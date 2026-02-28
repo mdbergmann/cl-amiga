@@ -245,6 +245,35 @@
 (check "do multi-result" 30 (do ((i 0 (+ i 1))) ((= i 1) 10 20 30)))
 (check "do nil result" nil (do ((i 0 (+ i 1))) ((= i 1))))
 
+; --- Quasiquote ---
+(check "qq atom" 42 `42)
+(check "qq symbol" 'foo `foo)
+(check "qq simple list" '(1 2 3) `(1 2 3))
+(check "qq unquote" '(a 3 c) `(a ,(+ 1 2) c))
+(check "qq unquote var" '(val 10) (let ((x 10)) `(val ,x)))
+(check "qq splice" '(a 1 2 3 b) `(a ,@'(1 2 3) b))
+(check "qq splice concat" '(1 2 3 4) `(,@'(1 2) ,@'(3 4)))
+(check "qq nested list" '(a (b 3)) `(a (b ,(+ 1 2))))
+(check "qq dotted" '(a . 3) `(a . ,(+ 1 2)))
+(defmacro qq-inc (x) `(+ ,x 1))
+(check "qq macro inc" 6 (qq-inc 5))
+(defmacro qq-progn (&rest body) `(progn ,@body))
+(check "qq macro splice" 42 (qq-progn 1 2 42))
+
+; --- Gensym ---
+(check "gensym symbolp" t (symbolp (gensym)))
+(check "gensym unique" nil (eq (gensym) (gensym)))
+(check "gensym prefix" t (symbolp (gensym "MY-")))
+
+; --- Boot functions ---
+(check "cadr" 2 (cadr '(1 2 3)))
+(check "caar" 'a (caar '((a b) c)))
+(check "cddr" '(3) (cddr '(1 2 3)))
+(check "caddr" 3 (caddr '(1 2 3)))
+(check "identity" 42 (identity 42))
+(check "endp nil" t (endp nil))
+(check "endp list" nil (endp '(1)))
+
 ; --- Format ---
 (check "format nil" nil (format t ""))
 

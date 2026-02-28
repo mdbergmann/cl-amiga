@@ -23,6 +23,9 @@ typedef struct {
 
 CL_Obj cl_read_from_string(CL_ReadStream *stream);
 
+/* Check if last read hit EOF (for load loop) */
+int cl_reader_eof(void);
+
 void cl_reader_init(void);
 
 #endif /* CL_READER_H */

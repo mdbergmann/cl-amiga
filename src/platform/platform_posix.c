@@ -46,6 +46,36 @@ void platform_ungetchar(int ch)
     ungetc(ch, stdin);
 }
 
+char *platform_file_read(const char *path, unsigned long *size_out)
+{
+    FILE *f;
+    long fsize;
+    char *buf;
+
+    *size_out = 0;
+    f = fopen(path, "rb");
+    if (!f) return NULL;
+
+    fseek(f, 0, SEEK_END);
+    fsize = ftell(f);
+    fseek(f, 0, SEEK_SET);
+
+    if (fsize <= 0) { fclose(f); return NULL; }
+
+    buf = (char *)malloc((size_t)fsize + 1);
+    if (!buf) { fclose(f); return NULL; }
+
+    if (fread(buf, 1, (size_t)fsize, f) != (size_t)fsize) {
+        free(buf);
+        fclose(f);
+        return NULL;
+    }
+    buf[fsize] = '\0';
+    *size_out = (unsigned long)fsize;
+    fclose(f);
+    return buf;
+}
+
 void platform_init(void)
 {
     /* Nothing needed on POSIX */

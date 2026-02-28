@@ -8,6 +8,55 @@
 #include "../platform/platform.h"
 #include <string.h>
 
+/* Try to load boot.lisp from known locations */
+static void load_boot_file(void)
+{
+    /* Paths to try, in order */
+    static const char *paths[] = {
+        "lib/boot.lisp",
+#ifdef PLATFORM_AMIGA
+        "PROGDIR:lib/boot.lisp",
+#endif
+        NULL
+    };
+    int i;
+
+    for (i = 0; paths[i] != NULL; i++) {
+        unsigned long size;
+        char *buf = platform_file_read(paths[i], &size);
+        if (buf) {
+            CL_ReadStream stream;
+            stream.buf = buf;
+            stream.pos = 0;
+            stream.len = (int)size;
+
+            for (;;) {
+                CL_Obj expr, bytecode;
+                int err;
+
+                expr = cl_read_from_string(&stream);
+                if (cl_reader_eof()) break;
+
+                err = CL_CATCH();
+                if (err == CL_ERR_NONE) {
+                    CL_GC_PROTECT(expr);
+                    bytecode = cl_compile(expr);
+                    CL_GC_UNPROTECT(1);
+                    if (!CL_NULL_P(bytecode))
+                        cl_vm_eval(bytecode);
+                    CL_UNCATCH();
+                } else {
+                    CL_UNCATCH();
+                }
+            }
+
+            platform_free(buf);
+            return;  /* Loaded successfully, stop trying */
+        }
+    }
+    /* If no boot file found, silently continue */
+}
+
 CL_Obj cl_eval_string(const char *str)
 {
     CL_ReadStream stream;
@@ -107,4 +156,5 @@ void cl_repl_init(void)
 {
     cl_eval_string("(defmacro when (test &rest body) (list 'if test (cons 'progn body)))");
     cl_eval_string("(defmacro unless (test &rest body) (list 'if test nil (cons 'progn body)))");
+    load_boot_file();
 }

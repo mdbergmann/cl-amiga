@@ -371,9 +371,10 @@ void cl_gc(void)
 void cl_mem_stats(void)
 {
     char buf[256];
-    sprintf(buf, "Heap: %u/%u bytes used, %u free, %u GC cycles\n",
-            cl_heap.total_allocated, cl_heap.arena_size,
-            cl_heap.arena_size - cl_heap.total_allocated,
-            cl_heap.gc_count);
+    sprintf(buf, "Heap: %lu/%lu bytes used, %lu free, %lu GC cycles\n",
+            (unsigned long)cl_heap.total_allocated,
+            (unsigned long)cl_heap.arena_size,
+            (unsigned long)(cl_heap.arena_size - cl_heap.total_allocated),
+            (unsigned long)cl_heap.gc_count);
     platform_write_string(buf);
 }

@@ -597,6 +597,144 @@ static void compile_cond(CL_Compiler *c, CL_Obj form)
     }
 }
 
+/* --- Quasiquote --- */
+
+/* Check if a list contains any (UNQUOTE-SPLICING ...) elements */
+static int qq_has_splicing(CL_Obj list)
+{
+    while (CL_CONS_P(list)) {
+        CL_Obj elem = cl_car(list);
+        if (CL_CONS_P(elem) && cl_car(elem) == SYM_UNQUOTE_SPLICING)
+            return 1;
+        list = cl_cdr(list);
+    }
+    return 0;
+}
+
+/* Forward declaration */
+static void compile_qq(CL_Compiler *c, CL_Obj tmpl);
+
+/* Compile a quasiquote list without splicing:
+ * Each element is compiled via compile_qq, then OP_LIST n.
+ * Handles dotted tails: `(a b . ,x) */
+static void compile_qq_list_nosplice(CL_Compiler *c, CL_Obj tmpl)
+{
+    int n = 0;
+    CL_Obj cursor = tmpl;
+
+    while (CL_CONS_P(cursor)) {
+        CL_Obj elem = cl_car(cursor);
+        CL_Obj rest = cl_cdr(cursor);
+
+        /* Detect dotted unquote: `(... . ,x) reads as (... UNQUOTE x) */
+        if (elem == SYM_UNQUOTE && CL_CONS_P(rest) && CL_NULL_P(cl_cdr(rest))) {
+            compile_expr(c, cl_car(rest));
+            {
+                int i;
+                for (i = 0; i < n; i++)
+                    emit(c, OP_CONS);
+            }
+            return;
+        }
+
+        compile_qq(c, elem);
+        n++;
+        cursor = rest;
+    }
+
+    if (CL_NULL_P(cursor)) {
+        /* Proper list */
+        emit(c, OP_LIST);
+        emit(c, (uint8_t)n);
+    } else {
+        /* Dotted tail (non-unquote atom) — compile the cdr, then n CONSes */
+        compile_qq(c, cursor);
+        {
+            int i;
+            for (i = 0; i < n; i++)
+                emit(c, OP_CONS);
+        }
+    }
+}
+
+/* Compile a quasiquote list with splicing:
+ * Groups elements into segments, calls APPEND on them. */
+static void compile_qq_list_splice(CL_Compiler *c, CL_Obj tmpl)
+{
+    int n_segments = 0;
+    CL_Obj cursor = tmpl;
+    CL_Obj sym_append;
+    int idx;
+
+    /* Load APPEND function */
+    sym_append = cl_intern("APPEND", 6);
+    idx = add_constant(c, sym_append);
+    emit(c, OP_FLOAD);
+    emit_u16(c, (uint16_t)idx);
+
+    /* Walk the list, grouping consecutive non-splice elements */
+    while (CL_CONS_P(cursor)) {
+        CL_Obj elem = cl_car(cursor);
+
+        if (CL_CONS_P(elem) && cl_car(elem) == SYM_UNQUOTE_SPLICING) {
+            /* Splice: compile the expression directly */
+            compile_expr(c, cl_car(cl_cdr(elem)));
+            n_segments++;
+        } else {
+            /* Start a run of non-splice elements */
+            int run = 0;
+            while (CL_CONS_P(cursor)) {
+                CL_Obj e = cl_car(cursor);
+                if (CL_CONS_P(e) && cl_car(e) == SYM_UNQUOTE_SPLICING)
+                    break;
+                compile_qq(c, e);
+                run++;
+                cursor = cl_cdr(cursor);
+            }
+            emit(c, OP_LIST);
+            emit(c, (uint8_t)run);
+            n_segments++;
+            continue;  /* Don't advance cursor again */
+        }
+        cursor = cl_cdr(cursor);
+    }
+
+    emit(c, OP_CALL);
+    emit(c, (uint8_t)n_segments);
+}
+
+/* Recursive quasiquote template walker */
+static void compile_qq(CL_Compiler *c, CL_Obj tmpl)
+{
+    /* Atom (non-cons, including NIL): emit as constant */
+    if (!CL_CONS_P(tmpl)) {
+        if (CL_NULL_P(tmpl))
+            emit(c, OP_NIL);
+        else
+            emit_const(c, tmpl);
+        return;
+    }
+
+    /* (UNQUOTE x): compile x normally */
+    if (cl_car(tmpl) == SYM_UNQUOTE) {
+        compile_expr(c, cl_car(cl_cdr(tmpl)));
+        return;
+    }
+
+    /* List — check for splicing */
+    if (qq_has_splicing(tmpl)) {
+        compile_qq_list_splice(c, tmpl);
+    } else {
+        compile_qq_list_nosplice(c, tmpl);
+    }
+}
+
+static void compile_quasiquote(CL_Compiler *c, CL_Obj form)
+{
+    CL_Obj tmpl = cl_car(cl_cdr(form));
+    compile_qq(c, tmpl);
+}
+
 /* --- Loop forms --- */
 
 static void compile_dolist(CL_Compiler *c, CL_Obj form)
@@ -1009,6 +1147,7 @@ static void compile_expr(CL_Compiler *c, CL_Obj expr)
         if (head == SYM_DO)          { compile_do(c, expr); return; }
         if (head == SYM_DOLIST)      { compile_dolist(c, expr); return; }
         if (head == SYM_DOTIMES)     { compile_dotimes(c, expr); return; }
+        if (head == SYM_QUASIQUOTE)  { compile_quasiquote(c, expr); return; }
 
         /* Regular function call */
         compile_call(c, expr);

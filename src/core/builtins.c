@@ -6,6 +6,7 @@
 #include "printer.h"
 #include "vm.h"
 #include "compiler.h"
+#include "reader.h"
 #include "../platform/platform.h"
 #include <stdio.h>
 #include <string.h>
@@ -83,7 +84,7 @@ static CL_Obj bi_div(CL_Obj *args, int n)
 
 static CL_Obj bi_mod(CL_Obj *args, int n)
 {
-    (void)n;
+    CL_UNUSED(n);
     if (!CL_FIXNUM_P(args[0]) || !CL_FIXNUM_P(args[1]))
         cl_error(CL_ERR_TYPE, "MOD: not a number");
     if (CL_FIXNUM_VAL(args[1]) == 0)
@@ -157,7 +158,7 @@ static CL_Obj bi_ge(CL_Obj *args, int n)
 
 static CL_Obj bi_1plus(CL_Obj *args, int n)
 {
-    (void)n;
+    CL_UNUSED(n);
     if (!CL_FIXNUM_P(args[0]))
         cl_error(CL_ERR_TYPE, "1+: not a number");
     return CL_MAKE_FIXNUM(CL_FIXNUM_VAL(args[0]) + 1);
@@ -165,7 +166,7 @@ static CL_Obj bi_1plus(CL_Obj *args, int n)
 
 static CL_Obj bi_1minus(CL_Obj *args, int n)
 {
-    (void)n;
+    CL_UNUSED(n);
     if (!CL_FIXNUM_P(args[0]))
         cl_error(CL_ERR_TYPE, "1-: not a number");
     return CL_MAKE_FIXNUM(CL_FIXNUM_VAL(args[0]) - 1);
@@ -175,19 +176,19 @@ static CL_Obj bi_1minus(CL_Obj *args, int n)
 
 static CL_Obj bi_cons(CL_Obj *args, int n)
 {
-    (void)n;
+    CL_UNUSED(n);
     return cl_cons(args[0], args[1]);
 }
 
 static CL_Obj bi_car(CL_Obj *args, int n)
 {
-    (void)n;
+    CL_UNUSED(n);
     return cl_car(args[0]);
 }
 
 static CL_Obj bi_cdr(CL_Obj *args, int n)
 {
-    (void)n;
+    CL_UNUSED(n);
     return cl_cdr(args[0]);
 }
 
@@ -204,7 +205,7 @@ static CL_Obj bi_length(CL_Obj *args, int n)
 {
     CL_Obj obj = args[0];
     int len = 0;
-    (void)n;
+    CL_UNUSED(n);
 
     if (CL_STRING_P(obj)) {
         CL_String *s = (CL_String *)CL_OBJ_TO_PTR(obj);
@@ -252,7 +253,7 @@ static CL_Obj bi_reverse(CL_Obj *args, int n)
 {
     CL_Obj list = args[0];
     CL_Obj result = CL_NIL;
-    (void)n;
+    CL_UNUSED(n);
 
     while (!CL_NULL_P(list)) {
         result = cl_cons(cl_car(list), result);
@@ -265,7 +266,7 @@ static CL_Obj bi_nth(CL_Obj *args, int n)
 {
     int idx;
     CL_Obj list;
-    (void)n;
+    CL_UNUSED(n);
 
     if (!CL_FIXNUM_P(args[0]))
         cl_error(CL_ERR_TYPE, "NTH: index must be a number");
@@ -282,62 +283,62 @@ static CL_Obj bi_nth(CL_Obj *args, int n)
 
 static CL_Obj bi_null(CL_Obj *args, int n)
 {
-    (void)n;
+    CL_UNUSED(n);
     return CL_NULL_P(args[0]) ? SYM_T : CL_NIL;
 }
 
 static CL_Obj bi_consp(CL_Obj *args, int n)
 {
-    (void)n;
+    CL_UNUSED(n);
     return CL_CONS_P(args[0]) ? SYM_T : CL_NIL;
 }
 
 static CL_Obj bi_atom(CL_Obj *args, int n)
 {
-    (void)n;
+    CL_UNUSED(n);
     return CL_CONS_P(args[0]) ? CL_NIL : SYM_T;
 }
 
 static CL_Obj bi_listp(CL_Obj *args, int n)
 {
-    (void)n;
+    CL_UNUSED(n);
     return (CL_NULL_P(args[0]) || CL_CONS_P(args[0])) ? SYM_T : CL_NIL;
 }
 
 static CL_Obj bi_numberp(CL_Obj *args, int n)
 {
-    (void)n;
+    CL_UNUSED(n);
     return CL_FIXNUM_P(args[0]) ? SYM_T : CL_NIL;
 }
 
 static CL_Obj bi_symbolp(CL_Obj *args, int n)
 {
-    (void)n;
+    CL_UNUSED(n);
     return (CL_NULL_P(args[0]) || CL_SYMBOL_P(args[0])) ? SYM_T : CL_NIL;
 }
 
 static CL_Obj bi_stringp(CL_Obj *args, int n)
 {
-    (void)n;
+    CL_UNUSED(n);
     return CL_STRING_P(args[0]) ? SYM_T : CL_NIL;
 }
 
 static CL_Obj bi_functionp(CL_Obj *args, int n)
 {
-    (void)n;
+    CL_UNUSED(n);
     return (CL_FUNCTION_P(args[0]) || CL_CLOSURE_P(args[0]) ||
             CL_BYTECODE_P(args[0])) ? SYM_T : CL_NIL;
 }
 
 static CL_Obj bi_eq(CL_Obj *args, int n)
 {
-    (void)n;
+    CL_UNUSED(n);
     return (args[0] == args[1]) ? SYM_T : CL_NIL;
 }
 
 static CL_Obj bi_eql(CL_Obj *args, int n)
 {
-    (void)n;
+    CL_UNUSED(n);
     /* For fixnums and characters, value equality; otherwise identity */
     if (CL_FIXNUM_P(args[0]) && CL_FIXNUM_P(args[1]))
         return (args[0] == args[1]) ? SYM_T : CL_NIL;
@@ -349,7 +350,7 @@ static CL_Obj bi_eql(CL_Obj *args, int n)
 static CL_Obj bi_equal(CL_Obj *args, int n)
 {
     CL_Obj a = args[0], b = args[1];
-    (void)n;
+    CL_UNUSED(n);
 
     if (a == b) return SYM_T;
     if (CL_CONS_P(a) && CL_CONS_P(b)) {
@@ -371,7 +372,7 @@ static CL_Obj bi_equal(CL_Obj *args, int n)
 
 static CL_Obj bi_not(CL_Obj *args, int n)
 {
-    (void)n;
+    CL_UNUSED(n);
     return CL_NULL_P(args[0]) ? SYM_T : CL_NIL;
 }
 
@@ -379,28 +380,28 @@ static CL_Obj bi_not(CL_Obj *args, int n)
 
 static CL_Obj bi_print(CL_Obj *args, int n)
 {
-    (void)n;
+    CL_UNUSED(n);
     cl_print(args[0]);
     return args[0];
 }
 
 static CL_Obj bi_prin1(CL_Obj *args, int n)
 {
-    (void)n;
+    CL_UNUSED(n);
     cl_prin1(args[0]);
     return args[0];
 }
 
 static CL_Obj bi_princ(CL_Obj *args, int n)
 {
-    (void)n;
+    CL_UNUSED(n);
     cl_princ(args[0]);
     return args[0];
 }
 
 static CL_Obj bi_terpri(CL_Obj *args, int n)
 {
-    (void)args; (void)n;
+    CL_UNUSED(args); CL_UNUSED(n);
     platform_write_string("\n");
     return CL_NIL;
 }
@@ -408,7 +409,7 @@ static CL_Obj bi_terpri(CL_Obj *args, int n)
 static CL_Obj bi_format(CL_Obj *args, int n)
 {
     /* Minimal: (format t "string") just prints */
-    (void)n;
+    CL_UNUSED(n);
     if (n >= 2 && CL_STRING_P(args[1])) {
         CL_String *s = (CL_String *)CL_OBJ_TO_PTR(args[1]);
         /* Simple ~A and ~% substitution */
@@ -444,7 +445,7 @@ static CL_Obj bi_mapcar(CL_Obj *args, int n)
     CL_Obj func = args[0];
     CL_Obj list = args[1];
     CL_Obj result = CL_NIL, tail = CL_NIL;
-    (void)n;
+    CL_UNUSED(n);
 
     CL_GC_PROTECT(func);
     CL_GC_PROTECT(list);
@@ -539,14 +540,14 @@ static CL_Obj bi_funcall(CL_Obj *args, int n)
 static CL_Obj bi_type_of(CL_Obj *args, int n)
 {
     const char *name;
-    (void)n;
+    CL_UNUSED(n);
     name = cl_type_name(args[0]);
     return cl_intern(name, (uint32_t)strlen(name));
 }
 
 static CL_Obj bi_zerop(CL_Obj *args, int n)
 {
-    (void)n;
+    CL_UNUSED(n);
     if (!CL_FIXNUM_P(args[0]))
         cl_error(CL_ERR_TYPE, "ZEROP: not a number");
     return CL_FIXNUM_VAL(args[0]) == 0 ? SYM_T : CL_NIL;
@@ -554,7 +555,7 @@ static CL_Obj bi_zerop(CL_Obj *args, int n)
 
 static CL_Obj bi_plusp(CL_Obj *args, int n)
 {
-    (void)n;
+    CL_UNUSED(n);
     if (!CL_FIXNUM_P(args[0]))
         cl_error(CL_ERR_TYPE, "PLUSP: not a number");
     return CL_FIXNUM_VAL(args[0]) > 0 ? SYM_T : CL_NIL;
@@ -562,7 +563,7 @@ static CL_Obj bi_plusp(CL_Obj *args, int n)
 
 static CL_Obj bi_minusp(CL_Obj *args, int n)
 {
-    (void)n;
+    CL_UNUSED(n);
     if (!CL_FIXNUM_P(args[0]))
         cl_error(CL_ERR_TYPE, "MINUSP: not a number");
     return CL_FIXNUM_VAL(args[0]) < 0 ? SYM_T : CL_NIL;
@@ -571,7 +572,7 @@ static CL_Obj bi_minusp(CL_Obj *args, int n)
 static CL_Obj bi_abs(CL_Obj *args, int n)
 {
     int32_t v;
-    (void)n;
+    CL_UNUSED(n);
     if (!CL_FIXNUM_P(args[0]))
         cl_error(CL_ERR_TYPE, "ABS: not a number");
     v = CL_FIXNUM_VAL(args[0]);
@@ -610,6 +611,78 @@ static CL_Obj bi_min(CL_Obj *args, int n)
         if (v < m) m = v;
     }
     return CL_MAKE_FIXNUM(m);
+}
+
+/* --- Load --- */
+
+static CL_Obj bi_load(CL_Obj *args, int n)
+{
+    CL_String *path_str;
+    char *buf;
+    unsigned long size;
+    CL_ReadStream stream;
+    CL_Obj expr, bytecode;
+
+    CL_UNUSED(n);
+    if (!CL_STRING_P(args[0]))
+        cl_error(CL_ERR_TYPE, "LOAD: argument must be a string");
+
+    path_str = (CL_String *)CL_OBJ_TO_PTR(args[0]);
+    buf = platform_file_read(path_str->data, &size);
+    if (!buf)
+        cl_error(CL_ERR_GENERAL, "LOAD: cannot open file");
+
+    stream.buf = buf;
+    stream.pos = 0;
+    stream.len = (int)size;
+
+    for (;;) {
+        int err;
+
+        expr = cl_read_from_string(&stream);
+        if (cl_reader_eof()) break;
+
+        err = CL_CATCH();
+        if (err == CL_ERR_NONE) {
+            CL_GC_PROTECT(expr);
+            bytecode = cl_compile(expr);
+            CL_GC_UNPROTECT(1);
+            if (!CL_NULL_P(bytecode))
+                cl_vm_eval(bytecode);
+            CL_UNCATCH();
+        } else {
+            cl_error_print();
+            CL_UNCATCH();
+        }
+    }
+
+    platform_free(buf);
+    return SYM_T;
+}
+
+/* --- Gensym --- */
+
+static uint32_t gensym_counter = 0;
+
+static CL_Obj bi_gensym(CL_Obj *args, int n)
+{
+    char buf[64];
+    const char *prefix = "G";
+    CL_Obj name_str, sym;
+    int len;
+
+    if (n > 0 && CL_STRING_P(args[0])) {
+        CL_String *s = (CL_String *)CL_OBJ_TO_PTR(args[0]);
+        prefix = s->data;
+    }
+
+    /* Manual int-to-string for vbcc compatibility */
+    len = snprintf(buf, sizeof(buf), "%s%lu", prefix, (unsigned long)gensym_counter++);
+    name_str = cl_make_string(buf, (uint32_t)len);
+    CL_GC_PROTECT(name_str);
+    sym = cl_make_symbol(name_str);  /* Uninterned — not in any package */
+    CL_GC_UNPROTECT(1);
+    return sym;
 }
 
 /* --- Registration --- */
@@ -679,4 +752,6 @@ void cl_builtins_init(void)
 
     /* Misc */
     defun("TYPE-OF", bi_type_of, 1, 1);
+    defun("GENSYM", bi_gensym, 0, 1);
+    defun("LOAD", bi_load, 1, 1);
 }

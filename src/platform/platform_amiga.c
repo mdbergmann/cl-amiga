@@ -57,6 +57,37 @@ void platform_ungetchar(int ch)
     }
 }
 
+char *platform_file_read(const char *path, unsigned long *size_out)
+{
+    BPTR fh;
+    LONG fsize, nread;
+    char *buf;
+
+    *size_out = 0;
+    fh = Open((STRPTR)path, MODE_OLDFILE);
+    if (!fh) return NULL;
+
+    /* Seek to end to get size */
+    Seek(fh, 0, OFFSET_END);
+    fsize = Seek(fh, 0, OFFSET_BEGINNING);
+
+    if (fsize <= 0) { Close(fh); return NULL; }
+
+    buf = (char *)AllocVec(fsize + 1, MEMF_CLEAR);
+    if (!buf) { Close(fh); return NULL; }
+
+    nread = Read(fh, buf, fsize);
+    Close(fh);
+
+    if (nread != fsize) {
+        FreeVec(buf);
+        return NULL;
+    }
+    buf[fsize] = '\0';
+    *size_out = (unsigned long)fsize;
+    return buf;
+}
+
 void platform_init(void)
 {
     /* Nothing needed — dos.library is auto-opened by vbcc startup */

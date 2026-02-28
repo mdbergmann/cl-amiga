@@ -349,6 +349,11 @@ CL_Obj cl_read_from_string(CL_ReadStream *stream)
     return read_expr();
 }
 
+int cl_reader_eof(void)
+{
+    return eof_seen;
+}
+
 void cl_reader_init(void)
 {
     /* Nothing needed yet */

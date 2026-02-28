@@ -573,6 +573,94 @@ TEST(eval_do)
         "(do ((i 0 (+ i 1))) ((= i 1)))"), "NIL");
 }
 
+/* --- Quasiquote --- */
+
+TEST(eval_quasiquote_atom)
+{
+    ASSERT_EQ_INT(eval_int("`42"), 42);
+    ASSERT_STR_EQ(eval_print("`foo"), "FOO");
+}
+
+TEST(eval_quasiquote_simple_list)
+{
+    ASSERT_STR_EQ(eval_print("`(1 2 3)"), "(1 2 3)");
+    ASSERT_STR_EQ(eval_print("`(a b c)"), "(A B C)");
+}
+
+TEST(eval_quasiquote_unquote)
+{
+    ASSERT_STR_EQ(eval_print("`(a ,(+ 1 2) c)"), "(A 3 C)");
+    ASSERT_STR_EQ(eval_print("(let ((x 10)) `(val ,x))"), "(VAL 10)");
+}
+
+TEST(eval_quasiquote_splicing)
+{
+    ASSERT_STR_EQ(eval_print("`(a ,@'(1 2 3) b)"), "(A 1 2 3 B)");
+    ASSERT_STR_EQ(eval_print("`(,@'(1 2) ,@'(3 4))"), "(1 2 3 4)");
+    ASSERT_STR_EQ(eval_print("`(a ,@'(1 2))"), "(A 1 2)");
+}
+
+TEST(eval_quasiquote_nested_list)
+{
+    ASSERT_STR_EQ(eval_print("`(a (b ,(+ 1 2)))"), "(A (B 3))");
+}
+
+TEST(eval_quasiquote_dotted)
+{
+    ASSERT_STR_EQ(eval_print("`(a . ,(+ 1 2))"), "(A . 3)");
+}
+
+TEST(eval_quasiquote_in_macro)
+{
+    eval_print("(defmacro my-inc2 (x) `(+ ,x 1))");
+    ASSERT_EQ_INT(eval_int("(my-inc2 5)"), 6);
+    ASSERT_EQ_INT(eval_int("(my-inc2 99)"), 100);
+}
+
+TEST(eval_quasiquote_macro_splice)
+{
+    eval_print("(defmacro my-progn (&rest body) `(progn ,@body))");
+    ASSERT_EQ_INT(eval_int("(my-progn 1 2 42)"), 42);
+}
+
+/* --- Gensym --- */
+
+TEST(eval_gensym)
+{
+    CL_Obj g1, g2;
+
+    /* gensym returns a symbol */
+    ASSERT_STR_EQ(eval_print("(symbolp (gensym))"), "T");
+
+    /* Two gensyms are distinct */
+    g1 = cl_eval_string("(gensym)");
+    g2 = cl_eval_string("(gensym)");
+    ASSERT(g1 != g2);
+}
+
+/* --- Load --- */
+
+TEST(eval_load)
+{
+    eval_print("(load \"tests/test_load.lisp\")");
+    ASSERT_EQ_INT(eval_int("*load-test-var*"), 42);
+    ASSERT_EQ_INT(eval_int("(load-test-fn 5)"), 105);
+}
+
+/* --- Boot file functions --- */
+
+TEST(eval_boot_functions)
+{
+    ASSERT_EQ_INT(eval_int("(cadr '(1 2 3))"), 2);
+    ASSERT_STR_EQ(eval_print("(caar '((a b) c))"), "A");
+    ASSERT_STR_EQ(eval_print("(cdar '((a b) c))"), "(B)");
+    ASSERT_STR_EQ(eval_print("(cddr '(1 2 3))"), "(3)");
+    ASSERT_EQ_INT(eval_int("(caddr '(1 2 3))"), 3);
+    ASSERT_EQ_INT(eval_int("(identity 42)"), 42);
+    ASSERT_STR_EQ(eval_print("(endp nil)"), "T");
+    ASSERT_STR_EQ(eval_print("(endp '(1))"), "NIL");
+}
+
 int main(void)
 {
     test_init();
@@ -635,6 +723,17 @@ int main(void)
     RUN(eval_dolist);
     RUN(eval_dotimes);
     RUN(eval_do);
+    RUN(eval_quasiquote_atom);
+    RUN(eval_quasiquote_simple_list);
+    RUN(eval_quasiquote_unquote);
+    RUN(eval_quasiquote_splicing);
+    RUN(eval_quasiquote_nested_list);
+    RUN(eval_quasiquote_dotted);
+    RUN(eval_quasiquote_in_macro);
+    RUN(eval_quasiquote_macro_splice);
+    RUN(eval_gensym);
+    RUN(eval_load);
+    RUN(eval_boot_functions);
 
     teardown();
     REPORT();
