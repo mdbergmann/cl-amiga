@@ -28,4 +28,7 @@ CL_Obj cl_get_macro(CL_Obj name);
 
 void cl_compiler_init(void);
 
+/* Expand one level of macro (returns form unchanged if not a macro call) */
+CL_Obj cl_macroexpand_1(CL_Obj form);
+
 #endif /* CL_COMPILER_H */

@@ -319,6 +319,25 @@
 (check "key override" 15 (key-def :x 5))
 (check "lambda optional" 15 ((lambda (a &optional (b 5)) (+ a b)) 10))
 
+; --- Phase 4: &allow-other-keys ---
+(defun aok-test (&key x &allow-other-keys) x)
+(check "aok accepts unknown" 5 (aok-test :x 5 :z 99))
+(check "aok no known key" nil (aok-test :z 99))
+(check "caller allow-other-keys" '(1 nil) (key-test :x 1 :z 99 :allow-other-keys t))
+
+; --- Phase 4: eval ---
+(check "eval simple" 3 (eval '(+ 1 2)))
+(check "eval complex" 42 (eval '(* 6 7)))
+(check "eval quote" 'foo (eval ''foo))
+
+; --- Phase 4: macroexpand-1 / macroexpand ---
+(defmacro me-test (x) `(+ ,x 1))
+(check "macroexpand-1 macro" '(+ 5 1) (macroexpand-1 '(me-test 5)))
+(check "macroexpand-1 non-macro" '(+ 1 2) (macroexpand-1 '(+ 1 2)))
+(defmacro me-wrap (x) `(me-test ,x))
+(check "macroexpand nested" '(+ 5 1) (macroexpand '(me-wrap 5)))
+(check "macroexpand non-macro" '(+ 1 2) (macroexpand '(+ 1 2)))
+
 ; --- Summary ---
 (format t "~%=== Results ===~%")
 (format t "Passed: ~A~%" *pass-count*)

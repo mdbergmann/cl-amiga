@@ -778,6 +778,59 @@ TEST(eval_optional_lambda)
     ASSERT_EQ_INT(eval_int("((lambda (a &optional (b 5)) (+ a b)) 10 20)"), 30);
 }
 
+/* --- Phase 4: &allow-other-keys --- */
+
+TEST(eval_key_unknown_error)
+{
+    /* Unknown keyword should signal an error */
+    const char *r = eval_print("(key-test :x 1 :z 99)");
+    ASSERT(strstr(r, "ERROR") != NULL);
+}
+
+TEST(eval_key_allow_other_keys)
+{
+    /* &allow-other-keys in lambda list suppresses error */
+    eval_print("(defun aok-test (&key x &allow-other-keys) x)");
+    ASSERT_EQ_INT(eval_int("(aok-test :x 5 :z 99)"), 5);
+    ASSERT_EQ_INT(eval_int("(aok-test :z 99)"), 0);  /* x defaults to NIL=0 as fixnum... */
+    ASSERT_STR_EQ(eval_print("(aok-test :z 99)"), "NIL");
+}
+
+TEST(eval_key_caller_allow)
+{
+    /* Caller passes :allow-other-keys t to suppress error */
+    ASSERT_STR_EQ(eval_print("(key-test :x 1 :z 99 :allow-other-keys t)"), "(1 NIL)");
+}
+
+/* --- Phase 4: eval builtin --- */
+
+TEST(eval_eval_builtin)
+{
+    ASSERT_EQ_INT(eval_int("(eval '(+ 1 2))"), 3);
+    ASSERT_EQ_INT(eval_int("(eval '(* 6 7))"), 42);
+    ASSERT_STR_EQ(eval_print("(eval ''foo)"), "FOO");
+}
+
+/* --- Phase 4: macroexpand-1 / macroexpand --- */
+
+TEST(eval_macroexpand_1)
+{
+    eval_print("(defmacro me-test (x) `(+ ,x 1))");
+    /* macroexpand-1 on a macro call returns expanded form */
+    ASSERT_STR_EQ(eval_print("(macroexpand-1 '(me-test 5))"), "(+ 5 1)");
+    /* macroexpand-1 on a non-macro form returns it unchanged */
+    ASSERT_STR_EQ(eval_print("(macroexpand-1 '(+ 1 2))"), "(+ 1 2)");
+}
+
+TEST(eval_macroexpand)
+{
+    /* macroexpand expands until no more macros at top level */
+    eval_print("(defmacro me-wrap (x) `(me-test ,x))");
+    ASSERT_STR_EQ(eval_print("(macroexpand '(me-wrap 5))"), "(+ 5 1)");
+    /* Non-macro form returned unchanged */
+    ASSERT_STR_EQ(eval_print("(macroexpand '(+ 1 2))"), "(+ 1 2)");
+}
+
 int main(void)
 {
     test_init();
@@ -866,6 +919,12 @@ int main(void)
     RUN(eval_key);
     RUN(eval_key_default);
     RUN(eval_optional_lambda);
+    RUN(eval_key_unknown_error);
+    RUN(eval_key_allow_other_keys);
+    RUN(eval_key_caller_allow);
+    RUN(eval_eval_builtin);
+    RUN(eval_macroexpand_1);
+    RUN(eval_macroexpand);
 
     teardown();
     REPORT();

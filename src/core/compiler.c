@@ -1826,7 +1826,7 @@ static void compile_symbol(CL_Compiler *c, CL_Obj sym)
     }
 }
 
-static CL_Obj macroexpand_1(CL_Obj form);
+CL_Obj cl_macroexpand_1(CL_Obj form);
 
 static void compile_expr(CL_Compiler *c, CL_Obj expr)
 {
@@ -1848,7 +1848,7 @@ static void compile_expr(CL_Compiler *c, CL_Obj expr)
 
         /* Macro expansion */
         if (CL_SYMBOL_P(head) && cl_macro_p(head)) {
-            CL_Obj expanded = macroexpand_1(expr);
+            CL_Obj expanded = cl_macroexpand_1(expr);
             compile_expr(c, expanded);
             return;
         }
@@ -1891,7 +1891,7 @@ static void compile_expr(CL_Compiler *c, CL_Obj expr)
 
 /* --- Macro expansion (runtime, via VM) --- */
 
-static CL_Obj macroexpand_1(CL_Obj form)
+CL_Obj cl_macroexpand_1(CL_Obj form)
 {
     CL_Obj head = cl_car(form);
     CL_Obj expander = cl_get_macro(head);

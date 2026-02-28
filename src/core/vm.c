@@ -496,17 +496,32 @@ CL_Obj cl_vm_eval(CL_Obj bytecode_obj)
 
                     /* Keyword matching */
                     if (has_key) {
+                        int allow = (callee_bc->flags & 2) != 0;
                         int ki;
-                        for (ki = 0; ki + 1 < n_extra; ki += 2) {
-                            CL_Obj key = extra_args[ki];
-                            CL_Obj val = extra_args[ki + 1];
-                            int j;
-                            for (j = 0; j < callee_bc->n_keys; j++) {
-                                if (key == callee_bc->key_syms[j]) {
-                                    cl_vm.stack[frame->bp + callee_bc->key_slots[j]] = val;
+                        /* Check for :allow-other-keys t in caller args */
+                        if (!allow) {
+                            for (ki = 0; ki + 1 < n_extra; ki += 2) {
+                                if (extra_args[ki] == KW_ALLOW_OTHER_KEYS &&
+                                    !CL_NULL_P(extra_args[ki + 1])) {
+                                    allow = 1;
                                     break;
                                 }
                             }
+                        }
+                        for (ki = 0; ki + 1 < n_extra; ki += 2) {
+                            CL_Obj key = extra_args[ki];
+                            CL_Obj val = extra_args[ki + 1];
+                            int j, found = 0;
+                            for (j = 0; j < callee_bc->n_keys; j++) {
+                                if (key == callee_bc->key_syms[j]) {
+                                    cl_vm.stack[frame->bp + callee_bc->key_slots[j]] = val;
+                                    found = 1;
+                                    break;
+                                }
+                            }
+                            if (!found && key != KW_ALLOW_OTHER_KEYS && !allow)
+                                cl_error(CL_ERR_ARGS, "Unknown keyword argument: %s",
+                                         cl_symbol_name(key));
                         }
                     }
 
@@ -568,17 +583,32 @@ CL_Obj cl_vm_eval(CL_Obj bytecode_obj)
 
                     /* Keyword matching */
                     if (has_key) {
+                        int allow = (callee_bc->flags & 2) != 0;
                         int ki;
-                        for (ki = 0; ki + 1 < n_extra; ki += 2) {
-                            CL_Obj key = extra_args[ki];
-                            CL_Obj val = extra_args[ki + 1];
-                            int j;
-                            for (j = 0; j < callee_bc->n_keys; j++) {
-                                if (key == callee_bc->key_syms[j]) {
-                                    cl_vm.stack[new_bp + callee_bc->key_slots[j]] = val;
+                        /* Check for :allow-other-keys t in caller args */
+                        if (!allow) {
+                            for (ki = 0; ki + 1 < n_extra; ki += 2) {
+                                if (extra_args[ki] == KW_ALLOW_OTHER_KEYS &&
+                                    !CL_NULL_P(extra_args[ki + 1])) {
+                                    allow = 1;
                                     break;
                                 }
                             }
+                        }
+                        for (ki = 0; ki + 1 < n_extra; ki += 2) {
+                            CL_Obj key = extra_args[ki];
+                            CL_Obj val = extra_args[ki + 1];
+                            int j, found = 0;
+                            for (j = 0; j < callee_bc->n_keys; j++) {
+                                if (key == callee_bc->key_syms[j]) {
+                                    cl_vm.stack[new_bp + callee_bc->key_slots[j]] = val;
+                                    found = 1;
+                                    break;
+                                }
+                            }
+                            if (!found && key != KW_ALLOW_OTHER_KEYS && !allow)
+                                cl_error(CL_ERR_ARGS, "Unknown keyword argument: %s",
+                                         cl_symbol_name(key));
                         }
                     }
 

@@ -41,6 +41,7 @@ CL_Obj SYM_FLET = CL_NIL;
 CL_Obj SYM_LABELS = CL_NIL;
 CL_Obj SYM_AMP_KEY = CL_NIL;
 CL_Obj SYM_AMP_ALLOW_OTHER_KEYS = CL_NIL;
+CL_Obj KW_ALLOW_OTHER_KEYS = CL_NIL;
 
 /* FNV-1a hash */
 uint32_t cl_hash_string(const char *str, uint32_t len)
@@ -147,6 +148,7 @@ void cl_symbol_init(void)
     SYM_LABELS        = cl_intern_in("LABELS", 6, cl_package_cl);
     SYM_AMP_KEY       = cl_intern_in("&KEY", 4, cl_package_cl);
     SYM_AMP_ALLOW_OTHER_KEYS = cl_intern_in("&ALLOW-OTHER-KEYS", 17, cl_package_cl);
+    KW_ALLOW_OTHER_KEYS = cl_intern_keyword("ALLOW-OTHER-KEYS", 16);
 
     /* T is self-evaluating */
     {

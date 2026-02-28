@@ -660,6 +660,36 @@ static CL_Obj bi_load(CL_Obj *args, int n)
     return SYM_T;
 }
 
+/* --- Eval / Macroexpand --- */
+
+static CL_Obj bi_eval(CL_Obj *args, int n)
+{
+    CL_Obj bytecode;
+    CL_UNUSED(n);
+    CL_GC_PROTECT(args[0]);
+    bytecode = cl_compile(args[0]);
+    CL_GC_UNPROTECT(1);
+    if (CL_NULL_P(bytecode)) return CL_NIL;
+    return cl_vm_eval(bytecode);
+}
+
+static CL_Obj bi_macroexpand_1(CL_Obj *args, int n)
+{
+    CL_UNUSED(n);
+    return cl_macroexpand_1(args[0]);
+}
+
+static CL_Obj bi_macroexpand(CL_Obj *args, int n)
+{
+    CL_Obj form = args[0];
+    CL_UNUSED(n);
+    for (;;) {
+        CL_Obj expanded = cl_macroexpand_1(form);
+        if (expanded == form) return form;
+        form = expanded;
+    }
+}
+
 /* --- Error --- */
 
 static CL_Obj bi_error(CL_Obj *args, int n)
@@ -768,4 +798,7 @@ void cl_builtins_init(void)
     defun("GENSYM", bi_gensym, 0, 1);
     defun("LOAD", bi_load, 1, 1);
     defun("ERROR", bi_error, 1, -1);
+    defun("EVAL", bi_eval, 1, 1);
+    defun("MACROEXPAND-1", bi_macroexpand_1, 1, 1);
+    defun("MACROEXPAND", bi_macroexpand, 1, 1);
 }

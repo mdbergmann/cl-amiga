@@ -68,5 +68,6 @@ extern CL_Obj SYM_FLET;
 extern CL_Obj SYM_LABELS;
 extern CL_Obj SYM_AMP_KEY;
 extern CL_Obj SYM_AMP_ALLOW_OTHER_KEYS;
+extern CL_Obj KW_ALLOW_OTHER_KEYS;
 
 #endif /* CL_SYMBOL_H */
