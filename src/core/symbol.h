@@ -55,5 +55,8 @@ extern CL_Obj SYM_AMP_BODY;
 extern CL_Obj SYM_AND;
 extern CL_Obj SYM_OR;
 extern CL_Obj SYM_COND;
+extern CL_Obj SYM_DO;
+extern CL_Obj SYM_DOLIST;
+extern CL_Obj SYM_DOTIMES;
 
 #endif /* CL_SYMBOL_H */

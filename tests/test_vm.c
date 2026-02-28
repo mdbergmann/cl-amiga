@@ -499,6 +499,80 @@ TEST(eval_apply_closure)
     ASSERT_EQ_INT(eval_int("(apply (make-adder 50) '(7))"), 57);
 }
 
+/* --- Loop forms: dolist, dotimes, do --- */
+
+TEST(eval_dolist)
+{
+    /* Basic iteration — collect via side effect */
+    eval_print("(setq *result* nil)");
+    eval_print("(dolist (x '(1 2 3)) (setq *result* (cons x *result*)))");
+    ASSERT_STR_EQ(eval_print("*result*"), "(3 2 1)");
+
+    /* Empty list — body never executes */
+    eval_print("(setq *count* 0)");
+    eval_print("(dolist (x nil) (setq *count* (+ *count* 1)))");
+    ASSERT_EQ_INT(eval_int("*count*"), 0);
+
+    /* Result form */
+    ASSERT_EQ_INT(eval_int("(dolist (x '(1 2 3) 42))"), 42);
+
+    /* Default return is NIL */
+    ASSERT_STR_EQ(eval_print("(dolist (x '(1 2 3)))"), "NIL");
+
+    /* var is NIL during result-form */
+    ASSERT_STR_EQ(eval_print("(dolist (x '(1 2 3) x))"), "NIL");
+}
+
+TEST(eval_dotimes)
+{
+    /* Count 0..n-1 */
+    eval_print("(setq *sum* 0)");
+    eval_print("(dotimes (i 5) (setq *sum* (+ *sum* i)))");
+    ASSERT_EQ_INT(eval_int("*sum*"), 10);  /* 0+1+2+3+4 */
+
+    /* Zero count — body never executes */
+    eval_print("(setq *count* 0)");
+    eval_print("(dotimes (i 0) (setq *count* (+ *count* 1)))");
+    ASSERT_EQ_INT(eval_int("*count*"), 0);
+
+    /* Result form */
+    ASSERT_EQ_INT(eval_int("(dotimes (i 3 99))"), 99);
+
+    /* Default return is NIL */
+    ASSERT_STR_EQ(eval_print("(dotimes (i 3))"), "NIL");
+
+    /* var accessible in result-form (equals count at end) */
+    ASSERT_EQ_INT(eval_int("(dotimes (i 5 i))"), 5);
+}
+
+TEST(eval_do)
+{
+    /* Simple countdown */
+    ASSERT_EQ_INT(eval_int(
+        "(do ((i 10 (- i 1))) ((= i 0) 42))"), 42);
+
+    /* Multiple vars with steps */
+    ASSERT_EQ_INT(eval_int(
+        "(do ((i 0 (+ i 1)) (sum 0 (+ sum i))) ((= i 5) sum))"), 10);
+
+    /* Var without step — retains value */
+    ASSERT_EQ_INT(eval_int(
+        "(do ((x 100) (i 0 (+ i 1))) ((= i 3) x))"), 100);
+
+    /* Body forms execute */
+    eval_print("(setq *do-body* 0)");
+    eval_print("(do ((i 0 (+ i 1))) ((= i 3)) (setq *do-body* (+ *do-body* 1)))");
+    ASSERT_EQ_INT(eval_int("*do-body*"), 3);
+
+    /* Multiple result forms (progn) */
+    ASSERT_EQ_INT(eval_int(
+        "(do ((i 0 (+ i 1))) ((= i 1) 10 20 30))"), 30);
+
+    /* No result form — returns NIL */
+    ASSERT_STR_EQ(eval_print(
+        "(do ((i 0 (+ i 1))) ((= i 1)))"), "NIL");
+}
+
 int main(void)
 {
     test_init();
@@ -558,6 +632,9 @@ int main(void)
     RUN(eval_mapcar_lambda);
     RUN(eval_funcall_lambda);
     RUN(eval_apply_closure);
+    RUN(eval_dolist);
+    RUN(eval_dotimes);
+    RUN(eval_do);
 
     teardown();
     REPORT();

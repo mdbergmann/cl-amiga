@@ -28,6 +28,9 @@ CL_Obj SYM_AMP_BODY = CL_NIL;
 CL_Obj SYM_AND = CL_NIL;
 CL_Obj SYM_OR = CL_NIL;
 CL_Obj SYM_COND = CL_NIL;
+CL_Obj SYM_DO = CL_NIL;
+CL_Obj SYM_DOLIST = CL_NIL;
+CL_Obj SYM_DOTIMES = CL_NIL;
 
 /* FNV-1a hash */
 uint32_t cl_hash_string(const char *str, uint32_t len)
@@ -121,6 +124,9 @@ void cl_symbol_init(void)
     SYM_AND           = cl_intern_in("AND", 3, cl_package_cl);
     SYM_OR            = cl_intern_in("OR", 2, cl_package_cl);
     SYM_COND          = cl_intern_in("COND", 4, cl_package_cl);
+    SYM_DO            = cl_intern_in("DO", 2, cl_package_cl);
+    SYM_DOLIST        = cl_intern_in("DOLIST", 6, cl_package_cl);
+    SYM_DOTIMES       = cl_intern_in("DOTIMES", 7, cl_package_cl);
 
     /* T is self-evaluating */
     {

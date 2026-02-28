@@ -87,6 +87,13 @@ static void patch_jump(CL_Compiler *c, int patch_pos)
     c->code[patch_pos + 1] = (uint8_t)(offset & 0xFF);
 }
 
+/* Emit a backward jump (loop) to a known target position */
+static void emit_loop_jump(CL_Compiler *c, uint8_t op, int target)
+{
+    emit(c, op);
+    emit_i16(c, (int16_t)(target - (c->code_pos + 2)));
+}
+
 /* --- Special form compilation --- */
 
 static void compile_quote(CL_Compiler *c, CL_Obj form)
@@ -590,6 +597,286 @@ static void compile_cond(CL_Compiler *c, CL_Obj form)
     }
 }
 
+/* --- Loop forms --- */
+
+static void compile_dolist(CL_Compiler *c, CL_Obj form)
+{
+    /* (dolist (var list-form [result-form]) body...) */
+    CL_Obj binding = cl_car(cl_cdr(form));
+    CL_Obj body = cl_cdr(cl_cdr(form));
+    CL_Obj var = cl_car(binding);
+    CL_Obj list_form = cl_car(cl_cdr(binding));
+    CL_Obj result_form = cl_car(cl_cdr(cl_cdr(binding)));
+    CL_CompEnv *env = c->env;
+    int saved_local_count = env->local_count;
+    int saved_tail = c->in_tail;
+    int var_slot, iter_slot;
+    int loop_start, jnil_pos;
+
+    c->in_tail = 0;
+
+    /* Allocate var slot */
+    var_slot = cl_env_add_local(env, var);
+
+    /* Allocate internal iter slot (no symbol, never looked up) */
+    iter_slot = env->local_count;
+    env->local_count++;
+    if (env->local_count > env->max_locals)
+        env->max_locals = env->local_count;
+
+    /* Compile list-form, store into iter_slot */
+    compile_expr(c, list_form);
+    emit(c, OP_STORE);
+    emit(c, (uint8_t)iter_slot);
+    emit(c, OP_POP);
+
+    /* loop_start: LOAD iter_slot, JNIL -> end */
+    loop_start = c->code_pos;
+    emit(c, OP_LOAD);
+    emit(c, (uint8_t)iter_slot);
+    jnil_pos = emit_jump(c, OP_JNIL);
+
+    /* Set var = (car iter) */
+    emit(c, OP_LOAD);
+    emit(c, (uint8_t)iter_slot);
+    emit(c, OP_CAR);
+    emit(c, OP_STORE);
+    emit(c, (uint8_t)var_slot);
+    emit(c, OP_POP);
+
+    /* Advance iter = (cdr iter) */
+    emit(c, OP_LOAD);
+    emit(c, (uint8_t)iter_slot);
+    emit(c, OP_CDR);
+    emit(c, OP_STORE);
+    emit(c, (uint8_t)iter_slot);
+    emit(c, OP_POP);
+
+    /* Compile body forms, each followed by POP */
+    {
+        CL_Obj b = body;
+        while (!CL_NULL_P(b)) {
+            compile_expr(c, cl_car(b));
+            emit(c, OP_POP);
+            b = cl_cdr(b);
+        }
+    }
+
+    /* Backward jump to loop_start */
+    emit_loop_jump(c, OP_JMP, loop_start);
+
+    /* end: */
+    patch_jump(c, jnil_pos);
+
+    /* CL spec: var is NIL during result-form evaluation */
+    emit(c, OP_NIL);
+    emit(c, OP_STORE);
+    emit(c, (uint8_t)var_slot);
+    emit(c, OP_POP);
+
+    /* Compile result-form or NIL */
+    c->in_tail = saved_tail;
+    if (!CL_NULL_P(cl_cdr(cl_cdr(binding)))) {
+        compile_expr(c, result_form);
+    } else {
+        emit(c, OP_NIL);
+    }
+
+    /* Restore scope */
+    env->local_count = saved_local_count;
+}
+
+static void compile_dotimes(CL_Compiler *c, CL_Obj form)
+{
+    /* (dotimes (var count-form [result-form]) body...) */
+    CL_Obj binding = cl_car(cl_cdr(form));
+    CL_Obj body = cl_cdr(cl_cdr(form));
+    CL_Obj var = cl_car(binding);
+    CL_Obj count_form = cl_car(cl_cdr(binding));
+    CL_Obj result_form = cl_car(cl_cdr(cl_cdr(binding)));
+    CL_CompEnv *env = c->env;
+    int saved_local_count = env->local_count;
+    int saved_tail = c->in_tail;
+    int var_slot, limit_slot;
+    int loop_start, jtrue_pos;
+
+    c->in_tail = 0;
+
+    /* Allocate var slot */
+    var_slot = cl_env_add_local(env, var);
+
+    /* Allocate internal limit slot */
+    limit_slot = env->local_count;
+    env->local_count++;
+    if (env->local_count > env->max_locals)
+        env->max_locals = env->local_count;
+
+    /* Compile count-form, store into limit_slot */
+    compile_expr(c, count_form);
+    emit(c, OP_STORE);
+    emit(c, (uint8_t)limit_slot);
+    emit(c, OP_POP);
+
+    /* var = 0 */
+    emit_const(c, CL_MAKE_FIXNUM(0));
+    emit(c, OP_STORE);
+    emit(c, (uint8_t)var_slot);
+    emit(c, OP_POP);
+
+    /* loop_start: LOAD var, LOAD limit, GE, JTRUE -> end */
+    loop_start = c->code_pos;
+    emit(c, OP_LOAD);
+    emit(c, (uint8_t)var_slot);
+    emit(c, OP_LOAD);
+    emit(c, (uint8_t)limit_slot);
+    emit(c, OP_GE);
+    jtrue_pos = emit_jump(c, OP_JTRUE);
+
+    /* Compile body forms, each followed by POP */
+    {
+        CL_Obj b = body;
+        while (!CL_NULL_P(b)) {
+            compile_expr(c, cl_car(b));
+            emit(c, OP_POP);
+            b = cl_cdr(b);
+        }
+    }
+
+    /* Increment: var = var + 1 */
+    emit(c, OP_LOAD);
+    emit(c, (uint8_t)var_slot);
+    emit_const(c, CL_MAKE_FIXNUM(1));
+    emit(c, OP_ADD);
+    emit(c, OP_STORE);
+    emit(c, (uint8_t)var_slot);
+    emit(c, OP_POP);
+
+    /* Backward jump to loop_start */
+    emit_loop_jump(c, OP_JMP, loop_start);
+
+    /* end: */
+    patch_jump(c, jtrue_pos);
+
+    /* Compile result-form or NIL */
+    c->in_tail = saved_tail;
+    if (!CL_NULL_P(cl_cdr(cl_cdr(binding)))) {
+        compile_expr(c, result_form);
+    } else {
+        emit(c, OP_NIL);
+    }
+
+    /* Restore scope */
+    env->local_count = saved_local_count;
+}
+
+static void compile_do(CL_Compiler *c, CL_Obj form)
+{
+    /* (do ((var init [step])...) (end-test result...) body...) */
+    CL_Obj var_clauses = cl_car(cl_cdr(form));
+    CL_Obj end_clause = cl_car(cl_cdr(cl_cdr(form)));
+    CL_Obj body = cl_cdr(cl_cdr(cl_cdr(form)));
+    CL_Obj end_test = cl_car(end_clause);
+    CL_Obj result_forms = cl_cdr(end_clause);
+    CL_CompEnv *env = c->env;
+    int saved_local_count = env->local_count;
+    int saved_tail = c->in_tail;
+
+    /* Parse bindings into arrays */
+    CL_Obj vars[CL_MAX_LOCALS];
+    CL_Obj inits[CL_MAX_LOCALS];
+    CL_Obj steps[CL_MAX_LOCALS];  /* CL_NIL if no step form */
+    int has_step[CL_MAX_LOCALS];
+    int n = 0;
+    int i;
+    int loop_start, jtrue_pos;
+
+    {
+        CL_Obj vc = var_clauses;
+        while (!CL_NULL_P(vc) && n < CL_MAX_LOCALS) {
+            CL_Obj clause = cl_car(vc);
+            vars[n] = cl_car(clause);
+            inits[n] = cl_car(cl_cdr(clause));
+            if (!CL_NULL_P(cl_cdr(cl_cdr(clause)))) {
+                steps[n] = cl_car(cl_cdr(cl_cdr(clause)));
+                has_step[n] = 1;
+            } else {
+                steps[n] = CL_NIL;
+                has_step[n] = 0;
+            }
+            n++;
+            vc = cl_cdr(vc);
+        }
+    }
+
+    c->in_tail = 0;
+
+    /* Parallel init: evaluate all init forms onto stack */
+    for (i = 0; i < n; i++) {
+        compile_expr(c, inits[i]);
+    }
+
+    /* Register all vars as locals */
+    for (i = 0; i < n; i++) {
+        cl_env_add_local(env, vars[i]);
+    }
+
+    /* Store back-to-front */
+    for (i = n - 1; i >= 0; i--) {
+        emit(c, OP_STORE);
+        emit(c, (uint8_t)(saved_local_count + i));
+        emit(c, OP_POP);
+    }
+
+    /* loop_start: compile end-test, JTRUE -> end */
+    loop_start = c->code_pos;
+    compile_expr(c, end_test);
+    jtrue_pos = emit_jump(c, OP_JTRUE);
+
+    /* Compile body forms, each followed by POP */
+    {
+        CL_Obj b = body;
+        while (!CL_NULL_P(b)) {
+            compile_expr(c, cl_car(b));
+            emit(c, OP_POP);
+            b = cl_cdr(b);
+        }
+    }
+
+    /* Parallel step: evaluate all step forms (or load current value) */
+    for (i = 0; i < n; i++) {
+        if (has_step[i]) {
+            compile_expr(c, steps[i]);
+        } else {
+            emit(c, OP_LOAD);
+            emit(c, (uint8_t)(saved_local_count + i));
+        }
+    }
+
+    /* Store all back-to-front */
+    for (i = n - 1; i >= 0; i--) {
+        emit(c, OP_STORE);
+        emit(c, (uint8_t)(saved_local_count + i));
+        emit(c, OP_POP);
+    }
+
+    /* Backward jump to loop_start */
+    emit_loop_jump(c, OP_JMP, loop_start);
+
+    /* end: */
+    patch_jump(c, jtrue_pos);
+
+    /* Compile result forms as progn, or NIL */
+    c->in_tail = saved_tail;
+    if (!CL_NULL_P(result_forms)) {
+        compile_progn(c, result_forms);
+    } else {
+        emit(c, OP_NIL);
+    }
+
+    /* Restore scope */
+    env->local_count = saved_local_count;
+}
+
 /* --- Main compilation dispatch --- */
 
 static void compile_call(CL_Compiler *c, CL_Obj form)
@@ -719,6 +1006,9 @@ static void compile_expr(CL_Compiler *c, CL_Obj expr)
         if (head == SYM_AND)         { compile_and(c, expr); return; }
         if (head == SYM_OR)          { compile_or(c, expr); return; }
         if (head == SYM_COND)        { compile_cond(c, expr); return; }
+        if (head == SYM_DO)          { compile_do(c, expr); return; }
+        if (head == SYM_DOLIST)      { compile_dolist(c, expr); return; }
+        if (head == SYM_DOTIMES)     { compile_dotimes(c, expr); return; }
 
         /* Regular function call */
         compile_call(c, expr);

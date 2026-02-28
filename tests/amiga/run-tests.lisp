@@ -213,6 +213,38 @@
 (check "apply lambda" 7 (apply (lambda (a b) (+ a b)) '(3 4)))
 (check "apply closure" 57 (apply (make-adder 50) '(7)))
 
+; --- DOLIST ---
+(setq *dl-result* nil)
+(dolist (x '(1 2 3)) (setq *dl-result* (cons x *dl-result*)))
+(check "dolist collect" '(3 2 1) *dl-result*)
+(setq *dl-count* 0)
+(dolist (x nil) (setq *dl-count* (+ *dl-count* 1)))
+(check "dolist empty" 0 *dl-count*)
+(check "dolist result" 42 (dolist (x '(1 2 3) 42)))
+(check "dolist nil result" nil (dolist (x '(1 2 3))))
+(check "dolist var nil in result" nil (dolist (x '(1 2 3) x)))
+
+; --- DOTIMES ---
+(setq *dt-sum* 0)
+(dotimes (i 5) (setq *dt-sum* (+ *dt-sum* i)))
+(check "dotimes sum 0-4" 10 *dt-sum*)
+(setq *dt-count* 0)
+(dotimes (i 0) (setq *dt-count* (+ *dt-count* 1)))
+(check "dotimes zero" 0 *dt-count*)
+(check "dotimes result" 99 (dotimes (i 3 99)))
+(check "dotimes nil result" nil (dotimes (i 3)))
+(check "dotimes var in result" 5 (dotimes (i 5 i)))
+
+; --- DO ---
+(check "do countdown" 42 (do ((i 10 (- i 1))) ((= i 0) 42)))
+(check "do multi-var" 10 (do ((i 0 (+ i 1)) (sum 0 (+ sum i))) ((= i 5) sum)))
+(check "do no-step" 100 (do ((x 100) (i 0 (+ i 1))) ((= i 3) x)))
+(setq *do-body* 0)
+(do ((i 0 (+ i 1))) ((= i 3)) (setq *do-body* (+ *do-body* 1)))
+(check "do body exec" 3 *do-body*)
+(check "do multi-result" 30 (do ((i 0 (+ i 1))) ((= i 1) 10 20 30)))
+(check "do nil result" nil (do ((i 0 (+ i 1))) ((= i 1))))
+
 ; --- Format ---
 (check "format nil" nil (format t ""))
 
