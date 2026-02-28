@@ -148,6 +148,7 @@ Core infrastructure and interactive environment:
 - [ ] Reader macros
 - [ ] Packages (defpackage, use-package, import, export)
 - [ ] Declarations and type checking
+- [ ] `loop` facility (extended LOOP macro with `for`, `collect`, `when`, etc.)
 - [ ] Compiler optimizations (constant folding, inlining)
 
 ### Phase 5: Performance & Polish
