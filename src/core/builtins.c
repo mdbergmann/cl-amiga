@@ -459,9 +459,10 @@ static CL_Obj bi_mapcar(CL_Obj *args, int n)
         if (CL_FUNCTION_P(func)) {
             CL_Function *f = (CL_Function *)CL_OBJ_TO_PTR(func);
             val = f->func(&elem, 1);
+        } else if (CL_BYTECODE_P(func) || CL_CLOSURE_P(func)) {
+            val = cl_vm_apply(func, &elem, 1);
         } else {
-            /* For now, only built-in functions work with mapcar */
-            cl_error(CL_ERR_TYPE, "MAPCAR: compiled function support pending");
+            cl_error(CL_ERR_TYPE, "MAPCAR: not a function");
             val = CL_NIL;
         }
 
@@ -511,6 +512,9 @@ static CL_Obj bi_apply(CL_Obj *args, int n)
         CL_Function *f = (CL_Function *)CL_OBJ_TO_PTR(func);
         return f->func(flat_args, nflat);
     }
+    if (CL_BYTECODE_P(func) || CL_CLOSURE_P(func)) {
+        return cl_vm_apply(func, flat_args, nflat);
+    }
 
     cl_error(CL_ERR_TYPE, "APPLY: not a function");
     return CL_NIL;
@@ -522,6 +526,9 @@ static CL_Obj bi_funcall(CL_Obj *args, int n)
     if (CL_FUNCTION_P(func)) {
         CL_Function *f = (CL_Function *)CL_OBJ_TO_PTR(func);
         return f->func(args + 1, n - 1);
+    }
+    if (CL_BYTECODE_P(func) || CL_CLOSURE_P(func)) {
+        return cl_vm_apply(func, args + 1, n - 1);
     }
     cl_error(CL_ERR_TYPE, "FUNCALL: not a function");
     return CL_NIL;

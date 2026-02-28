@@ -176,6 +176,43 @@
 (check "type-of string" 'string (type-of "hello"))
 (check "type-of cons" 'cons (type-of '(1 2)))
 
+; --- AND / OR / COND ---
+(check "and empty" t (and))
+(check "and single" 42 (and 42))
+(check "and all true" 3 (and 1 2 3))
+(check "and short-circuit" nil (and 1 nil 2))
+(check "and first nil" nil (and nil 1))
+(check "or empty" nil (or))
+(check "or single" 42 (or 42))
+(check "or first true" 1 (or 1 2))
+(check "or skip nil" 2 (or nil 2 3))
+(check "or all nil" nil (or nil nil nil))
+(check "cond t-clause" 42 (cond (t 42)))
+(check "cond skip nil" 2 (cond (nil 1) (t 2)))
+(check "cond no match" nil (cond (nil 1)))
+(check "cond multi-body" 3 (cond (t 1 2 3)))
+(check "cond expr-test" 20 (cond ((= 1 2) 10) ((= 1 1) 20)))
+(check "cond empty" nil (cond))
+
+; --- WHEN / UNLESS (bootstrap macros) ---
+(check "when true" 42 (when t 1 2 42))
+(check "when false" nil (when nil 1 2 42))
+(check "unless nil" 99 (unless nil 1 2 99))
+(check "unless t" nil (unless t 1 2 99))
+
+; --- Mapcar with lambda/closure ---
+(check "mapcar lambda" '(1 4 9) (mapcar (lambda (x) (* x x)) '(1 2 3)))
+(defun make-multiplier (n) (lambda (x) (* n x)))
+(check "mapcar closure" '(3 6 9) (mapcar (make-multiplier 3) '(1 2 3)))
+
+; --- Funcall with lambda/closure ---
+(check "funcall lambda" 30 (funcall (lambda (a b) (+ a b)) 10 20))
+(check "funcall closure" 15 (funcall (make-adder 10) 5))
+
+; --- Apply with lambda/closure ---
+(check "apply lambda" 7 (apply (lambda (a b) (+ a b)) '(3 4)))
+(check "apply closure" 57 (apply (make-adder 50) '(7)))
+
 ; --- Format ---
 (check "format nil" nil (format t ""))
 

@@ -25,6 +25,9 @@ CL_Obj SYM_UNQUOTE_SPLICING = CL_NIL;
 CL_Obj SYM_AMP_REST = CL_NIL;
 CL_Obj SYM_AMP_OPTIONAL = CL_NIL;
 CL_Obj SYM_AMP_BODY = CL_NIL;
+CL_Obj SYM_AND = CL_NIL;
+CL_Obj SYM_OR = CL_NIL;
+CL_Obj SYM_COND = CL_NIL;
 
 /* FNV-1a hash */
 uint32_t cl_hash_string(const char *str, uint32_t len)
@@ -115,6 +118,9 @@ void cl_symbol_init(void)
     SYM_AMP_REST      = cl_intern_in("&REST", 5, cl_package_cl);
     SYM_AMP_OPTIONAL  = cl_intern_in("&OPTIONAL", 9, cl_package_cl);
     SYM_AMP_BODY      = cl_intern_in("&BODY", 5, cl_package_cl);
+    SYM_AND           = cl_intern_in("AND", 3, cl_package_cl);
+    SYM_OR            = cl_intern_in("OR", 2, cl_package_cl);
+    SYM_COND          = cl_intern_in("COND", 4, cl_package_cl);
 
     /* T is self-evaluating */
     {

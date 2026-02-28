@@ -52,5 +52,8 @@ extern CL_Obj SYM_UNQUOTE_SPLICING;
 extern CL_Obj SYM_AMP_REST;
 extern CL_Obj SYM_AMP_OPTIONAL;
 extern CL_Obj SYM_AMP_BODY;
+extern CL_Obj SYM_AND;
+extern CL_Obj SYM_OR;
+extern CL_Obj SYM_COND;
 
 #endif /* CL_SYMBOL_H */

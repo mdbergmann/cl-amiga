@@ -415,6 +415,90 @@ TEST(eval_closure_shared_scope)
     ASSERT_EQ_INT(eval_int("(let ((p (make-pair 10))) ((car (cdr p))))"), 11);
 }
 
+/* --- AND / OR / COND --- */
+
+TEST(eval_and)
+{
+    /* (and) => T */
+    ASSERT_STR_EQ(eval_print("(and)"), "T");
+    /* (and x) => x */
+    ASSERT_EQ_INT(eval_int("(and 42)"), 42);
+    /* Short-circuit: returns first nil */
+    ASSERT_STR_EQ(eval_print("(and 1 nil 2)"), "NIL");
+    /* All truthy: returns last value */
+    ASSERT_EQ_INT(eval_int("(and 1 2 3)"), 3);
+    /* First is nil */
+    ASSERT_STR_EQ(eval_print("(and nil 1)"), "NIL");
+}
+
+TEST(eval_or)
+{
+    /* (or) => NIL */
+    ASSERT_STR_EQ(eval_print("(or)"), "NIL");
+    /* (or x) => x */
+    ASSERT_EQ_INT(eval_int("(or 42)"), 42);
+    /* Short-circuit: returns first truthy */
+    ASSERT_EQ_INT(eval_int("(or nil 2 3)"), 2);
+    /* All nil: returns nil */
+    ASSERT_STR_EQ(eval_print("(or nil nil nil)"), "NIL");
+    /* First is truthy */
+    ASSERT_EQ_INT(eval_int("(or 1 2)"), 1);
+}
+
+TEST(eval_cond)
+{
+    /* Basic clause matching */
+    ASSERT_EQ_INT(eval_int("(cond (t 42))"), 42);
+    ASSERT_EQ_INT(eval_int("(cond (nil 1) (t 2))"), 2);
+    /* No matching clause */
+    ASSERT_STR_EQ(eval_print("(cond (nil 1))"), "NIL");
+    /* Multiple body forms */
+    ASSERT_EQ_INT(eval_int("(cond (t 1 2 3))"), 3);
+    /* Condition with expression */
+    ASSERT_EQ_INT(eval_int("(cond ((= 1 2) 10) ((= 1 1) 20))"), 20);
+    /* Empty cond */
+    ASSERT_STR_EQ(eval_print("(cond)"), "NIL");
+}
+
+TEST(eval_when_unless)
+{
+    /* when: true => body result */
+    ASSERT_EQ_INT(eval_int("(when t 1 2 42)"), 42);
+    /* when: nil => NIL */
+    ASSERT_STR_EQ(eval_print("(when nil 1 2 42)"), "NIL");
+    /* unless: nil => body result */
+    ASSERT_EQ_INT(eval_int("(unless nil 1 2 99)"), 99);
+    /* unless: true => NIL */
+    ASSERT_STR_EQ(eval_print("(unless t 1 2 99)"), "NIL");
+}
+
+/* --- mapcar / funcall / apply with compiled functions --- */
+
+TEST(eval_mapcar_lambda)
+{
+    /* mapcar with lambda */
+    ASSERT_STR_EQ(eval_print("(mapcar (lambda (x) (* x x)) '(1 2 3))"), "(1 4 9)");
+    /* mapcar with closure */
+    eval_print("(defun make-multiplier (n) (lambda (x) (* n x)))");
+    ASSERT_STR_EQ(eval_print("(mapcar (make-multiplier 3) '(1 2 3))"), "(3 6 9)");
+}
+
+TEST(eval_funcall_lambda)
+{
+    /* funcall with lambda */
+    ASSERT_EQ_INT(eval_int("(funcall (lambda (a b) (+ a b)) 10 20)"), 30);
+    /* funcall with closure */
+    ASSERT_EQ_INT(eval_int("(funcall (make-adder 100) 5)"), 105);
+}
+
+TEST(eval_apply_closure)
+{
+    /* apply with lambda */
+    ASSERT_EQ_INT(eval_int("(apply (lambda (a b) (+ a b)) '(3 4))"), 7);
+    /* apply with closure */
+    ASSERT_EQ_INT(eval_int("(apply (make-adder 50) '(7))"), 57);
+}
+
 int main(void)
 {
     test_init();
@@ -467,6 +551,13 @@ int main(void)
     RUN(eval_closure_multiple_captures);
     RUN(eval_closure_nested);
     RUN(eval_closure_shared_scope);
+    RUN(eval_and);
+    RUN(eval_or);
+    RUN(eval_cond);
+    RUN(eval_when_unless);
+    RUN(eval_mapcar_lambda);
+    RUN(eval_funcall_lambda);
+    RUN(eval_apply_closure);
 
     teardown();
     REPORT();

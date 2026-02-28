@@ -105,5 +105,6 @@ void cl_repl_batch(void)
 
 void cl_repl_init(void)
 {
-    /* Nothing needed yet */
+    cl_eval_string("(defmacro when (test &rest body) (list 'if test (cons 'progn body)))");
+    cl_eval_string("(defmacro unless (test &rest body) (list 'if test nil (cons 'progn body)))");
 }

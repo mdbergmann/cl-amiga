@@ -433,6 +433,163 @@ static void compile_block(CL_Compiler *c, CL_Obj form)
     compile_body(c, body);
 }
 
+static void compile_and(CL_Compiler *c, CL_Obj form)
+{
+    CL_Obj args = cl_cdr(form);
+    int saved_tail = c->in_tail;
+    int nil_patches[64];
+    int n_patches = 0;
+
+    if (CL_NULL_P(args)) {
+        /* (and) => T */
+        emit(c, OP_T);
+        return;
+    }
+
+    if (CL_NULL_P(cl_cdr(args))) {
+        /* (and x) => just compile x */
+        compile_expr(c, cl_car(args));
+        return;
+    }
+
+    /* Multiple args: short-circuit chain */
+    while (!CL_NULL_P(args)) {
+        int is_last = CL_NULL_P(cl_cdr(args));
+        if (is_last) {
+            c->in_tail = saved_tail;
+            compile_expr(c, cl_car(args));
+        } else {
+            c->in_tail = 0;
+            compile_expr(c, cl_car(args));
+            emit(c, OP_DUP);
+            nil_patches[n_patches++] = emit_jump(c, OP_JNIL);
+            emit(c, OP_POP);
+        }
+        args = cl_cdr(args);
+    }
+
+    /* Patch all nil-jumps to here (done label) */
+    {
+        int i;
+        for (i = 0; i < n_patches; i++)
+            patch_jump(c, nil_patches[i]);
+    }
+}
+
+static void compile_or(CL_Compiler *c, CL_Obj form)
+{
+    CL_Obj args = cl_cdr(form);
+    int saved_tail = c->in_tail;
+    int true_patches[64];
+    int n_patches = 0;
+
+    if (CL_NULL_P(args)) {
+        /* (or) => NIL */
+        emit(c, OP_NIL);
+        return;
+    }
+
+    if (CL_NULL_P(cl_cdr(args))) {
+        /* (or x) => just compile x */
+        compile_expr(c, cl_car(args));
+        return;
+    }
+
+    /* Multiple args: short-circuit chain */
+    while (!CL_NULL_P(args)) {
+        int is_last = CL_NULL_P(cl_cdr(args));
+        if (is_last) {
+            c->in_tail = saved_tail;
+            compile_expr(c, cl_car(args));
+        } else {
+            c->in_tail = 0;
+            compile_expr(c, cl_car(args));
+            emit(c, OP_DUP);
+            true_patches[n_patches++] = emit_jump(c, OP_JTRUE);
+            emit(c, OP_POP);
+        }
+        args = cl_cdr(args);
+    }
+
+    /* Patch all true-jumps to here (done label) */
+    {
+        int i;
+        for (i = 0; i < n_patches; i++)
+            patch_jump(c, true_patches[i]);
+    }
+}
+
+static void compile_cond(CL_Compiler *c, CL_Obj form)
+{
+    CL_Obj clauses = cl_cdr(form);
+    int saved_tail = c->in_tail;
+    int done_patches[64];
+    int n_done = 0;
+
+    if (CL_NULL_P(clauses)) {
+        emit(c, OP_NIL);
+        return;
+    }
+
+    while (!CL_NULL_P(clauses)) {
+        CL_Obj clause = cl_car(clauses);
+        CL_Obj test = cl_car(clause);
+        CL_Obj body = cl_cdr(clause);
+        int is_last = CL_NULL_P(cl_cdr(clauses));
+
+        if (test == SYM_T && is_last) {
+            /* (t body...) — default clause, no test needed */
+            c->in_tail = saved_tail;
+            if (CL_NULL_P(body))
+                emit(c, OP_T);
+            else
+                compile_progn(c, body);
+        } else {
+            int jnil_pos;
+            /* Compile test */
+            c->in_tail = 0;
+            compile_expr(c, test);
+            jnil_pos = emit_jump(c, OP_JNIL);
+
+            /* Compile body */
+            c->in_tail = saved_tail;
+            if (CL_NULL_P(body)) {
+                /* (cond (test)) with no body — return test value
+                 * But test was already consumed by JNIL, so we'd need DUP.
+                 * CL spec says return test value. For simplicity, push T. */
+                emit(c, OP_T);
+            } else {
+                compile_progn(c, body);
+            }
+
+            /* Always JMP past NIL fallthrough (even last non-t clause) */
+            done_patches[n_done++] = emit_jump(c, OP_JMP);
+
+            patch_jump(c, jnil_pos);
+        }
+
+        clauses = cl_cdr(clauses);
+    }
+
+    /* If the last clause wasn't a t-default, we need a NIL fallthrough */
+    {
+        CL_Obj last_clause = cl_car(cl_cdr(form));
+        CL_Obj c2 = cl_cdr(form);
+        /* Walk to last clause */
+        while (!CL_NULL_P(cl_cdr(c2))) c2 = cl_cdr(c2);
+        last_clause = cl_car(c2);
+        if (cl_car(last_clause) != SYM_T)
+            emit(c, OP_NIL);
+    }
+
+    /* Patch all done-jumps */
+    {
+        int i;
+        for (i = 0; i < n_done; i++)
+            patch_jump(c, done_patches[i]);
+    }
+}
+
 /* --- Main compilation dispatch --- */
 
 static void compile_call(CL_Compiler *c, CL_Obj form)
@@ -559,6 +716,9 @@ static void compile_expr(CL_Compiler *c, CL_Obj expr)
         if (head == SYM_DEFMACRO)    { compile_defmacro(c, expr); return; }
         if (head == SYM_FUNCTION)    { compile_function(c, expr); return; }
         if (head == SYM_BLOCK)       { compile_block(c, expr); return; }
+        if (head == SYM_AND)         { compile_and(c, expr); return; }
+        if (head == SYM_OR)          { compile_or(c, expr); return; }
+        if (head == SYM_COND)        { compile_cond(c, expr); return; }
 
         /* Regular function call */
         compile_call(c, expr);

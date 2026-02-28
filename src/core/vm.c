@@ -599,36 +599,29 @@ CL_Obj cl_vm_eval(CL_Obj bytecode_obj)
             /* (apply func arglist) */
             CL_Obj arglist = cl_vm_pop();
             CL_Obj func_obj = cl_vm_pop();
-            int nargs = 0;
+            CL_Obj flat_args[64];
+            int nflat = 0;
+            CL_Obj result;
 
-            /* Push func back */
-            cl_vm_push(func_obj);
-
-            /* Unpack arg list onto stack */
+            /* Flatten arglist into C array */
             {
                 CL_Obj a = arglist;
-                while (!CL_NULL_P(a)) {
-                    cl_vm_push(cl_car(a));
-                    nargs++;
+                while (!CL_NULL_P(a) && nflat < 64) {
+                    flat_args[nflat++] = cl_car(a);
                     a = cl_cdr(a);
                 }
             }
 
-            /* Now fake a CALL instruction */
-            /* We need to handle this inline since we can't "execute" an opcode */
-            {
-                CL_Obj *arg_base = &cl_vm.stack[cl_vm.sp - nargs];
-                func_obj = cl_vm.stack[cl_vm.sp - nargs - 1];
-
-                if (CL_FUNCTION_P(func_obj)) {
-                    CL_Function *f = (CL_Function *)CL_OBJ_TO_PTR(func_obj);
-                    CL_Obj result = call_builtin(f, arg_base, nargs);
-                    cl_vm.sp -= (nargs + 1);
-                    cl_vm_push(result);
-                } else {
-                    cl_error(CL_ERR_TYPE, "APPLY: not a callable function");
-                }
+            if (CL_FUNCTION_P(func_obj)) {
+                CL_Function *f = (CL_Function *)CL_OBJ_TO_PTR(func_obj);
+                result = call_builtin(f, flat_args, nflat);
+            } else if (CL_BYTECODE_P(func_obj) || CL_CLOSURE_P(func_obj)) {
+                result = cl_vm_apply(func_obj, flat_args, nflat);
+            } else {
+                cl_error(CL_ERR_TYPE, "APPLY: not a callable function");
+                result = CL_NIL;
             }
+            cl_vm_push(result);
             break;
         }
 
