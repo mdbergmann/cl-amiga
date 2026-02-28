@@ -42,6 +42,11 @@ CL_Obj SYM_LABELS = CL_NIL;
 CL_Obj SYM_AMP_KEY = CL_NIL;
 CL_Obj SYM_AMP_ALLOW_OTHER_KEYS = CL_NIL;
 CL_Obj KW_ALLOW_OTHER_KEYS = CL_NIL;
+CL_Obj SYM_TAGBODY = CL_NIL;
+CL_Obj SYM_GO = CL_NIL;
+CL_Obj SYM_CATCH = CL_NIL;
+CL_Obj SYM_THROW = CL_NIL;
+CL_Obj SYM_UNWIND_PROTECT = CL_NIL;
 
 /* FNV-1a hash */
 uint32_t cl_hash_string(const char *str, uint32_t len)
@@ -149,6 +154,11 @@ void cl_symbol_init(void)
     SYM_AMP_KEY       = cl_intern_in("&KEY", 4, cl_package_cl);
     SYM_AMP_ALLOW_OTHER_KEYS = cl_intern_in("&ALLOW-OTHER-KEYS", 17, cl_package_cl);
     KW_ALLOW_OTHER_KEYS = cl_intern_keyword("ALLOW-OTHER-KEYS", 16);
+    SYM_TAGBODY        = cl_intern_in("TAGBODY", 7, cl_package_cl);
+    SYM_GO             = cl_intern_in("GO", 2, cl_package_cl);
+    SYM_CATCH          = cl_intern_in("CATCH", 5, cl_package_cl);
+    SYM_THROW          = cl_intern_in("THROW", 5, cl_package_cl);
+    SYM_UNWIND_PROTECT = cl_intern_in("UNWIND-PROTECT", 14, cl_package_cl);
 
     /* T is self-evaluating */
     {

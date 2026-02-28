@@ -831,6 +831,137 @@ TEST(eval_macroexpand)
     ASSERT_STR_EQ(eval_print("(macroexpand '(+ 1 2))"), "(+ 1 2)");
 }
 
+/* --- Phase 4 Tier 2: tagbody/go --- */
+
+TEST(eval_tagbody_basic)
+{
+    /* tagbody with sequential tags and statements returns NIL */
+    ASSERT_STR_EQ(eval_print("(let ((x 0)) (tagbody (setq x 1) (setq x (+ x 1))) x)"), "2");
+}
+
+TEST(eval_tagbody_forward_go)
+{
+    /* go jumps forward, skipping intermediate code */
+    ASSERT_EQ_INT(eval_int("(let ((x 0)) (tagbody (go end) (setq x 99) end) x)"), 0);
+}
+
+TEST(eval_tagbody_backward_go)
+{
+    /* go jumps backward to implement a loop */
+    ASSERT_EQ_INT(eval_int(
+        "(let ((x 0)) (tagbody loop (setq x (+ x 1)) (if (< x 5) (go loop))) x)"), 5);
+}
+
+TEST(eval_tagbody_nested)
+{
+    /* nested tagbody */
+    ASSERT_EQ_INT(eval_int(
+        "(let ((x 0)) (tagbody outer (setq x (+ x 1)) (tagbody (setq x (+ x 10)) (go done)) done) x)"), 11);
+}
+
+TEST(eval_tagbody_fixnum_tags)
+{
+    /* integer tags are valid */
+    ASSERT_EQ_INT(eval_int(
+        "(let ((x 0)) (tagbody (go 2) 1 (setq x 99) 2 (setq x 42)) x)"), 42);
+}
+
+TEST(eval_tagbody_go_from_if)
+{
+    /* go from inside if */
+    ASSERT_EQ_INT(eval_int(
+        "(let ((x 0)) (tagbody start (setq x (+ x 1)) (if (< x 3) (go start))) x)"), 3);
+}
+
+/* --- Phase 4 Tier 2: catch/throw --- */
+
+TEST(eval_catch_basic)
+{
+    /* Basic catch/throw */
+    ASSERT_EQ_INT(eval_int("(catch 'done (throw 'done 42))"), 42);
+}
+
+TEST(eval_catch_normal)
+{
+    /* Normal return (no throw) */
+    ASSERT_EQ_INT(eval_int("(catch 'done (+ 1 2))"), 3);
+}
+
+TEST(eval_catch_throw_across_call)
+{
+    /* throw across function calls */
+    eval_print("(defun throw-helper () (throw 'bail 99))");
+    ASSERT_EQ_INT(eval_int("(catch 'bail (+ 1 (throw-helper)))"), 99);
+}
+
+TEST(eval_catch_nested)
+{
+    /* nested catches — inner catches first */
+    ASSERT_EQ_INT(eval_int(
+        "(catch 'outer (+ 10 (catch 'inner (throw 'inner 5))))"), 15);
+}
+
+TEST(eval_catch_nested_outer)
+{
+    /* nested catches — throw to outer */
+    ASSERT_EQ_INT(eval_int(
+        "(catch 'outer (catch 'inner (throw 'outer 42)))"), 42);
+}
+
+TEST(eval_catch_no_value)
+{
+    /* throw with no value defaults to NIL */
+    ASSERT_STR_EQ(eval_print("(catch 'done (throw 'done))"), "NIL");
+}
+
+TEST(eval_throw_unmatched)
+{
+    /* Unmatched throw signals error */
+    ASSERT_STR_EQ(eval_print("(catch 'a (throw 'b 1))"), "ERROR:1");
+}
+
+/* --- Phase 4 Tier 2: unwind-protect --- */
+
+TEST(eval_uwp_normal)
+{
+    /* Normal exit runs cleanup, returns protected form value */
+    ASSERT_STR_EQ(eval_print(
+        "(let ((log nil)) (let ((r (unwind-protect 42 (setq log t)))) (list r log)))"),
+        "(42 T)");
+}
+
+TEST(eval_uwp_throw_cleanup)
+{
+    /* throw through UWP runs cleanup */
+    ASSERT_STR_EQ(eval_print(
+        "(let ((cleanup nil)) (catch 'done (unwind-protect (throw 'done 1) (setq cleanup t))) cleanup)"),
+        "T");
+}
+
+TEST(eval_uwp_throw_value)
+{
+    /* throw through UWP delivers correct value */
+    ASSERT_EQ_INT(eval_int(
+        "(catch 'done (unwind-protect (throw 'done 42) (+ 1 2)))"), 42);
+}
+
+TEST(eval_uwp_nested)
+{
+    /* nested UWP: both cleanups run */
+    ASSERT_STR_EQ(eval_print(
+        "(let ((log nil)) (catch 'done (unwind-protect (unwind-protect (throw 'done 1) (setq log (cons 'inner log))) (setq log (cons 'outer log)))) log)"),
+        "(OUTER INNER)");
+}
+
+TEST(eval_uwp_error_cleanup)
+{
+    /* error through UWP runs cleanup (checked via global side-effect,
+       since error propagates past catch and aborts the expression) */
+    eval_print("(setq *uwp-flag* nil)");
+    eval_print("(unwind-protect (error \"boom\") (setq *uwp-flag* t))");
+    ASSERT_STR_EQ(eval_print("*uwp-flag*"), "T");
+}
+
 int main(void)
 {
     test_init();
@@ -925,6 +1056,24 @@ int main(void)
     RUN(eval_eval_builtin);
     RUN(eval_macroexpand_1);
     RUN(eval_macroexpand);
+    RUN(eval_tagbody_basic);
+    RUN(eval_tagbody_forward_go);
+    RUN(eval_tagbody_backward_go);
+    RUN(eval_tagbody_nested);
+    RUN(eval_tagbody_fixnum_tags);
+    RUN(eval_tagbody_go_from_if);
+    RUN(eval_catch_basic);
+    RUN(eval_catch_normal);
+    RUN(eval_catch_throw_across_call);
+    RUN(eval_catch_nested);
+    RUN(eval_catch_nested_outer);
+    RUN(eval_catch_no_value);
+    RUN(eval_throw_unmatched);
+    RUN(eval_uwp_normal);
+    RUN(eval_uwp_throw_cleanup);
+    RUN(eval_uwp_throw_value);
+    RUN(eval_uwp_nested);
+    RUN(eval_uwp_error_cleanup);
 
     teardown();
     REPORT();

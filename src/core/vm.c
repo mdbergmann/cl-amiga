@@ -7,13 +7,27 @@
 #include "../platform/platform.h"
 #include <stdio.h>
 #include <string.h>
+#include <stdlib.h>
 
 CL_VM cl_vm;
+
+/* NLX stack */
+CL_NLXFrame cl_nlx_stack[CL_MAX_NLX_FRAMES];
+int cl_nlx_top = 0;
+
+/* Pending throw state */
+int cl_pending_throw = 0;
+CL_Obj cl_pending_tag = 0;
+CL_Obj cl_pending_value = 0;
+int cl_pending_error_code = 0;
+char cl_pending_error_msg[512];
 
 void cl_vm_init(void)
 {
     cl_vm.sp = 0;
     cl_vm.fp = 0;
+    cl_nlx_top = 0;
+    cl_pending_throw = 0;
 }
 
 void cl_vm_push(CL_Obj val)
@@ -738,6 +752,167 @@ CL_Obj cl_vm_eval(CL_Obj bytecode_obj)
                 result = CL_NIL;
             }
             cl_vm_push(result);
+            break;
+        }
+
+        case OP_CATCH: {
+            int16_t catch_offset = read_i16(code, &ip);
+            CL_Obj catch_tag = cl_vm_pop();
+            CL_NLXFrame *nlx;
+
+            if (cl_nlx_top >= CL_MAX_NLX_FRAMES)
+                cl_error(CL_ERR_OVERFLOW, "NLX stack overflow");
+
+            nlx = &cl_nlx_stack[cl_nlx_top];
+            nlx->type = CL_NLX_CATCH;
+            nlx->vm_sp = cl_vm.sp;
+            nlx->vm_fp = cl_vm.fp;
+            nlx->tag = catch_tag;
+            nlx->result = CL_NIL;
+            nlx->catch_ip = ip;
+            nlx->offset = catch_offset;
+            nlx->code = code;
+            nlx->constants = constants;
+            nlx->base_fp = base_fp;
+
+            if (setjmp(nlx->buf) == 0) {
+                /* Normal path: body executes */
+                cl_nlx_top++;
+            } else {
+                /* longjmp from throw: restore state from NLX frame.
+                 * Recompute nlx from global — the local pointer may be
+                 * indeterminate after longjmp (C99 7.13.2.1). */
+                nlx = &cl_nlx_stack[cl_nlx_top];
+                {
+                    CL_Obj throw_result = nlx->result;
+                    cl_vm.sp = nlx->vm_sp;
+                    cl_vm.fp = nlx->vm_fp;
+                    frame = &cl_vm.frames[cl_vm.fp - 1];
+                    code = nlx->code;
+                    constants = nlx->constants;
+                    base_fp = nlx->base_fp;
+                    ip = nlx->catch_ip + nlx->offset;
+                    cl_vm_push(throw_result);
+                }
+            }
+            break;
+        }
+
+        case OP_UNCATCH: {
+            /* Normal exit from catch body — pop NLX frame */
+            if (cl_nlx_top > 0)
+                cl_nlx_top--;
+            break;
+        }
+
+        case OP_UWPROT: {
+            int16_t uwp_offset = read_i16(code, &ip);
+            CL_NLXFrame *nlx;
+
+            if (cl_nlx_top >= CL_MAX_NLX_FRAMES)
+                cl_error(CL_ERR_OVERFLOW, "NLX stack overflow");
+
+            nlx = &cl_nlx_stack[cl_nlx_top];
+            nlx->type = CL_NLX_UWPROT;
+            nlx->vm_sp = cl_vm.sp;
+            nlx->vm_fp = cl_vm.fp;
+            nlx->tag = CL_NIL;
+            nlx->result = CL_NIL;
+            nlx->catch_ip = ip;
+            nlx->offset = uwp_offset;
+            nlx->code = code;
+            nlx->constants = constants;
+            nlx->base_fp = base_fp;
+
+            if (setjmp(nlx->buf) == 0) {
+                /* Normal path: protected form executes */
+                cl_nlx_top++;
+            } else {
+                /* longjmp from throw/error through UWP: restore state, jump to cleanup.
+                 * Recompute nlx — local pointer may be indeterminate after longjmp. */
+                nlx = &cl_nlx_stack[cl_nlx_top];
+                cl_vm.sp = nlx->vm_sp;
+                cl_vm.fp = nlx->vm_fp;
+                frame = &cl_vm.frames[cl_vm.fp - 1];
+                code = nlx->code;
+                constants = nlx->constants;
+                base_fp = nlx->base_fp;
+                ip = nlx->catch_ip + nlx->offset;
+            }
+            break;
+        }
+
+        case OP_UWPOP: {
+            /* Normal exit from protected form — pop NLX frame, clear pending */
+            if (cl_nlx_top > 0)
+                cl_nlx_top--;
+            cl_pending_throw = 0;
+            break;
+        }
+
+        case OP_UWRETHROW: {
+            /* After cleanup forms: re-initiate pending throw/error if any */
+            if (cl_pending_throw == 1) {
+                /* Re-throw: find matching catch */
+                CL_Obj ptag = cl_pending_tag;
+                CL_Obj pval = cl_pending_value;
+                int i;
+
+                for (i = cl_nlx_top - 1; i >= 0; i--) {
+                    if (cl_nlx_stack[i].type == CL_NLX_CATCH &&
+                        cl_nlx_stack[i].tag == ptag) {
+                        /* Check for interposing UWPROT */
+                        int j;
+                        for (j = cl_nlx_top - 1; j > i; j--) {
+                            if (cl_nlx_stack[j].type == CL_NLX_UWPROT) {
+                                /* Jump to interposing UWPROT first */
+                                cl_nlx_top = j;
+                                longjmp(cl_nlx_stack[j].buf, 1);
+                            }
+                        }
+                        /* No interposing UWPROT, go directly to catch */
+                        cl_pending_throw = 0;
+                        cl_nlx_stack[i].result = pval;
+                        cl_nlx_top = i;
+                        longjmp(cl_nlx_stack[i].buf, 1);
+                    }
+                }
+                /* No catch found — signal error */
+                cl_pending_throw = 0;
+                cl_error(CL_ERR_GENERAL, "No catch for tag during re-throw");
+            } else if (cl_pending_throw == 2) {
+                /* Re-throw error: find interposing UWPROT or error frame */
+                int i;
+                for (i = cl_nlx_top - 1; i >= 0; i--) {
+                    if (cl_nlx_stack[i].type == CL_NLX_UWPROT) {
+                        cl_nlx_top = i;
+                        longjmp(cl_nlx_stack[i].buf, 1);
+                    }
+                }
+                /* No more UWPROT — propagate to error handler.
+                 * Restore VM state to before this cl_vm_eval call
+                 * so subsequent evaluations start from a clean state. */
+                {
+                    int err_code = cl_pending_error_code;
+                    cl_pending_throw = 0;
+                    cl_nlx_top = 0;
+                    cl_vm.fp = base_fp;
+                    cl_vm.sp = cl_vm.frames[base_fp].bp;
+                    cl_error_code = err_code;
+                    strncpy(cl_error_msg, cl_pending_error_msg, sizeof(cl_error_msg) - 1);
+                    cl_error_msg[sizeof(cl_error_msg) - 1] = '\0';
+                    if (cl_error_frame_top > 0) {
+                        cl_error_frame_top--;
+                        cl_error_frames[cl_error_frame_top].active = 0;
+                        longjmp(cl_error_frames[cl_error_frame_top].buf, err_code);
+                    }
+                    platform_write_string("FATAL ERROR: ");
+                    platform_write_string(cl_error_msg);
+                    platform_write_string("\n");
+                    exit(1);
+                }
+            }
+            /* cl_pending_throw == 0: nop */
             break;
         }
 

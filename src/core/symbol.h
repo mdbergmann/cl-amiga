@@ -69,5 +69,10 @@ extern CL_Obj SYM_LABELS;
 extern CL_Obj SYM_AMP_KEY;
 extern CL_Obj SYM_AMP_ALLOW_OTHER_KEYS;
 extern CL_Obj KW_ALLOW_OTHER_KEYS;
+extern CL_Obj SYM_TAGBODY;
+extern CL_Obj SYM_GO;
+extern CL_Obj SYM_CATCH;
+extern CL_Obj SYM_THROW;
+extern CL_Obj SYM_UNWIND_PROTECT;
 
 #endif /* CL_SYMBOL_H */

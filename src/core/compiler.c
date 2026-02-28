@@ -20,6 +20,21 @@ typedef struct {
     int result_slot;  /* local slot where return value is stored */
 } CL_BlockInfo;
 
+/* Tagbody tracking for go */
+#define CL_MAX_TAGBODY_TAGS 32
+
+typedef struct {
+    CL_Obj tag;
+    int code_pos;          /* bytecode offset, -1 if forward */
+    int forward_patches[CL_MAX_BLOCK_PATCHES];
+    int n_forward;
+} CL_TagInfo;
+
+typedef struct {
+    CL_TagInfo tags[CL_MAX_TAGBODY_TAGS];
+    int n_tags;
+} CL_TagbodyInfo;
+
 /* Compiler state */
 typedef struct {
     uint8_t code[CL_MAX_CODE_SIZE];
@@ -30,6 +45,8 @@ typedef struct {
     int in_tail;      /* Are we in tail position? */
     CL_BlockInfo blocks[CL_MAX_BLOCKS];
     int block_count;
+    CL_TagbodyInfo tagbodies[CL_MAX_BLOCKS];
+    int tagbody_count;
 } CL_Compiler;
 
 /* Macro table (simple association list: ((name . expander) ...)) */
@@ -721,6 +738,212 @@ static void compile_return(CL_Compiler *c, CL_Obj form)
     }
 
     cl_error(CL_ERR_GENERAL, "RETURN: no block named NIL");
+}
+
+/* --- tagbody / go --- */
+
+static int is_tagbody_tag(CL_Obj form)
+{
+    /* Tags are symbols or integers (CL spec) */
+    return CL_SYMBOL_P(form) || CL_FIXNUM_P(form);
+}
+
+static void compile_tagbody(CL_Compiler *c, CL_Obj form)
+{
+    CL_Obj body = cl_cdr(form);
+    int saved_tagbody_count = c->tagbody_count;
+    int saved_tail = c->in_tail;
+    CL_TagbodyInfo *tb;
+    CL_Obj cursor;
+    int i;
+
+    c->in_tail = 0;
+
+    /* Push tagbody info */
+    tb = &c->tagbodies[c->tagbody_count++];
+    tb->n_tags = 0;
+
+    /* First pass: collect all tags */
+    cursor = body;
+    while (!CL_NULL_P(cursor)) {
+        CL_Obj item = cl_car(cursor);
+        if (is_tagbody_tag(item)) {
+            CL_TagInfo *ti = &tb->tags[tb->n_tags++];
+            ti->tag = item;
+            ti->code_pos = -1;
+            ti->n_forward = 0;
+        }
+        cursor = cl_cdr(cursor);
+    }
+
+    /* Second pass: compile statements, record tag positions and patch forwards */
+    cursor = body;
+    while (!CL_NULL_P(cursor)) {
+        CL_Obj item = cl_car(cursor);
+        if (is_tagbody_tag(item)) {
+            /* Record the bytecode position of this tag and patch pending forward jumps */
+            for (i = 0; i < tb->n_tags; i++) {
+                if (tb->tags[i].tag == item) {
+                    int j;
+                    tb->tags[i].code_pos = c->code_pos;
+                    /* Patch any forward go jumps that targeted this tag */
+                    for (j = 0; j < tb->tags[i].n_forward; j++) {
+                        patch_jump(c, tb->tags[i].forward_patches[j]);
+                    }
+                    tb->tags[i].n_forward = 0;
+                    break;
+                }
+            }
+        } else {
+            /* Compile statement, discard result */
+            compile_expr(c, item);
+            emit(c, OP_POP);
+        }
+        cursor = cl_cdr(cursor);
+    }
+
+    /* tagbody returns NIL */
+    emit(c, OP_NIL);
+
+    /* Restore */
+    c->tagbody_count = saved_tagbody_count;
+    c->in_tail = saved_tail;
+}
+
+static void compile_go(CL_Compiler *c, CL_Obj form)
+{
+    CL_Obj tag = cl_car(cl_cdr(form));
+    int i, j;
+
+    /* Search tagbodies innermost-first for matching tag */
+    for (i = c->tagbody_count - 1; i >= 0; i--) {
+        CL_TagbodyInfo *tb = &c->tagbodies[i];
+        for (j = 0; j < tb->n_tags; j++) {
+            if (tb->tags[j].tag == tag) {
+                CL_TagInfo *ti = &tb->tags[j];
+                if (ti->code_pos >= 0) {
+                    /* Backward jump to known position */
+                    emit_loop_jump(c, OP_JMP, ti->code_pos);
+                } else {
+                    /* Forward jump — patch later */
+                    if (ti->n_forward < CL_MAX_BLOCK_PATCHES)
+                        ti->forward_patches[ti->n_forward++] = emit_jump(c, OP_JMP);
+                }
+                return;
+            }
+        }
+    }
+
+    cl_error(CL_ERR_GENERAL, "GO: no tag named %s",
+             CL_SYMBOL_P(tag) ? cl_symbol_name(tag) : "?");
+}
+
+/* --- catch --- */
+
+static void compile_catch(CL_Compiler *c, CL_Obj form)
+{
+    /* (catch tag body...) */
+    CL_Obj tag_form = cl_car(cl_cdr(form));
+    CL_Obj body = cl_cdr(cl_cdr(form));
+    int saved_tail = c->in_tail;
+    int catch_pos, jmp_pos;
+
+    c->in_tail = 0;
+
+    /* Compile tag expression (push tag value on stack) */
+    compile_expr(c, tag_form);
+
+    /* OP_CATCH offset_to_landing: setjmp; on throw jumps to landing */
+    emit(c, OP_CATCH);
+    catch_pos = c->code_pos;
+    emit_i16(c, 0); /* placeholder */
+
+    /* Compile body (progn) */
+    c->in_tail = saved_tail;
+    if (CL_NULL_P(body))
+        emit(c, OP_NIL);
+    else
+        compile_progn(c, body);
+
+    /* OP_UNCATCH: pop catch frame (normal exit) */
+    emit(c, OP_UNCATCH);
+
+    /* JMP past the throw landing */
+    jmp_pos = emit_jump(c, OP_JMP);
+
+    /* [landing]: throw arrives here with result on stack */
+    patch_jump(c, catch_pos);
+
+    /* [past_landing]: both paths converge, result is on stack */
+    patch_jump(c, jmp_pos);
+}
+
+/* --- unwind-protect --- */
+
+static void compile_unwind_protect(CL_Compiler *c, CL_Obj form)
+{
+    /* (unwind-protect protected-form cleanup1 cleanup2 ...) */
+    CL_Obj protected_form = cl_car(cl_cdr(form));
+    CL_Obj cleanup_forms = cl_cdr(cl_cdr(form));
+    CL_CompEnv *env = c->env;
+    int saved_local_count = env->local_count;
+    int saved_tail = c->in_tail;
+    int uwprot_pos, jmp_pos;
+    int result_slot;
+
+    c->in_tail = 0;
+
+    /* Allocate result slot */
+    result_slot = env->local_count;
+    env->local_count++;
+    if (env->local_count > env->max_locals)
+        env->max_locals = env->local_count;
+
+    /* OP_UWPROT offset_to_cleanup_landing */
+    emit(c, OP_UWPROT);
+    uwprot_pos = c->code_pos;
+    emit_i16(c, 0); /* placeholder */
+
+    /* Compile protected form */
+    compile_expr(c, protected_form);
+
+    /* Save result in slot */
+    emit(c, OP_STORE);
+    emit(c, (uint8_t)result_slot);
+    emit(c, OP_POP);
+
+    /* OP_UWPOP: normal exit, pop frame, clear pending */
+    emit(c, OP_UWPOP);
+
+    /* JMP to cleanup_start (skip the landing) */
+    jmp_pos = emit_jump(c, OP_JMP);
+
+    /* [cleanup_landing]: longjmp arrives here */
+    patch_jump(c, uwprot_pos);
+
+    /* [cleanup_start]: both paths merge */
+    patch_jump(c, jmp_pos);
+
+    /* Compile cleanup forms, discarding results */
+    {
+        CL_Obj cf = cleanup_forms;
+        while (!CL_NULL_P(cf)) {
+            compile_expr(c, cl_car(cf));
+            emit(c, OP_POP);
+            cf = cl_cdr(cf);
+        }
+    }
+
+    /* OP_UWRETHROW: if pending throw, re-initiate (never returns); else nop */
+    emit(c, OP_UWRETHROW);
+
+    /* Normal path: load saved result */
+    emit(c, OP_LOAD);
+    emit(c, (uint8_t)result_slot);
+
+    /* Restore */
+    c->in_tail = saved_tail;
+    env->local_count = saved_local_count;
 }
 
 static void compile_and(CL_Compiler *c, CL_Obj form)
@@ -1880,6 +2103,10 @@ static void compile_expr(CL_Compiler *c, CL_Obj expr)
         if (head == SYM_DOLIST)      { compile_dolist(c, expr); return; }
         if (head == SYM_DOTIMES)     { compile_dotimes(c, expr); return; }
         if (head == SYM_QUASIQUOTE)  { compile_quasiquote(c, expr); return; }
+        if (head == SYM_TAGBODY)     { compile_tagbody(c, expr); return; }
+        if (head == SYM_GO)          { compile_go(c, expr); return; }
+        if (head == SYM_CATCH)       { compile_catch(c, expr); return; }
+        if (head == SYM_UNWIND_PROTECT) { compile_unwind_protect(c, expr); return; }
 
         /* Regular function call */
         compile_call(c, expr);

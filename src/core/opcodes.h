@@ -60,6 +60,11 @@ enum CL_Opcode {
     OP_FLOAD     = 0x83,  /* u16: Load function binding of symbol */
     OP_DEFMACRO  = 0x84,  /* u16: Register TOS as macro expander for symbol */
     OP_ARGC      = 0x86,  /* Push actual argument count as fixnum */
+    OP_CATCH     = 0x85,  /* i16: Pop tag, push NLX catch frame, setjmp */
+    OP_UNCATCH   = 0x87,  /* Pop NLX catch frame (normal exit) */
+    OP_UWPROT    = 0x88,  /* i16: Push NLX uwprot frame, setjmp */
+    OP_UWPOP     = 0x89,  /* Pop NLX uwprot frame (normal exit) */
+    OP_UWRETHROW = 0x8A,  /* Re-throw pending if any, else nop */
 
     OP_HALT      = 0xFF   /* Stop VM */
 };

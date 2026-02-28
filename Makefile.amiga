@@ -2,7 +2,7 @@
 # Usage: cd CLAmiga: ; make -f Makefile.amiga
 
 CC = vc
-CFLAGS = -c99 -O0 -DPLATFORM_AMIGA -Isrc
+CFLAGS = -c99 -O0 -cpu=68020 -DPLATFORM_AMIGA -Isrc
 LDFLAGS = -lamiga
 
 BUILDDIR = build/amiga

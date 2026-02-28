@@ -1,8 +1,10 @@
 #include "error.h"
+#include "vm.h"
 #include "../platform/platform.h"
 #include <stdio.h>
 #include <stdarg.h>
 #include <stdlib.h>
+#include <string.h>
 
 CL_ErrorFrame cl_error_frames[CL_MAX_ERROR_FRAMES];
 int cl_error_frame_top = 0;
@@ -25,6 +27,29 @@ void cl_error(int code, const char *fmt, ...)
     va_start(ap, fmt);
     vsnprintf(cl_error_msg, sizeof(cl_error_msg), fmt, ap);
     va_end(ap);
+
+    /* Check for interposing unwind-protect frames in NLX stack */
+    {
+        int i;
+        for (i = cl_nlx_top - 1; i >= 0; i--) {
+            if (cl_nlx_stack[i].type == CL_NLX_UWPROT) {
+                /* Set pending error, longjmp to UWPROT cleanup */
+                cl_pending_throw = 2;
+                cl_pending_error_code = code;
+                strncpy(cl_pending_error_msg, cl_error_msg,
+                        sizeof(cl_pending_error_msg) - 1);
+                cl_pending_error_msg[sizeof(cl_pending_error_msg) - 1] = '\0';
+                cl_nlx_top = i;
+                longjmp(cl_nlx_stack[i].buf, 1);
+            }
+        }
+    }
+
+    /* No UWPROT found — propagating to C error handler.
+     * NLX frames (catch/uwprot) are invalid once we leave the VM,
+     * so clear the NLX stack and reset pending state. */
+    cl_nlx_top = 0;
+    cl_pending_throw = 0;
 
     if (cl_error_frame_top > 0) {
         cl_error_frame_top--;

@@ -338,6 +338,28 @@
 (check "macroexpand nested" '(+ 5 1) (macroexpand '(me-wrap 5)))
 (check "macroexpand non-macro" '(+ 1 2) (macroexpand '(+ 1 2)))
 
+; --- Phase 4 Tier 2: tagbody/go ---
+(check "tagbody basic" 2 (let ((x 0)) (tagbody (setq x 1) (setq x (+ x 1))) x))
+(check "tagbody forward go" 0 (let ((x 0)) (tagbody (go end) (setq x 99) end) x))
+(check "tagbody backward go" 5 (let ((x 0)) (tagbody loop (setq x (+ x 1)) (if (< x 5) (go loop))) x))
+(check "tagbody fixnum tags" 42 (let ((x 0)) (tagbody (go 2) 1 (setq x 99) 2 (setq x 42)) x))
+(check "tagbody go from if" 3 (let ((x 0)) (tagbody start (setq x (+ x 1)) (if (< x 3) (go start))) x))
+
+; --- Phase 4 Tier 2: catch/throw ---
+(check "catch basic" 42 (catch 'done (throw 'done 42)))
+(check "catch normal" 3 (catch 'done (+ 1 2)))
+(defun throw-helper-t () (throw 'bail 99))
+(check "catch across call" 99 (catch 'bail (+ 1 (throw-helper-t))))
+(check "catch nested inner" 15 (catch 'outer (+ 10 (catch 'inner (throw 'inner 5)))))
+(check "catch nested outer" 42 (catch 'outer (catch 'inner (throw 'outer 42))))
+(check "throw no value" nil (catch 'done (throw 'done)))
+
+; --- Phase 4 Tier 2: unwind-protect ---
+(check "uwp normal" '(42 t) (let ((log nil)) (let ((r (unwind-protect 42 (setq log t)))) (list r log))))
+(check "uwp throw cleanup" t (let ((cleanup nil)) (catch 'done (unwind-protect (throw 'done 1) (setq cleanup t))) cleanup))
+(check "uwp throw value" 42 (catch 'done (unwind-protect (throw 'done 42) (+ 1 2))))
+(check "uwp nested" '(outer inner) (let ((log nil)) (catch 'done (unwind-protect (unwind-protect (throw 'done 1) (setq log (cons 'inner log))) (setq log (cons 'outer log)))) log))
+
 ; --- Summary ---
 (format t "~%=== Results ===~%")
 (format t "Passed: ~A~%" *pass-count*)

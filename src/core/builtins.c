@@ -690,6 +690,41 @@ static CL_Obj bi_macroexpand(CL_Obj *args, int n)
     }
 }
 
+/* --- Throw --- */
+
+static CL_Obj bi_throw(CL_Obj *args, int n)
+{
+    CL_Obj tag = args[0];
+    CL_Obj value = (n > 1) ? args[1] : CL_NIL;
+    int i;
+
+    /* Scan NLX stack for matching catch */
+    for (i = cl_nlx_top - 1; i >= 0; i--) {
+        if (cl_nlx_stack[i].type == CL_NLX_CATCH &&
+            cl_nlx_stack[i].tag == tag) {
+            int j;
+            /* Check for interposing UWPROT frames */
+            for (j = cl_nlx_top - 1; j > i; j--) {
+                if (cl_nlx_stack[j].type == CL_NLX_UWPROT) {
+                    /* Set pending throw, longjmp to UWPROT */
+                    cl_pending_throw = 1;
+                    cl_pending_tag = tag;
+                    cl_pending_value = value;
+                    cl_nlx_top = j;
+                    longjmp(cl_nlx_stack[j].buf, 1);
+                }
+            }
+            /* No interposing UWPROT — go directly to catch */
+            cl_nlx_stack[i].result = value;
+            cl_nlx_top = i;
+            longjmp(cl_nlx_stack[i].buf, 1);
+        }
+    }
+
+    cl_error(CL_ERR_GENERAL, "No catch for tag");
+    return CL_NIL;
+}
+
 /* --- Error --- */
 
 static CL_Obj bi_error(CL_Obj *args, int n)
@@ -798,6 +833,7 @@ void cl_builtins_init(void)
     defun("GENSYM", bi_gensym, 0, 1);
     defun("LOAD", bi_load, 1, 1);
     defun("ERROR", bi_error, 1, -1);
+    defun("THROW", bi_throw, 1, 2);
     defun("EVAL", bi_eval, 1, 1);
     defun("MACROEXPAND-1", bi_macroexpand_1, 1, 1);
     defun("MACROEXPAND", bi_macroexpand, 1, 1);
