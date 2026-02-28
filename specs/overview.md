@@ -81,11 +81,11 @@ Single-pass recursive compiler from S-expressions to bytecode:
 - Macro expansion before compilation
 - Backward jump support for loop forms
 
-**Special forms:** `quote`, `if`, `progn`, `lambda`, `let`, `let*`, `setq`, `defun`, `defmacro`, `function (#')`, `block`, `return-from`, `and`, `or`, `cond`, `do`, `dolist`, `dotimes`
+**Special forms:** `quote`, `if`, `progn`, `lambda`, `let`, `let*`, `setq`, `defun`, `defmacro`, `function (#')`, `block`, `return-from`, `and`, `or`, `cond`, `do`, `dolist`, `dotimes`, `case`, `ecase`, `typecase`, `etypecase`, `flet`, `labels`, `prog1`, `prog2`
 
 **Bootstrap macros:** `when`, `unless`
 
-## Built-in Functions (48 functions)
+## Built-in Functions (56 functions)
 
 | Category | Functions |
 |----------|-----------|
@@ -95,8 +95,9 @@ Single-pass recursive compiler from S-expressions to bytecode:
 | Equality | `eq` `eql` `equal` `not` |
 | List ops | `cons` `car` `cdr` `first` `rest` `list` `length` `append` `reverse` `nth` |
 | Higher-order | `mapcar` `apply` `funcall` |
-| I/O | `print` `prin1` `princ` `terpri` `format` |
-| Misc | `type-of` |
+| I/O | `print` `prin1` `princ` `terpri` `format` `load` |
+| Eval/Macro | `eval` `macroexpand` `macroexpand-1` |
+| Misc | `type-of` `gensym` `error` |
 
 ## Implementation Roadmap
 
@@ -129,32 +130,33 @@ Control flow, closures, macros, iteration:
 
 57 host tests (4 suites), 163 Amiga batch tests — all passing.
 
-### Phase 3: Macro Infrastructure
+### Phase 3: Macro Infrastructure ✅
 
 Quasiquote and tooling that makes real macro writing practical:
-- [ ] Quasiquote (`` ` ``/`,`/`,@`) — reader and expander
-- [ ] `gensym`, `gentemp` — hygienic macro support
-- [ ] File `load` — load .lisp files at runtime
-- [ ] Boot file loading (boot.lisp at startup)
+- [x] Quasiquote (`` ` ``/`,`/`,@`) — reader and expander
+- [x] `gensym` — hygienic macro support
+- [x] File `load` — load .lisp files at runtime
+- [x] Boot file loading (boot.lisp at startup)
 
-### Phase 4: Core Language Completeness
+89 host tests (4 suites), 222 Amiga batch tests — all passing.
+
+### Phase 4: Core Language Completeness (in progress)
 
 Features needed for idiomatic CL programming:
-- [ ] `&optional`, `&key`, `&allow-other-keys` lambda list support
-- [ ] `flet`, `labels` — local function bindings
-- [ ] `case`, `ecase`, `typecase`, `etypecase`
-- [ ] `prog1`, `prog2`
-- [ ] `return` (implicit block NIL)
+- [x] `&optional`, `&key`, `&allow-other-keys` lambda list support
+- [x] `flet`, `labels` — local function bindings
+- [x] `case`, `ecase`, `typecase`, `etypecase`
+- [x] `prog1`, `prog2`
+- [x] `block`/`return-from`/`return`
+- [x] `eval`, `macroexpand`, `macroexpand-1` (user-accessible)
 - [ ] `tagbody`/`go` — low-level control flow
 - [ ] `catch`/`throw` — dynamic non-local exits
 - [ ] `unwind-protect` — cleanup forms
-- [ ] `block`/`return-from` — full implementation (currently simplified)
 - [ ] Multiple return values (`values`, `multiple-value-bind`, `multiple-value-list`, `multiple-value-prog1`, `nth-value`)
 - [ ] Dynamic variables (`defvar`, `defparameter`, special declarations, dynamic binding)
 - [ ] `setf` with generalized places (`defsetf`, `define-setf-expander`)
 - [ ] Modify macros: `push`, `pop`, `pushnew`, `incf`, `decf`
 - [ ] `destructuring-bind`
-- [ ] `eval`, `macroexpand`, `macroexpand-1` (user-accessible)
 - [ ] `eval-when` — compile-time evaluation control
 
 ### Phase 5: Standard Library
@@ -254,9 +256,9 @@ cl-amiga/
 │   └── boot.lisp          # Bootstrap macros/functions
 ├── tests/
 │   ├── test.h             # Test framework
-│   ├── test_*.c           # Host test suites (4 files, 57 tests)
+│   ├── test_*.c           # Host test suites (4 files, 89 tests)
 │   └── amiga/
-│       └── run-tests.lisp # AmigaOS batch tests (163 tests)
+│       └── run-tests.lisp # AmigaOS batch tests (222 tests)
 ├── build/                 # Build output (gitignored)
 └── verify/
     └── realamiga/          # FS-UAE config + AmigaOS system image
