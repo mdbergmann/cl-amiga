@@ -35,6 +35,9 @@ void cl_vm_init(void);
 /* Execute a bytecode object, return result */
 CL_Obj cl_vm_eval(CL_Obj bytecode);
 
+/* Apply a function to arguments (builds temp bytecode, calls cl_vm_eval) */
+CL_Obj cl_vm_apply(CL_Obj func, CL_Obj *args, int nargs);
+
 /* Push/pop on VM value stack (for builtins) */
 void cl_vm_push(CL_Obj val);
 CL_Obj cl_vm_pop(void);

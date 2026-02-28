@@ -68,6 +68,41 @@ void cl_repl(void)
     platform_write_string("\nBye.\n");
 }
 
+void cl_repl_batch(void)
+{
+    char line[1024];
+
+    while (platform_read_line(line, sizeof(line))) {
+        int err;
+        int i;
+
+        /* Skip empty lines */
+        if (line[0] == '\0') continue;
+
+        /* Skip comment lines and non-Lisp lines */
+        i = 0;
+        while (line[i] == ' ' || line[i] == '\t') i++;
+        if (line[i] == ';') continue;
+        /* Skip lines starting with -- (CLI args leaked to stdin on AmigaOS) */
+        if (line[i] == '-' && line[i + 1] == '-') continue;
+
+        /* Quit command */
+        if (strcmp(line, "(quit)") == 0 || strcmp(line, "(QUIT)") == 0 ||
+            strcmp(line, "(exit)") == 0 || strcmp(line, "(EXIT)") == 0) {
+            break;
+        }
+
+        err = CL_CATCH();
+        if (err == CL_ERR_NONE) {
+            cl_eval_string(line);
+            CL_UNCATCH();
+        } else {
+            cl_error_print();
+            CL_UNCATCH();
+        }
+    }
+}
+
 void cl_repl_init(void)
 {
     /* Nothing needed yet */

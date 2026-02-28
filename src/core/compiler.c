@@ -5,6 +5,7 @@
 #include "package.h"
 #include "mem.h"
 #include "error.h"
+#include "vm.h"
 #include "../platform/platform.h"
 #include <string.h>
 
@@ -380,10 +381,11 @@ static void compile_defun(CL_Compiler *c, CL_Obj form)
 
 static void compile_defmacro(CL_Compiler *c, CL_Obj form)
 {
-    /* Same as defun but registers the result as a macro */
+    /* Compile the expander as a lambda, then emit OP_DEFMACRO */
     CL_Obj name = cl_car(cl_cdr(form));
     CL_Obj lambda_list = cl_car(cl_cdr(cl_cdr(form)));
     CL_Obj body = cl_cdr(cl_cdr(cl_cdr(form)));
+    int idx;
 
     CL_Obj lambda_form = cl_cons(SYM_LAMBDA,
                                   cl_cons(lambda_list, body));
@@ -393,17 +395,10 @@ static void compile_defmacro(CL_Compiler *c, CL_Obj form)
 
     CL_GC_UNPROTECT(1);
 
-    {
-        int idx = add_constant(c, name);
-        emit(c, OP_DUP);
-        emit(c, OP_GSTORE);
-        emit_u16(c, (uint16_t)idx);
-    }
-
-    /* Note: macro registration happens at eval time via the VM,
-       which calls cl_register_macro after executing defmacro */
-    emit(c, OP_POP);
-    emit_const(c, name);
+    /* OP_DEFMACRO pops the closure, registers macro, pushes name */
+    idx = add_constant(c, name);
+    emit(c, OP_DEFMACRO);
+    emit_u16(c, (uint16_t)idx);
 }
 
 static void compile_function(CL_Compiler *c, CL_Obj form)
@@ -565,27 +560,32 @@ static void compile_expr(CL_Compiler *c, CL_Obj expr)
 
 /* --- Macro expansion (runtime, via VM) --- */
 
-/* Defined extern so vm.c can call macroexpand */
-CL_Obj cl_vm_eval(CL_Obj bytecode);  /* forward decl from vm.h */
-
 static CL_Obj macroexpand_1(CL_Obj form)
 {
     CL_Obj head = cl_car(form);
     CL_Obj expander = cl_get_macro(head);
-    CL_Obj args = cl_cdr(form);
+    CL_Obj args_list, expanded;
+    CL_Obj arg_array[64];
+    int nargs = 0;
 
     if (CL_NULL_P(expander)) return form;
 
-    /* Call the macro expander with the form's args.
-       For simplicity, we apply the expander as a function call
-       by constructing (expander arg1 arg2 ...) and evaluating. */
-    /* This is handled by the VM at a higher level.
-       For now, just return the form — macro expansion
-       will be implemented once the VM is running. */
-    (void)args;
+    /* Extract arguments from the form's cdr into a C array */
+    args_list = cl_cdr(form);
+    while (!CL_NULL_P(args_list) && nargs < 64) {
+        arg_array[nargs++] = cl_car(args_list);
+        args_list = cl_cdr(args_list);
+    }
 
-    /* TODO: Actually apply the macro expander function */
-    return form;
+    /* GC-protect the form during expansion */
+    CL_GC_PROTECT(form);
+    CL_GC_PROTECT(expander);
+
+    expanded = cl_vm_apply(expander, arg_array, nargs);
+
+    CL_GC_UNPROTECT(2);
+
+    return expanded;
 }
 
 /* --- Macro table --- */

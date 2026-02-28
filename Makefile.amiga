@@ -1,0 +1,80 @@
+# CL-Amiga Makefile for AmigaOS / vbcc
+# Usage: cd CLAmiga: ; make -f Makefile.amiga
+
+CC = vc
+CFLAGS = -c99 -O0 -DPLATFORM_AMIGA -Isrc
+LDFLAGS = -lamiga
+
+BUILDDIR = build/amiga
+
+OBJS = $(BUILDDIR)/main.o \
+       $(BUILDDIR)/platform_amiga.o \
+       $(BUILDDIR)/types.o \
+       $(BUILDDIR)/mem.o \
+       $(BUILDDIR)/error.o \
+       $(BUILDDIR)/symbol.o \
+       $(BUILDDIR)/package.o \
+       $(BUILDDIR)/reader.o \
+       $(BUILDDIR)/printer.o \
+       $(BUILDDIR)/env.o \
+       $(BUILDDIR)/compiler.o \
+       $(BUILDDIR)/vm.o \
+       $(BUILDDIR)/builtins.o \
+       $(BUILDDIR)/repl.o
+
+TARGET = $(BUILDDIR)/clamiga
+
+all: dirs $(TARGET)
+
+dirs:
+	-makedir build
+	-makedir $(BUILDDIR)
+
+$(TARGET): $(OBJS)
+	$(CC) $(CFLAGS) -o $@ $(OBJS) $(LDFLAGS)
+
+$(BUILDDIR)/main.o: src/main.c
+	$(CC) $(CFLAGS) -o $@ -c $<
+
+$(BUILDDIR)/platform_amiga.o: src/platform/platform_amiga.c
+	$(CC) $(CFLAGS) -o $@ -c $<
+
+$(BUILDDIR)/types.o: src/core/types.c
+	$(CC) $(CFLAGS) -o $@ -c $<
+
+$(BUILDDIR)/mem.o: src/core/mem.c
+	$(CC) $(CFLAGS) -o $@ -c $<
+
+$(BUILDDIR)/error.o: src/core/error.c
+	$(CC) $(CFLAGS) -o $@ -c $<
+
+$(BUILDDIR)/symbol.o: src/core/symbol.c
+	$(CC) $(CFLAGS) -o $@ -c $<
+
+$(BUILDDIR)/package.o: src/core/package.c
+	$(CC) $(CFLAGS) -o $@ -c $<
+
+$(BUILDDIR)/reader.o: src/core/reader.c
+	$(CC) $(CFLAGS) -o $@ -c $<
+
+$(BUILDDIR)/printer.o: src/core/printer.c
+	$(CC) $(CFLAGS) -o $@ -c $<
+
+$(BUILDDIR)/env.o: src/core/env.c
+	$(CC) $(CFLAGS) -o $@ -c $<
+
+$(BUILDDIR)/compiler.o: src/core/compiler.c
+	$(CC) $(CFLAGS) -o $@ -c $<
+
+$(BUILDDIR)/vm.o: src/core/vm.c
+	$(CC) $(CFLAGS) -o $@ -c $<
+
+$(BUILDDIR)/builtins.o: src/core/builtins.c
+	$(CC) $(CFLAGS) -o $@ -c $<
+
+$(BUILDDIR)/repl.o: src/core/repl.c
+	$(CC) $(CFLAGS) -o $@ -c $<
+
+clean:
+	-delete $(BUILDDIR)/#?.o
+	-delete $(TARGET)

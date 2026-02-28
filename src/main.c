@@ -10,11 +10,18 @@
 #include "core/vm.h"
 #include "core/builtins.h"
 #include "core/repl.h"
+#include <string.h>
 
 int main(int argc, char *argv[])
 {
-    (void)argc;
-    (void)argv;
+    int batch = 0;
+    int i;
+
+    for (i = 1; i < argc; i++) {
+        if (strcmp(argv[i], "--batch") == 0) {
+            batch = 1;
+        }
+    }
 
     platform_init();
 
@@ -30,10 +37,13 @@ int main(int argc, char *argv[])
     cl_builtins_init();
     cl_repl_init();
 
-    platform_write_string("CL-Amiga v0.1\n");
-    platform_write_string("Type (quit) to exit.\n\n");
-
-    cl_repl();
+    if (batch) {
+        cl_repl_batch();
+    } else {
+        platform_write_string("CL-Amiga v0.1\n");
+        platform_write_string("Type (quit) to exit.\n\n");
+        cl_repl();
+    }
 
     cl_mem_shutdown();
     platform_shutdown();

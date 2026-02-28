@@ -35,7 +35,7 @@ TEST_BINS   = $(patsubst $(TEST_SRCDIR)/%.c,$(BUILDDIR)/tests/%,$(TEST_SRCS))
 LIB_SRCS = $(PLATFORM_SRC) $(CORE_SRC)
 LIB_OBJS = $(patsubst $(SRCDIR)/%.c,$(BUILDDIR)/%.o,$(LIB_SRCS))
 
-.PHONY: host test clean
+.PHONY: host test clean verify-amiga
 
 host: $(BUILDDIR)/clamiga
 
@@ -66,6 +66,22 @@ test: $(TEST_BINS)
 $(BUILDDIR)/tests/%: $(TEST_SRCDIR)/%.c $(LIB_OBJS)
 	@mkdir -p $(dir $@)
 	$(CC_HOST) $(CFLAGS_HOST) -I$(SRCDIR) -I$(TEST_SRCDIR) -o $@ $< $(LIB_OBJS)
+
+# Verify Amiga test results (after FS-UAE run)
+verify-amiga:
+	@if [ ! -f build/amiga/test-results.log ]; then \
+		echo "No test results found. Run FS-UAE first."; \
+		exit 1; \
+	fi
+	@echo "=== Amiga Test Results ==="
+	@cat build/amiga/test-results.log
+	@echo ""
+	@if grep -q "ALL TESTS PASSED" build/amiga/test-results.log; then \
+		echo "=== Amiga verification PASSED ==="; \
+	else \
+		echo "=== Amiga verification FAILED ==="; \
+		exit 1; \
+	fi
 
 clean:
 	rm -rf build

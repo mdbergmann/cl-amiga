@@ -6,7 +6,23 @@
 #include "../platform/platform.h"
 #include <string.h>
 #include <ctype.h>
+
+/* strcasecmp: available via <strings.h> on POSIX, provide fallback for AmigaOS */
+#ifdef PLATFORM_AMIGA
+static int cl_strcasecmp(const char *a, const char *b)
+{
+    while (*a && *b) {
+        int ca = (*a >= 'A' && *a <= 'Z') ? *a + 32 : *a;
+        int cb = (*b >= 'A' && *b <= 'Z') ? *b + 32 : *b;
+        if (ca != cb) return ca - cb;
+        a++; b++;
+    }
+    return (unsigned char)*a - (unsigned char)*b;
+}
+#define strcasecmp cl_strcasecmp
+#else
 #include <strings.h>
+#endif
 
 /* Reading from console vs string buffer */
 static int use_stream = 0;

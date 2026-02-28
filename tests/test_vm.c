@@ -332,6 +332,47 @@ TEST(eval_keyword)
     ASSERT_STR_EQ(eval_print(":test"), ":TEST");
 }
 
+/* --- Macros --- */
+
+TEST(eval_defmacro_simple)
+{
+    /* Macro that always returns a constant form */
+    eval_print("(defmacro always-42 () 42)");
+    ASSERT_EQ_INT(eval_int("(always-42)"), 42);
+}
+
+TEST(eval_defmacro_with_args)
+{
+    /* Macro that builds (+ x 1) using list */
+    eval_print("(defmacro inc (x) (list '+ x 1))");
+    ASSERT_EQ_INT(eval_int("(inc 5)"), 6);
+    ASSERT_EQ_INT(eval_int("(inc 99)"), 100);
+}
+
+TEST(eval_defmacro_when)
+{
+    /* when macro: (when test body...) => (if test (progn body...)) */
+    eval_print("(defmacro my-when (test &rest body) (list 'if test (cons 'progn body)))");
+    ASSERT_EQ_INT(eval_int("(my-when t 1 2 42)"), 42);
+    ASSERT_STR_EQ(eval_print("(my-when nil 1 2 42)"), "NIL");
+}
+
+TEST(eval_defmacro_unless)
+{
+    /* unless macro: (unless test body...) => (if test nil (progn body...)) */
+    eval_print("(defmacro my-unless (test &rest body) (list 'if test nil (cons 'progn body)))");
+    ASSERT_EQ_INT(eval_int("(my-unless nil 1 2 99)"), 99);
+    ASSERT_STR_EQ(eval_print("(my-unless t 1 2 99)"), "NIL");
+}
+
+TEST(eval_defmacro_identity)
+{
+    /* Macro receives unevaluated forms — verify by quoting the arg */
+    eval_print("(defmacro quote-it (x) (list 'quote x))");
+    ASSERT_STR_EQ(eval_print("(quote-it (+ 1 2))"), "(+ 1 2)");
+    ASSERT_STR_EQ(eval_print("(quote-it hello)"), "HELLO");
+}
+
 int main(void)
 {
     test_init();
@@ -374,6 +415,11 @@ int main(void)
     RUN(eval_error_type);
     RUN(eval_self_evaluating);
     RUN(eval_keyword);
+    RUN(eval_defmacro_simple);
+    RUN(eval_defmacro_with_args);
+    RUN(eval_defmacro_when);
+    RUN(eval_defmacro_unless);
+    RUN(eval_defmacro_identity);
 
     teardown();
     REPORT();

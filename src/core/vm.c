@@ -6,6 +6,7 @@
 #include "compiler.h"
 #include "../platform/platform.h"
 #include <stdio.h>
+#include <string.h>
 
 CL_VM cl_vm;
 
@@ -27,6 +28,73 @@ CL_Obj cl_vm_pop(void)
     if (cl_vm.sp <= 0)
         cl_error(CL_ERR_OVERFLOW, "VM stack underflow");
     return cl_vm.stack[--cl_vm.sp];
+}
+
+CL_Obj cl_vm_apply(CL_Obj func, CL_Obj *args, int nargs)
+{
+    /*
+     * Build a temporary bytecode stub:
+     *   CONST func_idx      (3 bytes)
+     *   CONST arg0_idx      (3 bytes per arg)
+     *   ...
+     *   CALL nargs           (2 bytes)
+     *   HALT                 (1 byte)
+     */
+    uint8_t stub_code[256];
+    CL_Obj stub_consts[64];
+    int cp = 0, cc = 0, i;
+    CL_Bytecode *bc;
+    CL_Obj bc_obj, result;
+
+    /* Constant 0 = function */
+    stub_consts[cc] = func;
+    stub_code[cp++] = OP_CONST;
+    stub_code[cp++] = 0;
+    stub_code[cp++] = (uint8_t)cc;
+    cc++;
+
+    /* Constants 1..nargs = arguments */
+    for (i = 0; i < nargs && cc < 64; i++) {
+        stub_consts[cc] = args[i];
+        stub_code[cp++] = OP_CONST;
+        stub_code[cp++] = 0;
+        stub_code[cp++] = (uint8_t)cc;
+        cc++;
+    }
+
+    stub_code[cp++] = OP_CALL;
+    stub_code[cp++] = (uint8_t)nargs;
+    stub_code[cp++] = OP_HALT;
+
+    /* Allocate bytecode on the heap (arena) */
+    bc = (CL_Bytecode *)cl_alloc(TYPE_BYTECODE, sizeof(CL_Bytecode));
+    if (!bc) return CL_NIL;
+
+    bc->code = (uint8_t *)platform_alloc(cp);
+    if (bc->code) memcpy(bc->code, stub_code, cp);
+    bc->code_len = cp;
+
+    bc->constants = (CL_Obj *)platform_alloc(cc * sizeof(CL_Obj));
+    if (bc->constants) {
+        for (i = 0; i < cc; i++)
+            bc->constants[i] = stub_consts[i];
+    }
+    bc->n_constants = cc;
+    bc->arity = 0;
+    bc->n_locals = 0;
+    bc->n_upvalues = 0;
+    bc->name = CL_NIL;
+
+    bc_obj = CL_PTR_TO_OBJ(bc);
+    result = cl_vm_eval(bc_obj);
+
+    /* Free the temporary code/constants (bc itself is in the GC arena) */
+    platform_free(bc->code);
+    platform_free(bc->constants);
+    bc->code = NULL;
+    bc->constants = NULL;
+
+    return result;
 }
 
 static uint16_t read_u16(uint8_t *code, uint32_t *ip)
@@ -501,6 +569,15 @@ CL_Obj cl_vm_eval(CL_Obj bytecode_obj)
             } else {
                 cl_vm_push(CL_NIL);
             }
+            break;
+        }
+
+        case OP_DEFMACRO: {
+            uint16_t idx = read_u16(code, &ip);
+            CL_Obj name = constants[idx];
+            CL_Obj expander = cl_vm_pop();
+            cl_register_macro(name, expander);
+            cl_vm_push(name);
             break;
         }
 

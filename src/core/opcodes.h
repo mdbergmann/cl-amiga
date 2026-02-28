@@ -58,6 +58,7 @@ enum CL_Opcode {
     OP_NIL       = 0x81,  /* Push NIL */
     OP_T         = 0x82,  /* Push T */
     OP_FLOAD     = 0x83,  /* u16: Load function binding of symbol */
+    OP_DEFMACRO  = 0x84,  /* u16: Register TOS as macro expander for symbol */
 
     OP_HALT      = 0xFF   /* Stop VM */
 };
