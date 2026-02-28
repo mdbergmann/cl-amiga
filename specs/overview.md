@@ -2,7 +2,7 @@
 
 ## Vision
 
-A Common Lisp environment built from scratch for AmigaOS 3+, running on both m68k and PPC hardware. The bytecode VM ensures architecture-agnostic execution — the same compiled Lisp code runs on both platforms. Starting with a minimal core and growing incrementally toward ANSI CL compliance.
+A Common Lisp environment built from scratch for AmigaOS 3+, running on both m68k and PPC hardware. The bytecode VM ensures architecture-agnostic execution — the same compiled Lisp code runs on both platforms. Starting with a minimal core and growing incrementally toward full ANSI CL compliance, with ASDF as the ultimate validation target.
 
 ## Target Hardware
 
@@ -70,19 +70,22 @@ Stack-based, byte-oriented instruction encoding. 35 opcodes:
 | Logic | NOT |
 | Control flow | JMP, JNIL, JTRUE |
 | Functions | CALL, TAILCALL, RET, CLOSURE, APPLY |
-| Misc | LIST, HALT |
+| Misc | LIST, HALT, DEFMACRO |
 
 ## Compiler
 
 Single-pass recursive compiler from S-expressions to bytecode:
 - Lexical scope with compile-time environment chain
-- Upvalue capture for closures
+- Flat closure model with upvalue capture (value semantics)
 - Tail position tracking for tail call optimization
 - Macro expansion before compilation
+- Backward jump support for loop forms
 
-**Special forms (Phase 1):** `quote`, `if`, `progn`, `lambda`, `let`, `let*`, `setq`, `defun`, `defmacro`, `function (#')`, `block`, `return-from`
+**Special forms:** `quote`, `if`, `progn`, `lambda`, `let`, `let*`, `setq`, `defun`, `defmacro`, `function (#')`, `block`, `return-from`, `and`, `or`, `cond`, `do`, `dolist`, `dotimes`
 
-## Built-in Functions (Phase 1: 48 functions)
+**Bootstrap macros:** `when`, `unless`
+
+## Built-in Functions (48 functions)
 
 | Category | Functions |
 |----------|-----------|
@@ -95,9 +98,11 @@ Single-pass recursive compiler from S-expressions to bytecode:
 | I/O | `print` `prin1` `princ` `terpri` `format` |
 | Misc | `type-of` |
 
-## Implementation Phases
+## Implementation Roadmap
 
-### Phase 1: Working REPL ✅ (Current)
+The goal is full ANSI CL compliance, validated by running ASDF (~14K lines of CL). Phases are ordered by dependency — each tier builds on the previous.
+
+### Phase 1: Core Infrastructure ✅
 
 Core infrastructure and interactive environment:
 - Tagged pointer type system
@@ -109,50 +114,117 @@ Core infrastructure and interactive environment:
 - Stack-based VM with tail calls
 - 48 built-in functions
 - Interactive REPL with error recovery
-- 86 tests, all passing
+- AmigaOS platform layer (platform_amiga.c, AllocVec, dos.library I/O)
+- Cross-compilation with vbcc, verified on FS-UAE (A4000/68040)
 
-### Phase 2: Language Completeness
+### Phase 2: Language Foundation ✅
 
-- [ ] Runtime macro expansion (defmacro works but expansion not wired up)
-- [ ] Closure upvalue capture (currently stubbed)
-- [ ] Permanent GC roots for packages/symbols
-- [ ] File loading (load boot.lisp at startup)
-- [ ] `mapcar` with compiled functions
-- [ ] `cond`, `case`, `when`, `unless`, `and`, `or` (via macros or special forms)
-- [ ] `do`, `dolist`, `dotimes` loops
-- [ ] `labels`, `flet` (local function binding)
-- [ ] Multiple return values (`values`, `multiple-value-bind`)
-- [ ] `&optional`, `&key` lambda list support
-- [ ] String operations (`string=`, `subseq`, `concatenate`, etc.)
-- [ ] `setf` with generalized places
-- [ ] Dynamic variables (`defvar`, `defparameter`, special bindings)
+Control flow, closures, macros, iteration:
+- [x] Runtime macro expansion (`defmacro` with `cl_vm_apply`)
+- [x] Closures with captured upvalues (flat closure model, value capture)
+- [x] `mapcar`/`funcall`/`apply` with compiled functions and closures
+- [x] `and`, `or`, `cond` (compiler special forms)
+- [x] `when`, `unless` (bootstrap macros)
+- [x] `do`, `dolist`, `dotimes` (compiler special forms with backward jumps)
 
-### Phase 3: AmigaOS Integration
+57 host tests (4 suites), 163 Amiga batch tests — all passing.
 
-- [ ] `platform_amiga.c` implementation (AllocVec, dos.library I/O)
-- [ ] Cross-compilation with bebbo's amiga-gcc or vbcc
-- [ ] Testing on FS-UAE emulator
-- [ ] Testing on real hardware (A1200)
-- [ ] Amiga-specific FFI (calling library functions)
-- [ ] Intuition/gadtools bindings for GUI (stretch goal)
+### Phase 3: Macro Infrastructure
 
-### Phase 4: Standard Library & Compliance
+Quasiquote and tooling that makes real macro writing practical:
+- [ ] Quasiquote (`` ` ``/`,`/`,@`) — reader and expander
+- [ ] `gensym`, `gentemp` — hygienic macro support
+- [ ] File `load` — load .lisp files at runtime
+- [ ] Boot file loading (boot.lisp at startup)
 
-- [ ] CLOS (subset — defclass, defmethod, defgeneric)
-- [ ] Condition system (handler-bind, handler-case, restart-case)
-- [ ] Streams (make-string-input-stream, with-output-to-string)
-- [ ] Sequences (map, reduce, find, remove, sort)
-- [ ] Hash tables
-- [ ] Pathnames and file I/O
-- [ ] Pretty printer
-- [ ] Reader macros
-- [ ] Packages (defpackage, use-package, import, export)
-- [ ] Declarations and type checking
-- [ ] `loop` facility (extended LOOP macro with `for`, `collect`, `when`, etc.)
+### Phase 4: Core Language Completeness
+
+Features needed for idiomatic CL programming:
+- [ ] `&optional`, `&key`, `&allow-other-keys` lambda list support
+- [ ] `flet`, `labels` — local function bindings
+- [ ] `case`, `ecase`, `typecase`, `etypecase`
+- [ ] `prog1`, `prog2`
+- [ ] `return` (implicit block NIL)
+- [ ] `tagbody`/`go` — low-level control flow
+- [ ] `catch`/`throw` — dynamic non-local exits
+- [ ] `unwind-protect` — cleanup forms
+- [ ] `block`/`return-from` — full implementation (currently simplified)
+- [ ] Multiple return values (`values`, `multiple-value-bind`, `multiple-value-list`, `multiple-value-prog1`, `nth-value`)
+- [ ] Dynamic variables (`defvar`, `defparameter`, special declarations, dynamic binding)
+- [ ] `setf` with generalized places (`defsetf`, `define-setf-expander`)
+- [ ] Modify macros: `push`, `pop`, `pushnew`, `incf`, `decf`
+- [ ] `destructuring-bind`
+- [ ] `eval`, `macroexpand`, `macroexpand-1` (user-accessible)
+- [ ] `eval-when` — compile-time evaluation control
+
+### Phase 5: Standard Library
+
+Data structures, sequences, strings, and I/O:
+- [ ] Hash tables (`make-hash-table`, `gethash`, `remhash`, `maphash`, `clrhash`)
+- [ ] Sequence functions (`find`, `find-if`, `remove`, `remove-if`, `remove-if-not`, `remove-duplicates`, `position`, `search`, `count`, `sort`, `stable-sort`, `substitute`, `reduce`, `map`, `every`, `some`, `notany`, `notevery`, `mismatch`)
+- [ ] List utilities (`member`, `assoc`, `rassoc`, `intersection`, `union`, `set-difference`, `subsetp`, `adjoin`, `last`, `butlast`, `nthcdr`, `copy-list`, `copy-tree`, `sublis`, `subst`, `acons`, `pairlis`, `getf`)
+- [ ] Destructive list ops (`nconc`, `nreverse`, `delete`, `delete-if`, `rplaca`, `rplacd`, `nsubst`)
+- [ ] Mapping variants (`mapcan`, `mapc`, `maplist`, `mapl`, `mapcon`)
+- [ ] String operations (`string=`, `string-equal`, `string<`, `string>`, `string-upcase`, `string-downcase`, `string-trim`, `string-left-trim`, `string-right-trim`, `subseq`, `concatenate`, `parse-integer`)
+- [ ] Character functions (`char=`, `char<`, `char-code`, `code-char`, `upper-case-p`, `lower-case-p`, `alpha-char-p`, `digit-char-p`, `char-upcase`, `char-downcase`)
+- [ ] Symbol functions (`symbol-name`, `symbol-value`, `symbol-function`, `symbol-package`, `boundp`, `fboundp`, `fdefinition`, `make-symbol`, `keywordp`)
+- [ ] Array operations (`make-array`, `aref`, `vector`, `array-dimensions`, `array-rank`, `fill`, `replace`)
+- [ ] Type system (`typep`, `coerce`, `deftype`, `subtypep`)
+- [ ] `declare`, `declaim`, `proclaim` — declarations
+
+### Phase 6: Control & Error Handling
+
+Condition system and full package support:
+- [ ] Condition system (`define-condition`, `make-condition`, `handler-case`, `handler-bind`, `signal`, `error`, `warn`, `cerror`)
+- [ ] Restarts (`restart-case`, `invoke-restart`, `find-restart`, `with-simple-restart`, `abort`, `continue`, `muffle-warning`)
+- [ ] `ignore-errors`, `check-type`, `assert`
+- [ ] Full packages (`defpackage`, `in-package`, `use-package`, `export`, `import`, `shadow`, `shadowing-import-from`, `find-package`, `make-package`, `rename-package`, `delete-package`, `do-symbols`, `do-external-symbols`, `intern`, `unintern`)
+
+### Phase 7: I/O & Pathnames
+
+File system integration and stream abstraction:
+- [ ] Streams (input/output/bidirectional, string streams, broadcast, concatenated, two-way)
+- [ ] Stream operations (`read-char`, `write-char`, `peek-char`, `unread-char`, `read-line`, `write-string`, `write-line`, `terpri`, `fresh-line`, `finish-output`, `force-output`)
+- [ ] `with-open-file`, `open`, `close`
+- [ ] `read`, `read-from-string`, `read-preserving-whitespace`
+- [ ] `write`, `write-to-string`, `prin1-to-string`, `princ-to-string`
+- [ ] `with-output-to-string`, `with-input-from-string`, `make-string-output-stream`, `get-output-stream-string`
+- [ ] `with-standard-io-syntax`
+- [ ] Pathnames (`make-pathname`, `merge-pathnames`, `namestring`, `truename`, `pathname-name`, `pathname-type`, `pathname-directory`, `enough-namestring`, `parse-namestring`, `wild-pathname-p`, `translate-pathname`)
+- [ ] File operations (`probe-file`, `file-write-date`, `delete-file`, `rename-file`, `ensure-directories-exist`, `directory`)
+- [ ] Reader macros (`set-macro-character`, `set-dispatch-macro-character`, `*readtable*`, `copy-readtable`)
+- [ ] Feature conditionals (`#+`, `#-`, `*features*`)
+
+### Phase 8: Iteration & Format
+
+Extended iteration and output formatting:
+- [ ] `loop` facility (extended LOOP macro: `for`/`in`/`on`/`across`, `collect`/`append`/`nconc`, `when`/`unless`/`if`, `with`/`initially`/`finally`, `thereis`/`always`/`never`, `sum`/`count`/`maximize`/`minimize`)
+- [ ] `format` full directives (`~A`, `~S`, `~D`, `~B`, `~O`, `~X`, `~R`, `~%`, `~&`, `~T`, `~<~>`, `~{~}`, `~[~]`, `~?`, `~(~)`, `~*`, `~^`)
+- [ ] Pretty printer (`pprint`, `pprint-logical-block`, `pprint-newline`, `pprint-indent`)
+
+### Phase 9: CLOS
+
+Common Lisp Object System:
+- [ ] `defclass` — class definition with slots, inheritance, metaclasses
+- [ ] Slot options: `:initarg`, `:initform`, `:accessor`, `:reader`, `:writer`, `:allocation`, `:type`, `:documentation`
+- [ ] `defgeneric`, `defmethod` — generic function dispatch
+- [ ] Method qualifiers: `:before`, `:after`, `:around`, `call-next-method`
+- [ ] `make-instance`, `initialize-instance`, `reinitialize-instance`, `shared-initialize`
+- [ ] `slot-value`, `slot-boundp`, `slot-exists-p`, `slot-makunbound`
+- [ ] `with-slots`, `with-accessors`
+- [ ] `find-class`, `class-of`, `class-name`, `change-class`
+- [ ] `print-object` — CLOS-based printing
+- [ ] `defstruct` — structure definitions (subset or full)
+- [ ] Multiple inheritance, standard method combination
+
+### Phase 10: ASDF & Beyond
+
+Validation and ecosystem:
+- [ ] Run ASDF 3.3 (~14K lines) — ultimate compliance test
+- [ ] `compile-file`, `load`, `require`, `provide`
+- [ ] Logical pathnames
+- [ ] `documentation` strings
 - [ ] Compiler optimizations (constant folding, inlining)
-
-### Phase 5: Performance & Polish
-
 - [ ] Bytecode optimizer
 - [ ] Generational or incremental GC
 - [ ] Bignums (arbitrary precision integers)
@@ -160,19 +232,21 @@ Core infrastructure and interactive environment:
 - [ ] Disassembler
 - [ ] Debugger / stepper
 - [ ] Line editing (history, tab completion)
-- [ ] Documentation strings
+- [ ] Amiga-specific FFI (calling library functions)
+- [ ] Intuition/gadtools bindings for GUI (stretch goal)
 
 ## Project Structure
 
 ```
 cl-amiga/
 ├── CLAUDE.md              # Dev conventions and quick reference
-├── Makefile               # Build system
+├── Makefile               # Build system (host)
+├── Makefile.amiga         # Build system (AmigaOS/vbcc)
 ├── specs/
 │   └── overview.md        # This file
 ├── src/
 │   ├── main.c             # Entry point
-│   ├── core/              # Language implementation (14 modules)
+│   ├── core/              # Language implementation (12 modules)
 │   └── platform/          # OS abstraction (posix, amiga)
 ├── include/
 │   └── clamiga.h          # Public umbrella header
@@ -180,15 +254,20 @@ cl-amiga/
 │   └── boot.lisp          # Bootstrap macros/functions
 ├── tests/
 │   ├── test.h             # Test framework
-│   └── test_*.c           # Test suites (4 files, 86 tests)
+│   ├── test_*.c           # Host test suites (4 files, 57 tests)
+│   └── amiga/
+│       └── run-tests.lisp # AmigaOS batch tests (163 tests)
 ├── build/                 # Build output (gitignored)
-└── verify/                # AmigaOS system image for testing (gitignored)
+└── verify/
+    └── realamiga/          # FS-UAE config + AmigaOS system image
 ```
 
 ## Verification Targets
 
-1. `(+ 1 2)` → `3`
-2. `(defun fact (n) (if (<= n 1) 1 (* n (fact (1- n)))))` then `(fact 10)` → `3628800`
-3. `(mapcar #'1+ '(1 2 3))` → `(2 3 4)`
-4. Cross-compile to m68k, run in FS-UAE
+1. `(+ 1 2)` → `3` ✅
+2. `(defun fact (n) (if (<= n 1) 1 (* n (fact (1- n)))))` then `(fact 10)` → `3628800` ✅
+3. `(mapcar #'1+ '(1 2 3))` → `(2 3 4)` ✅
+4. Cross-compile to m68k, run in FS-UAE ✅
 5. Run on real A1200 hardware
+6. Load and execute multi-file Lisp programs
+7. `(require "asdf")` — load and run ASDF 3.3
