@@ -11,11 +11,17 @@
 
 #define CL_MAX_LOCALS 256
 #define CL_MAX_UPVALUES 64
+#define CL_MAX_LOCAL_FUNS 32
 
 typedef struct {
     int is_local;   /* 1 = parent's local, 0 = parent's upvalue */
     int index;      /* slot index in parent */
 } CL_UpvalueDesc;
+
+typedef struct {
+    CL_Obj name;   /* function name (symbol) */
+    int slot;      /* local slot index where closure is stored */
+} CL_LocalFun;
 
 typedef struct CL_CompEnv {
     struct CL_CompEnv *parent;    /* Enclosing scope (for closures) */
@@ -25,6 +31,8 @@ typedef struct CL_CompEnv {
     int depth;                    /* Nesting depth (0 = top-level function) */
     CL_UpvalueDesc upvalues[CL_MAX_UPVALUES];
     int upvalue_count;
+    CL_LocalFun local_funs[CL_MAX_LOCAL_FUNS];
+    int local_fun_count;
 } CL_CompEnv;
 
 /* Create a new compile-time environment */
@@ -46,5 +54,12 @@ int cl_env_lookup_upvalue(CL_CompEnv *env, CL_Obj symbol,
 /* Resolve a symbol as an upvalue in env's flat upvalue array.
  * Returns upvalue index (>=0) or -1 if not found in any parent scope. */
 int cl_env_resolve_upvalue(CL_CompEnv *env, CL_Obj symbol);
+
+/* Local function bindings (flet/labels) */
+int cl_env_add_local_fun(CL_CompEnv *env, CL_Obj name, int slot);
+int cl_env_lookup_local_fun(CL_CompEnv *env, CL_Obj name);
+
+/* Resolve a local function as an upvalue (across lambda boundaries) */
+int cl_env_resolve_fun_upvalue(CL_CompEnv *env, CL_Obj name);
 
 #endif /* CL_ENV_H */

@@ -18,6 +18,7 @@ typedef struct {
     uint32_t ip;         /* Instruction pointer */
     uint32_t bp;         /* Base pointer (locals start) */
     int n_locals;
+    uint8_t nargs;       /* Actual argument count (for OP_ARGC) */
 } CL_Frame;
 
 typedef struct {

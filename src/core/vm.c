@@ -84,6 +84,11 @@ CL_Obj cl_vm_apply(CL_Obj func, CL_Obj *args, int nargs)
     bc->n_locals = 0;
     bc->n_upvalues = 0;
     bc->name = CL_NIL;
+    bc->n_optional = 0;
+    bc->flags = 0;
+    bc->n_keys = 0;
+    bc->key_syms = NULL;
+    bc->key_slots = NULL;
 
     bc_obj = CL_PTR_TO_OBJ(bc);
     result = cl_vm_eval(bc_obj);
@@ -155,6 +160,7 @@ CL_Obj cl_vm_eval(CL_Obj bytecode_obj)
     frame->ip = 0;
     frame->bp = cl_vm.sp;
     frame->n_locals = bc->n_locals;
+    frame->nargs = 0;
 
     /* Allocate space for locals */
     {
@@ -420,7 +426,8 @@ CL_Obj cl_vm_eval(CL_Obj bytecode_obj)
             } else if (CL_BYTECODE_P(func_obj) || CL_CLOSURE_P(func_obj)) {
                 CL_Bytecode *callee_bc;
                 CL_Frame *new_frame;
-                int callee_arity, has_rest, i;
+                int callee_arity, has_rest, n_opt, has_key, i;
+                int min_args, max_args;
 
                 if (CL_CLOSURE_P(func_obj)) {
                     CL_Closure *cl = (CL_Closure *)CL_OBJ_TO_PTR(func_obj);
@@ -431,50 +438,93 @@ CL_Obj cl_vm_eval(CL_Obj bytecode_obj)
 
                 callee_arity = callee_bc->arity & 0x7FFF;
                 has_rest = callee_bc->arity & 0x8000;
+                n_opt = callee_bc->n_optional;
+                has_key = callee_bc->flags & 1;
 
-                /* Check arity */
-                if (!has_rest && nargs != callee_arity) {
-                    cl_error(CL_ERR_ARGS, "Wrong number of arguments: expected %d, got %d",
-                             callee_arity, nargs);
+                /* Arity check */
+                min_args = callee_arity;
+                max_args = (has_rest || has_key)
+                           ? 255 : callee_arity + n_opt;
+
+                if (nargs < min_args) {
+                    cl_error(CL_ERR_ARGS, "Too few arguments: expected %s%d, got %d",
+                             (n_opt || has_rest || has_key) ? "at least " : "",
+                             min_args, nargs);
                 }
-                if (has_rest && nargs < callee_arity) {
-                    cl_error(CL_ERR_ARGS, "Too few arguments: expected at least %d, got %d",
-                             callee_arity, nargs);
+                if (nargs > max_args) {
+                    cl_error(CL_ERR_ARGS, "Too many arguments: expected %s%d, got %d",
+                             n_opt ? "at most " : "",
+                             max_args, nargs);
                 }
 
                 if (is_tail && cl_vm.fp > base_fp + 1) {
                     /* Tail call: reuse current frame */
                     CL_Obj *src = arg_base;
+                    CL_Obj extra_args[64];
+                    int n_extra = 0;
+                    int n_positional = callee_arity + n_opt;
+
                     cl_vm.sp = frame->bp;
 
-                    /* Push args as new locals */
-                    for (i = 0; i < nargs && i < callee_arity; i++)
+                    /* Push positional args */
+                    for (i = 0; i < nargs && i < n_positional; i++)
                         cl_vm_push(src[i]);
+
+                    /* Fill missing optionals with NIL */
+                    while (cl_vm.sp < (int)(frame->bp + n_positional))
+                        cl_vm_push(CL_NIL);
+
+                    /* Save extra args for keyword processing */
+                    if (has_key || has_rest) {
+                        for (i = n_positional; i < nargs; i++) {
+                            if (n_extra < 64) extra_args[n_extra++] = src[i];
+                        }
+                    }
 
                     /* Handle &rest */
                     if (has_rest) {
                         CL_Obj rest = CL_NIL;
                         int j;
-                        for (j = nargs - 1; j >= callee_arity; j--)
-                            rest = cl_cons(src[j], rest);
+                        for (j = n_extra - 1; j >= 0; j--)
+                            rest = cl_cons(extra_args[j], rest);
                         cl_vm_push(rest);
                     }
 
-                    /* Fill remaining locals with NIL */
+                    /* Fill remaining locals with NIL (including key slots) */
                     while (cl_vm.sp < (int)(frame->bp + callee_bc->n_locals))
                         cl_vm_push(CL_NIL);
+
+                    /* Keyword matching */
+                    if (has_key) {
+                        int ki;
+                        for (ki = 0; ki + 1 < n_extra; ki += 2) {
+                            CL_Obj key = extra_args[ki];
+                            CL_Obj val = extra_args[ki + 1];
+                            int j;
+                            for (j = 0; j < callee_bc->n_keys; j++) {
+                                if (key == callee_bc->key_syms[j]) {
+                                    cl_vm.stack[frame->bp + callee_bc->key_slots[j]] = val;
+                                    break;
+                                }
+                            }
+                        }
+                    }
 
                     frame->bytecode = func_obj;
                     frame->code = callee_bc->code;
                     frame->constants = callee_bc->constants;
                     frame->ip = 0;
                     frame->n_locals = callee_bc->n_locals;
+                    frame->nargs = nargs;
                     code = callee_bc->code;
                     constants = callee_bc->constants;
                     ip = 0;
                 } else {
                     /* Normal call: push new frame */
                     uint32_t new_bp;
+                    CL_Obj extra_args[64];
+                    int n_extra = 0;
+                    int n_positional = callee_arity + n_opt;
 
                     /* Remove func_obj from under args; shift args down */
                     {
@@ -487,20 +537,50 @@ CL_Obj cl_vm_eval(CL_Obj bytecode_obj)
 
                     new_bp = cl_vm.sp - nargs;
 
+                    /* Save extra args for keyword processing */
+                    if (has_key || has_rest) {
+                        for (i = n_positional; i < nargs; i++) {
+                            if (n_extra < 64)
+                                extra_args[n_extra++] = cl_vm.stack[new_bp + i];
+                        }
+                    }
+
+                    /* Truncate stack to positional args */
+                    if (nargs > n_positional)
+                        cl_vm.sp = new_bp + n_positional;
+
+                    /* Fill missing optionals with NIL */
+                    while (cl_vm.sp < (int)(new_bp + n_positional))
+                        cl_vm_push(CL_NIL);
+
                     /* Handle &rest parameter */
                     if (has_rest) {
                         CL_Obj rest = CL_NIL;
                         int j;
-                        for (j = nargs - 1; j >= callee_arity; j--) {
-                            rest = cl_cons(cl_vm.stack[new_bp + j], rest);
-                        }
-                        cl_vm.sp = new_bp + callee_arity;
+                        for (j = n_extra - 1; j >= 0; j--)
+                            rest = cl_cons(extra_args[j], rest);
                         cl_vm_push(rest);
                     }
 
-                    /* Fill remaining locals with NIL */
+                    /* Fill remaining locals with NIL (including key slots) */
                     while (cl_vm.sp < (int)(new_bp + callee_bc->n_locals))
                         cl_vm_push(CL_NIL);
+
+                    /* Keyword matching */
+                    if (has_key) {
+                        int ki;
+                        for (ki = 0; ki + 1 < n_extra; ki += 2) {
+                            CL_Obj key = extra_args[ki];
+                            CL_Obj val = extra_args[ki + 1];
+                            int j;
+                            for (j = 0; j < callee_bc->n_keys; j++) {
+                                if (key == callee_bc->key_syms[j]) {
+                                    cl_vm.stack[new_bp + callee_bc->key_slots[j]] = val;
+                                    break;
+                                }
+                            }
+                        }
+                    }
 
                     /* Save current frame state */
                     frame->ip = ip;
@@ -515,6 +595,7 @@ CL_Obj cl_vm_eval(CL_Obj bytecode_obj)
                     new_frame->ip = 0;
                     new_frame->bp = new_bp;
                     new_frame->n_locals = callee_bc->n_locals;
+                    new_frame->nargs = nargs;
 
                     frame = new_frame;
                     code = callee_bc->code;
@@ -592,6 +673,11 @@ CL_Obj cl_vm_eval(CL_Obj bytecode_obj)
             CL_Obj expander = cl_vm_pop();
             cl_register_macro(name, expander);
             cl_vm_push(name);
+            break;
+        }
+
+        case OP_ARGC: {
+            cl_vm_push(CL_MAKE_FIXNUM(frame->nargs));
             break;
         }
 

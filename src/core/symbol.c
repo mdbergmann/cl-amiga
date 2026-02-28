@@ -31,6 +31,16 @@ CL_Obj SYM_COND = CL_NIL;
 CL_Obj SYM_DO = CL_NIL;
 CL_Obj SYM_DOLIST = CL_NIL;
 CL_Obj SYM_DOTIMES = CL_NIL;
+CL_Obj SYM_RETURN = CL_NIL;
+CL_Obj SYM_CASE = CL_NIL;
+CL_Obj SYM_ECASE = CL_NIL;
+CL_Obj SYM_TYPECASE = CL_NIL;
+CL_Obj SYM_ETYPECASE = CL_NIL;
+CL_Obj SYM_OTHERWISE = CL_NIL;
+CL_Obj SYM_FLET = CL_NIL;
+CL_Obj SYM_LABELS = CL_NIL;
+CL_Obj SYM_AMP_KEY = CL_NIL;
+CL_Obj SYM_AMP_ALLOW_OTHER_KEYS = CL_NIL;
 
 /* FNV-1a hash */
 uint32_t cl_hash_string(const char *str, uint32_t len)
@@ -127,6 +137,16 @@ void cl_symbol_init(void)
     SYM_DO            = cl_intern_in("DO", 2, cl_package_cl);
     SYM_DOLIST        = cl_intern_in("DOLIST", 6, cl_package_cl);
     SYM_DOTIMES       = cl_intern_in("DOTIMES", 7, cl_package_cl);
+    SYM_RETURN        = cl_intern_in("RETURN", 6, cl_package_cl);
+    SYM_CASE          = cl_intern_in("CASE", 4, cl_package_cl);
+    SYM_ECASE         = cl_intern_in("ECASE", 5, cl_package_cl);
+    SYM_TYPECASE      = cl_intern_in("TYPECASE", 8, cl_package_cl);
+    SYM_ETYPECASE     = cl_intern_in("ETYPECASE", 9, cl_package_cl);
+    SYM_OTHERWISE     = cl_intern_in("OTHERWISE", 9, cl_package_cl);
+    SYM_FLET          = cl_intern_in("FLET", 4, cl_package_cl);
+    SYM_LABELS        = cl_intern_in("LABELS", 6, cl_package_cl);
+    SYM_AMP_KEY       = cl_intern_in("&KEY", 4, cl_package_cl);
+    SYM_AMP_ALLOW_OTHER_KEYS = cl_intern_in("&ALLOW-OTHER-KEYS", 17, cl_package_cl);
 
     /* T is self-evaluating */
     {

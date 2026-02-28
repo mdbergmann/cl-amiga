@@ -58,5 +58,15 @@ extern CL_Obj SYM_COND;
 extern CL_Obj SYM_DO;
 extern CL_Obj SYM_DOLIST;
 extern CL_Obj SYM_DOTIMES;
+extern CL_Obj SYM_RETURN;
+extern CL_Obj SYM_CASE;
+extern CL_Obj SYM_ECASE;
+extern CL_Obj SYM_TYPECASE;
+extern CL_Obj SYM_ETYPECASE;
+extern CL_Obj SYM_OTHERWISE;
+extern CL_Obj SYM_FLET;
+extern CL_Obj SYM_LABELS;
+extern CL_Obj SYM_AMP_KEY;
+extern CL_Obj SYM_AMP_ALLOW_OTHER_KEYS;
 
 #endif /* CL_SYMBOL_H */

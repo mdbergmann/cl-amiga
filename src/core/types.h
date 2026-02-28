@@ -154,10 +154,15 @@ typedef struct {
     CL_Obj *constants;  /* Constants pool */
     uint32_t code_len;
     uint16_t n_constants;
-    uint16_t arity;
+    uint16_t arity;     /* bits 0-14: required params, bit 15: has_rest */
     uint16_t n_locals;
     uint16_t n_upvalues;
     CL_Obj name;        /* Symbol or NIL */
+    uint8_t n_optional; /* Number of &optional params */
+    uint8_t flags;      /* bit 0: has_key, bit 1: allow_other_keys */
+    uint8_t n_keys;     /* Number of &key params */
+    CL_Obj *key_syms;   /* Keyword symbols array (platform_alloc'd) */
+    uint8_t *key_slots; /* Slot indices for each key param (platform_alloc'd) */
 } CL_Bytecode;
 
 #define CL_BYTECODE_P(obj) (CL_HEAP_P(obj) && CL_HDR_TYPE(CL_OBJ_TO_PTR(obj)) == TYPE_BYTECODE)

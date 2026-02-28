@@ -660,6 +660,19 @@ static CL_Obj bi_load(CL_Obj *args, int n)
     return SYM_T;
 }
 
+/* --- Error --- */
+
+static CL_Obj bi_error(CL_Obj *args, int n)
+{
+    if (n > 0 && CL_STRING_P(args[0])) {
+        CL_String *s = (CL_String *)CL_OBJ_TO_PTR(args[0]);
+        cl_error(CL_ERR_GENERAL, "%s", s->data);
+    } else {
+        cl_error(CL_ERR_GENERAL, "Error signaled");
+    }
+    return CL_NIL;
+}
+
 /* --- Gensym --- */
 
 static uint32_t gensym_counter = 0;
@@ -754,4 +767,5 @@ void cl_builtins_init(void)
     defun("TYPE-OF", bi_type_of, 1, 1);
     defun("GENSYM", bi_gensym, 0, 1);
     defun("LOAD", bi_load, 1, 1);
+    defun("ERROR", bi_error, 1, -1);
 }

@@ -661,6 +661,123 @@ TEST(eval_boot_functions)
     ASSERT_STR_EQ(eval_print("(endp '(1))"), "NIL");
 }
 
+/* --- Phase 4: return / return-from --- */
+
+TEST(eval_block_return)
+{
+    ASSERT_EQ_INT(eval_int("(block nil 1 (return 42) 3)"), 42);
+    ASSERT_EQ_INT(eval_int("(block foo (return-from foo 42))"), 42);
+    ASSERT_EQ_INT(eval_int("(block nil 1 2 3)"), 3);
+    ASSERT_STR_EQ(eval_print("(block nil (return nil))"), "NIL");
+}
+
+TEST(eval_return_in_do)
+{
+    ASSERT_EQ_INT(eval_int(
+        "(do ((i 0 (1+ i))) ((= i 10) 99) (if (= i 5) (return 42)))"), 42);
+}
+
+TEST(eval_return_in_dolist)
+{
+    ASSERT_EQ_INT(eval_int(
+        "(dolist (x '(1 3 4 7)) (if (= 0 (mod x 2)) (return x)))"), 4);
+}
+
+TEST(eval_return_in_dotimes)
+{
+    ASSERT_EQ_INT(eval_int(
+        "(dotimes (i 100) (if (= i 7) (return i)))"), 7);
+}
+
+/* --- Phase 4: prog1 / prog2 --- */
+
+TEST(eval_prog1)
+{
+    ASSERT_EQ_INT(eval_int("(prog1 1 2 3)"), 1);
+    ASSERT_EQ_INT(eval_int("(prog1 42)"), 42);
+}
+
+TEST(eval_prog2)
+{
+    ASSERT_EQ_INT(eval_int("(prog2 1 2 3)"), 2);
+    ASSERT_EQ_INT(eval_int("(prog2 1 42)"), 42);
+}
+
+/* --- Phase 4: case / ecase --- */
+
+TEST(eval_case)
+{
+    ASSERT_STR_EQ(eval_print("(case 2 (1 'a) (2 'b) (3 'c))"), "B");
+    ASSERT_STR_EQ(eval_print("(case 5 ((1 2) 'low) ((3 4) 'high) (t 'other))"), "OTHER");
+    ASSERT_STR_EQ(eval_print("(case 99 (1 'a))"), "NIL");
+    ASSERT_STR_EQ(eval_print("(ecase 2 (1 'a) (2 'b))"), "B");
+}
+
+TEST(eval_typecase)
+{
+    ASSERT_STR_EQ(eval_print("(typecase 42 (integer 'num) (string 'str))"), "NUM");
+    ASSERT_STR_EQ(eval_print("(typecase \"hi\" (integer 'num) (string 'str))"), "STR");
+    ASSERT_STR_EQ(eval_print("(typecase 42 (string 'str) (t 'other))"), "OTHER");
+}
+
+/* --- Phase 4: flet / labels --- */
+
+TEST(eval_flet)
+{
+    ASSERT_EQ_INT(eval_int("(flet ((f (x) (+ x 1))) (f 3))"), 4);
+    /* flet with closure capture from enclosing let */
+    ASSERT_EQ_INT(eval_int("(let ((x 10)) (flet ((f (y) (+ x y))) (f 5)))"), 15);
+}
+
+TEST(eval_labels)
+{
+    /* Use unique names to avoid collision with earlier defun tests */
+    ASSERT_EQ_INT(eval_int(
+        "(labels ((lab-fact (n) (if (<= n 1) 1 (* n (lab-fact (- n 1)))))) (lab-fact 5))"), 120);
+    /* Mutual recursion */
+    ASSERT_STR_EQ(eval_print(
+        "(labels ((lab-even (n) (if (= n 0) t (lab-odd (- n 1)))) "
+        "(lab-odd (n) (if (= n 0) nil (lab-even (- n 1))))) "
+        "(lab-even 4))"), "T");
+}
+
+/* --- Phase 4: &optional / &key --- */
+
+TEST(eval_optional)
+{
+    eval_print("(defun opt-test (a &optional b) (list a b))");
+    ASSERT_STR_EQ(eval_print("(opt-test 1)"), "(1 NIL)");
+    ASSERT_STR_EQ(eval_print("(opt-test 1 2)"), "(1 2)");
+}
+
+TEST(eval_optional_default)
+{
+    eval_print("(defun opt-def (a &optional (b 10)) (+ a b))");
+    ASSERT_EQ_INT(eval_int("(opt-def 1)"), 11);
+    ASSERT_EQ_INT(eval_int("(opt-def 1 2)"), 3);
+}
+
+TEST(eval_key)
+{
+    eval_print("(defun key-test (&key x y) (list x y))");
+    ASSERT_STR_EQ(eval_print("(key-test :x 1 :y 2)"), "(1 2)");
+    ASSERT_STR_EQ(eval_print("(key-test)"), "(NIL NIL)");
+    ASSERT_STR_EQ(eval_print("(key-test :y 5)"), "(NIL 5)");
+}
+
+TEST(eval_key_default)
+{
+    eval_print("(defun key-def (&key (x 0) (y 10)) (+ x y))");
+    ASSERT_EQ_INT(eval_int("(key-def :x 5)"), 15);
+    ASSERT_EQ_INT(eval_int("(key-def)"), 10);
+}
+
+TEST(eval_optional_lambda)
+{
+    ASSERT_EQ_INT(eval_int("((lambda (a &optional (b 5)) (+ a b)) 10)"), 15);
+    ASSERT_EQ_INT(eval_int("((lambda (a &optional (b 5)) (+ a b)) 10 20)"), 30);
+}
+
 int main(void)
 {
     test_init();
@@ -734,6 +851,21 @@ int main(void)
     RUN(eval_gensym);
     RUN(eval_load);
     RUN(eval_boot_functions);
+    RUN(eval_block_return);
+    RUN(eval_return_in_do);
+    RUN(eval_return_in_dolist);
+    RUN(eval_return_in_dotimes);
+    RUN(eval_prog1);
+    RUN(eval_prog2);
+    RUN(eval_case);
+    RUN(eval_typecase);
+    RUN(eval_flet);
+    RUN(eval_labels);
+    RUN(eval_optional);
+    RUN(eval_optional_default);
+    RUN(eval_key);
+    RUN(eval_key_default);
+    RUN(eval_optional_lambda);
 
     teardown();
     REPORT();

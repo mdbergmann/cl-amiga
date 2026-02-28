@@ -9,6 +9,17 @@
 #include "../platform/platform.h"
 #include <string.h>
 
+/* Block tracking for return/return-from */
+#define CL_MAX_BLOCKS 16
+#define CL_MAX_BLOCK_PATCHES 16
+
+typedef struct {
+    CL_Obj tag;
+    int exit_patches[CL_MAX_BLOCK_PATCHES];
+    int n_patches;
+    int result_slot;  /* local slot where return value is stored */
+} CL_BlockInfo;
+
 /* Compiler state */
 typedef struct {
     uint8_t code[CL_MAX_CODE_SIZE];
@@ -17,6 +28,8 @@ typedef struct {
     int const_count;
     CL_CompEnv *env;
     int in_tail;      /* Are we in tail position? */
+    CL_BlockInfo blocks[CL_MAX_BLOCKS];
+    int block_count;
 } CL_Compiler;
 
 /* Macro table (simple association list: ((name . expander) ...)) */
@@ -163,6 +176,91 @@ static void compile_progn(CL_Compiler *c, CL_Obj forms)
     }
 }
 
+/* Parsed lambda list structure */
+typedef struct {
+    CL_Obj required[CL_MAX_LOCALS];
+    int n_required;
+    CL_Obj opt_names[CL_MAX_LOCALS];
+    CL_Obj opt_defaults[CL_MAX_LOCALS]; /* CL_NIL if no default */
+    int n_optional;
+    CL_Obj rest_name;       /* CL_NIL if no &rest */
+    int has_rest;
+    CL_Obj key_names[CL_MAX_LOCALS];
+    CL_Obj key_keywords[CL_MAX_LOCALS]; /* keyword symbols */
+    CL_Obj key_defaults[CL_MAX_LOCALS];
+    int n_keys;
+    int allow_other_keys;
+} CL_ParsedLambdaList;
+
+static void parse_lambda_list(CL_Obj params, CL_ParsedLambdaList *ll)
+{
+    CL_Obj p = params;
+    int state = 0; /* 0=required, 1=optional, 2=rest, 3=key */
+
+    memset(ll, 0, sizeof(*ll));
+    ll->rest_name = CL_NIL;
+
+    while (!CL_NULL_P(p)) {
+        CL_Obj item = cl_car(p);
+        p = cl_cdr(p);
+
+        if (item == SYM_AMP_OPTIONAL) {
+            state = 1;
+            continue;
+        }
+        if (item == SYM_AMP_REST || item == SYM_AMP_BODY) {
+            state = 2;
+            continue;
+        }
+        if (item == SYM_AMP_KEY) {
+            state = 3;
+            continue;
+        }
+        if (item == SYM_AMP_ALLOW_OTHER_KEYS) {
+            ll->allow_other_keys = 1;
+            continue;
+        }
+
+        switch (state) {
+        case 0: /* required */
+            ll->required[ll->n_required++] = item;
+            break;
+        case 1: /* optional */
+            if (CL_CONS_P(item)) {
+                ll->opt_names[ll->n_optional] = cl_car(item);
+                ll->opt_defaults[ll->n_optional] = cl_car(cl_cdr(item));
+            } else {
+                ll->opt_names[ll->n_optional] = item;
+                ll->opt_defaults[ll->n_optional] = CL_NIL;
+            }
+            ll->n_optional++;
+            break;
+        case 2: /* rest */
+            ll->rest_name = item;
+            ll->has_rest = 1;
+            state = 3; /* after rest, only &key allowed */
+            break;
+        case 3: /* key */
+            if (CL_CONS_P(item)) {
+                CL_Obj kname = cl_car(item);
+                ll->key_names[ll->n_keys] = kname;
+                ll->key_defaults[ll->n_keys] = cl_car(cl_cdr(item));
+            } else {
+                ll->key_names[ll->n_keys] = item;
+                ll->key_defaults[ll->n_keys] = CL_NIL;
+            }
+            /* Intern the keyword symbol (e.g., X -> :X) */
+            {
+                const char *name_str = cl_symbol_name(ll->key_names[ll->n_keys]);
+                ll->key_keywords[ll->n_keys] = cl_intern_keyword(
+                    name_str, (uint32_t)strlen(name_str));
+            }
+            ll->n_keys++;
+            break;
+        }
+    }
+}
+
 static void compile_lambda(CL_Compiler *c, CL_Obj form)
 {
     /* (lambda (params...) body...) */
@@ -170,11 +268,14 @@ static void compile_lambda(CL_Compiler *c, CL_Obj form)
     CL_Obj body = cl_cdr(cl_cdr(form));
     CL_Compiler inner;
     CL_CompEnv *env;
-    CL_Obj param;
-    int arity = 0;
-    int has_rest = 0;
+    CL_ParsedLambdaList ll;
     CL_Bytecode *bc;
     int const_idx;
+    int i;
+    int key_slot_indices[CL_MAX_LOCALS];
+
+    /* Parse lambda list */
+    parse_lambda_list(params, &ll);
 
     /* Set up inner compiler */
     memset(&inner, 0, sizeof(inner));
@@ -182,21 +283,66 @@ static void compile_lambda(CL_Compiler *c, CL_Obj form)
     inner.env = env;
     inner.in_tail = 1;
 
-    /* Process parameter list */
-    param = params;
-    while (!CL_NULL_P(param)) {
-        CL_Obj p = cl_car(param);
-        if (p == SYM_AMP_REST) {
-            has_rest = 1;
-            param = cl_cdr(param);
-            if (!CL_NULL_P(param)) {
-                cl_env_add_local(env, cl_car(param));
+    /* Add required params as locals */
+    for (i = 0; i < ll.n_required; i++)
+        cl_env_add_local(env, ll.required[i]);
+
+    /* Add optional params as locals */
+    for (i = 0; i < ll.n_optional; i++)
+        cl_env_add_local(env, ll.opt_names[i]);
+
+    /* Add rest param */
+    if (ll.has_rest)
+        cl_env_add_local(env, ll.rest_name);
+
+    /* Add key params as locals, record their slot indices */
+    for (i = 0; i < ll.n_keys; i++) {
+        key_slot_indices[i] = cl_env_add_local(env, ll.key_names[i]);
+    }
+
+    /* Emit prologue for optional defaults */
+    for (i = 0; i < ll.n_optional; i++) {
+        if (!CL_NULL_P(ll.opt_defaults[i])) {
+            int skip_pos;
+            /* if nargs >= required + i + 1, skip default */
+            emit(&inner, OP_ARGC);
+            emit_const(&inner, CL_MAKE_FIXNUM(ll.n_required + i + 1));
+            emit(&inner, OP_GE);
+            skip_pos = emit_jump(&inner, OP_JTRUE);
+            /* Apply default */
+            {
+                int saved = inner.in_tail;
+                inner.in_tail = 0;
+                compile_expr(&inner, ll.opt_defaults[i]);
+                inner.in_tail = saved;
             }
-            break;
+            emit(&inner, OP_STORE);
+            emit(&inner, (uint8_t)(ll.n_required + i));
+            emit(&inner, OP_POP);
+            patch_jump(&inner, skip_pos);
         }
-        cl_env_add_local(env, p);
-        arity++;
-        param = cl_cdr(param);
+    }
+
+    /* Emit prologue for key defaults */
+    for (i = 0; i < ll.n_keys; i++) {
+        if (!CL_NULL_P(ll.key_defaults[i])) {
+            int skip_pos;
+            /* If slot is non-NIL, key was provided — skip default */
+            emit(&inner, OP_LOAD);
+            emit(&inner, (uint8_t)key_slot_indices[i]);
+            skip_pos = emit_jump(&inner, OP_JTRUE);
+            /* Apply default */
+            {
+                int saved = inner.in_tail;
+                inner.in_tail = 0;
+                compile_expr(&inner, ll.key_defaults[i]);
+                inner.in_tail = saved;
+            }
+            emit(&inner, OP_STORE);
+            emit(&inner, (uint8_t)key_slot_indices[i]);
+            emit(&inner, OP_POP);
+            patch_jump(&inner, skip_pos);
+        }
     }
 
     /* Compile body */
@@ -212,7 +358,6 @@ static void compile_lambda(CL_Compiler *c, CL_Obj form)
     bc->code_len = inner.code_pos;
 
     if (inner.const_count > 0) {
-        int i;
         bc->constants = (CL_Obj *)platform_alloc(
             inner.const_count * sizeof(CL_Obj));
         if (bc->constants) {
@@ -225,10 +370,26 @@ static void compile_lambda(CL_Compiler *c, CL_Obj form)
         bc->n_constants = 0;
     }
 
-    bc->arity = has_rest ? (arity | 0x8000) : arity;
+    bc->arity = ll.has_rest ? (ll.n_required | 0x8000) : ll.n_required;
     bc->n_locals = env->max_locals;
     bc->n_upvalues = env->upvalue_count;
     bc->name = CL_NIL;
+    bc->n_optional = (uint8_t)ll.n_optional;
+    bc->flags = (ll.n_keys > 0 ? 1 : 0) | (ll.allow_other_keys ? 2 : 0);
+    bc->n_keys = (uint8_t)ll.n_keys;
+
+    /* Allocate and fill key_syms and key_slots */
+    if (ll.n_keys > 0) {
+        bc->key_syms = (CL_Obj *)platform_alloc(ll.n_keys * sizeof(CL_Obj));
+        bc->key_slots = (uint8_t *)platform_alloc(ll.n_keys);
+        for (i = 0; i < ll.n_keys; i++) {
+            bc->key_syms[i] = ll.key_keywords[i];
+            bc->key_slots[i] = (uint8_t)key_slot_indices[i];
+        }
+    } else {
+        bc->key_syms = NULL;
+        bc->key_slots = NULL;
+    }
 
     /* Emit closure instruction in outer compiler, then capture descriptors */
     const_idx = add_constant(c, CL_PTR_TO_OBJ(bc));
@@ -237,7 +398,6 @@ static void compile_lambda(CL_Compiler *c, CL_Obj form)
 
     /* Emit capture descriptors: [is_local:u8, index:u8] per upvalue */
     {
-        int i;
         for (i = 0; i < env->upvalue_count; i++) {
             emit(c, (uint8_t)env->upvalues[i].is_local);
             emit(c, (uint8_t)env->upvalues[i].index);
@@ -425,8 +585,28 @@ static void compile_function(CL_Compiler *c, CL_Obj form)
     if (CL_CONS_P(name) && cl_car(name) == SYM_LAMBDA) {
         /* (function (lambda ...)) */
         compile_lambda(c, name);
+    } else if (CL_SYMBOL_P(name)) {
+        /* Check local function bindings (flet/labels) first */
+        int fun_slot = cl_env_lookup_local_fun(c->env, name);
+        if (fun_slot >= 0) {
+            emit(c, OP_LOAD);
+            emit(c, (uint8_t)fun_slot);
+        } else if (c->env) {
+            int uv_idx = cl_env_resolve_fun_upvalue(c->env, name);
+            if (uv_idx >= 0) {
+                emit(c, OP_UPVAL);
+                emit(c, (uint8_t)uv_idx);
+            } else {
+                int idx = add_constant(c, name);
+                emit(c, OP_FLOAD);
+                emit_u16(c, (uint16_t)idx);
+            }
+        } else {
+            int idx = add_constant(c, name);
+            emit(c, OP_FLOAD);
+            emit_u16(c, (uint16_t)idx);
+        }
     } else {
-        /* (function sym) => load function binding */
         int idx = add_constant(c, name);
         emit(c, OP_FLOAD);
         emit_u16(c, (uint16_t)idx);
@@ -435,9 +615,112 @@ static void compile_function(CL_Compiler *c, CL_Obj form)
 
 static void compile_block(CL_Compiler *c, CL_Obj form)
 {
-    /* Simplified: just compile body for now */
+    CL_Obj tag = cl_car(cl_cdr(form));
     CL_Obj body = cl_cdr(cl_cdr(form));
+    CL_CompEnv *env = c->env;
+    int saved_local_count = env->local_count;
+    int saved_block_count = c->block_count;
+    int result_slot;
+    CL_BlockInfo *bi;
+    int i;
+
+    /* Allocate anonymous result slot */
+    result_slot = env->local_count;
+    env->local_count++;
+    if (env->local_count > env->max_locals)
+        env->max_locals = env->local_count;
+
+    /* Push block info */
+    bi = &c->blocks[c->block_count++];
+    bi->tag = tag;
+    bi->n_patches = 0;
+    bi->result_slot = result_slot;
+
+    /* Compile body */
     compile_body(c, body);
+
+    /* Normal exit: store result in slot */
+    emit(c, OP_STORE);
+    emit(c, (uint8_t)result_slot);
+    emit(c, OP_POP);
+
+    /* Patch all return-from jumps to here */
+    for (i = 0; i < bi->n_patches; i++)
+        patch_jump(c, bi->exit_patches[i]);
+
+    /* Load result from slot */
+    emit(c, OP_LOAD);
+    emit(c, (uint8_t)result_slot);
+
+    /* Restore */
+    c->block_count = saved_block_count;
+    env->local_count = saved_local_count;
+}
+
+static void compile_return_from(CL_Compiler *c, CL_Obj form)
+{
+    CL_Obj tag = cl_car(cl_cdr(form));
+    CL_Obj val_form = cl_car(cl_cdr(cl_cdr(form)));
+    int saved_tail = c->in_tail;
+    int i;
+
+    /* Find matching block (innermost first) */
+    for (i = c->block_count - 1; i >= 0; i--) {
+        if (c->blocks[i].tag == tag) {
+            CL_BlockInfo *bi = &c->blocks[i];
+
+            /* Compile value */
+            c->in_tail = 0;
+            if (!CL_NULL_P(cl_cdr(cl_cdr(form))))
+                compile_expr(c, val_form);
+            else
+                emit(c, OP_NIL);
+            c->in_tail = saved_tail;
+
+            /* Store in result slot and jump to exit */
+            emit(c, OP_STORE);
+            emit(c, (uint8_t)bi->result_slot);
+            emit(c, OP_POP);
+
+            if (bi->n_patches < CL_MAX_BLOCK_PATCHES)
+                bi->exit_patches[bi->n_patches++] = emit_jump(c, OP_JMP);
+            return;
+        }
+    }
+
+    cl_error(CL_ERR_GENERAL, "RETURN-FROM: no block named %s",
+             CL_NULL_P(tag) ? "NIL" : cl_symbol_name(tag));
+}
+
+static void compile_return(CL_Compiler *c, CL_Obj form)
+{
+    /* (return [value]) => return-from NIL */
+    CL_Obj val_form = cl_car(cl_cdr(form));
+    int saved_tail = c->in_tail;
+    int i;
+
+    for (i = c->block_count - 1; i >= 0; i--) {
+        if (CL_NULL_P(c->blocks[i].tag)) {
+            CL_BlockInfo *bi = &c->blocks[i];
+
+            c->in_tail = 0;
+            if (!CL_NULL_P(cl_cdr(form)))
+                compile_expr(c, val_form);
+            else
+                emit(c, OP_NIL);
+            c->in_tail = saved_tail;
+
+            emit(c, OP_STORE);
+            emit(c, (uint8_t)bi->result_slot);
+            emit(c, OP_POP);
+
+            if (bi->n_patches < CL_MAX_BLOCK_PATCHES)
+                bi->exit_patches[bi->n_patches++] = emit_jump(c, OP_JMP);
+            return;
+        }
+    }
+
+    cl_error(CL_ERR_GENERAL, "RETURN: no block named NIL");
 }
 
 static void compile_and(CL_Compiler *c, CL_Obj form)
@@ -735,6 +1018,350 @@ static void compile_quasiquote(CL_Compiler *c, CL_Obj form)
     compile_qq(c, tmpl);
 }
 
+/* --- Case forms --- */
+
+static void compile_case(CL_Compiler *c, CL_Obj form, int error_if_no_match)
+{
+    /* (case keyform (key-or-keys body...)... [(t|otherwise body...)]) */
+    CL_Obj keyform = cl_car(cl_cdr(form));
+    CL_Obj clauses = cl_cdr(cl_cdr(form));
+    CL_CompEnv *env = c->env;
+    int saved_local_count = env->local_count;
+    int saved_tail = c->in_tail;
+    int temp_slot;
+    int done_patches[64];
+    int n_done = 0;
+    int had_default = 0;
+
+    /* Allocate temp slot for keyform value */
+    temp_slot = env->local_count;
+    env->local_count++;
+    if (env->local_count > env->max_locals)
+        env->max_locals = env->local_count;
+
+    /* Compile and store keyform */
+    c->in_tail = 0;
+    compile_expr(c, keyform);
+    emit(c, OP_STORE);
+    emit(c, (uint8_t)temp_slot);
+    emit(c, OP_POP);
+
+    /* Process clauses */
+    while (!CL_NULL_P(clauses)) {
+        CL_Obj clause = cl_car(clauses);
+        CL_Obj keys = cl_car(clause);
+        CL_Obj body = cl_cdr(clause);
+
+        /* Check for default clause: T or OTHERWISE */
+        if (keys == SYM_T || keys == SYM_OTHERWISE) {
+            had_default = 1;
+            c->in_tail = saved_tail;
+            if (CL_NULL_P(body))
+                emit(c, OP_NIL);
+            else
+                compile_progn(c, body);
+            done_patches[n_done++] = emit_jump(c, OP_JMP);
+        } else {
+            int body_patches[64];
+            int n_body = 0;
+            int next_clause_pos;
+
+            /* Emit EQ tests for each key */
+            if (CL_CONS_P(keys)) {
+                /* Multiple keys: ((k1 k2 k3) body...) */
+                CL_Obj k = keys;
+                while (!CL_NULL_P(k)) {
+                    emit(c, OP_LOAD);
+                    emit(c, (uint8_t)temp_slot);
+                    emit_const(c, cl_car(k));
+                    emit(c, OP_EQ);
+                    body_patches[n_body++] = emit_jump(c, OP_JTRUE);
+                    k = cl_cdr(k);
+                }
+            } else {
+                /* Single key: (key body...) */
+                emit(c, OP_LOAD);
+                emit(c, (uint8_t)temp_slot);
+                emit_const(c, keys);
+                emit(c, OP_EQ);
+                body_patches[n_body++] = emit_jump(c, OP_JTRUE);
+            }
+
+            /* No key matched — jump to next clause */
+            next_clause_pos = emit_jump(c, OP_JMP);
+
+            /* body: patch all key-match jumps here */
+            {
+                int j;
+                for (j = 0; j < n_body; j++)
+                    patch_jump(c, body_patches[j]);
+            }
+
+            /* Compile body */
+            c->in_tail = saved_tail;
+            if (CL_NULL_P(body))
+                emit(c, OP_NIL);
+            else
+                compile_progn(c, body);
+            done_patches[n_done++] = emit_jump(c, OP_JMP);
+
+            /* next_clause: */
+            patch_jump(c, next_clause_pos);
+        }
+
+        clauses = cl_cdr(clauses);
+    }
+
+    /* No default matched */
+    if (!had_default) {
+        if (error_if_no_match) {
+            /* ecase: signal error */
+            CL_Obj sym_error = cl_intern("ERROR", 5);
+            CL_Obj errmsg = cl_make_string("ECASE: no matching clause", 25);
+            int idx = add_constant(c, sym_error);
+            emit(c, OP_FLOAD);
+            emit_u16(c, (uint16_t)idx);
+            emit_const(c, errmsg);
+            emit(c, OP_CALL);
+            emit(c, 1);
+        } else {
+            emit(c, OP_NIL);
+        }
+    }
+
+    /* Patch all done-jumps */
+    {
+        int i;
+        for (i = 0; i < n_done; i++)
+            patch_jump(c, done_patches[i]);
+    }
+
+    /* Restore scope */
+    env->local_count = saved_local_count;
+}
+
+static void compile_typecase(CL_Compiler *c, CL_Obj form, int error_if_no_match)
+{
+    /* (typecase keyform (type body...)... [(t|otherwise body...)]) */
+    CL_Obj keyform = cl_car(cl_cdr(form));
+    CL_Obj clauses = cl_cdr(cl_cdr(form));
+    CL_CompEnv *env = c->env;
+    int saved_local_count = env->local_count;
+    int saved_tail = c->in_tail;
+    int temp_slot;
+    int done_patches[64];
+    int n_done = 0;
+    int had_default = 0;
+    CL_Obj sym_type_of;
+    int type_of_idx;
+
+    /* Allocate temp slot for (type-of keyform) result */
+    temp_slot = env->local_count;
+    env->local_count++;
+    if (env->local_count > env->max_locals)
+        env->max_locals = env->local_count;
+
+    /* Compile keyform, call TYPE-OF, store result */
+    c->in_tail = 0;
+    sym_type_of = cl_intern("TYPE-OF", 7);
+    type_of_idx = add_constant(c, sym_type_of);
+    emit(c, OP_FLOAD);
+    emit_u16(c, (uint16_t)type_of_idx);
+    compile_expr(c, keyform);
+    emit(c, OP_CALL);
+    emit(c, 1);
+    emit(c, OP_STORE);
+    emit(c, (uint8_t)temp_slot);
+    emit(c, OP_POP);
+
+    /* Process clauses (same structure as case but compare type symbols) */
+    while (!CL_NULL_P(clauses)) {
+        CL_Obj clause = cl_car(clauses);
+        CL_Obj type_spec = cl_car(clause);
+        CL_Obj body = cl_cdr(clause);
+
+        if (type_spec == SYM_T || type_spec == SYM_OTHERWISE) {
+            had_default = 1;
+            c->in_tail = saved_tail;
+            if (CL_NULL_P(body))
+                emit(c, OP_NIL);
+            else
+                compile_progn(c, body);
+            done_patches[n_done++] = emit_jump(c, OP_JMP);
+        } else {
+            int jnil_pos;
+            CL_Obj type_sym;
+
+            /* Map CL type specifier to our type-of symbol */
+            if (type_spec == cl_intern("INTEGER", 7) ||
+                type_spec == cl_intern("FIXNUM", 6))
+                type_sym = cl_intern("FIXNUM", 6);
+            else if (type_spec == cl_intern("STRING", 6))
+                type_sym = cl_intern("STRING", 6);
+            else if (type_spec == cl_intern("CONS", 4) ||
+                     type_spec == cl_intern("LIST", 4))
+                type_sym = cl_intern("CONS", 4);
+            else if (type_spec == cl_intern("SYMBOL", 6))
+                type_sym = cl_intern("SYMBOL", 6);
+            else if (type_spec == cl_intern("FUNCTION", 8))
+                type_sym = cl_intern("FUNCTION", 8);
+            else
+                type_sym = type_spec; /* Use as-is */
+
+            emit(c, OP_LOAD);
+            emit(c, (uint8_t)temp_slot);
+            emit_const(c, type_sym);
+            emit(c, OP_EQ);
+            jnil_pos = emit_jump(c, OP_JNIL);
+
+            /* Compile body */
+            c->in_tail = saved_tail;
+            if (CL_NULL_P(body))
+                emit(c, OP_NIL);
+            else
+                compile_progn(c, body);
+            done_patches[n_done++] = emit_jump(c, OP_JMP);
+
+            patch_jump(c, jnil_pos);
+        }
+
+        clauses = cl_cdr(clauses);
+    }
+
+    /* No default */
+    if (!had_default) {
+        if (error_if_no_match) {
+            CL_Obj sym_error = cl_intern("ERROR", 5);
+            CL_Obj errmsg = cl_make_string("ETYPECASE: no matching clause", 29);
+            int idx = add_constant(c, sym_error);
+            emit(c, OP_FLOAD);
+            emit_u16(c, (uint16_t)idx);
+            emit_const(c, errmsg);
+            emit(c, OP_CALL);
+            emit(c, 1);
+        } else {
+            emit(c, OP_NIL);
+        }
+    }
+
+    /* Patch done-jumps */
+    {
+        int i;
+        for (i = 0; i < n_done; i++)
+            patch_jump(c, done_patches[i]);
+    }
+
+    env->local_count = saved_local_count;
+}
+
+/* --- flet / labels --- */
+
+static void compile_flet(CL_Compiler *c, CL_Obj form)
+{
+    /* (flet ((name (params) body...) ...) body...) */
+    CL_Obj bindings = cl_car(cl_cdr(form));
+    CL_Obj body = cl_cdr(cl_cdr(form));
+    CL_CompEnv *env = c->env;
+    int saved_local_count = env->local_count;
+    int saved_fun_count = env->local_fun_count;
+    int saved_tail = c->in_tail;
+
+    /* Phase 1: compile each function in outer scope, store in anonymous slots */
+    {
+        CL_Obj b = bindings;
+        while (!CL_NULL_P(b)) {
+            CL_Obj binding = cl_car(b);
+            CL_Obj fname = cl_car(binding);
+            CL_Obj lambda_list = cl_car(cl_cdr(binding));
+            CL_Obj fbody = cl_cdr(cl_cdr(binding));
+            CL_Obj lambda_form;
+            int slot;
+
+            /* Build (lambda (params) body...) */
+            lambda_form = cl_cons(SYM_LAMBDA, cl_cons(lambda_list, fbody));
+            CL_GC_PROTECT(lambda_form);
+
+            c->in_tail = 0;
+            compile_expr(c, lambda_form);
+            CL_GC_UNPROTECT(1);
+
+            /* Allocate anonymous slot and store */
+            slot = env->local_count;
+            env->local_count++;
+            if (env->local_count > env->max_locals)
+                env->max_locals = env->local_count;
+            /* Store CL_NIL in locals[] to keep it anonymous */
+            env->locals[slot] = CL_NIL;
+
+            emit(c, OP_STORE);
+            emit(c, (uint8_t)slot);
+            emit(c, OP_POP);
+
+            /* Register in function namespace */
+            cl_env_add_local_fun(env, fname, slot);
+
+            b = cl_cdr(b);
+        }
+    }
+
+    /* Phase 2: compile body */
+    c->in_tail = saved_tail;
+    compile_body(c, body);
+
+    /* Restore */
+    env->local_count = saved_local_count;
+    env->local_fun_count = saved_fun_count;
+}
+
+static void compile_labels(CL_Compiler *c, CL_Obj form)
+{
+    /* (labels ((name (params) body...) ...) body...)
+     *
+     * Uses temporary global bindings so recursive/mutual references
+     * resolve at runtime via FLOAD. This works because FLOAD checks
+     * the value binding, and the closures are stored there before any
+     * function body executes.
+     *
+     * Limitation: labels function names are visible globally (will be
+     * fixed when reference capture / heap-boxed cells are implemented).
+     */
+    CL_Obj bindings = cl_car(cl_cdr(form));
+    CL_Obj body = cl_cdr(cl_cdr(form));
+    int saved_tail = c->in_tail;
+
+    /* Compile each function as lambda, store as global value binding */
+    {
+        CL_Obj b = bindings;
+        while (!CL_NULL_P(b)) {
+            CL_Obj binding = cl_car(b);
+            CL_Obj fname = cl_car(binding);
+            CL_Obj lambda_list = cl_car(cl_cdr(binding));
+            CL_Obj fbody = cl_cdr(cl_cdr(binding));
+            CL_Obj lambda_form;
+            int idx;
+
+            lambda_form = cl_cons(SYM_LAMBDA, cl_cons(lambda_list, fbody));
+            CL_GC_PROTECT(lambda_form);
+
+            c->in_tail = 0;
+            compile_expr(c, lambda_form);
+            CL_GC_UNPROTECT(1);
+
+            /* Store as global value binding (FLOAD falls back to value) */
+            idx = add_constant(c, fname);
+            emit(c, OP_GSTORE);
+            emit_u16(c, (uint16_t)idx);
+            emit(c, OP_POP);
+
+            b = cl_cdr(b);
+        }
+    }
+
+    /* Compile body — calls use FLOAD which finds the value binding */
+    c->in_tail = saved_tail;
+    compile_body(c, body);
+}
+
 /* --- Loop forms --- */
 
 static void compile_dolist(CL_Compiler *c, CL_Obj form)
@@ -748,8 +1375,11 @@ static void compile_dolist(CL_Compiler *c, CL_Obj form)
     CL_CompEnv *env = c->env;
     int saved_local_count = env->local_count;
     int saved_tail = c->in_tail;
-    int var_slot, iter_slot;
+    int saved_block_count = c->block_count;
+    int var_slot, iter_slot, result_slot;
     int loop_start, jnil_pos;
+    CL_BlockInfo *bi;
+    int i;
 
     c->in_tail = 0;
 
@@ -761,6 +1391,18 @@ static void compile_dolist(CL_Compiler *c, CL_Obj form)
     env->local_count++;
     if (env->local_count > env->max_locals)
         env->max_locals = env->local_count;
+
+    /* Allocate result slot for implicit block NIL */
+    result_slot = env->local_count;
+    env->local_count++;
+    if (env->local_count > env->max_locals)
+        env->max_locals = env->local_count;
+
+    /* Push block info for implicit block NIL */
+    bi = &c->blocks[c->block_count++];
+    bi->tag = CL_NIL;
+    bi->n_patches = 0;
+    bi->result_slot = result_slot;
 
     /* Compile list-form, store into iter_slot */
     compile_expr(c, list_form);
@@ -812,15 +1454,27 @@ static void compile_dolist(CL_Compiler *c, CL_Obj form)
     emit(c, (uint8_t)var_slot);
     emit(c, OP_POP);
 
-    /* Compile result-form or NIL */
+    /* Compile result-form or NIL, store in result_slot */
     c->in_tail = saved_tail;
     if (!CL_NULL_P(cl_cdr(cl_cdr(binding)))) {
         compile_expr(c, result_form);
     } else {
         emit(c, OP_NIL);
     }
+    emit(c, OP_STORE);
+    emit(c, (uint8_t)result_slot);
+    emit(c, OP_POP);
 
-    /* Restore scope */
+    /* Patch all return-from NIL jumps to here */
+    for (i = 0; i < bi->n_patches; i++)
+        patch_jump(c, bi->exit_patches[i]);
+
+    /* Load result */
+    emit(c, OP_LOAD);
+    emit(c, (uint8_t)result_slot);
+
+    /* Restore */
+    c->block_count = saved_block_count;
     env->local_count = saved_local_count;
 }
 
@@ -835,8 +1489,11 @@ static void compile_dotimes(CL_Compiler *c, CL_Obj form)
     CL_CompEnv *env = c->env;
     int saved_local_count = env->local_count;
     int saved_tail = c->in_tail;
-    int var_slot, limit_slot;
+    int saved_block_count = c->block_count;
+    int var_slot, limit_slot, result_slot;
     int loop_start, jtrue_pos;
+    CL_BlockInfo *bi;
+    int i;
 
     c->in_tail = 0;
 
@@ -848,6 +1505,18 @@ static void compile_dotimes(CL_Compiler *c, CL_Obj form)
     env->local_count++;
     if (env->local_count > env->max_locals)
         env->max_locals = env->local_count;
+
+    /* Allocate result slot for implicit block NIL */
+    result_slot = env->local_count;
+    env->local_count++;
+    if (env->local_count > env->max_locals)
+        env->max_locals = env->local_count;
+
+    /* Push block info for implicit block NIL */
+    bi = &c->blocks[c->block_count++];
+    bi->tag = CL_NIL;
+    bi->n_patches = 0;
+    bi->result_slot = result_slot;
 
     /* Compile count-form, store into limit_slot */
     compile_expr(c, count_form);
@@ -895,15 +1564,27 @@ static void compile_dotimes(CL_Compiler *c, CL_Obj form)
     /* end: */
     patch_jump(c, jtrue_pos);
 
-    /* Compile result-form or NIL */
+    /* Compile result-form or NIL, store in result_slot */
     c->in_tail = saved_tail;
     if (!CL_NULL_P(cl_cdr(cl_cdr(binding)))) {
         compile_expr(c, result_form);
     } else {
         emit(c, OP_NIL);
     }
+    emit(c, OP_STORE);
+    emit(c, (uint8_t)result_slot);
+    emit(c, OP_POP);
 
-    /* Restore scope */
+    /* Patch all return-from NIL jumps to here */
+    for (i = 0; i < bi->n_patches; i++)
+        patch_jump(c, bi->exit_patches[i]);
+
+    /* Load result */
+    emit(c, OP_LOAD);
+    emit(c, (uint8_t)result_slot);
+
+    /* Restore */
+    c->block_count = saved_block_count;
     env->local_count = saved_local_count;
 }
 
@@ -918,6 +1599,7 @@ static void compile_do(CL_Compiler *c, CL_Obj form)
     CL_CompEnv *env = c->env;
     int saved_local_count = env->local_count;
     int saved_tail = c->in_tail;
+    int saved_block_count = c->block_count;
 
     /* Parse bindings into arrays */
     CL_Obj vars[CL_MAX_LOCALS];
@@ -927,6 +1609,8 @@ static void compile_do(CL_Compiler *c, CL_Obj form)
     int n = 0;
     int i;
     int loop_start, jtrue_pos;
+    int result_slot;
+    CL_BlockInfo *bi;
 
     {
         CL_Obj vc = var_clauses;
@@ -964,6 +1648,18 @@ static void compile_do(CL_Compiler *c, CL_Obj form)
         emit(c, (uint8_t)(saved_local_count + i));
         emit(c, OP_POP);
     }
+
+    /* Allocate result slot for implicit block NIL */
+    result_slot = env->local_count;
+    env->local_count++;
+    if (env->local_count > env->max_locals)
+        env->max_locals = env->local_count;
+
+    /* Push block info for implicit block NIL */
+    bi = &c->blocks[c->block_count++];
+    bi->tag = CL_NIL;
+    bi->n_patches = 0;
+    bi->result_slot = result_slot;
 
     /* loop_start: compile end-test, JTRUE -> end */
     loop_start = c->code_pos;
@@ -1003,15 +1699,27 @@ static void compile_do(CL_Compiler *c, CL_Obj form)
     /* end: */
     patch_jump(c, jtrue_pos);
 
-    /* Compile result forms as progn, or NIL */
+    /* Compile result forms as progn, or NIL, store in result_slot */
     c->in_tail = saved_tail;
     if (!CL_NULL_P(result_forms)) {
         compile_progn(c, result_forms);
     } else {
         emit(c, OP_NIL);
     }
+    emit(c, OP_STORE);
+    emit(c, (uint8_t)result_slot);
+    emit(c, OP_POP);
 
-    /* Restore scope */
+    /* Patch all return-from NIL jumps to here */
+    for (i = 0; i < bi->n_patches; i++)
+        patch_jump(c, bi->exit_patches[i]);
+
+    /* Load result */
+    emit(c, OP_LOAD);
+    emit(c, (uint8_t)result_slot);
+
+    /* Restore */
+    c->block_count = saved_block_count;
     env->local_count = saved_local_count;
 }
 
@@ -1028,10 +1736,26 @@ static void compile_call(CL_Compiler *c, CL_Obj form)
     c->in_tail = 0;
 
     if (CL_SYMBOL_P(func)) {
-        /* Named function call — load function binding */
-        int idx = add_constant(c, func);
-        emit(c, OP_FLOAD);
-        emit_u16(c, (uint16_t)idx);
+        /* Check local function bindings (flet/labels) first */
+        int fun_slot = cl_env_lookup_local_fun(c->env, func);
+        if (fun_slot >= 0) {
+            emit(c, OP_LOAD);
+            emit(c, (uint8_t)fun_slot);
+        } else if (c->env) {
+            int uv_idx = cl_env_resolve_fun_upvalue(c->env, func);
+            if (uv_idx >= 0) {
+                emit(c, OP_UPVAL);
+                emit(c, (uint8_t)uv_idx);
+            } else {
+                int idx = add_constant(c, func);
+                emit(c, OP_FLOAD);
+                emit_u16(c, (uint16_t)idx);
+            }
+        } else {
+            int idx = add_constant(c, func);
+            emit(c, OP_FLOAD);
+            emit_u16(c, (uint16_t)idx);
+        }
     } else {
         compile_expr(c, func);
     }
@@ -1141,6 +1865,14 @@ static void compile_expr(CL_Compiler *c, CL_Obj expr)
         if (head == SYM_DEFMACRO)    { compile_defmacro(c, expr); return; }
         if (head == SYM_FUNCTION)    { compile_function(c, expr); return; }
         if (head == SYM_BLOCK)       { compile_block(c, expr); return; }
+        if (head == SYM_RETURN_FROM) { compile_return_from(c, expr); return; }
+        if (head == SYM_RETURN)      { compile_return(c, expr); return; }
+        if (head == SYM_CASE)        { compile_case(c, expr, 0); return; }
+        if (head == SYM_ECASE)       { compile_case(c, expr, 1); return; }
+        if (head == SYM_TYPECASE)    { compile_typecase(c, expr, 0); return; }
+        if (head == SYM_ETYPECASE)   { compile_typecase(c, expr, 1); return; }
+        if (head == SYM_FLET)        { compile_flet(c, expr); return; }
+        if (head == SYM_LABELS)      { compile_labels(c, expr); return; }
         if (head == SYM_AND)         { compile_and(c, expr); return; }
         if (head == SYM_OR)          { compile_or(c, expr); return; }
         if (head == SYM_COND)        { compile_cond(c, expr); return; }
@@ -1262,6 +1994,11 @@ CL_Obj cl_compile(CL_Obj expr)
     bc->n_locals = env->max_locals;
     bc->n_upvalues = 0;
     bc->name = CL_NIL;
+    bc->n_optional = 0;
+    bc->flags = 0;
+    bc->n_keys = 0;
+    bc->key_syms = NULL;
+    bc->key_slots = NULL;
 
     cl_env_destroy(env);
     return CL_PTR_TO_OBJ(bc);

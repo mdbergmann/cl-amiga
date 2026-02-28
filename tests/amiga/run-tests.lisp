@@ -277,6 +277,48 @@
 ; --- Format ---
 (check "format nil" nil (format t ""))
 
+; --- Phase 4: return / return-from ---
+(check "block return" 42 (block nil 1 (return 42) 3))
+(check "block return-from" 42 (block foo (return-from foo 42)))
+(check "block normal" 3 (block nil 1 2 3))
+(check "return in do" 42 (do ((i 0 (1+ i))) ((= i 10) 99) (if (= i 5) (return 42))))
+(check "return in dolist" 4 (dolist (x '(1 3 4 7)) (if (= 0 (mod x 2)) (return x))))
+(check "return in dotimes" 7 (dotimes (i 100) (if (= i 7) (return i))))
+
+; --- Phase 4: prog1 / prog2 ---
+(check "prog1" 1 (prog1 1 2 3))
+(check "prog2" 2 (prog2 1 2 3))
+
+; --- Phase 4: case / ecase ---
+(check "case match" 'b (case 2 (1 'a) (2 'b) (3 'c)))
+(check "case multi-key" 'other (case 5 ((1 2) 'low) ((3 4) 'high) (t 'other)))
+(check "case no match" nil (case 99 (1 'a)))
+(check "ecase match" 'b (ecase 2 (1 'a) (2 'b)))
+(check "typecase int" 'num (typecase 42 (integer 'num) (string 'str)))
+(check "typecase str" 'str (typecase "hi" (integer 'num) (string 'str)))
+
+; --- Phase 4: flet / labels ---
+(check "flet basic" 4 (flet ((f (x) (+ x 1))) (f 3)))
+(check "flet closure" 15 (let ((x 10)) (flet ((f (y) (+ x y))) (f 5))))
+(check "labels fact" 120 (labels ((fact (n) (if (<= n 1) 1 (* n (fact (- n 1)))))) (fact 5)))
+(check "labels mutual" t (labels ((even2 (n) (if (= n 0) t (odd2 (- n 1)))) (odd2 (n) (if (= n 0) nil (even2 (- n 1))))) (even2 4)))
+
+; --- Phase 4: &optional / &key ---
+(defun opt-test (a &optional b) (list a b))
+(check "optional nil" '(1 nil) (opt-test 1))
+(check "optional val" '(1 2) (opt-test 1 2))
+(defun opt-def (a &optional (b 10)) (+ a b))
+(check "optional default" 11 (opt-def 1))
+(check "optional override" 3 (opt-def 1 2))
+(defun key-test (&key x y) (list x y))
+(check "key both" '(1 2) (key-test :x 1 :y 2))
+(check "key none" '(nil nil) (key-test))
+(check "key partial" '(nil 5) (key-test :y 5))
+(defun key-def (&key (x 0) (y 10)) (+ x y))
+(check "key default" 10 (key-def))
+(check "key override" 15 (key-def :x 5))
+(check "lambda optional" 15 ((lambda (a &optional (b 5)) (+ a b)) 10))
+
 ; --- Summary ---
 (format t "~%=== Results ===~%")
 (format t "Passed: ~A~%" *pass-count*)

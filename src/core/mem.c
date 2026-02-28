@@ -266,6 +266,11 @@ static void gc_mark_children(void *ptr, uint8_t type)
         gc_mark_push(bc->name);
         for (i = 0; i < bc->n_constants; i++)
             gc_mark_push(bc->constants[i]);
+        /* Mark keyword symbols if present */
+        if (bc->key_syms) {
+            for (i = 0; i < bc->n_keys; i++)
+                gc_mark_push(bc->key_syms[i]);
+        }
         break;
     }
     case TYPE_VECTOR: {
