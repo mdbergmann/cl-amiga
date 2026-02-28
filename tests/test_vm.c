@@ -373,6 +373,48 @@ TEST(eval_defmacro_identity)
     ASSERT_STR_EQ(eval_print("(quote-it hello)"), "HELLO");
 }
 
+/* --- Closures with captured upvalues --- */
+
+TEST(eval_closure_capture_let)
+{
+    /* Lambda captures variable from let binding */
+    ASSERT_EQ_INT(eval_int("(let ((x 10)) ((lambda (y) (+ x y)) 5))"), 15);
+    ASSERT_EQ_INT(eval_int("(let ((a 100)) ((lambda () a)))"), 100);
+}
+
+TEST(eval_closure_make_adder)
+{
+    /* Classic make-adder: defun returns closure capturing n */
+    eval_print("(defun make-adder (n) (lambda (x) (+ n x)))");
+    ASSERT_EQ_INT(eval_int("((make-adder 10) 5)"), 15);
+    ASSERT_EQ_INT(eval_int("((make-adder 100) 42)"), 142);
+}
+
+TEST(eval_closure_multiple_captures)
+{
+    /* Capture multiple variables */
+    ASSERT_EQ_INT(eval_int("(let ((a 1) (b 2) (c 3)) ((lambda () (+ a b c))))"), 6);
+    ASSERT_EQ_INT(eval_int("(let ((x 10) (y 20)) ((lambda (z) (+ x y z)) 30))"), 60);
+}
+
+TEST(eval_closure_nested)
+{
+    /* Nested lambda: inner captures from outer closure's upvalue */
+    eval_print("(defun make-adder2 (n) (lambda (x) ((lambda (a b) (+ a b)) n x)))");
+    ASSERT_EQ_INT(eval_int("((make-adder2 10) 5)"), 15);
+
+    /* Double-nesting: outer captures from let, inner captures from outer */
+    ASSERT_EQ_INT(eval_int("(let ((x 10)) ((lambda () ((lambda () (+ x 5))))))"), 15);
+}
+
+TEST(eval_closure_shared_scope)
+{
+    /* Two lambdas capture the same variable (value capture = independent copies) */
+    eval_print("(defun make-pair (x) (list (lambda () x) (lambda () (+ x 1))))");
+    ASSERT_EQ_INT(eval_int("(let ((p (make-pair 10))) ((car p)))"), 10);
+    ASSERT_EQ_INT(eval_int("(let ((p (make-pair 10))) ((car (cdr p))))"), 11);
+}
+
 int main(void)
 {
     test_init();
@@ -420,6 +462,11 @@ int main(void)
     RUN(eval_defmacro_when);
     RUN(eval_defmacro_unless);
     RUN(eval_defmacro_identity);
+    RUN(eval_closure_capture_let);
+    RUN(eval_closure_make_adder);
+    RUN(eval_closure_multiple_captures);
+    RUN(eval_closure_nested);
+    RUN(eval_closure_shared_scope);
 
     teardown();
     REPORT();

@@ -243,18 +243,11 @@ CL_Obj cl_vm_eval(CL_Obj bytecode_obj)
         }
 
         case OP_UPVAL: {
-            /* Simplified upvalue access through closure */
-            uint8_t depth = code[ip++];
+            /* Flat upvalue access: single index into closure's upvalues[] */
             uint8_t index = code[ip++];
-            /* Walk up the closure chain */
             if (CL_CLOSURE_P(frame->bytecode)) {
                 CL_Closure *cl = (CL_Closure *)CL_OBJ_TO_PTR(frame->bytecode);
-                (void)depth; /* For now, flat upvalues */
-                if (index < ((CL_HDR_SIZE(cl) - sizeof(CL_Closure)) / sizeof(CL_Obj))) {
-                    cl_vm_push(cl->upvalues[index]);
-                } else {
-                    cl_vm_push(CL_NIL);
-                }
+                cl_vm_push(cl->upvalues[index]);
             } else {
                 cl_vm_push(CL_NIL);
             }
@@ -559,14 +552,35 @@ CL_Obj cl_vm_eval(CL_Obj bytecode_obj)
 
         case OP_CLOSURE: {
             uint16_t idx = read_u16(code, &ip);
-            CL_Obj template = constants[idx];
-            /* For now, create a simple closure without captured upvalues */
+            CL_Obj tmpl = constants[idx];
+            CL_Bytecode *tmpl_bc = (CL_Bytecode *)CL_OBJ_TO_PTR(tmpl);
+            int n_upvals = tmpl_bc->n_upvalues;
             CL_Closure *cl = (CL_Closure *)cl_alloc(TYPE_CLOSURE,
-                                                      sizeof(CL_Closure));
+                sizeof(CL_Closure) + n_upvals * sizeof(CL_Obj));
             if (cl) {
-                cl->bytecode = template;
+                int i;
+                cl->bytecode = tmpl;
+                /* Read capture descriptors and populate upvalues */
+                for (i = 0; i < n_upvals; i++) {
+                    uint8_t is_local = code[ip++];
+                    uint8_t cap_idx = code[ip++];
+                    if (is_local) {
+                        /* Capture from current frame's local slot */
+                        cl->upvalues[i] = cl_vm.stack[frame->bp + cap_idx];
+                    } else {
+                        /* Capture from current closure's upvalue slot */
+                        if (CL_CLOSURE_P(frame->bytecode)) {
+                            CL_Closure *parent_cl = (CL_Closure *)CL_OBJ_TO_PTR(frame->bytecode);
+                            cl->upvalues[i] = parent_cl->upvalues[cap_idx];
+                        } else {
+                            cl->upvalues[i] = CL_NIL;
+                        }
+                    }
+                }
                 cl_vm_push(CL_PTR_TO_OBJ(cl));
             } else {
+                /* Skip capture descriptors even on alloc failure */
+                ip += n_upvals * 2;
                 cl_vm_push(CL_NIL);
             }
             break;

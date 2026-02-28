@@ -10,6 +10,12 @@
  */
 
 #define CL_MAX_LOCALS 256
+#define CL_MAX_UPVALUES 64
+
+typedef struct {
+    int is_local;   /* 1 = parent's local, 0 = parent's upvalue */
+    int index;      /* slot index in parent */
+} CL_UpvalueDesc;
 
 typedef struct CL_CompEnv {
     struct CL_CompEnv *parent;    /* Enclosing scope (for closures) */
@@ -17,6 +23,8 @@ typedef struct CL_CompEnv {
     int local_count;
     int max_locals;               /* High-water mark for local_count */
     int depth;                    /* Nesting depth (0 = top-level function) */
+    CL_UpvalueDesc upvalues[CL_MAX_UPVALUES];
+    int upvalue_count;
 } CL_CompEnv;
 
 /* Create a new compile-time environment */
@@ -34,5 +42,9 @@ int cl_env_lookup(CL_CompEnv *env, CL_Obj symbol);
 /* Look up in parent envs for upvalue, returns 1 if found */
 int cl_env_lookup_upvalue(CL_CompEnv *env, CL_Obj symbol,
                           int *depth_out, int *index_out);
+
+/* Resolve a symbol as an upvalue in env's flat upvalue array.
+ * Returns upvalue index (>=0) or -1 if not found in any parent scope. */
+int cl_env_resolve_upvalue(CL_CompEnv *env, CL_Obj symbol);
 
 #endif /* CL_ENV_H */

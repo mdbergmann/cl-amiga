@@ -220,15 +220,24 @@ static void compile_lambda(CL_Compiler *c, CL_Obj form)
 
     bc->arity = has_rest ? (arity | 0x8000) : arity;
     bc->n_locals = env->max_locals;
-    bc->n_upvalues = 0;
+    bc->n_upvalues = env->upvalue_count;
     bc->name = CL_NIL;
 
-    cl_env_destroy(env);
-
-    /* Emit closure instruction in outer compiler */
+    /* Emit closure instruction in outer compiler, then capture descriptors */
     const_idx = add_constant(c, CL_PTR_TO_OBJ(bc));
     emit(c, OP_CLOSURE);
     emit_u16(c, (uint16_t)const_idx);
+
+    /* Emit capture descriptors: [is_local:u8, index:u8] per upvalue */
+    {
+        int i;
+        for (i = 0; i < env->upvalue_count; i++) {
+            emit(c, (uint8_t)env->upvalues[i].is_local);
+            emit(c, (uint8_t)env->upvalues[i].index);
+        }
+    }
+
+    cl_env_destroy(env);
 }
 
 static void compile_let(CL_Compiler *c, CL_Obj form, int sequential)
@@ -471,7 +480,6 @@ static void compile_body(CL_Compiler *c, CL_Obj forms)
 static void compile_symbol(CL_Compiler *c, CL_Obj sym)
 {
     int slot;
-    int depth, index;
 
     /* NIL and T are special */
     if (CL_NULL_P(sym)) { emit(c, OP_NIL); return; }
@@ -494,12 +502,14 @@ static void compile_symbol(CL_Compiler *c, CL_Obj sym)
         return;
     }
 
-    /* Upvalue? */
-    if (c->env && cl_env_lookup_upvalue(c->env, sym, &depth, &index)) {
-        emit(c, OP_UPVAL);
-        emit(c, (uint8_t)depth);
-        emit(c, (uint8_t)index);
-        return;
+    /* Upvalue? (captured from enclosing scope) */
+    if (c->env) {
+        int uv_idx = cl_env_resolve_upvalue(c->env, sym);
+        if (uv_idx >= 0) {
+            emit(c, OP_UPVAL);
+            emit(c, (uint8_t)uv_idx);
+            return;
+        }
     }
 
     /* Global variable */

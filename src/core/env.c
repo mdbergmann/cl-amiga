@@ -10,6 +10,7 @@ CL_CompEnv *cl_env_create(CL_CompEnv *parent)
     env->local_count = 0;
     env->max_locals = 0;
     env->depth = parent ? parent->depth + 1 : 0;
+    env->upvalue_count = 0;
     return env;
 }
 
@@ -54,4 +55,54 @@ int cl_env_lookup_upvalue(CL_CompEnv *env, CL_Obj symbol,
         depth++;
     }
     return 0;
+}
+
+int cl_env_resolve_upvalue(CL_CompEnv *env, CL_Obj symbol)
+{
+    int i;
+
+    if (!env->parent) return -1;
+
+    /* Already tracked? Return existing index */
+    for (i = 0; i < env->upvalue_count; i++) {
+        /* Match by descriptor: check if this upvalue refers to the same
+         * symbol. We need to look at what the descriptor points to.
+         * Simpler: re-derive and check if we'd get the same descriptor. */
+    }
+
+    /* Check if symbol is a local in the immediate parent */
+    {
+        int parent_slot = cl_env_lookup(env->parent, symbol);
+        if (parent_slot >= 0) {
+            /* Check if already tracked */
+            for (i = 0; i < env->upvalue_count; i++) {
+                if (env->upvalues[i].is_local && env->upvalues[i].index == parent_slot)
+                    return i;
+            }
+            if (env->upvalue_count >= CL_MAX_UPVALUES) return -1;
+            env->upvalues[env->upvalue_count].is_local = 1;
+            env->upvalues[env->upvalue_count].index = parent_slot;
+            return env->upvalue_count++;
+        }
+    }
+
+    /* Not in parent's locals — recursively resolve in parent
+     * (this makes the parent capture it too, so we can reference
+     * the parent's upvalue slot) */
+    {
+        int parent_upval = cl_env_resolve_upvalue(env->parent, symbol);
+        if (parent_upval >= 0) {
+            /* Check if already tracked */
+            for (i = 0; i < env->upvalue_count; i++) {
+                if (!env->upvalues[i].is_local && env->upvalues[i].index == parent_upval)
+                    return i;
+            }
+            if (env->upvalue_count >= CL_MAX_UPVALUES) return -1;
+            env->upvalues[env->upvalue_count].is_local = 0;
+            env->upvalues[env->upvalue_count].index = parent_upval;
+            return env->upvalue_count++;
+        }
+    }
+
+    return -1;
 }

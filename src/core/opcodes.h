@@ -13,7 +13,7 @@ enum CL_Opcode {
     OP_STORE     = 0x03,  /* u8:  Store to local variable */
     OP_GLOAD     = 0x04,  /* u16: Push global (symbol value) */
     OP_GSTORE    = 0x05,  /* u16: Store global (symbol value) */
-    OP_UPVAL     = 0x06,  /* u8,u8: Load closed-over variable (depth, index) */
+    OP_UPVAL     = 0x06,  /* u8: Load closed-over variable (flat upvalue index) */
 
     /* Stack manipulation */
     OP_POP       = 0x10,  /* Discard top of stack */

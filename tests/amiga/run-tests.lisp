@@ -158,6 +158,19 @@
 (defmacro quote-it (x) (list 'quote x))
 (check "macro identity" '(+ 1 2) (quote-it (+ 1 2)))
 
+; --- Closures with captured upvalues ---
+(check "closure let capture" 15 (let ((x 10)) ((lambda (y) (+ x y)) 5)))
+(check "closure no-arg capture" 100 (let ((a 100)) ((lambda () a))))
+(defun make-adder (n) (lambda (x) (+ n x)))
+(check "make-adder 10+5" 15 ((make-adder 10) 5))
+(check "make-adder 100+42" 142 ((make-adder 100) 42))
+(check "closure multi-capture" 6 (let ((a 1) (b 2) (c 3)) ((lambda () (+ a b c)))))
+(check "closure with param" 60 (let ((x 10) (y 20)) ((lambda (z) (+ x y z)) 30)))
+(check "closure nested" 15 (let ((x 10)) ((lambda () ((lambda () (+ x 5)))))))
+(defun make-pair (x) (list (lambda () x) (lambda () (+ x 1))))
+(check "closure shared-a" 10 (let ((p (make-pair 10))) ((car p))))
+(check "closure shared-b" 11 (let ((p (make-pair 10))) ((car (cdr p)))))
+
 ; --- Type-of ---
 (check "type-of fixnum" 'fixnum (type-of 42))
 (check "type-of string" 'string (type-of "hello"))
