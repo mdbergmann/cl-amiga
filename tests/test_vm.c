@@ -2011,6 +2011,49 @@ TEST(eval_sort_with_key)
     ASSERT_STR_EQ(eval_print("(sort (list -3 1 -2 4) #'< :key #'abs)"), "(1 -2 -3 4)");
 }
 
+TEST(eval_typep)
+{
+    ASSERT_STR_EQ(eval_print("(typep 42 'integer)"), "T");
+    ASSERT_STR_EQ(eval_print("(typep 42 'fixnum)"), "T");
+    ASSERT_STR_EQ(eval_print("(typep 42 'number)"), "T");
+    ASSERT_STR_EQ(eval_print("(typep 42 'string)"), "NIL");
+    ASSERT_STR_EQ(eval_print("(typep \"hello\" 'string)"), "T");
+    ASSERT_STR_EQ(eval_print("(typep #\\A 'character)"), "T");
+    ASSERT_STR_EQ(eval_print("(typep nil 'null)"), "T");
+    ASSERT_STR_EQ(eval_print("(typep nil 'symbol)"), "T");
+    ASSERT_STR_EQ(eval_print("(typep nil 'list)"), "T");
+    ASSERT_STR_EQ(eval_print("(typep '(1 2) 'cons)"), "T");
+    ASSERT_STR_EQ(eval_print("(typep '(1 2) 'list)"), "T");
+    ASSERT_STR_EQ(eval_print("(typep 42 'atom)"), "T");
+    ASSERT_STR_EQ(eval_print("(typep '(1) 'atom)"), "NIL");
+    ASSERT_STR_EQ(eval_print("(typep :foo 'keyword)"), "T");
+    ASSERT_STR_EQ(eval_print("(typep 'bar 'keyword)"), "NIL");
+    ASSERT_STR_EQ(eval_print("(typep #'+ 'function)"), "T");
+    ASSERT_STR_EQ(eval_print("(typep (make-hash-table) 'hash-table)"), "T");
+    ASSERT_STR_EQ(eval_print("(typep 42 't)"), "T");
+    ASSERT_STR_EQ(eval_print("(typep 42 'nil)"), "NIL");
+    ASSERT_STR_EQ(eval_print("(typep '(1 2 3) 'sequence)"), "T");
+    ASSERT_STR_EQ(eval_print("(typep (vector 1 2) 'sequence)"), "T");
+    ASSERT_STR_EQ(eval_print("(typep (vector 1 2) 'vector)"), "T");
+}
+
+TEST(eval_coerce)
+{
+    ASSERT_STR_EQ(eval_print("(coerce 42 't)"), "42");
+    ASSERT_STR_EQ(eval_print("(coerce 65 'character)"), "#\\A");
+    ASSERT_STR_EQ(eval_print("(coerce #\\A 'integer)"), "65");
+    ASSERT_STR_EQ(eval_print("(coerce #\\A 'character)"), "#\\A");
+    ASSERT_STR_EQ(eval_print("(coerce 42 'integer)"), "42");
+    ASSERT_STR_EQ(eval_print("(coerce 'foo 'string)"), "\"FOO\"");
+    ASSERT_STR_EQ(eval_print("(coerce #\\A 'string)"), "\"A\"");
+    ASSERT_STR_EQ(eval_print("(coerce \"hello\" 'string)"), "\"hello\"");
+    ASSERT_STR_EQ(eval_print("(coerce '(1 2 3) 'vector)"), "#(1 2 3)");
+    ASSERT_STR_EQ(eval_print("(coerce (vector 1 2 3) 'list)"), "(1 2 3)");
+    ASSERT_STR_EQ(eval_print("(coerce nil 'list)"), "NIL");
+    ASSERT_STR_EQ(eval_print("(coerce (vector) 'list)"), "NIL");
+    ASSERT_STR_EQ(eval_print("(coerce nil 'vector)"), "#()");
+}
+
 int main(void)
 {
     test_init();
@@ -2274,6 +2317,10 @@ int main(void)
     RUN(eval_sort);
     RUN(eval_stable_sort);
     RUN(eval_sort_with_key);
+
+    /* Phase 5 — Type system */
+    RUN(eval_typep);
+    RUN(eval_coerce);
 
     teardown();
     REPORT();

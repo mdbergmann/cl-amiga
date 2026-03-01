@@ -367,6 +367,157 @@ static CL_Obj bi_type_of(CL_Obj *args, int n)
     return cl_intern(name, (uint32_t)strlen(name));
 }
 
+static CL_Obj bi_typep(CL_Obj *args, int n)
+{
+    CL_Obj obj = args[0];
+    CL_Obj type_spec = args[1];
+    const char *tname;
+    CL_UNUSED(n);
+
+    if (!CL_SYMBOL_P(type_spec) && !CL_NULL_P(type_spec))
+        cl_error(CL_ERR_TYPE, "TYPEP: type specifier must be a symbol");
+
+    tname = cl_symbol_name(type_spec);
+
+    if (strcmp(tname, "T") == 0)              return SYM_T;
+    if (strcmp(tname, "NIL") == 0)            return CL_NIL;
+    if (strcmp(tname, "NULL") == 0)           return CL_NULL_P(obj) ? SYM_T : CL_NIL;
+    if (strcmp(tname, "SYMBOL") == 0)         return (CL_NULL_P(obj) || CL_SYMBOL_P(obj)) ? SYM_T : CL_NIL;
+    if (strcmp(tname, "KEYWORD") == 0) {
+        if (!CL_NULL_P(obj) && CL_SYMBOL_P(obj)) {
+            CL_Symbol *s = (CL_Symbol *)CL_OBJ_TO_PTR(obj);
+            return (s->package == cl_package_keyword) ? SYM_T : CL_NIL;
+        }
+        return CL_NIL;
+    }
+    if (strcmp(tname, "CONS") == 0)           return CL_CONS_P(obj) ? SYM_T : CL_NIL;
+    if (strcmp(tname, "LIST") == 0)           return (CL_NULL_P(obj) || CL_CONS_P(obj)) ? SYM_T : CL_NIL;
+    if (strcmp(tname, "ATOM") == 0)           return (!CL_CONS_P(obj)) ? SYM_T : CL_NIL;
+    if (strcmp(tname, "INTEGER") == 0 || strcmp(tname, "FIXNUM") == 0 || strcmp(tname, "NUMBER") == 0)
+        return CL_FIXNUM_P(obj) ? SYM_T : CL_NIL;
+    if (strcmp(tname, "CHARACTER") == 0)      return CL_CHAR_P(obj) ? SYM_T : CL_NIL;
+    if (strcmp(tname, "STRING") == 0)         return CL_STRING_P(obj) ? SYM_T : CL_NIL;
+    if (strcmp(tname, "VECTOR") == 0 || strcmp(tname, "SIMPLE-VECTOR") == 0 || strcmp(tname, "ARRAY") == 0 || strcmp(tname, "SIMPLE-ARRAY") == 0)
+        return (CL_STRING_P(obj) || CL_VECTOR_P(obj)) ? SYM_T : CL_NIL;
+    if (strcmp(tname, "SEQUENCE") == 0)
+        return (CL_NULL_P(obj) || CL_CONS_P(obj) || CL_STRING_P(obj) || CL_VECTOR_P(obj)) ? SYM_T : CL_NIL;
+    if (strcmp(tname, "FUNCTION") == 0)
+        return (CL_FUNCTION_P(obj) || CL_CLOSURE_P(obj) || CL_BYTECODE_P(obj)) ? SYM_T : CL_NIL;
+    if (strcmp(tname, "COMPILED-FUNCTION") == 0)
+        return (CL_CLOSURE_P(obj) || CL_BYTECODE_P(obj)) ? SYM_T : CL_NIL;
+    if (strcmp(tname, "HASH-TABLE") == 0)     return CL_HASHTABLE_P(obj) ? SYM_T : CL_NIL;
+    if (strcmp(tname, "PACKAGE") == 0)        return CL_PACKAGE_P(obj) ? SYM_T : CL_NIL;
+
+    cl_error(CL_ERR_TYPE, "TYPEP: unknown type specifier");
+    return CL_NIL;
+}
+
+static CL_Obj bi_coerce(CL_Obj *args, int n)
+{
+    CL_Obj obj = args[0];
+    CL_Obj result_type = args[1];
+    const char *tname;
+    CL_UNUSED(n);
+
+    if (!CL_SYMBOL_P(result_type) && !CL_NULL_P(result_type))
+        cl_error(CL_ERR_TYPE, "COERCE: result type must be a symbol");
+
+    tname = cl_symbol_name(result_type);
+
+    /* (coerce x 't) — identity */
+    if (strcmp(tname, "T") == 0)
+        return obj;
+
+    /* (coerce x 'character) */
+    if (strcmp(tname, "CHARACTER") == 0) {
+        if (CL_CHAR_P(obj)) return obj;
+        if (CL_FIXNUM_P(obj)) return CL_MAKE_CHAR((uint32_t)CL_FIXNUM_VAL(obj));
+        cl_error(CL_ERR_TYPE, "COERCE: cannot coerce to CHARACTER");
+        return CL_NIL;
+    }
+
+    /* (coerce x 'integer) / 'fixnum / 'number */
+    if (strcmp(tname, "INTEGER") == 0 || strcmp(tname, "FIXNUM") == 0 || strcmp(tname, "NUMBER") == 0) {
+        if (CL_FIXNUM_P(obj)) return obj;
+        if (CL_CHAR_P(obj)) return CL_MAKE_FIXNUM(CL_CHAR_VAL(obj));
+        cl_error(CL_ERR_TYPE, "COERCE: cannot coerce to INTEGER");
+        return CL_NIL;
+    }
+
+    /* (coerce x 'string) */
+    if (strcmp(tname, "STRING") == 0) {
+        if (CL_STRING_P(obj)) return obj;
+        if (CL_NULL_P(obj)) return cl_make_string("NIL", 3);
+        if (CL_SYMBOL_P(obj)) {
+            const char *sname = cl_symbol_name(obj);
+            return cl_make_string(sname, (uint32_t)strlen(sname));
+        }
+        if (CL_CHAR_P(obj)) {
+            char c = (char)CL_CHAR_VAL(obj);
+            return cl_make_string(&c, 1);
+        }
+        cl_error(CL_ERR_TYPE, "COERCE: cannot coerce to STRING");
+        return CL_NIL;
+    }
+
+    /* (coerce x 'list) */
+    if (strcmp(tname, "LIST") == 0) {
+        if (CL_NULL_P(obj) || CL_CONS_P(obj)) return obj;
+        if (CL_VECTOR_P(obj)) {
+            CL_Vector *v = (CL_Vector *)CL_OBJ_TO_PTR(obj);
+            CL_Obj result = CL_NIL;
+            uint32_t i = v->length;
+            while (i > 0) {
+                i--;
+                result = cl_cons(v->data[i], result);
+            }
+            return result;
+        }
+        if (CL_STRING_P(obj)) {
+            CL_String *s = (CL_String *)CL_OBJ_TO_PTR(obj);
+            CL_Obj result = CL_NIL;
+            uint32_t i = s->length;
+            while (i > 0) {
+                i--;
+                result = cl_cons(CL_MAKE_CHAR((unsigned char)s->data[i]), result);
+            }
+            return result;
+        }
+        cl_error(CL_ERR_TYPE, "COERCE: cannot coerce to LIST");
+        return CL_NIL;
+    }
+
+    /* (coerce x 'vector) */
+    if (strcmp(tname, "VECTOR") == 0) {
+        if (CL_VECTOR_P(obj)) return obj;
+        if (CL_NULL_P(obj) || CL_CONS_P(obj)) {
+            /* Count list length */
+            CL_Obj p = obj;
+            uint32_t len = 0;
+            uint32_t i;
+            CL_Obj vec;
+            CL_Vector *v;
+            while (!CL_NULL_P(p)) {
+                len++;
+                p = cl_cdr(p);
+            }
+            vec = cl_make_vector(len);
+            v = (CL_Vector *)CL_OBJ_TO_PTR(vec);
+            p = obj;
+            for (i = 0; i < len; i++) {
+                v->data[i] = cl_car(p);
+                p = cl_cdr(p);
+            }
+            return vec;
+        }
+        cl_error(CL_ERR_TYPE, "COERCE: cannot coerce to VECTOR");
+        return CL_NIL;
+    }
+
+    cl_error(CL_ERR_TYPE, "COERCE: unknown result type");
+    return CL_NIL;
+}
+
 /* --- Registration --- */
 
 /* Sub-module init functions */
@@ -415,6 +566,8 @@ void cl_builtins_init(void)
 
     /* Misc */
     defun("TYPE-OF", bi_type_of, 1, 1);
+    defun("TYPEP", bi_typep, 2, 2);
+    defun("COERCE", bi_coerce, 2, 2);
 
     /* Sub-module builtins */
     cl_builtins_arith_init();

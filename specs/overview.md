@@ -91,7 +91,7 @@ Single-pass recursive compiler from S-expressions to bytecode:
 
 **Bootstrap functions:** `cadr`, `caar`, `cdar`, `cddr`, `caddr`, `cadar`, `identity`, `endp`, `member`, `intersection`, `union`, `set-difference`, `subsetp`
 
-## Built-in Functions (124 functions)
+## Built-in Functions (177 functions)
 
 | Category | Functions |
 |----------|-----------|
@@ -112,6 +112,7 @@ Single-pass recursive compiler from S-expressions to bytecode:
 | Eval/Macro | `eval` `macroexpand` `macroexpand-1` |
 | Control | `throw` `values` `values-list` `error` |
 | Hash tables | `make-hash-table` `gethash` `remhash` `maphash` `clrhash` `hash-table-count` `hash-table-p` |
+| Type system | `typep` `coerce` |
 | Misc | `type-of` `gensym` |
 
 ## Implementation Roadmap
@@ -194,7 +195,8 @@ Data structures, sequences, strings, and I/O:
 - [x] Hash tables (`make-hash-table`, `gethash`, `remhash`, `maphash`, `clrhash`, `hash-table-count`, `hash-table-p`, `(setf gethash)`)
 - [x] Sequence functions (`find`, `find-if`, `find-if-not`, `position`, `position-if`, `position-if-not`, `count`, `count-if`, `count-if-not`, `remove`, `remove-if`, `remove-if-not`, `remove-duplicates`, `substitute`, `substitute-if`, `substitute-if-not`, `reduce`, `fill`, `replace`, `every`, `some`, `notany`, `notevery`, `map`, `mismatch`, `search`, `sort`, `stable-sort`)
 - [x] Array operations (`vector`, `array-dimensions`, `array-rank`, `fill`, `replace`)
-- [ ] Type system (`typep`, `coerce`, `deftype`, `subtypep`)
+- [x] Type predicates (`typep`, `coerce`)
+- [ ] Advanced types (`deftype`, `subtypep`)
 - [ ] `declare`, `declaim`, `proclaim` — declarations
 - [ ] `disassemble` — print bytecode disassembly of compiled functions
 - [ ] `trace`, `untrace` — function call tracing for debugging
