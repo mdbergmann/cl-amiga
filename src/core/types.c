@@ -32,6 +32,7 @@ const char *cl_type_name(CL_Obj obj)
         case TYPE_BYTECODE: return "COMPILED-FUNCTION";
         case TYPE_VECTOR:   return "VECTOR";
         case TYPE_PACKAGE:  return "PACKAGE";
+        case TYPE_HASHTABLE: return "HASH-TABLE";
         default:            return "UNKNOWN";
         }
     }

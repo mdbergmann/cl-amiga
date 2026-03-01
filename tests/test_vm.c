@@ -1347,6 +1347,474 @@ TEST(eval_defun_return_from)
     ASSERT_STR_EQ(eval_print("(find-it 4 '(1 2 3))"), "NIL");
 }
 
+/* --- Phase 5 Tier 1: Character functions --- */
+
+TEST(eval_characterp)
+{
+    ASSERT_STR_EQ(eval_print("(characterp #\\A)"), "T");
+    ASSERT_STR_EQ(eval_print("(characterp 65)"), "NIL");
+    ASSERT_STR_EQ(eval_print("(characterp #\\Space)"), "T");
+}
+
+TEST(eval_char_comparison)
+{
+    ASSERT_STR_EQ(eval_print("(char= #\\A #\\A)"), "T");
+    ASSERT_STR_EQ(eval_print("(char= #\\A #\\B)"), "NIL");
+    ASSERT_STR_EQ(eval_print("(char/= #\\A #\\B)"), "T");
+    ASSERT_STR_EQ(eval_print("(char/= #\\A #\\A)"), "NIL");
+    ASSERT_STR_EQ(eval_print("(char< #\\A #\\B)"), "T");
+    ASSERT_STR_EQ(eval_print("(char< #\\B #\\A)"), "NIL");
+    ASSERT_STR_EQ(eval_print("(char> #\\B #\\A)"), "T");
+    ASSERT_STR_EQ(eval_print("(char<= #\\A #\\A)"), "T");
+    ASSERT_STR_EQ(eval_print("(char<= #\\A #\\B)"), "T");
+    ASSERT_STR_EQ(eval_print("(char>= #\\B #\\A)"), "T");
+    ASSERT_STR_EQ(eval_print("(char>= #\\A #\\A)"), "T");
+}
+
+TEST(eval_char_code_conversion)
+{
+    ASSERT_EQ_INT(eval_int("(char-code #\\A)"), 65);
+    ASSERT_STR_EQ(eval_print("(code-char 65)"), "#\\A");
+    ASSERT_EQ_INT(eval_int("(char-code (code-char 97))"), 97);
+}
+
+TEST(eval_char_case)
+{
+    ASSERT_STR_EQ(eval_print("(char-upcase #\\a)"), "#\\A");
+    ASSERT_STR_EQ(eval_print("(char-upcase #\\A)"), "#\\A");
+    ASSERT_STR_EQ(eval_print("(char-downcase #\\A)"), "#\\a");
+    ASSERT_STR_EQ(eval_print("(char-downcase #\\a)"), "#\\a");
+}
+
+TEST(eval_char_predicates)
+{
+    ASSERT_STR_EQ(eval_print("(upper-case-p #\\A)"), "T");
+    ASSERT_STR_EQ(eval_print("(upper-case-p #\\a)"), "NIL");
+    ASSERT_STR_EQ(eval_print("(lower-case-p #\\a)"), "T");
+    ASSERT_STR_EQ(eval_print("(lower-case-p #\\A)"), "NIL");
+    ASSERT_STR_EQ(eval_print("(alpha-char-p #\\A)"), "T");
+    ASSERT_STR_EQ(eval_print("(alpha-char-p #\\1)"), "NIL");
+    ASSERT_STR_EQ(eval_print("(digit-char-p #\\5)"), "T");
+    ASSERT_STR_EQ(eval_print("(digit-char-p #\\A)"), "NIL");
+}
+
+/* --- Phase 5 Tier 1: Symbol functions --- */
+
+TEST(eval_symbol_name)
+{
+    ASSERT_STR_EQ(eval_print("(symbol-name 'foo)"), "\"FOO\"");
+    ASSERT_STR_EQ(eval_print("(symbol-name nil)"), "\"NIL\"");
+}
+
+TEST(eval_symbol_package_fn)
+{
+    /* symbol-package returns a package object */
+    ASSERT_STR_EQ(eval_print("(null (symbol-package 'foo))"), "NIL");
+}
+
+TEST(eval_fboundp)
+{
+    ASSERT_STR_EQ(eval_print("(fboundp '+)"), "T");
+    ASSERT_STR_EQ(eval_print("(fboundp (gensym))"), "NIL");
+}
+
+TEST(eval_fdefinition)
+{
+    /* fdefinition returns the same as symbol-function */
+    ASSERT_STR_EQ(eval_print("(functionp (fdefinition '+))"), "T");
+}
+
+TEST(eval_make_symbol)
+{
+    ASSERT_STR_EQ(eval_print("(symbolp (make-symbol \"TEST\"))"), "T");
+    ASSERT_STR_EQ(eval_print("(symbol-name (make-symbol \"HELLO\"))"), "\"HELLO\"");
+}
+
+TEST(eval_keywordp)
+{
+    ASSERT_STR_EQ(eval_print("(keywordp :foo)"), "T");
+    ASSERT_STR_EQ(eval_print("(keywordp 'foo)"), "NIL");
+    ASSERT_STR_EQ(eval_print("(keywordp 42)"), "NIL");
+}
+
+/* --- Phase 5 Tier 1: Fixed builtins --- */
+
+TEST(eval_length_vector)
+{
+    ASSERT_EQ_INT(eval_int("(length (make-array 5))"), 5);
+}
+
+TEST(eval_equal_vector)
+{
+    eval_print("(defun make-vec-12 () (let ((v (make-array 2))) (setf (aref v 0) 1) (setf (aref v 1) 2) v))");
+    ASSERT_STR_EQ(eval_print(
+        "(equal (make-vec-12) (make-vec-12))"), "T");
+    ASSERT_STR_EQ(eval_print(
+        "(let ((v (make-array 2))) (setf (aref v 0) 1) (setf (aref v 1) 99) (equal (make-vec-12) v))"), "NIL");
+}
+
+TEST(eval_mapcar_multi_list)
+{
+    ASSERT_STR_EQ(eval_print("(mapcar #'+ '(1 2 3) '(10 20 30))"),
+        "(11 22 33)");
+    ASSERT_STR_EQ(eval_print("(mapcar #'list '(a b) '(1 2))"),
+        "((A 1) (B 2))");
+    /* Uneven lists — stops at shortest */
+    ASSERT_STR_EQ(eval_print("(mapcar #'+ '(1 2 3) '(10 20))"),
+        "(11 22)");
+}
+
+/* --- Phase 5 Tier 2: String functions --- */
+
+TEST(eval_string_comparison)
+{
+    ASSERT_STR_EQ(eval_print("(string= \"hello\" \"hello\")"), "T");
+    ASSERT_STR_EQ(eval_print("(string= \"hello\" \"HELLO\")"), "NIL");
+    ASSERT_STR_EQ(eval_print("(string-equal \"hello\" \"HELLO\")"), "T");
+    ASSERT_STR_EQ(eval_print("(string< \"abc\" \"abd\")"), "T");
+    ASSERT_STR_EQ(eval_print("(string< \"abd\" \"abc\")"), "NIL");
+    ASSERT_STR_EQ(eval_print("(string> \"abd\" \"abc\")"), "T");
+    ASSERT_STR_EQ(eval_print("(string<= \"abc\" \"abc\")"), "T");
+    ASSERT_STR_EQ(eval_print("(string>= \"abc\" \"abc\")"), "T");
+}
+
+TEST(eval_string_case_conversion)
+{
+    ASSERT_STR_EQ(eval_print("(string-upcase \"hello\")"), "\"HELLO\"");
+    ASSERT_STR_EQ(eval_print("(string-downcase \"HELLO\")"), "\"hello\"");
+    ASSERT_STR_EQ(eval_print("(string-upcase \"Hello World\")"), "\"HELLO WORLD\"");
+}
+
+TEST(eval_string_trim)
+{
+    ASSERT_STR_EQ(eval_print("(string-trim \" \" \"  hello  \")"), "\"hello\"");
+    ASSERT_STR_EQ(eval_print("(string-left-trim \" \" \"  hello  \")"), "\"hello  \"");
+    ASSERT_STR_EQ(eval_print("(string-right-trim \" \" \"  hello  \")"), "\"  hello\"");
+}
+
+TEST(eval_subseq)
+{
+    ASSERT_STR_EQ(eval_print("(subseq \"hello\" 1 3)"), "\"el\"");
+    ASSERT_STR_EQ(eval_print("(subseq \"hello\" 2)"), "\"llo\"");
+    ASSERT_STR_EQ(eval_print("(subseq '(a b c d) 1 3)"), "(B C)");
+}
+
+TEST(eval_concatenate)
+{
+    ASSERT_STR_EQ(eval_print("(concatenate 'string \"hello\" \" \" \"world\")"),
+        "\"hello world\"");
+}
+
+TEST(eval_char_accessor)
+{
+    ASSERT_STR_EQ(eval_print("(char \"hello\" 0)"), "#\\h");
+    ASSERT_STR_EQ(eval_print("(char \"hello\" 4)"), "#\\o");
+    ASSERT_STR_EQ(eval_print("(schar \"abc\" 1)"), "#\\b");
+}
+
+TEST(eval_string_coerce)
+{
+    ASSERT_STR_EQ(eval_print("(string 'foo)"), "\"FOO\"");
+    ASSERT_STR_EQ(eval_print("(string \"hello\")"), "\"hello\"");
+    ASSERT_STR_EQ(eval_print("(string #\\A)"), "\"A\"");
+}
+
+TEST(eval_parse_integer)
+{
+    ASSERT_EQ_INT(eval_int("(parse-integer \"42\")"), 42);
+    ASSERT_EQ_INT(eval_int("(parse-integer \"-7\")"), -7);
+    ASSERT_EQ_INT(eval_int("(parse-integer \"FF\" :radix 16)"), 255);
+    ASSERT_EQ_INT(eval_int("(parse-integer \"  123  \")"), 123);
+}
+
+TEST(eval_write_to_string)
+{
+    ASSERT_STR_EQ(eval_print("(write-to-string 42)"), "\"42\"");
+    ASSERT_STR_EQ(eval_print("(write-to-string 'foo)"), "\"FOO\"");
+}
+
+TEST(eval_prin1_to_string)
+{
+    ASSERT_STR_EQ(eval_print("(prin1-to-string \"hello\")"),
+        "\"\\\"hello\\\"\"");
+    ASSERT_STR_EQ(eval_print("(prin1-to-string 42)"), "\"42\"");
+}
+
+TEST(eval_princ_to_string)
+{
+    ASSERT_STR_EQ(eval_print("(princ-to-string \"hello\")"), "\"hello\"");
+    ASSERT_STR_EQ(eval_print("(princ-to-string 42)"), "\"42\"");
+}
+
+/* --- Phase 5 Tier 3: List utilities --- */
+
+TEST(eval_nthcdr)
+{
+    ASSERT_STR_EQ(eval_print("(nthcdr 0 '(1 2 3))"), "(1 2 3)");
+    ASSERT_STR_EQ(eval_print("(nthcdr 2 '(1 2 3))"), "(3)");
+    ASSERT_STR_EQ(eval_print("(nthcdr 3 '(1 2 3))"), "NIL");
+    ASSERT_STR_EQ(eval_print("(nthcdr 5 '(1 2 3))"), "NIL");
+}
+
+TEST(eval_last)
+{
+    ASSERT_STR_EQ(eval_print("(last '(1 2 3))"), "(3)");
+    ASSERT_STR_EQ(eval_print("(last '(1 2 3) 2)"), "(2 3)");
+    ASSERT_STR_EQ(eval_print("(last '(1 2 3) 0)"), "NIL");
+    ASSERT_STR_EQ(eval_print("(last nil)"), "NIL");
+}
+
+TEST(eval_acons)
+{
+    ASSERT_STR_EQ(eval_print("(acons 'a 1 nil)"), "((A . 1))");
+    ASSERT_STR_EQ(eval_print("(acons 'b 2 '((a . 1)))"), "((B . 2) (A . 1))");
+}
+
+TEST(eval_copy_list)
+{
+    ASSERT_STR_EQ(eval_print("(copy-list '(1 2 3))"), "(1 2 3)");
+    ASSERT_STR_EQ(eval_print("(copy-list nil)"), "NIL");
+    /* Verify it's a copy, not the same structure */
+    ASSERT_STR_EQ(eval_print("(let ((x '(1 2 3))) (eq x (copy-list x)))"), "NIL");
+}
+
+TEST(eval_pairlis)
+{
+    ASSERT_STR_EQ(eval_print("(pairlis '(a b c) '(1 2 3))"), "((A . 1) (B . 2) (C . 3))");
+    ASSERT_STR_EQ(eval_print("(pairlis '(a b) '(1 2) '((c . 3)))"), "((A . 1) (B . 2) (C . 3))");
+}
+
+TEST(eval_assoc)
+{
+    ASSERT_STR_EQ(eval_print("(assoc 'b '((a . 1) (b . 2) (c . 3)))"), "(B . 2)");
+    ASSERT_STR_EQ(eval_print("(assoc 'd '((a . 1) (b . 2)))"), "NIL");
+    ASSERT_STR_EQ(eval_print("(assoc \"b\" (list (cons \"a\" 1) (cons \"b\" 2)) :test #'equal)"), "(\"b\" . 2)");
+}
+
+TEST(eval_rassoc)
+{
+    ASSERT_STR_EQ(eval_print("(rassoc 2 '((a . 1) (b . 2) (c . 3)))"), "(B . 2)");
+    ASSERT_STR_EQ(eval_print("(rassoc 9 '((a . 1) (b . 2)))"), "NIL");
+}
+
+TEST(eval_getf)
+{
+    ASSERT_EQ_INT(eval_int("(getf '(:a 1 :b 2) :b)"), 2);
+    ASSERT_STR_EQ(eval_print("(getf '(:a 1 :b 2) :c)"), "NIL");
+    ASSERT_EQ_INT(eval_int("(getf '(:a 1 :b 2) :c 99)"), 99);
+}
+
+TEST(eval_subst)
+{
+    ASSERT_STR_EQ(eval_print("(subst 'x 'b '(a b (c b)))"), "(A X (C X))");
+    ASSERT_STR_EQ(eval_print("(subst 99 1 '(1 (2 1) 3))"), "(99 (2 99) 3)");
+}
+
+TEST(eval_sublis)
+{
+    ASSERT_STR_EQ(eval_print("(sublis '((a . 1) (b . 2)) '(a b c))"), "(1 2 C)");
+}
+
+TEST(eval_adjoin)
+{
+    ASSERT_STR_EQ(eval_print("(adjoin 1 '(2 3))"), "(1 2 3)");
+    ASSERT_STR_EQ(eval_print("(adjoin 2 '(1 2 3))"), "(1 2 3)");
+}
+
+TEST(eval_nconc)
+{
+    ASSERT_STR_EQ(eval_print("(nconc (list 1 2) (list 3 4))"), "(1 2 3 4)");
+    ASSERT_STR_EQ(eval_print("(nconc nil (list 1 2))"), "(1 2)");
+    ASSERT_STR_EQ(eval_print("(nconc (list 1) nil (list 2 3))"), "(1 2 3)");
+}
+
+TEST(eval_nreverse)
+{
+    ASSERT_STR_EQ(eval_print("(nreverse (list 1 2 3))"), "(3 2 1)");
+    ASSERT_STR_EQ(eval_print("(nreverse nil)"), "NIL");
+    ASSERT_STR_EQ(eval_print("(nreverse (list 1))"), "(1)");
+}
+
+TEST(eval_delete)
+{
+    ASSERT_STR_EQ(eval_print("(delete 2 (list 1 2 3 2 4))"), "(1 3 4)");
+    ASSERT_STR_EQ(eval_print("(delete 5 (list 1 2 3))"), "(1 2 3)");
+    ASSERT_STR_EQ(eval_print("(delete \"b\" (list \"a\" \"b\" \"c\") :test #'equal)"), "(\"a\" \"c\")");
+}
+
+TEST(eval_delete_if)
+{
+    ASSERT_STR_EQ(eval_print("(delete-if #'zerop (list 0 1 0 2 0 3))"), "(1 2 3)");
+    ASSERT_STR_EQ(eval_print("(delete-if #'numberp (list 1 2 3))"), "NIL");
+}
+
+TEST(eval_nsubst)
+{
+    ASSERT_STR_EQ(eval_print("(let ((x (list 'a 'b (list 'c 'b)))) (nsubst 'x 'b x))"), "(A X (C X))");
+}
+
+TEST(eval_butlast)
+{
+    ASSERT_STR_EQ(eval_print("(butlast '(1 2 3))"), "(1 2)");
+    ASSERT_STR_EQ(eval_print("(butlast '(1 2 3) 2)"), "(1)");
+    ASSERT_STR_EQ(eval_print("(butlast '(1 2 3) 5)"), "NIL");
+    ASSERT_STR_EQ(eval_print("(butlast nil)"), "NIL");
+}
+
+TEST(eval_copy_tree)
+{
+    ASSERT_STR_EQ(eval_print("(copy-tree '(1 (2 3) 4))"), "(1 (2 3) 4)");
+    ASSERT_STR_EQ(eval_print("(copy-tree 42)"), "42");
+    /* Deep copy: modifying original doesn't affect copy */
+    ASSERT_STR_EQ(eval_print("(let ((x '(1 (2 3)))) (let ((y (copy-tree x))) (equal x y)))"), "T");
+}
+
+TEST(eval_mapc)
+{
+    /* mapc returns the first list */
+    ASSERT_STR_EQ(eval_print("(mapc #'1+ '(1 2 3))"), "(1 2 3)");
+    /* mapc with side effects using a global */
+    ASSERT_STR_EQ(eval_print("(progn (setq *mapc-r* nil) (mapc (lambda (x) (setq *mapc-r* (cons (* x x) *mapc-r*))) '(1 2 3)) (nreverse *mapc-r*))"), "(1 4 9)");
+}
+
+TEST(eval_mapcan)
+{
+    ASSERT_STR_EQ(eval_print("(mapcan (lambda (x) (if (numberp x) (list x) nil)) '(a 1 b 2 c 3))"), "(1 2 3)");
+}
+
+TEST(eval_maplist)
+{
+    ASSERT_STR_EQ(eval_print("(maplist #'length '(1 2 3 4))"), "(4 3 2 1)");
+}
+
+TEST(eval_mapl)
+{
+    /* mapl returns the first list, operates on sublists */
+    ASSERT_STR_EQ(eval_print("(progn (setq *mapl-r* nil) (mapl (lambda (l) (setq *mapl-r* (cons (length l) *mapl-r*))) '(a b c)) (nreverse *mapl-r*))"), "(3 2 1)");
+}
+
+TEST(eval_mapcon)
+{
+    ASSERT_STR_EQ(eval_print("(mapcon (lambda (l) (list (length l))) '(a b c))"), "(3 2 1)");
+}
+
+TEST(eval_intersection)
+{
+    ASSERT_STR_EQ(eval_print("(intersection '(1 2 3 4) '(2 4 6))"), "(2 4)");
+    ASSERT_STR_EQ(eval_print("(intersection '(1 2) '(3 4))"), "NIL");
+}
+
+TEST(eval_union)
+{
+    /* union returns list1 elements plus list2 elements not in list1 */
+    ASSERT_STR_EQ(eval_print("(union '(1 2 3) '(2 3 4))"), "(3 2 1 4)");
+}
+
+TEST(eval_set_difference)
+{
+    ASSERT_STR_EQ(eval_print("(set-difference '(1 2 3 4) '(2 4))"), "(1 3)");
+    ASSERT_STR_EQ(eval_print("(set-difference '(1 2) '(1 2))"), "NIL");
+}
+
+TEST(eval_subsetp)
+{
+    ASSERT_STR_EQ(eval_print("(subsetp '(1 2) '(1 2 3))"), "T");
+    ASSERT_STR_EQ(eval_print("(subsetp '(1 4) '(1 2 3))"), "NIL");
+    ASSERT_STR_EQ(eval_print("(subsetp nil '(1 2 3))"), "T");
+}
+
+/* --- Hash tables --- */
+
+TEST(eval_make_hash_table)
+{
+    ASSERT_STR_EQ(eval_print("(hash-table-p (make-hash-table))"), "T");
+    ASSERT_STR_EQ(eval_print("(hash-table-p 42)"), "NIL");
+    ASSERT_STR_EQ(eval_print("(hash-table-p nil)"), "NIL");
+    ASSERT_STR_EQ(eval_print("(type-of (make-hash-table))"), "HASH-TABLE");
+}
+
+TEST(eval_gethash_setf)
+{
+    eval_print("(defvar *ht1* (make-hash-table))");
+    ASSERT_STR_EQ(eval_print("(setf (gethash 'a *ht1*) 1)"), "1");
+    ASSERT_STR_EQ(eval_print("(gethash 'a *ht1*)"), "1");
+    ASSERT_STR_EQ(eval_print("(setf (gethash 'b *ht1*) 2)"), "2");
+    ASSERT_STR_EQ(eval_print("(gethash 'b *ht1*)"), "2");
+    ASSERT_STR_EQ(eval_print("(hash-table-count *ht1*)"), "2");
+}
+
+TEST(eval_gethash_default)
+{
+    eval_print("(defvar *ht2* (make-hash-table))");
+    ASSERT_STR_EQ(eval_print("(gethash 'x *ht2*)"), "NIL");
+    ASSERT_STR_EQ(eval_print("(gethash 'x *ht2* 99)"), "99");
+}
+
+TEST(eval_gethash_overwrite)
+{
+    eval_print("(defvar *ht3* (make-hash-table))");
+    eval_print("(setf (gethash 'k *ht3*) 10)");
+    ASSERT_STR_EQ(eval_print("(gethash 'k *ht3*)"), "10");
+    eval_print("(setf (gethash 'k *ht3*) 20)");
+    ASSERT_STR_EQ(eval_print("(gethash 'k *ht3*)"), "20");
+    ASSERT_STR_EQ(eval_print("(hash-table-count *ht3*)"), "1");
+}
+
+TEST(eval_remhash)
+{
+    eval_print("(defvar *ht4* (make-hash-table))");
+    eval_print("(setf (gethash 'a *ht4*) 1)");
+    eval_print("(setf (gethash 'b *ht4*) 2)");
+    ASSERT_STR_EQ(eval_print("(remhash 'a *ht4*)"), "T");
+    ASSERT_STR_EQ(eval_print("(gethash 'a *ht4*)"), "NIL");
+    ASSERT_STR_EQ(eval_print("(hash-table-count *ht4*)"), "1");
+    ASSERT_STR_EQ(eval_print("(remhash 'z *ht4*)"), "NIL");
+}
+
+TEST(eval_clrhash)
+{
+    eval_print("(defvar *ht5* (make-hash-table))");
+    eval_print("(setf (gethash 'a *ht5*) 1)");
+    eval_print("(setf (gethash 'b *ht5*) 2)");
+    eval_print("(clrhash *ht5*)");
+    ASSERT_STR_EQ(eval_print("(hash-table-count *ht5*)"), "0");
+    ASSERT_STR_EQ(eval_print("(gethash 'a *ht5*)"), "NIL");
+}
+
+TEST(eval_maphash)
+{
+    eval_print("(defvar *ht6* (make-hash-table))");
+    eval_print("(setf (gethash 'x *ht6*) 10)");
+    eval_print("(setf (gethash 'y *ht6*) 20)");
+    eval_print("(defvar *sum6* 0)");
+    eval_print("(maphash (lambda (k v) (setq *sum6* (+ *sum6* v))) *ht6*)");
+    ASSERT_STR_EQ(eval_print("*sum6*"), "30");
+}
+
+TEST(eval_hash_table_equal_test)
+{
+    eval_print("(defvar *hte* (make-hash-table :test 'equal))");
+    eval_print("(setf (gethash \"hello\" *hte*) 42)");
+    ASSERT_STR_EQ(eval_print("(gethash \"hello\" *hte*)"), "42");
+    ASSERT_STR_EQ(eval_print("(hash-table-count *hte*)"), "1");
+}
+
+TEST(eval_hash_table_eq_test)
+{
+    eval_print("(defvar *hteq* (make-hash-table :test 'eq))");
+    eval_print("(setf (gethash 'foo *hteq*) 99)");
+    ASSERT_STR_EQ(eval_print("(gethash 'foo *hteq*)"), "99");
+}
+
+TEST(eval_gethash_mv)
+{
+    /* gethash returns two values: value and present-p */
+    eval_print("(defvar *htmv* (make-hash-table))");
+    eval_print("(setf (gethash 'k *htmv*) 42)");
+    ASSERT_STR_EQ(eval_print("(multiple-value-bind (v p) (gethash 'k *htmv*) p)"), "T");
+    ASSERT_STR_EQ(eval_print("(multiple-value-bind (v p) (gethash 'missing *htmv*) p)"), "NIL");
+}
+
 int main(void)
 {
     test_init();
@@ -1506,6 +1974,76 @@ int main(void)
     RUN(eval_defsetf_short);
     RUN(eval_defsetf_cadr);
     RUN(eval_defun_return_from);
+
+    /* Phase 5 Tier 1 */
+    RUN(eval_characterp);
+    RUN(eval_char_comparison);
+    RUN(eval_char_code_conversion);
+    RUN(eval_char_case);
+    RUN(eval_char_predicates);
+    RUN(eval_symbol_name);
+    RUN(eval_symbol_package_fn);
+    RUN(eval_fboundp);
+    RUN(eval_fdefinition);
+    RUN(eval_make_symbol);
+    RUN(eval_keywordp);
+    RUN(eval_length_vector);
+    RUN(eval_equal_vector);
+    RUN(eval_mapcar_multi_list);
+
+    /* Phase 5 Tier 2 */
+    RUN(eval_string_comparison);
+    RUN(eval_string_case_conversion);
+    RUN(eval_string_trim);
+    RUN(eval_subseq);
+    RUN(eval_concatenate);
+    RUN(eval_char_accessor);
+    RUN(eval_string_coerce);
+    RUN(eval_parse_integer);
+    RUN(eval_write_to_string);
+    RUN(eval_prin1_to_string);
+    RUN(eval_princ_to_string);
+
+    /* Phase 5 Tier 3 */
+    RUN(eval_nthcdr);
+    RUN(eval_last);
+    RUN(eval_acons);
+    RUN(eval_copy_list);
+    RUN(eval_pairlis);
+    RUN(eval_assoc);
+    RUN(eval_rassoc);
+    RUN(eval_getf);
+    RUN(eval_subst);
+    RUN(eval_sublis);
+    RUN(eval_adjoin);
+    RUN(eval_nconc);
+    RUN(eval_nreverse);
+    RUN(eval_delete);
+    RUN(eval_delete_if);
+    RUN(eval_nsubst);
+    RUN(eval_butlast);
+    RUN(eval_copy_tree);
+    RUN(eval_mapc);
+    RUN(eval_mapcan);
+    RUN(eval_maplist);
+    RUN(eval_mapl);
+    RUN(eval_mapcon);
+    RUN(eval_intersection);
+    RUN(eval_union);
+    RUN(eval_set_difference);
+    RUN(eval_subsetp);
+
+    /* Phase 5 — Hash tables */
+    RUN(eval_make_hash_table);
+    RUN(eval_gethash_setf);
+    RUN(eval_gethash_default);
+    RUN(eval_gethash_overwrite);
+    RUN(eval_remhash);
+    RUN(eval_clrhash);
+    RUN(eval_maphash);
+    RUN(eval_hash_table_equal_test);
+    RUN(eval_hash_table_eq_test);
+    RUN(eval_gethash_mv);
 
     teardown();
     REPORT();

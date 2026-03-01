@@ -39,7 +39,7 @@ CL_Obj (uint32_t):
 Heap object header (uint32_t):
   [type:8][gc_mark:1][size:23]       max object size = 8MB
 
-Types: CONS, SYMBOL, STRING, FUNCTION, CLOSURE, BYTECODE, VECTOR, PACKAGE
+Types: CONS, SYMBOL, STRING, FUNCTION, CLOSURE, BYTECODE, VECTOR, PACKAGE, HASHTABLE
 ```
 
 ## Memory Budget (8MB System)
@@ -85,25 +85,33 @@ Single-pass recursive compiler from S-expressions to bytecode:
 - Macro expansion before compilation
 - Backward jump support for loop forms
 
-**Special forms:** `quote`, `if`, `progn`, `lambda`, `let`, `let*`, `setq`, `setf`, `defun`, `defvar`, `defparameter`, `defmacro`, `function (#')`, `block`, `return-from`, `return`, `and`, `or`, `cond`, `do`, `dolist`, `dotimes`, `case`, `ecase`, `typecase`, `etypecase`, `flet`, `labels`, `tagbody`, `go`, `catch`, `unwind-protect`, `multiple-value-bind`, `multiple-value-list`, `multiple-value-prog1`, `nth-value`
+**Special forms:** `quote`, `if`, `progn`, `lambda`, `let`, `let*`, `setq`, `setf`, `defun`, `defvar`, `defparameter`, `defmacro`, `function (#')`, `block`, `return-from`, `return`, `and`, `or`, `cond`, `do`, `dolist`, `dotimes`, `case`, `ecase`, `typecase`, `etypecase`, `flet`, `labels`, `tagbody`, `go`, `catch`, `unwind-protect`, `multiple-value-bind`, `multiple-value-list`, `multiple-value-prog1`, `nth-value`, `eval-when`, `destructuring-bind`, `defsetf`
 
-**Bootstrap macros:** `when`, `unless`, `prog1`, `prog2`, `push`, `pop`, `incf`, `decf`
+**Bootstrap macros:** `when`, `unless`, `prog1`, `prog2`, `push`, `pop`, `incf`, `decf`, `pushnew`
 
-## Built-in Functions (72 functions)
+**Bootstrap functions:** `cadr`, `caar`, `cdar`, `cddr`, `caddr`, `cadar`, `identity`, `endp`, `member`, `intersection`, `union`, `set-difference`, `subsetp`
+
+## Built-in Functions (124 functions)
 
 | Category | Functions |
 |----------|-----------|
 | Arithmetic | `+` `-` `*` `/` `mod` `1+` `1-` `abs` `max` `min` |
 | Comparison | `=` `<` `>` `<=` `>=` |
-| Predicates | `null` `consp` `atom` `listp` `numberp` `integerp` `symbolp` `stringp` `functionp` `vectorp` `zerop` `plusp` `minusp` |
+| Predicates | `null` `consp` `atom` `listp` `numberp` `integerp` `symbolp` `stringp` `functionp` `vectorp` `zerop` `plusp` `minusp` `characterp` `keywordp` `hash-table-p` |
 | Equality | `eq` `eql` `equal` `not` |
-| List ops | `cons` `car` `cdr` `first` `rest` `list` `length` `append` `reverse` `nth` |
+| List ops | `cons` `car` `cdr` `first` `rest` `list` `length` `append` `reverse` `nth` `nthcdr` `last` `butlast` `copy-list` `copy-tree` |
+| Alist/plist | `acons` `pairlis` `assoc` `rassoc` `getf` `adjoin` |
+| Tree ops | `subst` `sublis` `nsubst` |
+| Destructive | `nconc` `nreverse` `delete` `delete-if` |
 | Mutation | `rplaca` `rplacd` `aref` `svref` `make-array` `set` |
-| Symbol access | `symbol-value` `symbol-function` `boundp` |
-| Higher-order | `mapcar` `apply` `funcall` |
+| Symbol access | `symbol-value` `symbol-function` `symbol-name` `symbol-package` `boundp` `fboundp` `fdefinition` `make-symbol` |
+| Higher-order | `mapcar` `mapc` `mapcan` `maplist` `mapl` `mapcon` `apply` `funcall` |
+| Characters | `char=` `char/=` `char<` `char>` `char<=` `char>=` `char-code` `code-char` `char-upcase` `char-downcase` `upper-case-p` `lower-case-p` `alpha-char-p` `digit-char-p` |
+| Strings | `string=` `string-equal` `string<` `string>` `string<=` `string>=` `string-upcase` `string-downcase` `string-trim` `string-left-trim` `string-right-trim` `subseq` `concatenate` `char` `schar` `string` `parse-integer` `write-to-string` `prin1-to-string` `princ-to-string` |
 | I/O | `print` `prin1` `princ` `terpri` `format` `load` |
 | Eval/Macro | `eval` `macroexpand` `macroexpand-1` |
 | Control | `throw` `values` `values-list` `error` |
+| Hash tables | `make-hash-table` `gethash` `remhash` `maphash` `clrhash` `hash-table-count` `hash-table-p` |
 | Misc | `type-of` `gensym` |
 
 ## Implementation Roadmap
@@ -147,7 +155,7 @@ Quasiquote and tooling that makes real macro writing practical:
 
 89 host tests (4 suites), 222 Amiga batch tests — all passing.
 
-### Phase 4: Core Language Completeness (in progress)
+### Phase 4: Core Language Completeness ✅
 
 Features needed for idiomatic CL programming:
 - [x] `&optional`, `&key`, `&allow-other-keys` lambda list support
@@ -161,7 +169,7 @@ Features needed for idiomatic CL programming:
 - [x] `unwind-protect` — cleanup forms
 - [x] Multiple return values (`values`, `multiple-value-bind`, `multiple-value-list`, `multiple-value-prog1`, `nth-value`)
 - [x] Dynamic variables (`defvar`, `defparameter`, special declarations, shallow binding)
-- [x] `setf` with generalized places (car/cdr/first/rest/nth/aref/svref/symbol-value/symbol-function)
+- [x] `setf` with generalized places (car/cdr/first/rest/nth/aref/svref/symbol-value/symbol-function/gethash)
 - [x] Modify macros: `push`, `pop`, `incf`, `decf`
 - [x] Mutation builtins: `rplaca`, `rplacd`, `aref`, `svref`, `make-array`, `set`
 - [x] `destructuring-bind`
@@ -173,20 +181,31 @@ Features needed for idiomatic CL programming:
 
 154 host tests (4 suites), ~290 Amiga batch tests — all passing.
 
-### Phase 5: Standard Library
+### Phase 5: Standard Library (in progress)
 
 Data structures, sequences, strings, and I/O:
-- [ ] Hash tables (`make-hash-table`, `gethash`, `remhash`, `maphash`, `clrhash`)
+- [x] Character functions (`characterp`, `char=`, `char/=`, `char<`, `char>`, `char<=`, `char>=`, `char-code`, `code-char`, `upper-case-p`, `lower-case-p`, `alpha-char-p`, `digit-char-p`, `char-upcase`, `char-downcase`)
+- [x] Symbol functions (`symbol-name`, `symbol-package`, `fboundp`, `fdefinition`, `make-symbol`, `keywordp`)
+- [x] String operations (`string=`, `string-equal`, `string<`, `string>`, `string<=`, `string>=`, `string-upcase`, `string-downcase`, `string-trim`, `string-left-trim`, `string-right-trim`, `subseq`, `concatenate`, `char`, `schar`, `string`, `parse-integer`, `write-to-string`, `prin1-to-string`, `princ-to-string`)
+- [x] List utilities (`nthcdr`, `last`, `acons`, `copy-list`, `pairlis`, `assoc`, `rassoc`, `getf`, `subst`, `sublis`, `adjoin`, `butlast`, `copy-tree`) — `member` done in Phase 4
+- [x] Destructive list ops (`nconc`, `nreverse`, `delete`, `delete-if`, `nsubst`)
+- [x] Mapping variants (`mapc`, `mapcan`, `maplist`, `mapl`, `mapcon`)
+- [x] Set operations in Lisp (`intersection`, `union`, `set-difference`, `subsetp`)
+- [x] Hash tables (`make-hash-table`, `gethash`, `remhash`, `maphash`, `clrhash`, `hash-table-count`, `hash-table-p`, `(setf gethash)`)
 - [ ] Sequence functions (`find`, `find-if`, `remove`, `remove-if`, `remove-if-not`, `remove-duplicates`, `position`, `search`, `count`, `sort`, `stable-sort`, `substitute`, `reduce`, `map`, `every`, `some`, `notany`, `notevery`, `mismatch`)
-- [ ] List utilities (`assoc`, `rassoc`, `intersection`, `union`, `set-difference`, `subsetp`, `adjoin`, `last`, `butlast`, `nthcdr`, `copy-list`, `copy-tree`, `sublis`, `subst`, `acons`, `pairlis`, `getf`) — `member` done in Phase 4
-- [ ] Destructive list ops (`nconc`, `nreverse`, `delete`, `delete-if`, `nsubst`)
-- [ ] Mapping variants (`mapcan`, `mapc`, `maplist`, `mapl`, `mapcon`)
-- [ ] String operations (`string=`, `string-equal`, `string<`, `string>`, `string-upcase`, `string-downcase`, `string-trim`, `string-left-trim`, `string-right-trim`, `subseq`, `concatenate`, `parse-integer`)
-- [ ] Character functions (`char=`, `char<`, `char-code`, `code-char`, `upper-case-p`, `lower-case-p`, `alpha-char-p`, `digit-char-p`, `char-upcase`, `char-downcase`)
-- [ ] Symbol functions (`symbol-name`, `symbol-package`, `fboundp`, `fdefinition`, `make-symbol`, `keywordp`)
 - [ ] Array operations (`vector`, `array-dimensions`, `array-rank`, `fill`, `replace`)
 - [ ] Type system (`typep`, `coerce`, `deftype`, `subtypep`)
 - [ ] `declare`, `declaim`, `proclaim` — declarations
+- [ ] `disassemble` — print bytecode disassembly of compiled functions
+- [ ] `trace`, `untrace` — function call tracing for debugging
+- [ ] Stack traces on error — walk VM call frames, print function names and call chain
+- [ ] Source location tracking — reader tracks line numbers, compiler attaches to bytecode, errors include file:line context
+
+216 host tests (4 suites), 450 Amiga batch tests — all passing.
+
+**Build improvements:**
+- Split builtins.c into 7 modules and compiler.c into 3 modules (stay under vbcc TU size limits)
+- Heap-allocate CL_Compiler structs (CL_Compiler is ~45KB due to tagbody arrays; two nested instances during compile_lambda overflowed the 65KB AmigaOS stack)
 
 ### Phase 6: Control & Error Handling
 
@@ -264,7 +283,7 @@ cl-amiga/
 │   └── overview.md        # This file
 ├── src/
 │   ├── main.c             # Entry point
-│   ├── core/              # Language implementation (12 modules)
+│   ├── core/              # Language implementation (17 modules)
 │   └── platform/          # OS abstraction (posix, amiga)
 ├── include/
 │   └── clamiga.h          # Public umbrella header
@@ -272,9 +291,9 @@ cl-amiga/
 │   └── boot.lisp          # Bootstrap macros/functions
 ├── tests/
 │   ├── test.h             # Test framework
-│   ├── test_*.c           # Host test suites (4 files, 137 tests)
+│   ├── test_*.c           # Host test suites (4 files, 216 tests)
 │   └── amiga/
-│       └── run-tests.lisp # AmigaOS batch tests (269 tests)
+│       └── run-tests.lisp # AmigaOS batch tests (450 tests)
 ├── build/                 # Build output (gitignored)
 └── verify/
     └── realamiga/          # FS-UAE config + AmigaOS system image

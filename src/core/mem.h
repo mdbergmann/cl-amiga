@@ -48,6 +48,7 @@ CL_Obj cl_make_string(const char *str, uint32_t len);
 CL_Obj cl_make_symbol(CL_Obj name);
 CL_Obj cl_make_function(CL_CFunc func, CL_Obj name, int min_args, int max_args);
 CL_Obj cl_make_vector(uint32_t length);
+CL_Obj cl_make_hashtable(uint32_t bucket_count, uint32_t test);
 
 /* GC root protection */
 #define CL_GC_PROTECT(var) cl_gc_push_root(&(var))

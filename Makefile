@@ -27,6 +27,7 @@ CORE_SRC     = $(SRCDIR)/core/types.c \
                $(SRCDIR)/core/builtins_mutation.c \
                $(SRCDIR)/core/builtins_strings.c \
                $(SRCDIR)/core/builtins_lists.c \
+               $(SRCDIR)/core/builtins_hashtable.c \
                $(SRCDIR)/core/repl.c
 MAIN_SRC     = $(SRCDIR)/main.c
 

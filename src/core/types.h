@@ -81,7 +81,8 @@ enum CL_ObjType {
     TYPE_CLOSURE,
     TYPE_BYTECODE,
     TYPE_VECTOR,
-    TYPE_PACKAGE
+    TYPE_PACKAGE,
+    TYPE_HASHTABLE
 };
 
 /* Header access macros */
@@ -201,6 +202,23 @@ typedef struct {
 } CL_Package;
 
 #define CL_PACKAGE_P(obj) (CL_HEAP_P(obj) && CL_HDR_TYPE(CL_OBJ_TO_PTR(obj)) == TYPE_PACKAGE)
+
+/* --- Hash Table --- */
+
+/* Test function enum: stored in the test field */
+#define CL_HT_TEST_EQ    0
+#define CL_HT_TEST_EQL   1
+#define CL_HT_TEST_EQUAL 2
+
+typedef struct {
+    CL_Header hdr;
+    uint32_t test;          /* CL_HT_TEST_EQ/EQL/EQUAL */
+    uint32_t count;         /* Number of entries */
+    uint32_t bucket_count;  /* Number of buckets */
+    CL_Obj buckets[];       /* Flexible array: each is a list of (key . value) pairs */
+} CL_Hashtable;
+
+#define CL_HASHTABLE_P(obj) (CL_HEAP_P(obj) && CL_HDR_TYPE(CL_OBJ_TO_PTR(obj)) == TYPE_HASHTABLE)
 
 /* --- Convenience accessors --- */
 

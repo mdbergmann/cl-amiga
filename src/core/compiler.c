@@ -17,6 +17,8 @@ CL_Obj SETF_SYM_SYMBOL_FUNCTION = CL_NIL;
 CL_Obj SETF_HELPER_NTH = CL_NIL;
 CL_Obj SETF_HELPER_SV = CL_NIL;
 CL_Obj SETF_HELPER_SF = CL_NIL;
+CL_Obj SETF_SYM_GETHASH = CL_NIL;
+CL_Obj SETF_HELPER_GETHASH = CL_NIL;
 
 /* --- Code emission --- */
 
@@ -537,6 +539,16 @@ static void compile_setf_place(CL_Compiler *c, CL_Obj place, CL_Obj val_form)
             compile_expr(c, val_form);
             cl_emit(c, OP_CALL);
             cl_emit(c, 2);
+        } else if (head == SETF_SYM_GETHASH) {
+            /* (setf (gethash key ht) val) → (%setf-gethash key ht val) */
+            int idx = cl_add_constant(c, SETF_HELPER_GETHASH);
+            cl_emit(c, OP_FLOAD);
+            cl_emit_u16(c, (uint16_t)idx);
+            compile_expr(c, cl_car(cl_cdr(place)));       /* key */
+            compile_expr(c, cl_car(cl_cdr(cl_cdr(place)))); /* hash-table */
+            compile_expr(c, val_form);                     /* value */
+            cl_emit(c, OP_CALL);
+            cl_emit(c, 3);
         } else {
             /* Check defsetf table */
             CL_Obj entry = setf_table;
@@ -940,4 +952,6 @@ void cl_compiler_init(void)
     SETF_HELPER_NTH          = cl_intern_in("%SETF-NTH", 9, cl_package_cl);
     SETF_HELPER_SV           = cl_intern_in("%SET-SYMBOL-VALUE", 17, cl_package_cl);
     SETF_HELPER_SF           = cl_intern_in("%SET-SYMBOL-FUNCTION", 20, cl_package_cl);
+    SETF_SYM_GETHASH         = cl_intern_in("GETHASH", 7, cl_package_cl);
+    SETF_HELPER_GETHASH      = cl_intern_in("%SETF-GETHASH", 13, cl_package_cl);
 }

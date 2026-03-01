@@ -205,6 +205,18 @@ CL_Obj cl_make_vector(uint32_t length)
     return CL_PTR_TO_OBJ(v);
 }
 
+CL_Obj cl_make_hashtable(uint32_t bucket_count, uint32_t test)
+{
+    uint32_t alloc_size = sizeof(CL_Hashtable) + bucket_count * sizeof(CL_Obj);
+    CL_Hashtable *ht = (CL_Hashtable *)cl_alloc(TYPE_HASHTABLE, alloc_size);
+    if (!ht) return CL_NIL;
+    ht->test = test;
+    ht->count = 0;
+    ht->bucket_count = bucket_count;
+    /* buckets[] already zeroed (= CL_NIL) by cl_alloc */
+    return CL_PTR_TO_OBJ(ht);
+}
+
 /* --- GC Root Stack --- */
 
 void cl_gc_push_root(CL_Obj *root)
@@ -287,6 +299,13 @@ static void gc_mark_children(void *ptr, uint8_t type)
         gc_mark_push(p->name);
         gc_mark_push(p->symbols);
         gc_mark_push(p->use_list);
+        break;
+    }
+    case TYPE_HASHTABLE: {
+        CL_Hashtable *ht = (CL_Hashtable *)ptr;
+        uint32_t i;
+        for (i = 0; i < ht->bucket_count; i++)
+            gc_mark_push(ht->buckets[i]);
         break;
     }
     default:
