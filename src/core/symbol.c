@@ -47,6 +47,10 @@ CL_Obj SYM_GO = CL_NIL;
 CL_Obj SYM_CATCH = CL_NIL;
 CL_Obj SYM_THROW = CL_NIL;
 CL_Obj SYM_UNWIND_PROTECT = CL_NIL;
+CL_Obj SYM_MULTIPLE_VALUE_BIND = CL_NIL;
+CL_Obj SYM_MULTIPLE_VALUE_LIST = CL_NIL;
+CL_Obj SYM_MULTIPLE_VALUE_PROG1 = CL_NIL;
+CL_Obj SYM_NTH_VALUE = CL_NIL;
 
 /* FNV-1a hash */
 uint32_t cl_hash_string(const char *str, uint32_t len)
@@ -159,6 +163,10 @@ void cl_symbol_init(void)
     SYM_CATCH          = cl_intern_in("CATCH", 5, cl_package_cl);
     SYM_THROW          = cl_intern_in("THROW", 5, cl_package_cl);
     SYM_UNWIND_PROTECT = cl_intern_in("UNWIND-PROTECT", 14, cl_package_cl);
+    SYM_MULTIPLE_VALUE_BIND  = cl_intern_in("MULTIPLE-VALUE-BIND", 19, cl_package_cl);
+    SYM_MULTIPLE_VALUE_LIST  = cl_intern_in("MULTIPLE-VALUE-LIST", 19, cl_package_cl);
+    SYM_MULTIPLE_VALUE_PROG1 = cl_intern_in("MULTIPLE-VALUE-PROG1", 20, cl_package_cl);
+    SYM_NTH_VALUE            = cl_intern_in("NTH-VALUE", 9, cl_package_cl);
 
     /* T is self-evaluating */
     {

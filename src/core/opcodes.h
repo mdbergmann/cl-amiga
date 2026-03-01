@@ -65,6 +65,9 @@ enum CL_Opcode {
     OP_UWPROT    = 0x88,  /* i16: Push NLX uwprot frame, setjmp */
     OP_UWPOP     = 0x89,  /* Pop NLX uwprot frame (normal exit) */
     OP_UWRETHROW = 0x8A,  /* Re-throw pending if any, else nop */
+    OP_MV_LOAD   = 0x8B,  /* u8: Push cl_mv_values[index] or NIL if >= count */
+    OP_MV_TO_LIST = 0x8C, /* Build list from MV buffer, push it */
+    OP_NTH_VALUE  = 0x8D, /* Pop index, push mv_values[index] or NIL */
 
     OP_HALT      = 0xFF   /* Stop VM */
 };

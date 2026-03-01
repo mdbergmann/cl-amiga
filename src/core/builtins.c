@@ -725,6 +725,31 @@ static CL_Obj bi_throw(CL_Obj *args, int n)
     return CL_NIL;
 }
 
+/* --- Multiple Values --- */
+
+static CL_Obj bi_values(CL_Obj *args, int n)
+{
+    int i;
+    int count = n < CL_MAX_MV ? n : CL_MAX_MV;
+    for (i = 0; i < count; i++)
+        cl_mv_values[i] = args[i];
+    cl_mv_count = count;
+    return n > 0 ? args[0] : CL_NIL;
+}
+
+static CL_Obj bi_values_list(CL_Obj *args, int n)
+{
+    CL_Obj list = args[0];
+    int count = 0;
+    CL_UNUSED(n);
+    while (!CL_NULL_P(list) && count < CL_MAX_MV) {
+        cl_mv_values[count++] = cl_car(list);
+        list = cl_cdr(list);
+    }
+    cl_mv_count = count;
+    return count > 0 ? cl_mv_values[0] : CL_NIL;
+}
+
 /* --- Error --- */
 
 static CL_Obj bi_error(CL_Obj *args, int n)
@@ -837,4 +862,8 @@ void cl_builtins_init(void)
     defun("EVAL", bi_eval, 1, 1);
     defun("MACROEXPAND-1", bi_macroexpand_1, 1, 1);
     defun("MACROEXPAND", bi_macroexpand, 1, 1);
+
+    /* Multiple values */
+    defun("VALUES", bi_values, 0, -1);
+    defun("VALUES-LIST", bi_values_list, 1, 1);
 }

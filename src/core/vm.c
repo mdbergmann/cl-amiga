@@ -11,6 +11,10 @@
 
 CL_VM cl_vm;
 
+/* Multiple values */
+CL_Obj cl_mv_values[CL_MAX_MV];
+int cl_mv_count = 1;
+
 /* NLX stack */
 CL_NLXFrame cl_nlx_stack[CL_MAX_NLX_FRAMES];
 int cl_nlx_top = 0;
@@ -28,6 +32,7 @@ void cl_vm_init(void)
     cl_vm.fp = 0;
     cl_nlx_top = 0;
     cl_pending_throw = 0;
+    cl_mv_count = 1;
 }
 
 void cl_vm_push(CL_Obj val)
@@ -131,6 +136,7 @@ static int16_t read_i16(uint8_t *code, uint32_t *ip)
 /* Call a built-in C function */
 static CL_Obj call_builtin(CL_Function *func, CL_Obj *args, int nargs)
 {
+    CL_Obj result;
     if (nargs < func->min_args) {
         cl_error(CL_ERR_ARGS, "%s: too few arguments (got %d, need %d)",
                  CL_NULL_P(func->name) ? "?" : cl_symbol_name(func->name),
@@ -141,7 +147,10 @@ static CL_Obj call_builtin(CL_Function *func, CL_Obj *args, int nargs)
                  CL_NULL_P(func->name) ? "?" : cl_symbol_name(func->name),
                  nargs, func->max_args);
     }
-    return func->func(args, nargs);
+    cl_mv_count = 1;  /* default; bi_values/bi_values_list may override */
+    result = func->func(args, nargs);
+    cl_mv_values[0] = result;  /* primary always in buffer */
+    return result;
 }
 
 CL_Obj cl_vm_eval(CL_Obj bytecode_obj)
@@ -204,20 +213,24 @@ CL_Obj cl_vm_eval(CL_Obj bytecode_obj)
         case OP_CONST: {
             uint16_t idx = read_u16(code, &ip);
             cl_vm_push(constants[idx]);
+            cl_mv_count = 1;
             break;
         }
 
         case OP_NIL:
             cl_vm_push(CL_NIL);
+            cl_mv_count = 1;
             break;
 
         case OP_T:
             cl_vm_push(SYM_T);
+            cl_mv_count = 1;
             break;
 
         case OP_LOAD: {
             uint8_t slot = code[ip++];
             cl_vm_push(cl_vm.stack[frame->bp + slot]);
+            cl_mv_count = 1;
             break;
         }
 
@@ -235,6 +248,7 @@ CL_Obj cl_vm_eval(CL_Obj bytecode_obj)
                 cl_error(CL_ERR_UNBOUND, "Unbound variable: %s",
                          cl_symbol_name(sym));
             cl_vm_push(s->value);
+            cl_mv_count = 1;
             break;
         }
 
@@ -259,6 +273,7 @@ CL_Obj cl_vm_eval(CL_Obj bytecode_obj)
             } else {
                 cl_vm_push(s->function);
             }
+            cl_mv_count = 1;
             break;
         }
 
@@ -271,6 +286,7 @@ CL_Obj cl_vm_eval(CL_Obj bytecode_obj)
             } else {
                 cl_vm_push(CL_NIL);
             }
+            cl_mv_count = 1;
             break;
         }
 
@@ -286,18 +302,21 @@ CL_Obj cl_vm_eval(CL_Obj bytecode_obj)
             CL_Obj cdr_val = cl_vm_pop();
             CL_Obj car_val = cl_vm_pop();
             cl_vm_push(cl_cons(car_val, cdr_val));
+            cl_mv_count = 1;
             break;
         }
 
         case OP_CAR: {
             CL_Obj obj = cl_vm_pop();
             cl_vm_push(cl_car(obj));
+            cl_mv_count = 1;
             break;
         }
 
         case OP_CDR: {
             CL_Obj obj = cl_vm_pop();
             cl_vm_push(cl_cdr(obj));
+            cl_mv_count = 1;
             break;
         }
 
@@ -306,6 +325,7 @@ CL_Obj cl_vm_eval(CL_Obj bytecode_obj)
             if (!CL_FIXNUM_P(a) || !CL_FIXNUM_P(b))
                 cl_error(CL_ERR_TYPE, "+: not a number");
             cl_vm_push(CL_MAKE_FIXNUM(CL_FIXNUM_VAL(a) + CL_FIXNUM_VAL(b)));
+            cl_mv_count = 1;
             break;
         }
 
@@ -314,6 +334,7 @@ CL_Obj cl_vm_eval(CL_Obj bytecode_obj)
             if (!CL_FIXNUM_P(a) || !CL_FIXNUM_P(b))
                 cl_error(CL_ERR_TYPE, "-: not a number");
             cl_vm_push(CL_MAKE_FIXNUM(CL_FIXNUM_VAL(a) - CL_FIXNUM_VAL(b)));
+            cl_mv_count = 1;
             break;
         }
 
@@ -322,6 +343,7 @@ CL_Obj cl_vm_eval(CL_Obj bytecode_obj)
             if (!CL_FIXNUM_P(a) || !CL_FIXNUM_P(b))
                 cl_error(CL_ERR_TYPE, "*: not a number");
             cl_vm_push(CL_MAKE_FIXNUM(CL_FIXNUM_VAL(a) * CL_FIXNUM_VAL(b)));
+            cl_mv_count = 1;
             break;
         }
 
@@ -332,12 +354,14 @@ CL_Obj cl_vm_eval(CL_Obj bytecode_obj)
             if (CL_FIXNUM_VAL(b) == 0)
                 cl_error(CL_ERR_DIVZERO, "Division by zero");
             cl_vm_push(CL_MAKE_FIXNUM(CL_FIXNUM_VAL(a) / CL_FIXNUM_VAL(b)));
+            cl_mv_count = 1;
             break;
         }
 
         case OP_EQ: {
             CL_Obj b = cl_vm_pop(), a = cl_vm_pop();
             cl_vm_push(a == b ? SYM_T : CL_NIL);
+            cl_mv_count = 1;
             break;
         }
 
@@ -346,6 +370,7 @@ CL_Obj cl_vm_eval(CL_Obj bytecode_obj)
             if (!CL_FIXNUM_P(a) || !CL_FIXNUM_P(b))
                 cl_error(CL_ERR_TYPE, "=: not a number");
             cl_vm_push(CL_FIXNUM_VAL(a) == CL_FIXNUM_VAL(b) ? SYM_T : CL_NIL);
+            cl_mv_count = 1;
             break;
         }
 
@@ -354,6 +379,7 @@ CL_Obj cl_vm_eval(CL_Obj bytecode_obj)
             if (!CL_FIXNUM_P(a) || !CL_FIXNUM_P(b))
                 cl_error(CL_ERR_TYPE, "<: not a number");
             cl_vm_push(CL_FIXNUM_VAL(a) < CL_FIXNUM_VAL(b) ? SYM_T : CL_NIL);
+            cl_mv_count = 1;
             break;
         }
 
@@ -362,6 +388,7 @@ CL_Obj cl_vm_eval(CL_Obj bytecode_obj)
             if (!CL_FIXNUM_P(a) || !CL_FIXNUM_P(b))
                 cl_error(CL_ERR_TYPE, ">: not a number");
             cl_vm_push(CL_FIXNUM_VAL(a) > CL_FIXNUM_VAL(b) ? SYM_T : CL_NIL);
+            cl_mv_count = 1;
             break;
         }
 
@@ -370,6 +397,7 @@ CL_Obj cl_vm_eval(CL_Obj bytecode_obj)
             if (!CL_FIXNUM_P(a) || !CL_FIXNUM_P(b))
                 cl_error(CL_ERR_TYPE, "<=: not a number");
             cl_vm_push(CL_FIXNUM_VAL(a) <= CL_FIXNUM_VAL(b) ? SYM_T : CL_NIL);
+            cl_mv_count = 1;
             break;
         }
 
@@ -378,12 +406,14 @@ CL_Obj cl_vm_eval(CL_Obj bytecode_obj)
             if (!CL_FIXNUM_P(a) || !CL_FIXNUM_P(b))
                 cl_error(CL_ERR_TYPE, ">=: not a number");
             cl_vm_push(CL_FIXNUM_VAL(a) >= CL_FIXNUM_VAL(b) ? SYM_T : CL_NIL);
+            cl_mv_count = 1;
             break;
         }
 
         case OP_NOT: {
             CL_Obj a = cl_vm_pop();
             cl_vm_push(CL_NULL_P(a) ? SYM_T : CL_NIL);
+            cl_mv_count = 1;
             break;
         }
 
@@ -416,6 +446,7 @@ CL_Obj cl_vm_eval(CL_Obj bytecode_obj)
                 list = cl_cons(cl_vm_pop(), list);
             }
             cl_vm_push(list);
+            cl_mv_count = 1;
             break;
         }
 
@@ -708,6 +739,7 @@ CL_Obj cl_vm_eval(CL_Obj bytecode_obj)
                 ip += n_upvals * 2;
                 cl_vm_push(CL_NIL);
             }
+            cl_mv_count = 1;
             break;
         }
 
@@ -722,6 +754,7 @@ CL_Obj cl_vm_eval(CL_Obj bytecode_obj)
 
         case OP_ARGC: {
             cl_vm_push(CL_MAKE_FIXNUM(frame->nargs));
+            cl_mv_count = 1;
             break;
         }
 
@@ -792,6 +825,7 @@ CL_Obj cl_vm_eval(CL_Obj bytecode_obj)
                     constants = nlx->constants;
                     base_fp = nlx->base_fp;
                     ip = nlx->catch_ip + nlx->offset;
+                    cl_mv_count = 1;  /* throw delivers single value */
                     cl_vm_push(throw_result);
                 }
             }
@@ -913,6 +947,48 @@ CL_Obj cl_vm_eval(CL_Obj bytecode_obj)
                 }
             }
             /* cl_pending_throw == 0: nop */
+            break;
+        }
+
+        case OP_MV_LOAD: {
+            uint8_t index = code[ip++];
+            cl_vm_push((int)index < cl_mv_count ? cl_mv_values[index] : CL_NIL);
+            break;
+        }
+
+        case OP_MV_TO_LIST: {
+            /* Pops primary from stack, builds list from MV buffer.
+             * For single values (inline opcodes), uses the popped primary. */
+            CL_Obj primary = cl_vm_pop();
+            CL_Obj list = CL_NIL;
+            if (cl_mv_count == 0) {
+                /* (values) — no values, empty list */
+            } else if (cl_mv_count == 1) {
+                list = cl_cons(primary, CL_NIL);
+            } else {
+                int i;
+                for (i = cl_mv_count - 1; i >= 0; i--)
+                    list = cl_cons(cl_mv_values[i], list);
+            }
+            cl_vm_push(list);
+            cl_mv_count = 1;
+            break;
+        }
+
+        case OP_NTH_VALUE: {
+            /* Stack: [index] [primary]  (primary on top)
+             * Pops primary, pops index, pushes result. */
+            CL_Obj primary = cl_vm_pop();
+            CL_Obj idx_obj = cl_vm_pop();
+            int idx;
+            if (!CL_FIXNUM_P(idx_obj))
+                cl_error(CL_ERR_TYPE, "NTH-VALUE: index must be a number");
+            idx = CL_FIXNUM_VAL(idx_obj);
+            if (idx == 0)
+                cl_vm_push(primary);
+            else
+                cl_vm_push(idx > 0 && idx < cl_mv_count ? cl_mv_values[idx] : CL_NIL);
+            cl_mv_count = 1;
             break;
         }
 

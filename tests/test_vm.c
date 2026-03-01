@@ -962,6 +962,78 @@ TEST(eval_uwp_error_cleanup)
     ASSERT_STR_EQ(eval_print("*uwp-flag*"), "T");
 }
 
+/* --- Phase 4 Tier 2: Multiple Values --- */
+
+TEST(eval_values_basic)
+{
+    /* (values) returns NIL */
+    ASSERT_STR_EQ(eval_print("(values)"), "NIL");
+    /* (values 1) returns 1 */
+    ASSERT_EQ_INT(eval_int("(values 1)"), 1);
+    /* (values 1 2 3) returns primary = 1 */
+    ASSERT_EQ_INT(eval_int("(values 1 2 3)"), 1);
+}
+
+TEST(eval_multiple_value_bind)
+{
+    /* Basic MVB */
+    ASSERT_STR_EQ(eval_print(
+        "(multiple-value-bind (a b c) (values 1 2 3) (list a b c))"), "(1 2 3)");
+    /* More vars than values — extras are NIL */
+    ASSERT_STR_EQ(eval_print(
+        "(multiple-value-bind (a b c) (values 1) (list a b c))"), "(1 NIL NIL)");
+    /* Fewer vars than values — extras ignored */
+    ASSERT_EQ_INT(eval_int(
+        "(multiple-value-bind (a) (values 10 20 30) a)"), 10);
+}
+
+TEST(eval_multiple_value_list)
+{
+    ASSERT_STR_EQ(eval_print("(multiple-value-list (values 1 2 3))"), "(1 2 3)");
+    ASSERT_STR_EQ(eval_print("(multiple-value-list (values))"), "NIL");
+    ASSERT_STR_EQ(eval_print("(multiple-value-list (+ 1 2))"), "(3)");
+}
+
+TEST(eval_multiple_value_prog1)
+{
+    /* Preserves all values of first form */
+    ASSERT_STR_EQ(eval_print(
+        "(multiple-value-list (multiple-value-prog1 (values 1 2 3) (+ 4 5)))"), "(1 2 3)");
+}
+
+TEST(eval_nth_value)
+{
+    ASSERT_EQ_INT(eval_int("(nth-value 0 (values 10 20 30))"), 10);
+    ASSERT_EQ_INT(eval_int("(nth-value 1 (values 10 20 30))"), 20);
+    ASSERT_EQ_INT(eval_int("(nth-value 2 (values 10 20 30))"), 30);
+    /* Out of range returns NIL */
+    ASSERT_STR_EQ(eval_print("(nth-value 5 (values 1 2 3))"), "NIL");
+}
+
+TEST(eval_values_list)
+{
+    /* values-list creates multiple values from a list */
+    ASSERT_STR_EQ(eval_print(
+        "(multiple-value-list (values-list '(1 2 3)))"), "(1 2 3)");
+    ASSERT_EQ_INT(eval_int("(values-list '(42))"), 42);
+}
+
+TEST(eval_mv_propagation)
+{
+    /* MV propagates through progn (last form's values) */
+    ASSERT_STR_EQ(eval_print(
+        "(multiple-value-list (progn 1 (values 2 3 4)))"), "(2 3 4)");
+    /* MV propagates through if */
+    ASSERT_STR_EQ(eval_print(
+        "(multiple-value-list (if t (values 1 2)))"), "(1 2)");
+    /* MV propagates through let body */
+    ASSERT_STR_EQ(eval_print(
+        "(multiple-value-list (let ((x 1)) (values x 2 3)))"), "(1 2 3)");
+    /* Non-MV form yields single value */
+    ASSERT_STR_EQ(eval_print(
+        "(multiple-value-list 42)"), "(42)");
+}
+
 int main(void)
 {
     test_init();
@@ -1074,6 +1146,13 @@ int main(void)
     RUN(eval_uwp_throw_value);
     RUN(eval_uwp_nested);
     RUN(eval_uwp_error_cleanup);
+    RUN(eval_values_basic);
+    RUN(eval_multiple_value_bind);
+    RUN(eval_multiple_value_list);
+    RUN(eval_multiple_value_prog1);
+    RUN(eval_nth_value);
+    RUN(eval_values_list);
+    RUN(eval_mv_propagation);
 
     teardown();
     REPORT();

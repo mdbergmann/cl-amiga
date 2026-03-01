@@ -61,6 +61,11 @@ extern CL_Obj cl_pending_value;
 extern int cl_pending_error_code;
 extern char cl_pending_error_msg[512];
 
+/* --- Multiple Values --- */
+#define CL_MAX_MV 20
+extern CL_Obj cl_mv_values[CL_MAX_MV];
+extern int cl_mv_count;
+
 /* Initialize VM */
 void cl_vm_init(void);
 

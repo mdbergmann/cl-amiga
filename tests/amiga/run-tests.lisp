@@ -360,6 +360,27 @@
 (check "uwp throw value" 42 (catch 'done (unwind-protect (throw 'done 42) (+ 1 2))))
 (check "uwp nested" '(outer inner) (let ((log nil)) (catch 'done (unwind-protect (unwind-protect (throw 'done 1) (setq log (cons 'inner log))) (setq log (cons 'outer log)))) log))
 
+; --- Phase 4 Tier 2: Multiple Values ---
+(check "values none" nil (values))
+(check "values one" 1 (values 1))
+(check "values primary" 1 (values 1 2 3))
+(check "mvb basic" '(1 2 3) (multiple-value-bind (a b c) (values 1 2 3) (list a b c)))
+(check "mvb fewer values" '(1 nil nil) (multiple-value-bind (a b c) (values 1) (list a b c)))
+(check "mvb fewer vars" 10 (multiple-value-bind (a) (values 10 20 30) a))
+(check "mv-list values" '(1 2 3) (multiple-value-list (values 1 2 3)))
+(check "mv-list none" nil (multiple-value-list (values)))
+(check "mv-list single" '(3) (multiple-value-list (+ 1 2)))
+(check "nth-value 0" 10 (nth-value 0 (values 10 20 30)))
+(check "nth-value 1" 20 (nth-value 1 (values 10 20 30)))
+(check "nth-value 2" 30 (nth-value 2 (values 10 20 30)))
+(check "nth-value oob" nil (nth-value 5 (values 1 2 3)))
+(check "values-list" '(1 2 3) (multiple-value-list (values-list '(1 2 3))))
+(check "values-list primary" 42 (values-list '(42)))
+(check "mv progn" '(2 3 4) (multiple-value-list (progn 1 (values 2 3 4))))
+(check "mv if" '(1 2) (multiple-value-list (if t (values 1 2))))
+(check "mv let" '(1 2 3) (multiple-value-list (let ((x 1)) (values x 2 3))))
+(check "mvp1" '(1 2 3) (multiple-value-list (multiple-value-prog1 (values 1 2 3) (+ 4 5))))
+
 ; --- Summary ---
 (format t "~%=== Results ===~%")
 (format t "Passed: ~A~%" *pass-count*)

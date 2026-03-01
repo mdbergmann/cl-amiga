@@ -2049,6 +2049,158 @@ static void compile_symbol(CL_Compiler *c, CL_Obj sym)
     }
 }
 
+/* --- Multiple Values --- */
+
+static void compile_multiple_value_bind(CL_Compiler *c, CL_Obj form)
+{
+    /* (multiple-value-bind (vars...) values-form body...) */
+    CL_Obj vars_list = cl_car(cl_cdr(form));
+    CL_Obj values_form = cl_car(cl_cdr(cl_cdr(form)));
+    CL_Obj body = cl_cdr(cl_cdr(cl_cdr(form)));
+    CL_CompEnv *env = c->env;
+    int saved_local_count = env->local_count;
+    int saved_tail = c->in_tail;
+    CL_Obj vl;
+    int var_index;
+
+    /* Compile values form — primary on stack, MV buffer set */
+    c->in_tail = 0;
+    compile_expr(c, values_form);
+
+    /* Load MV values into local slots.
+     * Var 0 uses the primary from the stack (reliable).
+     * Vars 1+ use OP_MV_LOAD (reads from MV buffer, set by bi_values). */
+    var_index = 0;
+    vl = vars_list;
+    while (!CL_NULL_P(vl)) {
+        CL_Obj var = cl_car(vl);
+        int slot = cl_env_add_local(env, var);
+        if (var_index == 0) {
+            /* Primary value is on stack top */
+            emit(c, OP_STORE);
+            emit(c, (uint8_t)slot);
+            emit(c, OP_POP);
+        } else {
+            emit(c, OP_MV_LOAD);
+            emit(c, (uint8_t)var_index);
+            emit(c, OP_STORE);
+            emit(c, (uint8_t)slot);
+            emit(c, OP_POP);
+        }
+        var_index++;
+        vl = cl_cdr(vl);
+    }
+
+    /* If no vars, still need to pop the primary */
+    if (var_index == 0)
+        emit(c, OP_POP);
+
+    if (env->local_count > env->max_locals)
+        env->max_locals = env->local_count;
+
+    /* Compile body */
+    c->in_tail = saved_tail;
+    compile_body(c, body);
+
+    /* Restore scope */
+    env->local_count = saved_local_count;
+}
+
+static void compile_multiple_value_list(CL_Compiler *c, CL_Obj form)
+{
+    /* (multiple-value-list form) */
+    CL_Obj values_form = cl_car(cl_cdr(form));
+    int saved_tail = c->in_tail;
+
+    c->in_tail = 0;
+    compile_expr(c, values_form);
+    emit(c, OP_MV_TO_LIST);   /* pops primary, builds list from MV state */
+
+    c->in_tail = saved_tail;
+}
+
+static void compile_nth_value(CL_Compiler *c, CL_Obj form)
+{
+    /* (nth-value n form) */
+    CL_Obj n_form = cl_car(cl_cdr(form));
+    CL_Obj values_form = cl_car(cl_cdr(cl_cdr(form)));
+    int saved_tail = c->in_tail;
+
+    c->in_tail = 0;
+
+    if (CL_FIXNUM_P(n_form)) {
+        int idx = CL_FIXNUM_VAL(n_form);
+        compile_expr(c, values_form);
+        if (idx == 0) {
+            /* Primary value is already on stack — nothing to do */
+        } else {
+            emit(c, OP_POP);  /* discard primary */
+            emit(c, OP_MV_LOAD);
+            emit(c, (uint8_t)(idx < 0 ? 255 : idx > 255 ? 255 : idx));
+        }
+    } else {
+        /* Dynamic index: stack will be [index] [primary] */
+        compile_expr(c, n_form);
+        compile_expr(c, values_form);
+        emit(c, OP_NTH_VALUE); /* pops primary, pops index, pushes result */
+    }
+
+    c->in_tail = saved_tail;
+}
+
+static void compile_multiple_value_prog1(CL_Compiler *c, CL_Obj form)
+{
+    /* (multiple-value-prog1 first-form forms...)
+     * Evaluate first-form, save all its values,
+     * evaluate remaining forms for effect, restore saved values. */
+    CL_Obj first_form = cl_car(cl_cdr(form));
+    CL_Obj rest_forms = cl_cdr(cl_cdr(form));
+    CL_CompEnv *env = c->env;
+    int saved_local_count = env->local_count;
+    int saved_tail = c->in_tail;
+    int list_slot;
+
+    c->in_tail = 0;
+
+    /* Compile first form — primary on stack, MV buffer set */
+    compile_expr(c, first_form);
+    emit(c, OP_MV_TO_LIST);   /* pops primary, saves all values as a list */
+
+    /* Allocate slot for saved list */
+    list_slot = env->local_count;
+    env->local_count++;
+    if (env->local_count > env->max_locals)
+        env->max_locals = env->local_count;
+    emit(c, OP_STORE);
+    emit(c, (uint8_t)list_slot);
+    emit(c, OP_POP);
+
+    /* Evaluate remaining forms for effect */
+    {
+        CL_Obj rf = rest_forms;
+        while (!CL_NULL_P(rf)) {
+            compile_expr(c, cl_car(rf));
+            emit(c, OP_POP);
+            rf = cl_cdr(rf);
+        }
+    }
+
+    /* Restore MV state by calling VALUES-LIST on saved list */
+    {
+        CL_Obj vl_sym = cl_intern_in("VALUES-LIST", 11, cl_package_cl);
+        int sym_idx = add_constant(c, vl_sym);
+        emit(c, OP_FLOAD);
+        emit_u16(c, (uint16_t)sym_idx);
+        emit(c, OP_LOAD);
+        emit(c, (uint8_t)list_slot);
+        emit(c, OP_CALL);
+        emit(c, 1);
+    }
+
+    c->in_tail = saved_tail;
+    env->local_count = saved_local_count;
+}
+
 CL_Obj cl_macroexpand_1(CL_Obj form);
 
 static void compile_expr(CL_Compiler *c, CL_Obj expr)
@@ -2107,6 +2259,10 @@ static void compile_expr(CL_Compiler *c, CL_Obj expr)
         if (head == SYM_GO)          { compile_go(c, expr); return; }
         if (head == SYM_CATCH)       { compile_catch(c, expr); return; }
         if (head == SYM_UNWIND_PROTECT) { compile_unwind_protect(c, expr); return; }
+        if (head == SYM_MULTIPLE_VALUE_BIND)  { compile_multiple_value_bind(c, expr); return; }
+        if (head == SYM_MULTIPLE_VALUE_LIST)  { compile_multiple_value_list(c, expr); return; }
+        if (head == SYM_MULTIPLE_VALUE_PROG1) { compile_multiple_value_prog1(c, expr); return; }
+        if (head == SYM_NTH_VALUE)            { compile_nth_value(c, expr); return; }
 
         /* Regular function call */
         compile_call(c, expr);
