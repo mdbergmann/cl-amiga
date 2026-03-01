@@ -652,6 +652,129 @@
 (check "gethash mv present" t (multiple-value-bind (v p) (gethash 'x *ht-map*) p))
 (check "gethash mv absent" nil (multiple-value-bind (v p) (gethash 'missing *ht-map*) p))
 
+; --- Sequence functions ---
+(defun my-evenp (x) (= (mod x 2) 0))
+
+; find
+(check "find basic" 3 (find 3 '(1 2 3 4 5)))
+(check "find not found" nil (find 9 '(1 2 3)))
+(check "find with start" 2 (find 2 '(1 2 3 2 1) :start 2))
+(check "find with test" "b" (find "b" '("a" "b" "c") :test #'equal))
+(check "find from-end" 3 (find 3 '(1 3 2 3 4) :from-end t))
+
+; find-if, find-if-not
+(check "find-if" 2 (find-if #'my-evenp '(1 2 3 4)))
+(check "find-if not found" nil (find-if #'my-evenp '(1 3 5)))
+(check "find-if-not" 5 (find-if-not #'my-evenp '(2 4 5 6)))
+
+; position
+(check "position basic" 2 (position 3 '(1 2 3 4)))
+(check "position not found" nil (position 9 '(1 2 3)))
+(check "position from-end" 2 (position 1 '(1 2 1 2) :from-end t))
+
+; position-if, position-if-not
+(check "position-if" 2 (position-if #'my-evenp '(1 3 4 5)))
+(check "position-if-not" 2 (position-if-not #'my-evenp '(2 4 5)))
+
+; count
+(check "count basic" 3 (count 1 '(1 2 1 3 1)))
+(check "count none" 0 (count 9 '(1 2 3)))
+(check "count with start" 2 (count 1 '(1 2 1 3 1) :start 1))
+
+; count-if, count-if-not
+(check "count-if" 3 (count-if #'my-evenp '(1 2 3 4 5 6)))
+(check "count-if-not" 3 (count-if-not #'my-evenp '(1 2 3 4 5)))
+
+; remove
+(check "remove basic" '(1 2 4 5) (remove 3 '(1 2 3 4 3 5)))
+(check "remove count" '(1 2 4 3 5) (remove 3 '(1 2 3 4 3 5) :count 1))
+(check "remove not found" '(1 2 3) (remove 9 '(1 2 3)))
+(check "remove from-end count" '(1 2 3 4 5) (remove 3 '(1 2 3 4 3 5) :count 1 :from-end t))
+
+; remove-if, remove-if-not
+(check "remove-if" '(1 3 5) (remove-if #'my-evenp '(1 2 3 4 5)))
+(check "remove-if-not" '(2 4) (remove-if-not #'my-evenp '(1 2 3 4 5)))
+
+; remove-duplicates
+(check "remove-duplicates" '(1 3 2 4) (remove-duplicates '(1 2 1 3 2 4)))
+(check "remove-dup symbols" '(b a c) (remove-duplicates '(a b a c)))
+
+; substitute
+(check "substitute basic" '(1 2 99 4 99) (substitute 99 3 '(1 2 3 4 3)))
+(check "substitute count" '(1 2 0 4 3) (substitute 0 3 '(1 2 3 4 3) :count 1))
+
+; substitute-if, substitute-if-not
+(check "substitute-if" '(1 0 3 0 5) (substitute-if 0 #'my-evenp '(1 2 3 4 5)))
+(check "substitute-if-not" '(0 2 0 4 0) (substitute-if-not 0 #'my-evenp '(1 2 3 4 5)))
+
+; reduce
+(check "reduce sum" 10 (reduce #'+ '(1 2 3 4)))
+(check "reduce empty init" 0 (reduce #'+ '() :initial-value 0))
+(check "reduce single init" 15 (reduce #'+ '(5) :initial-value 10))
+(check "reduce cons" '((1 . 2) . 3) (reduce #'cons '(1 2 3)))
+
+; fill
+(defvar *fill-list* (list 1 2 3 4))
+(fill *fill-list* 0)
+(check "fill all" '(0 0 0 0) *fill-list*)
+(defvar *fill-list2* (list 1 2 3 4))
+(fill *fill-list2* 0 :start 1 :end 3)
+(check "fill range" '(1 0 0 4) *fill-list2*)
+
+; replace
+(defvar *repl-list* (list 1 2 3 4 5))
+(replace *repl-list* '(a b c) :start1 1)
+(check "replace" '(1 a b c 5) *repl-list*)
+
+; every, some, notany, notevery
+(check "every true" t (every #'my-evenp '(2 4 6)))
+(check "every false" nil (every #'my-evenp '(2 3 6)))
+(check "every empty" t (every #'my-evenp '()))
+(check "some true" t (some #'my-evenp '(1 3 4)))
+(check "some false" nil (some #'my-evenp '(1 3 5)))
+(check "notany true" t (notany #'my-evenp '(1 3 5)))
+(check "notany false" nil (notany #'my-evenp '(1 2 3)))
+(check "notevery true" t (notevery #'my-evenp '(2 4 5)))
+(check "notevery false" nil (notevery #'my-evenp '(2 4 6)))
+
+; map
+(check "map list" '(2 3 4) (map 'list #'1+ '(1 2 3)))
+
+; mismatch
+(check "mismatch none" nil (mismatch '(1 2 3) '(1 2 3)))
+(check "mismatch at 2" 2 (mismatch '(1 2 3) '(1 2 4)))
+(check "mismatch length" 2 (mismatch '(1 2) '(1 2 3)))
+
+; search
+(check "search found" 1 (search '(2 3) '(1 2 3 4)))
+(check "search not found" nil (search '(9) '(1 2 3)))
+(check "search empty" 0 (search '() '(1 2 3)))
+
+; sort
+(check "sort asc" '(1 1 3 4 5) (sort (list 3 1 4 1 5) #'<))
+(check "sort desc" '(5 4 3 2 1) (sort (list 1 2 3 4 5) #'>))
+(check "sort single" '(1) (sort (list 1) #'<))
+(check "sort empty" nil (sort '() #'<))
+(check "sort with key" '(1 -2 -3 4) (sort (list -3 1 -2 4) #'< :key #'abs))
+
+; stable-sort
+(check "stable-sort" '(1 2 3) (stable-sort (list 3 1 2) #'<))
+
+; find/position with :key
+(check "find with key" '(2 b) (find 2 '((1 a) (2 b) (3 c)) :key #'car))
+(check "position with key" 1 (position 2 '((1 a) (2 b) (3 c)) :key #'car))
+(check "count with key" 2 (count 1 '((1 a) (2 b) (1 c)) :key #'car))
+
+; remove with :key
+(check "remove with key" '((2 b) (3 c)) (remove 1 '((1 a) (2 b) (3 c)) :key #'car))
+
+; every/some with multiple lists
+(check "every 2 lists" t (every #'< '(1 2 3) '(2 3 4)))
+(check "some 2 lists" t (some #'< '(3 2 1) '(1 2 3)))
+
+; reduce with key
+(check "reduce with key" 6 (reduce #'+ '((1 a) (2 b) (3 c)) :key #'car))
+
 ; --- Summary ---
 (format t "~%=== Results ===~%")
 (format t "Passed: ~A~%" *pass-count*)

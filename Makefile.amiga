@@ -28,6 +28,8 @@ OBJS = $(BUILDDIR)/main.o \
        $(BUILDDIR)/builtins_strings.o \
        $(BUILDDIR)/builtins_lists.o \
        $(BUILDDIR)/builtins_hashtable.o \
+       $(BUILDDIR)/builtins_sequence.o \
+       $(BUILDDIR)/builtins_sequence2.o \
        $(BUILDDIR)/repl.o
 
 TARGET = $(BUILDDIR)/clamiga
@@ -102,6 +104,12 @@ $(BUILDDIR)/builtins_lists.o: src/core/builtins_lists.c
 	$(CC) $(CFLAGS) -o $@ -c $<
 
 $(BUILDDIR)/builtins_hashtable.o: src/core/builtins_hashtable.c
+	$(CC) $(CFLAGS) -o $@ -c $<
+
+$(BUILDDIR)/builtins_sequence.o: src/core/builtins_sequence.c
+	$(CC) $(CFLAGS) -o $@ -c $<
+
+$(BUILDDIR)/builtins_sequence2.o: src/core/builtins_sequence2.c
 	$(CC) $(CFLAGS) -o $@ -c $<
 
 $(BUILDDIR)/repl.o: src/core/repl.c

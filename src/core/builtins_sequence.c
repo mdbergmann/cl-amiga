@@ -1,0 +1,1249 @@
+#include "builtins.h"
+#include "symbol.h"
+#include "package.h"
+#include "mem.h"
+#include "error.h"
+#include "vm.h"
+#include "../platform/platform.h"
+#include <string.h>
+
+/* Helper to register a builtin */
+static void defun(const char *name, CL_CFunc func, int min, int max)
+{
+    CL_Obj sym = cl_intern_in(name, (uint32_t)strlen(name), cl_package_cl);
+    CL_Obj fn = cl_make_function(func, sym, min, max);
+    CL_Symbol *s = (CL_Symbol *)CL_OBJ_TO_PTR(sym);
+    s->function = fn;
+    s->value = fn;
+}
+
+/* --- Pre-interned keyword symbols --- */
+
+static CL_Obj KW_TEST = CL_NIL;
+static CL_Obj KW_KEY = CL_NIL;
+static CL_Obj KW_START = CL_NIL;
+static CL_Obj KW_END = CL_NIL;
+static CL_Obj KW_COUNT = CL_NIL;
+static CL_Obj KW_FROM_END = CL_NIL;
+static CL_Obj KW_INITIAL_VALUE = CL_NIL;
+static CL_Obj KW_START1 = CL_NIL;
+static CL_Obj KW_END1 = CL_NIL;
+static CL_Obj KW_START2 = CL_NIL;
+static CL_Obj KW_END2 = CL_NIL;
+static CL_Obj SYM_EQL_FN = CL_NIL;
+
+/* --- Shared infrastructure --- */
+
+/* Parsed keyword arguments for sequence functions */
+typedef struct {
+    CL_Obj test_fn;     /* :test function (default eql) */
+    CL_Obj key_fn;      /* :key function (default NIL = identity) */
+    int32_t start;      /* :start (default 0) */
+    int32_t end;        /* :end (default -1 = length) */
+    int32_t count;      /* :count (default -1 = all) */
+    int from_end;       /* :from-end (default 0) */
+} SeqArgs;
+
+static void parse_seq_args(CL_Obj *args, int n, int kw_start, SeqArgs *sa)
+{
+    int i;
+    sa->test_fn = SYM_EQL_FN;
+    sa->key_fn = CL_NIL;
+    sa->start = 0;
+    sa->end = -1;
+    sa->count = -1;
+    sa->from_end = 0;
+
+    for (i = kw_start; i + 1 < n; i += 2) {
+        CL_Obj kw = args[i];
+        CL_Obj val = args[i + 1];
+        if (kw == KW_TEST) {
+            sa->test_fn = val;
+        } else if (kw == KW_KEY) {
+            sa->key_fn = val;
+        } else if (kw == KW_START) {
+            if (CL_FIXNUM_P(val)) sa->start = CL_FIXNUM_VAL(val);
+        } else if (kw == KW_END) {
+            if (!CL_NULL_P(val) && CL_FIXNUM_P(val)) sa->end = CL_FIXNUM_VAL(val);
+        } else if (kw == KW_COUNT) {
+            if (!CL_NULL_P(val) && CL_FIXNUM_P(val)) sa->count = CL_FIXNUM_VAL(val);
+        } else if (kw == KW_FROM_END) {
+            sa->from_end = !CL_NULL_P(val);
+        }
+    }
+}
+
+/* Call a 2-arg test function */
+static CL_Obj call_test(CL_Obj test_fn, CL_Obj a, CL_Obj b)
+{
+    CL_Obj targs[2];
+    targs[0] = a;
+    targs[1] = b;
+    if (CL_FUNCTION_P(test_fn)) {
+        CL_Function *f = (CL_Function *)CL_OBJ_TO_PTR(test_fn);
+        return f->func(targs, 2);
+    }
+    if (CL_BYTECODE_P(test_fn) || CL_CLOSURE_P(test_fn))
+        return cl_vm_apply(test_fn, targs, 2);
+    cl_error(CL_ERR_TYPE, "not a function (test)");
+    return CL_NIL;
+}
+
+/* Call a 1-arg predicate/key function */
+static CL_Obj call_1(CL_Obj fn, CL_Obj arg)
+{
+    CL_Obj pargs[1];
+    pargs[0] = arg;
+    if (CL_FUNCTION_P(fn)) {
+        CL_Function *f = (CL_Function *)CL_OBJ_TO_PTR(fn);
+        return f->func(pargs, 1);
+    }
+    if (CL_BYTECODE_P(fn) || CL_CLOSURE_P(fn))
+        return cl_vm_apply(fn, pargs, 1);
+    cl_error(CL_ERR_TYPE, "not a function");
+    return CL_NIL;
+}
+
+/* Apply :key if present, otherwise return element unchanged */
+static CL_Obj apply_key(CL_Obj key_fn, CL_Obj elem)
+{
+    if (CL_NULL_P(key_fn)) return elem;
+    return call_1(key_fn, elem);
+}
+
+/* Test item against element (applying :key to element) */
+static int seq_test_match(SeqArgs *sa, CL_Obj item, CL_Obj elem)
+{
+    CL_Obj keyed = apply_key(sa->key_fn, elem);
+    return !CL_NULL_P(call_test(sa->test_fn, item, keyed));
+}
+
+/* Test predicate against element (applying :key to element) */
+static int seq_pred_match(CL_Obj pred, CL_Obj key_fn, CL_Obj elem)
+{
+    CL_Obj keyed = apply_key(key_fn, elem);
+    return !CL_NULL_P(call_1(pred, keyed));
+}
+
+/* --- Sequence element access helpers --- */
+
+static int32_t seq_length(CL_Obj seq)
+{
+    if (CL_NULL_P(seq)) return 0;
+    if (CL_CONS_P(seq)) {
+        int32_t len = 0;
+        while (!CL_NULL_P(seq)) { len++; seq = cl_cdr(seq); }
+        return len;
+    }
+    if (CL_VECTOR_P(seq)) {
+        CL_Vector *v = (CL_Vector *)CL_OBJ_TO_PTR(seq);
+        return (int32_t)v->length;
+    }
+    if (CL_STRING_P(seq)) {
+        CL_String *s = (CL_String *)CL_OBJ_TO_PTR(seq);
+        return (int32_t)s->length;
+    }
+    cl_error(CL_ERR_TYPE, "not a sequence");
+    return 0;
+}
+
+static CL_Obj seq_elt(CL_Obj seq, int32_t idx)
+{
+    if (CL_CONS_P(seq) || CL_NULL_P(seq)) {
+        while (idx > 0 && !CL_NULL_P(seq)) { seq = cl_cdr(seq); idx--; }
+        return CL_NULL_P(seq) ? CL_NIL : cl_car(seq);
+    }
+    if (CL_VECTOR_P(seq)) {
+        CL_Vector *v = (CL_Vector *)CL_OBJ_TO_PTR(seq);
+        if ((uint32_t)idx >= v->length) cl_error(CL_ERR_ARGS, "index out of bounds");
+        return v->data[idx];
+    }
+    if (CL_STRING_P(seq)) {
+        CL_String *s = (CL_String *)CL_OBJ_TO_PTR(seq);
+        if ((uint32_t)idx >= s->length) cl_error(CL_ERR_ARGS, "index out of bounds");
+        return CL_MAKE_CHAR((unsigned char)s->data[idx]);
+    }
+    cl_error(CL_ERR_TYPE, "not a sequence");
+    return CL_NIL;
+}
+
+/* ======================================================= */
+/* FIND / FIND-IF / FIND-IF-NOT                            */
+/* ======================================================= */
+
+static CL_Obj bi_find(CL_Obj *args, int n)
+{
+    CL_Obj item = args[0], seq = args[1];
+    SeqArgs sa;
+    int32_t i, len, end;
+
+    parse_seq_args(args, n, 2, &sa);
+    len = seq_length(seq);
+    end = (sa.end < 0) ? len : sa.end;
+
+    if (!sa.from_end) {
+        /* Forward scan */
+        if (CL_CONS_P(seq) || CL_NULL_P(seq)) {
+            CL_Obj cur = seq;
+            for (i = 0; i < end && !CL_NULL_P(cur); i++, cur = cl_cdr(cur)) {
+                if (i >= sa.start && seq_test_match(&sa, item, cl_car(cur)))
+                    return cl_car(cur);
+            }
+        } else {
+            for (i = sa.start; i < end; i++) {
+                CL_Obj elem = seq_elt(seq, i);
+                if (seq_test_match(&sa, item, elem))
+                    return elem;
+            }
+        }
+    } else {
+        /* :from-end — forward scan tracking last match */
+        CL_Obj found = CL_NIL;
+        int found_p = 0;
+        if (CL_CONS_P(seq) || CL_NULL_P(seq)) {
+            CL_Obj cur = seq;
+            for (i = 0; i < end && !CL_NULL_P(cur); i++, cur = cl_cdr(cur)) {
+                if (i >= sa.start && seq_test_match(&sa, item, cl_car(cur))) {
+                    found = cl_car(cur);
+                    found_p = 1;
+                }
+            }
+        } else {
+            for (i = sa.start; i < end; i++) {
+                CL_Obj elem = seq_elt(seq, i);
+                if (seq_test_match(&sa, item, elem)) {
+                    found = elem;
+                    found_p = 1;
+                }
+            }
+        }
+        if (found_p) return found;
+    }
+    return CL_NIL;
+}
+
+static CL_Obj bi_find_if(CL_Obj *args, int n)
+{
+    CL_Obj pred = args[0], seq = args[1];
+    SeqArgs sa;
+    int32_t i, len, end;
+
+    parse_seq_args(args, n, 2, &sa);
+    len = seq_length(seq);
+    end = (sa.end < 0) ? len : sa.end;
+
+    if (!sa.from_end) {
+        if (CL_CONS_P(seq) || CL_NULL_P(seq)) {
+            CL_Obj cur = seq;
+            for (i = 0; i < end && !CL_NULL_P(cur); i++, cur = cl_cdr(cur)) {
+                if (i >= sa.start && seq_pred_match(pred, sa.key_fn, cl_car(cur)))
+                    return cl_car(cur);
+            }
+        } else {
+            for (i = sa.start; i < end; i++) {
+                CL_Obj elem = seq_elt(seq, i);
+                if (seq_pred_match(pred, sa.key_fn, elem))
+                    return elem;
+            }
+        }
+    } else {
+        CL_Obj found = CL_NIL;
+        int found_p = 0;
+        if (CL_CONS_P(seq) || CL_NULL_P(seq)) {
+            CL_Obj cur = seq;
+            for (i = 0; i < end && !CL_NULL_P(cur); i++, cur = cl_cdr(cur)) {
+                if (i >= sa.start && seq_pred_match(pred, sa.key_fn, cl_car(cur))) {
+                    found = cl_car(cur);
+                    found_p = 1;
+                }
+            }
+        } else {
+            for (i = sa.start; i < end; i++) {
+                CL_Obj elem = seq_elt(seq, i);
+                if (seq_pred_match(pred, sa.key_fn, elem)) {
+                    found = elem;
+                    found_p = 1;
+                }
+            }
+        }
+        if (found_p) return found;
+    }
+    return CL_NIL;
+}
+
+static CL_Obj bi_find_if_not(CL_Obj *args, int n)
+{
+    CL_Obj pred = args[0], seq = args[1];
+    SeqArgs sa;
+    int32_t i, len, end;
+
+    parse_seq_args(args, n, 2, &sa);
+    len = seq_length(seq);
+    end = (sa.end < 0) ? len : sa.end;
+
+    if (!sa.from_end) {
+        if (CL_CONS_P(seq) || CL_NULL_P(seq)) {
+            CL_Obj cur = seq;
+            for (i = 0; i < end && !CL_NULL_P(cur); i++, cur = cl_cdr(cur)) {
+                if (i >= sa.start && !seq_pred_match(pred, sa.key_fn, cl_car(cur)))
+                    return cl_car(cur);
+            }
+        } else {
+            for (i = sa.start; i < end; i++) {
+                CL_Obj elem = seq_elt(seq, i);
+                if (!seq_pred_match(pred, sa.key_fn, elem))
+                    return elem;
+            }
+        }
+    } else {
+        CL_Obj found = CL_NIL;
+        int found_p = 0;
+        if (CL_CONS_P(seq) || CL_NULL_P(seq)) {
+            CL_Obj cur = seq;
+            for (i = 0; i < end && !CL_NULL_P(cur); i++, cur = cl_cdr(cur)) {
+                if (i >= sa.start && !seq_pred_match(pred, sa.key_fn, cl_car(cur))) {
+                    found = cl_car(cur);
+                    found_p = 1;
+                }
+            }
+        } else {
+            for (i = sa.start; i < end; i++) {
+                CL_Obj elem = seq_elt(seq, i);
+                if (!seq_pred_match(pred, sa.key_fn, elem)) {
+                    found = elem;
+                    found_p = 1;
+                }
+            }
+        }
+        if (found_p) return found;
+    }
+    return CL_NIL;
+}
+
+/* ======================================================= */
+/* POSITION / POSITION-IF / POSITION-IF-NOT                */
+/* ======================================================= */
+
+static CL_Obj bi_position(CL_Obj *args, int n)
+{
+    CL_Obj item = args[0], seq = args[1];
+    SeqArgs sa;
+    int32_t i, len, end;
+
+    parse_seq_args(args, n, 2, &sa);
+    len = seq_length(seq);
+    end = (sa.end < 0) ? len : sa.end;
+
+    if (!sa.from_end) {
+        if (CL_CONS_P(seq) || CL_NULL_P(seq)) {
+            CL_Obj cur = seq;
+            for (i = 0; i < end && !CL_NULL_P(cur); i++, cur = cl_cdr(cur)) {
+                if (i >= sa.start && seq_test_match(&sa, item, cl_car(cur)))
+                    return CL_MAKE_FIXNUM(i);
+            }
+        } else {
+            for (i = sa.start; i < end; i++) {
+                CL_Obj elem = seq_elt(seq, i);
+                if (seq_test_match(&sa, item, elem))
+                    return CL_MAKE_FIXNUM(i);
+            }
+        }
+    } else {
+        int32_t found = -1;
+        if (CL_CONS_P(seq) || CL_NULL_P(seq)) {
+            CL_Obj cur = seq;
+            for (i = 0; i < end && !CL_NULL_P(cur); i++, cur = cl_cdr(cur)) {
+                if (i >= sa.start && seq_test_match(&sa, item, cl_car(cur)))
+                    found = i;
+            }
+        } else {
+            for (i = sa.start; i < end; i++) {
+                if (seq_test_match(&sa, item, seq_elt(seq, i)))
+                    found = i;
+            }
+        }
+        if (found >= 0) return CL_MAKE_FIXNUM(found);
+    }
+    return CL_NIL;
+}
+
+static CL_Obj bi_position_if(CL_Obj *args, int n)
+{
+    CL_Obj pred = args[0], seq = args[1];
+    SeqArgs sa;
+    int32_t i, len, end;
+
+    parse_seq_args(args, n, 2, &sa);
+    len = seq_length(seq);
+    end = (sa.end < 0) ? len : sa.end;
+
+    if (!sa.from_end) {
+        if (CL_CONS_P(seq) || CL_NULL_P(seq)) {
+            CL_Obj cur = seq;
+            for (i = 0; i < end && !CL_NULL_P(cur); i++, cur = cl_cdr(cur)) {
+                if (i >= sa.start && seq_pred_match(pred, sa.key_fn, cl_car(cur)))
+                    return CL_MAKE_FIXNUM(i);
+            }
+        } else {
+            for (i = sa.start; i < end; i++) {
+                if (seq_pred_match(pred, sa.key_fn, seq_elt(seq, i)))
+                    return CL_MAKE_FIXNUM(i);
+            }
+        }
+    } else {
+        int32_t found = -1;
+        if (CL_CONS_P(seq) || CL_NULL_P(seq)) {
+            CL_Obj cur = seq;
+            for (i = 0; i < end && !CL_NULL_P(cur); i++, cur = cl_cdr(cur)) {
+                if (i >= sa.start && seq_pred_match(pred, sa.key_fn, cl_car(cur)))
+                    found = i;
+            }
+        } else {
+            for (i = sa.start; i < end; i++) {
+                if (seq_pred_match(pred, sa.key_fn, seq_elt(seq, i)))
+                    found = i;
+            }
+        }
+        if (found >= 0) return CL_MAKE_FIXNUM(found);
+    }
+    return CL_NIL;
+}
+
+static CL_Obj bi_position_if_not(CL_Obj *args, int n)
+{
+    CL_Obj pred = args[0], seq = args[1];
+    SeqArgs sa;
+    int32_t i, len, end;
+
+    parse_seq_args(args, n, 2, &sa);
+    len = seq_length(seq);
+    end = (sa.end < 0) ? len : sa.end;
+
+    if (!sa.from_end) {
+        if (CL_CONS_P(seq) || CL_NULL_P(seq)) {
+            CL_Obj cur = seq;
+            for (i = 0; i < end && !CL_NULL_P(cur); i++, cur = cl_cdr(cur)) {
+                if (i >= sa.start && !seq_pred_match(pred, sa.key_fn, cl_car(cur)))
+                    return CL_MAKE_FIXNUM(i);
+            }
+        } else {
+            for (i = sa.start; i < end; i++) {
+                if (!seq_pred_match(pred, sa.key_fn, seq_elt(seq, i)))
+                    return CL_MAKE_FIXNUM(i);
+            }
+        }
+    } else {
+        int32_t found = -1;
+        if (CL_CONS_P(seq) || CL_NULL_P(seq)) {
+            CL_Obj cur = seq;
+            for (i = 0; i < end && !CL_NULL_P(cur); i++, cur = cl_cdr(cur)) {
+                if (i >= sa.start && !seq_pred_match(pred, sa.key_fn, cl_car(cur)))
+                    found = i;
+            }
+        } else {
+            for (i = sa.start; i < end; i++) {
+                if (!seq_pred_match(pred, sa.key_fn, seq_elt(seq, i)))
+                    found = i;
+            }
+        }
+        if (found >= 0) return CL_MAKE_FIXNUM(found);
+    }
+    return CL_NIL;
+}
+
+/* ======================================================= */
+/* COUNT / COUNT-IF / COUNT-IF-NOT                         */
+/* ======================================================= */
+
+static CL_Obj bi_count(CL_Obj *args, int n)
+{
+    CL_Obj item = args[0], seq = args[1];
+    SeqArgs sa;
+    int32_t i, len, end, cnt = 0;
+
+    parse_seq_args(args, n, 2, &sa);
+    len = seq_length(seq);
+    end = (sa.end < 0) ? len : sa.end;
+
+    if (CL_CONS_P(seq) || CL_NULL_P(seq)) {
+        CL_Obj cur = seq;
+        for (i = 0; i < end && !CL_NULL_P(cur); i++, cur = cl_cdr(cur)) {
+            if (i >= sa.start && seq_test_match(&sa, item, cl_car(cur)))
+                cnt++;
+        }
+    } else {
+        for (i = sa.start; i < end; i++) {
+            if (seq_test_match(&sa, item, seq_elt(seq, i)))
+                cnt++;
+        }
+    }
+    return CL_MAKE_FIXNUM(cnt);
+}
+
+static CL_Obj bi_count_if(CL_Obj *args, int n)
+{
+    CL_Obj pred = args[0], seq = args[1];
+    SeqArgs sa;
+    int32_t i, len, end, cnt = 0;
+
+    parse_seq_args(args, n, 2, &sa);
+    len = seq_length(seq);
+    end = (sa.end < 0) ? len : sa.end;
+
+    if (CL_CONS_P(seq) || CL_NULL_P(seq)) {
+        CL_Obj cur = seq;
+        for (i = 0; i < end && !CL_NULL_P(cur); i++, cur = cl_cdr(cur)) {
+            if (i >= sa.start && seq_pred_match(pred, sa.key_fn, cl_car(cur)))
+                cnt++;
+        }
+    } else {
+        for (i = sa.start; i < end; i++) {
+            if (seq_pred_match(pred, sa.key_fn, seq_elt(seq, i)))
+                cnt++;
+        }
+    }
+    return CL_MAKE_FIXNUM(cnt);
+}
+
+static CL_Obj bi_count_if_not(CL_Obj *args, int n)
+{
+    CL_Obj pred = args[0], seq = args[1];
+    SeqArgs sa;
+    int32_t i, len, end, cnt = 0;
+
+    parse_seq_args(args, n, 2, &sa);
+    len = seq_length(seq);
+    end = (sa.end < 0) ? len : sa.end;
+
+    if (CL_CONS_P(seq) || CL_NULL_P(seq)) {
+        CL_Obj cur = seq;
+        for (i = 0; i < end && !CL_NULL_P(cur); i++, cur = cl_cdr(cur)) {
+            if (i >= sa.start && !seq_pred_match(pred, sa.key_fn, cl_car(cur)))
+                cnt++;
+        }
+    } else {
+        for (i = sa.start; i < end; i++) {
+            if (!seq_pred_match(pred, sa.key_fn, seq_elt(seq, i)))
+                cnt++;
+        }
+    }
+    return CL_MAKE_FIXNUM(cnt);
+}
+
+/* ======================================================= */
+/* REMOVE / REMOVE-IF / REMOVE-IF-NOT / REMOVE-DUPLICATES */
+/* ======================================================= */
+
+/* Helper: build a result list from elements, skipping marked positions.
+   Works for list sequences by collecting non-removed elements. */
+static CL_Obj remove_from_list(CL_Obj seq, int32_t start, int32_t end,
+                               int32_t count, int from_end,
+                               CL_Obj item, CL_Obj test_fn, CL_Obj key_fn,
+                               int mode) /* 0=test-item, 1=pred, 2=pred-not */
+{
+    CL_Obj result = CL_NIL, tail = CL_NIL;
+    CL_Obj cur;
+    int32_t i, removed = 0;
+
+    CL_GC_PROTECT(result);
+    CL_GC_PROTECT(tail);
+
+    if (from_end && count >= 0) {
+        /* Two-pass: count matches from end */
+        int32_t total_matches = 0;
+        int32_t skip_count;
+        cur = seq;
+        for (i = 0; !CL_NULL_P(cur); i++, cur = cl_cdr(cur)) {
+            if (i >= start && (end < 0 || i < end)) {
+                CL_Obj elem = cl_car(cur);
+                int match = 0;
+                if (mode == 0) {
+                    CL_Obj keyed = apply_key(key_fn, elem);
+                    match = !CL_NULL_P(call_test(test_fn, item, keyed));
+                } else if (mode == 1) {
+                    match = seq_pred_match(item, key_fn, elem);
+                } else {
+                    match = !seq_pred_match(item, key_fn, elem);
+                }
+                if (match) total_matches++;
+            }
+        }
+        /* Skip first (total_matches - count) matches from the front */
+        skip_count = total_matches - count;
+        if (skip_count < 0) skip_count = 0;
+
+        cur = seq;
+        for (i = 0; !CL_NULL_P(cur); i++, cur = cl_cdr(cur)) {
+            CL_Obj elem = cl_car(cur);
+            int match = 0;
+            if (i >= start && (end < 0 || i < end)) {
+                if (mode == 0) {
+                    CL_Obj keyed = apply_key(key_fn, elem);
+                    match = !CL_NULL_P(call_test(test_fn, item, keyed));
+                } else if (mode == 1) {
+                    match = seq_pred_match(item, key_fn, elem);
+                } else {
+                    match = !seq_pred_match(item, key_fn, elem);
+                }
+            }
+            if (match) {
+                if (skip_count > 0) {
+                    skip_count--;
+                    match = 0; /* keep this one */
+                }
+            }
+            if (!match) {
+                CL_Obj cell = cl_cons(elem, CL_NIL);
+                if (CL_NULL_P(result)) result = cell;
+                else ((CL_Cons *)CL_OBJ_TO_PTR(tail))->cdr = cell;
+                tail = cell;
+            }
+        }
+    } else {
+        /* Forward removal */
+        cur = seq;
+        for (i = 0; !CL_NULL_P(cur); i++, cur = cl_cdr(cur)) {
+            CL_Obj elem = cl_car(cur);
+            int should_remove = 0;
+
+            if (i >= start && (end < 0 || i < end) && (count < 0 || removed < count)) {
+                if (mode == 0) {
+                    CL_Obj keyed = apply_key(key_fn, elem);
+                    should_remove = !CL_NULL_P(call_test(test_fn, item, keyed));
+                } else if (mode == 1) {
+                    should_remove = seq_pred_match(item, key_fn, elem);
+                } else {
+                    should_remove = !seq_pred_match(item, key_fn, elem);
+                }
+            }
+
+            if (should_remove) {
+                removed++;
+            } else {
+                CL_Obj cell = cl_cons(elem, CL_NIL);
+                if (CL_NULL_P(result)) result = cell;
+                else ((CL_Cons *)CL_OBJ_TO_PTR(tail))->cdr = cell;
+                tail = cell;
+            }
+        }
+    }
+
+    CL_GC_UNPROTECT(2);
+    return result;
+}
+
+static CL_Obj bi_remove(CL_Obj *args, int n)
+{
+    CL_Obj item = args[0], seq = args[1];
+    SeqArgs sa;
+    parse_seq_args(args, n, 2, &sa);
+
+    if (CL_NULL_P(seq)) return CL_NIL;
+    if (CL_CONS_P(seq)) {
+        int32_t len = seq_length(seq);
+        int32_t end = (sa.end < 0) ? len : sa.end;
+        return remove_from_list(seq, sa.start, end, sa.count, sa.from_end,
+                                item, sa.test_fn, sa.key_fn, 0);
+    }
+    /* Vector path */
+    {
+        CL_Vector *v = (CL_Vector *)CL_OBJ_TO_PTR(seq);
+        int32_t end = (sa.end < 0) ? (int32_t)v->length : sa.end;
+        CL_Obj result = CL_NIL, tail = CL_NIL;
+        int32_t i, removed = 0;
+
+        CL_GC_PROTECT(result);
+        CL_GC_PROTECT(tail);
+
+        for (i = 0; i < (int32_t)v->length; i++) {
+            CL_Obj elem = v->data[i];
+            int should_remove = 0;
+            if (i >= sa.start && i < end && (sa.count < 0 || removed < sa.count)) {
+                CL_Obj keyed = apply_key(sa.key_fn, elem);
+                should_remove = !CL_NULL_P(call_test(sa.test_fn, item, keyed));
+            }
+            if (should_remove) {
+                removed++;
+            } else {
+                CL_Obj cell = cl_cons(elem, CL_NIL);
+                if (CL_NULL_P(result)) result = cell;
+                else ((CL_Cons *)CL_OBJ_TO_PTR(tail))->cdr = cell;
+                tail = cell;
+            }
+        }
+
+        CL_GC_UNPROTECT(2);
+        return result;
+    }
+}
+
+static CL_Obj bi_remove_if(CL_Obj *args, int n)
+{
+    CL_Obj pred = args[0], seq = args[1];
+    SeqArgs sa;
+    parse_seq_args(args, n, 2, &sa);
+
+    if (CL_NULL_P(seq)) return CL_NIL;
+    if (CL_CONS_P(seq)) {
+        int32_t len = seq_length(seq);
+        int32_t end = (sa.end < 0) ? len : sa.end;
+        return remove_from_list(seq, sa.start, end, sa.count, sa.from_end,
+                                pred, CL_NIL, sa.key_fn, 1);
+    }
+    /* Vector path */
+    {
+        CL_Vector *v = (CL_Vector *)CL_OBJ_TO_PTR(seq);
+        int32_t end = (sa.end < 0) ? (int32_t)v->length : sa.end;
+        CL_Obj result = CL_NIL, tail = CL_NIL;
+        int32_t i, removed = 0;
+
+        CL_GC_PROTECT(result);
+        CL_GC_PROTECT(tail);
+
+        for (i = 0; i < (int32_t)v->length; i++) {
+            CL_Obj elem = v->data[i];
+            int should_remove = 0;
+            if (i >= sa.start && i < end && (sa.count < 0 || removed < sa.count)) {
+                should_remove = seq_pred_match(pred, sa.key_fn, elem);
+            }
+            if (should_remove) {
+                removed++;
+            } else {
+                CL_Obj cell = cl_cons(elem, CL_NIL);
+                if (CL_NULL_P(result)) result = cell;
+                else ((CL_Cons *)CL_OBJ_TO_PTR(tail))->cdr = cell;
+                tail = cell;
+            }
+        }
+
+        CL_GC_UNPROTECT(2);
+        return result;
+    }
+}
+
+static CL_Obj bi_remove_if_not(CL_Obj *args, int n)
+{
+    CL_Obj pred = args[0], seq = args[1];
+    SeqArgs sa;
+    parse_seq_args(args, n, 2, &sa);
+
+    if (CL_NULL_P(seq)) return CL_NIL;
+    if (CL_CONS_P(seq)) {
+        int32_t len = seq_length(seq);
+        int32_t end = (sa.end < 0) ? len : sa.end;
+        return remove_from_list(seq, sa.start, end, sa.count, sa.from_end,
+                                pred, CL_NIL, sa.key_fn, 2);
+    }
+    /* Vector path */
+    {
+        CL_Vector *v = (CL_Vector *)CL_OBJ_TO_PTR(seq);
+        int32_t end = (sa.end < 0) ? (int32_t)v->length : sa.end;
+        CL_Obj result = CL_NIL, tail = CL_NIL;
+        int32_t i, removed = 0;
+
+        CL_GC_PROTECT(result);
+        CL_GC_PROTECT(tail);
+
+        for (i = 0; i < (int32_t)v->length; i++) {
+            CL_Obj elem = v->data[i];
+            int should_remove = 0;
+            if (i >= sa.start && i < end && (sa.count < 0 || removed < sa.count)) {
+                should_remove = !seq_pred_match(pred, sa.key_fn, elem);
+            }
+            if (should_remove) {
+                removed++;
+            } else {
+                CL_Obj cell = cl_cons(elem, CL_NIL);
+                if (CL_NULL_P(result)) result = cell;
+                else ((CL_Cons *)CL_OBJ_TO_PTR(tail))->cdr = cell;
+                tail = cell;
+            }
+        }
+
+        CL_GC_UNPROTECT(2);
+        return result;
+    }
+}
+
+static CL_Obj bi_remove_duplicates(CL_Obj *args, int n)
+{
+    CL_Obj seq = args[0];
+    SeqArgs sa;
+    CL_Obj result = CL_NIL, tail = CL_NIL;
+    int32_t i, j, len, end;
+
+    parse_seq_args(args, n, 1, &sa);
+    len = seq_length(seq);
+    end = (sa.end < 0) ? len : sa.end;
+
+    CL_GC_PROTECT(result);
+    CL_GC_PROTECT(tail);
+
+    if (CL_CONS_P(seq) || CL_NULL_P(seq)) {
+        /* For lists: keep last occurrence (per CL spec with :from-end nil) */
+        CL_Obj cur = seq;
+        for (i = 0; !CL_NULL_P(cur); i++, cur = cl_cdr(cur)) {
+            CL_Obj elem = cl_car(cur);
+            int dup = 0;
+
+            if (i >= sa.start && i < end) {
+                /* Check if elem appears later in the range */
+                CL_Obj ahead = cl_cdr(cur);
+                for (j = i + 1; !CL_NULL_P(ahead) && j < end; j++, ahead = cl_cdr(ahead)) {
+                    CL_Obj keyed_i = apply_key(sa.key_fn, elem);
+                    CL_Obj keyed_j = apply_key(sa.key_fn, cl_car(ahead));
+                    if (!CL_NULL_P(call_test(sa.test_fn, keyed_i, keyed_j))) {
+                        dup = 1;
+                        break;
+                    }
+                }
+            }
+
+            if (!dup) {
+                CL_Obj cell = cl_cons(elem, CL_NIL);
+                if (CL_NULL_P(result)) result = cell;
+                else ((CL_Cons *)CL_OBJ_TO_PTR(tail))->cdr = cell;
+                tail = cell;
+            }
+        }
+    } else if (CL_VECTOR_P(seq)) {
+        CL_Vector *v = (CL_Vector *)CL_OBJ_TO_PTR(seq);
+        for (i = 0; i < (int32_t)v->length; i++) {
+            CL_Obj elem = v->data[i];
+            int dup = 0;
+
+            if (i >= sa.start && i < end) {
+                for (j = i + 1; j < end; j++) {
+                    CL_Obj keyed_i = apply_key(sa.key_fn, elem);
+                    CL_Obj keyed_j = apply_key(sa.key_fn, v->data[j]);
+                    if (!CL_NULL_P(call_test(sa.test_fn, keyed_i, keyed_j))) {
+                        dup = 1;
+                        break;
+                    }
+                }
+            }
+
+            if (!dup) {
+                CL_Obj cell = cl_cons(elem, CL_NIL);
+                if (CL_NULL_P(result)) result = cell;
+                else ((CL_Cons *)CL_OBJ_TO_PTR(tail))->cdr = cell;
+                tail = cell;
+            }
+        }
+    }
+
+    CL_GC_UNPROTECT(2);
+    return result;
+}
+
+/* ======================================================= */
+/* SUBSTITUTE / SUBSTITUTE-IF / SUBSTITUTE-IF-NOT          */
+/* ======================================================= */
+
+static CL_Obj bi_substitute(CL_Obj *args, int n)
+{
+    CL_Obj newitem = args[0], olditem = args[1], seq = args[2];
+    SeqArgs sa;
+    CL_Obj result = CL_NIL, tail = CL_NIL;
+    int32_t i, len, end, replaced = 0;
+
+    parse_seq_args(args, n, 3, &sa);
+    len = seq_length(seq);
+    end = (sa.end < 0) ? len : sa.end;
+
+    CL_GC_PROTECT(result);
+    CL_GC_PROTECT(tail);
+    CL_GC_PROTECT(newitem);
+
+    if (CL_CONS_P(seq) || CL_NULL_P(seq)) {
+        CL_Obj cur = seq;
+        for (i = 0; !CL_NULL_P(cur); i++, cur = cl_cdr(cur)) {
+            CL_Obj elem = cl_car(cur);
+            int match = 0;
+            if (i >= sa.start && i < end && (sa.count < 0 || replaced < sa.count)) {
+                match = seq_test_match(&sa, olditem, elem);
+            }
+            {
+                CL_Obj val = match ? newitem : elem;
+                CL_Obj cell = cl_cons(val, CL_NIL);
+                if (CL_NULL_P(result)) result = cell;
+                else ((CL_Cons *)CL_OBJ_TO_PTR(tail))->cdr = cell;
+                tail = cell;
+                if (match) replaced++;
+            }
+        }
+    } else if (CL_VECTOR_P(seq)) {
+        CL_Vector *v = (CL_Vector *)CL_OBJ_TO_PTR(seq);
+        for (i = 0; i < (int32_t)v->length; i++) {
+            CL_Obj elem = v->data[i];
+            int match = 0;
+            if (i >= sa.start && i < end && (sa.count < 0 || replaced < sa.count)) {
+                match = seq_test_match(&sa, olditem, elem);
+            }
+            {
+                CL_Obj val = match ? newitem : elem;
+                CL_Obj cell = cl_cons(val, CL_NIL);
+                if (CL_NULL_P(result)) result = cell;
+                else ((CL_Cons *)CL_OBJ_TO_PTR(tail))->cdr = cell;
+                tail = cell;
+                if (match) replaced++;
+            }
+        }
+    }
+
+    CL_GC_UNPROTECT(3);
+    return result;
+}
+
+static CL_Obj bi_substitute_if(CL_Obj *args, int n)
+{
+    CL_Obj newitem = args[0], pred = args[1], seq = args[2];
+    SeqArgs sa;
+    CL_Obj result = CL_NIL, tail = CL_NIL;
+    int32_t i, len, end, replaced = 0;
+
+    parse_seq_args(args, n, 3, &sa);
+    len = seq_length(seq);
+    end = (sa.end < 0) ? len : sa.end;
+
+    CL_GC_PROTECT(result);
+    CL_GC_PROTECT(tail);
+    CL_GC_PROTECT(newitem);
+
+    if (CL_CONS_P(seq) || CL_NULL_P(seq)) {
+        CL_Obj cur = seq;
+        for (i = 0; !CL_NULL_P(cur); i++, cur = cl_cdr(cur)) {
+            CL_Obj elem = cl_car(cur);
+            int match = 0;
+            if (i >= sa.start && i < end && (sa.count < 0 || replaced < sa.count))
+                match = seq_pred_match(pred, sa.key_fn, elem);
+            {
+                CL_Obj val = match ? newitem : elem;
+                CL_Obj cell = cl_cons(val, CL_NIL);
+                if (CL_NULL_P(result)) result = cell;
+                else ((CL_Cons *)CL_OBJ_TO_PTR(tail))->cdr = cell;
+                tail = cell;
+                if (match) replaced++;
+            }
+        }
+    } else if (CL_VECTOR_P(seq)) {
+        CL_Vector *v = (CL_Vector *)CL_OBJ_TO_PTR(seq);
+        for (i = 0; i < (int32_t)v->length; i++) {
+            CL_Obj elem = v->data[i];
+            int match = 0;
+            if (i >= sa.start && i < end && (sa.count < 0 || replaced < sa.count))
+                match = seq_pred_match(pred, sa.key_fn, elem);
+            {
+                CL_Obj val = match ? newitem : elem;
+                CL_Obj cell = cl_cons(val, CL_NIL);
+                if (CL_NULL_P(result)) result = cell;
+                else ((CL_Cons *)CL_OBJ_TO_PTR(tail))->cdr = cell;
+                tail = cell;
+                if (match) replaced++;
+            }
+        }
+    }
+
+    CL_GC_UNPROTECT(3);
+    return result;
+}
+
+static CL_Obj bi_substitute_if_not(CL_Obj *args, int n)
+{
+    CL_Obj newitem = args[0], pred = args[1], seq = args[2];
+    SeqArgs sa;
+    CL_Obj result = CL_NIL, tail = CL_NIL;
+    int32_t i, len, end, replaced = 0;
+
+    parse_seq_args(args, n, 3, &sa);
+    len = seq_length(seq);
+    end = (sa.end < 0) ? len : sa.end;
+
+    CL_GC_PROTECT(result);
+    CL_GC_PROTECT(tail);
+    CL_GC_PROTECT(newitem);
+
+    if (CL_CONS_P(seq) || CL_NULL_P(seq)) {
+        CL_Obj cur = seq;
+        for (i = 0; !CL_NULL_P(cur); i++, cur = cl_cdr(cur)) {
+            CL_Obj elem = cl_car(cur);
+            int match = 0;
+            if (i >= sa.start && i < end && (sa.count < 0 || replaced < sa.count))
+                match = !seq_pred_match(pred, sa.key_fn, elem);
+            {
+                CL_Obj val = match ? newitem : elem;
+                CL_Obj cell = cl_cons(val, CL_NIL);
+                if (CL_NULL_P(result)) result = cell;
+                else ((CL_Cons *)CL_OBJ_TO_PTR(tail))->cdr = cell;
+                tail = cell;
+                if (match) replaced++;
+            }
+        }
+    } else if (CL_VECTOR_P(seq)) {
+        CL_Vector *v = (CL_Vector *)CL_OBJ_TO_PTR(seq);
+        for (i = 0; i < (int32_t)v->length; i++) {
+            CL_Obj elem = v->data[i];
+            int match = 0;
+            if (i >= sa.start && i < end && (sa.count < 0 || replaced < sa.count))
+                match = !seq_pred_match(pred, sa.key_fn, elem);
+            {
+                CL_Obj val = match ? newitem : elem;
+                CL_Obj cell = cl_cons(val, CL_NIL);
+                if (CL_NULL_P(result)) result = cell;
+                else ((CL_Cons *)CL_OBJ_TO_PTR(tail))->cdr = cell;
+                tail = cell;
+                if (match) replaced++;
+            }
+        }
+    }
+
+    CL_GC_UNPROTECT(3);
+    return result;
+}
+
+/* ======================================================= */
+/* REDUCE                                                  */
+/* ======================================================= */
+
+static CL_Obj bi_reduce(CL_Obj *args, int n)
+{
+    CL_Obj func = args[0], seq = args[1];
+    CL_Obj initial = CL_NIL;
+    int has_initial = 0;
+    int32_t start = 0, end_val, len;
+    CL_Obj key_fn = CL_NIL;
+    CL_Obj accum;
+    int i;
+
+    /* Parse keyword args manually */
+    for (i = 2; i + 1 < n; i += 2) {
+        if (args[i] == KW_INITIAL_VALUE) {
+            initial = args[i + 1];
+            has_initial = 1;
+        } else if (args[i] == KW_KEY) {
+            key_fn = args[i + 1];
+        } else if (args[i] == KW_START) {
+            if (CL_FIXNUM_P(args[i + 1])) start = CL_FIXNUM_VAL(args[i + 1]);
+        } else if (args[i] == KW_END) {
+            /* handled below */
+        } else if (args[i] == KW_FROM_END) {
+            if (!CL_NULL_P(args[i + 1]))
+                cl_error(CL_ERR_ARGS, "REDUCE: :from-end T not supported");
+        }
+    }
+
+    len = seq_length(seq);
+    /* Re-scan for :end */
+    end_val = len;
+    for (i = 2; i + 1 < n; i += 2) {
+        if (args[i] == KW_END && !CL_NULL_P(args[i + 1]) && CL_FIXNUM_P(args[i + 1]))
+            end_val = CL_FIXNUM_VAL(args[i + 1]);
+    }
+
+    if (start >= end_val) {
+        /* Empty subsequence */
+        if (has_initial) return initial;
+        /* Call function with zero args */
+        return call_1(func, CL_NIL); /* This isn't quite right but CL spec says identity */
+    }
+
+    if (has_initial) {
+        accum = initial;
+    } else {
+        accum = apply_key(key_fn, seq_elt(seq, start));
+        start++;
+    }
+
+    CL_GC_PROTECT(accum);
+    CL_GC_PROTECT(func);
+
+    if (CL_CONS_P(seq) || CL_NULL_P(seq)) {
+        CL_Obj cur = seq;
+        int32_t idx = 0;
+        /* Skip to start */
+        while (idx < start && !CL_NULL_P(cur)) { cur = cl_cdr(cur); idx++; }
+        while (idx < end_val && !CL_NULL_P(cur)) {
+            CL_Obj elem = apply_key(key_fn, cl_car(cur));
+            CL_Obj rargs[2];
+            rargs[0] = accum;
+            rargs[1] = elem;
+            accum = call_test(func, accum, elem); /* reuse call_test for 2-arg */
+            cur = cl_cdr(cur);
+            idx++;
+        }
+    } else {
+        int32_t idx;
+        for (idx = start; idx < end_val; idx++) {
+            CL_Obj elem = apply_key(key_fn, seq_elt(seq, idx));
+            accum = call_test(func, accum, elem);
+        }
+    }
+
+    CL_GC_UNPROTECT(2);
+    return accum;
+}
+
+/* ======================================================= */
+/* FILL                                                    */
+/* ======================================================= */
+
+static CL_Obj bi_fill(CL_Obj *args, int n)
+{
+    CL_Obj seq = args[0], item = args[1];
+    int32_t start = 0, end_val, len;
+    int32_t i;
+
+    /* Parse :start :end */
+    for (i = 2; i + 1 < n; i += 2) {
+        if (args[i] == KW_START && CL_FIXNUM_P(args[i + 1]))
+            start = CL_FIXNUM_VAL(args[i + 1]);
+        else if (args[i] == KW_END && !CL_NULL_P(args[i + 1]) && CL_FIXNUM_P(args[i + 1]))
+            end_val = CL_FIXNUM_VAL(args[i + 1]);
+    }
+
+    len = seq_length(seq);
+    /* Re-scan for :end (need to set default after knowing length) */
+    end_val = len;
+    for (i = 2; i + 1 < n; i += 2) {
+        if (args[i] == KW_END && !CL_NULL_P(args[i + 1]) && CL_FIXNUM_P(args[i + 1]))
+            end_val = CL_FIXNUM_VAL(args[i + 1]);
+    }
+
+    if (CL_CONS_P(seq) || CL_NULL_P(seq)) {
+        CL_Obj cur = seq;
+        for (i = 0; i < end_val && !CL_NULL_P(cur); i++, cur = cl_cdr(cur)) {
+            if (i >= start)
+                ((CL_Cons *)CL_OBJ_TO_PTR(cur))->car = item;
+        }
+    } else if (CL_VECTOR_P(seq)) {
+        CL_Vector *v = (CL_Vector *)CL_OBJ_TO_PTR(seq);
+        for (i = start; i < end_val && i < (int32_t)v->length; i++)
+            v->data[i] = item;
+    } else if (CL_STRING_P(seq)) {
+        CL_String *s = (CL_String *)CL_OBJ_TO_PTR(seq);
+        if (!CL_CHAR_P(item))
+            cl_error(CL_ERR_TYPE, "FILL: string requires a character");
+        for (i = start; i < end_val && i < (int32_t)s->length; i++)
+            s->data[i] = (char)CL_CHAR_VAL(item);
+    }
+
+    return seq;
+}
+
+/* ======================================================= */
+/* REPLACE                                                 */
+/* ======================================================= */
+
+static CL_Obj bi_replace(CL_Obj *args, int n)
+{
+    CL_Obj seq1 = args[0], seq2 = args[1];
+    int32_t start1 = 0, end1, start2 = 0, end2;
+    int32_t len1, len2;
+    int32_t i, j, count;
+
+    /* Parse keyword args */
+    len1 = seq_length(seq1);
+    len2 = seq_length(seq2);
+    end1 = len1;
+    end2 = len2;
+
+    for (i = 2; i + 1 < n; i += 2) {
+        if (args[i] == KW_START1 && CL_FIXNUM_P(args[i + 1]))
+            start1 = CL_FIXNUM_VAL(args[i + 1]);
+        else if (args[i] == KW_END1 && !CL_NULL_P(args[i + 1]) && CL_FIXNUM_P(args[i + 1]))
+            end1 = CL_FIXNUM_VAL(args[i + 1]);
+        else if (args[i] == KW_START2 && CL_FIXNUM_P(args[i + 1]))
+            start2 = CL_FIXNUM_VAL(args[i + 1]);
+        else if (args[i] == KW_END2 && !CL_NULL_P(args[i + 1]) && CL_FIXNUM_P(args[i + 1]))
+            end2 = CL_FIXNUM_VAL(args[i + 1]);
+    }
+
+    count = end1 - start1;
+    if (end2 - start2 < count) count = end2 - start2;
+
+    if (CL_VECTOR_P(seq1) && CL_VECTOR_P(seq2)) {
+        CL_Vector *v1 = (CL_Vector *)CL_OBJ_TO_PTR(seq1);
+        CL_Vector *v2 = (CL_Vector *)CL_OBJ_TO_PTR(seq2);
+        for (i = 0; i < count; i++)
+            v1->data[start1 + i] = v2->data[start2 + i];
+    } else {
+        /* General case: use seq_elt + mutation */
+        /* For lists, walk to position first */
+        if (CL_CONS_P(seq1)) {
+            CL_Obj cur1 = seq1;
+            j = start2;
+            for (i = 0; !CL_NULL_P(cur1); i++, cur1 = cl_cdr(cur1)) {
+                if (i >= start1 && i < start1 + count) {
+                    ((CL_Cons *)CL_OBJ_TO_PTR(cur1))->car = seq_elt(seq2, j);
+                    j++;
+                }
+            }
+        } else if (CL_VECTOR_P(seq1)) {
+            CL_Vector *v1 = (CL_Vector *)CL_OBJ_TO_PTR(seq1);
+            for (i = 0; i < count; i++)
+                v1->data[start1 + i] = seq_elt(seq2, start2 + i);
+        }
+    }
+
+    return seq1;
+}
+
+/* ======================================================= */
+/* Registration                                            */
+/* ======================================================= */
+
+void cl_builtins_sequence_init(void)
+{
+    /* Pre-intern keyword symbols */
+    KW_TEST          = cl_intern_keyword("TEST", 4);
+    KW_KEY           = cl_intern_keyword("KEY", 3);
+    KW_START         = cl_intern_keyword("START", 5);
+    KW_END           = cl_intern_keyword("END", 3);
+    KW_COUNT         = cl_intern_keyword("COUNT", 5);
+    KW_FROM_END      = cl_intern_keyword("FROM-END", 8);
+    KW_INITIAL_VALUE = cl_intern_keyword("INITIAL-VALUE", 13);
+    KW_START1        = cl_intern_keyword("START1", 6);
+    KW_END1          = cl_intern_keyword("END1", 4);
+    KW_START2        = cl_intern_keyword("START2", 6);
+    KW_END2          = cl_intern_keyword("END2", 4);
+
+    /* Cache eql function */
+    {
+        CL_Obj eql_sym = cl_intern_in("EQL", 3, cl_package_cl);
+        CL_Symbol *s = (CL_Symbol *)CL_OBJ_TO_PTR(eql_sym);
+        SYM_EQL_FN = s->function;
+    }
+
+    /* Find family */
+    defun("FIND", bi_find, 2, -1);
+    defun("FIND-IF", bi_find_if, 2, -1);
+    defun("FIND-IF-NOT", bi_find_if_not, 2, -1);
+
+    /* Position family */
+    defun("POSITION", bi_position, 2, -1);
+    defun("POSITION-IF", bi_position_if, 2, -1);
+    defun("POSITION-IF-NOT", bi_position_if_not, 2, -1);
+
+    /* Count family */
+    defun("COUNT", bi_count, 2, -1);
+    defun("COUNT-IF", bi_count_if, 2, -1);
+    defun("COUNT-IF-NOT", bi_count_if_not, 2, -1);
+
+    /* Remove family */
+    defun("REMOVE", bi_remove, 2, -1);
+    defun("REMOVE-IF", bi_remove_if, 2, -1);
+    defun("REMOVE-IF-NOT", bi_remove_if_not, 2, -1);
+    defun("REMOVE-DUPLICATES", bi_remove_duplicates, 1, -1);
+
+    /* Substitute family */
+    defun("SUBSTITUTE", bi_substitute, 3, -1);
+    defun("SUBSTITUTE-IF", bi_substitute_if, 3, -1);
+    defun("SUBSTITUTE-IF-NOT", bi_substitute_if_not, 3, -1);
+
+    /* Reduce */
+    defun("REDUCE", bi_reduce, 2, -1);
+
+    /* Fill, Replace */
+    defun("FILL", bi_fill, 2, -1);
+    defun("REPLACE", bi_replace, 2, -1);
+}

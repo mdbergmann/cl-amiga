@@ -1815,6 +1815,181 @@ TEST(eval_gethash_mv)
     ASSERT_STR_EQ(eval_print("(multiple-value-bind (v p) (gethash 'missing *htmv*) p)"), "NIL");
 }
 
+/* --- Phase 5: Sequence functions --- */
+
+TEST(eval_find)
+{
+    ASSERT_STR_EQ(eval_print("(find 3 '(1 2 3 4 5))"), "3");
+    ASSERT_STR_EQ(eval_print("(find 9 '(1 2 3))"), "NIL");
+    ASSERT_STR_EQ(eval_print("(find 2 '(1 2 3 2 1) :start 2)"), "2");
+    ASSERT_STR_EQ(eval_print("(find \"b\" '(\"a\" \"b\" \"c\") :test #'equal)"), "\"b\"");
+}
+
+TEST(eval_find_if)
+{
+    eval_print("(defun my-evenp (x) (= (mod x 2) 0))");
+    ASSERT_STR_EQ(eval_print("(find-if #'my-evenp '(1 2 3 4))"), "2");
+    ASSERT_STR_EQ(eval_print("(find-if #'my-evenp '(1 3 5))"), "NIL");
+}
+
+TEST(eval_find_if_not)
+{
+    ASSERT_STR_EQ(eval_print("(find-if-not #'my-evenp '(2 4 5 6))"), "5");
+}
+
+TEST(eval_position)
+{
+    ASSERT_STR_EQ(eval_print("(position 3 '(1 2 3 4))"), "2");
+    ASSERT_STR_EQ(eval_print("(position 9 '(1 2 3))"), "NIL");
+    ASSERT_STR_EQ(eval_print("(position 1 '(1 2 1 2) :from-end t)"), "2");
+}
+
+TEST(eval_position_if)
+{
+    ASSERT_STR_EQ(eval_print("(position-if #'my-evenp '(1 3 4 5))"), "2");
+}
+
+TEST(eval_position_if_not)
+{
+    ASSERT_STR_EQ(eval_print("(position-if-not #'my-evenp '(2 4 5))"), "2");
+}
+
+TEST(eval_count)
+{
+    ASSERT_EQ_INT(eval_int("(count 1 '(1 2 1 3 1))"), 3);
+    ASSERT_EQ_INT(eval_int("(count 9 '(1 2 3))"), 0);
+}
+
+TEST(eval_count_if)
+{
+    ASSERT_EQ_INT(eval_int("(count-if #'my-evenp '(1 2 3 4 5 6))"), 3);
+}
+
+TEST(eval_count_if_not)
+{
+    ASSERT_EQ_INT(eval_int("(count-if-not #'my-evenp '(1 2 3 4 5))"), 3);
+}
+
+TEST(eval_remove)
+{
+    ASSERT_STR_EQ(eval_print("(remove 3 '(1 2 3 4 3 5))"), "(1 2 4 5)");
+    ASSERT_STR_EQ(eval_print("(remove 3 '(1 2 3 4 3 5) :count 1)"), "(1 2 4 3 5)");
+    ASSERT_STR_EQ(eval_print("(remove 9 '(1 2 3))"), "(1 2 3)");
+}
+
+TEST(eval_remove_if)
+{
+    ASSERT_STR_EQ(eval_print("(remove-if #'my-evenp '(1 2 3 4 5))"), "(1 3 5)");
+}
+
+TEST(eval_remove_if_not)
+{
+    ASSERT_STR_EQ(eval_print("(remove-if-not #'my-evenp '(1 2 3 4 5))"), "(2 4)");
+}
+
+TEST(eval_remove_duplicates)
+{
+    ASSERT_STR_EQ(eval_print("(remove-duplicates '(1 2 1 3 2 4))"), "(1 3 2 4)");
+    ASSERT_STR_EQ(eval_print("(remove-duplicates '(a b a c))"), "(B A C)");
+}
+
+TEST(eval_substitute)
+{
+    ASSERT_STR_EQ(eval_print("(substitute 99 3 '(1 2 3 4 3))"), "(1 2 99 4 99)");
+    ASSERT_STR_EQ(eval_print("(substitute 0 3 '(1 2 3 4 3) :count 1)"), "(1 2 0 4 3)");
+}
+
+TEST(eval_substitute_if)
+{
+    ASSERT_STR_EQ(eval_print("(substitute-if 0 #'my-evenp '(1 2 3 4 5))"), "(1 0 3 0 5)");
+}
+
+TEST(eval_substitute_if_not)
+{
+    ASSERT_STR_EQ(eval_print("(substitute-if-not 0 #'my-evenp '(1 2 3 4 5))"), "(0 2 0 4 0)");
+}
+
+TEST(eval_reduce)
+{
+    ASSERT_EQ_INT(eval_int("(reduce #'+ '(1 2 3 4))"), 10);
+    ASSERT_EQ_INT(eval_int("(reduce #'+ '() :initial-value 0)"), 0);
+    ASSERT_EQ_INT(eval_int("(reduce #'+ '(5) :initial-value 10)"), 15);
+    ASSERT_STR_EQ(eval_print("(reduce #'cons '(1 2 3))"), "((1 . 2) . 3)");
+}
+
+TEST(eval_fill)
+{
+    ASSERT_STR_EQ(eval_print("(let ((x (list 1 2 3 4))) (fill x 0) x)"), "(0 0 0 0)");
+    ASSERT_STR_EQ(eval_print("(let ((x (list 1 2 3 4))) (fill x 0 :start 1 :end 3) x)"), "(1 0 0 4)");
+}
+
+TEST(eval_replace_fn)
+{
+    ASSERT_STR_EQ(eval_print("(let ((x (list 1 2 3 4 5))) (replace x '(a b c) :start1 1) x)"), "(1 A B C 5)");
+}
+
+TEST(eval_every)
+{
+    ASSERT_STR_EQ(eval_print("(every #'my-evenp '(2 4 6))"), "T");
+    ASSERT_STR_EQ(eval_print("(every #'my-evenp '(2 3 6))"), "NIL");
+    ASSERT_STR_EQ(eval_print("(every #'my-evenp '())"), "T");
+}
+
+TEST(eval_some)
+{
+    ASSERT_STR_EQ(eval_print("(some #'my-evenp '(1 3 4))"), "T");
+    ASSERT_STR_EQ(eval_print("(some #'my-evenp '(1 3 5))"), "NIL");
+}
+
+TEST(eval_notany)
+{
+    ASSERT_STR_EQ(eval_print("(notany #'my-evenp '(1 3 5))"), "T");
+    ASSERT_STR_EQ(eval_print("(notany #'my-evenp '(1 2 3))"), "NIL");
+}
+
+TEST(eval_notevery)
+{
+    ASSERT_STR_EQ(eval_print("(notevery #'my-evenp '(2 4 5))"), "T");
+    ASSERT_STR_EQ(eval_print("(notevery #'my-evenp '(2 4 6))"), "NIL");
+}
+
+TEST(eval_map_fn)
+{
+    ASSERT_STR_EQ(eval_print("(map 'list #'1+ '(1 2 3))"), "(2 3 4)");
+}
+
+TEST(eval_mismatch)
+{
+    ASSERT_STR_EQ(eval_print("(mismatch '(1 2 3) '(1 2 3))"), "NIL");
+    ASSERT_STR_EQ(eval_print("(mismatch '(1 2 3) '(1 2 4))"), "2");
+    ASSERT_STR_EQ(eval_print("(mismatch '(1 2) '(1 2 3))"), "2");
+}
+
+TEST(eval_search_fn)
+{
+    ASSERT_STR_EQ(eval_print("(search '(2 3) '(1 2 3 4))"), "1");
+    ASSERT_STR_EQ(eval_print("(search '(9) '(1 2 3))"), "NIL");
+    ASSERT_STR_EQ(eval_print("(search '() '(1 2 3))"), "0");
+}
+
+TEST(eval_sort)
+{
+    ASSERT_STR_EQ(eval_print("(sort (list 3 1 4 1 5) #'<)"), "(1 1 3 4 5)");
+    ASSERT_STR_EQ(eval_print("(sort (list 5 4 3 2 1) #'<)"), "(1 2 3 4 5)");
+    ASSERT_STR_EQ(eval_print("(sort (list 1) #'<)"), "(1)");
+    ASSERT_STR_EQ(eval_print("(sort '() #'<)"), "NIL");
+}
+
+TEST(eval_stable_sort)
+{
+    ASSERT_STR_EQ(eval_print("(stable-sort (list 3 1 2) #'<)"), "(1 2 3)");
+}
+
+TEST(eval_sort_with_key)
+{
+    ASSERT_STR_EQ(eval_print("(sort (list -3 1 -2 4) #'< :key #'abs)"), "(1 -2 -3 4)");
+}
+
 int main(void)
 {
     test_init();
@@ -2044,6 +2219,37 @@ int main(void)
     RUN(eval_hash_table_equal_test);
     RUN(eval_hash_table_eq_test);
     RUN(eval_gethash_mv);
+
+    /* Phase 5 — Sequence functions */
+    RUN(eval_find);
+    RUN(eval_find_if);
+    RUN(eval_find_if_not);
+    RUN(eval_position);
+    RUN(eval_position_if);
+    RUN(eval_position_if_not);
+    RUN(eval_count);
+    RUN(eval_count_if);
+    RUN(eval_count_if_not);
+    RUN(eval_remove);
+    RUN(eval_remove_if);
+    RUN(eval_remove_if_not);
+    RUN(eval_remove_duplicates);
+    RUN(eval_substitute);
+    RUN(eval_substitute_if);
+    RUN(eval_substitute_if_not);
+    RUN(eval_reduce);
+    RUN(eval_fill);
+    RUN(eval_replace_fn);
+    RUN(eval_every);
+    RUN(eval_some);
+    RUN(eval_notany);
+    RUN(eval_notevery);
+    RUN(eval_map_fn);
+    RUN(eval_mismatch);
+    RUN(eval_search_fn);
+    RUN(eval_sort);
+    RUN(eval_stable_sort);
+    RUN(eval_sort_with_key);
 
     teardown();
     REPORT();

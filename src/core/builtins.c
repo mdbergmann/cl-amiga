@@ -376,6 +376,8 @@ void cl_builtins_mutation_init(void);
 void cl_builtins_strings_init(void);
 void cl_builtins_lists_init(void);
 void cl_builtins_hashtable_init(void);
+void cl_builtins_sequence_init(void);
+void cl_builtins_sequence2_init(void);
 
 void cl_builtins_init(void)
 {
@@ -421,4 +423,6 @@ void cl_builtins_init(void)
     cl_builtins_strings_init();
     cl_builtins_lists_init();
     cl_builtins_hashtable_init();
+    cl_builtins_sequence_init();
+    cl_builtins_sequence2_init();
 }

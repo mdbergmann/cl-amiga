@@ -192,7 +192,7 @@ Data structures, sequences, strings, and I/O:
 - [x] Mapping variants (`mapc`, `mapcan`, `maplist`, `mapl`, `mapcon`)
 - [x] Set operations in Lisp (`intersection`, `union`, `set-difference`, `subsetp`)
 - [x] Hash tables (`make-hash-table`, `gethash`, `remhash`, `maphash`, `clrhash`, `hash-table-count`, `hash-table-p`, `(setf gethash)`)
-- [ ] Sequence functions (`find`, `find-if`, `remove`, `remove-if`, `remove-if-not`, `remove-duplicates`, `position`, `search`, `count`, `sort`, `stable-sort`, `substitute`, `reduce`, `map`, `every`, `some`, `notany`, `notevery`, `mismatch`)
+- [x] Sequence functions (`find`, `find-if`, `find-if-not`, `position`, `position-if`, `position-if-not`, `count`, `count-if`, `count-if-not`, `remove`, `remove-if`, `remove-if-not`, `remove-duplicates`, `substitute`, `substitute-if`, `substitute-if-not`, `reduce`, `fill`, `replace`, `every`, `some`, `notany`, `notevery`, `map`, `mismatch`, `search`, `sort`, `stable-sort`)
 - [ ] Array operations (`vector`, `array-dimensions`, `array-rank`, `fill`, `replace`)
 - [ ] Type system (`typep`, `coerce`, `deftype`, `subtypep`)
 - [ ] `declare`, `declaim`, `proclaim` — declarations
@@ -200,6 +200,7 @@ Data structures, sequences, strings, and I/O:
 - [ ] `trace`, `untrace` — function call tracing for debugging
 - [ ] Stack traces on error — walk VM call frames, print function names and call chain
 - [ ] Source location tracking — reader tracks line numbers, compiler attaches to bytecode, errors include file:line context
+- [ ] `time` — macro to measure and print execution time of an expression
 
 216 host tests (4 suites), 450 Amiga batch tests — all passing.
 
