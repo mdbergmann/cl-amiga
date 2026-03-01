@@ -71,6 +71,11 @@ enum CL_Opcode {
     OP_DYNBIND   = 0x8E,  /* u16: const idx of symbol — pop value, save old, set new */
     OP_DYNUNBIND = 0x8F,  /* u8: count — restore N bindings */
 
+    /* Mutation */
+    OP_RPLACA    = 0x90,  /* pop new-car, pop cons → set car, push new-car */
+    OP_RPLACD    = 0x91,  /* pop new-cdr, pop cons → set cdr, push new-cdr */
+    OP_ASET      = 0x92,  /* pop val, pop index, pop vector → set data[idx], push val */
+
     OP_HALT      = 0xFF   /* Stop VM */
 };
 

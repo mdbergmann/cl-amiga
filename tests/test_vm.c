@@ -1132,6 +1132,92 @@ TEST(eval_special_mixed_let)
     ASSERT_EQ_INT(eval_int("*m*"), 10);
 }
 
+/* --- setf and mutation --- */
+
+TEST(eval_setf_car_cdr)
+{
+    ASSERT_STR_EQ(eval_print("(let ((x (list 1 2 3))) (setf (car x) 10) x)"), "(10 2 3)");
+    ASSERT_STR_EQ(eval_print("(let ((x (cons 1 2))) (setf (cdr x) 3) x)"), "(1 . 3)");
+}
+
+TEST(eval_setf_first_rest)
+{
+    ASSERT_STR_EQ(eval_print("(let ((x (list 1 2 3))) (setf (first x) 10) x)"), "(10 2 3)");
+    ASSERT_STR_EQ(eval_print("(let ((x (list 1 2 3))) (setf (rest x) (list 20 30)) x)"), "(1 20 30)");
+}
+
+TEST(eval_setf_nth)
+{
+    ASSERT_STR_EQ(eval_print("(let ((x (list 1 2 3))) (setf (nth 1 x) 20) x)"), "(1 20 3)");
+    ASSERT_STR_EQ(eval_print("(let ((x (list 1 2 3))) (setf (nth 0 x) 10) x)"), "(10 2 3)");
+}
+
+TEST(eval_setf_variable)
+{
+    ASSERT_EQ_INT(eval_int("(let ((x 1)) (setf x 42) x)"), 42);
+}
+
+TEST(eval_setf_multiple)
+{
+    /* (setf a 1 b 2) — returns last value */
+    ASSERT_EQ_INT(eval_int("(let ((a 0) (b 0)) (setf a 1 b 2))"), 2);
+}
+
+TEST(eval_rplaca_rplacd)
+{
+    ASSERT_STR_EQ(eval_print("(let ((x (cons 1 2))) (rplaca x 10))"), "(10 . 2)");
+    ASSERT_STR_EQ(eval_print("(let ((x (cons 1 2))) (rplacd x 20))"), "(1 . 20)");
+}
+
+TEST(eval_aref_make_array_vectorp)
+{
+    ASSERT_STR_EQ(eval_print("(vectorp (make-array 3))"), "T");
+    ASSERT_STR_EQ(eval_print("(vectorp 42)"), "NIL");
+    ASSERT_EQ_INT(eval_int(
+        "(let ((v (make-array 3)))"
+        "  (setf (aref v 0) 10)"
+        "  (setf (aref v 1) 20)"
+        "  (setf (aref v 2) 30)"
+        "  (+ (aref v 0) (aref v 1) (aref v 2)))"), 60);
+}
+
+TEST(eval_setf_svref)
+{
+    ASSERT_EQ_INT(eval_int(
+        "(let ((v (make-array 2)))"
+        "  (setf (svref v 0) 5)"
+        "  (setf (svref v 1) 7)"
+        "  (+ (svref v 0) (svref v 1)))"), 12);
+}
+
+TEST(eval_symbol_value)
+{
+    eval_print("(defvar *sv-test* 42)");
+    ASSERT_EQ_INT(eval_int("(symbol-value '*sv-test*)"), 42);
+}
+
+TEST(eval_setf_symbol_value)
+{
+    eval_print("(defvar *sv-setf* 10)");
+    ASSERT_EQ_INT(eval_int("(setf (symbol-value '*sv-setf*) 99)"), 99);
+    ASSERT_EQ_INT(eval_int("*sv-setf*"), 99);
+}
+
+TEST(eval_set_builtin)
+{
+    eval_print("(defvar *set-test* 10)");
+    ASSERT_EQ_INT(eval_int("(set '*set-test* 77)"), 77);
+    ASSERT_EQ_INT(eval_int("*set-test*"), 77);
+}
+
+TEST(eval_setf_return_value)
+{
+    /* setf returns the assigned value */
+    ASSERT_EQ_INT(eval_int("(let ((x (list 1 2 3))) (setf (car x) 99))"), 99);
+    ASSERT_EQ_INT(eval_int(
+        "(let ((v (make-array 1))) (setf (aref v 0) 42))"), 42);
+}
+
 int main(void)
 {
     test_init();
@@ -1262,6 +1348,18 @@ int main(void)
     RUN(eval_special_unwind_protect);
     RUN(eval_special_error_restore);
     RUN(eval_special_mixed_let);
+    RUN(eval_setf_car_cdr);
+    RUN(eval_setf_first_rest);
+    RUN(eval_setf_nth);
+    RUN(eval_setf_variable);
+    RUN(eval_setf_multiple);
+    RUN(eval_rplaca_rplacd);
+    RUN(eval_aref_make_array_vectorp);
+    RUN(eval_setf_svref);
+    RUN(eval_symbol_value);
+    RUN(eval_setf_symbol_value);
+    RUN(eval_set_builtin);
+    RUN(eval_setf_return_value);
 
     teardown();
     REPORT();

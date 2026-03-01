@@ -1033,6 +1033,53 @@ CL_Obj cl_vm_eval(CL_Obj bytecode_obj)
             break;
         }
 
+        case OP_RPLACA: {
+            CL_Obj new_car = cl_vm_pop();
+            CL_Obj cons_obj = cl_vm_pop();
+            CL_Cons *cell;
+            if (!CL_CONS_P(cons_obj))
+                cl_error(CL_ERR_TYPE, "RPLACA: not a cons");
+            cell = (CL_Cons *)CL_OBJ_TO_PTR(cons_obj);
+            cell->car = new_car;
+            cl_vm_push(new_car);
+            cl_mv_count = 1;
+            break;
+        }
+
+        case OP_RPLACD: {
+            CL_Obj new_cdr = cl_vm_pop();
+            CL_Obj cons_obj = cl_vm_pop();
+            CL_Cons *cell;
+            if (!CL_CONS_P(cons_obj))
+                cl_error(CL_ERR_TYPE, "RPLACD: not a cons");
+            cell = (CL_Cons *)CL_OBJ_TO_PTR(cons_obj);
+            cell->cdr = new_cdr;
+            cl_vm_push(new_cdr);
+            cl_mv_count = 1;
+            break;
+        }
+
+        case OP_ASET: {
+            CL_Obj val = cl_vm_pop();
+            CL_Obj idx_obj = cl_vm_pop();
+            CL_Obj vec_obj = cl_vm_pop();
+            CL_Vector *vec;
+            int32_t idx;
+            if (!CL_VECTOR_P(vec_obj))
+                cl_error(CL_ERR_TYPE, "ASET: not a vector");
+            if (!CL_FIXNUM_P(idx_obj))
+                cl_error(CL_ERR_TYPE, "ASET: index must be a number");
+            vec = (CL_Vector *)CL_OBJ_TO_PTR(vec_obj);
+            idx = CL_FIXNUM_VAL(idx_obj);
+            if (idx < 0 || (uint32_t)idx >= vec->length)
+                cl_error(CL_ERR_ARGS, "ASET: index %d out of range (0-%lu)",
+                         (int)idx, (unsigned long)(vec->length - 1));
+            vec->data[idx] = val;
+            cl_vm_push(val);
+            cl_mv_count = 1;
+            break;
+        }
+
         default:
             cl_error(CL_ERR_GENERAL, "Unknown opcode: 0x%02x at ip=%u",
                      op, ip - 1);

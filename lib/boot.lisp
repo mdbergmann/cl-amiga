@@ -16,3 +16,9 @@
 ;; prog1 / prog2
 (defmacro prog1 (first &rest body) (let ((g (gensym))) `(let ((,g ,first)) ,@body ,g)))
 (defmacro prog2 (first second &rest body) (let ((g (gensym))) `(progn ,first (let ((,g ,second)) ,@body ,g))))
+
+;; setf modify macros
+(defmacro push (item place) `(setf ,place (cons ,item ,place)))
+(defmacro pop (place) (let ((g (gensym))) `(let ((,g (car ,place))) (setf ,place (cdr ,place)) ,g)))
+(defmacro incf (place &optional (delta 1)) `(setf ,place (+ ,place ,delta)))
+(defmacro decf (place &optional (delta 1)) `(setf ,place (- ,place ,delta)))

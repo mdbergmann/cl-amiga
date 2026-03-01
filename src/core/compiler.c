@@ -52,6 +52,20 @@ typedef struct {
 /* Macro table (simple association list: ((name . expander) ...)) */
 static CL_Obj macro_table = CL_NIL;
 
+/* Cached setf place symbols (initialized in cl_compiler_init) */
+static CL_Obj SETF_SYM_CAR = CL_NIL;
+static CL_Obj SETF_SYM_CDR = CL_NIL;
+static CL_Obj SETF_SYM_FIRST = CL_NIL;
+static CL_Obj SETF_SYM_REST = CL_NIL;
+static CL_Obj SETF_SYM_NTH = CL_NIL;
+static CL_Obj SETF_SYM_AREF = CL_NIL;
+static CL_Obj SETF_SYM_SVREF = CL_NIL;
+static CL_Obj SETF_SYM_SYMBOL_VALUE = CL_NIL;
+static CL_Obj SETF_SYM_SYMBOL_FUNCTION = CL_NIL;
+static CL_Obj SETF_HELPER_NTH = CL_NIL;
+static CL_Obj SETF_HELPER_SV = CL_NIL;
+static CL_Obj SETF_HELPER_SF = CL_NIL;
+
 /* Forward declarations */
 static void compile_expr(CL_Compiler *c, CL_Obj expr);
 static void compile_body(CL_Compiler *c, CL_Obj forms);
@@ -568,6 +582,107 @@ static void compile_setq(CL_Compiler *c, CL_Obj form)
             emit(c, OP_GSTORE);
             emit_u16(c, (uint16_t)idx);
         }
+
+        rest = cl_cdr(cl_cdr(rest));
+        /* If there are more pairs, pop the intermediate value */
+        if (!CL_NULL_P(rest)) {
+            emit(c, OP_POP);
+        }
+    }
+}
+
+/* compile_setf_place: compile one (place value) pair for setf */
+static void compile_setf_place(CL_Compiler *c, CL_Obj place, CL_Obj val_form)
+{
+    int saved_tail = c->in_tail;
+    c->in_tail = 0;
+
+    if (CL_SYMBOL_P(place)) {
+        /* (setf sym val) — same as setq */
+        int slot;
+        compile_expr(c, val_form);
+        slot = cl_env_lookup(c->env, place);
+        if (slot >= 0) {
+            emit(c, OP_DUP);
+            emit(c, OP_STORE);
+            emit(c, (uint8_t)slot);
+        } else {
+            int idx = add_constant(c, place);
+            emit(c, OP_DUP);
+            emit(c, OP_GSTORE);
+            emit_u16(c, (uint16_t)idx);
+        }
+    } else if (CL_CONS_P(place)) {
+        CL_Obj head = cl_car(place);
+
+        if (head == SETF_SYM_CAR || head == SETF_SYM_FIRST) {
+            /* (setf (car x) val) → compile x, compile val, OP_RPLACA */
+            compile_expr(c, cl_car(cl_cdr(place)));
+            compile_expr(c, val_form);
+            emit(c, OP_RPLACA);
+        } else if (head == SETF_SYM_CDR || head == SETF_SYM_REST) {
+            /* (setf (cdr x) val) → compile x, compile val, OP_RPLACD */
+            compile_expr(c, cl_car(cl_cdr(place)));
+            compile_expr(c, val_form);
+            emit(c, OP_RPLACD);
+        } else if (head == SETF_SYM_AREF || head == SETF_SYM_SVREF) {
+            /* (setf (aref v i) val) → compile v, compile i, compile val, OP_ASET */
+            compile_expr(c, cl_car(cl_cdr(place)));
+            compile_expr(c, cl_car(cl_cdr(cl_cdr(place))));
+            compile_expr(c, val_form);
+            emit(c, OP_ASET);
+        } else if (head == SETF_SYM_NTH) {
+            /* (setf (nth n list) val) → FLOAD %setf-nth, n, list, val, CALL 3 */
+            int idx = add_constant(c, SETF_HELPER_NTH);
+            emit(c, OP_FLOAD);
+            emit_u16(c, (uint16_t)idx);
+            compile_expr(c, cl_car(cl_cdr(place)));         /* n */
+            compile_expr(c, cl_car(cl_cdr(cl_cdr(place)))); /* list */
+            compile_expr(c, val_form);                      /* val */
+            emit(c, OP_CALL);
+            emit(c, 3);
+        } else if (head == SETF_SYM_SYMBOL_VALUE) {
+            /* (setf (symbol-value sym) val) → FLOAD %set-symbol-value, sym, val, CALL 2 */
+            int idx = add_constant(c, SETF_HELPER_SV);
+            emit(c, OP_FLOAD);
+            emit_u16(c, (uint16_t)idx);
+            compile_expr(c, cl_car(cl_cdr(place)));
+            compile_expr(c, val_form);
+            emit(c, OP_CALL);
+            emit(c, 2);
+        } else if (head == SETF_SYM_SYMBOL_FUNCTION) {
+            /* (setf (symbol-function sym) val) → FLOAD %set-symbol-function, sym, val, CALL 2 */
+            int idx = add_constant(c, SETF_HELPER_SF);
+            emit(c, OP_FLOAD);
+            emit_u16(c, (uint16_t)idx);
+            compile_expr(c, cl_car(cl_cdr(place)));
+            compile_expr(c, val_form);
+            emit(c, OP_CALL);
+            emit(c, 2);
+        } else {
+            cl_error(CL_ERR_GENERAL, "SETF: unknown place form");
+        }
+    } else {
+        cl_error(CL_ERR_GENERAL, "SETF: invalid place");
+    }
+
+    c->in_tail = saved_tail;
+}
+
+static void compile_setf(CL_Compiler *c, CL_Obj form)
+{
+    /* (setf place1 val1 place2 val2 ...) */
+    CL_Obj rest = cl_cdr(form);
+
+    while (!CL_NULL_P(rest)) {
+        CL_Obj place = cl_car(rest);
+        CL_Obj val_form;
+
+        if (CL_NULL_P(cl_cdr(rest)))
+            cl_error(CL_ERR_ARGS, "SETF: odd number of arguments");
+        val_form = cl_car(cl_cdr(rest));
+
+        compile_setf_place(c, place, val_form);
 
         rest = cl_cdr(cl_cdr(rest));
         /* If there are more pairs, pop the intermediate value */
@@ -2311,6 +2426,7 @@ static void compile_expr(CL_Compiler *c, CL_Obj expr)
         if (head == SYM_LET)         { compile_let(c, expr, 0); return; }
         if (head == SYM_LETSTAR)     { compile_let(c, expr, 1); return; }
         if (head == SYM_SETQ)        { compile_setq(c, expr); return; }
+        if (head == SYM_SETF)        { compile_setf(c, expr); return; }
         if (head == SYM_DEFUN)       { compile_defun(c, expr); return; }
         if (head == SYM_DEFVAR)      { compile_defvar(c, expr); return; }
         if (head == SYM_DEFPARAMETER) { compile_defparameter(c, expr); return; }
@@ -2475,4 +2591,18 @@ CL_Obj cl_compile_defun(CL_Obj name, CL_Obj lambda_list, CL_Obj body)
 void cl_compiler_init(void)
 {
     macro_table = CL_NIL;
+
+    /* Cache setf place symbols */
+    SETF_SYM_CAR             = cl_intern_in("CAR", 3, cl_package_cl);
+    SETF_SYM_CDR             = cl_intern_in("CDR", 3, cl_package_cl);
+    SETF_SYM_FIRST           = cl_intern_in("FIRST", 5, cl_package_cl);
+    SETF_SYM_REST            = cl_intern_in("REST", 4, cl_package_cl);
+    SETF_SYM_NTH             = cl_intern_in("NTH", 3, cl_package_cl);
+    SETF_SYM_AREF            = cl_intern_in("AREF", 4, cl_package_cl);
+    SETF_SYM_SVREF           = cl_intern_in("SVREF", 5, cl_package_cl);
+    SETF_SYM_SYMBOL_VALUE    = cl_intern_in("SYMBOL-VALUE", 12, cl_package_cl);
+    SETF_SYM_SYMBOL_FUNCTION = cl_intern_in("SYMBOL-FUNCTION", 15, cl_package_cl);
+    SETF_HELPER_NTH          = cl_intern_in("%SETF-NTH", 9, cl_package_cl);
+    SETF_HELPER_SV           = cl_intern_in("%SET-SYMBOL-VALUE", 17, cl_package_cl);
+    SETF_HELPER_SF           = cl_intern_in("%SET-SYMBOL-FUNCTION", 20, cl_package_cl);
 }

@@ -53,6 +53,7 @@ CL_Obj SYM_MULTIPLE_VALUE_PROG1 = CL_NIL;
 CL_Obj SYM_NTH_VALUE = CL_NIL;
 CL_Obj SYM_DEFVAR = CL_NIL;
 CL_Obj SYM_DEFPARAMETER = CL_NIL;
+CL_Obj SYM_SETF = CL_NIL;
 
 /* FNV-1a hash */
 uint32_t cl_hash_string(const char *str, uint32_t len)
@@ -179,6 +180,7 @@ void cl_symbol_init(void)
     SYM_NTH_VALUE            = cl_intern_in("NTH-VALUE", 9, cl_package_cl);
     SYM_DEFVAR               = cl_intern_in("DEFVAR", 6, cl_package_cl);
     SYM_DEFPARAMETER         = cl_intern_in("DEFPARAMETER", 12, cl_package_cl);
+    SYM_SETF                 = cl_intern_in("SETF", 4, cl_package_cl);
 
     /* T is self-evaluating */
     {

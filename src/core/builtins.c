@@ -763,6 +763,130 @@ static CL_Obj bi_error(CL_Obj *args, int n)
     return CL_NIL;
 }
 
+/* --- Mutation --- */
+
+static CL_Obj bi_rplaca(CL_Obj *args, int n)
+{
+    CL_Cons *cell;
+    CL_UNUSED(n);
+    if (!CL_CONS_P(args[0]))
+        cl_error(CL_ERR_TYPE, "RPLACA: not a cons");
+    cell = (CL_Cons *)CL_OBJ_TO_PTR(args[0]);
+    cell->car = args[1];
+    return args[0];  /* CL spec: returns the cons */
+}
+
+static CL_Obj bi_rplacd(CL_Obj *args, int n)
+{
+    CL_Cons *cell;
+    CL_UNUSED(n);
+    if (!CL_CONS_P(args[0]))
+        cl_error(CL_ERR_TYPE, "RPLACD: not a cons");
+    cell = (CL_Cons *)CL_OBJ_TO_PTR(args[0]);
+    cell->cdr = args[1];
+    return args[0];  /* CL spec: returns the cons */
+}
+
+static CL_Obj bi_aref(CL_Obj *args, int n)
+{
+    CL_Vector *vec;
+    int32_t idx;
+    CL_UNUSED(n);
+    if (!CL_VECTOR_P(args[0]))
+        cl_error(CL_ERR_TYPE, "AREF: not a vector");
+    if (!CL_FIXNUM_P(args[1]))
+        cl_error(CL_ERR_TYPE, "AREF: index must be a number");
+    vec = (CL_Vector *)CL_OBJ_TO_PTR(args[0]);
+    idx = CL_FIXNUM_VAL(args[1]);
+    if (idx < 0 || (uint32_t)idx >= vec->length)
+        cl_error(CL_ERR_ARGS, "AREF: index %d out of range", (int)idx);
+    return vec->data[idx];
+}
+
+static CL_Obj bi_make_array(CL_Obj *args, int n)
+{
+    CL_UNUSED(n);
+    if (!CL_FIXNUM_P(args[0]))
+        cl_error(CL_ERR_TYPE, "MAKE-ARRAY: size must be a number");
+    return cl_make_vector((uint32_t)CL_FIXNUM_VAL(args[0]));
+}
+
+static CL_Obj bi_vectorp(CL_Obj *args, int n)
+{
+    CL_UNUSED(n);
+    return CL_VECTOR_P(args[0]) ? SYM_T : CL_NIL;
+}
+
+static CL_Obj bi_symbol_value(CL_Obj *args, int n)
+{
+    CL_Symbol *s;
+    CL_UNUSED(n);
+    if (!CL_SYMBOL_P(args[0]))
+        cl_error(CL_ERR_TYPE, "SYMBOL-VALUE: not a symbol");
+    s = (CL_Symbol *)CL_OBJ_TO_PTR(args[0]);
+    if (s->value == CL_UNBOUND)
+        cl_error(CL_ERR_UNBOUND, "SYMBOL-VALUE: unbound variable: %s",
+                 cl_symbol_name(args[0]));
+    return s->value;
+}
+
+static CL_Obj bi_symbol_function(CL_Obj *args, int n)
+{
+    CL_Symbol *s;
+    CL_UNUSED(n);
+    if (!CL_SYMBOL_P(args[0]))
+        cl_error(CL_ERR_TYPE, "SYMBOL-FUNCTION: not a symbol");
+    s = (CL_Symbol *)CL_OBJ_TO_PTR(args[0]);
+    if (s->function == CL_UNBOUND)
+        cl_error(CL_ERR_UNDEFINED, "SYMBOL-FUNCTION: undefined function: %s",
+                 cl_symbol_name(args[0]));
+    return s->function;
+}
+
+static CL_Obj bi_setf_nth(CL_Obj *args, int n)
+{
+    /* (%setf-nth n list val) — walk list to nth cons, rplaca, return val */
+    int32_t idx;
+    CL_Obj list;
+    CL_Cons *cell;
+    CL_UNUSED(n);
+    if (!CL_FIXNUM_P(args[0]))
+        cl_error(CL_ERR_TYPE, "%SETF-NTH: index must be a number");
+    idx = CL_FIXNUM_VAL(args[0]);
+    list = args[1];
+    while (idx > 0 && !CL_NULL_P(list)) {
+        list = cl_cdr(list);
+        idx--;
+    }
+    if (CL_NULL_P(list) || !CL_CONS_P(list))
+        cl_error(CL_ERR_ARGS, "%SETF-NTH: index out of range");
+    cell = (CL_Cons *)CL_OBJ_TO_PTR(list);
+    cell->car = args[2];
+    return args[2];
+}
+
+static CL_Obj bi_set_symbol_value(CL_Obj *args, int n)
+{
+    CL_Symbol *s;
+    CL_UNUSED(n);
+    if (!CL_SYMBOL_P(args[0]))
+        cl_error(CL_ERR_TYPE, "SET: not a symbol");
+    s = (CL_Symbol *)CL_OBJ_TO_PTR(args[0]);
+    s->value = args[1];
+    return args[1];
+}
+
+static CL_Obj bi_set_symbol_function(CL_Obj *args, int n)
+{
+    CL_Symbol *s;
+    CL_UNUSED(n);
+    if (!CL_SYMBOL_P(args[0]))
+        cl_error(CL_ERR_TYPE, "%SET-SYMBOL-FUNCTION: not a symbol");
+    s = (CL_Symbol *)CL_OBJ_TO_PTR(args[0]);
+    s->function = args[1];
+    return args[1];
+}
+
 /* --- Boundp --- */
 
 static CL_Obj bi_boundp(CL_Obj *args, int n)
@@ -876,6 +1000,20 @@ void cl_builtins_init(void)
     defun("MACROEXPAND", bi_macroexpand, 1, 1);
 
     defun("BOUNDP", bi_boundp, 1, 1);
+
+    /* Mutation */
+    defun("RPLACA", bi_rplaca, 2, 2);
+    defun("RPLACD", bi_rplacd, 2, 2);
+    defun("AREF", bi_aref, 2, 2);
+    defun("SVREF", bi_aref, 2, 2);
+    defun("MAKE-ARRAY", bi_make_array, 1, 1);
+    defun("VECTORP", bi_vectorp, 1, 1);
+    defun("SYMBOL-VALUE", bi_symbol_value, 1, 1);
+    defun("SYMBOL-FUNCTION", bi_symbol_function, 1, 1);
+    defun("%SETF-NTH", bi_setf_nth, 3, 3);
+    defun("%SET-SYMBOL-VALUE", bi_set_symbol_value, 2, 2);
+    defun("%SET-SYMBOL-FUNCTION", bi_set_symbol_function, 2, 2);
+    defun("SET", bi_set_symbol_value, 2, 2);
 
     /* Multiple values */
     defun("VALUES", bi_values, 0, -1);
