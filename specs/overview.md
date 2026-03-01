@@ -58,7 +58,7 @@ Types: CONS, SYMBOL, STRING, FUNCTION, CLOSURE, BYTECODE, VECTOR, PACKAGE
 
 ## Bytecode VM
 
-Stack-based, byte-oriented instruction encoding. 35 opcodes:
+Stack-based, byte-oriented instruction encoding. 44 opcodes:
 
 | Category | Opcodes |
 |----------|---------|
@@ -70,7 +70,11 @@ Stack-based, byte-oriented instruction encoding. 35 opcodes:
 | Logic | NOT |
 | Control flow | JMP, JNIL, JTRUE |
 | Functions | CALL, TAILCALL, RET, CLOSURE, APPLY |
-| Misc | LIST, HALT, DEFMACRO |
+| NLX | CATCH, UNCATCH, UWPROT, UWPOP, UWRETHROW |
+| Multiple values | MV_LOAD, MV_TO_LIST, NTH_VALUE |
+| Dynamic binding | DYNBIND, DYNUNBIND |
+| Mutation | RPLACA, RPLACD, ASET |
+| Misc | LIST, HALT, DEFMACRO, ARGC |
 
 ## Compiler
 
@@ -81,23 +85,26 @@ Single-pass recursive compiler from S-expressions to bytecode:
 - Macro expansion before compilation
 - Backward jump support for loop forms
 
-**Special forms:** `quote`, `if`, `progn`, `lambda`, `let`, `let*`, `setq`, `defun`, `defmacro`, `function (#')`, `block`, `return-from`, `and`, `or`, `cond`, `do`, `dolist`, `dotimes`, `case`, `ecase`, `typecase`, `etypecase`, `flet`, `labels`, `prog1`, `prog2`
+**Special forms:** `quote`, `if`, `progn`, `lambda`, `let`, `let*`, `setq`, `setf`, `defun`, `defvar`, `defparameter`, `defmacro`, `function (#')`, `block`, `return-from`, `return`, `and`, `or`, `cond`, `do`, `dolist`, `dotimes`, `case`, `ecase`, `typecase`, `etypecase`, `flet`, `labels`, `tagbody`, `go`, `catch`, `unwind-protect`, `multiple-value-bind`, `multiple-value-list`, `multiple-value-prog1`, `nth-value`
 
-**Bootstrap macros:** `when`, `unless`
+**Bootstrap macros:** `when`, `unless`, `prog1`, `prog2`, `push`, `pop`, `incf`, `decf`
 
-## Built-in Functions (56 functions)
+## Built-in Functions (72 functions)
 
 | Category | Functions |
 |----------|-----------|
 | Arithmetic | `+` `-` `*` `/` `mod` `1+` `1-` `abs` `max` `min` |
 | Comparison | `=` `<` `>` `<=` `>=` |
-| Predicates | `null` `consp` `atom` `listp` `numberp` `integerp` `symbolp` `stringp` `functionp` `zerop` `plusp` `minusp` |
+| Predicates | `null` `consp` `atom` `listp` `numberp` `integerp` `symbolp` `stringp` `functionp` `vectorp` `zerop` `plusp` `minusp` |
 | Equality | `eq` `eql` `equal` `not` |
 | List ops | `cons` `car` `cdr` `first` `rest` `list` `length` `append` `reverse` `nth` |
+| Mutation | `rplaca` `rplacd` `aref` `svref` `make-array` `set` |
+| Symbol access | `symbol-value` `symbol-function` `boundp` |
 | Higher-order | `mapcar` `apply` `funcall` |
 | I/O | `print` `prin1` `princ` `terpri` `format` `load` |
 | Eval/Macro | `eval` `macroexpand` `macroexpand-1` |
-| Misc | `type-of` `gensym` `error` |
+| Control | `throw` `values` `values-list` `error` |
+| Misc | `type-of` `gensym` |
 
 ## Implementation Roadmap
 
@@ -149,15 +156,20 @@ Features needed for idiomatic CL programming:
 - [x] `prog1`, `prog2`
 - [x] `block`/`return-from`/`return`
 - [x] `eval`, `macroexpand`, `macroexpand-1` (user-accessible)
-- [ ] `tagbody`/`go` — low-level control flow
-- [ ] `catch`/`throw` — dynamic non-local exits
-- [ ] `unwind-protect` — cleanup forms
-- [ ] Multiple return values (`values`, `multiple-value-bind`, `multiple-value-list`, `multiple-value-prog1`, `nth-value`)
-- [ ] Dynamic variables (`defvar`, `defparameter`, special declarations, dynamic binding)
-- [ ] `setf` with generalized places (`defsetf`, `define-setf-expander`)
-- [ ] Modify macros: `push`, `pop`, `pushnew`, `incf`, `decf`
+- [x] `tagbody`/`go` — low-level control flow
+- [x] `catch`/`throw` — dynamic non-local exits
+- [x] `unwind-protect` — cleanup forms
+- [x] Multiple return values (`values`, `multiple-value-bind`, `multiple-value-list`, `multiple-value-prog1`, `nth-value`)
+- [x] Dynamic variables (`defvar`, `defparameter`, special declarations, shallow binding)
+- [x] `setf` with generalized places (car/cdr/first/rest/nth/aref/svref/symbol-value/symbol-function)
+- [x] Modify macros: `push`, `pop`, `incf`, `decf`
+- [x] Mutation builtins: `rplaca`, `rplacd`, `aref`, `svref`, `make-array`, `set`
 - [ ] `destructuring-bind`
 - [ ] `eval-when` — compile-time evaluation control
+- [ ] `pushnew`
+- [ ] `defsetf`, `define-setf-expander` — user-extensible setf places
+
+137 host tests (4 suites), 269 Amiga batch tests — all passing.
 
 ### Phase 5: Standard Library
 
@@ -165,12 +177,12 @@ Data structures, sequences, strings, and I/O:
 - [ ] Hash tables (`make-hash-table`, `gethash`, `remhash`, `maphash`, `clrhash`)
 - [ ] Sequence functions (`find`, `find-if`, `remove`, `remove-if`, `remove-if-not`, `remove-duplicates`, `position`, `search`, `count`, `sort`, `stable-sort`, `substitute`, `reduce`, `map`, `every`, `some`, `notany`, `notevery`, `mismatch`)
 - [ ] List utilities (`member`, `assoc`, `rassoc`, `intersection`, `union`, `set-difference`, `subsetp`, `adjoin`, `last`, `butlast`, `nthcdr`, `copy-list`, `copy-tree`, `sublis`, `subst`, `acons`, `pairlis`, `getf`)
-- [ ] Destructive list ops (`nconc`, `nreverse`, `delete`, `delete-if`, `rplaca`, `rplacd`, `nsubst`)
+- [ ] Destructive list ops (`nconc`, `nreverse`, `delete`, `delete-if`, `nsubst`)
 - [ ] Mapping variants (`mapcan`, `mapc`, `maplist`, `mapl`, `mapcon`)
 - [ ] String operations (`string=`, `string-equal`, `string<`, `string>`, `string-upcase`, `string-downcase`, `string-trim`, `string-left-trim`, `string-right-trim`, `subseq`, `concatenate`, `parse-integer`)
 - [ ] Character functions (`char=`, `char<`, `char-code`, `code-char`, `upper-case-p`, `lower-case-p`, `alpha-char-p`, `digit-char-p`, `char-upcase`, `char-downcase`)
-- [ ] Symbol functions (`symbol-name`, `symbol-value`, `symbol-function`, `symbol-package`, `boundp`, `fboundp`, `fdefinition`, `make-symbol`, `keywordp`)
-- [ ] Array operations (`make-array`, `aref`, `vector`, `array-dimensions`, `array-rank`, `fill`, `replace`)
+- [ ] Symbol functions (`symbol-name`, `symbol-package`, `fboundp`, `fdefinition`, `make-symbol`, `keywordp`)
+- [ ] Array operations (`vector`, `array-dimensions`, `array-rank`, `fill`, `replace`)
 - [ ] Type system (`typep`, `coerce`, `deftype`, `subtypep`)
 - [ ] `declare`, `declaim`, `proclaim` — declarations
 
@@ -256,9 +268,9 @@ cl-amiga/
 │   └── boot.lisp          # Bootstrap macros/functions
 ├── tests/
 │   ├── test.h             # Test framework
-│   ├── test_*.c           # Host test suites (4 files, 89 tests)
+│   ├── test_*.c           # Host test suites (4 files, 137 tests)
 │   └── amiga/
-│       └── run-tests.lisp # AmigaOS batch tests (222 tests)
+│       └── run-tests.lisp # AmigaOS batch tests (269 tests)
 ├── build/                 # Build output (gitignored)
 └── verify/
     └── realamiga/          # FS-UAE config + AmigaOS system image
