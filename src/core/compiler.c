@@ -218,7 +218,7 @@ void compile_lambda(CL_Compiler *c, CL_Obj form)
 {
     CL_Obj params = cl_car(cl_cdr(form));
     CL_Obj body = cl_cdr(cl_cdr(form));
-    CL_Compiler inner;
+    CL_Compiler *inner;
     CL_CompEnv *env;
     CL_ParsedLambdaList ll;
     CL_Bytecode *bc;
@@ -228,10 +228,13 @@ void compile_lambda(CL_Compiler *c, CL_Obj form)
 
     parse_lambda_list(params, &ll);
 
-    memset(&inner, 0, sizeof(inner));
+    /* Heap-allocate inner compiler (~45KB — too large for AmigaOS stack) */
+    inner = (CL_Compiler *)platform_alloc(sizeof(CL_Compiler));
+    if (!inner) return;
+    memset(inner, 0, sizeof(*inner));
     env = cl_env_create(c->env);
-    inner.env = env;
-    inner.in_tail = 1;
+    inner->env = env;
+    inner->in_tail = 1;
 
     for (i = 0; i < ll.n_required; i++)
         cl_env_add_local(env, ll.required[i]);
@@ -246,20 +249,20 @@ void compile_lambda(CL_Compiler *c, CL_Obj form)
     for (i = 0; i < ll.n_optional; i++) {
         if (!CL_NULL_P(ll.opt_defaults[i])) {
             int skip_pos;
-            cl_emit(&inner, OP_ARGC);
-            cl_emit_const(&inner, CL_MAKE_FIXNUM(ll.n_required + i + 1));
-            cl_emit(&inner, OP_GE);
-            skip_pos = cl_emit_jump(&inner, OP_JTRUE);
+            cl_emit(inner, OP_ARGC);
+            cl_emit_const(inner, CL_MAKE_FIXNUM(ll.n_required + i + 1));
+            cl_emit(inner, OP_GE);
+            skip_pos = cl_emit_jump(inner, OP_JTRUE);
             {
-                int saved = inner.in_tail;
-                inner.in_tail = 0;
-                compile_expr(&inner, ll.opt_defaults[i]);
-                inner.in_tail = saved;
+                int saved = inner->in_tail;
+                inner->in_tail = 0;
+                compile_expr(inner, ll.opt_defaults[i]);
+                inner->in_tail = saved;
             }
-            cl_emit(&inner, OP_STORE);
-            cl_emit(&inner, (uint8_t)(ll.n_required + i));
-            cl_emit(&inner, OP_POP);
-            cl_patch_jump(&inner, skip_pos);
+            cl_emit(inner, OP_STORE);
+            cl_emit(inner, (uint8_t)(ll.n_required + i));
+            cl_emit(inner, OP_POP);
+            cl_patch_jump(inner, skip_pos);
         }
     }
 
@@ -267,41 +270,41 @@ void compile_lambda(CL_Compiler *c, CL_Obj form)
     for (i = 0; i < ll.n_keys; i++) {
         if (!CL_NULL_P(ll.key_defaults[i])) {
             int skip_pos;
-            cl_emit(&inner, OP_LOAD);
-            cl_emit(&inner, (uint8_t)key_slot_indices[i]);
-            skip_pos = cl_emit_jump(&inner, OP_JTRUE);
+            cl_emit(inner, OP_LOAD);
+            cl_emit(inner, (uint8_t)key_slot_indices[i]);
+            skip_pos = cl_emit_jump(inner, OP_JTRUE);
             {
-                int saved = inner.in_tail;
-                inner.in_tail = 0;
-                compile_expr(&inner, ll.key_defaults[i]);
-                inner.in_tail = saved;
+                int saved = inner->in_tail;
+                inner->in_tail = 0;
+                compile_expr(inner, ll.key_defaults[i]);
+                inner->in_tail = saved;
             }
-            cl_emit(&inner, OP_STORE);
-            cl_emit(&inner, (uint8_t)key_slot_indices[i]);
-            cl_emit(&inner, OP_POP);
-            cl_patch_jump(&inner, skip_pos);
+            cl_emit(inner, OP_STORE);
+            cl_emit(inner, (uint8_t)key_slot_indices[i]);
+            cl_emit(inner, OP_POP);
+            cl_patch_jump(inner, skip_pos);
         }
     }
 
-    compile_body(&inner, body);
-    cl_emit(&inner, OP_RET);
+    compile_body(inner, body);
+    cl_emit(inner, OP_RET);
 
     /* Build bytecode object */
     bc = (CL_Bytecode *)cl_alloc(TYPE_BYTECODE, sizeof(CL_Bytecode));
-    if (!bc) { cl_env_destroy(env); return; }
+    if (!bc) { cl_env_destroy(env); platform_free(inner); return; }
 
-    bc->code = (uint8_t *)platform_alloc(inner.code_pos);
-    if (bc->code) memcpy(bc->code, inner.code, inner.code_pos);
-    bc->code_len = inner.code_pos;
+    bc->code = (uint8_t *)platform_alloc(inner->code_pos);
+    if (bc->code) memcpy(bc->code, inner->code, inner->code_pos);
+    bc->code_len = inner->code_pos;
 
-    if (inner.const_count > 0) {
+    if (inner->const_count > 0) {
         bc->constants = (CL_Obj *)platform_alloc(
-            inner.const_count * sizeof(CL_Obj));
+            inner->const_count * sizeof(CL_Obj));
         if (bc->constants) {
-            for (i = 0; i < inner.const_count; i++)
-                bc->constants[i] = inner.constants[i];
+            for (i = 0; i < inner->const_count; i++)
+                bc->constants[i] = inner->constants[i];
         }
-        bc->n_constants = inner.const_count;
+        bc->n_constants = inner->const_count;
     } else {
         bc->constants = NULL;
         bc->n_constants = 0;
@@ -337,6 +340,7 @@ void compile_lambda(CL_Compiler *c, CL_Obj form)
     }
 
     cl_env_destroy(env);
+    platform_free(inner);
 }
 
 /* --- Let --- */
@@ -860,34 +864,37 @@ CL_Obj cl_get_macro(CL_Obj name)
 
 CL_Obj cl_compile(CL_Obj expr)
 {
-    CL_Compiler comp;
+    CL_Compiler *comp;
     CL_CompEnv *env;
     CL_Bytecode *bc;
 
-    memset(&comp, 0, sizeof(comp));
+    /* Heap-allocate compiler state (~45KB — too large for AmigaOS stack) */
+    comp = (CL_Compiler *)platform_alloc(sizeof(CL_Compiler));
+    if (!comp) return CL_NIL;
+    memset(comp, 0, sizeof(*comp));
     env = cl_env_create(NULL);
-    comp.env = env;
-    comp.in_tail = 0;
+    comp->env = env;
+    comp->in_tail = 0;
 
-    compile_expr(&comp, expr);
-    cl_emit(&comp, OP_HALT);
+    compile_expr(comp, expr);
+    cl_emit(comp, OP_HALT);
 
     bc = (CL_Bytecode *)cl_alloc(TYPE_BYTECODE, sizeof(CL_Bytecode));
-    if (!bc) { cl_env_destroy(env); return CL_NIL; }
+    if (!bc) { cl_env_destroy(env); platform_free(comp); return CL_NIL; }
 
-    bc->code = (uint8_t *)platform_alloc(comp.code_pos);
-    if (bc->code) memcpy(bc->code, comp.code, comp.code_pos);
-    bc->code_len = comp.code_pos;
+    bc->code = (uint8_t *)platform_alloc(comp->code_pos);
+    if (bc->code) memcpy(bc->code, comp->code, comp->code_pos);
+    bc->code_len = comp->code_pos;
 
-    if (comp.const_count > 0) {
+    if (comp->const_count > 0) {
         int i;
         bc->constants = (CL_Obj *)platform_alloc(
-            comp.const_count * sizeof(CL_Obj));
+            comp->const_count * sizeof(CL_Obj));
         if (bc->constants) {
-            for (i = 0; i < comp.const_count; i++)
-                bc->constants[i] = comp.constants[i];
+            for (i = 0; i < comp->const_count; i++)
+                bc->constants[i] = comp->constants[i];
         }
-        bc->n_constants = comp.const_count;
+        bc->n_constants = comp->const_count;
     } else {
         bc->constants = NULL;
         bc->n_constants = 0;
@@ -904,6 +911,7 @@ CL_Obj cl_compile(CL_Obj expr)
     bc->key_slots = NULL;
 
     cl_env_destroy(env);
+    platform_free(comp);
     return CL_PTR_TO_OBJ(bc);
 }
 

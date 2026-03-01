@@ -16,6 +16,15 @@ make test          # Run all tests (mandatory — must pass before committing)
 make clean         # Remove build artifacts
 ```
 
+Amiga build & test via FS-UAE:
+```
+# Launch FS-UAE (use raw binary, NOT `open` command)
+verify/realamiga/FS-UAE.app/Contents/MacOS/fs-uae verify/realamiga/verify.fs-uae
+```
+- Boots AmigaOS, builds with vbcc, runs Amiga test suite automatically
+- Results in `build/amiga/build.log` and `build/amiga/test-results.log`
+- `make verify-amiga` checks test results after emulator closes
+
 Cross-compilation (step 13, not yet set up):
 - `verify/otherthenamiga/aos3/` contains AmigaOS system image with vbcc/SDKs
 - `verify/otherthenamiga/verify.fs-uae` is the FS-UAE emulator config
