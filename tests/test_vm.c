@@ -1218,6 +1218,135 @@ TEST(eval_setf_return_value)
         "(let ((v (make-array 1))) (setf (aref v 0) 42))"), 42);
 }
 
+/* --- member & pushnew --- */
+
+TEST(eval_member_found)
+{
+    ASSERT_STR_EQ(eval_print("(member 2 '(1 2 3))"), "(2 3)");
+}
+
+TEST(eval_member_not_found)
+{
+    ASSERT_STR_EQ(eval_print("(member 4 '(1 2 3))"), "NIL");
+}
+
+TEST(eval_member_with_test)
+{
+    ASSERT_STR_EQ(eval_print(
+        "(member \"a\" (list \"a\" \"b\") :test #'equal)"), "(\"a\" \"b\")");
+}
+
+TEST(eval_pushnew_new)
+{
+    ASSERT_STR_EQ(eval_print("(let ((x '(1 2))) (pushnew 3 x) x)"),
+                  "(3 1 2)");
+}
+
+TEST(eval_pushnew_existing)
+{
+    ASSERT_STR_EQ(eval_print("(let ((x '(1 2))) (pushnew 1 x) x)"),
+                  "(1 2)");
+}
+
+/* --- eval-when --- */
+
+TEST(eval_eval_when_execute)
+{
+    ASSERT_EQ_INT(eval_int("(eval-when (:execute) (+ 1 2))"), 3);
+}
+
+TEST(eval_eval_when_multiple_situations)
+{
+    ASSERT_EQ_INT(eval_int(
+        "(eval-when (:compile-toplevel :load-toplevel :execute) (+ 10 20))"),
+        30);
+}
+
+TEST(eval_eval_when_body)
+{
+    ASSERT_EQ_INT(eval_int("(eval-when (:execute) 1 2 3)"), 3);
+}
+
+/* --- destructuring-bind --- */
+
+TEST(eval_destructuring_bind_simple)
+{
+    ASSERT_STR_EQ(eval_print(
+        "(destructuring-bind (a b c) '(1 2 3) (list a b c))"),
+        "(1 2 3)");
+}
+
+TEST(eval_destructuring_bind_nested)
+{
+    ASSERT_STR_EQ(eval_print(
+        "(destructuring-bind (a (b c) &rest d) '(1 (2 3) 4 5) (list a b c d))"),
+        "(1 2 3 (4 5))");
+}
+
+TEST(eval_destructuring_bind_rest)
+{
+    ASSERT_STR_EQ(eval_print(
+        "(destructuring-bind (a &rest b) '(1 2 3) (list a b))"),
+        "(1 (2 3))");
+}
+
+TEST(eval_destructuring_bind_optional)
+{
+    ASSERT_STR_EQ(eval_print(
+        "(destructuring-bind (a &optional (b 10)) '(1) (list a b))"),
+        "(1 10)");
+}
+
+TEST(eval_destructuring_bind_optional_provided)
+{
+    ASSERT_STR_EQ(eval_print(
+        "(destructuring-bind (a &optional (b 10)) '(1 2) (list a b))"),
+        "(1 2)");
+}
+
+TEST(eval_destructuring_bind_body)
+{
+    ASSERT_STR_EQ(eval_print(
+        "(destructuring-bind (a &body b) '(1 2 3) (list a b))"),
+        "(1 (2 3))");
+}
+
+/* --- defsetf --- */
+
+TEST(eval_defsetf_short)
+{
+    eval_print("(defun my-get (vec i) (aref vec i))");
+    eval_print(
+        "(defun my-put (vec i val) (progn (setf (aref vec i) val) val))");
+    eval_print("(defsetf my-get my-put)");
+    ASSERT_EQ_INT(eval_int(
+        "(let ((v (make-array 3))) (setf (my-get v 0) 42) (my-get v 0))"),
+        42);
+}
+
+TEST(eval_defsetf_cadr)
+{
+    eval_print("(defun set-cadr (l v) (rplaca (cdr l) v) v)");
+    eval_print("(defsetf cadr set-cadr)");
+    ASSERT_STR_EQ(eval_print(
+        "(let ((x (list 1 2 3))) (setf (cadr x) 99) x)"),
+        "(1 99 3)");
+}
+
+/* --- defun block (return-from inside do) --- */
+
+TEST(eval_defun_return_from)
+{
+    eval_print(
+        "(defun find-it (item list)"
+        "  (do ((l list (cdr l)))"
+        "      ((null l) nil)"
+        "    (when (eql item (car l))"
+        "      (return-from find-it l))))");
+    ASSERT_STR_EQ(eval_print("(find-it 2 '(1 2 3))"), "(2 3)");
+    ASSERT_STR_EQ(eval_print("(find-it 4 '(1 2 3))"), "NIL");
+}
+
 int main(void)
 {
     test_init();
@@ -1360,6 +1489,23 @@ int main(void)
     RUN(eval_setf_symbol_value);
     RUN(eval_set_builtin);
     RUN(eval_setf_return_value);
+    RUN(eval_member_found);
+    RUN(eval_member_not_found);
+    RUN(eval_member_with_test);
+    RUN(eval_pushnew_new);
+    RUN(eval_pushnew_existing);
+    RUN(eval_eval_when_execute);
+    RUN(eval_eval_when_multiple_situations);
+    RUN(eval_eval_when_body);
+    RUN(eval_destructuring_bind_simple);
+    RUN(eval_destructuring_bind_nested);
+    RUN(eval_destructuring_bind_rest);
+    RUN(eval_destructuring_bind_optional);
+    RUN(eval_destructuring_bind_optional_provided);
+    RUN(eval_destructuring_bind_body);
+    RUN(eval_defsetf_short);
+    RUN(eval_defsetf_cadr);
+    RUN(eval_defun_return_from);
 
     teardown();
     REPORT();

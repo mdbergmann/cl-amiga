@@ -524,6 +524,13 @@ static CL_Obj bi_apply(CL_Obj *args, int n)
 static CL_Obj bi_funcall(CL_Obj *args, int n)
 {
     CL_Obj func = args[0];
+    /* CL spec: funcall accepts a symbol, resolving to its function binding */
+    if (CL_SYMBOL_P(func)) {
+        CL_Symbol *s = (CL_Symbol *)CL_OBJ_TO_PTR(func);
+        func = s->function;
+        if (CL_NULL_P(func) || func == CL_UNBOUND)
+            cl_error(CL_ERR_TYPE, "FUNCALL: symbol has no function binding");
+    }
     if (CL_FUNCTION_P(func)) {
         CL_Function *f = (CL_Function *)CL_OBJ_TO_PTR(func);
         return f->func(args + 1, n - 1);

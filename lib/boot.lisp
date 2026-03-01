@@ -22,3 +22,23 @@
 (defmacro pop (place) (let ((g (gensym))) `(let ((,g (car ,place))) (setf ,place (cdr ,place)) ,g)))
 (defmacro incf (place &optional (delta 1)) `(setf ,place (+ ,place ,delta)))
 (defmacro decf (place &optional (delta 1)) `(setf ,place (- ,place ,delta)))
+
+;; List searching
+(defun member (item list &key (test #'eql))
+  (do ((l list (cdr l)))
+      ((null l) nil)
+    (when (funcall test item (car l))
+      (return-from member l))))
+
+;; pushnew — push only if not already a member
+(defmacro pushnew (item place &key test)
+  (let ((g (gensym)))
+    (if test
+        `(let ((,g ,item))
+           (unless (member ,g ,place :test ,test)
+             (setf ,place (cons ,g ,place)))
+           ,place)
+        `(let ((,g ,item))
+           (unless (member ,g ,place)
+             (setf ,place (cons ,g ,place)))
+           ,place))))

@@ -52,6 +52,11 @@ typedef struct {
 /* Macro table (simple association list: ((name . expander) ...)) */
 static CL_Obj macro_table = CL_NIL;
 
+/* Setf expander table: ((accessor . updater) ...)
+ * Short form: updater is a symbol → (updater args... val)
+ * Long form not yet supported. */
+static CL_Obj setf_table = CL_NIL;
+
 /* Cached setf place symbols (initialized in cl_compiler_init) */
 static CL_Obj SETF_SYM_CAR = CL_NIL;
 static CL_Obj SETF_SYM_CDR = CL_NIL;
@@ -660,7 +665,38 @@ static void compile_setf_place(CL_Compiler *c, CL_Obj place, CL_Obj val_form)
             emit(c, OP_CALL);
             emit(c, 2);
         } else {
-            cl_error(CL_ERR_GENERAL, "SETF: unknown place form");
+            /* Check defsetf table */
+            CL_Obj entry = setf_table;
+            CL_Obj updater = CL_NIL;
+            int found = 0;
+            while (!CL_NULL_P(entry)) {
+                CL_Obj pair = cl_car(entry);
+                if (cl_car(pair) == head) {
+                    updater = cl_cdr(pair);
+                    found = 1;
+                    break;
+                }
+                entry = cl_cdr(entry);
+            }
+            if (found) {
+                /* Emit: (updater args... val) */
+                CL_Obj args = cl_cdr(place);
+                int nargs = 0;
+                int idx = add_constant(c, updater);
+                emit(c, OP_FLOAD);
+                emit_u16(c, (uint16_t)idx);
+                while (!CL_NULL_P(args)) {
+                    compile_expr(c, cl_car(args));
+                    nargs++;
+                    args = cl_cdr(args);
+                }
+                compile_expr(c, val_form);
+                nargs++;
+                emit(c, OP_CALL);
+                emit(c, (uint8_t)nargs);
+            } else {
+                cl_error(CL_ERR_GENERAL, "SETF: unknown place form");
+            }
         }
     } else {
         cl_error(CL_ERR_GENERAL, "SETF: invalid place");
@@ -690,6 +726,198 @@ static void compile_setf(CL_Compiler *c, CL_Obj form)
             emit(c, OP_POP);
         }
     }
+}
+
+/* Helper: allocate an anonymous temp local slot (no symbol name) */
+static int alloc_temp_slot(CL_CompEnv *env)
+{
+    int slot = env->local_count;
+    env->locals[slot] = CL_NIL;
+    env->local_count++;
+    if (env->local_count > env->max_locals)
+        env->max_locals = env->local_count;
+    return slot;
+}
+
+/* Recursive destructuring pattern walker.
+ * pos_slot: local slot holding the current list position.
+ * pattern: the destructuring lambda list (nested list).
+ * Allocates local slots for each bound variable. */
+static void compile_destructure_pattern(CL_Compiler *c, int pos_slot,
+                                         CL_Obj pattern)
+{
+    CL_CompEnv *env = c->env;
+    int saved_tail = c->in_tail;
+    c->in_tail = 0;
+
+    while (!CL_NULL_P(pattern)) {
+        CL_Obj elem = cl_car(pattern);
+
+        /* &rest / &body — bind remaining list to next symbol */
+        if (elem == SYM_AMP_REST || elem == SYM_AMP_BODY) {
+            CL_Obj rest_var = cl_car(cl_cdr(pattern));
+            int slot = cl_env_add_local(env, rest_var);
+            emit(c, OP_LOAD);
+            emit(c, (uint8_t)pos_slot);
+            emit(c, OP_STORE);
+            emit(c, (uint8_t)slot);
+            emit(c, OP_POP);
+            break; /* nothing after &rest */
+        }
+
+        /* &optional — remaining elements are optional with defaults */
+        if (elem == SYM_AMP_OPTIONAL) {
+            CL_Obj rest = cl_cdr(pattern);
+            while (!CL_NULL_P(rest)) {
+                CL_Obj opt = cl_car(rest);
+                CL_Obj var;
+                CL_Obj default_val = CL_NIL;
+                int slot, skip_pos;
+
+                if (elem == SYM_AMP_REST || elem == SYM_AMP_BODY) {
+                    /* &rest after &optional */
+                    CL_Obj rest_var = cl_car(cl_cdr(rest));
+                    slot = cl_env_add_local(env, rest_var);
+                    emit(c, OP_LOAD);
+                    emit(c, (uint8_t)pos_slot);
+                    emit(c, OP_STORE);
+                    emit(c, (uint8_t)slot);
+                    emit(c, OP_POP);
+                    goto done;
+                }
+
+                if (CL_CONS_P(opt)) {
+                    var = cl_car(opt);
+                    if (!CL_NULL_P(cl_cdr(opt)))
+                        default_val = cl_car(cl_cdr(opt));
+                } else {
+                    var = opt;
+                }
+
+                slot = cl_env_add_local(env, var);
+
+                /* If pos is NIL, use default; else take (car pos) */
+                emit(c, OP_LOAD);
+                emit(c, (uint8_t)pos_slot);
+                skip_pos = emit_jump(c, OP_JNIL);
+
+                /* pos not nil: var = (car pos), pos = (cdr pos) */
+                emit(c, OP_LOAD);
+                emit(c, (uint8_t)pos_slot);
+                emit(c, OP_CAR);
+                emit(c, OP_STORE);
+                emit(c, (uint8_t)slot);
+                emit(c, OP_POP);
+                emit(c, OP_LOAD);
+                emit(c, (uint8_t)pos_slot);
+                emit(c, OP_CDR);
+                emit(c, OP_STORE);
+                emit(c, (uint8_t)pos_slot);
+                emit(c, OP_POP);
+                {
+                    int end_pos = emit_jump(c, OP_JMP);
+                    patch_jump(c, skip_pos);
+                    /* pos is nil: use default */
+                    compile_expr(c, default_val);
+                    emit(c, OP_STORE);
+                    emit(c, (uint8_t)slot);
+                    emit(c, OP_POP);
+                    patch_jump(c, end_pos);
+                }
+
+                rest = cl_cdr(rest);
+                elem = CL_NULL_P(rest) ? CL_NIL : cl_car(rest);
+            }
+            goto done;
+        }
+
+        if (CL_CONS_P(elem)) {
+            /* Nested pattern: extract sublist, recurse */
+            int sub_slot = alloc_temp_slot(env);
+            emit(c, OP_LOAD);
+            emit(c, (uint8_t)pos_slot);
+            emit(c, OP_CAR);
+            emit(c, OP_STORE);
+            emit(c, (uint8_t)sub_slot);
+            emit(c, OP_POP);
+            compile_destructure_pattern(c, sub_slot, elem);
+        } else if (CL_SYMBOL_P(elem)) {
+            /* Simple variable: bind (car pos) */
+            int slot = cl_env_add_local(env, elem);
+            emit(c, OP_LOAD);
+            emit(c, (uint8_t)pos_slot);
+            emit(c, OP_CAR);
+            emit(c, OP_STORE);
+            emit(c, (uint8_t)slot);
+            emit(c, OP_POP);
+        }
+
+        /* Advance pos = (cdr pos) */
+        emit(c, OP_LOAD);
+        emit(c, (uint8_t)pos_slot);
+        emit(c, OP_CDR);
+        emit(c, OP_STORE);
+        emit(c, (uint8_t)pos_slot);
+        emit(c, OP_POP);
+
+        pattern = cl_cdr(pattern);
+    }
+done:
+    c->in_tail = saved_tail;
+}
+
+static void compile_destructuring_bind(CL_Compiler *c, CL_Obj form)
+{
+    /* (destructuring-bind pattern expr body...) */
+    CL_Obj pattern = cl_car(cl_cdr(form));
+    CL_Obj expr = cl_car(cl_cdr(cl_cdr(form)));
+    CL_Obj body = cl_cdr(cl_cdr(cl_cdr(form)));
+    CL_CompEnv *env = c->env;
+    int saved_local_count = env->local_count;
+    int saved_tail = c->in_tail;
+    int pos_slot;
+
+    /* Compile expression, store in temp slot */
+    c->in_tail = 0;
+    compile_expr(c, expr);
+    pos_slot = alloc_temp_slot(env);
+    emit(c, OP_STORE);
+    emit(c, (uint8_t)pos_slot);
+    emit(c, OP_POP);
+
+    /* Walk pattern, binding variables */
+    compile_destructure_pattern(c, pos_slot, pattern);
+
+    /* Compile body */
+    c->in_tail = saved_tail;
+    compile_body(c, body);
+
+    /* Restore scope */
+    env->local_count = saved_local_count;
+}
+
+static void compile_eval_when(CL_Compiler *c, CL_Obj form)
+{
+    /* (eval-when (situations...) body...)
+     * In single-pass compile-and-eval, always execute body if :execute
+     * or :compile-toplevel or :load-toplevel is present.
+     * Practically: just compile body as progn (always execute). */
+    CL_Obj body = cl_cdr(cl_cdr(form));
+    compile_progn(c, body);
+}
+
+static void compile_defsetf(CL_Compiler *c, CL_Obj form)
+{
+    /* Short form: (defsetf accessor updater)
+     * Registers that (setf (accessor args...) val) → (updater args... val) */
+    CL_Obj accessor = cl_car(cl_cdr(form));
+    CL_Obj updater = cl_car(cl_cdr(cl_cdr(form)));
+
+    /* Store mapping in setf_table at compile time (immediate side effect) */
+    setf_table = cl_cons(cl_cons(accessor, updater), setf_table);
+
+    /* Return the accessor name */
+    emit_const(c, accessor);
 }
 
 static void compile_defvar(CL_Compiler *c, CL_Obj form)
@@ -737,15 +965,21 @@ static void compile_defun(CL_Compiler *c, CL_Obj form)
     CL_Obj name = cl_car(cl_cdr(form));
     CL_Obj lambda_list = cl_car(cl_cdr(cl_cdr(form)));
     CL_Obj body = cl_cdr(cl_cdr(cl_cdr(form)));
+    CL_Obj block_body, lambda_form;
 
-    /* Build (lambda (params) body...) and compile it */
-    CL_Obj lambda_form = cl_cons(SYM_LAMBDA,
-                                  cl_cons(lambda_list, body));
+    /* CL spec: defun wraps body in (block name ...) */
+    block_body = cl_cons(SYM_BLOCK, cl_cons(name, body));
+    CL_GC_PROTECT(block_body);
+
+    /* Build (lambda (params) (block name body...)) */
+    lambda_form = cl_cons(SYM_LAMBDA,
+                          cl_cons(lambda_list,
+                                  cl_cons(block_body, CL_NIL)));
     CL_GC_PROTECT(lambda_form);
 
     compile_expr(c, lambda_form);
 
-    CL_GC_UNPROTECT(1);
+    CL_GC_UNPROTECT(2);
 
     /* Store as function binding of name */
     {
@@ -2456,6 +2690,9 @@ static void compile_expr(CL_Compiler *c, CL_Obj expr)
         if (head == SYM_MULTIPLE_VALUE_LIST)  { compile_multiple_value_list(c, expr); return; }
         if (head == SYM_MULTIPLE_VALUE_PROG1) { compile_multiple_value_prog1(c, expr); return; }
         if (head == SYM_NTH_VALUE)            { compile_nth_value(c, expr); return; }
+        if (head == SYM_EVAL_WHEN)            { compile_eval_when(c, expr); return; }
+        if (head == SYM_DESTRUCTURING_BIND)   { compile_destructuring_bind(c, expr); return; }
+        if (head == SYM_DEFSETF)              { compile_defsetf(c, expr); return; }
 
         /* Regular function call */
         compile_call(c, expr);
@@ -2591,6 +2828,7 @@ CL_Obj cl_compile_defun(CL_Obj name, CL_Obj lambda_list, CL_Obj body)
 void cl_compiler_init(void)
 {
     macro_table = CL_NIL;
+    setf_table = CL_NIL;
 
     /* Cache setf place symbols */
     SETF_SYM_CAR             = cl_intern_in("CAR", 3, cl_package_cl);

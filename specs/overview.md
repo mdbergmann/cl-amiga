@@ -164,19 +164,21 @@ Features needed for idiomatic CL programming:
 - [x] `setf` with generalized places (car/cdr/first/rest/nth/aref/svref/symbol-value/symbol-function)
 - [x] Modify macros: `push`, `pop`, `incf`, `decf`
 - [x] Mutation builtins: `rplaca`, `rplacd`, `aref`, `svref`, `make-array`, `set`
-- [ ] `destructuring-bind`
-- [ ] `eval-when` — compile-time evaluation control
-- [ ] `pushnew`
-- [ ] `defsetf`, `define-setf-expander` — user-extensible setf places
+- [x] `destructuring-bind`
+- [x] `eval-when` — compile-time evaluation control
+- [x] `member`, `pushnew`
+- [x] `defsetf` — user-extensible setf places (short form)
+- [x] `defun` implicit named block (CL spec: `return-from` works inside `defun`)
+- [x] `funcall` symbol resolution (CL spec: `funcall` accepts symbols)
 
-137 host tests (4 suites), 269 Amiga batch tests — all passing.
+154 host tests (4 suites), ~290 Amiga batch tests — all passing.
 
 ### Phase 5: Standard Library
 
 Data structures, sequences, strings, and I/O:
 - [ ] Hash tables (`make-hash-table`, `gethash`, `remhash`, `maphash`, `clrhash`)
 - [ ] Sequence functions (`find`, `find-if`, `remove`, `remove-if`, `remove-if-not`, `remove-duplicates`, `position`, `search`, `count`, `sort`, `stable-sort`, `substitute`, `reduce`, `map`, `every`, `some`, `notany`, `notevery`, `mismatch`)
-- [ ] List utilities (`member`, `assoc`, `rassoc`, `intersection`, `union`, `set-difference`, `subsetp`, `adjoin`, `last`, `butlast`, `nthcdr`, `copy-list`, `copy-tree`, `sublis`, `subst`, `acons`, `pairlis`, `getf`)
+- [ ] List utilities (`assoc`, `rassoc`, `intersection`, `union`, `set-difference`, `subsetp`, `adjoin`, `last`, `butlast`, `nthcdr`, `copy-list`, `copy-tree`, `sublis`, `subst`, `acons`, `pairlis`, `getf`) — `member` done in Phase 4
 - [ ] Destructive list ops (`nconc`, `nreverse`, `delete`, `delete-if`, `nsubst`)
 - [ ] Mapping variants (`mapcan`, `mapc`, `maplist`, `mapl`, `mapcon`)
 - [ ] String operations (`string=`, `string-equal`, `string<`, `string>`, `string-upcase`, `string-downcase`, `string-trim`, `string-left-trim`, `string-right-trim`, `subseq`, `concatenate`, `parse-integer`)
@@ -248,6 +250,8 @@ Validation and ecosystem:
 - [ ] Line editing (history, tab completion)
 - [ ] Amiga-specific FFI (calling library functions)
 - [ ] Intuition/gadtools bindings for GUI (stretch goal)
+- [ ] Image save/restore (`save-image`, `load-image`) — serialize heap arena, symbol tables, package state, and bytecode pools to disk; restore to skip boot.lisp loading and resume a saved environment
+- [ ] Standalone executables — prepend runtime binary to a saved image to produce a single self-contained executable (like SBCL's `save-lisp-and-die :executable t`)
 
 ## Project Structure
 

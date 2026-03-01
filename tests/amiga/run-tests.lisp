@@ -446,6 +446,41 @@
 (check "decf" 9 (let ((x 10)) (decf x)))
 (check "decf delta" 5 (let ((x 10)) (decf x 5)))
 
+; --- member & pushnew ---
+(check "member found" '(2 3) (member 2 '(1 2 3)))
+(check "member not found" nil (member 4 '(1 2 3)))
+(check "member with test" '("a" "b") (member "a" (list "a" "b") :test #'equal))
+(check "pushnew new item" '(3 1 2) (let ((x '(1 2))) (pushnew 3 x) x))
+(check "pushnew existing" '(1 2) (let ((x '(1 2))) (pushnew 1 x) x))
+(check "pushnew with test" '("a" "b") (let ((x (list "a" "b"))) (pushnew "a" x :test #'equal) x))
+
+; --- eval-when ---
+(check "eval-when execute" 3 (eval-when (:execute) (+ 1 2)))
+(check "eval-when multiple" 30 (eval-when (:compile-toplevel :load-toplevel :execute) (+ 10 20)))
+(check "eval-when body" 3 (eval-when (:execute) 1 2 3))
+
+; --- destructuring-bind ---
+(check "d-bind simple" '(1 2 3) (destructuring-bind (a b c) '(1 2 3) (list a b c)))
+(check "d-bind nested" '(1 2 3 (4 5)) (destructuring-bind (a (b c) &rest d) '(1 (2 3) 4 5) (list a b c d)))
+(check "d-bind &rest" '(1 (2 3)) (destructuring-bind (a &rest b) '(1 2 3) (list a b)))
+(check "d-bind &optional default" '(1 10) (destructuring-bind (a &optional (b 10)) '(1) (list a b)))
+(check "d-bind &optional provided" '(1 2) (destructuring-bind (a &optional (b 10)) '(1 2) (list a b)))
+(check "d-bind &body" '(1 (2 3)) (destructuring-bind (a &body b) '(1 2 3) (list a b)))
+
+; --- defsetf ---
+(defun my-get-t (vec i) (aref vec i))
+(defun my-put-t (vec i val) (setf (aref vec i) val) val)
+(defsetf my-get-t my-put-t)
+(check "defsetf short" 42 (let ((v (make-array 3))) (setf (my-get-t v 0) 42) (my-get-t v 0)))
+(defun set-cadr-t (l v) (rplaca (cdr l) v) v)
+(defsetf cadr set-cadr-t)
+(check "defsetf cadr" '(1 99 3) (let ((x (list 1 2 3))) (setf (cadr x) 99) x))
+
+; --- defun implicit block ---
+(defun find-test (item list) (do ((l list (cdr l))) ((null l) nil) (when (eql item (car l)) (return-from find-test l))))
+(check "defun return-from found" '(2 3) (find-test 2 '(1 2 3)))
+(check "defun return-from nil" nil (find-test 4 '(1 2 3)))
+
 ; --- Summary ---
 (format t "~%=== Results ===~%")
 (format t "Passed: ~A~%" *pass-count*)

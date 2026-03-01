@@ -84,5 +84,8 @@ extern CL_Obj SYM_NTH_VALUE;
 extern CL_Obj SYM_DEFVAR;
 extern CL_Obj SYM_DEFPARAMETER;
 extern CL_Obj SYM_SETF;
+extern CL_Obj SYM_EVAL_WHEN;
+extern CL_Obj SYM_DESTRUCTURING_BIND;
+extern CL_Obj SYM_DEFSETF;
 
 #endif /* CL_SYMBOL_H */
