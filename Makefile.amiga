@@ -18,6 +18,8 @@ OBJS = $(BUILDDIR)/main.o \
        $(BUILDDIR)/printer.o \
        $(BUILDDIR)/env.o \
        $(BUILDDIR)/compiler.o \
+       $(BUILDDIR)/compiler_special.o \
+       $(BUILDDIR)/compiler_extra.o \
        $(BUILDDIR)/vm.o \
        $(BUILDDIR)/builtins.o \
        $(BUILDDIR)/builtins_arith.o \
@@ -69,6 +71,12 @@ $(BUILDDIR)/env.o: src/core/env.c
 	$(CC) $(CFLAGS) -o $@ -c $<
 
 $(BUILDDIR)/compiler.o: src/core/compiler.c
+	$(CC) $(CFLAGS) -o $@ -c $<
+
+$(BUILDDIR)/compiler_special.o: src/core/compiler_special.c
+	$(CC) $(CFLAGS) -o $@ -c $<
+
+$(BUILDDIR)/compiler_extra.o: src/core/compiler_extra.c
 	$(CC) $(CFLAGS) -o $@ -c $<
 
 $(BUILDDIR)/vm.o: src/core/vm.c

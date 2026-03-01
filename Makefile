@@ -18,6 +18,8 @@ CORE_SRC     = $(SRCDIR)/core/types.c \
                $(SRCDIR)/core/printer.c \
                $(SRCDIR)/core/env.c \
                $(SRCDIR)/core/compiler.c \
+               $(SRCDIR)/core/compiler_special.c \
+               $(SRCDIR)/core/compiler_extra.c \
                $(SRCDIR)/core/vm.c \
                $(SRCDIR)/core/builtins.c \
                $(SRCDIR)/core/builtins_arith.c \
