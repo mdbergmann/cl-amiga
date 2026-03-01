@@ -228,6 +228,19 @@ int cl_prin1_to_string(CL_Obj obj, char *buf, int bufsize)
     return out_pos;
 }
 
+int cl_princ_to_string(CL_Obj obj, char *buf, int bufsize)
+{
+    escape_mode = 0;
+    to_buffer = 1;
+    out_buf = buf;
+    out_pos = 0;
+    out_size = bufsize;
+    print_obj(obj);
+    if (out_pos < out_size) out_buf[out_pos] = '\0';
+    to_buffer = 0;
+    return out_pos;
+}
+
 void cl_printer_init(void)
 {
     /* Nothing needed yet */

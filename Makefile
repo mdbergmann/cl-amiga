@@ -20,6 +20,11 @@ CORE_SRC     = $(SRCDIR)/core/types.c \
                $(SRCDIR)/core/compiler.c \
                $(SRCDIR)/core/vm.c \
                $(SRCDIR)/core/builtins.c \
+               $(SRCDIR)/core/builtins_arith.c \
+               $(SRCDIR)/core/builtins_io.c \
+               $(SRCDIR)/core/builtins_mutation.c \
+               $(SRCDIR)/core/builtins_strings.c \
+               $(SRCDIR)/core/builtins_lists.c \
                $(SRCDIR)/core/repl.c
 MAIN_SRC     = $(SRCDIR)/main.c
 

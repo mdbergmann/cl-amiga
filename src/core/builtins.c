@@ -3,12 +3,8 @@
 #include "package.h"
 #include "mem.h"
 #include "error.h"
-#include "printer.h"
 #include "vm.h"
-#include "compiler.h"
-#include "reader.h"
 #include "../platform/platform.h"
-#include <stdio.h>
 #include <string.h>
 
 /* Helper to register a builtin */
@@ -20,156 +16,6 @@ static void defun(const char *name, CL_CFunc func, int min, int max)
     s->function = fn;
     /* Also set value slot so (function +) and #'+ work */
     s->value = fn;
-}
-
-/* --- Arithmetic --- */
-
-static CL_Obj bi_add(CL_Obj *args, int n)
-{
-    int32_t sum = 0;
-    int i;
-    for (i = 0; i < n; i++) {
-        if (!CL_FIXNUM_P(args[i]))
-            cl_error(CL_ERR_TYPE, "+: not a number");
-        sum += CL_FIXNUM_VAL(args[i]);
-    }
-    return CL_MAKE_FIXNUM(sum);
-}
-
-static CL_Obj bi_sub(CL_Obj *args, int n)
-{
-    int32_t result;
-    int i;
-    if (n == 0) return CL_MAKE_FIXNUM(0);
-    if (!CL_FIXNUM_P(args[0]))
-        cl_error(CL_ERR_TYPE, "-: not a number");
-    if (n == 1) return CL_MAKE_FIXNUM(-CL_FIXNUM_VAL(args[0]));
-    result = CL_FIXNUM_VAL(args[0]);
-    for (i = 1; i < n; i++) {
-        if (!CL_FIXNUM_P(args[i]))
-            cl_error(CL_ERR_TYPE, "-: not a number");
-        result -= CL_FIXNUM_VAL(args[i]);
-    }
-    return CL_MAKE_FIXNUM(result);
-}
-
-static CL_Obj bi_mul(CL_Obj *args, int n)
-{
-    int32_t product = 1;
-    int i;
-    for (i = 0; i < n; i++) {
-        if (!CL_FIXNUM_P(args[i]))
-            cl_error(CL_ERR_TYPE, "*: not a number");
-        product *= CL_FIXNUM_VAL(args[i]);
-    }
-    return CL_MAKE_FIXNUM(product);
-}
-
-static CL_Obj bi_div(CL_Obj *args, int n)
-{
-    int32_t result;
-    int i;
-    if (!CL_FIXNUM_P(args[0]))
-        cl_error(CL_ERR_TYPE, "/: not a number");
-    result = CL_FIXNUM_VAL(args[0]);
-    for (i = 1; i < n; i++) {
-        if (!CL_FIXNUM_P(args[i]))
-            cl_error(CL_ERR_TYPE, "/: not a number");
-        if (CL_FIXNUM_VAL(args[i]) == 0)
-            cl_error(CL_ERR_DIVZERO, "Division by zero");
-        result /= CL_FIXNUM_VAL(args[i]);
-    }
-    return CL_MAKE_FIXNUM(result);
-}
-
-static CL_Obj bi_mod(CL_Obj *args, int n)
-{
-    CL_UNUSED(n);
-    if (!CL_FIXNUM_P(args[0]) || !CL_FIXNUM_P(args[1]))
-        cl_error(CL_ERR_TYPE, "MOD: not a number");
-    if (CL_FIXNUM_VAL(args[1]) == 0)
-        cl_error(CL_ERR_DIVZERO, "Division by zero");
-    return CL_MAKE_FIXNUM(CL_FIXNUM_VAL(args[0]) % CL_FIXNUM_VAL(args[1]));
-}
-
-/* --- Comparison --- */
-
-static CL_Obj bi_numeq(CL_Obj *args, int n)
-{
-    int i;
-    if (!CL_FIXNUM_P(args[0]))
-        cl_error(CL_ERR_TYPE, "=: not a number");
-    for (i = 1; i < n; i++) {
-        if (!CL_FIXNUM_P(args[i]))
-            cl_error(CL_ERR_TYPE, "=: not a number");
-        if (CL_FIXNUM_VAL(args[i]) != CL_FIXNUM_VAL(args[0]))
-            return CL_NIL;
-    }
-    return SYM_T;
-}
-
-static CL_Obj bi_lt(CL_Obj *args, int n)
-{
-    int i;
-    for (i = 0; i < n - 1; i++) {
-        if (!CL_FIXNUM_P(args[i]) || !CL_FIXNUM_P(args[i+1]))
-            cl_error(CL_ERR_TYPE, "<: not a number");
-        if (!(CL_FIXNUM_VAL(args[i]) < CL_FIXNUM_VAL(args[i+1])))
-            return CL_NIL;
-    }
-    return SYM_T;
-}
-
-static CL_Obj bi_gt(CL_Obj *args, int n)
-{
-    int i;
-    for (i = 0; i < n - 1; i++) {
-        if (!CL_FIXNUM_P(args[i]) || !CL_FIXNUM_P(args[i+1]))
-            cl_error(CL_ERR_TYPE, ">: not a number");
-        if (!(CL_FIXNUM_VAL(args[i]) > CL_FIXNUM_VAL(args[i+1])))
-            return CL_NIL;
-    }
-    return SYM_T;
-}
-
-static CL_Obj bi_le(CL_Obj *args, int n)
-{
-    int i;
-    for (i = 0; i < n - 1; i++) {
-        if (!CL_FIXNUM_P(args[i]) || !CL_FIXNUM_P(args[i+1]))
-            cl_error(CL_ERR_TYPE, "<=: not a number");
-        if (!(CL_FIXNUM_VAL(args[i]) <= CL_FIXNUM_VAL(args[i+1])))
-            return CL_NIL;
-    }
-    return SYM_T;
-}
-
-static CL_Obj bi_ge(CL_Obj *args, int n)
-{
-    int i;
-    for (i = 0; i < n - 1; i++) {
-        if (!CL_FIXNUM_P(args[i]) || !CL_FIXNUM_P(args[i+1]))
-            cl_error(CL_ERR_TYPE, ">=: not a number");
-        if (!(CL_FIXNUM_VAL(args[i]) >= CL_FIXNUM_VAL(args[i+1])))
-            return CL_NIL;
-    }
-    return SYM_T;
-}
-
-static CL_Obj bi_1plus(CL_Obj *args, int n)
-{
-    CL_UNUSED(n);
-    if (!CL_FIXNUM_P(args[0]))
-        cl_error(CL_ERR_TYPE, "1+: not a number");
-    return CL_MAKE_FIXNUM(CL_FIXNUM_VAL(args[0]) + 1);
-}
-
-static CL_Obj bi_1minus(CL_Obj *args, int n)
-{
-    CL_UNUSED(n);
-    if (!CL_FIXNUM_P(args[0]))
-        cl_error(CL_ERR_TYPE, "1-: not a number");
-    return CL_MAKE_FIXNUM(CL_FIXNUM_VAL(args[0]) - 1);
 }
 
 /* --- List operations --- */
@@ -210,6 +56,11 @@ static CL_Obj bi_length(CL_Obj *args, int n)
     if (CL_STRING_P(obj)) {
         CL_String *s = (CL_String *)CL_OBJ_TO_PTR(obj);
         return CL_MAKE_FIXNUM(s->length);
+    }
+
+    if (CL_VECTOR_P(obj)) {
+        CL_Vector *v = (CL_Vector *)CL_OBJ_TO_PTR(obj);
+        return CL_MAKE_FIXNUM(v->length);
     }
 
     while (!CL_NULL_P(obj)) {
@@ -367,6 +218,18 @@ static CL_Obj bi_equal(CL_Obj *args, int n)
             memcmp(sa->data, sb->data, sa->length) == 0)
             return SYM_T;
     }
+    if (CL_VECTOR_P(a) && CL_VECTOR_P(b)) {
+        CL_Vector *va = (CL_Vector *)CL_OBJ_TO_PTR(a);
+        CL_Vector *vb = (CL_Vector *)CL_OBJ_TO_PTR(b);
+        uint32_t i;
+        if (va->length != vb->length) return CL_NIL;
+        for (i = 0; i < va->length; i++) {
+            CL_Obj pair[2];
+            pair[0] = va->data[i]; pair[1] = vb->data[i];
+            if (CL_NULL_P(bi_equal(pair, 2))) return CL_NIL;
+        }
+        return SYM_T;
+    }
     return CL_NIL;
 }
 
@@ -376,92 +239,45 @@ static CL_Obj bi_not(CL_Obj *args, int n)
     return CL_NULL_P(args[0]) ? SYM_T : CL_NIL;
 }
 
-/* --- I/O --- */
-
-static CL_Obj bi_print(CL_Obj *args, int n)
-{
-    CL_UNUSED(n);
-    cl_print(args[0]);
-    return args[0];
-}
-
-static CL_Obj bi_prin1(CL_Obj *args, int n)
-{
-    CL_UNUSED(n);
-    cl_prin1(args[0]);
-    return args[0];
-}
-
-static CL_Obj bi_princ(CL_Obj *args, int n)
-{
-    CL_UNUSED(n);
-    cl_princ(args[0]);
-    return args[0];
-}
-
-static CL_Obj bi_terpri(CL_Obj *args, int n)
-{
-    CL_UNUSED(args); CL_UNUSED(n);
-    platform_write_string("\n");
-    return CL_NIL;
-}
-
-static CL_Obj bi_format(CL_Obj *args, int n)
-{
-    /* Minimal: (format t "string") just prints */
-    CL_UNUSED(n);
-    if (n >= 2 && CL_STRING_P(args[1])) {
-        CL_String *s = (CL_String *)CL_OBJ_TO_PTR(args[1]);
-        /* Simple ~A and ~% substitution */
-        const char *p = s->data;
-        int ai = 2; /* Next argument index */
-        while (*p) {
-            if (*p == '~' && *(p+1)) {
-                p++;
-                if (*p == 'A' || *p == 'a') {
-                    if (ai < n) cl_princ(args[ai++]);
-                } else if (*p == 'S' || *p == 's') {
-                    if (ai < n) cl_prin1(args[ai++]);
-                } else if (*p == '%') {
-                    platform_write_string("\n");
-                } else if (*p == '~') {
-                    platform_write_string("~");
-                }
-                p++;
-            } else {
-                char c[2] = { *p, '\0' };
-                platform_write_string(c);
-                p++;
-            }
-        }
-    }
-    return CL_NIL;
-}
-
 /* --- Higher-order --- */
 
 static CL_Obj bi_mapcar(CL_Obj *args, int n)
 {
     CL_Obj func = args[0];
-    CL_Obj list = args[1];
     CL_Obj result = CL_NIL, tail = CL_NIL;
-    CL_UNUSED(n);
+    int nlists = n - 1;
+    CL_Obj lists[16]; /* Max 16 list arguments */
+    CL_Obj call_args[16];
+    int i;
+
+    if (nlists > 16) nlists = 16;
+    for (i = 0; i < nlists; i++)
+        lists[i] = args[i + 1];
 
     CL_GC_PROTECT(func);
-    CL_GC_PROTECT(list);
     CL_GC_PROTECT(result);
     CL_GC_PROTECT(tail);
 
-    while (!CL_NULL_P(list)) {
-        CL_Obj elem = cl_car(list);
+    for (;;) {
         CL_Obj val;
 
-        /* Call function with one argument */
+        /* Check if any list is exhausted */
+        for (i = 0; i < nlists; i++) {
+            if (CL_NULL_P(lists[i])) goto done;
+        }
+
+        /* Collect car of each list */
+        for (i = 0; i < nlists; i++) {
+            call_args[i] = cl_car(lists[i]);
+            lists[i] = cl_cdr(lists[i]);
+        }
+
+        /* Call function */
         if (CL_FUNCTION_P(func)) {
             CL_Function *f = (CL_Function *)CL_OBJ_TO_PTR(func);
-            val = f->func(&elem, 1);
+            val = f->func(call_args, nlists);
         } else if (CL_BYTECODE_P(func) || CL_CLOSURE_P(func)) {
-            val = cl_vm_apply(func, &elem, 1);
+            val = cl_vm_apply(func, call_args, nlists);
         } else {
             cl_error(CL_ERR_TYPE, "MAPCAR: not a function");
             val = CL_NIL;
@@ -476,11 +292,10 @@ static CL_Obj bi_mapcar(CL_Obj *args, int n)
             }
             tail = cell;
         }
-
-        list = cl_cdr(list);
     }
 
-    CL_GC_UNPROTECT(4);
+done:
+    CL_GC_UNPROTECT(3);
     return result;
 }
 
@@ -552,405 +367,17 @@ static CL_Obj bi_type_of(CL_Obj *args, int n)
     return cl_intern(name, (uint32_t)strlen(name));
 }
 
-static CL_Obj bi_zerop(CL_Obj *args, int n)
-{
-    CL_UNUSED(n);
-    if (!CL_FIXNUM_P(args[0]))
-        cl_error(CL_ERR_TYPE, "ZEROP: not a number");
-    return CL_FIXNUM_VAL(args[0]) == 0 ? SYM_T : CL_NIL;
-}
-
-static CL_Obj bi_plusp(CL_Obj *args, int n)
-{
-    CL_UNUSED(n);
-    if (!CL_FIXNUM_P(args[0]))
-        cl_error(CL_ERR_TYPE, "PLUSP: not a number");
-    return CL_FIXNUM_VAL(args[0]) > 0 ? SYM_T : CL_NIL;
-}
-
-static CL_Obj bi_minusp(CL_Obj *args, int n)
-{
-    CL_UNUSED(n);
-    if (!CL_FIXNUM_P(args[0]))
-        cl_error(CL_ERR_TYPE, "MINUSP: not a number");
-    return CL_FIXNUM_VAL(args[0]) < 0 ? SYM_T : CL_NIL;
-}
-
-static CL_Obj bi_abs(CL_Obj *args, int n)
-{
-    int32_t v;
-    CL_UNUSED(n);
-    if (!CL_FIXNUM_P(args[0]))
-        cl_error(CL_ERR_TYPE, "ABS: not a number");
-    v = CL_FIXNUM_VAL(args[0]);
-    return CL_MAKE_FIXNUM(v < 0 ? -v : v);
-}
-
-static CL_Obj bi_max(CL_Obj *args, int n)
-{
-    int32_t m;
-    int i;
-    if (!CL_FIXNUM_P(args[0]))
-        cl_error(CL_ERR_TYPE, "MAX: not a number");
-    m = CL_FIXNUM_VAL(args[0]);
-    for (i = 1; i < n; i++) {
-        int32_t v;
-        if (!CL_FIXNUM_P(args[i]))
-            cl_error(CL_ERR_TYPE, "MAX: not a number");
-        v = CL_FIXNUM_VAL(args[i]);
-        if (v > m) m = v;
-    }
-    return CL_MAKE_FIXNUM(m);
-}
-
-static CL_Obj bi_min(CL_Obj *args, int n)
-{
-    int32_t m;
-    int i;
-    if (!CL_FIXNUM_P(args[0]))
-        cl_error(CL_ERR_TYPE, "MIN: not a number");
-    m = CL_FIXNUM_VAL(args[0]);
-    for (i = 1; i < n; i++) {
-        int32_t v;
-        if (!CL_FIXNUM_P(args[i]))
-            cl_error(CL_ERR_TYPE, "MIN: not a number");
-        v = CL_FIXNUM_VAL(args[i]);
-        if (v < m) m = v;
-    }
-    return CL_MAKE_FIXNUM(m);
-}
-
-/* --- Load --- */
-
-static CL_Obj bi_load(CL_Obj *args, int n)
-{
-    CL_String *path_str;
-    char *buf;
-    unsigned long size;
-    CL_ReadStream stream;
-    CL_Obj expr, bytecode;
-
-    CL_UNUSED(n);
-    if (!CL_STRING_P(args[0]))
-        cl_error(CL_ERR_TYPE, "LOAD: argument must be a string");
-
-    path_str = (CL_String *)CL_OBJ_TO_PTR(args[0]);
-    buf = platform_file_read(path_str->data, &size);
-    if (!buf)
-        cl_error(CL_ERR_GENERAL, "LOAD: cannot open file");
-
-    stream.buf = buf;
-    stream.pos = 0;
-    stream.len = (int)size;
-
-    for (;;) {
-        int err;
-
-        expr = cl_read_from_string(&stream);
-        if (cl_reader_eof()) break;
-
-        err = CL_CATCH();
-        if (err == CL_ERR_NONE) {
-            CL_GC_PROTECT(expr);
-            bytecode = cl_compile(expr);
-            CL_GC_UNPROTECT(1);
-            if (!CL_NULL_P(bytecode))
-                cl_vm_eval(bytecode);
-            CL_UNCATCH();
-        } else {
-            cl_error_print();
-            CL_UNCATCH();
-        }
-    }
-
-    platform_free(buf);
-    return SYM_T;
-}
-
-/* --- Eval / Macroexpand --- */
-
-static CL_Obj bi_eval(CL_Obj *args, int n)
-{
-    CL_Obj bytecode;
-    CL_UNUSED(n);
-    CL_GC_PROTECT(args[0]);
-    bytecode = cl_compile(args[0]);
-    CL_GC_UNPROTECT(1);
-    if (CL_NULL_P(bytecode)) return CL_NIL;
-    return cl_vm_eval(bytecode);
-}
-
-static CL_Obj bi_macroexpand_1(CL_Obj *args, int n)
-{
-    CL_UNUSED(n);
-    return cl_macroexpand_1(args[0]);
-}
-
-static CL_Obj bi_macroexpand(CL_Obj *args, int n)
-{
-    CL_Obj form = args[0];
-    CL_UNUSED(n);
-    for (;;) {
-        CL_Obj expanded = cl_macroexpand_1(form);
-        if (expanded == form) return form;
-        form = expanded;
-    }
-}
-
-/* --- Throw --- */
-
-static CL_Obj bi_throw(CL_Obj *args, int n)
-{
-    CL_Obj tag = args[0];
-    CL_Obj value = (n > 1) ? args[1] : CL_NIL;
-    int i;
-
-    /* Scan NLX stack for matching catch */
-    for (i = cl_nlx_top - 1; i >= 0; i--) {
-        if (cl_nlx_stack[i].type == CL_NLX_CATCH &&
-            cl_nlx_stack[i].tag == tag) {
-            int j;
-            /* Check for interposing UWPROT frames */
-            for (j = cl_nlx_top - 1; j > i; j--) {
-                if (cl_nlx_stack[j].type == CL_NLX_UWPROT) {
-                    /* Set pending throw, longjmp to UWPROT */
-                    cl_pending_throw = 1;
-                    cl_pending_tag = tag;
-                    cl_pending_value = value;
-                    cl_nlx_top = j;
-                    longjmp(cl_nlx_stack[j].buf, 1);
-                }
-            }
-            /* No interposing UWPROT — go directly to catch */
-            cl_nlx_stack[i].result = value;
-            cl_nlx_top = i;
-            longjmp(cl_nlx_stack[i].buf, 1);
-        }
-    }
-
-    cl_error(CL_ERR_GENERAL, "No catch for tag");
-    return CL_NIL;
-}
-
-/* --- Multiple Values --- */
-
-static CL_Obj bi_values(CL_Obj *args, int n)
-{
-    int i;
-    int count = n < CL_MAX_MV ? n : CL_MAX_MV;
-    for (i = 0; i < count; i++)
-        cl_mv_values[i] = args[i];
-    cl_mv_count = count;
-    return n > 0 ? args[0] : CL_NIL;
-}
-
-static CL_Obj bi_values_list(CL_Obj *args, int n)
-{
-    CL_Obj list = args[0];
-    int count = 0;
-    CL_UNUSED(n);
-    while (!CL_NULL_P(list) && count < CL_MAX_MV) {
-        cl_mv_values[count++] = cl_car(list);
-        list = cl_cdr(list);
-    }
-    cl_mv_count = count;
-    return count > 0 ? cl_mv_values[0] : CL_NIL;
-}
-
-/* --- Error --- */
-
-static CL_Obj bi_error(CL_Obj *args, int n)
-{
-    if (n > 0 && CL_STRING_P(args[0])) {
-        CL_String *s = (CL_String *)CL_OBJ_TO_PTR(args[0]);
-        cl_error(CL_ERR_GENERAL, "%s", s->data);
-    } else {
-        cl_error(CL_ERR_GENERAL, "Error signaled");
-    }
-    return CL_NIL;
-}
-
-/* --- Mutation --- */
-
-static CL_Obj bi_rplaca(CL_Obj *args, int n)
-{
-    CL_Cons *cell;
-    CL_UNUSED(n);
-    if (!CL_CONS_P(args[0]))
-        cl_error(CL_ERR_TYPE, "RPLACA: not a cons");
-    cell = (CL_Cons *)CL_OBJ_TO_PTR(args[0]);
-    cell->car = args[1];
-    return args[0];  /* CL spec: returns the cons */
-}
-
-static CL_Obj bi_rplacd(CL_Obj *args, int n)
-{
-    CL_Cons *cell;
-    CL_UNUSED(n);
-    if (!CL_CONS_P(args[0]))
-        cl_error(CL_ERR_TYPE, "RPLACD: not a cons");
-    cell = (CL_Cons *)CL_OBJ_TO_PTR(args[0]);
-    cell->cdr = args[1];
-    return args[0];  /* CL spec: returns the cons */
-}
-
-static CL_Obj bi_aref(CL_Obj *args, int n)
-{
-    CL_Vector *vec;
-    int32_t idx;
-    CL_UNUSED(n);
-    if (!CL_VECTOR_P(args[0]))
-        cl_error(CL_ERR_TYPE, "AREF: not a vector");
-    if (!CL_FIXNUM_P(args[1]))
-        cl_error(CL_ERR_TYPE, "AREF: index must be a number");
-    vec = (CL_Vector *)CL_OBJ_TO_PTR(args[0]);
-    idx = CL_FIXNUM_VAL(args[1]);
-    if (idx < 0 || (uint32_t)idx >= vec->length)
-        cl_error(CL_ERR_ARGS, "AREF: index %d out of range", (int)idx);
-    return vec->data[idx];
-}
-
-static CL_Obj bi_make_array(CL_Obj *args, int n)
-{
-    CL_UNUSED(n);
-    if (!CL_FIXNUM_P(args[0]))
-        cl_error(CL_ERR_TYPE, "MAKE-ARRAY: size must be a number");
-    return cl_make_vector((uint32_t)CL_FIXNUM_VAL(args[0]));
-}
-
-static CL_Obj bi_vectorp(CL_Obj *args, int n)
-{
-    CL_UNUSED(n);
-    return CL_VECTOR_P(args[0]) ? SYM_T : CL_NIL;
-}
-
-static CL_Obj bi_symbol_value(CL_Obj *args, int n)
-{
-    CL_Symbol *s;
-    CL_UNUSED(n);
-    if (!CL_SYMBOL_P(args[0]))
-        cl_error(CL_ERR_TYPE, "SYMBOL-VALUE: not a symbol");
-    s = (CL_Symbol *)CL_OBJ_TO_PTR(args[0]);
-    if (s->value == CL_UNBOUND)
-        cl_error(CL_ERR_UNBOUND, "SYMBOL-VALUE: unbound variable: %s",
-                 cl_symbol_name(args[0]));
-    return s->value;
-}
-
-static CL_Obj bi_symbol_function(CL_Obj *args, int n)
-{
-    CL_Symbol *s;
-    CL_UNUSED(n);
-    if (!CL_SYMBOL_P(args[0]))
-        cl_error(CL_ERR_TYPE, "SYMBOL-FUNCTION: not a symbol");
-    s = (CL_Symbol *)CL_OBJ_TO_PTR(args[0]);
-    if (s->function == CL_UNBOUND)
-        cl_error(CL_ERR_UNDEFINED, "SYMBOL-FUNCTION: undefined function: %s",
-                 cl_symbol_name(args[0]));
-    return s->function;
-}
-
-static CL_Obj bi_setf_nth(CL_Obj *args, int n)
-{
-    /* (%setf-nth n list val) — walk list to nth cons, rplaca, return val */
-    int32_t idx;
-    CL_Obj list;
-    CL_Cons *cell;
-    CL_UNUSED(n);
-    if (!CL_FIXNUM_P(args[0]))
-        cl_error(CL_ERR_TYPE, "%SETF-NTH: index must be a number");
-    idx = CL_FIXNUM_VAL(args[0]);
-    list = args[1];
-    while (idx > 0 && !CL_NULL_P(list)) {
-        list = cl_cdr(list);
-        idx--;
-    }
-    if (CL_NULL_P(list) || !CL_CONS_P(list))
-        cl_error(CL_ERR_ARGS, "%SETF-NTH: index out of range");
-    cell = (CL_Cons *)CL_OBJ_TO_PTR(list);
-    cell->car = args[2];
-    return args[2];
-}
-
-static CL_Obj bi_set_symbol_value(CL_Obj *args, int n)
-{
-    CL_Symbol *s;
-    CL_UNUSED(n);
-    if (!CL_SYMBOL_P(args[0]))
-        cl_error(CL_ERR_TYPE, "SET: not a symbol");
-    s = (CL_Symbol *)CL_OBJ_TO_PTR(args[0]);
-    s->value = args[1];
-    return args[1];
-}
-
-static CL_Obj bi_set_symbol_function(CL_Obj *args, int n)
-{
-    CL_Symbol *s;
-    CL_UNUSED(n);
-    if (!CL_SYMBOL_P(args[0]))
-        cl_error(CL_ERR_TYPE, "%SET-SYMBOL-FUNCTION: not a symbol");
-    s = (CL_Symbol *)CL_OBJ_TO_PTR(args[0]);
-    s->function = args[1];
-    return args[1];
-}
-
-/* --- Boundp --- */
-
-static CL_Obj bi_boundp(CL_Obj *args, int n)
-{
-    CL_Symbol *s;
-    CL_UNUSED(n);
-    if (!CL_SYMBOL_P(args[0]))
-        cl_error(CL_ERR_TYPE, "BOUNDP: not a symbol");
-    s = (CL_Symbol *)CL_OBJ_TO_PTR(args[0]);
-    return (s->value != CL_UNBOUND) ? SYM_T : CL_NIL;
-}
-
-/* --- Gensym --- */
-
-static uint32_t gensym_counter = 0;
-
-static CL_Obj bi_gensym(CL_Obj *args, int n)
-{
-    char buf[64];
-    const char *prefix = "G";
-    CL_Obj name_str, sym;
-    int len;
-
-    if (n > 0 && CL_STRING_P(args[0])) {
-        CL_String *s = (CL_String *)CL_OBJ_TO_PTR(args[0]);
-        prefix = s->data;
-    }
-
-    /* Manual int-to-string for vbcc compatibility */
-    len = snprintf(buf, sizeof(buf), "%s%lu", prefix, (unsigned long)gensym_counter++);
-    name_str = cl_make_string(buf, (uint32_t)len);
-    CL_GC_PROTECT(name_str);
-    sym = cl_make_symbol(name_str);  /* Uninterned — not in any package */
-    CL_GC_UNPROTECT(1);
-    return sym;
-}
-
 /* --- Registration --- */
+
+/* Sub-module init functions */
+void cl_builtins_arith_init(void);
+void cl_builtins_io_init(void);
+void cl_builtins_mutation_init(void);
+void cl_builtins_strings_init(void);
+void cl_builtins_lists_init(void);
 
 void cl_builtins_init(void)
 {
-    /* Arithmetic */
-    defun("+", bi_add, 0, -1);
-    defun("-", bi_sub, 1, -1);
-    defun("*", bi_mul, 0, -1);
-    defun("/", bi_div, 1, -1);
-    defun("MOD", bi_mod, 2, 2);
-    defun("1+", bi_1plus, 1, 1);
-    defun("1-", bi_1minus, 1, 1);
-
-    /* Comparison */
-    defun("=", bi_numeq, 1, -1);
-    defun("<", bi_lt, 1, -1);
-    defun(">", bi_gt, 1, -1);
-    defun("<=", bi_le, 1, -1);
-    defun(">=", bi_ge, 1, -1);
-
     /* List ops */
     defun("CONS", bi_cons, 2, 2);
     defun("CAR", bi_car, 1, 1);
@@ -977,52 +404,19 @@ void cl_builtins_init(void)
     defun("EQL", bi_eql, 2, 2);
     defun("EQUAL", bi_equal, 2, 2);
     defun("NOT", bi_not, 1, 1);
-    defun("ZEROP", bi_zerop, 1, 1);
-    defun("PLUSP", bi_plusp, 1, 1);
-    defun("MINUSP", bi_minusp, 1, 1);
-    defun("ABS", bi_abs, 1, 1);
-    defun("MAX", bi_max, 1, -1);
-    defun("MIN", bi_min, 1, -1);
-
-    /* I/O */
-    defun("PRINT", bi_print, 1, 1);
-    defun("PRIN1", bi_prin1, 1, 1);
-    defun("PRINC", bi_princ, 1, 1);
-    defun("TERPRI", bi_terpri, 0, 0);
-    defun("FORMAT", bi_format, 1, -1);
 
     /* Higher-order */
-    defun("MAPCAR", bi_mapcar, 2, 2);
+    defun("MAPCAR", bi_mapcar, 2, -1);
     defun("APPLY", bi_apply, 2, -1);
     defun("FUNCALL", bi_funcall, 1, -1);
 
     /* Misc */
     defun("TYPE-OF", bi_type_of, 1, 1);
-    defun("GENSYM", bi_gensym, 0, 1);
-    defun("LOAD", bi_load, 1, 1);
-    defun("ERROR", bi_error, 1, -1);
-    defun("THROW", bi_throw, 1, 2);
-    defun("EVAL", bi_eval, 1, 1);
-    defun("MACROEXPAND-1", bi_macroexpand_1, 1, 1);
-    defun("MACROEXPAND", bi_macroexpand, 1, 1);
 
-    defun("BOUNDP", bi_boundp, 1, 1);
-
-    /* Mutation */
-    defun("RPLACA", bi_rplaca, 2, 2);
-    defun("RPLACD", bi_rplacd, 2, 2);
-    defun("AREF", bi_aref, 2, 2);
-    defun("SVREF", bi_aref, 2, 2);
-    defun("MAKE-ARRAY", bi_make_array, 1, 1);
-    defun("VECTORP", bi_vectorp, 1, 1);
-    defun("SYMBOL-VALUE", bi_symbol_value, 1, 1);
-    defun("SYMBOL-FUNCTION", bi_symbol_function, 1, 1);
-    defun("%SETF-NTH", bi_setf_nth, 3, 3);
-    defun("%SET-SYMBOL-VALUE", bi_set_symbol_value, 2, 2);
-    defun("%SET-SYMBOL-FUNCTION", bi_set_symbol_function, 2, 2);
-    defun("SET", bi_set_symbol_value, 2, 2);
-
-    /* Multiple values */
-    defun("VALUES", bi_values, 0, -1);
-    defun("VALUES-LIST", bi_values_list, 1, 1);
+    /* Sub-module builtins */
+    cl_builtins_arith_init();
+    cl_builtins_io_init();
+    cl_builtins_mutation_init();
+    cl_builtins_strings_init();
+    cl_builtins_lists_init();
 }

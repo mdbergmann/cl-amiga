@@ -1,7 +1,7 @@
 # CL-Amiga Makefile for AmigaOS / vbcc
 # Usage: cd CLAmiga: ; make -f Makefile.amiga
 
-CC = vc
+CC = vc +vc_largecode
 CFLAGS = -c99 -O0 -cpu=68020 -DPLATFORM_AMIGA -Isrc
 LDFLAGS = -lamiga
 
@@ -20,6 +20,11 @@ OBJS = $(BUILDDIR)/main.o \
        $(BUILDDIR)/compiler.o \
        $(BUILDDIR)/vm.o \
        $(BUILDDIR)/builtins.o \
+       $(BUILDDIR)/builtins_arith.o \
+       $(BUILDDIR)/builtins_io.o \
+       $(BUILDDIR)/builtins_mutation.o \
+       $(BUILDDIR)/builtins_strings.o \
+       $(BUILDDIR)/builtins_lists.o \
        $(BUILDDIR)/repl.o
 
 TARGET = $(BUILDDIR)/clamiga
@@ -70,6 +75,21 @@ $(BUILDDIR)/vm.o: src/core/vm.c
 	$(CC) $(CFLAGS) -o $@ -c $<
 
 $(BUILDDIR)/builtins.o: src/core/builtins.c
+	$(CC) $(CFLAGS) -o $@ -c $<
+
+$(BUILDDIR)/builtins_arith.o: src/core/builtins_arith.c
+	$(CC) $(CFLAGS) -o $@ -c $<
+
+$(BUILDDIR)/builtins_io.o: src/core/builtins_io.c
+	$(CC) $(CFLAGS) -o $@ -c $<
+
+$(BUILDDIR)/builtins_mutation.o: src/core/builtins_mutation.c
+	$(CC) $(CFLAGS) -o $@ -c $<
+
+$(BUILDDIR)/builtins_strings.o: src/core/builtins_strings.c
+	$(CC) $(CFLAGS) -o $@ -c $<
+
+$(BUILDDIR)/builtins_lists.o: src/core/builtins_lists.c
 	$(CC) $(CFLAGS) -o $@ -c $<
 
 $(BUILDDIR)/repl.o: src/core/repl.c

@@ -20,6 +20,7 @@ void cl_print(CL_Obj obj);
 
 /* Print to a buffer (returns chars written) */
 int cl_prin1_to_string(CL_Obj obj, char *buf, int bufsize);
+int cl_princ_to_string(CL_Obj obj, char *buf, int bufsize);
 
 void cl_printer_init(void);
 

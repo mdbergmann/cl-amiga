@@ -42,3 +42,27 @@
            (unless (member ,g ,place)
              (setf ,place (cons ,g ,place)))
            ,place))))
+
+;; Set operations
+(defun intersection (list1 list2 &key (test #'eql))
+  (let ((result nil))
+    (dolist (x list1 (nreverse result))
+      (when (member x list2 :test test)
+        (push x result)))))
+
+(defun union (list1 list2 &key (test #'eql))
+  (let ((result (copy-list list1)))
+    (dolist (x list2 (nreverse result))
+      (unless (member x list1 :test test)
+        (push x result)))))
+
+(defun set-difference (list1 list2 &key (test #'eql))
+  (let ((result nil))
+    (dolist (x list1 (nreverse result))
+      (unless (member x list2 :test test)
+        (push x result)))))
+
+(defun subsetp (list1 list2 &key (test #'eql))
+  (dolist (x list1 t)
+    (unless (member x list2 :test test)
+      (return-from subsetp nil))))
