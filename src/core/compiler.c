@@ -431,19 +431,22 @@ static void compile_let(CL_Compiler *c, CL_Obj form, int sequential)
      * Locals are added to the current env (flat local slots) so they
      * map directly to VM pre-allocated local slots. After the body,
      * we restore local_count to "pop" them from scope.
+     *
+     * Special (dynamic) variables use OP_DYNBIND/OP_DYNUNBIND instead
+     * of local slots, and are NOT added to the lexical env.
      */
     CL_Obj bindings = cl_car(cl_cdr(form));
     CL_Obj body = cl_cdr(cl_cdr(form));
     CL_CompEnv *env = c->env;
     int saved_local_count = env->local_count;
     int saved_tail = c->in_tail;
+    int special_count = 0;
 
     if (sequential) {
         /* let* — each binding visible to the next */
         while (!CL_NULL_P(bindings)) {
             CL_Obj binding = cl_car(bindings);
             CL_Obj var, val;
-            int slot;
 
             if (CL_CONS_P(binding)) {
                 var = cl_car(binding);
@@ -455,10 +458,18 @@ static void compile_let(CL_Compiler *c, CL_Obj form, int sequential)
 
             c->in_tail = 0;
             compile_expr(c, val);
-            slot = cl_env_add_local(env, var);
-            emit(c, OP_STORE);
-            emit(c, (uint8_t)slot);
-            emit(c, OP_POP);
+
+            if (cl_symbol_specialp(var)) {
+                int idx = add_constant(c, var);
+                emit(c, OP_DYNBIND);
+                emit_u16(c, (uint16_t)idx);
+                special_count++;
+            } else {
+                int slot = cl_env_add_local(env, var);
+                emit(c, OP_STORE);
+                emit(c, (uint8_t)slot);
+                emit(c, OP_POP);
+            }
             bindings = cl_cdr(bindings);
         }
     } else {
@@ -487,20 +498,44 @@ static void compile_let(CL_Compiler *c, CL_Obj form, int sequential)
             compile_expr(c, vals[i]);
         }
 
-        /* Register locals and store values (stack top = last val) */
-        for (i = 0; i < n; i++)
-            cl_env_add_local(env, vars[i]);
-
-        for (i = n - 1; i >= 0; i--) {
-            emit(c, OP_STORE);
-            emit(c, (uint8_t)(saved_local_count + i));
-            emit(c, OP_POP);
+        /* Bind values (stack top = last val, bind back-to-front).
+         * For let (parallel), register all lexical locals first,
+         * then store/dynbind back-to-front. */
+        {
+            /* First pass: register lexical locals (not specials) */
+            int lexical_slots[CL_MAX_LOCALS];
+            for (i = 0; i < n; i++) {
+                if (cl_symbol_specialp(vars[i])) {
+                    lexical_slots[i] = -1;
+                } else {
+                    lexical_slots[i] = cl_env_add_local(env, vars[i]);
+                }
+            }
+            /* Second pass: pop values back-to-front */
+            for (i = n - 1; i >= 0; i--) {
+                if (lexical_slots[i] >= 0) {
+                    emit(c, OP_STORE);
+                    emit(c, (uint8_t)lexical_slots[i]);
+                    emit(c, OP_POP);
+                } else {
+                    int idx = add_constant(c, vars[i]);
+                    emit(c, OP_DYNBIND);
+                    emit_u16(c, (uint16_t)idx);
+                    special_count++;
+                }
+            }
         }
     }
 
     /* Compile body */
     c->in_tail = saved_tail;
     compile_body(c, body);
+
+    /* Unbind dynamic variables */
+    if (special_count > 0) {
+        emit(c, OP_DYNUNBIND);
+        emit(c, (uint8_t)special_count);
+    }
 
     /* Restore scope (locals "go out of scope") */
     env->local_count = saved_local_count;
@@ -540,6 +575,46 @@ static void compile_setq(CL_Compiler *c, CL_Obj form)
             emit(c, OP_POP);
         }
     }
+}
+
+static void compile_defvar(CL_Compiler *c, CL_Obj form)
+{
+    /* (defvar name) or (defvar name init-form) */
+    CL_Obj name = cl_car(cl_cdr(form));
+    CL_Obj rest = cl_cdr(cl_cdr(form));
+    CL_Symbol *sym = (CL_Symbol *)CL_OBJ_TO_PTR(name);
+
+    sym->flags |= CL_SYM_SPECIAL;
+
+    if (!CL_NULL_P(rest) && sym->value == CL_UNBOUND) {
+        int idx;
+        compile_expr(c, cl_car(rest));
+        idx = add_constant(c, name);
+        emit(c, OP_GSTORE);
+        emit_u16(c, (uint16_t)idx);
+        emit(c, OP_POP);
+    }
+    emit_const(c, name);
+}
+
+static void compile_defparameter(CL_Compiler *c, CL_Obj form)
+{
+    /* (defparameter name init-form) — always sets value */
+    CL_Obj name = cl_car(cl_cdr(form));
+    CL_Obj rest = cl_cdr(cl_cdr(form));
+    CL_Symbol *sym = (CL_Symbol *)CL_OBJ_TO_PTR(name);
+    int idx;
+
+    sym->flags |= CL_SYM_SPECIAL;
+
+    if (!CL_NULL_P(rest)) {
+        compile_expr(c, cl_car(rest));
+        idx = add_constant(c, name);
+        emit(c, OP_GSTORE);
+        emit_u16(c, (uint16_t)idx);
+        emit(c, OP_POP);
+    }
+    emit_const(c, name);
 }
 
 static void compile_defun(CL_Compiler *c, CL_Obj form)
@@ -2237,6 +2312,8 @@ static void compile_expr(CL_Compiler *c, CL_Obj expr)
         if (head == SYM_LETSTAR)     { compile_let(c, expr, 1); return; }
         if (head == SYM_SETQ)        { compile_setq(c, expr); return; }
         if (head == SYM_DEFUN)       { compile_defun(c, expr); return; }
+        if (head == SYM_DEFVAR)      { compile_defvar(c, expr); return; }
+        if (head == SYM_DEFPARAMETER) { compile_defparameter(c, expr); return; }
         if (head == SYM_DEFMACRO)    { compile_defmacro(c, expr); return; }
         if (head == SYM_FUNCTION)    { compile_function(c, expr); return; }
         if (head == SYM_BLOCK)       { compile_block(c, expr); return; }

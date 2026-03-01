@@ -1034,6 +1034,104 @@ TEST(eval_mv_propagation)
         "(multiple-value-list 42)"), "(42)");
 }
 
+/* === Dynamic (special) variables === */
+
+TEST(eval_defvar_basic)
+{
+    ASSERT_STR_EQ(eval_print("(defvar *x* 10)"), "*X*");
+    ASSERT_EQ_INT(eval_int("*x*"), 10);
+}
+
+TEST(eval_defvar_no_overwrite)
+{
+    /* defvar does not overwrite existing value */
+    eval_print("(defvar *y* 42)");
+    eval_print("(defvar *y* 99)");
+    ASSERT_EQ_INT(eval_int("*y*"), 42);
+}
+
+TEST(eval_defparameter_overwrite)
+{
+    /* defparameter always overwrites */
+    eval_print("(defparameter *z* 10)");
+    ASSERT_EQ_INT(eval_int("*z*"), 10);
+    eval_print("(defparameter *z* 20)");
+    ASSERT_EQ_INT(eval_int("*z*"), 20);
+}
+
+TEST(eval_special_let_binding)
+{
+    /* let dynamically binds special var, restores after */
+    eval_print("(defvar *a* 1)");
+    ASSERT_EQ_INT(eval_int("(let ((*a* 2)) *a*)"), 2);
+    ASSERT_EQ_INT(eval_int("*a*"), 1);
+}
+
+TEST(eval_special_let_star_binding)
+{
+    /* let* same behavior */
+    eval_print("(defvar *b* 10)");
+    ASSERT_EQ_INT(eval_int("(let* ((*b* 20)) *b*)"), 20);
+    ASSERT_EQ_INT(eval_int("*b*"), 10);
+}
+
+TEST(eval_special_visible_in_called_fn)
+{
+    /* Dynamic binding visible through function calls */
+    eval_print("(defvar *d* 0)");
+    eval_print("(defun read-d () *d*)");
+    ASSERT_EQ_INT(eval_int("(let ((*d* 99)) (read-d))"), 99);
+    ASSERT_EQ_INT(eval_int("(read-d)"), 0);
+}
+
+TEST(eval_special_nested_binding)
+{
+    /* Nested let with same special var */
+    eval_print("(defvar *e* 1)");
+    ASSERT_EQ_INT(eval_int(
+        "(let ((*e* 2)) (let ((*e* 3)) *e*))"), 3);
+    ASSERT_EQ_INT(eval_int("*e*"), 1);
+}
+
+TEST(eval_special_setq)
+{
+    /* setq modifies current binding, outer restored */
+    eval_print("(defvar *f* 1)");
+    ASSERT_EQ_INT(eval_int(
+        "(let ((*f* 10)) (setq *f* 20) *f*)"), 20);
+    ASSERT_EQ_INT(eval_int("*f*"), 1);
+}
+
+TEST(eval_special_unwind_protect)
+{
+    /* Bindings restored on throw through unwind-protect */
+    eval_print("(defvar *g* 1)");
+    eval_print(
+        "(catch 'done"
+        "  (unwind-protect"
+        "    (let ((*g* 99))"
+        "      (throw 'done *g*))"
+        "    nil))");
+    ASSERT_EQ_INT(eval_int("*g*"), 1);
+}
+
+TEST(eval_special_error_restore)
+{
+    /* Bindings restored on error */
+    eval_print("(defvar *h* 1)");
+    eval_print("(let ((*h* 99)) (error \"boom\"))");
+    ASSERT_EQ_INT(eval_int("*h*"), 1);
+}
+
+TEST(eval_special_mixed_let)
+{
+    /* let with both lexical and special bindings */
+    eval_print("(defvar *m* 10)");
+    ASSERT_EQ_INT(eval_int(
+        "(let ((x 1) (*m* 20) (y 2)) (+ x *m* y))"), 23);
+    ASSERT_EQ_INT(eval_int("*m*"), 10);
+}
+
 int main(void)
 {
     test_init();
@@ -1153,6 +1251,17 @@ int main(void)
     RUN(eval_nth_value);
     RUN(eval_values_list);
     RUN(eval_mv_propagation);
+    RUN(eval_defvar_basic);
+    RUN(eval_defvar_no_overwrite);
+    RUN(eval_defparameter_overwrite);
+    RUN(eval_special_let_binding);
+    RUN(eval_special_let_star_binding);
+    RUN(eval_special_visible_in_called_fn);
+    RUN(eval_special_nested_binding);
+    RUN(eval_special_setq);
+    RUN(eval_special_unwind_protect);
+    RUN(eval_special_error_restore);
+    RUN(eval_special_mixed_let);
 
     teardown();
     REPORT();

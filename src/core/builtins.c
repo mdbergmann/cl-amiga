@@ -763,6 +763,18 @@ static CL_Obj bi_error(CL_Obj *args, int n)
     return CL_NIL;
 }
 
+/* --- Boundp --- */
+
+static CL_Obj bi_boundp(CL_Obj *args, int n)
+{
+    CL_Symbol *s;
+    CL_UNUSED(n);
+    if (!CL_SYMBOL_P(args[0]))
+        cl_error(CL_ERR_TYPE, "BOUNDP: not a symbol");
+    s = (CL_Symbol *)CL_OBJ_TO_PTR(args[0]);
+    return (s->value != CL_UNBOUND) ? SYM_T : CL_NIL;
+}
+
 /* --- Gensym --- */
 
 static uint32_t gensym_counter = 0;
@@ -862,6 +874,8 @@ void cl_builtins_init(void)
     defun("EVAL", bi_eval, 1, 1);
     defun("MACROEXPAND-1", bi_macroexpand_1, 1, 1);
     defun("MACROEXPAND", bi_macroexpand, 1, 1);
+
+    defun("BOUNDP", bi_boundp, 1, 1);
 
     /* Multiple values */
     defun("VALUES", bi_values, 0, -1);

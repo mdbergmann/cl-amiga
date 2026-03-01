@@ -47,9 +47,11 @@ void cl_error(int code, const char *fmt, ...)
 
     /* No UWPROT found — propagating to C error handler.
      * NLX frames (catch/uwprot) are invalid once we leave the VM,
-     * so clear the NLX stack and reset pending state. */
+     * so clear the NLX stack and reset pending state.
+     * Restore all dynamic bindings before leaving the VM. */
     cl_nlx_top = 0;
     cl_pending_throw = 0;
+    cl_dynbind_restore_to(0);
 
     if (cl_error_frame_top > 0) {
         cl_error_frame_top--;

@@ -1,4 +1,5 @@
 #include "mem.h"
+#include "vm.h"
 #include "../platform/platform.h"
 #include <string.h>
 #include <stdio.h>
@@ -174,6 +175,7 @@ CL_Obj cl_make_symbol(CL_Obj name)
     sym->plist = CL_NIL;
     sym->package = CL_NIL;
     sym->hash = 0;
+    sym->flags = 0;
     return CL_PTR_TO_OBJ(sym);
 }
 
@@ -316,6 +318,12 @@ static void gc_mark(void)
     /* Push all roots */
     for (i = 0; i < gc_root_count; i++) {
         gc_mark_push(*gc_root_stack[i]);
+    }
+
+    /* Mark dynamic binding stack (saved old values) */
+    for (i = 0; i < cl_dyn_top; i++) {
+        gc_mark_push(cl_dyn_stack[i].symbol);
+        gc_mark_push(cl_dyn_stack[i].old_value);
     }
 
     /* Drain mark stack iteratively */

@@ -116,7 +116,10 @@ typedef struct {
     CL_Obj plist;     /* Property list */
     CL_Obj package;   /* Home package */
     uint32_t hash;    /* Cached name hash */
+    uint32_t flags;   /* bit 0: IS_SPECIAL (declared by defvar/defparameter) */
 } CL_Symbol;
+
+#define CL_SYM_SPECIAL  0x01
 
 #define CL_SYMBOL_P(obj) (CL_HEAP_P(obj) && CL_HDR_TYPE(CL_OBJ_TO_PTR(obj)) == TYPE_SYMBOL)
 

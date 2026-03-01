@@ -19,6 +19,21 @@ int cl_mv_count = 1;
 CL_NLXFrame cl_nlx_stack[CL_MAX_NLX_FRAMES];
 int cl_nlx_top = 0;
 
+/* Dynamic binding stack */
+CL_DynBinding cl_dyn_stack[CL_MAX_DYN_BINDINGS];
+int cl_dyn_top = 0;
+
+void cl_dynbind_restore_to(int mark)
+{
+    while (cl_dyn_top > mark) {
+        cl_dyn_top--;
+        {
+            CL_Symbol *s = (CL_Symbol *)CL_OBJ_TO_PTR(cl_dyn_stack[cl_dyn_top].symbol);
+            s->value = cl_dyn_stack[cl_dyn_top].old_value;
+        }
+    }
+}
+
 /* Pending throw state */
 int cl_pending_throw = 0;
 CL_Obj cl_pending_tag = 0;
@@ -31,6 +46,7 @@ void cl_vm_init(void)
     cl_vm.sp = 0;
     cl_vm.fp = 0;
     cl_nlx_top = 0;
+    cl_dyn_top = 0;
     cl_pending_throw = 0;
     cl_mv_count = 1;
 }
@@ -807,6 +823,7 @@ CL_Obj cl_vm_eval(CL_Obj bytecode_obj)
             nlx->code = code;
             nlx->constants = constants;
             nlx->base_fp = base_fp;
+            nlx->dyn_mark = cl_dyn_top;
 
             if (setjmp(nlx->buf) == 0) {
                 /* Normal path: body executes */
@@ -816,6 +833,7 @@ CL_Obj cl_vm_eval(CL_Obj bytecode_obj)
                  * Recompute nlx from global — the local pointer may be
                  * indeterminate after longjmp (C99 7.13.2.1). */
                 nlx = &cl_nlx_stack[cl_nlx_top];
+                cl_dynbind_restore_to(nlx->dyn_mark);
                 {
                     CL_Obj throw_result = nlx->result;
                     cl_vm.sp = nlx->vm_sp;
@@ -857,6 +875,7 @@ CL_Obj cl_vm_eval(CL_Obj bytecode_obj)
             nlx->code = code;
             nlx->constants = constants;
             nlx->base_fp = base_fp;
+            nlx->dyn_mark = cl_dyn_top;
 
             if (setjmp(nlx->buf) == 0) {
                 /* Normal path: protected form executes */
@@ -865,6 +884,7 @@ CL_Obj cl_vm_eval(CL_Obj bytecode_obj)
                 /* longjmp from throw/error through UWP: restore state, jump to cleanup.
                  * Recompute nlx — local pointer may be indeterminate after longjmp. */
                 nlx = &cl_nlx_stack[cl_nlx_top];
+                cl_dynbind_restore_to(nlx->dyn_mark);
                 cl_vm.sp = nlx->vm_sp;
                 cl_vm.fp = nlx->vm_fp;
                 frame = &cl_vm.frames[cl_vm.fp - 1];
@@ -930,6 +950,7 @@ CL_Obj cl_vm_eval(CL_Obj bytecode_obj)
                     int err_code = cl_pending_error_code;
                     cl_pending_throw = 0;
                     cl_nlx_top = 0;
+                    cl_dynbind_restore_to(0);
                     cl_vm.fp = base_fp;
                     cl_vm.sp = cl_vm.frames[base_fp].bp;
                     cl_error_code = err_code;
@@ -989,6 +1010,26 @@ CL_Obj cl_vm_eval(CL_Obj bytecode_obj)
             else
                 cl_vm_push(idx > 0 && idx < cl_mv_count ? cl_mv_values[idx] : CL_NIL);
             cl_mv_count = 1;
+            break;
+        }
+
+        case OP_DYNBIND: {
+            uint16_t idx = read_u16(code, &ip);
+            CL_Obj sym = constants[idx];
+            CL_Obj new_val = cl_vm_pop();
+            CL_Symbol *s = (CL_Symbol *)CL_OBJ_TO_PTR(sym);
+            if (cl_dyn_top >= CL_MAX_DYN_BINDINGS)
+                cl_error(CL_ERR_OVERFLOW, "Dynamic binding stack overflow");
+            cl_dyn_stack[cl_dyn_top].symbol = sym;
+            cl_dyn_stack[cl_dyn_top].old_value = s->value;
+            cl_dyn_top++;
+            s->value = new_val;
+            break;
+        }
+
+        case OP_DYNUNBIND: {
+            uint8_t count = code[ip++];
+            cl_dynbind_restore_to(cl_dyn_top - count);
             break;
         }
 

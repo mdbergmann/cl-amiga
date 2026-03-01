@@ -51,6 +51,8 @@ CL_Obj SYM_MULTIPLE_VALUE_BIND = CL_NIL;
 CL_Obj SYM_MULTIPLE_VALUE_LIST = CL_NIL;
 CL_Obj SYM_MULTIPLE_VALUE_PROG1 = CL_NIL;
 CL_Obj SYM_NTH_VALUE = CL_NIL;
+CL_Obj SYM_DEFVAR = CL_NIL;
+CL_Obj SYM_DEFPARAMETER = CL_NIL;
 
 /* FNV-1a hash */
 uint32_t cl_hash_string(const char *str, uint32_t len)
@@ -106,6 +108,14 @@ CL_Obj cl_intern_keyword(const char *name, uint32_t len)
     CL_Symbol *s = (CL_Symbol *)CL_OBJ_TO_PTR(sym);
     s->value = sym;
     return sym;
+}
+
+int cl_symbol_specialp(CL_Obj sym)
+{
+    CL_Symbol *s;
+    if (CL_NULL_P(sym)) return 0;
+    s = (CL_Symbol *)CL_OBJ_TO_PTR(sym);
+    return (s->flags & CL_SYM_SPECIAL) != 0;
 }
 
 const char *cl_symbol_name(CL_Obj sym)
@@ -167,6 +177,8 @@ void cl_symbol_init(void)
     SYM_MULTIPLE_VALUE_LIST  = cl_intern_in("MULTIPLE-VALUE-LIST", 19, cl_package_cl);
     SYM_MULTIPLE_VALUE_PROG1 = cl_intern_in("MULTIPLE-VALUE-PROG1", 20, cl_package_cl);
     SYM_NTH_VALUE            = cl_intern_in("NTH-VALUE", 9, cl_package_cl);
+    SYM_DEFVAR               = cl_intern_in("DEFVAR", 6, cl_package_cl);
+    SYM_DEFPARAMETER         = cl_intern_in("DEFPARAMETER", 12, cl_package_cl);
 
     /* T is self-evaluating */
     {

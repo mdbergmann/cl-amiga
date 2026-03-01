@@ -28,6 +28,9 @@ CL_Obj cl_intern_keyword(const char *name, uint32_t len);
 /* Get symbol name as C string (pointer into CL_String data) */
 const char *cl_symbol_name(CL_Obj sym);
 
+/* Check if symbol is declared special (by defvar/defparameter) */
+int cl_symbol_specialp(CL_Obj sym);
+
 /* Initialize symbol system */
 void cl_symbol_init(void);
 
@@ -78,5 +81,7 @@ extern CL_Obj SYM_MULTIPLE_VALUE_BIND;
 extern CL_Obj SYM_MULTIPLE_VALUE_LIST;
 extern CL_Obj SYM_MULTIPLE_VALUE_PROG1;
 extern CL_Obj SYM_NTH_VALUE;
+extern CL_Obj SYM_DEFVAR;
+extern CL_Obj SYM_DEFPARAMETER;
 
 #endif /* CL_SYMBOL_H */

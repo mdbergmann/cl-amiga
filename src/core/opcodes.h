@@ -68,6 +68,8 @@ enum CL_Opcode {
     OP_MV_LOAD   = 0x8B,  /* u8: Push cl_mv_values[index] or NIL if >= count */
     OP_MV_TO_LIST = 0x8C, /* Build list from MV buffer, push it */
     OP_NTH_VALUE  = 0x8D, /* Pop index, push mv_values[index] or NIL */
+    OP_DYNBIND   = 0x8E,  /* u16: const idx of symbol — pop value, save old, set new */
+    OP_DYNUNBIND = 0x8F,  /* u8: count — restore N bindings */
 
     OP_HALT      = 0xFF   /* Stop VM */
 };

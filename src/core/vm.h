@@ -31,6 +31,21 @@ typedef struct {
 
 extern CL_VM cl_vm;
 
+/* --- Dynamic (special) variable binding stack --- */
+
+typedef struct {
+    CL_Obj symbol;
+    CL_Obj old_value;
+} CL_DynBinding;
+
+#define CL_MAX_DYN_BINDINGS 256
+
+extern CL_DynBinding cl_dyn_stack[CL_MAX_DYN_BINDINGS];
+extern int cl_dyn_top;
+
+/* Restore dynamic bindings down to mark */
+void cl_dynbind_restore_to(int mark);
+
 /* --- Non-Local eXit (NLX) stack for catch/throw and unwind-protect --- */
 
 #define CL_NLX_CATCH   0
@@ -49,6 +64,7 @@ typedef struct {
     uint8_t *code;         /* code pointer to restore */
     CL_Obj *constants;     /* constants pointer to restore */
     int base_fp;           /* base_fp of the cl_vm_eval call */
+    int dyn_mark;          /* binding stack depth at frame creation */
 } CL_NLXFrame;
 
 extern CL_NLXFrame cl_nlx_stack[CL_MAX_NLX_FRAMES];
