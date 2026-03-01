@@ -1464,6 +1464,27 @@ TEST(eval_mapcar_multi_list)
         "(11 22)");
 }
 
+TEST(eval_vector)
+{
+    ASSERT_STR_EQ(eval_print("(vector 1 2 3)"), "#(1 2 3)");
+    ASSERT_STR_EQ(eval_print("(vector)"), "#()");
+    ASSERT_EQ_INT(eval_int("(aref (vector 10 20 30) 1)"), 20);
+    ASSERT_STR_EQ(eval_print("(vectorp (vector 1 2))"), "T");
+}
+
+TEST(eval_array_dimensions)
+{
+    ASSERT_STR_EQ(eval_print("(array-dimensions (make-array 5))"), "(5)");
+    ASSERT_STR_EQ(eval_print("(array-dimensions (vector 1 2 3))"), "(3)");
+    ASSERT_STR_EQ(eval_print("(array-dimensions (vector))"), "(0)");
+}
+
+TEST(eval_array_rank)
+{
+    ASSERT_EQ_INT(eval_int("(array-rank (make-array 5))"), 1);
+    ASSERT_EQ_INT(eval_int("(array-rank (vector 1 2 3))"), 1);
+}
+
 /* --- Phase 5 Tier 2: String functions --- */
 
 TEST(eval_string_comparison)
@@ -2165,6 +2186,9 @@ int main(void)
     RUN(eval_length_vector);
     RUN(eval_equal_vector);
     RUN(eval_mapcar_multi_list);
+    RUN(eval_vector);
+    RUN(eval_array_dimensions);
+    RUN(eval_array_rank);
 
     /* Phase 5 Tier 2 */
     RUN(eval_string_comparison);

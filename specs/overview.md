@@ -103,7 +103,7 @@ Single-pass recursive compiler from S-expressions to bytecode:
 | Alist/plist | `acons` `pairlis` `assoc` `rassoc` `getf` `adjoin` |
 | Tree ops | `subst` `sublis` `nsubst` |
 | Destructive | `nconc` `nreverse` `delete` `delete-if` |
-| Mutation | `rplaca` `rplacd` `aref` `svref` `make-array` `set` |
+| Mutation | `rplaca` `rplacd` `aref` `svref` `make-array` `vector` `array-dimensions` `array-rank` `set` |
 | Symbol access | `symbol-value` `symbol-function` `symbol-name` `symbol-package` `boundp` `fboundp` `fdefinition` `make-symbol` |
 | Higher-order | `mapcar` `mapc` `mapcan` `maplist` `mapl` `mapcon` `apply` `funcall` |
 | Characters | `char=` `char/=` `char<` `char>` `char<=` `char>=` `char-code` `code-char` `char-upcase` `char-downcase` `upper-case-p` `lower-case-p` `alpha-char-p` `digit-char-p` |
@@ -193,7 +193,7 @@ Data structures, sequences, strings, and I/O:
 - [x] Set operations in Lisp (`intersection`, `union`, `set-difference`, `subsetp`)
 - [x] Hash tables (`make-hash-table`, `gethash`, `remhash`, `maphash`, `clrhash`, `hash-table-count`, `hash-table-p`, `(setf gethash)`)
 - [x] Sequence functions (`find`, `find-if`, `find-if-not`, `position`, `position-if`, `position-if-not`, `count`, `count-if`, `count-if-not`, `remove`, `remove-if`, `remove-if-not`, `remove-duplicates`, `substitute`, `substitute-if`, `substitute-if-not`, `reduce`, `fill`, `replace`, `every`, `some`, `notany`, `notevery`, `map`, `mismatch`, `search`, `sort`, `stable-sort`)
-- [ ] Array operations (`vector`, `array-dimensions`, `array-rank`, `fill`, `replace`)
+- [x] Array operations (`vector`, `array-dimensions`, `array-rank`, `fill`, `replace`)
 - [ ] Type system (`typep`, `coerce`, `deftype`, `subtypep`)
 - [ ] `declare`, `declaim`, `proclaim` — declarations
 - [ ] `disassemble` — print bytecode disassembly of compiled functions

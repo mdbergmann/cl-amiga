@@ -156,6 +156,38 @@ static CL_Obj bi_boundp(CL_Obj *args, int n)
     return (s->value != CL_UNBOUND) ? SYM_T : CL_NIL;
 }
 
+/* --- Array operations --- */
+
+static CL_Obj bi_vector(CL_Obj *args, int n)
+{
+    CL_Obj v;
+    CL_Vector *vec;
+    int i;
+    v = cl_make_vector((uint32_t)n);
+    vec = (CL_Vector *)CL_OBJ_TO_PTR(v);
+    for (i = 0; i < n; i++)
+        vec->data[i] = args[i];
+    return v;
+}
+
+static CL_Obj bi_array_dimensions(CL_Obj *args, int n)
+{
+    CL_Vector *vec;
+    CL_UNUSED(n);
+    if (!CL_VECTOR_P(args[0]))
+        cl_error(CL_ERR_TYPE, "ARRAY-DIMENSIONS: not an array");
+    vec = (CL_Vector *)CL_OBJ_TO_PTR(args[0]);
+    return cl_cons(CL_MAKE_FIXNUM(vec->length), CL_NIL);
+}
+
+static CL_Obj bi_array_rank(CL_Obj *args, int n)
+{
+    CL_UNUSED(n);
+    if (!CL_VECTOR_P(args[0]))
+        cl_error(CL_ERR_TYPE, "ARRAY-RANK: not an array");
+    return CL_MAKE_FIXNUM(1);
+}
+
 /* --- Registration --- */
 
 void cl_builtins_mutation_init(void)
@@ -167,6 +199,9 @@ void cl_builtins_mutation_init(void)
     defun("SVREF", bi_aref, 2, 2);
     defun("MAKE-ARRAY", bi_make_array, 1, 1);
     defun("VECTORP", bi_vectorp, 1, 1);
+    defun("VECTOR", bi_vector, 0, -1);
+    defun("ARRAY-DIMENSIONS", bi_array_dimensions, 1, 1);
+    defun("ARRAY-RANK", bi_array_rank, 1, 1);
 
     /* Symbol accessors */
     defun("SYMBOL-VALUE", bi_symbol_value, 1, 1);
