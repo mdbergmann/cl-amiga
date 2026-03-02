@@ -128,6 +128,10 @@ extern CL_Obj SYM_CONTROL_ERROR;
 extern CL_Obj SYM_ARITHMETIC_ERROR;
 extern CL_Obj SYM_DIVISION_BY_ZERO;
 
+/* Signaling symbols */
+extern CL_Obj SYM_SIGNAL;
+extern CL_Obj SYM_WARN;
+
 /* Condition keyword symbols */
 extern CL_Obj KW_FORMAT_CONTROL;
 extern CL_Obj KW_FORMAT_ARGUMENTS;

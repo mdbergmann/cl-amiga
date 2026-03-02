@@ -234,19 +234,6 @@ static CL_Obj bi_values_list(CL_Obj *args, int n)
     return count > 0 ? cl_mv_values[0] : CL_NIL;
 }
 
-/* --- Error --- */
-
-static CL_Obj bi_error(CL_Obj *args, int n)
-{
-    if (n > 0 && CL_STRING_P(args[0])) {
-        CL_String *s = (CL_String *)CL_OBJ_TO_PTR(args[0]);
-        cl_error(CL_ERR_GENERAL, "%s", s->data);
-    } else {
-        cl_error(CL_ERR_GENERAL, "Error signaled");
-    }
-    return CL_NIL;
-}
-
 /* --- Gensym --- */
 
 static uint32_t gensym_counter = 0;
@@ -557,8 +544,7 @@ void cl_builtins_io_init(void)
     defun("MACROEXPAND-1", bi_macroexpand_1, 1, 1);
     defun("MACROEXPAND", bi_macroexpand, 1, 1);
 
-    /* Error / Throw */
-    defun("ERROR", bi_error, 1, -1);
+    /* Throw (ERROR is now in builtins_condition.c) */
     defun("THROW", bi_throw, 1, 2);
 
     /* Multiple values */

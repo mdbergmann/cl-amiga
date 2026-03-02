@@ -31,6 +31,10 @@ int cl_nlx_top = 0;
 CL_DynBinding cl_dyn_stack[CL_MAX_DYN_BINDINGS];
 int cl_dyn_top = 0;
 
+/* Handler binding stack */
+CL_HandlerBinding cl_handler_stack[CL_MAX_HANDLER_BINDINGS];
+int cl_handler_top = 0;
+
 void cl_dynbind_restore_to(int mark)
 {
     while (cl_dyn_top > mark) {
@@ -55,6 +59,7 @@ void cl_vm_init(void)
     cl_vm.fp = 0;
     cl_nlx_top = 0;
     cl_dyn_top = 0;
+    cl_handler_top = 0;
     cl_pending_throw = 0;
     cl_mv_count = 1;
     cl_trace_depth = 0;
@@ -1043,6 +1048,7 @@ CL_Obj cl_vm_eval(CL_Obj bytecode_obj)
             nlx->constants = constants;
             nlx->base_fp = base_fp;
             nlx->dyn_mark = cl_dyn_top;
+            nlx->handler_mark = cl_handler_top;
 
             if (setjmp(nlx->buf) == 0) {
                 /* Normal path: body executes */
@@ -1053,6 +1059,7 @@ CL_Obj cl_vm_eval(CL_Obj bytecode_obj)
                  * indeterminate after longjmp (C99 7.13.2.1). */
                 nlx = &cl_nlx_stack[cl_nlx_top];
                 cl_dynbind_restore_to(nlx->dyn_mark);
+                cl_handler_top = nlx->handler_mark;
                 {
                     CL_Obj throw_result = nlx->result;
                     cl_vm.sp = nlx->vm_sp;
@@ -1095,6 +1102,7 @@ CL_Obj cl_vm_eval(CL_Obj bytecode_obj)
             nlx->constants = constants;
             nlx->base_fp = base_fp;
             nlx->dyn_mark = cl_dyn_top;
+            nlx->handler_mark = cl_handler_top;
 
             if (setjmp(nlx->buf) == 0) {
                 /* Normal path: protected form executes */
@@ -1104,6 +1112,7 @@ CL_Obj cl_vm_eval(CL_Obj bytecode_obj)
                  * Recompute nlx — local pointer may be indeterminate after longjmp. */
                 nlx = &cl_nlx_stack[cl_nlx_top];
                 cl_dynbind_restore_to(nlx->dyn_mark);
+                cl_handler_top = nlx->handler_mark;
                 cl_vm.sp = nlx->vm_sp;
                 cl_vm.fp = nlx->vm_fp;
                 frame = &cl_vm.frames[cl_vm.fp - 1];
@@ -1170,6 +1179,7 @@ CL_Obj cl_vm_eval(CL_Obj bytecode_obj)
                     cl_pending_throw = 0;
                     cl_nlx_top = 0;
                     cl_dynbind_restore_to(0);
+                    cl_handler_top = 0;
                     cl_vm.fp = base_fp;
                     cl_vm.sp = cl_vm.frames[base_fp].bp;
                     cl_error_code = err_code;

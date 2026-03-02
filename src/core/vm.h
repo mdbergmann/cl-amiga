@@ -65,6 +65,7 @@ typedef struct {
     CL_Obj *constants;     /* constants pointer to restore */
     int base_fp;           /* base_fp of the cl_vm_eval call */
     int dyn_mark;          /* binding stack depth at frame creation */
+    int handler_mark;      /* handler stack depth at frame creation */
 } CL_NLXFrame;
 
 extern CL_NLXFrame cl_nlx_stack[CL_MAX_NLX_FRAMES];
@@ -76,6 +77,24 @@ extern CL_Obj cl_pending_tag;
 extern CL_Obj cl_pending_value;
 extern int cl_pending_error_code;
 extern char cl_pending_error_msg[512];
+
+/* --- Condition handler binding stack --- */
+
+typedef struct {
+    CL_Obj type_name;     /* Condition type symbol to match */
+    CL_Obj handler;       /* Handler function (closure or function) */
+    int handler_mark;     /* Handler stack depth when this binding was established */
+} CL_HandlerBinding;
+
+#define CL_MAX_HANDLER_BINDINGS 64
+extern CL_HandlerBinding cl_handler_stack[CL_MAX_HANDLER_BINDINGS];
+extern int cl_handler_top;
+
+/* Signal a condition — walks handler stack, returns NIL if no handler transferred */
+CL_Obj cl_signal_condition(CL_Obj condition);
+
+/* Create a condition from an error code and message */
+CL_Obj cl_create_condition_from_error(int code, const char *msg);
 
 /* --- Multiple Values --- */
 #define CL_MAX_MV 20

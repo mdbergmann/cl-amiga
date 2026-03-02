@@ -241,7 +241,28 @@ Extended iteration and output formatting:
 - [ ] `format` full directives (`~A`, `~S`, `~D`, `~B`, `~O`, `~X`, `~R`, `~%`, `~&`, `~T`, `~<~>`, `~{~}`, `~[~]`, `~?`, `~(~)`, `~*`, `~^`)
 - [ ] Pretty printer (`pprint`, `pprint-logical-block`, `pprint-newline`, `pprint-indent`)
 
-### Phase 9: CLOS
+### Phase 9: Numeric Tower
+
+Full CL numeric type hierarchy with arithmetic contagion:
+- [ ] Bignums — arbitrary precision integers, heap-allocated variable-length digit arrays
+- [ ] Ratios — normalized numerator/denominator pairs (fixnum or bignum), GCD reduction
+- [ ] Single-float — IEEE 754 32-bit, heap-allocated; software implementation (optional 68881/68882 FPU fast path)
+- [ ] Double-float — IEEE 754 64-bit, heap-allocated; software implementation (optional FPU)
+- [ ] Complex numbers — real + imaginary parts, any real type
+- [ ] Numeric contagion: integer → ratio → single-float → double-float; complex promotion
+- [ ] Reader syntax: ratios (`1/2`, `3/4`), floats (`1.0`, `1.5e3`, `1.0d0`), complex (`#C(1 2)`)
+- [ ] Division: `(/ 1 2)` → `1/2` (ratio), `(/ 1.0 2)` → `0.5` (float)
+- [ ] All arithmetic ops (`+` `-` `*` `/` `mod` `abs` `max` `min` `1+` `1-`) extended for full tower
+- [ ] Rounding: `floor`, `ceiling`, `truncate`, `round`, `ffloor`, `fceiling`, `ftruncate`, `fround`
+- [ ] Ratio ops: `numerator`, `denominator`, `rational`, `rationalize`
+- [ ] Float ops: `float`, `float-digits`, `float-radix`, `float-sign`, `decode-float`, `integer-decode-float`, `scale-float`
+- [ ] Complex ops: `realpart`, `imagpart`, `conjugate`, `phase`
+- [ ] Math: `sqrt`, `isqrt`, `expt`, `log`, `exp`, `gcd`, `lcm`, `ash`, `logand`, `logior`, `logxor`, `lognot`, `logcount`
+- [ ] Trig: `sin`, `cos`, `tan`, `asin`, `acos`, `atan` (software float)
+- [ ] Type predicates: `rationalp`, `ratiop`, `realp`, `complexp`, `floatp`, `single-float-p`, `double-float-p`
+- [ ] Constants: `most-positive-fixnum`, `most-negative-fixnum`, `pi`, float limits
+
+### Phase 10: CLOS
 
 Common Lisp Object System:
 - [ ] `defclass` — class definition with slots, inheritance, metaclasses
@@ -256,7 +277,7 @@ Common Lisp Object System:
 - [ ] `defstruct` — structure definitions (subset or full)
 - [ ] Multiple inheritance, standard method combination
 
-### Phase 10: ASDF & Beyond
+### Phase 11: ASDF & Beyond
 
 Validation and ecosystem:
 - [ ] Run ASDF 3.3 (~14K lines) — ultimate compliance test
@@ -266,9 +287,6 @@ Validation and ecosystem:
 - [ ] Compiler optimizations (constant folding, inlining)
 - [ ] Bytecode optimizer
 - [ ] Generational or incremental GC
-- [ ] Bignums (arbitrary precision integers)
-- [ ] Floats (optional, 68881/68882 FPU or software)
-- [ ] Disassembler
 - [ ] Debugger / stepper
 - [ ] Line editing (history, tab completion)
 - [ ] Amiga-specific FFI (calling library functions)

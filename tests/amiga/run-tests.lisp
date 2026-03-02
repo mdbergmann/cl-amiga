@@ -953,6 +953,16 @@
 (srcloc-outer 1)
 (check "srcloc error recovery" 42 42)
 
+; --- Condition signaling ---
+(check "signal returns nil" nil (signal (make-condition 'simple-condition :format-control "test")))
+(check "signal string returns nil" nil (signal "something"))
+(check "signal symbol returns nil" nil (signal 'simple-condition))
+(check "warn returns nil" nil (warn "test warning"))
+(check "warn symbol returns nil" nil (warn 'simple-warning))
+; error test: error is caught by batch REPL, next expression returns 42
+(error "test error for batch")
+(check "error recovery" 42 42)
+
 ; --- Summary ---
 (format t "~%=== Results ===~%")
 (format t "Passed: ~A~%" *pass-count*)

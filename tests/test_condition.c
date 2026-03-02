@@ -146,6 +146,89 @@ TEST(c_hierarchy_matches)
     ASSERT(!cl_condition_type_matches(SYM_CONDITION, SYM_ERROR_COND));
 }
 
+/* --- C-level signal tests --- */
+
+TEST(c_signal_no_handlers)
+{
+    /* cl_signal_condition with empty handler stack returns NIL */
+    CL_Obj cond = cl_make_condition(SYM_SIMPLE_CONDITION, CL_NIL, CL_NIL);
+    CL_Obj result = cl_signal_condition(cond);
+    ASSERT_EQ(result, CL_NIL);
+}
+
+TEST(c_error_creates_condition)
+{
+    /* Verify cl_error() still recovers via CL_CATCH (backward compat) */
+    int err = CL_CATCH();
+    if (err == CL_ERR_NONE) {
+        cl_error(CL_ERR_GENERAL, "test backward compat");
+        CL_UNCATCH();
+        ASSERT(0);  /* Should not reach here */
+    } else {
+        CL_UNCATCH();
+        ASSERT_EQ_INT(err, CL_ERR_GENERAL);
+    }
+}
+
+TEST(c_create_condition_from_error)
+{
+    CL_Obj cond;
+    CL_Condition *c;
+
+    cond = cl_create_condition_from_error(CL_ERR_TYPE, "type mismatch");
+    ASSERT(CL_CONDITION_P(cond));
+    c = (CL_Condition *)CL_OBJ_TO_PTR(cond);
+    ASSERT_EQ(c->type_name, SYM_TYPE_ERROR);
+    ASSERT(!CL_NULL_P(c->report_string));
+
+    cond = cl_create_condition_from_error(CL_ERR_DIVZERO, "div by zero");
+    c = (CL_Condition *)CL_OBJ_TO_PTR(cond);
+    ASSERT_EQ(c->type_name, SYM_DIVISION_BY_ZERO);
+
+    cond = cl_create_condition_from_error(CL_ERR_UNBOUND, "unbound");
+    c = (CL_Condition *)CL_OBJ_TO_PTR(cond);
+    ASSERT_EQ(c->type_name, SYM_UNBOUND_VARIABLE_COND);
+
+    cond = cl_create_condition_from_error(CL_ERR_UNDEFINED, "undef");
+    c = (CL_Condition *)CL_OBJ_TO_PTR(cond);
+    ASSERT_EQ(c->type_name, SYM_UNDEFINED_FUNCTION_COND);
+
+    cond = cl_create_condition_from_error(CL_ERR_ARGS, "bad args");
+    c = (CL_Condition *)CL_OBJ_TO_PTR(cond);
+    ASSERT_EQ(c->type_name, SYM_PROGRAM_ERROR);
+
+    cond = cl_create_condition_from_error(CL_ERR_GENERAL, "generic");
+    c = (CL_Condition *)CL_OBJ_TO_PTR(cond);
+    ASSERT_EQ(c->type_name, SYM_SIMPLE_ERROR);
+}
+
+TEST(c_handler_stack_nlx)
+{
+    /* Push a handler, set up NLX frame, verify handler_top restored after NLX */
+    extern CL_HandlerBinding cl_handler_stack[];
+    extern int cl_handler_top;
+
+    cl_handler_top = 0;
+    cl_handler_stack[0].type_name = SYM_CONDITION;
+    cl_handler_stack[0].handler = CL_NIL;
+    cl_handler_stack[0].handler_mark = 0;
+    cl_handler_top = 1;
+
+    {
+        int err = CL_CATCH();
+        if (err == CL_ERR_NONE) {
+            /* handler_top should be 1 here */
+            ASSERT_EQ_INT(cl_handler_top, 1);
+            cl_error(CL_ERR_GENERAL, "test nlx");
+            CL_UNCATCH();
+        } else {
+            CL_UNCATCH();
+            /* After error recovery, handler_top should be reset to 0 */
+            ASSERT_EQ_INT(cl_handler_top, 0);
+        }
+    }
+}
+
 /* --- Lisp-level tests --- */
 
 TEST(lisp_conditionp)
@@ -222,6 +305,48 @@ TEST(lisp_printer)
                   "#<CONDITION SIMPLE-ERROR: \"bad thing\">");
 }
 
+/* --- Lisp-level signal/warn/error tests --- */
+
+TEST(lisp_signal_returns_nil)
+{
+    ASSERT_STR_EQ(eval_print("(signal (make-condition 'simple-condition :format-control \"test\"))"), "NIL");
+}
+
+TEST(lisp_signal_with_string)
+{
+    ASSERT_STR_EQ(eval_print("(signal \"something happened\")"), "NIL");
+}
+
+TEST(lisp_signal_with_symbol)
+{
+    ASSERT_STR_EQ(eval_print("(signal 'simple-condition)"), "NIL");
+}
+
+TEST(lisp_warn_returns_nil)
+{
+    ASSERT_STR_EQ(eval_print("(warn \"test warning\")"), "NIL");
+}
+
+TEST(lisp_warn_with_symbol)
+{
+    ASSERT_STR_EQ(eval_print("(warn 'simple-warning)"), "NIL");
+}
+
+TEST(lisp_error_still_caught)
+{
+    /* (error "test") caught by CL_CATCH in eval_print */
+    const char *result = eval_print("(error \"test error\")");
+    /* Should be caught as an error, not crash */
+    ASSERT_STR_EQ(result, "ERROR:1");
+}
+
+TEST(lisp_error_with_symbol)
+{
+    /* (error 'type-error :datum 42) */
+    const char *result = eval_print("(error 'type-error :datum 42)");
+    ASSERT_STR_EQ(result, "ERROR:1");
+}
+
 int main(void)
 {
     setup();
@@ -231,6 +356,10 @@ int main(void)
     RUN(c_condition_p);
     RUN(c_condition_with_slots);
     RUN(c_hierarchy_matches);
+    RUN(c_signal_no_handlers);
+    RUN(c_error_creates_condition);
+    RUN(c_create_condition_from_error);
+    RUN(c_handler_stack_nlx);
 
     /* Lisp-level tests */
     RUN(lisp_conditionp);
@@ -241,6 +370,15 @@ int main(void)
     RUN(lisp_type_of);
     RUN(lisp_typep_condition);
     RUN(lisp_printer);
+
+    /* Signal/warn/error tests */
+    RUN(lisp_signal_returns_nil);
+    RUN(lisp_signal_with_string);
+    RUN(lisp_signal_with_symbol);
+    RUN(lisp_warn_returns_nil);
+    RUN(lisp_warn_with_symbol);
+    RUN(lisp_error_still_caught);
+    RUN(lisp_error_with_symbol);
 
     teardown();
     REPORT();

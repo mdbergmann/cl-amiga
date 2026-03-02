@@ -31,6 +31,12 @@ void cl_error(int code, const char *fmt, ...)
     /* Capture backtrace while VM frames are still intact */
     cl_capture_backtrace();
 
+    /* Signal through condition handler stack before unwinding */
+    {
+        CL_Obj cond = cl_create_condition_from_error(code, cl_error_msg);
+        cl_signal_condition(cond);
+    }
+
     /* Check for interposing unwind-protect frames in NLX stack */
     {
         int i;
@@ -55,6 +61,7 @@ void cl_error(int code, const char *fmt, ...)
     cl_nlx_top = 0;
     cl_pending_throw = 0;
     cl_dynbind_restore_to(0);
+    cl_handler_top = 0;
 
     if (cl_error_frame_top > 0) {
         cl_error_frame_top--;

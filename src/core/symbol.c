@@ -98,6 +98,10 @@ CL_Obj SYM_CONTROL_ERROR = CL_NIL;
 CL_Obj SYM_ARITHMETIC_ERROR = CL_NIL;
 CL_Obj SYM_DIVISION_BY_ZERO = CL_NIL;
 
+/* Signaling symbols */
+CL_Obj SYM_SIGNAL = CL_NIL;
+CL_Obj SYM_WARN = CL_NIL;
+
 /* Condition keyword symbols */
 CL_Obj KW_FORMAT_CONTROL = CL_NIL;
 CL_Obj KW_FORMAT_ARGUMENTS = CL_NIL;
@@ -273,6 +277,10 @@ void cl_symbol_init(void)
     SYM_CONTROL_ERROR            = cl_intern_in("CONTROL-ERROR", 13, cl_package_cl);
     SYM_ARITHMETIC_ERROR         = cl_intern_in("ARITHMETIC-ERROR", 16, cl_package_cl);
     SYM_DIVISION_BY_ZERO         = cl_intern_in("DIVISION-BY-ZERO", 16, cl_package_cl);
+
+    /* Signaling symbols */
+    SYM_SIGNAL                   = cl_intern_in("SIGNAL", 6, cl_package_cl);
+    SYM_WARN                     = cl_intern_in("WARN", 4, cl_package_cl);
 
     /* Condition keyword symbols */
     KW_FORMAT_CONTROL            = cl_intern_keyword("FORMAT-CONTROL", 14);
