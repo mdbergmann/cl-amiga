@@ -1114,6 +1114,18 @@
 (cl-user::check "local-nick reader" t (eq 'KD:TEST :TEST))
 (in-package "COMMON-LISP-USER")
 
+; --- Macrolet ---
+(check "macrolet basic" 25 (macrolet ((square (x) `(* ,x ,x))) (square 5)))
+(check "macrolet nested" 15 (macrolet ((m (x) `(+ ,x 1))) (macrolet ((m (x) `(+ ,x 10))) (m 5))))
+(check "macrolet body" 14 (macrolet ((double (x) `(* 2 ,x))) (double 3) (double 7)))
+
+; --- Symbol-macrolet ---
+(check "symbol-macrolet basic" 42 (symbol-macrolet ((x 42)) x))
+(check "symbol-macrolet expr" 3 (symbol-macrolet ((x (+ 1 2))) x))
+(check "symbol-macrolet setq" '(99 . 2) (let ((a (cons 1 2))) (symbol-macrolet ((x (car a))) (setq x 99) a)))
+(check "symbol-macrolet nested" 20 (symbol-macrolet ((x 10)) (symbol-macrolet ((x 20)) x)))
+(check "symbol-macrolet multi" 30 (symbol-macrolet ((x 10) (y 20)) (+ x y)))
+
 ; --- Debugger ---
 (check "invoke-debugger exists" t (functionp #'invoke-debugger))
 (check "*debugger-hook* initial" nil *debugger-hook*)

@@ -1074,3 +1074,77 @@ void compile_restart_case(CL_Compiler *c, CL_Obj form)
 
     c->in_tail = saved_tail;
 }
+
+/* --- Macrolet --- */
+
+void compile_macrolet(CL_Compiler *c, CL_Obj form)
+{
+    /* (macrolet ((name (params) body...) ...) body...) */
+    CL_Obj bindings = cl_car(cl_cdr(form));
+    CL_Obj body = cl_cdr(cl_cdr(form));
+    CL_CompEnv *env = c->env;
+    int saved_macro_count = env->local_macro_count;
+
+    /* Compile each macro expander at compile time */
+    {
+        CL_Obj b = bindings;
+        while (!CL_NULL_P(b)) {
+            CL_Obj binding = cl_car(b);
+            CL_Obj mname = cl_car(binding);
+            CL_Obj lambda_list = cl_car(cl_cdr(binding));
+            CL_Obj mbody = cl_cdr(cl_cdr(binding));
+            CL_Obj lambda_form, bytecode, closure;
+
+            /* Build (lambda (params) body...) */
+            lambda_form = cl_cons(SYM_LAMBDA, cl_cons(lambda_list, mbody));
+            CL_GC_PROTECT(lambda_form);
+
+            /* Compile and evaluate at compile time to get closure */
+            bytecode = cl_compile(lambda_form);
+            CL_GC_PROTECT(bytecode);
+            closure = cl_vm_eval(bytecode);
+            CL_GC_UNPROTECT(2);
+
+            cl_env_add_local_macro(env, mname, closure);
+
+            b = cl_cdr(b);
+        }
+    }
+
+    /* Compile body with local macros active */
+    compile_body(c, body);
+
+    /* Restore */
+    env->local_macro_count = saved_macro_count;
+}
+
+/* --- Symbol-macrolet --- */
+
+void compile_symbol_macrolet(CL_Compiler *c, CL_Obj form)
+{
+    /* (symbol-macrolet ((sym expansion) ...) body...) */
+    CL_Obj bindings = cl_car(cl_cdr(form));
+    CL_Obj body = cl_cdr(cl_cdr(form));
+    CL_CompEnv *env = c->env;
+    int saved_symbol_macro_count = env->symbol_macro_count;
+
+    /* Register each symbol macro */
+    {
+        CL_Obj b = bindings;
+        while (!CL_NULL_P(b)) {
+            CL_Obj binding = cl_car(b);
+            CL_Obj sym = cl_car(binding);
+            CL_Obj expansion = cl_car(cl_cdr(binding));
+
+            cl_env_add_symbol_macro(env, sym, expansion);
+
+            b = cl_cdr(b);
+        }
+    }
+
+    /* Compile body with symbol macros active */
+    compile_body(c, body);
+
+    /* Restore */
+    env->symbol_macro_count = saved_symbol_macro_count;
+}

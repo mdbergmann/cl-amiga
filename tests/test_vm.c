@@ -2528,6 +2528,107 @@ TEST(eval_srcloc_reader_line)
     ASSERT_EQ_INT(line, 3);
 }
 
+/* --- Macrolet --- */
+
+TEST(eval_macrolet_basic)
+{
+    ASSERT_EQ_INT(eval_int("(macrolet ((square (x) `(* ,x ,x))) (square 5))"), 25);
+}
+
+TEST(eval_macrolet_shadow)
+{
+    /* Local macro shadows global macro */
+    eval_print("(defmacro my-inc (x) `(+ ,x 1))");
+    ASSERT_EQ_INT(eval_int("(my-inc 10)"), 11);
+    /* Now shadow with macrolet that adds 100 */
+    ASSERT_EQ_INT(eval_int("(macrolet ((my-inc (x) `(+ ,x 100))) (my-inc 10))"), 110);
+    /* Global still works */
+    ASSERT_EQ_INT(eval_int("(my-inc 10)"), 11);
+}
+
+TEST(eval_macrolet_scope)
+{
+    const char *result;
+    /* Macro not visible outside macrolet body */
+    ASSERT_EQ_INT(eval_int("(macrolet ((add3 (x) `(+ ,x 3))) (add3 7))"), 10);
+    /* add3 should not exist as a global macro, so calling it will error */
+    result = eval_print("(add3 7)");
+    ASSERT(strncmp(result, "ERROR:", 6) == 0);
+}
+
+TEST(eval_macrolet_nested)
+{
+    /* Inner macrolet shadows outer */
+    ASSERT_EQ_INT(eval_int(
+        "(macrolet ((m (x) `(+ ,x 1)))"
+        "  (macrolet ((m (x) `(+ ,x 10)))"
+        "    (m 5)))"), 15);
+    /* Outer still works after inner scope */
+    ASSERT_EQ_INT(eval_int(
+        "(macrolet ((m (x) `(+ ,x 1)))"
+        "  (+ (macrolet ((m (x) `(+ ,x 10))) (m 5))"
+        "     (m 5)))"), 21);
+}
+
+TEST(eval_macrolet_with_body)
+{
+    /* macrolet with multiple body forms */
+    ASSERT_STR_EQ(eval_print(
+        "(macrolet ((double (x) `(* 2 ,x)))"
+        "  (double 3)"
+        "  (double 7))"), "14");
+}
+
+/* --- Symbol-macrolet --- */
+
+TEST(eval_symbol_macrolet_basic)
+{
+    ASSERT_EQ_INT(eval_int("(symbol-macrolet ((x 42)) x)"), 42);
+}
+
+TEST(eval_symbol_macrolet_expr)
+{
+    /* Symbol macro expands to an expression */
+    ASSERT_EQ_INT(eval_int("(symbol-macrolet ((x (+ 1 2))) x)"), 3);
+}
+
+TEST(eval_symbol_macrolet_setq)
+{
+    /* (setq sym val) on a symbol-macro rewrites to (setf expansion val) */
+    ASSERT_STR_EQ(eval_print(
+        "(let ((a (cons 1 2)))"
+        "  (symbol-macrolet ((x (car a)))"
+        "    (setq x 99)"
+        "    a))"), "(99 . 2)");
+}
+
+TEST(eval_symbol_macrolet_scope)
+{
+    /* Symbol macro not visible outside body */
+    ASSERT_EQ_INT(eval_int(
+        "(let ((result 0))"
+        "  (symbol-macrolet ((x 42))"
+        "    (setq result x))"
+        "  result)"), 42);
+}
+
+TEST(eval_symbol_macrolet_nested)
+{
+    /* Inner shadows outer */
+    ASSERT_EQ_INT(eval_int(
+        "(symbol-macrolet ((x 10))"
+        "  (symbol-macrolet ((x 20))"
+        "    x))"), 20);
+}
+
+TEST(eval_symbol_macrolet_multiple)
+{
+    /* Multiple symbol macros */
+    ASSERT_EQ_INT(eval_int(
+        "(symbol-macrolet ((x 10) (y 20))"
+        "  (+ x y))"), 30);
+}
+
 int main(void)
 {
     test_init();
@@ -2842,6 +2943,19 @@ int main(void)
     RUN(eval_get_internal_real_time);
     RUN(eval_srcloc_load_backtrace);
     RUN(eval_srcloc_reader_line);
+
+    /* Phase 7 — Macrolet / Symbol-macrolet */
+    RUN(eval_macrolet_basic);
+    RUN(eval_macrolet_shadow);
+    RUN(eval_macrolet_scope);
+    RUN(eval_macrolet_nested);
+    RUN(eval_macrolet_with_body);
+    RUN(eval_symbol_macrolet_basic);
+    RUN(eval_symbol_macrolet_expr);
+    RUN(eval_symbol_macrolet_setq);
+    RUN(eval_symbol_macrolet_scope);
+    RUN(eval_symbol_macrolet_nested);
+    RUN(eval_symbol_macrolet_multiple);
 
     teardown();
     REPORT();

@@ -99,6 +99,8 @@ extern CL_Obj SYM_UNTRACE;
 extern CL_Obj SYM_TIME;
 extern CL_Obj SYM_IN_PACKAGE;
 extern CL_Obj SYM_STAR_PACKAGE;
+extern CL_Obj SYM_MACROLET;
+extern CL_Obj SYM_SYMBOL_MACROLET;
 
 /* Declaration specifier symbols */
 extern CL_Obj SYM_SPECIAL_DECL;

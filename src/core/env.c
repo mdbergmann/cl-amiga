@@ -12,6 +12,8 @@ CL_CompEnv *cl_env_create(CL_CompEnv *parent)
     env->depth = parent ? parent->depth + 1 : 0;
     env->upvalue_count = 0;
     env->local_fun_count = 0;
+    env->local_macro_count = 0;
+    env->symbol_macro_count = 0;
     return env;
 }
 
@@ -123,6 +125,42 @@ int cl_env_lookup_local_fun(CL_CompEnv *env, CL_Obj name)
         if (env->local_funs[i].name == name) return env->local_funs[i].slot;
     }
     return -1;
+}
+
+int cl_env_add_local_macro(CL_CompEnv *env, CL_Obj name, CL_Obj expander)
+{
+    if (env->local_macro_count >= CL_MAX_LOCAL_MACROS) return -1;
+    env->local_macros[env->local_macro_count].name = name;
+    env->local_macros[env->local_macro_count].expander = expander;
+    return env->local_macro_count++;
+}
+
+CL_Obj cl_env_lookup_local_macro(CL_CompEnv *env, CL_Obj name)
+{
+    int i;
+    for (i = env->local_macro_count - 1; i >= 0; i--) {
+        if (env->local_macros[i].name == name)
+            return env->local_macros[i].expander;
+    }
+    return CL_NIL;
+}
+
+int cl_env_add_symbol_macro(CL_CompEnv *env, CL_Obj name, CL_Obj expansion)
+{
+    if (env->symbol_macro_count >= CL_MAX_SYMBOL_MACROS) return -1;
+    env->symbol_macros[env->symbol_macro_count].name = name;
+    env->symbol_macros[env->symbol_macro_count].expansion = expansion;
+    return env->symbol_macro_count++;
+}
+
+CL_Obj cl_env_lookup_symbol_macro(CL_CompEnv *env, CL_Obj name)
+{
+    int i;
+    for (i = env->symbol_macro_count - 1; i >= 0; i--) {
+        if (env->symbol_macros[i].name == name)
+            return env->symbol_macros[i].expansion;
+    }
+    return CL_NIL;
 }
 
 int cl_env_resolve_fun_upvalue(CL_CompEnv *env, CL_Obj name)

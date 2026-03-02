@@ -476,6 +476,8 @@ static void compile_let(CL_Compiler *c, CL_Obj form, int sequential)
 
 /* --- Setq / Setf --- */
 
+static void compile_setf_place(CL_Compiler *c, CL_Obj place, CL_Obj val_form);
+
 static void compile_setq(CL_Compiler *c, CL_Obj form)
 {
     CL_Obj rest = cl_cdr(form);
@@ -485,6 +487,19 @@ static void compile_setq(CL_Compiler *c, CL_Obj form)
         CL_Obj val = cl_car(cl_cdr(rest));
         int slot;
         int saved_tail = c->in_tail;
+
+        /* Check if var is a symbol macro — rewrite as (setf expansion val) */
+        if (CL_SYMBOL_P(var)) {
+            CL_Obj expansion = cl_env_lookup_symbol_macro(c->env, var);
+            if (!CL_NULL_P(expansion)) {
+                compile_setf_place(c, expansion, val);
+                rest = cl_cdr(cl_cdr(rest));
+                if (!CL_NULL_P(rest)) {
+                    cl_emit(c, OP_POP);
+                }
+                continue;
+            }
+        }
 
         c->in_tail = 0;
         compile_expr(c, val);
@@ -747,6 +762,15 @@ static void compile_symbol(CL_Compiler *c, CL_Obj sym)
         }
     }
 
+    /* Check symbol macros before variable lookup */
+    {
+        CL_Obj expansion = cl_env_lookup_symbol_macro(c->env, sym);
+        if (!CL_NULL_P(expansion)) {
+            compile_expr(c, expansion);
+            return;
+        }
+    }
+
     slot = cl_env_lookup(c->env, sym);
     if (slot >= 0) {
         cl_emit(c, OP_LOAD);
@@ -800,6 +824,28 @@ void compile_expr(CL_Compiler *c, CL_Obj expr)
                     c->line_entry_count++;
                 }
                 c->current_line = line;
+            }
+        }
+
+        /* Check local macros (macrolet) before global macros */
+        if (CL_SYMBOL_P(head)) {
+            CL_Obj local_expander = cl_env_lookup_local_macro(c->env, head);
+            if (!CL_NULL_P(local_expander)) {
+                /* Expand using local macro expander */
+                CL_Obj expanded;
+                CL_Obj arg_array[64];
+                int nargs = 0;
+                CL_Obj args_list = cl_cdr(expr);
+                while (!CL_NULL_P(args_list) && nargs < 64) {
+                    arg_array[nargs++] = cl_car(args_list);
+                    args_list = cl_cdr(args_list);
+                }
+                CL_GC_PROTECT(expr);
+                CL_GC_PROTECT(local_expander);
+                expanded = cl_vm_apply(local_expander, arg_array, nargs);
+                CL_GC_UNPROTECT(2);
+                compile_expr(c, expanded);
+                return;
             }
         }
 
@@ -864,6 +910,8 @@ void compile_expr(CL_Compiler *c, CL_Obj expr)
         if (head == SYM_UNTRACE)     { compile_untrace(c, expr); return; }
         if (head == SYM_TIME)        { compile_time(c, expr); return; }
         if (head == SYM_IN_PACKAGE)  { compile_in_package(c, expr); return; }
+        if (head == SYM_MACROLET)        { compile_macrolet(c, expr); return; }
+        if (head == SYM_SYMBOL_MACROLET) { compile_symbol_macrolet(c, expr); return; }
 
         compile_call(c, expr);
         return;

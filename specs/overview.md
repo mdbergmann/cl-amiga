@@ -86,7 +86,7 @@ Single-pass recursive compiler from S-expressions to bytecode:
 - Macro expansion before compilation
 - Backward jump support for loop forms
 
-**Special forms:** `quote`, `if`, `progn`, `lambda`, `let`, `let*`, `setq`, `setf`, `defun`, `defvar`, `defparameter`, `defmacro`, `function (#')`, `block`, `return-from`, `return`, `and`, `or`, `cond`, `do`, `dolist`, `dotimes`, `case`, `ecase`, `typecase`, `etypecase`, `flet`, `labels`, `tagbody`, `go`, `catch`, `unwind-protect`, `multiple-value-bind`, `multiple-value-list`, `multiple-value-prog1`, `nth-value`, `eval-when`, `destructuring-bind`, `defsetf`, `trace`, `untrace`, `time`, `handler-bind`, `restart-case`, `in-package`
+**Special forms:** `quote`, `if`, `progn`, `lambda`, `let`, `let*`, `setq`, `setf`, `defun`, `defvar`, `defparameter`, `defmacro`, `function (#')`, `block`, `return-from`, `return`, `and`, `or`, `cond`, `do`, `dolist`, `dotimes`, `case`, `ecase`, `typecase`, `etypecase`, `flet`, `labels`, `tagbody`, `go`, `catch`, `unwind-protect`, `multiple-value-bind`, `multiple-value-list`, `multiple-value-prog1`, `nth-value`, `eval-when`, `destructuring-bind`, `defsetf`, `trace`, `untrace`, `time`, `handler-bind`, `restart-case`, `in-package`, `macrolet`, `symbol-macrolet`
 
 **Bootstrap macros:** `when`, `unless`, `prog1`, `prog2`, `push`, `pop`, `incf`, `decf`, `pushnew`, `handler-case`, `ignore-errors`, `with-simple-restart`, `define-condition`, `check-type`, `assert`, `defpackage`, `do-symbols`, `do-external-symbols`
 
@@ -126,6 +126,7 @@ The goal is full ANSI CL compliance, validated by running ASDF (~14K lines of CL
 ### Phase 1: Core Infrastructure ✅
 
 Core infrastructure and interactive environment:
+
 - Tagged pointer type system
 - Arena allocator + mark-and-sweep GC
 - Symbol interning and CL/CL-USER/KEYWORD packages
@@ -141,6 +142,7 @@ Core infrastructure and interactive environment:
 ### Phase 2: Language Foundation ✅
 
 Control flow, closures, macros, iteration:
+
 - [x] Runtime macro expansion (`defmacro` with `cl_vm_apply`)
 - [x] Closures with captured upvalues (flat closure model, value capture)
 - [x] `mapcar`/`funcall`/`apply` with compiled functions and closures
@@ -153,6 +155,7 @@ Control flow, closures, macros, iteration:
 ### Phase 3: Macro Infrastructure ✅
 
 Quasiquote and tooling that makes real macro writing practical:
+
 - [x] Quasiquote (`` ` ``/`,`/`,@`) — reader and expander
 - [x] `gensym` — hygienic macro support
 - [x] File `load` — load .lisp files at runtime
@@ -163,6 +166,7 @@ Quasiquote and tooling that makes real macro writing practical:
 ### Phase 4: Core Language Completeness ✅
 
 Features needed for idiomatic CL programming:
+
 - [x] `&optional`, `&key`, `&allow-other-keys` lambda list support
 - [x] `flet`, `labels` — local function bindings
 - [x] `case`, `ecase`, `typecase`, `etypecase`
@@ -189,6 +193,7 @@ Features needed for idiomatic CL programming:
 ### Phase 5: Standard Library (in progress)
 
 Data structures, sequences, strings, and I/O:
+
 - [x] Character functions (`characterp`, `char=`, `char/=`, `char<`, `char>`, `char<=`, `char>=`, `char-code`, `code-char`, `upper-case-p`, `lower-case-p`, `alpha-char-p`, `digit-char-p`, `char-upcase`, `char-downcase`)
 - [x] Symbol functions (`symbol-name`, `symbol-package`, `fboundp`, `fdefinition`, `make-symbol`, `keywordp`)
 - [x] String operations (`string=`, `string-equal`, `string<`, `string>`, `string<=`, `string>=`, `string-upcase`, `string-downcase`, `string-trim`, `string-left-trim`, `string-right-trim`, `subseq`, `concatenate`, `char`, `schar`, `string`, `parse-integer`, `write-to-string`, `prin1-to-string`, `princ-to-string`)
@@ -211,12 +216,14 @@ Data structures, sequences, strings, and I/O:
 289 host tests (4 suites), ~628 Amiga batch tests — all passing.
 
 **Build improvements:**
+
 - Split builtins.c into 7 modules and compiler.c into 3 modules (stay under vbcc TU size limits)
 - Heap-allocate CL_Compiler structs (CL_Compiler is ~45KB due to tagbody arrays; two nested instances during compile_lambda overflowed the 65KB AmigaOS stack)
 
 ### Phase 6: Control & Error Handling (in progress)
 
 Condition system, packages, and compiler completeness:
+
 - [x] Condition types (`define-condition`, `make-condition`, `conditionp`, condition type hierarchy)
 - [x] Handler binding stack (`handler-bind` special form, `OP_HANDLER_PUSH`/`OP_HANDLER_POP` opcodes)
 - [x] Signaling (`signal`, `warn`, `error` with condition integration)
@@ -231,8 +238,9 @@ Condition system, packages, and compiler completeness:
 - [x] CDR-10 package-local nicknames — `package-local-nicknames`, `add-package-local-nickname`, `remove-package-local-nickname` builtins, `:local-nicknames` in `make-package` and `defpackage`, scoped resolution in `cl_find_package`
 - [x] Interactive debugger — on error, display condition, backtrace, and available restarts; prompt user to select restart or abort; `invoke-debugger`, `break`, `*debugger-hook*`
 
-474 host tests (6 suites), 706 Amiga batch tests — all passing.
-- [ ] `macrolet`, `symbol-macrolet` — local macro bindings (compile-time only, no opcodes)
+474 host tests (6 suites), 714 Amiga batch tests — all passing.
+
+- [x] `macrolet`, `symbol-macrolet` — local macro bindings (compile-time only, no opcodes)
 - [ ] Unused variable warnings with `ignore`/`ignorable` declaration support
 - [ ] `defconstant` — constant variable definitions
 - [ ] `multiple-value-call`, `multiple-value-setq` — MV completeness
@@ -244,6 +252,7 @@ Condition system, packages, and compiler completeness:
 ### Phase 7: I/O & Pathnames
 
 File system integration and stream abstraction:
+
 - [ ] Streams (input/output/bidirectional, string streams, broadcast, concatenated, two-way)
 - [ ] Stream operations (`read-char`, `write-char`, `peek-char`, `unread-char`, `read-line`, `write-string`, `write-line`, `terpri`, `fresh-line`, `finish-output`, `force-output`)
 - [ ] `with-open-file`, `open`, `close`
@@ -367,9 +376,9 @@ cl-amiga/
 │   └── boot.lisp          # Bootstrap macros/functions
 ├── tests/
 │   ├── test.h             # Test framework
-│   ├── test_*.c           # Host test suites (6 files, 457 tests)
+│   ├── test_*.c           # Host test suites (6 files, 485 tests)
 │   └── amiga/
-│       └── run-tests.lisp # AmigaOS batch tests (706 tests)
+│       └── run-tests.lisp # AmigaOS batch tests (714 tests)
 ├── build/                 # Build output (gitignored)
 └── verify/
     └── realamiga/          # FS-UAE config + AmigaOS system image

@@ -129,6 +129,8 @@ void compile_labels(CL_Compiler *c, CL_Obj form);
 void compile_destructuring_bind(CL_Compiler *c, CL_Obj form);
 void compile_handler_bind(CL_Compiler *c, CL_Obj form);
 void compile_restart_case(CL_Compiler *c, CL_Obj form);
+void compile_macrolet(CL_Compiler *c, CL_Obj form);
+void compile_symbol_macrolet(CL_Compiler *c, CL_Obj form);
 
 /* compiler_extra.c */
 void compile_and(CL_Compiler *c, CL_Obj form);
