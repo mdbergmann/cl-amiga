@@ -21,6 +21,9 @@ CL_Obj SETF_HELPER_SF = CL_NIL;
 CL_Obj SETF_SYM_GETHASH = CL_NIL;
 CL_Obj SETF_HELPER_GETHASH = CL_NIL;
 
+/* Global optimization settings */
+CL_OptimizeSettings cl_optimize_settings = {1, 1, 1, 1};
+
 /* --- Code emission --- */
 
 void cl_emit(CL_Compiler *c, uint8_t byte)
@@ -348,6 +351,11 @@ void compile_lambda(CL_Compiler *c, CL_Obj form)
 
 /* --- Let --- */
 
+static int var_is_special(CL_Obj var, CL_Obj local_specials)
+{
+    return cl_symbol_specialp(var) || is_locally_special(var, local_specials);
+}
+
 static void compile_let(CL_Compiler *c, CL_Obj form, int sequential)
 {
     CL_Obj bindings = cl_car(cl_cdr(form));
@@ -356,6 +364,9 @@ static void compile_let(CL_Compiler *c, CL_Obj form, int sequential)
     int saved_local_count = env->local_count;
     int saved_tail = c->in_tail;
     int special_count = 0;
+
+    /* Pre-scan body for (declare (special ...)) to find locally-special vars */
+    CL_Obj local_specials = scan_local_specials(body);
 
     if (sequential) {
         while (!CL_NULL_P(bindings)) {
@@ -373,7 +384,7 @@ static void compile_let(CL_Compiler *c, CL_Obj form, int sequential)
             c->in_tail = 0;
             compile_expr(c, val);
 
-            if (cl_symbol_specialp(var)) {
+            if (var_is_special(var, local_specials)) {
                 int idx = cl_add_constant(c, var);
                 cl_emit(c, OP_DYNBIND);
                 cl_emit_u16(c, (uint16_t)idx);
@@ -413,7 +424,7 @@ static void compile_let(CL_Compiler *c, CL_Obj form, int sequential)
         {
             int lexical_slots[CL_MAX_LOCALS];
             for (i = 0; i < n; i++) {
-                if (cl_symbol_specialp(vars[i])) {
+                if (var_is_special(vars[i], local_specials)) {
                     lexical_slots[i] = -1;
                 } else {
                     lexical_slots[i] = cl_env_add_local(env, vars[i]);
@@ -699,7 +710,8 @@ static void compile_call(CL_Compiler *c, CL_Obj form)
 
 void compile_body(CL_Compiler *c, CL_Obj forms)
 {
-    compile_progn(c, forms);
+    CL_Obj rest = process_body_declarations(c, forms);
+    compile_progn(c, rest);
 }
 
 static void compile_symbol(CL_Compiler *c, CL_Obj sym)
@@ -806,6 +818,12 @@ void compile_expr(CL_Compiler *c, CL_Obj expr)
         if (head == SYM_CATCH)       { compile_catch(c, expr); return; }
         if (head == SYM_UNWIND_PROTECT) { compile_unwind_protect(c, expr); return; }
         if (head == SYM_DESTRUCTURING_BIND) { compile_destructuring_bind(c, expr); return; }
+        if (head == SYM_DECLARE) {
+            cl_error(CL_ERR_GENERAL, "DECLARE is not allowed here -- it must appear at the start of a body form");
+            return;
+        }
+        if (head == SYM_DECLAIM)     { compile_declaim(c, expr); return; }
+        if (head == SYM_LOCALLY)     { compile_locally(c, expr); return; }
 
         compile_call(c, expr);
         return;

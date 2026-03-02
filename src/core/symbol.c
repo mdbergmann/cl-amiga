@@ -58,6 +58,26 @@ CL_Obj SYM_EVAL_WHEN = CL_NIL;
 CL_Obj SYM_DESTRUCTURING_BIND = CL_NIL;
 CL_Obj SYM_DEFSETF = CL_NIL;
 CL_Obj SYM_DEFTYPE = CL_NIL;
+CL_Obj SYM_DECLARE = CL_NIL;
+CL_Obj SYM_DECLAIM = CL_NIL;
+CL_Obj SYM_LOCALLY = CL_NIL;
+
+/* Declaration specifier symbols */
+CL_Obj SYM_SPECIAL_DECL = CL_NIL;
+CL_Obj SYM_TYPE_DECL = CL_NIL;
+CL_Obj SYM_FTYPE_DECL = CL_NIL;
+CL_Obj SYM_INLINE_DECL = CL_NIL;
+CL_Obj SYM_NOTINLINE_DECL = CL_NIL;
+CL_Obj SYM_OPTIMIZE_DECL = CL_NIL;
+CL_Obj SYM_IGNORE_DECL = CL_NIL;
+CL_Obj SYM_IGNORABLE_DECL = CL_NIL;
+CL_Obj SYM_DYNAMIC_EXTENT_DECL = CL_NIL;
+
+/* Optimize quality symbols */
+CL_Obj SYM_SPEED = CL_NIL;
+CL_Obj SYM_SAFETY = CL_NIL;
+CL_Obj SYM_DEBUG = CL_NIL;
+CL_Obj SYM_SPACE = CL_NIL;
 
 /* FNV-1a hash */
 uint32_t cl_hash_string(const char *str, uint32_t len)
@@ -189,6 +209,26 @@ void cl_symbol_init(void)
     SYM_DESTRUCTURING_BIND   = cl_intern_in("DESTRUCTURING-BIND", 18, cl_package_cl);
     SYM_DEFSETF              = cl_intern_in("DEFSETF", 7, cl_package_cl);
     SYM_DEFTYPE              = cl_intern_in("DEFTYPE", 7, cl_package_cl);
+    SYM_DECLARE              = cl_intern_in("DECLARE", 7, cl_package_cl);
+    SYM_DECLAIM              = cl_intern_in("DECLAIM", 7, cl_package_cl);
+    SYM_LOCALLY              = cl_intern_in("LOCALLY", 7, cl_package_cl);
+
+    /* Declaration specifier symbols */
+    SYM_SPECIAL_DECL         = cl_intern_in("SPECIAL", 7, cl_package_cl);
+    SYM_TYPE_DECL            = cl_intern_in("TYPE", 4, cl_package_cl);
+    SYM_FTYPE_DECL           = cl_intern_in("FTYPE", 5, cl_package_cl);
+    SYM_INLINE_DECL          = cl_intern_in("INLINE", 6, cl_package_cl);
+    SYM_NOTINLINE_DECL       = cl_intern_in("NOTINLINE", 9, cl_package_cl);
+    SYM_OPTIMIZE_DECL        = cl_intern_in("OPTIMIZE", 8, cl_package_cl);
+    SYM_IGNORE_DECL          = cl_intern_in("IGNORE", 6, cl_package_cl);
+    SYM_IGNORABLE_DECL       = cl_intern_in("IGNORABLE", 9, cl_package_cl);
+    SYM_DYNAMIC_EXTENT_DECL  = cl_intern_in("DYNAMIC-EXTENT", 14, cl_package_cl);
+
+    /* Optimize quality symbols */
+    SYM_SPEED                = cl_intern_in("SPEED", 5, cl_package_cl);
+    SYM_SAFETY               = cl_intern_in("SAFETY", 6, cl_package_cl);
+    SYM_DEBUG                = cl_intern_in("DEBUG", 5, cl_package_cl);
+    SYM_SPACE                = cl_intern_in("SPACE", 5, cl_package_cl);
 
     /* T is self-evaluating */
     {

@@ -88,5 +88,25 @@ extern CL_Obj SYM_EVAL_WHEN;
 extern CL_Obj SYM_DESTRUCTURING_BIND;
 extern CL_Obj SYM_DEFSETF;
 extern CL_Obj SYM_DEFTYPE;
+extern CL_Obj SYM_DECLARE;
+extern CL_Obj SYM_DECLAIM;
+extern CL_Obj SYM_LOCALLY;
+
+/* Declaration specifier symbols */
+extern CL_Obj SYM_SPECIAL_DECL;
+extern CL_Obj SYM_TYPE_DECL;
+extern CL_Obj SYM_FTYPE_DECL;
+extern CL_Obj SYM_INLINE_DECL;
+extern CL_Obj SYM_NOTINLINE_DECL;
+extern CL_Obj SYM_OPTIMIZE_DECL;
+extern CL_Obj SYM_IGNORE_DECL;
+extern CL_Obj SYM_IGNORABLE_DECL;
+extern CL_Obj SYM_DYNAMIC_EXTENT_DECL;
+
+/* Optimize quality symbols */
+extern CL_Obj SYM_SPEED;
+extern CL_Obj SYM_SAFETY;
+extern CL_Obj SYM_DEBUG;
+extern CL_Obj SYM_SPACE;
 
 #endif /* CL_SYMBOL_H */

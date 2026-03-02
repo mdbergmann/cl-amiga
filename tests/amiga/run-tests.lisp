@@ -872,6 +872,39 @@
 (check "disassemble closure" nil (disassemble (lambda (x) (+ x 1))))
 (check "disassemble builtin" nil (disassemble 'cons))
 
+; --- Declarations: declare, declaim, proclaim, locally ---
+(declaim (special *dcl-x*))
+(setq *dcl-x* 10)
+(defun get-dcl-x () *dcl-x*)
+(check "declaim special" 99 (let ((*dcl-x* 99)) (get-dcl-x)))
+
+(setq *dcl-ds* 10)
+(defun get-dcl-ds () *dcl-ds*)
+(check "declare special let" 42 (let ((*dcl-ds* 42)) (declare (special *dcl-ds*)) (get-dcl-ds)))
+
+(check "declare ignore" 42 (let ((x 1)) (declare (ignore x)) 42))
+(check "declare type" 1 (let ((x 1)) (declare (type fixnum x)) x))
+(check "declaim optimize" nil (declaim (optimize (speed 3))))
+(check "declaim inline" nil (declaim (inline cons)))
+
+(proclaim '(special *dcl-p*))
+(setq *dcl-p* 100)
+(defun get-dcl-p () *dcl-p*)
+(check "proclaim special" 200 (let ((*dcl-p* 200)) (get-dcl-p)))
+
+(check "locally basic" 3 (locally 1 2 3))
+(check "locally declare" 5 (locally (declare (special *dcl-lv*)) (setq *dcl-lv* 5) *dcl-lv*))
+
+(check "declare in lambda" 42 ((lambda (x) (declare (ignore x)) 42) 99))
+
+(declaim (special *dcl-m1*) (special *dcl-m2*))
+(setq *dcl-m1* 1)
+(setq *dcl-m2* 2)
+(defun get-dcl-m1 () *dcl-m1*)
+(defun get-dcl-m2 () *dcl-m2*)
+(check "declaim multi 1" 10 (let ((*dcl-m1* 10)) (get-dcl-m1)))
+(check "declaim multi 2" 20 (let ((*dcl-m2* 20)) (get-dcl-m2)))
+
 ; --- Summary ---
 (format t "~%=== Results ===~%")
 (format t "Passed: ~A~%" *pass-count*)

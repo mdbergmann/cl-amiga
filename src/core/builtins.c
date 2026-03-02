@@ -4,6 +4,7 @@
 #include "mem.h"
 #include "error.h"
 #include "vm.h"
+#include "compiler.h"
 #include "../platform/platform.h"
 #include <string.h>
 
@@ -357,6 +358,15 @@ static CL_Obj bi_funcall(CL_Obj *args, int n)
     return CL_NIL;
 }
 
+/* --- Declarations --- */
+
+static CL_Obj bi_proclaim(CL_Obj *args, int n)
+{
+    CL_UNUSED(n);
+    cl_process_declaration_specifier(args[0]);
+    return CL_NIL;
+}
+
 /* --- Registration --- */
 
 /* Sub-module init functions */
@@ -403,6 +413,9 @@ void cl_builtins_init(void)
     defun("MAPCAR", bi_mapcar, 2, -1);
     defun("APPLY", bi_apply, 2, -1);
     defun("FUNCALL", bi_funcall, 1, -1);
+
+    /* Declarations */
+    defun("PROCLAIM", bi_proclaim, 1, 1);
 
     /* Sub-module builtins */
     cl_builtins_arith_init();

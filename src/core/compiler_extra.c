@@ -829,3 +829,167 @@ void compile_defmacro(CL_Compiler *c, CL_Obj form)
     cl_emit(c, OP_DEFMACRO);
     cl_emit_u16(c, (uint16_t)idx);
 }
+
+/* --- Declaration processing --- */
+
+/* Process a single declaration specifier, applying global side effects.
+ * Used by declaim, proclaim, and declare (for special). */
+void cl_process_declaration_specifier(CL_Obj spec)
+{
+    CL_Obj head;
+
+    if (!CL_CONS_P(spec)) return;
+    head = cl_car(spec);
+
+    if (head == SYM_SPECIAL_DECL) {
+        /* (special var...) — mark each symbol as globally special */
+        CL_Obj vars = cl_cdr(spec);
+        while (!CL_NULL_P(vars)) {
+            CL_Obj var = cl_car(vars);
+            if (CL_SYMBOL_P(var)) {
+                CL_Symbol *s = (CL_Symbol *)CL_OBJ_TO_PTR(var);
+                s->flags |= CL_SYM_SPECIAL;
+            }
+            vars = cl_cdr(vars);
+        }
+    } else if (head == SYM_INLINE_DECL) {
+        /* (inline fn...) — set inline flag */
+        CL_Obj fns = cl_cdr(spec);
+        while (!CL_NULL_P(fns)) {
+            CL_Obj fn = cl_car(fns);
+            if (CL_SYMBOL_P(fn)) {
+                CL_Symbol *s = (CL_Symbol *)CL_OBJ_TO_PTR(fn);
+                s->flags |= CL_SYM_INLINE;
+            }
+            fns = cl_cdr(fns);
+        }
+    } else if (head == SYM_NOTINLINE_DECL) {
+        /* (notinline fn...) — clear inline flag */
+        CL_Obj fns = cl_cdr(spec);
+        while (!CL_NULL_P(fns)) {
+            CL_Obj fn = cl_car(fns);
+            if (CL_SYMBOL_P(fn)) {
+                CL_Symbol *s = (CL_Symbol *)CL_OBJ_TO_PTR(fn);
+                s->flags &= ~CL_SYM_INLINE;
+            }
+            fns = cl_cdr(fns);
+        }
+    } else if (head == SYM_OPTIMIZE_DECL) {
+        /* (optimize (speed 3) (safety 1) ...) or (optimize speed) */
+        CL_Obj quals = cl_cdr(spec);
+        while (!CL_NULL_P(quals)) {
+            CL_Obj q = cl_car(quals);
+            CL_Obj name;
+            int val = 3; /* bare name means 3 per CL spec */
+            if (CL_CONS_P(q)) {
+                name = cl_car(q);
+                if (!CL_NULL_P(cl_cdr(q)) && CL_FIXNUM_P(cl_car(cl_cdr(q))))
+                    val = CL_FIXNUM_VAL(cl_car(cl_cdr(q)));
+            } else {
+                name = q;
+            }
+            if (val < 0) val = 0;
+            if (val > 3) val = 3;
+            if (name == SYM_SPEED) cl_optimize_settings.speed = (uint8_t)val;
+            else if (name == SYM_SAFETY) cl_optimize_settings.safety = (uint8_t)val;
+            else if (name == SYM_DEBUG) cl_optimize_settings.debug = (uint8_t)val;
+            else if (name == SYM_SPACE) cl_optimize_settings.space = (uint8_t)val;
+            quals = cl_cdr(quals);
+        }
+    }
+    /* type, ftype, ignore, ignorable, dynamic-extent — no-op for now */
+}
+
+/* Scan body for (declare (special ...)) forms and return a list of
+ * locally-special variable symbols. Does NOT consume the forms. */
+CL_Obj scan_local_specials(CL_Obj body)
+{
+    CL_Obj result = CL_NIL;
+    CL_Obj forms = body;
+
+    while (!CL_NULL_P(forms)) {
+        CL_Obj form = cl_car(forms);
+
+        /* Stop at first non-declare form */
+        if (!CL_CONS_P(form) || cl_car(form) != SYM_DECLARE)
+            break;
+
+        /* Walk each specifier in (declare spec1 spec2 ...) */
+        {
+            CL_Obj specs = cl_cdr(form);
+            while (!CL_NULL_P(specs)) {
+                CL_Obj spec = cl_car(specs);
+                if (CL_CONS_P(spec) && cl_car(spec) == SYM_SPECIAL_DECL) {
+                    CL_Obj vars = cl_cdr(spec);
+                    while (!CL_NULL_P(vars)) {
+                        result = cl_cons(cl_car(vars), result);
+                        vars = cl_cdr(vars);
+                    }
+                }
+                specs = cl_cdr(specs);
+            }
+        }
+        forms = cl_cdr(forms);
+    }
+    return result;
+}
+
+/* Check if a variable is in the locally-special list */
+int is_locally_special(CL_Obj var, CL_Obj local_specials)
+{
+    CL_Obj list = local_specials;
+    while (!CL_NULL_P(list)) {
+        if (cl_car(list) == var) return 1;
+        list = cl_cdr(list);
+    }
+    return 0;
+}
+
+/* Strip leading (declare ...) forms from body, processing their specifiers.
+ * Returns the remaining body forms (first non-declare form onward). */
+CL_Obj process_body_declarations(CL_Compiler *c, CL_Obj body)
+{
+    CL_Obj forms = body;
+    CL_UNUSED(c);
+
+    while (!CL_NULL_P(forms)) {
+        CL_Obj form = cl_car(forms);
+
+        /* Stop at first non-declare form */
+        if (!CL_CONS_P(form) || cl_car(form) != SYM_DECLARE)
+            break;
+
+        /* Process each specifier */
+        {
+            CL_Obj specs = cl_cdr(form);
+            while (!CL_NULL_P(specs)) {
+                cl_process_declaration_specifier(cl_car(specs));
+                specs = cl_cdr(specs);
+            }
+        }
+        forms = cl_cdr(forms);
+    }
+    return forms;
+}
+
+/* --- Declaim --- */
+
+void compile_declaim(CL_Compiler *c, CL_Obj form)
+{
+    /* (declaim decl-spec ...) — process each globally, emit NIL */
+    CL_Obj specs = cl_cdr(form);
+    while (!CL_NULL_P(specs)) {
+        cl_process_declaration_specifier(cl_car(specs));
+        specs = cl_cdr(specs);
+    }
+    cl_emit(c, OP_NIL);
+}
+
+/* --- Locally --- */
+
+void compile_locally(CL_Compiler *c, CL_Obj form)
+{
+    /* (locally (declare ...) body...) */
+    CL_Obj body = cl_cdr(form);
+    compile_body(c, body);
+}

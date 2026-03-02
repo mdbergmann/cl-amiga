@@ -197,7 +197,7 @@ Data structures, sequences, strings, and I/O:
 - [x] Array operations (`vector`, `array-dimensions`, `array-rank`, `fill`, `replace`)
 - [x] Type predicates (`typep`, `coerce`)
 - [x] Advanced types (`deftype`, `subtypep`, compound type specifiers)
-- [ ] `declare`, `declaim`, `proclaim` — declarations
+- [x] `declare`, `declaim`, `proclaim`, `locally` — declarations
 - [x] `disassemble` — print bytecode disassembly of compiled functions
 - [ ] `trace`, `untrace` — function call tracing for debugging
 - [ ] Stack traces on error — walk VM call frames, print function names and call chain

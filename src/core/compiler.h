@@ -35,4 +35,17 @@ CL_Obj cl_macroexpand_1(CL_Obj form);
 void cl_register_type(CL_Obj name, CL_Obj expander);
 CL_Obj cl_get_type_expander(CL_Obj name);
 
+/* Optimization settings (used by (declare (optimize ...))) */
+typedef struct {
+    uint8_t speed;   /* 0-3, default 1 */
+    uint8_t safety;  /* 0-3, default 1 */
+    uint8_t debug;   /* 0-3, default 1 */
+    uint8_t space;   /* 0-3, default 1 */
+} CL_OptimizeSettings;
+
+extern CL_OptimizeSettings cl_optimize_settings;
+
+/* Process a single declaration specifier (for proclaim/declaim) */
+void cl_process_declaration_specifier(CL_Obj spec);
+
 #endif /* CL_COMPILER_H */

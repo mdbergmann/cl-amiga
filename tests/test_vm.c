@@ -2177,6 +2177,109 @@ TEST(eval_disassemble_unbound)
     ASSERT_STR_EQ(eval_print("(disassemble 'no-such-function-xyz)"), "ERROR:8");
 }
 
+/* --- Declarations: declare, declaim, proclaim, locally --- */
+
+TEST(eval_declaim_special)
+{
+    /* declaim marks a variable as globally special */
+    eval_print("(declaim (special *decl-x*))");
+    eval_print("(setq *decl-x* 10)");
+    /* A function should see the dynamic binding */
+    eval_print("(defun get-decl-x () *decl-x*)");
+    ASSERT_EQ_INT(eval_int("(let ((*decl-x* 99)) (get-decl-x))"), 99);
+}
+
+TEST(eval_declare_special_let)
+{
+    /* Local declare special in let body — forces dynamic binding */
+    eval_print("(setq *ds-var* 10)");
+    eval_print("(defun get-ds-var () *ds-var*)");
+    ASSERT_EQ_INT(eval_int(
+        "(let ((*ds-var* 42)) (declare (special *ds-var*)) (get-ds-var))"), 42);
+}
+
+TEST(eval_declare_special_letstar)
+{
+    /* Local declare special in let* body */
+    eval_print("(setq *ds-var2* 10)");
+    eval_print("(defun get-ds-var2 () *ds-var2*)");
+    ASSERT_EQ_INT(eval_int(
+        "(let* ((*ds-var2* 55)) (declare (special *ds-var2*)) (get-ds-var2))"), 55);
+}
+
+TEST(eval_declare_ignore)
+{
+    /* (declare (ignore x)) accepted without error */
+    ASSERT_EQ_INT(eval_int("(let ((x 1)) (declare (ignore x)) 42)"), 42);
+}
+
+TEST(eval_declare_type)
+{
+    /* (declare (type fixnum x)) accepted without error */
+    ASSERT_EQ_INT(eval_int("(let ((x 1)) (declare (type fixnum x)) x)"), 1);
+}
+
+TEST(eval_declaim_optimize)
+{
+    /* (declaim (optimize (speed 3))) accepted without error */
+    ASSERT_STR_EQ(eval_print("(declaim (optimize (speed 3)))"), "NIL");
+}
+
+TEST(eval_declaim_inline)
+{
+    /* (declaim (inline foo)) accepted without error */
+    ASSERT_STR_EQ(eval_print("(declaim (inline cons))"), "NIL");
+}
+
+TEST(eval_proclaim_special)
+{
+    /* (proclaim '(special *proc-var*)) — runtime special declaration */
+    eval_print("(proclaim '(special *proc-var*))");
+    eval_print("(setq *proc-var* 100)");
+    eval_print("(defun get-proc-var () *proc-var*)");
+    ASSERT_EQ_INT(eval_int("(let ((*proc-var* 200)) (get-proc-var))"), 200);
+}
+
+TEST(eval_locally_basic)
+{
+    /* (locally body...) — evaluates body, returns last value */
+    ASSERT_EQ_INT(eval_int("(locally 1 2 3)"), 3);
+}
+
+TEST(eval_locally_declare)
+{
+    /* (locally (declare (special *loc-var*)) ...) */
+    eval_print("(setq *loc-var* 5)");
+    eval_print("(defun get-loc-var () *loc-var*)");
+    ASSERT_EQ_INT(eval_int("(locally (declare (special *loc-var*)) *loc-var*)"), 5);
+}
+
+TEST(eval_declare_misplaced)
+{
+    /* declare at top level should error */
+    ASSERT_STR_EQ(eval_print("(declare (special x))"), "ERROR:1");
+}
+
+TEST(eval_declare_in_lambda)
+{
+    /* declare in lambda body */
+    ASSERT_EQ_INT(eval_int(
+        "((lambda (x) (declare (ignore x)) 42) 99)"), 42);
+}
+
+TEST(eval_declaim_multiple)
+{
+    /* declaim with multiple specifiers */
+    ASSERT_STR_EQ(eval_print(
+        "(declaim (special *dm1*) (special *dm2*))"), "NIL");
+    eval_print("(setq *dm1* 1)");
+    eval_print("(setq *dm2* 2)");
+    eval_print("(defun get-dm1 () *dm1*)");
+    eval_print("(defun get-dm2 () *dm2*)");
+    ASSERT_EQ_INT(eval_int("(let ((*dm1* 10)) (get-dm1))"), 10);
+    ASSERT_EQ_INT(eval_int("(let ((*dm2* 20)) (get-dm2))"), 20);
+}
+
 int main(void)
 {
     test_init();
@@ -2454,6 +2557,21 @@ int main(void)
     RUN(eval_disassemble_closure);
     RUN(eval_disassemble_builtin);
     RUN(eval_disassemble_unbound);
+
+    /* Phase 5 — Declarations */
+    RUN(eval_declaim_special);
+    RUN(eval_declare_special_let);
+    RUN(eval_declare_special_letstar);
+    RUN(eval_declare_ignore);
+    RUN(eval_declare_type);
+    RUN(eval_declaim_optimize);
+    RUN(eval_declaim_inline);
+    RUN(eval_proclaim_special);
+    RUN(eval_locally_basic);
+    RUN(eval_locally_declare);
+    RUN(eval_declare_misplaced);
+    RUN(eval_declare_in_lambda);
+    RUN(eval_declaim_multiple);
 
     teardown();
     REPORT();

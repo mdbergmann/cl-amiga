@@ -137,5 +137,12 @@ void compile_defvar(CL_Compiler *c, CL_Obj form);
 void compile_defparameter(CL_Compiler *c, CL_Obj form);
 void compile_defun(CL_Compiler *c, CL_Obj form);
 void compile_defmacro(CL_Compiler *c, CL_Obj form);
+void compile_declaim(CL_Compiler *c, CL_Obj form);
+void compile_locally(CL_Compiler *c, CL_Obj form);
+
+/* Declaration processing helpers */
+CL_Obj process_body_declarations(CL_Compiler *c, CL_Obj body);
+CL_Obj scan_local_specials(CL_Obj body);
+int is_locally_special(CL_Obj var, CL_Obj local_specials);
 
 #endif /* COMPILER_INTERNAL_H */
