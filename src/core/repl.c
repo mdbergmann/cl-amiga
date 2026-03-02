@@ -26,9 +26,15 @@ static void load_boot_file(void)
         char *buf = platform_file_read(paths[i], &size);
         if (buf) {
             CL_ReadStream stream;
+            const char *prev_file = cl_current_source_file;
+            uint16_t prev_file_id = cl_current_file_id;
+            cl_current_source_file = paths[i];
+            cl_current_file_id++;
+
             stream.buf = buf;
             stream.pos = 0;
             stream.len = (int)size;
+            stream.line = 1;
 
             for (;;) {
                 CL_Obj expr, bytecode;
@@ -50,6 +56,8 @@ static void load_boot_file(void)
                 }
             }
 
+            cl_current_source_file = prev_file;
+            cl_current_file_id = prev_file_id;
             platform_free(buf);
             return;  /* Loaded successfully, stop trying */
         }
@@ -65,6 +73,7 @@ CL_Obj cl_eval_string(const char *str)
     stream.buf = str;
     stream.pos = 0;
     stream.len = (int)strlen(str);
+    stream.line = 1;
 
     expr = cl_read_from_string(&stream);
     if (CL_NULL_P(expr)) return CL_NIL;

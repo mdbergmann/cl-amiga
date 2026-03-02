@@ -2450,6 +2450,84 @@ TEST(eval_backtrace_empty)
     cl_vm.fp = 0;
 }
 
+/* --- Time --- */
+
+TEST(eval_time_basic)
+{
+    /* (time expr) should return the value of expr */
+    ASSERT_STR_EQ(eval_print("(time (+ 1 2))"), "3");
+}
+
+TEST(eval_time_nested)
+{
+    /* time can be nested in other forms */
+    ASSERT_STR_EQ(eval_print("(+ 10 (time (* 3 4)))"), "22");
+}
+
+TEST(eval_time_defun)
+{
+    /* time works with function calls */
+    cl_eval_string("(defun time-test (x) (* x x))");
+    ASSERT_STR_EQ(eval_print("(time (time-test 5))"), "25");
+}
+
+TEST(eval_get_internal_real_time)
+{
+    /* get-internal-real-time returns a fixnum */
+    ASSERT_STR_EQ(eval_print("(integerp (get-internal-real-time))"), "T");
+}
+
+/* --- Source location tracking --- */
+
+TEST(eval_srcloc_load_backtrace)
+{
+    /* Errors in loaded files show file:line in backtrace */
+    int err;
+    cl_vm.sp = 0;
+    cl_vm.fp = 0;
+
+    err = CL_CATCH();
+    if (err == CL_ERR_NONE) {
+        cl_eval_string("(load \"tests/test_srcloc.lisp\")");
+        CL_UNCATCH();
+    } else {
+        CL_UNCATCH();
+    }
+    /* Check backtrace contains file and line info */
+    ASSERT(strstr(cl_backtrace_buf, "test_srcloc.lisp") != NULL);
+    ASSERT(strstr(cl_backtrace_buf, "SRCLOC-FAIL") != NULL);
+    cl_vm.sp = 0;
+    cl_vm.fp = 0;
+}
+
+TEST(eval_srcloc_reader_line)
+{
+    /* Reader tracks line numbers in string streams */
+    CL_ReadStream stream;
+    CL_Obj expr;
+    int line;
+
+    stream.buf = "(foo)\n(bar)\n(baz)";
+    stream.pos = 0;
+    stream.len = 17;
+    stream.line = 1;
+
+    expr = cl_read_from_string(&stream);
+    /* First expression starts at line 1 */
+    line = cl_srcloc_lookup(expr);
+    ASSERT_EQ_INT(line, 1);
+
+    expr = cl_read_from_string(&stream);
+    /* Second expression starts at line 2 */
+    line = cl_srcloc_lookup(expr);
+    ASSERT_EQ_INT(line, 2);
+
+    expr = cl_read_from_string(&stream);
+    /* Third expression starts at line 3 */
+    line = cl_srcloc_lookup(expr);
+    ASSERT_EQ_INT(line, 3);
+}
+
 int main(void)
 {
     test_init();
@@ -2758,6 +2836,12 @@ int main(void)
     RUN(eval_backtrace_recursive);
     RUN(eval_backtrace_uwprot);
     RUN(eval_backtrace_empty);
+    RUN(eval_time_basic);
+    RUN(eval_time_nested);
+    RUN(eval_time_defun);
+    RUN(eval_get_internal_real_time);
+    RUN(eval_srcloc_load_backtrace);
+    RUN(eval_srcloc_reader_line);
 
     teardown();
     REPORT();

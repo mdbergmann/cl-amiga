@@ -88,6 +88,14 @@ char *platform_file_read(const char *path, unsigned long *size_out)
     return buf;
 }
 
+uint32_t platform_time_ms(void)
+{
+    struct DateStamp ds;
+    DateStamp(&ds);
+    /* ds_Minute: minutes since midnight, ds_Tick: 1/50s ticks since last minute */
+    return (uint32_t)(ds.ds_Minute * 60000UL + ds.ds_Tick * 20UL);
+}
+
 void platform_init(void)
 {
     /* Nothing needed — dos.library is auto-opened by vbcc startup */

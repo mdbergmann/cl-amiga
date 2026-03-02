@@ -93,6 +93,7 @@ extern CL_Obj SYM_DECLAIM;
 extern CL_Obj SYM_LOCALLY;
 extern CL_Obj SYM_TRACE;
 extern CL_Obj SYM_UNTRACE;
+extern CL_Obj SYM_TIME;
 
 /* Declaration specifier symbols */
 extern CL_Obj SYM_SPECIAL_DECL;

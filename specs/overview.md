@@ -85,13 +85,13 @@ Single-pass recursive compiler from S-expressions to bytecode:
 - Macro expansion before compilation
 - Backward jump support for loop forms
 
-**Special forms:** `quote`, `if`, `progn`, `lambda`, `let`, `let*`, `setq`, `setf`, `defun`, `defvar`, `defparameter`, `defmacro`, `function (#')`, `block`, `return-from`, `return`, `and`, `or`, `cond`, `do`, `dolist`, `dotimes`, `case`, `ecase`, `typecase`, `etypecase`, `flet`, `labels`, `tagbody`, `go`, `catch`, `unwind-protect`, `multiple-value-bind`, `multiple-value-list`, `multiple-value-prog1`, `nth-value`, `eval-when`, `destructuring-bind`, `defsetf`, `trace`, `untrace`
+**Special forms:** `quote`, `if`, `progn`, `lambda`, `let`, `let*`, `setq`, `setf`, `defun`, `defvar`, `defparameter`, `defmacro`, `function (#')`, `block`, `return-from`, `return`, `and`, `or`, `cond`, `do`, `dolist`, `dotimes`, `case`, `ecase`, `typecase`, `etypecase`, `flet`, `labels`, `tagbody`, `go`, `catch`, `unwind-protect`, `multiple-value-bind`, `multiple-value-list`, `multiple-value-prog1`, `nth-value`, `eval-when`, `destructuring-bind`, `defsetf`, `trace`, `untrace`, `time`
 
 **Bootstrap macros:** `when`, `unless`, `prog1`, `prog2`, `push`, `pop`, `incf`, `decf`, `pushnew`
 
 **Bootstrap functions:** `cadr`, `caar`, `cdar`, `cddr`, `caddr`, `cadar`, `identity`, `endp`, `member`, `intersection`, `union`, `set-difference`, `subsetp`
 
-## Built-in Functions (178 functions)
+## Built-in Functions (181 functions)
 
 | Category | Functions |
 |----------|-----------|
@@ -113,6 +113,7 @@ Single-pass recursive compiler from S-expressions to bytecode:
 | Control | `throw` `values` `values-list` `error` |
 | Hash tables | `make-hash-table` `gethash` `remhash` `maphash` `clrhash` `hash-table-count` `hash-table-p` |
 | Type system | `typep` `coerce` |
+| Timing | `get-internal-real-time` |
 | Misc | `type-of` `gensym` |
 
 ## Implementation Roadmap
@@ -201,10 +202,10 @@ Data structures, sequences, strings, and I/O:
 - [x] `disassemble` — print bytecode disassembly of compiled functions
 - [x] `trace`, `untrace` — function call tracing for debugging
 - [x] Stack traces on error — walk VM call frames, print function names and call chain
-- [ ] Source location tracking — reader tracks line numbers, compiler attaches to bytecode, errors include file:line context
-- [ ] `time` — macro to measure and print execution time of an expression
+- [x] Source location tracking — reader tracks line numbers, compiler attaches to bytecode, errors include file:line context
+- [x] `time` — macro to measure and print execution time of an expression
 
-283 host tests (4 suites), ~618 Amiga batch tests — all passing.
+289 host tests (4 suites), ~628 Amiga batch tests — all passing.
 
 **Build improvements:**
 - Split builtins.c into 7 modules and compiler.c into 3 modules (stay under vbcc TU size limits)

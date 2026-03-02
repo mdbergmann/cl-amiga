@@ -93,6 +93,8 @@ static CL_Obj bi_load(CL_Obj *args, int n)
     unsigned long size;
     CL_ReadStream stream;
     CL_Obj expr, bytecode;
+    const char *prev_file;
+    uint16_t prev_file_id;
 
     CL_UNUSED(n);
     if (!CL_STRING_P(args[0]))
@@ -103,9 +105,16 @@ static CL_Obj bi_load(CL_Obj *args, int n)
     if (!buf)
         cl_error(CL_ERR_GENERAL, "LOAD: cannot open file");
 
+    /* Save and set source file context */
+    prev_file = cl_current_source_file;
+    prev_file_id = cl_current_file_id;
+    cl_current_source_file = path_str->data;
+    cl_current_file_id++;
+
     stream.buf = buf;
     stream.pos = 0;
     stream.len = (int)size;
+    stream.line = 1;
 
     for (;;) {
         int err;
@@ -126,6 +135,10 @@ static CL_Obj bi_load(CL_Obj *args, int n)
             CL_UNCATCH();
         }
     }
+
+    /* Restore source file context */
+    cl_current_source_file = prev_file;
+    cl_current_file_id = prev_file_id;
 
     platform_free(buf);
     return SYM_T;
@@ -498,6 +511,35 @@ static CL_Obj bi_disassemble(CL_Obj *args, int n)
     return CL_NIL;
 }
 
+/* --- Timing --- */
+
+static CL_Obj bi_get_internal_time(CL_Obj *args, int n)
+{
+    CL_UNUSED(args); CL_UNUSED(n);
+    return CL_MAKE_FIXNUM((int32_t)(platform_time_ms() & 0x7FFFFFFF));
+}
+
+static CL_Obj bi_time_report(CL_Obj *args, int n)
+{
+    uint32_t start, end, elapsed;
+    char buf[80];
+    CL_UNUSED(n);
+    if (!CL_FIXNUM_P(args[0]))
+        cl_error(CL_ERR_TYPE, "%%TIME-REPORT: expected fixnum");
+    start = (uint32_t)CL_FIXNUM_VAL(args[0]);
+    end = platform_time_ms() & 0x7FFFFFFF;
+    elapsed = (end >= start) ? (end - start) : ((0x7FFFFFFF - start) + end + 1);
+    snprintf(buf, sizeof(buf), "Evaluation took %lu ms.\n", (unsigned long)elapsed);
+    platform_write_string(buf);
+    return CL_NIL;
+}
+
+static CL_Obj bi_get_internal_real_time(CL_Obj *args, int n)
+{
+    CL_UNUSED(args); CL_UNUSED(n);
+    return CL_MAKE_FIXNUM((int32_t)(platform_time_ms() & 0x7FFFFFFF));
+}
+
 /* --- Registration --- */
 
 void cl_builtins_io_init(void)
@@ -528,4 +570,9 @@ void cl_builtins_io_init(void)
 
     /* Debugging */
     defun("DISASSEMBLE", bi_disassemble, 1, 1);
+
+    /* Timing (internal helpers for TIME special form) */
+    defun("%GET-INTERNAL-TIME", bi_get_internal_time, 0, 0);
+    defun("%TIME-REPORT", bi_time_report, 1, 1);
+    defun("GET-INTERNAL-REAL-TIME", bi_get_internal_real_time, 0, 0);
 }

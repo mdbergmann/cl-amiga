@@ -218,6 +218,34 @@ static void trace_print_exit(CL_Obj name_sym, CL_Obj result)
 
 /* --- Backtrace capture --- */
 
+/* Look up source line for a given IP in a bytecode's line map.
+ * Returns 0 if no mapping found. Uses binary-like scan (entries sorted by pc). */
+static int lookup_source_line(CL_Bytecode *bc, uint32_t ip)
+{
+    int i, best_line = 0;
+    if (!bc->line_map || bc->line_map_count == 0) return 0;
+    for (i = 0; i < bc->line_map_count; i++) {
+        if (bc->line_map[i].pc <= ip)
+            best_line = bc->line_map[i].line;
+        else
+            break;
+    }
+    return best_line;
+}
+
+static CL_Bytecode *get_frame_bytecode(CL_Frame *f)
+{
+    CL_Obj bc_obj = f->bytecode;
+    if (CL_BYTECODE_P(bc_obj))
+        return (CL_Bytecode *)CL_OBJ_TO_PTR(bc_obj);
+    if (CL_CLOSURE_P(bc_obj)) {
+        CL_Closure *cl = (CL_Closure *)CL_OBJ_TO_PTR(bc_obj);
+        if (CL_BYTECODE_P(cl->bytecode))
+            return (CL_Bytecode *)CL_OBJ_TO_PTR(cl->bytecode);
+    }
+    return NULL;
+}
+
 void cl_capture_backtrace(void)
 {
     int i, pos = 0;
@@ -230,7 +258,15 @@ void cl_capture_backtrace(void)
     for (i = cl_vm.fp - 1; i >= 0 && depth < max_show; i--, depth++) {
         CL_Frame *f = &cl_vm.frames[i];
         CL_Obj name = get_func_name(f->bytecode);
+        CL_Bytecode *bc = get_frame_bytecode(f);
+        int line = 0;
+        const char *file = NULL;
         int n;
+
+        if (bc) {
+            line = lookup_source_line(bc, f->ip);
+            file = bc->source_file;
+        }
 
         n = snprintf(cl_backtrace_buf + pos,
                      CL_BACKTRACE_BUF_SIZE - pos, "  %d: ", depth);
@@ -238,13 +274,33 @@ void cl_capture_backtrace(void)
         if (pos >= CL_BACKTRACE_BUF_SIZE - 1) break;
 
         if (!CL_NULL_P(name) && CL_SYMBOL_P(name)) {
-            n = snprintf(cl_backtrace_buf + pos,
-                         CL_BACKTRACE_BUF_SIZE - pos,
-                         "%s\n", cl_symbol_name(name));
+            if (file && line > 0) {
+                n = snprintf(cl_backtrace_buf + pos,
+                             CL_BACKTRACE_BUF_SIZE - pos,
+                             "%s (%s:%d)\n", cl_symbol_name(name), file, line);
+            } else if (line > 0) {
+                n = snprintf(cl_backtrace_buf + pos,
+                             CL_BACKTRACE_BUF_SIZE - pos,
+                             "%s (line %d)\n", cl_symbol_name(name), line);
+            } else {
+                n = snprintf(cl_backtrace_buf + pos,
+                             CL_BACKTRACE_BUF_SIZE - pos,
+                             "%s\n", cl_symbol_name(name));
+            }
         } else {
-            n = snprintf(cl_backtrace_buf + pos,
-                         CL_BACKTRACE_BUF_SIZE - pos,
-                         "<anonymous>\n");
+            if (file && line > 0) {
+                n = snprintf(cl_backtrace_buf + pos,
+                             CL_BACKTRACE_BUF_SIZE - pos,
+                             "<anonymous> (%s:%d)\n", file, line);
+            } else if (line > 0) {
+                n = snprintf(cl_backtrace_buf + pos,
+                             CL_BACKTRACE_BUF_SIZE - pos,
+                             "<anonymous> (line %d)\n", line);
+            } else {
+                n = snprintf(cl_backtrace_buf + pos,
+                             CL_BACKTRACE_BUF_SIZE - pos,
+                             "<anonymous>\n");
+            }
         }
         pos += n;
         if (pos >= CL_BACKTRACE_BUF_SIZE - 1) break;

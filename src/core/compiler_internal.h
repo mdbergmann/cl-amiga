@@ -14,6 +14,7 @@
 #include "mem.h"
 #include "error.h"
 #include "vm.h"
+#include "reader.h"
 #include "../platform/platform.h"
 #include <string.h>
 
@@ -43,6 +44,9 @@ typedef struct {
     int n_tags;
 } CL_TagbodyInfo;
 
+/* Source line map tracking during compilation */
+#define CL_MAX_LINE_ENTRIES 256
+
 /* Compiler state */
 typedef struct {
     uint8_t code[CL_MAX_CODE_SIZE];
@@ -55,6 +59,10 @@ typedef struct {
     int block_count;
     CL_TagbodyInfo tagbodies[CL_MAX_BLOCKS];
     int tagbody_count;
+    /* Source location tracking */
+    CL_LineEntry line_entries[CL_MAX_LINE_ENTRIES];
+    int line_entry_count;
+    int current_line;   /* Current source line being compiled */
 } CL_Compiler;
 
 /* Parsed lambda list structure */
@@ -142,6 +150,7 @@ void compile_declaim(CL_Compiler *c, CL_Obj form);
 void compile_locally(CL_Compiler *c, CL_Obj form);
 void compile_trace(CL_Compiler *c, CL_Obj form);
 void compile_untrace(CL_Compiler *c, CL_Obj form);
+void compile_time(CL_Compiler *c, CL_Obj form);
 
 /* Declaration processing helpers */
 CL_Obj process_body_declarations(CL_Compiler *c, CL_Obj body);

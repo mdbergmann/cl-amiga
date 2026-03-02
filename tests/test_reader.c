@@ -32,6 +32,7 @@ static CL_Obj reads(const char *str)
     stream.buf = str;
     stream.pos = 0;
     stream.len = (int)strlen(str);
+    stream.line = 1;
     return cl_read_from_string(&stream);
 }
 

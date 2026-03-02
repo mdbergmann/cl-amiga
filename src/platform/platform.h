@@ -8,6 +8,7 @@
  */
 
 #include <stddef.h>
+#include <stdint.h>
 
 /* Suppress unused-parameter warnings portably.
  * vbcc warns on (void)x ("statement has no effect", warning 153),
@@ -30,6 +31,9 @@ void  platform_ungetchar(int ch);
 
 /* File I/O */
 char *platform_file_read(const char *path, unsigned long *size_out);
+
+/* Timing */
+uint32_t platform_time_ms(void);   /* Monotonic milliseconds (for elapsed time) */
 
 /* Lifecycle */
 void  platform_init(void);

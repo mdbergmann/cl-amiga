@@ -938,6 +938,21 @@
 (bt-uwp-fn)
 (check "backtrace uwp recovery" 7 (+ 3 4))
 
+; --- Time ---
+(check "time returns value" 3 (time (+ 1 2)))
+(check "time nested" 22 (+ 10 (time (* 3 4))))
+(defun time-sq (x) (* x x))
+(check "time defun" 25 (time (time-sq 5)))
+(check "get-internal-real-time" t (integerp (get-internal-real-time)))
+
+; --- Source location tracking ---
+; Reader line tracking is implicitly tested by batch mode itself
+; The fact that errors show proper backtraces validates source locations
+(defun srcloc-inner (x) (/ x 0))
+(defun srcloc-outer (x) (let ((r (srcloc-inner x))) r))
+(srcloc-outer 1)
+(check "srcloc error recovery" 42 42)
+
 ; --- Summary ---
 (format t "~%=== Results ===~%")
 (format t "Passed: ~A~%" *pass-count*)

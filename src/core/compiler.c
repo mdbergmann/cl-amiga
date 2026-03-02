@@ -338,6 +338,22 @@ void compile_lambda(CL_Compiler *c, CL_Obj form)
         bc->key_slots = NULL;
     }
 
+    /* Transfer source line map */
+    if (inner->line_entry_count > 0) {
+        bc->line_map = (CL_LineEntry *)platform_alloc(
+            inner->line_entry_count * sizeof(CL_LineEntry));
+        if (bc->line_map) {
+            for (i = 0; i < inner->line_entry_count; i++)
+                bc->line_map[i] = inner->line_entries[i];
+        }
+        bc->line_map_count = (uint16_t)inner->line_entry_count;
+    } else {
+        bc->line_map = NULL;
+        bc->line_map_count = 0;
+    }
+    bc->source_line = (uint16_t)c->current_line;
+    bc->source_file = cl_current_source_file;
+
     const_idx = cl_add_constant(c, CL_PTR_TO_OBJ(bc));
     cl_emit(c, OP_CLOSURE);
     cl_emit_u16(c, (uint16_t)const_idx);
@@ -771,6 +787,22 @@ void compile_expr(CL_Compiler *c, CL_Obj expr)
     if (CL_CONS_P(expr)) {
         CL_Obj head = cl_car(expr);
 
+        /* Record source location for this expression */
+        {
+            int line = cl_srcloc_lookup(expr);
+            if (line > 0 && c->line_entry_count < CL_MAX_LINE_ENTRIES) {
+                int last = c->line_entry_count - 1;
+                /* Only add if different from last entry */
+                if (last < 0 || c->line_entries[last].line != (uint16_t)line
+                             || c->line_entries[last].pc != (uint16_t)c->code_pos) {
+                    c->line_entries[c->line_entry_count].pc = (uint16_t)c->code_pos;
+                    c->line_entries[c->line_entry_count].line = (uint16_t)line;
+                    c->line_entry_count++;
+                }
+                c->current_line = line;
+            }
+        }
+
         if (CL_SYMBOL_P(head) && cl_macro_p(head)) {
             CL_Obj expanded = cl_macroexpand_1(expr);
             compile_expr(c, expanded);
@@ -828,6 +860,7 @@ void compile_expr(CL_Compiler *c, CL_Obj expr)
         if (head == SYM_LOCALLY)     { compile_locally(c, expr); return; }
         if (head == SYM_TRACE)       { compile_trace(c, expr); return; }
         if (head == SYM_UNTRACE)     { compile_untrace(c, expr); return; }
+        if (head == SYM_TIME)        { compile_time(c, expr); return; }
 
         compile_call(c, expr);
         return;
@@ -968,6 +1001,23 @@ CL_Obj cl_compile(CL_Obj expr)
     bc->n_keys = 0;
     bc->key_syms = NULL;
     bc->key_slots = NULL;
+
+    /* Transfer source line map */
+    if (comp->line_entry_count > 0) {
+        int i;
+        bc->line_map = (CL_LineEntry *)platform_alloc(
+            comp->line_entry_count * sizeof(CL_LineEntry));
+        if (bc->line_map) {
+            for (i = 0; i < comp->line_entry_count; i++)
+                bc->line_map[i] = comp->line_entries[i];
+        }
+        bc->line_map_count = (uint16_t)comp->line_entry_count;
+    } else {
+        bc->line_map = NULL;
+        bc->line_map_count = 0;
+    }
+    bc->source_line = (uint16_t)comp->current_line;
+    bc->source_file = cl_current_source_file;
 
     cl_env_destroy(env);
     platform_free(comp);

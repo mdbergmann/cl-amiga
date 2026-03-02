@@ -154,6 +154,12 @@ typedef struct {
 
 /* --- Bytecode (compiled function template) --- */
 
+/* Source line map entry: maps bytecode offset to source line number */
+typedef struct {
+    uint16_t pc;        /* Bytecode offset */
+    uint16_t line;      /* Source line number */
+} CL_LineEntry;
+
 typedef struct {
     CL_Header hdr;
     uint8_t *code;      /* Bytecode array */
@@ -169,6 +175,11 @@ typedef struct {
     uint8_t n_keys;     /* Number of &key params */
     CL_Obj *key_syms;   /* Keyword symbols array (platform_alloc'd) */
     uint8_t *key_slots; /* Slot indices for each key param (platform_alloc'd) */
+    /* Source location tracking (platform_alloc'd) */
+    CL_LineEntry *line_map;  /* Array of pc→line entries, sorted by pc */
+    uint16_t line_map_count; /* Number of entries */
+    uint16_t source_line;    /* Line where function was defined */
+    const char *source_file; /* Filename (NULL for REPL) */
 } CL_Bytecode;
 
 #define CL_BYTECODE_P(obj) (CL_HEAP_P(obj) && CL_HDR_TYPE(CL_OBJ_TO_PTR(obj)) == TYPE_BYTECODE)

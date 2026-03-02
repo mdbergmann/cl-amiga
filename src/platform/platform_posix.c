@@ -2,6 +2,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/time.h>
 
 void *platform_alloc(unsigned long size)
 {
@@ -74,6 +75,13 @@ char *platform_file_read(const char *path, unsigned long *size_out)
     *size_out = (unsigned long)fsize;
     fclose(f);
     return buf;
+}
+
+uint32_t platform_time_ms(void)
+{
+    struct timeval tv;
+    gettimeofday(&tv, NULL);
+    return (uint32_t)((tv.tv_sec * 1000) + (tv.tv_usec / 1000));
 }
 
 void platform_init(void)

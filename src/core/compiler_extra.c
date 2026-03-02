@@ -1070,3 +1070,55 @@ void compile_untrace(CL_Compiler *c, CL_Obj form)
     cl_emit(c, OP_LIST);
     cl_emit(c, (uint8_t)n);
 }
+
+/* --- Time --- */
+
+void compile_time(CL_Compiler *c, CL_Obj form)
+{
+    /* (time expr) — evaluate expr, print elapsed time, return result */
+    CL_Obj body = cl_cdr(form);
+    int saved_tail = c->in_tail;
+    int start_slot, result_slot;
+    int get_time_idx, report_idx;
+
+    if (CL_NULL_P(body))
+        cl_error(CL_ERR_ARGS, "TIME: missing expression");
+
+    c->in_tail = 0;
+    start_slot = alloc_temp_slot(c->env);
+    result_slot = alloc_temp_slot(c->env);
+
+    get_time_idx = cl_add_constant(c, cl_intern_in("%GET-INTERNAL-TIME", 18, cl_package_cl));
+    report_idx = cl_add_constant(c, cl_intern_in("%TIME-REPORT", 12, cl_package_cl));
+
+    /* Get start time, store in temp slot, pop from stack */
+    cl_emit(c, OP_FLOAD);
+    cl_emit_u16(c, (uint16_t)get_time_idx);
+    cl_emit(c, OP_CALL);
+    cl_emit(c, 0);
+    cl_emit(c, OP_STORE);
+    cl_emit(c, (uint8_t)start_slot);
+    cl_emit(c, OP_POP);
+
+    /* Compile body expression (result on stack) */
+    compile_expr(c, cl_car(body));
+
+    /* Save body result in temp slot, pop from stack */
+    cl_emit(c, OP_STORE);
+    cl_emit(c, (uint8_t)result_slot);
+    cl_emit(c, OP_POP);
+
+    /* Print timing: FLOAD %TIME-REPORT, LOAD start_slot, CALL 1 */
+    cl_emit(c, OP_FLOAD);
+    cl_emit_u16(c, (uint16_t)report_idx);
+    cl_emit(c, OP_LOAD);
+    cl_emit(c, (uint8_t)start_slot);
+    cl_emit(c, OP_CALL);
+    cl_emit(c, 1);
+    cl_emit(c, OP_POP);  /* Discard %TIME-REPORT result (NIL) */
+
+    /* Restore body result */
+    cl_emit(c, OP_LOAD);
+    cl_emit(c, (uint8_t)result_slot);
+    c->in_tail = saved_tail;
+}

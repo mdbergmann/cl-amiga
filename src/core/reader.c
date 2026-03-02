@@ -29,25 +29,54 @@ static int use_stream = 0;
 static CL_ReadStream *current_stream = NULL;
 static int eof_seen = 0;
 
+/* Source location tracking */
+CL_SrcLoc cl_srcloc_table[CL_SRCLOC_SIZE];
+const char *cl_current_source_file = NULL;
+uint16_t cl_current_file_id = 0;
+static int console_line = 1;  /* Line counter for console reads */
+
 static int read_char(void)
 {
+    int ch;
     if (use_stream) {
         if (!current_stream || current_stream->pos >= current_stream->len)
             return -1;
-        return (unsigned char)current_stream->buf[current_stream->pos++];
+        ch = (unsigned char)current_stream->buf[current_stream->pos++];
+        if (ch == '\n') current_stream->line++;
+        return ch;
     }
-    return platform_getchar();
+    ch = platform_getchar();
+    if (ch == '\n') console_line++;
+    return ch;
 }
 
 static void unread_char(int ch)
 {
     if (ch < 0) return;
     if (use_stream) {
-        if (current_stream && current_stream->pos > 0)
+        if (current_stream && current_stream->pos > 0) {
             current_stream->pos--;
+            if (ch == '\n') current_stream->line--;
+        }
         return;
     }
+    if (ch == '\n') console_line--;
     platform_ungetchar(ch);
+}
+
+static int current_line(void)
+{
+    if (use_stream && current_stream)
+        return current_stream->line;
+    return console_line;
+}
+
+static void srcloc_record(CL_Obj cons_obj, int line)
+{
+    uint32_t idx = (cons_obj >> 2) % CL_SRCLOC_SIZE;
+    cl_srcloc_table[idx].cons_obj = cons_obj;
+    cl_srcloc_table[idx].line = (uint16_t)line;
+    cl_srcloc_table[idx].file_id = cl_current_file_id;
 }
 
 /* Skip whitespace and comments */
@@ -179,9 +208,18 @@ static CL_Obj read_string(void)
     return cl_make_string(buf, (uint32_t)len);
 }
 
+int cl_srcloc_lookup(CL_Obj cons_obj)
+{
+    uint32_t idx = (cons_obj >> 2) % CL_SRCLOC_SIZE;
+    if (cl_srcloc_table[idx].cons_obj == cons_obj)
+        return (int)cl_srcloc_table[idx].line;
+    return 0;
+}
+
 /* Read a list */
 static CL_Obj read_list(void)
 {
+    int start_line = current_line();
     CL_Obj head = CL_NIL;
     CL_Obj tail = CL_NIL;
     CL_Obj elem;
@@ -237,6 +275,7 @@ static CL_Obj read_list(void)
             CL_Obj cell = cl_cons(elem, CL_NIL);
             if (CL_NULL_P(head)) {
                 head = cell;
+                srcloc_record(head, start_line);
             } else {
                 ((CL_Cons *)CL_OBJ_TO_PTR(tail))->cdr = cell;
             }
@@ -346,6 +385,8 @@ CL_Obj cl_read_from_string(CL_ReadStream *stream)
     use_stream = 1;
     current_stream = stream;
     eof_seen = 0;
+    /* Initialize line tracking if not already set */
+    if (stream->line == 0) stream->line = 1;
     return read_expr();
 }
 
@@ -356,5 +397,8 @@ int cl_reader_eof(void)
 
 void cl_reader_init(void)
 {
-    /* Nothing needed yet */
+    memset(cl_srcloc_table, 0, sizeof(cl_srcloc_table));
+    console_line = 1;
+    cl_current_source_file = NULL;
+    cl_current_file_id = 0;
 }
