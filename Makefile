@@ -33,6 +33,7 @@ CORE_SRC     = $(SRCDIR)/core/types.c \
                $(SRCDIR)/core/builtins_type.c \
                $(SRCDIR)/core/builtins_condition.c \
                $(SRCDIR)/core/builtins_package.c \
+               $(SRCDIR)/core/debugger.c \
                $(SRCDIR)/core/repl.c
 MAIN_SRC     = $(SRCDIR)/main.c
 

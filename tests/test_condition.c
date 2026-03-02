@@ -9,6 +9,7 @@
 #include "core/compiler.h"
 #include "core/vm.h"
 #include "core/builtins.h"
+#include "core/debugger.h"
 #include "core/repl.h"
 #include "platform/platform.h"
 
@@ -24,6 +25,7 @@ static void setup(void)
     cl_compiler_init();
     cl_vm_init();
     cl_builtins_init();
+    cl_debugger_init();
     cl_repl_init();
 }
 
@@ -47,6 +49,9 @@ static const char *eval_print(const char *str)
         return buf;
     } else {
         CL_UNCATCH();
+        /* Reset VM state after error (prevent stale frames) */
+        cl_vm.sp = 0;
+        cl_vm.fp = 0;
         snprintf(buf, sizeof(buf), "ERROR:%d", err);
         return buf;
     }
@@ -665,6 +670,71 @@ TEST(lisp_restart_stack_nlx)
     }
 }
 
+/* --- Debugger tests --- */
+
+TEST(c_debugger_disabled_by_default)
+{
+    /* Debugger should be disabled by default (not in interactive REPL) */
+    ASSERT_EQ_INT(cl_debugger_enabled, 0);
+}
+
+TEST(c_debugger_recursion_guard)
+{
+    /* When cl_in_debugger is set, cl_invoke_debugger should return immediately */
+    CL_Obj cond = cl_make_condition(SYM_SIMPLE_ERROR, CL_NIL, CL_NIL);
+    cl_in_debugger = 1;
+    cl_invoke_debugger(cond);  /* Should return immediately, not hang */
+    cl_in_debugger = 0;
+    ASSERT(1);  /* If we get here, recursion guard worked */
+}
+
+TEST(lisp_invoke_debugger_exists)
+{
+    ASSERT_STR_EQ(eval_print("(functionp #'invoke-debugger)"), "T");
+}
+
+TEST(lisp_debugger_hook_initially_nil)
+{
+    ASSERT_STR_EQ(eval_print("*debugger-hook*"), "NIL");
+}
+
+TEST(lisp_debugger_hook_is_special)
+{
+    /* *debugger-hook* should be a special variable (dynamic binding works) */
+    ASSERT_STR_EQ(eval_print("(let ((*debugger-hook* 42)) *debugger-hook*)"), "42");
+}
+
+TEST(lisp_break_exists)
+{
+    ASSERT_STR_EQ(eval_print("(functionp #'break)"), "T");
+}
+
+TEST(lisp_debugger_hook_called)
+{
+    /* Set *debugger-hook* to a lambda that marks a box and invokes CONTINUE;
+     * trigger error inside restart-case with continue restart */
+    ASSERT_STR_EQ(eval_print(
+        "(let ((box (cons nil nil)))"
+        "  (let ((*debugger-hook* (lambda (c hook)"
+        "                           (rplaca box t)"
+        "                           (invoke-restart 'continue))))"
+        "    (restart-case (error \"test\")"
+        "      (continue () nil)))"
+        "  (car box))"),
+        "T");
+}
+
+TEST(lisp_break_with_continue)
+{
+    /* Set *debugger-hook* to invoke CONTINUE, call break, verify continues */
+    ASSERT_STR_EQ(eval_print(
+        "(let ((*debugger-hook* (lambda (c hook)"
+        "                         (invoke-restart 'continue))))"
+        "  (break)"
+        "  :after-break)"),
+        ":AFTER-BREAK");
+}
+
 int main(void)
 {
     setup();
@@ -736,6 +806,16 @@ int main(void)
     RUN(lisp_check_type_fail);
     RUN(lisp_assert_pass);
     RUN(lisp_assert_fail);
+
+    /* Debugger tests */
+    RUN(c_debugger_disabled_by_default);
+    RUN(c_debugger_recursion_guard);
+    RUN(lisp_invoke_debugger_exists);
+    RUN(lisp_debugger_hook_initially_nil);
+    RUN(lisp_debugger_hook_is_special);
+    RUN(lisp_break_exists);
+    RUN(lisp_debugger_hook_called);
+    RUN(lisp_break_with_continue);
 
     teardown();
     REPORT();

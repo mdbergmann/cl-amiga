@@ -106,6 +106,9 @@ extern int cl_restart_top;
 /* Signal a condition — walks handler stack, returns NIL if no handler transferred */
 CL_Obj cl_signal_condition(CL_Obj condition);
 
+/* Throw a value to a catch tag (for restart invocation from debugger) */
+void cl_throw_to_tag(CL_Obj tag, CL_Obj value);
+
 /* Create a condition from an error code and message */
 CL_Obj cl_create_condition_from_error(int code, const char *msg);
 

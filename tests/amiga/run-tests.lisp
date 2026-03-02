@@ -1114,6 +1114,11 @@
 (cl-user::check "local-nick reader" t (eq 'KD:TEST :TEST))
 (in-package "COMMON-LISP-USER")
 
+; --- Debugger ---
+(check "invoke-debugger exists" t (functionp #'invoke-debugger))
+(check "*debugger-hook* initial" nil *debugger-hook*)
+(check "break exists" t (functionp #'break))
+
 ; --- Summary ---
 (format t "~%=== Results ===~%")
 (format t "Passed: ~A~%" *pass-count*)

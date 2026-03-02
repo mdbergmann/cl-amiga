@@ -9,6 +9,7 @@
 #include "core/compiler.h"
 #include "core/vm.h"
 #include "core/builtins.h"
+#include "core/debugger.h"
 #include "core/repl.h"
 #include <string.h>
 
@@ -35,6 +36,7 @@ int main(int argc, char *argv[])
     cl_compiler_init();
     cl_vm_init();
     cl_builtins_init();
+    cl_debugger_init();
     cl_repl_init();
 
     if (batch) {

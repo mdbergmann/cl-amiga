@@ -229,9 +229,9 @@ Condition system, packages, and compiler completeness:
 - [x] Reader package-qualified syntax (`pkg:sym` external, `pkg::sym` internal, `#:sym` uninterned), printer package prefixes (`PKG:SYM`, `PKG::SYM`, `#:SYM`)
 - [x] `defpackage` (boot macro), `in-package` (compiler special form), `do-symbols`, `do-external-symbols` (boot macros), `%package-symbols`, `%package-external-symbols` (internal builtins), `*PACKAGE*` special variable
 - [x] CDR-10 package-local nicknames — `package-local-nicknames`, `add-package-local-nickname`, `remove-package-local-nickname` builtins, `:local-nicknames` in `make-package` and `defpackage`, scoped resolution in `cl_find_package`
-- [ ] Interactive debugger — on error, display condition, backtrace, and available restarts; prompt user to select restart or abort; `invoke-debugger`, `break`, `*debugger-hook*`
+- [x] Interactive debugger — on error, display condition, backtrace, and available restarts; prompt user to select restart or abort; `invoke-debugger`, `break`, `*debugger-hook*`
 
-466 host tests (6 suites), 703 Amiga batch tests — all passing.
+474 host tests (6 suites), 706 Amiga batch tests — all passing.
 - [ ] `macrolet`, `symbol-macrolet` — local macro bindings (compile-time only, no opcodes)
 - [ ] Unused variable warnings with `ignore`/`ignorable` declaration support
 - [ ] `defconstant` — constant variable definitions
@@ -344,6 +344,7 @@ Validation and ecosystem:
 - [ ] Line editing (history, tab completion)
 - [ ] Amiga-specific FFI (calling library functions)
 - [ ] Intuition/gadtools bindings for GUI (stretch goal)
+- [ ] Green threads — VM-level cooperative threading: each thread is a `CL_Thread` with its own VM stack, call frames, dynamic bindings, handler/restart/NLX stacks, and MV state; scheduler yields at safe points (OP_CALL, backward jumps); `cl-amiga/threads` package with `make-thread`, `join-thread`, `destroy-thread`, `thread-yield`, `current-thread`, `all-threads`, `threadp`; locks (`make-lock`, `acquire-lock`, `release-lock`, `with-lock-held`), recursive locks, read-write locks; condition variables (`make-condition-variable`, `condition-wait`, `condition-notify`); same API on AmigaOS and POSIX (concurrent everywhere, optionally parallel on POSIX via M:N OS thread pool); cooperative scheduling makes GC stop-the-world trivial; bordeaux-threads compatibility layer as a separate package on top
 - [ ] Image save/restore (`save-image`, `load-image`) — serialize heap arena, symbol tables, package state, and bytecode pools to disk; restore to skip boot.lisp loading and resume a saved environment
 - [ ] Standalone executables — prepend runtime binary to a saved image to produce a single self-contained executable (like SBCL's `save-lisp-and-die :executable t`)
 
@@ -368,7 +369,7 @@ cl-amiga/
 │   ├── test.h             # Test framework
 │   ├── test_*.c           # Host test suites (6 files, 457 tests)
 │   └── amiga/
-│       └── run-tests.lisp # AmigaOS batch tests (703 tests)
+│       └── run-tests.lisp # AmigaOS batch tests (706 tests)
 ├── build/                 # Build output (gitignored)
 └── verify/
     └── realamiga/          # FS-UAE config + AmigaOS system image

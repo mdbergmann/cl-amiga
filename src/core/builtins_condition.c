@@ -545,8 +545,8 @@ static CL_Obj bi_error(CL_Obj *args, int n)
 
 /* --- Restart builtins --- */
 
-/* Helper: throw to a catch tag (same logic as bi_throw in builtins_io.c) */
-static void throw_to_tag(CL_Obj tag, CL_Obj value)
+/* Throw to a catch tag — used by restart invocation and debugger */
+void cl_throw_to_tag(CL_Obj tag, CL_Obj value)
 {
     int i;
     for (i = cl_nlx_top - 1; i >= 0; i--) {
@@ -584,7 +584,7 @@ static CL_Obj bi_invoke_restart(CL_Obj *args, int n)
             CL_Obj result = cl_vm_apply(cl_restart_stack[i].handler,
                                          args + 1, n - 1);
             /* Throw result to the restart's catch tag */
-            throw_to_tag(cl_restart_stack[i].tag, result);
+            cl_throw_to_tag(cl_restart_stack[i].tag, result);
             return CL_NIL; /* unreachable */
         }
     }

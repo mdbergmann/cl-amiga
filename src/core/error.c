@@ -1,5 +1,6 @@
 #include "error.h"
 #include "vm.h"
+#include "debugger.h"
 #include "../platform/platform.h"
 #include <stdio.h>
 #include <stdarg.h>
@@ -35,6 +36,8 @@ void cl_error(int code, const char *fmt, ...)
     {
         CL_Obj cond = cl_create_condition_from_error(code, cl_error_msg);
         cl_signal_condition(cond);
+        /* Invoke debugger before unwinding (returns if user picks "top level") */
+        cl_invoke_debugger(cond);
     }
 
     /* Check for interposing unwind-protect frames in NLX stack */

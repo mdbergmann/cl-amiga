@@ -4,6 +4,7 @@
 #include "compiler.h"
 #include "vm.h"
 #include "error.h"
+#include "debugger.h"
 #include "mem.h"
 #include "../platform/platform.h"
 #include <string.h>
@@ -92,6 +93,7 @@ void cl_repl(void)
 {
     char line[1024];
 
+    cl_debugger_enabled = 1;
     platform_write_string("CL-AMIGA> ");
 
     while (platform_read_line(line, sizeof(line))) {

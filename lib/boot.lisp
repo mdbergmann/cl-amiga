@@ -199,3 +199,10 @@
        (dolist (,s ,syms ,result)
          (let ((,var ,s))
            ,@body)))))
+
+;; break — enter debugger with CONTINUE restart
+(defun break (&optional (format-control "Break"))
+  (restart-case
+    (invoke-debugger (make-condition 'simple-condition
+                                     :format-control format-control))
+    (continue () nil)))
