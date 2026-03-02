@@ -347,6 +347,103 @@ TEST(lisp_error_with_symbol)
     ASSERT_STR_EQ(result, "ERROR:1");
 }
 
+/* --- handler-bind tests --- */
+
+TEST(lisp_handler_bind_basic)
+{
+    /* handler-bind with signal: handler receives condition, throws type name */
+    ASSERT_STR_EQ(eval_print(
+        "(catch 'test-tag"
+        "  (handler-bind ((simple-condition (lambda (c) (throw 'test-tag (condition-type-name c)))))"
+        "    (signal (make-condition 'simple-condition :format-control \"test\"))))"),
+        "SIMPLE-CONDITION");
+}
+
+TEST(lisp_handler_bind_error_type)
+{
+    /* handler-bind matching on error type via hierarchy */
+    ASSERT_STR_EQ(eval_print(
+        "(catch 'test-tag"
+        "  (handler-bind ((error (lambda (c) (throw 'test-tag 42))))"
+        "    (signal (make-condition 'simple-error :format-control \"boom\"))))"),
+        "42");
+}
+
+TEST(lisp_handler_bind_no_match)
+{
+    /* handler-bind: non-matching type, handler not called, signal returns nil */
+    ASSERT_STR_EQ(eval_print(
+        "(catch 'test-tag"
+        "  (handler-bind ((type-error (lambda (c) (throw 'test-tag :touched))))"
+        "    (signal (make-condition 'simple-warning :format-control \"w\"))"
+        "    :untouched))"),
+        ":UNTOUCHED");
+}
+
+TEST(lisp_handler_bind_multiple_clauses)
+{
+    /* Multiple clauses: correct one matches */
+    ASSERT_STR_EQ(eval_print(
+        "(catch 'test-tag"
+        "  (handler-bind ((warning (lambda (c) (throw 'test-tag :warn)))"
+        "                 (error (lambda (c) (throw 'test-tag :error))))"
+        "    (signal (make-condition 'simple-warning :format-control \"w\"))))"),
+        ":WARN");
+}
+
+TEST(lisp_handler_bind_body_value)
+{
+    /* handler-bind returns body value on normal exit */
+    ASSERT_STR_EQ(eval_print(
+        "(handler-bind ((error (lambda (c) nil)))"
+        "  (+ 1 2))"),
+        "3");
+}
+
+TEST(lisp_handler_case_catches_error)
+{
+    /* handler-case catches error and runs clause body */
+    ASSERT_STR_EQ(eval_print(
+        "(handler-case (error \"boom\")"
+        "  (error (c) 42))"),
+        "42");
+}
+
+TEST(lisp_handler_case_no_error)
+{
+    /* handler-case with no error returns form value */
+    ASSERT_STR_EQ(eval_print(
+        "(handler-case (+ 1 2)"
+        "  (error (c) 99))"),
+        "3");
+}
+
+TEST(lisp_handler_case_type_dispatch)
+{
+    /* handler-case dispatches on condition type */
+    ASSERT_STR_EQ(eval_print(
+        "(handler-case (error 'type-error :datum 42 :expected-type 'string)"
+        "  (type-error (c) (type-error-datum c))"
+        "  (error (c) :generic))"),
+        "42");
+}
+
+TEST(lisp_ignore_errors)
+{
+    /* ignore-errors catches error, returns nil */
+    ASSERT_STR_EQ(eval_print(
+        "(ignore-errors (error \"boom\"))"),
+        "NIL");
+}
+
+TEST(lisp_ignore_errors_no_error)
+{
+    /* ignore-errors with no error returns form value */
+    ASSERT_STR_EQ(eval_print(
+        "(ignore-errors (+ 10 20))"),
+        "30");
+}
+
 int main(void)
 {
     setup();
@@ -379,6 +476,20 @@ int main(void)
     RUN(lisp_warn_with_symbol);
     RUN(lisp_error_still_caught);
     RUN(lisp_error_with_symbol);
+
+    /* handler-bind tests */
+    RUN(lisp_handler_bind_basic);
+    RUN(lisp_handler_bind_error_type);
+    RUN(lisp_handler_bind_no_match);
+    RUN(lisp_handler_bind_multiple_clauses);
+    RUN(lisp_handler_bind_body_value);
+
+    /* handler-case / ignore-errors tests */
+    RUN(lisp_handler_case_catches_error);
+    RUN(lisp_handler_case_no_error);
+    RUN(lisp_handler_case_type_dispatch);
+    RUN(lisp_ignore_errors);
+    RUN(lisp_ignore_errors_no_error);
 
     teardown();
     REPORT();

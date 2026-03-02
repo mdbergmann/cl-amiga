@@ -76,6 +76,8 @@ enum CL_Opcode {
     OP_RPLACD    = 0x91,  /* pop new-cdr, pop cons → set cdr, push new-cdr */
     OP_ASET      = 0x92,  /* pop val, pop index, pop vector → set data[idx], push val */
     OP_DEFTYPE   = 0x93,  /* u16: Register TOS as type expander for symbol */
+    OP_HANDLER_PUSH = 0x94, /* u16: const idx of type symbol; pop handler closure, push onto handler stack */
+    OP_HANDLER_POP  = 0x95, /* u8: count; pop N handler bindings from handler stack */
 
     OP_HALT      = 0xFF   /* Stop VM */
 };

@@ -39,7 +39,7 @@ CL_Obj (uint32_t):
 Heap object header (uint32_t):
   [type:8][gc_mark:1][size:23]       max object size = 8MB
 
-Types: CONS, SYMBOL, STRING, FUNCTION, CLOSURE, BYTECODE, VECTOR, PACKAGE, HASHTABLE
+Types: CONS, SYMBOL, STRING, FUNCTION, CLOSURE, BYTECODE, VECTOR, PACKAGE, HASHTABLE, CONDITION
 ```
 
 ## Memory Budget (8MB System)
@@ -58,7 +58,7 @@ Types: CONS, SYMBOL, STRING, FUNCTION, CLOSURE, BYTECODE, VECTOR, PACKAGE, HASHT
 
 ## Bytecode VM
 
-Stack-based, byte-oriented instruction encoding. 44 opcodes:
+Stack-based, byte-oriented instruction encoding. 46 opcodes:
 
 | Category | Opcodes |
 |----------|---------|
@@ -74,6 +74,7 @@ Stack-based, byte-oriented instruction encoding. 44 opcodes:
 | Multiple values | MV_LOAD, MV_TO_LIST, NTH_VALUE |
 | Dynamic binding | DYNBIND, DYNUNBIND |
 | Mutation | RPLACA, RPLACD, ASET |
+| Condition handling | HANDLER_PUSH, HANDLER_POP |
 | Misc | LIST, HALT, DEFMACRO, ARGC |
 
 ## Compiler
@@ -85,13 +86,13 @@ Single-pass recursive compiler from S-expressions to bytecode:
 - Macro expansion before compilation
 - Backward jump support for loop forms
 
-**Special forms:** `quote`, `if`, `progn`, `lambda`, `let`, `let*`, `setq`, `setf`, `defun`, `defvar`, `defparameter`, `defmacro`, `function (#')`, `block`, `return-from`, `return`, `and`, `or`, `cond`, `do`, `dolist`, `dotimes`, `case`, `ecase`, `typecase`, `etypecase`, `flet`, `labels`, `tagbody`, `go`, `catch`, `unwind-protect`, `multiple-value-bind`, `multiple-value-list`, `multiple-value-prog1`, `nth-value`, `eval-when`, `destructuring-bind`, `defsetf`, `trace`, `untrace`, `time`
+**Special forms:** `quote`, `if`, `progn`, `lambda`, `let`, `let*`, `setq`, `setf`, `defun`, `defvar`, `defparameter`, `defmacro`, `function (#')`, `block`, `return-from`, `return`, `and`, `or`, `cond`, `do`, `dolist`, `dotimes`, `case`, `ecase`, `typecase`, `etypecase`, `flet`, `labels`, `tagbody`, `go`, `catch`, `unwind-protect`, `multiple-value-bind`, `multiple-value-list`, `multiple-value-prog1`, `nth-value`, `eval-when`, `destructuring-bind`, `defsetf`, `trace`, `untrace`, `time`, `handler-bind`
 
-**Bootstrap macros:** `when`, `unless`, `prog1`, `prog2`, `push`, `pop`, `incf`, `decf`, `pushnew`
+**Bootstrap macros:** `when`, `unless`, `prog1`, `prog2`, `push`, `pop`, `incf`, `decf`, `pushnew`, `handler-case`, `ignore-errors`
 
 **Bootstrap functions:** `cadr`, `caar`, `cdar`, `cddr`, `caddr`, `cadar`, `identity`, `endp`, `member`, `intersection`, `union`, `set-difference`, `subsetp`
 
-## Built-in Functions (181 functions)
+## Built-in Functions (191 functions)
 
 | Category | Functions |
 |----------|-----------|
@@ -110,7 +111,8 @@ Single-pass recursive compiler from S-expressions to bytecode:
 | Strings | `string=` `string-equal` `string<` `string>` `string<=` `string>=` `string-upcase` `string-downcase` `string-trim` `string-left-trim` `string-right-trim` `subseq` `concatenate` `char` `schar` `string` `parse-integer` `write-to-string` `prin1-to-string` `princ-to-string` |
 | I/O | `print` `prin1` `princ` `terpri` `format` `load` `disassemble` |
 | Eval/Macro | `eval` `macroexpand` `macroexpand-1` |
-| Control | `throw` `values` `values-list` `error` |
+| Control | `throw` `values` `values-list` `error` `signal` `warn` |
+| Conditions | `make-condition` `conditionp` `condition-type-name` `type-error-datum` `type-error-expected-type` `simple-condition-format-control` `simple-condition-format-arguments` `define-condition` |
 | Hash tables | `make-hash-table` `gethash` `remhash` `maphash` `clrhash` `hash-table-count` `hash-table-p` |
 | Type system | `typep` `coerce` |
 | Timing | `get-internal-real-time` |
@@ -211,13 +213,25 @@ Data structures, sequences, strings, and I/O:
 - Split builtins.c into 7 modules and compiler.c into 3 modules (stay under vbcc TU size limits)
 - Heap-allocate CL_Compiler structs (CL_Compiler is ~45KB due to tagbody arrays; two nested instances during compile_lambda overflowed the 65KB AmigaOS stack)
 
-### Phase 6: Control & Error Handling
+### Phase 6: Control & Error Handling (in progress)
 
-Condition system and full package support:
-- [ ] Condition system (`define-condition`, `make-condition`, `handler-case`, `handler-bind`, `signal`, `error`, `warn`, `cerror`)
+Condition system, packages, and compiler completeness:
+- [x] Condition types (`define-condition`, `make-condition`, `conditionp`, condition type hierarchy)
+- [x] Handler binding stack (`handler-bind` special form, `OP_HANDLER_PUSH`/`OP_HANDLER_POP` opcodes)
+- [x] Signaling (`signal`, `warn`, `error` with condition integration)
+- [x] `handler-case` (boot macro using catch/throw + cons box pattern)
+- [x] `ignore-errors` (boot macro)
 - [ ] Restarts (`restart-case`, `invoke-restart`, `find-restart`, `with-simple-restart`, `abort`, `continue`, `muffle-warning`)
-- [ ] `ignore-errors`, `check-type`, `assert`
+- [ ] `cerror`, `check-type`, `assert`
+
+371 host tests (5 suites), ~640 Amiga batch tests — all passing.
 - [ ] Full packages (`defpackage`, `in-package`, `use-package`, `export`, `import`, `shadow`, `shadowing-import-from`, `find-package`, `make-package`, `rename-package`, `delete-package`, `do-symbols`, `do-external-symbols`, `intern`, `unintern`)
+- [ ] `macrolet`, `symbol-macrolet` — local macro bindings (compile-time only, no opcodes)
+- [ ] Unused variable warnings with `ignore`/`ignorable` declaration support
+- [ ] `defconstant` — constant variable definitions
+- [ ] `multiple-value-call`, `multiple-value-setq` — MV completeness
+- [ ] `progv` — dynamic binding with computed symbols
+- [ ] `the` — type declaration special form (initially no-op, validates later)
 
 ### Phase 7: I/O & Pathnames
 
@@ -233,13 +247,23 @@ File system integration and stream abstraction:
 - [ ] File operations (`probe-file`, `file-write-date`, `delete-file`, `rename-file`, `ensure-directories-exist`, `directory`)
 - [ ] Reader macros (`set-macro-character`, `set-dispatch-macro-character`, `*readtable*`, `copy-readtable`)
 - [ ] Feature conditionals (`#+`, `#-`, `*features*`)
+- [ ] `sleep` — platform sleep function
+- [ ] Time: `get-universal-time`, `decode-universal-time`, `encode-universal-time`, `get-decoded-time`
+- [ ] `compile` — compile function at runtime
 
 ### Phase 8: Iteration & Format
 
-Extended iteration and output formatting:
+Extended iteration, output formatting, and standard library completeness:
 - [ ] `loop` facility (extended LOOP macro: `for`/`in`/`on`/`across`, `collect`/`append`/`nconc`, `when`/`unless`/`if`, `with`/`initially`/`finally`, `thereis`/`always`/`never`, `sum`/`count`/`maximize`/`minimize`)
 - [ ] `format` full directives (`~A`, `~S`, `~D`, `~B`, `~O`, `~X`, `~R`, `~%`, `~&`, `~T`, `~<~>`, `~{~}`, `~[~]`, `~?`, `~(~)`, `~*`, `~^`)
 - [ ] Pretty printer (`pprint`, `pprint-logical-block`, `pprint-newline`, `pprint-indent`)
+- [ ] Setf completeness: `rotatef`, `shiftf`, `define-modify-macro`, `defsetf` long form, `define-setf-expander`
+- [ ] `psetq`, `psetf` — parallel assignment
+- [ ] `load-time-value` — evaluate once at load time
+- [ ] Missing list ops: `tree-equal`, `make-list`, `list*`, `list-length`, `tailp`, `ldiff`, `revappend`, `nreconc`, `assoc-if`, `rassoc-if`, `remf`
+- [ ] Missing string ops: `string-capitalize`, `nstring-upcase`, `nstring-downcase`, `nstring-capitalize`, `char-name`, `name-char`
+- [ ] Missing sequence ops: `map-into`, `copy-seq`, `elt`, `(setf elt)`
+- [ ] Higher-order: `complement`, `constantly`
 
 ### Phase 9: Numeric Tower
 
@@ -261,10 +285,17 @@ Full CL numeric type hierarchy with arithmetic contagion:
 - [ ] Trig: `sin`, `cos`, `tan`, `asin`, `acos`, `atan` (software float)
 - [ ] Type predicates: `rationalp`, `ratiop`, `realp`, `complexp`, `floatp`, `single-float-p`, `double-float-p`
 - [ ] Constants: `most-positive-fixnum`, `most-negative-fixnum`, `pi`, float limits
+- [ ] `random`, `make-random-state`, `*random-state*` — pseudo-random number generation
+- [ ] Bit manipulation: `ldb`, `dpb`, `byte`, `byte-size`, `byte-position`, `integer-length`, `logbitp`, `logtest`, `boole`
 
 ### Phase 10: CLOS
 
-Common Lisp Object System:
+Structures and Common Lisp Object System:
+- [ ] `defstruct` — structure definitions (slots, constructors, copier, predicate, `:include` inheritance, `:type list/vector`)
+- [ ] `copy-structure`, struct accessors, `#S()` reader syntax
+- [ ] Multi-dimensional arrays, adjustable arrays, fill pointers, displaced arrays
+- [ ] `vector-push`, `vector-push-extend`, `adjust-array`, `make-array` keyword extensions (`:adjustable`, `:fill-pointer`, `:displaced-to`)
+- [ ] Bit vectors: `bit-and`, `bit-or`, `bit-xor`, `bit-not`, `bit-vector-p`, `make-array :element-type 'bit`
 - [ ] `defclass` — class definition with slots, inheritance, metaclasses
 - [ ] Slot options: `:initarg`, `:initform`, `:accessor`, `:reader`, `:writer`, `:allocation`, `:type`, `:documentation`
 - [ ] `defgeneric`, `defmethod` — generic function dispatch
@@ -273,9 +304,9 @@ Common Lisp Object System:
 - [ ] `slot-value`, `slot-boundp`, `slot-exists-p`, `slot-makunbound`
 - [ ] `with-slots`, `with-accessors`
 - [ ] `find-class`, `class-of`, `class-name`, `change-class`
-- [ ] `print-object` — CLOS-based printing
-- [ ] `defstruct` — structure definitions (subset or full)
+- [ ] `print-object`, `print-unreadable-object` — CLOS-based printing
 - [ ] Multiple inheritance, standard method combination
+- [ ] `define-method-combination`
 
 ### Phase 11: ASDF & Beyond
 
@@ -284,8 +315,19 @@ Validation and ecosystem:
 - [ ] `compile-file`, `load`, `require`, `provide`
 - [ ] Logical pathnames
 - [ ] `documentation` strings
-- [ ] Compiler optimizations (constant folding, inlining)
-- [ ] Bytecode optimizer
+- [ ] `define-compiler-macro`, `compiler-macro-function`
+- [ ] `make-load-form`, `make-load-form-saving-slots`
+- [ ] Environment: `lisp-implementation-type`, `lisp-implementation-version`, `machine-type`, `machine-version`, `software-type`, `software-version`, `room`
+- [ ] Introspection: `describe`, `inspect`, `apropos`, `apropos-list`
+- [ ] Symbol utilities: `copy-symbol`, `gentemp`, `*gensym-counter*`
+- [ ] Bytecode peephole optimizer — second pass over `c->code[]` buffer before creating `CL_Bytecode`, linear scan with in-place rewrite:
+  - Fused opcodes: `STORE+POP` → `STORE_POP`, `LOAD+POP` elimination
+  - Constant folding: `CONST 1, CONST 2, CALL +` → `CONST 3` for known arithmetic
+  - Known-function specialization: `FLOAD +, CONST x, CONST y, CALL 2` → `CONST x, CONST y, OP_ADD` when function is known at compile time
+  - Dead code elimination: unreachable branches after `JTRUE`/`JNIL` with constant conditions
+  - Jump threading: `JMP` to `JMP` → direct jump to final target
+  - Redundant load elimination: `STORE slot, LOAD slot` → `STORE slot, DUP`
+- [ ] Compiler optimizations (constant folding during compilation, function inlining)
 - [ ] Generational or incremental GC
 - [ ] Debugger / stepper
 - [ ] Line editing (history, tab completion)
@@ -305,7 +347,7 @@ cl-amiga/
 │   └── overview.md        # This file
 ├── src/
 │   ├── main.c             # Entry point
-│   ├── core/              # Language implementation (17 modules)
+│   ├── core/              # Language implementation (21 modules)
 │   └── platform/          # OS abstraction (posix, amiga)
 ├── include/
 │   └── clamiga.h          # Public umbrella header
@@ -313,9 +355,9 @@ cl-amiga/
 │   └── boot.lisp          # Bootstrap macros/functions
 ├── tests/
 │   ├── test.h             # Test framework
-│   ├── test_*.c           # Host test suites (4 files, 216 tests)
+│   ├── test_*.c           # Host test suites (5 files, 371 tests)
 │   └── amiga/
-│       └── run-tests.lisp # AmigaOS batch tests (450 tests)
+│       └── run-tests.lisp # AmigaOS batch tests (~640 tests)
 ├── build/                 # Build output (gitignored)
 └── verify/
     └── realamiga/          # FS-UAE config + AmigaOS system image

@@ -983,6 +983,28 @@ CL_Obj cl_vm_eval(CL_Obj bytecode_obj)
             break;
         }
 
+        case OP_HANDLER_PUSH: {
+            uint16_t idx = read_u16(code, &ip);
+            CL_Obj type_sym = constants[idx];
+            CL_Obj handler = cl_vm_pop();
+
+            if (cl_handler_top >= CL_MAX_HANDLER_BINDINGS)
+                cl_error(CL_ERR_OVERFLOW, "Handler stack overflow");
+
+            cl_handler_stack[cl_handler_top].type_name = type_sym;
+            cl_handler_stack[cl_handler_top].handler = handler;
+            cl_handler_stack[cl_handler_top].handler_mark = cl_handler_top;
+            cl_handler_top++;
+            break;
+        }
+
+        case OP_HANDLER_POP: {
+            uint8_t count = code[ip++];
+            cl_handler_top -= count;
+            if (cl_handler_top < 0) cl_handler_top = 0;
+            break;
+        }
+
         case OP_ARGC: {
             cl_vm_push(CL_MAKE_FIXNUM(frame->nargs));
             cl_mv_count = 1;

@@ -963,6 +963,21 @@
 (error "test error for batch")
 (check "error recovery" 42 42)
 
+; --- handler-bind ---
+(check "handler-bind basic" 'simple-condition (catch 'test-tag (handler-bind ((simple-condition (lambda (c) (throw 'test-tag (condition-type-name c))))) (signal (make-condition 'simple-condition :format-control "test")))))
+(check "handler-bind error match" 42 (catch 'test-tag (handler-bind ((error (lambda (c) (throw 'test-tag 42)))) (signal (make-condition 'simple-error :format-control "boom")))))
+(check "handler-bind no match" :untouched (catch 'test-tag (handler-bind ((type-error (lambda (c) (throw 'test-tag :touched)))) (signal (make-condition 'simple-warning :format-control "w")) :untouched)))
+(check "handler-bind body value" 3 (handler-bind ((error (lambda (c) nil))) (+ 1 2)))
+
+; --- handler-case ---
+(check "handler-case catches error" 42 (handler-case (error "boom") (error (c) 42)))
+(check "handler-case no error" 3 (handler-case (+ 1 2) (error (c) 99)))
+(check "handler-case type dispatch" 42 (handler-case (error 'type-error :datum 42 :expected-type 'string) (type-error (c) (type-error-datum c)) (error (c) :generic)))
+
+; --- ignore-errors ---
+(check "ignore-errors catches" nil (ignore-errors (error "boom")))
+(check "ignore-errors no error" 30 (ignore-errors (+ 10 20)))
+
 ; --- Summary ---
 (format t "~%=== Results ===~%")
 (format t "Passed: ~A~%" *pass-count*)

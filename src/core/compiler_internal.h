@@ -127,6 +127,7 @@ void compile_do(CL_Compiler *c, CL_Obj form);
 void compile_flet(CL_Compiler *c, CL_Obj form);
 void compile_labels(CL_Compiler *c, CL_Obj form);
 void compile_destructuring_bind(CL_Compiler *c, CL_Obj form);
+void compile_handler_bind(CL_Compiler *c, CL_Obj form);
 
 /* compiler_extra.c */
 void compile_and(CL_Compiler *c, CL_Obj form);

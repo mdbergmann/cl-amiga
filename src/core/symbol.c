@@ -101,6 +101,7 @@ CL_Obj SYM_DIVISION_BY_ZERO = CL_NIL;
 /* Signaling symbols */
 CL_Obj SYM_SIGNAL = CL_NIL;
 CL_Obj SYM_WARN = CL_NIL;
+CL_Obj SYM_HANDLER_BIND = CL_NIL;
 
 /* Condition keyword symbols */
 CL_Obj KW_FORMAT_CONTROL = CL_NIL;
@@ -281,6 +282,7 @@ void cl_symbol_init(void)
     /* Signaling symbols */
     SYM_SIGNAL                   = cl_intern_in("SIGNAL", 6, cl_package_cl);
     SYM_WARN                     = cl_intern_in("WARN", 4, cl_package_cl);
+    SYM_HANDLER_BIND             = cl_intern_in("HANDLER-BIND", 12, cl_package_cl);
 
     /* Condition keyword symbols */
     KW_FORMAT_CONTROL            = cl_intern_keyword("FORMAT-CONTROL", 14);

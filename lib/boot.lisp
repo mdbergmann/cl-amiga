@@ -66,3 +66,37 @@
   (dolist (x list1 t)
     (unless (member x list2 :test test)
       (return-from subsetp nil))))
+
+;; handler-case — run clause bodies after unwinding
+;; Uses catch/throw + cons box because:
+;;   - handlers run in separate VM context (cl_vm_apply), so return-from can't
+;;     reach the establishing block
+;;   - closures use value capture, so setq on outer variables doesn't propagate;
+;;     rplaca on a shared cons cell does propagate
+(defmacro handler-case (form &rest clauses)
+  (let ((tag (gensym "HC"))
+        (box (gensym "BOX")))
+    `(let ((,box (cons nil nil)))
+       (let ((result (catch ',tag
+                       (handler-bind
+                         ,(mapcar (lambda (clause)
+                                    `(,(car clause) (lambda (c)
+                                                      (rplaca ,box c)
+                                                      (throw ',tag ',tag))))
+                                  clauses)
+                         ,form))))
+         (if (eq result ',tag)
+             (typecase (car ,box)
+               ,@(mapcar (lambda (clause)
+                           (let ((type (car clause))
+                                 (arglist (cadr clause))
+                                 (body (cddr clause)))
+                             `(,type (let ((,(if arglist (car arglist) (gensym)) (car ,box)))
+                                       ,@body))))
+                         clauses))
+             result)))))
+
+;; ignore-errors — catch errors, return (values nil condition)
+(defmacro ignore-errors (&rest body)
+  `(handler-case (progn ,@body)
+     (error (c) (values nil c))))

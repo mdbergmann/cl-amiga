@@ -950,3 +950,35 @@ void compile_do(CL_Compiler *c, CL_Obj form)
     c->block_count = saved_block_count;
     env->local_count = saved_local_count;
 }
+
+/* --- handler-bind --- */
+
+void compile_handler_bind(CL_Compiler *c, CL_Obj form)
+{
+    /* (handler-bind ((type handler-expr) ...) body...) */
+    CL_Obj clauses = cl_car(cl_cdr(form));
+    CL_Obj body = cl_cdr(cl_cdr(form));
+    int count = 0;
+    CL_Obj cl;
+
+    /* For each (type handler) clause: compile handler, push onto handler stack */
+    for (cl = clauses; !CL_NULL_P(cl); cl = cl_cdr(cl)) {
+        CL_Obj clause = cl_car(cl);
+        CL_Obj type_sym = cl_car(clause);
+        CL_Obj handler_expr = cl_car(cl_cdr(clause));
+        int type_idx;
+
+        compile_expr(c, handler_expr);    /* Push handler closure on VM stack */
+        type_idx = cl_add_constant(c, type_sym);
+        cl_emit(c, OP_HANDLER_PUSH);
+        cl_emit_u16(c, (uint16_t)type_idx);
+        count++;
+    }
+
+    /* Compile body as progn */
+    compile_progn(c, body);
+
+    /* Normal exit: pop all handler bindings */
+    cl_emit(c, OP_HANDLER_POP);
+    cl_emit(c, (uint8_t)count);
+}

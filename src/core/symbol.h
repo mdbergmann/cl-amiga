@@ -131,6 +131,7 @@ extern CL_Obj SYM_DIVISION_BY_ZERO;
 /* Signaling symbols */
 extern CL_Obj SYM_SIGNAL;
 extern CL_Obj SYM_WARN;
+extern CL_Obj SYM_HANDLER_BIND;
 
 /* Condition keyword symbols */
 extern CL_Obj KW_FORMAT_CONTROL;
