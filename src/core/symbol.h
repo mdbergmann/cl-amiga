@@ -97,6 +97,8 @@ extern CL_Obj SYM_LOCALLY;
 extern CL_Obj SYM_TRACE;
 extern CL_Obj SYM_UNTRACE;
 extern CL_Obj SYM_TIME;
+extern CL_Obj SYM_IN_PACKAGE;
+extern CL_Obj SYM_STAR_PACKAGE;
 
 /* Declaration specifier symbols */
 extern CL_Obj SYM_SPECIAL_DECL;

@@ -1122,3 +1122,46 @@ void compile_time(CL_Compiler *c, CL_Obj form)
     cl_emit(c, (uint8_t)result_slot);
     c->in_tail = saved_tail;
 }
+
+/* --- in-package --- */
+
+void compile_in_package(CL_Compiler *c, CL_Obj form)
+{
+    /* (in-package name) where name is a symbol or string */
+    CL_Obj name_form = cl_car(cl_cdr(form));
+    CL_Obj pkg;
+    const char *name_str;
+    uint32_t name_len;
+    int idx;
+
+    /* Resolve package name at compile time */
+    if (CL_SYMBOL_P(name_form)) {
+        CL_Symbol *sym = (CL_Symbol *)CL_OBJ_TO_PTR(name_form);
+        CL_String *sname = (CL_String *)CL_OBJ_TO_PTR(sym->name);
+        name_str = sname->data;
+        name_len = sname->length;
+    } else if (CL_STRING_P(name_form)) {
+        CL_String *s = (CL_String *)CL_OBJ_TO_PTR(name_form);
+        name_str = s->data;
+        name_len = s->length;
+    } else {
+        cl_error(CL_ERR_TYPE, "IN-PACKAGE: expected symbol or string");
+        return;
+    }
+
+    pkg = cl_find_package(name_str, name_len);
+    if (CL_NULL_P(pkg)) {
+        cl_error(CL_ERR_GENERAL, "Package %.*s not found", (int)name_len, name_str);
+        return;
+    }
+
+    /* Set at compile time so subsequent symbols are interned correctly */
+    cl_current_package = pkg;
+
+    /* Emit runtime code to set *PACKAGE* */
+    cl_emit_const(c, pkg);      /* Push package object */
+    idx = cl_add_constant(c, SYM_STAR_PACKAGE);
+    cl_emit(c, OP_GSTORE);
+    cl_emit_u16(c, (uint16_t)idx);
+    /* OP_GSTORE leaves value on stack — that's fine as the result */
+}

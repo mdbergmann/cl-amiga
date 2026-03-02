@@ -141,3 +141,52 @@
      (error 'simple-error
             :format-control ,(or string "Assertion failed: ~S")
             :format-arguments (list ',test-form))))
+
+;; defpackage — define a package with :use, :export, :nicknames options
+(defmacro defpackage (name &rest options)
+  (let ((pkg-name (if (symbolp name) (symbol-name name) name))
+        (uses nil)
+        (exports nil)
+        (nicknames nil))
+    ;; Parse options
+    (dolist (opt options)
+      (case (car opt)
+        (:use (setq uses (cdr opt)))
+        (:export (setq exports (cdr opt)))
+        (:nicknames (setq nicknames (cdr opt)))))
+    `(progn
+       (let ((pkg (or (find-package ,pkg-name)
+                      (make-package ,pkg-name :nicknames ',nicknames))))
+         ,@(when uses
+             `((dolist (u ',uses)
+                 (use-package (or (find-package (if (symbolp u) (symbol-name u) u))
+                                  (error "Package ~A not found" u))
+                              pkg))))
+         ,@(when exports
+             `((dolist (e ',exports)
+                 (export (intern (if (symbolp e) (symbol-name e) e) pkg) pkg))))
+         pkg))))
+
+;; do-symbols — iterate over all symbols in a package
+(defmacro do-symbols (spec &body body)
+  (let ((var (car spec))
+        (package (cadr spec))
+        (result (caddr spec))
+        (pkg (gensym)) (syms (gensym)) (s (gensym)))
+    `(let* ((,pkg ,(if package `(find-package ,package) '*package*))
+            (,syms (%package-symbols ,pkg)))
+       (dolist (,s ,syms ,result)
+         (let ((,var ,s))
+           ,@body)))))
+
+;; do-external-symbols — iterate over exported symbols in a package
+(defmacro do-external-symbols (spec &body body)
+  (let ((var (car spec))
+        (package (cadr spec))
+        (result (caddr spec))
+        (pkg (gensym)) (syms (gensym)) (s (gensym)))
+    `(let* ((,pkg ,(if package `(find-package ,package) '*package*))
+            (,syms (%package-external-symbols ,pkg)))
+       (dolist (,s ,syms ,result)
+         (let ((,var ,s))
+           ,@body)))))

@@ -47,6 +47,9 @@ static const char *eval_print(const char *str)
         return buf;
     } else {
         CL_UNCATCH();
+        /* Reset VM state after error (prevent stale frames) */
+        cl_vm.sp = 0;
+        cl_vm.fp = 0;
         snprintf(buf, sizeof(buf), "ERROR:%d", err);
         return buf;
     }
@@ -528,6 +531,164 @@ TEST(eval_print_other_pkg_internal_prefix)
     ASSERT_STR_EQ(eval_print("(prin1-to-string 'PR-FOO2::ISYM)"), "\"PR-FOO2::ISYM\"");
 }
 
+/* ---- in-package tests ---- */
+
+TEST(eval_star_package_initial)
+{
+    /* *PACKAGE* should initially be CL-USER */
+    ASSERT_STR_EQ(eval_print("(package-name *package*)"), "\"COMMON-LISP-USER\"");
+}
+
+TEST(eval_in_package_basic)
+{
+    /* Create a package that uses CL, and switch to it */
+    eval_print("(make-package \"IP-TEST1\" :use '(\"COMMON-LISP\"))");
+    eval_print("(in-package \"IP-TEST1\")");
+    ASSERT_STR_EQ(eval_print("(package-name *package*)"), "\"IP-TEST1\"");
+    /* Switch back */
+    eval_print("(in-package \"COMMON-LISP-USER\")");
+    ASSERT_STR_EQ(eval_print("(package-name *package*)"), "\"COMMON-LISP-USER\"");
+}
+
+TEST(eval_in_package_returns_package)
+{
+    eval_print("(make-package \"IP-TEST2\" :use '(\"COMMON-LISP\"))");
+    ASSERT_STR_EQ(eval_print("(in-package \"IP-TEST2\")"), "#<PACKAGE IP-TEST2>");
+    eval_print("(in-package \"COMMON-LISP-USER\")");
+}
+
+TEST(eval_in_package_symbol_name)
+{
+    /* in-package should accept unquoted symbol name */
+    eval_print("(make-package \"IP-TEST3\" :use '(\"COMMON-LISP\"))");
+    eval_print("(in-package IP-TEST3)");
+    ASSERT_STR_EQ(eval_print("(package-name *package*)"), "\"IP-TEST3\"");
+    eval_print("(in-package \"COMMON-LISP-USER\")");
+}
+
+/* ---- defpackage tests ---- */
+
+TEST(eval_defpackage_basic)
+{
+    ASSERT_STR_EQ(eval_print(
+        "(package-name (defpackage \"DP-TEST1\"))"),
+        "\"DP-TEST1\"");
+    ASSERT_STR_EQ(eval_print("(find-package \"DP-TEST1\")"), "#<PACKAGE DP-TEST1>");
+}
+
+TEST(eval_defpackage_with_use)
+{
+    eval_print("(defpackage \"DP-USE\" (:use \"COMMON-LISP\"))");
+    /* Should inherit CL symbols */
+    ASSERT_STR_EQ(eval_print(
+        "(multiple-value-bind (s st) (find-symbol \"CAR\" (find-package \"DP-USE\")) st)"),
+        ":INHERITED");
+}
+
+TEST(eval_defpackage_with_export)
+{
+    eval_print("(defpackage \"DP-EXP\" (:export \"MY-FUNC\"))");
+    ASSERT_STR_EQ(eval_print(
+        "(multiple-value-bind (s st) (find-symbol \"MY-FUNC\" (find-package \"DP-EXP\")) st)"),
+        ":EXTERNAL");
+}
+
+TEST(eval_defpackage_full)
+{
+    eval_print("(defpackage \"DP-FULL\" (:use \"COMMON-LISP\") (:export \"PUB-SYM\"))");
+    /* Should have use-list */
+    ASSERT_STR_EQ(eval_print("(length (package-use-list (find-package \"DP-FULL\")))"), "1");
+    /* PUB-SYM should be exported */
+    ASSERT_STR_EQ(eval_print(
+        "(multiple-value-bind (s st) (find-symbol \"PUB-SYM\" (find-package \"DP-FULL\")) st)"),
+        ":EXTERNAL");
+}
+
+TEST(eval_defpackage_idempotent)
+{
+    /* defpackage on existing package should return it without error */
+    eval_print("(defpackage \"DP-IDEM\" (:export \"A\"))");
+    eval_print("(defpackage \"DP-IDEM\" (:export \"B\"))");
+    /* Both A and B should be exported */
+    ASSERT_STR_EQ(eval_print(
+        "(multiple-value-bind (s st) (find-symbol \"A\" (find-package \"DP-IDEM\")) st)"),
+        ":EXTERNAL");
+    ASSERT_STR_EQ(eval_print(
+        "(multiple-value-bind (s st) (find-symbol \"B\" (find-package \"DP-IDEM\")) st)"),
+        ":EXTERNAL");
+}
+
+/* ---- defpackage + in-package integration ---- */
+
+TEST(eval_defpackage_in_package_workflow)
+{
+    eval_print("(defpackage \"MY-LIB\" (:use \"COMMON-LISP\") (:export \"MY-FUN\"))");
+    eval_print("(in-package \"MY-LIB\")");
+    eval_print("(defun my-fun (x) (* x 2))");
+    eval_print("(in-package \"COMMON-LISP-USER\")");
+    ASSERT_STR_EQ(eval_print("(my-lib:my-fun 21)"), "42");
+}
+
+/* ---- %package-symbols / %package-external-symbols ---- */
+
+TEST(eval_package_symbols)
+{
+    eval_print("(make-package \"PS-TEST\")");
+    eval_print("(intern \"A\" (find-package \"PS-TEST\"))");
+    eval_print("(intern \"B\" (find-package \"PS-TEST\"))");
+    eval_print("(intern \"C\" (find-package \"PS-TEST\"))");
+    ASSERT_STR_EQ(eval_print("(length (%package-symbols (find-package \"PS-TEST\")))"), "3");
+}
+
+TEST(eval_package_external_symbols)
+{
+    eval_print("(make-package \"PES-TEST\")");
+    eval_print("(intern \"X\" (find-package \"PES-TEST\"))");
+    eval_print("(intern \"Y\" (find-package \"PES-TEST\"))");
+    eval_print("(export (find-symbol \"X\" (find-package \"PES-TEST\")) (find-package \"PES-TEST\"))");
+    /* Only X is exported */
+    ASSERT_STR_EQ(eval_print("(length (%package-external-symbols (find-package \"PES-TEST\")))"), "1");
+}
+
+/* ---- do-symbols / do-external-symbols ---- */
+
+TEST(eval_do_symbols)
+{
+    eval_print("(make-package \"DS-TEST\")");
+    eval_print("(intern \"S1\" (find-package \"DS-TEST\"))");
+    eval_print("(intern \"S2\" (find-package \"DS-TEST\"))");
+    ASSERT_STR_EQ(eval_print(
+        "(let ((count 0)) (do-symbols (s \"DS-TEST\") (incf count)) count)"),
+        "2");
+}
+
+TEST(eval_do_external_symbols)
+{
+    eval_print("(make-package \"DES-TEST\")");
+    eval_print("(intern \"E1\" (find-package \"DES-TEST\"))");
+    eval_print("(intern \"E2\" (find-package \"DES-TEST\"))");
+    eval_print("(export (find-symbol \"E1\" (find-package \"DES-TEST\")) (find-package \"DES-TEST\"))");
+    ASSERT_STR_EQ(eval_print(
+        "(let ((count 0)) (do-external-symbols (s \"DES-TEST\") (incf count)) count)"),
+        "1");
+}
+
+TEST(eval_do_external_symbols_finds_car)
+{
+    /* CAR should be among CL's external symbols */
+    ASSERT_STR_EQ(eval_print(
+        "(let ((found nil)) (do-external-symbols (s \"COMMON-LISP\") (when (eq s 'car) (setq found t))) found)"),
+        "T");
+}
+
+TEST(eval_do_symbols_keyword)
+{
+    /* KEYWORD package should have at least some symbols */
+    ASSERT_STR_EQ(eval_print(
+        "(let ((count 0)) (do-symbols (s \"KEYWORD\") (incf count)) (> count 0))"),
+        "T");
+}
+
 /* ---- Main ---- */
 
 int main(void)
@@ -589,6 +750,30 @@ int main(void)
     RUN(eval_print_current_pkg_no_prefix);
     RUN(eval_print_other_pkg_prefix);
     RUN(eval_print_other_pkg_internal_prefix);
+
+    /* in-package tests */
+    RUN(eval_star_package_initial);
+    RUN(eval_in_package_basic);
+    RUN(eval_in_package_returns_package);
+    RUN(eval_in_package_symbol_name);
+
+    /* defpackage tests */
+    RUN(eval_defpackage_basic);
+    RUN(eval_defpackage_with_use);
+    RUN(eval_defpackage_with_export);
+    RUN(eval_defpackage_full);
+    RUN(eval_defpackage_idempotent);
+    RUN(eval_defpackage_in_package_workflow);
+
+    /* %package-symbols / %package-external-symbols */
+    RUN(eval_package_symbols);
+    RUN(eval_package_external_symbols);
+
+    /* do-symbols / do-external-symbols */
+    RUN(eval_do_symbols);
+    RUN(eval_do_external_symbols);
+    RUN(eval_do_external_symbols_finds_car);
+    RUN(eval_do_symbols_keyword);
 
     teardown();
     REPORT();

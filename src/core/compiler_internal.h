@@ -153,6 +153,7 @@ void compile_locally(CL_Compiler *c, CL_Obj form);
 void compile_trace(CL_Compiler *c, CL_Obj form);
 void compile_untrace(CL_Compiler *c, CL_Obj form);
 void compile_time(CL_Compiler *c, CL_Obj form);
+void compile_in_package(CL_Compiler *c, CL_Obj form);
 
 /* Declaration processing helpers */
 CL_Obj process_body_declarations(CL_Compiler *c, CL_Obj body);

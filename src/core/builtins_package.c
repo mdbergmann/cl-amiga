@@ -467,6 +467,54 @@ static CL_Obj bi_list_all_packages(CL_Obj *args, int nargs)
     return result;
 }
 
+/* (%package-symbols package) — list of all symbols in package */
+static CL_Obj bi_package_symbols(CL_Obj *args, int nargs)
+{
+    CL_Obj pkg_obj = coerce_to_package(args[0]);
+    CL_Package *pkg = (CL_Package *)CL_OBJ_TO_PTR(pkg_obj);
+    CL_Vector *tbl = (CL_Vector *)CL_OBJ_TO_PTR(pkg->symbols);
+    CL_Obj result = CL_NIL;
+    uint32_t i;
+    (void)nargs;
+
+    CL_GC_PROTECT(result);
+    for (i = 0; i < tbl->length; i++) {
+        CL_Obj bucket = tbl->data[i];
+        while (!CL_NULL_P(bucket)) {
+            result = cl_cons(cl_car(bucket), result);
+            bucket = cl_cdr(bucket);
+        }
+    }
+    CL_GC_UNPROTECT(1);
+    return result;
+}
+
+/* (%package-external-symbols package) — list of exported symbols in package */
+static CL_Obj bi_package_external_symbols(CL_Obj *args, int nargs)
+{
+    CL_Obj pkg_obj = coerce_to_package(args[0]);
+    CL_Package *pkg = (CL_Package *)CL_OBJ_TO_PTR(pkg_obj);
+    CL_Vector *tbl = (CL_Vector *)CL_OBJ_TO_PTR(pkg->symbols);
+    CL_Obj result = CL_NIL;
+    uint32_t i;
+    (void)nargs;
+
+    CL_GC_PROTECT(result);
+    for (i = 0; i < tbl->length; i++) {
+        CL_Obj bucket = tbl->data[i];
+        while (!CL_NULL_P(bucket)) {
+            CL_Obj sym = cl_car(bucket);
+            CL_Symbol *s = (CL_Symbol *)CL_OBJ_TO_PTR(sym);
+            if (s->flags & CL_SYM_EXPORTED) {
+                result = cl_cons(sym, result);
+            }
+            bucket = cl_cdr(bucket);
+        }
+    }
+    CL_GC_UNPROTECT(1);
+    return result;
+}
+
 /* ---- Init ---- */
 
 void cl_builtins_package_init(void)
@@ -495,4 +543,6 @@ void cl_builtins_package_init(void)
     defun("PACKAGE-USE-LIST", bi_package_use_list, 1, 1);
     defun("PACKAGE-NICKNAMES", bi_package_nicknames, 1, 1);
     defun("LIST-ALL-PACKAGES", bi_list_all_packages, 0, 0);
+    defun("%PACKAGE-SYMBOLS", bi_package_symbols, 1, 1);
+    defun("%PACKAGE-EXTERNAL-SYMBOLS", bi_package_external_symbols, 1, 1);
 }

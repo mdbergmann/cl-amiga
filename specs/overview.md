@@ -86,13 +86,13 @@ Single-pass recursive compiler from S-expressions to bytecode:
 - Macro expansion before compilation
 - Backward jump support for loop forms
 
-**Special forms:** `quote`, `if`, `progn`, `lambda`, `let`, `let*`, `setq`, `setf`, `defun`, `defvar`, `defparameter`, `defmacro`, `function (#')`, `block`, `return-from`, `return`, `and`, `or`, `cond`, `do`, `dolist`, `dotimes`, `case`, `ecase`, `typecase`, `etypecase`, `flet`, `labels`, `tagbody`, `go`, `catch`, `unwind-protect`, `multiple-value-bind`, `multiple-value-list`, `multiple-value-prog1`, `nth-value`, `eval-when`, `destructuring-bind`, `defsetf`, `trace`, `untrace`, `time`, `handler-bind`, `restart-case`
+**Special forms:** `quote`, `if`, `progn`, `lambda`, `let`, `let*`, `setq`, `setf`, `defun`, `defvar`, `defparameter`, `defmacro`, `function (#')`, `block`, `return-from`, `return`, `and`, `or`, `cond`, `do`, `dolist`, `dotimes`, `case`, `ecase`, `typecase`, `etypecase`, `flet`, `labels`, `tagbody`, `go`, `catch`, `unwind-protect`, `multiple-value-bind`, `multiple-value-list`, `multiple-value-prog1`, `nth-value`, `eval-when`, `destructuring-bind`, `defsetf`, `trace`, `untrace`, `time`, `handler-bind`, `restart-case`, `in-package`
 
-**Bootstrap macros:** `when`, `unless`, `prog1`, `prog2`, `push`, `pop`, `incf`, `decf`, `pushnew`, `handler-case`, `ignore-errors`, `with-simple-restart`, `define-condition`, `check-type`, `assert`
+**Bootstrap macros:** `when`, `unless`, `prog1`, `prog2`, `push`, `pop`, `incf`, `decf`, `pushnew`, `handler-case`, `ignore-errors`, `with-simple-restart`, `define-condition`, `check-type`, `assert`, `defpackage`, `do-symbols`, `do-external-symbols`
 
 **Bootstrap functions:** `cadr`, `caar`, `cdar`, `cddr`, `caddr`, `cadar`, `identity`, `endp`, `member`, `intersection`, `union`, `set-difference`, `subsetp`, `cerror`
 
-## Built-in Functions (216 functions)
+## Built-in Functions (219 functions)
 
 | Category | Functions |
 |----------|-----------|
@@ -115,7 +115,7 @@ Single-pass recursive compiler from S-expressions to bytecode:
 | Conditions | `make-condition` `conditionp` `condition-type-name` `type-error-datum` `type-error-expected-type` `simple-condition-format-control` `simple-condition-format-arguments` `%register-condition-type` `condition-slot-value` |
 | Hash tables | `make-hash-table` `gethash` `remhash` `maphash` `clrhash` `hash-table-count` `hash-table-p` |
 | Type system | `typep` `coerce` |
-| Packages | `make-package` `find-package` `delete-package` `rename-package` `export` `unexport` `import` `use-package` `unuse-package` `shadow` `find-symbol` `intern` `unintern` `package-name` `package-use-list` `package-nicknames` `list-all-packages` |
+| Packages | `make-package` `find-package` `delete-package` `rename-package` `export` `unexport` `import` `use-package` `unuse-package` `shadow` `find-symbol` `intern` `unintern` `package-name` `package-use-list` `package-nicknames` `list-all-packages` `%package-symbols` `%package-external-symbols` |
 | Timing | `get-internal-real-time` |
 | Misc | `type-of` `gensym` |
 
@@ -227,16 +227,17 @@ Condition system, packages, and compiler completeness:
 - [x] `define-condition` (boot macro), `check-type` (boot macro), `assert` (boot macro), `condition-slot-value` builtin
 - [x] Package foundation — package registry, `CL_SYM_EXPORTED` flag, export-aware symbol inheritance, nicknames, 17 package builtins (`make-package`, `find-package`, `delete-package`, `rename-package`, `export`, `unexport`, `import`, `use-package`, `unuse-package`, `shadow`, `find-symbol`, `intern`, `unintern`, `package-name`, `package-use-list`, `package-nicknames`, `list-all-packages`)
 - [x] Reader package-qualified syntax (`pkg:sym` external, `pkg::sym` internal, `#:sym` uninterned), printer package prefixes (`PKG:SYM`, `PKG::SYM`, `#:SYM`)
+- [x] `defpackage` (boot macro), `in-package` (compiler special form), `do-symbols`, `do-external-symbols` (boot macros), `%package-symbols`, `%package-external-symbols` (internal builtins), `*PACKAGE*` special variable
 - [ ] Interactive debugger — on error, display condition, backtrace, and available restarts; prompt user to select restart or abort; `invoke-debugger`, `break`, `*debugger-hook*`
 
-289 host tests (6 suites), 697 Amiga batch tests — all passing.
-- [ ] `defpackage`, `in-package`, `do-symbols`, `do-external-symbols`
+457 host tests (6 suites), 697 Amiga batch tests — all passing.
 - [ ] `macrolet`, `symbol-macrolet` — local macro bindings (compile-time only, no opcodes)
 - [ ] Unused variable warnings with `ignore`/`ignorable` declaration support
 - [ ] `defconstant` — constant variable definitions
 - [ ] `multiple-value-call`, `multiple-value-setq` — MV completeness
 - [ ] `progv` — dynamic binding with computed symbols
 - [ ] `the` — type declaration special form (initially no-op, validates later)
+- [ ] Enhanced `time` — report bytes consed, GC cycles, heap usage in addition to wall time; optionally CPU time via `getrusage()` (POSIX) / `ReadEClock()` (AmigaOS)
 
 ### Phase 7: I/O & Pathnames
 
@@ -363,9 +364,9 @@ cl-amiga/
 │   └── boot.lisp          # Bootstrap macros/functions
 ├── tests/
 │   ├── test.h             # Test framework
-│   ├── test_*.c           # Host test suites (6 files, 425 tests)
+│   ├── test_*.c           # Host test suites (6 files, 457 tests)
 │   └── amiga/
-│       └── run-tests.lisp # AmigaOS batch tests (683 tests)
+│       └── run-tests.lisp # AmigaOS batch tests (697 tests)
 ├── build/                 # Build output (gitignored)
 └── verify/
     └── realamiga/          # FS-UAE config + AmigaOS system image

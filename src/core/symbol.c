@@ -64,6 +64,8 @@ CL_Obj SYM_LOCALLY = CL_NIL;
 CL_Obj SYM_TRACE = CL_NIL;
 CL_Obj SYM_UNTRACE = CL_NIL;
 CL_Obj SYM_TIME = CL_NIL;
+CL_Obj SYM_IN_PACKAGE = CL_NIL;
+CL_Obj SYM_STAR_PACKAGE = CL_NIL;
 
 /* Declaration specifier symbols */
 CL_Obj SYM_SPECIAL_DECL = CL_NIL;
@@ -270,6 +272,8 @@ void cl_symbol_init(void)
     SYM_TRACE                = cl_intern_in("TRACE", 5, cl_package_cl);
     SYM_UNTRACE              = cl_intern_in("UNTRACE", 7, cl_package_cl);
     SYM_TIME                 = cl_intern_in("TIME", 4, cl_package_cl);
+    SYM_IN_PACKAGE           = cl_intern_in("IN-PACKAGE", 10, cl_package_cl);
+    SYM_STAR_PACKAGE         = cl_intern_in("*PACKAGE*", 9, cl_package_cl);
 
     /* Declaration specifier symbols */
     SYM_SPECIAL_DECL         = cl_intern_in("SPECIAL", 7, cl_package_cl);
@@ -337,6 +341,13 @@ void cl_symbol_init(void)
 
     /* Set the global CL_T for use by type predicates */
     CL_T = SYM_T;
+
+    /* *PACKAGE* is a special variable initialized to CL-USER */
+    {
+        CL_Symbol *pkg_sym = (CL_Symbol *)CL_OBJ_TO_PTR(SYM_STAR_PACKAGE);
+        pkg_sym->value = cl_current_package;
+        pkg_sym->flags |= CL_SYM_SPECIAL;
+    }
 
     /* Export all CL symbols so CL-USER inherits them.
        Also called again after cl_builtins_init() for builtin names. */

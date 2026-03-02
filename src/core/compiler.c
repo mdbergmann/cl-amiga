@@ -863,6 +863,7 @@ void compile_expr(CL_Compiler *c, CL_Obj expr)
         if (head == SYM_TRACE)       { compile_trace(c, expr); return; }
         if (head == SYM_UNTRACE)     { compile_untrace(c, expr); return; }
         if (head == SYM_TIME)        { compile_time(c, expr); return; }
+        if (head == SYM_IN_PACKAGE)  { compile_in_package(c, expr); return; }
 
         compile_call(c, expr);
         return;
