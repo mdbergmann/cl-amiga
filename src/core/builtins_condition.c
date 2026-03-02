@@ -467,6 +467,124 @@ static CL_Obj bi_error(CL_Obj *args, int n)
     return CL_NIL;
 }
 
+/* --- Restart builtins --- */
+
+/* Helper: throw to a catch tag (same logic as bi_throw in builtins_io.c) */
+static void throw_to_tag(CL_Obj tag, CL_Obj value)
+{
+    int i;
+    for (i = cl_nlx_top - 1; i >= 0; i--) {
+        if (cl_nlx_stack[i].type == CL_NLX_CATCH &&
+            cl_nlx_stack[i].tag == tag) {
+            int j;
+            /* Check for interposing UWPROT frames */
+            for (j = cl_nlx_top - 1; j > i; j--) {
+                if (cl_nlx_stack[j].type == CL_NLX_UWPROT) {
+                    cl_pending_throw = 1;
+                    cl_pending_tag = tag;
+                    cl_pending_value = value;
+                    cl_nlx_top = j;
+                    longjmp(cl_nlx_stack[j].buf, 1);
+                }
+            }
+            cl_nlx_stack[i].result = value;
+            cl_nlx_top = i;
+            longjmp(cl_nlx_stack[i].buf, 1);
+        }
+    }
+    cl_error(CL_ERR_GENERAL, "INVOKE-RESTART: no catch for restart tag");
+}
+
+/* (invoke-restart restart-name &rest args) */
+static CL_Obj bi_invoke_restart(CL_Obj *args, int n)
+{
+    CL_Obj name = args[0];
+    int i;
+
+    /* Search restart stack top-down */
+    for (i = cl_restart_top - 1; i >= 0; i--) {
+        if (cl_restart_stack[i].name == name) {
+            /* Call the restart handler closure with remaining args */
+            CL_Obj result = cl_vm_apply(cl_restart_stack[i].handler,
+                                         args + 1, n - 1);
+            /* Throw result to the restart's catch tag */
+            throw_to_tag(cl_restart_stack[i].tag, result);
+            return CL_NIL; /* unreachable */
+        }
+    }
+    cl_error(CL_ERR_GENERAL, "Restart %s not found",
+             CL_SYMBOL_P(name) ? cl_symbol_name(name) : "?");
+    return CL_NIL;
+}
+
+/* (find-restart name &optional condition) — return T if found, NIL if not */
+static CL_Obj bi_find_restart(CL_Obj *args, int n)
+{
+    CL_Obj name = args[0];
+    int i;
+    CL_UNUSED(n);
+
+    for (i = cl_restart_top - 1; i >= 0; i--) {
+        if (cl_restart_stack[i].name == name)
+            return SYM_T;
+    }
+    return CL_NIL;
+}
+
+/* (compute-restarts &optional condition) — return list of restart name symbols */
+static CL_Obj bi_compute_restarts(CL_Obj *args, int n)
+{
+    CL_Obj result = CL_NIL;
+    int i;
+    CL_UNUSED(args);
+    CL_UNUSED(n);
+
+    CL_GC_PROTECT(result);
+    for (i = 0; i < cl_restart_top; i++) {
+        result = cl_cons(cl_restart_stack[i].name, result);
+    }
+    CL_GC_UNPROTECT(1);
+    return result;
+}
+
+/* (abort &optional condition) */
+static CL_Obj bi_abort(CL_Obj *args, int n)
+{
+    CL_Obj abort_args[1];
+    CL_UNUSED(args);
+    CL_UNUSED(n);
+    abort_args[0] = SYM_ABORT;
+    return bi_invoke_restart(abort_args, 1);
+}
+
+/* (continue &optional condition) — invoke CONTINUE restart if available */
+static CL_Obj bi_continue_restart(CL_Obj *args, int n)
+{
+    int i;
+    CL_UNUSED(args);
+    CL_UNUSED(n);
+
+    /* Only invoke if CONTINUE restart is available */
+    for (i = cl_restart_top - 1; i >= 0; i--) {
+        if (cl_restart_stack[i].name == SYM_CONTINUE) {
+            CL_Obj cont_args[1];
+            cont_args[0] = SYM_CONTINUE;
+            return bi_invoke_restart(cont_args, 1);
+        }
+    }
+    return CL_NIL;
+}
+
+/* (muffle-warning &optional condition) */
+static CL_Obj bi_muffle_warning(CL_Obj *args, int n)
+{
+    CL_Obj mw_args[1];
+    CL_UNUSED(args);
+    CL_UNUSED(n);
+    mw_args[0] = SYM_MUFFLE_WARNING;
+    return bi_invoke_restart(mw_args, 1);
+}
+
 /* --- Registration --- */
 
 void cl_builtins_condition_init(void)
@@ -489,4 +607,12 @@ void cl_builtins_condition_init(void)
     defun("SIGNAL", bi_signal, 1, -1);
     defun("WARN", bi_warn, 1, -1);
     defun("ERROR", bi_error, 1, -1);
+
+    /* Restarts */
+    defun("INVOKE-RESTART", bi_invoke_restart, 1, -1);
+    defun("FIND-RESTART", bi_find_restart, 1, 2);
+    defun("COMPUTE-RESTARTS", bi_compute_restarts, 0, 1);
+    defun("ABORT", bi_abort, 0, 1);
+    defun("CONTINUE", bi_continue_restart, 0, 1);
+    defun("MUFFLE-WARNING", bi_muffle_warning, 0, 1);
 }

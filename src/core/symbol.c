@@ -102,6 +102,14 @@ CL_Obj SYM_DIVISION_BY_ZERO = CL_NIL;
 CL_Obj SYM_SIGNAL = CL_NIL;
 CL_Obj SYM_WARN = CL_NIL;
 CL_Obj SYM_HANDLER_BIND = CL_NIL;
+CL_Obj SYM_RESTART_CASE = CL_NIL;
+
+/* Restart name symbols */
+CL_Obj SYM_ABORT = CL_NIL;
+CL_Obj SYM_CONTINUE = CL_NIL;
+CL_Obj SYM_MUFFLE_WARNING = CL_NIL;
+CL_Obj SYM_USE_VALUE = CL_NIL;
+CL_Obj SYM_STORE_VALUE = CL_NIL;
 
 /* Condition keyword symbols */
 CL_Obj KW_FORMAT_CONTROL = CL_NIL;
@@ -283,6 +291,14 @@ void cl_symbol_init(void)
     SYM_SIGNAL                   = cl_intern_in("SIGNAL", 6, cl_package_cl);
     SYM_WARN                     = cl_intern_in("WARN", 4, cl_package_cl);
     SYM_HANDLER_BIND             = cl_intern_in("HANDLER-BIND", 12, cl_package_cl);
+    SYM_RESTART_CASE             = cl_intern_in("RESTART-CASE", 12, cl_package_cl);
+
+    /* Restart name symbols */
+    SYM_ABORT                    = cl_intern_in("ABORT", 5, cl_package_cl);
+    SYM_CONTINUE                 = cl_intern_in("CONTINUE", 8, cl_package_cl);
+    SYM_MUFFLE_WARNING           = cl_intern_in("MUFFLE-WARNING", 14, cl_package_cl);
+    SYM_USE_VALUE                = cl_intern_in("USE-VALUE", 9, cl_package_cl);
+    SYM_STORE_VALUE              = cl_intern_in("STORE-VALUE", 11, cl_package_cl);
 
     /* Condition keyword symbols */
     KW_FORMAT_CONTROL            = cl_intern_keyword("FORMAT-CONTROL", 14);

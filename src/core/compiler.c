@@ -853,6 +853,7 @@ void compile_expr(CL_Compiler *c, CL_Obj expr)
         if (head == SYM_UNWIND_PROTECT) { compile_unwind_protect(c, expr); return; }
         if (head == SYM_DESTRUCTURING_BIND) { compile_destructuring_bind(c, expr); return; }
         if (head == SYM_HANDLER_BIND) { compile_handler_bind(c, expr); return; }
+        if (head == SYM_RESTART_CASE) { compile_restart_case(c, expr); return; }
         if (head == SYM_DECLARE) {
             cl_error(CL_ERR_GENERAL, "DECLARE is not allowed here -- it must appear at the start of a body form");
             return;

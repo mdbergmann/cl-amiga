@@ -311,6 +311,8 @@ static DisasmInfo disasm_opcode_info(uint8_t op)
     case OP_DEFTYPE:    info.name = "DEFTYPE";    info.arg_type = OP_ARG_U16; break;
     case OP_HANDLER_PUSH: info.name = "HANDLER_PUSH"; info.arg_type = OP_ARG_U16; break;
     case OP_HANDLER_POP:  info.name = "HANDLER_POP";  info.arg_type = OP_ARG_U8;  break;
+    case OP_RESTART_PUSH: info.name = "RESTART_PUSH"; info.arg_type = OP_ARG_U16; break;
+    case OP_RESTART_POP:  info.name = "RESTART_POP";  info.arg_type = OP_ARG_U8;  break;
     case OP_ARGC:       info.name = "ARGC";       break;
     case OP_CATCH:      info.name = "CATCH";      info.arg_type = OP_ARG_I16; break;
     case OP_UNCATCH:    info.name = "UNCATCH";    break;

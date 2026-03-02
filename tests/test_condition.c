@@ -444,6 +444,129 @@ TEST(lisp_ignore_errors_no_error)
         "30");
 }
 
+/* --- restart-case tests --- */
+
+TEST(lisp_restart_case_basic)
+{
+    /* Basic restart-case: invoke-restart transfers control */
+    ASSERT_STR_EQ(eval_print(
+        "(restart-case (invoke-restart 'use-value 42)"
+        "  (use-value (v) v))"),
+        "42");
+}
+
+TEST(lisp_restart_case_normal_exit)
+{
+    /* restart-case: no restart invoked, returns form value */
+    ASSERT_STR_EQ(eval_print(
+        "(restart-case (+ 1 2)"
+        "  (abort () 99))"),
+        "3");
+}
+
+TEST(lisp_restart_case_multiple_clauses)
+{
+    /* Multiple restarts: correct one selected */
+    ASSERT_STR_EQ(eval_print(
+        "(restart-case (invoke-restart 'continue)"
+        "  (abort () :aborted)"
+        "  (continue () :continued))"),
+        ":CONTINUED");
+}
+
+TEST(lisp_restart_case_no_params)
+{
+    /* Restart with no parameters */
+    ASSERT_STR_EQ(eval_print(
+        "(restart-case (invoke-restart 'abort)"
+        "  (abort () 42))"),
+        "42");
+}
+
+TEST(lisp_find_restart)
+{
+    /* find-restart returns T when restart is active */
+    ASSERT_STR_EQ(eval_print(
+        "(restart-case (if (find-restart 'continue) :found :not-found)"
+        "  (continue () nil))"),
+        ":FOUND");
+}
+
+TEST(lisp_find_restart_missing)
+{
+    /* find-restart returns NIL when restart is not active */
+    ASSERT_STR_EQ(eval_print(
+        "(find-restart 'continue)"),
+        "NIL");
+}
+
+TEST(lisp_compute_restarts)
+{
+    /* compute-restarts returns list of active restart names */
+    ASSERT_STR_EQ(eval_print(
+        "(restart-case (length (compute-restarts))"
+        "  (abort () nil)"
+        "  (continue () nil))"),
+        "2");
+}
+
+TEST(lisp_restart_case_with_handler)
+{
+    /* handler-case + restart-case interaction:
+     * handler invokes a restart established around the signaling form */
+    ASSERT_STR_EQ(eval_print(
+        "(handler-bind ((error (lambda (c) (invoke-restart 'continue))))"
+        "  (restart-case (error \"boom\")"
+        "    (continue () 99)))"),
+        "99");
+}
+
+TEST(lisp_with_simple_restart)
+{
+    /* with-simple-restart: invoke restart returns (values nil t) */
+    ASSERT_STR_EQ(eval_print(
+        "(with-simple-restart (abort \"Abort operation\")"
+        "  (invoke-restart 'abort))"),
+        "NIL");
+}
+
+TEST(lisp_with_simple_restart_normal)
+{
+    /* with-simple-restart: no restart invoked, returns body value */
+    ASSERT_STR_EQ(eval_print(
+        "(with-simple-restart (abort \"Abort operation\")"
+        "  42)"),
+        "42");
+}
+
+TEST(lisp_cerror_continue)
+{
+    /* cerror: CONTINUE restart returns NIL */
+    ASSERT_STR_EQ(eval_print(
+        "(handler-bind ((error (lambda (c) (invoke-restart 'continue))))"
+        "  (cerror \"Continue anyway\" \"something bad\")"
+        "  :after-cerror)"),
+        ":AFTER-CERROR");
+}
+
+TEST(lisp_restart_stack_nlx)
+{
+    /* Verify restart stack is properly cleaned up after NLX */
+    extern int cl_restart_top;
+
+    /* After error recovery, restart_top should be 0 */
+    {
+        int err = CL_CATCH();
+        if (err == CL_ERR_NONE) {
+            cl_error(CL_ERR_GENERAL, "test nlx");
+            CL_UNCATCH();
+        } else {
+            CL_UNCATCH();
+            ASSERT_EQ_INT(cl_restart_top, 0);
+        }
+    }
+}
+
 int main(void)
 {
     setup();
@@ -490,6 +613,20 @@ int main(void)
     RUN(lisp_handler_case_type_dispatch);
     RUN(lisp_ignore_errors);
     RUN(lisp_ignore_errors_no_error);
+
+    /* restart-case tests */
+    RUN(lisp_restart_case_basic);
+    RUN(lisp_restart_case_normal_exit);
+    RUN(lisp_restart_case_multiple_clauses);
+    RUN(lisp_restart_case_no_params);
+    RUN(lisp_find_restart);
+    RUN(lisp_find_restart_missing);
+    RUN(lisp_compute_restarts);
+    RUN(lisp_restart_case_with_handler);
+    RUN(lisp_with_simple_restart);
+    RUN(lisp_with_simple_restart_normal);
+    RUN(lisp_cerror_continue);
+    RUN(lisp_restart_stack_nlx);
 
     teardown();
     REPORT();

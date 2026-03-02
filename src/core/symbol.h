@@ -132,6 +132,14 @@ extern CL_Obj SYM_DIVISION_BY_ZERO;
 extern CL_Obj SYM_SIGNAL;
 extern CL_Obj SYM_WARN;
 extern CL_Obj SYM_HANDLER_BIND;
+extern CL_Obj SYM_RESTART_CASE;
+
+/* Restart name symbols */
+extern CL_Obj SYM_ABORT;
+extern CL_Obj SYM_CONTINUE;
+extern CL_Obj SYM_MUFFLE_WARNING;
+extern CL_Obj SYM_USE_VALUE;
+extern CL_Obj SYM_STORE_VALUE;
 
 /* Condition keyword symbols */
 extern CL_Obj KW_FORMAT_CONTROL;

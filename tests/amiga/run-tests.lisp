@@ -978,6 +978,19 @@
 (check "ignore-errors catches" nil (ignore-errors (error "boom")))
 (check "ignore-errors no error" 30 (ignore-errors (+ 10 20)))
 
+; --- restart-case ---
+(check "restart-case basic" 42 (restart-case (invoke-restart 'use-value 42) (use-value (v) v)))
+(check "restart-case normal exit" 3 (restart-case (+ 1 2) (abort () 99)))
+(check "restart-case no params" 42 (restart-case (invoke-restart 'abort) (abort () 42)))
+(check "restart-case multiple" :continued (restart-case (invoke-restart 'continue) (abort () :aborted) (continue () :continued)))
+(check "find-restart found" :found (restart-case (if (find-restart 'continue) :found :not-found) (continue () nil)))
+(check "find-restart missing" nil (find-restart 'continue))
+(check "compute-restarts count" 2 (restart-case (length (compute-restarts)) (abort () nil) (continue () nil)))
+(check "restart with handler" 99 (handler-bind ((error (lambda (c) (invoke-restart 'continue)))) (restart-case (error "boom") (continue () 99))))
+(check "with-simple-restart invoke" nil (with-simple-restart (abort "Abort") (invoke-restart 'abort)))
+(check "with-simple-restart normal" 42 (with-simple-restart (abort "Abort") 42))
+(check "cerror continue" :after (handler-bind ((error (lambda (c) (invoke-restart 'continue)))) (cerror "Continue" "bad") :after))
+
 ; --- Summary ---
 (format t "~%=== Results ===~%")
 (format t "Passed: ~A~%" *pass-count*)

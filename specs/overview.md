@@ -58,7 +58,7 @@ Types: CONS, SYMBOL, STRING, FUNCTION, CLOSURE, BYTECODE, VECTOR, PACKAGE, HASHT
 
 ## Bytecode VM
 
-Stack-based, byte-oriented instruction encoding. 46 opcodes:
+Stack-based, byte-oriented instruction encoding. 48 opcodes:
 
 | Category | Opcodes |
 |----------|---------|
@@ -74,7 +74,7 @@ Stack-based, byte-oriented instruction encoding. 46 opcodes:
 | Multiple values | MV_LOAD, MV_TO_LIST, NTH_VALUE |
 | Dynamic binding | DYNBIND, DYNUNBIND |
 | Mutation | RPLACA, RPLACD, ASET |
-| Condition handling | HANDLER_PUSH, HANDLER_POP |
+| Condition handling | HANDLER_PUSH, HANDLER_POP, RESTART_PUSH, RESTART_POP |
 | Misc | LIST, HALT, DEFMACRO, ARGC |
 
 ## Compiler
@@ -86,13 +86,13 @@ Single-pass recursive compiler from S-expressions to bytecode:
 - Macro expansion before compilation
 - Backward jump support for loop forms
 
-**Special forms:** `quote`, `if`, `progn`, `lambda`, `let`, `let*`, `setq`, `setf`, `defun`, `defvar`, `defparameter`, `defmacro`, `function (#')`, `block`, `return-from`, `return`, `and`, `or`, `cond`, `do`, `dolist`, `dotimes`, `case`, `ecase`, `typecase`, `etypecase`, `flet`, `labels`, `tagbody`, `go`, `catch`, `unwind-protect`, `multiple-value-bind`, `multiple-value-list`, `multiple-value-prog1`, `nth-value`, `eval-when`, `destructuring-bind`, `defsetf`, `trace`, `untrace`, `time`, `handler-bind`
+**Special forms:** `quote`, `if`, `progn`, `lambda`, `let`, `let*`, `setq`, `setf`, `defun`, `defvar`, `defparameter`, `defmacro`, `function (#')`, `block`, `return-from`, `return`, `and`, `or`, `cond`, `do`, `dolist`, `dotimes`, `case`, `ecase`, `typecase`, `etypecase`, `flet`, `labels`, `tagbody`, `go`, `catch`, `unwind-protect`, `multiple-value-bind`, `multiple-value-list`, `multiple-value-prog1`, `nth-value`, `eval-when`, `destructuring-bind`, `defsetf`, `trace`, `untrace`, `time`, `handler-bind`, `restart-case`
 
-**Bootstrap macros:** `when`, `unless`, `prog1`, `prog2`, `push`, `pop`, `incf`, `decf`, `pushnew`, `handler-case`, `ignore-errors`
+**Bootstrap macros:** `when`, `unless`, `prog1`, `prog2`, `push`, `pop`, `incf`, `decf`, `pushnew`, `handler-case`, `ignore-errors`, `with-simple-restart`
 
-**Bootstrap functions:** `cadr`, `caar`, `cdar`, `cddr`, `caddr`, `cadar`, `identity`, `endp`, `member`, `intersection`, `union`, `set-difference`, `subsetp`
+**Bootstrap functions:** `cadr`, `caar`, `cdar`, `cddr`, `caddr`, `cadar`, `identity`, `endp`, `member`, `intersection`, `union`, `set-difference`, `subsetp`, `cerror`
 
-## Built-in Functions (191 functions)
+## Built-in Functions (197 functions)
 
 | Category | Functions |
 |----------|-----------|
@@ -111,7 +111,7 @@ Single-pass recursive compiler from S-expressions to bytecode:
 | Strings | `string=` `string-equal` `string<` `string>` `string<=` `string>=` `string-upcase` `string-downcase` `string-trim` `string-left-trim` `string-right-trim` `subseq` `concatenate` `char` `schar` `string` `parse-integer` `write-to-string` `prin1-to-string` `princ-to-string` |
 | I/O | `print` `prin1` `princ` `terpri` `format` `load` `disassemble` |
 | Eval/Macro | `eval` `macroexpand` `macroexpand-1` |
-| Control | `throw` `values` `values-list` `error` `signal` `warn` |
+| Control | `throw` `values` `values-list` `error` `signal` `warn` `invoke-restart` `find-restart` `compute-restarts` `abort` `continue` `muffle-warning` |
 | Conditions | `make-condition` `conditionp` `condition-type-name` `type-error-datum` `type-error-expected-type` `simple-condition-format-control` `simple-condition-format-arguments` `define-condition` |
 | Hash tables | `make-hash-table` `gethash` `remhash` `maphash` `clrhash` `hash-table-count` `hash-table-p` |
 | Type system | `typep` `coerce` |
@@ -221,10 +221,12 @@ Condition system, packages, and compiler completeness:
 - [x] Signaling (`signal`, `warn`, `error` with condition integration)
 - [x] `handler-case` (boot macro using catch/throw + cons box pattern)
 - [x] `ignore-errors` (boot macro)
-- [ ] Restarts (`restart-case`, `invoke-restart`, `find-restart`, `with-simple-restart`, `abort`, `continue`, `muffle-warning`)
-- [ ] `cerror`, `check-type`, `assert`
+- [x] Restarts (`restart-case` compiler special form, `invoke-restart`, `find-restart`, `compute-restarts`, `abort`, `continue`, `muffle-warning` builtins)
+- [x] `with-simple-restart` (boot macro), `cerror` (boot function)
+- [ ] `check-type`, `assert`
+- [ ] Interactive debugger — on error, display condition, backtrace, and available restarts; prompt user to select restart or abort; `invoke-debugger`, `break`, `*debugger-hook*`
 
-371 host tests (5 suites), ~640 Amiga batch tests — all passing.
+383 host tests (5 suites), 649 Amiga batch tests — all passing.
 - [ ] Full packages (`defpackage`, `in-package`, `use-package`, `export`, `import`, `shadow`, `shadowing-import-from`, `find-package`, `make-package`, `rename-package`, `delete-package`, `do-symbols`, `do-external-symbols`, `intern`, `unintern`)
 - [ ] `macrolet`, `symbol-macrolet` — local macro bindings (compile-time only, no opcodes)
 - [ ] Unused variable warnings with `ignore`/`ignorable` declaration support
@@ -329,7 +331,7 @@ Validation and ecosystem:
   - Redundant load elimination: `STORE slot, LOAD slot` → `STORE slot, DUP`
 - [ ] Compiler optimizations (constant folding during compilation, function inlining)
 - [ ] Generational or incremental GC
-- [ ] Debugger / stepper
+- [ ] Advanced debugger: single-stepper, frame inspection, local variable display in debug frames
 - [ ] Line editing (history, tab completion)
 - [ ] Amiga-specific FFI (calling library functions)
 - [ ] Intuition/gadtools bindings for GUI (stretch goal)
@@ -355,9 +357,9 @@ cl-amiga/
 │   └── boot.lisp          # Bootstrap macros/functions
 ├── tests/
 │   ├── test.h             # Test framework
-│   ├── test_*.c           # Host test suites (5 files, 371 tests)
+│   ├── test_*.c           # Host test suites (5 files, 383 tests)
 │   └── amiga/
-│       └── run-tests.lisp # AmigaOS batch tests (~640 tests)
+│       └── run-tests.lisp # AmigaOS batch tests (649 tests)
 ├── build/                 # Build output (gitignored)
 └── verify/
     └── realamiga/          # FS-UAE config + AmigaOS system image

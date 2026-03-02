@@ -982,3 +982,95 @@ void compile_handler_bind(CL_Compiler *c, CL_Obj form)
     cl_emit(c, OP_HANDLER_POP);
     cl_emit(c, (uint8_t)count);
 }
+
+/* --- restart-case --- */
+
+/* Skip :report, :interactive, :test keyword options in restart clause */
+static CL_Obj skip_restart_options(CL_Obj forms)
+{
+    static CL_Obj KW_REPORT = CL_NIL;
+    static CL_Obj KW_INTERACTIVE = CL_NIL;
+    static CL_Obj KW_TEST = CL_NIL;
+
+    if (CL_NULL_P(KW_REPORT)) {
+        KW_REPORT = cl_intern_keyword("REPORT", 6);
+        KW_INTERACTIVE = cl_intern_keyword("INTERACTIVE", 11);
+        KW_TEST = cl_intern_keyword("TEST", 4);
+    }
+
+    while (!CL_NULL_P(forms)) {
+        CL_Obj head = cl_car(forms);
+        if (head == KW_REPORT || head == KW_INTERACTIVE || head == KW_TEST) {
+            /* Skip keyword + its value */
+            forms = cl_cdr(forms);
+            if (!CL_NULL_P(forms))
+                forms = cl_cdr(forms);
+        } else {
+            break;
+        }
+    }
+    return forms;
+}
+
+void compile_restart_case(CL_Compiler *c, CL_Obj form)
+{
+    /* (restart-case form (name (params...) [:report str] body...)...) */
+    CL_Obj main_form = cl_car(cl_cdr(form));
+    CL_Obj clauses = cl_cdr(cl_cdr(form));
+    int saved_tail = c->in_tail;
+    int count = 0;
+    int catch_pos, jmp_pos;
+    CL_Obj cl_iter;
+    CL_Obj catch_tag;
+
+    c->in_tail = 0;
+
+    /* Generate unique catch tag (a fresh cons cell) */
+    catch_tag = cl_cons(CL_NIL, CL_NIL);
+
+    /* Set up catch frame with the unique tag */
+    cl_emit_const(c, catch_tag);  /* push tag */
+    cl_emit(c, OP_CATCH);
+    catch_pos = c->code_pos;
+    cl_emit_i16(c, 0);  /* placeholder for landing offset */
+
+    /* Push restart bindings: for each clause, compile lambda + push tag + OP_RESTART_PUSH */
+    for (cl_iter = clauses; !CL_NULL_P(cl_iter); cl_iter = cl_cdr(cl_iter)) {
+        CL_Obj clause = cl_car(cl_iter);
+        CL_Obj restart_name = cl_car(clause);
+        CL_Obj params = cl_car(cl_cdr(clause));
+        CL_Obj clause_body = skip_restart_options(cl_cdr(cl_cdr(clause)));
+        CL_Obj lambda_form;
+        int name_idx;
+
+        /* Build (lambda (params...) body...) and compile it */
+        lambda_form = cl_cons(SYM_LAMBDA, cl_cons(params, clause_body));
+        compile_expr(c, lambda_form);  /* pushes closure on stack */
+
+        /* Push catch tag */
+        cl_emit_const(c, catch_tag);
+
+        /* OP_RESTART_PUSH: pops tag, pops closure, pushes restart binding */
+        name_idx = cl_add_constant(c, restart_name);
+        cl_emit(c, OP_RESTART_PUSH);
+        cl_emit_u16(c, (uint16_t)name_idx);
+        count++;
+    }
+
+    /* Compile the main form */
+    compile_expr(c, main_form);
+
+    /* Normal exit: pop restart bindings, uncatch, jump past landing */
+    cl_emit(c, OP_RESTART_POP);
+    cl_emit(c, (uint8_t)count);
+    cl_emit(c, OP_UNCATCH);
+    jmp_pos = cl_emit_jump(c, OP_JMP);
+
+    /* [landing]: invoke-restart threw result here */
+    cl_patch_jump(c, catch_pos);
+
+    /* [past_landing]: both paths converge */
+    cl_patch_jump(c, jmp_pos);
+
+    c->in_tail = saved_tail;
+}

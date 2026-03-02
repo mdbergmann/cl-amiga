@@ -66,6 +66,7 @@ typedef struct {
     int base_fp;           /* base_fp of the cl_vm_eval call */
     int dyn_mark;          /* binding stack depth at frame creation */
     int handler_mark;      /* handler stack depth at frame creation */
+    int restart_mark;      /* restart stack depth at frame creation */
 } CL_NLXFrame;
 
 extern CL_NLXFrame cl_nlx_stack[CL_MAX_NLX_FRAMES];
@@ -89,6 +90,18 @@ typedef struct {
 #define CL_MAX_HANDLER_BINDINGS 64
 extern CL_HandlerBinding cl_handler_stack[CL_MAX_HANDLER_BINDINGS];
 extern int cl_handler_top;
+
+/* --- Restart binding stack --- */
+
+typedef struct {
+    CL_Obj name;        /* Restart name symbol (ABORT, CONTINUE, etc.) or NIL */
+    CL_Obj handler;     /* Closure to invoke */
+    CL_Obj tag;         /* Internal catch tag for transfer of control */
+} CL_RestartBinding;
+
+#define CL_MAX_RESTART_BINDINGS 64
+extern CL_RestartBinding cl_restart_stack[CL_MAX_RESTART_BINDINGS];
+extern int cl_restart_top;
 
 /* Signal a condition — walks handler stack, returns NIL if no handler transferred */
 CL_Obj cl_signal_condition(CL_Obj condition);

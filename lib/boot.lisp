@@ -100,3 +100,15 @@
 (defmacro ignore-errors (&rest body)
   `(handler-case (progn ,@body)
      (error (c) (values nil c))))
+
+;; with-simple-restart — establish a named restart that returns (values nil t)
+(defmacro with-simple-restart (restart-spec &rest body)
+  (let ((name (car restart-spec))
+        (format-control (cadr restart-spec)))
+    `(restart-case (progn ,@body)
+       (,name () :report ,format-control (values nil t)))))
+
+;; cerror — continuable error: establish CONTINUE restart around error
+(defun cerror (format-control datum &rest args)
+  (restart-case (apply #'error datum args)
+    (continue () :report format-control nil)))
