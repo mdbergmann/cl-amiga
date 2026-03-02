@@ -991,6 +991,25 @@
 (check "with-simple-restart normal" 42 (with-simple-restart (abort "Abort") 42))
 (check "cerror continue" :after (handler-bind ((error (lambda (c) (invoke-restart 'continue)))) (cerror "Continue" "bad") :after))
 
+; --- define-condition ---
+(check "define-condition basic" 'my-error (define-condition my-error (error) ()))
+(check "define-condition conditionp" t (conditionp (make-condition 'my-error)))
+(define-condition file-err (error) ((pathname :initarg :pathname :reader file-err-pathname)))
+(check "define-condition reader" "/tmp" (file-err-pathname (make-condition 'file-err :pathname "/tmp")))
+(check "define-condition typep parent" t (typep (make-condition 'my-error) 'error))
+(check "define-condition typep condition" t (typep (make-condition 'my-error) 'condition))
+(check "define-condition typep not warning" nil (typep (make-condition 'my-error) 'warning))
+(define-condition app-err (error) ())
+(check "define-condition handler-case" :caught (handler-case (error 'app-err) (app-err (c) :caught)))
+
+; --- check-type ---
+(check "check-type pass" :ok (let ((x 42)) (check-type x integer) :ok))
+(check "check-type fail" "hello" (handler-case (let ((x "hello")) (check-type x integer)) (type-error (c) (type-error-datum c))))
+
+; --- assert ---
+(check "assert pass" :ok (progn (assert (= 1 1)) :ok))
+(check "assert fail" :failed (handler-case (assert (= 1 2)) (simple-error (c) :failed)))
+
 ; --- Summary ---
 (format t "~%=== Results ===~%")
 (format t "Passed: ~A~%" *pass-count*)

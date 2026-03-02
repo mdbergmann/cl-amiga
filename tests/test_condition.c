@@ -549,6 +549,104 @@ TEST(lisp_cerror_continue)
         ":AFTER-CERROR");
 }
 
+/* --- define-condition / check-type / assert tests --- */
+
+TEST(lisp_define_condition_basic)
+{
+    /* define-condition creates a custom type that conditionp recognizes */
+    ASSERT_STR_EQ(eval_print(
+        "(define-condition my-error (error) ())"),
+        "MY-ERROR");
+    ASSERT_STR_EQ(eval_print(
+        "(conditionp (make-condition 'my-error))"),
+        "T");
+}
+
+TEST(lisp_define_condition_reader)
+{
+    /* define-condition with slot and reader accessor */
+    eval_print(
+        "(define-condition file-error (error)"
+        "  ((pathname :initarg :pathname :reader file-error-pathname)))");
+    ASSERT_STR_EQ(eval_print(
+        "(file-error-pathname (make-condition 'file-error :pathname \"/tmp/foo\"))"),
+        "\"/tmp/foo\"");
+}
+
+TEST(lisp_define_condition_hierarchy)
+{
+    /* Custom condition type matches parent via typep */
+    eval_print("(define-condition net-error (error) ())");
+    ASSERT_STR_EQ(eval_print(
+        "(typep (make-condition 'net-error) 'error)"),
+        "T");
+    ASSERT_STR_EQ(eval_print(
+        "(typep (make-condition 'net-error) 'condition)"),
+        "T");
+    ASSERT_STR_EQ(eval_print(
+        "(typep (make-condition 'net-error) 'warning)"),
+        "NIL");
+}
+
+TEST(lisp_define_condition_handler_case)
+{
+    /* handler-case catches custom condition type */
+    eval_print("(define-condition app-error (error) ())");
+    ASSERT_STR_EQ(eval_print(
+        "(handler-case (error 'app-error)"
+        "  (app-error (c) :caught))"),
+        ":CAUGHT");
+}
+
+TEST(lisp_define_condition_multi_slots)
+{
+    /* Multiple slots with readers */
+    eval_print(
+        "(define-condition db-error (error)"
+        "  ((query :initarg :query :reader db-error-query)"
+        "   (code :initarg :code :reader db-error-code)))");
+    ASSERT_STR_EQ(eval_print(
+        "(db-error-query (make-condition 'db-error :query \"SELECT\" :code 42))"),
+        "\"SELECT\"");
+    ASSERT_STR_EQ(eval_print(
+        "(db-error-code (make-condition 'db-error :query \"SELECT\" :code 42))"),
+        "42");
+}
+
+TEST(lisp_check_type_pass)
+{
+    /* check-type passes when type matches */
+    ASSERT_STR_EQ(eval_print(
+        "(let ((x 42)) (check-type x integer) :ok)"),
+        ":OK");
+}
+
+TEST(lisp_check_type_fail)
+{
+    /* check-type signals type-error when type doesn't match */
+    ASSERT_STR_EQ(eval_print(
+        "(handler-case (let ((x \"hello\")) (check-type x integer))"
+        "  (type-error (c) (type-error-datum c)))"),
+        "\"hello\"");
+}
+
+TEST(lisp_assert_pass)
+{
+    /* assert passes when test is true */
+    ASSERT_STR_EQ(eval_print(
+        "(progn (assert (= 1 1)) :ok)"),
+        ":OK");
+}
+
+TEST(lisp_assert_fail)
+{
+    /* assert signals error when test is false */
+    ASSERT_STR_EQ(eval_print(
+        "(handler-case (assert (= 1 2))"
+        "  (simple-error (c) :assertion-failed))"),
+        ":ASSERTION-FAILED");
+}
+
 TEST(lisp_restart_stack_nlx)
 {
     /* Verify restart stack is properly cleaned up after NLX */
@@ -627,6 +725,17 @@ int main(void)
     RUN(lisp_with_simple_restart_normal);
     RUN(lisp_cerror_continue);
     RUN(lisp_restart_stack_nlx);
+
+    /* define-condition / check-type / assert tests */
+    RUN(lisp_define_condition_basic);
+    RUN(lisp_define_condition_reader);
+    RUN(lisp_define_condition_hierarchy);
+    RUN(lisp_define_condition_handler_case);
+    RUN(lisp_define_condition_multi_slots);
+    RUN(lisp_check_type_pass);
+    RUN(lisp_check_type_fail);
+    RUN(lisp_assert_pass);
+    RUN(lisp_assert_fail);
 
     teardown();
     REPORT();

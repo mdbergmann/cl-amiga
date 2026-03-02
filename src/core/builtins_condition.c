@@ -48,6 +48,10 @@ static void defun(const char *name, CL_CFunc func, int min, int max)
  */
 static CL_Obj condition_hierarchy = CL_NIL;
 
+/* Slot table for user-defined condition types:
+ * ((type-name . ((slot-name . :initarg) ...)) ...) */
+static CL_Obj condition_slot_table = CL_NIL;
+
 /* Build the hierarchy alist during init */
 static void build_hierarchy(void)
 {
@@ -296,6 +300,78 @@ static CL_Obj bi_type_error_expected_type(CL_Obj *args, int n)
         cl_error(CL_ERR_TYPE, "TYPE-ERROR-EXPECTED-TYPE: not a condition");
     cond = (CL_Condition *)CL_OBJ_TO_PTR(args[0]);
     return slot_lookup(cond->slots, KW_EXPECTED_TYPE);
+}
+
+/* --- User-defined condition types --- */
+
+/* (%register-condition-type name parent slot-pairs)
+ * Adds to condition_hierarchy and condition_slot_table. */
+static CL_Obj bi_register_condition_type(CL_Obj *args, int n)
+{
+    CL_Obj name = args[0];
+    CL_Obj parent = args[1];
+    CL_Obj slot_pairs = args[2];
+    CL_Obj entry;
+    CL_UNUSED(n);
+
+    if (!CL_SYMBOL_P(name))
+        cl_error(CL_ERR_TYPE, "%%REGISTER-CONDITION-TYPE: name must be a symbol");
+    if (!CL_SYMBOL_P(parent) && !CL_NULL_P(parent))
+        cl_error(CL_ERR_TYPE, "%%REGISTER-CONDITION-TYPE: parent must be a symbol");
+
+    /* Add (name parent) to condition_hierarchy */
+    CL_GC_PROTECT(slot_pairs);
+    entry = cl_cons(name, cl_cons(parent, CL_NIL));
+    condition_hierarchy = cl_cons(entry, condition_hierarchy);
+
+    /* Add (name . slot-pairs) to condition_slot_table */
+    entry = cl_cons(name, slot_pairs);
+    condition_slot_table = cl_cons(entry, condition_slot_table);
+    CL_GC_UNPROTECT(1);
+
+    return name;
+}
+
+/* (condition-slot-value condition slot-name)
+ * Look up slot-name in condition_slot_table to find the initarg keyword,
+ * then look up that keyword in the condition's slots alist. */
+static CL_Obj bi_condition_slot_value(CL_Obj *args, int n)
+{
+    CL_Obj cond_obj = args[0];
+    CL_Obj slot_name = args[1];
+    CL_Condition *cond;
+    CL_Obj type_name, table_entry, slot_pairs, initarg;
+    CL_UNUSED(n);
+
+    if (!CL_CONDITION_P(cond_obj))
+        cl_error(CL_ERR_TYPE, "CONDITION-SLOT-VALUE: not a condition");
+
+    cond = (CL_Condition *)CL_OBJ_TO_PTR(cond_obj);
+    type_name = cond->type_name;
+
+    /* Find type in slot table */
+    table_entry = condition_slot_table;
+    while (!CL_NULL_P(table_entry)) {
+        CL_Obj entry = cl_car(table_entry);
+        if (cl_car(entry) == type_name) {
+            /* Found — walk slot pairs to find matching slot-name */
+            slot_pairs = cl_cdr(entry);
+            while (!CL_NULL_P(slot_pairs)) {
+                CL_Obj pair = cl_car(slot_pairs);
+                if (cl_car(pair) == slot_name) {
+                    /* Found slot — get initarg keyword */
+                    initarg = cl_cdr(pair);
+                    /* Look up initarg in condition's slots */
+                    return slot_lookup(cond->slots, initarg);
+                }
+                slot_pairs = cl_cdr(slot_pairs);
+            }
+            return CL_NIL; /* Slot name not found */
+        }
+        table_entry = cl_cdr(table_entry);
+    }
+
+    return CL_NIL; /* Type not in slot table */
 }
 
 /* --- Signaling --- */
@@ -591,8 +667,9 @@ void cl_builtins_condition_init(void)
 {
     /* Build condition type hierarchy */
     CL_GC_PROTECT(condition_hierarchy);
+    CL_GC_PROTECT(condition_slot_table);
     build_hierarchy();
-    CL_GC_UNPROTECT(1);
+    CL_GC_UNPROTECT(2);
 
     /* Register builtins */
     defun("MAKE-CONDITION", bi_make_condition, 1, -1);
@@ -602,6 +679,10 @@ void cl_builtins_condition_init(void)
     defun("SIMPLE-CONDITION-FORMAT-ARGUMENTS", bi_simple_condition_format_arguments, 1, 1);
     defun("TYPE-ERROR-DATUM", bi_type_error_datum, 1, 1);
     defun("TYPE-ERROR-EXPECTED-TYPE", bi_type_error_expected_type, 1, 1);
+
+    /* User-defined condition types */
+    defun("%REGISTER-CONDITION-TYPE", bi_register_condition_type, 3, 3);
+    defun("CONDITION-SLOT-VALUE", bi_condition_slot_value, 2, 2);
 
     /* Signaling */
     defun("SIGNAL", bi_signal, 1, -1);

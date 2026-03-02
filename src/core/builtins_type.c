@@ -77,7 +77,6 @@ static int typep_symbol(CL_Obj obj, CL_Obj type_sym)
     {
         extern int cl_condition_type_matches(CL_Obj cond_type, CL_Obj handler_type);
         extern int cl_is_condition_type(CL_Obj type_sym);
-        CL_Obj type_sym = cl_intern_in(tname, (uint32_t)strlen(tname), cl_package_cl);
         if (cl_is_condition_type(type_sym)) {
             if (!CL_CONDITION_P(obj)) return 0;
             {

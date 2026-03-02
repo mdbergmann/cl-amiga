@@ -112,3 +112,32 @@
 (defun cerror (format-control datum &rest args)
   (restart-case (apply #'error datum args)
     (continue () :report format-control nil)))
+
+;; define-condition — define a user condition type with slots and readers
+(defmacro define-condition (name parent-types slot-specs &rest options)
+  (let ((parent (if (consp parent-types) (car parent-types) parent-types))
+        (slot-pairs (mapcar (lambda (spec) (cons (car spec) (getf (cdr spec) :initarg))) slot-specs)))
+    `(progn
+       (%register-condition-type ',name ',parent ',slot-pairs)
+       ,@(mapcan (lambda (slot-spec)
+                   (let* ((slot-name (car slot-spec))
+                          (opts (cdr slot-spec))
+                          (reader (getf opts :reader)))
+                     (when reader
+                       (list `(defun ,reader (c) (condition-slot-value c ',slot-name))))))
+                 slot-specs)
+       ',name)))
+
+;; check-type — signal type-error if place is not of type
+(defmacro check-type (place type &optional type-string)
+  (let ((val (gensym)))
+    `(let ((,val ,place))
+       (unless (typep ,val ',type)
+         (error 'type-error :datum ,val :expected-type ',type)))))
+
+;; assert — signal error if test-form is false
+(defmacro assert (test-form &optional places string &rest args)
+  `(unless ,test-form
+     (error 'simple-error
+            :format-control ,(or string "Assertion failed: ~S")
+            :format-arguments (list ',test-form))))
