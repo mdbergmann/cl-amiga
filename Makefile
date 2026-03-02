@@ -30,6 +30,7 @@ CORE_SRC     = $(SRCDIR)/core/types.c \
                $(SRCDIR)/core/builtins_hashtable.c \
                $(SRCDIR)/core/builtins_sequence.c \
                $(SRCDIR)/core/builtins_sequence2.c \
+               $(SRCDIR)/core/builtins_type.c \
                $(SRCDIR)/core/repl.c
 MAIN_SRC     = $(SRCDIR)/main.c
 

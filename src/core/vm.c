@@ -768,6 +768,15 @@ CL_Obj cl_vm_eval(CL_Obj bytecode_obj)
             break;
         }
 
+        case OP_DEFTYPE: {
+            uint16_t idx = read_u16(code, &ip);
+            CL_Obj name = constants[idx];
+            CL_Obj expander = cl_vm_pop();
+            cl_register_type(name, expander);
+            cl_vm_push(name);
+            break;
+        }
+
         case OP_ARGC: {
             cl_vm_push(CL_MAKE_FIXNUM(frame->nargs));
             cl_mv_count = 1;

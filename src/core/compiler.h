@@ -31,4 +31,8 @@ void cl_compiler_init(void);
 /* Expand one level of macro (returns form unchanged if not a macro call) */
 CL_Obj cl_macroexpand_1(CL_Obj form);
 
+/* Type expander table (for deftype) */
+void cl_register_type(CL_Obj name, CL_Obj expander);
+CL_Obj cl_get_type_expander(CL_Obj name);
+
 #endif /* CL_COMPILER_H */

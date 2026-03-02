@@ -819,6 +819,53 @@
 (check "coerce nil->list" nil (coerce nil 'list))
 (check "coerce nil->vector" t (equal (coerce nil 'vector) (vector)))
 
+; --- Type system: compound typep ---
+(check "typep or match int" t (typep 42 '(or integer string)))
+(check "typep or match str" t (typep "hi" '(or integer string)))
+(check "typep or no match" nil (typep #\A '(or integer string)))
+(check "typep and match" t (typep nil '(and symbol list)))
+(check "typep and no match" nil (typep 42 '(and number string)))
+(check "typep not match" t (typep 42 '(not string)))
+(check "typep not no match" nil (typep "hi" '(not string)))
+(check "typep member match" t (typep 1 '(member 1 2 3)))
+(check "typep member no match" nil (typep 4 '(member 1 2 3)))
+(check "typep eql match" t (typep 42 '(eql 42)))
+(check "typep eql no match" nil (typep 43 '(eql 42)))
+(check "typep satisfies match" t (typep 42 '(satisfies numberp)))
+(check "typep satisfies no" nil (typep "hi" '(satisfies numberp)))
+(check "typep nested compound" t (typep 42 '(or (and integer atom) string)))
+
+; --- Type system: deftype ---
+(deftype my-num () 'number)
+(check "deftype basic match" t (typep 42 'my-num))
+(check "deftype basic no" nil (typep "hi" 'my-num))
+(deftype str-or-num () '(or string number))
+(check "deftype compound match int" t (typep 42 'str-or-num))
+(check "deftype compound match str" t (typep "hi" 'str-or-num))
+(check "deftype compound no" nil (typep #\A 'str-or-num))
+
+; --- Type system: subtypep ---
+(check "subtypep fixnum<number" t (subtypep 'fixnum 'number))
+(check "subtypep fixnum<integer" t (subtypep 'fixnum 'integer))
+(check "subtypep integer<number" t (subtypep 'integer 'number))
+(check "subtypep cons<list" t (subtypep 'cons 'list))
+(check "subtypep null<list" t (subtypep 'null 'list))
+(check "subtypep list<sequence" t (subtypep 'list 'sequence))
+(check "subtypep keyword<symbol" t (subtypep 'keyword 'symbol))
+(check "subtypep compiled-fn<fn" t (subtypep 'compiled-function 'function))
+(check "subtypep same type" t (subtypep 'integer 'integer))
+(check "subtypep not subtype" nil (subtypep 'string 'number))
+(check "subtypep nil<anything" t (subtypep 'nil 'number))
+(check "subtypep anything<t" t (subtypep 'number 't))
+(check "subtypep mv second val" '(t t) (multiple-value-list (subtypep 'fixnum 'number)))
+(check "subtypep mv not sub" '(nil t) (multiple-value-list (subtypep 'string 'number)))
+
+; --- Type system: typecase with compound ---
+(check "typecase or int" "match" (typecase 42 ((or integer string) "match") (t "no")))
+(check "typecase or str" "match" (typecase "hi" ((or integer string) "match") (t "no")))
+(check "typecase or no" "no" (typecase #\A ((or integer string) "match") (t "no")))
+(check "typecase list nil" "list" (typecase nil (list "list") (t "other")))
+
 ; --- Disassemble ---
 (defun disasm-test-fn (x) (+ x 1))
 (check "disassemble defun" nil (disassemble 'disasm-test-fn))

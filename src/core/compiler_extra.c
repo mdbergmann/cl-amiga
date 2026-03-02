@@ -430,7 +430,8 @@ void compile_case(CL_Compiler *c, CL_Obj form, int error_if_no_match)
 
 void compile_typecase(CL_Compiler *c, CL_Obj form, int error_if_no_match)
 {
-    /* (typecase keyform (type body...)... [(t|otherwise body...)]) */
+    /* (typecase keyform (type-spec body...)... [(t|otherwise body...)])
+     * Uses TYPEP for each clause — supports compound type specifiers. */
     CL_Obj keyform = cl_car(cl_cdr(form));
     CL_Obj clauses = cl_cdr(cl_cdr(form));
     CL_CompEnv *env = c->env;
@@ -440,29 +441,27 @@ void compile_typecase(CL_Compiler *c, CL_Obj form, int error_if_no_match)
     int done_patches[64];
     int n_done = 0;
     int had_default = 0;
-    CL_Obj sym_type_of;
-    int type_of_idx;
+    CL_Obj sym_typep;
+    int typep_idx;
 
-    /* Allocate temp slot for (type-of keyform) result */
+    /* Allocate temp slot for keyform value */
     temp_slot = env->local_count;
     env->local_count++;
     if (env->local_count > env->max_locals)
         env->max_locals = env->local_count;
 
-    /* Compile keyform, call TYPE-OF, store result */
+    /* Compile and store keyform */
     c->in_tail = 0;
-    sym_type_of = cl_intern("TYPE-OF", 7);
-    type_of_idx = cl_add_constant(c, sym_type_of);
-    cl_emit(c, OP_FLOAD);
-    cl_emit_u16(c, (uint16_t)type_of_idx);
     compile_expr(c, keyform);
-    cl_emit(c, OP_CALL);
-    cl_emit(c, 1);
     cl_emit(c, OP_STORE);
     cl_emit(c, (uint8_t)temp_slot);
     cl_emit(c, OP_POP);
 
-    /* Process clauses (same structure as case but compare type symbols) */
+    /* Pre-load TYPEP symbol index */
+    sym_typep = cl_intern("TYPEP", 5);
+    typep_idx = cl_add_constant(c, sym_typep);
+
+    /* Process clauses */
     while (!CL_NULL_P(clauses)) {
         CL_Obj clause = cl_car(clauses);
         CL_Obj type_spec = cl_car(clause);
@@ -478,28 +477,15 @@ void compile_typecase(CL_Compiler *c, CL_Obj form, int error_if_no_match)
             done_patches[n_done++] = cl_emit_jump(c, OP_JMP);
         } else {
             int jnil_pos;
-            CL_Obj type_sym;
 
-            /* Map CL type specifier to our type-of symbol */
-            if (type_spec == cl_intern("INTEGER", 7) ||
-                type_spec == cl_intern("FIXNUM", 6))
-                type_sym = cl_intern("FIXNUM", 6);
-            else if (type_spec == cl_intern("STRING", 6))
-                type_sym = cl_intern("STRING", 6);
-            else if (type_spec == cl_intern("CONS", 4) ||
-                     type_spec == cl_intern("LIST", 4))
-                type_sym = cl_intern("CONS", 4);
-            else if (type_spec == cl_intern("SYMBOL", 6))
-                type_sym = cl_intern("SYMBOL", 6);
-            else if (type_spec == cl_intern("FUNCTION", 8))
-                type_sym = cl_intern("FUNCTION", 8);
-            else
-                type_sym = type_spec; /* Use as-is */
-
+            /* Emit: (typep keyform 'type-spec) */
+            cl_emit(c, OP_FLOAD);
+            cl_emit_u16(c, (uint16_t)typep_idx);
             cl_emit(c, OP_LOAD);
             cl_emit(c, (uint8_t)temp_slot);
-            cl_emit_const(c, type_sym);
-            cl_emit(c, OP_EQ);
+            cl_emit_const(c, type_spec);
+            cl_emit(c, OP_CALL);
+            cl_emit(c, 2);
             jnil_pos = cl_emit_jump(c, OP_JNIL);
 
             /* Compile body */
@@ -716,6 +702,31 @@ void compile_defsetf(CL_Compiler *c, CL_Obj form)
 
     /* Return the accessor name */
     cl_emit_const(c, accessor);
+}
+
+/* --- Deftype --- */
+
+void compile_deftype(CL_Compiler *c, CL_Obj form)
+{
+    /* (deftype name lambda-list body...)
+     * Compile the expander as a lambda, then emit OP_DEFTYPE */
+    CL_Obj name = cl_car(cl_cdr(form));
+    CL_Obj lambda_list = cl_car(cl_cdr(cl_cdr(form)));
+    CL_Obj body = cl_cdr(cl_cdr(cl_cdr(form)));
+    int idx;
+
+    CL_Obj lambda_form = cl_cons(SYM_LAMBDA,
+                                  cl_cons(lambda_list, body));
+    CL_GC_PROTECT(lambda_form);
+
+    compile_expr(c, lambda_form);
+
+    CL_GC_UNPROTECT(1);
+
+    /* OP_DEFTYPE pops the closure, registers type, pushes name */
+    idx = cl_add_constant(c, name);
+    cl_emit(c, OP_DEFTYPE);
+    cl_emit_u16(c, (uint16_t)idx);
 }
 
 /* --- Defvar / Defparameter --- */

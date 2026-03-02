@@ -4,6 +4,7 @@
 
 CL_Obj macro_table = CL_NIL;
 CL_Obj setf_table = CL_NIL;
+CL_Obj type_table = CL_NIL;
 
 CL_Obj SETF_SYM_CAR = CL_NIL;
 CL_Obj SETF_SYM_CDR = CL_NIL;
@@ -786,6 +787,7 @@ void compile_expr(CL_Compiler *c, CL_Obj expr)
         if (head == SYM_QUASIQUOTE)  { compile_quasiquote(c, expr); return; }
         if (head == SYM_EVAL_WHEN)   { compile_eval_when(c, expr); return; }
         if (head == SYM_DEFSETF)     { compile_defsetf(c, expr); return; }
+        if (head == SYM_DEFTYPE)     { compile_deftype(c, expr); return; }
         if (head == SYM_MULTIPLE_VALUE_BIND)  { compile_multiple_value_bind(c, expr); return; }
         if (head == SYM_MULTIPLE_VALUE_LIST)  { compile_multiple_value_list(c, expr); return; }
         if (head == SYM_MULTIPLE_VALUE_PROG1) { compile_multiple_value_prog1(c, expr); return; }
@@ -872,6 +874,29 @@ CL_Obj cl_get_macro(CL_Obj name)
     return CL_NIL;
 }
 
+/* --- Type table (for deftype) --- */
+
+void cl_register_type(CL_Obj name, CL_Obj expander)
+{
+    CL_Obj pair;
+    CL_GC_PROTECT(name);
+    CL_GC_PROTECT(expander);
+    pair = cl_cons(name, expander);
+    type_table = cl_cons(pair, type_table);
+    CL_GC_UNPROTECT(2);
+}
+
+CL_Obj cl_get_type_expander(CL_Obj name)
+{
+    CL_Obj list = type_table;
+    while (!CL_NULL_P(list)) {
+        CL_Obj pair = cl_car(list);
+        if (cl_car(pair) == name) return cl_cdr(pair);
+        list = cl_cdr(list);
+    }
+    return CL_NIL;
+}
+
 /* --- Public API --- */
 
 CL_Obj cl_compile(CL_Obj expr)
@@ -939,6 +964,7 @@ void cl_compiler_init(void)
 {
     macro_table = CL_NIL;
     setf_table = CL_NIL;
+    type_table = CL_NIL;
 
     SETF_SYM_CAR             = cl_intern_in("CAR", 3, cl_package_cl);
     SETF_SYM_CDR             = cl_intern_in("CDR", 3, cl_package_cl);

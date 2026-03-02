@@ -308,6 +308,7 @@ static DisasmInfo disasm_opcode_info(uint8_t op)
     case OP_T:          info.name = "T";          break;
     case OP_FLOAD:      info.name = "FLOAD";      info.arg_type = OP_ARG_U16; break;
     case OP_DEFMACRO:   info.name = "DEFMACRO";   info.arg_type = OP_ARG_U16; break;
+    case OP_DEFTYPE:    info.name = "DEFTYPE";    info.arg_type = OP_ARG_U16; break;
     case OP_ARGC:       info.name = "ARGC";       break;
     case OP_CATCH:      info.name = "CATCH";      info.arg_type = OP_ARG_I16; break;
     case OP_UNCATCH:    info.name = "UNCATCH";    break;
@@ -397,7 +398,7 @@ static void disasm_bytecode(CL_Bytecode *bc)
             annot[0] = '\0';
             if (val < bc->n_constants &&
                 (op == OP_CONST || op == OP_GLOAD || op == OP_GSTORE ||
-                 op == OP_FLOAD || op == OP_DEFMACRO || op == OP_DYNBIND ||
+                 op == OP_FLOAD || op == OP_DEFMACRO || op == OP_DEFTYPE || op == OP_DYNBIND ||
                  op == OP_CLOSURE)) {
                 cl_prin1_to_string(bc->constants[val], annot, sizeof(annot));
             }

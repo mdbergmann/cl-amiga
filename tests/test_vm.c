@@ -2054,6 +2054,101 @@ TEST(eval_coerce)
     ASSERT_STR_EQ(eval_print("(coerce nil 'vector)"), "#()");
 }
 
+/* --- Compound typep --- */
+
+TEST(eval_typep_compound)
+{
+    /* (or ...) */
+    ASSERT_STR_EQ(eval_print("(typep 42 '(or integer string))"), "T");
+    ASSERT_STR_EQ(eval_print("(typep \"hi\" '(or integer string))"), "T");
+    ASSERT_STR_EQ(eval_print("(typep #\\A '(or integer string))"), "NIL");
+
+    /* (and ...) */
+    ASSERT_STR_EQ(eval_print("(typep nil '(and symbol list))"), "T");
+    ASSERT_STR_EQ(eval_print("(typep 42 '(and number atom))"), "T");
+    ASSERT_STR_EQ(eval_print("(typep 42 '(and number string))"), "NIL");
+
+    /* (not ...) */
+    ASSERT_STR_EQ(eval_print("(typep 42 '(not string))"), "T");
+    ASSERT_STR_EQ(eval_print("(typep \"hi\" '(not string))"), "NIL");
+
+    /* (member ...) */
+    ASSERT_STR_EQ(eval_print("(typep 1 '(member 1 2 3))"), "T");
+    ASSERT_STR_EQ(eval_print("(typep 4 '(member 1 2 3))"), "NIL");
+
+    /* (eql ...) */
+    ASSERT_STR_EQ(eval_print("(typep 42 '(eql 42))"), "T");
+    ASSERT_STR_EQ(eval_print("(typep 43 '(eql 42))"), "NIL");
+
+    /* (satisfies ...) */
+    ASSERT_STR_EQ(eval_print("(typep 42 '(satisfies numberp))"), "T");
+    ASSERT_STR_EQ(eval_print("(typep \"hi\" '(satisfies numberp))"), "NIL");
+
+    /* nested compound */
+    ASSERT_STR_EQ(eval_print("(typep 42 '(or (and integer atom) string))"), "T");
+    ASSERT_STR_EQ(eval_print("(typep #\\A '(or integer string))"), "NIL");
+}
+
+/* --- deftype --- */
+
+TEST(eval_deftype)
+{
+    /* Simple no-arg deftype */
+    eval_print("(deftype my-num () 'number)");
+    ASSERT_STR_EQ(eval_print("(typep 42 'my-num)"), "T");
+    ASSERT_STR_EQ(eval_print("(typep \"hi\" 'my-num)"), "NIL");
+
+    /* Deftype expanding to compound */
+    eval_print("(deftype string-or-num () '(or string number))");
+    ASSERT_STR_EQ(eval_print("(typep 42 'string-or-num)"), "T");
+    ASSERT_STR_EQ(eval_print("(typep \"hi\" 'string-or-num)"), "T");
+    ASSERT_STR_EQ(eval_print("(typep #\\A 'string-or-num)"), "NIL");
+}
+
+/* --- subtypep --- */
+
+TEST(eval_subtypep)
+{
+    /* Known hierarchy checks */
+    ASSERT_STR_EQ(eval_print("(subtypep 'fixnum 'number)"), "T");
+    ASSERT_STR_EQ(eval_print("(subtypep 'fixnum 'integer)"), "T");
+    ASSERT_STR_EQ(eval_print("(subtypep 'integer 'number)"), "T");
+    ASSERT_STR_EQ(eval_print("(subtypep 'cons 'list)"), "T");
+    ASSERT_STR_EQ(eval_print("(subtypep 'null 'list)"), "T");
+    ASSERT_STR_EQ(eval_print("(subtypep 'list 'sequence)"), "T");
+    ASSERT_STR_EQ(eval_print("(subtypep 'string 'sequence)"), "T");
+    ASSERT_STR_EQ(eval_print("(subtypep 'keyword 'symbol)"), "T");
+    ASSERT_STR_EQ(eval_print("(subtypep 'compiled-function 'function)"), "T");
+
+    /* Same type */
+    ASSERT_STR_EQ(eval_print("(subtypep 'integer 'integer)"), "T");
+
+    /* Not a subtype */
+    ASSERT_STR_EQ(eval_print("(subtypep 'string 'number)"), "NIL");
+    ASSERT_STR_EQ(eval_print("(subtypep 'number 'fixnum)"), "NIL");
+
+    /* nil is subtype of everything */
+    ASSERT_STR_EQ(eval_print("(subtypep 'nil 'number)"), "T");
+
+    /* everything is subtype of t */
+    ASSERT_STR_EQ(eval_print("(subtypep 'number 't)"), "T");
+
+    /* MV return: second value should be T for known types */
+    ASSERT_STR_EQ(eval_print("(multiple-value-list (subtypep 'fixnum 'number))"), "(T T)");
+    ASSERT_STR_EQ(eval_print("(multiple-value-list (subtypep 'string 'number))"), "(NIL T)");
+}
+
+/* --- typecase with compound type specs --- */
+
+TEST(eval_typecase_compound)
+{
+    ASSERT_STR_EQ(eval_print("(typecase 42 ((or integer string) \"match\") (t \"no\"))"), "\"match\"");
+    ASSERT_STR_EQ(eval_print("(typecase \"hi\" ((or integer string) \"match\") (t \"no\"))"), "\"match\"");
+    ASSERT_STR_EQ(eval_print("(typecase #\\A ((or integer string) \"match\") (t \"no\"))"), "\"no\"");
+    /* typecase with list type now properly matches nil */
+    ASSERT_STR_EQ(eval_print("(typecase nil (list \"list\") (t \"other\"))"), "\"list\"");
+}
+
 /* --- Disassemble --- */
 
 TEST(eval_disassemble_defun)
@@ -2349,6 +2444,10 @@ int main(void)
     /* Phase 5 — Type system */
     RUN(eval_typep);
     RUN(eval_coerce);
+    RUN(eval_typep_compound);
+    RUN(eval_deftype);
+    RUN(eval_subtypep);
+    RUN(eval_typecase_compound);
 
     /* Phase 5 — Disassemble */
     RUN(eval_disassemble_defun);

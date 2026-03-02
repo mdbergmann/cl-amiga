@@ -75,6 +75,7 @@ enum CL_Opcode {
     OP_RPLACA    = 0x90,  /* pop new-car, pop cons → set car, push new-car */
     OP_RPLACD    = 0x91,  /* pop new-cdr, pop cons → set cdr, push new-cdr */
     OP_ASET      = 0x92,  /* pop val, pop index, pop vector → set data[idx], push val */
+    OP_DEFTYPE   = 0x93,  /* u16: Register TOS as type expander for symbol */
 
     OP_HALT      = 0xFF   /* Stop VM */
 };
