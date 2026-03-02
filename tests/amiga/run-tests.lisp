@@ -1048,6 +1048,54 @@
 (unintern (find-symbol "REM-SYM" (find-package "UNINT-AMI")) (find-package "UNINT-AMI"))
 (check "unintern" nil (multiple-value-bind (s st) (find-symbol "REM-SYM" (find-package "UNINT-AMI")) st))
 
+; === Reader Qualified Syntax ===
+
+; pkg:sym external access
+(make-package "QRA-FOO")
+(intern "QBAR" (find-package "QRA-FOO"))
+(export (find-symbol "QBAR" (find-package "QRA-FOO")) (find-package "QRA-FOO"))
+(check "pkg:sym external" t (eq (find-symbol "QBAR" (find-package "QRA-FOO")) 'QRA-FOO:QBAR))
+
+; pkg::sym internal access
+(intern "QSECRET" (find-package "QRA-FOO"))
+(check "pkg::sym internal" t (eq (find-symbol "QSECRET" (find-package "QRA-FOO")) 'QRA-FOO::QSECRET))
+
+; pkg::sym creates symbol
+(make-package "QRA-BAR")
+(check "pkg::sym creates" t (symbolp 'QRA-BAR::NEWSYM))
+(check "pkg::sym status" :internal (multiple-value-bind (s st) (find-symbol "NEWSYM" (find-package "QRA-BAR")) st))
+
+; CL:CAR = CAR
+(check "cl:sym" t (eq 'CL:CAR 'CAR))
+
+; KEYWORD:TEST = :TEST
+(check "keyword:sym" t (eq 'KEYWORD:TEST :TEST))
+
+; #:sym uninterned
+(check "uninterned symbolp" t (symbolp '#:TEMP))
+(check "uninterned no pkg" t (null (symbol-package '#:TEMP)))
+(check "uninterned unique" nil (eq '#:X '#:X))
+
+; Printer: uninterned
+(check "print uninterned" "#:HELLO" (prin1-to-string '#:HELLO))
+
+; Printer: keyword unchanged
+(check "print keyword" ":FOO" (prin1-to-string :FOO))
+
+; Printer: current pkg no prefix
+(check "print current pkg" "CAR" (prin1-to-string 'CAR))
+
+; Printer: other pkg external
+(make-package "QRA-PR")
+(intern "XSYM" (find-package "QRA-PR"))
+(export (find-symbol "XSYM" (find-package "QRA-PR")) (find-package "QRA-PR"))
+(check "print external" "QRA-PR:XSYM" (prin1-to-string 'QRA-PR:XSYM))
+
+; Printer: other pkg internal
+(make-package "QRA-PR2")
+(intern "ISYM" (find-package "QRA-PR2"))
+(check "print internal" "QRA-PR2::ISYM" (prin1-to-string 'QRA-PR2::ISYM))
+
 ; --- Summary ---
 (format t "~%=== Results ===~%")
 (format t "Passed: ~A~%" *pass-count*)

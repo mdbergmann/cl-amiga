@@ -396,6 +396,138 @@ TEST(eval_unintern)
         "NIL");
 }
 
+/* ---- Reader qualified syntax tests ---- */
+
+TEST(c_make_uninterned_symbol)
+{
+    CL_Obj name_str = cl_make_string("TEMP", 4);
+    CL_Obj sym = cl_make_uninterned_symbol(name_str);
+    CL_Symbol *s = (CL_Symbol *)CL_OBJ_TO_PTR(sym);
+    ASSERT(CL_SYMBOL_P(sym));
+    ASSERT(CL_NULL_P(s->package));
+    ASSERT_STR_EQ(cl_symbol_name(sym), "TEMP");
+}
+
+TEST(c_uninterned_symbols_are_unique)
+{
+    CL_Obj name1 = cl_make_string("X", 1);
+    CL_Obj name2 = cl_make_string("X", 1);
+    CL_Obj sym1 = cl_make_uninterned_symbol(name1);
+    CL_Obj sym2 = cl_make_uninterned_symbol(name2);
+    ASSERT(sym1 != sym2);  /* Each uninterned symbol is unique */
+}
+
+TEST(eval_read_pkg_external)
+{
+    /* Create package FOO with exported symbol BAR */
+    eval_print("(make-package \"QR-FOO\")");
+    eval_print("(intern \"BAR\" (find-package \"QR-FOO\"))");
+    eval_print("(export (find-symbol \"BAR\" (find-package \"QR-FOO\")) (find-package \"QR-FOO\"))");
+    /* QR-FOO:BAR should resolve to the exported symbol */
+    ASSERT_STR_EQ(eval_print("(eq (find-symbol \"BAR\" (find-package \"QR-FOO\")) 'QR-FOO:BAR)"), "T");
+}
+
+TEST(eval_read_pkg_external_error)
+{
+    /* Create package with non-exported symbol */
+    eval_print("(make-package \"QR-FOO2\")");
+    eval_print("(intern \"SECRET\" (find-package \"QR-FOO2\"))");
+    /* QR-FOO2:SECRET should error (not exported) */
+    {
+        const char *result = eval_print("QR-FOO2:SECRET");
+        /* Should produce an error */
+        ASSERT(strncmp(result, "ERROR:", 6) == 0);
+    }
+}
+
+TEST(eval_read_pkg_internal)
+{
+    /* Create package with non-exported symbol */
+    eval_print("(make-package \"QR-FOO3\")");
+    eval_print("(intern \"HIDDEN\" (find-package \"QR-FOO3\"))");
+    /* QR-FOO3::HIDDEN should work (internal access) */
+    ASSERT_STR_EQ(eval_print("(eq (find-symbol \"HIDDEN\" (find-package \"QR-FOO3\")) 'QR-FOO3::HIDDEN)"), "T");
+}
+
+TEST(eval_read_pkg_internal_creates)
+{
+    /* pkg::sym should create symbol if it doesn't exist */
+    eval_print("(make-package \"QR-FOO4\")");
+    ASSERT_STR_EQ(eval_print("(symbolp 'QR-FOO4::NEWSYM)"), "T");
+    ASSERT_STR_EQ(eval_print(
+        "(multiple-value-bind (s st) (find-symbol \"NEWSYM\" (find-package \"QR-FOO4\")) st)"),
+        ":INTERNAL");
+}
+
+TEST(eval_read_pkg_not_found)
+{
+    /* Non-existent package should error */
+    {
+        const char *result = eval_print("NONEXISTENT-PKG:FOO");
+        ASSERT(strncmp(result, "ERROR:", 6) == 0);
+    }
+}
+
+TEST(eval_read_cl_qualified)
+{
+    /* CL:CAR should resolve to the standard CAR */
+    ASSERT_STR_EQ(eval_print("(eq 'CL:CAR 'CAR)"), "T");
+}
+
+TEST(eval_read_keyword_qualified)
+{
+    /* KEYWORD:TEST should be same as :TEST */
+    ASSERT_STR_EQ(eval_print("(eq 'KEYWORD:TEST :TEST)"), "T");
+}
+
+TEST(eval_read_uninterned)
+{
+    /* #:SYM creates uninterned symbol */
+    ASSERT_STR_EQ(eval_print("(symbolp '#:TEMP)"), "T");
+    ASSERT_STR_EQ(eval_print("(null (symbol-package '#:TEMP))"), "T");
+}
+
+TEST(eval_read_uninterned_unique)
+{
+    /* Two #:SYM are not eq even with same name */
+    ASSERT_STR_EQ(eval_print("(eq '#:X '#:X)"), "NIL");
+}
+
+TEST(eval_print_uninterned)
+{
+    /* Uninterned symbols print as #:NAME */
+    ASSERT_STR_EQ(eval_print("(let ((s '#:HELLO)) (prin1-to-string s))"), "\"#:HELLO\"");
+}
+
+TEST(eval_print_keyword_unchanged)
+{
+    /* Keywords still print with : prefix */
+    ASSERT_STR_EQ(eval_print("(prin1-to-string :foo)"), "\":FOO\"");
+}
+
+TEST(eval_print_current_pkg_no_prefix)
+{
+    /* Symbols in current package print without prefix */
+    ASSERT_STR_EQ(eval_print("(prin1-to-string 'CAR)"), "\"CAR\"");
+}
+
+TEST(eval_print_other_pkg_prefix)
+{
+    /* Symbols from other packages print with package prefix */
+    eval_print("(make-package \"PR-FOO\")");
+    eval_print("(intern \"XSYM\" (find-package \"PR-FOO\"))");
+    eval_print("(export (find-symbol \"XSYM\" (find-package \"PR-FOO\")) (find-package \"PR-FOO\"))");
+    ASSERT_STR_EQ(eval_print("(prin1-to-string 'PR-FOO:XSYM)"), "\"PR-FOO:XSYM\"");
+}
+
+TEST(eval_print_other_pkg_internal_prefix)
+{
+    /* Internal symbols from other packages print with :: prefix */
+    eval_print("(make-package \"PR-FOO2\")");
+    eval_print("(intern \"ISYM\" (find-package \"PR-FOO2\"))");
+    ASSERT_STR_EQ(eval_print("(prin1-to-string 'PR-FOO2::ISYM)"), "\"PR-FOO2::ISYM\"");
+}
+
 /* ---- Main ---- */
 
 int main(void)
@@ -439,6 +571,24 @@ int main(void)
     RUN(eval_rename_package);
     RUN(eval_shadow);
     RUN(eval_unintern);
+
+    /* Reader qualified syntax tests */
+    RUN(c_make_uninterned_symbol);
+    RUN(c_uninterned_symbols_are_unique);
+    RUN(eval_read_pkg_external);
+    RUN(eval_read_pkg_external_error);
+    RUN(eval_read_pkg_internal);
+    RUN(eval_read_pkg_internal_creates);
+    RUN(eval_read_pkg_not_found);
+    RUN(eval_read_cl_qualified);
+    RUN(eval_read_keyword_qualified);
+    RUN(eval_read_uninterned);
+    RUN(eval_read_uninterned_unique);
+    RUN(eval_print_uninterned);
+    RUN(eval_print_keyword_unchanged);
+    RUN(eval_print_current_pkg_no_prefix);
+    RUN(eval_print_other_pkg_prefix);
+    RUN(eval_print_other_pkg_internal_prefix);
 
     teardown();
     REPORT();

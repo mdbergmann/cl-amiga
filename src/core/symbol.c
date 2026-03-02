@@ -173,6 +173,23 @@ CL_Obj cl_intern_keyword(const char *name, uint32_t len)
     return sym;
 }
 
+CL_Obj cl_make_uninterned_symbol(CL_Obj name_str)
+{
+    CL_Obj sym;
+    CL_Symbol *s;
+    CL_String *name;
+
+    CL_GC_PROTECT(name_str);
+    sym = cl_make_symbol(name_str);
+    CL_GC_UNPROTECT(1);
+
+    s = (CL_Symbol *)CL_OBJ_TO_PTR(sym);
+    name = (CL_String *)CL_OBJ_TO_PTR(name_str);
+    s->hash = cl_hash_string(name->data, name->length);
+    s->package = CL_NIL;  /* No home package */
+    return sym;
+}
+
 int cl_symbol_specialp(CL_Obj sym)
 {
     CL_Symbol *s;

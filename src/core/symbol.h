@@ -25,6 +25,9 @@ CL_Obj cl_find_symbol(const char *name, uint32_t len, CL_Obj package);
 /* Intern a keyword (in KEYWORD package, self-evaluating) */
 CL_Obj cl_intern_keyword(const char *name, uint32_t len);
 
+/* Create an uninterned symbol (no home package) */
+CL_Obj cl_make_uninterned_symbol(CL_Obj name_str);
+
 /* Get symbol name as C string (pointer into CL_String data) */
 const char *cl_symbol_name(CL_Obj sym);
 

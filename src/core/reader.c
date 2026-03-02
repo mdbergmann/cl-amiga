@@ -165,6 +165,52 @@ static CL_Obj read_atom(void)
         return cl_intern_keyword(buf + 1, (uint32_t)(len - 1));
     }
 
+    /* Check for package-qualified symbol (pkg:sym or pkg::sym) */
+    {
+        int colon_pos = -1;
+        int double_colon = 0;
+        for (i = 0; i < len; i++) {
+            if (buf[i] == ':') {
+                colon_pos = i;
+                if (i + 1 < len && buf[i + 1] == ':') {
+                    double_colon = 1;
+                }
+                break;
+            }
+        }
+        if (colon_pos > 0) {
+            char pkg_name[256];
+            char sym_name[256];
+            CL_Obj package;
+            int sym_start = double_colon ? colon_pos + 2 : colon_pos + 1;
+            int sym_len = len - sym_start;
+
+            if (sym_len <= 0)
+                cl_error(CL_ERR_PARSE, "Missing symbol name after package qualifier");
+
+            memcpy(pkg_name, buf, (uint32_t)colon_pos);
+            pkg_name[colon_pos] = '\0';
+            memcpy(sym_name, buf + sym_start, (uint32_t)sym_len);
+            sym_name[sym_len] = '\0';
+
+            package = cl_find_package(pkg_name, (uint32_t)colon_pos);
+            if (CL_NULL_P(package))
+                cl_error(CL_ERR_PARSE, "Package %s not found", pkg_name);
+
+            if (double_colon) {
+                /* pkg::sym — intern as internal symbol */
+                return cl_intern_in(sym_name, (uint32_t)sym_len, package);
+            } else {
+                /* pkg:sym — look up external symbol only */
+                CL_Obj sym = cl_package_find_external(sym_name, (uint32_t)sym_len, package);
+                if (CL_NULL_P(sym))
+                    cl_error(CL_ERR_PARSE, "Symbol %s not exported from %s",
+                             sym_name, pkg_name);
+                return sym;
+            }
+        }
+    }
+
     /* Check for NIL */
     if (len == 3 && buf[0] == 'N' && buf[1] == 'I' && buf[2] == 'L') {
         return CL_NIL;
@@ -353,6 +399,23 @@ static CL_Obj read_expr(void)
                 return CL_NIL;
             }
             return CL_MAKE_CHAR(ch);
+        }
+        if (ch == ':') {
+            /* #:sym — uninterned symbol */
+            char sym_buf[256];
+            int sym_len = 0;
+            int ch2;
+            CL_Obj name_str;
+            while (sym_len < 255) {
+                ch2 = read_char();
+                if (is_delimiter(ch2)) { unread_char(ch2); break; }
+                sym_buf[sym_len++] = (char)toupper(ch2);
+            }
+            sym_buf[sym_len] = '\0';
+            if (sym_len == 0)
+                cl_error(CL_ERR_PARSE, "Missing symbol name after #:");
+            name_str = cl_make_string(sym_buf, (uint32_t)sym_len);
+            return cl_make_uninterned_symbol(name_str);
         }
         cl_error(CL_ERR_PARSE, "Unknown dispatch macro: #%c", ch);
         return CL_NIL;

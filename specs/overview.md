@@ -226,10 +226,11 @@ Condition system, packages, and compiler completeness:
 - [x] `with-simple-restart` (boot macro), `cerror` (boot function)
 - [x] `define-condition` (boot macro), `check-type` (boot macro), `assert` (boot macro), `condition-slot-value` builtin
 - [x] Package foundation — package registry, `CL_SYM_EXPORTED` flag, export-aware symbol inheritance, nicknames, 17 package builtins (`make-package`, `find-package`, `delete-package`, `rename-package`, `export`, `unexport`, `import`, `use-package`, `unuse-package`, `shadow`, `find-symbol`, `intern`, `unintern`, `package-name`, `package-use-list`, `package-nicknames`, `list-all-packages`)
+- [x] Reader package-qualified syntax (`pkg:sym` external, `pkg::sym` internal, `#:sym` uninterned), printer package prefixes (`PKG:SYM`, `PKG::SYM`, `#:SYM`)
 - [ ] Interactive debugger — on error, display condition, backtrace, and available restarts; prompt user to select restart or abort; `invoke-debugger`, `break`, `*debugger-hook*`
 
-425 host tests (6 suites), 683 Amiga batch tests — all passing.
-- [ ] `defpackage`, `in-package`, qualified symbol syntax (`pkg:sym`, `pkg::sym`), `do-symbols`, `do-external-symbols`
+289 host tests (6 suites), 697 Amiga batch tests — all passing.
+- [ ] `defpackage`, `in-package`, `do-symbols`, `do-external-symbols`
 - [ ] `macrolet`, `symbol-macrolet` — local macro bindings (compile-time only, no opcodes)
 - [ ] Unused variable warnings with `ignore`/`ignorable` declaration support
 - [ ] `defconstant` — constant variable definitions
@@ -254,6 +255,9 @@ File system integration and stream abstraction:
 - [ ] `sleep` — platform sleep function
 - [ ] Time: `get-universal-time`, `decode-universal-time`, `encode-universal-time`, `get-decoded-time`
 - [ ] `compile` — compile function at runtime
+- [ ] User init file — load `~/.clamigarc` (POSIX) or `S:clamiga.lisp` (AmigaOS) on REPL startup, after boot.lisp; skip with `--no-userinit` flag
+- [ ] `--load <file>` / `--eval <expr>` command-line options — load files or evaluate expressions before REPL; `--script <file>` to run file and exit (no REPL)
+- [ ] `--heap <size>` — configurable arena size (default 4MB, e.g. `--heap 8M`); also `--stack <size>` for VM value stack
 
 ### Phase 8: Iteration & Format
 

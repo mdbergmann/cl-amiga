@@ -120,11 +120,32 @@ static void print_obj(CL_Obj obj)
 
     case TYPE_SYMBOL: {
         CL_Symbol *sym = (CL_Symbol *)CL_OBJ_TO_PTR(obj);
-        /* Print package prefix for keywords */
-        if (sym->package == cl_package_keyword) {
+        if (CL_NULL_P(sym->package)) {
+            /* Uninterned symbol */
+            out_str("#:");
+            out_str(cl_symbol_name(obj));
+        } else if (sym->package == cl_package_keyword) {
+            /* Keyword */
             out_char(':');
+            out_str(cl_symbol_name(obj));
+        } else if (sym->package == cl_current_package ||
+                   cl_package_find_symbol(cl_symbol_name(obj),
+                       ((CL_String *)CL_OBJ_TO_PTR(sym->name))->length,
+                       cl_current_package) == obj) {
+            /* Accessible in current package — no prefix */
+            out_str(cl_symbol_name(obj));
+        } else {
+            /* Symbol from another package */
+            CL_Package *pkg = (CL_Package *)CL_OBJ_TO_PTR(sym->package);
+            CL_String *pkg_name = (CL_String *)CL_OBJ_TO_PTR(pkg->name);
+            out_str(pkg_name->data);
+            if (sym->flags & CL_SYM_EXPORTED) {
+                out_char(':');
+            } else {
+                out_str("::");
+            }
+            out_str(cl_symbol_name(obj));
         }
-        out_str(cl_symbol_name(obj));
         break;
     }
 
