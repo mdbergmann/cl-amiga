@@ -33,6 +33,7 @@ const char *cl_type_name(CL_Obj obj)
         case TYPE_VECTOR:   return "VECTOR";
         case TYPE_PACKAGE:  return "PACKAGE";
         case TYPE_HASHTABLE: return "HASH-TABLE";
+        case TYPE_CONDITION: return "CONDITION";
         default:            return "UNKNOWN";
         }
     }

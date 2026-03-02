@@ -82,6 +82,28 @@ CL_Obj SYM_SAFETY = CL_NIL;
 CL_Obj SYM_DEBUG = CL_NIL;
 CL_Obj SYM_SPACE = CL_NIL;
 
+/* Condition type name symbols */
+CL_Obj SYM_CONDITION = CL_NIL;
+CL_Obj SYM_WARNING = CL_NIL;
+CL_Obj SYM_SERIOUS_CONDITION = CL_NIL;
+CL_Obj SYM_ERROR_COND = CL_NIL;
+CL_Obj SYM_SIMPLE_CONDITION = CL_NIL;
+CL_Obj SYM_SIMPLE_ERROR = CL_NIL;
+CL_Obj SYM_SIMPLE_WARNING = CL_NIL;
+CL_Obj SYM_TYPE_ERROR = CL_NIL;
+CL_Obj SYM_UNBOUND_VARIABLE_COND = CL_NIL;
+CL_Obj SYM_UNDEFINED_FUNCTION_COND = CL_NIL;
+CL_Obj SYM_PROGRAM_ERROR = CL_NIL;
+CL_Obj SYM_CONTROL_ERROR = CL_NIL;
+CL_Obj SYM_ARITHMETIC_ERROR = CL_NIL;
+CL_Obj SYM_DIVISION_BY_ZERO = CL_NIL;
+
+/* Condition keyword symbols */
+CL_Obj KW_FORMAT_CONTROL = CL_NIL;
+CL_Obj KW_FORMAT_ARGUMENTS = CL_NIL;
+CL_Obj KW_DATUM = CL_NIL;
+CL_Obj KW_EXPECTED_TYPE = CL_NIL;
+
 /* FNV-1a hash */
 uint32_t cl_hash_string(const char *str, uint32_t len)
 {
@@ -235,6 +257,28 @@ void cl_symbol_init(void)
     SYM_SAFETY               = cl_intern_in("SAFETY", 6, cl_package_cl);
     SYM_DEBUG                = cl_intern_in("DEBUG", 5, cl_package_cl);
     SYM_SPACE                = cl_intern_in("SPACE", 5, cl_package_cl);
+
+    /* Condition type name symbols */
+    SYM_CONDITION                = cl_intern_in("CONDITION", 9, cl_package_cl);
+    SYM_WARNING                  = cl_intern_in("WARNING", 7, cl_package_cl);
+    SYM_SERIOUS_CONDITION        = cl_intern_in("SERIOUS-CONDITION", 17, cl_package_cl);
+    SYM_ERROR_COND               = cl_intern_in("ERROR", 5, cl_package_cl);
+    SYM_SIMPLE_CONDITION         = cl_intern_in("SIMPLE-CONDITION", 16, cl_package_cl);
+    SYM_SIMPLE_ERROR             = cl_intern_in("SIMPLE-ERROR", 12, cl_package_cl);
+    SYM_SIMPLE_WARNING           = cl_intern_in("SIMPLE-WARNING", 14, cl_package_cl);
+    SYM_TYPE_ERROR               = cl_intern_in("TYPE-ERROR", 10, cl_package_cl);
+    SYM_UNBOUND_VARIABLE_COND    = cl_intern_in("UNBOUND-VARIABLE", 16, cl_package_cl);
+    SYM_UNDEFINED_FUNCTION_COND  = cl_intern_in("UNDEFINED-FUNCTION", 18, cl_package_cl);
+    SYM_PROGRAM_ERROR            = cl_intern_in("PROGRAM-ERROR", 13, cl_package_cl);
+    SYM_CONTROL_ERROR            = cl_intern_in("CONTROL-ERROR", 13, cl_package_cl);
+    SYM_ARITHMETIC_ERROR         = cl_intern_in("ARITHMETIC-ERROR", 16, cl_package_cl);
+    SYM_DIVISION_BY_ZERO         = cl_intern_in("DIVISION-BY-ZERO", 16, cl_package_cl);
+
+    /* Condition keyword symbols */
+    KW_FORMAT_CONTROL            = cl_intern_keyword("FORMAT-CONTROL", 14);
+    KW_FORMAT_ARGUMENTS          = cl_intern_keyword("FORMAT-ARGUMENTS", 16);
+    KW_DATUM                     = cl_intern_keyword("DATUM", 5);
+    KW_EXPECTED_TYPE             = cl_intern_keyword("EXPECTED-TYPE", 13);
 
     /* T is self-evaluating */
     {

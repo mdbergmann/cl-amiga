@@ -112,4 +112,26 @@ extern CL_Obj SYM_SAFETY;
 extern CL_Obj SYM_DEBUG;
 extern CL_Obj SYM_SPACE;
 
+/* Condition type name symbols */
+extern CL_Obj SYM_CONDITION;
+extern CL_Obj SYM_WARNING;
+extern CL_Obj SYM_SERIOUS_CONDITION;
+extern CL_Obj SYM_ERROR_COND;
+extern CL_Obj SYM_SIMPLE_CONDITION;
+extern CL_Obj SYM_SIMPLE_ERROR;
+extern CL_Obj SYM_SIMPLE_WARNING;
+extern CL_Obj SYM_TYPE_ERROR;
+extern CL_Obj SYM_UNBOUND_VARIABLE_COND;
+extern CL_Obj SYM_UNDEFINED_FUNCTION_COND;
+extern CL_Obj SYM_PROGRAM_ERROR;
+extern CL_Obj SYM_CONTROL_ERROR;
+extern CL_Obj SYM_ARITHMETIC_ERROR;
+extern CL_Obj SYM_DIVISION_BY_ZERO;
+
+/* Condition keyword symbols */
+extern CL_Obj KW_FORMAT_CONTROL;
+extern CL_Obj KW_FORMAT_ARGUMENTS;
+extern CL_Obj KW_DATUM;
+extern CL_Obj KW_EXPECTED_TYPE;
+
 #endif /* CL_SYMBOL_H */

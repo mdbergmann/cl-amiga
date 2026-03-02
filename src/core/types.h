@@ -82,7 +82,8 @@ enum CL_ObjType {
     TYPE_BYTECODE,
     TYPE_VECTOR,
     TYPE_PACKAGE,
-    TYPE_HASHTABLE
+    TYPE_HASHTABLE,
+    TYPE_CONDITION
 };
 
 /* Header access macros */
@@ -232,6 +233,17 @@ typedef struct {
 } CL_Hashtable;
 
 #define CL_HASHTABLE_P(obj) (CL_HEAP_P(obj) && CL_HDR_TYPE(CL_OBJ_TO_PTR(obj)) == TYPE_HASHTABLE)
+
+/* --- Condition --- */
+
+typedef struct {
+    CL_Header hdr;
+    CL_Obj type_name;      /* Symbol: SIMPLE-ERROR, TYPE-ERROR, etc. */
+    CL_Obj slots;          /* Alist: ((slot-name . value) ...) */
+    CL_Obj report_string;  /* Pre-formatted message string, or NIL */
+} CL_Condition;
+
+#define CL_CONDITION_P(obj) (CL_HEAP_P(obj) && CL_HDR_TYPE(CL_OBJ_TO_PTR(obj)) == TYPE_CONDITION)
 
 /* --- Convenience accessors --- */
 

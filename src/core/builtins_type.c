@@ -72,6 +72,21 @@ static int typep_symbol(CL_Obj obj, CL_Obj type_sym)
     if (strcmp(tname, "HASH-TABLE") == 0)     return CL_HASHTABLE_P(obj);
     if (strcmp(tname, "PACKAGE") == 0)        return CL_PACKAGE_P(obj);
 
+    /* Condition types — check hierarchy for condition objects,
+     * return 0 for non-condition objects with condition type specs */
+    {
+        extern int cl_condition_type_matches(CL_Obj cond_type, CL_Obj handler_type);
+        extern int cl_is_condition_type(CL_Obj type_sym);
+        CL_Obj type_sym = cl_intern_in(tname, (uint32_t)strlen(tname), cl_package_cl);
+        if (cl_is_condition_type(type_sym)) {
+            if (!CL_CONDITION_P(obj)) return 0;
+            {
+                CL_Condition *cond = (CL_Condition *)CL_OBJ_TO_PTR(obj);
+                return cl_condition_type_matches(cond->type_name, type_sym);
+            }
+        }
+    }
+
     /* Check user-defined types */
     {
         CL_Obj expander = cl_get_type_expander(type_sym);
@@ -199,6 +214,11 @@ static CL_Obj bi_type_of(CL_Obj *args, int n)
 {
     const char *name;
     CL_UNUSED(n);
+    /* For conditions, return the specific condition type name */
+    if (CL_CONDITION_P(args[0])) {
+        CL_Condition *cond = (CL_Condition *)CL_OBJ_TO_PTR(args[0]);
+        return cond->type_name;
+    }
     name = cl_type_name(args[0]);
     return cl_intern(name, (uint32_t)strlen(name));
 }
@@ -339,6 +359,20 @@ enum TypeId {
     TID_HASH_TABLE,
     TID_PACKAGE,
     TID_ATOM,
+    TID_CONDITION,
+    TID_WARNING,
+    TID_SERIOUS_CONDITION,
+    TID_ERROR,
+    TID_SIMPLE_CONDITION,
+    TID_SIMPLE_ERROR,
+    TID_SIMPLE_WARNING,
+    TID_TYPE_ERROR,
+    TID_PROGRAM_ERROR,
+    TID_CONTROL_ERROR,
+    TID_ARITHMETIC_ERROR,
+    TID_DIVISION_BY_ZERO,
+    TID_UNBOUND_VARIABLE,
+    TID_UNDEFINED_FUNCTION,
     TID_T,
     TID_COUNT
 };
@@ -365,6 +399,20 @@ static int type_name_to_id(const char *name)
     if (strcmp(name, "HASH-TABLE") == 0) return TID_HASH_TABLE;
     if (strcmp(name, "PACKAGE") == 0) return TID_PACKAGE;
     if (strcmp(name, "ATOM") == 0) return TID_ATOM;
+    if (strcmp(name, "CONDITION") == 0) return TID_CONDITION;
+    if (strcmp(name, "WARNING") == 0) return TID_WARNING;
+    if (strcmp(name, "SERIOUS-CONDITION") == 0) return TID_SERIOUS_CONDITION;
+    if (strcmp(name, "ERROR") == 0) return TID_ERROR;
+    if (strcmp(name, "SIMPLE-CONDITION") == 0) return TID_SIMPLE_CONDITION;
+    if (strcmp(name, "SIMPLE-ERROR") == 0) return TID_SIMPLE_ERROR;
+    if (strcmp(name, "SIMPLE-WARNING") == 0) return TID_SIMPLE_WARNING;
+    if (strcmp(name, "TYPE-ERROR") == 0) return TID_TYPE_ERROR;
+    if (strcmp(name, "PROGRAM-ERROR") == 0) return TID_PROGRAM_ERROR;
+    if (strcmp(name, "CONTROL-ERROR") == 0) return TID_CONTROL_ERROR;
+    if (strcmp(name, "ARITHMETIC-ERROR") == 0) return TID_ARITHMETIC_ERROR;
+    if (strcmp(name, "DIVISION-BY-ZERO") == 0) return TID_DIVISION_BY_ZERO;
+    if (strcmp(name, "UNBOUND-VARIABLE") == 0) return TID_UNBOUND_VARIABLE;
+    if (strcmp(name, "UNDEFINED-FUNCTION") == 0) return TID_UNDEFINED_FUNCTION;
     if (strcmp(name, "T") == 0) return TID_T;
     return TID_UNKNOWN;
 }
@@ -406,6 +454,58 @@ static int subtype_check(int id1, int id2)
     if (id2 == TID_ATOM) {
         if (id1 != TID_CONS && id1 != TID_LIST) return 1;
         if (id1 == TID_LIST) return 0;  /* list includes cons */
+    }
+
+    /* Condition hierarchy:
+     * condition
+     *   warning
+     *     simple-warning  (also simple-condition)
+     *   serious-condition
+     *     error
+     *       simple-error  (also simple-condition)
+     *       type-error
+     *       program-error
+     *       control-error
+     *       unbound-variable
+     *       undefined-function
+     *       arithmetic-error
+     *         division-by-zero
+     *   simple-condition
+     */
+    if (id2 == TID_CONDITION) {
+        if (id1 == TID_WARNING || id1 == TID_SERIOUS_CONDITION ||
+            id1 == TID_ERROR || id1 == TID_SIMPLE_CONDITION ||
+            id1 == TID_SIMPLE_ERROR || id1 == TID_SIMPLE_WARNING ||
+            id1 == TID_TYPE_ERROR || id1 == TID_PROGRAM_ERROR ||
+            id1 == TID_CONTROL_ERROR || id1 == TID_ARITHMETIC_ERROR ||
+            id1 == TID_DIVISION_BY_ZERO || id1 == TID_UNBOUND_VARIABLE ||
+            id1 == TID_UNDEFINED_FUNCTION)
+            return 1;
+    }
+    if (id2 == TID_WARNING) {
+        if (id1 == TID_SIMPLE_WARNING) return 1;
+    }
+    if (id2 == TID_SERIOUS_CONDITION) {
+        if (id1 == TID_ERROR || id1 == TID_SIMPLE_ERROR ||
+            id1 == TID_TYPE_ERROR || id1 == TID_PROGRAM_ERROR ||
+            id1 == TID_CONTROL_ERROR || id1 == TID_ARITHMETIC_ERROR ||
+            id1 == TID_DIVISION_BY_ZERO || id1 == TID_UNBOUND_VARIABLE ||
+            id1 == TID_UNDEFINED_FUNCTION)
+            return 1;
+    }
+    if (id2 == TID_ERROR) {
+        if (id1 == TID_SIMPLE_ERROR || id1 == TID_TYPE_ERROR ||
+            id1 == TID_PROGRAM_ERROR || id1 == TID_CONTROL_ERROR ||
+            id1 == TID_ARITHMETIC_ERROR || id1 == TID_DIVISION_BY_ZERO ||
+            id1 == TID_UNBOUND_VARIABLE || id1 == TID_UNDEFINED_FUNCTION)
+            return 1;
+    }
+    if (id2 == TID_SIMPLE_CONDITION) {
+        if (id1 == TID_SIMPLE_ERROR || id1 == TID_SIMPLE_WARNING)
+            return 1;
+    }
+    if (id2 == TID_ARITHMETIC_ERROR) {
+        if (id1 == TID_DIVISION_BY_ZERO) return 1;
     }
 
     return 0;

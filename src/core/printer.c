@@ -204,6 +204,23 @@ static void print_obj(CL_Obj obj)
         break;
     }
 
+    case TYPE_CONDITION: {
+        CL_Condition *cond = (CL_Condition *)CL_OBJ_TO_PTR(obj);
+        out_str("#<CONDITION ");
+        if (!CL_NULL_P(cond->type_name))
+            out_str(cl_symbol_name(cond->type_name));
+        else
+            out_str("CONDITION");
+        if (!CL_NULL_P(cond->report_string)) {
+            CL_String *rs = (CL_String *)CL_OBJ_TO_PTR(cond->report_string);
+            out_str(": \"");
+            out_str(rs->data);
+            out_char('"');
+        }
+        out_char('>');
+        break;
+    }
+
     default:
         out_str("#<unknown>");
         break;

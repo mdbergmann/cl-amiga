@@ -217,6 +217,24 @@ CL_Obj cl_make_hashtable(uint32_t bucket_count, uint32_t test)
     return CL_PTR_TO_OBJ(ht);
 }
 
+CL_Obj cl_make_condition(CL_Obj type_name, CL_Obj slots, CL_Obj report_string)
+{
+    CL_Condition *cond;
+
+    CL_GC_PROTECT(type_name);
+    CL_GC_PROTECT(slots);
+    CL_GC_PROTECT(report_string);
+
+    cond = (CL_Condition *)cl_alloc(TYPE_CONDITION, sizeof(CL_Condition));
+    CL_GC_UNPROTECT(3);
+
+    if (!cond) return CL_NIL;
+    cond->type_name = type_name;
+    cond->slots = slots;
+    cond->report_string = report_string;
+    return CL_PTR_TO_OBJ(cond);
+}
+
 /* --- GC Root Stack --- */
 
 void cl_gc_push_root(CL_Obj *root)
@@ -306,6 +324,13 @@ static void gc_mark_children(void *ptr, uint8_t type)
         uint32_t i;
         for (i = 0; i < ht->bucket_count; i++)
             gc_mark_push(ht->buckets[i]);
+        break;
+    }
+    case TYPE_CONDITION: {
+        CL_Condition *cond = (CL_Condition *)ptr;
+        gc_mark_push(cond->type_name);
+        gc_mark_push(cond->slots);
+        gc_mark_push(cond->report_string);
         break;
     }
     default:

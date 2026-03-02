@@ -31,6 +31,7 @@ OBJS = $(BUILDDIR)/main.o \
        $(BUILDDIR)/builtins_sequence.o \
        $(BUILDDIR)/builtins_sequence2.o \
        $(BUILDDIR)/builtins_type.o \
+       $(BUILDDIR)/builtins_condition.o \
        $(BUILDDIR)/repl.o
 
 TARGET = $(BUILDDIR)/clamiga
@@ -114,6 +115,9 @@ $(BUILDDIR)/builtins_sequence2.o: src/core/builtins_sequence2.c
 	$(CC) $(CFLAGS) -o $@ -c $<
 
 $(BUILDDIR)/builtins_type.o: src/core/builtins_type.c
+	$(CC) $(CFLAGS) -o $@ -c $<
+
+$(BUILDDIR)/builtins_condition.o: src/core/builtins_condition.c
 	$(CC) $(CFLAGS) -o $@ -c $<
 
 $(BUILDDIR)/repl.o: src/core/repl.c

@@ -449,6 +449,7 @@ void cl_builtins_hashtable_init(void);
 void cl_builtins_sequence_init(void);
 void cl_builtins_sequence2_init(void);
 void cl_builtins_type_init(void);
+void cl_builtins_condition_init(void);
 
 void cl_builtins_init(void)
 {
@@ -503,4 +504,5 @@ void cl_builtins_init(void)
     cl_builtins_sequence_init();
     cl_builtins_sequence2_init();
     cl_builtins_type_init();
+    cl_builtins_condition_init();
 }
