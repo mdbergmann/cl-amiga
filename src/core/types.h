@@ -124,6 +124,7 @@ typedef struct {
 #define CL_SYM_SPECIAL  0x01
 #define CL_SYM_INLINE   0x02
 #define CL_SYM_TRACED   0x04
+#define CL_SYM_EXPORTED 0x08
 
 #define CL_SYMBOL_P(obj) (CL_HEAP_P(obj) && CL_HDR_TYPE(CL_OBJ_TO_PTR(obj)) == TYPE_SYMBOL)
 
@@ -212,6 +213,7 @@ typedef struct {
     CL_Obj name;        /* CL_String */
     CL_Obj symbols;     /* Hash table (vector of lists) */
     CL_Obj use_list;    /* List of used packages */
+    CL_Obj nicknames;   /* List of nickname strings */
     uint32_t sym_count;
 } CL_Package;
 

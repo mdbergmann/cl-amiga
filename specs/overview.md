@@ -92,7 +92,7 @@ Single-pass recursive compiler from S-expressions to bytecode:
 
 **Bootstrap functions:** `cadr`, `caar`, `cdar`, `cddr`, `caddr`, `cadar`, `identity`, `endp`, `member`, `intersection`, `union`, `set-difference`, `subsetp`, `cerror`
 
-## Built-in Functions (199 functions)
+## Built-in Functions (216 functions)
 
 | Category | Functions |
 |----------|-----------|
@@ -115,6 +115,7 @@ Single-pass recursive compiler from S-expressions to bytecode:
 | Conditions | `make-condition` `conditionp` `condition-type-name` `type-error-datum` `type-error-expected-type` `simple-condition-format-control` `simple-condition-format-arguments` `%register-condition-type` `condition-slot-value` |
 | Hash tables | `make-hash-table` `gethash` `remhash` `maphash` `clrhash` `hash-table-count` `hash-table-p` |
 | Type system | `typep` `coerce` |
+| Packages | `make-package` `find-package` `delete-package` `rename-package` `export` `unexport` `import` `use-package` `unuse-package` `shadow` `find-symbol` `intern` `unintern` `package-name` `package-use-list` `package-nicknames` `list-all-packages` |
 | Timing | `get-internal-real-time` |
 | Misc | `type-of` `gensym` |
 
@@ -224,10 +225,11 @@ Condition system, packages, and compiler completeness:
 - [x] Restarts (`restart-case` compiler special form, `invoke-restart`, `find-restart`, `compute-restarts`, `abort`, `continue`, `muffle-warning` builtins)
 - [x] `with-simple-restart` (boot macro), `cerror` (boot function)
 - [x] `define-condition` (boot macro), `check-type` (boot macro), `assert` (boot macro), `condition-slot-value` builtin
+- [x] Package foundation — package registry, `CL_SYM_EXPORTED` flag, export-aware symbol inheritance, nicknames, 17 package builtins (`make-package`, `find-package`, `delete-package`, `rename-package`, `export`, `unexport`, `import`, `use-package`, `unuse-package`, `shadow`, `find-symbol`, `intern`, `unintern`, `package-name`, `package-use-list`, `package-nicknames`, `list-all-packages`)
 - [ ] Interactive debugger — on error, display condition, backtrace, and available restarts; prompt user to select restart or abort; `invoke-debugger`, `break`, `*debugger-hook*`
 
-392 host tests (5 suites), 660 Amiga batch tests — all passing.
-- [ ] Full packages (`defpackage`, `in-package`, `use-package`, `export`, `import`, `shadow`, `shadowing-import-from`, `find-package`, `make-package`, `rename-package`, `delete-package`, `do-symbols`, `do-external-symbols`, `intern`, `unintern`)
+425 host tests (6 suites), 683 Amiga batch tests — all passing.
+- [ ] `defpackage`, `in-package`, qualified symbol syntax (`pkg:sym`, `pkg::sym`), `do-symbols`, `do-external-symbols`
 - [ ] `macrolet`, `symbol-macrolet` — local macro bindings (compile-time only, no opcodes)
 - [ ] Unused variable warnings with `ignore`/`ignorable` declaration support
 - [ ] `defconstant` — constant variable definitions
@@ -349,7 +351,7 @@ cl-amiga/
 │   └── overview.md        # This file
 ├── src/
 │   ├── main.c             # Entry point
-│   ├── core/              # Language implementation (21 modules)
+│   ├── core/              # Language implementation (22 modules)
 │   └── platform/          # OS abstraction (posix, amiga)
 ├── include/
 │   └── clamiga.h          # Public umbrella header
@@ -357,9 +359,9 @@ cl-amiga/
 │   └── boot.lisp          # Bootstrap macros/functions
 ├── tests/
 │   ├── test.h             # Test framework
-│   ├── test_*.c           # Host test suites (5 files, 392 tests)
+│   ├── test_*.c           # Host test suites (6 files, 425 tests)
 │   └── amiga/
-│       └── run-tests.lisp # AmigaOS batch tests (660 tests)
+│       └── run-tests.lisp # AmigaOS batch tests (683 tests)
 ├── build/                 # Build output (gitignored)
 └── verify/
     └── realamiga/          # FS-UAE config + AmigaOS system image

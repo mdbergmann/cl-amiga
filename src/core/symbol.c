@@ -320,4 +320,8 @@ void cl_symbol_init(void)
 
     /* Set the global CL_T for use by type predicates */
     CL_T = SYM_T;
+
+    /* Export all CL symbols so CL-USER inherits them.
+       Also called again after cl_builtins_init() for builtin names. */
+    cl_package_export_all_cl_symbols();
 }
