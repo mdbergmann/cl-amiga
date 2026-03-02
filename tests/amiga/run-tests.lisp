@@ -925,6 +925,19 @@
 (check "trace multiple" 16 (tr-p2 (tr-q2 3)))
 (untrace)
 
+; --- Backtrace (error recovery) ---
+; Test that errors in nested calls don't break subsequent evaluation
+(defun bt-err-inner () (error "test error"))
+(defun bt-err-outer () (+ 1 (bt-err-inner)))
+(bt-err-outer)
+(check "backtrace recovery" 42 42)
+(defun bt-rec-err (n) (if (= n 0) (error "depth") (+ 1 (bt-rec-err (1- n)))))
+(bt-rec-err 5)
+(check "backtrace deep recovery" 99 99)
+(defun bt-uwp-fn () (unwind-protect (error "uwp err") nil))
+(bt-uwp-fn)
+(check "backtrace uwp recovery" 7 (+ 3 4))
+
 ; --- Summary ---
 (format t "~%=== Results ===~%")
 (format t "Passed: ~A~%" *pass-count*)

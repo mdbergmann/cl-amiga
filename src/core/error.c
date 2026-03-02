@@ -28,6 +28,9 @@ void cl_error(int code, const char *fmt, ...)
     vsnprintf(cl_error_msg, sizeof(cl_error_msg), fmt, ap);
     va_end(ap);
 
+    /* Capture backtrace while VM frames are still intact */
+    cl_capture_backtrace();
+
     /* Check for interposing unwind-protect frames in NLX stack */
     {
         int i;
@@ -71,4 +74,8 @@ void cl_error_print(void)
     platform_write_string("ERROR: ");
     platform_write_string(cl_error_msg);
     platform_write_string("\n");
+    if (cl_backtrace_buf[0] != '\0') {
+        platform_write_string("Backtrace:\n");
+        platform_write_string(cl_backtrace_buf);
+    }
 }

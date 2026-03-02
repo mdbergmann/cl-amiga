@@ -2347,6 +2347,109 @@ TEST(eval_trace_multiple)
     eval_print("(untrace)");
 }
 
+/* --- Backtrace --- */
+
+TEST(eval_backtrace_named)
+{
+    /* Error in a named function shows its name in backtrace */
+    int err;
+    eval_print("(defun bt-inner () (error \"oops\"))");
+    eval_print("(defun bt-outer () (+ 1 (bt-inner)))");
+    err = CL_CATCH();
+    if (err == CL_ERR_NONE) {
+        cl_eval_string("(bt-outer)");
+        CL_UNCATCH();
+    } else {
+        CL_UNCATCH();
+    }
+    /* Backtrace should contain BT-INNER and BT-OUTER */
+    ASSERT(strstr(cl_backtrace_buf, "BT-INNER") != NULL);
+    ASSERT(strstr(cl_backtrace_buf, "BT-OUTER") != NULL);
+    cl_vm.sp = 0;
+    cl_vm.fp = 0;
+}
+
+TEST(eval_backtrace_anonymous)
+{
+    /* Top-level error shows <anonymous> */
+    int err;
+    err = CL_CATCH();
+    if (err == CL_ERR_NONE) {
+        cl_eval_string("(+ undefined-var 1)");
+        CL_UNCATCH();
+    } else {
+        CL_UNCATCH();
+    }
+    ASSERT(strstr(cl_backtrace_buf, "<anonymous>") != NULL);
+    cl_vm.sp = 0;
+    cl_vm.fp = 0;
+}
+
+TEST(eval_backtrace_recursive)
+{
+    /* Recursive function shows multiple frames */
+    int err;
+    eval_print("(defun bt-rec (n) (if (= n 0) (error \"bottom\") (+ 1 (bt-rec (1- n)))))");
+    err = CL_CATCH();
+    if (err == CL_ERR_NONE) {
+        cl_eval_string("(bt-rec 3)");
+        CL_UNCATCH();
+    } else {
+        CL_UNCATCH();
+    }
+    /* Should have multiple BT-REC entries */
+    {
+        const char *p = cl_backtrace_buf;
+        int count = 0;
+        while ((p = strstr(p, "BT-REC")) != NULL) {
+            count++;
+            p += 6;
+        }
+        ASSERT(count == 4); /* n=0,1,2,3 */
+    }
+    cl_vm.sp = 0;
+    cl_vm.fp = 0;
+}
+
+TEST(eval_backtrace_uwprot)
+{
+    /* Backtrace captured before unwind-protect cleanup */
+    int err;
+    eval_print("(defun bt-uwp-inner () (error \"err\"))");
+    eval_print("(defun bt-uwp-outer () (unwind-protect (bt-uwp-inner) nil))");
+    err = CL_CATCH();
+    if (err == CL_ERR_NONE) {
+        cl_eval_string("(bt-uwp-outer)");
+        CL_UNCATCH();
+    } else {
+        CL_UNCATCH();
+    }
+    ASSERT(strstr(cl_backtrace_buf, "BT-UWP-INNER") != NULL);
+    ASSERT(strstr(cl_backtrace_buf, "BT-UWP-OUTER") != NULL);
+    cl_vm.sp = 0;
+    cl_vm.fp = 0;
+}
+
+TEST(eval_backtrace_empty)
+{
+    /* No backtrace when error occurs outside VM (e.g., parse error) */
+    int err;
+    cl_vm.sp = 0;
+    cl_vm.fp = 0;
+    cl_backtrace_buf[0] = '\0';
+    err = CL_CATCH();
+    if (err == CL_ERR_NONE) {
+        cl_eval_string("(+ 1");  /* unterminated — reader error */
+        CL_UNCATCH();
+    } else {
+        CL_UNCATCH();
+    }
+    /* Reader errors happen before VM runs, so backtrace should be empty */
+    ASSERT(cl_backtrace_buf[0] == '\0');
+    cl_vm.sp = 0;
+    cl_vm.fp = 0;
+}
+
 int main(void)
 {
     test_init();
@@ -2648,6 +2751,13 @@ int main(void)
     RUN(eval_untrace_all);
     RUN(eval_trace_builtin);
     RUN(eval_trace_multiple);
+
+    /* Phase 5 — Backtrace */
+    RUN(eval_backtrace_named);
+    RUN(eval_backtrace_anonymous);
+    RUN(eval_backtrace_recursive);
+    RUN(eval_backtrace_uwprot);
+    RUN(eval_backtrace_empty);
 
     teardown();
     REPORT();

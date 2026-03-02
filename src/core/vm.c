@@ -20,6 +20,9 @@ int cl_mv_count = 1;
 int cl_trace_depth = 0;
 int cl_trace_count = 0;
 
+/* Backtrace */
+char cl_backtrace_buf[CL_BACKTRACE_BUF_SIZE];
+
 /* NLX stack */
 CL_NLXFrame cl_nlx_stack[CL_MAX_NLX_FRAMES];
 int cl_nlx_top = 0;
@@ -211,6 +214,47 @@ static void trace_print_exit(CL_Obj name_sym, CL_Obj result)
     cl_prin1_to_string(result, buf, sizeof(buf));
     platform_write_string(buf);
     platform_write_string("\n");
+}
+
+/* --- Backtrace capture --- */
+
+void cl_capture_backtrace(void)
+{
+    int i, pos = 0;
+    int max_show = 20;
+    int depth = 0;
+
+    cl_backtrace_buf[0] = '\0';
+    if (cl_vm.fp <= 0) return;
+
+    for (i = cl_vm.fp - 1; i >= 0 && depth < max_show; i--, depth++) {
+        CL_Frame *f = &cl_vm.frames[i];
+        CL_Obj name = get_func_name(f->bytecode);
+        int n;
+
+        n = snprintf(cl_backtrace_buf + pos,
+                     CL_BACKTRACE_BUF_SIZE - pos, "  %d: ", depth);
+        pos += n;
+        if (pos >= CL_BACKTRACE_BUF_SIZE - 1) break;
+
+        if (!CL_NULL_P(name) && CL_SYMBOL_P(name)) {
+            n = snprintf(cl_backtrace_buf + pos,
+                         CL_BACKTRACE_BUF_SIZE - pos,
+                         "%s\n", cl_symbol_name(name));
+        } else {
+            n = snprintf(cl_backtrace_buf + pos,
+                         CL_BACKTRACE_BUF_SIZE - pos,
+                         "<anonymous>\n");
+        }
+        pos += n;
+        if (pos >= CL_BACKTRACE_BUF_SIZE - 1) break;
+    }
+
+    if (cl_vm.fp > max_show) {
+        snprintf(cl_backtrace_buf + pos,
+                 CL_BACKTRACE_BUF_SIZE - pos,
+                 "  ... %d more frames\n", cl_vm.fp - max_show);
+    }
 }
 
 /* Call a built-in C function */

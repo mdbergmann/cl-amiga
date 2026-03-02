@@ -86,6 +86,13 @@ extern int cl_mv_count;
 extern int cl_trace_depth;
 extern int cl_trace_count;
 
+/* --- Backtrace --- */
+#define CL_BACKTRACE_BUF_SIZE 2048
+extern char cl_backtrace_buf[CL_BACKTRACE_BUF_SIZE];
+
+/* Capture current VM call stack into cl_backtrace_buf */
+void cl_capture_backtrace(void);
+
 /* Initialize VM */
 void cl_vm_init(void);
 

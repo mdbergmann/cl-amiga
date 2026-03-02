@@ -108,6 +108,9 @@ void cl_repl(void)
             CL_UNCATCH();
         } else {
             cl_error_print();
+            /* Reset VM state after error (prevent stale frames) */
+            cl_vm.sp = 0;
+            cl_vm.fp = 0;
             CL_UNCATCH();
         }
 
@@ -147,6 +150,9 @@ void cl_repl_batch(void)
             CL_UNCATCH();
         } else {
             cl_error_print();
+            /* Reset VM state after error (prevent stale frames) */
+            cl_vm.sp = 0;
+            cl_vm.fp = 0;
             CL_UNCATCH();
         }
     }

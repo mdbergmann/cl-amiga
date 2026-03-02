@@ -200,11 +200,11 @@ Data structures, sequences, strings, and I/O:
 - [x] `declare`, `declaim`, `proclaim`, `locally` — declarations
 - [x] `disassemble` — print bytecode disassembly of compiled functions
 - [x] `trace`, `untrace` — function call tracing for debugging
-- [ ] Stack traces on error — walk VM call frames, print function names and call chain
+- [x] Stack traces on error — walk VM call frames, print function names and call chain
 - [ ] Source location tracking — reader tracks line numbers, compiler attaches to bytecode, errors include file:line context
 - [ ] `time` — macro to measure and print execution time of an expression
 
-278 host tests (4 suites), ~593 Amiga batch tests — all passing.
+283 host tests (4 suites), ~618 Amiga batch tests — all passing.
 
 **Build improvements:**
 - Split builtins.c into 7 modules and compiler.c into 3 modules (stay under vbcc TU size limits)
