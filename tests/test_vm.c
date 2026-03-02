@@ -2054,6 +2054,34 @@ TEST(eval_coerce)
     ASSERT_STR_EQ(eval_print("(coerce nil 'vector)"), "#()");
 }
 
+/* --- Disassemble --- */
+
+TEST(eval_disassemble_defun)
+{
+    /* disassemble of a user-defined function returns NIL */
+    eval_print("(defun disasm-test (x) (+ x 1))");
+    ASSERT_STR_EQ(eval_print("(disassemble 'disasm-test)"), "NIL");
+}
+
+TEST(eval_disassemble_closure)
+{
+    /* disassemble of a closure returns NIL */
+    eval_print("(defun make-adder (n) (lambda (x) (+ x n)))");
+    ASSERT_STR_EQ(eval_print("(disassemble (make-adder 5))"), "NIL");
+}
+
+TEST(eval_disassemble_builtin)
+{
+    /* disassemble of a built-in function returns NIL with message */
+    ASSERT_STR_EQ(eval_print("(disassemble 'cons)"), "NIL");
+}
+
+TEST(eval_disassemble_unbound)
+{
+    /* disassemble of unbound symbol signals an error */
+    ASSERT_STR_EQ(eval_print("(disassemble 'no-such-function-xyz)"), "ERROR:8");
+}
+
 int main(void)
 {
     test_init();
@@ -2321,6 +2349,12 @@ int main(void)
     /* Phase 5 — Type system */
     RUN(eval_typep);
     RUN(eval_coerce);
+
+    /* Phase 5 — Disassemble */
+    RUN(eval_disassemble_defun);
+    RUN(eval_disassemble_closure);
+    RUN(eval_disassemble_builtin);
+    RUN(eval_disassemble_unbound);
 
     teardown();
     REPORT();

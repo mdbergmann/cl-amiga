@@ -819,6 +819,12 @@
 (check "coerce nil->list" nil (coerce nil 'list))
 (check "coerce nil->vector" t (equal (coerce nil 'vector) (vector)))
 
+; --- Disassemble ---
+(defun disasm-test-fn (x) (+ x 1))
+(check "disassemble defun" nil (disassemble 'disasm-test-fn))
+(check "disassemble closure" nil (disassemble (lambda (x) (+ x 1))))
+(check "disassemble builtin" nil (disassemble 'cons))
+
 ; --- Summary ---
 (format t "~%=== Results ===~%")
 (format t "Passed: ~A~%" *pass-count*)

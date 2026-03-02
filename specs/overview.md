@@ -91,7 +91,7 @@ Single-pass recursive compiler from S-expressions to bytecode:
 
 **Bootstrap functions:** `cadr`, `caar`, `cdar`, `cddr`, `caddr`, `cadar`, `identity`, `endp`, `member`, `intersection`, `union`, `set-difference`, `subsetp`
 
-## Built-in Functions (177 functions)
+## Built-in Functions (178 functions)
 
 | Category | Functions |
 |----------|-----------|
@@ -108,7 +108,7 @@ Single-pass recursive compiler from S-expressions to bytecode:
 | Higher-order | `mapcar` `mapc` `mapcan` `maplist` `mapl` `mapcon` `apply` `funcall` |
 | Characters | `char=` `char/=` `char<` `char>` `char<=` `char>=` `char-code` `code-char` `char-upcase` `char-downcase` `upper-case-p` `lower-case-p` `alpha-char-p` `digit-char-p` |
 | Strings | `string=` `string-equal` `string<` `string>` `string<=` `string>=` `string-upcase` `string-downcase` `string-trim` `string-left-trim` `string-right-trim` `subseq` `concatenate` `char` `schar` `string` `parse-integer` `write-to-string` `prin1-to-string` `princ-to-string` |
-| I/O | `print` `prin1` `princ` `terpri` `format` `load` |
+| I/O | `print` `prin1` `princ` `terpri` `format` `load` `disassemble` |
 | Eval/Macro | `eval` `macroexpand` `macroexpand-1` |
 | Control | `throw` `values` `values-list` `error` |
 | Hash tables | `make-hash-table` `gethash` `remhash` `maphash` `clrhash` `hash-table-count` `hash-table-p` |
@@ -198,7 +198,7 @@ Data structures, sequences, strings, and I/O:
 - [x] Type predicates (`typep`, `coerce`)
 - [ ] Advanced types (`deftype`, `subtypep`)
 - [ ] `declare`, `declaim`, `proclaim` — declarations
-- [ ] `disassemble` — print bytecode disassembly of compiled functions
+- [x] `disassemble` — print bytecode disassembly of compiled functions
 - [ ] `trace`, `untrace` — function call tracing for debugging
 - [ ] Stack traces on error — walk VM call frames, print function names and call chain
 - [ ] Source location tracking — reader tracks line numbers, compiler attaches to bytecode, errors include file:line context

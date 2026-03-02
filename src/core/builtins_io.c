@@ -7,6 +7,7 @@
 #include "compiler.h"
 #include "reader.h"
 #include "vm.h"
+#include "opcodes.h"
 #include "../platform/platform.h"
 #include <stdio.h>
 #include <string.h>
@@ -258,6 +259,244 @@ static CL_Obj bi_gensym(CL_Obj *args, int n)
     return sym;
 }
 
+/* --- Disassemble --- */
+
+typedef struct {
+    const char *name;
+    uint8_t arg_type;
+} DisasmInfo;
+
+static DisasmInfo disasm_opcode_info(uint8_t op)
+{
+    DisasmInfo info;
+    info.name = NULL;
+    info.arg_type = OP_ARG_NONE;
+
+    switch (op) {
+    case OP_CONST:      info.name = "CONST";      info.arg_type = OP_ARG_U16; break;
+    case OP_LOAD:       info.name = "LOAD";       info.arg_type = OP_ARG_U8;  break;
+    case OP_STORE:      info.name = "STORE";      info.arg_type = OP_ARG_U8;  break;
+    case OP_GLOAD:      info.name = "GLOAD";      info.arg_type = OP_ARG_U16; break;
+    case OP_GSTORE:     info.name = "GSTORE";     info.arg_type = OP_ARG_U16; break;
+    case OP_UPVAL:      info.name = "UPVAL";      info.arg_type = OP_ARG_U8;  break;
+    case OP_POP:        info.name = "POP";        break;
+    case OP_DUP:        info.name = "DUP";        break;
+    case OP_CONS:       info.name = "CONS";       break;
+    case OP_CAR:        info.name = "CAR";        break;
+    case OP_CDR:        info.name = "CDR";        break;
+    case OP_ADD:        info.name = "ADD";        break;
+    case OP_SUB:        info.name = "SUB";        break;
+    case OP_MUL:        info.name = "MUL";        break;
+    case OP_DIV:        info.name = "DIV";        break;
+    case OP_EQ:         info.name = "EQ";         break;
+    case OP_LT:         info.name = "LT";         break;
+    case OP_GT:         info.name = "GT";         break;
+    case OP_LE:         info.name = "LE";         break;
+    case OP_GE:         info.name = "GE";         break;
+    case OP_NUMEQ:      info.name = "NUMEQ";     break;
+    case OP_NOT:        info.name = "NOT";        break;
+    case OP_JMP:        info.name = "JMP";        info.arg_type = OP_ARG_I16; break;
+    case OP_JNIL:       info.name = "JNIL";       info.arg_type = OP_ARG_I16; break;
+    case OP_JTRUE:      info.name = "JTRUE";      info.arg_type = OP_ARG_I16; break;
+    case OP_CALL:       info.name = "CALL";       info.arg_type = OP_ARG_U8;  break;
+    case OP_TAILCALL:   info.name = "TAILCALL";   info.arg_type = OP_ARG_U8;  break;
+    case OP_RET:        info.name = "RET";        break;
+    case OP_CLOSURE:    info.name = "CLOSURE";    info.arg_type = OP_ARG_U16; break;
+    case OP_APPLY:      info.name = "APPLY";      break;
+    case OP_LIST:       info.name = "LIST";       info.arg_type = OP_ARG_U8;  break;
+    case OP_NIL:        info.name = "NIL";        break;
+    case OP_T:          info.name = "T";          break;
+    case OP_FLOAD:      info.name = "FLOAD";      info.arg_type = OP_ARG_U16; break;
+    case OP_DEFMACRO:   info.name = "DEFMACRO";   info.arg_type = OP_ARG_U16; break;
+    case OP_ARGC:       info.name = "ARGC";       break;
+    case OP_CATCH:      info.name = "CATCH";      info.arg_type = OP_ARG_I16; break;
+    case OP_UNCATCH:    info.name = "UNCATCH";    break;
+    case OP_UWPROT:     info.name = "UWPROT";     info.arg_type = OP_ARG_I16; break;
+    case OP_UWPOP:      info.name = "UWPOP";      break;
+    case OP_UWRETHROW:  info.name = "UWRETHROW";  break;
+    case OP_MV_LOAD:    info.name = "MV_LOAD";    info.arg_type = OP_ARG_U8;  break;
+    case OP_MV_TO_LIST: info.name = "MV_TO_LIST"; break;
+    case OP_NTH_VALUE:  info.name = "NTH_VALUE";  break;
+    case OP_DYNBIND:    info.name = "DYNBIND";    info.arg_type = OP_ARG_U16; break;
+    case OP_DYNUNBIND:  info.name = "DYNUNBIND";  info.arg_type = OP_ARG_U8;  break;
+    case OP_RPLACA:     info.name = "RPLACA";     break;
+    case OP_RPLACD:     info.name = "RPLACD";     break;
+    case OP_ASET:       info.name = "ASET";       break;
+    case OP_HALT:       info.name = "HALT";       break;
+    default: break;
+    }
+    return info;
+}
+
+static void disasm_bytecode(CL_Bytecode *bc)
+{
+    uint8_t *code = bc->code;
+    uint32_t len = bc->code_len;
+    uint32_t ip = 0;
+    char line[256];
+    char annot[128];
+
+    /* Header */
+    platform_write_string("Disassembly of ");
+    if (!CL_NULL_P(bc->name)) {
+        cl_prin1_to_string(bc->name, annot, sizeof(annot));
+        platform_write_string(annot);
+    } else {
+        platform_write_string("#<anonymous>");
+    }
+    platform_write_string(":\n");
+
+    /* Metadata */
+    {
+        int req = bc->arity & 0x7FFF;
+        int has_rest = (bc->arity >> 15) & 1;
+        snprintf(line, sizeof(line), "  %d required, %d optional, %d key%s%s\n",
+                req, (int)bc->n_optional, (int)bc->n_keys,
+                has_rest ? ", &rest" : "",
+                (bc->flags & 2) ? ", &allow-other-keys" : "");
+        platform_write_string(line);
+        snprintf(line, sizeof(line), "  %lu locals, %lu upvalues\n",
+                (unsigned long)bc->n_locals, (unsigned long)bc->n_upvalues);
+        platform_write_string(line);
+        snprintf(line, sizeof(line), "  %lu bytes, %lu constants\n\n",
+                (unsigned long)len, (unsigned long)bc->n_constants);
+        platform_write_string(line);
+    }
+
+    /* Instructions */
+    while (ip < len) {
+        uint32_t start_ip = ip;
+        uint8_t op = code[ip++];
+        DisasmInfo info = disasm_opcode_info(op);
+
+        if (!info.name) {
+            snprintf(line, sizeof(line), "  %04lu: ???          0x%02X\n",
+                    (unsigned long)start_ip, (unsigned int)op);
+            platform_write_string(line);
+            continue;
+        }
+
+        switch (info.arg_type) {
+        case OP_ARG_NONE:
+            snprintf(line, sizeof(line), "  %04lu: %s\n",
+                    (unsigned long)start_ip, info.name);
+            platform_write_string(line);
+            break;
+
+        case OP_ARG_U8: {
+            uint8_t val = code[ip++];
+            snprintf(line, sizeof(line), "  %04lu: %-12s %u\n",
+                    (unsigned long)start_ip, info.name, (unsigned int)val);
+            platform_write_string(line);
+            break;
+        }
+
+        case OP_ARG_U16: {
+            uint16_t val = (uint16_t)((code[ip] << 8) | code[ip + 1]);
+            ip += 2;
+            annot[0] = '\0';
+            if (val < bc->n_constants &&
+                (op == OP_CONST || op == OP_GLOAD || op == OP_GSTORE ||
+                 op == OP_FLOAD || op == OP_DEFMACRO || op == OP_DYNBIND ||
+                 op == OP_CLOSURE)) {
+                cl_prin1_to_string(bc->constants[val], annot, sizeof(annot));
+            }
+            if (annot[0]) {
+                snprintf(line, sizeof(line), "  %04lu: %-12s %-4u ; %s\n",
+                        (unsigned long)start_ip, info.name,
+                        (unsigned int)val, annot);
+            } else {
+                snprintf(line, sizeof(line), "  %04lu: %-12s %u\n",
+                        (unsigned long)start_ip, info.name, (unsigned int)val);
+            }
+            platform_write_string(line);
+
+            /* OP_CLOSURE: read and print capture descriptors */
+            if (op == OP_CLOSURE && val < bc->n_constants) {
+                CL_Obj tmpl = bc->constants[val];
+                if (CL_BYTECODE_P(tmpl)) {
+                    CL_Bytecode *tmpl_bc = (CL_Bytecode *)CL_OBJ_TO_PTR(tmpl);
+                    int ci;
+                    for (ci = 0; ci < tmpl_bc->n_upvalues; ci++) {
+                        uint8_t is_local = code[ip++];
+                        uint8_t cap_idx = code[ip++];
+                        snprintf(line, sizeof(line),
+                                "          capture %d: %s slot %u\n",
+                                ci, is_local ? "local" : "upval",
+                                (unsigned int)cap_idx);
+                        platform_write_string(line);
+                    }
+                }
+            }
+            break;
+        }
+
+        case OP_ARG_I16: {
+            int16_t val = (int16_t)((code[ip] << 8) | code[ip + 1]);
+            ip += 2;
+            snprintf(line, sizeof(line), "  %04lu: %-12s %+d    ; -> %04lu\n",
+                    (unsigned long)start_ip, info.name, (int)val,
+                    (unsigned long)((int32_t)ip + (int32_t)val));
+            platform_write_string(line);
+            break;
+        }
+        }
+    }
+
+    /* Constants pool */
+    if (bc->n_constants > 0) {
+        uint16_t ci;
+        platform_write_string("\nConstants:\n");
+        for (ci = 0; ci < bc->n_constants; ci++) {
+            cl_prin1_to_string(bc->constants[ci], annot, sizeof(annot));
+            snprintf(line, sizeof(line), "  %u: %s\n",
+                    (unsigned int)ci, annot);
+            platform_write_string(line);
+        }
+    }
+    platform_write_string("\n");
+}
+
+static CL_Obj bi_disassemble(CL_Obj *args, int n)
+{
+    CL_Obj arg = args[0];
+    CL_Bytecode *bc = NULL;
+    CL_UNUSED(n);
+
+    /* Accept symbol — resolve to function binding (same fallback as OP_FLOAD) */
+    if (CL_SYMBOL_P(arg)) {
+        CL_Symbol *sym = (CL_Symbol *)CL_OBJ_TO_PTR(arg);
+        if (sym->function != CL_UNBOUND && !CL_NULL_P(sym->function))
+            arg = sym->function;
+        else if (sym->value != CL_UNBOUND && !CL_NULL_P(sym->value))
+            arg = sym->value;
+        else
+            cl_error(CL_ERR_UNDEFINED, "DISASSEMBLE: no function binding");
+    }
+
+    if (CL_BYTECODE_P(arg)) {
+        bc = (CL_Bytecode *)CL_OBJ_TO_PTR(arg);
+    } else if (CL_CLOSURE_P(arg)) {
+        CL_Closure *cl = (CL_Closure *)CL_OBJ_TO_PTR(arg);
+        if (CL_BYTECODE_P(cl->bytecode))
+            bc = (CL_Bytecode *)CL_OBJ_TO_PTR(cl->bytecode);
+    } else if (CL_FUNCTION_P(arg)) {
+        CL_Function *fn = (CL_Function *)CL_OBJ_TO_PTR(arg);
+        char nbuf[128];
+        platform_write_string("Built-in function: ");
+        cl_prin1_to_string(fn->name, nbuf, sizeof(nbuf));
+        platform_write_string(nbuf);
+        platform_write_string("\n  (no bytecode to disassemble)\n");
+        return CL_NIL;
+    }
+
+    if (!bc)
+        cl_error(CL_ERR_TYPE, "DISASSEMBLE: argument must be a function or symbol");
+
+    disasm_bytecode(bc);
+    return CL_NIL;
+}
+
 /* --- Registration --- */
 
 void cl_builtins_io_init(void)
@@ -285,4 +524,7 @@ void cl_builtins_io_init(void)
 
     /* Gensym */
     defun("GENSYM", bi_gensym, 0, 1);
+
+    /* Debugging */
+    defun("DISASSEMBLE", bi_disassemble, 1, 1);
 }
