@@ -1096,6 +1096,24 @@
 (intern "ISYM" (find-package "QRA-PR2"))
 (check "print internal" "QRA-PR2::ISYM" (prin1-to-string 'QRA-PR2::ISYM))
 
+; --- CDR-10: Package-local nicknames ---
+(make-package "LN-AMI1" :use '("COMMON-LISP"))
+(add-package-local-nickname "KW-AMI" (find-package "KEYWORD") (find-package "LN-AMI1"))
+(check "pkg-local-nick add" 1 (length (package-local-nicknames (find-package "LN-AMI1"))))
+(in-package "LN-AMI1")
+(cl-user::check "pkg-local-nick resolve" t (not (null (find-package "KW-AMI"))))
+(in-package "COMMON-LISP-USER")
+(check "pkg-local-nick scoped" nil (find-package "KW-AMI"))
+(make-package "LN-AMI2" :use '("COMMON-LISP"))
+(add-package-local-nickname "RK" (find-package "KEYWORD") (find-package "LN-AMI2"))
+(remove-package-local-nickname "RK" (find-package "LN-AMI2"))
+(check "pkg-local-nick remove" 0 (length (package-local-nicknames (find-package "LN-AMI2"))))
+(defpackage "LN-AMI3" (:use "COMMON-LISP") (:local-nicknames ("KD" "KEYWORD")))
+(in-package "LN-AMI3")
+(cl-user::check "defpackage local-nick" t (not (null (find-package "KD"))))
+(cl-user::check "local-nick reader" t (eq 'KD:TEST :TEST))
+(in-package "COMMON-LISP-USER")
+
 ; --- Summary ---
 (format t "~%=== Results ===~%")
 (format t "Passed: ~A~%" *pass-count*)

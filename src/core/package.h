@@ -55,6 +55,10 @@ void cl_shadow_symbol(const char *name, uint32_t len, CL_Obj package);
 void cl_use_package(CL_Obj pkg_to_use, CL_Obj using_pkg);
 void cl_unuse_package(CL_Obj pkg_to_unuse, CL_Obj using_pkg);
 
+/* CDR-10: Package-local nicknames */
+void cl_add_package_local_nickname(CL_Obj nick_str, CL_Obj target_pkg, CL_Obj in_pkg);
+void cl_remove_package_local_nickname(const char *name, uint32_t len, CL_Obj from_pkg);
+
 /* Export all symbols currently in CL package (called after symbol init) */
 void cl_package_export_all_cl_symbols(void);
 

@@ -23,6 +23,7 @@ static CL_Obj KW_EXTERNAL = CL_NIL;
 static CL_Obj KW_INHERITED = CL_NIL;
 static CL_Obj KW_NICKNAMES = CL_NIL;
 static CL_Obj KW_USE = CL_NIL;
+static CL_Obj KW_LOCAL_NICKNAMES = CL_NIL;
 
 /* ---- Helpers ---- */
 
@@ -94,6 +95,7 @@ static CL_Obj bi_make_package(CL_Obj *args, int nargs)
     CL_Obj pkg, existing;
     CL_Obj nicknames = CL_NIL;
     CL_Obj use = CL_NIL;
+    CL_Obj local_nicks = CL_NIL;
     int i;
 
     get_name_str(args[0], &name, &len);
@@ -111,6 +113,8 @@ static CL_Obj bi_make_package(CL_Obj *args, int nargs)
             nicknames = args[i + 1];
         } else if (args[i] == KW_USE) {
             use = args[i + 1];
+        } else if (args[i] == KW_LOCAL_NICKNAMES) {
+            local_nicks = args[i + 1];
         }
     }
 
@@ -131,6 +135,22 @@ static CL_Obj bi_make_package(CL_Obj *args, int nargs)
         CL_Obj used_pkg = coerce_to_package(cl_car(use));
         cl_use_package(used_pkg, pkg);
         use = cl_cdr(use);
+    }
+
+    /* Process :local-nicknames list — each entry is (nick-name target-package) */
+    while (!CL_NULL_P(local_nicks)) {
+        CL_Obj pair = cl_car(local_nicks);
+        CL_Obj nick_designator = cl_car(pair);
+        CL_Obj target_designator = cl_car(cl_cdr(pair));
+        CL_Obj nick_str, target_pkg;
+        const char *nick_name;
+        uint32_t nick_len;
+
+        get_name_str(nick_designator, &nick_name, &nick_len);
+        nick_str = cl_make_string(nick_name, nick_len);
+        target_pkg = coerce_to_package(target_designator);
+        cl_add_package_local_nickname(nick_str, target_pkg, pkg);
+        local_nicks = cl_cdr(local_nicks);
     }
 
     CL_GC_UNPROTECT(1);
@@ -515,6 +535,45 @@ static CL_Obj bi_package_external_symbols(CL_Obj *args, int nargs)
     return result;
 }
 
+/* ---- CDR-10: Package-local nicknames ---- */
+
+/* (package-local-nicknames package) — returns alist of (nick-string . package) */
+static CL_Obj bi_package_local_nicknames(CL_Obj *args, int nargs)
+{
+    CL_Obj pkg = coerce_to_package(args[0]);
+    CL_Package *p = (CL_Package *)CL_OBJ_TO_PTR(pkg);
+    (void)nargs;
+    return p->local_nicknames;
+}
+
+/* (add-package-local-nickname nick-name target-package &optional package) */
+static CL_Obj bi_add_package_local_nickname(CL_Obj *args, int nargs)
+{
+    const char *nick_name;
+    uint32_t nick_len;
+    CL_Obj nick_str, target_pkg, in_pkg;
+
+    get_name_str(args[0], &nick_name, &nick_len);
+    nick_str = cl_make_string(nick_name, nick_len);
+    target_pkg = coerce_to_package(args[1]);
+    in_pkg = (nargs > 2) ? coerce_to_package(args[2]) : cl_current_package;
+    cl_add_package_local_nickname(nick_str, target_pkg, in_pkg);
+    return SYM_T;
+}
+
+/* (remove-package-local-nickname nick-name &optional package) */
+static CL_Obj bi_remove_package_local_nickname(CL_Obj *args, int nargs)
+{
+    const char *nick_name;
+    uint32_t nick_len;
+    CL_Obj from_pkg;
+
+    get_name_str(args[0], &nick_name, &nick_len);
+    from_pkg = (nargs > 1) ? coerce_to_package(args[1]) : cl_current_package;
+    cl_remove_package_local_nickname(nick_name, nick_len, from_pkg);
+    return SYM_T;
+}
+
 /* ---- Init ---- */
 
 void cl_builtins_package_init(void)
@@ -523,8 +582,9 @@ void cl_builtins_package_init(void)
     KW_INTERNAL  = cl_intern_keyword("INTERNAL", 8);
     KW_EXTERNAL  = cl_intern_keyword("EXTERNAL", 8);
     KW_INHERITED = cl_intern_keyword("INHERITED", 9);
-    KW_NICKNAMES = cl_intern_keyword("NICKNAMES", 9);
-    KW_USE       = cl_intern_keyword("USE", 3);
+    KW_NICKNAMES       = cl_intern_keyword("NICKNAMES", 9);
+    KW_USE             = cl_intern_keyword("USE", 3);
+    KW_LOCAL_NICKNAMES = cl_intern_keyword("LOCAL-NICKNAMES", 15);
 
     defun("MAKE-PACKAGE", bi_make_package, 1, -1);
     defun("FIND-PACKAGE", bi_find_package, 1, 1);
@@ -545,4 +605,7 @@ void cl_builtins_package_init(void)
     defun("LIST-ALL-PACKAGES", bi_list_all_packages, 0, 0);
     defun("%PACKAGE-SYMBOLS", bi_package_symbols, 1, 1);
     defun("%PACKAGE-EXTERNAL-SYMBOLS", bi_package_external_symbols, 1, 1);
+    defun("PACKAGE-LOCAL-NICKNAMES", bi_package_local_nicknames, 1, 1);
+    defun("ADD-PACKAGE-LOCAL-NICKNAME", bi_add_package_local_nickname, 2, 3);
+    defun("REMOVE-PACKAGE-LOCAL-NICKNAME", bi_remove_package_local_nickname, 1, 2);
 }

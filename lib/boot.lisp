@@ -142,18 +142,20 @@
             :format-control ,(or string "Assertion failed: ~S")
             :format-arguments (list ',test-form))))
 
-;; defpackage — define a package with :use, :export, :nicknames options
+;; defpackage — define a package with :use, :export, :nicknames, :local-nicknames options
 (defmacro defpackage (name &rest options)
   (let ((pkg-name (if (symbolp name) (symbol-name name) name))
         (uses nil)
         (exports nil)
-        (nicknames nil))
+        (nicknames nil)
+        (local-nicks nil))
     ;; Parse options
     (dolist (opt options)
       (case (car opt)
         (:use (setq uses (cdr opt)))
         (:export (setq exports (cdr opt)))
-        (:nicknames (setq nicknames (cdr opt)))))
+        (:nicknames (setq nicknames (cdr opt)))
+        (:local-nicknames (setq local-nicks (cdr opt)))))
     `(progn
        (let ((pkg (or (find-package ,pkg-name)
                       (make-package ,pkg-name :nicknames ',nicknames))))
@@ -165,6 +167,13 @@
          ,@(when exports
              `((dolist (e ',exports)
                  (export (intern (if (symbolp e) (symbol-name e) e) pkg) pkg))))
+         ,@(when local-nicks
+             `((dolist (ln ',local-nicks)
+                 (add-package-local-nickname
+                  (car ln)
+                  (or (find-package (if (symbolp (cadr ln)) (symbol-name (cadr ln)) (cadr ln)))
+                      (error "Package ~A not found for local nickname" (cadr ln)))
+                  pkg))))
          pkg))))
 
 ;; do-symbols — iterate over all symbols in a package

@@ -689,6 +689,140 @@ TEST(eval_do_symbols_keyword)
         "T");
 }
 
+/* ---- CDR-10: Package-local nicknames ---- */
+
+TEST(c_local_nicknames_basic)
+{
+    CL_Obj pkg = cl_make_package("LN-TEST1");
+    CL_Obj nick_str = cl_make_string("KW", 2);
+    CL_Obj saved_pkg;
+    CL_Obj found;
+
+    cl_register_package(pkg);
+    cl_add_package_local_nickname(nick_str, cl_package_keyword, pkg);
+
+    /* Set as current package to test resolution */
+    saved_pkg = cl_current_package;
+    cl_current_package = pkg;
+
+    found = cl_find_package("KW", 2);
+    ASSERT(!CL_NULL_P(found));
+    ASSERT(found == cl_package_keyword);
+
+    cl_current_package = saved_pkg;
+}
+
+TEST(c_local_nicknames_scoped)
+{
+    CL_Obj pkg_a = cl_make_package("LN-SCOPE-A");
+    CL_Obj pkg_b = cl_make_package("LN-SCOPE-B");
+    CL_Obj nick_str = cl_make_string("MY-CL", 5);
+    CL_Obj found;
+
+    cl_register_package(pkg_a);
+    cl_register_package(pkg_b);
+
+    /* Add local nickname only to pkg_a */
+    cl_add_package_local_nickname(nick_str, cl_package_cl, pkg_a);
+
+    /* Should NOT resolve when pkg_b is current */
+    cl_current_package = pkg_b;
+    found = cl_find_package("MY-CL", 5);
+    ASSERT(CL_NULL_P(found));
+
+    /* SHOULD resolve when pkg_a is current */
+    cl_current_package = pkg_a;
+    found = cl_find_package("MY-CL", 5);
+    ASSERT(!CL_NULL_P(found));
+    ASSERT(found == cl_package_cl);
+
+    cl_current_package = cl_package_cl_user;
+}
+
+TEST(c_local_nicknames_remove)
+{
+    CL_Obj pkg = cl_make_package("LN-REM");
+    CL_Obj nick_str = cl_make_string("REMKW", 5);
+    CL_Obj saved_pkg;
+    CL_Obj found;
+
+    cl_register_package(pkg);
+    cl_add_package_local_nickname(nick_str, cl_package_keyword, pkg);
+
+    saved_pkg = cl_current_package;
+    cl_current_package = pkg;
+
+    found = cl_find_package("REMKW", 5);
+    ASSERT(!CL_NULL_P(found));
+
+    cl_remove_package_local_nickname("REMKW", 5, pkg);
+    found = cl_find_package("REMKW", 5);
+    ASSERT(CL_NULL_P(found));
+
+    cl_current_package = saved_pkg;
+}
+
+TEST(eval_add_local_nickname)
+{
+    eval_print("(make-package \"LN-EVAL1\" :use '(\"COMMON-LISP\"))");
+    eval_print("(add-package-local-nickname \"K\" (find-package \"KEYWORD\") (find-package \"LN-EVAL1\"))");
+    eval_print("(in-package \"LN-EVAL1\")");
+    ASSERT_STR_EQ(eval_print("(find-package \"K\")"), "#<PACKAGE KEYWORD>");
+    eval_print("(in-package \"COMMON-LISP-USER\")");
+}
+
+TEST(eval_remove_local_nickname)
+{
+    eval_print("(make-package \"LN-EVAL2\" :use '(\"COMMON-LISP\"))");
+    eval_print("(add-package-local-nickname \"K2\" (find-package \"KEYWORD\") (find-package \"LN-EVAL2\"))");
+    eval_print("(in-package \"LN-EVAL2\")");
+    ASSERT_STR_EQ(eval_print("(find-package \"K2\")"), "#<PACKAGE KEYWORD>");
+    eval_print("(remove-package-local-nickname \"K2\")");
+    ASSERT_STR_EQ(eval_print("(find-package \"K2\")"), "NIL");
+    eval_print("(in-package \"COMMON-LISP-USER\")");
+}
+
+TEST(eval_package_local_nicknames)
+{
+    eval_print("(make-package \"LN-EVAL3\" :use '(\"COMMON-LISP\"))");
+    eval_print("(add-package-local-nickname \"MY-KW\" (find-package \"KEYWORD\") (find-package \"LN-EVAL3\"))");
+    ASSERT_STR_EQ(eval_print("(length (package-local-nicknames (find-package \"LN-EVAL3\")))"), "1");
+}
+
+TEST(eval_defpackage_local_nicknames)
+{
+    eval_print("(defpackage \"LN-DP\" (:use \"COMMON-LISP\") (:local-nicknames (\"K\" \"KEYWORD\")))");
+    eval_print("(in-package \"LN-DP\")");
+    ASSERT_STR_EQ(eval_print("(find-package \"K\")"), "#<PACKAGE KEYWORD>");
+    eval_print("(in-package \"COMMON-LISP-USER\")");
+}
+
+TEST(eval_local_nickname_reader)
+{
+    eval_print("(defpackage \"LN-RD\" (:use \"COMMON-LISP\") (:local-nicknames (\"K\" \"KEYWORD\")))");
+    eval_print("(in-package \"LN-RD\")");
+    /* K:TEST should resolve to KEYWORD:TEST = :TEST */
+    ASSERT_STR_EQ(eval_print("(eq 'K:TEST :TEST)"), "T");
+    eval_print("(in-package \"COMMON-LISP-USER\")");
+}
+
+TEST(eval_local_nickname_scope)
+{
+    /* Create two packages, only one has local nickname */
+    eval_print("(defpackage \"LN-SC1\" (:use \"COMMON-LISP\") (:local-nicknames (\"KW\" \"KEYWORD\")))");
+    eval_print("(defpackage \"LN-SC2\" (:use \"COMMON-LISP\"))");
+
+    /* In LN-SC1, KW should resolve */
+    eval_print("(in-package \"LN-SC1\")");
+    ASSERT_STR_EQ(eval_print("(find-package \"KW\")"), "#<PACKAGE KEYWORD>");
+    eval_print("(in-package \"COMMON-LISP-USER\")");
+
+    /* In LN-SC2, KW should NOT resolve */
+    eval_print("(in-package \"LN-SC2\")");
+    ASSERT_STR_EQ(eval_print("(find-package \"KW\")"), "NIL");
+    eval_print("(in-package \"COMMON-LISP-USER\")");
+}
+
 /* ---- Main ---- */
 
 int main(void)
@@ -774,6 +908,17 @@ int main(void)
     RUN(eval_do_external_symbols);
     RUN(eval_do_external_symbols_finds_car);
     RUN(eval_do_symbols_keyword);
+
+    /* CDR-10: Package-local nicknames */
+    RUN(c_local_nicknames_basic);
+    RUN(c_local_nicknames_scoped);
+    RUN(c_local_nicknames_remove);
+    RUN(eval_add_local_nickname);
+    RUN(eval_remove_local_nickname);
+    RUN(eval_package_local_nicknames);
+    RUN(eval_defpackage_local_nicknames);
+    RUN(eval_local_nickname_reader);
+    RUN(eval_local_nickname_scope);
 
     teardown();
     REPORT();

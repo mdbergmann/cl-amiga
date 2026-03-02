@@ -63,6 +63,7 @@ CL_Obj cl_make_package(const char *name)
     pkg->symbols = symtab;
     pkg->use_list = CL_NIL;
     pkg->nicknames = CL_NIL;
+    pkg->local_nicknames = CL_NIL;
     pkg->sym_count = 0;
     return CL_PTR_TO_OBJ(pkg);
 }
@@ -155,7 +156,22 @@ CL_Obj cl_find_symbol_with_status(const char *name, uint32_t len,
 
 CL_Obj cl_find_package(const char *name, uint32_t len)
 {
-    CL_Obj reg = cl_package_registry;
+    CL_Obj reg;
+
+    /* CDR-10: Check local nicknames of current package first */
+    if (!CL_NULL_P(cl_current_package)) {
+        CL_Package *cur = (CL_Package *)CL_OBJ_TO_PTR(cl_current_package);
+        CL_Obj lnicks = cur->local_nicknames;
+        while (!CL_NULL_P(lnicks)) {
+            CL_Obj entry = cl_car(lnicks);
+            if (str_eq(cl_car(entry), name, len)) {
+                return cl_cdr(entry);
+            }
+            lnicks = cl_cdr(lnicks);
+        }
+    }
+
+    reg = cl_package_registry;
 
     while (!CL_NULL_P(reg)) {
         CL_Obj entry = cl_car(reg);
@@ -300,6 +316,60 @@ void cl_unuse_package(CL_Obj pkg_to_unuse, CL_Obj using_pkg)
                 user->use_list = cl_cdr(list);
             } else {
                 /* Mutate cdr of prev */
+                CL_Cons *c = (CL_Cons *)CL_OBJ_TO_PTR(prev);
+                c->cdr = cl_cdr(list);
+            }
+            return;
+        }
+        prev = list;
+        list = cl_cdr(list);
+    }
+}
+
+void cl_add_package_local_nickname(CL_Obj nick_str, CL_Obj target_pkg, CL_Obj in_pkg)
+{
+    CL_Package *p = (CL_Package *)CL_OBJ_TO_PTR(in_pkg);
+    CL_String *ns = (CL_String *)CL_OBJ_TO_PTR(nick_str);
+    CL_Obj list = p->local_nicknames;
+
+    /* Check for duplicate — replace if exists */
+    while (!CL_NULL_P(list)) {
+        CL_Obj entry = cl_car(list);
+        if (str_eq(cl_car(entry), ns->data, ns->length)) {
+            /* Replace target */
+            CL_Cons *c = (CL_Cons *)CL_OBJ_TO_PTR(entry);
+            c->cdr = target_pkg;
+            return;
+        }
+        list = cl_cdr(list);
+    }
+
+    /* Prepend new entry */
+    {
+        CL_Obj entry;
+        CL_GC_PROTECT(in_pkg);
+        CL_GC_PROTECT(nick_str);
+        CL_GC_PROTECT(target_pkg);
+        entry = cl_cons(nick_str, target_pkg);
+        CL_GC_PROTECT(entry);
+        p = (CL_Package *)CL_OBJ_TO_PTR(in_pkg);
+        p->local_nicknames = cl_cons(entry, p->local_nicknames);
+        CL_GC_UNPROTECT(4);
+    }
+}
+
+void cl_remove_package_local_nickname(const char *name, uint32_t len, CL_Obj from_pkg)
+{
+    CL_Package *p = (CL_Package *)CL_OBJ_TO_PTR(from_pkg);
+    CL_Obj prev = CL_NIL;
+    CL_Obj list = p->local_nicknames;
+
+    while (!CL_NULL_P(list)) {
+        CL_Obj entry = cl_car(list);
+        if (str_eq(cl_car(entry), name, len)) {
+            if (CL_NULL_P(prev)) {
+                p->local_nicknames = cl_cdr(list);
+            } else {
                 CL_Cons *c = (CL_Cons *)CL_OBJ_TO_PTR(prev);
                 c->cdr = cl_cdr(list);
             }

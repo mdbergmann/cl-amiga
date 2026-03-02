@@ -92,7 +92,7 @@ Single-pass recursive compiler from S-expressions to bytecode:
 
 **Bootstrap functions:** `cadr`, `caar`, `cdar`, `cddr`, `caddr`, `cadar`, `identity`, `endp`, `member`, `intersection`, `union`, `set-difference`, `subsetp`, `cerror`
 
-## Built-in Functions (219 functions)
+## Built-in Functions (222 functions)
 
 | Category | Functions |
 |----------|-----------|
@@ -115,7 +115,7 @@ Single-pass recursive compiler from S-expressions to bytecode:
 | Conditions | `make-condition` `conditionp` `condition-type-name` `type-error-datum` `type-error-expected-type` `simple-condition-format-control` `simple-condition-format-arguments` `%register-condition-type` `condition-slot-value` |
 | Hash tables | `make-hash-table` `gethash` `remhash` `maphash` `clrhash` `hash-table-count` `hash-table-p` |
 | Type system | `typep` `coerce` |
-| Packages | `make-package` `find-package` `delete-package` `rename-package` `export` `unexport` `import` `use-package` `unuse-package` `shadow` `find-symbol` `intern` `unintern` `package-name` `package-use-list` `package-nicknames` `list-all-packages` `%package-symbols` `%package-external-symbols` |
+| Packages | `make-package` `find-package` `delete-package` `rename-package` `export` `unexport` `import` `use-package` `unuse-package` `shadow` `find-symbol` `intern` `unintern` `package-name` `package-use-list` `package-nicknames` `list-all-packages` `%package-symbols` `%package-external-symbols` `package-local-nicknames` `add-package-local-nickname` `remove-package-local-nickname` |
 | Timing | `get-internal-real-time` |
 | Misc | `type-of` `gensym` |
 
@@ -228,9 +228,10 @@ Condition system, packages, and compiler completeness:
 - [x] Package foundation — package registry, `CL_SYM_EXPORTED` flag, export-aware symbol inheritance, nicknames, 17 package builtins (`make-package`, `find-package`, `delete-package`, `rename-package`, `export`, `unexport`, `import`, `use-package`, `unuse-package`, `shadow`, `find-symbol`, `intern`, `unintern`, `package-name`, `package-use-list`, `package-nicknames`, `list-all-packages`)
 - [x] Reader package-qualified syntax (`pkg:sym` external, `pkg::sym` internal, `#:sym` uninterned), printer package prefixes (`PKG:SYM`, `PKG::SYM`, `#:SYM`)
 - [x] `defpackage` (boot macro), `in-package` (compiler special form), `do-symbols`, `do-external-symbols` (boot macros), `%package-symbols`, `%package-external-symbols` (internal builtins), `*PACKAGE*` special variable
+- [x] CDR-10 package-local nicknames — `package-local-nicknames`, `add-package-local-nickname`, `remove-package-local-nickname` builtins, `:local-nicknames` in `make-package` and `defpackage`, scoped resolution in `cl_find_package`
 - [ ] Interactive debugger — on error, display condition, backtrace, and available restarts; prompt user to select restart or abort; `invoke-debugger`, `break`, `*debugger-hook*`
 
-457 host tests (6 suites), 697 Amiga batch tests — all passing.
+466 host tests (6 suites), 703 Amiga batch tests — all passing.
 - [ ] `macrolet`, `symbol-macrolet` — local macro bindings (compile-time only, no opcodes)
 - [ ] Unused variable warnings with `ignore`/`ignorable` declaration support
 - [ ] `defconstant` — constant variable definitions
@@ -238,6 +239,7 @@ Condition system, packages, and compiler completeness:
 - [ ] `progv` — dynamic binding with computed symbols
 - [ ] `the` — type declaration special form (initially no-op, validates later)
 - [ ] Enhanced `time` — report bytes consed, GC cycles, heap usage in addition to wall time; optionally CPU time via `getrusage()` (POSIX) / `ReadEClock()` (AmigaOS)
+- [ ] REPL history variables — `*`, `**`, `***` (last 3 results), `+`, `++`, `+++` (last 3 forms), `-` (current form being evaluated)
 
 ### Phase 7: I/O & Pathnames
 
@@ -366,7 +368,7 @@ cl-amiga/
 │   ├── test.h             # Test framework
 │   ├── test_*.c           # Host test suites (6 files, 457 tests)
 │   └── amiga/
-│       └── run-tests.lisp # AmigaOS batch tests (697 tests)
+│       └── run-tests.lisp # AmigaOS batch tests (703 tests)
 ├── build/                 # Build output (gitignored)
 └── verify/
     └── realamiga/          # FS-UAE config + AmigaOS system image
