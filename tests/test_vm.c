@@ -2280,6 +2280,73 @@ TEST(eval_declaim_multiple)
     ASSERT_EQ_INT(eval_int("(let ((*dm2* 20)) (get-dm2))"), 20);
 }
 
+/* ===== Phase 5 — Trace/Untrace ===== */
+
+TEST(eval_trace_basic)
+{
+    /* Trace a function and verify result is still correct */
+    eval_print("(defun tr-add (a b) (+ a b))");
+    eval_print("(trace tr-add)");
+    ASSERT_EQ_INT(eval_int("(tr-add 3 4)"), 7);
+    eval_print("(untrace tr-add)");
+}
+
+TEST(eval_trace_returns_list)
+{
+    /* (trace name) returns a list of traced names */
+    eval_print("(defun tr-foo () 42)");
+    ASSERT_STR_EQ(eval_print("(trace tr-foo)"), "(TR-FOO)");
+    eval_print("(untrace tr-foo)");
+}
+
+TEST(eval_trace_untrace)
+{
+    /* Untrace returns list, function still works */
+    eval_print("(defun tr-sq (x) (* x x))");
+    eval_print("(trace tr-sq)");
+    ASSERT_EQ_INT(eval_int("(tr-sq 5)"), 25);
+    ASSERT_STR_EQ(eval_print("(untrace tr-sq)"), "(TR-SQ)");
+    ASSERT_EQ_INT(eval_int("(tr-sq 6)"), 36);
+}
+
+TEST(eval_trace_query)
+{
+    /* (trace) with no args returns list of traced functions */
+    eval_print("(defun tr-a () 1)");
+    eval_print("(trace tr-a)");
+    ASSERT_STR_EQ(eval_print("(trace)"), "(TR-A)");
+    eval_print("(untrace tr-a)");
+    ASSERT_STR_EQ(eval_print("(trace)"), "NIL");
+}
+
+TEST(eval_untrace_all)
+{
+    /* (untrace) with no args clears all traces */
+    eval_print("(defun tr-x () 10)");
+    eval_print("(defun tr-y () 20)");
+    eval_print("(trace tr-x tr-y)");
+    ASSERT_STR_EQ(eval_print("(untrace)"), "NIL");
+    ASSERT_STR_EQ(eval_print("(trace)"), "NIL");
+}
+
+TEST(eval_trace_builtin)
+{
+    /* Trace a built-in function */
+    eval_print("(trace cons)");
+    ASSERT_STR_EQ(eval_print("(cons 1 2)"), "(1 . 2)");
+    eval_print("(untrace cons)");
+}
+
+TEST(eval_trace_multiple)
+{
+    /* Trace multiple functions */
+    eval_print("(defun tr-p (x) (* x x))");
+    eval_print("(defun tr-q (x) (+ x 1))");
+    ASSERT_STR_EQ(eval_print("(trace tr-p tr-q)"), "(TR-P TR-Q)");
+    ASSERT_EQ_INT(eval_int("(tr-p (tr-q 3))"), 16);
+    eval_print("(untrace)");
+}
+
 int main(void)
 {
     test_init();
@@ -2572,6 +2639,15 @@ int main(void)
     RUN(eval_declare_misplaced);
     RUN(eval_declare_in_lambda);
     RUN(eval_declaim_multiple);
+
+    /* Phase 5 — Trace/Untrace */
+    RUN(eval_trace_basic);
+    RUN(eval_trace_returns_list);
+    RUN(eval_trace_untrace);
+    RUN(eval_trace_query);
+    RUN(eval_untrace_all);
+    RUN(eval_trace_builtin);
+    RUN(eval_trace_multiple);
 
     teardown();
     REPORT();

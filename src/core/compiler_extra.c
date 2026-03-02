@@ -790,6 +790,7 @@ void compile_defun(CL_Compiler *c, CL_Obj form)
                                   cl_cons(block_body, CL_NIL)));
     CL_GC_PROTECT(lambda_form);
 
+    pending_lambda_name = name;
     compile_expr(c, lambda_form);
 
     CL_GC_UNPROTECT(2);
@@ -992,4 +993,80 @@ void compile_locally(CL_Compiler *c, CL_Obj form)
     /* (locally (declare ...) body...) */
     CL_Obj body = cl_cdr(form);
     compile_body(c, body);
+}
+
+/* --- Trace / Untrace --- */
+
+void compile_trace(CL_Compiler *c, CL_Obj form)
+{
+    /* (trace) — return list of currently traced functions
+     * (trace name1 name2 ...) — trace functions, return list of names */
+    CL_Obj args = cl_cdr(form);
+    int trace_fn_idx;
+    int n = 0;
+    CL_Obj a;
+
+    if (CL_NULL_P(args)) {
+        /* (trace) with no args: call %TRACED-FUNCTIONS */
+        int idx = cl_add_constant(c, cl_intern_in("%TRACED-FUNCTIONS", 17, cl_package_cl));
+        cl_emit(c, OP_FLOAD);
+        cl_emit_u16(c, (uint16_t)idx);
+        cl_emit(c, OP_CALL);
+        cl_emit(c, 0);
+        return;
+    }
+
+    trace_fn_idx = cl_add_constant(c, cl_intern_in("%TRACE-FUNCTION", 15, cl_package_cl));
+    a = args;
+    while (!CL_NULL_P(a)) {
+        CL_Obj name = cl_car(a);
+        int name_idx = cl_add_constant(c, name);
+        cl_emit(c, OP_FLOAD);
+        cl_emit_u16(c, (uint16_t)trace_fn_idx);
+        cl_emit(c, OP_CONST);
+        cl_emit_u16(c, (uint16_t)name_idx);
+        cl_emit(c, OP_CALL);
+        cl_emit(c, 1);
+        n++;
+        a = cl_cdr(a);
+    }
+    cl_emit(c, OP_LIST);
+    cl_emit(c, (uint8_t)n);
+}
+
+void compile_untrace(CL_Compiler *c, CL_Obj form)
+{
+    /* (untrace) — untrace all, return NIL
+     * (untrace name1 name2 ...) — untrace named functions, return list */
+    CL_Obj args = cl_cdr(form);
+    int untrace_fn_idx;
+    int n = 0;
+    CL_Obj a;
+
+    if (CL_NULL_P(args)) {
+        /* (untrace) with no args: call %UNTRACE-ALL */
+        int idx = cl_add_constant(c, cl_intern_in("%UNTRACE-ALL", 12, cl_package_cl));
+        cl_emit(c, OP_FLOAD);
+        cl_emit_u16(c, (uint16_t)idx);
+        cl_emit(c, OP_CALL);
+        cl_emit(c, 0);
+        return;
+    }
+
+    untrace_fn_idx = cl_add_constant(c, cl_intern_in("%UNTRACE-FUNCTION", 17, cl_package_cl));
+    a = args;
+    while (!CL_NULL_P(a)) {
+        CL_Obj name = cl_car(a);
+        int name_idx = cl_add_constant(c, name);
+        cl_emit(c, OP_FLOAD);
+        cl_emit_u16(c, (uint16_t)untrace_fn_idx);
+        cl_emit(c, OP_CONST);
+        cl_emit_u16(c, (uint16_t)name_idx);
+        cl_emit(c, OP_CALL);
+        cl_emit(c, 1);
+        n++;
+        a = cl_cdr(a);
+    }
+    cl_emit(c, OP_LIST);
+    cl_emit(c, (uint8_t)n);
 }

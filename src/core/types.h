@@ -122,6 +122,7 @@ typedef struct {
 
 #define CL_SYM_SPECIAL  0x01
 #define CL_SYM_INLINE   0x02
+#define CL_SYM_TRACED   0x04
 
 #define CL_SYMBOL_P(obj) (CL_HEAP_P(obj) && CL_HDR_TYPE(CL_OBJ_TO_PTR(obj)) == TYPE_SYMBOL)
 

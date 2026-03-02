@@ -4,6 +4,7 @@
 #include "mem.h"
 #include "error.h"
 #include "compiler.h"
+#include "printer.h"
 #include "../platform/platform.h"
 #include <stdio.h>
 #include <string.h>
@@ -14,6 +15,10 @@ CL_VM cl_vm;
 /* Multiple values */
 CL_Obj cl_mv_values[CL_MAX_MV];
 int cl_mv_count = 1;
+
+/* Trace */
+int cl_trace_depth = 0;
+int cl_trace_count = 0;
 
 /* NLX stack */
 CL_NLXFrame cl_nlx_stack[CL_MAX_NLX_FRAMES];
@@ -49,6 +54,7 @@ void cl_vm_init(void)
     cl_dyn_top = 0;
     cl_pending_throw = 0;
     cl_mv_count = 1;
+    cl_trace_depth = 0;
 }
 
 void cl_vm_push(CL_Obj val)
@@ -147,6 +153,64 @@ static uint16_t read_u16(uint8_t *code, uint32_t *ip)
 static int16_t read_i16(uint8_t *code, uint32_t *ip)
 {
     return (int16_t)read_u16(code, ip);
+}
+
+/* --- Trace helpers --- */
+
+static CL_Obj get_func_name(CL_Obj func_obj)
+{
+    if (CL_FUNCTION_P(func_obj)) {
+        return ((CL_Function *)CL_OBJ_TO_PTR(func_obj))->name;
+    } else if (CL_CLOSURE_P(func_obj)) {
+        CL_Closure *cl = (CL_Closure *)CL_OBJ_TO_PTR(func_obj);
+        return ((CL_Bytecode *)CL_OBJ_TO_PTR(cl->bytecode))->name;
+    } else if (CL_BYTECODE_P(func_obj)) {
+        return ((CL_Bytecode *)CL_OBJ_TO_PTR(func_obj))->name;
+    }
+    return CL_NIL;
+}
+
+static int is_func_traced(CL_Obj func_obj)
+{
+    CL_Obj name;
+    if (cl_trace_count <= 0) return 0;
+    name = get_func_name(func_obj);
+    if (!CL_NULL_P(name) && CL_SYMBOL_P(name)) {
+        return (((CL_Symbol *)CL_OBJ_TO_PTR(name))->flags & CL_SYM_TRACED) != 0;
+    }
+    return 0;
+}
+
+static void trace_print_entry(CL_Obj name_sym, CL_Obj *args, int nargs)
+{
+    char buf[128];
+    int i;
+    for (i = 0; i < cl_trace_depth; i++)
+        platform_write_string("  ");
+    snprintf(buf, sizeof(buf), "%d: (", cl_trace_depth);
+    platform_write_string(buf);
+    platform_write_string(cl_symbol_name(name_sym));
+    for (i = 0; i < nargs; i++) {
+        platform_write_string(" ");
+        cl_prin1_to_string(args[i], buf, sizeof(buf));
+        platform_write_string(buf);
+    }
+    platform_write_string(")\n");
+}
+
+static void trace_print_exit(CL_Obj name_sym, CL_Obj result)
+{
+    char buf[128];
+    int i;
+    for (i = 0; i < cl_trace_depth; i++)
+        platform_write_string("  ");
+    snprintf(buf, sizeof(buf), "%d: ", cl_trace_depth);
+    platform_write_string(buf);
+    platform_write_string(cl_symbol_name(name_sym));
+    platform_write_string(" returned ");
+    cl_prin1_to_string(result, buf, sizeof(buf));
+    platform_write_string(buf);
+    platform_write_string("\n");
 }
 
 /* Call a built-in C function */
@@ -481,7 +545,17 @@ CL_Obj cl_vm_eval(CL_Obj bytecode_obj)
             if (CL_FUNCTION_P(func_obj)) {
                 /* Built-in C function */
                 CL_Function *f = (CL_Function *)CL_OBJ_TO_PTR(func_obj);
-                CL_Obj result = call_builtin(f, arg_base, nargs);
+                int traced = is_func_traced(func_obj);
+                CL_Obj result;
+                if (traced) {
+                    trace_print_entry(f->name, arg_base, nargs);
+                    cl_trace_depth++;
+                }
+                result = call_builtin(f, arg_base, nargs);
+                if (traced) {
+                    cl_trace_depth--;
+                    trace_print_exit(f->name, result);
+                }
                 cl_vm.sp -= (nargs + 1);
                 cl_vm_push(result);
             } else if (CL_BYTECODE_P(func_obj) || CL_CLOSURE_P(func_obj)) {
@@ -519,11 +593,22 @@ CL_Obj cl_vm_eval(CL_Obj bytecode_obj)
                 }
 
                 if (is_tail && cl_vm.fp > base_fp + 1) {
-                    /* Tail call: reuse current frame */
                     CL_Obj *src = arg_base;
                     CL_Obj extra_args[64];
                     int n_extra = 0;
                     int n_positional = callee_arity + n_opt;
+
+                    /* Trace: adjust depth for tail call transition */
+                    if (cl_trace_count > 0) {
+                        CL_Obj cur_name = get_func_name(frame->bytecode);
+                        if (!CL_NULL_P(cur_name) && CL_SYMBOL_P(cur_name) &&
+                            (((CL_Symbol *)CL_OBJ_TO_PTR(cur_name))->flags & CL_SYM_TRACED))
+                            cl_trace_depth--;
+                        if (is_func_traced(func_obj)) {
+                            trace_print_entry(callee_bc->name, arg_base, nargs);
+                            cl_trace_depth++;
+                        }
+                    }
 
                     cl_vm.sp = frame->bp;
 
@@ -601,6 +686,12 @@ CL_Obj cl_vm_eval(CL_Obj bytecode_obj)
                     CL_Obj extra_args[64];
                     int n_extra = 0;
                     int n_positional = callee_arity + n_opt;
+
+                    /* Trace: entry for normal call */
+                    if (is_func_traced(func_obj))  {
+                        trace_print_entry(callee_bc->name, arg_base, nargs);
+                        cl_trace_depth++;
+                    }
 
                     /* Remove func_obj from under args; shift args down */
                     {
@@ -703,6 +794,16 @@ CL_Obj cl_vm_eval(CL_Obj bytecode_obj)
             CL_Obj result = (cl_vm.sp > (int)(frame->bp + frame->n_locals))
                             ? cl_vm_pop() : CL_NIL;
 
+            /* Trace: print return value */
+            if (cl_trace_count > 0) {
+                CL_Obj ret_name = get_func_name(frame->bytecode);
+                if (!CL_NULL_P(ret_name) && CL_SYMBOL_P(ret_name) &&
+                    (((CL_Symbol *)CL_OBJ_TO_PTR(ret_name))->flags & CL_SYM_TRACED)) {
+                    cl_trace_depth--;
+                    trace_print_exit(ret_name, result);
+                }
+            }
+
             /* Pop frame */
             cl_vm.sp = frame->bp;
             cl_vm.fp--;
@@ -802,7 +903,16 @@ CL_Obj cl_vm_eval(CL_Obj bytecode_obj)
 
             if (CL_FUNCTION_P(func_obj)) {
                 CL_Function *f = (CL_Function *)CL_OBJ_TO_PTR(func_obj);
+                int traced = is_func_traced(func_obj);
+                if (traced) {
+                    trace_print_entry(f->name, flat_args, nflat);
+                    cl_trace_depth++;
+                }
                 result = call_builtin(f, flat_args, nflat);
+                if (traced) {
+                    cl_trace_depth--;
+                    trace_print_exit(f->name, result);
+                }
             } else if (CL_BYTECODE_P(func_obj) || CL_CLOSURE_P(func_obj)) {
                 result = cl_vm_apply(func_obj, flat_args, nflat);
             } else {

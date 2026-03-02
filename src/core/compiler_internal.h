@@ -78,6 +78,7 @@ typedef struct {
 extern CL_Obj macro_table;
 extern CL_Obj setf_table;
 extern CL_Obj type_table;
+extern CL_Obj pending_lambda_name;
 extern CL_Obj SETF_SYM_CAR, SETF_SYM_CDR, SETF_SYM_FIRST, SETF_SYM_REST;
 extern CL_Obj SETF_SYM_NTH, SETF_SYM_AREF, SETF_SYM_SVREF;
 extern CL_Obj SETF_SYM_SYMBOL_VALUE, SETF_SYM_SYMBOL_FUNCTION;
@@ -139,6 +140,8 @@ void compile_defun(CL_Compiler *c, CL_Obj form);
 void compile_defmacro(CL_Compiler *c, CL_Obj form);
 void compile_declaim(CL_Compiler *c, CL_Obj form);
 void compile_locally(CL_Compiler *c, CL_Obj form);
+void compile_trace(CL_Compiler *c, CL_Obj form);
+void compile_untrace(CL_Compiler *c, CL_Obj form);
 
 /* Declaration processing helpers */
 CL_Obj process_body_declarations(CL_Compiler *c, CL_Obj body);

@@ -367,6 +367,76 @@ static CL_Obj bi_proclaim(CL_Obj *args, int n)
     return CL_NIL;
 }
 
+/* --- Trace --- */
+
+static CL_Obj trace_list = CL_NIL;
+
+static CL_Obj bi_trace_function(CL_Obj *args, int n)
+{
+    CL_Symbol *s;
+    CL_UNUSED(n);
+    if (!CL_SYMBOL_P(args[0]))
+        cl_error(CL_ERR_TYPE, "TRACE: not a symbol");
+    s = (CL_Symbol *)CL_OBJ_TO_PTR(args[0]);
+    if (!(s->flags & CL_SYM_TRACED)) {
+        s->flags |= CL_SYM_TRACED;
+        cl_trace_count++;
+        trace_list = cl_cons(args[0], trace_list);
+    }
+    return args[0];
+}
+
+static CL_Obj bi_untrace_function(CL_Obj *args, int n)
+{
+    CL_Symbol *s;
+    CL_UNUSED(n);
+    if (!CL_SYMBOL_P(args[0]))
+        cl_error(CL_ERR_TYPE, "UNTRACE: not a symbol");
+    s = (CL_Symbol *)CL_OBJ_TO_PTR(args[0]);
+    if (s->flags & CL_SYM_TRACED) {
+        CL_Obj prev = CL_NIL, curr = trace_list;
+        s->flags &= ~CL_SYM_TRACED;
+        cl_trace_count--;
+        while (!CL_NULL_P(curr)) {
+            if (cl_car(curr) == args[0]) {
+                if (CL_NULL_P(prev))
+                    trace_list = cl_cdr(curr);
+                else
+                    ((CL_Cons *)CL_OBJ_TO_PTR(prev))->cdr = cl_cdr(curr);
+                break;
+            }
+            prev = curr;
+            curr = cl_cdr(curr);
+        }
+    }
+    return args[0];
+}
+
+static CL_Obj bi_traced_functions(CL_Obj *args, int n)
+{
+    CL_UNUSED(args);
+    CL_UNUSED(n);
+    return trace_list;
+}
+
+static CL_Obj bi_untrace_all(CL_Obj *args, int n)
+{
+    CL_Obj list = trace_list;
+    CL_UNUSED(args);
+    CL_UNUSED(n);
+    while (!CL_NULL_P(list)) {
+        CL_Obj sym = cl_car(list);
+        if (CL_SYMBOL_P(sym)) {
+            ((CL_Symbol *)CL_OBJ_TO_PTR(sym))->flags &= ~CL_SYM_TRACED;
+        }
+        list = cl_cdr(list);
+    }
+    trace_list = CL_NIL;
+    cl_trace_count = 0;
+    cl_trace_depth = 0;
+    return CL_NIL;
+}
+
 /* --- Registration --- */
 
 /* Sub-module init functions */
@@ -416,6 +486,12 @@ void cl_builtins_init(void)
 
     /* Declarations */
     defun("PROCLAIM", bi_proclaim, 1, 1);
+
+    /* Trace (internal helpers, called by compiler special forms) */
+    defun("%TRACE-FUNCTION", bi_trace_function, 1, 1);
+    defun("%UNTRACE-FUNCTION", bi_untrace_function, 1, 1);
+    defun("%TRACED-FUNCTIONS", bi_traced_functions, 0, 0);
+    defun("%UNTRACE-ALL", bi_untrace_all, 0, 0);
 
     /* Sub-module builtins */
     cl_builtins_arith_init();

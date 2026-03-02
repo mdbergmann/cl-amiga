@@ -5,6 +5,7 @@
 CL_Obj macro_table = CL_NIL;
 CL_Obj setf_table = CL_NIL;
 CL_Obj type_table = CL_NIL;
+CL_Obj pending_lambda_name = CL_NIL;
 
 CL_Obj SETF_SYM_CAR = CL_NIL;
 CL_Obj SETF_SYM_CDR = CL_NIL;
@@ -319,7 +320,8 @@ void compile_lambda(CL_Compiler *c, CL_Obj form)
     bc->arity = ll.has_rest ? (ll.n_required | 0x8000) : ll.n_required;
     bc->n_locals = env->max_locals;
     bc->n_upvalues = env->upvalue_count;
-    bc->name = CL_NIL;
+    bc->name = pending_lambda_name;
+    pending_lambda_name = CL_NIL;
     bc->n_optional = (uint8_t)ll.n_optional;
     bc->flags = (ll.n_keys > 0 ? 1 : 0) | (ll.allow_other_keys ? 2 : 0);
     bc->n_keys = (uint8_t)ll.n_keys;
@@ -824,6 +826,8 @@ void compile_expr(CL_Compiler *c, CL_Obj expr)
         }
         if (head == SYM_DECLAIM)     { compile_declaim(c, expr); return; }
         if (head == SYM_LOCALLY)     { compile_locally(c, expr); return; }
+        if (head == SYM_TRACE)       { compile_trace(c, expr); return; }
+        if (head == SYM_UNTRACE)     { compile_untrace(c, expr); return; }
 
         compile_call(c, expr);
         return;

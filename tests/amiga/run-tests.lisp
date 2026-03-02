@@ -905,6 +905,26 @@
 (check "declaim multi 1" 10 (let ((*dcl-m1* 10)) (get-dcl-m1)))
 (check "declaim multi 2" 20 (let ((*dcl-m2* 20)) (get-dcl-m2)))
 
+; --- Trace/Untrace ---
+(defun tr-fact (n) (if (<= n 1) 1 (* n (tr-fact (1- n)))))
+(trace tr-fact)
+(check "trace result" 120 (tr-fact 5))
+(untrace tr-fact)
+(check "untrace result" 6 (tr-fact 3))
+(defun tr-bar () 42)
+(check "trace returns list" '(tr-bar) (trace tr-bar))
+(check "trace query" '(tr-bar) (trace))
+(check "untrace all" nil (untrace))
+(check "trace query empty" nil (trace))
+(trace cons)
+(check "trace builtin" '(1 . 2) (cons 1 2))
+(untrace cons)
+(defun tr-p2 (x) (* x x))
+(defun tr-q2 (x) (+ x 1))
+(trace tr-p2 tr-q2)
+(check "trace multiple" 16 (tr-p2 (tr-q2 3)))
+(untrace)
+
 ; --- Summary ---
 (format t "~%=== Results ===~%")
 (format t "Passed: ~A~%" *pass-count*)

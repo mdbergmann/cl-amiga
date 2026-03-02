@@ -85,7 +85,7 @@ Single-pass recursive compiler from S-expressions to bytecode:
 - Macro expansion before compilation
 - Backward jump support for loop forms
 
-**Special forms:** `quote`, `if`, `progn`, `lambda`, `let`, `let*`, `setq`, `setf`, `defun`, `defvar`, `defparameter`, `defmacro`, `function (#')`, `block`, `return-from`, `return`, `and`, `or`, `cond`, `do`, `dolist`, `dotimes`, `case`, `ecase`, `typecase`, `etypecase`, `flet`, `labels`, `tagbody`, `go`, `catch`, `unwind-protect`, `multiple-value-bind`, `multiple-value-list`, `multiple-value-prog1`, `nth-value`, `eval-when`, `destructuring-bind`, `defsetf`
+**Special forms:** `quote`, `if`, `progn`, `lambda`, `let`, `let*`, `setq`, `setf`, `defun`, `defvar`, `defparameter`, `defmacro`, `function (#')`, `block`, `return-from`, `return`, `and`, `or`, `cond`, `do`, `dolist`, `dotimes`, `case`, `ecase`, `typecase`, `etypecase`, `flet`, `labels`, `tagbody`, `go`, `catch`, `unwind-protect`, `multiple-value-bind`, `multiple-value-list`, `multiple-value-prog1`, `nth-value`, `eval-when`, `destructuring-bind`, `defsetf`, `trace`, `untrace`
 
 **Bootstrap macros:** `when`, `unless`, `prog1`, `prog2`, `push`, `pop`, `incf`, `decf`, `pushnew`
 
@@ -199,12 +199,12 @@ Data structures, sequences, strings, and I/O:
 - [x] Advanced types (`deftype`, `subtypep`, compound type specifiers)
 - [x] `declare`, `declaim`, `proclaim`, `locally` — declarations
 - [x] `disassemble` — print bytecode disassembly of compiled functions
-- [ ] `trace`, `untrace` — function call tracing for debugging
+- [x] `trace`, `untrace` — function call tracing for debugging
 - [ ] Stack traces on error — walk VM call frames, print function names and call chain
 - [ ] Source location tracking — reader tracks line numbers, compiler attaches to bytecode, errors include file:line context
 - [ ] `time` — macro to measure and print execution time of an expression
 
-216 host tests (4 suites), 450 Amiga batch tests — all passing.
+278 host tests (4 suites), ~593 Amiga batch tests — all passing.
 
 **Build improvements:**
 - Split builtins.c into 7 modules and compiler.c into 3 modules (stay under vbcc TU size limits)

@@ -82,6 +82,10 @@ extern char cl_pending_error_msg[512];
 extern CL_Obj cl_mv_values[CL_MAX_MV];
 extern int cl_mv_count;
 
+/* --- Trace --- */
+extern int cl_trace_depth;
+extern int cl_trace_count;
+
 /* Initialize VM */
 void cl_vm_init(void);
 
