@@ -1,4 +1,5 @@
 #include "reader.h"
+#include "readtable.h"
 #include "symbol.h"
 #include "package.h"
 #include "mem.h"
@@ -6,6 +7,7 @@
 #include "float.h"
 #include "error.h"
 #include "stream.h"
+#include "vm.h"
 #include "../platform/platform.h"
 #include <string.h>
 #include <ctype.h>
@@ -87,8 +89,13 @@ static void skip_whitespace(void)
 
 static int is_delimiter(int ch)
 {
-    return ch < 0 || isspace(ch) || ch == '(' || ch == ')' ||
-           ch == '"' || ch == ';' || ch == '\'' || ch == '`' || ch == ',';
+    if (ch < 0) return 1;
+    if (ch < CL_RT_CHARS) {
+        CL_Readtable *rt = cl_readtable_current();
+        uint8_t syn = rt->syntax[ch];
+        return syn == CL_CHAR_WHITESPACE || syn == CL_CHAR_TERM_MACRO;
+    }
+    return 0;
 }
 
 /* Forward declarations */
@@ -487,6 +494,21 @@ static CL_Obj read_expr(void)
     ch = read_char();
     if (ch < 0) { eof_seen = 1; return CL_NIL; }
 
+    /* Check readtable for user-defined macro function */
+    if (ch >= 0 && ch < CL_RT_CHARS) {
+        CL_Readtable *rt = cl_readtable_current();
+        uint8_t syn = rt->syntax[ch];
+        if ((syn == CL_CHAR_TERM_MACRO || syn == CL_CHAR_NONTERM_MACRO) &&
+            !CL_NULL_P(rt->macro_fn[ch])) {
+            /* User-defined macro: call (fn stream char) */
+            CL_Obj args[2];
+            args[0] = reader_stream;
+            args[1] = CL_MAKE_CHAR(ch);
+            return cl_vm_apply(rt->macro_fn[ch], args, 2);
+        }
+    }
+
+    /* Built-in macro dispatch */
     switch (ch) {
     case '(':
         return read_list();
@@ -509,8 +531,24 @@ static CL_Obj read_expr(void)
         obj = read_expr();
         return cl_cons(SYM_UNQUOTE, cl_cons(obj, CL_NIL));
 
-    case '#':
-        ch = read_char();
+    case '#': {
+        int sub_ch = read_char();
+
+        /* Check readtable for user-defined dispatch sub-character */
+        if (sub_ch >= 0 && sub_ch < CL_RT_CHARS) {
+            CL_Readtable *rt = cl_readtable_current();
+            if (!CL_NULL_P(rt->dispatch_fn[sub_ch])) {
+                /* User dispatch macro: call (fn stream sub-char nil) */
+                CL_Obj args[3];
+                args[0] = reader_stream;
+                args[1] = CL_MAKE_CHAR(sub_ch);
+                args[2] = CL_NIL; /* no numeric arg */
+                return cl_vm_apply(rt->dispatch_fn[sub_ch], args, 3);
+            }
+        }
+
+        /* Built-in dispatch macros */
+        ch = sub_ch;
         if (ch == '\'') {
             /* #'foo => (FUNCTION foo) */
             obj = read_expr();
@@ -582,6 +620,7 @@ static CL_Obj read_expr(void)
         }
         cl_error(CL_ERR_PARSE, "Unknown dispatch macro: #%c", ch);
         return CL_NIL;
+    }
 
     case '"':
         return read_string();
@@ -652,4 +691,5 @@ void cl_reader_init(void)
     reader_line = 1;
     cl_current_source_file = NULL;
     cl_current_file_id = 0;
+    cl_readtable_init();
 }

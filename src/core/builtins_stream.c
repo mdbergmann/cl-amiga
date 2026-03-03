@@ -17,6 +17,7 @@
 #include "error.h"
 #include "vm.h"
 #include "bignum.h"
+#include "readtable.h"
 #include "../platform/platform.h"
 #include <string.h>
 
@@ -650,6 +651,182 @@ static CL_Obj bi_directory_namestring(CL_Obj *args, int n)
     return cl_make_string(data, last_sep);
 }
 
+/* --- Readtable helpers --- */
+
+/* Resolve readtable argument: fixnum index or NIL (= current) */
+static int resolve_readtable_idx(CL_Obj *args, int n, int arg_idx)
+{
+    if (arg_idx < n && !CL_NULL_P(args[arg_idx])) {
+        if (CL_FIXNUM_P(args[arg_idx])) {
+            int idx = CL_FIXNUM_VAL(args[arg_idx]);
+            if (idx >= 0 && idx < CL_RT_POOL_SIZE)
+                return idx;
+        }
+        cl_error(CL_ERR_TYPE, "Not a valid readtable");
+    }
+    /* Default: current readtable */
+    {
+        CL_Symbol *sym = (CL_Symbol *)CL_OBJ_TO_PTR(SYM_STAR_READTABLE);
+        CL_Obj val = sym->value;
+        if (CL_FIXNUM_P(val)) {
+            int idx = CL_FIXNUM_VAL(val);
+            if (idx >= 0 && idx < CL_RT_POOL_SIZE)
+                return idx;
+        }
+    }
+    return 1; /* fallback */
+}
+
+/* (readtablep obj) => T or NIL */
+static CL_Obj bi_readtablep(CL_Obj *args, int n)
+{
+    CL_UNUSED(n);
+    if (CL_FIXNUM_P(args[0])) {
+        int idx = CL_FIXNUM_VAL(args[0]);
+        if (idx >= 0 && idx < CL_RT_POOL_SIZE &&
+            (cl_readtable_alloc_mask & (1u << idx)))
+            return CL_T;
+    }
+    return CL_NIL;
+}
+
+/* (get-macro-character char &optional readtable) => fn, non-terminating-p */
+static CL_Obj bi_get_macro_character(CL_Obj *args, int n)
+{
+    int ch, rt_idx;
+    CL_Readtable *rt;
+
+    if (!CL_CHAR_P(args[0]))
+        cl_error(CL_ERR_TYPE, "GET-MACRO-CHARACTER: first argument must be a character");
+    ch = CL_CHAR_VAL(args[0]);
+    rt_idx = resolve_readtable_idx(args, n, 1);
+    rt = cl_readtable_get(rt_idx);
+
+    if (ch >= 0 && ch < CL_RT_CHARS &&
+        (rt->syntax[ch] == CL_CHAR_TERM_MACRO ||
+         rt->syntax[ch] == CL_CHAR_NONTERM_MACRO)) {
+        /* Return 2 values: function (or NIL for built-in), non-terminating-p */
+        cl_mv_count = 2;
+        cl_mv_values[0] = rt->macro_fn[ch];
+        cl_mv_values[1] = (rt->syntax[ch] == CL_CHAR_NONTERM_MACRO) ? CL_T : CL_NIL;
+        return rt->macro_fn[ch];
+    }
+    cl_mv_count = 2;
+    cl_mv_values[0] = CL_NIL;
+    cl_mv_values[1] = CL_NIL;
+    return CL_NIL;
+}
+
+/* (set-macro-character char fn &optional non-terminating-p readtable) => T */
+static CL_Obj bi_set_macro_character(CL_Obj *args, int n)
+{
+    int ch, rt_idx;
+    CL_Readtable *rt;
+    int non_term = 0;
+
+    if (!CL_CHAR_P(args[0]))
+        cl_error(CL_ERR_TYPE, "SET-MACRO-CHARACTER: first argument must be a character");
+    ch = CL_CHAR_VAL(args[0]);
+    if (ch < 0 || ch >= CL_RT_CHARS)
+        cl_error(CL_ERR_TYPE, "SET-MACRO-CHARACTER: character out of range");
+
+    /* args[1] = function */
+    if (n > 2 && !CL_NULL_P(args[2]))
+        non_term = 1;
+    rt_idx = resolve_readtable_idx(args, n, 3);
+    rt = cl_readtable_get(rt_idx);
+
+    rt->syntax[ch] = non_term ? CL_CHAR_NONTERM_MACRO : CL_CHAR_TERM_MACRO;
+    rt->macro_fn[ch] = args[1];
+    return CL_T;
+}
+
+/* (make-dispatch-macro-character char &optional non-terminating-p readtable) => T */
+static CL_Obj bi_make_dispatch_macro_character(CL_Obj *args, int n)
+{
+    int ch, rt_idx;
+    CL_Readtable *rt;
+    int non_term = 0;
+
+    if (!CL_CHAR_P(args[0]))
+        cl_error(CL_ERR_TYPE, "MAKE-DISPATCH-MACRO-CHARACTER: first argument must be a character");
+    ch = CL_CHAR_VAL(args[0]);
+    if (ch < 0 || ch >= CL_RT_CHARS)
+        cl_error(CL_ERR_TYPE, "MAKE-DISPATCH-MACRO-CHARACTER: character out of range");
+
+    if (n > 1 && !CL_NULL_P(args[1]))
+        non_term = 1;
+    rt_idx = resolve_readtable_idx(args, n, 2);
+    rt = cl_readtable_get(rt_idx);
+
+    rt->syntax[ch] = non_term ? CL_CHAR_NONTERM_MACRO : CL_CHAR_TERM_MACRO;
+    rt->macro_fn[ch] = CL_NIL; /* built-in dispatch handling */
+    return CL_T;
+}
+
+/* (set-dispatch-macro-character disp-char sub-char fn &optional readtable) => T */
+static CL_Obj bi_set_dispatch_macro_character(CL_Obj *args, int n)
+{
+    int sub_ch, rt_idx;
+    CL_Readtable *rt;
+
+    if (!CL_CHAR_P(args[0]))
+        cl_error(CL_ERR_TYPE, "SET-DISPATCH-MACRO-CHARACTER: disp-char must be a character");
+    if (!CL_CHAR_P(args[1]))
+        cl_error(CL_ERR_TYPE, "SET-DISPATCH-MACRO-CHARACTER: sub-char must be a character");
+    sub_ch = CL_CHAR_VAL(args[1]);
+    if (sub_ch < 0 || sub_ch >= CL_RT_CHARS)
+        cl_error(CL_ERR_TYPE, "SET-DISPATCH-MACRO-CHARACTER: sub-char out of range");
+
+    rt_idx = resolve_readtable_idx(args, n, 3);
+    rt = cl_readtable_get(rt_idx);
+
+    rt->dispatch_fn[sub_ch] = args[2]; /* fn */
+    return CL_T;
+}
+
+/* (get-dispatch-macro-character disp-char sub-char &optional readtable) => fn */
+static CL_Obj bi_get_dispatch_macro_character(CL_Obj *args, int n)
+{
+    int sub_ch, rt_idx;
+    CL_Readtable *rt;
+
+    if (!CL_CHAR_P(args[0]))
+        cl_error(CL_ERR_TYPE, "GET-DISPATCH-MACRO-CHARACTER: disp-char must be a character");
+    if (!CL_CHAR_P(args[1]))
+        cl_error(CL_ERR_TYPE, "GET-DISPATCH-MACRO-CHARACTER: sub-char must be a character");
+    sub_ch = CL_CHAR_VAL(args[1]);
+    if (sub_ch < 0 || sub_ch >= CL_RT_CHARS)
+        return CL_NIL;
+
+    rt_idx = resolve_readtable_idx(args, n, 2);
+    rt = cl_readtable_get(rt_idx);
+    return rt->dispatch_fn[sub_ch];
+}
+
+/* (copy-readtable &optional from-readtable to-readtable) => readtable */
+static CL_Obj bi_copy_readtable(CL_Obj *args, int n)
+{
+    int from_idx, to_idx, result;
+
+    /* from: default = current readtable */
+    from_idx = resolve_readtable_idx(args, n, 0);
+
+    /* to: NIL = allocate new, or fixnum index */
+    if (n > 1 && !CL_NULL_P(args[1])) {
+        if (!CL_FIXNUM_P(args[1]))
+            cl_error(CL_ERR_TYPE, "COPY-READTABLE: to argument must be a readtable or NIL");
+        to_idx = CL_FIXNUM_VAL(args[1]);
+    } else {
+        to_idx = -1; /* allocate new */
+    }
+
+    result = cl_readtable_copy(from_idx, to_idx);
+    if (result < 0)
+        cl_error(CL_ERR_TYPE, "COPY-READTABLE: no free readtable slots");
+    return CL_MAKE_FIXNUM(result);
+}
+
 /* --- Registration --- */
 
 void cl_builtins_stream_init(void)
@@ -708,4 +885,13 @@ void cl_builtins_stream_init(void)
     defun("%MKDIR", bi_mkdir, 1, 1);
     defun("FILE-NAMESTRING", bi_file_namestring, 1, 1);
     defun("DIRECTORY-NAMESTRING", bi_directory_namestring, 1, 1);
+
+    /* Step 12: Readtable */
+    defun("READTABLEP", bi_readtablep, 1, 1);
+    defun("GET-MACRO-CHARACTER", bi_get_macro_character, 1, 2);
+    defun("SET-MACRO-CHARACTER", bi_set_macro_character, 2, 4);
+    defun("MAKE-DISPATCH-MACRO-CHARACTER", bi_make_dispatch_macro_character, 1, 3);
+    defun("SET-DISPATCH-MACRO-CHARACTER", bi_set_dispatch_macro_character, 3, 4);
+    defun("GET-DISPATCH-MACRO-CHARACTER", bi_get_dispatch_macro_character, 2, 3);
+    defun("COPY-READTABLE", bi_copy_readtable, 0, 2);
 }

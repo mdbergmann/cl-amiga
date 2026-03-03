@@ -1635,6 +1635,31 @@
 (check "mkdir" t (%mkdir "T:cl_test_step10_dir"))
 (check "mkdir-probe" "T:cl_test_step10_dir" (probe-file "T:cl_test_step10_dir"))
 
+; --- Step 12: Readtable + Compile ---
+
+; readtablep
+(check "readtablep-current" t (readtablep *readtable*))
+(check "readtablep-non-rt" nil (readtablep 42))
+
+; get-macro-character for ( => NIL (built-in), not non-terminating
+(check "get-macro-char-paren" nil (get-macro-character #\())
+
+; get-macro-character for # => NIL fn, T non-term-p (second value)
+(check "get-macro-char-hash" (list nil t) (multiple-value-list (get-macro-character #\#)))
+
+; copy-readtable
+(check "copy-readtable" t (readtablep (copy-readtable)))
+
+; compile nil lambda
+(check "compile-nil-lambda" 42 (funcall (compile nil '(lambda (x) (+ x 1))) 41))
+
+; compile named function
+(check "compile-named" t (functionp (compile 'car)))
+
+; set-macro-character: define ! then test it
+(set-macro-character #\! (lambda (stream char) (list 'quote (read stream t nil t))))
+(check "set-macro-char" t (equal !hello 'hello))
+
 ; --- Summary ---
 (format t "~%=== Results ===~%")
 (format t "Passed: ~A~%" *pass-count*)

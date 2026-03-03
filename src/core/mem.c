@@ -1,6 +1,7 @@
 #include "mem.h"
 #include "float.h"
 #include "vm.h"
+#include "readtable.h"
 #include "../platform/platform.h"
 #include <string.h>
 #include <stdio.h>
@@ -437,6 +438,21 @@ static void gc_mark(void)
     for (i = 0; i < cl_dyn_top; i++) {
         gc_mark_push(cl_dyn_stack[i].symbol);
         gc_mark_push(cl_dyn_stack[i].old_value);
+    }
+
+    /* Mark readtable user macro closures */
+    {
+        int rt, ch;
+        for (rt = 0; rt < CL_RT_POOL_SIZE; rt++) {
+            if (!(cl_readtable_alloc_mask & (1u << rt)))
+                continue;
+            for (ch = 0; ch < CL_RT_CHARS; ch++) {
+                if (!CL_NULL_P(cl_readtable_pool[rt].macro_fn[ch]))
+                    gc_mark_push(cl_readtable_pool[rt].macro_fn[ch]);
+                if (!CL_NULL_P(cl_readtable_pool[rt].dispatch_fn[ch]))
+                    gc_mark_push(cl_readtable_pool[rt].dispatch_fn[ch]);
+            }
+        }
     }
 
     /* Drain mark stack iteratively */

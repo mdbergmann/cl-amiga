@@ -2,6 +2,7 @@
 #define CL_READER_H
 
 #include "types.h"
+#include "readtable.h"
 
 /*
  * S-expression reader (parser).

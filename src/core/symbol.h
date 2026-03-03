@@ -177,6 +177,9 @@ extern CL_Obj SYM_TERMINAL_IO;       /* *TERMINAL-IO* */
 /* Feature system */
 extern CL_Obj SYM_STAR_FEATURES;     /* *FEATURES* */
 
+/* Readtable */
+extern CL_Obj SYM_STAR_READTABLE;    /* *READTABLE* */
+
 /* Feature keywords */
 extern CL_Obj KW_CL_AMIGA;           /* :CL-AMIGA */
 extern CL_Obj KW_COMMON_LISP;        /* :COMMON-LISP */

@@ -15,6 +15,7 @@ CORE_SRC     = $(SRCDIR)/core/types.c \
                $(SRCDIR)/core/symbol.c \
                $(SRCDIR)/core/package.c \
                $(SRCDIR)/core/reader.c \
+               $(SRCDIR)/core/readtable.c \
                $(SRCDIR)/core/printer.c \
                $(SRCDIR)/core/env.c \
                $(SRCDIR)/core/compiler.c \

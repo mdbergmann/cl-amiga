@@ -1283,6 +1283,94 @@ TEST(eval_values_from_defun)
     ASSERT_STR_EQ(buf, "(10 20 30)");
 }
 
+/* --- Readtable tests (Step 12) --- */
+
+TEST(readtablep_current)
+{
+    CL_Obj result = cl_eval_string("(readtablep *readtable*)");
+    ASSERT(result == CL_T);
+}
+
+TEST(readtablep_non_readtable)
+{
+    CL_Obj result = cl_eval_string("(readtablep 42)");
+    ASSERT(CL_NULL_P(result));
+}
+
+TEST(get_macro_character_paren)
+{
+    /* ( is a terminating macro — fn should be NIL (built-in), non-term-p should be NIL */
+    CL_Obj result = cl_eval_string("(get-macro-character #\\()");
+    ASSERT(CL_NULL_P(result));
+}
+
+TEST(get_macro_character_hash)
+{
+    /* # is a non-terminating macro — check second value */
+    CL_Obj result = cl_eval_string(
+        "(multiple-value-list (get-macro-character #\\#))");
+    char buf[64];
+    cl_prin1_to_string(result, buf, sizeof(buf));
+    ASSERT_STR_EQ(buf, "(NIL T)");
+}
+
+TEST(set_macro_character_excl)
+{
+    /* Define ! as a reader macro: set it up via C API directly to verify */
+    CL_Obj result;
+    CL_Readtable *rt;
+
+    /* Verify set-macro-character works at the C level */
+    result = cl_eval_string(
+        "(set-macro-character #\\! "
+        "  (lambda (stream char) "
+        "    (list 'quote (read stream t nil t))))");
+    ASSERT(result == CL_T);
+
+    /* Check the readtable was actually modified */
+    rt = cl_readtable_current();
+    ASSERT(rt->syntax['!'] == CL_CHAR_TERM_MACRO);
+    ASSERT(!CL_NULL_P(rt->macro_fn['!']));
+
+    /* Now read and eval with ! as a macro character */
+    result = cl_eval_string("(equal !hello 'hello)");
+    ASSERT(result == CL_T);
+
+    /* Clean up: restore ! to constituent */
+    rt->syntax['!'] = CL_CHAR_CONSTITUENT;
+    rt->macro_fn['!'] = CL_NIL;
+}
+
+TEST(copy_readtable_preserves)
+{
+    /* Copy current readtable, verify the copy is a valid readtable */
+    CL_Obj result = cl_eval_string("(readtablep (copy-readtable))");
+    ASSERT(result == CL_T);
+}
+
+TEST(compile_nil_lambda)
+{
+    /* (compile nil '(lambda (x) (+ x 1))) => function, then funcall */
+    CL_Obj result = cl_eval_string(
+        "(funcall (compile nil '(lambda (x) (+ x 1))) 41)");
+    ASSERT(CL_FIXNUM_P(result));
+    ASSERT_EQ_INT(CL_FIXNUM_VAL(result), 42);
+}
+
+TEST(compile_named_function)
+{
+    /* (compile 'car) => returns the car function */
+    CL_Obj result = cl_eval_string("(functionp (compile 'car))");
+    ASSERT(result == CL_T);
+}
+
+TEST(star_readtable_is_special)
+{
+    /* *readtable* should be a special variable */
+    CL_Obj result = cl_eval_string("(boundp '*readtable*)");
+    ASSERT(result == CL_T);
+}
+
 int main(void)
 {
     test_init();
@@ -1386,6 +1474,17 @@ int main(void)
 
     /* MV propagation regression test */
     RUN(eval_values_from_defun);
+
+    /* Readtable tests (Step 12) */
+    RUN(readtablep_current);
+    RUN(readtablep_non_readtable);
+    RUN(get_macro_character_paren);
+    RUN(get_macro_character_hash);
+    RUN(set_macro_character_excl);
+    RUN(copy_readtable_preserves);
+    RUN(compile_nil_lambda);
+    RUN(compile_named_function);
+    RUN(star_readtable_is_special);
 
     teardown();
     REPORT();

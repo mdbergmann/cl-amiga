@@ -22,6 +22,7 @@ OBJS = $(BUILDDIR)/main.o \
        $(BUILDDIR)/symbol.o \
        $(BUILDDIR)/package.o \
        $(BUILDDIR)/reader.o \
+       $(BUILDDIR)/readtable.o \
        $(BUILDDIR)/printer.o \
        $(BUILDDIR)/env.o \
        $(BUILDDIR)/compiler.o \
@@ -83,6 +84,9 @@ $(BUILDDIR)/package.o: src/core/package.c
 	$(CC) $(CFLAGS) -o $@ -c $<
 
 $(BUILDDIR)/reader.o: src/core/reader.c
+	$(CC) $(CFLAGS) -o $@ -c $<
+
+$(BUILDDIR)/readtable.o: src/core/readtable.c
 	$(CC) $(CFLAGS) -o $@ -c $<
 
 $(BUILDDIR)/printer.o: src/core/printer.c

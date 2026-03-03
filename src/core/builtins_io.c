@@ -673,6 +673,37 @@ static CL_Obj bi_sleep(CL_Obj *args, int n)
     return CL_NIL;
 }
 
+/* (compile name &optional definition) */
+static CL_Obj bi_compile(CL_Obj *args, int n)
+{
+    CL_Obj name = args[0];
+
+    if (n > 1 && !CL_NULL_P(args[1])) {
+        /* (compile nil '(lambda (x) x)) — compile lambda form, return function */
+        CL_Obj bc = cl_compile(args[1]);
+        CL_Obj fn = cl_vm_eval(bc);
+        /* Return 3 values per CL spec: function, warnings-p, failure-p */
+        cl_mv_count = 3;
+        cl_mv_values[0] = fn;
+        cl_mv_values[1] = CL_NIL;
+        cl_mv_values[2] = CL_NIL;
+        return fn;
+    }
+
+    if (!CL_NULL_P(name) && CL_SYMBOL_P(name)) {
+        /* (compile 'foo) — return existing function binding */
+        CL_Symbol *sym = (CL_Symbol *)CL_OBJ_TO_PTR(name);
+        CL_Obj fn = sym->function;
+        cl_mv_count = 3;
+        cl_mv_values[0] = fn;
+        cl_mv_values[1] = CL_NIL;
+        cl_mv_values[2] = CL_NIL;
+        return fn;
+    }
+
+    return CL_NIL;
+}
+
 /* --- Registration --- */
 
 void cl_builtins_io_init(void)
@@ -712,4 +743,7 @@ void cl_builtins_io_init(void)
 
     /* Sleep */
     defun("SLEEP", bi_sleep, 1, 1);
+
+    /* Compile */
+    defun("COMPILE", bi_compile, 1, 2);
 }

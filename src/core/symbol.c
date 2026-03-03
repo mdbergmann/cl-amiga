@@ -141,6 +141,7 @@ CL_Obj SYM_DEBUG_IO = CL_NIL;
 CL_Obj SYM_QUERY_IO = CL_NIL;
 CL_Obj SYM_TERMINAL_IO = CL_NIL;
 CL_Obj SYM_STAR_FEATURES = CL_NIL;
+CL_Obj SYM_STAR_READTABLE = CL_NIL;
 CL_Obj KW_CL_AMIGA = CL_NIL;
 CL_Obj KW_COMMON_LISP = CL_NIL;
 CL_Obj KW_POSIX = CL_NIL;
@@ -445,6 +446,14 @@ void cl_symbol_init(void)
         CL_Symbol *pkg_sym = (CL_Symbol *)CL_OBJ_TO_PTR(SYM_STAR_PACKAGE);
         pkg_sym->value = cl_current_package;
         pkg_sym->flags |= CL_SYM_SPECIAL;
+    }
+
+    /* *READTABLE* — readtable pool index, initial = 1 (user-modifiable copy) */
+    SYM_STAR_READTABLE = cl_intern_in("*READTABLE*", 11, cl_package_cl);
+    {
+        CL_Symbol *rt_sym = (CL_Symbol *)CL_OBJ_TO_PTR(SYM_STAR_READTABLE);
+        rt_sym->value = CL_MAKE_FIXNUM(1);
+        rt_sym->flags |= CL_SYM_SPECIAL;
     }
 
     /* Export all CL symbols so CL-USER inherits them.
