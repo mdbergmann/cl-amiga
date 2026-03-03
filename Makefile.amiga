@@ -43,6 +43,7 @@ OBJS = $(BUILDDIR)/main.o \
        $(BUILDDIR)/builtins_struct.o \
        $(BUILDDIR)/bignum.o \
        $(BUILDDIR)/float.o \
+       $(BUILDDIR)/float_math.o \
        $(BUILDDIR)/debugger.o \
        $(BUILDDIR)/repl.o \
        $(BUILDDIR)/color.o
@@ -143,6 +144,9 @@ $(BUILDDIR)/bignum.o: src/core/bignum.c
 	$(CC) $(CFLAGS) -o $@ -c $<
 
 $(BUILDDIR)/float.o: src/core/float.c
+	$(CC) $(CFLAGS) -o $@ -c $<
+
+$(BUILDDIR)/float_math.o: src/core/float_math.c
 	$(CC) $(CFLAGS) -o $@ -c $<
 
 $(BUILDDIR)/debugger.o: src/core/debugger.c

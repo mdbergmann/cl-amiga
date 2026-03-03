@@ -472,6 +472,7 @@ void cl_builtins_type_init(void);
 void cl_builtins_condition_init(void);
 void cl_builtins_package_init(void);
 void cl_builtins_struct_init(void);
+void cl_float_math_init(void);
 
 void cl_builtins_init(void)
 {
@@ -529,6 +530,7 @@ void cl_builtins_init(void)
     cl_builtins_condition_init();
     cl_builtins_package_init();
     cl_builtins_struct_init();
+    cl_float_math_init();
 
     /* All CL symbols now interned — mark them exported */
     cl_package_export_all_cl_symbols();

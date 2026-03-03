@@ -435,6 +435,313 @@ TEST(rem_float)
     ASSERT_STR_EQ(eval_print("(rem 10.0 -3)"), "1.0");
 }
 
+/* ================================================================
+ * Step 11: Math functions (sqrt, exp, log, expt)
+ * ================================================================ */
+
+/* --- sqrt --- */
+
+TEST(sqrt_perfect_square)
+{
+    ASSERT_STR_EQ(eval_print("(sqrt 4.0)"), "2.0");
+    ASSERT_STR_EQ(eval_print("(sqrt 9.0)"), "3.0");
+    ASSERT_STR_EQ(eval_print("(sqrt 0.0)"), "0.0");
+    ASSERT_STR_EQ(eval_print("(sqrt 1.0)"), "1.0");
+}
+
+TEST(sqrt_non_perfect)
+{
+    /* sqrt(2) ≈ 1.41421 */
+    ASSERT_STR_EQ(eval_print("(< (abs (- (sqrt 2.0) 1.41421)) 0.001)"), "T");
+}
+
+TEST(sqrt_integer_arg)
+{
+    /* Integer args produce single-float result */
+    ASSERT_STR_EQ(eval_print("(sqrt 4)"), "2.0");
+    ASSERT_STR_EQ(eval_print("(sqrt 0)"), "0.0");
+}
+
+TEST(sqrt_double)
+{
+    ASSERT_STR_EQ(eval_print("(sqrt 4.0d0)"), "2.0d0");
+    ASSERT_STR_EQ(eval_print("(sqrt 0.0d0)"), "0.0d0");
+}
+
+TEST(sqrt_error_negative)
+{
+    ASSERT_STR_EQ(eval_print("(sqrt -1.0)"), "ERROR:2");
+    ASSERT_STR_EQ(eval_print("(sqrt -4)"), "ERROR:2");
+}
+
+/* --- exp --- */
+
+TEST(exp_zero)
+{
+    ASSERT_STR_EQ(eval_print("(exp 0.0)"), "1.0");
+    ASSERT_STR_EQ(eval_print("(exp 0)"), "1.0");
+}
+
+TEST(exp_one)
+{
+    /* e^1 ≈ 2.71828 */
+    ASSERT_STR_EQ(eval_print("(< (abs (- (exp 1.0) 2.71828)) 0.001)"), "T");
+}
+
+TEST(exp_negative)
+{
+    /* e^-1 ≈ 0.36788 */
+    ASSERT_STR_EQ(eval_print("(< (abs (- (exp -1.0) 0.36788)) 0.001)"), "T");
+}
+
+TEST(exp_double)
+{
+    ASSERT_STR_EQ(eval_print("(exp 0.0d0)"), "1.0d0");
+}
+
+/* --- log --- */
+
+TEST(log_one)
+{
+    ASSERT_STR_EQ(eval_print("(log 1.0)"), "0.0");
+}
+
+TEST(log_e)
+{
+    /* ln(e) ≈ 1.0 */
+    ASSERT_STR_EQ(eval_print("(< (abs (- (log 2.71828) 1.0)) 0.001)"), "T");
+}
+
+TEST(log_integer_arg)
+{
+    /* ln(1) = 0.0 */
+    ASSERT_STR_EQ(eval_print("(log 1)"), "0.0");
+}
+
+TEST(log_with_base)
+{
+    /* log base 10 of 100 = 2 */
+    ASSERT_STR_EQ(eval_print("(< (abs (- (log 100.0 10.0) 2.0)) 0.001)"), "T");
+    /* log base 2 of 8 = 3 */
+    ASSERT_STR_EQ(eval_print("(< (abs (- (log 8.0 2.0) 3.0)) 0.001)"), "T");
+}
+
+TEST(log_double)
+{
+    ASSERT_STR_EQ(eval_print("(log 1.0d0)"), "0.0d0");
+}
+
+TEST(log_error_nonpositive)
+{
+    ASSERT_STR_EQ(eval_print("(log 0)"), "ERROR:2");
+    ASSERT_STR_EQ(eval_print("(log -1.0)"), "ERROR:2");
+}
+
+TEST(log_error_bad_base)
+{
+    ASSERT_STR_EQ(eval_print("(log 10.0 1.0)"), "ERROR:7");  /* base=1 → divzero */
+    ASSERT_STR_EQ(eval_print("(log 10.0 0)"), "ERROR:2");    /* base≤0 → type */
+}
+
+/* --- expt (float-aware) --- */
+
+TEST(expt_integer_positive)
+{
+    /* Integer base + non-negative integer exponent → exact integer */
+    ASSERT_STR_EQ(eval_print("(expt 2 10)"), "1024");
+    ASSERT_STR_EQ(eval_print("(expt 3 0)"), "1");
+    ASSERT_STR_EQ(eval_print("(expt -2 3)"), "-8");
+    ASSERT_STR_EQ(eval_print("(expt 5 1)"), "5");
+}
+
+TEST(expt_integer_negative_exp)
+{
+    /* Integer base + negative integer exponent → float */
+    ASSERT_STR_EQ(eval_print("(expt 2 -1)"), "0.5");
+    ASSERT_STR_EQ(eval_print("(< (abs (- (expt 2 -3) 0.125)) 0.001)"), "T");
+}
+
+TEST(expt_float_args)
+{
+    /* Float args → float result */
+    ASSERT_STR_EQ(eval_print("(expt 2.0 3.0)"), "8.0");
+    ASSERT_STR_EQ(eval_print("(< (abs (- (expt 2.0 0.5) 1.41421)) 0.001)"), "T");
+}
+
+TEST(expt_mixed_args)
+{
+    /* Integer base + float exponent → float */
+    ASSERT_STR_EQ(eval_print("(expt 4 0.5)"), "2.0");
+    /* Float base + integer exponent → float */
+    ASSERT_STR_EQ(eval_print("(expt 2.0 3)"), "8.0");
+}
+
+TEST(expt_double)
+{
+    ASSERT_STR_EQ(eval_print("(expt 2.0d0 3)"), "8.0d0");
+    ASSERT_STR_EQ(eval_print("(expt 2 3.0d0)"), "8.0d0");
+}
+
+TEST(expt_zero_base)
+{
+    ASSERT_STR_EQ(eval_print("(expt 0 0)"), "1");
+    ASSERT_STR_EQ(eval_print("(expt 0 5)"), "0");
+    ASSERT_STR_EQ(eval_print("(expt 0.0 5.0)"), "0.0");
+}
+
+TEST(expt_error_cases)
+{
+    /* 0^negative → error */
+    ASSERT_STR_EQ(eval_print("(expt 0 -1)"), "ERROR:7");
+    /* negative base + non-integer exponent → error */
+    ASSERT_STR_EQ(eval_print("(expt -2.0 0.5)"), "ERROR:2");
+}
+
+/* ================================================================
+ * Step 12: Trigonometric functions (sin, cos, tan, asin, acos, atan)
+ * ================================================================ */
+
+/* --- sin --- */
+
+TEST(sin_zero)
+{
+    ASSERT_STR_EQ(eval_print("(sin 0.0)"), "0.0");
+    ASSERT_STR_EQ(eval_print("(sin 0)"), "0.0");
+}
+
+TEST(sin_known_value)
+{
+    /* sin(1.0) ≈ 0.84147 */
+    ASSERT_STR_EQ(eval_print("(< (abs (- (sin 1.0) 0.84147)) 0.001)"), "T");
+}
+
+TEST(sin_double)
+{
+    ASSERT_STR_EQ(eval_print("(sin 0.0d0)"), "0.0d0");
+}
+
+/* --- cos --- */
+
+TEST(cos_zero)
+{
+    ASSERT_STR_EQ(eval_print("(cos 0.0)"), "1.0");
+    ASSERT_STR_EQ(eval_print("(cos 0)"), "1.0");
+}
+
+TEST(cos_known_value)
+{
+    /* cos(1.0) ≈ 0.5403 */
+    ASSERT_STR_EQ(eval_print("(< (abs (- (cos 1.0) 0.5403)) 0.001)"), "T");
+}
+
+TEST(cos_double)
+{
+    ASSERT_STR_EQ(eval_print("(cos 0.0d0)"), "1.0d0");
+}
+
+/* --- tan --- */
+
+TEST(tan_zero)
+{
+    ASSERT_STR_EQ(eval_print("(tan 0.0)"), "0.0");
+    ASSERT_STR_EQ(eval_print("(tan 0)"), "0.0");
+}
+
+TEST(tan_known_value)
+{
+    /* tan(1.0) ≈ 1.55740 */
+    ASSERT_STR_EQ(eval_print("(< (abs (- (tan 1.0) 1.55740)) 0.001)"), "T");
+}
+
+TEST(tan_double)
+{
+    ASSERT_STR_EQ(eval_print("(tan 0.0d0)"), "0.0d0");
+}
+
+/* --- asin --- */
+
+TEST(asin_zero)
+{
+    ASSERT_STR_EQ(eval_print("(asin 0.0)"), "0.0");
+    ASSERT_STR_EQ(eval_print("(asin 0)"), "0.0");
+}
+
+TEST(asin_one)
+{
+    /* asin(1.0) ≈ π/2 ≈ 1.5707 */
+    ASSERT_STR_EQ(eval_print("(< (abs (- (asin 1.0) 1.5707)) 0.001)"), "T");
+}
+
+TEST(asin_double)
+{
+    ASSERT_STR_EQ(eval_print("(asin 0.0d0)"), "0.0d0");
+}
+
+TEST(asin_error_domain)
+{
+    ASSERT_STR_EQ(eval_print("(asin 2.0)"), "ERROR:2");
+    ASSERT_STR_EQ(eval_print("(asin -2.0)"), "ERROR:2");
+}
+
+/* --- acos --- */
+
+TEST(acos_one)
+{
+    ASSERT_STR_EQ(eval_print("(acos 1.0)"), "0.0");
+}
+
+TEST(acos_zero)
+{
+    /* acos(0.0) ≈ π/2 ≈ 1.5707 */
+    ASSERT_STR_EQ(eval_print("(< (abs (- (acos 0.0) 1.5707)) 0.001)"), "T");
+}
+
+TEST(acos_integer_arg)
+{
+    ASSERT_STR_EQ(eval_print("(acos 1)"), "0.0");
+}
+
+TEST(acos_double)
+{
+    ASSERT_STR_EQ(eval_print("(acos 1.0d0)"), "0.0d0");
+}
+
+TEST(acos_error_domain)
+{
+    ASSERT_STR_EQ(eval_print("(acos 2.0)"), "ERROR:2");
+    ASSERT_STR_EQ(eval_print("(acos -2.0)"), "ERROR:2");
+}
+
+/* --- atan --- */
+
+TEST(atan_zero)
+{
+    ASSERT_STR_EQ(eval_print("(atan 0.0)"), "0.0");
+    ASSERT_STR_EQ(eval_print("(atan 0)"), "0.0");
+}
+
+TEST(atan_one)
+{
+    /* atan(1.0) ≈ π/4 ≈ 0.7853 */
+    ASSERT_STR_EQ(eval_print("(< (abs (- (atan 1.0) 0.7853)) 0.001)"), "T");
+}
+
+TEST(atan_two_args)
+{
+    /* atan2(1.0, 1.0) ≈ π/4 ≈ 0.7853 */
+    ASSERT_STR_EQ(eval_print("(< (abs (- (atan 1.0 1.0) 0.7853)) 0.001)"), "T");
+}
+
+TEST(atan_double)
+{
+    ASSERT_STR_EQ(eval_print("(atan 0.0d0)"), "0.0d0");
+}
+
+TEST(atan_integer_arg)
+{
+    ASSERT_STR_EQ(eval_print("(atan 1)"), eval_print("(atan 1.0)"));
+}
+
 /* ================================================================ */
 
 int main(void)
@@ -509,6 +816,56 @@ int main(void)
     RUN(ffloor_mv);
     RUN(mod_float);
     RUN(rem_float);
+
+    /* Step 11: math functions */
+    RUN(sqrt_perfect_square);
+    RUN(sqrt_non_perfect);
+    RUN(sqrt_integer_arg);
+    RUN(sqrt_double);
+    RUN(sqrt_error_negative);
+    RUN(exp_zero);
+    RUN(exp_one);
+    RUN(exp_negative);
+    RUN(exp_double);
+    RUN(log_one);
+    RUN(log_e);
+    RUN(log_integer_arg);
+    RUN(log_with_base);
+    RUN(log_double);
+    RUN(log_error_nonpositive);
+    RUN(log_error_bad_base);
+    RUN(expt_integer_positive);
+    RUN(expt_integer_negative_exp);
+    RUN(expt_float_args);
+    RUN(expt_mixed_args);
+    RUN(expt_double);
+    RUN(expt_zero_base);
+    RUN(expt_error_cases);
+
+    /* Step 12: trigonometric functions */
+    RUN(sin_zero);
+    RUN(sin_known_value);
+    RUN(sin_double);
+    RUN(cos_zero);
+    RUN(cos_known_value);
+    RUN(cos_double);
+    RUN(tan_zero);
+    RUN(tan_known_value);
+    RUN(tan_double);
+    RUN(asin_zero);
+    RUN(asin_one);
+    RUN(asin_double);
+    RUN(asin_error_domain);
+    RUN(acos_one);
+    RUN(acos_zero);
+    RUN(acos_integer_arg);
+    RUN(acos_double);
+    RUN(acos_error_domain);
+    RUN(atan_zero);
+    RUN(atan_one);
+    RUN(atan_two_args);
+    RUN(atan_double);
+    RUN(atan_integer_arg);
 
     teardown();
     REPORT();

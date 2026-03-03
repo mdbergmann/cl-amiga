@@ -93,11 +93,11 @@ Single-pass recursive compiler from S-expressions to bytecode:
 
 **Bootstrap functions:** `cadr`, `caar`, `cdar`, `cddr`, `caddr`, `cadar`, `identity`, `endp`, `member`, `intersection`, `union`, `set-difference`, `subsetp`, `cerror`
 
-## Built-in Functions (250+ functions)
+## Built-in Functions (260+ functions)
 
 | Category | Functions |
 |----------|-----------|
-| Arithmetic | `+` `-` `*` `/` `truncate` `rem` `mod` `1+` `1-` `abs` `max` `min` `gcd` `lcm` `expt` `isqrt` |
+| Arithmetic | `+` `-` `*` `/` `truncate` `rem` `mod` `1+` `1-` `abs` `max` `min` `gcd` `lcm` `expt` `isqrt` `sqrt` `exp` `log` `sin` `cos` `tan` `asin` `acos` `atan` |
 | Bitwise | `ash` `logand` `logior` `logxor` `lognot` `integer-length` |
 | Comparison | `=` `<` `>` `<=` `>=` |
 | Predicates | `null` `consp` `atom` `listp` `numberp` `integerp` `symbolp` `stringp` `functionp` `vectorp` `zerop` `plusp` `minusp` `evenp` `oddp` `characterp` `keywordp` `hash-table-p` |
@@ -298,7 +298,7 @@ Full CL numeric type hierarchy with arithmetic contagion:
 - [x] Type hierarchy: `fixnum`/`bignum` < `integer` < `rational` < `real` < `number` in `typep` and `subtypep`
 - [x] `eql`/`equal`/hash-table support for bignums (value equality)
 
-Floats (steps 1-9 of 16):
+Floats (steps 1-12, complete):
 - [x] Single-float — IEEE 754 32-bit, heap-allocated (`CL_SingleFloat`, 8 bytes)
 - [x] Double-float — IEEE 754 64-bit, heap-allocated (`CL_DoubleFloat`, 12 bytes)
 - [x] Contagion: integer + float → float; single + double → double
@@ -309,18 +309,24 @@ Floats (steps 1-9 of 16):
 - [x] Equality/hash: `eql`/`equal` value comparison, bit-based hashing
 - [x] Predicates: `floatp`, `realp`, `rationalp`, `numberp` updated
 - [x] Float-specific: `float`, `float-digits`, `float-radix`, `float-sign`, `decode-float`, `integer-decode-float`, `scale-float`
+- [x] Rounding: `floor`, `ceiling`, `round`, `truncate` (2 values), `ffloor`, `fceiling`, `ftruncate`, `fround`, `mod`/`rem` with floats
+- [x] Math functions: `sqrt`, `exp`, `log` (1-2 args), `expt` (integer-exact + float paths)
+- [x] Trigonometric: `sin`, `cos`, `tan`, `asin` (domain check), `acos` (domain check), `atan` (1-2 args via `atan2`)
 - [x] Amiga build: `-lmieee` (software float); `FPU=1` → `-fpu=68881 -lm881` (hardware FPU)
 
 **Known FPU issue:** 68881/68040 hardware FPU (`FPU=1`) has minor precision differences — `integer-decode-float` significand off-by-one on some values, and `scale-float` double formatting mismatch. Software float (`-lmieee`, default) passes all tests. 2/837 Amiga tests fail with `FPU=1`.
 
-Rounding (step 10):
-- [x] `floor`, `ceiling`, `round`, `truncate` — accept integers and floats, return 2 values (quotient, remainder)
-- [x] `ffloor`, `fceiling`, `ftruncate`, `fround` — f-variants return float quotient
-- [x] `mod`/`rem` updated for float arguments
+**Float limitations (not planned):**
+- No ratios — `(/ 1 2)` returns `0` (integer truncation), not `1/2`
+- No complex numbers — `(sqrt -1)` signals an error instead of returning `#C(0 1)`
+- No `*read-default-float-format*` — unqualified literals always produce single-float
+- No float limits constants (`most-positive-single-float`, `least-positive-single-float`, etc.)
+- No `pi` constant
+- No `random`/`*random-state*`
 
-670 host tests (9 suites), 877 Amiga batch tests — all passing (software float).
+716 host tests (9 suites), 877 Amiga batch tests — all passing (software float).
 
-Remaining (deferred):
+Remaining numeric features (deferred):
 - [ ] Ratios — normalized numerator/denominator pairs (fixnum or bignum), GCD reduction
 - [ ] Complex numbers — real + imaginary parts, any real type
 - [ ] Numeric contagion: integer → ratio → single-float → double-float; complex promotion
@@ -328,8 +334,7 @@ Remaining (deferred):
 - [ ] Division: `(/ 1 2)` → `1/2` (ratio)
 - [ ] Ratio ops: `numerator`, `denominator`, `rational`, `rationalize`
 - [ ] Complex ops: `realpart`, `imagpart`, `conjugate`, `phase`
-- [ ] Math: `sqrt`, `log`, `exp`, `expt` (float-aware), `logcount`
-- [ ] Trig: `sin`, `cos`, `tan`, `asin`, `acos`, `atan`
+- [ ] `logcount`
 - [ ] Type predicates: `ratiop`, `complexp`
 - [ ] Constants: `pi`, float limits, `*read-default-float-format*`
 - [ ] `random`, `make-random-state`, `*random-state*` — pseudo-random number generation
@@ -410,6 +415,10 @@ cl-amiga/
 └── verify/
     └── realamiga/          # FS-UAE config + AmigaOS system image
 ```
+
+## Known Bugs
+
+- [ ] **Amiga crash on heap exhaustion** — when the heap is exhausted (e.g. `(fact 3000)` with tail-recursive bignum factorial), the error is reported but the application crashes instead of recovering gracefully back to the REPL. Should signal a `storage-condition` and return to the REPL prompt.
 
 ## Verification Targets
 
