@@ -2731,6 +2731,227 @@ TEST(eval_symbol_macrolet_multiple)
         "  (+ x y))"), 30);
 }
 
+/* --- Phase 8 Step 2: Missing string operations --- */
+
+TEST(eval_string_capitalize)
+{
+    ASSERT_STR_EQ(eval_print("(string-capitalize \"hello world\")"), "\"Hello World\"");
+    ASSERT_STR_EQ(eval_print("(string-capitalize \"HELLO WORLD\")"), "\"Hello World\"");
+    ASSERT_STR_EQ(eval_print("(string-capitalize \"foo-bar\")"), "\"Foo-Bar\"");
+}
+
+TEST(eval_nstring_upcase)
+{
+    ASSERT_STR_EQ(eval_print(
+        "(let ((s (copy-seq \"hello\")))"
+        "  (nstring-upcase s)"
+        "  s)"), "\"HELLO\"");
+}
+
+TEST(eval_nstring_downcase)
+{
+    ASSERT_STR_EQ(eval_print(
+        "(let ((s (copy-seq \"HELLO\")))"
+        "  (nstring-downcase s)"
+        "  s)"), "\"hello\"");
+}
+
+TEST(eval_nstring_capitalize)
+{
+    ASSERT_STR_EQ(eval_print(
+        "(let ((s (copy-seq \"hello world\")))"
+        "  (nstring-capitalize s)"
+        "  s)"), "\"Hello World\"");
+}
+
+TEST(eval_char_name)
+{
+    ASSERT_STR_EQ(eval_print("(char-name #\\Space)"), "\"Space\"");
+    ASSERT_STR_EQ(eval_print("(char-name #\\Newline)"), "\"Newline\"");
+    ASSERT_STR_EQ(eval_print("(char-name #\\A)"), "NIL");
+}
+
+TEST(eval_name_char)
+{
+    ASSERT_STR_EQ(eval_print("(name-char \"Space\")"), "#\\Space");
+    ASSERT_STR_EQ(eval_print("(name-char \"SPACE\")"), "#\\Space");
+    ASSERT_STR_EQ(eval_print("(name-char \"Newline\")"), "#\\Newline");
+    ASSERT_STR_EQ(eval_print("(name-char \"xyzzy\")"), "NIL");
+}
+
+TEST(eval_char_ci_compare)
+{
+    ASSERT_STR_EQ(eval_print("(char-equal #\\a #\\A)"), "T");
+    ASSERT_STR_EQ(eval_print("(char-not-equal #\\a #\\b)"), "T");
+    ASSERT_STR_EQ(eval_print("(char-lessp #\\a #\\B)"), "T");
+    ASSERT_STR_EQ(eval_print("(char-greaterp #\\b #\\A)"), "T");
+    ASSERT_STR_EQ(eval_print("(char-not-greaterp #\\a #\\A)"), "T");
+    ASSERT_STR_EQ(eval_print("(char-not-lessp #\\A #\\a)"), "T");
+}
+
+TEST(eval_graphic_char_p)
+{
+    ASSERT_STR_EQ(eval_print("(graphic-char-p #\\A)"), "T");
+    ASSERT_STR_EQ(eval_print("(graphic-char-p #\\Space)"), "T");
+    ASSERT_STR_EQ(eval_print("(graphic-char-p #\\Newline)"), "NIL");
+}
+
+TEST(eval_alphanumericp)
+{
+    ASSERT_STR_EQ(eval_print("(alphanumericp #\\A)"), "T");
+    ASSERT_STR_EQ(eval_print("(alphanumericp #\\5)"), "T");
+    ASSERT_STR_EQ(eval_print("(alphanumericp #\\!)"), "NIL");
+}
+
+TEST(eval_digit_char)
+{
+    ASSERT_STR_EQ(eval_print("(digit-char 0)"), "#\\0");
+    ASSERT_STR_EQ(eval_print("(digit-char 9)"), "#\\9");
+    ASSERT_STR_EQ(eval_print("(digit-char 10 16)"), "#\\A");
+    ASSERT_STR_EQ(eval_print("(digit-char 10)"), "NIL");
+}
+
+/* --- Phase 8 Step 3: Missing sequence operations --- */
+
+TEST(eval_elt)
+{
+    ASSERT_EQ_INT(eval_int("(elt '(a b c) 1)"), CL_FIXNUM_VAL(cl_eval_string("'b")));
+    ASSERT_STR_EQ(eval_print("(elt (vector 10 20 30) 2)"), "30");
+    ASSERT_STR_EQ(eval_print("(elt \"abc\" 0)"), "#\\a");
+}
+
+TEST(eval_setf_elt)
+{
+    ASSERT_STR_EQ(eval_print(
+        "(let ((v (vector 1 2 3)))"
+        "  (setf (elt v 1) 99) v)"), "#(1 99 3)");
+    ASSERT_STR_EQ(eval_print(
+        "(let ((l (list 1 2 3)))"
+        "  (setf (elt l 0) 99) l)"), "(99 2 3)");
+}
+
+TEST(eval_copy_seq)
+{
+    ASSERT_STR_EQ(eval_print("(copy-seq '(1 2 3))"), "(1 2 3)");
+    ASSERT_STR_EQ(eval_print("(copy-seq \"hello\")"), "\"hello\"");
+    ASSERT_STR_EQ(eval_print(
+        "(let ((a (vector 1 2 3))"
+        "      (b (copy-seq (vector 1 2 3))))"
+        "  (equal a b))"), "T");
+    ASSERT_STR_EQ(eval_print("(copy-seq nil)"), "NIL");
+}
+
+TEST(eval_map_into)
+{
+    ASSERT_STR_EQ(eval_print(
+        "(let ((v (vector 0 0 0)))"
+        "  (map-into v #'+ (vector 1 2 3) (vector 10 20 30))"
+        "  v)"), "#(11 22 33)");
+}
+
+/* --- Phase 8 Step 4: Higher-order functions --- */
+
+TEST(eval_complement)
+{
+    ASSERT_STR_EQ(eval_print(
+        "(funcall (complement #'zerop) 0)"), "NIL");
+    ASSERT_STR_EQ(eval_print(
+        "(funcall (complement #'zerop) 5)"), "T");
+}
+
+TEST(eval_constantly)
+{
+    ASSERT_STR_EQ(eval_print(
+        "(funcall (constantly 42) 1 2 3)"), "42");
+    ASSERT_STR_EQ(eval_print(
+        "(mapcar (constantly 'x) '(1 2 3))"), "(X X X)");
+}
+
+/* --- Phase 8 Step 1: Missing list operations --- */
+
+TEST(eval_list_star)
+{
+    ASSERT_STR_EQ(eval_print("(list* 1 2)"), "(1 . 2)");
+    ASSERT_STR_EQ(eval_print("(list* 1 2 3)"), "(1 2 . 3)");
+    ASSERT_STR_EQ(eval_print("(list* 1 2 3 nil)"), "(1 2 3)");
+    ASSERT_STR_EQ(eval_print("(list* 'a)"), "A");
+}
+
+TEST(eval_make_list)
+{
+    ASSERT_STR_EQ(eval_print("(make-list 3)"), "(NIL NIL NIL)");
+    ASSERT_STR_EQ(eval_print("(make-list 3 :initial-element 'x)"), "(X X X)");
+    ASSERT_STR_EQ(eval_print("(make-list 0)"), "NIL");
+}
+
+TEST(eval_tree_equal)
+{
+    ASSERT_STR_EQ(eval_print("(tree-equal '(1 (2 3)) '(1 (2 3)))"), "T");
+    ASSERT_STR_EQ(eval_print("(tree-equal '(1 2) '(1 3))"), "NIL");
+    ASSERT_STR_EQ(eval_print("(tree-equal nil nil)"), "T");
+    ASSERT_STR_EQ(eval_print("(tree-equal '(\"a\" \"b\") '(\"a\" \"b\") :test #'equal)"), "T");
+}
+
+TEST(eval_list_length)
+{
+    ASSERT_STR_EQ(eval_print("(list-length '(1 2 3))"), "3");
+    ASSERT_STR_EQ(eval_print("(list-length nil)"), "0");
+}
+
+TEST(eval_tailp)
+{
+    ASSERT_STR_EQ(eval_print(
+        "(let ((x '(1 2 3)))"
+        "  (tailp (cdr x) x))"), "T");
+    ASSERT_STR_EQ(eval_print("(tailp nil '(1 2 3))"), "T");
+    ASSERT_STR_EQ(eval_print("(tailp '(4) '(1 2 3))"), "NIL");
+}
+
+TEST(eval_ldiff)
+{
+    ASSERT_STR_EQ(eval_print(
+        "(let* ((x '(1 2 3 4))"
+        "       (tail (cddr x)))"
+        "  (ldiff x tail))"), "(1 2)");
+    ASSERT_STR_EQ(eval_print("(ldiff '(1 2 3) nil)"), "(1 2 3)");
+}
+
+TEST(eval_revappend)
+{
+    ASSERT_STR_EQ(eval_print("(revappend '(1 2 3) '(4 5))"), "(3 2 1 4 5)");
+    ASSERT_STR_EQ(eval_print("(revappend nil '(1 2))"), "(1 2)");
+}
+
+TEST(eval_nreconc)
+{
+    ASSERT_STR_EQ(eval_print("(nreconc (list 1 2 3) '(4 5))"), "(3 2 1 4 5)");
+    ASSERT_STR_EQ(eval_print("(nreconc nil '(1 2))"), "(1 2)");
+}
+
+TEST(eval_assoc_if)
+{
+    ASSERT_STR_EQ(eval_print("(assoc-if #'symbolp '((1 . a) (b . 2) (3 . c)))"), "(B . 2)");
+    ASSERT_STR_EQ(eval_print("(assoc-if #'null '((1 . a) (2 . b)))"), "NIL");
+}
+
+TEST(eval_rassoc_if)
+{
+    ASSERT_STR_EQ(eval_print("(rassoc-if #'symbolp '((1 . 2) (3 . b) (4 . 5)))"), "(3 . B)");
+    ASSERT_STR_EQ(eval_print("(rassoc-if #'null '((1 . a) (2 . b)))"), "NIL");
+}
+
+TEST(eval_remf)
+{
+    ASSERT_STR_EQ(eval_print(
+        "(let ((p (list :a 1 :b 2 :c 3)))"
+        "  (remf p :b)"
+        "  p)"), "(:A 1 :C 3)");
+    ASSERT_STR_EQ(eval_print(
+        "(multiple-value-list (remf (list :a 1 :b 2) :a))"), "((:B 2) T)");
+    ASSERT_STR_EQ(eval_print(
+        "(multiple-value-list (remf (list :a 1 :b 2) :z))"), "((:A 1 :B 2) NIL)");
+}
+
 /* --- Paren depth --- */
 
 TEST(paren_depth_balanced)
@@ -3187,6 +3408,41 @@ int main(void)
     RUN(eval_symbol_macrolet_scope);
     RUN(eval_symbol_macrolet_nested);
     RUN(eval_symbol_macrolet_multiple);
+
+    /* Phase 8 Step 2 — Missing string operations */
+    RUN(eval_string_capitalize);
+    RUN(eval_nstring_upcase);
+    RUN(eval_nstring_downcase);
+    RUN(eval_nstring_capitalize);
+    RUN(eval_char_name);
+    RUN(eval_name_char);
+    RUN(eval_char_ci_compare);
+    RUN(eval_graphic_char_p);
+    RUN(eval_alphanumericp);
+    RUN(eval_digit_char);
+
+    /* Phase 8 Step 3 — Missing sequence operations */
+    RUN(eval_elt);
+    RUN(eval_setf_elt);
+    RUN(eval_copy_seq);
+    RUN(eval_map_into);
+
+    /* Phase 8 Step 4 — Higher-order functions */
+    RUN(eval_complement);
+    RUN(eval_constantly);
+
+    /* Phase 8 Step 1 — Missing list operations */
+    RUN(eval_list_star);
+    RUN(eval_make_list);
+    RUN(eval_tree_equal);
+    RUN(eval_list_length);
+    RUN(eval_tailp);
+    RUN(eval_ldiff);
+    RUN(eval_revappend);
+    RUN(eval_nreconc);
+    RUN(eval_assoc_if);
+    RUN(eval_rassoc_if);
+    RUN(eval_remf);
 
     /* Paren depth */
     RUN(paren_depth_balanced);

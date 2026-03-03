@@ -586,6 +586,299 @@ static CL_Obj bi_princ_to_string_fn(CL_Obj *args, int n)
     return cl_make_string(buf, (uint32_t)len);
 }
 
+/* --- Phase 8 Step 2: Additional string/char operations --- */
+
+static CL_Obj bi_string_capitalize(CL_Obj *args, int n)
+{
+    CL_String *s;
+    CL_Obj result;
+    CL_String *rs;
+    uint32_t i;
+    int in_word = 0;
+    CL_UNUSED(n);
+    if (!CL_STRING_P(args[0]))
+        cl_error(CL_ERR_TYPE, "STRING-CAPITALIZE: not a string");
+    s = (CL_String *)CL_OBJ_TO_PTR(args[0]);
+    result = cl_make_string(s->data, s->length);
+    rs = (CL_String *)CL_OBJ_TO_PTR(result);
+    for (i = 0; i < rs->length; i++) {
+        char c = rs->data[i];
+        int is_alpha = (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z');
+        int is_alnum = is_alpha || (c >= '0' && c <= '9');
+        if (!in_word && is_alpha) {
+            /* Capitalize first char of word */
+            if (c >= 'a' && c <= 'z') rs->data[i] = c - 32;
+            in_word = 1;
+        } else if (in_word && is_alnum) {
+            /* Downcase rest of word */
+            if (c >= 'A' && c <= 'Z') rs->data[i] = c + 32;
+        } else {
+            in_word = is_alnum;
+        }
+    }
+    return result;
+}
+
+static CL_Obj bi_nstring_upcase(CL_Obj *args, int n)
+{
+    CL_String *s;
+    uint32_t i;
+    CL_UNUSED(n);
+    if (!CL_STRING_P(args[0]))
+        cl_error(CL_ERR_TYPE, "NSTRING-UPCASE: not a string");
+    s = (CL_String *)CL_OBJ_TO_PTR(args[0]);
+    for (i = 0; i < s->length; i++) {
+        if (s->data[i] >= 'a' && s->data[i] <= 'z')
+            s->data[i] -= 32;
+    }
+    return args[0];
+}
+
+static CL_Obj bi_nstring_downcase(CL_Obj *args, int n)
+{
+    CL_String *s;
+    uint32_t i;
+    CL_UNUSED(n);
+    if (!CL_STRING_P(args[0]))
+        cl_error(CL_ERR_TYPE, "NSTRING-DOWNCASE: not a string");
+    s = (CL_String *)CL_OBJ_TO_PTR(args[0]);
+    for (i = 0; i < s->length; i++) {
+        if (s->data[i] >= 'A' && s->data[i] <= 'Z')
+            s->data[i] += 32;
+    }
+    return args[0];
+}
+
+static CL_Obj bi_nstring_capitalize(CL_Obj *args, int n)
+{
+    CL_String *s;
+    uint32_t i;
+    int in_word = 0;
+    CL_UNUSED(n);
+    if (!CL_STRING_P(args[0]))
+        cl_error(CL_ERR_TYPE, "NSTRING-CAPITALIZE: not a string");
+    s = (CL_String *)CL_OBJ_TO_PTR(args[0]);
+    for (i = 0; i < s->length; i++) {
+        char c = s->data[i];
+        int is_alpha = (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z');
+        int is_alnum = is_alpha || (c >= '0' && c <= '9');
+        if (!in_word && is_alpha) {
+            if (c >= 'a' && c <= 'z') s->data[i] = c - 32;
+            in_word = 1;
+        } else if (in_word && is_alnum) {
+            if (c >= 'A' && c <= 'Z') s->data[i] = c + 32;
+        } else {
+            in_word = is_alnum;
+        }
+    }
+    return args[0];
+}
+
+/* char-name table */
+static const struct { int code; const char *name; } char_names[] = {
+    {' ',  "Space"},
+    {'\n', "Newline"},
+    {'\t', "Tab"},
+    {'\r', "Return"},
+    {'\b', "Backspace"},
+    {127,  "Rubout"},
+    {'\f', "Page"},
+    {'\n', "Linefeed"},
+    {0, NULL}
+};
+
+static CL_Obj bi_char_name(CL_Obj *args, int n)
+{
+    int c, i;
+    CL_UNUSED(n);
+    if (!CL_CHAR_P(args[0]))
+        cl_error(CL_ERR_TYPE, "CHAR-NAME: not a character");
+    c = CL_CHAR_VAL(args[0]);
+    for (i = 0; char_names[i].name; i++) {
+        if (char_names[i].code == c)
+            return cl_make_string(char_names[i].name,
+                                  (uint32_t)strlen(char_names[i].name));
+    }
+    return CL_NIL;
+}
+
+#ifdef PLATFORM_AMIGA
+/* vbcc has no <strings.h> — provide case-insensitive compare */
+static int cl_local_strcasecmp(const char *a, const char *b)
+{
+    while (*a && *b) {
+        int ca = *a, cb = *b;
+        if (ca >= 'a' && ca <= 'z') ca -= 32;
+        if (cb >= 'a' && cb <= 'z') cb -= 32;
+        if (ca != cb) return ca - cb;
+        a++; b++;
+    }
+    return (unsigned char)*a - (unsigned char)*b;
+}
+#define STRCASECMP cl_local_strcasecmp
+#else
+#include <strings.h>
+#define STRCASECMP strcasecmp
+#endif
+
+static CL_Obj bi_name_char(CL_Obj *args, int n)
+{
+    const char *name;
+    uint32_t len;
+    int i;
+    CL_UNUSED(n);
+    if (!CL_STRING_P(args[0]))
+        cl_error(CL_ERR_TYPE, "NAME-CHAR: not a string");
+    {
+        CL_String *s = (CL_String *)CL_OBJ_TO_PTR(args[0]);
+        name = s->data;
+        len = s->length;
+    }
+    for (i = 0; char_names[i].name; i++) {
+        if (strlen(char_names[i].name) == len &&
+            STRCASECMP(char_names[i].name, name) == 0)
+            return CL_MAKE_CHAR(char_names[i].code);
+    }
+    return CL_NIL;
+}
+
+static CL_Obj bi_graphic_char_p(CL_Obj *args, int n)
+{
+    int c;
+    CL_UNUSED(n);
+    if (!CL_CHAR_P(args[0]))
+        cl_error(CL_ERR_TYPE, "GRAPHIC-CHAR-P: not a character");
+    c = CL_CHAR_VAL(args[0]);
+    return (c >= 32 && c < 127) ? SYM_T : CL_NIL;
+}
+
+static CL_Obj bi_standard_char_p(CL_Obj *args, int n)
+{
+    int c;
+    CL_UNUSED(n);
+    if (!CL_CHAR_P(args[0]))
+        cl_error(CL_ERR_TYPE, "STANDARD-CHAR-P: not a character");
+    c = CL_CHAR_VAL(args[0]);
+    /* Standard chars: graphic chars + space + newline */
+    return ((c >= 32 && c < 127) || c == '\n') ? SYM_T : CL_NIL;
+}
+
+static CL_Obj bi_alphanumericp(CL_Obj *args, int n)
+{
+    int c;
+    CL_UNUSED(n);
+    if (!CL_CHAR_P(args[0]))
+        cl_error(CL_ERR_TYPE, "ALPHANUMERICP: not a character");
+    c = CL_CHAR_VAL(args[0]);
+    return ((c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') ||
+            (c >= '0' && c <= '9')) ? SYM_T : CL_NIL;
+}
+
+static CL_Obj bi_digit_char(CL_Obj *args, int n)
+{
+    int32_t weight, radix = 10;
+    CL_UNUSED(n);
+    if (!CL_FIXNUM_P(args[0]))
+        cl_error(CL_ERR_TYPE, "DIGIT-CHAR: not an integer");
+    weight = CL_FIXNUM_VAL(args[0]);
+    if (n >= 2 && CL_FIXNUM_P(args[1]))
+        radix = CL_FIXNUM_VAL(args[1]);
+    if (weight < 0 || weight >= radix)
+        return CL_NIL;
+    if (weight < 10)
+        return CL_MAKE_CHAR('0' + weight);
+    return CL_MAKE_CHAR('A' + weight - 10);
+}
+
+static CL_Obj bi_both_case_p(CL_Obj *args, int n)
+{
+    int c;
+    CL_UNUSED(n);
+    if (!CL_CHAR_P(args[0]))
+        cl_error(CL_ERR_TYPE, "BOTH-CASE-P: not a character");
+    c = CL_CHAR_VAL(args[0]);
+    return ((c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z'))
+        ? SYM_T : CL_NIL;
+}
+
+static CL_Obj bi_char_equal(CL_Obj *args, int n)
+{
+    int a, b;
+    CL_UNUSED(n);
+    if (!CL_CHAR_P(args[0]) || !CL_CHAR_P(args[1]))
+        cl_error(CL_ERR_TYPE, "CHAR-EQUAL: not a character");
+    a = CL_CHAR_VAL(args[0]);
+    b = CL_CHAR_VAL(args[1]);
+    if (a >= 'a' && a <= 'z') a -= 32;
+    if (b >= 'a' && b <= 'z') b -= 32;
+    return (a == b) ? SYM_T : CL_NIL;
+}
+
+static CL_Obj bi_char_not_equal(CL_Obj *args, int n)
+{
+    int a, b;
+    CL_UNUSED(n);
+    if (!CL_CHAR_P(args[0]) || !CL_CHAR_P(args[1]))
+        cl_error(CL_ERR_TYPE, "CHAR-NOT-EQUAL: not a character");
+    a = CL_CHAR_VAL(args[0]);
+    b = CL_CHAR_VAL(args[1]);
+    if (a >= 'a' && a <= 'z') a -= 32;
+    if (b >= 'a' && b <= 'z') b -= 32;
+    return (a != b) ? SYM_T : CL_NIL;
+}
+
+static CL_Obj bi_char_lessp(CL_Obj *args, int n)
+{
+    int a, b;
+    CL_UNUSED(n);
+    if (!CL_CHAR_P(args[0]) || !CL_CHAR_P(args[1]))
+        cl_error(CL_ERR_TYPE, "CHAR-LESSP: not a character");
+    a = CL_CHAR_VAL(args[0]);
+    b = CL_CHAR_VAL(args[1]);
+    if (a >= 'a' && a <= 'z') a -= 32;
+    if (b >= 'a' && b <= 'z') b -= 32;
+    return (a < b) ? SYM_T : CL_NIL;
+}
+
+static CL_Obj bi_char_greaterp(CL_Obj *args, int n)
+{
+    int a, b;
+    CL_UNUSED(n);
+    if (!CL_CHAR_P(args[0]) || !CL_CHAR_P(args[1]))
+        cl_error(CL_ERR_TYPE, "CHAR-GREATERP: not a character");
+    a = CL_CHAR_VAL(args[0]);
+    b = CL_CHAR_VAL(args[1]);
+    if (a >= 'a' && a <= 'z') a -= 32;
+    if (b >= 'a' && b <= 'z') b -= 32;
+    return (a > b) ? SYM_T : CL_NIL;
+}
+
+static CL_Obj bi_char_not_greaterp(CL_Obj *args, int n)
+{
+    int a, b;
+    CL_UNUSED(n);
+    if (!CL_CHAR_P(args[0]) || !CL_CHAR_P(args[1]))
+        cl_error(CL_ERR_TYPE, "CHAR-NOT-GREATERP: not a character");
+    a = CL_CHAR_VAL(args[0]);
+    b = CL_CHAR_VAL(args[1]);
+    if (a >= 'a' && a <= 'z') a -= 32;
+    if (b >= 'a' && b <= 'z') b -= 32;
+    return (a <= b) ? SYM_T : CL_NIL;
+}
+
+static CL_Obj bi_char_not_lessp(CL_Obj *args, int n)
+{
+    int a, b;
+    CL_UNUSED(n);
+    if (!CL_CHAR_P(args[0]) || !CL_CHAR_P(args[1]))
+        cl_error(CL_ERR_TYPE, "CHAR-NOT-LESSP: not a character");
+    a = CL_CHAR_VAL(args[0]);
+    b = CL_CHAR_VAL(args[1]);
+    if (a >= 'a' && a <= 'z') a -= 32;
+    if (b >= 'a' && b <= 'z') b -= 32;
+    return (a >= b) ? SYM_T : CL_NIL;
+}
+
 /* --- Registration --- */
 
 void cl_builtins_strings_init(void)
@@ -635,4 +928,23 @@ void cl_builtins_strings_init(void)
     defun("WRITE-TO-STRING", bi_write_to_string, 1, 1);
     defun("PRIN1-TO-STRING", bi_prin1_to_string_fn, 1, 1);
     defun("PRINC-TO-STRING", bi_princ_to_string_fn, 1, 1);
+
+    /* Phase 8 Step 2 */
+    defun("STRING-CAPITALIZE", bi_string_capitalize, 1, 1);
+    defun("NSTRING-UPCASE", bi_nstring_upcase, 1, 1);
+    defun("NSTRING-DOWNCASE", bi_nstring_downcase, 1, 1);
+    defun("NSTRING-CAPITALIZE", bi_nstring_capitalize, 1, 1);
+    defun("CHAR-NAME", bi_char_name, 1, 1);
+    defun("NAME-CHAR", bi_name_char, 1, 1);
+    defun("GRAPHIC-CHAR-P", bi_graphic_char_p, 1, 1);
+    defun("STANDARD-CHAR-P", bi_standard_char_p, 1, 1);
+    defun("ALPHANUMERICP", bi_alphanumericp, 1, 1);
+    defun("DIGIT-CHAR", bi_digit_char, 1, 2);
+    defun("BOTH-CASE-P", bi_both_case_p, 1, 1);
+    defun("CHAR-EQUAL", bi_char_equal, 2, 2);
+    defun("CHAR-NOT-EQUAL", bi_char_not_equal, 2, 2);
+    defun("CHAR-LESSP", bi_char_lessp, 2, 2);
+    defun("CHAR-GREATERP", bi_char_greaterp, 2, 2);
+    defun("CHAR-NOT-GREATERP", bi_char_not_greaterp, 2, 2);
+    defun("CHAR-NOT-LESSP", bi_char_not_lessp, 2, 2);
 }

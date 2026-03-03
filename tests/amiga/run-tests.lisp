@@ -1660,6 +1660,155 @@
 (set-macro-character #\! (lambda (stream char) (list 'quote (read stream t nil t))))
 (check "set-macro-char" t (equal !hello 'hello))
 
+; --- Phase 8 Step 2: Missing string operations ---
+
+; string-capitalize
+(check "string-capitalize" "Hello World" (string-capitalize "hello world"))
+(check "string-capitalize upper" "Hello World" (string-capitalize "HELLO WORLD"))
+(check "string-capitalize hyphen" "Foo-Bar" (string-capitalize "foo-bar"))
+
+; nstring-upcase
+(check "nstring-upcase" "HELLO" (let ((s (copy-seq "hello"))) (nstring-upcase s) s))
+
+; nstring-downcase
+(check "nstring-downcase" "hello" (let ((s (copy-seq "HELLO"))) (nstring-downcase s) s))
+
+; nstring-capitalize
+(check "nstring-capitalize" "Hello World" (let ((s (copy-seq "hello world"))) (nstring-capitalize s) s))
+
+; char-name
+(check "char-name space" "Space" (char-name #\Space))
+(check "char-name newline" "Newline" (char-name #\Newline))
+(check "char-name graphic" nil (char-name #\A))
+
+; name-char
+(check "name-char space" #\Space (name-char "Space"))
+(check "name-char upper" #\Space (name-char "SPACE"))
+(check "name-char newline" #\Newline (name-char "Newline"))
+(check "name-char invalid" nil (name-char "xyzzy"))
+
+; char-equal (case-insensitive)
+(check "char-equal ci" t (char-equal #\a #\A))
+(check "char-not-equal ci" t (char-not-equal #\a #\b))
+(check "char-lessp ci" t (char-lessp #\a #\B))
+(check "char-greaterp ci" t (char-greaterp #\b #\A))
+(check "char-not-greaterp ci" t (char-not-greaterp #\a #\A))
+(check "char-not-lessp ci" t (char-not-lessp #\A #\a))
+
+; graphic-char-p
+(check "graphic-char-p A" t (graphic-char-p #\A))
+(check "graphic-char-p space" t (graphic-char-p #\Space))
+(check "graphic-char-p newline" nil (graphic-char-p #\Newline))
+
+; alphanumericp
+(check "alphanumericp A" t (alphanumericp #\A))
+(check "alphanumericp 5" t (alphanumericp #\5))
+(check "alphanumericp !" nil (alphanumericp #\!))
+
+; digit-char
+(check "digit-char 0" #\0 (digit-char 0))
+(check "digit-char 9" #\9 (digit-char 9))
+(check "digit-char hex" #\A (digit-char 10 16))
+(check "digit-char over" nil (digit-char 10))
+
+; both-case-p
+(check "both-case-p A" t (both-case-p #\A))
+(check "both-case-p a" t (both-case-p #\a))
+(check "both-case-p 1" nil (both-case-p #\1))
+
+; standard-char-p
+(check "standard-char-p A" t (standard-char-p #\A))
+(check "standard-char-p nl" t (standard-char-p #\Newline))
+
+; --- Phase 8 Step 3: Missing sequence operations ---
+
+; elt
+(check "elt list" 'b (elt '(a b c) 1))
+(check "elt vector" 20 (elt (vector 10 20 30) 1))
+(check "elt string" #\b (elt "abc" 1))
+
+; (setf elt)
+(check "setf elt vector" 99 (let ((v (vector 1 2 3))) (setf (elt v 1) 99) (elt v 1)))
+(check "setf elt list" '(99 2 3) (let ((l (list 1 2 3))) (setf (elt l 0) 99) l))
+
+; copy-seq
+(check "copy-seq list" '(1 2 3) (copy-seq '(1 2 3)))
+(check "copy-seq nil" nil (copy-seq nil))
+(check "copy-seq string" "hello" (copy-seq "hello"))
+(check "copy-seq indep" 1 (let ((a (list 1 2))) (let ((b (copy-seq a))) (setf (car b) 99) (car a))))
+
+; map-into
+(check "map-into vector" 33 (let ((v (vector 0 0 0))) (map-into v #'+ (vector 1 2 3) (vector 10 20 30)) (elt v 2)))
+
+; --- Phase 8 Step 4: Higher-order functions ---
+
+; complement
+(check "complement t" nil (funcall (complement #'zerop) 0))
+(check "complement nil" t (funcall (complement #'zerop) 5))
+
+; constantly
+(check "constantly" 42 (funcall (constantly 42) 1 2 3))
+(check "constantly mapcar" '(x x x) (mapcar (constantly 'x) '(1 2 3)))
+
+; --- Phase 8 Step 1: Missing list operations ---
+
+; list*
+(check "list* 2args" '(1 . 2) (list* 1 2))
+(check "list* 3args" '(1 2 . 3) (list* 1 2 3))
+(check "list* with nil" '(1 2 3) (list* 1 2 3 nil))
+(check "list* single" 'a (list* 'a))
+
+; make-list
+(check "make-list basic" '(nil nil nil) (make-list 3))
+(check "make-list init" '(x x x) (make-list 3 :initial-element 'x))
+(check "make-list zero" nil (make-list 0))
+
+; tree-equal
+(check "tree-equal match" t (tree-equal '(1 (2 3)) '(1 (2 3))))
+(check "tree-equal mismatch" nil (tree-equal '(1 2) '(1 3)))
+(check "tree-equal nil" t (tree-equal nil nil))
+(check "tree-equal test" t (tree-equal '("a" "b") '("a" "b") :test #'equal))
+
+; list-length
+(check "list-length" 3 (list-length '(1 2 3)))
+(check "list-length nil" 0 (list-length nil))
+
+; tailp
+(check "tailp cdr" t (let ((x '(1 2 3))) (tailp (cdr x) x)))
+(check "tailp nil" t (tailp nil '(1 2 3)))
+(check "tailp no" nil (tailp '(4) '(1 2 3)))
+
+; ldiff
+(check "ldiff basic" '(1 2) (let* ((x '(1 2 3 4)) (tail (cddr x))) (ldiff x tail)))
+(check "ldiff nil" '(1 2 3) (ldiff '(1 2 3) nil))
+
+; revappend
+(check "revappend" '(3 2 1 4 5) (revappend '(1 2 3) '(4 5)))
+(check "revappend nil" '(1 2) (revappend nil '(1 2)))
+
+; nreconc
+(check "nreconc" '(3 2 1 4 5) (nreconc (list 1 2 3) '(4 5)))
+(check "nreconc nil" '(1 2) (nreconc nil '(1 2)))
+
+; assoc-if
+(check "assoc-if found" '(b . 2) (assoc-if #'symbolp '((1 . a) (b . 2) (3 . c))))
+(check "assoc-if not found" nil (assoc-if #'null '((1 . a) (2 . b))))
+
+; assoc-if-not
+(check "assoc-if-not" '(1 . a) (assoc-if-not #'symbolp '((1 . a) (b . 2))))
+
+; rassoc-if
+(check "rassoc-if found" '(3 . b) (rassoc-if #'symbolp '((1 . 2) (3 . b) (4 . 5))))
+(check "rassoc-if not found" nil (rassoc-if #'null '((1 . a) (2 . b))))
+
+; rassoc-if-not
+(check "rassoc-if-not" '(1 . 2) (rassoc-if-not #'symbolp '((1 . 2) (3 . b))))
+
+; remf
+(check "remf middle" '(:a 1 :c 3) (let ((p (list :a 1 :b 2 :c 3))) (remf p :b) p))
+(check "remf head mv" '((:b 2) t) (multiple-value-list (remf (list :a 1 :b 2) :a)))
+(check "remf missing mv" '((:a 1 :b 2) nil) (multiple-value-list (remf (list :a 1 :b 2) :z)))
+
 ; --- Summary ---
 (format t "~%=== Results ===~%")
 (format t "Passed: ~A~%" *pass-count*)

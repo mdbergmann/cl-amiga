@@ -39,7 +39,7 @@ CL_Obj (uint32_t):
 Heap object header (uint32_t):
   [type:8][gc_mark:1][size:23]       max object size = 8MB
 
-Types: CONS, SYMBOL, STRING, FUNCTION, CLOSURE, BYTECODE, VECTOR, PACKAGE, HASHTABLE, CONDITION, STRUCT, BIGNUM
+Types: CONS, SYMBOL, STRING, FUNCTION, CLOSURE, BYTECODE, VECTOR, PACKAGE, HASHTABLE, CONDITION, STRUCT, BIGNUM, SINGLE_FLOAT, DOUBLE_FLOAT, STREAM
 ```
 
 ## Memory Budget (8MB System)
@@ -89,11 +89,11 @@ Single-pass recursive compiler from S-expressions to bytecode:
 
 **Special forms:** `quote`, `if`, `progn`, `lambda`, `let`, `let*`, `setq`, `setf`, `defun`, `defvar`, `defparameter`, `defmacro`, `function (#')`, `block`, `return-from`, `return`, `and`, `or`, `cond`, `do`, `dolist`, `dotimes`, `case`, `ecase`, `typecase`, `etypecase`, `flet`, `labels`, `tagbody`, `go`, `catch`, `unwind-protect`, `multiple-value-bind`, `multiple-value-list`, `multiple-value-prog1`, `nth-value`, `eval-when`, `destructuring-bind`, `defsetf`, `trace`, `untrace`, `time`, `handler-bind`, `restart-case`, `in-package`, `macrolet`, `symbol-macrolet`, `the`
 
-**Bootstrap macros:** `when`, `unless`, `prog1`, `prog2`, `push`, `pop`, `incf`, `decf`, `pushnew`, `handler-case`, `ignore-errors`, `with-simple-restart`, `define-condition`, `check-type`, `assert`, `defpackage`, `do-symbols`, `do-external-symbols`, `defstruct`
+**Bootstrap macros:** `when`, `unless`, `prog1`, `prog2`, `push`, `pop`, `incf`, `decf`, `pushnew`, `handler-case`, `ignore-errors`, `with-simple-restart`, `define-condition`, `check-type`, `assert`, `defpackage`, `do-symbols`, `do-external-symbols`, `defstruct`, `with-open-file`, `with-output-to-string`, `with-input-from-string`, `with-standard-io-syntax`
 
-**Bootstrap functions:** `cadr`, `caar`, `cdar`, `cddr`, `caddr`, `cadar`, `identity`, `endp`, `member`, `intersection`, `union`, `set-difference`, `subsetp`, `cerror`
+**Bootstrap functions:** `cadr`, `caar`, `cdar`, `cddr`, `caddr`, `cadar`, `identity`, `endp`, `member`, `intersection`, `union`, `set-difference`, `subsetp`, `cerror`, `read-from-string`, `prin1-to-string`, `princ-to-string`, `write-to-string`, `pathname-name`, `pathname-type`, `namestring`, `truename`, `make-pathname`, `merge-pathnames`, `enough-namestring`, `decode-universal-time`, `encode-universal-time`, `get-decoded-time`
 
-## Built-in Functions (260+ functions)
+## Built-in Functions (300+ functions)
 
 | Category | Functions |
 |----------|-----------|
@@ -111,7 +111,11 @@ Single-pass recursive compiler from S-expressions to bytecode:
 | Higher-order | `mapcar` `mapc` `mapcan` `maplist` `mapl` `mapcon` `apply` `funcall` |
 | Characters | `char=` `char/=` `char<` `char>` `char<=` `char>=` `char-code` `code-char` `char-upcase` `char-downcase` `upper-case-p` `lower-case-p` `alpha-char-p` `digit-char-p` |
 | Strings | `string=` `string-equal` `string<` `string>` `string<=` `string>=` `string-upcase` `string-downcase` `string-trim` `string-left-trim` `string-right-trim` `subseq` `concatenate` `char` `schar` `string` `parse-integer` `write-to-string` `prin1-to-string` `princ-to-string` |
-| I/O | `print` `prin1` `princ` `terpri` `format` `load` `disassemble` |
+| I/O | `print` `prin1` `princ` `terpri` `format` `read` `load` `disassemble` `compile` |
+| Streams | `streamp` `input-stream-p` `output-stream-p` `interactive-stream-p` `open-stream-p` `read-char` `write-char` `peek-char` `unread-char` `read-line` `write-string` `write-line` `fresh-line` `finish-output` `force-output` `clear-output` `close` `open` `make-string-input-stream` `make-string-output-stream` `get-output-stream-string` |
+| Readtable | `readtablep` `get-macro-character` `set-macro-character` `make-dispatch-macro-character` `set-dispatch-macro-character` `get-dispatch-macro-character` `copy-readtable` |
+| File system | `probe-file` `delete-file` `rename-file` `file-write-date` `file-namestring` `directory-namestring` |
+| Time | `get-universal-time` `get-internal-real-time` `sleep` |
 | Eval/Macro | `eval` `macroexpand` `macroexpand-1` |
 | Control | `throw` `values` `values-list` `error` `signal` `warn` `invoke-restart` `find-restart` `compute-restarts` `abort` `continue` `muffle-warning` |
 | Conditions | `make-condition` `conditionp` `condition-type-name` `type-error-datum` `type-error-expected-type` `simple-condition-format-control` `simple-condition-format-arguments` `%register-condition-type` `condition-slot-value` |
@@ -119,7 +123,6 @@ Single-pass recursive compiler from S-expressions to bytecode:
 | Hash tables | `make-hash-table` `gethash` `remhash` `maphash` `clrhash` `hash-table-count` `hash-table-p` |
 | Type system | `typep` `coerce` `subtypep` |
 | Packages | `make-package` `find-package` `delete-package` `rename-package` `export` `unexport` `import` `use-package` `unuse-package` `shadow` `find-symbol` `intern` `unintern` `package-name` `package-use-list` `package-nicknames` `list-all-packages` `%package-symbols` `%package-external-symbols` `package-local-nicknames` `add-package-local-nickname` `remove-package-local-nickname` |
-| Timing | `get-internal-real-time` |
 | Misc | `type-of` `gensym` |
 
 ## Implementation Roadmap
@@ -193,7 +196,7 @@ Features needed for idiomatic CL programming:
 
 154 host tests (4 suites), ~290 Amiga batch tests — all passing.
 
-### Phase 5: Standard Library (in progress)
+### Phase 5: Standard Library ✅
 
 Data structures, sequences, strings, and I/O:
 
@@ -223,7 +226,7 @@ Data structures, sequences, strings, and I/O:
 - Split builtins.c into 7 modules and compiler.c into 3 modules (stay under vbcc TU size limits)
 - Heap-allocate CL_Compiler structs (CL_Compiler is ~45KB due to tagbody arrays; two nested instances during compile_lambda overflowed the 65KB AmigaOS stack)
 
-### Phase 6: Control & Error Handling (in progress)
+### Phase 6: Control & Error Handling ✅
 
 Condition system, packages, and compiler completeness:
 
@@ -253,28 +256,31 @@ Condition system, packages, and compiler completeness:
 - [x] REPL history variables — `*`, `**`, `***` (last 3 results), `+`, `++`, `+++` (last 3 forms), `-` (current form being evaluated)
 - [ ] REPL startup ASCII art — display a nice logo/banner when starting the interactive REPL
 
-### Phase 7: I/O & Pathnames
+### Phase 7: I/O & Pathnames ✅
 
 File system integration and stream abstraction:
 
-- [ ] Streams (input/output/bidirectional, string streams, broadcast, concatenated, two-way)
-- [ ] Stream operations (`read-char`, `write-char`, `peek-char`, `unread-char`, `read-line`, `write-string`, `write-line`, `terpri`, `fresh-line`, `finish-output`, `force-output`)
-- [ ] `with-open-file`, `open`, `close`
-- [ ] `read`, `read-from-string`, `read-preserving-whitespace`
-- [ ] `write`, `write-to-string`, `prin1-to-string`, `princ-to-string`
-- [ ] `with-output-to-string`, `with-input-from-string`, `make-string-output-stream`, `get-output-stream-string`
-- [ ] `with-standard-io-syntax`
-- [ ] Printer control variables — `*print-escape*`, `*print-readably*`, `*print-base*`, `*print-radix*`, `*print-case*`, `*print-gensym*`, `*print-array*`, `*print-length*`, `*print-level*`, `*print-lines*`; checked in existing C print functions; `*print-readably*` overrides escape/array/gensym when true and signals `print-not-readable` for unprintable objects
-- [ ] Pathnames (`make-pathname`, `merge-pathnames`, `namestring`, `truename`, `pathname-name`, `pathname-type`, `pathname-directory`, `enough-namestring`, `parse-namestring`, `wild-pathname-p`, `translate-pathname`)
-- [ ] File operations (`probe-file`, `file-write-date`, `delete-file`, `rename-file`, `ensure-directories-exist`, `directory`)
-- [ ] Reader macros (`set-macro-character`, `set-dispatch-macro-character`, `*readtable*`, `copy-readtable`)
-- [ ] Feature conditionals (`#+`, `#-`, `*features*`)
-- [ ] `sleep` — platform sleep function
-- [ ] Time: `get-universal-time`, `decode-universal-time`, `encode-universal-time`, `get-decoded-time`
-- [ ] `compile` — compile function at runtime
-- [ ] User init file — load `~/.clamigarc` (POSIX) or `S:clamiga.lisp` (AmigaOS) on REPL startup, after boot.lisp; skip with `--no-userinit` flag
-- [ ] `--load <file>` / `--eval <expr>` command-line options — load files or evaluate expressions before REPL; `--script <file>` to run file and exit (no REPL)
+- [x] Streams (input/output/bidirectional, string streams) — `CL_Stream` heap type with console/file/string subtypes, growable output buffers via platform side tables
+- [x] Stream operations (`read-char`, `write-char`, `peek-char`, `unread-char`, `read-line`, `write-string`, `write-line`, `terpri`, `fresh-line`, `finish-output`, `force-output`, `clear-output`, `open-stream-p`, `close`, `streamp`, `input-stream-p`, `output-stream-p`, `interactive-stream-p`)
+- [x] `with-open-file`, `open`, `close` — file I/O with `:direction`, `:if-exists`, `:if-does-not-exist` keywords
+- [x] `read`, `read-from-string` — stream-aware reader
+- [x] `write-to-string`, `prin1-to-string`, `princ-to-string` — boot.lisp functions using `with-output-to-string`
+- [x] `with-output-to-string`, `with-input-from-string`, `make-string-input-stream`, `make-string-output-stream`, `get-output-stream-string`
+- [x] `with-standard-io-syntax`
+- [x] Pathnames (`make-pathname`, `merge-pathnames`, `namestring`, `truename`, `pathname-name`, `pathname-type`, `enough-namestring`, `file-namestring`, `directory-namestring`) — boot.lisp functions, string-based representation
+- [x] File operations (`probe-file`, `file-write-date`, `delete-file`, `rename-file`, `%mkdir`)
+- [x] Reader macros — readtable pool (4 structs indexed by fixnum), `*readtable*` special variable, `set-macro-character`, `get-macro-character`, `make-dispatch-macro-character`, `set-dispatch-macro-character`, `get-dispatch-macro-character`, `copy-readtable`, `readtablep`; reader consults readtable for user-defined macro and dispatch sub-characters
+- [x] Feature conditionals (`#+`, `#-`, `*features*`) — `:cl-amiga`, `:common-lisp`, `:posix`/`:amigaos`/`:m68k`
+- [x] `sleep` — `platform_sleep_ms` (usleep on POSIX, Delay on Amiga)
+- [x] Time: `get-universal-time`, `decode-universal-time`, `encode-universal-time`, `get-decoded-time` — boot.lisp functions with epoch conversion
+- [x] `compile` — compile lambda form or return named function binding; returns 3 values (fn, warnings-p, failure-p)
+- [x] User init file — load `~/.clamigarc` (POSIX) or `S:clamiga.lisp` (AmigaOS) on REPL startup, after boot.lisp; skip with `--no-userinit` flag
+- [x] `--load <file>` / `--eval <expr>` command-line options — load files or evaluate expressions before REPL; `--script <file>` to run file and exit (no REPL)
 - [x] `--heap <size>` — configurable arena size (default 4MB, e.g. `--heap 8M`); also `--stack <size>` for VM value stack, `--frames <n>` for call frame depth (default 256); `--help` prints usage; unknown `--` options show error + usage
+
+Not yet implemented: broadcast/concatenated/two-way/echo streams, `read-preserving-whitespace`, `write` with keyword args, printer control variables (`*print-escape*`, `*print-base*`, etc.), `parse-namestring`, `wild-pathname-p`, `translate-pathname`, `ensure-directories-exist`, `directory`
+
+814 host tests (10 suites), 1042 Amiga batch tests — all passing.
 
 ### Phase 8: Iteration & Format
 
@@ -290,7 +296,7 @@ Extended iteration, output formatting, and standard library completeness:
 - [ ] Missing sequence ops: `map-into`, `copy-seq`, `elt`, `(setf elt)`
 - [ ] Higher-order: `complement`, `constantly`
 
-### Phase 9: Numeric Tower (in progress)
+### Phase 9: Numeric Tower ✅
 
 Full CL numeric type hierarchy with arithmetic contagion:
 - [x] Bignums — arbitrary precision integers, heap-allocated 16-bit limb arrays (little-endian); schoolbook multiplication; Knuth Algorithm D division; automatic fixnum↔bignum promotion/demotion; all arithmetic ops dispatch through `cl_arith_*` layer
@@ -325,7 +331,7 @@ Floats (steps 1-12, complete):
 - No `pi` constant
 - No `random`/`*random-state*`
 
-716 host tests (9 suites), 877 Amiga batch tests — all passing (software float).
+716 host tests (9 suites), 877 Amiga batch tests — all passing (software float) at end of Phase 9.
 
 Remaining numeric features (deferred):
 - [ ] Ratios — normalized numerator/denominator pairs (fixnum or bignum), GCD reduction
@@ -341,7 +347,7 @@ Remaining numeric features (deferred):
 - [ ] `random`, `make-random-state`, `*random-state*` — pseudo-random number generation
 - [ ] Bit manipulation: `ldb`, `dpb`, `byte`, `byte-size`, `byte-position`, `logbitp`, `logtest`, `boole`
 
-### Phase 10: CLOS (in progress)
+### Phase 10: Structures & CLOS
 
 Structures and Common Lisp Object System:
 - [x] `defstruct` — structure definitions (slots with defaults, constructors with `&key`, copier, predicate, accessors with `setf`, `:conc-name`, `:constructor`, `:predicate`, `:copier`, `:include` inheritance, `typep` integration, `#S()` printing, `type-of`, `structurep`)
@@ -402,7 +408,7 @@ cl-amiga/
 │   └── overview.md        # This file
 ├── src/
 │   ├── main.c             # Entry point
-│   ├── core/              # Language implementation (25 modules)
+│   ├── core/              # Language implementation (34 modules)
 │   └── platform/          # OS abstraction (posix, amiga)
 ├── include/
 │   └── clamiga.h          # Public umbrella header
@@ -410,9 +416,9 @@ cl-amiga/
 │   └── boot.lisp          # Bootstrap macros/functions
 ├── tests/
 │   ├── test.h             # Test framework
-│   ├── test_*.c           # Host test suites (8 files, 619 tests)
+│   ├── test_*.c           # Host test suites (10 files, 814 tests)
 │   └── amiga/
-│       └── run-tests.lisp # AmigaOS batch tests (752 tests)
+│       └── run-tests.lisp # AmigaOS batch tests (1042 tests)
 ├── build/                 # Build output (gitignored)
 └── verify/
     └── realamiga/          # FS-UAE config + AmigaOS system image

@@ -1188,6 +1188,180 @@ static CL_Obj bi_replace(CL_Obj *args, int n)
     return seq1;
 }
 
+/* --- Phase 8 Step 3: elt, (setf elt), copy-seq, map-into --- */
+
+static CL_Obj bi_elt(CL_Obj *args, int n)
+{
+    CL_UNUSED(n);
+    if (!CL_FIXNUM_P(args[1]))
+        cl_error(CL_ERR_TYPE, "ELT: index must be an integer");
+    return seq_elt(args[0], CL_FIXNUM_VAL(args[1]));
+}
+
+static CL_Obj bi_setf_elt(CL_Obj *args, int n)
+{
+    /* args: sequence index new-value */
+    CL_Obj seq = args[0];
+    int32_t idx;
+    CL_Obj val = args[2];
+    CL_UNUSED(n);
+    if (!CL_FIXNUM_P(args[1]))
+        cl_error(CL_ERR_TYPE, "(SETF ELT): index must be an integer");
+    idx = CL_FIXNUM_VAL(args[1]);
+
+    if (CL_CONS_P(seq) || CL_NULL_P(seq)) {
+        while (idx > 0 && !CL_NULL_P(seq)) { seq = cl_cdr(seq); idx--; }
+        if (CL_NULL_P(seq))
+            cl_error(CL_ERR_ARGS, "(SETF ELT): index out of bounds");
+        ((CL_Cons *)CL_OBJ_TO_PTR(seq))->car = val;
+        return val;
+    }
+    if (CL_VECTOR_P(seq)) {
+        CL_Vector *v = (CL_Vector *)CL_OBJ_TO_PTR(seq);
+        if ((uint32_t)idx >= v->length)
+            cl_error(CL_ERR_ARGS, "(SETF ELT): index out of bounds");
+        v->data[idx] = val;
+        return val;
+    }
+    if (CL_STRING_P(seq)) {
+        CL_String *s = (CL_String *)CL_OBJ_TO_PTR(seq);
+        if ((uint32_t)idx >= s->length)
+            cl_error(CL_ERR_ARGS, "(SETF ELT): index out of bounds");
+        if (!CL_CHAR_P(val))
+            cl_error(CL_ERR_TYPE, "(SETF ELT): value must be a character for string");
+        s->data[idx] = (char)CL_CHAR_VAL(val);
+        return val;
+    }
+    cl_error(CL_ERR_TYPE, "(SETF ELT): not a sequence");
+    return CL_NIL;
+}
+
+static CL_Obj bi_copy_seq(CL_Obj *args, int n)
+{
+    CL_Obj seq = args[0];
+    CL_UNUSED(n);
+
+    if (CL_NULL_P(seq)) return CL_NIL;
+
+    if (CL_CONS_P(seq)) {
+        /* Copy list */
+        CL_Obj result = CL_NIL, tail = CL_NIL;
+        CL_GC_PROTECT(result);
+        CL_GC_PROTECT(tail);
+        while (CL_CONS_P(seq)) {
+            CL_Obj cell = cl_cons(cl_car(seq), CL_NIL);
+            if (CL_NULL_P(result))
+                result = cell;
+            else
+                ((CL_Cons *)CL_OBJ_TO_PTR(tail))->cdr = cell;
+            tail = cell;
+            seq = cl_cdr(seq);
+        }
+        CL_GC_UNPROTECT(2);
+        return result;
+    }
+    if (CL_VECTOR_P(seq)) {
+        CL_Vector *v = (CL_Vector *)CL_OBJ_TO_PTR(seq);
+        CL_Obj result = cl_make_vector(v->length);
+        CL_Vector *rv = (CL_Vector *)CL_OBJ_TO_PTR(result);
+        memcpy(rv->data, v->data, v->length * sizeof(CL_Obj));
+        return result;
+    }
+    if (CL_STRING_P(seq)) {
+        CL_String *s = (CL_String *)CL_OBJ_TO_PTR(seq);
+        return cl_make_string(s->data, s->length);
+    }
+    cl_error(CL_ERR_TYPE, "COPY-SEQ: not a sequence");
+    return CL_NIL;
+}
+
+static CL_Obj bi_map_into(CL_Obj *args, int n)
+{
+    CL_Obj result_seq = args[0];
+    CL_Obj func = args[1];
+    int n_seqs = n - 2;
+    CL_Obj seqs[16];
+    CL_Obj call_args[16];
+    int32_t i, idx = 0, result_len;
+    int j;
+
+    if (n_seqs > 16) n_seqs = 16;
+    for (j = 0; j < n_seqs; j++)
+        seqs[j] = args[j + 2];
+
+    result_len = seq_length(result_seq);
+
+    for (idx = 0; idx < result_len; idx++) {
+        CL_Obj val;
+        /* Check if any source sequence is exhausted */
+        for (j = 0; j < n_seqs; j++) {
+            if (CL_CONS_P(seqs[j]) || CL_NULL_P(seqs[j])) {
+                if (CL_NULL_P(seqs[j])) goto map_into_done;
+            }
+        }
+        /* Gather arguments */
+        for (j = 0; j < n_seqs; j++) {
+            if (CL_CONS_P(seqs[j])) {
+                call_args[j] = cl_car(seqs[j]);
+                seqs[j] = cl_cdr(seqs[j]);
+            } else {
+                call_args[j] = seq_elt(seqs[j], idx);
+            }
+        }
+        /* Call function */
+        if (n_seqs == 0)
+            val = call_1(func, CL_NIL); /* 0-arg case not standard but safe */
+        else {
+            if (CL_FUNCTION_P(func)) {
+                CL_Function *f = (CL_Function *)CL_OBJ_TO_PTR(func);
+                val = f->func(call_args, n_seqs);
+            } else {
+                val = cl_vm_apply(func, call_args, n_seqs);
+            }
+        }
+        /* Store into result */
+        if (CL_VECTOR_P(result_seq)) {
+            CL_Vector *v = (CL_Vector *)CL_OBJ_TO_PTR(result_seq);
+            v->data[idx] = val;
+        } else if (CL_STRING_P(result_seq)) {
+            CL_String *s = (CL_String *)CL_OBJ_TO_PTR(result_seq);
+            if (CL_CHAR_P(val)) s->data[idx] = (char)CL_CHAR_VAL(val);
+        }
+        /* For list result, handled below */
+    }
+
+map_into_done:
+    /* For list: re-traverse and store */
+    if (CL_CONS_P(result_seq)) {
+        /* Re-run to fill list (simpler approach) */
+        CL_Obj cur = result_seq;
+        /* Reset source seqs */
+        for (j = 0; j < n_seqs; j++)
+            seqs[j] = args[j + 2];
+        for (i = 0; i < idx && !CL_NULL_P(cur); i++) {
+            CL_Obj val;
+            for (j = 0; j < n_seqs; j++) {
+                if (CL_CONS_P(seqs[j])) {
+                    call_args[j] = cl_car(seqs[j]);
+                    seqs[j] = cl_cdr(seqs[j]);
+                } else {
+                    call_args[j] = seq_elt(seqs[j], i);
+                }
+            }
+            if (CL_FUNCTION_P(func)) {
+                CL_Function *f = (CL_Function *)CL_OBJ_TO_PTR(func);
+                val = f->func(call_args, n_seqs);
+            } else {
+                val = cl_vm_apply(func, call_args, n_seqs);
+            }
+            ((CL_Cons *)CL_OBJ_TO_PTR(cur))->car = val;
+            cur = cl_cdr(cur);
+        }
+    }
+
+    return result_seq;
+}
+
 /* ======================================================= */
 /* Registration                                            */
 /* ======================================================= */
@@ -1246,4 +1420,10 @@ void cl_builtins_sequence_init(void)
     /* Fill, Replace */
     defun("FILL", bi_fill, 2, -1);
     defun("REPLACE", bi_replace, 2, -1);
+
+    /* Phase 8 Step 3 */
+    defun("ELT", bi_elt, 2, 2);
+    defun("%SETF-ELT", bi_setf_elt, 3, 3);
+    defun("COPY-SEQ", bi_copy_seq, 1, 1);
+    defun("MAP-INTO", bi_map_into, 2, -1);
 }

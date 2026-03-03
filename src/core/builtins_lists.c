@@ -742,6 +742,90 @@ mapcon_done:
     return result;
 }
 
+/* --- list*, make-list, remf (Phase 8 Step 1) --- */
+
+static CL_Obj bi_list_star(CL_Obj *args, int n)
+{
+    CL_Obj result;
+    int i;
+    if (n == 0)
+        cl_error(CL_ERR_ARGS, "LIST*: at least 1 argument required");
+    if (n == 1)
+        return args[0];
+    /* Last arg becomes the final cdr */
+    result = args[n - 1];
+    CL_GC_PROTECT(result);
+    for (i = n - 2; i >= 0; i--)
+        result = cl_cons(args[i], result);
+    CL_GC_UNPROTECT(1);
+    return result;
+}
+
+static CL_Obj bi_make_list(CL_Obj *args, int n)
+{
+    int32_t count;
+    CL_Obj init_elem = CL_NIL;
+    CL_Obj result = CL_NIL;
+    int i;
+    CL_Obj kw_init;
+
+    if (!CL_FIXNUM_P(args[0]))
+        cl_error(CL_ERR_TYPE, "MAKE-LIST: size must be a fixnum");
+    count = CL_FIXNUM_VAL(args[0]);
+    if (count < 0)
+        cl_error(CL_ERR_ARGS, "MAKE-LIST: size must be non-negative");
+
+    /* Parse :initial-element keyword */
+    kw_init = cl_intern_in("INITIAL-ELEMENT", 15, cl_package_keyword);
+    for (i = 1; i < n - 1; i += 2) {
+        if (args[i] == kw_init)
+            init_elem = args[i + 1];
+    }
+
+    CL_GC_PROTECT(result);
+    for (i = 0; i < count; i++)
+        result = cl_cons(init_elem, result);
+    CL_GC_UNPROTECT(1);
+    return result;
+}
+
+static CL_Obj bi_remf(CL_Obj *args, int n)
+{
+    /* (remf place indicator) — destructive plist removal
+       Returns the modified plist. Second value: T if found. */
+    CL_Obj plist = args[0], indicator = args[1];
+    CL_Obj prev = CL_NIL, curr = plist;
+    CL_UNUSED(n);
+
+    while (!CL_NULL_P(curr)) {
+        CL_Obj key = cl_car(curr);
+        CL_Obj next = cl_cdr(curr);
+        if (CL_NULL_P(next)) break;
+        if (key == indicator) {
+            CL_Obj rest = cl_cdr(next);
+            if (CL_NULL_P(prev)) {
+                /* Removing from head */
+                cl_mv_count = 2;
+                cl_mv_values[0] = rest;
+                cl_mv_values[1] = SYM_T;
+                return rest;
+            } else {
+                ((CL_Cons *)CL_OBJ_TO_PTR(prev))->cdr = rest;
+                cl_mv_count = 2;
+                cl_mv_values[0] = plist;
+                cl_mv_values[1] = SYM_T;
+                return plist;
+            }
+        }
+        prev = next;
+        curr = cl_cdr(next);
+    }
+    cl_mv_count = 2;
+    cl_mv_values[0] = plist;
+    cl_mv_values[1] = CL_NIL;
+    return plist;
+}
+
 /* --- Registration --- */
 
 void cl_builtins_lists_init(void)
@@ -769,6 +853,11 @@ void cl_builtins_lists_init(void)
     /* Copy/construction */
     defun("BUTLAST", bi_butlast, 1, 2);
     defun("COPY-TREE", bi_copy_tree, 1, 1);
+
+    /* Phase 8 Step 1 */
+    defun("LIST*", bi_list_star, 1, -1);
+    defun("MAKE-LIST", bi_make_list, 1, -1);
+    defun("REMF", bi_remf, 2, 2);
 
     /* Mapping variants */
     defun("MAPC", bi_mapc, 2, -1);

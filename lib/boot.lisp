@@ -22,6 +22,7 @@
 (defmacro pop (place) (let ((g (gensym))) `(let ((,g (car ,place))) (setf ,place (cdr ,place)) ,g)))
 (defmacro incf (place &optional (delta 1)) `(setf ,place (+ ,place ,delta)))
 (defmacro decf (place &optional (delta 1)) `(setf ,place (- ,place ,delta)))
+(defsetf elt %setf-elt)
 
 ;; List searching
 (defun member (item list &key (test #'eql))
@@ -436,6 +437,95 @@
 (defun get-decoded-time ()
   "Return the current time decoded into 9 values."
   (decode-universal-time (get-universal-time)))
+
+;; --- Phase 8 Step 4: Higher-order functions ---
+(defun complement (fn)
+  "Return a function that returns the opposite of FN."
+  (lambda (&rest args) (not (apply fn args))))
+
+(defun constantly (value)
+  "Return a function that always returns VALUE."
+  (lambda (&rest args) value))
+
+;; --- Phase 8 Step 1: Missing list operations ---
+
+(defun tree-equal (a b &key (test #'eql))
+  "Compare two trees recursively using TEST."
+  (cond
+    ((funcall test a b) t)
+    ((and (consp a) (consp b))
+     (and (tree-equal (car a) (car b) :test test)
+          (tree-equal (cdr a) (cdr b) :test test)))
+    (t nil)))
+
+(defun list-length (list)
+  "Return the length of LIST, or NIL if circular (tortoise-and-hare)."
+  (do ((n 0 (+ n 2))
+       (slow list (cddr slow))
+       (fast list))
+      (nil)
+    (when (null fast) (return n))
+    (setq fast (cdr fast))
+    (when (null fast) (return (+ n 1)))
+    (when (eq slow fast) (return nil))
+    (setq fast (cdr fast))))
+
+(defun tailp (object list)
+  "Return true if OBJECT is EQL to LIST or any CDR of LIST."
+  (do ((l list (cdr l)))
+      ((atom l) (eql object l))
+    (when (eql object l) (return t))))
+
+(defun ldiff (list object)
+  "Return a copy of LIST up to but not including the tail OBJECT."
+  (let ((result nil))
+    (do ((l list (cdr l)))
+        ((or (atom l) (eql l object)) (nreverse result))
+      (push (car l) result))))
+
+(defun revappend (list tail)
+  "Non-destructively reverse LIST and append TAIL."
+  (do ((l list (cdr l))
+       (result tail (cons (car l) result)))
+      ((null l) result)))
+
+(defun nreconc (list tail)
+  "Destructively reverse LIST and append TAIL."
+  (do ((l list)
+       (next nil))
+      ((null l) tail)
+    (setq next (cdr l))
+    (rplacd l tail)
+    (setq tail l)
+    (setq l next)))
+
+(defun assoc-if (predicate alist &key key)
+  "Return first pair in ALIST where PREDICATE is true of the key."
+  (dolist (pair alist nil)
+    (when (consp pair)
+      (when (funcall predicate (if key (funcall key (car pair)) (car pair)))
+        (return pair)))))
+
+(defun assoc-if-not (predicate alist &key key)
+  "Return first pair in ALIST where PREDICATE is false of the key."
+  (dolist (pair alist nil)
+    (when (consp pair)
+      (unless (funcall predicate (if key (funcall key (car pair)) (car pair)))
+        (return pair)))))
+
+(defun rassoc-if (predicate alist &key key)
+  "Return first pair in ALIST where PREDICATE is true of the value."
+  (dolist (pair alist nil)
+    (when (consp pair)
+      (when (funcall predicate (if key (funcall key (cdr pair)) (cdr pair)))
+        (return pair)))))
+
+(defun rassoc-if-not (predicate alist &key key)
+  "Return first pair in ALIST where PREDICATE is false of the value."
+  (dolist (pair alist nil)
+    (when (consp pair)
+      (unless (funcall predicate (if key (funcall key (cdr pair)) (cdr pair)))
+        (return pair)))))
 
 ;; --- Pathname functions (Step 10) ---
 ;; Pathnames are represented as strings (namestrings).
