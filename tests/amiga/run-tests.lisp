@@ -1345,6 +1345,90 @@
 (check "stream file type" t (streamp (%make-test-stream 1 1)))
 (check "stream string type" t (streamp (%make-test-stream 1 2)))
 
+; --- Streams (Phase 7 Step 2) ---
+; Standard stream variables are bound to streams
+(check "standard-input bound" t (streamp *standard-input*))
+(check "standard-output bound" t (streamp *standard-output*))
+(check "error-output bound" t (streamp *error-output*))
+(check "trace-output bound" t (streamp *trace-output*))
+(check "debug-io bound" t (streamp *debug-io*))
+(check "query-io bound" t (streamp *query-io*))
+(check "terminal-io bound" t (streamp *terminal-io*))
+; Direction checks
+(check "standard-input is input" t (input-stream-p *standard-input*))
+(check "standard-input not output" nil (output-stream-p *standard-input*))
+(check "standard-output is output" t (output-stream-p *standard-output*))
+(check "standard-output not input" nil (input-stream-p *standard-output*))
+(check "error-output is output" t (output-stream-p *error-output*))
+; interactive-stream-p
+(check "interactive-stream-p console" t (interactive-stream-p *standard-output*))
+(check "interactive-stream-p stdin" t (interactive-stream-p *standard-input*))
+(check "interactive-stream-p file" nil (interactive-stream-p (%make-test-stream 1 1)))
+(check "interactive-stream-p string" nil (interactive-stream-p (%make-test-stream 1 2)))
+
+; --- Streams (Phase 7 Step 3) ---
+; String output streams
+(check "make-string-output-stream" t (streamp (make-string-output-stream)))
+(check "write-char to string stream" "A" (let ((s (make-string-output-stream))) (write-char #\A s) (get-output-stream-string s)))
+(check "write-string to string stream" "Hello" (let ((s (make-string-output-stream))) (write-string "Hello" s) (get-output-stream-string s)))
+(check "write-line to string stream" (concatenate 'string "Hello" (string #\Newline)) (let ((s (make-string-output-stream))) (write-line "Hello" s) (get-output-stream-string s)))
+(check "get-output-stream-string resets" "second" (let ((s (make-string-output-stream))) (write-string "first" s) (get-output-stream-string s) (write-string "second" s) (get-output-stream-string s)))
+(check "multiple write-char" "ABC" (let ((s (make-string-output-stream))) (write-char #\A s) (write-char #\B s) (write-char #\C s) (get-output-stream-string s)))
+
+; String input streams
+(check "make-string-input-stream" t (streamp (make-string-input-stream "hello")))
+(check "read-char from string" #\H (read-char (make-string-input-stream "Hello")))
+(check "read-char eof error" t (handler-case (progn (read-char (make-string-input-stream "")) nil) (error (c) t)))
+(check "read-char eof no error" :eof (read-char (make-string-input-stream "") nil :eof))
+(check "read-line from string" "Hello" (read-line (make-string-input-stream "Hello")))
+(check "read-line with newline" "Hello" (read-line (make-string-input-stream (concatenate 'string "Hello" (string #\Newline) "World"))))
+(check "read-line missing-newline-p" t (nth-value 1 (read-line (make-string-input-stream "Hello"))))
+(check "read-line has newline" nil (nth-value 1 (read-line (make-string-input-stream (concatenate 'string "Hello" (string #\Newline))))))
+(check "string-input-stream start end" #\W (read-char (make-string-input-stream "Hello World" 6)))
+
+; peek-char
+(check "peek-char nil" #\A (peek-char nil (make-string-input-stream "ABC")))
+(check "peek-char no consume" #\A (let ((s (make-string-input-stream "ABC"))) (peek-char nil s) (read-char s)))
+(check "peek-char t skip ws" #\A (peek-char t (make-string-input-stream "  A")))
+(check "peek-char char skip" #\B (peek-char #\B (make-string-input-stream "xxByz")))
+
+; unread-char
+(check "unread-char" #\H (let ((s (make-string-input-stream "Hi"))) (let ((c (read-char s))) (unread-char c s) (read-char s))))
+
+; write-string :start :end
+(check "write-string start end" "llo" (let ((s (make-string-output-stream))) (write-string "Hello" s :start 2 :end 5) (get-output-stream-string s)))
+
+; open-stream-p / close
+(check "open-stream-p open" t (open-stream-p (make-string-output-stream)))
+(check "close returns t" t (close (make-string-output-stream)))
+(check "open-stream-p closed" nil (let ((s (make-string-output-stream))) (close s) (open-stream-p s)))
+
+; terpri with stream
+(check "terpri to stream" (string #\Newline) (let ((s (make-string-output-stream))) (terpri s) (get-output-stream-string s)))
+
+; fresh-line
+(check "fresh-line at BOL" nil (let ((s (make-string-output-stream))) (fresh-line s)))
+(check "fresh-line not at BOL" t (let ((s (make-string-output-stream))) (write-char #\X s) (fresh-line s)))
+(check "fresh-line writes newline" (concatenate 'string "X" (string #\Newline)) (let ((s (make-string-output-stream))) (write-char #\X s) (fresh-line s) (get-output-stream-string s)))
+
+; finish-output / force-output / clear-output (no error)
+(check "finish-output no error" nil (finish-output))
+(check "force-output no error" nil (force-output))
+(check "clear-output no error" nil (clear-output))
+
+; write-char returns character
+(check "write-char returns char" #\X (write-char #\X (make-string-output-stream)))
+
+; --- Read from stream ---
+(check "read from string-input-stream list" '(+ 1 2) (read (make-string-input-stream "(+ 1 2)")))
+(check "read from string-input-stream integer" 42 (read (make-string-input-stream "42")))
+(check "read from string-input-stream symbol" 'hello (read (make-string-input-stream "hello")))
+(check "read from string-input-stream string" "hello" (read (make-string-input-stream "\"hello\"")))
+(check "read eof-value" :eof (read (make-string-input-stream "") nil :eof))
+(check "read-from-string list" '(hello world) (read-from-string "(hello world)"))
+(check "read-from-string integer" 42 (read-from-string "42"))
+(check "read-from-string eof-value" :eof (read-from-string "" nil :eof))
+
 ; --- Summary ---
 (format t "~%=== Results ===~%")
 (format t "Passed: ~A~%" *pass-count*)

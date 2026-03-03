@@ -165,4 +165,13 @@ extern CL_Obj SYM_PLUSPLUS;       /* ++ — second-to-last form */
 extern CL_Obj SYM_PLUSPLUSPLUS;  /* +++ — third-to-last form */
 extern CL_Obj SYM_MINUS;         /* - — current form being evaluated */
 
+/* Standard stream variables */
+extern CL_Obj SYM_STANDARD_INPUT;    /* *STANDARD-INPUT* */
+extern CL_Obj SYM_STANDARD_OUTPUT;   /* *STANDARD-OUTPUT* */
+extern CL_Obj SYM_ERROR_OUTPUT;      /* *ERROR-OUTPUT* */
+extern CL_Obj SYM_TRACE_OUTPUT;      /* *TRACE-OUTPUT* */
+extern CL_Obj SYM_DEBUG_IO;          /* *DEBUG-IO* */
+extern CL_Obj SYM_QUERY_IO;          /* *QUERY-IO* */
+extern CL_Obj SYM_TERMINAL_IO;       /* *TERMINAL-IO* */
+
 #endif /* CL_SYMBOL_H */

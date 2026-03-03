@@ -14,7 +14,10 @@
 /* Read one S-expression, return CL_NIL on EOF */
 CL_Obj cl_read(void);
 
-/* Read from a string buffer (for eval-string, testing) */
+/* Read one S-expression from a CL_Stream object */
+CL_Obj cl_read_from_stream(CL_Obj stream);
+
+/* Read from a string buffer (backward-compatible convenience) */
 typedef struct {
     const char *buf;
     int pos;

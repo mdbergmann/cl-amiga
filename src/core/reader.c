@@ -5,6 +5,7 @@
 #include "bignum.h"
 #include "float.h"
 #include "error.h"
+#include "stream.h"
 #include "../platform/platform.h"
 #include <string.h>
 #include <ctype.h>
@@ -27,51 +28,33 @@ static int cl_strcasecmp(const char *a, const char *b)
 #include <strings.h>
 #endif
 
-/* Reading from console vs string buffer */
-static int use_stream = 0;
-static CL_ReadStream *current_stream = NULL;
+/* Current stream being read from */
+static CL_Obj reader_stream = 0;
 static int eof_seen = 0;
 
 /* Source location tracking */
 CL_SrcLoc cl_srcloc_table[CL_SRCLOC_SIZE];
 const char *cl_current_source_file = NULL;
 uint16_t cl_current_file_id = 0;
-static int console_line = 1;  /* Line counter for console reads */
+static int reader_line = 1;  /* Line counter for reads */
 
 static int read_char(void)
 {
-    int ch;
-    if (use_stream) {
-        if (!current_stream || current_stream->pos >= current_stream->len)
-            return -1;
-        ch = (unsigned char)current_stream->buf[current_stream->pos++];
-        if (ch == '\n') current_stream->line++;
-        return ch;
-    }
-    ch = platform_getchar();
-    if (ch == '\n') console_line++;
+    int ch = cl_stream_read_char(reader_stream);
+    if (ch == '\n') reader_line++;
     return ch;
 }
 
 static void unread_char(int ch)
 {
     if (ch < 0) return;
-    if (use_stream) {
-        if (current_stream && current_stream->pos > 0) {
-            current_stream->pos--;
-            if (ch == '\n') current_stream->line--;
-        }
-        return;
-    }
-    if (ch == '\n') console_line--;
-    platform_ungetchar(ch);
+    cl_stream_unread_char(reader_stream, ch);
+    if (ch == '\n') reader_line--;
 }
 
 static int current_line(void)
 {
-    if (use_stream && current_stream)
-        return current_stream->line;
-    return console_line;
+    return reader_line;
 }
 
 static void srcloc_record(CL_Obj cons_obj, int line)
@@ -516,20 +499,41 @@ static CL_Obj read_expr(void)
 
 CL_Obj cl_read(void)
 {
-    use_stream = 0;
-    current_stream = NULL;
+    reader_stream = cl_stdin_stream;
+    reader_line = 1;
+    eof_seen = 0;
+    return read_expr();
+}
+
+CL_Obj cl_read_from_stream(CL_Obj stream)
+{
+    reader_stream = stream;
     eof_seen = 0;
     return read_expr();
 }
 
 CL_Obj cl_read_from_string(CL_ReadStream *stream)
 {
-    use_stream = 1;
-    current_stream = stream;
+    CL_Obj str, s;
+    CL_Stream *st;
+    CL_Obj result;
+
+    str = cl_make_string(stream->buf, (uint32_t)stream->len);
+    CL_GC_PROTECT(str);
+    s = cl_make_string_input_stream(str, (uint32_t)stream->pos, (uint32_t)stream->len);
+    CL_GC_UNPROTECT(1);
+
+    reader_stream = s;
+    reader_line = stream->line ? stream->line : 1;
     eof_seen = 0;
-    /* Initialize line tracking if not already set */
-    if (stream->line == 0) stream->line = 1;
-    return read_expr();
+
+    result = read_expr();
+
+    /* Sync position back */
+    st = (CL_Stream *)CL_OBJ_TO_PTR(s);
+    stream->pos = (int)st->position;
+    stream->line = reader_line;
+    return result;
 }
 
 int cl_reader_eof(void)
@@ -540,7 +544,7 @@ int cl_reader_eof(void)
 void cl_reader_init(void)
 {
     memset(cl_srcloc_table, 0, sizeof(cl_srcloc_table));
-    console_line = 1;
+    reader_line = 1;
     cl_current_source_file = NULL;
     cl_current_file_id = 0;
 }

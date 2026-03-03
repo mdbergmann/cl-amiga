@@ -19,6 +19,11 @@
 
 #define CL_STREAM_BUF_TABLE_SIZE 64
 
+/* Singleton console streams */
+extern CL_Obj cl_stdin_stream;   /* Console input stream */
+extern CL_Obj cl_stdout_stream;  /* Console output stream */
+extern CL_Obj cl_stderr_stream;  /* Console error output stream */
+
 /* Initialize stream subsystem */
 void cl_stream_init(void);
 
@@ -49,5 +54,34 @@ void cl_stream_outbuf_write(CL_Stream *st, const char *str);
 
 /* Reset output buffer (for get-output-stream-string) */
 void cl_stream_outbuf_reset(uint32_t handle);
+
+/* --- Stream I/O operations --- */
+
+/* Read one character from stream. Returns -1 on EOF. */
+int  cl_stream_read_char(CL_Obj stream);
+
+/* Write one character to stream. */
+void cl_stream_write_char(CL_Obj stream, int ch);
+
+/* Write a string (len bytes) to stream. */
+void cl_stream_write_string(CL_Obj stream, const char *str, uint32_t len);
+
+/* Peek at next character without consuming. Returns -1 on EOF. */
+int  cl_stream_peek_char(CL_Obj stream);
+
+/* Push a character back onto stream (only one level). */
+void cl_stream_unread_char(CL_Obj stream, int ch);
+
+/* Close a stream. */
+void cl_stream_close(CL_Obj stream);
+
+/* Create string input stream reading from string[start..end). */
+CL_Obj cl_make_string_input_stream(CL_Obj string, uint32_t start, uint32_t end);
+
+/* Create string output stream with growable buffer. */
+CL_Obj cl_make_string_output_stream(void);
+
+/* Extract accumulated string from string output stream and reset buffer. */
+CL_Obj cl_get_output_stream_string(CL_Obj stream);
 
 #endif /* CL_STREAM_H */

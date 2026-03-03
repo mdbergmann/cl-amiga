@@ -311,6 +311,11 @@
           (setq idx (+ idx 1))))
       `(progn ,@(reverse forms) ',name))))
 
+;; read-from-string — read an S-expression from a string
+(defun read-from-string (string &optional eof-error-p eof-value)
+  (let ((s (make-string-input-stream string)))
+    (read s eof-error-p eof-value)))
+
 ;; break — enter debugger with CONTINUE restart
 (defun break (&optional (format-control "Break"))
   (restart-case

@@ -264,6 +264,7 @@ File system integration and stream abstraction:
 - [ ] `write`, `write-to-string`, `prin1-to-string`, `princ-to-string`
 - [ ] `with-output-to-string`, `with-input-from-string`, `make-string-output-stream`, `get-output-stream-string`
 - [ ] `with-standard-io-syntax`
+- [ ] Printer control variables — `*print-escape*`, `*print-readably*`, `*print-base*`, `*print-radix*`, `*print-case*`, `*print-gensym*`, `*print-array*`, `*print-length*`, `*print-level*`, `*print-lines*`; checked in existing C print functions; `*print-readably*` overrides escape/array/gensym when true and signals `print-not-readable` for unprintable objects
 - [ ] Pathnames (`make-pathname`, `merge-pathnames`, `namestring`, `truename`, `pathname-name`, `pathname-type`, `pathname-directory`, `enough-namestring`, `parse-namestring`, `wild-pathname-p`, `translate-pathname`)
 - [ ] File operations (`probe-file`, `file-write-date`, `delete-file`, `rename-file`, `ensure-directories-exist`, `directory`)
 - [ ] Reader macros (`set-macro-character`, `set-dispatch-macro-character`, `*readtable*`, `copy-readtable`)
@@ -388,6 +389,7 @@ Validation and ecosystem:
 - [ ] Green threads — VM-level cooperative threading: each thread is a `CL_Thread` with its own VM stack, call frames, dynamic bindings, handler/restart/NLX stacks, and MV state; scheduler yields at safe points (OP_CALL, backward jumps); `cl-amiga/threads` package with `make-thread`, `join-thread`, `destroy-thread`, `thread-yield`, `current-thread`, `all-threads`, `threadp`; locks (`make-lock`, `acquire-lock`, `release-lock`, `with-lock-held`), recursive locks, read-write locks; condition variables (`make-condition-variable`, `condition-wait`, `condition-notify`); same API on AmigaOS and POSIX (concurrent everywhere, optionally parallel on POSIX via M:N OS thread pool); cooperative scheduling makes GC stop-the-world trivial; bordeaux-threads compatibility layer as a separate package on top
 - [ ] Image save/restore (`save-image`, `load-image`) — serialize heap arena, symbol tables, package state, and bytecode pools to disk; restore to skip boot.lisp loading and resume a saved environment
 - [ ] Standalone executables — prepend runtime binary to a saved image to produce a single self-contained executable (like SBCL's `save-lisp-and-die :executable t`)
+- [ ] 64-bit `CL_Obj` on 64-bit hosts — conditional `uint64_t` representation to break the ~4GB arena limit on Linux/macOS; `uint32_t` stays on Amiga; requires widening stack slots, bytecode operands, and GC tag logic; bytecode would no longer be binary-compatible across platforms (already different due to pointer width)
 
 ## Project Structure
 
@@ -419,6 +421,7 @@ cl-amiga/
 ## Known Bugs
 
 - [ ] **Amiga crash on heap exhaustion** — when the heap is exhausted (e.g. `(fact 3000)` with tail-recursive bignum factorial), the error is reported but the application crashes instead of recovering gracefully back to the REPL. Should signal a `storage-condition` and return to the REPL prompt.
+- [ ] **`--heap` overflow for sizes >= 4G** — `parse_size()` overflows `uint32_t` silently (e.g. `--heap 4G` wraps to 0). Should cap at ~3.5GB and give a clear error for larger values.
 
 ## Verification Targets
 

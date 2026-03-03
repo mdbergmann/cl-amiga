@@ -6,6 +6,7 @@
 #include "printer.h"
 #include "compiler.h"
 #include "reader.h"
+#include "stream.h"
 #include "vm.h"
 #include "opcodes.h"
 #include "../platform/platform.h"
@@ -43,13 +44,6 @@ static CL_Obj bi_princ(CL_Obj *args, int n)
     CL_UNUSED(n);
     cl_princ(args[0]);
     return args[0];
-}
-
-static CL_Obj bi_terpri(CL_Obj *args, int n)
-{
-    CL_UNUSED(args); CL_UNUSED(n);
-    platform_write_string("\n");
-    return CL_NIL;
 }
 
 static CL_Obj bi_format(CL_Obj *args, int n)
@@ -91,8 +85,7 @@ static CL_Obj bi_load(CL_Obj *args, int n)
     CL_String *path_str;
     char *buf;
     unsigned long size;
-    CL_ReadStream stream;
-    CL_Obj expr, bytecode;
+    CL_Obj cl_str, stream, expr, bytecode;
     const char *prev_file;
     uint16_t prev_file_id;
 
@@ -111,15 +104,18 @@ static CL_Obj bi_load(CL_Obj *args, int n)
     cl_current_source_file = path_str->data;
     cl_current_file_id++;
 
-    stream.buf = buf;
-    stream.pos = 0;
-    stream.len = (int)size;
-    stream.line = 1;
+    /* Create CL string + stream once for the whole file */
+    cl_str = cl_make_string(buf, (int)size);
+    CL_GC_PROTECT(cl_str);
+    stream = cl_make_string_input_stream(cl_str, 0, (uint32_t)size);
+    CL_GC_PROTECT(stream);
+
+    platform_free(buf);  /* C buffer no longer needed after string creation */
 
     for (;;) {
         int err;
 
-        expr = cl_read_from_string(&stream);
+        expr = cl_read_from_stream(stream);
         if (cl_reader_eof()) break;
 
         err = CL_CATCH();
@@ -136,12 +132,45 @@ static CL_Obj bi_load(CL_Obj *args, int n)
         }
     }
 
+    CL_GC_UNPROTECT(2);
+
     /* Restore source file context */
     cl_current_source_file = prev_file;
     cl_current_file_id = prev_file_id;
 
-    platform_free(buf);
     return SYM_T;
+}
+
+/* --- Read --- */
+
+static CL_Obj bi_read(CL_Obj *args, int n)
+{
+    CL_Obj stream;
+    int eof_error_p;
+    CL_Obj eof_value;
+    CL_Obj result;
+
+    /* Resolve stream argument (nil->*standard-input*, t->*terminal-io*) */
+    if (n < 1 || CL_NULL_P(args[0])) {
+        CL_Symbol *sym = (CL_Symbol *)CL_OBJ_TO_PTR(SYM_STANDARD_INPUT);
+        stream = sym->value;
+    } else if (args[0] == CL_T) {
+        CL_Symbol *sym = (CL_Symbol *)CL_OBJ_TO_PTR(SYM_TERMINAL_IO);
+        stream = sym->value;
+    } else {
+        stream = args[0];
+    }
+
+    eof_error_p = (n < 2 || !CL_NULL_P(args[1]));  /* default T */
+    eof_value = (n >= 3) ? args[2] : CL_NIL;
+
+    result = cl_read_from_stream(stream);
+    if (cl_reader_eof()) {
+        if (eof_error_p)
+            cl_error(CL_ERR_GENERAL, "READ: end of file");
+        return eof_value;
+    }
+    return result;
 }
 
 /* --- Eval / Macroexpand --- */
@@ -574,10 +603,10 @@ void cl_builtins_io_init(void)
     defun("PRINT", bi_print, 1, 1);
     defun("PRIN1", bi_prin1, 1, 1);
     defun("PRINC", bi_princ, 1, 1);
-    defun("TERPRI", bi_terpri, 0, 0);
     defun("FORMAT", bi_format, 1, -1);
 
-    /* Load / Eval */
+    /* Read / Load / Eval */
+    defun("READ", bi_read, 0, -1);
     defun("LOAD", bi_load, 1, 1);
     defun("EVAL", bi_eval, 1, 1);
     defun("MACROEXPAND-1", bi_macroexpand_1, 1, 1);

@@ -8,6 +8,7 @@
 #include "mem.h"
 #include "symbol.h"
 #include "package.h"
+#include "stream.h"
 #include "color.h"
 #include "../platform/platform.h"
 #include <string.h>
@@ -68,22 +69,25 @@ static void load_boot_file(void)
         unsigned long size;
         char *buf = platform_file_read(paths[i], &size);
         if (buf) {
-            CL_ReadStream stream;
+            CL_Obj cl_str, stream;
             const char *prev_file = cl_current_source_file;
             uint16_t prev_file_id = cl_current_file_id;
             cl_current_source_file = paths[i];
             cl_current_file_id++;
 
-            stream.buf = buf;
-            stream.pos = 0;
-            stream.len = (int)size;
-            stream.line = 1;
+            /* Create CL string + stream once for the whole file */
+            cl_str = cl_make_string(buf, (int)size);
+            CL_GC_PROTECT(cl_str);
+            stream = cl_make_string_input_stream(cl_str, 0, (uint32_t)size);
+            CL_GC_PROTECT(stream);
+
+            platform_free(buf);  /* C buffer no longer needed */
 
             for (;;) {
                 CL_Obj expr, bytecode;
                 int err;
 
-                expr = cl_read_from_string(&stream);
+                expr = cl_read_from_stream(stream);
                 if (cl_reader_eof()) break;
 
                 err = CL_CATCH();
@@ -99,9 +103,9 @@ static void load_boot_file(void)
                 }
             }
 
+            CL_GC_UNPROTECT(2);
             cl_current_source_file = prev_file;
             cl_current_file_id = prev_file_id;
-            platform_free(buf);
             return;  /* Loaded successfully, stop trying */
         }
     }

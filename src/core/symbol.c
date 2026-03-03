@@ -132,6 +132,15 @@ CL_Obj SYM_PLUSPLUS = CL_NIL;
 CL_Obj SYM_PLUSPLUSPLUS = CL_NIL;
 CL_Obj SYM_MINUS = CL_NIL;
 
+/* Standard stream variable symbols */
+CL_Obj SYM_STANDARD_INPUT = CL_NIL;
+CL_Obj SYM_STANDARD_OUTPUT = CL_NIL;
+CL_Obj SYM_ERROR_OUTPUT = CL_NIL;
+CL_Obj SYM_TRACE_OUTPUT = CL_NIL;
+CL_Obj SYM_DEBUG_IO = CL_NIL;
+CL_Obj SYM_QUERY_IO = CL_NIL;
+CL_Obj SYM_TERMINAL_IO = CL_NIL;
+
 /* FNV-1a hash */
 uint32_t cl_hash_string(const char *str, uint32_t len)
 {
@@ -361,6 +370,32 @@ void cl_symbol_init(void)
     SYM_STARSTARSTAR   = cl_intern_in("***", 3, cl_package_cl);
     SYM_PLUSPLUS        = cl_intern_in("++", 2, cl_package_cl);
     SYM_PLUSPLUSPLUS   = cl_intern_in("+++", 3, cl_package_cl);
+
+    /* Standard stream variable symbols — mark as special */
+    SYM_STANDARD_INPUT   = cl_intern_in("*STANDARD-INPUT*", 16, cl_package_cl);
+    SYM_STANDARD_OUTPUT  = cl_intern_in("*STANDARD-OUTPUT*", 17, cl_package_cl);
+    SYM_ERROR_OUTPUT     = cl_intern_in("*ERROR-OUTPUT*", 14, cl_package_cl);
+    SYM_TRACE_OUTPUT     = cl_intern_in("*TRACE-OUTPUT*", 14, cl_package_cl);
+    SYM_DEBUG_IO         = cl_intern_in("*DEBUG-IO*", 10, cl_package_cl);
+    SYM_QUERY_IO         = cl_intern_in("*QUERY-IO*", 10, cl_package_cl);
+    SYM_TERMINAL_IO      = cl_intern_in("*TERMINAL-IO*", 13, cl_package_cl);
+    {
+        CL_Symbol *s;
+        s = (CL_Symbol *)CL_OBJ_TO_PTR(SYM_STANDARD_INPUT);
+        s->flags |= CL_SYM_SPECIAL;
+        s = (CL_Symbol *)CL_OBJ_TO_PTR(SYM_STANDARD_OUTPUT);
+        s->flags |= CL_SYM_SPECIAL;
+        s = (CL_Symbol *)CL_OBJ_TO_PTR(SYM_ERROR_OUTPUT);
+        s->flags |= CL_SYM_SPECIAL;
+        s = (CL_Symbol *)CL_OBJ_TO_PTR(SYM_TRACE_OUTPUT);
+        s->flags |= CL_SYM_SPECIAL;
+        s = (CL_Symbol *)CL_OBJ_TO_PTR(SYM_DEBUG_IO);
+        s->flags |= CL_SYM_SPECIAL;
+        s = (CL_Symbol *)CL_OBJ_TO_PTR(SYM_QUERY_IO);
+        s->flags |= CL_SYM_SPECIAL;
+        s = (CL_Symbol *)CL_OBJ_TO_PTR(SYM_TERMINAL_IO);
+        s->flags |= CL_SYM_SPECIAL;
+    }
 
     /* T is self-evaluating */
     {
