@@ -91,8 +91,90 @@ static int is_delimiter(int ch)
            ch == '"' || ch == ';' || ch == '\'' || ch == '`' || ch == ',';
 }
 
-/* Forward declaration */
+/* Forward declarations */
 static CL_Obj read_expr(void);
+static CL_Obj read_list(void);
+
+/* Sentinel value returned when #+/#- skips a form.
+ * Low byte 0x06: not fixnum (bit 0 = 0), not char (not 0x0A), not NIL (not 0).
+ * Never a valid arena offset. Only used internally by the reader. */
+#define CL_READER_SKIP ((CL_Obj)0x06)
+
+/* --- Feature conditional support (#+ / #-) --- */
+
+/* Check if a keyword symbol is in the *features* list */
+static int feature_member(CL_Obj keyword)
+{
+    CL_Symbol *feat_sym = (CL_Symbol *)CL_OBJ_TO_PTR(SYM_STAR_FEATURES);
+    CL_Obj list = feat_sym->value;
+    while (CL_CONS_P(list)) {
+        if (cl_car(list) == keyword)
+            return 1;
+        list = cl_cdr(list);
+    }
+    return 0;
+}
+
+/* Keyword symbols for feature expression operators.
+ * Initialized lazily on first use to avoid init-order issues. */
+static CL_Obj kw_and = CL_NIL;
+static CL_Obj kw_or  = CL_NIL;
+static CL_Obj kw_not = CL_NIL;
+
+static void ensure_feature_keywords(void)
+{
+    if (CL_NULL_P(kw_and)) {
+        kw_and = cl_intern_keyword("AND", 3);
+        kw_or  = cl_intern_keyword("OR", 2);
+        kw_not = cl_intern_keyword("NOT", 3);
+    }
+}
+
+/* Evaluate a feature expression (read as a form) against *features*.
+ * Feature exprs: keyword atoms, (:and ...), (:or ...), (:not ...) */
+static int eval_feature_expr(CL_Obj expr)
+{
+    if (CL_SYMBOL_P(expr)) {
+        /* Should be a keyword — check membership */
+        return feature_member(expr);
+    }
+    if (CL_CONS_P(expr)) {
+        CL_Obj head = cl_car(expr);
+        CL_Obj rest = cl_cdr(expr);
+        ensure_feature_keywords();
+        if (head == kw_and) {
+            /* (:and f1 f2 ...) — all must be true */
+            while (CL_CONS_P(rest)) {
+                if (!eval_feature_expr(cl_car(rest)))
+                    return 0;
+                rest = cl_cdr(rest);
+            }
+            return 1;
+        }
+        if (head == kw_or) {
+            /* (:or f1 f2 ...) — any must be true */
+            while (CL_CONS_P(rest)) {
+                if (eval_feature_expr(cl_car(rest)))
+                    return 1;
+                rest = cl_cdr(rest);
+            }
+            return 0;
+        }
+        if (head == kw_not) {
+            /* (:not f) — invert */
+            if (CL_CONS_P(rest))
+                return !eval_feature_expr(cl_car(rest));
+            return 1;
+        }
+    }
+    return 0;
+}
+
+/* Skip (read and discard) a single form from the reader */
+static void skip_form(void)
+{
+    read_expr();  /* Just read and discard */
+}
 
 /*
  * Try to parse buf as a float literal.
@@ -378,6 +460,7 @@ static CL_Obj read_list(void)
         }
 
         elem = read_expr();
+        if (elem == CL_READER_SKIP) continue;  /* #+ / #- skipped form */
 
         {
             CL_Obj cell = cl_cons(elem, CL_NIL);
@@ -479,6 +562,24 @@ static CL_Obj read_expr(void)
             name_str = cl_make_string(sym_buf, (uint32_t)sym_len);
             return cl_make_uninterned_symbol(name_str);
         }
+        if (ch == '+' || ch == '-') {
+            /* #+ / #- feature conditionals.
+             * Per CL spec, feature expr is read with *package* = KEYWORD */
+            CL_Obj saved_pkg = cl_current_package;
+            CL_Obj feat_expr;
+            int present;
+            cl_current_package = cl_package_keyword;
+            feat_expr = read_expr();
+            cl_current_package = saved_pkg;
+            present = eval_feature_expr(feat_expr);
+            if (ch == '-') present = !present;
+            if (present) {
+                return read_expr();
+            } else {
+                skip_form();
+                return CL_READER_SKIP;
+            }
+        }
         cl_error(CL_ERR_PARSE, "Unknown dispatch macro: #%c", ch);
         return CL_NIL;
 
@@ -499,17 +600,21 @@ static CL_Obj read_expr(void)
 
 CL_Obj cl_read(void)
 {
+    CL_Obj result;
     reader_stream = cl_stdin_stream;
     reader_line = 1;
     eof_seen = 0;
-    return read_expr();
+    do { result = read_expr(); } while (result == CL_READER_SKIP && !eof_seen);
+    return result;
 }
 
 CL_Obj cl_read_from_stream(CL_Obj stream)
 {
+    CL_Obj result;
     reader_stream = stream;
     eof_seen = 0;
-    return read_expr();
+    do { result = read_expr(); } while (result == CL_READER_SKIP && !eof_seen);
+    return result;
 }
 
 CL_Obj cl_read_from_string(CL_ReadStream *stream)
@@ -527,7 +632,7 @@ CL_Obj cl_read_from_string(CL_ReadStream *stream)
     reader_line = stream->line ? stream->line : 1;
     eof_seen = 0;
 
-    result = read_expr();
+    do { result = read_expr(); } while (result == CL_READER_SKIP && !eof_seen);
 
     /* Sync position back */
     st = (CL_Stream *)CL_OBJ_TO_PTR(s);

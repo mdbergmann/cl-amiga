@@ -3,6 +3,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/time.h>
+#include <unistd.h>
 
 void *platform_alloc(unsigned long size)
 {
@@ -166,6 +167,12 @@ uint32_t platform_time_ms(void)
     struct timeval tv;
     gettimeofday(&tv, NULL);
     return (uint32_t)((tv.tv_sec * 1000) + (tv.tv_usec / 1000));
+}
+
+void platform_sleep_ms(uint32_t milliseconds)
+{
+    if (milliseconds > 0)
+        usleep(milliseconds * 1000);
 }
 
 void platform_init(void)

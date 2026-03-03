@@ -140,6 +140,12 @@ CL_Obj SYM_TRACE_OUTPUT = CL_NIL;
 CL_Obj SYM_DEBUG_IO = CL_NIL;
 CL_Obj SYM_QUERY_IO = CL_NIL;
 CL_Obj SYM_TERMINAL_IO = CL_NIL;
+CL_Obj SYM_STAR_FEATURES = CL_NIL;
+CL_Obj KW_CL_AMIGA = CL_NIL;
+CL_Obj KW_COMMON_LISP = CL_NIL;
+CL_Obj KW_POSIX = CL_NIL;
+CL_Obj KW_AMIGAOS = CL_NIL;
+CL_Obj KW_M68K = CL_NIL;
 
 /* FNV-1a hash */
 uint32_t cl_hash_string(const char *str, uint32_t len)
@@ -395,6 +401,28 @@ void cl_symbol_init(void)
         s->flags |= CL_SYM_SPECIAL;
         s = (CL_Symbol *)CL_OBJ_TO_PTR(SYM_TERMINAL_IO);
         s->flags |= CL_SYM_SPECIAL;
+    }
+
+    /* *FEATURES* — feature list for #+ / #- */
+    SYM_STAR_FEATURES = cl_intern_in("*FEATURES*", 10, cl_package_cl);
+    KW_CL_AMIGA    = cl_intern_keyword("CL-AMIGA", 8);
+    KW_COMMON_LISP = cl_intern_keyword("COMMON-LISP", 11);
+    KW_POSIX       = cl_intern_keyword("POSIX", 5);
+    KW_AMIGAOS     = cl_intern_keyword("AMIGAOS", 7);
+    KW_M68K        = cl_intern_keyword("M68K", 4);
+    {
+        CL_Symbol *s = (CL_Symbol *)CL_OBJ_TO_PTR(SYM_STAR_FEATURES);
+        CL_Obj features = CL_NIL;
+        s->flags |= CL_SYM_SPECIAL;
+#ifdef PLATFORM_AMIGA
+        features = cl_cons(KW_M68K, features);
+        features = cl_cons(KW_AMIGAOS, features);
+#else
+        features = cl_cons(KW_POSIX, features);
+#endif
+        features = cl_cons(KW_COMMON_LISP, features);
+        features = cl_cons(KW_CL_AMIGA, features);
+        s->value = features;
     }
 
     /* T is self-evaluating */

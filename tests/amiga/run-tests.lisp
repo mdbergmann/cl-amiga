@@ -1520,6 +1520,50 @@
   (princ "hello" s))
 (check "prin1/princ to file" "42 hello" (with-open-file (s (concatenate 'string *test-tmp* "_clt_pr.txt") :direction :input) (read-line s)))
 
+; --- Feature conditionals (#+ / #-) ---
+
+; *features* is a list
+(check "features-is-list" t (consp *features*))
+
+; :CL-AMIGA is in *features*
+(check "features-has-cl-amiga" t (if (member :cl-amiga *features*) t nil))
+
+; :COMMON-LISP is in *features*
+(check "features-has-common-lisp" t (if (member :common-lisp *features*) t nil))
+
+; #+cl-amiga includes form
+(check "feature-plus-present" 42 #+cl-amiga 42)
+
+; #-cl-amiga skips form
+(check "feature-minus-present" 99 #-cl-amiga 42 99)
+
+; #+nonexistent skips form
+(check "feature-plus-absent" 99 #+nonexistent 42 99)
+
+; #-nonexistent includes form
+(check "feature-minus-absent" 42 #-nonexistent 42)
+
+; Feature conditionals in a list
+(check "feature-in-list" '(1 2 3) '(1 #+cl-amiga 2 3))
+(check "feature-skip-in-list" '(1 3) '(1 #+nonexistent 2 3))
+
+; Compound feature expressions
+(check "feature-and" 42 #+(and cl-amiga common-lisp) 42)
+(check "feature-or" 42 #+(or nonexistent cl-amiga) 42)
+(check "feature-not" 42 #+(not nonexistent) 42)
+(check "feature-not-fail" 99 #+(not cl-amiga) 42 99)
+
+; Platform-specific features on Amiga
+(check "features-has-amigaos" t (if (member :amigaos *features*) t nil))
+(check "features-has-m68k" t (if (member :m68k *features*) t nil))
+(check "feature-plus-amigaos" 42 #+amigaos 42)
+
+; sleep with zero duration
+(check "sleep-zero" nil (sleep 0))
+
+; with-standard-io-syntax executes body
+(check "with-standard-io-syntax" 42 (with-standard-io-syntax 42))
+
 ; --- Summary ---
 (format t "~%=== Results ===~%")
 (format t "Passed: ~A~%" *pass-count*)

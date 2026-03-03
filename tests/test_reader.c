@@ -238,6 +238,129 @@ TEST(roundtrip_dotted)
     ASSERT_STR_EQ(read_print("(a . b)"), "(A . B)");
 }
 
+/* --- Feature conditionals (#+ / #-) --- */
+
+TEST(feature_plus_present)
+{
+    /* :CL-AMIGA is in *features*, so #+cl-amiga should include the form */
+    CL_Obj obj = reads("#+cl-amiga 42");
+    ASSERT(CL_FIXNUM_P(obj));
+    ASSERT_EQ_INT(CL_FIXNUM_VAL(obj), 42);
+}
+
+TEST(feature_plus_absent)
+{
+    /* :NONEXISTENT is not in *features*, so form is skipped, next is read */
+    CL_Obj obj = reads("#+nonexistent 42 99");
+    ASSERT(CL_FIXNUM_P(obj));
+    ASSERT_EQ_INT(CL_FIXNUM_VAL(obj), 99);
+}
+
+TEST(feature_minus_present)
+{
+    /* #-cl-amiga: feature IS present, so form is SKIPPED */
+    CL_Obj obj = reads("#-cl-amiga 42 99");
+    ASSERT(CL_FIXNUM_P(obj));
+    ASSERT_EQ_INT(CL_FIXNUM_VAL(obj), 99);
+}
+
+TEST(feature_minus_absent)
+{
+    /* #-nonexistent: feature is NOT present, so form is INCLUDED */
+    CL_Obj obj = reads("#-nonexistent 42");
+    ASSERT(CL_FIXNUM_P(obj));
+    ASSERT_EQ_INT(CL_FIXNUM_VAL(obj), 42);
+}
+
+TEST(feature_plus_posix)
+{
+    /* On host, :POSIX should be in *features* */
+    CL_Obj obj = reads("#+posix :yes");
+    ASSERT(CL_SYMBOL_P(obj));
+    ASSERT_STR_EQ(cl_symbol_name(obj), "YES");
+}
+
+TEST(feature_plus_common_lisp)
+{
+    CL_Obj obj = reads("#+common-lisp :yes");
+    ASSERT(CL_SYMBOL_P(obj));
+    ASSERT_STR_EQ(cl_symbol_name(obj), "YES");
+}
+
+TEST(feature_in_list)
+{
+    /* Feature conditionals inside a list */
+    ASSERT_STR_EQ(read_print("(1 #+cl-amiga 2 3)"), "(1 2 3)");
+}
+
+TEST(feature_skip_in_list)
+{
+    /* Skipped feature conditional inside a list */
+    ASSERT_STR_EQ(read_print("(1 #+nonexistent 2 3)"), "(1 3)");
+}
+
+TEST(feature_skip_compound_form)
+{
+    /* Skipping a compound form (list), not just atom */
+    ASSERT_STR_EQ(read_print("(1 #+nonexistent (a b c) 3)"), "(1 3)");
+}
+
+TEST(feature_and_expr)
+{
+    /* (:and :cl-amiga :posix) — both present on host */
+    CL_Obj obj = reads("#+(and cl-amiga posix) 42 99");
+    ASSERT(CL_FIXNUM_P(obj));
+    ASSERT_EQ_INT(CL_FIXNUM_VAL(obj), 42);
+}
+
+TEST(feature_and_expr_fail)
+{
+    /* (:and :cl-amiga :nonexistent) — one missing */
+    CL_Obj obj = reads("#+(and cl-amiga nonexistent) 42 99");
+    ASSERT(CL_FIXNUM_P(obj));
+    ASSERT_EQ_INT(CL_FIXNUM_VAL(obj), 99);
+}
+
+TEST(feature_or_expr)
+{
+    /* (:or :nonexistent :cl-amiga) — one present */
+    CL_Obj obj = reads("#+(or nonexistent cl-amiga) 42 99");
+    ASSERT(CL_FIXNUM_P(obj));
+    ASSERT_EQ_INT(CL_FIXNUM_VAL(obj), 42);
+}
+
+TEST(feature_or_expr_fail)
+{
+    /* (:or :nonexistent :also-nonexistent) — none present */
+    CL_Obj obj = reads("#+(or nonexistent also-nonexistent) 42 99");
+    ASSERT(CL_FIXNUM_P(obj));
+    ASSERT_EQ_INT(CL_FIXNUM_VAL(obj), 99);
+}
+
+TEST(feature_not_expr)
+{
+    /* (:not :nonexistent) — not present, so true */
+    CL_Obj obj = reads("#+(not nonexistent) 42 99");
+    ASSERT(CL_FIXNUM_P(obj));
+    ASSERT_EQ_INT(CL_FIXNUM_VAL(obj), 42);
+}
+
+TEST(feature_not_expr_fail)
+{
+    /* (:not :cl-amiga) — present, so false */
+    CL_Obj obj = reads("#+(not cl-amiga) 42 99");
+    ASSERT(CL_FIXNUM_P(obj));
+    ASSERT_EQ_INT(CL_FIXNUM_VAL(obj), 99);
+}
+
+TEST(features_is_list)
+{
+    /* *FEATURES* should be a non-nil list */
+    CL_Symbol *s = (CL_Symbol *)CL_OBJ_TO_PTR(SYM_STAR_FEATURES);
+    ASSERT(!CL_NULL_P(s->value));
+    ASSERT(CL_CONS_P(s->value));
+}
+
 int main(void)
 {
     test_init();
@@ -267,6 +390,24 @@ int main(void)
     RUN(roundtrip_string);
     RUN(roundtrip_nil);
     RUN(roundtrip_dotted);
+
+    /* Feature conditionals */
+    RUN(feature_plus_present);
+    RUN(feature_plus_absent);
+    RUN(feature_minus_present);
+    RUN(feature_minus_absent);
+    RUN(feature_plus_posix);
+    RUN(feature_plus_common_lisp);
+    RUN(feature_in_list);
+    RUN(feature_skip_in_list);
+    RUN(feature_skip_compound_form);
+    RUN(feature_and_expr);
+    RUN(feature_and_expr_fail);
+    RUN(feature_or_expr);
+    RUN(feature_or_expr_fail);
+    RUN(feature_not_expr);
+    RUN(feature_not_expr_fail);
+    RUN(features_is_list);
 
     teardown();
     REPORT();

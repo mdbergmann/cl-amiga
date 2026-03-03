@@ -191,6 +191,14 @@ uint32_t platform_time_ms(void)
     return (uint32_t)(ds.ds_Minute * 60000UL + ds.ds_Tick * 20UL);
 }
 
+void platform_sleep_ms(uint32_t milliseconds)
+{
+    /* Delay() takes ticks (1/50s = 20ms each). Round up. */
+    LONG ticks = (LONG)((milliseconds + 19) / 20);
+    if (ticks > 0)
+        Delay(ticks);
+}
+
 void platform_init(void)
 {
     /* Nothing needed — dos.library is auto-opened by vbcc startup */

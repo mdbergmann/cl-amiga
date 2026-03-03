@@ -48,6 +48,7 @@ int          platform_file_eof(PlatformFile fh);
 
 /* Timing */
 uint32_t platform_time_ms(void);   /* Monotonic milliseconds (for elapsed time) */
+void     platform_sleep_ms(uint32_t milliseconds);
 
 /* Lifecycle */
 void  platform_init(void);

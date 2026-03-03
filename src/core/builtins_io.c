@@ -9,6 +9,7 @@
 #include "stream.h"
 #include "vm.h"
 #include "opcodes.h"
+#include "float.h"
 #include "../platform/platform.h"
 #include <stdio.h>
 #include <string.h>
@@ -648,6 +649,30 @@ static CL_Obj bi_get_internal_real_time(CL_Obj *args, int n)
     return CL_MAKE_FIXNUM((int32_t)(platform_time_ms() & 0x7FFFFFFF));
 }
 
+static CL_Obj bi_sleep(CL_Obj *args, int n)
+{
+    uint32_t ms;
+    CL_UNUSED(n);
+    if (CL_FIXNUM_P(args[0])) {
+        int32_t sec = CL_FIXNUM_VAL(args[0]);
+        if (sec < 0)
+            cl_error(CL_ERR_TYPE, "SLEEP: argument must be non-negative");
+        ms = (uint32_t)sec * 1000;
+    } else if (CL_HEAP_P(args[0]) &&
+               (CL_HDR_TYPE(CL_OBJ_TO_PTR(args[0])) == TYPE_SINGLE_FLOAT ||
+                CL_HDR_TYPE(CL_OBJ_TO_PTR(args[0])) == TYPE_DOUBLE_FLOAT)) {
+        double val = cl_to_double(args[0]);
+        if (val < 0.0)
+            cl_error(CL_ERR_TYPE, "SLEEP: argument must be non-negative");
+        ms = (uint32_t)(val * 1000.0);
+    } else {
+        cl_error(CL_ERR_TYPE, "SLEEP: argument must be a non-negative real number");
+        return CL_NIL;
+    }
+    platform_sleep_ms(ms);
+    return CL_NIL;
+}
+
 /* --- Registration --- */
 
 void cl_builtins_io_init(void)
@@ -684,4 +709,7 @@ void cl_builtins_io_init(void)
     defun("%GET-GC-COUNT", bi_get_gc_count, 0, 0);
     defun("%TIME-REPORT", bi_time_report, 3, 3);
     defun("GET-INTERNAL-REAL-TIME", bi_get_internal_real_time, 0, 0);
+
+    /* Sleep */
+    defun("SLEEP", bi_sleep, 1, 1);
 }

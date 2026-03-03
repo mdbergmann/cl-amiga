@@ -174,4 +174,14 @@ extern CL_Obj SYM_DEBUG_IO;          /* *DEBUG-IO* */
 extern CL_Obj SYM_QUERY_IO;          /* *QUERY-IO* */
 extern CL_Obj SYM_TERMINAL_IO;       /* *TERMINAL-IO* */
 
+/* Feature system */
+extern CL_Obj SYM_STAR_FEATURES;     /* *FEATURES* */
+
+/* Feature keywords */
+extern CL_Obj KW_CL_AMIGA;           /* :CL-AMIGA */
+extern CL_Obj KW_COMMON_LISP;        /* :COMMON-LISP */
+extern CL_Obj KW_POSIX;              /* :POSIX */
+extern CL_Obj KW_AMIGAOS;            /* :AMIGAOS */
+extern CL_Obj KW_M68K;               /* :M68K */
+
 #endif /* CL_SYMBOL_H */

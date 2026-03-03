@@ -349,6 +349,13 @@
          (progn ,@body)
          (when ,var (close ,var))))))
 
+;; with-standard-io-syntax — bind I/O variables to standard values
+;; Minimal implementation: only binds *package* to CL-USER for now.
+;; Future: bind *readtable*, *print-readably*, etc. when implemented.
+(defmacro with-standard-io-syntax (&body body)
+  `(let ((*package* (find-package "CL-USER")))
+     ,@body))
+
 ;; --- Printer-to-string functions ---
 
 (defun prin1-to-string (object)
