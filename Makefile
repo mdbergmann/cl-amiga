@@ -35,6 +35,7 @@ CORE_SRC     = $(SRCDIR)/core/types.c \
                $(SRCDIR)/core/builtins_package.c \
                $(SRCDIR)/core/builtins_struct.c \
                $(SRCDIR)/core/bignum.c \
+               $(SRCDIR)/core/float.c \
                $(SRCDIR)/core/debugger.c \
                $(SRCDIR)/core/repl.c \
                $(SRCDIR)/core/color.c

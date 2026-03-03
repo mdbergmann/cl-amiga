@@ -3,10 +3,12 @@
 #include "package.h"
 #include "mem.h"
 #include "bignum.h"
+#include "float.h"
 #include "error.h"
 #include "../platform/platform.h"
 #include <string.h>
 #include <ctype.h>
+#include <stdlib.h>
 
 /* strcasecmp: available via <strings.h> on POSIX, provide fallback for AmigaOS */
 #ifdef PLATFORM_AMIGA
@@ -109,6 +111,67 @@ static int is_delimiter(int ch)
 /* Forward declaration */
 static CL_Obj read_expr(void);
 
+/*
+ * Try to parse buf as a float literal.
+ * Returns the float object, or CL_NIL if not a valid float token.
+ *
+ * Recognized forms (input already uppercased by reader):
+ *   1.0  .5  1.            — decimal point
+ *   1E3  1.5E-2            — E exponent (default = single-float)
+ *   1.0F0  1.5F-2          — F exponent (single-float)
+ *   1.0S0  1.5S-2          — S exponent (short = single-float)
+ *   1.0D0  1.5D-2          — D exponent (double-float)
+ *   1.0L0  1.5L-2          — L exponent (long = double-float)
+ */
+static CL_Obj try_parse_float(const char *buf, int len)
+{
+    int i, has_dot = 0, has_exp = 0, has_digit = 0;
+    int exp_pos = -1, is_double = 0;
+    char parse_buf[256];
+    double val;
+    char *endp;
+
+    i = 0;
+    if (len > 0 && (buf[0] == '+' || buf[0] == '-')) i = 1;
+
+    for (; i < len; i++) {
+        if (isdigit((unsigned char)buf[i])) {
+            has_digit = 1;
+        } else if (buf[i] == '.' && !has_dot && !has_exp) {
+            has_dot = 1;
+        } else if ((buf[i] == 'E' || buf[i] == 'F' || buf[i] == 'D' ||
+                    buf[i] == 'S' || buf[i] == 'L') && !has_exp && has_digit) {
+            has_exp = 1;
+            exp_pos = i;
+            if (buf[i] == 'D' || buf[i] == 'L')
+                is_double = 1;
+        } else if ((buf[i] == '+' || buf[i] == '-') && has_exp && i == exp_pos + 1) {
+            /* Sign after exponent marker — valid */
+        } else {
+            return CL_NIL;  /* Invalid character for float */
+        }
+    }
+
+    /* Must have at least one digit and either a dot or exponent marker */
+    if (!has_digit || (!has_dot && !has_exp))
+        return CL_NIL;
+
+    /* Build parse buffer: replace CL exponent marker with 'E' for strtod */
+    if (len >= 256) return CL_NIL;
+    memcpy(parse_buf, buf, (uint32_t)len);
+    parse_buf[len] = '\0';
+    if (exp_pos >= 0 && parse_buf[exp_pos] != 'E')
+        parse_buf[exp_pos] = 'E';
+
+    val = strtod(parse_buf, &endp);
+    if (endp != parse_buf + len)
+        return CL_NIL;  /* strtod didn't consume entire token */
+
+    if (is_double)
+        return cl_make_double_float(val);
+    return cl_make_single_float((float)val);
+}
+
 /* Read an atom (number, symbol, keyword) */
 static CL_Obj read_atom(void)
 {
@@ -167,6 +230,13 @@ static CL_Obj read_atom(void)
         }
         /* Overflow or large number: create bignum */
         return cl_bignum_from_string(buf + start, digit_count, neg);
+    }
+
+    /* Try float literal (decimal point or exponent marker) */
+    {
+        CL_Obj float_obj = try_parse_float(buf, len);
+        if (!CL_NULL_P(float_obj))
+            return float_obj;
     }
 
     /* Check for keyword */

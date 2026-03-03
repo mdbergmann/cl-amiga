@@ -1,5 +1,6 @@
 #include "builtins.h"
 #include "bignum.h"
+#include "float.h"
 #include "symbol.h"
 #include "package.h"
 #include "mem.h"
@@ -199,6 +200,13 @@ static CL_Obj bi_eql(CL_Obj *args, int n)
         return (args[0] == args[1]) ? SYM_T : CL_NIL;
     if (CL_BIGNUM_P(args[0]) && CL_BIGNUM_P(args[1]))
         return cl_bignum_equal(args[0], args[1]) ? SYM_T : CL_NIL;
+    /* Floats: same type and same value */
+    if (CL_SINGLE_FLOAT_P(args[0]) && CL_SINGLE_FLOAT_P(args[1]))
+        return ((CL_SingleFloat *)CL_OBJ_TO_PTR(args[0]))->value ==
+               ((CL_SingleFloat *)CL_OBJ_TO_PTR(args[1]))->value ? SYM_T : CL_NIL;
+    if (CL_DOUBLE_FLOAT_P(args[0]) && CL_DOUBLE_FLOAT_P(args[1]))
+        return ((CL_DoubleFloat *)CL_OBJ_TO_PTR(args[0]))->value ==
+               ((CL_DoubleFloat *)CL_OBJ_TO_PTR(args[1]))->value ? SYM_T : CL_NIL;
     return (args[0] == args[1]) ? SYM_T : CL_NIL;
 }
 
@@ -210,6 +218,13 @@ static CL_Obj bi_equal(CL_Obj *args, int n)
     if (a == b) return SYM_T;
     if (CL_BIGNUM_P(a) && CL_BIGNUM_P(b))
         return cl_bignum_equal(a, b) ? SYM_T : CL_NIL;
+    /* Floats: equal is same as eql (same type, same value) */
+    if (CL_SINGLE_FLOAT_P(a) && CL_SINGLE_FLOAT_P(b))
+        return ((CL_SingleFloat *)CL_OBJ_TO_PTR(a))->value ==
+               ((CL_SingleFloat *)CL_OBJ_TO_PTR(b))->value ? SYM_T : CL_NIL;
+    if (CL_DOUBLE_FLOAT_P(a) && CL_DOUBLE_FLOAT_P(b))
+        return ((CL_DoubleFloat *)CL_OBJ_TO_PTR(a))->value ==
+               ((CL_DoubleFloat *)CL_OBJ_TO_PTR(b))->value ? SYM_T : CL_NIL;
     if (CL_CONS_P(a) && CL_CONS_P(b)) {
         CL_Obj aa[2], bb[2];
         aa[0] = cl_car(a); aa[1] = cl_car(b);

@@ -9,6 +9,7 @@
 #include "symbol.h"
 #include "package.h"
 #include "mem.h"
+#include "float.h"
 #include "error.h"
 #include "vm.h"
 #include "compiler.h"
@@ -58,9 +59,15 @@ static int typep_symbol(CL_Obj obj, CL_Obj type_sym)
     if (strcmp(tname, "ATOM") == 0)           return !CL_CONS_P(obj);
     if (strcmp(tname, "FIXNUM") == 0)  return CL_FIXNUM_P(obj);
     if (strcmp(tname, "BIGNUM") == 0)  return CL_BIGNUM_P(obj);
-    if (strcmp(tname, "INTEGER") == 0 || strcmp(tname, "NUMBER") == 0 ||
-        strcmp(tname, "RATIONAL") == 0 || strcmp(tname, "REAL") == 0)
-        return CL_INTEGER_P(obj);
+    if (strcmp(tname, "INTEGER") == 0) return CL_INTEGER_P(obj);
+    if (strcmp(tname, "RATIONAL") == 0) return CL_INTEGER_P(obj);
+    if (strcmp(tname, "SINGLE-FLOAT") == 0 || strcmp(tname, "SHORT-FLOAT") == 0)
+        return CL_SINGLE_FLOAT_P(obj);
+    if (strcmp(tname, "DOUBLE-FLOAT") == 0 || strcmp(tname, "LONG-FLOAT") == 0)
+        return CL_DOUBLE_FLOAT_P(obj);
+    if (strcmp(tname, "FLOAT") == 0)  return CL_FLOATP(obj);
+    if (strcmp(tname, "REAL") == 0)   return CL_REALP(obj);
+    if (strcmp(tname, "NUMBER") == 0) return CL_NUMBER_P(obj);
     if (strcmp(tname, "CHARACTER") == 0)      return CL_CHAR_P(obj);
     if (strcmp(tname, "STRING") == 0)         return CL_STRING_P(obj);
     if (strcmp(tname, "VECTOR") == 0 || strcmp(tname, "SIMPLE-VECTOR") == 0 ||
@@ -275,6 +282,23 @@ static CL_Obj bi_coerce(CL_Obj *args, int n)
         return CL_NIL;
     }
 
+    /* (coerce x 'float) / 'single-float / 'short-float */
+    if (strcmp(tname, "FLOAT") == 0 || strcmp(tname, "SINGLE-FLOAT") == 0 ||
+        strcmp(tname, "SHORT-FLOAT") == 0) {
+        if (CL_SINGLE_FLOAT_P(obj)) return obj;
+        if (CL_NUMBER_P(obj)) return cl_make_single_float(cl_to_float(obj));
+        cl_error(CL_ERR_TYPE, "COERCE: cannot coerce to SINGLE-FLOAT");
+        return CL_NIL;
+    }
+
+    /* (coerce x 'double-float) / 'long-float */
+    if (strcmp(tname, "DOUBLE-FLOAT") == 0 || strcmp(tname, "LONG-FLOAT") == 0) {
+        if (CL_DOUBLE_FLOAT_P(obj)) return obj;
+        if (CL_NUMBER_P(obj)) return cl_make_double_float(cl_to_double(obj));
+        cl_error(CL_ERR_TYPE, "COERCE: cannot coerce to DOUBLE-FLOAT");
+        return CL_NIL;
+    }
+
     /* (coerce x 'integer) / 'fixnum / 'number */
     if (strcmp(tname, "INTEGER") == 0 || strcmp(tname, "FIXNUM") == 0 || strcmp(tname, "NUMBER") == 0) {
         if (CL_FIXNUM_P(obj)) return obj;
@@ -398,6 +422,9 @@ enum TypeId {
     TID_DIVISION_BY_ZERO,
     TID_UNBOUND_VARIABLE,
     TID_UNDEFINED_FUNCTION,
+    TID_SINGLE_FLOAT,
+    TID_DOUBLE_FLOAT,
+    TID_FLOAT,
     TID_STRUCTURE,
     TID_T,
     TID_COUNT
@@ -442,6 +469,9 @@ static int type_name_to_id(const char *name)
     if (strcmp(name, "DIVISION-BY-ZERO") == 0) return TID_DIVISION_BY_ZERO;
     if (strcmp(name, "UNBOUND-VARIABLE") == 0) return TID_UNBOUND_VARIABLE;
     if (strcmp(name, "UNDEFINED-FUNCTION") == 0) return TID_UNDEFINED_FUNCTION;
+    if (strcmp(name, "SINGLE-FLOAT") == 0 || strcmp(name, "SHORT-FLOAT") == 0) return TID_SINGLE_FLOAT;
+    if (strcmp(name, "DOUBLE-FLOAT") == 0 || strcmp(name, "LONG-FLOAT") == 0) return TID_DOUBLE_FLOAT;
+    if (strcmp(name, "FLOAT") == 0) return TID_FLOAT;
     if (strcmp(name, "STRUCTURE") == 0 || strcmp(name, "STRUCTURE-OBJECT") == 0) return TID_STRUCTURE;
     if (strcmp(name, "T") == 0) return TID_T;
     return TID_UNKNOWN;
@@ -469,6 +499,13 @@ static int subtype_check(int id1, int id2)
                                 id2 == TID_NUMBER)) return 1;
     if (id1 == TID_RATIONAL && (id2 == TID_REAL || id2 == TID_NUMBER)) return 1;
     if (id1 == TID_REAL && id2 == TID_NUMBER) return 1;
+
+    /* Float hierarchy: single-float/double-float < float < real < number */
+    if (id1 == TID_SINGLE_FLOAT && (id2 == TID_FLOAT || id2 == TID_REAL ||
+                                     id2 == TID_NUMBER)) return 1;
+    if (id1 == TID_DOUBLE_FLOAT && (id2 == TID_FLOAT || id2 == TID_REAL ||
+                                     id2 == TID_NUMBER)) return 1;
+    if (id1 == TID_FLOAT && (id2 == TID_REAL || id2 == TID_NUMBER)) return 1;
 
     /* List hierarchy: null < list, cons < list, list < sequence */
     if (id1 == TID_NULL && (id2 == TID_LIST || id2 == TID_SYMBOL || id2 == TID_SEQUENCE)) return 1;

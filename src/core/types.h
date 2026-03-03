@@ -85,7 +85,9 @@ enum CL_ObjType {
     TYPE_HASHTABLE,
     TYPE_CONDITION,
     TYPE_STRUCT,
-    TYPE_BIGNUM
+    TYPE_BIGNUM,
+    TYPE_SINGLE_FLOAT,
+    TYPE_DOUBLE_FLOAT
 };
 
 /* Header access macros */

@@ -273,7 +273,7 @@ File system integration and stream abstraction:
 - [ ] `compile` — compile function at runtime
 - [ ] User init file — load `~/.clamigarc` (POSIX) or `S:clamiga.lisp` (AmigaOS) on REPL startup, after boot.lisp; skip with `--no-userinit` flag
 - [ ] `--load <file>` / `--eval <expr>` command-line options — load files or evaluate expressions before REPL; `--script <file>` to run file and exit (no REPL)
-- [ ] `--heap <size>` — configurable arena size (default 4MB, e.g. `--heap 8M`); also `--stack <size>` for VM value stack
+- [ ] `--heap <size>` — configurable arena size (default 4MB, e.g. `--heap 8M`); also `--stack <size>` for VM value stack, `--frames <n>` for call frame depth (default 256)
 
 ### Phase 8: Iteration & Format
 
@@ -298,7 +298,7 @@ Full CL numeric type hierarchy with arithmetic contagion:
 - [x] Type hierarchy: `fixnum`/`bignum` < `integer` < `rational` < `real` < `number` in `typep` and `subtypep`
 - [x] `eql`/`equal`/hash-table support for bignums (value equality)
 
-619 host tests (8 suites), ~790+ Amiga batch tests — all passing.
+619 host tests (8 suites), 793 Amiga batch tests — all passing.
 
 Remaining (deferred):
 - [ ] Ratios — normalized numerator/denominator pairs (fixnum or bignum), GCD reduction

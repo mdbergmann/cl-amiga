@@ -12,6 +12,7 @@
 #include "symbol.h"
 #include "package.h"
 #include "mem.h"
+#include "float.h"
 #include "error.h"
 #include "vm.h"
 #include "reader.h"

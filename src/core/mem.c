@@ -1,4 +1,5 @@
 #include "mem.h"
+#include "float.h"
 #include "vm.h"
 #include "../platform/platform.h"
 #include <string.h>
@@ -264,6 +265,24 @@ CL_Obj cl_make_bignum(uint32_t n_limbs, uint32_t sign)
     return CL_PTR_TO_OBJ(bn);
 }
 
+CL_Obj cl_make_single_float(float value)
+{
+    CL_SingleFloat *sf = (CL_SingleFloat *)cl_alloc(TYPE_SINGLE_FLOAT,
+                                                     sizeof(CL_SingleFloat));
+    if (!sf) return CL_NIL;
+    sf->value = value;
+    return CL_PTR_TO_OBJ(sf);
+}
+
+CL_Obj cl_make_double_float(double value)
+{
+    CL_DoubleFloat *df = (CL_DoubleFloat *)cl_alloc(TYPE_DOUBLE_FLOAT,
+                                                      sizeof(CL_DoubleFloat));
+    if (!df) return CL_NIL;
+    df->value = value;
+    return CL_PTR_TO_OBJ(df);
+}
+
 /* --- GC Root Stack --- */
 
 void cl_gc_push_root(CL_Obj *root)
@@ -373,7 +392,9 @@ static void gc_mark_children(void *ptr, uint8_t type)
         break;
     }
     case TYPE_BIGNUM:
-        /* No children — limbs are raw uint16_t data */
+    case TYPE_SINGLE_FLOAT:
+    case TYPE_DOUBLE_FLOAT:
+        /* No children — raw numeric data */
         break;
     default:
         break;

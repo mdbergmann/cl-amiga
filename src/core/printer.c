@@ -3,9 +3,11 @@
 #include "package.h"
 #include "mem.h"
 #include "bignum.h"
+#include "float.h"
 #include "../platform/platform.h"
 #include <stdio.h>
 #include <string.h>
+#include <ctype.h>
 
 /* Output mode */
 static int escape_mode = 1;   /* 1 = prin1, 0 = princ */
@@ -40,6 +42,45 @@ static void out_int(int32_t val)
 }
 
 static void print_obj(CL_Obj obj);
+
+/* Check if sprintf result looks like a plain integer (all digits, no decimal/exponent) */
+static int needs_decimal(const char *buf)
+{
+    const char *p = buf;
+    if (*p == '-' || *p == '+') p++;
+    while (*p) {
+        if (!isdigit((unsigned char)*p)) return 0;
+        p++;
+    }
+    return 1;
+}
+
+static void print_single_float(float value)
+{
+    char buf[32];
+    sprintf(buf, "%g", (double)value);
+    if (needs_decimal(buf))
+        strcat(buf, ".0");
+    out_str(buf);
+}
+
+static void print_double_float(double value)
+{
+    char buf[48];
+    char *e;
+    sprintf(buf, "%.15g", value);
+    /* Replace 'e' with 'd' for double-float exponent marker */
+    e = strchr(buf, 'e');
+    if (!e) e = strchr(buf, 'E');
+    if (e) {
+        *e = 'd';
+    } else if (needs_decimal(buf)) {
+        strcat(buf, ".0d0");
+    } else {
+        strcat(buf, "d0");
+    }
+    out_str(buf);
+}
 
 static void print_list(CL_Obj obj)
 {
@@ -116,6 +157,16 @@ static void print_obj(CL_Obj obj)
 
     if (CL_BIGNUM_P(obj)) {
         cl_bignum_print(obj, out_str);
+        return;
+    }
+
+    if (CL_SINGLE_FLOAT_P(obj)) {
+        print_single_float(((CL_SingleFloat *)CL_OBJ_TO_PTR(obj))->value);
+        return;
+    }
+
+    if (CL_DOUBLE_FLOAT_P(obj)) {
+        print_double_float(((CL_DoubleFloat *)CL_OBJ_TO_PTR(obj))->value);
         return;
     }
 
