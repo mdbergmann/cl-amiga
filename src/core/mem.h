@@ -52,6 +52,7 @@ CL_Obj cl_make_vector(uint32_t length);
 CL_Obj cl_make_hashtable(uint32_t bucket_count, uint32_t test);
 CL_Obj cl_make_condition(CL_Obj type_name, CL_Obj slots, CL_Obj report_string);
 CL_Obj cl_make_struct(CL_Obj type_name, uint32_t n_slots);
+CL_Obj cl_make_bignum(uint32_t n_limbs, uint32_t sign);
 
 /* GC root protection */
 #define CL_GC_PROTECT(var) cl_gc_push_root(&(var))

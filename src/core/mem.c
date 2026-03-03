@@ -253,6 +253,17 @@ CL_Obj cl_make_struct(CL_Obj type_name, uint32_t n_slots)
     return CL_PTR_TO_OBJ(st);
 }
 
+CL_Obj cl_make_bignum(uint32_t n_limbs, uint32_t sign)
+{
+    uint32_t alloc_size = sizeof(CL_Bignum) + n_limbs * sizeof(uint16_t);
+    CL_Bignum *bn = (CL_Bignum *)cl_alloc(TYPE_BIGNUM, alloc_size);
+    if (!bn) return CL_NIL;
+    bn->length = n_limbs;
+    bn->sign = sign;
+    /* limbs[] already zeroed by cl_alloc */
+    return CL_PTR_TO_OBJ(bn);
+}
+
 /* --- GC Root Stack --- */
 
 void cl_gc_push_root(CL_Obj *root)
@@ -361,6 +372,9 @@ static void gc_mark_children(void *ptr, uint8_t type)
             gc_mark_push(st->slots[i]);
         break;
     }
+    case TYPE_BIGNUM:
+        /* No children — limbs are raw uint16_t data */
+        break;
     default:
         break;
     }

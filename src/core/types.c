@@ -35,6 +35,7 @@ const char *cl_type_name(CL_Obj obj)
         case TYPE_HASHTABLE: return "HASH-TABLE";
         case TYPE_CONDITION: return "CONDITION";
         case TYPE_STRUCT:   return "STRUCTURE";
+        case TYPE_BIGNUM:   return "BIGNUM";
         default:            return "UNKNOWN";
         }
     }

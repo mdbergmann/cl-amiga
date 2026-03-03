@@ -2,6 +2,7 @@
 #include "symbol.h"
 #include "package.h"
 #include "mem.h"
+#include "bignum.h"
 #include "error.h"
 #include "../platform/platform.h"
 #include <string.h>
@@ -145,19 +146,27 @@ static CL_Obj read_atom(void)
         }
     }
     if (is_number && has_digit) {
-        long val = 0;
         int neg = 0;
+        int start;
+        int digit_count;
         i = 0;
         if (buf[0] == '-') { neg = 1; i = 1; }
         else if (buf[0] == '+') { i = 1; }
-        for (; i < len; i++) {
-            val = val * 10 + (buf[i] - '0');
+        start = i;
+        digit_count = len - start;
+
+        /* If too many digits for fixnum (> 10 digits), go straight to bignum */
+        if (digit_count <= 9) {
+            long val = 0;
+            for (i = start; i < len; i++) {
+                val = val * 10 + (buf[i] - '0');
+            }
+            if (neg) val = -val;
+            if (val >= CL_FIXNUM_MIN && val <= CL_FIXNUM_MAX)
+                return CL_MAKE_FIXNUM((int32_t)val);
         }
-        if (neg) val = -val;
-        if (val > CL_FIXNUM_MAX || val < CL_FIXNUM_MIN) {
-            cl_error(CL_ERR_OVERFLOW, "Integer overflow: %s", buf);
-        }
-        return CL_MAKE_FIXNUM((int32_t)val);
+        /* Overflow or large number: create bignum */
+        return cl_bignum_from_string(buf + start, digit_count, neg);
     }
 
     /* Check for keyword */

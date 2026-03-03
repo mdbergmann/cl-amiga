@@ -1,4 +1,5 @@
 #include "builtins.h"
+#include "bignum.h"
 #include "symbol.h"
 #include "package.h"
 #include "mem.h"
@@ -22,20 +23,31 @@ static void defun(const char *name, CL_CFunc func, int min, int max)
 
 static uint32_t hash_obj(CL_Obj obj, uint32_t test)
 {
-    /* For eq/eql: hash by identity (the tagged value itself) */
-    if (test == CL_HT_TEST_EQ || test == CL_HT_TEST_EQL) {
-        /* Mix bits of the tagged value */
+    /* For eq: hash by identity */
+    if (test == CL_HT_TEST_EQ) {
         uint32_t h = obj;
         h ^= h >> 16;
         h *= 0x45d9f3bU;
         h ^= h >> 16;
         return h;
     }
+    /* For eql: bignums need value-based hash */
+    if (test == CL_HT_TEST_EQL) {
+        if (CL_BIGNUM_P(obj)) return cl_bignum_hash(obj);
+        {
+            uint32_t h = obj;
+            h ^= h >> 16;
+            h *= 0x45d9f3bU;
+            h ^= h >> 16;
+            return h;
+        }
+    }
 
     /* For equal: structural hash */
     if (CL_NULL_P(obj)) return 0;
     if (CL_FIXNUM_P(obj)) return (uint32_t)obj;
     if (CL_CHAR_P(obj)) return (uint32_t)obj;
+    if (CL_BIGNUM_P(obj)) return cl_bignum_hash(obj);
 
     if (CL_HEAP_P(obj)) {
         uint8_t type = CL_HDR_TYPE(CL_OBJ_TO_PTR(obj));
@@ -76,13 +88,18 @@ static int keys_equal(CL_Obj a, CL_Obj b, uint32_t test)
         return a == b;
 
     if (test == CL_HT_TEST_EQL) {
-        /* eq for heap objects, value equality for fixnums/chars */
-        return a == b;
+        if (a == b) return 1;
+        /* Value equality for bignums */
+        if (CL_BIGNUM_P(a) && CL_BIGNUM_P(b))
+            return cl_bignum_equal(a, b);
+        return 0;
     }
 
     /* CL_HT_TEST_EQUAL: structural equality */
     if (a == b) return 1;
     if (CL_FIXNUM_P(a) || CL_CHAR_P(a)) return a == b;
+    if (CL_BIGNUM_P(a) && CL_BIGNUM_P(b))
+        return cl_bignum_equal(a, b);
 
     if (CL_STRING_P(a) && CL_STRING_P(b)) {
         CL_String *sa = (CL_String *)CL_OBJ_TO_PTR(a);

@@ -2,6 +2,7 @@
 #include "symbol.h"
 #include "package.h"
 #include "mem.h"
+#include "bignum.h"
 #include "../platform/platform.h"
 #include <stdio.h>
 #include <string.h>
@@ -110,6 +111,11 @@ static void print_obj(CL_Obj obj)
 
     if (!CL_HEAP_P(obj)) {
         out_str("#<unknown>");
+        return;
+    }
+
+    if (CL_BIGNUM_P(obj)) {
+        cl_bignum_print(obj, out_str);
         return;
     }
 

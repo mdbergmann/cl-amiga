@@ -1,4 +1,5 @@
 #include "builtins.h"
+#include "bignum.h"
 #include "symbol.h"
 #include "package.h"
 #include "mem.h"
@@ -196,6 +197,8 @@ static CL_Obj bi_eql(CL_Obj *args, int n)
         return (args[0] == args[1]) ? SYM_T : CL_NIL;
     if (CL_CHAR_P(args[0]) && CL_CHAR_P(args[1]))
         return (args[0] == args[1]) ? SYM_T : CL_NIL;
+    if (CL_BIGNUM_P(args[0]) && CL_BIGNUM_P(args[1]))
+        return cl_bignum_equal(args[0], args[1]) ? SYM_T : CL_NIL;
     return (args[0] == args[1]) ? SYM_T : CL_NIL;
 }
 
@@ -205,6 +208,8 @@ static CL_Obj bi_equal(CL_Obj *args, int n)
     CL_UNUSED(n);
 
     if (a == b) return SYM_T;
+    if (CL_BIGNUM_P(a) && CL_BIGNUM_P(b))
+        return cl_bignum_equal(a, b) ? SYM_T : CL_NIL;
     if (CL_CONS_P(a) && CL_CONS_P(b)) {
         CL_Obj aa[2], bb[2];
         aa[0] = cl_car(a); aa[1] = cl_car(b);

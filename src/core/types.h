@@ -84,7 +84,8 @@ enum CL_ObjType {
     TYPE_PACKAGE,
     TYPE_HASHTABLE,
     TYPE_CONDITION,
-    TYPE_STRUCT
+    TYPE_STRUCT,
+    TYPE_BIGNUM
 };
 
 /* Header access macros */
@@ -260,6 +261,18 @@ typedef struct {
 } CL_Struct;
 
 #define CL_STRUCT_P(obj) (CL_HEAP_P(obj) && CL_HDR_TYPE(CL_OBJ_TO_PTR(obj)) == TYPE_STRUCT)
+
+/* --- Bignum (arbitrary-precision integer) --- */
+
+typedef struct {
+    CL_Header hdr;
+    uint32_t length;    /* Number of 16-bit limbs */
+    uint32_t sign;      /* 0 = positive, 1 = negative */
+    uint16_t limbs[];   /* Flexible array: little-endian (limbs[0] = least significant) */
+} CL_Bignum;
+
+#define CL_BIGNUM_P(obj) (CL_HEAP_P(obj) && CL_HDR_TYPE(CL_OBJ_TO_PTR(obj)) == TYPE_BIGNUM)
+#define CL_INTEGER_P(obj) (CL_FIXNUM_P(obj) || CL_BIGNUM_P(obj))
 
 /* --- Convenience accessors --- */
 

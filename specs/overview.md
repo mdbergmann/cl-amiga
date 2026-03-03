@@ -39,7 +39,7 @@ CL_Obj (uint32_t):
 Heap object header (uint32_t):
   [type:8][gc_mark:1][size:23]       max object size = 8MB
 
-Types: CONS, SYMBOL, STRING, FUNCTION, CLOSURE, BYTECODE, VECTOR, PACKAGE, HASHTABLE, CONDITION, STRUCT
+Types: CONS, SYMBOL, STRING, FUNCTION, CLOSURE, BYTECODE, VECTOR, PACKAGE, HASHTABLE, CONDITION, STRUCT, BIGNUM
 ```
 
 ## Memory Budget (8MB System)
@@ -93,13 +93,14 @@ Single-pass recursive compiler from S-expressions to bytecode:
 
 **Bootstrap functions:** `cadr`, `caar`, `cdar`, `cddr`, `caddr`, `cadar`, `identity`, `endp`, `member`, `intersection`, `union`, `set-difference`, `subsetp`, `cerror`
 
-## Built-in Functions (233 functions)
+## Built-in Functions (250+ functions)
 
 | Category | Functions |
 |----------|-----------|
-| Arithmetic | `+` `-` `*` `/` `mod` `1+` `1-` `abs` `max` `min` |
+| Arithmetic | `+` `-` `*` `/` `truncate` `rem` `mod` `1+` `1-` `abs` `max` `min` `gcd` `lcm` `expt` `isqrt` |
+| Bitwise | `ash` `logand` `logior` `logxor` `lognot` `integer-length` |
 | Comparison | `=` `<` `>` `<=` `>=` |
-| Predicates | `null` `consp` `atom` `listp` `numberp` `integerp` `symbolp` `stringp` `functionp` `vectorp` `zerop` `plusp` `minusp` `characterp` `keywordp` `hash-table-p` |
+| Predicates | `null` `consp` `atom` `listp` `numberp` `integerp` `symbolp` `stringp` `functionp` `vectorp` `zerop` `plusp` `minusp` `evenp` `oddp` `characterp` `keywordp` `hash-table-p` |
 | Equality | `eq` `eql` `equal` `not` |
 | List ops | `cons` `car` `cdr` `first` `rest` `list` `length` `append` `reverse` `nth` `nthcdr` `last` `butlast` `copy-list` `copy-tree` |
 | Alist/plist | `acons` `pairlis` `assoc` `rassoc` `getf` `adjoin` |
@@ -116,7 +117,7 @@ Single-pass recursive compiler from S-expressions to bytecode:
 | Conditions | `make-condition` `conditionp` `condition-type-name` `type-error-datum` `type-error-expected-type` `simple-condition-format-control` `simple-condition-format-arguments` `%register-condition-type` `condition-slot-value` |
 | Structures | `structurep` `%register-struct-type` `%make-struct` `%struct-ref` `%struct-set` `%copy-struct` `%struct-type-name` `%struct-slot-names` `%struct-slot-specs` |
 | Hash tables | `make-hash-table` `gethash` `remhash` `maphash` `clrhash` `hash-table-count` `hash-table-p` |
-| Type system | `typep` `coerce` |
+| Type system | `typep` `coerce` `subtypep` |
 | Packages | `make-package` `find-package` `delete-package` `rename-package` `export` `unexport` `import` `use-package` `unuse-package` `shadow` `find-symbol` `intern` `unintern` `package-name` `package-use-list` `package-nicknames` `list-all-packages` `%package-symbols` `%package-external-symbols` `package-local-nicknames` `add-package-local-nickname` `remove-package-local-nickname` |
 | Timing | `get-internal-real-time` |
 | Misc | `type-of` `gensym` |
@@ -288,10 +289,18 @@ Extended iteration, output formatting, and standard library completeness:
 - [ ] Missing sequence ops: `map-into`, `copy-seq`, `elt`, `(setf elt)`
 - [ ] Higher-order: `complement`, `constantly`
 
-### Phase 9: Numeric Tower
+### Phase 9: Numeric Tower (in progress)
 
 Full CL numeric type hierarchy with arithmetic contagion:
-- [ ] Bignums — arbitrary precision integers, heap-allocated variable-length digit arrays
+- [x] Bignums — arbitrary precision integers, heap-allocated 16-bit limb arrays (little-endian); schoolbook multiplication; Knuth Algorithm D division; automatic fixnum↔bignum promotion/demotion; all arithmetic ops dispatch through `cl_arith_*` layer
+- [x] Integer math: `gcd`, `lcm`, `expt` (binary exponentiation), `isqrt` (Newton's method), `ash`, `logand`, `logior`, `logxor`, `lognot`, `integer-length`, `evenp`, `oddp`, `truncate`, `rem`
+- [x] Constants: `most-positive-fixnum`, `most-negative-fixnum`
+- [x] Type hierarchy: `fixnum`/`bignum` < `integer` < `rational` < `real` < `number` in `typep` and `subtypep`
+- [x] `eql`/`equal`/hash-table support for bignums (value equality)
+
+619 host tests (8 suites), ~790+ Amiga batch tests — all passing.
+
+Remaining (deferred):
 - [ ] Ratios — normalized numerator/denominator pairs (fixnum or bignum), GCD reduction
 - [ ] Single-float — IEEE 754 32-bit, heap-allocated; software implementation (optional 68881/68882 FPU fast path)
 - [ ] Double-float — IEEE 754 64-bit, heap-allocated; software implementation (optional FPU)
@@ -299,17 +308,17 @@ Full CL numeric type hierarchy with arithmetic contagion:
 - [ ] Numeric contagion: integer → ratio → single-float → double-float; complex promotion
 - [ ] Reader syntax: ratios (`1/2`, `3/4`), floats (`1.0`, `1.5e3`, `1.0d0`), complex (`#C(1 2)`)
 - [ ] Division: `(/ 1 2)` → `1/2` (ratio), `(/ 1.0 2)` → `0.5` (float)
-- [ ] All arithmetic ops (`+` `-` `*` `/` `mod` `abs` `max` `min` `1+` `1-`) extended for full tower
-- [ ] Rounding: `floor`, `ceiling`, `truncate`, `round`, `ffloor`, `fceiling`, `ftruncate`, `fround`
+- [ ] All arithmetic ops extended for full tower
+- [ ] Rounding: `floor`, `ceiling`, `round`, `ffloor`, `fceiling`, `ftruncate`, `fround`
 - [ ] Ratio ops: `numerator`, `denominator`, `rational`, `rationalize`
 - [ ] Float ops: `float`, `float-digits`, `float-radix`, `float-sign`, `decode-float`, `integer-decode-float`, `scale-float`
 - [ ] Complex ops: `realpart`, `imagpart`, `conjugate`, `phase`
-- [ ] Math: `sqrt`, `isqrt`, `expt`, `log`, `exp`, `gcd`, `lcm`, `ash`, `logand`, `logior`, `logxor`, `lognot`, `logcount`
+- [ ] Math: `sqrt`, `log`, `exp`, `logcount`
 - [ ] Trig: `sin`, `cos`, `tan`, `asin`, `acos`, `atan` (software float)
 - [ ] Type predicates: `rationalp`, `ratiop`, `realp`, `complexp`, `floatp`, `single-float-p`, `double-float-p`
-- [ ] Constants: `most-positive-fixnum`, `most-negative-fixnum`, `pi`, float limits
+- [ ] Constants: `pi`, float limits
 - [ ] `random`, `make-random-state`, `*random-state*` — pseudo-random number generation
-- [ ] Bit manipulation: `ldb`, `dpb`, `byte`, `byte-size`, `byte-position`, `integer-length`, `logbitp`, `logtest`, `boole`
+- [ ] Bit manipulation: `ldb`, `dpb`, `byte`, `byte-size`, `byte-position`, `logbitp`, `logtest`, `boole`
 
 ### Phase 10: CLOS (in progress)
 
@@ -371,7 +380,7 @@ cl-amiga/
 │   └── overview.md        # This file
 ├── src/
 │   ├── main.c             # Entry point
-│   ├── core/              # Language implementation (24 modules)
+│   ├── core/              # Language implementation (25 modules)
 │   └── platform/          # OS abstraction (posix, amiga)
 ├── include/
 │   └── clamiga.h          # Public umbrella header
@@ -379,7 +388,7 @@ cl-amiga/
 │   └── boot.lisp          # Bootstrap macros/functions
 ├── tests/
 │   ├── test.h             # Test framework
-│   ├── test_*.c           # Host test suites (7 files, 529 tests)
+│   ├── test_*.c           # Host test suites (8 files, 619 tests)
 │   └── amiga/
 │       └── run-tests.lisp # AmigaOS batch tests (752 tests)
 ├── build/                 # Build output (gitignored)
@@ -390,7 +399,7 @@ cl-amiga/
 ## Verification Targets
 
 1. `(+ 1 2)` → `3` ✅
-2. `(defun fact (n) (if (<= n 1) 1 (* n (fact (1- n)))))` then `(fact 10)` → `3628800` ✅
+2. `(defun fact (n) (if (<= n 1) 1 (* n (fact (1- n)))))` then `(fact 10)` → `3628800` ✅ / `(fact 30)` → `265252859812191058636308480000000` (bignum) ✅
 3. `(mapcar #'1+ '(1 2 3))` → `(2 3 4)` ✅
 4. Cross-compile to m68k, run in FS-UAE ✅
 5. Run on real A1200 hardware

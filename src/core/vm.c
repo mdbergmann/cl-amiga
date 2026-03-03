@@ -2,6 +2,7 @@
 #include "opcodes.h"
 #include "symbol.h"
 #include "mem.h"
+#include "bignum.h"
 #include "error.h"
 #include "compiler.h"
 #include "printer.h"
@@ -512,38 +513,28 @@ CL_Obj cl_vm_eval(CL_Obj bytecode_obj)
 
         case OP_ADD: {
             CL_Obj b = cl_vm_pop(), a = cl_vm_pop();
-            if (!CL_FIXNUM_P(a) || !CL_FIXNUM_P(b))
-                cl_error(CL_ERR_TYPE, "+: not a number");
-            cl_vm_push(CL_MAKE_FIXNUM(CL_FIXNUM_VAL(a) + CL_FIXNUM_VAL(b)));
+            cl_vm_push(cl_arith_add(a, b));
             cl_mv_count = 1;
             break;
         }
 
         case OP_SUB: {
             CL_Obj b = cl_vm_pop(), a = cl_vm_pop();
-            if (!CL_FIXNUM_P(a) || !CL_FIXNUM_P(b))
-                cl_error(CL_ERR_TYPE, "-: not a number");
-            cl_vm_push(CL_MAKE_FIXNUM(CL_FIXNUM_VAL(a) - CL_FIXNUM_VAL(b)));
+            cl_vm_push(cl_arith_sub(a, b));
             cl_mv_count = 1;
             break;
         }
 
         case OP_MUL: {
             CL_Obj b = cl_vm_pop(), a = cl_vm_pop();
-            if (!CL_FIXNUM_P(a) || !CL_FIXNUM_P(b))
-                cl_error(CL_ERR_TYPE, "*: not a number");
-            cl_vm_push(CL_MAKE_FIXNUM(CL_FIXNUM_VAL(a) * CL_FIXNUM_VAL(b)));
+            cl_vm_push(cl_arith_mul(a, b));
             cl_mv_count = 1;
             break;
         }
 
         case OP_DIV: {
             CL_Obj b = cl_vm_pop(), a = cl_vm_pop();
-            if (!CL_FIXNUM_P(a) || !CL_FIXNUM_P(b))
-                cl_error(CL_ERR_TYPE, "/: not a number");
-            if (CL_FIXNUM_VAL(b) == 0)
-                cl_error(CL_ERR_DIVZERO, "Division by zero");
-            cl_vm_push(CL_MAKE_FIXNUM(CL_FIXNUM_VAL(a) / CL_FIXNUM_VAL(b)));
+            cl_vm_push(cl_arith_truncate(a, b));
             cl_mv_count = 1;
             break;
         }
@@ -557,27 +548,21 @@ CL_Obj cl_vm_eval(CL_Obj bytecode_obj)
 
         case OP_NUMEQ: {
             CL_Obj b = cl_vm_pop(), a = cl_vm_pop();
-            if (!CL_FIXNUM_P(a) || !CL_FIXNUM_P(b))
-                cl_error(CL_ERR_TYPE, "=: not a number");
-            cl_vm_push(CL_FIXNUM_VAL(a) == CL_FIXNUM_VAL(b) ? SYM_T : CL_NIL);
+            cl_vm_push(cl_arith_compare(a, b) == 0 ? SYM_T : CL_NIL);
             cl_mv_count = 1;
             break;
         }
 
         case OP_LT: {
             CL_Obj b = cl_vm_pop(), a = cl_vm_pop();
-            if (!CL_FIXNUM_P(a) || !CL_FIXNUM_P(b))
-                cl_error(CL_ERR_TYPE, "<: not a number");
-            cl_vm_push(CL_FIXNUM_VAL(a) < CL_FIXNUM_VAL(b) ? SYM_T : CL_NIL);
+            cl_vm_push(cl_arith_compare(a, b) < 0 ? SYM_T : CL_NIL);
             cl_mv_count = 1;
             break;
         }
 
         case OP_GT: {
             CL_Obj b = cl_vm_pop(), a = cl_vm_pop();
-            if (!CL_FIXNUM_P(a) || !CL_FIXNUM_P(b))
-                cl_error(CL_ERR_TYPE, ">: not a number");
-            cl_vm_push(CL_FIXNUM_VAL(a) > CL_FIXNUM_VAL(b) ? SYM_T : CL_NIL);
+            cl_vm_push(cl_arith_compare(a, b) > 0 ? SYM_T : CL_NIL);
             cl_mv_count = 1;
             break;
         }

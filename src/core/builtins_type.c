@@ -56,8 +56,11 @@ static int typep_symbol(CL_Obj obj, CL_Obj type_sym)
     if (strcmp(tname, "CONS") == 0)           return CL_CONS_P(obj);
     if (strcmp(tname, "LIST") == 0)           return CL_NULL_P(obj) || CL_CONS_P(obj);
     if (strcmp(tname, "ATOM") == 0)           return !CL_CONS_P(obj);
-    if (strcmp(tname, "INTEGER") == 0 || strcmp(tname, "FIXNUM") == 0 || strcmp(tname, "NUMBER") == 0)
-        return CL_FIXNUM_P(obj);
+    if (strcmp(tname, "FIXNUM") == 0)  return CL_FIXNUM_P(obj);
+    if (strcmp(tname, "BIGNUM") == 0)  return CL_BIGNUM_P(obj);
+    if (strcmp(tname, "INTEGER") == 0 || strcmp(tname, "NUMBER") == 0 ||
+        strcmp(tname, "RATIONAL") == 0 || strcmp(tname, "REAL") == 0)
+        return CL_INTEGER_P(obj);
     if (strcmp(tname, "CHARACTER") == 0)      return CL_CHAR_P(obj);
     if (strcmp(tname, "STRING") == 0)         return CL_STRING_P(obj);
     if (strcmp(tname, "VECTOR") == 0 || strcmp(tname, "SIMPLE-VECTOR") == 0 ||
@@ -361,7 +364,10 @@ enum TypeId {
     TID_NIL = 0,
     TID_NULL,
     TID_FIXNUM,
+    TID_BIGNUM,
     TID_INTEGER,
+    TID_RATIONAL,
+    TID_REAL,
     TID_NUMBER,
     TID_CHARACTER,
     TID_KEYWORD,
@@ -402,7 +408,10 @@ static int type_name_to_id(const char *name)
     if (strcmp(name, "NIL") == 0) return TID_NIL;
     if (strcmp(name, "NULL") == 0) return TID_NULL;
     if (strcmp(name, "FIXNUM") == 0) return TID_FIXNUM;
+    if (strcmp(name, "BIGNUM") == 0) return TID_BIGNUM;
     if (strcmp(name, "INTEGER") == 0) return TID_INTEGER;
+    if (strcmp(name, "RATIONAL") == 0) return TID_RATIONAL;
+    if (strcmp(name, "REAL") == 0) return TID_REAL;
     if (strcmp(name, "NUMBER") == 0) return TID_NUMBER;
     if (strcmp(name, "CHARACTER") == 0) return TID_CHARACTER;
     if (strcmp(name, "KEYWORD") == 0) return TID_KEYWORD;
@@ -451,9 +460,15 @@ static int subtype_check(int id1, int id2)
     /* t is NOT subtype of anything except t */
     if (id1 == TID_T) return 0;
 
-    /* Numeric hierarchy: fixnum < integer < number */
-    if (id1 == TID_FIXNUM && (id2 == TID_INTEGER || id2 == TID_NUMBER)) return 1;
-    if (id1 == TID_INTEGER && id2 == TID_NUMBER) return 1;
+    /* Numeric hierarchy: fixnum/bignum < integer < rational < real < number */
+    if (id1 == TID_FIXNUM && (id2 == TID_INTEGER || id2 == TID_RATIONAL ||
+                               id2 == TID_REAL || id2 == TID_NUMBER)) return 1;
+    if (id1 == TID_BIGNUM && (id2 == TID_INTEGER || id2 == TID_RATIONAL ||
+                               id2 == TID_REAL || id2 == TID_NUMBER)) return 1;
+    if (id1 == TID_INTEGER && (id2 == TID_RATIONAL || id2 == TID_REAL ||
+                                id2 == TID_NUMBER)) return 1;
+    if (id1 == TID_RATIONAL && (id2 == TID_REAL || id2 == TID_NUMBER)) return 1;
+    if (id1 == TID_REAL && id2 == TID_NUMBER) return 1;
 
     /* List hierarchy: null < list, cons < list, list < sequence */
     if (id1 == TID_NULL && (id2 == TID_LIST || id2 == TID_SYMBOL || id2 == TID_SEQUENCE)) return 1;
