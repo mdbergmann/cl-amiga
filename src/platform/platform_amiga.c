@@ -57,6 +57,17 @@ void platform_ungetchar(int ch)
     }
 }
 
+void platform_drain_input(void)
+{
+    /* AmigaOS CLI leaks command line text to Input() (stdin).
+     * Drain any pending chars before the interactive REPL starts. */
+    BPTR in = Input();
+    if (!in) return;
+    while (WaitForChar(in, 1000)) {  /* 1ms timeout per char */
+        if (FGetC(in) < 0) break;
+    }
+}
+
 char *platform_file_read(const char *path, unsigned long *size_out)
 {
     BPTR fh;

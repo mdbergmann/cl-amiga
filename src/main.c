@@ -234,8 +234,18 @@ int main(int argc, char *argv[])
     } else if (batch) {
         cl_repl_batch();
     } else {
+        /* Drain residual CLI data from stdin (AmigaOS leaks command line to Input()) */
+        platform_drain_input();
         cl_color_set(CL_COLOR_BOLD_CYAN);
-        platform_write_string("CL-Amiga v0.1");
+        platform_write_string(
+            "\n"
+            "  ))     \\\n"
+            " ))       \\          CL-Amiga v0.1\n"
+            "))         \\\n"
+            "))         /\\        Common Lisp for AmigaOS 3+\n"
+            " ))       /  \\\n"
+            "  ))     /    \\\n"
+        );
         cl_color_reset();
         platform_write_string("\nType (quit) to exit.\n\n");
         cl_repl();

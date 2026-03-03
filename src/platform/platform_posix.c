@@ -51,6 +51,11 @@ void platform_ungetchar(int ch)
     ungetc(ch, stdin);
 }
 
+void platform_drain_input(void)
+{
+    /* No-op on POSIX — stdin doesn't have residual CLI data */
+}
+
 char *platform_file_read(const char *path, unsigned long *size_out)
 {
     FILE *f;

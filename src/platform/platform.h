@@ -28,6 +28,7 @@ void  platform_write_string(const char *str);
 int   platform_read_line(char *buf, int bufsize);
 int   platform_getchar(void);
 void  platform_ungetchar(int ch);
+void  platform_drain_input(void);  /* Drain residual data from stdin (AmigaOS CLI leak) */
 
 /* File I/O (bulk read) */
 char *platform_file_read(const char *path, unsigned long *size_out);
