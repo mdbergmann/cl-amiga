@@ -272,6 +272,169 @@ TEST(scale_float_error_not_float)
     ASSERT_STR_EQ(eval_print("(scale-float 5 3)"), "ERROR:2");
 }
 
+/* ================================================================
+ * Step 10: Rounding functions
+ * ================================================================ */
+
+/* --- truncate (float-aware + MV) --- */
+
+TEST(truncate_float_1arg)
+{
+    ASSERT_STR_EQ(eval_print("(truncate 2.7)"), "2");
+    ASSERT_STR_EQ(eval_print("(truncate -2.7)"), "-2");
+    ASSERT_STR_EQ(eval_print("(truncate 2.0)"), "2");
+}
+
+TEST(truncate_float_2args)
+{
+    ASSERT_STR_EQ(eval_print("(truncate 10.0 3)"), "3");
+    ASSERT_STR_EQ(eval_print("(truncate -10.0 3)"), "-3");
+}
+
+TEST(truncate_mv)
+{
+    ASSERT_STR_EQ(eval_print("(multiple-value-list (truncate 7 2))"), "(3 1)");
+    ASSERT_STR_EQ(eval_print("(multiple-value-list (truncate -7 2))"), "(-3 -1)");
+    ASSERT_STR_EQ(eval_print("(multiple-value-list (truncate 2.5))"), "(2 0.5)");
+    ASSERT_STR_EQ(eval_print("(multiple-value-list (truncate -2.5))"), "(-2 -0.5)");
+}
+
+/* --- floor --- */
+
+TEST(floor_integer)
+{
+    ASSERT_STR_EQ(eval_print("(floor 7 2)"), "3");
+    ASSERT_STR_EQ(eval_print("(floor -7 2)"), "-4");
+    ASSERT_STR_EQ(eval_print("(floor 7 -2)"), "-4");
+    ASSERT_STR_EQ(eval_print("(floor -7 -2)"), "3");
+}
+
+TEST(floor_float_1arg)
+{
+    ASSERT_STR_EQ(eval_print("(floor 2.7)"), "2");
+    ASSERT_STR_EQ(eval_print("(floor -2.7)"), "-3");
+    ASSERT_STR_EQ(eval_print("(floor 2.0)"), "2");
+}
+
+TEST(floor_float_2args)
+{
+    ASSERT_STR_EQ(eval_print("(floor 10.0 3)"), "3");
+    ASSERT_STR_EQ(eval_print("(floor -10.0 3)"), "-4");
+}
+
+TEST(floor_mv)
+{
+    ASSERT_STR_EQ(eval_print("(multiple-value-list (floor 7 2))"), "(3 1)");
+    ASSERT_STR_EQ(eval_print("(multiple-value-list (floor -7 2))"), "(-4 1)");
+    ASSERT_STR_EQ(eval_print("(multiple-value-list (floor 2.5))"), "(2 0.5)");
+    ASSERT_STR_EQ(eval_print("(multiple-value-list (floor -2.5))"), "(-3 0.5)");
+}
+
+/* --- ceiling --- */
+
+TEST(ceiling_integer)
+{
+    ASSERT_STR_EQ(eval_print("(ceiling 7 2)"), "4");
+    ASSERT_STR_EQ(eval_print("(ceiling -7 2)"), "-3");
+    ASSERT_STR_EQ(eval_print("(ceiling 7 -2)"), "-3");
+    ASSERT_STR_EQ(eval_print("(ceiling -7 -2)"), "4");
+}
+
+TEST(ceiling_float_1arg)
+{
+    ASSERT_STR_EQ(eval_print("(ceiling 2.3)"), "3");
+    ASSERT_STR_EQ(eval_print("(ceiling -2.3)"), "-2");
+    ASSERT_STR_EQ(eval_print("(ceiling 2.0)"), "2");
+}
+
+TEST(ceiling_mv)
+{
+    ASSERT_STR_EQ(eval_print("(multiple-value-list (ceiling 7 2))"), "(4 -1)");
+    ASSERT_STR_EQ(eval_print("(multiple-value-list (ceiling -7 2))"), "(-3 -1)");
+    ASSERT_STR_EQ(eval_print("(multiple-value-list (ceiling 2.5))"), "(3 -0.5)");
+    ASSERT_STR_EQ(eval_print("(multiple-value-list (ceiling -2.5))"), "(-2 -0.5)");
+}
+
+/* --- round --- */
+
+TEST(round_integer)
+{
+    ASSERT_STR_EQ(eval_print("(round 7 2)"), "4");   /* 3.5 → 4 (even) */
+    ASSERT_STR_EQ(eval_print("(round 5 2)"), "2");   /* 2.5 → 2 (even) */
+    ASSERT_STR_EQ(eval_print("(round 8 3)"), "3");   /* 2.67 → 3 */
+    ASSERT_STR_EQ(eval_print("(round 7 3)"), "2");   /* 2.33 → 2 */
+}
+
+TEST(round_float_1arg)
+{
+    ASSERT_STR_EQ(eval_print("(round 2.5)"), "2");   /* banker's: even */
+    ASSERT_STR_EQ(eval_print("(round 3.5)"), "4");   /* banker's: even */
+    ASSERT_STR_EQ(eval_print("(round 2.3)"), "2");
+    ASSERT_STR_EQ(eval_print("(round 2.7)"), "3");
+    ASSERT_STR_EQ(eval_print("(round -2.5)"), "-2");
+    ASSERT_STR_EQ(eval_print("(round -3.5)"), "-4");
+}
+
+TEST(round_mv)
+{
+    ASSERT_STR_EQ(eval_print("(multiple-value-list (round 2.5))"), "(2 0.5)");
+    ASSERT_STR_EQ(eval_print("(multiple-value-list (round 3.5))"), "(4 -0.5)");
+}
+
+/* --- f-variants --- */
+
+TEST(ffloor_basic)
+{
+    ASSERT_STR_EQ(eval_print("(ffloor 2.7)"), "2.0");
+    ASSERT_STR_EQ(eval_print("(ffloor -2.7)"), "-3.0");
+    ASSERT_STR_EQ(eval_print("(ffloor 7 2)"), "3.0");
+}
+
+TEST(fceiling_basic)
+{
+    ASSERT_STR_EQ(eval_print("(fceiling 2.3)"), "3.0");
+    ASSERT_STR_EQ(eval_print("(fceiling -2.3)"), "-2.0");
+}
+
+TEST(ftruncate_basic)
+{
+    ASSERT_STR_EQ(eval_print("(ftruncate 2.7)"), "2.0");
+    ASSERT_STR_EQ(eval_print("(ftruncate -2.7)"), "-2.0");
+}
+
+TEST(fround_basic)
+{
+    ASSERT_STR_EQ(eval_print("(fround 2.5)"), "2.0");
+    ASSERT_STR_EQ(eval_print("(fround 3.5)"), "4.0");
+}
+
+TEST(ffloor_double)
+{
+    ASSERT_STR_EQ(eval_print("(ffloor 2.7d0)"), "2.0d0");
+}
+
+TEST(ffloor_mv)
+{
+    ASSERT_STR_EQ(eval_print("(multiple-value-list (ffloor 2.5))"), "(2.0 0.5)");
+    ASSERT_STR_EQ(eval_print("(multiple-value-list (ffloor 7 2))"), "(3.0 1)");
+}
+
+/* --- mod/rem with floats --- */
+
+TEST(mod_float)
+{
+    ASSERT_STR_EQ(eval_print("(mod 10.0 3)"), "1.0");
+    ASSERT_STR_EQ(eval_print("(mod -10.0 3)"), "2.0");
+    ASSERT_STR_EQ(eval_print("(mod 10.0 -3)"), "-2.0");
+}
+
+TEST(rem_float)
+{
+    ASSERT_STR_EQ(eval_print("(rem 10.0 3)"), "1.0");
+    ASSERT_STR_EQ(eval_print("(rem -10.0 3)"), "-1.0");
+    ASSERT_STR_EQ(eval_print("(rem 10.0 -3)"), "1.0");
+}
+
 /* ================================================================ */
 
 int main(void)
@@ -323,6 +486,29 @@ int main(void)
     RUN(decode_float_error_not_float);
     RUN(integer_decode_float_error_not_float);
     RUN(scale_float_error_not_float);
+
+    /* Step 10: rounding */
+    RUN(truncate_float_1arg);
+    RUN(truncate_float_2args);
+    RUN(truncate_mv);
+    RUN(floor_integer);
+    RUN(floor_float_1arg);
+    RUN(floor_float_2args);
+    RUN(floor_mv);
+    RUN(ceiling_integer);
+    RUN(ceiling_float_1arg);
+    RUN(ceiling_mv);
+    RUN(round_integer);
+    RUN(round_float_1arg);
+    RUN(round_mv);
+    RUN(ffloor_basic);
+    RUN(fceiling_basic);
+    RUN(ftruncate_basic);
+    RUN(fround_basic);
+    RUN(ffloor_double);
+    RUN(ffloor_mv);
+    RUN(mod_float);
+    RUN(rem_float);
 
     teardown();
     REPORT();

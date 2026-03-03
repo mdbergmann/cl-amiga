@@ -298,25 +298,40 @@ Full CL numeric type hierarchy with arithmetic contagion:
 - [x] Type hierarchy: `fixnum`/`bignum` < `integer` < `rational` < `real` < `number` in `typep` and `subtypep`
 - [x] `eql`/`equal`/hash-table support for bignums (value equality)
 
-619 host tests (8 suites), 793 Amiga batch tests — all passing.
+Floats (steps 1-9 of 16):
+- [x] Single-float — IEEE 754 32-bit, heap-allocated (`CL_SingleFloat`, 8 bytes)
+- [x] Double-float — IEEE 754 64-bit, heap-allocated (`CL_DoubleFloat`, 12 bytes)
+- [x] Contagion: integer + float → float; single + double → double
+- [x] Reader: `1.0`, `1.5e3` → single-float; `1.0d0`, `1.5d3` → double-float
+- [x] Printer: single `%g` with `.0`; double `%.15g` with `d` exponent
+- [x] Arithmetic dispatch: all `cl_arith_*` ops accept floats
+- [x] Type system: `typep`, `subtypep`, `coerce`, `type-of` for float types
+- [x] Equality/hash: `eql`/`equal` value comparison, bit-based hashing
+- [x] Predicates: `floatp`, `realp`, `rationalp`, `numberp` updated
+- [x] Float-specific: `float`, `float-digits`, `float-radix`, `float-sign`, `decode-float`, `integer-decode-float`, `scale-float`
+- [x] Amiga build: `-lmieee` (software float); `FPU=1` → `-fpu=68881 -lm881` (hardware FPU)
+
+**Known FPU issue:** 68881/68040 hardware FPU (`FPU=1`) has minor precision differences — `integer-decode-float` significand off-by-one on some values, and `scale-float` double formatting mismatch. Software float (`-lmieee`, default) passes all tests. 2/837 Amiga tests fail with `FPU=1`.
+
+Rounding (step 10):
+- [x] `floor`, `ceiling`, `round`, `truncate` — accept integers and floats, return 2 values (quotient, remainder)
+- [x] `ffloor`, `fceiling`, `ftruncate`, `fround` — f-variants return float quotient
+- [x] `mod`/`rem` updated for float arguments
+
+670 host tests (9 suites), 877 Amiga batch tests — all passing (software float).
 
 Remaining (deferred):
 - [ ] Ratios — normalized numerator/denominator pairs (fixnum or bignum), GCD reduction
-- [ ] Single-float — IEEE 754 32-bit, heap-allocated; software implementation (optional 68881/68882 FPU fast path)
-- [ ] Double-float — IEEE 754 64-bit, heap-allocated; software implementation (optional FPU)
 - [ ] Complex numbers — real + imaginary parts, any real type
 - [ ] Numeric contagion: integer → ratio → single-float → double-float; complex promotion
-- [ ] Reader syntax: ratios (`1/2`, `3/4`), floats (`1.0`, `1.5e3`, `1.0d0`), complex (`#C(1 2)`)
-- [ ] Division: `(/ 1 2)` → `1/2` (ratio), `(/ 1.0 2)` → `0.5` (float)
-- [ ] All arithmetic ops extended for full tower
-- [ ] Rounding: `floor`, `ceiling`, `round`, `ffloor`, `fceiling`, `ftruncate`, `fround`
+- [ ] Reader syntax: ratios (`1/2`, `3/4`), complex (`#C(1 2)`)
+- [ ] Division: `(/ 1 2)` → `1/2` (ratio)
 - [ ] Ratio ops: `numerator`, `denominator`, `rational`, `rationalize`
-- [ ] Float ops: `float`, `float-digits`, `float-radix`, `float-sign`, `decode-float`, `integer-decode-float`, `scale-float`
 - [ ] Complex ops: `realpart`, `imagpart`, `conjugate`, `phase`
-- [ ] Math: `sqrt`, `log`, `exp`, `logcount`
-- [ ] Trig: `sin`, `cos`, `tan`, `asin`, `acos`, `atan` (software float)
-- [ ] Type predicates: `rationalp`, `ratiop`, `realp`, `complexp`, `floatp`, `single-float-p`, `double-float-p`
-- [ ] Constants: `pi`, float limits
+- [ ] Math: `sqrt`, `log`, `exp`, `expt` (float-aware), `logcount`
+- [ ] Trig: `sin`, `cos`, `tan`, `asin`, `acos`, `atan`
+- [ ] Type predicates: `ratiop`, `complexp`
+- [ ] Constants: `pi`, float limits, `*read-default-float-format*`
 - [ ] `random`, `make-random-state`, `*random-state*` — pseudo-random number generation
 - [ ] Bit manipulation: `ldb`, `dpb`, `byte`, `byte-size`, `byte-position`, `logbitp`, `logtest`, `boole`
 

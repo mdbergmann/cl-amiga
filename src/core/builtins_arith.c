@@ -32,6 +32,161 @@ static void check_integer(CL_Obj obj, const char *op)
         cl_error(CL_ERR_TYPE, "%s: not an integer", op);
 }
 
+/* --- Rounding helpers --- */
+
+/* Forward declaration (defined later in this file for integer-decode-float) */
+static CL_Obj double_int_to_obj(double val);
+
+/* Convert a whole-number double (positive or negative) to fixnum or bignum */
+static CL_Obj double_to_integer(double val)
+{
+    if (val >= (double)CL_FIXNUM_MIN && val <= (double)CL_FIXNUM_MAX)
+        return CL_MAKE_FIXNUM((int32_t)val);
+    if (val >= 0.0)
+        return double_int_to_obj(val);
+    return cl_arith_negate(double_int_to_obj(-val));
+}
+
+/* Round-to-nearest-even (banker's rounding) */
+static double cl_round_even(double val)
+{
+    double down = floor(val);
+    double frac = val - down;
+    if (frac > 0.5) return down + 1.0;
+    if (frac < 0.5) return down;
+    /* Exactly 0.5: round to nearest even */
+    if (fmod(down, 2.0) == 0.0) return down;
+    return down + 1.0;
+}
+
+enum { ROUND_FLOOR, ROUND_CEILING, ROUND_TRUNCATE, ROUND_ROUND };
+
+/* Apply rounding mode to a double */
+static double apply_round(double val, int mode)
+{
+    switch (mode) {
+    case ROUND_FLOOR:    return floor(val);
+    case ROUND_CEILING:  return ceil(val);
+    case ROUND_TRUNCATE: return (val >= 0.0) ? floor(val) : ceil(val);
+    case ROUND_ROUND:    return cl_round_even(val);
+    }
+    return val;
+}
+
+/* Core rounding: floor/ceiling/truncate/round with 1 or 2 args.
+   If float_quotient is true, quotient is returned as float (f-variants). */
+static CL_Obj do_rounding(CL_Obj *args, int n, int mode,
+                           const char *name, int float_quotient)
+{
+    CL_Obj num = args[0];
+    check_number(num, name);
+
+    if (n == 1) {
+        /* Single argument */
+        if (CL_INTEGER_P(num)) {
+            CL_Obj q, r;
+            if (float_quotient) {
+                q = cl_make_single_float((float)cl_to_double(num));
+                r = CL_MAKE_FIXNUM(0);
+            } else {
+                q = num;
+                r = CL_MAKE_FIXNUM(0);
+            }
+            cl_mv_count = 2;
+            cl_mv_values[0] = q;
+            cl_mv_values[1] = r;
+            return q;
+        }
+        /* Float argument */
+        {
+            double val = cl_to_double(num);
+            double dq = apply_round(val, mode);
+            double dr = val - dq;
+            int is_dbl = CL_DOUBLE_FLOAT_P(num);
+            CL_Obj qobj, robj;
+            if (float_quotient)
+                qobj = is_dbl ? cl_make_double_float(dq)
+                              : cl_make_single_float((float)dq);
+            else
+                qobj = double_to_integer(dq);
+            robj = is_dbl ? cl_make_double_float(dr)
+                          : cl_make_single_float((float)dr);
+            cl_mv_count = 2;
+            cl_mv_values[0] = qobj;
+            cl_mv_values[1] = robj;
+            return qobj;
+        }
+    }
+
+    /* Two arguments */
+    check_number(args[1], name);
+
+    if (CL_INTEGER_P(num) && CL_INTEGER_P(args[1])) {
+        /* Integer path: exact arithmetic */
+        CL_Obj q = cl_arith_truncate(num, args[1]);
+        CL_Obj r = cl_arith_sub(num, cl_arith_mul(q, args[1]));
+
+        /* Adjust based on rounding mode */
+        if (mode != ROUND_TRUNCATE && !cl_arith_zerop(r)) {
+            if (mode == ROUND_FLOOR) {
+                if (cl_arith_minusp(r) != cl_arith_minusp(args[1])) {
+                    q = cl_arith_sub(q, CL_MAKE_FIXNUM(1));
+                    r = cl_arith_add(r, args[1]);
+                }
+            } else if (mode == ROUND_CEILING) {
+                if (cl_arith_minusp(r) == cl_arith_minusp(args[1])) {
+                    q = cl_arith_add(q, CL_MAKE_FIXNUM(1));
+                    r = cl_arith_sub(r, args[1]);
+                }
+            } else { /* ROUND_ROUND */
+                CL_Obj abs_2r = cl_arith_abs(cl_arith_add(r, r));
+                CL_Obj abs_b = cl_arith_abs(args[1]);
+                int cmp = cl_arith_compare(abs_2r, abs_b);
+                if (cmp > 0 || (cmp == 0 && !cl_arith_evenp(q))) {
+                    if (cl_arith_minusp(num) == cl_arith_minusp(args[1])) {
+                        q = cl_arith_add(q, CL_MAKE_FIXNUM(1));
+                        r = cl_arith_sub(r, args[1]);
+                    } else {
+                        q = cl_arith_sub(q, CL_MAKE_FIXNUM(1));
+                        r = cl_arith_add(r, args[1]);
+                    }
+                }
+            }
+        }
+
+        if (float_quotient)
+            q = cl_make_single_float((float)cl_to_double(q));
+
+        cl_mv_count = 2;
+        cl_mv_values[0] = q;
+        cl_mv_values[1] = r;
+        return q;
+    }
+
+    /* Float path */
+    {
+        double a = cl_to_double(num);
+        double b = cl_to_double(args[1]);
+        double dq, dr;
+        int is_dbl = CL_DOUBLE_FLOAT_P(num) || CL_DOUBLE_FLOAT_P(args[1]);
+        CL_Obj qobj, robj;
+        if (b == 0.0) cl_error(CL_ERR_DIVZERO, "Division by zero");
+        dq = apply_round(a / b, mode);
+        dr = a - dq * b;
+        if (float_quotient)
+            qobj = is_dbl ? cl_make_double_float(dq)
+                          : cl_make_single_float((float)dq);
+        else
+            qobj = double_to_integer(dq);
+        robj = is_dbl ? cl_make_double_float(dr)
+                      : cl_make_single_float((float)dr);
+        cl_mv_count = 2;
+        cl_mv_values[0] = qobj;
+        cl_mv_values[1] = robj;
+        return qobj;
+    }
+}
+
 /* --- Arithmetic --- */
 
 static CL_Obj bi_add(CL_Obj *args, int n)
@@ -104,20 +259,48 @@ static CL_Obj bi_div(CL_Obj *args, int n)
     return result;
 }
 
-static CL_Obj bi_truncate(CL_Obj *args, int n)
-{
-    check_integer(args[0], "TRUNCATE");
-    if (n == 1) return args[0];  /* (truncate integer) = identity for integers */
-    check_integer(args[1], "TRUNCATE");
-    return cl_arith_truncate(args[0], args[1]);
-}
+/* --- Rounding builtins --- */
 
+static CL_Obj bi_floor(CL_Obj *args, int n)
+{ return do_rounding(args, n, ROUND_FLOOR, "FLOOR", 0); }
+
+static CL_Obj bi_ceiling(CL_Obj *args, int n)
+{ return do_rounding(args, n, ROUND_CEILING, "CEILING", 0); }
+
+static CL_Obj bi_truncate(CL_Obj *args, int n)
+{ return do_rounding(args, n, ROUND_TRUNCATE, "TRUNCATE", 0); }
+
+static CL_Obj bi_round(CL_Obj *args, int n)
+{ return do_rounding(args, n, ROUND_ROUND, "ROUND", 0); }
+
+static CL_Obj bi_ffloor(CL_Obj *args, int n)
+{ return do_rounding(args, n, ROUND_FLOOR, "FFLOOR", 1); }
+
+static CL_Obj bi_fceiling(CL_Obj *args, int n)
+{ return do_rounding(args, n, ROUND_CEILING, "FCEILING", 1); }
+
+static CL_Obj bi_ftruncate(CL_Obj *args, int n)
+{ return do_rounding(args, n, ROUND_TRUNCATE, "FTRUNCATE", 1); }
+
+static CL_Obj bi_fround(CL_Obj *args, int n)
+{ return do_rounding(args, n, ROUND_ROUND, "FROUND", 1); }
+
+/* (rem number divisor) — truncation remainder (sign follows dividend) */
 static CL_Obj bi_rem(CL_Obj *args, int n)
 {
     CL_UNUSED(n);
-    check_integer(args[0], "REM");
-    check_integer(args[1], "REM");
-    /* REM: truncation remainder (sign follows dividend) */
+    check_number(args[0], "REM");
+    check_number(args[1], "REM");
+    if (CL_FLOATP(args[0]) || CL_FLOATP(args[1])) {
+        double a = cl_to_double(args[0]);
+        double b = cl_to_double(args[1]);
+        double r;
+        int is_dbl = CL_DOUBLE_FLOAT_P(args[0]) || CL_DOUBLE_FLOAT_P(args[1]);
+        if (b == 0.0) cl_error(CL_ERR_DIVZERO, "Division by zero");
+        r = fmod(a, b);
+        return is_dbl ? cl_make_double_float(r) : cl_make_single_float((float)r);
+    }
+    /* Integer case */
     if (CL_FIXNUM_P(args[0]) && CL_FIXNUM_P(args[1])) {
         int32_t va = CL_FIXNUM_VAL(args[0]);
         int32_t vb = CL_FIXNUM_VAL(args[1]);
@@ -130,11 +313,25 @@ static CL_Obj bi_rem(CL_Obj *args, int n)
     }
 }
 
+/* (mod number divisor) — floor remainder (sign follows divisor) */
 static CL_Obj bi_mod(CL_Obj *args, int n)
 {
     CL_UNUSED(n);
-    check_integer(args[0], "MOD");
-    check_integer(args[1], "MOD");
+    check_number(args[0], "MOD");
+    check_number(args[1], "MOD");
+    if (CL_FLOATP(args[0]) || CL_FLOATP(args[1])) {
+        double a = cl_to_double(args[0]);
+        double b = cl_to_double(args[1]);
+        double r;
+        int is_dbl = CL_DOUBLE_FLOAT_P(args[0]) || CL_DOUBLE_FLOAT_P(args[1]);
+        if (b == 0.0) cl_error(CL_ERR_DIVZERO, "Division by zero");
+        r = fmod(a, b);
+        /* CL mod: result has same sign as divisor */
+        if (r != 0.0 && ((r < 0.0) != (b < 0.0)))
+            r += b;
+        return is_dbl ? cl_make_double_float(r) : cl_make_single_float((float)r);
+    }
+    /* Integer case */
     return cl_arith_mod(args[0], args[1]);
 }
 
@@ -635,7 +832,14 @@ void cl_builtins_arith_init(void)
     defun("-", bi_sub, 1, -1);
     defun("*", bi_mul, 0, -1);
     defun("/", bi_div, 1, -1);
+    defun("FLOOR", bi_floor, 1, 2);
+    defun("CEILING", bi_ceiling, 1, 2);
     defun("TRUNCATE", bi_truncate, 1, 2);
+    defun("ROUND", bi_round, 1, 2);
+    defun("FFLOOR", bi_ffloor, 1, 2);
+    defun("FCEILING", bi_fceiling, 1, 2);
+    defun("FTRUNCATE", bi_ftruncate, 1, 2);
+    defun("FROUND", bi_fround, 1, 2);
     defun("REM", bi_rem, 2, 2);
     defun("MOD", bi_mod, 2, 2);
     defun("1+", bi_1plus, 1, 1);
