@@ -322,3 +322,31 @@
     (invoke-debugger (make-condition 'simple-condition
                                      :format-control format-control))
     (continue () nil)))
+
+;; --- String stream macros ---
+
+(defmacro with-output-to-string (spec &body body)
+  (let ((var (car spec)))
+    `(let ((,var (make-string-output-stream)))
+       (unwind-protect
+         (progn ,@body (get-output-stream-string ,var))
+         (close ,var)))))
+
+(defmacro with-input-from-string (spec &body body)
+  (let ((var (car spec))
+        (string (cadr spec)))
+    `(let ((,var (make-string-input-stream ,string)))
+       (unwind-protect
+         (progn ,@body)
+         (close ,var)))))
+
+;; --- Printer-to-string functions ---
+
+(defun prin1-to-string (object)
+  (with-output-to-string (s) (prin1 object s)))
+
+(defun princ-to-string (object)
+  (with-output-to-string (s) (princ object s)))
+
+(defun write-to-string (object)
+  (with-output-to-string (s) (prin1 object s)))

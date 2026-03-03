@@ -4,6 +4,7 @@
 #include "mem.h"
 #include "bignum.h"
 #include "float.h"
+#include "stream.h"
 #include "../platform/platform.h"
 #include <stdio.h>
 #include <string.h>
@@ -12,7 +13,10 @@
 /* Output mode */
 static int escape_mode = 1;   /* 1 = prin1, 0 = princ */
 
-/* Output targets */
+/* Stream-based output target (CL_NIL when using buffer mode) */
+static CL_Obj printer_stream = CL_NIL;
+
+/* Buffer output (for cl_prin1_to_string / cl_princ_to_string) */
 static int to_buffer = 0;
 static char *out_buf = NULL;
 static int out_pos = 0;
@@ -20,7 +24,9 @@ static int out_size = 0;
 
 static void out_char(int ch)
 {
-    if (to_buffer) {
+    if (printer_stream != CL_NIL) {
+        cl_stream_write_char(printer_stream, ch);
+    } else if (to_buffer) {
         if (out_pos < out_size - 1)
             out_buf[out_pos++] = (char)ch;
     } else {
@@ -31,7 +37,11 @@ static void out_char(int ch)
 
 static void out_str(const char *s)
 {
-    while (*s) out_char(*s++);
+    if (printer_stream != CL_NIL) {
+        cl_stream_write_string(printer_stream, s, (uint32_t)strlen(s));
+    } else {
+        while (*s) out_char(*s++);
+    }
 }
 
 static void out_int(int32_t val)
@@ -348,51 +358,86 @@ static void print_obj(CL_Obj obj)
     }
 }
 
-/* Public API */
+/* Public API — stream-based */
+
+void cl_prin1_to_stream(CL_Obj obj, CL_Obj stream)
+{
+    CL_Obj prev = printer_stream;
+    escape_mode = 1;
+    to_buffer = 0;
+    printer_stream = stream;
+    print_obj(obj);
+    printer_stream = prev;
+}
+
+void cl_princ_to_stream(CL_Obj obj, CL_Obj stream)
+{
+    CL_Obj prev = printer_stream;
+    escape_mode = 0;
+    to_buffer = 0;
+    printer_stream = stream;
+    print_obj(obj);
+    printer_stream = prev;
+}
+
+void cl_print_to_stream(CL_Obj obj, CL_Obj stream)
+{
+    cl_stream_write_char(stream, '\n');
+    cl_prin1_to_stream(obj, stream);
+    cl_stream_write_char(stream, ' ');
+}
+
+/* Convenience wrappers — print to *standard-output* */
 
 void cl_prin1(CL_Obj obj)
 {
-    escape_mode = 1;
-    to_buffer = 0;
-    print_obj(obj);
+    CL_Symbol *sym = (CL_Symbol *)CL_OBJ_TO_PTR(SYM_STANDARD_OUTPUT);
+    cl_prin1_to_stream(obj, sym->value);
 }
 
 void cl_princ(CL_Obj obj)
 {
-    escape_mode = 0;
-    to_buffer = 0;
-    print_obj(obj);
+    CL_Symbol *sym = (CL_Symbol *)CL_OBJ_TO_PTR(SYM_STANDARD_OUTPUT);
+    cl_princ_to_stream(obj, sym->value);
 }
 
 void cl_print(CL_Obj obj)
 {
-    cl_prin1(obj);
-    platform_write_string("\n");
+    CL_Symbol *sym = (CL_Symbol *)CL_OBJ_TO_PTR(SYM_STANDARD_OUTPUT);
+    cl_print_to_stream(obj, sym->value);
 }
+
+/* C-internal: print to a C buffer (for vm.c, debugger.c, etc.) */
 
 int cl_prin1_to_string(CL_Obj obj, char *buf, int bufsize)
 {
+    CL_Obj prev = printer_stream;
     escape_mode = 1;
     to_buffer = 1;
+    printer_stream = CL_NIL;
     out_buf = buf;
     out_pos = 0;
     out_size = bufsize;
     print_obj(obj);
     if (out_pos < out_size) out_buf[out_pos] = '\0';
     to_buffer = 0;
+    printer_stream = prev;
     return out_pos;
 }
 
 int cl_princ_to_string(CL_Obj obj, char *buf, int bufsize)
 {
+    CL_Obj prev = printer_stream;
     escape_mode = 0;
     to_buffer = 1;
+    printer_stream = CL_NIL;
     out_buf = buf;
     out_pos = 0;
     out_size = bufsize;
     print_obj(obj);
     if (out_pos < out_size) out_buf[out_pos] = '\0';
     to_buffer = 0;
+    printer_stream = prev;
     return out_pos;
 }
 

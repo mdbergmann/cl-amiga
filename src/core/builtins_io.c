@@ -23,59 +23,112 @@ static void defun(const char *name, CL_CFunc func, int min, int max)
     s->value = fn;
 }
 
+/* --- Stream resolution helper (matches builtins_stream.c pattern) --- */
+
+static CL_Obj resolve_output_stream_io(CL_Obj *args, int n, int idx)
+{
+    CL_Obj s;
+    CL_Symbol *sym;
+    if (idx >= n || CL_NULL_P(args[idx])) {
+        sym = (CL_Symbol *)CL_OBJ_TO_PTR(SYM_STANDARD_OUTPUT);
+        return sym->value;
+    }
+    s = args[idx];
+    if (s == CL_T) {
+        sym = (CL_Symbol *)CL_OBJ_TO_PTR(SYM_TERMINAL_IO);
+        return sym->value;
+    }
+    if (!CL_STREAM_P(s))
+        cl_error(CL_ERR_TYPE, "argument is not a stream");
+    return s;
+}
+
 /* --- I/O --- */
 
 static CL_Obj bi_print(CL_Obj *args, int n)
 {
-    CL_UNUSED(n);
-    cl_print(args[0]);
+    CL_Obj stream = resolve_output_stream_io(args, n, 1);
+    cl_print_to_stream(args[0], stream);
     return args[0];
 }
 
 static CL_Obj bi_prin1(CL_Obj *args, int n)
 {
-    CL_UNUSED(n);
-    cl_prin1(args[0]);
+    CL_Obj stream = resolve_output_stream_io(args, n, 1);
+    cl_prin1_to_stream(args[0], stream);
     return args[0];
 }
 
 static CL_Obj bi_princ(CL_Obj *args, int n)
 {
-    CL_UNUSED(n);
-    cl_princ(args[0]);
+    CL_Obj stream = resolve_output_stream_io(args, n, 1);
+    cl_princ_to_stream(args[0], stream);
     return args[0];
+}
+
+static void format_to_stream(CL_Obj stream, CL_Obj *args, int n)
+{
+    CL_String *s;
+    const char *p;
+    int ai;
+
+    if (n < 2 || !CL_STRING_P(args[1]))
+        return;
+
+    s = (CL_String *)CL_OBJ_TO_PTR(args[1]);
+    p = s->data;
+    ai = 2;
+
+    while (*p) {
+        if (*p == '~' && *(p+1)) {
+            p++;
+            if (*p == 'A' || *p == 'a') {
+                if (ai < n) cl_princ_to_stream(args[ai++], stream);
+            } else if (*p == 'S' || *p == 's') {
+                if (ai < n) cl_prin1_to_stream(args[ai++], stream);
+            } else if (*p == '%') {
+                cl_stream_write_char(stream, '\n');
+            } else if (*p == '~') {
+                cl_stream_write_char(stream, '~');
+            }
+            p++;
+        } else {
+            cl_stream_write_char(stream, *p);
+            p++;
+        }
+    }
 }
 
 static CL_Obj bi_format(CL_Obj *args, int n)
 {
-    /* Minimal: (format t "string") just prints */
-    CL_UNUSED(n);
-    if (n >= 2 && CL_STRING_P(args[1])) {
-        CL_String *s = (CL_String *)CL_OBJ_TO_PTR(args[1]);
-        /* Simple ~A and ~% substitution */
-        const char *p = s->data;
-        int ai = 2; /* Next argument index */
-        while (*p) {
-            if (*p == '~' && *(p+1)) {
-                p++;
-                if (*p == 'A' || *p == 'a') {
-                    if (ai < n) cl_princ(args[ai++]);
-                } else if (*p == 'S' || *p == 's') {
-                    if (ai < n) cl_prin1(args[ai++]);
-                } else if (*p == '%') {
-                    platform_write_string("\n");
-                } else if (*p == '~') {
-                    platform_write_string("~");
-                }
-                p++;
-            } else {
-                char c[2] = { *p, '\0' };
-                platform_write_string(c);
-                p++;
-            }
+    CL_Obj dest = (n >= 1) ? args[0] : CL_NIL;
+
+    if (CL_NULL_P(dest)) {
+        /* (format nil ...) => return string */
+        CL_Obj sstream = cl_make_string_output_stream();
+        CL_GC_PROTECT(sstream);
+        format_to_stream(sstream, args, n);
+        {
+            CL_Obj result = cl_get_output_stream_string(sstream);
+            CL_GC_UNPROTECT(1);
+            return result;
         }
+    } else {
+        /* T => *standard-output*, stream => that stream */
+        CL_Obj stream;
+        if (dest == CL_T) {
+            CL_Symbol *sym = (CL_Symbol *)CL_OBJ_TO_PTR(SYM_STANDARD_OUTPUT);
+            stream = sym->value;
+        } else if (CL_STREAM_P(dest)) {
+            stream = dest;
+        } else {
+            /* Treat anything else as T for backward compat */
+            CL_Symbol *sym = (CL_Symbol *)CL_OBJ_TO_PTR(SYM_STANDARD_OUTPUT);
+            stream = sym->value;
+        }
+        format_to_stream(stream, args, n);
+        return CL_NIL;
     }
-    return CL_NIL;
 }
 
 /* --- Load --- */
@@ -600,9 +653,9 @@ static CL_Obj bi_get_internal_real_time(CL_Obj *args, int n)
 void cl_builtins_io_init(void)
 {
     /* I/O */
-    defun("PRINT", bi_print, 1, 1);
-    defun("PRIN1", bi_prin1, 1, 1);
-    defun("PRINC", bi_princ, 1, 1);
+    defun("PRINT", bi_print, 1, 2);
+    defun("PRIN1", bi_prin1, 1, 2);
+    defun("PRINC", bi_princ, 1, 2);
     defun("FORMAT", bi_format, 1, -1);
 
     /* Read / Load / Eval */

@@ -1429,6 +1429,49 @@
 (check "read-from-string integer" 42 (read-from-string "42"))
 (check "read-from-string eof-value" :eof (read-from-string "" nil :eof))
 
+; --- Printer + stream integration (Step 7) ---
+
+; prin1/princ/print with optional stream arg
+(check "prin1 to stream" "42" (let ((s (make-string-output-stream))) (prin1 42 s) (get-output-stream-string s)))
+(check "princ to stream" "hello" (let ((s (make-string-output-stream))) (princ "hello" s) (get-output-stream-string s)))
+(check "prin1 string escaped" "\"hello\"" (let ((s (make-string-output-stream))) (prin1 "hello" s) (get-output-stream-string s)))
+(check "princ string unescaped" "hello" (let ((s (make-string-output-stream))) (princ "hello" s) (get-output-stream-string s)))
+(check "prin1 list to stream" "(1 2 3)" (let ((s (make-string-output-stream))) (prin1 '(1 2 3) s) (get-output-stream-string s)))
+(check "prin1 nil to stream" "NIL" (let ((s (make-string-output-stream))) (prin1 nil s) (get-output-stream-string s)))
+(check "prin1 char to stream" "#\\A" (let ((s (make-string-output-stream))) (prin1 #\A s) (get-output-stream-string s)))
+(check "princ char to stream" "A" (let ((s (make-string-output-stream))) (princ #\A s) (get-output-stream-string s)))
+(check "multiple prints to stream" "1+2=3" (let ((s (make-string-output-stream))) (princ 1 s) (write-char #\+ s) (princ 2 s) (write-char #\= s) (princ 3 s) (get-output-stream-string s)))
+(check "prin1 returns object" 42 (prin1 42 (make-string-output-stream)))
+(check "princ returns object" "hi" (princ "hi" (make-string-output-stream)))
+
+; format with destination
+(check "format nil returns string" "hello 42" (format nil "hello ~A" 42))
+(check "format nil multi args" "1 + 2 = 3" (format nil "~A + ~A = ~A" 1 2 3))
+(check "format nil ~S" "\"hi\"" (format nil "~S" "hi"))
+(check "format nil tilde" "~" (format nil "~~"))
+(check "format to stream" "val=99" (let ((s (make-string-output-stream))) (format s "val=~A" 99) (get-output-stream-string s)))
+(check "format t returns nil" nil (format t ""))
+
+; with-output-to-string macro
+(check "with-output-to-string basic" "hello" (with-output-to-string (s) (write-string "hello" s)))
+(check "with-output-to-string format" "1 + 2 = 3" (with-output-to-string (s) (format s "~A + ~A = ~A" 1 2 3)))
+(check "with-output-to-string prin1" "42" (with-output-to-string (s) (prin1 42 s)))
+(check "with-output-to-string multiple" "AB" (with-output-to-string (s) (princ "A" s) (princ "B" s)))
+
+; with-input-from-string macro
+(check "with-input-from-string read" '(+ 1 2) (with-input-from-string (s "(+ 1 2)") (read s)))
+(check "with-input-from-string read-char" #\H (with-input-from-string (s "Hello") (read-char s)))
+
+; prin1-to-string / princ-to-string / write-to-string
+(check "prin1-to-string fixnum" "42" (prin1-to-string 42))
+(check "prin1-to-string string" "\"hello\"" (prin1-to-string "hello"))
+(check "prin1-to-string list" "(1 2 3)" (prin1-to-string '(1 2 3)))
+(check "prin1-to-string nil" "NIL" (prin1-to-string nil))
+(check "prin1-to-string char" "#\\A" (prin1-to-string #\A))
+(check "princ-to-string string" "hello" (princ-to-string "hello"))
+(check "princ-to-string fixnum" "42" (princ-to-string 42))
+(check "write-to-string" "(1 2 3)" (write-to-string '(1 2 3)))
+
 ; --- Summary ---
 (format t "~%=== Results ===~%")
 (format t "Passed: ~A~%" *pass-count*)

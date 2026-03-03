@@ -816,6 +816,178 @@ TEST(read_from_string_backward_compat)
     ASSERT_EQ_INT(CL_FIXNUM_VAL(r2), 20);
 }
 
+/* --- Printer + stream integration tests (Step 7) --- */
+
+TEST(prin1_to_string_stream)
+{
+    CL_Obj sstream = cl_make_string_output_stream();
+    CL_Obj result;
+    CL_String *rs;
+
+    CL_GC_PROTECT(sstream);
+    cl_prin1_to_stream(CL_MAKE_FIXNUM(42), sstream);
+    result = cl_get_output_stream_string(sstream);
+    CL_GC_UNPROTECT(1);
+
+    ASSERT(CL_STRING_P(result));
+    rs = (CL_String *)CL_OBJ_TO_PTR(result);
+    ASSERT_STR_EQ(rs->data, "42");
+}
+
+TEST(princ_to_string_stream)
+{
+    CL_Obj sstream = cl_make_string_output_stream();
+    CL_Obj str = cl_make_string("hello", 5);
+    CL_Obj result;
+    CL_String *rs;
+
+    CL_GC_PROTECT(sstream);
+    CL_GC_PROTECT(str);
+    cl_princ_to_stream(str, sstream);
+    result = cl_get_output_stream_string(sstream);
+    CL_GC_UNPROTECT(2);
+
+    ASSERT(CL_STRING_P(result));
+    rs = (CL_String *)CL_OBJ_TO_PTR(result);
+    ASSERT_STR_EQ(rs->data, "hello");
+}
+
+TEST(prin1_string_escapes_to_stream)
+{
+    CL_Obj sstream = cl_make_string_output_stream();
+    CL_Obj str = cl_make_string("hello", 5);
+    CL_Obj result;
+    CL_String *rs;
+
+    CL_GC_PROTECT(sstream);
+    CL_GC_PROTECT(str);
+    cl_prin1_to_stream(str, sstream);
+    result = cl_get_output_stream_string(sstream);
+    CL_GC_UNPROTECT(2);
+
+    ASSERT(CL_STRING_P(result));
+    rs = (CL_String *)CL_OBJ_TO_PTR(result);
+    ASSERT_STR_EQ(rs->data, "\"hello\"");
+}
+
+TEST(print_to_string_stream)
+{
+    CL_Obj sstream = cl_make_string_output_stream();
+    CL_Obj result;
+    CL_String *rs;
+
+    CL_GC_PROTECT(sstream);
+    cl_print_to_stream(CL_MAKE_FIXNUM(99), sstream);
+    result = cl_get_output_stream_string(sstream);
+    CL_GC_UNPROTECT(1);
+
+    ASSERT(CL_STRING_P(result));
+    rs = (CL_String *)CL_OBJ_TO_PTR(result);
+    /* print outputs: newline, object, space */
+    ASSERT_STR_EQ(rs->data, "\n99 ");
+}
+
+TEST(prin1_list_to_stream)
+{
+    CL_Obj sstream = cl_make_string_output_stream();
+    CL_Obj list, result;
+    CL_String *rs;
+
+    CL_GC_PROTECT(sstream);
+    list = cl_cons(CL_MAKE_FIXNUM(1),
+           cl_cons(CL_MAKE_FIXNUM(2),
+           cl_cons(CL_MAKE_FIXNUM(3), CL_NIL)));
+    CL_GC_PROTECT(list);
+    cl_prin1_to_stream(list, sstream);
+    result = cl_get_output_stream_string(sstream);
+    CL_GC_UNPROTECT(2);
+
+    ASSERT(CL_STRING_P(result));
+    rs = (CL_String *)CL_OBJ_TO_PTR(result);
+    ASSERT_STR_EQ(rs->data, "(1 2 3)");
+}
+
+TEST(multiple_prints_to_same_stream)
+{
+    CL_Obj sstream = cl_make_string_output_stream();
+    CL_Obj result;
+    CL_String *rs;
+
+    CL_GC_PROTECT(sstream);
+    cl_princ_to_stream(CL_MAKE_FIXNUM(1), sstream);
+    cl_stream_write_char(sstream, '+');
+    cl_princ_to_stream(CL_MAKE_FIXNUM(2), sstream);
+    cl_stream_write_char(sstream, '=');
+    cl_princ_to_stream(CL_MAKE_FIXNUM(3), sstream);
+    result = cl_get_output_stream_string(sstream);
+    CL_GC_UNPROTECT(1);
+
+    ASSERT(CL_STRING_P(result));
+    rs = (CL_String *)CL_OBJ_TO_PTR(result);
+    ASSERT_STR_EQ(rs->data, "1+2=3");
+}
+
+TEST(prin1_to_string_c_still_works)
+{
+    /* Verify the C-internal cl_prin1_to_string still works */
+    char buf[64];
+    int len;
+    CL_Obj list = cl_cons(CL_MAKE_FIXNUM(10), cl_cons(CL_MAKE_FIXNUM(20), CL_NIL));
+    CL_GC_PROTECT(list);
+    len = cl_prin1_to_string(list, buf, sizeof(buf));
+    CL_GC_UNPROTECT(1);
+    ASSERT(len > 0);
+    ASSERT_STR_EQ(buf, "(10 20)");
+}
+
+TEST(prin1_nil_to_stream)
+{
+    CL_Obj sstream = cl_make_string_output_stream();
+    CL_Obj result;
+    CL_String *rs;
+
+    CL_GC_PROTECT(sstream);
+    cl_prin1_to_stream(CL_NIL, sstream);
+    result = cl_get_output_stream_string(sstream);
+    CL_GC_UNPROTECT(1);
+
+    ASSERT(CL_STRING_P(result));
+    rs = (CL_String *)CL_OBJ_TO_PTR(result);
+    ASSERT_STR_EQ(rs->data, "NIL");
+}
+
+TEST(prin1_char_to_stream)
+{
+    CL_Obj sstream = cl_make_string_output_stream();
+    CL_Obj result;
+    CL_String *rs;
+
+    CL_GC_PROTECT(sstream);
+    cl_prin1_to_stream(CL_MAKE_CHAR('A'), sstream);
+    result = cl_get_output_stream_string(sstream);
+    CL_GC_UNPROTECT(1);
+
+    ASSERT(CL_STRING_P(result));
+    rs = (CL_String *)CL_OBJ_TO_PTR(result);
+    ASSERT_STR_EQ(rs->data, "#\\A");
+}
+
+TEST(princ_char_to_stream)
+{
+    CL_Obj sstream = cl_make_string_output_stream();
+    CL_Obj result;
+    CL_String *rs;
+
+    CL_GC_PROTECT(sstream);
+    cl_princ_to_stream(CL_MAKE_CHAR('A'), sstream);
+    result = cl_get_output_stream_string(sstream);
+    CL_GC_UNPROTECT(1);
+
+    ASSERT(CL_STRING_P(result));
+    rs = (CL_String *)CL_OBJ_TO_PTR(result);
+    ASSERT_STR_EQ(rs->data, "A");
+}
+
 int main(void)
 {
     test_init();
@@ -878,6 +1050,18 @@ int main(void)
     RUN(read_from_stream_empty);
     RUN(read_from_stream_string_literal);
     RUN(read_from_string_backward_compat);
+
+    /* Printer + stream integration (Step 7) */
+    RUN(prin1_to_string_stream);
+    RUN(princ_to_string_stream);
+    RUN(prin1_string_escapes_to_stream);
+    RUN(print_to_string_stream);
+    RUN(prin1_list_to_stream);
+    RUN(multiple_prints_to_same_stream);
+    RUN(prin1_to_string_c_still_works);
+    RUN(prin1_nil_to_stream);
+    RUN(prin1_char_to_stream);
+    RUN(princ_char_to_stream);
 
     teardown();
     REPORT();
