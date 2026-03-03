@@ -3650,6 +3650,255 @@ TEST(eval_print_array)
         "\"#<ARRAY>\"");
 }
 
+/* --- WRITE function with keyword arguments --- */
+
+TEST(eval_write_basic)
+{
+    /* write returns the object */
+    ASSERT_EQ_INT(eval_int(
+        "(let ((x (write 42 :stream (make-string-output-stream)))) x)"), 42);
+
+    /* write with :escape nil acts like princ */
+    ASSERT_STR_EQ(eval_print(
+        "(let ((s (make-string-output-stream)))"
+        "  (write \"hello\" :stream s :escape nil)"
+        "  (get-output-stream-string s))"),
+        "\"hello\"");
+
+    /* write with :escape t acts like prin1 */
+    ASSERT_STR_EQ(eval_print(
+        "(let ((s (make-string-output-stream)))"
+        "  (write \"hello\" :stream s :escape t)"
+        "  (get-output-stream-string s))"),
+        "\"\\\"hello\\\"\"");
+}
+
+TEST(eval_write_base_radix)
+{
+    /* write with :base 16 */
+    ASSERT_STR_EQ(eval_print(
+        "(let ((s (make-string-output-stream)))"
+        "  (write 255 :stream s :base 16)"
+        "  (get-output-stream-string s))"),
+        "\"FF\"");
+
+    /* write with :base 2 */
+    ASSERT_STR_EQ(eval_print(
+        "(let ((s (make-string-output-stream)))"
+        "  (write 10 :stream s :base 2)"
+        "  (get-output-stream-string s))"),
+        "\"1010\"");
+
+    /* write with :radix t :base 16 */
+    ASSERT_STR_EQ(eval_print(
+        "(let ((s (make-string-output-stream)))"
+        "  (write 255 :stream s :base 16 :radix t)"
+        "  (get-output-stream-string s))"),
+        "\"#xFF\"");
+}
+
+TEST(eval_write_level_length)
+{
+    /* write with :level 1 */
+    ASSERT_STR_EQ(eval_print(
+        "(let ((s (make-string-output-stream)))"
+        "  (write '(a (b (c))) :stream s :level 1)"
+        "  (get-output-stream-string s))"),
+        "\"(A #)\"");
+
+    /* write with :length 2 */
+    ASSERT_STR_EQ(eval_print(
+        "(let ((s (make-string-output-stream)))"
+        "  (write '(a b c d e) :stream s :length 2)"
+        "  (get-output-stream-string s))"),
+        "\"(A B ...)\"");
+}
+
+TEST(eval_write_case)
+{
+    /* write with :case :downcase */
+    ASSERT_STR_EQ(eval_print(
+        "(let ((s (make-string-output-stream)))"
+        "  (write 'hello :stream s :case :downcase)"
+        "  (get-output-stream-string s))"),
+        "\"hello\"");
+
+    /* write with :case :capitalize */
+    ASSERT_STR_EQ(eval_print(
+        "(let ((s (make-string-output-stream)))"
+        "  (write 'foo-bar :stream s :case :capitalize)"
+        "  (get-output-stream-string s))"),
+        "\"Foo-Bar\"");
+}
+
+TEST(eval_write_gensym_array)
+{
+    /* write with :gensym nil */
+    ASSERT_STR_EQ(eval_print(
+        "(let ((s (make-string-output-stream)))"
+        "  (write (make-symbol \"FOO\") :stream s :gensym nil)"
+        "  (get-output-stream-string s))"),
+        "\"FOO\"");
+
+    /* write with :array nil */
+    ASSERT_STR_EQ(eval_print(
+        "(let ((s (make-string-output-stream)))"
+        "  (write (vector 1 2) :stream s :array nil)"
+        "  (get-output-stream-string s))"),
+        "\"#<VECTOR>\"");
+}
+
+/* --- *print-circle* --- */
+
+TEST(eval_print_circle_cdr_cycle)
+{
+    /* CDR cycle: (let ((x (list 1 2))) (rplacd (cdr x) x) x) => #1=(1 2 . #1#) */
+    ASSERT_STR_EQ(eval_print(
+        "(let ((*print-circle* t))"
+        "  (let ((x (list 1 2)))"
+        "    (rplacd (cdr x) x)"
+        "    (prin1-to-string x)))"),
+        "\"#0=(1 2 . #0#)\"");
+}
+
+TEST(eval_print_circle_car_self)
+{
+    /* CAR self-ref: (let ((x (list nil))) (rplaca x x) x) => #1=(#1#) */
+    ASSERT_STR_EQ(eval_print(
+        "(let ((*print-circle* t))"
+        "  (let ((x (list nil)))"
+        "    (rplaca x x)"
+        "    (prin1-to-string x)))"),
+        "\"#0=(#0#)\"");
+}
+
+TEST(eval_print_circle_shared_sub)
+{
+    /* Shared substructure: same object in two positions */
+    ASSERT_STR_EQ(eval_print(
+        "(let ((*print-circle* t))"
+        "  (let ((sub (list 1 2)))"
+        "    (prin1-to-string (list sub sub))))"),
+        "\"(#0=(1 2) #0#)\"");
+}
+
+TEST(eval_print_circle_no_sharing)
+{
+    /* No sharing: plain list prints without labels */
+    ASSERT_STR_EQ(eval_print(
+        "(let ((*print-circle* t))"
+        "  (prin1-to-string '(1 2 3)))"),
+        "\"(1 2 3)\"");
+}
+
+TEST(eval_print_circle_nil_default)
+{
+    /* *print-circle* NIL (default): no labels even with sharing */
+    ASSERT_STR_EQ(eval_print(
+        "(let ((sub (list 1)))"
+        "  (prin1-to-string (list sub sub)))"),
+        "\"((1) (1))\"");
+}
+
+TEST(eval_print_circle_vector)
+{
+    /* Circular vector: vector containing self */
+    ASSERT_STR_EQ(eval_print(
+        "(let ((*print-circle* t))"
+        "  (let ((v (vector nil 42)))"
+        "    (setf (aref v 0) v)"
+        "    (prin1-to-string v)))"),
+        "\"#0=#(#0# 42)\"");
+}
+
+TEST(eval_print_circle_deep_shared)
+{
+    /* Deep shared: leaf shared at depth */
+    ASSERT_STR_EQ(eval_print(
+        "(let ((*print-circle* t))"
+        "  (let ((leaf (list 99)))"
+        "    (prin1-to-string (list (list leaf) (list leaf)))))"),
+        "\"((#0=(99)) (#0#))\"");
+}
+
+TEST(eval_print_circle_write_to_string)
+{
+    /* write-to-string with :circle t */
+    ASSERT_STR_EQ(eval_print(
+        "(let ((x (list 1 2)))"
+        "  (rplacd (cdr x) x)"
+        "  (write-to-string x :circle t))"),
+        "\"#0=(1 2 . #0#)\"");
+}
+
+/* --- Format directive extensions --- */
+
+TEST(eval_format_decimal)
+{
+    /* ~D: decimal */
+    ASSERT_STR_EQ(eval_print("(format nil \"~D\" 42)"), "\"42\"");
+    ASSERT_STR_EQ(eval_print("(format nil \"~D\" -7)"), "\"-7\"");
+    ASSERT_STR_EQ(eval_print("(format nil \"~D\" 0)"), "\"0\"");
+}
+
+TEST(eval_format_binary)
+{
+    /* ~B: binary */
+    ASSERT_STR_EQ(eval_print("(format nil \"~B\" 10)"), "\"1010\"");
+    ASSERT_STR_EQ(eval_print("(format nil \"~B\" 255)"), "\"11111111\"");
+    ASSERT_STR_EQ(eval_print("(format nil \"~B\" 0)"), "\"0\"");
+}
+
+TEST(eval_format_octal)
+{
+    /* ~O: octal */
+    ASSERT_STR_EQ(eval_print("(format nil \"~O\" 8)"), "\"10\"");
+    ASSERT_STR_EQ(eval_print("(format nil \"~O\" 255)"), "\"377\"");
+}
+
+TEST(eval_format_hex)
+{
+    /* ~X: hexadecimal */
+    ASSERT_STR_EQ(eval_print("(format nil \"~X\" 255)"), "\"FF\"");
+    ASSERT_STR_EQ(eval_print("(format nil \"~X\" 256)"), "\"100\"");
+    ASSERT_STR_EQ(eval_print("(format nil \"~X\" 0)"), "\"0\"");
+}
+
+TEST(eval_format_character)
+{
+    /* ~C: character */
+    ASSERT_STR_EQ(eval_print("(format nil \"~C\" #\\A)"), "\"A\"");
+    ASSERT_STR_EQ(eval_print("(format nil \"~C\" #\\Space)"), "\" \"");
+}
+
+TEST(eval_format_write)
+{
+    /* ~W: write */
+    ASSERT_STR_EQ(eval_print("(format nil \"~W\" \"hello\")"), "\"\\\"hello\\\"\"");
+    ASSERT_STR_EQ(eval_print("(format nil \"~W\" 42)"), "\"42\"");
+}
+
+TEST(eval_format_freshline)
+{
+    /* ~&: fresh line */
+    ASSERT_STR_EQ(eval_print("(format nil \"hello~&world\")"), "\"hello\\nworld\"");
+}
+
+TEST(eval_format_page)
+{
+    /* ~|: page separator (form feed character) */
+    ASSERT_EQ_INT(eval_int("(length (format nil \"a~|b\"))"), 3);
+    ASSERT_EQ_INT(eval_int("(char-code (char (format nil \"a~|b\") 1))"), 12);
+}
+
+TEST(eval_format_mixed)
+{
+    /* Mix of directives */
+    ASSERT_STR_EQ(eval_print(
+        "(format nil \"dec=~D hex=~X bin=~B\" 255 255 255)"),
+        "\"dec=255 hex=FF bin=11111111\"");
+}
+
 /* --- Phase 8: Loop macro --- */
 
 TEST(eval_loop_simple_return)
@@ -4163,6 +4412,119 @@ TEST(eval_loop_destructuring_on)
         "  collect (list a b))"), "((1 (2 3)) (2 (3)) (3 NIL))");
 }
 
+/* --- Pretty-printing / *print-pretty* --- */
+
+TEST(eval_print_pretty_default)
+{
+    /* *print-right-margin* defaults to NIL */
+    ASSERT_STR_EQ(eval_print("*print-right-margin*"), "NIL");
+    /* *print-pretty* defaults to NIL */
+    ASSERT_STR_EQ(eval_print("*print-pretty*"), "NIL");
+}
+
+TEST(eval_print_pretty_short_list)
+{
+    /* Short list stays on one line even with pretty printing */
+    ASSERT_STR_EQ(eval_print(
+        "(let ((*print-pretty* t) (*print-right-margin* 40))"
+        "  (write-to-string '(1 2 3)))"),
+        "\"(1 2 3)\"");
+}
+
+TEST(eval_print_pretty_long_list)
+{
+    /* Narrow margin forces line breaks (greedy fill: break when past margin) */
+    ASSERT_STR_EQ(eval_print(
+        "(let ((*print-pretty* t) (*print-right-margin* 10))"
+        "  (write-to-string '(alpha beta gamma delta)))"),
+        "\"(ALPHA BETA\\n GAMMA DELTA)\"");
+}
+
+TEST(eval_print_pretty_nested)
+{
+    /* Nested lists indent correctly */
+    ASSERT_STR_EQ(eval_print(
+        "(let ((*print-pretty* t) (*print-right-margin* 15))"
+        "  (write-to-string '(a (b c d) e)))"),
+        "\"(A (B C D) E)\"");
+}
+
+TEST(eval_print_pretty_vector)
+{
+    /* Vectors break similarly to lists */
+    ASSERT_STR_EQ(eval_print(
+        "(let ((*print-pretty* t) (*print-right-margin* 10))"
+        "  (write-to-string (vector 'alpha 'beta 'gamma)))"),
+        "\"#(ALPHA BETA\\n  GAMMA)\"");
+}
+
+TEST(eval_print_pretty_empty)
+{
+    /* NIL and single-element lists */
+    ASSERT_STR_EQ(eval_print(
+        "(let ((*print-pretty* t) (*print-right-margin* 10))"
+        "  (write-to-string nil))"),
+        "\"NIL\"");
+    ASSERT_STR_EQ(eval_print(
+        "(let ((*print-pretty* t) (*print-right-margin* 10))"
+        "  (write-to-string '(x)))"),
+        "\"(X)\"");
+}
+
+TEST(eval_print_pretty_dotted)
+{
+    /* Dotted pair stays inline if short enough */
+    ASSERT_STR_EQ(eval_print(
+        "(let ((*print-pretty* t) (*print-right-margin* 40))"
+        "  (write-to-string '(a . b)))"),
+        "\"(A . B)\"");
+}
+
+TEST(eval_pprint_basic)
+{
+    /* pprint outputs newline + pretty-printed form */
+    ASSERT_STR_EQ(eval_print(
+        "(let ((s (make-string-output-stream)))"
+        "  (pprint '(1 2 3) s)"
+        "  (get-output-stream-string s))"),
+        "\"\\n(1 2 3)\"");
+}
+
+TEST(eval_print_pretty_write_keyword)
+{
+    /* write :pretty t enables pretty printing */
+    ASSERT_STR_EQ(eval_print(
+        "(write-to-string '(1 2 3) :pretty t :right-margin 40)"),
+        "\"(1 2 3)\"");
+}
+
+TEST(eval_print_pretty_write_to_string)
+{
+    /* write-to-string :pretty t with narrow margin */
+    ASSERT_STR_EQ(eval_print(
+        "(write-to-string '(alpha beta gamma delta) :pretty t :right-margin 10)"),
+        "\"(ALPHA BETA\\n GAMMA DELTA)\"");
+}
+
+TEST(eval_print_pretty_off_no_break)
+{
+    /* When *print-pretty* is nil, no line breaks even past margin */
+    ASSERT_STR_EQ(eval_print(
+        "(let ((*print-pretty* nil) (*print-right-margin* 5))"
+        "  (write-to-string '(alpha beta gamma)))"),
+        "\"(ALPHA BETA GAMMA)\"");
+}
+
+TEST(eval_print_pretty_with_level_length)
+{
+    /* Pretty + level/length interact correctly */
+    ASSERT_STR_EQ(eval_print(
+        "(let ((*print-pretty* t) (*print-right-margin* 10)"
+        "      (*print-length* 2))"
+        "  (write-to-string '(alpha beta gamma delta)))"),
+        "\"(ALPHA BETA ...)\"");
+}
+
 int main(void)
 {
     test_init();
@@ -4646,6 +5008,48 @@ int main(void)
     RUN(eval_print_case_in_list);
     RUN(eval_print_gensym);
     RUN(eval_print_array);
+
+    /* WRITE function with keyword arguments */
+    RUN(eval_write_basic);
+    RUN(eval_write_base_radix);
+    RUN(eval_write_level_length);
+    RUN(eval_write_case);
+    RUN(eval_write_gensym_array);
+
+    /* *print-circle* */
+    RUN(eval_print_circle_cdr_cycle);
+    RUN(eval_print_circle_car_self);
+    RUN(eval_print_circle_shared_sub);
+    RUN(eval_print_circle_no_sharing);
+    RUN(eval_print_circle_nil_default);
+    RUN(eval_print_circle_vector);
+    RUN(eval_print_circle_deep_shared);
+    RUN(eval_print_circle_write_to_string);
+
+    /* Format directive extensions */
+    RUN(eval_format_decimal);
+    RUN(eval_format_binary);
+    RUN(eval_format_octal);
+    RUN(eval_format_hex);
+    RUN(eval_format_character);
+    RUN(eval_format_write);
+    RUN(eval_format_freshline);
+    RUN(eval_format_page);
+    RUN(eval_format_mixed);
+
+    /* *print-pretty* / pprint */
+    RUN(eval_print_pretty_default);
+    RUN(eval_print_pretty_short_list);
+    RUN(eval_print_pretty_long_list);
+    RUN(eval_print_pretty_nested);
+    RUN(eval_print_pretty_vector);
+    RUN(eval_print_pretty_empty);
+    RUN(eval_print_pretty_dotted);
+    RUN(eval_pprint_basic);
+    RUN(eval_print_pretty_write_keyword);
+    RUN(eval_print_pretty_write_to_string);
+    RUN(eval_print_pretty_off_no_break);
+    RUN(eval_print_pretty_with_level_length);
 
     teardown();
     REPORT();

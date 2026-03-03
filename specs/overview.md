@@ -93,7 +93,7 @@ Single-pass recursive compiler from S-expressions to bytecode:
 
 **Bootstrap functions:** `cadr`, `caar`, `cdar`, `cddr`, `caddr`, `cadar`, `cdddr`, `cadddr`, `identity`, `endp`, `member`, `intersection`, `union`, `set-difference`, `subsetp`, `cerror`, `break`, `read-from-string`, `prin1-to-string`, `princ-to-string`, `write-to-string`, `complement`, `constantly`, `tree-equal`, `list-length`, `tailp`, `ldiff`, `revappend`, `nreconc`, `assoc-if`, `assoc-if-not`, `rassoc-if`, `rassoc-if-not`, `pathname-name`, `pathname-type`, `pathname-directory`, `namestring`, `truename`, `make-pathname`, `merge-pathnames`, `enough-namestring`, `ensure-directories-exist`, `decode-universal-time`, `encode-universal-time`, `get-decoded-time`
 
-## Built-in Functions (346 C functions + 35 boot.lisp functions)
+## Built-in Functions (347 C functions + 35 boot.lisp functions)
 
 | Category | Functions |
 |----------|-----------|
@@ -114,7 +114,7 @@ Single-pass recursive compiler from S-expressions to bytecode:
 | Characters | `char=` `char/=` `char<` `char>` `char<=` `char>=` `char-code` `code-char` `char-upcase` `char-downcase` `upper-case-p` `lower-case-p` `alpha-char-p` `digit-char-p` `char-name` `name-char` |
 | Strings | `string=` `string-equal` `string/=` `string-not-equal` `string<` `string>` `string<=` `string>=` `string-upcase` `string-downcase` `string-capitalize` `nstring-upcase` `nstring-downcase` `nstring-capitalize` `string-trim` `string-left-trim` `string-right-trim` `subseq` `concatenate` `char` `schar` `string` `parse-integer` |
 | Sequences | `find` `find-if` `find-if-not` `position` `position-if` `position-if-not` `count` `count-if` `count-if-not` `remove` `remove-if` `remove-if-not` `remove-duplicates` `substitute` `substitute-if` `substitute-if-not` `reduce` `fill` `replace` `every` `some` `notany` `notevery` `map` `map-into` `mismatch` `search` `sort` `stable-sort` `copy-seq` `elt` |
-| I/O | `write` `print` `prin1` `princ` `terpri` `format` `read` `load` `disassemble` `compile` |
+| I/O | `write` `print` `prin1` `princ` `pprint` `terpri` `format` `read` `load` `disassemble` `compile` |
 | Streams | `streamp` `input-stream-p` `output-stream-p` `interactive-stream-p` `open-stream-p` `read-char` `write-char` `peek-char` `unread-char` `read-line` `write-string` `write-line` `fresh-line` `finish-output` `force-output` `clear-output` `close` `open` `make-string-input-stream` `make-string-output-stream` `get-output-stream-string` |
 | Readtable | `readtablep` `get-macro-character` `set-macro-character` `make-dispatch-macro-character` `set-dispatch-macro-character` `get-dispatch-macro-character` `copy-readtable` |
 | File system | `probe-file` `delete-file` `rename-file` `file-write-date` `file-namestring` `directory-namestring` `ensure-directories-exist` |
@@ -297,22 +297,22 @@ Extended iteration, output formatting, printer control, and standard library com
   - BEING clauses: `hash-key[s]`/`hash-value[s]` of hash tables (with `using`), `symbol[s]`/`present-symbol[s]`/`external-symbol[s]` of packages
   - Destructuring: tree-shaped patterns in FOR variable position (`(a b)`, `(a . b)`, `(a (b c))`)
   - Helper builtins: `%hash-table-pairs` (C), `%package-symbols`/`%package-external-symbols`
-- [x] Printer control variables — `*print-escape*`, `*print-readably*`, `*print-base*`, `*print-radix*`, `*print-level*`, `*print-length*`, `*print-case*`, `*print-gensym*`, `*print-array*`, `*print-circle*`, `*print-pretty*`
-- [x] `write` builtin with keyword args (`:stream`, `:escape`, `:readably`, `:base`, `:radix`, `:level`, `:length`, `:case`, `:gensym`, `:array`, `:circle`, `:pretty`)
+- [x] Printer control variables — `*print-escape*`, `*print-readably*`, `*print-base*`, `*print-radix*`, `*print-level*`, `*print-length*`, `*print-case*`, `*print-gensym*`, `*print-array*`, `*print-circle*`, `*print-pretty*`, `*print-right-margin*`
+- [x] `write` builtin with keyword args (`:stream`, `:escape`, `:readably`, `:base`, `:radix`, `:level`, `:length`, `:case`, `:gensym`, `:array`, `:circle`, `:pretty`, `:right-margin`)
 - [x] Extended `format` directives — `~A`, `~S`, `~W`, `~D`, `~B`, `~O`, `~X`, `~C`, `~%`, `~&`, `~|`, `~~`
 - [x] Missing list ops: `tree-equal`, `make-list`, `list*`, `list-length`, `tailp`, `ldiff`, `revappend`, `nreconc`, `assoc-if`, `assoc-if-not`, `rassoc-if`, `rassoc-if-not`
 - [x] Missing string ops: `string-capitalize`, `nstring-upcase`, `nstring-downcase`, `nstring-capitalize`, `char-name`, `name-char`
 - [x] Missing sequence ops: `map-into`, `copy-seq`, `elt`, `(setf elt)`
 - [x] Higher-order: `complement`, `constantly`
 - [ ] Full `format` directives (`~R`, `~T`, `~<~>`, `~{~}`, `~[~]`, `~?`, `~(~)`, `~*`, `~^`, column/padding params)
-- [ ] Pretty printer (`pprint`, `pprint-logical-block`, `pprint-newline`, `pprint-indent`)
-- [ ] `*print-circle*` detection (variable exists but circular structure detection not implemented)
+- [x] Pretty printer — `pprint` builtin, `*print-pretty*` / `*print-right-margin*` control variables, fill-style line breaking (greedy, no look-ahead), column tracking, indentation stack for lists/vectors/structs; `write`/`write-to-string` `:pretty`/`:right-margin` keywords
+- [ ] Full pretty printer (`pprint-logical-block`, `pprint-newline`, `pprint-indent`, `*print-pprint-dispatch*`)
 - [ ] Setf completeness: `rotatef`, `shiftf`, `define-modify-macro`, `defsetf` long form, `define-setf-expander`
 - [ ] `psetq`, `psetf` — parallel assignment
 - [ ] `load-time-value` — evaluate once at load time
 - [ ] `remf` — destructive plist removal
 
-997 host tests (11 suites), 1370 Amiga batch tests — all passing.
+1017 host tests (11 suites), 1389 Amiga batch tests — all passing.
 
 ### Phase 9: Numeric Tower ✅
 
@@ -439,9 +439,9 @@ cl-amiga/
 │   └── boot.lisp          # Bootstrap macros/functions
 ├── tests/
 │   ├── test.h             # Test framework
-│   ├── test_*.c           # Host test suites (11 files, 997 tests)
+│   ├── test_*.c           # Host test suites (11 files, 1017 tests)
 │   └── amiga/
-│       └── run-tests.lisp # AmigaOS batch tests (1370 tests)
+│       └── run-tests.lisp # AmigaOS batch tests (1389 tests)
 ├── build/                 # Build output (gitignored)
 └── verify/
     └── realamiga/          # FS-UAE config + AmigaOS system image

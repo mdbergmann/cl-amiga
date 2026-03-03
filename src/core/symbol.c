@@ -155,6 +155,7 @@ CL_Obj SYM_PRINT_GENSYM = CL_NIL;
 CL_Obj SYM_PRINT_ARRAY = CL_NIL;
 CL_Obj SYM_PRINT_CIRCLE = CL_NIL;
 CL_Obj SYM_PRINT_PRETTY = CL_NIL;
+CL_Obj SYM_PRINT_RIGHT_MARGIN = CL_NIL;
 CL_Obj KW_UPCASE = CL_NIL;
 CL_Obj KW_DOWNCASE = CL_NIL;
 CL_Obj KW_CAPITALIZE = CL_NIL;
@@ -433,6 +434,7 @@ void cl_symbol_init(void)
     SYM_PRINT_ARRAY    = cl_intern_in("*PRINT-ARRAY*", 13, cl_package_cl);
     SYM_PRINT_CIRCLE   = cl_intern_in("*PRINT-CIRCLE*", 14, cl_package_cl);
     SYM_PRINT_PRETTY   = cl_intern_in("*PRINT-PRETTY*", 14, cl_package_cl);
+    SYM_PRINT_RIGHT_MARGIN = cl_intern_in("*PRINT-RIGHT-MARGIN*", 20, cl_package_cl);
     KW_UPCASE          = cl_intern_keyword("UPCASE", 6);
     KW_DOWNCASE        = cl_intern_keyword("DOWNCASE", 8);
     KW_CAPITALIZE      = cl_intern_keyword("CAPITALIZE", 10);
@@ -459,6 +461,8 @@ void cl_symbol_init(void)
         s = (CL_Symbol *)CL_OBJ_TO_PTR(SYM_PRINT_CIRCLE);
         s->flags |= CL_SYM_SPECIAL; s->value = CL_NIL;
         s = (CL_Symbol *)CL_OBJ_TO_PTR(SYM_PRINT_PRETTY);
+        s->flags |= CL_SYM_SPECIAL; s->value = CL_NIL;
+        s = (CL_Symbol *)CL_OBJ_TO_PTR(SYM_PRINT_RIGHT_MARGIN);
         s->flags |= CL_SYM_SPECIAL; s->value = CL_NIL;
     }
 

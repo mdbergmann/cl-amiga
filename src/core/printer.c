@@ -109,6 +109,200 @@ static int print_case(void)
 /* Current nesting depth for *print-level* tracking */
 static int32_t current_depth = 0;
 
+/* Pretty-printing: column tracking and indentation stack */
+static int32_t current_column = 0;
+
+#define PP_INDENT_MAX 32
+static int32_t pp_indent_stack[PP_INDENT_MAX];
+static int32_t pp_indent_top = 0;
+
+/* Forward declaration — out_char is defined after the circle detection section */
+static void out_char(int ch);
+
+static void pp_newline_indent(void)
+{
+    int32_t indent = (pp_indent_top > 0) ? pp_indent_stack[pp_indent_top - 1] : 0;
+    int32_t i;
+    out_char('\n');
+    for (i = 0; i < indent; i++) out_char(' ');
+}
+
+/* ================================================================
+ * *print-circle* support — two-pass printing with static hash table
+ *
+ * Pass 1: iterative DFS pre-walk counts visits per compound object.
+ * Pass 2: objects seen >1 time get #n= (definition) / #n# (back-ref).
+ * ================================================================ */
+
+static int print_circle_p(void)
+{
+    CL_Symbol *s;
+    if (CL_NULL_P(SYM_PRINT_CIRCLE)) return 0;
+    s = (CL_Symbol *)CL_OBJ_TO_PTR(SYM_PRINT_CIRCLE);
+    return !CL_NULL_P(s->value);
+}
+
+static int print_pretty_p(void)
+{
+    CL_Symbol *s;
+    if (CL_NULL_P(SYM_PRINT_PRETTY)) return 0;
+    s = (CL_Symbol *)CL_OBJ_TO_PTR(SYM_PRINT_PRETTY);
+    return !CL_NULL_P(s->value);
+}
+
+/* Returns right margin (default 72 when NIL), or fixnum value */
+static int32_t print_right_margin(void)
+{
+    CL_Symbol *s;
+    if (CL_NULL_P(SYM_PRINT_RIGHT_MARGIN)) return 72;
+    s = (CL_Symbol *)CL_OBJ_TO_PTR(SYM_PRINT_RIGHT_MARGIN);
+    if (CL_NULL_P(s->value)) return 72;
+    if (CL_FIXNUM_P(s->value)) return CL_FIXNUM_VAL(s->value);
+    return 72;
+}
+
+/*
+ * Open-addressing hash table for circle detection.
+ * Keys are CL_Obj values (heap offsets); CL_NIL (0) = empty slot.
+ * Values encode state:
+ *   0 = seen once (not shared)
+ *   1 = seen more than once (shared, no label yet)
+ *   >=2 = assigned label (label = val - 2)
+ *   <0 = already printed (negated label - 2)
+ */
+#define CIRCLE_HT_SIZE 256
+static CL_Obj  circle_keys[CIRCLE_HT_SIZE];
+static int32_t circle_vals[CIRCLE_HT_SIZE];
+static int circle_count;
+static int circle_next_label;
+static int circle_active;
+
+static void circle_clear(void)
+{
+    int i;
+    for (i = 0; i < CIRCLE_HT_SIZE; i++) {
+        circle_keys[i] = CL_NIL;
+        circle_vals[i] = 0;
+    }
+    circle_count = 0;
+    circle_next_label = 0;
+    circle_active = 0;
+}
+
+static uint32_t circle_hash(CL_Obj obj)
+{
+    /* Simple hash for arena offsets: multiply and shift */
+    uint32_t h = obj;
+    h ^= h >> 16;
+    h *= 0x45d9f3b;
+    h ^= h >> 16;
+    return h & (CIRCLE_HT_SIZE - 1);
+}
+
+/*
+ * Find slot for obj. Returns index into circle_keys/circle_vals.
+ * If obj is not in the table, returns the first empty slot.
+ */
+static int circle_find(CL_Obj obj)
+{
+    uint32_t idx = circle_hash(obj);
+    int i;
+    for (i = 0; i < CIRCLE_HT_SIZE; i++) {
+        uint32_t slot = (idx + (uint32_t)i) & (CIRCLE_HT_SIZE - 1);
+        if (circle_keys[slot] == obj) return (int)slot;
+        if (circle_keys[slot] == CL_NIL) return (int)slot;
+    }
+    return (int)idx; /* table full — shouldn't happen */
+}
+
+/* Is this a compound heap object that can contain references? */
+static int circle_compound_p(CL_Obj obj)
+{
+    int type;
+    if (!CL_HEAP_P(obj)) return 0;
+    type = (int)CL_HDR_TYPE(CL_OBJ_TO_PTR(obj));
+    return type == TYPE_CONS || type == TYPE_VECTOR || type == TYPE_STRUCT;
+}
+
+/*
+ * Iterative DFS pre-walk. Marks each compound object as seen-once (0)
+ * or seen-more-than-once (1). Stops recursion on already-seen objects.
+ */
+static void circle_walk(CL_Obj root)
+{
+    CL_Obj stack[512];
+    int sp = 0;
+    int slot;
+
+    if (!circle_compound_p(root)) return;
+    stack[sp++] = root;
+
+    while (sp > 0) {
+        CL_Obj obj = stack[--sp];
+        int type;
+
+        if (!circle_compound_p(obj)) continue;
+
+        slot = circle_find(obj);
+        if (circle_keys[slot] == obj) {
+            /* Already seen — mark as shared */
+            if (circle_vals[slot] == 0)
+                circle_vals[slot] = 1;
+            continue; /* don't recurse again */
+        }
+
+        /* First time seeing this object */
+        if (circle_count >= CIRCLE_HT_SIZE * 3 / 4) continue; /* table too full */
+        circle_keys[slot] = obj;
+        circle_vals[slot] = 0;
+        circle_count++;
+
+        type = (int)CL_HDR_TYPE(CL_OBJ_TO_PTR(obj));
+        if (type == TYPE_CONS) {
+            CL_Obj cdr_val = cl_cdr(obj);
+            CL_Obj car_val = cl_car(obj);
+            /* Push cdr first so car is processed first (stack is LIFO) */
+            if (circle_compound_p(cdr_val) && sp < 511)
+                stack[sp++] = cdr_val;
+            if (circle_compound_p(car_val) && sp < 511)
+                stack[sp++] = car_val;
+        } else if (type == TYPE_VECTOR) {
+            CL_Vector *v = (CL_Vector *)CL_OBJ_TO_PTR(obj);
+            CL_Obj *elts = cl_vector_data(v);
+            uint32_t len = cl_vector_active_length(v);
+            uint32_t i;
+            for (i = 0; i < len && sp < 511; i++) {
+                if (circle_compound_p(elts[i]))
+                    stack[sp++] = elts[i];
+            }
+        } else if (type == TYPE_STRUCT) {
+            CL_Struct *st = (CL_Struct *)CL_OBJ_TO_PTR(obj);
+            uint32_t i;
+            for (i = 0; i < st->n_slots && sp < 511; i++) {
+                if (circle_compound_p(st->slots[i]))
+                    stack[sp++] = st->slots[i];
+            }
+        }
+    }
+}
+
+/*
+ * Assign labels 0,1,2,... to objects seen more than once.
+ * Stored as label+2 in circle_vals to distinguish from seen-once(0)
+ * and shared-no-label(1).
+ */
+static void circle_assign_labels(void)
+{
+    int i;
+    circle_next_label = 0;
+    for (i = 0; i < CIRCLE_HT_SIZE; i++) {
+        if (circle_keys[i] != CL_NIL && circle_vals[i] == 1) {
+            circle_vals[i] = circle_next_label + 2;
+            circle_next_label++;
+        }
+    }
+}
+
 /* ================================================================
  * Output target state (stream or C buffer)
  * ================================================================ */
@@ -133,11 +327,16 @@ static void out_char(int ch)
         char c[2] = { (char)ch, '\0' };
         platform_write_string(c);
     }
+    if (ch == '\n') current_column = 0; else current_column++;
 }
 
 static void out_str(const char *s)
 {
     if (printer_stream != CL_NIL) {
+        const char *p;
+        for (p = s; *p; p++) {
+            if (*p == '\n') current_column = 0; else current_column++;
+        }
         cl_stream_write_string(printer_stream, s, (uint32_t)strlen(s));
     } else {
         while (*s) out_char(*s++);
@@ -204,6 +403,52 @@ static void out_integer(int32_t val, int32_t base, int radix)
 }
 
 static void print_obj(CL_Obj obj);
+
+/* Output #n= or #n# label */
+static void out_circle_label(int label, int definition)
+{
+    char buf[16];
+    sprintf(buf, "#%d%c", label, definition ? '=' : '#');
+    out_str(buf);
+}
+
+/*
+ * Check circle table for obj. Returns:
+ *   0 = not shared, print normally
+ *   1 = first time printing shared obj (emitted #n=, continue printing)
+ *  -1 = already printed (emitted #n#, caller should return immediately)
+ */
+static int circle_check(CL_Obj obj)
+{
+    int slot;
+    int32_t val;
+
+    if (!circle_active) return 0;
+    if (!circle_compound_p(obj)) return 0;
+
+    slot = circle_find(obj);
+    if (circle_keys[slot] != obj) return 0; /* not in table */
+
+    val = circle_vals[slot];
+    if (val == 0) return 0; /* seen once, not shared */
+
+    if (val < 0) {
+        /* Already printed — emit back-reference */
+        out_circle_label((-val) - 2, 0);
+        return -1;
+    }
+
+    if (val >= 2) {
+        /* First print of shared object — emit definition label */
+        int label = val - 2;
+        out_circle_label(label, 1);
+        circle_vals[slot] = -(val); /* mark as printed */
+        return 1;
+    }
+
+    /* val == 1: shared but no label assigned (shouldn't happen after assign) */
+    return 0;
+}
 
 /*
  * Output a symbol name honoring *print-case*.
@@ -308,6 +553,8 @@ static void print_list(CL_Obj obj)
     int32_t max_depth = print_level();
     int32_t max_len = print_length();
     int32_t count = 0;
+    int pretty = print_pretty_p();
+    int32_t margin = 0;
 
     if (max_depth >= 0 && current_depth >= max_depth) {
         out_char('#');
@@ -316,6 +563,13 @@ static void print_list(CL_Obj obj)
     current_depth++;
 
     out_char('(');
+
+    if (pretty) {
+        margin = print_right_margin();
+        if (pp_indent_top < PP_INDENT_MAX)
+            pp_indent_stack[pp_indent_top++] = current_column;
+    }
+
     if (max_len >= 0 && max_len == 0) {
         out_str("...");
     } else {
@@ -329,7 +583,22 @@ static void print_list(CL_Obj obj)
                 obj = CL_NIL; /* skip dotted pair check */
                 break;
             }
-            out_char(' ');
+            /* CDR circle check: if this cdr cons is shared/circular,
+             * print it as ". <obj>" so print_obj handles #n= / #n# */
+            if (circle_active && circle_compound_p(obj)) {
+                int slot = circle_find(obj);
+                if (circle_keys[slot] == obj && circle_vals[slot] != 0) {
+                    out_str(" . ");
+                    print_obj(obj);
+                    obj = CL_NIL; /* suppress trailing dotted pair check */
+                    break;
+                }
+            }
+            if (pretty && current_column >= margin) {
+                pp_newline_indent();
+            } else {
+                out_char(' ');
+            }
             print_obj(cl_car(obj));
             count++;
             obj = cl_cdr(obj);
@@ -340,6 +609,9 @@ static void print_list(CL_Obj obj)
             print_obj(obj);
         }
     }
+
+    if (pretty && pp_indent_top > 0)
+        pp_indent_top--;
 
     out_char(')');
     current_depth--;
@@ -396,6 +668,13 @@ static void print_array_slice(CL_Obj *elts, uint32_t *dims, uint8_t rank,
 
 static void print_obj(CL_Obj obj)
 {
+    /* Circle check: emit #n= or #n# for shared/circular objects */
+    {
+        int cc = circle_check(obj);
+        if (cc < 0) return; /* already printed — #n# emitted */
+        /* cc == 1: #n= emitted, fall through to print contents */
+    }
+
     if (CL_NULL_P(obj)) {
         out_symbol_name("NIL");
         return;
@@ -576,16 +855,27 @@ static void print_obj(CL_Obj obj)
             uint32_t i;
             uint32_t vec_len = cl_vector_active_length(v);
             CL_Obj *elts = cl_vector_data(v);
+            int pretty = print_pretty_p();
+            int32_t margin = pretty ? print_right_margin() : 0;
             current_depth++;
             out_str("#(");
+            if (pretty && pp_indent_top < PP_INDENT_MAX)
+                pp_indent_stack[pp_indent_top++] = current_column;
             for (i = 0; i < vec_len; i++) {
                 if (max_len >= 0 && (int32_t)i >= max_len) {
                     out_str("...");
                     break;
                 }
-                if (i > 0) out_char(' ');
+                if (i > 0) {
+                    if (pretty && current_column >= margin)
+                        pp_newline_indent();
+                    else
+                        out_char(' ');
+                }
                 print_obj(elts[i]);
             }
+            if (pretty && pp_indent_top > 0)
+                pp_indent_top--;
             out_char(')');
             current_depth--;
         }
@@ -622,6 +912,8 @@ static void print_obj(CL_Obj obj)
         CL_Struct *st = (CL_Struct *)CL_OBJ_TO_PTR(obj);
         uint32_t i;
         int32_t max_depth = print_level();
+        int pretty = print_pretty_p();
+        int32_t margin = pretty ? print_right_margin() : 0;
         extern CL_Obj cl_struct_slot_names(CL_Obj type_name);
         CL_Obj slot_names = cl_struct_slot_names(st->type_desc);
 
@@ -631,10 +923,15 @@ static void print_obj(CL_Obj obj)
         }
         current_depth++;
         out_str("#S(");
+        if (pretty && pp_indent_top < PP_INDENT_MAX)
+            pp_indent_stack[pp_indent_top++] = current_column;
         if (!CL_NULL_P(st->type_desc))
             out_str(cl_symbol_name(st->type_desc));
         for (i = 0; i < st->n_slots; i++) {
-            out_char(' ');
+            if (pretty && current_column >= margin)
+                pp_newline_indent();
+            else
+                out_char(' ');
             if (!CL_NULL_P(slot_names)) {
                 out_char(':');
                 out_str(cl_symbol_name(cl_car(slot_names)));
@@ -643,6 +940,8 @@ static void print_obj(CL_Obj obj)
             out_char(' ');
             print_obj(st->slots[i]);
         }
+        if (pretty && pp_indent_top > 0)
+            pp_indent_top--;
         out_char(')');
         current_depth--;
         break;
@@ -700,12 +999,33 @@ void cl_write_to_stream(CL_Obj obj, CL_Obj stream)
 {
     CL_Obj prev = printer_stream;
     int32_t prev_depth = current_depth;
+    int32_t prev_column = current_column;
+    int32_t prev_indent_top = pp_indent_top;
+    int prev_circle_active = circle_active;
     current_depth = 0;
+    current_column = 0;
+    pp_indent_top = 0;
     to_buffer = 0;
     printer_stream = stream;
+
+    /* Activate *print-circle* if enabled and not already active (re-entrant safe) */
+    if (print_circle_p() && !circle_active) {
+        circle_clear();
+        circle_walk(obj);
+        circle_assign_labels();
+        circle_active = 1;
+    }
+
     print_obj(obj);
+
+    if (!prev_circle_active && circle_active) {
+        circle_active = 0;
+    }
+
     printer_stream = prev;
     current_depth = prev_depth;
+    current_column = prev_column;
+    pp_indent_top = prev_indent_top;
 }
 
 void cl_prin1_to_stream(CL_Obj obj, CL_Obj stream)
@@ -786,17 +1106,38 @@ static int write_to_buffer_internal(CL_Obj obj, char *buf, int bufsize)
 {
     CL_Obj prev = printer_stream;
     int32_t prev_depth = current_depth;
+    int32_t prev_column = current_column;
+    int32_t prev_indent_top = pp_indent_top;
+    int prev_circle_active = circle_active;
     current_depth = 0;
+    current_column = 0;
+    pp_indent_top = 0;
     to_buffer = 1;
     printer_stream = CL_NIL;
     out_buf = buf;
     out_pos = 0;
     out_size = bufsize;
+
+    /* Activate *print-circle* if enabled and not already active */
+    if (print_circle_p() && !circle_active) {
+        circle_clear();
+        circle_walk(obj);
+        circle_assign_labels();
+        circle_active = 1;
+    }
+
     print_obj(obj);
+
+    if (!prev_circle_active && circle_active) {
+        circle_active = 0;
+    }
+
     if (out_pos < out_size) out_buf[out_pos] = '\0';
     to_buffer = 0;
     printer_stream = prev;
     current_depth = prev_depth;
+    current_column = prev_column;
+    pp_indent_top = prev_indent_top;
     return out_pos;
 }
 

@@ -2146,6 +2146,140 @@
 (check "print-array nil multi-dim" "#<ARRAY>"
   (let ((*print-array* nil)) (prin1-to-string (make-array '(2 3)))))
 
+; --- WRITE function with keyword arguments ---
+(check "write returns object" 42
+  (let ((x (write 42 :stream (make-string-output-stream)))) x))
+(check "write :escape nil" "hello"
+  (let ((s (make-string-output-stream)))
+    (write "hello" :stream s :escape nil)
+    (get-output-stream-string s)))
+(check "write :escape t" "\"hello\""
+  (let ((s (make-string-output-stream)))
+    (write "hello" :stream s :escape t)
+    (get-output-stream-string s)))
+(check "write :base 16" "FF"
+  (let ((s (make-string-output-stream)))
+    (write 255 :stream s :base 16)
+    (get-output-stream-string s)))
+(check "write :base 2" "1010"
+  (let ((s (make-string-output-stream)))
+    (write 10 :stream s :base 2)
+    (get-output-stream-string s)))
+(check "write :radix t :base 16" "#xFF"
+  (let ((s (make-string-output-stream)))
+    (write 255 :stream s :base 16 :radix t)
+    (get-output-stream-string s)))
+(check "write :level 1" "(A #)"
+  (let ((s (make-string-output-stream)))
+    (write '(a (b (c))) :stream s :level 1)
+    (get-output-stream-string s)))
+(check "write :length 2" "(A B ...)"
+  (let ((s (make-string-output-stream)))
+    (write '(a b c d e) :stream s :length 2)
+    (get-output-stream-string s)))
+(check "write :case :downcase" "hello"
+  (let ((s (make-string-output-stream)))
+    (write 'hello :stream s :case :downcase)
+    (get-output-stream-string s)))
+(check "write :case :capitalize" "Foo-Bar"
+  (let ((s (make-string-output-stream)))
+    (write 'foo-bar :stream s :case :capitalize)
+    (get-output-stream-string s)))
+(check "write :gensym nil" "FOO"
+  (let ((s (make-string-output-stream)))
+    (write (make-symbol "FOO") :stream s :gensym nil)
+    (get-output-stream-string s)))
+(check "write :array nil" "#<VECTOR>"
+  (let ((s (make-string-output-stream)))
+    (write (vector 1 2) :stream s :array nil)
+    (get-output-stream-string s)))
+
+; --- *print-circle* ---
+(check "circle cdr cycle" "#0=(1 2 . #0#)"
+  (let ((*print-circle* t))
+    (let ((x (list 1 2)))
+      (rplacd (cdr x) x)
+      (prin1-to-string x))))
+(check "circle car self-ref" "#0=(#0#)"
+  (let ((*print-circle* t))
+    (let ((x (list nil)))
+      (rplaca x x)
+      (prin1-to-string x))))
+(check "circle shared sub" "(#0=(1 2) #0#)"
+  (let ((*print-circle* t))
+    (let ((sub (list 1 2)))
+      (prin1-to-string (list sub sub)))))
+(check "circle no sharing" "(1 2 3)"
+  (let ((*print-circle* t))
+    (prin1-to-string '(1 2 3))))
+(check "circle nil default" "((1) (1))"
+  (let ((sub (list 1)))
+    (prin1-to-string (list sub sub))))
+(check "circle vector self" "#0=#(#0# 42)"
+  (let ((*print-circle* t))
+    (let ((v (vector nil 42)))
+      (setf (aref v 0) v)
+      (prin1-to-string v))))
+(check "circle deep shared" "((#0=(99)) (#0#))"
+  (let ((*print-circle* t))
+    (let ((leaf (list 99)))
+      (prin1-to-string (list (list leaf) (list leaf))))))
+(check "write-to-string :circle" "#0=(1 2 . #0#)"
+  (let ((x (list 1 2)))
+    (rplacd (cdr x) x)
+    (write-to-string x :circle t)))
+
+; --- Format directive extensions ---
+(check "format ~D" "42" (format nil "~D" 42))
+(check "format ~D negative" "-7" (format nil "~D" -7))
+(check "format ~D zero" "0" (format nil "~D" 0))
+(check "format ~B" "1010" (format nil "~B" 10))
+(check "format ~B 255" "11111111" (format nil "~B" 255))
+(check "format ~O" "10" (format nil "~O" 8))
+(check "format ~O 255" "377" (format nil "~O" 255))
+(check "format ~X" "FF" (format nil "~X" 255))
+(check "format ~X 256" "100" (format nil "~X" 256))
+(check "format ~X zero" "0" (format nil "~X" 0))
+(check "format ~C" "A" (format nil "~C" #\A))
+(check "format ~C space" " " (format nil "~C" #\Space))
+(check "format ~W string" "\"hello\"" (format nil "~W" "hello"))
+(check "format ~W number" "42" (format nil "~W" 42))
+(check "format ~& freshline" 11 (length (format nil "hello~&world")))
+(check "format ~| page" 3 (length (format nil "a~|b")))
+(check "format ~| page char" 12 (char-code (char (format nil "a~|b") 1)))
+(check "format mixed" "dec=255 hex=FF bin=11111111"
+  (format nil "dec=~D hex=~X bin=~B" 255 255 255))
+
+; --- Pretty-printing / *print-pretty* ---
+(check "print-pretty default nil" nil *print-pretty*)
+(check "print-right-margin default nil" nil *print-right-margin*)
+(check "pretty short list" "(1 2 3)"
+  (let ((*print-pretty* t) (*print-right-margin* 40))
+    (write-to-string '(1 2 3))))
+(check "pretty long list" 27
+  (length (let ((*print-pretty* t) (*print-right-margin* 10))
+    (write-to-string '(alpha beta gamma delta)))))
+(check "pretty off no break" "(ALPHA BETA GAMMA)"
+  (let ((*print-pretty* nil) (*print-right-margin* 5))
+    (write-to-string '(alpha beta gamma))))
+(check "pretty write keyword" "(1 2 3)"
+  (write-to-string '(1 2 3) :pretty t :right-margin 40))
+(check "pretty write-to-string narrow" 27
+  (length (write-to-string '(alpha beta gamma delta) :pretty t :right-margin 10)))
+(check "pprint basic" 8
+  (length (let ((s (make-string-output-stream)))
+    (pprint '(1 2 3) s)
+    (get-output-stream-string s))))
+(check "pretty empty nil" "NIL"
+  (let ((*print-pretty* t) (*print-right-margin* 10))
+    (write-to-string nil)))
+(check "pretty single elt" "(X)"
+  (let ((*print-pretty* t) (*print-right-margin* 10))
+    (write-to-string '(x))))
+(check "pretty dotted" "(A . B)"
+  (let ((*print-pretty* t) (*print-right-margin* 40))
+    (write-to-string '(a . b))))
+
 ; --- Summary ---
 (format t "~%=== Results ===~%")
 (format t "Passed: ~A~%" *pass-count*)

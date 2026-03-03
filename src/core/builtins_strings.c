@@ -559,12 +559,80 @@ static CL_Obj bi_parse_integer(CL_Obj *args, int n)
     return CL_MAKE_FIXNUM(sign * result);
 }
 
+/* Keywords for write-to-string (same as write) */
+static CL_Obj KW_WTS_ESCAPE;
+static CL_Obj KW_WTS_READABLY;
+static CL_Obj KW_WTS_BASE;
+static CL_Obj KW_WTS_RADIX;
+static CL_Obj KW_WTS_LEVEL;
+static CL_Obj KW_WTS_LENGTH;
+static CL_Obj KW_WTS_CASE;
+static CL_Obj KW_WTS_GENSYM;
+static CL_Obj KW_WTS_ARRAY;
+static CL_Obj KW_WTS_CIRCLE;
+static CL_Obj KW_WTS_PRETTY;
+static CL_Obj KW_WTS_RIGHT_MARGIN;
+
 static CL_Obj bi_write_to_string(CL_Obj *args, int n)
 {
     char buf[1024];
-    int len;
-    CL_UNUSED(n);
+    int len, i;
+    CL_Symbol *se = NULL, *sr = NULL, *sb = NULL, *sx = NULL;
+    CL_Symbol *sl = NULL, *sn = NULL, *sc = NULL, *sg = NULL;
+    CL_Symbol *sa = NULL, *si = NULL, *sp = NULL, *sm = NULL;
+    CL_Obj prev_e, prev_r, prev_b, prev_x, prev_l, prev_n;
+    CL_Obj prev_c, prev_g, prev_a, prev_i, prev_p, prev_m;
+    int has_keywords = (n > 1);
+
+    if (has_keywords) {
+        se = (CL_Symbol *)CL_OBJ_TO_PTR(SYM_PRINT_ESCAPE);    prev_e = se->value;
+        sr = (CL_Symbol *)CL_OBJ_TO_PTR(SYM_PRINT_READABLY);  prev_r = sr->value;
+        sb = (CL_Symbol *)CL_OBJ_TO_PTR(SYM_PRINT_BASE);      prev_b = sb->value;
+        sx = (CL_Symbol *)CL_OBJ_TO_PTR(SYM_PRINT_RADIX);     prev_x = sx->value;
+        sl = (CL_Symbol *)CL_OBJ_TO_PTR(SYM_PRINT_LEVEL);     prev_l = sl->value;
+        sn = (CL_Symbol *)CL_OBJ_TO_PTR(SYM_PRINT_LENGTH);    prev_n = sn->value;
+        sc = (CL_Symbol *)CL_OBJ_TO_PTR(SYM_PRINT_CASE);      prev_c = sc->value;
+        sg = (CL_Symbol *)CL_OBJ_TO_PTR(SYM_PRINT_GENSYM);    prev_g = sg->value;
+        sa = (CL_Symbol *)CL_OBJ_TO_PTR(SYM_PRINT_ARRAY);     prev_a = sa->value;
+        si = (CL_Symbol *)CL_OBJ_TO_PTR(SYM_PRINT_CIRCLE);    prev_i = si->value;
+        sp = (CL_Symbol *)CL_OBJ_TO_PTR(SYM_PRINT_PRETTY);    prev_p = sp->value;
+        sm = (CL_Symbol *)CL_OBJ_TO_PTR(SYM_PRINT_RIGHT_MARGIN); prev_m = sm->value;
+
+        for (i = 1; i + 1 < n; i += 2) {
+            CL_Obj kw = args[i];
+            CL_Obj val = args[i + 1];
+            if (kw == KW_WTS_ESCAPE)        se->value = val;
+            else if (kw == KW_WTS_READABLY) sr->value = val;
+            else if (kw == KW_WTS_BASE)     sb->value = val;
+            else if (kw == KW_WTS_RADIX)    sx->value = val;
+            else if (kw == KW_WTS_LEVEL)    sl->value = val;
+            else if (kw == KW_WTS_LENGTH)   sn->value = val;
+            else if (kw == KW_WTS_CASE)     sc->value = val;
+            else if (kw == KW_WTS_GENSYM)   sg->value = val;
+            else if (kw == KW_WTS_ARRAY)    sa->value = val;
+            else if (kw == KW_WTS_CIRCLE)   si->value = val;
+            else if (kw == KW_WTS_PRETTY)   sp->value = val;
+            else if (kw == KW_WTS_RIGHT_MARGIN) sm->value = val;
+        }
+    }
+
     len = cl_prin1_to_string(args[0], buf, sizeof(buf));
+
+    if (has_keywords) {
+        se->value = prev_e;
+        sr->value = prev_r;
+        sb->value = prev_b;
+        sx->value = prev_x;
+        sl->value = prev_l;
+        sn->value = prev_n;
+        sc->value = prev_c;
+        sg->value = prev_g;
+        sa->value = prev_a;
+        si->value = prev_i;
+        sp->value = prev_p;
+        sm->value = prev_m;
+    }
+
     return cl_make_string(buf, (uint32_t)len);
 }
 
@@ -925,7 +993,21 @@ void cl_builtins_strings_init(void)
     defun("SCHAR", bi_char_accessor, 2, 2);
     defun("STRING", bi_string_coerce, 1, 1);
     defun("PARSE-INTEGER", bi_parse_integer, 1, -1);
-    defun("WRITE-TO-STRING", bi_write_to_string, 1, 1);
+    defun("WRITE-TO-STRING", bi_write_to_string, 1, -1);
+
+    /* Initialize write-to-string keywords */
+    KW_WTS_ESCAPE   = cl_intern_in("ESCAPE",   6, cl_package_keyword);
+    KW_WTS_READABLY = cl_intern_in("READABLY", 8, cl_package_keyword);
+    KW_WTS_BASE     = cl_intern_in("BASE",     4, cl_package_keyword);
+    KW_WTS_RADIX    = cl_intern_in("RADIX",    5, cl_package_keyword);
+    KW_WTS_LEVEL    = cl_intern_in("LEVEL",    5, cl_package_keyword);
+    KW_WTS_LENGTH   = cl_intern_in("LENGTH",   6, cl_package_keyword);
+    KW_WTS_CASE     = cl_intern_in("CASE",     4, cl_package_keyword);
+    KW_WTS_GENSYM   = cl_intern_in("GENSYM",   6, cl_package_keyword);
+    KW_WTS_ARRAY    = cl_intern_in("ARRAY",    5, cl_package_keyword);
+    KW_WTS_CIRCLE   = cl_intern_in("CIRCLE",   6, cl_package_keyword);
+    KW_WTS_PRETTY   = cl_intern_in("PRETTY",   6, cl_package_keyword);
+    KW_WTS_RIGHT_MARGIN = cl_intern_in("RIGHT-MARGIN", 12, cl_package_keyword);
     defun("PRIN1-TO-STRING", bi_prin1_to_string_fn, 1, 1);
     defun("PRINC-TO-STRING", bi_princ_to_string_fn, 1, 1);
 

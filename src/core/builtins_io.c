@@ -44,7 +44,118 @@ static CL_Obj resolve_output_stream_io(CL_Obj *args, int n, int idx)
     return s;
 }
 
+/* --- Keywords for WRITE --- */
+
+static CL_Obj KW_WR_STREAM;
+static CL_Obj KW_WR_ESCAPE;
+static CL_Obj KW_WR_READABLY;
+static CL_Obj KW_WR_BASE;
+static CL_Obj KW_WR_RADIX;
+static CL_Obj KW_WR_LEVEL;
+static CL_Obj KW_WR_LENGTH;
+static CL_Obj KW_WR_CASE;
+static CL_Obj KW_WR_GENSYM;
+static CL_Obj KW_WR_ARRAY;
+static CL_Obj KW_WR_CIRCLE;
+static CL_Obj KW_WR_PRETTY;
+static CL_Obj KW_WR_RIGHT_MARGIN;
+
 /* --- I/O --- */
+
+/*
+ * (write object &key :stream :escape :readably :base :radix :level
+ *        :length :case :gensym :array :circle :pretty)
+ * Outputs object honoring all *print-* variable overrides.
+ * Returns object.
+ */
+static CL_Obj bi_write(CL_Obj *args, int n)
+{
+    CL_Obj obj = args[0];
+    CL_Obj stream;
+    CL_Symbol *sym;
+    int i;
+
+    /* Symbol pointers for save/restore */
+    CL_Symbol *se = NULL, *sr = NULL, *sb = NULL, *sx = NULL;
+    CL_Symbol *sl = NULL, *sn = NULL, *sc = NULL, *sg = NULL;
+    CL_Symbol *sa = NULL, *si = NULL, *sp = NULL, *sm = NULL;
+    CL_Obj prev_e, prev_r, prev_b, prev_x, prev_l, prev_n;
+    CL_Obj prev_c, prev_g, prev_a, prev_i, prev_p, prev_m;
+
+    /* Default: *standard-output* */
+    sym = (CL_Symbol *)CL_OBJ_TO_PTR(SYM_STANDARD_OUTPUT);
+    stream = sym->value;
+
+    /* Save current values */
+    se = (CL_Symbol *)CL_OBJ_TO_PTR(SYM_PRINT_ESCAPE);    prev_e = se->value;
+    sr = (CL_Symbol *)CL_OBJ_TO_PTR(SYM_PRINT_READABLY);  prev_r = sr->value;
+    sb = (CL_Symbol *)CL_OBJ_TO_PTR(SYM_PRINT_BASE);      prev_b = sb->value;
+    sx = (CL_Symbol *)CL_OBJ_TO_PTR(SYM_PRINT_RADIX);     prev_x = sx->value;
+    sl = (CL_Symbol *)CL_OBJ_TO_PTR(SYM_PRINT_LEVEL);     prev_l = sl->value;
+    sn = (CL_Symbol *)CL_OBJ_TO_PTR(SYM_PRINT_LENGTH);    prev_n = sn->value;
+    sc = (CL_Symbol *)CL_OBJ_TO_PTR(SYM_PRINT_CASE);      prev_c = sc->value;
+    sg = (CL_Symbol *)CL_OBJ_TO_PTR(SYM_PRINT_GENSYM);    prev_g = sg->value;
+    sa = (CL_Symbol *)CL_OBJ_TO_PTR(SYM_PRINT_ARRAY);     prev_a = sa->value;
+    si = (CL_Symbol *)CL_OBJ_TO_PTR(SYM_PRINT_CIRCLE);    prev_i = si->value;
+    sp = (CL_Symbol *)CL_OBJ_TO_PTR(SYM_PRINT_PRETTY);    prev_p = sp->value;
+    sm = (CL_Symbol *)CL_OBJ_TO_PTR(SYM_PRINT_RIGHT_MARGIN); prev_m = sm->value;
+
+    /* Parse keyword arguments (start at index 1, pairs) */
+    for (i = 1; i + 1 < n; i += 2) {
+        CL_Obj kw = args[i];
+        CL_Obj val = args[i + 1];
+        if (kw == KW_WR_STREAM) {
+            if (val == CL_T) {
+                sym = (CL_Symbol *)CL_OBJ_TO_PTR(SYM_TERMINAL_IO);
+                stream = sym->value;
+            } else if (!CL_NULL_P(val)) {
+                stream = val;
+            }
+        } else if (kw == KW_WR_ESCAPE) {
+            se->value = val;
+        } else if (kw == KW_WR_READABLY) {
+            sr->value = val;
+        } else if (kw == KW_WR_BASE) {
+            sb->value = val;
+        } else if (kw == KW_WR_RADIX) {
+            sx->value = val;
+        } else if (kw == KW_WR_LEVEL) {
+            sl->value = val;
+        } else if (kw == KW_WR_LENGTH) {
+            sn->value = val;
+        } else if (kw == KW_WR_CASE) {
+            sc->value = val;
+        } else if (kw == KW_WR_GENSYM) {
+            sg->value = val;
+        } else if (kw == KW_WR_ARRAY) {
+            sa->value = val;
+        } else if (kw == KW_WR_CIRCLE) {
+            si->value = val;
+        } else if (kw == KW_WR_PRETTY) {
+            sp->value = val;
+        } else if (kw == KW_WR_RIGHT_MARGIN) {
+            sm->value = val;
+        }
+    }
+
+    cl_write_to_stream(obj, stream);
+
+    /* Restore all values */
+    se->value = prev_e;
+    sr->value = prev_r;
+    sb->value = prev_b;
+    sx->value = prev_x;
+    sl->value = prev_l;
+    sn->value = prev_n;
+    sc->value = prev_c;
+    sg->value = prev_g;
+    sa->value = prev_a;
+    si->value = prev_i;
+    sp->value = prev_p;
+    sm->value = prev_m;
+
+    return obj;
+}
 
 static CL_Obj bi_print(CL_Obj *args, int n)
 {
@@ -67,6 +178,36 @@ static CL_Obj bi_princ(CL_Obj *args, int n)
     return args[0];
 }
 
+static CL_Obj bi_pprint(CL_Obj *args, int n)
+{
+    CL_Obj stream = resolve_output_stream_io(args, n, 1);
+    CL_Symbol *se = (CL_Symbol *)CL_OBJ_TO_PTR(SYM_PRINT_ESCAPE);
+    CL_Symbol *sp = (CL_Symbol *)CL_OBJ_TO_PTR(SYM_PRINT_PRETTY);
+    CL_Obj prev_e = se->value;
+    CL_Obj prev_p = sp->value;
+    se->value = SYM_T;
+    sp->value = SYM_T;
+    cl_stream_write_char(stream, '\n');
+    cl_write_to_stream(args[0], stream);
+    se->value = prev_e;
+    sp->value = prev_p;
+    return CL_NIL;
+}
+
+/* Helper: print integer in given base (for ~D, ~B, ~O, ~X) */
+static void format_integer(CL_Obj stream, CL_Obj arg, int32_t base)
+{
+    CL_Symbol *sb = (CL_Symbol *)CL_OBJ_TO_PTR(SYM_PRINT_BASE);
+    CL_Symbol *sx = (CL_Symbol *)CL_OBJ_TO_PTR(SYM_PRINT_RADIX);
+    CL_Obj prev_b = sb->value;
+    CL_Obj prev_x = sx->value;
+    sb->value = CL_MAKE_FIXNUM(base);
+    sx->value = CL_NIL;
+    cl_princ_to_stream(arg, stream);
+    sb->value = prev_b;
+    sx->value = prev_x;
+}
+
 static void format_to_stream(CL_Obj stream, CL_Obj *args, int n)
 {
     CL_String *s;
@@ -87,8 +228,32 @@ static void format_to_stream(CL_Obj stream, CL_Obj *args, int n)
                 if (ai < n) cl_princ_to_stream(args[ai++], stream);
             } else if (*p == 'S' || *p == 's') {
                 if (ai < n) cl_prin1_to_stream(args[ai++], stream);
+            } else if (*p == 'W' || *p == 'w') {
+                /* ~W: output as if by WRITE (all *print-* bindings) */
+                if (ai < n) cl_write_to_stream(args[ai++], stream);
+            } else if (*p == 'D' || *p == 'd') {
+                /* ~D: decimal integer */
+                if (ai < n) format_integer(stream, args[ai++], 10);
+            } else if (*p == 'B' || *p == 'b') {
+                /* ~B: binary integer */
+                if (ai < n) format_integer(stream, args[ai++], 2);
+            } else if (*p == 'O' || *p == 'o') {
+                /* ~O: octal integer */
+                if (ai < n) format_integer(stream, args[ai++], 8);
+            } else if (*p == 'X' || *p == 'x') {
+                /* ~X: hexadecimal integer */
+                if (ai < n) format_integer(stream, args[ai++], 16);
+            } else if (*p == 'C' || *p == 'c') {
+                /* ~C: character (princ style) */
+                if (ai < n) cl_princ_to_stream(args[ai++], stream);
             } else if (*p == '%') {
                 cl_stream_write_char(stream, '\n');
+            } else if (*p == '&') {
+                /* ~&: fresh-line (newline if not at start of line) */
+                cl_stream_write_char(stream, '\n');
+            } else if (*p == '|') {
+                /* ~|: page separator */
+                cl_stream_write_char(stream, '\f');
             } else if (*p == '~') {
                 cl_stream_write_char(stream, '~');
             }
@@ -708,10 +873,27 @@ static CL_Obj bi_compile(CL_Obj *args, int n)
 
 void cl_builtins_io_init(void)
 {
+    /* Intern keywords for WRITE */
+    KW_WR_STREAM   = cl_intern_keyword("STREAM", 6);
+    KW_WR_ESCAPE   = cl_intern_keyword("ESCAPE", 6);
+    KW_WR_READABLY = cl_intern_keyword("READABLY", 8);
+    KW_WR_BASE     = cl_intern_keyword("BASE", 4);
+    KW_WR_RADIX    = cl_intern_keyword("RADIX", 5);
+    KW_WR_LEVEL    = cl_intern_keyword("LEVEL", 5);
+    KW_WR_LENGTH   = cl_intern_keyword("LENGTH", 6);
+    KW_WR_CASE     = cl_intern_keyword("CASE", 4);
+    KW_WR_GENSYM   = cl_intern_keyword("GENSYM", 6);
+    KW_WR_ARRAY    = cl_intern_keyword("ARRAY", 5);
+    KW_WR_CIRCLE   = cl_intern_keyword("CIRCLE", 6);
+    KW_WR_PRETTY   = cl_intern_keyword("PRETTY", 6);
+    KW_WR_RIGHT_MARGIN = cl_intern_keyword("RIGHT-MARGIN", 12);
+
     /* I/O */
+    defun("WRITE", bi_write, 1, -1);
     defun("PRINT", bi_print, 1, 2);
     defun("PRIN1", bi_prin1, 1, 2);
     defun("PRINC", bi_princ, 1, 2);
+    defun("PPRINT", bi_pprint, 1, 2);
     defun("FORMAT", bi_format, 1, -1);
 
     /* Read / Load / Eval */
