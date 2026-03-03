@@ -50,6 +50,7 @@ CL_Obj cl_make_function(CL_CFunc func, CL_Obj name, int min_args, int max_args);
 CL_Obj cl_make_vector(uint32_t length);
 CL_Obj cl_make_hashtable(uint32_t bucket_count, uint32_t test);
 CL_Obj cl_make_condition(CL_Obj type_name, CL_Obj slots, CL_Obj report_string);
+CL_Obj cl_make_struct(CL_Obj type_name, uint32_t n_slots);
 
 /* GC root protection */
 #define CL_GC_PROTECT(var) cl_gc_push_root(&(var))

@@ -129,6 +129,9 @@ static CL_Obj bi_set_symbol_value(CL_Obj *args, int n)
     if (!CL_SYMBOL_P(args[0]))
         cl_error(CL_ERR_TYPE, "SET: not a symbol");
     s = (CL_Symbol *)CL_OBJ_TO_PTR(args[0]);
+    if (s->flags & CL_SYM_CONSTANT)
+        cl_error(CL_ERR_GENERAL, "Cannot assign to constant variable: %s",
+                 cl_symbol_name(args[0]));
     s->value = args[1];
     return args[1];
 }

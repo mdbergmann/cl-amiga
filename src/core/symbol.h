@@ -86,6 +86,7 @@ extern CL_Obj SYM_MULTIPLE_VALUE_PROG1;
 extern CL_Obj SYM_NTH_VALUE;
 extern CL_Obj SYM_DEFVAR;
 extern CL_Obj SYM_DEFPARAMETER;
+extern CL_Obj SYM_DEFCONSTANT;
 extern CL_Obj SYM_SETF;
 extern CL_Obj SYM_EVAL_WHEN;
 extern CL_Obj SYM_DESTRUCTURING_BIND;
@@ -101,6 +102,7 @@ extern CL_Obj SYM_IN_PACKAGE;
 extern CL_Obj SYM_STAR_PACKAGE;
 extern CL_Obj SYM_MACROLET;
 extern CL_Obj SYM_SYMBOL_MACROLET;
+extern CL_Obj SYM_THE;
 
 /* Declaration specifier symbols */
 extern CL_Obj SYM_SPECIAL_DECL;

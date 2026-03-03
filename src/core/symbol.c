@@ -53,6 +53,7 @@ CL_Obj SYM_MULTIPLE_VALUE_PROG1 = CL_NIL;
 CL_Obj SYM_NTH_VALUE = CL_NIL;
 CL_Obj SYM_DEFVAR = CL_NIL;
 CL_Obj SYM_DEFPARAMETER = CL_NIL;
+CL_Obj SYM_DEFCONSTANT = CL_NIL;
 CL_Obj SYM_SETF = CL_NIL;
 CL_Obj SYM_EVAL_WHEN = CL_NIL;
 CL_Obj SYM_DESTRUCTURING_BIND = CL_NIL;
@@ -68,6 +69,7 @@ CL_Obj SYM_IN_PACKAGE = CL_NIL;
 CL_Obj SYM_STAR_PACKAGE = CL_NIL;
 CL_Obj SYM_MACROLET = CL_NIL;
 CL_Obj SYM_SYMBOL_MACROLET = CL_NIL;
+CL_Obj SYM_THE = CL_NIL;
 
 /* Declaration specifier symbols */
 CL_Obj SYM_SPECIAL_DECL = CL_NIL;
@@ -180,9 +182,10 @@ CL_Obj cl_find_symbol(const char *name, uint32_t len, CL_Obj package)
 CL_Obj cl_intern_keyword(const char *name, uint32_t len)
 {
     CL_Obj sym = cl_intern_in(name, len, cl_package_keyword);
-    /* Keywords are self-evaluating: their value is themselves */
+    /* Keywords are self-evaluating constants */
     CL_Symbol *s = (CL_Symbol *)CL_OBJ_TO_PTR(sym);
     s->value = sym;
+    s->flags |= CL_SYM_CONSTANT;
     return sym;
 }
 
@@ -226,6 +229,16 @@ void cl_symbol_init(void)
     /* Intern well-known symbols in CL package */
     SYM_T             = cl_intern_in("T", 1, cl_package_cl);
     SYM_NIL           = cl_intern_in("NIL", 3, cl_package_cl);
+    /* T and NIL are constants per CL spec */
+    {
+        CL_Symbol *s;
+        s = (CL_Symbol *)CL_OBJ_TO_PTR(SYM_T);
+        s->flags |= CL_SYM_CONSTANT;
+        s->value = SYM_T;
+        s = (CL_Symbol *)CL_OBJ_TO_PTR(SYM_NIL);
+        s->flags |= CL_SYM_CONSTANT;
+        /* NIL's value is already 0 = CL_NIL */
+    }
     SYM_QUOTE         = cl_intern_in("QUOTE", 5, cl_package_cl);
     SYM_IF            = cl_intern_in("IF", 2, cl_package_cl);
     SYM_PROGN         = cl_intern_in("PROGN", 5, cl_package_cl);
@@ -272,6 +285,7 @@ void cl_symbol_init(void)
     SYM_NTH_VALUE            = cl_intern_in("NTH-VALUE", 9, cl_package_cl);
     SYM_DEFVAR               = cl_intern_in("DEFVAR", 6, cl_package_cl);
     SYM_DEFPARAMETER         = cl_intern_in("DEFPARAMETER", 12, cl_package_cl);
+    SYM_DEFCONSTANT          = cl_intern_in("DEFCONSTANT", 11, cl_package_cl);
     SYM_SETF                 = cl_intern_in("SETF", 4, cl_package_cl);
     SYM_EVAL_WHEN            = cl_intern_in("EVAL-WHEN", 9, cl_package_cl);
     SYM_DESTRUCTURING_BIND   = cl_intern_in("DESTRUCTURING-BIND", 18, cl_package_cl);
@@ -287,6 +301,7 @@ void cl_symbol_init(void)
     SYM_STAR_PACKAGE         = cl_intern_in("*PACKAGE*", 9, cl_package_cl);
     SYM_MACROLET             = cl_intern_in("MACROLET", 8, cl_package_cl);
     SYM_SYMBOL_MACROLET      = cl_intern_in("SYMBOL-MACROLET", 15, cl_package_cl);
+    SYM_THE                  = cl_intern_in("THE", 3, cl_package_cl);
 
     /* Declaration specifier symbols */
     SYM_SPECIAL_DECL         = cl_intern_in("SPECIAL", 7, cl_package_cl);

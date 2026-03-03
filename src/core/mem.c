@@ -235,6 +235,22 @@ CL_Obj cl_make_condition(CL_Obj type_name, CL_Obj slots, CL_Obj report_string)
     return CL_PTR_TO_OBJ(cond);
 }
 
+CL_Obj cl_make_struct(CL_Obj type_name, uint32_t n_slots)
+{
+    uint32_t alloc_size = sizeof(CL_Struct) + n_slots * sizeof(CL_Obj);
+    CL_Struct *st;
+
+    CL_GC_PROTECT(type_name);
+    st = (CL_Struct *)cl_alloc(TYPE_STRUCT, alloc_size);
+    CL_GC_UNPROTECT(1);
+
+    if (!st) return CL_NIL;
+    st->type_desc = type_name;
+    st->n_slots = n_slots;
+    /* slots[] already zeroed (= CL_NIL) by cl_alloc */
+    return CL_PTR_TO_OBJ(st);
+}
+
 /* --- GC Root Stack --- */
 
 void cl_gc_push_root(CL_Obj *root)
@@ -333,6 +349,14 @@ static void gc_mark_children(void *ptr, uint8_t type)
         gc_mark_push(cond->type_name);
         gc_mark_push(cond->slots);
         gc_mark_push(cond->report_string);
+        break;
+    }
+    case TYPE_STRUCT: {
+        CL_Struct *st = (CL_Struct *)ptr;
+        uint32_t i;
+        gc_mark_push(st->type_desc);
+        for (i = 0; i < st->n_slots; i++)
+            gc_mark_push(st->slots[i]);
         break;
     }
     default:

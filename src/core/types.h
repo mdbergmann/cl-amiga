@@ -83,7 +83,8 @@ enum CL_ObjType {
     TYPE_VECTOR,
     TYPE_PACKAGE,
     TYPE_HASHTABLE,
-    TYPE_CONDITION
+    TYPE_CONDITION,
+    TYPE_STRUCT
 };
 
 /* Header access macros */
@@ -125,6 +126,7 @@ typedef struct {
 #define CL_SYM_INLINE   0x02
 #define CL_SYM_TRACED   0x04
 #define CL_SYM_EXPORTED 0x08
+#define CL_SYM_CONSTANT 0x10
 
 #define CL_SYMBOL_P(obj) (CL_HEAP_P(obj) && CL_HDR_TYPE(CL_OBJ_TO_PTR(obj)) == TYPE_SYMBOL)
 
@@ -248,6 +250,17 @@ typedef struct {
 
 #define CL_CONDITION_P(obj) (CL_HEAP_P(obj) && CL_HDR_TYPE(CL_OBJ_TO_PTR(obj)) == TYPE_CONDITION)
 
+/* --- Structure --- */
+
+typedef struct {
+    CL_Header hdr;
+    CL_Obj type_desc;      /* Symbol: struct type name */
+    uint32_t n_slots;      /* Number of slots */
+    CL_Obj slots[];        /* Positional slot values */
+} CL_Struct;
+
+#define CL_STRUCT_P(obj) (CL_HEAP_P(obj) && CL_HDR_TYPE(CL_OBJ_TO_PTR(obj)) == TYPE_STRUCT)
+
 /* --- Convenience accessors --- */
 
 CL_Obj cl_car(CL_Obj obj);
@@ -256,6 +269,9 @@ CL_Obj cl_cons(CL_Obj car, CL_Obj cdr);
 
 /* Type name for printing/errors */
 const char *cl_type_name(CL_Obj obj);
+
+/* Check if obj is of type type_spec (same as CL typep) */
+int cl_typep(CL_Obj obj, CL_Obj type_spec);
 
 /* Initialize type system (sets up CL_T, etc.) */
 void cl_types_init(void);

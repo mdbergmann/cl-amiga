@@ -501,6 +501,15 @@ static void compile_setq(CL_Compiler *c, CL_Obj form)
             }
         }
 
+        /* Check for constant symbols */
+        if (CL_SYMBOL_P(var)) {
+            CL_Symbol *sym = (CL_Symbol *)CL_OBJ_TO_PTR(var);
+            if (sym->flags & CL_SYM_CONSTANT) {
+                cl_error(CL_ERR_GENERAL, "Cannot assign to constant variable: %s",
+                         cl_symbol_name(var));
+            }
+        }
+
         c->in_tail = 0;
         compile_expr(c, val);
         c->in_tail = saved_tail;
@@ -531,6 +540,12 @@ static void compile_setf_place(CL_Compiler *c, CL_Obj place, CL_Obj val_form)
 
     if (CL_SYMBOL_P(place)) {
         int slot;
+        /* Check for constant symbols */
+        CL_Symbol *sym = (CL_Symbol *)CL_OBJ_TO_PTR(place);
+        if (sym->flags & CL_SYM_CONSTANT) {
+            cl_error(CL_ERR_GENERAL, "Cannot assign to constant variable: %s",
+                     cl_symbol_name(place));
+        }
         compile_expr(c, val_form);
         slot = cl_env_lookup(c->env, place);
         if (slot >= 0) {
@@ -868,6 +883,7 @@ void compile_expr(CL_Compiler *c, CL_Obj expr)
         if (head == SYM_DEFUN)       { compile_defun(c, expr); return; }
         if (head == SYM_DEFVAR)      { compile_defvar(c, expr); return; }
         if (head == SYM_DEFPARAMETER) { compile_defparameter(c, expr); return; }
+        if (head == SYM_DEFCONSTANT)  { compile_defconstant(c, expr); return; }
         if (head == SYM_DEFMACRO)    { compile_defmacro(c, expr); return; }
         if (head == SYM_AND)         { compile_and(c, expr); return; }
         if (head == SYM_OR)          { compile_or(c, expr); return; }
@@ -912,6 +928,7 @@ void compile_expr(CL_Compiler *c, CL_Obj expr)
         if (head == SYM_IN_PACKAGE)  { compile_in_package(c, expr); return; }
         if (head == SYM_MACROLET)        { compile_macrolet(c, expr); return; }
         if (head == SYM_SYMBOL_MACROLET) { compile_symbol_macrolet(c, expr); return; }
+        if (head == SYM_THE)             { compile_the(c, expr); return; }
 
         compile_call(c, expr);
         return;

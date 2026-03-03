@@ -80,6 +80,7 @@ enum CL_Opcode {
     OP_HANDLER_POP  = 0x95, /* u8: count; pop N handler bindings from handler stack */
     OP_RESTART_PUSH = 0x96, /* u16: const idx of name symbol; pop tag, pop closure, push restart binding */
     OP_RESTART_POP  = 0x97, /* u8: count; pop N restart bindings */
+    OP_ASSERT_TYPE  = 0x98, /* u16: const idx of type spec; peek TOS, signal type-error if mismatch */
 
     OP_HALT      = 0xFF   /* Stop VM */
 };

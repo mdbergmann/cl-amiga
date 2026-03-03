@@ -771,6 +771,34 @@ void compile_defparameter(CL_Compiler *c, CL_Obj form)
     cl_emit_const(c, name);
 }
 
+void compile_defconstant(CL_Compiler *c, CL_Obj form)
+{
+    /* (defconstant name value) — always sets value, marks constant */
+    CL_Obj name = cl_car(cl_cdr(form));
+    CL_Obj rest = cl_cdr(cl_cdr(form));
+    CL_Symbol *sym = (CL_Symbol *)CL_OBJ_TO_PTR(name);
+    int idx;
+
+    /* If already constant with a different value, error */
+    if ((sym->flags & CL_SYM_CONSTANT) && sym->value != CL_UNBOUND) {
+        if (!CL_NULL_P(rest)) {
+            /* Compile the value to check, but we'll compare at compile time */
+            /* CL spec: redefining with same value is allowed, different value is undefined */
+        }
+    }
+
+    sym->flags |= CL_SYM_CONSTANT;
+
+    if (!CL_NULL_P(rest)) {
+        compile_expr(c, cl_car(rest));
+        idx = cl_add_constant(c, name);
+        cl_emit(c, OP_GSTORE);
+        cl_emit_u16(c, (uint16_t)idx);
+        cl_emit(c, OP_POP);
+    }
+    cl_emit_const(c, name);
+}
+
 /* --- Defun / Defmacro --- */
 
 void compile_defun(CL_Compiler *c, CL_Obj form)
@@ -993,6 +1021,36 @@ void compile_locally(CL_Compiler *c, CL_Obj form)
     /* (locally (declare ...) body...) */
     CL_Obj body = cl_cdr(form);
     compile_body(c, body);
+}
+
+/* --- The --- */
+
+void compile_the(CL_Compiler *c, CL_Obj form)
+{
+    /* (the type-spec value-form) */
+    CL_Obj args = cl_cdr(form);
+    CL_Obj type_spec, value_form;
+
+    if (CL_NULL_P(args) || CL_NULL_P(cl_cdr(args)))
+        cl_error(CL_ERR_ARGS, "THE: requires type and value form");
+
+    type_spec = cl_car(args);
+    value_form = cl_car(cl_cdr(args));
+
+    if (cl_optimize_settings.safety >= 1) {
+        /* Disable tail position: ASSERT_TYPE must run after value form */
+        int saved_tail = c->in_tail;
+        c->in_tail = 0;
+        compile_expr(c, value_form);
+        c->in_tail = saved_tail;
+
+        int idx = cl_add_constant(c, type_spec);
+        cl_emit(c, OP_ASSERT_TYPE);
+        cl_emit_u16(c, (uint16_t)idx);
+    } else {
+        /* safety 0: no check, preserve tail position */
+        compile_expr(c, value_form);
+    }
 }
 
 /* --- Trace / Untrace --- */

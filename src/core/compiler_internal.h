@@ -148,6 +148,7 @@ void compile_defsetf(CL_Compiler *c, CL_Obj form);
 void compile_deftype(CL_Compiler *c, CL_Obj form);
 void compile_defvar(CL_Compiler *c, CL_Obj form);
 void compile_defparameter(CL_Compiler *c, CL_Obj form);
+void compile_defconstant(CL_Compiler *c, CL_Obj form);
 void compile_defun(CL_Compiler *c, CL_Obj form);
 void compile_defmacro(CL_Compiler *c, CL_Obj form);
 void compile_declaim(CL_Compiler *c, CL_Obj form);
@@ -156,6 +157,7 @@ void compile_trace(CL_Compiler *c, CL_Obj form);
 void compile_untrace(CL_Compiler *c, CL_Obj form);
 void compile_time(CL_Compiler *c, CL_Obj form);
 void compile_in_package(CL_Compiler *c, CL_Obj form);
+void compile_the(CL_Compiler *c, CL_Obj form);
 
 /* Declaration processing helpers */
 CL_Obj process_body_declarations(CL_Compiler *c, CL_Obj body);

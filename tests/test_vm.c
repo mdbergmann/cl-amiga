@@ -1059,6 +1059,45 @@ TEST(eval_defparameter_overwrite)
     ASSERT_EQ_INT(eval_int("*z*"), 20);
 }
 
+TEST(eval_defconstant_basic)
+{
+    ASSERT_STR_EQ(eval_print("(defconstant +my-const+ 42)"), "+MY-CONST+");
+    ASSERT_EQ_INT(eval_int("+my-const+"), 42);
+}
+
+TEST(eval_defconstant_setq_error)
+{
+    /* setq on a constant should error at compile time */
+    eval_print("(defconstant +dc1+ 10)");
+    const char *r = eval_print("(setq +dc1+ 20)");
+    ASSERT(strstr(r, "ERROR") != NULL);
+    /* Value should be unchanged */
+    ASSERT_EQ_INT(eval_int("+dc1+"), 10);
+}
+
+TEST(eval_defconstant_set_error)
+{
+    /* set on a constant should error at runtime */
+    eval_print("(defconstant +dc2+ 99)");
+    const char *r = eval_print("(set '+dc2+ 0)");
+    ASSERT(strstr(r, "ERROR") != NULL);
+    ASSERT_EQ_INT(eval_int("+dc2+"), 99);
+}
+
+TEST(eval_defconstant_t_is_constant)
+{
+    /* T is a constant per CL spec */
+    const char *r = eval_print("(setq t 42)");
+    ASSERT(strstr(r, "ERROR") != NULL);
+}
+
+TEST(eval_defconstant_keyword_error)
+{
+    /* Keywords are constants per CL spec */
+    const char *r = eval_print("(set ':foo 42)");
+    ASSERT(strstr(r, "ERROR") != NULL);
+}
+
 TEST(eval_special_let_binding)
 {
     /* let dynamically binds special var, restores after */
@@ -2280,6 +2319,49 @@ TEST(eval_declaim_multiple)
     ASSERT_EQ_INT(eval_int("(let ((*dm2* 20)) (get-dm2))"), 20);
 }
 
+/* ===== Phase 6 — The ===== */
+
+TEST(eval_the_basic)
+{
+    /* (the type form) passes through value when type matches */
+    ASSERT_EQ_INT(eval_int("(the fixnum 42)"), 42);
+    ASSERT_STR_EQ(eval_print("(the string \"hello\")"), "\"hello\"");
+    ASSERT_EQ_INT(eval_int("(the fixnum (+ 1 2))"), 3);
+    ASSERT_STR_EQ(eval_print("(the symbol 'foo)"), "FOO");
+    ASSERT_STR_EQ(eval_print("(the list '(1 2 3))"), "(1 2 3)");
+    ASSERT_STR_EQ(eval_print("(the null nil)"), "NIL");
+}
+
+TEST(eval_the_compound_type)
+{
+    /* compound type specifiers */
+    ASSERT_EQ_INT(eval_int("(the (or fixnum null) 42)"), 42);
+    ASSERT_STR_EQ(eval_print("(the (or fixnum null) nil)"), "NIL");
+    ASSERT_STR_EQ(eval_print("(the (or string symbol) \"hi\")"), "\"hi\"");
+}
+
+TEST(eval_the_type_error)
+{
+    /* signals type-error when value doesn't match */
+    ASSERT_STR_EQ(eval_print("(the fixnum \"oops\")"), "ERROR:2");
+    ASSERT_STR_EQ(eval_print("(the string 42)"), "ERROR:2");
+}
+
+TEST(eval_the_safety_zero)
+{
+    /* safety 0 skips the check */
+    eval_print("(declaim (optimize (safety 0)))");
+    ASSERT_STR_EQ(eval_print("(the fixnum \"oops\")"), "\"oops\"");
+    /* restore default safety */
+    eval_print("(declaim (optimize (safety 1)))");
+}
+
+TEST(eval_the_nested)
+{
+    /* nested the forms */
+    ASSERT_EQ_INT(eval_int("(the fixnum (the fixnum (+ 1 2)))"), 3);
+}
+
 /* ===== Phase 5 — Trace/Untrace ===== */
 
 TEST(eval_trace_basic)
@@ -2867,6 +2949,11 @@ int main(void)
     RUN(eval_defvar_basic);
     RUN(eval_defvar_no_overwrite);
     RUN(eval_defparameter_overwrite);
+    RUN(eval_defconstant_basic);
+    RUN(eval_defconstant_setq_error);
+    RUN(eval_defconstant_set_error);
+    RUN(eval_defconstant_t_is_constant);
+    RUN(eval_defconstant_keyword_error);
     RUN(eval_special_let_binding);
     RUN(eval_special_let_star_binding);
     RUN(eval_special_visible_in_called_fn);
@@ -3037,6 +3124,13 @@ int main(void)
     RUN(eval_declare_misplaced);
     RUN(eval_declare_in_lambda);
     RUN(eval_declaim_multiple);
+
+    /* Phase 6 — The */
+    RUN(eval_the_basic);
+    RUN(eval_the_compound_type);
+    RUN(eval_the_type_error);
+    RUN(eval_the_safety_zero);
+    RUN(eval_the_nested);
 
     /* Phase 5 — Trace/Untrace */
     RUN(eval_trace_basic);

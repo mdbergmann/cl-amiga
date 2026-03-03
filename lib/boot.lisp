@@ -200,6 +200,117 @@
          (let ((,var ,s))
            ,@body)))))
 
+;; defstruct — define a named structure type
+;; Supports options: :conc-name, :constructor, :predicate, :copier, :include
+(defun %defstruct-parse-slot (spec)
+  "Parse a slot spec into (name default). Accepts NAME or (NAME DEFAULT)."
+  (if (consp spec)
+      (list (car spec) (cadr spec))
+      (list spec nil)))
+
+(defmacro defstruct (name-and-options &rest slot-specs)
+  (let* ((name (if (consp name-and-options) (car name-and-options) name-and-options))
+         (options (if (consp name-and-options) (cdr name-and-options) nil))
+         (name-str (symbol-name name))
+         ;; Parse options
+         (conc-name-opt nil) (conc-name-set nil)
+         (constructor-opt nil) (constructor-set nil)
+         (predicate-opt nil) (predicate-set nil)
+         (copier-opt nil) (copier-set nil)
+         (include-name nil) (include-slots nil))
+    ;; Process options
+    (dolist (opt options)
+      (cond
+        ((and (consp opt) (eq (car opt) :conc-name))
+         (setq conc-name-set t)
+         (setq conc-name-opt (cadr opt)))
+        ((eq opt :conc-name)
+         (setq conc-name-set t)
+         (setq conc-name-opt nil))
+        ((and (consp opt) (eq (car opt) :constructor))
+         (setq constructor-set t)
+         (setq constructor-opt (cadr opt)))
+        ((eq opt :constructor)
+         (setq constructor-set t)
+         (setq constructor-opt nil))
+        ((and (consp opt) (eq (car opt) :predicate))
+         (setq predicate-set t)
+         (setq predicate-opt (cadr opt)))
+        ((eq opt :predicate)
+         (setq predicate-set t)
+         (setq predicate-opt nil))
+        ((and (consp opt) (eq (car opt) :copier))
+         (setq copier-set t)
+         (setq copier-opt (cadr opt)))
+        ((eq opt :copier)
+         (setq copier-set t)
+         (setq copier-opt nil))
+        ((and (consp opt) (eq (car opt) :include))
+         (setq include-name (cadr opt)))))
+    ;; Compute inherited slots from :include (with defaults)
+    (when include-name
+      (let ((parent-specs (%struct-slot-specs include-name)))
+        (dolist (spec parent-specs)
+          (push spec include-slots))
+        (setq include-slots (reverse include-slots))))
+    ;; Build full slot list: inherited + own
+    (let* ((own-parsed (mapcar #'%defstruct-parse-slot slot-specs))
+           (all-slots (append include-slots own-parsed))
+           (n-slots (length all-slots))
+           (slot-names (mapcar #'car all-slots))
+           ;; Compute conc-name prefix (user supplies the full prefix incl. separator)
+           (prefix (cond
+                     ((not conc-name-set) (concatenate 'string name-str "-"))
+                     ((null conc-name-opt) "")
+                     (t (symbol-name conc-name-opt))))
+           ;; Constructor name
+           (ctor-name (cond
+                        ((not constructor-set) (intern (concatenate 'string "MAKE-" name-str)))
+                        ((null constructor-opt) nil)
+                        (t constructor-opt)))
+           ;; Predicate name
+           (pred-name (cond
+                        ((not predicate-set) (intern (concatenate 'string name-str "-P")))
+                        ((null predicate-opt) nil)
+                        (t predicate-opt)))
+           ;; Copier name
+           (copy-name (cond
+                        ((not copier-set) (intern (concatenate 'string "COPY-" name-str)))
+                        ((null copier-opt) nil)
+                        (t copier-opt)))
+           (forms nil))
+      ;; Register the struct type (store slot specs with defaults for :include)
+      (push `(%register-struct-type ',name ,n-slots
+               ,(if include-name `',include-name nil)
+               ',all-slots)
+            forms)
+      ;; Constructor
+      (when ctor-name
+        (let ((key-params (mapcar (lambda (s)
+                                    (list (car s) (cadr s)))
+                                  all-slots)))
+          (push `(defun ,ctor-name (&key ,@key-params)
+                   (%make-struct ',name ,@(mapcar #'car all-slots)))
+                forms)))
+      ;; Predicate
+      (when pred-name
+        (push `(defun ,pred-name (obj) (typep obj ',name))
+              forms))
+      ;; Copier
+      (when copy-name
+        (push `(defun ,copy-name (obj) (%copy-struct obj))
+              forms))
+      ;; Accessors and setf writers
+      (let ((idx 0))
+        (dolist (sname slot-names)
+          (let* ((acc-name (intern (concatenate 'string prefix (symbol-name sname))))
+                 (setter-name (intern (concatenate 'string "%SET-" (symbol-name acc-name)))))
+            (push `(defun ,acc-name (obj) (%struct-ref obj ,idx)) forms)
+            (push `(defun ,setter-name (obj val) (%struct-set obj ,idx val)) forms)
+            (push `(defsetf ,acc-name ,setter-name) forms))
+          (setq idx (+ idx 1))))
+      `(progn ,@(reverse forms) ',name))))
+
 ;; break — enter debugger with CONTINUE restart
 (defun break (&optional (format-control "Break"))
   (restart-case

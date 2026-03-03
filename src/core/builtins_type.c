@@ -72,6 +72,21 @@ static int typep_symbol(CL_Obj obj, CL_Obj type_sym)
     if (strcmp(tname, "HASH-TABLE") == 0)     return CL_HASHTABLE_P(obj);
     if (strcmp(tname, "PACKAGE") == 0)        return CL_PACKAGE_P(obj);
 
+    /* Structure types — check hierarchy for struct objects */
+    if (strcmp(tname, "STRUCTURE") == 0 || strcmp(tname, "STRUCTURE-OBJECT") == 0)
+        return CL_STRUCT_P(obj);
+    {
+        extern int cl_is_struct_type(CL_Obj type_sym);
+        extern int cl_struct_type_matches(CL_Obj obj_type, CL_Obj test_type);
+        if (cl_is_struct_type(type_sym)) {
+            if (!CL_STRUCT_P(obj)) return 0;
+            {
+                CL_Struct *st = (CL_Struct *)CL_OBJ_TO_PTR(obj);
+                return cl_struct_type_matches(st->type_desc, type_sym);
+            }
+        }
+    }
+
     /* Condition types — check hierarchy for condition objects,
      * return 0 for non-condition objects with condition type specs */
     {
@@ -217,6 +232,11 @@ static CL_Obj bi_type_of(CL_Obj *args, int n)
     if (CL_CONDITION_P(args[0])) {
         CL_Condition *cond = (CL_Condition *)CL_OBJ_TO_PTR(args[0]);
         return cond->type_name;
+    }
+    /* For structures, return the struct type name */
+    if (CL_STRUCT_P(args[0])) {
+        CL_Struct *st = (CL_Struct *)CL_OBJ_TO_PTR(args[0]);
+        return st->type_desc;
     }
     name = cl_type_name(args[0]);
     return cl_intern(name, (uint32_t)strlen(name));
@@ -372,6 +392,7 @@ enum TypeId {
     TID_DIVISION_BY_ZERO,
     TID_UNBOUND_VARIABLE,
     TID_UNDEFINED_FUNCTION,
+    TID_STRUCTURE,
     TID_T,
     TID_COUNT
 };
@@ -412,6 +433,7 @@ static int type_name_to_id(const char *name)
     if (strcmp(name, "DIVISION-BY-ZERO") == 0) return TID_DIVISION_BY_ZERO;
     if (strcmp(name, "UNBOUND-VARIABLE") == 0) return TID_UNBOUND_VARIABLE;
     if (strcmp(name, "UNDEFINED-FUNCTION") == 0) return TID_UNDEFINED_FUNCTION;
+    if (strcmp(name, "STRUCTURE") == 0 || strcmp(name, "STRUCTURE-OBJECT") == 0) return TID_STRUCTURE;
     if (strcmp(name, "T") == 0) return TID_T;
     return TID_UNKNOWN;
 }
@@ -507,6 +529,9 @@ static int subtype_check(int id1, int id2)
         if (id1 == TID_DIVISION_BY_ZERO) return 1;
     }
 
+    /* Structure hierarchy: structure < atom */
+    if (id1 == TID_STRUCTURE && id2 == TID_ATOM) return 1;
+
     return 0;
 }
 
@@ -543,6 +568,13 @@ static CL_Obj bi_subtypep(CL_Obj *args, int n)
     cl_mv_values[0] = result ? SYM_T : CL_NIL;
     cl_mv_values[1] = SYM_T;  /* second value = "certain" */
     return result ? SYM_T : CL_NIL;
+}
+
+/* --- Public typep API --- */
+
+int cl_typep(CL_Obj obj, CL_Obj type_spec)
+{
+    return typep_check(obj, type_spec);
 }
 
 /* --- Registration --- */

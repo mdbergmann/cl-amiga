@@ -33,6 +33,7 @@ OBJS = $(BUILDDIR)/main.o \
        $(BUILDDIR)/builtins_type.o \
        $(BUILDDIR)/builtins_condition.o \
        $(BUILDDIR)/builtins_package.o \
+       $(BUILDDIR)/builtins_struct.o \
        $(BUILDDIR)/debugger.o \
        $(BUILDDIR)/repl.o \
        $(BUILDDIR)/color.o
@@ -124,6 +125,9 @@ $(BUILDDIR)/builtins_condition.o: src/core/builtins_condition.c
 	$(CC) $(CFLAGS) -o $@ -c $<
 
 $(BUILDDIR)/builtins_package.o: src/core/builtins_package.c
+	$(CC) $(CFLAGS) -o $@ -c $<
+
+$(BUILDDIR)/builtins_struct.o: src/core/builtins_struct.c
 	$(CC) $(CFLAGS) -o $@ -c $<
 
 $(BUILDDIR)/debugger.o: src/core/debugger.c

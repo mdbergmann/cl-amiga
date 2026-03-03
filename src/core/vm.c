@@ -1033,6 +1033,32 @@ CL_Obj cl_vm_eval(CL_Obj bytecode_obj)
             break;
         }
 
+        case OP_ASSERT_TYPE: {
+            uint16_t idx = read_u16(code, &ip);
+            CL_Obj type_spec = constants[idx];
+            CL_Obj val = cl_vm.stack[cl_vm.sp - 1]; /* peek TOS */
+            if (!cl_typep(val, type_spec)) {
+                /* Build type-error condition with :datum and :expected-type */
+                CL_Obj slots = CL_NIL;
+                CL_Obj cond;
+                CL_GC_PROTECT(slots);
+                slots = cl_cons(cl_cons(KW_EXPECTED_TYPE, type_spec), slots);
+                slots = cl_cons(cl_cons(KW_DATUM, val), slots);
+                CL_GC_UNPROTECT(1);
+                cond = cl_make_condition(SYM_TYPE_ERROR, slots, CL_NIL);
+                cl_signal_condition(cond);
+                /* If no handler transferred control, fall to C error */
+                {
+                    char buf[128];
+                    char tbuf[64];
+                    cl_prin1_to_string(val, buf, sizeof(buf));
+                    cl_prin1_to_string(type_spec, tbuf, sizeof(tbuf));
+                    cl_error(CL_ERR_TYPE, "THE: value %s is not of type %s", buf, tbuf);
+                }
+            }
+            break;
+        }
+
         case OP_ARGC: {
             cl_vm_push(CL_MAKE_FIXNUM(frame->nargs));
             cl_mv_count = 1;

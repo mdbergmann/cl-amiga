@@ -225,6 +225,28 @@ static void print_obj(CL_Obj obj)
         break;
     }
 
+    case TYPE_STRUCT: {
+        CL_Struct *st = (CL_Struct *)CL_OBJ_TO_PTR(obj);
+        uint32_t i;
+        extern CL_Obj cl_struct_slot_names(CL_Obj type_name);
+        CL_Obj slot_names = cl_struct_slot_names(st->type_desc);
+        out_str("#S(");
+        if (!CL_NULL_P(st->type_desc))
+            out_str(cl_symbol_name(st->type_desc));
+        for (i = 0; i < st->n_slots; i++) {
+            out_char(' ');
+            if (!CL_NULL_P(slot_names)) {
+                out_char(':');
+                out_str(cl_symbol_name(cl_car(slot_names)));
+                slot_names = cl_cdr(slot_names);
+            }
+            out_char(' ');
+            print_obj(st->slots[i]);
+        }
+        out_char(')');
+        break;
+    }
+
     case TYPE_CONDITION: {
         CL_Condition *cond = (CL_Condition *)CL_OBJ_TO_PTR(obj);
         out_str("#<CONDITION ");

@@ -313,6 +313,7 @@ static DisasmInfo disasm_opcode_info(uint8_t op)
     case OP_HANDLER_POP:  info.name = "HANDLER_POP";  info.arg_type = OP_ARG_U8;  break;
     case OP_RESTART_PUSH: info.name = "RESTART_PUSH"; info.arg_type = OP_ARG_U16; break;
     case OP_RESTART_POP:  info.name = "RESTART_POP";  info.arg_type = OP_ARG_U8;  break;
+    case OP_ASSERT_TYPE:  info.name = "ASSERT_TYPE";  info.arg_type = OP_ARG_U16; break;
     case OP_ARGC:       info.name = "ARGC";       break;
     case OP_CATCH:      info.name = "CATCH";      info.arg_type = OP_ARG_I16; break;
     case OP_UNCATCH:    info.name = "UNCATCH";    break;
@@ -403,7 +404,7 @@ static void disasm_bytecode(CL_Bytecode *bc)
             if (val < bc->n_constants &&
                 (op == OP_CONST || op == OP_GLOAD || op == OP_GSTORE ||
                  op == OP_FLOAD || op == OP_DEFMACRO || op == OP_DEFTYPE || op == OP_DYNBIND ||
-                 op == OP_CLOSURE || op == OP_HANDLER_PUSH)) {
+                 op == OP_CLOSURE || op == OP_HANDLER_PUSH || op == OP_ASSERT_TYPE)) {
                 cl_prin1_to_string(bc->constants[val], annot, sizeof(annot));
             }
             if (annot[0]) {
