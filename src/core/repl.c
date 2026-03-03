@@ -6,8 +6,12 @@
 #include "error.h"
 #include "debugger.h"
 #include "mem.h"
+#include "symbol.h"
+#include "package.h"
 #include "../platform/platform.h"
 #include <string.h>
+
+#define REPL_BUF_SIZE 4096
 
 /* Try to load boot.lisp from known locations */
 static void load_boot_file(void)
@@ -66,6 +70,70 @@ static void load_boot_file(void)
     /* If no boot file found, silently continue */
 }
 
+/* Compute net parenthesis depth of a string, skipping:
+ * - String literals ("..." with \" escape handling)
+ * - Line comments (; to end of line)
+ * - Character literals (#\( #\) #\Space etc.) */
+int cl_paren_depth(const char *str)
+{
+    int depth = 0;
+    int i = 0;
+
+    while (str[i] != '\0') {
+        char c = str[i];
+
+        /* String literal — skip to closing quote */
+        if (c == '"') {
+            i++;
+            while (str[i] != '\0') {
+                if (str[i] == '\\' && str[i + 1] != '\0') {
+                    i += 2;  /* skip escaped char */
+                    continue;
+                }
+                if (str[i] == '"') {
+                    i++;
+                    break;
+                }
+                i++;
+            }
+            continue;
+        }
+
+        /* Line comment — skip to end of line */
+        if (c == ';') {
+            while (str[i] != '\0' && str[i] != '\n')
+                i++;
+            continue;
+        }
+
+        /* Character literal #\x — skip the character name */
+        if (c == '#' && str[i + 1] == '\\') {
+            i += 2;  /* skip #\ */
+            /* Skip character name (e.g., Space, Newline, or single char) */
+            if (str[i] != '\0') {
+                /* Check for named character (alphabetic sequence) */
+                if ((str[i] >= 'A' && str[i] <= 'Z') ||
+                    (str[i] >= 'a' && str[i] <= 'z')) {
+                    while (str[i] != '\0' &&
+                           ((str[i] >= 'A' && str[i] <= 'Z') ||
+                            (str[i] >= 'a' && str[i] <= 'z')))
+                        i++;
+                } else {
+                    i++;  /* single non-alpha char like #\( */
+                }
+            }
+            continue;
+        }
+
+        if (c == '(') depth++;
+        else if (c == ')') depth--;
+
+        i++;
+    }
+
+    return depth;
+}
+
 CL_Obj cl_eval_string(const char *str)
 {
     CL_ReadStream stream;
@@ -89,42 +157,127 @@ CL_Obj cl_eval_string(const char *str)
     return result;
 }
 
+/* Update REPL history variables after a successful eval.
+ * form = the expression that was read, result = the value it produced. */
+void cl_repl_update_history(CL_Obj form, CL_Obj result)
+{
+    CL_Symbol *s;
+
+    /* Shift ***: *** <- **, ** <- *, * <- result */
+    s = (CL_Symbol *)CL_OBJ_TO_PTR(SYM_STARSTARSTAR);
+    s->value = ((CL_Symbol *)CL_OBJ_TO_PTR(SYM_STARSTAR))->value;
+
+    s = (CL_Symbol *)CL_OBJ_TO_PTR(SYM_STARSTAR);
+    s->value = ((CL_Symbol *)CL_OBJ_TO_PTR(SYM_STAR))->value;
+
+    s = (CL_Symbol *)CL_OBJ_TO_PTR(SYM_STAR);
+    s->value = result;
+
+    /* Shift +++: +++ <- ++, ++ <- +, + <- form */
+    s = (CL_Symbol *)CL_OBJ_TO_PTR(SYM_PLUSPLUSPLUS);
+    s->value = ((CL_Symbol *)CL_OBJ_TO_PTR(SYM_PLUSPLUS))->value;
+
+    s = (CL_Symbol *)CL_OBJ_TO_PTR(SYM_PLUSPLUS);
+    s->value = ((CL_Symbol *)CL_OBJ_TO_PTR(SYM_PLUS))->value;
+
+    s = (CL_Symbol *)CL_OBJ_TO_PTR(SYM_PLUS);
+    s->value = form;
+}
+
 void cl_repl(void)
 {
+    char accum[REPL_BUF_SIZE];
     char line[1024];
+    int accum_len = 0;
+    int depth = 0;
 
     cl_debugger_enabled = 1;
     platform_write_string("CL-AMIGA> ");
 
     while (platform_read_line(line, sizeof(line))) {
-        int err;
+        int line_len = (int)strlen(line);
 
-        /* Skip empty lines */
-        if (line[0] == '\0') {
+        /* Empty line with no accumulated input: skip */
+        if (line[0] == '\0' && accum_len == 0) {
             platform_write_string("CL-AMIGA> ");
             continue;
         }
 
+        /* Append line to accumulation buffer (with newline separator) */
+        if (accum_len > 0 && accum_len < REPL_BUF_SIZE - 1) {
+            accum[accum_len++] = '\n';
+        }
+        if (accum_len + line_len < REPL_BUF_SIZE - 1) {
+            memcpy(accum + accum_len, line, line_len);
+            accum_len += line_len;
+        }
+        accum[accum_len] = '\0';
+
+        /* Check paren depth */
+        depth = cl_paren_depth(accum);
+
+        if (depth > 0) {
+            /* Incomplete expression — show continuation prompt */
+            platform_write_string("       > ");
+            continue;
+        }
+
+        /* Complete expression — evaluate */
+
         /* Quit command */
-        if (strcmp(line, "(quit)") == 0 || strcmp(line, "(QUIT)") == 0 ||
-            strcmp(line, "(exit)") == 0 || strcmp(line, "(EXIT)") == 0) {
+        if (strcmp(accum, "(quit)") == 0 || strcmp(accum, "(QUIT)") == 0 ||
+            strcmp(accum, "(exit)") == 0 || strcmp(accum, "(EXIT)") == 0) {
             break;
         }
 
-        err = CL_CATCH();
-        if (err == CL_ERR_NONE) {
-            CL_Obj result = cl_eval_string(line);
-            cl_prin1(result);
-            platform_write_string("\n");
-            CL_UNCATCH();
-        } else {
-            cl_error_print();
-            /* Reset VM state after error (prevent stale frames) */
-            cl_vm.sp = 0;
-            cl_vm.fp = 0;
-            CL_UNCATCH();
+        {
+            int err;
+            err = CL_CATCH();
+            if (err == CL_ERR_NONE) {
+                /* Inline read/compile/eval for history variable support */
+                CL_ReadStream stream;
+                CL_Obj expr, bytecode, result;
+
+                stream.buf = accum;
+                stream.pos = 0;
+                stream.len = accum_len;
+                stream.line = 1;
+
+                expr = cl_read_from_string(&stream);
+                if (!CL_NULL_P(expr) && !cl_reader_eof()) {
+                    CL_Symbol *s;
+
+                    /* Set - to current form */
+                    s = (CL_Symbol *)CL_OBJ_TO_PTR(SYM_MINUS);
+                    s->value = expr;
+
+                    CL_GC_PROTECT(expr);
+                    bytecode = cl_compile(expr);
+                    CL_GC_UNPROTECT(1);
+
+                    if (!CL_NULL_P(bytecode)) {
+                        result = cl_vm_eval(bytecode);
+
+                        /* Update history: shift *, **, ***, +, ++, +++ */
+                        cl_repl_update_history(expr, result);
+
+                        cl_prin1(result);
+                        platform_write_string("\n");
+                    }
+                }
+                CL_UNCATCH();
+            } else {
+                cl_error_print();
+                /* Reset VM state after error (prevent stale frames) */
+                cl_vm.sp = 0;
+                cl_vm.fp = 0;
+                CL_UNCATCH();
+            }
         }
 
+        /* Reset accumulation buffer */
+        accum_len = 0;
+        depth = 0;
         platform_write_string("CL-AMIGA> ");
     }
 
@@ -133,40 +286,80 @@ void cl_repl(void)
 
 void cl_repl_batch(void)
 {
+    char accum[REPL_BUF_SIZE];
     char line[1024];
+    int accum_len = 0;
+    int depth = 0;
 
     while (platform_read_line(line, sizeof(line))) {
-        int err;
+        int line_len = (int)strlen(line);
         int i;
 
-        /* Skip empty lines */
-        if (line[0] == '\0') continue;
+        /* When accumulator is empty, apply line-level skip rules */
+        if (accum_len == 0) {
+            /* Skip empty lines */
+            if (line[0] == '\0') continue;
 
-        /* Skip comment lines and non-Lisp lines */
-        i = 0;
-        while (line[i] == ' ' || line[i] == '\t') i++;
-        if (line[i] == ';') continue;
-        /* Skip lines starting with -- (CLI args leaked to stdin on AmigaOS) */
-        if (line[i] == '-' && line[i + 1] == '-') continue;
+            /* Skip comment lines and non-Lisp lines */
+            i = 0;
+            while (line[i] == ' ' || line[i] == '\t') i++;
+            if (line[i] == ';') continue;
+            /* Skip lines starting with -- (CLI args leaked to stdin on AmigaOS) */
+            if (line[i] == '-' && line[i + 1] == '-') continue;
+        }
+
+        /* Append line to accumulation buffer (with newline separator) */
+        if (accum_len > 0 && accum_len < REPL_BUF_SIZE - 1) {
+            accum[accum_len++] = '\n';
+        }
+        if (accum_len + line_len < REPL_BUF_SIZE - 1) {
+            memcpy(accum + accum_len, line, line_len);
+            accum_len += line_len;
+        }
+        accum[accum_len] = '\0';
+
+        /* Check paren depth */
+        depth = cl_paren_depth(accum);
+
+        if (depth > 0) {
+            /* Incomplete — read another line */
+            continue;
+        }
+
+        /* Complete expression — evaluate */
 
         /* Quit command */
-        if (strcmp(line, "(quit)") == 0 || strcmp(line, "(QUIT)") == 0 ||
-            strcmp(line, "(exit)") == 0 || strcmp(line, "(EXIT)") == 0) {
+        if (strcmp(accum, "(quit)") == 0 || strcmp(accum, "(QUIT)") == 0 ||
+            strcmp(accum, "(exit)") == 0 || strcmp(accum, "(EXIT)") == 0) {
             break;
         }
 
-        err = CL_CATCH();
-        if (err == CL_ERR_NONE) {
-            cl_eval_string(line);
-            CL_UNCATCH();
-        } else {
-            cl_error_print();
-            /* Reset VM state after error (prevent stale frames) */
-            cl_vm.sp = 0;
-            cl_vm.fp = 0;
-            CL_UNCATCH();
+        {
+            int err;
+            err = CL_CATCH();
+            if (err == CL_ERR_NONE) {
+                cl_eval_string(accum);
+                CL_UNCATCH();
+            } else {
+                cl_error_print();
+                /* Reset VM state after error (prevent stale frames) */
+                cl_vm.sp = 0;
+                cl_vm.fp = 0;
+                CL_UNCATCH();
+            }
         }
+
+        /* Reset accumulation buffer */
+        accum_len = 0;
+        depth = 0;
     }
+}
+
+static void init_history_symbol(CL_Obj sym)
+{
+    CL_Symbol *s = (CL_Symbol *)CL_OBJ_TO_PTR(sym);
+    s->flags |= CL_SYM_SPECIAL;
+    s->value = CL_NIL;
 }
 
 void cl_repl_init(void)
@@ -174,4 +367,18 @@ void cl_repl_init(void)
     cl_eval_string("(defmacro when (test &rest body) (list 'if test (cons 'progn body)))");
     cl_eval_string("(defmacro unless (test &rest body) (list 'if test nil (cons 'progn body)))");
     load_boot_file();
+
+    /* Look up *, +, - (already interned by builtins as arithmetic functions) */
+    SYM_STAR  = cl_intern_in("*", 1, cl_package_cl);
+    SYM_PLUS  = cl_intern_in("+", 1, cl_package_cl);
+    SYM_MINUS = cl_intern_in("-", 1, cl_package_cl);
+
+    /* Mark all 7 history symbols as special with initial value NIL */
+    init_history_symbol(SYM_STAR);
+    init_history_symbol(SYM_STARSTAR);
+    init_history_symbol(SYM_STARSTARSTAR);
+    init_history_symbol(SYM_PLUS);
+    init_history_symbol(SYM_PLUSPLUS);
+    init_history_symbol(SYM_PLUSPLUSPLUS);
+    init_history_symbol(SYM_MINUS);
 }

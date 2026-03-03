@@ -1,5 +1,5 @@
 ; CL-Amiga Test Suite — runs in batch mode on AmigaOS
-; Each expression must be on a single line (REPL reads line-by-line)
+; Multi-line expressions supported (paren-balanced accumulation)
 
 ; --- Test infrastructure ---
 (setq *pass-count* 0)
@@ -1130,6 +1130,18 @@
 (check "invoke-debugger exists" t (functionp #'invoke-debugger))
 (check "*debugger-hook* initial" nil *debugger-hook*)
 (check "break exists" t (functionp #'break))
+
+; --- Multi-line expressions ---
+(defun multiline-fact (n)
+  (if (<= n 1)
+    1
+    (* n (multiline-fact (1- n)))))
+(check "multiline defun" 120 (multiline-fact 5))
+(check "multiline nested"
+  15
+  (let ((x 10)
+        (y 5))
+    (+ x y)))
 
 ; --- Summary ---
 (format t "~%=== Results ===~%")

@@ -154,4 +154,13 @@ extern CL_Obj KW_FORMAT_ARGUMENTS;
 extern CL_Obj KW_DATUM;
 extern CL_Obj KW_EXPECTED_TYPE;
 
+/* REPL history symbols */
+extern CL_Obj SYM_STAR;          /* * — last result */
+extern CL_Obj SYM_STARSTAR;      /* ** — second-to-last result */
+extern CL_Obj SYM_STARSTARSTAR;  /* *** — third-to-last result */
+extern CL_Obj SYM_PLUS;          /* + — last form */
+extern CL_Obj SYM_PLUSPLUS;       /* ++ — second-to-last form */
+extern CL_Obj SYM_PLUSPLUSPLUS;  /* +++ — third-to-last form */
+extern CL_Obj SYM_MINUS;         /* - — current form being evaluated */
+
 #endif /* CL_SYMBOL_H */

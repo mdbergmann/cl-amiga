@@ -2629,6 +2629,122 @@ TEST(eval_symbol_macrolet_multiple)
         "  (+ x y))"), 30);
 }
 
+/* --- Paren depth --- */
+
+TEST(paren_depth_balanced)
+{
+    ASSERT_EQ_INT(cl_paren_depth("(+ 1 2)"), 0);
+    ASSERT_EQ_INT(cl_paren_depth("((a) (b))"), 0);
+    ASSERT_EQ_INT(cl_paren_depth("()"), 0);
+    ASSERT_EQ_INT(cl_paren_depth(""), 0);
+    ASSERT_EQ_INT(cl_paren_depth("hello"), 0);
+}
+
+TEST(paren_depth_unbalanced)
+{
+    ASSERT_EQ_INT(cl_paren_depth("(defun foo"), 1);
+    ASSERT_EQ_INT(cl_paren_depth("(defun foo (x)"), 1);
+    ASSERT_EQ_INT(cl_paren_depth("(("), 2);
+    ASSERT_EQ_INT(cl_paren_depth("(+ 1 2))"), -1);
+}
+
+TEST(paren_depth_strings)
+{
+    /* Parens inside strings should not count */
+    ASSERT_EQ_INT(cl_paren_depth("(print \"((\")"), 0);
+    ASSERT_EQ_INT(cl_paren_depth("(print \")\")"), 0);
+    ASSERT_EQ_INT(cl_paren_depth("(print \"\\\"\")"), 0);
+}
+
+TEST(paren_depth_comments)
+{
+    /* Parens in comments should not count */
+    ASSERT_EQ_INT(cl_paren_depth("(+ 1 2) ; extra ("), 0);
+    ASSERT_EQ_INT(cl_paren_depth("; just a comment ((("), 0);
+    /* Multi-line with comment */
+    ASSERT_EQ_INT(cl_paren_depth("(defun foo (x)\n  ; body )\n  (+ x 1))"), 0);
+}
+
+TEST(paren_depth_char_literals)
+{
+    /* Character literal #\( should not count as open paren */
+    ASSERT_EQ_INT(cl_paren_depth("(list #\\( #\\))"), 0);
+    /* Named character literals */
+    ASSERT_EQ_INT(cl_paren_depth("(list #\\Space)"), 0);
+}
+
+TEST(paren_depth_multiline)
+{
+    /* Typical multi-line defun */
+    ASSERT_EQ_INT(cl_paren_depth("(defun fact (n)"), 1);
+    ASSERT_EQ_INT(cl_paren_depth("(defun fact (n)\n  (if (<= n 1) 1"), 2);
+    ASSERT_EQ_INT(cl_paren_depth(
+        "(defun fact (n)\n  (if (<= n 1) 1\n    (* n (fact (1- n)))))"), 0);
+}
+
+/* --- History variables --- */
+
+TEST(history_star_basic)
+{
+    /* Eval (+ 1 2) => 3, update history, check * */
+    CL_Obj form = cl_eval_string("'(+ 1 2)");
+    CL_Obj result = CL_MAKE_FIXNUM(3);
+    cl_repl_update_history(form, result);
+    ASSERT_EQ_INT(eval_int("*"), 3);
+}
+
+TEST(history_star_shift)
+{
+    /* First eval: result 10 */
+    cl_repl_update_history(CL_NIL, CL_MAKE_FIXNUM(10));
+    /* Second eval: result 20 */
+    cl_repl_update_history(CL_NIL, CL_MAKE_FIXNUM(20));
+    /* Third eval: result 30 */
+    cl_repl_update_history(CL_NIL, CL_MAKE_FIXNUM(30));
+
+    ASSERT_EQ_INT(eval_int("*"), 30);
+    ASSERT_EQ_INT(eval_int("**"), 20);
+    ASSERT_EQ_INT(eval_int("***"), 10);
+}
+
+TEST(history_plus_shift)
+{
+    CL_Obj form1, form2, form3;
+    form1 = cl_eval_string("'(first-form)");
+    form2 = cl_eval_string("'(second-form)");
+    form3 = cl_eval_string("'(third-form)");
+
+    cl_repl_update_history(form1, CL_MAKE_FIXNUM(1));
+    cl_repl_update_history(form2, CL_MAKE_FIXNUM(2));
+    cl_repl_update_history(form3, CL_MAKE_FIXNUM(3));
+
+    /* + should be the last form */
+    ASSERT_STR_EQ(eval_print("+"), "(THIRD-FORM)");
+    ASSERT_STR_EQ(eval_print("++"), "(SECOND-FORM)");
+    ASSERT_STR_EQ(eval_print("+++"), "(FIRST-FORM)");
+}
+
+TEST(history_minus_during_eval)
+{
+    /* - is set before eval, so we test by checking SYM_MINUS value directly */
+    CL_Obj form = cl_eval_string("'(some-form)");
+    CL_Symbol *s;
+
+    /* Simulate what the REPL does: set - before compile/eval */
+    s = (CL_Symbol *)CL_OBJ_TO_PTR(SYM_MINUS);
+    s->value = form;
+
+    ASSERT_STR_EQ(eval_print("-"), "(SOME-FORM)");
+}
+
+TEST(history_arithmetic_still_works)
+{
+    /* Verify *, +, - still work as arithmetic functions */
+    ASSERT_EQ_INT(eval_int("(* 3 4)"), 12);
+    ASSERT_EQ_INT(eval_int("(+ 5 6)"), 11);
+    ASSERT_EQ_INT(eval_int("(- 10 3)"), 7);
+}
+
 int main(void)
 {
     test_init();
@@ -2956,6 +3072,21 @@ int main(void)
     RUN(eval_symbol_macrolet_scope);
     RUN(eval_symbol_macrolet_nested);
     RUN(eval_symbol_macrolet_multiple);
+
+    /* Paren depth */
+    RUN(paren_depth_balanced);
+    RUN(paren_depth_unbalanced);
+    RUN(paren_depth_strings);
+    RUN(paren_depth_comments);
+    RUN(paren_depth_char_literals);
+    RUN(paren_depth_multiline);
+
+    /* History variables */
+    RUN(history_star_basic);
+    RUN(history_star_shift);
+    RUN(history_plus_shift);
+    RUN(history_minus_during_eval);
+    RUN(history_arithmetic_still_works);
 
     teardown();
     REPORT();

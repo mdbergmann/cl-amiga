@@ -121,6 +121,15 @@ CL_Obj KW_FORMAT_ARGUMENTS = CL_NIL;
 CL_Obj KW_DATUM = CL_NIL;
 CL_Obj KW_EXPECTED_TYPE = CL_NIL;
 
+/* REPL history symbols */
+CL_Obj SYM_STAR = CL_NIL;
+CL_Obj SYM_STARSTAR = CL_NIL;
+CL_Obj SYM_STARSTARSTAR = CL_NIL;
+CL_Obj SYM_PLUS = CL_NIL;
+CL_Obj SYM_PLUSPLUS = CL_NIL;
+CL_Obj SYM_PLUSPLUSPLUS = CL_NIL;
+CL_Obj SYM_MINUS = CL_NIL;
+
 /* FNV-1a hash */
 uint32_t cl_hash_string(const char *str, uint32_t len)
 {
@@ -330,6 +339,13 @@ void cl_symbol_init(void)
     KW_FORMAT_ARGUMENTS          = cl_intern_keyword("FORMAT-ARGUMENTS", 16);
     KW_DATUM                     = cl_intern_keyword("DATUM", 5);
     KW_EXPECTED_TYPE             = cl_intern_keyword("EXPECTED-TYPE", 13);
+
+    /* REPL history symbols — intern multi-char ones now;
+       *, +, - will be looked up in cl_repl_init() after builtins register them */
+    SYM_STARSTAR       = cl_intern_in("**", 2, cl_package_cl);
+    SYM_STARSTARSTAR   = cl_intern_in("***", 3, cl_package_cl);
+    SYM_PLUSPLUS        = cl_intern_in("++", 2, cl_package_cl);
+    SYM_PLUSPLUSPLUS   = cl_intern_in("+++", 3, cl_package_cl);
 
     /* T is self-evaluating */
     {
