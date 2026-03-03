@@ -152,6 +152,9 @@ static void print_obj(CL_Obj obj)
             case '\n': out_str("Newline"); break;
             case '\t': out_str("Tab"); break;
             case '\r': out_str("Return"); break;
+            case '\b': out_str("Backspace"); break;
+            case '\f': out_str("Page"); break;
+            case 0x7F: out_str("Rubout"); break;
             default:   out_char(ch); break;
             }
         } else {

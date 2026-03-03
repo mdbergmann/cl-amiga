@@ -576,8 +576,12 @@ static CL_Obj read_expr(void)
                 /* Named characters */
                 if (strcasecmp(name, "Space") == 0) return CL_MAKE_CHAR(' ');
                 if (strcasecmp(name, "Newline") == 0) return CL_MAKE_CHAR('\n');
+                if (strcasecmp(name, "Linefeed") == 0) return CL_MAKE_CHAR('\n');
                 if (strcasecmp(name, "Tab") == 0) return CL_MAKE_CHAR('\t');
                 if (strcasecmp(name, "Return") == 0) return CL_MAKE_CHAR('\r');
+                if (strcasecmp(name, "Backspace") == 0) return CL_MAKE_CHAR('\b');
+                if (strcasecmp(name, "Page") == 0) return CL_MAKE_CHAR('\f');
+                if (strcasecmp(name, "Rubout") == 0) return CL_MAKE_CHAR(0x7F);
                 cl_error(CL_ERR_PARSE, "Unknown character name: %s", name);
                 return CL_NIL;
             }
