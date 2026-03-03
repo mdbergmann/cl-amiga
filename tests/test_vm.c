@@ -1511,6 +1511,44 @@ TEST(eval_vector)
     ASSERT_STR_EQ(eval_print("(vectorp (vector 1 2))"), "T");
 }
 
+TEST(eval_vector_reader)
+{
+    /* #(...) reader syntax */
+    ASSERT_STR_EQ(eval_print("#(1 2 3)"), "#(1 2 3)");
+    ASSERT_STR_EQ(eval_print("#()"), "#()");
+    ASSERT_EQ_INT(eval_int("(aref #(10 20 30) 1)"), 20);
+    ASSERT_EQ_INT(eval_int("(length #(a b c d))"), 4);
+    ASSERT_STR_EQ(eval_print("(simple-vector-p #(1 2))"), "T");
+    ASSERT_STR_EQ(eval_print("(vectorp #(1))"), "T");
+    /* Nested vectors */
+    ASSERT_STR_EQ(eval_print("(aref #(#(1 2) #(3 4)) 0)"), "#(1 2)");
+    ASSERT_EQ_INT(eval_int("(aref (aref #(#(1 2) #(3 4)) 1) 0)"), 3);
+    /* Mixed types */
+    ASSERT_STR_EQ(eval_print("#(1 \"hello\" a)"), "#(1 \"hello\" A)");
+}
+
+TEST(eval_array_print_multidim)
+{
+    /* 2D */
+    ASSERT_STR_EQ(eval_print(
+        "(make-array '(2 3) :initial-contents '((1 2 3) (4 5 6)))"),
+        "#2A((1 2 3) (4 5 6))");
+    /* 3D */
+    ASSERT_STR_EQ(eval_print(
+        "(make-array '(2 2 2) :initial-contents '(((1 2) (3 4)) ((5 6) (7 8))))"),
+        "#3A(((1 2) (3 4)) ((5 6) (7 8)))");
+    /* Empty dimension */
+    ASSERT_STR_EQ(eval_print("(make-array '(2 0))"), "#2A(() ())");
+    ASSERT_STR_EQ(eval_print("(make-array '(0 3))"), "#2A()");
+    /* *print-array* nil */
+    ASSERT_STR_EQ(eval_print(
+        "(let ((*print-array* nil)) (write-to-string (vector 1 2)))"),
+        "\"#<VECTOR>\"");
+    ASSERT_STR_EQ(eval_print(
+        "(let ((*print-array* nil)) (write-to-string (make-array '(2 3))))"),
+        "\"#<ARRAY>\"");
+}
+
 TEST(eval_array_dimensions)
 {
     ASSERT_STR_EQ(eval_print("(array-dimensions (make-array 5))"), "(5)");
@@ -1686,6 +1724,75 @@ TEST(eval_adjust_array)
     ASSERT_EQ_INT(eval_int(
         "(let ((v (make-array 5 :fill-pointer 2 :adjustable t)))"
         "  (fill-pointer (adjust-array v 10 :fill-pointer 8)))"), 8);
+}
+
+/* --- Array type predicates (Step 7) --- */
+
+TEST(eval_array_type_predicates)
+{
+    /* arrayp */
+    ASSERT_STR_EQ(eval_print("(arrayp (vector 1 2 3))"), "T");
+    ASSERT_STR_EQ(eval_print("(arrayp (make-array 5))"), "T");
+    ASSERT_STR_EQ(eval_print("(arrayp (make-array '(2 3)))"), "T");
+    ASSERT_STR_EQ(eval_print("(arrayp \"hello\")"), "T");
+    ASSERT_STR_EQ(eval_print("(arrayp 42)"), "NIL");
+    ASSERT_STR_EQ(eval_print("(arrayp '(1 2))"), "NIL");
+    ASSERT_STR_EQ(eval_print("(arrayp nil)"), "NIL");
+
+    /* simple-vector-p */
+    ASSERT_STR_EQ(eval_print("(simple-vector-p (vector 1 2 3))"), "T");
+    ASSERT_STR_EQ(eval_print("(simple-vector-p (make-array 5))"), "T");
+    ASSERT_STR_EQ(eval_print("(simple-vector-p (make-array 5 :fill-pointer 0))"), "NIL");
+    ASSERT_STR_EQ(eval_print("(simple-vector-p (make-array 5 :adjustable t))"), "NIL");
+    ASSERT_STR_EQ(eval_print("(simple-vector-p (make-array '(2 3)))"), "NIL");
+    ASSERT_STR_EQ(eval_print("(simple-vector-p \"hello\")"), "NIL");
+    ASSERT_STR_EQ(eval_print("(simple-vector-p 42)"), "NIL");
+
+    /* adjustable-array-p */
+    ASSERT_STR_EQ(eval_print("(adjustable-array-p (make-array 5 :adjustable t))"), "T");
+    ASSERT_STR_EQ(eval_print("(adjustable-array-p (make-array 5))"), "NIL");
+    ASSERT_STR_EQ(eval_print("(adjustable-array-p (vector 1 2))"), "NIL");
+    ASSERT_STR_EQ(eval_print("(adjustable-array-p \"hello\")"), "NIL");
+}
+
+TEST(eval_array_typep)
+{
+    /* typep with ARRAY — true for all arrays */
+    ASSERT_STR_EQ(eval_print("(typep (vector 1 2) 'array)"), "T");
+    ASSERT_STR_EQ(eval_print("(typep (make-array '(2 3)) 'array)"), "T");
+    ASSERT_STR_EQ(eval_print("(typep \"hello\" 'array)"), "T");
+    ASSERT_STR_EQ(eval_print("(typep 42 'array)"), "NIL");
+
+    /* typep with VECTOR — true for 1D arrays and strings */
+    ASSERT_STR_EQ(eval_print("(typep (vector 1 2) 'vector)"), "T");
+    ASSERT_STR_EQ(eval_print("(typep \"hello\" 'vector)"), "T");
+    ASSERT_STR_EQ(eval_print("(typep (make-array '(2 3)) 'vector)"), "NIL");
+
+    /* typep with SIMPLE-VECTOR — 1D, element-type T, simple */
+    ASSERT_STR_EQ(eval_print("(typep (vector 1 2) 'simple-vector)"), "T");
+    ASSERT_STR_EQ(eval_print("(typep (make-array 5) 'simple-vector)"), "T");
+    ASSERT_STR_EQ(eval_print("(typep (make-array 5 :fill-pointer 0) 'simple-vector)"), "NIL");
+    ASSERT_STR_EQ(eval_print("(typep (make-array 5 :adjustable t) 'simple-vector)"), "NIL");
+    ASSERT_STR_EQ(eval_print("(typep \"hello\" 'simple-vector)"), "NIL");
+    ASSERT_STR_EQ(eval_print("(typep (make-array '(2 3)) 'simple-vector)"), "NIL");
+
+    /* typep with SIMPLE-ARRAY — array with no fill-pointer, not adjustable */
+    ASSERT_STR_EQ(eval_print("(typep (vector 1 2) 'simple-array)"), "T");
+    ASSERT_STR_EQ(eval_print("(typep (make-array '(2 3)) 'simple-array)"), "T");
+    ASSERT_STR_EQ(eval_print("(typep \"hello\" 'simple-array)"), "T");
+    ASSERT_STR_EQ(eval_print("(typep (make-array 5 :fill-pointer 0) 'simple-array)"), "NIL");
+    ASSERT_STR_EQ(eval_print("(typep (make-array 5 :adjustable t) 'simple-array)"), "NIL");
+}
+
+TEST(eval_array_type_of)
+{
+    /* type-of returns specific types */
+    ASSERT_STR_EQ(eval_print("(type-of (vector 1 2 3))"), "SIMPLE-VECTOR");
+    ASSERT_STR_EQ(eval_print("(type-of (make-array 5))"), "SIMPLE-VECTOR");
+    ASSERT_STR_EQ(eval_print("(type-of (make-array 5 :fill-pointer 0))"), "VECTOR");
+    ASSERT_STR_EQ(eval_print("(type-of (make-array 5 :adjustable t))"), "VECTOR");
+    ASSERT_STR_EQ(eval_print("(type-of (make-array '(2 3)))"), "SIMPLE-ARRAY");
+    ASSERT_STR_EQ(eval_print("(type-of \"hello\")"), "STRING");
 }
 
 /* --- Phase 5 Tier 2: String functions --- */
@@ -3319,6 +3426,230 @@ TEST(eval_print_level_length_combined)
         "\"(A B ...)\"");
 }
 
+TEST(eval_print_base_binary)
+{
+    ASSERT_STR_EQ(eval_print(
+        "(let ((*print-base* 2)) (prin1-to-string 10))"),
+        "\"1010\"");
+    ASSERT_STR_EQ(eval_print(
+        "(let ((*print-base* 2)) (prin1-to-string 255))"),
+        "\"11111111\"");
+    ASSERT_STR_EQ(eval_print(
+        "(let ((*print-base* 2)) (prin1-to-string 0))"),
+        "\"0\"");
+    ASSERT_STR_EQ(eval_print(
+        "(let ((*print-base* 2)) (prin1-to-string -5))"),
+        "\"-101\"");
+}
+
+TEST(eval_print_base_octal)
+{
+    ASSERT_STR_EQ(eval_print(
+        "(let ((*print-base* 8)) (prin1-to-string 8))"),
+        "\"10\"");
+    ASSERT_STR_EQ(eval_print(
+        "(let ((*print-base* 8)) (prin1-to-string 255))"),
+        "\"377\"");
+    ASSERT_STR_EQ(eval_print(
+        "(let ((*print-base* 8)) (prin1-to-string 0))"),
+        "\"0\"");
+}
+
+TEST(eval_print_base_hex)
+{
+    ASSERT_STR_EQ(eval_print(
+        "(let ((*print-base* 16)) (prin1-to-string 255))"),
+        "\"FF\"");
+    ASSERT_STR_EQ(eval_print(
+        "(let ((*print-base* 16)) (prin1-to-string 256))"),
+        "\"100\"");
+    ASSERT_STR_EQ(eval_print(
+        "(let ((*print-base* 16)) (prin1-to-string 0))"),
+        "\"0\"");
+    ASSERT_STR_EQ(eval_print(
+        "(let ((*print-base* 16)) (prin1-to-string -1))"),
+        "\"-1\"");
+    ASSERT_STR_EQ(eval_print(
+        "(let ((*print-base* 16)) (prin1-to-string 3735928559))"),
+        "\"DEADBEEF\"");
+}
+
+TEST(eval_print_base_other)
+{
+    /* Base 3 */
+    ASSERT_STR_EQ(eval_print(
+        "(let ((*print-base* 3)) (prin1-to-string 9))"),
+        "\"100\"");
+    /* Base 36 */
+    ASSERT_STR_EQ(eval_print(
+        "(let ((*print-base* 36)) (prin1-to-string 35))"),
+        "\"Z\"");
+}
+
+TEST(eval_print_radix_decimal)
+{
+    /* Radix with base 10: trailing dot */
+    ASSERT_STR_EQ(eval_print(
+        "(let ((*print-radix* t)) (prin1-to-string 42))"),
+        "\"42.\"");
+    ASSERT_STR_EQ(eval_print(
+        "(let ((*print-radix* t)) (prin1-to-string 0))"),
+        "\"0.\"");
+    ASSERT_STR_EQ(eval_print(
+        "(let ((*print-radix* t)) (prin1-to-string -7))"),
+        "\"-7.\"");
+}
+
+TEST(eval_print_radix_binary)
+{
+    ASSERT_STR_EQ(eval_print(
+        "(let ((*print-base* 2) (*print-radix* t)) (prin1-to-string 10))"),
+        "\"#b1010\"");
+}
+
+TEST(eval_print_radix_octal)
+{
+    ASSERT_STR_EQ(eval_print(
+        "(let ((*print-base* 8) (*print-radix* t)) (prin1-to-string 255))"),
+        "\"#o377\"");
+}
+
+TEST(eval_print_radix_hex)
+{
+    ASSERT_STR_EQ(eval_print(
+        "(let ((*print-base* 16) (*print-radix* t)) (prin1-to-string 255))"),
+        "\"#xFF\"");
+}
+
+TEST(eval_print_radix_other)
+{
+    /* Base 3 with radix: #3r prefix */
+    ASSERT_STR_EQ(eval_print(
+        "(let ((*print-base* 3) (*print-radix* t)) (prin1-to-string 9))"),
+        "\"#3r100\"");
+}
+
+TEST(eval_print_base_bignum)
+{
+    /* Bignum in hex */
+    ASSERT_STR_EQ(eval_print(
+        "(let ((*print-base* 16)) (prin1-to-string (expt 2 32)))"),
+        "\"100000000\"");
+    /* Bignum in binary */
+    ASSERT_STR_EQ(eval_print(
+        "(let ((*print-base* 2)) (prin1-to-string (expt 2 16)))"),
+        "\"10000000000000000\"");
+    /* Bignum in octal */
+    ASSERT_STR_EQ(eval_print(
+        "(let ((*print-base* 8)) (prin1-to-string 65536))"),
+        "\"200000\"");
+}
+
+TEST(eval_print_radix_bignum)
+{
+    /* Bignum with radix prefix */
+    ASSERT_STR_EQ(eval_print(
+        "(let ((*print-base* 16) (*print-radix* t)) (prin1-to-string (expt 2 32)))"),
+        "\"#x100000000\"");
+    /* Bignum with base 10 radix (trailing dot) */
+    ASSERT_STR_EQ(eval_print(
+        "(let ((*print-radix* t)) (prin1-to-string (expt 2 32)))"),
+        "\"4294967296.\"");
+}
+
+TEST(eval_print_case_upcase)
+{
+    /* Default :UPCASE — symbols printed as-is */
+    ASSERT_STR_EQ(eval_print(
+        "(let ((*print-case* :upcase)) (prin1-to-string 'hello))"),
+        "\"HELLO\"");
+    ASSERT_STR_EQ(eval_print(
+        "(prin1-to-string 'hello)"), "\"HELLO\"");
+}
+
+TEST(eval_print_case_downcase)
+{
+    ASSERT_STR_EQ(eval_print(
+        "(let ((*print-case* :downcase)) (prin1-to-string 'hello))"),
+        "\"hello\"");
+    ASSERT_STR_EQ(eval_print(
+        "(let ((*print-case* :downcase)) (prin1-to-string 'foo-bar))"),
+        "\"foo-bar\"");
+    /* NIL is a symbol too */
+    ASSERT_STR_EQ(eval_print(
+        "(let ((*print-case* :downcase)) (prin1-to-string nil))"),
+        "\"nil\"");
+    /* T is a symbol too */
+    ASSERT_STR_EQ(eval_print(
+        "(let ((*print-case* :downcase)) (prin1-to-string t))"),
+        "\"t\"");
+    /* Keywords */
+    ASSERT_STR_EQ(eval_print(
+        "(let ((*print-case* :downcase)) (prin1-to-string :foo))"),
+        "\":foo\"");
+}
+
+TEST(eval_print_case_capitalize)
+{
+    ASSERT_STR_EQ(eval_print(
+        "(let ((*print-case* :capitalize)) (prin1-to-string 'hello))"),
+        "\"Hello\"");
+    ASSERT_STR_EQ(eval_print(
+        "(let ((*print-case* :capitalize)) (prin1-to-string 'foo-bar))"),
+        "\"Foo-Bar\"");
+    ASSERT_STR_EQ(eval_print(
+        "(let ((*print-case* :capitalize)) (prin1-to-string nil))"),
+        "\"Nil\"");
+    /* Keywords */
+    ASSERT_STR_EQ(eval_print(
+        "(let ((*print-case* :capitalize)) (prin1-to-string :test))"),
+        "\":Test\"");
+}
+
+TEST(eval_print_case_in_list)
+{
+    /* print-case affects symbols inside lists */
+    ASSERT_STR_EQ(eval_print(
+        "(let ((*print-case* :downcase)) (prin1-to-string '(a b c)))"),
+        "\"(a b c)\"");
+    ASSERT_STR_EQ(eval_print(
+        "(let ((*print-case* :capitalize)) (prin1-to-string '(hello world)))"),
+        "\"(Hello World)\"");
+}
+
+TEST(eval_print_gensym)
+{
+    /* Default: *print-gensym* = T, uninterned symbols get #: prefix */
+    ASSERT_STR_EQ(eval_print(
+        "(prin1-to-string (make-symbol \"FOO\"))"),
+        "\"#:FOO\"");
+    /* With *print-gensym* = NIL, no #: prefix */
+    ASSERT_STR_EQ(eval_print(
+        "(let ((*print-gensym* nil)) (prin1-to-string (make-symbol \"FOO\")))"),
+        "\"FOO\"");
+    /* Still applies print-case */
+    ASSERT_STR_EQ(eval_print(
+        "(let ((*print-gensym* nil) (*print-case* :downcase))"
+        "  (prin1-to-string (make-symbol \"FOO\")))"),
+        "\"foo\"");
+}
+
+TEST(eval_print_array)
+{
+    /* Default: *print-array* = T, vectors print contents */
+    ASSERT_STR_EQ(eval_print(
+        "(prin1-to-string (vector 1 2 3))"),
+        "\"#(1 2 3)\"");
+    /* With *print-array* = NIL, vectors print as #<VECTOR> */
+    ASSERT_STR_EQ(eval_print(
+        "(let ((*print-array* nil)) (prin1-to-string (vector 1 2 3)))"),
+        "\"#<VECTOR>\"");
+    /* Multi-dim arrays print as #<ARRAY> when *print-array* = NIL */
+    ASSERT_STR_EQ(eval_print(
+        "(let ((*print-array* nil)) (prin1-to-string (make-array '(2 3))))"),
+        "\"#<ARRAY>\"");
+}
+
 /* --- Phase 8: Loop macro --- */
 
 TEST(eval_loop_simple_return)
@@ -4013,6 +4344,8 @@ int main(void)
     RUN(eval_equal_vector);
     RUN(eval_mapcar_multi_list);
     RUN(eval_vector);
+    RUN(eval_vector_reader);
+    RUN(eval_array_print_multidim);
     RUN(eval_array_dimensions);
     RUN(eval_array_rank);
     RUN(eval_setf_aref_multidim);
@@ -4023,6 +4356,9 @@ int main(void)
     RUN(eval_fill_pointer);
     RUN(eval_vector_push);
     RUN(eval_adjust_array);
+    RUN(eval_array_type_predicates);
+    RUN(eval_array_typep);
+    RUN(eval_array_type_of);
 
     /* Phase 5 Tier 2 */
     RUN(eval_string_comparison);
@@ -4293,6 +4629,23 @@ int main(void)
     RUN(eval_print_level);
     RUN(eval_print_length);
     RUN(eval_print_level_length_combined);
+    RUN(eval_print_base_binary);
+    RUN(eval_print_base_octal);
+    RUN(eval_print_base_hex);
+    RUN(eval_print_base_other);
+    RUN(eval_print_radix_decimal);
+    RUN(eval_print_radix_binary);
+    RUN(eval_print_radix_octal);
+    RUN(eval_print_radix_hex);
+    RUN(eval_print_radix_other);
+    RUN(eval_print_base_bignum);
+    RUN(eval_print_radix_bignum);
+    RUN(eval_print_case_upcase);
+    RUN(eval_print_case_downcase);
+    RUN(eval_print_case_capitalize);
+    RUN(eval_print_case_in_list);
+    RUN(eval_print_gensym);
+    RUN(eval_print_array);
 
     teardown();
     REPORT();

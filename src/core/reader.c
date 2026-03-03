@@ -622,6 +622,54 @@ static CL_Obj read_expr(void)
                 return CL_READER_SKIP;
             }
         }
+        if (ch == '(') {
+            /* #(e1 e2 ...) => simple vector */
+            CL_Obj elems = CL_NIL;
+            CL_Obj tail = CL_NIL;
+            uint32_t count = 0;
+            uint32_t i;
+            CL_Obj vec;
+            CL_Vector *v;
+            CL_Obj elem;
+
+            CL_GC_PROTECT(elems);
+            CL_GC_PROTECT(tail);
+
+            for (;;) {
+                skip_whitespace();
+                if (eof_seen) {
+                    CL_GC_UNPROTECT(2);
+                    cl_error(CL_ERR_PARSE, "Unterminated #( vector literal");
+                    return CL_NIL;
+                }
+                {
+                    int c2 = read_char();
+                    if (c2 == ')') break;
+                    unread_char(c2);
+                }
+                elem = read_expr();
+                if (elem == CL_READER_SKIP) continue;
+                {
+                    CL_Obj cell = cl_cons(elem, CL_NIL);
+                    if (CL_NULL_P(elems)) {
+                        elems = cell;
+                    } else {
+                        ((CL_Cons *)CL_OBJ_TO_PTR(tail))->cdr = cell;
+                    }
+                    tail = cell;
+                    count++;
+                }
+            }
+
+            vec = cl_make_vector(count);
+            CL_GC_UNPROTECT(2);
+            v = (CL_Vector *)CL_OBJ_TO_PTR(vec);
+            for (i = 0; i < count; i++) {
+                cl_vector_data(v)[i] = cl_car(elems);
+                elems = cl_cdr(elems);
+            }
+            return vec;
+        }
         cl_error(CL_ERR_PARSE, "Unknown dispatch macro: #%c", ch);
         return CL_NIL;
     }

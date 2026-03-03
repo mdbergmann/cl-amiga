@@ -56,6 +56,56 @@ static int32_t print_length(void)
     return -1;
 }
 
+/* Returns current *print-base* (2-36), default 10 */
+static int32_t print_base(void)
+{
+    CL_Symbol *s;
+    int32_t val;
+    if (CL_NULL_P(SYM_PRINT_BASE)) return 10;
+    s = (CL_Symbol *)CL_OBJ_TO_PTR(SYM_PRINT_BASE);
+    if (!CL_FIXNUM_P(s->value)) return 10;
+    val = CL_FIXNUM_VAL(s->value);
+    if (val < 2 || val > 36) return 10;
+    return val;
+}
+
+static int print_radix_p(void)
+{
+    CL_Symbol *s;
+    if (CL_NULL_P(SYM_PRINT_RADIX)) return 0;
+    s = (CL_Symbol *)CL_OBJ_TO_PTR(SYM_PRINT_RADIX);
+    return !CL_NULL_P(s->value);
+}
+
+static int print_gensym_p(void)
+{
+    CL_Symbol *s;
+    if (CL_NULL_P(SYM_PRINT_GENSYM)) return 1; /* before init */
+    s = (CL_Symbol *)CL_OBJ_TO_PTR(SYM_PRINT_GENSYM);
+    return !CL_NULL_P(s->value);
+}
+
+static int print_array_p(void)
+{
+    CL_Symbol *s;
+    if (CL_NULL_P(SYM_PRINT_ARRAY)) return 1; /* before init */
+    s = (CL_Symbol *)CL_OBJ_TO_PTR(SYM_PRINT_ARRAY);
+    return !CL_NULL_P(s->value);
+}
+
+/* Returns 0=UPCASE, 1=DOWNCASE, 2=CAPITALIZE */
+static int print_case(void)
+{
+    CL_Symbol *s;
+    CL_Obj val;
+    if (CL_NULL_P(SYM_PRINT_CASE)) return 0;
+    s = (CL_Symbol *)CL_OBJ_TO_PTR(SYM_PRINT_CASE);
+    val = s->value;
+    if (val == KW_DOWNCASE) return 1;
+    if (val == KW_CAPITALIZE) return 2;
+    return 0; /* :UPCASE or unknown */
+}
+
 /* Current nesting depth for *print-level* tracking */
 static int32_t current_depth = 0;
 
@@ -94,14 +144,125 @@ static void out_str(const char *s)
     }
 }
 
-static void out_int(int32_t val)
+/* Base-aware integer output honoring *print-base* and *print-radix* */
+static void out_integer(int32_t val, int32_t base, int radix)
 {
-    char buf[16];
-    sprintf(buf, "%d", (int)val);
-    out_str(buf);
+    static const char digit_chars[] = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ";
+    char buf[40]; /* enough for 32-bit binary + prefix + sign */
+    int pos = 0;
+    uint32_t uval;
+    int negative = 0;
+
+    /* Radix prefix */
+    if (radix) {
+        switch (base) {
+        case 2:  out_str("#b"); break;
+        case 8:  out_str("#o"); break;
+        case 16: out_str("#x"); break;
+        default:
+            if (base != 10) {
+                char rbuf[8];
+                sprintf(rbuf, "#%d", (int)base);
+                out_str(rbuf);
+                out_char('r');
+            }
+            break;
+        }
+    }
+
+    /* Handle sign */
+    if (val < 0) {
+        negative = 1;
+        /* Handle INT32_MIN carefully */
+        if (val == (int32_t)0x80000000) {
+            uval = (uint32_t)0x80000000;
+        } else {
+            uval = (uint32_t)(-val);
+        }
+    } else {
+        uval = (uint32_t)val;
+    }
+
+    /* Convert to digits in reverse */
+    if (uval == 0) {
+        buf[pos++] = '0';
+    } else {
+        while (uval > 0) {
+            buf[pos++] = digit_chars[uval % (uint32_t)base];
+            uval /= (uint32_t)base;
+        }
+    }
+
+    /* Output sign */
+    if (negative) out_char('-');
+
+    /* Output digits in correct order */
+    while (pos > 0) out_char(buf[--pos]);
+
+    /* Radix suffix: trailing dot for base 10 */
+    if (radix && base == 10) out_char('.');
 }
 
 static void print_obj(CL_Obj obj);
+
+/*
+ * Output a symbol name honoring *print-case*.
+ * Per CL spec, *print-case* only affects all-uppercase names
+ * (which is standard for interned CL symbols).
+ * Names with lowercase or non-alpha chars are printed as-is.
+ */
+static void out_symbol_name(const char *name)
+{
+    int pcase = print_case();
+    const char *p;
+    int all_upper = 1;
+
+    /* If :UPCASE (default), output as-is */
+    if (pcase == 0) {
+        out_str(name);
+        return;
+    }
+
+    /* Check if name is all uppercase letters + non-alpha chars */
+    for (p = name; *p; p++) {
+        if (*p >= 'a' && *p <= 'z') {
+            all_upper = 0;
+            break;
+        }
+    }
+
+    /* If name has lowercase chars, print as-is (mixed case, not transformed) */
+    if (!all_upper) {
+        out_str(name);
+        return;
+    }
+
+    if (pcase == 1) {
+        /* :DOWNCASE — all uppercase -> lowercase */
+        for (p = name; *p; p++) {
+            if (*p >= 'A' && *p <= 'Z')
+                out_char(*p + ('a' - 'A'));
+            else
+                out_char(*p);
+        }
+    } else {
+        /* :CAPITALIZE — first letter of each word uppercase, rest lowercase */
+        int word_start = 1;
+        for (p = name; *p; p++) {
+            if (*p >= 'A' && *p <= 'Z') {
+                if (word_start)
+                    out_char(*p); /* keep uppercase */
+                else
+                    out_char(*p + ('a' - 'A')); /* lowercase */
+                word_start = 0;
+            } else {
+                out_char(*p);
+                /* Non-alphanumeric chars are word separators */
+                word_start = !(*p >= '0' && *p <= '9');
+            }
+        }
+    }
+}
 
 /* Check if sprintf result looks like a plain integer (all digits, no decimal/exponent) */
 static int needs_decimal(const char *buf)
@@ -203,15 +364,45 @@ static void print_string(CL_Obj obj)
     }
 }
 
+/* Recursive helper for multi-dim array printing.
+ * Prints one dimension slice, advancing *row_major as elements are printed. */
+static void print_array_slice(CL_Obj *elts, uint32_t *dims, uint8_t rank,
+                              uint8_t dim, uint32_t *row_major, int32_t max_len)
+{
+    uint32_t i;
+    out_char('(');
+    for (i = 0; i < dims[dim]; i++) {
+        if (max_len >= 0 && (int32_t)i >= max_len) {
+            /* Skip remaining elements/slices */
+            uint32_t skip = dims[dim] - i;
+            uint8_t d;
+            uint32_t slice_size = 1;
+            for (d = dim + 1; d < rank; d++)
+                slice_size *= dims[d];
+            *row_major += skip * slice_size;
+            out_str("...");
+            break;
+        }
+        if (i > 0) out_char(' ');
+        if (dim == rank - 1) {
+            print_obj(elts[*row_major]);
+            (*row_major)++;
+        } else {
+            print_array_slice(elts, dims, rank, dim + 1, row_major, max_len);
+        }
+    }
+    out_char(')');
+}
+
 static void print_obj(CL_Obj obj)
 {
     if (CL_NULL_P(obj)) {
-        out_str("NIL");
+        out_symbol_name("NIL");
         return;
     }
 
     if (CL_FIXNUM_P(obj)) {
-        out_int(CL_FIXNUM_VAL(obj));
+        out_integer(CL_FIXNUM_VAL(obj), print_base(), print_radix_p());
         return;
     }
 
@@ -241,7 +432,25 @@ static void print_obj(CL_Obj obj)
     }
 
     if (CL_BIGNUM_P(obj)) {
-        cl_bignum_print(obj, out_str);
+        int32_t base = print_base();
+        int radix = print_radix_p();
+        if (radix) {
+            switch (base) {
+            case 2:  out_str("#b"); break;
+            case 8:  out_str("#o"); break;
+            case 16: out_str("#x"); break;
+            default:
+                if (base != 10) {
+                    char rbuf[8];
+                    sprintf(rbuf, "#%d", (int)base);
+                    out_str(rbuf);
+                    out_char('r');
+                }
+                break;
+            }
+        }
+        cl_bignum_print_base(obj, base, out_str);
+        if (radix && base == 10) out_char('.');
         return;
     }
 
@@ -263,30 +472,31 @@ static void print_obj(CL_Obj obj)
     case TYPE_SYMBOL: {
         CL_Symbol *sym = (CL_Symbol *)CL_OBJ_TO_PTR(obj);
         if (CL_NULL_P(sym->package)) {
-            /* Uninterned symbol */
-            out_str("#:");
-            out_str(cl_symbol_name(obj));
+            /* Uninterned symbol — #: prefix only if *print-gensym* */
+            if (print_gensym_p())
+                out_str("#:");
+            out_symbol_name(cl_symbol_name(obj));
         } else if (sym->package == cl_package_keyword) {
             /* Keyword */
             out_char(':');
-            out_str(cl_symbol_name(obj));
+            out_symbol_name(cl_symbol_name(obj));
         } else if (sym->package == cl_current_package ||
                    cl_package_find_symbol(cl_symbol_name(obj),
                        ((CL_String *)CL_OBJ_TO_PTR(sym->name))->length,
                        cl_current_package) == obj) {
             /* Accessible in current package — no prefix */
-            out_str(cl_symbol_name(obj));
+            out_symbol_name(cl_symbol_name(obj));
         } else {
             /* Symbol from another package */
             CL_Package *pkg = (CL_Package *)CL_OBJ_TO_PTR(sym->package);
             CL_String *pkg_name = (CL_String *)CL_OBJ_TO_PTR(pkg->name);
-            out_str(pkg_name->data);
+            out_symbol_name(pkg_name->data);
             if (sym->flags & CL_SYM_EXPORTED) {
                 out_char(':');
             } else {
                 out_str("::");
             }
-            out_str(cl_symbol_name(obj));
+            out_symbol_name(cl_symbol_name(obj));
         }
         break;
     }
@@ -331,28 +541,54 @@ static void print_obj(CL_Obj obj)
 
     case TYPE_VECTOR: {
         CL_Vector *v = (CL_Vector *)CL_OBJ_TO_PTR(obj);
-        uint32_t i;
-        uint32_t vec_len = cl_vector_active_length(v);
-        CL_Obj *elts = cl_vector_data(v);
         int32_t max_depth = print_level();
         int32_t max_len = print_length();
+
+        if (!print_array_p()) {
+            if (v->rank > 1)
+                out_str("#<ARRAY>");
+            else
+                out_str("#<VECTOR>");
+            break;
+        }
 
         if (max_depth >= 0 && current_depth >= max_depth) {
             out_char('#');
             break;
         }
-        current_depth++;
-        out_str("#(");
-        for (i = 0; i < vec_len; i++) {
-            if (max_len >= 0 && (int32_t)i >= max_len) {
-                out_str("...");
-                break;
+
+        if (v->rank > 1) {
+            /* Multi-dimensional: #nA(...) with nested lists */
+            char rank_buf[12];
+            uint32_t dims[16];
+            uint8_t rank = v->rank;
+            uint8_t d;
+            uint32_t rm = 0;
+            snprintf(rank_buf, sizeof(rank_buf), "#%dA", (int)rank);
+            out_str(rank_buf);
+            for (d = 0; d < rank; d++)
+                dims[d] = (uint32_t)CL_FIXNUM_VAL(v->data[d]);
+            current_depth++;
+            print_array_slice(cl_vector_data(v), dims, rank, 0, &rm, max_len);
+            current_depth--;
+        } else {
+            /* 1D vector: #(...) */
+            uint32_t i;
+            uint32_t vec_len = cl_vector_active_length(v);
+            CL_Obj *elts = cl_vector_data(v);
+            current_depth++;
+            out_str("#(");
+            for (i = 0; i < vec_len; i++) {
+                if (max_len >= 0 && (int32_t)i >= max_len) {
+                    out_str("...");
+                    break;
+                }
+                if (i > 0) out_char(' ');
+                print_obj(elts[i]);
             }
-            if (i > 0) out_char(' ');
-            print_obj(elts[i]);
+            out_char(')');
+            current_depth--;
         }
-        out_char(')');
-        current_depth--;
         break;
     }
 

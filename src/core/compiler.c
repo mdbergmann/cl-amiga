@@ -866,6 +866,7 @@ void compile_expr(CL_Compiler *c, CL_Obj expr)
     if (CL_STRING_P(expr))  { cl_emit_const(c, expr); return; }
     if (CL_BIGNUM_P(expr))  { cl_emit_const(c, expr); return; }
     if (CL_FLOATP(expr))    { cl_emit_const(c, expr); return; }
+    if (CL_VECTOR_P(expr))  { cl_emit_const(c, expr); return; }
 
     if (CL_SYMBOL_P(expr)) {
         compile_symbol(c, expr);

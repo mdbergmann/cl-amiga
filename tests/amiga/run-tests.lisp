@@ -439,8 +439,23 @@
 (check "vector" "#(1 2 3)" (write-to-string (vector 1 2 3)))
 (check "vector empty" "#()" (write-to-string (vector)))
 (check "vector aref" 20 (aref (vector 10 20 30) 1))
+; --- Reader #(...) syntax (Step 8) ---
+(check "#() reader empty" "#()" (write-to-string #()))
+(check "#() reader elems" "#(1 2 3)" (write-to-string #(1 2 3)))
+(check "#() reader aref" 20 (aref #(10 20 30) 1))
+(check "#() reader length" 4 (length #(a b c d)))
+(check "#() reader svp" t (simple-vector-p #(1 2)))
+(check "#() reader nested" "#(1 2)" (write-to-string (aref #(#(1 2) #(3 4)) 0)))
+
 (check "array-dimensions" '(5) (array-dimensions (make-array 5)))
 (check "array-rank" 1 (array-rank (make-array 5)))
+
+; --- Multi-dim array printing (Step 9) ---
+(check "print 2d array" "#2A((1 2 3) (4 5 6))" (write-to-string (make-array '(2 3) :initial-contents '((1 2 3) (4 5 6)))))
+(check "print 3d array" "#3A(((1 2) (3 4)) ((5 6) (7 8)))" (write-to-string (make-array '(2 2 2) :initial-contents '(((1 2) (3 4)) ((5 6) (7 8))))))
+(check "print 2d empty" "#2A(() ())" (write-to-string (make-array '(2 0))))
+(check "print-array nil vec" "#<VECTOR>" (let ((*print-array* nil)) (write-to-string (vector 1 2))))
+(check "print-array nil arr" "#<ARRAY>" (let ((*print-array* nil)) (write-to-string (make-array '(2 3)))))
 
 ; --- Multi-dimensional arrays (Step 4) ---
 (check "make-array 2d" '(2 3) (array-dimensions (make-array '(2 3))))
@@ -480,6 +495,43 @@
 (check "adjust-array grow" 100 (let ((v (make-array 3 :adjustable t :initial-element 1))) (let ((v2 (adjust-array v 5 :initial-element 99))) (+ (aref v2 0) (aref v2 3)))))
 (check "adjust-array shrink" 3 (let ((v (make-array 5 :adjustable t :initial-element 42))) (array-total-size (adjust-array v 3))))
 (check "adjust-array fp" 2 (let ((v (make-array 5 :fill-pointer 2 :adjustable t))) (fill-pointer (adjust-array v 10))))
+
+; --- Array type predicates (Step 7) ---
+(check "arrayp vector" t (arrayp (vector 1 2 3)))
+(check "arrayp make-array" t (arrayp (make-array 5)))
+(check "arrayp 2d" t (arrayp (make-array '(2 3))))
+(check "arrayp string" t (arrayp "hello"))
+(check "arrayp fixnum" nil (arrayp 42))
+(check "arrayp list" nil (arrayp '(1 2)))
+(check "arrayp nil" nil (arrayp nil))
+(check "simple-vector-p vec" t (simple-vector-p (vector 1 2 3)))
+(check "simple-vector-p arr" t (simple-vector-p (make-array 5)))
+(check "simple-vector-p fp" nil (simple-vector-p (make-array 5 :fill-pointer 0)))
+(check "simple-vector-p adj" nil (simple-vector-p (make-array 5 :adjustable t)))
+(check "simple-vector-p 2d" nil (simple-vector-p (make-array '(2 3))))
+(check "simple-vector-p str" nil (simple-vector-p "hello"))
+(check "simple-vector-p fix" nil (simple-vector-p 42))
+(check "adjustable-array-p t" t (adjustable-array-p (make-array 5 :adjustable t)))
+(check "adjustable-array-p nil" nil (adjustable-array-p (make-array 5)))
+(check "adjustable-array-p vec" nil (adjustable-array-p (vector 1 2)))
+(check "adjustable-array-p str" nil (adjustable-array-p "hello"))
+(check "typep array vec" t (typep (vector 1 2) 'array))
+(check "typep array 2d" t (typep (make-array '(2 3)) 'array))
+(check "typep array str" t (typep "hello" 'array))
+(check "typep array fix" nil (typep 42 'array))
+(check "typep vector 1d" t (typep (vector 1 2) 'vector))
+(check "typep vector str" t (typep "hello" 'vector))
+(check "typep vector 2d" nil (typep (make-array '(2 3)) 'vector))
+(check "typep simple-vec" t (typep (vector 1 2) 'simple-vector))
+(check "typep simple-vec fp" nil (typep (make-array 5 :fill-pointer 0) 'simple-vector))
+(check "typep simple-vec str" nil (typep "hello" 'simple-vector))
+(check "typep simple-arr" t (typep (vector 1 2) 'simple-array))
+(check "typep simple-arr 2d" t (typep (make-array '(2 3)) 'simple-array))
+(check "typep simple-arr fp" nil (typep (make-array 5 :fill-pointer 0) 'simple-array))
+(check "type-of simple-vec" 'simple-vector (type-of (vector 1 2 3)))
+(check "type-of vec w/ fp" 'vector (type-of (make-array 5 :fill-pointer 0)))
+(check "type-of 2d" 'simple-array (type-of (make-array '(2 3))))
+(check "type-of string" 'string (type-of "hello"))
 
 (defvar *sv-t1* 42)
 (check "symbol-value" 42 (symbol-value '*sv-t1*))
@@ -1996,6 +2048,103 @@
 (check "print-level+length" "(A B ...)"
   (let ((*print-level* 1) (*print-length* 2))
     (prin1-to-string '(a b (c d) e))))
+
+; *print-base* tests
+(check "print-base binary" "1010"
+  (let ((*print-base* 2)) (prin1-to-string 10)))
+(check "print-base binary 255" "11111111"
+  (let ((*print-base* 2)) (prin1-to-string 255)))
+(check "print-base binary 0" "0"
+  (let ((*print-base* 2)) (prin1-to-string 0)))
+(check "print-base binary neg" "-101"
+  (let ((*print-base* 2)) (prin1-to-string -5)))
+(check "print-base octal" "10"
+  (let ((*print-base* 8)) (prin1-to-string 8)))
+(check "print-base octal 255" "377"
+  (let ((*print-base* 8)) (prin1-to-string 255)))
+(check "print-base hex FF" "FF"
+  (let ((*print-base* 16)) (prin1-to-string 255)))
+(check "print-base hex 100" "100"
+  (let ((*print-base* 16)) (prin1-to-string 256)))
+(check "print-base hex 0" "0"
+  (let ((*print-base* 16)) (prin1-to-string 0)))
+(check "print-base hex neg" "-1"
+  (let ((*print-base* 16)) (prin1-to-string -1)))
+(check "print-base 3" "100"
+  (let ((*print-base* 3)) (prin1-to-string 9)))
+(check "print-base 36" "Z"
+  (let ((*print-base* 36)) (prin1-to-string 35)))
+
+; *print-radix* tests
+(check "print-radix decimal" "42."
+  (let ((*print-radix* t)) (prin1-to-string 42)))
+(check "print-radix decimal 0" "0."
+  (let ((*print-radix* t)) (prin1-to-string 0)))
+(check "print-radix decimal neg" "-7."
+  (let ((*print-radix* t)) (prin1-to-string -7)))
+(check "print-radix binary" "#b1010"
+  (let ((*print-base* 2) (*print-radix* t)) (prin1-to-string 10)))
+(check "print-radix octal" "#o377"
+  (let ((*print-base* 8) (*print-radix* t)) (prin1-to-string 255)))
+(check "print-radix hex" "#xFF"
+  (let ((*print-base* 16) (*print-radix* t)) (prin1-to-string 255)))
+(check "print-radix base3" "#3r100"
+  (let ((*print-base* 3) (*print-radix* t)) (prin1-to-string 9)))
+
+; *print-base* with bignums
+(check "print-base bignum hex" "100000000"
+  (let ((*print-base* 16)) (prin1-to-string (expt 2 32))))
+(check "print-base bignum binary" "10000000000000000"
+  (let ((*print-base* 2)) (prin1-to-string (expt 2 16))))
+(check "print-base bignum octal" "200000"
+  (let ((*print-base* 8)) (prin1-to-string 65536)))
+(check "print-radix bignum hex" "#x100000000"
+  (let ((*print-base* 16) (*print-radix* t)) (prin1-to-string (expt 2 32))))
+(check "print-radix bignum decimal" "4294967296."
+  (let ((*print-radix* t)) (prin1-to-string (expt 2 32))))
+
+; *print-case* tests
+(check "print-case upcase" "HELLO"
+  (let ((*print-case* :upcase)) (prin1-to-string 'hello)))
+(check "print-case downcase" "hello"
+  (let ((*print-case* :downcase)) (prin1-to-string 'hello)))
+(check "print-case downcase hyphen" "foo-bar"
+  (let ((*print-case* :downcase)) (prin1-to-string 'foo-bar)))
+(check "print-case downcase nil" "nil"
+  (let ((*print-case* :downcase)) (prin1-to-string nil)))
+(check "print-case downcase t" "t"
+  (let ((*print-case* :downcase)) (prin1-to-string t)))
+(check "print-case downcase keyword" ":foo"
+  (let ((*print-case* :downcase)) (prin1-to-string :foo)))
+(check "print-case capitalize" "Hello"
+  (let ((*print-case* :capitalize)) (prin1-to-string 'hello)))
+(check "print-case capitalize hyphen" "Foo-Bar"
+  (let ((*print-case* :capitalize)) (prin1-to-string 'foo-bar)))
+(check "print-case capitalize nil" "Nil"
+  (let ((*print-case* :capitalize)) (prin1-to-string nil)))
+(check "print-case capitalize keyword" ":Test"
+  (let ((*print-case* :capitalize)) (prin1-to-string :test)))
+(check "print-case downcase list" "(a b c)"
+  (let ((*print-case* :downcase)) (prin1-to-string '(a b c))))
+(check "print-case capitalize list" "(Hello World)"
+  (let ((*print-case* :capitalize)) (prin1-to-string '(hello world))))
+
+; *print-gensym* tests
+(check "print-gensym default" "#:FOO"
+  (prin1-to-string (make-symbol "FOO")))
+(check "print-gensym nil" "FOO"
+  (let ((*print-gensym* nil)) (prin1-to-string (make-symbol "FOO"))))
+(check "print-gensym nil + downcase" "foo"
+  (let ((*print-gensym* nil) (*print-case* :downcase))
+    (prin1-to-string (make-symbol "FOO"))))
+
+; *print-array* tests
+(check "print-array default" "#(1 2 3)"
+  (prin1-to-string (vector 1 2 3)))
+(check "print-array nil vector" "#<VECTOR>"
+  (let ((*print-array* nil)) (prin1-to-string (vector 1 2 3))))
+(check "print-array nil multi-dim" "#<ARRAY>"
+  (let ((*print-array* nil)) (prin1-to-string (make-array '(2 3)))))
 
 ; --- Summary ---
 (format t "~%=== Results ===~%")

@@ -24,6 +24,20 @@ static CL_Obj KW_FILL_POINTER = CL_NIL;
 static CL_Obj KW_ADJUSTABLE = CL_NIL;
 static CL_Obj KW_ELEMENT_TYPE = CL_NIL;
 
+/* Helper: recursively flatten nested lists into array elements */
+static void flatten_contents(CL_Obj contents, CL_Obj *elts, uint32_t total, uint32_t *j)
+{
+    while (!CL_NULL_P(contents) && *j < total) {
+        CL_Obj elem = cl_car(contents);
+        if (CL_CONS_P(elem)) {
+            flatten_contents(elem, elts, total, j);
+        } else {
+            elts[(*j)++] = elem;
+        }
+        contents = cl_cdr(contents);
+    }
+}
+
 /* ======================================================= */
 /* MAKE-ARRAY                                              */
 /* ======================================================= */
@@ -152,24 +166,9 @@ static CL_Obj bi_make_array(CL_Obj *args, int n)
                     cur = cl_cdr(cur);
                 }
             } else {
-                /* Recursive flatten: walk nested structure */
+                /* Recursive flatten: walk nested structure to arbitrary depth */
                 uint32_t j = 0;
-                CL_Obj row;
-                cur = initial_contents;
-                while (!CL_NULL_P(cur) && j < total) {
-                    row = cl_car(cur);
-                    if (CL_CONS_P(row)) {
-                        /* Walk inner list */
-                        CL_Obj inner = row;
-                        while (!CL_NULL_P(inner) && j < total) {
-                            elts[j++] = cl_car(inner);
-                            inner = cl_cdr(inner);
-                        }
-                    } else {
-                        elts[j++] = row;
-                    }
-                    cur = cl_cdr(cur);
-                }
+                flatten_contents(initial_contents, elts, total, &j);
             }
         }
         return result;
@@ -298,7 +297,8 @@ static CL_Obj bi_setf_aref(CL_Obj *args, int n)
 }
 
 /* ======================================================= */
-/* VECTOR / VECTORP                                        */
+/* VECTOR / VECTORP / ARRAYP / SIMPLE-VECTOR-P /           */
+/* ADJUSTABLE-ARRAY-P                                      */
 /* ======================================================= */
 
 static CL_Obj bi_vector(CL_Obj *args, int n)
@@ -322,6 +322,35 @@ static CL_Obj bi_vectorp(CL_Obj *args, int n)
         CL_Vector *v = (CL_Vector *)CL_OBJ_TO_PTR(args[0]);
         return (v->rank <= 1) ? SYM_T : CL_NIL;
     }
+}
+
+/* (arrayp obj) — true for any array: vectors, multi-dim arrays, strings */
+static CL_Obj bi_arrayp(CL_Obj *args, int n)
+{
+    CL_UNUSED(n);
+    return (CL_VECTOR_P(args[0]) || CL_STRING_P(args[0])) ? SYM_T : CL_NIL;
+}
+
+/* (simple-vector-p obj) — true for 1D, element-type T, no fill-pointer, not adjustable */
+static CL_Obj bi_simple_vector_p(CL_Obj *args, int n)
+{
+    CL_Vector *v;
+    CL_UNUSED(n);
+    if (!CL_VECTOR_P(args[0])) return CL_NIL;
+    v = (CL_Vector *)CL_OBJ_TO_PTR(args[0]);
+    return (v->rank <= 1 && v->flags == 0) ? SYM_T : CL_NIL;
+}
+
+/* (adjustable-array-p array) — true if array was created with :adjustable t */
+static CL_Obj bi_adjustable_array_p(CL_Obj *args, int n)
+{
+    CL_Vector *v;
+    CL_UNUSED(n);
+    if (!CL_VECTOR_P(args[0]) && !CL_STRING_P(args[0]))
+        cl_error(CL_ERR_TYPE, "ADJUSTABLE-ARRAY-P: not an array");
+    if (CL_STRING_P(args[0])) return CL_NIL;  /* strings are never adjustable */
+    v = (CL_Vector *)CL_OBJ_TO_PTR(args[0]);
+    return (v->flags & CL_VEC_FLAG_ADJUSTABLE) ? SYM_T : CL_NIL;
 }
 
 /* ======================================================= */
@@ -700,6 +729,9 @@ void cl_builtins_array_init(void)
 
     /* Predicates */
     defun("VECTORP", bi_vectorp, 1, 1);
+    defun("ARRAYP", bi_arrayp, 1, 1);
+    defun("SIMPLE-VECTOR-P", bi_simple_vector_p, 1, 1);
+    defun("ADJUSTABLE-ARRAY-P", bi_adjustable_array_p, 1, 1);
 
     /* Query */
     defun("ARRAY-DIMENSIONS", bi_array_dimensions, 1, 1);

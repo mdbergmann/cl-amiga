@@ -38,6 +38,7 @@ uint32_t cl_bignum_hash(CL_Obj obj);
 /* String conversion */
 CL_Obj cl_bignum_from_string(const char *str, int len, int negative);
 void cl_bignum_print(CL_Obj obj, void (*out)(const char *));
+void cl_bignum_print_base(CL_Obj obj, int32_t base, void (*out)(const char *));
 
 /* Extended integer operations */
 CL_Obj cl_arith_gcd(CL_Obj a, CL_Obj b);

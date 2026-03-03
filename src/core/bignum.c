@@ -978,8 +978,13 @@ CL_Obj cl_bignum_from_string(const char *str, int len, int negative)
 
 void cl_bignum_print(CL_Obj obj, void (*out)(const char *))
 {
+    cl_bignum_print_base(obj, 10, out);
+}
+
+void cl_bignum_print_base(CL_Obj obj, int32_t base, void (*out)(const char *))
+{
+    static const char digit_chars[] = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ";
     CL_Bignum *bn = (CL_Bignum *)CL_OBJ_TO_PTR(obj);
-    /* Convert to decimal by repeated division by 10000 */
     uint16_t work_stack[256];
     uint16_t *work;
     uint32_t work_len;
@@ -990,6 +995,9 @@ void cl_bignum_print(CL_Obj obj, void (*out)(const char *))
     int i;
     int heap_work = 0, heap_digits = 0;
 
+    if (base < 2) base = 10;
+    if (base > 36) base = 10;
+
     /* Use stack buffers for small bignums, heap for large */
     if (bn->length <= 256) {
         work = work_stack;
@@ -997,8 +1005,8 @@ void cl_bignum_print(CL_Obj obj, void (*out)(const char *))
         work = (uint16_t *)platform_alloc(bn->length * sizeof(uint16_t));
         heap_work = 1;
     }
-    /* Each 16-bit limb ≈ 4.8 decimal digits, round up to 5 */
-    digits_cap = bn->length * 5 + 1;
+    /* Each 16-bit limb can produce up to 16 binary digits; base 2 is worst case */
+    digits_cap = bn->length * 16 + 2;
     if (digits_cap <= 1024) {
         digits = digits_stack;
     } else {
@@ -1014,35 +1022,20 @@ void cl_bignum_print(CL_Obj obj, void (*out)(const char *))
         goto cleanup;
     }
 
-    /* Extract groups of 4 decimal digits */
+    /* Extract single digits by repeated division by base */
     while (work_len > 1 || work[0] != 0) {
-        uint16_t group;
-        char buf[5];
-        group = bignum_div_single(work, work_len, 10000, work);
+        uint16_t rem;
+        rem = bignum_div_single(work, work_len, (uint16_t)base, work);
         while (work_len > 1 && work[work_len - 1] == 0)
             work_len--;
-
-        /* Store 4 digits */
-        buf[3] = '0' + (group % 10); group /= 10;
-        buf[2] = '0' + (group % 10); group /= 10;
-        buf[1] = '0' + (group % 10); group /= 10;
-        buf[0] = '0' + (group % 10);
-        buf[4] = '\0';
-
-        /* Append in reverse order (we'll reverse later) */
-        for (i = 3; i >= 0; i--) {
-            if ((uint32_t)dpos < digits_cap - 1) digits[dpos++] = buf[i];
-        }
+        if ((uint32_t)dpos < digits_cap - 1)
+            digits[dpos++] = digit_chars[rem];
     }
-
-    /* Strip leading zeros (they're at the end since digits are reversed) */
-    while (dpos > 1 && digits[dpos - 1] == '0')
-        dpos--;
 
     /* Output sign */
     if (bn->sign) out("-");
 
-    /* Output digits in reverse */
+    /* Output digits in reverse (dpos-1 is most significant) */
     {
         char outbuf[2];
         outbuf[1] = '\0';

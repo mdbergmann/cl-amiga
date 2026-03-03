@@ -70,9 +70,28 @@ static int typep_symbol(CL_Obj obj, CL_Obj type_sym)
     if (strcmp(tname, "NUMBER") == 0) return CL_NUMBER_P(obj);
     if (strcmp(tname, "CHARACTER") == 0)      return CL_CHAR_P(obj);
     if (strcmp(tname, "STRING") == 0)         return CL_STRING_P(obj);
-    if (strcmp(tname, "VECTOR") == 0 || strcmp(tname, "SIMPLE-VECTOR") == 0 ||
-        strcmp(tname, "ARRAY") == 0 || strcmp(tname, "SIMPLE-ARRAY") == 0)
-        return CL_STRING_P(obj) || CL_VECTOR_P(obj);
+    if (strcmp(tname, "ARRAY") == 0 || strcmp(tname, "SIMPLE-ARRAY") == 0) {
+        if (CL_STRING_P(obj)) return 1;
+        if (!CL_VECTOR_P(obj)) return 0;
+        if (strcmp(tname, "SIMPLE-ARRAY") == 0) {
+            CL_Vector *v = (CL_Vector *)CL_OBJ_TO_PTR(obj);
+            /* simple = no fill-pointer and not adjustable (multidim flag is ok) */
+            return !(v->flags & (CL_VEC_FLAG_FILL_POINTER | CL_VEC_FLAG_ADJUSTABLE));
+        }
+        return 1;
+    }
+    if (strcmp(tname, "VECTOR") == 0) {
+        if (CL_STRING_P(obj)) return 1;
+        if (!CL_VECTOR_P(obj)) return 0;
+        { CL_Vector *v = (CL_Vector *)CL_OBJ_TO_PTR(obj); return v->rank <= 1; }
+    }
+    if (strcmp(tname, "SIMPLE-VECTOR") == 0) {
+        /* 1D, element-type T (not string), no fill-pointer, not adjustable */
+        CL_Vector *v;
+        if (!CL_VECTOR_P(obj)) return 0;
+        v = (CL_Vector *)CL_OBJ_TO_PTR(obj);
+        return v->rank <= 1 && v->flags == 0;
+    }
     if (strcmp(tname, "SEQUENCE") == 0)
         return CL_NULL_P(obj) || CL_CONS_P(obj) || CL_STRING_P(obj) || CL_VECTOR_P(obj);
     if (strcmp(tname, "FUNCTION") == 0)
@@ -249,6 +268,18 @@ static CL_Obj bi_type_of(CL_Obj *args, int n)
         CL_Struct *st = (CL_Struct *)CL_OBJ_TO_PTR(args[0]);
         return st->type_desc;
     }
+    /* For vectors/arrays, return specific type */
+    if (CL_VECTOR_P(args[0])) {
+        CL_Vector *v = (CL_Vector *)CL_OBJ_TO_PTR(args[0]);
+        if (v->rank > 1)
+            name = !(v->flags & (CL_VEC_FLAG_FILL_POINTER | CL_VEC_FLAG_ADJUSTABLE))
+                   ? "SIMPLE-ARRAY" : "ARRAY";
+        else if (v->flags == 0)
+            name = "SIMPLE-VECTOR";
+        else
+            name = "VECTOR";
+        return cl_intern(name, (uint32_t)strlen(name));
+    }
     name = cl_type_name(args[0]);
     return cl_intern(name, (uint32_t)strlen(name));
 }
@@ -403,6 +434,7 @@ enum TypeId {
     TID_STRING,
     TID_SIMPLE_VECTOR,
     TID_VECTOR,
+    TID_SIMPLE_ARRAY,
     TID_ARRAY,
     TID_SEQUENCE,
     TID_COMPILED_FUNCTION,
@@ -450,7 +482,8 @@ static int type_name_to_id(const char *name)
     if (strcmp(name, "STRING") == 0) return TID_STRING;
     if (strcmp(name, "SIMPLE-VECTOR") == 0) return TID_SIMPLE_VECTOR;
     if (strcmp(name, "VECTOR") == 0) return TID_VECTOR;
-    if (strcmp(name, "ARRAY") == 0 || strcmp(name, "SIMPLE-ARRAY") == 0) return TID_ARRAY;
+    if (strcmp(name, "SIMPLE-ARRAY") == 0) return TID_SIMPLE_ARRAY;
+    if (strcmp(name, "ARRAY") == 0) return TID_ARRAY;
     if (strcmp(name, "SEQUENCE") == 0) return TID_SEQUENCE;
     if (strcmp(name, "COMPILED-FUNCTION") == 0) return TID_COMPILED_FUNCTION;
     if (strcmp(name, "FUNCTION") == 0) return TID_FUNCTION;
@@ -517,10 +550,18 @@ static int subtype_check(int id1, int id2)
     /* Symbol hierarchy: keyword < symbol, null < symbol */
     if (id1 == TID_KEYWORD && id2 == TID_SYMBOL) return 1;
 
-    /* Vector hierarchy: simple-vector < vector < array, vector < sequence */
-    if (id1 == TID_SIMPLE_VECTOR && (id2 == TID_VECTOR || id2 == TID_ARRAY || id2 == TID_SEQUENCE)) return 1;
+    /* Vector/array hierarchy:
+     * simple-vector < simple-array < array
+     * simple-vector < vector < array
+     * vector < sequence
+     * string < vector < array
+     */
+    if (id1 == TID_SIMPLE_VECTOR && (id2 == TID_VECTOR || id2 == TID_SIMPLE_ARRAY ||
+                                      id2 == TID_ARRAY || id2 == TID_SEQUENCE)) return 1;
+    if (id1 == TID_SIMPLE_ARRAY && id2 == TID_ARRAY) return 1;
     if (id1 == TID_VECTOR && (id2 == TID_ARRAY || id2 == TID_SEQUENCE)) return 1;
-    if (id1 == TID_STRING && (id2 == TID_VECTOR || id2 == TID_ARRAY || id2 == TID_SEQUENCE)) return 1;
+    if (id1 == TID_STRING && (id2 == TID_VECTOR || id2 == TID_SIMPLE_ARRAY ||
+                               id2 == TID_ARRAY || id2 == TID_SEQUENCE)) return 1;
 
     /* Function hierarchy: compiled-function < function */
     if (id1 == TID_COMPILED_FUNCTION && id2 == TID_FUNCTION) return 1;
