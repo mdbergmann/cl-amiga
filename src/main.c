@@ -26,6 +26,10 @@ static void print_usage(void)
         "  --stack <size>   VM value stack size (default: 64K)\n"
         "  --frames <n>     Max call frame depth (default: 256)\n"
         "  --batch          Batch mode (no prompts, read from stdin)\n"
+        "  --load <file>    Load Lisp file before REPL (multiple allowed)\n"
+        "  --eval <expr>    Evaluate expression before REPL (multiple allowed)\n"
+        "  --script <file>  Load file and exit (no REPL)\n"
+        "  --no-userinit    Skip user init file (~/.clamigarc)\n"
         "  --color          Force color output\n"
         "  --no-color       Disable color output\n"
         "  --help           Show this help message\n"
@@ -62,10 +66,23 @@ static uint32_t parse_size(const char *str)
     return val;
 }
 
+/* Max number of --load/--eval actions */
+#define MAX_ACTIONS 32
+
+typedef struct {
+    int is_eval; /* 0 = load file, 1 = eval string */
+    const char *arg;
+} CLAction;
+
 int main(int argc, char *argv[])
 {
     int batch = 0;
     int color_set = 0;
+    int no_userinit = 0;
+    int script = 0;
+    const char *script_file = NULL;
+    CLAction actions[MAX_ACTIONS];
+    int action_count = 0;
     int i;
     uint32_t heap_size = 0;
     uint32_t stack_entries = 0;
@@ -80,9 +97,41 @@ int main(int argc, char *argv[])
         } else if (strcmp(argv[i], "--no-color") == 0) {
             cl_repl_color = 0;
             color_set = 1;
+        } else if (strcmp(argv[i], "--no-userinit") == 0) {
+            no_userinit = 1;
         } else if (strcmp(argv[i], "--help") == 0) {
             print_usage();
             exit(0);
+        } else if (strcmp(argv[i], "--load") == 0) {
+            if (i + 1 >= argc) {
+                fprintf(stderr, "Error: --load requires a file argument\n");
+                print_usage();
+                exit(1);
+            }
+            if (action_count < MAX_ACTIONS) {
+                actions[action_count].is_eval = 0;
+                actions[action_count].arg = argv[++i];
+                action_count++;
+            }
+        } else if (strcmp(argv[i], "--eval") == 0) {
+            if (i + 1 >= argc) {
+                fprintf(stderr, "Error: --eval requires an expression argument\n");
+                print_usage();
+                exit(1);
+            }
+            if (action_count < MAX_ACTIONS) {
+                actions[action_count].is_eval = 1;
+                actions[action_count].arg = argv[++i];
+                action_count++;
+            }
+        } else if (strcmp(argv[i], "--script") == 0) {
+            if (i + 1 >= argc) {
+                fprintf(stderr, "Error: --script requires a file argument\n");
+                print_usage();
+                exit(1);
+            }
+            script = 1;
+            script_file = argv[++i];
         } else if (strcmp(argv[i], "--heap") == 0) {
             if (i + 1 >= argc) {
                 fprintf(stderr, "Error: --heap requires a size argument\n");
@@ -132,9 +181,9 @@ int main(int argc, char *argv[])
         }
     }
 
-    /* Default: color on for interactive, off for batch */
+    /* Default: color on for interactive, off for batch/script */
     if (!color_set)
-        cl_repl_color = !batch;
+        cl_repl_color = !(batch || script);
 
     platform_init();
 
@@ -150,9 +199,39 @@ int main(int argc, char *argv[])
     cl_stream_init();
     cl_builtins_init();
     cl_debugger_init();
-    cl_repl_init();
+    cl_repl_init_no_userinit(no_userinit);
 
-    if (batch) {
+    /* Execute --load and --eval actions in order */
+    for (i = 0; i < action_count; i++) {
+        int err = CL_CATCH();
+        if (err == CL_ERR_NONE) {
+            if (actions[i].is_eval) {
+                cl_eval_string(actions[i].arg);
+            } else {
+                cl_load_file(actions[i].arg);
+            }
+            CL_UNCATCH();
+        } else {
+            cl_error_print();
+            cl_vm.sp = 0;
+            cl_vm.fp = 0;
+            CL_UNCATCH();
+        }
+    }
+
+    if (script) {
+        /* Script mode: load file and exit */
+        int err = CL_CATCH();
+        if (err == CL_ERR_NONE) {
+            cl_load_file(script_file);
+            CL_UNCATCH();
+        } else {
+            cl_error_print();
+            cl_vm.sp = 0;
+            cl_vm.fp = 0;
+            CL_UNCATCH();
+        }
+    } else if (batch) {
         cl_repl_batch();
     } else {
         cl_color_set(CL_COLOR_BOLD_CYAN);

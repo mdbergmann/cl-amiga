@@ -12,6 +12,8 @@
 #include "color.h"
 #include "../platform/platform.h"
 #include <string.h>
+#include <stdio.h>
+#include <stdlib.h>
 
 #define REPL_BUF_SIZE 4096
 
@@ -110,6 +112,127 @@ static void load_boot_file(void)
         }
     }
     /* If no boot file found, silently continue */
+}
+
+/* Load a file by path (C string). Used by --load and --script. */
+void cl_load_file(const char *path)
+{
+    unsigned long size;
+    char *buf = platform_file_read(path, &size);
+    if (!buf) {
+        char msg[256];
+        snprintf(msg, sizeof(msg), "Cannot open file: %s", path);
+        cl_error(CL_ERR_GENERAL, msg);
+        return;
+    }
+
+    {
+        CL_Obj cl_str, stream;
+        const char *prev_file = cl_current_source_file;
+        uint16_t prev_file_id = cl_current_file_id;
+        cl_current_source_file = path;
+        cl_current_file_id++;
+
+        cl_str = cl_make_string(buf, (int)size);
+        CL_GC_PROTECT(cl_str);
+        stream = cl_make_string_input_stream(cl_str, 0, (uint32_t)size);
+        CL_GC_PROTECT(stream);
+
+        platform_free(buf);
+
+        for (;;) {
+            CL_Obj expr, bytecode;
+            int err;
+
+            expr = cl_read_from_stream(stream);
+            if (cl_reader_eof()) break;
+
+            err = CL_CATCH();
+            if (err == CL_ERR_NONE) {
+                CL_GC_PROTECT(expr);
+                bytecode = cl_compile(expr);
+                CL_GC_UNPROTECT(1);
+                if (!CL_NULL_P(bytecode))
+                    cl_vm_eval(bytecode);
+                CL_UNCATCH();
+            } else {
+                cl_error_print();
+                CL_UNCATCH();
+            }
+        }
+
+        CL_GC_UNPROTECT(2);
+        cl_current_source_file = prev_file;
+        cl_current_file_id = prev_file_id;
+    }
+}
+
+/* Try to load user init file */
+static void load_user_init(void)
+{
+#ifdef PLATFORM_AMIGA
+    static const char *paths[] = { "S:clamiga.lisp", NULL };
+#else
+    static char user_init_path[512];
+    static const char *paths[2];
+    const char *home = getenv("HOME");
+    if (home) {
+        snprintf(user_init_path, sizeof(user_init_path),
+                 "%s/.clamigarc", home);
+        paths[0] = user_init_path;
+        paths[1] = NULL;
+    } else {
+        paths[0] = NULL;
+    }
+#endif
+    {
+        int i;
+        for (i = 0; paths[i] != NULL; i++) {
+            unsigned long size;
+            char *buf = platform_file_read(paths[i], &size);
+            if (buf) {
+                CL_Obj cl_str, stream;
+                const char *prev_file = cl_current_source_file;
+                uint16_t prev_file_id = cl_current_file_id;
+                cl_current_source_file = paths[i];
+                cl_current_file_id++;
+
+                cl_str = cl_make_string(buf, (int)size);
+                CL_GC_PROTECT(cl_str);
+                stream = cl_make_string_input_stream(cl_str, 0, (uint32_t)size);
+                CL_GC_PROTECT(stream);
+
+                platform_free(buf);
+
+                for (;;) {
+                    CL_Obj expr, bytecode;
+                    int err;
+
+                    expr = cl_read_from_stream(stream);
+                    if (cl_reader_eof()) break;
+
+                    err = CL_CATCH();
+                    if (err == CL_ERR_NONE) {
+                        CL_GC_PROTECT(expr);
+                        bytecode = cl_compile(expr);
+                        CL_GC_UNPROTECT(1);
+                        if (!CL_NULL_P(bytecode))
+                            cl_vm_eval(bytecode);
+                        CL_UNCATCH();
+                    } else {
+                        cl_error_print();
+                        CL_UNCATCH();
+                    }
+                }
+
+                CL_GC_UNPROTECT(2);
+                cl_current_source_file = prev_file;
+                cl_current_file_id = prev_file_id;
+                return;  /* Loaded, stop trying */
+            }
+        }
+    }
+    /* No user init found — silently continue */
 }
 
 /* Compute net parenthesis depth of a string, skipping:
@@ -406,11 +529,14 @@ static void init_history_symbol(CL_Obj sym)
     s->value = CL_NIL;
 }
 
-void cl_repl_init(void)
+void cl_repl_init_no_userinit(int no_userinit)
 {
     cl_eval_string("(defmacro when (test &rest body) (list 'if test (cons 'progn body)))");
     cl_eval_string("(defmacro unless (test &rest body) (list 'if test nil (cons 'progn body)))");
     load_boot_file();
+
+    if (!no_userinit)
+        load_user_init();
 
     /* Look up *, +, - (already interned by builtins as arithmetic functions) */
     SYM_STAR  = cl_intern_in("*", 1, cl_package_cl);
@@ -425,4 +551,9 @@ void cl_repl_init(void)
     init_history_symbol(SYM_PLUSPLUS);
     init_history_symbol(SYM_PLUSPLUSPLUS);
     init_history_symbol(SYM_MINUS);
+}
+
+void cl_repl_init(void)
+{
+    cl_repl_init_no_userinit(0);
 }
