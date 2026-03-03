@@ -81,6 +81,7 @@ static int typep_symbol(CL_Obj obj, CL_Obj type_sym)
         return CL_CLOSURE_P(obj) || CL_BYTECODE_P(obj);
     if (strcmp(tname, "HASH-TABLE") == 0)     return CL_HASHTABLE_P(obj);
     if (strcmp(tname, "PACKAGE") == 0)        return CL_PACKAGE_P(obj);
+    if (strcmp(tname, "STREAM") == 0)        return CL_STREAM_P(obj);
 
     /* Structure types — check hierarchy for struct objects */
     if (strcmp(tname, "STRUCTURE") == 0 || strcmp(tname, "STRUCTURE-OBJECT") == 0)

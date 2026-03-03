@@ -87,7 +87,8 @@ enum CL_ObjType {
     TYPE_STRUCT,
     TYPE_BIGNUM,
     TYPE_SINGLE_FLOAT,
-    TYPE_DOUBLE_FLOAT
+    TYPE_DOUBLE_FLOAT,
+    TYPE_STREAM
 };
 
 /* Header access macros */
@@ -275,6 +276,39 @@ typedef struct {
 
 #define CL_BIGNUM_P(obj) (CL_HEAP_P(obj) && CL_HDR_TYPE(CL_OBJ_TO_PTR(obj)) == TYPE_BIGNUM)
 #define CL_INTEGER_P(obj) (CL_FIXNUM_P(obj) || CL_BIGNUM_P(obj))
+
+/* --- Stream --- */
+
+/* Stream direction */
+#define CL_STREAM_INPUT   1
+#define CL_STREAM_OUTPUT  2
+#define CL_STREAM_IO      3
+
+/* Stream type */
+#define CL_STREAM_CONSOLE 0
+#define CL_STREAM_FILE    1
+#define CL_STREAM_STRING  2
+
+/* Stream flags */
+#define CL_STREAM_FLAG_OPEN  0x01
+#define CL_STREAM_FLAG_EOF   0x02
+
+typedef struct {
+    CL_Header hdr;
+    uint32_t direction;      /* INPUT=1, OUTPUT=2, IO=3 */
+    uint32_t stream_type;    /* CONSOLE=0, FILE=1, STRING=2 */
+    uint32_t flags;          /* bit 0: open, bit 1: eof */
+    uint32_t handle_id;      /* Index into platform file handle side table */
+    CL_Obj   string_buf;     /* Source string for input streams, NIL for output */
+    uint32_t position;       /* Read/write cursor */
+    uint32_t out_buf_handle; /* Index into side table for growable C buffer */
+    uint32_t out_buf_size;   /* Output buffer capacity */
+    uint32_t out_buf_len;    /* Output buffer used length */
+    int32_t  unread_char;    /* -1 if none, else pushed-back char */
+    CL_Obj   element_type;   /* Symbol (CHARACTER) */
+} CL_Stream;
+
+#define CL_STREAM_P(obj) (CL_HEAP_P(obj) && CL_HDR_TYPE(CL_OBJ_TO_PTR(obj)) == TYPE_STREAM)
 
 /* --- Convenience accessors --- */
 

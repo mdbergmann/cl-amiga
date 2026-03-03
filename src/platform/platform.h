@@ -29,8 +29,22 @@ int   platform_read_line(char *buf, int bufsize);
 int   platform_getchar(void);
 void  platform_ungetchar(int ch);
 
-/* File I/O */
+/* File I/O (bulk read) */
 char *platform_file_read(const char *path, unsigned long *size_out);
+
+/* Handle-based file I/O (for CL streams) */
+typedef uint32_t PlatformFile;
+#define PLATFORM_FILE_INVALID 0
+#define PLATFORM_FILE_READ    0
+#define PLATFORM_FILE_WRITE   1
+#define PLATFORM_FILE_APPEND  2
+
+PlatformFile platform_file_open(const char *path, int mode);
+void         platform_file_close(PlatformFile fh);
+int          platform_file_getchar(PlatformFile fh);
+int          platform_file_write_string(PlatformFile fh, const char *str);
+int          platform_file_write_char(PlatformFile fh, int ch);
+int          platform_file_eof(PlatformFile fh);
 
 /* Timing */
 uint32_t platform_time_ms(void);   /* Monotonic milliseconds (for elapsed time) */

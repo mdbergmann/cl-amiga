@@ -321,6 +321,27 @@ static void print_obj(CL_Obj obj)
         break;
     }
 
+    case TYPE_STREAM: {
+        CL_Stream *st = (CL_Stream *)CL_OBJ_TO_PTR(obj);
+        out_str("#<");
+        switch (st->stream_type) {
+        case CL_STREAM_CONSOLE: out_str("CONSOLE-"); break;
+        case CL_STREAM_FILE:    out_str("FILE-"); break;
+        case CL_STREAM_STRING:  out_str("STRING-"); break;
+        default:                out_str(""); break;
+        }
+        switch (st->direction) {
+        case CL_STREAM_INPUT:  out_str("INPUT-STREAM"); break;
+        case CL_STREAM_OUTPUT: out_str("OUTPUT-STREAM"); break;
+        case CL_STREAM_IO:     out_str("IO-STREAM"); break;
+        default:               out_str("STREAM"); break;
+        }
+        if (!(st->flags & CL_STREAM_FLAG_OPEN))
+            out_str(" (closed)");
+        out_char('>');
+        break;
+    }
+
     default:
         out_str("#<unknown>");
         break;

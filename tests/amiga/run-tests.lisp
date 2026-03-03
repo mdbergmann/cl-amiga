@@ -1328,6 +1328,23 @@
 (check "rem float neg" -1.0 (rem -10.0 3))
 (check "rem float neg div" 1.0 (rem 10.0 -3))
 
+; --- Streams (Phase 7 Step 1) ---
+(check "streamp on stream" t (streamp (%make-test-stream 1 0)))
+(check "streamp on fixnum" nil (streamp 42))
+(check "streamp on string" nil (streamp "hello"))
+(check "streamp on nil" nil (streamp nil))
+(check "type-of stream" 'stream (type-of (%make-test-stream 1 0)))
+(check "typep stream" t (typep (%make-test-stream 2 0) 'stream))
+(check "input-stream-p input" t (input-stream-p (%make-test-stream 1 0)))
+(check "input-stream-p output" nil (input-stream-p (%make-test-stream 2 0)))
+(check "input-stream-p io" t (input-stream-p (%make-test-stream 3 0)))
+(check "output-stream-p output" t (output-stream-p (%make-test-stream 2 0)))
+(check "output-stream-p input" nil (output-stream-p (%make-test-stream 1 0)))
+(check "output-stream-p io" t (output-stream-p (%make-test-stream 3 0)))
+(check "stream console type" t (streamp (%make-test-stream 1 0)))
+(check "stream file type" t (streamp (%make-test-stream 1 1)))
+(check "stream string type" t (streamp (%make-test-stream 1 2)))
+
 ; --- Summary ---
 (format t "~%=== Results ===~%")
 (format t "Passed: ~A~%" *pass-count*)

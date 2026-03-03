@@ -88,6 +88,101 @@ char *platform_file_read(const char *path, unsigned long *size_out)
     return buf;
 }
 
+/* --- Handle-based file I/O --- */
+
+/* On Amiga, BPTR is a LONG (32-bit). We store them directly as uint32_t.
+ * Slot 0 is reserved as PLATFORM_FILE_INVALID. */
+
+#define PLATFORM_FILE_TABLE_SIZE 64
+
+static BPTR file_table[PLATFORM_FILE_TABLE_SIZE];
+static int file_table_init = 0;
+
+static void file_table_ensure_init(void)
+{
+    if (!file_table_init) {
+        int i;
+        for (i = 0; i < PLATFORM_FILE_TABLE_SIZE; i++)
+            file_table[i] = 0;
+        file_table_init = 1;
+    }
+}
+
+PlatformFile platform_file_open(const char *path, int mode)
+{
+    BPTR fh;
+    LONG amode;
+    int i;
+
+    file_table_ensure_init();
+
+    switch (mode) {
+    case PLATFORM_FILE_READ:   amode = MODE_OLDFILE;  break;
+    case PLATFORM_FILE_WRITE:  amode = MODE_NEWFILE;  break;
+    case PLATFORM_FILE_APPEND: amode = MODE_READWRITE; break;
+    default: return PLATFORM_FILE_INVALID;
+    }
+
+    fh = Open((STRPTR)path, amode);
+    if (!fh) return PLATFORM_FILE_INVALID;
+
+    /* For append mode, seek to end */
+    if (mode == PLATFORM_FILE_APPEND) {
+        Seek(fh, 0, OFFSET_END);
+    }
+
+    /* Find free slot (slot 0 reserved) */
+    for (i = 1; i < PLATFORM_FILE_TABLE_SIZE; i++) {
+        if (file_table[i] == 0) {
+            file_table[i] = fh;
+            return (PlatformFile)i;
+        }
+    }
+
+    Close(fh);
+    return PLATFORM_FILE_INVALID;
+}
+
+void platform_file_close(PlatformFile fh)
+{
+    if (fh > 0 && fh < PLATFORM_FILE_TABLE_SIZE && file_table[fh]) {
+        Close(file_table[fh]);
+        file_table[fh] = 0;
+    }
+}
+
+int platform_file_getchar(PlatformFile fh)
+{
+    if (fh > 0 && fh < PLATFORM_FILE_TABLE_SIZE && file_table[fh])
+        return FGetC(file_table[fh]);
+    return -1;
+}
+
+int platform_file_write_string(PlatformFile fh, const char *str)
+{
+    if (fh > 0 && fh < PLATFORM_FILE_TABLE_SIZE && file_table[fh]) {
+        LONG len = strlen(str);
+        LONG written = Write(file_table[fh], (APTR)str, len);
+        return (written == len) ? 0 : -1;
+    }
+    return -1;
+}
+
+int platform_file_write_char(PlatformFile fh, int ch)
+{
+    if (fh > 0 && fh < PLATFORM_FILE_TABLE_SIZE && file_table[fh])
+        return (FPutC(file_table[fh], ch) != -1) ? 0 : -1;
+    return -1;
+}
+
+int platform_file_eof(PlatformFile fh)
+{
+    /* Amiga: no direct feof equivalent; we detect EOF via FGetC returning -1 */
+    if (fh > 0 && fh < PLATFORM_FILE_TABLE_SIZE && file_table[fh])
+        return 0;  /* Can't know without reading */
+    return 1;
+}
+
 uint32_t platform_time_ms(void)
 {
     struct DateStamp ds;

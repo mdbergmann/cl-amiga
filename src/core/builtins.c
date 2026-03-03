@@ -1,6 +1,7 @@
 #include "builtins.h"
 #include "bignum.h"
 #include "float.h"
+#include "stream.h"
 #include "symbol.h"
 #include "package.h"
 #include "mem.h"
@@ -472,6 +473,7 @@ void cl_builtins_type_init(void);
 void cl_builtins_condition_init(void);
 void cl_builtins_package_init(void);
 void cl_builtins_struct_init(void);
+void cl_builtins_stream_init(void);
 void cl_float_math_init(void);
 
 void cl_builtins_init(void)
@@ -530,6 +532,7 @@ void cl_builtins_init(void)
     cl_builtins_condition_init();
     cl_builtins_package_init();
     cl_builtins_struct_init();
+    cl_builtins_stream_init();
     cl_float_math_init();
 
     /* All CL symbols now interned — mark them exported */

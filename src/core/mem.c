@@ -391,6 +391,12 @@ static void gc_mark_children(void *ptr, uint8_t type)
             gc_mark_push(st->slots[i]);
         break;
     }
+    case TYPE_STREAM: {
+        CL_Stream *st = (CL_Stream *)ptr;
+        gc_mark_push(st->string_buf);
+        gc_mark_push(st->element_type);
+        break;
+    }
     case TYPE_BIGNUM:
     case TYPE_SINGLE_FLOAT:
     case TYPE_DOUBLE_FLOAT:

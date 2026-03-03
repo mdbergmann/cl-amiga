@@ -41,6 +41,8 @@ OBJS = $(BUILDDIR)/main.o \
        $(BUILDDIR)/builtins_condition.o \
        $(BUILDDIR)/builtins_package.o \
        $(BUILDDIR)/builtins_struct.o \
+       $(BUILDDIR)/builtins_stream.o \
+       $(BUILDDIR)/stream.o \
        $(BUILDDIR)/bignum.o \
        $(BUILDDIR)/float.o \
        $(BUILDDIR)/float_math.o \
@@ -138,6 +140,12 @@ $(BUILDDIR)/builtins_package.o: src/core/builtins_package.c
 	$(CC) $(CFLAGS) -o $@ -c $<
 
 $(BUILDDIR)/builtins_struct.o: src/core/builtins_struct.c
+	$(CC) $(CFLAGS) -o $@ -c $<
+
+$(BUILDDIR)/builtins_stream.o: src/core/builtins_stream.c
+	$(CC) $(CFLAGS) -o $@ -c $<
+
+$(BUILDDIR)/stream.o: src/core/stream.c
 	$(CC) $(CFLAGS) -o $@ -c $<
 
 $(BUILDDIR)/bignum.o: src/core/bignum.c

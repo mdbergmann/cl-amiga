@@ -9,6 +9,7 @@
 #include "core/compiler.h"
 #include "core/vm.h"
 #include "core/builtins.h"
+#include "core/stream.h"
 #include "core/debugger.h"
 #include "core/repl.h"
 #include "core/color.h"
@@ -146,6 +147,7 @@ int main(int argc, char *argv[])
     cl_printer_init();
     cl_compiler_init();
     cl_vm_init(stack_entries, frame_count);
+    cl_stream_init();
     cl_builtins_init();
     cl_debugger_init();
     cl_repl_init();
@@ -160,6 +162,7 @@ int main(int argc, char *argv[])
         cl_repl();
     }
 
+    cl_stream_shutdown();
     cl_vm_shutdown();
     cl_mem_shutdown();
     platform_shutdown();

@@ -19,6 +19,7 @@
 #include "../src/core/compiler.h"
 #include "../src/core/vm.h"
 #include "../src/core/builtins.h"
+#include "../src/core/stream.h"
 #include "../src/core/repl.h"
 
 #endif /* CLAMIGA_H */
