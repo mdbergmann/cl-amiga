@@ -340,6 +340,15 @@
          (progn ,@body)
          (close ,var)))))
 
+;; with-open-file — open a file stream, execute body, ensure close
+(defmacro with-open-file (spec &body body)
+  (let ((var (car spec))
+        (open-args (cdr spec)))
+    `(let ((,var (open ,@open-args)))
+       (unwind-protect
+         (progn ,@body)
+         (when ,var (close ,var))))))
+
 ;; --- Printer-to-string functions ---
 
 (defun prin1-to-string (object)

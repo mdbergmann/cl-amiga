@@ -1472,6 +1472,54 @@
 (check "princ-to-string fixnum" "42" (princ-to-string 42))
 (check "write-to-string" "(1 2 3)" (write-to-string '(1 2 3)))
 
+; --- File streams / open / with-open-file (Step 8) ---
+; Use /tmp/ on POSIX, T: on Amiga — both are writable temp directories
+; Detect by trying /tmp/ first (fails on Amiga), fall back to T:
+(defvar *test-tmp*
+  (handler-case
+    (let ((s (open "/tmp/_cltest_probe" :direction :output)))
+      (close s) "/tmp/")
+    (error (c) "T:")))
+
+; open for output and input
+(check "open output creates stream" t (let ((s (open (concatenate 'string *test-tmp* "_clt_s8.txt") :direction :output))) (close s) (streamp s)))
+(let ((s (open (concatenate 'string *test-tmp* "_clt_s8.txt") :direction :output))) (write-string "Test123" s) (close s))
+(check "open input reads" "Test123" (let ((s (open (concatenate 'string *test-tmp* "_clt_s8.txt") :direction :input))) (let ((line (read-line s))) (close s) line)))
+
+; open with :if-exists :append
+(let ((s (open (concatenate 'string *test-tmp* "_clt_s8a.txt") :direction :output))) (write-string "First" s) (close s))
+(let ((s (open (concatenate 'string *test-tmp* "_clt_s8a.txt") :direction :output :if-exists :append))) (write-string "Second" s) (close s))
+(check "open append" "FirstSecond" (let ((s (open (concatenate 'string *test-tmp* "_clt_s8a.txt") :direction :input))) (let ((line (read-line s))) (close s) line)))
+
+; open nonexistent for input -> error
+(check "open nonexistent error" t (handler-case (progn (open (concatenate 'string *test-tmp* "_nonexist_xyz.txt") :direction :input) nil) (error (c) t)))
+
+; open nonexistent for input with :if-does-not-exist nil -> nil
+(check "open nonexistent nil" nil (open (concatenate 'string *test-tmp* "_nonexist_xyz.txt") :direction :input :if-does-not-exist nil))
+
+; with-open-file write then read
+(with-open-file (s (concatenate 'string *test-tmp* "_clt_wof.txt") :direction :output)
+  (format s "Hello ~A" "WOF"))
+(check "with-open-file read" "Hello WOF" (with-open-file (s (concatenate 'string *test-tmp* "_clt_wof.txt") :direction :input) (read-line s)))
+
+; with-open-file returns body value
+(check "with-open-file returns value" 42 (with-open-file (s (concatenate 'string *test-tmp* "_clt_wof.txt") :direction :input) (read-line s) 42))
+
+; with-open-file close on error
+(check "with-open-file closes on error" t (let ((stream nil)) (handler-case (with-open-file (s (concatenate 'string *test-tmp* "_clt_wof.txt") :direction :input) (setq stream s) (error "boom")) (error (c) (not (open-stream-p stream))))))
+
+; format to file stream
+(with-open-file (s (concatenate 'string *test-tmp* "_clt_fmt.txt") :direction :output)
+  (format s "~A + ~A = ~A" 1 2 3))
+(check "format to file" "1 + 2 = 3" (with-open-file (s (concatenate 'string *test-tmp* "_clt_fmt.txt") :direction :input) (read-line s)))
+
+; prin1/princ to file stream
+(with-open-file (s (concatenate 'string *test-tmp* "_clt_pr.txt") :direction :output)
+  (prin1 42 s)
+  (princ " " s)
+  (princ "hello" s))
+(check "prin1/princ to file" "42 hello" (with-open-file (s (concatenate 'string *test-tmp* "_clt_pr.txt") :direction :input) (read-line s)))
+
 ; --- Summary ---
 (format t "~%=== Results ===~%")
 (format t "Passed: ~A~%" *pass-count*)

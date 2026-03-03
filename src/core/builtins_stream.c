@@ -34,6 +34,17 @@ static void defun(const char *name, CL_CFunc func, int min, int max)
 static CL_Obj KW_START = CL_NIL;
 static CL_Obj KW_END = CL_NIL;
 static CL_Obj KW_ABORT_KW = CL_NIL;
+static CL_Obj KW_DIRECTION = CL_NIL;
+static CL_Obj KW_INPUT = CL_NIL;
+static CL_Obj KW_OUTPUT = CL_NIL;
+static CL_Obj KW_IO = CL_NIL;
+static CL_Obj KW_IF_EXISTS = CL_NIL;
+static CL_Obj KW_IF_DOES_NOT_EXIST = CL_NIL;
+static CL_Obj KW_SUPERSEDE = CL_NIL;
+static CL_Obj KW_APPEND = CL_NIL;
+static CL_Obj KW_ERROR_KW = CL_NIL;
+static CL_Obj KW_CREATE = CL_NIL;
+static CL_Obj KW_NEW_VERSION = CL_NIL;
 
 /* --- Stream argument resolution helpers --- */
 
@@ -423,6 +434,97 @@ static CL_Obj bi_get_output_stream_string(CL_Obj *args, int n)
     return cl_get_output_stream_string(args[0]);
 }
 
+/* --- File streams (Step 8) --- */
+
+/* Helper: find keyword value in args list (keyword arg pairs start at idx) */
+static CL_Obj find_keyword_arg(CL_Obj *args, int n, int start, CL_Obj keyword)
+{
+    int i;
+    for (i = start; i + 1 < n; i += 2) {
+        if (args[i] == keyword)
+            return args[i + 1];
+    }
+    return CL_UNBOUND;  /* Not found */
+}
+
+/* (open filename &key :direction :if-exists :if-does-not-exist) */
+static CL_Obj bi_open(CL_Obj *args, int n)
+{
+    CL_String *path_str;
+    CL_Obj direction_val, if_exists_val, if_dne_val;
+    CL_Obj direction, if_exists, if_dne;
+    int platform_mode;
+    uint32_t stream_dir;
+    PlatformFile fh;
+    CL_Obj stream;
+    CL_Stream *st;
+
+    if (!CL_STRING_P(args[0]))
+        cl_error(CL_ERR_TYPE, "OPEN: filename must be a string");
+    path_str = (CL_String *)CL_OBJ_TO_PTR(args[0]);
+
+    /* Parse keyword arguments */
+    direction_val = find_keyword_arg(args, n, 1, KW_DIRECTION);
+    if_exists_val = find_keyword_arg(args, n, 1, KW_IF_EXISTS);
+    if_dne_val    = find_keyword_arg(args, n, 1, KW_IF_DOES_NOT_EXIST);
+
+    /* Default direction is :input */
+    direction = (direction_val != CL_UNBOUND) ? direction_val : KW_INPUT;
+
+    /* Determine defaults based on direction */
+    if (direction == KW_INPUT) {
+        if_exists = (if_exists_val != CL_UNBOUND) ? if_exists_val : CL_NIL; /* don't care */
+        if_dne    = (if_dne_val != CL_UNBOUND)    ? if_dne_val    : KW_ERROR_KW;
+        stream_dir = CL_STREAM_INPUT;
+        platform_mode = PLATFORM_FILE_READ;
+    } else if (direction == KW_OUTPUT) {
+        if_exists = (if_exists_val != CL_UNBOUND) ? if_exists_val : KW_NEW_VERSION;
+        if_dne    = (if_dne_val != CL_UNBOUND)    ? if_dne_val    : KW_CREATE;
+        stream_dir = CL_STREAM_OUTPUT;
+
+        if (if_exists == KW_APPEND) {
+            platform_mode = PLATFORM_FILE_APPEND;
+        } else {
+            /* :supersede, :new-version, or default → truncate/create */
+            platform_mode = PLATFORM_FILE_WRITE;
+        }
+    } else if (direction == KW_IO) {
+        if_exists = (if_exists_val != CL_UNBOUND) ? if_exists_val : KW_NEW_VERSION;
+        if_dne    = (if_dne_val != CL_UNBOUND)    ? if_dne_val    : KW_CREATE;
+        stream_dir = CL_STREAM_IO;
+        platform_mode = PLATFORM_FILE_APPEND; /* read+write, no truncate */
+    } else {
+        cl_error(CL_ERR_GENERAL, "OPEN: invalid :direction");
+        return CL_NIL;
+    }
+
+    /* Handle :if-exists :error — check if file already exists */
+    if (direction != KW_INPUT && if_exists == KW_ERROR_KW) {
+        PlatformFile test = platform_file_open(path_str->data, PLATFORM_FILE_READ);
+        if (test != PLATFORM_FILE_INVALID) {
+            platform_file_close(test);
+            cl_error(CL_ERR_GENERAL, "OPEN: file already exists");
+        }
+    }
+
+    /* Open the file */
+    fh = platform_file_open(path_str->data, platform_mode);
+    if (fh == PLATFORM_FILE_INVALID) {
+        /* :if-does-not-exist nil — return NIL silently */
+        if (CL_NULL_P(if_dne))
+            return CL_NIL;
+        cl_error(CL_ERR_GENERAL, "OPEN: cannot open file");
+        return CL_NIL;
+    }
+
+    /* Create stream object */
+    stream = cl_make_stream(stream_dir, CL_STREAM_FILE);
+    st = (CL_Stream *)CL_OBJ_TO_PTR(stream);
+    st->handle_id = (uint32_t)fh;
+
+    return stream;
+}
+
 /* --- Registration --- */
 
 void cl_builtins_stream_init(void)
@@ -431,6 +533,17 @@ void cl_builtins_stream_init(void)
     KW_START   = cl_intern_keyword("START", 5);
     KW_END     = cl_intern_keyword("END", 3);
     KW_ABORT_KW = cl_intern_keyword("ABORT", 5);
+    KW_DIRECTION = cl_intern_keyword("DIRECTION", 9);
+    KW_INPUT   = cl_intern_keyword("INPUT", 5);
+    KW_OUTPUT  = cl_intern_keyword("OUTPUT", 6);
+    KW_IO      = cl_intern_keyword("IO", 2);
+    KW_IF_EXISTS = cl_intern_keyword("IF-EXISTS", 9);
+    KW_IF_DOES_NOT_EXIST = cl_intern_keyword("IF-DOES-NOT-EXIST", 17);
+    KW_SUPERSEDE = cl_intern_keyword("SUPERSEDE", 9);
+    KW_APPEND  = cl_intern_keyword("APPEND", 6);
+    KW_ERROR_KW = cl_intern_keyword("ERROR", 5);
+    KW_CREATE  = cl_intern_keyword("CREATE", 6);
+    KW_NEW_VERSION = cl_intern_keyword("NEW-VERSION", 11);
 
     /* Step 1 */
     defun("STREAMP", bi_streamp, 1, 1);
@@ -457,4 +570,7 @@ void cl_builtins_stream_init(void)
     defun("MAKE-STRING-INPUT-STREAM", bi_make_string_input_stream, 1, 3);
     defun("MAKE-STRING-OUTPUT-STREAM", bi_make_string_output_stream, 0, -1);
     defun("GET-OUTPUT-STREAM-STRING", bi_get_output_stream_string, 1, 1);
+
+    /* Step 8: File streams */
+    defun("OPEN", bi_open, 1, -1);
 }

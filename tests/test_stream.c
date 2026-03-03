@@ -988,6 +988,100 @@ TEST(princ_char_to_stream)
     ASSERT_STR_EQ(rs->data, "A");
 }
 
+/* --- File stream open/close tests (Step 8) --- */
+
+TEST(open_file_write_read)
+{
+    const char *path = "/tmp/cl_test_step8_open.txt";
+    PlatformFile wfh;
+    CL_Obj stream;
+    CL_Stream *st;
+    int ch;
+
+    /* Write via platform to create file */
+    wfh = platform_file_open(path, PLATFORM_FILE_WRITE);
+    ASSERT(wfh != PLATFORM_FILE_INVALID);
+    platform_file_write_string(wfh, "ABCDE");
+    platform_file_close(wfh);
+
+    /* Open as CL file input stream */
+    stream = cl_make_stream(CL_STREAM_INPUT, CL_STREAM_FILE);
+    st = (CL_Stream *)CL_OBJ_TO_PTR(stream);
+    st->handle_id = (uint32_t)platform_file_open(path, PLATFORM_FILE_READ);
+    ASSERT(st->handle_id != PLATFORM_FILE_INVALID);
+
+    ch = cl_stream_read_char(stream);
+    ASSERT_EQ_INT(ch, 'A');
+    ch = cl_stream_read_char(stream);
+    ASSERT_EQ_INT(ch, 'B');
+
+    cl_stream_close(stream);
+}
+
+TEST(open_file_output_stream_write)
+{
+    const char *path = "/tmp/cl_test_step8_out.txt";
+    CL_Obj wstream, rstream;
+    CL_Stream *wst, *rst;
+    int ch;
+
+    /* Create output file stream */
+    wstream = cl_make_stream(CL_STREAM_OUTPUT, CL_STREAM_FILE);
+    wst = (CL_Stream *)CL_OBJ_TO_PTR(wstream);
+    wst->handle_id = (uint32_t)platform_file_open(path, PLATFORM_FILE_WRITE);
+    ASSERT(wst->handle_id != PLATFORM_FILE_INVALID);
+
+    cl_stream_write_char(wstream, 'X');
+    cl_stream_write_char(wstream, 'Y');
+    cl_stream_write_char(wstream, 'Z');
+    cl_stream_close(wstream);
+
+    /* Read back */
+    rstream = cl_make_stream(CL_STREAM_INPUT, CL_STREAM_FILE);
+    rst = (CL_Stream *)CL_OBJ_TO_PTR(rstream);
+    rst->handle_id = (uint32_t)platform_file_open(path, PLATFORM_FILE_READ);
+    ASSERT(rst->handle_id != PLATFORM_FILE_INVALID);
+
+    ch = cl_stream_read_char(rstream);
+    ASSERT_EQ_INT(ch, 'X');
+    ch = cl_stream_read_char(rstream);
+    ASSERT_EQ_INT(ch, 'Y');
+    ch = cl_stream_read_char(rstream);
+    ASSERT_EQ_INT(ch, 'Z');
+    ch = cl_stream_read_char(rstream);
+    ASSERT_EQ_INT(ch, -1);  /* EOF */
+
+    cl_stream_close(rstream);
+}
+
+TEST(file_stream_write_string_read_back)
+{
+    const char *path = "/tmp/cl_test_step8_str.txt";
+    CL_Obj wstream, rstream;
+    CL_Stream *wst, *rst;
+    char buf[64];
+    int i, ch;
+
+    /* Write a string to file */
+    wstream = cl_make_stream(CL_STREAM_OUTPUT, CL_STREAM_FILE);
+    wst = (CL_Stream *)CL_OBJ_TO_PTR(wstream);
+    wst->handle_id = (uint32_t)platform_file_open(path, PLATFORM_FILE_WRITE);
+    cl_stream_write_string(wstream, "Hello World", 11);
+    cl_stream_close(wstream);
+
+    /* Read back */
+    rstream = cl_make_stream(CL_STREAM_INPUT, CL_STREAM_FILE);
+    rst = (CL_Stream *)CL_OBJ_TO_PTR(rstream);
+    rst->handle_id = (uint32_t)platform_file_open(path, PLATFORM_FILE_READ);
+    i = 0;
+    while ((ch = cl_stream_read_char(rstream)) != -1 && i < 63)
+        buf[i++] = (char)ch;
+    buf[i] = '\0';
+    cl_stream_close(rstream);
+
+    ASSERT_STR_EQ(buf, "Hello World");
+}
+
 int main(void)
 {
     test_init();
@@ -1062,6 +1156,11 @@ int main(void)
     RUN(prin1_nil_to_stream);
     RUN(prin1_char_to_stream);
     RUN(princ_char_to_stream);
+
+    /* File stream open/close (Step 8) */
+    RUN(open_file_write_read);
+    RUN(open_file_output_stream_write);
+    RUN(file_stream_write_string_read_back);
 
     teardown();
     REPORT();
