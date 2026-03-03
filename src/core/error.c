@@ -1,6 +1,7 @@
 #include "error.h"
 #include "vm.h"
 #include "debugger.h"
+#include "color.h"
 #include "../platform/platform.h"
 #include <stdio.h>
 #include <stdarg.h>
@@ -74,16 +75,20 @@ void cl_error(int code, const char *fmt, ...)
     }
 
     /* No error frame — fatal */
+    cl_color_set(CL_COLOR_RED);
     platform_write_string("FATAL ERROR: ");
     platform_write_string(cl_error_msg);
+    cl_color_reset();
     platform_write_string("\n");
     exit(1);
 }
 
 void cl_error_print(void)
 {
+    cl_color_set(CL_COLOR_RED);
     platform_write_string("ERROR: ");
     platform_write_string(cl_error_msg);
+    cl_color_reset();
     platform_write_string("\n");
     if (cl_backtrace_buf[0] != '\0') {
         platform_write_string("Backtrace:\n");

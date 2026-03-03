@@ -8,6 +8,7 @@
 #include "mem.h"
 #include "symbol.h"
 #include "package.h"
+#include "color.h"
 #include "../platform/platform.h"
 #include <string.h>
 
@@ -192,14 +193,18 @@ void cl_repl(void)
     int depth = 0;
 
     cl_debugger_enabled = 1;
+    cl_color_set(CL_COLOR_BOLD_CYAN);
     platform_write_string("CL-AMIGA> ");
+    cl_color_reset();
 
     while (platform_read_line(line, sizeof(line))) {
         int line_len = (int)strlen(line);
 
         /* Empty line with no accumulated input: skip */
         if (line[0] == '\0' && accum_len == 0) {
+            cl_color_set(CL_COLOR_BOLD_CYAN);
             platform_write_string("CL-AMIGA> ");
+            cl_color_reset();
             continue;
         }
 
@@ -218,7 +223,9 @@ void cl_repl(void)
 
         if (depth > 0) {
             /* Incomplete expression — show continuation prompt */
+            cl_color_set(CL_COLOR_BOLD_CYAN);
             platform_write_string("       > ");
+            cl_color_reset();
             continue;
         }
 
@@ -261,7 +268,9 @@ void cl_repl(void)
                         /* Update history: shift *, **, ***, +, ++, +++ */
                         cl_repl_update_history(expr, result);
 
+                        cl_color_set(CL_COLOR_GREEN);
                         cl_prin1(result);
+                        cl_color_reset();
                         platform_write_string("\n");
                     }
                 }
@@ -278,7 +287,9 @@ void cl_repl(void)
         /* Reset accumulation buffer */
         accum_len = 0;
         depth = 0;
+        cl_color_set(CL_COLOR_BOLD_CYAN);
         platform_write_string("CL-AMIGA> ");
+        cl_color_reset();
     }
 
     platform_write_string("\nBye.\n");

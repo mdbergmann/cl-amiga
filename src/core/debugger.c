@@ -15,6 +15,7 @@
 #include "vm.h"
 #include "printer.h"
 #include "repl.h"
+#include "color.h"
 #include "../platform/platform.h"
 #include <stdio.h>
 #include <string.h>
@@ -43,6 +44,7 @@ static void display_condition(CL_Obj condition)
     CL_Condition *cond = (CL_Condition *)CL_OBJ_TO_PTR(condition);
     char buf[256];
 
+    cl_color_set(CL_COLOR_BOLD_RED);
     platform_write_string("\nDebugger entered: ");
     cl_prin1_to_string(cond->type_name, buf, sizeof(buf));
     platform_write_string(buf);
@@ -52,6 +54,7 @@ static void display_condition(CL_Obj condition)
         platform_write_string(": ");
         platform_write_string(s->data);
     }
+    cl_color_reset();
     platform_write_string("\n");
 }
 
@@ -190,19 +193,25 @@ void cl_invoke_debugger(CL_Obj condition)
     display_help();
 
     /* Mini-REPL loop */
+    cl_color_set(CL_COLOR_BOLD_MAGENTA);
     platform_write_string("\nDebug> ");
+    cl_color_reset();
 
     while (platform_read_line(line, sizeof(line))) {
         /* Skip empty lines */
         if (line[0] == '\0') {
+            cl_color_set(CL_COLOR_BOLD_MAGENTA);
             platform_write_string("Debug> ");
+            cl_color_reset();
             continue;
         }
 
         /* Check for commands */
         if (strcmp(line, ":bt") == 0) {
             display_backtrace();
+            cl_color_set(CL_COLOR_BOLD_MAGENTA);
             platform_write_string("Debug> ");
+            cl_color_reset();
             continue;
         }
 
@@ -213,7 +222,9 @@ void cl_invoke_debugger(CL_Obj condition)
 
         if (strcmp(line, ":help") == 0) {
             display_help();
+            cl_color_set(CL_COLOR_BOLD_MAGENTA);
             platform_write_string("Debug> ");
+            cl_color_reset();
             continue;
         }
 
@@ -237,7 +248,9 @@ void cl_invoke_debugger(CL_Obj condition)
                 } else {
                     platform_write_string("Invalid restart number\n");
                 }
+                cl_color_set(CL_COLOR_BOLD_MAGENTA);
                 platform_write_string("Debug> ");
+                cl_color_reset();
                 continue;
             }
         }
@@ -260,8 +273,10 @@ void cl_invoke_debugger(CL_Obj condition)
                 CL_UNCATCH();
             } else {
                 CL_UNCATCH();
+                cl_color_set(CL_COLOR_RED);
                 platform_write_string("Error during eval: ");
                 platform_write_string(cl_error_msg);
+                cl_color_reset();
                 platform_write_string("\n");
                 /* Reset VM state after error */
                 cl_vm.sp = 0;
@@ -269,7 +284,9 @@ void cl_invoke_debugger(CL_Obj condition)
             }
         }
 
+        cl_color_set(CL_COLOR_BOLD_MAGENTA);
         platform_write_string("Debug> ");
+        cl_color_reset();
     }
 
     cl_in_debugger = 0;

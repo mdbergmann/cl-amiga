@@ -12,6 +12,7 @@
 #include "error.h"
 #include "vm.h"
 #include "printer.h"
+#include "color.h"
 #include "../platform/platform.h"
 #include <string.h>
 
@@ -508,6 +509,7 @@ static CL_Obj bi_warn(CL_Obj *args, int n)
     /* No handler transferred control — print warning and return NIL */
     {
         CL_Condition *c = (CL_Condition *)CL_OBJ_TO_PTR(cond);
+        cl_color_set(CL_COLOR_YELLOW);
         platform_write_string("WARNING: ");
         if (!CL_NULL_P(c->report_string)) {
             CL_String *s = (CL_String *)CL_OBJ_TO_PTR(c->report_string);
@@ -517,6 +519,7 @@ static CL_Obj bi_warn(CL_Obj *args, int n)
             cl_prin1_to_string(c->type_name, buf, sizeof(buf));
             platform_write_string(buf);
         }
+        cl_color_reset();
         platform_write_string("\n");
     }
     return CL_NIL;

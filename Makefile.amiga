@@ -34,7 +34,8 @@ OBJS = $(BUILDDIR)/main.o \
        $(BUILDDIR)/builtins_condition.o \
        $(BUILDDIR)/builtins_package.o \
        $(BUILDDIR)/debugger.o \
-       $(BUILDDIR)/repl.o
+       $(BUILDDIR)/repl.o \
+       $(BUILDDIR)/color.o
 
 TARGET = $(BUILDDIR)/clamiga
 
@@ -129,6 +130,9 @@ $(BUILDDIR)/debugger.o: src/core/debugger.c
 	$(CC) $(CFLAGS) -o $@ -c $<
 
 $(BUILDDIR)/repl.o: src/core/repl.c
+	$(CC) $(CFLAGS) -o $@ -c $<
+
+$(BUILDDIR)/color.o: src/core/color.c
 	$(CC) $(CFLAGS) -o $@ -c $<
 
 clean:

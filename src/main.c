@@ -11,18 +11,30 @@
 #include "core/builtins.h"
 #include "core/debugger.h"
 #include "core/repl.h"
+#include "core/color.h"
 #include <string.h>
 
 int main(int argc, char *argv[])
 {
     int batch = 0;
+    int color_set = 0;
     int i;
 
     for (i = 1; i < argc; i++) {
         if (strcmp(argv[i], "--batch") == 0) {
             batch = 1;
+        } else if (strcmp(argv[i], "--color") == 0) {
+            cl_repl_color = 1;
+            color_set = 1;
+        } else if (strcmp(argv[i], "--no-color") == 0) {
+            cl_repl_color = 0;
+            color_set = 1;
         }
     }
+
+    /* Default: color on for interactive, off for batch */
+    if (!color_set)
+        cl_repl_color = !batch;
 
     platform_init();
 
@@ -42,8 +54,10 @@ int main(int argc, char *argv[])
     if (batch) {
         cl_repl_batch();
     } else {
-        platform_write_string("CL-Amiga v0.1\n");
-        platform_write_string("Type (quit) to exit.\n\n");
+        cl_color_set(CL_COLOR_BOLD_CYAN);
+        platform_write_string("CL-Amiga v0.1");
+        cl_color_reset();
+        platform_write_string("\nType (quit) to exit.\n\n");
         cl_repl();
     }
 
