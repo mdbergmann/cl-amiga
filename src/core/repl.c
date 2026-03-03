@@ -14,6 +14,43 @@
 
 #define REPL_BUF_SIZE 4096
 
+/* Get current package name length */
+static int pkg_name_len(void)
+{
+    if (CL_HEAP_P(cl_current_package)) {
+        CL_Package *pkg = (CL_Package *)CL_OBJ_TO_PTR(cl_current_package);
+        CL_String *name = (CL_String *)CL_OBJ_TO_PTR(pkg->name);
+        return (int)name->length;
+    }
+    return 8; /* strlen("CL-AMIGA") */
+}
+
+/* Print REPL prompt showing current package name */
+static void repl_prompt(void)
+{
+    cl_color_set(CL_COLOR_BOLD_CYAN);
+    if (CL_HEAP_P(cl_current_package)) {
+        CL_Package *pkg = (CL_Package *)CL_OBJ_TO_PTR(cl_current_package);
+        CL_String *name = (CL_String *)CL_OBJ_TO_PTR(pkg->name);
+        platform_write_string(name->data);
+    } else {
+        platform_write_string("CL-AMIGA");
+    }
+    platform_write_string("> ");
+    cl_color_reset();
+}
+
+/* Print continuation prompt (spaces matching package name width + "> ") */
+static void repl_continuation_prompt(void)
+{
+    int i, len = pkg_name_len();
+    cl_color_set(CL_COLOR_BOLD_CYAN);
+    for (i = 0; i < len; i++)
+        platform_write_string(" ");
+    platform_write_string("> ");
+    cl_color_reset();
+}
+
 /* Try to load boot.lisp from known locations */
 static void load_boot_file(void)
 {
@@ -193,18 +230,14 @@ void cl_repl(void)
     int depth = 0;
 
     cl_debugger_enabled = 1;
-    cl_color_set(CL_COLOR_BOLD_CYAN);
-    platform_write_string("CL-AMIGA> ");
-    cl_color_reset();
+    repl_prompt();
 
     while (platform_read_line(line, sizeof(line))) {
         int line_len = (int)strlen(line);
 
         /* Empty line with no accumulated input: skip */
         if (line[0] == '\0' && accum_len == 0) {
-            cl_color_set(CL_COLOR_BOLD_CYAN);
-            platform_write_string("CL-AMIGA> ");
-            cl_color_reset();
+            repl_prompt();
             continue;
         }
 
@@ -223,9 +256,7 @@ void cl_repl(void)
 
         if (depth > 0) {
             /* Incomplete expression — show continuation prompt */
-            cl_color_set(CL_COLOR_BOLD_CYAN);
-            platform_write_string("       > ");
-            cl_color_reset();
+            repl_continuation_prompt();
             continue;
         }
 
@@ -287,9 +318,7 @@ void cl_repl(void)
         /* Reset accumulation buffer */
         accum_len = 0;
         depth = 0;
-        cl_color_set(CL_COLOR_BOLD_CYAN);
-        platform_write_string("CL-AMIGA> ");
-        cl_color_reset();
+        repl_prompt();
     }
 
     platform_write_string("\nBye.\n");
