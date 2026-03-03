@@ -366,3 +366,168 @@
 
 (defun write-to-string (object)
   (with-output-to-string (s) (prin1 object s)))
+
+;; --- Time functions (Step 10) ---
+
+(defun decode-universal-time (universal-time &optional time-zone)
+  "Decode universal time into 9 values: sec min hour date month year dow dst tz"
+  (let* ((tz (or time-zone 0))
+         (adjusted (- universal-time (* tz 3600)))
+         ;; Seconds within the day
+         (day-seconds (mod adjusted 86400))
+         (total-days (truncate adjusted 86400))
+         ;; Time components
+         (second (mod day-seconds 60))
+         (minute (mod (truncate day-seconds 60) 60))
+         (hour (truncate day-seconds 3600))
+         ;; Date computation — days since 1900-01-01 (Monday)
+         ;; Day of week: 0=Monday, 6=Sunday
+         (dow (mod total-days 7))
+         ;; Year calculation with leap year handling
+         (remaining-days total-days)
+         (year 1900)
+         (leap nil)
+         (month 1)
+         (date 1))
+    ;; Find year using tagbody/go
+    (block find-year
+      (tagbody
+       year-loop
+        (setq leap (and (zerop (mod year 4))
+                        (or (not (zerop (mod year 100)))
+                            (zerop (mod year 400)))))
+        (let ((days-in-year (if leap 366 365)))
+          (when (< remaining-days days-in-year)
+            (return-from find-year))
+          (setq remaining-days (- remaining-days days-in-year))
+          (setq year (+ year 1)))
+        (go year-loop)))
+    ;; Find month (remaining-days is 0-based day within year)
+    (let ((month-days (if leap
+                          '(31 29 31 30 31 30 31 31 30 31 30 31)
+                          '(31 28 31 30 31 30 31 31 30 31 30 31))))
+      (dolist (md month-days)
+        (when (< remaining-days md)
+          (setq date (+ remaining-days 1))
+          (return))
+        (setq remaining-days (- remaining-days md))
+        (setq month (+ month 1))))
+    (values second minute hour date month year dow nil tz)))
+
+(defun encode-universal-time (second minute hour date month year &optional time-zone)
+  "Encode time components into universal time."
+  (let* ((tz (or time-zone 0))
+         ;; Count days from 1900-01-01 to year-01-01
+         (y (- year 1900))
+         (total-days (+ (* y 365)
+                        (truncate (+ y 3) 4)        ; leap years (every 4)
+                        (- (truncate (+ y 99) 100)) ; minus century years
+                        (truncate (+ y 399) 400)))   ; plus 400-year cycles
+         ;; Add days for months within the year
+         (leap (and (zerop (mod year 4))
+                    (or (not (zerop (mod year 100)))
+                        (zerop (mod year 400)))))
+         (month-days (if leap
+                         '(0 31 60 91 121 152 182 213 244 274 305 335)
+                         '(0 31 59 90 120 151 181 212 243 273 304 334))))
+    (setq total-days (+ total-days (nth (- month 1) month-days) (- date 1)))
+    (+ (* total-days 86400) (* hour 3600) (* minute 60) second (* tz 3600))))
+
+(defun get-decoded-time ()
+  "Return the current time decoded into 9 values."
+  (decode-universal-time (get-universal-time)))
+
+;; --- Pathname functions (Step 10) ---
+;; Pathnames are represented as strings (namestrings).
+;; Supports both POSIX (/) and Amiga (:) path separators.
+
+(defun namestring (pathname)
+  "Return the namestring for PATHNAME (identity for strings)."
+  pathname)
+
+(defun truename (pathname)
+  "Return the true name of PATHNAME (identity for now)."
+  pathname)
+
+(defun pathname-name (pathname)
+  "Extract the name component (without extension) from PATHNAME."
+  (let* ((file (file-namestring pathname))
+         (dot-pos (position #\. file :from-end t)))
+    (if dot-pos
+        (subseq file 0 dot-pos)
+        file)))
+
+(defun pathname-type (pathname)
+  "Extract the type (extension) from PATHNAME."
+  (let* ((file (file-namestring pathname))
+         (dot-pos (position #\. file :from-end t)))
+    (if dot-pos
+        (subseq file (+ dot-pos 1))
+        nil)))
+
+(defun pathname-directory (pathname)
+  "Extract the directory component from PATHNAME as a list."
+  (let ((dir (directory-namestring pathname)))
+    (if (string= dir "")
+        nil
+        (list :absolute dir))))
+
+(defun make-pathname (&key directory name type)
+  "Construct a pathname string from components."
+  (let ((result ""))
+    (when directory
+      (if (and (consp directory) (eq (car directory) :absolute))
+          (setq result (cadr directory))
+          (when (stringp directory) (setq result directory))))
+    (when name
+      (setq result (concatenate 'string result name)))
+    (when type
+      (setq result (concatenate 'string result "." type)))
+    result))
+
+(defun merge-pathnames (pathname &optional (defaults "") default-version)
+  "Merge PATHNAME with DEFAULTS."
+  (let ((dir (directory-namestring pathname))
+        (file (file-namestring pathname)))
+    (if (string= dir "")
+        ;; No directory in pathname — use defaults' directory
+        (let ((def-dir (directory-namestring defaults)))
+          (concatenate 'string def-dir file))
+        pathname)))
+
+(defun enough-namestring (pathname &optional (defaults ""))
+  "Return a relative pathname string sufficient to identify PATHNAME given DEFAULTS."
+  (let ((def-dir (directory-namestring defaults))
+        (path-dir (directory-namestring pathname))
+        (file (file-namestring pathname)))
+    (if (and (> (length def-dir) 0)
+             (>= (length path-dir) (length def-dir))
+             (string= (subseq path-dir 0 (length def-dir)) def-dir))
+        ;; Strip the common prefix
+        (concatenate 'string (subseq path-dir (length def-dir)) file)
+        pathname)))
+
+(defun %ensure-dirs-helper (dir pos len created)
+  "Helper for ensure-directories-exist. Walks dir string creating directories."
+  (if (>= pos len)
+      created
+      (let ((next-sep nil))
+        (do ((i pos (+ i 1)))
+            ((>= i len))
+          (when (or (char= (char dir i) #\/)
+                    (char= (char dir i) #\:))
+            (setq next-sep (+ i 1))
+            (return)))
+        (if next-sep
+            (progn
+              (when (char= (char dir (- next-sep 1)) #\/)
+                (let ((sub (subseq dir 0 next-sep)))
+                  (when (%mkdir sub) (setq created t))))
+              (%ensure-dirs-helper dir next-sep len created))
+            created))))
+
+(defun ensure-directories-exist (pathname)
+  "Create all directories in the path of PATHNAME. Returns pathname and created-p."
+  (let* ((dir (directory-namestring pathname))
+         (created (%ensure-dirs-helper dir 0 (length dir) nil)))
+    (values pathname created)))

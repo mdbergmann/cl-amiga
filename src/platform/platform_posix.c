@@ -3,7 +3,10 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/time.h>
+#include <sys/stat.h>
+#include <time.h>
 #include <unistd.h>
+#include <errno.h>
 
 void *platform_alloc(unsigned long size)
 {
@@ -173,6 +176,51 @@ void platform_sleep_ms(uint32_t milliseconds)
 {
     if (milliseconds > 0)
         usleep(milliseconds * 1000);
+}
+
+uint32_t platform_universal_time(void)
+{
+    /* CL universal time: seconds since 1900-01-01 00:00:00 UTC
+     * Unix epoch: 1970-01-01 00:00:00 UTC
+     * Difference: 70 years = 2208988800 seconds */
+    time_t t = time(NULL);
+    return (uint32_t)((unsigned long)t + 2208988800UL);
+}
+
+int platform_file_exists(const char *path)
+{
+    struct stat st;
+    return (stat(path, &st) == 0) ? 1 : 0;
+}
+
+int platform_file_is_directory(const char *path)
+{
+    struct stat st;
+    if (stat(path, &st) != 0) return 0;
+    return S_ISDIR(st.st_mode) ? 1 : 0;
+}
+
+int platform_file_delete(const char *path)
+{
+    return (unlink(path) == 0) ? 0 : -1;
+}
+
+int platform_file_rename(const char *oldpath, const char *newpath)
+{
+    return (rename(oldpath, newpath) == 0) ? 0 : -1;
+}
+
+uint32_t platform_file_mtime(const char *path)
+{
+    struct stat st;
+    if (stat(path, &st) != 0) return 0;
+    /* Convert Unix time_t to CL universal time */
+    return (uint32_t)((unsigned long)st.st_mtime + 2208988800UL);
+}
+
+int platform_mkdir(const char *path)
+{
+    return (mkdir(path, 0755) == 0 || errno == EEXIST) ? 0 : -1;
 }
 
 void platform_init(void)

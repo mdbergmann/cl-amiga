@@ -1564,6 +1564,77 @@
 ; with-standard-io-syntax executes body
 (check "with-standard-io-syntax" 42 (with-standard-io-syntax 42))
 
+; --- Step 10: Time Functions + Minimal Pathnames ---
+
+; get-universal-time returns a large integer
+(check "get-universal-time" t (> (get-universal-time) 3786912000))
+
+; file-write-date on existing file returns a number
+(check "file-write-date" t (numberp (file-write-date "lib/boot.lisp")))
+
+; probe-file on existing file
+(check "probe-file-exists" "lib/boot.lisp" (probe-file "lib/boot.lisp"))
+
+; probe-file on nonexistent file
+(check "probe-file-nil" nil (probe-file "nonexistent_xyz_123.txt"))
+
+; file-namestring extracts filename
+(check "file-namestring-posix" "baz.txt" (file-namestring "/foo/bar/baz.txt"))
+(check "file-namestring-amiga" "test.lisp" (file-namestring "Work:dev/test.lisp"))
+
+; directory-namestring extracts directory
+(check "dir-namestring-posix" "/foo/bar/" (directory-namestring "/foo/bar/baz.txt"))
+(check "dir-namestring-amiga" "Work:dev/" (directory-namestring "Work:dev/test.lisp"))
+
+; pathname-name extracts name without extension
+(check "pathname-name" "test" (pathname-name "/foo/test.lisp"))
+
+; pathname-type extracts extension
+(check "pathname-type" "lisp" (pathname-type "/foo/test.lisp"))
+(check "pathname-type-none" nil (pathname-type "/foo/test"))
+
+; namestring is identity
+(check "namestring" "/foo/bar" (namestring "/foo/bar"))
+
+; truename is identity (for now)
+(check "truename" "/foo/bar" (truename "/foo/bar"))
+
+; make-pathname constructs path
+(check "make-pathname" "hello.txt" (make-pathname :name "hello" :type "txt"))
+
+; merge-pathnames fills in missing directory
+(check "merge-pathnames" "/some/dir/file.txt" (merge-pathnames "file.txt" "/some/dir/"))
+(check "merge-pathnames-has-dir" "/other/file.txt" (merge-pathnames "/other/file.txt" "/some/dir/"))
+
+; enough-namestring strips common prefix
+(check "enough-namestring" "bar/baz.txt" (enough-namestring "/foo/bar/baz.txt" "/foo/"))
+
+; decode-universal-time returns 9 values
+(check "decode-ut-count" 9 (length (multiple-value-list (decode-universal-time (get-universal-time)))))
+
+; encode/decode round-trip
+(check "encode-decode-roundtrip" (list 30 45 12 15 6 2025) (multiple-value-bind (s mi h d mo y) (decode-universal-time (encode-universal-time 30 45 12 15 6 2025)) (list s mi h d mo y)))
+
+; get-decoded-time returns 9 values
+(check "get-decoded-time-count" 9 (length (multiple-value-list (get-decoded-time))))
+
+; values propagation through defun (regression test for OP_LOAD MV fix)
+(defun %test-mv-values () (values 10 20 30))
+(check "defun-mv-propagation" (list 10 20 30) (multiple-value-list (%test-mv-values)))
+
+; delete-file and rename-file via write/probe/delete cycle
+(with-open-file (s "T:cl_test_step10.tmp" :direction :output) (write-string "test" s))
+(check "probe-written" "T:cl_test_step10.tmp" (probe-file "T:cl_test_step10.tmp"))
+(rename-file "T:cl_test_step10.tmp" "T:cl_test_step10_ren.tmp")
+(check "rename-old-gone" nil (probe-file "T:cl_test_step10.tmp"))
+(check "rename-new-exists" "T:cl_test_step10_ren.tmp" (probe-file "T:cl_test_step10_ren.tmp"))
+(delete-file "T:cl_test_step10_ren.tmp")
+(check "delete-file" nil (probe-file "T:cl_test_step10_ren.tmp"))
+
+; %mkdir creates directory
+(check "mkdir" t (%mkdir "T:cl_test_step10_dir"))
+(check "mkdir-probe" "T:cl_test_step10_dir" (probe-file "T:cl_test_step10_dir"))
+
 ; --- Summary ---
 (format t "~%=== Results ===~%")
 (format t "Passed: ~A~%" *pass-count*)

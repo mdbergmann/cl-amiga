@@ -441,7 +441,6 @@ CL_Obj cl_vm_eval(CL_Obj bytecode_obj)
         case OP_LOAD: {
             uint8_t slot = code[ip++];
             cl_vm_push(cl_vm.stack[frame->bp + slot]);
-            cl_mv_count = 1;
             break;
         }
 

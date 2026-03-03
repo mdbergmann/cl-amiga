@@ -199,6 +199,96 @@ void platform_sleep_ms(uint32_t milliseconds)
         Delay(ticks);
 }
 
+uint32_t platform_universal_time(void)
+{
+    /* AmigaOS epoch: 1978-01-01 00:00:00 UTC
+     * CL universal time epoch: 1900-01-01 00:00:00 UTC
+     * Difference: 78 years = 2461449600 seconds
+     *   (1900-1978: 78 years, 19 leap years: 78*365 + 19 = 28489 days * 86400) */
+    struct DateStamp ds;
+    uint32_t amiga_secs;
+    DateStamp(&ds);
+    amiga_secs = (uint32_t)(ds.ds_Days * 86400UL + ds.ds_Minute * 60UL + ds.ds_Tick / 50UL);
+    return amiga_secs + 2461449600UL;
+}
+
+int platform_file_exists(const char *path)
+{
+    BPTR lock = Lock((STRPTR)path, ACCESS_READ);
+    if (lock) {
+        UnLock(lock);
+        return 1;
+    }
+    return 0;
+}
+
+int platform_file_is_directory(const char *path)
+{
+    BPTR lock = Lock((STRPTR)path, ACCESS_READ);
+    if (lock) {
+        struct FileInfoBlock *fib = (struct FileInfoBlock *)AllocVec(sizeof(struct FileInfoBlock), MEMF_CLEAR);
+        int result = 0;
+        if (fib) {
+            if (Examine(lock, fib)) {
+                result = (fib->fib_DirEntryType > 0) ? 1 : 0;
+            }
+            FreeVec(fib);
+        }
+        UnLock(lock);
+        return result;
+    }
+    return 0;
+}
+
+int platform_file_delete(const char *path)
+{
+    return DeleteFile((STRPTR)path) ? 0 : -1;
+}
+
+int platform_file_rename(const char *oldpath, const char *newpath)
+{
+    return Rename((STRPTR)oldpath, (STRPTR)newpath) ? 0 : -1;
+}
+
+uint32_t platform_file_mtime(const char *path)
+{
+    BPTR lock = Lock((STRPTR)path, ACCESS_READ);
+    if (lock) {
+        struct FileInfoBlock *fib = (struct FileInfoBlock *)AllocVec(sizeof(struct FileInfoBlock), MEMF_CLEAR);
+        uint32_t result = 0;
+        if (fib) {
+            if (Examine(lock, fib)) {
+                /* fib_Date is a DateStamp relative to Amiga epoch (1978-01-01) */
+                uint32_t amiga_secs = (uint32_t)(fib->fib_Date.ds_Days * 86400UL
+                    + fib->fib_Date.ds_Minute * 60UL
+                    + fib->fib_Date.ds_Tick / 50UL);
+                result = amiga_secs + 2461449600UL;
+            }
+            FreeVec(fib);
+        }
+        UnLock(lock);
+        return result;
+    }
+    return 0;
+}
+
+int platform_mkdir(const char *path)
+{
+    BPTR lock;
+    /* Check if it already exists */
+    lock = Lock((STRPTR)path, ACCESS_READ);
+    if (lock) {
+        UnLock(lock);
+        return 0; /* Already exists */
+    }
+    lock = CreateDir((STRPTR)path);
+    if (lock) {
+        UnLock(lock);
+        return 0;
+    }
+    return -1;
+}
+
 void platform_init(void)
 {
     /* Nothing needed — dos.library is auto-opened by vbcc startup */

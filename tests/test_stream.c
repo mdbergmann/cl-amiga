@@ -12,8 +12,14 @@
 #include "core/stream.h"
 #include "core/reader.h"
 #include "core/printer.h"
+#include "core/compiler.h"
+#include "core/vm.h"
+#include "core/repl.h"
+#include "core/bignum.h"
 #include "platform/platform.h"
 #include <string.h>
+#include <stdio.h>
+#include <unistd.h>
 
 static void setup(void)
 {
@@ -23,8 +29,12 @@ static void setup(void)
     cl_package_init();
     cl_symbol_init();
     cl_reader_init();
+    cl_printer_init();
+    cl_compiler_init();
+    cl_vm_init(0, 0);
     cl_stream_init();
     cl_builtins_init();
+    cl_repl_init();
 }
 
 static void teardown(void)
@@ -1082,6 +1092,197 @@ TEST(file_stream_write_string_read_back)
     ASSERT_STR_EQ(buf, "Hello World");
 }
 
+/* --- Platform file operations (Step 10) --- */
+
+TEST(platform_universal_time)
+{
+    uint32_t ut = platform_universal_time();
+    /* Should be > 2000-01-01 (3155760000) and < 2100-01-01 (~6311520000 > uint32 max)
+     * Actually CL universal time for 2020 is ~3786912000, for 2030 ~4102444800 */
+    ASSERT(ut > 3786912000u); /* After 2020 */
+}
+
+TEST(platform_file_exists_positive)
+{
+    const char *path = "/tmp/cl_test_exists.tmp";
+    PlatformFile f = platform_file_open(path, PLATFORM_FILE_WRITE);
+    ASSERT(f != PLATFORM_FILE_INVALID);
+    platform_file_write_string(f, "test");
+    platform_file_close(f);
+
+    ASSERT(platform_file_exists(path));
+    remove(path);
+}
+
+TEST(platform_file_exists_negative)
+{
+    ASSERT(!platform_file_exists("/tmp/cl_nonexistent_xyz_123.tmp"));
+}
+
+TEST(platform_file_delete_test)
+{
+    const char *path = "/tmp/cl_test_delete.tmp";
+    PlatformFile f = platform_file_open(path, PLATFORM_FILE_WRITE);
+    platform_file_write_string(f, "test");
+    platform_file_close(f);
+
+    ASSERT(platform_file_exists(path));
+    ASSERT(platform_file_delete(path) == 0);
+    ASSERT(!platform_file_exists(path));
+}
+
+TEST(platform_file_rename_test)
+{
+    const char *old_path = "/tmp/cl_test_rename_old.tmp";
+    const char *new_path = "/tmp/cl_test_rename_new.tmp";
+    PlatformFile f = platform_file_open(old_path, PLATFORM_FILE_WRITE);
+    platform_file_write_string(f, "test");
+    platform_file_close(f);
+
+    ASSERT(platform_file_rename(old_path, new_path) == 0);
+    ASSERT(!platform_file_exists(old_path));
+    ASSERT(platform_file_exists(new_path));
+    remove(new_path);
+}
+
+TEST(platform_file_mtime_test)
+{
+    const char *path = "/tmp/cl_test_mtime.tmp";
+    PlatformFile f = platform_file_open(path, PLATFORM_FILE_WRITE);
+    uint32_t mtime;
+    platform_file_write_string(f, "test");
+    platform_file_close(f);
+
+    mtime = platform_file_mtime(path);
+    /* Should be a recent universal time (> 2020) */
+    ASSERT(mtime > 3786912000u);
+    remove(path);
+}
+
+TEST(platform_file_mtime_nonexistent)
+{
+    uint32_t mtime = platform_file_mtime("/tmp/cl_nonexistent_mtime.tmp");
+    ASSERT_EQ_INT((int)mtime, 0);
+}
+
+TEST(platform_mkdir_test)
+{
+    const char *path = "/tmp/cl_test_mkdir_step10";
+    ASSERT(platform_mkdir(path) == 0);
+    ASSERT(platform_file_is_directory(path));
+    /* Second call should succeed (already exists) */
+    ASSERT(platform_mkdir(path) == 0);
+    rmdir(path);
+}
+
+TEST(platform_file_is_directory_test)
+{
+    ASSERT(platform_file_is_directory("/tmp"));
+    ASSERT(!platform_file_is_directory("/tmp/cl_nonexistent_dir_xyz"));
+}
+
+/* --- Builtin tests via eval (Step 10) --- */
+
+TEST(eval_get_universal_time)
+{
+    CL_Obj result = cl_eval_string("(get-universal-time)");
+    /* Should return a bignum (> fixnum range) */
+    ASSERT(!CL_NULL_P(result));
+    /* The value should be a number (fixnum or bignum) */
+    ASSERT(CL_FIXNUM_P(result) || CL_BIGNUM_P(result));
+}
+
+TEST(eval_probe_file_exists)
+{
+    const char *path = "/tmp/cl_test_probe_eval.tmp";
+    PlatformFile f = platform_file_open(path, PLATFORM_FILE_WRITE);
+    CL_Obj result;
+    platform_file_write_string(f, "test");
+    platform_file_close(f);
+
+    result = cl_eval_string("(probe-file \"/tmp/cl_test_probe_eval.tmp\")");
+    ASSERT(CL_STRING_P(result));
+
+    remove(path);
+}
+
+TEST(eval_probe_file_not_exists)
+{
+    CL_Obj result = cl_eval_string("(probe-file \"/tmp/cl_nonexistent_eval_xyz.tmp\")");
+    ASSERT(CL_NULL_P(result));
+}
+
+TEST(eval_delete_file)
+{
+    const char *path = "/tmp/cl_test_delete_eval.tmp";
+    PlatformFile f = platform_file_open(path, PLATFORM_FILE_WRITE);
+    platform_file_write_string(f, "test");
+    platform_file_close(f);
+
+    cl_eval_string("(delete-file \"/tmp/cl_test_delete_eval.tmp\")");
+    ASSERT(!platform_file_exists(path));
+}
+
+TEST(eval_file_write_date)
+{
+    const char *path = "/tmp/cl_test_fwd_eval.tmp";
+    PlatformFile f = platform_file_open(path, PLATFORM_FILE_WRITE);
+    CL_Obj result;
+    platform_file_write_string(f, "test");
+    platform_file_close(f);
+
+    result = cl_eval_string("(file-write-date \"/tmp/cl_test_fwd_eval.tmp\")");
+    ASSERT(!CL_NULL_P(result));
+    /* Should be a number */
+    ASSERT(CL_FIXNUM_P(result) || CL_BIGNUM_P(result));
+
+    remove(path);
+}
+
+TEST(eval_file_namestring)
+{
+    CL_Obj result = cl_eval_string("(file-namestring \"/foo/bar/baz.txt\")");
+    CL_String *s;
+    ASSERT(CL_STRING_P(result));
+    s = (CL_String *)CL_OBJ_TO_PTR(result);
+    ASSERT_STR_EQ(s->data, "baz.txt");
+}
+
+TEST(eval_directory_namestring)
+{
+    CL_Obj result = cl_eval_string("(directory-namestring \"/foo/bar/baz.txt\")");
+    CL_String *s;
+    ASSERT(CL_STRING_P(result));
+    s = (CL_String *)CL_OBJ_TO_PTR(result);
+    ASSERT_STR_EQ(s->data, "/foo/bar/");
+}
+
+TEST(eval_rename_file)
+{
+    const char *old_path = "/tmp/cl_test_rename_eval_old.tmp";
+    const char *new_path = "/tmp/cl_test_rename_eval_new.tmp";
+    PlatformFile f = platform_file_open(old_path, PLATFORM_FILE_WRITE);
+    platform_file_write_string(f, "test");
+    platform_file_close(f);
+
+    cl_eval_string("(rename-file \"/tmp/cl_test_rename_eval_old.tmp\" \"/tmp/cl_test_rename_eval_new.tmp\")");
+    ASSERT(!platform_file_exists(old_path));
+    ASSERT(platform_file_exists(new_path));
+
+    remove(new_path);
+}
+
+TEST(eval_values_from_defun)
+{
+    /* Regression test: values must propagate through defun returns */
+    const char *expr = "(progn (defun mv-test () (values 10 20 30)) "
+                       "(multiple-value-list (mv-test)))";
+    CL_Obj result = cl_eval_string(expr);
+    char buf[64];
+    cl_prin1_to_string(result, buf, sizeof(buf));
+    ASSERT_STR_EQ(buf, "(10 20 30)");
+}
+
 int main(void)
 {
     test_init();
@@ -1161,6 +1362,30 @@ int main(void)
     RUN(open_file_write_read);
     RUN(open_file_output_stream_write);
     RUN(file_stream_write_string_read_back);
+
+    /* Platform file operations (Step 10) */
+    RUN(platform_universal_time);
+    RUN(platform_file_exists_positive);
+    RUN(platform_file_exists_negative);
+    RUN(platform_file_delete_test);
+    RUN(platform_file_rename_test);
+    RUN(platform_file_mtime_test);
+    RUN(platform_file_mtime_nonexistent);
+    RUN(platform_mkdir_test);
+    RUN(platform_file_is_directory_test);
+
+    /* Builtins via eval (Step 10) */
+    RUN(eval_get_universal_time);
+    RUN(eval_probe_file_exists);
+    RUN(eval_probe_file_not_exists);
+    RUN(eval_delete_file);
+    RUN(eval_file_write_date);
+    RUN(eval_file_namestring);
+    RUN(eval_directory_namestring);
+    RUN(eval_rename_file);
+
+    /* MV propagation regression test */
+    RUN(eval_values_from_defun);
 
     teardown();
     REPORT();

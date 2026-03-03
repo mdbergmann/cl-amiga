@@ -14,6 +14,7 @@
 /* Allocation */
 CL_Obj cl_bignum_normalize(CL_Obj obj);
 CL_Obj cl_bignum_from_int32(int32_t val);
+CL_Obj cl_bignum_from_uint32(uint32_t val);
 
 /* Unified arithmetic dispatch (handles fixnum/bignum mix) */
 CL_Obj cl_arith_add(CL_Obj a, CL_Obj b);

@@ -16,6 +16,7 @@
 #include "mem.h"
 #include "error.h"
 #include "vm.h"
+#include "bignum.h"
 #include "../platform/platform.h"
 #include <string.h>
 
@@ -525,6 +526,130 @@ static CL_Obj bi_open(CL_Obj *args, int n)
     return stream;
 }
 
+/* --- Time functions (Step 10) --- */
+
+/* (get-universal-time) => integer */
+static CL_Obj bi_get_universal_time(CL_Obj *args, int n)
+{
+    uint32_t ut;
+    CL_UNUSED(args); CL_UNUSED(n);
+    ut = platform_universal_time();
+    /* Universal time is large (>3.9 billion) — needs bignum on 32-bit */
+    return cl_bignum_from_uint32(ut);
+}
+
+/* --- File system functions (Step 10) --- */
+
+/* (probe-file pathname) => pathname or NIL */
+static CL_Obj bi_probe_file(CL_Obj *args, int n)
+{
+    CL_String *str;
+    CL_UNUSED(n);
+    if (!CL_STRING_P(args[0]))
+        cl_error(CL_ERR_TYPE, "PROBE-FILE: argument must be a string");
+    str = (CL_String *)CL_OBJ_TO_PTR(args[0]);
+    return platform_file_exists(str->data) ? args[0] : CL_NIL;
+}
+
+/* (delete-file pathname) => T */
+static CL_Obj bi_delete_file(CL_Obj *args, int n)
+{
+    CL_String *str;
+    CL_UNUSED(n);
+    if (!CL_STRING_P(args[0]))
+        cl_error(CL_ERR_TYPE, "DELETE-FILE: argument must be a string");
+    str = (CL_String *)CL_OBJ_TO_PTR(args[0]);
+    if (platform_file_delete(str->data) != 0)
+        cl_error(CL_ERR_GENERAL, "DELETE-FILE: cannot delete file");
+    return CL_T;
+}
+
+/* (rename-file filespec new-name) => new-name, old-truename, new-truename (3 values) */
+static CL_Obj bi_rename_file(CL_Obj *args, int n)
+{
+    CL_String *old_str, *new_str;
+    CL_UNUSED(n);
+    if (!CL_STRING_P(args[0]))
+        cl_error(CL_ERR_TYPE, "RENAME-FILE: first argument must be a string");
+    if (!CL_STRING_P(args[1]))
+        cl_error(CL_ERR_TYPE, "RENAME-FILE: second argument must be a string");
+    old_str = (CL_String *)CL_OBJ_TO_PTR(args[0]);
+    new_str = (CL_String *)CL_OBJ_TO_PTR(args[1]);
+    if (platform_file_rename(old_str->data, new_str->data) != 0)
+        cl_error(CL_ERR_GENERAL, "RENAME-FILE: cannot rename file");
+    /* Return 3 values: new-name, old-truename, new-truename */
+    cl_mv_values[0] = args[1];
+    cl_mv_values[1] = args[0];
+    cl_mv_values[2] = args[1];
+    cl_mv_count = 3;
+    return args[1];
+}
+
+/* (file-write-date pathname) => universal-time or NIL */
+static CL_Obj bi_file_write_date(CL_Obj *args, int n)
+{
+    CL_String *str;
+    uint32_t mtime;
+    CL_UNUSED(n);
+    if (!CL_STRING_P(args[0]))
+        cl_error(CL_ERR_TYPE, "FILE-WRITE-DATE: argument must be a string");
+    str = (CL_String *)CL_OBJ_TO_PTR(args[0]);
+    mtime = platform_file_mtime(str->data);
+    if (mtime == 0) return CL_NIL;
+    return cl_bignum_from_uint32(mtime);
+}
+
+/* (%mkdir pathname) => T or NIL — internal for ensure-directories-exist */
+static CL_Obj bi_mkdir(CL_Obj *args, int n)
+{
+    CL_String *str;
+    CL_UNUSED(n);
+    if (!CL_STRING_P(args[0]))
+        cl_error(CL_ERR_TYPE, "%MKDIR: argument must be a string");
+    str = (CL_String *)CL_OBJ_TO_PTR(args[0]);
+    return (platform_mkdir(str->data) == 0) ? CL_T : CL_NIL;
+}
+
+/* (file-namestring pathname) => string */
+static CL_Obj bi_file_namestring(CL_Obj *args, int n)
+{
+    CL_String *str;
+    const char *data;
+    uint32_t len, i, last_sep;
+    CL_UNUSED(n);
+    if (!CL_STRING_P(args[0]))
+        cl_error(CL_ERR_TYPE, "FILE-NAMESTRING: argument must be a string");
+    str = (CL_String *)CL_OBJ_TO_PTR(args[0]);
+    data = str->data;
+    len = str->length;
+    last_sep = 0;
+    for (i = 0; i < len; i++) {
+        if (data[i] == '/' || data[i] == ':')
+            last_sep = i + 1;
+    }
+    return cl_make_string(data + last_sep, len - last_sep);
+}
+
+/* (directory-namestring pathname) => string */
+static CL_Obj bi_directory_namestring(CL_Obj *args, int n)
+{
+    CL_String *str;
+    const char *data;
+    uint32_t len, i, last_sep;
+    CL_UNUSED(n);
+    if (!CL_STRING_P(args[0]))
+        cl_error(CL_ERR_TYPE, "DIRECTORY-NAMESTRING: argument must be a string");
+    str = (CL_String *)CL_OBJ_TO_PTR(args[0]);
+    data = str->data;
+    len = str->length;
+    last_sep = 0;
+    for (i = 0; i < len; i++) {
+        if (data[i] == '/' || data[i] == ':')
+            last_sep = i + 1;
+    }
+    return cl_make_string(data, last_sep);
+}
+
 /* --- Registration --- */
 
 void cl_builtins_stream_init(void)
@@ -573,4 +698,14 @@ void cl_builtins_stream_init(void)
 
     /* Step 8: File streams */
     defun("OPEN", bi_open, 1, -1);
+
+    /* Step 10: Time and file system */
+    defun("GET-UNIVERSAL-TIME", bi_get_universal_time, 0, 0);
+    defun("PROBE-FILE", bi_probe_file, 1, 1);
+    defun("DELETE-FILE", bi_delete_file, 1, 1);
+    defun("RENAME-FILE", bi_rename_file, 2, 2);
+    defun("FILE-WRITE-DATE", bi_file_write_date, 1, 1);
+    defun("%MKDIR", bi_mkdir, 1, 1);
+    defun("FILE-NAMESTRING", bi_file_namestring, 1, 1);
+    defun("DIRECTORY-NAMESTRING", bi_directory_namestring, 1, 1);
 }

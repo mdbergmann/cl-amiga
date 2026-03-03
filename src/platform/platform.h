@@ -49,6 +49,15 @@ int          platform_file_eof(PlatformFile fh);
 /* Timing */
 uint32_t platform_time_ms(void);   /* Monotonic milliseconds (for elapsed time) */
 void     platform_sleep_ms(uint32_t milliseconds);
+uint32_t platform_universal_time(void); /* Seconds since 1900-01-01 00:00:00 UTC */
+
+/* File system operations */
+int      platform_file_exists(const char *path);
+int      platform_file_is_directory(const char *path);
+int      platform_file_delete(const char *path);
+int      platform_file_rename(const char *oldpath, const char *newpath);
+uint32_t platform_file_mtime(const char *path); /* Universal time of last mod, 0 on error */
+int      platform_mkdir(const char *path);       /* Create single directory, 0=success */
 
 /* Lifecycle */
 void  platform_init(void);

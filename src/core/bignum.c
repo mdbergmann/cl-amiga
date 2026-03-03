@@ -377,7 +377,24 @@ CL_Obj cl_bignum_from_int32(int32_t val)
     return cl_bignum_normalize(obj);
 }
 
-/* Create a bignum from unsigned 32-bit value */
+/* Create a bignum from unsigned 32-bit value (public, sign=0) */
+CL_Obj cl_bignum_from_uint32(uint32_t val)
+{
+    CL_Obj obj;
+    CL_Bignum *bn;
+
+    if (val == 0) return CL_MAKE_FIXNUM(0);
+    if (val <= (uint32_t)CL_FIXNUM_MAX)
+        return CL_MAKE_FIXNUM((int32_t)val);
+
+    obj = cl_make_bignum(2, 0);
+    bn = (CL_Bignum *)CL_OBJ_TO_PTR(obj);
+    bn->limbs[0] = (uint16_t)(val & 0xFFFF);
+    bn->limbs[1] = (uint16_t)(val >> 16);
+    return cl_bignum_normalize(obj);
+}
+
+/* Create a bignum from unsigned 32-bit value with sign */
 static CL_Obj bignum_from_uint32(uint32_t val, uint32_t sign)
 {
     CL_Obj obj;
