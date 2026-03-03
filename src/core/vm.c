@@ -58,8 +58,16 @@ CL_Obj cl_pending_value = 0;
 int cl_pending_error_code = 0;
 char cl_pending_error_msg[512];
 
-void cl_vm_init(void)
+void cl_vm_init(uint32_t stack_size, int frame_size)
 {
+    if (stack_size == 0) stack_size = CL_VM_STACK_SIZE;
+    if (frame_size == 0) frame_size = CL_VM_FRAME_SIZE;
+
+    cl_vm.stack = (CL_Obj *)platform_alloc(stack_size * sizeof(CL_Obj));
+    cl_vm.stack_size = stack_size;
+    cl_vm.frames = (CL_Frame *)platform_alloc(frame_size * sizeof(CL_Frame));
+    cl_vm.frame_size = frame_size;
+
     cl_vm.sp = 0;
     cl_vm.fp = 0;
     cl_nlx_top = 0;
@@ -71,9 +79,21 @@ void cl_vm_init(void)
     cl_trace_depth = 0;
 }
 
+void cl_vm_shutdown(void)
+{
+    if (cl_vm.stack) {
+        platform_free(cl_vm.stack);
+        cl_vm.stack = NULL;
+    }
+    if (cl_vm.frames) {
+        platform_free(cl_vm.frames);
+        cl_vm.frames = NULL;
+    }
+}
+
 void cl_vm_push(CL_Obj val)
 {
-    if (cl_vm.sp >= CL_VM_STACK_SIZE)
+    if (cl_vm.sp >= (int)cl_vm.stack_size)
         cl_error(CL_ERR_OVERFLOW, "VM stack overflow");
     cl_vm.stack[cl_vm.sp++] = val;
 }
@@ -862,7 +882,7 @@ CL_Obj cl_vm_eval(CL_Obj bytecode_obj)
                     /* Save current frame state */
                     frame->ip = ip;
 
-                    if (cl_vm.fp >= CL_VM_FRAME_SIZE)
+                    if (cl_vm.fp >= cl_vm.frame_size)
                         cl_error(CL_ERR_OVERFLOW, "Call stack overflow");
 
                     new_frame = &cl_vm.frames[cl_vm.fp++];

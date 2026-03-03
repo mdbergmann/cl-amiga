@@ -23,9 +23,11 @@ typedef struct {
 } CL_Frame;
 
 typedef struct {
-    CL_Obj stack[CL_VM_STACK_SIZE];
+    CL_Obj *stack;
+    uint32_t stack_size; /* Number of entries */
     int sp;              /* Stack pointer (next free slot) */
-    CL_Frame frames[CL_VM_FRAME_SIZE];
+    CL_Frame *frames;
+    int frame_size;      /* Max call frames */
     int fp;              /* Frame pointer (current frame index) */
 } CL_VM;
 
@@ -128,8 +130,11 @@ extern char cl_backtrace_buf[CL_BACKTRACE_BUF_SIZE];
 /* Capture current VM call stack into cl_backtrace_buf */
 void cl_capture_backtrace(void);
 
-/* Initialize VM */
-void cl_vm_init(void);
+/* Initialize VM (0 = use default for either parameter) */
+void cl_vm_init(uint32_t stack_size, int frame_size);
+
+/* Shutdown VM (free dynamic allocations) */
+void cl_vm_shutdown(void);
 
 /* Execute a bytecode object, return result */
 CL_Obj cl_vm_eval(CL_Obj bytecode);

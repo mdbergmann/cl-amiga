@@ -23,7 +23,7 @@ static void setup(void)
     cl_reader_init();
     cl_printer_init();
     cl_compiler_init();
-    cl_vm_init();
+    cl_vm_init(0, 0);
     cl_builtins_init();
     cl_debugger_init();
     cl_repl_init();
