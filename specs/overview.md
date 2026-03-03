@@ -254,7 +254,7 @@ Condition system, packages, and compiler completeness:
 - [x] `the` — type declaration special form with `OP_ASSERT_TYPE` opcode; runtime type check when safety >= 1, no-op at safety 0; disables TCO when safety >= 1; `(the (values ...) ...)` for multiple values not yet supported
 - [x] Enhanced `time` — reports bytes consed, GC cycles, and heap usage in addition to wall time; `total_consed` monotonic counter in `CL_Heap`; `%GET-BYTES-CONSED`, `%GET-GC-COUNT` internal builtins; optionally CPU time via `getrusage()` (POSIX) / `ReadEClock()` (AmigaOS) deferred
 - [x] REPL history variables — `*`, `**`, `***` (last 3 results), `+`, `++`, `+++` (last 3 forms), `-` (current form being evaluated)
-- [ ] REPL startup ASCII art — display a nice logo/banner when starting the interactive REPL
+- [x] REPL startup ASCII art — ASCII art banner displayed when starting the interactive REPL
 
 ### Phase 7: I/O & Pathnames ✅
 
@@ -275,7 +275,7 @@ File system integration and stream abstraction:
 - [x] Time: `get-universal-time`, `decode-universal-time`, `encode-universal-time`, `get-decoded-time` — boot.lisp functions with epoch conversion
 - [x] `compile` — compile lambda form or return named function binding; returns 3 values (fn, warnings-p, failure-p)
 - [x] User init file — load `~/.clamigarc` (POSIX) or `S:clamiga.lisp` (AmigaOS) on REPL startup, after boot.lisp; skip with `--no-userinit` flag
-- [x] `--load <file>` / `--eval <expr>` command-line options — load files or evaluate expressions before REPL; `--script <file>` to run file and exit (no REPL)
+- [x] `--load <file>` / `--eval <expr>` command-line options — load files or evaluate expressions before REPL (output appears after banner in interactive mode); `--script <file>` to run file and exit (no REPL); `--non-interactive` to process options and exit without entering REPL
 - [x] `--heap <size>` — configurable arena size (default 4MB, e.g. `--heap 8M`); also `--stack <size>` for VM value stack, `--frames <n>` for call frame depth (default 256); `--help` prints usage; unknown `--` options show error + usage
 
 Not yet implemented: broadcast/concatenated/two-way/echo streams, `read-preserving-whitespace`, `write` with keyword args, printer control variables (`*print-escape*`, `*print-base*`, etc.), `parse-namestring`, `wild-pathname-p`, `translate-pathname`, `ensure-directories-exist`, `directory`

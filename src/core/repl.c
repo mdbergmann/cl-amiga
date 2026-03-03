@@ -362,10 +362,18 @@ void cl_repl(void)
     while (platform_read_line(line, sizeof(line))) {
         int line_len = (int)strlen(line);
 
-        /* Empty line with no accumulated input: skip */
-        if (line[0] == '\0' && accum_len == 0) {
-            repl_prompt();
-            continue;
+        /* When accumulator is empty, apply line-level skip rules */
+        if (accum_len == 0) {
+            /* Empty line: skip */
+            if (line[0] == '\0') {
+                repl_prompt();
+                continue;
+            }
+            /* Skip lines starting with -- (CLI args leaked to stdin on AmigaOS) */
+            if (line[0] == '-' && line[1] == '-') {
+                repl_prompt();
+                continue;
+            }
         }
 
         /* Append line to accumulation buffer (with newline separator) */

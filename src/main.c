@@ -29,6 +29,7 @@ static void print_usage(void)
         "  --load <file>    Load Lisp file before REPL (multiple allowed)\n"
         "  --eval <expr>    Evaluate expression before REPL (multiple allowed)\n"
         "  --script <file>  Load file and exit (no REPL)\n"
+        "  --non-interactive Process options and exit (no REPL)\n"
         "  --no-userinit    Skip user init file (~/.clamigarc)\n"
         "  --color          Force color output\n"
         "  --no-color       Disable color output\n"
@@ -77,6 +78,7 @@ typedef struct {
 int main(int argc, char *argv[])
 {
     int batch = 0;
+    int non_interactive = 0;
     int color_set = 0;
     int no_userinit = 0;
     int script = 0;
@@ -97,6 +99,8 @@ int main(int argc, char *argv[])
         } else if (strcmp(argv[i], "--no-color") == 0) {
             cl_repl_color = 0;
             color_set = 1;
+        } else if (strcmp(argv[i], "--non-interactive") == 0) {
+            non_interactive = 1;
         } else if (strcmp(argv[i], "--no-userinit") == 0) {
             no_userinit = 1;
         } else if (strcmp(argv[i], "--help") == 0) {
@@ -181,9 +185,9 @@ int main(int argc, char *argv[])
         }
     }
 
-    /* Default: color on for interactive, off for batch/script */
+    /* Default: color on for interactive, off for batch/script/non-interactive */
     if (!color_set)
-        cl_repl_color = !(batch || script);
+        cl_repl_color = !(batch || script || non_interactive);
 
     platform_init();
 
@@ -201,37 +205,74 @@ int main(int argc, char *argv[])
     cl_debugger_init();
     cl_repl_init_no_userinit(no_userinit);
 
-    /* Execute --load and --eval actions in order */
-    for (i = 0; i < action_count; i++) {
-        int err = CL_CATCH();
-        if (err == CL_ERR_NONE) {
-            if (actions[i].is_eval) {
-                cl_eval_string(actions[i].arg);
-            } else {
-                cl_load_file(actions[i].arg);
-            }
-            CL_UNCATCH();
-        } else {
-            cl_error_print();
-            cl_vm.sp = 0;
-            cl_vm.fp = 0;
-            CL_UNCATCH();
-        }
-    }
-
     if (script) {
+        /* Script/batch: execute --load/--eval actions before mode entry */
+        for (i = 0; i < action_count; i++) {
+            int err = CL_CATCH();
+            if (err == CL_ERR_NONE) {
+                if (actions[i].is_eval) {
+                    cl_eval_string(actions[i].arg);
+                } else {
+                    cl_load_file(actions[i].arg);
+                }
+                CL_UNCATCH();
+            } else {
+                cl_error_print();
+                cl_vm.sp = 0;
+                cl_vm.fp = 0;
+                CL_UNCATCH();
+            }
+        }
+
         /* Script mode: load file and exit */
-        int err = CL_CATCH();
-        if (err == CL_ERR_NONE) {
-            cl_load_file(script_file);
-            CL_UNCATCH();
-        } else {
-            cl_error_print();
-            cl_vm.sp = 0;
-            cl_vm.fp = 0;
-            CL_UNCATCH();
+        {
+            int err = CL_CATCH();
+            if (err == CL_ERR_NONE) {
+                cl_load_file(script_file);
+                CL_UNCATCH();
+            } else {
+                cl_error_print();
+                cl_vm.sp = 0;
+                cl_vm.fp = 0;
+                CL_UNCATCH();
+            }
+        }
+    } else if (non_interactive) {
+        /* Non-interactive: execute --load/--eval actions and exit */
+        for (i = 0; i < action_count; i++) {
+            int err = CL_CATCH();
+            if (err == CL_ERR_NONE) {
+                if (actions[i].is_eval) {
+                    cl_eval_string(actions[i].arg);
+                } else {
+                    cl_load_file(actions[i].arg);
+                }
+                CL_UNCATCH();
+            } else {
+                cl_error_print();
+                cl_vm.sp = 0;
+                cl_vm.fp = 0;
+                CL_UNCATCH();
+            }
         }
     } else if (batch) {
+        /* Batch: execute --load/--eval actions before batch REPL */
+        for (i = 0; i < action_count; i++) {
+            int err = CL_CATCH();
+            if (err == CL_ERR_NONE) {
+                if (actions[i].is_eval) {
+                    cl_eval_string(actions[i].arg);
+                } else {
+                    cl_load_file(actions[i].arg);
+                }
+                CL_UNCATCH();
+            } else {
+                cl_error_print();
+                cl_vm.sp = 0;
+                cl_vm.fp = 0;
+                CL_UNCATCH();
+            }
+        }
         cl_repl_batch();
     } else {
         /* Drain residual CLI data from stdin (AmigaOS leaks command line to Input()) */
@@ -248,6 +289,25 @@ int main(int argc, char *argv[])
         );
         cl_color_reset();
         platform_write_string("\nType (quit) to exit.\n\n");
+
+        /* Interactive: execute --load/--eval actions after banner */
+        for (i = 0; i < action_count; i++) {
+            int err = CL_CATCH();
+            if (err == CL_ERR_NONE) {
+                if (actions[i].is_eval) {
+                    cl_eval_string(actions[i].arg);
+                } else {
+                    cl_load_file(actions[i].arg);
+                }
+                CL_UNCATCH();
+            } else {
+                cl_error_print();
+                cl_vm.sp = 0;
+                cl_vm.fp = 0;
+                CL_UNCATCH();
+            }
+        }
+
         cl_repl();
     }
 
