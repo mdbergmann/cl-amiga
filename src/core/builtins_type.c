@@ -329,11 +329,12 @@ static CL_Obj bi_coerce(CL_Obj *args, int n)
         if (CL_NULL_P(obj) || CL_CONS_P(obj)) return obj;
         if (CL_VECTOR_P(obj)) {
             CL_Vector *v = (CL_Vector *)CL_OBJ_TO_PTR(obj);
+            CL_Obj *elts = cl_vector_data(v);
             CL_Obj result = CL_NIL;
-            uint32_t i = v->length;
+            uint32_t i = cl_vector_active_length(v);
             while (i > 0) {
                 i--;
-                result = cl_cons(v->data[i], result);
+                result = cl_cons(elts[i], result);
             }
             return result;
         }
@@ -368,7 +369,7 @@ static CL_Obj bi_coerce(CL_Obj *args, int n)
             v = (CL_Vector *)CL_OBJ_TO_PTR(vec);
             p = obj;
             for (i = 0; i < len; i++) {
-                v->data[i] = cl_car(p);
+                cl_vector_data(v)[i] = cl_car(p);
                 p = cl_cdr(p);
             }
             return vec;

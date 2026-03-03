@@ -73,7 +73,7 @@ static int32_t seq_length(CL_Obj seq)
     }
     if (CL_VECTOR_P(seq)) {
         CL_Vector *v = (CL_Vector *)CL_OBJ_TO_PTR(seq);
-        return (int32_t)v->length;
+        return (int32_t)cl_vector_active_length(v);
     }
     if (CL_STRING_P(seq)) {
         CL_String *s = (CL_String *)CL_OBJ_TO_PTR(seq);
@@ -91,8 +91,8 @@ static CL_Obj seq_elt(CL_Obj seq, int32_t idx)
     }
     if (CL_VECTOR_P(seq)) {
         CL_Vector *v = (CL_Vector *)CL_OBJ_TO_PTR(seq);
-        if ((uint32_t)idx >= v->length) cl_error(CL_ERR_ARGS, "index out of bounds");
-        return v->data[idx];
+        if ((uint32_t)idx >= cl_vector_active_length(v)) cl_error(CL_ERR_ARGS, "index out of bounds");
+        return cl_vector_data(v)[idx];
     }
     if (CL_STRING_P(seq)) {
         CL_String *s = (CL_String *)CL_OBJ_TO_PTR(seq);
@@ -474,7 +474,7 @@ static CL_Obj bi_sort(CL_Obj *args, int n)
 
     if (CL_VECTOR_P(seq)) {
         CL_Vector *v = (CL_Vector *)CL_OBJ_TO_PTR(seq);
-        vector_insertion_sort(v->data, (int32_t)v->length, pred, key_fn);
+        vector_insertion_sort(cl_vector_data(v), (int32_t)cl_vector_active_length(v), pred, key_fn);
         return seq;
     }
 

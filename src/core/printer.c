@@ -10,8 +10,58 @@
 #include <string.h>
 #include <ctype.h>
 
-/* Output mode */
-static int escape_mode = 1;   /* 1 = prin1, 0 = princ */
+/* ================================================================
+ * Dynamic printer variable readers
+ *
+ * These read *print-escape* etc. from their symbol values so that
+ * LET / dynamic bindings are honored automatically.
+ * Guard against early calls before cl_symbol_init() has run.
+ * ================================================================ */
+
+static int print_escape_p(void)
+{
+    CL_Symbol *s;
+    if (CL_NULL_P(SYM_PRINT_ESCAPE)) return 1; /* before init */
+    s = (CL_Symbol *)CL_OBJ_TO_PTR(SYM_PRINT_ESCAPE);
+    return !CL_NULL_P(s->value);
+}
+
+static int print_readably_p(void)
+{
+    CL_Symbol *s;
+    if (CL_NULL_P(SYM_PRINT_READABLY)) return 0;
+    s = (CL_Symbol *)CL_OBJ_TO_PTR(SYM_PRINT_READABLY);
+    return !CL_NULL_P(s->value);
+}
+
+/* Returns -1 for NIL (no limit), else fixnum value */
+static int32_t print_level(void)
+{
+    CL_Symbol *s;
+    if (CL_NULL_P(SYM_PRINT_LEVEL)) return -1;
+    s = (CL_Symbol *)CL_OBJ_TO_PTR(SYM_PRINT_LEVEL);
+    if (CL_NULL_P(s->value)) return -1;
+    if (CL_FIXNUM_P(s->value)) return CL_FIXNUM_VAL(s->value);
+    return -1;
+}
+
+/* Returns -1 for NIL (no limit), else fixnum value */
+static int32_t print_length(void)
+{
+    CL_Symbol *s;
+    if (CL_NULL_P(SYM_PRINT_LENGTH)) return -1;
+    s = (CL_Symbol *)CL_OBJ_TO_PTR(SYM_PRINT_LENGTH);
+    if (CL_NULL_P(s->value)) return -1;
+    if (CL_FIXNUM_P(s->value)) return CL_FIXNUM_VAL(s->value);
+    return -1;
+}
+
+/* Current nesting depth for *print-level* tracking */
+static int32_t current_depth = 0;
+
+/* ================================================================
+ * Output target state (stream or C buffer)
+ * ================================================================ */
 
 /* Stream-based output target (CL_NIL when using buffer mode) */
 static CL_Obj printer_stream = CL_NIL;
@@ -94,28 +144,50 @@ static void print_double_float(double value)
 
 static void print_list(CL_Obj obj)
 {
-    out_char('(');
-    print_obj(cl_car(obj));
-    obj = cl_cdr(obj);
+    int32_t max_depth = print_level();
+    int32_t max_len = print_length();
+    int32_t count = 0;
 
-    while (CL_CONS_P(obj)) {
-        out_char(' ');
-        print_obj(cl_car(obj));
-        obj = cl_cdr(obj);
+    if (max_depth >= 0 && current_depth >= max_depth) {
+        out_char('#');
+        return;
     }
+    current_depth++;
 
-    if (!CL_NULL_P(obj)) {
-        out_str(" . ");
-        print_obj(obj);
+    out_char('(');
+    if (max_len >= 0 && max_len == 0) {
+        out_str("...");
+    } else {
+        print_obj(cl_car(obj));
+        count++;
+        obj = cl_cdr(obj);
+
+        while (CL_CONS_P(obj)) {
+            if (max_len >= 0 && count >= max_len) {
+                out_str(" ...");
+                obj = CL_NIL; /* skip dotted pair check */
+                break;
+            }
+            out_char(' ');
+            print_obj(cl_car(obj));
+            count++;
+            obj = cl_cdr(obj);
+        }
+
+        if (!CL_NULL_P(obj)) {
+            out_str(" . ");
+            print_obj(obj);
+        }
     }
 
     out_char(')');
+    current_depth--;
 }
 
 static void print_string(CL_Obj obj)
 {
     CL_String *s = (CL_String *)CL_OBJ_TO_PTR(obj);
-    if (escape_mode) {
+    if (print_escape_p() || print_readably_p()) {
         uint32_t i;
         out_char('"');
         for (i = 0; i < s->length; i++) {
@@ -145,7 +217,7 @@ static void print_obj(CL_Obj obj)
 
     if (CL_CHAR_P(obj)) {
         int ch = CL_CHAR_VAL(obj);
-        if (escape_mode) {
+        if (print_escape_p() || print_readably_p()) {
             out_str("#\\");
             switch (ch) {
             case ' ':  out_str("Space"); break;
@@ -260,12 +332,27 @@ static void print_obj(CL_Obj obj)
     case TYPE_VECTOR: {
         CL_Vector *v = (CL_Vector *)CL_OBJ_TO_PTR(obj);
         uint32_t i;
+        uint32_t vec_len = cl_vector_active_length(v);
+        CL_Obj *elts = cl_vector_data(v);
+        int32_t max_depth = print_level();
+        int32_t max_len = print_length();
+
+        if (max_depth >= 0 && current_depth >= max_depth) {
+            out_char('#');
+            break;
+        }
+        current_depth++;
         out_str("#(");
-        for (i = 0; i < v->length; i++) {
+        for (i = 0; i < vec_len; i++) {
+            if (max_len >= 0 && (int32_t)i >= max_len) {
+                out_str("...");
+                break;
+            }
             if (i > 0) out_char(' ');
-            print_obj(v->data[i]);
+            print_obj(elts[i]);
         }
         out_char(')');
+        current_depth--;
         break;
     }
 
@@ -298,8 +385,15 @@ static void print_obj(CL_Obj obj)
     case TYPE_STRUCT: {
         CL_Struct *st = (CL_Struct *)CL_OBJ_TO_PTR(obj);
         uint32_t i;
+        int32_t max_depth = print_level();
         extern CL_Obj cl_struct_slot_names(CL_Obj type_name);
         CL_Obj slot_names = cl_struct_slot_names(st->type_desc);
+
+        if (max_depth >= 0 && current_depth >= max_depth) {
+            out_char('#');
+            break;
+        }
+        current_depth++;
         out_str("#S(");
         if (!CL_NULL_P(st->type_desc))
             out_str(cl_symbol_name(st->type_desc));
@@ -314,6 +408,7 @@ static void print_obj(CL_Obj obj)
             print_obj(st->slots[i]);
         }
         out_char(')');
+        current_depth--;
         break;
     }
 
@@ -361,26 +456,63 @@ static void print_obj(CL_Obj obj)
     }
 }
 
-/* Public API — stream-based */
+/* ================================================================
+ * Public API — stream-based
+ * ================================================================ */
 
-void cl_prin1_to_stream(CL_Obj obj, CL_Obj stream)
+void cl_write_to_stream(CL_Obj obj, CL_Obj stream)
 {
     CL_Obj prev = printer_stream;
-    escape_mode = 1;
+    int32_t prev_depth = current_depth;
+    current_depth = 0;
     to_buffer = 0;
     printer_stream = stream;
     print_obj(obj);
     printer_stream = prev;
+    current_depth = prev_depth;
+}
+
+void cl_prin1_to_stream(CL_Obj obj, CL_Obj stream)
+{
+    CL_Symbol *se;
+    CL_Obj prev_e;
+    if (CL_NULL_P(SYM_PRINT_ESCAPE)) {
+        /* Before init — fall through directly */
+        CL_Obj prev = printer_stream;
+        to_buffer = 0;
+        printer_stream = stream;
+        print_obj(obj);
+        printer_stream = prev;
+        return;
+    }
+    se = (CL_Symbol *)CL_OBJ_TO_PTR(SYM_PRINT_ESCAPE);
+    prev_e = se->value;
+    se->value = CL_T;
+    cl_write_to_stream(obj, stream);
+    se->value = prev_e;
 }
 
 void cl_princ_to_stream(CL_Obj obj, CL_Obj stream)
 {
-    CL_Obj prev = printer_stream;
-    escape_mode = 0;
-    to_buffer = 0;
-    printer_stream = stream;
-    print_obj(obj);
-    printer_stream = prev;
+    CL_Symbol *se, *sr;
+    CL_Obj prev_e, prev_r;
+    if (CL_NULL_P(SYM_PRINT_ESCAPE)) {
+        CL_Obj prev = printer_stream;
+        to_buffer = 0;
+        printer_stream = stream;
+        print_obj(obj);
+        printer_stream = prev;
+        return;
+    }
+    se = (CL_Symbol *)CL_OBJ_TO_PTR(SYM_PRINT_ESCAPE);
+    sr = (CL_Symbol *)CL_OBJ_TO_PTR(SYM_PRINT_READABLY);
+    prev_e = se->value;
+    prev_r = sr->value;
+    se->value = CL_NIL;
+    sr->value = CL_NIL;
+    cl_write_to_stream(obj, stream);
+    se->value = prev_e;
+    sr->value = prev_r;
 }
 
 void cl_print_to_stream(CL_Obj obj, CL_Obj stream)
@@ -410,12 +542,15 @@ void cl_print(CL_Obj obj)
     cl_print_to_stream(obj, sym->value);
 }
 
-/* C-internal: print to a C buffer (for vm.c, debugger.c, etc.) */
+/* ================================================================
+ * C-internal: print to a C buffer (for vm.c, debugger.c, etc.)
+ * ================================================================ */
 
-int cl_prin1_to_string(CL_Obj obj, char *buf, int bufsize)
+static int write_to_buffer_internal(CL_Obj obj, char *buf, int bufsize)
 {
     CL_Obj prev = printer_stream;
-    escape_mode = 1;
+    int32_t prev_depth = current_depth;
+    current_depth = 0;
     to_buffer = 1;
     printer_stream = CL_NIL;
     out_buf = buf;
@@ -425,23 +560,45 @@ int cl_prin1_to_string(CL_Obj obj, char *buf, int bufsize)
     if (out_pos < out_size) out_buf[out_pos] = '\0';
     to_buffer = 0;
     printer_stream = prev;
+    current_depth = prev_depth;
     return out_pos;
+}
+
+int cl_prin1_to_string(CL_Obj obj, char *buf, int bufsize)
+{
+    CL_Symbol *se;
+    CL_Obj prev_e;
+    int result;
+    if (CL_NULL_P(SYM_PRINT_ESCAPE)) {
+        /* Before init */
+        return write_to_buffer_internal(obj, buf, bufsize);
+    }
+    se = (CL_Symbol *)CL_OBJ_TO_PTR(SYM_PRINT_ESCAPE);
+    prev_e = se->value;
+    se->value = CL_T;
+    result = write_to_buffer_internal(obj, buf, bufsize);
+    se->value = prev_e;
+    return result;
 }
 
 int cl_princ_to_string(CL_Obj obj, char *buf, int bufsize)
 {
-    CL_Obj prev = printer_stream;
-    escape_mode = 0;
-    to_buffer = 1;
-    printer_stream = CL_NIL;
-    out_buf = buf;
-    out_pos = 0;
-    out_size = bufsize;
-    print_obj(obj);
-    if (out_pos < out_size) out_buf[out_pos] = '\0';
-    to_buffer = 0;
-    printer_stream = prev;
-    return out_pos;
+    CL_Symbol *se, *sr;
+    CL_Obj prev_e, prev_r;
+    int result;
+    if (CL_NULL_P(SYM_PRINT_ESCAPE)) {
+        return write_to_buffer_internal(obj, buf, bufsize);
+    }
+    se = (CL_Symbol *)CL_OBJ_TO_PTR(SYM_PRINT_ESCAPE);
+    sr = (CL_Symbol *)CL_OBJ_TO_PTR(SYM_PRINT_READABLY);
+    prev_e = se->value;
+    prev_r = sr->value;
+    se->value = CL_NIL;
+    sr->value = CL_NIL;
+    result = write_to_buffer_internal(obj, buf, bufsize);
+    se->value = prev_e;
+    sr->value = prev_r;
+    return result;
 }
 
 void cl_printer_init(void)

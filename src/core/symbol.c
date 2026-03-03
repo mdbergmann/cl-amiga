@@ -142,6 +142,23 @@ CL_Obj SYM_QUERY_IO = CL_NIL;
 CL_Obj SYM_TERMINAL_IO = CL_NIL;
 CL_Obj SYM_STAR_FEATURES = CL_NIL;
 CL_Obj SYM_STAR_READTABLE = CL_NIL;
+
+/* Printer control variable symbols */
+CL_Obj SYM_PRINT_ESCAPE = CL_NIL;
+CL_Obj SYM_PRINT_READABLY = CL_NIL;
+CL_Obj SYM_PRINT_BASE = CL_NIL;
+CL_Obj SYM_PRINT_RADIX = CL_NIL;
+CL_Obj SYM_PRINT_LEVEL = CL_NIL;
+CL_Obj SYM_PRINT_LENGTH = CL_NIL;
+CL_Obj SYM_PRINT_CASE = CL_NIL;
+CL_Obj SYM_PRINT_GENSYM = CL_NIL;
+CL_Obj SYM_PRINT_ARRAY = CL_NIL;
+CL_Obj SYM_PRINT_CIRCLE = CL_NIL;
+CL_Obj SYM_PRINT_PRETTY = CL_NIL;
+CL_Obj KW_UPCASE = CL_NIL;
+CL_Obj KW_DOWNCASE = CL_NIL;
+CL_Obj KW_CAPITALIZE = CL_NIL;
+
 CL_Obj KW_CL_AMIGA = CL_NIL;
 CL_Obj KW_COMMON_LISP = CL_NIL;
 CL_Obj KW_POSIX = CL_NIL;
@@ -402,6 +419,47 @@ void cl_symbol_init(void)
         s->flags |= CL_SYM_SPECIAL;
         s = (CL_Symbol *)CL_OBJ_TO_PTR(SYM_TERMINAL_IO);
         s->flags |= CL_SYM_SPECIAL;
+    }
+
+    /* Printer control variables — CL spec defaults */
+    SYM_PRINT_ESCAPE   = cl_intern_in("*PRINT-ESCAPE*", 14, cl_package_cl);
+    SYM_PRINT_READABLY = cl_intern_in("*PRINT-READABLY*", 16, cl_package_cl);
+    SYM_PRINT_BASE     = cl_intern_in("*PRINT-BASE*", 12, cl_package_cl);
+    SYM_PRINT_RADIX    = cl_intern_in("*PRINT-RADIX*", 13, cl_package_cl);
+    SYM_PRINT_LEVEL    = cl_intern_in("*PRINT-LEVEL*", 13, cl_package_cl);
+    SYM_PRINT_LENGTH   = cl_intern_in("*PRINT-LENGTH*", 14, cl_package_cl);
+    SYM_PRINT_CASE     = cl_intern_in("*PRINT-CASE*", 12, cl_package_cl);
+    SYM_PRINT_GENSYM   = cl_intern_in("*PRINT-GENSYM*", 14, cl_package_cl);
+    SYM_PRINT_ARRAY    = cl_intern_in("*PRINT-ARRAY*", 13, cl_package_cl);
+    SYM_PRINT_CIRCLE   = cl_intern_in("*PRINT-CIRCLE*", 14, cl_package_cl);
+    SYM_PRINT_PRETTY   = cl_intern_in("*PRINT-PRETTY*", 14, cl_package_cl);
+    KW_UPCASE          = cl_intern_keyword("UPCASE", 6);
+    KW_DOWNCASE        = cl_intern_keyword("DOWNCASE", 8);
+    KW_CAPITALIZE      = cl_intern_keyword("CAPITALIZE", 10);
+    {
+        CL_Symbol *s;
+        s = (CL_Symbol *)CL_OBJ_TO_PTR(SYM_PRINT_ESCAPE);
+        s->flags |= CL_SYM_SPECIAL; s->value = SYM_T;
+        s = (CL_Symbol *)CL_OBJ_TO_PTR(SYM_PRINT_READABLY);
+        s->flags |= CL_SYM_SPECIAL; s->value = CL_NIL;
+        s = (CL_Symbol *)CL_OBJ_TO_PTR(SYM_PRINT_BASE);
+        s->flags |= CL_SYM_SPECIAL; s->value = CL_MAKE_FIXNUM(10);
+        s = (CL_Symbol *)CL_OBJ_TO_PTR(SYM_PRINT_RADIX);
+        s->flags |= CL_SYM_SPECIAL; s->value = CL_NIL;
+        s = (CL_Symbol *)CL_OBJ_TO_PTR(SYM_PRINT_LEVEL);
+        s->flags |= CL_SYM_SPECIAL; s->value = CL_NIL;
+        s = (CL_Symbol *)CL_OBJ_TO_PTR(SYM_PRINT_LENGTH);
+        s->flags |= CL_SYM_SPECIAL; s->value = CL_NIL;
+        s = (CL_Symbol *)CL_OBJ_TO_PTR(SYM_PRINT_CASE);
+        s->flags |= CL_SYM_SPECIAL; s->value = KW_UPCASE;
+        s = (CL_Symbol *)CL_OBJ_TO_PTR(SYM_PRINT_GENSYM);
+        s->flags |= CL_SYM_SPECIAL; s->value = SYM_T;
+        s = (CL_Symbol *)CL_OBJ_TO_PTR(SYM_PRINT_ARRAY);
+        s->flags |= CL_SYM_SPECIAL; s->value = SYM_T;
+        s = (CL_Symbol *)CL_OBJ_TO_PTR(SYM_PRINT_CIRCLE);
+        s->flags |= CL_SYM_SPECIAL; s->value = CL_NIL;
+        s = (CL_Symbol *)CL_OBJ_TO_PTR(SYM_PRINT_PRETTY);
+        s->flags |= CL_SYM_SPECIAL; s->value = CL_NIL;
     }
 
     /* *FEATURES* — feature list for #+ / #- */

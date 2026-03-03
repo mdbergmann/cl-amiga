@@ -89,7 +89,7 @@ Single-pass recursive compiler from S-expressions to bytecode:
 
 **Special forms:** `quote`, `if`, `progn`, `lambda`, `let`, `let*`, `setq`, `setf`, `defun`, `defvar`, `defparameter`, `defmacro`, `function (#')`, `block`, `return-from`, `return`, `and`, `or`, `cond`, `do`, `dolist`, `dotimes`, `case`, `ecase`, `typecase`, `etypecase`, `flet`, `labels`, `tagbody`, `go`, `catch`, `unwind-protect`, `multiple-value-bind`, `multiple-value-list`, `multiple-value-prog1`, `nth-value`, `eval-when`, `destructuring-bind`, `defsetf`, `trace`, `untrace`, `time`, `handler-bind`, `restart-case`, `in-package`, `macrolet`, `symbol-macrolet`, `the`
 
-**Bootstrap macros:** `when`, `unless`, `prog1`, `prog2`, `push`, `pop`, `incf`, `decf`, `pushnew`, `handler-case`, `ignore-errors`, `with-simple-restart`, `define-condition`, `check-type`, `assert`, `defpackage`, `do-symbols`, `do-external-symbols`, `defstruct`, `with-open-file`, `with-output-to-string`, `with-input-from-string`, `with-standard-io-syntax`
+**Bootstrap macros:** `when`, `unless`, `prog1`, `prog2`, `push`, `pop`, `incf`, `decf`, `pushnew`, `handler-case`, `ignore-errors`, `with-simple-restart`, `define-condition`, `check-type`, `assert`, `defpackage`, `do-symbols`, `do-external-symbols`, `defstruct`, `with-open-file`, `with-output-to-string`, `with-input-from-string`, `with-standard-io-syntax`, `loop`
 
 **Bootstrap functions:** `cadr`, `caar`, `cdar`, `cddr`, `caddr`, `cadar`, `identity`, `endp`, `member`, `intersection`, `union`, `set-difference`, `subsetp`, `cerror`, `read-from-string`, `prin1-to-string`, `princ-to-string`, `write-to-string`, `pathname-name`, `pathname-type`, `namestring`, `truename`, `make-pathname`, `merge-pathnames`, `enough-namestring`, `decode-universal-time`, `encode-universal-time`, `get-decoded-time`
 
@@ -285,7 +285,15 @@ Not yet implemented: broadcast/concatenated/two-way/echo streams, `read-preservi
 ### Phase 8: Iteration & Format
 
 Extended iteration, output formatting, and standard library completeness:
-- [ ] `loop` facility (extended LOOP macro: `for`/`in`/`on`/`across`, `collect`/`append`/`nconc`, `when`/`unless`/`if`, `with`/`initially`/`finally`, `thereis`/`always`/`never`, `sum`/`count`/`maximize`/`minimize`)
+- [x] `loop` facility — extended LOOP macro in boot.lisp:
+  - Iteration: `for`/`as` with `in`/`on`/`across`/`=`/`from`/`downfrom`/`upfrom`, `to`/`below`/`above`/`downto`/`upto`, `by`, `repeat`, `while`/`until`
+  - Accumulation: `collect`/`append`/`nconc`/`sum`/`count`/`maximize`/`minimize`, `into` named variables
+  - Conditionals: `when`/`if`/`unless` with `and`/`else`/`end`
+  - Termination: `always`/`never`/`thereis`, `return`, `loop-finish`
+  - Structure: `with`/`and`, `named`, `initially`/`finally`
+  - BEING clauses: `hash-key[s]`/`hash-value[s]` of hash tables (with `using`), `symbol[s]`/`present-symbol[s]`/`external-symbol[s]` of packages
+  - Destructuring: tree-shaped patterns in FOR variable position (`(a b)`, `(a . b)`, `(a (b c))`)
+  - Helper builtins: `%hash-table-pairs` (C), `%package-symbols`/`%package-external-symbols`
 - [ ] `format` full directives (`~A`, `~S`, `~D`, `~B`, `~O`, `~X`, `~R`, `~%`, `~&`, `~T`, `~<~>`, `~{~}`, `~[~]`, `~?`, `~(~)`, `~*`, `~^`)
 - [ ] Pretty printer (`pprint`, `pprint-logical-block`, `pprint-newline`, `pprint-indent`)
 - [ ] Setf completeness: `rotatef`, `shiftf`, `define-modify-macro`, `defsetf` long form, `define-setf-expander`
@@ -416,9 +424,9 @@ cl-amiga/
 │   └── boot.lisp          # Bootstrap macros/functions
 ├── tests/
 │   ├── test.h             # Test framework
-│   ├── test_*.c           # Host test suites (10 files, 814 tests)
+│   ├── test_*.c           # Host test suites (10 files, 908 tests)
 │   └── amiga/
-│       └── run-tests.lisp # AmigaOS batch tests (1042 tests)
+│       └── run-tests.lisp # AmigaOS batch tests (1255 tests)
 ├── build/                 # Build output (gitignored)
 └── verify/
     └── realamiga/          # FS-UAE config + AmigaOS system image

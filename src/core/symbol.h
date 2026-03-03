@@ -180,6 +180,24 @@ extern CL_Obj SYM_STAR_FEATURES;     /* *FEATURES* */
 /* Readtable */
 extern CL_Obj SYM_STAR_READTABLE;    /* *READTABLE* */
 
+/* Printer control variable symbols */
+extern CL_Obj SYM_PRINT_ESCAPE;      /* *PRINT-ESCAPE* */
+extern CL_Obj SYM_PRINT_READABLY;    /* *PRINT-READABLY* */
+extern CL_Obj SYM_PRINT_BASE;        /* *PRINT-BASE* */
+extern CL_Obj SYM_PRINT_RADIX;       /* *PRINT-RADIX* */
+extern CL_Obj SYM_PRINT_LEVEL;       /* *PRINT-LEVEL* */
+extern CL_Obj SYM_PRINT_LENGTH;      /* *PRINT-LENGTH* */
+extern CL_Obj SYM_PRINT_CASE;        /* *PRINT-CASE* */
+extern CL_Obj SYM_PRINT_GENSYM;      /* *PRINT-GENSYM* */
+extern CL_Obj SYM_PRINT_ARRAY;       /* *PRINT-ARRAY* */
+extern CL_Obj SYM_PRINT_CIRCLE;      /* *PRINT-CIRCLE* */
+extern CL_Obj SYM_PRINT_PRETTY;      /* *PRINT-PRETTY* */
+
+/* Print-case keyword symbols */
+extern CL_Obj KW_UPCASE;             /* :UPCASE */
+extern CL_Obj KW_DOWNCASE;           /* :DOWNCASE */
+extern CL_Obj KW_CAPITALIZE;         /* :CAPITALIZE */
+
 /* Feature keywords */
 extern CL_Obj KW_CL_AMIGA;           /* :CL-AMIGA */
 extern CL_Obj KW_COMMON_LISP;        /* :COMMON-LISP */

@@ -202,15 +202,34 @@ typedef struct {
 
 #define CL_CLOSURE_P(obj) (CL_HEAP_P(obj) && CL_HDR_TYPE(CL_OBJ_TO_PTR(obj)) == TYPE_CLOSURE)
 
-/* --- Vector --- */
+/* --- Vector / Array --- */
+
+/* Vector flags */
+#define CL_VEC_FLAG_FILL_POINTER  0x01
+#define CL_VEC_FLAG_ADJUSTABLE    0x02
+#define CL_VEC_FLAG_MULTIDIM      0x04
+
+/* Sentinel: no fill pointer */
+#define CL_NO_FILL_POINTER  0xFFFFFFFFu
 
 typedef struct {
     CL_Header hdr;
-    uint32_t length;
-    CL_Obj data[];
+    uint32_t length;          /* Total element count */
+    uint32_t fill_pointer;    /* CL_NO_FILL_POINTER = none */
+    uint8_t  flags;           /* CL_VEC_FLAG_* */
+    uint8_t  rank;            /* 0 = simple 1D, >1 = multi-dim */
+    uint16_t _reserved;       /* Alignment padding */
+    CL_Obj data[];            /* For rank>1: dims in data[0..rank-1], elements at data[rank] */
 } CL_Vector;
 
 #define CL_VECTOR_P(obj) (CL_HEAP_P(obj) && CL_HDR_TYPE(CL_OBJ_TO_PTR(obj)) == TYPE_VECTOR)
+
+/* Access helpers: data pointer (skips dimension storage for multi-dim) */
+#define cl_vector_data(v)  ((v)->rank > 1 ? &(v)->data[(v)->rank] : (v)->data)
+
+/* Active length: fill pointer if present, else total length */
+#define cl_vector_active_length(v) \
+    ((v)->fill_pointer != CL_NO_FILL_POINTER ? (v)->fill_pointer : (v)->length)
 
 /* --- Package --- */
 

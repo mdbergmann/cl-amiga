@@ -21,6 +21,11 @@ CL_Obj SETF_HELPER_SV = CL_NIL;
 CL_Obj SETF_HELPER_SF = CL_NIL;
 CL_Obj SETF_SYM_GETHASH = CL_NIL;
 CL_Obj SETF_HELPER_GETHASH = CL_NIL;
+CL_Obj SETF_HELPER_AREF = CL_NIL;
+CL_Obj SETF_SYM_ROW_MAJOR_AREF = CL_NIL;
+CL_Obj SETF_HELPER_ROW_MAJOR_AREF = CL_NIL;
+CL_Obj SETF_SYM_FILL_POINTER = CL_NIL;
+CL_Obj SETF_HELPER_FILL_POINTER = CL_NIL;
 
 /* Global optimization settings */
 CL_OptimizeSettings cl_optimize_settings = {1, 1, 1, 1};
@@ -516,12 +521,12 @@ static void compile_setq(CL_Compiler *c, CL_Obj form)
 
         slot = cl_env_lookup(c->env, var);
         if (slot >= 0) {
-            cl_emit(c, OP_DUP);
+            /* OP_STORE peeks top without popping — no DUP needed */
             cl_emit(c, OP_STORE);
             cl_emit(c, (uint8_t)slot);
         } else {
             int idx = cl_add_constant(c, var);
-            cl_emit(c, OP_DUP);
+            /* OP_GSTORE peeks top without popping — no DUP needed */
             cl_emit(c, OP_GSTORE);
             cl_emit_u16(c, (uint16_t)idx);
         }
@@ -549,12 +554,12 @@ static void compile_setf_place(CL_Compiler *c, CL_Obj place, CL_Obj val_form)
         compile_expr(c, val_form);
         slot = cl_env_lookup(c->env, place);
         if (slot >= 0) {
-            cl_emit(c, OP_DUP);
+            /* OP_STORE peeks top without popping — no DUP needed */
             cl_emit(c, OP_STORE);
             cl_emit(c, (uint8_t)slot);
         } else {
             int idx = cl_add_constant(c, place);
-            cl_emit(c, OP_DUP);
+            /* OP_GSTORE peeks top without popping — no DUP needed */
             cl_emit(c, OP_GSTORE);
             cl_emit_u16(c, (uint16_t)idx);
         }
@@ -570,10 +575,33 @@ static void compile_setf_place(CL_Compiler *c, CL_Obj place, CL_Obj val_form)
             compile_expr(c, val_form);
             cl_emit(c, OP_RPLACD);
         } else if (head == SETF_SYM_AREF || head == SETF_SYM_SVREF) {
-            compile_expr(c, cl_car(cl_cdr(place)));
-            compile_expr(c, cl_car(cl_cdr(cl_cdr(place))));
-            compile_expr(c, val_form);
-            cl_emit(c, OP_ASET);
+            /* Count indices: place = (aref arr idx1 idx2 ...) */
+            CL_Obj indices = cl_cdr(cl_cdr(place));
+            int nindices = 0;
+            CL_Obj tmp = indices;
+            while (!CL_NULL_P(tmp)) { nindices++; tmp = cl_cdr(tmp); }
+
+            if (nindices <= 1 || head == SETF_SYM_SVREF) {
+                /* 1D fast path: use OP_ASET */
+                compile_expr(c, cl_car(cl_cdr(place)));
+                compile_expr(c, cl_car(indices));
+                compile_expr(c, val_form);
+                cl_emit(c, OP_ASET);
+            } else {
+                /* Multi-dim: call %SETF-AREF(array, val, idx1, idx2, ...) */
+                int ci = cl_add_constant(c, SETF_HELPER_AREF);
+                cl_emit(c, OP_FLOAD);
+                cl_emit_u16(c, (uint16_t)ci);
+                compile_expr(c, cl_car(cl_cdr(place)));  /* array */
+                compile_expr(c, val_form);               /* value */
+                tmp = indices;
+                while (!CL_NULL_P(tmp)) {
+                    compile_expr(c, cl_car(tmp));
+                    tmp = cl_cdr(tmp);
+                }
+                cl_emit(c, OP_CALL);
+                cl_emit(c, (uint8_t)(2 + nindices));
+            }
         } else if (head == SETF_SYM_NTH) {
             int idx = cl_add_constant(c, SETF_HELPER_NTH);
             cl_emit(c, OP_FLOAD);
@@ -597,6 +625,25 @@ static void compile_setf_place(CL_Compiler *c, CL_Obj place, CL_Obj val_form)
             cl_emit_u16(c, (uint16_t)idx);
             compile_expr(c, cl_car(cl_cdr(place)));
             compile_expr(c, val_form);
+            cl_emit(c, OP_CALL);
+            cl_emit(c, 2);
+        } else if (head == SETF_SYM_ROW_MAJOR_AREF) {
+            /* (setf (row-major-aref arr idx) val) → (%setf-row-major-aref arr idx val) */
+            int idx = cl_add_constant(c, SETF_HELPER_ROW_MAJOR_AREF);
+            cl_emit(c, OP_FLOAD);
+            cl_emit_u16(c, (uint16_t)idx);
+            compile_expr(c, cl_car(cl_cdr(place)));       /* array */
+            compile_expr(c, cl_car(cl_cdr(cl_cdr(place)))); /* index */
+            compile_expr(c, val_form);                     /* value */
+            cl_emit(c, OP_CALL);
+            cl_emit(c, 3);
+        } else if (head == SETF_SYM_FILL_POINTER) {
+            /* (setf (fill-pointer vec) val) → (%setf-fill-pointer vec val) */
+            int idx = cl_add_constant(c, SETF_HELPER_FILL_POINTER);
+            cl_emit(c, OP_FLOAD);
+            cl_emit_u16(c, (uint16_t)idx);
+            compile_expr(c, cl_car(cl_cdr(place)));       /* vector */
+            compile_expr(c, val_form);                     /* new fill-pointer */
             cl_emit(c, OP_CALL);
             cl_emit(c, 2);
         } else if (head == SETF_SYM_GETHASH) {
@@ -1122,4 +1169,9 @@ void cl_compiler_init(void)
     SETF_HELPER_SF           = cl_intern_in("%SET-SYMBOL-FUNCTION", 20, cl_package_cl);
     SETF_SYM_GETHASH         = cl_intern_in("GETHASH", 7, cl_package_cl);
     SETF_HELPER_GETHASH      = cl_intern_in("%SETF-GETHASH", 13, cl_package_cl);
+    SETF_HELPER_AREF         = cl_intern_in("%SETF-AREF", 10, cl_package_cl);
+    SETF_SYM_ROW_MAJOR_AREF = cl_intern_in("ROW-MAJOR-AREF", 14, cl_package_cl);
+    SETF_HELPER_ROW_MAJOR_AREF = cl_intern_in("%SETF-ROW-MAJOR-AREF", 20, cl_package_cl);
+    SETF_SYM_FILL_POINTER    = cl_intern_in("FILL-POINTER", 12, cl_package_cl);
+    SETF_HELPER_FILL_POINTER = cl_intern_in("%SETF-FILL-POINTER", 18, cl_package_cl);
 }

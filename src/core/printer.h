@@ -4,15 +4,20 @@
 #include "types.h"
 
 /*
- * Object printer (prin1/princ style).
- * prin1 = with escape chars (readable)
- * princ = without escape chars (human)
+ * Object printer.
+ *
+ * cl_write_to_stream() is the core — it honors all *print-* variables
+ * as currently bound.  prin1/princ/print temporarily bind *print-escape*
+ * and delegate to write.
  */
 
-/* Print object to a stream (prin1 style, readable) */
+/* Core: print object honoring current *print-* bindings */
+void cl_write_to_stream(CL_Obj obj, CL_Obj stream);
+
+/* Print object to a stream (prin1 style: *print-escape* = T) */
 void cl_prin1_to_stream(CL_Obj obj, CL_Obj stream);
 
-/* Print object to a stream (princ style, human-readable) */
+/* Print object to a stream (princ style: *print-escape* = NIL) */
 void cl_princ_to_stream(CL_Obj obj, CL_Obj stream);
 
 /* Print newline + object + space to a stream */

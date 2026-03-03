@@ -205,7 +205,34 @@ CL_Obj cl_make_vector(uint32_t length)
     CL_Vector *v = (CL_Vector *)cl_alloc(TYPE_VECTOR, alloc_size);
     if (!v) return CL_NIL;
     v->length = length;
+    v->fill_pointer = CL_NO_FILL_POINTER;
+    v->flags = 0;
+    v->rank = 0;
+    v->_reserved = 0;
     /* data[] already zeroed (= CL_NIL) by cl_alloc */
+    return CL_PTR_TO_OBJ(v);
+}
+
+CL_Obj cl_make_array(uint32_t total, uint8_t rank, uint32_t *dims,
+                     uint8_t flags, uint32_t fill_ptr)
+{
+    /* For multi-dim (rank>1): store dimensions in data[0..rank-1], elements at data[rank..] */
+    uint32_t n_data = (rank > 1) ? (uint32_t)rank + total : total;
+    uint32_t alloc_size = sizeof(CL_Vector) + n_data * sizeof(CL_Obj);
+    CL_Vector *v = (CL_Vector *)cl_alloc(TYPE_VECTOR, alloc_size);
+    if (!v) return CL_NIL;
+    v->length = total;
+    v->fill_pointer = fill_ptr;
+    v->flags = flags;
+    v->rank = rank;
+    v->_reserved = 0;
+    /* Store dimensions as fixnums for multi-dim */
+    if (rank > 1 && dims) {
+        uint8_t i;
+        for (i = 0; i < rank; i++)
+            v->data[i] = CL_MAKE_FIXNUM((int32_t)dims[i]);
+    }
+    /* Element slots already zeroed (= CL_NIL) by cl_alloc */
     return CL_PTR_TO_OBJ(v);
 }
 
@@ -357,7 +384,9 @@ static void gc_mark_children(void *ptr, uint8_t type)
     case TYPE_VECTOR: {
         CL_Vector *v = (CL_Vector *)ptr;
         uint32_t i;
-        for (i = 0; i < v->length; i++)
+        /* For multi-dim: data[0..rank-1] are dim fixnums, elements at data[rank..] */
+        uint32_t n_entries = (v->rank > 1) ? (uint32_t)v->rank + v->length : v->length;
+        for (i = 0; i < n_entries; i++)
             gc_mark_push(v->data[i]);
         break;
     }

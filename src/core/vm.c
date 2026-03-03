@@ -1388,7 +1388,7 @@ CL_Obj cl_vm_eval(CL_Obj bytecode_obj)
             if (idx < 0 || (uint32_t)idx >= vec->length)
                 cl_error(CL_ERR_ARGS, "ASET: index %d out of range (0-%lu)",
                          (int)idx, (unsigned long)(vec->length - 1));
-            vec->data[idx] = val;
+            cl_vector_data(vec)[idx] = val;
             cl_vm_push(val);
             cl_mv_count = 1;
             break;

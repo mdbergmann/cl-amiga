@@ -826,13 +826,12 @@ void compile_defun(CL_Compiler *c, CL_Obj form)
     /* Store as function binding of name */
     {
         int idx = cl_add_constant(c, name);
-        /* The closure is on the stack; store as function binding */
-        cl_emit(c, OP_DUP);
+        /* OP_GSTORE peeks top without popping */
         cl_emit(c, OP_GSTORE);
         cl_emit_u16(c, (uint16_t)idx);
     }
 
-    /* Return the symbol name */
+    /* Return the symbol name (replace closure on stack) */
     cl_emit(c, OP_POP);
     cl_emit_const(c, name);
 }

@@ -8,6 +8,8 @@
 (defun cddr (x) (cdr (cdr x)))
 (defun caddr (x) (car (cdr (cdr x))))
 (defun cadar (x) (car (cdr (car x))))
+(defun cdddr (x) (cdr (cdr (cdr x))))
+(defun cadddr (x) (car (cdr (cdr (cdr x)))))
 
 ;; Utility functions
 (defun identity (x) x)
@@ -621,3 +623,579 @@
   (let* ((dir (directory-namestring pathname))
          (created (%ensure-dirs-helper dir 0 (length dir) nil)))
     (values pathname created)))
+
+;; --- LOOP macro (Phase 8) ---
+
+(defun %loop-keyword-p (sym name)
+  "Check if SYM is a symbol whose name matches NAME."
+  (and (symbolp sym)
+       (string= (symbol-name sym) name)))
+
+(defun %loop-keyword-sym-p (sym)
+  "Check if SYM is any recognized loop keyword."
+  (and (symbolp sym)
+       (let ((n (symbol-name sym)))
+         (or (string= n "FOR") (string= n "AS")
+             (string= n "WITH") (string= n "DO") (string= n "DOING")
+             (string= n "COLLECT") (string= n "COLLECTING")
+             (string= n "APPEND") (string= n "APPENDING")
+             (string= n "NCONC") (string= n "NCONCING")
+             (string= n "SUM") (string= n "SUMMING")
+             (string= n "COUNT") (string= n "COUNTING")
+             (string= n "MAXIMIZE") (string= n "MAXIMIZING")
+             (string= n "MINIMIZE") (string= n "MINIMIZING")
+             (string= n "WHILE") (string= n "UNTIL")
+             (string= n "REPEAT")
+             (string= n "ALWAYS") (string= n "NEVER") (string= n "THEREIS")
+             (string= n "WHEN") (string= n "IF") (string= n "UNLESS")
+             (string= n "RETURN")
+             (string= n "NAMED") (string= n "INITIALLY") (string= n "FINALLY")
+             (string= n "IN") (string= n "ON") (string= n "BY")
+             (string= n "FROM") (string= n "DOWNFROM") (string= n "UPFROM")
+             (string= n "TO") (string= n "BELOW") (string= n "ABOVE")
+             (string= n "DOWNTO") (string= n "UPTO")
+             (string= n "ACROSS") (string= n "THEN")
+             (string= n "INTO") (string= n "BEING") (string= n "EACH")
+             (string= n "THE") (string= n "OF") (string= n "USING")
+             (string= n "HASH-KEY") (string= n "HASH-KEYS")
+             (string= n "HASH-VALUE") (string= n "HASH-VALUES")
+             (string= n "SYMBOL") (string= n "SYMBOLS")
+             (string= n "PRESENT-SYMBOL") (string= n "PRESENT-SYMBOLS")
+             (string= n "EXTERNAL-SYMBOL") (string= n "EXTERNAL-SYMBOLS")
+             (string= n "AND") (string= n "ELSE") (string= n "END")))))
+
+(defun %loop-accum-body (kn expr accum-var)
+  "Generate the body form for accumulation kind KN."
+  (cond
+    ((or (string= kn "COLLECT") (string= kn "COLLECTING"))
+     `(push ,expr ,accum-var))
+    ((or (string= kn "SUM") (string= kn "SUMMING"))
+     `(setq ,accum-var (+ ,accum-var ,expr)))
+    ((or (string= kn "COUNT") (string= kn "COUNTING"))
+     `(when ,expr (setq ,accum-var (+ ,accum-var 1))))
+    ((or (string= kn "MAXIMIZE") (string= kn "MAXIMIZING"))
+     (let ((tmp (gensym "V")))
+       `(let ((,tmp ,expr))
+          (when (or (null ,accum-var) (> ,tmp ,accum-var))
+            (setq ,accum-var ,tmp)))))
+    ((or (string= kn "MINIMIZE") (string= kn "MINIMIZING"))
+     (let ((tmp (gensym "V")))
+       `(let ((,tmp ,expr))
+          (when (or (null ,accum-var) (< ,tmp ,accum-var))
+            (setq ,accum-var ,tmp)))))
+    ((or (string= kn "APPEND") (string= kn "APPENDING"))
+     `(setq ,accum-var (append ,accum-var ,expr)))
+    (t
+     `(setq ,accum-var (nconc ,accum-var ,expr)))))
+
+(defun %loop-accum-keyword-p (sym)
+  "Check if SYM is an accumulation keyword."
+  (and (symbolp sym)
+       (let ((n (symbol-name sym)))
+         (or (string= n "COLLECT") (string= n "COLLECTING")
+             (string= n "APPEND") (string= n "APPENDING")
+             (string= n "NCONC") (string= n "NCONCING")
+             (string= n "SUM") (string= n "SUMMING")
+             (string= n "COUNT") (string= n "COUNTING")
+             (string= n "MAXIMIZE") (string= n "MAXIMIZING")
+             (string= n "MINIMIZE") (string= n "MINIMIZING")))))
+
+(defun %expand-simple-loop (forms)
+  "Expand simple (loop body...) into block/tagbody."
+  (let ((tag (gensym "LOOP")))
+    `(block nil
+       (tagbody
+         ,tag
+         ,@forms
+         (go ,tag)))))
+
+(defun %loop-destructure-vars (pattern)
+  "Extract all variable names from a destructuring pattern."
+  (cond
+    ((null pattern) nil)
+    ((symbolp pattern) (list pattern))
+    ((consp pattern)
+     (append (%loop-destructure-vars (car pattern))
+             (%loop-destructure-vars (cdr pattern))))
+    (t nil)))
+
+(defun %loop-destructure-assigns (pattern source)
+  "Generate setq forms to destructure SOURCE into PATTERN variables."
+  (cond
+    ((null pattern) nil)
+    ((symbolp pattern) (list `(setq ,pattern ,source)))
+    ((consp pattern)
+     (append (%loop-destructure-assigns (car pattern) `(car ,source))
+             (%loop-destructure-assigns (cdr pattern) `(cdr ,source))))
+    (t nil)))
+
+(defun %loop-parse-for (rest var sub-kw end-tag)
+  "Parse a FOR/AS clause. Returns (new-rest bindings end-tests pre-body steps)."
+  (cond
+    ;; FOR var IN list [BY step-fn]
+    ((%loop-keyword-p sub-kw "IN")
+     (let ((list-expr (car rest))
+           (iter-gs (gensym "ITER"))
+           (by-fn nil))
+       (setq rest (cdr rest))
+       (when (and rest (%loop-keyword-p (car rest) "BY"))
+         (setq rest (cdr rest))
+         (setq by-fn (car rest))
+         (setq rest (cdr rest)))
+       (list rest
+             (list (list iter-gs list-expr) (list var nil))
+             (list `(when (endp ,iter-gs) (go ,end-tag)))
+             (list `(setq ,var (car ,iter-gs)))
+             (list (if by-fn
+                       `(setq ,iter-gs (funcall ,by-fn ,iter-gs))
+                       `(setq ,iter-gs (cdr ,iter-gs)))))))
+    ;; FOR var ON list [BY step-fn]
+    ((%loop-keyword-p sub-kw "ON")
+     (let ((list-expr (car rest))
+           (by-fn nil))
+       (setq rest (cdr rest))
+       (when (and rest (%loop-keyword-p (car rest) "BY"))
+         (setq rest (cdr rest))
+         (setq by-fn (car rest))
+         (setq rest (cdr rest)))
+       (list rest
+             (list (list var list-expr))
+             (list `(when (endp ,var) (go ,end-tag)))
+             nil
+             (list (if by-fn
+                       `(setq ,var (funcall ,by-fn ,var))
+                       `(setq ,var (cdr ,var)))))))
+    ;; FOR var ACROSS vector
+    ((%loop-keyword-p sub-kw "ACROSS")
+     (let ((vec-expr (car rest))
+           (vec-gs (gensym "VEC"))
+           (len-gs (gensym "LEN"))
+           (idx-gs (gensym "IDX")))
+       (setq rest (cdr rest))
+       (list rest
+             (list (list vec-gs vec-expr) (list len-gs `(length ,vec-gs))
+                   (list idx-gs 0) (list var nil))
+             (list `(when (>= ,idx-gs ,len-gs) (go ,end-tag)))
+             (list `(setq ,var (elt ,vec-gs ,idx-gs)))
+             (list `(setq ,idx-gs (+ ,idx-gs 1))))))
+    ;; FOR var = expr [THEN step-expr]
+    ((and (symbolp sub-kw) (string= (symbol-name sub-kw) "="))
+     (let ((init-expr (car rest))
+           (step-expr nil))
+       (setq rest (cdr rest))
+       (when (and rest (%loop-keyword-p (car rest) "THEN"))
+         (setq rest (cdr rest))
+         (setq step-expr (car rest))
+         (setq rest (cdr rest)))
+       (list rest
+             (list (list var init-expr))
+             nil nil
+             (if step-expr (list `(setq ,var ,step-expr)) nil))))
+    ;; FOR var FROM/UPFROM/DOWNFROM start ...
+    ((or (%loop-keyword-p sub-kw "FROM")
+         (%loop-keyword-p sub-kw "UPFROM")
+         (%loop-keyword-p sub-kw "DOWNFROM"))
+     (let ((start-expr (car rest))
+           (dir (if (%loop-keyword-p sub-kw "DOWNFROM") :down :up))
+           (end-expr nil) (end-gs nil) (cmp-fn nil)
+           (step-val 1))
+       (setq rest (cdr rest))
+       (block parse-num-opts
+         (tagbody
+           num-opt-next
+           (when (null rest) (return-from parse-num-opts))
+           (cond
+             ((or (%loop-keyword-p (car rest) "TO")
+                  (%loop-keyword-p (car rest) "UPTO"))
+              (setq rest (cdr rest))
+              (setq end-expr (car rest))
+              (setq rest (cdr rest))
+              (setq cmp-fn (if (eq dir :up) '> '<)))
+             ((%loop-keyword-p (car rest) "DOWNTO")
+              (setq rest (cdr rest))
+              (setq end-expr (car rest))
+              (setq rest (cdr rest))
+              (setq dir :down)
+              (setq cmp-fn '<))
+             ((%loop-keyword-p (car rest) "BELOW")
+              (setq rest (cdr rest))
+              (setq end-expr (car rest))
+              (setq rest (cdr rest))
+              (setq cmp-fn '>=))
+             ((%loop-keyword-p (car rest) "ABOVE")
+              (setq rest (cdr rest))
+              (setq end-expr (car rest))
+              (setq rest (cdr rest))
+              (setq dir :down)
+              (setq cmp-fn '<=))
+             ((%loop-keyword-p (car rest) "BY")
+              (setq rest (cdr rest))
+              (setq step-val (car rest))
+              (setq rest (cdr rest)))
+             (t (return-from parse-num-opts)))
+           (go num-opt-next)))
+       (let ((binds (list (list var start-expr)))
+             (tests nil))
+         (when end-expr
+           (setq end-gs (gensym "END"))
+           (push (list end-gs end-expr) binds)
+           (setq tests (list `(when (,cmp-fn ,var ,end-gs) (go ,end-tag)))))
+         (list rest binds tests nil
+               (list (if (eq dir :down)
+                         `(setq ,var (- ,var ,step-val))
+                         `(setq ,var (+ ,var ,step-val))))))))
+    ;; FOR var BEING {the|each} {hash-key[s]|hash-value[s]} {of|in} ht [using (...)]
+    ;; FOR var BEING {the|each} {symbol[s]|present-symbol[s]|external-symbol[s]} {of|in} pkg
+    ((%loop-keyword-p sub-kw "BEING")
+     (let ((what nil)
+           (using-var nil))
+       ;; Skip optional the/each
+       (when (and rest (symbolp (car rest))
+                  (let ((n (symbol-name (car rest))))
+                    (or (string= n "THE") (string= n "EACH"))))
+         (setq rest (cdr rest)))
+       ;; Parse iteration kind
+       (when (null rest) (error "LOOP: missing BEING iteration kind"))
+       (let ((n (if (symbolp (car rest)) (symbol-name (car rest)) "")))
+         (cond
+           ((or (string= n "HASH-KEY") (string= n "HASH-KEYS"))
+            (setq what "HASH-KEYS"))
+           ((or (string= n "HASH-VALUE") (string= n "HASH-VALUES"))
+            (setq what "HASH-VALUES"))
+           ((or (string= n "SYMBOL") (string= n "SYMBOLS"))
+            (setq what "SYMBOLS"))
+           ((or (string= n "PRESENT-SYMBOL") (string= n "PRESENT-SYMBOLS"))
+            (setq what "PRESENT-SYMBOLS"))
+           ((or (string= n "EXTERNAL-SYMBOL") (string= n "EXTERNAL-SYMBOLS"))
+            (setq what "EXTERNAL-SYMBOLS"))
+           (t (error "LOOP: unrecognized BEING type ~S" (car rest)))))
+       (setq rest (cdr rest))
+       ;; Skip of/in
+       (when (and rest (symbolp (car rest))
+                  (let ((n (symbol-name (car rest))))
+                    (or (string= n "OF") (string= n "IN"))))
+         (setq rest (cdr rest)))
+       ;; Source expression
+       (let ((src-expr (car rest)))
+         (setq rest (cdr rest))
+         ;; Check for USING clause (hash tables only)
+         (when (and rest (%loop-keyword-p (car rest) "USING"))
+           (setq rest (cdr rest))
+           (let ((spec (car rest)))
+             (setq rest (cdr rest))
+             (setq using-var (cadr spec))))
+         ;; Generate expansion
+         (cond
+           ;; Hash table iteration
+           ((or (string= what "HASH-KEYS") (string= what "HASH-VALUES"))
+            (let* ((iter-gs (gensym "ITER"))
+                   (is-keys (string= what "HASH-KEYS"))
+                   (binds (list (list iter-gs `(%hash-table-pairs ,src-expr))
+                                (list var nil)))
+                   (pre (list `(setq ,var (,(if is-keys 'caar 'cdar) ,iter-gs)))))
+              (when using-var
+                (setq binds (append binds (list (list using-var nil))))
+                (setq pre (append pre
+                                  (list `(setq ,using-var
+                                               (,(if is-keys 'cdar 'caar) ,iter-gs))))))
+              (list rest binds
+                    (list `(when (endp ,iter-gs) (go ,end-tag)))
+                    pre
+                    (list `(setq ,iter-gs (cdr ,iter-gs))))))
+           ;; Package symbol iteration
+           (t
+            (let* ((iter-gs (gensym "ITER"))
+                   (fn (if (string= what "EXTERNAL-SYMBOLS")
+                           '%package-external-symbols
+                           '%package-symbols)))
+              (list rest
+                    (list (list iter-gs `(,fn (find-package ,src-expr)))
+                          (list var nil))
+                    (list `(when (endp ,iter-gs) (go ,end-tag)))
+                    (list `(setq ,var (car ,iter-gs)))
+                    (list `(setq ,iter-gs (cdr ,iter-gs))))))))))
+    (t
+     (error "LOOP: unrecognized FOR sub-clause ~S" sub-kw))))
+
+(defun %loop-parse-cond-subclause (sub rest block-name
+                                    bindings into-vars default-accum
+                                    result-form epilogue)
+  "Parse one conditional sub-clause. Returns (form rest bindings into-vars
+   default-accum result-form epilogue)."
+  (let ((form nil))
+    (cond
+      ;; DO — consume forms until keyword
+      ((or (%loop-keyword-p sub "DO") (%loop-keyword-p sub "DOING"))
+       (let ((do-forms nil))
+         (block consume-cond-do
+           (tagbody
+             cond-do-next
+             (when (null rest) (return-from consume-cond-do))
+             (when (%loop-keyword-sym-p (car rest)) (return-from consume-cond-do))
+             (push (car rest) do-forms)
+             (setq rest (cdr rest))
+             (go cond-do-next)))
+         (setq form `(progn ,@(nreverse do-forms)))))
+      ;; RETURN
+      ((%loop-keyword-p sub "RETURN")
+       (setq form `(return-from ,block-name ,(car rest)))
+       (setq rest (cdr rest)))
+      ;; Accumulation
+      ((%loop-accum-keyword-p sub)
+       (let* ((kn (symbol-name sub))
+              (is-collect (or (string= kn "COLLECT") (string= kn "COLLECTING")))
+              (is-sum (or (string= kn "SUM") (string= kn "SUMMING")))
+              (is-count (or (string= kn "COUNT") (string= kn "COUNTING")))
+              (init-val (if (or is-sum is-count) 0 nil))
+              (expr (car rest))
+              (accum-var nil))
+         (setq rest (cdr rest))
+         (if (and rest (%loop-keyword-p (car rest) "INTO"))
+             (progn
+               (setq rest (cdr rest))
+               (setq accum-var (car rest))
+               (setq rest (cdr rest))
+               (unless (member accum-var into-vars)
+                 (push accum-var into-vars)
+                 (push (list accum-var init-val) bindings)
+                 (when is-collect
+                   (push `(setq ,accum-var (nreverse ,accum-var)) epilogue))))
+             (progn
+               (unless default-accum
+                 (setq default-accum (gensym "ACC"))
+                 (push (list default-accum init-val) bindings)
+                 (setq result-form (if is-collect `(nreverse ,default-accum)
+                                       default-accum)))
+               (setq accum-var default-accum)))
+         (setq form (%loop-accum-body kn expr accum-var))))
+      (t (error "LOOP: invalid WHEN/IF sub-clause ~S" sub)))
+    (list form rest bindings into-vars default-accum result-form epilogue)))
+
+(defun %expand-extended-loop (forms)
+  "Expand extended loop with keywords into block/let*/tagbody."
+  (let* ((rest forms)
+         (block-name nil)
+         (bindings nil)
+         (end-tests nil)
+         (pre-body nil)
+         (body nil)
+         (steps nil)
+         (epilogue nil)
+         (finally-forms nil)
+         (initially-forms nil)
+         (result-form nil)
+         (default-accum nil)
+         (into-vars nil)
+         (loop-tag (gensym "LOOP"))
+         (end-tag (gensym "END")))
+    ;; Parser loop
+    (block parse-done
+      (tagbody
+        parse-next
+        (when (null rest) (return-from parse-done))
+        (let ((kw (car rest)))
+          (setq rest (cdr rest))
+          (cond
+            ;; WHILE
+            ((%loop-keyword-p kw "WHILE")
+             (push `(unless ,(car rest) (go ,end-tag)) end-tests)
+             (setq rest (cdr rest)))
+            ;; UNTIL
+            ((%loop-keyword-p kw "UNTIL")
+             (push `(when ,(car rest) (go ,end-tag)) end-tests)
+             (setq rest (cdr rest)))
+            ;; DO / DOING
+            ((or (%loop-keyword-p kw "DO") (%loop-keyword-p kw "DOING"))
+             (block consume-do
+               (tagbody
+                 do-next
+                 (when (null rest) (return-from consume-do))
+                 (when (%loop-keyword-sym-p (car rest)) (return-from consume-do))
+                 (push (car rest) body)
+                 (setq rest (cdr rest))
+                 (go do-next))))
+            ;; REPEAT
+            ((%loop-keyword-p kw "REPEAT")
+             (let ((ctr (gensym "REP")))
+               (push (list ctr (car rest)) bindings)
+               (setq rest (cdr rest))
+               (push `(when (<= ,ctr 0) (go ,end-tag)) end-tests)
+               (push `(setq ,ctr (- ,ctr 1)) steps)))
+            ;; FOR / AS — delegated
+            ((or (%loop-keyword-p kw "FOR") (%loop-keyword-p kw "AS"))
+             (let* ((raw-var (car rest))
+                    (destructuring (consp raw-var))
+                    (var (if destructuring (gensym "DVAR") raw-var))
+                    (sub-kw (cadr rest))
+                    (r (%loop-parse-for (cddr rest) var sub-kw end-tag)))
+               (setq rest (car r))
+               (dolist (b (cadr r)) (push b bindings))
+               (when destructuring
+                 (dolist (v (%loop-destructure-vars raw-var))
+                   (push (list v nil) bindings)))
+               (dolist (e (caddr r)) (push e end-tests))
+               (dolist (p (car (cdddr r))) (push p pre-body))
+               (when destructuring
+                 (dolist (a (%loop-destructure-assigns raw-var var))
+                   (push a pre-body)))
+               (dolist (s (cadr (cdddr r))) (push s steps))))
+            ;; RETURN
+            ((%loop-keyword-p kw "RETURN")
+             (push `(return-from ,block-name ,(car rest)) body)
+             (setq rest (cdr rest)))
+            ;; Accumulation (unified)
+            ((%loop-accum-keyword-p kw)
+             (let* ((kn (symbol-name kw))
+                    (is-collect (or (string= kn "COLLECT") (string= kn "COLLECTING")))
+                    (is-sum (or (string= kn "SUM") (string= kn "SUMMING")))
+                    (is-count (or (string= kn "COUNT") (string= kn "COUNTING")))
+                    (init-val (if (or is-sum is-count) 0 nil))
+                    (expr (car rest))
+                    (accum-var nil))
+               (setq rest (cdr rest))
+               (if (and rest (%loop-keyword-p (car rest) "INTO"))
+                   (progn
+                     (setq rest (cdr rest))
+                     (setq accum-var (car rest))
+                     (setq rest (cdr rest))
+                     (unless (member accum-var into-vars)
+                       (push accum-var into-vars)
+                       (push (list accum-var init-val) bindings)
+                       (when is-collect
+                         (push `(setq ,accum-var (nreverse ,accum-var)) epilogue))))
+                   (progn
+                     (unless default-accum
+                       (setq default-accum (gensym "ACC"))
+                       (push (list default-accum init-val) bindings)
+                       (setq result-form (if is-collect `(nreverse ,default-accum)
+                                             default-accum)))
+                     (setq accum-var default-accum)))
+               (push (%loop-accum-body kn expr accum-var) body)))
+            ;; NAMED
+            ((%loop-keyword-p kw "NAMED")
+             (setq block-name (car rest))
+             (setq rest (cdr rest)))
+            ;; WITH var [= expr] {AND var [= expr]}*
+            ((%loop-keyword-p kw "WITH")
+             (block parse-with
+               (tagbody
+                 with-next
+                 (let ((wvar (car rest)))
+                   (setq rest (cdr rest))
+                   (if (and rest (symbolp (car rest))
+                            (string= (symbol-name (car rest)) "="))
+                       (progn
+                         (setq rest (cdr rest))
+                         (push (list wvar (car rest)) bindings)
+                         (setq rest (cdr rest)))
+                       (push (list wvar nil) bindings)))
+                 (when (and rest (%loop-keyword-p (car rest) "AND"))
+                   (setq rest (cdr rest))
+                   (go with-next)))))
+            ;; INITIALLY
+            ((%loop-keyword-p kw "INITIALLY")
+             (block consume-ini
+               (tagbody
+                 ini-next
+                 (when (null rest) (return-from consume-ini))
+                 (when (%loop-keyword-sym-p (car rest)) (return-from consume-ini))
+                 (push (car rest) initially-forms)
+                 (setq rest (cdr rest))
+                 (go ini-next))))
+            ;; FINALLY
+            ((%loop-keyword-p kw "FINALLY")
+             (block consume-fin
+               (tagbody
+                 fin-next
+                 (when (null rest) (return-from consume-fin))
+                 (when (%loop-keyword-sym-p (car rest)) (return-from consume-fin))
+                 (push (car rest) finally-forms)
+                 (setq rest (cdr rest))
+                 (go fin-next))))
+            ;; ALWAYS
+            ((%loop-keyword-p kw "ALWAYS")
+             (push `(unless ,(car rest) (return-from ,block-name nil)) body)
+             (setq rest (cdr rest))
+             (unless result-form (setq result-form t)))
+            ;; NEVER
+            ((%loop-keyword-p kw "NEVER")
+             (push `(when ,(car rest) (return-from ,block-name nil)) body)
+             (setq rest (cdr rest))
+             (unless result-form (setq result-form t)))
+            ;; THEREIS
+            ((%loop-keyword-p kw "THEREIS")
+             (let ((tmp (gensym "V")))
+               (push `(let ((,tmp ,(car rest)))
+                        (when ,tmp (return-from ,block-name ,tmp)))
+                     body)
+               (setq rest (cdr rest))))
+            ;; WHEN / IF / UNLESS — conditional with sub-clauses
+            ((or (%loop-keyword-p kw "WHEN") (%loop-keyword-p kw "IF")
+                 (%loop-keyword-p kw "UNLESS"))
+             (let ((test-expr (car rest))
+                   (negate (%loop-keyword-p kw "UNLESS"))
+                   (then-forms nil)
+                   (else-forms nil)
+                   (in-else nil))
+               (setq rest (cdr rest))
+               (block parse-subclauses
+                 (tagbody
+                   parse-one-sub
+                   (let* ((r (%loop-parse-cond-subclause
+                              (car rest) (cdr rest) block-name
+                              bindings into-vars default-accum
+                              result-form epilogue)))
+                     (if in-else
+                         (push (car r) else-forms)
+                         (push (car r) then-forms))
+                     (setq rest (cadr r))
+                     (setq bindings (caddr r))
+                     (setq into-vars (car (cdddr r)))
+                     (setq default-accum (cadr (cdddr r)))
+                     (setq result-form (caddr (cdddr r)))
+                     (setq epilogue (car (cdddr (cdddr r)))))
+                   (cond
+                     ((and rest (%loop-keyword-p (car rest) "AND"))
+                      (setq rest (cdr rest))
+                      (go parse-one-sub))
+                     ((and rest (%loop-keyword-p (car rest) "ELSE"))
+                      (setq rest (cdr rest))
+                      (setq in-else t)
+                      (go parse-one-sub))
+                     ((and rest (%loop-keyword-p (car rest) "END"))
+                      (setq rest (cdr rest))))))
+               (when negate (setq test-expr `(not ,test-expr)))
+               (if else-forms
+                   (push `(if ,test-expr
+                              (progn ,@(nreverse then-forms))
+                              (progn ,@(nreverse else-forms)))
+                         body)
+                   (push `(when ,test-expr ,@(nreverse then-forms)) body))))
+            (t
+             (error "LOOP: unrecognized clause ~S" kw))))
+        (go parse-next)))
+    ;; Build the expansion
+    `(block ,block-name
+       (let* ,(nreverse bindings)
+         ,@(nreverse initially-forms)
+         (macrolet ((loop-finish () (list 'go ',end-tag)))
+           (tagbody
+             ,loop-tag
+             ,@(nreverse end-tests)
+             ,@(nreverse pre-body)
+             ,@(nreverse body)
+             ,@(nreverse steps)
+             (go ,loop-tag)
+             ,end-tag))
+         ,@(nreverse epilogue)
+         ,@(nreverse finally-forms)
+         ,result-form))))
+
+(defmacro loop (&rest forms)
+  "CL LOOP macro — supports simple and extended forms."
+  (if (or (null forms)
+          (%loop-keyword-sym-p (car forms)))
+      ;; Extended loop (starts with keyword or is empty)
+      (%expand-extended-loop forms)
+      ;; Simple loop (body forms only)
+      (%expand-simple-loop forms)))

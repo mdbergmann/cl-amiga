@@ -408,6 +408,36 @@ static CL_Obj bi_hash_table_p(CL_Obj *args, int n)
     return CL_HASHTABLE_P(args[0]) ? SYM_T : CL_NIL;
 }
 
+static CL_Obj bi_hash_table_pairs(CL_Obj *args, int n)
+{
+    CL_Obj ht_obj = args[0];
+    CL_Hashtable *ht;
+    CL_Obj result = CL_NIL;
+    uint32_t i;
+    CL_UNUSED(n);
+
+    if (!CL_HASHTABLE_P(ht_obj))
+        cl_error(CL_ERR_TYPE, "%HASH-TABLE-PAIRS: not a hash table");
+
+    CL_GC_PROTECT(ht_obj);
+    CL_GC_PROTECT(result);
+
+    ht = (CL_Hashtable *)CL_OBJ_TO_PTR(ht_obj);
+    for (i = 0; i < ht->bucket_count; i++) {
+        CL_Obj chain = ht->buckets[i];
+        while (!CL_NULL_P(chain)) {
+            CL_Obj pair = cl_car(chain);
+            result = cl_cons(pair, result);
+            /* Re-dereference after potential GC from cl_cons */
+            ht = (CL_Hashtable *)CL_OBJ_TO_PTR(ht_obj);
+            chain = cl_cdr(chain);
+        }
+    }
+
+    CL_GC_UNPROTECT(2);
+    return result;
+}
+
 /* --- Registration --- */
 
 void cl_builtins_hashtable_init(void)
@@ -427,4 +457,5 @@ void cl_builtins_hashtable_init(void)
     defun("HASH-TABLE-COUNT", bi_hash_table_count, 1, 1);
     defun("HASH-TABLE-P", bi_hash_table_p, 1, 1);
     defun("%SETF-GETHASH", bi_setf_gethash, 3, 3);
+    defun("%HASH-TABLE-PAIRS", bi_hash_table_pairs, 1, 1);
 }

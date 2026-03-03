@@ -64,7 +64,7 @@ static CL_Obj bi_length(CL_Obj *args, int n)
 
     if (CL_VECTOR_P(obj)) {
         CL_Vector *v = (CL_Vector *)CL_OBJ_TO_PTR(obj);
-        return CL_MAKE_FIXNUM(v->length);
+        return CL_MAKE_FIXNUM(cl_vector_active_length(v));
     }
 
     while (!CL_NULL_P(obj)) {
@@ -474,6 +474,7 @@ void cl_builtins_condition_init(void);
 void cl_builtins_package_init(void);
 void cl_builtins_struct_init(void);
 void cl_builtins_stream_init(void);
+void cl_builtins_array_init(void);
 void cl_float_math_init(void);
 
 void cl_builtins_init(void)
@@ -533,6 +534,7 @@ void cl_builtins_init(void)
     cl_builtins_package_init();
     cl_builtins_struct_init();
     cl_builtins_stream_init();
+    cl_builtins_array_init();
     cl_float_math_init();
 
     /* All CL symbols now interned — mark them exported */

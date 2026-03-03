@@ -1524,6 +1524,170 @@ TEST(eval_array_rank)
     ASSERT_EQ_INT(eval_int("(array-rank (vector 1 2 3))"), 1);
 }
 
+TEST(eval_setf_aref_multidim)
+{
+    /* 2D array: setf + read back */
+    ASSERT_EQ_INT(eval_int(
+        "(let ((a (make-array '(2 3))))"
+        "  (setf (aref a 0 0) 10)"
+        "  (setf (aref a 0 1) 20)"
+        "  (setf (aref a 0 2) 30)"
+        "  (setf (aref a 1 0) 40)"
+        "  (setf (aref a 1 1) 50)"
+        "  (setf (aref a 1 2) 60)"
+        "  (+ (aref a 0 0) (aref a 1 2)))"), 70);
+
+    /* setf returns the value */
+    ASSERT_EQ_INT(eval_int(
+        "(let ((a (make-array '(3 3))))"
+        "  (setf (aref a 1 2) 99))"), 99);
+
+    /* 3D array */
+    ASSERT_EQ_INT(eval_int(
+        "(let ((a (make-array '(2 2 2))))"
+        "  (setf (aref a 0 0 0) 1)"
+        "  (setf (aref a 1 1 1) 8)"
+        "  (+ (aref a 0 0 0) (aref a 1 1 1)))"), 9);
+}
+
+TEST(eval_array_dimension)
+{
+    /* 1D */
+    ASSERT_EQ_INT(eval_int("(array-dimension (make-array 5) 0)"), 5);
+    /* 2D */
+    ASSERT_EQ_INT(eval_int("(array-dimension (make-array '(3 4)) 0)"), 3);
+    ASSERT_EQ_INT(eval_int("(array-dimension (make-array '(3 4)) 1)"), 4);
+}
+
+TEST(eval_array_total_size)
+{
+    ASSERT_EQ_INT(eval_int("(array-total-size (make-array 5))"), 5);
+    ASSERT_EQ_INT(eval_int("(array-total-size (make-array '(3 4)))"), 12);
+    ASSERT_EQ_INT(eval_int("(array-total-size (make-array '(2 3 4)))"), 24);
+}
+
+TEST(eval_array_row_major_index)
+{
+    /* 1D: identity */
+    ASSERT_EQ_INT(eval_int("(array-row-major-index (make-array 5) 3)"), 3);
+    /* 2D: row-major = row*ncols + col */
+    ASSERT_EQ_INT(eval_int("(array-row-major-index (make-array '(3 4)) 0 0)"), 0);
+    ASSERT_EQ_INT(eval_int("(array-row-major-index (make-array '(3 4)) 1 0)"), 4);
+    ASSERT_EQ_INT(eval_int("(array-row-major-index (make-array '(3 4)) 2 3)"), 11);
+}
+
+TEST(eval_row_major_aref)
+{
+    /* Access via row-major index */
+    ASSERT_EQ_INT(eval_int(
+        "(let ((a (make-array '(2 3))))"
+        "  (setf (aref a 1 2) 99)"
+        "  (row-major-aref a 5))"), 99);  /* row 1, col 2 = 1*3+2 = 5 */
+
+    /* setf row-major-aref */
+    ASSERT_EQ_INT(eval_int(
+        "(let ((a (make-array '(2 3))))"
+        "  (setf (row-major-aref a 5) 77)"
+        "  (aref a 1 2))"), 77);
+
+    /* setf returns value */
+    ASSERT_EQ_INT(eval_int(
+        "(let ((a (make-array 3)))"
+        "  (setf (row-major-aref a 1) 42))"), 42);
+}
+
+TEST(eval_fill_pointer)
+{
+    /* Basic fill-pointer read */
+    ASSERT_EQ_INT(eval_int(
+        "(fill-pointer (make-array 10 :fill-pointer 0))"), 0);
+    ASSERT_EQ_INT(eval_int(
+        "(fill-pointer (make-array 10 :fill-pointer 5))"), 5);
+
+    /* fill-pointer T means start at 0 */
+    ASSERT_EQ_INT(eval_int(
+        "(fill-pointer (make-array 10 :fill-pointer t))"), 0);
+
+    /* array-has-fill-pointer-p */
+    ASSERT_STR_EQ(eval_print(
+        "(array-has-fill-pointer-p (make-array 5 :fill-pointer 0))"), "T");
+    ASSERT_STR_EQ(eval_print(
+        "(array-has-fill-pointer-p (make-array 5))"), "NIL");
+
+    /* setf fill-pointer */
+    ASSERT_EQ_INT(eval_int(
+        "(let ((v (make-array 10 :fill-pointer 0)))"
+        "  (setf (fill-pointer v) 7)"
+        "  (fill-pointer v))"), 7);
+
+    /* setf returns the new value */
+    ASSERT_EQ_INT(eval_int(
+        "(let ((v (make-array 10 :fill-pointer 0)))"
+        "  (setf (fill-pointer v) 3))"), 3);
+}
+
+TEST(eval_vector_push)
+{
+    /* basic vector-push */
+    ASSERT_EQ_INT(eval_int(
+        "(let ((v (make-array 5 :fill-pointer 0)))"
+        "  (vector-push 10 v)"
+        "  (vector-push 20 v)"
+        "  (vector-push 30 v)"
+        "  (fill-pointer v))"), 3);
+
+    /* vector-push returns old fill-pointer */
+    ASSERT_EQ_INT(eval_int(
+        "(let ((v (make-array 5 :fill-pointer 0)))"
+        "  (vector-push 10 v)"
+        "  (vector-push 20 v))"), 1);
+
+    /* vector-push returns NIL when full */
+    ASSERT_STR_EQ(eval_print(
+        "(let ((v (make-array 2 :fill-pointer 0)))"
+        "  (vector-push 1 v)"
+        "  (vector-push 2 v)"
+        "  (vector-push 3 v))"), "NIL");
+
+    /* pushed elements accessible via aref */
+    ASSERT_EQ_INT(eval_int(
+        "(let ((v (make-array 3 :fill-pointer 0)))"
+        "  (vector-push 10 v)"
+        "  (vector-push 20 v)"
+        "  (+ (aref v 0) (aref v 1)))"), 30);
+
+    /* length reflects fill pointer */
+    ASSERT_EQ_INT(eval_int(
+        "(let ((v (make-array 10 :fill-pointer 0)))"
+        "  (vector-push 1 v)"
+        "  (vector-push 2 v)"
+        "  (length v))"), 2);
+}
+
+TEST(eval_adjust_array)
+{
+    /* grow array, preserving old data */
+    ASSERT_EQ_INT(eval_int(
+        "(let ((v (make-array 3 :adjustable t :initial-element 1)))"
+        "  (let ((v2 (adjust-array v 5 :initial-element 99)))"
+        "    (+ (aref v2 0) (aref v2 3))))"), 100);  /* 1 + 99 */
+
+    /* shrink array */
+    ASSERT_EQ_INT(eval_int(
+        "(let ((v (make-array 5 :adjustable t :initial-element 42)))"
+        "  (array-total-size (adjust-array v 3)))"), 3);
+
+    /* preserves fill pointer */
+    ASSERT_EQ_INT(eval_int(
+        "(let ((v (make-array 5 :fill-pointer 2 :adjustable t)))"
+        "  (fill-pointer (adjust-array v 10)))"), 2);
+
+    /* adjust with :fill-pointer override */
+    ASSERT_EQ_INT(eval_int(
+        "(let ((v (make-array 5 :fill-pointer 2 :adjustable t)))"
+        "  (fill-pointer (adjust-array v 10 :fill-pointer 8)))"), 8);
+}
+
 /* --- Phase 5 Tier 2: String functions --- */
 
 TEST(eval_string_comparison)
@@ -3068,6 +3232,606 @@ TEST(history_arithmetic_still_works)
     ASSERT_EQ_INT(eval_int("(- 10 3)"), 7);
 }
 
+/* --- Printer control variables --- */
+
+TEST(eval_print_var_defaults)
+{
+    /* CL spec default values */
+    ASSERT_STR_EQ(eval_print("*print-escape*"), "T");
+    ASSERT_STR_EQ(eval_print("*print-readably*"), "NIL");
+    ASSERT_EQ_INT(eval_int("*print-base*"), 10);
+    ASSERT_STR_EQ(eval_print("*print-radix*"), "NIL");
+    ASSERT_STR_EQ(eval_print("*print-level*"), "NIL");
+    ASSERT_STR_EQ(eval_print("*print-length*"), "NIL");
+    ASSERT_STR_EQ(eval_print("*print-case*"), ":UPCASE");
+    ASSERT_STR_EQ(eval_print("*print-gensym*"), "T");
+    ASSERT_STR_EQ(eval_print("*print-array*"), "T");
+    ASSERT_STR_EQ(eval_print("*print-circle*"), "NIL");
+    ASSERT_STR_EQ(eval_print("*print-pretty*"), "NIL");
+}
+
+TEST(eval_print_escape_dynamic)
+{
+    /* prin1-to-string forces escape=T */
+    ASSERT_STR_EQ(eval_print("(prin1-to-string \"hello\")"),
+        "\"\\\"hello\\\"\"");
+    /* princ-to-string forces escape=NIL */
+    ASSERT_STR_EQ(eval_print("(princ-to-string \"hello\")"), "\"hello\"");
+    /* Dynamic binding: prin1 overrides *print-escape* NIL binding */
+    ASSERT_STR_EQ(eval_print(
+        "(let ((*print-escape* nil)) (prin1-to-string \"hi\"))"),
+        "\"\\\"hi\\\"\"");
+    /* Dynamic binding: princ overrides *print-escape* T binding */
+    ASSERT_STR_EQ(eval_print(
+        "(let ((*print-escape* t)) (princ-to-string \"hi\"))"),
+        "\"hi\"");
+    /* Characters also affected */
+    ASSERT_STR_EQ(eval_print("(prin1-to-string #\\Space)"), "\"#\\\\Space\"");
+    ASSERT_STR_EQ(eval_print("(princ-to-string #\\Space)"), "\" \"");
+}
+
+TEST(eval_print_level)
+{
+    /* Level 0 — everything is # */
+    ASSERT_STR_EQ(eval_print(
+        "(let ((*print-level* 0)) (prin1-to-string '(a b)))"),
+        "\"#\"");
+    /* Level 1 — top list shown, nested lists become # */
+    ASSERT_STR_EQ(eval_print(
+        "(let ((*print-level* 1)) (prin1-to-string '(a (b (c)))))"),
+        "\"(A #)\"");
+    /* Level 2 */
+    ASSERT_STR_EQ(eval_print(
+        "(let ((*print-level* 2)) (prin1-to-string '(a (b (c)))))"),
+        "\"(A (B #))\"");
+    /* NIL = no limit (default) */
+    ASSERT_STR_EQ(eval_print(
+        "(prin1-to-string '(a (b (c))))"),
+        "\"(A (B (C)))\"");
+}
+
+TEST(eval_print_length)
+{
+    /* Length 0 — no elements shown */
+    ASSERT_STR_EQ(eval_print(
+        "(let ((*print-length* 0)) (prin1-to-string '(a b c)))"),
+        "\"(...)\"");
+    /* Length 2 — first 2 shown, rest truncated */
+    ASSERT_STR_EQ(eval_print(
+        "(let ((*print-length* 2)) (prin1-to-string '(a b c d e)))"),
+        "\"(A B ...)\"");
+    /* Length longer than list — no truncation */
+    ASSERT_STR_EQ(eval_print(
+        "(let ((*print-length* 10)) (prin1-to-string '(a b)))"),
+        "\"(A B)\"");
+    /* Dotted pair not truncated when within length */
+    ASSERT_STR_EQ(eval_print(
+        "(let ((*print-length* 2)) (prin1-to-string '(a . b)))"),
+        "\"(A . B)\"");
+}
+
+TEST(eval_print_level_length_combined)
+{
+    /* Both level and length active */
+    ASSERT_STR_EQ(eval_print(
+        "(let ((*print-level* 1) (*print-length* 2))"
+        "  (prin1-to-string '(a b (c d) e)))"),
+        "\"(A B ...)\"");
+}
+
+/* --- Phase 8: Loop macro --- */
+
+TEST(eval_loop_simple_return)
+{
+    /* Simple loop with return */
+    ASSERT_EQ_INT(eval_int(
+        "(let ((i 0))"
+        "  (loop"
+        "    (when (= i 5) (return i))"
+        "    (setq i (+ i 1))))"), 5);
+}
+
+TEST(eval_loop_simple_accumulate)
+{
+    /* Simple loop accumulating a list */
+    ASSERT_STR_EQ(eval_print(
+        "(let ((result nil) (i 0))"
+        "  (loop"
+        "    (when (>= i 3) (return (nreverse result)))"
+        "    (push i result)"
+        "    (setq i (+ i 1))))"), "(0 1 2)");
+}
+
+TEST(eval_loop_while)
+{
+    /* Extended loop with while */
+    ASSERT_EQ_INT(eval_int(
+        "(let ((i 0) (sum 0))"
+        "  (loop while (< i 5)"
+        "    do (setq sum (+ sum i))"
+        "       (setq i (+ i 1)))"
+        "  sum)"), 10);
+}
+
+TEST(eval_loop_until)
+{
+    /* Extended loop with until */
+    ASSERT_EQ_INT(eval_int(
+        "(let ((i 0) (sum 0))"
+        "  (loop until (= i 4)"
+        "    do (setq sum (+ sum i))"
+        "       (setq i (+ i 1)))"
+        "  sum)"), 6);
+}
+
+TEST(eval_loop_do_multiple)
+{
+    /* Extended loop do with multiple body forms */
+    ASSERT_EQ_INT(eval_int(
+        "(let ((x 0) (y 0))"
+        "  (loop while (< x 3)"
+        "    do (setq x (+ x 1))"
+        "       (setq y (+ y 10)))"
+        "  y)"), 30);
+}
+
+/* --- Phase 8: Loop Step 2 — for/as/repeat --- */
+
+TEST(eval_loop_for_in)
+{
+    /* for var in list */
+    ASSERT_STR_EQ(eval_print(
+        "(let ((r nil))"
+        "  (loop for x in '(1 2 3)"
+        "    do (push x r))"
+        "  (nreverse r))"), "(1 2 3)");
+}
+
+TEST(eval_loop_for_in_by)
+{
+    /* for var in list by #'cddr */
+    ASSERT_STR_EQ(eval_print(
+        "(let ((r nil))"
+        "  (loop for x in '(1 2 3 4 5)"
+        "    by #'cddr"
+        "    do (push x r))"
+        "  (nreverse r))"), "(1 3 5)");
+}
+
+TEST(eval_loop_for_on)
+{
+    /* for var on list */
+    ASSERT_STR_EQ(eval_print(
+        "(let ((r nil))"
+        "  (loop for x on '(1 2 3)"
+        "    do (push x r))"
+        "  (nreverse r))"), "((1 2 3) (2 3) (3))");
+}
+
+TEST(eval_loop_for_from_to)
+{
+    /* for var from start to end */
+    ASSERT_EQ_INT(eval_int(
+        "(let ((sum 0))"
+        "  (loop for i from 1 to 5"
+        "    do (setq sum (+ sum i)))"
+        "  sum)"), 15);
+}
+
+TEST(eval_loop_for_from_below)
+{
+    /* for var from start below end */
+    ASSERT_EQ_INT(eval_int(
+        "(let ((sum 0))"
+        "  (loop for i from 0 below 4"
+        "    do (setq sum (+ sum i)))"
+        "  sum)"), 6);
+}
+
+TEST(eval_loop_for_from_by)
+{
+    /* for var from start to end by step */
+    ASSERT_STR_EQ(eval_print(
+        "(let ((r nil))"
+        "  (loop for i from 0 to 10 by 3"
+        "    do (push i r))"
+        "  (nreverse r))"), "(0 3 6 9)");
+}
+
+TEST(eval_loop_for_downfrom)
+{
+    /* for var downfrom start to end */
+    ASSERT_STR_EQ(eval_print(
+        "(let ((r nil))"
+        "  (loop for i downfrom 5 to 1"
+        "    do (push i r))"
+        "  (nreverse r))"), "(5 4 3 2 1)");
+}
+
+TEST(eval_loop_for_downfrom_above)
+{
+    /* for var downfrom start above end */
+    ASSERT_STR_EQ(eval_print(
+        "(let ((r nil))"
+        "  (loop for i downfrom 5 above 2"
+        "    do (push i r))"
+        "  (nreverse r))"), "(5 4 3)");
+}
+
+TEST(eval_loop_for_across)
+{
+    /* for var across vector */
+    ASSERT_STR_EQ(eval_print(
+        "(let ((r nil))"
+        "  (loop for c across \"abc\""
+        "    do (push c r))"
+        "  (nreverse r))"), "(#\\a #\\b #\\c)");
+}
+
+TEST(eval_loop_for_eq_then)
+{
+    /* for var = init then step */
+    ASSERT_STR_EQ(eval_print(
+        "(let ((r nil))"
+        "  (loop for x = 1 then (* x 2)"
+        "    while (< x 20)"
+        "    do (push x r))"
+        "  (nreverse r))"), "(1 2 4 8 16)");
+}
+
+TEST(eval_loop_repeat)
+{
+    /* repeat n */
+    ASSERT_EQ_INT(eval_int(
+        "(let ((count 0))"
+        "  (loop repeat 5"
+        "    do (setq count (+ count 1)))"
+        "  count)"), 5);
+}
+
+TEST(eval_loop_for_multiple)
+{
+    /* multiple for clauses */
+    ASSERT_STR_EQ(eval_print(
+        "(let ((r nil))"
+        "  (loop for x in '(a b c)"
+        "        for i from 1"
+        "    do (push (cons i x) r))"
+        "  (nreverse r))"), "((1 . A) (2 . B) (3 . C))");
+}
+
+/* --- Phase 8: Loop Step 3 — accumulation + return --- */
+
+TEST(eval_loop_collect)
+{
+    /* collect */
+    ASSERT_STR_EQ(eval_print(
+        "(loop for x in '(1 2 3) collect x)"), "(1 2 3)");
+}
+
+TEST(eval_loop_collect_expr)
+{
+    /* collect expression */
+    ASSERT_STR_EQ(eval_print(
+        "(loop for x in '(1 2 3) collect (* x x))"), "(1 4 9)");
+}
+
+TEST(eval_loop_collect_into)
+{
+    /* collect into named var — use do + return to verify accumulation */
+    ASSERT_STR_EQ(eval_print(
+        "(loop for x in '(1 2 3 4 5)"
+        "  collect x into result"
+        "  do (when (= x 3) (return (nreverse result))))"), "(1 2 3)");
+}
+
+TEST(eval_loop_sum)
+{
+    /* sum */
+    ASSERT_EQ_INT(eval_int(
+        "(loop for x in '(1 2 3 4 5) sum x)"), 15);
+}
+
+TEST(eval_loop_sum_into)
+{
+    /* sum into named var — use do + return to verify */
+    ASSERT_EQ_INT(eval_int(
+        "(loop for x in '(1 2 3 4 5)"
+        "  sum x into total"
+        "  do (when (= x 3) (return total)))"), 6);
+}
+
+TEST(eval_loop_count)
+{
+    /* count */
+    ASSERT_EQ_INT(eval_int(
+        "(loop for x in '(1 nil 2 nil 3) count x)"), 3);
+}
+
+TEST(eval_loop_maximize)
+{
+    /* maximize */
+    ASSERT_EQ_INT(eval_int(
+        "(loop for x in '(3 1 4 1 5 9 2 6) maximize x)"), 9);
+}
+
+TEST(eval_loop_minimize)
+{
+    /* minimize */
+    ASSERT_EQ_INT(eval_int(
+        "(loop for x in '(3 1 4 1 5 9 2 6) minimize x)"), 1);
+}
+
+TEST(eval_loop_append)
+{
+    /* append */
+    ASSERT_STR_EQ(eval_print(
+        "(loop for x in '((a b) (c d) (e)) append x)"), "(A B C D E)");
+}
+
+TEST(eval_loop_nconc)
+{
+    /* nconc */
+    ASSERT_STR_EQ(eval_print(
+        "(loop for x in '((1 2) (3 4)) nconc (copy-list x))"), "(1 2 3 4)");
+}
+
+TEST(eval_loop_return)
+{
+    /* return clause */
+    ASSERT_EQ_INT(eval_int(
+        "(loop for x in '(1 2 3 4 5)"
+        "  do (when (= x 3) (return x)))"), 3);
+}
+
+TEST(eval_loop_return_clause)
+{
+    /* loop return keyword */
+    ASSERT_EQ_INT(eval_int(
+        "(loop for x from 1"
+        "  do (when (> x 10) (return x)))"), 11);
+}
+
+TEST(eval_loop_when_collect)
+{
+    /* when ... collect */
+    ASSERT_STR_EQ(eval_print(
+        "(loop for x in '(1 2 3 4 5 6)"
+        "  when (evenp x) collect x)"), "(2 4 6)");
+}
+
+TEST(eval_loop_if_else)
+{
+    /* if ... collect ... else collect */
+    ASSERT_STR_EQ(eval_print(
+        "(loop for x in '(1 2 3 4 5)"
+        "  if (oddp x) collect x"
+        "  else collect (- x))"), "(1 -2 3 -4 5)");
+}
+
+TEST(eval_loop_unless_collect)
+{
+    /* unless ... collect */
+    ASSERT_STR_EQ(eval_print(
+        "(loop for x in '(1 2 3 4 5)"
+        "  unless (evenp x) collect x)"), "(1 3 5)");
+}
+
+TEST(eval_loop_when_and)
+{
+    /* when ... and chaining: collect + side effect */
+    ASSERT_STR_EQ(eval_print(
+        "(let ((side nil))"
+        "  (let ((r (loop for x in '(1 2 3 4)"
+        "             when (evenp x) collect x"
+        "             and do (push x side))))"
+        "    (list r (nreverse side))))"), "((2 4) (2 4))");
+}
+
+TEST(eval_loop_always)
+{
+    /* always — true case */
+    ASSERT_STR_EQ(eval_print(
+        "(loop for x in '(2 4 6) always (evenp x))"), "T");
+    /* always — false case */
+    ASSERT_STR_EQ(eval_print(
+        "(loop for x in '(2 3 6) always (evenp x))"), "NIL");
+}
+
+TEST(eval_loop_never)
+{
+    /* never — true case */
+    ASSERT_STR_EQ(eval_print(
+        "(loop for x in '(1 3 5) never (evenp x))"), "T");
+    /* never — false case */
+    ASSERT_STR_EQ(eval_print(
+        "(loop for x in '(1 2 5) never (evenp x))"), "NIL");
+}
+
+TEST(eval_loop_thereis)
+{
+    /* thereis — found */
+    ASSERT_EQ_INT(eval_int(
+        "(loop for x in '(1 2 3 4 5)"
+        "  thereis (and (> x 3) x))"), 4);
+    /* thereis — not found */
+    ASSERT_STR_EQ(eval_print(
+        "(loop for x in '(1 2 3)"
+        "  thereis (and (> x 10) x))"), "NIL");
+}
+
+TEST(eval_loop_with)
+{
+    /* with var = expr */
+    ASSERT_EQ_INT(eval_int(
+        "(loop with sum = 0"
+        "  for x in '(1 2 3)"
+        "  do (setq sum (+ sum x))"
+        "  finally (return sum))"), 6);
+}
+
+TEST(eval_loop_with_and)
+{
+    /* with ... and */
+    ASSERT_STR_EQ(eval_print(
+        "(loop with x = 10 and y = 20"
+        "  repeat 1 collect (+ x y))"), "(30)");
+}
+
+TEST(eval_loop_named)
+{
+    /* named block with return-from */
+    ASSERT_EQ_INT(eval_int(
+        "(loop named my-loop"
+        "  for x from 1"
+        "  do (when (> x 5) (return-from my-loop x)))"), 6);
+}
+
+TEST(eval_loop_initially)
+{
+    /* initially form */
+    ASSERT_STR_EQ(eval_print(
+        "(let ((log nil))"
+        "  (loop initially (push 'start log)"
+        "    for x in '(1 2) do (push x log))"
+        "  (nreverse log))"), "(START 1 2)");
+}
+
+TEST(eval_loop_finally)
+{
+    /* finally with return */
+    ASSERT_EQ_INT(eval_int(
+        "(loop for x in '(1 2 3 4 5)"
+        "  sum x into total"
+        "  finally (return total))"), 15);
+}
+
+TEST(eval_loop_collect_into_finally)
+{
+    /* collect into with finally */
+    ASSERT_STR_EQ(eval_print(
+        "(loop for x in '(a b c)"
+        "  collect x into items"
+        "  finally (return items))"), "(A B C)");
+}
+
+TEST(eval_loop_finish)
+{
+    /* loop-finish terminates loop normally, returns accumulation */
+    ASSERT_EQ_INT(eval_int(
+        "(loop for i from 1 to 10 sum i"
+        "  do (when (= i 5) (loop-finish)))"), 15);
+}
+
+TEST(eval_loop_finish_finally)
+{
+    /* loop-finish still runs finally forms */
+    ASSERT_EQ_INT(eval_int(
+        "(let ((ran nil))"
+        "  (loop for i from 1 to 10"
+        "    do (when (= i 3) (loop-finish))"
+        "    finally (setq ran t))"
+        "  (if ran 1 0))"), 1);
+}
+
+/* ---- LOOP BEING clause ---- */
+
+TEST(eval_loop_being_hash_keys)
+{
+    ASSERT_STR_EQ(eval_print(
+        "(let ((ht (make-hash-table)))"
+        "  (setf (gethash :a ht) 1)"
+        "  (setf (gethash :b ht) 2)"
+        "  (sort (loop for k being the hash-keys of ht collect k)"
+        "        #'string< :key #'symbol-name))"), "(:A :B)");
+}
+
+TEST(eval_loop_being_hash_values)
+{
+    ASSERT_STR_EQ(eval_print(
+        "(let ((ht (make-hash-table)))"
+        "  (setf (gethash :a ht) 10)"
+        "  (setf (gethash :b ht) 20)"
+        "  (sort (loop for v being the hash-values in ht collect v)"
+        "        #'<))"), "(10 20)");
+}
+
+TEST(eval_loop_being_hash_keys_using)
+{
+    ASSERT_STR_EQ(eval_print(
+        "(let ((ht (make-hash-table)))"
+        "  (setf (gethash :x ht) 42)"
+        "  (loop for k being each hash-key of ht"
+        "        using (hash-value v)"
+        "        collect (list k v)))"), "((:X 42))");
+}
+
+TEST(eval_loop_being_hash_values_using)
+{
+    ASSERT_STR_EQ(eval_print(
+        "(let ((ht (make-hash-table)))"
+        "  (setf (gethash :x ht) 42)"
+        "  (loop for v being each hash-value of ht"
+        "        using (hash-key k)"
+        "        collect (list k v)))"), "((:X 42))");
+}
+
+TEST(eval_loop_being_symbols)
+{
+    /* Create a package with known symbols, count them */
+    ASSERT_STR_EQ(eval_print(
+        "(progn"
+        "  (defpackage \"LOOP-SYM-TEST\" (:use))"
+        "  (intern \"AA\" \"LOOP-SYM-TEST\")"
+        "  (intern \"BB\" \"LOOP-SYM-TEST\")"
+        "  (length (loop for s being the symbols of \"LOOP-SYM-TEST\""
+        "               collect s)))"), "2");
+}
+
+TEST(eval_loop_being_external_symbols)
+{
+    ASSERT_STR_EQ(eval_print(
+        "(progn"
+        "  (defpackage \"LOOP-EXT-TEST\" (:use) (:export \"PUB\"))"
+        "  (intern \"PRIV\" \"LOOP-EXT-TEST\")"
+        "  (length (loop for s being the external-symbols of \"LOOP-EXT-TEST\""
+        "               collect s)))"), "1");
+}
+
+/* ---- LOOP destructuring ---- */
+
+TEST(eval_loop_destructuring_in)
+{
+    /* destructure pairs from a list */
+    ASSERT_STR_EQ(eval_print(
+        "(loop for (a b) in '((1 2) (3 4) (5 6))"
+        "  collect (+ a b))"), "(3 7 11)");
+}
+
+TEST(eval_loop_destructuring_dotted)
+{
+    /* destructure dotted pairs */
+    ASSERT_STR_EQ(eval_print(
+        "(loop for (a . b) in '((x . 1) (y . 2) (z . 3))"
+        "  collect (list a b))"), "((X 1) (Y 2) (Z 3))");
+}
+
+TEST(eval_loop_destructuring_nested)
+{
+    /* nested destructuring */
+    ASSERT_STR_EQ(eval_print(
+        "(loop for (a (b c)) in '((1 (2 3)) (4 (5 6)))"
+        "  collect (+ a b c))"), "(6 15)");
+}
+
+TEST(eval_loop_destructuring_on)
+{
+    /* destructuring with ON */
+    ASSERT_STR_EQ(eval_print(
+        "(loop for (a . b) on '(1 2 3)"
+        "  collect (list a b))"), "((1 (2 3)) (2 (3)) (3 NIL))");
+}
+
 int main(void)
 {
     test_init();
@@ -3251,6 +4015,14 @@ int main(void)
     RUN(eval_vector);
     RUN(eval_array_dimensions);
     RUN(eval_array_rank);
+    RUN(eval_setf_aref_multidim);
+    RUN(eval_array_dimension);
+    RUN(eval_array_total_size);
+    RUN(eval_array_row_major_index);
+    RUN(eval_row_major_aref);
+    RUN(eval_fill_pointer);
+    RUN(eval_vector_push);
+    RUN(eval_adjust_array);
 
     /* Phase 5 Tier 2 */
     RUN(eval_string_comparison);
@@ -3444,6 +4216,62 @@ int main(void)
     RUN(eval_rassoc_if);
     RUN(eval_remf);
 
+    /* Phase 8 — Loop macro */
+    RUN(eval_loop_simple_return);
+    RUN(eval_loop_simple_accumulate);
+    RUN(eval_loop_while);
+    RUN(eval_loop_until);
+    RUN(eval_loop_do_multiple);
+    RUN(eval_loop_for_in);
+    RUN(eval_loop_for_in_by);
+    RUN(eval_loop_for_on);
+    RUN(eval_loop_for_from_to);
+    RUN(eval_loop_for_from_below);
+    RUN(eval_loop_for_from_by);
+    RUN(eval_loop_for_downfrom);
+    RUN(eval_loop_for_downfrom_above);
+    RUN(eval_loop_for_across);
+    RUN(eval_loop_for_eq_then);
+    RUN(eval_loop_repeat);
+    RUN(eval_loop_for_multiple);
+    RUN(eval_loop_collect);
+    RUN(eval_loop_collect_expr);
+    RUN(eval_loop_collect_into);
+    RUN(eval_loop_sum);
+    RUN(eval_loop_sum_into);
+    RUN(eval_loop_count);
+    RUN(eval_loop_maximize);
+    RUN(eval_loop_minimize);
+    RUN(eval_loop_append);
+    RUN(eval_loop_nconc);
+    RUN(eval_loop_return);
+    RUN(eval_loop_return_clause);
+    RUN(eval_loop_when_collect);
+    RUN(eval_loop_if_else);
+    RUN(eval_loop_unless_collect);
+    RUN(eval_loop_when_and);
+    RUN(eval_loop_always);
+    RUN(eval_loop_never);
+    RUN(eval_loop_thereis);
+    RUN(eval_loop_with);
+    RUN(eval_loop_with_and);
+    RUN(eval_loop_named);
+    RUN(eval_loop_initially);
+    RUN(eval_loop_finally);
+    RUN(eval_loop_collect_into_finally);
+    RUN(eval_loop_finish);
+    RUN(eval_loop_finish_finally);
+    RUN(eval_loop_being_hash_keys);
+    RUN(eval_loop_being_hash_values);
+    RUN(eval_loop_being_hash_keys_using);
+    RUN(eval_loop_being_hash_values_using);
+    RUN(eval_loop_being_symbols);
+    RUN(eval_loop_being_external_symbols);
+    RUN(eval_loop_destructuring_in);
+    RUN(eval_loop_destructuring_dotted);
+    RUN(eval_loop_destructuring_nested);
+    RUN(eval_loop_destructuring_on);
+
     /* Paren depth */
     RUN(paren_depth_balanced);
     RUN(paren_depth_unbalanced);
@@ -3458,6 +4286,13 @@ int main(void)
     RUN(history_plus_shift);
     RUN(history_minus_during_eval);
     RUN(history_arithmetic_still_works);
+
+    /* Printer control variables */
+    RUN(eval_print_var_defaults);
+    RUN(eval_print_escape_dynamic);
+    RUN(eval_print_level);
+    RUN(eval_print_length);
+    RUN(eval_print_level_length_combined);
 
     teardown();
     REPORT();

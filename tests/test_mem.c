@@ -61,8 +61,8 @@ TEST(alloc_vector)
     vec = (CL_Vector *)CL_OBJ_TO_PTR(v);
     ASSERT_EQ_INT((int)vec->length, 10);
     /* All elements should be NIL */
-    ASSERT(CL_NULL_P(vec->data[0]));
-    ASSERT(CL_NULL_P(vec->data[9]));
+    ASSERT(CL_NULL_P(cl_vector_data(vec)[0]));
+    ASSERT(CL_NULL_P(cl_vector_data(vec)[9]));
 }
 
 TEST(gc_basic)

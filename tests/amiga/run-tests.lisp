@@ -441,6 +441,46 @@
 (check "vector aref" 20 (aref (vector 10 20 30) 1))
 (check "array-dimensions" '(5) (array-dimensions (make-array 5)))
 (check "array-rank" 1 (array-rank (make-array 5)))
+
+; --- Multi-dimensional arrays (Step 4) ---
+(check "make-array 2d" '(2 3) (array-dimensions (make-array '(2 3))))
+(check "aref 2d setf" 70 (let ((a (make-array '(2 3)))) (setf (aref a 0 0) 10) (setf (aref a 1 2) 60) (+ (aref a 0 0) (aref a 1 2))))
+(check "setf aref 2d ret" 99 (let ((a (make-array '(3 3)))) (setf (aref a 1 2) 99)))
+(check "aref 3d" 9 (let ((a (make-array '(2 2 2)))) (setf (aref a 0 0 0) 1) (setf (aref a 1 1 1) 8) (+ (aref a 0 0 0) (aref a 1 1 1))))
+(check "array-rank 2d" 2 (array-rank (make-array '(3 4))))
+(check "array-dimensions 2d" '(3 4) (array-dimensions (make-array '(3 4))))
+
+; --- Array query builtins (Step 5) ---
+(check "array-dimension 1d" 5 (array-dimension (make-array 5) 0))
+(check "array-dimension 2d ax0" 3 (array-dimension (make-array '(3 4)) 0))
+(check "array-dimension 2d ax1" 4 (array-dimension (make-array '(3 4)) 1))
+(check "array-total-size 1d" 5 (array-total-size (make-array 5)))
+(check "array-total-size 2d" 12 (array-total-size (make-array '(3 4))))
+(check "array-total-size 3d" 24 (array-total-size (make-array '(2 3 4))))
+(check "row-major-index 1d" 3 (array-row-major-index (make-array 5) 3))
+(check "row-major-index 2d" 0 (array-row-major-index (make-array '(3 4)) 0 0))
+(check "row-major-index 2d b" 4 (array-row-major-index (make-array '(3 4)) 1 0))
+(check "row-major-index 2d c" 11 (array-row-major-index (make-array '(3 4)) 2 3))
+(check "row-major-aref" 99 (let ((a (make-array '(2 3)))) (setf (aref a 1 2) 99) (row-major-aref a 5)))
+(check "setf row-major-aref" 77 (let ((a (make-array '(2 3)))) (setf (row-major-aref a 5) 77) (aref a 1 2)))
+
+; --- Fill pointer operations (Step 6) ---
+(check "fill-pointer 0" 0 (fill-pointer (make-array 10 :fill-pointer 0)))
+(check "fill-pointer 5" 5 (fill-pointer (make-array 10 :fill-pointer 5)))
+(check "fill-pointer t" 0 (fill-pointer (make-array 10 :fill-pointer t)))
+(check "has-fill-pointer t" t (array-has-fill-pointer-p (make-array 5 :fill-pointer 0)))
+(check "has-fill-pointer nil" nil (array-has-fill-pointer-p (make-array 5)))
+(check "setf fill-pointer" 7 (let ((v (make-array 10 :fill-pointer 0))) (setf (fill-pointer v) 7) (fill-pointer v)))
+(check "setf fill-pointer ret" 3 (let ((v (make-array 10 :fill-pointer 0))) (setf (fill-pointer v) 3)))
+(check "vector-push basic" 3 (let ((v (make-array 5 :fill-pointer 0))) (vector-push 10 v) (vector-push 20 v) (vector-push 30 v) (fill-pointer v)))
+(check "vector-push ret" 1 (let ((v (make-array 5 :fill-pointer 0))) (vector-push 10 v) (vector-push 20 v)))
+(check "vector-push full" nil (let ((v (make-array 2 :fill-pointer 0))) (vector-push 1 v) (vector-push 2 v) (vector-push 3 v)))
+(check "vector-push data" 30 (let ((v (make-array 3 :fill-pointer 0))) (vector-push 10 v) (vector-push 20 v) (+ (aref v 0) (aref v 1))))
+(check "length w/ fp" 2 (let ((v (make-array 10 :fill-pointer 0))) (vector-push 1 v) (vector-push 2 v) (length v)))
+(check "adjust-array grow" 100 (let ((v (make-array 3 :adjustable t :initial-element 1))) (let ((v2 (adjust-array v 5 :initial-element 99))) (+ (aref v2 0) (aref v2 3)))))
+(check "adjust-array shrink" 3 (let ((v (make-array 5 :adjustable t :initial-element 42))) (array-total-size (adjust-array v 3))))
+(check "adjust-array fp" 2 (let ((v (make-array 5 :fill-pointer 2 :adjustable t))) (fill-pointer (adjust-array v 10))))
+
 (defvar *sv-t1* 42)
 (check "symbol-value" 42 (symbol-value '*sv-t1*))
 (defvar *sv-t2* 10)
@@ -1808,6 +1848,154 @@
 (check "remf middle" '(:a 1 :c 3) (let ((p (list :a 1 :b 2 :c 3))) (remf p :b) p))
 (check "remf head mv" '((:b 2) t) (multiple-value-list (remf (list :a 1 :b 2) :a)))
 (check "remf missing mv" '((:a 1 :b 2) nil) (multiple-value-list (remf (list :a 1 :b 2) :z)))
+
+; --- Loop macro ---
+; Simple loop
+(check "loop simple return" 5 (let ((i 0)) (loop (when (= i 5) (return i)) (setq i (+ i 1)))))
+(check "loop simple accum" '(0 1 2) (let ((result nil) (i 0)) (loop (when (>= i 3) (return (nreverse result))) (push i result) (setq i (+ i 1)))))
+
+; Extended loop - while/until/do
+(check "loop while" 10 (let ((i 0) (sum 0)) (loop while (< i 5) do (setq sum (+ sum i)) (setq i (+ i 1))) sum))
+(check "loop until" 6 (let ((i 0) (sum 0)) (loop until (= i 4) do (setq sum (+ sum i)) (setq i (+ i 1))) sum))
+(check "loop do multiple" 30 (let ((x 0) (y 0)) (loop while (< x 3) do (setq x (+ x 1)) (setq y (+ y 10))) y))
+
+; Loop for/as/repeat
+(check "loop for in" '(1 2 3) (let ((r nil)) (loop for x in '(1 2 3) do (push x r)) (nreverse r)))
+(check "loop for in by" '(1 3 5) (let ((r nil)) (loop for x in '(1 2 3 4 5) by #'cddr do (push x r)) (nreverse r)))
+(check "loop for on" '((1 2 3) (2 3) (3)) (let ((r nil)) (loop for x on '(1 2 3) do (push x r)) (nreverse r)))
+(check "loop for from to" 15 (let ((sum 0)) (loop for i from 1 to 5 do (setq sum (+ sum i))) sum))
+(check "loop for from below" 6 (let ((sum 0)) (loop for i from 0 below 4 do (setq sum (+ sum i))) sum))
+(check "loop for from by" '(0 3 6 9) (let ((r nil)) (loop for i from 0 to 10 by 3 do (push i r)) (nreverse r)))
+(check "loop for downfrom" '(5 4 3 2 1) (let ((r nil)) (loop for i downfrom 5 to 1 do (push i r)) (nreverse r)))
+(check "loop for downfrom above" '(5 4 3) (let ((r nil)) (loop for i downfrom 5 above 2 do (push i r)) (nreverse r)))
+(check "loop for across" '(1 2 3) (let ((r nil)) (loop for x across (vector 1 2 3) do (push x r)) (nreverse r)))
+(check "loop for = then" '(1 2 4 8 16) (let ((r nil)) (loop for x = 1 then (* x 2) while (< x 20) do (push x r)) (nreverse r)))
+(check "loop repeat" 5 (let ((c 0)) (loop repeat 5 do (setq c (+ c 1))) c))
+(check "loop for multiple" '((1 . a) (2 . b) (3 . c)) (let ((r nil)) (loop for x in '(a b c) for i from 1 do (push (cons i x) r)) (nreverse r)))
+
+; Loop accumulation
+(check "loop collect" '(1 2 3) (loop for x in '(1 2 3) collect x))
+(check "loop collect expr" '(1 4 9) (loop for x in '(1 2 3) collect (* x x)))
+(check "loop collect into" '(1 2 3) (loop for x in '(1 2 3 4 5) collect x into r do (when (= x 3) (return (nreverse r)))))
+(check "loop sum" 15 (loop for x in '(1 2 3 4 5) sum x))
+(check "loop sum into" 6 (loop for x in '(1 2 3 4 5) sum x into tot do (when (= x 3) (return tot))))
+(check "loop count" 3 (loop for x in '(1 nil 2 nil 3) count x))
+(check "loop maximize" 9 (loop for x in '(3 1 4 1 5 9 2 6) maximize x))
+(check "loop minimize" 1 (loop for x in '(3 1 4 1 5 9 2 6) minimize x))
+(check "loop append" '(a b c d e) (loop for x in '((a b) (c d) (e)) append x))
+(check "loop nconc" '(1 2 3 4) (loop for x in '((1 2) (3 4)) nconc (copy-list x)))
+(check "loop return" 3 (loop for x in '(1 2 3 4 5) do (when (= x 3) (return x))))
+
+; Loop Step 4 — conditionals, always/never/thereis, with, named, initially/finally
+(check "loop when collect" '(2 4 6) (loop for x in '(1 2 3 4 5 6) when (evenp x) collect x))
+(check "loop if/else" '(1 -2 3 -4 5) (loop for x in '(1 2 3 4 5) if (oddp x) collect x else collect (- x)))
+(check "loop unless collect" '(1 3 5) (loop for x in '(1 2 3 4 5) unless (evenp x) collect x))
+(check "loop when and" '((2 4) (2 4)) (let ((side nil)) (let ((r (loop for x in '(1 2 3 4) when (evenp x) collect x and do (push x side)))) (list r (nreverse side)))))
+(check "loop always true" t (loop for x in '(2 4 6) always (evenp x)))
+(check "loop always false" nil (loop for x in '(2 3 6) always (evenp x)))
+(check "loop never true" t (loop for x in '(1 3 5) never (evenp x)))
+(check "loop never false" nil (loop for x in '(1 2 5) never (evenp x)))
+(check "loop thereis found" 4 (loop for x in '(1 2 3 4 5) thereis (and (> x 3) x)))
+(check "loop thereis nil" nil (loop for x in '(1 2 3) thereis (and (> x 10) x)))
+(check "loop with" 6 (loop with sum = 0 for x in '(1 2 3) do (setq sum (+ sum x)) finally (return sum)))
+(check "loop with and" '(30) (loop with x = 10 and y = 20 repeat 1 collect (+ x y)))
+(check "loop named" 6 (loop named my-loop for x from 1 do (when (> x 5) (return-from my-loop x))))
+(check "loop initially" '(start 1 2) (let ((log nil)) (loop initially (push 'start log) for x in '(1 2) do (push x log)) (nreverse log)))
+(check "loop finally return" 15 (loop for x in '(1 2 3 4 5) sum x into total finally (return total)))
+(check "loop collect into finally" '(a b c) (loop for x in '(a b c) collect x into items finally (return items)))
+
+;; loop-finish
+(check "loop-finish" 15 (loop for i from 1 to 10 sum i do (when (= i 5) (loop-finish))))
+(check "loop-finish+finally" t (let ((ran nil)) (loop for i from 1 to 10 do (when (= i 3) (loop-finish)) finally (setq ran t)) ran))
+
+;; loop BEING clause
+(check "loop being hash-keys" '(:a :b)
+  (let ((ht (make-hash-table)))
+    (setf (gethash :a ht) 1)
+    (setf (gethash :b ht) 2)
+    (sort (loop for k being the hash-keys of ht collect k)
+          #'string< :key #'symbol-name)))
+(check "loop being hash-values" '(10 20)
+  (let ((ht (make-hash-table)))
+    (setf (gethash :a ht) 10)
+    (setf (gethash :b ht) 20)
+    (sort (loop for v being the hash-values in ht collect v) #'<)))
+(check "loop being hash-keys using" '((:x 42))
+  (let ((ht (make-hash-table)))
+    (setf (gethash :x ht) 42)
+    (loop for k being each hash-key of ht using (hash-value v)
+          collect (list k v))))
+(check "loop being hash-values using" '((:x 42))
+  (let ((ht (make-hash-table)))
+    (setf (gethash :x ht) 42)
+    (loop for v being each hash-value of ht using (hash-key k)
+          collect (list k v))))
+(defpackage "LOOP-SYM-AMI" (:use))
+(intern "AA" "LOOP-SYM-AMI")
+(intern "BB" "LOOP-SYM-AMI")
+(check "loop being symbols" 2
+  (length (loop for s being the symbols of "LOOP-SYM-AMI" collect s)))
+(defpackage "LOOP-EXT-AMI" (:use) (:export "PUB"))
+(intern "PRIV" "LOOP-EXT-AMI")
+(check "loop being external-symbols" 1
+  (length (loop for s being the external-symbols of "LOOP-EXT-AMI" collect s)))
+
+;; loop destructuring
+(check "loop destr in" '(3 7 11) (loop for (a b) in '((1 2) (3 4) (5 6)) collect (+ a b)))
+(check "loop destr dotted" '((x 1) (y 2) (z 3)) (loop for (a . b) in '((x . 1) (y . 2) (z . 3)) collect (list a b)))
+(check "loop destr nested" '(6 15) (loop for (a (b c)) in '((1 (2 3)) (4 (5 6))) collect (+ a b c)))
+(check "loop destr on" '((1 (2 3)) (2 (3)) (3 nil)) (loop for (a . b) on '(1 2 3) collect (list a b)))
+
+; --- Printer control variables (Steps 1-2) ---
+; Default values per CL spec
+(check "print-escape default" t *print-escape*)
+(check "print-readably default" nil *print-readably*)
+(check "print-base default" 10 *print-base*)
+(check "print-radix default" nil *print-radix*)
+(check "print-level default" nil *print-level*)
+(check "print-length default" nil *print-length*)
+(check "print-case default" :upcase *print-case*)
+(check "print-gensym default" t *print-gensym*)
+(check "print-array default" t *print-array*)
+(check "print-circle default" nil *print-circle*)
+(check "print-pretty default" nil *print-pretty*)
+
+; prin1-to-string / princ-to-string honor escape variable
+(check "prin1-to-string string" "\"hello\"" (prin1-to-string "hello"))
+(check "princ-to-string string" "hello" (princ-to-string "hello"))
+(check "prin1-to-string char" "#\\Space" (prin1-to-string #\Space))
+(check "princ-to-string char" " " (princ-to-string #\Space))
+(check "prin1-to-string number" "42" (prin1-to-string 42))
+
+; Dynamic binding of *print-escape* affects princ (which binds NIL)
+; and prin1 (which binds T) — verify they override correctly
+(check "let print-escape nil princ-to-string"
+  "hello" (let ((*print-escape* nil)) (princ-to-string "hello")))
+(check "let print-escape t prin1-to-string"
+  "\"hello\"" (let ((*print-escape* t)) (prin1-to-string "hello")))
+
+; *print-level* tests
+(check "print-level 0" "#"
+  (let ((*print-level* 0)) (prin1-to-string '(a b))))
+(check "print-level 1" "(A #)"
+  (let ((*print-level* 1)) (prin1-to-string '(a (b (c))))))
+(check "print-level 2" "(A (B #))"
+  (let ((*print-level* 2)) (prin1-to-string '(a (b (c))))))
+
+; *print-length* tests
+(check "print-length 0" "(...)"
+  (let ((*print-length* 0)) (prin1-to-string '(a b c))))
+(check "print-length 2" "(A B ...)"
+  (let ((*print-length* 2)) (prin1-to-string '(a b c d e))))
+(check "print-length no trunc" "(A B)"
+  (let ((*print-length* 10)) (prin1-to-string '(a b))))
+(check "print-length dotted" "(A . B)"
+  (let ((*print-length* 2)) (prin1-to-string '(a . b))))
+
+; Combined level + length
+(check "print-level+length" "(A B ...)"
+  (let ((*print-level* 1) (*print-length* 2))
+    (prin1-to-string '(a b (c d) e))))
 
 ; --- Summary ---
 (format t "~%=== Results ===~%")
