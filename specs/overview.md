@@ -39,7 +39,7 @@ CL_Obj (uint32_t):
 Heap object header (uint32_t):
   [type:8][gc_mark:1][size:23]       max object size = 8MB
 
-Types: CONS, SYMBOL, STRING, FUNCTION, CLOSURE, BYTECODE, VECTOR, PACKAGE, HASHTABLE, CONDITION, STRUCT, BIGNUM, SINGLE_FLOAT, DOUBLE_FLOAT, STREAM
+Types: CONS, SYMBOL, STRING, FUNCTION, CLOSURE, BYTECODE, VECTOR, PACKAGE, HASHTABLE, CONDITION, STRUCT, BIGNUM, SINGLE_FLOAT, DOUBLE_FLOAT, STREAM, ARRAY
 ```
 
 ## Memory Budget (8MB System)
@@ -58,7 +58,7 @@ Types: CONS, SYMBOL, STRING, FUNCTION, CLOSURE, BYTECODE, VECTOR, PACKAGE, HASHT
 
 ## Bytecode VM
 
-Stack-based, byte-oriented instruction encoding. 49 opcodes:
+Stack-based, byte-oriented instruction encoding. 56 opcodes:
 
 | Category | Opcodes |
 |----------|---------|
@@ -76,7 +76,7 @@ Stack-based, byte-oriented instruction encoding. 49 opcodes:
 | Mutation | RPLACA, RPLACD, ASET |
 | Condition handling | HANDLER_PUSH, HANDLER_POP, RESTART_PUSH, RESTART_POP |
 | Type checking | ASSERT_TYPE |
-| Misc | LIST, HALT, DEFMACRO, ARGC |
+| Misc | LIST, HALT, DEFMACRO, DEFTYPE, ARGC |
 
 ## Compiler
 
@@ -87,43 +87,46 @@ Single-pass recursive compiler from S-expressions to bytecode:
 - Macro expansion before compilation
 - Backward jump support for loop forms
 
-**Special forms:** `quote`, `if`, `progn`, `lambda`, `let`, `let*`, `setq`, `setf`, `defun`, `defvar`, `defparameter`, `defmacro`, `function (#')`, `block`, `return-from`, `return`, `and`, `or`, `cond`, `do`, `dolist`, `dotimes`, `case`, `ecase`, `typecase`, `etypecase`, `flet`, `labels`, `tagbody`, `go`, `catch`, `unwind-protect`, `multiple-value-bind`, `multiple-value-list`, `multiple-value-prog1`, `nth-value`, `eval-when`, `destructuring-bind`, `defsetf`, `trace`, `untrace`, `time`, `handler-bind`, `restart-case`, `in-package`, `macrolet`, `symbol-macrolet`, `the`
+**Special forms:** `quote`, `if`, `progn`, `lambda`, `let`, `let*`, `setq`, `setf`, `defun`, `defvar`, `defparameter`, `defconstant`, `defmacro`, `function (#')`, `block`, `return-from`, `return`, `and`, `or`, `cond`, `do`, `dolist`, `dotimes`, `case`, `ecase`, `typecase`, `etypecase`, `flet`, `labels`, `tagbody`, `go`, `catch`, `unwind-protect`, `multiple-value-bind`, `multiple-value-list`, `multiple-value-prog1`, `nth-value`, `eval-when`, `destructuring-bind`, `defsetf`, `deftype`, `trace`, `untrace`, `time`, `handler-bind`, `restart-case`, `in-package`, `macrolet`, `symbol-macrolet`, `the`, `declare`, `declaim`, `locally`
 
 **Bootstrap macros:** `when`, `unless`, `prog1`, `prog2`, `push`, `pop`, `incf`, `decf`, `pushnew`, `handler-case`, `ignore-errors`, `with-simple-restart`, `define-condition`, `check-type`, `assert`, `defpackage`, `do-symbols`, `do-external-symbols`, `defstruct`, `with-open-file`, `with-output-to-string`, `with-input-from-string`, `with-standard-io-syntax`, `loop`
 
-**Bootstrap functions:** `cadr`, `caar`, `cdar`, `cddr`, `caddr`, `cadar`, `identity`, `endp`, `member`, `intersection`, `union`, `set-difference`, `subsetp`, `cerror`, `read-from-string`, `prin1-to-string`, `princ-to-string`, `write-to-string`, `pathname-name`, `pathname-type`, `namestring`, `truename`, `make-pathname`, `merge-pathnames`, `enough-namestring`, `decode-universal-time`, `encode-universal-time`, `get-decoded-time`
+**Bootstrap functions:** `cadr`, `caar`, `cdar`, `cddr`, `caddr`, `cadar`, `cdddr`, `cadddr`, `identity`, `endp`, `member`, `intersection`, `union`, `set-difference`, `subsetp`, `cerror`, `break`, `read-from-string`, `prin1-to-string`, `princ-to-string`, `write-to-string`, `complement`, `constantly`, `tree-equal`, `list-length`, `tailp`, `ldiff`, `revappend`, `nreconc`, `assoc-if`, `assoc-if-not`, `rassoc-if`, `rassoc-if-not`, `pathname-name`, `pathname-type`, `pathname-directory`, `namestring`, `truename`, `make-pathname`, `merge-pathnames`, `enough-namestring`, `ensure-directories-exist`, `decode-universal-time`, `encode-universal-time`, `get-decoded-time`
 
-## Built-in Functions (300+ functions)
+## Built-in Functions (346 C functions + 35 boot.lisp functions)
 
 | Category | Functions |
 |----------|-----------|
-| Arithmetic | `+` `-` `*` `/` `truncate` `rem` `mod` `1+` `1-` `abs` `max` `min` `gcd` `lcm` `expt` `isqrt` `sqrt` `exp` `log` `sin` `cos` `tan` `asin` `acos` `atan` |
+| Arithmetic | `+` `-` `*` `/` `truncate` `floor` `ceiling` `round` `ftruncate` `ffloor` `fceiling` `fround` `rem` `mod` `1+` `1-` `abs` `max` `min` `gcd` `lcm` `expt` `isqrt` `sqrt` `exp` `log` `sin` `cos` `tan` `asin` `acos` `atan` |
 | Bitwise | `ash` `logand` `logior` `logxor` `lognot` `integer-length` |
-| Comparison | `=` `<` `>` `<=` `>=` |
-| Predicates | `null` `consp` `atom` `listp` `numberp` `integerp` `symbolp` `stringp` `functionp` `vectorp` `zerop` `plusp` `minusp` `evenp` `oddp` `characterp` `keywordp` `hash-table-p` |
+| Comparison | `=` `/=` `<` `>` `<=` `>=` |
+| Predicates | `null` `consp` `atom` `listp` `numberp` `integerp` `floatp` `realp` `rationalp` `symbolp` `stringp` `functionp` `vectorp` `arrayp` `simple-vector-p` `adjustable-array-p` `zerop` `plusp` `minusp` `evenp` `oddp` `characterp` `keywordp` `hash-table-p` |
 | Equality | `eq` `eql` `equal` `not` |
-| List ops | `cons` `car` `cdr` `first` `rest` `list` `length` `append` `reverse` `nth` `nthcdr` `last` `butlast` `copy-list` `copy-tree` |
+| List ops | `cons` `car` `cdr` `first` `rest` `list` `list*` `make-list` `length` `append` `reverse` `nth` `nthcdr` `last` `butlast` `copy-list` `copy-tree` |
 | Alist/plist | `acons` `pairlis` `assoc` `rassoc` `getf` `adjoin` |
 | Tree ops | `subst` `sublis` `nsubst` |
 | Destructive | `nconc` `nreverse` `delete` `delete-if` |
-| Mutation | `rplaca` `rplacd` `aref` `svref` `make-array` `vector` `array-dimensions` `array-rank` `set` |
+| Mutation | `rplaca` `rplacd` `set` |
+| Arrays | `make-array` `vector` `aref` `svref` `vectorp` `arrayp` `simple-vector-p` `adjustable-array-p` `array-dimensions` `array-rank` `array-dimension` `array-total-size` `array-row-major-index` `row-major-aref` `fill-pointer` `array-has-fill-pointer-p` `vector-push` `vector-push-extend` `adjust-array` |
 | Symbol access | `symbol-value` `symbol-function` `symbol-name` `symbol-package` `boundp` `fboundp` `fdefinition` `make-symbol` |
 | Higher-order | `mapcar` `mapc` `mapcan` `maplist` `mapl` `mapcon` `apply` `funcall` |
-| Characters | `char=` `char/=` `char<` `char>` `char<=` `char>=` `char-code` `code-char` `char-upcase` `char-downcase` `upper-case-p` `lower-case-p` `alpha-char-p` `digit-char-p` |
-| Strings | `string=` `string-equal` `string<` `string>` `string<=` `string>=` `string-upcase` `string-downcase` `string-trim` `string-left-trim` `string-right-trim` `subseq` `concatenate` `char` `schar` `string` `parse-integer` `write-to-string` `prin1-to-string` `princ-to-string` |
-| I/O | `print` `prin1` `princ` `terpri` `format` `read` `load` `disassemble` `compile` |
+| Floats | `float` `float-digits` `float-radix` `float-sign` `decode-float` `integer-decode-float` `scale-float` |
+| Characters | `char=` `char/=` `char<` `char>` `char<=` `char>=` `char-code` `code-char` `char-upcase` `char-downcase` `upper-case-p` `lower-case-p` `alpha-char-p` `digit-char-p` `char-name` `name-char` |
+| Strings | `string=` `string-equal` `string/=` `string-not-equal` `string<` `string>` `string<=` `string>=` `string-upcase` `string-downcase` `string-capitalize` `nstring-upcase` `nstring-downcase` `nstring-capitalize` `string-trim` `string-left-trim` `string-right-trim` `subseq` `concatenate` `char` `schar` `string` `parse-integer` |
+| Sequences | `find` `find-if` `find-if-not` `position` `position-if` `position-if-not` `count` `count-if` `count-if-not` `remove` `remove-if` `remove-if-not` `remove-duplicates` `substitute` `substitute-if` `substitute-if-not` `reduce` `fill` `replace` `every` `some` `notany` `notevery` `map` `map-into` `mismatch` `search` `sort` `stable-sort` `copy-seq` `elt` |
+| I/O | `write` `print` `prin1` `princ` `terpri` `format` `read` `load` `disassemble` `compile` |
 | Streams | `streamp` `input-stream-p` `output-stream-p` `interactive-stream-p` `open-stream-p` `read-char` `write-char` `peek-char` `unread-char` `read-line` `write-string` `write-line` `fresh-line` `finish-output` `force-output` `clear-output` `close` `open` `make-string-input-stream` `make-string-output-stream` `get-output-stream-string` |
 | Readtable | `readtablep` `get-macro-character` `set-macro-character` `make-dispatch-macro-character` `set-dispatch-macro-character` `get-dispatch-macro-character` `copy-readtable` |
-| File system | `probe-file` `delete-file` `rename-file` `file-write-date` `file-namestring` `directory-namestring` |
+| File system | `probe-file` `delete-file` `rename-file` `file-write-date` `file-namestring` `directory-namestring` `ensure-directories-exist` |
 | Time | `get-universal-time` `get-internal-real-time` `sleep` |
-| Eval/Macro | `eval` `macroexpand` `macroexpand-1` |
-| Control | `throw` `values` `values-list` `error` `signal` `warn` `invoke-restart` `find-restart` `compute-restarts` `abort` `continue` `muffle-warning` |
+| Eval/Macro | `eval` `macroexpand` `macroexpand-1` `proclaim` |
+| Control | `throw` `values` `values-list` `error` `signal` `warn` `invoke-restart` `find-restart` `compute-restarts` `abort` `continue` `muffle-warning` `invoke-debugger` |
 | Conditions | `make-condition` `conditionp` `condition-type-name` `type-error-datum` `type-error-expected-type` `simple-condition-format-control` `simple-condition-format-arguments` `%register-condition-type` `condition-slot-value` |
 | Structures | `structurep` `%register-struct-type` `%make-struct` `%struct-ref` `%struct-set` `%copy-struct` `%struct-type-name` `%struct-slot-names` `%struct-slot-specs` |
-| Hash tables | `make-hash-table` `gethash` `remhash` `maphash` `clrhash` `hash-table-count` `hash-table-p` |
-| Type system | `typep` `coerce` `subtypep` |
+| Hash tables | `make-hash-table` `gethash` `remhash` `maphash` `clrhash` `hash-table-count` `hash-table-p` `%hash-table-pairs` |
+| Type system | `type-of` `typep` `coerce` `subtypep` |
 | Packages | `make-package` `find-package` `delete-package` `rename-package` `export` `unexport` `import` `use-package` `unuse-package` `shadow` `find-symbol` `intern` `unintern` `package-name` `package-use-list` `package-nicknames` `list-all-packages` `%package-symbols` `%package-external-symbols` `package-local-nicknames` `add-package-local-nickname` `remove-package-local-nickname` |
-| Misc | `type-of` `gensym` |
+| Misc | `gensym` |
 
 ## Implementation Roadmap
 
@@ -278,13 +281,13 @@ File system integration and stream abstraction:
 - [x] `--load <file>` / `--eval <expr>` command-line options — load files or evaluate expressions before REPL (output appears after banner in interactive mode); `--script <file>` to run file and exit (no REPL); `--non-interactive` to process options and exit without entering REPL
 - [x] `--heap <size>` — configurable arena size (default 4MB, e.g. `--heap 8M`); also `--stack <size>` for VM value stack, `--frames <n>` for call frame depth (default 256); `--help` prints usage; unknown `--` options show error + usage
 
-Not yet implemented: broadcast/concatenated/two-way/echo streams, `read-preserving-whitespace`, `write` with keyword args, printer control variables (`*print-escape*`, `*print-base*`, etc.), `parse-namestring`, `wild-pathname-p`, `translate-pathname`, `ensure-directories-exist`, `directory`
+Not yet implemented: broadcast/concatenated/two-way/echo streams, `read-preserving-whitespace`, `parse-namestring`, `wild-pathname-p`, `translate-pathname`, `directory`
 
 814 host tests (10 suites), 1042 Amiga batch tests — all passing.
 
-### Phase 8: Iteration & Format
+### Phase 8: Iteration, Format & Printer
 
-Extended iteration, output formatting, and standard library completeness:
+Extended iteration, output formatting, printer control, and standard library completeness:
 - [x] `loop` facility — extended LOOP macro in boot.lisp:
   - Iteration: `for`/`as` with `in`/`on`/`across`/`=`/`from`/`downfrom`/`upfrom`, `to`/`below`/`above`/`downto`/`upto`, `by`, `repeat`, `while`/`until`
   - Accumulation: `collect`/`append`/`nconc`/`sum`/`count`/`maximize`/`minimize`, `into` named variables
@@ -294,15 +297,22 @@ Extended iteration, output formatting, and standard library completeness:
   - BEING clauses: `hash-key[s]`/`hash-value[s]` of hash tables (with `using`), `symbol[s]`/`present-symbol[s]`/`external-symbol[s]` of packages
   - Destructuring: tree-shaped patterns in FOR variable position (`(a b)`, `(a . b)`, `(a (b c))`)
   - Helper builtins: `%hash-table-pairs` (C), `%package-symbols`/`%package-external-symbols`
-- [ ] `format` full directives (`~A`, `~S`, `~D`, `~B`, `~O`, `~X`, `~R`, `~%`, `~&`, `~T`, `~<~>`, `~{~}`, `~[~]`, `~?`, `~(~)`, `~*`, `~^`)
+- [x] Printer control variables — `*print-escape*`, `*print-readably*`, `*print-base*`, `*print-radix*`, `*print-level*`, `*print-length*`, `*print-case*`, `*print-gensym*`, `*print-array*`, `*print-circle*`, `*print-pretty*`
+- [x] `write` builtin with keyword args (`:stream`, `:escape`, `:readably`, `:base`, `:radix`, `:level`, `:length`, `:case`, `:gensym`, `:array`, `:circle`, `:pretty`)
+- [x] Extended `format` directives — `~A`, `~S`, `~W`, `~D`, `~B`, `~O`, `~X`, `~C`, `~%`, `~&`, `~|`, `~~`
+- [x] Missing list ops: `tree-equal`, `make-list`, `list*`, `list-length`, `tailp`, `ldiff`, `revappend`, `nreconc`, `assoc-if`, `assoc-if-not`, `rassoc-if`, `rassoc-if-not`
+- [x] Missing string ops: `string-capitalize`, `nstring-upcase`, `nstring-downcase`, `nstring-capitalize`, `char-name`, `name-char`
+- [x] Missing sequence ops: `map-into`, `copy-seq`, `elt`, `(setf elt)`
+- [x] Higher-order: `complement`, `constantly`
+- [ ] Full `format` directives (`~R`, `~T`, `~<~>`, `~{~}`, `~[~]`, `~?`, `~(~)`, `~*`, `~^`, column/padding params)
 - [ ] Pretty printer (`pprint`, `pprint-logical-block`, `pprint-newline`, `pprint-indent`)
+- [ ] `*print-circle*` detection (variable exists but circular structure detection not implemented)
 - [ ] Setf completeness: `rotatef`, `shiftf`, `define-modify-macro`, `defsetf` long form, `define-setf-expander`
 - [ ] `psetq`, `psetf` — parallel assignment
 - [ ] `load-time-value` — evaluate once at load time
-- [ ] Missing list ops: `tree-equal`, `make-list`, `list*`, `list-length`, `tailp`, `ldiff`, `revappend`, `nreconc`, `assoc-if`, `rassoc-if`, `remf`
-- [ ] Missing string ops: `string-capitalize`, `nstring-upcase`, `nstring-downcase`, `nstring-capitalize`, `char-name`, `name-char`
-- [ ] Missing sequence ops: `map-into`, `copy-seq`, `elt`, `(setf elt)`
-- [ ] Higher-order: `complement`, `constantly`
+- [ ] `remf` — destructive plist removal
+
+997 host tests (11 suites), 1370 Amiga batch tests — all passing.
 
 ### Phase 9: Numeric Tower ✅
 
@@ -360,8 +370,13 @@ Remaining numeric features (deferred):
 Structures and Common Lisp Object System:
 - [x] `defstruct` — structure definitions (slots with defaults, constructors with `&key`, copier, predicate, accessors with `setf`, `:conc-name`, `:constructor`, `:predicate`, `:copier`, `:include` inheritance, `typep` integration, `#S()` printing, `type-of`, `structurep`)
   - **Not yet implemented:** `:type list/vector`, `:print-function`/`:print-object`, `#S()` reader syntax, `:named`, `:read-only` slots, BOA constructors
-- [ ] Multi-dimensional arrays, adjustable arrays, fill pointers, displaced arrays
-- [ ] `vector-push`, `vector-push-extend`, `adjust-array`, `make-array` keyword extensions (`:adjustable`, `:fill-pointer`, `:displaced-to`)
+- [x] Multi-dimensional arrays — `make-array` with list dimensions, `aref`/`(setf aref)` variadic row-major index, `#nA(...)` printer format, `#(...)` reader syntax
+- [x] Adjustable arrays, fill pointers — `make-array` `:adjustable`/`:fill-pointer`/`:initial-element`/`:initial-contents`/`:element-type` keywords
+- [x] `vector-push`, `vector-push-extend`, `adjust-array`, `fill-pointer`, `(setf fill-pointer)`, `array-has-fill-pointer-p`
+- [x] Array query — `array-dimension`, `array-total-size`, `array-row-major-index`, `row-major-aref`, `(setf row-major-aref)`, `array-dimensions`, `array-rank`
+- [x] Array type predicates — `arrayp`, `simple-vector-p`, `adjustable-array-p`; `typep`/`type-of`/`subtypep` properly differentiate ARRAY/SIMPLE-ARRAY/VECTOR/SIMPLE-VECTOR
+- [x] `*print-array*` — controls readable vs unreadable array printing
+- [ ] Displaced arrays (`:displaced-to`, `:displaced-index-offset`)
 - [ ] Bit vectors: `bit-and`, `bit-or`, `bit-xor`, `bit-not`, `bit-vector-p`, `make-array :element-type 'bit`
 - [ ] `defclass` — class definition with slots, inheritance, metaclasses
 - [ ] Slot options: `:initarg`, `:initform`, `:accessor`, `:reader`, `:writer`, `:allocation`, `:type`, `:documentation`
@@ -416,7 +431,7 @@ cl-amiga/
 │   └── overview.md        # This file
 ├── src/
 │   ├── main.c             # Entry point
-│   ├── core/              # Language implementation (34 modules)
+│   ├── core/              # Language implementation (35 .c + 20 .h modules)
 │   └── platform/          # OS abstraction (posix, amiga)
 ├── include/
 │   └── clamiga.h          # Public umbrella header
@@ -424,9 +439,9 @@ cl-amiga/
 │   └── boot.lisp          # Bootstrap macros/functions
 ├── tests/
 │   ├── test.h             # Test framework
-│   ├── test_*.c           # Host test suites (10 files, 908 tests)
+│   ├── test_*.c           # Host test suites (11 files, 997 tests)
 │   └── amiga/
-│       └── run-tests.lisp # AmigaOS batch tests (1255 tests)
+│       └── run-tests.lisp # AmigaOS batch tests (1370 tests)
 ├── build/                 # Build output (gitignored)
 └── verify/
     └── realamiga/          # FS-UAE config + AmigaOS system image
