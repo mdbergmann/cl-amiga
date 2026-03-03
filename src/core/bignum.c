@@ -490,27 +490,43 @@ CL_Obj cl_arith_add(CL_Obj a, CL_Obj b)
         uint16_t ta[2], tb[2];
         uint32_t a_len, b_len, a_sign, b_sign;
         const uint16_t *al, *bl;
-        uint16_t result[256]; /* Max limbs for stack-allocated result */
-        uint32_t r_len;
+        uint16_t result_stack[256];
+        uint16_t *result;
+        uint32_t r_len, max_len;
+        int heap_result = 0;
 
         al = to_limbs(a, &a_len, &a_sign, ta);
         bl = to_limbs(b, &b_len, &b_sign, tb);
 
+        max_len = (a_len > b_len ? a_len : b_len) + 1;
+        if (max_len <= 256) {
+            result = result_stack;
+        } else {
+            result = (uint16_t *)platform_alloc(max_len * sizeof(uint16_t));
+            heap_result = 1;
+        }
+
         if (a_sign == b_sign) {
             /* Same sign: add magnitudes */
+            CL_Obj res;
             r_len = bignum_add_mag(al, a_len, bl, b_len, result);
-            return bignum_from_limbs(result, r_len, a_sign);
+            res = bignum_from_limbs(result, r_len, a_sign);
+            if (heap_result) platform_free(result);
+            return res;
         } else {
             /* Different signs: subtract smaller from larger magnitude */
             int cmp = bignum_compare_mag(al, a_len, bl, b_len);
-            if (cmp == 0) return CL_MAKE_FIXNUM(0);
+            CL_Obj res;
+            if (cmp == 0) { if (heap_result) platform_free(result); return CL_MAKE_FIXNUM(0); }
             if (cmp > 0) {
                 r_len = bignum_sub_mag(al, a_len, bl, b_len, result);
-                return bignum_from_limbs(result, r_len, a_sign);
+                res = bignum_from_limbs(result, r_len, a_sign);
             } else {
                 r_len = bignum_sub_mag(bl, b_len, al, a_len, result);
-                return bignum_from_limbs(result, r_len, b_sign);
+                res = bignum_from_limbs(result, r_len, b_sign);
             }
+            if (heap_result) platform_free(result);
+            return res;
         }
     }
 }
@@ -534,8 +550,10 @@ CL_Obj cl_arith_sub(CL_Obj a, CL_Obj b)
         uint16_t ta[2], tb[2];
         uint32_t a_len, b_len, a_sign, b_sign;
         const uint16_t *al, *bl;
-        uint16_t result[256];
-        uint32_t r_len;
+        uint16_t result_stack[256];
+        uint16_t *result;
+        uint32_t r_len, max_len;
+        int heap_result = 0;
 
         al = to_limbs(a, &a_len, &a_sign, ta);
         bl = to_limbs(b, &b_len, &b_sign, tb);
@@ -543,19 +561,33 @@ CL_Obj cl_arith_sub(CL_Obj a, CL_Obj b)
         /* Flip sign of b, then add */
         b_sign = b_sign ? 0 : 1;
 
+        max_len = (a_len > b_len ? a_len : b_len) + 1;
+        if (max_len <= 256) {
+            result = result_stack;
+        } else {
+            result = (uint16_t *)platform_alloc(max_len * sizeof(uint16_t));
+            heap_result = 1;
+        }
+
         if (a_sign == b_sign) {
+            CL_Obj res;
             r_len = bignum_add_mag(al, a_len, bl, b_len, result);
-            return bignum_from_limbs(result, r_len, a_sign);
+            res = bignum_from_limbs(result, r_len, a_sign);
+            if (heap_result) platform_free(result);
+            return res;
         } else {
             int cmp = bignum_compare_mag(al, a_len, bl, b_len);
-            if (cmp == 0) return CL_MAKE_FIXNUM(0);
+            CL_Obj res;
+            if (cmp == 0) { if (heap_result) platform_free(result); return CL_MAKE_FIXNUM(0); }
             if (cmp > 0) {
                 r_len = bignum_sub_mag(al, a_len, bl, b_len, result);
-                return bignum_from_limbs(result, r_len, a_sign);
+                res = bignum_from_limbs(result, r_len, a_sign);
             } else {
                 r_len = bignum_sub_mag(bl, b_len, al, a_len, result);
-                return bignum_from_limbs(result, r_len, b_sign);
+                res = bignum_from_limbs(result, r_len, b_sign);
             }
+            if (heap_result) platform_free(result);
+            return res;
         }
     }
 }
@@ -660,8 +692,10 @@ CL_Obj cl_arith_truncate(CL_Obj a, CL_Obj b)
         uint16_t ta[2], tb[2];
         uint32_t a_len, b_len, a_sign, b_sign, r_sign;
         const uint16_t *al, *bl;
-        uint16_t quot[256], rem[256];
+        uint16_t quot_stack[256], rem_stack[256];
+        uint16_t *quot, *rem;
         uint32_t q_len;
+        int heap_bufs = 0;
 
         al = to_limbs(a, &a_len, &a_sign, ta);
         bl = to_limbs(b, &b_len, &b_sign, tb);
@@ -674,9 +708,22 @@ CL_Obj cl_arith_truncate(CL_Obj a, CL_Obj b)
         if (bignum_compare_mag(al, a_len, bl, b_len) < 0)
             return CL_MAKE_FIXNUM(0);
 
+        if (a_len > 256) {
+            quot = (uint16_t *)platform_alloc(a_len * sizeof(uint16_t));
+            rem = (uint16_t *)platform_alloc(a_len * sizeof(uint16_t));
+            heap_bufs = 1;
+        } else {
+            quot = quot_stack;
+            rem = rem_stack;
+        }
+
         q_len = bignum_divmod(al, a_len, bl, b_len, quot, rem);
         r_sign = a_sign ^ b_sign;
-        return bignum_from_limbs(quot, q_len, r_sign);
+        {
+            CL_Obj res = bignum_from_limbs(quot, q_len, r_sign);
+            if (heap_bufs) { platform_free(quot); platform_free(rem); }
+            return res;
+        }
     }
 }
 
@@ -703,9 +750,11 @@ CL_Obj cl_arith_mod(CL_Obj a, CL_Obj b)
         uint16_t ta[2], tb[2];
         uint32_t a_len, b_len, a_sign, b_sign;
         const uint16_t *al, *bl;
-        uint16_t quot[256], rem[256];
+        uint16_t quot_stack[256], rem_stack[256];
+        uint16_t *quot, *rem;
         uint32_t rem_len;
         int rem_is_zero;
+        int heap_bufs = 0;
 
         al = to_limbs(a, &a_len, &a_sign, ta);
         bl = to_limbs(b, &b_len, &b_sign, tb);
@@ -717,12 +766,21 @@ CL_Obj cl_arith_mod(CL_Obj a, CL_Obj b)
         if (bignum_compare_mag(al, a_len, bl, b_len) < 0) {
             rem_obj = a;
         } else {
+            if (a_len > 256) {
+                quot = (uint16_t *)platform_alloc(a_len * sizeof(uint16_t));
+                rem = (uint16_t *)platform_alloc(a_len * sizeof(uint16_t));
+                heap_bufs = 1;
+            } else {
+                quot = quot_stack;
+                rem = rem_stack;
+            }
             bignum_divmod(al, a_len, bl, b_len, quot, rem);
             /* Find actual remainder length */
             rem_len = b_len;
             while (rem_len > 1 && rem[rem_len - 1] == 0)
                 rem_len--;
             rem_obj = bignum_from_limbs(rem, rem_len, a_sign);
+            if (heap_bufs) { platform_free(quot); platform_free(rem); }
         }
 
         /* CL mod: result has same sign as divisor.
@@ -905,23 +963,38 @@ void cl_bignum_print(CL_Obj obj, void (*out)(const char *))
 {
     CL_Bignum *bn = (CL_Bignum *)CL_OBJ_TO_PTR(obj);
     /* Convert to decimal by repeated division by 10000 */
-    uint16_t work[256];
+    uint16_t work_stack[256];
+    uint16_t *work;
     uint32_t work_len;
-    char digits[512]; /* Enough for 256 * 16 bits ≈ 1200+ decimal digits */
+    char digits_stack[1024];
+    char *digits;
+    uint32_t digits_cap;
     int dpos = 0;
     int i;
+    int heap_work = 0, heap_digits = 0;
 
-    /* Copy limbs to working buffer */
-    if (bn->length > 256) {
-        out("#<BIGNUM too large>");
-        return;
+    /* Use stack buffers for small bignums, heap for large */
+    if (bn->length <= 256) {
+        work = work_stack;
+    } else {
+        work = (uint16_t *)platform_alloc(bn->length * sizeof(uint16_t));
+        heap_work = 1;
     }
+    /* Each 16-bit limb ≈ 4.8 decimal digits, round up to 5 */
+    digits_cap = bn->length * 5 + 1;
+    if (digits_cap <= 1024) {
+        digits = digits_stack;
+    } else {
+        digits = (char *)platform_alloc(digits_cap);
+        heap_digits = 1;
+    }
+
     memcpy(work, bn->limbs, bn->length * sizeof(uint16_t));
     work_len = bn->length;
 
     if (work_len == 1 && work[0] == 0) {
         out("0");
-        return;
+        goto cleanup;
     }
 
     /* Extract groups of 4 decimal digits */
@@ -941,7 +1014,7 @@ void cl_bignum_print(CL_Obj obj, void (*out)(const char *))
 
         /* Append in reverse order (we'll reverse later) */
         for (i = 3; i >= 0; i--) {
-            if (dpos < 511) digits[dpos++] = buf[i];
+            if ((uint32_t)dpos < digits_cap - 1) digits[dpos++] = buf[i];
         }
     }
 
@@ -961,6 +1034,10 @@ void cl_bignum_print(CL_Obj obj, void (*out)(const char *))
             out(outbuf);
         }
     }
+
+cleanup:
+    if (heap_work) platform_free(work);
+    if (heap_digits) platform_free(digits);
 }
 
 /* ================================================================
@@ -988,8 +1065,10 @@ CL_Obj cl_arith_gcd(CL_Obj a, CL_Obj b)
             uint16_t ta2[2], tb2[2];
             uint32_t a_len2, b_len2, a_sign2, b_sign2;
             const uint16_t *al2, *bl2;
-            uint16_t quot[256], rem[256];
+            uint16_t quot_stack[256], rem_stack[256];
+            uint16_t *quot, *rem;
             uint32_t rem_len;
+            int heap_bufs = 0;
 
             al2 = to_limbs(a, &a_len2, &a_sign2, ta2);
             bl2 = to_limbs(b, &b_len2, &b_sign2, tb2);
@@ -997,10 +1076,19 @@ CL_Obj cl_arith_gcd(CL_Obj a, CL_Obj b)
             if (bignum_compare_mag(al2, a_len2, bl2, b_len2) < 0) {
                 temp = a;
             } else {
+                if (a_len2 > 256) {
+                    quot = (uint16_t *)platform_alloc(a_len2 * sizeof(uint16_t));
+                    rem = (uint16_t *)platform_alloc(a_len2 * sizeof(uint16_t));
+                    heap_bufs = 1;
+                } else {
+                    quot = quot_stack;
+                    rem = rem_stack;
+                }
                 bignum_divmod(al2, a_len2, bl2, b_len2, quot, rem);
                 rem_len = b_len2;
                 while (rem_len > 1 && rem[rem_len - 1] == 0) rem_len--;
                 temp = bignum_from_limbs(rem, rem_len, 0);
+                if (heap_bufs) { platform_free(quot); platform_free(rem); }
             }
         }
         a = b;
@@ -1166,13 +1254,19 @@ CL_Obj cl_arith_ash(CL_Obj n, CL_Obj count)
         uint32_t word_shift = (uint32_t)shift / 16;
         uint32_t bit_shift = (uint32_t)shift % 16;
         uint32_t r_len, i;
-        uint16_t result[256];
+        uint16_t result_stack[256];
+        uint16_t *result;
+        int heap_result = 0;
+        CL_Obj res;
 
         nl = to_limbs(n, &n_len, &n_sign, tn);
         r_len = n_len + word_shift + 1;
-        if (r_len > 256) {
-            cl_error(CL_ERR_OVERFLOW, "ASH: result too large");
-            return CL_NIL;
+
+        if (r_len <= 256) {
+            result = result_stack;
+        } else {
+            result = (uint16_t *)platform_alloc(r_len * sizeof(uint16_t));
+            heap_result = 1;
         }
 
         memset(result, 0, r_len * sizeof(uint16_t));
@@ -1190,7 +1284,9 @@ CL_Obj cl_arith_ash(CL_Obj n, CL_Obj count)
         }
 
         while (r_len > 1 && result[r_len - 1] == 0) r_len--;
-        return bignum_from_limbs(result, r_len, n_sign);
+        res = bignum_from_limbs(result, r_len, n_sign);
+        if (heap_result) platform_free(result);
+        return res;
     } else {
         /* Right shift (arithmetic: toward negative infinity) */
         uint16_t tn[2];
