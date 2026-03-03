@@ -511,17 +511,51 @@ static CL_Obj bi_get_internal_time(CL_Obj *args, int n)
     return CL_MAKE_FIXNUM((int32_t)(platform_time_ms() & 0x7FFFFFFF));
 }
 
+static CL_Obj bi_get_bytes_consed(CL_Obj *args, int n)
+{
+    CL_UNUSED(args); CL_UNUSED(n);
+    return CL_MAKE_FIXNUM((int32_t)(cl_heap.total_consed & 0x7FFFFFFF));
+}
+
+static CL_Obj bi_get_gc_count(CL_Obj *args, int n)
+{
+    CL_UNUSED(args); CL_UNUSED(n);
+    return CL_MAKE_FIXNUM((int32_t)(cl_heap.gc_count & 0x7FFFFFFF));
+}
+
 static CL_Obj bi_time_report(CL_Obj *args, int n)
 {
-    uint32_t start, end, elapsed;
-    char buf[80];
+    uint32_t start_time, end_time, elapsed;
+    uint32_t start_consed, end_consed, bytes_consed;
+    uint32_t start_gc, end_gc, gc_cycles;
+    char buf[256];
     CL_UNUSED(n);
-    if (!CL_FIXNUM_P(args[0]))
-        cl_error(CL_ERR_TYPE, "%%TIME-REPORT: expected fixnum");
-    start = (uint32_t)CL_FIXNUM_VAL(args[0]);
-    end = platform_time_ms() & 0x7FFFFFFF;
-    elapsed = (end >= start) ? (end - start) : ((0x7FFFFFFF - start) + end + 1);
-    snprintf(buf, sizeof(buf), "Evaluation took %lu ms.\n", (unsigned long)elapsed);
+
+    start_time = (uint32_t)CL_FIXNUM_VAL(args[0]);
+    start_consed = (uint32_t)CL_FIXNUM_VAL(args[1]);
+    start_gc = (uint32_t)CL_FIXNUM_VAL(args[2]);
+
+    end_time = platform_time_ms() & 0x7FFFFFFF;
+    end_consed = cl_heap.total_consed & 0x7FFFFFFF;
+    end_gc = cl_heap.gc_count & 0x7FFFFFFF;
+
+    elapsed = (end_time >= start_time)
+        ? (end_time - start_time)
+        : ((0x7FFFFFFF - start_time) + end_time + 1);
+    bytes_consed = (end_consed >= start_consed)
+        ? (end_consed - start_consed)
+        : ((0x7FFFFFFF - start_consed) + end_consed + 1);
+    gc_cycles = (end_gc >= start_gc)
+        ? (end_gc - start_gc)
+        : ((0x7FFFFFFF - start_gc) + end_gc + 1);
+
+    snprintf(buf, sizeof(buf),
+             "Evaluation took %lu ms; %lu bytes consed; %lu GC cycles; %lu/%lu heap bytes used.\n",
+             (unsigned long)elapsed,
+             (unsigned long)bytes_consed,
+             (unsigned long)gc_cycles,
+             (unsigned long)cl_heap.total_allocated,
+             (unsigned long)cl_heap.arena_size);
     platform_write_string(buf);
     return CL_NIL;
 }
@@ -564,6 +598,8 @@ void cl_builtins_io_init(void)
 
     /* Timing (internal helpers for TIME special form) */
     defun("%GET-INTERNAL-TIME", bi_get_internal_time, 0, 0);
-    defun("%TIME-REPORT", bi_time_report, 1, 1);
+    defun("%GET-BYTES-CONSED", bi_get_bytes_consed, 0, 0);
+    defun("%GET-GC-COUNT", bi_get_gc_count, 0, 0);
+    defun("%TIME-REPORT", bi_time_report, 3, 3);
     defun("GET-INTERNAL-REAL-TIME", bi_get_internal_real_time, 0, 0);
 }

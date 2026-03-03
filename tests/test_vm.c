@@ -2553,6 +2553,26 @@ TEST(eval_time_defun)
     ASSERT_STR_EQ(eval_print("(time (time-test 5))"), "25");
 }
 
+TEST(eval_time_stats)
+{
+    /* (time expr) should return correct value and internal helpers work */
+    ASSERT_STR_EQ(eval_print("(time (+ 1 2))"), "3");
+
+    /* %GET-BYTES-CONSED returns a non-negative fixnum */
+    ASSERT_STR_EQ(eval_print("(integerp (%get-bytes-consed))"), "T");
+    ASSERT_STR_EQ(eval_print("(>= (%get-bytes-consed) 0)"), "T");
+
+    /* %GET-GC-COUNT returns a non-negative fixnum */
+    ASSERT_STR_EQ(eval_print("(integerp (%get-gc-count))"), "T");
+    ASSERT_STR_EQ(eval_print("(>= (%get-gc-count) 0)"), "T");
+
+    /* Bytes consed increases after allocation */
+    ASSERT_STR_EQ(eval_print(
+        "(let ((before (%get-bytes-consed)))"
+        "  (cons 1 2)"
+        "  (> (%get-bytes-consed) before))"), "T");
+}
+
 TEST(eval_get_internal_real_time)
 {
     /* get-internal-real-time returns a fixnum */
@@ -3150,6 +3170,7 @@ int main(void)
     RUN(eval_time_basic);
     RUN(eval_time_nested);
     RUN(eval_time_defun);
+    RUN(eval_time_stats);
     RUN(eval_get_internal_real_time);
     RUN(eval_srcloc_load_backtrace);
     RUN(eval_srcloc_reader_line);

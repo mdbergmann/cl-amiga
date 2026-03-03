@@ -30,6 +30,7 @@ typedef struct {
     uint32_t bump;              /* Bump pointer offset from arena */
     CL_FreeBlock *free_list;    /* Free list head */
     uint32_t total_allocated;   /* Bytes currently allocated */
+    uint32_t total_consed;      /* Bytes ever allocated (monotonic, never reset) */
     uint32_t gc_count;          /* Number of GC cycles */
 } CL_Heap;
 

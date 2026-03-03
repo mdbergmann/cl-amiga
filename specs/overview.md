@@ -93,7 +93,7 @@ Single-pass recursive compiler from S-expressions to bytecode:
 
 **Bootstrap functions:** `cadr`, `caar`, `cdar`, `cddr`, `caddr`, `cadar`, `identity`, `endp`, `member`, `intersection`, `union`, `set-difference`, `subsetp`, `cerror`
 
-## Built-in Functions (231 functions)
+## Built-in Functions (233 functions)
 
 | Category | Functions |
 |----------|-----------|
@@ -213,7 +213,7 @@ Data structures, sequences, strings, and I/O:
 - [x] `trace`, `untrace` — function call tracing for debugging
 - [x] Stack traces on error — walk VM call frames, print function names and call chain
 - [x] Source location tracking — reader tracks line numbers, compiler attaches to bytecode, errors include file:line context
-- [x] `time` — macro to measure and print execution time of an expression
+- [x] `time` — measure and print execution time, bytes consed, GC cycles, and heap usage
 
 289 host tests (4 suites), ~628 Amiga batch tests — all passing.
 
@@ -240,7 +240,7 @@ Condition system, packages, and compiler completeness:
 - [x] CDR-10 package-local nicknames — `package-local-nicknames`, `add-package-local-nickname`, `remove-package-local-nickname` builtins, `:local-nicknames` in `make-package` and `defpackage`, scoped resolution in `cl_find_package`
 - [x] Interactive debugger — on error, display condition, backtrace, and available restarts; prompt user to select restart or abort; `invoke-debugger`, `break`, `*debugger-hook*`
 
-474 host tests (6 suites), 714 Amiga batch tests — all passing.
+476 host tests (6 suites), 752 Amiga batch tests — all passing.
 
 - [x] `macrolet`, `symbol-macrolet` — local macro bindings (compile-time only, no opcodes)
 - [ ] Unused variable warnings with `ignore`/`ignorable` declaration support
@@ -248,8 +248,9 @@ Condition system, packages, and compiler completeness:
 - [ ] `multiple-value-call`, `multiple-value-setq` — MV completeness
 - [ ] `progv` — dynamic binding with computed symbols
 - [x] `the` — type declaration special form with `OP_ASSERT_TYPE` opcode; runtime type check when safety >= 1, no-op at safety 0; disables TCO when safety >= 1; `(the (values ...) ...)` for multiple values not yet supported
-- [ ] Enhanced `time` — report bytes consed, GC cycles, heap usage in addition to wall time; optionally CPU time via `getrusage()` (POSIX) / `ReadEClock()` (AmigaOS)
-- [ ] REPL history variables — `*`, `**`, `***` (last 3 results), `+`, `++`, `+++` (last 3 forms), `-` (current form being evaluated)
+- [x] Enhanced `time` — reports bytes consed, GC cycles, and heap usage in addition to wall time; `total_consed` monotonic counter in `CL_Heap`; `%GET-BYTES-CONSED`, `%GET-GC-COUNT` internal builtins; optionally CPU time via `getrusage()` (POSIX) / `ReadEClock()` (AmigaOS) deferred
+- [x] REPL history variables — `*`, `**`, `***` (last 3 results), `+`, `++`, `+++` (last 3 forms), `-` (current form being evaluated)
+- [ ] REPL startup ASCII art — display a nice logo/banner when starting the interactive REPL
 
 ### Phase 7: I/O & Pathnames
 
@@ -378,9 +379,9 @@ cl-amiga/
 │   └── boot.lisp          # Bootstrap macros/functions
 ├── tests/
 │   ├── test.h             # Test framework
-│   ├── test_*.c           # Host test suites (7 files, 523 tests)
+│   ├── test_*.c           # Host test suites (7 files, 529 tests)
 │   └── amiga/
-│       └── run-tests.lisp # AmigaOS batch tests (714 tests)
+│       └── run-tests.lisp # AmigaOS batch tests (752 tests)
 ├── build/                 # Build output (gitignored)
 └── verify/
     └── realamiga/          # FS-UAE config + AmigaOS system image

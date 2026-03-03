@@ -44,6 +44,7 @@ void cl_mem_init(uint32_t heap_size)
     cl_heap.bump = CL_ALIGN;  /* Skip offset 0 so it stays NIL */
     cl_heap.free_list = NULL;
     cl_heap.total_allocated = 0;
+    cl_heap.total_consed = 0;
     cl_heap.gc_count = 0;
 
     gc_root_count = 0;
@@ -126,6 +127,7 @@ void *cl_alloc(uint8_t type, uint32_t size)
     /* Initialize header */
     ((CL_Header *)ptr)->header = CL_MAKE_HDR(type, size);
     cl_heap.total_allocated += size;
+    cl_heap.total_consed += size;
 
     return ptr;
 }
