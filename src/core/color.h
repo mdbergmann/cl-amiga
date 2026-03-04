@@ -11,7 +11,7 @@ void cl_color_set(const char *ansi_code);
 void cl_color_reset(void);
 
 /* ANSI color code constants */
-#define CL_COLOR_DIM_BLUE     "\033[34m"
+#define CL_COLOR_LIGHT_BLUE   "\033[94m"
 #define CL_COLOR_DIM_GREEN    "\033[32m"
 #define CL_COLOR_DIM_CYAN     "\033[36m"
 #define CL_COLOR_RED          "\033[31m"
