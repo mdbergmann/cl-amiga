@@ -8,6 +8,7 @@
 #include "builtins.h"
 #include "bignum.h"
 #include "float.h"
+#include "ratio.h"
 #include "symbol.h"
 #include "package.h"
 #include "mem.h"
@@ -112,6 +113,45 @@ static CL_Obj bi_expt_float(CL_Obj *args, int n)
     if (CL_INTEGER_P(args[0]) && CL_INTEGER_P(args[1])
         && !cl_arith_minusp(args[1])) {
         return cl_arith_expt(args[0], args[1]);
+    }
+
+    /* Ratio base with integer exponent: exact rational result */
+    if (CL_RATIO_P(args[0]) && CL_INTEGER_P(args[1])) {
+        CL_Obj num = cl_numerator(args[0]);
+        CL_Obj den = cl_denominator(args[0]);
+        CL_Obj exp = args[1];
+        CL_Obj rn, rd;
+        /* Negative exponent: (a/b)^(-n) = (b/a)^n */
+        if (cl_arith_minusp(exp)) {
+            CL_Obj tmp = num;
+            num = den;
+            den = tmp;
+            CL_GC_PROTECT(num); CL_GC_PROTECT(den);
+            exp = cl_arith_negate(exp);
+            CL_GC_UNPROTECT(2);
+        }
+        CL_GC_PROTECT(num); CL_GC_PROTECT(den); CL_GC_PROTECT(exp);
+        rn = cl_arith_expt(num, exp);
+        CL_GC_UNPROTECT(3);
+        CL_GC_PROTECT(rn); CL_GC_PROTECT(den); CL_GC_PROTECT(exp);
+        rd = cl_arith_expt(den, exp);
+        CL_GC_UNPROTECT(3);
+        return cl_make_ratio_normalized(rn, rd);
+    }
+
+    /* Integer base with negative integer exponent: produce ratio */
+    if (CL_INTEGER_P(args[0]) && CL_INTEGER_P(args[1])
+        && cl_arith_minusp(args[1])) {
+        CL_Obj base = args[0];
+        CL_Obj exp;
+        CL_Obj powered;
+        CL_GC_PROTECT(base);
+        exp = cl_arith_negate(args[1]);
+        CL_GC_UNPROTECT(1);
+        CL_GC_PROTECT(base); CL_GC_PROTECT(exp);
+        powered = cl_arith_expt(base, exp);
+        CL_GC_UNPROTECT(2);
+        return cl_make_ratio_normalized(CL_MAKE_FIXNUM(1), powered);
     }
 
     /* Float path */

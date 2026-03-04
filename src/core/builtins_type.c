@@ -10,6 +10,7 @@
 #include "package.h"
 #include "mem.h"
 #include "float.h"
+#include "ratio.h"
 #include "error.h"
 #include "vm.h"
 #include "compiler.h"
@@ -60,7 +61,8 @@ static int typep_symbol(CL_Obj obj, CL_Obj type_sym)
     if (strcmp(tname, "FIXNUM") == 0)  return CL_FIXNUM_P(obj);
     if (strcmp(tname, "BIGNUM") == 0)  return CL_BIGNUM_P(obj);
     if (strcmp(tname, "INTEGER") == 0) return CL_INTEGER_P(obj);
-    if (strcmp(tname, "RATIONAL") == 0) return CL_INTEGER_P(obj);
+    if (strcmp(tname, "RATIO") == 0)  return CL_RATIO_P(obj);
+    if (strcmp(tname, "RATIONAL") == 0) return CL_RATIONAL_P(obj);
     if (strcmp(tname, "SINGLE-FLOAT") == 0 || strcmp(tname, "SHORT-FLOAT") == 0)
         return CL_SINGLE_FLOAT_P(obj);
     if (strcmp(tname, "DOUBLE-FLOAT") == 0 || strcmp(tname, "LONG-FLOAT") == 0)
@@ -423,6 +425,7 @@ enum TypeId {
     TID_FIXNUM,
     TID_BIGNUM,
     TID_INTEGER,
+    TID_RATIO,
     TID_RATIONAL,
     TID_REAL,
     TID_NUMBER,
@@ -471,6 +474,7 @@ static int type_name_to_id(const char *name)
     if (strcmp(name, "FIXNUM") == 0) return TID_FIXNUM;
     if (strcmp(name, "BIGNUM") == 0) return TID_BIGNUM;
     if (strcmp(name, "INTEGER") == 0) return TID_INTEGER;
+    if (strcmp(name, "RATIO") == 0) return TID_RATIO;
     if (strcmp(name, "RATIONAL") == 0) return TID_RATIONAL;
     if (strcmp(name, "REAL") == 0) return TID_REAL;
     if (strcmp(name, "NUMBER") == 0) return TID_NUMBER;
@@ -532,6 +536,8 @@ static int subtype_check(int id1, int id2)
                                id2 == TID_REAL || id2 == TID_NUMBER)) return 1;
     if (id1 == TID_INTEGER && (id2 == TID_RATIONAL || id2 == TID_REAL ||
                                 id2 == TID_NUMBER)) return 1;
+    if (id1 == TID_RATIO && (id2 == TID_RATIONAL || id2 == TID_REAL ||
+                              id2 == TID_NUMBER)) return 1;
     if (id1 == TID_RATIONAL && (id2 == TID_REAL || id2 == TID_NUMBER)) return 1;
     if (id1 == TID_REAL && id2 == TID_NUMBER) return 1;
 

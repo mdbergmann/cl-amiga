@@ -32,6 +32,7 @@ OBJS = $(BUILDDIR)/main.o \
        $(BUILDDIR)/builtins.o \
        $(BUILDDIR)/builtins_arith.o \
        $(BUILDDIR)/builtins_io.o \
+       $(BUILDDIR)/builtins_format.o \
        $(BUILDDIR)/builtins_mutation.o \
        $(BUILDDIR)/builtins_strings.o \
        $(BUILDDIR)/builtins_lists.o \
@@ -46,6 +47,7 @@ OBJS = $(BUILDDIR)/main.o \
        $(BUILDDIR)/builtins_stream.o \
        $(BUILDDIR)/stream.o \
        $(BUILDDIR)/bignum.o \
+       $(BUILDDIR)/ratio.o \
        $(BUILDDIR)/float.o \
        $(BUILDDIR)/float_math.o \
        $(BUILDDIR)/debugger.o \
@@ -117,6 +119,9 @@ $(BUILDDIR)/builtins_arith.o: src/core/builtins_arith.c
 $(BUILDDIR)/builtins_io.o: src/core/builtins_io.c
 	$(CC) $(CFLAGS) -o $@ -c $<
 
+$(BUILDDIR)/builtins_format.o: src/core/builtins_format.c
+	$(CC) $(CFLAGS) -o $@ -c $<
+
 $(BUILDDIR)/builtins_mutation.o: src/core/builtins_mutation.c
 	$(CC) $(CFLAGS) -o $@ -c $<
 
@@ -157,6 +162,9 @@ $(BUILDDIR)/stream.o: src/core/stream.c
 	$(CC) $(CFLAGS) -o $@ -c $<
 
 $(BUILDDIR)/bignum.o: src/core/bignum.c
+	$(CC) $(CFLAGS) -o $@ -c $<
+
+$(BUILDDIR)/ratio.o: src/core/ratio.c
 	$(CC) $(CFLAGS) -o $@ -c $<
 
 $(BUILDDIR)/float.o: src/core/float.c

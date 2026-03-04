@@ -293,6 +293,22 @@ CL_Obj cl_make_bignum(uint32_t n_limbs, uint32_t sign)
     return CL_PTR_TO_OBJ(bn);
 }
 
+CL_Obj cl_make_ratio(CL_Obj numerator, CL_Obj denominator)
+{
+    CL_Ratio *r;
+
+    CL_GC_PROTECT(numerator);
+    CL_GC_PROTECT(denominator);
+
+    r = (CL_Ratio *)cl_alloc(TYPE_RATIO, sizeof(CL_Ratio));
+    CL_GC_UNPROTECT(2);
+
+    if (!r) return CL_NIL;
+    r->numerator = numerator;
+    r->denominator = denominator;
+    return CL_PTR_TO_OBJ(r);
+}
+
 CL_Obj cl_make_single_float(float value)
 {
     CL_SingleFloat *sf = (CL_SingleFloat *)cl_alloc(TYPE_SINGLE_FLOAT,
@@ -425,6 +441,12 @@ static void gc_mark_children(void *ptr, uint8_t type)
         CL_Stream *st = (CL_Stream *)ptr;
         gc_mark_push(st->string_buf);
         gc_mark_push(st->element_type);
+        break;
+    }
+    case TYPE_RATIO: {
+        CL_Ratio *r = (CL_Ratio *)ptr;
+        gc_mark_push(r->numerator);
+        gc_mark_push(r->denominator);
         break;
     }
     case TYPE_BIGNUM:

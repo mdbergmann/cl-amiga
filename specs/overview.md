@@ -39,7 +39,7 @@ CL_Obj (uint32_t):
 Heap object header (uint32_t):
   [type:8][gc_mark:1][size:23]       max object size = 8MB
 
-Types: CONS, SYMBOL, STRING, FUNCTION, CLOSURE, BYTECODE, VECTOR, PACKAGE, HASHTABLE, CONDITION, STRUCT, BIGNUM, SINGLE_FLOAT, DOUBLE_FLOAT, STREAM, ARRAY
+Types: CONS, SYMBOL, STRING, FUNCTION, CLOSURE, BYTECODE, VECTOR, PACKAGE, HASHTABLE, CONDITION, STRUCT, BIGNUM, SINGLE_FLOAT, DOUBLE_FLOAT, RATIO, STREAM, ARRAY
 ```
 
 ## Memory Budget (8MB System)
@@ -93,7 +93,7 @@ Single-pass recursive compiler from S-expressions to bytecode:
 
 **Bootstrap functions:** `cadr`, `caar`, `cdar`, `cddr`, `caddr`, `cadar`, `cdddr`, `cadddr`, `identity`, `endp`, `member`, `intersection`, `union`, `set-difference`, `subsetp`, `cerror`, `break`, `read-from-string`, `prin1-to-string`, `princ-to-string`, `write-to-string`, `complement`, `constantly`, `tree-equal`, `list-length`, `tailp`, `ldiff`, `revappend`, `nreconc`, `assoc-if`, `assoc-if-not`, `rassoc-if`, `rassoc-if-not`, `pathname-name`, `pathname-type`, `pathname-directory`, `namestring`, `truename`, `make-pathname`, `merge-pathnames`, `enough-namestring`, `ensure-directories-exist`, `decode-universal-time`, `encode-universal-time`, `get-decoded-time`
 
-## Built-in Functions (347 C functions + 35 boot.lisp functions)
+## Built-in Functions (351 C functions + 35 boot.lisp functions)
 
 | Category | Functions |
 |----------|-----------|
@@ -110,6 +110,7 @@ Single-pass recursive compiler from S-expressions to bytecode:
 | Arrays | `make-array` `vector` `aref` `svref` `vectorp` `arrayp` `simple-vector-p` `adjustable-array-p` `array-dimensions` `array-rank` `array-dimension` `array-total-size` `array-row-major-index` `row-major-aref` `fill-pointer` `array-has-fill-pointer-p` `vector-push` `vector-push-extend` `adjust-array` |
 | Symbol access | `symbol-value` `symbol-function` `symbol-name` `symbol-package` `boundp` `fboundp` `fdefinition` `make-symbol` |
 | Higher-order | `mapcar` `mapc` `mapcan` `maplist` `mapl` `mapcon` `apply` `funcall` |
+| Ratios | `numerator` `denominator` `rational` `rationalize` |
 | Floats | `float` `float-digits` `float-radix` `float-sign` `decode-float` `integer-decode-float` `scale-float` |
 | Characters | `char=` `char/=` `char<` `char>` `char<=` `char>=` `char-code` `code-char` `char-upcase` `char-downcase` `upper-case-p` `lower-case-p` `alpha-char-p` `digit-char-p` `char-name` `name-char` |
 | Strings | `string=` `string-equal` `string/=` `string-not-equal` `string<` `string>` `string<=` `string>=` `string-upcase` `string-downcase` `string-capitalize` `nstring-upcase` `nstring-downcase` `nstring-capitalize` `string-trim` `string-left-trim` `string-right-trim` `subseq` `concatenate` `char` `schar` `string` `parse-integer` |
@@ -299,12 +300,12 @@ Extended iteration, output formatting, printer control, and standard library com
   - Helper builtins: `%hash-table-pairs` (C), `%package-symbols`/`%package-external-symbols`
 - [x] Printer control variables — `*print-escape*`, `*print-readably*`, `*print-base*`, `*print-radix*`, `*print-level*`, `*print-length*`, `*print-case*`, `*print-gensym*`, `*print-array*`, `*print-circle*`, `*print-pretty*`, `*print-right-margin*`
 - [x] `write` builtin with keyword args (`:stream`, `:escape`, `:readably`, `:base`, `:radix`, `:level`, `:length`, `:case`, `:gensym`, `:array`, `:circle`, `:pretty`, `:right-margin`)
-- [x] Extended `format` directives — `~A`, `~S`, `~W`, `~D`, `~B`, `~O`, `~X`, `~C`, `~%`, `~&`, `~|`, `~~`
+- [x] Extended `format` directives — `~A`, `~S`, `~W`, `~D`, `~B`, `~O`, `~X`, `~C`, `~%`, `~&`, `~|`, `~~`, `~R`, `~T`, `~*`, `~^`, `~?`, `~(~)`, `~[~;~]`, `~{~}` with padding/commas/sign params, case conversion, conditionals, iteration, recursive processing, radix (cardinal/ordinal/Roman/base-n)
 - [x] Missing list ops: `tree-equal`, `make-list`, `list*`, `list-length`, `tailp`, `ldiff`, `revappend`, `nreconc`, `assoc-if`, `assoc-if-not`, `rassoc-if`, `rassoc-if-not`
 - [x] Missing string ops: `string-capitalize`, `nstring-upcase`, `nstring-downcase`, `nstring-capitalize`, `char-name`, `name-char`
 - [x] Missing sequence ops: `map-into`, `copy-seq`, `elt`, `(setf elt)`
 - [x] Higher-order: `complement`, `constantly`
-- [ ] Full `format` directives (`~R`, `~T`, `~<~>`, `~{~}`, `~[~]`, `~?`, `~(~)`, `~*`, `~^`, column/padding params)
+- [ ] Justification `~<~>` — remaining unimplemented format directive
 - [x] Pretty printer — `pprint` builtin, `*print-pretty*` / `*print-right-margin*` control variables, fill-style line breaking (greedy, no look-ahead), column tracking, indentation stack for lists/vectors/structs; `write`/`write-to-string` `:pretty`/`:right-margin` keywords
 - [ ] Full pretty printer (`pprint-logical-block`, `pprint-newline`, `pprint-indent`, `*print-pprint-dispatch*`)
 - [ ] Setf completeness: `rotatef`, `shiftf`, `define-modify-macro`, `defsetf` long form, `define-setf-expander`
@@ -312,15 +313,15 @@ Extended iteration, output formatting, printer control, and standard library com
 - [ ] `load-time-value` — evaluate once at load time
 - [ ] `remf` — destructive plist removal
 
-1017 host tests (11 suites), 1389 Amiga batch tests — all passing.
+1113 host tests (12 suites), 1435+ Amiga batch tests — all passing.
 
 ### Phase 9: Numeric Tower ✅
 
-Full CL numeric type hierarchy with arithmetic contagion:
+Full CL numeric type hierarchy with arithmetic contagion (integers, bignums, ratios, floats):
 - [x] Bignums — arbitrary precision integers, heap-allocated 16-bit limb arrays (little-endian); schoolbook multiplication; Knuth Algorithm D division; automatic fixnum↔bignum promotion/demotion; all arithmetic ops dispatch through `cl_arith_*` layer
 - [x] Integer math: `gcd`, `lcm`, `expt` (binary exponentiation), `isqrt` (Newton's method), `ash`, `logand`, `logior`, `logxor`, `lognot`, `integer-length`, `evenp`, `oddp`, `truncate`, `rem`
 - [x] Constants: `most-positive-fixnum`, `most-negative-fixnum`
-- [x] Type hierarchy: `fixnum`/`bignum` < `integer` < `rational` < `real` < `number` in `typep` and `subtypep`
+- [x] Type hierarchy: `fixnum`/`bignum` < `integer` < `rational` < `real` < `number`; `ratio` < `rational` < `real` < `number` in `typep` and `subtypep`
 - [x] `eql`/`equal`/hash-table support for bignums (value equality)
 
 Floats (steps 1-12, complete):
@@ -339,10 +340,29 @@ Floats (steps 1-12, complete):
 - [x] Trigonometric: `sin`, `cos`, `tan`, `asin` (domain check), `acos` (domain check), `atan` (1-2 args via `atan2`)
 - [x] Amiga build: `-lmieee` (software float); `FPU=1` → `-fpu=68881 -lm881` (hardware FPU)
 
+Ratios (complete):
+- [x] `CL_Ratio` heap type — numerator/denominator pair (fixnum or bignum), always normalized to lowest terms with positive denominator
+- [x] Normalization via GCD reduction; auto-demotion to integer when denominator=1 or numerator=0
+- [x] Arithmetic: `+` `-` `*` `/` on ratios and mixed ratio/integer; cross-multiply algorithm
+- [x] Comparison: ratio vs ratio, ratio vs integer, ratio vs float (via double conversion)
+- [x] Predicates: `zerop`, `plusp`, `minusp`, `abs` dispatch to ratio-specific functions
+- [x] Reader: ratio literals (`1/2`, `-3/4`, `+5/7`), auto-normalizing; compiler constant support
+- [x] Printer: `numerator/denominator` format, respects `*print-base*` and `*print-radix*`
+- [x] Type system: `typep` for `ratio`/`rational`/`real`/`number`; `type-of` → `RATIO`; `subtypep` hierarchy ratio < rational < real < number
+- [x] Equality/hashing: `eql`/`equal` value comparison, FNV-based hashing; hash table keys work correctly
+- [x] `coerce` ratio→float via `cl_to_double`; `(coerce 1/2 'float)` → `0.5`
+- [x] Rounding: `floor`/`ceiling`/`truncate`/`round` on ratios (decomposes to numerator/denominator division)
+- [x] Builtins: `numerator`, `denominator`, `rational`, `rationalize`
+- [x] `expt` with ratio base — exact rational result: `(expt 1/2 3)` → `1/8`; integer base + negative exponent → ratio: `(expt 2 -1)` → `1/2`
+- [x] `mod`/`rem` with ratio arguments
+- [x] Float contagion: ratio + float → float (e.g., `(+ 1/2 0.5)` → `1.0`)
+- [x] Division produces ratios: `(/ 1 2)` → `1/2`, `(/ 3)` → `1/3` (reciprocal)
+- [x] GC integration: mark-and-sweep traces numerator/denominator; GC survival tested
+- [x] `min`/`max`, `1+`/`1-` work with ratios via generic arithmetic dispatch
+
 **Known FPU issue:** 68881/68040 hardware FPU (`FPU=1`) has minor precision differences — `integer-decode-float` significand off-by-one on some values, and `scale-float` double formatting mismatch. Software float (`-lmieee`, default) passes all tests. 2/837 Amiga tests fail with `FPU=1`.
 
-**Float limitations (not planned):**
-- No ratios — `(/ 1 2)` returns `0` (integer truncation), not `1/2`
+**Numeric limitations (not planned):**
 - No complex numbers — `(sqrt -1)` signals an error instead of returning `#C(0 1)`
 - No `*read-default-float-format*` — unqualified literals always produce single-float
 - No float limits constants (`most-positive-single-float`, `least-positive-single-float`, etc.)
@@ -352,15 +372,10 @@ Floats (steps 1-12, complete):
 716 host tests (9 suites), 877 Amiga batch tests — all passing (software float) at end of Phase 9.
 
 Remaining numeric features (deferred):
-- [ ] Ratios — normalized numerator/denominator pairs (fixnum or bignum), GCD reduction
 - [ ] Complex numbers — real + imaginary parts, any real type
-- [ ] Numeric contagion: integer → ratio → single-float → double-float; complex promotion
-- [ ] Reader syntax: ratios (`1/2`, `3/4`), complex (`#C(1 2)`)
-- [ ] Division: `(/ 1 2)` → `1/2` (ratio)
-- [ ] Ratio ops: `numerator`, `denominator`, `rational`, `rationalize`
 - [ ] Complex ops: `realpart`, `imagpart`, `conjugate`, `phase`
+- [ ] Reader syntax: complex (`#C(1 2)`)
 - [ ] `logcount`
-- [ ] Type predicates: `ratiop`, `complexp`
 - [ ] Constants: `pi`, float limits, `*read-default-float-format*`
 - [ ] `random`, `make-random-state`, `*random-state*` — pseudo-random number generation
 - [ ] Bit manipulation: `ldb`, `dpb`, `byte`, `byte-size`, `byte-position`, `logbitp`, `logtest`, `boole`
@@ -439,9 +454,9 @@ cl-amiga/
 │   └── boot.lisp          # Bootstrap macros/functions
 ├── tests/
 │   ├── test.h             # Test framework
-│   ├── test_*.c           # Host test suites (11 files, 1017 tests)
+│   ├── test_*.c           # Host test suites (12 files, 1113 tests)
 │   └── amiga/
-│       └── run-tests.lisp # AmigaOS batch tests (1389 tests)
+│       └── run-tests.lisp # AmigaOS batch tests (1435 tests)
 ├── build/                 # Build output (gitignored)
 └── verify/
     └── realamiga/          # FS-UAE config + AmigaOS system image

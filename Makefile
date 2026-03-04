@@ -25,6 +25,7 @@ CORE_SRC     = $(SRCDIR)/core/types.c \
                $(SRCDIR)/core/builtins.c \
                $(SRCDIR)/core/builtins_arith.c \
                $(SRCDIR)/core/builtins_io.c \
+               $(SRCDIR)/core/builtins_format.c \
                $(SRCDIR)/core/builtins_mutation.c \
                $(SRCDIR)/core/builtins_strings.c \
                $(SRCDIR)/core/builtins_lists.c \
@@ -39,6 +40,7 @@ CORE_SRC     = $(SRCDIR)/core/types.c \
                $(SRCDIR)/core/builtins_stream.c \
                $(SRCDIR)/core/stream.c \
                $(SRCDIR)/core/bignum.c \
+               $(SRCDIR)/core/ratio.c \
                $(SRCDIR)/core/float.c \
                $(SRCDIR)/core/float_math.c \
                $(SRCDIR)/core/debugger.c \

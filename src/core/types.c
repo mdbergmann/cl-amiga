@@ -38,6 +38,7 @@ const char *cl_type_name(CL_Obj obj)
         case TYPE_BIGNUM:   return "BIGNUM";
         case TYPE_SINGLE_FLOAT: return "SINGLE-FLOAT";
         case TYPE_DOUBLE_FLOAT: return "DOUBLE-FLOAT";
+        case TYPE_RATIO:    return "RATIO";
         case TYPE_STREAM:   return "STREAM";
         default:            return "UNKNOWN";
         }

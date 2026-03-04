@@ -3899,6 +3899,232 @@ TEST(eval_format_mixed)
         "\"dec=255 hex=FF bin=11111111\"");
 }
 
+/* --- Advanced Format: Step 1 — padding, commas, sign --- */
+
+TEST(eval_format_padded_decimal)
+{
+    /* ~mincolD: right-pad with spaces */
+    ASSERT_STR_EQ(eval_print("(format nil \"~10D\" 42)"), "\"        42\"");
+    /* ~mincol,'padcharD: pad with custom char */
+    ASSERT_STR_EQ(eval_print("(format nil \"~10,'0D\" 42)"), "\"0000000042\"");
+    /* ~:D: insert commas */
+    ASSERT_STR_EQ(eval_print("(format nil \"~:D\" 1234567)"), "\"1,234,567\"");
+    /* ~@D: always show sign */
+    ASSERT_STR_EQ(eval_print("(format nil \"~@D\" 42)"), "\"+42\"");
+    ASSERT_STR_EQ(eval_print("(format nil \"~@D\" -7)"), "\"-7\"");
+    /* Combine mincol + comma + sign */
+    ASSERT_STR_EQ(eval_print("(format nil \"~14:@D\" 1234567)"), "\"    +1,234,567\"");
+}
+
+TEST(eval_format_padded_aesthetic)
+{
+    /* ~mincolA: left-justify, right-pad */
+    ASSERT_STR_EQ(eval_print("(format nil \"~10A\" \"hi\")"), "\"hi        \"");
+    /* ~mincol@A: right-justify, left-pad */
+    ASSERT_STR_EQ(eval_print("(format nil \"~10@A\" \"hi\")"), "\"        hi\"");
+    /* ~mincolS: left-justify, right-pad (with escape) */
+    ASSERT_STR_EQ(eval_print("(format nil \"~10S\" \"hi\")"), "\"\\\"hi\\\"      \"");
+}
+
+TEST(eval_format_prefix_params)
+{
+    /* ~n%: multiple newlines */
+    ASSERT_EQ_INT(eval_int("(length (format nil \"~3%\"))"), 3);
+    /* ~n~: multiple tildes */
+    ASSERT_STR_EQ(eval_print("(format nil \"~3~\")"), "\"~~~\"");
+}
+
+/* --- Advanced Format: Step 2 — ~* and ~T --- */
+
+TEST(eval_format_goto)
+{
+    /* ~* skip forward 1 arg */
+    ASSERT_STR_EQ(eval_print("(format nil \"~A ~* ~A\" 1 2 3)"), "\"1  3\"");
+    /* ~n* skip forward n args */
+    ASSERT_STR_EQ(eval_print("(format nil \"~A ~2* ~A\" 1 2 3 4)"), "\"1  4\"");
+    /* ~:* back up 1 arg */
+    ASSERT_STR_EQ(eval_print("(format nil \"~A ~A ~:*~A\" 1 2)"), "\"1 2 2\"");
+    /* ~n:* back up n args */
+    ASSERT_STR_EQ(eval_print("(format nil \"~A ~A ~2:*~A ~A\" 1 2)"), "\"1 2 1 2\"");
+    /* ~n@* go to absolute position */
+    ASSERT_STR_EQ(eval_print("(format nil \"~A ~A ~0@*~A\" 1 2)"), "\"1 2 1\"");
+}
+
+TEST(eval_format_tabulate)
+{
+    /* ~colnumT: absolute tab to column */
+    ASSERT_STR_EQ(eval_print("(format nil \"abc~10Tdef\")"), "\"abc       def\"");
+    /* Already past column — colinc kicks in */
+    ASSERT_STR_EQ(eval_print("(format nil \"abcdefghij~10,5Txx\")"), "\"abcdefghij     xx\"");
+    /* ~colnum,colinc@T: relative tab */
+    ASSERT_STR_EQ(eval_print("(format nil \"abc~3,1@Tdef\")"), "\"abc   def\"");
+}
+
+/* --- Advanced Format: Step 3 — ~(~) case conversion --- */
+
+TEST(eval_format_case_downcase)
+{
+    /* ~(text~) — lowercase all */
+    ASSERT_STR_EQ(eval_print("(format nil \"~(~A~)\" \"HELLO WORLD\")"),
+                  "\"hello world\"");
+}
+
+TEST(eval_format_case_capitalize)
+{
+    /* ~:(text~) — capitalize each word */
+    ASSERT_STR_EQ(eval_print("(format nil \"~:(~A~)\" \"hello world\")"),
+                  "\"Hello World\"");
+}
+
+TEST(eval_format_case_cap_first)
+{
+    /* ~@(text~) — capitalize first word only */
+    ASSERT_STR_EQ(eval_print("(format nil \"~@(~A~)\" \"hello world\")"),
+                  "\"Hello world\"");
+}
+
+TEST(eval_format_case_upcase)
+{
+    /* ~:@(text~) — uppercase all */
+    ASSERT_STR_EQ(eval_print("(format nil \"~:@(~A~)\" \"hello\")"),
+                  "\"HELLO\"");
+}
+
+/* --- Advanced Format: Step 4 — ~[~;~] conditional --- */
+
+TEST(eval_format_cond_numeric)
+{
+    /* ~[c0~;c1~;c2~] — select by integer */
+    ASSERT_STR_EQ(eval_print("(format nil \"~[zero~;one~;two~]\" 1)"), "\"one\"");
+    ASSERT_STR_EQ(eval_print("(format nil \"~[zero~;one~;two~]\" 0)"), "\"zero\"");
+    ASSERT_STR_EQ(eval_print("(format nil \"~[zero~;one~;two~]\" 2)"), "\"two\"");
+    /* Out of range — no output */
+    ASSERT_STR_EQ(eval_print("(format nil \"~[zero~;one~]\" 5)"), "\"\"");
+}
+
+TEST(eval_format_cond_default)
+{
+    /* ~[c0~;c1~:;default~] — last clause with ~:; is default */
+    ASSERT_STR_EQ(eval_print("(format nil \"~[zero~;one~:;other~]\" 5)"), "\"other\"");
+    ASSERT_STR_EQ(eval_print("(format nil \"~[zero~;one~:;other~]\" 0)"), "\"zero\"");
+}
+
+TEST(eval_format_cond_boolean)
+{
+    /* ~:[false~;true~] — nil=clause0, non-nil=clause1 */
+    ASSERT_STR_EQ(eval_print("(format nil \"~:[false~;true~]\" nil)"), "\"false\"");
+    ASSERT_STR_EQ(eval_print("(format nil \"~:[false~;true~]\" 42)"), "\"true\"");
+    ASSERT_STR_EQ(eval_print("(format nil \"~:[false~;true~]\" t)"), "\"true\"");
+}
+
+TEST(eval_format_cond_atsign)
+{
+    /* ~@[clause~] — if non-nil, format clause (arg available); if nil, skip */
+    ASSERT_STR_EQ(eval_print("(format nil \"~@[x=~A ~]done\" 42)"), "\"x=42 done\"");
+    ASSERT_STR_EQ(eval_print("(format nil \"~@[x=~A ~]done\" nil)"), "\"done\"");
+}
+
+/* --- Advanced format: Step 5 — ~{~} iteration and ~^ --- */
+
+TEST(eval_format_iteration_list)
+{
+    /* ~{body~} — iterate over list elements */
+    ASSERT_STR_EQ(eval_print("(format nil \"~{~A ~}\" '(1 2 3))"), "\"1 2 3 \"");
+    ASSERT_STR_EQ(eval_print("(format nil \"~{~A~^, ~}\" '(1 2 3))"), "\"1, 2, 3\"");
+    ASSERT_STR_EQ(eval_print("(format nil \"~{~A~}\" nil)"), "\"\"");
+}
+
+TEST(eval_format_iteration_sublists)
+{
+    /* ~:{body~} — iterate over list of sublists */
+    ASSERT_STR_EQ(eval_print("(format nil \"~:{[~A ~A] ~}\" '((a 1) (b 2)))"), "\"[A 1] [B 2] \"");
+    ASSERT_STR_EQ(eval_print("(format nil \"~:{~A=~A ~}\" '((x 1) (y 2) (z 3)))"), "\"X=1 Y=2 Z=3 \"");
+}
+
+TEST(eval_format_iteration_atsign)
+{
+    /* ~@{body~} — iterate using remaining args directly */
+    ASSERT_STR_EQ(eval_print("(format nil \"~@{~A~^, ~}\" 1 2 3)"), "\"1, 2, 3\"");
+    ASSERT_STR_EQ(eval_print("(format nil \"~@{~A ~A~^; ~}\" 'a 1 'b 2)"), "\"A 1; B 2\"");
+}
+
+TEST(eval_format_iteration_colon_atsign)
+{
+    /* ~:@{body~} — remaining args are sublists */
+    ASSERT_STR_EQ(eval_print("(format nil \"~:@{~A-~A ~}\" '(a 1) '(b 2))"), "\"A-1 B-2 \"");
+}
+
+TEST(eval_format_iteration_limit)
+{
+    /* ~n{body~} — max iteration count */
+    ASSERT_STR_EQ(eval_print("(format nil \"~2{~A ~}\" '(1 2 3 4 5))"), "\"1 2 \"");
+}
+
+TEST(eval_format_escape)
+{
+    /* ~^ — escape iteration when no args remain */
+    ASSERT_STR_EQ(eval_print("(format nil \"~{~A~^-~}\" '(x))"), "\"X\"");
+    ASSERT_STR_EQ(eval_print("(format nil \"~{~A~^-~}\" '(x y z))"), "\"X-Y-Z\"");
+}
+
+/* --- Advanced format: Step 6 — ~? recursive and ~R radix --- */
+
+TEST(eval_format_recursive)
+{
+    /* ~? — recursive format with string + arg list */
+    ASSERT_STR_EQ(eval_print("(format nil \"~? and ~A\" \"~A ~A\" '(1 2) 3)"), "\"1 2 and 3\"");
+}
+
+TEST(eval_format_recursive_atsign)
+{
+    /* ~@? — recursive format using remaining args */
+    ASSERT_STR_EQ(eval_print("(format nil \"~@? and ~A\" \"~A ~A\" 1 2 3)"), "\"1 2 and 3\"");
+}
+
+TEST(eval_format_radix_cardinal)
+{
+    /* ~R — cardinal English */
+    ASSERT_STR_EQ(eval_print("(format nil \"~R\" 0)"), "\"zero\"");
+    ASSERT_STR_EQ(eval_print("(format nil \"~R\" 5)"), "\"five\"");
+    ASSERT_STR_EQ(eval_print("(format nil \"~R\" 42)"), "\"forty-two\"");
+    ASSERT_STR_EQ(eval_print("(format nil \"~R\" 100)"), "\"one hundred\"");
+    ASSERT_STR_EQ(eval_print("(format nil \"~R\" 1000)"), "\"one thousand\"");
+    ASSERT_STR_EQ(eval_print("(format nil \"~R\" 1234)"), "\"one thousand two hundred thirty-four\"");
+}
+
+TEST(eval_format_radix_ordinal)
+{
+    /* ~:R — ordinal English */
+    ASSERT_STR_EQ(eval_print("(format nil \"~:R\" 1)"), "\"first\"");
+    ASSERT_STR_EQ(eval_print("(format nil \"~:R\" 3)"), "\"third\"");
+    ASSERT_STR_EQ(eval_print("(format nil \"~:R\" 21)"), "\"twenty-first\"");
+    ASSERT_STR_EQ(eval_print("(format nil \"~:R\" 100)"), "\"one hundredth\"");
+}
+
+TEST(eval_format_radix_roman)
+{
+    /* ~@R — Roman numerals */
+    ASSERT_STR_EQ(eval_print("(format nil \"~@R\" 4)"), "\"IV\"");
+    ASSERT_STR_EQ(eval_print("(format nil \"~@R\" 9)"), "\"IX\"");
+    ASSERT_STR_EQ(eval_print("(format nil \"~@R\" 42)"), "\"XLII\"");
+    ASSERT_STR_EQ(eval_print("(format nil \"~@R\" 1999)"), "\"MCMXCIX\"");
+}
+
+TEST(eval_format_radix_old_roman)
+{
+    /* ~:@R — old-style Roman (additive) */
+    ASSERT_STR_EQ(eval_print("(format nil \"~:@R\" 4)"), "\"IIII\"");
+    ASSERT_STR_EQ(eval_print("(format nil \"~:@R\" 9)"), "\"VIIII\"");
+}
+
+TEST(eval_format_radix_base)
+{
+    /* ~nR — print in base n */
+    ASSERT_STR_EQ(eval_print("(format nil \"~2R\" 10)"), "\"1010\"");
+    ASSERT_STR_EQ(eval_print("(format nil \"~8R\" 255)"), "\"377\"");
+    ASSERT_STR_EQ(eval_print("(format nil \"~16R\" 255)"), "\"FF\"");
+}
+
 /* --- Phase 8: Loop macro --- */
 
 TEST(eval_loop_simple_return)
@@ -5036,6 +5262,44 @@ int main(void)
     RUN(eval_format_freshline);
     RUN(eval_format_page);
     RUN(eval_format_mixed);
+
+    /* Advanced format: padding, commas, sign */
+    RUN(eval_format_padded_decimal);
+    RUN(eval_format_padded_aesthetic);
+    RUN(eval_format_prefix_params);
+
+    /* Advanced format: ~* and ~T */
+    RUN(eval_format_goto);
+    RUN(eval_format_tabulate);
+
+    /* Advanced format: ~(~) case conversion */
+    RUN(eval_format_case_downcase);
+    RUN(eval_format_case_capitalize);
+    RUN(eval_format_case_cap_first);
+    RUN(eval_format_case_upcase);
+
+    /* Advanced format: ~[~;~] conditional */
+    RUN(eval_format_cond_numeric);
+    RUN(eval_format_cond_default);
+    RUN(eval_format_cond_boolean);
+    RUN(eval_format_cond_atsign);
+
+    /* Advanced format: ~{~} iteration and ~^ */
+    RUN(eval_format_iteration_list);
+    RUN(eval_format_iteration_sublists);
+    RUN(eval_format_iteration_atsign);
+    RUN(eval_format_iteration_colon_atsign);
+    RUN(eval_format_iteration_limit);
+    RUN(eval_format_escape);
+
+    /* Advanced format: ~? recursive and ~R radix */
+    RUN(eval_format_recursive);
+    RUN(eval_format_recursive_atsign);
+    RUN(eval_format_radix_cardinal);
+    RUN(eval_format_radix_ordinal);
+    RUN(eval_format_radix_roman);
+    RUN(eval_format_radix_old_roman);
+    RUN(eval_format_radix_base);
 
     /* *print-pretty* / pprint */
     RUN(eval_print_pretty_default);

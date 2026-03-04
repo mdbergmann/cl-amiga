@@ -3,6 +3,7 @@
 #include "package.h"
 #include "mem.h"
 #include "bignum.h"
+#include "ratio.h"
 #include "float.h"
 #include "stream.h"
 #include "../platform/platform.h"
@@ -730,6 +731,40 @@ static void print_obj(CL_Obj obj)
         }
         cl_bignum_print_base(obj, base, out_str);
         if (radix && base == 10) out_char('.');
+        return;
+    }
+
+    if (CL_RATIO_P(obj)) {
+        CL_Ratio *r = (CL_Ratio *)CL_OBJ_TO_PTR(obj);
+        int32_t base = print_base();
+        int radix = print_radix_p();
+        /* Radix prefix (same as bignum/fixnum but NO trailing dot) */
+        if (radix) {
+            switch (base) {
+            case 2:  out_str("#b"); break;
+            case 8:  out_str("#o"); break;
+            case 16: out_str("#x"); break;
+            default:
+                if (base != 10) {
+                    char rbuf[8];
+                    sprintf(rbuf, "#%d", (int)base);
+                    out_str(rbuf);
+                    out_char('r');
+                }
+                break;
+            }
+        }
+        /* Print numerator */
+        if (CL_FIXNUM_P(r->numerator))
+            out_integer(CL_FIXNUM_VAL(r->numerator), base, 0);
+        else
+            cl_bignum_print_base(r->numerator, base, out_str);
+        out_char('/');
+        /* Print denominator */
+        if (CL_FIXNUM_P(r->denominator))
+            out_integer(CL_FIXNUM_VAL(r->denominator), base, 0);
+        else
+            cl_bignum_print_base(r->denominator, base, out_str);
         return;
     }
 

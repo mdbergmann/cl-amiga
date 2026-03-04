@@ -194,76 +194,8 @@ static CL_Obj bi_pprint(CL_Obj *args, int n)
     return CL_NIL;
 }
 
-/* Helper: print integer in given base (for ~D, ~B, ~O, ~X) */
-static void format_integer(CL_Obj stream, CL_Obj arg, int32_t base)
-{
-    CL_Symbol *sb = (CL_Symbol *)CL_OBJ_TO_PTR(SYM_PRINT_BASE);
-    CL_Symbol *sx = (CL_Symbol *)CL_OBJ_TO_PTR(SYM_PRINT_RADIX);
-    CL_Obj prev_b = sb->value;
-    CL_Obj prev_x = sx->value;
-    sb->value = CL_MAKE_FIXNUM(base);
-    sx->value = CL_NIL;
-    cl_princ_to_stream(arg, stream);
-    sb->value = prev_b;
-    sx->value = prev_x;
-}
-
-static void format_to_stream(CL_Obj stream, CL_Obj *args, int n)
-{
-    CL_String *s;
-    const char *p;
-    int ai;
-
-    if (n < 2 || !CL_STRING_P(args[1]))
-        return;
-
-    s = (CL_String *)CL_OBJ_TO_PTR(args[1]);
-    p = s->data;
-    ai = 2;
-
-    while (*p) {
-        if (*p == '~' && *(p+1)) {
-            p++;
-            if (*p == 'A' || *p == 'a') {
-                if (ai < n) cl_princ_to_stream(args[ai++], stream);
-            } else if (*p == 'S' || *p == 's') {
-                if (ai < n) cl_prin1_to_stream(args[ai++], stream);
-            } else if (*p == 'W' || *p == 'w') {
-                /* ~W: output as if by WRITE (all *print-* bindings) */
-                if (ai < n) cl_write_to_stream(args[ai++], stream);
-            } else if (*p == 'D' || *p == 'd') {
-                /* ~D: decimal integer */
-                if (ai < n) format_integer(stream, args[ai++], 10);
-            } else if (*p == 'B' || *p == 'b') {
-                /* ~B: binary integer */
-                if (ai < n) format_integer(stream, args[ai++], 2);
-            } else if (*p == 'O' || *p == 'o') {
-                /* ~O: octal integer */
-                if (ai < n) format_integer(stream, args[ai++], 8);
-            } else if (*p == 'X' || *p == 'x') {
-                /* ~X: hexadecimal integer */
-                if (ai < n) format_integer(stream, args[ai++], 16);
-            } else if (*p == 'C' || *p == 'c') {
-                /* ~C: character (princ style) */
-                if (ai < n) cl_princ_to_stream(args[ai++], stream);
-            } else if (*p == '%') {
-                cl_stream_write_char(stream, '\n');
-            } else if (*p == '&') {
-                /* ~&: fresh-line (newline if not at start of line) */
-                cl_stream_write_char(stream, '\n');
-            } else if (*p == '|') {
-                /* ~|: page separator */
-                cl_stream_write_char(stream, '\f');
-            } else if (*p == '~') {
-                cl_stream_write_char(stream, '~');
-            }
-            p++;
-        } else {
-            cl_stream_write_char(stream, *p);
-            p++;
-        }
-    }
-}
+/* Defined in builtins_format.c */
+extern void cl_format_to_stream(CL_Obj stream, CL_Obj *args, int n);
 
 static CL_Obj bi_format(CL_Obj *args, int n)
 {
@@ -273,9 +205,13 @@ static CL_Obj bi_format(CL_Obj *args, int n)
         /* (format nil ...) => return string */
         CL_Obj sstream = cl_make_string_output_stream();
         CL_GC_PROTECT(sstream);
-        format_to_stream(sstream, args, n);
+        cl_format_to_stream(sstream, args, n);
         {
             CL_Obj result = cl_get_output_stream_string(sstream);
+            /* Free the temp outbuf slot to avoid exhausting the table */
+            CL_Stream *tmp_st = (CL_Stream *)CL_OBJ_TO_PTR(sstream);
+            cl_stream_free_outbuf(tmp_st->out_buf_handle);
+            tmp_st->out_buf_handle = 0;
             CL_GC_UNPROTECT(1);
             return result;
         }
@@ -292,7 +228,7 @@ static CL_Obj bi_format(CL_Obj *args, int n)
             CL_Symbol *sym = (CL_Symbol *)CL_OBJ_TO_PTR(SYM_STANDARD_OUTPUT);
             stream = sym->value;
         }
-        format_to_stream(stream, args, n);
+        cl_format_to_stream(stream, args, n);
         return CL_NIL;
     }
 }

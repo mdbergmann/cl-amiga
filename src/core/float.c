@@ -6,6 +6,7 @@
  */
 
 #include "float.h"
+#include "ratio.h"
 #include "mem.h"
 #include "error.h"
 #include <math.h>
@@ -36,6 +37,9 @@ double cl_to_double(CL_Obj obj)
         }
         return bn->sign ? -result : result;
     }
+
+    if (CL_RATIO_P(obj))
+        return cl_ratio_to_double(obj);
 
     cl_error(CL_ERR_TYPE, "Not a number: %s", cl_type_name(obj));
     return 0.0; /* Not reached */

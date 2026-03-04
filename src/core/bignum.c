@@ -7,6 +7,7 @@
  */
 
 #include "bignum.h"
+#include "ratio.h"
 #include "float.h"
 #include "mem.h"
 #include "symbol.h"
@@ -493,6 +494,10 @@ CL_Obj cl_arith_add(CL_Obj a, CL_Obj b)
     if (CL_FLOATP(a) || CL_FLOATP(b))
         return cl_float_add(a, b);
 
+    /* Ratio path: either operand is ratio → ratio result */
+    if (CL_RATIO_P(a) || CL_RATIO_P(b))
+        return cl_ratio_add(a, b);
+
     /* Fast path: both fixnums */
     if (CL_FIXNUM_P(a) && CL_FIXNUM_P(b)) {
         int32_t va = CL_FIXNUM_VAL(a);
@@ -554,6 +559,10 @@ CL_Obj cl_arith_sub(CL_Obj a, CL_Obj b)
     if (CL_FLOATP(a) || CL_FLOATP(b))
         return cl_float_sub(a, b);
 
+    /* Ratio path */
+    if (CL_RATIO_P(a) || CL_RATIO_P(b))
+        return cl_ratio_sub(a, b);
+
     /* Fast path: both fixnums */
     if (CL_FIXNUM_P(a) && CL_FIXNUM_P(b)) {
         int32_t va = CL_FIXNUM_VAL(a);
@@ -614,6 +623,10 @@ CL_Obj cl_arith_mul(CL_Obj a, CL_Obj b)
     /* Float path */
     if (CL_FLOATP(a) || CL_FLOATP(b))
         return cl_float_mul(a, b);
+
+    /* Ratio path */
+    if (CL_RATIO_P(a) || CL_RATIO_P(b))
+        return cl_ratio_mul(a, b);
 
     /* Fast path: both fixnums, check for overflow */
     if (CL_FIXNUM_P(a) && CL_FIXNUM_P(b)) {
@@ -823,6 +836,9 @@ CL_Obj cl_arith_negate(CL_Obj a)
     if (CL_FLOATP(a))
         return cl_float_negate(a);
 
+    if (CL_RATIO_P(a))
+        return cl_ratio_negate(a);
+
     if (CL_FIXNUM_P(a)) {
         int32_t val = CL_FIXNUM_VAL(a);
         /* CL_FIXNUM_MIN negated overflows fixnum range */
@@ -849,6 +865,9 @@ CL_Obj cl_arith_abs(CL_Obj a)
         return cl_make_single_float((float)v);
     }
 
+    if (CL_RATIO_P(a))
+        return cl_ratio_abs(a);
+
     if (CL_FIXNUM_P(a)) {
         int32_t val = CL_FIXNUM_VAL(a);
         if (val == CL_FIXNUM_MIN)
@@ -872,6 +891,10 @@ int cl_arith_compare(CL_Obj a, CL_Obj b)
     /* Float path */
     if (CL_FLOATP(a) || CL_FLOATP(b))
         return cl_float_compare(a, b);
+
+    /* Ratio path */
+    if (CL_RATIO_P(a) || CL_RATIO_P(b))
+        return cl_ratio_compare(a, b);
 
     /* Fast path: both fixnums */
     if (CL_FIXNUM_P(a) && CL_FIXNUM_P(b)) {
@@ -911,6 +934,7 @@ int cl_arith_compare(CL_Obj a, CL_Obj b)
 int cl_arith_zerop(CL_Obj a)
 {
     if (CL_FLOATP(a)) return cl_float_zerop(a);
+    if (CL_RATIO_P(a)) return cl_ratio_zerop(a);
     if (CL_FIXNUM_P(a)) return CL_FIXNUM_VAL(a) == 0;
     /* Normalized bignums are never zero (they'd be fixnum 0) */
     return 0;
@@ -919,6 +943,7 @@ int cl_arith_zerop(CL_Obj a)
 int cl_arith_plusp(CL_Obj a)
 {
     if (CL_FLOATP(a)) return cl_float_plusp(a);
+    if (CL_RATIO_P(a)) return cl_ratio_plusp(a);
     if (CL_FIXNUM_P(a)) return CL_FIXNUM_VAL(a) > 0;
     return ((CL_Bignum *)CL_OBJ_TO_PTR(a))->sign == 0;
 }
@@ -926,6 +951,7 @@ int cl_arith_plusp(CL_Obj a)
 int cl_arith_minusp(CL_Obj a)
 {
     if (CL_FLOATP(a)) return cl_float_minusp(a);
+    if (CL_RATIO_P(a)) return cl_ratio_minusp(a);
     if (CL_FIXNUM_P(a)) return CL_FIXNUM_VAL(a) < 0;
     return ((CL_Bignum *)CL_OBJ_TO_PTR(a))->sign != 0;
 }

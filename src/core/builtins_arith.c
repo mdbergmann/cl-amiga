@@ -1,5 +1,6 @@
 #include "builtins.h"
 #include "bignum.h"
+#include "ratio.h"
 #include "float.h"
 #include "symbol.h"
 #include "package.h"
@@ -97,6 +98,13 @@ static CL_Obj do_rounding(CL_Obj *args, int n, int mode,
             cl_mv_values[1] = r;
             return q;
         }
+        /* Ratio: (floor p/q) = (floor p q), remainder is ratio */
+        if (CL_RATIO_P(num)) {
+            CL_Obj pair[2];
+            pair[0] = cl_numerator(num);
+            pair[1] = cl_denominator(num);
+            return do_rounding(pair, 2, mode, name, float_quotient);
+        }
         /* Float argument */
         {
             double val = cl_to_double(num);
@@ -121,10 +129,19 @@ static CL_Obj do_rounding(CL_Obj *args, int n, int mode,
     /* Two arguments */
     check_number(args[1], name);
 
-    if (CL_INTEGER_P(num) && CL_INTEGER_P(args[1])) {
-        /* Integer path: exact arithmetic */
-        CL_Obj q = cl_arith_truncate(num, args[1]);
-        CL_Obj r = cl_arith_sub(num, cl_arith_mul(q, args[1]));
+    if (CL_RATIONAL_P(num) && CL_RATIONAL_P(args[1])) {
+        /* Rational path: exact arithmetic.
+         * For ratios, cross-multiply to get integer division:
+         * (floor a_n/a_d  b_n/b_d) = (floor a_n*b_d  a_d*b_n)
+         * then remainder = num - q * args[1] */
+        CL_Obj int_a, int_b, q, r;
+        int_a = cl_arith_mul(cl_numerator(num), cl_denominator(args[1]));
+        CL_GC_PROTECT(int_a);
+        int_b = cl_arith_mul(cl_denominator(num), cl_numerator(args[1]));
+        CL_GC_UNPROTECT(1);
+
+        q = cl_arith_truncate(int_a, int_b);
+        r = cl_arith_sub(num, cl_arith_mul(q, args[1]));
 
         /* Adjust based on rounding mode */
         if (mode != ROUND_TRUNCATE && !cl_arith_zerop(r)) {
@@ -245,7 +262,8 @@ static CL_Obj bi_div(CL_Obj *args, int n)
     if (n == 1) {
         if (has_float)
             return cl_float_div(cl_make_single_float(1.0f), args[0]);
-        return cl_arith_truncate(CL_MAKE_FIXNUM(1), args[0]);
+        /* CL spec: (/ x) = 1/x as ratio */
+        return cl_ratio_div(CL_MAKE_FIXNUM(1), args[0]);
     }
     result = args[0];
     CL_GC_PROTECT(result);
@@ -253,7 +271,7 @@ static CL_Obj bi_div(CL_Obj *args, int n)
         if (has_float)
             result = cl_float_div(result, args[i]);
         else
-            result = cl_arith_truncate(result, args[i]);
+            result = cl_ratio_div(result, args[i]);
     }
     CL_GC_UNPROTECT(1);
     return result;
@@ -300,6 +318,25 @@ static CL_Obj bi_rem(CL_Obj *args, int n)
         r = fmod(a, b);
         return is_dbl ? cl_make_double_float(r) : cl_make_single_float((float)r);
     }
+    /* Ratio case: rem(a,b) = a - truncate(a,b) * b */
+    if (CL_RATIO_P(args[0]) || CL_RATIO_P(args[1])) {
+        /* Compute a/b as ratio, then truncate to integer */
+        CL_Obj quot = cl_ratio_div(args[0], args[1]);
+        CL_Obj a = args[0], b = args[1];
+        CL_Obj trunc_q;
+        if (CL_INTEGER_P(quot)) {
+            trunc_q = quot;
+        } else {
+            /* Truncate ratio to integer: truncate(num/den) */
+            trunc_q = cl_arith_truncate(cl_numerator(quot), cl_denominator(quot));
+        }
+        CL_GC_PROTECT(a); CL_GC_PROTECT(b); CL_GC_PROTECT(trunc_q);
+        {
+            CL_Obj result = cl_arith_sub(a, cl_arith_mul(trunc_q, b));
+            CL_GC_UNPROTECT(3);
+            return result;
+        }
+    }
     /* Integer case */
     if (CL_FIXNUM_P(args[0]) && CL_FIXNUM_P(args[1])) {
         int32_t va = CL_FIXNUM_VAL(args[0]);
@@ -330,6 +367,40 @@ static CL_Obj bi_mod(CL_Obj *args, int n)
         if (r != 0.0 && ((r < 0.0) != (b < 0.0)))
             r += b;
         return is_dbl ? cl_make_double_float(r) : cl_make_single_float((float)r);
+    }
+    /* Ratio case: mod(a,b) = a - floor(a,b) * b */
+    if (CL_RATIO_P(args[0]) || CL_RATIO_P(args[1])) {
+        CL_Obj quot = cl_ratio_div(args[0], args[1]);
+        CL_Obj a = args[0], b = args[1];
+        CL_Obj floor_q;
+        if (CL_INTEGER_P(quot)) {
+            floor_q = quot;
+        } else {
+            /* Floor ratio: floor(num/den) */
+            CL_Obj num = cl_numerator(quot);
+            CL_Obj den = cl_denominator(quot);
+            CL_Obj trunc_q = cl_arith_truncate(num, den);
+            /* Adjust: if result is negative and not exact, subtract 1 */
+            CL_GC_PROTECT(trunc_q); CL_GC_PROTECT(num); CL_GC_PROTECT(den);
+            {
+                CL_Obj check = cl_arith_mul(trunc_q, den);
+                CL_GC_UNPROTECT(3);
+                CL_GC_PROTECT(trunc_q); CL_GC_PROTECT(check);
+                if (cl_arith_compare(check, num) != 0 && cl_arith_minusp(quot)) {
+                    CL_GC_UNPROTECT(2);
+                    floor_q = cl_arith_sub(trunc_q, CL_MAKE_FIXNUM(1));
+                } else {
+                    CL_GC_UNPROTECT(2);
+                    floor_q = trunc_q;
+                }
+            }
+        }
+        CL_GC_PROTECT(a); CL_GC_PROTECT(b); CL_GC_PROTECT(floor_q);
+        {
+            CL_Obj result = cl_arith_sub(a, cl_arith_mul(floor_q, b));
+            CL_GC_UNPROTECT(3);
+            return result;
+        }
     }
     /* Integer case */
     return cl_arith_mod(args[0], args[1]);
@@ -627,7 +698,119 @@ static CL_Obj bi_realp(CL_Obj *args, int n)
 static CL_Obj bi_rationalp(CL_Obj *args, int n)
 {
     CL_UNUSED(n);
-    return CL_INTEGER_P(args[0]) ? SYM_T : CL_NIL;
+    return CL_RATIONAL_P(args[0]) ? SYM_T : CL_NIL;
+}
+
+/* --- Ratio accessors --- */
+
+static CL_Obj bi_numerator(CL_Obj *args, int n)
+{
+    CL_UNUSED(n);
+    if (!CL_RATIONAL_P(args[0]))
+        cl_error(CL_ERR_TYPE, "NUMERATOR: not a rational: %s", cl_type_name(args[0]));
+    return cl_numerator(args[0]);
+}
+
+static CL_Obj bi_denominator(CL_Obj *args, int n)
+{
+    CL_UNUSED(n);
+    if (!CL_RATIONAL_P(args[0]))
+        cl_error(CL_ERR_TYPE, "DENOMINATOR: not a rational: %s", cl_type_name(args[0]));
+    return cl_denominator(args[0]);
+}
+
+/* (rational x) — convert real to rational */
+static CL_Obj bi_rational(CL_Obj *args, int n)
+{
+    CL_UNUSED(n);
+    if (CL_RATIONAL_P(args[0]))
+        return args[0];
+    if (CL_FLOATP(args[0])) {
+        /* Convert float to exact rational via continued fraction */
+        double val = cl_to_double(args[0]);
+        double sign = 1.0;
+        double intpart, frac;
+        CL_Obj result, p0, p1, q0, q1;
+        int i;
+
+        if (val == 0.0) return CL_MAKE_FIXNUM(0);
+        if (val < 0.0) { sign = -1.0; val = -val; }
+
+        /* Continued fraction algorithm */
+        intpart = (double)(int64_t)val;
+        frac = val - intpart;
+
+        p0 = CL_MAKE_FIXNUM(0); p1 = CL_MAKE_FIXNUM(1);
+        q0 = CL_MAKE_FIXNUM(1); q1 = CL_MAKE_FIXNUM(0);
+
+        /* First step with integer part */
+        {
+            CL_Obj a = CL_MAKE_FIXNUM((int32_t)intpart);
+            CL_Obj new_p, new_q;
+            CL_GC_PROTECT(p0); CL_GC_PROTECT(p1);
+            CL_GC_PROTECT(q0); CL_GC_PROTECT(q1);
+            CL_GC_PROTECT(a);
+            new_p = cl_arith_add(cl_arith_mul(a, p1), p0);
+            CL_GC_UNPROTECT(5);
+
+            CL_GC_PROTECT(p0); CL_GC_PROTECT(p1);
+            CL_GC_PROTECT(q0); CL_GC_PROTECT(q1);
+            CL_GC_PROTECT(a); CL_GC_PROTECT(new_p);
+            new_q = cl_arith_add(cl_arith_mul(a, q1), q0);
+            CL_GC_UNPROTECT(6);
+
+            p0 = p1; p1 = new_p;
+            q0 = q1; q1 = new_q;
+        }
+
+        for (i = 0; i < 50 && frac > 1e-15; i++) {
+            double inv = 1.0 / frac;
+            double ai = (double)(int64_t)inv;
+            CL_Obj a, new_p, new_q;
+
+            frac = inv - ai;
+            if (ai > 1e9) break; /* Coefficient too large */
+
+            a = CL_MAKE_FIXNUM((int32_t)ai);
+            CL_GC_PROTECT(p0); CL_GC_PROTECT(p1);
+            CL_GC_PROTECT(q0); CL_GC_PROTECT(q1);
+            CL_GC_PROTECT(a);
+            new_p = cl_arith_add(cl_arith_mul(a, p1), p0);
+            CL_GC_UNPROTECT(5);
+
+            CL_GC_PROTECT(p0); CL_GC_PROTECT(p1);
+            CL_GC_PROTECT(q0); CL_GC_PROTECT(q1);
+            CL_GC_PROTECT(a); CL_GC_PROTECT(new_p);
+            new_q = cl_arith_add(cl_arith_mul(a, q1), q0);
+            CL_GC_UNPROTECT(6);
+
+            p0 = p1; p1 = new_p;
+            q0 = q1; q1 = new_q;
+
+            /* Check if we've converged */
+            {
+                double approx = cl_to_double(p1) / cl_to_double(q1);
+                if (approx == val) break;
+            }
+        }
+
+        if (sign < 0.0) {
+            CL_GC_PROTECT(p1); CL_GC_PROTECT(q1);
+            p1 = cl_arith_negate(p1);
+            CL_GC_UNPROTECT(2);
+        }
+
+        result = cl_make_ratio_normalized(p1, q1);
+        return result;
+    }
+    cl_error(CL_ERR_TYPE, "RATIONAL: not a real number: %s", cl_type_name(args[0]));
+    return CL_NIL;
+}
+
+/* (rationalize x) — same as rational for now */
+static CL_Obj bi_rationalize(CL_Obj *args, int n)
+{
+    return bi_rational(args, n);
 }
 
 /* --- Float-specific functions (Step 9) --- */
@@ -878,6 +1061,12 @@ void cl_builtins_arith_init(void)
     defun("LOGIOR", bi_logior, 0, -1);
     defun("LOGXOR", bi_logxor, 0, -1);
     defun("LOGNOT", bi_lognot, 1, 1);
+
+    /* Ratio accessors */
+    defun("NUMERATOR", bi_numerator, 1, 1);
+    defun("DENOMINATOR", bi_denominator, 1, 1);
+    defun("RATIONAL", bi_rational, 1, 1);
+    defun("RATIONALIZE", bi_rationalize, 1, 1);
 
     /* Float-specific functions */
     defun("FLOAT", bi_float, 1, 2);

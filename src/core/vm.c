@@ -3,6 +3,8 @@
 #include "symbol.h"
 #include "mem.h"
 #include "bignum.h"
+#include "ratio.h"
+#include "float.h"
 #include "error.h"
 #include "compiler.h"
 #include "printer.h"
@@ -553,7 +555,10 @@ CL_Obj cl_vm_eval(CL_Obj bytecode_obj)
 
         case OP_DIV: {
             CL_Obj b = cl_vm_pop(), a = cl_vm_pop();
-            cl_vm_push(cl_arith_truncate(a, b));
+            if (CL_FLOATP(a) || CL_FLOATP(b))
+                cl_vm_push(cl_float_div(a, b));
+            else
+                cl_vm_push(cl_ratio_div(a, b));
             cl_mv_count = 1;
             break;
         }

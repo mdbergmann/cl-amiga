@@ -1,6 +1,7 @@
 #include "builtins.h"
 #include "bignum.h"
 #include "float.h"
+#include "ratio.h"
 #include "stream.h"
 #include "symbol.h"
 #include "package.h"
@@ -208,6 +209,8 @@ static CL_Obj bi_eql(CL_Obj *args, int n)
     if (CL_DOUBLE_FLOAT_P(args[0]) && CL_DOUBLE_FLOAT_P(args[1]))
         return ((CL_DoubleFloat *)CL_OBJ_TO_PTR(args[0]))->value ==
                ((CL_DoubleFloat *)CL_OBJ_TO_PTR(args[1]))->value ? SYM_T : CL_NIL;
+    if (CL_RATIO_P(args[0]) && CL_RATIO_P(args[1]))
+        return cl_ratio_equal(args[0], args[1]) ? SYM_T : CL_NIL;
     return (args[0] == args[1]) ? SYM_T : CL_NIL;
 }
 
@@ -219,6 +222,8 @@ static CL_Obj bi_equal(CL_Obj *args, int n)
     if (a == b) return SYM_T;
     if (CL_BIGNUM_P(a) && CL_BIGNUM_P(b))
         return cl_bignum_equal(a, b) ? SYM_T : CL_NIL;
+    if (CL_RATIO_P(a) && CL_RATIO_P(b))
+        return cl_ratio_equal(a, b) ? SYM_T : CL_NIL;
     /* Floats: equal is same as eql (same type, same value) */
     if (CL_SINGLE_FLOAT_P(a) && CL_SINGLE_FLOAT_P(b))
         return ((CL_SingleFloat *)CL_OBJ_TO_PTR(a))->value ==

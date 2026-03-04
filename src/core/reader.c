@@ -5,6 +5,7 @@
 #include "mem.h"
 #include "bignum.h"
 #include "float.h"
+#include "ratio.h"
 #include "error.h"
 #include "stream.h"
 #include "vm.h"
@@ -309,6 +310,70 @@ static CL_Obj read_atom(void)
         CL_Obj float_obj = try_parse_float(buf, len);
         if (!CL_NULL_P(float_obj))
             return float_obj;
+    }
+
+    /* Check for ratio literal: [sign]digits/digits (e.g. 1/2, -3/4) */
+    {
+        int slash_pos = -1;
+        int valid_ratio = 1;
+        int ri;
+        int rstart = 0;
+
+        if (buf[0] == '+' || buf[0] == '-') rstart = 1;
+        /* Find exactly one slash with digits on both sides */
+        for (ri = rstart; ri < len; ri++) {
+            if (buf[ri] == '/') {
+                if (slash_pos >= 0) { valid_ratio = 0; break; }
+                slash_pos = ri;
+            } else if (!isdigit((unsigned char)buf[ri])) {
+                valid_ratio = 0;
+                break;
+            }
+        }
+        if (valid_ratio && slash_pos > rstart && slash_pos < len - 1) {
+            /* Parse numerator */
+            int num_neg = (buf[0] == '-');
+            int num_start = rstart;
+            int num_digits = slash_pos - num_start;
+            CL_Obj num_obj, den_obj;
+
+            if (num_digits <= 9) {
+                long nv = 0;
+                for (ri = num_start; ri < slash_pos; ri++)
+                    nv = nv * 10 + (buf[ri] - '0');
+                if (num_neg) nv = -nv;
+                if (nv >= CL_FIXNUM_MIN && nv <= CL_FIXNUM_MAX)
+                    num_obj = CL_MAKE_FIXNUM((int32_t)nv);
+                else
+                    num_obj = cl_bignum_from_string(buf + num_start, num_digits, num_neg);
+            } else {
+                num_obj = cl_bignum_from_string(buf + num_start, num_digits, num_neg);
+            }
+
+            /* Parse denominator (always positive) */
+            {
+                int den_start = slash_pos + 1;
+                int den_digits = len - den_start;
+
+                CL_GC_PROTECT(num_obj);
+
+                if (den_digits <= 9) {
+                    long dv = 0;
+                    for (ri = den_start; ri < len; ri++)
+                        dv = dv * 10 + (buf[ri] - '0');
+                    if (dv >= CL_FIXNUM_MIN && dv <= CL_FIXNUM_MAX)
+                        den_obj = CL_MAKE_FIXNUM((int32_t)dv);
+                    else
+                        den_obj = cl_bignum_from_string(buf + den_start, den_digits, 0);
+                } else {
+                    den_obj = cl_bignum_from_string(buf + den_start, den_digits, 0);
+                }
+
+                CL_GC_UNPROTECT(1);
+            }
+
+            return cl_make_ratio_normalized(num_obj, den_obj);
+        }
     }
 
     /* Check for keyword */

@@ -556,9 +556,9 @@ TEST(expt_integer_positive)
 
 TEST(expt_integer_negative_exp)
 {
-    /* Integer base + negative integer exponent → float */
-    ASSERT_STR_EQ(eval_print("(expt 2 -1)"), "0.5");
-    ASSERT_STR_EQ(eval_print("(< (abs (- (expt 2 -3) 0.125)) 0.001)"), "T");
+    /* CL spec: rational base + integer exponent → exact rational */
+    ASSERT_STR_EQ(eval_print("(expt 2 -1)"), "1/2");
+    ASSERT_STR_EQ(eval_print("(expt 2 -3)"), "1/8");
 }
 
 TEST(expt_float_args)

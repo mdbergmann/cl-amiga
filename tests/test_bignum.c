@@ -616,11 +616,11 @@ TEST(hash_table_bignum_key)
 
 TEST(expt_negative_exp)
 {
-    /* Float-aware expt: integer base + negative integer exponent → float */
-    ASSERT_STR_EQ(eval_print("(expt 2 -1)"), "0.5");
-    ASSERT_STR_EQ(eval_print("(expt 1 -5)"), "1.0");
-    ASSERT_STR_EQ(eval_print("(expt -1 -3)"), "-1.0");
-    ASSERT_STR_EQ(eval_print("(expt -1 -4)"), "1.0");
+    /* CL spec: rational base + integer exponent → exact rational */
+    ASSERT_STR_EQ(eval_print("(expt 2 -1)"), "1/2");
+    ASSERT_STR_EQ(eval_print("(expt 1 -5)"), "1");
+    ASSERT_STR_EQ(eval_print("(expt -1 -3)"), "-1");
+    ASSERT_STR_EQ(eval_print("(expt -1 -4)"), "1");
 }
 
 /* ================================================================

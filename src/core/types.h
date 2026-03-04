@@ -88,6 +88,7 @@ enum CL_ObjType {
     TYPE_BIGNUM,
     TYPE_SINGLE_FLOAT,
     TYPE_DOUBLE_FLOAT,
+    TYPE_RATIO,
     TYPE_STREAM
 };
 
@@ -295,6 +296,17 @@ typedef struct {
 
 #define CL_BIGNUM_P(obj) (CL_HEAP_P(obj) && CL_HDR_TYPE(CL_OBJ_TO_PTR(obj)) == TYPE_BIGNUM)
 #define CL_INTEGER_P(obj) (CL_FIXNUM_P(obj) || CL_BIGNUM_P(obj))
+
+/* --- Ratio (exact fraction p/q, always in lowest terms, q > 0) --- */
+
+typedef struct {
+    CL_Header hdr;          /* 4 bytes */
+    CL_Obj numerator;       /* Integer (fixnum or bignum) */
+    CL_Obj denominator;     /* Positive integer (fixnum or bignum), never 0 or 1 in normalized form */
+} CL_Ratio;                 /* 12 bytes total */
+
+#define CL_RATIO_P(obj) (CL_HEAP_P(obj) && CL_HDR_TYPE(CL_OBJ_TO_PTR(obj)) == TYPE_RATIO)
+#define CL_RATIONAL_P(obj) (CL_INTEGER_P(obj) || CL_RATIO_P(obj))
 
 /* --- Stream --- */
 

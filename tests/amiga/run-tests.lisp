@@ -2250,6 +2250,62 @@
 (check "format mixed" "dec=255 hex=FF bin=11111111"
   (format nil "dec=~D hex=~X bin=~B" 255 255 255))
 
+; --- Advanced format: padding/commas/sign (Step 1) ---
+(check "format ~8D pad" "      42" (format nil "~8D" 42))
+(check "format ~8,'0D padchar" "00000042" (format nil "~8,'0D" 42))
+(check "format ~:D commas" "1,234,567" (format nil "~:D" 1234567))
+(check "format ~@D sign" "+42" (format nil "~@D" 42))
+(check "format ~@D neg" "-7" (format nil "~@D" -7))
+(check "format ~10A pad right" "hello     " (format nil "~10A" "hello"))
+(check "format ~10@A pad left" "     hello" (format nil "~10@A" "hello"))
+(check "format ~10S" "\"hello\"   " (format nil "~10S" "hello"))
+(check "format ~3%" 3 (length (format nil "~3%")))
+(check "format ~5~" "~~~~~" (format nil "~5~"))
+
+; --- Advanced format: ~* goto, ~T tabulate (Step 2) ---
+(check "format ~* skip" "B" (format nil "~*~A" 'a 'b))
+(check "format ~2* skip2" "C" (format nil "~2*~A" 'a 'b 'c))
+(check "format ~:* backup" "XX" (format nil "~A~:*~A" 'x))
+
+; --- Advanced format: ~(~) case conversion (Step 3) ---
+(check "format ~( lowercase" "hello world" (format nil "~(HELLO WORLD~)"))
+(check "format ~:( capitalize" "Hello World" (format nil "~:(hello world~)"))
+(check "format ~@( cap first" "Hello world" (format nil "~@(hello world~)"))
+(check "format ~:@( upcase" "HELLO WORLD" (format nil "~:@(hello world~)"))
+
+; --- Advanced format: ~[~;~] conditional (Step 4) ---
+(check "format ~[ numeric 0" "zero" (format nil "~[zero~;one~;two~]" 0))
+(check "format ~[ numeric 1" "one" (format nil "~[zero~;one~;two~]" 1))
+(check "format ~[ default" "other" (format nil "~[zero~;one~:;other~]" 99))
+(check "format ~:[ false" "false" (format nil "~:[false~;true~]" nil))
+(check "format ~:[ true" "true" (format nil "~:[false~;true~]" 42))
+(check "format ~@[ non-nil" "x=42 done" (format nil "~@[x=~A ~]done" 42))
+(check "format ~@[ nil" "done" (format nil "~@[x=~A ~]done" nil))
+
+; --- Advanced format: ~{~} iteration, ~^ (Step 5) ---
+(check "format ~{~} list" "1 2 3 " (format nil "~{~A ~}" '(1 2 3)))
+(check "format ~{~^~} sep" "1, 2, 3" (format nil "~{~A~^, ~}" '(1 2 3)))
+(check "format ~{~} empty" "" (format nil "~{~A~}" nil))
+(check "format ~:{~} sublists" "X=1 Y=2 " (format nil "~:{~A=~A ~}" '((x 1) (y 2))))
+(check "format ~@{~^~} atsign" "1, 2, 3" (format nil "~@{~A~^, ~}" 1 2 3))
+(check "format ~2{~}" "1 2 " (format nil "~2{~A ~}" '(1 2 3 4 5)))
+(check "format ~^ single" "X" (format nil "~{~A~^-~}" '(x)))
+(check "format ~^ multi" "X-Y-Z" (format nil "~{~A~^-~}" '(x y z)))
+
+; --- Advanced format: ~? recursive, ~R radix (Step 6) ---
+(check "format ~? recursive" "1 2 and 3" (format nil "~? and ~A" "~A ~A" '(1 2) 3))
+(check "format ~@? atsign" "1 2 and 3" (format nil "~@? and ~A" "~A ~A" 1 2 3))
+(check "format ~R zero" "zero" (format nil "~R" 0))
+(check "format ~R cardinal" "forty-two" (format nil "~R" 42))
+(check "format ~R thousand" "one thousand two hundred thirty-four" (format nil "~R" 1234))
+(check "format ~:R ordinal" "first" (format nil "~:R" 1))
+(check "format ~:R 21" "twenty-first" (format nil "~:R" 21))
+(check "format ~@R roman" "XLII" (format nil "~@R" 42))
+(check "format ~@R 1999" "MCMXCIX" (format nil "~@R" 1999))
+(check "format ~:@R old roman" "IIII" (format nil "~:@R" 4))
+(check "format ~2R binary" "1010" (format nil "~2R" 10))
+(check "format ~16R hex" "FF" (format nil "~16R" 255))
+
 ; --- Pretty-printing / *print-pretty* ---
 (check "print-pretty default nil" nil *print-pretty*)
 (check "print-right-margin default nil" nil *print-right-margin*)
@@ -2279,6 +2335,112 @@
 (check "pretty dotted" "(A . B)"
   (let ((*print-pretty* t) (*print-right-margin* 40))
     (write-to-string '(a . b))))
+
+; --- Ratio Numbers ---
+; Reader
+(check "read ratio" 1/2 1/2)
+(check "read ratio neg" -3/4 -3/4)
+(check "read ratio normalize" 1/2 2/4)
+(check "read ratio demote" 2 6/3)
+
+; Predicates
+(check "ratiop ratio" t (typep 1/2 'ratio))
+(check "ratiop int" nil (typep 5 'ratio))
+(check "rationalp ratio" t (rationalp 1/2))
+(check "rationalp int" t (rationalp 5))
+(check "rationalp float" nil (rationalp 1.0))
+
+; Type
+(check "type-of ratio" 'ratio (type-of 1/2))
+(check "subtypep ratio rational" t (subtypep 'ratio 'rational))
+
+; Arithmetic
+(check "ratio add" 5/6 (+ 1/2 1/3))
+(check "ratio add int" 3/2 (+ 1/2 1))
+(check "ratio sub" 1/6 (- 1/2 1/3))
+(check "ratio mul" 1/6 (* 1/2 1/3))
+(check "ratio div" 3/2 (/ 1/2 1/3))
+(check "ratio negate" -1/2 (- 1/2))
+(check "div to ratio" 1/2 (/ 1 2))
+(check "div reduces" 3/2 (/ 6 4))
+(check "div to integer" 2 (/ 6 3))
+(check "reciprocal" 1/3 (/ 3))
+
+; Comparison
+(check "ratio < true" t (< 1/3 1/2))
+(check "ratio > true" t (> 1/2 1/3))
+(check "ratio = same" t (= 1/2 2/4))
+(check "ratio = float" t (= 1/2 0.5))
+(check "ratio < int" t (< 1/3 1))
+(check "ratio > int" t (> 3/2 1))
+
+; Predicates on ratios
+(check "zerop ratio" nil (zerop 1/2))
+(check "plusp ratio" t (plusp 1/2))
+(check "minusp ratio" t (minusp -1/2))
+(check "abs ratio" 3/4 (abs -3/4))
+
+; min/max
+(check "min ratio" 1/4 (min 1/2 1/3 1/4))
+(check "max ratio" 1/2 (max 1/2 1/3 1/4))
+
+; Accessors
+(check "numerator ratio" 3 (numerator 3/4))
+(check "numerator int" 5 (numerator 5))
+(check "denominator ratio" 4 (denominator 3/4))
+(check "denominator int" 1 (denominator 5))
+
+; Rounding
+(check "floor ratio" 3 (floor 7/2))
+(check "ceiling ratio" 4 (ceiling 7/2))
+(check "truncate ratio" 3 (truncate 7/2))
+(check "round ratio" 4 (round 7/2))
+
+; Coerce
+(check "coerce ratio float" 0.5 (coerce 1/2 'single-float))
+
+; Float contagion
+(check "ratio + float" 1.0 (+ 1/2 0.5))
+
+; eql/equal
+(check "eql ratio" t (eql 1/2 2/4))
+(check "equal ratio" t (equal 1/2 2/4))
+(check "eql ratio diff" nil (eql 1/2 1/3))
+
+; Hash tables with ratio keys
+(check "ratio hash key"
+  'half
+  (let ((ht (make-hash-table)))
+    (setf (gethash 1/2 ht) 'half)
+    (gethash 1/2 ht)))
+(check "ratio hash normalized"
+  'half
+  (let ((ht (make-hash-table)))
+    (setf (gethash 1/2 ht) 'half)
+    (gethash 2/4 ht)))
+
+; expt with ratios
+(check "expt ratio" 1/8 (expt 1/2 3))
+(check "expt ratio neg" 3/2 (expt 2/3 -1))
+(check "expt int neg" 1/2 (expt 2 -1))
+
+; 1+/1-
+(check "1+ ratio" 3/2 (1+ 1/2))
+(check "1- ratio" -1/2 (1- 1/2))
+
+; mod/rem
+(check "mod ratio" 1/2 (mod 5/2 1))
+(check "rem ratio" 1/2 (rem 5/2 1))
+
+; rational/rationalize
+(check "rational int" 5 (rational 5))
+(check "rational ratio" 1/2 (rational 1/2))
+(check "rational float" 1/2 (rational 0.5))
+(check "rationalize float" 1/2 (rationalize 0.5))
+
+; Printer
+(check "print ratio" "1/2" (write-to-string 1/2))
+(check "print ratio neg" "-3/4" (write-to-string -3/4))
 
 ; --- Summary ---
 (format t "~%=== Results ===~%")

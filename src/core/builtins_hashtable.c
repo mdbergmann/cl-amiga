@@ -1,6 +1,7 @@
 #include "builtins.h"
 #include "bignum.h"
 #include "float.h"
+#include "ratio.h"
 #include "symbol.h"
 #include "package.h"
 #include "mem.h"
@@ -32,9 +33,10 @@ static uint32_t hash_obj(CL_Obj obj, uint32_t test)
         h ^= h >> 16;
         return h;
     }
-    /* For eql: bignums and floats need value-based hash */
+    /* For eql: bignums, ratios, and floats need value-based hash */
     if (test == CL_HT_TEST_EQL) {
         if (CL_BIGNUM_P(obj)) return cl_bignum_hash(obj);
+        if (CL_RATIO_P(obj)) return cl_ratio_hash(obj);
         if (CL_SINGLE_FLOAT_P(obj)) {
             union { float f; uint32_t u; } conv;
             conv.f = ((CL_SingleFloat *)CL_OBJ_TO_PTR(obj))->value;
@@ -59,6 +61,7 @@ static uint32_t hash_obj(CL_Obj obj, uint32_t test)
     if (CL_FIXNUM_P(obj)) return (uint32_t)obj;
     if (CL_CHAR_P(obj)) return (uint32_t)obj;
     if (CL_BIGNUM_P(obj)) return cl_bignum_hash(obj);
+    if (CL_RATIO_P(obj)) return cl_ratio_hash(obj);
     if (CL_SINGLE_FLOAT_P(obj)) {
         union { float f; uint32_t u; } conv;
         conv.f = ((CL_SingleFloat *)CL_OBJ_TO_PTR(obj))->value;
@@ -113,6 +116,8 @@ static int keys_equal(CL_Obj a, CL_Obj b, uint32_t test)
         /* Value equality for bignums */
         if (CL_BIGNUM_P(a) && CL_BIGNUM_P(b))
             return cl_bignum_equal(a, b);
+        if (CL_RATIO_P(a) && CL_RATIO_P(b))
+            return cl_ratio_equal(a, b);
         /* Value equality for floats (same type required for eql) */
         if (CL_SINGLE_FLOAT_P(a) && CL_SINGLE_FLOAT_P(b))
             return ((CL_SingleFloat *)CL_OBJ_TO_PTR(a))->value ==
@@ -128,6 +133,8 @@ static int keys_equal(CL_Obj a, CL_Obj b, uint32_t test)
     if (CL_FIXNUM_P(a) || CL_CHAR_P(a)) return a == b;
     if (CL_BIGNUM_P(a) && CL_BIGNUM_P(b))
         return cl_bignum_equal(a, b);
+    if (CL_RATIO_P(a) && CL_RATIO_P(b))
+        return cl_ratio_equal(a, b);
     /* Floats: equal is same as eql (same type, same value) */
     if (CL_SINGLE_FLOAT_P(a) && CL_SINGLE_FLOAT_P(b))
         return ((CL_SingleFloat *)CL_OBJ_TO_PTR(a))->value ==
