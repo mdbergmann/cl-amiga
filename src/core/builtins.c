@@ -208,12 +208,6 @@ static CL_Obj bi_listp(CL_Obj *args, int n)
     return (CL_NULL_P(args[0]) || CL_CONS_P(args[0])) ? SYM_T : CL_NIL;
 }
 
-static CL_Obj bi_numberp(CL_Obj *args, int n)
-{
-    CL_UNUSED(n);
-    return CL_FIXNUM_P(args[0]) ? SYM_T : CL_NIL;
-}
-
 static CL_Obj bi_symbolp(CL_Obj *args, int n)
 {
     CL_UNUSED(n);
@@ -564,8 +558,6 @@ void cl_builtins_init(void)
     defun("CONSP", bi_consp, 1, 1);
     defun("ATOM", bi_atom, 1, 1);
     defun("LISTP", bi_listp, 1, 1);
-    defun("NUMBERP", bi_numberp, 1, 1);
-    defun("INTEGERP", bi_numberp, 1, 1);
     defun("SYMBOLP", bi_symbolp, 1, 1);
     defun("STRINGP", bi_stringp, 1, 1);
     defun("FUNCTIONP", bi_functionp, 1, 1);
