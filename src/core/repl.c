@@ -239,10 +239,77 @@ static void load_user_init(void)
  * - String literals ("..." with \" escape handling)
  * - Line comments (; to end of line)
  * - Character literals (#\( #\) #\Space etc.) */
+/* Skip whitespace and comments in paren-depth scanner, return new index */
+static int pd_skip_ws(const char *str, int i)
+{
+    while (str[i] != '\0') {
+        if (str[i] == ' ' || str[i] == '\t' || str[i] == '\n' || str[i] == '\r') {
+            i++;
+        } else if (str[i] == ';') {
+            while (str[i] != '\0' && str[i] != '\n') i++;
+        } else {
+            break;
+        }
+    }
+    return i;
+}
+
+/* Skip a single token (symbol/number) in paren-depth scanner, return new index */
+static int pd_skip_token(const char *str, int i)
+{
+    while (str[i] != '\0' && str[i] != ' ' && str[i] != '\t' &&
+           str[i] != '\n' && str[i] != '\r' && str[i] != '(' &&
+           str[i] != ')' && str[i] != '"' && str[i] != ';')
+        i++;
+    return i;
+}
+
+/* Skip a balanced form in paren-depth scanner (for feature expressions).
+ * Returns new index, or -1 if form is incomplete. */
+static int pd_skip_form(const char *str, int i)
+{
+    i = pd_skip_ws(str, i);
+    if (str[i] == '\0') return -1;
+    if (str[i] == '(') {
+        int d = 1;
+        i++;
+        while (str[i] != '\0' && d > 0) {
+            if (str[i] == '(') d++;
+            else if (str[i] == ')') d--;
+            else if (str[i] == '"') {
+                i++;
+                while (str[i] != '\0') {
+                    if (str[i] == '\\' && str[i + 1] != '\0') { i += 2; continue; }
+                    if (str[i] == '"') break;
+                    i++;
+                }
+            } else if (str[i] == ';') {
+                while (str[i] != '\0' && str[i] != '\n') i++;
+                continue;
+            }
+            if (str[i] != '\0') i++;
+        }
+        return (d == 0) ? i : -1;
+    }
+    if (str[i] == '"') {
+        i++;
+        while (str[i] != '\0') {
+            if (str[i] == '\\' && str[i + 1] != '\0') { i += 2; continue; }
+            if (str[i] == '"') { i++; return i; }
+            i++;
+        }
+        return -1;
+    }
+    /* Token */
+    if (str[i] == '#' || str[i] == '\'') return -1;  /* complex — be conservative */
+    return pd_skip_token(str, i);
+}
+
 int cl_paren_depth(const char *str)
 {
     int depth = 0;
     int i = 0;
+    int pending_forms = 0;  /* forms still needed by #+/#- */
 
     while (str[i] != '\0') {
         char c = str[i];
@@ -261,6 +328,7 @@ int cl_paren_depth(const char *str)
                 }
                 i++;
             }
+            if (pending_forms > 0 && depth == 0) pending_forms--;
             continue;
         }
 
@@ -287,15 +355,43 @@ int cl_paren_depth(const char *str)
                     i++;  /* single non-alpha char like #\( */
                 }
             }
+            if (pending_forms > 0 && depth == 0) pending_forms--;
             continue;
         }
 
-        if (c == '(') depth++;
-        else if (c == ')') depth--;
+        /* #+ / #- feature conditionals: need feature-expr + one more form */
+        if (c == '#' && (str[i + 1] == '+' || str[i + 1] == '-')) {
+            int j;
+            i += 2;  /* skip #+ or #- */
+            /* Skip the feature expression */
+            j = pd_skip_form(str, i);
+            if (j < 0) {
+                /* Incomplete feature expr — definitely need more input */
+                return 1;
+            }
+            i = j;
+            /* Now we need one more form (the conditioned form) */
+            pending_forms++;
+            continue;
+        }
+
+        if (c == '(') {
+            depth++;
+        } else if (c == ')') {
+            depth--;
+            if (pending_forms > 0 && depth == 0) pending_forms--;
+        } else if (c != ' ' && c != '\t' && c != '\n' && c != '\r') {
+            /* Start of an atom/token — skip it */
+            int start = i;
+            i = pd_skip_token(str, i);
+            if (i > start && pending_forms > 0 && depth == 0) pending_forms--;
+            continue;
+        }
 
         i++;
     }
 
+    if (pending_forms > 0) return 1;  /* still waiting for conditioned form */
     return depth;
 }
 

@@ -71,6 +71,10 @@ All OS calls go through `platform.h`. Implementations:
 - `make test` must pass with zero failures before any commit
 - Test files: `tests/test_*.c`, each has its own `main()` and setup/teardown
 
+## Reference
+
+- **Common Lisp HyperSpec**: https://www.lispworks.com/documentation/HyperSpec/Front/
+
 ## Known Limitations (to fix incrementally)
 
 - `defmacro` compiles but runtime macro expansion not wired up
