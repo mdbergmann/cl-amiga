@@ -277,16 +277,41 @@ int main(int argc, char *argv[])
     } else {
         /* Drain residual CLI data from stdin (AmigaOS leaks command line to Input()) */
         platform_drain_input();
+        platform_write_string("\n");
+        /* Line 1:   ))     \ */
         cl_color_set(CL_COLOR_LIGHT_BLUE);
-        platform_write_string(
-            "\n"
-            "  ))     \\\n"
-            " ))       \\          CL-Amiga v0.1\n"
-            "))         \\\n"
-            "))         /\\        Common Lisp for AmigaOS 3+\n"
-            " ))       /  \\\n"
-            "  ))     /    \\\n"
-        );
+        platform_write_string("  ))     ");
+        cl_color_set(CL_COLOR_RED);
+        platform_write_string("\\\n");
+        /* Line 2:  ))       \          CL-Amiga v0.1 */
+        cl_color_set(CL_COLOR_LIGHT_BLUE);
+        platform_write_string(" ))       ");
+        cl_color_set(CL_COLOR_RED);
+        platform_write_string("\\          ");
+        cl_color_set(CL_COLOR_DIM_CYAN);
+        platform_write_string("CL-Amiga v0.1\n");
+        /* Line 3: ))         \ */
+        cl_color_set(CL_COLOR_LIGHT_BLUE);
+        platform_write_string("))         ");
+        cl_color_set(CL_COLOR_RED);
+        platform_write_string("\\\n");
+        /* Line 4: ))         /\        Common Lisp for AmigaOS 3+ */
+        cl_color_set(CL_COLOR_LIGHT_BLUE);
+        platform_write_string("))         ");
+        cl_color_set(CL_COLOR_RED);
+        platform_write_string("/\\        ");
+        cl_color_set(CL_COLOR_DIM_CYAN);
+        platform_write_string("Common Lisp for AmigaOS 3+\n");
+        /* Line 5:  ))       /  \ */
+        cl_color_set(CL_COLOR_LIGHT_BLUE);
+        platform_write_string(" ))       ");
+        cl_color_set(CL_COLOR_RED);
+        platform_write_string("/  \\\n");
+        /* Line 6:   ))     /    \ */
+        cl_color_set(CL_COLOR_LIGHT_BLUE);
+        platform_write_string("  ))     ");
+        cl_color_set(CL_COLOR_RED);
+        platform_write_string("/    \\\n");
         cl_color_reset();
         platform_write_string("\nType (quit) to exit.\n\n");
 
