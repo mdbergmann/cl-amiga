@@ -974,6 +974,7 @@ int is_locally_special(CL_Obj var, CL_Obj local_specials)
 }
 
 /* Strip leading (declare ...) forms from body, processing their specifiers.
+ * Also skips docstrings (string literals among declarations per CL spec).
  * Returns the remaining body forms (first non-declare form onward). */
 CL_Obj process_body_declarations(CL_Compiler *c, CL_Obj body)
 {
@@ -982,6 +983,12 @@ CL_Obj process_body_declarations(CL_Compiler *c, CL_Obj body)
 
     while (!CL_NULL_P(forms)) {
         CL_Obj form = cl_car(forms);
+
+        /* Skip docstrings among declarations (string followed by more forms) */
+        if (CL_STRING_P(form) && !CL_NULL_P(cl_cdr(forms))) {
+            forms = cl_cdr(forms);
+            continue;
+        }
 
         /* Stop at first non-declare form */
         if (!CL_CONS_P(form) || cl_car(form) != SYM_DECLARE)

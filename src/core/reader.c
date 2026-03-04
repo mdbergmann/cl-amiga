@@ -192,6 +192,91 @@ static void skip_form(void)
     read_suppress--;
 }
 
+/* Read a number in the given radix (2, 8, 16, or arbitrary via #nR).
+ * Handles optional sign, fixnum/bignum dispatch. */
+static CL_Obj read_radix_number(int radix)
+{
+    char buf[256];
+    int len = 0;
+    int ch;
+    int neg = 0;
+    int i;
+
+    /* Read token */
+    while (len < 255) {
+        ch = read_char();
+        if (is_delimiter(ch)) { unread_char(ch); break; }
+        buf[len++] = (char)toupper(ch);
+    }
+    buf[len] = '\0';
+
+    if (read_suppress) return CL_NIL;
+    if (len == 0) {
+        cl_error(CL_ERR_PARSE, "No digits after #radix prefix");
+        return CL_NIL;
+    }
+
+    /* Handle sign */
+    i = 0;
+    if (buf[0] == '+') i = 1;
+    else if (buf[0] == '-') { neg = 1; i = 1; }
+
+    if (i >= len) {
+        cl_error(CL_ERR_PARSE, "No digits after sign in #radix number");
+        return CL_NIL;
+    }
+
+    /* Try fixnum range first using unsigned long accumulator */
+    {
+        unsigned long val = 0;
+        int overflow = 0;
+        int j;
+        for (j = i; j < len; j++) {
+            int dv;
+            char c = buf[j];
+            if (c >= '0' && c <= '9') dv = c - '0';
+            else if (c >= 'A' && c <= 'Z') dv = c - 'A' + 10;
+            else {
+                cl_error(CL_ERR_PARSE, "Invalid digit '%c' for radix %d", buf[j], radix);
+                return CL_NIL;
+            }
+            if (dv >= radix) {
+                cl_error(CL_ERR_PARSE, "Invalid digit '%c' for radix %d", buf[j], radix);
+                return CL_NIL;
+            }
+            if (!overflow) {
+                unsigned long nv = val * (unsigned long)radix + (unsigned long)dv;
+                if (nv / (unsigned long)radix != val) overflow = 1;
+                else val = nv;
+            }
+        }
+        if (!overflow) {
+            long sv = neg ? -(long)val : (long)val;
+            if (sv >= CL_FIXNUM_MIN && sv <= CL_FIXNUM_MAX)
+                return CL_MAKE_FIXNUM((int32_t)sv);
+        }
+    }
+
+    /* Bignum: Horner's method with cl_arith_mul/cl_arith_add */
+    {
+        CL_Obj result = CL_MAKE_FIXNUM(0);
+        CL_Obj radix_obj = CL_MAKE_FIXNUM(radix);
+        int j;
+        CL_GC_PROTECT(result);
+        for (j = i; j < len; j++) {
+            int dv;
+            char c = buf[j];
+            if (c >= '0' && c <= '9') dv = c - '0';
+            else dv = c - 'A' + 10;
+            result = cl_arith_mul(result, radix_obj);
+            result = cl_arith_add(result, CL_MAKE_FIXNUM(dv));
+        }
+        if (neg) result = cl_arith_negate(result);
+        CL_GC_UNPROTECT(1);
+        return result;
+    }
+}
+
 /*
  * Try to parse buf as a float literal.
  * Returns the float object, or CL_NIL if not a valid float token.
@@ -814,6 +899,34 @@ static CL_Obj read_expr(void)
                 result = CL_NIL;
             CL_GC_UNPROTECT(1);
             return result;
+        }
+        if (ch == 'X' || ch == 'x') {
+            return read_radix_number(16);
+        }
+        if (ch == 'B' || ch == 'b') {
+            return read_radix_number(2);
+        }
+        if (ch == 'O' || ch == 'o') {
+            return read_radix_number(8);
+        }
+        /* #nR — arbitrary radix */
+        if (ch >= '0' && ch <= '9') {
+            int radix_val = ch - '0';
+            while (1) {
+                ch = read_char();
+                if (ch == 'R' || ch == 'r') break;
+                if (ch >= '0' && ch <= '9') {
+                    radix_val = radix_val * 10 + (ch - '0');
+                } else {
+                    cl_error(CL_ERR_PARSE, "Invalid radix prefix #%d%c", radix_val, ch);
+                    return CL_NIL;
+                }
+            }
+            if (radix_val < 2 || radix_val > 36) {
+                cl_error(CL_ERR_PARSE, "Radix %d out of range (2-36)", radix_val);
+                return CL_NIL;
+            }
+            return read_radix_number(radix_val);
         }
         if (read_suppress) return CL_NIL;
         cl_error(CL_ERR_PARSE, "Unknown dispatch macro: #%c", ch);

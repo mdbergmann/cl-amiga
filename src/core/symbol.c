@@ -103,6 +103,16 @@ CL_Obj SYM_PROGRAM_ERROR = CL_NIL;
 CL_Obj SYM_CONTROL_ERROR = CL_NIL;
 CL_Obj SYM_ARITHMETIC_ERROR = CL_NIL;
 CL_Obj SYM_DIVISION_BY_ZERO = CL_NIL;
+CL_Obj SYM_STYLE_WARNING = CL_NIL;
+CL_Obj SYM_CELL_ERROR = CL_NIL;
+CL_Obj SYM_UNBOUND_SLOT = CL_NIL;
+CL_Obj SYM_STREAM_ERROR = CL_NIL;
+CL_Obj SYM_END_OF_FILE = CL_NIL;
+CL_Obj SYM_FILE_ERROR = CL_NIL;
+CL_Obj SYM_PACKAGE_ERROR = CL_NIL;
+CL_Obj SYM_PARSE_ERROR = CL_NIL;
+CL_Obj SYM_PRINT_NOT_READABLE = CL_NIL;
+CL_Obj SYM_STORAGE_CONDITION = CL_NIL;
 
 /* Signaling symbols */
 CL_Obj SYM_SIGNAL = CL_NIL;
@@ -408,6 +418,16 @@ void cl_symbol_init(void)
     SYM_CONTROL_ERROR            = cl_intern_in("CONTROL-ERROR", 13, cl_package_cl);
     SYM_ARITHMETIC_ERROR         = cl_intern_in("ARITHMETIC-ERROR", 16, cl_package_cl);
     SYM_DIVISION_BY_ZERO         = cl_intern_in("DIVISION-BY-ZERO", 16, cl_package_cl);
+    SYM_STYLE_WARNING            = cl_intern_in("STYLE-WARNING", 13, cl_package_cl);
+    SYM_CELL_ERROR               = cl_intern_in("CELL-ERROR", 10, cl_package_cl);
+    SYM_UNBOUND_SLOT             = cl_intern_in("UNBOUND-SLOT", 12, cl_package_cl);
+    SYM_STREAM_ERROR             = cl_intern_in("STREAM-ERROR", 12, cl_package_cl);
+    SYM_END_OF_FILE              = cl_intern_in("END-OF-FILE", 11, cl_package_cl);
+    SYM_FILE_ERROR               = cl_intern_in("FILE-ERROR", 10, cl_package_cl);
+    SYM_PACKAGE_ERROR            = cl_intern_in("PACKAGE-ERROR", 13, cl_package_cl);
+    SYM_PARSE_ERROR              = cl_intern_in("PARSE-ERROR", 11, cl_package_cl);
+    SYM_PRINT_NOT_READABLE       = cl_intern_in("PRINT-NOT-READABLE", 18, cl_package_cl);
+    SYM_STORAGE_CONDITION        = cl_intern_in("STORAGE-CONDITION", 17, cl_package_cl);
 
     /* Signaling symbols */
     SYM_SIGNAL                   = cl_intern_in("SIGNAL", 6, cl_package_cl);

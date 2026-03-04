@@ -33,16 +33,26 @@ static void defun(const char *name, CL_CFunc func, int min, int max)
  *   simple-condition
  *   warning
  *     simple-warning        (also simple-condition)
+ *     style-warning
  *   serious-condition
+ *     storage-condition
  *     error
  *       simple-error        (also simple-condition)
  *       type-error
+ *       cell-error
+ *         unbound-slot
  *       unbound-variable
  *       undefined-function
  *       program-error
  *       control-error
  *       arithmetic-error
  *         division-by-zero
+ *       stream-error
+ *         end-of-file
+ *       file-error
+ *       package-error
+ *       parse-error
+ *       print-not-readable
  *
  * Stored as alist: ((type-sym parent-sym ...) ...)
  * Multiple parents for types with multiple inheritance.
@@ -58,6 +68,60 @@ static void build_hierarchy(void)
 {
     /* Helper: push (type parent1 parent2 ...) onto hierarchy */
     /* Build bottom-up so hierarchy is a proper alist */
+
+    /* print-not-readable -> error */
+    condition_hierarchy = cl_cons(
+        cl_cons(SYM_PRINT_NOT_READABLE,
+                cl_cons(SYM_ERROR_COND, CL_NIL)),
+        condition_hierarchy);
+
+    /* parse-error -> error */
+    condition_hierarchy = cl_cons(
+        cl_cons(SYM_PARSE_ERROR,
+                cl_cons(SYM_ERROR_COND, CL_NIL)),
+        condition_hierarchy);
+
+    /* package-error -> error */
+    condition_hierarchy = cl_cons(
+        cl_cons(SYM_PACKAGE_ERROR,
+                cl_cons(SYM_ERROR_COND, CL_NIL)),
+        condition_hierarchy);
+
+    /* file-error -> error */
+    condition_hierarchy = cl_cons(
+        cl_cons(SYM_FILE_ERROR,
+                cl_cons(SYM_ERROR_COND, CL_NIL)),
+        condition_hierarchy);
+
+    /* end-of-file -> stream-error */
+    condition_hierarchy = cl_cons(
+        cl_cons(SYM_END_OF_FILE,
+                cl_cons(SYM_STREAM_ERROR, CL_NIL)),
+        condition_hierarchy);
+
+    /* stream-error -> error */
+    condition_hierarchy = cl_cons(
+        cl_cons(SYM_STREAM_ERROR,
+                cl_cons(SYM_ERROR_COND, CL_NIL)),
+        condition_hierarchy);
+
+    /* unbound-slot -> cell-error */
+    condition_hierarchy = cl_cons(
+        cl_cons(SYM_UNBOUND_SLOT,
+                cl_cons(SYM_CELL_ERROR, CL_NIL)),
+        condition_hierarchy);
+
+    /* cell-error -> error */
+    condition_hierarchy = cl_cons(
+        cl_cons(SYM_CELL_ERROR,
+                cl_cons(SYM_ERROR_COND, CL_NIL)),
+        condition_hierarchy);
+
+    /* storage-condition -> serious-condition */
+    condition_hierarchy = cl_cons(
+        cl_cons(SYM_STORAGE_CONDITION,
+                cl_cons(SYM_SERIOUS_CONDITION, CL_NIL)),
+        condition_hierarchy);
 
     /* division-by-zero -> arithmetic-error */
     condition_hierarchy = cl_cons(
@@ -106,6 +170,12 @@ static void build_hierarchy(void)
         cl_cons(SYM_SIMPLE_ERROR,
                 cl_cons(SYM_ERROR_COND,
                         cl_cons(SYM_SIMPLE_CONDITION, CL_NIL))),
+        condition_hierarchy);
+
+    /* style-warning -> warning */
+    condition_hierarchy = cl_cons(
+        cl_cons(SYM_STYLE_WARNING,
+                cl_cons(SYM_WARNING, CL_NIL)),
         condition_hierarchy);
 
     /* simple-warning -> warning, simple-condition */

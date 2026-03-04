@@ -94,6 +94,51 @@
     (unless (member x list2 :test test)
       (return-from subsetp nil))))
 
+;; documentation — CL standard documentation function
+(defvar *documentation-table* (make-hash-table :test 'equal))
+
+(defun documentation (obj doc-type)
+  (gethash (cons obj doc-type) *documentation-table*))
+
+(defun %set-documentation (obj doc-type string)
+  (setf (gethash (cons obj doc-type) *documentation-table*) string))
+
+(defsetf documentation %set-documentation)
+
+;; Stubs for CL standard functions ASDF needs
+(defun compile-file (input-file &rest args)
+  (declare (ignore args))
+  nil)
+
+(defun compile-file-pathname (input-file &rest args)
+  (declare (ignore args))
+  (pathname input-file))
+
+(defmacro with-compilation-unit ((&rest options) &body body)
+  (declare (ignore options))
+  `(progn ,@body))
+
+(defmacro with-standard-io-syntax (&body body)
+  `(let ((*package* (find-package :common-lisp-user))
+         (*print-base* 10)
+         (*print-radix* nil)
+         (*print-circle* nil)
+         (*print-escape* t)
+         (*print-readably* nil)
+         (*read-base* 10)
+         (*read-eval* t))
+     ,@body))
+
+(defmacro print-unreadable-object ((object stream &key type identity) &body body)
+  (let ((obj-var (gensym)))
+    `(let ((,obj-var ,object))
+       (write-string "#<" ,stream)
+       ,@(when type `((write-string (symbol-name (type-of ,obj-var)) ,stream)
+                       ,(when body '(write-char #\Space ,stream))))
+       ,@body
+       (write-string ">" ,stream)
+       nil)))
+
 ;; handler-case — run clause bodies after unwinding
 ;; Uses catch/throw + cons box because:
 ;;   - handlers run in separate VM context (cl_vm_apply), so return-from can't
@@ -1097,24 +1142,24 @@
                      body)
                (setq rest (cdr rest))))
             ;; WHEN / IF / UNLESS — conditional with sub-clauses
+            ;; Handles flat :when ... :else :when ... chains iteratively
             ((or (%loop-keyword-p kw "WHEN") (%loop-keyword-p kw "IF")
                  (%loop-keyword-p kw "UNLESS"))
-             (let ((test-expr (car rest))
-                   (negate (%loop-keyword-p kw "UNLESS"))
-                   (then-forms nil)
-                   (else-forms nil)
-                   (in-else nil))
+             (let ((cond-clauses nil)  ;; list of (test . then-forms) -- built in reverse
+                   (final-else nil)
+                   (cur-test (car rest))
+                   (cur-negate (%loop-keyword-p kw "UNLESS"))
+                   (cur-then nil))
                (setq rest (cdr rest))
-               (block parse-subclauses
+               (block parse-cond-chain
                  (tagbody
-                   parse-one-sub
+                   parse-cond-sub
+                   ;; Parse one sub-clause
                    (let* ((r (%loop-parse-cond-subclause
                               (car rest) (cdr rest) block-name
                               bindings into-vars default-accum
                               result-form epilogue)))
-                     (if in-else
-                         (push (car r) else-forms)
-                         (push (car r) then-forms))
+                     (push (car r) cur-then)
                      (setq rest (cadr r))
                      (setq bindings (caddr r))
                      (setq into-vars (car (cdddr r)))
@@ -1122,22 +1167,75 @@
                      (setq result-form (caddr (cdddr r)))
                      (setq epilogue (car (cdddr (cdddr r)))))
                    (cond
+                     ;; AND — more sub-clauses for same branch
                      ((and rest (%loop-keyword-p (car rest) "AND"))
                       (setq rest (cdr rest))
-                      (go parse-one-sub))
+                      (go parse-cond-sub))
+                     ;; ELSE followed by WHEN/IF/UNLESS — new cond clause (iterative)
+                     ((and rest (%loop-keyword-p (car rest) "ELSE")
+                           (cdr rest)
+                           (or (%loop-keyword-p (cadr rest) "WHEN")
+                               (%loop-keyword-p (cadr rest) "IF")
+                               (%loop-keyword-p (cadr rest) "UNLESS")))
+                      ;; Save current clause
+                      (when cur-negate (setq cur-test `(not ,cur-test)))
+                      (push (cons cur-test (nreverse cur-then)) cond-clauses)
+                      ;; Start new clause
+                      (setq rest (cdr rest))  ;; skip :else
+                      (setq cur-negate (%loop-keyword-p (car rest) "UNLESS"))
+                      (setq rest (cdr rest))  ;; skip :when/:if/:unless
+                      (setq cur-test (car rest))
+                      (setq rest (cdr rest))  ;; skip test-expr
+                      (setq cur-then nil)
+                      (go parse-cond-sub))
+                     ;; ELSE followed by non-conditional — final else branch
                      ((and rest (%loop-keyword-p (car rest) "ELSE"))
                       (setq rest (cdr rest))
-                      (setq in-else t)
-                      (go parse-one-sub))
+                      ;; Save current clause
+                      (when cur-negate (setq cur-test `(not ,cur-test)))
+                      (push (cons cur-test (nreverse cur-then)) cond-clauses)
+                      ;; Parse else sub-clauses
+                      (setq cur-then nil)
+                      (block parse-final-else
+                        (tagbody
+                          parse-else-sub
+                          (let* ((r (%loop-parse-cond-subclause
+                                     (car rest) (cdr rest) block-name
+                                     bindings into-vars default-accum
+                                     result-form epilogue)))
+                            (push (car r) final-else)
+                            (setq rest (cadr r))
+                            (setq bindings (caddr r))
+                            (setq into-vars (car (cdddr r)))
+                            (setq default-accum (cadr (cdddr r)))
+                            (setq result-form (caddr (cdddr r)))
+                            (setq epilogue (car (cdddr (cdddr r)))))
+                          (when (and rest (%loop-keyword-p (car rest) "AND"))
+                            (setq rest (cdr rest))
+                            (go parse-else-sub))))
+                      (when (and rest (%loop-keyword-p (car rest) "END"))
+                        (setq rest (cdr rest))))
+                     ;; END — done
                      ((and rest (%loop-keyword-p (car rest) "END"))
-                      (setq rest (cdr rest))))))
-               (when negate (setq test-expr `(not ,test-expr)))
-               (if else-forms
-                   (push `(if ,test-expr
-                              (progn ,@(nreverse then-forms))
-                              (progn ,@(nreverse else-forms)))
-                         body)
-                   (push `(when ,test-expr ,@(nreverse then-forms)) body))))
+                      (setq rest (cdr rest))
+                      ;; Save current clause
+                      (when cur-negate (setq cur-test `(not ,cur-test)))
+                      (push (cons cur-test (nreverse cur-then)) cond-clauses))
+                     ;; No more conditional tokens — done
+                     (t
+                      (when cur-negate (setq cur-test `(not ,cur-test)))
+                      (push (cons cur-test (nreverse cur-then)) cond-clauses)))))
+               ;; Build nested if/else from cond-clauses (reverse order) + final-else
+               (let ((result (if final-else
+                                 `(progn ,@(nreverse final-else))
+                                 nil)))
+                 (dolist (clause cond-clauses)
+                   (let ((test (car clause))
+                         (forms (cdr clause)))
+                     (if result
+                         (setq result `(if ,test (progn ,@forms) ,result))
+                         (setq result `(when ,test ,@forms)))))
+                 (push result body))))
             (t
              (error "LOOP: unrecognized clause ~S" kw))))
         (go parse-next)))

@@ -240,6 +240,26 @@
   (list (find-class 'error) (find-class 'simple-condition)))
 (%make-bootstrap-class 'simple-warning
   (list (find-class 'warning) (find-class 'simple-condition)))
+(%make-bootstrap-class 'style-warning
+  (list (find-class 'warning)))
+(%make-bootstrap-class 'storage-condition
+  (list (find-class 'serious-condition)))
+(%make-bootstrap-class 'cell-error
+  (list (find-class 'error)))
+(%make-bootstrap-class 'unbound-slot
+  (list (find-class 'cell-error)))
+(%make-bootstrap-class 'stream-error
+  (list (find-class 'error)))
+(%make-bootstrap-class 'end-of-file
+  (list (find-class 'stream-error)))
+(%make-bootstrap-class 'file-error
+  (list (find-class 'error)))
+(%make-bootstrap-class 'package-error
+  (list (find-class 'error)))
+(%make-bootstrap-class 'parse-error
+  (list (find-class 'error)))
+(%make-bootstrap-class 'print-not-readable
+  (list (find-class 'error)))
 
 ;;; --- Register condition types as CLOS classes (for method dispatch) ---
 

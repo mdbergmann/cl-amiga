@@ -136,6 +136,16 @@ extern CL_Obj SYM_PROGRAM_ERROR;
 extern CL_Obj SYM_CONTROL_ERROR;
 extern CL_Obj SYM_ARITHMETIC_ERROR;
 extern CL_Obj SYM_DIVISION_BY_ZERO;
+extern CL_Obj SYM_STYLE_WARNING;
+extern CL_Obj SYM_CELL_ERROR;
+extern CL_Obj SYM_UNBOUND_SLOT;
+extern CL_Obj SYM_STREAM_ERROR;
+extern CL_Obj SYM_END_OF_FILE;
+extern CL_Obj SYM_FILE_ERROR;
+extern CL_Obj SYM_PACKAGE_ERROR;
+extern CL_Obj SYM_PARSE_ERROR;
+extern CL_Obj SYM_PRINT_NOT_READABLE;
+extern CL_Obj SYM_STORAGE_CONDITION;
 
 /* Signaling symbols */
 extern CL_Obj SYM_SIGNAL;
