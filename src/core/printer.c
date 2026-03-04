@@ -6,6 +6,7 @@
 #include "ratio.h"
 #include "float.h"
 #include "stream.h"
+#include "vm.h"
 #include "../platform/platform.h"
 #include <stdio.h>
 #include <string.h>
@@ -667,6 +668,58 @@ static void print_array_slice(CL_Obj *elts, uint32_t *dims, uint8_t rank,
     out_char(')');
 }
 
+/*
+ * Check *print-pprint-dispatch* for a custom printer function.
+ * Returns 1 if handled (dispatched), 0 if not.
+ */
+static int pprint_dispatch_active = 0; /* recursion guard */
+
+static int try_pprint_dispatch(CL_Obj obj)
+{
+    CL_Symbol *sd;
+    CL_Obj table, cur, best_fn;
+    int32_t best_priority;
+
+    if (pprint_dispatch_active) return 0; /* prevent recursion */
+    if (CL_NULL_P(SYM_PRINT_PPRINT_DISPATCH)) return 0;
+    sd = (CL_Symbol *)CL_OBJ_TO_PTR(SYM_PRINT_PPRINT_DISPATCH);
+    table = sd->value;
+    if (CL_NULL_P(table)) return 0;
+    if (!print_pretty_p()) return 0;
+
+    /* Linear scan for best matching entry */
+    best_fn = CL_NIL;
+    best_priority = -999999;
+    cur = table;
+    while (!CL_NULL_P(cur)) {
+        CL_Obj entry = cl_car(cur);
+        CL_Obj type_spec = cl_car(entry);
+        CL_Obj prio_fn = cl_cdr(entry);
+        int32_t prio = CL_FIXNUM_P(cl_car(prio_fn)) ? CL_FIXNUM_VAL(cl_car(prio_fn)) : 0;
+        CL_Obj fn = cl_cdr(prio_fn);
+
+        if (cl_typep(obj, type_spec) && prio > best_priority) {
+            best_priority = prio;
+            best_fn = fn;
+        }
+        cur = cl_cdr(cur);
+    }
+
+    if (CL_NULL_P(best_fn)) return 0;
+
+    /* Call the dispatch function: (fn stream obj) */
+    {
+        CL_Obj stream = printer_stream;
+        CL_Obj call_args[2];
+        call_args[0] = stream;
+        call_args[1] = obj;
+        pprint_dispatch_active = 1;
+        cl_vm_apply(best_fn, call_args, 2);
+        pprint_dispatch_active = 0;
+    }
+    return 1;
+}
+
 static void print_obj(CL_Obj obj)
 {
     /* Circle check: emit #n= or #n# for shared/circular objects */
@@ -675,6 +728,9 @@ static void print_obj(CL_Obj obj)
         if (cc < 0) return; /* already printed — #n# emitted */
         /* cc == 1: #n= emitted, fall through to print contents */
     }
+
+    /* Check pprint dispatch table */
+    if (try_pprint_dispatch(obj)) return;
 
     if (CL_NULL_P(obj)) {
         out_symbol_name("NIL");
@@ -1211,6 +1267,49 @@ int cl_princ_to_string(CL_Obj obj, char *buf, int bufsize)
     se->value = prev_e;
     sr->value = prev_r;
     return result;
+}
+
+/* ================================================================
+ * Pretty-printing public API
+ * ================================================================ */
+
+/* Block start column stack (parallel to pp_indent_stack) */
+static int32_t pp_block_start[PP_INDENT_MAX];
+
+int32_t cl_pp_get_column(void)
+{
+    return current_column;
+}
+
+int32_t cl_pp_get_right_margin(void)
+{
+    return print_right_margin();
+}
+
+void cl_pp_newline_indent(void)
+{
+    pp_newline_indent();
+}
+
+void cl_pp_set_indent(int32_t n)
+{
+    if (pp_indent_top > 0)
+        pp_indent_stack[pp_indent_top - 1] = n;
+}
+
+void cl_pp_push_block(int32_t start_col)
+{
+    if (pp_indent_top < PP_INDENT_MAX) {
+        pp_block_start[pp_indent_top] = start_col;
+        pp_indent_stack[pp_indent_top] = start_col;
+        pp_indent_top++;
+    }
+}
+
+void cl_pp_pop_block(void)
+{
+    if (pp_indent_top > 0)
+        pp_indent_top--;
 }
 
 void cl_printer_init(void)

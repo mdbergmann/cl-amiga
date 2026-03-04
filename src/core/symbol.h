@@ -193,6 +193,7 @@ extern CL_Obj SYM_PRINT_ARRAY;       /* *PRINT-ARRAY* */
 extern CL_Obj SYM_PRINT_CIRCLE;      /* *PRINT-CIRCLE* */
 extern CL_Obj SYM_PRINT_PRETTY;      /* *PRINT-PRETTY* */
 extern CL_Obj SYM_PRINT_RIGHT_MARGIN; /* *PRINT-RIGHT-MARGIN* */
+extern CL_Obj SYM_PRINT_PPRINT_DISPATCH; /* *PRINT-PPRINT-DISPATCH* */
 
 /* Print-case keyword symbols */
 extern CL_Obj KW_UPCASE;             /* :UPCASE */

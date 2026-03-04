@@ -307,15 +307,15 @@ Extended iteration, output formatting, printer control, and standard library com
 - [x] Higher-order: `complement`, `constantly`
 - [ ] Justification `~<~>` — remaining unimplemented format directive
 - [x] Pretty printer — `pprint` builtin, `*print-pretty*` / `*print-right-margin*` control variables, fill-style line breaking (greedy, no look-ahead), column tracking, indentation stack for lists/vectors/structs; `write`/`write-to-string` `:pretty`/`:right-margin` keywords
-- [ ] Full pretty printer (`pprint-logical-block`, `pprint-newline`, `pprint-indent`, `*print-pprint-dispatch*`)
-- [ ] Setf completeness: `rotatef`, `shiftf`, `define-modify-macro`, `defsetf` long form, `define-setf-expander`
+- [x] Full pretty printer (`pprint-logical-block`, `pprint-newline`, `pprint-indent`, `*print-pprint-dispatch*`) — greedy approximation (no XP buffering), `:linear` behaves like `:fill`
+- [ ] Setf completeness: `define-modify-macro`, `defsetf` long form, `define-setf-expander` (`rotatef`, `shiftf` done)
 - [ ] `psetq`, `psetf` — parallel assignment
 - [ ] `load-time-value` — evaluate once at load time
-- [ ] `remf` — destructive plist removal
+- [x] `remf` — destructive plist removal
 
 1113 host tests (12 suites), 1435+ Amiga batch tests — all passing.
 
-### Phase 9: Numeric Tower ✅
+### Phase 9: Numeric Tower
 
 Full CL numeric type hierarchy with arithmetic contagion (integers, bignums, ratios, floats):
 - [x] Bignums — arbitrary precision integers, heap-allocated 16-bit limb arrays (little-endian); schoolbook multiplication; Knuth Algorithm D division; automatic fixnum↔bignum promotion/demotion; all arithmetic ops dispatch through `cl_arith_*` layer
@@ -362,16 +362,9 @@ Ratios (complete):
 
 **Known FPU issue:** 68881/68040 hardware FPU (`FPU=1`) has minor precision differences — `integer-decode-float` significand off-by-one on some values, and `scale-float` double formatting mismatch. Software float (`-lmieee`, default) passes all tests. 2/837 Amiga tests fail with `FPU=1`.
 
-**Numeric limitations (not planned):**
-- No complex numbers — `(sqrt -1)` signals an error instead of returning `#C(0 1)`
-- No `*read-default-float-format*` — unqualified literals always produce single-float
-- No float limits constants (`most-positive-single-float`, `least-positive-single-float`, etc.)
-- No `pi` constant
-- No `random`/`*random-state*`
-
 716 host tests (9 suites), 877 Amiga batch tests — all passing (software float) at end of Phase 9.
 
-Remaining numeric features (deferred):
+Not yet implemented:
 - [ ] Complex numbers — real + imaginary parts, any real type
 - [ ] Complex ops: `realpart`, `imagpart`, `conjugate`, `phase`
 - [ ] Reader syntax: complex (`#C(1 2)`)

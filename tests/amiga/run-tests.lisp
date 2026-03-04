@@ -2442,6 +2442,59 @@
 (check "print ratio" "1/2" (write-to-string 1/2))
 (check "print ratio neg" "-3/4" (write-to-string -3/4))
 
+; --- rotatef / shiftf ---
+(defvar *rfa* 1)
+(defvar *rfb* 2)
+(defvar *rfc* 3)
+(rotatef *rfa* *rfb* *rfc*)
+(check "rotatef a" 2 *rfa*)
+(check "rotatef b" 3 *rfb*)
+(check "rotatef c" 1 *rfc*)
+
+(defvar *rf2x* 10)
+(defvar *rf2y* 20)
+(rotatef *rf2x* *rf2y*)
+(check "rotatef two x" 20 *rf2x*)
+(check "rotatef two y" 10 *rf2y*)
+
+(check "rotatef returns nil" nil (let ((a 1) (b 2)) (rotatef a b)))
+
+(defvar *sfa* 1)
+(defvar *sfb* 2)
+(defvar *sfc* 3)
+(defvar *sf-result* (shiftf *sfa* *sfb* *sfc* 99))
+(check "shiftf result" 1 *sf-result*)
+(check "shiftf a" 2 *sfa*)
+(check "shiftf b" 3 *sfb*)
+(check "shiftf c" 99 *sfc*)
+
+(defvar *sf2x* 10)
+(check "shiftf two" 10 (shiftf *sf2x* 42))
+(check "shiftf two val" 42 *sf2x*)
+
+(defvar *sfc-x* (cons 5 6))
+(check "shiftf car" 5 (shiftf (car *sfc-x*) 77))
+(check "shiftf car val" 77 (car *sfc-x*))
+
+; --- pprint-newline ---
+(check "pprint-newline mandatory" t (progn (pprint-newline :mandatory) t))
+(check "pprint-newline fill" t (progn (pprint-newline :fill) t))
+(check "pprint-newline linear" t (progn (pprint-newline :linear) t))
+(check "pprint-newline miser" t (progn (pprint-newline :miser) t))
+
+; --- pprint-indent ---
+(check "pprint-indent current" t (progn (pprint-indent :current 2) t))
+(check "pprint-indent block" t (progn (pprint-indent :block 4) t))
+
+; --- pprint-logical-block ---
+(check "pprint-logical-block" "[1 2 3]" (with-output-to-string (s) (pprint-logical-block (s '(1 2 3) :prefix "[" :suffix "]") (princ (pprint-pop) s) (pprint-exit-if-list-exhausted) (write-char #\Space s) (princ (pprint-pop) s) (pprint-exit-if-list-exhausted) (write-char #\Space s) (princ (pprint-pop) s))))
+
+; --- pprint-dispatch ---
+(check "copy-pprint-dispatch" nil (copy-pprint-dispatch))
+(set-pprint-dispatch 'integer (lambda (s obj) (write-string "[" s) (princ obj s) (write-string "]" s)) 1)
+(check "pprint-dispatch custom" "[42]" (let ((*print-pretty* t)) (with-output-to-string (s) (write 42 :stream s :pretty t))))
+(set-pprint-dispatch 'integer nil)
+
 ; --- Summary ---
 (format t "~%=== Results ===~%")
 (format t "Passed: ~A~%" *pass-count*)

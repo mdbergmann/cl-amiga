@@ -35,4 +35,12 @@ int cl_princ_to_string(CL_Obj obj, char *buf, int bufsize);
 
 void cl_printer_init(void);
 
+/* Pretty-printing API */
+int32_t cl_pp_get_column(void);        /* current output column */
+int32_t cl_pp_get_right_margin(void);  /* effective right margin */
+void cl_pp_newline_indent(void);       /* emit newline + indent */
+void cl_pp_set_indent(int32_t n);      /* set top of indent stack */
+void cl_pp_push_block(int32_t start_col); /* push indent + block_start */
+void cl_pp_pop_block(void);            /* pop indent + block_start */
+
 #endif /* CL_PRINTER_H */

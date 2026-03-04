@@ -4751,6 +4751,162 @@ TEST(eval_print_pretty_with_level_length)
         "\"(ALPHA BETA ...)\"");
 }
 
+/* --- rotatef / shiftf --- */
+
+TEST(eval_rotatef_basic)
+{
+    eval_print("(defvar *rf-a* 1)");
+    eval_print("(defvar *rf-b* 2)");
+    eval_print("(defvar *rf-c* 3)");
+    eval_print("(rotatef *rf-a* *rf-b* *rf-c*)");
+    ASSERT_EQ_INT(eval_int("*rf-a*"), 2);
+    ASSERT_EQ_INT(eval_int("*rf-b*"), 3);
+    ASSERT_EQ_INT(eval_int("*rf-c*"), 1);
+}
+
+TEST(eval_rotatef_two)
+{
+    eval_print("(defvar *rf2-x* 10)");
+    eval_print("(defvar *rf2-y* 20)");
+    eval_print("(rotatef *rf2-x* *rf2-y*)");
+    ASSERT_EQ_INT(eval_int("*rf2-x*"), 20);
+    ASSERT_EQ_INT(eval_int("*rf2-y*"), 10);
+}
+
+TEST(eval_rotatef_returns_nil)
+{
+    eval_print("(defvar *rfr-a* 1)");
+    eval_print("(defvar *rfr-b* 2)");
+    ASSERT_STR_EQ(eval_print("(rotatef *rfr-a* *rfr-b*)"), "NIL");
+}
+
+TEST(eval_rotatef_car)
+{
+    eval_print("(defvar *rfc-x* (cons 1 2))");
+    eval_print("(defvar *rfc-y* 99)");
+    eval_print("(rotatef (car *rfc-x*) *rfc-y*)");
+    ASSERT_EQ_INT(eval_int("(car *rfc-x*)"), 99);
+    ASSERT_EQ_INT(eval_int("*rfc-y*"), 1);
+}
+
+TEST(eval_shiftf_basic)
+{
+    eval_print("(defvar *sf-a* 1)");
+    eval_print("(defvar *sf-b* 2)");
+    eval_print("(defvar *sf-c* 3)");
+    ASSERT_EQ_INT(eval_int("(shiftf *sf-a* *sf-b* *sf-c* 99)"), 1);
+    ASSERT_EQ_INT(eval_int("*sf-a*"), 2);
+    ASSERT_EQ_INT(eval_int("*sf-b*"), 3);
+    ASSERT_EQ_INT(eval_int("*sf-c*"), 99);
+}
+
+TEST(eval_shiftf_two)
+{
+    eval_print("(defvar *sf2-x* 10)");
+    ASSERT_EQ_INT(eval_int("(shiftf *sf2-x* 42)"), 10);
+    ASSERT_EQ_INT(eval_int("*sf2-x*"), 42);
+}
+
+TEST(eval_shiftf_car)
+{
+    eval_print("(defvar *sfc-x* (cons 5 6))");
+    ASSERT_EQ_INT(eval_int("(shiftf (car *sfc-x*) 77)"), 5);
+    ASSERT_EQ_INT(eval_int("(car *sfc-x*)"), 77);
+}
+
+/* --- pprint-newline --- */
+
+TEST(eval_pprint_newline_mandatory)
+{
+    /* :mandatory doesn't error */
+    ASSERT_STR_EQ(eval_print("(progn (pprint-newline :mandatory) t)"), "T");
+}
+
+TEST(eval_pprint_newline_fill)
+{
+    /* :fill doesn't error */
+    ASSERT_STR_EQ(eval_print("(progn (pprint-newline :fill) t)"), "T");
+}
+
+TEST(eval_pprint_newline_kinds)
+{
+    /* All four kinds accepted */
+    ASSERT_STR_EQ(eval_print("(progn (pprint-newline :linear) t)"), "T");
+    ASSERT_STR_EQ(eval_print("(progn (pprint-newline :miser) t)"), "T");
+}
+
+/* --- pprint-indent --- */
+
+TEST(eval_pprint_indent_current)
+{
+    /* pprint-indent :current doesn't error */
+    ASSERT_STR_EQ(eval_print(
+        "(progn (pprint-indent :current 2) t)"),
+        "T");
+}
+
+TEST(eval_pprint_indent_block)
+{
+    /* pprint-indent :block doesn't error */
+    ASSERT_STR_EQ(eval_print(
+        "(progn (pprint-indent :block 4) t)"),
+        "T");
+}
+
+/* --- pprint-logical-block --- */
+
+TEST(eval_pprint_logical_block_basic)
+{
+    /* pprint-logical-block with prefix/suffix, using with-output-to-string */
+    ASSERT_STR_EQ(eval_print(
+        "(with-output-to-string (s)"
+        "  (pprint-logical-block (s '(1 2 3) :prefix \"[\" :suffix \"]\")"
+        "    (princ (pprint-pop) s)"
+        "    (pprint-exit-if-list-exhausted)"
+        "    (write-char #\\Space s)"
+        "    (princ (pprint-pop) s)"
+        "    (pprint-exit-if-list-exhausted)"
+        "    (write-char #\\Space s)"
+        "    (princ (pprint-pop) s)))"),
+        "\"[1 2 3]\"");
+}
+
+/* --- pprint-dispatch --- */
+
+TEST(eval_pprint_dispatch_set_get)
+{
+    /* set-pprint-dispatch and pprint-dispatch round-trip */
+    eval_print("(set-pprint-dispatch 'cons (lambda (s obj) (format s \"<~S>\" obj)))");
+    ASSERT_STR_EQ(eval_print("(pprint-dispatch '(1 2))"), "#<CLOSURE anonymous>");
+    /* Clean up */
+    eval_print("(set-pprint-dispatch 'cons nil)");
+}
+
+TEST(eval_copy_pprint_dispatch)
+{
+    /* copy-pprint-dispatch returns a copy */
+    ASSERT_STR_EQ(eval_print("(copy-pprint-dispatch)"), "NIL");
+}
+
+TEST(eval_pprint_dispatch_custom)
+{
+    /* Custom dispatch function used during pretty printing */
+    eval_print(
+        "(set-pprint-dispatch 'integer"
+        "  (lambda (s obj)"
+        "    (write-string \"[\" s)"
+        "    (princ obj s)"
+        "    (write-string \"]\" s))"
+        "  1)");
+    ASSERT_STR_EQ(eval_print(
+        "(let ((*print-pretty* t))"
+        "  (with-output-to-string (s)"
+        "    (write 42 :stream s :pretty t)))"),
+        "\"[42]\"");
+    /* Clean up */
+    eval_print("(set-pprint-dispatch 'integer nil)");
+}
+
 int main(void)
 {
     test_init();
@@ -5314,6 +5470,30 @@ int main(void)
     RUN(eval_print_pretty_write_to_string);
     RUN(eval_print_pretty_off_no_break);
     RUN(eval_print_pretty_with_level_length);
+
+    /* rotatef / shiftf */
+    RUN(eval_rotatef_basic);
+    RUN(eval_rotatef_two);
+    RUN(eval_rotatef_returns_nil);
+    RUN(eval_rotatef_car);
+    RUN(eval_shiftf_basic);
+    RUN(eval_shiftf_two);
+    RUN(eval_shiftf_car);
+
+    /* pprint-newline / pprint-indent */
+    RUN(eval_pprint_newline_mandatory);
+    RUN(eval_pprint_newline_fill);
+    RUN(eval_pprint_newline_kinds);
+    RUN(eval_pprint_indent_current);
+    RUN(eval_pprint_indent_block);
+
+    /* pprint-logical-block */
+    RUN(eval_pprint_logical_block_basic);
+
+    /* pprint-dispatch */
+    RUN(eval_pprint_dispatch_set_get);
+    RUN(eval_copy_pprint_dispatch);
+    RUN(eval_pprint_dispatch_custom);
 
     teardown();
     REPORT();

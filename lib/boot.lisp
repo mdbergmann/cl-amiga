@@ -26,6 +26,30 @@
 (defmacro decf (place &optional (delta 1)) `(setf ,place (- ,place ,delta)))
 (defsetf elt %setf-elt)
 
+;; rotatef — rotate values among places
+(defmacro rotatef (&rest places)
+  (if (< (length places) 2)
+      nil
+      (let ((temps (mapcar (lambda (x) (declare (ignore x)) (gensym)) places)))
+        `(let ,(mapcar #'list temps places)
+           ,@(mapcar (lambda (p v) `(setf ,p ,v))
+                     places
+                     (append (cdr temps) (list (car temps))))
+           nil))))
+
+;; shiftf — shift values among places, return first
+(defmacro shiftf (&rest places-and-newval)
+  (let* ((places (butlast places-and-newval))
+         (newval (car (last places-and-newval)))
+         (temps (mapcar (lambda (x) (declare (ignore x)) (gensym)) places))
+         (tval (gensym)))
+    `(let (,@(mapcar #'list temps places)
+           (,tval ,newval))
+       ,@(mapcar (lambda (p v) `(setf ,p ,v))
+                 places
+                 (append (cdr temps) (list tval)))
+       ,(car temps))))
+
 ;; List searching
 (defun member (item list &key (test #'eql))
   (do ((l list (cdr l)))
@@ -1199,3 +1223,26 @@
       (%expand-extended-loop forms)
       ;; Simple loop (body forms only)
       (%expand-simple-loop forms)))
+
+;; pprint-logical-block — structured pretty printing
+(defmacro pprint-logical-block (header &body body)
+  (let* ((stream-sym (car header))
+         (list-form (cadr header))
+         (keys (cddr header))
+         (prefix (getf keys :prefix))
+         (per-line-prefix (getf keys :per-line-prefix))
+         (suffix (getf keys :suffix))
+         (pfx (or prefix per-line-prefix))
+         (glist (gensym "LIST")))
+    `(let ((,glist ,list-form))
+       (%pp-push-block)
+       ,(when pfx `(write-string ,pfx ,stream-sym))
+       (macrolet ((pprint-pop ()
+                    (list 'prog1 (list 'car ',glist)
+                          (list 'setq ',glist (list 'cdr ',glist))))
+                  (pprint-exit-if-list-exhausted ()
+                    (list 'when (list 'null ',glist) '(return nil))))
+         (block nil ,@body))
+       ,(when suffix `(write-string ,suffix ,stream-sym))
+       (%pp-pop-block)
+       nil)))

@@ -59,6 +59,7 @@ static CL_Obj KW_WR_ARRAY;
 static CL_Obj KW_WR_CIRCLE;
 static CL_Obj KW_WR_PRETTY;
 static CL_Obj KW_WR_RIGHT_MARGIN;
+static CL_Obj KW_WR_PPRINT_DISPATCH;
 
 /* --- I/O --- */
 
@@ -79,8 +80,10 @@ static CL_Obj bi_write(CL_Obj *args, int n)
     CL_Symbol *se = NULL, *sr = NULL, *sb = NULL, *sx = NULL;
     CL_Symbol *sl = NULL, *sn = NULL, *sc = NULL, *sg = NULL;
     CL_Symbol *sa = NULL, *si = NULL, *sp = NULL, *sm = NULL;
+    CL_Symbol *sd = NULL;
     CL_Obj prev_e, prev_r, prev_b, prev_x, prev_l, prev_n;
     CL_Obj prev_c, prev_g, prev_a, prev_i, prev_p, prev_m;
+    CL_Obj prev_d;
 
     /* Default: *standard-output* */
     sym = (CL_Symbol *)CL_OBJ_TO_PTR(SYM_STANDARD_OUTPUT);
@@ -99,6 +102,7 @@ static CL_Obj bi_write(CL_Obj *args, int n)
     si = (CL_Symbol *)CL_OBJ_TO_PTR(SYM_PRINT_CIRCLE);    prev_i = si->value;
     sp = (CL_Symbol *)CL_OBJ_TO_PTR(SYM_PRINT_PRETTY);    prev_p = sp->value;
     sm = (CL_Symbol *)CL_OBJ_TO_PTR(SYM_PRINT_RIGHT_MARGIN); prev_m = sm->value;
+    sd = (CL_Symbol *)CL_OBJ_TO_PTR(SYM_PRINT_PPRINT_DISPATCH); prev_d = sd->value;
 
     /* Parse keyword arguments (start at index 1, pairs) */
     for (i = 1; i + 1 < n; i += 2) {
@@ -135,6 +139,8 @@ static CL_Obj bi_write(CL_Obj *args, int n)
             sp->value = val;
         } else if (kw == KW_WR_RIGHT_MARGIN) {
             sm->value = val;
+        } else if (kw == KW_WR_PPRINT_DISPATCH) {
+            sd->value = val;
         }
     }
 
@@ -153,6 +159,7 @@ static CL_Obj bi_write(CL_Obj *args, int n)
     si->value = prev_i;
     sp->value = prev_p;
     sm->value = prev_m;
+    sd->value = prev_d;
 
     return obj;
 }
@@ -805,6 +812,229 @@ static CL_Obj bi_compile(CL_Obj *args, int n)
     return CL_NIL;
 }
 
+/* --- Pretty-printing builtins --- */
+
+static CL_Obj KW_LINEAR;
+static CL_Obj KW_FILL;
+static CL_Obj KW_MISER;
+static CL_Obj KW_MANDATORY;
+static CL_Obj KW_BLOCK;
+static CL_Obj KW_CURRENT;
+
+/*
+ * (pprint-newline kind &optional stream)
+ * kind: :linear :fill :miser :mandatory
+ */
+static CL_Obj bi_pprint_newline(CL_Obj *args, int n)
+{
+    CL_Obj kind = args[0];
+    CL_UNUSED(n);
+
+    if (kind == KW_MANDATORY) {
+        cl_pp_newline_indent();
+    } else if (kind == KW_FILL || kind == KW_LINEAR) {
+        /* Greedy: break when past right margin */
+        if (cl_pp_get_column() >= cl_pp_get_right_margin())
+            cl_pp_newline_indent();
+    } else if (kind == KW_MISER) {
+        /* Break when close to right margin */
+        if (cl_pp_get_column() >= cl_pp_get_right_margin() - 4)
+            cl_pp_newline_indent();
+    } else {
+        cl_error(CL_ERR_TYPE, "PPRINT-NEWLINE: invalid kind");
+    }
+    return CL_NIL;
+}
+
+/*
+ * (pprint-indent relative-to n &optional stream)
+ * relative-to: :block or :current
+ */
+static CL_Obj bi_pprint_indent(CL_Obj *args, int n)
+{
+    CL_Obj rel = args[0];
+    int32_t delta;
+    CL_UNUSED(n);
+
+    if (!CL_FIXNUM_P(args[1]))
+        cl_error(CL_ERR_TYPE, "PPRINT-INDENT: n must be an integer");
+    delta = CL_FIXNUM_VAL(args[1]);
+
+    if (rel == KW_CURRENT) {
+        cl_pp_set_indent(cl_pp_get_column() + delta);
+    } else {
+        /* :block — would need block start column; use current indent as approximation */
+        cl_pp_set_indent(delta);
+    }
+    return CL_NIL;
+}
+
+/* Internal builtins for pprint-logical-block */
+static CL_Obj bi_pp_push_block(CL_Obj *args, int n)
+{
+    CL_UNUSED(args); CL_UNUSED(n);
+    cl_pp_push_block(cl_pp_get_column());
+    return CL_NIL;
+}
+
+static CL_Obj bi_pp_pop_block(CL_Obj *args, int n)
+{
+    CL_UNUSED(args); CL_UNUSED(n);
+    cl_pp_pop_block();
+    return CL_NIL;
+}
+
+/* --- Pprint-dispatch table --- */
+
+/* Table is an alist: ((type-spec priority . function) ...) stored in *print-pprint-dispatch* */
+
+/*
+ * (set-pprint-dispatch type-spec function &optional priority table)
+ * If function is nil, removes the entry.
+ */
+static CL_Obj bi_set_pprint_dispatch(CL_Obj *args, int n)
+{
+    CL_Obj type_spec = args[0];
+    CL_Obj function = args[1];
+    int32_t priority = 0;
+    CL_Symbol *sym;
+    CL_Obj table, prev, cur, entry, new_entry;
+
+    if (n >= 3 && CL_FIXNUM_P(args[2]))
+        priority = CL_FIXNUM_VAL(args[2]);
+
+    /* Get the dispatch table (or use the 4th arg if provided) */
+    sym = (CL_Symbol *)CL_OBJ_TO_PTR(SYM_PRINT_PPRINT_DISPATCH);
+    if (n >= 4 && !CL_NULL_P(args[3]))
+        table = args[3];
+    else
+        table = sym->value;
+
+    /* If function is nil, remove matching entry */
+    if (CL_NULL_P(function)) {
+        prev = CL_NIL;
+        cur = table;
+        while (!CL_NULL_P(cur)) {
+            entry = cl_car(cur);
+            if (cl_car(entry) == type_spec) {
+                if (CL_NULL_P(prev))
+                    table = cl_cdr(cur);
+                else {
+                    /* Can't rplacd easily from C, rebuild without this entry */
+                    CL_Obj result = CL_NIL;
+                    CL_Obj scan = table;
+                    while (!CL_NULL_P(scan)) {
+                        if (scan != cur)
+                            result = cl_cons(cl_car(scan), result);
+                        scan = cl_cdr(scan);
+                    }
+                    table = result;
+                }
+                break;
+            }
+            prev = cur;
+            cur = cl_cdr(cur);
+        }
+        sym->value = table;
+        return CL_NIL;
+    }
+
+    /* Remove existing entry for this type-spec first */
+    {
+        CL_Obj result = CL_NIL;
+        cur = table;
+        while (!CL_NULL_P(cur)) {
+            entry = cl_car(cur);
+            if (cl_car(entry) != type_spec)
+                result = cl_cons(cl_car(cur), result);
+            cur = cl_cdr(cur);
+        }
+        table = result;
+    }
+
+    /* Build new entry: (type-spec priority . function) */
+    new_entry = cl_cons(CL_MAKE_FIXNUM(priority), function);
+    CL_GC_PROTECT(new_entry);
+    new_entry = cl_cons(type_spec, new_entry);
+    CL_GC_UNPROTECT(1);
+
+    /* Cons onto front of table */
+    CL_GC_PROTECT(new_entry);
+    table = cl_cons(new_entry, table);
+    CL_GC_UNPROTECT(1);
+
+    sym->value = table;
+    return CL_NIL;
+}
+
+/*
+ * (pprint-dispatch object &optional table)
+ * Returns 2 values: function, found-p
+ */
+static CL_Obj bi_pprint_dispatch(CL_Obj *args, int n)
+{
+    CL_Obj object = args[0];
+    CL_Symbol *sym = (CL_Symbol *)CL_OBJ_TO_PTR(SYM_PRINT_PPRINT_DISPATCH);
+    CL_Obj table = (n >= 2 && !CL_NULL_P(args[1])) ? args[1] : sym->value;
+    CL_Obj best_fn = CL_NIL;
+    int32_t best_priority = -999999;
+    CL_Obj cur, entry;
+
+    cur = table;
+    while (!CL_NULL_P(cur)) {
+        CL_Obj type_spec, prio_fn;
+        int32_t prio;
+        CL_Obj fn;
+        CL_Obj typep_args[2];
+        CL_Obj typep_result;
+
+        entry = cl_car(cur);
+        type_spec = cl_car(entry);
+        prio_fn = cl_cdr(entry);
+        prio = CL_FIXNUM_P(cl_car(prio_fn)) ? CL_FIXNUM_VAL(cl_car(prio_fn)) : 0;
+        fn = cl_cdr(prio_fn);
+
+        /* Check if object matches type-spec using typep */
+        typep_args[0] = object;
+        typep_args[1] = type_spec;
+        typep_result = cl_typep(object, type_spec) ? SYM_T : CL_NIL;
+
+        if (!CL_NULL_P(typep_result) && prio > best_priority) {
+            best_priority = prio;
+            best_fn = fn;
+        }
+
+        cur = cl_cdr(cur);
+    }
+
+    cl_mv_count = 2;
+    cl_mv_values[0] = best_fn;
+    cl_mv_values[1] = CL_NULL_P(best_fn) ? CL_NIL : SYM_T;
+    return best_fn;
+}
+
+/*
+ * (copy-pprint-dispatch &optional table)
+ * Shallow copy the alist.
+ */
+static CL_Obj bi_copy_pprint_dispatch(CL_Obj *args, int n)
+{
+    CL_Symbol *sym = (CL_Symbol *)CL_OBJ_TO_PTR(SYM_PRINT_PPRINT_DISPATCH);
+    CL_Obj table = (n >= 1 && !CL_NULL_P(args[0])) ? args[0] : sym->value;
+    CL_Obj result = CL_NIL;
+    CL_Obj cur;
+
+    /* Rebuild list (reverses order, but that's fine for alists) */
+    cur = table;
+    while (!CL_NULL_P(cur)) {
+        CL_GC_PROTECT(result);
+        result = cl_cons(cl_car(cur), result);
+        CL_GC_UNPROTECT(1);
+        cur = cl_cdr(cur);
+    }
+    return result;
+}
+
 /* --- Registration --- */
 
 void cl_builtins_io_init(void)
@@ -823,6 +1053,7 @@ void cl_builtins_io_init(void)
     KW_WR_CIRCLE   = cl_intern_keyword("CIRCLE", 6);
     KW_WR_PRETTY   = cl_intern_keyword("PRETTY", 6);
     KW_WR_RIGHT_MARGIN = cl_intern_keyword("RIGHT-MARGIN", 12);
+    KW_WR_PPRINT_DISPATCH = cl_intern_keyword("PPRINT-DISPATCH", 15);
 
     /* I/O */
     defun("WRITE", bi_write, 1, -1);
@@ -864,4 +1095,25 @@ void cl_builtins_io_init(void)
 
     /* Compile */
     defun("COMPILE", bi_compile, 1, 2);
+
+    /* Pretty-printing keywords */
+    KW_LINEAR    = cl_intern_keyword("LINEAR", 6);
+    KW_FILL      = cl_intern_keyword("FILL", 4);
+    KW_MISER     = cl_intern_keyword("MISER", 5);
+    KW_MANDATORY = cl_intern_keyword("MANDATORY", 9);
+    KW_BLOCK     = cl_intern_keyword("BLOCK", 5);
+    KW_CURRENT   = cl_intern_keyword("CURRENT", 7);
+
+    /* Pretty-printing builtins */
+    defun("PPRINT-NEWLINE", bi_pprint_newline, 1, 2);
+    defun("PPRINT-INDENT", bi_pprint_indent, 2, 3);
+
+    /* Internal builtins for pprint-logical-block */
+    defun("%PP-PUSH-BLOCK", bi_pp_push_block, 0, 0);
+    defun("%PP-POP-BLOCK", bi_pp_pop_block, 0, 0);
+
+    /* Pprint-dispatch table */
+    defun("SET-PPRINT-DISPATCH", bi_set_pprint_dispatch, 2, 4);
+    defun("PPRINT-DISPATCH", bi_pprint_dispatch, 1, 2);
+    defun("COPY-PPRINT-DISPATCH", bi_copy_pprint_dispatch, 0, 1);
 }
