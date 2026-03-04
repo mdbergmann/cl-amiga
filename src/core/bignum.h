@@ -51,6 +51,8 @@ CL_Obj cl_arith_logxor(CL_Obj a, CL_Obj b);
 CL_Obj cl_arith_lognot(CL_Obj a);
 int    cl_arith_integer_length(CL_Obj n);
 int    cl_arith_evenp(CL_Obj a);
+int    cl_arith_logcount(CL_Obj n);
+int    cl_arith_logbitp(int index, CL_Obj integer);
 
 /* Initialize bignum subsystem (intern MOST-POSITIVE-FIXNUM etc.) */
 void cl_bignum_init(void);

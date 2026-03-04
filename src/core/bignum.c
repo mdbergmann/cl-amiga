@@ -1538,8 +1538,123 @@ CL_Obj cl_arith_lognot(CL_Obj a)
 }
 
 /* ================================================================
+ * Bit counting / testing
+ * ================================================================ */
+
+/* Count 1-bits in a uint16_t */
+static int popcount16(uint16_t v)
+{
+    int c = 0;
+    while (v) { v &= v - 1; c++; }
+    return c;
+}
+
+int cl_arith_logcount(CL_Obj n)
+{
+    /* For positive: count 1-bits. For negative: count 0-bits (= popcount of ~n = popcount of lognot(n)). */
+    if (CL_FIXNUM_P(n)) {
+        int32_t val = CL_FIXNUM_VAL(n);
+        uint32_t uval = (val < 0) ? (uint32_t)~val : (uint32_t)val;
+        int c = 0;
+        while (uval) { uval &= uval - 1; c++; }
+        return c;
+    }
+    {
+        CL_Bignum *bn = (CL_Bignum *)CL_OBJ_TO_PTR(n);
+        uint32_t i;
+        int c = 0;
+        if (bn->sign == 0) {
+            /* Positive: count 1-bits in magnitude */
+            for (i = 0; i < bn->length; i++)
+                c += popcount16(bn->limbs[i]);
+        } else {
+            /* Negative: count 0-bits = popcount of two's complement negation - but easier:
+               logcount(-n) = logcount(n-1) for negative n (CL spec).
+               We compute two's complement and count 1-bits of the inverted form.
+               Actually, for negative n, logcount(n) = logcount(lognot(n)) = logcount(-n-1).
+               -n-1 has magnitude |n|-1. */
+            uint16_t tmp[128];
+            uint32_t len = bn->length;
+            uint32_t borrow = 1;
+            if (len > 128) len = 128;
+            /* Compute magnitude - 1 */
+            for (i = 0; i < len; i++) {
+                uint32_t val = (uint32_t)bn->limbs[i] - borrow;
+                tmp[i] = (uint16_t)(val & 0xFFFF);
+                borrow = (val >> 16) & 1; /* borrow if underflow */
+            }
+            for (i = 0; i < len; i++)
+                c += popcount16(tmp[i]);
+        }
+        return c;
+    }
+}
+
+int cl_arith_logbitp(int index, CL_Obj integer)
+{
+    /* Test bit at position index in integer (two's complement). */
+    if (index < 0) return 0;
+
+    if (CL_FIXNUM_P(integer)) {
+        int32_t val = CL_FIXNUM_VAL(integer);
+        if (index >= 31) return val < 0 ? 1 : 0; /* sign extension */
+        return (val >> index) & 1;
+    }
+    {
+        CL_Bignum *bn = (CL_Bignum *)CL_OBJ_TO_PTR(integer);
+        uint32_t limb_idx = (uint32_t)index / 16;
+        uint32_t bit_idx = (uint32_t)index % 16;
+
+        if (bn->sign == 0) {
+            /* Positive: just test the bit in magnitude */
+            if (limb_idx >= bn->length) return 0;
+            return (bn->limbs[limb_idx] >> bit_idx) & 1;
+        } else {
+            /* Negative: two's complement. Need to negate magnitude.
+               In two's complement, bits of -n = ~(n-1) when n > 0.
+               So bit i of -|m| = NOT(bit i of (|m|-1)).
+               But we need to handle borrow propagation. */
+            uint16_t tmp[128];
+            uint32_t len = bn->length;
+            uint32_t borrow = 1;
+            uint32_t i;
+            uint16_t val;
+            if (len > 128) len = 128;
+            /* Compute |m| - 1 in magnitude, only up to limb_idx+1 */
+            {
+                uint32_t compute_len = limb_idx + 1;
+                if (compute_len > len) compute_len = len;
+                for (i = 0; i < compute_len; i++) {
+                    uint32_t v = (uint32_t)bn->limbs[i] - borrow;
+                    tmp[i] = (uint16_t)(v & 0xFFFF);
+                    borrow = (v >> 16) & 1;
+                }
+            }
+            if (limb_idx >= len) {
+                /* Beyond magnitude: two's complement sign extension = all 1s */
+                return 1;
+            }
+            val = tmp[limb_idx];
+            /* Two's complement: invert */
+            return ((~val) >> bit_idx) & 1;
+        }
+    }
+}
+
+/* ================================================================
  * Initialization
  * ================================================================ */
+
+/* Helper: intern a constant symbol with a fixnum value */
+static void def_const(const char *name, uint32_t len, int32_t val,
+                       CL_Obj *sym_out)
+{
+    CL_Obj sym = cl_intern_in(name, len, cl_package_cl);
+    CL_Symbol *s = (CL_Symbol *)CL_OBJ_TO_PTR(sym);
+    s->value = CL_MAKE_FIXNUM(val);
+    s->flags |= CL_SYM_CONSTANT;
+    if (sym_out) *sym_out = sym;
+}
 
 void cl_bignum_init(void)
 {
@@ -1557,4 +1672,22 @@ void cl_bignum_init(void)
     s = (CL_Symbol *)CL_OBJ_TO_PTR(sym);
     s->value = CL_MAKE_FIXNUM(CL_FIXNUM_MIN);
     s->flags |= CL_SYM_CONSTANT;
+
+    /* BOOLE operation constants (CL spec values 0-15) */
+    def_const("BOOLE-CLR",   9,  0, &SYM_BOOLE_CLR);
+    def_const("BOOLE-SET",   9,  1, &SYM_BOOLE_SET);
+    def_const("BOOLE-1",     7,  2, &SYM_BOOLE_1);
+    def_const("BOOLE-2",     7,  3, &SYM_BOOLE_2);
+    def_const("BOOLE-C1",    8,  4, &SYM_BOOLE_C1);
+    def_const("BOOLE-C2",    8,  5, &SYM_BOOLE_C2);
+    def_const("BOOLE-AND",   9,  6, &SYM_BOOLE_AND);
+    def_const("BOOLE-IOR",   9,  7, &SYM_BOOLE_IOR);
+    def_const("BOOLE-XOR",   9,  8, &SYM_BOOLE_XOR);
+    def_const("BOOLE-EQV",   9,  9, &SYM_BOOLE_EQV);
+    def_const("BOOLE-NAND",  10, 10, &SYM_BOOLE_NAND);
+    def_const("BOOLE-NOR",   9,  11, &SYM_BOOLE_NOR);
+    def_const("BOOLE-ANDC1", 11, 12, &SYM_BOOLE_ANDC1);
+    def_const("BOOLE-ANDC2", 11, 13, &SYM_BOOLE_ANDC2);
+    def_const("BOOLE-ORC1",  10, 14, &SYM_BOOLE_ORC1);
+    def_const("BOOLE-ORC2",  10, 15, &SYM_BOOLE_ORC2);
 }

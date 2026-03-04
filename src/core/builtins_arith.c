@@ -671,6 +671,198 @@ static CL_Obj bi_lognot(CL_Obj *args, int n)
     return cl_arith_lognot(args[0]);
 }
 
+/* --- Bit manipulation --- */
+
+static CL_Obj bi_logcount(CL_Obj *args, int n)
+{
+    CL_UNUSED(n);
+    check_integer(args[0], "LOGCOUNT");
+    return CL_MAKE_FIXNUM(cl_arith_logcount(args[0]));
+}
+
+static CL_Obj bi_logbitp(CL_Obj *args, int n)
+{
+    int32_t index;
+    CL_UNUSED(n);
+    check_integer(args[0], "LOGBITP");
+    check_integer(args[1], "LOGBITP");
+    if (!CL_FIXNUM_P(args[0]))
+        cl_error(CL_ERR_TYPE, "LOGBITP: index too large");
+    index = CL_FIXNUM_VAL(args[0]);
+    if (index < 0)
+        cl_error(CL_ERR_TYPE, "LOGBITP: index must be non-negative");
+    return cl_arith_logbitp(index, args[1]) ? SYM_T : CL_NIL;
+}
+
+static CL_Obj bi_logtest(CL_Obj *args, int n)
+{
+    CL_Obj result;
+    CL_UNUSED(n);
+    check_integer(args[0], "LOGTEST");
+    check_integer(args[1], "LOGTEST");
+    result = cl_arith_logand(args[0], args[1]);
+    return cl_arith_zerop(result) ? CL_NIL : SYM_T;
+}
+
+/* byte spec is (size . position) */
+static CL_Obj bi_byte(CL_Obj *args, int n)
+{
+    CL_UNUSED(n);
+    check_integer(args[0], "BYTE");
+    check_integer(args[1], "BYTE");
+    return cl_cons(args[0], args[1]);
+}
+
+static CL_Obj bi_byte_size(CL_Obj *args, int n)
+{
+    CL_UNUSED(n);
+    if (!CL_CONS_P(args[0]))
+        cl_error(CL_ERR_TYPE, "BYTE-SIZE: not a byte specifier");
+    return cl_car(args[0]);
+}
+
+static CL_Obj bi_byte_position(CL_Obj *args, int n)
+{
+    CL_UNUSED(n);
+    if (!CL_CONS_P(args[0]))
+        cl_error(CL_ERR_TYPE, "BYTE-POSITION: not a byte specifier");
+    return cl_cdr(args[0]);
+}
+
+/* (ldb bytespec integer) — extract bit field */
+static CL_Obj bi_ldb(CL_Obj *args, int n)
+{
+    CL_Obj size, pos, shifted, mask;
+    CL_UNUSED(n);
+    if (!CL_CONS_P(args[0]))
+        cl_error(CL_ERR_TYPE, "LDB: not a byte specifier");
+    check_integer(args[1], "LDB");
+    size = cl_car(args[0]);
+    pos = cl_cdr(args[0]);
+    /* shifted = ash(integer, -position) */
+    shifted = cl_arith_ash(args[1], cl_arith_negate(pos));
+    /* mask = (1 << size) - 1 = ash(1, size) - 1 */
+    CL_GC_PROTECT(shifted);
+    mask = cl_arith_sub(cl_arith_ash(CL_MAKE_FIXNUM(1), size), CL_MAKE_FIXNUM(1));
+    CL_GC_UNPROTECT(1);
+    return cl_arith_logand(shifted, mask);
+}
+
+/* (dpb newbyte bytespec integer) — deposit bit field */
+static CL_Obj bi_dpb(CL_Obj *args, int n)
+{
+    CL_Obj size, pos, mask, shifted_mask, cleared, new_bits;
+    CL_UNUSED(n);
+    check_integer(args[0], "DPB");
+    if (!CL_CONS_P(args[1]))
+        cl_error(CL_ERR_TYPE, "DPB: not a byte specifier");
+    check_integer(args[2], "DPB");
+    size = cl_car(args[1]);
+    pos = cl_cdr(args[1]);
+    /* mask = (1 << size) - 1 */
+    mask = cl_arith_sub(cl_arith_ash(CL_MAKE_FIXNUM(1), size), CL_MAKE_FIXNUM(1));
+    CL_GC_PROTECT(mask);
+    /* shifted_mask = ash(mask, position) */
+    shifted_mask = cl_arith_ash(mask, pos);
+    CL_GC_UNPROTECT(1);
+    CL_GC_PROTECT(shifted_mask);
+    /* Clear the field in integer */
+    cleared = cl_arith_logand(args[2], cl_arith_lognot(shifted_mask));
+    CL_GC_UNPROTECT(1);
+    CL_GC_PROTECT(cleared);
+    /* Shift new value into position, masked */
+    new_bits = cl_arith_ash(cl_arith_logand(args[0], mask), pos);
+    CL_GC_UNPROTECT(1);
+    return cl_arith_logior(cleared, new_bits);
+}
+
+/* (ldb-test bytespec integer) — test if field is nonzero */
+static CL_Obj bi_ldb_test(CL_Obj *args, int n)
+{
+    CL_Obj val = bi_ldb(args, n);
+    return cl_arith_zerop(val) ? CL_NIL : SYM_T;
+}
+
+/* (mask-field bytespec integer) — like ldb but preserves position */
+static CL_Obj bi_mask_field(CL_Obj *args, int n)
+{
+    CL_Obj size, pos, mask, shifted_mask;
+    CL_UNUSED(n);
+    if (!CL_CONS_P(args[0]))
+        cl_error(CL_ERR_TYPE, "MASK-FIELD: not a byte specifier");
+    check_integer(args[1], "MASK-FIELD");
+    size = cl_car(args[0]);
+    pos = cl_cdr(args[0]);
+    mask = cl_arith_sub(cl_arith_ash(CL_MAKE_FIXNUM(1), size), CL_MAKE_FIXNUM(1));
+    CL_GC_PROTECT(mask);
+    shifted_mask = cl_arith_ash(mask, pos);
+    CL_GC_UNPROTECT(1);
+    return cl_arith_logand(args[1], shifted_mask);
+}
+
+/* (deposit-field newbyte bytespec integer) — like dpb but from same position */
+static CL_Obj bi_deposit_field(CL_Obj *args, int n)
+{
+    CL_Obj size, pos, mask, shifted_mask, cleared, new_bits;
+    CL_UNUSED(n);
+    check_integer(args[0], "DEPOSIT-FIELD");
+    if (!CL_CONS_P(args[1]))
+        cl_error(CL_ERR_TYPE, "DEPOSIT-FIELD: not a byte specifier");
+    check_integer(args[2], "DEPOSIT-FIELD");
+    size = cl_car(args[1]);
+    pos = cl_cdr(args[1]);
+    mask = cl_arith_sub(cl_arith_ash(CL_MAKE_FIXNUM(1), size), CL_MAKE_FIXNUM(1));
+    CL_GC_PROTECT(mask);
+    shifted_mask = cl_arith_ash(mask, pos);
+    CL_GC_UNPROTECT(1);
+    CL_GC_PROTECT(shifted_mask);
+    /* Clear the field in integer */
+    cleared = cl_arith_logand(args[2], cl_arith_lognot(shifted_mask));
+    CL_GC_UNPROTECT(1);
+    CL_GC_PROTECT(cleared);
+    /* Extract field bits from newbyte at position (already in position) */
+    new_bits = cl_arith_logand(args[0], shifted_mask);
+    CL_GC_UNPROTECT(1);
+    return cl_arith_logior(cleared, new_bits);
+}
+
+/* (boole op integer-1 integer-2) — boolean operation */
+static CL_Obj bi_boole(CL_Obj *args, int n)
+{
+    int32_t op;
+    CL_Obj a, b;
+    CL_UNUSED(n);
+    check_integer(args[0], "BOOLE");
+    check_integer(args[1], "BOOLE");
+    check_integer(args[2], "BOOLE");
+    if (!CL_FIXNUM_P(args[0]))
+        cl_error(CL_ERR_TYPE, "BOOLE: operation must be a fixnum");
+    op = CL_FIXNUM_VAL(args[0]);
+    a = args[1];
+    b = args[2];
+    switch (op) {
+    case 0:  return CL_MAKE_FIXNUM(0);                        /* CLR */
+    case 1:  return CL_MAKE_FIXNUM(-1);                       /* SET */
+    case 2:  return a;                                          /* 1 */
+    case 3:  return b;                                          /* 2 */
+    case 4:  return cl_arith_lognot(a);                        /* C1 */
+    case 5:  return cl_arith_lognot(b);                        /* C2 */
+    case 6:  return cl_arith_logand(a, b);                     /* AND */
+    case 7:  return cl_arith_logior(a, b);                     /* IOR */
+    case 8:  return cl_arith_logxor(a, b);                     /* XOR */
+    case 9:  return cl_arith_lognot(cl_arith_logxor(a, b));   /* EQV */
+    case 10: return cl_arith_lognot(cl_arith_logand(a, b));   /* NAND */
+    case 11: return cl_arith_lognot(cl_arith_logior(a, b));   /* NOR */
+    case 12: return cl_arith_logand(cl_arith_lognot(a), b);   /* ANDC1 */
+    case 13: return cl_arith_logand(a, cl_arith_lognot(b));   /* ANDC2 */
+    case 14: return cl_arith_logior(cl_arith_lognot(a), b);   /* ORC1 */
+    case 15: return cl_arith_logior(a, cl_arith_lognot(b));   /* ORC2 */
+    default:
+        cl_error(CL_ERR_ARGS, "BOOLE: invalid operation %d", op);
+        return CL_NIL;
+    }
+}
+
 static CL_Obj bi_numberp(CL_Obj *args, int n)
 {
     CL_UNUSED(n);
@@ -1061,6 +1253,20 @@ void cl_builtins_arith_init(void)
     defun("LOGIOR", bi_logior, 0, -1);
     defun("LOGXOR", bi_logxor, 0, -1);
     defun("LOGNOT", bi_lognot, 1, 1);
+    defun("LOGCOUNT", bi_logcount, 1, 1);
+    defun("LOGBITP", bi_logbitp, 2, 2);
+    defun("LOGTEST", bi_logtest, 2, 2);
+
+    /* Byte operations */
+    defun("BYTE", bi_byte, 2, 2);
+    defun("BYTE-SIZE", bi_byte_size, 1, 1);
+    defun("BYTE-POSITION", bi_byte_position, 1, 1);
+    defun("LDB", bi_ldb, 2, 2);
+    defun("DPB", bi_dpb, 3, 3);
+    defun("LDB-TEST", bi_ldb_test, 2, 2);
+    defun("MASK-FIELD", bi_mask_field, 2, 2);
+    defun("DEPOSIT-FIELD", bi_deposit_field, 3, 3);
+    defun("BOOLE", bi_boole, 3, 3);
 
     /* Ratio accessors */
     defun("NUMERATOR", bi_numerator, 1, 1);

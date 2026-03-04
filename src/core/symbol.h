@@ -200,6 +200,24 @@ extern CL_Obj KW_UPCASE;             /* :UPCASE */
 extern CL_Obj KW_DOWNCASE;           /* :DOWNCASE */
 extern CL_Obj KW_CAPITALIZE;         /* :CAPITALIZE */
 
+/* Boole operation constants */
+extern CL_Obj SYM_BOOLE_CLR;         /* BOOLE-CLR */
+extern CL_Obj SYM_BOOLE_SET;         /* BOOLE-SET */
+extern CL_Obj SYM_BOOLE_1;           /* BOOLE-1 */
+extern CL_Obj SYM_BOOLE_2;           /* BOOLE-2 */
+extern CL_Obj SYM_BOOLE_C1;          /* BOOLE-C1 */
+extern CL_Obj SYM_BOOLE_C2;          /* BOOLE-C2 */
+extern CL_Obj SYM_BOOLE_AND;         /* BOOLE-AND */
+extern CL_Obj SYM_BOOLE_IOR;         /* BOOLE-IOR */
+extern CL_Obj SYM_BOOLE_XOR;         /* BOOLE-XOR */
+extern CL_Obj SYM_BOOLE_EQV;         /* BOOLE-EQV */
+extern CL_Obj SYM_BOOLE_NAND;        /* BOOLE-NAND */
+extern CL_Obj SYM_BOOLE_NOR;         /* BOOLE-NOR */
+extern CL_Obj SYM_BOOLE_ANDC1;       /* BOOLE-ANDC1 */
+extern CL_Obj SYM_BOOLE_ANDC2;       /* BOOLE-ANDC2 */
+extern CL_Obj SYM_BOOLE_ORC1;        /* BOOLE-ORC1 */
+extern CL_Obj SYM_BOOLE_ORC2;        /* BOOLE-ORC2 */
+
 /* Feature keywords */
 extern CL_Obj KW_CL_AMIGA;           /* :CL-AMIGA */
 extern CL_Obj KW_COMMON_LISP;        /* :COMMON-LISP */
