@@ -4907,6 +4907,61 @@ TEST(eval_pprint_dispatch_custom)
     eval_print("(set-pprint-dispatch 'integer nil)");
 }
 
+/* --- Modules (provide / require) --- */
+
+TEST(eval_provide_adds_to_modules)
+{
+    /* provide adds module name to *modules* */
+    eval_print("(provide \"my-module\")");
+    ASSERT_STR_EQ(eval_print("(car *modules*)"), "\"my-module\"");
+}
+
+TEST(eval_provide_no_duplicate)
+{
+    /* provide does not add duplicates */
+    eval_print("(provide \"dup-mod\")");
+    eval_print("(provide \"dup-mod\")");
+    /* Count occurrences - should be exactly 1 */
+    ASSERT_STR_EQ(eval_print(
+        "(count \"dup-mod\" *modules* :test #'string=)"), "1");
+}
+
+TEST(eval_provide_symbol_name)
+{
+    /* provide accepts a symbol, using its name */
+    eval_print("(provide 'sym-mod)");
+    ASSERT_STR_EQ(eval_print(
+        "(find \"SYM-MOD\" *modules* :test #'string=)"), "\"SYM-MOD\"");
+}
+
+TEST(eval_require_already_provided)
+{
+    /* require of already-provided module is a no-op */
+    eval_print("(provide \"already-there\")");
+    ASSERT_STR_EQ(eval_print("(require \"already-there\")"), "NIL");
+}
+
+TEST(eval_require_with_pathname)
+{
+    /* require loads a file when not yet provided */
+    eval_print("(require \"test-module\" \"tests/test_module.lisp\")");
+    ASSERT_STR_EQ(eval_print("*test-module-loaded*"), "T");
+    ASSERT_EQ_INT(eval_int("(test-module-fn 5)"), 50);
+    /* The module file calls (provide "test-module"), so it should be in *modules* */
+    ASSERT_STR_EQ(eval_print(
+        "(find \"test-module\" *modules* :test #'string=)"), "\"test-module\"");
+}
+
+TEST(eval_require_does_not_reload)
+{
+    /* After provide, require should not load again */
+    eval_print("(provide \"test-module\")");
+    eval_print("(setq *test-module-loaded* nil)");
+    eval_print("(require \"test-module\" \"tests/test_module.lisp\")");
+    /* Should still be nil because require was a no-op */
+    ASSERT_STR_EQ(eval_print("*test-module-loaded*"), "NIL");
+}
+
 int main(void)
 {
     test_init();
@@ -5494,6 +5549,14 @@ int main(void)
     RUN(eval_pprint_dispatch_set_get);
     RUN(eval_copy_pprint_dispatch);
     RUN(eval_pprint_dispatch_custom);
+
+    /* provide / require */
+    RUN(eval_provide_adds_to_modules);
+    RUN(eval_provide_no_duplicate);
+    RUN(eval_provide_symbol_name);
+    RUN(eval_require_already_provided);
+    RUN(eval_require_with_pathname);
+    RUN(eval_require_does_not_reload);
 
     teardown();
     REPORT();

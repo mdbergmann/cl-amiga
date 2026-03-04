@@ -93,7 +93,7 @@ Single-pass recursive compiler from S-expressions to bytecode:
 
 **Bootstrap functions:** `cadr`, `caar`, `cdar`, `cddr`, `caddr`, `cadar`, `cdddr`, `cadddr`, `identity`, `endp`, `member`, `intersection`, `union`, `set-difference`, `subsetp`, `cerror`, `break`, `read-from-string`, `prin1-to-string`, `princ-to-string`, `write-to-string`, `complement`, `constantly`, `tree-equal`, `list-length`, `tailp`, `ldiff`, `revappend`, `nreconc`, `assoc-if`, `assoc-if-not`, `rassoc-if`, `rassoc-if-not`, `truename`, `ensure-directories-exist`, `decode-universal-time`, `encode-universal-time`, `get-decoded-time`
 
-## Built-in Functions (411 C functions + 35 boot.lisp functions)
+## Built-in Functions (413 C functions + 35 boot.lisp functions)
 
 | Category | Functions |
 |----------|-----------|
@@ -117,7 +117,7 @@ Single-pass recursive compiler from S-expressions to bytecode:
 | Characters | `char=` `char/=` `char<` `char>` `char<=` `char>=` `char-code` `code-char` `char-upcase` `char-downcase` `upper-case-p` `lower-case-p` `alpha-char-p` `digit-char-p` `char-name` `name-char` |
 | Strings | `string=` `string-equal` `string/=` `string-not-equal` `string<` `string>` `string<=` `string>=` `string-upcase` `string-downcase` `string-capitalize` `nstring-upcase` `nstring-downcase` `nstring-capitalize` `string-trim` `string-left-trim` `string-right-trim` `subseq` `concatenate` `char` `schar` `string` `parse-integer` |
 | Sequences | `find` `find-if` `find-if-not` `position` `position-if` `position-if-not` `count` `count-if` `count-if-not` `remove` `remove-if` `remove-if-not` `remove-duplicates` `substitute` `substitute-if` `substitute-if-not` `reduce` `fill` `replace` `every` `some` `notany` `notevery` `map` `map-into` `mismatch` `search` `sort` `stable-sort` `copy-seq` `elt` |
-| I/O | `write` `print` `prin1` `princ` `pprint` `terpri` `format` `read` `load` `disassemble` `compile` |
+| I/O | `write` `print` `prin1` `princ` `pprint` `terpri` `format` `read` `load` `provide` `require` `disassemble` `compile` |
 | Streams | `streamp` `input-stream-p` `output-stream-p` `interactive-stream-p` `open-stream-p` `read-char` `write-char` `peek-char` `unread-char` `read-line` `write-string` `write-line` `fresh-line` `finish-output` `force-output` `clear-output` `close` `open` `make-string-input-stream` `make-string-output-stream` `get-output-stream-string` |
 | Readtable | `readtablep` `get-macro-character` `set-macro-character` `make-dispatch-macro-character` `set-dispatch-macro-character` `get-dispatch-macro-character` `copy-readtable` |
 | Pathnames | `pathname` `pathnamep` `parse-namestring` `namestring` `make-pathname` `merge-pathnames` `pathname-host` `pathname-device` `pathname-directory` `pathname-name` `pathname-type` `pathname-version` `file-namestring` `directory-namestring` `enough-namestring` |
@@ -412,7 +412,8 @@ Structures and Common Lisp Object System:
 
 Validation and ecosystem:
 - [ ] Run ASDF 3.3 (~14K lines) — ultimate compliance test
-- [ ] `compile-file`, `load`, `require`, `provide`
+- [x] `provide`, `require` — module system (`*modules*` list, string/symbol module names, pathname or default `lib/` search)
+- [ ] `compile-file`
 - [ ] Logical pathnames
 - [ ] `documentation` strings
 - [ ] `define-compiler-macro`, `compiler-macro-function`
@@ -458,9 +459,9 @@ cl-amiga/
 │   └── boot.lisp          # Bootstrap macros/functions
 ├── tests/
 │   ├── test.h             # Test framework
-│   ├── test_*.c           # Host test suites (16 files, 1285 tests)
+│   ├── test_*.c           # Host test suites (16 files, 1291 tests)
 │   └── amiga/
-│       └── run-tests.lisp # AmigaOS batch tests (1435 tests)
+│       └── run-tests.lisp # AmigaOS batch tests (1576 tests)
 ├── build/                 # Build output (gitignored)
 └── verify/
     └── realamiga/          # FS-UAE config + AmigaOS system image

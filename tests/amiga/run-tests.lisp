@@ -2696,6 +2696,15 @@
 (check "array-has-fp bv" nil (array-has-fill-pointer-p #*1010))
 (check "adjustable-p bv" nil (adjustable-array-p #*1010))
 
+; --- Modules (provide / require) ---
+(check "provide returns t" t (provide "test-mod-1"))
+(check "modules contains provided" "test-mod-1" (find "test-mod-1" *modules* :test #'string=))
+(check "provide no duplicate" 1 (progn (provide "test-mod-1") (count "test-mod-1" *modules* :test #'string=)))
+(check "provide symbol" t (provide 'test-mod-sym))
+(check "provide symbol name" "TEST-MOD-SYM" (find "TEST-MOD-SYM" *modules* :test #'string=))
+(check "require already provided" nil (require "test-mod-1"))
+(check "modules is list" t (listp *modules*))
+
 ; --- Summary ---
 (format t "~%=== Results ===~%")
 (format t "Passed: ~A~%" *pass-count*)

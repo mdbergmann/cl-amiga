@@ -1042,6 +1042,138 @@ static CL_Obj bi_copy_pprint_dispatch(CL_Obj *args, int n)
     return result;
 }
 
+/* --- Modules (provide / require) --- */
+
+/* Get module name as a C string from a string or symbol argument */
+static const char *module_name_cstr(CL_Obj arg, uint32_t *len_out)
+{
+    if (CL_STRING_P(arg)) {
+        CL_String *s = (CL_String *)CL_OBJ_TO_PTR(arg);
+        *len_out = s->length;
+        return s->data;
+    }
+    if (CL_SYMBOL_P(arg)) {
+        CL_Symbol *s = (CL_Symbol *)CL_OBJ_TO_PTR(arg);
+        CL_String *name = (CL_String *)CL_OBJ_TO_PTR(s->name);
+        *len_out = name->length;
+        return name->data;
+    }
+    cl_error(CL_ERR_TYPE, "module name must be a string or symbol");
+    *len_out = 0;
+    return NULL;
+}
+
+/* Check if module name is in *modules* list (string= comparison) */
+static int module_provided_p(const char *name, uint32_t len)
+{
+    CL_Symbol *mod_sym = (CL_Symbol *)CL_OBJ_TO_PTR(SYM_STAR_MODULES);
+    CL_Obj list = mod_sym->value;
+    while (!CL_NULL_P(list)) {
+        CL_Obj entry = cl_car(list);
+        if (CL_STRING_P(entry)) {
+            CL_String *s = (CL_String *)CL_OBJ_TO_PTR(entry);
+            if (s->length == len && memcmp(s->data, name, len) == 0)
+                return 1;
+        }
+        list = cl_cdr(list);
+    }
+    return 0;
+}
+
+/*
+ * (provide module-name)
+ * Add module-name to *modules* if not already present.
+ */
+static CL_Obj bi_provide(CL_Obj *args, int n)
+{
+    uint32_t len;
+    const char *name;
+    CL_Symbol *mod_sym;
+    CL_Obj name_str;
+
+    CL_UNUSED(n);
+    name = module_name_cstr(args[0], &len);
+
+    if (module_provided_p(name, len))
+        return SYM_T;
+
+    /* Push string onto *modules* */
+    mod_sym = (CL_Symbol *)CL_OBJ_TO_PTR(SYM_STAR_MODULES);
+    name_str = cl_make_string(name, len);
+    CL_GC_PROTECT(name_str);
+    mod_sym->value = cl_cons(name_str, mod_sym->value);
+    CL_GC_UNPROTECT(1);
+    return SYM_T;
+}
+
+/*
+ * (require module-name &optional pathnames)
+ * Load module if not already provided.
+ */
+static CL_Obj bi_require(CL_Obj *args, int n)
+{
+    uint32_t len;
+    const char *name;
+
+    name = module_name_cstr(args[0], &len);
+
+    /* Already provided? */
+    if (module_provided_p(name, len))
+        return CL_NIL;
+
+    if (n >= 2 && !CL_NULL_P(args[1])) {
+        /* Pathnames provided */
+        CL_Obj pathnames = args[1];
+        if (CL_STRING_P(pathnames) || CL_PATHNAME_P(pathnames)) {
+            /* Single pathname */
+            CL_Obj load_args[1];
+            load_args[0] = pathnames;
+            bi_load(load_args, 1);
+        } else if (CL_CONS_P(pathnames)) {
+            /* List of pathnames */
+            while (!CL_NULL_P(pathnames)) {
+                CL_Obj load_args[1];
+                load_args[0] = cl_car(pathnames);
+                bi_load(load_args, 1);
+                pathnames = cl_cdr(pathnames);
+            }
+        } else {
+            cl_error(CL_ERR_TYPE, "REQUIRE: pathnames must be a string, pathname, or list");
+        }
+    } else {
+        /* Implementation-defined search: try lib/<module-name>.lisp */
+        char path[256];
+        CL_Obj load_args[1];
+        CL_Obj path_obj;
+        char *buf;
+        unsigned long size;
+
+        snprintf(path, sizeof(path), "lib/%.*s.lisp", (int)len, name);
+
+        /* Check if file exists */
+        buf = platform_file_read(path, &size);
+        if (!buf) {
+#ifdef PLATFORM_AMIGA
+            snprintf(path, sizeof(path), "PROGDIR:lib/%.*s.lisp", (int)len, name);
+            buf = platform_file_read(path, &size);
+            if (!buf)
+                cl_error(CL_ERR_GENERAL, "REQUIRE: cannot find module file");
+#else
+            cl_error(CL_ERR_GENERAL, "REQUIRE: cannot find module file");
+#endif
+        }
+        platform_free(buf);
+
+        path_obj = cl_make_string(path, (uint32_t)strlen(path));
+        CL_GC_PROTECT(path_obj);
+        load_args[0] = path_obj;
+        bi_load(load_args, 1);
+        CL_GC_UNPROTECT(1);
+    }
+
+    return SYM_T;
+}
+
 /* --- Registration --- */
 
 void cl_builtins_io_init(void)
@@ -1102,6 +1234,10 @@ void cl_builtins_io_init(void)
 
     /* Compile */
     defun("COMPILE", bi_compile, 1, 2);
+
+    /* Modules */
+    defun("PROVIDE", bi_provide, 1, 1);
+    defun("REQUIRE", bi_require, 1, 2);
 
     /* Pretty-printing keywords */
     KW_LINEAR    = cl_intern_keyword("LINEAR", 6);
