@@ -1386,6 +1386,85 @@ TEST(eval_defun_return_from)
     ASSERT_STR_EQ(eval_print("(find-it 4 '(1 2 3))"), "NIL");
 }
 
+/* --- Cross-closure return-from (NLX-based blocks) --- */
+
+TEST(eval_return_from_labels)
+{
+    /* return-from across labels boundary (ASDF pattern) */
+    eval_print(
+        "(defun frob (x)"
+        "  (labels ((inner (v)"
+        "             (if (> v 10)"
+        "               (return-from frob (+ v 100))"
+        "               v)))"
+        "    (inner x)))");
+    ASSERT_EQ_INT(eval_int("(frob 5)"), 5);
+    ASSERT_EQ_INT(eval_int("(frob 20)"), 120);
+}
+
+TEST(eval_return_from_flet)
+{
+    /* return-from across flet boundary */
+    eval_print(
+        "(defun flet-test (x)"
+        "  (flet ((helper (v)"
+        "           (when (evenp v)"
+        "             (return-from flet-test (* v 10)))))"
+        "    (helper x)"
+        "    x))");
+    ASSERT_EQ_INT(eval_int("(flet-test 3)"), 3);
+    ASSERT_EQ_INT(eval_int("(flet-test 4)"), 40);
+}
+
+TEST(eval_return_from_lambda)
+{
+    /* return-from across lambda boundary */
+    eval_print(
+        "(defun lambda-test (lst)"
+        "  (dolist (x lst)"
+        "    (funcall (lambda (v)"
+        "               (when (= v 42)"
+        "                 (return-from lambda-test :found)))"
+        "             x))"
+        "  :not-found)");
+    ASSERT_STR_EQ(eval_print("(lambda-test '(1 2 3))"), ":NOT-FOUND");
+    ASSERT_STR_EQ(eval_print("(lambda-test '(1 42 3))"), ":FOUND");
+}
+
+TEST(eval_return_from_nested_labels)
+{
+    /* return-from through two levels of labels nesting */
+    eval_print(
+        "(defun nested-test (x)"
+        "  (labels ((outer (v)"
+        "             (labels ((inner (w)"
+        "                       (when (> w 100)"
+        "                         (return-from nested-test :big))))"
+        "               (inner v)"
+        "               :small)))"
+        "    (outer x)))");
+    ASSERT_STR_EQ(eval_print("(nested-test 50)"), ":SMALL");
+    ASSERT_STR_EQ(eval_print("(nested-test 200)"), ":BIG");
+}
+
+TEST(eval_block_with_unwind_protect)
+{
+    /* return-from across labels with interposing unwind-protect.
+     * Use *uwp-log* (special var) since closures have value capture. */
+    eval_print("(defvar *uwp-log* nil)");
+    eval_print(
+        "(defun uwp-test (x)"
+        "  (setq *uwp-log* nil)"
+        "  (labels ((inner (v)"
+        "             (unwind-protect"
+        "               (when (> v 5) (return-from uwp-test :early))"
+        "               (setq *uwp-log* :cleaned))))"
+        "    (inner x)"
+        "    :normal))");
+    ASSERT_STR_EQ(eval_print("(uwp-test 10)"), ":EARLY");
+    ASSERT_STR_EQ(eval_print("*uwp-log*"), ":CLEANED");
+}
+
 /* --- Phase 5 Tier 1: Character functions --- */
 
 TEST(eval_characterp)
@@ -5160,6 +5239,13 @@ int main(void)
     RUN(eval_defsetf_short);
     RUN(eval_defsetf_cadr);
     RUN(eval_defun_return_from);
+
+    /* Cross-closure return-from */
+    RUN(eval_return_from_labels);
+    RUN(eval_return_from_flet);
+    RUN(eval_return_from_lambda);
+    RUN(eval_return_from_nested_labels);
+    RUN(eval_block_with_unwind_protect);
 
     /* Phase 5 Tier 1 */
     RUN(eval_characterp);

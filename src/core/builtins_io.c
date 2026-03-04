@@ -512,6 +512,9 @@ static DisasmInfo disasm_opcode_info(uint8_t op)
     case OP_RESTART_PUSH: info.name = "RESTART_PUSH"; info.arg_type = OP_ARG_U16; break;
     case OP_RESTART_POP:  info.name = "RESTART_POP";  info.arg_type = OP_ARG_U8;  break;
     case OP_ASSERT_TYPE:  info.name = "ASSERT_TYPE";  info.arg_type = OP_ARG_U16; break;
+    case OP_BLOCK_PUSH:   info.name = "BLOCK_PUSH";  info.arg_type = OP_ARG_U16; break;
+    case OP_BLOCK_POP:    info.name = "BLOCK_POP";   break;
+    case OP_BLOCK_RETURN: info.name = "BLOCK_RETURN"; info.arg_type = OP_ARG_U16; break;
     case OP_ARGC:       info.name = "ARGC";       break;
     case OP_CATCH:      info.name = "CATCH";      info.arg_type = OP_ARG_I16; break;
     case OP_UNCATCH:    info.name = "UNCATCH";    break;
@@ -602,7 +605,8 @@ static void disasm_bytecode(CL_Bytecode *bc)
             if (val < bc->n_constants &&
                 (op == OP_CONST || op == OP_GLOAD || op == OP_GSTORE ||
                  op == OP_FLOAD || op == OP_DEFMACRO || op == OP_DEFTYPE || op == OP_DYNBIND ||
-                 op == OP_CLOSURE || op == OP_HANDLER_PUSH || op == OP_ASSERT_TYPE)) {
+                 op == OP_CLOSURE || op == OP_HANDLER_PUSH || op == OP_ASSERT_TYPE ||
+                 op == OP_BLOCK_PUSH || op == OP_BLOCK_RETURN)) {
                 cl_prin1_to_string(bc->constants[val], annot, sizeof(annot));
             }
             if (annot[0]) {
@@ -614,6 +618,16 @@ static void disasm_bytecode(CL_Bytecode *bc)
                         (unsigned long)start_ip, info.name, (unsigned int)val);
             }
             platform_write_string(line);
+
+            /* OP_BLOCK_PUSH: also has i16 offset after u16 const_idx */
+            if (op == OP_BLOCK_PUSH) {
+                int16_t boff = (int16_t)((code[ip] << 8) | code[ip + 1]);
+                ip += 2;
+                snprintf(line, sizeof(line),
+                        "          offset %+d -> %04lu\n",
+                        (int)boff, (unsigned long)((int32_t)ip + (int32_t)boff));
+                platform_write_string(line);
+            }
 
             /* OP_CLOSURE: read and print capture descriptors */
             if (op == OP_CLOSURE && val < bc->n_constants) {

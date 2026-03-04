@@ -28,6 +28,7 @@ typedef struct {
     int exit_patches[CL_MAX_BLOCK_PATCHES];
     int n_patches;
     int result_slot;  /* local slot where return value is stored */
+    int uses_nlx;     /* 1 if NLX-based (compile_block), 0 if local-jump (loop forms) */
 } CL_BlockInfo;
 
 /* Tagbody tracking for go */
@@ -64,6 +65,9 @@ typedef struct {
     CL_LineEntry line_entries[CL_MAX_LINE_ENTRIES];
     int line_entry_count;
     int current_line;   /* Current source line being compiled */
+    /* Outer block names visible from enclosing scopes (for cross-closure return-from) */
+    CL_Obj outer_blocks[CL_MAX_BLOCKS];
+    int outer_block_count;
 } CL_Compiler;
 
 /* Parsed lambda list structure */

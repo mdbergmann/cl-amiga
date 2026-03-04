@@ -82,6 +82,10 @@ enum CL_Opcode {
     OP_RESTART_POP  = 0x97, /* u8: count; pop N restart bindings */
     OP_ASSERT_TYPE  = 0x98, /* u16: const idx of type spec; peek TOS, signal type-error if mismatch */
 
+    OP_BLOCK_PUSH   = 0x99, /* u16 const_idx, i16 offset: set up NLX block frame for return-from */
+    OP_BLOCK_POP    = 0x9A, /* Pop NLX block frame (normal exit from block) */
+    OP_BLOCK_RETURN = 0x9B, /* u16 const_idx: pop value, longjmp to matching block */
+
     OP_HALT      = 0xFF   /* Stop VM */
 };
 

@@ -1068,6 +1068,95 @@ CL_Obj cl_vm_eval(CL_Obj bytecode_obj)
             break;
         }
 
+        case OP_BLOCK_PUSH: {
+            /* Set up NLX block frame for return-from support */
+            uint16_t tag_idx = read_u16(code, &ip);
+            int16_t block_offset = read_i16(code, &ip);
+            CL_Obj block_tag = constants[tag_idx];
+            CL_NLXFrame *nlx;
+
+            if (cl_nlx_top >= CL_MAX_NLX_FRAMES)
+                cl_error(CL_ERR_OVERFLOW, "NLX stack overflow");
+
+            nlx = &cl_nlx_stack[cl_nlx_top];
+            nlx->type = CL_NLX_BLOCK;
+            nlx->vm_sp = cl_vm.sp;
+            nlx->vm_fp = cl_vm.fp;
+            nlx->tag = block_tag;
+            nlx->result = CL_NIL;
+            nlx->catch_ip = ip;
+            nlx->offset = block_offset;
+            nlx->code = code;
+            nlx->constants = constants;
+            nlx->base_fp = base_fp;
+            nlx->dyn_mark = cl_dyn_top;
+            nlx->handler_mark = cl_handler_top;
+            nlx->restart_mark = cl_restart_top;
+
+            if (setjmp(nlx->buf) == 0) {
+                /* Normal path: block body executes */
+                cl_nlx_top++;
+            } else {
+                /* longjmp from return-from: restore state */
+                nlx = &cl_nlx_stack[cl_nlx_top];
+                cl_dynbind_restore_to(nlx->dyn_mark);
+                cl_handler_top = nlx->handler_mark;
+                cl_restart_top = nlx->restart_mark;
+                {
+                    CL_Obj block_result = nlx->result;
+                    cl_vm.sp = nlx->vm_sp;
+                    cl_vm.fp = nlx->vm_fp;
+                    frame = &cl_vm.frames[cl_vm.fp - 1];
+                    code = nlx->code;
+                    constants = nlx->constants;
+                    base_fp = nlx->base_fp;
+                    ip = nlx->catch_ip + nlx->offset;
+                    cl_mv_count = 1;
+                    cl_vm_push(block_result);
+                }
+            }
+            break;
+        }
+
+        case OP_BLOCK_POP: {
+            /* Normal exit from block body — pop NLX frame */
+            if (cl_nlx_top > 0)
+                cl_nlx_top--;
+            break;
+        }
+
+        case OP_BLOCK_RETURN: {
+            /* return-from: pop value, find matching block on NLX stack, longjmp */
+            uint16_t tag_idx = read_u16(code, &ip);
+            CL_Obj block_tag = constants[tag_idx];
+            CL_Obj value = cl_vm_pop();
+            int i;
+
+            for (i = cl_nlx_top - 1; i >= 0; i--) {
+                if (cl_nlx_stack[i].type == CL_NLX_BLOCK &&
+                    cl_nlx_stack[i].tag == block_tag) {
+                    int j;
+                    /* Check for interposing UWPROT frames */
+                    for (j = cl_nlx_top - 1; j > i; j--) {
+                        if (cl_nlx_stack[j].type == CL_NLX_UWPROT) {
+                            cl_pending_throw = 1;
+                            cl_pending_tag = block_tag;
+                            cl_pending_value = value;
+                            cl_nlx_top = j;
+                            longjmp(cl_nlx_stack[j].buf, 1);
+                        }
+                    }
+                    /* No interposing UWPROT — longjmp directly to block */
+                    cl_nlx_stack[i].result = value;
+                    cl_nlx_top = i;
+                    longjmp(cl_nlx_stack[i].buf, 1);
+                }
+            }
+            cl_error(CL_ERR_GENERAL, "RETURN-FROM: no block named %s",
+                     CL_NULL_P(block_tag) ? "NIL" : cl_symbol_name(block_tag));
+            break;
+        }
+
         case OP_ARGC: {
             cl_vm_push(CL_MAKE_FIXNUM(frame->nargs));
             cl_mv_count = 1;
@@ -1224,13 +1313,14 @@ CL_Obj cl_vm_eval(CL_Obj bytecode_obj)
         case OP_UWRETHROW: {
             /* After cleanup forms: re-initiate pending throw/error if any */
             if (cl_pending_throw == 1) {
-                /* Re-throw: find matching catch */
+                /* Re-throw: find matching catch or block */
                 CL_Obj ptag = cl_pending_tag;
                 CL_Obj pval = cl_pending_value;
                 int i;
 
                 for (i = cl_nlx_top - 1; i >= 0; i--) {
-                    if (cl_nlx_stack[i].type == CL_NLX_CATCH &&
+                    if ((cl_nlx_stack[i].type == CL_NLX_CATCH ||
+                         cl_nlx_stack[i].type == CL_NLX_BLOCK) &&
                         cl_nlx_stack[i].tag == ptag) {
                         /* Check for interposing UWPROT */
                         int j;
@@ -1241,7 +1331,7 @@ CL_Obj cl_vm_eval(CL_Obj bytecode_obj)
                                 longjmp(cl_nlx_stack[j].buf, 1);
                             }
                         }
-                        /* No interposing UWPROT, go directly to catch */
+                        /* No interposing UWPROT, go directly to target */
                         cl_pending_throw = 0;
                         cl_nlx_stack[i].result = pval;
                         cl_nlx_top = i;

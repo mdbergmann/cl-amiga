@@ -254,6 +254,17 @@ void compile_lambda(CL_Compiler *c, CL_Obj form)
     inner->env = env;
     inner->in_tail = 1;
 
+    /* Propagate visible block names for cross-closure return-from */
+    inner->outer_block_count = 0;
+    for (i = 0; i < c->block_count; i++) {
+        if (inner->outer_block_count < CL_MAX_BLOCKS)
+            inner->outer_blocks[inner->outer_block_count++] = c->blocks[i].tag;
+    }
+    for (i = 0; i < c->outer_block_count; i++) {
+        if (inner->outer_block_count < CL_MAX_BLOCKS)
+            inner->outer_blocks[inner->outer_block_count++] = c->outer_blocks[i];
+    }
+
     for (i = 0; i < ll.n_required; i++)
         cl_env_add_local(env, ll.required[i]);
     for (i = 0; i < ll.n_optional; i++)

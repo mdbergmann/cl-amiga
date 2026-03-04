@@ -8,8 +8,8 @@
  * Handles special forms, lexical scope, upvalue capture, tail calls.
  */
 
-#define CL_MAX_CODE_SIZE   8192
-#define CL_MAX_CONSTANTS   256
+#define CL_MAX_CODE_SIZE   16384
+#define CL_MAX_CONSTANTS   512
 
 /* Compile a top-level expression, returns a CL_Bytecode object */
 CL_Obj cl_compile(CL_Obj expr);

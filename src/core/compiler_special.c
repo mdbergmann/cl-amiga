@@ -169,48 +169,96 @@ void compile_destructuring_bind(CL_Compiler *c, CL_Obj form)
 
 /* --- Block / Return --- */
 
+/* Check if an S-expression tree contains closure-creating forms
+ * (lambda, labels, flet). Used to decide if a block needs NLX
+ * for cross-closure return-from support. */
+static int tree_has_closure_forms(CL_Obj tree)
+{
+    while (CL_CONS_P(tree)) {
+        CL_Obj head = cl_car(tree);
+        if (CL_CONS_P(head)) {
+            CL_Obj op = cl_car(head);
+            if (op == SYM_LAMBDA || op == SYM_LABELS || op == SYM_FLET)
+                return 1;
+            if (tree_has_closure_forms(head))
+                return 1;
+        } else if (head == SYM_LAMBDA || head == SYM_LABELS || head == SYM_FLET) {
+            return 1;
+        }
+        tree = cl_cdr(tree);
+    }
+    return 0;
+}
+
 void compile_block(CL_Compiler *c, CL_Obj form)
 {
     CL_Obj tag = cl_car(cl_cdr(form));
     CL_Obj body = cl_cdr(cl_cdr(form));
-    CL_CompEnv *env = c->env;
-    int saved_local_count = env->local_count;
     int saved_block_count = c->block_count;
-    int result_slot;
+    int needs_nlx = tree_has_closure_forms(body);
     CL_BlockInfo *bi;
-    int i;
 
-    /* Allocate anonymous result slot */
-    result_slot = env->local_count;
-    env->local_count++;
-    if (env->local_count > env->max_locals)
-        env->max_locals = env->local_count;
-
-    /* Push block info */
+    /* Push block info (for compile-time lookup by return-from) */
     bi = &c->blocks[c->block_count++];
     bi->tag = tag;
     bi->n_patches = 0;
-    bi->result_slot = result_slot;
+    bi->uses_nlx = needs_nlx;
 
-    /* Compile body */
-    compile_body(c, body);
+    if (needs_nlx) {
+        /* NLX path: set up NLX frame for cross-closure return-from */
+        int tag_idx, block_push_pos, jmp_pos;
 
-    /* Normal exit: store result in slot */
-    cl_emit(c, OP_STORE);
-    cl_emit(c, (uint8_t)result_slot);
-    cl_emit(c, OP_POP);
+        bi->result_slot = -1;
 
-    /* Patch all return-from jumps to here */
-    for (i = 0; i < bi->n_patches; i++)
-        cl_patch_jump(c, bi->exit_patches[i]);
+        tag_idx = cl_add_constant(c, tag);
+        cl_emit(c, OP_BLOCK_PUSH);
+        cl_emit_u16(c, (uint16_t)tag_idx);
+        block_push_pos = c->code_pos;
+        cl_emit_i16(c, 0); /* placeholder offset to landing */
 
-    /* Load result from slot */
-    cl_emit(c, OP_LOAD);
-    cl_emit(c, (uint8_t)result_slot);
+        compile_body(c, body);
+
+        /* Normal exit: pop NLX frame, jump past landing */
+        cl_emit(c, OP_BLOCK_POP);
+        jmp_pos = cl_emit_jump(c, OP_JMP);
+
+        /* Landing: longjmp arrives here with result on stack */
+        cl_patch_jump(c, block_push_pos);
+
+        /* End: both paths converge with result on TOS */
+        cl_patch_jump(c, jmp_pos);
+    } else {
+        /* Local path: efficient local jumps (no NLX overhead) */
+        CL_CompEnv *env = c->env;
+        int saved_local_count = env->local_count;
+        int result_slot, i;
+
+        result_slot = env->local_count;
+        env->local_count++;
+        if (env->local_count > env->max_locals)
+            env->max_locals = env->local_count;
+        bi->result_slot = result_slot;
+
+        compile_body(c, body);
+
+        /* Normal exit: store result in slot */
+        cl_emit(c, OP_STORE);
+        cl_emit(c, (uint8_t)result_slot);
+        cl_emit(c, OP_POP);
+
+        /* Patch all return-from jumps to here */
+        for (i = 0; i < bi->n_patches; i++)
+            cl_patch_jump(c, bi->exit_patches[i]);
+
+        /* Load result from slot */
+        cl_emit(c, OP_LOAD);
+        cl_emit(c, (uint8_t)result_slot);
+
+        env->local_count = saved_local_count;
+    }
 
     /* Restore */
     c->block_count = saved_block_count;
-    env->local_count = saved_local_count;
 }
 
 void compile_return_from(CL_Compiler *c, CL_Obj form)
@@ -218,9 +266,9 @@ void compile_return_from(CL_Compiler *c, CL_Obj form)
     CL_Obj tag = cl_car(cl_cdr(form));
     CL_Obj val_form = cl_car(cl_cdr(cl_cdr(form)));
     int saved_tail = c->in_tail;
-    int i;
+    int i, tag_idx;
 
-    /* Find matching block (innermost first) */
+    /* Find matching block (innermost first) — check local blocks */
     for (i = c->block_count - 1; i >= 0; i--) {
         if (c->blocks[i].tag == tag) {
             CL_BlockInfo *bi = &c->blocks[i];
@@ -233,13 +281,38 @@ void compile_return_from(CL_Compiler *c, CL_Obj form)
                 cl_emit(c, OP_NIL);
             c->in_tail = saved_tail;
 
-            /* Store in result slot and jump to exit */
-            cl_emit(c, OP_STORE);
-            cl_emit(c, (uint8_t)bi->result_slot);
-            cl_emit(c, OP_POP);
+            if (bi->uses_nlx) {
+                /* NLX-based block: emit OP_BLOCK_RETURN */
+                tag_idx = cl_add_constant(c, tag);
+                cl_emit(c, OP_BLOCK_RETURN);
+                cl_emit_u16(c, (uint16_t)tag_idx);
+            } else {
+                /* Local-jump block (loop forms): use existing mechanism */
+                cl_emit(c, OP_STORE);
+                cl_emit(c, (uint8_t)bi->result_slot);
+                cl_emit(c, OP_POP);
+                if (bi->n_patches < CL_MAX_BLOCK_PATCHES)
+                    bi->exit_patches[bi->n_patches++] = cl_emit_jump(c, OP_JMP);
+            }
+            return;
+        }
+    }
 
-            if (bi->n_patches < CL_MAX_BLOCK_PATCHES)
-                bi->exit_patches[bi->n_patches++] = cl_emit_jump(c, OP_JMP);
+    /* Check outer blocks (from enclosing scopes, for cross-closure return-from) */
+    for (i = 0; i < c->outer_block_count; i++) {
+        if (c->outer_blocks[i] == tag) {
+            /* Compile value */
+            c->in_tail = 0;
+            if (!CL_NULL_P(cl_cdr(cl_cdr(form))))
+                compile_expr(c, val_form);
+            else
+                cl_emit(c, OP_NIL);
+            c->in_tail = saved_tail;
+
+            /* Emit cross-closure block return (NLX longjmp) */
+            tag_idx = cl_add_constant(c, tag);
+            cl_emit(c, OP_BLOCK_RETURN);
+            cl_emit_u16(c, (uint16_t)tag_idx);
             return;
         }
     }
@@ -253,7 +326,7 @@ void compile_return(CL_Compiler *c, CL_Obj form)
     /* (return [value]) => return-from NIL */
     CL_Obj val_form = cl_car(cl_cdr(form));
     int saved_tail = c->in_tail;
-    int i;
+    int i, tag_idx;
 
     for (i = c->block_count - 1; i >= 0; i--) {
         if (CL_NULL_P(c->blocks[i].tag)) {
@@ -266,12 +339,36 @@ void compile_return(CL_Compiler *c, CL_Obj form)
                 cl_emit(c, OP_NIL);
             c->in_tail = saved_tail;
 
-            cl_emit(c, OP_STORE);
-            cl_emit(c, (uint8_t)bi->result_slot);
-            cl_emit(c, OP_POP);
+            if (bi->uses_nlx) {
+                /* NLX-based block: emit OP_BLOCK_RETURN */
+                tag_idx = cl_add_constant(c, CL_NIL);
+                cl_emit(c, OP_BLOCK_RETURN);
+                cl_emit_u16(c, (uint16_t)tag_idx);
+            } else {
+                /* Local-jump block (loop forms): use existing mechanism */
+                cl_emit(c, OP_STORE);
+                cl_emit(c, (uint8_t)bi->result_slot);
+                cl_emit(c, OP_POP);
+                if (bi->n_patches < CL_MAX_BLOCK_PATCHES)
+                    bi->exit_patches[bi->n_patches++] = cl_emit_jump(c, OP_JMP);
+            }
+            return;
+        }
+    }
 
-            if (bi->n_patches < CL_MAX_BLOCK_PATCHES)
-                bi->exit_patches[bi->n_patches++] = cl_emit_jump(c, OP_JMP);
+    /* Check outer blocks for NIL-tagged block */
+    for (i = 0; i < c->outer_block_count; i++) {
+        if (CL_NULL_P(c->outer_blocks[i])) {
+            c->in_tail = 0;
+            if (!CL_NULL_P(cl_cdr(form)))
+                compile_expr(c, val_form);
+            else
+                cl_emit(c, OP_NIL);
+            c->in_tail = saved_tail;
+
+            tag_idx = cl_add_constant(c, CL_NIL);
+            cl_emit(c, OP_BLOCK_RETURN);
+            cl_emit_u16(c, (uint16_t)tag_idx);
             return;
         }
     }
