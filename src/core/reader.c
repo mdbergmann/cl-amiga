@@ -9,6 +9,7 @@
 #include "error.h"
 #include "stream.h"
 #include "vm.h"
+#include "compiler.h"
 #include "../platform/platform.h"
 #include <string.h>
 #include <ctype.h>
@@ -34,6 +35,10 @@ static int cl_strcasecmp(const char *a, const char *b)
 /* Current stream being read from */
 static CL_Obj reader_stream = 0;
 static int eof_seen = 0;
+
+/* Read-suppress mode: when > 0, suppress errors from skipped feature conditionals.
+ * Counter (not bool) to handle nested #+/#- correctly. */
+static int read_suppress = 0;
 
 /* Source location tracking */
 CL_SrcLoc cl_srcloc_table[CL_SRCLOC_SIZE];
@@ -178,10 +183,13 @@ static int eval_feature_expr(CL_Obj expr)
     return 0;
 }
 
-/* Skip (read and discard) a single form from the reader */
+/* Skip (read and discard) a single form from the reader.
+ * Increments read_suppress so that errors (unknown packages, etc.) are suppressed. */
 static void skip_form(void)
 {
+    read_suppress++;
     read_expr();  /* Just read and discard */
+    read_suppress--;
 }
 
 /*
@@ -401,8 +409,10 @@ static CL_Obj read_atom(void)
             int sym_start = double_colon ? colon_pos + 2 : colon_pos + 1;
             int sym_len = len - sym_start;
 
-            if (sym_len <= 0)
+            if (sym_len <= 0) {
+                if (read_suppress) return CL_NIL;
                 cl_error(CL_ERR_PARSE, "Missing symbol name after package qualifier");
+            }
 
             memcpy(pkg_name, buf, (uint32_t)colon_pos);
             pkg_name[colon_pos] = '\0';
@@ -410,8 +420,10 @@ static CL_Obj read_atom(void)
             sym_name[sym_len] = '\0';
 
             package = cl_find_package(pkg_name, (uint32_t)colon_pos);
-            if (CL_NULL_P(package))
+            if (CL_NULL_P(package)) {
+                if (read_suppress) return CL_NIL;
                 cl_error(CL_ERR_PARSE, "Package %s not found", pkg_name);
+            }
 
             if (double_colon) {
                 /* pkg::sym — intern as internal symbol */
@@ -419,9 +431,11 @@ static CL_Obj read_atom(void)
             } else {
                 /* pkg:sym — look up external symbol only */
                 CL_Obj sym = cl_package_find_external(sym_name, (uint32_t)sym_len, package);
-                if (CL_NULL_P(sym))
+                if (CL_NULL_P(sym)) {
+                    if (read_suppress) return CL_NIL;
                     cl_error(CL_ERR_PARSE, "Symbol %s not exported from %s",
                              sym_name, pkg_name);
+                }
                 return sym;
             }
         }
@@ -647,6 +661,7 @@ static CL_Obj read_expr(void)
                 if (strcasecmp(name, "Backspace") == 0) return CL_MAKE_CHAR('\b');
                 if (strcasecmp(name, "Page") == 0) return CL_MAKE_CHAR('\f');
                 if (strcasecmp(name, "Rubout") == 0) return CL_MAKE_CHAR(0x7F);
+                if (read_suppress) return CL_NIL;
                 cl_error(CL_ERR_PARSE, "Unknown character name: %s", name);
                 return CL_NIL;
             }
@@ -664,8 +679,10 @@ static CL_Obj read_expr(void)
                 sym_buf[sym_len++] = (char)toupper(ch2);
             }
             sym_buf[sym_len] = '\0';
-            if (sym_len == 0)
+            if (sym_len == 0) {
+                if (read_suppress) return CL_NIL;
                 cl_error(CL_ERR_PARSE, "Missing symbol name after #:");
+            }
             name_str = cl_make_string(sym_buf, (uint32_t)sym_len);
             return cl_make_uninterned_symbol(name_str);
         }
@@ -718,6 +735,7 @@ static CL_Obj read_expr(void)
             skip_whitespace();
             ch = read_char();
             if (ch != '"') {
+                if (read_suppress) { unread_char(ch); return CL_NIL; }
                 cl_error(CL_ERR_PARSE, "#P must be followed by a string");
                 return CL_NIL;
             }
@@ -775,6 +793,29 @@ static CL_Obj read_expr(void)
             }
             return vec;
         }
+        if (ch == '.') {
+            /* #. read-time eval */
+            CL_Obj form = read_expr();
+            CL_Obj bytecode, result;
+            CL_Symbol *re_sym;
+
+            if (read_suppress) return CL_NIL;
+
+            /* Check *read-eval* */
+            re_sym = (CL_Symbol *)CL_OBJ_TO_PTR(SYM_STAR_READ_EVAL);
+            if (CL_NULL_P(re_sym->value))
+                cl_error(CL_ERR_GENERAL, "#. disabled: *READ-EVAL* is NIL");
+
+            CL_GC_PROTECT(form);
+            bytecode = cl_compile(form);
+            if (!CL_NULL_P(bytecode))
+                result = cl_vm_eval(bytecode);
+            else
+                result = CL_NIL;
+            CL_GC_UNPROTECT(1);
+            return result;
+        }
+        if (read_suppress) return CL_NIL;
         cl_error(CL_ERR_PARSE, "Unknown dispatch macro: #%c", ch);
         return CL_NIL;
     }

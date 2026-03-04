@@ -4962,6 +4962,40 @@ TEST(eval_require_does_not_reload)
     ASSERT_STR_EQ(eval_print("*test-module-loaded*"), "NIL");
 }
 
+/* --- Property lists --- */
+
+TEST(eval_symbol_plist_initial)
+{
+    ASSERT_STR_EQ(eval_print("(symbol-plist 'test-plist-sym-1)"), "NIL");
+}
+
+TEST(eval_setf_get)
+{
+    ASSERT_STR_EQ(eval_print("(setf (get 'test-plist-sym-2 'bar) 42)"), "42");
+    ASSERT_STR_EQ(eval_print("(get 'test-plist-sym-2 'bar)"), "42");
+}
+
+TEST(eval_get_default)
+{
+    ASSERT_STR_EQ(eval_print("(get 'test-plist-sym-2 'baz 99)"), "99");
+    ASSERT_STR_EQ(eval_print("(get 'test-plist-sym-2 'baz)"), "NIL");
+}
+
+TEST(eval_remprop)
+{
+    eval_print("(setf (get 'test-plist-sym-3 'foo) 10)");
+    ASSERT_STR_EQ(eval_print("(remprop 'test-plist-sym-3 'foo)"), "T");
+    ASSERT_STR_EQ(eval_print("(get 'test-plist-sym-3 'foo)"), "NIL");
+    ASSERT_STR_EQ(eval_print("(remprop 'test-plist-sym-3 'foo)"), "NIL");
+}
+
+TEST(eval_setf_get_update)
+{
+    eval_print("(setf (get 'test-plist-sym-4 'x) 1)");
+    eval_print("(setf (get 'test-plist-sym-4 'x) 2)");
+    ASSERT_STR_EQ(eval_print("(get 'test-plist-sym-4 'x)"), "2");
+}
+
 int main(void)
 {
     test_init();
@@ -5557,6 +5591,13 @@ int main(void)
     RUN(eval_require_already_provided);
     RUN(eval_require_with_pathname);
     RUN(eval_require_does_not_reload);
+
+    /* property lists */
+    RUN(eval_symbol_plist_initial);
+    RUN(eval_setf_get);
+    RUN(eval_get_default);
+    RUN(eval_remprop);
+    RUN(eval_setf_get_update);
 
     teardown();
     REPORT();

@@ -235,6 +235,9 @@ extern CL_Obj KW_VERSION;           /* :VERSION */
 extern CL_Obj KW_DEFAULTS;          /* :DEFAULTS */
 extern CL_Obj SYM_STAR_DEFAULT_PATHNAME_DEFAULTS; /* *DEFAULT-PATHNAME-DEFAULTS* */
 
+/* Read-time eval */
+extern CL_Obj SYM_STAR_READ_EVAL;    /* *READ-EVAL* */
+
 /* Modules */
 extern CL_Obj SYM_STAR_MODULES;      /* *MODULES* */
 

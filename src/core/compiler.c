@@ -30,6 +30,8 @@ CL_Obj SETF_SYM_BIT = CL_NIL;
 CL_Obj SETF_HELPER_BIT = CL_NIL;
 CL_Obj SETF_SYM_SBIT = CL_NIL;
 CL_Obj SETF_HELPER_SBIT = CL_NIL;
+CL_Obj SETF_SYM_GET = CL_NIL;
+CL_Obj SETF_HELPER_GET = CL_NIL;
 
 /* Global optimization settings */
 CL_OptimizeSettings cl_optimize_settings = {1, 1, 1, 1};
@@ -680,6 +682,16 @@ static void compile_setf_place(CL_Compiler *c, CL_Obj place, CL_Obj val_form)
             compile_expr(c, val_form);                     /* value */
             cl_emit(c, OP_CALL);
             cl_emit(c, 3);
+        } else if (head == SETF_SYM_GET) {
+            /* (setf (get sym indicator) val) → (%setf-get sym indicator val) */
+            int idx = cl_add_constant(c, SETF_HELPER_GET);
+            cl_emit(c, OP_FLOAD);
+            cl_emit_u16(c, (uint16_t)idx);
+            compile_expr(c, cl_car(cl_cdr(place)));       /* symbol */
+            compile_expr(c, cl_car(cl_cdr(cl_cdr(place)))); /* indicator */
+            compile_expr(c, val_form);                     /* value */
+            cl_emit(c, OP_CALL);
+            cl_emit(c, 3);
         } else {
             /* Check defsetf table */
             CL_Obj entry = setf_table;
@@ -1206,4 +1218,6 @@ void cl_compiler_init(void)
     SETF_HELPER_BIT          = cl_intern_in("%SETF-BIT", 9, cl_package_cl);
     SETF_SYM_SBIT            = cl_intern_in("SBIT", 4, cl_package_cl);
     SETF_HELPER_SBIT         = cl_intern_in("%SETF-SBIT", 10, cl_package_cl);
+    SETF_SYM_GET             = cl_intern_in("GET", 3, cl_package_cl);
+    SETF_HELPER_GET          = cl_intern_in("%SETF-GET", 9, cl_package_cl);
 }

@@ -539,9 +539,18 @@ static void init_history_symbol(CL_Obj sym)
 
 void cl_repl_init_no_userinit(int no_userinit)
 {
+    /* Load standard library in CL package so macros/functions are
+       accessible from any package that :use's CL */
+    CL_Obj saved_pkg = cl_current_package;
+    cl_current_package = cl_package_cl;
+
     cl_eval_string("(defmacro when (test &rest body) (list 'if test (cons 'progn body)))");
     cl_eval_string("(defmacro unless (test &rest body) (list 'if test nil (cons 'progn body)))");
     load_boot_file();
+
+    /* Export newly-defined CL symbols so they are visible in all packages */
+    cl_package_export_all_cl_symbols();
+    cl_current_package = saved_pkg;
 
     if (!no_userinit)
         load_user_init();

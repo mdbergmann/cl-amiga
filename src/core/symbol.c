@@ -195,6 +195,7 @@ CL_Obj KW_VERSION = CL_NIL;
 CL_Obj KW_DEFAULTS = CL_NIL;
 CL_Obj SYM_STAR_DEFAULT_PATHNAME_DEFAULTS = CL_NIL;
 
+CL_Obj SYM_STAR_READ_EVAL = CL_NIL;
 CL_Obj SYM_STAR_MODULES = CL_NIL;
 
 CL_Obj KW_CL_AMIGA = CL_NIL;
@@ -535,6 +536,14 @@ void cl_symbol_init(void)
         CL_Symbol *s = (CL_Symbol *)CL_OBJ_TO_PTR(SYM_STAR_DEFAULT_PATHNAME_DEFAULTS);
         s->flags |= CL_SYM_SPECIAL;
         /* Value set later in cl_builtins_pathname_init after pathname type is available */
+    }
+
+    /* *READ-EVAL* — controls whether #. is allowed (default T) */
+    SYM_STAR_READ_EVAL = cl_intern_in("*READ-EVAL*", 11, cl_package_cl);
+    {
+        CL_Symbol *s = (CL_Symbol *)CL_OBJ_TO_PTR(SYM_STAR_READ_EVAL);
+        s->flags |= CL_SYM_SPECIAL;
+        s->value = SYM_T;
     }
 
     /* *MODULES* — list of provided module names */

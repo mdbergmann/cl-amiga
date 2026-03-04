@@ -6,6 +6,10 @@
 #include "core/symbol.h"
 #include "core/reader.h"
 #include "core/printer.h"
+#include "core/compiler.h"
+#include "core/vm.h"
+#include "core/builtins.h"
+#include "core/repl.h"
 #include "platform/platform.h"
 
 static void setup(void)
@@ -17,6 +21,10 @@ static void setup(void)
     cl_symbol_init();
     cl_reader_init();
     cl_printer_init();
+    cl_compiler_init();
+    cl_vm_init(0, 0);
+    cl_builtins_init();
+    cl_repl_init();
 }
 
 static void teardown(void)
@@ -361,6 +369,76 @@ TEST(features_is_list)
     ASSERT(CL_CONS_P(s->value));
 }
 
+/* --- Read-suppress: skipped feature conditionals suppress errors --- */
+
+TEST(feature_suppress_unknown_package)
+{
+    /* #+nonexistent should suppress "Package not found" error */
+    CL_Obj obj = reads("#+nonexistent (unknown-pkg:symbol) 42");
+    ASSERT(CL_FIXNUM_P(obj));
+    ASSERT_EQ_INT(CL_FIXNUM_VAL(obj), 42);
+}
+
+TEST(feature_suppress_internal_symbol)
+{
+    /* #+nonexistent should suppress pkg::internal access errors */
+    CL_Obj obj = reads("#+nonexistent badpkg::internal 42");
+    ASSERT(CL_FIXNUM_P(obj));
+    ASSERT_EQ_INT(CL_FIXNUM_VAL(obj), 42);
+}
+
+TEST(feature_suppress_unknown_char_name)
+{
+    /* #+nonexistent should suppress unknown character name errors */
+    CL_Obj obj = reads("#+nonexistent #\\UnknownCharName 42");
+    ASSERT(CL_FIXNUM_P(obj));
+    ASSERT_EQ_INT(CL_FIXNUM_VAL(obj), 42);
+}
+
+TEST(feature_suppress_nested)
+{
+    /* Nested feature conditionals: both skipped, read final form */
+    CL_Obj obj = reads("#+nonexistent #+also-nonexistent foo 42");
+    ASSERT(CL_FIXNUM_P(obj));
+    ASSERT_EQ_INT(CL_FIXNUM_VAL(obj), 42);
+}
+
+TEST(feature_suppress_unknown_dispatch)
+{
+    /* #+nonexistent should suppress unknown dispatch macro */
+    CL_Obj obj = reads("#+nonexistent #! 42");
+    ASSERT(CL_FIXNUM_P(obj));
+    ASSERT_EQ_INT(CL_FIXNUM_VAL(obj), 42);
+}
+
+TEST(feature_suppress_in_list)
+{
+    /* read-suppress inside a list with unknown package */
+    ASSERT_STR_EQ(read_print("(1 #+nonexistent unknown-pkg:sym 3)"), "(1 3)");
+}
+
+/* --- Read-time eval (#.) --- */
+
+TEST(read_time_eval_arithmetic)
+{
+    /* #.(+ 1 2) should read as 3 */
+    CL_Obj obj = reads("#.(+ 1 2)");
+    ASSERT(CL_FIXNUM_P(obj));
+    ASSERT_EQ_INT(CL_FIXNUM_VAL(obj), 3);
+}
+
+TEST(read_time_eval_list)
+{
+    /* #.(list 1 2) should read as (1 2) */
+    ASSERT_STR_EQ(read_print("#.(list 1 2)"), "(1 2)");
+}
+
+TEST(read_time_eval_in_list)
+{
+    /* #. inside a list */
+    ASSERT_STR_EQ(read_print("(a #.(+ 10 20) b)"), "(A 30 B)");
+}
+
 int main(void)
 {
     test_init();
@@ -408,6 +486,19 @@ int main(void)
     RUN(feature_not_expr);
     RUN(feature_not_expr_fail);
     RUN(features_is_list);
+
+    /* Read-suppress tests */
+    RUN(feature_suppress_unknown_package);
+    RUN(feature_suppress_internal_symbol);
+    RUN(feature_suppress_unknown_char_name);
+    RUN(feature_suppress_nested);
+    RUN(feature_suppress_unknown_dispatch);
+    RUN(feature_suppress_in_list);
+
+    /* Read-time eval */
+    RUN(read_time_eval_arithmetic);
+    RUN(read_time_eval_list);
+    RUN(read_time_eval_in_list);
 
     teardown();
     REPORT();

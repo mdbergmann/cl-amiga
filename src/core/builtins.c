@@ -517,6 +517,94 @@ static CL_Obj bi_untrace_all(CL_Obj *args, int n)
     return CL_NIL;
 }
 
+/* --- Property lists --- */
+
+static CL_Obj bi_symbol_plist(CL_Obj *args, int n)
+{
+    CL_UNUSED(n);
+    if (!CL_SYMBOL_P(args[0]))
+        cl_error(CL_ERR_TYPE, "SYMBOL-PLIST: not a symbol");
+    return ((CL_Symbol *)CL_OBJ_TO_PTR(args[0]))->plist;
+}
+
+static CL_Obj bi_get(CL_Obj *args, int n)
+{
+    CL_Symbol *s;
+    CL_Obj plist, indicator, def;
+    if (!CL_SYMBOL_P(args[0]))
+        cl_error(CL_ERR_TYPE, "GET: not a symbol");
+    s = (CL_Symbol *)CL_OBJ_TO_PTR(args[0]);
+    indicator = args[1];
+    def = (n > 2) ? args[2] : CL_NIL;
+    plist = s->plist;
+    while (!CL_NULL_P(plist) && !CL_NULL_P(cl_cdr(plist))) {
+        if (cl_car(plist) == indicator)
+            return cl_car(cl_cdr(plist));
+        plist = cl_cdr(cl_cdr(plist));
+    }
+    return def;
+}
+
+static CL_Obj bi_setf_get(CL_Obj *args, int n)
+{
+    /* (%setf-get symbol indicator value) */
+    CL_Symbol *s;
+    CL_Obj plist, indicator, value;
+    CL_UNUSED(n);
+    if (!CL_SYMBOL_P(args[0]))
+        cl_error(CL_ERR_TYPE, "GET: not a symbol");
+    s = (CL_Symbol *)CL_OBJ_TO_PTR(args[0]);
+    indicator = args[1];
+    value = args[2];
+    plist = s->plist;
+    /* Search for existing indicator */
+    while (!CL_NULL_P(plist) && !CL_NULL_P(cl_cdr(plist))) {
+        if (cl_car(plist) == indicator) {
+            /* Update value in place */
+            ((CL_Cons *)CL_OBJ_TO_PTR(cl_cdr(plist)))->car = value;
+            return value;
+        }
+        plist = cl_cdr(cl_cdr(plist));
+    }
+    /* Not found — prepend indicator+value */
+    {
+        CL_Obj new_plist;
+        CL_GC_PROTECT(value);
+        new_plist = cl_cons(indicator, cl_cons(value, s->plist));
+        CL_GC_UNPROTECT(1);
+        /* Re-fetch symbol pointer after potential GC */
+        s = (CL_Symbol *)CL_OBJ_TO_PTR(args[0]);
+        s->plist = new_plist;
+    }
+    return value;
+}
+
+static CL_Obj bi_remprop(CL_Obj *args, int n)
+{
+    CL_Symbol *s;
+    CL_Obj indicator, plist, prev_val;
+    CL_UNUSED(n);
+    if (!CL_SYMBOL_P(args[0]))
+        cl_error(CL_ERR_TYPE, "REMPROP: not a symbol");
+    s = (CL_Symbol *)CL_OBJ_TO_PTR(args[0]);
+    indicator = args[1];
+    plist = s->plist;
+    prev_val = CL_NIL;
+    while (!CL_NULL_P(plist) && !CL_NULL_P(cl_cdr(plist))) {
+        if (cl_car(plist) == indicator) {
+            CL_Obj rest = cl_cdr(cl_cdr(plist));
+            if (CL_NULL_P(prev_val))
+                s->plist = rest;
+            else
+                ((CL_Cons *)CL_OBJ_TO_PTR(prev_val))->cdr = rest;
+            return SYM_T;
+        }
+        prev_val = cl_cdr(plist);  /* value cell */
+        plist = cl_cdr(cl_cdr(plist));
+    }
+    return CL_NIL;
+}
+
 /* --- Registration --- */
 
 /* Sub-module init functions */
@@ -574,6 +662,12 @@ void cl_builtins_init(void)
 
     /* Declarations */
     defun("PROCLAIM", bi_proclaim, 1, 1);
+
+    /* Property lists */
+    defun("SYMBOL-PLIST", bi_symbol_plist, 1, 1);
+    defun("GET", bi_get, 2, 3);
+    defun("%SETF-GET", bi_setf_get, 3, 3);
+    defun("REMPROP", bi_remprop, 2, 2);
 
     /* Trace (internal helpers, called by compiler special forms) */
     defun("%TRACE-FUNCTION", bi_trace_function, 1, 1);

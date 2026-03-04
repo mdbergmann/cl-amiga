@@ -2705,6 +2705,12 @@
 (check "require already provided" nil (require "test-mod-1"))
 (check "modules is list" t (listp *modules*))
 
+; --- Read-time eval (#.) ---
+(check "#. arithmetic" 3 #.(+ 1 2))
+(check "#. list" '(1 2) #.(list 1 2))
+(check "#. in list" '(a 30 b) (list 'a #.(+ 10 20) 'b))
+(check "*read-eval* default" t *read-eval*)
+
 ; --- Summary ---
 (format t "~%=== Results ===~%")
 (format t "Passed: ~A~%" *pass-count*)
