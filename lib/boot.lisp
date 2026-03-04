@@ -143,9 +143,12 @@
 ;; define-condition — define a user condition type with slots and readers
 (defmacro define-condition (name parent-types slot-specs &rest options)
   (let ((parent (if (consp parent-types) (car parent-types) parent-types))
+        (parents-list (if (consp parent-types) parent-types (list parent-types)))
         (slot-pairs (mapcar (lambda (spec) (cons (car spec) (getf (cdr spec) :initarg))) slot-specs)))
     `(progn
        (%register-condition-type ',name ',parent ',slot-pairs)
+       (when (boundp '%register-condition-class)
+         (%register-condition-class ',name ',parents-list))
        ,@(mapcan (lambda (slot-spec)
                    (let* ((slot-name (car slot-spec))
                           (opts (cdr slot-spec))

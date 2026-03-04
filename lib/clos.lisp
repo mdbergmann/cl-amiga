@@ -213,6 +213,49 @@
 (%make-bootstrap-class 'condition
   (list (find-class 't)))
 
+;; Condition type hierarchy (for method dispatch on condition types)
+(%make-bootstrap-class 'serious-condition
+  (list (find-class 'condition)))
+(%make-bootstrap-class 'warning
+  (list (find-class 'condition)))
+(%make-bootstrap-class 'simple-condition
+  (list (find-class 'condition)))
+(%make-bootstrap-class 'error
+  (list (find-class 'serious-condition)))
+(%make-bootstrap-class 'type-error
+  (list (find-class 'error)))
+(%make-bootstrap-class 'arithmetic-error
+  (list (find-class 'error)))
+(%make-bootstrap-class 'division-by-zero
+  (list (find-class 'arithmetic-error)))
+(%make-bootstrap-class 'control-error
+  (list (find-class 'error)))
+(%make-bootstrap-class 'program-error
+  (list (find-class 'error)))
+(%make-bootstrap-class 'undefined-function
+  (list (find-class 'error)))
+(%make-bootstrap-class 'unbound-variable
+  (list (find-class 'error)))
+(%make-bootstrap-class 'simple-error
+  (list (find-class 'error) (find-class 'simple-condition)))
+(%make-bootstrap-class 'simple-warning
+  (list (find-class 'warning) (find-class 'simple-condition)))
+
+;;; --- Register condition types as CLOS classes (for method dispatch) ---
+
+(defun %register-condition-class (name direct-super-names)
+  "Register a condition type as a CLOS class for method dispatch."
+  (unless (find-class name nil)
+    (let* ((supers (mapcar #'find-class direct-super-names))
+           (class (%make-struct 'standard-class
+                    name supers nil nil nil nil nil nil nil t)))
+      (%set-class-cpl class (%compute-builtin-cpl class))
+      (setf (find-class name) class)
+      (dolist (super supers)
+        (%set-class-direct-subclasses super
+          (cons class (class-direct-subclasses super))))
+      class)))
+
 ;;; --- class-of ---
 
 (defun class-of (object)
