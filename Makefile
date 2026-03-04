@@ -70,7 +70,7 @@ host: $(BUILDDIR)/clamiga
 
 $(BUILDDIR)/clamiga: $(HOST_OBJS)
 	@mkdir -p $(dir $@)
-	$(CC_HOST) $(CFLAGS_HOST) -o $@ $^
+	$(CC_HOST) $(CFLAGS_HOST) -o $@ $^ -lm
 
 $(BUILDDIR)/%.o: $(SRCDIR)/%.c
 	@mkdir -p $(dir $@)
@@ -94,7 +94,7 @@ test: $(TEST_BINS)
 
 $(BUILDDIR)/tests/%: $(TEST_SRCDIR)/%.c $(LIB_OBJS)
 	@mkdir -p $(dir $@)
-	$(CC_HOST) $(CFLAGS_HOST) -I$(SRCDIR) -I$(TEST_SRCDIR) -o $@ $< $(LIB_OBJS)
+	$(CC_HOST) $(CFLAGS_HOST) -I$(SRCDIR) -I$(TEST_SRCDIR) -o $@ $< $(LIB_OBJS) -lm
 
 # Verify Amiga test results (after FS-UAE run)
 verify-amiga:
