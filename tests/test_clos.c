@@ -139,10 +139,11 @@ TEST(class_of_stream)
 
 /* === Step 2: Bootstrap core classes === */
 
-/* Load CLOS module */
+/* CLOS module is auto-loaded during init */
 TEST(clos_require)
 {
-    ASSERT_STR_EQ(eval_print("(require \"clos\")"), "T");
+    /* CLOS is now loaded at startup; require returns NIL (already provided) */
+    ASSERT_STR_EQ(eval_print("(require \"clos\")"), "NIL");
 }
 
 /* find-class returns a class metaobject */
