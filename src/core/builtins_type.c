@@ -72,8 +72,22 @@ static int typep_symbol(CL_Obj obj, CL_Obj type_sym)
     if (strcmp(tname, "NUMBER") == 0) return CL_NUMBER_P(obj);
     if (strcmp(tname, "CHARACTER") == 0)      return CL_CHAR_P(obj);
     if (strcmp(tname, "STRING") == 0)         return CL_STRING_P(obj);
+    if (strcmp(tname, "BIT-VECTOR") == 0)
+        return CL_BIT_VECTOR_P(obj);
+    if (strcmp(tname, "SIMPLE-BIT-VECTOR") == 0) {
+        if (!CL_BIT_VECTOR_P(obj)) return 0;
+        { CL_BitVector *bv = (CL_BitVector *)CL_OBJ_TO_PTR(obj);
+          return !(bv->flags & (CL_VEC_FLAG_FILL_POINTER | CL_VEC_FLAG_ADJUSTABLE)); }
+    }
     if (strcmp(tname, "ARRAY") == 0 || strcmp(tname, "SIMPLE-ARRAY") == 0) {
         if (CL_STRING_P(obj)) return 1;
+        if (CL_BIT_VECTOR_P(obj)) {
+            if (strcmp(tname, "SIMPLE-ARRAY") == 0) {
+                CL_BitVector *bv = (CL_BitVector *)CL_OBJ_TO_PTR(obj);
+                return !(bv->flags & (CL_VEC_FLAG_FILL_POINTER | CL_VEC_FLAG_ADJUSTABLE));
+            }
+            return 1;
+        }
         if (!CL_VECTOR_P(obj)) return 0;
         if (strcmp(tname, "SIMPLE-ARRAY") == 0) {
             CL_Vector *v = (CL_Vector *)CL_OBJ_TO_PTR(obj);
@@ -84,6 +98,7 @@ static int typep_symbol(CL_Obj obj, CL_Obj type_sym)
     }
     if (strcmp(tname, "VECTOR") == 0) {
         if (CL_STRING_P(obj)) return 1;
+        if (CL_BIT_VECTOR_P(obj)) return 1;
         if (!CL_VECTOR_P(obj)) return 0;
         { CL_Vector *v = (CL_Vector *)CL_OBJ_TO_PTR(obj); return v->rank <= 1; }
     }
@@ -95,7 +110,7 @@ static int typep_symbol(CL_Obj obj, CL_Obj type_sym)
         return v->rank <= 1 && v->flags == 0;
     }
     if (strcmp(tname, "SEQUENCE") == 0)
-        return CL_NULL_P(obj) || CL_CONS_P(obj) || CL_STRING_P(obj) || CL_VECTOR_P(obj);
+        return CL_NULL_P(obj) || CL_CONS_P(obj) || CL_STRING_P(obj) || CL_VECTOR_P(obj) || CL_BIT_VECTOR_P(obj);
     if (strcmp(tname, "FUNCTION") == 0)
         return CL_FUNCTION_P(obj) || CL_CLOSURE_P(obj) || CL_BYTECODE_P(obj);
     if (strcmp(tname, "COMPILED-FUNCTION") == 0)
@@ -103,6 +118,8 @@ static int typep_symbol(CL_Obj obj, CL_Obj type_sym)
     if (strcmp(tname, "HASH-TABLE") == 0)     return CL_HASHTABLE_P(obj);
     if (strcmp(tname, "PACKAGE") == 0)        return CL_PACKAGE_P(obj);
     if (strcmp(tname, "STREAM") == 0)        return CL_STREAM_P(obj);
+    if (strcmp(tname, "RANDOM-STATE") == 0) return CL_RANDOM_STATE_P(obj);
+    if (strcmp(tname, "PATHNAME") == 0)     return CL_PATHNAME_P(obj);
 
     /* Structure types — check hierarchy for struct objects */
     if (strcmp(tname, "STRUCTURE") == 0 || strcmp(tname, "STRUCTURE-OBJECT") == 0)
@@ -270,6 +287,12 @@ static CL_Obj bi_type_of(CL_Obj *args, int n)
         CL_Struct *st = (CL_Struct *)CL_OBJ_TO_PTR(args[0]);
         return st->type_desc;
     }
+    /* For bit vectors */
+    if (CL_BIT_VECTOR_P(args[0])) {
+        CL_BitVector *bv = (CL_BitVector *)CL_OBJ_TO_PTR(args[0]);
+        name = (bv->flags == 0) ? "SIMPLE-BIT-VECTOR" : "BIT-VECTOR";
+        return cl_intern(name, (uint32_t)strlen(name));
+    }
     /* For vectors/arrays, return specific type */
     if (CL_VECTOR_P(args[0])) {
         CL_Vector *v = (CL_Vector *)CL_OBJ_TO_PTR(args[0]);
@@ -357,9 +380,44 @@ static CL_Obj bi_coerce(CL_Obj *args, int n)
         return CL_NIL;
     }
 
+    /* (coerce x 'bit-vector) */
+    if (strcmp(tname, "BIT-VECTOR") == 0 || strcmp(tname, "SIMPLE-BIT-VECTOR") == 0) {
+        if (CL_BIT_VECTOR_P(obj)) return obj;
+        if (CL_NULL_P(obj) || CL_CONS_P(obj)) {
+            CL_Obj p = obj;
+            uint32_t len = 0;
+            uint32_t ii;
+            CL_Obj bvobj;
+            CL_BitVector *bv;
+            while (!CL_NULL_P(p)) { len++; p = cl_cdr(p); }
+            bvobj = cl_make_bit_vector(len);
+            bv = (CL_BitVector *)CL_OBJ_TO_PTR(bvobj);
+            p = obj;
+            for (ii = 0; ii < len; ii++) {
+                CL_Obj elem = cl_car(p);
+                if (CL_FIXNUM_P(elem) && CL_FIXNUM_VAL(elem) == 1)
+                    bv->data[ii / 32] |= (1u << (ii % 32));
+                p = cl_cdr(p);
+            }
+            return bvobj;
+        }
+        cl_error(CL_ERR_TYPE, "COERCE: cannot coerce to BIT-VECTOR");
+        return CL_NIL;
+    }
+
     /* (coerce x 'list) */
     if (strcmp(tname, "LIST") == 0) {
         if (CL_NULL_P(obj) || CL_CONS_P(obj)) return obj;
+        if (CL_BIT_VECTOR_P(obj)) {
+            CL_BitVector *bv = (CL_BitVector *)CL_OBJ_TO_PTR(obj);
+            CL_Obj result = CL_NIL;
+            uint32_t ii = bv->length;
+            while (ii > 0) {
+                ii--;
+                result = cl_cons(CL_MAKE_FIXNUM(cl_bv_get_bit(bv, ii)), result);
+            }
+            return result;
+        }
         if (CL_VECTOR_P(obj)) {
             CL_Vector *v = (CL_Vector *)CL_OBJ_TO_PTR(obj);
             CL_Obj *elts = cl_vector_data(v);
@@ -388,6 +446,18 @@ static CL_Obj bi_coerce(CL_Obj *args, int n)
     /* (coerce x 'vector) */
     if (strcmp(tname, "VECTOR") == 0) {
         if (CL_VECTOR_P(obj)) return obj;
+        if (CL_BIT_VECTOR_P(obj)) {
+            CL_BitVector *bv = (CL_BitVector *)CL_OBJ_TO_PTR(obj);
+            uint32_t bvlen = bv->length;
+            uint32_t ii;
+            CL_Obj vec = cl_make_vector(bvlen);
+            CL_Vector *v;
+            bv = (CL_BitVector *)CL_OBJ_TO_PTR(obj);
+            v = (CL_Vector *)CL_OBJ_TO_PTR(vec);
+            for (ii = 0; ii < bvlen; ii++)
+                cl_vector_data(v)[ii] = CL_MAKE_FIXNUM(cl_bv_get_bit(bv, ii));
+            return vec;
+        }
         if (CL_NULL_P(obj) || CL_CONS_P(obj)) {
             CL_Obj p = obj;
             uint32_t len = 0;
@@ -408,6 +478,18 @@ static CL_Obj bi_coerce(CL_Obj *args, int n)
             return vec;
         }
         cl_error(CL_ERR_TYPE, "COERCE: cannot coerce to VECTOR");
+        return CL_NIL;
+    }
+
+    /* (coerce x 'pathname) */
+    if (strcmp(tname, "PATHNAME") == 0) {
+        if (CL_PATHNAME_P(obj)) return obj;
+        if (CL_STRING_P(obj)) {
+            extern CL_Obj cl_parse_namestring(const char *str, uint32_t len);
+            CL_String *s = (CL_String *)CL_OBJ_TO_PTR(obj);
+            return cl_parse_namestring(s->data, s->length);
+        }
+        cl_error(CL_ERR_TYPE, "COERCE: cannot coerce to PATHNAME");
         return CL_NIL;
     }
 
@@ -463,6 +545,9 @@ enum TypeId {
     TID_DOUBLE_FLOAT,
     TID_FLOAT,
     TID_STRUCTURE,
+    TID_BIT_VECTOR,
+    TID_SIMPLE_BIT_VECTOR,
+    TID_PATHNAME,
     TID_T,
     TID_COUNT
 };
@@ -512,6 +597,9 @@ static int type_name_to_id(const char *name)
     if (strcmp(name, "DOUBLE-FLOAT") == 0 || strcmp(name, "LONG-FLOAT") == 0) return TID_DOUBLE_FLOAT;
     if (strcmp(name, "FLOAT") == 0) return TID_FLOAT;
     if (strcmp(name, "STRUCTURE") == 0 || strcmp(name, "STRUCTURE-OBJECT") == 0) return TID_STRUCTURE;
+    if (strcmp(name, "BIT-VECTOR") == 0) return TID_BIT_VECTOR;
+    if (strcmp(name, "SIMPLE-BIT-VECTOR") == 0) return TID_SIMPLE_BIT_VECTOR;
+    if (strcmp(name, "PATHNAME") == 0) return TID_PATHNAME;
     if (strcmp(name, "T") == 0) return TID_T;
     return TID_UNKNOWN;
 }
@@ -568,6 +656,11 @@ static int subtype_check(int id1, int id2)
     if (id1 == TID_VECTOR && (id2 == TID_ARRAY || id2 == TID_SEQUENCE)) return 1;
     if (id1 == TID_STRING && (id2 == TID_VECTOR || id2 == TID_SIMPLE_ARRAY ||
                                id2 == TID_ARRAY || id2 == TID_SEQUENCE)) return 1;
+    if (id1 == TID_BIT_VECTOR && (id2 == TID_VECTOR || id2 == TID_ARRAY ||
+                                   id2 == TID_SEQUENCE)) return 1;
+    if (id1 == TID_SIMPLE_BIT_VECTOR && (id2 == TID_BIT_VECTOR || id2 == TID_VECTOR ||
+                                          id2 == TID_SIMPLE_ARRAY || id2 == TID_ARRAY ||
+                                          id2 == TID_SEQUENCE)) return 1;
 
     /* Function hierarchy: compiled-function < function */
     if (id1 == TID_COMPILED_FUNCTION && id2 == TID_FUNCTION) return 1;
@@ -632,6 +725,9 @@ static int subtype_check(int id1, int id2)
 
     /* Structure hierarchy: structure < atom */
     if (id1 == TID_STRUCTURE && id2 == TID_ATOM) return 1;
+
+    /* Pathname is an atom */
+    if (id1 == TID_PATHNAME && id2 == TID_ATOM) return 1;
 
     return 0;
 }

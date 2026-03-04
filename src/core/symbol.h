@@ -218,6 +218,23 @@ extern CL_Obj SYM_BOOLE_ANDC2;       /* BOOLE-ANDC2 */
 extern CL_Obj SYM_BOOLE_ORC1;        /* BOOLE-ORC1 */
 extern CL_Obj SYM_BOOLE_ORC2;        /* BOOLE-ORC2 */
 
+/* Random state */
+extern CL_Obj SYM_RANDOM_STATE;      /* *RANDOM-STATE* */
+
+/* Pathname */
+extern CL_Obj SYM_PATHNAME;          /* PATHNAME */
+extern CL_Obj KW_ABSOLUTE;           /* :ABSOLUTE */
+extern CL_Obj KW_RELATIVE;           /* :RELATIVE */
+extern CL_Obj KW_NEWEST;             /* :NEWEST */
+extern CL_Obj KW_HOST;               /* :HOST */
+extern CL_Obj KW_DEVICE;             /* :DEVICE */
+extern CL_Obj KW_DIRECTORY;          /* :DIRECTORY */
+extern CL_Obj KW_NAME;              /* :NAME */
+extern CL_Obj KW_TYPE;              /* :TYPE */
+extern CL_Obj KW_VERSION;           /* :VERSION */
+extern CL_Obj KW_DEFAULTS;          /* :DEFAULTS */
+extern CL_Obj SYM_STAR_DEFAULT_PATHNAME_DEFAULTS; /* *DEFAULT-PATHNAME-DEFAULTS* */
+
 /* Feature keywords */
 extern CL_Obj KW_CL_AMIGA;           /* :CL-AMIGA */
 extern CL_Obj KW_COMMON_LISP;        /* :COMMON-LISP */

@@ -687,6 +687,46 @@ static CL_Obj read_expr(void)
                 return CL_READER_SKIP;
             }
         }
+        if (ch == '*') {
+            /* #*0110 => simple bit vector */
+            char bits[4096];
+            int blen = 0;
+            uint32_t bi;
+            CL_Obj bvobj;
+            CL_BitVector *bv;
+            for (;;) {
+                int c2 = read_char();
+                if (c2 == '0' || c2 == '1') {
+                    if (blen < 4095) bits[blen++] = (char)c2;
+                } else {
+                    if (c2 >= 0) unread_char(c2);
+                    break;
+                }
+            }
+            bvobj = cl_make_bit_vector((uint32_t)blen);
+            bv = (CL_BitVector *)CL_OBJ_TO_PTR(bvobj);
+            for (bi = 0; bi < (uint32_t)blen; bi++) {
+                if (bits[bi] == '1')
+                    bv->data[bi / 32] |= (1u << (bi % 32));
+            }
+            return bvobj;
+        }
+        if (ch == 'p' || ch == 'P') {
+            /* #P"..." => pathname literal */
+            CL_Obj path_str;
+            extern CL_Obj cl_parse_namestring(const char *str, uint32_t len);
+            skip_whitespace();
+            ch = read_char();
+            if (ch != '"') {
+                cl_error(CL_ERR_PARSE, "#P must be followed by a string");
+                return CL_NIL;
+            }
+            path_str = read_string();
+            {
+                CL_String *s = (CL_String *)CL_OBJ_TO_PTR(path_str);
+                return cl_parse_namestring(s->data, s->length);
+            }
+        }
         if (ch == '(') {
             /* #(e1 e2 ...) => simple vector */
             CL_Obj elems = CL_NIL;

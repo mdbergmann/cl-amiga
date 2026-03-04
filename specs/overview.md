@@ -39,7 +39,7 @@ CL_Obj (uint32_t):
 Heap object header (uint32_t):
   [type:8][gc_mark:1][size:23]       max object size = 8MB
 
-Types: CONS, SYMBOL, STRING, FUNCTION, CLOSURE, BYTECODE, VECTOR, PACKAGE, HASHTABLE, CONDITION, STRUCT, BIGNUM, SINGLE_FLOAT, DOUBLE_FLOAT, RATIO, STREAM, ARRAY
+Types: CONS, SYMBOL, STRING, FUNCTION, CLOSURE, BYTECODE, VECTOR, PACKAGE, HASHTABLE, CONDITION, STRUCT, BIGNUM, SINGLE_FLOAT, DOUBLE_FLOAT, RATIO, STREAM, ARRAY, RANDOM_STATE, BIT_VECTOR, PATHNAME
 ```
 
 ## Memory Budget (8MB System)
@@ -91,16 +91,16 @@ Single-pass recursive compiler from S-expressions to bytecode:
 
 **Bootstrap macros:** `when`, `unless`, `prog1`, `prog2`, `push`, `pop`, `incf`, `decf`, `pushnew`, `handler-case`, `ignore-errors`, `with-simple-restart`, `define-condition`, `check-type`, `assert`, `defpackage`, `do-symbols`, `do-external-symbols`, `defstruct`, `with-open-file`, `with-output-to-string`, `with-input-from-string`, `with-standard-io-syntax`, `loop`
 
-**Bootstrap functions:** `cadr`, `caar`, `cdar`, `cddr`, `caddr`, `cadar`, `cdddr`, `cadddr`, `identity`, `endp`, `member`, `intersection`, `union`, `set-difference`, `subsetp`, `cerror`, `break`, `read-from-string`, `prin1-to-string`, `princ-to-string`, `write-to-string`, `complement`, `constantly`, `tree-equal`, `list-length`, `tailp`, `ldiff`, `revappend`, `nreconc`, `assoc-if`, `assoc-if-not`, `rassoc-if`, `rassoc-if-not`, `pathname-name`, `pathname-type`, `pathname-directory`, `namestring`, `truename`, `make-pathname`, `merge-pathnames`, `enough-namestring`, `ensure-directories-exist`, `decode-universal-time`, `encode-universal-time`, `get-decoded-time`
+**Bootstrap functions:** `cadr`, `caar`, `cdar`, `cddr`, `caddr`, `cadar`, `cdddr`, `cadddr`, `identity`, `endp`, `member`, `intersection`, `union`, `set-difference`, `subsetp`, `cerror`, `break`, `read-from-string`, `prin1-to-string`, `princ-to-string`, `write-to-string`, `complement`, `constantly`, `tree-equal`, `list-length`, `tailp`, `ldiff`, `revappend`, `nreconc`, `assoc-if`, `assoc-if-not`, `rassoc-if`, `rassoc-if-not`, `truename`, `ensure-directories-exist`, `decode-universal-time`, `encode-universal-time`, `get-decoded-time`
 
-## Built-in Functions (351 C functions + 35 boot.lisp functions)
+## Built-in Functions (366 C functions + 35 boot.lisp functions)
 
 | Category | Functions |
 |----------|-----------|
 | Arithmetic | `+` `-` `*` `/` `truncate` `floor` `ceiling` `round` `ftruncate` `ffloor` `fceiling` `fround` `rem` `mod` `1+` `1-` `abs` `max` `min` `gcd` `lcm` `expt` `isqrt` `sqrt` `exp` `log` `sin` `cos` `tan` `asin` `acos` `atan` |
 | Bitwise | `ash` `logand` `logior` `logxor` `lognot` `integer-length` |
 | Comparison | `=` `/=` `<` `>` `<=` `>=` |
-| Predicates | `null` `consp` `atom` `listp` `numberp` `integerp` `floatp` `realp` `rationalp` `symbolp` `stringp` `functionp` `vectorp` `arrayp` `simple-vector-p` `adjustable-array-p` `zerop` `plusp` `minusp` `evenp` `oddp` `characterp` `keywordp` `hash-table-p` |
+| Predicates | `null` `consp` `atom` `listp` `numberp` `integerp` `floatp` `realp` `rationalp` `symbolp` `stringp` `functionp` `vectorp` `arrayp` `simple-vector-p` `adjustable-array-p` `zerop` `plusp` `minusp` `evenp` `oddp` `characterp` `keywordp` `hash-table-p` `pathnamep` |
 | Equality | `eq` `eql` `equal` `not` |
 | List ops | `cons` `car` `cdr` `first` `rest` `list` `list*` `make-list` `length` `append` `reverse` `nth` `nthcdr` `last` `butlast` `copy-list` `copy-tree` |
 | Alist/plist | `acons` `pairlis` `assoc` `rassoc` `getf` `adjoin` |
@@ -118,7 +118,8 @@ Single-pass recursive compiler from S-expressions to bytecode:
 | I/O | `write` `print` `prin1` `princ` `pprint` `terpri` `format` `read` `load` `disassemble` `compile` |
 | Streams | `streamp` `input-stream-p` `output-stream-p` `interactive-stream-p` `open-stream-p` `read-char` `write-char` `peek-char` `unread-char` `read-line` `write-string` `write-line` `fresh-line` `finish-output` `force-output` `clear-output` `close` `open` `make-string-input-stream` `make-string-output-stream` `get-output-stream-string` |
 | Readtable | `readtablep` `get-macro-character` `set-macro-character` `make-dispatch-macro-character` `set-dispatch-macro-character` `get-dispatch-macro-character` `copy-readtable` |
-| File system | `probe-file` `delete-file` `rename-file` `file-write-date` `file-namestring` `directory-namestring` `ensure-directories-exist` |
+| Pathnames | `pathname` `pathnamep` `parse-namestring` `namestring` `make-pathname` `merge-pathnames` `pathname-host` `pathname-device` `pathname-directory` `pathname-name` `pathname-type` `pathname-version` `file-namestring` `directory-namestring` `enough-namestring` |
+| File system | `probe-file` `delete-file` `rename-file` `file-write-date` `ensure-directories-exist` |
 | Time | `get-universal-time` `get-internal-real-time` `sleep` |
 | Eval/Macro | `eval` `macroexpand` `macroexpand-1` `proclaim` |
 | Control | `throw` `values` `values-list` `error` `signal` `warn` `invoke-restart` `find-restart` `compute-restarts` `abort` `continue` `muffle-warning` `invoke-debugger` |
@@ -271,7 +272,7 @@ File system integration and stream abstraction:
 - [x] `write-to-string`, `prin1-to-string`, `princ-to-string` — boot.lisp functions using `with-output-to-string`
 - [x] `with-output-to-string`, `with-input-from-string`, `make-string-input-stream`, `make-string-output-stream`, `get-output-stream-string`
 - [x] `with-standard-io-syntax`
-- [x] Pathnames (`make-pathname`, `merge-pathnames`, `namestring`, `truename`, `pathname-name`, `pathname-type`, `enough-namestring`, `file-namestring`, `directory-namestring`) — boot.lisp functions, string-based representation
+- [x] Pathnames — `CL_Pathname` heap type with 6 components (host, device, directory, name, type, version); `#P"..."` reader macro; platform-aware parsing (Amiga `VOLUME:dir/file` and POSIX `/dir/file`); 15 C builtins (`pathname`, `pathnamep`, `parse-namestring`, `namestring`, `make-pathname`, `merge-pathnames`, `pathname-host`, `pathname-device`, `pathname-directory`, `pathname-name`, `pathname-type`, `pathname-version`, `file-namestring`, `directory-namestring`, `enough-namestring`); `*default-pathname-defaults*`; `equal` structural comparison; `typep`/`type-of`/`subtypep`/`coerce` integration; `load`/`open` accept pathnames
 - [x] File operations (`probe-file`, `file-write-date`, `delete-file`, `rename-file`, `%mkdir`)
 - [x] Reader macros — readtable pool (4 structs indexed by fixnum), `*readtable*` special variable, `set-macro-character`, `get-macro-character`, `make-dispatch-macro-character`, `set-dispatch-macro-character`, `get-dispatch-macro-character`, `copy-readtable`, `readtablep`; reader consults readtable for user-defined macro and dispatch sub-characters
 - [x] Feature conditionals (`#+`, `#-`, `*features*`) — `:cl-amiga`, `:common-lisp`, `:posix`/`:amigaos`/`:m68k`
@@ -282,7 +283,7 @@ File system integration and stream abstraction:
 - [x] `--load <file>` / `--eval <expr>` command-line options — load files or evaluate expressions before REPL (output appears after banner in interactive mode); `--script <file>` to run file and exit (no REPL); `--non-interactive` to process options and exit without entering REPL
 - [x] `--heap <size>` — configurable arena size (default 4MB, e.g. `--heap 8M`); also `--stack <size>` for VM value stack, `--frames <n>` for call frame depth (default 256); `--help` prints usage; unknown `--` options show error + usage
 
-Not yet implemented: broadcast/concatenated/two-way/echo streams, `read-preserving-whitespace`, `parse-namestring`, `wild-pathname-p`, `translate-pathname`, `directory`
+Not yet implemented: broadcast/concatenated/two-way/echo streams, `read-preserving-whitespace`, `wild-pathname-p`, `translate-pathname`, `directory`, logical pathnames
 
 814 host tests (10 suites), 1042 Amiga batch tests — all passing.
 
@@ -439,7 +440,7 @@ cl-amiga/
 │   └── overview.md        # This file
 ├── src/
 │   ├── main.c             # Entry point
-│   ├── core/              # Language implementation (35 .c + 20 .h modules)
+│   ├── core/              # Language implementation (36 .c + 20 .h modules)
 │   └── platform/          # OS abstraction (posix, amiga)
 ├── include/
 │   └── clamiga.h          # Public umbrella header
@@ -447,7 +448,7 @@ cl-amiga/
 │   └── boot.lisp          # Bootstrap macros/functions
 ├── tests/
 │   ├── test.h             # Test framework
-│   ├── test_*.c           # Host test suites (12 files, 1113 tests)
+│   ├── test_*.c           # Host test suites (15 files, 1269 tests)
 │   └── amiga/
 │       └── run-tests.lisp # AmigaOS batch tests (1435 tests)
 ├── build/                 # Build output (gitignored)

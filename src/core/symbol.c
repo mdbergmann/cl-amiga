@@ -179,6 +179,22 @@ CL_Obj SYM_BOOLE_ANDC2 = CL_NIL;
 CL_Obj SYM_BOOLE_ORC1 = CL_NIL;
 CL_Obj SYM_BOOLE_ORC2 = CL_NIL;
 
+CL_Obj SYM_RANDOM_STATE = CL_NIL;
+
+/* Pathname */
+CL_Obj SYM_PATHNAME = CL_NIL;
+CL_Obj KW_ABSOLUTE = CL_NIL;
+CL_Obj KW_RELATIVE = CL_NIL;
+CL_Obj KW_NEWEST = CL_NIL;
+CL_Obj KW_HOST = CL_NIL;
+CL_Obj KW_DEVICE = CL_NIL;
+CL_Obj KW_DIRECTORY = CL_NIL;
+CL_Obj KW_NAME = CL_NIL;
+CL_Obj KW_TYPE = CL_NIL;
+CL_Obj KW_VERSION = CL_NIL;
+CL_Obj KW_DEFAULTS = CL_NIL;
+CL_Obj SYM_STAR_DEFAULT_PATHNAME_DEFAULTS = CL_NIL;
+
 CL_Obj KW_CL_AMIGA = CL_NIL;
 CL_Obj KW_COMMON_LISP = CL_NIL;
 CL_Obj KW_POSIX = CL_NIL;
@@ -490,6 +506,33 @@ void cl_symbol_init(void)
     {
         CL_Symbol *s = (CL_Symbol *)CL_OBJ_TO_PTR(SYM_PRINT_PPRINT_DISPATCH);
         s->flags |= CL_SYM_SPECIAL; s->value = CL_NIL;
+    }
+
+    /* *RANDOM-STATE* — default random state */
+    SYM_RANDOM_STATE = cl_intern_in("*RANDOM-STATE*", 14, cl_package_cl);
+    {
+        CL_Symbol *s = (CL_Symbol *)CL_OBJ_TO_PTR(SYM_RANDOM_STATE);
+        s->flags |= CL_SYM_SPECIAL;
+        s->value = cl_make_random_state(platform_time_ms() ^ platform_universal_time());
+    }
+
+    /* Pathname symbols */
+    SYM_PATHNAME = cl_intern_in("PATHNAME", 8, cl_package_cl);
+    KW_ABSOLUTE  = cl_intern_keyword("ABSOLUTE", 8);
+    KW_RELATIVE  = cl_intern_keyword("RELATIVE", 8);
+    KW_NEWEST    = cl_intern_keyword("NEWEST", 6);
+    KW_HOST      = cl_intern_keyword("HOST", 4);
+    KW_DEVICE    = cl_intern_keyword("DEVICE", 6);
+    KW_DIRECTORY = cl_intern_keyword("DIRECTORY", 9);
+    KW_NAME      = cl_intern_keyword("NAME", 4);
+    KW_TYPE      = cl_intern_keyword("TYPE", 4);
+    KW_VERSION   = cl_intern_keyword("VERSION", 7);
+    KW_DEFAULTS  = cl_intern_keyword("DEFAULTS", 8);
+    SYM_STAR_DEFAULT_PATHNAME_DEFAULTS = cl_intern_in("*DEFAULT-PATHNAME-DEFAULTS*", 27, cl_package_cl);
+    {
+        CL_Symbol *s = (CL_Symbol *)CL_OBJ_TO_PTR(SYM_STAR_DEFAULT_PATHNAME_DEFAULTS);
+        s->flags |= CL_SYM_SPECIAL;
+        /* Value set later in cl_builtins_pathname_init after pathname type is available */
     }
 
     /* *FEATURES* — feature list for #+ / #- */

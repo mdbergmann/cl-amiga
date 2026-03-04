@@ -1382,18 +1382,30 @@ CL_Obj cl_vm_eval(CL_Obj bytecode_obj)
             CL_Obj val = cl_vm_pop();
             CL_Obj idx_obj = cl_vm_pop();
             CL_Obj vec_obj = cl_vm_pop();
-            CL_Vector *vec;
             int32_t idx;
-            if (!CL_VECTOR_P(vec_obj))
-                cl_error(CL_ERR_TYPE, "ASET: not a vector");
             if (!CL_FIXNUM_P(idx_obj))
                 cl_error(CL_ERR_TYPE, "ASET: index must be a number");
-            vec = (CL_Vector *)CL_OBJ_TO_PTR(vec_obj);
             idx = CL_FIXNUM_VAL(idx_obj);
-            if (idx < 0 || (uint32_t)idx >= vec->length)
-                cl_error(CL_ERR_ARGS, "ASET: index %d out of range (0-%lu)",
-                         (int)idx, (unsigned long)(vec->length - 1));
-            cl_vector_data(vec)[idx] = val;
+            if (CL_BIT_VECTOR_P(vec_obj)) {
+                CL_BitVector *bv = (CL_BitVector *)CL_OBJ_TO_PTR(vec_obj);
+                int32_t v;
+                if (idx < 0 || (uint32_t)idx >= cl_bv_active_length(bv))
+                    cl_error(CL_ERR_ARGS, "ASET: index %d out of range", (int)idx);
+                if (!CL_FIXNUM_P(val))
+                    cl_error(CL_ERR_TYPE, "ASET: value must be 0 or 1 for bit vector");
+                v = CL_FIXNUM_VAL(val);
+                if (v != 0 && v != 1)
+                    cl_error(CL_ERR_TYPE, "ASET: value must be 0 or 1 for bit vector");
+                cl_bv_set_bit(bv, (uint32_t)idx, v);
+            } else if (CL_VECTOR_P(vec_obj)) {
+                CL_Vector *vec = (CL_Vector *)CL_OBJ_TO_PTR(vec_obj);
+                if (idx < 0 || (uint32_t)idx >= vec->length)
+                    cl_error(CL_ERR_ARGS, "ASET: index %d out of range (0-%lu)",
+                             (int)idx, (unsigned long)(vec->length - 1));
+                cl_vector_data(vec)[idx] = val;
+            } else {
+                cl_error(CL_ERR_TYPE, "ASET: not a vector");
+            }
             cl_vm_push(val);
             cl_mv_count = 1;
             break;

@@ -973,6 +973,20 @@ static void print_obj(CL_Obj obj)
         break;
     }
 
+    case TYPE_BIT_VECTOR: {
+        CL_BitVector *bv = (CL_BitVector *)CL_OBJ_TO_PTR(obj);
+        uint32_t bvi, bvlen;
+        if (!print_array_p()) {
+            out_str("#<BIT-VECTOR>");
+            break;
+        }
+        bvlen = cl_bv_active_length(bv);
+        out_str("#*");
+        for (bvi = 0; bvi < bvlen; bvi++)
+            out_char(cl_bv_get_bit(bv, bvi) ? '1' : '0');
+        break;
+    }
+
     case TYPE_PACKAGE: {
         CL_Package *p = (CL_Package *)CL_OBJ_TO_PTR(obj);
         CL_String *name = (CL_String *)CL_OBJ_TO_PTR(p->name);
@@ -1054,6 +1068,21 @@ static void print_obj(CL_Obj obj)
         out_char('>');
         break;
     }
+
+    case TYPE_PATHNAME: {
+        CL_Pathname *pn = (CL_Pathname *)CL_OBJ_TO_PTR(obj);
+        char ns_buf[1024];
+        extern uint32_t cl_pathname_to_namestring(CL_Pathname *pn, char *buf, uint32_t bufsz);
+        cl_pathname_to_namestring(pn, ns_buf, sizeof(ns_buf));
+        out_str("#P\"");
+        out_str(ns_buf);
+        out_char('"');
+        break;
+    }
+
+    case TYPE_RANDOM_STATE:
+        out_str("#<RANDOM-STATE>");
+        break;
 
     case TYPE_STREAM: {
         CL_Stream *st = (CL_Stream *)CL_OBJ_TO_PTR(obj);

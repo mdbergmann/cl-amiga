@@ -327,6 +327,68 @@ CL_Obj cl_make_double_float(double value)
     return CL_PTR_TO_OBJ(df);
 }
 
+CL_Obj cl_make_random_state(uint32_t seed)
+{
+    CL_RandomState *rs = (CL_RandomState *)cl_alloc(TYPE_RANDOM_STATE,
+                                                      sizeof(CL_RandomState));
+    if (!rs) return CL_NIL;
+    /* Seed all 4 state words from seed using splitmix32-like mixing */
+    {
+        uint32_t z = seed;
+        z = (z ^ (z >> 16)) * 0x45d9f3bU; z ^= z >> 16;
+        rs->s[0] = z ? z : 1;
+        z = (seed + 0x9e3779b9U);
+        z = (z ^ (z >> 16)) * 0x45d9f3bU; z ^= z >> 16;
+        rs->s[1] = z ? z : 1;
+        z = (seed + 0x9e3779b9U * 2);
+        z = (z ^ (z >> 16)) * 0x45d9f3bU; z ^= z >> 16;
+        rs->s[2] = z ? z : 1;
+        z = (seed + 0x9e3779b9U * 3);
+        z = (z ^ (z >> 16)) * 0x45d9f3bU; z ^= z >> 16;
+        rs->s[3] = z ? z : 1;
+    }
+    return CL_PTR_TO_OBJ(rs);
+}
+
+CL_Obj cl_make_bit_vector(uint32_t nbits)
+{
+    uint32_t nwords = CL_BV_WORDS(nbits);
+    uint32_t alloc_size = sizeof(CL_BitVector) + nwords * sizeof(uint32_t);
+    CL_BitVector *bv = (CL_BitVector *)cl_alloc(TYPE_BIT_VECTOR, alloc_size);
+    if (!bv) return CL_NIL;
+    bv->length = nbits;
+    bv->fill_pointer = CL_NO_FILL_POINTER;
+    bv->flags = 0;
+    bv->_pad[0] = bv->_pad[1] = bv->_pad[2] = 0;
+    /* data[] already zeroed by cl_alloc */
+    return CL_PTR_TO_OBJ(bv);
+}
+
+CL_Obj cl_make_pathname(CL_Obj host, CL_Obj device, CL_Obj directory,
+                        CL_Obj name, CL_Obj type, CL_Obj version)
+{
+    CL_Pathname *pn;
+
+    CL_GC_PROTECT(host);
+    CL_GC_PROTECT(device);
+    CL_GC_PROTECT(directory);
+    CL_GC_PROTECT(name);
+    CL_GC_PROTECT(type);
+    CL_GC_PROTECT(version);
+
+    pn = (CL_Pathname *)cl_alloc(TYPE_PATHNAME, sizeof(CL_Pathname));
+    CL_GC_UNPROTECT(6);
+
+    if (!pn) return CL_NIL;
+    pn->host = host;
+    pn->device = device;
+    pn->directory = directory;
+    pn->name = name;
+    pn->type = type;
+    pn->version = version;
+    return CL_PTR_TO_OBJ(pn);
+}
+
 /* --- GC Root Stack --- */
 
 void cl_gc_push_root(CL_Obj *root)
@@ -449,10 +511,22 @@ static void gc_mark_children(void *ptr, uint8_t type)
         gc_mark_push(r->denominator);
         break;
     }
+    case TYPE_PATHNAME: {
+        CL_Pathname *pn = (CL_Pathname *)ptr;
+        gc_mark_push(pn->host);
+        gc_mark_push(pn->device);
+        gc_mark_push(pn->directory);
+        gc_mark_push(pn->name);
+        gc_mark_push(pn->type);
+        gc_mark_push(pn->version);
+        break;
+    }
     case TYPE_BIGNUM:
     case TYPE_SINGLE_FLOAT:
     case TYPE_DOUBLE_FLOAT:
-        /* No children — raw numeric data */
+    case TYPE_RANDOM_STATE:
+    case TYPE_BIT_VECTOR:
+        /* No children — raw numeric/state data */
         break;
     default:
         break;

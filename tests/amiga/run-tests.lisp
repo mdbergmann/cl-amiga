@@ -1691,15 +1691,53 @@
 ; truename is identity (for now)
 (check "truename" "/foo/bar" (truename "/foo/bar"))
 
-; make-pathname constructs path
-(check "make-pathname" "hello.txt" (make-pathname :name "hello" :type "txt"))
+; make-pathname constructs path (returns pathname, use namestring to get string)
+(check "make-pathname" "hello.txt" (namestring (make-pathname :name "hello" :type "txt")))
 
-; merge-pathnames fills in missing directory
-(check "merge-pathnames" "/some/dir/file.txt" (merge-pathnames "file.txt" "/some/dir/"))
-(check "merge-pathnames-has-dir" "/other/file.txt" (merge-pathnames "/other/file.txt" "/some/dir/"))
+; merge-pathnames fills in missing directory (returns pathname)
+(check "merge-pathnames" "/some/dir/file.txt" (namestring (merge-pathnames "file.txt" "/some/dir/")))
+(check "merge-pathnames-has-dir" "/other/file.txt" (namestring (merge-pathnames "/other/file.txt" "/some/dir/")))
 
-; enough-namestring strips common prefix
-(check "enough-namestring" "bar/baz.txt" (enough-namestring "/foo/bar/baz.txt" "/foo/"))
+; enough-namestring
+(check "enough-namestring" "/foo/bar/baz.txt" (enough-namestring "/foo/bar/baz.txt" "/foo/"))
+
+; --- Pathname type (proper #P pathnames) ---
+
+; pathnamep predicate
+(check "pathnamep-true" t (pathnamep #P"test.lisp"))
+(check "pathnamep-false" nil (pathnamep "test.lisp"))
+
+; #P reader creates pathname objects
+(check "pathname-read-print" "#P\"foo.lisp\"" (format nil "~S" #P"foo.lisp"))
+
+; pathname coercion from string
+(check "pathname-from-string" t (pathnamep (pathname "foo.lisp")))
+
+; pathname-name from #P
+(check "pathname-name-p" "bar" (pathname-name #P"/foo/bar.lisp"))
+
+; pathname-type from #P
+(check "pathname-type-p" "lisp" (pathname-type #P"/foo/bar.lisp"))
+
+; pathname-directory from #P
+(check "pathname-dir-p" (list :absolute "foo") (pathname-directory #P"/foo/bar.lisp"))
+
+; pathname-device from Amiga path
+(check "pathname-device-amiga" "DH0" (pathname-device #P"DH0:Work/test.lisp"))
+
+; namestring round-trip
+(check "namestring-roundtrip" "/foo/bar.lisp" (namestring #P"/foo/bar.lisp"))
+
+; equal on pathnames
+(check "pathname-equal" t (equal #P"/foo/bar.lisp" #P"/foo/bar.lisp"))
+(check "pathname-not-equal" nil (equal #P"/foo/bar.lisp" #P"/baz/bar.lisp"))
+
+; typep / type-of
+(check "pathname-typep" t (typep #P"test" 'pathname))
+(check "pathname-type-of" 'pathname (type-of #P"test"))
+
+; *default-pathname-defaults* is a pathname
+(check "default-pn-defaults" t (pathnamep *default-pathname-defaults*))
 
 ; decode-universal-time returns 9 values
 (check "decode-ut-count" 9 (length (multiple-value-list (decode-universal-time (get-universal-time)))))
@@ -2546,6 +2584,117 @@
 (check "logcount bignum" 1 (logcount (expt 2 40)))
 (check "logbitp bignum" t (logbitp 40 (expt 2 40)))
 (check "logbitp bignum false" nil (logbitp 39 (expt 2 40)))
+
+; --- Bit Vectors ---
+; Reader/printer round-trip
+(check "bv reader empty" "#*" (format nil "~A" #*))
+(check "bv reader 10110" "#*10110" (format nil "~A" #*10110))
+(check "bv reader 32bit" "#*10101010101010101010101010101010" (format nil "~A" #*10101010101010101010101010101010))
+
+; Predicates
+(check "bit-vector-p t" t (bit-vector-p #*1010))
+(check "bit-vector-p nil" nil (bit-vector-p #(1 0 1 0)))
+(check "simple-bit-vector-p" t (simple-bit-vector-p #*1010))
+(check "vectorp bv" t (vectorp #*1010))
+(check "arrayp bv" t (arrayp #*1010))
+
+; type-of, typep
+(check "type-of bv" 'simple-bit-vector (type-of #*1010))
+(check "typep bv bit-vector" t (typep #*1010 'bit-vector))
+(check "typep bv vector" t (typep #*1010 'vector))
+(check "typep bv array" t (typep #*1010 'array))
+(check "typep bv sequence" t (typep #*1010 'sequence))
+(check "typep bv simple-array" t (typep #*1010 'simple-array))
+(check "typep bv string" nil (typep #*1010 'string))
+
+; subtypep
+(check "subtypep bv<vector" t (subtypep 'bit-vector 'vector))
+(check "subtypep sbv<bv" t (subtypep 'simple-bit-vector 'bit-vector))
+(check "subtypep bv<sequence" t (subtypep 'bit-vector 'sequence))
+
+; Element access
+(check "bit 0" 1 (bit #*10110 0))
+(check "bit 1" 0 (bit #*10110 1))
+(check "bit 2" 1 (bit #*10110 2))
+(check "sbit 0" 1 (sbit #*1100 0))
+(check "sbit 3" 0 (sbit #*1100 3))
+(check "aref bv" 1 (aref #*10110 2))
+
+; setf bit
+(check "setf bit" "#*0010" (let ((bv #*0000)) (setf (bit bv 2) 1) (format nil "~A" bv)))
+(check "setf sbit" "#*1011" (let ((bv #*1111)) (setf (sbit bv 1) 0) (format nil "~A" bv)))
+(check "setf aref bv" "#*1000" (let ((bv #*0000)) (setf (aref bv 0) 1) (format nil "~A" bv)))
+
+; make-array with element-type bit
+(check "make-array bit" t (bit-vector-p (make-array 5 :element-type 'bit)))
+(check "make-array bit ie1" "#*1111" (format nil "~A" (make-array 4 :element-type 'bit :initial-element 1)))
+(check "make-array bit ic" "#*1010" (format nil "~A" (make-array 4 :element-type 'bit :initial-contents '(1 0 1 0))))
+
+; Length / elt
+(check "length bv" 5 (length #*10110))
+(check "length bv empty" 0 (length #*))
+(check "elt bv 0" 1 (elt #*10110 0))
+(check "elt bv 4" 0 (elt #*10110 4))
+
+; find / position / count
+(check "find 1 bv" 1 (find 1 #*00100))
+(check "find 1 bv nil" nil (find 1 #*00000))
+(check "position 1 bv" 2 (position 1 #*00100))
+(check "count 1 bv" 3 (count 1 #*10110))
+(check "count 0 bv" 2 (count 0 #*10110))
+
+; copy-seq
+(check "copy-seq bv" "#*10110" (format nil "~A" (copy-seq #*10110)))
+(check "copy-seq independent" '("#*001" "#*101")
+  (let ((a #*101) (b (copy-seq #*101)))
+    (setf (bit a 0) 0)
+    (list (format nil "~A" a) (format nil "~A" b))))
+
+; reverse
+(check "reverse bv" "#*01101" (format nil "~A" (reverse #*10110)))
+(check "reverse bv empty" "#*" (format nil "~A" (reverse #*)))
+
+; fill
+(check "fill bv" "#*11111" (let ((bv #*00000)) (fill bv 1) (format nil "~A" bv)))
+(check "fill bv range" "#*10011" (let ((bv #*11111)) (fill bv 0 :start 1 :end 3) (format nil "~A" bv)))
+
+; setf elt
+(check "setf elt bv" "#*0010" (let ((bv #*0000)) (setf (elt bv 2) 1) (format nil "~A" bv)))
+
+; equal
+(check "equal bv same" t (equal #*10110 #*10110))
+(check "equal bv diff" nil (equal #*10110 #*10111))
+(check "equal bv len" nil (equal #*10110 #*1011))
+(check "equal bv empty" t (equal #* #*))
+(check "equal bv vs vec" nil (equal #*101 #(1 0 1)))
+
+; coerce
+(check "coerce bv->list" '(1 0 1 1 0) (coerce #*10110 'list))
+(check "coerce list->bv" "#*10110" (format nil "~A" (coerce '(1 0 1 1 0) 'bit-vector)))
+(check "coerce bv->vector" #(1 0 1) (coerce #*101 'vector))
+
+; Bitwise operations
+(check "bit-and" "#*1000" (format nil "~A" (bit-and #*1100 #*1010)))
+(check "bit-ior" "#*1110" (format nil "~A" (bit-ior #*1100 #*1010)))
+(check "bit-xor" "#*0110" (format nil "~A" (bit-xor #*1100 #*1010)))
+(check "bit-eqv" "#*1001" (format nil "~A" (bit-eqv #*1100 #*1010)))
+(check "bit-nand" "#*0111" (format nil "~A" (bit-nand #*1100 #*1010)))
+(check "bit-nor" "#*0001" (format nil "~A" (bit-nor #*1100 #*1010)))
+(check "bit-andc1" "#*0010" (format nil "~A" (bit-andc1 #*1100 #*1010)))
+(check "bit-andc2" "#*0100" (format nil "~A" (bit-andc2 #*1100 #*1010)))
+(check "bit-orc1" "#*1011" (format nil "~A" (bit-orc1 #*1100 #*1010)))
+(check "bit-orc2" "#*1101" (format nil "~A" (bit-orc2 #*1100 #*1010)))
+(check "bit-not" "#*01001" (format nil "~A" (bit-not #*10110)))
+(check "bit-and in-place" "#*1000" (let ((a #*1100)) (bit-and a #*1010 t) (format nil "~A" a)))
+
+; Array queries
+(check "array-dimensions bv" '(5) (array-dimensions #*10110))
+(check "array-rank bv" 1 (array-rank #*10110))
+(check "array-dimension bv" 5 (array-dimension #*10110 0))
+(check "array-total-size bv" 5 (array-total-size #*10110))
+(check "row-major-aref bv" 1 (row-major-aref #*10110 2))
+(check "array-has-fp bv" nil (array-has-fill-pointer-p #*1010))
+(check "adjustable-p bv" nil (adjustable-array-p #*1010))
 
 ; --- Summary ---
 (format t "~%=== Results ===~%")

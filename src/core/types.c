@@ -40,6 +40,9 @@ const char *cl_type_name(CL_Obj obj)
         case TYPE_DOUBLE_FLOAT: return "DOUBLE-FLOAT";
         case TYPE_RATIO:    return "RATIO";
         case TYPE_STREAM:   return "STREAM";
+        case TYPE_RANDOM_STATE: return "RANDOM-STATE";
+        case TYPE_BIT_VECTOR: return "BIT-VECTOR";
+        case TYPE_PATHNAME: return "PATHNAME";
         default:            return "UNKNOWN";
         }
     }

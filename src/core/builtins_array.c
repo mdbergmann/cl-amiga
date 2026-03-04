@@ -47,8 +47,10 @@ static CL_Obj bi_make_array(CL_Obj *args, int n)
     CL_Obj dim_arg = args[0];
     CL_Obj initial_element = CL_NIL;
     CL_Obj initial_contents = CL_NIL;
+    CL_Obj element_type = CL_NIL;
     int has_initial_element = 0;
     int has_initial_contents = 0;
+    int element_type_bit = 0;
     uint32_t fill_ptr = CL_NO_FILL_POINTER;
     uint8_t flags = 0;
     int i;
@@ -75,7 +77,10 @@ static CL_Obj bi_make_array(CL_Obj *args, int n)
             if (!CL_NULL_P(args[i + 1]))
                 flags |= CL_VEC_FLAG_ADJUSTABLE;
         } else if (args[i] == KW_ELEMENT_TYPE) {
-            /* Accept and ignore — we only have general arrays */
+            element_type = args[i + 1];
+            if (CL_SYMBOL_P(element_type) &&
+                strcmp(cl_symbol_name(element_type), "BIT") == 0)
+                element_type_bit = 1;
         }
     }
 
@@ -87,6 +92,38 @@ static CL_Obj bi_make_array(CL_Obj *args, int n)
         uint32_t length = (uint32_t)CL_FIXNUM_VAL(dim_arg);
         CL_Obj result;
         CL_Vector *v;
+
+        /* Bit vector path */
+        if (element_type_bit) {
+            CL_BitVector *bv;
+            result = cl_make_bit_vector(length);
+            bv = (CL_BitVector *)CL_OBJ_TO_PTR(result);
+            bv->flags = flags;
+            bv->fill_pointer = fill_ptr;
+            if (has_initial_element) {
+                if (!CL_FIXNUM_P(initial_element) ||
+                    (CL_FIXNUM_VAL(initial_element) != 0 && CL_FIXNUM_VAL(initial_element) != 1))
+                    cl_error(CL_ERR_TYPE, "MAKE-ARRAY: :initial-element for bit array must be 0 or 1");
+                if (CL_FIXNUM_VAL(initial_element) == 1) {
+                    uint32_t nw = CL_BV_WORDS(length), wi;
+                    for (wi = 0; wi < nw; wi++)
+                        bv->data[wi] = 0xFFFFFFFFu;
+                    /* Mask trailing */
+                    if (length % 32 != 0)
+                        bv->data[nw - 1] &= (1u << (length % 32)) - 1;
+                }
+            } else if (has_initial_contents) {
+                CL_Obj cur = initial_contents;
+                uint32_t j;
+                for (j = 0; j < length && !CL_NULL_P(cur); j++) {
+                    CL_Obj elem = cl_car(cur);
+                    if (CL_FIXNUM_P(elem) && CL_FIXNUM_VAL(elem) == 1)
+                        bv->data[j / 32] |= (1u << (j % 32));
+                    cur = cl_cdr(cur);
+                }
+            }
+            return result;
+        }
 
         if (flags == 0 && fill_ptr == CL_NO_FILL_POINTER && !has_initial_element && !has_initial_contents) {
             /* Fast path: simple vector */
@@ -185,6 +222,18 @@ static CL_Obj bi_make_array(CL_Obj *args, int n)
 static CL_Obj bi_aref(CL_Obj *args, int n)
 {
     CL_Vector *vec;
+    if (CL_BIT_VECTOR_P(args[0])) {
+        CL_BitVector *bv = (CL_BitVector *)CL_OBJ_TO_PTR(args[0]);
+        int32_t idx;
+        if (n < 2)
+            cl_error(CL_ERR_ARGS, "AREF: too few arguments");
+        if (!CL_FIXNUM_P(args[1]))
+            cl_error(CL_ERR_TYPE, "AREF: index must be a fixnum");
+        idx = CL_FIXNUM_VAL(args[1]);
+        if (idx < 0 || (uint32_t)idx >= cl_bv_active_length(bv))
+            cl_error(CL_ERR_ARGS, "AREF: index %d out of range", (int)idx);
+        return CL_MAKE_FIXNUM(cl_bv_get_bit(bv, (uint32_t)idx));
+    }
     if (!CL_VECTOR_P(args[0]))
         cl_error(CL_ERR_TYPE, "AREF: not an array");
     vec = (CL_Vector *)CL_OBJ_TO_PTR(args[0]);
@@ -258,6 +307,25 @@ static CL_Obj bi_setf_aref(CL_Obj *args, int n)
     uint32_t row_major = 0;
     int d;
 
+    if (CL_BIT_VECTOR_P(array)) {
+        CL_BitVector *bv = (CL_BitVector *)CL_OBJ_TO_PTR(array);
+        int32_t idx, val;
+        if (nindices != 1)
+            cl_error(CL_ERR_ARGS, "%SETF-AREF: expected 1 index for bit vector");
+        if (!CL_FIXNUM_P(args[2]))
+            cl_error(CL_ERR_TYPE, "%SETF-AREF: index must be a fixnum");
+        idx = CL_FIXNUM_VAL(args[2]);
+        if (idx < 0 || (uint32_t)idx >= cl_bv_active_length(bv))
+            cl_error(CL_ERR_ARGS, "%SETF-AREF: index %d out of range", (int)idx);
+        if (!CL_FIXNUM_P(value))
+            cl_error(CL_ERR_TYPE, "%SETF-AREF: value must be 0 or 1 for bit vector");
+        val = CL_FIXNUM_VAL(value);
+        if (val != 0 && val != 1)
+            cl_error(CL_ERR_TYPE, "%SETF-AREF: value must be 0 or 1");
+        cl_bv_set_bit(bv, (uint32_t)idx, val);
+        return value;
+    }
+
     if (!CL_VECTOR_P(array))
         cl_error(CL_ERR_TYPE, "%SETF-AREF: not an array");
     vec = (CL_Vector *)CL_OBJ_TO_PTR(array);
@@ -316,6 +384,7 @@ static CL_Obj bi_vector(CL_Obj *args, int n)
 static CL_Obj bi_vectorp(CL_Obj *args, int n)
 {
     CL_UNUSED(n);
+    if (CL_BIT_VECTOR_P(args[0])) return SYM_T;
     if (!CL_VECTOR_P(args[0])) return CL_NIL;
     /* vectorp is false for multi-dim arrays */
     {
@@ -324,11 +393,11 @@ static CL_Obj bi_vectorp(CL_Obj *args, int n)
     }
 }
 
-/* (arrayp obj) — true for any array: vectors, multi-dim arrays, strings */
+/* (arrayp obj) — true for any array: vectors, multi-dim arrays, strings, bit-vectors */
 static CL_Obj bi_arrayp(CL_Obj *args, int n)
 {
     CL_UNUSED(n);
-    return (CL_VECTOR_P(args[0]) || CL_STRING_P(args[0])) ? SYM_T : CL_NIL;
+    return (CL_VECTOR_P(args[0]) || CL_STRING_P(args[0]) || CL_BIT_VECTOR_P(args[0])) ? SYM_T : CL_NIL;
 }
 
 /* (simple-vector-p obj) — true for 1D, element-type T, no fill-pointer, not adjustable */
@@ -346,6 +415,10 @@ static CL_Obj bi_adjustable_array_p(CL_Obj *args, int n)
 {
     CL_Vector *v;
     CL_UNUSED(n);
+    if (CL_BIT_VECTOR_P(args[0])) {
+        CL_BitVector *bv = (CL_BitVector *)CL_OBJ_TO_PTR(args[0]);
+        return (bv->flags & CL_VEC_FLAG_ADJUSTABLE) ? SYM_T : CL_NIL;
+    }
     if (!CL_VECTOR_P(args[0]) && !CL_STRING_P(args[0]))
         cl_error(CL_ERR_TYPE, "ADJUSTABLE-ARRAY-P: not an array");
     if (CL_STRING_P(args[0])) return CL_NIL;  /* strings are never adjustable */
@@ -361,6 +434,10 @@ static CL_Obj bi_array_dimensions(CL_Obj *args, int n)
 {
     CL_Vector *vec;
     CL_UNUSED(n);
+    if (CL_BIT_VECTOR_P(args[0])) {
+        CL_BitVector *bv = (CL_BitVector *)CL_OBJ_TO_PTR(args[0]);
+        return cl_cons(CL_MAKE_FIXNUM(bv->length), CL_NIL);
+    }
     if (!CL_VECTOR_P(args[0]))
         cl_error(CL_ERR_TYPE, "ARRAY-DIMENSIONS: not an array");
     vec = (CL_Vector *)CL_OBJ_TO_PTR(args[0]);
@@ -381,6 +458,7 @@ static CL_Obj bi_array_rank(CL_Obj *args, int n)
 {
     CL_Vector *vec;
     CL_UNUSED(n);
+    if (CL_BIT_VECTOR_P(args[0])) return CL_MAKE_FIXNUM(1);
     if (!CL_VECTOR_P(args[0]))
         cl_error(CL_ERR_TYPE, "ARRAY-RANK: not an array");
     vec = (CL_Vector *)CL_OBJ_TO_PTR(args[0]);
@@ -397,6 +475,12 @@ static CL_Obj bi_array_dimension(CL_Obj *args, int n)
     CL_Vector *vec;
     int32_t axis;
     CL_UNUSED(n);
+    if (CL_BIT_VECTOR_P(args[0])) {
+        CL_BitVector *bv = (CL_BitVector *)CL_OBJ_TO_PTR(args[0]);
+        if (!CL_FIXNUM_P(args[1]) || CL_FIXNUM_VAL(args[1]) != 0)
+            cl_error(CL_ERR_ARGS, "ARRAY-DIMENSION: axis must be 0 for bit vector");
+        return CL_MAKE_FIXNUM(bv->length);
+    }
     if (!CL_VECTOR_P(args[0]))
         cl_error(CL_ERR_TYPE, "ARRAY-DIMENSION: not an array");
     if (!CL_FIXNUM_P(args[1]))
@@ -420,6 +504,10 @@ static CL_Obj bi_array_total_size(CL_Obj *args, int n)
 {
     CL_Vector *vec;
     CL_UNUSED(n);
+    if (CL_BIT_VECTOR_P(args[0])) {
+        CL_BitVector *bv = (CL_BitVector *)CL_OBJ_TO_PTR(args[0]);
+        return CL_MAKE_FIXNUM(bv->length);
+    }
     if (!CL_VECTOR_P(args[0]))
         cl_error(CL_ERR_TYPE, "ARRAY-TOTAL-SIZE: not an array");
     vec = (CL_Vector *)CL_OBJ_TO_PTR(args[0]);
@@ -437,6 +525,18 @@ static CL_Obj bi_array_row_major_index(CL_Obj *args, int n)
     int nindices = n - 1;
     uint32_t row_major = 0;
     int d;
+
+    if (CL_BIT_VECTOR_P(args[0])) {
+        int32_t idx;
+        if (nindices != 1)
+            cl_error(CL_ERR_ARGS, "ARRAY-ROW-MAJOR-INDEX: expected 1 subscript for bit vector");
+        if (!CL_FIXNUM_P(args[1]))
+            cl_error(CL_ERR_TYPE, "ARRAY-ROW-MAJOR-INDEX: subscript must be a fixnum");
+        idx = CL_FIXNUM_VAL(args[1]);
+        if (idx < 0 || (uint32_t)idx >= ((CL_BitVector *)CL_OBJ_TO_PTR(args[0]))->length)
+            cl_error(CL_ERR_ARGS, "ARRAY-ROW-MAJOR-INDEX: subscript out of range");
+        return args[1];
+    }
 
     if (!CL_VECTOR_P(args[0]))
         cl_error(CL_ERR_TYPE, "ARRAY-ROW-MAJOR-INDEX: not an array");
@@ -482,6 +582,15 @@ static CL_Obj bi_row_major_aref(CL_Obj *args, int n)
     CL_Vector *vec;
     int32_t idx;
     CL_UNUSED(n);
+    if (CL_BIT_VECTOR_P(args[0])) {
+        CL_BitVector *bv = (CL_BitVector *)CL_OBJ_TO_PTR(args[0]);
+        if (!CL_FIXNUM_P(args[1]))
+            cl_error(CL_ERR_TYPE, "ROW-MAJOR-AREF: index must be a fixnum");
+        idx = CL_FIXNUM_VAL(args[1]);
+        if (idx < 0 || (uint32_t)idx >= bv->length)
+            cl_error(CL_ERR_ARGS, "ROW-MAJOR-AREF: index out of range");
+        return CL_MAKE_FIXNUM(cl_bv_get_bit(bv, (uint32_t)idx));
+    }
     if (!CL_VECTOR_P(args[0]))
         cl_error(CL_ERR_TYPE, "ROW-MAJOR-AREF: not an array");
     if (!CL_FIXNUM_P(args[1]))
@@ -500,6 +609,22 @@ static CL_Obj bi_setf_row_major_aref(CL_Obj *args, int n)
     CL_Vector *vec;
     int32_t idx;
     CL_UNUSED(n);
+    if (CL_BIT_VECTOR_P(args[0])) {
+        CL_BitVector *bv = (CL_BitVector *)CL_OBJ_TO_PTR(args[0]);
+        int32_t val;
+        if (!CL_FIXNUM_P(args[1]))
+            cl_error(CL_ERR_TYPE, "%SETF-ROW-MAJOR-AREF: index must be a fixnum");
+        idx = CL_FIXNUM_VAL(args[1]);
+        if (idx < 0 || (uint32_t)idx >= bv->length)
+            cl_error(CL_ERR_ARGS, "%SETF-ROW-MAJOR-AREF: index out of range");
+        if (!CL_FIXNUM_P(args[2]))
+            cl_error(CL_ERR_TYPE, "%SETF-ROW-MAJOR-AREF: value must be 0 or 1 for bit vector");
+        val = CL_FIXNUM_VAL(args[2]);
+        if (val != 0 && val != 1)
+            cl_error(CL_ERR_TYPE, "%SETF-ROW-MAJOR-AREF: value must be 0 or 1");
+        cl_bv_set_bit(bv, (uint32_t)idx, val);
+        return args[2];
+    }
     if (!CL_VECTOR_P(args[0]))
         cl_error(CL_ERR_TYPE, "%SETF-ROW-MAJOR-AREF: not an array");
     if (!CL_FIXNUM_P(args[1]))
@@ -520,14 +645,22 @@ static CL_Obj bi_setf_row_major_aref(CL_Obj *args, int n)
 /* (fill-pointer vector) → fixnum */
 static CL_Obj bi_fill_pointer(CL_Obj *args, int n)
 {
-    CL_Vector *vec;
     CL_UNUSED(n);
+    if (CL_BIT_VECTOR_P(args[0])) {
+        CL_BitVector *bv = (CL_BitVector *)CL_OBJ_TO_PTR(args[0]);
+        if (bv->fill_pointer == CL_NO_FILL_POINTER)
+            cl_error(CL_ERR_TYPE, "FILL-POINTER: bit vector has no fill pointer");
+        return CL_MAKE_FIXNUM((int32_t)bv->fill_pointer);
+    }
+    {
+    CL_Vector *vec;
     if (!CL_VECTOR_P(args[0]))
         cl_error(CL_ERR_TYPE, "FILL-POINTER: not a vector");
     vec = (CL_Vector *)CL_OBJ_TO_PTR(args[0]);
     if (vec->fill_pointer == CL_NO_FILL_POINTER)
         cl_error(CL_ERR_TYPE, "FILL-POINTER: vector has no fill pointer");
     return CL_MAKE_FIXNUM((int32_t)vec->fill_pointer);
+    }
 }
 
 /* (%SETF-FILL-POINTER vector new-fp) → new-fp */
@@ -554,12 +687,18 @@ static CL_Obj bi_setf_fill_pointer(CL_Obj *args, int n)
 /* (array-has-fill-pointer-p array) → boolean */
 static CL_Obj bi_array_has_fill_pointer_p(CL_Obj *args, int n)
 {
-    CL_Vector *vec;
     CL_UNUSED(n);
+    if (CL_BIT_VECTOR_P(args[0])) {
+        CL_BitVector *bv = (CL_BitVector *)CL_OBJ_TO_PTR(args[0]);
+        return (bv->fill_pointer != CL_NO_FILL_POINTER) ? SYM_T : CL_NIL;
+    }
+    {
+    CL_Vector *vec;
     if (!CL_VECTOR_P(args[0]))
         cl_error(CL_ERR_TYPE, "ARRAY-HAS-FILL-POINTER-P: not an array");
     vec = (CL_Vector *)CL_OBJ_TO_PTR(args[0]);
     return (vec->fill_pointer != CL_NO_FILL_POINTER) ? SYM_T : CL_NIL;
+    }
 }
 
 /* ======================================================= */

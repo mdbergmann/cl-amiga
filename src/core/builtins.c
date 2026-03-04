@@ -68,6 +68,11 @@ static CL_Obj bi_length(CL_Obj *args, int n)
         return CL_MAKE_FIXNUM(cl_vector_active_length(v));
     }
 
+    if (CL_BIT_VECTOR_P(obj)) {
+        CL_BitVector *bv = (CL_BitVector *)CL_OBJ_TO_PTR(obj);
+        return CL_MAKE_FIXNUM(cl_bv_active_length(bv));
+    }
+
     while (!CL_NULL_P(obj)) {
         len++;
         obj = cl_cdr(obj);
@@ -107,15 +112,57 @@ static CL_Obj bi_append(CL_Obj *args, int n)
 
 static CL_Obj bi_reverse(CL_Obj *args, int n)
 {
-    CL_Obj list = args[0];
-    CL_Obj result = CL_NIL;
+    CL_Obj seq = args[0];
     CL_UNUSED(n);
 
-    while (!CL_NULL_P(list)) {
-        result = cl_cons(cl_car(list), result);
-        list = cl_cdr(list);
+    if (CL_NULL_P(seq)) return CL_NIL;
+
+    if (CL_CONS_P(seq)) {
+        CL_Obj result = CL_NIL;
+        while (!CL_NULL_P(seq)) {
+            result = cl_cons(cl_car(seq), result);
+            seq = cl_cdr(seq);
+        }
+        return result;
     }
-    return result;
+    if (CL_VECTOR_P(seq)) {
+        CL_Vector *v = (CL_Vector *)CL_OBJ_TO_PTR(seq);
+        uint32_t alen = cl_vector_active_length(v);
+        CL_Obj result = cl_make_vector(alen);
+        CL_Vector *rv = (CL_Vector *)CL_OBJ_TO_PTR(result);
+        uint32_t i;
+        /* Re-fetch after potential GC */
+        v = (CL_Vector *)CL_OBJ_TO_PTR(seq);
+        for (i = 0; i < alen; i++)
+            cl_vector_data(rv)[i] = cl_vector_data(v)[alen - 1 - i];
+        return result;
+    }
+    if (CL_STRING_P(seq)) {
+        CL_String *s = (CL_String *)CL_OBJ_TO_PTR(seq);
+        uint32_t slen = s->length;
+        char *tmp = (char *)platform_alloc(slen + 1);
+        CL_Obj result;
+        uint32_t i;
+        for (i = 0; i < slen; i++)
+            tmp[i] = s->data[slen - 1 - i];
+        tmp[slen] = '\0';
+        result = cl_make_string(tmp, slen);
+        platform_free(tmp);
+        return result;
+    }
+    if (CL_BIT_VECTOR_P(seq)) {
+        CL_BitVector *bv = (CL_BitVector *)CL_OBJ_TO_PTR(seq);
+        uint32_t blen = bv->length;
+        CL_Obj result = cl_make_bit_vector(blen);
+        CL_BitVector *rv = (CL_BitVector *)CL_OBJ_TO_PTR(result);
+        uint32_t i;
+        bv = (CL_BitVector *)CL_OBJ_TO_PTR(seq);
+        for (i = 0; i < blen; i++)
+            cl_bv_set_bit(rv, i, cl_bv_get_bit(bv, blen - 1 - i));
+        return result;
+    }
+    cl_error(CL_ERR_TYPE, "REVERSE: not a sequence");
+    return CL_NIL;
 }
 
 static CL_Obj bi_nth(CL_Obj *args, int n)
@@ -256,6 +303,19 @@ static CL_Obj bi_equal(CL_Obj *args, int n)
             if (CL_NULL_P(bi_equal(pair, 2))) return CL_NIL;
         }
         return SYM_T;
+    }
+    if (CL_BIT_VECTOR_P(a) && CL_BIT_VECTOR_P(b)) {
+        CL_BitVector *ba = (CL_BitVector *)CL_OBJ_TO_PTR(a);
+        CL_BitVector *bb = (CL_BitVector *)CL_OBJ_TO_PTR(b);
+        uint32_t nwords;
+        if (ba->length != bb->length) return CL_NIL;
+        nwords = CL_BV_WORDS(ba->length);
+        if (nwords == 0) return SYM_T;
+        return memcmp(ba->data, bb->data, nwords * sizeof(uint32_t)) == 0 ? SYM_T : CL_NIL;
+    }
+    if (CL_PATHNAME_P(a) && CL_PATHNAME_P(b)) {
+        extern int cl_pathname_equal(CL_Obj a, CL_Obj b);
+        return cl_pathname_equal(a, b) ? SYM_T : CL_NIL;
     }
     return CL_NIL;
 }
@@ -481,6 +541,9 @@ void cl_builtins_struct_init(void);
 void cl_builtins_stream_init(void);
 void cl_builtins_array_init(void);
 void cl_float_math_init(void);
+void cl_builtins_random_init(void);
+void cl_builtins_bitvector_init(void);
+void cl_builtins_pathname_init(void);
 
 void cl_builtins_init(void)
 {
@@ -541,6 +604,9 @@ void cl_builtins_init(void)
     cl_builtins_stream_init();
     cl_builtins_array_init();
     cl_float_math_init();
+    cl_builtins_random_init();
+    cl_builtins_bitvector_init();
+    cl_builtins_pathname_init();
 
     /* All CL symbols now interned — mark them exported */
     cl_package_export_all_cl_symbols();

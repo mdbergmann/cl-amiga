@@ -26,6 +26,10 @@ CL_Obj SETF_SYM_ROW_MAJOR_AREF = CL_NIL;
 CL_Obj SETF_HELPER_ROW_MAJOR_AREF = CL_NIL;
 CL_Obj SETF_SYM_FILL_POINTER = CL_NIL;
 CL_Obj SETF_HELPER_FILL_POINTER = CL_NIL;
+CL_Obj SETF_SYM_BIT = CL_NIL;
+CL_Obj SETF_HELPER_BIT = CL_NIL;
+CL_Obj SETF_SYM_SBIT = CL_NIL;
+CL_Obj SETF_HELPER_SBIT = CL_NIL;
 
 /* Global optimization settings */
 CL_OptimizeSettings cl_optimize_settings = {1, 1, 1, 1};
@@ -656,6 +660,26 @@ static void compile_setf_place(CL_Compiler *c, CL_Obj place, CL_Obj val_form)
             compile_expr(c, val_form);                     /* value */
             cl_emit(c, OP_CALL);
             cl_emit(c, 3);
+        } else if (head == SETF_SYM_BIT) {
+            /* (setf (bit bv idx) val) → (%setf-bit bv idx val) */
+            int idx = cl_add_constant(c, SETF_HELPER_BIT);
+            cl_emit(c, OP_FLOAD);
+            cl_emit_u16(c, (uint16_t)idx);
+            compile_expr(c, cl_car(cl_cdr(place)));       /* bit-vector */
+            compile_expr(c, cl_car(cl_cdr(cl_cdr(place)))); /* index */
+            compile_expr(c, val_form);                     /* value */
+            cl_emit(c, OP_CALL);
+            cl_emit(c, 3);
+        } else if (head == SETF_SYM_SBIT) {
+            /* (setf (sbit bv idx) val) → (%setf-sbit bv idx val) */
+            int idx = cl_add_constant(c, SETF_HELPER_SBIT);
+            cl_emit(c, OP_FLOAD);
+            cl_emit_u16(c, (uint16_t)idx);
+            compile_expr(c, cl_car(cl_cdr(place)));       /* bit-vector */
+            compile_expr(c, cl_car(cl_cdr(cl_cdr(place)))); /* index */
+            compile_expr(c, val_form);                     /* value */
+            cl_emit(c, OP_CALL);
+            cl_emit(c, 3);
         } else {
             /* Check defsetf table */
             CL_Obj entry = setf_table;
@@ -868,6 +892,8 @@ void compile_expr(CL_Compiler *c, CL_Obj expr)
     if (CL_RATIO_P(expr))   { cl_emit_const(c, expr); return; }
     if (CL_FLOATP(expr))    { cl_emit_const(c, expr); return; }
     if (CL_VECTOR_P(expr))  { cl_emit_const(c, expr); return; }
+    if (CL_BIT_VECTOR_P(expr)) { cl_emit_const(c, expr); return; }
+    if (CL_PATHNAME_P(expr))   { cl_emit_const(c, expr); return; }
 
     if (CL_SYMBOL_P(expr)) {
         compile_symbol(c, expr);
@@ -1176,4 +1202,8 @@ void cl_compiler_init(void)
     SETF_HELPER_ROW_MAJOR_AREF = cl_intern_in("%SETF-ROW-MAJOR-AREF", 20, cl_package_cl);
     SETF_SYM_FILL_POINTER    = cl_intern_in("FILL-POINTER", 12, cl_package_cl);
     SETF_HELPER_FILL_POINTER = cl_intern_in("%SETF-FILL-POINTER", 18, cl_package_cl);
+    SETF_SYM_BIT             = cl_intern_in("BIT", 3, cl_package_cl);
+    SETF_HELPER_BIT          = cl_intern_in("%SETF-BIT", 9, cl_package_cl);
+    SETF_SYM_SBIT            = cl_intern_in("SBIT", 4, cl_package_cl);
+    SETF_HELPER_SBIT         = cl_intern_in("%SETF-SBIT", 10, cl_package_cl);
 }

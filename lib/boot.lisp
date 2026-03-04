@@ -554,74 +554,14 @@
         (return pair)))))
 
 ;; --- Pathname functions (Step 10) ---
-;; Pathnames are represented as strings (namestrings).
-;; Supports both POSIX (/) and Amiga (:) path separators.
-
-(defun namestring (pathname)
-  "Return the namestring for PATHNAME (identity for strings)."
-  pathname)
+;; Core pathname functions (pathname, pathnamep, parse-namestring, namestring,
+;; make-pathname, merge-pathnames, pathname-host/device/directory/name/type/version,
+;; file-namestring, directory-namestring, enough-namestring) are C builtins.
+;; Only truename remains in boot.lisp for now.
 
 (defun truename (pathname)
   "Return the true name of PATHNAME (identity for now)."
-  pathname)
-
-(defun pathname-name (pathname)
-  "Extract the name component (without extension) from PATHNAME."
-  (let* ((file (file-namestring pathname))
-         (dot-pos (position #\. file :from-end t)))
-    (if dot-pos
-        (subseq file 0 dot-pos)
-        file)))
-
-(defun pathname-type (pathname)
-  "Extract the type (extension) from PATHNAME."
-  (let* ((file (file-namestring pathname))
-         (dot-pos (position #\. file :from-end t)))
-    (if dot-pos
-        (subseq file (+ dot-pos 1))
-        nil)))
-
-(defun pathname-directory (pathname)
-  "Extract the directory component from PATHNAME as a list."
-  (let ((dir (directory-namestring pathname)))
-    (if (string= dir "")
-        nil
-        (list :absolute dir))))
-
-(defun make-pathname (&key directory name type)
-  "Construct a pathname string from components."
-  (let ((result ""))
-    (when directory
-      (if (and (consp directory) (eq (car directory) :absolute))
-          (setq result (cadr directory))
-          (when (stringp directory) (setq result directory))))
-    (when name
-      (setq result (concatenate 'string result name)))
-    (when type
-      (setq result (concatenate 'string result "." type)))
-    result))
-
-(defun merge-pathnames (pathname &optional (defaults "") default-version)
-  "Merge PATHNAME with DEFAULTS."
-  (let ((dir (directory-namestring pathname))
-        (file (file-namestring pathname)))
-    (if (string= dir "")
-        ;; No directory in pathname — use defaults' directory
-        (let ((def-dir (directory-namestring defaults)))
-          (concatenate 'string def-dir file))
-        pathname)))
-
-(defun enough-namestring (pathname &optional (defaults ""))
-  "Return a relative pathname string sufficient to identify PATHNAME given DEFAULTS."
-  (let ((def-dir (directory-namestring defaults))
-        (path-dir (directory-namestring pathname))
-        (file (file-namestring pathname)))
-    (if (and (> (length def-dir) 0)
-             (>= (length path-dir) (length def-dir))
-             (string= (subseq path-dir 0 (length def-dir)) def-dir))
-        ;; Strip the common prefix
-        (concatenate 'string (subseq path-dir (length def-dir)) file)
-        pathname)))
+  (namestring pathname))
 
 (defun %ensure-dirs-helper (dir pos len created)
   "Helper for ensure-directories-exist. Walks dir string creating directories."

@@ -58,6 +58,10 @@ CL_Obj cl_make_bignum(uint32_t n_limbs, uint32_t sign);
 CL_Obj cl_make_ratio(CL_Obj numerator, CL_Obj denominator);
 CL_Obj cl_make_single_float(float value);
 CL_Obj cl_make_double_float(double value);
+CL_Obj cl_make_random_state(uint32_t seed);
+CL_Obj cl_make_bit_vector(uint32_t nbits);
+CL_Obj cl_make_pathname(CL_Obj host, CL_Obj device, CL_Obj directory,
+                        CL_Obj name, CL_Obj type, CL_Obj version);
 
 /* GC root protection */
 #define CL_GC_PROTECT(var) cl_gc_push_root(&(var))

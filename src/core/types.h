@@ -89,7 +89,10 @@ enum CL_ObjType {
     TYPE_SINGLE_FLOAT,
     TYPE_DOUBLE_FLOAT,
     TYPE_RATIO,
-    TYPE_STREAM
+    TYPE_STREAM,
+    TYPE_RANDOM_STATE,
+    TYPE_BIT_VECTOR,
+    TYPE_PATHNAME
 };
 
 /* Header access macros */
@@ -341,6 +344,60 @@ typedef struct {
 } CL_Stream;
 
 #define CL_STREAM_P(obj) (CL_HEAP_P(obj) && CL_HDR_TYPE(CL_OBJ_TO_PTR(obj)) == TYPE_STREAM)
+
+/* --- Random State (xorshift128) --- */
+
+typedef struct {
+    CL_Header hdr;
+    uint32_t s[4];  /* xorshift128 state */
+} CL_RandomState;
+
+#define CL_RANDOM_STATE_P(obj) (CL_HEAP_P(obj) && CL_HDR_TYPE(CL_OBJ_TO_PTR(obj)) == TYPE_RANDOM_STATE)
+
+/* --- Bit Vector (packed bit array) --- */
+
+typedef struct {
+    CL_Header hdr;
+    uint32_t length;          /* Number of bits */
+    uint32_t fill_pointer;    /* CL_NO_FILL_POINTER = none */
+    uint8_t  flags;           /* CL_VEC_FLAG_FILL_POINTER | CL_VEC_FLAG_ADJUSTABLE */
+    uint8_t  _pad[3];
+    uint32_t data[];          /* ceil(length/32) packed words, LSB-first */
+} CL_BitVector;
+
+#define CL_BIT_VECTOR_P(obj) (CL_HEAP_P(obj) && CL_HDR_TYPE(CL_OBJ_TO_PTR(obj)) == TYPE_BIT_VECTOR)
+
+/* Number of uint32_t words needed for n bits */
+#define CL_BV_WORDS(n)  (((n) + 31) / 32)
+
+/* Get bit i: LSB-first within each word */
+#define cl_bv_get_bit(bv, i) \
+    (((bv)->data[(i) / 32] >> ((i) % 32)) & 1u)
+
+/* Set bit i to val (0 or 1) */
+#define cl_bv_set_bit(bv, i, val) \
+    do { \
+        if (val) (bv)->data[(i) / 32] |= (1u << ((i) % 32)); \
+        else     (bv)->data[(i) / 32] &= ~(1u << ((i) % 32)); \
+    } while (0)
+
+/* Active length: fill pointer if present, else total length */
+#define cl_bv_active_length(bv) \
+    ((bv)->fill_pointer != CL_NO_FILL_POINTER ? (bv)->fill_pointer : (bv)->length)
+
+/* --- Pathname --- */
+
+typedef struct {
+    CL_Header hdr;
+    CL_Obj host;       /* NIL or string */
+    CL_Obj device;     /* NIL or string (Amiga volume/assign) */
+    CL_Obj directory;  /* NIL or list: (:ABSOLUTE "d1" "d2") or (:RELATIVE ...) */
+    CL_Obj name;       /* NIL or string */
+    CL_Obj type;       /* NIL or string (extension, no dot) */
+    CL_Obj version;    /* NIL or :NEWEST or fixnum */
+} CL_Pathname;
+
+#define CL_PATHNAME_P(obj) (CL_HEAP_P(obj) && CL_HDR_TYPE(CL_OBJ_TO_PTR(obj)) == TYPE_PATHNAME)
 
 /* --- Convenience accessors --- */
 

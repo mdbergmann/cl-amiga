@@ -252,8 +252,15 @@ static CL_Obj bi_load(CL_Obj *args, int n)
     uint16_t prev_file_id;
 
     CL_UNUSED(n);
+    if (CL_PATHNAME_P(args[0])) {
+        /* Convert pathname to namestring */
+        char ns_buf[1024];
+        extern const char *cl_coerce_to_namestring(CL_Obj arg, char *buf, uint32_t bufsz);
+        cl_coerce_to_namestring(args[0], ns_buf, sizeof(ns_buf));
+        args[0] = cl_make_string(ns_buf, (uint32_t)strlen(ns_buf));
+    }
     if (!CL_STRING_P(args[0]))
-        cl_error(CL_ERR_TYPE, "LOAD: argument must be a string");
+        cl_error(CL_ERR_TYPE, "LOAD: argument must be a string or pathname");
 
     path_str = (CL_String *)CL_OBJ_TO_PTR(args[0]);
     buf = platform_file_read(path_str->data, &size);

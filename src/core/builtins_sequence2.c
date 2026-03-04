@@ -79,6 +79,10 @@ static int32_t seq_length(CL_Obj seq)
         CL_String *s = (CL_String *)CL_OBJ_TO_PTR(seq);
         return (int32_t)s->length;
     }
+    if (CL_BIT_VECTOR_P(seq)) {
+        CL_BitVector *bv = (CL_BitVector *)CL_OBJ_TO_PTR(seq);
+        return (int32_t)cl_bv_active_length(bv);
+    }
     cl_error(CL_ERR_TYPE, "not a sequence");
     return 0;
 }
@@ -98,6 +102,11 @@ static CL_Obj seq_elt(CL_Obj seq, int32_t idx)
         CL_String *s = (CL_String *)CL_OBJ_TO_PTR(seq);
         if ((uint32_t)idx >= s->length) cl_error(CL_ERR_ARGS, "index out of bounds");
         return CL_MAKE_CHAR((unsigned char)s->data[idx]);
+    }
+    if (CL_BIT_VECTOR_P(seq)) {
+        CL_BitVector *bv = (CL_BitVector *)CL_OBJ_TO_PTR(seq);
+        if ((uint32_t)idx >= cl_bv_active_length(bv)) cl_error(CL_ERR_ARGS, "index out of bounds");
+        return CL_MAKE_FIXNUM(cl_bv_get_bit(bv, (uint32_t)idx));
     }
     cl_error(CL_ERR_TYPE, "not a sequence");
     return CL_NIL;

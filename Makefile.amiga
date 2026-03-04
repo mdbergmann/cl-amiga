@@ -45,6 +45,9 @@ OBJS = $(BUILDDIR)/main.o \
        $(BUILDDIR)/builtins_package.o \
        $(BUILDDIR)/builtins_struct.o \
        $(BUILDDIR)/builtins_stream.o \
+       $(BUILDDIR)/builtins_random.o \
+       $(BUILDDIR)/builtins_bitvector.o \
+       $(BUILDDIR)/builtins_pathname.o \
        $(BUILDDIR)/stream.o \
        $(BUILDDIR)/bignum.o \
        $(BUILDDIR)/ratio.o \
@@ -158,6 +161,9 @@ $(BUILDDIR)/builtins_struct.o: src/core/builtins_struct.c
 $(BUILDDIR)/builtins_stream.o: src/core/builtins_stream.c
 	$(CC) $(CFLAGS) -o $@ -c $<
 
+$(BUILDDIR)/builtins_random.o: src/core/builtins_random.c
+	$(CC) $(CFLAGS) -o $@ -c $<
+
 $(BUILDDIR)/stream.o: src/core/stream.c
 	$(CC) $(CFLAGS) -o $@ -c $<
 
@@ -180,6 +186,12 @@ $(BUILDDIR)/repl.o: src/core/repl.c
 	$(CC) $(CFLAGS) -o $@ -c $<
 
 $(BUILDDIR)/color.o: src/core/color.c
+	$(CC) $(CFLAGS) -o $@ -c $<
+
+$(BUILDDIR)/builtins_bitvector.o: src/core/builtins_bitvector.c
+	$(CC) $(CFLAGS) -o $@ -c $<
+
+$(BUILDDIR)/builtins_pathname.o: src/core/builtins_pathname.c
 	$(CC) $(CFLAGS) -o $@ -c $<
 
 clean:

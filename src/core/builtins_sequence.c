@@ -143,6 +143,10 @@ static int32_t seq_length(CL_Obj seq)
         CL_String *s = (CL_String *)CL_OBJ_TO_PTR(seq);
         return (int32_t)s->length;
     }
+    if (CL_BIT_VECTOR_P(seq)) {
+        CL_BitVector *bv = (CL_BitVector *)CL_OBJ_TO_PTR(seq);
+        return (int32_t)cl_bv_active_length(bv);
+    }
     cl_error(CL_ERR_TYPE, "not a sequence");
     return 0;
 }
@@ -162,6 +166,11 @@ static CL_Obj seq_elt(CL_Obj seq, int32_t idx)
         CL_String *s = (CL_String *)CL_OBJ_TO_PTR(seq);
         if ((uint32_t)idx >= s->length) cl_error(CL_ERR_ARGS, "index out of bounds");
         return CL_MAKE_CHAR((unsigned char)s->data[idx]);
+    }
+    if (CL_BIT_VECTOR_P(seq)) {
+        CL_BitVector *bv = (CL_BitVector *)CL_OBJ_TO_PTR(seq);
+        if ((uint32_t)idx >= cl_bv_active_length(bv)) cl_error(CL_ERR_ARGS, "index out of bounds");
+        return CL_MAKE_FIXNUM(cl_bv_get_bit(bv, (uint32_t)idx));
     }
     cl_error(CL_ERR_TYPE, "not a sequence");
     return CL_NIL;
@@ -1141,6 +1150,17 @@ static CL_Obj bi_fill(CL_Obj *args, int n)
             cl_error(CL_ERR_TYPE, "FILL: string requires a character");
         for (i = start; i < end_val && i < (int32_t)s->length; i++)
             s->data[i] = (char)CL_CHAR_VAL(item);
+    } else if (CL_BIT_VECTOR_P(seq)) {
+        CL_BitVector *bv = (CL_BitVector *)CL_OBJ_TO_PTR(seq);
+        int32_t bvlen = (int32_t)cl_bv_active_length(bv);
+        int32_t val;
+        if (!CL_FIXNUM_P(item))
+            cl_error(CL_ERR_TYPE, "FILL: bit vector requires 0 or 1");
+        val = CL_FIXNUM_VAL(item);
+        if (val != 0 && val != 1)
+            cl_error(CL_ERR_TYPE, "FILL: bit vector requires 0 or 1");
+        for (i = start; i < end_val && i < bvlen; i++)
+            cl_bv_set_bit(bv, (uint32_t)i, val);
     }
 
     return seq;
@@ -1248,6 +1268,19 @@ static CL_Obj bi_setf_elt(CL_Obj *args, int n)
         s->data[idx] = (char)CL_CHAR_VAL(val);
         return val;
     }
+    if (CL_BIT_VECTOR_P(seq)) {
+        CL_BitVector *bv = (CL_BitVector *)CL_OBJ_TO_PTR(seq);
+        int32_t v;
+        if ((uint32_t)idx >= cl_bv_active_length(bv))
+            cl_error(CL_ERR_ARGS, "(SETF ELT): index out of bounds");
+        if (!CL_FIXNUM_P(val))
+            cl_error(CL_ERR_TYPE, "(SETF ELT): value must be 0 or 1 for bit vector");
+        v = CL_FIXNUM_VAL(val);
+        if (v != 0 && v != 1)
+            cl_error(CL_ERR_TYPE, "(SETF ELT): value must be 0 or 1 for bit vector");
+        cl_bv_set_bit(bv, (uint32_t)idx, v);
+        return val;
+    }
     cl_error(CL_ERR_TYPE, "(SETF ELT): not a sequence");
     return CL_NIL;
 }
@@ -1287,6 +1320,14 @@ static CL_Obj bi_copy_seq(CL_Obj *args, int n)
     if (CL_STRING_P(seq)) {
         CL_String *s = (CL_String *)CL_OBJ_TO_PTR(seq);
         return cl_make_string(s->data, s->length);
+    }
+    if (CL_BIT_VECTOR_P(seq)) {
+        CL_BitVector *bv = (CL_BitVector *)CL_OBJ_TO_PTR(seq);
+        uint32_t nwords = CL_BV_WORDS(bv->length);
+        CL_Obj result = cl_make_bit_vector(bv->length);
+        CL_BitVector *rv = (CL_BitVector *)CL_OBJ_TO_PTR(result);
+        memcpy(rv->data, bv->data, nwords * sizeof(uint32_t));
+        return result;
     }
     cl_error(CL_ERR_TYPE, "COPY-SEQ: not a sequence");
     return CL_NIL;
