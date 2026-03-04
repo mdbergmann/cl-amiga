@@ -283,6 +283,76 @@ static CL_Obj bi_struct_slot_count(CL_Obj *args, int n)
     return cl_car(cl_cdr(entry));  /* cadr = n-slots */
 }
 
+/*
+ * (%class-of obj) — return CL type-name symbol for any object.
+ * For structs: returns the struct type name (e.g., POINT).
+ * For built-in types: returns canonical CL class name symbol.
+ * Used by CLOS class-of to map objects to class metaobjects.
+ */
+static CL_Obj bi_class_of(CL_Obj *args, int n)
+{
+    CL_Obj obj = args[0];
+    const char *name;
+    CL_UNUSED(n);
+
+    if (CL_NULL_P(obj))
+        return cl_intern("NULL", 4);
+    if (CL_FIXNUM_P(obj))
+        return cl_intern("FIXNUM", 6);
+    if (CL_CHAR_P(obj))
+        return cl_intern("CHARACTER", 9);
+
+    if (CL_HEAP_P(obj)) {
+        switch (CL_HDR_TYPE(CL_OBJ_TO_PTR(obj))) {
+        case TYPE_CONS:
+            return cl_intern("CONS", 4);
+        case TYPE_SYMBOL:
+            return cl_intern("SYMBOL", 6);
+        case TYPE_STRING:
+            return cl_intern("STRING", 6);
+        case TYPE_FUNCTION:
+        case TYPE_CLOSURE:
+            return cl_intern("FUNCTION", 8);
+        case TYPE_BYTECODE:
+            return cl_intern("COMPILED-FUNCTION", 17);
+        case TYPE_VECTOR:
+            return cl_intern("VECTOR", 6);
+        case TYPE_PACKAGE:
+            return cl_intern("PACKAGE", 7);
+        case TYPE_HASHTABLE:
+            return cl_intern("HASH-TABLE", 10);
+        case TYPE_CONDITION: {
+            CL_Condition *cond = (CL_Condition *)CL_OBJ_TO_PTR(obj);
+            return cond->type_name;
+        }
+        case TYPE_STRUCT: {
+            CL_Struct *st = (CL_Struct *)CL_OBJ_TO_PTR(obj);
+            return st->type_desc;
+        }
+        case TYPE_BIGNUM:
+            return cl_intern("BIGNUM", 6);
+        case TYPE_SINGLE_FLOAT:
+            return cl_intern("SINGLE-FLOAT", 12);
+        case TYPE_DOUBLE_FLOAT:
+            return cl_intern("DOUBLE-FLOAT", 12);
+        case TYPE_RATIO:
+            return cl_intern("RATIO", 5);
+        case TYPE_STREAM:
+            return cl_intern("STREAM", 6);
+        case TYPE_RANDOM_STATE:
+            return cl_intern("RANDOM-STATE", 12);
+        case TYPE_BIT_VECTOR:
+            return cl_intern("BIT-VECTOR", 10);
+        case TYPE_PATHNAME:
+            return cl_intern("PATHNAME", 8);
+        default:
+            break;
+        }
+    }
+    name = "T";
+    return cl_intern(name, (uint32_t)strlen(name));
+}
+
 /* --- Registration --- */
 
 void cl_builtins_struct_init(void)
@@ -300,4 +370,5 @@ void cl_builtins_struct_init(void)
     defun("%STRUCT-SLOT-NAMES", bi_struct_slot_names, 1, 1);
     defun("%STRUCT-SLOT-SPECS", bi_struct_slot_specs, 1, 1);
     defun("%STRUCT-SLOT-COUNT", bi_struct_slot_count, 1, 1);
+    defun("%CLASS-OF", bi_class_of, 1, 1);
 }

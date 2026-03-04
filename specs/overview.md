@@ -93,7 +93,7 @@ Single-pass recursive compiler from S-expressions to bytecode:
 
 **Bootstrap functions:** `cadr`, `caar`, `cdar`, `cddr`, `caddr`, `cadar`, `cdddr`, `cadddr`, `identity`, `endp`, `member`, `intersection`, `union`, `set-difference`, `subsetp`, `cerror`, `break`, `read-from-string`, `prin1-to-string`, `princ-to-string`, `write-to-string`, `complement`, `constantly`, `tree-equal`, `list-length`, `tailp`, `ldiff`, `revappend`, `nreconc`, `assoc-if`, `assoc-if-not`, `rassoc-if`, `rassoc-if-not`, `truename`, `ensure-directories-exist`, `decode-universal-time`, `encode-universal-time`, `get-decoded-time`
 
-## Built-in Functions (413 C functions + 35 boot.lisp functions)
+## Built-in Functions (414 C functions + 35 boot.lisp functions)
 
 | Category | Functions |
 |----------|-----------|
@@ -126,7 +126,7 @@ Single-pass recursive compiler from S-expressions to bytecode:
 | Eval/Macro | `eval` `macroexpand` `macroexpand-1` `proclaim` |
 | Control | `throw` `values` `values-list` `error` `signal` `warn` `invoke-restart` `find-restart` `compute-restarts` `abort` `continue` `muffle-warning` `invoke-debugger` |
 | Conditions | `make-condition` `conditionp` `condition-type-name` `type-error-datum` `type-error-expected-type` `simple-condition-format-control` `simple-condition-format-arguments` `%register-condition-type` `condition-slot-value` |
-| Structures | `structurep` `%register-struct-type` `%make-struct` `%struct-ref` `%struct-set` `%copy-struct` `%struct-type-name` `%struct-slot-names` `%struct-slot-specs` |
+| Structures | `structurep` `%register-struct-type` `%make-struct` `%struct-ref` `%struct-set` `%copy-struct` `%struct-type-name` `%struct-slot-names` `%struct-slot-specs` `%class-of` |
 | Hash tables | `make-hash-table` `gethash` `remhash` `maphash` `clrhash` `hash-table-count` `hash-table-p` `%hash-table-pairs` |
 | Type system | `type-of` `typep` `coerce` `subtypep` |
 | Packages | `make-package` `find-package` `delete-package` `rename-package` `export` `unexport` `import` `use-package` `unuse-package` `shadow` `find-symbol` `intern` `unintern` `package-name` `package-use-list` `package-nicknames` `list-all-packages` `%package-symbols` `%package-external-symbols` `package-local-nicknames` `add-package-local-nickname` `remove-package-local-nickname` |
@@ -396,17 +396,19 @@ Structures and Common Lisp Object System:
 - [x] `*print-array*` — controls readable vs unreadable array printing
 - [ ] Displaced arrays (`:displaced-to`, `:displaced-index-offset`)
 - [x] Bit vectors — `TYPE_BIT_VECTOR` with packed `uint32_t` storage; `#*` reader/printer notation; `bit`, `sbit`, `aref`/`(setf aref)` element access; 11 bitwise operations (`bit-and`, `bit-ior`, `bit-xor`, `bit-eqv`, `bit-nand`, `bit-nor`, `bit-andc1`, `bit-andc2`, `bit-orc1`, `bit-orc2`, `bit-not`); `bit-vector-p`, `simple-bit-vector-p` predicates; sequence protocol (`length`, `elt`, `find`, `count`, `map`, etc.); `equal` structural comparison; `coerce` list↔bit-vector; `make-array :element-type 'bit`; `typep`/`type-of`/`subtypep` integration
-- [ ] `defclass` — class definition with slots, inheritance, metaclasses
-- [ ] Slot options: `:initarg`, `:initform`, `:accessor`, `:reader`, `:writer`, `:allocation`, `:type`, `:documentation`
-- [ ] `defgeneric`, `defmethod` — generic function dispatch
-- [ ] Method qualifiers: `:before`, `:after`, `:around`, `call-next-method`
-- [ ] `make-instance`, `initialize-instance`, `reinitialize-instance`, `shared-initialize`
-- [ ] `slot-value`, `slot-boundp`, `slot-exists-p`, `slot-makunbound`
-- [ ] `with-slots`, `with-accessors`
-- [ ] `find-class`, `class-of`, `class-name`, `change-class`
-- [ ] `print-object`, `print-unreadable-object` — CLOS-based printing
-- [ ] Multiple inheritance, standard method combination
-- [ ] `define-method-combination`
+- CLOS (practical subset, loaded on demand via `(require "clos")`):
+  - [x] `%class-of` C builtin — returns canonical CL type-name symbol for any object (structs return `type_desc`, built-in types return standard name)
+  - [x] Bootstrap core classes — 29 built-in class metaobjects as `STANDARD-CLASS` structs (10 slots: name, direct-superclasses, direct-slots, cpl, effective-slots, slot-index-table, direct-subclasses, direct-methods, prototype, finalized-p); C3-ordered class precedence lists; direct-subclass links; `*class-table*` hash table registry
+  - [x] `find-class`, `(setf find-class)`, `class-of`, `class-name`, `class-direct-superclasses`, `class-precedence-list`, `class-direct-subclasses`, `class-direct-slots`, `class-effective-slots`, `class-slot-index-table`, `class-direct-methods`
+  - [ ] `defclass` — class definition with slots, inheritance, C3 linearization
+  - [ ] Slot options: `:initarg`, `:initform`, `:accessor`, `:reader`, `:writer`, `:type`, `:documentation`
+  - [ ] `make-instance`, `slot-value`, `(setf slot-value)`, `slot-boundp`, `with-slots`
+  - [ ] `initialize-instance`, `shared-initialize` — standard initialization protocol
+  - [ ] `defgeneric`, `defmethod` — single-dispatch generic functions
+  - [ ] Method qualifiers: `:before`, `:after`, `:around`, `call-next-method`, `next-method-p`
+  - [ ] Standard method combination, dispatch caching
+  - [ ] `print-object`, `print-unreadable-object` — CLOS-based printing
+  - [ ] `describe` integration for CLOS objects
 
 ### Phase 11: ASDF & Beyond
 
@@ -456,12 +458,13 @@ cl-amiga/
 ├── include/
 │   └── clamiga.h          # Public umbrella header
 ├── lib/
-│   └── boot.lisp          # Bootstrap macros/functions
+│   ├── boot.lisp          # Bootstrap macros/functions
+│   └── clos.lisp          # CLOS implementation (loaded via require)
 ├── tests/
 │   ├── test.h             # Test framework
-│   ├── test_*.c           # Host test suites (16 files, 1291 tests)
+│   ├── test_*.c           # Host test suites (17 files, 1305 tests)
 │   └── amiga/
-│       └── run-tests.lisp # AmigaOS batch tests (1576 tests)
+│       └── run-tests.lisp # AmigaOS batch tests (1609 tests)
 ├── build/                 # Build output (gitignored)
 └── verify/
     └── realamiga/          # FS-UAE config + AmigaOS system image
