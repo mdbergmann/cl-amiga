@@ -93,6 +93,8 @@ Single-pass recursive compiler from S-expressions to bytecode:
 
 **Bootstrap functions:** `cadr`, `caar`, `cdar`, `cddr`, `caddr`, `cadar`, `cdddr`, `cadddr`, `identity`, `endp`, `member`, `intersection`, `union`, `set-difference`, `subsetp`, `cerror`, `break`, `read-from-string`, `prin1-to-string`, `princ-to-string`, `write-to-string`, `complement`, `constantly`, `tree-equal`, `list-length`, `tailp`, `ldiff`, `revappend`, `nreconc`, `assoc-if`, `assoc-if-not`, `rassoc-if`, `rassoc-if-not`, `truename`, `ensure-directories-exist`, `decode-universal-time`, `encode-universal-time`, `get-decoded-time`
 
+**CLOS functions (lib/clos.lisp, loaded via require):** `defclass`, `make-instance`, `slot-value`, `(setf slot-value)`, `slot-boundp`, `slot-makunbound`, `slot-exists-p`, `defgeneric`, `defmethod`, `call-next-method`, `next-method-p`, `with-slots`, `class-of`, `find-class`, `(setf find-class)`, `ensure-generic-function`, `allocate-instance`, `initialize-instance`, `shared-initialize`, `reinitialize-instance`, `change-class`, `print-object`, `class-name`, `class-precedence-list`, `class-direct-superclasses`, `class-direct-subclasses`, `class-effective-slots`, `class-slot-index-table`
+
 ## Built-in Functions (414 C functions + 35 boot.lisp functions)
 
 | Category | Functions |
@@ -400,15 +402,22 @@ Structures and Common Lisp Object System:
   - [x] `%class-of` C builtin — returns canonical CL type-name symbol for any object (structs return `type_desc`, built-in types return standard name)
   - [x] Bootstrap core classes — 29 built-in class metaobjects as `STANDARD-CLASS` structs (10 slots: name, direct-superclasses, direct-slots, cpl, effective-slots, slot-index-table, direct-subclasses, direct-methods, prototype, finalized-p); C3-ordered class precedence lists; direct-subclass links; `*class-table*` hash table registry
   - [x] `find-class`, `(setf find-class)`, `class-of`, `class-name`, `class-direct-superclasses`, `class-precedence-list`, `class-direct-subclasses`, `class-direct-slots`, `class-effective-slots`, `class-slot-index-table`, `class-direct-methods`
-  - [ ] `defclass` — class definition with slots, inheritance, C3 linearization
-  - [ ] Slot options: `:initarg`, `:initform`, `:accessor`, `:reader`, `:writer`, `:type`, `:documentation`
-  - [ ] `make-instance`, `slot-value`, `(setf slot-value)`, `slot-boundp`, `with-slots`
-  - [ ] `initialize-instance`, `shared-initialize` — standard initialization protocol
-  - [ ] `defgeneric`, `defmethod` — single-dispatch generic functions
-  - [ ] Method qualifiers: `:before`, `:after`, `:around`, `call-next-method`, `next-method-p`
-  - [ ] Standard method combination, dispatch caching
-  - [ ] `print-object`, `print-unreadable-object` — CLOS-based printing
+  - [x] Slot access — `slot-value`, `(setf slot-value)`, `slot-boundp`, `slot-makunbound`, `slot-exists-p` with uninterned `*slot-unbound-marker*` sentinel
+  - [x] C3 linearization — `%compute-class-precedence-list` for correct multiple inheritance CPL computation
+  - [x] `defclass` — class definition macro: parses slot specifiers (`:initarg`, `:initform`, `:accessor`, `:reader`, `:writer`), computes effective slots from CPL (superclass slot merging), registers struct type, builds `slot-index-table`, defaults to `standard-object` superclass; initforms wrapped in zero-arg lambdas (evaluated at instance creation)
+  - [x] `make-instance` — `allocate-instance` creates struct with all slots unbound, `initialize-instance` / `shared-initialize` apply initargs then initforms; accepts class name or class object
+  - [x] `defgeneric`, `defmethod` — full multiple dispatch generic functions; `standard-generic-function` and `standard-method` struct types; discriminating closure set as symbol-function; `%compute-applicable-methods` with C3-based specificity sorting
+  - [x] Standard method combination — `:before` (most-specific-first), primary with `call-next-method` / `next-method-p` chain via dynamic variables, `:after` (least-specific-first), `:around` wrapping; EQL specializers supported
+  - [x] `with-slots` — macro using `symbol-macrolet`; supports `(slot-name)` and `((var slot-name))` forms; `setf` of symbol-macrolet vars fixed in compiler
+  - [x] GF accessors — `defclass` generates `defgeneric`/`defmethod` for `:accessor`/`:reader`/`:writer`; `initialize-instance` and `shared-initialize` converted to generic functions with default methods
+  - [x] `change-class` — creates new instance of target class, copies shared slot values, applies initargs/initforms; `reinitialize-instance` re-applies initargs to existing instance
+  - [x] `print-object` — generic function dispatched via `*print-object-hook*` C hook; default methods for `standard-class` (`#<STANDARD-CLASS name>`), `standard-generic-function`, `standard-method`; user-defined methods work; plain structs without methods fall through to `#S(...)` default
+  - [ ] `print-unreadable-object` — macro for `#<...>` format
   - [ ] `describe` integration for CLOS objects
+  - [ ] `defclass` `:type`, `:documentation` slot options
+  - [ ] Dispatch caching for performance
+
+1391 host tests (17 suites), 1748 Amiga batch tests — all passing.
 
 ### Phase 11: ASDF & Beyond
 
@@ -462,9 +471,9 @@ cl-amiga/
 │   └── clos.lisp          # CLOS implementation (loaded via require)
 ├── tests/
 │   ├── test.h             # Test framework
-│   ├── test_*.c           # Host test suites (17 files, 1305 tests)
+│   ├── test_*.c           # Host test suites (17 files, 1391 tests)
 │   └── amiga/
-│       └── run-tests.lisp # AmigaOS batch tests (1609 tests)
+│       └── run-tests.lisp # AmigaOS batch tests (1748 tests)
 ├── build/                 # Build output (gitignored)
 └── verify/
     └── realamiga/          # FS-UAE config + AmigaOS system image
