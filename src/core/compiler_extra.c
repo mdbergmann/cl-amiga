@@ -7,6 +7,7 @@
  */
 
 #include "compiler_internal.h"
+#include <stdio.h>
 
 /* --- And / Or --- */
 
@@ -836,6 +837,69 @@ void compile_defun(CL_Compiler *c, CL_Obj form)
     cl_emit_const(c, name);
 }
 
+/* Generate a unique uninterned symbol for defmacro destructuring */
+static CL_Obj defmacro_gensym(void)
+{
+    static uint32_t counter = 0;
+    char buf[32];
+    CL_Obj name_str;
+    snprintf(buf, sizeof(buf), "%%DMAC%lu", (unsigned long)counter++);
+    name_str = cl_make_string(buf, (uint32_t)strlen(buf));
+    return cl_make_symbol(name_str);
+}
+
+/* Check if param is a lambda list keyword (&optional, &key, etc.) */
+static int is_ll_keyword(CL_Obj param)
+{
+    return CL_SYMBOL_P(param) &&
+           (param == SYM_AMP_OPTIONAL || param == SYM_AMP_KEY ||
+            param == SYM_AMP_REST || param == SYM_AMP_BODY ||
+            param == SYM_AMP_ALLOW_OTHER_KEYS);
+}
+
+/* Check if a lambda list needs destructuring transformation.
+ * Returns 1 if any required parameter is a list (not a symbol),
+ * or if &body/&rest is followed by a list pattern.
+ * List params after &optional/&key are (name default) specs, not destructuring. */
+static int defmacro_needs_destructuring(CL_Obj ll)
+{
+    int in_optional_or_key = 0;
+
+    while (!CL_NULL_P(ll)) {
+        CL_Obj param = cl_car(ll);
+
+        if (CL_SYMBOL_P(param) &&
+            (param == SYM_AMP_OPTIONAL || param == SYM_AMP_KEY)) {
+            in_optional_or_key = 1;
+            ll = cl_cdr(ll);
+            continue;
+        }
+        if (CL_SYMBOL_P(param) &&
+            (param == SYM_AMP_BODY || param == SYM_AMP_REST)) {
+            in_optional_or_key = 0; /* back to positional mode */
+            /* Check if next param is a list pattern */
+            {
+                CL_Obj next = cl_cdr(ll);
+                if (!CL_NULL_P(next) && CL_CONS_P(cl_car(next)))
+                    return 1;
+            }
+            ll = cl_cdr(ll);
+            continue;
+        }
+        if (is_ll_keyword(param)) {
+            ll = cl_cdr(ll);
+            continue;
+        }
+
+        /* Required parameter (before any keyword) */
+        if (!in_optional_or_key && CL_CONS_P(param))
+            return 1;
+
+        ll = cl_cdr(ll);
+    }
+    return 0;
+}
+
 void compile_defmacro(CL_Compiler *c, CL_Obj form)
 {
     /* Compile the expander as a lambda, then emit OP_DEFMACRO */
@@ -843,14 +907,110 @@ void compile_defmacro(CL_Compiler *c, CL_Obj form)
     CL_Obj lambda_list = cl_car(cl_cdr(cl_cdr(form)));
     CL_Obj body = cl_cdr(cl_cdr(cl_cdr(form)));
     int idx;
+    CL_Obj lambda_form;
 
-    CL_Obj lambda_form = cl_cons(SYM_LAMBDA,
-                                  cl_cons(lambda_list, body));
+    CL_GC_PROTECT(name);
+    CL_GC_PROTECT(lambda_list);
+    CL_GC_PROTECT(body);
+
+    /* Transform destructuring lambda lists:
+     * Replace list parameters with gensyms and wrap body in
+     * destructuring-bind forms. */
+    if (defmacro_needs_destructuring(lambda_list)) {
+        CL_Obj new_ll = CL_NIL, new_ll_tail = CL_NIL;
+        CL_Obj cur = lambda_list;
+        int in_opt_key = 0; /* inside &optional or &key section */
+
+        CL_GC_PROTECT(new_ll);
+
+        while (!CL_NULL_P(cur)) {
+            CL_Obj param = cl_car(cur);
+            CL_Obj next_param;
+            CL_Obj cell;
+
+            /* Track lambda list keyword sections */
+            if (CL_SYMBOL_P(param) &&
+                (param == SYM_AMP_OPTIONAL || param == SYM_AMP_KEY)) {
+                in_opt_key = 1;
+                cell = cl_cons(param, CL_NIL);
+                if (CL_NULL_P(new_ll)) { new_ll = cell; }
+                else { ((CL_Cons *)CL_OBJ_TO_PTR(new_ll_tail))->cdr = cell; }
+                new_ll_tail = cell;
+                cur = cl_cdr(cur);
+                continue;
+            }
+
+            if (!in_opt_key && CL_CONS_P(param)) {
+                /* Required list parameter — replace with gensym + destructuring-bind */
+                CL_Obj gs = defmacro_gensym();
+                CL_Obj db_form;
+                CL_GC_PROTECT(gs);
+
+                /* Wrap body: (destructuring-bind pattern gensym ...body) */
+                db_form = cl_cons(SYM_DESTRUCTURING_BIND,
+                           cl_cons(param, cl_cons(gs, body)));
+                body = cl_cons(db_form, CL_NIL);
+
+                /* Add gensym to new lambda list */
+                cell = cl_cons(gs, CL_NIL);
+                if (CL_NULL_P(new_ll)) { new_ll = cell; }
+                else { ((CL_Cons *)CL_OBJ_TO_PTR(new_ll_tail))->cdr = cell; }
+                new_ll_tail = cell;
+                CL_GC_UNPROTECT(1); /* gs */
+            } else if (CL_SYMBOL_P(param) &&
+                       (param == SYM_AMP_BODY || param == SYM_AMP_REST)) {
+                in_opt_key = 0; /* back to positional */
+                /* &body/&rest — check if next is a list pattern */
+                next_param = CL_NULL_P(cl_cdr(cur)) ? CL_NIL : cl_car(cl_cdr(cur));
+                if (CL_CONS_P(next_param)) {
+                    /* Replace with &body/&rest gensym + destructuring-bind */
+                    CL_Obj gs = defmacro_gensym();
+                    CL_Obj db_form;
+                    CL_GC_PROTECT(gs);
+
+                    db_form = cl_cons(SYM_DESTRUCTURING_BIND,
+                               cl_cons(next_param, cl_cons(gs, body)));
+                    body = cl_cons(db_form, CL_NIL);
+
+                    /* Add &body/&rest gensym to new lambda list */
+                    cell = cl_cons(param, CL_NIL);
+                    if (CL_NULL_P(new_ll)) { new_ll = cell; }
+                    else { ((CL_Cons *)CL_OBJ_TO_PTR(new_ll_tail))->cdr = cell; }
+                    new_ll_tail = cell;
+
+                    cell = cl_cons(gs, CL_NIL);
+                    ((CL_Cons *)CL_OBJ_TO_PTR(new_ll_tail))->cdr = cell;
+                    new_ll_tail = cell;
+
+                    cur = cl_cdr(cur); /* skip the list pattern */
+                    CL_GC_UNPROTECT(1); /* gs */
+                } else {
+                    /* Normal &body/&rest with symbol — just copy */
+                    cell = cl_cons(param, CL_NIL);
+                    if (CL_NULL_P(new_ll)) { new_ll = cell; }
+                    else { ((CL_Cons *)CL_OBJ_TO_PTR(new_ll_tail))->cdr = cell; }
+                    new_ll_tail = cell;
+                }
+            } else {
+                /* Normal symbol parameter or &optional/&key spec — just copy */
+                cell = cl_cons(param, CL_NIL);
+                if (CL_NULL_P(new_ll)) { new_ll = cell; }
+                else { ((CL_Cons *)CL_OBJ_TO_PTR(new_ll_tail))->cdr = cell; }
+                new_ll_tail = cell;
+            }
+            cur = cl_cdr(cur);
+        }
+
+        lambda_list = new_ll;
+        CL_GC_UNPROTECT(1); /* new_ll */
+    }
+
+    lambda_form = cl_cons(SYM_LAMBDA, cl_cons(lambda_list, body));
     CL_GC_PROTECT(lambda_form);
 
     compile_expr(c, lambda_form);
 
-    CL_GC_UNPROTECT(1);
+    CL_GC_UNPROTECT(4); /* lambda_form, body, lambda_list, name */
 
     /* OP_DEFMACRO pops the closure, registers macro, pushes name */
     idx = cl_add_constant(c, name);

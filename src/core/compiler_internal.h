@@ -84,6 +84,9 @@ typedef struct {
     CL_Obj key_defaults[CL_MAX_LOCALS];
     int n_keys;
     int allow_other_keys;
+    CL_Obj aux_names[CL_MAX_LOCALS];
+    CL_Obj aux_inits[CL_MAX_LOCALS]; /* init form or CL_NIL */
+    int n_aux;
 } CL_ParsedLambdaList;
 
 /* --- Shared globals (defined in compiler.c) --- */

@@ -950,7 +950,7 @@
            (spec-names (cdr parsed)))
       `(%add-method-to-gf
          ',name ',qualifiers ',spec-names
-         (lambda ,unspec-ll ,@body)
+         (lambda ,unspec-ll (block ,name ,@body))
          ',unspec-ll))))
 
 (defun %add-method-to-gf (gf-name qualifiers specializer-names fn lambda-list)

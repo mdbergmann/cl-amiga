@@ -1180,6 +1180,14 @@ CL_Obj cl_vm_eval(CL_Obj bytecode_obj)
                 }
             }
 
+            /* Resolve symbol to its function binding */
+            if (CL_SYMBOL_P(func_obj)) {
+                CL_Symbol *s = (CL_Symbol *)CL_OBJ_TO_PTR(func_obj);
+                func_obj = s->function;
+                if (CL_NULL_P(func_obj) || func_obj == CL_UNBOUND)
+                    cl_error(CL_ERR_TYPE, "APPLY: symbol has no function binding");
+            }
+
             if (CL_FUNCTION_P(func_obj)) {
                 CL_Function *f = (CL_Function *)CL_OBJ_TO_PTR(func_obj);
                 int traced = is_func_traced(func_obj);

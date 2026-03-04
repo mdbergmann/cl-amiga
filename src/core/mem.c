@@ -475,6 +475,7 @@ static void gc_mark_children(void *ptr, uint8_t type)
         gc_mark_push(p->use_list);
         gc_mark_push(p->nicknames);
         gc_mark_push(p->local_nicknames);
+        gc_mark_push(p->shadowing_symbols);
         break;
     }
     case TYPE_HASHTABLE: {

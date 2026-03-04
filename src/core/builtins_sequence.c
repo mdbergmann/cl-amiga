@@ -1032,7 +1032,7 @@ static CL_Obj bi_reduce(CL_Obj *args, int n)
 {
     CL_Obj func = args[0], seq = args[1];
     CL_Obj initial = CL_NIL;
-    int has_initial = 0;
+    int has_initial = 0, from_end = 0;
     int32_t start = 0, end_val, len;
     CL_Obj key_fn = CL_NIL;
     CL_Obj accum;
@@ -1051,7 +1051,7 @@ static CL_Obj bi_reduce(CL_Obj *args, int n)
             /* handled below */
         } else if (args[i] == KW_FROM_END) {
             if (!CL_NULL_P(args[i + 1]))
-                cl_error(CL_ERR_ARGS, "REDUCE: :from-end T not supported");
+                from_end = 1;
         }
     }
 
@@ -1070,6 +1070,53 @@ static CL_Obj bi_reduce(CL_Obj *args, int n)
         return call_1(func, CL_NIL); /* This isn't quite right but CL spec says identity */
     }
 
+    if (from_end) {
+        /* :from-end T — process from right to left.
+         * For right-associative reduction: f(e1, f(e2, f(e3, init)))
+         * Arguments to f are: (element, accumulator) */
+        int32_t sub_len = end_val - start;
+
+        if (has_initial) {
+            accum = initial;
+        } else {
+            accum = apply_key(key_fn, seq_elt(seq, end_val - 1));
+            end_val--;
+            sub_len--;
+        }
+
+        CL_GC_PROTECT(accum);
+        CL_GC_PROTECT(func);
+
+        if (CL_VECTOR_P(seq)) {
+            int32_t idx;
+            for (idx = end_val - 1; idx >= start; idx--) {
+                CL_Obj elem = apply_key(key_fn, seq_elt(seq, idx));
+                accum = call_test(func, elem, accum);
+            }
+        } else {
+            /* List: collect elements into temp array, then iterate backwards */
+            CL_Obj *elts = (CL_Obj *)platform_alloc(
+                (uint32_t)(sub_len * sizeof(CL_Obj)));
+            CL_Obj cur = seq;
+            int32_t idx = 0, j = 0;
+            while (idx < start && !CL_NULL_P(cur)) { cur = cl_cdr(cur); idx++; }
+            while (idx < end_val && !CL_NULL_P(cur)) {
+                elts[j++] = cl_car(cur);
+                cur = cl_cdr(cur);
+                idx++;
+            }
+            for (idx = j - 1; idx >= 0; idx--) {
+                CL_Obj elem = apply_key(key_fn, elts[idx]);
+                accum = call_test(func, elem, accum);
+            }
+            platform_free(elts);
+        }
+
+        CL_GC_UNPROTECT(2);
+        return accum;
+    }
+
+    /* Forward (default) reduction */
     if (has_initial) {
         accum = initial;
     } else {
@@ -1087,10 +1134,7 @@ static CL_Obj bi_reduce(CL_Obj *args, int n)
         while (idx < start && !CL_NULL_P(cur)) { cur = cl_cdr(cur); idx++; }
         while (idx < end_val && !CL_NULL_P(cur)) {
             CL_Obj elem = apply_key(key_fn, cl_car(cur));
-            CL_Obj rargs[2];
-            rargs[0] = accum;
-            rargs[1] = elem;
-            accum = call_test(func, accum, elem); /* reuse call_test for 2-arg */
+            accum = call_test(func, accum, elem);
             cur = cl_cdr(cur);
             idx++;
         }

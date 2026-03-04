@@ -5075,6 +5075,208 @@ TEST(eval_setf_get_update)
     ASSERT_STR_EQ(eval_print("(get 'test-plist-sym-4 'x)"), "2");
 }
 
+/* --- Block comments (#|...|#) --- */
+
+TEST(eval_block_comment_basic)
+{
+    ASSERT_EQ_INT(eval_int("#| comment |# 42"), 42);
+}
+
+TEST(eval_block_comment_inline)
+{
+    ASSERT_EQ_INT(eval_int("(+ 1 #| skip |# 2)"), 3);
+}
+
+TEST(eval_block_comment_nested)
+{
+    ASSERT_EQ_INT(eval_int("#| outer #| inner |# still outer |# 99"), 99);
+}
+
+TEST(eval_block_comment_multiline)
+{
+    ASSERT_EQ_INT(eval_int("#|\n  multi\n  line\n|# 7"), 7);
+}
+
+/* --- &aux in lambda lists --- */
+
+TEST(eval_aux_basic)
+{
+    ASSERT_EQ_INT(eval_int("(funcall (lambda (x &aux (y 10)) (+ x y)) 5)"), 15);
+}
+
+TEST(eval_aux_multiple)
+{
+    ASSERT_EQ_INT(eval_int("(funcall (lambda (x &aux (a 1) (b 2)) (+ x a b)) 10)"), 13);
+}
+
+TEST(eval_aux_no_init)
+{
+    ASSERT_STR_EQ(eval_print("(funcall (lambda (&aux z) z))"), "NIL");
+}
+
+TEST(eval_aux_uses_param)
+{
+    ASSERT_EQ_INT(eval_int("(funcall (lambda (x &aux (y (* x 2))) y) 5)"), 10);
+}
+
+TEST(eval_aux_with_key)
+{
+    ASSERT_EQ_INT(eval_int("(funcall (lambda (&key x &aux (y (or x 0))) (+ y 1)) :x 5)"), 6);
+}
+
+TEST(eval_defun_aux)
+{
+    eval_print("(defun test-aux-fn (a &aux (b (+ a 1))) b)");
+    ASSERT_EQ_INT(eval_int("(test-aux-fn 10)"), 11);
+}
+
+/* --- apply with symbols --- */
+
+TEST(eval_apply_symbol)
+{
+    ASSERT_EQ_INT(eval_int("(apply '+ '(1 2 3))"), 6);
+}
+
+TEST(eval_apply_symbol_funcall)
+{
+    ASSERT_EQ_INT(eval_int("(apply '* 2 '(3 4))"), 24);
+}
+
+/* --- package-used-by-list --- */
+
+TEST(eval_package_used_by_list)
+{
+    /* CL-USER uses CL, so CL-USER should be in CL's used-by list */
+    ASSERT_STR_EQ(eval_print("(if (member (find-package \"COMMON-LISP-USER\") (package-used-by-list (find-package \"COMMON-LISP\"))) t nil)"), "T");
+}
+
+/* --- shadowing-import --- */
+
+TEST(eval_shadowing_import)
+{
+    eval_print("(defpackage \"TEST-SHAD-PKG\" (:use))");
+    eval_print("(shadowing-import 'cons (find-package \"TEST-SHAD-PKG\"))");
+    ASSERT_STR_EQ(eval_print("(if (member 'cons (package-shadowing-symbols (find-package \"TEST-SHAD-PKG\"))) t nil)"), "T");
+}
+
+/* --- copy-symbol --- */
+
+TEST(eval_copy_symbol_basic)
+{
+    ASSERT_STR_EQ(eval_print("(symbol-name (copy-symbol 'foo))"), "\"FOO\"");
+}
+
+TEST(eval_copy_symbol_uninterned)
+{
+    ASSERT_STR_EQ(eval_print("(symbol-package (copy-symbol 'foo))"), "NIL");
+}
+
+TEST(eval_copy_symbol_props)
+{
+    eval_print("(defvar *copy-sym-test* 42)");
+    ASSERT_STR_EQ(eval_print("(symbol-value (copy-symbol '*copy-sym-test* t))"), "42");
+}
+
+/* --- LOOP nested :if sub-clause tests --- */
+
+TEST(eval_loop_nested_if)
+{
+    ASSERT_STR_EQ(eval_print(
+        "(loop :for x :in '(1 2 3)"
+        "  :when (> x 1)"
+        "    :if (= x 2) :collect :two"
+        "    :else :collect :three"
+        "    :end)"),
+        "(:TWO :THREE)");
+}
+
+TEST(eval_loop_nested_when_else)
+{
+    /* :when with nested :when */
+    ASSERT_STR_EQ(eval_print(
+        "(loop :for x :in '(1 2 3 4 5)"
+        "  :when (oddp x)"
+        "    :if (> x 2) :collect x :end)"),
+        "(3 5)");
+}
+
+TEST(eval_loop_nested_unless)
+{
+    ASSERT_STR_EQ(eval_print(
+        "(loop :for x :in '(1 2 3 4)"
+        "  :when t"
+        "    :unless (evenp x) :collect x :end)"),
+        "(1 3)");
+}
+
+/* --- defmacro destructuring tests --- */
+
+TEST(eval_defmacro_destructuring_required)
+{
+    /* Required parameter is a list pattern */
+    eval_print("(defmacro dm-test1 ((a b) c) `(list ,a ,b ,c))");
+    ASSERT_STR_EQ(eval_print("(dm-test1 (1 2) 3)"), "(1 2 3)");
+}
+
+TEST(eval_defmacro_destructuring_body)
+{
+    /* &body with destructuring pattern (if-let pattern) */
+    eval_print("(defmacro dm-test2 (var &body (then-form &optional else-form))"
+               "  `(let ((,var t)) (if ,var ,then-form ,else-form)))");
+    ASSERT_STR_EQ(eval_print("(dm-test2 x :yes :no)"), ":YES");
+    ASSERT_STR_EQ(eval_print("(dm-test2 x :only)"), ":ONLY");
+}
+
+TEST(eval_defmacro_optional_not_destructured)
+{
+    /* &optional with (name default) should NOT be destructured */
+    eval_print("(defmacro dm-test3 (x &optional (y 42)) `(list ,x ,y))");
+    ASSERT_STR_EQ(eval_print("(dm-test3 1)"), "(1 42)");
+    ASSERT_STR_EQ(eval_print("(dm-test3 1 2)"), "(1 2)");
+}
+
+/* --- define-modify-macro tests --- */
+
+TEST(eval_define_modify_macro)
+{
+    eval_print("(define-modify-macro appendf (&rest args) append)");
+    ASSERT_STR_EQ(eval_print(
+        "(let ((x '(1 2))) (appendf x '(3 4)) x)"),
+        "(1 2 3 4)");
+}
+
+/* --- reduce :from-end tests --- */
+
+TEST(eval_reduce_from_end)
+{
+    ASSERT_STR_EQ(eval_print(
+        "(reduce #'cons '(1 2 3 4) :from-end t)"),
+        "(1 2 3 . 4)");
+}
+
+TEST(eval_reduce_from_end_initial)
+{
+    ASSERT_STR_EQ(eval_print(
+        "(reduce #'cons '(1 2 3) :from-end t :initial-value '())"),
+        "(1 2 3)");
+}
+
+/* --- defmethod implicit block test --- */
+
+TEST(eval_defmethod_implicit_block)
+{
+    eval_print("(defgeneric dmib-fn (x))");
+    eval_print("(defmethod dmib-fn ((x t)) (return-from dmib-fn 42) 99)");
+    ASSERT_STR_EQ(eval_print("(dmib-fn 1)"), "42");
+}
+
+/* --- user-homedir-pathname test --- */
+
+TEST(eval_user_homedir_pathname)
+{
+    ASSERT_STR_EQ(eval_print("(pathnamep (user-homedir-pathname))"), "T");
+}
+
 int main(void)
 {
     test_init();
@@ -5684,6 +5886,58 @@ int main(void)
     RUN(eval_get_default);
     RUN(eval_remprop);
     RUN(eval_setf_get_update);
+
+    /* block comments */
+    RUN(eval_block_comment_basic);
+    RUN(eval_block_comment_inline);
+    RUN(eval_block_comment_nested);
+    RUN(eval_block_comment_multiline);
+
+    /* &aux */
+    RUN(eval_aux_basic);
+    RUN(eval_aux_multiple);
+    RUN(eval_aux_no_init);
+    RUN(eval_aux_uses_param);
+    RUN(eval_aux_with_key);
+    RUN(eval_defun_aux);
+
+    /* apply with symbols */
+    RUN(eval_apply_symbol);
+    RUN(eval_apply_symbol_funcall);
+
+    /* package-used-by-list */
+    RUN(eval_package_used_by_list);
+
+    /* shadowing-import */
+    RUN(eval_shadowing_import);
+
+    /* copy-symbol */
+    RUN(eval_copy_symbol_basic);
+    RUN(eval_copy_symbol_uninterned);
+    RUN(eval_copy_symbol_props);
+
+    /* LOOP nested :if sub-clause */
+    RUN(eval_loop_nested_if);
+    RUN(eval_loop_nested_when_else);
+    RUN(eval_loop_nested_unless);
+
+    /* defmacro destructuring */
+    RUN(eval_defmacro_destructuring_required);
+    RUN(eval_defmacro_destructuring_body);
+    RUN(eval_defmacro_optional_not_destructured);
+
+    /* define-modify-macro */
+    RUN(eval_define_modify_macro);
+
+    /* reduce :from-end */
+    RUN(eval_reduce_from_end);
+    RUN(eval_reduce_from_end_initial);
+
+    /* defmethod implicit block */
+    RUN(eval_defmethod_implicit_block);
+
+    /* user-homedir-pathname */
+    RUN(eval_user_homedir_pathname);
 
     teardown();
     REPORT();

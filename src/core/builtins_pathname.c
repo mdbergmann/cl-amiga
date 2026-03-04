@@ -16,6 +16,7 @@
 #include "../platform/platform.h"
 #include <string.h>
 #include <stdio.h>
+#include <stdlib.h>
 
 /* Helper to register a builtin */
 static void defun(const char *name, CL_CFunc func, int min, int max)
@@ -579,6 +580,38 @@ int cl_pathname_equal(CL_Obj a, CL_Obj b)
     return 1;
 }
 
+/* (user-homedir-pathname &optional host) */
+static CL_Obj bi_user_homedir_pathname(CL_Obj *args, int n)
+{
+    const char *home;
+    CL_UNUSED(args);
+    CL_UNUSED(n);
+#ifdef PLATFORM_AMIGA
+    home = "PROGDIR:";
+#else
+    home = getenv("HOME");
+    if (!home) home = "/";
+#endif
+    {
+        uint32_t hlen = (uint32_t)strlen(home);
+        /* Ensure path ends with separator */
+        if (hlen > 0 && home[hlen - 1] != '/'
+#ifdef PLATFORM_AMIGA
+            && home[hlen - 1] != ':'
+#endif
+           ) {
+            char buf[512];
+            if (hlen + 1 < sizeof(buf)) {
+                memcpy(buf, home, hlen);
+                buf[hlen] = '/';
+                buf[hlen + 1] = '\0';
+                return cl_parse_namestring(buf, hlen + 1);
+            }
+        }
+        return cl_parse_namestring(home, hlen);
+    }
+}
+
 /* ================================================================
  * Registration
  * ================================================================ */
@@ -600,6 +633,7 @@ void cl_builtins_pathname_init(void)
     defun("FILE-NAMESTRING", bi_file_namestring, 1, 1);
     defun("DIRECTORY-NAMESTRING", bi_directory_namestring, 1, 1);
     defun("ENOUGH-NAMESTRING", bi_enough_namestring, 1, 2);
+    defun("USER-HOMEDIR-PATHNAME", bi_user_homedir_pathname, 0, 1);
 
     /* Initialize *default-pathname-defaults* to empty pathname */
     {

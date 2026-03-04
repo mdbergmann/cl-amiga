@@ -574,6 +574,87 @@ static CL_Obj bi_remove_package_local_nickname(CL_Obj *args, int nargs)
     return SYM_T;
 }
 
+/* (package-used-by-list package) — list of packages that use this one */
+static CL_Obj bi_package_used_by_list(CL_Obj *args, int nargs)
+{
+    CL_Obj target = coerce_to_package(args[0]);
+    CL_Obj result = CL_NIL;
+    CL_Obj reg = cl_package_registry;
+    (void)nargs;
+
+    CL_GC_PROTECT(result);
+    while (!CL_NULL_P(reg)) {
+        CL_Obj pkg = cl_cdr(cl_car(reg));
+        CL_Package *p = (CL_Package *)CL_OBJ_TO_PTR(pkg);
+        CL_Obj uses = p->use_list;
+        while (!CL_NULL_P(uses)) {
+            if (cl_car(uses) == target) {
+                result = cl_cons(pkg, result);
+                break;
+            }
+            uses = cl_cdr(uses);
+        }
+        reg = cl_cdr(reg);
+    }
+    CL_GC_UNPROTECT(1);
+    return result;
+}
+
+/* (shadowing-import symbol &optional package) */
+static CL_Obj bi_shadowing_import(CL_Obj *args, int nargs)
+{
+    CL_Obj symbols = args[0];
+    CL_Obj pkg = (nargs > 1) ? coerce_to_package(args[1]) : cl_current_package;
+    CL_Package *p = (CL_Package *)CL_OBJ_TO_PTR(pkg);
+
+    if (CL_SYMBOL_P(symbols)) {
+        cl_import_symbol(symbols, pkg);
+        /* Add to shadowing symbols list */
+        p->shadowing_symbols = cl_cons(symbols, p->shadowing_symbols);
+    } else {
+        while (!CL_NULL_P(symbols)) {
+            CL_Obj sym = cl_car(symbols);
+            cl_import_symbol(sym, pkg);
+            p->shadowing_symbols = cl_cons(sym, p->shadowing_symbols);
+            symbols = cl_cdr(symbols);
+        }
+    }
+    return SYM_T;
+}
+
+/* (package-shadowing-symbols package) */
+static CL_Obj bi_package_shadowing_symbols(CL_Obj *args, int nargs)
+{
+    CL_Obj pkg = coerce_to_package(args[0]);
+    CL_Package *p = (CL_Package *)CL_OBJ_TO_PTR(pkg);
+    (void)nargs;
+    return p->shadowing_symbols;
+}
+
+/* (copy-symbol symbol &optional copy-properties) */
+static CL_Obj bi_copy_symbol(CL_Obj *args, int nargs)
+{
+    CL_Obj sym_obj = args[0];
+    int copy_props = (nargs > 1 && !CL_NULL_P(args[1]));
+    CL_Symbol *orig;
+    CL_Obj new_sym;
+    CL_Symbol *ns;
+
+    if (!CL_SYMBOL_P(sym_obj))
+        cl_error(CL_ERR_TYPE, "COPY-SYMBOL: argument must be a symbol");
+
+    orig = (CL_Symbol *)CL_OBJ_TO_PTR(sym_obj);
+    new_sym = cl_make_uninterned_symbol(orig->name);
+    ns = (CL_Symbol *)CL_OBJ_TO_PTR(new_sym);
+
+    if (copy_props) {
+        ns->value = orig->value;
+        ns->function = orig->function;
+        ns->plist = orig->plist;
+    }
+    return new_sym;
+}
+
 /* ---- Init ---- */
 
 void cl_builtins_package_init(void)
@@ -608,4 +689,8 @@ void cl_builtins_package_init(void)
     defun("PACKAGE-LOCAL-NICKNAMES", bi_package_local_nicknames, 1, 1);
     defun("ADD-PACKAGE-LOCAL-NICKNAME", bi_add_package_local_nickname, 2, 3);
     defun("REMOVE-PACKAGE-LOCAL-NICKNAME", bi_remove_package_local_nickname, 1, 2);
+    defun("PACKAGE-USED-BY-LIST", bi_package_used_by_list, 1, 1);
+    defun("SHADOWING-IMPORT", bi_shadowing_import, 1, 2);
+    defun("PACKAGE-SHADOWING-SYMBOLS", bi_package_shadowing_symbols, 1, 1);
+    defun("COPY-SYMBOL", bi_copy_symbol, 1, 2);
 }

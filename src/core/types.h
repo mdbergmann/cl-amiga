@@ -244,6 +244,7 @@ typedef struct {
     CL_Obj use_list;    /* List of used packages */
     CL_Obj nicknames;   /* List of nickname strings */
     CL_Obj local_nicknames; /* CDR-10: alist ((nick-string . package) ...) */
+    CL_Obj shadowing_symbols; /* List of shadowing symbols */
     uint32_t sym_count;
 } CL_Package;
 

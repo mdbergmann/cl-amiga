@@ -180,7 +180,7 @@ void compile_progn(CL_Compiler *c, CL_Obj forms)
 static void parse_lambda_list(CL_Obj params, CL_ParsedLambdaList *ll)
 {
     CL_Obj p = params;
-    int state = 0; /* 0=required, 1=optional, 2=rest, 3=key */
+    int state = 0; /* 0=required, 1=optional, 2=rest, 3=key, 4=aux */
 
     memset(ll, 0, sizeof(*ll));
     ll->rest_name = CL_NIL;
@@ -193,6 +193,7 @@ static void parse_lambda_list(CL_Obj params, CL_ParsedLambdaList *ll)
         if (item == SYM_AMP_REST || item == SYM_AMP_BODY) { state = 2; continue; }
         if (item == SYM_AMP_KEY) { state = 3; continue; }
         if (item == SYM_AMP_ALLOW_OTHER_KEYS) { ll->allow_other_keys = 1; continue; }
+        if (item == SYM_AMP_AUX) { state = 4; continue; }
 
         switch (state) {
         case 0:
@@ -227,6 +228,16 @@ static void parse_lambda_list(CL_Obj params, CL_ParsedLambdaList *ll)
                     name_str, (uint32_t)strlen(name_str));
             }
             ll->n_keys++;
+            break;
+        case 4:
+            if (CL_CONS_P(item)) {
+                ll->aux_names[ll->n_aux] = cl_car(item);
+                ll->aux_inits[ll->n_aux] = cl_car(cl_cdr(item));
+            } else {
+                ll->aux_names[ll->n_aux] = item;
+                ll->aux_inits[ll->n_aux] = CL_NIL;
+            }
+            ll->n_aux++;
             break;
         }
     }
@@ -273,6 +284,8 @@ void compile_lambda(CL_Compiler *c, CL_Obj form)
         cl_env_add_local(env, ll.rest_name);
     for (i = 0; i < ll.n_keys; i++)
         key_slot_indices[i] = cl_env_add_local(env, ll.key_names[i]);
+    for (i = 0; i < ll.n_aux; i++)
+        cl_env_add_local(env, ll.aux_names[i]);
 
     /* Emit prologue for optional defaults */
     for (i = 0; i < ll.n_optional; i++) {
@@ -313,6 +326,20 @@ void compile_lambda(CL_Compiler *c, CL_Obj form)
             cl_emit(inner, OP_POP);
             cl_patch_jump(inner, skip_pos);
         }
+    }
+
+    /* Emit prologue for &aux bindings */
+    for (i = 0; i < ll.n_aux; i++) {
+        int aux_slot = cl_env_lookup(env, ll.aux_names[i]);
+        {
+            int saved = inner->in_tail;
+            inner->in_tail = 0;
+            compile_expr(inner, ll.aux_inits[i]);
+            inner->in_tail = saved;
+        }
+        cl_emit(inner, OP_STORE);
+        cl_emit(inner, (uint8_t)aux_slot);
+        cl_emit(inner, OP_POP);
     }
 
     compile_body(inner, body);

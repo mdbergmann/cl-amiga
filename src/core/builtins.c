@@ -43,6 +43,16 @@ static CL_Obj bi_cdr(CL_Obj *args, int n)
     return cl_cdr(args[0]);
 }
 
+static CL_Obj bi_second(CL_Obj *a, int n) { CL_UNUSED(n); return cl_car(cl_cdr(a[0])); }
+static CL_Obj bi_third(CL_Obj *a, int n)  { CL_UNUSED(n); return cl_car(cl_cdr(cl_cdr(a[0]))); }
+static CL_Obj bi_fourth(CL_Obj *a, int n) { CL_UNUSED(n); return cl_car(cl_cdr(cl_cdr(cl_cdr(a[0])))); }
+static CL_Obj bi_fifth(CL_Obj *a, int n)  { CL_UNUSED(n); return cl_car(cl_cdr(cl_cdr(cl_cdr(cl_cdr(a[0]))))); }
+static CL_Obj bi_sixth(CL_Obj *a, int n)  { CL_UNUSED(n); return cl_car(cl_cdr(cl_cdr(cl_cdr(cl_cdr(cl_cdr(a[0])))))); }
+static CL_Obj bi_seventh(CL_Obj *a, int n){ CL_UNUSED(n); return cl_car(cl_cdr(cl_cdr(cl_cdr(cl_cdr(cl_cdr(cl_cdr(a[0]))))))); }
+static CL_Obj bi_eighth(CL_Obj *a, int n) { CL_UNUSED(n); return cl_car(cl_cdr(cl_cdr(cl_cdr(cl_cdr(cl_cdr(cl_cdr(cl_cdr(a[0])))))))); }
+static CL_Obj bi_ninth(CL_Obj *a, int n)  { CL_UNUSED(n); return cl_car(cl_cdr(cl_cdr(cl_cdr(cl_cdr(cl_cdr(cl_cdr(cl_cdr(cl_cdr(a[0]))))))))); }
+static CL_Obj bi_tenth(CL_Obj *a, int n)  { CL_UNUSED(n); return cl_car(cl_cdr(cl_cdr(cl_cdr(cl_cdr(cl_cdr(cl_cdr(cl_cdr(cl_cdr(cl_cdr(a[0])))))))))); }
+
 static CL_Obj bi_list(CL_Obj *args, int n)
 {
     CL_Obj result = CL_NIL;
@@ -405,6 +415,14 @@ static CL_Obj bi_apply(CL_Obj *args, int n)
         arglist = cl_cdr(arglist);
     }
 
+    /* Resolve symbol to its function binding (same as funcall) */
+    if (CL_SYMBOL_P(func)) {
+        CL_Symbol *s = (CL_Symbol *)CL_OBJ_TO_PTR(func);
+        func = s->function;
+        if (CL_NULL_P(func) || func == CL_UNBOUND)
+            cl_error(CL_ERR_TYPE, "APPLY: symbol has no function binding");
+    }
+
     if (CL_FUNCTION_P(func)) {
         CL_Function *f = (CL_Function *)CL_OBJ_TO_PTR(func);
         return f->func(flat_args, nflat);
@@ -635,6 +653,15 @@ void cl_builtins_init(void)
     defun("CAR", bi_car, 1, 1);
     defun("CDR", bi_cdr, 1, 1);
     defun("FIRST", bi_car, 1, 1);
+    defun("SECOND", bi_second, 1, 1);
+    defun("THIRD", bi_third, 1, 1);
+    defun("FOURTH", bi_fourth, 1, 1);
+    defun("FIFTH", bi_fifth, 1, 1);
+    defun("SIXTH", bi_sixth, 1, 1);
+    defun("SEVENTH", bi_seventh, 1, 1);
+    defun("EIGHTH", bi_eighth, 1, 1);
+    defun("NINTH", bi_ninth, 1, 1);
+    defun("TENTH", bi_tenth, 1, 1);
     defun("REST", bi_cdr, 1, 1);
     defun("LIST", bi_list, 0, -1);
     defun("LENGTH", bi_length, 1, 1);

@@ -50,6 +50,18 @@
                  (append (cdr temps) (list tval)))
        ,(car temps))))
 
+;; define-modify-macro — define a macro that modifies a place
+(defmacro define-modify-macro (name lambda-list function &optional documentation)
+  (let ((place-var (gensym "PLACE"))
+        (has-rest (member '&rest lambda-list))
+        (plain-args (remove '&rest (remove '&optional lambda-list))))
+    `(defmacro ,name (,place-var ,@lambda-list)
+       ,@(when documentation (list documentation))
+       (list 'setf ,place-var
+             ,(if has-rest
+                  `(list* ',function ,place-var ,@plain-args)
+                  `(list ',function ,place-var ,@plain-args))))))
+
 ;; List searching
 (defun member (item list &key (test #'eql))
   (do ((l list (cdr l)))
@@ -185,11 +197,23 @@
   (restart-case (apply #'error datum args)
     (continue () :report format-control nil)))
 
+;; %set-condition-default-initargs — stub (default initargs not yet used)
+(defun %set-condition-default-initargs (name initargs)
+  (declare (ignore name initargs))
+  nil)
+
 ;; define-condition — define a user condition type with slots and readers
 (defmacro define-condition (name parent-types slot-specs &rest options)
   (let ((parent (if (consp parent-types) (car parent-types) parent-types))
         (parents-list (if (consp parent-types) parent-types (list parent-types)))
-        (slot-pairs (mapcar (lambda (spec) (cons (car spec) (getf (cdr spec) :initarg))) slot-specs)))
+        (slot-pairs (mapcar (lambda (spec) (cons (car spec) (getf (cdr spec) :initarg))) slot-specs))
+        (report nil)
+        (default-initargs nil))
+    ;; Parse options
+    (dolist (opt options)
+      (case (car opt)
+        (:report (setq report (cadr opt)))
+        (:default-initargs (setq default-initargs (cdr opt)))))
     `(progn
        (%register-condition-type ',name ',parent ',slot-pairs)
        (when (boundp '%register-condition-class)
@@ -201,6 +225,14 @@
                      (when reader
                        (list `(defun ,reader (c) (condition-slot-value c ',slot-name))))))
                  slot-specs)
+       ,@(when report
+           (if (stringp report)
+             `((defmethod print-object ((c ,name) stream)
+                 (write-string ,report stream)))
+             `((defmethod print-object ((c ,name) stream)
+                 (funcall ,report c stream)))))
+       ,@(when default-initargs
+           `((%set-condition-default-initargs ',name ',default-initargs)))
        ',name)))
 
 ;; check-type — signal type-error if place is not of type
@@ -217,28 +249,65 @@
             :format-control ,(or string "Assertion failed: ~S")
             :format-arguments (list ',test-form))))
 
-;; defpackage — define a package with :use, :export, :nicknames, :local-nicknames options
+;; defpackage — define a package with :use, :export, :nicknames, :local-nicknames,
+;;   :import-from, :shadow, :shadowing-import-from, :intern options
 (defmacro defpackage (name &rest options)
   (let ((pkg-name (if (symbolp name) (symbol-name name) name))
         (uses nil)
         (exports nil)
         (nicknames nil)
-        (local-nicks nil))
+        (local-nicks nil)
+        (import-froms nil)
+        (shadows nil)
+        (shadowing-import-froms nil)
+        (interns nil))
     ;; Parse options
     (dolist (opt options)
       (case (car opt)
         (:use (setq uses (cdr opt)))
         (:export (setq exports (cdr opt)))
         (:nicknames (setq nicknames (cdr opt)))
-        (:local-nicknames (setq local-nicks (cdr opt)))))
+        (:local-nicknames (setq local-nicks (cdr opt)))
+        (:import-from (setq import-froms (cons (cdr opt) import-froms)))
+        (:shadow (setq shadows (append shadows (cdr opt))))
+        (:shadowing-import-from (setq shadowing-import-froms (cons (cdr opt) shadowing-import-froms)))
+        (:intern (setq interns (append interns (cdr opt))))))
     `(progn
        (let ((pkg (or (find-package ,pkg-name)
                       (make-package ,pkg-name :nicknames ',nicknames))))
+         ,@(when shadows
+             `((dolist (s ',shadows)
+                 (shadow (if (symbolp s) (symbol-name s) s) pkg))))
          ,@(when uses
              `((dolist (u ',uses)
                  (use-package (or (find-package (if (symbolp u) (symbol-name u) u))
                                   (error "Package ~A not found" u))
                               pkg))))
+         ,@(mapcar (lambda (import-spec)
+                     (let ((from-pkg (car import-spec))
+                           (syms (cdr import-spec)))
+                       `(let ((src-pkg (or (find-package ,(if (symbolp from-pkg)
+                                                             (symbol-name from-pkg)
+                                                             from-pkg))
+                                           (error "Package ~A not found" ',from-pkg))))
+                          (dolist (s ',syms)
+                            (let ((sym (find-symbol (if (symbolp s) (symbol-name s) s) src-pkg)))
+                              (when sym (import sym pkg)))))))
+                   import-froms)
+         ,@(mapcar (lambda (import-spec)
+                     (let ((from-pkg (car import-spec))
+                           (syms (cdr import-spec)))
+                       `(let ((src-pkg (or (find-package ,(if (symbolp from-pkg)
+                                                             (symbol-name from-pkg)
+                                                             from-pkg))
+                                           (error "Package ~A not found" ',from-pkg))))
+                          (dolist (s ',syms)
+                            (let ((sym (find-symbol (if (symbolp s) (symbol-name s) s) src-pkg)))
+                              (when sym (shadowing-import sym pkg)))))))
+                   shadowing-import-froms)
+         ,@(when interns
+             `((dolist (s ',interns)
+                 (intern (if (symbolp s) (symbol-name s) s) pkg))))
          ,@(when exports
              `((dolist (e ',exports)
                  (export (intern (if (symbolp e) (symbol-name e) e) pkg) pkg))))
@@ -980,6 +1049,67 @@
                                        default-accum)))
                (setq accum-var default-accum)))
          (setq form (%loop-accum-body kn expr accum-var))))
+      ;; Nested IF/WHEN/UNLESS as sub-clause (standard LOOP syntax)
+      ((or (%loop-keyword-p sub "IF") (%loop-keyword-p sub "WHEN")
+           (%loop-keyword-p sub "UNLESS"))
+       (let* ((inner-test (car rest))
+              (negate (%loop-keyword-p sub "UNLESS"))
+              (then-forms nil)
+              (else-forms nil))
+         (setq rest (cdr rest))
+         ;; Parse then-branch sub-clause(s) connected by AND
+         (block parse-inner-then
+           (tagbody
+             inner-then-sub
+             (let* ((r (%loop-parse-cond-subclause
+                        (car rest) (cdr rest) block-name
+                        bindings into-vars default-accum
+                        result-form epilogue)))
+               (push (car r) then-forms)
+               (setq rest (cadr r))
+               (setq bindings (caddr r))
+               (setq into-vars (car (cdddr r)))
+               (setq default-accum (cadr (cdddr r)))
+               (setq result-form (caddr (cdddr r)))
+               (setq epilogue (car (cdddr (cdddr r)))))
+             (when (and rest (%loop-keyword-p (car rest) "AND"))
+               (setq rest (cdr rest))
+               (go inner-then-sub))))
+         ;; Check for ELSE branch
+         (when (and rest (%loop-keyword-p (car rest) "ELSE"))
+           (setq rest (cdr rest))
+           (block parse-inner-else
+             (tagbody
+               inner-else-sub
+               (let* ((r (%loop-parse-cond-subclause
+                          (car rest) (cdr rest) block-name
+                          bindings into-vars default-accum
+                          result-form epilogue)))
+                 (push (car r) else-forms)
+                 (setq rest (cadr r))
+                 (setq bindings (caddr r))
+                 (setq into-vars (car (cdddr r)))
+                 (setq default-accum (cadr (cdddr r)))
+                 (setq result-form (caddr (cdddr r)))
+                 (setq epilogue (car (cdddr (cdddr r)))))
+               (when (and rest (%loop-keyword-p (car rest) "AND"))
+                 (setq rest (cdr rest))
+                 (go inner-else-sub)))))
+         ;; Consume optional END
+         (when (and rest (%loop-keyword-p (car rest) "END"))
+           (setq rest (cdr rest)))
+         ;; Build the form
+         (when negate (setq inner-test `(not ,inner-test)))
+         (let ((then-body (if (cdr then-forms)
+                              `(progn ,@(nreverse then-forms))
+                              (car then-forms)))
+               (else-body (when else-forms
+                            (if (cdr else-forms)
+                                `(progn ,@(nreverse else-forms))
+                                (car else-forms)))))
+           (setq form (if else-body
+                          `(if ,inner-test ,then-body ,else-body)
+                          `(when ,inner-test ,then-body))))))
       (t (error "LOOP: invalid WHEN/IF sub-clause ~S" sub)))
     (list form rest bindings into-vars default-accum result-form epilogue)))
 

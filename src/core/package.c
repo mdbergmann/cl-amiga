@@ -64,6 +64,7 @@ CL_Obj cl_make_package(const char *name)
     pkg->use_list = CL_NIL;
     pkg->nicknames = CL_NIL;
     pkg->local_nicknames = CL_NIL;
+    pkg->shadowing_symbols = CL_NIL;
     pkg->sym_count = 0;
     return CL_PTR_TO_OBJ(pkg);
 }

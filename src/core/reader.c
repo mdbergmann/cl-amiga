@@ -713,6 +713,30 @@ static CL_Obj read_expr(void)
 
         /* Built-in dispatch macros */
         ch = sub_ch;
+        if (ch == '|') {
+            /* #|...|# block comment (nestable per CL spec) */
+            int depth = 1;
+            int prev = -1;
+            while (depth > 0) {
+                int c2 = read_char();
+                if (c2 < 0) {
+                    cl_error(CL_ERR_PARSE, "Unterminated block comment #|...|#");
+                    return CL_NIL;
+                }
+                if (prev == '#' && c2 == '|') {
+                    depth++;
+                    prev = -1;  /* reset to avoid #|| matching twice */
+                    continue;
+                }
+                if (prev == '|' && c2 == '#') {
+                    depth--;
+                    prev = -1;
+                    continue;
+                }
+                prev = c2;
+            }
+            return CL_READER_SKIP;
+        }
         if (ch == '\'') {
             /* #'foo => (FUNCTION foo) */
             obj = read_expr();

@@ -89,7 +89,7 @@ Single-pass recursive compiler from S-expressions to bytecode:
 
 **Special forms:** `quote`, `if`, `progn`, `lambda`, `let`, `let*`, `setq`, `setf`, `defun`, `defvar`, `defparameter`, `defconstant`, `defmacro`, `function (#')`, `block`, `return-from`, `return`, `and`, `or`, `cond`, `do`, `dolist`, `dotimes`, `case`, `ecase`, `typecase`, `etypecase`, `flet`, `labels`, `tagbody`, `go`, `catch`, `unwind-protect`, `multiple-value-bind`, `multiple-value-list`, `multiple-value-prog1`, `nth-value`, `eval-when`, `destructuring-bind`, `defsetf`, `deftype`, `trace`, `untrace`, `time`, `handler-bind`, `restart-case`, `in-package`, `macrolet`, `symbol-macrolet`, `the`, `declare`, `declaim`, `locally`
 
-**Bootstrap macros:** `when`, `unless`, `prog1`, `prog2`, `push`, `pop`, `incf`, `decf`, `pushnew`, `handler-case`, `ignore-errors`, `with-simple-restart`, `define-condition`, `check-type`, `assert`, `defpackage`, `do-symbols`, `do-external-symbols`, `defstruct`, `with-open-file`, `with-output-to-string`, `with-input-from-string`, `with-standard-io-syntax`, `loop`
+**Bootstrap macros:** `when`, `unless`, `prog1`, `prog2`, `push`, `pop`, `incf`, `decf`, `pushnew`, `handler-case`, `ignore-errors`, `with-simple-restart`, `define-condition`, `check-type`, `assert`, `defpackage`, `do-symbols`, `do-external-symbols`, `defstruct`, `with-open-file`, `with-output-to-string`, `with-input-from-string`, `with-standard-io-syntax`, `loop`, `define-modify-macro`
 
 **Bootstrap functions:** `cadr`, `caar`, `cdar`, `cddr`, `caddr`, `cadar`, `cdddr`, `cadddr`, `identity`, `endp`, `member`, `intersection`, `union`, `set-difference`, `subsetp`, `cerror`, `break`, `read-from-string`, `prin1-to-string`, `princ-to-string`, `write-to-string`, `complement`, `constantly`, `tree-equal`, `list-length`, `tailp`, `ldiff`, `revappend`, `nreconc`, `assoc-if`, `assoc-if-not`, `rassoc-if`, `rassoc-if-not`, `truename`, `ensure-directories-exist`, `decode-universal-time`, `encode-universal-time`, `get-decoded-time`
 
@@ -122,7 +122,7 @@ Single-pass recursive compiler from S-expressions to bytecode:
 | I/O | `write` `print` `prin1` `princ` `pprint` `terpri` `format` `read` `load` `provide` `require` `disassemble` `compile` |
 | Streams | `streamp` `input-stream-p` `output-stream-p` `interactive-stream-p` `open-stream-p` `read-char` `write-char` `peek-char` `unread-char` `read-line` `write-string` `write-line` `fresh-line` `finish-output` `force-output` `clear-output` `close` `open` `make-string-input-stream` `make-string-output-stream` `get-output-stream-string` |
 | Readtable | `readtablep` `get-macro-character` `set-macro-character` `make-dispatch-macro-character` `set-dispatch-macro-character` `get-dispatch-macro-character` `copy-readtable` |
-| Pathnames | `pathname` `pathnamep` `parse-namestring` `namestring` `make-pathname` `merge-pathnames` `pathname-host` `pathname-device` `pathname-directory` `pathname-name` `pathname-type` `pathname-version` `file-namestring` `directory-namestring` `enough-namestring` |
+| Pathnames | `pathname` `pathnamep` `parse-namestring` `namestring` `make-pathname` `merge-pathnames` `pathname-host` `pathname-device` `pathname-directory` `pathname-name` `pathname-type` `pathname-version` `file-namestring` `directory-namestring` `enough-namestring` `user-homedir-pathname` |
 | File system | `probe-file` `delete-file` `rename-file` `file-write-date` `ensure-directories-exist` |
 | Time | `get-universal-time` `get-internal-real-time` `sleep` |
 | Eval/Macro | `eval` `macroexpand` `macroexpand-1` `proclaim` |
@@ -159,7 +159,7 @@ Core infrastructure and interactive environment:
 
 Control flow, closures, macros, iteration:
 
-- [x] Runtime macro expansion (`defmacro` with `cl_vm_apply`)
+- [x] Runtime macro expansion (`defmacro` with `cl_vm_apply`, destructuring lambda lists)
 - [x] Closures with captured upvalues (flat closure model, value capture)
 - [x] `mapcar`/`funcall`/`apply` with compiled functions and closures
 - [x] `and`, `or`, `cond` (compiler special forms)
@@ -298,7 +298,7 @@ Extended iteration, output formatting, printer control, and standard library com
 - [x] `loop` facility — extended LOOP macro in boot.lisp:
   - Iteration: `for`/`as` with `in`/`on`/`across`/`=`/`from`/`downfrom`/`upfrom`, `to`/`below`/`above`/`downto`/`upto`, `by`, `repeat`, `while`/`until`
   - Accumulation: `collect`/`append`/`nconc`/`sum`/`count`/`maximize`/`minimize`, `into` named variables
-  - Conditionals: `when`/`if`/`unless` with `and`/`else`/`end`
+  - Conditionals: `when`/`if`/`unless` with `and`/`else`/`end`, nested conditionals as sub-clauses
   - Termination: `always`/`never`/`thereis`, `return`, `loop-finish`
   - Structure: `with`/`and`, `named`, `initially`/`finally`
   - BEING clauses: `hash-key[s]`/`hash-value[s]` of hash tables (with `using`), `symbol[s]`/`present-symbol[s]`/`external-symbol[s]` of packages
@@ -314,12 +314,12 @@ Extended iteration, output formatting, printer control, and standard library com
 - [ ] Justification `~<~>` — remaining unimplemented format directive
 - [x] Pretty printer — `pprint` builtin, `*print-pretty*` / `*print-right-margin*` control variables, fill-style line breaking (greedy, no look-ahead), column tracking, indentation stack for lists/vectors/structs; `write`/`write-to-string` `:pretty`/`:right-margin` keywords
 - [x] Full pretty printer (`pprint-logical-block`, `pprint-newline`, `pprint-indent`, `*print-pprint-dispatch*`) — greedy approximation (no XP buffering), `:linear` behaves like `:fill`
-- [ ] Setf completeness: `define-modify-macro`, `defsetf` long form, `define-setf-expander` (`rotatef`, `shiftf` done)
+- [ ] Setf completeness: `defsetf` long form, `define-setf-expander` (`rotatef`, `shiftf`, `define-modify-macro` done)
 - [ ] `psetq`, `psetf` — parallel assignment
 - [ ] `load-time-value` — evaluate once at load time
 - [x] `remf` — destructive plist removal
 
-1113 host tests (12 suites), 1435+ Amiga batch tests — all passing.
+1113 host tests (12 suites), 1655+ Amiga batch tests — all passing.
 
 ### Phase 9: Numeric Tower
 
@@ -406,7 +406,7 @@ Structures and Common Lisp Object System:
   - [x] C3 linearization — `%compute-class-precedence-list` for correct multiple inheritance CPL computation
   - [x] `defclass` — class definition macro: parses slot specifiers (`:initarg`, `:initform`, `:accessor`, `:reader`, `:writer`), computes effective slots from CPL (superclass slot merging), registers struct type, builds `slot-index-table`, defaults to `standard-object` superclass; initforms wrapped in zero-arg lambdas (evaluated at instance creation)
   - [x] `make-instance` — `allocate-instance` creates struct with all slots unbound, `initialize-instance` / `shared-initialize` apply initargs then initforms; accepts class name or class object
-  - [x] `defgeneric`, `defmethod` — full multiple dispatch generic functions; `standard-generic-function` and `standard-method` struct types; discriminating closure set as symbol-function; `%compute-applicable-methods` with C3-based specificity sorting
+  - [x] `defgeneric`, `defmethod` — full multiple dispatch generic functions; `standard-generic-function` and `standard-method` struct types; discriminating closure set as symbol-function; `%compute-applicable-methods` with C3-based specificity sorting; implicit block named after generic function
   - [x] Standard method combination — `:before` (most-specific-first), primary with `call-next-method` / `next-method-p` chain via dynamic variables, `:after` (least-specific-first), `:around` wrapping; EQL specializers supported
   - [x] `with-slots` — macro using `symbol-macrolet`; supports `(slot-name)` and `((var slot-name))` forms; `setf` of symbol-macrolet vars fixed in compiler
   - [x] GF accessors — `defclass` generates `defgeneric`/`defmethod` for `:accessor`/`:reader`/`:writer`; `initialize-instance` and `shared-initialize` converted to generic functions with default methods
@@ -422,7 +422,7 @@ Structures and Common Lisp Object System:
 ### Phase 11: ASDF & Beyond
 
 Validation and ecosystem:
-- [ ] Run ASDF 3.3 (~14K lines) — ultimate compliance test
+- [ ] Run ASDF 3.3 (~14K lines) — ultimate compliance test (loads with 1 non-code error remaining)
 - [x] `provide`, `require` — module system (`*modules*` list, string/symbol module names, pathname or default `lib/` search)
 - [ ] `compile-file`
 - [ ] Logical pathnames

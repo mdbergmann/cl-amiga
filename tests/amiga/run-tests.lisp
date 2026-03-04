@@ -2870,6 +2870,45 @@
 (check "print-object custom" "#<PRINTABLE hello>" (print-object (make-instance 'printable :tag "hello") nil))
 (check "print-object default nil" nil (print-object 42 nil))
 
+; --- LOOP nested conditionals ---
+(check "loop nested if" '(:two :three) (loop :for x :in '(1 2 3) :when (> x 1) :if (= x 2) :collect :two :else :collect :three :end))
+(check "loop nested when collect" '(3 5) (loop :for x :in '(1 2 3 4 5) :when (oddp x) :if (> x 2) :collect x :end))
+(check "loop nested unless" '(1 3) (loop :for x :in '(1 2 3 4) :when t :unless (evenp x) :collect x :end))
+(check "loop nested if do" '(2 4) (let ((r nil)) (loop :for x :in '(1 2 3 4) :when t :if (evenp x) :do (push x r) :end) (nreverse r)))
+
+; --- Defmacro destructuring ---
+(defmacro amiga-dm1 ((a b) c) `(list ,a ,b ,c))
+(check "defmacro destructuring req" '(1 2 3) (amiga-dm1 (1 2) 3))
+(defmacro amiga-dm2 (var &body (then-form &optional else-form)) `(let ((,var t)) (if ,var ,then-form ,else-form)))
+(check "defmacro destructuring body" :yes (amiga-dm2 x :yes :no))
+(check "defmacro destructuring body opt" :only (amiga-dm2 x :only))
+(defmacro amiga-dm3 (x &optional (y 42)) `(list ,x ,y))
+(check "defmacro optional not destructured" '(1 42) (amiga-dm3 1))
+(check "defmacro optional provided" '(1 2) (amiga-dm3 1 2))
+
+; --- define-modify-macro ---
+(define-modify-macro amiga-appendf (&rest args) append)
+(check "define-modify-macro" '(1 2 3 4) (let ((x '(1 2))) (amiga-appendf x '(3 4)) x))
+
+; --- reduce :from-end ---
+(check "reduce from-end cons" '(1 2 3 . 4) (reduce #'cons '(1 2 3 4) :from-end t))
+(check "reduce from-end initial" '(1 2 3) (reduce #'cons '(1 2 3) :from-end t :initial-value '()))
+(check "reduce from-end vector" '(1 2 3 . 4) (reduce #'cons #(1 2 3 4) :from-end t))
+(check "reduce forward unchanged" 10 (reduce #'+ '(1 2 3 4)))
+
+; --- defmethod implicit block ---
+(defgeneric amiga-block-test (x))
+(defmethod amiga-block-test ((x t)) (return-from amiga-block-test 42) 99)
+(check "defmethod implicit block" 42 (amiga-block-test 1))
+
+; --- user-homedir-pathname ---
+(check "user-homedir-pathname type" t (pathnamep (user-homedir-pathname)))
+
+; --- %set-condition-default-initargs ---
+(check "set-condition-default-initargs stub" nil (%set-condition-default-initargs 'foo '(:x 1)))
+(define-condition amiga-test-cond (error) () (:default-initargs :x 1))
+(check "define-condition with default-initargs" 'amiga-test-cond 'amiga-test-cond)
+
 ; --- Summary ---
 (format t "~%=== Results ===~%")
 (format t "Passed: ~A~%" *pass-count*)
