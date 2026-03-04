@@ -551,11 +551,20 @@ static void compile_setf_place(CL_Compiler *c, CL_Obj place, CL_Obj val_form)
 
     if (CL_SYMBOL_P(place)) {
         int slot;
+        /* Check if place is a symbol macro — rewrite as (setf expansion val) */
+        CL_Obj expansion = cl_env_lookup_symbol_macro(c->env, place);
+        if (!CL_NULL_P(expansion)) {
+            compile_setf_place(c, expansion, val_form);
+            c->in_tail = saved_tail;
+            return;
+        }
         /* Check for constant symbols */
-        CL_Symbol *sym = (CL_Symbol *)CL_OBJ_TO_PTR(place);
-        if (sym->flags & CL_SYM_CONSTANT) {
-            cl_error(CL_ERR_GENERAL, "Cannot assign to constant variable: %s",
-                     cl_symbol_name(place));
+        {
+            CL_Symbol *sym = (CL_Symbol *)CL_OBJ_TO_PTR(place);
+            if (sym->flags & CL_SYM_CONSTANT) {
+                cl_error(CL_ERR_GENERAL, "Cannot assign to constant variable: %s",
+                         cl_symbol_name(place));
+            }
         }
         compile_expr(c, val_form);
         slot = cl_env_lookup(c->env, place);

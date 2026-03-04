@@ -157,6 +157,7 @@ CL_Obj SYM_PRINT_CIRCLE = CL_NIL;
 CL_Obj SYM_PRINT_PRETTY = CL_NIL;
 CL_Obj SYM_PRINT_RIGHT_MARGIN = CL_NIL;
 CL_Obj SYM_PRINT_PPRINT_DISPATCH = CL_NIL;
+CL_Obj SYM_PRINT_OBJECT_HOOK = CL_NIL;
 CL_Obj KW_UPCASE = CL_NIL;
 CL_Obj KW_DOWNCASE = CL_NIL;
 CL_Obj KW_CAPITALIZE = CL_NIL;
@@ -508,6 +509,13 @@ void cl_symbol_init(void)
     SYM_PRINT_PPRINT_DISPATCH = cl_intern_in("*PRINT-PPRINT-DISPATCH*", 23, cl_package_cl);
     {
         CL_Symbol *s = (CL_Symbol *)CL_OBJ_TO_PTR(SYM_PRINT_PPRINT_DISPATCH);
+        s->flags |= CL_SYM_SPECIAL; s->value = CL_NIL;
+    }
+
+    /* *PRINT-OBJECT-HOOK* — called for struct printing, returns string or NIL */
+    SYM_PRINT_OBJECT_HOOK = cl_intern_in("*PRINT-OBJECT-HOOK*", 19, cl_package_cl);
+    {
+        CL_Symbol *s = (CL_Symbol *)CL_OBJ_TO_PTR(SYM_PRINT_OBJECT_HOOK);
         s->flags |= CL_SYM_SPECIAL; s->value = CL_NIL;
     }
 

@@ -1020,7 +1020,28 @@ static void print_obj(CL_Obj obj)
         int pretty = print_pretty_p();
         int32_t margin = pretty ? print_right_margin() : 0;
         extern CL_Obj cl_struct_slot_names(CL_Obj type_name);
-        CL_Obj slot_names = cl_struct_slot_names(st->type_desc);
+        CL_Obj slot_names;
+
+        /* *print-object-hook*: if set, call it for custom struct printing.
+         * Hook takes (object) and returns a string to output, or NIL
+         * to fall through to default printing. */
+        if (!CL_NULL_P(SYM_PRINT_OBJECT_HOOK)) {
+            CL_Symbol *hook_sym = (CL_Symbol *)CL_OBJ_TO_PTR(SYM_PRINT_OBJECT_HOOK);
+            if (!CL_NULL_P(hook_sym->value)) {
+                CL_Obj hook_args[1];
+                CL_Obj result;
+                hook_args[0] = obj;
+                result = cl_vm_apply(hook_sym->value, hook_args, 1);
+                if (!CL_NULL_P(result) && CL_HEAP_P(result) &&
+                    CL_HDR_TYPE(CL_OBJ_TO_PTR(result)) == TYPE_STRING) {
+                    CL_String *rs = (CL_String *)CL_OBJ_TO_PTR(result);
+                    out_str(rs->data);
+                    break; /* hook handled it */
+                }
+            }
+        }
+
+        slot_names = cl_struct_slot_names(st->type_desc);
 
         if (max_depth >= 0 && current_depth >= max_depth) {
             out_char('#');
