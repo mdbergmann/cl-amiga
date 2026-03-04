@@ -41,6 +41,7 @@ CORE_SRC     = $(SRCDIR)/core/types.c \
                $(SRCDIR)/core/builtins_random.c \
                $(SRCDIR)/core/builtins_bitvector.c \
                $(SRCDIR)/core/builtins_pathname.c \
+               $(SRCDIR)/core/builtins_describe.c \
                $(SRCDIR)/core/stream.c \
                $(SRCDIR)/core/bignum.c \
                $(SRCDIR)/core/ratio.c \

@@ -93,14 +93,16 @@ Single-pass recursive compiler from S-expressions to bytecode:
 
 **Bootstrap functions:** `cadr`, `caar`, `cdar`, `cddr`, `caddr`, `cadar`, `cdddr`, `cadddr`, `identity`, `endp`, `member`, `intersection`, `union`, `set-difference`, `subsetp`, `cerror`, `break`, `read-from-string`, `prin1-to-string`, `princ-to-string`, `write-to-string`, `complement`, `constantly`, `tree-equal`, `list-length`, `tailp`, `ldiff`, `revappend`, `nreconc`, `assoc-if`, `assoc-if-not`, `rassoc-if`, `rassoc-if-not`, `truename`, `ensure-directories-exist`, `decode-universal-time`, `encode-universal-time`, `get-decoded-time`
 
-## Built-in Functions (366 C functions + 35 boot.lisp functions)
+## Built-in Functions (411 C functions + 35 boot.lisp functions)
 
 | Category | Functions |
 |----------|-----------|
 | Arithmetic | `+` `-` `*` `/` `truncate` `floor` `ceiling` `round` `ftruncate` `ffloor` `fceiling` `fround` `rem` `mod` `1+` `1-` `abs` `max` `min` `gcd` `lcm` `expt` `isqrt` `sqrt` `exp` `log` `sin` `cos` `tan` `asin` `acos` `atan` |
-| Bitwise | `ash` `logand` `logior` `logxor` `lognot` `integer-length` |
+| Bitwise | `ash` `logand` `logior` `logxor` `lognot` `integer-length` `logcount` `logbitp` `logtest` `boole` `byte` `byte-size` `byte-position` `ldb` `dpb` |
+| Bit vectors | `bit-vector-p` `simple-bit-vector-p` `bit` `sbit` `bit-and` `bit-ior` `bit-xor` `bit-eqv` `bit-nand` `bit-nor` `bit-andc1` `bit-andc2` `bit-orc1` `bit-orc2` `bit-not` |
+| Random | `random` `make-random-state` `random-state-p` |
 | Comparison | `=` `/=` `<` `>` `<=` `>=` |
-| Predicates | `null` `consp` `atom` `listp` `numberp` `integerp` `floatp` `realp` `rationalp` `symbolp` `stringp` `functionp` `vectorp` `arrayp` `simple-vector-p` `adjustable-array-p` `zerop` `plusp` `minusp` `evenp` `oddp` `characterp` `keywordp` `hash-table-p` `pathnamep` |
+| Predicates | `null` `consp` `atom` `listp` `numberp` `integerp` `floatp` `realp` `rationalp` `symbolp` `stringp` `functionp` `vectorp` `arrayp` `simple-vector-p` `adjustable-array-p` `bit-vector-p` `simple-bit-vector-p` `zerop` `plusp` `minusp` `evenp` `oddp` `characterp` `keywordp` `hash-table-p` `random-state-p` `pathnamep` |
 | Equality | `eq` `eql` `equal` `not` |
 | List ops | `cons` `car` `cdr` `first` `rest` `list` `list*` `make-list` `length` `append` `reverse` `nth` `nthcdr` `last` `butlast` `copy-list` `copy-tree` |
 | Alist/plist | `acons` `pairlis` `assoc` `rassoc` `getf` `adjoin` |
@@ -128,6 +130,7 @@ Single-pass recursive compiler from S-expressions to bytecode:
 | Hash tables | `make-hash-table` `gethash` `remhash` `maphash` `clrhash` `hash-table-count` `hash-table-p` `%hash-table-pairs` |
 | Type system | `type-of` `typep` `coerce` `subtypep` |
 | Packages | `make-package` `find-package` `delete-package` `rename-package` `export` `unexport` `import` `use-package` `unuse-package` `shadow` `find-symbol` `intern` `unintern` `package-name` `package-use-list` `package-nicknames` `list-all-packages` `%package-symbols` `%package-external-symbols` `package-local-nicknames` `add-package-local-nickname` `remove-package-local-nickname` |
+| Introspection | `describe` |
 | Misc | `gensym` |
 
 ## Implementation Roadmap
@@ -361,6 +364,15 @@ Ratios (complete):
 - [x] GC integration: mark-and-sweep traces numerator/denominator; GC survival tested
 - [x] `min`/`max`, `1+`/`1-` work with ratios via generic arithmetic dispatch
 
+Bit manipulation:
+- [x] `logcount`, `logbitp`, `logtest` — bit counting and testing
+- [x] `byte`, `byte-size`, `byte-position`, `ldb`, `dpb` — byte specifier operations
+- [x] `boole` with 16 `boole-*` constants — generalized boolean operations
+
+Random numbers:
+- [x] `TYPE_RANDOM_STATE` with xorshift128 PRNG
+- [x] `random`, `make-random-state`, `*random-state*`, `random-state-p`
+
 **Known FPU issue:** 68881/68040 hardware FPU (`FPU=1`) has minor precision differences — `integer-decode-float` significand off-by-one on some values, and `scale-float` double formatting mismatch. Software float (`-lmieee`, default) passes all tests. 2/837 Amiga tests fail with `FPU=1`.
 
 716 host tests (9 suites), 877 Amiga batch tests — all passing (software float) at end of Phase 9.
@@ -369,10 +381,7 @@ Not yet implemented:
 - [ ] Complex numbers — real + imaginary parts, any real type
 - [ ] Complex ops: `realpart`, `imagpart`, `conjugate`, `phase`
 - [ ] Reader syntax: complex (`#C(1 2)`)
-- [ ] `logcount`
 - [ ] Constants: `pi`, float limits, `*read-default-float-format*`
-- [ ] `random`, `make-random-state`, `*random-state*` — pseudo-random number generation
-- [ ] Bit manipulation: `ldb`, `dpb`, `byte`, `byte-size`, `byte-position`, `logbitp`, `logtest`, `boole`
 
 ### Phase 10: Structures & CLOS
 
@@ -386,7 +395,7 @@ Structures and Common Lisp Object System:
 - [x] Array type predicates — `arrayp`, `simple-vector-p`, `adjustable-array-p`; `typep`/`type-of`/`subtypep` properly differentiate ARRAY/SIMPLE-ARRAY/VECTOR/SIMPLE-VECTOR
 - [x] `*print-array*` — controls readable vs unreadable array printing
 - [ ] Displaced arrays (`:displaced-to`, `:displaced-index-offset`)
-- [ ] Bit vectors: `bit-and`, `bit-or`, `bit-xor`, `bit-not`, `bit-vector-p`, `make-array :element-type 'bit`
+- [x] Bit vectors — `TYPE_BIT_VECTOR` with packed `uint32_t` storage; `#*` reader/printer notation; `bit`, `sbit`, `aref`/`(setf aref)` element access; 11 bitwise operations (`bit-and`, `bit-ior`, `bit-xor`, `bit-eqv`, `bit-nand`, `bit-nor`, `bit-andc1`, `bit-andc2`, `bit-orc1`, `bit-orc2`, `bit-not`); `bit-vector-p`, `simple-bit-vector-p` predicates; sequence protocol (`length`, `elt`, `find`, `count`, `map`, etc.); `equal` structural comparison; `coerce` list↔bit-vector; `make-array :element-type 'bit`; `typep`/`type-of`/`subtypep` integration
 - [ ] `defclass` — class definition with slots, inheritance, metaclasses
 - [ ] Slot options: `:initarg`, `:initform`, `:accessor`, `:reader`, `:writer`, `:allocation`, `:type`, `:documentation`
 - [ ] `defgeneric`, `defmethod` — generic function dispatch
@@ -409,7 +418,8 @@ Validation and ecosystem:
 - [ ] `define-compiler-macro`, `compiler-macro-function`
 - [ ] `make-load-form`, `make-load-form-saving-slots`
 - [ ] Environment: `lisp-implementation-type`, `lisp-implementation-version`, `machine-type`, `machine-version`, `software-type`, `software-version`, `room`
-- [ ] Introspection: `describe`, `inspect`, `apropos`, `apropos-list`
+- [x] `describe` — type-dispatched object description to stream (all 19 heap types + fixnum + character + NIL)
+- [ ] Introspection: `inspect`, `apropos`, `apropos-list`
 - [ ] Symbol utilities: `copy-symbol`, `gentemp`, `*gensym-counter*`
 - [ ] Bytecode peephole optimizer — second pass over `c->code[]` buffer before creating `CL_Bytecode`, linear scan with in-place rewrite:
   - Fused opcodes: `STORE+POP` → `STORE_POP`, `LOAD+POP` elimination
@@ -440,7 +450,7 @@ cl-amiga/
 │   └── overview.md        # This file
 ├── src/
 │   ├── main.c             # Entry point
-│   ├── core/              # Language implementation (36 .c + 20 .h modules)
+│   ├── core/              # Language implementation (37 .c + 20 .h modules)
 │   └── platform/          # OS abstraction (posix, amiga)
 ├── include/
 │   └── clamiga.h          # Public umbrella header
@@ -448,7 +458,7 @@ cl-amiga/
 │   └── boot.lisp          # Bootstrap macros/functions
 ├── tests/
 │   ├── test.h             # Test framework
-│   ├── test_*.c           # Host test suites (15 files, 1269 tests)
+│   ├── test_*.c           # Host test suites (16 files, 1285 tests)
 │   └── amiga/
 │       └── run-tests.lisp # AmigaOS batch tests (1435 tests)
 ├── build/                 # Build output (gitignored)

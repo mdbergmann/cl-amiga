@@ -48,6 +48,7 @@ OBJS = $(BUILDDIR)/main.o \
        $(BUILDDIR)/builtins_random.o \
        $(BUILDDIR)/builtins_bitvector.o \
        $(BUILDDIR)/builtins_pathname.o \
+       $(BUILDDIR)/builtins_describe.o \
        $(BUILDDIR)/stream.o \
        $(BUILDDIR)/bignum.o \
        $(BUILDDIR)/ratio.o \
@@ -192,6 +193,9 @@ $(BUILDDIR)/builtins_bitvector.o: src/core/builtins_bitvector.c
 	$(CC) $(CFLAGS) -o $@ -c $<
 
 $(BUILDDIR)/builtins_pathname.o: src/core/builtins_pathname.c
+	$(CC) $(CFLAGS) -o $@ -c $<
+
+$(BUILDDIR)/builtins_describe.o: src/core/builtins_describe.c
 	$(CC) $(CFLAGS) -o $@ -c $<
 
 clean:
