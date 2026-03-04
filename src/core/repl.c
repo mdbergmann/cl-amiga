@@ -31,7 +31,7 @@ static int pkg_name_len(void)
 /* Print REPL prompt showing current package name */
 static void repl_prompt(void)
 {
-    cl_color_set(CL_COLOR_BOLD_CYAN);
+    cl_color_set(CL_COLOR_DIM_CYAN);
     if (CL_HEAP_P(cl_current_package)) {
         CL_Package *pkg = (CL_Package *)CL_OBJ_TO_PTR(cl_current_package);
         CL_String *name = (CL_String *)CL_OBJ_TO_PTR(pkg->name);
@@ -47,7 +47,7 @@ static void repl_prompt(void)
 static void repl_continuation_prompt(void)
 {
     int i, len = pkg_name_len();
-    cl_color_set(CL_COLOR_BOLD_CYAN);
+    cl_color_set(CL_COLOR_DIM_CYAN);
     for (i = 0; i < len; i++)
         platform_write_string(" ");
     platform_write_string("> ");
@@ -530,7 +530,7 @@ void cl_repl(void)
                         /* Update history: shift *, **, ***, +, ++, +++ */
                         cl_repl_update_history(expr, result);
 
-                        cl_color_set(CL_COLOR_GREEN);
+                        cl_color_set(CL_COLOR_DIM_GREEN);
                         cl_prin1(result);
                         cl_color_reset();
                         platform_write_string("\n");

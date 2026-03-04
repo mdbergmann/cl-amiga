@@ -277,7 +277,7 @@ int main(int argc, char *argv[])
     } else {
         /* Drain residual CLI data from stdin (AmigaOS leaks command line to Input()) */
         platform_drain_input();
-        cl_color_set(CL_COLOR_BOLD_CYAN);
+        cl_color_set(CL_COLOR_DIM_BLUE);
         platform_write_string(
             "\n"
             "  ))     \\\n"
