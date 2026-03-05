@@ -642,7 +642,7 @@ static void gc_mark(void)
 
 static void gc_sweep(void)
 {
-    uint8_t *ptr = cl_heap.arena;
+    uint8_t *ptr = cl_heap.arena + CL_ALIGN;  /* Skip offset 0 (reserved for NIL) */
     uint8_t *end = cl_heap.arena + cl_heap.bump;
 
     cl_heap.free_list = NULL;
@@ -674,6 +674,7 @@ static void gc_sweep(void)
             fb->size = total;
             fb->next = cl_heap.free_list;
             cl_heap.free_list = fb;
+            size = total;  /* advance past entire coalesced region */
         }
         ptr += size;
     }

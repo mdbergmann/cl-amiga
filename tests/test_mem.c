@@ -113,6 +113,73 @@ TEST(gc_chain)
     CL_GC_UNPROTECT(1);
 }
 
+TEST(gc_reclaims_memory)
+{
+    /* Allocate far more garbage than fits in heap.
+     * With 4MB heap, each cons is 16 bytes, so ~250K conses fill the heap.
+     * Allocating 1M conses requires GC to reclaim dead objects multiple times.
+     * Before the coalescing fix, overlapping free list entries caused
+     * corruption and "Heap exhausted" errors. */
+    CL_Obj kept = cl_cons(CL_MAKE_FIXNUM(42), CL_NIL);
+    uint32_t gc_before;
+    int i;
+
+    CL_GC_PROTECT(kept);
+    gc_before = cl_heap.gc_count;
+
+    for (i = 0; i < 1000000; i++) {
+        CL_Obj c = cl_cons(CL_MAKE_FIXNUM(i), CL_NIL);
+        ASSERT(!CL_NULL_P(c));  /* Must never fail */
+        (void)c;
+    }
+
+    /* GC must have run at least once */
+    ASSERT(cl_heap.gc_count > gc_before);
+
+    /* Protected object must survive all GC cycles intact */
+    ASSERT(CL_CONS_P(kept));
+    ASSERT_EQ_INT(CL_FIXNUM_VAL(cl_car(kept)), 42);
+
+    CL_GC_UNPROTECT(1);
+}
+
+TEST(gc_coalesce_no_overlap)
+{
+    /* Verify that after GC with adjacent dead objects, the free list
+     * has no overlapping blocks. Allocate a batch of garbage, GC,
+     * then verify we can fill the freed space without corruption. */
+    CL_Obj sentinel = cl_cons(CL_MAKE_FIXNUM(99), CL_NIL);
+    int i;
+    uint32_t alloc_before, alloc_after;
+
+    CL_GC_PROTECT(sentinel);
+
+    /* Fill heap with garbage conses */
+    for (i = 0; i < 200000; i++) {
+        cl_cons(CL_MAKE_FIXNUM(i), CL_NIL);
+    }
+
+    cl_gc();
+    alloc_before = cl_heap.total_allocated;
+
+    /* Re-allocate into freed space — should not corrupt sentinel */
+    for (i = 0; i < 200000; i++) {
+        cl_cons(CL_MAKE_FIXNUM(i), CL_NIL);
+    }
+
+    cl_gc();
+    alloc_after = cl_heap.total_allocated;
+
+    /* Sentinel must survive both GC cycles */
+    ASSERT(CL_CONS_P(sentinel));
+    ASSERT_EQ_INT(CL_FIXNUM_VAL(cl_car(sentinel)), 99);
+
+    /* Allocation counts should be similar (same live set) */
+    ASSERT(alloc_after <= alloc_before + 1024);
+
+    CL_GC_UNPROTECT(1);
+}
+
 TEST(heap_stats)
 {
     /* Verify arena is initialized and stats don't crash */
@@ -133,6 +200,8 @@ int main(void)
     RUN(alloc_vector);
     RUN(gc_basic);
     RUN(gc_chain);
+    RUN(gc_reclaims_memory);
+    RUN(gc_coalesce_no_overlap);
     RUN(heap_stats);
 
     teardown();
