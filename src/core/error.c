@@ -1,4 +1,5 @@
 #include "error.h"
+#include "mem.h"
 #include "vm.h"
 #include "debugger.h"
 #include "color.h"
@@ -61,12 +62,14 @@ void cl_error(int code, const char *fmt, ...)
     /* No UWPROT found — propagating to C error handler.
      * NLX frames (catch/uwprot) are invalid once we leave the VM,
      * so clear the NLX stack and reset pending state.
-     * Restore all dynamic bindings before leaving the VM. */
+     * Restore all dynamic bindings before leaving the VM.
+     * Reset GC root stack — longjmp invalidates stack-local roots. */
     cl_nlx_top = 0;
     cl_pending_throw = 0;
     cl_dynbind_restore_to(0);
     cl_handler_top = 0;
     cl_restart_top = 0;
+    cl_gc_reset_roots();
 
     if (cl_error_frame_top > 0) {
         cl_error_frame_top--;

@@ -5,6 +5,7 @@
 #include "readtable.h"
 #include "package.h"
 #include "../platform/platform.h"
+#include <stdarg.h>
 #include <string.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -106,6 +107,38 @@ static void *alloc_from_free_list(uint32_t size)
     return NULL;
 }
 
+/* Signal a storage error without allocating (safe when heap is exhausted
+ * or corrupted).  Uses direct longjmp, bypassing cl_error() which would
+ * try to allocate condition objects. */
+void cl_storage_error(const char *fmt, ...)
+{
+    va_list ap;
+    cl_error_code = CL_ERR_STORAGE;
+    va_start(ap, fmt);
+    vsnprintf(cl_error_msg, sizeof(cl_error_msg), fmt, ap);
+    va_end(ap);
+    /* Skip cl_capture_backtrace() — VM frames may reference corrupted heap */
+    cl_backtrace_buf[0] = '\0';
+    cl_gc_reset_roots();
+    cl_vm.sp = 0;
+    cl_vm.fp = 0;
+    cl_nlx_top = 0;
+    cl_pending_throw = 0;
+    cl_dynbind_restore_to(0);
+    cl_handler_top = 0;
+    cl_restart_top = 0;
+    if (cl_error_frame_top > 0) {
+        cl_error_frame_top--;
+        cl_error_frames[cl_error_frame_top].active = 0;
+        longjmp(cl_error_frames[cl_error_frame_top].buf, CL_ERR_STORAGE);
+    }
+    /* No error frame — fatal */
+    platform_write_string("FATAL: ");
+    platform_write_string(cl_error_msg);
+    platform_write_string("\n");
+    exit(1);
+}
+
 void *cl_alloc(uint8_t type, uint32_t size)
 {
     void *ptr;
@@ -129,27 +162,7 @@ void *cl_alloc(uint8_t type, uint32_t size)
         }
     }
     if (!ptr) {
-        /* Cannot use cl_error() here — it allocates condition objects,
-         * which would re-enter cl_alloc and crash.  Instead, set the
-         * error message directly and longjmp to the nearest error frame,
-         * or abort if there is no error frame. */
-        cl_error_code = CL_ERR_STORAGE;
-        snprintf(cl_error_msg, sizeof(cl_error_msg),
-                 "Heap exhausted (requested %u bytes)", (unsigned)size);
-        cl_capture_backtrace();
-        cl_nlx_top = 0;
-        cl_pending_throw = 0;
-        cl_dynbind_restore_to(0);
-        cl_handler_top = 0;
-        cl_restart_top = 0;
-        if (cl_error_frame_top > 0) {
-            cl_error_frame_top--;
-            cl_error_frames[cl_error_frame_top].active = 0;
-            longjmp(cl_error_frames[cl_error_frame_top].buf, CL_ERR_STORAGE);
-        }
-        /* No error frame — fatal */
-        platform_write_string("FATAL: Heap exhausted\n");
-        exit(1);
+        cl_storage_error("Heap exhausted (requested %u bytes)", (unsigned)size);
     }
 
     /* Initialize header */
@@ -431,6 +444,11 @@ void cl_gc_pop_roots(int n)
 {
     gc_root_count -= n;
     if (gc_root_count < 0) gc_root_count = 0;
+}
+
+void cl_gc_reset_roots(void)
+{
+    gc_root_count = 0;
 }
 
 /* --- Mark Phase --- */

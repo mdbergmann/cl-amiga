@@ -5277,6 +5277,29 @@ TEST(eval_user_homedir_pathname)
     ASSERT_STR_EQ(eval_print("(pathnamep (user-homedir-pathname))"), "T");
 }
 
+/* --- Heap exhaustion / storage error tests --- */
+
+TEST(eval_heap_exhaustion_error)
+{
+    /* Accumulating live data until heap is full should signal CL_ERR_STORAGE
+     * with a proper message, not crash with a segfault.
+     * NOTE: this must be the LAST test — heap state is unreliable after. */
+    int err;
+    cl_gc_reset_roots();  /* Clear any stale roots from previous tests */
+    err = CL_CATCH();
+    if (err == CL_ERR_NONE) {
+        cl_eval_string("(let ((x nil)) (dotimes (i 500000) (push i x)) x)");
+        CL_UNCATCH();
+        /* If we get here, heap was big enough — not a failure */
+    } else {
+        CL_UNCATCH();
+        ASSERT_EQ_INT(err, CL_ERR_STORAGE);
+        ASSERT(strstr(cl_error_msg, "Heap exhausted") != NULL);
+    }
+    cl_vm.sp = 0;
+    cl_vm.fp = 0;
+}
+
 int main(void)
 {
     test_init();
@@ -5938,6 +5961,9 @@ int main(void)
 
     /* user-homedir-pathname */
     RUN(eval_user_homedir_pathname);
+
+    /* heap exhaustion / storage errors */
+    RUN(eval_heap_exhaustion_error);
 
     teardown();
     REPORT();

@@ -40,6 +40,9 @@ extern CL_Heap cl_heap;
 void cl_mem_init(uint32_t heap_size);
 void cl_mem_shutdown(void);
 
+/* Signal a storage error without allocating (safe when heap is exhausted) */
+void cl_storage_error(const char *fmt, ...);
+
 /* Allocate a heap object (triggers GC if needed) */
 void *cl_alloc(uint8_t type, uint32_t size);
 
@@ -69,6 +72,7 @@ CL_Obj cl_make_pathname(CL_Obj host, CL_Obj device, CL_Obj directory,
 
 void cl_gc_push_root(CL_Obj *root);
 void cl_gc_pop_roots(int n);
+void cl_gc_reset_roots(void);
 
 /* Manually trigger GC */
 void cl_gc(void);
