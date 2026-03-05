@@ -566,6 +566,17 @@ TEST(eval_in_package_symbol_name)
     eval_print("(in-package \"COMMON-LISP-USER\")");
 }
 
+TEST(eval_load_preserves_package)
+{
+    /* Regression: load must bind *package* so in-package in loaded file
+       does not affect the caller's package */
+    eval_print("(in-package \"COMMON-LISP-USER\")");
+    ASSERT_STR_EQ(eval_print("(package-name *package*)"), "\"COMMON-LISP-USER\"");
+    eval_print("(load \"tests/test_load_package.lisp\")");
+    /* Package should still be CL-USER after load returns */
+    ASSERT_STR_EQ(eval_print("(package-name *package*)"), "\"COMMON-LISP-USER\"");
+}
+
 /* ---- defpackage tests ---- */
 
 TEST(eval_defpackage_basic)
@@ -890,6 +901,7 @@ int main(void)
     RUN(eval_in_package_basic);
     RUN(eval_in_package_returns_package);
     RUN(eval_in_package_symbol_name);
+    RUN(eval_load_preserves_package);
 
     /* defpackage tests */
     RUN(eval_defpackage_basic);

@@ -663,6 +663,10 @@ void cl_repl_init_no_userinit(int no_userinit)
     /* Export newly-defined CL symbols so they are visible in all packages */
     cl_package_export_all_cl_symbols();
     cl_current_package = saved_pkg;
+    {
+        CL_Symbol *pkg_sym = (CL_Symbol *)CL_OBJ_TO_PTR(SYM_STAR_PACKAGE);
+        pkg_sym->value = saved_pkg;
+    }
 
     if (!no_userinit)
         load_user_init();
