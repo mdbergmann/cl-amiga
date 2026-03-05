@@ -300,6 +300,13 @@ int platform_mkdir(const char *path)
     return -1;
 }
 
+const char *platform_getenv(const char *name, char *buf, int bufsize)
+{
+    LONG len = GetVar((STRPTR)name, buf, bufsize, 0);
+    if (len < 0) return NULL;
+    return buf;
+}
+
 void platform_init(void)
 {
     /* Nothing needed — dos.library is auto-opened by vbcc startup */

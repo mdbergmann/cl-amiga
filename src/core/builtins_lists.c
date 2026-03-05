@@ -430,7 +430,7 @@ static CL_Obj bi_delete(CL_Obj *args, int n)
 
 static CL_Obj bi_delete_if(CL_Obj *args, int n)
 {
-    CL_Obj pred = args[0], list = args[1];
+    CL_Obj pred = cl_coerce_funcdesig(args[0], "DELETE-IF"), list = args[1];
     CL_Obj prev = CL_NIL, curr = list;
     CL_UNUSED(n);
 

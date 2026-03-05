@@ -1255,15 +1255,10 @@ static CL_Obj bi_getenv(CL_Obj *args, int n)
         cl_error(CL_ERR_TYPE, "GETENV: argument must be a string");
     {
         CL_String *s = (CL_String *)CL_OBJ_TO_PTR(name_obj);
-#ifdef PLATFORM_AMIGA
-        /* AmigaOS: GetVar from dos.library — TODO */
-        (void)s;
-        return CL_NIL;
-#else
-        result = getenv(s->data);
+        char buf[256];
+        result = platform_getenv(s->data, buf, sizeof(buf));
         if (!result) return CL_NIL;
         return cl_make_string(result, (uint32_t)strlen(result));
-#endif
     }
 }
 

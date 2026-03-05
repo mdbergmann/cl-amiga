@@ -129,6 +129,28 @@ static CL_Obj bi_boundp(CL_Obj *args, int n)
     return (s->value != CL_UNBOUND) ? SYM_T : CL_NIL;
 }
 
+static CL_Obj bi_fboundp(CL_Obj *args, int n)
+{
+    CL_Symbol *s;
+    CL_UNUSED(n);
+    if (!CL_SYMBOL_P(args[0]))
+        cl_error(CL_ERR_TYPE, "FBOUNDP: not a symbol");
+    s = (CL_Symbol *)CL_OBJ_TO_PTR(args[0]);
+    return (s->function != CL_UNBOUND && !CL_NULL_P(s->function))
+        ? SYM_T : CL_NIL;
+}
+
+static CL_Obj bi_fmakunbound(CL_Obj *args, int n)
+{
+    CL_Symbol *s;
+    CL_UNUSED(n);
+    if (!CL_SYMBOL_P(args[0]))
+        cl_error(CL_ERR_TYPE, "FMAKUNBOUND: not a symbol");
+    s = (CL_Symbol *)CL_OBJ_TO_PTR(args[0]);
+    s->function = CL_UNBOUND;
+    return args[0];
+}
+
 /* --- Registration --- */
 
 void cl_builtins_mutation_init(void)
@@ -148,6 +170,8 @@ void cl_builtins_mutation_init(void)
     defun("%SET-SYMBOL-FUNCTION", bi_set_symbol_function, 2, 2);
     defun("SET", bi_set_symbol_value, 2, 2);
 
-    /* Boundp */
+    /* Boundp / Fboundp */
     defun("BOUNDP", bi_boundp, 1, 1);
+    defun("FBOUNDP", bi_fboundp, 1, 1);
+    defun("FMAKUNBOUND", bi_fmakunbound, 1, 1);
 }

@@ -2909,6 +2909,26 @@
 (define-condition amiga-test-cond (error) () (:default-initargs :x 1))
 (check "define-condition with default-initargs" 'amiga-test-cond 'amiga-test-cond)
 
+; --- ASDF-session features ---
+(check "lisp-implementation-type returns string" t (stringp (lisp-implementation-type)))
+(check "lisp-implementation-version returns string" t (stringp (lisp-implementation-version)))
+(check "software-type returns string" t (stringp (software-type)))
+(check "machine-type returns string" t (stringp (machine-type)))
+
+; --- make-string ---
+(check "make-string basic" "aaa" (make-string 3 :initial-element #\a))
+(check "make-string default" 3 (length (make-string 3)))
+
+; --- fboundp / fmakunbound ---
+(defun amiga-fboundp-test () 42)
+(check "fboundp defined function" t (fboundp 'amiga-fboundp-test))
+(fmakunbound 'amiga-fboundp-test)
+(check "fmakunbound removes binding" nil (fboundp 'amiga-fboundp-test))
+
+; --- %getenv ---
+(check "%getenv non-existent returns NIL" nil (%getenv "CLAMIGA_NONEXISTENT_VAR_12345"))
+(check "%getenv type check" t (handler-case (progn (%getenv 42) nil) (error () t)))
+
 ; --- Summary ---
 (format t "~%=== Results ===~%")
 (format t "Passed: ~A~%" *pass-count*)

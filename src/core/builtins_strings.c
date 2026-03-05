@@ -180,28 +180,6 @@ static CL_Obj bi_symbol_package(CL_Obj *args, int n)
     return s->package;
 }
 
-static CL_Obj bi_fboundp(CL_Obj *args, int n)
-{
-    CL_Symbol *s;
-    CL_UNUSED(n);
-    if (!CL_SYMBOL_P(args[0]))
-        cl_error(CL_ERR_TYPE, "FBOUNDP: not a symbol");
-    s = (CL_Symbol *)CL_OBJ_TO_PTR(args[0]);
-    return (s->function != CL_UNBOUND && !CL_NULL_P(s->function))
-        ? SYM_T : CL_NIL;
-}
-
-static CL_Obj bi_fmakunbound(CL_Obj *args, int n)
-{
-    CL_Symbol *s;
-    CL_UNUSED(n);
-    if (!CL_SYMBOL_P(args[0]))
-        cl_error(CL_ERR_TYPE, "FMAKUNBOUND: not a symbol");
-    s = (CL_Symbol *)CL_OBJ_TO_PTR(args[0]);
-    s->function = CL_UNBOUND;
-    return args[0];
-}
-
 static CL_Obj bi_make_symbol(CL_Obj *args, int n)
 {
     CL_UNUSED(n);
@@ -1023,8 +1001,6 @@ void cl_builtins_strings_init(void)
     /* Symbol functions */
     defun("SYMBOL-NAME", bi_symbol_name, 1, 1);
     defun("SYMBOL-PACKAGE", bi_symbol_package, 1, 1);
-    defun("FBOUNDP", bi_fboundp, 1, 1);
-    defun("FMAKUNBOUND", bi_fmakunbound, 1, 1);
     defun("MAKE-SYMBOL", bi_make_symbol, 1, 1);
     defun("KEYWORDP", bi_keywordp, 1, 1);
 

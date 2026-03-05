@@ -228,6 +228,12 @@ int platform_mkdir(const char *path)
     return (mkdir(path, 0755) == 0 || errno == EEXIST) ? 0 : -1;
 }
 
+const char *platform_getenv(const char *name, char *buf, int bufsize)
+{
+    (void)buf; (void)bufsize;
+    return getenv(name);
+}
+
 void platform_init(void)
 {
     /* Nothing needed on POSIX */

@@ -639,6 +639,7 @@ void cl_repl_init_no_userinit(int no_userinit)
 
     cl_eval_string("(defmacro when (test &rest body) (list 'if test (cons 'progn body)))");
     cl_eval_string("(defmacro unless (test &rest body) (list 'if test nil (cons 'progn body)))");
+
     load_boot_file();
 
     /* Load CLOS so defclass/defgeneric/defmethod are available */
