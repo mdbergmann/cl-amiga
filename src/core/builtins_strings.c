@@ -305,6 +305,21 @@ static CL_Obj bi_string_ge(CL_Obj *args, int n)
     return CL_NIL;
 }
 
+/* Coerce a string designator (string, symbol, or character) to CL_String*.
+ * Per CL spec, string designators are accepted by string functions. */
+static CL_String *coerce_to_cl_string(CL_Obj obj, const char *func_name)
+{
+    if (CL_STRING_P(obj))
+        return (CL_String *)CL_OBJ_TO_PTR(obj);
+    if (CL_SYMBOL_P(obj)) {
+        CL_Symbol *sym = (CL_Symbol *)CL_OBJ_TO_PTR(obj);
+        return (CL_String *)CL_OBJ_TO_PTR(sym->name);
+    }
+    (void)func_name;
+    cl_error(CL_ERR_TYPE, "not a string designator");
+    return NULL;
+}
+
 static CL_Obj bi_string_upcase(CL_Obj *args, int n)
 {
     CL_String *s;
@@ -312,9 +327,7 @@ static CL_Obj bi_string_upcase(CL_Obj *args, int n)
     CL_String *rs;
     uint32_t i;
     CL_UNUSED(n);
-    if (!CL_STRING_P(args[0]))
-        cl_error(CL_ERR_TYPE, "STRING-UPCASE: not a string");
-    s = (CL_String *)CL_OBJ_TO_PTR(args[0]);
+    s = coerce_to_cl_string(args[0], "STRING-UPCASE");
     result = cl_make_string(s->data, s->length);
     rs = (CL_String *)CL_OBJ_TO_PTR(result);
     for (i = 0; i < rs->length; i++) {
@@ -331,9 +344,7 @@ static CL_Obj bi_string_downcase(CL_Obj *args, int n)
     CL_String *rs;
     uint32_t i;
     CL_UNUSED(n);
-    if (!CL_STRING_P(args[0]))
-        cl_error(CL_ERR_TYPE, "STRING-DOWNCASE: not a string");
-    s = (CL_String *)CL_OBJ_TO_PTR(args[0]);
+    s = coerce_to_cl_string(args[0], "STRING-DOWNCASE");
     result = cl_make_string(s->data, s->length);
     rs = (CL_String *)CL_OBJ_TO_PTR(result);
     for (i = 0; i < rs->length; i++) {
@@ -341,21 +352,6 @@ static CL_Obj bi_string_downcase(CL_Obj *args, int n)
             rs->data[i] += 32;
     }
     return result;
-}
-
-/* Coerce a string designator (string, symbol, or character) to CL_String*.
- * Per CL spec, string designators are accepted by string functions. */
-static CL_String *coerce_to_cl_string(CL_Obj obj, const char *func_name)
-{
-    if (CL_STRING_P(obj))
-        return (CL_String *)CL_OBJ_TO_PTR(obj);
-    if (CL_SYMBOL_P(obj)) {
-        CL_Symbol *sym = (CL_Symbol *)CL_OBJ_TO_PTR(obj);
-        return (CL_String *)CL_OBJ_TO_PTR(sym->name);
-    }
-    (void)func_name;
-    cl_error(CL_ERR_TYPE, "not a string designator");
-    return NULL;
 }
 
 static int trim_char_in_set(int ch, CL_String *set)
@@ -656,9 +652,7 @@ static CL_Obj bi_string_capitalize(CL_Obj *args, int n)
     uint32_t i;
     int in_word = 0;
     CL_UNUSED(n);
-    if (!CL_STRING_P(args[0]))
-        cl_error(CL_ERR_TYPE, "STRING-CAPITALIZE: not a string");
-    s = (CL_String *)CL_OBJ_TO_PTR(args[0]);
+    s = coerce_to_cl_string(args[0], "STRING-CAPITALIZE");
     result = cl_make_string(s->data, s->length);
     rs = (CL_String *)CL_OBJ_TO_PTR(result);
     for (i = 0; i < rs->length; i++) {

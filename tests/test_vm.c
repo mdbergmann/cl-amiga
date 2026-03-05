@@ -3090,6 +3090,16 @@ TEST(eval_string_capitalize)
     ASSERT_STR_EQ(eval_print("(string-capitalize \"foo-bar\")"), "\"Foo-Bar\"");
 }
 
+TEST(eval_string_case_designators)
+{
+    /* string-upcase/downcase/capitalize must accept string designators
+       (symbols, characters), not just strings */
+    ASSERT_STR_EQ(eval_print("(string-downcase :FIVEAM)"), "\"fiveam\"");
+    ASSERT_STR_EQ(eval_print("(string-downcase 'HELLO)"), "\"hello\"");
+    ASSERT_STR_EQ(eval_print("(string-upcase :foo)"), "\"FOO\"");
+    ASSERT_STR_EQ(eval_print("(string-capitalize :hello-world)"), "\"Hello-World\"");
+}
+
 TEST(eval_nstring_upcase)
 {
     ASSERT_STR_EQ(eval_print(
@@ -5688,6 +5698,7 @@ int main(void)
 
     /* Phase 8 Step 2 — Missing string operations */
     RUN(eval_string_capitalize);
+    RUN(eval_string_case_designators);
     RUN(eval_nstring_upcase);
     RUN(eval_nstring_downcase);
     RUN(eval_nstring_capitalize);
