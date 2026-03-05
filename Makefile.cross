@@ -1,0 +1,97 @@
+# CL-Amiga Cross-compilation Makefile
+# Uses m68k-amigaos-gcc from tools/m68k-amigaos-gcc/prefix
+# Run: make -f Makefile.cross [amiga|test-amiga|clean]
+
+TOOLCHAIN = $(CURDIR)/tools/m68k-amigaos-gcc/prefix
+CC        = $(TOOLCHAIN)/bin/m68k-amigaos-gcc
+CFLAGS    = -noixemul -mcpu=68020 -msoft-float -std=c99 -Wall -O2 -DPLATFORM_AMIGA
+LDFLAGS   = -noixemul -mcpu=68020 -msoft-float
+
+SRCDIR   = src
+BUILDDIR = build/cross
+
+# Source files
+PLATFORM_SRC = $(SRCDIR)/platform/platform_amiga.c
+CORE_SRC     = $(SRCDIR)/core/types.c \
+               $(SRCDIR)/core/mem.c \
+               $(SRCDIR)/core/error.c \
+               $(SRCDIR)/core/symbol.c \
+               $(SRCDIR)/core/package.c \
+               $(SRCDIR)/core/reader.c \
+               $(SRCDIR)/core/readtable.c \
+               $(SRCDIR)/core/printer.c \
+               $(SRCDIR)/core/env.c \
+               $(SRCDIR)/core/compiler.c \
+               $(SRCDIR)/core/compiler_special.c \
+               $(SRCDIR)/core/compiler_extra.c \
+               $(SRCDIR)/core/vm.c \
+               $(SRCDIR)/core/builtins.c \
+               $(SRCDIR)/core/builtins_arith.c \
+               $(SRCDIR)/core/builtins_io.c \
+               $(SRCDIR)/core/builtins_format.c \
+               $(SRCDIR)/core/builtins_mutation.c \
+               $(SRCDIR)/core/builtins_strings.c \
+               $(SRCDIR)/core/builtins_lists.c \
+               $(SRCDIR)/core/builtins_hashtable.c \
+               $(SRCDIR)/core/builtins_sequence.c \
+               $(SRCDIR)/core/builtins_sequence2.c \
+               $(SRCDIR)/core/builtins_type.c \
+               $(SRCDIR)/core/builtins_condition.c \
+               $(SRCDIR)/core/builtins_package.c \
+               $(SRCDIR)/core/builtins_struct.c \
+               $(SRCDIR)/core/builtins_array.c \
+               $(SRCDIR)/core/builtins_stream.c \
+               $(SRCDIR)/core/builtins_random.c \
+               $(SRCDIR)/core/builtins_bitvector.c \
+               $(SRCDIR)/core/builtins_pathname.c \
+               $(SRCDIR)/core/builtins_describe.c \
+               $(SRCDIR)/core/stream.c \
+               $(SRCDIR)/core/bignum.c \
+               $(SRCDIR)/core/ratio.c \
+               $(SRCDIR)/core/float.c \
+               $(SRCDIR)/core/float_math.c \
+               $(SRCDIR)/core/debugger.c \
+               $(SRCDIR)/core/repl.c \
+               $(SRCDIR)/core/color.c
+MAIN_SRC     = $(SRCDIR)/main.c
+
+ALL_SRCS = $(MAIN_SRC) $(PLATFORM_SRC) $(CORE_SRC)
+ALL_OBJS = $(patsubst $(SRCDIR)/%.c,$(BUILDDIR)/%.o,$(ALL_SRCS))
+
+.PHONY: amiga test-amiga clean
+
+amiga: $(BUILDDIR)/clamiga
+
+$(BUILDDIR)/clamiga: $(ALL_OBJS)
+	@mkdir -p $(dir $@)
+	$(CC) $(LDFLAGS) -o $@ $^ -lm
+
+$(BUILDDIR)/%.o: $(SRCDIR)/%.c
+	@mkdir -p $(dir $@)
+	$(CC) $(CFLAGS) -I$(SRCDIR) -c -o $@ $<
+
+# Cross-compile, place binary, launch FS-UAE for testing
+# The boot script tries vbcc build (fails without vbcc), then runs the pre-placed binary
+test-amiga: $(BUILDDIR)/clamiga
+	@mkdir -p build/amiga
+	cp $(BUILDDIR)/clamiga build/amiga/clamiga
+	@echo "=== Launching FS-UAE — close emulator when tests finish ==="
+	verify/realamiga/FS-UAE.app/Contents/MacOS/fs-uae verify/realamiga/verify.fs-uae
+	@$(MAKE) --no-print-directory -f Makefile.cross verify-amiga
+
+verify-amiga:
+	@if [ ! -f build/amiga/test-results.log ]; then \
+		echo "No test results found. Run FS-UAE first."; \
+		exit 1; \
+	fi
+	@echo "=== Amiga Test Results ==="
+	@cat build/amiga/test-results.log
+	@if grep -q "ALL TESTS PASSED" build/amiga/test-results.log; then \
+		echo "=== Amiga verification PASSED ==="; \
+	else \
+		echo "=== Amiga verification FAILED ==="; \
+		exit 1; \
+	fi
+
+clean:
+	rm -rf $(BUILDDIR)
