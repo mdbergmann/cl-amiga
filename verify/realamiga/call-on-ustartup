@@ -1,0 +1,3 @@
+; Run cross-compiled CL-Amiga test suite
+cd CLAmiga:
+build/amiga/clamiga --batch <tests/amiga/run-tests.lisp >build/amiga/test-results.log

@@ -1,4 +1,8 @@
 build/
 *.o
 *.d
-verify/
+verify/*
+!verify/realamiga/
+verify/realamiga/*
+!verify/realamiga/call-on-ustartup
+!verify/realamiga/verify.fs-uae
