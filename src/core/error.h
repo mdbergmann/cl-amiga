@@ -19,6 +19,7 @@
 #define CL_ERR_OVERFLOW   6
 #define CL_ERR_DIVZERO    7
 #define CL_ERR_UNDEFINED  8
+#define CL_ERR_STORAGE    9
 
 /* Error handler frame stack */
 #define CL_MAX_ERROR_FRAMES 16

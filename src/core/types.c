@@ -1,4 +1,6 @@
 #include "types.h"
+#include "mem.h"
+#include "error.h"
 #include "../platform/platform.h"
 
 CL_Obj CL_T = CL_NIL;  /* Set properly during init by symbol/package setup */
@@ -6,12 +8,18 @@ CL_Obj CL_T = CL_NIL;  /* Set properly during init by symbol/package setup */
 CL_Obj cl_car(CL_Obj obj)
 {
     if (CL_NULL_P(obj)) return CL_NIL;
+    if (obj >= cl_heap.arena_size)
+        cl_error(CL_ERR_STORAGE,
+                 "Heap exhausted, can't allocate more memory");
     return ((CL_Cons *)CL_OBJ_TO_PTR(obj))->car;
 }
 
 CL_Obj cl_cdr(CL_Obj obj)
 {
     if (CL_NULL_P(obj)) return CL_NIL;
+    if (obj >= cl_heap.arena_size)
+        cl_error(CL_ERR_STORAGE,
+                 "Heap exhausted, can't allocate more memory");
     return ((CL_Cons *)CL_OBJ_TO_PTR(obj))->cdr;
 }
 

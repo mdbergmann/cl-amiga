@@ -1,4 +1,5 @@
 #include "mem.h"
+#include "error.h"
 #include "float.h"
 #include "vm.h"
 #include "readtable.h"
@@ -6,6 +7,7 @@
 #include "../platform/platform.h"
 #include <string.h>
 #include <stdio.h>
+#include <stdlib.h>
 
 /* External roots needed for GC marking */
 extern CL_Obj macro_table, setf_table, setf_fn_table, type_table;
@@ -127,8 +129,27 @@ void *cl_alloc(uint8_t type, uint32_t size)
         }
     }
     if (!ptr) {
-        platform_write_string("ERROR: Heap exhausted\n");
-        return NULL;
+        /* Cannot use cl_error() here — it allocates condition objects,
+         * which would re-enter cl_alloc and crash.  Instead, set the
+         * error message directly and longjmp to the nearest error frame,
+         * or abort if there is no error frame. */
+        cl_error_code = CL_ERR_STORAGE;
+        snprintf(cl_error_msg, sizeof(cl_error_msg),
+                 "Heap exhausted (requested %u bytes)", (unsigned)size);
+        cl_capture_backtrace();
+        cl_nlx_top = 0;
+        cl_pending_throw = 0;
+        cl_dynbind_restore_to(0);
+        cl_handler_top = 0;
+        cl_restart_top = 0;
+        if (cl_error_frame_top > 0) {
+            cl_error_frame_top--;
+            cl_error_frames[cl_error_frame_top].active = 0;
+            longjmp(cl_error_frames[cl_error_frame_top].buf, CL_ERR_STORAGE);
+        }
+        /* No error frame — fatal */
+        platform_write_string("FATAL: Heap exhausted\n");
+        exit(1);
     }
 
     /* Initialize header */
