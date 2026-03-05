@@ -588,9 +588,39 @@ static CL_Obj bi_describe(CL_Obj *args, int n)
     return CL_NIL;
 }
 
+/* (room &optional verbosity)
+   verbosity: :default (or omitted), :minimal, :full
+   Prints heap usage, GC stats, and allocation info. */
+static CL_Obj bi_room(CL_Obj *args, int n)
+{
+    char buf[256];
+    uint32_t used = cl_heap.total_allocated;
+    uint32_t total = cl_heap.arena_size;
+    uint32_t free_bytes = total - used;
+    uint32_t pct = (used * 100) / total;
+
+    (void)args; (void)n;
+
+    platform_write_string("Heap:\n");
+    sprintf(buf, "  %lu / %lu bytes used (%lu%%)\n",
+            (unsigned long)used, (unsigned long)total, (unsigned long)pct);
+    platform_write_string(buf);
+    sprintf(buf, "  %lu bytes free\n", (unsigned long)free_bytes);
+    platform_write_string(buf);
+    sprintf(buf, "  %lu bytes consed (total ever allocated)\n",
+            (unsigned long)cl_heap.total_consed);
+    platform_write_string(buf);
+    sprintf(buf, "GC:\n  %lu collections\n", (unsigned long)cl_heap.gc_count);
+    platform_write_string(buf);
+
+    cl_mv_count = 0;
+    return CL_NIL;
+}
+
 /* --- Registration --- */
 
 void cl_builtins_describe_init(void)
 {
     defun("DESCRIBE", bi_describe, 1, 2);
+    defun("ROOM", bi_room, 0, 1);
 }
