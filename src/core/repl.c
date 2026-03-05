@@ -71,19 +71,15 @@ static void load_boot_file(void)
         unsigned long size;
         char *buf = platform_file_read(paths[i], &size);
         if (buf) {
-            CL_Obj cl_str, stream;
             const char *prev_file = cl_current_source_file;
             uint16_t prev_file_id = cl_current_file_id;
+            CL_Obj stream;
             cl_current_source_file = paths[i];
             cl_current_file_id++;
 
-            /* Create CL string + stream once for the whole file */
-            cl_str = cl_make_string(buf, (int)size);
-            CL_GC_PROTECT(cl_str);
-            stream = cl_make_string_input_stream(cl_str, 0, (uint32_t)size);
+            /* Use C-buffer stream — file content stays outside GC arena */
+            stream = cl_make_cbuf_input_stream(buf, (uint32_t)size);
             CL_GC_PROTECT(stream);
-
-            platform_free(buf);  /* C buffer no longer needed */
 
             for (;;) {
                 CL_Obj expr, bytecode;
@@ -105,7 +101,9 @@ static void load_boot_file(void)
                 }
             }
 
-            CL_GC_UNPROTECT(2);
+            CL_GC_UNPROTECT(1);
+            cl_stream_close(stream);
+            platform_free(buf);
             cl_current_source_file = prev_file;
             cl_current_file_id = prev_file_id;
             return;  /* Loaded successfully, stop trying */
@@ -127,18 +125,15 @@ void cl_load_file(const char *path)
     }
 
     {
-        CL_Obj cl_str, stream;
         const char *prev_file = cl_current_source_file;
         uint16_t prev_file_id = cl_current_file_id;
+        CL_Obj stream;
         cl_current_source_file = path;
         cl_current_file_id++;
 
-        cl_str = cl_make_string(buf, (int)size);
-        CL_GC_PROTECT(cl_str);
-        stream = cl_make_string_input_stream(cl_str, 0, (uint32_t)size);
+        /* Use C-buffer stream — file content stays outside GC arena */
+        stream = cl_make_cbuf_input_stream(buf, (uint32_t)size);
         CL_GC_PROTECT(stream);
-
-        platform_free(buf);
 
         for (;;) {
             CL_Obj expr, bytecode;
@@ -161,7 +156,9 @@ void cl_load_file(const char *path)
             }
         }
 
-        CL_GC_UNPROTECT(2);
+        CL_GC_UNPROTECT(1);
+        cl_stream_close(stream);
+        platform_free(buf);
         cl_current_source_file = prev_file;
         cl_current_file_id = prev_file_id;
     }

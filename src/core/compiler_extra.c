@@ -237,6 +237,12 @@ static void compile_qq_list_splice(CL_Compiler *c, CL_Obj tmpl)
     CL_Obj cursor = tmpl;
     CL_Obj sym_append;
     int idx;
+    int saved_tail = c->in_tail;
+
+    /* Splice expressions are NOT in tail position — the APPEND call follows.
+     * Without this, user-defined functions in ,@(fn ...) get compiled as
+     * OP_TAILCALL which replaces the frame and skips the final APPEND call. */
+    c->in_tail = 0;
 
     /* Load APPEND function */
     sym_append = cl_intern("APPEND", 6);
@@ -271,6 +277,7 @@ static void compile_qq_list_splice(CL_Compiler *c, CL_Obj tmpl)
         cursor = cl_cdr(cursor);
     }
 
+    c->in_tail = saved_tail;
     cl_emit(c, OP_CALL);
     cl_emit(c, (uint8_t)n_segments);
 }
@@ -827,8 +834,8 @@ void compile_defun(CL_Compiler *c, CL_Obj form)
     /* Store as function binding of name */
     {
         int idx = cl_add_constant(c, name);
-        /* OP_GSTORE peeks top without popping */
-        cl_emit(c, OP_GSTORE);
+        /* OP_FSTORE peeks top without popping — stores to function slot */
+        cl_emit(c, OP_FSTORE);
         cl_emit_u16(c, (uint16_t)idx);
     }
 

@@ -885,7 +885,8 @@
                    (%gf-dispatch gf args))))
           (%set-gf-discriminating-function gf dispatch-fn)
           (setf (gethash name *generic-function-table*) gf)
-          (setf (symbol-function name) dispatch-fn)
+          (when (symbolp name)
+            (setf (symbol-function name) dispatch-fn))
           gf))))
 
 ;;; --- defgeneric macro ---

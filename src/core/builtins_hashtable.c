@@ -340,7 +340,7 @@ static CL_Obj bi_remhash(CL_Obj *args, int n)
 
 static CL_Obj bi_maphash(CL_Obj *args, int n)
 {
-    CL_Obj func = args[0];
+    CL_Obj func = cl_coerce_funcdesig(args[0], "MAPHASH");
     CL_Obj ht_obj = args[1];
     CL_Hashtable *ht;
     uint32_t i;

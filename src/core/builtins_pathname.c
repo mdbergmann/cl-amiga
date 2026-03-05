@@ -612,6 +612,14 @@ static CL_Obj bi_user_homedir_pathname(CL_Obj *args, int n)
     }
 }
 
+/* wild-pathname-p — we don't support wildcards, always returns NIL */
+static CL_Obj bi_wild_pathname_p(CL_Obj *args, int n)
+{
+    CL_UNUSED(args);
+    CL_UNUSED(n);
+    return CL_NIL;
+}
+
 /* ================================================================
  * Registration
  * ================================================================ */
@@ -634,6 +642,7 @@ void cl_builtins_pathname_init(void)
     defun("DIRECTORY-NAMESTRING", bi_directory_namestring, 1, 1);
     defun("ENOUGH-NAMESTRING", bi_enough_namestring, 1, 2);
     defun("USER-HOMEDIR-PATHNAME", bi_user_homedir_pathname, 0, 1);
+    defun("WILD-PATHNAME-P", bi_wild_pathname_p, 1, 2);
 
     /* Initialize *default-pathname-defaults* to empty pathname */
     {

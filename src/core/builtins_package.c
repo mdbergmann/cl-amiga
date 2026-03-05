@@ -64,6 +64,10 @@ static void get_name_str(CL_Obj arg, const char **out_name, uint32_t *out_len)
         CL_String *s = (CL_String *)CL_OBJ_TO_PTR(arg);
         *out_name = s->data;
         *out_len = s->length;
+    } else if (CL_NULL_P(arg)) {
+        /* NIL is a symbol with name "NIL" */
+        *out_name = "NIL";
+        *out_len = 3;
     } else if (CL_SYMBOL_P(arg)) {
         CL_Symbol *sym = (CL_Symbol *)CL_OBJ_TO_PTR(arg);
         CL_String *s = (CL_String *)CL_OBJ_TO_PTR(sym->name);

@@ -102,6 +102,141 @@ static void compile_destructure_pattern(CL_Compiler *c, int pos_slot,
             goto done;
         }
 
+        /* &key — keyword destructuring (plist-based) */
+        if (elem == SYM_AMP_KEY) {
+            CL_Obj rest = cl_cdr(pattern);
+            int scan_slot = alloc_temp_slot(env);
+
+            while (!CL_NULL_P(rest)) {
+                CL_Obj spec = cl_car(rest);
+                CL_Obj var, keyword_sym, default_val = CL_NIL;
+                CL_Obj supplied_p = CL_NIL;
+                int var_slot, supplied_slot = -1;
+                int found_pos, not_found_pos, done_pos;
+                const char *kw_name;
+
+                /* Skip &allow-other-keys */
+                if (CL_SYMBOL_P(spec) && spec == SYM_AMP_ALLOW_OTHER_KEYS) {
+                    rest = cl_cdr(rest);
+                    continue;
+                }
+
+                /* Parse key spec: var | (var default) | (var default supplied-p) |
+                   ((keyword var) default [supplied-p]) */
+                if (CL_CONS_P(spec)) {
+                    CL_Obj first = cl_car(spec);
+                    if (CL_CONS_P(first)) {
+                        /* ((keyword var) default ...) */
+                        keyword_sym = cl_car(first);
+                        var = cl_car(cl_cdr(first));
+                    } else {
+                        var = first;
+                        /* keyword derived from var name */
+                        kw_name = cl_symbol_name(var);
+                        keyword_sym = cl_intern_keyword(kw_name,
+                                         (uint32_t)strlen(kw_name));
+                    }
+                    if (!CL_NULL_P(cl_cdr(spec)))
+                        default_val = cl_car(cl_cdr(spec));
+                    if (!CL_NULL_P(cl_cdr(spec)) &&
+                        !CL_NULL_P(cl_cdr(cl_cdr(spec))))
+                        supplied_p = cl_car(cl_cdr(cl_cdr(spec)));
+                } else {
+                    var = spec;
+                    kw_name = cl_symbol_name(var);
+                    keyword_sym = cl_intern_keyword(kw_name,
+                                     (uint32_t)strlen(kw_name));
+                }
+
+                var_slot = cl_env_add_local(env, var);
+                if (!CL_NULL_P(supplied_p))
+                    supplied_slot = cl_env_add_local(env, supplied_p);
+
+                /* Emit bytecode to scan plist for keyword:
+                 *   scan_slot = pos_slot (copy plist)
+                 *   loop: if scan_slot is nil → not_found
+                 *         if (car scan_slot) == keyword → found
+                 *         scan_slot = (cddr scan_slot)
+                 *         goto loop
+                 * found: var = (cadr scan_slot), supplied-p = T
+                 * not_found: var = default, supplied-p = NIL
+                 */
+                cl_emit(c, OP_LOAD);
+                cl_emit(c, (uint8_t)pos_slot);
+                cl_emit(c, OP_STORE);
+                cl_emit(c, (uint8_t)scan_slot);
+                cl_emit(c, OP_POP);
+
+                /* loop: */
+                {
+                    int loop_start = c->code_pos;
+
+                    /* if scan_slot is nil → not_found */
+                    cl_emit(c, OP_LOAD);
+                    cl_emit(c, (uint8_t)scan_slot);
+                    not_found_pos = cl_emit_jump(c, OP_JNIL);
+
+                    /* (car scan_slot) == keyword? */
+                    cl_emit(c, OP_LOAD);
+                    cl_emit(c, (uint8_t)scan_slot);
+                    cl_emit(c, OP_CAR);
+                    cl_emit_const(c, keyword_sym);
+                    cl_emit(c, OP_EQ);
+                    found_pos = cl_emit_jump(c, OP_JTRUE);
+
+                    /* Not found: scan_slot = (cddr scan_slot) */
+                    cl_emit(c, OP_LOAD);
+                    cl_emit(c, (uint8_t)scan_slot);
+                    cl_emit(c, OP_CDR);
+                    /* Protect against odd-length plist */
+                    {
+                        int odd_pos = cl_emit_jump(c, OP_JNIL);
+                        cl_emit(c, OP_CDR);
+                        cl_emit(c, OP_STORE);
+                        cl_emit(c, (uint8_t)scan_slot);
+                        cl_emit(c, OP_POP);
+                        cl_emit_loop_jump(c, OP_JMP, loop_start);
+                        cl_patch_jump(c, odd_pos);
+                        /* Odd-length: pop NIL, fall through to not_found */
+                    }
+
+                    /* not_found: var = default, supplied-p = NIL */
+                    cl_patch_jump(c, not_found_pos);
+                    compile_expr(c, default_val);
+                    cl_emit(c, OP_STORE);
+                    cl_emit(c, (uint8_t)var_slot);
+                    cl_emit(c, OP_POP);
+                    if (supplied_slot >= 0) {
+                        cl_emit(c, OP_NIL);
+                        cl_emit(c, OP_STORE);
+                        cl_emit(c, (uint8_t)supplied_slot);
+                        cl_emit(c, OP_POP);
+                    }
+                    done_pos = cl_emit_jump(c, OP_JMP);
+
+                    /* found: var = (cadr scan_slot), supplied-p = T */
+                    cl_patch_jump(c, found_pos);
+                    cl_emit(c, OP_LOAD);
+                    cl_emit(c, (uint8_t)scan_slot);
+                    cl_emit(c, OP_CDR);
+                    cl_emit(c, OP_CAR);
+                    cl_emit(c, OP_STORE);
+                    cl_emit(c, (uint8_t)var_slot);
+                    cl_emit(c, OP_POP);
+                    if (supplied_slot >= 0) {
+                        cl_emit(c, OP_T);
+                        cl_emit(c, OP_STORE);
+                        cl_emit(c, (uint8_t)supplied_slot);
+                        cl_emit(c, OP_POP);
+                    }
+                    cl_patch_jump(c, done_pos);
+                }
+
+                rest = cl_cdr(rest);
+            }
+            goto done;
+        }
+
         if (CL_CONS_P(elem)) {
             /* Nested pattern: extract sublist, recurse */
             int sub_slot = alloc_temp_slot(env);
@@ -605,8 +740,13 @@ void compile_flet(CL_Compiler *c, CL_Obj form)
             CL_Obj lambda_form;
             int slot;
 
-            /* Build (lambda (params) body...) */
-            lambda_form = cl_cons(SYM_LAMBDA, cl_cons(lambda_list, fbody));
+            /* Build (lambda (params) (block name body...)) per CL spec:
+             * flet functions have an implicit block named after the function */
+            {
+                CL_Obj block_form = cl_cons(SYM_BLOCK, cl_cons(fname, fbody));
+                lambda_form = cl_cons(SYM_LAMBDA,
+                               cl_cons(lambda_list, cl_cons(block_form, CL_NIL)));
+            }
             CL_GC_PROTECT(lambda_form);
 
             c->in_tail = 0;
@@ -665,6 +805,10 @@ void compile_labels(CL_Compiler *c, CL_Obj form)
             CL_Obj lambda_form;
             int idx;
 
+            /* Build (lambda (params) body...)
+             * TODO: CL spec requires implicit block around labels functions,
+             * but this interacts with our NLX-based cross-closure return-from.
+             * Adding the block breaks cross-scope return-from. Needs investigation. */
             lambda_form = cl_cons(SYM_LAMBDA, cl_cons(lambda_list, fbody));
             CL_GC_PROTECT(lambda_form);
 

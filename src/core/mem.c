@@ -2,9 +2,13 @@
 #include "float.h"
 #include "vm.h"
 #include "readtable.h"
+#include "package.h"
 #include "../platform/platform.h"
 #include <string.h>
 #include <stdio.h>
+
+/* External roots needed for GC marking */
+extern CL_Obj macro_table, setf_table, type_table;
 
 CL_Heap cl_heap;
 uint8_t *cl_arena_base = NULL;  /* Global arena base for offset↔pointer conversion */
@@ -159,7 +163,10 @@ CL_Obj cl_make_string(const char *str, uint32_t len)
     CL_String *s = (CL_String *)cl_alloc(TYPE_STRING, alloc_size);
     if (!s) return CL_NIL;
     s->length = len;
-    memcpy(s->data, str, len);
+    if (str)
+        memcpy(s->data, str, len);
+    else
+        memset(s->data, 0, len);
     s->data[len] = '\0';
     return CL_PTR_TO_OBJ(s);
 }
@@ -560,11 +567,53 @@ static void gc_mark(void)
         gc_mark_push(*gc_root_stack[i]);
     }
 
+    /* Mark package registry — transitively marks all packages, all symbols,
+     * and all their values/functions/plists */
+    gc_mark_push(cl_package_registry);
+
+    /* Mark compiler tables (alists not reachable through packages) */
+    gc_mark_push(macro_table);
+    gc_mark_push(setf_table);
+    gc_mark_push(type_table);
+
     /* Mark dynamic binding stack (saved old values) */
     for (i = 0; i < cl_dyn_top; i++) {
         gc_mark_push(cl_dyn_stack[i].symbol);
         gc_mark_push(cl_dyn_stack[i].old_value);
     }
+
+    /* Mark NLX stack (catch tags and results) */
+    for (i = 0; i < cl_nlx_top; i++) {
+        gc_mark_push(cl_nlx_stack[i].tag);
+        gc_mark_push(cl_nlx_stack[i].result);
+    }
+
+    /* Mark handler stack */
+    for (i = 0; i < cl_handler_top; i++) {
+        gc_mark_push(cl_handler_stack[i].type_name);
+        gc_mark_push(cl_handler_stack[i].handler);
+    }
+
+    /* Mark restart stack */
+    for (i = 0; i < cl_restart_top; i++) {
+        gc_mark_push(cl_restart_stack[i].name);
+        gc_mark_push(cl_restart_stack[i].handler);
+        gc_mark_push(cl_restart_stack[i].tag);
+    }
+
+    /* Mark VM execution stack */
+    if (cl_vm.stack) {
+        for (i = 0; i < cl_vm.sp; i++) {
+            gc_mark_push(cl_vm.stack[i]);
+        }
+    }
+
+    /* Mark multiple values and pending throw state */
+    for (i = 0; i < CL_MAX_MV; i++) {
+        gc_mark_push(cl_mv_values[i]);
+    }
+    gc_mark_push(cl_pending_tag);
+    gc_mark_push(cl_pending_value);
 
     /* Mark readtable user macro closures */
     {

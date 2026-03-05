@@ -257,6 +257,7 @@ extern CL_Obj SYM_STAR_MODULES;      /* *MODULES* */
 extern CL_Obj KW_CL_AMIGA;           /* :CL-AMIGA */
 extern CL_Obj KW_COMMON_LISP;        /* :COMMON-LISP */
 extern CL_Obj KW_POSIX;              /* :POSIX */
+extern CL_Obj KW_UNIX;               /* :UNIX */
 extern CL_Obj KW_AMIGAOS;            /* :AMIGAOS */
 extern CL_Obj KW_M68K;               /* :M68K */
 

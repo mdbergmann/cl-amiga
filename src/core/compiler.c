@@ -14,6 +14,8 @@ CL_Obj SETF_SYM_REST = CL_NIL;
 CL_Obj SETF_SYM_NTH = CL_NIL;
 CL_Obj SETF_SYM_AREF = CL_NIL;
 CL_Obj SETF_SYM_SVREF = CL_NIL;
+CL_Obj SETF_SYM_CHAR = CL_NIL;
+CL_Obj SETF_SYM_SCHAR = CL_NIL;
 CL_Obj SETF_SYM_SYMBOL_VALUE = CL_NIL;
 CL_Obj SETF_SYM_SYMBOL_FUNCTION = CL_NIL;
 CL_Obj SETF_HELPER_NTH = CL_NIL;
@@ -32,6 +34,8 @@ CL_Obj SETF_SYM_SBIT = CL_NIL;
 CL_Obj SETF_HELPER_SBIT = CL_NIL;
 CL_Obj SETF_SYM_GET = CL_NIL;
 CL_Obj SETF_HELPER_GET = CL_NIL;
+CL_Obj SETF_SYM_GETF = CL_NIL;
+CL_Obj SETF_HELPER_GETF = CL_NIL;
 
 /* Global optimization settings */
 CL_OptimizeSettings cl_optimize_settings = {1, 1, 1, 1};
@@ -278,16 +282,12 @@ void compile_lambda(CL_Compiler *c, CL_Obj form)
 
     for (i = 0; i < ll.n_required; i++)
         cl_env_add_local(env, ll.required[i]);
-    for (i = 0; i < ll.n_optional; i++)
-        cl_env_add_local(env, ll.opt_names[i]);
-    if (ll.has_rest)
-        cl_env_add_local(env, ll.rest_name);
-    for (i = 0; i < ll.n_keys; i++)
-        key_slot_indices[i] = cl_env_add_local(env, ll.key_names[i]);
-    for (i = 0; i < ll.n_aux; i++)
-        cl_env_add_local(env, ll.aux_names[i]);
 
-    /* Emit prologue for optional defaults */
+    /* Emit prologue for optional defaults.
+     * Add each optional local AFTER compiling its default expression,
+     * so the default can refer to earlier params but not the current one.
+     * This is critical for &optional (*special* *special*) where the
+     * default should read the dynamic/global value, not the uninitialized slot. */
     for (i = 0; i < ll.n_optional; i++) {
         if (!CL_NULL_P(ll.opt_defaults[i])) {
             int skip_pos;
@@ -306,7 +306,15 @@ void compile_lambda(CL_Compiler *c, CL_Obj form)
             cl_emit(inner, OP_POP);
             cl_patch_jump(inner, skip_pos);
         }
+        cl_env_add_local(env, ll.opt_names[i]);
     }
+
+    if (ll.has_rest)
+        cl_env_add_local(env, ll.rest_name);
+    for (i = 0; i < ll.n_keys; i++)
+        key_slot_indices[i] = cl_env_add_local(env, ll.key_names[i]);
+    for (i = 0; i < ll.n_aux; i++)
+        cl_env_add_local(env, ll.aux_names[i]);
 
     /* Emit prologue for key defaults */
     for (i = 0; i < ll.n_keys; i++) {
@@ -627,7 +635,8 @@ static void compile_setf_place(CL_Compiler *c, CL_Obj place, CL_Obj val_form)
             compile_expr(c, cl_car(cl_cdr(place)));
             compile_expr(c, val_form);
             cl_emit(c, OP_RPLACD);
-        } else if (head == SETF_SYM_AREF || head == SETF_SYM_SVREF) {
+        } else if (head == SETF_SYM_AREF || head == SETF_SYM_SVREF ||
+                   head == SETF_SYM_CHAR || head == SETF_SYM_SCHAR) {
             /* Count indices: place = (aref arr idx1 idx2 ...) */
             CL_Obj indices = cl_cdr(cl_cdr(place));
             int nindices = 0;
@@ -735,6 +744,16 @@ static void compile_setf_place(CL_Compiler *c, CL_Obj place, CL_Obj val_form)
             cl_emit(c, OP_FLOAD);
             cl_emit_u16(c, (uint16_t)idx);
             compile_expr(c, cl_car(cl_cdr(place)));       /* symbol */
+            compile_expr(c, cl_car(cl_cdr(cl_cdr(place)))); /* indicator */
+            compile_expr(c, val_form);                     /* value */
+            cl_emit(c, OP_CALL);
+            cl_emit(c, 3);
+        } else if (head == SETF_SYM_GETF) {
+            /* (setf (getf plist indicator) val) → (%setf-getf plist indicator val) */
+            int idx = cl_add_constant(c, SETF_HELPER_GETF);
+            cl_emit(c, OP_FLOAD);
+            cl_emit_u16(c, (uint16_t)idx);
+            compile_expr(c, cl_car(cl_cdr(place)));       /* plist-place */
             compile_expr(c, cl_car(cl_cdr(cl_cdr(place)))); /* indicator */
             compile_expr(c, val_form);                     /* value */
             cl_emit(c, OP_CALL);
@@ -984,10 +1003,10 @@ void compile_expr(CL_Compiler *c, CL_Obj expr)
             if (!CL_NULL_P(local_expander)) {
                 /* Expand using local macro expander */
                 CL_Obj expanded;
-                CL_Obj arg_array[64];
+                CL_Obj arg_array[255];
                 int nargs = 0;
                 CL_Obj args_list = cl_cdr(expr);
-                while (!CL_NULL_P(args_list) && nargs < 64) {
+                while (!CL_NULL_P(args_list) && nargs < 255) {
                     arg_array[nargs++] = cl_car(args_list);
                     args_list = cl_cdr(args_list);
                 }
@@ -1080,14 +1099,14 @@ CL_Obj cl_macroexpand_1(CL_Obj form)
     CL_Obj head = cl_car(form);
     CL_Obj expander = cl_get_macro(head);
     CL_Obj expanded;
-    CL_Obj arg_array[64];
+    CL_Obj arg_array[255];
     int nargs = 0;
     CL_Obj args_list;
 
     if (CL_NULL_P(expander)) return form;
 
     args_list = cl_cdr(form);
-    while (!CL_NULL_P(args_list) && nargs < 64) {
+    while (!CL_NULL_P(args_list) && nargs < 255) {
         arg_array[nargs++] = cl_car(args_list);
         args_list = cl_cdr(args_list);
     }
@@ -1099,6 +1118,7 @@ CL_Obj cl_macroexpand_1(CL_Obj form)
 
     return expanded;
 }
+
 
 /* --- Macro table --- */
 
@@ -1249,6 +1269,8 @@ void cl_compiler_init(void)
     SETF_SYM_NTH             = cl_intern_in("NTH", 3, cl_package_cl);
     SETF_SYM_AREF            = cl_intern_in("AREF", 4, cl_package_cl);
     SETF_SYM_SVREF           = cl_intern_in("SVREF", 5, cl_package_cl);
+    SETF_SYM_CHAR            = cl_intern_in("CHAR", 4, cl_package_cl);
+    SETF_SYM_SCHAR           = cl_intern_in("SCHAR", 5, cl_package_cl);
     SETF_SYM_SYMBOL_VALUE    = cl_intern_in("SYMBOL-VALUE", 12, cl_package_cl);
     SETF_SYM_SYMBOL_FUNCTION = cl_intern_in("SYMBOL-FUNCTION", 15, cl_package_cl);
     SETF_HELPER_NTH          = cl_intern_in("%SETF-NTH", 9, cl_package_cl);
@@ -1267,4 +1289,6 @@ void cl_compiler_init(void)
     SETF_HELPER_SBIT         = cl_intern_in("%SETF-SBIT", 10, cl_package_cl);
     SETF_SYM_GET             = cl_intern_in("GET", 3, cl_package_cl);
     SETF_HELPER_GET          = cl_intern_in("%SETF-GET", 9, cl_package_cl);
+    SETF_SYM_GETF            = cl_intern_in("GETF", 4, cl_package_cl);
+    SETF_HELPER_GETF         = cl_intern_in("%SETF-GETF", 10, cl_package_cl);
 }

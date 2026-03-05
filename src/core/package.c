@@ -211,9 +211,18 @@ void cl_register_package(CL_Obj pkg)
 void cl_export_symbol(CL_Obj sym, CL_Obj package)
 {
     CL_Symbol *s;
-    (void)package;
+    CL_String *sname;
     if (CL_NULL_P(sym)) return;
     s = (CL_Symbol *)CL_OBJ_TO_PTR(sym);
+    sname = (CL_String *)CL_OBJ_TO_PTR(s->name);
+
+    /* If symbol is not present in package's own table, import it first.
+       Per CL spec: "If the symbol is accessible via use-package,
+       it is first imported into package, after which it is exported." */
+    if (CL_NULL_P(find_own_symbol(sname->data, sname->length, package))) {
+        cl_import_symbol(sym, package);
+    }
+
     s->flags |= CL_SYM_EXPORTED;
 }
 

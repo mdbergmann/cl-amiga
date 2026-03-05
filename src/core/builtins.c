@@ -23,6 +23,22 @@ static void defun(const char *name, CL_CFunc func, int min, int max)
     s->value = fn;
 }
 
+/* Coerce function designator: symbol -> its function binding */
+CL_Obj cl_coerce_funcdesig(CL_Obj obj, const char *context)
+{
+    if (CL_FUNCTION_P(obj) || CL_BYTECODE_P(obj) || CL_CLOSURE_P(obj))
+        return obj;
+    if (CL_SYMBOL_P(obj)) {
+        CL_Symbol *s = (CL_Symbol *)CL_OBJ_TO_PTR(obj);
+        CL_Obj fn = s->function;
+        if (!CL_NULL_P(fn))
+            return fn;
+        cl_error(CL_ERR_UNDEFINED, "Undefined function: %s", cl_symbol_name(obj));
+    }
+    cl_error(CL_ERR_TYPE, "%s: not a function", context);
+    return CL_NIL;
+}
+
 /* --- List operations --- */
 
 static CL_Obj bi_cons(CL_Obj *args, int n)
@@ -334,7 +350,7 @@ static CL_Obj bi_not(CL_Obj *args, int n)
 
 static CL_Obj bi_mapcar(CL_Obj *args, int n)
 {
-    CL_Obj func = args[0];
+    CL_Obj func = cl_coerce_funcdesig(args[0], "MAPCAR");
     CL_Obj result = CL_NIL, tail = CL_NIL;
     int nlists = n - 1;
     CL_Obj lists[16]; /* Max 16 list arguments */

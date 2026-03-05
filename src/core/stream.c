@@ -24,6 +24,15 @@ typedef struct {
 static CL_OutBuf outbuf_table[CL_STREAM_BUF_TABLE_SIZE];
 static int stream_initialized = 0;
 
+/* --- C-buffer input stream side table --- */
+
+#define CL_CBUF_TABLE_SIZE 8
+
+static struct {
+    const char *data;
+    uint32_t len;
+} cbuf_table[CL_CBUF_TABLE_SIZE];
+
 void cl_stream_init(void)
 {
     int i;
@@ -246,6 +255,15 @@ int cl_stream_read_char(CL_Obj stream)
         ch = (unsigned char)s->data[st->position++];
         break;
     }
+    case CL_STREAM_CBUF: {
+        uint32_t idx = st->handle_id;
+        if (idx == 0 || idx >= CL_CBUF_TABLE_SIZE || !cbuf_table[idx].data)
+            return -1;
+        if (st->position >= st->out_buf_len)
+            return -1;
+        ch = (unsigned char)cbuf_table[idx].data[st->position++];
+        break;
+    }
     default:
         return -1;
     }
@@ -368,6 +386,14 @@ void cl_stream_close(CL_Obj stream)
         if ((st->direction & CL_STREAM_OUTPUT) && st->out_buf_handle != 0)
             cl_stream_free_outbuf(st->out_buf_handle);
         break;
+    case CL_STREAM_CBUF: {
+        uint32_t idx = st->handle_id;
+        if (idx > 0 && idx < CL_CBUF_TABLE_SIZE) {
+            cbuf_table[idx].data = NULL;
+            cbuf_table[idx].len = 0;
+        }
+        break;
+    }
     default:
         break;
     }
@@ -384,6 +410,28 @@ CL_Obj cl_make_string_input_stream(CL_Obj string, uint32_t start, uint32_t end)
     st->position = start;
     st->out_buf_len = end;  /* Reuse as end limit */
     return s;
+}
+
+CL_Obj cl_make_cbuf_input_stream(const char *data, uint32_t len)
+{
+    CL_Obj s = cl_make_stream(CL_STREAM_INPUT, CL_STREAM_CBUF);
+    CL_Stream *st;
+    int i;
+    if (CL_NULL_P(s)) return CL_NIL;
+
+    /* Find a free slot in the cbuf table */
+    for (i = 1; i < CL_CBUF_TABLE_SIZE; i++) {
+        if (cbuf_table[i].data == NULL) {
+            cbuf_table[i].data = data;
+            cbuf_table[i].len = len;
+            st = (CL_Stream *)CL_OBJ_TO_PTR(s);
+            st->handle_id = (uint32_t)i;
+            st->position = 0;
+            st->out_buf_len = len;  /* End limit */
+            return s;
+        }
+    }
+    return CL_NIL;  /* No free slots */
 }
 
 CL_Obj cl_make_string_output_stream(void)

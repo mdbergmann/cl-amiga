@@ -47,6 +47,7 @@ static int typep_symbol(CL_Obj obj, CL_Obj type_sym)
     if (strcmp(tname, "T") == 0)              return 1;
     if (strcmp(tname, "NIL") == 0)            return 0;
     if (strcmp(tname, "NULL") == 0)           return CL_NULL_P(obj);
+    if (strcmp(tname, "BOOLEAN") == 0)        return CL_NULL_P(obj) || obj == SYM_T;
     if (strcmp(tname, "SYMBOL") == 0)         return CL_NULL_P(obj) || CL_SYMBOL_P(obj);
     if (strcmp(tname, "KEYWORD") == 0) {
         if (!CL_NULL_P(obj) && CL_SYMBOL_P(obj)) {
@@ -71,7 +72,13 @@ static int typep_symbol(CL_Obj obj, CL_Obj type_sym)
     if (strcmp(tname, "REAL") == 0)   return CL_REALP(obj);
     if (strcmp(tname, "NUMBER") == 0) return CL_NUMBER_P(obj);
     if (strcmp(tname, "CHARACTER") == 0)      return CL_CHAR_P(obj);
+    if (strcmp(tname, "BASE-CHAR") == 0)     return CL_CHAR_P(obj);
+    if (strcmp(tname, "STANDARD-CHAR") == 0) return CL_CHAR_P(obj);
+    if (strcmp(tname, "EXTENDED-CHAR") == 0) return 0;
     if (strcmp(tname, "STRING") == 0)         return CL_STRING_P(obj);
+    if (strcmp(tname, "SIMPLE-STRING") == 0)  return CL_STRING_P(obj);
+    if (strcmp(tname, "BASE-STRING") == 0)    return CL_STRING_P(obj);
+    if (strcmp(tname, "SIMPLE-BASE-STRING") == 0) return CL_STRING_P(obj);
     if (strcmp(tname, "BIT-VECTOR") == 0)
         return CL_BIT_VECTOR_P(obj);
     if (strcmp(tname, "SIMPLE-BIT-VECTOR") == 0) {
@@ -120,6 +127,7 @@ static int typep_symbol(CL_Obj obj, CL_Obj type_sym)
     if (strcmp(tname, "STREAM") == 0)        return CL_STREAM_P(obj);
     if (strcmp(tname, "RANDOM-STATE") == 0) return CL_RANDOM_STATE_P(obj);
     if (strcmp(tname, "PATHNAME") == 0)     return CL_PATHNAME_P(obj);
+    if (strcmp(tname, "LOGICAL-PATHNAME") == 0) return 0;
 
     /* Structure types — check hierarchy for struct objects */
     if (strcmp(tname, "STRUCTURE") == 0 || strcmp(tname, "STRUCTURE-OBJECT") == 0)
@@ -364,8 +372,9 @@ static CL_Obj bi_coerce(CL_Obj *args, int n)
         return CL_NIL;
     }
 
-    /* (coerce x 'string) */
-    if (strcmp(tname, "STRING") == 0) {
+    /* (coerce x 'string) or 'simple-string or 'base-string or 'simple-base-string */
+    if (strcmp(tname, "STRING") == 0 || strcmp(tname, "SIMPLE-STRING") == 0 ||
+        strcmp(tname, "BASE-STRING") == 0 || strcmp(tname, "SIMPLE-BASE-STRING") == 0) {
         if (CL_STRING_P(obj)) return obj;
         if (CL_NULL_P(obj)) return cl_make_string("NIL", 3);
         if (CL_SYMBOL_P(obj)) {
@@ -375,6 +384,41 @@ static CL_Obj bi_coerce(CL_Obj *args, int n)
         if (CL_CHAR_P(obj)) {
             char c = (char)CL_CHAR_VAL(obj);
             return cl_make_string(&c, 1);
+        }
+        /* Coerce list of characters to string */
+        if (CL_NULL_P(obj) || CL_CONS_P(obj)) {
+            CL_Obj p = obj;
+            uint32_t len = 0;
+            uint32_t i;
+            CL_Obj result;
+            CL_String *s;
+            while (!CL_NULL_P(p)) { len++; p = cl_cdr(p); }
+            result = cl_make_string(NULL, len);
+            s = (CL_String *)CL_OBJ_TO_PTR(result);
+            p = obj;
+            for (i = 0; i < len; i++) {
+                CL_Obj elem = cl_car(p);
+                if (!CL_CHAR_P(elem))
+                    cl_error(CL_ERR_TYPE, "COERCE: list element is not a character");
+                s->data[i] = (char)CL_CHAR_VAL(elem);
+                p = cl_cdr(p);
+            }
+            return result;
+        }
+        /* Coerce vector of characters to string */
+        if (CL_VECTOR_P(obj)) {
+            CL_Vector *v = (CL_Vector *)CL_OBJ_TO_PTR(obj);
+            uint32_t len = cl_vector_active_length(v);
+            CL_Obj *elts = cl_vector_data(v);
+            uint32_t i;
+            CL_Obj result = cl_make_string(NULL, len);
+            CL_String *s = (CL_String *)CL_OBJ_TO_PTR(result);
+            for (i = 0; i < len; i++) {
+                if (!CL_CHAR_P(elts[i]))
+                    cl_error(CL_ERR_TYPE, "COERCE: vector element is not a character");
+                s->data[i] = (char)CL_CHAR_VAL(elts[i]);
+            }
+            return result;
         }
         cl_error(CL_ERR_TYPE, "COERCE: cannot coerce to STRING");
         return CL_NIL;
@@ -548,6 +592,7 @@ enum TypeId {
     TID_BIT_VECTOR,
     TID_SIMPLE_BIT_VECTOR,
     TID_PATHNAME,
+    TID_BOOLEAN,
     TID_T,
     TID_COUNT
 };
@@ -564,6 +609,8 @@ static int type_name_to_id(const char *name)
     if (strcmp(name, "REAL") == 0) return TID_REAL;
     if (strcmp(name, "NUMBER") == 0) return TID_NUMBER;
     if (strcmp(name, "CHARACTER") == 0) return TID_CHARACTER;
+    if (strcmp(name, "BASE-CHAR") == 0) return TID_CHARACTER;
+    if (strcmp(name, "STANDARD-CHAR") == 0) return TID_CHARACTER;
     if (strcmp(name, "KEYWORD") == 0) return TID_KEYWORD;
     if (strcmp(name, "SYMBOL") == 0) return TID_SYMBOL;
     if (strcmp(name, "CONS") == 0) return TID_CONS;
@@ -600,6 +647,7 @@ static int type_name_to_id(const char *name)
     if (strcmp(name, "BIT-VECTOR") == 0) return TID_BIT_VECTOR;
     if (strcmp(name, "SIMPLE-BIT-VECTOR") == 0) return TID_SIMPLE_BIT_VECTOR;
     if (strcmp(name, "PATHNAME") == 0) return TID_PATHNAME;
+    if (strcmp(name, "BOOLEAN") == 0) return TID_BOOLEAN;
     if (strcmp(name, "T") == 0) return TID_T;
     return TID_UNKNOWN;
 }
@@ -641,8 +689,10 @@ static int subtype_check(int id1, int id2)
     if (id1 == TID_CONS && (id2 == TID_LIST || id2 == TID_SEQUENCE)) return 1;
     if (id1 == TID_LIST && id2 == TID_SEQUENCE) return 1;
 
-    /* Symbol hierarchy: keyword < symbol, null < symbol */
+    /* Symbol hierarchy: keyword < symbol, null < symbol, boolean < symbol */
     if (id1 == TID_KEYWORD && id2 == TID_SYMBOL) return 1;
+    if (id1 == TID_BOOLEAN && id2 == TID_SYMBOL) return 1;
+    if (id1 == TID_NULL && id2 == TID_BOOLEAN) return 1;
 
     /* Vector/array hierarchy:
      * simple-vector < simple-array < array

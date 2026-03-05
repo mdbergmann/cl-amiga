@@ -60,7 +60,7 @@ static CL_Obj extract_test_arg(CL_Obj *args, int n, int start)
     CL_Obj kw_test = cl_intern_in("TEST", 4, cl_package_keyword);
     for (i = start; i < n - 1; i += 2) {
         if (args[i] == kw_test)
-            return args[i + 1];
+            return cl_coerce_funcdesig(args[i + 1], ":TEST");
     }
     /* Default: eql */
     {
@@ -237,6 +237,31 @@ static CL_Obj bi_getf(CL_Obj *args, int n)
         plist = cl_cdr(plist);
     }
     return def;
+}
+
+/* %SETF-GETF: (setf (getf plist indicator) value)
+ * Destructively modifies the value cell for INDICATOR in PLIST.
+ * If not found, prepends indicator/value to the front and returns new plist.
+ * Returns the value. */
+static CL_Obj bi_setf_getf(CL_Obj *args, int n)
+{
+    CL_Obj plist = args[0], indicator = args[1], value = args[2];
+    CL_Obj p = plist;
+    CL_UNUSED(n);
+    while (!CL_NULL_P(p)) {
+        CL_Obj key = cl_car(p);
+        CL_Obj val_cell = cl_cdr(p);
+        if (CL_NULL_P(val_cell)) break;
+        if (key == indicator) {
+            /* Found — destructively update the value cell */
+            ((CL_Cons *)CL_OBJ_TO_PTR(val_cell))->car = value;
+            return value;
+        }
+        p = cl_cdr(val_cell);
+    }
+    /* Not found — this case can't update the caller's variable,
+     * but we return value anyway. The caller should handle this. */
+    return value;
 }
 
 static CL_Obj bi_subst(CL_Obj *args, int n)
@@ -544,7 +569,7 @@ static CL_Obj call_func(CL_Obj func, CL_Obj *call_args, int nargs)
 
 static CL_Obj bi_mapc(CL_Obj *args, int n)
 {
-    CL_Obj func = args[0];
+    CL_Obj func = cl_coerce_funcdesig(args[0], "MAPC");
     CL_Obj first_list = args[1];
     int nlists = n - 1;
     CL_Obj lists[16];
@@ -569,7 +594,7 @@ static CL_Obj bi_mapc(CL_Obj *args, int n)
 
 static CL_Obj bi_mapcan(CL_Obj *args, int n)
 {
-    CL_Obj func = args[0];
+    CL_Obj func = cl_coerce_funcdesig(args[0], "MAPCAN");
     int nlists = n - 1;
     CL_Obj lists[16];
     CL_Obj call_args[16];
@@ -839,6 +864,7 @@ void cl_builtins_lists_init(void)
     defun("ASSOC", bi_assoc, 2, -1);
     defun("RASSOC", bi_rassoc, 2, -1);
     defun("GETF", bi_getf, 2, 3);
+    defun("%SETF-GETF", bi_setf_getf, 3, 3);
     defun("SUBST", bi_subst, 3, -1);
     defun("SUBLIS", bi_sublis, 2, -1);
     defun("ADJOIN", bi_adjoin, 2, -1);

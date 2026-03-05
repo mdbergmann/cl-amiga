@@ -204,8 +204,12 @@
 
 ;; define-condition — define a user condition type with slots and readers
 (defmacro define-condition (name parent-types slot-specs &rest options)
-  (let ((parent (if (consp parent-types) (car parent-types) parent-types))
-        (parents-list (if (consp parent-types) parent-types (list parent-types)))
+  (let ((parent (cond ((consp parent-types) (car parent-types))
+                      ((null parent-types) 'condition)
+                      (t parent-types)))
+        (parents-list (cond ((consp parent-types) parent-types)
+                            ((null parent-types) '(condition))
+                            (t (list parent-types))))
         (slot-pairs (mapcar (lambda (spec) (cons (car spec) (getf (cdr spec) :initarg))) slot-specs))
         (report nil)
         (default-initargs nil))
@@ -216,7 +220,7 @@
         (:default-initargs (setq default-initargs (cdr opt)))))
     `(progn
        (%register-condition-type ',name ',parent ',slot-pairs)
-       (when (boundp '%register-condition-class)
+       (when (fboundp '%register-condition-class)
          (%register-condition-class ',name ',parents-list))
        ,@(mapcan (lambda (slot-spec)
                    (let* ((slot-name (car slot-spec))
@@ -473,7 +477,7 @@
   (let ((var (car spec)))
     `(let ((,var (make-string-output-stream)))
        (unwind-protect
-         (progn ,@body (get-output-stream-string ,var))
+         (locally ,@body (get-output-stream-string ,var))
          (close ,var)))))
 
 (defmacro with-input-from-string (spec &body body)
@@ -481,7 +485,7 @@
         (string (cadr spec)))
     `(let ((,var (make-string-input-stream ,string)))
        (unwind-protect
-         (progn ,@body)
+         (locally ,@body)
          (close ,var)))))
 
 ;; with-open-file — open a file stream, execute body, ensure close
@@ -490,7 +494,7 @@
         (open-args (cdr spec)))
     `(let ((,var (open ,@open-args)))
        (unwind-protect
-         (progn ,@body)
+         (locally ,@body)
          (when ,var (close ,var))))))
 
 ;; with-standard-io-syntax — bind I/O variables to standard values
@@ -508,8 +512,6 @@
 (defun princ-to-string (object)
   (with-output-to-string (s) (princ object s)))
 
-(defun write-to-string (object)
-  (with-output-to-string (s) (prin1 object s)))
 
 ;; --- Time functions (Step 10) ---
 
@@ -868,10 +870,22 @@
          (setq rest (cdr rest))
          (setq step-expr (car rest))
          (setq rest (cdr rest)))
-       (list rest
-             (list (list var init-expr))
-             nil nil
-             (if step-expr (list `(setq ,var ,step-expr)) nil))))
+       (if step-expr
+           ;; WITH THEN: first iteration uses init-expr, subsequent use step-expr
+           (let ((flag (gensym "FIRST")))
+             (list rest
+                   (list (list var nil) (list flag t))
+                   nil
+                   (list `(if ,flag
+                              (progn (setq ,var ,init-expr) (setq ,flag nil))
+                              (setq ,var ,step-expr)))
+                   nil))
+           ;; WITHOUT THEN: re-evaluate expr each iteration
+           (list rest
+                 (list (list var nil))
+                 nil
+                 (list `(setq ,var ,init-expr))
+                 nil))))
     ;; FOR var FROM/UPFROM/DOWNFROM start ...
     ((or (%loop-keyword-p sub-kw "FROM")
          (%loop-keyword-p sub-kw "UPFROM")
@@ -1118,8 +1132,7 @@
   (let* ((rest forms)
          (block-name nil)
          (bindings nil)
-         (end-tests nil)
-         (pre-body nil)
+         (preamble nil)
          (body nil)
          (steps nil)
          (epilogue nil)
@@ -1140,11 +1153,11 @@
           (cond
             ;; WHILE
             ((%loop-keyword-p kw "WHILE")
-             (push `(unless ,(car rest) (go ,end-tag)) end-tests)
+             (push `(unless ,(car rest) (go ,end-tag)) preamble)
              (setq rest (cdr rest)))
             ;; UNTIL
             ((%loop-keyword-p kw "UNTIL")
-             (push `(when ,(car rest) (go ,end-tag)) end-tests)
+             (push `(when ,(car rest) (go ,end-tag)) preamble)
              (setq rest (cdr rest)))
             ;; DO / DOING
             ((or (%loop-keyword-p kw "DO") (%loop-keyword-p kw "DOING"))
@@ -1161,7 +1174,7 @@
              (let ((ctr (gensym "REP")))
                (push (list ctr (car rest)) bindings)
                (setq rest (cdr rest))
-               (push `(when (<= ,ctr 0) (go ,end-tag)) end-tests)
+               (push `(when (<= ,ctr 0) (go ,end-tag)) preamble)
                (push `(setq ,ctr (- ,ctr 1)) steps)))
             ;; FOR / AS — delegated
             ((or (%loop-keyword-p kw "FOR") (%loop-keyword-p kw "AS"))
@@ -1175,11 +1188,11 @@
                (when destructuring
                  (dolist (v (%loop-destructure-vars raw-var))
                    (push (list v nil) bindings)))
-               (dolist (e (caddr r)) (push e end-tests))
-               (dolist (p (car (cdddr r))) (push p pre-body))
+               (dolist (e (caddr r)) (push e preamble))
+               (dolist (p (car (cdddr r))) (push p preamble))
                (when destructuring
                  (dolist (a (%loop-destructure-assigns raw-var var))
-                   (push a pre-body)))
+                   (push a preamble)))
                (dolist (s (cadr (cdddr r))) (push s steps))))
             ;; RETURN
             ((%loop-keyword-p kw "RETURN")
@@ -1376,8 +1389,7 @@
          (macrolet ((loop-finish () (list 'go ',end-tag)))
            (tagbody
              ,loop-tag
-             ,@(nreverse end-tests)
-             ,@(nreverse pre-body)
+             ,@(nreverse preamble)
              ,@(nreverse body)
              ,@(nreverse steps)
              (go ,loop-tag)

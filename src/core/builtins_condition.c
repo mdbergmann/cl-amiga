@@ -545,15 +545,26 @@ static CL_Obj coerce_to_condition(CL_Obj *args, int n, CL_Obj default_type)
     }
 
     if (CL_STRING_P(arg)) {
-        /* (signal "message") → simple-condition with :format-control */
-        CL_Obj pair, slots;
+        /* (error "msg" a b) → simple-condition with :format-control + :format-arguments */
+        CL_Obj pair, slots, fmt_args;
+        int i;
         CL_GC_PROTECT(arg);
+        /* Collect format arguments (args[1..n-1]) into a list */
+        fmt_args = CL_NIL;
+        for (i = n - 1; i > 0; i--)
+            fmt_args = cl_cons(args[i], fmt_args);
+        CL_GC_PROTECT(fmt_args);
+        slots = CL_NIL;
+        if (!CL_NULL_P(fmt_args)) {
+            pair = cl_cons(KW_FORMAT_ARGUMENTS, fmt_args);
+            slots = cl_cons(pair, slots);
+        }
+        CL_GC_PROTECT(slots);
         pair = cl_cons(KW_FORMAT_CONTROL, arg);
-        CL_GC_PROTECT(pair);
-        slots = cl_cons(pair, CL_NIL);
+        slots = cl_cons(pair, slots);
         {
             CL_Obj result = cl_make_condition(default_type, slots, arg);
-            CL_GC_UNPROTECT(2);
+            CL_GC_UNPROTECT(3);
             return result;
         }
     }

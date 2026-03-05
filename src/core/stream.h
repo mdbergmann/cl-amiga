@@ -78,6 +78,11 @@ void cl_stream_close(CL_Obj stream);
 /* Create string input stream reading from string[start..end). */
 CL_Obj cl_make_string_input_stream(CL_Obj string, uint32_t start, uint32_t end);
 
+/* Create input stream reading from a C buffer (data stays outside GC arena).
+ * The caller must keep `data` alive until the stream is done.
+ * The data pointer is stored in the outbuf side table. */
+CL_Obj cl_make_cbuf_input_stream(const char *data, uint32_t len);
+
 /* Create string output stream with growable buffer. */
 CL_Obj cl_make_string_output_stream(void);
 

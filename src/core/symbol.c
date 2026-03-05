@@ -213,6 +213,7 @@ CL_Obj SYM_STAR_MODULES = CL_NIL;
 CL_Obj KW_CL_AMIGA = CL_NIL;
 CL_Obj KW_COMMON_LISP = CL_NIL;
 CL_Obj KW_POSIX = CL_NIL;
+CL_Obj KW_UNIX = CL_NIL;
 CL_Obj KW_AMIGAOS = CL_NIL;
 CL_Obj KW_M68K = CL_NIL;
 
@@ -589,6 +590,7 @@ void cl_symbol_init(void)
     KW_CL_AMIGA    = cl_intern_keyword("CL-AMIGA", 8);
     KW_COMMON_LISP = cl_intern_keyword("COMMON-LISP", 11);
     KW_POSIX       = cl_intern_keyword("POSIX", 5);
+    KW_UNIX        = cl_intern_keyword("UNIX", 4);
     KW_AMIGAOS     = cl_intern_keyword("AMIGAOS", 7);
     KW_M68K        = cl_intern_keyword("M68K", 4);
     {
@@ -600,6 +602,7 @@ void cl_symbol_init(void)
         features = cl_cons(KW_AMIGAOS, features);
 #else
         features = cl_cons(KW_POSIX, features);
+        features = cl_cons(KW_UNIX, features);
 #endif
         features = cl_cons(KW_COMMON_LISP, features);
         features = cl_cons(KW_CL_AMIGA, features);

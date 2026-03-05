@@ -13,6 +13,7 @@
 #include "../platform/platform.h"
 #include <stdio.h>
 #include <string.h>
+#include <stdlib.h>
 
 /* Helper to register a builtin */
 static void defun(const char *name, CL_CFunc func, int min, int max)
@@ -247,7 +248,7 @@ static CL_Obj bi_load(CL_Obj *args, int n)
     CL_String *path_str;
     char *buf;
     unsigned long size;
-    CL_Obj cl_str, stream, expr, bytecode;
+    CL_Obj stream, expr, bytecode;
     const char *prev_file;
     uint16_t prev_file_id;
 
@@ -273,13 +274,9 @@ static CL_Obj bi_load(CL_Obj *args, int n)
     cl_current_source_file = path_str->data;
     cl_current_file_id++;
 
-    /* Create CL string + stream once for the whole file */
-    cl_str = cl_make_string(buf, (int)size);
-    CL_GC_PROTECT(cl_str);
-    stream = cl_make_string_input_stream(cl_str, 0, (uint32_t)size);
+    /* Use C-buffer stream — file content stays outside GC arena */
+    stream = cl_make_cbuf_input_stream(buf, (uint32_t)size);
     CL_GC_PROTECT(stream);
-
-    platform_free(buf);  /* C buffer no longer needed after string creation */
 
     for (;;) {
         int err;
@@ -301,7 +298,9 @@ static CL_Obj bi_load(CL_Obj *args, int n)
         }
     }
 
-    CL_GC_UNPROTECT(2);
+    CL_GC_UNPROTECT(1);
+    cl_stream_close(stream);
+    platform_free(buf);
 
     /* Restore source file context */
     cl_current_source_file = prev_file;
@@ -505,6 +504,7 @@ static DisasmInfo disasm_opcode_info(uint8_t op)
     case OP_NIL:        info.name = "NIL";        break;
     case OP_T:          info.name = "T";          break;
     case OP_FLOAD:      info.name = "FLOAD";      info.arg_type = OP_ARG_U16; break;
+    case OP_FSTORE:     info.name = "FSTORE";     info.arg_type = OP_ARG_U16; break;
     case OP_DEFMACRO:   info.name = "DEFMACRO";   info.arg_type = OP_ARG_U16; break;
     case OP_DEFTYPE:    info.name = "DEFTYPE";    info.arg_type = OP_ARG_U16; break;
     case OP_HANDLER_PUSH: info.name = "HANDLER_PUSH"; info.arg_type = OP_ARG_U16; break;
@@ -1188,6 +1188,85 @@ static CL_Obj bi_require(CL_Obj *args, int n)
     return SYM_T;
 }
 
+/* --- Environment Info --- */
+
+static CL_Obj bi_lisp_implementation_type(CL_Obj *args, int n)
+{
+    CL_UNUSED(args); CL_UNUSED(n);
+    return cl_make_string("CL-Amiga", 8);
+}
+
+static CL_Obj bi_lisp_implementation_version(CL_Obj *args, int n)
+{
+    CL_UNUSED(args); CL_UNUSED(n);
+    return cl_make_string("0.1.0", 5);
+}
+
+static CL_Obj bi_software_type(CL_Obj *args, int n)
+{
+    CL_UNUSED(args); CL_UNUSED(n);
+#ifdef PLATFORM_AMIGA
+    return cl_make_string("AmigaOS", 7);
+#elif defined(__APPLE__)
+    return cl_make_string("Darwin", 6);
+#else
+    return cl_make_string("Linux", 5);
+#endif
+}
+
+static CL_Obj bi_software_version(CL_Obj *args, int n)
+{
+    CL_UNUSED(args); CL_UNUSED(n);
+    return CL_NIL;
+}
+
+static CL_Obj bi_machine_type(CL_Obj *args, int n)
+{
+    CL_UNUSED(args); CL_UNUSED(n);
+#ifdef PLATFORM_AMIGA
+    return cl_make_string("m68k", 4);
+#elif defined(__aarch64__)
+    return cl_make_string("aarch64", 7);
+#elif defined(__x86_64__)
+    return cl_make_string("x86-64", 6);
+#else
+    return cl_make_string("unknown", 7);
+#endif
+}
+
+static CL_Obj bi_machine_version(CL_Obj *args, int n)
+{
+    CL_UNUSED(args); CL_UNUSED(n);
+    return CL_NIL;
+}
+
+static CL_Obj bi_machine_instance(CL_Obj *args, int n)
+{
+    CL_UNUSED(args); CL_UNUSED(n);
+    return CL_NIL;
+}
+
+static CL_Obj bi_getenv(CL_Obj *args, int n)
+{
+    CL_Obj name_obj = args[0];
+    const char *result;
+    CL_UNUSED(n);
+    if (!CL_STRING_P(name_obj))
+        cl_error(CL_ERR_TYPE, "GETENV: argument must be a string");
+    {
+        CL_String *s = (CL_String *)CL_OBJ_TO_PTR(name_obj);
+#ifdef PLATFORM_AMIGA
+        /* AmigaOS: GetVar from dos.library — TODO */
+        (void)s;
+        return CL_NIL;
+#else
+        result = getenv(s->data);
+        if (!result) return CL_NIL;
+        return cl_make_string(result, (uint32_t)strlen(result));
+#endif
+    }
+}
+
 /* --- Registration --- */
 
 void cl_builtins_io_init(void)
@@ -1252,6 +1331,16 @@ void cl_builtins_io_init(void)
     /* Modules */
     defun("PROVIDE", bi_provide, 1, 1);
     defun("REQUIRE", bi_require, 1, 2);
+
+    /* Environment */
+    defun("LISP-IMPLEMENTATION-TYPE", bi_lisp_implementation_type, 0, 0);
+    defun("LISP-IMPLEMENTATION-VERSION", bi_lisp_implementation_version, 0, 0);
+    defun("SOFTWARE-TYPE", bi_software_type, 0, 0);
+    defun("SOFTWARE-VERSION", bi_software_version, 0, 0);
+    defun("MACHINE-TYPE", bi_machine_type, 0, 0);
+    defun("MACHINE-VERSION", bi_machine_version, 0, 0);
+    defun("MACHINE-INSTANCE", bi_machine_instance, 0, 0);
+    defun("%GETENV", bi_getenv, 1, 1);
 
     /* Pretty-printing keywords */
     KW_LINEAR    = cl_intern_keyword("LINEAR", 6);

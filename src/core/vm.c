@@ -117,24 +117,27 @@ CL_Obj cl_vm_apply(CL_Obj func, CL_Obj *args, int nargs)
      *   CALL nargs           (2 bytes)
      *   HALT                 (1 byte)
      */
-    uint8_t stub_code[256];
-    CL_Obj stub_consts[64];
+    uint8_t stub_code[1024];
+    CL_Obj stub_consts[256];
     int cp = 0, cc = 0, i;
     CL_Bytecode *bc;
     CL_Obj bc_obj, result;
 
+    /* Clamp nargs to 255 (OP_CALL u8 limit) */
+    if (nargs > 255) nargs = 255;
+
     /* Constant 0 = function */
     stub_consts[cc] = func;
     stub_code[cp++] = OP_CONST;
-    stub_code[cp++] = 0;
+    stub_code[cp++] = (uint8_t)(cc >> 8);
     stub_code[cp++] = (uint8_t)cc;
     cc++;
 
     /* Constants 1..nargs = arguments */
-    for (i = 0; i < nargs && cc < 64; i++) {
+    for (i = 0; i < nargs; i++) {
         stub_consts[cc] = args[i];
         stub_code[cp++] = OP_CONST;
-        stub_code[cp++] = 0;
+        stub_code[cp++] = (uint8_t)(cc >> 8);
         stub_code[cp++] = (uint8_t)cc;
         cc++;
     }
@@ -476,16 +479,24 @@ CL_Obj cl_vm_eval(CL_Obj bytecode_obj)
             uint16_t idx = read_u16(code, &ip);
             CL_Obj sym = constants[idx];
             CL_Symbol *s = (CL_Symbol *)CL_OBJ_TO_PTR(sym);
-            if (s->function == CL_UNBOUND) {
-                /* Fall back to value slot (for defun storing in value) */
-                if (s->value == CL_UNBOUND)
-                    cl_error(CL_ERR_UNDEFINED, "Undefined function: %s",
-                             cl_symbol_name(sym));
+            if (s->function != CL_UNBOUND) {
+                cl_vm_push(s->function);
+            } else if (s->value != CL_UNBOUND) {
+                /* Fall back to value slot (for labels/flet value bindings) */
                 cl_vm_push(s->value);
             } else {
-                cl_vm_push(s->function);
+                cl_error(CL_ERR_UNDEFINED, "Undefined function: %s",
+                         cl_symbol_name(sym));
             }
             cl_mv_count = 1;
+            break;
+        }
+
+        case OP_FSTORE: {
+            uint16_t idx = read_u16(code, &ip);
+            CL_Obj sym = constants[idx];
+            CL_Symbol *s = (CL_Symbol *)CL_OBJ_TO_PTR(sym);
+            s->function = cl_vm.stack[cl_vm.sp - 1];
             break;
         }
 
@@ -713,7 +724,7 @@ CL_Obj cl_vm_eval(CL_Obj bytecode_obj)
 
                 if (is_tail && cl_vm.fp > base_fp + 1) {
                     CL_Obj *src = arg_base;
-                    CL_Obj extra_args[64];
+                    CL_Obj extra_args[256];
                     int n_extra = 0;
                     int n_positional = callee_arity + n_opt;
 
@@ -742,7 +753,7 @@ CL_Obj cl_vm_eval(CL_Obj bytecode_obj)
                     /* Save extra args for keyword processing */
                     if (has_key || has_rest) {
                         for (i = n_positional; i < nargs; i++) {
-                            if (n_extra < 64) extra_args[n_extra++] = src[i];
+                            if (n_extra < 256) extra_args[n_extra++] = src[i];
                         }
                     }
 
@@ -802,7 +813,7 @@ CL_Obj cl_vm_eval(CL_Obj bytecode_obj)
                 } else {
                     /* Normal call: push new frame */
                     uint32_t new_bp;
-                    CL_Obj extra_args[64];
+                    CL_Obj extra_args[256];
                     int n_extra = 0;
                     int n_positional = callee_arity + n_opt;
 
@@ -826,7 +837,7 @@ CL_Obj cl_vm_eval(CL_Obj bytecode_obj)
                     /* Save extra args for keyword processing */
                     if (has_key || has_rest) {
                         for (i = n_positional; i < nargs; i++) {
-                            if (n_extra < 64)
+                            if (n_extra < 256)
                                 extra_args[n_extra++] = cl_vm.stack[new_bp + i];
                         }
                     }
@@ -1495,6 +1506,14 @@ CL_Obj cl_vm_eval(CL_Obj bytecode_obj)
                 if (v != 0 && v != 1)
                     cl_error(CL_ERR_TYPE, "ASET: value must be 0 or 1 for bit vector");
                 cl_bv_set_bit(bv, (uint32_t)idx, v);
+            } else if (CL_STRING_P(vec_obj)) {
+                CL_String *str = (CL_String *)CL_OBJ_TO_PTR(vec_obj);
+                if (idx < 0 || (uint32_t)idx >= str->length)
+                    cl_error(CL_ERR_ARGS, "ASET: index %d out of range (0-%lu)",
+                             (int)idx, (unsigned long)(str->length - 1));
+                if (!CL_CHAR_P(val))
+                    cl_error(CL_ERR_TYPE, "ASET: value must be a character for string");
+                str->data[idx] = (char)CL_CHAR_VAL(val);
             } else if (CL_VECTOR_P(vec_obj)) {
                 CL_Vector *vec = (CL_Vector *)CL_OBJ_TO_PTR(vec_obj);
                 if (idx < 0 || (uint32_t)idx >= vec->length)

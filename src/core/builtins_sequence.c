@@ -58,9 +58,9 @@ static void parse_seq_args(CL_Obj *args, int n, int kw_start, SeqArgs *sa)
         CL_Obj kw = args[i];
         CL_Obj val = args[i + 1];
         if (kw == KW_TEST) {
-            sa->test_fn = val;
+            sa->test_fn = cl_coerce_funcdesig(val, ":TEST");
         } else if (kw == KW_KEY) {
-            sa->key_fn = val;
+            sa->key_fn = cl_coerce_funcdesig(val, ":KEY");
         } else if (kw == KW_START) {
             if (CL_FIXNUM_P(val)) sa->start = CL_FIXNUM_VAL(val);
         } else if (kw == KW_END) {
@@ -79,6 +79,11 @@ static CL_Obj call_test(CL_Obj test_fn, CL_Obj a, CL_Obj b)
     CL_Obj targs[2];
     targs[0] = a;
     targs[1] = b;
+    /* Resolve symbol function designator */
+    if (CL_SYMBOL_P(test_fn)) {
+        CL_Symbol *s = (CL_Symbol *)CL_OBJ_TO_PTR(test_fn);
+        test_fn = s->function;
+    }
     if (CL_FUNCTION_P(test_fn)) {
         CL_Function *f = (CL_Function *)CL_OBJ_TO_PTR(test_fn);
         return f->func(targs, 2);
@@ -94,6 +99,11 @@ static CL_Obj call_1(CL_Obj fn, CL_Obj arg)
 {
     CL_Obj pargs[1];
     pargs[0] = arg;
+    /* Resolve symbol function designator */
+    if (CL_SYMBOL_P(fn)) {
+        CL_Symbol *s = (CL_Symbol *)CL_OBJ_TO_PTR(fn);
+        fn = s->function;
+    }
     if (CL_FUNCTION_P(fn)) {
         CL_Function *f = (CL_Function *)CL_OBJ_TO_PTR(fn);
         return f->func(pargs, 1);

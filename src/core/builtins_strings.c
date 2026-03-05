@@ -191,6 +191,17 @@ static CL_Obj bi_fboundp(CL_Obj *args, int n)
         ? SYM_T : CL_NIL;
 }
 
+static CL_Obj bi_fmakunbound(CL_Obj *args, int n)
+{
+    CL_Symbol *s;
+    CL_UNUSED(n);
+    if (!CL_SYMBOL_P(args[0]))
+        cl_error(CL_ERR_TYPE, "FMAKUNBOUND: not a symbol");
+    s = (CL_Symbol *)CL_OBJ_TO_PTR(args[0]);
+    s->function = CL_UNBOUND;
+    return args[0];
+}
+
 static CL_Obj bi_make_symbol(CL_Obj *args, int n)
 {
     CL_UNUSED(n);
@@ -354,6 +365,21 @@ static CL_Obj bi_string_downcase(CL_Obj *args, int n)
     return result;
 }
 
+/* Coerce a string designator (string, symbol, or character) to CL_String*.
+ * Per CL spec, string designators are accepted by string functions. */
+static CL_String *coerce_to_cl_string(CL_Obj obj, const char *func_name)
+{
+    if (CL_STRING_P(obj))
+        return (CL_String *)CL_OBJ_TO_PTR(obj);
+    if (CL_SYMBOL_P(obj)) {
+        CL_Symbol *sym = (CL_Symbol *)CL_OBJ_TO_PTR(obj);
+        return (CL_String *)CL_OBJ_TO_PTR(sym->name);
+    }
+    (void)func_name;
+    cl_error(CL_ERR_TYPE, "not a string designator");
+    return NULL;
+}
+
 static int trim_char_in_set(int ch, CL_String *set)
 {
     uint32_t i;
@@ -367,12 +393,8 @@ static CL_Obj bi_string_trim(CL_Obj *args, int n)
     CL_String *set, *s;
     uint32_t start, end;
     CL_UNUSED(n);
-    if (!CL_STRING_P(args[0]))
-        cl_error(CL_ERR_TYPE, "STRING-TRIM: char-bag must be a string");
-    if (!CL_STRING_P(args[1]))
-        cl_error(CL_ERR_TYPE, "STRING-TRIM: not a string");
-    set = (CL_String *)CL_OBJ_TO_PTR(args[0]);
-    s = (CL_String *)CL_OBJ_TO_PTR(args[1]);
+    set = coerce_to_cl_string(args[0], "STRING-TRIM");
+    s = coerce_to_cl_string(args[1], "STRING-TRIM");
     start = 0;
     end = s->length;
     while (start < end && trim_char_in_set(s->data[start], set)) start++;
@@ -385,12 +407,8 @@ static CL_Obj bi_string_left_trim(CL_Obj *args, int n)
     CL_String *set, *s;
     uint32_t start;
     CL_UNUSED(n);
-    if (!CL_STRING_P(args[0]))
-        cl_error(CL_ERR_TYPE, "STRING-LEFT-TRIM: char-bag must be a string");
-    if (!CL_STRING_P(args[1]))
-        cl_error(CL_ERR_TYPE, "STRING-LEFT-TRIM: not a string");
-    set = (CL_String *)CL_OBJ_TO_PTR(args[0]);
-    s = (CL_String *)CL_OBJ_TO_PTR(args[1]);
+    set = coerce_to_cl_string(args[0], "STRING-LEFT-TRIM");
+    s = coerce_to_cl_string(args[1], "STRING-LEFT-TRIM");
     start = 0;
     while (start < s->length && trim_char_in_set(s->data[start], set)) start++;
     return cl_make_string(s->data + start, s->length - start);
@@ -401,12 +419,8 @@ static CL_Obj bi_string_right_trim(CL_Obj *args, int n)
     CL_String *set, *s;
     uint32_t end;
     CL_UNUSED(n);
-    if (!CL_STRING_P(args[0]))
-        cl_error(CL_ERR_TYPE, "STRING-RIGHT-TRIM: char-bag must be a string");
-    if (!CL_STRING_P(args[1]))
-        cl_error(CL_ERR_TYPE, "STRING-RIGHT-TRIM: not a string");
-    set = (CL_String *)CL_OBJ_TO_PTR(args[0]);
-    s = (CL_String *)CL_OBJ_TO_PTR(args[1]);
+    set = coerce_to_cl_string(args[0], "STRING-RIGHT-TRIM");
+    s = coerce_to_cl_string(args[1], "STRING-RIGHT-TRIM");
     end = s->length;
     while (end > 0 && trim_char_in_set(s->data[end - 1], set)) end--;
     return cl_make_string(s->data, end);
@@ -947,6 +961,44 @@ static CL_Obj bi_char_not_lessp(CL_Obj *args, int n)
     return (a >= b) ? SYM_T : CL_NIL;
 }
 
+/* --- MAKE-STRING --- */
+
+static CL_Obj KW_INITIAL_ELEMENT;
+static CL_Obj KW_ELEMENT_TYPE;
+
+static CL_Obj bi_make_string_fn(CL_Obj *args, int n)
+{
+    uint32_t size;
+    char fill_char = ' ';  /* default fill */
+    int i;
+    CL_Obj result;
+    CL_String *s;
+
+    if (!CL_FIXNUM_P(args[0]) || CL_FIXNUM_VAL(args[0]) < 0)
+        cl_error(CL_ERR_TYPE, "MAKE-STRING: size must be a non-negative integer");
+    size = (uint32_t)CL_FIXNUM_VAL(args[0]);
+
+    /* Parse keyword arguments */
+    for (i = 1; i + 1 < n; i += 2) {
+        if (args[i] == KW_INITIAL_ELEMENT) {
+            if (!CL_CHAR_P(args[i + 1]))
+                cl_error(CL_ERR_TYPE, "MAKE-STRING: :initial-element must be a character");
+            fill_char = (char)CL_CHAR_VAL(args[i + 1]);
+        } else if (args[i] == KW_ELEMENT_TYPE) {
+            /* Ignore :element-type — we only support base-char */
+        }
+    }
+
+    result = cl_make_string(NULL, size);
+    s = (CL_String *)CL_OBJ_TO_PTR(result);
+    {
+        uint32_t j;
+        for (j = 0; j < size; j++)
+            s->data[j] = fill_char;
+    }
+    return result;
+}
+
 /* --- Registration --- */
 
 void cl_builtins_strings_init(void)
@@ -972,6 +1024,7 @@ void cl_builtins_strings_init(void)
     defun("SYMBOL-NAME", bi_symbol_name, 1, 1);
     defun("SYMBOL-PACKAGE", bi_symbol_package, 1, 1);
     defun("FBOUNDP", bi_fboundp, 1, 1);
+    defun("FMAKUNBOUND", bi_fmakunbound, 1, 1);
     defun("MAKE-SYMBOL", bi_make_symbol, 1, 1);
     defun("KEYWORDP", bi_keywordp, 1, 1);
 
@@ -1029,4 +1082,8 @@ void cl_builtins_strings_init(void)
     defun("CHAR-GREATERP", bi_char_greaterp, 2, 2);
     defun("CHAR-NOT-GREATERP", bi_char_not_greaterp, 2, 2);
     defun("CHAR-NOT-LESSP", bi_char_not_lessp, 2, 2);
+    defun("MAKE-STRING", bi_make_string_fn, 1, -1);
+
+    KW_INITIAL_ELEMENT = cl_intern_keyword("INITIAL-ELEMENT", 15);
+    KW_ELEMENT_TYPE    = cl_intern_keyword("ELEMENT-TYPE", 12);
 }
