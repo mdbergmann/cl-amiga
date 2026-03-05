@@ -25,6 +25,17 @@ static void defun(const char *name, CL_CFunc func, int min, int max)
     s->value = fn;
 }
 
+/* Helper to register an extension builtin in the EXT package (exported) */
+static void extfun(const char *name, CL_CFunc func, int min, int max)
+{
+    CL_Obj sym = cl_intern_in(name, (uint32_t)strlen(name), cl_package_ext);
+    CL_Obj fn = cl_make_function(func, sym, min, max);
+    CL_Symbol *s = (CL_Symbol *)CL_OBJ_TO_PTR(sym);
+    s->function = fn;
+    s->value = fn;
+    cl_export_symbol(sym, cl_package_ext);
+}
+
 /* --- Stream resolution helper (matches builtins_stream.c pattern) --- */
 
 static CL_Obj resolve_output_stream_io(CL_Obj *args, int n, int idx)
@@ -1252,7 +1263,7 @@ static CL_Obj bi_getenv(CL_Obj *args, int n)
     const char *result;
     CL_UNUSED(n);
     if (!CL_STRING_P(name_obj))
-        cl_error(CL_ERR_TYPE, "GETENV: argument must be a string");
+        cl_error(CL_ERR_TYPE, "EXT:GETENV: argument must be a string");
     {
         CL_String *s = (CL_String *)CL_OBJ_TO_PTR(name_obj);
         char buf[256];
@@ -1260,6 +1271,30 @@ static CL_Obj bi_getenv(CL_Obj *args, int n)
         if (!result) return CL_NIL;
         return cl_make_string(result, (uint32_t)strlen(result));
     }
+}
+
+static CL_Obj bi_getcwd(CL_Obj *args, int n)
+{
+    char buf[1024];
+    int len;
+    CL_UNUSED(args); CL_UNUSED(n);
+    len = platform_getcwd(buf, sizeof(buf));
+    if (len == 0)
+        cl_error(CL_ERR_GENERAL, "EXT:GETCWD: could not determine current directory");
+    return cl_make_string(buf, (uint32_t)len);
+}
+
+static CL_Obj bi_system_command(CL_Obj *args, int n)
+{
+    CL_Obj cmd_obj = args[0];
+    CL_String *s;
+    int exit_code;
+    CL_UNUSED(n);
+    if (!CL_STRING_P(cmd_obj))
+        cl_error(CL_ERR_TYPE, "EXT:SYSTEM-COMMAND: argument must be a string");
+    s = (CL_String *)CL_OBJ_TO_PTR(cmd_obj);
+    exit_code = platform_system(s->data);
+    return CL_MAKE_FIXNUM(exit_code);
 }
 
 /* --- Registration --- */
@@ -1335,7 +1370,10 @@ void cl_builtins_io_init(void)
     defun("MACHINE-TYPE", bi_machine_type, 0, 0);
     defun("MACHINE-VERSION", bi_machine_version, 0, 0);
     defun("MACHINE-INSTANCE", bi_machine_instance, 0, 0);
-    defun("%GETENV", bi_getenv, 1, 1);
+    /* Extension functions (EXT package) */
+    extfun("GETENV", bi_getenv, 1, 1);
+    extfun("GETCWD", bi_getcwd, 0, 0);
+    extfun("SYSTEM-COMMAND", bi_system_command, 1, 1);
 
     /* Pretty-printing keywords */
     KW_LINEAR    = cl_intern_keyword("LINEAR", 6);

@@ -63,6 +63,12 @@ int      platform_mkdir(const char *path);       /* Create single directory, 0=s
 /* Environment */
 const char *platform_getenv(const char *name, char *buf, int bufsize);
 
+/* Subprocess execution */
+int platform_system(const char *command);
+
+/* Current working directory (returns length, 0 on error) */
+int platform_getcwd(char *buf, int bufsize);
+
 /* Lifecycle */
 void  platform_init(void);
 void  platform_shutdown(void);

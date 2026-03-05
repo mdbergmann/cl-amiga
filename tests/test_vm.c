@@ -5277,6 +5277,31 @@ TEST(eval_user_homedir_pathname)
     ASSERT_STR_EQ(eval_print("(pathnamep (user-homedir-pathname))"), "T");
 }
 
+/* --- ext:system-command tests --- */
+
+TEST(eval_system_command_true)
+{
+    ASSERT_STR_EQ(eval_print("(ext:system-command \"true\")"), "0");
+}
+
+TEST(eval_system_command_false)
+{
+    ASSERT_STR_EQ(eval_print("(ext:system-command \"false\")"), "1");
+}
+
+TEST(eval_system_command_echo)
+{
+    ASSERT_STR_EQ(eval_print("(ext:system-command \"echo hello > /dev/null\")"), "0");
+}
+
+TEST(eval_getcwd)
+{
+    /* ext:getcwd should return a non-empty string starting with / */
+    const char *result = eval_print("(ext:getcwd)");
+    ASSERT(result[0] == '"');  /* printed as a string */
+    ASSERT(result[1] == '/');  /* absolute path */
+}
+
 /* --- Heap exhaustion / storage error tests --- */
 
 TEST(eval_heap_exhaustion_error)
@@ -5961,6 +5986,12 @@ int main(void)
 
     /* user-homedir-pathname */
     RUN(eval_user_homedir_pathname);
+
+    /* ext:system-command, ext:getcwd */
+    RUN(eval_system_command_true);
+    RUN(eval_system_command_false);
+    RUN(eval_system_command_echo);
+    RUN(eval_getcwd);
 
     /* heap exhaustion / storage errors */
     RUN(eval_heap_exhaustion_error);

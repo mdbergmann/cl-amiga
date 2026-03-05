@@ -8,6 +8,7 @@
 CL_Obj cl_package_cl = CL_NIL;
 CL_Obj cl_package_cl_user = CL_NIL;
 CL_Obj cl_package_keyword = CL_NIL;
+CL_Obj cl_package_ext = CL_NIL;
 CL_Obj cl_current_package = CL_NIL;
 CL_Obj cl_package_registry = CL_NIL;
 
@@ -432,10 +433,14 @@ void cl_package_init(void)
     cl_package_cl_user = cl_make_package("COMMON-LISP-USER");
     CL_GC_PROTECT(cl_package_cl_user);
 
+    cl_package_ext = cl_make_package("EXT");
+    CL_GC_PROTECT(cl_package_ext);
+
     /* Register in global registry */
     cl_register_package(cl_package_cl);
     cl_register_package(cl_package_keyword);
     cl_register_package(cl_package_cl_user);
+    cl_register_package(cl_package_ext);
 
     /* Add nicknames */
     {
@@ -449,11 +454,15 @@ void cl_package_init(void)
         user_pkg->nicknames = cl_cons(nick, CL_NIL);
     }
 
-    /* CL-USER uses CL */
+    /* CL-USER uses CL and EXT */
     cl_use_package(cl_package_cl, cl_package_cl_user);
+    cl_use_package(cl_package_ext, cl_package_cl_user);
+
+    /* EXT uses CL */
+    cl_use_package(cl_package_cl, cl_package_ext);
 
     cl_current_package = cl_package_cl_user;
 
     /* Note: roots are kept protected permanently (they're globals) */
-    CL_GC_UNPROTECT(3);
+    CL_GC_UNPROTECT(4);
 }

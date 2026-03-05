@@ -4,6 +4,7 @@
 #include <string.h>
 #include <sys/time.h>
 #include <sys/stat.h>
+#include <sys/wait.h>
 #include <time.h>
 #include <unistd.h>
 #include <errno.h>
@@ -232,6 +233,22 @@ const char *platform_getenv(const char *name, char *buf, int bufsize)
 {
     (void)buf; (void)bufsize;
     return getenv(name);
+}
+
+int platform_getcwd(char *buf, int bufsize)
+{
+    if (getcwd(buf, (size_t)bufsize) != NULL)
+        return (int)strlen(buf);
+    return 0;
+}
+
+int platform_system(const char *command)
+{
+    int status = system(command);
+    if (status == -1) return -1;
+    if (WIFEXITED(status)) return WEXITSTATUS(status);
+    if (WIFSIGNALED(status)) return 128 + WTERMSIG(status);
+    return -1;
 }
 
 void platform_init(void)

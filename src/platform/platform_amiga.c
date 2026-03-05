@@ -307,6 +307,25 @@ const char *platform_getenv(const char *name, char *buf, int bufsize)
     return buf;
 }
 
+int platform_getcwd(char *buf, int bufsize)
+{
+    BPTR lock = Lock("", ACCESS_READ);
+    if (lock) {
+        if (NameFromLock(lock, (STRPTR)buf, bufsize)) {
+            UnLock(lock);
+            return (int)strlen(buf);
+        }
+        UnLock(lock);
+    }
+    return 0;
+}
+
+int platform_system(const char *command)
+{
+    LONG rc = SystemTagList((STRPTR)command, NULL);
+    return (int)rc;
+}
+
 void platform_init(void)
 {
     /* Nothing needed — dos.library is auto-opened by vbcc startup */

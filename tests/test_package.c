@@ -286,8 +286,8 @@ TEST(eval_package_nicknames)
 
 TEST(eval_package_use_list)
 {
-    /* CL-USER uses CL */
-    ASSERT_STR_EQ(eval_print("(length (package-use-list (find-package \"CL-USER\")))"), "1");
+    /* CL-USER uses CL and EXT */
+    ASSERT_STR_EQ(eval_print("(length (package-use-list (find-package \"CL-USER\")))"), "2");
 }
 
 TEST(eval_find_symbol_external)

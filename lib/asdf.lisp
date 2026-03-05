@@ -2146,7 +2146,7 @@ use getenvp to return NIL in such a case."
         (ct:free buffer1)))
     #+gcl (system:getenv x)
     #+(or genera mezzano) nil
-    #+cl-amiga (cl::%getenv x)
+    #+cl-amiga (ext:getenv x)
     #+lispworks (lispworks:environment-variable x)
     #+mcl (ccl:with-cstrs ((name x))
             (let ((value (_getenv name)))
@@ -2377,6 +2377,8 @@ suitable for use as a directory name to segregate Lisp FASLs, C dynamic librarie
         #+mkcl (mk-ext:getcwd)
         #+sbcl (sb-ext:parse-native-namestring (sb-unix:posix-getcwd/))
         #+xcl (extensions:current-directory)
+        #+cl-amiga (parse-namestring (ext:getcwd))
+        #-(or cl-amiga abcl allegro clasp clisp clozure cmucl cormanlisp ecl gcl lispworks mkcl sbcl scl xcl genera mezzano)
         (not-implemented-error 'getcwd)))
 
   (defun chdir (x)
@@ -7205,12 +7207,13 @@ or whether it's already taken care of by the implementation's underlying run-pro
        (return-from %system
          (wait-process
           (apply 'launch-program (%normalize-system-command command) keys)))))
-    #+(or abcl clasp clisp cormanlisp ecl gcl genera (and lispworks os-windows) mkcl xcl)
+    #+(or cl-amiga abcl clasp clisp cormanlisp ecl gcl genera (and lispworks os-windows) mkcl xcl)
     (let ((%command (%redirected-system-command command input output error-output directory)))
       ;; see comments for these functions
       (%handle-if-does-not-exist input if-input-does-not-exist)
       (%handle-if-exists output if-output-exists)
       (%handle-if-exists error-output if-error-output-exists)
+      #+cl-amiga (ext:system-command %command)
       #+abcl (ext:run-shell-command %command)
       #+(or clasp ecl) (let ((*standard-input* *stdin*)
                              (*standard-output* *stdout*)
@@ -7329,7 +7332,7 @@ RUN-PROGRAM returns 3 values:
 or an indication of failure via the EXIT-CODE of the process"
     (declare (ignorable input output error-output if-input-does-not-exist if-output-exists
                         if-error-output-exists element-type external-format ignore-error-status))
-    #-(or abcl allegro clasp clisp clozure cmucl cormanlisp ecl gcl lispworks mcl mkcl sbcl scl xcl)
+    #-(or cl-amiga abcl allegro clasp clisp clozure cmucl cormanlisp ecl gcl lispworks mcl mkcl sbcl scl xcl)
     (not-implemented-error 'run-program)
     (apply (if (or force-shell
                    ;; Per doc string, set FORCE-SHELL to T if we get command as a string.
@@ -7337,7 +7340,7 @@ or an indication of failure via the EXIT-CODE of the process"
                    (and (stringp command)
                         (or (not force-shell-suppliedp)
                             #-(or allegro clisp clozure sbcl) (os-cond ((os-windows-p) t))))
-                   #+(or clasp clisp cormanlisp gcl (and lispworks os-windows) mcl xcl) t
+                   #+(or cl-amiga clasp clisp cormanlisp gcl (and lispworks os-windows) mcl xcl) t
                    ;; A race condition in ECL <= 16.0.0 prevents using ext:run-program
                    #+ecl #.(if-let (ver (parse-version (lisp-implementation-version)))
                                    (lexicographic<= '< ver '(16 0 0)))
