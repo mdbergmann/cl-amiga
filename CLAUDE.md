@@ -40,6 +40,7 @@ verify/realamiga/FS-UAE.app/Contents/MacOS/fs-uae verify/realamiga/verify.fs-uae
 ## Tests
 
 - **Tests are our specification** — every new feature or bugfix must have both host and Amiga tests
+- **Every bug fix must include a regression test** that reproduces the bug and verifies the fix
 - Host tests: `tests/test_*.c` using framework in `tests/test.h`; `make test` must pass before any commit
 - Amiga tests: `tests/amiga/run-tests.lisp` — Lisp-based test suite run on AmigaOS via FS-UAE
 
