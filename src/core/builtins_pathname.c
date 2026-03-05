@@ -439,10 +439,54 @@ static CL_Obj bi_merge_pathnames(CL_Obj *args, int n)
     /* Fill in missing components from defaults */
     host      = CL_NULL_P(pn->host)      ? def->host      : pn->host;
     device    = CL_NULL_P(pn->device)    ? def->device    : pn->device;
-    directory = CL_NULL_P(pn->directory) ? def->directory : pn->directory;
     pn_name   = CL_NULL_P(pn->name)     ? def->name      : pn->name;
     pn_type   = CL_NULL_P(pn->type)     ? def->type      : pn->type;
     version   = CL_NULL_P(pn->version)  ? def->version   : pn->version;
+
+    /* Merge directories per CL spec: if pathname has :RELATIVE directory
+       and defaults have a directory, append relative components to defaults */
+    if (CL_NULL_P(pn->directory)) {
+        directory = def->directory;
+    } else if (!CL_NULL_P(def->directory) && CL_CONS_P(pn->directory) &&
+               cl_car(pn->directory) == KW_RELATIVE) {
+        /* Build merged list: copy def->directory, then append cdr(pn->directory) */
+        CL_Obj merged = CL_NIL, tail = CL_NIL;
+        CL_Obj src;
+        CL_GC_PROTECT(pn_obj);
+        CL_GC_PROTECT(def_obj);
+        CL_GC_PROTECT(merged);
+        CL_GC_PROTECT(tail);
+
+        /* Copy all of def->directory */
+        for (src = def->directory; CL_CONS_P(src); src = cl_cdr(src)) {
+            CL_Obj cell = cl_cons(cl_car(src), CL_NIL);
+            if (CL_NULL_P(merged)) {
+                merged = cell;
+                tail = cell;
+            } else {
+                ((CL_Cons *)CL_OBJ_TO_PTR(tail))->cdr = cell;
+                tail = cell;
+            }
+        }
+        /* Append pn's relative components (skip :RELATIVE keyword) */
+        for (src = cl_cdr(pn->directory); CL_CONS_P(src); src = cl_cdr(src)) {
+            CL_Obj cell = cl_cons(cl_car(src), CL_NIL);
+            if (CL_NULL_P(merged)) {
+                merged = cell;
+                tail = cell;
+            } else {
+                ((CL_Cons *)CL_OBJ_TO_PTR(tail))->cdr = cell;
+                tail = cell;
+            }
+        }
+        directory = merged;
+        CL_GC_UNPROTECT(4);
+        /* Re-fetch pointers after potential GC */
+        pn = (CL_Pathname *)CL_OBJ_TO_PTR(pn_obj);
+        def = (CL_Pathname *)CL_OBJ_TO_PTR(def_obj);
+    } else {
+        directory = pn->directory;
+    }
 
     if (n >= 3 && CL_NULL_P(version))
         version = args[2];

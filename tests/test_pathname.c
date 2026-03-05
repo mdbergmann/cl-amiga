@@ -261,6 +261,72 @@ TEST(merge_pathnames_no_merge_needed)
                   "\"/full/path.lisp\"");
 }
 
+TEST(merge_pathnames_relative_into_relative)
+{
+    ASSERT_STR_EQ(eval_print("(namestring (merge-pathnames \".local/share/\" \"ocicl/\"))"),
+                  "\"ocicl/.local/share/\"");
+}
+
+TEST(merge_pathnames_relative_into_absolute)
+{
+    ASSERT_STR_EQ(eval_print("(namestring (merge-pathnames \"sub/file.lisp\" \"/base/\"))"),
+                  "\"/base/sub/file.lisp\"");
+}
+
+TEST(merge_pathnames_dir_only_trailing_slash)
+{
+    ASSERT_STR_EQ(eval_print("(pathname-directory (merge-pathnames \".local/share/\" \"ocicl/\"))"),
+                  "(:RELATIVE \"ocicl\" \".local\" \"share\")");
+}
+
+TEST(merge_pathnames_relative_into_absolute_dir)
+{
+    /* Verify directory structure: (:ABSOLUTE "base" "sub") */
+    ASSERT_STR_EQ(eval_print("(pathname-directory (merge-pathnames \"sub/file.lisp\" \"/base/\"))"),
+                  "(:ABSOLUTE \"base\" \"sub\")");
+}
+
+TEST(merge_pathnames_relative_single_into_multi)
+{
+    /* Single relative component into multi-component absolute */
+    ASSERT_STR_EQ(eval_print("(namestring (merge-pathnames \"lib/foo.lisp\" \"/usr/local/\"))"),
+                  "\"/usr/local/lib/foo.lisp\"");
+    ASSERT_STR_EQ(eval_print("(pathname-directory (merge-pathnames \"lib/foo.lisp\" \"/usr/local/\"))"),
+                  "(:ABSOLUTE \"usr\" \"local\" \"lib\")");
+}
+
+TEST(merge_pathnames_relative_defaults_nil_dir)
+{
+    /* Relative dir but defaults has NIL directory — keep relative as-is */
+    ASSERT_STR_EQ(eval_print("(pathname-directory (merge-pathnames \"sub/foo.lisp\" \"bar.lisp\"))"),
+                  "(:RELATIVE \"sub\")");
+}
+
+TEST(merge_pathnames_absolute_overrides_absolute)
+{
+    /* Both absolute — pathname's directory wins entirely */
+    ASSERT_STR_EQ(eval_print("(pathname-directory (merge-pathnames \"/my/dir/\" \"/other/dir/\"))"),
+                  "(:ABSOLUTE \"my\" \"dir\")");
+}
+
+TEST(merge_pathnames_name_preserved_on_merge)
+{
+    /* Pathname's name/type preserved while directories merge */
+    ASSERT_STR_EQ(eval_print("(pathname-name (merge-pathnames \"sub/mine.txt\" \"/base/\"))"),
+                  "\"mine\"");
+    ASSERT_STR_EQ(eval_print("(pathname-type (merge-pathnames \"sub/mine.txt\" \"/base/\"))"),
+                  "\"txt\"");
+}
+
+TEST(merge_pathnames_relative_file_only)
+{
+    /* Relative pathname with just a filename (no dir components) merges dir from defaults */
+    ASSERT_STR_EQ(eval_print("(namestring (merge-pathnames \"test.lisp\" \"/usr/src/\"))"),
+                  "\"/usr/src/test.lisp\"");
+    ASSERT_STR_EQ(eval_print("(pathname-directory (merge-pathnames \"test.lisp\" \"/usr/src/\"))"),
+                  "(:ABSOLUTE \"usr\" \"src\")");
+}
+
 /* --- file-namestring --- */
 
 TEST(file_namestring_basic)
@@ -382,6 +448,15 @@ int main(void)
     RUN(make_pathname_dir);
     RUN(merge_pathnames_basic);
     RUN(merge_pathnames_no_merge_needed);
+    RUN(merge_pathnames_relative_into_relative);
+    RUN(merge_pathnames_relative_into_absolute);
+    RUN(merge_pathnames_dir_only_trailing_slash);
+    RUN(merge_pathnames_relative_into_absolute_dir);
+    RUN(merge_pathnames_relative_single_into_multi);
+    RUN(merge_pathnames_relative_defaults_nil_dir);
+    RUN(merge_pathnames_absolute_overrides_absolute);
+    RUN(merge_pathnames_name_preserved_on_merge);
+    RUN(merge_pathnames_relative_file_only);
     RUN(file_namestring_basic);
     RUN(directory_namestring_basic);
     RUN(pathname_amiga_device_dir);
