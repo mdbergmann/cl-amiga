@@ -20,6 +20,7 @@
 #define CL_ERR_DIVZERO    7
 #define CL_ERR_UNDEFINED  8
 #define CL_ERR_STORAGE    9
+#define CL_ERR_EXIT      10
 
 /* Error handler frame stack */
 #define CL_MAX_ERROR_FRAMES 16
@@ -33,6 +34,7 @@ extern CL_ErrorFrame cl_error_frames[CL_MAX_ERROR_FRAMES];
 extern int cl_error_frame_top;
 extern int cl_error_code;
 extern char cl_error_msg[512];
+extern int cl_exit_code;
 
 /* Push a new error frame, returns 0 on setjmp, error code on longjmp */
 #define CL_CATCH() \

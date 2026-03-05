@@ -534,6 +534,9 @@ void cl_repl(void)
                     }
                 }
                 CL_UNCATCH();
+            } else if (err == CL_ERR_EXIT) {
+                CL_UNCATCH();
+                break;
             } else {
                 cl_error_print();
                 /* Reset VM state after error (prevent stale frames) */
@@ -608,6 +611,9 @@ void cl_repl_batch(void)
             if (err == CL_ERR_NONE) {
                 cl_eval_string(accum);
                 CL_UNCATCH();
+            } else if (err == CL_ERR_EXIT) {
+                CL_UNCATCH();
+                break;
             } else {
                 cl_error_print();
                 /* Reset VM state after error (prevent stale frames) */

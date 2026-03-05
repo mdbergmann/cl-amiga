@@ -75,6 +75,17 @@ typedef struct {
     const char *arg;
 } CLAction;
 
+/* Evaluate --eval in CL-USER context (not whatever *package* was left by --load) */
+static CL_Obj eval_string_in_cl_user(const char *str)
+{
+    CL_Obj saved_pkg = cl_current_package;
+    CL_Obj result;
+    cl_current_package = cl_package_cl_user;
+    result = cl_eval_string(str);
+    cl_current_package = saved_pkg;
+    return result;
+}
+
 int main(int argc, char *argv[])
 {
     int batch = 0;
@@ -211,11 +222,14 @@ int main(int argc, char *argv[])
             int err = CL_CATCH();
             if (err == CL_ERR_NONE) {
                 if (actions[i].is_eval) {
-                    cl_eval_string(actions[i].arg);
+                    eval_string_in_cl_user(actions[i].arg);
                 } else {
                     cl_load_file(actions[i].arg);
                 }
                 CL_UNCATCH();
+            } else if (err == CL_ERR_EXIT) {
+                CL_UNCATCH();
+                goto shutdown;
             } else {
                 cl_error_print();
                 cl_vm.sp = 0;
@@ -230,6 +244,9 @@ int main(int argc, char *argv[])
             if (err == CL_ERR_NONE) {
                 cl_load_file(script_file);
                 CL_UNCATCH();
+            } else if (err == CL_ERR_EXIT) {
+                CL_UNCATCH();
+                goto shutdown;
             } else {
                 cl_error_print();
                 cl_vm.sp = 0;
@@ -243,11 +260,14 @@ int main(int argc, char *argv[])
             int err = CL_CATCH();
             if (err == CL_ERR_NONE) {
                 if (actions[i].is_eval) {
-                    cl_eval_string(actions[i].arg);
+                    eval_string_in_cl_user(actions[i].arg);
                 } else {
                     cl_load_file(actions[i].arg);
                 }
                 CL_UNCATCH();
+            } else if (err == CL_ERR_EXIT) {
+                CL_UNCATCH();
+                goto shutdown;
             } else {
                 cl_error_print();
                 cl_vm.sp = 0;
@@ -261,11 +281,14 @@ int main(int argc, char *argv[])
             int err = CL_CATCH();
             if (err == CL_ERR_NONE) {
                 if (actions[i].is_eval) {
-                    cl_eval_string(actions[i].arg);
+                    eval_string_in_cl_user(actions[i].arg);
                 } else {
                     cl_load_file(actions[i].arg);
                 }
                 CL_UNCATCH();
+            } else if (err == CL_ERR_EXIT) {
+                CL_UNCATCH();
+                goto shutdown;
             } else {
                 cl_error_print();
                 cl_vm.sp = 0;
@@ -320,11 +343,14 @@ int main(int argc, char *argv[])
             int err = CL_CATCH();
             if (err == CL_ERR_NONE) {
                 if (actions[i].is_eval) {
-                    cl_eval_string(actions[i].arg);
+                    eval_string_in_cl_user(actions[i].arg);
                 } else {
                     cl_load_file(actions[i].arg);
                 }
                 CL_UNCATCH();
+            } else if (err == CL_ERR_EXIT) {
+                CL_UNCATCH();
+                goto shutdown;
             } else {
                 cl_error_print();
                 cl_vm.sp = 0;
@@ -336,10 +362,11 @@ int main(int argc, char *argv[])
         cl_repl();
     }
 
+shutdown:
     cl_stream_shutdown();
     cl_vm_shutdown();
     cl_mem_shutdown();
     platform_shutdown();
 
-    return 0;
+    return cl_exit_code;
 }

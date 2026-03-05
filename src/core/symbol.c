@@ -205,6 +205,8 @@ CL_Obj KW_NAME = CL_NIL;
 CL_Obj KW_TYPE = CL_NIL;
 CL_Obj KW_VERSION = CL_NIL;
 CL_Obj KW_DEFAULTS = CL_NIL;
+CL_Obj KW_UNSPECIFIC = CL_NIL;
+CL_Obj KW_WILD = CL_NIL;
 CL_Obj SYM_STAR_DEFAULT_PATHNAME_DEFAULTS = CL_NIL;
 
 CL_Obj SYM_STAR_READ_EVAL = CL_NIL;
@@ -561,7 +563,9 @@ void cl_symbol_init(void)
     KW_NAME      = cl_intern_keyword("NAME", 4);
     KW_TYPE      = cl_intern_keyword("TYPE", 4);
     KW_VERSION   = cl_intern_keyword("VERSION", 7);
-    KW_DEFAULTS  = cl_intern_keyword("DEFAULTS", 8);
+    KW_DEFAULTS    = cl_intern_keyword("DEFAULTS", 8);
+    KW_UNSPECIFIC  = cl_intern_keyword("UNSPECIFIC", 10);
+    KW_WILD        = cl_intern_keyword("WILD", 4);
     SYM_STAR_DEFAULT_PATHNAME_DEFAULTS = cl_intern_in("*DEFAULT-PATHNAME-DEFAULTS*", 27, cl_package_cl);
     {
         CL_Symbol *s = (CL_Symbol *)CL_OBJ_TO_PTR(SYM_STAR_DEFAULT_PATHNAME_DEFAULTS);

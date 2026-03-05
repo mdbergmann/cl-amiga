@@ -662,6 +662,16 @@ void cl_builtins_bitvector_init(void);
 void cl_builtins_pathname_init(void);
 void cl_builtins_describe_init(void);
 
+static CL_Obj bi_quit(CL_Obj *args, int n)
+{
+    int code = 0;
+    if (n > 0 && CL_FIXNUM_P(args[0]))
+        code = CL_FIXNUM_VAL(args[0]);
+    cl_exit_code = code;
+    cl_error(CL_ERR_EXIT, "");
+    return CL_NIL; /* unreachable */
+}
+
 void cl_builtins_init(void)
 {
     /* List ops */
@@ -741,4 +751,23 @@ void cl_builtins_init(void)
 
     /* All CL symbols now interned — mark them exported */
     cl_package_export_all_cl_symbols();
+
+    /* Process control — in CL-USER, not CL (quit/exit are non-standard) */
+    {
+        CL_Obj sym;
+        CL_Obj fn;
+        CL_Symbol *s;
+
+        sym = cl_intern_in("QUIT", 4, cl_package_cl_user);
+        fn = cl_make_function(bi_quit, sym, 0, 1);
+        s = (CL_Symbol *)CL_OBJ_TO_PTR(sym);
+        s->function = fn;
+        s->value = fn;
+
+        sym = cl_intern_in("EXIT", 4, cl_package_cl_user);
+        fn = cl_make_function(bi_quit, sym, 0, 1);
+        s = (CL_Symbol *)CL_OBJ_TO_PTR(sym);
+        s->function = fn;
+        s->value = fn;
+    }
 }

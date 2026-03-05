@@ -193,15 +193,18 @@ uint32_t cl_pathname_to_namestring(CL_Pathname *pn, char *buf, uint32_t bufsz)
     for (_i = 0; _i < (slen); _i++) EMIT_CHAR((s)[_i]); \
 } while(0)
 
+/* Check if a component is "empty" (NIL or :UNSPECIFIC) */
+#define COMP_EMPTY(c) (CL_NULL_P(c) || (c) == KW_UNSPECIFIC)
+
     /* Device (Amiga: "DH0:") */
-    if (!CL_NULL_P(pn->device) && CL_STRING_P(pn->device)) {
+    if (!COMP_EMPTY(pn->device) && CL_STRING_P(pn->device)) {
         CL_String *dev = (CL_String *)CL_OBJ_TO_PTR(pn->device);
         EMIT_STR(dev->data, dev->length);
         EMIT_CHAR(':');
     }
 
     /* Directory */
-    if (!CL_NULL_P(pn->directory) && CL_CONS_P(pn->directory)) {
+    if (!COMP_EMPTY(pn->directory) && CL_CONS_P(pn->directory)) {
         CL_Obj dir = pn->directory;
         CL_Obj kind = cl_car(dir);
         CL_Obj rest = cl_cdr(dir);
@@ -223,13 +226,13 @@ uint32_t cl_pathname_to_namestring(CL_Pathname *pn, char *buf, uint32_t bufsz)
     }
 
     /* Name */
-    if (!CL_NULL_P(pn->name) && CL_STRING_P(pn->name)) {
+    if (!COMP_EMPTY(pn->name) && CL_STRING_P(pn->name)) {
         CL_String *nm = (CL_String *)CL_OBJ_TO_PTR(pn->name);
         EMIT_STR(nm->data, nm->length);
     }
 
     /* Type (with dot) */
-    if (!CL_NULL_P(pn->type) && CL_STRING_P(pn->type)) {
+    if (!COMP_EMPTY(pn->type) && CL_STRING_P(pn->type)) {
         CL_String *tp = (CL_String *)CL_OBJ_TO_PTR(pn->type);
         EMIT_CHAR('.');
         EMIT_STR(tp->data, tp->length);
@@ -459,14 +462,14 @@ static CL_Obj bi_file_namestring(CL_Obj *args, int n)
     pn_obj = coerce_to_pathname(args[0]);
     pn = (CL_Pathname *)CL_OBJ_TO_PTR(pn_obj);
 
-    if (!CL_NULL_P(pn->name) && CL_STRING_P(pn->name)) {
+    if (!COMP_EMPTY(pn->name) && CL_STRING_P(pn->name)) {
         CL_String *nm = (CL_String *)CL_OBJ_TO_PTR(pn->name);
         if (pos + nm->length < sizeof(buf)) {
             memcpy(buf + pos, nm->data, nm->length);
             pos += nm->length;
         }
     }
-    if (!CL_NULL_P(pn->type) && CL_STRING_P(pn->type)) {
+    if (!COMP_EMPTY(pn->type) && CL_STRING_P(pn->type)) {
         CL_String *tp = (CL_String *)CL_OBJ_TO_PTR(pn->type);
         if (pos + 1 + tp->length < sizeof(buf)) {
             buf[pos++] = '.';

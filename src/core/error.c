@@ -13,6 +13,7 @@ CL_ErrorFrame cl_error_frames[CL_MAX_ERROR_FRAMES];
 int cl_error_frame_top = 0;
 int cl_error_code = CL_ERR_NONE;
 char cl_error_msg[512];
+int cl_exit_code = 0;
 
 void cl_error_init(void)
 {
@@ -30,6 +31,22 @@ void cl_error(int code, const char *fmt, ...)
     va_start(ap, fmt);
     vsnprintf(cl_error_msg, sizeof(cl_error_msg), fmt, ap);
     va_end(ap);
+
+    /* Exit request: skip debugger/conditions, just unwind */
+    if (code == CL_ERR_EXIT) {
+        cl_nlx_top = 0;
+        cl_pending_throw = 0;
+        cl_dynbind_restore_to(0);
+        cl_handler_top = 0;
+        cl_restart_top = 0;
+        cl_gc_reset_roots();
+        if (cl_error_frame_top > 0) {
+            cl_error_frame_top--;
+            cl_error_frames[cl_error_frame_top].active = 0;
+            longjmp(cl_error_frames[cl_error_frame_top].buf, code);
+        }
+        exit(cl_exit_code);
+    }
 
     /* Capture backtrace while VM frames are still intact */
     cl_capture_backtrace();
