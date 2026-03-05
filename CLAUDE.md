@@ -15,13 +15,16 @@ make test          # Run all tests (mandatory — must pass before committing)
 make clean         # Remove build artifacts
 ```
 
-Amiga build & test via FS-UAE:
+Cross-compile for Amiga and test via FS-UAE:
 ```
-# Launch FS-UAE (use raw binary, NOT `open` command)
-verify/realamiga/FS-UAE.app/Contents/MacOS/fs-uae verify/realamiga/verify.fs-uae
+make -f Makefile.cross amiga        # Cross-compile to build/cross/clamiga (m68k-amigaos-gcc)
+make -f Makefile.cross test-amiga   # Cross-compile, copy binary, launch FS-UAE, verify results
+make -f Makefile.cross clean        # Remove cross-build artifacts
 ```
-- Boots AmigaOS, builds with vbcc, runs Amiga test suite automatically
-- `make verify-amiga` checks test results after emulator closes
+- Uses `m68k-amigaos-gcc` toolchain from `tools/m68k-amigaos-gcc/prefix`
+- **Preferred method** for building the Amiga binary — faster than compiling inside the emulator with vbcc
+- `test-amiga` places the binary in `build/amiga/`, boots FS-UAE, runs the Amiga test suite, and verifies results
+- FS-UAE must be closed manually after tests finish; results are checked automatically
 
 ## Architecture
 
