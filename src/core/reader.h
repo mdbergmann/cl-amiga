@@ -54,4 +54,13 @@ extern uint16_t cl_current_file_id;
 
 void cl_reader_init(void);
 
+/* Reset reader line counter to 1 (call before reading a new file) */
+void cl_reader_reset_line(void);
+
+/* Get current reader line number (for save/restore across nested loads) */
+int cl_reader_get_line(void);
+
+/* Set reader line number (for restoring after nested load) */
+void cl_reader_set_line(int line);
+
 #endif /* CL_READER_H */

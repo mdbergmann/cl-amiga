@@ -73,9 +73,11 @@ static void load_boot_file(void)
         if (buf) {
             const char *prev_file = cl_current_source_file;
             uint16_t prev_file_id = cl_current_file_id;
+            int prev_line = cl_reader_get_line();
             CL_Obj stream;
             cl_current_source_file = paths[i];
             cl_current_file_id++;
+            cl_reader_reset_line();
 
             /* Use C-buffer stream — file content stays outside GC arena */
             stream = cl_make_cbuf_input_stream(buf, (uint32_t)size);
@@ -106,6 +108,7 @@ static void load_boot_file(void)
             platform_free(buf);
             cl_current_source_file = prev_file;
             cl_current_file_id = prev_file_id;
+            cl_reader_set_line(prev_line);
             return;  /* Loaded successfully, stop trying */
         }
     }
@@ -127,9 +130,11 @@ void cl_load_file(const char *path)
     {
         const char *prev_file = cl_current_source_file;
         uint16_t prev_file_id = cl_current_file_id;
+        int prev_line = cl_reader_get_line();
         CL_Obj stream;
         cl_current_source_file = path;
         cl_current_file_id++;
+        cl_reader_reset_line();
 
         /* Use C-buffer stream — file content stays outside GC arena */
         stream = cl_make_cbuf_input_stream(buf, (uint32_t)size);
@@ -161,6 +166,7 @@ void cl_load_file(const char *path)
         platform_free(buf);
         cl_current_source_file = prev_file;
         cl_current_file_id = prev_file_id;
+        cl_reader_set_line(prev_line);
     }
 }
 
@@ -191,8 +197,10 @@ static void load_user_init(void)
                 CL_Obj cl_str, stream;
                 const char *prev_file = cl_current_source_file;
                 uint16_t prev_file_id = cl_current_file_id;
+                int prev_line = cl_reader_get_line();
                 cl_current_source_file = paths[i];
                 cl_current_file_id++;
+                cl_reader_reset_line();
 
                 cl_str = cl_make_string(buf, (int)size);
                 CL_GC_PROTECT(cl_str);
@@ -225,6 +233,7 @@ static void load_user_init(void)
                 CL_GC_UNPROTECT(2);
                 cl_current_source_file = prev_file;
                 cl_current_file_id = prev_file_id;
+                cl_reader_set_line(prev_line);
                 return;  /* Loaded, stop trying */
             }
         }

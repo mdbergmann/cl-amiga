@@ -262,6 +262,7 @@ static CL_Obj bi_load(CL_Obj *args, int n)
     CL_Obj stream, expr, bytecode;
     const char *prev_file;
     uint16_t prev_file_id;
+    int prev_line;
 
     CL_UNUSED(n);
     if (CL_PATHNAME_P(args[0])) {
@@ -282,8 +283,10 @@ static CL_Obj bi_load(CL_Obj *args, int n)
     /* Save and set source file context */
     prev_file = cl_current_source_file;
     prev_file_id = cl_current_file_id;
+    prev_line = cl_reader_get_line();
     cl_current_source_file = path_str->data;
     cl_current_file_id++;
+    cl_reader_reset_line();
 
     /* Use C-buffer stream — file content stays outside GC arena */
     stream = cl_make_cbuf_input_stream(buf, (uint32_t)size);
@@ -316,6 +319,7 @@ static CL_Obj bi_load(CL_Obj *args, int n)
     /* Restore source file context */
     cl_current_source_file = prev_file;
     cl_current_file_id = prev_file_id;
+    cl_reader_set_line(prev_line);
 
     return SYM_T;
 }

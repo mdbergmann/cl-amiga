@@ -972,6 +972,21 @@ static CL_Obj read_expr(void)
 
 /* Public API */
 
+void cl_reader_reset_line(void)
+{
+    reader_line = 1;
+}
+
+int cl_reader_get_line(void)
+{
+    return reader_line;
+}
+
+void cl_reader_set_line(int line)
+{
+    reader_line = line;
+}
+
 CL_Obj cl_read(void)
 {
     CL_Obj result;
