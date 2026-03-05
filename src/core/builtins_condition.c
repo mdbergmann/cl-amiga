@@ -13,8 +13,12 @@
 #include "vm.h"
 #include "printer.h"
 #include "color.h"
+#include "stream.h"
 #include "../platform/platform.h"
 #include <string.h>
+
+/* Defined in builtins_format.c */
+extern void cl_format_to_stream(CL_Obj stream, CL_Obj *args, int n);
 
 /* Helper to register a builtin */
 static void defun(const char *name, CL_CFunc func, int min, int max)
@@ -261,6 +265,52 @@ static CL_Obj slot_lookup(CL_Obj slots, CL_Obj key)
         slots = cl_cdr(slots);
     }
     return CL_NIL;
+}
+
+/* Format a condition's report string, applying :format-arguments if present.
+ * Returns a CL string object, or CL_NIL if no format-control. */
+static CL_Obj format_condition_report(CL_Condition *c)
+{
+    CL_Obj fmt_ctrl = slot_lookup(c->slots, KW_FORMAT_CONTROL);
+    CL_Obj fmt_args;
+    if (CL_NULL_P(fmt_ctrl) || !CL_STRING_P(fmt_ctrl))
+        return c->report_string;  /* fallback to raw report_string */
+
+    fmt_args = slot_lookup(c->slots, KW_FORMAT_ARGUMENTS);
+    if (CL_NULL_P(fmt_args))
+        return fmt_ctrl;  /* no args to substitute */
+
+    /* Build args array for cl_format_to_stream: [dest, fmt, arg1, arg2, ...] */
+    {
+        CL_Obj sstream, result;
+        int list_len = 0;
+        CL_Obj tmp;
+        CL_Obj fmt_args_arr[32];  /* max 30 format args */
+        int i;
+
+        /* Count and collect format arguments from list */
+        for (tmp = fmt_args; !CL_NULL_P(tmp) && list_len < 30; tmp = cl_cdr(tmp))
+            fmt_args_arr[list_len++] = cl_car(tmp);
+
+        sstream = cl_make_string_output_stream();
+        CL_GC_PROTECT(sstream);
+        {
+            CL_Obj args_buf[32];
+            args_buf[0] = sstream;  /* destination (unused by cl_format_to_stream) */
+            args_buf[1] = fmt_ctrl;
+            for (i = 0; i < list_len; i++)
+                args_buf[2 + i] = fmt_args_arr[i];
+            cl_format_to_stream(sstream, args_buf, 2 + list_len);
+        }
+        result = cl_get_output_stream_string(sstream);
+        {
+            CL_Stream *tmp_st = (CL_Stream *)CL_OBJ_TO_PTR(sstream);
+            cl_stream_free_outbuf(tmp_st->out_buf_handle);
+            tmp_st->out_buf_handle = 0;
+        }
+        CL_GC_UNPROTECT(1);
+        return result;
+    }
 }
 
 /* Check if a symbol is a known condition type in the hierarchy */
@@ -590,10 +640,11 @@ static CL_Obj bi_warn(CL_Obj *args, int n)
     /* No handler transferred control — print warning and return NIL */
     {
         CL_Condition *c = (CL_Condition *)CL_OBJ_TO_PTR(cond);
+        CL_Obj report = format_condition_report(c);
         cl_color_set(CL_COLOR_YELLOW);
         platform_write_string("WARNING: ");
-        if (!CL_NULL_P(c->report_string)) {
-            CL_String *s = (CL_String *)CL_OBJ_TO_PTR(c->report_string);
+        if (!CL_NULL_P(report) && CL_STRING_P(report)) {
+            CL_String *s = (CL_String *)CL_OBJ_TO_PTR(report);
             platform_write_string(s->data);
         } else {
             char buf[128];
@@ -615,8 +666,9 @@ static CL_Obj bi_error(CL_Obj *args, int n)
     /* No handler transferred control — fall to C error handler */
     {
         CL_Condition *c = (CL_Condition *)CL_OBJ_TO_PTR(cond);
-        if (!CL_NULL_P(c->report_string)) {
-            CL_String *s = (CL_String *)CL_OBJ_TO_PTR(c->report_string);
+        CL_Obj report = format_condition_report(c);
+        if (!CL_NULL_P(report) && CL_STRING_P(report)) {
+            CL_String *s = (CL_String *)CL_OBJ_TO_PTR(report);
             cl_error(CL_ERR_GENERAL, "%s", s->data);
         } else {
             char buf[128];
