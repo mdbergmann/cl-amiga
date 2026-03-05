@@ -1,0 +1,3 @@
+[submodule "tools/m68k-amigaos-gcc"]
+	path = tools/m68k-amigaos-gcc
+	url = https://github.com/AmigaPorts/m68k-amigaos-gcc.git

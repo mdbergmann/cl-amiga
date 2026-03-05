@@ -137,6 +137,33 @@ static CL_Obj bi_invoke_debugger(CL_Obj *args, int n)
     return CL_NIL; /* unreachable */
 }
 
+/* Jump directly to the top-level (REPL) error frame, clearing all
+ * VM/NLX/handler/restart state.  Used by :q and "Return to top level"
+ * so a single command always reaches the REPL prompt. */
+static void jump_to_top_level(void)
+{
+    cl_in_debugger = 0;
+    cl_nlx_top = 0;
+    cl_pending_throw = 0;
+    cl_dynbind_restore_to(0);
+    cl_handler_top = 0;
+    cl_restart_top = 0;
+    cl_gc_reset_roots();
+    cl_vm.sp = 0;
+    cl_vm.fp = 0;
+
+    if (cl_error_frame_top > 0) {
+        int code = cl_error_code;
+        /* Reset to bottom-most frame (the REPL's error frame) */
+        cl_error_frame_top = 1;
+        cl_error_frames[0].active = 0;
+        longjmp(cl_error_frames[0].buf, code);
+    }
+
+    /* No error frame — fatal (should not happen in interactive REPL) */
+    platform_write_string("No error frame — cannot return to top level\n");
+}
+
 /* Core debugger loop */
 void cl_invoke_debugger(CL_Obj condition)
 {
@@ -216,8 +243,7 @@ void cl_invoke_debugger(CL_Obj condition)
         }
 
         if (strcmp(line, ":q") == 0) {
-            cl_in_debugger = 0;
-            return; /* Return to top level */
+            jump_to_top_level(); /* longjmp — does not return */
         }
 
         if (strcmp(line, ":help") == 0) {
@@ -237,8 +263,7 @@ void cl_invoke_debugger(CL_Obj condition)
                 if (idx >= 0 && idx < num_restarts) {
                     if (idx == num_restarts - 1) {
                         /* "Return to top level" */
-                        cl_in_debugger = 0;
-                        return;
+                        jump_to_top_level(); /* longjmp — does not return */
                     }
                     /* Invoke the restart — this does not return (longjmp) */
                     cl_in_debugger = 0;
