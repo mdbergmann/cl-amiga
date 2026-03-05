@@ -168,7 +168,8 @@ static int typep_symbol(CL_Obj obj, CL_Obj type_sym)
         }
     }
 
-    cl_error(CL_ERR_TYPE, "TYPEP: unknown type specifier");
+    cl_error(CL_ERR_TYPE, "TYPEP: unknown type specifier %s",
+             cl_symbol_name(type_sym));
     return 0;
 }
 
@@ -273,6 +274,14 @@ static int typep_check(CL_Obj obj, CL_Obj type_spec)
         }
 
         cl_error(CL_ERR_TYPE, "TYPEP: invalid compound type specifier");
+    }
+
+    /* Class object as type specifier: extract class name (slot 0) */
+    if (CL_STRUCT_P(type_spec)) {
+        CL_Struct *st = (CL_Struct *)CL_OBJ_TO_PTR(type_spec);
+        CL_Obj class_name = st->slots[0];
+        if (CL_SYMBOL_P(class_name))
+            return typep_symbol(obj, class_name);
     }
 
     cl_error(CL_ERR_TYPE, "TYPEP: invalid type specifier");
@@ -537,7 +546,8 @@ static CL_Obj bi_coerce(CL_Obj *args, int n)
         return CL_NIL;
     }
 
-    cl_error(CL_ERR_TYPE, "COERCE: unknown result type");
+    cl_error(CL_ERR_TYPE, "COERCE: unknown result type %s",
+             cl_symbol_name(result_type));
     return CL_NIL;
 }
 
@@ -789,7 +799,17 @@ static CL_Obj bi_subtypep(CL_Obj *args, int n)
     int id1, id2, result;
     CL_UNUSED(n);
 
-    /* Only handle symbol type specifiers for now */
+    /* Class objects as type specifiers: extract class name (slot 0) */
+    if (CL_STRUCT_P(type1)) {
+        CL_Struct *st = (CL_Struct *)CL_OBJ_TO_PTR(type1);
+        type1 = st->slots[0]; /* class name */
+    }
+    if (CL_STRUCT_P(type2)) {
+        CL_Struct *st = (CL_Struct *)CL_OBJ_TO_PTR(type2);
+        type2 = st->slots[0]; /* class name */
+    }
+
+    /* Only handle symbol type specifiers */
     if ((!CL_SYMBOL_P(type1) && !CL_NULL_P(type1)) ||
         (!CL_SYMBOL_P(type2) && !CL_NULL_P(type2))) {
         /* Compound types: return (NIL NIL) = "don't know" */
@@ -803,6 +823,17 @@ static CL_Obj bi_subtypep(CL_Obj *args, int n)
     id2 = type_name_to_id(cl_symbol_name(type2));
 
     if (id1 == TID_UNKNOWN || id2 == TID_UNKNOWN) {
+        /* Check struct type hierarchy (CLOS classes) */
+        extern int cl_struct_type_matches(CL_Obj obj_type, CL_Obj test_type);
+        extern int cl_is_struct_type(CL_Obj type_sym);
+        if (CL_SYMBOL_P(type1) && CL_SYMBOL_P(type2) &&
+            cl_is_struct_type(type1) && cl_is_struct_type(type2)) {
+            result = cl_struct_type_matches(type1, type2);
+            cl_mv_count = 2;
+            cl_mv_values[0] = result ? SYM_T : CL_NIL;
+            cl_mv_values[1] = SYM_T;
+            return result ? SYM_T : CL_NIL;
+        }
         /* Unknown type: return (NIL NIL) */
         cl_mv_count = 2;
         cl_mv_values[0] = CL_NIL;

@@ -26,6 +26,13 @@
     (direct-subclasses nil) (direct-methods nil)
     (prototype nil) (finalized-p nil)))
 
+;; built-in-class: same layout as standard-class, used as metaclass for built-in types
+(%register-struct-type 'built-in-class 10 'standard-class
+  '((name nil) (direct-superclasses nil) (direct-slots nil)
+    (cpl nil) (effective-slots nil) (slot-index-table nil)
+    (direct-subclasses nil) (direct-methods nil)
+    (prototype nil) (finalized-p nil)))
+
 ;;; --- Class metaobject accessors ---
 
 (defun class-name (class)
@@ -79,7 +86,7 @@
 
 (defvar *class-table* (make-hash-table :test 'eq))
 
-(defun find-class (name &optional (errorp t))
+(defun find-class (name &optional (errorp t) environment)
   "Find the class named NAME. Signal an error if not found and ERRORP is true."
   (multiple-value-bind (class found-p)
       (gethash name *class-table*)
@@ -514,8 +521,10 @@
                 (nconc eslot (list :initform-function
                                    (%slot-spec-option dslot :initform-function)))
                 (return)))))))
-    ;; Register struct type
-    (%register-struct-type name n-slots nil struct-slot-specs)
+    ;; Register struct type (pass first direct super for typep hierarchy)
+    (%register-struct-type name n-slots
+                           (if direct-super-names (car direct-super-names) nil)
+                           struct-slot-specs)
     ;; Fill in class metaobject
     (%set-class-cpl class cpl)
     (%set-class-effective-slots class effective)
@@ -885,8 +894,16 @@
                    (%gf-dispatch gf args))))
           (%set-gf-discriminating-function gf dispatch-fn)
           (setf (gethash name *generic-function-table*) gf)
-          (when (symbolp name)
-            (setf (symbol-function name) dispatch-fn))
+          (cond
+            ((symbolp name)
+             (setf (symbol-function name) dispatch-fn))
+            ;; (setf accessor) — install dispatch fn on hidden symbol
+            ((and (consp name) (eq (car name) 'setf) (consp (cdr name)))
+             (let* ((accessor (cadr name))
+                    (hidden-name (concatenate 'string "%SETF-" (symbol-name accessor)))
+                    (hidden-sym (intern hidden-name "COMMON-LISP")))
+               (setf (symbol-function hidden-sym) dispatch-fn)
+               (%register-setf-function accessor hidden-sym))))
           gf))))
 
 ;;; --- defgeneric macro ---
@@ -948,10 +965,14 @@
            (body (cdr rest))
            (parsed (%parse-specialized-lambda-list spec-ll))
            (unspec-ll (car parsed))
-           (spec-names (cdr parsed)))
+           (spec-names (cdr parsed))
+           ;; Block name must be a symbol; (setf foo) -> foo
+           (block-name (if (and (consp name) (eq (car name) 'setf))
+                           (cadr name)
+                           name)))
       `(%add-method-to-gf
          ',name ',qualifiers ',spec-names
-         (lambda ,unspec-ll (block ,name ,@body))
+         (lambda ,unspec-ll (block ,block-name ,@body))
          ',unspec-ll))))
 
 (defun %add-method-to-gf (gf-name qualifiers specializer-names fn lambda-list)

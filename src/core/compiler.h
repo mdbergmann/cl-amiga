@@ -35,6 +35,9 @@ CL_Obj cl_macroexpand_1(CL_Obj form);
 void cl_register_type(CL_Obj name, CL_Obj expander);
 CL_Obj cl_get_type_expander(CL_Obj name);
 
+/* Setf function table: (defun (setf accessor) ...) */
+void cl_register_setf_function(CL_Obj accessor, CL_Obj setf_fn_sym);
+
 /* Optimization settings (used by (declare (optimize ...))) */
 typedef struct {
     uint8_t speed;   /* 0-3, default 1 */

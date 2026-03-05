@@ -609,6 +609,30 @@ void cl_symbol_init(void)
         s->value = features;
     }
 
+    /* *LOAD-VERBOSE*, *LOAD-PRINT*, *LOAD-PATHNAME*, *LOAD-TRUENAME* */
+    {
+        CL_Obj sym;
+        CL_Symbol *s;
+        sym = cl_intern_in("*LOAD-VERBOSE*", 14, cl_package_cl);
+        s = (CL_Symbol *)CL_OBJ_TO_PTR(sym);
+        s->flags |= CL_SYM_SPECIAL; s->value = CL_NIL;
+        sym = cl_intern_in("*LOAD-PRINT*", 12, cl_package_cl);
+        s = (CL_Symbol *)CL_OBJ_TO_PTR(sym);
+        s->flags |= CL_SYM_SPECIAL; s->value = CL_NIL;
+        sym = cl_intern_in("*LOAD-PATHNAME*", 15, cl_package_cl);
+        s = (CL_Symbol *)CL_OBJ_TO_PTR(sym);
+        s->flags |= CL_SYM_SPECIAL; s->value = CL_NIL;
+        sym = cl_intern_in("*LOAD-TRUENAME*", 15, cl_package_cl);
+        s = (CL_Symbol *)CL_OBJ_TO_PTR(sym);
+        s->flags |= CL_SYM_SPECIAL; s->value = CL_NIL;
+        sym = cl_intern_in("*COMPILE-VERBOSE*", 17, cl_package_cl);
+        s = (CL_Symbol *)CL_OBJ_TO_PTR(sym);
+        s->flags |= CL_SYM_SPECIAL; s->value = CL_NIL;
+        sym = cl_intern_in("*COMPILE-PRINT*", 15, cl_package_cl);
+        s = (CL_Symbol *)CL_OBJ_TO_PTR(sym);
+        s->flags |= CL_SYM_SPECIAL; s->value = CL_NIL;
+    }
+
     /* T is self-evaluating */
     {
         CL_Symbol *t = (CL_Symbol *)CL_OBJ_TO_PTR(SYM_T);

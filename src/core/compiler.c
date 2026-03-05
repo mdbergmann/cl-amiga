@@ -4,6 +4,7 @@
 
 CL_Obj macro_table = CL_NIL;
 CL_Obj setf_table = CL_NIL;
+CL_Obj setf_fn_table = CL_NIL;  /* (setf name) functions: ((accessor . setf-fn-sym) ...) val-first calling */
 CL_Obj type_table = CL_NIL;
 CL_Obj pending_lambda_name = CL_NIL;
 
@@ -788,11 +789,57 @@ static void compile_setf_place(CL_Compiler *c, CL_Obj place, CL_Obj val_form)
                 cl_emit(c, OP_CALL);
                 cl_emit(c, (uint8_t)nargs);
             } else {
-                cl_error(CL_ERR_GENERAL, "SETF: unknown place form");
+                /* Setf function (late-bound): construct %SETF-<name> symbol,
+                 * emit FLOAD — resolved at runtime like normal function calls.
+                 * Handles both (defun (setf name) ...) and
+                 * (defgeneric (setf name) ...) / (defmethod (setf name) ...).
+                 * Check setf_fn_table first; if not found, intern %SETF-<name>. */
+                CL_Obj setf_fn = CL_NIL;
+                {
+                    CL_Obj sfe = setf_fn_table;
+                    while (!CL_NULL_P(sfe)) {
+                        CL_Obj pair = cl_car(sfe);
+                        if (cl_car(pair) == head) {
+                            setf_fn = cl_cdr(pair);
+                            break;
+                        }
+                        sfe = cl_cdr(sfe);
+                    }
+                }
+                if (CL_NULL_P(setf_fn)) {
+                    /* Optimistic late binding: intern %SETF-<name> */
+                    CL_Symbol *sym = (CL_Symbol *)CL_OBJ_TO_PTR(head);
+                    CL_String *sname = (CL_String *)CL_OBJ_TO_PTR(sym->name);
+                    char buf[128];
+                    int len = snprintf(buf, sizeof(buf), "%%SETF-%.*s",
+                                       (int)sname->length, sname->data);
+                    setf_fn = cl_intern_in(buf, (uint32_t)len, cl_package_cl);
+                }
+                {
+                    /* Setf function: (setf (foo a b) val) → (%setf-foo val a b) */
+                    CL_Obj args = cl_cdr(place);
+                    int nargs = 0;
+                    int idx = cl_add_constant(c, setf_fn);
+                    cl_emit(c, OP_FLOAD);
+                    cl_emit_u16(c, (uint16_t)idx);
+                    compile_expr(c, val_form);  /* new-value FIRST */
+                    nargs++;
+                    while (!CL_NULL_P(args)) {
+                        compile_expr(c, cl_car(args));
+                        nargs++;
+                        args = cl_cdr(args);
+                    }
+                    cl_emit(c, OP_CALL);
+                    cl_emit(c, (uint8_t)nargs);
+                }
             }
         }
     } else {
-        cl_error(CL_ERR_GENERAL, "SETF: invalid place");
+        if (CL_CONS_P(place) && CL_SYMBOL_P(cl_car(place)))
+            cl_error(CL_ERR_GENERAL, "SETF: invalid place (%s ...)",
+                     cl_symbol_name(cl_car(place)));
+        else
+            cl_error(CL_ERR_GENERAL, "SETF: invalid place");
     }
 
     c->in_tail = saved_tail;
@@ -1089,7 +1136,8 @@ void compile_expr(CL_Compiler *c, CL_Obj expr)
         return;
     }
 
-    cl_error(CL_ERR_GENERAL, "Cannot compile: unknown expression type");
+    cl_error(CL_ERR_GENERAL, "Cannot compile: unexpected %s in expression position",
+             cl_type_name(expr));
 }
 
 /* --- Macro expansion (runtime, via VM) --- */
@@ -1174,6 +1222,18 @@ CL_Obj cl_get_type_expander(CL_Obj name)
         list = cl_cdr(list);
     }
     return CL_NIL;
+}
+
+/* --- Setf function table --- */
+
+void cl_register_setf_function(CL_Obj accessor, CL_Obj setf_fn_sym)
+{
+    CL_Obj pair;
+    CL_GC_PROTECT(accessor);
+    CL_GC_PROTECT(setf_fn_sym);
+    pair = cl_cons(accessor, setf_fn_sym);
+    setf_fn_table = cl_cons(pair, setf_fn_table);
+    CL_GC_UNPROTECT(2);
 }
 
 /* --- Public API --- */

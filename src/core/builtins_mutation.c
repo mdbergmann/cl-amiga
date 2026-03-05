@@ -3,6 +3,7 @@
 #include "package.h"
 #include "mem.h"
 #include "error.h"
+#include "compiler.h"
 #include "../platform/platform.h"
 #include <string.h>
 
@@ -151,6 +152,14 @@ static CL_Obj bi_fmakunbound(CL_Obj *args, int n)
     return args[0];
 }
 
+static CL_Obj bi_register_setf_function(CL_Obj *args, int n)
+{
+    /* (%register-setf-function accessor-sym setf-fn-sym) */
+    CL_UNUSED(n);
+    cl_register_setf_function(args[0], args[1]);
+    return args[0];
+}
+
 /* --- Registration --- */
 
 void cl_builtins_mutation_init(void)
@@ -174,4 +183,5 @@ void cl_builtins_mutation_init(void)
     defun("BOUNDP", bi_boundp, 1, 1);
     defun("FBOUNDP", bi_fboundp, 1, 1);
     defun("FMAKUNBOUND", bi_fmakunbound, 1, 1);
+    defun("%REGISTER-SETF-FUNCTION", bi_register_setf_function, 2, 2);
 }

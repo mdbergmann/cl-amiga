@@ -212,7 +212,8 @@
                             (t (list parent-types))))
         (slot-pairs (mapcar (lambda (spec) (cons (car spec) (getf (cdr spec) :initarg))) slot-specs))
         (report nil)
-        (default-initargs nil))
+        (default-initargs nil)
+        (clos-available (fboundp '%add-method-to-gf)))
     ;; Parse options
     (dolist (opt options)
       (case (car opt)
@@ -227,7 +228,11 @@
                           (opts (cdr slot-spec))
                           (reader (getf opts :reader)))
                      (when reader
-                       (list `(defun ,reader (c) (condition-slot-value c ',slot-name))))))
+                       (if clos-available
+                           ;; CLOS loaded: use defmethod to avoid overwriting existing GFs
+                           (list `(defmethod ,reader ((c ,name)) (condition-slot-value c ',slot-name)))
+                           ;; No CLOS: plain defun
+                           (list `(defun ,reader (c) (condition-slot-value c ',slot-name)))))))
                  slot-specs)
        ,@(when report
            (if (stringp report)
@@ -1009,6 +1014,13 @@
                     (list `(when (endp ,iter-gs) (go ,end-tag)))
                     (list `(setq ,var (car ,iter-gs)))
                     (list `(setq ,iter-gs (cdr ,iter-gs))))))))))
+    ;; FOR var OF-TYPE type-spec <sub-clause> — skip type declaration, recurse
+    ((%loop-keyword-p sub-kw "OF-TYPE")
+     ;; rest = (type-spec real-sub-kw . rest-of-clause)
+     ;; Skip the type-spec, delegate to real sub-clause
+     (let ((real-sub-kw (cadr rest))
+           (real-rest (cddr rest)))
+       (%loop-parse-for real-rest var real-sub-kw end-tag)))
     (t
      (error "LOOP: unrecognized FOR sub-clause ~S" sub-kw))))
 

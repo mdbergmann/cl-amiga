@@ -1251,7 +1251,20 @@ static CL_Obj bi_replace(CL_Obj *args, int n)
     count = end1 - start1;
     if (end2 - start2 < count) count = end2 - start2;
 
-    if (CL_VECTOR_P(seq1) && CL_VECTOR_P(seq2)) {
+    if (CL_STRING_P(seq1)) {
+        /* String target */
+        CL_String *s1 = (CL_String *)CL_OBJ_TO_PTR(seq1);
+        if (CL_STRING_P(seq2)) {
+            CL_String *s2 = (CL_String *)CL_OBJ_TO_PTR(seq2);
+            for (i = 0; i < count; i++)
+                s1->data[start1 + i] = s2->data[start2 + i];
+        } else {
+            for (i = 0; i < count; i++) {
+                CL_Obj ch = seq_elt(seq2, start2 + i);
+                s1->data[start1 + i] = (char)CL_CHAR_VAL(ch);
+            }
+        }
+    } else if (CL_VECTOR_P(seq1) && CL_VECTOR_P(seq2)) {
         CL_Obj *elts1 = cl_vector_data((CL_Vector *)CL_OBJ_TO_PTR(seq1));
         CL_Obj *elts2 = cl_vector_data((CL_Vector *)CL_OBJ_TO_PTR(seq2));
         for (i = 0; i < count; i++)

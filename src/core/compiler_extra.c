@@ -294,9 +294,15 @@ static void compile_qq(CL_Compiler *c, CL_Obj tmpl)
         return;
     }
 
-    /* (UNQUOTE x): compile x normally */
+    /* (UNQUOTE x): compile x — but NOT in tail position, since the
+     * quasiquote still has work to do (LIST/CONS) after this value.
+     * Without this, user-defined function calls in ,(fn ...) get
+     * OP_TAILCALL which replaces the frame and skips the list construction. */
     if (cl_car(tmpl) == SYM_UNQUOTE) {
+        int saved_tail = c->in_tail;
+        c->in_tail = 0;
         compile_expr(c, cl_car(cl_cdr(tmpl)));
+        c->in_tail = saved_tail;
         return;
     }
 
@@ -815,9 +821,33 @@ void compile_defun(CL_Compiler *c, CL_Obj form)
     CL_Obj lambda_list = cl_car(cl_cdr(cl_cdr(form)));
     CL_Obj body = cl_cdr(cl_cdr(cl_cdr(form)));
     CL_Obj block_body, lambda_form;
+    CL_Obj real_name = name;       /* symbol for block/return */
+    CL_Obj store_sym = name;       /* symbol for OP_FSTORE */
+    int is_setf_fn = 0;
+
+    /* Handle (defun (setf name) ...) — setf function */
+    if (CL_CONS_P(name) && cl_car(name) == SYM_SETF && CL_CONS_P(cl_cdr(name))) {
+        CL_Obj accessor = cl_car(cl_cdr(name));
+        is_setf_fn = 1;
+        real_name = accessor;  /* block name = accessor name */
+
+        /* Create hidden symbol %SETF-<name> for storing the function */
+        {
+            CL_Symbol *sym = (CL_Symbol *)CL_OBJ_TO_PTR(accessor);
+            CL_String *sname = (CL_String *)CL_OBJ_TO_PTR(sym->name);
+            char buf[128];
+            int len;
+            len = snprintf(buf, sizeof(buf), "%%SETF-%.*s",
+                           (int)sname->length, sname->data);
+            store_sym = cl_intern_in(buf, (uint32_t)len, cl_package_cl);
+        }
+
+        /* Register in setf_fn_table: (accessor . store_sym) */
+        setf_fn_table = cl_cons(cl_cons(accessor, store_sym), setf_fn_table);
+    }
 
     /* CL spec: defun wraps body in (block name ...) */
-    block_body = cl_cons(SYM_BLOCK, cl_cons(name, body));
+    block_body = cl_cons(SYM_BLOCK, cl_cons(real_name, body));
     CL_GC_PROTECT(block_body);
 
     /* Build (lambda (params) (block name body...)) */
@@ -826,22 +856,22 @@ void compile_defun(CL_Compiler *c, CL_Obj form)
                                   cl_cons(block_body, CL_NIL)));
     CL_GC_PROTECT(lambda_form);
 
-    pending_lambda_name = name;
+    pending_lambda_name = real_name;
     compile_expr(c, lambda_form);
 
     CL_GC_UNPROTECT(2);
 
-    /* Store as function binding of name */
+    /* Store as function binding */
     {
-        int idx = cl_add_constant(c, name);
+        int idx = cl_add_constant(c, store_sym);
         /* OP_FSTORE peeks top without popping — stores to function slot */
         cl_emit(c, OP_FSTORE);
         cl_emit_u16(c, (uint16_t)idx);
     }
 
-    /* Return the symbol name (replace closure on stack) */
+    /* Return the name (replace closure on stack) */
     cl_emit(c, OP_POP);
-    cl_emit_const(c, name);
+    cl_emit_const(c, is_setf_fn ? name : real_name);
 }
 
 /* Generate a unique uninterned symbol for defmacro destructuring */

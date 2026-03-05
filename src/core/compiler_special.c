@@ -267,6 +267,19 @@ static void compile_destructure_pattern(CL_Compiler *c, int pos_slot,
         cl_emit(c, OP_POP);
 
         pattern = cl_cdr(pattern);
+
+        /* Dotted pair tail: (a b . rest) — bind rest to remaining list */
+        if (!CL_NULL_P(pattern) && !CL_CONS_P(pattern)) {
+            if (CL_SYMBOL_P(pattern)) {
+                int slot = cl_env_add_local(env, pattern);
+                cl_emit(c, OP_LOAD);
+                cl_emit(c, (uint8_t)pos_slot);
+                cl_emit(c, OP_STORE);
+                cl_emit(c, (uint8_t)slot);
+                cl_emit(c, OP_POP);
+            }
+            break;
+        }
     }
 done:
     c->in_tail = saved_tail;

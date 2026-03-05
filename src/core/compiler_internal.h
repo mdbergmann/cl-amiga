@@ -17,7 +17,9 @@
 #include "vm.h"
 #include "reader.h"
 #include "../platform/platform.h"
+#include "printer.h"
 #include <string.h>
+#include <stdio.h>
 
 /* Block tracking for return/return-from */
 #define CL_MAX_BLOCKS 16
@@ -93,6 +95,7 @@ typedef struct {
 
 extern CL_Obj macro_table;
 extern CL_Obj setf_table;
+extern CL_Obj setf_fn_table;
 extern CL_Obj type_table;
 extern CL_Obj pending_lambda_name;
 extern CL_Obj SETF_SYM_CAR, SETF_SYM_CDR, SETF_SYM_FIRST, SETF_SYM_REST;
