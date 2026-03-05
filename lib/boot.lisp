@@ -684,8 +684,8 @@
 ;; Only truename remains in boot.lisp for now.
 
 (defun truename (pathname)
-  "Return the true name of PATHNAME (identity for now)."
-  (namestring pathname))
+  "Return the true name of PATHNAME."
+  (pathname (namestring pathname)))
 
 (defun %ensure-dirs-helper (dir pos len created)
   "Helper for ensure-directories-exist. Walks dir string creating directories."

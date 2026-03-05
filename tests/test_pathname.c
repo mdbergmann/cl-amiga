@@ -406,6 +406,43 @@ TEST(pathname_dir_only_name_nil)
     ASSERT_STR_EQ(eval_print("(pathname-name #P\"/foo/bar/\")"), "NIL");
 }
 
+/* --- truename and probe-file return pathnames --- */
+
+TEST(truename_returns_pathname_from_string)
+{
+    ASSERT_STR_EQ(eval_print("(pathnamep (truename \"/tmp/\"))"), "T");
+}
+
+TEST(truename_returns_pathname_from_pathname)
+{
+    ASSERT_STR_EQ(eval_print("(pathnamep (truename #P\"/tmp/\"))"), "T");
+}
+
+TEST(probe_file_returns_pathname)
+{
+    ASSERT_STR_EQ(eval_print("(pathnamep (probe-file \"/tmp/\"))"), "T");
+}
+
+TEST(probe_file_accepts_pathname)
+{
+    ASSERT_STR_EQ(eval_print("(pathnamep (probe-file #P\"/tmp/\"))"), "T");
+}
+
+TEST(probe_file_nonexistent_returns_nil)
+{
+    ASSERT_STR_EQ(eval_print("(probe-file #P\"/nonexistent_path_xyz\")"), "NIL");
+}
+
+TEST(file_write_date_accepts_string)
+{
+    ASSERT_STR_EQ(eval_print("(integerp (file-write-date \"/tmp/\"))"), "T");
+}
+
+TEST(file_write_date_accepts_pathname)
+{
+    ASSERT_STR_EQ(eval_print("(integerp (file-write-date #P\"/tmp/\"))"), "T");
+}
+
 /* --- Run all tests --- */
 
 int main(void)
@@ -470,6 +507,13 @@ int main(void)
     RUN(pathname_version_nil);
     RUN(pathname_dir_only);
     RUN(pathname_dir_only_name_nil);
+    RUN(truename_returns_pathname_from_string);
+    RUN(truename_returns_pathname_from_pathname);
+    RUN(probe_file_returns_pathname);
+    RUN(probe_file_accepts_pathname);
+    RUN(probe_file_nonexistent_returns_nil);
+    RUN(file_write_date_accepts_string);
+    RUN(file_write_date_accepts_pathname);
 
     teardown();
     REPORT();

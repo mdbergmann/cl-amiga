@@ -1201,7 +1201,7 @@ TEST(eval_probe_file_exists)
     platform_file_close(f);
 
     result = cl_eval_string("(probe-file \"/tmp/cl_test_probe_eval.tmp\")");
-    ASSERT(CL_STRING_P(result));
+    ASSERT(CL_PATHNAME_P(result));
 
     remove(path);
 }

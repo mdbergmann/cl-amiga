@@ -449,6 +449,20 @@ static CL_Obj find_keyword_arg(CL_Obj *args, int n, int start, CL_Obj keyword)
     return CL_UNBOUND;  /* Not found */
 }
 
+/* Coerce pathname designator to a CL string object, modifying *arg in place.
+   Returns the C string data pointer, or NULL if not a valid designator. */
+static const char *coerce_to_filename(CL_Obj *arg)
+{
+    if (CL_PATHNAME_P(*arg)) {
+        char ns_buf[1024];
+        extern const char *cl_coerce_to_namestring(CL_Obj, char *, uint32_t);
+        cl_coerce_to_namestring(*arg, ns_buf, sizeof(ns_buf));
+        *arg = cl_make_string(ns_buf, (uint32_t)strlen(ns_buf));
+    }
+    if (!CL_STRING_P(*arg)) return NULL;
+    return ((CL_String *)CL_OBJ_TO_PTR(*arg))->data;
+}
+
 /* (open filename &key :direction :if-exists :if-does-not-exist) */
 static CL_Obj bi_open(CL_Obj *args, int n)
 {
@@ -461,13 +475,7 @@ static CL_Obj bi_open(CL_Obj *args, int n)
     CL_Obj stream;
     CL_Stream *st;
 
-    if (CL_PATHNAME_P(args[0])) {
-        char ns_buf[1024];
-        extern const char *cl_coerce_to_namestring(CL_Obj arg, char *buf, uint32_t bufsz);
-        cl_coerce_to_namestring(args[0], ns_buf, sizeof(ns_buf));
-        args[0] = cl_make_string(ns_buf, (uint32_t)strlen(ns_buf));
-    }
-    if (!CL_STRING_P(args[0]))
+    if (!coerce_to_filename(&args[0]))
         cl_error(CL_ERR_TYPE, "OPEN: filename must be a string or pathname");
     path_str = (CL_String *)CL_OBJ_TO_PTR(args[0]);
 
@@ -550,23 +558,28 @@ static CL_Obj bi_get_universal_time(CL_Obj *args, int n)
 /* (probe-file pathname) => pathname or NIL */
 static CL_Obj bi_probe_file(CL_Obj *args, int n)
 {
-    CL_String *str;
+    const char *path;
     CL_UNUSED(n);
-    if (!CL_STRING_P(args[0]))
-        cl_error(CL_ERR_TYPE, "PROBE-FILE: argument must be a string");
-    str = (CL_String *)CL_OBJ_TO_PTR(args[0]);
-    return platform_file_exists(str->data) ? args[0] : CL_NIL;
+    path = coerce_to_filename(&args[0]);
+    if (!path)
+        cl_error(CL_ERR_TYPE, "PROBE-FILE: argument must be a pathname designator");
+    if (!platform_file_exists(path)) return CL_NIL;
+    {
+        extern CL_Obj cl_parse_namestring(const char *str, uint32_t len);
+        CL_String *s = (CL_String *)CL_OBJ_TO_PTR(args[0]);
+        return cl_parse_namestring(s->data, s->length);
+    }
 }
 
 /* (delete-file pathname) => T */
 static CL_Obj bi_delete_file(CL_Obj *args, int n)
 {
-    CL_String *str;
+    const char *path;
     CL_UNUSED(n);
-    if (!CL_STRING_P(args[0]))
-        cl_error(CL_ERR_TYPE, "DELETE-FILE: argument must be a string");
-    str = (CL_String *)CL_OBJ_TO_PTR(args[0]);
-    if (platform_file_delete(str->data) != 0)
+    path = coerce_to_filename(&args[0]);
+    if (!path)
+        cl_error(CL_ERR_TYPE, "DELETE-FILE: argument must be a pathname designator");
+    if (platform_file_delete(path) != 0)
         cl_error(CL_ERR_GENERAL, "DELETE-FILE: cannot delete file");
     return CL_T;
 }
@@ -574,15 +587,15 @@ static CL_Obj bi_delete_file(CL_Obj *args, int n)
 /* (rename-file filespec new-name) => new-name, old-truename, new-truename (3 values) */
 static CL_Obj bi_rename_file(CL_Obj *args, int n)
 {
-    CL_String *old_str, *new_str;
+    const char *old_path, *new_path;
     CL_UNUSED(n);
-    if (!CL_STRING_P(args[0]))
-        cl_error(CL_ERR_TYPE, "RENAME-FILE: first argument must be a string");
-    if (!CL_STRING_P(args[1]))
-        cl_error(CL_ERR_TYPE, "RENAME-FILE: second argument must be a string");
-    old_str = (CL_String *)CL_OBJ_TO_PTR(args[0]);
-    new_str = (CL_String *)CL_OBJ_TO_PTR(args[1]);
-    if (platform_file_rename(old_str->data, new_str->data) != 0)
+    old_path = coerce_to_filename(&args[0]);
+    if (!old_path)
+        cl_error(CL_ERR_TYPE, "RENAME-FILE: first argument must be a pathname designator");
+    new_path = coerce_to_filename(&args[1]);
+    if (!new_path)
+        cl_error(CL_ERR_TYPE, "RENAME-FILE: second argument must be a pathname designator");
+    if (platform_file_rename(old_path, new_path) != 0)
         cl_error(CL_ERR_GENERAL, "RENAME-FILE: cannot rename file");
     /* Return 3 values: new-name, old-truename, new-truename */
     cl_mv_values[0] = args[1];
@@ -595,13 +608,13 @@ static CL_Obj bi_rename_file(CL_Obj *args, int n)
 /* (file-write-date pathname) => universal-time or NIL */
 static CL_Obj bi_file_write_date(CL_Obj *args, int n)
 {
-    CL_String *str;
+    const char *path;
     uint32_t mtime;
     CL_UNUSED(n);
-    if (!CL_STRING_P(args[0]))
-        cl_error(CL_ERR_TYPE, "FILE-WRITE-DATE: argument must be a string");
-    str = (CL_String *)CL_OBJ_TO_PTR(args[0]);
-    mtime = platform_file_mtime(str->data);
+    path = coerce_to_filename(&args[0]);
+    if (!path)
+        cl_error(CL_ERR_TYPE, "FILE-WRITE-DATE: argument must be a pathname designator");
+    mtime = platform_file_mtime(path);
     if (mtime == 0) return CL_NIL;
     return cl_bignum_from_uint32(mtime);
 }
