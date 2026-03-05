@@ -86,6 +86,9 @@
 
 (defvar *class-table* (make-hash-table :test 'eq))
 
+;; Register with C for typep to check CLOS class-precedence-lists
+(%set-clos-class-table *class-table*)
+
 (defun find-class (name &optional (errorp t) environment)
   "Find the class named NAME. Signal an error if not found and ERRORP is true."
   (multiple-value-bind (class found-p)

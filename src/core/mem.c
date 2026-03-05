@@ -9,6 +9,7 @@
 
 /* External roots needed for GC marking */
 extern CL_Obj macro_table, setf_table, setf_fn_table, type_table;
+extern CL_Obj cl_clos_class_table;
 
 CL_Heap cl_heap;
 uint8_t *cl_arena_base = NULL;  /* Global arena base for offset↔pointer conversion */
@@ -576,6 +577,7 @@ static void gc_mark(void)
     gc_mark_push(setf_table);
     gc_mark_push(setf_fn_table);
     gc_mark_push(type_table);
+    gc_mark_push(cl_clos_class_table);
 
     /* Mark dynamic binding stack (saved old values) */
     for (i = 0; i < cl_dyn_top; i++) {

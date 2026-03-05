@@ -768,6 +768,40 @@ TEST(print_object_default_struct)
         "#S(PLAIN-ST :A 1)");
 }
 
+/* === Phase 10: typep with multiple inheritance === */
+
+TEST(typep_multiple_inheritance)
+{
+    /* Define a class hierarchy with multiple inheritance */
+    eval_print("(defclass mixin-a () ())");
+    eval_print("(defclass mixin-b () ())");
+    eval_print("(defclass multi-child (mixin-a mixin-b) ())");
+    eval_print("(defvar *mc* (make-instance 'multi-child))");
+
+    /* Instance should be typep of both mixins */
+    ASSERT_STR_EQ(eval_print("(typep *mc* 'multi-child)"), "T");
+    ASSERT_STR_EQ(eval_print("(typep *mc* 'mixin-a)"), "T");
+    ASSERT_STR_EQ(eval_print("(typep *mc* 'mixin-b)"), "T");
+    ASSERT_STR_EQ(eval_print("(typep *mc* 'standard-object)"), "T");
+    ASSERT_STR_EQ(eval_print("(typep *mc* 't)"), "T");
+}
+
+TEST(typep_multiple_inheritance_or)
+{
+    /* Compound (or ...) type with multiple inheritance */
+    ASSERT_STR_EQ(eval_print(
+        "(typep *mc* '(or mixin-a mixin-b))"), "T");
+    ASSERT_STR_EQ(eval_print(
+        "(typep *mc* '(and mixin-a mixin-b))"), "T");
+}
+
+TEST(typep_multiple_inheritance_negative)
+{
+    /* Should NOT match unrelated classes */
+    eval_print("(defclass unrelated () ())");
+    ASSERT_STR_EQ(eval_print("(typep *mc* 'unrelated)"), "NIL");
+}
+
 int main(void)
 {
     test_init();
@@ -880,6 +914,11 @@ int main(void)
     RUN(print_object_gf);
     RUN(print_object_custom);
     RUN(print_object_default_struct);
+
+    /* Phase 10: typep with multiple inheritance */
+    RUN(typep_multiple_inheritance);
+    RUN(typep_multiple_inheritance_or);
+    RUN(typep_multiple_inheritance_negative);
 
     teardown();
     REPORT();

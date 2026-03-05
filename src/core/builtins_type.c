@@ -135,11 +135,15 @@ static int typep_symbol(CL_Obj obj, CL_Obj type_sym)
     {
         extern int cl_is_struct_type(CL_Obj type_sym);
         extern int cl_struct_type_matches(CL_Obj obj_type, CL_Obj test_type);
+        extern int cl_clos_type_matches(CL_Obj obj_type, CL_Obj test_type);
         if (cl_is_struct_type(type_sym)) {
             if (!CL_STRUCT_P(obj)) return 0;
             {
                 CL_Struct *st = (CL_Struct *)CL_OBJ_TO_PTR(obj);
-                return cl_struct_type_matches(st->type_desc, type_sym);
+                /* Try single-parent struct chain first, then CLOS CPL */
+                if (cl_struct_type_matches(st->type_desc, type_sym))
+                    return 1;
+                return cl_clos_type_matches(st->type_desc, type_sym);
             }
         }
     }
@@ -165,6 +169,21 @@ static int typep_symbol(CL_Obj obj, CL_Obj type_sym)
             /* Call expander with no args, get expanded type spec */
             CL_Obj expanded = cl_vm_apply(expander, NULL, 0);
             return typep_check(obj, expanded);
+        }
+    }
+
+    /* CLOS class table fallback — handles bootstrap classes (e.g.
+     * standard-object) that are in the class table but not the struct
+     * registry, and any other CLOS-only type specifiers. */
+    {
+        extern int cl_clos_type_matches(CL_Obj obj_type, CL_Obj test_type);
+        extern int cl_clos_class_exists(CL_Obj name);
+        if (cl_clos_class_exists(type_sym)) {
+            if (!CL_STRUCT_P(obj)) return 0;
+            {
+                CL_Struct *st = (CL_Struct *)CL_OBJ_TO_PTR(obj);
+                return cl_clos_type_matches(st->type_desc, type_sym);
+            }
         }
     }
 

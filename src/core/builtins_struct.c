@@ -111,6 +111,87 @@ int cl_struct_type_matches(CL_Obj obj_type, CL_Obj test_type)
     }
 }
 
+/* --- CLOS class table for typep with multiple inheritance ---
+ *
+ * The struct registry only tracks a single parent, but CLOS classes
+ * can have multiple superclasses. The class-precedence-list (CPL)
+ * stored in each class metaobject (slot 3) is the correct authority.
+ * This global is set from Lisp via %set-clos-class-table. */
+
+CL_Obj cl_clos_class_table = 0;  /* NIL until CLOS loads */
+
+/* Eq hash table lookup from C (for *class-table* which uses :test 'eq) */
+static CL_Obj ht_eq_lookup(CL_Obj ht_obj, CL_Obj key)
+{
+    CL_Hashtable *ht;
+    uint32_t hash, bucket_idx;
+    CL_Obj chain;
+
+    if (!CL_HASHTABLE_P(ht_obj)) return CL_NIL;
+
+    ht = (CL_Hashtable *)CL_OBJ_TO_PTR(ht_obj);
+    hash = (uint32_t)key;
+    hash ^= hash >> 16;
+    hash *= 0x45d9f3bU;
+    hash ^= hash >> 16;
+    bucket_idx = hash % ht->bucket_count;
+    chain = ht->buckets[bucket_idx];
+
+    while (!CL_NULL_P(chain)) {
+        CL_Obj pair = cl_car(chain);
+        if (cl_car(pair) == key)
+            return cl_cdr(pair);
+        chain = cl_cdr(chain);
+    }
+    return CL_NIL;
+}
+
+/* Check CLOS class hierarchy via class-precedence-list.
+ * Returns 1 if obj_type is a subtype of test_type per CLOS CPL. */
+int cl_clos_type_matches(CL_Obj obj_type, CL_Obj test_type)
+{
+    CL_Obj class_obj, cpl;
+    CL_Struct *class_st;
+
+    if (CL_NULL_P(cl_clos_class_table)) return 0;
+
+    /* Look up the class metaobject for obj_type */
+    class_obj = ht_eq_lookup(cl_clos_class_table, obj_type);
+    if (CL_NULL_P(class_obj)) return 0;
+    if (!CL_STRUCT_P(class_obj)) return 0;
+
+    /* CPL is in slot 3 of the class metaobject */
+    class_st = (CL_Struct *)CL_OBJ_TO_PTR(class_obj);
+    if (class_st->n_slots < 4) return 0;
+    cpl = class_st->slots[3];
+
+    /* Walk CPL — each element is a class metaobject, slot 0 = name */
+    while (!CL_NULL_P(cpl)) {
+        CL_Obj cpl_class = cl_car(cpl);
+        if (CL_STRUCT_P(cpl_class)) {
+            CL_Struct *cpl_st = (CL_Struct *)CL_OBJ_TO_PTR(cpl_class);
+            if (cpl_st->n_slots > 0 && cpl_st->slots[0] == test_type)
+                return 1;
+        }
+        cpl = cl_cdr(cpl);
+    }
+    return 0;
+}
+
+/* Check if a name is in the CLOS class table. */
+int cl_clos_class_exists(CL_Obj name)
+{
+    if (CL_NULL_P(cl_clos_class_table)) return 0;
+    return !CL_NULL_P(ht_eq_lookup(cl_clos_class_table, name));
+}
+
+static CL_Obj bi_set_clos_class_table(CL_Obj *args, int n)
+{
+    CL_UNUSED(n);
+    cl_clos_class_table = args[0];
+    return args[0];
+}
+
 /* --- Builtins --- */
 
 /* (%register-struct-type name n-slots parent slot-names) */
@@ -371,4 +452,5 @@ void cl_builtins_struct_init(void)
     defun("%STRUCT-SLOT-SPECS", bi_struct_slot_specs, 1, 1);
     defun("%STRUCT-SLOT-COUNT", bi_struct_slot_count, 1, 1);
     defun("%CLASS-OF", bi_class_of, 1, 1);
+    defun("%SET-CLOS-CLASS-TABLE", bi_set_clos_class_table, 1, 1);
 }
