@@ -19,6 +19,7 @@ CL_Obj SETF_SYM_CHAR = CL_NIL;
 CL_Obj SETF_SYM_SCHAR = CL_NIL;
 CL_Obj SETF_SYM_SYMBOL_VALUE = CL_NIL;
 CL_Obj SETF_SYM_SYMBOL_FUNCTION = CL_NIL;
+CL_Obj SETF_SYM_FDEFINITION = CL_NIL;
 CL_Obj SETF_HELPER_NTH = CL_NIL;
 CL_Obj SETF_HELPER_SV = CL_NIL;
 CL_Obj SETF_HELPER_SF = CL_NIL;
@@ -986,7 +987,7 @@ static void compile_setf_place(CL_Compiler *c, CL_Obj place, CL_Obj val_form)
             compile_expr(c, val_form);
             cl_emit(c, OP_CALL);
             cl_emit(c, 2);
-        } else if (head == SETF_SYM_SYMBOL_FUNCTION) {
+        } else if (head == SETF_SYM_SYMBOL_FUNCTION || head == SETF_SYM_FDEFINITION) {
             int idx = cl_add_constant(c, SETF_HELPER_SF);
             cl_emit(c, OP_FLOAD);
             cl_emit_u16(c, (uint16_t)idx);
@@ -1641,6 +1642,7 @@ void cl_compiler_init(void)
     SETF_SYM_SCHAR           = cl_intern_in("SCHAR", 5, cl_package_cl);
     SETF_SYM_SYMBOL_VALUE    = cl_intern_in("SYMBOL-VALUE", 12, cl_package_cl);
     SETF_SYM_SYMBOL_FUNCTION = cl_intern_in("SYMBOL-FUNCTION", 15, cl_package_cl);
+    SETF_SYM_FDEFINITION     = cl_intern_in("FDEFINITION", 11, cl_package_cl);
     SETF_HELPER_NTH          = cl_intern_in("%SETF-NTH", 9, cl_package_cl);
     SETF_HELPER_SV           = cl_intern_in("%SET-SYMBOL-VALUE", 17, cl_package_cl);
     SETF_HELPER_SF           = cl_intern_in("%SET-SYMBOL-FUNCTION", 20, cl_package_cl);

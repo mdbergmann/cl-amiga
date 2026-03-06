@@ -613,6 +613,21 @@ void cl_symbol_init(void)
         s->value = features;
     }
 
+    /* LAMBDA-LIST-KEYWORDS — CL constant */
+    {
+        CL_Obj sym = cl_intern_in("LAMBDA-LIST-KEYWORDS", 20, cl_package_cl);
+        CL_Symbol *s = (CL_Symbol *)CL_OBJ_TO_PTR(sym);
+        CL_Obj kws = CL_NIL;
+        kws = cl_cons(SYM_AMP_AUX, kws);
+        kws = cl_cons(SYM_AMP_ALLOW_OTHER_KEYS, kws);
+        kws = cl_cons(SYM_AMP_KEY, kws);
+        kws = cl_cons(SYM_AMP_BODY, kws);
+        kws = cl_cons(SYM_AMP_REST, kws);
+        kws = cl_cons(SYM_AMP_OPTIONAL, kws);
+        s->value = kws;
+        s->flags |= CL_SYM_CONSTANT;
+    }
+
     /* *LOAD-VERBOSE*, *LOAD-PRINT*, *LOAD-PATHNAME*, *LOAD-TRUENAME* */
     {
         CL_Obj sym;

@@ -273,9 +273,9 @@
     ;; Parse options
     (dolist (opt options)
       (case (car opt)
-        (:use (setq uses (cdr opt)))
-        (:export (setq exports (cdr opt)))
-        (:nicknames (setq nicknames (cdr opt)))
+        (:use (setq uses (append uses (cdr opt))))
+        (:export (setq exports (append exports (cdr opt))))
+        (:nicknames (setq nicknames (append nicknames (cdr opt))))
         (:local-nicknames (setq local-nicks (cdr opt)))
         (:import-from (setq import-froms (cons (cdr opt) import-froms)))
         (:shadow (setq shadows (append shadows (cdr opt))))
