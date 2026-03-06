@@ -640,7 +640,7 @@ void cl_repl_batch(void)
             continue;
         }
 
-        /* Complete expression — evaluate */
+        /* Complete expression(s) — read and evaluate all forms in buffer */
 
         /* Quit command */
         if (strcmp(accum, "(quit)") == 0 || strcmp(accum, "(QUIT)") == 0 ||
@@ -649,21 +649,47 @@ void cl_repl_batch(void)
         }
 
         {
-            int err;
-            err = CL_CATCH();
-            if (err == CL_ERR_NONE) {
-                cl_eval_string(accum);
-                CL_UNCATCH();
-            } else if (err == CL_ERR_EXIT) {
-                CL_UNCATCH();
-                break;
-            } else {
-                cl_error_print();
-                /* Reset VM state after error (prevent stale frames) */
-                cl_vm.sp = 0;
-                cl_vm.fp = 0;
-                CL_UNCATCH();
+            CL_ReadStream stream;
+            int quit = 0;
+            stream.buf = accum;
+            stream.pos = 0;
+            stream.len = accum_len;
+            stream.line = 1;
+
+            while (stream.pos < stream.len && !quit) {
+                int err;
+                err = CL_CATCH();
+                if (err == CL_ERR_NONE) {
+                    CL_Obj expr, bytecode, result;
+
+                    expr = cl_read_from_string(&stream);
+                    if (CL_NULL_P(expr) || cl_reader_eof()) {
+                        CL_UNCATCH();
+                        break;
+                    }
+
+                    CL_GC_PROTECT(expr);
+                    bytecode = cl_compile(expr);
+                    CL_GC_UNPROTECT(1);
+
+                    if (!CL_NULL_P(bytecode)) {
+                        result = cl_vm_eval(bytecode);
+                        cl_prin1(result);
+                        platform_write_string("\n");
+                    }
+                    CL_UNCATCH();
+                } else if (err == CL_ERR_EXIT) {
+                    CL_UNCATCH();
+                    quit = 1;
+                } else {
+                    cl_error_print();
+                    cl_vm.sp = 0;
+                    cl_vm.fp = 0;
+                    CL_UNCATCH();
+                    break; /* skip rest of buffer on error */
+                }
             }
+            if (quit) break;
         }
 
         /* Reset accumulation buffer */

@@ -77,7 +77,7 @@ $(BUILDDIR)/%.o: $(SRCDIR)/%.c
 	$(CC_HOST) $(CFLAGS_HOST) -I$(SRCDIR) -c -o $@ $<
 
 # Tests
-test: $(TEST_BINS)
+test: $(TEST_BINS) host
 	@echo "=== Running tests ==="
 	@failed=0; \
 	for t in $(TEST_BINS); do \
@@ -89,6 +89,13 @@ test: $(TEST_BINS)
 			failed=1; \
 		fi; \
 	done; \
+	echo "--- test_batch ---"; \
+	if sh $(TEST_SRCDIR)/test_batch.sh $(BUILDDIR)/clamiga; then \
+		echo "PASS"; \
+	else \
+		echo "FAIL"; \
+		failed=1; \
+	fi; \
 	if [ $$failed -eq 0 ]; then echo "=== All tests passed ==="; \
 	else echo "=== Some tests failed ==="; exit 1; fi
 
