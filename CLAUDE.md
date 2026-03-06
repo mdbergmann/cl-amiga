@@ -51,6 +51,7 @@ make -f Makefile.cross clean        # Remove cross-build artifacts
 
 - **Clear error, warning, and info messages from the compiler and runtime are very important**
 - Strive for helpful, precise diagnostics that guide the user to the problem and solution
+- When loading Lisp code and fixing bugs, **improve compiler error messages** — include source location (file, line), the offending form, and actionable guidance where possible
 
 ## Reference
 
