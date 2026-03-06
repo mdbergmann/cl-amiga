@@ -1607,6 +1607,41 @@ TEST(eval_block_with_unwind_protect)
     ASSERT_STR_EQ(eval_print("*uwp-log*"), ":CLEANED");
 }
 
+/* Regression: tail call inside defun leaks NLX BLOCK frame, causing
+ * OP_UWPOP to pop the leaked BLOCK instead of the UWP.  This corrupts
+ * unwind-protect cleanup when a cross-closure return-from unwinds
+ * through the UWP. */
+TEST(eval_uwp_nlx_leak_tailcall)
+{
+    eval_print("(defvar *uwp-cleanup-val* nil)");
+    /* call-with-fn: has &key so keyword supplied-p writes T to stack.
+     * The defun block uses NLX (body contains lambda). Tail call to
+     * the thunk leaks the BLOCK NLX frame. */
+    eval_print(
+        "(defun call-with-fn (thunk &key override)"
+        "  (declare (ignore override))"
+        "  (funcall thunk))");
+    /* outer-fn: calls call-with-fn with a lambda that has unwind-protect.
+     * The lambda captures session (a local) and accesses it in cleanup. */
+    eval_print(
+        "(defun outer-fn (fun)"
+        "  (call-with-fn"
+        "    #'(lambda ()"
+        "        (let ((session 'my-session))"
+        "          (unwind-protect"
+        "              (funcall fun)"
+        "            (setq *uwp-cleanup-val* session))))))");
+    /* wrapper: establishes a block, calls outer-fn, which calls fun.
+     * fun does return-from across the UWP boundary. */
+    eval_print(
+        "(defun wrapper ()"
+        "  (block done"
+        "    (outer-fn #'(lambda () (return-from done :early)))"
+        "    :normal))");
+    ASSERT_STR_EQ(eval_print("(wrapper)"), ":EARLY");
+    ASSERT_STR_EQ(eval_print("*uwp-cleanup-val*"), "MY-SESSION");
+}
+
 /* --- Phase 5 Tier 1: Character functions --- */
 
 TEST(eval_characterp)
@@ -5797,6 +5832,7 @@ int main(void)
     RUN(eval_return_from_lambda);
     RUN(eval_return_from_nested_labels);
     RUN(eval_block_with_unwind_protect);
+    RUN(eval_uwp_nlx_leak_tailcall);
 
     /* Phase 5 Tier 1 */
     RUN(eval_characterp);

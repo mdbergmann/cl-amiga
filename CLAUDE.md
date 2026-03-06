@@ -40,6 +40,13 @@ make -f Makefile.cross clean        # Remove cross-build artifacts
 - Use `uint32_t`/`int32_t` explicitly, not `int` or `long` for sized data
 - C89/C99 compatible — no C11+ features
 
+## Debugging
+
+- **Debug instrumentation** should be guarded by preprocessor flags (e.g. `#ifdef DEBUG_GC`, `#ifdef DEBUG_COMPILER`, `#ifdef DEBUG_VM`) — never leave unconditional debug output in the code
+- Activate debug instrumentation via make flags: `make host DEBUG_FLAGS="-DDEBUG_GC -DDEBUG_COMPILER"` (or any combination of flags)
+- The Makefile passes `$(DEBUG_FLAGS)` to `CFLAGS`, so any `-D` defines can be added without editing the Makefile
+- Keep debug output behind these guards so it compiles to nothing in normal builds — zero overhead when not debugging
+
 ## Tests
 
 - **Tests are our specification** — every new feature or bugfix must have both host and Amiga tests

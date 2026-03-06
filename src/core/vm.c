@@ -15,6 +15,44 @@
 
 CL_VM cl_vm;
 
+/* Debug: UWP stack watchpoint.  Activate with -DCL_DEBUG_UWP */
+#ifdef CL_DEBUG_UWP
+static int dbg_watch_idx = -1;
+static CL_Obj dbg_watch_orig = 0;
+static int dbg_watch_nlx = -1;
+static void dbg_check_watch_impl(const char *where) {
+    if (dbg_watch_idx >= 0 && dbg_watch_nlx >= 0 &&
+        cl_nlx_top > dbg_watch_nlx &&
+        cl_vm.stack[dbg_watch_idx] != dbg_watch_orig) {
+        fprintf(stderr, "[WATCH] stack[%d] changed from 0x%x to 0x%x by %s, fp=%d sp=%d\n",
+                dbg_watch_idx, (unsigned)dbg_watch_orig,
+                (unsigned)cl_vm.stack[dbg_watch_idx], where, cl_vm.fp, cl_vm.sp);
+        {
+            int fi;
+            for (fi = cl_vm.fp - 1; fi >= 0 && fi >= cl_vm.fp - 15; fi--) {
+                CL_Frame *f = &cl_vm.frames[fi];
+                const char *fn = "?";
+                CL_Bytecode *fbc = NULL;
+                if (CL_CLOSURE_P(f->bytecode)) {
+                    CL_Closure *cc = (CL_Closure *)CL_OBJ_TO_PTR(f->bytecode);
+                    fbc = (CL_Bytecode *)CL_OBJ_TO_PTR(cc->bytecode);
+                } else if (CL_BYTECODE_P(f->bytecode)) {
+                    fbc = (CL_Bytecode *)CL_OBJ_TO_PTR(f->bytecode);
+                }
+                if (fbc && fbc->name != CL_NIL) fn = cl_symbol_name(fbc->name);
+                else if (fbc) fn = "<anon>";
+                fprintf(stderr, "  frame[%d] fn=%s bp=%d n_locals=%d\n",
+                        fi, fn, f->bp, f->n_locals);
+            }
+        }
+        dbg_watch_idx = -1;
+    }
+}
+#define DBG_CHECK_WATCH(w) dbg_check_watch_impl(w)
+#else
+#define DBG_CHECK_WATCH(w) ((void)0)
+#endif
+
 /* Multiple values */
 CL_Obj cl_mv_values[CL_MAX_MV];
 int cl_mv_count = 1;
@@ -98,6 +136,10 @@ void cl_vm_push(CL_Obj val)
     if (cl_vm.sp >= (int)cl_vm.stack_size)
         cl_error(CL_ERR_OVERFLOW, "VM stack overflow");
     cl_vm.stack[cl_vm.sp++] = val;
+#ifdef CL_DEBUG_UWP
+    if (dbg_watch_idx >= 0 && (cl_vm.sp - 1) == dbg_watch_idx && val != dbg_watch_orig)
+        DBG_CHECK_WATCH("cl_vm_push");
+#endif
 }
 
 CL_Obj cl_vm_pop(void)
@@ -417,6 +459,13 @@ CL_Obj cl_vm_eval(CL_Obj bytecode_obj)
     for (;;) {
         uint8_t op = code[ip++];
 
+        /* Debug: check watchpoint before instruction dispatch */
+#ifdef CL_DEBUG_UWP
+        if (dbg_watch_idx >= 0 && cl_vm.stack[dbg_watch_idx] != dbg_watch_orig) {
+            DBG_CHECK_WATCH("pre-dispatch");
+        }
+#endif
+
         switch (op) {
         case OP_HALT: {
             CL_Obj result = (cl_vm.sp > (int)(frame->bp + frame->n_locals))
@@ -453,6 +502,7 @@ CL_Obj cl_vm_eval(CL_Obj bytecode_obj)
         case OP_STORE: {
             uint8_t slot = code[ip++];
             cl_vm.stack[frame->bp + slot] = cl_vm.stack[cl_vm.sp - 1];
+            DBG_CHECK_WATCH("OP_STORE");
             break;
         }
 
@@ -780,8 +830,10 @@ CL_Obj cl_vm_eval(CL_Obj bytecode_obj)
                     cl_vm.sp = frame->bp;
 
                     /* Push positional args */
-                    for (i = 0; i < nargs && i < n_positional; i++)
+                    for (i = 0; i < nargs && i < n_positional; i++) {
                         cl_vm_push(src[i]);
+                        DBG_CHECK_WATCH("TAILCALL-PUSH-ARG");
+                    }
 
                     /* Fill missing optionals with NIL */
                     while (cl_vm.sp < (int)(frame->bp + n_positional))
@@ -830,6 +882,7 @@ CL_Obj cl_vm_eval(CL_Obj bytecode_obj)
                                     cl_vm.stack[frame->bp + callee_bc->key_slots[j]] = val;
                                     if (callee_bc->key_suppliedp_slots)
                                         cl_vm.stack[frame->bp + callee_bc->key_suppliedp_slots[j]] = CL_T;
+                                    DBG_CHECK_WATCH("TAILCALL-KEY-SUPPLIEDP");
                                     found = 1;
                                     break;
                                 }
@@ -923,8 +976,10 @@ CL_Obj cl_vm_eval(CL_Obj bytecode_obj)
                             for (j = 0; j < callee_bc->n_keys; j++) {
                                 if (key == callee_bc->key_syms[j]) {
                                     cl_vm.stack[new_bp + callee_bc->key_slots[j]] = val;
-                                    if (callee_bc->key_suppliedp_slots)
+                                    if (callee_bc->key_suppliedp_slots) {
                                         cl_vm.stack[new_bp + callee_bc->key_suppliedp_slots[j]] = CL_T;
+                                        DBG_CHECK_WATCH("CALL-KEY-SUPPLIEDP");
+                                    }
                                     found = 1;
                                     break;
                                 }
@@ -1171,9 +1226,20 @@ CL_Obj cl_vm_eval(CL_Obj bytecode_obj)
         }
 
         case OP_BLOCK_POP: {
-            /* Normal exit from block body — pop NLX frame */
-            if (cl_nlx_top > 0)
-                cl_nlx_top--;
+            /* Normal exit from block body — pop NLX frame.
+             * Search for matching BLOCK, as tail calls in called
+             * functions may have leaked BLOCK frames above. */
+            {
+                int bi;
+                for (bi = cl_nlx_top - 1; bi >= 0; bi--) {
+                    if (cl_nlx_stack[bi].type == CL_NLX_BLOCK) {
+                        cl_nlx_top = bi;
+                        break;
+                    }
+                }
+                if (bi < 0 && cl_nlx_top > 0)
+                    cl_nlx_top--;
+            }
             break;
         }
 
@@ -1313,9 +1379,20 @@ CL_Obj cl_vm_eval(CL_Obj bytecode_obj)
         }
 
         case OP_UNCATCH: {
-            /* Normal exit from catch body — pop NLX frame */
-            if (cl_nlx_top > 0)
-                cl_nlx_top--;
+            /* Normal exit from catch body — pop NLX frame.
+             * Search for matching CATCH, as tail calls may have
+             * leaked BLOCK frames above it. */
+            {
+                int ci;
+                for (ci = cl_nlx_top - 1; ci >= 0; ci--) {
+                    if (cl_nlx_stack[ci].type == CL_NLX_CATCH) {
+                        cl_nlx_top = ci;
+                        break;
+                    }
+                }
+                if (ci < 0 && cl_nlx_top > 0)
+                    cl_nlx_top--;
+            }
             break;
         }
 
@@ -1344,6 +1421,20 @@ CL_Obj cl_vm_eval(CL_Obj bytecode_obj)
             if (setjmp(nlx->buf) == 0) {
                 /* Normal path: protected form executes */
                 cl_nlx_top++;
+
+
+#ifdef CL_DEBUG_UWP
+                if (frame->n_locals >= 1 &&
+                    cl_vm.stack[frame->bp] != CL_NIL &&
+                    cl_vm.stack[frame->bp] != CL_T &&
+                    cl_vm.fp >= 88 && dbg_watch_idx < 0) {
+                    dbg_watch_idx = frame->bp;
+                    dbg_watch_orig = cl_vm.stack[frame->bp];
+                    dbg_watch_nlx = cl_nlx_top - 1;
+                    fprintf(stderr, "[UWP-WATCH] armed on stack[%d]=0x%x fp=%d nlx=%d\n",
+                            frame->bp, (unsigned)cl_vm.stack[frame->bp], cl_vm.fp, dbg_watch_nlx);
+                }
+#endif
             } else {
                 /* longjmp from throw/error through UWP: restore state, jump to cleanup.
                  * Recompute nlx — local pointer may be indeterminate after longjmp. */
@@ -1358,14 +1449,70 @@ CL_Obj cl_vm_eval(CL_Obj bytecode_obj)
                 constants = nlx->constants;
                 base_fp = nlx->base_fp;
                 ip = nlx->catch_ip + nlx->offset;
+
+
+#ifdef CL_DEBUG_UWP
+                /* Detect slot corruption after UWP longjmp */
+                {
+                    int di;
+                    int has_corruption = 0;
+                    for (di = 0; di < frame->n_locals && di < 8; di++) {
+                        if (cl_vm.stack[frame->bp + di] == CL_T) {
+                            has_corruption = 1;
+                            break;
+                        }
+                    }
+                    if (has_corruption) {
+                        int fi;
+                        fprintf(stderr, "[UWP-LONGJMP] CORRUPTION at bp=%d sp=%d fp=%d n_locals=%d\n",
+                                frame->bp, cl_vm.sp, cl_vm.fp, frame->n_locals);
+                        fprintf(stderr, "[UWP-LONGJMP] slots:");
+                        for (di = 0; di < frame->n_locals && di < 16; di++)
+                            fprintf(stderr, " [%d]=0x%x", di, (unsigned)cl_vm.stack[frame->bp + di]);
+                        fprintf(stderr, "\n");
+                        fprintf(stderr, "[UWP-LONGJMP] nlx_top=%d, pending_throw=%d\n",
+                                cl_nlx_top, cl_pending_throw);
+                        /* Print NLX stack and frame stack */
+                        for (fi = cl_nlx_top; fi >= 0 && fi >= cl_nlx_top - 5; fi--)
+                            fprintf(stderr, "[UWP-LONGJMP] nlx[%d] type=%d vm_fp=%d vm_sp=%d\n",
+                                    fi, cl_nlx_stack[fi].type, cl_nlx_stack[fi].vm_fp, cl_nlx_stack[fi].vm_sp);
+                        for (fi = cl_vm.fp - 1; fi >= 0 && fi >= cl_vm.fp - 15; fi--) {
+                            CL_Frame *f = &cl_vm.frames[fi];
+                            const char *fn = "?";
+                            CL_Bytecode *fbc = NULL;
+                            if (CL_CLOSURE_P(f->bytecode)) {
+                                CL_Closure *cc = (CL_Closure *)CL_OBJ_TO_PTR(f->bytecode);
+                                fbc = (CL_Bytecode *)CL_OBJ_TO_PTR(cc->bytecode);
+                            } else if (CL_BYTECODE_P(f->bytecode)) {
+                                fbc = (CL_Bytecode *)CL_OBJ_TO_PTR(f->bytecode);
+                            }
+                            if (fbc && fbc->name != CL_NIL) fn = cl_symbol_name(fbc->name);
+                            else if (fbc) fn = "<anon>";
+                            fprintf(stderr, "  frame[%d] fn=%s bp=%d n_locals=%d nargs=%d\n",
+                                    fi, fn, f->bp, f->n_locals, f->nargs);
+                        }
+                    }
+                }
+#endif
             }
             break;
         }
 
         case OP_UWPOP: {
-            /* Normal exit from protected form — pop NLX frame, clear pending */
-            if (cl_nlx_top > 0)
-                cl_nlx_top--;
+            /* Normal exit from protected form — pop NLX frame, clear pending.
+             * Must find the matching UWPROT frame, as tail calls in called
+             * functions may have leaked BLOCK/CATCH frames above it. */
+            {
+                int uwi;
+                for (uwi = cl_nlx_top - 1; uwi >= 0; uwi--) {
+                    if (cl_nlx_stack[uwi].type == CL_NLX_UWPROT) {
+                        cl_nlx_top = uwi;
+                        break;
+                    }
+                }
+                if (uwi < 0 && cl_nlx_top > 0)
+                    cl_nlx_top--;  /* fallback: pop whatever is on top */
+            }
             cl_pending_throw = 0;
             break;
         }
