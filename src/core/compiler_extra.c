@@ -129,15 +129,17 @@ void compile_cond(CL_Compiler *c, CL_Obj form)
             /* Compile test */
             c->in_tail = 0;
             compile_expr(c, test);
-            jnil_pos = cl_emit_jump(c, OP_JNIL);
 
-            /* Compile body */
-            c->in_tail = saved_tail;
             if (CL_NULL_P(body)) {
-                /* (cond (test)) with no body — return test value
-                 * But test was already consumed by JNIL, so push T. */
-                cl_emit(c, OP_T);
+                /* (cond (test)) with no body — return the test value itself.
+                 * DUP before JNIL so value stays on stack if test is true. */
+                cl_emit(c, OP_DUP);
+                jnil_pos = cl_emit_jump(c, OP_JNIL);
             } else {
+                jnil_pos = cl_emit_jump(c, OP_JNIL);
+
+                /* Compile body */
+                c->in_tail = saved_tail;
                 compile_progn(c, body);
             }
 
@@ -145,6 +147,10 @@ void compile_cond(CL_Compiler *c, CL_Obj form)
             done_patches[n_done++] = cl_emit_jump(c, OP_JMP);
 
             cl_patch_jump(c, jnil_pos);
+            if (CL_NULL_P(body)) {
+                /* JNIL popped the DUP'd value (was NIL), pop the original too */
+                cl_emit(c, OP_POP);
+            }
         }
 
         clauses = cl_cdr(clauses);
@@ -703,8 +709,40 @@ void compile_multiple_value_prog1(CL_Compiler *c, CL_Obj form)
 void compile_eval_when(CL_Compiler *c, CL_Obj form)
 {
     /* (eval-when (situations...) body...)
-     * In single-pass compile-and-eval, always execute body. */
+     * In single-pass compile-and-eval, always execute body.
+     * At top level with multiple forms: if any is defmacro/deftype,
+     * compile and eval each individually so macros are available for later forms. */
     CL_Obj body = cl_cdr(cl_cdr(form));
+
+    if (c->env->parent == NULL &&
+        !CL_NULL_P(body) && !CL_NULL_P(cl_cdr(body))) {
+        /* Check if any body form is a definition that later forms might depend on */
+        int has_def = 0;
+        CL_Obj rest;
+        for (rest = body; !CL_NULL_P(rest); rest = cl_cdr(rest)) {
+            CL_Obj sub = cl_car(rest);
+            if (CL_CONS_P(sub)) {
+                CL_Obj head = cl_car(sub);
+                if (head == SYM_DEFMACRO || head == SYM_DEFTYPE) {
+                    has_def = 1;
+                    break;
+                }
+            }
+        }
+        if (has_def) {
+            for (rest = body; !CL_NULL_P(rest); rest = cl_cdr(rest)) {
+                CL_Obj sub = cl_car(rest);
+                CL_Obj bc;
+                CL_GC_PROTECT(rest);
+                bc = cl_compile(sub);
+                if (!CL_NULL_P(bc))
+                    cl_vm_eval(bc);
+                CL_GC_UNPROTECT(1);
+            }
+            cl_emit(c, OP_NIL);
+            return;
+        }
+    }
     compile_progn(c, body);
 }
 

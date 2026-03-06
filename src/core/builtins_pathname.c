@@ -386,27 +386,30 @@ static CL_Obj bi_make_pathname(CL_Obj *args, int n)
 {
     CL_Obj host = CL_NIL, device = CL_NIL, directory = CL_NIL;
     CL_Obj pn_name = CL_NIL, pn_type = CL_NIL, version = CL_NIL;
+    /* Track which keywords were explicitly provided so NIL overrides defaults */
+    int has_host = 0, has_device = 0, has_directory = 0;
+    int has_name = 0, has_type = 0, has_version = 0;
     int i;
 
     for (i = 0; i + 1 < n; i += 2) {
         CL_Obj key = args[i];
         CL_Obj val = args[i + 1];
-        if (key == KW_HOST) host = val;
-        else if (key == KW_DEVICE) device = val;
-        else if (key == KW_DIRECTORY) directory = val;
-        else if (key == KW_NAME) pn_name = val;
-        else if (key == KW_TYPE) pn_type = val;
-        else if (key == KW_VERSION) version = val;
+        if (key == KW_HOST) { host = val; has_host = 1; }
+        else if (key == KW_DEVICE) { device = val; has_device = 1; }
+        else if (key == KW_DIRECTORY) { directory = val; has_directory = 1; }
+        else if (key == KW_NAME) { pn_name = val; has_name = 1; }
+        else if (key == KW_TYPE) { pn_type = val; has_type = 1; }
+        else if (key == KW_VERSION) { version = val; has_version = 1; }
         else if (key == KW_DEFAULTS) {
-            /* Merge with defaults */
+            /* Merge with defaults — only fill in components not explicitly provided */
             if (CL_PATHNAME_P(val)) {
                 CL_Pathname *def = (CL_Pathname *)CL_OBJ_TO_PTR(val);
-                if (CL_NULL_P(host)) host = def->host;
-                if (CL_NULL_P(device)) device = def->device;
-                if (CL_NULL_P(directory)) directory = def->directory;
-                if (CL_NULL_P(pn_name)) pn_name = def->name;
-                if (CL_NULL_P(pn_type)) pn_type = def->type;
-                if (CL_NULL_P(version)) version = def->version;
+                if (!has_host) host = def->host;
+                if (!has_device) device = def->device;
+                if (!has_directory) directory = def->directory;
+                if (!has_name) pn_name = def->name;
+                if (!has_type) pn_type = def->type;
+                if (!has_version) version = def->version;
             }
         }
     }

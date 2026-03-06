@@ -68,6 +68,8 @@ CL_Obj SYM_UNTRACE = CL_NIL;
 CL_Obj SYM_TIME = CL_NIL;
 CL_Obj SYM_IN_PACKAGE = CL_NIL;
 CL_Obj SYM_STAR_PACKAGE = CL_NIL;
+CL_Obj SYM_STAR_LOAD_PATHNAME = CL_NIL;
+CL_Obj SYM_STAR_LOAD_TRUENAME = CL_NIL;
 CL_Obj SYM_MACROLET = CL_NIL;
 CL_Obj SYM_SYMBOL_MACROLET = CL_NIL;
 CL_Obj SYM_THE = CL_NIL;
@@ -387,6 +389,8 @@ void cl_symbol_init(void)
     SYM_TIME                 = cl_intern_in("TIME", 4, cl_package_cl);
     SYM_IN_PACKAGE           = cl_intern_in("IN-PACKAGE", 10, cl_package_cl);
     SYM_STAR_PACKAGE         = cl_intern_in("*PACKAGE*", 9, cl_package_cl);
+    SYM_STAR_LOAD_PATHNAME   = cl_intern_in("*LOAD-PATHNAME*", 15, cl_package_cl);
+    SYM_STAR_LOAD_TRUENAME   = cl_intern_in("*LOAD-TRUENAME*", 15, cl_package_cl);
     SYM_MACROLET             = cl_intern_in("MACROLET", 8, cl_package_cl);
     SYM_SYMBOL_MACROLET      = cl_intern_in("SYMBOL-MACROLET", 15, cl_package_cl);
     SYM_THE                  = cl_intern_in("THE", 3, cl_package_cl);

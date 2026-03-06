@@ -817,6 +817,16 @@
              (%loop-destructure-assigns (cdr pattern) `(cdr ,source))))
     (t nil)))
 
+(defun %loop-destructure-bindings (pattern source)
+  "Generate (var init) binding forms to destructure SOURCE into PATTERN variables."
+  (cond
+    ((null pattern) nil)
+    ((symbolp pattern) (list (list pattern source)))
+    ((consp pattern)
+     (append (%loop-destructure-bindings (car pattern) `(car ,source))
+             (%loop-destructure-bindings (cdr pattern) `(cdr ,source))))
+    (t nil)))
+
 (defun %loop-parse-for (rest var sub-kw end-tag)
   "Parse a FOR/AS clause. Returns (new-rest bindings end-tests pre-body steps)."
   (cond
@@ -1259,10 +1269,8 @@
                          (setq rest (cdr rest)))
                        (push (list wvar nil) bindings))
                    (when destructuring-w
-                     (dolist (v (%loop-destructure-vars raw-wvar))
-                       (push (list v nil) bindings))
-                     (dolist (a (%loop-destructure-assigns raw-wvar wvar))
-                       (push a preamble))))
+                     (dolist (b (%loop-destructure-bindings raw-wvar wvar))
+                       (push b bindings))))
                  (when (and rest (%loop-keyword-p (car rest) "AND"))
                    (setq rest (cdr rest))
                    (go with-next)))))

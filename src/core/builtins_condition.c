@@ -631,29 +631,88 @@ static CL_Obj bi_signal(CL_Obj *args, int n)
     return CL_NIL;
 }
 
+/* Cached NIL-returning closure for muffle-warning restart handler */
+static CL_Obj muffle_handler = CL_NIL;
+
+static CL_Obj get_muffle_handler(void)
+{
+    if (CL_NULL_P(muffle_handler)) {
+        extern CL_Obj cl_eval_string(const char *str);
+        muffle_handler = cl_eval_string("(lambda () nil)");
+        CL_GC_PROTECT(muffle_handler);  /* permanent root */
+    }
+    return muffle_handler;
+}
+
 /* (warn condition-or-type &rest args) */
 static CL_Obj bi_warn(CL_Obj *args, int n)
 {
     CL_Obj cond = coerce_to_condition(args, n, SYM_SIMPLE_WARNING);
-    cl_signal_condition(cond);
+    CL_Obj tag;
+    int saved_restart_top = cl_restart_top;
+    int muffled = 0;
 
-    /* No handler transferred control — print warning and return NIL */
-    {
-        CL_Condition *c = (CL_Condition *)CL_OBJ_TO_PTR(cond);
-        CL_Obj report = format_condition_report(c);
-        cl_color_set(CL_COLOR_YELLOW);
-        platform_write_string("WARNING: ");
-        if (!CL_NULL_P(report) && CL_STRING_P(report)) {
-            CL_String *s = (CL_String *)CL_OBJ_TO_PTR(report);
-            platform_write_string(s->data);
-        } else {
-            char buf[128];
-            cl_prin1_to_string(c->type_name, buf, sizeof(buf));
-            platform_write_string(buf);
+    /* Create unique catch tag for muffle-warning */
+    tag = cl_cons(SYM_MUFFLE_WARNING, CL_NIL);
+    CL_GC_PROTECT(cond);
+    CL_GC_PROTECT(tag);
+
+    /* Push NLX catch frame for the muffle-warning restart */
+    if (cl_nlx_top < CL_MAX_NLX_FRAMES) {
+        CL_NLXFrame *frame = &cl_nlx_stack[cl_nlx_top];
+        frame->type = CL_NLX_CATCH;
+        frame->tag = tag;
+        frame->vm_sp = cl_vm.sp;
+        frame->vm_fp = cl_vm.fp;
+        frame->result = CL_NIL;
+        frame->dyn_mark = cl_dyn_top;
+        frame->handler_mark = cl_handler_top;
+        frame->restart_mark = cl_restart_top;
+        cl_nlx_top++;
+
+        /* Push muffle-warning restart */
+        if (cl_restart_top < CL_MAX_RESTART_BINDINGS) {
+            cl_restart_stack[cl_restart_top].name = SYM_MUFFLE_WARNING;
+            cl_restart_stack[cl_restart_top].handler = get_muffle_handler();
+            cl_restart_stack[cl_restart_top].tag = tag;
+            cl_restart_top++;
         }
-        cl_color_reset();
-        platform_write_string("\n");
+
+        if (setjmp(frame->buf) != 0) {
+            /* muffle-warning was invoked — skip warning output */
+            muffled = 1;
+        }
     }
+
+    if (!muffled) {
+        cl_signal_condition(cond);
+
+        /* No handler transferred control — print warning and return NIL */
+        {
+            CL_Condition *c = (CL_Condition *)CL_OBJ_TO_PTR(cond);
+            CL_Obj report = format_condition_report(c);
+            cl_color_set(CL_COLOR_YELLOW);
+            platform_write_string("WARNING: ");
+            if (!CL_NULL_P(report) && CL_STRING_P(report)) {
+                CL_String *s = (CL_String *)CL_OBJ_TO_PTR(report);
+                platform_write_string(s->data);
+            } else {
+                char buf[128];
+                cl_prin1_to_string(c->type_name, buf, sizeof(buf));
+                platform_write_string(buf);
+            }
+            cl_color_reset();
+            platform_write_string("\n");
+        }
+    }
+
+    /* Clean up restart and NLX frames */
+    cl_restart_top = saved_restart_top;
+    /* Pop our NLX catch frame if still there */
+    if (cl_nlx_top > 0 && cl_nlx_stack[cl_nlx_top - 1].tag == tag)
+        cl_nlx_top--;
+
+    CL_GC_UNPROTECT(2);
     return CL_NIL;
 }
 

@@ -267,6 +267,9 @@ static CL_Obj bi_load(CL_Obj *args, int n)
     /* Per CL spec, LOAD binds *package* so in-package in loaded file
        doesn't affect the caller */
     CL_Obj saved_package = cl_current_package;
+    CL_Obj load_pathname_obj, load_truename_obj;
+    CL_Symbol *lp_sym, *lt_sym;
+    CL_Obj saved_load_pathname, saved_load_truename;
 
     CL_UNUSED(n);
     if (CL_PATHNAME_P(args[0])) {
@@ -283,6 +286,22 @@ static CL_Obj bi_load(CL_Obj *args, int n)
     buf = platform_file_read(path_str->data, &size);
     if (!buf)
         cl_error(CL_ERR_GENERAL, "LOAD: cannot open file");
+
+    /* Bind *load-pathname* and *load-truename* per CL spec */
+    {
+        extern CL_Obj cl_parse_namestring(const char *str, uint32_t len);
+        load_pathname_obj = cl_parse_namestring(path_str->data,
+                                                (uint32_t)strlen(path_str->data));
+    }
+    load_truename_obj = load_pathname_obj; /* truename = pathname for now */
+    CL_GC_PROTECT(load_pathname_obj);
+    CL_GC_PROTECT(load_truename_obj);
+    lp_sym = (CL_Symbol *)CL_OBJ_TO_PTR(SYM_STAR_LOAD_PATHNAME);
+    lt_sym = (CL_Symbol *)CL_OBJ_TO_PTR(SYM_STAR_LOAD_TRUENAME);
+    saved_load_pathname = lp_sym->value;
+    saved_load_truename = lt_sym->value;
+    lp_sym->value = load_pathname_obj;
+    lt_sym->value = load_truename_obj;
 
     /* Save and set source file context */
     prev_file = cl_current_source_file;
@@ -316,9 +335,14 @@ static CL_Obj bi_load(CL_Obj *args, int n)
         }
     }
 
-    CL_GC_UNPROTECT(1);
+    CL_GC_UNPROTECT(1); /* stream */
     cl_stream_close(stream);
     platform_free(buf);
+
+    /* Restore *load-pathname* and *load-truename* */
+    lp_sym->value = saved_load_pathname;
+    lt_sym->value = saved_load_truename;
+    CL_GC_UNPROTECT(2); /* load_truename_obj, load_pathname_obj */
 
     /* Restore source file context */
     cl_current_source_file = prev_file;

@@ -1427,7 +1427,10 @@ TEST(eval_eval_when_multiple_situations)
 
 TEST(eval_eval_when_body)
 {
-    ASSERT_EQ_INT(eval_int("(eval-when (:execute) 1 2 3)"), 3);
+    /* Top-level multi-form eval-when processes forms individually for macro availability.
+     * Verify side effects work (defvar sets value). */
+    ASSERT_EQ_INT(eval_int(
+        "(progn (eval-when (:execute) (defvar *ew-test* 0) (setq *ew-test* 42)) *ew-test*)"), 42);
 }
 
 /* --- destructuring-bind --- */

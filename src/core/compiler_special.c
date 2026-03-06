@@ -57,22 +57,30 @@ static void compile_destructure_pattern(CL_Compiler *c, int pos_slot,
                     goto done;
                 }
 
+                CL_Obj supplied_p = CL_NIL;
+                int supplied_slot = -1;
+
                 if (CL_CONS_P(opt)) {
                     var = cl_car(opt);
                     if (!CL_NULL_P(cl_cdr(opt)))
                         default_val = cl_car(cl_cdr(opt));
+                    if (!CL_NULL_P(cl_cdr(opt)) &&
+                        !CL_NULL_P(cl_cdr(cl_cdr(opt))))
+                        supplied_p = cl_car(cl_cdr(cl_cdr(opt)));
                 } else {
                     var = opt;
                 }
 
                 slot = cl_env_add_local(env, var);
+                if (!CL_NULL_P(supplied_p))
+                    supplied_slot = cl_env_add_local(env, supplied_p);
 
                 /* If pos is NIL, use default; else take (car pos) */
                 cl_emit(c, OP_LOAD);
                 cl_emit(c, (uint8_t)pos_slot);
                 skip_pos = cl_emit_jump(c, OP_JNIL);
 
-                /* pos not nil: var = (car pos), pos = (cdr pos) */
+                /* pos not nil: var = (car pos), pos = (cdr pos), supplied-p = T */
                 cl_emit(c, OP_LOAD);
                 cl_emit(c, (uint8_t)pos_slot);
                 cl_emit(c, OP_CAR);
@@ -85,14 +93,26 @@ static void compile_destructure_pattern(CL_Compiler *c, int pos_slot,
                 cl_emit(c, OP_STORE);
                 cl_emit(c, (uint8_t)pos_slot);
                 cl_emit(c, OP_POP);
+                if (supplied_slot >= 0) {
+                    cl_emit(c, OP_T);
+                    cl_emit(c, OP_STORE);
+                    cl_emit(c, (uint8_t)supplied_slot);
+                    cl_emit(c, OP_POP);
+                }
                 {
                     int end_pos = cl_emit_jump(c, OP_JMP);
                     cl_patch_jump(c, skip_pos);
-                    /* pos is nil: use default */
+                    /* pos is nil: use default, supplied-p = NIL */
                     compile_expr(c, default_val);
                     cl_emit(c, OP_STORE);
                     cl_emit(c, (uint8_t)slot);
                     cl_emit(c, OP_POP);
+                    if (supplied_slot >= 0) {
+                        cl_emit(c, OP_NIL);
+                        cl_emit(c, OP_STORE);
+                        cl_emit(c, (uint8_t)supplied_slot);
+                        cl_emit(c, OP_POP);
+                    }
                     cl_patch_jump(c, end_pos);
                 }
 

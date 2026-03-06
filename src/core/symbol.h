@@ -101,6 +101,8 @@ extern CL_Obj SYM_UNTRACE;
 extern CL_Obj SYM_TIME;
 extern CL_Obj SYM_IN_PACKAGE;
 extern CL_Obj SYM_STAR_PACKAGE;
+extern CL_Obj SYM_STAR_LOAD_PATHNAME;
+extern CL_Obj SYM_STAR_LOAD_TRUENAME;
 extern CL_Obj SYM_MACROLET;
 extern CL_Obj SYM_SYMBOL_MACROLET;
 extern CL_Obj SYM_THE;
