@@ -169,6 +169,7 @@ CL_Obj cl_vm_apply(CL_Obj func, CL_Obj *args, int nargs)
     bc->n_keys = 0;
     bc->key_syms = NULL;
     bc->key_slots = NULL;
+    bc->key_suppliedp_slots = NULL;
 
     bc_obj = CL_PTR_TO_OBJ(bc);
     result = cl_vm_eval(bc_obj);
@@ -827,6 +828,8 @@ CL_Obj cl_vm_eval(CL_Obj bytecode_obj)
                             for (j = 0; j < callee_bc->n_keys; j++) {
                                 if (key == callee_bc->key_syms[j]) {
                                     cl_vm.stack[frame->bp + callee_bc->key_slots[j]] = val;
+                                    if (callee_bc->key_suppliedp_slots)
+                                        cl_vm.stack[frame->bp + callee_bc->key_suppliedp_slots[j]] = CL_T;
                                     found = 1;
                                     break;
                                 }
@@ -920,6 +923,8 @@ CL_Obj cl_vm_eval(CL_Obj bytecode_obj)
                             for (j = 0; j < callee_bc->n_keys; j++) {
                                 if (key == callee_bc->key_syms[j]) {
                                     cl_vm.stack[new_bp + callee_bc->key_slots[j]] = val;
+                                    if (callee_bc->key_suppliedp_slots)
+                                        cl_vm.stack[new_bp + callee_bc->key_suppliedp_slots[j]] = CL_T;
                                     found = 1;
                                     break;
                                 }

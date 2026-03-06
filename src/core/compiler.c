@@ -224,9 +224,15 @@ static void parse_lambda_list(CL_Obj params, CL_ParsedLambdaList *ll)
             if (CL_CONS_P(item)) {
                 ll->key_names[ll->n_keys] = cl_car(item);
                 ll->key_defaults[ll->n_keys] = cl_car(cl_cdr(item));
+                /* Third element is supplied-p variable: (name default svar) */
+                {
+                    CL_Obj cddr = cl_cdr(cl_cdr(item));
+                    ll->key_suppliedp[ll->n_keys] = CL_NULL_P(cddr) ? CL_NIL : cl_car(cddr);
+                }
             } else {
                 ll->key_names[ll->n_keys] = item;
                 ll->key_defaults[ll->n_keys] = CL_NIL;
+                ll->key_suppliedp[ll->n_keys] = CL_NIL;
             }
             {
                 const char *name_str = cl_symbol_name(ll->key_names[ll->n_keys]);
@@ -260,6 +266,7 @@ void compile_lambda(CL_Compiler *c, CL_Obj form)
     int const_idx;
     int i;
     int key_slot_indices[CL_MAX_LOCALS];
+    int key_suppliedp_indices[CL_MAX_LOCALS];
 
     parse_lambda_list(params, &ll);
 
@@ -315,15 +322,24 @@ void compile_lambda(CL_Compiler *c, CL_Obj form)
         cl_env_add_local(env, ll.rest_name);
     for (i = 0; i < ll.n_keys; i++)
         key_slot_indices[i] = cl_env_add_local(env, ll.key_names[i]);
+    /* Always allocate a tracking slot per key for VM-level supplied-p.
+     * If user also declared a supplied-p var, reuse the same slot. */
+    for (i = 0; i < ll.n_keys; i++) {
+        if (!CL_NULL_P(ll.key_suppliedp[i]))
+            key_suppliedp_indices[i] = cl_env_add_local(env, ll.key_suppliedp[i]);
+        else
+            key_suppliedp_indices[i] = alloc_temp_slot(env);
+    }
     for (i = 0; i < ll.n_aux; i++)
         cl_env_add_local(env, ll.aux_names[i]);
 
-    /* Emit prologue for key defaults */
+    /* Emit prologue for key defaults: check the VM-set tracking slot,
+     * not the key value itself (which could legitimately be NIL). */
     for (i = 0; i < ll.n_keys; i++) {
         if (!CL_NULL_P(ll.key_defaults[i])) {
             int skip_pos;
             cl_emit(inner, OP_LOAD);
-            cl_emit(inner, (uint8_t)key_slot_indices[i]);
+            cl_emit(inner, (uint8_t)key_suppliedp_indices[i]);
             skip_pos = cl_emit_jump(inner, OP_JTRUE);
             {
                 int saved = inner->in_tail;
@@ -437,13 +453,16 @@ void compile_lambda(CL_Compiler *c, CL_Obj form)
     if (ll.n_keys > 0) {
         bc->key_syms = (CL_Obj *)platform_alloc(ll.n_keys * sizeof(CL_Obj));
         bc->key_slots = (uint8_t *)platform_alloc(ll.n_keys);
+        bc->key_suppliedp_slots = (uint8_t *)platform_alloc(ll.n_keys);
         for (i = 0; i < ll.n_keys; i++) {
             bc->key_syms[i] = ll.key_keywords[i];
             bc->key_slots[i] = (uint8_t)key_slot_indices[i];
+            bc->key_suppliedp_slots[i] = (uint8_t)key_suppliedp_indices[i];
         }
     } else {
         bc->key_syms = NULL;
         bc->key_slots = NULL;
+        bc->key_suppliedp_slots = NULL;
     }
 
     /* Transfer source line map */
@@ -807,8 +826,13 @@ static void compile_let(CL_Compiler *c, CL_Obj form, int sequential)
         }
     }
 
-    c->in_tail = saved_tail;
+    /* If we have dynamic bindings, disable tail calls in the body so that
+     * OP_DYNUNBIND executes before the function returns. Without this,
+     * a tail call would replace the frame and skip the unwind. */
+    c->in_tail = (special_count > 0) ? 0 : saved_tail;
+    c->special_depth += special_count;
     compile_body(c, body);
+    c->special_depth -= special_count;
 
     if (special_count > 0) {
         cl_emit(c, OP_DYNUNBIND);
@@ -1602,6 +1626,7 @@ CL_Obj cl_compile(CL_Obj expr)
     bc->n_keys = 0;
     bc->key_syms = NULL;
     bc->key_slots = NULL;
+    bc->key_suppliedp_slots = NULL;
 
     /* Transfer source line map */
     if (comp->line_entry_count > 0) {

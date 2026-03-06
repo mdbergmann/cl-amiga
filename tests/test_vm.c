@@ -5516,6 +5516,77 @@ TEST(eval_getcwd)
     ASSERT(result[1] == '/');  /* absolute path */
 }
 
+/* --- Quicklisp/ASDF compatibility regression tests --- */
+
+TEST(eval_remove_if_not_string)
+{
+    /* remove-if-not on strings must iterate characters, not raw vector data */
+    ASSERT_STR_EQ(eval_print("(remove-if-not #'digit-char-p \"2021-02-13\")"),
+                  "\"20210213\"");
+}
+
+TEST(eval_remove_if_string)
+{
+    ASSERT_STR_EQ(eval_print("(remove-if #'digit-char-p \"abc123\")"),
+                  "\"abc\"");
+}
+
+TEST(eval_remove_string)
+{
+    ASSERT_STR_EQ(eval_print("(remove #\\- \"2021-02-13\")"),
+                  "\"20210213\"");
+}
+
+TEST(eval_key_suppliedp_param)
+{
+    /* &key supplied-p parameter: T when key is explicitly supplied */
+    cl_eval_string("(defun %test-sp (&key (x nil xp)) (list x xp))");
+    ASSERT_STR_EQ(eval_print("(%test-sp)"), "(NIL NIL)");
+    ASSERT_STR_EQ(eval_print("(%test-sp :x nil)"), "(NIL T)");
+    ASSERT_STR_EQ(eval_print("(%test-sp :x 42)"), "(42 T)");
+}
+
+TEST(eval_key_nil_value_not_default)
+{
+    /* Passing :x nil must NOT apply the default value */
+    cl_eval_string("(defun %test-kd (&key (x 99)) x)");
+    ASSERT_EQ_INT(eval_int("(%test-kd)"), 99);
+    ASSERT_EQ(cl_eval_string("(%test-kd :x nil)"), CL_NIL);
+    ASSERT_EQ_INT(eval_int("(%test-kd :x 42)"), 42);
+}
+
+TEST(eval_special_var_unwind_closure)
+{
+    /* Dynamic bindings must be restored after closure returns */
+    cl_eval_string("(defvar *%tw1* nil)");
+    cl_eval_string("(defun %tw1-inner () *%tw1*)");
+    cl_eval_string(
+        "(defun %tw1-outer ()"
+        "  (let ((*%tw1* :outer))"
+        "    (let ((f (lambda () (let ((*%tw1* :inner)) (%tw1-inner)))))"
+        "      (list (%tw1-inner) (funcall f) (%tw1-inner)))))");
+    ASSERT_STR_EQ(eval_print("(%tw1-outer)"), "(:OUTER :INNER :OUTER)");
+}
+
+TEST(eval_special_var_unwind_block_return)
+{
+    /* return from block must unwind dynamic bindings */
+    cl_eval_string("(defvar *%tw2* nil)");
+    cl_eval_string(
+        "(defun %tw2-test ()"
+        "  (loop (let ((*%tw2* :bound)) (return *%tw2*))))");
+    ASSERT_STR_EQ(eval_print("(list (%tw2-test) *%tw2*)"), "(:BOUND NIL)");
+}
+
+TEST(eval_destructuring_bind_rest_key)
+{
+    /* destructuring-bind must process &key after &rest */
+    ASSERT_STR_EQ(eval_print(
+        "(destructuring-bind (a &rest r &key x y) '(1 :x 10 :y 20)"
+        "  (list a r x y))"),
+        "(1 (:X 10 :Y 20) 10 20)");
+}
+
 /* --- Heap exhaustion / storage error tests --- */
 
 TEST(eval_heap_exhaustion_error)
@@ -6225,6 +6296,16 @@ int main(void)
     RUN(eval_system_command_false);
     RUN(eval_system_command_echo);
     RUN(eval_getcwd);
+
+    /* quicklisp/ASDF compatibility regressions */
+    RUN(eval_remove_if_not_string);
+    RUN(eval_remove_if_string);
+    RUN(eval_remove_string);
+    RUN(eval_key_suppliedp_param);
+    RUN(eval_key_nil_value_not_default);
+    RUN(eval_special_var_unwind_closure);
+    RUN(eval_special_var_unwind_block_return);
+    RUN(eval_destructuring_bind_rest_key);
 
     /* heap exhaustion / storage errors */
     RUN(eval_heap_exhaustion_error);

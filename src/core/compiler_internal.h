@@ -31,6 +31,7 @@ typedef struct {
     int n_patches;
     int result_slot;  /* local slot where return value is stored */
     int uses_nlx;     /* 1 if NLX-based (compile_block), 0 if local-jump (loop forms) */
+    int dyn_depth;    /* special binding depth at block entry (for local-jump unwinding) */
 } CL_BlockInfo;
 
 /* Tagbody tracking for go */
@@ -59,6 +60,7 @@ typedef struct {
     int const_count;
     CL_CompEnv *env;
     int in_tail;      /* Are we in tail position? */
+    int special_depth; /* Current number of active dynamic bindings */
     CL_BlockInfo blocks[CL_MAX_BLOCKS];
     int block_count;
     CL_TagbodyInfo tagbodies[CL_MAX_BLOCKS];
@@ -84,6 +86,7 @@ typedef struct {
     CL_Obj key_names[CL_MAX_LOCALS];
     CL_Obj key_keywords[CL_MAX_LOCALS]; /* keyword symbols */
     CL_Obj key_defaults[CL_MAX_LOCALS];
+    CL_Obj key_suppliedp[CL_MAX_LOCALS]; /* supplied-p var or CL_NIL */
     int n_keys;
     int allow_other_keys;
     CL_Obj aux_names[CL_MAX_LOCALS];

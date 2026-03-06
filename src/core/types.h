@@ -188,6 +188,7 @@ typedef struct {
     uint8_t n_keys;     /* Number of &key params */
     CL_Obj *key_syms;   /* Keyword symbols array (platform_alloc'd) */
     uint8_t *key_slots; /* Slot indices for each key param (platform_alloc'd) */
+    uint8_t *key_suppliedp_slots; /* Slot indices for supplied-p vars (or 0xFF=none) */
     /* Source location tracking (platform_alloc'd) */
     CL_LineEntry *line_map;  /* Array of pc→line entries, sorted by pc */
     uint16_t line_map_count; /* Number of entries */

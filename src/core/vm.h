@@ -53,7 +53,7 @@ void cl_dynbind_restore_to(int mark);
 #define CL_NLX_CATCH   0
 #define CL_NLX_UWPROT  1
 #define CL_NLX_BLOCK   2
-#define CL_MAX_NLX_FRAMES 64
+#define CL_MAX_NLX_FRAMES 256
 
 typedef struct {
     uint8_t type;          /* CL_NLX_CATCH or CL_NLX_UWPROT */

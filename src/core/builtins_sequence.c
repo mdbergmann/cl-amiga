@@ -651,6 +651,42 @@ static CL_Obj remove_from_list(CL_Obj seq, int32_t start, int32_t end,
     return result;
 }
 
+/* remove_from_string: shared string path for remove/remove-if/remove-if-not.
+   mode: 0=remove (item+test), 1=remove-if (pred), 2=remove-if-not (pred) */
+static CL_Obj remove_from_string(CL_Obj seq, CL_Obj item_or_pred,
+                                  CL_Obj test_fn, CL_Obj key_fn,
+                                  int32_t start, int32_t end,
+                                  int32_t count, int mode)
+{
+    CL_String *s = (CL_String *)CL_OBJ_TO_PTR(seq);
+    int32_t slen = (int32_t)s->length;
+    char buf[1024];
+    int32_t out = 0, i, removed = 0;
+
+    if (end < 0) end = slen;
+
+    for (i = 0; i < slen && out < (int32_t)sizeof(buf) - 1; i++) {
+        CL_Obj elem = CL_MAKE_CHAR((unsigned char)s->data[i]);
+        int should_remove = 0;
+        if (i >= start && i < end && (count < 0 || removed < count)) {
+            CL_Obj keyed = apply_key(key_fn, elem);
+            if (mode == 0) {
+                should_remove = !CL_NULL_P(call_test(test_fn, item_or_pred, keyed));
+            } else if (mode == 1) {
+                should_remove = seq_pred_match(item_or_pred, CL_NIL, elem);
+            } else {
+                should_remove = !seq_pred_match(item_or_pred, CL_NIL, elem);
+            }
+        }
+        if (should_remove) {
+            removed++;
+        } else {
+            buf[out++] = s->data[i];
+        }
+    }
+    return cl_make_string(buf, (uint32_t)out);
+}
+
 static CL_Obj bi_remove(CL_Obj *args, int n)
 {
     CL_Obj item = args[0], seq = args[1];
@@ -663,6 +699,10 @@ static CL_Obj bi_remove(CL_Obj *args, int n)
         int32_t end = (sa.end < 0) ? len : sa.end;
         return remove_from_list(seq, sa.start, end, sa.count, sa.from_end,
                                 item, sa.test_fn, sa.key_fn, 0);
+    }
+    if (CL_STRING_P(seq)) {
+        return remove_from_string(seq, item, sa.test_fn, sa.key_fn,
+                                  sa.start, sa.end, sa.count, 0);
     }
     /* Vector path */
     {
@@ -711,6 +751,10 @@ static CL_Obj bi_remove_if(CL_Obj *args, int n)
         return remove_from_list(seq, sa.start, end, sa.count, sa.from_end,
                                 pred, CL_NIL, sa.key_fn, 1);
     }
+    if (CL_STRING_P(seq)) {
+        return remove_from_string(seq, pred, CL_NIL, sa.key_fn,
+                                  sa.start, sa.end, sa.count, 1);
+    }
     /* Vector path */
     {
         CL_Vector *v = (CL_Vector *)CL_OBJ_TO_PTR(seq);
@@ -756,6 +800,10 @@ static CL_Obj bi_remove_if_not(CL_Obj *args, int n)
         int32_t end = (sa.end < 0) ? len : sa.end;
         return remove_from_list(seq, sa.start, end, sa.count, sa.from_end,
                                 pred, CL_NIL, sa.key_fn, 2);
+    }
+    if (CL_STRING_P(seq)) {
+        return remove_from_string(seq, pred, CL_NIL, sa.key_fn,
+                                  sa.start, sa.end, sa.count, 2);
     }
     /* Vector path */
     {

@@ -699,7 +699,7 @@
 (defun method-lambda-list (m) (%struct-ref m 4))
 
 ;;; --- GF table ---
-(defvar *generic-function-table* (make-hash-table :test 'eq))
+(defvar *generic-function-table* (make-hash-table :test 'equal))
 
 ;;; --- call-next-method support ---
 (defvar *call-next-method-function* nil)

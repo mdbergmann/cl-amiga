@@ -33,7 +33,11 @@ static void compile_destructure_pattern(CL_Compiler *c, int pos_slot,
             cl_emit(c, OP_STORE);
             cl_emit(c, (uint8_t)slot);
             cl_emit(c, OP_POP);
-            break; /* nothing after &rest */
+            /* Skip to &key if present, otherwise done */
+            pattern = cl_cdr(cl_cdr(pattern)); /* skip &rest var */
+            if (!CL_NULL_P(pattern) && cl_car(pattern) == SYM_AMP_KEY)
+                continue; /* let &key handler process it */
+            break;
         }
 
         /* &optional — remaining elements are optional with defaults */
@@ -375,6 +379,7 @@ void compile_block(CL_Compiler *c, CL_Obj form)
     bi->tag = tag;
     bi->n_patches = 0;
     bi->uses_nlx = needs_nlx;
+    bi->dyn_depth = c->special_depth;
 
     if (needs_nlx) {
         /* NLX path: set up NLX frame for cross-closure return-from */
@@ -459,7 +464,14 @@ void compile_return_from(CL_Compiler *c, CL_Obj form)
                 cl_emit(c, OP_BLOCK_RETURN);
                 cl_emit_u16(c, (uint16_t)tag_idx);
             } else {
-                /* Local-jump block (loop forms): use existing mechanism */
+                /* Local-jump block: unwind dynamic bindings before jumping */
+                {
+                    int unwind_count = c->special_depth - bi->dyn_depth;
+                    if (unwind_count > 0) {
+                        cl_emit(c, OP_DYNUNBIND);
+                        cl_emit(c, (uint8_t)unwind_count);
+                    }
+                }
                 cl_emit(c, OP_STORE);
                 cl_emit(c, (uint8_t)bi->result_slot);
                 cl_emit(c, OP_POP);
@@ -517,7 +529,14 @@ void compile_return(CL_Compiler *c, CL_Obj form)
                 cl_emit(c, OP_BLOCK_RETURN);
                 cl_emit_u16(c, (uint16_t)tag_idx);
             } else {
-                /* Local-jump block (loop forms): use existing mechanism */
+                /* Local-jump block: unwind dynamic bindings before jumping */
+                {
+                    int unwind_count = c->special_depth - bi->dyn_depth;
+                    if (unwind_count > 0) {
+                        cl_emit(c, OP_DYNUNBIND);
+                        cl_emit(c, (uint8_t)unwind_count);
+                    }
+                }
                 cl_emit(c, OP_STORE);
                 cl_emit(c, (uint8_t)bi->result_slot);
                 cl_emit(c, OP_POP);
