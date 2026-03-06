@@ -531,6 +531,10 @@ static DisasmInfo disasm_opcode_info(uint8_t op)
     case OP_T:          info.name = "T";          break;
     case OP_FLOAD:      info.name = "FLOAD";      info.arg_type = OP_ARG_U16; break;
     case OP_FSTORE:     info.name = "FSTORE";     info.arg_type = OP_ARG_U16; break;
+    case OP_MAKE_CELL:  info.name = "MAKE_CELL";  break;
+    case OP_CELL_REF:   info.name = "CELL_REF";   break;
+    case OP_CELL_SET_LOCAL: info.name = "CELL_SET_LOCAL"; info.arg_type = OP_ARG_U8; break;
+    case OP_CELL_SET_UPVAL: info.name = "CELL_SET_UPVAL"; info.arg_type = OP_ARG_U8; break;
     case OP_DEFMACRO:   info.name = "DEFMACRO";   info.arg_type = OP_ARG_U16; break;
     case OP_DEFTYPE:    info.name = "DEFTYPE";    info.arg_type = OP_ARG_U16; break;
     case OP_HANDLER_PUSH: info.name = "HANDLER_PUSH"; info.arg_type = OP_ARG_U16; break;

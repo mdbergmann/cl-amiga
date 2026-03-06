@@ -10,6 +10,7 @@ CL_CompEnv *cl_env_create(CL_CompEnv *parent)
     env->local_count = 0;
     env->max_locals = 0;
     env->depth = parent ? parent->depth + 1 : 0;
+    memset(env->boxed, 0, sizeof(env->boxed));
     env->upvalue_count = 0;
     env->local_fun_count = 0;
     env->local_macro_count = 0;
@@ -85,6 +86,7 @@ int cl_env_resolve_upvalue(CL_CompEnv *env, CL_Obj symbol)
             if (env->upvalue_count >= CL_MAX_UPVALUES) return -1;
             env->upvalues[env->upvalue_count].is_local = 1;
             env->upvalues[env->upvalue_count].index = parent_slot;
+            env->upvalues[env->upvalue_count].is_boxed = env->parent->boxed[parent_slot];
             return env->upvalue_count++;
         }
     }
@@ -103,6 +105,7 @@ int cl_env_resolve_upvalue(CL_CompEnv *env, CL_Obj symbol)
             if (env->upvalue_count >= CL_MAX_UPVALUES) return -1;
             env->upvalues[env->upvalue_count].is_local = 0;
             env->upvalues[env->upvalue_count].index = parent_upval;
+            env->upvalues[env->upvalue_count].is_boxed = env->parent->upvalues[parent_upval].is_boxed;
             return env->upvalue_count++;
         }
     }
@@ -181,6 +184,7 @@ int cl_env_resolve_fun_upvalue(CL_CompEnv *env, CL_Obj name)
             if (env->upvalue_count >= CL_MAX_UPVALUES) return -1;
             env->upvalues[env->upvalue_count].is_local = 1;
             env->upvalues[env->upvalue_count].index = parent_slot;
+            env->upvalues[env->upvalue_count].is_boxed = env->parent->boxed[parent_slot];
             return env->upvalue_count++;
         }
     }
@@ -196,6 +200,7 @@ int cl_env_resolve_fun_upvalue(CL_CompEnv *env, CL_Obj name)
             if (env->upvalue_count >= CL_MAX_UPVALUES) return -1;
             env->upvalues[env->upvalue_count].is_local = 0;
             env->upvalues[env->upvalue_count].index = parent_upval;
+            env->upvalues[env->upvalue_count].is_boxed = env->parent->upvalues[parent_upval].is_boxed;
             return env->upvalue_count++;
         }
     }

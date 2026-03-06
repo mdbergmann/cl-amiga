@@ -18,6 +18,7 @@
 typedef struct {
     int is_local;   /* 1 = parent's local, 0 = parent's upvalue */
     int index;      /* slot index in parent */
+    int is_boxed;   /* 1 = refers to a heap-boxed cell (mutable shared binding) */
 } CL_UpvalueDesc;
 
 typedef struct {
@@ -41,6 +42,7 @@ typedef struct CL_CompEnv {
     int local_count;
     int max_locals;               /* High-water mark for local_count */
     int depth;                    /* Nesting depth (0 = top-level function) */
+    uint8_t boxed[CL_MAX_LOCALS]; /* 1 = local is a heap-boxed cell */
     CL_UpvalueDesc upvalues[CL_MAX_UPVALUES];
     int upvalue_count;
     CL_LocalFun local_funs[CL_MAX_LOCAL_FUNS];

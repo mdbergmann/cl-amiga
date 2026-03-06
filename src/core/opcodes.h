@@ -87,6 +87,12 @@ enum CL_Opcode {
     OP_BLOCK_RETURN = 0x9B, /* u16 const_idx: pop value, longjmp to matching block */
     OP_FSTORE       = 0x9C, /* u16: Store to function binding of symbol (peek, no pop) */
 
+    /* Heap-boxed cells for mutable closure bindings */
+    OP_MAKE_CELL    = 0x9D, /* Pop value, create cell, push cell */
+    OP_CELL_REF     = 0x9E, /* Pop cell, push cell->value */
+    OP_CELL_SET_LOCAL = 0x9F, /* u8 slot: cell=locals[slot], cell->value=TOS (peek) */
+    OP_CELL_SET_UPVAL = 0xA0, /* u8 idx: cell=upvalue[idx], cell->value=TOS (peek) */
+
     OP_HALT      = 0xFF   /* Stop VM */
 };
 

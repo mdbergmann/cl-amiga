@@ -351,6 +351,55 @@ void compile_lambda(CL_Compiler *c, CL_Obj form)
         cl_emit(inner, OP_POP);
     }
 
+    /* Box params that are both mutated and captured across closure boundary */
+    {
+        CL_Obj param_vars[CL_MAX_LOCALS];
+        int param_slots[CL_MAX_LOCALS];
+        int n_params = 0;
+        uint8_t needs_boxing[CL_MAX_LOCALS];
+
+        for (i = 0; i < ll.n_required; i++) {
+            param_slots[n_params] = cl_env_lookup(env, ll.required[i]);
+            param_vars[n_params] = ll.required[i];
+            n_params++;
+        }
+        for (i = 0; i < ll.n_optional; i++) {
+            param_slots[n_params] = cl_env_lookup(env, ll.opt_names[i]);
+            param_vars[n_params] = ll.opt_names[i];
+            n_params++;
+        }
+        if (ll.has_rest) {
+            param_slots[n_params] = cl_env_lookup(env, ll.rest_name);
+            param_vars[n_params] = ll.rest_name;
+            n_params++;
+        }
+        for (i = 0; i < ll.n_keys; i++) {
+            param_slots[n_params] = key_slot_indices[i];
+            param_vars[n_params] = ll.key_names[i];
+            n_params++;
+        }
+        for (i = 0; i < ll.n_aux; i++) {
+            param_slots[n_params] = cl_env_lookup(env, ll.aux_names[i]);
+            param_vars[n_params] = ll.aux_names[i];
+            n_params++;
+        }
+
+        if (n_params > 0) {
+            determine_boxed_vars(body, param_vars, n_params, needs_boxing);
+            for (i = 0; i < n_params; i++) {
+                if (needs_boxing[i] && param_slots[i] >= 0) {
+                    cl_emit(inner, OP_LOAD);
+                    cl_emit(inner, (uint8_t)param_slots[i]);
+                    cl_emit(inner, OP_MAKE_CELL);
+                    cl_emit(inner, OP_STORE);
+                    cl_emit(inner, (uint8_t)param_slots[i]);
+                    cl_emit(inner, OP_POP);
+                    env->boxed[param_slots[i]] = 1;
+                }
+            }
+        }
+    }
+
     compile_body(inner, body);
     cl_emit(inner, OP_RET);
 
@@ -425,6 +474,152 @@ void compile_lambda(CL_Compiler *c, CL_Obj form)
     platform_free(inner);
 }
 
+/* --- Boxing analysis (pre-scan for mutable closure bindings) --- */
+
+/* Check if sym is one of the tracked vars; returns index or -1 */
+static int find_var_index(CL_Obj sym, CL_Obj *vars, int n_vars)
+{
+    int i;
+    for (i = 0; i < n_vars; i++) {
+        if (vars[i] == sym) return i;
+    }
+    return -1;
+}
+
+/*
+ * Recursive tree walker that determines which vars are mutated (target of setq)
+ * and which are captured (referenced inside a lambda/flet/labels body).
+ * closure_depth starts at 0; increments when entering closure-creating forms.
+ */
+void scan_body_for_boxing(CL_Obj form, CL_Obj *vars, int n_vars,
+                          uint8_t *mutated, uint8_t *captured,
+                          int closure_depth)
+{
+    CL_Obj head, rest;
+
+    if (CL_NULL_P(form) || CL_FIXNUM_P(form) || CL_CHAR_P(form))
+        return;
+
+    /* Symbol reference */
+    if (CL_SYMBOL_P(form)) {
+        if (closure_depth > 0) {
+            int idx = find_var_index(form, vars, n_vars);
+            if (idx >= 0) captured[idx] = 1;
+        }
+        return;
+    }
+
+    if (!CL_CONS_P(form)) return;
+
+    head = cl_car(form);
+    rest = cl_cdr(form);
+
+    /* (quote ...) — skip entirely */
+    if (head == SYM_QUOTE) return;
+
+    /* (setq var val var val ...) */
+    if (head == SYM_SETQ) {
+        CL_Obj pairs = rest;
+        while (CL_CONS_P(pairs) && CL_CONS_P(cl_cdr(pairs))) {
+            CL_Obj var = cl_car(pairs);
+            CL_Obj val = cl_car(cl_cdr(pairs));
+            int idx = find_var_index(var, vars, n_vars);
+            if (idx >= 0) mutated[idx] = 1;
+            if (closure_depth > 0 && idx >= 0) captured[idx] = 1;
+            scan_body_for_boxing(val, vars, n_vars, mutated, captured, closure_depth);
+            pairs = cl_cdr(cl_cdr(pairs));
+        }
+        return;
+    }
+
+    /* (lambda params . body) — body is at increased closure depth */
+    if (head == SYM_LAMBDA) {
+        CL_Obj body = cl_cdr(rest); /* skip param list */
+        while (CL_CONS_P(body)) {
+            scan_body_for_boxing(cl_car(body), vars, n_vars,
+                                 mutated, captured, closure_depth + 1);
+            body = cl_cdr(body);
+        }
+        return;
+    }
+
+    /* (defun name params . body) — body is at increased closure depth */
+    if (head == SYM_DEFUN) {
+        CL_Obj body = cl_cdr(cl_cdr(rest)); /* skip name and param list */
+        while (CL_CONS_P(body)) {
+            scan_body_for_boxing(cl_car(body), vars, n_vars,
+                                 mutated, captured, closure_depth + 1);
+            body = cl_cdr(body);
+        }
+        return;
+    }
+
+    /* (flet/labels ((name params . body) ...) . body) */
+    if (head == SYM_FLET || head == SYM_LABELS) {
+        CL_Obj defs = cl_car(rest);
+        CL_Obj body = cl_cdr(rest);
+        /* Scan each function definition body at increased depth */
+        while (CL_CONS_P(defs)) {
+            CL_Obj def = cl_car(defs);
+            CL_Obj fbody = cl_cdr(cl_cdr(def)); /* skip name and params */
+            while (CL_CONS_P(fbody)) {
+                scan_body_for_boxing(cl_car(fbody), vars, n_vars,
+                                     mutated, captured, closure_depth + 1);
+                fbody = cl_cdr(fbody);
+            }
+            defs = cl_cdr(defs);
+        }
+        /* Scan outer body at current depth */
+        while (CL_CONS_P(body)) {
+            scan_body_for_boxing(cl_car(body), vars, n_vars,
+                                 mutated, captured, closure_depth);
+            body = cl_cdr(body);
+        }
+        return;
+    }
+
+    /* General form: scan all sub-expressions */
+    {
+        CL_Obj cur = form;
+        while (CL_CONS_P(cur)) {
+            scan_body_for_boxing(cl_car(cur), vars, n_vars,
+                                 mutated, captured, closure_depth);
+            cur = cl_cdr(cur);
+        }
+    }
+}
+
+/*
+ * Determine which vars need boxing (both mutated AND captured across closure boundary).
+ * body is the list of body forms to scan.
+ * Sets boxed_out[i] = 1 for each var that needs boxing.
+ */
+void determine_boxed_vars(CL_Obj body, CL_Obj *vars, int n_vars,
+                          uint8_t *boxed_out)
+{
+    uint8_t mutated[CL_MAX_LOCALS];
+    uint8_t captured[CL_MAX_LOCALS];
+    int i;
+
+    memset(mutated, 0, n_vars);
+    memset(captured, 0, n_vars);
+    memset(boxed_out, 0, n_vars);
+
+    /* Scan all body forms */
+    {
+        CL_Obj cur = body;
+        while (CL_CONS_P(cur)) {
+            scan_body_for_boxing(cl_car(cur), vars, n_vars,
+                                 mutated, captured, 0);
+            cur = cl_cdr(cur);
+        }
+    }
+
+    for (i = 0; i < n_vars; i++) {
+        boxed_out[i] = (mutated[i] && captured[i]) ? 1 : 0;
+    }
+}
+
 /* --- Let --- */
 
 static int var_is_special(CL_Obj var, CL_Obj local_specials)
@@ -445,33 +640,85 @@ static void compile_let(CL_Compiler *c, CL_Obj form, int sequential)
     CL_Obj local_specials = scan_local_specials(body);
 
     if (sequential) {
-        while (!CL_NULL_P(bindings)) {
-            CL_Obj binding = cl_car(bindings);
-            CL_Obj var, val;
-
-            if (CL_CONS_P(binding)) {
-                var = cl_car(binding);
-                val = cl_car(cl_cdr(binding));
-            } else {
-                var = binding;
-                val = CL_NIL;
+        /* Pre-scan all bindings + body for boxing analysis */
+        CL_Obj all_vars[CL_MAX_LOCALS];
+        uint8_t needs_boxing[CL_MAX_LOCALS];
+        int n_all = 0;
+        {
+            CL_Obj b = bindings;
+            while (!CL_NULL_P(b) && n_all < CL_MAX_LOCALS) {
+                CL_Obj binding = cl_car(b);
+                all_vars[n_all++] = CL_CONS_P(binding) ? cl_car(binding) : binding;
+                b = cl_cdr(b);
             }
-
-            c->in_tail = 0;
-            compile_expr(c, val);
-
-            if (var_is_special(var, local_specials)) {
-                int idx = cl_add_constant(c, var);
-                cl_emit(c, OP_DYNBIND);
-                cl_emit_u16(c, (uint16_t)idx);
-                special_count++;
-            } else {
-                int slot = cl_env_add_local(env, var);
-                cl_emit(c, OP_STORE);
-                cl_emit(c, (uint8_t)slot);
-                cl_emit(c, OP_POP);
+        }
+        {
+            uint8_t mutated[CL_MAX_LOCALS], captured[CL_MAX_LOCALS];
+            int bi;
+            CL_Obj b;
+            memset(mutated, 0, (size_t)n_all);
+            memset(captured, 0, (size_t)n_all);
+            b = bindings;
+            while (!CL_NULL_P(b)) {
+                CL_Obj binding = cl_car(b);
+                if (CL_CONS_P(binding))
+                    scan_body_for_boxing(cl_car(cl_cdr(binding)), all_vars, n_all,
+                                         mutated, captured, 0);
+                b = cl_cdr(b);
             }
-            bindings = cl_cdr(bindings);
+            {
+                CL_Obj cur = body;
+                while (CL_CONS_P(cur)) {
+                    scan_body_for_boxing(cl_car(cur), all_vars, n_all,
+                                         mutated, captured, 0);
+                    cur = cl_cdr(cur);
+                }
+            }
+            for (bi = 0; bi < n_all; bi++)
+                needs_boxing[bi] = (mutated[bi] && captured[bi]) ? 1 : 0;
+        }
+
+        /* Compile bindings, boxing after each store if needed */
+        {
+            int var_idx = 0;
+            while (!CL_NULL_P(bindings)) {
+                CL_Obj binding = cl_car(bindings);
+                CL_Obj var, val;
+
+                if (CL_CONS_P(binding)) {
+                    var = cl_car(binding);
+                    val = cl_car(cl_cdr(binding));
+                } else {
+                    var = binding;
+                    val = CL_NIL;
+                }
+
+                c->in_tail = 0;
+                compile_expr(c, val);
+
+                if (var_is_special(var, local_specials)) {
+                    int idx = cl_add_constant(c, var);
+                    cl_emit(c, OP_DYNBIND);
+                    cl_emit_u16(c, (uint16_t)idx);
+                    special_count++;
+                } else {
+                    int slot = cl_env_add_local(env, var);
+                    cl_emit(c, OP_STORE);
+                    cl_emit(c, (uint8_t)slot);
+                    cl_emit(c, OP_POP);
+                    if (needs_boxing[var_idx]) {
+                        cl_emit(c, OP_LOAD);
+                        cl_emit(c, (uint8_t)slot);
+                        cl_emit(c, OP_MAKE_CELL);
+                        cl_emit(c, OP_STORE);
+                        cl_emit(c, (uint8_t)slot);
+                        cl_emit(c, OP_POP);
+                        env->boxed[slot] = 1;
+                    }
+                }
+                var_idx++;
+                bindings = cl_cdr(bindings);
+            }
         }
     } else {
         CL_Obj vars[CL_MAX_LOCALS];
@@ -516,6 +763,36 @@ static void compile_let(CL_Compiler *c, CL_Obj form, int sequential)
                     cl_emit(c, OP_DYNBIND);
                     cl_emit_u16(c, (uint16_t)idx);
                     special_count++;
+                }
+            }
+
+            /* Box lexical vars that are both mutated and captured */
+            {
+                CL_Obj lex_vars[CL_MAX_LOCALS];
+                int lex_slots[CL_MAX_LOCALS];
+                int n_lex = 0;
+                uint8_t needs_boxing[CL_MAX_LOCALS];
+
+                for (i = 0; i < n; i++) {
+                    if (lexical_slots[i] >= 0) {
+                        lex_vars[n_lex] = vars[i];
+                        lex_slots[n_lex] = lexical_slots[i];
+                        n_lex++;
+                    }
+                }
+                if (n_lex > 0) {
+                    determine_boxed_vars(body, lex_vars, n_lex, needs_boxing);
+                    for (i = 0; i < n_lex; i++) {
+                        if (needs_boxing[i]) {
+                            cl_emit(c, OP_LOAD);
+                            cl_emit(c, (uint8_t)lex_slots[i]);
+                            cl_emit(c, OP_MAKE_CELL);
+                            cl_emit(c, OP_STORE);
+                            cl_emit(c, (uint8_t)lex_slots[i]);
+                            cl_emit(c, OP_POP);
+                            env->boxed[lex_slots[i]] = 1;
+                        }
+                    }
                 }
             }
         }
@@ -574,12 +851,26 @@ static void compile_setq(CL_Compiler *c, CL_Obj form)
 
         slot = cl_env_lookup(c->env, var);
         if (slot >= 0) {
-            /* OP_STORE peeks top without popping — no DUP needed */
-            cl_emit(c, OP_STORE);
-            cl_emit(c, (uint8_t)slot);
+            if (c->env->boxed[slot]) {
+                cl_emit(c, OP_CELL_SET_LOCAL);
+                cl_emit(c, (uint8_t)slot);
+            } else {
+                cl_emit(c, OP_STORE);
+                cl_emit(c, (uint8_t)slot);
+            }
+        } else if (c->env) {
+            int uv_idx = cl_env_resolve_upvalue(c->env, var);
+            if (uv_idx >= 0) {
+                /* Upvalue setq — must be boxed (scan guarantees this) */
+                cl_emit(c, OP_CELL_SET_UPVAL);
+                cl_emit(c, (uint8_t)uv_idx);
+            } else {
+                int idx = cl_add_constant(c, var);
+                cl_emit(c, OP_GSTORE);
+                cl_emit_u16(c, (uint16_t)idx);
+            }
         } else {
             int idx = cl_add_constant(c, var);
-            /* OP_GSTORE peeks top without popping — no DUP needed */
             cl_emit(c, OP_GSTORE);
             cl_emit_u16(c, (uint16_t)idx);
         }
@@ -616,12 +907,25 @@ static void compile_setf_place(CL_Compiler *c, CL_Obj place, CL_Obj val_form)
         compile_expr(c, val_form);
         slot = cl_env_lookup(c->env, place);
         if (slot >= 0) {
-            /* OP_STORE peeks top without popping — no DUP needed */
-            cl_emit(c, OP_STORE);
-            cl_emit(c, (uint8_t)slot);
+            if (c->env->boxed[slot]) {
+                cl_emit(c, OP_CELL_SET_LOCAL);
+                cl_emit(c, (uint8_t)slot);
+            } else {
+                cl_emit(c, OP_STORE);
+                cl_emit(c, (uint8_t)slot);
+            }
+        } else if (c->env) {
+            int uv_idx = cl_env_resolve_upvalue(c->env, place);
+            if (uv_idx >= 0) {
+                cl_emit(c, OP_CELL_SET_UPVAL);
+                cl_emit(c, (uint8_t)uv_idx);
+            } else {
+                int idx = cl_add_constant(c, place);
+                cl_emit(c, OP_GSTORE);
+                cl_emit_u16(c, (uint16_t)idx);
+            }
         } else {
             int idx = cl_add_constant(c, place);
-            /* OP_GSTORE peeks top without popping — no DUP needed */
             cl_emit(c, OP_GSTORE);
             cl_emit_u16(c, (uint16_t)idx);
         }
@@ -986,6 +1290,8 @@ static void compile_symbol(CL_Compiler *c, CL_Obj sym)
     if (slot >= 0) {
         cl_emit(c, OP_LOAD);
         cl_emit(c, (uint8_t)slot);
+        if (c->env->boxed[slot])
+            cl_emit(c, OP_CELL_REF);
         return;
     }
 
@@ -994,6 +1300,8 @@ static void compile_symbol(CL_Compiler *c, CL_Obj sym)
         if (uv_idx >= 0) {
             cl_emit(c, OP_UPVAL);
             cl_emit(c, (uint8_t)uv_idx);
+            if (c->env->upvalues[uv_idx].is_boxed)
+                cl_emit(c, OP_CELL_REF);
             return;
         }
     }

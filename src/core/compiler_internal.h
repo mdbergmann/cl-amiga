@@ -181,4 +181,11 @@ CL_Obj process_body_declarations(CL_Compiler *c, CL_Obj body);
 CL_Obj scan_local_specials(CL_Obj body);
 int is_locally_special(CL_Obj var, CL_Obj local_specials);
 
+/* Boxing analysis for mutable closure bindings */
+void determine_boxed_vars(CL_Obj body, CL_Obj *vars, int n_vars,
+                          uint8_t *boxed_out);
+void scan_body_for_boxing(CL_Obj form, CL_Obj *vars, int n_vars,
+                          uint8_t *mutated, uint8_t *captured,
+                          int closure_depth);
+
 #endif /* COMPILER_INTERNAL_H */

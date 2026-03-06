@@ -1101,6 +1101,14 @@ static void print_obj(CL_Obj obj)
         break;
     }
 
+    case TYPE_CELL: {
+        CL_Cell *cell = (CL_Cell *)CL_OBJ_TO_PTR(obj);
+        out_str("#<CELL ");
+        print_obj(cell->value);
+        out_char('>');
+        break;
+    }
+
     case TYPE_RANDOM_STATE:
         out_str("#<RANDOM-STATE>");
         break;

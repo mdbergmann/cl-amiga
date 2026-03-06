@@ -500,6 +500,42 @@ CL_Obj cl_vm_eval(CL_Obj bytecode_obj)
             break;
         }
 
+        case OP_MAKE_CELL: {
+            CL_Obj val = cl_vm_pop();
+            cl_vm_push(cl_make_cell(val));
+            break;
+        }
+
+        case OP_CELL_REF: {
+            CL_Obj cell_obj = cl_vm_pop();
+            CL_Cell *cell = (CL_Cell *)CL_OBJ_TO_PTR(cell_obj);
+            cl_vm_push(cell->value);
+            break;
+        }
+
+        case OP_CELL_SET_LOCAL: {
+            uint8_t slot = code[ip++];
+            CL_Obj cell_obj = cl_vm.stack[frame->bp + slot];
+            CL_Cell *cell = (CL_Cell *)CL_OBJ_TO_PTR(cell_obj);
+            cell->value = cl_vm.stack[cl_vm.sp - 1]; /* peek */
+            break;
+        }
+
+        case OP_CELL_SET_UPVAL: {
+            uint8_t index = code[ip++];
+            CL_Obj cell_obj;
+            CL_Cell *cell;
+            if (CL_CLOSURE_P(frame->bytecode)) {
+                CL_Closure *cl = (CL_Closure *)CL_OBJ_TO_PTR(frame->bytecode);
+                cell_obj = cl->upvalues[index];
+            } else {
+                break; /* shouldn't happen */
+            }
+            cell = (CL_Cell *)CL_OBJ_TO_PTR(cell_obj);
+            cell->value = cl_vm.stack[cl_vm.sp - 1]; /* peek */
+            break;
+        }
+
         case OP_UPVAL: {
             /* Flat upvalue access: single index into closure's upvalues[] */
             uint8_t index = code[ip++];

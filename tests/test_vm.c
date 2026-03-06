@@ -415,6 +415,116 @@ TEST(eval_closure_shared_scope)
     ASSERT_EQ_INT(eval_int("(let ((p (make-pair 10))) ((car (cdr p))))"), 11);
 }
 
+/* --- Heap-boxed cells (mutable closure capture) --- */
+
+TEST(eval_cell_basic_counter)
+{
+    /* Closure captures and mutates a let variable via setq */
+    eval_print("(let ((n 0)) (defun cell-inc () (setq n (+ n 1)) n))");
+    ASSERT_EQ_INT(eval_int("(cell-inc)"), 1);
+    ASSERT_EQ_INT(eval_int("(cell-inc)"), 2);
+    ASSERT_EQ_INT(eval_int("(cell-inc)"), 3);
+}
+
+TEST(eval_cell_shared_getter_setter)
+{
+    /* Two closures share a mutable variable via heap-boxed cell */
+    eval_print("(let ((x 10)) (defun cg () x) (defun cs (v) (setq x v)))");
+    ASSERT_EQ_INT(eval_int("(cg)"), 10);
+    eval_print("(cs 42)");
+    ASSERT_EQ_INT(eval_int("(cg)"), 42);
+    eval_print("(cs 99)");
+    ASSERT_EQ_INT(eval_int("(cg)"), 99);
+}
+
+TEST(eval_cell_accumulator_param)
+{
+    /* Parameter captured and mutated in returned closure */
+    eval_print("(defun make-acc (init) (lambda (x) (setq init (+ init x)) init))");
+    eval_print("(defvar *ta* (make-acc 0))");
+    ASSERT_EQ_INT(eval_int("(funcall *ta* 5)"), 5);
+    ASSERT_EQ_INT(eval_int("(funcall *ta* 3)"), 8);
+    ASSERT_EQ_INT(eval_int("(funcall *ta* 10)"), 18);
+}
+
+TEST(eval_cell_independent_instances)
+{
+    /* Multiple closure instances have independent cells */
+    eval_print("(defun mk-ctr () (let ((n 0)) (lambda () (setq n (+ n 1)) n)))");
+    eval_print("(defvar *tc1* (mk-ctr))");
+    eval_print("(defvar *tc2* (mk-ctr))");
+    ASSERT_EQ_INT(eval_int("(funcall *tc1*)"), 1);
+    ASSERT_EQ_INT(eval_int("(funcall *tc1*)"), 2);
+    ASSERT_EQ_INT(eval_int("(funcall *tc2*)"), 1);  /* independent */
+    ASSERT_EQ_INT(eval_int("(funcall *tc1*)"), 3);
+    ASSERT_EQ_INT(eval_int("(funcall *tc2*)"), 2);
+}
+
+TEST(eval_cell_setq_before_capture)
+{
+    /* Mutation before capture — closure sees post-mutation value */
+    ASSERT_EQ_INT(eval_int("(let ((x 0)) (setq x 42) ((lambda () x)))"), 42);
+}
+
+TEST(eval_cell_nested_closure)
+{
+    /* Inner closure mutates var from outer let via upvalue chain */
+    eval_print("(let ((x 0))"
+               "  (defun cell-outer () (lambda () (setq x (+ x 1)) x)))");
+    ASSERT_EQ_INT(eval_int("(funcall (cell-outer))"), 1);
+    ASSERT_EQ_INT(eval_int("(funcall (cell-outer))"), 2);
+}
+
+TEST(eval_cell_let_star)
+{
+    /* let* with one mutable captured var, one read-only captured var */
+    eval_print("(let* ((a 1) (b 10))"
+               "  (defun clg () (+ a b))"
+               "  (defun cls (v) (setq a v)))");
+    ASSERT_EQ_INT(eval_int("(clg)"), 11);
+    eval_print("(cls 5)");
+    ASSERT_EQ_INT(eval_int("(clg)"), 15);
+}
+
+TEST(eval_cell_flet_mutation)
+{
+    /* flet function mutates captured outer variable */
+    ASSERT_EQ_INT(eval_int(
+        "(let ((n 0))"
+        "  (flet ((bump () (setq n (+ n 1))))"
+        "    (bump) (bump) (bump) n))"), 3);
+}
+
+TEST(eval_cell_labels_shared)
+{
+    /* labels functions share mutable variable */
+    ASSERT_STR_EQ(eval_print(
+        "(let ((n 0))"
+        "  (labels ((my-inc () (setq n (+ n 1)))"
+        "           (my-peek () n))"
+        "    (my-inc) (my-inc) (my-inc) (my-peek)))"), "3");
+}
+
+TEST(eval_cell_do_let_capture)
+{
+    /* do loop with per-iteration let binding: each closure gets own value */
+    ASSERT_STR_EQ(eval_print(
+        "(let ((fns nil))"
+        "  (do ((i 0 (+ i 1)))"
+        "      ((= i 3) (mapcar #'funcall (reverse fns)))"
+        "    (let ((j i))"
+        "      (setq fns (cons (lambda () j) fns)))))"),
+        "(0 1 2)");
+}
+
+TEST(eval_cell_readonly_no_boxing)
+{
+    /* Read-only capture: no boxing, no regression */
+    ASSERT_EQ_INT(eval_int("(let ((x 42)) ((lambda () x)))"), 42);
+    eval_print("(defun ma2 (n) (lambda (x) (+ n x)))");
+    ASSERT_EQ_INT(eval_int("((ma2 10) 5)"), 15);
+}
+
 /* --- AND / OR / COND --- */
 
 TEST(eval_and)
@@ -5464,6 +5574,20 @@ int main(void)
     RUN(eval_closure_multiple_captures);
     RUN(eval_closure_nested);
     RUN(eval_closure_shared_scope);
+
+    /* Heap-boxed cells (mutable closure capture) */
+    RUN(eval_cell_basic_counter);
+    RUN(eval_cell_shared_getter_setter);
+    RUN(eval_cell_accumulator_param);
+    RUN(eval_cell_independent_instances);
+    RUN(eval_cell_setq_before_capture);
+    RUN(eval_cell_nested_closure);
+    RUN(eval_cell_let_star);
+    RUN(eval_cell_flet_mutation);
+    RUN(eval_cell_labels_shared);
+    RUN(eval_cell_do_let_capture);
+    RUN(eval_cell_readonly_no_boxing);
+
     RUN(eval_and);
     RUN(eval_or);
     RUN(eval_cond);

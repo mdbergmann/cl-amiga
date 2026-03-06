@@ -406,6 +406,19 @@ CL_Obj cl_make_bit_vector(uint32_t nbits)
     return CL_PTR_TO_OBJ(bv);
 }
 
+CL_Obj cl_make_cell(CL_Obj value)
+{
+    CL_Cell *cell;
+
+    CL_GC_PROTECT(value);
+    cell = (CL_Cell *)cl_alloc(TYPE_CELL, sizeof(CL_Cell));
+    CL_GC_UNPROTECT(1);
+
+    if (!cell) return CL_NIL;
+    cell->value = value;
+    return CL_PTR_TO_OBJ(cell);
+}
+
 CL_Obj cl_make_pathname(CL_Obj host, CL_Obj device, CL_Obj directory,
                         CL_Obj name, CL_Obj type, CL_Obj version)
 {
@@ -567,6 +580,11 @@ static void gc_mark_children(void *ptr, uint8_t type)
         gc_mark_push(pn->name);
         gc_mark_push(pn->type);
         gc_mark_push(pn->version);
+        break;
+    }
+    case TYPE_CELL: {
+        CL_Cell *cell = (CL_Cell *)ptr;
+        gc_mark_push(cell->value);
         break;
     }
     case TYPE_BIGNUM:

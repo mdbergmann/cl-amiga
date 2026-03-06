@@ -191,13 +191,17 @@ static void compile_destructure_pattern(CL_Compiler *c, int pos_slot,
                     /* Protect against odd-length plist */
                     {
                         int odd_pos = cl_emit_jump(c, OP_JNIL);
+                        /* JNIL consumed TOS; reload (cdr scan_slot) */
+                        cl_emit(c, OP_LOAD);
+                        cl_emit(c, (uint8_t)scan_slot);
+                        cl_emit(c, OP_CDR);
                         cl_emit(c, OP_CDR);
                         cl_emit(c, OP_STORE);
                         cl_emit(c, (uint8_t)scan_slot);
                         cl_emit(c, OP_POP);
                         cl_emit_loop_jump(c, OP_JMP, loop_start);
                         cl_patch_jump(c, odd_pos);
-                        /* Odd-length: pop NIL, fall through to not_found */
+                        /* Odd-length: fall through to not_found */
                     }
 
                     /* not_found: var = default, supplied-p = NIL */
@@ -860,6 +864,7 @@ void compile_dolist(CL_Compiler *c, CL_Obj form)
     int saved_block_count = c->block_count;
     int var_slot, iter_slot, result_slot;
     int loop_start, jnil_pos;
+    int var_boxed = 0;
     CL_BlockInfo *bi;
     int i;
 
@@ -867,6 +872,29 @@ void compile_dolist(CL_Compiler *c, CL_Obj form)
 
     /* Allocate var slot */
     var_slot = cl_env_add_local(env, var);
+
+    /* Check if loop var is captured in body (always mutated by loop) */
+    {
+        uint8_t captured = 0, mutated = 0;
+        CL_Obj cur = body;
+        while (CL_CONS_P(cur)) {
+            scan_body_for_boxing(cl_car(cur), &var, 1, &mutated, &captured, 0);
+            cur = cl_cdr(cur);
+        }
+        if (!CL_NULL_P(cl_cdr(cl_cdr(binding))))
+            scan_body_for_boxing(result_form, &var, 1, &mutated, &captured, 0);
+        var_boxed = captured;
+    }
+
+    /* If boxed, initialize cell in var_slot */
+    if (var_boxed) {
+        cl_emit(c, OP_NIL);
+        cl_emit(c, OP_MAKE_CELL);
+        cl_emit(c, OP_STORE);
+        cl_emit(c, (uint8_t)var_slot);
+        cl_emit(c, OP_POP);
+        env->boxed[var_slot] = 1;
+    }
 
     /* Allocate internal iter slot (no symbol, never looked up) */
     iter_slot = env->local_count;
@@ -902,7 +930,11 @@ void compile_dolist(CL_Compiler *c, CL_Obj form)
     cl_emit(c, OP_LOAD);
     cl_emit(c, (uint8_t)iter_slot);
     cl_emit(c, OP_CAR);
-    cl_emit(c, OP_STORE);
+    if (var_boxed) {
+        cl_emit(c, OP_CELL_SET_LOCAL);
+    } else {
+        cl_emit(c, OP_STORE);
+    }
     cl_emit(c, (uint8_t)var_slot);
     cl_emit(c, OP_POP);
 
@@ -932,7 +964,11 @@ void compile_dolist(CL_Compiler *c, CL_Obj form)
 
     /* CL spec: var is NIL during result-form evaluation */
     cl_emit(c, OP_NIL);
-    cl_emit(c, OP_STORE);
+    if (var_boxed) {
+        cl_emit(c, OP_CELL_SET_LOCAL);
+    } else {
+        cl_emit(c, OP_STORE);
+    }
     cl_emit(c, (uint8_t)var_slot);
     cl_emit(c, OP_POP);
 
@@ -974,6 +1010,7 @@ void compile_dotimes(CL_Compiler *c, CL_Obj form)
     int saved_block_count = c->block_count;
     int var_slot, limit_slot, result_slot;
     int loop_start, jtrue_pos;
+    int var_boxed = 0;
     CL_BlockInfo *bi;
     int i;
 
@@ -981,6 +1018,19 @@ void compile_dotimes(CL_Compiler *c, CL_Obj form)
 
     /* Allocate var slot */
     var_slot = cl_env_add_local(env, var);
+
+    /* Check if loop var is captured in body (always mutated by loop) */
+    {
+        uint8_t captured = 0, mutated = 0;
+        CL_Obj cur = body;
+        while (CL_CONS_P(cur)) {
+            scan_body_for_boxing(cl_car(cur), &var, 1, &mutated, &captured, 0);
+            cur = cl_cdr(cur);
+        }
+        if (!CL_NULL_P(cl_cdr(cl_cdr(binding))))
+            scan_body_for_boxing(result_form, &var, 1, &mutated, &captured, 0);
+        var_boxed = captured;
+    }
 
     /* Allocate internal limit slot */
     limit_slot = env->local_count;
@@ -1006,8 +1056,12 @@ void compile_dotimes(CL_Compiler *c, CL_Obj form)
     cl_emit(c, (uint8_t)limit_slot);
     cl_emit(c, OP_POP);
 
-    /* var = 0 */
+    /* var = 0 (boxed: wrap in cell) */
     cl_emit_const(c, CL_MAKE_FIXNUM(0));
+    if (var_boxed) {
+        cl_emit(c, OP_MAKE_CELL);
+        env->boxed[var_slot] = 1;
+    }
     cl_emit(c, OP_STORE);
     cl_emit(c, (uint8_t)var_slot);
     cl_emit(c, OP_POP);
@@ -1016,6 +1070,7 @@ void compile_dotimes(CL_Compiler *c, CL_Obj form)
     loop_start = c->code_pos;
     cl_emit(c, OP_LOAD);
     cl_emit(c, (uint8_t)var_slot);
+    if (var_boxed) cl_emit(c, OP_CELL_REF);
     cl_emit(c, OP_LOAD);
     cl_emit(c, (uint8_t)limit_slot);
     cl_emit(c, OP_GE);
@@ -1034,9 +1089,14 @@ void compile_dotimes(CL_Compiler *c, CL_Obj form)
     /* Increment: var = var + 1 */
     cl_emit(c, OP_LOAD);
     cl_emit(c, (uint8_t)var_slot);
+    if (var_boxed) cl_emit(c, OP_CELL_REF);
     cl_emit_const(c, CL_MAKE_FIXNUM(1));
     cl_emit(c, OP_ADD);
-    cl_emit(c, OP_STORE);
+    if (var_boxed) {
+        cl_emit(c, OP_CELL_SET_LOCAL);
+    } else {
+        cl_emit(c, OP_STORE);
+    }
     cl_emit(c, (uint8_t)var_slot);
     cl_emit(c, OP_POP);
 
@@ -1088,6 +1148,7 @@ void compile_do(CL_Compiler *c, CL_Obj form)
     CL_Obj inits[CL_MAX_LOCALS];
     CL_Obj steps[CL_MAX_LOCALS];  /* CL_NIL if no step form */
     int has_step[CL_MAX_LOCALS];
+    uint8_t do_boxed[CL_MAX_LOCALS];
     int n = 0;
     int i;
     int loop_start, jtrue_pos;
@@ -1112,6 +1173,35 @@ void compile_do(CL_Compiler *c, CL_Obj form)
         }
     }
 
+    /* Check which do vars are captured (all stepped vars are mutated by loop) */
+    {
+        uint8_t mutated[CL_MAX_LOCALS], captured[CL_MAX_LOCALS];
+        CL_Obj cur;
+        memset(mutated, 0, (size_t)n);
+        memset(captured, 0, (size_t)n);
+        memset(do_boxed, 0, (size_t)n);
+        /* Scan body, end-test, result forms, and step forms */
+        cur = body;
+        while (CL_CONS_P(cur)) {
+            scan_body_for_boxing(cl_car(cur), vars, n, mutated, captured, 0);
+            cur = cl_cdr(cur);
+        }
+        scan_body_for_boxing(end_test, vars, n, mutated, captured, 0);
+        cur = result_forms;
+        while (CL_CONS_P(cur)) {
+            scan_body_for_boxing(cl_car(cur), vars, n, mutated, captured, 0);
+            cur = cl_cdr(cur);
+        }
+        for (i = 0; i < n; i++) {
+            scan_body_for_boxing(steps[i], vars, n, mutated, captured, 0);
+        }
+        /* Stepped vars are always mutated; all do vars with step forms need boxing if captured */
+        for (i = 0; i < n; i++) {
+            do_boxed[i] = (has_step[i] && captured[i]) ? 1 :
+                          (mutated[i] && captured[i]) ? 1 : 0;
+        }
+    }
+
     c->in_tail = 0;
 
     /* Parallel init: evaluate all init forms onto stack */
@@ -1129,6 +1219,19 @@ void compile_do(CL_Compiler *c, CL_Obj form)
         cl_emit(c, OP_STORE);
         cl_emit(c, (uint8_t)(saved_local_count + i));
         cl_emit(c, OP_POP);
+    }
+
+    /* Box vars that need it */
+    for (i = 0; i < n; i++) {
+        if (do_boxed[i]) {
+            cl_emit(c, OP_LOAD);
+            cl_emit(c, (uint8_t)(saved_local_count + i));
+            cl_emit(c, OP_MAKE_CELL);
+            cl_emit(c, OP_STORE);
+            cl_emit(c, (uint8_t)(saved_local_count + i));
+            cl_emit(c, OP_POP);
+            env->boxed[saved_local_count + i] = 1;
+        }
     }
 
     /* Allocate result slot for implicit block NIL */
@@ -1165,12 +1268,17 @@ void compile_do(CL_Compiler *c, CL_Obj form)
         } else {
             cl_emit(c, OP_LOAD);
             cl_emit(c, (uint8_t)(saved_local_count + i));
+            if (do_boxed[i]) cl_emit(c, OP_CELL_REF);
         }
     }
 
     /* Store all back-to-front */
     for (i = n - 1; i >= 0; i--) {
-        cl_emit(c, OP_STORE);
+        if (do_boxed[i]) {
+            cl_emit(c, OP_CELL_SET_LOCAL);
+        } else {
+            cl_emit(c, OP_STORE);
+        }
         cl_emit(c, (uint8_t)(saved_local_count + i));
         cl_emit(c, OP_POP);
     }

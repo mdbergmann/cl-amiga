@@ -92,7 +92,8 @@ enum CL_ObjType {
     TYPE_STREAM,
     TYPE_RANDOM_STATE,
     TYPE_BIT_VECTOR,
-    TYPE_PATHNAME
+    TYPE_PATHNAME,
+    TYPE_CELL
 };
 
 /* Header access macros */
@@ -400,6 +401,15 @@ typedef struct {
 } CL_Pathname;
 
 #define CL_PATHNAME_P(obj) (CL_HEAP_P(obj) && CL_HDR_TYPE(CL_OBJ_TO_PTR(obj)) == TYPE_PATHNAME)
+
+/* --- Cell (heap-boxed mutable binding for closures) --- */
+
+typedef struct {
+    CL_Header hdr;
+    CL_Obj value;
+} CL_Cell;
+
+#define CL_CELL_P(obj) (CL_HEAP_P(obj) && CL_HDR_TYPE(CL_OBJ_TO_PTR(obj)) == TYPE_CELL)
 
 /* --- Convenience accessors --- */
 

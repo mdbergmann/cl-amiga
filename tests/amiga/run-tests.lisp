@@ -171,6 +171,51 @@
 (check "closure shared-a" 10 (let ((p (make-pair 10))) ((car p))))
 (check "closure shared-b" 11 (let ((p (make-pair 10))) ((car (cdr p)))))
 
+; --- Heap-boxed cells (mutable closure capture) ---
+(let ((n 0)) (defun cell-inc () (setq n (+ n 1)) n))
+(check "cell counter 1" 1 (cell-inc))
+(check "cell counter 2" 2 (cell-inc))
+(check "cell counter 3" 3 (cell-inc))
+
+(let ((x 10)) (defun cg () x) (defun cs (v) (setq x v)))
+(check "cell getter init" 10 (cg))
+(cs 42)
+(check "cell getter after set" 42 (cg))
+
+(defun make-acc (init) (lambda (x) (setq init (+ init x)) init))
+(defvar *ta* (make-acc 0))
+(check "cell accum 5" 5 (funcall *ta* 5))
+(check "cell accum +3" 8 (funcall *ta* 3))
+(check "cell accum +10" 18 (funcall *ta* 10))
+
+(defun mk-ctr () (let ((n 0)) (lambda () (setq n (+ n 1)) n)))
+(defvar *tc1* (mk-ctr))
+(defvar *tc2* (mk-ctr))
+(check "cell indep c1-1" 1 (funcall *tc1*))
+(check "cell indep c1-2" 2 (funcall *tc1*))
+(check "cell indep c2-1" 1 (funcall *tc2*))
+(check "cell indep c1-3" 3 (funcall *tc1*))
+(check "cell indep c2-2" 2 (funcall *tc2*))
+
+(check "cell setq before capture" 42 (let ((x 0)) (setq x 42) ((lambda () x))))
+
+(let ((x 0)) (defun cell-outer () (lambda () (setq x (+ x 1)) x)))
+(check "cell nested 1" 1 (funcall (cell-outer)))
+(check "cell nested 2" 2 (funcall (cell-outer)))
+
+(check "cell flet mutation" 3
+  (let ((n 0))
+    (flet ((bump () (setq n (+ n 1))))
+      (bump) (bump) (bump) n)))
+
+(check "cell labels shared" 3
+  (let ((n 0))
+    (labels ((my-inc () (setq n (+ n 1)))
+             (my-peek () n))
+      (my-inc) (my-inc) (my-inc) (my-peek))))
+
+(check "cell readonly" 42 (let ((x 42)) ((lambda () x))))
+
 ; --- Type-of ---
 (check "type-of fixnum" 'fixnum (type-of 42))
 (check "type-of string" 'string (type-of "hello"))

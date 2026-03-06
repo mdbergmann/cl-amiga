@@ -703,12 +703,15 @@
 
 ;;; --- call-next-method support ---
 (defvar *call-next-method-function* nil)
+(defvar *call-next-method-args* nil)
 (defvar *next-method-p-function* nil)
 
 (defun call-next-method (&rest args)
-  "Call the next most-specific method."
+  "Call the next most-specific method.
+When called with no arguments, passes the original method arguments."
   (if *call-next-method-function*
-      (apply *call-next-method-function* args)
+      (apply *call-next-method-function*
+             (if args args *call-next-method-args*))
       (error "No next method")))
 
 (defun next-method-p ()
@@ -856,6 +859,7 @@
         (lambda (&rest call-args)
           (let* ((actual-args (or call-args args))
                  (*call-next-method-function* rest-chain)
+                 (*call-next-method-args* actual-args)
                  (*next-method-p-function*
                    (lambda () (not (null (cdr methods))))))
             (apply (method-function m) actual-args))))))
@@ -869,6 +873,7 @@
         (lambda (&rest call-args)
           (let* ((actual-args (or call-args args))
                  (*call-next-method-function* rest-chain)
+                 (*call-next-method-args* actual-args)
                  (*next-method-p-function* (lambda () t)))
             (apply (method-function m) actual-args))))))
 
@@ -973,10 +978,17 @@
            (block-name (if (and (consp name) (eq (car name) 'setf))
                            (cadr name)
                            name)))
-      `(%add-method-to-gf
-         ',name ',qualifiers ',spec-names
-         (lambda ,unspec-ll (block ,block-name ,@body))
-         ',unspec-ll))))
+      ;; Per CL spec, keyword checking for GFs is based on the union of
+      ;; all applicable methods' keywords. Add &allow-other-keys so the
+      ;; VM doesn't reject keywords accepted by other methods.
+      (let ((effective-ll (if (and (member '&key unspec-ll)
+                                   (not (member '&allow-other-keys unspec-ll)))
+                              (append unspec-ll '(&allow-other-keys))
+                              unspec-ll)))
+        `(%add-method-to-gf
+           ',name ',qualifiers ',spec-names
+           (lambda ,effective-ll (block ,block-name ,@body))
+           ',unspec-ll)))))
 
 (defun %add-method-to-gf (gf-name qualifiers specializer-names fn lambda-list)
   "Add a method to the named generic function."
@@ -1014,6 +1026,21 @@
           (push (list entry
                       `(slot-value ,instance-var ',entry))
                 bindings)))
+    `(let ((,instance-var ,instance-form))
+       (symbol-macrolet ,(nreverse bindings)
+         ,@body))))
+
+(defmacro with-accessors (slot-entries instance-form &body body)
+  "Evaluate BODY with accessor-based bindings via symbol-macrolet.
+   SLOT-ENTRIES is ((var accessor) ...).
+   Each var expands to (accessor instance)."
+  (let ((instance-var (gensym "INSTANCE"))
+        (bindings nil))
+    (dolist (entry slot-entries)
+      (let ((var (car entry))
+            (accessor (cadr entry)))
+        (push (list var `(,accessor ,instance-var))
+              bindings)))
     `(let ((,instance-var ,instance-form))
        (symbol-macrolet ,(nreverse bindings)
          ,@body))))
