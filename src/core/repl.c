@@ -131,6 +131,9 @@ void cl_load_file(const char *path)
         const char *prev_file = cl_current_source_file;
         uint16_t prev_file_id = cl_current_file_id;
         int prev_line = cl_reader_get_line();
+        /* Per CL spec, LOAD binds *package* so in-package in loaded file
+           doesn't affect the caller */
+        CL_Obj saved_package = cl_current_package;
         CL_Obj stream;
         cl_current_source_file = path;
         cl_current_file_id++;
@@ -167,6 +170,13 @@ void cl_load_file(const char *path)
         cl_current_source_file = prev_file;
         cl_current_file_id = prev_file_id;
         cl_reader_set_line(prev_line);
+
+        /* Restore *package* — in-package in loaded file must not leak */
+        cl_current_package = saved_package;
+        {
+            CL_Symbol *pkg_sym = (CL_Symbol *)CL_OBJ_TO_PTR(SYM_STAR_PACKAGE);
+            pkg_sym->value = saved_package;
+        }
     }
 }
 

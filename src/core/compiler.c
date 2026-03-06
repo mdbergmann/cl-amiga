@@ -535,7 +535,9 @@ void scan_body_for_boxing(CL_Obj form, CL_Obj *vars, int n_vars,
 
     /* (lambda params . body) — body is at increased closure depth */
     if (head == SYM_LAMBDA) {
-        CL_Obj body = cl_cdr(rest); /* skip param list */
+        CL_Obj body;
+        if (!CL_CONS_P(rest)) return; /* malformed lambda */
+        body = cl_cdr(rest); /* skip param list */
         while (CL_CONS_P(body)) {
             scan_body_for_boxing(cl_car(body), vars, n_vars,
                                  mutated, captured, closure_depth + 1);
@@ -546,7 +548,9 @@ void scan_body_for_boxing(CL_Obj form, CL_Obj *vars, int n_vars,
 
     /* (defun name params . body) — body is at increased closure depth */
     if (head == SYM_DEFUN) {
-        CL_Obj body = cl_cdr(cl_cdr(rest)); /* skip name and param list */
+        CL_Obj body;
+        if (!CL_CONS_P(rest) || !CL_CONS_P(cl_cdr(rest))) return;
+        body = cl_cdr(cl_cdr(rest)); /* skip name and param list */
         while (CL_CONS_P(body)) {
             scan_body_for_boxing(cl_car(body), vars, n_vars,
                                  mutated, captured, closure_depth + 1);
@@ -557,12 +561,16 @@ void scan_body_for_boxing(CL_Obj form, CL_Obj *vars, int n_vars,
 
     /* (flet/labels ((name params . body) ...) . body) */
     if (head == SYM_FLET || head == SYM_LABELS) {
-        CL_Obj defs = cl_car(rest);
-        CL_Obj body = cl_cdr(rest);
+        CL_Obj defs, body;
+        if (!CL_CONS_P(rest)) return;
+        defs = cl_car(rest);
+        body = cl_cdr(rest);
         /* Scan each function definition body at increased depth */
         while (CL_CONS_P(defs)) {
             CL_Obj def = cl_car(defs);
-            CL_Obj fbody = cl_cdr(cl_cdr(def)); /* skip name and params */
+            CL_Obj fbody;
+            if (!CL_CONS_P(def) || !CL_CONS_P(cl_cdr(def))) { defs = cl_cdr(defs); continue; }
+            fbody = cl_cdr(cl_cdr(def)); /* skip name and params */
             while (CL_CONS_P(fbody)) {
                 scan_body_for_boxing(cl_car(fbody), vars, n_vars,
                                      mutated, captured, closure_depth + 1);
