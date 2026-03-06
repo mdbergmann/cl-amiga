@@ -4634,6 +4634,22 @@ TEST(eval_loop_with_and)
         "  repeat 1 collect (+ x y))"), "(30)");
 }
 
+TEST(eval_loop_with_destructuring)
+{
+    /* with destructuring — dotted pair */
+    ASSERT_STR_EQ(eval_print(
+        "(loop with (a . b) = (cons 1 2)"
+        "  do (return (list a b)))"), "(1 2)");
+    /* with destructuring — proper list */
+    ASSERT_STR_EQ(eval_print(
+        "(loop with (first . rest) = '(10 20 30)"
+        "  do (return (list first rest)))"), "(10 (20 30))");
+    /* with destructuring — nested */
+    ASSERT_STR_EQ(eval_print(
+        "(loop with ((a b) . c) = '((1 2) 3 4)"
+        "  do (return (list a b c)))"), "(1 2 (3 4))");
+}
+
 TEST(eval_loop_named)
 {
     /* named block with return-from */
@@ -5834,6 +5850,7 @@ int main(void)
     RUN(eval_loop_thereis);
     RUN(eval_loop_with);
     RUN(eval_loop_with_and);
+    RUN(eval_loop_with_destructuring);
     RUN(eval_loop_named);
     RUN(eval_loop_initially);
     RUN(eval_loop_finally);

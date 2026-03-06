@@ -12,6 +12,7 @@
 #include "float.h"
 #include "ratio.h"
 #include "bignum.h"
+#include "printer.h"
 #include "error.h"
 #include "vm.h"
 #include "compiler.h"
@@ -392,7 +393,12 @@ static int typep_check(CL_Obj obj, CL_Obj type_spec)
             }
         }
 
-        cl_error(CL_ERR_TYPE, "TYPEP: invalid compound type specifier");
+        {
+            char buf[128];
+            cl_prin1_to_string(head, buf, sizeof(buf));
+            cl_error(CL_ERR_TYPE,
+                     "TYPEP: invalid compound type specifier head: %s", buf);
+        }
     }
 
     /* Class object as type specifier: extract class name (slot 0) */
@@ -403,7 +409,11 @@ static int typep_check(CL_Obj obj, CL_Obj type_spec)
             return typep_symbol(obj, class_name);
     }
 
-    cl_error(CL_ERR_TYPE, "TYPEP: invalid type specifier");
+    {
+        char buf[128];
+        cl_prin1_to_string(type_spec, buf, sizeof(buf));
+        cl_error(CL_ERR_TYPE, "TYPEP: invalid type specifier: %s", buf);
+    }
     return 0;
 }
 

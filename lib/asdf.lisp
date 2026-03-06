@@ -1485,13 +1485,12 @@ starting the separation from the end, e.g. when called with arguments
     (block ()
       (let ((list nil) (words 0) (end (length string)))
         (when (zerop end) (return nil))
-        (flet ((separatorp (char) (find char separator))
-               (done () (return (cons (subseq string 0 end) list))))
+        (flet ((separatorp (char) (find char separator)))
           (loop
             :for start = (if (and max (>= words (1- max)))
-                             (done)
+                             (return (cons (subseq string 0 end) list))
                              (position-if #'separatorp string :end end :from-end t))
-            :do (when (null start) (done))
+            :do (when (null start) (return (cons (subseq string 0 end) list)))
                 (push (subseq string (1+ start) end) list)
                 (incf words)
                 (setf end start))))))
@@ -14070,13 +14069,16 @@ system or its dependencies if it has already been loaded."
 
 (in-package :asdf/footer)
 
-;;;; Register ASDF itself and all its subsystems as preloaded.
+;;;; Register ASDF itself and all its subsystems as preloaded and immutable.
+;;;; Using register-immutable-system prevents upgrade-asdf from trying to
+;;;; search the filesystem for ASDF .asd files (which don't exist when
+;;;; ASDF is bundled as a single file).
 (with-upgradability ()
   (dolist (s '("asdf" "asdf-package-system"))
     ;; Don't bother with these system names, no one relies on them anymore:
     ;; "asdf-utils" "asdf-bundle" "asdf-driver" "asdf-defsystem"
-    (register-preloaded-system s :version *asdf-version*))
-  (register-preloaded-system "uiop" :version *uiop-version*))
+    (register-immutable-system s :version *asdf-version*))
+  (register-immutable-system "uiop" :version *uiop-version*))
 
 ;;;; Ensure that the version slot on the registered preloaded systems are
 ;;;; correct, by CLEARing the system. However, we do not CLEAR-SYSTEM

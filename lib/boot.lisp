@@ -1247,7 +1247,9 @@
              (block parse-with
                (tagbody
                  with-next
-                 (let ((wvar (car rest)))
+                 (let* ((raw-wvar (car rest))
+                        (destructuring-w (consp raw-wvar))
+                        (wvar (if destructuring-w (gensym "WDVAR") raw-wvar)))
                    (setq rest (cdr rest))
                    (if (and rest (symbolp (car rest))
                             (string= (symbol-name (car rest)) "="))
@@ -1255,7 +1257,12 @@
                          (setq rest (cdr rest))
                          (push (list wvar (car rest)) bindings)
                          (setq rest (cdr rest)))
-                       (push (list wvar nil) bindings)))
+                       (push (list wvar nil) bindings))
+                   (when destructuring-w
+                     (dolist (v (%loop-destructure-vars raw-wvar))
+                       (push (list v nil) bindings))
+                     (dolist (a (%loop-destructure-assigns raw-wvar wvar))
+                       (push a preamble))))
                  (when (and rest (%loop-keyword-p (car rest) "AND"))
                    (setq rest (cdr rest))
                    (go with-next)))))

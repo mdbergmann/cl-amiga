@@ -520,13 +520,17 @@ void compile_typecase(CL_Compiler *c, CL_Obj form, int error_if_no_match)
     if (!had_default) {
         if (error_if_no_match) {
             CL_Obj sym_error = cl_intern("ERROR", 5);
-            CL_Obj errmsg = cl_make_string("ETYPECASE: no matching clause", 29);
+            CL_Obj errmsg = cl_make_string(
+                "ETYPECASE: ~S fell through without matching any clause", 54);
             int idx = cl_add_constant(c, sym_error);
             cl_emit(c, OP_FLOAD);
             cl_emit_u16(c, (uint16_t)idx);
             cl_emit_const(c, errmsg);
+            /* Push the keyform value so error message shows what failed */
+            cl_emit(c, OP_LOAD);
+            cl_emit(c, (uint8_t)temp_slot);
             cl_emit(c, OP_CALL);
-            cl_emit(c, 1);
+            cl_emit(c, 2);
         } else {
             cl_emit(c, OP_NIL);
         }
