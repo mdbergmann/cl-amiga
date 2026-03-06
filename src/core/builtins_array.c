@@ -234,6 +234,18 @@ static CL_Obj bi_aref(CL_Obj *args, int n)
             cl_error(CL_ERR_ARGS, "AREF: index %d out of range", (int)idx);
         return CL_MAKE_FIXNUM(cl_bv_get_bit(bv, (uint32_t)idx));
     }
+    if (CL_STRING_P(args[0])) {
+        CL_String *s = (CL_String *)CL_OBJ_TO_PTR(args[0]);
+        int32_t idx;
+        if (n < 2)
+            cl_error(CL_ERR_ARGS, "AREF: too few arguments");
+        if (!CL_FIXNUM_P(args[1]))
+            cl_error(CL_ERR_TYPE, "AREF: index must be a fixnum");
+        idx = CL_FIXNUM_VAL(args[1]);
+        if (idx < 0 || (uint32_t)idx >= s->length)
+            cl_error(CL_ERR_ARGS, "AREF: index %d out of range", (int)idx);
+        return CL_MAKE_CHAR((unsigned char)s->data[idx]);
+    }
     if (!CL_VECTOR_P(args[0]))
         cl_error(CL_ERR_TYPE, "AREF: not an array");
     vec = (CL_Vector *)CL_OBJ_TO_PTR(args[0]);
@@ -323,6 +335,22 @@ static CL_Obj bi_setf_aref(CL_Obj *args, int n)
         if (val != 0 && val != 1)
             cl_error(CL_ERR_TYPE, "%SETF-AREF: value must be 0 or 1");
         cl_bv_set_bit(bv, (uint32_t)idx, val);
+        return value;
+    }
+
+    if (CL_STRING_P(array)) {
+        CL_String *s = (CL_String *)CL_OBJ_TO_PTR(array);
+        int32_t idx;
+        if (nindices != 1)
+            cl_error(CL_ERR_ARGS, "%SETF-AREF: expected 1 index for string");
+        if (!CL_FIXNUM_P(args[2]))
+            cl_error(CL_ERR_TYPE, "%SETF-AREF: index must be a fixnum");
+        idx = CL_FIXNUM_VAL(args[2]);
+        if (idx < 0 || (uint32_t)idx >= s->length)
+            cl_error(CL_ERR_ARGS, "%SETF-AREF: index %d out of range", (int)idx);
+        if (!CL_CHAR_P(value))
+            cl_error(CL_ERR_TYPE, "%SETF-AREF: value must be a character for string");
+        s->data[idx] = (char)CL_CHAR_VAL(value);
         return value;
     }
 
@@ -591,6 +619,15 @@ static CL_Obj bi_row_major_aref(CL_Obj *args, int n)
             cl_error(CL_ERR_ARGS, "ROW-MAJOR-AREF: index out of range");
         return CL_MAKE_FIXNUM(cl_bv_get_bit(bv, (uint32_t)idx));
     }
+    if (CL_STRING_P(args[0])) {
+        CL_String *s = (CL_String *)CL_OBJ_TO_PTR(args[0]);
+        if (!CL_FIXNUM_P(args[1]))
+            cl_error(CL_ERR_TYPE, "ROW-MAJOR-AREF: index must be a fixnum");
+        idx = CL_FIXNUM_VAL(args[1]);
+        if (idx < 0 || (uint32_t)idx >= s->length)
+            cl_error(CL_ERR_ARGS, "ROW-MAJOR-AREF: index %d out of range", (int)idx);
+        return CL_MAKE_CHAR((unsigned char)s->data[idx]);
+    }
     if (!CL_VECTOR_P(args[0]))
         cl_error(CL_ERR_TYPE, "ROW-MAJOR-AREF: not an array");
     if (!CL_FIXNUM_P(args[1]))
@@ -623,6 +660,18 @@ static CL_Obj bi_setf_row_major_aref(CL_Obj *args, int n)
         if (val != 0 && val != 1)
             cl_error(CL_ERR_TYPE, "%SETF-ROW-MAJOR-AREF: value must be 0 or 1");
         cl_bv_set_bit(bv, (uint32_t)idx, val);
+        return args[2];
+    }
+    if (CL_STRING_P(args[0])) {
+        CL_String *s = (CL_String *)CL_OBJ_TO_PTR(args[0]);
+        if (!CL_FIXNUM_P(args[1]))
+            cl_error(CL_ERR_TYPE, "%SETF-ROW-MAJOR-AREF: index must be a fixnum");
+        idx = CL_FIXNUM_VAL(args[1]);
+        if (idx < 0 || (uint32_t)idx >= s->length)
+            cl_error(CL_ERR_ARGS, "%SETF-ROW-MAJOR-AREF: index %d out of range", (int)idx);
+        if (!CL_CHAR_P(args[2]))
+            cl_error(CL_ERR_TYPE, "%SETF-ROW-MAJOR-AREF: value must be a character for string");
+        s->data[idx] = (char)CL_CHAR_VAL(args[2]);
         return args[2];
     }
     if (!CL_VECTOR_P(args[0]))

@@ -1339,6 +1339,20 @@ TEST(eval_setf_svref)
         "  (+ (svref v 0) (svref v 1)))"), 12);
 }
 
+TEST(eval_aref_string)
+{
+    /* aref on strings should return characters (CL spec: strings are arrays) */
+    ASSERT_STR_EQ(eval_print("(aref \"hello\" 0)"), "#\\h");
+    ASSERT_STR_EQ(eval_print("(aref \"hello\" 4)"), "#\\o");
+    /* setf aref on strings */
+    ASSERT_STR_EQ(eval_print(
+        "(let ((s (copy-seq \"hello\")))"
+        "  (setf (aref s 0) #\\H)"
+        "  s)"), "\"Hello\"");
+    /* row-major-aref on strings */
+    ASSERT_STR_EQ(eval_print("(row-major-aref \"abcd\" 2)"), "#\\c");
+}
+
 TEST(eval_symbol_value)
 {
     eval_print("(defvar *sv-test* 42)");
@@ -5679,6 +5693,7 @@ int main(void)
     RUN(eval_rplaca_rplacd);
     RUN(eval_aref_make_array_vectorp);
     RUN(eval_setf_svref);
+    RUN(eval_aref_string);
     RUN(eval_symbol_value);
     RUN(eval_setf_symbol_value);
     RUN(eval_set_builtin);
