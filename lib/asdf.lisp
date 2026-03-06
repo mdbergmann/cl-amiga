@@ -9725,7 +9725,7 @@ Returns two values:
 
   (defmethod mark-operation-done ((o operation) (c component))
     (let ((stamp (compute-action-stamp nil o c :just-done t)))
-      (assert stamp () "Failed to compute a stamp for completed action ~A" (action-description o c))1
+      (assert stamp () "Failed to compute a stamp for completed action ~A" (action-description o c))
       (setf (component-operation-time o c) stamp))))
 
 
@@ -11442,42 +11442,36 @@ PREVIOUS-PRIMARY when not null is the primary system for the PREVIOUS system."
   ;; preloaded, with a previous configuration, or before filesystem changes), and
   ;; load a found .asd if appropriate. Finally, update registration table and return results.
   (defmethod find-system ((name string) &optional (error-p t))
-    (nest
-     (with-asdf-session (:key `(find-system ,name)))
-     (let ((name-primary-p (primary-system-p name)))
-       (unless name-primary-p (find-system (primary-system-name name) nil)))
-     (or (and *immutable-systems* (gethash name *immutable-systems*) (registered-system name)))
-     (multiple-value-bind (foundp found-system pathname previous previous-time previous-primary)
-         (locate-system name)
-       (assert (eq foundp (and (or found-system pathname previous) t))))
-     (let ((previous-pathname (system-source-file previous))
-           (system (or previous found-system)))
-       (when (and found-system (not previous))
-         (register-system found-system))
-       (when (and system pathname)
-         (setf (system-source-file system) pathname))
-       (if-let ((stamp (get-file-stamp pathname)))
-         (let ((up-to-date-p
-                (and previous previous-primary
-                     (or (pathname-equal pathname previous-pathname)
-                         (and pathname previous-pathname
-                              (pathname-equal
-                               (physicalize-pathname pathname)
-                               (physicalize-pathname previous-pathname))))
-                     (timestamp<= stamp previous-time)
-                     ;; Check that all previous definition-dependencies are up-to-date,
-                     ;; traversing them without triggering the adding of nodes to the plan.
-                     ;; TODO: actually have a prepare-define-op, extract its timestamp,
-                     ;; and check that it is less than the stamp of the previous define-op ?
-                     (definition-dependencies-up-to-date-p previous-primary))))
-           (unless up-to-date-p
-             (restart-case
-                 (signal 'system-out-of-date :name name)
-               (continue () :report "continue"))
-             (load-asd pathname :name name)))))
-     ;; Try again after having loaded from disk if needed
-     (or (registered-system name)
-         (when error-p (error 'missing-component :requires name)))))
+    (with-asdf-session (:key `(find-system ,name))
+      (let ((name-primary-p (primary-system-p name)))
+        (unless name-primary-p (find-system (primary-system-name name) nil))
+        (or (and *immutable-systems* (gethash name *immutable-systems*) (registered-system name))
+            (multiple-value-bind (foundp found-system pathname previous previous-time previous-primary)
+                (locate-system name)
+              (assert (eq foundp (and (or found-system pathname previous) t)))
+              (let ((previous-pathname (system-source-file previous))
+                    (system (or previous found-system)))
+                (when (and found-system (not previous))
+                  (register-system found-system))
+                (when (and system pathname)
+                  (setf (system-source-file system) pathname))
+                (if-let ((stamp (get-file-stamp pathname)))
+                  (let ((up-to-date-p
+                         (and previous previous-primary
+                              (or (pathname-equal pathname previous-pathname)
+                                  (and pathname previous-pathname
+                                       (pathname-equal
+                                        (physicalize-pathname pathname)
+                                        (physicalize-pathname previous-pathname))))
+                              (timestamp<= stamp previous-time)
+                              (definition-dependencies-up-to-date-p previous-primary))))
+                    (unless up-to-date-p
+                      (restart-case
+                          (signal 'system-out-of-date :name name)
+                        (continue () :report "continue"))
+                      (load-asd pathname :name name)))))
+              (or (registered-system name)
+                  (when error-p (error 'missing-component :requires name))))))))
 
   ;; Resolved forward reference for asdf/system-registry.
   (defun mark-component-preloaded (component)

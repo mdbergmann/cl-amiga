@@ -436,6 +436,41 @@ static CL_Obj bi_class_of(CL_Obj *args, int n)
 
 /* --- Registration --- */
 
+/* (%struct-change-class obj new-type-name new-slot-count)
+ * Modify a struct's type_desc and n_slots in-place if the allocated size allows.
+ * Returns T on success, NIL if the struct doesn't have enough allocated space. */
+static CL_Obj bi_struct_change_class(CL_Obj *args, int n)
+{
+    CL_Struct *st;
+    uint32_t new_n_slots, alloc_size, needed_size;
+    CL_UNUSED(n);
+
+    if (!CL_STRUCT_P(args[0]))
+        cl_error(CL_ERR_TYPE, "%%STRUCT-CHANGE-CLASS: not a structure");
+    if (!CL_FIXNUM_P(args[2]))
+        cl_error(CL_ERR_TYPE, "%%STRUCT-CHANGE-CLASS: slot count must be a fixnum");
+
+    st = (CL_Struct *)CL_OBJ_TO_PTR(args[0]);
+    new_n_slots = (uint32_t)CL_FIXNUM_VAL(args[2]);
+
+    /* Check if current allocation can hold the new slot count */
+    alloc_size = CL_HDR_SIZE(st);
+    needed_size = sizeof(CL_Struct) + new_n_slots * sizeof(CL_Obj);
+    if (needed_size > alloc_size)
+        return CL_NIL;  /* Not enough space */
+
+    /* Zero any new slots beyond old n_slots */
+    if (new_n_slots > st->n_slots) {
+        uint32_t i;
+        for (i = st->n_slots; i < new_n_slots; i++)
+            st->slots[i] = CL_NIL;
+    }
+
+    st->type_desc = args[1];
+    st->n_slots = new_n_slots;
+    return SYM_T;
+}
+
 void cl_builtins_struct_init(void)
 {
     CL_GC_PROTECT(struct_table);
@@ -453,4 +488,5 @@ void cl_builtins_struct_init(void)
     defun("%STRUCT-SLOT-COUNT", bi_struct_slot_count, 1, 1);
     defun("%CLASS-OF", bi_class_of, 1, 1);
     defun("%SET-CLOS-CLASS-TABLE", bi_set_clos_class_table, 1, 1);
+    defun("%STRUCT-CHANGE-CLASS", bi_struct_change_class, 3, 3);
 }

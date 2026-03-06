@@ -838,12 +838,12 @@ When called with no arguments, passes the original method arguments."
                ;; Execute :before methods
                (dolist (m before)
                  (apply (method-function m) args))
-               ;; Execute primary chain
-               (let ((result (apply primary-chain args)))
+               ;; Execute primary chain (preserve multiple values)
+               (let ((results (multiple-value-list (apply primary-chain args))))
                  ;; Execute :after methods
                  (dolist (m after)
                    (apply (method-function m) args))
-                 result))))
+                 (values-list results)))))
       (if around
           ;; Wrap :around methods
           (apply (%make-around-chain around call-primary args) args)
@@ -1131,31 +1131,56 @@ When called with no arguments, passes the original method arguments."
 (defgeneric change-class (instance new-class &rest initargs))
 (defmethod change-class ((instance t) new-class &rest initargs)
   "Change INSTANCE to be an instance of NEW-CLASS.
-   Copies values of shared slots, applies initargs to the rest.
-   Note: returns a new struct (cannot mutate struct type in-place)."
+   Modifies the instance in-place when the allocation has enough space,
+   otherwise allocates a new struct."
   (let* ((new-class-obj (if (symbolp new-class)
                             (find-class new-class)
                             new-class))
          (old-class (class-of instance))
-         (new-instance (allocate-instance new-class-obj))
          (old-slots (class-effective-slots old-class))
          (new-slots (class-effective-slots new-class-obj))
-         (new-index-table (class-slot-index-table new-class-obj))
-         (old-i 0))
-    ;; Copy shared slot values
-    (dolist (old-slot old-slots)
-      (let ((name (%slot-spec-name old-slot)))
-        (multiple-value-bind (new-i found-p)
-            (gethash name new-index-table)
-          (when (and found-p
-                     (not (eq (%struct-ref instance old-i)
-                              *slot-unbound-marker*)))
-            (%struct-set new-instance new-i
-                         (%struct-ref instance old-i)))))
-      (setq old-i (+ old-i 1)))
-    ;; Initialize remaining slots from initargs and initforms
-    (apply #'shared-initialize new-instance t initargs)
-    new-instance))
+         (new-n-slots (length new-slots))
+         (new-type-name (class-name new-class-obj))
+         (new-index-table (class-slot-index-table new-class-obj)))
+    ;; Save old slot values BEFORE changing class
+    (let ((saved-values nil))
+      (let ((old-i 0))
+        (dolist (old-slot old-slots)
+          (let ((name (%slot-spec-name old-slot)))
+            (multiple-value-bind (new-i found-p)
+                (gethash name new-index-table)
+              (when (and found-p
+                         (not (eq (%struct-ref instance old-i)
+                                  *slot-unbound-marker*)))
+                (push (cons new-i (%struct-ref instance old-i)) saved-values))))
+          (setq old-i (+ old-i 1))))
+      ;; Try in-place modification
+      (if (%struct-change-class instance new-type-name new-n-slots)
+          (progn
+            ;; Clear all slots to unbound
+            (dotimes (i new-n-slots)
+              (%struct-set instance i *slot-unbound-marker*))
+            ;; Restore saved shared slot values
+            (dolist (pair saved-values)
+              (%struct-set instance (car pair) (cdr pair)))
+            ;; Initialize remaining slots from initargs and initforms
+            (apply #'shared-initialize instance t initargs)
+            instance)
+        ;; Fallback: allocate new instance
+        (let ((new-instance (allocate-instance new-class-obj))
+              (old-i 0))
+          (dolist (old-slot old-slots)
+            (let ((name (%slot-spec-name old-slot)))
+              (multiple-value-bind (new-i found-p)
+                  (gethash name new-index-table)
+                (when (and found-p
+                           (not (eq (%struct-ref instance old-i)
+                                    *slot-unbound-marker*)))
+                  (%struct-set new-instance new-i
+                               (%struct-ref instance old-i)))))
+            (setq old-i (+ old-i 1)))
+          (apply #'shared-initialize new-instance t initargs)
+          new-instance)))))
 
 ;;; ====================================================================
 ;;; Phase 9: print-object generic function
