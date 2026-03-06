@@ -1350,6 +1350,21 @@ TEST(eval_destructuring_bind_body)
         "(1 (2 3))");
 }
 
+TEST(eval_destructuring_bind_key)
+{
+    /* Regression: &key with multiple keywords in destructuring-bind
+       was reading garbage from the stack for unfound keys */
+    ASSERT_STR_EQ(eval_print(
+        "(destructuring-bind (&key a b) '(:a 1) (list a b))"),
+        "(1 NIL)");
+    ASSERT_STR_EQ(eval_print(
+        "(destructuring-bind (&key a b) '(:a 1 :b 2) (list a b))"),
+        "(1 2)");
+    ASSERT_STR_EQ(eval_print(
+        "(destructuring-bind (&key a b c) '(:a 1 :c 3) (list a b c))"),
+        "(1 NIL 3)");
+}
+
 /* --- defsetf --- */
 
 TEST(eval_defsetf_short)
@@ -2476,6 +2491,52 @@ TEST(eval_typep_compound)
     /* nested compound */
     ASSERT_STR_EQ(eval_print("(typep 42 '(or (and integer atom) string))"), "T");
     ASSERT_STR_EQ(eval_print("(typep #\\A '(or integer string))"), "NIL");
+}
+
+/* --- numeric range type specifiers --- */
+
+TEST(eval_typep_numeric_range)
+{
+    /* (integer low high) — inclusive bounds */
+    ASSERT_STR_EQ(eval_print("(typep 3 '(integer 0 7))"), "T");
+    ASSERT_STR_EQ(eval_print("(typep 0 '(integer 0 7))"), "T");
+    ASSERT_STR_EQ(eval_print("(typep 7 '(integer 0 7))"), "T");
+    ASSERT_STR_EQ(eval_print("(typep 8 '(integer 0 7))"), "NIL");
+    ASSERT_STR_EQ(eval_print("(typep -1 '(integer 0 7))"), "NIL");
+    /* Non-integer fails base type check */
+    ASSERT_STR_EQ(eval_print("(typep 3.0 '(integer 0 7))"), "NIL");
+
+    /* Wildcard bounds with * */
+    ASSERT_STR_EQ(eval_print("(typep 100 '(integer 0 *))"), "T");
+    ASSERT_STR_EQ(eval_print("(typep -5 '(integer * 0))"), "T");
+    ASSERT_STR_EQ(eval_print("(typep 42 '(integer * *))"), "T");
+
+    /* No bounds = just base type */
+    ASSERT_STR_EQ(eval_print("(typep 42 '(integer))"), "T");
+    ASSERT_STR_EQ(eval_print("(typep 3.0 '(integer))"), "NIL");
+
+    /* Exclusive bounds via (n) list form */
+    ASSERT_STR_EQ(eval_print("(typep 1 '(integer (0) 7))"), "T");
+    ASSERT_STR_EQ(eval_print("(typep 0 '(integer (0) 7))"), "NIL");
+    ASSERT_STR_EQ(eval_print("(typep 6 '(integer 0 (7)))"), "T");
+    ASSERT_STR_EQ(eval_print("(typep 7 '(integer 0 (7)))"), "NIL");
+
+    /* (real low high) */
+    ASSERT_STR_EQ(eval_print("(typep 3 '(real 0 10))"), "T");
+    ASSERT_STR_EQ(eval_print("(typep 3.5 '(real 0 10))"), "T");
+    ASSERT_STR_EQ(eval_print("(typep 3/2 '(real 0 10))"), "T");
+
+    /* (float low high) */
+    ASSERT_STR_EQ(eval_print("(typep 3.0 '(float 0.0 10.0))"), "T");
+    ASSERT_STR_EQ(eval_print("(typep 3 '(float 0 10))"), "NIL");
+
+    /* (rational low high) */
+    ASSERT_STR_EQ(eval_print("(typep 3/2 '(rational 0 10))"), "T");
+    ASSERT_STR_EQ(eval_print("(typep 3 '(rational 0 10))"), "T");
+    ASSERT_STR_EQ(eval_print("(typep 3.0 '(rational 0 10))"), "NIL");
+
+    /* check-type with range type */
+    ASSERT_STR_EQ(eval_print("(let ((x 5)) (check-type x (integer 0 7)) x)"), "5");
 }
 
 /* --- deftype --- */
@@ -5496,6 +5557,7 @@ int main(void)
     RUN(eval_destructuring_bind_optional);
     RUN(eval_destructuring_bind_optional_provided);
     RUN(eval_destructuring_bind_body);
+    RUN(eval_destructuring_bind_key);
     RUN(eval_defsetf_short);
     RUN(eval_defsetf_cadr);
     RUN(eval_defun_return_from);
@@ -5628,6 +5690,7 @@ int main(void)
     RUN(eval_typep);
     RUN(eval_coerce);
     RUN(eval_typep_compound);
+    RUN(eval_typep_numeric_range);
     RUN(eval_deftype);
     RUN(eval_subtypep);
     RUN(eval_typecase_compound);

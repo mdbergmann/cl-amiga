@@ -11,6 +11,7 @@
 #include "mem.h"
 #include "float.h"
 #include "ratio.h"
+#include "bignum.h"
 #include "error.h"
 #include "vm.h"
 #include "compiler.h"
@@ -34,6 +35,20 @@ static CL_Obj TYPE_SYM_NOT = CL_NIL;
 static CL_Obj TYPE_SYM_MEMBER = CL_NIL;
 static CL_Obj TYPE_SYM_EQL = CL_NIL;
 static CL_Obj TYPE_SYM_SATISFIES = CL_NIL;
+/* Numeric range type specifier head symbols */
+static CL_Obj TYPE_SYM_INTEGER = CL_NIL;
+static CL_Obj TYPE_SYM_RATIONAL = CL_NIL;
+static CL_Obj TYPE_SYM_REAL = CL_NIL;
+static CL_Obj TYPE_SYM_FLOAT = CL_NIL;
+static CL_Obj TYPE_SYM_SINGLE_FLOAT = CL_NIL;
+static CL_Obj TYPE_SYM_SHORT_FLOAT = CL_NIL;
+static CL_Obj TYPE_SYM_DOUBLE_FLOAT = CL_NIL;
+static CL_Obj TYPE_SYM_LONG_FLOAT = CL_NIL;
+static CL_Obj TYPE_SYM_FIXNUM = CL_NIL;
+static CL_Obj TYPE_SYM_BIGNUM = CL_NIL;
+static CL_Obj TYPE_SYM_RATIO = CL_NIL;
+static CL_Obj TYPE_SYM_NUMBER = CL_NIL;
+static CL_Obj TYPE_SYM_STAR = CL_NIL; /* * for wildcard bounds in range types */
 
 /* Forward declaration */
 static int typep_check(CL_Obj obj, CL_Obj type_spec);
@@ -192,6 +207,81 @@ static int typep_symbol(CL_Obj obj, CL_Obj type_sym)
     return 0;
 }
 
+/* --- Numeric range type check: (type [low [high]]) ---
+ * low/high can be: * (unbounded), number (inclusive), (number) (exclusive) */
+static int check_numeric_range(CL_Obj obj, CL_Obj head, CL_Obj args)
+{
+    CL_Obj low_spec, high_spec;
+    int cmp;
+
+    /* First check if obj is the right base type */
+    if (head == TYPE_SYM_INTEGER || head == TYPE_SYM_FIXNUM ||
+        head == TYPE_SYM_BIGNUM) {
+        if (!CL_INTEGER_P(obj)) return 0;
+        if (head == TYPE_SYM_FIXNUM && !CL_FIXNUM_P(obj)) return 0;
+        if (head == TYPE_SYM_BIGNUM && !CL_BIGNUM_P(obj)) return 0;
+    } else if (head == TYPE_SYM_RATIO) {
+        if (!CL_RATIO_P(obj)) return 0;
+    } else if (head == TYPE_SYM_RATIONAL) {
+        if (!CL_RATIONAL_P(obj)) return 0;
+    } else if (head == TYPE_SYM_FLOAT) {
+        if (!CL_FLOATP(obj)) return 0;
+    } else if (head == TYPE_SYM_SINGLE_FLOAT || head == TYPE_SYM_SHORT_FLOAT) {
+        if (!CL_SINGLE_FLOAT_P(obj)) return 0;
+    } else if (head == TYPE_SYM_DOUBLE_FLOAT || head == TYPE_SYM_LONG_FLOAT) {
+        if (!CL_DOUBLE_FLOAT_P(obj)) return 0;
+    } else if (head == TYPE_SYM_REAL) {
+        if (!CL_REALP(obj)) return 0;
+    } else if (head == TYPE_SYM_NUMBER) {
+        if (!CL_NUMBER_P(obj)) return 0;
+    } else {
+        return 0;
+    }
+
+    /* No bounds specified: (type) = just the base type check */
+    if (CL_NULL_P(args)) return 1;
+
+    /* Parse low bound */
+    low_spec = cl_car(args);
+    args = cl_cdr(args);
+
+    /* Check low bound */
+    if (low_spec != TYPE_SYM_STAR && !CL_NULL_P(low_spec)) {
+        if (CL_CONS_P(low_spec)) {
+            /* (number) = exclusive lower bound */
+            CL_Obj bound = cl_car(low_spec);
+            cmp = cl_arith_compare(obj, bound);
+            if (cmp <= 0) return 0;  /* obj <= bound: fail */
+        } else {
+            /* number = inclusive lower bound */
+            cmp = cl_arith_compare(obj, low_spec);
+            if (cmp < 0) return 0;   /* obj < bound: fail */
+        }
+    }
+
+    /* No high bound specified */
+    if (CL_NULL_P(args)) return 1;
+
+    /* Parse high bound */
+    high_spec = cl_car(args);
+
+    /* Check high bound */
+    if (high_spec != TYPE_SYM_STAR && !CL_NULL_P(high_spec)) {
+        if (CL_CONS_P(high_spec)) {
+            /* (number) = exclusive upper bound */
+            CL_Obj bound = cl_car(high_spec);
+            cmp = cl_arith_compare(obj, bound);
+            if (cmp >= 0) return 0;  /* obj >= bound: fail */
+        } else {
+            /* number = inclusive upper bound */
+            cmp = cl_arith_compare(obj, high_spec);
+            if (cmp > 0) return 0;   /* obj > bound: fail */
+        }
+    }
+
+    return 1;
+}
+
 /* --- Recursive typep for compound type specifiers --- */
 
 static int typep_check(CL_Obj obj, CL_Obj type_spec)
@@ -273,6 +363,16 @@ static int typep_check(CL_Obj obj, CL_Obj type_spec)
             }
             result = cl_vm_apply(pred_fn, &obj, 1);
             return !CL_NULL_P(result);
+        }
+
+        /* Numeric range type specifiers: (integer low high), (real low high), etc. */
+        if (head == TYPE_SYM_INTEGER || head == TYPE_SYM_FIXNUM ||
+            head == TYPE_SYM_BIGNUM || head == TYPE_SYM_RATIO ||
+            head == TYPE_SYM_RATIONAL || head == TYPE_SYM_REAL ||
+            head == TYPE_SYM_FLOAT || head == TYPE_SYM_SINGLE_FLOAT ||
+            head == TYPE_SYM_SHORT_FLOAT || head == TYPE_SYM_DOUBLE_FLOAT ||
+            head == TYPE_SYM_LONG_FLOAT || head == TYPE_SYM_NUMBER) {
+            return check_numeric_range(obj, head, args);
         }
 
         /* User-defined parameterized type: (my-type args...) */
@@ -885,6 +985,20 @@ void cl_builtins_type_init(void)
     TYPE_SYM_MEMBER    = cl_intern_in("MEMBER", 6, cl_package_cl);
     TYPE_SYM_EQL       = cl_intern_in("EQL", 3, cl_package_cl);
     TYPE_SYM_SATISFIES = cl_intern_in("SATISFIES", 9, cl_package_cl);
+    /* Numeric range type specifier head symbols */
+    TYPE_SYM_INTEGER      = cl_intern_in("INTEGER", 7, cl_package_cl);
+    TYPE_SYM_RATIONAL     = cl_intern_in("RATIONAL", 8, cl_package_cl);
+    TYPE_SYM_REAL         = cl_intern_in("REAL", 4, cl_package_cl);
+    TYPE_SYM_FLOAT        = cl_intern_in("FLOAT", 5, cl_package_cl);
+    TYPE_SYM_SINGLE_FLOAT = cl_intern_in("SINGLE-FLOAT", 12, cl_package_cl);
+    TYPE_SYM_SHORT_FLOAT  = cl_intern_in("SHORT-FLOAT", 11, cl_package_cl);
+    TYPE_SYM_DOUBLE_FLOAT = cl_intern_in("DOUBLE-FLOAT", 12, cl_package_cl);
+    TYPE_SYM_LONG_FLOAT   = cl_intern_in("LONG-FLOAT", 10, cl_package_cl);
+    TYPE_SYM_FIXNUM       = cl_intern_in("FIXNUM", 6, cl_package_cl);
+    TYPE_SYM_BIGNUM       = cl_intern_in("BIGNUM", 6, cl_package_cl);
+    TYPE_SYM_RATIO        = cl_intern_in("RATIO", 5, cl_package_cl);
+    TYPE_SYM_NUMBER       = cl_intern_in("NUMBER", 6, cl_package_cl);
+    TYPE_SYM_STAR         = cl_intern_in("*", 1, cl_package_cl);
 
     defun("TYPE-OF", bi_type_of, 1, 1);
     defun("TYPEP", bi_typep, 2, 2);
