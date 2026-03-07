@@ -420,6 +420,8 @@ static CL_Obj bi_subseq(CL_Obj *args, int n)
     {
         CL_Obj list = args[0], result = CL_NIL, tail = CL_NIL;
         int32_t i = 0;
+        CL_GC_PROTECT(result);
+        CL_GC_PROTECT(tail);
         end = (n > 2 && !CL_NULL_P(args[2]) && CL_FIXNUM_P(args[2]))
             ? CL_FIXNUM_VAL(args[2]) : 0x7FFFFFFF;
         while (!CL_NULL_P(list) && i < end) {
@@ -432,6 +434,7 @@ static CL_Obj bi_subseq(CL_Obj *args, int n)
             list = cl_cdr(list);
             i++;
         }
+        CL_GC_UNPROTECT(2);
         return result;
     }
 }

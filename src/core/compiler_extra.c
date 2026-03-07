@@ -1001,6 +1001,7 @@ void compile_defmacro(CL_Compiler *c, CL_Obj form)
         int in_opt_key = 0; /* inside &optional or &key section */
 
         CL_GC_PROTECT(new_ll);
+        CL_GC_PROTECT(new_ll_tail);
 
         while (!CL_NULL_P(cur)) {
             CL_Obj param = cl_car(cur);
@@ -1081,7 +1082,7 @@ void compile_defmacro(CL_Compiler *c, CL_Obj form)
         }
 
         lambda_list = new_ll;
-        CL_GC_UNPROTECT(1); /* new_ll */
+        CL_GC_UNPROTECT(2); /* new_ll, new_ll_tail */
     }
 
     lambda_form = cl_cons(SYM_LAMBDA, cl_cons(lambda_list, body));

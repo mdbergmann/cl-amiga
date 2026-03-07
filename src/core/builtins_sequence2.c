@@ -394,6 +394,11 @@ static CL_Obj list_merge(CL_Obj a, CL_Obj b, CL_Obj pred, CL_Obj key_fn)
 {
     CL_Obj result = CL_NIL, tail = CL_NIL;
 
+    CL_GC_PROTECT(result);
+    CL_GC_PROTECT(tail);
+    CL_GC_PROTECT(a);
+    CL_GC_PROTECT(b);
+
     while (!CL_NULL_P(a) && !CL_NULL_P(b)) {
         CL_Obj ka = apply_key(key_fn, cl_car(a));
         CL_Obj kb = apply_key(key_fn, cl_car(b));
@@ -423,6 +428,7 @@ static CL_Obj list_merge(CL_Obj a, CL_Obj b, CL_Obj pred, CL_Obj key_fn)
         else ((CL_Cons *)CL_OBJ_TO_PTR(tail))->cdr = b;
     }
 
+    CL_GC_UNPROTECT(4);
     return result;
 }
 

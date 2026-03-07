@@ -68,6 +68,10 @@ CL_Obj cl_struct_slot_names(CL_Obj type_name)
     CL_Obj result = CL_NIL;
     CL_Obj tail = CL_NIL;
 
+    CL_GC_PROTECT(specs);
+    CL_GC_PROTECT(result);
+    CL_GC_PROTECT(tail);
+
     /* Extract car of each spec pair */
     while (!CL_NULL_P(specs)) {
         CL_Obj spec = cl_car(specs);
@@ -81,6 +85,7 @@ CL_Obj cl_struct_slot_names(CL_Obj type_name)
         tail = cell;
         specs = cl_cdr(specs);
     }
+    CL_GC_UNPROTECT(3);
     return result;
 }
 

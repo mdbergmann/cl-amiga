@@ -24,6 +24,7 @@ static int gc_root_count = 0;
 /* GC mark stack (iterative marking) */
 static CL_Obj gc_mark_stack[CL_GC_MARK_STACK_SIZE];
 static int gc_mark_top = 0;
+static int gc_mark_overflow = 0;  /* Set when mark stack overflows */
 
 /* Forward declarations */
 static void gc_mark(void);
@@ -468,8 +469,26 @@ void cl_gc_reset_roots(void)
 
 static void gc_mark_push(CL_Obj obj)
 {
+    /* Skip immediates and out-of-bounds */
+    if (CL_NULL_P(obj) || CL_FIXNUM_P(obj) || CL_CHAR_P(obj))
+        return;
+    if (obj >= cl_heap.arena_size)
+        return;
+
+    /* Skip already-marked objects — avoids duplicate pushes and makes
+     * overflow re-scan efficient (only pushes truly unmarked children) */
+    if (CL_HDR_MARKED(CL_OBJ_TO_PTR(obj)))
+        return;
+
     if (gc_mark_top < CL_GC_MARK_STACK_SIZE) {
         gc_mark_stack[gc_mark_top++] = obj;
+    } else {
+#ifdef DEBUG_GC
+        if (!gc_mark_overflow) {
+            platform_write_string("GC: mark stack overflow, will re-scan heap\n");
+        }
+#endif
+        gc_mark_overflow = 1;
     }
 }
 
@@ -691,9 +710,33 @@ static void gc_mark(void)
     }
 
     /* Drain mark stack iteratively */
+    gc_mark_overflow = 0;
     while (gc_mark_top > 0) {
         CL_Obj obj = gc_mark_stack[--gc_mark_top];
         gc_mark_obj(obj);
+    }
+
+    /* Handle mark stack overflow: re-scan heap for marked objects whose
+     * children may not have been pushed.  Repeat until no overflow. */
+    while (gc_mark_overflow) {
+        uint8_t *ptr = cl_heap.arena + CL_ALIGN;
+        uint8_t *end = cl_heap.arena + cl_heap.bump;
+
+        gc_mark_overflow = 0;
+        while (ptr < end) {
+            uint32_t size = CL_HDR_SIZE(ptr);
+            if (size == 0) break;
+            if (CL_HDR_MARKED(ptr)) {
+                /* Re-push children — gc_mark_obj will skip already-marked ones */
+                gc_mark_children(ptr, CL_HDR_TYPE(ptr));
+            }
+            ptr += size;
+        }
+        /* Drain anything newly pushed */
+        while (gc_mark_top > 0) {
+            CL_Obj obj = gc_mark_stack[--gc_mark_top];
+            gc_mark_obj(obj);
+        }
     }
 }
 

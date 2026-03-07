@@ -110,12 +110,16 @@ static CL_Obj bi_append(CL_Obj *args, int n)
 {
     CL_Obj result = CL_NIL;
     CL_Obj tail = CL_NIL;
+    CL_Obj list;
     int i;
 
     if (n == 0) return CL_NIL;
 
+    CL_GC_PROTECT(result);
+    CL_GC_PROTECT(tail);
+
     for (i = 0; i < n - 1; i++) {
-        CL_Obj list = args[i];
+        list = args[i];
         while (!CL_NULL_P(list)) {
             CL_Obj cell = cl_cons(cl_car(list), CL_NIL);
             if (CL_NULL_P(result)) {
@@ -130,9 +134,11 @@ static CL_Obj bi_append(CL_Obj *args, int n)
 
     /* Last arg shared (not copied) */
     if (CL_NULL_P(result)) {
+        CL_GC_UNPROTECT(2);
         return args[n - 1];
     }
     ((CL_Cons *)CL_OBJ_TO_PTR(tail))->cdr = args[n - 1];
+    CL_GC_UNPROTECT(2);
     return result;
 }
 
