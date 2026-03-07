@@ -15,6 +15,7 @@
 #include "float.h"
 #include "error.h"
 #include "vm.h"
+#include "debugger.h"
 #include "reader.h"
 #include "../platform/platform.h"
 #include "printer.h"

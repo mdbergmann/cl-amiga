@@ -918,7 +918,30 @@ When called with no arguments, passes the original method arguments."
 
 (defmacro defgeneric (name lambda-list &rest options)
   "Define a generic function."
-  `(ensure-generic-function ',name :lambda-list ',lambda-list))
+  (let ((method-defs nil))
+    (dolist (opt options)
+      (when (and (consp opt) (eq (car opt) :method))
+        ;; (:method [qualifiers...] specialized-lambda-list &body body)
+        (let ((rest (cdr opt))
+              (qualifiers nil))
+          ;; Collect qualifiers (keywords before the lambda-list)
+          (loop
+            (if (and rest (keywordp (car rest)))
+                (progn (push (car rest) qualifiers)
+                       (setq rest (cdr rest)))
+                (return)))
+          (setq qualifiers (nreverse qualifiers))
+          (let ((spec-ll (car rest))
+                (body (cdr rest)))
+            (if qualifiers
+                (push `(defmethod ,name ,@qualifiers ,spec-ll ,@body) method-defs)
+                (push `(defmethod ,name ,spec-ll ,@body) method-defs))))))
+    (setq method-defs (nreverse method-defs))
+    (if method-defs
+        `(progn
+           (ensure-generic-function ',name :lambda-list ',lambda-list)
+           ,@method-defs)
+        `(ensure-generic-function ',name :lambda-list ',lambda-list))))
 
 ;;; --- defmethod helpers ---
 

@@ -670,6 +670,27 @@ static CL_Obj bi_wild_pathname_p(CL_Obj *args, int n)
     return CL_NIL;
 }
 
+/* pathname-match-p — simplified: compare namestrings for equality
+ * (no wildcard support — just string equality) */
+static CL_Obj bi_pathname_match_p(CL_Obj *args, int n)
+{
+    CL_UNUSED(n);
+    CL_Obj ns1 = bi_namestring(&args[0], 1);
+    CL_Obj ns2 = bi_namestring(&args[1], 1);
+    CL_String *s1 = (CL_String *)CL_OBJ_TO_PTR(ns1);
+    CL_String *s2 = (CL_String *)CL_OBJ_TO_PTR(ns2);
+    if (s1->length != s2->length) return CL_NIL;
+    return memcmp(s1->data, s2->data, s1->length) == 0 ? CL_T : CL_NIL;
+}
+
+/* translate-pathname — simplified: just return the source pathname
+ * (no wildcard translation support) */
+static CL_Obj bi_translate_pathname(CL_Obj *args, int n)
+{
+    CL_UNUSED(n);
+    return coerce_to_pathname(args[0]);
+}
+
 /* ================================================================
  * Registration
  * ================================================================ */
@@ -693,6 +714,8 @@ void cl_builtins_pathname_init(void)
     defun("ENOUGH-NAMESTRING", bi_enough_namestring, 1, 2);
     defun("USER-HOMEDIR-PATHNAME", bi_user_homedir_pathname, 0, 1);
     defun("WILD-PATHNAME-P", bi_wild_pathname_p, 1, 2);
+    defun("PATHNAME-MATCH-P", bi_pathname_match_p, 2, 2);
+    defun("TRANSLATE-PATHNAME", bi_translate_pathname, 3, 3);
 
     /* Initialize *default-pathname-defaults* to empty pathname */
     {

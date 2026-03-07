@@ -76,7 +76,16 @@ void cl_error(int code, const char *fmt, ...)
         }
     }
 
-    /* No UWPROT found — propagating to C error handler.
+    /* No UWPROT found — propagating to C error handler. */
+    if (cl_error_frame_top > 1) {
+        /* Nested error frame — jump to it without destroying global state.
+         * The caller is responsible for restoring VM/binding state. */
+        cl_error_frame_top--;
+        cl_error_frames[cl_error_frame_top].active = 0;
+        longjmp(cl_error_frames[cl_error_frame_top].buf, code);
+    }
+
+    /* Outermost error frame (REPL) — full cleanup.
      * NLX frames (catch/uwprot) are invalid once we leave the VM,
      * so clear the NLX stack and reset pending state.
      * Restore all dynamic bindings before leaving the VM.

@@ -607,6 +607,10 @@ void scan_body_for_boxing(CL_Obj form, CL_Obj *vars, int n_vars,
         return;
     }
 
+    /* (defmacro ...) — skip entirely; macro bodies are template code
+     * that shouldn't be scanned for variable mutations */
+    if (head == SYM_DEFMACRO) return;
+
     /* (flet/labels ((name params . body) ...) . body) */
     if (head == SYM_FLET || head == SYM_LABELS) {
         CL_Obj defs, body;
@@ -633,6 +637,44 @@ void scan_body_for_boxing(CL_Obj form, CL_Obj *vars, int n_vars,
             body = cl_cdr(body);
         }
         return;
+    }
+
+    /* Expand macros before scanning so we can see through macro-generated
+     * lambdas and setf forms. Save/restore VM state to handle expansion
+     * errors gracefully without corrupting compiler state. */
+    if (CL_SYMBOL_P(head) && cl_macro_p(head)) {
+        int saved_sp = cl_vm.sp;
+        int saved_fp = cl_vm.fp;
+        int saved_dyn = cl_dyn_top;
+        int saved_nlx = cl_nlx_top;
+        int saved_handler = cl_handler_top;
+        int saved_restart = cl_restart_top;
+        int saved_debugger = cl_debugger_enabled;
+        cl_debugger_enabled = 0;  /* Suppress debugger during expansion */
+#ifdef DEBUG_SCANNER
+        fprintf(stderr, "[scanner] expanding macro: %s\n", cl_symbol_name(head));
+#endif
+        int err = CL_CATCH();
+        if (err == 0) {
+            CL_Obj expanded = cl_macroexpand_1(form);
+            CL_UNCATCH();
+            cl_debugger_enabled = saved_debugger;
+            if (expanded != form) {
+                scan_body_for_boxing(expanded, vars, n_vars,
+                                     mutated, captured, closure_depth);
+                return;
+            }
+        } else {
+            CL_UNCATCH();
+            /* Macro expansion failed — restore VM state and fall through */
+            cl_vm.sp = saved_sp;
+            cl_vm.fp = saved_fp;
+            cl_dynbind_restore_to(saved_dyn);
+            cl_nlx_top = saved_nlx;
+            cl_handler_top = saved_handler;
+            cl_restart_top = saved_restart;
+            cl_debugger_enabled = saved_debugger;
+        }
     }
 
     /* General form: scan all sub-expressions */
