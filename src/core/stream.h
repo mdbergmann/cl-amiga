@@ -89,4 +89,7 @@ CL_Obj cl_make_string_output_stream(void);
 /* Extract accumulated string from string output stream and reset buffer. */
 CL_Obj cl_get_output_stream_string(CL_Obj stream);
 
+/* Create a synonym stream that delegates to the value of symbol. */
+CL_Obj cl_make_synonym_stream(CL_Obj symbol);
+
 #endif /* CL_STREAM_H */

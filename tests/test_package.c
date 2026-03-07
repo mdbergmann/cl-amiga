@@ -834,6 +834,24 @@ TEST(eval_local_nickname_scope)
     eval_print("(in-package \"COMMON-LISP-USER\")");
 }
 
+/* ---- defpackage nickname tests (Bug 14) ---- */
+
+TEST(eval_defpackage_nicknames)
+{
+    /* defpackage with :nicknames should register the nickname */
+    eval_print("(defpackage #:nick-test (:nicknames #:nt) (:use #:cl))");
+    ASSERT_STR_EQ(eval_print("(package-name (find-package \"NT\"))"), "\"NICK-TEST\"");
+}
+
+TEST(eval_defpackage_nickname_in_package)
+{
+    /* in-package should work with a nickname */
+    eval_print("(defpackage #:nick-test2 (:nicknames #:nt2) (:use #:cl))");
+    eval_print("(in-package #:nt2)");
+    ASSERT_STR_EQ(eval_print("(package-name *package*)"), "\"NICK-TEST2\"");
+    eval_print("(in-package \"COMMON-LISP-USER\")");
+}
+
 /* ---- Main ---- */
 
 int main(void)
@@ -929,6 +947,8 @@ int main(void)
     RUN(eval_remove_local_nickname);
     RUN(eval_package_local_nicknames);
     RUN(eval_defpackage_local_nicknames);
+    RUN(eval_defpackage_nicknames);
+    RUN(eval_defpackage_nickname_in_package);
     RUN(eval_local_nickname_reader);
     RUN(eval_local_nickname_scope);
 

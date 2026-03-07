@@ -125,10 +125,23 @@ static CL_Obj bi_make_package(CL_Obj *args, int nargs)
     pkg = cl_make_package(name);
     CL_GC_PROTECT(pkg);
 
-    /* Set nicknames */
+    /* Set nicknames — convert designators (symbols/strings) to string objects */
     if (!CL_NULL_P(nicknames)) {
         CL_Package *p = (CL_Package *)CL_OBJ_TO_PTR(pkg);
-        p->nicknames = nicknames;
+        CL_Obj nick_list = CL_NIL;
+        CL_GC_PROTECT(nick_list);
+        CL_Obj rest = nicknames;
+        while (!CL_NULL_P(rest)) {
+            CL_Obj nick = cl_car(rest);
+            const char *nstr;
+            uint32_t nlen;
+            get_name_str(nick, &nstr, &nlen);
+            CL_Obj nick_string = cl_make_string(nstr, nlen);
+            nick_list = cl_cons(nick_string, nick_list);
+            rest = cl_cdr(rest);
+        }
+        p->nicknames = nick_list;
+        CL_GC_UNPROTECT(1);
     }
 
     /* Register */
@@ -211,8 +224,21 @@ static CL_Obj bi_rename_package(CL_Obj *args, int nargs)
     get_name_str(args[1], &new_name, &new_len);
     p->name = cl_make_string(new_name, new_len);
 
-    if (nargs > 2) {
-        p->nicknames = args[2];
+    if (nargs > 2 && !CL_NULL_P(args[2])) {
+        CL_Obj nick_list = CL_NIL;
+        CL_GC_PROTECT(nick_list);
+        CL_Obj rest = args[2];
+        while (!CL_NULL_P(rest)) {
+            CL_Obj nick = cl_car(rest);
+            const char *nstr;
+            uint32_t nlen;
+            get_name_str(nick, &nstr, &nlen);
+            CL_Obj nick_string = cl_make_string(nstr, nlen);
+            nick_list = cl_cons(nick_string, nick_list);
+            rest = cl_cdr(rest);
+        }
+        p->nicknames = nick_list;
+        CL_GC_UNPROTECT(1);
     } else {
         p->nicknames = CL_NIL;
     }

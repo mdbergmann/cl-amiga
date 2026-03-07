@@ -326,6 +326,7 @@ typedef struct {
 #define CL_STREAM_FILE    1
 #define CL_STREAM_STRING  2
 #define CL_STREAM_CBUF    3  /* C buffer input (outside GC arena) */
+#define CL_STREAM_SYNONYM 4  /* Synonym stream: delegates to symbol's value */
 
 /* Stream flags */
 #define CL_STREAM_FLAG_OPEN  0x01

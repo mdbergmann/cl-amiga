@@ -8,6 +8,7 @@
 #include <time.h>
 #include <unistd.h>
 #include <errno.h>
+#include <glob.h>
 
 void *platform_alloc(unsigned long size)
 {
@@ -249,6 +250,27 @@ int platform_system(const char *command)
     if (WIFEXITED(status)) return WEXITSTATUS(status);
     if (WIFSIGNALED(status)) return 128 + WTERMSIG(status);
     return -1;
+}
+
+char **platform_directory(const char *pattern, int *count_out)
+{
+    glob_t g;
+    char **result;
+    int i;
+
+    *count_out = 0;
+    if (glob(pattern, 0, NULL, &g) != 0) {
+        return NULL;
+    }
+    result = (char **)malloc(((size_t)g.gl_pathc + 1) * sizeof(char *));
+    if (!result) { globfree(&g); return NULL; }
+    for (i = 0; i < (int)g.gl_pathc; i++) {
+        result[i] = strdup(g.gl_pathv[i]);
+    }
+    result[g.gl_pathc] = NULL;
+    *count_out = (int)g.gl_pathc;
+    globfree(&g);
+    return result;
 }
 
 void platform_init(void)

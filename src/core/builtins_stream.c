@@ -20,6 +20,7 @@
 #include "readtable.h"
 #include "../platform/platform.h"
 #include <string.h>
+#include <stdlib.h>
 
 /* Helper to register a builtin */
 static void defun(const char *name, CL_CFunc func, int min, int max)
@@ -423,6 +424,28 @@ static CL_Obj bi_make_string_output_stream(CL_Obj *args, int n)
     return cl_make_string_output_stream();
 }
 
+/* (make-synonym-stream symbol) */
+static CL_Obj bi_make_synonym_stream(CL_Obj *args, int n)
+{
+    CL_UNUSED(n);
+    if (!CL_SYMBOL_P(args[0]))
+        cl_error(CL_ERR_TYPE, "MAKE-SYNONYM-STREAM: argument must be a symbol");
+    return cl_make_synonym_stream(args[0]);
+}
+
+/* (synonym-stream-symbol stream) */
+static CL_Obj bi_synonym_stream_symbol(CL_Obj *args, int n)
+{
+    CL_Stream *st;
+    CL_UNUSED(n);
+    if (!CL_STREAM_P(args[0]))
+        cl_error(CL_ERR_TYPE, "SYNONYM-STREAM-SYMBOL: argument is not a stream");
+    st = (CL_Stream *)CL_OBJ_TO_PTR(args[0]);
+    if (st->stream_type != CL_STREAM_SYNONYM)
+        cl_error(CL_ERR_TYPE, "SYNONYM-STREAM-SYMBOL: not a synonym stream");
+    return st->string_buf;
+}
+
 /* (get-output-stream-string stream) */
 static CL_Obj bi_get_output_stream_string(CL_Obj *args, int n)
 {
@@ -617,6 +640,46 @@ static CL_Obj bi_file_write_date(CL_Obj *args, int n)
     mtime = platform_file_mtime(path);
     if (mtime == 0) return CL_NIL;
     return cl_bignum_from_uint32(mtime);
+}
+
+/* (directory pathname &key) => list of pathnames */
+static CL_Obj bi_directory(CL_Obj *args, int n)
+{
+    const char *pattern;
+    char **entries;
+    int count, i;
+    CL_Obj result = CL_NIL;
+    CL_UNUSED(n);
+
+    pattern = coerce_to_filename(&args[0]);
+    if (!pattern)
+        cl_error(CL_ERR_TYPE, "DIRECTORY: argument must be a pathname designator");
+
+    entries = platform_directory(pattern, &count);
+    if (!entries) return CL_NIL;
+
+    CL_GC_PROTECT(result);
+    {
+        CL_Obj tail = CL_NIL;
+        CL_GC_PROTECT(tail);
+        for (i = 0; i < count; i++) {
+            extern CL_Obj cl_parse_namestring(const char *str, uint32_t len);
+            CL_Obj pn = cl_parse_namestring(entries[i], (uint32_t)strlen(entries[i]));
+            CL_Obj cell = cl_cons(pn, CL_NIL);
+            if (CL_NULL_P(result)) {
+                result = cell;
+                tail = cell;
+            } else {
+                ((CL_Cons *)CL_OBJ_TO_PTR(tail))->cdr = cell;
+                tail = cell;
+            }
+            free(entries[i]);
+        }
+        CL_GC_UNPROTECT(1); /* tail */
+    }
+    free(entries);
+    CL_GC_UNPROTECT(1); /* result */
+    return result;
 }
 
 /* (%mkdir pathname) => T or NIL — internal for ensure-directories-exist */
@@ -891,6 +954,8 @@ void cl_builtins_stream_init(void)
     defun("MAKE-STRING-INPUT-STREAM", bi_make_string_input_stream, 1, 3);
     defun("MAKE-STRING-OUTPUT-STREAM", bi_make_string_output_stream, 0, -1);
     defun("GET-OUTPUT-STREAM-STRING", bi_get_output_stream_string, 1, 1);
+    defun("MAKE-SYNONYM-STREAM", bi_make_synonym_stream, 1, 1);
+    defun("SYNONYM-STREAM-SYMBOL", bi_synonym_stream_symbol, 1, 1);
 
     /* Step 8: File streams */
     defun("OPEN", bi_open, 1, -1);
@@ -902,6 +967,7 @@ void cl_builtins_stream_init(void)
     defun("RENAME-FILE", bi_rename_file, 2, 2);
     defun("FILE-WRITE-DATE", bi_file_write_date, 1, 1);
     defun("%MKDIR", bi_mkdir, 1, 1);
+    defun("DIRECTORY", bi_directory, 1, -1);
     defun("FILE-NAMESTRING", bi_file_namestring, 1, 1);
     defun("DIRECTORY-NAMESTRING", bi_directory_namestring, 1, 1);
 

@@ -60,6 +60,9 @@ int      platform_file_rename(const char *oldpath, const char *newpath);
 uint32_t platform_file_mtime(const char *path); /* Universal time of last mod, 0 on error */
 int      platform_mkdir(const char *path);       /* Create single directory, 0=success */
 
+/* Directory listing — returns NULL-terminated array of names (caller frees each + array) */
+char **platform_directory(const char *pattern, int *count_out);
+
 /* Environment */
 const char *platform_getenv(const char *name, char *buf, int bufsize);
 

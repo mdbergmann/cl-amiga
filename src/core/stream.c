@@ -219,12 +219,32 @@ void cl_stream_outbuf_reset(uint32_t handle)
     }
 }
 
+/* --- Synonym stream resolution --- */
+
+static CL_Obj resolve_synonym(CL_Obj stream)
+{
+    CL_Stream *st = (CL_Stream *)CL_OBJ_TO_PTR(stream);
+    while (st->stream_type == CL_STREAM_SYNONYM) {
+        CL_Obj sym = st->string_buf;  /* symbol stored here */
+        CL_Symbol *s = (CL_Symbol *)CL_OBJ_TO_PTR(sym);
+        stream = s->value;
+        if (CL_NULL_P(stream) || !CL_HEAP_P(stream))
+            return CL_NIL;
+        st = (CL_Stream *)CL_OBJ_TO_PTR(stream);
+    }
+    return stream;
+}
+
 /* --- Stream I/O operations --- */
 
 int cl_stream_read_char(CL_Obj stream)
 {
-    CL_Stream *st = (CL_Stream *)CL_OBJ_TO_PTR(stream);
+    CL_Stream *st;
     int ch;
+
+    stream = resolve_synonym(stream);
+    if (CL_NULL_P(stream)) return -1;
+    st = (CL_Stream *)CL_OBJ_TO_PTR(stream);
 
     if (!(st->flags & CL_STREAM_FLAG_OPEN))
         return -1;
@@ -275,8 +295,12 @@ int cl_stream_read_char(CL_Obj stream)
 
 void cl_stream_write_char(CL_Obj stream, int ch)
 {
-    CL_Stream *st = (CL_Stream *)CL_OBJ_TO_PTR(stream);
+    CL_Stream *st;
     char buf[2];
+
+    stream = resolve_synonym(stream);
+    if (CL_NULL_P(stream)) return;
+    st = (CL_Stream *)CL_OBJ_TO_PTR(stream);
 
     if (!(st->flags & CL_STREAM_FLAG_OPEN))
         return;
@@ -306,8 +330,12 @@ void cl_stream_write_char(CL_Obj stream, int ch)
 
 void cl_stream_write_string(CL_Obj stream, const char *str, uint32_t len)
 {
-    CL_Stream *st = (CL_Stream *)CL_OBJ_TO_PTR(stream);
+    CL_Stream *st;
     uint32_t i;
+
+    stream = resolve_synonym(stream);
+    if (CL_NULL_P(stream)) return;
+    st = (CL_Stream *)CL_OBJ_TO_PTR(stream);
 
     if (!(st->flags & CL_STREAM_FLAG_OPEN))
         return;
@@ -355,23 +383,33 @@ void cl_stream_write_string(CL_Obj stream, const char *str, uint32_t len)
 
 int cl_stream_peek_char(CL_Obj stream)
 {
-    int ch = cl_stream_read_char(stream);
-    if (ch != -1) {
-        CL_Stream *st = (CL_Stream *)CL_OBJ_TO_PTR(stream);
-        st->unread_char = ch;
+    stream = resolve_synonym(stream);
+    if (CL_NULL_P(stream)) return -1;
+    {
+        int ch = cl_stream_read_char(stream);
+        if (ch != -1) {
+            CL_Stream *st = (CL_Stream *)CL_OBJ_TO_PTR(stream);
+            st->unread_char = ch;
+        }
+        return ch;
     }
-    return ch;
 }
 
 void cl_stream_unread_char(CL_Obj stream, int ch)
 {
-    CL_Stream *st = (CL_Stream *)CL_OBJ_TO_PTR(stream);
+    CL_Stream *st;
+    stream = resolve_synonym(stream);
+    if (CL_NULL_P(stream)) return;
+    st = (CL_Stream *)CL_OBJ_TO_PTR(stream);
     st->unread_char = ch;
 }
 
 void cl_stream_close(CL_Obj stream)
 {
-    CL_Stream *st = (CL_Stream *)CL_OBJ_TO_PTR(stream);
+    CL_Stream *st;
+    stream = resolve_synonym(stream);
+    if (CL_NULL_P(stream)) return;
+    st = (CL_Stream *)CL_OBJ_TO_PTR(stream);
     if (!(st->flags & CL_STREAM_FLAG_OPEN))
         return;
 
@@ -466,4 +504,14 @@ CL_Obj cl_get_output_stream_string(CL_Obj stream)
     st->out_buf_len = 0;
     st->charpos = 0;
     return result;
+}
+
+CL_Obj cl_make_synonym_stream(CL_Obj symbol)
+{
+    CL_Obj s = cl_make_stream(CL_STREAM_IO, CL_STREAM_SYNONYM);
+    CL_Stream *st;
+    if (CL_NULL_P(s)) return CL_NIL;
+    st = (CL_Stream *)CL_OBJ_TO_PTR(s);
+    st->string_buf = symbol;  /* Store the symbol */
+    return s;
 }

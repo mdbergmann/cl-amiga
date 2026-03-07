@@ -326,6 +326,14 @@ int platform_system(const char *command)
     return (int)rc;
 }
 
+char **platform_directory(const char *pattern, int *count_out)
+{
+    /* TODO: implement AmigaOS directory listing with MatchFirst/MatchNext */
+    CL_UNUSED(pattern);
+    *count_out = 0;
+    return NULL;
+}
+
 void platform_init(void)
 {
     /* Nothing needed — dos.library is auto-opened by vbcc startup */

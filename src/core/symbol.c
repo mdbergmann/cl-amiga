@@ -70,6 +70,8 @@ CL_Obj SYM_IN_PACKAGE = CL_NIL;
 CL_Obj SYM_STAR_PACKAGE = CL_NIL;
 CL_Obj SYM_STAR_LOAD_PATHNAME = CL_NIL;
 CL_Obj SYM_STAR_LOAD_TRUENAME = CL_NIL;
+CL_Obj SYM_STAR_COMPILE_FILE_PATHNAME = CL_NIL;
+CL_Obj SYM_STAR_COMPILE_FILE_TRUENAME = CL_NIL;
 CL_Obj SYM_MACROLET = CL_NIL;
 CL_Obj SYM_SYMBOL_MACROLET = CL_NIL;
 CL_Obj SYM_THE = CL_NIL;
@@ -391,6 +393,19 @@ void cl_symbol_init(void)
     SYM_STAR_PACKAGE         = cl_intern_in("*PACKAGE*", 9, cl_package_cl);
     SYM_STAR_LOAD_PATHNAME   = cl_intern_in("*LOAD-PATHNAME*", 15, cl_package_cl);
     SYM_STAR_LOAD_TRUENAME   = cl_intern_in("*LOAD-TRUENAME*", 15, cl_package_cl);
+    SYM_STAR_COMPILE_FILE_PATHNAME = cl_intern_in("*COMPILE-FILE-PATHNAME*", 23, cl_package_cl);
+    SYM_STAR_COMPILE_FILE_TRUENAME = cl_intern_in("*COMPILE-FILE-TRUENAME*", 23, cl_package_cl);
+    {
+        CL_Symbol *s;
+        s = (CL_Symbol *)CL_OBJ_TO_PTR(SYM_STAR_LOAD_PATHNAME);
+        s->flags |= CL_SYM_SPECIAL; s->value = CL_NIL;
+        s = (CL_Symbol *)CL_OBJ_TO_PTR(SYM_STAR_LOAD_TRUENAME);
+        s->flags |= CL_SYM_SPECIAL; s->value = CL_NIL;
+        s = (CL_Symbol *)CL_OBJ_TO_PTR(SYM_STAR_COMPILE_FILE_PATHNAME);
+        s->flags |= CL_SYM_SPECIAL; s->value = CL_NIL;
+        s = (CL_Symbol *)CL_OBJ_TO_PTR(SYM_STAR_COMPILE_FILE_TRUENAME);
+        s->flags |= CL_SYM_SPECIAL; s->value = CL_NIL;
+    }
     SYM_MACROLET             = cl_intern_in("MACROLET", 8, cl_package_cl);
     SYM_SYMBOL_MACROLET      = cl_intern_in("SYMBOL-MACROLET", 15, cl_package_cl);
     SYM_THE                  = cl_intern_in("THE", 3, cl_package_cl);

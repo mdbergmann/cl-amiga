@@ -5653,6 +5653,33 @@ TEST(eval_destructuring_bind_rest_key)
         "(1 (:X 10 :Y 20) 10 20)");
 }
 
+/* --- Synonym stream tests (Bug 14) --- */
+
+TEST(eval_synonym_stream)
+{
+    /* make-synonym-stream should delegate writes to the symbol's value */
+    ASSERT_STR_EQ(eval_print(
+        "(let ((s (make-string-output-stream)))"
+        "  (let ((*trace-output* s))"
+        "    (let ((syn (make-synonym-stream '*trace-output*)))"
+        "      (write-string \"hello\" syn)"
+        "      (get-output-stream-string s))))"),
+        "\"hello\"");
+}
+
+TEST(eval_compile_file_truename)
+{
+    /* *compile-file-truename* should be NIL when not compiling */
+    ASSERT_STR_EQ(eval_print("*compile-file-truename*"), "NIL");
+    ASSERT_STR_EQ(eval_print("*compile-file-pathname*"), "NIL");
+}
+
+TEST(eval_directory_basic)
+{
+    /* directory should return a list (possibly empty) */
+    ASSERT_STR_EQ(eval_print("(listp (directory \"/nonexistent-path-12345/*.xyz\"))"), "T");
+}
+
 /* --- Heap exhaustion / storage error tests --- */
 
 TEST(eval_heap_exhaustion_error)
@@ -6374,6 +6401,11 @@ int main(void)
     RUN(eval_special_var_unwind_closure);
     RUN(eval_special_var_unwind_block_return);
     RUN(eval_destructuring_bind_rest_key);
+
+    /* synonym streams, compile-file vars, directory (Bug 14) */
+    RUN(eval_synonym_stream);
+    RUN(eval_compile_file_truename);
+    RUN(eval_directory_basic);
 
     /* heap exhaustion / storage errors */
     RUN(eval_heap_exhaustion_error);
