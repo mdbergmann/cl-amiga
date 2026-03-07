@@ -687,6 +687,13 @@ static void gc_mark(void)
         }
     }
 
+    /* Mark bytecode objects referenced by active VM frames.
+     * Stub bytecodes from cl_vm_apply are only reachable through
+     * frame->bytecode — without this, GC sweeps them during nested calls. */
+    for (i = 0; i < cl_vm.fp; i++) {
+        gc_mark_push(cl_vm.frames[i].bytecode);
+    }
+
     /* Mark multiple values and pending throw state */
     for (i = 0; i < CL_MAX_MV; i++) {
         gc_mark_push(cl_mv_values[i]);

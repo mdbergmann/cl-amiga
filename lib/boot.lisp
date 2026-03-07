@@ -146,7 +146,7 @@
     `(let ((,obj-var ,object))
        (write-string "#<" ,stream)
        ,@(when type `((write-string (symbol-name (type-of ,obj-var)) ,stream)
-                       ,(when body '(write-char #\Space ,stream))))
+                       ,(when body `(write-char #\Space ,stream))))
        ,@body
        (write-string ">" ,stream)
        nil)))

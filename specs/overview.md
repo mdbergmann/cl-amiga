@@ -209,6 +209,10 @@ Phases 1-10 are complete. The system has:
 - Generational or incremental GC
 - Dispatch caching for generic functions
 
+**Loading / Compilation feedback:**
+- Progress output when loading Lisp files or ASDF systems — show which file is currently being compiled/loaded (e.g. `; Loading foo.lisp ...`, `; Compiling bar.lisp ...`)
+- Useful for debugging slow loads and understanding load order in complex systems
+
 **Aspirational:**
 - Advanced debugger: single-stepper, frame inspection, local variable display
 - Line editing (history, tab completion)

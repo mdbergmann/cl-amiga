@@ -1224,10 +1224,19 @@ When called with no arguments, passes the original method arguments."
                      "")
                  " (" (format nil "~{~A~^ ~}" spec-names) ")>")))
 
-;;; Wire up the C hook to call print-object
+;;; Wire up the C hook to call print-object.
+;;; The hook must return a string (or NIL to fall through to default #S(...)).
+;;; Uses with-output-to-string to capture stream-writing methods (CL protocol).
+;;; Also checks the return value for methods that return a string directly.
 (setq *print-object-hook*
   (lambda (obj)
-    (print-object obj nil)))
+    (let* ((result nil)
+           (s (with-output-to-string (stream)
+                (setq result (print-object obj stream)))))
+      (cond
+        ((and (stringp s) (> (length s) 0)) s)  ; stream-writing method
+        ((stringp result) result)                 ; string-returning method
+        (t nil)))))
 
 ;;; --- Provide module ---
 (provide "clos")

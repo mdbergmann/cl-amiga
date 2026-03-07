@@ -40,6 +40,16 @@ make -f Makefile.cross clean        # Remove cross-build artifacts
 - Use `uint32_t`/`int32_t` explicitly, not `int` or `long` for sized data
 - C89/C99 compatible — no C11+ features
 
+### GC Safety (Critical)
+
+Any C code that holds `CL_Obj` values across allocating calls **must** GC-protect them:
+
+- **Allocating functions**: `cl_alloc`, `cl_cons`, `cl_make_string`, `cl_make_vector`, `cl_make_struct`, `cl_make_symbol`, and any function that calls these (including `cl_vm_apply`)
+- **The pattern to watch for**: iterative list building with `result`/`tail` local variables and `cl_cons()` in a loop — the partially-built list is invisible to GC unless protected
+- **Fix**: wrap with `CL_GC_PROTECT(var)` before the loop and `CL_GC_UNPROTECT(n)` after
+- **Why it matters**: this is a non-moving GC, but unprotected objects can be swept (freed) and their memory reused, silently corrupting whatever is allocated in their place
+- **Note**: values on the VM stack (`cl_vm.stack`) and in `args[]` (builtin function arguments) are already GC-rooted — no need to protect those
+
 ## Debugging
 
 - **Debug instrumentation** should be guarded by preprocessor flags (e.g. `#ifdef DEBUG_GC`, `#ifdef DEBUG_COMPILER`, `#ifdef DEBUG_VM`) — never leave unconditional debug output in the code

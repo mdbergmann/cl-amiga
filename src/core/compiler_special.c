@@ -411,6 +411,7 @@ void compile_block(CL_Compiler *c, CL_Obj form)
         int result_slot, i;
 
         result_slot = env->local_count;
+        env->locals[result_slot] = CL_NIL;  /* Clear stale binding */
         env->local_count++;
         if (env->local_count > env->max_locals)
             env->max_locals = env->local_count;
@@ -722,6 +723,7 @@ void compile_unwind_protect(CL_Compiler *c, CL_Obj form)
 
     /* Allocate result slot */
     result_slot = env->local_count;
+    env->locals[result_slot] = CL_NIL;  /* Clear stale binding */
     env->local_count++;
     if (env->local_count > env->max_locals)
         env->max_locals = env->local_count;
@@ -937,12 +939,14 @@ void compile_dolist(CL_Compiler *c, CL_Obj form)
 
     /* Allocate internal iter slot (no symbol, never looked up) */
     iter_slot = env->local_count;
+    env->locals[iter_slot] = CL_NIL;  /* Clear stale binding */
     env->local_count++;
     if (env->local_count > env->max_locals)
         env->max_locals = env->local_count;
 
     /* Allocate result slot for implicit block NIL */
     result_slot = env->local_count;
+    env->locals[result_slot] = CL_NIL;  /* Clear stale binding */
     env->local_count++;
     if (env->local_count > env->max_locals)
         env->max_locals = env->local_count;
@@ -1073,12 +1077,14 @@ void compile_dotimes(CL_Compiler *c, CL_Obj form)
 
     /* Allocate internal limit slot */
     limit_slot = env->local_count;
+    env->locals[limit_slot] = CL_NIL;  /* Clear stale binding */
     env->local_count++;
     if (env->local_count > env->max_locals)
         env->max_locals = env->local_count;
 
     /* Allocate result slot for implicit block NIL */
     result_slot = env->local_count;
+    env->locals[result_slot] = CL_NIL;  /* Clear stale binding */
     env->local_count++;
     if (env->local_count > env->max_locals)
         env->max_locals = env->local_count;
@@ -1275,6 +1281,7 @@ void compile_do(CL_Compiler *c, CL_Obj form)
 
     /* Allocate result slot for implicit block NIL */
     result_slot = env->local_count;
+    env->locals[result_slot] = CL_NIL;  /* Clear stale binding */
     env->local_count++;
     if (env->local_count > env->max_locals)
         env->max_locals = env->local_count;

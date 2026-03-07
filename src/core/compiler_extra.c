@@ -343,6 +343,7 @@ void compile_case(CL_Compiler *c, CL_Obj form, int error_if_no_match)
 
     /* Allocate temp slot for keyform value */
     temp_slot = env->local_count;
+    env->locals[temp_slot] = CL_NIL;  /* Clear stale binding */
     env->local_count++;
     if (env->local_count > env->max_locals)
         env->max_locals = env->local_count;
@@ -466,6 +467,7 @@ void compile_typecase(CL_Compiler *c, CL_Obj form, int error_if_no_match)
 
     /* Allocate temp slot for keyform value */
     temp_slot = env->local_count;
+    env->locals[temp_slot] = CL_NIL;  /* Clear stale binding */
     env->local_count++;
     if (env->local_count > env->max_locals)
         env->max_locals = env->local_count;
@@ -671,6 +673,7 @@ void compile_multiple_value_prog1(CL_Compiler *c, CL_Obj form)
 
     /* Allocate slot for saved list */
     list_slot = env->local_count;
+    env->locals[list_slot] = CL_NIL;  /* Clear stale binding */
     env->local_count++;
     if (env->local_count > env->max_locals)
         env->max_locals = env->local_count;

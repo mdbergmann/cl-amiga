@@ -649,6 +649,19 @@ TEST(eval_dolist)
 
     /* var is NIL during result-form */
     ASSERT_STR_EQ(eval_print("(dolist (x '(1 2 3) x))"), "NIL");
+
+    /* Nested dolist with same var name — stale slot binding regression test.
+     * Inner dolist's var 's' in slot N must not shadow outer dolist's 's'
+     * after the inner scope exits (anonymous iter/result slots must clear
+     * stale locals[] entries). */
+    ASSERT_STR_EQ(eval_print(
+        "(let ((r nil))"
+        "  (let ((y 0))"
+        "    (dolist (s '(a b)) s))"
+        "  (dolist (s '(x y z))"
+        "    (setq r (cons s r)))"
+        "  (reverse r))"),
+        "(X Y Z)");
 }
 
 TEST(eval_dotimes)
