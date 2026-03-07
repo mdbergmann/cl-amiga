@@ -193,6 +193,13 @@ int main(int argc, char *argv[])
             fprintf(stderr, "Error: unknown option '%s'\n", argv[i]);
             print_usage();
             exit(1);
+        } else {
+            /* Bare file argument: treat as --load */
+            if (action_count < MAX_ACTIONS) {
+                actions[action_count].is_eval = 0;
+                actions[action_count].arg = argv[i];
+                action_count++;
+            }
         }
     }
 

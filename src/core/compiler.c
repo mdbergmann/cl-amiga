@@ -528,6 +528,35 @@ static int find_var_index(CL_Obj sym, CL_Obj *vars, int n_vars)
     return -1;
 }
 
+/* Walk a quasiquote template, only scanning UNQUOTE/UNQUOTE-SPLICING subforms.
+ * Template structure (literal symbols, lists used as structure) is skipped. */
+static void scan_qq_for_boxing(CL_Obj tmpl, CL_Obj *vars, int n_vars,
+                               uint8_t *mutated, uint8_t *captured,
+                               int closure_depth)
+{
+    if (!CL_CONS_P(tmpl)) return;
+
+    if (cl_car(tmpl) == SYM_UNQUOTE || cl_car(tmpl) == SYM_UNQUOTE_SPLICING) {
+        /* The unquoted expression is evaluated at runtime — scan it */
+        scan_body_for_boxing(cl_car(cl_cdr(tmpl)), vars, n_vars,
+                             mutated, captured, closure_depth);
+        return;
+    }
+
+    /* Nested quasiquote — skip deeper nesting levels */
+    if (cl_car(tmpl) == SYM_QUASIQUOTE) return;
+
+    /* Walk list elements looking for unquotes */
+    {
+        CL_Obj cur = tmpl;
+        while (CL_CONS_P(cur)) {
+            scan_qq_for_boxing(cl_car(cur), vars, n_vars,
+                               mutated, captured, closure_depth);
+            cur = cl_cdr(cur);
+        }
+    }
+}
+
 /*
  * Recursive tree walker that determines which vars are mutated (target of setq)
  * and which are captured (referenced inside a lambda/flet/labels body).
@@ -558,6 +587,15 @@ void scan_body_for_boxing(CL_Obj form, CL_Obj *vars, int n_vars,
 
     /* (quote ...) — skip entirely */
     if (head == SYM_QUOTE) return;
+
+    /* (quasiquote tmpl) — only scan unquoted subforms, not the template
+     * structure itself. Without this, macro calls inside backquote templates
+     * get spuriously expanded by the scanner with raw UNQUOTE forms. */
+    if (head == SYM_QUASIQUOTE) {
+        scan_qq_for_boxing(cl_car(rest), vars, n_vars,
+                           mutated, captured, closure_depth);
+        return;
+    }
 
     /* (setq var val var val ...) or (setf place val place val ...) */
     if (head == SYM_SETQ || head == SYM_SETF) {

@@ -313,8 +313,39 @@
         (error "~S has no slot named ~S" instance slot-name))
       (let ((val (%struct-ref instance index)))
         (if (eq val *slot-unbound-marker*)
-            (error "The slot ~S is unbound in ~S" slot-name instance)
+            (slot-unbound class instance slot-name)
             val)))))
+
+(defun slot-boundp (instance slot-name)
+  "Return true if the slot SLOT-NAME in INSTANCE is bound."
+  (let* ((class (class-of instance))
+         (index-table (class-slot-index-table class)))
+    (unless index-table
+      (error "~S has no slot-index-table (not a CLOS instance)" instance))
+    (multiple-value-bind (index found-p)
+        (gethash slot-name index-table)
+      (unless found-p
+        (error "~S has no slot named ~S" instance slot-name))
+      (not (eq (%struct-ref instance index) *slot-unbound-marker*)))))
+
+(defun slot-unbound (class instance slot-name)
+  "Called when an unbound slot is accessed. Default signals an error.
+Specialize via defmethod to provide lazy initialization."
+  (declare (ignore class))
+  (error "The slot ~S is unbound in ~S" slot-name instance))
+
+(defun slot-makunbound (instance slot-name)
+  "Make the slot SLOT-NAME in INSTANCE unbound."
+  (let* ((class (class-of instance))
+         (index-table (class-slot-index-table class)))
+    (unless index-table
+      (error "~S has no slot-index-table (not a CLOS instance)" instance))
+    (multiple-value-bind (index found-p)
+        (gethash slot-name index-table)
+      (unless found-p
+        (error "~S has no slot named ~S" instance slot-name))
+      (%struct-set instance index *slot-unbound-marker*)
+      instance)))
 
 (defun %set-slot-value (instance slot-name new-value)
   "Set the value of SLOT-NAME in INSTANCE to NEW-VALUE."
@@ -894,7 +925,18 @@ When called with no arguments, passes the original method arguments."
   (multiple-value-bind (existing found-p)
       (gethash name *generic-function-table*)
     (if found-p
-        existing
+        (progn
+          ;; Re-install dispatch function (may have been overwritten by defun reload)
+          (let ((dispatch-fn (%struct-ref existing 3)))
+            (cond
+              ((symbolp name)
+               (setf (symbol-function name) dispatch-fn))
+              ((and (consp name) (eq (car name) 'setf) (consp (cdr name)))
+               (let* ((accessor (cadr name))
+                      (hidden-name (concatenate 'string "%SETF-" (symbol-name accessor)))
+                      (hidden-sym (intern hidden-name "COMMON-LISP")))
+                 (setf (symbol-function hidden-sym) dispatch-fn)))))
+          existing)
         (let* ((gf (%make-struct 'standard-generic-function
                      name lambda-list nil nil nil))
                (dispatch-fn
@@ -971,10 +1013,10 @@ When called with no arguments, passes the original method arguments."
 
 (defun %resolve-specializers (specializer-names)
   "Resolve specializer names to class objects.
-   Symbols -> (find-class sym), (eql val) stays as-is."
+   Symbols -> (find-class sym), (eql val) evaluates val."
   (mapcar (lambda (s)
             (if (and (consp s) (eq (car s) 'eql))
-                s
+                (list 'eql (eval (cadr s)))
                 (find-class s)))
           specializer-names))
 
@@ -1086,6 +1128,14 @@ When called with no arguments, passes the original method arguments."
 (defgeneric initialize-instance (instance &rest initargs))
 (defmethod initialize-instance ((instance t) &rest initargs)
   (apply #'shared-initialize instance t initargs))
+
+;;; --- slot-unbound as a generic function ---
+;;; Upgrade the plain function to a GF so that classes can specialize
+;;; it (e.g. for lazy slot initialization).
+(let ((%su-fn #'slot-unbound))
+  (defgeneric slot-unbound (class instance slot-name))
+  (defmethod slot-unbound ((class t) instance slot-name)
+    (funcall %su-fn class instance slot-name)))
 
 ;;; --- Update defclass to generate GF-based accessors ---
 ;;; Redefine the defclass macro to use defmethod instead of defun
