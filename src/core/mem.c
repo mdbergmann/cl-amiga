@@ -791,9 +791,27 @@ static void gc_sweep(void)
 
 void cl_gc(void)
 {
+#ifdef DEBUG_GC
+    {
+        char buf[128];
+        snprintf(buf, sizeof(buf), "GC #%lu: marking...\n",
+                 (unsigned long)(cl_heap.gc_count + 1));
+        platform_write_string(buf);
+    }
+#endif
     gc_mark();
     gc_sweep();
     cl_heap.gc_count++;
+#ifdef DEBUG_GC
+    {
+        char buf[128];
+        snprintf(buf, sizeof(buf), "GC #%lu done: %lu/%lu bytes used\n",
+                 (unsigned long)cl_heap.gc_count,
+                 (unsigned long)cl_heap.total_allocated,
+                 (unsigned long)cl_heap.arena_size);
+        platform_write_string(buf);
+    }
+#endif
 }
 
 void cl_mem_stats(void)

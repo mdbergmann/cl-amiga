@@ -469,6 +469,16 @@ Specialize via defmethod to provide lazy initialization."
   "Return T if slot spec contains KEY."
   (if (member key (cdr spec)) t nil))
 
+(defun %slot-spec-all-options (spec key)
+  "Get all values for KEY from slot spec plist (supports multiple occurrences)."
+  (let ((result nil)
+        (tail (cdr spec)))
+    (loop
+      (setq tail (member key tail))
+      (unless tail (return (nreverse result)))
+      (push (cadr tail) result)
+      (setq tail (cddr tail)))))
+
 ;;; --- Effective slot computation ---
 
 (defun %merge-slot-option (child-spec parent-spec key)
@@ -583,9 +593,9 @@ Specialize via defmethod to provide lazy initialization."
     (dolist (spec slot-specifiers)
       (let* ((parsed (%parse-slot-spec spec))
              (slot-name (%slot-spec-name parsed))
-             (accessor (%slot-spec-option parsed :accessor))
-             (reader (%slot-spec-option parsed :reader))
-             (writer (%slot-spec-option parsed :writer)))
+             (accessors (%slot-spec-all-options parsed :accessor))
+             (readers (%slot-spec-all-options parsed :reader))
+             (writers (%slot-spec-all-options parsed :writer)))
         (push parsed parsed-slots)
         ;; Collect initform lambdas
         (when (%slot-spec-has-option-p parsed :initform)
@@ -593,7 +603,7 @@ Specialize via defmethod to provide lazy initialization."
                        (lambda () ,(%slot-spec-option parsed :initform)))
                 initform-pairs))
         ;; Generate accessor functions
-        (when accessor
+        (dolist (accessor accessors)
           (let ((setter-name (intern (concatenate 'string
                                       "%SET-" (symbol-name accessor)))))
             (push `(defun ,accessor (obj)
@@ -603,11 +613,11 @@ Specialize via defmethod to provide lazy initialization."
                      (setf (slot-value obj ',slot-name) val))
                   accessor-defs)
             (push `(defsetf ,accessor ,setter-name) accessor-defs)))
-        (when reader
+        (dolist (reader readers)
           (push `(defun ,reader (obj)
                    (slot-value obj ',slot-name))
                 accessor-defs))
-        (when writer
+        (dolist (writer writers)
           (push `(defun ,writer (val obj)
                    (setf (slot-value obj ',slot-name) val))
                 accessor-defs))))
@@ -1150,9 +1160,9 @@ When called with no arguments, passes the original method arguments."
     (dolist (spec slot-specifiers)
       (let* ((parsed (%parse-slot-spec spec))
              (slot-name (%slot-spec-name parsed))
-             (accessor (%slot-spec-option parsed :accessor))
-             (reader (%slot-spec-option parsed :reader))
-             (writer (%slot-spec-option parsed :writer)))
+             (accessors (%slot-spec-all-options parsed :accessor))
+             (readers (%slot-spec-all-options parsed :reader))
+             (writers (%slot-spec-all-options parsed :writer)))
         (push parsed parsed-slots)
         ;; Collect initform lambdas
         (when (%slot-spec-has-option-p parsed :initform)
@@ -1160,7 +1170,7 @@ When called with no arguments, passes the original method arguments."
                        (lambda () ,(%slot-spec-option parsed :initform)))
                 initform-pairs))
         ;; Generate GF-based accessor methods
-        (when accessor
+        (dolist (accessor accessors)
           (let ((setter-name (intern (concatenate 'string
                                       "%SET-" (symbol-name accessor)))))
             (push `(defgeneric ,accessor (obj)) accessor-defs)
@@ -1171,12 +1181,12 @@ When called with no arguments, passes the original method arguments."
                      (setf (slot-value obj ',slot-name) val))
                   accessor-defs)
             (push `(defsetf ,accessor ,setter-name) accessor-defs)))
-        (when reader
+        (dolist (reader readers)
           (push `(defgeneric ,reader (obj)) accessor-defs)
           (push `(defmethod ,reader ((obj ,name))
                    (slot-value obj ',slot-name))
                 accessor-defs))
-        (when writer
+        (dolist (writer writers)
           (push `(defgeneric ,writer (val obj)) accessor-defs)
           (push `(defmethod ,writer (val (obj ,name))
                    (setf (slot-value obj ',slot-name) val))

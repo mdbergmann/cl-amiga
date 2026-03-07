@@ -807,8 +807,11 @@ CL_Obj cl_vm_eval(CL_Obj bytecode_obj)
                              min_args, nargs);
                 }
                 if (nargs > max_args) {
-                    cl_error(CL_ERR_ARGS, "Too many arguments: expected %s%d, got %d",
-                             n_opt ? "at most " : "",
+                    CL_Obj fname = callee_bc->name;
+                    const char *fn = (!CL_NULL_P(fname) && CL_SYMBOL_P(fname))
+                                     ? cl_symbol_name(fname) : "<lambda>";
+                    cl_error(CL_ERR_ARGS, "Too many arguments to %s: expected %s%d, got %d",
+                             fn, n_opt ? "at most " : "",
                              max_args, nargs);
                 }
 
@@ -1014,7 +1017,23 @@ CL_Obj cl_vm_eval(CL_Obj bytecode_obj)
                     ip = 0;
                 }
             } else {
-                cl_error(CL_ERR_TYPE, "Not a function");
+                /* Print what we got for debugging */
+                char buf[128];
+                if (CL_NULL_P(func_obj)) {
+                    cl_error(CL_ERR_TYPE, "Not a function: NIL");
+                } else if (CL_SYMBOL_P(func_obj)) {
+                    snprintf(buf, sizeof(buf), "Not a function: symbol %s",
+                             cl_symbol_name(func_obj));
+                    cl_error(CL_ERR_TYPE, buf);
+                } else if (CL_HEAP_P(func_obj)) {
+                    snprintf(buf, sizeof(buf), "Not a function: heap object type %u",
+                             (unsigned)CL_HDR_TYPE(CL_OBJ_TO_PTR(func_obj)));
+                    cl_error(CL_ERR_TYPE, buf);
+                } else {
+                    snprintf(buf, sizeof(buf), "Not a function: raw value 0x%08X",
+                             (unsigned)func_obj);
+                    cl_error(CL_ERR_TYPE, buf);
+                }
             }
             break;
         }
