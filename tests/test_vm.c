@@ -525,6 +525,24 @@ TEST(eval_cell_readonly_no_boxing)
     ASSERT_EQ_INT(eval_int("((ma2 10) 5)"), 15);
 }
 
+TEST(eval_setf_boxing_across_closure)
+{
+    /* setf must trigger boxing when variable is captured across closure boundary */
+    eval_print("(defun test-setf-box (seed)"
+               "  (let ((f (lambda (x) (setf seed (+ seed x)))))"
+               "    (funcall f 1)"
+               "    (funcall f 2)"
+               "    seed))");
+    ASSERT_EQ_INT(eval_int("(test-setf-box 0)"), 3);
+
+    /* reduce pattern from ASDF */
+    eval_print("(defun test-reduce (combinator seed)"
+               "  (dolist (x '(1 2 3))"
+               "    (funcall (lambda () (setf seed (funcall combinator x seed)))))"
+               "  seed)");
+    ASSERT_EQ_INT(eval_int("(test-reduce #'+ 0)"), 6);
+}
+
 /* --- AND / OR / COND --- */
 
 TEST(eval_and)
@@ -5710,6 +5728,7 @@ int main(void)
     RUN(eval_cell_labels_shared);
     RUN(eval_cell_do_let_capture);
     RUN(eval_cell_readonly_no_boxing);
+    RUN(eval_setf_boxing_across_closure);
 
     RUN(eval_and);
     RUN(eval_or);

@@ -537,15 +537,22 @@ void scan_body_for_boxing(CL_Obj form, CL_Obj *vars, int n_vars,
     /* (quote ...) — skip entirely */
     if (head == SYM_QUOTE) return;
 
-    /* (setq var val var val ...) */
-    if (head == SYM_SETQ) {
+    /* (setq var val var val ...) or (setf place val place val ...) */
+    if (head == SYM_SETQ || head == SYM_SETF) {
         CL_Obj pairs = rest;
         while (CL_CONS_P(pairs) && CL_CONS_P(cl_cdr(pairs))) {
-            CL_Obj var = cl_car(pairs);
+            CL_Obj place = cl_car(pairs);
             CL_Obj val = cl_car(cl_cdr(pairs));
-            int idx = find_var_index(var, vars, n_vars);
-            if (idx >= 0) mutated[idx] = 1;
-            if (closure_depth > 0 && idx >= 0) captured[idx] = 1;
+            /* For symbols (simple variable places), mark as mutated */
+            if (CL_SYMBOL_P(place)) {
+                int idx = find_var_index(place, vars, n_vars);
+                if (idx >= 0) mutated[idx] = 1;
+                if (closure_depth > 0 && idx >= 0) captured[idx] = 1;
+            } else {
+                /* Generalized place — scan sub-expressions for references */
+                scan_body_for_boxing(place, vars, n_vars,
+                                     mutated, captured, closure_depth);
+            }
             scan_body_for_boxing(val, vars, n_vars, mutated, captured, closure_depth);
             pairs = cl_cdr(cl_cdr(pairs));
         }
@@ -894,9 +901,17 @@ static void compile_setq(CL_Compiler *c, CL_Obj form)
         } else if (c->env) {
             int uv_idx = cl_env_resolve_upvalue(c->env, var);
             if (uv_idx >= 0) {
-                /* Upvalue setq — must be boxed (scan guarantees this) */
-                cl_emit(c, OP_CELL_SET_UPVAL);
-                cl_emit(c, (uint8_t)uv_idx);
+                if (c->env->upvalues[uv_idx].is_boxed) {
+                    cl_emit(c, OP_CELL_SET_UPVAL);
+                    cl_emit(c, (uint8_t)uv_idx);
+                } else {
+                    /* Upvalue is not boxed — cannot mutate across closure boundary.
+                     * This happens when the boxing scan missed a mutation (e.g. via macro).
+                     * Fall back to global store as safety measure. */
+                    int idx = cl_add_constant(c, var);
+                    cl_emit(c, OP_GSTORE);
+                    cl_emit_u16(c, (uint16_t)idx);
+                }
             } else {
                 int idx = cl_add_constant(c, var);
                 cl_emit(c, OP_GSTORE);
@@ -950,8 +965,15 @@ static void compile_setf_place(CL_Compiler *c, CL_Obj place, CL_Obj val_form)
         } else if (c->env) {
             int uv_idx = cl_env_resolve_upvalue(c->env, place);
             if (uv_idx >= 0) {
-                cl_emit(c, OP_CELL_SET_UPVAL);
-                cl_emit(c, (uint8_t)uv_idx);
+                if (c->env->upvalues[uv_idx].is_boxed) {
+                    cl_emit(c, OP_CELL_SET_UPVAL);
+                    cl_emit(c, (uint8_t)uv_idx);
+                } else {
+                    /* Upvalue not boxed — fall back to global store */
+                    int idx = cl_add_constant(c, place);
+                    cl_emit(c, OP_GSTORE);
+                    cl_emit_u16(c, (uint16_t)idx);
+                }
             } else {
                 int idx = cl_add_constant(c, place);
                 cl_emit(c, OP_GSTORE);

@@ -582,6 +582,9 @@ CL_Obj cl_vm_eval(CL_Obj bytecode_obj)
             } else {
                 break; /* shouldn't happen */
             }
+            if (!CL_CELL_P(cell_obj)) {
+                cl_error(CL_ERR_TYPE, "OP_CELL_SET_UPVAL: upvalue[%u] is not a cell (internal compiler error)", (unsigned)index);
+            }
             cell = (CL_Cell *)CL_OBJ_TO_PTR(cell_obj);
             cell->value = cl_vm.stack[cl_vm.sp - 1]; /* peek */
             break;
