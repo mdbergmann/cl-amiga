@@ -47,7 +47,16 @@ typedef struct {
 typedef struct {
     CL_TagInfo tags[CL_MAX_TAGBODY_TAGS];
     int n_tags;
+    CL_Obj id;             /* unique tagbody identifier (for NLX) */
+    int uses_nlx;          /* 1 if tagbody needs NLX support */
 } CL_TagbodyInfo;
+
+/* Outer tagbody tag info for cross-closure GO */
+typedef struct {
+    CL_Obj tag;            /* the go tag (symbol/integer) */
+    CL_Obj tagbody_id;     /* identifier of the enclosing tagbody */
+    int tag_index;         /* index of the tag within the tagbody */
+} CL_OuterTagInfo;
 
 /* Source line map tracking during compilation */
 #define CL_MAX_LINE_ENTRIES 256
@@ -72,6 +81,9 @@ typedef struct {
     /* Outer block names visible from enclosing scopes (for cross-closure return-from) */
     CL_Obj outer_blocks[CL_MAX_BLOCKS];
     int outer_block_count;
+    /* Outer tagbody tags visible from enclosing scopes (for cross-closure go) */
+    CL_OuterTagInfo outer_tags[CL_MAX_BLOCKS * 4];
+    int outer_tag_count;
 } CL_Compiler;
 
 /* Parsed lambda list structure */

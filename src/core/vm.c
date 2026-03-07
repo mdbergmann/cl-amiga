@@ -1278,6 +1278,106 @@ CL_Obj cl_vm_eval(CL_Obj bytecode_obj)
             break;
         }
 
+        case OP_TAGBODY_PUSH: {
+            /* Set up NLX tagbody frame for cross-closure GO support */
+            uint16_t id_idx = read_u16(code, &ip);
+            int16_t tb_offset = read_i16(code, &ip);
+            CL_Obj tagbody_id = constants[id_idx];
+            CL_NLXFrame *nlx;
+
+            if (cl_nlx_top >= CL_MAX_NLX_FRAMES)
+                cl_error(CL_ERR_OVERFLOW, "NLX stack overflow");
+
+            nlx = &cl_nlx_stack[cl_nlx_top];
+            nlx->type = CL_NLX_TAGBODY;
+            nlx->vm_sp = cl_vm.sp;
+            nlx->vm_fp = cl_vm.fp;
+            nlx->tag = tagbody_id;
+            nlx->result = CL_NIL;
+            nlx->catch_ip = ip;
+            nlx->offset = tb_offset;
+            nlx->code = code;
+            nlx->constants = constants;
+            nlx->base_fp = base_fp;
+            nlx->dyn_mark = cl_dyn_top;
+            nlx->handler_mark = cl_handler_top;
+            nlx->restart_mark = cl_restart_top;
+
+            if (setjmp(nlx->buf) == 0) {
+                /* Normal path: tagbody body executes */
+                cl_nlx_top++;
+            } else {
+                /* longjmp from cross-closure GO: restore state */
+                nlx = &cl_nlx_stack[cl_nlx_top];
+                cl_dynbind_restore_to(nlx->dyn_mark);
+                cl_handler_top = nlx->handler_mark;
+                cl_restart_top = nlx->restart_mark;
+                {
+                    CL_Obj tag_index = nlx->result;
+                    cl_vm.sp = nlx->vm_sp;
+                    cl_vm.fp = nlx->vm_fp;
+                    frame = &cl_vm.frames[cl_vm.fp - 1];
+                    code = nlx->code;
+                    constants = nlx->constants;
+                    base_fp = nlx->base_fp;
+                    ip = nlx->catch_ip + nlx->offset;
+                    cl_mv_count = 1;
+                    /* Re-arm: keep NLX frame active for repeated GO */
+                    cl_nlx_top++;
+                    cl_vm_push(tag_index);
+                }
+            }
+            break;
+        }
+
+        case OP_TAGBODY_POP: {
+            /* Normal exit from tagbody — pop NLX frame.
+             * Search for matching TAGBODY frame. */
+            {
+                int bi;
+                for (bi = cl_nlx_top - 1; bi >= 0; bi--) {
+                    if (cl_nlx_stack[bi].type == CL_NLX_TAGBODY) {
+                        cl_nlx_top = bi;
+                        break;
+                    }
+                }
+                if (bi < 0 && cl_nlx_top > 0)
+                    cl_nlx_top--;
+            }
+            break;
+        }
+
+        case OP_TAGBODY_GO: {
+            /* Cross-closure GO: pop tag index, find matching tagbody, longjmp */
+            uint16_t id_idx = read_u16(code, &ip);
+            CL_Obj tagbody_id = constants[id_idx];
+            CL_Obj tag_index = cl_vm_pop();
+            int i;
+
+            for (i = cl_nlx_top - 1; i >= 0; i--) {
+                if (cl_nlx_stack[i].type == CL_NLX_TAGBODY &&
+                    cl_nlx_stack[i].tag == tagbody_id) {
+                    int j;
+                    /* Check for interposing UWPROT frames */
+                    for (j = cl_nlx_top - 1; j > i; j--) {
+                        if (cl_nlx_stack[j].type == CL_NLX_UWPROT) {
+                            cl_pending_throw = 1;
+                            cl_pending_tag = tagbody_id;
+                            cl_pending_value = tag_index;
+                            cl_nlx_top = j;
+                            longjmp(cl_nlx_stack[j].buf, 1);
+                        }
+                    }
+                    /* No interposing UWPROT — longjmp directly to tagbody */
+                    cl_nlx_stack[i].result = tag_index;
+                    cl_nlx_top = i;
+                    longjmp(cl_nlx_stack[i].buf, 1);
+                }
+            }
+            cl_error(CL_ERR_GENERAL, "GO: tagbody frame not found");
+            break;
+        }
+
         case OP_ARGC: {
             cl_vm_push(CL_MAKE_FIXNUM(frame->nargs));
             cl_mv_count = 1;
@@ -1530,7 +1630,8 @@ CL_Obj cl_vm_eval(CL_Obj bytecode_obj)
 
                 for (i = cl_nlx_top - 1; i >= 0; i--) {
                     if ((cl_nlx_stack[i].type == CL_NLX_CATCH ||
-                         cl_nlx_stack[i].type == CL_NLX_BLOCK) &&
+                         cl_nlx_stack[i].type == CL_NLX_BLOCK ||
+                         cl_nlx_stack[i].type == CL_NLX_TAGBODY) &&
                         cl_nlx_stack[i].tag == ptag) {
                         /* Check for interposing UWPROT */
                         int j;

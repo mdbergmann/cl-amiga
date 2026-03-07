@@ -354,11 +354,13 @@ static int tree_has_closure_forms(CL_Obj tree)
         CL_Obj head = cl_car(tree);
         if (CL_CONS_P(head)) {
             CL_Obj op = cl_car(head);
-            if (op == SYM_LAMBDA || op == SYM_LABELS || op == SYM_FLET)
+            if (op == SYM_LAMBDA || op == SYM_LABELS || op == SYM_FLET
+                || op == SYM_RESTART_CASE)
                 return 1;
             if (tree_has_closure_forms(head))
                 return 1;
-        } else if (head == SYM_LAMBDA || head == SYM_LABELS || head == SYM_FLET) {
+        } else if (head == SYM_LAMBDA || head == SYM_LABELS || head == SYM_FLET
+                   || head == SYM_RESTART_CASE) {
             return 1;
         }
         tree = cl_cdr(tree);
@@ -584,12 +586,20 @@ void compile_tagbody(CL_Compiler *c, CL_Obj form)
     CL_TagbodyInfo *tb;
     CL_Obj cursor;
     int i;
+    int needs_nlx = tree_has_closure_forms(body);
 
     c->in_tail = 0;
 
     /* Push tagbody info */
     tb = &c->tagbodies[c->tagbody_count++];
     tb->n_tags = 0;
+    tb->uses_nlx = needs_nlx;
+
+    /* Create unique tagbody identifier for NLX */
+    if (needs_nlx)
+        tb->id = cl_cons(CL_NIL, CL_NIL);  /* fresh cons cell as unique id */
+    else
+        tb->id = CL_NIL;
 
     /* First pass: collect all tags */
     cursor = body;
@@ -604,34 +614,90 @@ void compile_tagbody(CL_Compiler *c, CL_Obj form)
         cursor = cl_cdr(cursor);
     }
 
-    /* Second pass: compile statements, record tag positions and patch forwards */
-    cursor = body;
-    while (!CL_NULL_P(cursor)) {
-        CL_Obj item = cl_car(cursor);
-        if (is_tagbody_tag(item)) {
-            /* Record the bytecode position of this tag and patch pending forward jumps */
-            for (i = 0; i < tb->n_tags; i++) {
-                if (tb->tags[i].tag == item) {
-                    int j;
-                    tb->tags[i].code_pos = c->code_pos;
-                    /* Patch any forward go jumps that targeted this tag */
-                    for (j = 0; j < tb->tags[i].n_forward; j++) {
-                        cl_patch_jump(c, tb->tags[i].forward_patches[j]);
-                    }
-                    tb->tags[i].n_forward = 0;
-                    break;
-                }
-            }
-        } else {
-            /* Compile statement, discard result */
-            compile_expr(c, item);
-            cl_emit(c, OP_POP);
-        }
-        cursor = cl_cdr(cursor);
-    }
+    if (needs_nlx) {
+        /* NLX path: set up NLX frame, compile body, then dispatch landing */
+        int id_idx, push_pos, jmp_pos;
 
-    /* tagbody returns NIL */
-    cl_emit(c, OP_NIL);
+        id_idx = cl_add_constant(c, tb->id);
+        cl_emit(c, OP_TAGBODY_PUSH);
+        cl_emit_u16(c, (uint16_t)id_idx);
+        push_pos = c->code_pos;
+        cl_emit_i16(c, 0);  /* placeholder offset to landing */
+
+        /* Compile body (same as non-NLX) */
+        cursor = body;
+        while (!CL_NULL_P(cursor)) {
+            CL_Obj item = cl_car(cursor);
+            if (is_tagbody_tag(item)) {
+                for (i = 0; i < tb->n_tags; i++) {
+                    if (tb->tags[i].tag == item) {
+                        int j;
+                        tb->tags[i].code_pos = c->code_pos;
+                        for (j = 0; j < tb->tags[i].n_forward; j++)
+                            cl_patch_jump(c, tb->tags[i].forward_patches[j]);
+                        tb->tags[i].n_forward = 0;
+                        break;
+                    }
+                }
+            } else {
+                compile_expr(c, item);
+                cl_emit(c, OP_POP);
+            }
+            cursor = cl_cdr(cursor);
+        }
+
+        /* Normal exit: pop NLX frame, jump past dispatch */
+        cl_emit(c, OP_TAGBODY_POP);
+        jmp_pos = cl_emit_jump(c, OP_JMP);
+
+        /* Landing: longjmp from cross-closure GO arrives here.
+         * TOS = tag index (fixnum). Dispatch to the right tag position. */
+        cl_patch_jump(c, push_pos);
+
+        /* Dispatch table: compare tag index against each known tag */
+        for (i = 0; i < tb->n_tags; i++) {
+            if (tb->tags[i].code_pos >= 0) {
+                /* DUP, CONST i, EQ, JTRUE -> tag_pos */
+                cl_emit(c, OP_DUP);
+                cl_emit_const(c, CL_MAKE_FIXNUM(i));
+                cl_emit(c, OP_EQ);
+                cl_emit_loop_jump(c, OP_JTRUE, tb->tags[i].code_pos);
+            }
+        }
+        /* Pop the tag index (shouldn't reach here, but be safe) */
+        cl_emit(c, OP_POP);
+
+        /* Past dispatch */
+        cl_patch_jump(c, jmp_pos);
+
+        /* tagbody returns NIL */
+        cl_emit(c, OP_NIL);
+    } else {
+        /* Local path (non-NLX): efficient local jumps */
+        cursor = body;
+        while (!CL_NULL_P(cursor)) {
+            CL_Obj item = cl_car(cursor);
+            if (is_tagbody_tag(item)) {
+                for (i = 0; i < tb->n_tags; i++) {
+                    if (tb->tags[i].tag == item) {
+                        int j;
+                        tb->tags[i].code_pos = c->code_pos;
+                        for (j = 0; j < tb->tags[i].n_forward; j++)
+                            cl_patch_jump(c, tb->tags[i].forward_patches[j]);
+                        tb->tags[i].n_forward = 0;
+                        break;
+                    }
+                }
+            } else {
+                compile_expr(c, item);
+                cl_emit(c, OP_POP);
+            }
+            cursor = cl_cdr(cursor);
+        }
+
+        /* tagbody returns NIL */
+        cl_emit(c, OP_NIL);
+    }
 
     /* Restore */
     c->tagbody_count = saved_tagbody_count;
@@ -649,7 +715,13 @@ void compile_go(CL_Compiler *c, CL_Obj form)
         for (j = 0; j < tb->n_tags; j++) {
             if (tb->tags[j].tag == tag) {
                 CL_TagInfo *ti = &tb->tags[j];
-                if (ti->code_pos >= 0) {
+                if (tb->uses_nlx) {
+                    /* NLX-based tagbody: emit OP_TAGBODY_GO */
+                    int id_idx = cl_add_constant(c, tb->id);
+                    cl_emit_const(c, CL_MAKE_FIXNUM(j));  /* tag index */
+                    cl_emit(c, OP_TAGBODY_GO);
+                    cl_emit_u16(c, (uint16_t)id_idx);
+                } else if (ti->code_pos >= 0) {
                     /* Backward jump to known position */
                     cl_emit_loop_jump(c, OP_JMP, ti->code_pos);
                 } else {
@@ -659,6 +731,17 @@ void compile_go(CL_Compiler *c, CL_Obj form)
                 }
                 return;
             }
+        }
+    }
+
+    /* Check outer tagbody tags (from enclosing scopes, for cross-closure go) */
+    for (i = 0; i < c->outer_tag_count; i++) {
+        if (c->outer_tags[i].tag == tag) {
+            int id_idx = cl_add_constant(c, c->outer_tags[i].tagbody_id);
+            cl_emit_const(c, CL_MAKE_FIXNUM(c->outer_tags[i].tag_index));
+            cl_emit(c, OP_TAGBODY_GO);
+            cl_emit_u16(c, (uint16_t)id_idx);
+            return;
         }
     }
 
@@ -989,11 +1072,16 @@ void compile_dolist(CL_Compiler *c, CL_Obj form)
     cl_emit(c, (uint8_t)iter_slot);
     cl_emit(c, OP_POP);
 
-    /* Compile body forms, each followed by POP */
+    /* Compile body forms, each followed by POP (skip declarations) */
     {
         CL_Obj b = body;
         while (!CL_NULL_P(b)) {
-            compile_expr(c, cl_car(b));
+            CL_Obj form = cl_car(b);
+            if (CL_CONS_P(form) && cl_car(form) == SYM_DECLARE) {
+                b = cl_cdr(b);
+                continue;
+            }
+            compile_expr(c, form);
             cl_emit(c, OP_POP);
             b = cl_cdr(b);
         }
@@ -1121,11 +1209,16 @@ void compile_dotimes(CL_Compiler *c, CL_Obj form)
     cl_emit(c, OP_GE);
     jtrue_pos = cl_emit_jump(c, OP_JTRUE);
 
-    /* Compile body forms, each followed by POP */
+    /* Compile body forms, each followed by POP (skip declarations) */
     {
         CL_Obj b = body;
         while (!CL_NULL_P(b)) {
-            compile_expr(c, cl_car(b));
+            CL_Obj form = cl_car(b);
+            if (CL_CONS_P(form) && cl_car(form) == SYM_DECLARE) {
+                b = cl_cdr(b);
+                continue;
+            }
+            compile_expr(c, form);
             cl_emit(c, OP_POP);
             b = cl_cdr(b);
         }
@@ -1297,11 +1390,16 @@ void compile_do(CL_Compiler *c, CL_Obj form)
     compile_expr(c, end_test);
     jtrue_pos = cl_emit_jump(c, OP_JTRUE);
 
-    /* Compile body forms, each followed by POP */
+    /* Compile body forms, each followed by POP (skip declarations) */
     {
         CL_Obj b = body;
         while (!CL_NULL_P(b)) {
-            compile_expr(c, cl_car(b));
+            CL_Obj form = cl_car(b);
+            if (CL_CONS_P(form) && cl_car(form) == SYM_DECLARE) {
+                b = cl_cdr(b);
+                continue;
+            }
+            compile_expr(c, form);
             cl_emit(c, OP_POP);
             b = cl_cdr(b);
         }

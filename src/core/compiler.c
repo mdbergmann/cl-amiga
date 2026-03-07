@@ -289,6 +289,28 @@ void compile_lambda(CL_Compiler *c, CL_Obj form)
             inner->outer_blocks[inner->outer_block_count++] = c->outer_blocks[i];
     }
 
+    /* Propagate visible tagbody tags for cross-closure go */
+    inner->outer_tag_count = 0;
+    for (i = 0; i < c->tagbody_count; i++) {
+        CL_TagbodyInfo *tb = &c->tagbodies[i];
+        int j;
+        if (!tb->uses_nlx) continue;  /* only NLX tagbodies need propagation */
+        for (j = 0; j < tb->n_tags; j++) {
+            if (inner->outer_tag_count < (int)(sizeof(inner->outer_tags)/sizeof(inner->outer_tags[0]))) {
+                inner->outer_tags[inner->outer_tag_count].tag = tb->tags[j].tag;
+                inner->outer_tags[inner->outer_tag_count].tagbody_id = tb->id;
+                inner->outer_tags[inner->outer_tag_count].tag_index = j;
+                inner->outer_tag_count++;
+            }
+        }
+    }
+    for (i = 0; i < c->outer_tag_count; i++) {
+        if (inner->outer_tag_count < (int)(sizeof(inner->outer_tags)/sizeof(inner->outer_tags[0]))) {
+            inner->outer_tags[inner->outer_tag_count] = c->outer_tags[i];
+            inner->outer_tag_count++;
+        }
+    }
+
     for (i = 0; i < ll.n_required; i++)
         cl_env_add_local(env, ll.required[i]);
 

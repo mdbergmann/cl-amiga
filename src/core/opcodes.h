@@ -93,6 +93,11 @@ enum CL_Opcode {
     OP_CELL_SET_LOCAL = 0x9F, /* u8 slot: cell=locals[slot], cell->value=TOS (peek) */
     OP_CELL_SET_UPVAL = 0xA0, /* u8 idx: cell=upvalue[idx], cell->value=TOS (peek) */
 
+    /* NLX tagbody/go for cross-closure go support */
+    OP_TAGBODY_PUSH = 0xA1, /* u16 const_idx, i16 offset: set up NLX tagbody frame */
+    OP_TAGBODY_POP  = 0xA2, /* Pop NLX tagbody frame (normal exit from tagbody) */
+    OP_TAGBODY_GO   = 0xA3, /* u16 tagbody_id_idx, u16 tag_idx: cross-closure go */
+
     OP_HALT      = 0xFF   /* Stop VM */
 };
 

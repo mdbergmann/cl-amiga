@@ -50,9 +50,10 @@ void cl_dynbind_restore_to(int mark);
 
 /* --- Non-Local eXit (NLX) stack for catch/throw and unwind-protect --- */
 
-#define CL_NLX_CATCH   0
-#define CL_NLX_UWPROT  1
-#define CL_NLX_BLOCK   2
+#define CL_NLX_CATCH    0
+#define CL_NLX_UWPROT   1
+#define CL_NLX_BLOCK    2
+#define CL_NLX_TAGBODY  3
 #define CL_MAX_NLX_FRAMES 256
 
 typedef struct {

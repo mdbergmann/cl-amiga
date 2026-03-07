@@ -677,6 +677,35 @@
       (unless (funcall predicate (if key (funcall key (cdr pair)) (cdr pair)))
         (return pair)))))
 
+;; --- make-sequence ---
+(defun make-sequence (type size &key (initial-element nil ie-p))
+  "Create a sequence of the given TYPE and SIZE."
+  (let ((tname (if (symbolp type) (symbol-name type) "")))
+    (cond
+      ((or (string= tname "LIST"))
+       (if ie-p
+           (make-list size :initial-element initial-element)
+           (make-list size)))
+      ((or (string= tname "VECTOR")
+           (string= tname "SIMPLE-VECTOR")
+           (string= tname "ARRAY"))
+       (if ie-p
+           (make-array size :initial-element initial-element)
+           (make-array size)))
+      ((string= tname "STRING")
+       (if ie-p
+           (make-string size :initial-element initial-element)
+           (make-string size)))
+      ;; Handle (vector element-type) and (simple-array element-type (size)) compound specs
+      ((and (consp type)
+            (let ((head (symbol-name (car type))))
+              (or (string= head "VECTOR") (string= head "SIMPLE-VECTOR")
+                  (string= head "ARRAY") (string= head "SIMPLE-ARRAY"))))
+       (if ie-p
+           (make-array size :initial-element initial-element)
+           (make-array size)))
+      (t (error "MAKE-SEQUENCE: unsupported type ~S" type)))))
+
 ;; --- Pathname functions (Step 10) ---
 ;; Core pathname functions (pathname, pathnamep, parse-namestring, namestring,
 ;; make-pathname, merge-pathnames, pathname-host/device/directory/name/type/version,
@@ -1261,6 +1290,9 @@
                         (destructuring-w (consp raw-wvar))
                         (wvar (if destructuring-w (gensym "WDVAR") raw-wvar)))
                    (setq rest (cdr rest))
+                   ;; Skip OF-TYPE type-spec if present
+                   (when (and rest (%loop-keyword-p (car rest) "OF-TYPE"))
+                     (setq rest (cddr rest)))
                    (if (and rest (symbolp (car rest))
                             (string= (symbol-name (car rest)) "="))
                        (progn
