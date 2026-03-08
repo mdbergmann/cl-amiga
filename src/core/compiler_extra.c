@@ -1178,6 +1178,7 @@ CL_Obj scan_local_specials(CL_Obj body)
     CL_Obj result = CL_NIL;
     CL_Obj forms = body;
 
+    CL_GC_PROTECT(result);
     while (!CL_NULL_P(forms)) {
         CL_Obj form = cl_car(forms);
 
@@ -1202,6 +1203,7 @@ CL_Obj scan_local_specials(CL_Obj body)
         }
         forms = cl_cdr(forms);
     }
+    CL_GC_UNPROTECT(1);
     return result;
 }
 

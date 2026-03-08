@@ -8,7 +8,8 @@ CL_Obj cl_car(CL_Obj obj)
 {
     if (CL_NULL_P(obj)) return CL_NIL;
     if (obj >= cl_heap.arena_size)
-        cl_storage_error("Heap exhausted, can't allocate more memory");
+        cl_storage_error("CAR: corrupted pointer 0x%08x (arena size 0x%08x)",
+                         (unsigned)obj, (unsigned)cl_heap.arena_size);
     return ((CL_Cons *)CL_OBJ_TO_PTR(obj))->car;
 }
 
@@ -16,7 +17,8 @@ CL_Obj cl_cdr(CL_Obj obj)
 {
     if (CL_NULL_P(obj)) return CL_NIL;
     if (obj >= cl_heap.arena_size)
-        cl_storage_error("Heap exhausted, can't allocate more memory");
+        cl_storage_error("CDR: corrupted pointer 0x%08x (arena size 0x%08x)",
+                         (unsigned)obj, (unsigned)cl_heap.arena_size);
     return ((CL_Cons *)CL_OBJ_TO_PTR(obj))->cdr;
 }
 

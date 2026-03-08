@@ -472,11 +472,17 @@ static CL_Obj bi_array_dimensions(CL_Obj *args, int n)
     if (vec->rank > 1) {
         /* Build list from stored dims */
         CL_Obj result = CL_NIL;
-        int i = (int)vec->rank;
+        CL_Obj arr = args[0];
+        int i;
+        CL_GC_PROTECT(result);
+        CL_GC_PROTECT(arr);
+        i = (int)vec->rank;
         while (i > 0) {
             i--;
+            vec = (CL_Vector *)CL_OBJ_TO_PTR(arr);  /* re-deref after GC */
             result = cl_cons(vec->data[i], result);  /* dims are already fixnums */
         }
+        CL_GC_UNPROTECT(2);
         return result;
     }
     return cl_cons(CL_MAKE_FIXNUM(vec->length), CL_NIL);

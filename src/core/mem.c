@@ -31,7 +31,7 @@ static void gc_mark(void);
 static void gc_sweep(void);
 static void gc_mark_obj(CL_Obj obj);
 static void gc_mark_push(CL_Obj obj);
-static void *alloc_from_free_list(uint32_t size);
+static void *alloc_from_free_list(uint32_t *sizep);
 static void *alloc_from_bump(uint32_t size);
 
 /* Align size up to CL_ALIGN boundary */
@@ -80,8 +80,9 @@ static void *alloc_from_bump(uint32_t size)
     return NULL;
 }
 
-static void *alloc_from_free_list(uint32_t size)
+static void *alloc_from_free_list(uint32_t *sizep)
 {
+    uint32_t size = *sizep;
     CL_FreeBlock **prev = &cl_heap.free_list;
     CL_FreeBlock *block = cl_heap.free_list;
 
@@ -95,8 +96,9 @@ static void *alloc_from_free_list(uint32_t size)
                 new_free->next = block->next;
                 *prev = new_free;
             } else {
-                /* Use entire block */
+                /* Use entire block — report actual size so header matches */
                 size = block->size;
+                *sizep = size;
                 *prev = block->next;
             }
             memset(block, 0, size);
@@ -151,19 +153,26 @@ void *cl_alloc(uint8_t type, uint32_t size)
     /* Try bump allocator first */
     ptr = alloc_from_bump(size);
     if (!ptr) {
-        /* Try free list */
-        ptr = alloc_from_free_list(size);
+        /* Try free list (may update size if using entire oversized block) */
+        ptr = alloc_from_free_list(&size);
     }
     if (!ptr) {
         /* Run GC and retry */
         cl_gc();
-        ptr = alloc_from_free_list(size);
+        ptr = alloc_from_free_list(&size);
         if (!ptr) {
             ptr = alloc_from_bump(size);
         }
     }
     if (!ptr) {
         cl_storage_error("Heap exhausted (requested %u bytes)", (unsigned)size);
+    }
+
+    /* Guard: size must fit in the 23-bit header size field.
+     * If this fires, an object exceeds ~8MB — architecturally unsupported. */
+    if (size > CL_HDR_SIZE_MASK) {
+        cl_storage_error("Allocation too large for header: %u bytes (max %u)",
+                         (unsigned)size, (unsigned)CL_HDR_SIZE_MASK);
     }
 
     /* Initialize header */
@@ -639,51 +648,59 @@ static void gc_mark(void)
 {
     int i;
 
-    /* Push all roots */
+    gc_mark_overflow = 0;
+
+    /* Mark all roots directly (not via gc_mark_push).
+     * gc_mark_obj immediately sets the mark bit then pushes children.
+     * This is critical: if we used gc_mark_push for roots and the mark
+     * stack overflowed, dropped roots would never be marked and the
+     * heap re-scan couldn't recover them (it only processes children of
+     * already-marked objects).  With gc_mark_obj, even if children
+     * overflow, the root itself IS marked and recoverable by re-scan. */
     for (i = 0; i < gc_root_count; i++) {
-        gc_mark_push(*gc_root_stack[i]);
+        gc_mark_obj(*gc_root_stack[i]);
     }
 
     /* Mark package registry — transitively marks all packages, all symbols,
      * and all their values/functions/plists */
-    gc_mark_push(cl_package_registry);
+    gc_mark_obj(cl_package_registry);
 
     /* Mark compiler tables (alists not reachable through packages) */
-    gc_mark_push(macro_table);
-    gc_mark_push(setf_table);
-    gc_mark_push(setf_fn_table);
-    gc_mark_push(type_table);
-    gc_mark_push(cl_clos_class_table);
+    gc_mark_obj(macro_table);
+    gc_mark_obj(setf_table);
+    gc_mark_obj(setf_fn_table);
+    gc_mark_obj(type_table);
+    gc_mark_obj(cl_clos_class_table);
 
     /* Mark dynamic binding stack (saved old values) */
     for (i = 0; i < cl_dyn_top; i++) {
-        gc_mark_push(cl_dyn_stack[i].symbol);
-        gc_mark_push(cl_dyn_stack[i].old_value);
+        gc_mark_obj(cl_dyn_stack[i].symbol);
+        gc_mark_obj(cl_dyn_stack[i].old_value);
     }
 
     /* Mark NLX stack (catch tags and results) */
     for (i = 0; i < cl_nlx_top; i++) {
-        gc_mark_push(cl_nlx_stack[i].tag);
-        gc_mark_push(cl_nlx_stack[i].result);
+        gc_mark_obj(cl_nlx_stack[i].tag);
+        gc_mark_obj(cl_nlx_stack[i].result);
     }
 
     /* Mark handler stack */
     for (i = 0; i < cl_handler_top; i++) {
-        gc_mark_push(cl_handler_stack[i].type_name);
-        gc_mark_push(cl_handler_stack[i].handler);
+        gc_mark_obj(cl_handler_stack[i].type_name);
+        gc_mark_obj(cl_handler_stack[i].handler);
     }
 
     /* Mark restart stack */
     for (i = 0; i < cl_restart_top; i++) {
-        gc_mark_push(cl_restart_stack[i].name);
-        gc_mark_push(cl_restart_stack[i].handler);
-        gc_mark_push(cl_restart_stack[i].tag);
+        gc_mark_obj(cl_restart_stack[i].name);
+        gc_mark_obj(cl_restart_stack[i].handler);
+        gc_mark_obj(cl_restart_stack[i].tag);
     }
 
     /* Mark VM execution stack */
     if (cl_vm.stack) {
         for (i = 0; i < cl_vm.sp; i++) {
-            gc_mark_push(cl_vm.stack[i]);
+            gc_mark_obj(cl_vm.stack[i]);
         }
     }
 
@@ -691,15 +708,15 @@ static void gc_mark(void)
      * Stub bytecodes from cl_vm_apply are only reachable through
      * frame->bytecode — without this, GC sweeps them during nested calls. */
     for (i = 0; i < cl_vm.fp; i++) {
-        gc_mark_push(cl_vm.frames[i].bytecode);
+        gc_mark_obj(cl_vm.frames[i].bytecode);
     }
 
     /* Mark multiple values and pending throw state */
     for (i = 0; i < CL_MAX_MV; i++) {
-        gc_mark_push(cl_mv_values[i]);
+        gc_mark_obj(cl_mv_values[i]);
     }
-    gc_mark_push(cl_pending_tag);
-    gc_mark_push(cl_pending_value);
+    gc_mark_obj(cl_pending_tag);
+    gc_mark_obj(cl_pending_value);
 
     /* Mark readtable user macro closures */
     {
@@ -709,15 +726,16 @@ static void gc_mark(void)
                 continue;
             for (ch = 0; ch < CL_RT_CHARS; ch++) {
                 if (!CL_NULL_P(cl_readtable_pool[rt].macro_fn[ch]))
-                    gc_mark_push(cl_readtable_pool[rt].macro_fn[ch]);
+                    gc_mark_obj(cl_readtable_pool[rt].macro_fn[ch]);
                 if (!CL_NULL_P(cl_readtable_pool[rt].dispatch_fn[ch]))
-                    gc_mark_push(cl_readtable_pool[rt].dispatch_fn[ch]);
+                    gc_mark_obj(cl_readtable_pool[rt].dispatch_fn[ch]);
             }
         }
     }
 
-    /* Drain mark stack iteratively */
-    gc_mark_overflow = 0;
+    /* Drain mark stack iteratively (children pushed by gc_mark_obj above).
+     * Do NOT clear gc_mark_overflow here — it may have been set during
+     * root marking above, and the re-scan loop below must handle it. */
     while (gc_mark_top > 0) {
         CL_Obj obj = gc_mark_stack[--gc_mark_top];
         gc_mark_obj(obj);
@@ -767,16 +785,21 @@ static void gc_sweep(void)
             CL_HDR_CLR_MARK(ptr);
             cl_heap.total_allocated += size;
         } else {
-            /* Dead object — add to free list, coalesce with next if possible */
+            /* Dead object — add to free list, coalesce with next if possible.
+             * Limit coalesced size to CL_HDR_SIZE_MASK (23 bits, ~8MB) because
+             * free block's size field occupies the same position as the object
+             * header, and the next sweep reads CL_HDR_SIZE() which masks to
+             * 23 bits.  Blocks larger than that would be mis-parsed. */
             CL_FreeBlock *fb = (CL_FreeBlock *)ptr;
             uint32_t total = size;
 
-            /* Coalesce adjacent free blocks */
+            /* Coalesce adjacent free blocks up to max representable size */
             while (ptr + total < end) {
                 CL_Header *next = (CL_Header *)(ptr + total);
                 uint32_t next_size = next->header & CL_HDR_SIZE_MASK;
                 if (next_size == 0) break;
                 if (next->header & CL_HDR_MARK_BIT) break;  /* Next is live */
+                if (total + next_size > CL_HDR_SIZE_MASK) break;  /* Would overflow 23-bit size */
                 total += next_size;
             }
 

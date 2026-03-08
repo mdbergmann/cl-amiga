@@ -998,11 +998,13 @@ static CL_Obj bi_set_pprint_dispatch(CL_Obj *args, int n)
                     /* Can't rplacd easily from C, rebuild without this entry */
                     CL_Obj result = CL_NIL;
                     CL_Obj scan = table;
+                    CL_GC_PROTECT(result);
                     while (!CL_NULL_P(scan)) {
                         if (scan != cur)
                             result = cl_cons(cl_car(scan), result);
                         scan = cl_cdr(scan);
                     }
+                    CL_GC_UNPROTECT(1);
                     table = result;
                 }
                 break;
@@ -1017,6 +1019,7 @@ static CL_Obj bi_set_pprint_dispatch(CL_Obj *args, int n)
     /* Remove existing entry for this type-spec first */
     {
         CL_Obj result = CL_NIL;
+        CL_GC_PROTECT(result);
         cur = table;
         while (!CL_NULL_P(cur)) {
             entry = cl_car(cur);
@@ -1024,6 +1027,7 @@ static CL_Obj bi_set_pprint_dispatch(CL_Obj *args, int n)
                 result = cl_cons(cl_car(cur), result);
             cur = cl_cdr(cur);
         }
+        CL_GC_UNPROTECT(1);
         table = result;
     }
 

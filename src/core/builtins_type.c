@@ -594,31 +594,43 @@ static CL_Obj bi_coerce(CL_Obj *args, int n)
             CL_BitVector *bv = (CL_BitVector *)CL_OBJ_TO_PTR(obj);
             CL_Obj result = CL_NIL;
             uint32_t ii = bv->length;
+            CL_GC_PROTECT(result);
             while (ii > 0) {
                 ii--;
+                bv = (CL_BitVector *)CL_OBJ_TO_PTR(obj);
                 result = cl_cons(CL_MAKE_FIXNUM(cl_bv_get_bit(bv, ii)), result);
             }
+            CL_GC_UNPROTECT(1);
             return result;
         }
         if (CL_VECTOR_P(obj)) {
-            CL_Vector *v = (CL_Vector *)CL_OBJ_TO_PTR(obj);
-            CL_Obj *elts = cl_vector_data(v);
+            CL_Vector *v;
             CL_Obj result = CL_NIL;
-            uint32_t i = cl_vector_active_length(v);
+            uint32_t i;
+            CL_GC_PROTECT(result);
+            v = (CL_Vector *)CL_OBJ_TO_PTR(obj);
+            i = cl_vector_active_length(v);
             while (i > 0) {
                 i--;
-                result = cl_cons(elts[i], result);
+                v = (CL_Vector *)CL_OBJ_TO_PTR(obj);
+                result = cl_cons(cl_vector_data(v)[i], result);
             }
+            CL_GC_UNPROTECT(1);
             return result;
         }
         if (CL_STRING_P(obj)) {
-            CL_String *s = (CL_String *)CL_OBJ_TO_PTR(obj);
+            CL_String *s;
             CL_Obj result = CL_NIL;
-            uint32_t i = s->length;
+            uint32_t i;
+            CL_GC_PROTECT(result);
+            s = (CL_String *)CL_OBJ_TO_PTR(obj);
+            i = s->length;
             while (i > 0) {
                 i--;
+                s = (CL_String *)CL_OBJ_TO_PTR(obj);
                 result = cl_cons(CL_MAKE_CHAR((unsigned char)s->data[i]), result);
             }
+            CL_GC_UNPROTECT(1);
             return result;
         }
         cl_error(CL_ERR_TYPE, "COERCE: cannot coerce to LIST");
