@@ -121,28 +121,78 @@ static CL_Obj seq_elt(CL_Obj seq, int32_t idx)
 /* EVERY / SOME / NOTANY / NOTEVERY                        */
 /* ======================================================= */
 
+/* Helper: get sequence length for any sequence type */
+static int32_t every_seq_len(CL_Obj seq)
+{
+    if (CL_NULL_P(seq)) return 0;
+    if (CL_STRING_P(seq))
+        return (int32_t)((CL_String *)CL_OBJ_TO_PTR(seq))->length;
+    if (CL_VECTOR_P(seq)) {
+        CL_Vector *v = (CL_Vector *)CL_OBJ_TO_PTR(seq);
+        return (int32_t)cl_vector_active_length(v);
+    }
+    if (CL_BIT_VECTOR_P(seq)) {
+        CL_BitVector *bv = (CL_BitVector *)CL_OBJ_TO_PTR(seq);
+        return (int32_t)cl_bv_active_length(bv);
+    }
+    return -1; /* list — length unknown */
+}
+
+/* Helper: get element at index for non-list sequences */
+static CL_Obj every_seq_elt(CL_Obj seq, int32_t idx)
+{
+    if (CL_STRING_P(seq)) {
+        CL_String *s = (CL_String *)CL_OBJ_TO_PTR(seq);
+        return CL_MAKE_CHAR((unsigned char)s->data[idx]);
+    }
+    if (CL_VECTOR_P(seq)) {
+        CL_Vector *v = (CL_Vector *)CL_OBJ_TO_PTR(seq);
+        return cl_vector_data(v)[idx];
+    }
+    if (CL_BIT_VECTOR_P(seq)) {
+        CL_BitVector *bv = (CL_BitVector *)CL_OBJ_TO_PTR(seq);
+        return CL_MAKE_FIXNUM(cl_bv_get_bit(bv, (uint32_t)idx));
+    }
+    return CL_NIL;
+}
+
 static CL_Obj bi_every(CL_Obj *args, int n)
 {
     CL_Obj pred = cl_coerce_funcdesig(args[0], "EVERY");
-    int nlists = n - 1;
-    CL_Obj lists[16];
+    int nseqs = n - 1;
+    CL_Obj seqs[16];    /* current list tails (for list seqs) or original seq */
+    int32_t lens[16];   /* -1 for list, >= 0 for vector/string */
     CL_Obj call_args[16];
     int i;
+    int32_t idx = 0;
     CL_Obj last_result = SYM_T;
 
-    if (nlists > 16) nlists = 16;
-    for (i = 0; i < nlists; i++)
-        lists[i] = args[i + 1];
+    if (nseqs > 16) nseqs = 16;
+    for (i = 0; i < nseqs; i++) {
+        seqs[i] = args[i + 1];
+        lens[i] = every_seq_len(seqs[i]);
+    }
 
     for (;;) {
-        for (i = 0; i < nlists; i++) {
-            if (CL_NULL_P(lists[i])) return last_result;
+        /* Check exhaustion */
+        for (i = 0; i < nseqs; i++) {
+            if (lens[i] >= 0) {
+                if (idx >= lens[i]) return last_result;
+            } else {
+                if (CL_NULL_P(seqs[i])) return last_result;
+            }
         }
-        for (i = 0; i < nlists; i++) {
-            call_args[i] = cl_car(lists[i]);
-            lists[i] = cl_cdr(lists[i]);
+        /* Collect elements */
+        for (i = 0; i < nseqs; i++) {
+            if (lens[i] >= 0) {
+                call_args[i] = every_seq_elt(args[i + 1], idx);
+            } else {
+                call_args[i] = cl_car(seqs[i]);
+                seqs[i] = cl_cdr(seqs[i]);
+            }
         }
-        last_result = call_func(pred, call_args, nlists);
+        idx++;
+        last_result = call_func(pred, call_args, nseqs);
         if (CL_NULL_P(last_result)) return CL_NIL;
     }
 }
@@ -150,25 +200,38 @@ static CL_Obj bi_every(CL_Obj *args, int n)
 static CL_Obj bi_some(CL_Obj *args, int n)
 {
     CL_Obj pred = cl_coerce_funcdesig(args[0], "SOME");
-    int nlists = n - 1;
-    CL_Obj lists[16];
+    int nseqs = n - 1;
+    CL_Obj seqs[16];
+    int32_t lens[16];
     CL_Obj call_args[16];
     int i;
+    int32_t idx = 0;
 
-    if (nlists > 16) nlists = 16;
-    for (i = 0; i < nlists; i++)
-        lists[i] = args[i + 1];
+    if (nseqs > 16) nseqs = 16;
+    for (i = 0; i < nseqs; i++) {
+        seqs[i] = args[i + 1];
+        lens[i] = every_seq_len(seqs[i]);
+    }
 
     for (;;) {
         CL_Obj result;
-        for (i = 0; i < nlists; i++) {
-            if (CL_NULL_P(lists[i])) return CL_NIL;
+        for (i = 0; i < nseqs; i++) {
+            if (lens[i] >= 0) {
+                if (idx >= lens[i]) return CL_NIL;
+            } else {
+                if (CL_NULL_P(seqs[i])) return CL_NIL;
+            }
         }
-        for (i = 0; i < nlists; i++) {
-            call_args[i] = cl_car(lists[i]);
-            lists[i] = cl_cdr(lists[i]);
+        for (i = 0; i < nseqs; i++) {
+            if (lens[i] >= 0) {
+                call_args[i] = every_seq_elt(args[i + 1], idx);
+            } else {
+                call_args[i] = cl_car(seqs[i]);
+                seqs[i] = cl_cdr(seqs[i]);
+            }
         }
-        result = call_func(pred, call_args, nlists);
+        idx++;
+        result = call_func(pred, call_args, nseqs);
         if (!CL_NULL_P(result)) return result;
     }
 }
