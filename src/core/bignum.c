@@ -1406,7 +1406,7 @@ static uint32_t to_twos_complement(CL_Obj n, uint16_t *buf, uint32_t buf_size,
         /* Negate: invert and add 1 */
         uint32_t carry = 1;
         for (i = 0; i < len; i++) {
-            uint32_t val = (uint32_t)(~buf[i]) + carry;
+            uint32_t val = (uint32_t)(buf[i] ^ 0xFFFF) + carry;
             buf[i] = (uint16_t)(val & 0xFFFF);
             carry = val >> 16;
         }
@@ -1435,7 +1435,7 @@ static CL_Obj from_twos_complement(const uint16_t *buf, uint32_t len)
     {
         uint32_t carry = 1;
         for (i = 0; i < len; i++) {
-            uint32_t val = (uint32_t)(~buf[i]) + carry;
+            uint32_t val = (uint32_t)(buf[i] ^ 0xFFFF) + carry;
             tmp[i] = (uint16_t)(val & 0xFFFF);
             carry = val >> 16;
         }

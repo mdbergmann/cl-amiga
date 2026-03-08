@@ -863,6 +863,12 @@
 (check "substitute-if" '(1 0 3 0 5) (substitute-if 0 #'my-evenp '(1 2 3 4 5)))
 (check "substitute-if-not" '(0 2 0 4 0) (substitute-if-not 0 #'my-evenp '(1 2 3 4 5)))
 
+; nsubstitute
+(check "nsubstitute basic" '(1 2 99 4 99) (let ((x (list 1 2 3 4 3))) (nsubstitute 99 3 x) x))
+(check "nsubstitute count" '(1 2 0 4 3) (let ((x (list 1 2 3 4 3))) (nsubstitute 0 3 x :count 1) x))
+(check "nsubstitute-if" '(1 0 3 0 5) (let ((x (list 1 2 3 4 5))) (nsubstitute-if 0 #'my-evenp x) x))
+(check "nsubstitute-if-not" '(0 2 0 4 0) (let ((x (list 1 2 3 4 5))) (nsubstitute-if-not 0 #'my-evenp x) x))
+
 ; reduce
 (check "reduce sum" 10 (reduce #'+ '(1 2 3 4)))
 (check "reduce empty init" 0 (reduce #'+ '() :initial-value 0))
@@ -1407,6 +1413,8 @@
 (check "bignum oddp" t (oddp (+ (expt 2 64) 1)))
 (check "bignum eql" t (eql (expt 2 64) (expt 2 64)))
 (check "bignum logand" 9 (logand 15 9))
+(check "bignum logand -1 identity" 65536 (logand -1 65536))
+(check "bignum logand -1 multi-limb" 610777 (logand -1 610777))
 (check "bignum logior" 15 (logior 15 9))
 (check "bignum logxor" 6 (logxor 15 9))
 (check "bignum lognot" -1 (lognot 0))

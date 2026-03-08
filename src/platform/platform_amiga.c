@@ -208,6 +208,19 @@ int platform_file_set_position(PlatformFile fh, long pos)
     return -1;
 }
 
+long platform_file_length(PlatformFile fh)
+{
+    if (fh > 0 && fh < PLATFORM_FILE_TABLE_SIZE && file_table[fh]) {
+        long cur = Seek(file_table[fh], 0, OFFSET_CURRENT);
+        long end;
+        Seek(file_table[fh], 0, OFFSET_END);
+        end = Seek(file_table[fh], 0, OFFSET_CURRENT);
+        Seek(file_table[fh], cur, OFFSET_BEGINNING);
+        return end;
+    }
+    return -1;
+}
+
 uint32_t platform_time_ms(void)
 {
     struct DateStamp ds;

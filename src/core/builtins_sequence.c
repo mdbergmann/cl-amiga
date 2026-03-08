@@ -1083,6 +1083,124 @@ static CL_Obj bi_substitute_if_not(CL_Obj *args, int n)
 }
 
 /* ======================================================= */
+/* NSUBSTITUTE (destructive)                               */
+/* ======================================================= */
+
+static CL_Obj bi_nsubstitute(CL_Obj *args, int n)
+{
+    CL_Obj newitem = args[0], olditem = args[1], seq = args[2];
+    SeqArgs sa;
+    int32_t i, len, end, replaced = 0;
+
+    parse_seq_args(args, n, 3, &sa);
+    len = seq_length(seq);
+    end = (sa.end < 0) ? len : sa.end;
+
+    if (CL_CONS_P(seq) || CL_NULL_P(seq)) {
+        CL_Obj cur = seq;
+        for (i = 0; !CL_NULL_P(cur); i++, cur = cl_cdr(cur)) {
+            CL_Obj elem = cl_car(cur);
+            if (i >= sa.start && i < end && (sa.count < 0 || replaced < sa.count)) {
+                if (seq_test_match(&sa, olditem, elem)) {
+                    ((CL_Cons *)CL_OBJ_TO_PTR(cur))->car = newitem;
+                    replaced++;
+                }
+            }
+        }
+    } else if (CL_VECTOR_P(seq)) {
+        CL_Vector *v = (CL_Vector *)CL_OBJ_TO_PTR(seq);
+        int32_t vlen = (int32_t)cl_vector_active_length(v);
+        CL_Obj *elts = cl_vector_data(v);
+        for (i = 0; i < vlen; i++) {
+            CL_Obj elem = elts[i];
+            if (i >= sa.start && i < end && (sa.count < 0 || replaced < sa.count)) {
+                if (seq_test_match(&sa, olditem, elem)) {
+                    elts[i] = newitem;
+                    replaced++;
+                }
+            }
+        }
+    }
+    return seq;
+}
+
+static CL_Obj bi_nsubstitute_if(CL_Obj *args, int n)
+{
+    CL_Obj newitem = args[0], pred = args[1], seq = args[2];
+    SeqArgs sa;
+    int32_t i, len, end, replaced = 0;
+
+    parse_seq_args(args, n, 3, &sa);
+    len = seq_length(seq);
+    end = (sa.end < 0) ? len : sa.end;
+
+    if (CL_CONS_P(seq) || CL_NULL_P(seq)) {
+        CL_Obj cur = seq;
+        for (i = 0; !CL_NULL_P(cur); i++, cur = cl_cdr(cur)) {
+            CL_Obj elem = cl_car(cur);
+            if (i >= sa.start && i < end && (sa.count < 0 || replaced < sa.count)) {
+                if (seq_pred_match(pred, sa.key_fn, elem)) {
+                    ((CL_Cons *)CL_OBJ_TO_PTR(cur))->car = newitem;
+                    replaced++;
+                }
+            }
+        }
+    } else if (CL_VECTOR_P(seq)) {
+        CL_Vector *v = (CL_Vector *)CL_OBJ_TO_PTR(seq);
+        int32_t vlen = (int32_t)cl_vector_active_length(v);
+        CL_Obj *elts = cl_vector_data(v);
+        for (i = 0; i < vlen; i++) {
+            CL_Obj elem = elts[i];
+            if (i >= sa.start && i < end && (sa.count < 0 || replaced < sa.count)) {
+                if (seq_pred_match(pred, sa.key_fn, elem)) {
+                    elts[i] = newitem;
+                    replaced++;
+                }
+            }
+        }
+    }
+    return seq;
+}
+
+static CL_Obj bi_nsubstitute_if_not(CL_Obj *args, int n)
+{
+    CL_Obj newitem = args[0], pred = args[1], seq = args[2];
+    SeqArgs sa;
+    int32_t i, len, end, replaced = 0;
+
+    parse_seq_args(args, n, 3, &sa);
+    len = seq_length(seq);
+    end = (sa.end < 0) ? len : sa.end;
+
+    if (CL_CONS_P(seq) || CL_NULL_P(seq)) {
+        CL_Obj cur = seq;
+        for (i = 0; !CL_NULL_P(cur); i++, cur = cl_cdr(cur)) {
+            CL_Obj elem = cl_car(cur);
+            if (i >= sa.start && i < end && (sa.count < 0 || replaced < sa.count)) {
+                if (!seq_pred_match(pred, sa.key_fn, elem)) {
+                    ((CL_Cons *)CL_OBJ_TO_PTR(cur))->car = newitem;
+                    replaced++;
+                }
+            }
+        }
+    } else if (CL_VECTOR_P(seq)) {
+        CL_Vector *v = (CL_Vector *)CL_OBJ_TO_PTR(seq);
+        int32_t vlen = (int32_t)cl_vector_active_length(v);
+        CL_Obj *elts = cl_vector_data(v);
+        for (i = 0; i < vlen; i++) {
+            CL_Obj elem = elts[i];
+            if (i >= sa.start && i < end && (sa.count < 0 || replaced < sa.count)) {
+                if (!seq_pred_match(pred, sa.key_fn, elem)) {
+                    elts[i] = newitem;
+                    replaced++;
+                }
+            }
+        }
+    }
+    return seq;
+}
+
+/* ======================================================= */
 /* REDUCE                                                  */
 /* ======================================================= */
 
@@ -1604,6 +1722,9 @@ void cl_builtins_sequence_init(void)
     defun("SUBSTITUTE", bi_substitute, 3, -1);
     defun("SUBSTITUTE-IF", bi_substitute_if, 3, -1);
     defun("SUBSTITUTE-IF-NOT", bi_substitute_if_not, 3, -1);
+    defun("NSUBSTITUTE", bi_nsubstitute, 3, -1);
+    defun("NSUBSTITUTE-IF", bi_nsubstitute_if, 3, -1);
+    defun("NSUBSTITUTE-IF-NOT", bi_nsubstitute_if_not, 3, -1);
 
     /* Reduce */
     defun("REDUCE", bi_reduce, 2, -1);

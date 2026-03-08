@@ -186,6 +186,19 @@ int platform_file_set_position(PlatformFile fh, long pos)
     return -1;
 }
 
+long platform_file_length(PlatformFile fh)
+{
+    if (fh > 0 && fh < PLATFORM_FILE_TABLE_SIZE && file_table[fh]) {
+        long cur = ftell(file_table[fh]);
+        long end;
+        fseek(file_table[fh], 0, SEEK_END);
+        end = ftell(file_table[fh]);
+        fseek(file_table[fh], cur, SEEK_SET);
+        return end;
+    }
+    return -1;
+}
+
 uint32_t platform_time_ms(void)
 {
     struct timeval tv;

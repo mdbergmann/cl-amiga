@@ -434,6 +434,20 @@ static CL_Obj bi_numeq(CL_Obj *args, int n)
     return SYM_T;
 }
 
+static CL_Obj bi_numneq(CL_Obj *args, int n)
+{
+    int i, j;
+    for (i = 0; i < n; i++) {
+        check_number(args[i], "/=");
+        for (j = i + 1; j < n; j++) {
+            check_number(args[j], "/=");
+            if (cl_arith_compare(args[i], args[j]) == 0)
+                return CL_NIL;
+        }
+    }
+    return SYM_T;
+}
+
 static CL_Obj bi_lt(CL_Obj *args, int n)
 {
     int i;
@@ -1222,6 +1236,7 @@ void cl_builtins_arith_init(void)
 
     /* Comparison */
     defun("=", bi_numeq, 1, -1);
+    defun("/=", bi_numneq, 1, -1);
     defun("<", bi_lt, 1, -1);
     defun(">", bi_gt, 1, -1);
     defun("<=", bi_le, 1, -1);

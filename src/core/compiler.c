@@ -1268,16 +1268,21 @@ static void compile_setf_place(CL_Compiler *c, CL_Obj place, CL_Obj val_form)
                     }
                 }
                 if (CL_NULL_P(setf_fn)) {
-                    /* Optimistic late binding: intern %SETF-<name> */
+                    /* Optimistic late binding: intern %SETF-<name> in the
+                     * same package as the accessor symbol, so it matches
+                     * the setter created by defclass :accessor */
                     CL_Symbol *sym = (CL_Symbol *)CL_OBJ_TO_PTR(head);
                     CL_String *sname = (CL_String *)CL_OBJ_TO_PTR(sym->name);
+                    CL_Obj pkg = sym->package;
                     char buf[128];
                     int len = snprintf(buf, sizeof(buf), "%%SETF-%.*s",
                                        (int)sname->length, sname->data);
-                    setf_fn = cl_intern_in(buf, (uint32_t)len, cl_package_cl);
+                    if (CL_NULL_P(pkg)) pkg = cl_package_cl;
+                    setf_fn = cl_intern_in(buf, (uint32_t)len, pkg);
                 }
                 {
-                    /* Setf function: (setf (foo a b) val) → (%setf-foo val a b) */
+                    /* Late-bound setf: (setf (foo a b) val) → (%setf-foo val a b)
+                     * Value first — matches CL (setf name) function convention */
                     CL_Obj args = cl_cdr(place);
                     int nargs = 0;
                     int idx = cl_add_constant(c, setf_fn);

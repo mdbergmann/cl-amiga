@@ -599,6 +599,25 @@ static CL_Obj bi_file_position(CL_Obj *args, int n)
     }
 }
 
+/* (file-length stream) => integer or NIL */
+static CL_Obj bi_file_length(CL_Obj *args, int n)
+{
+    CL_Stream *st;
+    long cur, end;
+    (void)n;
+    if (!CL_STREAM_P(args[0]))
+        cl_error(CL_ERR_TYPE, "FILE-LENGTH: not a stream");
+    st = (CL_Stream *)CL_OBJ_TO_PTR(args[0]);
+    if (st->stream_type != CL_STREAM_FILE)
+        return CL_NIL;
+    cur = platform_file_position((PlatformFile)st->handle_id);
+    if (cur < 0) return CL_NIL;
+    end = platform_file_length((PlatformFile)st->handle_id);
+    platform_file_set_position((PlatformFile)st->handle_id, cur);
+    if (end < 0) return CL_NIL;
+    return CL_MAKE_FIXNUM((int32_t)end);
+}
+
 /* --- Time functions (Step 10) --- */
 
 /* (get-universal-time) => integer */
@@ -995,6 +1014,7 @@ void cl_builtins_stream_init(void)
     /* Step 8: File streams */
     defun("OPEN", bi_open, 1, -1);
     defun("FILE-POSITION", bi_file_position, 1, 2);
+    defun("FILE-LENGTH", bi_file_length, 1, 1);
 
     /* Step 10: Time and file system */
     defun("GET-UNIVERSAL-TIME", bi_get_universal_time, 0, 0);

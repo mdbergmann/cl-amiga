@@ -2534,6 +2534,22 @@ TEST(eval_substitute_if_not)
     ASSERT_STR_EQ(eval_print("(substitute-if-not 0 #'my-evenp '(1 2 3 4 5))"), "(0 2 0 4 0)");
 }
 
+TEST(eval_nsubstitute)
+{
+    ASSERT_STR_EQ(eval_print("(let ((x (list 1 2 3 4 3))) (nsubstitute 99 3 x) x)"), "(1 2 99 4 99)");
+    ASSERT_STR_EQ(eval_print("(let ((x (list 1 2 3 4 3))) (nsubstitute 0 3 x :count 1) x)"), "(1 2 0 4 3)");
+}
+
+TEST(eval_nsubstitute_if)
+{
+    ASSERT_STR_EQ(eval_print("(let ((x (list 1 2 3 4 5))) (nsubstitute-if 0 #'my-evenp x) x)"), "(1 0 3 0 5)");
+}
+
+TEST(eval_nsubstitute_if_not)
+{
+    ASSERT_STR_EQ(eval_print("(let ((x (list 1 2 3 4 5))) (nsubstitute-if-not 0 #'my-evenp x) x)"), "(0 2 0 4 0)");
+}
+
 TEST(eval_reduce)
 {
     ASSERT_EQ_INT(eval_int("(reduce #'+ '(1 2 3 4))"), 10);
@@ -6078,6 +6094,9 @@ int main(void)
     RUN(eval_substitute);
     RUN(eval_substitute_if);
     RUN(eval_substitute_if_not);
+    RUN(eval_nsubstitute);
+    RUN(eval_nsubstitute_if);
+    RUN(eval_nsubstitute_if_not);
     RUN(eval_reduce);
     RUN(eval_fill);
     RUN(eval_replace_fn);

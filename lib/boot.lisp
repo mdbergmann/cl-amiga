@@ -524,11 +524,16 @@
 (defun read-sequence (sequence stream &key (start 0) end)
   (let ((e (or end (length sequence)))
         (i start))
-    (loop while (< i e)
-          do (let ((b (read-byte stream nil nil)))
-               (if b
-                   (progn (setf (aref sequence i) b) (incf i))
-                   (return i))))
+    (block nil
+      (tagbody
+       loop-top
+       (when (>= i e) (go loop-end))
+       (let ((b (read-byte stream nil nil)))
+         (if b
+             (progn (setf (aref sequence i) b) (setf i (1+ i)))
+             (return-from nil i)))
+       (go loop-top)
+       loop-end))
     i))
 
 ;; with-standard-io-syntax — bind I/O variables to standard values
@@ -1517,3 +1522,23 @@
        ,(when suffix `(write-string ,suffix ,stream-sym))
        (%pp-pop-block)
        nil)))
+
+;; pprint-fill — print list elements separated by spaces (fill style)
+(defun pprint-fill (stream list &optional (colon-p t) atsign-p)
+  (declare (ignore atsign-p))
+  (let ((s (or stream *standard-output*)))
+    (when colon-p (write-char #\( s))
+    (loop for tail on list
+          do (write (car tail) :stream s)
+          when (cdr tail) do (write-char #\Space s))
+    (when colon-p (write-char #\) s))))
+
+;; pprint-linear — print list elements separated by newlines (linear style)
+(defun pprint-linear (stream list &optional (colon-p t) atsign-p)
+  (declare (ignore atsign-p))
+  (let ((s (or stream *standard-output*)))
+    (when colon-p (write-char #\( s))
+    (loop for tail on list
+          do (write (car tail) :stream s)
+          when (cdr tail) do (terpri s))
+    (when colon-p (write-char #\) s))))

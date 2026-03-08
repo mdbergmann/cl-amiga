@@ -398,6 +398,16 @@ TEST(logand_no_args)
     ASSERT_STR_EQ(eval_print("(logand)"), "-1");
 }
 
+/* Regression: two's complement negation used ~(uint16_t) which promotes to
+   int and flips all 32 bits, causing incorrect carry propagation */
+TEST(logand_negative_one_identity)
+{
+    ASSERT_STR_EQ(eval_print("(logand -1 65536)"), "65536");
+    ASSERT_STR_EQ(eval_print("(logand -1 610777)"), "610777");
+    ASSERT_STR_EQ(eval_print("(logand #xFFFFFFFF 610777)"), "610777");
+    ASSERT_STR_EQ(eval_print("(logand -1 #x12345678)"), "305419896");
+}
+
 TEST(logior_no_args)
 {
     ASSERT_STR_EQ(eval_print("(logior)"), "0");
@@ -765,6 +775,7 @@ int main(void)
     RUN(ash_right);
     RUN(ash_large);
     RUN(logand_no_args);
+    RUN(logand_negative_one_identity);
     RUN(logior_no_args);
 
     /* Integer-length, isqrt */
