@@ -21,6 +21,20 @@ static void defun(const char *name, CL_CFunc func, int min, int max)
     s->value = fn;
 }
 
+/* --- Case-insensitive string hash for equalp --- */
+
+static uint32_t hash_string_ci(const char *str, uint32_t len)
+{
+    uint32_t hash = 5381;
+    uint32_t i;
+    for (i = 0; i < len; i++) {
+        char ch = str[i];
+        if (ch >= 'A' && ch <= 'Z') ch += 32;
+        hash = hash * 33 + (unsigned char)ch;
+    }
+    return hash;
+}
+
 /* --- Hash function for CL objects --- */
 
 static uint32_t hash_obj(CL_Obj obj, uint32_t test)
@@ -56,10 +70,18 @@ static uint32_t hash_obj(CL_Obj obj, uint32_t test)
         }
     }
 
-    /* For equal: structural hash */
+    /* For equal/equalp: structural hash */
     if (CL_NULL_P(obj)) return 0;
     if (CL_FIXNUM_P(obj)) return (uint32_t)obj;
-    if (CL_CHAR_P(obj)) return (uint32_t)obj;
+    if (CL_CHAR_P(obj)) {
+        if (test == CL_HT_TEST_EQUALP) {
+            /* Case-insensitive char hash */
+            char ch = (char)CL_CHAR_VAL(obj);
+            if (ch >= 'A' && ch <= 'Z') ch += 32;
+            return (uint32_t)CL_MAKE_CHAR(ch);
+        }
+        return (uint32_t)obj;
+    }
     if (CL_BIGNUM_P(obj)) return cl_bignum_hash(obj);
     if (CL_RATIO_P(obj)) return cl_ratio_hash(obj);
     if (CL_SINGLE_FLOAT_P(obj)) {
@@ -77,6 +99,8 @@ static uint32_t hash_obj(CL_Obj obj, uint32_t test)
         uint8_t type = CL_HDR_TYPE(CL_OBJ_TO_PTR(obj));
         if (type == TYPE_STRING) {
             CL_String *s = (CL_String *)CL_OBJ_TO_PTR(obj);
+            if (test == CL_HT_TEST_EQUALP)
+                return hash_string_ci(s->data, s->length);
             return cl_hash_string(s->data, s->length);
         }
         if (type == TYPE_SYMBOL) {
@@ -128,8 +152,18 @@ static int keys_equal(CL_Obj a, CL_Obj b, uint32_t test)
         return 0;
     }
 
-    /* CL_HT_TEST_EQUAL: structural equality */
+    /* CL_HT_TEST_EQUAL or CL_HT_TEST_EQUALP: structural equality */
     if (a == b) return 1;
+    if (CL_CHAR_P(a) && CL_CHAR_P(b)) {
+        if (test == CL_HT_TEST_EQUALP) {
+            char ca = (char)CL_CHAR_VAL(a);
+            char cb = (char)CL_CHAR_VAL(b);
+            if (ca >= 'A' && ca <= 'Z') ca += 32;
+            if (cb >= 'A' && cb <= 'Z') cb += 32;
+            return ca == cb;
+        }
+        return a == b;
+    }
     if (CL_FIXNUM_P(a) || CL_CHAR_P(a)) return a == b;
     if (CL_BIGNUM_P(a) && CL_BIGNUM_P(b))
         return cl_bignum_equal(a, b);
@@ -146,8 +180,18 @@ static int keys_equal(CL_Obj a, CL_Obj b, uint32_t test)
     if (CL_STRING_P(a) && CL_STRING_P(b)) {
         CL_String *sa = (CL_String *)CL_OBJ_TO_PTR(a);
         CL_String *sb = (CL_String *)CL_OBJ_TO_PTR(b);
-        return sa->length == sb->length &&
-               memcmp(sa->data, sb->data, sa->length) == 0;
+        if (sa->length != sb->length) return 0;
+        if (test == CL_HT_TEST_EQUALP) {
+            uint32_t i;
+            for (i = 0; i < sa->length; i++) {
+                char ca = sa->data[i], cb = sb->data[i];
+                if (ca >= 'A' && ca <= 'Z') ca += 32;
+                if (cb >= 'A' && cb <= 'Z') cb += 32;
+                if (ca != cb) return 0;
+            }
+            return 1;
+        }
+        return memcmp(sa->data, sb->data, sa->length) == 0;
     }
 
     if (CL_CONS_P(a) && CL_CONS_P(b)) {
@@ -178,6 +222,7 @@ static CL_Obj KW_SIZE = CL_NIL;
 static CL_Obj SYM_EQ_HT = CL_NIL;
 static CL_Obj SYM_EQL_HT = CL_NIL;
 static CL_Obj SYM_EQUAL_HT = CL_NIL;
+static CL_Obj SYM_EQUALP_HT = CL_NIL;
 
 /* --- Builtins --- */
 
@@ -191,14 +236,40 @@ static CL_Obj bi_make_hash_table(CL_Obj *args, int n)
     for (i = 0; i + 1 < n; i += 2) {
         if (args[i] == KW_TEST) {
             CL_Obj test_fn = args[i + 1];
-            if (test_fn == SYM_EQ_HT)
-                test = CL_HT_TEST_EQ;
-            else if (test_fn == SYM_EQL_HT)
-                test = CL_HT_TEST_EQL;
-            else if (test_fn == SYM_EQUAL_HT)
-                test = CL_HT_TEST_EQUAL;
-            else
-                cl_error(CL_ERR_ARGS, "MAKE-HASH-TABLE: :test must be EQ, EQL, or EQUAL");
+            /* Compare by symbol name to handle cross-package references */
+            if (CL_SYMBOL_P(test_fn)) {
+                const char *name = cl_symbol_name(test_fn);
+                if (strcmp(name, "EQ") == 0)
+                    test = CL_HT_TEST_EQ;
+                else if (strcmp(name, "EQL") == 0)
+                    test = CL_HT_TEST_EQL;
+                else if (strcmp(name, "EQUAL") == 0)
+                    test = CL_HT_TEST_EQUAL;
+                else if (strcmp(name, "EQUALP") == 0)
+                    test = CL_HT_TEST_EQUALP;
+                else
+                    cl_error(CL_ERR_ARGS, "MAKE-HASH-TABLE: :test must be EQ, EQL, EQUAL, or EQUALP, got %s", name);
+            } else if (CL_HEAP_P(test_fn) && CL_HDR_TYPE(CL_OBJ_TO_PTR(test_fn)) == TYPE_FUNCTION) {
+                /* #'eq, #'eql, #'equal, #'equalp — check function name */
+                CL_Function *fn = (CL_Function *)CL_OBJ_TO_PTR(test_fn);
+                if (CL_SYMBOL_P(fn->name)) {
+                    const char *name = cl_symbol_name(fn->name);
+                    if (strcmp(name, "EQ") == 0)
+                        test = CL_HT_TEST_EQ;
+                    else if (strcmp(name, "EQL") == 0)
+                        test = CL_HT_TEST_EQL;
+                    else if (strcmp(name, "EQUAL") == 0)
+                        test = CL_HT_TEST_EQUAL;
+                    else if (strcmp(name, "EQUALP") == 0)
+                        test = CL_HT_TEST_EQUALP;
+                    else
+                        cl_error(CL_ERR_ARGS, "MAKE-HASH-TABLE: :test must be EQ, EQL, EQUAL, or EQUALP");
+                } else {
+                    cl_error(CL_ERR_ARGS, "MAKE-HASH-TABLE: :test must be EQ, EQL, EQUAL, or EQUALP");
+                }
+            } else {
+                cl_error(CL_ERR_ARGS, "MAKE-HASH-TABLE: :test must be EQ, EQL, EQUAL, or EQUALP");
+            }
         } else if (args[i] == KW_SIZE) {
             if (!CL_FIXNUM_P(args[i + 1]))
                 cl_error(CL_ERR_TYPE, "MAKE-HASH-TABLE: :size must be a number");
@@ -455,6 +526,7 @@ void cl_builtins_hashtable_init(void)
     SYM_EQ_HT   = cl_intern_in("EQ", 2, cl_package_cl);
     SYM_EQL_HT  = cl_intern_in("EQL", 3, cl_package_cl);
     SYM_EQUAL_HT = cl_intern_in("EQUAL", 5, cl_package_cl);
+    SYM_EQUALP_HT = cl_intern_in("EQUALP", 6, cl_package_cl);
 
     defun("MAKE-HASH-TABLE", bi_make_hash_table, 0, -1);
     defun("GETHASH", bi_gethash, 2, 3);

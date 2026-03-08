@@ -1001,9 +1001,10 @@ static void print_obj(CL_Obj obj)
         char buf[16];
         out_str("#<HASH-TABLE :TEST ");
         switch (ht->test) {
-        case CL_HT_TEST_EQ:    out_str("EQ"); break;
-        case CL_HT_TEST_EQL:   out_str("EQL"); break;
-        case CL_HT_TEST_EQUAL: out_str("EQUAL"); break;
+        case CL_HT_TEST_EQ:     out_str("EQ"); break;
+        case CL_HT_TEST_EQL:    out_str("EQL"); break;
+        case CL_HT_TEST_EQUAL:  out_str("EQUAL"); break;
+        case CL_HT_TEST_EQUALP: out_str("EQUALP"); break;
         default:                out_str("?"); break;
         }
         out_str(" :COUNT ");

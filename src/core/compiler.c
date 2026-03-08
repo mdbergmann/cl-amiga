@@ -1340,11 +1340,15 @@ static void compile_function(CL_Compiler *c, CL_Obj form)
         if (fun_slot >= 0) {
             cl_emit(c, OP_LOAD);
             cl_emit(c, (uint8_t)fun_slot);
+            if (c->env->boxed[fun_slot])
+                cl_emit(c, OP_CELL_REF);
         } else if (c->env) {
             int uv_idx = cl_env_resolve_fun_upvalue(c->env, name);
             if (uv_idx >= 0) {
                 cl_emit(c, OP_UPVAL);
                 cl_emit(c, (uint8_t)uv_idx);
+                if (c->env->upvalues[uv_idx].is_boxed)
+                    cl_emit(c, OP_CELL_REF);
             } else {
                 int idx = cl_add_constant(c, name);
                 cl_emit(c, OP_FLOAD);
@@ -1378,11 +1382,15 @@ static void compile_call(CL_Compiler *c, CL_Obj form)
         if (fun_slot >= 0) {
             cl_emit(c, OP_LOAD);
             cl_emit(c, (uint8_t)fun_slot);
+            if (c->env->boxed[fun_slot])
+                cl_emit(c, OP_CELL_REF);
         } else if (c->env) {
             int uv_idx = cl_env_resolve_fun_upvalue(c->env, func);
             if (uv_idx >= 0) {
                 cl_emit(c, OP_UPVAL);
                 cl_emit(c, (uint8_t)uv_idx);
+                if (c->env->upvalues[uv_idx].is_boxed)
+                    cl_emit(c, OP_CELL_REF);
             } else {
                 int idx = cl_add_constant(c, func);
                 cl_emit(c, OP_FLOAD);

@@ -255,9 +255,10 @@ typedef struct {
 /* --- Hash Table --- */
 
 /* Test function enum: stored in the test field */
-#define CL_HT_TEST_EQ    0
-#define CL_HT_TEST_EQL   1
-#define CL_HT_TEST_EQUAL 2
+#define CL_HT_TEST_EQ     0
+#define CL_HT_TEST_EQL    1
+#define CL_HT_TEST_EQUAL  2
+#define CL_HT_TEST_EQUALP 3
 
 typedef struct {
     CL_Header hdr;

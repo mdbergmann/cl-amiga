@@ -926,50 +926,109 @@ void compile_labels(CL_Compiler *c, CL_Obj form)
 {
     /* (labels ((name (params) body...) ...) body...)
      *
-     * Uses temporary global bindings so recursive/mutual references
-     * resolve at runtime via FLOAD. This works because FLOAD checks
-     * the value binding, and the closures are stored there before any
-     * function body executes.
+     * Like flet but functions can reference each other (mutual recursion).
+     * We pre-allocate local slots for all function names first, then compile
+     * each function body (which can now resolve cross-references via the
+     * local function namespace).
      */
     CL_Obj bindings = cl_car(cl_cdr(form));
     CL_Obj body = cl_cdr(cl_cdr(form));
+    CL_CompEnv *env = c->env;
+    int saved_local_count = env->local_count;
+    int saved_fun_count = env->local_fun_count;
     int saved_tail = c->in_tail;
 
-    /* Compile each function as lambda, store as global value binding */
+    /* Phase 1: pre-allocate slots, initialize to NIL, box them, and register
+     * all function names. Boxing is required so that closures compiled in
+     * phase 2 capture a reference to the box cell (not a copy of NIL). */
     {
         CL_Obj b = bindings;
+        int n = 0;
+        while (!CL_NULL_P(b)) {
+            CL_Obj binding = cl_car(b);
+            CL_Obj fname = cl_car(binding);
+            int slot = env->local_count;
+            env->local_count++;
+            if (env->local_count > env->max_locals)
+                env->max_locals = env->local_count;
+            env->locals[slot] = CL_NIL;  /* anonymous slot */
+
+            /* Initialize slot to NIL */
+            cl_emit(c, OP_CONST);
+            cl_emit_u16(c, cl_add_constant(c, CL_NIL));
+            cl_emit(c, OP_STORE);
+            cl_emit(c, (uint8_t)slot);
+            cl_emit(c, OP_POP);
+
+            /* Register in function namespace */
+            cl_env_add_local_fun(env, fname, slot);
+
+            n++;
+            b = cl_cdr(b);
+        }
+
+        /* Box all slots so closures capture by reference */
+        {
+            int i;
+            for (i = 0; i < n; i++) {
+                int slot = saved_local_count + i;
+                cl_emit(c, OP_LOAD);
+                cl_emit(c, (uint8_t)slot);
+                cl_emit(c, OP_MAKE_CELL);
+                cl_emit(c, OP_STORE);
+                cl_emit(c, (uint8_t)slot);
+                cl_emit(c, OP_POP);
+                env->boxed[slot] = 1;
+            }
+        }
+    }
+
+    /* Phase 2: compile each function and store in its pre-allocated (boxed) slot */
+    {
+        CL_Obj b = bindings;
+        int slot = saved_local_count;  /* first allocated slot */
         while (!CL_NULL_P(b)) {
             CL_Obj binding = cl_car(b);
             CL_Obj fname = cl_car(binding);
             CL_Obj lambda_list = cl_car(cl_cdr(binding));
             CL_Obj fbody = cl_cdr(cl_cdr(binding));
             CL_Obj lambda_form;
-            int idx;
 
-            /* Build (lambda (params) body...)
-             * TODO: CL spec requires implicit block around labels functions,
-             * but this interacts with our NLX-based cross-closure return-from.
-             * Adding the block breaks cross-scope return-from. Needs investigation. */
-            lambda_form = cl_cons(SYM_LAMBDA, cl_cons(lambda_list, fbody));
+            /* Build (lambda (params) (block name body...)) per CL spec:
+             * labels functions have an implicit block named after the function */
+            {
+                CL_Obj block_form = cl_cons(SYM_BLOCK, cl_cons(fname, fbody));
+                lambda_form = cl_cons(SYM_LAMBDA,
+                               cl_cons(lambda_list, cl_cons(block_form, CL_NIL)));
+            }
             CL_GC_PROTECT(lambda_form);
 
             c->in_tail = 0;
             compile_expr(c, lambda_form);
             CL_GC_UNPROTECT(1);
 
-            /* Store as global value binding (FLOAD falls back to value) */
-            idx = cl_add_constant(c, fname);
-            cl_emit(c, OP_GSTORE);
-            cl_emit_u16(c, (uint16_t)idx);
+            /* Store in boxed slot */
+            cl_emit(c, OP_CELL_SET_LOCAL);
+            cl_emit(c, (uint8_t)slot);
             cl_emit(c, OP_POP);
 
+            slot++;
             b = cl_cdr(b);
         }
     }
 
-    /* Compile body — calls use FLOAD which finds the value binding */
+    /* Phase 3: compile body */
     c->in_tail = saved_tail;
     compile_body(c, body);
+
+    /* Restore — clear boxed flags so reused slots aren't treated as boxed */
+    {
+        int i;
+        for (i = saved_local_count; i < env->local_count; i++)
+            env->boxed[i] = 0;
+    }
+    env->local_count = saved_local_count;
+    env->local_fun_count = saved_fun_count;
 }
 
 /* --- Loop forms --- */

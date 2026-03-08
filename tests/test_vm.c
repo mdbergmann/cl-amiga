@@ -880,6 +880,13 @@ TEST(eval_labels)
         "(labels ((lab-even (n) (if (= n 0) t (lab-odd (- n 1)))) "
         "(lab-odd (n) (if (= n 0) nil (lab-even (- n 1))))) "
         "(lab-even 4))"), "T");
+    /* Labels inside let* — boxed slots must not leak into subsequent bindings */
+    ASSERT_EQ_INT(eval_int(
+        "(let* ((x 99) "
+        "       (y (labels ((fn (z) z)) (fn x)))) y)"), 99);
+    /* Labels with implicit block (return-from) */
+    ASSERT_EQ_INT(eval_int(
+        "(labels ((lab-f (n) (if (<= n 0) (return-from lab-f 42) (lab-f (- n 1))))) (lab-f 3))"), 42);
 }
 
 /* --- Phase 4: &optional / &key --- */

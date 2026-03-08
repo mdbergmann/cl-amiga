@@ -335,9 +335,10 @@ static void describe_hashtable(CL_Obj obj, CL_Obj stream)
     write_line(stream, " is a HASH-TABLE");
 
     switch (ht->test) {
-        case CL_HT_TEST_EQ:    test_name = "EQ";    break;
-        case CL_HT_TEST_EQL:   test_name = "EQL";   break;
-        case CL_HT_TEST_EQUAL: test_name = "EQUAL"; break;
+        case CL_HT_TEST_EQ:     test_name = "EQ";     break;
+        case CL_HT_TEST_EQL:    test_name = "EQL";    break;
+        case CL_HT_TEST_EQUAL:  test_name = "EQUAL";  break;
+        case CL_HT_TEST_EQUALP: test_name = "EQUALP"; break;
         default:                test_name = "?";     break;
     }
     snprintf(buf, sizeof(buf), "  Test: %s", test_name);
