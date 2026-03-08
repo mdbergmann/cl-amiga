@@ -540,6 +540,14 @@
 (check "adjust-array grow" 100 (let ((v (make-array 3 :adjustable t :initial-element 1))) (let ((v2 (adjust-array v 5 :initial-element 99))) (+ (aref v2 0) (aref v2 3)))))
 (check "adjust-array shrink" 3 (let ((v (make-array 5 :adjustable t :initial-element 42))) (array-total-size (adjust-array v 3))))
 (check "adjust-array fp" 2 (let ((v (make-array 5 :fill-pointer 2 :adjustable t))) (fill-pointer (adjust-array v 10))))
+(check "adjust-array identity" t (let ((v (make-array 3 :adjustable t))) (eq v (adjust-array v 10))))
+(check "adjust-array data" 104 (let ((v (make-array 3 :adjustable t :initial-element 5))) (adjust-array v 6 :initial-element 99) (+ (aref v 0) (aref v 4))))
+(check "vpush-ext basic" 2 (let ((v (make-array 2 :fill-pointer 0 :adjustable t))) (vector-push-extend 10 v) (vector-push-extend 20 v) (vector-push-extend 30 v)))
+(check "vpush-ext fp" 3 (let ((v (make-array 2 :fill-pointer 0 :adjustable t))) (vector-push-extend 10 v) (vector-push-extend 20 v) (vector-push-extend 30 v) (fill-pointer v)))
+(check "vpush-ext data" 60 (let ((v (make-array 2 :fill-pointer 0 :adjustable t))) (vector-push-extend 10 v) (vector-push-extend 20 v) (vector-push-extend 30 v) (+ (aref v 0) (aref v 1) (aref v 2))))
+(check "vpush-ext many" 20 (let ((v (make-array 1 :fill-pointer 0 :adjustable t))) (dotimes (i 20) (vector-push-extend i v)) (fill-pointer v)))
+(check "vpush-ext identity" t (let ((v (make-array 1 :fill-pointer 0 :adjustable t))) (let ((v2 v)) (vector-push-extend 42 v) (vector-push-extend 99 v) (eq v v2))))
+(check "vpush-ext zero" 42 (let ((v (make-array 0 :fill-pointer 0 :adjustable t))) (vector-push-extend 42 v) (aref v 0)))
 
 ; --- Array type predicates (Step 7) ---
 (check "arrayp vector" t (arrayp (vector 1 2 3)))

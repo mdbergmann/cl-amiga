@@ -29,7 +29,7 @@ static void defun(const char *name, CL_CFunc func, int min, int max)
 
 /* Struct type registry:
  * alist of (name n-slots parent (slot-names...)) */
-static CL_Obj struct_table = CL_NIL;
+CL_Obj struct_table = CL_NIL;
 
 /* --- Registry lookup helpers --- */
 
@@ -478,9 +478,6 @@ static CL_Obj bi_struct_change_class(CL_Obj *args, int n)
 
 void cl_builtins_struct_init(void)
 {
-    CL_GC_PROTECT(struct_table);
-    CL_GC_UNPROTECT(1);
-
     defun("%REGISTER-STRUCT-TYPE", bi_register_struct_type, 4, 4);
     defun("%MAKE-STRUCT", bi_make_struct, 1, -1);
     defun("%STRUCT-REF", bi_struct_ref, 2, 2);

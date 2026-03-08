@@ -214,6 +214,7 @@ typedef struct {
 #define CL_VEC_FLAG_FILL_POINTER  0x01
 #define CL_VEC_FLAG_ADJUSTABLE    0x02
 #define CL_VEC_FLAG_MULTIDIM      0x04
+#define CL_VEC_FLAG_DISPLACED     0x08  /* data[0] = CL_Obj ref to backing vector */
 
 /* Sentinel: no fill pointer */
 #define CL_NO_FILL_POINTER  0xFFFFFFFFu
@@ -231,7 +232,12 @@ typedef struct {
 #define CL_VECTOR_P(obj) (CL_HEAP_P(obj) && CL_HDR_TYPE(CL_OBJ_TO_PTR(obj)) == TYPE_VECTOR)
 
 /* Access helpers: data pointer (skips dimension storage for multi-dim) */
-#define cl_vector_data(v)  ((v)->rank > 1 ? &(v)->data[(v)->rank] : (v)->data)
+/* For displaced vectors, follow data[0] to the backing vector */
+CL_Obj *cl_vector_data_fn(CL_Vector *v);
+#define cl_vector_data(v)  \
+    ((v)->flags & CL_VEC_FLAG_DISPLACED \
+     ? cl_vector_data_fn(v) \
+     : ((v)->rank > 1 ? &(v)->data[(v)->rank] : (v)->data))
 
 /* Active length: fill pointer if present, else total length */
 #define cl_vector_active_length(v) \

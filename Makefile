@@ -74,7 +74,10 @@ $(BUILDDIR)/clamiga: $(HOST_OBJS)
 
 $(BUILDDIR)/%.o: $(SRCDIR)/%.c
 	@mkdir -p $(dir $@)
-	$(CC_HOST) $(CFLAGS_HOST) -I$(SRCDIR) -c -o $@ $<
+	$(CC_HOST) $(CFLAGS_HOST) -I$(SRCDIR) -MMD -MP -c -o $@ $<
+
+# Include auto-generated dependency files
+-include $(HOST_OBJS:.o=.d)
 
 # Tests
 test: $(TEST_BINS) host

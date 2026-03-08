@@ -552,7 +552,8 @@ static CL_Obj bi_open(CL_Obj *args, int n)
         /* :if-does-not-exist nil — return NIL silently */
         if (CL_NULL_P(if_dne))
             return CL_NIL;
-        cl_error(CL_ERR_GENERAL, "OPEN: cannot open file");
+        cl_error(CL_ERR_GENERAL, "OPEN: cannot open file \"%s\"",
+                 path_str->data);
         return CL_NIL;
     }
 

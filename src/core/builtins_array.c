@@ -803,8 +803,10 @@ static CL_Obj bi_vector_push(CL_Obj *args, int n)
 static CL_Obj bi_vector_push_extend(CL_Obj *args, int n)
 {
     CL_Vector *vec;
-    uint32_t fp;
-    CL_UNUSED(n);
+    uint32_t fp, new_cap, old_len, i;
+    CL_Obj new_arr;
+    CL_Vector *new_vec;
+    CL_Obj *old_data, *new_data;
 
     if (!CL_VECTOR_P(args[1]))
         cl_error(CL_ERR_TYPE, "VECTOR-PUSH-EXTEND: not a vector");
@@ -822,11 +824,44 @@ static CL_Obj bi_vector_push_extend(CL_Obj *args, int n)
         return CL_MAKE_FIXNUM((int32_t)fp);
     }
 
-    cl_error(CL_ERR_GENERAL,
-             "VECTOR-PUSH-EXTEND: vector full (capacity %d); "
-             "use adjust-array to grow, then retry",
-             (int)vec->length);
-    return CL_NIL;  /* unreachable */
+    /* Need to extend: compute new capacity */
+    old_len = vec->length;
+    new_cap = old_len * 2;
+    if (new_cap < 4) new_cap = 4;
+    /* Honor optional extension argument */
+    if (n >= 3 && CL_FIXNUM_P(args[2])) {
+        uint32_t ext = (uint32_t)CL_FIXNUM_VAL(args[2]);
+        if (new_cap < old_len + ext)
+            new_cap = old_len + ext;
+    }
+
+    /* Allocate new backing vector (GC may fire) */
+    CL_GC_PROTECT(args[0]);
+    CL_GC_PROTECT(args[1]);
+    new_arr = cl_make_array(new_cap, 0, NULL,
+                            CL_VEC_FLAG_ADJUSTABLE, CL_NO_FILL_POINTER);
+    CL_GC_UNPROTECT(2);
+
+    /* Re-fetch after potential GC */
+    vec = (CL_Vector *)CL_OBJ_TO_PTR(args[1]);
+    new_vec = (CL_Vector *)CL_OBJ_TO_PTR(new_arr);
+
+    /* Copy old data to new backing vector */
+    old_data = cl_vector_data(vec);
+    new_data = cl_vector_data(new_vec);
+    for (i = 0; i < old_len; i++)
+        new_data[i] = old_data[i];
+
+    /* Store new element */
+    new_data[fp] = args[0];
+
+    /* Displace old vector to new backing vector */
+    vec->data[0] = new_arr;
+    vec->flags |= CL_VEC_FLAG_DISPLACED;
+    vec->length = new_cap;
+    vec->fill_pointer = fp + 1;
+
+    return CL_MAKE_FIXNUM((int32_t)fp);
 }
 
 /* ======================================================= */
@@ -890,7 +925,7 @@ static CL_Obj bi_adjust_array(CL_Obj *args, int n)
     old_len = old_vec->length;
     copy_len = old_len < new_len ? old_len : new_len;
 
-    /* Allocate new array */
+    /* Allocate new backing array */
     CL_GC_PROTECT(args[0]);
     new_arr = cl_make_array(new_len, 0, NULL,
                             old_vec->flags | CL_VEC_FLAG_ADJUSTABLE,
@@ -902,13 +937,26 @@ static CL_Obj bi_adjust_array(CL_Obj *args, int n)
     new_vec = (CL_Vector *)CL_OBJ_TO_PTR(new_arr);
 
     /* Copy old data */
-    for (i = 0; i < copy_len; i++)
-        cl_vector_data(new_vec)[i] = cl_vector_data(old_vec)[i];
+    {
+        CL_Obj *src = cl_vector_data(old_vec);
+        CL_Obj *dst = cl_vector_data(new_vec);
+        for (i = 0; i < copy_len; i++)
+            dst[i] = src[i];
 
-    /* Initialize new elements */
-    if (has_ie && new_len > old_len) {
-        for (i = old_len; i < new_len; i++)
-            cl_vector_data(new_vec)[i] = initial_element;
+        /* Initialize new elements */
+        if (has_ie && new_len > old_len) {
+            for (i = old_len; i < new_len; i++)
+                dst[i] = initial_element;
+        }
+    }
+
+    if (old_vec->flags & CL_VEC_FLAG_ADJUSTABLE) {
+        /* Adjustable: modify in place via displacement (CL spec identity) */
+        old_vec->data[0] = new_arr;
+        old_vec->flags |= CL_VEC_FLAG_DISPLACED;
+        old_vec->length = new_len;
+        old_vec->fill_pointer = new_fp;
+        return args[0];  /* Same identity */
     }
 
     return new_arr;

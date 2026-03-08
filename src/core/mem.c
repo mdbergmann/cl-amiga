@@ -13,6 +13,9 @@
 /* External roots needed for GC marking */
 extern CL_Obj macro_table, setf_table, setf_fn_table, type_table;
 extern CL_Obj cl_clos_class_table;
+extern CL_Obj struct_table;  /* builtins_struct.c: struct type registry */
+extern CL_Obj condition_hierarchy;     /* builtins_condition.c */
+extern CL_Obj condition_slot_table;    /* builtins_condition.c */
 
 CL_Heap cl_heap;
 uint8_t *cl_arena_base = NULL;  /* Global arena base for offset↔pointer conversion */
@@ -270,8 +273,13 @@ CL_Obj cl_make_array(uint32_t total, uint8_t rank, uint32_t *dims,
 {
     /* For multi-dim (rank>1): store dimensions in data[0..rank-1], elements at data[rank..] */
     uint32_t n_data = (rank > 1) ? (uint32_t)rank + total : total;
-    uint32_t alloc_size = sizeof(CL_Vector) + n_data * sizeof(CL_Obj);
-    CL_Vector *v = (CL_Vector *)cl_alloc(TYPE_VECTOR, alloc_size);
+    uint32_t alloc_size;
+    CL_Vector *v;
+    /* Adjustable vectors need at least 1 data slot for displacement pointer */
+    if ((flags & CL_VEC_FLAG_ADJUSTABLE) && n_data == 0)
+        n_data = 1;
+    alloc_size = sizeof(CL_Vector) + n_data * sizeof(CL_Obj);
+    v = (CL_Vector *)cl_alloc(TYPE_VECTOR, alloc_size);
     if (!v) return CL_NIL;
     v->length = total;
     v->fill_pointer = fill_ptr;
@@ -286,6 +294,14 @@ CL_Obj cl_make_array(uint32_t total, uint8_t rank, uint32_t *dims,
     }
     /* Element slots already zeroed (= CL_NIL) by cl_alloc */
     return CL_PTR_TO_OBJ(v);
+}
+
+/* Follow displacement chain to get the actual data pointer */
+CL_Obj *cl_vector_data_fn(CL_Vector *v)
+{
+    while (v->flags & CL_VEC_FLAG_DISPLACED)
+        v = (CL_Vector *)CL_OBJ_TO_PTR(v->data[0]);
+    return v->rank > 1 ? &v->data[v->rank] : v->data;
 }
 
 CL_Obj cl_make_hashtable(uint32_t bucket_count, uint32_t test)
@@ -550,10 +566,15 @@ static void gc_mark_children(void *ptr, uint8_t type)
     case TYPE_VECTOR: {
         CL_Vector *v = (CL_Vector *)ptr;
         uint32_t i;
-        /* For multi-dim: data[0..rank-1] are dim fixnums, elements at data[rank..] */
-        uint32_t n_entries = (v->rank > 1) ? (uint32_t)v->rank + v->length : v->length;
-        for (i = 0; i < n_entries; i++)
-            gc_mark_push(v->data[i]);
+        if (v->flags & CL_VEC_FLAG_DISPLACED) {
+            /* Displaced: data[0] is the backing vector reference */
+            gc_mark_push(v->data[0]);
+        } else {
+            /* For multi-dim: data[0..rank-1] are dim fixnums, elements at data[rank..] */
+            uint32_t n_entries = (v->rank > 1) ? (uint32_t)v->rank + v->length : v->length;
+            for (i = 0; i < n_entries; i++)
+                gc_mark_push(v->data[i]);
+        }
         break;
     }
     case TYPE_PACKAGE: {
@@ -671,6 +692,9 @@ static void gc_mark(void)
     gc_mark_obj(setf_fn_table);
     gc_mark_obj(type_table);
     gc_mark_obj(cl_clos_class_table);
+    gc_mark_obj(struct_table);
+    gc_mark_obj(condition_hierarchy);
+    gc_mark_obj(condition_slot_table);
 
     /* Mark dynamic binding stack (saved old values) */
     for (i = 0; i < cl_dyn_top; i++) {

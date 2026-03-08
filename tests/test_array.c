@@ -366,6 +366,64 @@ TEST(vector_push)
         "  (+ (aref v 0) (aref v 1)))"), 30);
 }
 
+TEST(vector_push_extend_basic)
+{
+    /* Extends when full, returns old fill-pointer index */
+    ASSERT_EQ_INT(eval_int(
+        "(let ((v (make-array 2 :fill-pointer 0 :adjustable t)))"
+        "  (vector-push-extend 10 v)"
+        "  (vector-push-extend 20 v)"
+        "  (vector-push-extend 30 v))"), 2);
+    /* Fill pointer advances past original capacity */
+    ASSERT_EQ_INT(eval_int(
+        "(let ((v (make-array 2 :fill-pointer 0 :adjustable t)))"
+        "  (vector-push-extend 10 v)"
+        "  (vector-push-extend 20 v)"
+        "  (vector-push-extend 30 v)"
+        "  (fill-pointer v))"), 3);
+    /* Data is accessible after extension */
+    ASSERT_EQ_INT(eval_int(
+        "(let ((v (make-array 2 :fill-pointer 0 :adjustable t)))"
+        "  (vector-push-extend 10 v)"
+        "  (vector-push-extend 20 v)"
+        "  (vector-push-extend 30 v)"
+        "  (+ (aref v 0) (aref v 1) (aref v 2)))"), 60);
+}
+
+TEST(vector_push_extend_multiple)
+{
+    /* Multiple extensions work correctly */
+    ASSERT_EQ_INT(eval_int(
+        "(let ((v (make-array 1 :fill-pointer 0 :adjustable t)))"
+        "  (dotimes (i 20) (vector-push-extend i v))"
+        "  (fill-pointer v))"), 20);
+    /* Verify data integrity after many extensions */
+    ASSERT_EQ_INT(eval_int(
+        "(let ((v (make-array 1 :fill-pointer 0 :adjustable t)))"
+        "  (dotimes (i 10) (vector-push-extend (* i 10) v))"
+        "  (+ (aref v 0) (aref v 5) (aref v 9)))"), 140);  /* 0 + 50 + 90 */
+}
+
+TEST(vector_push_extend_identity)
+{
+    /* Vector identity preserved (EQ) after extension */
+    ASSERT_STR_EQ(eval_print(
+        "(let ((v (make-array 1 :fill-pointer 0 :adjustable t)))"
+        "  (let ((v2 v))"
+        "    (vector-push-extend 42 v)"
+        "    (vector-push-extend 99 v)"
+        "    (eq v v2)))"), "T");
+}
+
+TEST(vector_push_extend_zero_capacity)
+{
+    /* Extending from zero-length vector */
+    ASSERT_EQ_INT(eval_int(
+        "(let ((v (make-array 0 :fill-pointer 0 :adjustable t)))"
+        "  (vector-push-extend 42 v)"
+        "  (aref v 0))"), 42);
+}
+
 /* ============================================================ */
 /* adjust-array                                                 */
 /* ============================================================ */
@@ -397,6 +455,19 @@ TEST(adjust_array_override_fp)
     ASSERT_EQ_INT(eval_int(
         "(let ((v (make-array 5 :fill-pointer 2 :adjustable t)))"
         "  (fill-pointer (adjust-array v 10 :fill-pointer 8)))"), 8);
+}
+
+TEST(adjust_array_identity)
+{
+    /* Adjustable arrays: adjust-array returns same object (EQ) */
+    ASSERT_STR_EQ(eval_print(
+        "(let ((v (make-array 3 :adjustable t)))"
+        "  (eq v (adjust-array v 10)))"), "T");
+    /* Data accessible through original reference after adjust */
+    ASSERT_EQ_INT(eval_int(
+        "(let ((v (make-array 3 :adjustable t :initial-element 5)))"
+        "  (adjust-array v 6 :initial-element 99)"
+        "  (+ (aref v 0) (aref v 4)))"), 104);  /* 5 + 99 */
 }
 
 /* ============================================================ */
@@ -646,12 +717,17 @@ int main(void)
     RUN(setf_fill_pointer);
     RUN(fill_pointer_bounds);
     RUN(vector_push);
+    RUN(vector_push_extend_basic);
+    RUN(vector_push_extend_multiple);
+    RUN(vector_push_extend_identity);
+    RUN(vector_push_extend_zero_capacity);
 
     /* Adjust */
     RUN(adjust_array_grow);
     RUN(adjust_array_shrink);
     RUN(adjust_array_preserves_fp);
     RUN(adjust_array_override_fp);
+    RUN(adjust_array_identity);
 
     /* Type predicates */
     RUN(arrayp);

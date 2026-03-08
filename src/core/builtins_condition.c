@@ -8,6 +8,9 @@
 #include "builtins.h"
 #include "symbol.h"
 #include "package.h"
+#ifdef DEBUG_CONDITION
+#include <stdio.h>
+#endif
 #include "mem.h"
 #include "error.h"
 #include "vm.h"
@@ -61,11 +64,11 @@ static void defun(const char *name, CL_CFunc func, int min, int max)
  * Stored as alist: ((type-sym parent-sym ...) ...)
  * Multiple parents for types with multiple inheritance.
  */
-static CL_Obj condition_hierarchy = CL_NIL;
+CL_Obj condition_hierarchy = CL_NIL;
 
 /* Slot table for user-defined condition types:
  * ((type-name . ((slot-name . :initarg) ...)) ...) */
-static CL_Obj condition_slot_table = CL_NIL;
+CL_Obj condition_slot_table = CL_NIL;
 
 /* Build the hierarchy alist during init */
 static void build_hierarchy(void)
@@ -540,6 +543,22 @@ CL_Obj cl_signal_condition(CL_Obj condition)
 
     cond = (CL_Condition *)CL_OBJ_TO_PTR(condition);
 
+#ifdef DEBUG_CONDITION
+    {
+        CL_String *tns = (CL_String *)CL_OBJ_TO_PTR(
+            ((CL_Symbol *)CL_OBJ_TO_PTR(cond->type_name))->name);
+        fprintf(stderr, "[signal_condition] type=%s handler_top=%d\n",
+                tns->data, cl_handler_top);
+        for (i = 0; i < cl_handler_top; i++) {
+            CL_String *htn = (CL_String *)CL_OBJ_TO_PTR(
+                ((CL_Symbol *)CL_OBJ_TO_PTR(
+                    cl_handler_stack[i].type_name))->name);
+            fprintf(stderr, "  [%d] type=%s mark=%d\n", i,
+                    htn->data, cl_handler_stack[i].handler_mark);
+        }
+    }
+#endif
+
     for (i = cl_handler_top - 1; i >= 0; i--) {
         if (cl_condition_type_matches(cond->type_name,
                                       cl_handler_stack[i].type_name)) {
@@ -861,10 +880,7 @@ static CL_Obj bi_muffle_warning(CL_Obj *args, int n)
 void cl_builtins_condition_init(void)
 {
     /* Build condition type hierarchy */
-    CL_GC_PROTECT(condition_hierarchy);
-    CL_GC_PROTECT(condition_slot_table);
     build_hierarchy();
-    CL_GC_UNPROTECT(2);
 
     /* Register builtins */
     defun("MAKE-CONDITION", bi_make_condition, 1, -1);
