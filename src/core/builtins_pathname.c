@@ -401,16 +401,16 @@ static CL_Obj bi_make_pathname(CL_Obj *args, int n)
         else if (key == KW_TYPE) { pn_type = val; has_type = 1; }
         else if (key == KW_VERSION) { version = val; has_version = 1; }
         else if (key == KW_DEFAULTS) {
-            /* Merge with defaults — only fill in components not explicitly provided */
-            if (CL_PATHNAME_P(val)) {
-                CL_Pathname *def = (CL_Pathname *)CL_OBJ_TO_PTR(val);
-                if (!has_host) host = def->host;
-                if (!has_device) device = def->device;
-                if (!has_directory) directory = def->directory;
-                if (!has_name) pn_name = def->name;
-                if (!has_type) pn_type = def->type;
-                if (!has_version) version = def->version;
-            }
+            /* Merge with defaults — only fill in components not explicitly provided.
+               Per CL spec, :defaults accepts any pathname designator. */
+            CL_Obj def_pn = coerce_to_pathname(val);
+            CL_Pathname *def = (CL_Pathname *)CL_OBJ_TO_PTR(def_pn);
+            if (!has_host) host = def->host;
+            if (!has_device) device = def->device;
+            if (!has_directory) directory = def->directory;
+            if (!has_name) pn_name = def->name;
+            if (!has_type) pn_type = def->type;
+            if (!has_version) version = def->version;
         }
     }
 

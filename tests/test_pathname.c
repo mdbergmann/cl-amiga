@@ -247,6 +247,19 @@ TEST(make_pathname_dir)
                   "\"/usr/lib/foo.lisp\"");
 }
 
+TEST(make_pathname_defaults_string)
+{
+    /* Regression: :defaults must accept pathname designators (strings), not just pathnames */
+    ASSERT_STR_EQ(eval_print("(namestring (make-pathname :directory '(:relative \"archives\") :defaults \"foo-20241012.tgz\"))"),
+                  "\"archives/foo-20241012.tgz\"");
+}
+
+TEST(make_pathname_defaults_pathname)
+{
+    ASSERT_STR_EQ(eval_print("(namestring (make-pathname :directory '(:relative \"out\") :defaults #P\"bar.lisp\"))"),
+                  "\"out/bar.lisp\"");
+}
+
 /* --- merge-pathnames --- */
 
 TEST(merge_pathnames_basic)
@@ -483,6 +496,8 @@ int main(void)
     RUN(pathname_equal_diff);
     RUN(make_pathname_basic);
     RUN(make_pathname_dir);
+    RUN(make_pathname_defaults_string);
+    RUN(make_pathname_defaults_pathname);
     RUN(merge_pathnames_basic);
     RUN(merge_pathnames_no_merge_needed);
     RUN(merge_pathnames_relative_into_relative);

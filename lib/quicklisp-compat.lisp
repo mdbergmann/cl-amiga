@@ -20,10 +20,30 @@
 (in-package #:ql-network)
 
 ;; Override open-connection to use CL-Amiga's ext:open-tcp-stream.
-;; Returns a bidirectional stream connected to host:port,
-;; similar to LispWorks' comm:open-tcp-stream or CLISP's socket:socket-connect.
 (defun open-connection (host port)
   (ext:open-tcp-stream host port))
+
+;; Direct implementations of definterface functions.
+;; The definterface GF dispatch via *implementation* has issues in CL-Amiga,
+;; so we override the public entry points directly with the "t" fallback behavior.
+(defun read-octets (buffer connection)
+  (read-sequence buffer connection))
+
+(defun write-octets (buffer connection)
+  (write-sequence buffer connection)
+  (force-output connection))
+
+(defun close-connection (connection)
+  (ignore-errors (close connection)))
+
+(defun call-with-connection (host port fun)
+  (let (connection)
+    (unwind-protect
+         (progn
+           (setf connection (open-connection host port))
+           (funcall fun connection))
+      (when connection
+        (close-connection connection)))))
 
 (in-package #:ql-http)
 

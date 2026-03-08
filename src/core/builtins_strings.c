@@ -416,6 +416,54 @@ static CL_Obj bi_subseq(CL_Obj *args, int n)
         if (start > end) start = end;
         return cl_make_string(s->data + start, (uint32_t)(end - start));
     }
+    /* Vector subseq */
+    if (CL_VECTOR_P(args[0])) {
+        CL_Vector *v = (CL_Vector *)CL_OBJ_TO_PTR(args[0]);
+        uint32_t len = cl_vector_active_length(v);
+        CL_Obj *data;
+        CL_Obj result;
+        int32_t i, rlen;
+        end = (n > 2 && !CL_NULL_P(args[2]) && CL_FIXNUM_P(args[2]))
+            ? CL_FIXNUM_VAL(args[2]) : (int32_t)len;
+        if (start < 0) start = 0;
+        if (end > (int32_t)len) end = (int32_t)len;
+        if (start > end) start = end;
+        rlen = end - start;
+        CL_GC_PROTECT(args[0]);
+        result = cl_make_vector((uint32_t)rlen);
+        v = (CL_Vector *)CL_OBJ_TO_PTR(args[0]);
+        data = cl_vector_data(v);
+        {
+            CL_Vector *rv = (CL_Vector *)CL_OBJ_TO_PTR(result);
+            CL_Obj *rdata = cl_vector_data(rv);
+            for (i = 0; i < rlen; i++)
+                rdata[i] = data[start + i];
+        }
+        CL_GC_UNPROTECT(1);
+        return result;
+    }
+    if (CL_BIT_VECTOR_P(args[0])) {
+        CL_BitVector *bv = (CL_BitVector *)CL_OBJ_TO_PTR(args[0]);
+        uint32_t len = cl_bv_active_length(bv);
+        CL_Obj result;
+        int32_t i, rlen;
+        end = (n > 2 && !CL_NULL_P(args[2]) && CL_FIXNUM_P(args[2]))
+            ? CL_FIXNUM_VAL(args[2]) : (int32_t)len;
+        if (start < 0) start = 0;
+        if (end > (int32_t)len) end = (int32_t)len;
+        if (start > end) start = end;
+        rlen = end - start;
+        CL_GC_PROTECT(args[0]);
+        result = cl_make_bit_vector((uint32_t)rlen);
+        bv = (CL_BitVector *)CL_OBJ_TO_PTR(args[0]);
+        {
+            CL_BitVector *rv = (CL_BitVector *)CL_OBJ_TO_PTR(result);
+            for (i = 0; i < rlen; i++)
+                cl_bv_set_bit(rv, (uint32_t)i, cl_bv_get_bit(bv, (uint32_t)(start + i)));
+        }
+        CL_GC_UNPROTECT(1);
+        return result;
+    }
     /* List subseq */
     {
         CL_Obj list = args[0], result = CL_NIL, tail = CL_NIL;

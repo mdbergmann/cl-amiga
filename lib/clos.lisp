@@ -624,7 +624,8 @@ Specialize via defmethod to provide lazy initialization."
         ;; Generate accessor functions
         (dolist (accessor accessors)
           (let ((setter-name (intern (concatenate 'string
-                                      "%SETF-" (symbol-name accessor)))))
+                                      "%SETF-" (symbol-name accessor))
+                                    (or (symbol-package accessor) *package*))))
             (push `(defun ,accessor (obj)
                      (slot-value obj ',slot-name))
                   accessor-defs)
@@ -955,8 +956,8 @@ When called with no arguments, passes the original method arguments."
   "Dispatch a generic function call."
   (let ((methods (%compute-applicable-methods gf args)))
     (when (null methods)
-      (error "No applicable method for ~S with args ~S"
-             (gf-name gf) args))
+      (error (format nil "No applicable method for ~S with args of types ~S"
+                     (gf-name gf) (mapcar #'type-of args))))
     (%call-with-method-combination methods args)))
 
 ;;; --- ensure-generic-function ---
@@ -1213,7 +1214,8 @@ When called with no arguments, passes the original method arguments."
         ;; Generate GF-based accessor methods
         (dolist (accessor accessors)
           (let ((setter-name (intern (concatenate 'string
-                                      "%SETF-" (symbol-name accessor)))))
+                                      "%SETF-" (symbol-name accessor))
+                                    (or (symbol-package accessor) *package*))))
             (push `(defgeneric ,accessor (obj)) accessor-defs)
             (push `(defmethod ,accessor ((obj ,name))
                      (slot-value obj ',slot-name))

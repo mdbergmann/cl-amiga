@@ -12,6 +12,7 @@
 #include "error.h"
 #include "printer.h"
 #include "stream.h"
+#include "float.h"
 #include "../platform/platform.h"
 #include <stdio.h>
 #include <stdlib.h>
@@ -1197,6 +1198,62 @@ static void fmt_dispatch(FmtCtx *ctx, FmtDirective *d)
         int i;
         for (i = 0; i < count; i++)
             cl_stream_write_char(ctx->stream, '~');
+        break;
+    }
+    case 'P': {
+        /* ~P: plural — "s" if arg /= 1, else ""
+           ~:P: backup then plural — backs up one arg, then plural
+           ~@P: "y"/"ies" — "y" if arg == 1, else "ies" */
+        CL_Obj arg;
+        int is_one;
+        if (d->colon && ctx->ai > 0)
+            ctx->ai--;  /* back up one arg */
+        arg = (ctx->ai < ctx->nargs) ? ctx->args[ctx->ai++] : CL_NIL;
+        is_one = (CL_FIXNUM_P(arg) && CL_FIXNUM_VAL(arg) == 1);
+        if (d->atsign) {
+            if (is_one)
+                cl_stream_write_char(ctx->stream, 'y');
+            else {
+                cl_stream_write_char(ctx->stream, 'i');
+                cl_stream_write_char(ctx->stream, 'e');
+                cl_stream_write_char(ctx->stream, 's');
+            }
+        } else {
+            if (!is_one)
+                cl_stream_write_char(ctx->stream, 's');
+        }
+        break;
+    }
+    case 'F':
+    case '$': {
+        /* ~F: fixed-format float — ~w,d,k,ovf,padcharF
+           ~$: monetary — ~d,n,w,padchar$ (d=2 dec digits, n=1 min int digits)
+           Simplified: just format number with d decimal digits */
+        CL_Obj arg = fmt_next_arg(ctx);
+        double val = cl_to_double(arg);
+        int32_t digs = (d->directive == '$') ? fmt_param(d, 0, 2) : fmt_param(d, 1, -1);
+        char buf[64];
+        if (digs < 0) {
+            snprintf(buf, sizeof(buf), "%g", val);
+        } else {
+            snprintf(buf, sizeof(buf), "%.*f", (int)digs, val);
+        }
+        {
+            const char *p = buf;
+            while (*p) cl_stream_write_char(ctx->stream, *p++);
+        }
+        break;
+    }
+    case 'E': {
+        /* ~E: exponential format — simplified */
+        CL_Obj arg = fmt_next_arg(ctx);
+        double val = cl_to_double(arg);
+        char buf[64];
+        snprintf(buf, sizeof(buf), "%E", val);
+        {
+            const char *p = buf;
+            while (*p) cl_stream_write_char(ctx->stream, *p++);
+        }
         break;
     }
     case 'T':

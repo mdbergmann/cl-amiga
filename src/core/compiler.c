@@ -522,7 +522,8 @@ void compile_lambda(CL_Compiler *c, CL_Obj form)
 static int find_var_index(CL_Obj sym, CL_Obj *vars, int n_vars)
 {
     int i;
-    for (i = 0; i < n_vars; i++) {
+    /* Search from end so shadowed variables (let*) resolve to innermost binding */
+    for (i = n_vars - 1; i >= 0; i--) {
         if (vars[i] == sym) return i;
     }
     return -1;
@@ -795,13 +796,21 @@ static void compile_let(CL_Compiler *c, CL_Obj form, int sequential)
             CL_Obj b;
             memset(mutated, 0, (size_t)n_all);
             memset(captured, 0, (size_t)n_all);
-            b = bindings;
-            while (!CL_NULL_P(b)) {
-                CL_Obj binding = cl_car(b);
-                if (CL_CONS_P(binding))
-                    scan_body_for_boxing(cl_car(cl_cdr(binding)), all_vars, n_all,
-                                         mutated, captured, 0);
-                b = cl_cdr(b);
+            /* Scan each binding's init-form against only the vars defined
+               so far (not including the current binding).  This ensures
+               (let* ((x 10) (x (1+ x)))) resolves the init-form reference
+               to the first x, not the second (which doesn't exist yet). */
+            {
+                int scan_count = 0;
+                b = bindings;
+                while (!CL_NULL_P(b)) {
+                    CL_Obj binding = cl_car(b);
+                    if (CL_CONS_P(binding))
+                        scan_body_for_boxing(cl_car(cl_cdr(binding)), all_vars,
+                                             scan_count, mutated, captured, 0);
+                    scan_count++;
+                    b = cl_cdr(b);
+                }
             }
             {
                 CL_Obj cur = body;

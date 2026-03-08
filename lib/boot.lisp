@@ -226,13 +226,20 @@
        ,@(mapcan (lambda (slot-spec)
                    (let* ((slot-name (car slot-spec))
                           (opts (cdr slot-spec))
-                          (reader (getf opts :reader)))
-                     (when reader
-                       (if clos-available
-                           ;; CLOS loaded: use defmethod to avoid overwriting existing GFs
-                           (list `(defmethod ,reader ((c ,name)) (condition-slot-value c ',slot-name)))
-                           ;; No CLOS: plain defun
-                           (list `(defun ,reader (c) (condition-slot-value c ',slot-name)))))))
+                          (reader (or (getf opts :reader)
+                                      (getf opts :accessor)))
+                          (accessor (getf opts :accessor)))
+                     (append
+                       (when reader
+                         (if clos-available
+                             (list `(defmethod ,reader ((c ,name)) (condition-slot-value c ',slot-name)))
+                             (list `(defun ,reader (c) (condition-slot-value c ',slot-name)))))
+                       (when accessor
+                         (let ((setter-name (intern (concatenate 'string
+                                                     "%SETF-" (symbol-name accessor))
+                                                   (or (symbol-package accessor) *package*))))
+                           (list `(defun ,setter-name (val c)
+                                    (%set-condition-slot-value c ',slot-name val))))))))
                  slot-specs)
        ,@(when report
            (if (stringp report)

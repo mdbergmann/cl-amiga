@@ -498,6 +498,64 @@ static CL_Obj bi_condition_slot_value(CL_Obj *args, int n)
     return CL_NIL; /* Type not in slot table */
 }
 
+/* (%set-condition-slot-value condition slot-name value) */
+static CL_Obj bi_set_condition_slot_value(CL_Obj *args, int n)
+{
+    CL_Obj cond_obj = args[0];
+    CL_Obj slot_name = args[1];
+    CL_Obj value = args[2];
+    CL_Condition *cond;
+    CL_Obj type_name, table_entry, slot_pairs, initarg;
+    CL_UNUSED(n);
+
+    if (!CL_CONDITION_P(cond_obj))
+        cl_error(CL_ERR_TYPE, "%SET-CONDITION-SLOT-VALUE: not a condition");
+
+    cond = (CL_Condition *)CL_OBJ_TO_PTR(cond_obj);
+    type_name = cond->type_name;
+
+    /* Find initarg for this slot name */
+    table_entry = condition_slot_table;
+    while (!CL_NULL_P(table_entry)) {
+        CL_Obj entry = cl_car(table_entry);
+        if (cl_car(entry) == type_name) {
+            slot_pairs = cl_cdr(entry);
+            while (!CL_NULL_P(slot_pairs)) {
+                CL_Obj pair = cl_car(slot_pairs);
+                if (cl_car(pair) == slot_name) {
+                    initarg = cl_cdr(pair);
+                    /* Update existing slot value */
+                    {
+                        CL_Obj slots = cond->slots;
+                        while (!CL_NULL_P(slots)) {
+                            CL_Obj sp = cl_car(slots);
+                            if (cl_car(sp) == initarg) {
+                                ((CL_Cons *)CL_OBJ_TO_PTR(sp))->cdr = value;
+                                return value;
+                            }
+                            slots = cl_cdr(slots);
+                        }
+                    }
+                    /* Slot not found in alist — add it */
+                    {
+                        CL_Obj new_pair;
+                        CL_GC_PROTECT(cond_obj);
+                        new_pair = cl_cons(initarg, value);
+                        cond = (CL_Condition *)CL_OBJ_TO_PTR(cond_obj);
+                        cond->slots = cl_cons(new_pair, cond->slots);
+                        CL_GC_UNPROTECT(1);
+                    }
+                    return value;
+                }
+                slot_pairs = cl_cdr(slot_pairs);
+            }
+        }
+        table_entry = cl_cdr(table_entry);
+    }
+    cl_error(CL_ERR_ARGS, "%SET-CONDITION-SLOT-VALUE: unknown slot");
+    return CL_NIL;
+}
+
 /* --- Signaling --- */
 
 /* Create a condition object from a C error code and message string */
@@ -894,6 +952,7 @@ void cl_builtins_condition_init(void)
     /* User-defined condition types */
     defun("%REGISTER-CONDITION-TYPE", bi_register_condition_type, 3, 3);
     defun("CONDITION-SLOT-VALUE", bi_condition_slot_value, 2, 2);
+    defun("%SET-CONDITION-SLOT-VALUE", bi_set_condition_slot_value, 3, 3);
 
     /* Signaling */
     defun("SIGNAL", bi_signal, 1, -1);

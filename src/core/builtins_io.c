@@ -1424,6 +1424,12 @@ void cl_builtins_io_init(void)
     defun("%GET-GC-COUNT", bi_get_gc_count, 0, 0);
     defun("%TIME-REPORT", bi_time_report, 3, 3);
     defun("GET-INTERNAL-REAL-TIME", bi_get_internal_real_time, 0, 0);
+    {
+        /* INTERNAL-TIME-UNITS-PER-SECOND — milliseconds */
+        CL_Obj sym = cl_intern_in("INTERNAL-TIME-UNITS-PER-SECOND", 30, cl_package_cl);
+        CL_Symbol *s = (CL_Symbol *)CL_OBJ_TO_PTR(sym);
+        s->value = CL_MAKE_FIXNUM(1000);
+    }
 
     /* Sleep */
     defun("SLEEP", bi_sleep, 1, 1);

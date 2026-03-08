@@ -5778,6 +5778,30 @@ TEST(eval_directory_basic)
     ASSERT_STR_EQ(eval_print("(listp (directory \"/nonexistent-path-12345/*.xyz\"))"), "T");
 }
 
+/* --- let* variable shadowing with closure capture --- */
+
+TEST(eval_let_star_shadow_closure_mutation)
+{
+    /* Regression: closures in let* body must capture the innermost binding
+       when the same variable name is rebound (shadowed). */
+    ASSERT_STR_EQ(eval_print(
+        "(let* ((x 10) (x 20))"
+        "  (labels ((set-x (v) (setf x v)) (get-x () x))"
+        "    (set-x 30) (get-x)))"), "30");
+}
+
+TEST(eval_let_star_shadow_initform_ref)
+{
+    /* Init-form of shadowed binding should see the earlier binding. */
+    ASSERT_STR_EQ(eval_print("(let* ((x 10) (x (1+ x))) x)"), "11");
+}
+
+TEST(eval_let_star_shadow_no_closure)
+{
+    /* Basic let* shadowing without closures. */
+    ASSERT_STR_EQ(eval_print("(let* ((x 1) (x (+ x 100))) x)"), "101");
+}
+
 /* --- Heap exhaustion / storage error tests --- */
 
 TEST(eval_heap_exhaustion_error)
@@ -6511,6 +6535,11 @@ int main(void)
     RUN(eval_synonym_stream);
     RUN(eval_compile_file_truename);
     RUN(eval_directory_basic);
+
+    /* let* variable shadowing with closure capture */
+    RUN(eval_let_star_shadow_closure_mutation);
+    RUN(eval_let_star_shadow_initform_ref);
+    RUN(eval_let_star_shadow_no_closure);
 
     /* heap exhaustion / storage errors */
     RUN(eval_heap_exhaustion_error);
