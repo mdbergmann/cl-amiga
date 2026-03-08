@@ -982,7 +982,7 @@ void cl_builtins_array_init(void)
     /* Access */
     defun("AREF", bi_aref, 2, -1);
     defun("SVREF", bi_svref, 2, 2);
-    defun("%SETF-AREF", bi_setf_aref, 3, -1);
+    cl_register_builtin("%SETF-AREF", bi_setf_aref, 3, -1, cl_package_clamiga);
 
     /* Predicates */
     defun("VECTORP", bi_vectorp, 1, 1);
@@ -997,11 +997,11 @@ void cl_builtins_array_init(void)
     defun("ARRAY-TOTAL-SIZE", bi_array_total_size, 1, 1);
     defun("ARRAY-ROW-MAJOR-INDEX", bi_array_row_major_index, 2, -1);
     defun("ROW-MAJOR-AREF", bi_row_major_aref, 2, 2);
-    defun("%SETF-ROW-MAJOR-AREF", bi_setf_row_major_aref, 3, 3);
+    cl_register_builtin("%SETF-ROW-MAJOR-AREF", bi_setf_row_major_aref, 3, 3, cl_package_clamiga);
 
     /* Fill pointer */
     defun("FILL-POINTER", bi_fill_pointer, 1, 1);
-    defun("%SETF-FILL-POINTER", bi_setf_fill_pointer, 2, 2);
+    cl_register_builtin("%SETF-FILL-POINTER", bi_setf_fill_pointer, 2, 2, cl_package_clamiga);
     defun("ARRAY-HAS-FILL-POINTER-P", bi_array_has_fill_pointer_p, 1, 1);
     defun("VECTOR-PUSH", bi_vector_push, 2, 2);
     defun("VECTOR-PUSH-EXTEND", bi_vector_push_extend, 2, 3);

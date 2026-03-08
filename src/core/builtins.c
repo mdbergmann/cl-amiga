@@ -12,15 +12,21 @@
 #include "../platform/platform.h"
 #include <string.h>
 
-/* Helper to register a builtin */
-static void defun(const char *name, CL_CFunc func, int min, int max)
+/* Shared: register a builtin in a specific package */
+void cl_register_builtin(const char *name, CL_CFunc func,
+                          int min, int max, CL_Obj package)
 {
-    CL_Obj sym = cl_intern_in(name, (uint32_t)strlen(name), cl_package_cl);
+    CL_Obj sym = cl_intern_in(name, (uint32_t)strlen(name), package);
     CL_Obj fn = cl_make_function(func, sym, min, max);
     CL_Symbol *s = (CL_Symbol *)CL_OBJ_TO_PTR(sym);
     s->function = fn;
-    /* Also set value slot so (function +) and #'+ work */
     s->value = fn;
+}
+
+/* Helper to register a builtin in CL */
+static void defun(const char *name, CL_CFunc func, int min, int max)
+{
+    cl_register_builtin(name, func, min, max, cl_package_cl);
 }
 
 /* Coerce function designator: symbol -> its function binding */
@@ -725,14 +731,14 @@ void cl_builtins_init(void)
     /* Property lists */
     defun("SYMBOL-PLIST", bi_symbol_plist, 1, 1);
     defun("GET", bi_get, 2, 3);
-    defun("%SETF-GET", bi_setf_get, 3, 3);
+    cl_register_builtin("%SETF-GET", bi_setf_get, 3, 3, cl_package_clamiga);
     defun("REMPROP", bi_remprop, 2, 2);
 
     /* Trace (internal helpers, called by compiler special forms) */
-    defun("%TRACE-FUNCTION", bi_trace_function, 1, 1);
-    defun("%UNTRACE-FUNCTION", bi_untrace_function, 1, 1);
-    defun("%TRACED-FUNCTIONS", bi_traced_functions, 0, 0);
-    defun("%UNTRACE-ALL", bi_untrace_all, 0, 0);
+    cl_register_builtin("%TRACE-FUNCTION", bi_trace_function, 1, 1, cl_package_clamiga);
+    cl_register_builtin("%UNTRACE-FUNCTION", bi_untrace_function, 1, 1, cl_package_clamiga);
+    cl_register_builtin("%TRACED-FUNCTIONS", bi_traced_functions, 0, 0, cl_package_clamiga);
+    cl_register_builtin("%UNTRACE-ALL", bi_untrace_all, 0, 0, cl_package_clamiga);
 
     /* Sub-module builtins */
     cl_builtins_arith_init();

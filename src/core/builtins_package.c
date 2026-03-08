@@ -714,8 +714,8 @@ void cl_builtins_package_init(void)
     defun("PACKAGE-USE-LIST", bi_package_use_list, 1, 1);
     defun("PACKAGE-NICKNAMES", bi_package_nicknames, 1, 1);
     defun("LIST-ALL-PACKAGES", bi_list_all_packages, 0, 0);
-    defun("%PACKAGE-SYMBOLS", bi_package_symbols, 1, 1);
-    defun("%PACKAGE-EXTERNAL-SYMBOLS", bi_package_external_symbols, 1, 1);
+    cl_register_builtin("%PACKAGE-SYMBOLS", bi_package_symbols, 1, 1, cl_package_clamiga);
+    cl_register_builtin("%PACKAGE-EXTERNAL-SYMBOLS", bi_package_external_symbols, 1, 1, cl_package_clamiga);
     defun("PACKAGE-LOCAL-NICKNAMES", bi_package_local_nicknames, 1, 1);
     defun("ADD-PACKAGE-LOCAL-NICKNAME", bi_add_package_local_nickname, 2, 3);
     defun("REMOVE-PACKAGE-LOCAL-NICKNAME", bi_remove_package_local_nickname, 1, 2);

@@ -2,13 +2,19 @@
 #include "symbol.h"
 #include "mem.h"
 #include "error.h"
+#include "compiler.h"
 #include "../platform/platform.h"
 #include <string.h>
+
+/* External tables for checking symbol bindings */
+extern CL_Obj struct_table;           /* builtins_struct.c */
+extern CL_Obj cl_clos_class_table;    /* builtins_struct.c */
 
 CL_Obj cl_package_cl = CL_NIL;
 CL_Obj cl_package_cl_user = CL_NIL;
 CL_Obj cl_package_keyword = CL_NIL;
 CL_Obj cl_package_ext = CL_NIL;
+CL_Obj cl_package_clamiga = CL_NIL;
 CL_Obj cl_current_package = CL_NIL;
 CL_Obj cl_package_registry = CL_NIL;
 
@@ -419,6 +425,89 @@ void cl_package_export_all_cl_symbols(void)
             list = cl_cdr(list);
         }
     }
+
+    /* Also export all CLAMIGA internal symbols */
+    pkg = (CL_Package *)CL_OBJ_TO_PTR(cl_package_clamiga);
+    tbl = (CL_Vector *)CL_OBJ_TO_PTR(pkg->symbols);
+    for (i = 0; i < tbl->length; i++) {
+        CL_Obj list = tbl->data[i];
+        while (!CL_NULL_P(list)) {
+            CL_Obj sym = cl_car(list);
+            CL_Symbol *s = (CL_Symbol *)CL_OBJ_TO_PTR(sym);
+            s->flags |= CL_SYM_EXPORTED;
+            list = cl_cdr(list);
+        }
+    }
+}
+
+/* Helper: check if a CL symbol has a real definition (function, value,
+   macro, type, struct, or CLOS class).  Used to filter out stray symbols
+   that were accidentally interned in CL by boot.lisp macro bodies. */
+static int symbol_has_binding(CL_Obj sym)
+{
+    extern int cl_is_struct_type(CL_Obj type_sym);
+    extern int cl_clos_class_exists(CL_Obj name);
+
+    CL_Symbol *s = (CL_Symbol *)CL_OBJ_TO_PTR(sym);
+
+    /* Has function or value binding */
+    if (s->function != CL_UNBOUND) return 1;
+    if (s->value != CL_UNBOUND)    return 1;
+
+    /* Is special or constant */
+    if (s->flags & (CL_SYM_SPECIAL | CL_SYM_CONSTANT)) return 1;
+
+    /* Is a macro or type expander */
+    if (cl_macro_p(sym))                          return 1;
+    if (!CL_NULL_P(cl_get_type_expander(sym)))    return 1;
+
+    /* Is a struct type or CLOS class */
+    if (cl_is_struct_type(sym))   return 1;
+    if (cl_clos_class_exists(sym)) return 1;
+
+    return 0;
+}
+
+void cl_package_export_defined_cl_symbols(void)
+{
+    CL_Package *pkg = (CL_Package *)CL_OBJ_TO_PTR(cl_package_cl);
+    CL_Vector *tbl = (CL_Vector *)CL_OBJ_TO_PTR(pkg->symbols);
+    uint32_t i;
+
+    for (i = 0; i < tbl->length; i++) {
+        CL_Obj list = tbl->data[i];
+        while (!CL_NULL_P(list)) {
+            CL_Obj sym = cl_car(list);
+            CL_Symbol *s = (CL_Symbol *)CL_OBJ_TO_PTR(sym);
+            /* Skip already-exported (from pre-boot export) */
+            if (!(s->flags & CL_SYM_EXPORTED)) {
+                if (symbol_has_binding(sym))
+                    s->flags |= CL_SYM_EXPORTED;
+            }
+            list = cl_cdr(list);
+        }
+    }
+
+    /* Keywords and CLAMIGA are always fully exported */
+    {
+        CL_Obj pkgs[2];
+        int p;
+        pkgs[0] = cl_package_keyword;
+        pkgs[1] = cl_package_clamiga;
+        for (p = 0; p < 2; p++) {
+            pkg = (CL_Package *)CL_OBJ_TO_PTR(pkgs[p]);
+            tbl = (CL_Vector *)CL_OBJ_TO_PTR(pkg->symbols);
+            for (i = 0; i < tbl->length; i++) {
+                CL_Obj list = tbl->data[i];
+                while (!CL_NULL_P(list)) {
+                    CL_Obj sym = cl_car(list);
+                    CL_Symbol *s = (CL_Symbol *)CL_OBJ_TO_PTR(sym);
+                    s->flags |= CL_SYM_EXPORTED;
+                    list = cl_cdr(list);
+                }
+            }
+        }
+    }
 }
 
 void cl_package_init(void)
@@ -436,11 +525,15 @@ void cl_package_init(void)
     cl_package_ext = cl_make_package("EXT");
     CL_GC_PROTECT(cl_package_ext);
 
+    cl_package_clamiga = cl_make_package("CLAMIGA");
+    CL_GC_PROTECT(cl_package_clamiga);
+
     /* Register in global registry */
     cl_register_package(cl_package_cl);
     cl_register_package(cl_package_keyword);
     cl_register_package(cl_package_cl_user);
     cl_register_package(cl_package_ext);
+    cl_register_package(cl_package_clamiga);
 
     /* Add nicknames */
     {
@@ -454,15 +547,21 @@ void cl_package_init(void)
         user_pkg->nicknames = cl_cons(nick, CL_NIL);
     }
 
-    /* CL-USER uses CL and EXT */
+    /* CL-USER uses CL, EXT, and CLAMIGA */
     cl_use_package(cl_package_cl, cl_package_cl_user);
     cl_use_package(cl_package_ext, cl_package_cl_user);
+    cl_use_package(cl_package_clamiga, cl_package_cl_user);
 
     /* EXT uses CL */
     cl_use_package(cl_package_cl, cl_package_ext);
 
+    /* CLAMIGA uses CL; CL uses CLAMIGA so boot.lisp/clos.lisp can
+       access internal builtins without package qualification */
+    cl_use_package(cl_package_cl, cl_package_clamiga);
+    cl_use_package(cl_package_clamiga, cl_package_cl);
+
     cl_current_package = cl_package_cl_user;
 
     /* Note: roots are kept protected permanently (they're globals) */
-    CL_GC_UNPROTECT(4);
+    CL_GC_UNPROTECT(5);
 }

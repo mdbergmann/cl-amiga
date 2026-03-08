@@ -11,6 +11,7 @@ extern CL_Obj cl_package_cl;       /* COMMON-LISP package */
 extern CL_Obj cl_package_cl_user;  /* COMMON-LISP-USER package */
 extern CL_Obj cl_package_keyword;  /* KEYWORD package */
 extern CL_Obj cl_package_ext;      /* EXT (implementation extensions) package */
+extern CL_Obj cl_package_clamiga;  /* CLAMIGA (implementation internals) package */
 extern CL_Obj cl_current_package;  /* *PACKAGE* */
 
 /* Package registry — alist ((name-str . pkg) ...) */
@@ -62,5 +63,10 @@ void cl_remove_package_local_nickname(const char *name, uint32_t len, CL_Obj fro
 
 /* Export all symbols currently in CL package (called after symbol init) */
 void cl_package_export_all_cl_symbols(void);
+
+/* Export only newly-defined CL symbols that have real bindings
+   (function, value, macro, type, struct, or CLOS class).
+   Already-exported symbols are left unchanged. */
+void cl_package_export_defined_cl_symbols(void);
 
 #endif /* CL_PACKAGE_H */

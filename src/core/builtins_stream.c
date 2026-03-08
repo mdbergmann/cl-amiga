@@ -995,7 +995,7 @@ void cl_builtins_stream_init(void)
     defun("INPUT-STREAM-P", bi_input_stream_p, 1, 1);
     defun("OUTPUT-STREAM-P", bi_output_stream_p, 1, 1);
     defun("INTERACTIVE-STREAM-P", bi_interactive_stream_p, 1, 1);
-    defun("%MAKE-TEST-STREAM", bi_make_test_stream, 2, 2);
+    cl_register_builtin("%MAKE-TEST-STREAM", bi_make_test_stream, 2, 2, cl_package_clamiga);
 
     /* Step 3: Character I/O */
     defun("READ-CHAR", bi_read_char, 0, 4);
@@ -1029,7 +1029,7 @@ void cl_builtins_stream_init(void)
     defun("DELETE-FILE", bi_delete_file, 1, 1);
     defun("RENAME-FILE", bi_rename_file, 2, 2);
     defun("FILE-WRITE-DATE", bi_file_write_date, 1, 1);
-    defun("%MKDIR", bi_mkdir, 1, 1);
+    cl_register_builtin("%MKDIR", bi_mkdir, 1, 1, cl_package_clamiga);
     defun("DIRECTORY", bi_directory, 1, -1);
     defun("FILE-NAMESTRING", bi_file_namestring, 1, 1);
     defun("DIRECTORY-NAMESTRING", bi_directory_namestring, 1, 1);

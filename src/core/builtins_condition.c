@@ -950,9 +950,9 @@ void cl_builtins_condition_init(void)
     defun("TYPE-ERROR-EXPECTED-TYPE", bi_type_error_expected_type, 1, 1);
 
     /* User-defined condition types */
-    defun("%REGISTER-CONDITION-TYPE", bi_register_condition_type, 3, 3);
+    cl_register_builtin("%REGISTER-CONDITION-TYPE", bi_register_condition_type, 3, 3, cl_package_clamiga);
     defun("CONDITION-SLOT-VALUE", bi_condition_slot_value, 2, 2);
-    defun("%SET-CONDITION-SLOT-VALUE", bi_set_condition_slot_value, 3, 3);
+    cl_register_builtin("%SET-CONDITION-SLOT-VALUE", bi_set_condition_slot_value, 3, 3, cl_package_clamiga);
 
     /* Signaling */
     defun("SIGNAL", bi_signal, 1, -1);

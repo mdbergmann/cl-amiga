@@ -715,13 +715,21 @@ void cl_repl_init_no_userinit(int no_userinit)
     cl_eval_string("(defmacro when (test &rest body) (list 'if test (cons 'progn body)))");
     cl_eval_string("(defmacro unless (test &rest body) (list 'if test nil (cons 'progn body)))");
 
+    /* Export all CL symbols defined so far (from symbol_init + builtins_init).
+       This must happen BEFORE loading boot.lisp, which runs in the CL package
+       and may intern stray symbols (e.g. local variable names in macro bodies)
+       that should NOT be exported. */
+    cl_package_export_all_cl_symbols();
+
     load_boot_file();
 
     /* Load CLOS so defclass/defgeneric/defmethod are available */
     cl_eval_string("(require \"clos\")");
 
-    /* Export newly-defined CL symbols so they are visible in all packages */
-    cl_package_export_all_cl_symbols();
+    /* Selectively export only NEW CL symbols that have real bindings
+       (function, value, macro, type, struct, or CLOS class).
+       Stray symbols interned by boot.lisp/clos.lisp macro bodies are skipped. */
+    cl_package_export_defined_cl_symbols();
     cl_current_package = saved_pkg;
     {
         CL_Symbol *pkg_sym = (CL_Symbol *)CL_OBJ_TO_PTR(SYM_STAR_PACKAGE);

@@ -535,6 +535,6 @@ void cl_builtins_hashtable_init(void)
     defun("CLRHASH", bi_clrhash, 1, 1);
     defun("HASH-TABLE-COUNT", bi_hash_table_count, 1, 1);
     defun("HASH-TABLE-P", bi_hash_table_p, 1, 1);
-    defun("%SETF-GETHASH", bi_setf_gethash, 3, 3);
-    defun("%HASH-TABLE-PAIRS", bi_hash_table_pairs, 1, 1);
+    cl_register_builtin("%SETF-GETHASH", bi_setf_gethash, 3, 3, cl_package_clamiga);
+    cl_register_builtin("%HASH-TABLE-PAIRS", bi_hash_table_pairs, 1, 1, cl_package_clamiga);
 }

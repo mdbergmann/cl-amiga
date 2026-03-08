@@ -864,7 +864,7 @@ void cl_builtins_lists_init(void)
     defun("ASSOC", bi_assoc, 2, -1);
     defun("RASSOC", bi_rassoc, 2, -1);
     defun("GETF", bi_getf, 2, 3);
-    defun("%SETF-GETF", bi_setf_getf, 3, 3);
+    cl_register_builtin("%SETF-GETF", bi_setf_getf, 3, 3, cl_package_clamiga);
     defun("SUBST", bi_subst, 3, -1);
     defun("SUBLIS", bi_sublis, 2, -1);
     defun("ADJOIN", bi_adjoin, 2, -1);

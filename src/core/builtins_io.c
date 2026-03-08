@@ -1419,10 +1419,10 @@ void cl_builtins_io_init(void)
     defun("DISASSEMBLE", bi_disassemble, 1, 1);
 
     /* Timing (internal helpers for TIME special form) */
-    defun("%GET-INTERNAL-TIME", bi_get_internal_time, 0, 0);
-    defun("%GET-BYTES-CONSED", bi_get_bytes_consed, 0, 0);
-    defun("%GET-GC-COUNT", bi_get_gc_count, 0, 0);
-    defun("%TIME-REPORT", bi_time_report, 3, 3);
+    cl_register_builtin("%GET-INTERNAL-TIME", bi_get_internal_time, 0, 0, cl_package_clamiga);
+    cl_register_builtin("%GET-BYTES-CONSED", bi_get_bytes_consed, 0, 0, cl_package_clamiga);
+    cl_register_builtin("%GET-GC-COUNT", bi_get_gc_count, 0, 0, cl_package_clamiga);
+    cl_register_builtin("%TIME-REPORT", bi_time_report, 3, 3, cl_package_clamiga);
     defun("GET-INTERNAL-REAL-TIME", bi_get_internal_real_time, 0, 0);
     {
         /* INTERNAL-TIME-UNITS-PER-SECOND — milliseconds */
@@ -1468,8 +1468,8 @@ void cl_builtins_io_init(void)
     defun("PPRINT-INDENT", bi_pprint_indent, 2, 3);
 
     /* Internal builtins for pprint-logical-block */
-    defun("%PP-PUSH-BLOCK", bi_pp_push_block, 0, 0);
-    defun("%PP-POP-BLOCK", bi_pp_pop_block, 0, 0);
+    cl_register_builtin("%PP-PUSH-BLOCK", bi_pp_push_block, 0, 0, cl_package_clamiga);
+    cl_register_builtin("%PP-POP-BLOCK", bi_pp_pop_block, 0, 0, cl_package_clamiga);
 
     /* Pprint-dispatch table */
     defun("SET-PPRINT-DISPATCH", bi_set_pprint_dispatch, 2, 4);

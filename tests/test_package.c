@@ -286,8 +286,8 @@ TEST(eval_package_nicknames)
 
 TEST(eval_package_use_list)
 {
-    /* CL-USER uses CL and EXT */
-    ASSERT_STR_EQ(eval_print("(length (package-use-list (find-package \"CL-USER\")))"), "2");
+    /* CL-USER uses CL, EXT, and CLAMIGA */
+    ASSERT_STR_EQ(eval_print("(length (package-use-list (find-package \"CL-USER\")))"), "3");
 }
 
 TEST(eval_find_symbol_external)
@@ -852,6 +852,37 @@ TEST(eval_defpackage_nickname_in_package)
     eval_print("(in-package \"COMMON-LISP-USER\")");
 }
 
+/* ---- CL package symbol pollution tests ---- */
+
+TEST(eval_cl_no_stray_exports)
+{
+    /* Symbols like PREFIX that are local variable names in boot.lisp macros
+       should NOT be exported from CL (regression test for Fix 35) */
+    ASSERT_STR_EQ(eval_print(
+        "(multiple-value-bind (sym status) (find-symbol \"PREFIX\" \"CL\") status)"),
+        ":INTERNAL");
+}
+
+TEST(eval_cl_legitimate_exports)
+{
+    /* Standard CL symbols defined by boot.lisp/clos.lisp must still be exported */
+    ASSERT_STR_EQ(eval_print(
+        "(multiple-value-bind (sym status) (find-symbol \"DEFSTRUCT\" \"CL\") status)"),
+        ":EXTERNAL");
+    ASSERT_STR_EQ(eval_print(
+        "(multiple-value-bind (sym status) (find-symbol \"LOOP\" \"CL\") status)"),
+        ":EXTERNAL");
+    ASSERT_STR_EQ(eval_print(
+        "(multiple-value-bind (sym status) (find-symbol \"LOOP-FINISH\" \"CL\") status)"),
+        ":EXTERNAL");
+    ASSERT_STR_EQ(eval_print(
+        "(multiple-value-bind (sym status) (find-symbol \"STANDARD-CLASS\" \"CL\") status)"),
+        ":EXTERNAL");
+    ASSERT_STR_EQ(eval_print(
+        "(multiple-value-bind (sym status) (find-symbol \"DEFCLASS\" \"CL\") status)"),
+        ":EXTERNAL");
+}
+
 /* ---- Main ---- */
 
 int main(void)
@@ -951,6 +982,10 @@ int main(void)
     RUN(eval_defpackage_nickname_in_package);
     RUN(eval_local_nickname_reader);
     RUN(eval_local_nickname_scope);
+
+    /* CL package symbol pollution (Fix 35) */
+    RUN(eval_cl_no_stray_exports);
+    RUN(eval_cl_legitimate_exports);
 
     teardown();
     REPORT();

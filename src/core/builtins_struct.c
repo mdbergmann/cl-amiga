@@ -478,17 +478,17 @@ static CL_Obj bi_struct_change_class(CL_Obj *args, int n)
 
 void cl_builtins_struct_init(void)
 {
-    defun("%REGISTER-STRUCT-TYPE", bi_register_struct_type, 4, 4);
-    defun("%MAKE-STRUCT", bi_make_struct, 1, -1);
-    defun("%STRUCT-REF", bi_struct_ref, 2, 2);
-    defun("%STRUCT-SET", bi_struct_set, 3, 3);
-    defun("%COPY-STRUCT", bi_copy_struct, 1, 1);
-    defun("%STRUCT-TYPE-NAME", bi_struct_type_name, 1, 1);
+    cl_register_builtin("%REGISTER-STRUCT-TYPE", bi_register_struct_type, 4, 4, cl_package_clamiga);
+    cl_register_builtin("%MAKE-STRUCT", bi_make_struct, 1, -1, cl_package_clamiga);
+    cl_register_builtin("%STRUCT-REF", bi_struct_ref, 2, 2, cl_package_clamiga);
+    cl_register_builtin("%STRUCT-SET", bi_struct_set, 3, 3, cl_package_clamiga);
+    cl_register_builtin("%COPY-STRUCT", bi_copy_struct, 1, 1, cl_package_clamiga);
+    cl_register_builtin("%STRUCT-TYPE-NAME", bi_struct_type_name, 1, 1, cl_package_clamiga);
     defun("STRUCTUREP", bi_structurep, 1, 1);
-    defun("%STRUCT-SLOT-NAMES", bi_struct_slot_names, 1, 1);
-    defun("%STRUCT-SLOT-SPECS", bi_struct_slot_specs, 1, 1);
-    defun("%STRUCT-SLOT-COUNT", bi_struct_slot_count, 1, 1);
-    defun("%CLASS-OF", bi_class_of, 1, 1);
-    defun("%SET-CLOS-CLASS-TABLE", bi_set_clos_class_table, 1, 1);
-    defun("%STRUCT-CHANGE-CLASS", bi_struct_change_class, 3, 3);
+    cl_register_builtin("%STRUCT-SLOT-NAMES", bi_struct_slot_names, 1, 1, cl_package_clamiga);
+    cl_register_builtin("%STRUCT-SLOT-SPECS", bi_struct_slot_specs, 1, 1, cl_package_clamiga);
+    cl_register_builtin("%STRUCT-SLOT-COUNT", bi_struct_slot_count, 1, 1, cl_package_clamiga);
+    cl_register_builtin("%CLASS-OF", bi_class_of, 1, 1, cl_package_clamiga);
+    cl_register_builtin("%SET-CLOS-CLASS-TABLE", bi_set_clos_class_table, 1, 1, cl_package_clamiga);
+    cl_register_builtin("%STRUCT-CHANGE-CLASS", bi_struct_change_class, 3, 3, cl_package_clamiga);
 }

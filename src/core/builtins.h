@@ -10,6 +10,10 @@
 
 void cl_builtins_init(void);
 
+/* Register a builtin function in a specific package */
+void cl_register_builtin(const char *name, CL_CFunc func,
+                          int min, int max, CL_Obj package);
+
 /* Coerce a function designator (function or symbol) to a callable function.
    If obj is already a function/closure/bytecode, returns it unchanged.
    If obj is a symbol, returns its function binding.

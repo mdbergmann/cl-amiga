@@ -174,14 +174,14 @@ void cl_builtins_mutation_init(void)
     defun("FDEFINITION", bi_symbol_function, 1, 1);
 
     /* Setf helpers */
-    defun("%SETF-NTH", bi_setf_nth, 3, 3);
-    defun("%SET-SYMBOL-VALUE", bi_set_symbol_value, 2, 2);
-    defun("%SET-SYMBOL-FUNCTION", bi_set_symbol_function, 2, 2);
+    cl_register_builtin("%SETF-NTH", bi_setf_nth, 3, 3, cl_package_clamiga);
+    cl_register_builtin("%SET-SYMBOL-VALUE", bi_set_symbol_value, 2, 2, cl_package_clamiga);
+    cl_register_builtin("%SET-SYMBOL-FUNCTION", bi_set_symbol_function, 2, 2, cl_package_clamiga);
     defun("SET", bi_set_symbol_value, 2, 2);
 
     /* Boundp / Fboundp */
     defun("BOUNDP", bi_boundp, 1, 1);
     defun("FBOUNDP", bi_fboundp, 1, 1);
     defun("FMAKUNBOUND", bi_fmakunbound, 1, 1);
-    defun("%REGISTER-SETF-FUNCTION", bi_register_setf_function, 2, 2);
+    cl_register_builtin("%REGISTER-SETF-FUNCTION", bi_register_setf_function, 2, 2, cl_package_clamiga);
 }

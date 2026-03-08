@@ -701,6 +701,13 @@ void cl_symbol_init(void)
         rt_sym->flags |= CL_SYM_SPECIAL;
     }
 
+    /* Standard CL symbols that have no global binding but must be exported.
+       These are used as macrolet names in boot.lisp macros (loop, pprint-logical-block)
+       and must be visible to user code for the macrolets to match. */
+    cl_intern_in("LOOP-FINISH", 11, cl_package_cl);
+    cl_intern_in("PPRINT-POP", 10, cl_package_cl);
+    cl_intern_in("PPRINT-EXIT-IF-LIST-EXHAUSTED", 29, cl_package_cl);
+
     /* Export all CL symbols so CL-USER inherits them.
        Also called again after cl_builtins_init() for builtin names. */
     cl_package_export_all_cl_symbols();

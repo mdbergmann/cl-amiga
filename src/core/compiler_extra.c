@@ -1317,7 +1317,7 @@ void compile_trace(CL_Compiler *c, CL_Obj form)
 
     if (CL_NULL_P(args)) {
         /* (trace) with no args: call %TRACED-FUNCTIONS */
-        int idx = cl_add_constant(c, cl_intern_in("%TRACED-FUNCTIONS", 17, cl_package_cl));
+        int idx = cl_add_constant(c, cl_intern_in("%TRACED-FUNCTIONS", 17, cl_package_clamiga));
         cl_emit(c, OP_FLOAD);
         cl_emit_u16(c, (uint16_t)idx);
         cl_emit(c, OP_CALL);
@@ -1325,7 +1325,7 @@ void compile_trace(CL_Compiler *c, CL_Obj form)
         return;
     }
 
-    trace_fn_idx = cl_add_constant(c, cl_intern_in("%TRACE-FUNCTION", 15, cl_package_cl));
+    trace_fn_idx = cl_add_constant(c, cl_intern_in("%TRACE-FUNCTION", 15, cl_package_clamiga));
     a = args;
     while (!CL_NULL_P(a)) {
         CL_Obj name = cl_car(a);
@@ -1354,7 +1354,7 @@ void compile_untrace(CL_Compiler *c, CL_Obj form)
 
     if (CL_NULL_P(args)) {
         /* (untrace) with no args: call %UNTRACE-ALL */
-        int idx = cl_add_constant(c, cl_intern_in("%UNTRACE-ALL", 12, cl_package_cl));
+        int idx = cl_add_constant(c, cl_intern_in("%UNTRACE-ALL", 12, cl_package_clamiga));
         cl_emit(c, OP_FLOAD);
         cl_emit_u16(c, (uint16_t)idx);
         cl_emit(c, OP_CALL);
@@ -1362,7 +1362,7 @@ void compile_untrace(CL_Compiler *c, CL_Obj form)
         return;
     }
 
-    untrace_fn_idx = cl_add_constant(c, cl_intern_in("%UNTRACE-FUNCTION", 17, cl_package_cl));
+    untrace_fn_idx = cl_add_constant(c, cl_intern_in("%UNTRACE-FUNCTION", 17, cl_package_clamiga));
     a = args;
     while (!CL_NULL_P(a)) {
         CL_Obj name = cl_car(a);
@@ -1399,10 +1399,10 @@ void compile_time(CL_Compiler *c, CL_Obj form)
     start_gc_slot = alloc_temp_slot(c->env);
     result_slot = alloc_temp_slot(c->env);
 
-    get_time_idx = cl_add_constant(c, cl_intern_in("%GET-INTERNAL-TIME", 18, cl_package_cl));
-    get_consed_idx = cl_add_constant(c, cl_intern_in("%GET-BYTES-CONSED", 17, cl_package_cl));
-    get_gc_idx = cl_add_constant(c, cl_intern_in("%GET-GC-COUNT", 13, cl_package_cl));
-    report_idx = cl_add_constant(c, cl_intern_in("%TIME-REPORT", 12, cl_package_cl));
+    get_time_idx = cl_add_constant(c, cl_intern_in("%GET-INTERNAL-TIME", 18, cl_package_clamiga));
+    get_consed_idx = cl_add_constant(c, cl_intern_in("%GET-BYTES-CONSED", 17, cl_package_clamiga));
+    get_gc_idx = cl_add_constant(c, cl_intern_in("%GET-GC-COUNT", 13, cl_package_clamiga));
+    report_idx = cl_add_constant(c, cl_intern_in("%TIME-REPORT", 12, cl_package_clamiga));
 
     /* Capture start time */
     cl_emit(c, OP_FLOAD);
