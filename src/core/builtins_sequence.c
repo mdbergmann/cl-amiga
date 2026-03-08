@@ -1451,7 +1451,7 @@ static CL_Obj bi_copy_seq(CL_Obj *args, int n)
 static CL_Obj bi_map_into(CL_Obj *args, int n)
 {
     CL_Obj result_seq = args[0];
-    CL_Obj func = args[1];
+    CL_Obj func = cl_coerce_funcdesig(args[1], "MAP-INTO");
     int n_seqs = n - 2;
     CL_Obj seqs[16];
     CL_Obj call_args[16];
@@ -1494,9 +1494,15 @@ static CL_Obj bi_map_into(CL_Obj *args, int n)
             }
         }
         /* Call function */
-        if (n_seqs == 0)
-            val = call_1(func, CL_NIL); /* 0-arg case not standard but safe */
-        else {
+        if (n_seqs == 0) {
+            /* CL spec: call with 0 arguments when no source sequences */
+            if (CL_FUNCTION_P(func)) {
+                CL_Function *f = (CL_Function *)CL_OBJ_TO_PTR(func);
+                val = f->func(call_args, 0);
+            } else {
+                val = cl_vm_apply(func, call_args, 0);
+            }
+        } else {
             if (CL_FUNCTION_P(func)) {
                 CL_Function *f = (CL_Function *)CL_OBJ_TO_PTR(func);
                 val = f->func(call_args, n_seqs);

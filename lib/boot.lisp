@@ -502,6 +502,35 @@
          (locally ,@body)
          (when ,var (close ,var))))))
 
+;; --- Byte and sequence I/O ---
+
+(defun write-byte (byte &optional stream)
+  (write-char (code-char byte) stream)
+  byte)
+
+(defun read-byte (stream &optional (eof-error-p t) eof-value)
+  (let ((ch (read-char stream eof-error-p nil)))
+    (if ch (char-code ch) (if eof-error-p (error "End of file on ~A" stream) eof-value))))
+
+(defun write-sequence (sequence stream &key (start 0) end)
+  (let ((e (or end (length sequence))))
+    (do ((i start (1+ i)))
+        ((>= i e) sequence)
+      (let ((elt (elt sequence i)))
+        (if (characterp elt)
+            (write-char elt stream)
+            (write-byte elt stream))))))
+
+(defun read-sequence (sequence stream &key (start 0) end)
+  (let ((e (or end (length sequence)))
+        (i start))
+    (loop while (< i e)
+          do (let ((b (read-byte stream nil nil)))
+               (if b
+                   (progn (setf (aref sequence i) b) (incf i))
+                   (return i))))
+    i))
+
 ;; with-standard-io-syntax — bind I/O variables to standard values
 ;; Minimal implementation: only binds *package* to CL-USER for now.
 ;; Future: bind *readtable*, *print-readably*, etc. when implemented.

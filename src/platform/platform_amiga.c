@@ -194,6 +194,20 @@ int platform_file_eof(PlatformFile fh)
     return 1;
 }
 
+long platform_file_position(PlatformFile fh)
+{
+    if (fh > 0 && fh < PLATFORM_FILE_TABLE_SIZE && file_table[fh])
+        return (long)Seek(file_table[fh], 0, OFFSET_CURRENT);
+    return -1;
+}
+
+int platform_file_set_position(PlatformFile fh, long pos)
+{
+    if (fh > 0 && fh < PLATFORM_FILE_TABLE_SIZE && file_table[fh])
+        return Seek(file_table[fh], pos, OFFSET_BEGINNING) >= 0 ? 0 : -1;
+    return -1;
+}
+
 uint32_t platform_time_ms(void)
 {
     struct DateStamp ds;

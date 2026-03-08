@@ -125,6 +125,21 @@ static CL_Obj bi_make_array(CL_Obj *args, int n)
             return result;
         }
 
+        /* For numeric element types, default initial-element to 0 */
+        if (!has_initial_element && !has_initial_contents && !CL_NULL_P(element_type)) {
+            /* Check if element-type is a numeric subtype (unsigned-byte, integer, etc.) */
+            if (!element_type_bit) {
+                /* Treat any non-character element-type as numeric → init to 0 */
+                if (CL_CONS_P(element_type) ||
+                    (CL_SYMBOL_P(element_type) &&
+                     strcmp(cl_symbol_name(element_type), "CHARACTER") != 0 &&
+                     strcmp(cl_symbol_name(element_type), "BASE-CHAR") != 0)) {
+                    initial_element = CL_MAKE_FIXNUM(0);
+                    has_initial_element = 1;
+                }
+            }
+        }
+
         if (flags == 0 && fill_ptr == CL_NO_FILL_POINTER && !has_initial_element && !has_initial_contents) {
             /* Fast path: simple vector */
             return cl_make_vector(length);

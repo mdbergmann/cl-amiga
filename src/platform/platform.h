@@ -46,6 +46,8 @@ int          platform_file_getchar(PlatformFile fh);
 int          platform_file_write_string(PlatformFile fh, const char *str);
 int          platform_file_write_char(PlatformFile fh, int ch);
 int          platform_file_eof(PlatformFile fh);
+long         platform_file_position(PlatformFile fh);
+int          platform_file_set_position(PlatformFile fh, long pos);
 
 /* Timing */
 uint32_t platform_time_ms(void);   /* Monotonic milliseconds (for elapsed time) */

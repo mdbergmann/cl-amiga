@@ -20,18 +20,18 @@
 ;;;   8: prototype            - unused
 ;;;   9: finalized-p          - t or nil
 
-(%register-struct-type 'standard-class 10 nil
+(%register-struct-type 'standard-class 11 nil
   '((name nil) (direct-superclasses nil) (direct-slots nil)
     (cpl nil) (effective-slots nil) (slot-index-table nil)
     (direct-subclasses nil) (direct-methods nil)
-    (prototype nil) (finalized-p nil)))
+    (prototype nil) (finalized-p nil) (default-initargs nil)))
 
 ;; built-in-class: same layout as standard-class, used as metaclass for built-in types
-(%register-struct-type 'built-in-class 10 'standard-class
+(%register-struct-type 'built-in-class 11 'standard-class
   '((name nil) (direct-superclasses nil) (direct-slots nil)
     (cpl nil) (effective-slots nil) (slot-index-table nil)
     (direct-subclasses nil) (direct-methods nil)
-    (prototype nil) (finalized-p nil)))
+    (prototype nil) (finalized-p nil) (default-initargs nil)))
 
 ;;; --- Class metaobject accessors ---
 
@@ -81,6 +81,12 @@
 
 (defun %set-class-finalized-p (class val)
   (%struct-set class 9 val))
+
+(defun class-default-initargs (class)
+  (%struct-ref class 10))
+
+(defun %set-class-default-initargs (class val)
+  (%struct-set class 10 val))
 
 ;;; --- Class registry ---
 
@@ -142,7 +148,8 @@
                  nil                     ; 6: direct-subclasses
                  nil                     ; 7: direct-methods
                  nil                     ; 8: prototype
-                 t)))                    ; 9: finalized-p
+                 t                       ; 9: finalized-p
+                 nil)))                  ; 10: default-initargs
     ;; Register in class table
     (setf (find-class name) class)
     ;; Compute CPL (supers already have theirs)
@@ -278,7 +285,7 @@
   (unless (find-class name nil)
     (let* ((supers (mapcar #'find-class direct-super-names))
            (class (%make-struct 'standard-class
-                    name supers nil nil nil nil nil nil nil t)))
+                    name supers nil nil nil nil nil nil nil t nil)))
       (%set-class-cpl class (%compute-builtin-cpl class))
       (setf (find-class name) class)
       (dolist (super supers)
@@ -528,7 +535,8 @@ Specialize via defmethod to provide lazy initialization."
 
 ;;; --- Class creation at runtime ---
 
-(defun %ensure-class (name direct-super-names direct-slots initform-alist)
+(defun %ensure-class (name direct-super-names direct-slots initform-alist
+                      &optional default-initargs)
   "Create or update a CLOS class. Called by defclass expansion."
   (let* ((supers (if direct-super-names
                      (mapcar #'find-class direct-super-names)
@@ -536,7 +544,7 @@ Specialize via defmethod to provide lazy initialization."
          ;; Create a temporary class to compute CPL
          (class (%make-struct 'standard-class
                   name supers direct-slots
-                  nil nil nil nil nil nil nil))
+                  nil nil nil nil nil nil nil nil))
          (cpl (%compute-class-precedence-list class))
          (effective (%compute-effective-slots cpl))
          (n-slots (length effective))
@@ -574,6 +582,8 @@ Specialize via defmethod to provide lazy initialization."
     (%set-class-effective-slots class effective)
     (%set-class-slot-index-table class index-table)
     (%set-class-finalized-p class t)
+    (when default-initargs
+      (%set-class-default-initargs class default-initargs))
     ;; Register class
     (setf (find-class name) class)
     ;; Register as subclass of each direct super
@@ -588,7 +598,16 @@ Specialize via defmethod to provide lazy initialization."
   "Define a new CLOS class."
   (let ((accessor-defs nil)
         (parsed-slots nil)
-        (initform-pairs nil))
+        (initform-pairs nil)
+        (default-initarg-forms nil))
+    ;; Parse class options
+    (dolist (opt class-options)
+      (when (and (consp opt) (eq (car opt) :default-initargs))
+        (let ((args (cdr opt)))
+          (loop while args
+                do (let ((key (pop args))
+                         (val (pop args)))
+                     (push `(list ',key (lambda () ,val)) default-initarg-forms))))))
     ;; Parse each slot specifier
     (dolist (spec slot-specifiers)
       (let* ((parsed (%parse-slot-spec spec))
@@ -627,7 +646,8 @@ Specialize via defmethod to provide lazy initialization."
        (%ensure-class ',name
                       ',direct-superclasses
                       ',parsed-slots
-                      (list ,@(nreverse initform-pairs)))
+                      (list ,@(nreverse initform-pairs))
+                      (list ,@(nreverse default-initarg-forms)))
        ,@accessor-defs
        (find-class ',name))))
 
@@ -692,11 +712,23 @@ Specialize via defmethod to provide lazy initialization."
   (let* ((class (if (symbolp class-or-name)
                     (find-class class-or-name)
                     class-or-name))
-         (instance (allocate-instance class)))
-    ;; Uses initialize-instance which is initially a plain function,
-    ;; then upgraded to a GF in Phase 7
-    (apply #'initialize-instance instance initargs)
-    instance))
+         ;; Apply default-initargs: for each default not already in initargs,
+         ;; evaluate the initform function and prepend to initargs
+         (defaults (class-default-initargs class))
+         (effective-initargs initargs))
+    (when defaults
+      (dolist (default defaults)
+        (let ((key (first default))
+              (initfn (second default)))
+          (unless (member key initargs :test #'eq)
+            (setq effective-initargs
+                  (append effective-initargs (list key (funcall initfn)))))))
+      (setq initargs effective-initargs))
+    (let ((instance (allocate-instance class)))
+      ;; Uses initialize-instance which is initially a plain function,
+      ;; then upgraded to a GF in Phase 7
+      (apply #'initialize-instance instance initargs)
+      instance)))
 
 ;;; ====================================================================
 ;;; Phase 5: defgeneric + defmethod + Dispatch
@@ -1155,7 +1187,17 @@ When called with no arguments, passes the original method arguments."
   "Define a new CLOS class (with generic function accessors)."
   (let ((accessor-defs nil)
         (parsed-slots nil)
-        (initform-pairs nil))
+        (initform-pairs nil)
+        (default-initarg-forms nil))
+    ;; Parse class options
+    (dolist (opt class-options)
+      (when (and (consp opt) (eq (car opt) :default-initargs))
+        ;; (:default-initargs :key1 val1 :key2 val2 ...)
+        (let ((args (cdr opt)))
+          (loop while args
+                do (let ((key (pop args))
+                         (val (pop args)))
+                     (push `(list ',key (lambda () ,val)) default-initarg-forms))))))
     ;; Parse each slot specifier
     (dolist (spec slot-specifiers)
       (let* ((parsed (%parse-slot-spec spec))
@@ -1197,7 +1239,8 @@ When called with no arguments, passes the original method arguments."
        (%ensure-class ',name
                       ',direct-superclasses
                       ',parsed-slots
-                      (list ,@(nreverse initform-pairs)))
+                      (list ,@(nreverse initform-pairs))
+                      (list ,@(nreverse default-initarg-forms)))
        ,@accessor-defs
        (find-class ',name))))
 
