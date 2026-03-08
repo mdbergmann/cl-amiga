@@ -764,6 +764,129 @@ TEST(eval_quasiquote_macro_splice)
     ASSERT_EQ_INT(eval_int("(my-progn 1 2 42)"), 42);
 }
 
+/* --- Nested quasiquote --- */
+
+TEST(eval_quasiquote_nested_double_unquote)
+{
+    /* ``(a ,,x) at outer level evaluates x, inner level preserves UNQUOTE */
+    ASSERT_STR_EQ(eval_print("(let ((x 42)) ``(a ,,x))"),
+                  "(QUASIQUOTE (A (UNQUOTE 42)))");
+}
+
+TEST(eval_quasiquote_nested_unquote_splice)
+{
+    /* ,,@xs — splice into nested quasiquote produces multiple UNQUOTE forms */
+    ASSERT_STR_EQ(eval_print("(let ((xs '(1 2 3))) ``(a ,,@xs))"),
+                  "(QUASIQUOTE (A (UNQUOTE 1) (UNQUOTE 2) (UNQUOTE 3)))");
+}
+
+TEST(eval_quasiquote_nested_simple)
+{
+    /* Nested backquote without unquote — all data */
+    ASSERT_STR_EQ(eval_print("``(a b)"),
+                  "(QUASIQUOTE (A B))");
+}
+
+TEST(eval_quasiquote_nested_inner_splice)
+{
+    /* ,@expr inside single backquote still works */
+    ASSERT_STR_EQ(eval_print("(let ((xs '(1 2))) `(a ,@xs b))"),
+                  "(A 1 2 B)");
+}
+
+TEST(eval_quasiquote_once_only_pattern)
+{
+    /* Test the once-only macro pattern from Alexandria */
+    eval_print(
+        "(defmacro test-oo (var &body body)"
+        "  (let ((g (gensym)))"
+        "    `(let ((,g ,var))"
+        "       `(let ((,,g ,,(car body)))"
+        "          t))))");
+    ASSERT_STR_EQ(eval_print("(macroexpand-1 '(test-oo x (+ 1 2)))"),
+                  /* Should produce a let-binding with gensym */
+                  eval_print("(macroexpand-1 '(test-oo x (+ 1 2)))"));
+}
+
+/* --- Standard condition accessors --- */
+
+TEST(eval_reader_error_condition)
+{
+    /* reader-error is a subtype of both parse-error and stream-error */
+    ASSERT_STR_EQ(eval_print("(typep (make-condition 'reader-error) 'reader-error)"), "T");
+    ASSERT_STR_EQ(eval_print("(typep (make-condition 'reader-error) 'parse-error)"), "T");
+    ASSERT_STR_EQ(eval_print("(typep (make-condition 'reader-error) 'stream-error)"), "T");
+    ASSERT_STR_EQ(eval_print("(typep (make-condition 'reader-error) 'error)"), "T");
+}
+
+TEST(eval_stream_error_stream_accessor)
+{
+    ASSERT_STR_EQ(eval_print(
+        "(stream-error-stream (make-condition 'stream-error :stream *standard-output*))"),
+        eval_print("*standard-output*"));
+}
+
+TEST(eval_package_error_package_accessor)
+{
+    ASSERT_STR_EQ(eval_print(
+        "(package-error-package (make-condition 'package-error :package (find-package :cl)))"),
+        eval_print("(find-package :cl)"));
+}
+
+TEST(eval_cell_error_name_accessor)
+{
+    ASSERT_STR_EQ(eval_print(
+        "(cell-error-name (make-condition 'cell-error :name 'foo))"),
+        "FOO");
+}
+
+TEST(eval_file_error_pathname_accessor)
+{
+    ASSERT_STR_EQ(eval_print(
+        "(file-error-pathname (make-condition 'file-error :pathname \"/tmp/x\"))"),
+        "\"/tmp/x\"");
+}
+
+/* --- define-compiler-macro (no-op) --- */
+
+TEST(eval_define_compiler_macro)
+{
+    /* define-compiler-macro should not error, returns the name */
+    ASSERT_STR_EQ(eval_print(
+        "(define-compiler-macro my-fn (&whole form x) (declare (ignore form x)) nil)"),
+        "MY-FN");
+    /* compiler-macro-function returns NIL */
+    ASSERT_STR_EQ(eval_print("(compiler-macro-function 'my-fn)"), "NIL");
+}
+
+/* --- setf values --- */
+
+TEST(eval_setf_values)
+{
+    ASSERT_STR_EQ(eval_print(
+        "(let ((a 0) (b 0) (c 0))"
+        "  (setf (values a b c) (values 10 20 30))"
+        "  (list a b c))"),
+        "(10 20 30)");
+}
+
+TEST(eval_setf_values_two)
+{
+    ASSERT_EQ_INT(eval_int(
+        "(let ((x 0) (y 0))"
+        "  (setf (values x y) (values 100 200))"
+        "  (+ x y))"), 300);
+}
+
+/* --- define-setf-expander (no-op) --- */
+
+TEST(eval_define_setf_expander)
+{
+    ASSERT_STR_EQ(eval_print(
+        "(define-setf-expander my-place (x) (declare (ignore x)) nil)"),
+        "MY-PLACE");
+}
+
 /* --- Gensym --- */
 
 TEST(eval_gensym)
@@ -5924,6 +6047,20 @@ int main(void)
     RUN(eval_quasiquote_dotted);
     RUN(eval_quasiquote_in_macro);
     RUN(eval_quasiquote_macro_splice);
+    RUN(eval_quasiquote_nested_double_unquote);
+    RUN(eval_quasiquote_nested_unquote_splice);
+    RUN(eval_quasiquote_nested_simple);
+    RUN(eval_quasiquote_nested_inner_splice);
+    RUN(eval_quasiquote_once_only_pattern);
+    RUN(eval_reader_error_condition);
+    RUN(eval_stream_error_stream_accessor);
+    RUN(eval_package_error_package_accessor);
+    RUN(eval_cell_error_name_accessor);
+    RUN(eval_file_error_pathname_accessor);
+    RUN(eval_define_compiler_macro);
+    RUN(eval_setf_values);
+    RUN(eval_setf_values_two);
+    RUN(eval_define_setf_expander);
     RUN(eval_gensym);
     RUN(eval_load);
     RUN(eval_boot_functions);

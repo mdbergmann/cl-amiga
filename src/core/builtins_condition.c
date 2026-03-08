@@ -82,6 +82,13 @@ static void build_hierarchy(void)
                 cl_cons(SYM_ERROR_COND, CL_NIL)),
         condition_hierarchy);
 
+    /* reader-error -> parse-error, stream-error */
+    condition_hierarchy = cl_cons(
+        cl_cons(SYM_READER_ERROR,
+                cl_cons(SYM_PARSE_ERROR,
+                        cl_cons(SYM_STREAM_ERROR, CL_NIL))),
+        condition_hierarchy);
+
     /* parse-error -> error */
     condition_hierarchy = cl_cons(
         cl_cons(SYM_PARSE_ERROR,
@@ -424,6 +431,72 @@ static CL_Obj bi_type_error_expected_type(CL_Obj *args, int n)
         cl_error(CL_ERR_TYPE, "TYPE-ERROR-EXPECTED-TYPE: not a condition");
     cond = (CL_Condition *)CL_OBJ_TO_PTR(args[0]);
     return slot_lookup(cond->slots, KW_EXPECTED_TYPE);
+}
+
+/* (stream-error-stream condition) */
+static CL_Obj bi_stream_error_stream(CL_Obj *args, int n)
+{
+    CL_Condition *cond;
+    CL_UNUSED(n);
+    if (!CL_CONDITION_P(args[0]))
+        cl_error(CL_ERR_TYPE, "STREAM-ERROR-STREAM: not a condition");
+    cond = (CL_Condition *)CL_OBJ_TO_PTR(args[0]);
+    return slot_lookup(cond->slots, KW_STREAM);
+}
+
+/* (package-error-package condition) */
+static CL_Obj bi_package_error_package(CL_Obj *args, int n)
+{
+    CL_Condition *cond;
+    CL_UNUSED(n);
+    if (!CL_CONDITION_P(args[0]))
+        cl_error(CL_ERR_TYPE, "PACKAGE-ERROR-PACKAGE: not a condition");
+    cond = (CL_Condition *)CL_OBJ_TO_PTR(args[0]);
+    return slot_lookup(cond->slots, KW_PACKAGE);
+}
+
+/* (cell-error-name condition) */
+static CL_Obj bi_cell_error_name(CL_Obj *args, int n)
+{
+    CL_Condition *cond;
+    CL_UNUSED(n);
+    if (!CL_CONDITION_P(args[0]))
+        cl_error(CL_ERR_TYPE, "CELL-ERROR-NAME: not a condition");
+    cond = (CL_Condition *)CL_OBJ_TO_PTR(args[0]);
+    return slot_lookup(cond->slots, KW_NAME);
+}
+
+/* (arithmetic-error-operands condition) */
+static CL_Obj bi_arithmetic_error_operands(CL_Obj *args, int n)
+{
+    CL_Condition *cond;
+    CL_UNUSED(n);
+    if (!CL_CONDITION_P(args[0]))
+        cl_error(CL_ERR_TYPE, "ARITHMETIC-ERROR-OPERANDS: not a condition");
+    cond = (CL_Condition *)CL_OBJ_TO_PTR(args[0]);
+    return slot_lookup(cond->slots, KW_OPERANDS);
+}
+
+/* (arithmetic-error-operation condition) */
+static CL_Obj bi_arithmetic_error_operation(CL_Obj *args, int n)
+{
+    CL_Condition *cond;
+    CL_UNUSED(n);
+    if (!CL_CONDITION_P(args[0]))
+        cl_error(CL_ERR_TYPE, "ARITHMETIC-ERROR-OPERATION: not a condition");
+    cond = (CL_Condition *)CL_OBJ_TO_PTR(args[0]);
+    return slot_lookup(cond->slots, KW_OPERATION);
+}
+
+/* (file-error-pathname condition) */
+static CL_Obj bi_file_error_pathname(CL_Obj *args, int n)
+{
+    CL_Condition *cond;
+    CL_UNUSED(n);
+    if (!CL_CONDITION_P(args[0]))
+        cl_error(CL_ERR_TYPE, "FILE-ERROR-PATHNAME: not a condition");
+    cond = (CL_Condition *)CL_OBJ_TO_PTR(args[0]);
+    return slot_lookup(cond->slots, KW_PATHNAME);
 }
 
 /* --- User-defined condition types --- */
@@ -948,6 +1021,12 @@ void cl_builtins_condition_init(void)
     defun("SIMPLE-CONDITION-FORMAT-ARGUMENTS", bi_simple_condition_format_arguments, 1, 1);
     defun("TYPE-ERROR-DATUM", bi_type_error_datum, 1, 1);
     defun("TYPE-ERROR-EXPECTED-TYPE", bi_type_error_expected_type, 1, 1);
+    defun("STREAM-ERROR-STREAM", bi_stream_error_stream, 1, 1);
+    defun("PACKAGE-ERROR-PACKAGE", bi_package_error_package, 1, 1);
+    defun("CELL-ERROR-NAME", bi_cell_error_name, 1, 1);
+    defun("ARITHMETIC-ERROR-OPERANDS", bi_arithmetic_error_operands, 1, 1);
+    defun("ARITHMETIC-ERROR-OPERATION", bi_arithmetic_error_operation, 1, 1);
+    defun("FILE-ERROR-PATHNAME", bi_file_error_pathname, 1, 1);
 
     /* User-defined condition types */
     cl_register_builtin("%REGISTER-CONDITION-TYPE", bi_register_condition_type, 3, 3, cl_package_clamiga);

@@ -1123,6 +1123,78 @@ static void compile_setf_place(CL_Compiler *c, CL_Obj place, CL_Obj val_form)
     } else if (CL_CONS_P(place)) {
         CL_Obj head = cl_car(place);
 
+        /* (setf (values p1 p2 ...) val-form) →
+         * (multiple-value-bind (t1 t2 ...) val-form (setf p1 t1) (setf p2 t2) ... t1) */
+        if (head == cl_intern_in("VALUES", 6, cl_package_cl)) {
+            CL_Obj places = cl_cdr(place);
+            CL_Obj tmps = CL_NIL;
+            CL_Obj setfs = CL_NIL;
+            CL_Obj mvb_form, sym_mvb;
+            int n = 0;
+            CL_Obj p;
+
+            CL_GC_PROTECT(tmps);
+            CL_GC_PROTECT(setfs);
+
+            /* Build list of gensyms and setf forms (in reverse) */
+            p = places;
+            while (CL_CONS_P(p)) {
+                char buf[16];
+                CL_Obj tmp, name_str;
+                int len;
+                len = snprintf(buf, sizeof(buf), "%%MV%d", n);
+                name_str = cl_make_string(buf, (uint32_t)len);
+                tmp = cl_make_symbol(name_str);
+                tmps = cl_cons(tmp, tmps);
+                /* Build (setf place-i tmp-i) */
+                setfs = cl_cons(
+                    cl_cons(cl_intern_in("SETF", 4, cl_package_cl),
+                            cl_cons(cl_car(p), cl_cons(tmp, CL_NIL))),
+                    setfs);
+                n++;
+                p = cl_cdr(p);
+            }
+
+            /* Reverse tmps and setfs */
+            {
+                CL_Obj rev_tmps = CL_NIL, rev_setfs = CL_NIL;
+                while (!CL_NULL_P(tmps)) {
+                    rev_tmps = cl_cons(cl_car(tmps), rev_tmps);
+                    tmps = cl_cdr(tmps);
+                }
+                while (!CL_NULL_P(setfs)) {
+                    rev_setfs = cl_cons(cl_car(setfs), rev_setfs);
+                    setfs = cl_cdr(setfs);
+                }
+                tmps = rev_tmps;
+                setfs = rev_setfs;
+            }
+
+            /* Build: (multiple-value-bind tmps val-form (setf p1 t1) ... (setf pn tn) t1) */
+            sym_mvb = cl_intern_in("MULTIPLE-VALUE-BIND", 19, cl_package_cl);
+            /* Append first tmp to end of setfs for return value */
+            {
+                CL_Obj body = cl_cons(cl_car(tmps), CL_NIL); /* (t1) */
+                CL_Obj s = setfs;
+                /* Reverse setfs to prepend to body */
+                CL_Obj rev_s = CL_NIL;
+                while (!CL_NULL_P(s)) {
+                    rev_s = cl_cons(cl_car(s), rev_s);
+                    s = cl_cdr(s);
+                }
+                while (!CL_NULL_P(rev_s)) {
+                    body = cl_cons(cl_car(rev_s), body);
+                    rev_s = cl_cdr(rev_s);
+                }
+                mvb_form = cl_cons(sym_mvb, cl_cons(tmps, cl_cons(val_form, body)));
+            }
+
+            CL_GC_UNPROTECT(2);
+            compile_expr(c, mvb_form);
+            c->in_tail = saved_tail;
+            return;
+        }
+
         if (head == SETF_SYM_CAR || head == SETF_SYM_FIRST) {
             compile_expr(c, cl_car(cl_cdr(place)));
             compile_expr(c, val_form);

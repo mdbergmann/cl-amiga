@@ -177,153 +177,291 @@ void compile_cond(CL_Compiler *c, CL_Obj form)
 
 /* --- Quasiquote --- */
 
-/* Check if a list contains any (UNQUOTE-SPLICING ...) elements */
-static int qq_has_splicing(CL_Obj list)
+/* Expand a quasiquote template into LIST/CONS/APPEND forms.
+ * Uses depth tracking for correct nested backquote handling.
+ *
+ * At depth 0: UNQUOTE evaluates, UNQUOTE-SPLICING splices.
+ * At depth > 0: all QQ markers are reconstructed as data.
+ * QUASIQUOTE increments depth, UNQUOTE/UNQUOTE-SPLICING decrement depth.
+ */
+
+static CL_Obj qq_expand(CL_Obj x, int depth);
+static CL_Obj qq_expand_list(CL_Obj x, int depth);
+
+/* Build (QUOTE x) */
+static CL_Obj qq_quote(CL_Obj x)
 {
-    while (CL_CONS_P(list)) {
-        CL_Obj elem = cl_car(list);
-        if (CL_CONS_P(elem) && cl_car(elem) == SYM_UNQUOTE_SPLICING)
-            return 1;
-        list = cl_cdr(list);
-    }
-    return 0;
+    return cl_cons(SYM_QUOTE, cl_cons(x, CL_NIL));
 }
 
-/* Forward declaration */
-static void compile_qq(CL_Compiler *c, CL_Obj tmpl);
-
-/* Compile a quasiquote list without splicing:
- * Each element is compiled via compile_qq, then OP_LIST n.
- * Handles dotted tails: `(a b . ,x) */
-static void compile_qq_list_nosplice(CL_Compiler *c, CL_Obj tmpl)
+/* Simplify (APPEND ...) forms */
+static CL_Obj qq_append(CL_Obj args)
 {
-    int n = 0;
-    CL_Obj cursor = tmpl;
+    CL_Obj sym_append = cl_intern_in("APPEND", 6, cl_package_cl);
+    if (CL_NULL_P(args)) return CL_NIL;
+    if (CL_NULL_P(cl_cdr(args))) return cl_car(args);
+    return cl_cons(sym_append, args);
+}
 
-    while (CL_CONS_P(cursor)) {
-        CL_Obj elem = cl_car(cursor);
-        CL_Obj rest = cl_cdr(cursor);
+/* Build (LIST a b c ...) */
+static CL_Obj qq_list(CL_Obj items)
+{
+    CL_Obj sym_list = cl_intern_in("LIST", 4, cl_package_cl);
+    return cl_cons(sym_list, items);
+}
 
-        /* Detect dotted unquote: `(... . ,x) reads as (... UNQUOTE x) */
-        if (elem == SYM_UNQUOTE && CL_CONS_P(rest) && CL_NULL_P(cl_cdr(rest))) {
-            compile_expr(c, cl_car(rest));
+/* Expand quasiquote template at the given nesting depth.
+ * Returns a form that, when evaluated, produces the desired structure. */
+static CL_Obj qq_expand(CL_Obj x, int depth)
+{
+    /* Atom: quote it (symbols need quoting, self-evaluating atoms don't) */
+    if (!CL_CONS_P(x)) {
+        if (CL_NULL_P(x))
+            return CL_NIL;
+        if (CL_SYMBOL_P(x))
+            return qq_quote(x);
+        /* Self-evaluating: fixnum, char, string, etc. */
+        return x;
+    }
+
+    {
+        CL_Obj head = cl_car(x);
+
+        /* (UNQUOTE expr) */
+        if (head == SYM_UNQUOTE) {
+            if (depth == 0)
+                return cl_car(cl_cdr(x));  /* Evaluate expr */
+            /* depth > 0: reconstruct as (LIST 'UNQUOTE (qq-expand expr depth-1)) */
             {
-                int i;
-                for (i = 0; i < n; i++)
-                    cl_emit(c, OP_CONS);
+                CL_Obj inner = qq_expand(cl_car(cl_cdr(x)), depth - 1);
+                return qq_list(cl_cons(qq_quote(SYM_UNQUOTE), cl_cons(inner, CL_NIL)));
             }
-            return;
         }
 
-        compile_qq(c, elem);
-        n++;
-        cursor = rest;
+        /* (UNQUOTE-SPLICING expr) */
+        if (head == SYM_UNQUOTE_SPLICING) {
+            if (depth == 0) {
+                /* At top level, this means "evaluate expr for splicing".
+                 * Return the expr — caller is responsible for splicing context. */
+                return cl_car(cl_cdr(x));
+            }
+            /* depth > 0: reconstruct */
+            {
+                CL_Obj inner = qq_expand(cl_car(cl_cdr(x)), depth - 1);
+                return qq_list(cl_cons(qq_quote(SYM_UNQUOTE_SPLICING), cl_cons(inner, CL_NIL)));
+            }
+        }
+
+        /* (QUASIQUOTE expr) — nested backquote */
+        if (head == SYM_QUASIQUOTE) {
+            CL_Obj inner = qq_expand(cl_car(cl_cdr(x)), depth + 1);
+            return qq_list(cl_cons(qq_quote(SYM_QUASIQUOTE), cl_cons(inner, CL_NIL)));
+        }
     }
 
-    if (CL_NULL_P(cursor)) {
-        /* Proper list */
-        cl_emit(c, OP_LIST);
-        cl_emit(c, (uint8_t)n);
-    } else {
-        /* Dotted tail (non-unquote atom) — compile the cdr, then n CONSes */
-        compile_qq(c, cursor);
+    /* Regular list: expand each element, combine with APPEND */
+    {
+        CL_Obj result = CL_NIL;
+        CL_Obj cursor = x;
+        CL_Obj sym_list_star;
+
+        CL_GC_PROTECT(result);
+
+        while (CL_CONS_P(cursor)) {
+            CL_Obj elem = cl_car(cursor);
+            CL_Obj rest = cl_cdr(cursor);
+
+            /* Detect dotted unquote: (... UNQUOTE expr) where UNQUOTE is bare symbol
+             * This comes from reader: `(a b . ,x) → (a b UNQUOTE x) */
+            if (depth == 0 && elem == SYM_UNQUOTE &&
+                CL_CONS_P(rest) && CL_NULL_P(cl_cdr(rest))) {
+                CL_Obj tail_expr = cl_car(rest);
+                CL_Obj args, rev;
+
+                sym_list_star = cl_intern_in("LIST*", 5, cl_package_cl);
+
+                /* result has (LIST val) segments in reverse order.
+                 * Extract the values, build LIST* args in correct order. */
+
+                /* Reverse result to get correct order */
+                rev = CL_NIL;
+                while (!CL_NULL_P(result)) {
+                    rev = cl_cons(cl_car(result), rev);
+                    result = cl_cdr(result);
+                }
+
+                /* Extract single value from each (LIST val) segment */
+                args = CL_NIL;
+                while (!CL_NULL_P(rev)) {
+                    CL_Obj seg = cl_car(rev);
+                    CL_Obj v;
+                    /* seg is (LIST expr) → extract expr */
+                    if (CL_CONS_P(seg) &&
+                        cl_car(seg) == cl_intern_in("LIST", 4, cl_package_cl) &&
+                        CL_CONS_P(cl_cdr(seg)) && CL_NULL_P(cl_cdr(cl_cdr(seg)))) {
+                        v = cl_car(cl_cdr(seg));
+                    } else {
+                        v = seg; /* fallback (e.g. splice segment) */
+                    }
+                    args = cl_cons(v, args);
+                    rev = cl_cdr(rev);
+                }
+                /* args is now reversed; add tail, then reverse again */
+                args = cl_cons(tail_expr, args);
+                rev = CL_NIL;
+                while (!CL_NULL_P(args)) {
+                    rev = cl_cons(cl_car(args), rev);
+                    args = cl_cdr(args);
+                }
+
+                {
+                    CL_Obj val = cl_cons(sym_list_star, rev);
+                    CL_GC_UNPROTECT(1);
+                    return val;
+                }
+            }
+
+            {
+                CL_Obj expanded = qq_expand_list(elem, depth);
+                result = cl_cons(expanded, result);
+            }
+            cursor = rest;
+        }
+
+        /* Handle dotted tail (non-unquote atom as CDR) — shouldn't normally happen
+         * since reader produces proper lists, but handle for safety */
+        if (!CL_NULL_P(cursor)) {
+            CL_Obj tail_exp = qq_expand(cursor, depth);
+            result = cl_cons(tail_exp, result);
+        }
+
+        /* Reverse */
         {
-            int i;
-            for (i = 0; i < n; i++)
-                cl_emit(c, OP_CONS);
-        }
-    }
-}
-
-/* Compile a quasiquote list with splicing:
- * Groups elements into segments, calls APPEND on them. */
-static void compile_qq_list_splice(CL_Compiler *c, CL_Obj tmpl)
-{
-    int n_segments = 0;
-    CL_Obj cursor = tmpl;
-    CL_Obj sym_append;
-    int idx;
-    int saved_tail = c->in_tail;
-
-    /* Splice expressions are NOT in tail position — the APPEND call follows.
-     * Without this, user-defined functions in ,@(fn ...) get compiled as
-     * OP_TAILCALL which replaces the frame and skips the final APPEND call. */
-    c->in_tail = 0;
-
-    /* Load APPEND function */
-    sym_append = cl_intern("APPEND", 6);
-    idx = cl_add_constant(c, sym_append);
-    cl_emit(c, OP_FLOAD);
-    cl_emit_u16(c, (uint16_t)idx);
-
-    /* Walk the list, grouping consecutive non-splice elements */
-    while (CL_CONS_P(cursor)) {
-        CL_Obj elem = cl_car(cursor);
-
-        if (CL_CONS_P(elem) && cl_car(elem) == SYM_UNQUOTE_SPLICING) {
-            /* Splice: compile the expression directly */
-            compile_expr(c, cl_car(cl_cdr(elem)));
-            n_segments++;
-        } else {
-            /* Start a run of non-splice elements */
-            int run = 0;
-            while (CL_CONS_P(cursor)) {
-                CL_Obj e = cl_car(cursor);
-                if (CL_CONS_P(e) && cl_car(e) == SYM_UNQUOTE_SPLICING)
-                    break;
-                compile_qq(c, e);
-                run++;
-                cursor = cl_cdr(cursor);
+            CL_Obj rev = CL_NIL;
+            while (!CL_NULL_P(result)) {
+                rev = cl_cons(cl_car(result), rev);
+                result = cl_cdr(result);
             }
-            cl_emit(c, OP_LIST);
-            cl_emit(c, (uint8_t)run);
-            n_segments++;
-            continue;  /* Don't advance cursor again */
+            result = rev;
         }
-        cursor = cl_cdr(cursor);
-    }
 
-    c->in_tail = saved_tail;
-    cl_emit(c, OP_CALL);
-    cl_emit(c, (uint8_t)n_segments);
+        {
+            CL_Obj val = qq_append(result);
+            CL_GC_UNPROTECT(1);
+            return val;
+        }
+    }
 }
 
-/* Recursive quasiquote template walker */
-static void compile_qq(CL_Compiler *c, CL_Obj tmpl)
+/* Expand a single list element for use in APPEND.
+ * Returns a form that evaluates to a LIST (for non-splicing elements)
+ * or directly to a list value (for splicing elements). */
+static CL_Obj qq_expand_list(CL_Obj x, int depth)
 {
-    /* Atom (non-cons, including NIL): emit as constant */
-    if (!CL_CONS_P(tmpl)) {
-        if (CL_NULL_P(tmpl))
-            cl_emit(c, OP_NIL);
-        else
-            cl_emit_const(c, tmpl);
-        return;
+    CL_Obj sym_list = cl_intern_in("LIST", 4, cl_package_cl);
+
+    /* Atom: (LIST 'x) */
+    if (!CL_CONS_P(x)) {
+        if (CL_NULL_P(x))
+            return cl_cons(sym_list, cl_cons(CL_NIL, CL_NIL));
+        if (CL_SYMBOL_P(x))
+            return cl_cons(sym_list, cl_cons(qq_quote(x), CL_NIL));
+        return cl_cons(sym_list, cl_cons(x, CL_NIL));
     }
 
-    /* (UNQUOTE x): compile x — but NOT in tail position, since the
-     * quasiquote still has work to do (LIST/CONS) after this value.
-     * Without this, user-defined function calls in ,(fn ...) get
-     * OP_TAILCALL which replaces the frame and skips the list construction. */
-    if (cl_car(tmpl) == SYM_UNQUOTE) {
-        int saved_tail = c->in_tail;
-        c->in_tail = 0;
-        compile_expr(c, cl_car(cl_cdr(tmpl)));
-        c->in_tail = saved_tail;
-        return;
+    {
+        CL_Obj head = cl_car(x);
+
+        /* (UNQUOTE expr) at depth 0: (LIST expr) */
+        if (head == SYM_UNQUOTE && depth == 0)
+            return cl_cons(sym_list, cl_cons(cl_car(cl_cdr(x)), CL_NIL));
+
+        /* (UNQUOTE-SPLICING expr) at depth 0: expr (spliced into APPEND) */
+        if (head == SYM_UNQUOTE_SPLICING && depth == 0)
+            return cl_car(cl_cdr(x));
+
+        /* (UNQUOTE inner) at depth > 0 */
+        if (head == SYM_UNQUOTE && depth > 0) {
+            CL_Obj inner_form = cl_car(cl_cdr(x));
+
+            /* Special case: (UNQUOTE (UNQUOTE-SPLICING expr)) at depth 1
+             * This is ,,@expr — evaluate expr and wrap each element in UNQUOTE.
+             * Produces: (MAPCAR (LAMBDA (V) (LIST 'UNQUOTE V)) expr)
+             * which is spliced into the APPEND call. */
+            if (depth == 1 && CL_CONS_P(inner_form) &&
+                cl_car(inner_form) == SYM_UNQUOTE_SPLICING) {
+                /* Return expr directly — it gets spliced by APPEND.
+                 * But each element needs to be wrapped in (UNQUOTE v).
+                 * Build: (MAPCAR (LAMBDA (#:V) (LIST 'UNQUOTE #:V)) expr) */
+                CL_Obj expr = cl_car(cl_cdr(inner_form));
+                CL_Obj gv, name_str, lambda_form, mapcar_form;
+                CL_Obj sym_mapcar = cl_intern_in("MAPCAR", 6, cl_package_cl);
+                CL_Obj sym_lambda = cl_intern_in("LAMBDA", 6, cl_package_cl);
+
+                name_str = cl_make_string("%QQV", 4);
+                gv = cl_make_symbol(name_str);
+
+                /* (LAMBDA (#:V) (LIST 'UNQUOTE #:V)) */
+                lambda_form = cl_cons(sym_lambda,
+                    cl_cons(cl_cons(gv, CL_NIL),
+                        cl_cons(qq_list(cl_cons(qq_quote(SYM_UNQUOTE),
+                                                cl_cons(gv, CL_NIL))),
+                                CL_NIL)));
+
+                /* (MAPCAR lambda expr) — result is spliced by APPEND */
+                mapcar_form = cl_cons(sym_mapcar,
+                    cl_cons(lambda_form, cl_cons(expr, CL_NIL)));
+
+                return mapcar_form;
+            }
+
+            /* General case: reconstruct as (LIST (LIST 'UNQUOTE inner')) */
+            {
+                CL_Obj inner = qq_expand(inner_form, depth - 1);
+                CL_Obj form = qq_list(cl_cons(qq_quote(SYM_UNQUOTE), cl_cons(inner, CL_NIL)));
+                return cl_cons(sym_list, cl_cons(form, CL_NIL));
+            }
+        }
+
+        /* (UNQUOTE-SPLICING inner) at depth > 0 */
+        if (head == SYM_UNQUOTE_SPLICING && depth > 0) {
+            CL_Obj inner_form = cl_car(cl_cdr(x));
+
+            /* Special case: (UNQUOTE-SPLICING (UNQUOTE-SPLICING expr)) at depth 1
+             * This is ,@,@expr — splice the result of expr.
+             * Each element of expr is itself a list that gets spliced in.
+             * Build: (APPLY 'APPEND (MAPCAR (LAMBDA (V) (LIST 'UNQUOTE-SPLICING V)) expr))
+             * Actually, this is very rare. Just do the general case. */
+
+            {
+                CL_Obj inner = qq_expand(inner_form, depth - 1);
+                CL_Obj form = qq_list(cl_cons(qq_quote(SYM_UNQUOTE_SPLICING), cl_cons(inner, CL_NIL)));
+                return cl_cons(sym_list, cl_cons(form, CL_NIL));
+            }
+        }
+
+        /* (QUASIQUOTE expr): increase depth, wrap in LIST */
+        if (head == SYM_QUASIQUOTE) {
+            CL_Obj inner = qq_expand(cl_car(cl_cdr(x)), depth + 1);
+            CL_Obj form = qq_list(cl_cons(qq_quote(SYM_QUASIQUOTE), cl_cons(inner, CL_NIL)));
+            return cl_cons(sym_list, cl_cons(form, CL_NIL));
+        }
     }
 
-    /* List — check for splicing */
-    if (qq_has_splicing(tmpl)) {
-        compile_qq_list_splice(c, tmpl);
-    } else {
-        compile_qq_list_nosplice(c, tmpl);
+    /* Nested list: (LIST (qq-expand x depth)) */
+    {
+        CL_Obj expanded = qq_expand(x, depth);
+        return cl_cons(sym_list, cl_cons(expanded, CL_NIL));
     }
 }
 
+/* Compile a quasiquote form by expanding to LIST/APPEND forms,
+ * then compiling the result as a normal expression. */
 void compile_quasiquote(CL_Compiler *c, CL_Obj form)
 {
     CL_Obj tmpl = cl_car(cl_cdr(form));
-    compile_qq(c, tmpl);
+    CL_Obj expanded = qq_expand(tmpl, 0);
+    compile_expr(c, expanded);
 }
 
 /* --- Case forms --- */

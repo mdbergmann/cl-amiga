@@ -275,6 +275,8 @@
   (list (find-class 'error)))
 (%make-bootstrap-class 'parse-error
   (list (find-class 'error)))
+(%make-bootstrap-class 'reader-error
+  (list (find-class 'parse-error) (find-class 'stream-error)))
 (%make-bootstrap-class 'print-not-readable
   (list (find-class 'error)))
 

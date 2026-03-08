@@ -116,6 +116,7 @@ CL_Obj SYM_END_OF_FILE = CL_NIL;
 CL_Obj SYM_FILE_ERROR = CL_NIL;
 CL_Obj SYM_PACKAGE_ERROR = CL_NIL;
 CL_Obj SYM_PARSE_ERROR = CL_NIL;
+CL_Obj SYM_READER_ERROR = CL_NIL;
 CL_Obj SYM_PRINT_NOT_READABLE = CL_NIL;
 CL_Obj SYM_STORAGE_CONDITION = CL_NIL;
 
@@ -137,6 +138,11 @@ CL_Obj KW_FORMAT_CONTROL = CL_NIL;
 CL_Obj KW_FORMAT_ARGUMENTS = CL_NIL;
 CL_Obj KW_DATUM = CL_NIL;
 CL_Obj KW_EXPECTED_TYPE = CL_NIL;
+CL_Obj KW_STREAM = CL_NIL;
+CL_Obj KW_PACKAGE = CL_NIL;
+CL_Obj KW_OPERANDS = CL_NIL;
+CL_Obj KW_OPERATION = CL_NIL;
+CL_Obj KW_PATHNAME = CL_NIL;
 
 /* REPL history symbols */
 CL_Obj SYM_STAR = CL_NIL;
@@ -465,6 +471,7 @@ void cl_symbol_init(void)
     SYM_FILE_ERROR               = cl_intern_in("FILE-ERROR", 10, cl_package_cl);
     SYM_PACKAGE_ERROR            = cl_intern_in("PACKAGE-ERROR", 13, cl_package_cl);
     SYM_PARSE_ERROR              = cl_intern_in("PARSE-ERROR", 11, cl_package_cl);
+    SYM_READER_ERROR             = cl_intern_in("READER-ERROR", 12, cl_package_cl);
     SYM_PRINT_NOT_READABLE       = cl_intern_in("PRINT-NOT-READABLE", 18, cl_package_cl);
     SYM_STORAGE_CONDITION        = cl_intern_in("STORAGE-CONDITION", 17, cl_package_cl);
 
@@ -486,6 +493,11 @@ void cl_symbol_init(void)
     KW_FORMAT_ARGUMENTS          = cl_intern_keyword("FORMAT-ARGUMENTS", 16);
     KW_DATUM                     = cl_intern_keyword("DATUM", 5);
     KW_EXPECTED_TYPE             = cl_intern_keyword("EXPECTED-TYPE", 13);
+    KW_STREAM                    = cl_intern_keyword("STREAM", 6);
+    KW_PACKAGE                   = cl_intern_keyword("PACKAGE", 7);
+    KW_OPERANDS                  = cl_intern_keyword("OPERANDS", 8);
+    KW_OPERATION                 = cl_intern_keyword("OPERATION", 9);
+    KW_PATHNAME                  = cl_intern_keyword("PATHNAME", 8);
 
     /* REPL history symbols — intern multi-char ones now;
        *, +, - will be looked up in cl_repl_init() after builtins register them */

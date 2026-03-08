@@ -3033,6 +3033,47 @@
 (check "%getenv non-existent returns NIL" nil (%getenv "CLAMIGA_NONEXISTENT_VAR_12345"))
 (check "%getenv type check" t (handler-case (progn (%getenv 42) nil) (error () t)))
 
+; --- Nested quasiquote ---
+(check "nested-qq double unquote" '(quasiquote (a (unquote 42)))
+  (let ((x 42)) ``(a ,,x)))
+(check "nested-qq unquote-splice" '(quasiquote (a (unquote 1) (unquote 2) (unquote 3)))
+  (let ((xs '(1 2 3))) ``(a ,,@xs)))
+(check "nested-qq simple" '(quasiquote (a b))
+  ``(a b))
+(check "nested-qq inner splice" '(a 1 2 b)
+  (let ((xs '(1 2))) `(a ,@xs b)))
+(check "dotted quasiquote" '(a . 3)
+  `(a . ,(+ 1 2)))
+
+; --- reader-error condition ---
+(check "reader-error typep" t (typep (make-condition 'reader-error) 'reader-error))
+(check "reader-error is parse-error" t (typep (make-condition 'reader-error) 'parse-error))
+(check "reader-error is stream-error" t (typep (make-condition 'reader-error) 'stream-error))
+(check "reader-error is error" t (typep (make-condition 'reader-error) 'error))
+
+; --- Standard condition accessors ---
+(check "stream-error-stream" *standard-output*
+  (stream-error-stream (make-condition 'stream-error :stream *standard-output*)))
+(check "cell-error-name" 'foo
+  (cell-error-name (make-condition 'cell-error :name 'foo)))
+(check "file-error-pathname" "/tmp/x"
+  (file-error-pathname (make-condition 'file-error :pathname "/tmp/x")))
+
+; --- define-compiler-macro (no-op) ---
+(check "define-compiler-macro" 'test-cm
+  (define-compiler-macro test-cm (&whole form x) (declare (ignore form x)) nil))
+(check "compiler-macro-function" nil (compiler-macro-function 'test-cm))
+
+; --- setf values ---
+(check "setf values" '(10 20 30)
+  (let ((a 0) (b 0) (c 0))
+    (setf (values a b c) (values 10 20 30))
+    (list a b c)))
+
+; --- define-setf-expander (no-op) ---
+(check "define-setf-expander" 'my-place
+  (define-setf-expander my-place (x) (declare (ignore x)) nil))
+
 ; --- Summary ---
 (format t "~%=== Results ===~%")
 (format t "Passed: ~A~%" *pass-count*)

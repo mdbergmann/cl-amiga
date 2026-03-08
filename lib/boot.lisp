@@ -85,6 +85,20 @@
                   `(list* ',function ,place-var ,@plain-args)
                   `(list ',function ,place-var ,@plain-args))))))
 
+;; Compiler macros (no-op — CL-Amiga doesn't optimize via compiler macros)
+(defmacro define-compiler-macro (name lambda-list &body body)
+  (declare (ignore lambda-list body))
+  `',name)
+
+(defun compiler-macro-function (name &optional env)
+  (declare (ignore name env))
+  nil)
+
+;; Setf expanders (stub — CL-Amiga uses defsetf for setf places)
+(defmacro define-setf-expander (access-fn lambda-list &body body)
+  (declare (ignore lambda-list body))
+  `',access-fn)
+
 ;; List searching
 (defun member (item list &key (test #'eql))
   (do ((l list (cdr l)))

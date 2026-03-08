@@ -149,6 +149,7 @@ extern CL_Obj SYM_END_OF_FILE;
 extern CL_Obj SYM_FILE_ERROR;
 extern CL_Obj SYM_PACKAGE_ERROR;
 extern CL_Obj SYM_PARSE_ERROR;
+extern CL_Obj SYM_READER_ERROR;
 extern CL_Obj SYM_PRINT_NOT_READABLE;
 extern CL_Obj SYM_STORAGE_CONDITION;
 
@@ -170,6 +171,11 @@ extern CL_Obj KW_FORMAT_CONTROL;
 extern CL_Obj KW_FORMAT_ARGUMENTS;
 extern CL_Obj KW_DATUM;
 extern CL_Obj KW_EXPECTED_TYPE;
+extern CL_Obj KW_STREAM;
+extern CL_Obj KW_PACKAGE;
+extern CL_Obj KW_OPERANDS;
+extern CL_Obj KW_OPERATION;
+extern CL_Obj KW_PATHNAME;
 
 /* REPL history symbols */
 extern CL_Obj SYM_STAR;          /* * — last result */
