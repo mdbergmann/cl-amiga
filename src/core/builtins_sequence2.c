@@ -584,7 +584,7 @@ static CL_Obj list_merge(CL_Obj a, CL_Obj b, CL_Obj pred, CL_Obj key_fn)
 
 static CL_Obj list_merge_sort(CL_Obj list, CL_Obj pred, CL_Obj key_fn)
 {
-    CL_Obj slow, fast, mid;
+    CL_Obj slow, fast, mid, result;
 
     if (CL_NULL_P(list) || CL_NULL_P(cl_cdr(list)))
         return list;
@@ -599,10 +599,18 @@ static CL_Obj list_merge_sort(CL_Obj list, CL_Obj pred, CL_Obj key_fn)
     mid = cl_cdr(slow);
     ((CL_Cons *)CL_OBJ_TO_PTR(slow))->cdr = CL_NIL;
 
+    /* GC-protect list and mid across recursive calls:
+       each recursive sort triggers merges that call key/pred functions,
+       which can allocate and trigger GC */
+    CL_GC_PROTECT(list);
+    CL_GC_PROTECT(mid);
+
     list = list_merge_sort(list, pred, key_fn);
     mid = list_merge_sort(mid, pred, key_fn);
 
-    return list_merge(list, mid, pred, key_fn);
+    result = list_merge(list, mid, pred, key_fn);
+    CL_GC_UNPROTECT(2);
+    return result;
 }
 
 /* Insertion sort for vectors — in-place, stable */

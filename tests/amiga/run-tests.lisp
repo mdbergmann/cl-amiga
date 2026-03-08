@@ -904,6 +904,9 @@
 (check "sort single" '(1) (sort (list 1) #'<))
 (check "sort empty" nil (sort '() #'<))
 (check "sort with key" '(1 -2 -3 4) (sort (list -3 1 -2 4) #'< :key #'abs))
+; Regression: sort with allocating key on large list (GC bug #8)
+(check "sort large+key" 200
+  (length (sort (loop for i from 1 to 200 collect (format nil "item~3,'0d" i)) #'string<)))
 
 ; stable-sort
 (check "stable-sort" '(1 2 3) (stable-sort (list 3 1 2) #'<))

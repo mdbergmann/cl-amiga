@@ -2683,6 +2683,11 @@ TEST(eval_stable_sort)
 TEST(eval_sort_with_key)
 {
     ASSERT_STR_EQ(eval_print("(sort (list -3 1 -2 4) #'< :key #'abs)"), "(1 -2 -3 4)");
+    /* Regression: sort with string key on large list (GC bug #8 — list_merge_sort
+       didn't GC-protect list/mid across recursive calls) */
+    ASSERT_STR_EQ(eval_print(
+        "(let ((items (loop for i from 1 to 200 collect (format nil \"item~3,'0d\" i))))"
+        "  (length (sort items #'string<)))"), "200");
 }
 
 TEST(eval_typep)
