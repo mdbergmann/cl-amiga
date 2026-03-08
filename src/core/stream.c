@@ -284,6 +284,9 @@ int cl_stream_read_char(CL_Obj stream)
         ch = (unsigned char)cbuf_table[idx].data[st->position++];
         break;
     }
+    case CL_STREAM_SOCKET:
+        ch = platform_socket_read((PlatformSocket)st->handle_id);
+        break;
     default:
         return -1;
     }
@@ -318,6 +321,9 @@ void cl_stream_write_char(CL_Obj stream, int ch)
         break;
     case CL_STREAM_STRING:
         cl_stream_outbuf_putchar(st, ch);
+        break;
+    case CL_STREAM_SOCKET:
+        platform_socket_write((PlatformSocket)st->handle_id, ch);
         break;
     }
 
@@ -364,6 +370,9 @@ void cl_stream_write_string(CL_Obj stream, const char *str, uint32_t len)
     case CL_STREAM_STRING:
         for (i = 0; i < len; i++)
             cl_stream_outbuf_putchar(st, (unsigned char)str[i]);
+        break;
+    case CL_STREAM_SOCKET:
+        platform_socket_write_buf((PlatformSocket)st->handle_id, str, len);
         break;
     }
 
@@ -432,6 +441,10 @@ void cl_stream_close(CL_Obj stream)
         }
         break;
     }
+    case CL_STREAM_SOCKET:
+        if (st->handle_id != 0)
+            platform_socket_close((PlatformSocket)st->handle_id);
+        break;
     default:
         break;
     }
@@ -504,6 +517,23 @@ CL_Obj cl_get_output_stream_string(CL_Obj stream)
     st->out_buf_len = 0;
     st->charpos = 0;
     return result;
+}
+
+CL_Obj cl_make_socket_stream(const char *host, int port)
+{
+    PlatformSocket sh = platform_socket_connect(host, port);
+    CL_Obj s;
+    CL_Stream *st;
+    if (sh == PLATFORM_SOCKET_INVALID)
+        return CL_NIL;
+    s = cl_make_stream(CL_STREAM_IO, CL_STREAM_SOCKET);
+    if (CL_NULL_P(s)) {
+        platform_socket_close(sh);
+        return CL_NIL;
+    }
+    st = (CL_Stream *)CL_OBJ_TO_PTR(s);
+    st->handle_id = (uint32_t)sh;
+    return s;
 }
 
 CL_Obj cl_make_synonym_stream(CL_Obj symbol)

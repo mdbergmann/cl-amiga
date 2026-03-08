@@ -50,6 +50,17 @@ long         platform_file_position(PlatformFile fh);
 int          platform_file_set_position(PlatformFile fh, long pos);
 long         platform_file_length(PlatformFile fh);
 
+/* TCP Socket I/O */
+typedef uint32_t PlatformSocket;
+#define PLATFORM_SOCKET_INVALID 0
+
+PlatformSocket platform_socket_connect(const char *host, int port);
+void           platform_socket_close(PlatformSocket sh);
+int            platform_socket_read(PlatformSocket sh);       /* Read one byte, -1 on EOF/error */
+int            platform_socket_write(PlatformSocket sh, int byte); /* Write one byte, 0=ok, -1=error */
+int            platform_socket_write_buf(PlatformSocket sh, const char *buf, uint32_t len); /* Write buffer */
+int            platform_socket_flush(PlatformSocket sh);      /* Flush output, 0=ok */
+
 /* Timing */
 uint32_t platform_time_ms(void);   /* Monotonic milliseconds (for elapsed time) */
 void     platform_sleep_ms(uint32_t milliseconds);

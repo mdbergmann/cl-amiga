@@ -5,6 +5,9 @@
 #include <sys/time.h>
 #include <sys/stat.h>
 #include <sys/wait.h>
+#include <sys/socket.h>
+#include <netinet/in.h>
+#include <netdb.h>
 #include <time.h>
 #include <unistd.h>
 #include <errno.h>
@@ -298,6 +301,111 @@ char **platform_directory(const char *pattern, int *count_out)
     *count_out = (int)g.gl_pathc;
     globfree(&g);
     return result;
+}
+
+/* --- TCP Socket I/O --- */
+
+#define PLATFORM_SOCKET_TABLE_SIZE 16
+
+static int socket_table[PLATFORM_SOCKET_TABLE_SIZE];
+static int socket_table_init = 0;
+
+static void socket_table_ensure_init(void)
+{
+    if (!socket_table_init) {
+        int i;
+        for (i = 0; i < PLATFORM_SOCKET_TABLE_SIZE; i++)
+            socket_table[i] = -1;
+        socket_table_init = 1;
+    }
+}
+
+PlatformSocket platform_socket_connect(const char *host, int port)
+{
+    struct hostent *he;
+    struct sockaddr_in addr;
+    int fd, i;
+
+    socket_table_ensure_init();
+
+    he = gethostbyname(host);
+    if (!he) return PLATFORM_SOCKET_INVALID;
+
+    fd = socket(AF_INET, SOCK_STREAM, 0);
+    if (fd < 0) return PLATFORM_SOCKET_INVALID;
+
+    memset(&addr, 0, sizeof(addr));
+    addr.sin_family = AF_INET;
+    addr.sin_port = htons((uint16_t)port);
+    memcpy(&addr.sin_addr, he->h_addr_list[0], (size_t)he->h_length);
+
+    if (connect(fd, (struct sockaddr *)&addr, sizeof(addr)) < 0) {
+        close(fd);
+        return PLATFORM_SOCKET_INVALID;
+    }
+
+    /* Find free slot (slot 0 reserved as INVALID) */
+    for (i = 1; i < PLATFORM_SOCKET_TABLE_SIZE; i++) {
+        if (socket_table[i] == -1) {
+            socket_table[i] = fd;
+            return (PlatformSocket)i;
+        }
+    }
+
+    close(fd);
+    return PLATFORM_SOCKET_INVALID;
+}
+
+void platform_socket_close(PlatformSocket sh)
+{
+    if (sh > 0 && sh < PLATFORM_SOCKET_TABLE_SIZE && socket_table[sh] >= 0) {
+        close(socket_table[sh]);
+        socket_table[sh] = -1;
+    }
+}
+
+int platform_socket_read(PlatformSocket sh)
+{
+    unsigned char byte;
+    ssize_t n;
+    if (sh == 0 || sh >= PLATFORM_SOCKET_TABLE_SIZE || socket_table[sh] < 0)
+        return -1;
+    n = read(socket_table[sh], &byte, 1);
+    if (n <= 0) return -1;
+    return (int)byte;
+}
+
+int platform_socket_write(PlatformSocket sh, int byte)
+{
+    unsigned char b = (unsigned char)byte;
+    ssize_t n;
+    if (sh == 0 || sh >= PLATFORM_SOCKET_TABLE_SIZE || socket_table[sh] < 0)
+        return -1;
+    n = write(socket_table[sh], &b, 1);
+    return (n == 1) ? 0 : -1;
+}
+
+int platform_socket_write_buf(PlatformSocket sh, const char *buf, uint32_t len)
+{
+    ssize_t total = 0;
+    int fd;
+    if (sh == 0 || sh >= PLATFORM_SOCKET_TABLE_SIZE || socket_table[sh] < 0)
+        return -1;
+    fd = socket_table[sh];
+    while ((uint32_t)total < len) {
+        ssize_t n = write(fd, buf + total, (size_t)(len - (uint32_t)total));
+        if (n <= 0) return -1;
+        total += n;
+    }
+    return 0;
+}
+
+int platform_socket_flush(PlatformSocket sh)
+{
+    /* TCP sockets don't need explicit flush — data is sent immediately.
+     * For completeness, this is a no-op. */
+    (void)sh;
+    return 0;
 }
 
 void platform_init(void)

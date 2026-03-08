@@ -361,6 +361,48 @@ char **platform_directory(const char *pattern, int *count_out)
     return NULL;
 }
 
+/* --- TCP Socket I/O (stub — requires bsdsocket.library, e.g. AmiTCP/Roadshow) --- */
+
+PlatformSocket platform_socket_connect(const char *host, int port)
+{
+    CL_UNUSED(host);
+    CL_UNUSED(port);
+    /* TODO: implement using bsdsocket.library */
+    return PLATFORM_SOCKET_INVALID;
+}
+
+void platform_socket_close(PlatformSocket sh)
+{
+    CL_UNUSED(sh);
+}
+
+int platform_socket_read(PlatformSocket sh)
+{
+    CL_UNUSED(sh);
+    return -1;
+}
+
+int platform_socket_write(PlatformSocket sh, int byte)
+{
+    CL_UNUSED(sh);
+    CL_UNUSED(byte);
+    return -1;
+}
+
+int platform_socket_write_buf(PlatformSocket sh, const char *buf, uint32_t len)
+{
+    CL_UNUSED(sh);
+    CL_UNUSED(buf);
+    CL_UNUSED(len);
+    return -1;
+}
+
+int platform_socket_flush(PlatformSocket sh)
+{
+    CL_UNUSED(sh);
+    return 0;
+}
+
 void platform_init(void)
 {
     /* Nothing needed — dos.library is auto-opened by vbcc startup */
