@@ -254,6 +254,46 @@ static CL_Obj bi_notevery(CL_Obj *args, int n)
 /* MAP                                                     */
 /* ======================================================= */
 
+/* Helper: check if any sequence is exhausted */
+static int map_exhausted(CL_Obj *seqs, int32_t *lens, int nseqs, int32_t idx)
+{
+    int i;
+    for (i = 0; i < nseqs; i++) {
+        if (lens[i] >= 0) {
+            if (idx >= lens[i]) return 1;
+        } else {
+            if (CL_NULL_P(seqs[i])) return 1;
+        }
+    }
+    return 0;
+}
+
+/* Helper: collect elements from sequences at current index */
+static void map_collect_args(CL_Obj *seqs, int32_t *lens, CL_Obj *orig_seqs,
+                             CL_Obj *call_args, int nseqs, int32_t idx)
+{
+    int i;
+    for (i = 0; i < nseqs; i++) {
+        if (lens[i] >= 0) {
+            call_args[i] = every_seq_elt(orig_seqs[i], idx);
+        } else {
+            call_args[i] = cl_car(seqs[i]);
+            seqs[i] = cl_cdr(seqs[i]);
+        }
+    }
+}
+
+/* Helper: match result-type symbol name */
+static int map_result_type_match(CL_Obj result_type, const char *name, uint32_t len)
+{
+    if (CL_SYMBOL_P(result_type)) {
+        CL_Symbol *s = (CL_Symbol *)CL_OBJ_TO_PTR(result_type);
+        CL_String *sn = (CL_String *)CL_OBJ_TO_PTR(s->name);
+        return sn->length == len && memcmp(sn->data, name, len) == 0;
+    }
+    return 0;
+}
+
 static CL_Obj bi_map(CL_Obj *args, int n)
 {
     /* (map result-type function &rest sequences) */
@@ -261,71 +301,119 @@ static CL_Obj bi_map(CL_Obj *args, int n)
     CL_Obj func = cl_coerce_funcdesig(args[1], "MAP");
     int nseqs = n - 2;
     CL_Obj seqs[16];
+    CL_Obj orig_seqs[16];
+    int32_t lens[16];
     CL_Obj call_args[16];
     CL_Obj result = CL_NIL, tail = CL_NIL;
     int i;
-    int is_list;
+    int32_t idx = 0;
+    int rt; /* 0=nil, 1=list, 2=string, 3=vector */
 
     if (nseqs > 16) nseqs = 16;
-    for (i = 0; i < nseqs; i++)
+    for (i = 0; i < nseqs; i++) {
         seqs[i] = args[i + 2];
+        orig_seqs[i] = seqs[i];
+        lens[i] = every_seq_len(seqs[i]);
+    }
 
-    /* Determine result type: nil means discard, list means build list */
-    is_list = 0;
-    if (CL_NULL_P(result_type)) {
-        /* nil result-type: just iterate for side-effects */
-        for (;;) {
-            for (i = 0; i < nseqs; i++) {
-                if (CL_NULL_P(seqs[i])) return CL_NIL;
-            }
-            for (i = 0; i < nseqs; i++) {
-                call_args[i] = cl_car(seqs[i]);
-                seqs[i] = cl_cdr(seqs[i]);
-            }
+    /* Determine result type */
+    rt = -1;
+    if (CL_NULL_P(result_type))
+        rt = 0;
+    else if (map_result_type_match(result_type, "NULL", 4))
+        rt = 0;
+    else if (map_result_type_match(result_type, "LIST", 4))
+        rt = 1;
+    else if (map_result_type_match(result_type, "STRING", 6))
+        rt = 2;
+    else if (map_result_type_match(result_type, "VECTOR", 6))
+        rt = 3;
+
+    if (rt < 0) {
+        cl_error(CL_ERR_ARGS, "MAP: unsupported result-type");
+        return CL_NIL;
+    }
+
+    if (rt == 0) {
+        /* nil/null result-type: iterate for side-effects */
+        for (idx = 0; ; idx++) {
+            if (map_exhausted(seqs, lens, nseqs, idx)) return CL_NIL;
+            map_collect_args(seqs, lens, orig_seqs, call_args, nseqs, idx);
             call_func(func, call_args, nseqs);
         }
     }
 
-    /* Check if result-type is 'list */
-    if (CL_SYMBOL_P(result_type)) {
-        CL_Symbol *s = (CL_Symbol *)CL_OBJ_TO_PTR(result_type);
-        CL_String *name = (CL_String *)CL_OBJ_TO_PTR(s->name);
-        if (name->length == 4 && memcmp(name->data, "LIST", 4) == 0)
-            is_list = 1;
-        else if (name->length == 4 && memcmp(name->data, "NULL", 4) == 0) {
-            /* Same as nil */
-            for (;;) {
-                for (i = 0; i < nseqs; i++) {
-                    if (CL_NULL_P(seqs[i])) return CL_NIL;
-                }
-                for (i = 0; i < nseqs; i++) {
-                    call_args[i] = cl_car(seqs[i]);
-                    seqs[i] = cl_cdr(seqs[i]);
-                }
-                call_func(func, call_args, nseqs);
+    if (rt == 2 || rt == 3) {
+        /* STRING or VECTOR result: need to know length first */
+        int32_t min_len = 0x7FFFFFFF;
+        for (i = 0; i < nseqs; i++) {
+            int32_t l = (lens[i] >= 0) ? lens[i] : seq_length(seqs[i]);
+            if (l < min_len) min_len = l;
+        }
+
+        if (rt == 2) {
+            result = cl_make_string("", 0);
+            /* Resize to min_len */
+            {
+                CL_String *s = (CL_String *)CL_OBJ_TO_PTR(result);
+                (void)s;
+                /* Build up by collecting results first */
+                result = CL_NIL;
             }
+            /* Collect into a list, then build string */
+            CL_GC_PROTECT(func);
+            CL_GC_PROTECT(result);
+            CL_GC_PROTECT(tail);
+            for (idx = 0; idx < min_len; idx++) {
+                CL_Obj val, cell;
+                map_collect_args(seqs, lens, orig_seqs, call_args, nseqs, idx);
+                val = call_func(func, call_args, nseqs);
+                cell = cl_cons(val, CL_NIL);
+                if (CL_NULL_P(result)) result = cell;
+                else ((CL_Cons *)CL_OBJ_TO_PTR(tail))->cdr = cell;
+                tail = cell;
+            }
+            /* Build string from char list */
+            {
+                char buf[4096];
+                CL_Obj cur = result;
+                int32_t si = 0;
+                while (!CL_NULL_P(cur) && si < 4095) {
+                    CL_Obj ch = cl_car(cur);
+                    if (CL_CHAR_P(ch))
+                        buf[si++] = (char)CL_CHAR_VAL(ch);
+                    cur = cl_cdr(cur);
+                }
+                buf[si] = '\0';
+                CL_GC_UNPROTECT(3);
+                return cl_make_string(buf, (uint32_t)si);
+            }
+        } else {
+            /* VECTOR */
+            CL_GC_PROTECT(func);
+            result = cl_make_vector((uint32_t)min_len);
+            CL_GC_PROTECT(result);
+            for (idx = 0; idx < min_len; idx++) {
+                CL_Obj val;
+                map_collect_args(seqs, lens, orig_seqs, call_args, nseqs, idx);
+                val = call_func(func, call_args, nseqs);
+                cl_vector_data((CL_Vector *)CL_OBJ_TO_PTR(result))[idx] = val;
+            }
+            CL_GC_UNPROTECT(2);
+            return result;
         }
     }
 
-    if (!is_list) {
-        cl_error(CL_ERR_ARGS, "MAP: only result-type LIST and NIL supported");
-        return CL_NIL;
-    }
-
+    /* LIST result type */
     CL_GC_PROTECT(func);
     CL_GC_PROTECT(result);
     CL_GC_PROTECT(tail);
 
-    for (;;) {
+    for (idx = 0; ; idx++) {
         CL_Obj val, cell;
 
-        for (i = 0; i < nseqs; i++) {
-            if (CL_NULL_P(seqs[i])) goto map_done;
-        }
-        for (i = 0; i < nseqs; i++) {
-            call_args[i] = cl_car(seqs[i]);
-            seqs[i] = cl_cdr(seqs[i]);
-        }
+        if (map_exhausted(seqs, lens, nseqs, idx)) break;
+        map_collect_args(seqs, lens, orig_seqs, call_args, nseqs, idx);
 
         val = call_func(func, call_args, nseqs);
         cell = cl_cons(val, CL_NIL);
@@ -334,7 +422,6 @@ static CL_Obj bi_map(CL_Obj *args, int n)
         tail = cell;
     }
 
-map_done:
     CL_GC_UNPROTECT(3);
     return result;
 }

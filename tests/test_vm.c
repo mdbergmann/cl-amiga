@@ -2581,6 +2581,76 @@ TEST(eval_notevery)
 TEST(eval_map_fn)
 {
     ASSERT_STR_EQ(eval_print("(map 'list #'1+ '(1 2 3))"), "(2 3 4)");
+    /* map over string */
+    ASSERT_STR_EQ(eval_print("(map 'list #'char-code \"abc\")"), "(97 98 99)");
+    /* map over vector */
+    ASSERT_STR_EQ(eval_print("(map 'list #'1+ #(10 20 30))"), "(11 21 31)");
+    /* map nil result-type over string */
+    ASSERT_STR_EQ(eval_print("(let ((r nil)) (map nil (lambda (c) (push c r)) \"ab\") (length r))"), "2");
+    /* map with mixed sequence types */
+    ASSERT_STR_EQ(eval_print("(map 'list #'+ '(1 2 3) #(10 20 30))"), "(11 22 33)");
+    ASSERT_STR_EQ(eval_print("(map 'list #'cons '(a b c) \"xyz\")"), "((A . #\\x) (B . #\\y) (C . #\\z))");
+    /* map with string result type */
+    ASSERT_STR_EQ(eval_print("(map 'string #'char-upcase \"hello\")"), "\"HELLO\"");
+    /* map with vector result type */
+    ASSERT_STR_EQ(eval_print("(map 'vector #'1+ '(1 2 3))"), "#(2 3 4)");
+    /* map stops at shortest sequence */
+    ASSERT_STR_EQ(eval_print("(map 'list #'+ '(1 2 3 4) #(10 20))"), "(11 22)");
+    ASSERT_STR_EQ(eval_print("(map 'list #'identity \"ab\")"), "(#\\a #\\b)");
+}
+
+TEST(eval_every_sequences)
+{
+    /* every with string */
+    ASSERT_STR_EQ(eval_print("(every #'alpha-char-p \"hello\")"), "T");
+    ASSERT_STR_EQ(eval_print("(every #'alpha-char-p \"hello1\")"), "NIL");
+    /* every with vector */
+    ASSERT_STR_EQ(eval_print("(every #'numberp #(1 2 3))"), "T");
+    ASSERT_STR_EQ(eval_print("(every #'numberp #(1 :a 3))"), "NIL");
+    /* every with empty sequences */
+    ASSERT_STR_EQ(eval_print("(every #'identity \"\")"), "T");
+    ASSERT_STR_EQ(eval_print("(every #'identity #())"), "T");
+    /* every with mixed sequence types */
+    ASSERT_STR_EQ(eval_print("(every #'eql '(97 98 99) (map 'list #'char-code \"abc\"))"), "T");
+    /* every with bit-vector */
+    ASSERT_STR_EQ(eval_print("(every #'zerop #*000)"), "T");
+    ASSERT_STR_EQ(eval_print("(every #'zerop #*010)"), "NIL");
+}
+
+TEST(eval_some_sequences)
+{
+    /* some with string */
+    ASSERT_STR_EQ(eval_print("(some #'digit-char-p \"abc1\")"), "T");
+    ASSERT_STR_EQ(eval_print("(some #'digit-char-p \"abcd\")"), "NIL");
+    /* some with vector */
+    ASSERT_STR_EQ(eval_print("(some #'zerop #(1 2 0 3))"), "T");
+    ASSERT_STR_EQ(eval_print("(some #'zerop #(1 2 3))"), "NIL");
+    /* some with empty sequences */
+    ASSERT_STR_EQ(eval_print("(some #'identity \"\")"), "NIL");
+    ASSERT_STR_EQ(eval_print("(some #'identity #())"), "NIL");
+    /* some with bit-vector */
+    ASSERT_STR_EQ(eval_print("(some #'plusp #*000)"), "NIL");
+    ASSERT_STR_EQ(eval_print("(some #'plusp #*010)"), "T");
+}
+
+TEST(eval_notany_sequences)
+{
+    /* notany with string */
+    ASSERT_STR_EQ(eval_print("(notany #'digit-char-p \"abcd\")"), "T");
+    ASSERT_STR_EQ(eval_print("(notany #'digit-char-p \"abc1\")"), "NIL");
+    /* notany with vector */
+    ASSERT_STR_EQ(eval_print("(notany #'zerop #(1 2 3))"), "T");
+    ASSERT_STR_EQ(eval_print("(notany #'zerop #(1 0 3))"), "NIL");
+}
+
+TEST(eval_notevery_sequences)
+{
+    /* notevery with string */
+    ASSERT_STR_EQ(eval_print("(notevery #'alpha-char-p \"hello1\")"), "T");
+    ASSERT_STR_EQ(eval_print("(notevery #'alpha-char-p \"hello\")"), "NIL");
+    /* notevery with vector */
+    ASSERT_STR_EQ(eval_print("(notevery #'numberp #(1 :a 3))"), "T");
+    ASSERT_STR_EQ(eval_print("(notevery #'numberp #(1 2 3))"), "NIL");
 }
 
 TEST(eval_mismatch)
@@ -6011,6 +6081,10 @@ int main(void)
     RUN(eval_notany);
     RUN(eval_notevery);
     RUN(eval_map_fn);
+    RUN(eval_every_sequences);
+    RUN(eval_some_sequences);
+    RUN(eval_notany_sequences);
+    RUN(eval_notevery_sequences);
     RUN(eval_mismatch);
     RUN(eval_search_fn);
     RUN(eval_sort);

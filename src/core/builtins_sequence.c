@@ -1464,17 +1464,29 @@ static CL_Obj bi_map_into(CL_Obj *args, int n)
 
     result_len = seq_length(result_seq);
 
+    /* Precompute source sequence lengths for non-list types */
+    {
+        int32_t src_lens[16];
+        for (j = 0; j < n_seqs; j++) {
+            if (CL_CONS_P(seqs[j]) || CL_NULL_P(seqs[j]))
+                src_lens[j] = -1; /* list — track via CL_NULL_P */
+            else
+                src_lens[j] = seq_length(seqs[j]);
+        }
+
     for (idx = 0; idx < result_len; idx++) {
         CL_Obj val;
         /* Check if any source sequence is exhausted */
         for (j = 0; j < n_seqs; j++) {
-            if (CL_CONS_P(seqs[j]) || CL_NULL_P(seqs[j])) {
+            if (src_lens[j] >= 0) {
+                if (idx >= src_lens[j]) goto map_into_done;
+            } else {
                 if (CL_NULL_P(seqs[j])) goto map_into_done;
             }
         }
         /* Gather arguments */
         for (j = 0; j < n_seqs; j++) {
-            if (CL_CONS_P(seqs[j])) {
+            if (src_lens[j] < 0) {
                 call_args[j] = cl_car(seqs[j]);
                 seqs[j] = cl_cdr(seqs[j]);
             } else {
@@ -1501,6 +1513,7 @@ static CL_Obj bi_map_into(CL_Obj *args, int n)
         }
         /* For list result, handled below */
     }
+    } /* end src_lens block */
 
 map_into_done:
     /* For list: re-traverse and store */

@@ -920,6 +920,46 @@
 (check "every 2 lists" t (every #'< '(1 2 3) '(2 3 4)))
 (check "some 2 lists" t (some #'< '(3 2 1) '(1 2 3)))
 
+; every/some/notany/notevery with strings
+(check "every string t" t (every #'alpha-char-p "hello"))
+(check "every string nil" nil (every #'alpha-char-p "hello1"))
+(check "some string t" t (some #'digit-char-p "abc1"))
+(check "some string nil" nil (some #'digit-char-p "abcd"))
+(check "notany string t" t (notany #'digit-char-p "abcd"))
+(check "notany string nil" nil (notany #'digit-char-p "abc1"))
+(check "notevery str t" t (notevery #'alpha-char-p "hello1"))
+(check "notevery str nil" nil (notevery #'alpha-char-p "hello"))
+
+; every/some/notany/notevery with vectors
+(check "every vector t" t (every #'numberp #(1 2 3)))
+(check "every vector nil" nil (every #'numberp #(1 :a 3)))
+(check "some vector t" t (some #'zerop #(1 2 0 3)))
+(check "some vector nil" nil (some #'zerop #(1 2 3)))
+(check "notany vector t" t (notany #'zerop #(1 2 3)))
+(check "notany vector nil" nil (notany #'zerop #(1 0 3)))
+(check "notevery vec t" t (notevery #'numberp #(1 :a 3)))
+(check "notevery vec nil" nil (notevery #'numberp #(1 2 3)))
+
+; every/some with empty sequences
+(check "every empty str" t (every #'identity ""))
+(check "every empty vec" t (every #'identity #()))
+(check "some empty str" nil (some #'identity ""))
+(check "some empty vec" nil (some #'identity #()))
+
+; every/some with bit-vectors
+(check "every bv t" t (every #'zerop #*000))
+(check "every bv nil" nil (every #'zerop #*010))
+(check "some bv t" t (some #'plusp #*010))
+(check "some bv nil" nil (some #'plusp #*000))
+
+; map over strings and vectors
+(check "map str" '(97 98 99) (map 'list #'char-code "abc"))
+(check "map vec" '(11 21 31) (map 'list #'1+ #(10 20 30)))
+(check "map mixed" '(11 22 33) (map 'list #'+ '(1 2 3) #(10 20 30)))
+(check "map str result" "HELLO" (map 'string #'char-upcase "hello"))
+(check "map vec result" #(2 3 4) (map 'vector #'1+ '(1 2 3)))
+(check "map shortest" '(11 22) (map 'list #'+ '(1 2 3 4) #(10 20)))
+
 ; reduce with key
 (check "reduce with key" 6 (reduce #'+ '((1 a) (2 b) (3 c)) :key #'car))
 
