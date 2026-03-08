@@ -209,9 +209,15 @@ static void parse_lambda_list(CL_Obj params, CL_ParsedLambdaList *ll)
             if (CL_CONS_P(item)) {
                 ll->opt_names[ll->n_optional] = cl_car(item);
                 ll->opt_defaults[ll->n_optional] = cl_car(cl_cdr(item));
+                /* Third element is supplied-p variable: (name default svar) */
+                {
+                    CL_Obj cddr = cl_cdr(cl_cdr(item));
+                    ll->opt_suppliedp[ll->n_optional] = CL_NULL_P(cddr) ? CL_NIL : cl_car(cddr);
+                }
             } else {
                 ll->opt_names[ll->n_optional] = item;
                 ll->opt_defaults[ll->n_optional] = CL_NIL;
+                ll->opt_suppliedp[ll->n_optional] = CL_NIL;
             }
             ll->n_optional++;
             break;
@@ -338,6 +344,25 @@ void compile_lambda(CL_Compiler *c, CL_Obj form)
             cl_patch_jump(inner, skip_pos);
         }
         cl_env_add_local(env, ll.opt_names[i]);
+    }
+    /* Allocate slots for &optional supplied-p variables and emit init code.
+     * Each supplied-p var is T if argc >= n_required + i + 1, else NIL. */
+    for (i = 0; i < ll.n_optional; i++) {
+        if (!CL_NULL_P(ll.opt_suppliedp[i])) {
+            int sp_slot = cl_env_add_local(env, ll.opt_suppliedp[i]);
+            int skip_pos;
+            /* Default is NIL (already zero-initialized by VM).
+             * If argument was supplied, set to T. */
+            cl_emit(inner, OP_ARGC);
+            cl_emit_const(inner, CL_MAKE_FIXNUM(ll.n_required + i + 1));
+            cl_emit(inner, OP_GE);
+            skip_pos = cl_emit_jump(inner, OP_JNIL);
+            cl_emit_const(inner, CL_T);
+            cl_emit(inner, OP_STORE);
+            cl_emit(inner, (uint8_t)sp_slot);
+            cl_emit(inner, OP_POP);
+            cl_patch_jump(inner, skip_pos);
+        }
     }
 
     if (ll.has_rest)
@@ -1506,6 +1531,8 @@ void compile_expr(CL_Compiler *c, CL_Obj expr)
     if (CL_VECTOR_P(expr))  { cl_emit_const(c, expr); return; }
     if (CL_BIT_VECTOR_P(expr)) { cl_emit_const(c, expr); return; }
     if (CL_PATHNAME_P(expr))   { cl_emit_const(c, expr); return; }
+    if (CL_STRUCT_P(expr))     { cl_emit_const(c, expr); return; }
+    if (CL_HASHTABLE_P(expr))  { cl_emit_const(c, expr); return; }
 
     if (CL_SYMBOL_P(expr)) {
         compile_symbol(c, expr);

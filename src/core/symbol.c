@@ -406,6 +406,21 @@ void cl_symbol_init(void)
         s = (CL_Symbol *)CL_OBJ_TO_PTR(SYM_STAR_COMPILE_FILE_TRUENAME);
         s->flags |= CL_SYM_SPECIAL; s->value = CL_NIL;
     }
+    /* *macroexpand-hook* — set to NIL here, boot.lisp sets to #'funcall */
+    /* *compile-print*, *compile-verbose* — standard CL variables */
+    {
+        CL_Obj sym;
+        CL_Symbol *s;
+        sym = cl_intern_in("*MACROEXPAND-HOOK*", 18, cl_package_cl);
+        s = (CL_Symbol *)CL_OBJ_TO_PTR(sym);
+        s->flags |= CL_SYM_SPECIAL; s->value = CL_NIL;
+        sym = cl_intern_in("*COMPILE-PRINT*", 15, cl_package_cl);
+        s = (CL_Symbol *)CL_OBJ_TO_PTR(sym);
+        s->flags |= CL_SYM_SPECIAL; s->value = CL_NIL;
+        sym = cl_intern_in("*COMPILE-VERBOSE*", 17, cl_package_cl);
+        s = (CL_Symbol *)CL_OBJ_TO_PTR(sym);
+        s->flags |= CL_SYM_SPECIAL; s->value = CL_NIL;
+    }
     SYM_MACROLET             = cl_intern_in("MACROLET", 8, cl_package_cl);
     SYM_SYMBOL_MACROLET      = cl_intern_in("SYMBOL-MACROLET", 15, cl_package_cl);
     SYM_THE                  = cl_intern_in("THE", 3, cl_package_cl);

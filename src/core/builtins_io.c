@@ -272,6 +272,15 @@ static CL_Obj bi_load(CL_Obj *args, int n)
     CL_Obj saved_load_pathname, saved_load_truename;
 
     CL_UNUSED(n);
+
+    /* Sync cl_current_package from *package* special variable,
+       so Lisp-level let-bindings of *package* are respected by the reader */
+    {
+        CL_Symbol *pkg_sym = (CL_Symbol *)CL_OBJ_TO_PTR(SYM_STAR_PACKAGE);
+        if (!CL_NULL_P(pkg_sym->value))
+            cl_current_package = pkg_sym->value;
+    }
+
     if (CL_PATHNAME_P(args[0])) {
         /* Convert pathname to namestring */
         char ns_buf[1024];

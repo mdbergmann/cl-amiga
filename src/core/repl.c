@@ -711,6 +711,10 @@ void cl_repl_init_no_userinit(int no_userinit)
        accessible from any package that :use's CL */
     CL_Obj saved_pkg = cl_current_package;
     cl_current_package = cl_package_cl;
+    {
+        CL_Symbol *pkg_sym = (CL_Symbol *)CL_OBJ_TO_PTR(SYM_STAR_PACKAGE);
+        pkg_sym->value = cl_package_cl;
+    }
 
     cl_eval_string("(defmacro when (test &rest body) (list 'if test (cons 'progn body)))");
     cl_eval_string("(defmacro unless (test &rest body) (list 'if test nil (cons 'progn body)))");

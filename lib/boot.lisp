@@ -1,15 +1,38 @@
 ;;; boot.lisp — Bootstrap functions for CL-Amiga
 ;;; Loaded at startup to provide common CL conveniences.
 
-;; Composite CAR/CDR accessors
+;; Standard CL variables (set early, before any macro expansion)
+(setq *macroexpand-hook* #'funcall)
+
+;; Composite CAR/CDR accessors (all 28 from CL spec)
 (defun cadr (x) (car (cdr x)))
 (defun caar (x) (car (car x)))
 (defun cdar (x) (cdr (car x)))
 (defun cddr (x) (cdr (cdr x)))
+(defun caaar (x) (car (car (car x))))
+(defun cdaar (x) (cdr (car (car x))))
+(defun cddar (x) (cdr (cdr (car x))))
 (defun caddr (x) (car (cdr (cdr x))))
 (defun cadar (x) (car (cdr (car x))))
+(defun caadr (x) (car (car (cdr x))))
+(defun cdadr (x) (cdr (car (cdr x))))
 (defun cdddr (x) (cdr (cdr (cdr x))))
+(defun caaaar (x) (car (car (car (car x)))))
+(defun cadaar (x) (car (cdr (car (car x)))))
+(defun caddar (x) (car (cdr (cdr (car x)))))
 (defun cadddr (x) (car (cdr (cdr (cdr x)))))
+(defun cdaaar (x) (cdr (car (car (car x)))))
+(defun cddaar (x) (cdr (cdr (car (car x)))))
+(defun cdddar (x) (cdr (cdr (cdr (car x)))))
+(defun cddddr (x) (cdr (cdr (cdr (cdr x)))))
+(defun caadar (x) (car (car (cdr (car x)))))
+(defun caaddr (x) (car (car (cdr (cdr x)))))
+(defun cdadar (x) (cdr (car (cdr (car x)))))
+(defun cdaddr (x) (cdr (car (cdr (cdr x)))))
+(defun caaadr (x) (car (car (car (cdr x)))))
+(defun cadadr (x) (car (cdr (car (cdr x)))))
+(defun cdaadr (x) (cdr (car (car (cdr x)))))
+(defun cddadr (x) (cdr (cdr (car (cdr x)))))
 
 ;; Utility functions
 (defun identity (x) x)
@@ -117,10 +140,31 @@
 
 (defsetf documentation %set-documentation)
 
-;; Stubs for CL standard functions ASDF needs
-(defun compile-file (input-file &rest args)
-  (declare (ignore args))
-  nil)
+;; with-open-file — defined early so compile-file can use it.
+;; Dependencies: open, close (C builtins), unwind-protect/locally/when (special forms).
+(defmacro with-open-file (spec &body body)
+  (let ((var (car spec))
+        (open-args (cdr spec)))
+    `(let ((,var (open ,@open-args)))
+       (unwind-protect
+         (locally ,@body)
+         (when ,var (close ,var))))))
+
+;; compile-file: interpreted-only implementation for ASDF compatibility
+;; Copies source to output-file so ASDF can rename and later load it.
+(defun compile-file (input-file &key (output-file (compile-file-pathname input-file))
+                     &allow-other-keys)
+  (let ((in-path (namestring (pathname input-file)))
+        (out-path (namestring (pathname output-file))))
+    (with-open-file (in in-path :direction :input)
+      (with-open-file (out out-path :direction :output :if-exists :supersede)
+        (block nil
+          (tagbody copy-loop
+            (let ((line (read-line in nil nil)))
+              (if line
+                  (progn (write-line line out) (go copy-loop))
+                  (return nil)))))))
+    (values (truename (pathname output-file)) nil nil)))
 
 (defun compile-file-pathname (input-file &rest args)
   (declare (ignore args))
@@ -476,6 +520,11 @@
   (let ((s (make-string-input-stream string)))
     (read s eof-error-p eof-value)))
 
+;; read-preserving-whitespace — same as read for our implementation
+(defun read-preserving-whitespace (&optional stream (eof-error-p t) eof-value recursive-p)
+  (declare (ignore recursive-p))
+  (read stream eof-error-p eof-value))
+
 ;; break — enter debugger with CONTINUE restart
 (defun break (&optional (format-control "Break"))
   (restart-case
@@ -501,13 +550,7 @@
          (close ,var)))))
 
 ;; with-open-file — open a file stream, execute body, ensure close
-(defmacro with-open-file (spec &body body)
-  (let ((var (car spec))
-        (open-args (cdr spec)))
-    `(let ((,var (open ,@open-args)))
-       (unwind-protect
-         (locally ,@body)
-         (when ,var (close ,var))))))
+;; with-open-file defined earlier in boot.lisp (before compile-file)
 
 ;; --- Byte and sequence I/O ---
 

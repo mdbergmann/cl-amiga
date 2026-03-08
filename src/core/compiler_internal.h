@@ -93,6 +93,7 @@ typedef struct {
     int n_required;
     CL_Obj opt_names[CL_MAX_LOCALS];
     CL_Obj opt_defaults[CL_MAX_LOCALS]; /* CL_NIL if no default */
+    CL_Obj opt_suppliedp[CL_MAX_LOCALS]; /* supplied-p var or CL_NIL */
     int n_optional;
     CL_Obj rest_name;       /* CL_NIL if no &rest */
     int has_rest;

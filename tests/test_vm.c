@@ -920,6 +920,20 @@ TEST(eval_key_default)
     ASSERT_EQ_INT(eval_int("(key-def)"), 10);
 }
 
+TEST(eval_optional_suppliedp)
+{
+    /* &optional with supplied-p variable */
+    eval_print("(defun opt-sp (a &optional (b nil b-p)) (list a b b-p))");
+    ASSERT_STR_EQ(eval_print("(opt-sp 1)"), "(1 NIL NIL)");
+    ASSERT_STR_EQ(eval_print("(opt-sp 1 2)"), "(1 2 T)");
+    ASSERT_STR_EQ(eval_print("(opt-sp 1 nil)"), "(1 NIL T)");
+    /* Multiple optionals with supplied-p */
+    eval_print("(defun opt-sp2 (&optional (x 0 xp) (y 0 yp)) (list x xp y yp))");
+    ASSERT_STR_EQ(eval_print("(opt-sp2)"), "(0 NIL 0 NIL)");
+    ASSERT_STR_EQ(eval_print("(opt-sp2 5)"), "(5 T 0 NIL)");
+    ASSERT_STR_EQ(eval_print("(opt-sp2 5 10)"), "(5 T 10 T)");
+}
+
 TEST(eval_optional_lambda)
 {
     ASSERT_EQ_INT(eval_int("((lambda (a &optional (b 5)) (+ a b)) 10)"), 15);
@@ -5925,6 +5939,7 @@ int main(void)
     RUN(eval_labels);
     RUN(eval_optional);
     RUN(eval_optional_default);
+    RUN(eval_optional_suppliedp);
     RUN(eval_key);
     RUN(eval_key_default);
     RUN(eval_optional_lambda);
