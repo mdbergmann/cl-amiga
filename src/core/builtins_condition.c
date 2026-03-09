@@ -519,12 +519,13 @@ static CL_Obj bi_register_condition_type(CL_Obj *args, int n)
     /* Add (name parent) to condition_hierarchy */
     CL_GC_PROTECT(slot_pairs);
     entry = cl_cons(name, cl_cons(parent, CL_NIL));
+    CL_GC_PROTECT(entry);
     condition_hierarchy = cl_cons(entry, condition_hierarchy);
 
     /* Add (name . slot-pairs) to condition_slot_table */
     entry = cl_cons(name, slot_pairs);
     condition_slot_table = cl_cons(entry, condition_slot_table);
-    CL_GC_UNPROTECT(1);
+    CL_GC_UNPROTECT(2);
 
     return name;
 }

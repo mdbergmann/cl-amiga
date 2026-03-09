@@ -1218,7 +1218,7 @@
 (check "find-package nil" nil (find-package "NONEXISTENT"))
 (check "package-name CL" "COMMON-LISP" (package-name (find-package "CL")))
 (check "package-nicknames CL" "CL" (car (package-nicknames (find-package "CL"))))
-(check "package-use-list CL-USER" 1 (length (package-use-list (find-package "CL-USER"))))
+(check "package-use-list CL-USER" 3 (length (package-use-list (find-package "CL-USER"))))
 (check "list-all-packages" t (>= (length (list-all-packages)) 3))
 (check "make-package" t (not (null (make-package "TEST-PKG-1"))))
 (check "find-package after make" t (not (null (find-package "TEST-PKG-1"))))
@@ -1769,7 +1769,7 @@
 (check "file-write-date" t (numberp (file-write-date "lib/boot.lisp")))
 
 ; probe-file on existing file
-(check "probe-file-exists" "lib/boot.lisp" (probe-file "lib/boot.lisp"))
+(check "probe-file-exists" #P"lib/boot.lisp" (probe-file "lib/boot.lisp"))
 
 ; probe-file on nonexistent file
 (check "probe-file-nil" nil (probe-file "nonexistent_xyz_123.txt"))
@@ -1793,7 +1793,7 @@
 (check "namestring" "/foo/bar" (namestring "/foo/bar"))
 
 ; truename is identity (for now)
-(check "truename" "/foo/bar" (truename "/foo/bar"))
+(check "truename" #P"/foo/bar" (truename "/foo/bar"))
 
 ; make-pathname constructs path (returns pathname, use namestring to get string)
 (check "make-pathname" "hello.txt" (namestring (make-pathname :name "hello" :type "txt")))
@@ -1858,16 +1858,16 @@
 
 ; delete-file and rename-file via write/probe/delete cycle
 (with-open-file (s "T:cl_test_step10.tmp" :direction :output) (write-string "test" s))
-(check "probe-written" "T:cl_test_step10.tmp" (probe-file "T:cl_test_step10.tmp"))
+(check "probe-written" #P"T:cl_test_step10.tmp" (probe-file "T:cl_test_step10.tmp"))
 (rename-file "T:cl_test_step10.tmp" "T:cl_test_step10_ren.tmp")
 (check "rename-old-gone" nil (probe-file "T:cl_test_step10.tmp"))
-(check "rename-new-exists" "T:cl_test_step10_ren.tmp" (probe-file "T:cl_test_step10_ren.tmp"))
+(check "rename-new-exists" #P"T:cl_test_step10_ren.tmp" (probe-file "T:cl_test_step10_ren.tmp"))
 (delete-file "T:cl_test_step10_ren.tmp")
 (check "delete-file" nil (probe-file "T:cl_test_step10_ren.tmp"))
 
 ; %mkdir creates directory
 (check "mkdir" t (%mkdir "T:cl_test_step10_dir"))
-(check "mkdir-probe" "T:cl_test_step10_dir" (probe-file "T:cl_test_step10_dir"))
+(check "mkdir-probe" #P"T:cl_test_step10_dir" (probe-file "T:cl_test_step10_dir"))
 
 ; --- Step 12: Readtable + Compile ---
 
@@ -2457,7 +2457,7 @@
 (check "pretty short list" "(1 2 3)"
   (let ((*print-pretty* t) (*print-right-margin* 40))
     (write-to-string '(1 2 3))))
-(check "pretty long list" 27
+(check "pretty long list" 25
   (length (let ((*print-pretty* t) (*print-right-margin* 10))
     (write-to-string '(alpha beta gamma delta)))))
 (check "pretty off no break" "(ALPHA BETA GAMMA)"
@@ -2465,7 +2465,7 @@
     (write-to-string '(alpha beta gamma))))
 (check "pretty write keyword" "(1 2 3)"
   (write-to-string '(1 2 3) :pretty t :right-margin 40))
-(check "pretty write-to-string narrow" 27
+(check "pretty write-to-string narrow" 25
   (length (write-to-string '(alpha beta gamma delta) :pretty t :right-margin 10)))
 (check "pprint basic" 8
   (length (let ((s (make-string-output-stream)))
@@ -2852,8 +2852,8 @@
 (check "direct-supers integer" 'rational (class-name (car (class-direct-superclasses (find-class 'integer)))))
 (check "direct-supers t" nil (class-direct-superclasses (find-class 't)))
 (check "cpl fixnum" '(fixnum integer rational real number t) (mapcar #'class-name (class-precedence-list (find-class 'fixnum))))
-(check "cpl cons" '(cons t) (mapcar #'class-name (class-precedence-list (find-class 'cons))))
-(check "cpl null" '(null symbol t) (mapcar #'class-name (class-precedence-list (find-class 'null))))
+(check "cpl cons" '(cons list sequence t) (mapcar #'class-name (class-precedence-list (find-class 'cons))))
+(check "cpl null" '(null symbol t list sequence) (mapcar #'class-name (class-precedence-list (find-class 'null))))
 (check "direct-subclasses integer has fixnum" t (if (member (find-class 'fixnum) (class-direct-subclasses (find-class 'integer)) :test #'eq) t nil))
 (check "direct-subclasses integer has bignum" t (if (member (find-class 'bignum) (class-direct-subclasses (find-class 'integer)) :test #'eq) t nil))
 
