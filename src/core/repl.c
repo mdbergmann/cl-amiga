@@ -725,10 +725,22 @@ void cl_repl_init_no_userinit(int no_userinit)
        that should NOT be exported. */
     cl_package_export_all_cl_symbols();
 
+    /* Suppress *load-verbose* during internal boot/clos loading */
+    {
+        CL_Symbol *lv = (CL_Symbol *)CL_OBJ_TO_PTR(SYM_STAR_LOAD_VERBOSE);
+        lv->value = CL_NIL;
+    }
+
     load_boot_file();
 
     /* Load CLOS so defclass/defgeneric/defmethod are available */
     cl_eval_string("(require \"clos\")");
+
+    /* Re-enable *load-verbose* for user code */
+    {
+        CL_Symbol *lv = (CL_Symbol *)CL_OBJ_TO_PTR(SYM_STAR_LOAD_VERBOSE);
+        lv->value = SYM_T;
+    }
 
     /* Selectively export only NEW CL symbols that have real bindings
        (function, value, macro, type, struct, or CLOS class).

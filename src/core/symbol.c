@@ -70,8 +70,10 @@ CL_Obj SYM_IN_PACKAGE = CL_NIL;
 CL_Obj SYM_STAR_PACKAGE = CL_NIL;
 CL_Obj SYM_STAR_LOAD_PATHNAME = CL_NIL;
 CL_Obj SYM_STAR_LOAD_TRUENAME = CL_NIL;
+CL_Obj SYM_STAR_LOAD_VERBOSE = CL_NIL;
 CL_Obj SYM_STAR_COMPILE_FILE_PATHNAME = CL_NIL;
 CL_Obj SYM_STAR_COMPILE_FILE_TRUENAME = CL_NIL;
+CL_Obj SYM_STAR_COMPILE_VERBOSE = CL_NIL;
 CL_Obj SYM_MACROLET = CL_NIL;
 CL_Obj SYM_SYMBOL_MACROLET = CL_NIL;
 CL_Obj SYM_THE = CL_NIL;
@@ -400,14 +402,18 @@ void cl_symbol_init(void)
     SYM_STAR_PACKAGE         = cl_intern_in("*PACKAGE*", 9, cl_package_cl);
     SYM_STAR_LOAD_PATHNAME   = cl_intern_in("*LOAD-PATHNAME*", 15, cl_package_cl);
     SYM_STAR_LOAD_TRUENAME   = cl_intern_in("*LOAD-TRUENAME*", 15, cl_package_cl);
+    SYM_STAR_LOAD_VERBOSE    = cl_intern_in("*LOAD-VERBOSE*", 14, cl_package_cl);
     SYM_STAR_COMPILE_FILE_PATHNAME = cl_intern_in("*COMPILE-FILE-PATHNAME*", 23, cl_package_cl);
     SYM_STAR_COMPILE_FILE_TRUENAME = cl_intern_in("*COMPILE-FILE-TRUENAME*", 23, cl_package_cl);
+    SYM_STAR_COMPILE_VERBOSE = cl_intern_in("*COMPILE-VERBOSE*", 17, cl_package_cl);
     {
         CL_Symbol *s;
         s = (CL_Symbol *)CL_OBJ_TO_PTR(SYM_STAR_LOAD_PATHNAME);
         s->flags |= CL_SYM_SPECIAL; s->value = CL_NIL;
         s = (CL_Symbol *)CL_OBJ_TO_PTR(SYM_STAR_LOAD_TRUENAME);
         s->flags |= CL_SYM_SPECIAL; s->value = CL_NIL;
+        s = (CL_Symbol *)CL_OBJ_TO_PTR(SYM_STAR_LOAD_VERBOSE);
+        s->flags |= CL_SYM_SPECIAL; s->value = SYM_T;
         s = (CL_Symbol *)CL_OBJ_TO_PTR(SYM_STAR_COMPILE_FILE_PATHNAME);
         s->flags |= CL_SYM_SPECIAL; s->value = CL_NIL;
         s = (CL_Symbol *)CL_OBJ_TO_PTR(SYM_STAR_COMPILE_FILE_TRUENAME);
@@ -424,9 +430,9 @@ void cl_symbol_init(void)
         sym = cl_intern_in("*COMPILE-PRINT*", 15, cl_package_cl);
         s = (CL_Symbol *)CL_OBJ_TO_PTR(sym);
         s->flags |= CL_SYM_SPECIAL; s->value = CL_NIL;
-        sym = cl_intern_in("*COMPILE-VERBOSE*", 17, cl_package_cl);
-        s = (CL_Symbol *)CL_OBJ_TO_PTR(sym);
-        s->flags |= CL_SYM_SPECIAL; s->value = CL_NIL;
+        /* *compile-verbose* now uses SYM_STAR_COMPILE_VERBOSE, initialized above */
+        s = (CL_Symbol *)CL_OBJ_TO_PTR(SYM_STAR_COMPILE_VERBOSE);
+        s->flags |= CL_SYM_SPECIAL; s->value = SYM_T;
     }
     SYM_MACROLET             = cl_intern_in("MACROLET", 8, cl_package_cl);
     SYM_SYMBOL_MACROLET      = cl_intern_in("SYMBOL-MACROLET", 15, cl_package_cl);

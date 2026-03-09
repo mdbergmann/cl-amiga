@@ -312,6 +312,16 @@ static CL_Obj bi_load(CL_Obj *args, int n)
     lp_sym->value = load_pathname_obj;
     lt_sym->value = load_truename_obj;
 
+    /* Print loading message if *load-verbose* is true */
+    {
+        CL_Symbol *lv_sym = (CL_Symbol *)CL_OBJ_TO_PTR(SYM_STAR_LOAD_VERBOSE);
+        if (!CL_NULL_P(lv_sym->value)) {
+            platform_write_string("; Loading ");
+            platform_write_string(path_str->data);
+            platform_write_string("\n");
+        }
+    }
+
     /* Save and set source file context */
     prev_file = cl_current_source_file;
     prev_file_id = cl_current_file_id;

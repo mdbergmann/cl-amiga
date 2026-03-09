@@ -167,9 +167,11 @@
 ;; compile-file: interpreted-only implementation for ASDF compatibility
 ;; Copies source to output-file so ASDF can rename and later load it.
 (defun compile-file (input-file &key (output-file (compile-file-pathname input-file))
-                     &allow-other-keys)
+                     (verbose *compile-verbose*) &allow-other-keys)
   (let ((in-path (namestring (pathname input-file)))
         (out-path (namestring (pathname output-file))))
+    (when verbose
+      (format t "; Compiling ~A~%" in-path))
     (with-open-file (in in-path :direction :input)
       (with-open-file (out out-path :direction :output :if-exists :supersede)
         (block nil
