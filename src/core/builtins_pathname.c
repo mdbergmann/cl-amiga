@@ -141,6 +141,10 @@ CL_Obj cl_parse_namestring(const char *str, uint32_t len)
 
         /* Filename starts after last slash */
         filename = last_slash ? last_slash + 1 : end;
+    } else if (!CL_NULL_P(device)) {
+        /* Device-only path (e.g. "PROGDIR:", "S:") — absolute with no subdirs */
+        directory = cl_cons(KW_ABSOLUTE, CL_NIL);
+        filename = p;
     } else {
         /* No directory — just a filename */
         filename = p;

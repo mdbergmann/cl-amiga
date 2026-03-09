@@ -2040,7 +2040,7 @@ from instrumentation by enclosing it in a PROGN."
 (uiop/package:define-package :uiop/os
   (:use :uiop/common-lisp :uiop/package :uiop/utility)
   (:export
-   #:featurep #:os-unix-p #:os-macosx-p #:os-windows-p #:os-genera-p #:detect-os ;; features
+   #:featurep #:os-unix-p #:os-macosx-p #:os-windows-p #:os-genera-p #:os-amigaos-p #:detect-os ;; features
    #:os-cond
    #:getenv #:getenvp ;; environment variables
    #:implementation-identifier ;; implementation identifier
@@ -2099,6 +2099,10 @@ keywords explicitly."
     "Is the underlying operating system Mezzano?"
     (featurep :mezzano))
 
+  (defun os-amigaos-p ()
+    "Is the underlying operating system AmigaOS?"
+    (featurep :amigaos))
+
   (defun detect-os ()
     "Detects the current operating system. Only needs be run at compile-time,
 except on ABCL where it might change between FASL compilation and runtime."
@@ -2107,7 +2111,8 @@ except on ABCL where it might change between FASL compilation and runtime."
                                         (:os-windows . os-windows-p)
                                         (:os-genera . os-genera-p) (:os-oldmac . os-oldmac-p)
                                         (:os-haiku . os-haiku-p)
-                                        (:os-mezzano . os-mezzano-p))
+                                        (:os-mezzano . os-mezzano-p)
+                                        (:os-amigaos . os-amigaos-p))
           :when (and (or (not o) (eq feature :os-macosx) (eq feature :os-haiku)) (funcall detect))
             :do (setf o feature) (pushnew feature *features*)
           :else :do (setf *features* (remove feature *features*))
@@ -7645,6 +7650,7 @@ also \"Configuration DSL\"\) in the ASDF manual."
     (resolve-absolute-location
      `(,(or (getenv-absolute-directory "XDG_DATA_HOME")
             (os-cond
+             ((os-amigaos-p) (ensure-directory-pathname "S:"))
              ((os-windows-p) (get-folder-path :local-appdata))
              (t (subpathname (user-homedir-pathname) ".local/share/"))))
        ,more)))
@@ -7657,6 +7663,7 @@ also \"Configuration DSL\"\) in the ASDF manual."
     (resolve-absolute-location
      `(,(or (getenv-absolute-directory "XDG_CONFIG_HOME")
             (os-cond
+             ((os-amigaos-p) (ensure-directory-pathname "S:"))
              ((os-windows-p) (xdg-data-home "config/"))
              (t (subpathname (user-homedir-pathname) ".config/"))))
        ,more)))
@@ -7704,6 +7711,7 @@ also \"Configuration DSL\"\) in the ASDF manual."
     (resolve-absolute-location
      `(,(or (getenv-absolute-directory "XDG_CACHE_HOME")
             (os-cond
+             ((os-amigaos-p) (ensure-directory-pathname "S:asdfcache/"))
              ((os-windows-p) (xdg-data-home "cache/"))
              (t (subpathname* (user-homedir-pathname) ".cache/"))))
        ,more)))

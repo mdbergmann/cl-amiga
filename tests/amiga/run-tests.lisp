@@ -1832,6 +1832,54 @@
 ; namestring round-trip
 (check "namestring-roundtrip" "/foo/bar.lisp" (namestring #P"/foo/bar.lisp"))
 
+; --- Amiga device: pathname tests ---
+
+; Device-only paths (PROGDIR:, S:, DH0:)
+(check "device-only S: device" "S" (pathname-device #P"S:"))
+(check "device-only S: dir" (list :absolute) (pathname-directory #P"S:"))
+(check "device-only S: name" nil (pathname-name #P"S:"))
+(check "device-only S: namestring" "S:" (namestring #P"S:"))
+(check "device-only PROGDIR: namestring" "PROGDIR:" (namestring #P"PROGDIR:"))
+(check "device-only PROGDIR: device" "PROGDIR" (pathname-device #P"PROGDIR:"))
+(check "device-only PROGDIR: dir" (list :absolute) (pathname-directory #P"PROGDIR:"))
+
+; Device-only paths are absolute (critical for ASDF)
+(check "device S: absolute" :absolute (car (pathname-directory #P"S:")))
+(check "device PROGDIR: absolute" :absolute (car (pathname-directory #P"PROGDIR:")))
+(check "device DH0: absolute" :absolute (car (pathname-directory #P"DH0:")))
+
+; Device-only roundtrips
+(check "device S: roundtrip" "S:" (namestring (pathname (namestring #P"S:"))))
+(check "device PROGDIR: roundtrip" "PROGDIR:" (namestring (pathname (namestring #P"PROGDIR:"))))
+
+; Device path with subdirectory
+(check "device subdir parse" "S:asdfcache/" (namestring #P"S:asdfcache/"))
+(check "device subdir dir" (list :absolute "asdfcache") (pathname-directory #P"S:asdfcache/"))
+
+; Merge-pathnames with device paths
+(check "merge device+relative" "PROGDIR:lib/boot.lisp"
+  (namestring (merge-pathnames "lib/boot.lisp" #P"PROGDIR:")))
+(check "merge device+subdir" "S:asdfcache/"
+  (namestring (merge-pathnames "asdfcache/" #P"S:")))
+(check "merge device dir" (list :absolute "lib")
+  (pathname-directory (merge-pathnames "lib/boot.lisp" #P"PROGDIR:")))
+(check "merge device preserves device" "PROGDIR"
+  (pathname-device (merge-pathnames "lib/boot.lisp" #P"PROGDIR:")))
+(check "merge device preserves name" "boot"
+  (pathname-name (merge-pathnames "boot.lisp" #P"PROGDIR:lib/")))
+(check "merge device preserves type" "lisp"
+  (pathname-type (merge-pathnames "boot.lisp" #P"PROGDIR:lib/")))
+(check "merge device absolute overrides" "DH0:Work/test.lisp"
+  (namestring (merge-pathnames #P"DH0:Work/test.lisp" #P"S:")))
+(check "merge device nested subdir" "S:asdfcache/common-lisp/cache/"
+  (namestring (merge-pathnames "common-lisp/cache/" #P"S:asdfcache/")))
+
+; Make-pathname with device
+(check "make-pathname device" "DH0:Work/test.lisp"
+  (namestring (make-pathname :device "DH0" :directory '(:absolute "Work") :name "test" :type "lisp")))
+(check "make-pathname device-only" "S:"
+  (namestring (make-pathname :device "S" :directory '(:absolute))))
+
 ; equal on pathnames
 (check "pathname-equal" t (equal #P"/foo/bar.lisp" #P"/foo/bar.lisp"))
 (check "pathname-not-equal" nil (equal #P"/foo/bar.lisp" #P"/baz/bar.lisp"))
