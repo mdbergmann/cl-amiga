@@ -5899,6 +5899,21 @@ TEST(eval_key_nil_value_not_default)
     ASSERT_EQ_INT(eval_int("(%test-kd :x 42)"), 42);
 }
 
+TEST(eval_key_default_special_var)
+{
+    /* Key param shadows a special variable — default must see the dynamic
+     * value, not the uninitialized local slot (was returning NIL). */
+    cl_eval_string("(defvar *%test-ks* 100)");
+    cl_eval_string("(defun %test-ks (&key ((:path *%test-ks*) *%test-ks*)) *%test-ks*)");
+    ASSERT_EQ_INT(eval_int("(%test-ks)"), 100);
+    ASSERT_EQ_INT(eval_int("(%test-ks :path 77)"), 77);
+    /* Later key default can reference earlier key param */
+    cl_eval_string("(defun %test-ks2 (&key (a 10) (b a)) (list a b))");
+    ASSERT_STR_EQ(eval_print("(%test-ks2)"), "(10 10)");
+    ASSERT_STR_EQ(eval_print("(%test-ks2 :a 20)"), "(20 20)");
+    ASSERT_STR_EQ(eval_print("(%test-ks2 :a 20 :b 30)"), "(20 30)");
+}
+
 TEST(eval_special_var_unwind_closure)
 {
     /* Dynamic bindings must be restored after closure returns */
@@ -6792,6 +6807,7 @@ int main(void)
     RUN(eval_remove_string);
     RUN(eval_key_suppliedp_param);
     RUN(eval_key_nil_value_not_default);
+    RUN(eval_key_default_special_var);
     RUN(eval_special_var_unwind_closure);
     RUN(eval_special_var_unwind_block_return);
     RUN(eval_destructuring_bind_rest_key);

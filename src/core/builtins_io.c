@@ -1419,7 +1419,7 @@ void cl_builtins_io_init(void)
 
     /* Read / Load / Eval */
     defun("READ", bi_read, 0, -1);
-    defun("LOAD", bi_load, 1, 1);
+    defun("LOAD", bi_load, 1, -1);  /* accepts keyword args: :verbose, :print */
     defun("EVAL", bi_eval, 1, 1);
     defun("MACROEXPAND-1", bi_macroexpand_1, 1, 1);
     defun("MACROEXPAND", bi_macroexpand, 1, 1);

@@ -597,6 +597,21 @@
 ;; with-open-file — open a file stream, execute body, ensure close
 ;; with-open-file defined earlier in boot.lisp (before compile-file)
 
+;; --- Stream output control ---
+;; No-ops: console/file output is unbuffered, socket send() is immediate.
+
+(defun finish-output (&optional (stream *standard-output*))
+  (declare (ignore stream))
+  nil)
+
+(defun force-output (&optional (stream *standard-output*))
+  (declare (ignore stream))
+  nil)
+
+(defun clear-output (&optional (stream *standard-output*))
+  (declare (ignore stream))
+  nil)
+
 ;; --- Byte and sequence I/O ---
 
 (defun write-byte (byte &optional stream)

@@ -348,7 +348,8 @@
 
 (define-implementation-package :cl-amiga #:qlqs-cl-amiga
   (:documentation "CL-Amiga - Common Lisp for AmigaOS 3+")
-  (:class cl-amiga))
+  (:class cl-amiga)
+  (:intern #:open-tcp-stream))
 
 ;;;
 ;;; Utility function
@@ -362,7 +363,10 @@
           (*compile-verbose* nil)
           (*load-print* nil)
           (*compile-print* nil))
-      (handler-bind ((warning #'muffle-warning))
+      (handler-bind ((warning (lambda (c)
+                                (declare (ignore c))
+                                (let ((r (find-restart 'muffle-warning)))
+                                  (when r (invoke-restart r))))))
         (funcall fun)))))
 
 (defimplementation (call-with-quiet-compilation :for sbcl :qualifier :around)
@@ -475,7 +479,9 @@
                                    :element-type '(unsigned-byte 8)
                                    :input t
                                    :output t
-                                   :buffering :full))))
+                                   :buffering :full)))
+  (:implementation cl-amiga
+    (ext:open-tcp-stream host port)))
 
 (definterface read-octets (buffer connection)
   (:implementation t
@@ -1543,7 +1549,6 @@ the indexes in the header accordingly."
            (:directory
             (ensure-directories-exist full-path))
            (t
-            (warn "Unknown tar block payload code -- ~D" payload-code)
             (skip-n-blocks (ceiling (payload-size block) 512) stream)))))))))
 
 (defun contents (tarfile)
@@ -1720,7 +1725,14 @@ the indexes in the header accordingly."
                   client-version
                   dist-url
                   dist-version)
-  (setf *home* (merge-pathnames *home* (truename *default-pathname-defaults*)))
+  ;; Work around CL-Amiga keyword default bug: ((:path *home*) *home*)
+  ;; evaluates the default as NIL instead of the current dynamic *home* value
+  (unless *home*
+    (setf *home* (merge-pathnames (make-pathname :directory '(:relative "quicklisp"))
+                                  (user-homedir-pathname))))
+  (setf *home* (merge-pathnames *home*
+                                (or (ignore-errors (truename *default-pathname-defaults*))
+                                    *default-pathname-defaults*)))
   (let ((name (non-empty-file-namestring *home*)))
     (when name
       (warn "Making ~A part of the install pathname directory"

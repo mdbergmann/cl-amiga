@@ -801,6 +801,7 @@ static CL_Obj bi_warn(CL_Obj *args, int n)
     CL_Obj cond = coerce_to_condition(args, n, SYM_SIMPLE_WARNING);
     CL_Obj tag;
     int saved_restart_top = cl_restart_top;
+    int saved_handler_top = cl_handler_top;
     int muffled = 0;
 
     /* Create unique catch tag for muffle-warning */
@@ -857,8 +858,11 @@ static CL_Obj bi_warn(CL_Obj *args, int n)
         }
     }
 
-    /* Clean up restart and NLX frames */
+    /* Clean up restart, handler, and NLX frames.
+     * Handler top must be restored because when muffle-warning longjmps
+     * back here, cl_signal_condition's handler_top restore is skipped. */
     cl_restart_top = saved_restart_top;
+    cl_handler_top = saved_handler_top;
     /* Pop our NLX catch frame if still there */
     if (cl_nlx_top > 0 && cl_nlx_stack[cl_nlx_top - 1].tag == tag)
         cl_nlx_top--;

@@ -361,54 +361,147 @@ char **platform_directory(const char *pattern, int *count_out)
     return NULL;
 }
 
-/* --- TCP Socket I/O (stub — requires bsdsocket.library, e.g. AmiTCP/Roadshow) --- */
+/* --- TCP Socket I/O via bsdsocket.library (AmiTCP/Roadshow/Miami) --- */
+
+#include <proto/bsdsocket.h>
+
+struct Library *SocketBase = NULL;
+
+#define PLATFORM_SOCKET_TABLE_SIZE 16
+
+static LONG socket_table[PLATFORM_SOCKET_TABLE_SIZE];
+static int socket_table_init = 0;
+
+static void socket_table_ensure_init(void)
+{
+    if (!socket_table_init) {
+        int i;
+        for (i = 0; i < PLATFORM_SOCKET_TABLE_SIZE; i++)
+            socket_table[i] = -1;
+        socket_table_init = 1;
+    }
+}
+
+static LONG socket_errno = 0;
+
+static int bsdsocket_open(void)
+{
+    if (SocketBase) return 1;
+    SocketBase = OpenLibrary("bsdsocket.library", 3);
+    if (!SocketBase) return 0;
+    /* Required by some TCP stacks (AmiTCP) for per-task errno */
+    SetErrnoPtr(&socket_errno, sizeof(socket_errno));
+    return 1;
+}
 
 PlatformSocket platform_socket_connect(const char *host, int port)
 {
-    CL_UNUSED(host);
-    CL_UNUSED(port);
-    /* TODO: implement using bsdsocket.library */
+    struct hostent *he;
+    struct sockaddr_in addr;
+    LONG fd;
+    int i;
+
+    socket_table_ensure_init();
+
+    if (!bsdsocket_open())
+        return PLATFORM_SOCKET_INVALID;
+
+    he = gethostbyname((STRPTR)host);
+    if (!he) return PLATFORM_SOCKET_INVALID;
+
+    fd = socket(AF_INET, SOCK_STREAM, 0);
+    if (fd < 0) return PLATFORM_SOCKET_INVALID;
+
+    memset(&addr, 0, sizeof(addr));
+    addr.sin_family = AF_INET;
+    addr.sin_port = htons((unsigned short)port);
+    memcpy(&addr.sin_addr, he->h_addr_list[0], (size_t)he->h_length);
+
+    if (connect(fd, (struct sockaddr *)&addr, sizeof(addr)) < 0) {
+        CloseSocket(fd);
+        return PLATFORM_SOCKET_INVALID;
+    }
+
+    /* Find free slot (slot 0 reserved as INVALID) */
+    for (i = 1; i < PLATFORM_SOCKET_TABLE_SIZE; i++) {
+        if (socket_table[i] == -1) {
+            socket_table[i] = fd;
+            return (PlatformSocket)i;
+        }
+    }
+
+    CloseSocket(fd);
     return PLATFORM_SOCKET_INVALID;
 }
 
 void platform_socket_close(PlatformSocket sh)
 {
-    CL_UNUSED(sh);
+    if (sh > 0 && sh < PLATFORM_SOCKET_TABLE_SIZE && socket_table[sh] >= 0) {
+        CloseSocket(socket_table[sh]);
+        socket_table[sh] = -1;
+    }
 }
 
 int platform_socket_read(PlatformSocket sh)
 {
-    CL_UNUSED(sh);
-    return -1;
+    unsigned char byte;
+    LONG n;
+    if (sh == 0 || sh >= PLATFORM_SOCKET_TABLE_SIZE || socket_table[sh] < 0)
+        return -1;
+    n = recv(socket_table[sh], &byte, 1, 0);
+    if (n <= 0) return -1;
+    return (int)byte;
 }
 
 int platform_socket_write(PlatformSocket sh, int byte)
 {
-    CL_UNUSED(sh);
-    CL_UNUSED(byte);
-    return -1;
+    unsigned char b = (unsigned char)byte;
+    LONG n;
+    if (sh == 0 || sh >= PLATFORM_SOCKET_TABLE_SIZE || socket_table[sh] < 0)
+        return -1;
+    n = send(socket_table[sh], &b, 1, 0);
+    return (n == 1) ? 0 : -1;
 }
 
 int platform_socket_write_buf(PlatformSocket sh, const char *buf, uint32_t len)
 {
-    CL_UNUSED(sh);
-    CL_UNUSED(buf);
-    CL_UNUSED(len);
-    return -1;
+    LONG total = 0;
+    LONG fd;
+    if (sh == 0 || sh >= PLATFORM_SOCKET_TABLE_SIZE || socket_table[sh] < 0)
+        return -1;
+    fd = socket_table[sh];
+    while ((uint32_t)total < len) {
+        LONG n = send(fd, (APTR)(buf + total), (LONG)(len - (uint32_t)total), 0);
+        if (n <= 0) return -1;
+        total += n;
+    }
+    return 0;
 }
 
 int platform_socket_flush(PlatformSocket sh)
 {
-    CL_UNUSED(sh);
+    /* TCP sockets don't need explicit flush */
+    (void)sh;
     return 0;
 }
 
 void platform_init(void)
 {
-    /* Nothing needed — dos.library is auto-opened by vbcc startup */
+    /* Nothing needed — dos.library is auto-opened by startup */
 }
 
 void platform_shutdown(void)
 {
-    /* Nothing needed */
+    if (SocketBase) {
+        /* Close any remaining open sockets */
+        int i;
+        for (i = 1; i < PLATFORM_SOCKET_TABLE_SIZE; i++) {
+            if (socket_table[i] >= 0) {
+                CloseSocket(socket_table[i]);
+                socket_table[i] = -1;
+            }
+        }
+        CloseLibrary(SocketBase);
+        SocketBase = NULL;
+    }
 }

@@ -393,10 +393,21 @@ void compile_lambda(CL_Compiler *c, CL_Obj form)
         cl_env_add_local(env, inner->ll.aux_names[i]);
 
     /* Emit prologue for key defaults: check the VM-set tracking slot,
-     * not the key value itself (which could legitimately be NIL). */
+     * not the key value itself (which could legitimately be NIL).
+     * Per CL spec (CLHS 3.4.1), init-forms can reference earlier params
+     * but NOT the current param or later ones.  We temporarily hide
+     * params i..N-1 from the local env so that if a key param shadows a
+     * special variable, the default form sees the dynamic value. */
     for (i = 0; i < inner->ll.n_keys; i++) {
         if (!CL_NULL_P(inner->ll.key_defaults[i])) {
-            int skip_pos;
+            int skip_pos, j;
+            /* Hide current and later key params from local env */
+            CL_Obj saved_key_locals[CL_MAX_LOCALS];
+            for (j = i; j < inner->ll.n_keys; j++) {
+                int s = inner->key_slot_indices[j];
+                saved_key_locals[j - i] = env->locals[s];
+                env->locals[s] = CL_MAKE_FIXNUM(0); /* non-symbol sentinel */
+            }
             cl_emit(inner, OP_LOAD);
             cl_emit(inner, (uint8_t)inner->key_suppliedp_indices[i]);
             skip_pos = cl_emit_jump(inner, OP_JTRUE);
@@ -410,6 +421,10 @@ void compile_lambda(CL_Compiler *c, CL_Obj form)
             cl_emit(inner, (uint8_t)inner->key_slot_indices[i]);
             cl_emit(inner, OP_POP);
             cl_patch_jump(inner, skip_pos);
+            /* Restore hidden key params */
+            for (j = i; j < inner->ll.n_keys; j++) {
+                env->locals[inner->key_slot_indices[j]] = saved_key_locals[j - i];
+            }
         }
     }
 

@@ -362,6 +362,12 @@
 (defun key-def (&key (x 0) (y 10)) (+ x y))
 (check "key default" 10 (key-def))
 (check "key override" 15 (key-def :x 5))
+; Regression: key param shadowing special var must see dynamic value as default
+(defvar *key-special-test* 100)
+(defun key-special-def (&key ((:path *key-special-test*) *key-special-test*))
+  *key-special-test*)
+(check "key default special" 100 (key-special-def))
+(check "key override special" 77 (key-special-def :path 77))
 (check "lambda optional" 15 ((lambda (a &optional (b 5)) (+ a b)) 10))
 
 ; --- Phase 4: &allow-other-keys ---
