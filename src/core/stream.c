@@ -7,6 +7,9 @@
 #include "mem.h"
 #include "../platform/platform.h"
 #include <string.h>
+#ifdef DEBUG_STREAM
+#include <stdio.h>
+#endif
 
 /* Singleton console streams */
 CL_Obj cl_stdin_stream = 0;
@@ -111,12 +114,13 @@ CL_Obj cl_make_stream(uint32_t direction, uint32_t stream_type)
 
 uint32_t cl_stream_alloc_outbuf(uint32_t initial_size)
 {
-    int i;
+    int i, retry;
     char *data;
 
     if (!stream_initialized) cl_stream_init();
     if (initial_size == 0) initial_size = 256;
 
+    for (retry = 0; retry < 2; retry++) {
     /* Slot 0 is reserved as invalid */
     for (i = 1; i < CL_STREAM_BUF_TABLE_SIZE; i++) {
         if (outbuf_table[i].data == NULL) {
@@ -125,10 +129,30 @@ uint32_t cl_stream_alloc_outbuf(uint32_t initial_size)
             outbuf_table[i].data = data;
             outbuf_table[i].capacity = initial_size;
             outbuf_table[i].length = 0;
+#ifdef DEBUG_STREAM
+            {
+                char dbg[64];
+                int used = 0, j;
+                for (j = 1; j < CL_STREAM_BUF_TABLE_SIZE; j++)
+                    if (outbuf_table[j].data) used++;
+                snprintf(dbg, sizeof(dbg), "[STREAM] alloc slot %d (%d/%d used)\n",
+                         i, used, CL_STREAM_BUF_TABLE_SIZE - 1);
+                platform_write_string(dbg);
+            }
+#endif
             return (uint32_t)i;
         }
     }
-    return 0;  /* No free slots */
+    /* All slots occupied — run GC to finalize dead streams, then retry */
+    if (retry == 0) {
+        extern void cl_gc(void);
+        cl_gc();
+    }
+    } /* end retry loop */
+#ifdef DEBUG_STREAM
+    platform_write_string("[STREAM] outbuf table FULL after GC\n");
+#endif
+    return 0;  /* No free slots even after GC */
 }
 
 void cl_stream_free_outbuf(uint32_t handle)
@@ -139,6 +163,17 @@ void cl_stream_free_outbuf(uint32_t handle)
         outbuf_table[handle].data = NULL;
         outbuf_table[handle].capacity = 0;
         outbuf_table[handle].length = 0;
+#ifdef DEBUG_STREAM
+        {
+            char dbg[64];
+            int used = 0, j;
+            for (j = 1; j < CL_STREAM_BUF_TABLE_SIZE; j++)
+                if (outbuf_table[j].data) used++;
+            snprintf(dbg, sizeof(dbg), "[STREAM] free  slot %d (%d/%d used)\n",
+                     (int)handle, used, CL_STREAM_BUF_TABLE_SIZE - 1);
+            platform_write_string(dbg);
+        }
+#endif
     }
 }
 

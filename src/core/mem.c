@@ -4,6 +4,7 @@
 #include "vm.h"
 #include "readtable.h"
 #include "package.h"
+#include "stream.h"
 #include "../platform/platform.h"
 #include <stdarg.h>
 #include <string.h>
@@ -809,13 +810,20 @@ static void gc_sweep(void)
             CL_HDR_CLR_MARK(ptr);
             cl_heap.total_allocated += size;
         } else {
-            /* Dead object — add to free list, coalesce with next if possible.
+            /* Dead object — finalize, then add to free list and coalesce.
              * Limit coalesced size to CL_HDR_SIZE_MASK (23 bits, ~8MB) because
              * free block's size field occupies the same position as the object
              * header, and the next sweep reads CL_HDR_SIZE() which masks to
              * 23 bits.  Blocks larger than that would be mis-parsed. */
             CL_FreeBlock *fb = (CL_FreeBlock *)ptr;
             uint32_t total = size;
+
+            /* Finalize: release external resources for dead objects */
+            if (CL_HDR_TYPE(ptr) == TYPE_STREAM) {
+                CL_Stream *st = (CL_Stream *)ptr;
+                if ((st->direction & CL_STREAM_OUTPUT) && st->out_buf_handle != 0)
+                    cl_stream_free_outbuf(st->out_buf_handle);
+            }
 
             /* Coalesce adjacent free blocks up to max representable size */
             while (ptr + total < end) {
@@ -824,6 +832,12 @@ static void gc_sweep(void)
                 if (next_size == 0) break;
                 if (next->header & CL_HDR_MARK_BIT) break;  /* Next is live */
                 if (total + next_size > CL_HDR_SIZE_MASK) break;  /* Would overflow 23-bit size */
+                /* Finalize the coalesced dead object too */
+                if (CL_HDR_TYPE((uint8_t *)next) == TYPE_STREAM) {
+                    CL_Stream *st = (CL_Stream *)next;
+                    if ((st->direction & CL_STREAM_OUTPUT) && st->out_buf_handle != 0)
+                        cl_stream_free_outbuf(st->out_buf_handle);
+                }
                 total += next_size;
             }
 
