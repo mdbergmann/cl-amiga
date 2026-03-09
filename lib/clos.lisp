@@ -960,8 +960,8 @@ When called with no arguments, passes the original method arguments."
   "Dispatch a generic function call."
   (let ((methods (%compute-applicable-methods gf args)))
     (when (null methods)
-      (error (format nil "No applicable method for ~S with args of types ~S"
-                     (gf-name gf) (mapcar #'type-of args))))
+      (error "No applicable method for ~S with args of types ~S"
+                     (gf-name gf) (mapcar #'type-of args)))
     (%call-with-method-combination methods args)))
 
 ;;; --- ensure-generic-function ---

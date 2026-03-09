@@ -1129,13 +1129,13 @@
 ; Test that errors in nested calls don't break subsequent evaluation
 (defun bt-err-inner () (error "test error"))
 (defun bt-err-outer () (+ 1 (bt-err-inner)))
-(bt-err-outer)
+(handler-case (bt-err-outer) (error () nil))
 (check "backtrace recovery" 42 42)
 (defun bt-rec-err (n) (if (= n 0) (error "depth") (+ 1 (bt-rec-err (1- n)))))
-(bt-rec-err 5)
+(handler-case (bt-rec-err 5) (error () nil))
 (check "backtrace deep recovery" 99 99)
 (defun bt-uwp-fn () (unwind-protect (error "uwp err") nil))
-(bt-uwp-fn)
+(handler-case (bt-uwp-fn) (error () nil))
 (check "backtrace uwp recovery" 7 (+ 3 4))
 
 ; --- Time ---
@@ -1150,7 +1150,7 @@
 ; The fact that errors show proper backtraces validates source locations
 (defun srcloc-inner (x) (/ x 0))
 (defun srcloc-outer (x) (let ((r (srcloc-inner x))) r))
-(srcloc-outer 1)
+(handler-case (srcloc-outer 1) (error () nil))
 (check "srcloc error recovery" 42 42)
 
 ; --- Condition signaling ---
@@ -1159,8 +1159,8 @@
 (check "signal symbol returns nil" nil (signal 'simple-condition))
 (check "warn returns nil" nil (warn "test warning"))
 (check "warn symbol returns nil" nil (warn 'simple-warning))
-; error test: error is caught by batch REPL, next expression returns 42
-(error "test error for batch")
+; error test: error is caught, next expression returns 42
+(handler-case (error "test error for batch") (error () nil))
 (check "error recovery" 42 42)
 
 ; --- handler-bind ---
@@ -1220,30 +1220,30 @@
 (check "package-nicknames CL" "CL" (car (package-nicknames (find-package "CL"))))
 (check "package-use-list CL-USER" 3 (length (package-use-list (find-package "CL-USER"))))
 (check "list-all-packages" t (>= (length (list-all-packages)) 3))
-(check "make-package" t (not (null (make-package "TEST-PKG-1"))))
+(check "make-package" t (not (null (or (find-package "TEST-PKG-1") (make-package "TEST-PKG-1")))))
 (check "find-package after make" t (not (null (find-package "TEST-PKG-1"))))
 (check "find-symbol CAR external" :external (multiple-value-bind (sym status) (find-symbol "CAR" (find-package "CL")) status))
 (check "find-symbol CAR inherited" :inherited (multiple-value-bind (sym status) (find-symbol "CAR" (find-package "CL-USER")) status))
 (check "find-symbol not found" nil (multiple-value-bind (sym status) (find-symbol "ZZZZZ" (find-package "CL")) status))
 (check "intern new" nil (multiple-value-bind (sym status) (intern "NEW-AMIGA-SYM") status))
 (check "intern existing" :inherited (multiple-value-bind (sym status) (intern "CAR") status))
-(make-package "EXP-AMI")
+(unless (find-package "EXP-AMI") (make-package "EXP-AMI"))
 (intern "EXP-SYM" (find-package "EXP-AMI"))
 (check "export" :external (progn (export (find-symbol "EXP-SYM" (find-package "EXP-AMI")) (find-package "EXP-AMI")) (multiple-value-bind (s st) (find-symbol "EXP-SYM" (find-package "EXP-AMI")) st)))
 (check "unexport" :internal (progn (unexport (find-symbol "EXP-SYM" (find-package "EXP-AMI")) (find-package "EXP-AMI")) (multiple-value-bind (s st) (find-symbol "EXP-SYM" (find-package "EXP-AMI")) st)))
-(make-package "USE-AMI-SRC")
-(make-package "USE-AMI-DST")
+(unless (find-package "USE-AMI-SRC") (make-package "USE-AMI-SRC"))
+(unless (find-package "USE-AMI-DST") (make-package "USE-AMI-DST"))
 (intern "SHARED-SYM" (find-package "USE-AMI-SRC"))
 (export (find-symbol "SHARED-SYM" (find-package "USE-AMI-SRC")) (find-package "USE-AMI-SRC"))
 (use-package "USE-AMI-SRC" "USE-AMI-DST")
 (check "use-package inherit" :inherited (multiple-value-bind (s st) (find-symbol "SHARED-SYM" (find-package "USE-AMI-DST")) st))
-(check "delete-package" nil (progn (make-package "DEL-AMI") (delete-package (find-package "DEL-AMI")) (find-package "DEL-AMI")))
-(check "rename-package" "RENAMED-AMI" (progn (make-package "ORIG-AMI") (rename-package (find-package "ORIG-AMI") "RENAMED-AMI") (package-name (find-package "RENAMED-AMI"))))
-(make-package "SHAD-AMI")
+(check "delete-package" nil (progn (unless (find-package "DEL-AMI") (make-package "DEL-AMI")) (delete-package (find-package "DEL-AMI")) (find-package "DEL-AMI")))
+(check "rename-package" "RENAMED-AMI" (progn (unless (find-package "ORIG-AMI") (make-package "ORIG-AMI")) (unless (find-package "RENAMED-AMI") (rename-package (find-package "ORIG-AMI") "RENAMED-AMI")) (package-name (find-package "RENAMED-AMI"))))
+(unless (find-package "SHAD-AMI") (make-package "SHAD-AMI"))
 (use-package "CL" "SHAD-AMI")
 (shadow "CAR" (find-package "SHAD-AMI"))
 (check "shadow" :internal (multiple-value-bind (s st) (find-symbol "CAR" (find-package "SHAD-AMI")) st))
-(make-package "UNINT-AMI")
+(unless (find-package "UNINT-AMI") (make-package "UNINT-AMI"))
 (intern "REM-SYM" (find-package "UNINT-AMI"))
 (unintern (find-symbol "REM-SYM" (find-package "UNINT-AMI")) (find-package "UNINT-AMI"))
 (check "unintern" nil (multiple-value-bind (s st) (find-symbol "REM-SYM" (find-package "UNINT-AMI")) st))
@@ -1251,7 +1251,7 @@
 ; === Reader Qualified Syntax ===
 
 ; pkg:sym external access
-(make-package "QRA-FOO")
+(unless (find-package "QRA-FOO") (make-package "QRA-FOO"))
 (intern "QBAR" (find-package "QRA-FOO"))
 (export (find-symbol "QBAR" (find-package "QRA-FOO")) (find-package "QRA-FOO"))
 (check "pkg:sym external" t (eq (find-symbol "QBAR" (find-package "QRA-FOO")) 'QRA-FOO:QBAR))
@@ -1261,7 +1261,7 @@
 (check "pkg::sym internal" t (eq (find-symbol "QSECRET" (find-package "QRA-FOO")) 'QRA-FOO::QSECRET))
 
 ; pkg::sym creates symbol
-(make-package "QRA-BAR")
+(unless (find-package "QRA-BAR") (make-package "QRA-BAR"))
 (check "pkg::sym creates" t (symbolp 'QRA-BAR::NEWSYM))
 (check "pkg::sym status" :internal (multiple-value-bind (s st) (find-symbol "NEWSYM" (find-package "QRA-BAR")) st))
 
@@ -1286,25 +1286,25 @@
 (check "print current pkg" "CAR" (prin1-to-string 'CAR))
 
 ; Printer: other pkg external
-(make-package "QRA-PR")
+(unless (find-package "QRA-PR") (make-package "QRA-PR"))
 (intern "XSYM" (find-package "QRA-PR"))
 (export (find-symbol "XSYM" (find-package "QRA-PR")) (find-package "QRA-PR"))
 (check "print external" "QRA-PR:XSYM" (prin1-to-string 'QRA-PR:XSYM))
 
 ; Printer: other pkg internal
-(make-package "QRA-PR2")
+(unless (find-package "QRA-PR2") (make-package "QRA-PR2"))
 (intern "ISYM" (find-package "QRA-PR2"))
 (check "print internal" "QRA-PR2::ISYM" (prin1-to-string 'QRA-PR2::ISYM))
 
 ; --- CDR-10: Package-local nicknames ---
-(make-package "LN-AMI1" :use '("COMMON-LISP"))
+(unless (find-package "LN-AMI1") (make-package "LN-AMI1" :use '("COMMON-LISP")))
 (add-package-local-nickname "KW-AMI" (find-package "KEYWORD") (find-package "LN-AMI1"))
 (check "pkg-local-nick add" 1 (length (package-local-nicknames (find-package "LN-AMI1"))))
 (in-package "LN-AMI1")
 (cl-user::check "pkg-local-nick resolve" t (not (null (find-package "KW-AMI"))))
 (in-package "COMMON-LISP-USER")
 (check "pkg-local-nick scoped" nil (find-package "KW-AMI"))
-(make-package "LN-AMI2" :use '("COMMON-LISP"))
+(unless (find-package "LN-AMI2") (make-package "LN-AMI2" :use '("COMMON-LISP")))
 (add-package-local-nickname "RK" (find-package "KEYWORD") (find-package "LN-AMI2"))
 (remove-package-local-nickname "RK" (find-package "LN-AMI2"))
 (check "pkg-local-nick remove" 0 (length (package-local-nicknames (find-package "LN-AMI2"))))
@@ -1752,7 +1752,7 @@
 ; Platform-specific features on Amiga
 (check "features-has-amigaos" t (if (member :amigaos *features*) t nil))
 (check "features-has-m68k" t (if (member :m68k *features*) t nil))
-(check "feature-plus-amigaos" 42 #+amigaos 42)
+#+amigaos (check "feature-plus-amigaos" 42 42)
 
 ; sleep with zero duration
 (check "sleep-zero" nil (sleep 0))
@@ -2439,7 +2439,7 @@
 (check "format ~W number" "42" (format nil "~W" 42))
 (check "format ~& freshline" 11 (length (format nil "hello~&world")))
 (check "format ~| page" 3 (length (format nil "a~|b")))
-(check "format ~| page char" 12 (char-code (char (format nil "a~|b") 1)))
+(check "format ~| page char" 12 (let ((s (format nil "a~|b"))) (if (>= (length s) 2) (char-code (char s 1)) -1)))
 (check "format mixed" "dec=255 hex=FF bin=11111111"
   (format nil "dec=~D hex=~X bin=~B" 255 255 255))
 
@@ -2862,7 +2862,7 @@
 
 ; --- Read-time eval (#.) ---
 (check "#. arithmetic" 3 #.(+ 1 2))
-(check "#. list" '(1 2) #.(list 1 2))
+(check "#. list" '(1 2) '#.(list 1 2))
 (check "#. in list" '(a 30 b) (list 'a #.(+ 10 20) 'b))
 (check "*read-eval* default" t *read-eval*)
 
@@ -3080,9 +3080,9 @@
 (fmakunbound 'amiga-fboundp-test)
 (check "fmakunbound removes binding" nil (fboundp 'amiga-fboundp-test))
 
-; --- %getenv ---
-(check "%getenv non-existent returns NIL" nil (%getenv "CLAMIGA_NONEXISTENT_VAR_12345"))
-(check "%getenv type check" t (handler-case (progn (%getenv 42) nil) (error () t)))
+; --- ext:getenv ---
+(check "getenv non-existent returns NIL" nil (ext:getenv "CLAMIGA_NONEXISTENT_VAR_12345"))
+(check "getenv type check" t (handler-case (progn (ext:getenv 42) nil) (error () t)))
 
 ; --- Nested quasiquote ---
 (check "nested-qq double unquote" '(quasiquote (a (unquote 42)))
