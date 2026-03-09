@@ -4976,6 +4976,22 @@ TEST(eval_loop_return_clause)
         "  do (when (> x 10) (return x)))"), 11);
 }
 
+TEST(eval_loop_return_in_do_let)
+{
+    /* return inside do + let — regression test for Fix 22 */
+    ASSERT_EQ_INT(eval_int(
+        "(loop while t do (let ((x 42)) (return x)))"), 42);
+    ASSERT_EQ_INT(eval_int(
+        "(loop for i from 0 do (let ((y (* i 10)))"
+        "  (when (= y 30) (return y))))"), 30);
+    /* return inside do + let* with multiple bindings */
+    ASSERT_EQ_INT(eval_int(
+        "(loop while t do (let* ((a 1) (b 2)) (return (+ a b))))"), 3);
+    /* return inside defun + loop + do + let */
+    cl_eval_string("(defun %test-loop-ret () (loop while t do (let ((x 7)) (return x))))");
+    ASSERT_EQ_INT(eval_int("(%test-loop-ret)"), 7);
+}
+
 TEST(eval_loop_when_collect)
 {
     /* when ... collect */
@@ -6497,6 +6513,7 @@ int main(void)
     RUN(eval_loop_nconc);
     RUN(eval_loop_return);
     RUN(eval_loop_return_clause);
+    RUN(eval_loop_return_in_do_let);
     RUN(eval_loop_when_collect);
     RUN(eval_loop_if_else);
     RUN(eval_loop_unless_collect);

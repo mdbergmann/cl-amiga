@@ -490,11 +490,17 @@ TEST(lisp_restart_case_no_params)
 
 TEST(lisp_find_restart)
 {
-    /* find-restart returns T when restart is active */
+    /* find-restart returns restart name when active */
     ASSERT_STR_EQ(eval_print(
         "(restart-case (if (find-restart 'continue) :found :not-found)"
         "  (continue () nil))"),
         ":FOUND");
+
+    /* find-restart result can be passed to invoke-restart (fiveam pattern) */
+    ASSERT_STR_EQ(eval_print(
+        "(restart-case (invoke-restart (find-restart 'use-value) 99)"
+        "  (use-value (v) v))"),
+        "99");
 }
 
 TEST(lisp_find_restart_missing)

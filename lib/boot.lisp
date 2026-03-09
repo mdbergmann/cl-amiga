@@ -617,6 +617,7 @@
 (defun read-sequence (sequence stream &key (start 0) end)
   (let ((e (or end (length sequence)))
         (i start))
+    ;; Cannot use loop here — loop macro is defined later in boot.lisp
     (block nil
       (tagbody
        loop-top
@@ -624,7 +625,7 @@
        (let ((b (read-byte stream nil nil)))
          (if b
              (progn (setf (aref sequence i) b) (setf i (1+ i)))
-             (return-from nil i)))
+             (return i)))
        (go loop-top)
        loop-end))
     i))

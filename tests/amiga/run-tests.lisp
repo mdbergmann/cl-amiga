@@ -2079,6 +2079,9 @@
 (check "loop append" '(a b c d e) (loop for x in '((a b) (c d) (e)) append x))
 (check "loop nconc" '(1 2 3 4) (loop for x in '((1 2) (3 4)) nconc (copy-list x)))
 (check "loop return" 3 (loop for x in '(1 2 3 4 5) do (when (= x 3) (return x))))
+(check "loop return in do+let" 42 (loop while t do (let ((x 42)) (return x))))
+(check "loop return in do+let*" 3 (loop while t do (let* ((a 1) (b 2)) (return (+ a b)))))
+(check "loop return in do+let defun" 7 (progn (defun %test-loop-ret2 () (loop while t do (let ((x 7)) (return x)))) (%test-loop-ret2)))
 
 ; Loop Step 4 — conditionals, always/never/thereis, with, named, initially/finally
 (check "loop when collect" '(2 4 6) (loop for x in '(1 2 3 4 5 6) when (evenp x) collect x))

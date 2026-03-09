@@ -938,7 +938,9 @@ static CL_Obj bi_invoke_restart(CL_Obj *args, int n)
     return CL_NIL;
 }
 
-/* (find-restart name &optional condition) — return T if found, NIL if not */
+/* (find-restart name &optional condition) — return restart name if found, NIL if not
+   CL spec says return a restart object; we return the restart's name symbol,
+   which invoke-restart also accepts as a designator. */
 static CL_Obj bi_find_restart(CL_Obj *args, int n)
 {
     CL_Obj name = args[0];
@@ -947,7 +949,7 @@ static CL_Obj bi_find_restart(CL_Obj *args, int n)
 
     for (i = cl_restart_top - 1; i >= 0; i--) {
         if (cl_restart_stack[i].name == name)
-            return SYM_T;
+            return name;
     }
     return CL_NIL;
 }
