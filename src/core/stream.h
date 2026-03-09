@@ -17,7 +17,7 @@
 
 /* --- Output buffer side table --- */
 
-#define CL_STREAM_BUF_TABLE_SIZE 64
+#define CL_STREAM_BUF_TABLE_SIZE 256
 
 /* Singleton console streams */
 extern CL_Obj cl_stdin_stream;   /* Console input stream */

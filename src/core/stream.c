@@ -5,6 +5,7 @@
 #include "stream.h"
 #include "symbol.h"
 #include "mem.h"
+#include "error.h"
 #include "../platform/platform.h"
 #include <string.h>
 #ifdef DEBUG_STREAM
@@ -529,6 +530,12 @@ CL_Obj cl_make_string_output_stream(void)
 
     st = (CL_Stream *)CL_OBJ_TO_PTR(s);
     h = cl_stream_alloc_outbuf(256);
+    if (h == 0) {
+        cl_error(0,
+                 "String output stream buffer table exhausted (%d slots)",
+                 CL_STREAM_BUF_TABLE_SIZE - 1);
+        return CL_NIL;
+    }
     st->out_buf_handle = h;
     st->out_buf_size = 256;
     return s;
