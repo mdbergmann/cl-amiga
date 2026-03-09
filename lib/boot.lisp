@@ -527,7 +527,61 @@
             (push `(defun ,setter-name (obj val) (%struct-set obj ,idx val)) forms)
             (push `(defsetf ,acc-name ,setter-name) forms))
           (setq idx (+ idx 1))))
+      ;; Register struct as CLOS class if CLOS is loaded
+      (push `(when (fboundp '%make-bootstrap-class)
+               (%make-bootstrap-class ',name
+                 (list (find-class ',(or include-name 'structure-object)))))
+            forms)
       `(progn ,@(reverse forms) ',name))))
+
+;; psetq — parallel setq: evaluate all values, then assign
+(defmacro psetq (&rest pairs)
+  (let ((temps nil) (sets nil) (p pairs))
+    (do () ((null p))
+      (let ((var (car p))
+            (val (cadr p))
+            (tmp (gensym)))
+        (push (list tmp val) temps)
+        (push `(setq ,var ,tmp) sets)
+        (setq p (cddr p))))
+    `(let ,(reverse temps) ,@(reverse sets) nil)))
+
+;; psetf — parallel setf: evaluate all values, then assign
+(defmacro psetf (&rest pairs)
+  (let ((temps nil) (sets nil) (p pairs))
+    (do () ((null p))
+      (let ((place (car p))
+            (val (cadr p))
+            (tmp (gensym)))
+        (push (list tmp val) temps)
+        (push `(setf ,place ,tmp) sets)
+        (setq p (cddr p))))
+    `(let ,(reverse temps) ,@(reverse sets) nil)))
+
+;; rotatef — rotate values among places
+(defmacro rotatef (&rest places)
+  (if (null places) nil
+    (if (null (cdr places)) nil
+      (let ((temps (mapcar (lambda (p) (declare (ignore p)) (gensym)) places)))
+        `(let ,(mapcar #'list temps places)
+           ,@(mapcar (lambda (p v) `(setf ,p ,v))
+                     places
+                     (append (cdr temps) (list (car temps))))
+           nil)))))
+
+;; shiftf — shift values left among places, return first
+(defmacro shiftf (&rest places-and-newval)
+  (if (null (cdr places-and-newval)) (car places-and-newval)
+    (let* ((places (butlast places-and-newval))
+           (newval (car (last places-and-newval)))
+           (temps (mapcar (lambda (p) (declare (ignore p)) (gensym)) places))
+           (tval (gensym)))
+      `(let (,@(mapcar #'list temps places)
+             (,tval ,newval))
+         ,@(mapcar (lambda (p v) `(setf ,p ,v))
+                   places
+                   (append (cdr temps) (list tval)))
+         ,(car temps)))))
 
 ;; read-from-string — read an S-expression from a string
 (defun read-from-string (string &optional eof-error-p eof-value)
@@ -1151,6 +1205,36 @@
                     (list `(when (endp ,iter-gs) (go ,end-tag)))
                     (list `(setq ,var (car ,iter-gs)))
                     (list `(setq ,iter-gs (cdr ,iter-gs))))))))))
+    ;; FOR var BELOW limit — shorthand for FROM 0 BELOW limit
+    ((%loop-keyword-p sub-kw "BELOW")
+     (let ((end-expr (car rest))
+           (end-gs (gensym "END")))
+       (setq rest (cdr rest))
+       (let ((step-val 1))
+         (when (and rest (%loop-keyword-p (car rest) "BY"))
+           (setq rest (cdr rest))
+           (setq step-val (car rest))
+           (setq rest (cdr rest)))
+         (list rest
+               (list (list var 0) (list end-gs end-expr))
+               (list `(when (>= ,var ,end-gs) (go ,end-tag)))
+               nil
+               (list `(setq ,var (+ ,var ,step-val)))))))
+    ;; FOR var ABOVE limit — shorthand for downward from some start
+    ((%loop-keyword-p sub-kw "ABOVE")
+     (let ((end-expr (car rest))
+           (end-gs (gensym "END")))
+       (setq rest (cdr rest))
+       (let ((step-val 1))
+         (when (and rest (%loop-keyword-p (car rest) "BY"))
+           (setq rest (cdr rest))
+           (setq step-val (car rest))
+           (setq rest (cdr rest)))
+         (list rest
+               (list (list var 0) (list end-gs end-expr))
+               (list `(when (<= ,var ,end-gs) (go ,end-tag)))
+               nil
+               (list `(setq ,var (- ,var ,step-val)))))))
     ;; FOR var OF-TYPE type-spec <sub-clause> — skip type declaration, recurse
     ((%loop-keyword-p sub-kw "OF-TYPE")
      ;; rest = (type-spec real-sub-kw . rest-of-clause)

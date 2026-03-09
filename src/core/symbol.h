@@ -108,6 +108,7 @@ extern CL_Obj SYM_STAR_COMPILE_FILE_TRUENAME;
 extern CL_Obj SYM_MACROLET;
 extern CL_Obj SYM_SYMBOL_MACROLET;
 extern CL_Obj SYM_THE;
+extern CL_Obj SYM_PROGV;
 
 /* Declaration specifier symbols */
 extern CL_Obj SYM_SPECIAL_DECL;

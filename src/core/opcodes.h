@@ -98,6 +98,10 @@ enum CL_Opcode {
     OP_TAGBODY_POP  = 0xA2, /* Pop NLX tagbody frame (normal exit from tagbody) */
     OP_TAGBODY_GO   = 0xA3, /* u16 tagbody_id_idx, u16 tag_idx: cross-closure go */
 
+    /* PROGV — runtime dynamic binding */
+    OP_PROGV_BIND   = 0xA4, /* Pop values-list, pop symbols-list, push dyn_mark, bind all */
+    OP_PROGV_UNBIND = 0xA5, /* Pop body result, pop dyn_mark, restore bindings, push result */
+
     OP_HALT      = 0xFF   /* Stop VM */
 };
 

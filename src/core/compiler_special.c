@@ -1713,3 +1713,31 @@ void compile_symbol_macrolet(CL_Compiler *c, CL_Obj form)
     /* Restore */
     env->symbol_macro_count = saved_symbol_macro_count;
 }
+
+/* --- PROGV --- */
+
+void compile_progv(CL_Compiler *c, CL_Obj form)
+{
+    /* (progv symbols-form values-form body...) */
+    CL_Obj symbols_form = cl_car(cl_cdr(form));
+    CL_Obj values_form  = cl_car(cl_cdr(cl_cdr(form)));
+    CL_Obj body = cl_cdr(cl_cdr(cl_cdr(form)));
+    int saved_tail = c->in_tail;
+
+    c->in_tail = 0;
+
+    /* Evaluate symbols list and values list */
+    compile_expr(c, symbols_form);
+    compile_expr(c, values_form);
+
+    /* OP_PROGV_BIND: pop values, pop symbols, push dyn_mark, bind */
+    cl_emit(c, OP_PROGV_BIND);
+
+    /* Compile body — dyn_mark sits below on stack */
+    compile_body(c, body);
+
+    /* OP_PROGV_UNBIND: pop result, pop dyn_mark, restore, push result */
+    cl_emit(c, OP_PROGV_UNBIND);
+
+    c->in_tail = saved_tail;
+}

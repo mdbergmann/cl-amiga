@@ -1717,6 +1717,7 @@ void cl_builtins_sequence_init(void)
     defun("REMOVE-IF", bi_remove_if, 2, -1);
     defun("REMOVE-IF-NOT", bi_remove_if_not, 2, -1);
     defun("REMOVE-DUPLICATES", bi_remove_duplicates, 1, -1);
+    defun("DELETE-DUPLICATES", bi_remove_duplicates, 1, -1);
 
     /* Substitute family */
     defun("SUBSTITUTE", bi_substitute, 3, -1);

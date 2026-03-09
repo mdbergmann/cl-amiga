@@ -3074,6 +3074,35 @@
 (check "define-setf-expander" 'my-place
   (define-setf-expander my-place (x) (declare (ignore x)) nil))
 
+; --- PROGV ---
+(defvar *progv-x* 10)
+(check "progv basic" 99 (progv '(*progv-x*) '(99) *progv-x*))
+(check "progv restored" 10 *progv-x*)
+
+(defvar *progv-a* 1)
+(defvar *progv-b* 2)
+(check "progv multiple" 30 (progv '(*progv-a* *progv-b*) '(10 20) (+ *progv-a* *progv-b*)))
+(check "progv multiple restored a" 1 *progv-a*)
+(check "progv multiple restored b" 2 *progv-b*)
+
+(check "progv empty symbols" 3 (progv '() '() (+ 1 2)))
+
+(check "progv extra values" 77
+  (progv '(*progv-a*) '(77 88 99) *progv-a*))
+
+(check "progv fewer values unbound" nil
+  (progv '(*progv-a*) '() (boundp '*progv-a*)))
+(check "progv fewer values restored" 1 *progv-a*)
+
+(check "progv restore on throw" 42
+  (catch 'done (progv '(*progv-x*) '(999) (throw 'done 42))))
+(check "progv restored after throw" 10 *progv-x*)
+
+(check "progv nested" 2
+  (progv '(*progv-x*) '(1)
+    (progv '(*progv-x*) '(2) *progv-x*)))
+(check "progv nested restored" 10 *progv-x*)
+
 ; --- Summary ---
 (format t "~%=== Results ===~%")
 (format t "Passed: ~A~%" *pass-count*)

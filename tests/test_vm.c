@@ -5941,6 +5941,73 @@ TEST(eval_let_star_shadow_no_closure)
 
 /* --- Heap exhaustion / storage error tests --- */
 
+/* --- PROGV tests --- */
+
+TEST(eval_progv_basic)
+{
+    /* Simple dynamic binding */
+    eval_print("(defvar *pv-x* 10)");
+    ASSERT_EQ_INT(eval_int("(progv '(*pv-x*) '(99) *pv-x*)"), 99);
+    /* Restored after progv */
+    ASSERT_EQ_INT(eval_int("*pv-x*"), 10);
+}
+
+TEST(eval_progv_multiple)
+{
+    /* Multiple bindings */
+    eval_print("(defvar *pv-a* 1)");
+    eval_print("(defvar *pv-b* 2)");
+    ASSERT_EQ_INT(eval_int("(progv '(*pv-a* *pv-b*) '(10 20) (+ *pv-a* *pv-b*))"), 30);
+    ASSERT_EQ_INT(eval_int("*pv-a*"), 1);
+    ASSERT_EQ_INT(eval_int("*pv-b*"), 2);
+}
+
+TEST(eval_progv_fewer_values)
+{
+    /* Fewer values than symbols — extras become unbound */
+    eval_print("(defvar *pv-c* 5)");
+    ASSERT_EQ_INT(eval_int(
+        "(progv '(*pv-c*) '(42) *pv-c*)"), 42);
+    /* With no values at all */
+    ASSERT_STR_EQ(eval_print(
+        "(progv '(*pv-c*) '() (boundp '*pv-c*))"), "NIL");
+    /* Restored after */
+    ASSERT_EQ_INT(eval_int("*pv-c*"), 5);
+}
+
+TEST(eval_progv_extra_values)
+{
+    /* More values than symbols — extra values ignored */
+    eval_print("(defvar *pv-d* 0)");
+    ASSERT_EQ_INT(eval_int("(progv '(*pv-d*) '(77 88 99) *pv-d*)"), 77);
+    ASSERT_EQ_INT(eval_int("*pv-d*"), 0);
+}
+
+TEST(eval_progv_empty_symbols)
+{
+    /* Empty symbol list — body executes normally */
+    ASSERT_EQ_INT(eval_int("(progv '() '() (+ 1 2))"), 3);
+}
+
+TEST(eval_progv_restore_on_throw)
+{
+    /* Bindings restored on non-local exit */
+    eval_print("(defvar *pv-e* 100)");
+    ASSERT_EQ_INT(eval_int(
+        "(catch 'done (progv '(*pv-e*) '(999) (throw 'done 42)))"), 42);
+    ASSERT_EQ_INT(eval_int("*pv-e*"), 100);
+}
+
+TEST(eval_progv_nested)
+{
+    /* Nested progv */
+    eval_print("(defvar *pv-f* 0)");
+    ASSERT_EQ_INT(eval_int(
+        "(progv '(*pv-f*) '(1) "
+        "  (progv '(*pv-f*) '(2) *pv-f*))"), 2);
+    ASSERT_EQ_INT(eval_int("*pv-f*"), 0);
+}
+
 TEST(eval_heap_exhaustion_error)
 {
     /* Accumulating live data until heap is full should signal CL_ERR_STORAGE
@@ -6692,6 +6759,15 @@ int main(void)
     RUN(eval_let_star_shadow_closure_mutation);
     RUN(eval_let_star_shadow_initform_ref);
     RUN(eval_let_star_shadow_no_closure);
+
+    /* PROGV */
+    RUN(eval_progv_basic);
+    RUN(eval_progv_multiple);
+    RUN(eval_progv_fewer_values);
+    RUN(eval_progv_extra_values);
+    RUN(eval_progv_empty_symbols);
+    RUN(eval_progv_restore_on_throw);
+    RUN(eval_progv_nested);
 
     /* heap exhaustion / storage errors */
     RUN(eval_heap_exhaustion_error);

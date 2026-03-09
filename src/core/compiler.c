@@ -228,9 +228,18 @@ static void parse_lambda_list(CL_Obj params, CL_ParsedLambdaList *ll)
             break;
         case 3:
             if (CL_CONS_P(item)) {
-                ll->key_names[ll->n_keys] = cl_car(item);
+                CL_Obj name_part = cl_car(item);
+                if (CL_CONS_P(name_part)) {
+                    /* ((:keyword var) default svar) — explicit keyword name */
+                    ll->key_keywords[ll->n_keys] = cl_car(name_part);
+                    ll->key_names[ll->n_keys] = cl_car(cl_cdr(name_part));
+                } else {
+                    /* (name default svar) — keyword inferred from name */
+                    ll->key_names[ll->n_keys] = name_part;
+                    ll->key_keywords[ll->n_keys] = CL_NIL; /* set below if not set */
+                }
                 ll->key_defaults[ll->n_keys] = cl_car(cl_cdr(item));
-                /* Third element is supplied-p variable: (name default svar) */
+                /* Third element is supplied-p variable: (...  default svar) */
                 {
                     CL_Obj cddr = cl_cdr(cl_cdr(item));
                     ll->key_suppliedp[ll->n_keys] = CL_NULL_P(cddr) ? CL_NIL : cl_car(cddr);
@@ -239,8 +248,10 @@ static void parse_lambda_list(CL_Obj params, CL_ParsedLambdaList *ll)
                 ll->key_names[ll->n_keys] = item;
                 ll->key_defaults[ll->n_keys] = CL_NIL;
                 ll->key_suppliedp[ll->n_keys] = CL_NIL;
+                ll->key_keywords[ll->n_keys] = CL_NIL;
             }
-            {
+            /* Infer keyword from variable name if not explicitly set */
+            if (ll->key_keywords[ll->n_keys] == CL_NIL) {
                 const char *name_str = cl_symbol_name(ll->key_names[ll->n_keys]);
                 ll->key_keywords[ll->n_keys] = cl_intern_keyword(
                     name_str, (uint32_t)strlen(name_str));
@@ -1701,6 +1712,7 @@ void compile_expr(CL_Compiler *c, CL_Obj expr)
         if (head == SYM_GO)          { compile_go(c, expr); return; }
         if (head == SYM_CATCH)       { compile_catch(c, expr); return; }
         if (head == SYM_UNWIND_PROTECT) { compile_unwind_protect(c, expr); return; }
+        if (head == SYM_PROGV) { compile_progv(c, expr); return; }
         if (head == SYM_DESTRUCTURING_BIND) { compile_destructuring_bind(c, expr); return; }
         if (head == SYM_HANDLER_BIND) { compile_handler_bind(c, expr); return; }
         if (head == SYM_RESTART_CASE) { compile_restart_case(c, expr); return; }

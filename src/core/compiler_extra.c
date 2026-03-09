@@ -563,7 +563,7 @@ void compile_case(CL_Compiler *c, CL_Obj form, int error_if_no_match)
     if (!had_default) {
         if (error_if_no_match) {
             /* ecase: signal error */
-            CL_Obj sym_error = cl_intern("ERROR", 5);
+            CL_Obj sym_error = cl_intern_in("ERROR", 5, cl_package_cl);
             CL_Obj errmsg = cl_make_string("ECASE: no matching clause", 25);
             int idx = cl_add_constant(c, sym_error);
             cl_emit(c, OP_FLOAD);
@@ -617,8 +617,9 @@ void compile_typecase(CL_Compiler *c, CL_Obj form, int error_if_no_match)
     cl_emit(c, (uint8_t)temp_slot);
     cl_emit(c, OP_POP);
 
-    /* Pre-load TYPEP symbol index */
-    sym_typep = cl_intern("TYPEP", 5);
+    /* Pre-load TYPEP symbol index — must use CL package explicitly,
+     * not cl_current_package (which may be KEYWORD during #+#. eval) */
+    sym_typep = cl_intern_in("TYPEP", 5, cl_package_cl);
     typep_idx = cl_add_constant(c, sym_typep);
 
     /* Process clauses */
@@ -665,7 +666,7 @@ void compile_typecase(CL_Compiler *c, CL_Obj form, int error_if_no_match)
     /* No default */
     if (!had_default) {
         if (error_if_no_match) {
-            CL_Obj sym_error = cl_intern("ERROR", 5);
+            CL_Obj sym_error = cl_intern_in("ERROR", 5, cl_package_cl);
             CL_Obj errmsg = cl_make_string(
                 "ETYPECASE: ~S fell through without matching any clause", 54);
             int idx = cl_add_constant(c, sym_error);

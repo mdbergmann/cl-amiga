@@ -1397,6 +1397,52 @@ CL_Obj cl_vm_eval(CL_Obj bytecode_obj)
             break;
         }
 
+        case OP_PROGV_BIND: {
+            /* Pop values-list, pop symbols-list, push dyn_mark, bind all */
+            CL_Obj values_list = cl_vm_pop();
+            CL_Obj symbols_list = cl_vm_pop();
+            int mark = cl_dyn_top;
+
+            /* Push saved dyn_mark as fixnum */
+            cl_vm_push(CL_MAKE_FIXNUM(mark));
+
+            /* Iterate symbols, pair with values */
+            while (!CL_NULL_P(symbols_list)) {
+                CL_Obj sym_obj = cl_car(symbols_list);
+                CL_Obj val;
+                CL_Symbol *s;
+
+                if (!CL_SYMBOL_P(sym_obj))
+                    cl_error(CL_ERR_TYPE, "PROGV: expected symbol, got non-symbol");
+
+                val = !CL_NULL_P(values_list) ? cl_car(values_list) : CL_UNBOUND;
+
+                if (cl_dyn_top >= CL_MAX_DYN_BINDINGS)
+                    cl_error(CL_ERR_OVERFLOW, "Dynamic binding stack overflow");
+
+                s = (CL_Symbol *)CL_OBJ_TO_PTR(sym_obj);
+                cl_dyn_stack[cl_dyn_top].symbol = sym_obj;
+                cl_dyn_stack[cl_dyn_top].old_value = s->value;
+                cl_dyn_top++;
+                s->value = val;
+
+                symbols_list = cl_cdr(symbols_list);
+                if (!CL_NULL_P(values_list))
+                    values_list = cl_cdr(values_list);
+            }
+            break;
+        }
+
+        case OP_PROGV_UNBIND: {
+            /* Pop body result, pop dyn_mark, restore bindings, push result */
+            CL_Obj result = cl_vm_pop();
+            CL_Obj mark_obj = cl_vm_pop();
+            int mark = CL_FIXNUM_VAL(mark_obj);
+            cl_dynbind_restore_to(mark);
+            cl_vm_push(result);
+            break;
+        }
+
         case OP_ARGC: {
             cl_vm_push(CL_MAKE_FIXNUM(frame->nargs));
             cl_mv_count = 1;
