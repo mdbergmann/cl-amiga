@@ -3176,7 +3176,7 @@ given DEFAULTS-PATHNAME as a base pathname."
     "Given a PATHNAME, return a pathname that has representations of its HOST and DEVICE components
 added to its DIRECTORY component. This is useful for output translations."
     (os-cond
-     ((os-unix-p)
+     ((or (os-unix-p) (os-amigaos-p))
       (when (physical-pathname-p pathname)
         (return-from directorize-pathname-host-device pathname))))
     (let* ((root (pathname-root pathname))
@@ -3287,7 +3287,7 @@ you need to still be able to use compile-op on that lisp file."))
         #+sbcl (sb-ext:native-namestring p)
         #-(or clozure cmucl sbcl scl)
         (os-cond
-         ((os-unix-p) (unix-namestring p))
+         ((or (os-unix-p) (os-amigaos-p)) (unix-namestring p))
          (t (namestring p))))))
 
   (defun parse-native-namestring (string &rest constraints &key ensure-directory &allow-other-keys)
@@ -3303,7 +3303,7 @@ a CL pathname satisfying all the specified constraints as per ENSURE-PATHNAME"
                  #+scl (lisp::parse-unix-namestring string)
                  #-(or clozure cmucl sbcl scl)
                  (os-cond
-                  ((os-unix-p) (parse-unix-namestring string :ensure-directory ensure-directory))
+                  ((or (os-unix-p) (os-amigaos-p)) (parse-unix-namestring string :ensure-directory ensure-directory))
                   (t (parse-namestring string))))))
            (pathname
              (if ensure-directory
@@ -3762,7 +3762,7 @@ Note that this operation is usually NOT thread-safe."
 (with-upgradability ()
   (defun inter-directory-separator ()
     "What character does the current OS conventionally uses to separate directories?"
-    (os-cond ((os-unix-p) #\:) (t #\;)))
+    (os-cond ((or (os-unix-p) (os-amigaos-p)) #\:) (t #\;)))
 
   (defun split-native-pathnames-string (string &rest constraints &key &allow-other-keys)
     "Given a string of pathnames specified in native OS syntax, separate them in a list,
@@ -4225,6 +4225,7 @@ and return that"
 and always returns EOF when read from"
     (os-cond
       ((os-unix-p) #p"/dev/null")
+      ((os-amigaos-p) #p"NIL:") ;; AmigaOS null device
       ((os-windows-p) #p"NUL") ;; Q: how many Lisps accept the #p"NUL:" syntax?
       (t (error "No /dev/null on your OS"))))
   (defun call-with-null-input (fun &key element-type external-format if-does-not-exist)

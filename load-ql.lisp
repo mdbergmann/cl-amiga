@@ -2,11 +2,10 @@
 (format t "~%ASDF loaded.~%")
 (load "quicklisp.lisp")
 (format t "~%Quicklisp loaded, attempting install...~%")
-;; Override *home* directly — the (:path *home*) keyword default bug
-;; causes *home* to be NIL inside install when not passed explicitly
+;; Set install path explicitly
 (setf quicklisp-quickstart::*home*
       (if (member :amigaos *features*)
-          (pathname "S:quicklisp/")
+          (pathname "quicklisp/")   ;; relative to current dir (CLAmiga:)
           (merge-pathnames (make-pathname :directory '(:relative "quicklisp"))
                            (user-homedir-pathname))))
 (handler-case

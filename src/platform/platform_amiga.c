@@ -313,13 +313,27 @@ uint32_t platform_file_mtime(const char *path)
 int platform_mkdir(const char *path)
 {
     BPTR lock;
+    char clean[256];
+    int len;
+
+    /* Strip trailing slash — AmigaOS CreateDir fails with trailing '/' */
+    len = strlen(path);
+    if (len > 0 && len < (int)sizeof(clean)) {
+        memcpy(clean, path, (size_t)len + 1);
+        if (len > 1 && clean[len - 1] == '/')
+            clean[len - 1] = '\0';
+    } else {
+        /* Path too long or empty */
+        return -1;
+    }
+
     /* Check if it already exists */
-    lock = Lock((STRPTR)path, ACCESS_READ);
+    lock = Lock((STRPTR)clean, ACCESS_READ);
     if (lock) {
         UnLock(lock);
         return 0; /* Already exists */
     }
-    lock = CreateDir((STRPTR)path);
+    lock = CreateDir((STRPTR)clean);
     if (lock) {
         UnLock(lock);
         return 0;

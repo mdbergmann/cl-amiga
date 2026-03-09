@@ -1,3 +1,4 @@
-; Load ASDF then quicklisp installer
+; Run CL-Amiga test suite
 cd CLAmiga:
-build/amiga/clamiga --heap 24M --batch <load-ql.lisp >build/amiga/ql-results.log
+stack 400000
+build/amiga/clamiga --batch <tests/amiga/run-tests.lisp >build/amiga/test-results.log
