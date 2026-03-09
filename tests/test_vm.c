@@ -3520,6 +3520,22 @@ TEST(eval_macrolet_with_body)
         "  (double 7))"), "14");
 }
 
+TEST(eval_macrolet_across_lambda)
+{
+    /* macrolet must be lexically visible inside nested lambdas (CL spec) */
+    ASSERT_EQ_INT(eval_int(
+        "(macrolet ((foo () '42))"
+        "  (funcall (lambda () (foo))))"), 42);
+    /* macrolet visible across multiple lambda levels */
+    ASSERT_EQ_INT(eval_int(
+        "(macrolet ((add10 (x) `(+ ,x 10)))"
+        "  (funcall (lambda () (funcall (lambda () (add10 5))))))"), 15);
+    /* macrolet with quasiquote unquote-splicing inside lambda */
+    ASSERT_STR_EQ(eval_print(
+        "(macrolet ((&body () '(list 1 2 3)))"
+        "  (funcall (lambda () `(progn ,@(&body)))))"), "(PROGN 1 2 3)");
+}
+
 /* --- Symbol-macrolet --- */
 
 TEST(eval_symbol_macrolet_basic)
@@ -3568,6 +3584,17 @@ TEST(eval_symbol_macrolet_multiple)
     ASSERT_EQ_INT(eval_int(
         "(symbol-macrolet ((x 10) (y 20))"
         "  (+ x y))"), 30);
+}
+
+TEST(eval_symbol_macrolet_across_lambda)
+{
+    /* symbol-macrolet must be lexically visible inside nested lambdas */
+    ASSERT_EQ_INT(eval_int(
+        "(symbol-macrolet ((x 42))"
+        "  (funcall (lambda () x)))"), 42);
+    ASSERT_EQ_INT(eval_int(
+        "(symbol-macrolet ((x 10) (y 20))"
+        "  (funcall (lambda () (+ x y))))"), 30);
 }
 
 /* --- Phase 8 Step 2: Missing string operations --- */
@@ -6440,12 +6467,14 @@ int main(void)
     RUN(eval_macrolet_scope);
     RUN(eval_macrolet_nested);
     RUN(eval_macrolet_with_body);
+    RUN(eval_macrolet_across_lambda);
     RUN(eval_symbol_macrolet_basic);
     RUN(eval_symbol_macrolet_expr);
     RUN(eval_symbol_macrolet_setq);
     RUN(eval_symbol_macrolet_scope);
     RUN(eval_symbol_macrolet_nested);
     RUN(eval_symbol_macrolet_multiple);
+    RUN(eval_symbol_macrolet_across_lambda);
 
     /* Phase 8 Step 2 — Missing string operations */
     RUN(eval_string_capitalize);

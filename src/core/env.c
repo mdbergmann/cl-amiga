@@ -13,8 +13,26 @@ CL_CompEnv *cl_env_create(CL_CompEnv *parent)
     memset(env->boxed, 0, sizeof(env->boxed));
     env->upvalue_count = 0;
     env->local_fun_count = 0;
-    env->local_macro_count = 0;
-    env->symbol_macro_count = 0;
+
+    /* Inherit macrolet and symbol-macrolet bindings from parent scope.
+     * Per CL spec, these are lexically scoped and visible in nested lambdas. */
+    if (parent) {
+        int i, n;
+        n = parent->local_macro_count;
+        if (n > CL_MAX_LOCAL_MACROS) n = CL_MAX_LOCAL_MACROS;
+        for (i = 0; i < n; i++)
+            env->local_macros[i] = parent->local_macros[i];
+        env->local_macro_count = n;
+
+        n = parent->symbol_macro_count;
+        if (n > CL_MAX_SYMBOL_MACROS) n = CL_MAX_SYMBOL_MACROS;
+        for (i = 0; i < n; i++)
+            env->symbol_macros[i] = parent->symbol_macros[i];
+        env->symbol_macro_count = n;
+    } else {
+        env->local_macro_count = 0;
+        env->symbol_macro_count = 0;
+    }
     return env;
 }
 

@@ -3106,6 +3106,17 @@
     (progv '(*progv-x*) '(2) *progv-x*)))
 (check "progv nested restored" 10 *progv-x*)
 
+; --- Macrolet/symbol-macrolet across lambda ---
+(check "macrolet across lambda" 42
+  (macrolet ((foo () '42))
+    (funcall (lambda () (foo)))))
+(check "symbol-macrolet across lambda" 42
+  (symbol-macrolet ((x 42))
+    (funcall (lambda () x))))
+(check "macrolet across nested lambda" 15
+  (macrolet ((add10 (x) `(+ ,x 10)))
+    (funcall (lambda () (funcall (lambda () (add10 5)))))))
+
 ; --- Summary ---
 (format t "~%=== Results ===~%")
 (format t "Passed: ~A~%" *pass-count*)
