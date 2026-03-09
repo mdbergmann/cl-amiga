@@ -55,6 +55,7 @@ The default heap is **4 MB**. Larger workloads need more:
 | REPL / small programs           | 4M (default)     | `stack 65000`     |
 | Loading ASDF                    | `--heap 8M`      | `stack 65000`     |
 | Quicklisp + quickload libraries | `--heap 24M`     | `stack 400000`    |
+| Fiveam (load + self-tests)      | `--heap 24M`     | `stack 600000`    |
 
 On AmigaOS, set the process stack before launching (the default 4 KB is too small):
 

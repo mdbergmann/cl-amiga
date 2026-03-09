@@ -12,6 +12,7 @@
 #include <unistd.h>
 #include <errno.h>
 #include <glob.h>
+#include <limits.h>
 
 void *platform_alloc(unsigned long size)
 {
@@ -301,6 +302,15 @@ char **platform_directory(const char *pattern, int *count_out)
     *count_out = (int)g.gl_pathc;
     globfree(&g);
     return result;
+}
+
+const char *platform_realpath(const char *path, char *buf, int bufsize)
+{
+    char resolved[PATH_MAX];
+    if (!realpath(path, resolved)) return NULL;
+    strncpy(buf, resolved, (size_t)bufsize - 1);
+    buf[bufsize - 1] = '\0';
+    return buf;
 }
 
 /* --- TCP Socket I/O --- */

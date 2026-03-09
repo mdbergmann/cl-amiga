@@ -367,12 +367,80 @@ int platform_system(const char *command)
     return (int)rc;
 }
 
+/* Convert Unix glob pattern to AmigaDOS pattern.
+   '*' -> '#?', rest passed through. */
+static void unix_to_amiga_pattern(const char *src, char *dst, int dstsize)
+{
+    int si = 0, di = 0;
+    while (src[si] && di < dstsize - 3) {
+        if (src[si] == '*') {
+            dst[di++] = '#';
+            dst[di++] = '?';
+            si++;
+        } else {
+            dst[di++] = src[si++];
+        }
+    }
+    dst[di] = '\0';
+}
+
 char **platform_directory(const char *pattern, int *count_out)
 {
-    /* TODO: implement AmigaOS directory listing with MatchFirst/MatchNext */
-    CL_UNUSED(pattern);
+    struct AnchorPath *ap;
+    char amiga_pat[512];
+    char **result = NULL;
+    int count = 0;
+    int capacity = 16;
+    LONG rc;
+
     *count_out = 0;
-    return NULL;
+
+    unix_to_amiga_pattern(pattern, amiga_pat, (int)sizeof(amiga_pat));
+
+    /* AnchorPath must be longword-aligned and zeroed */
+    ap = (struct AnchorPath *)AllocVec(sizeof(struct AnchorPath) + 256,
+                                       MEMF_CLEAR);
+    if (!ap) return NULL;
+    ap->ap_Strlen = 256; /* space for full path */
+
+    result = (char **)malloc((size_t)(capacity + 1) * sizeof(char *));
+    if (!result) { FreeVec(ap); return NULL; }
+
+    rc = MatchFirst((STRPTR)amiga_pat, ap);
+    while (rc == 0) {
+        /* Skip directories — we want files matching the pattern */
+        if (!(ap->ap_Info.fib_DirEntryType > 0)) {
+            if (count >= capacity) {
+                capacity *= 2;
+                result = (char **)realloc(result,
+                             (size_t)(capacity + 1) * sizeof(char *));
+                if (!result) break;
+            }
+            result[count] = strdup((char *)ap->ap_Buf);
+            count++;
+        }
+        rc = MatchNext(ap);
+    }
+    MatchEnd(ap);
+    FreeVec(ap);
+
+    if (result) {
+        result[count] = NULL;
+        *count_out = count;
+    }
+    return result;
+}
+
+const char *platform_realpath(const char *path, char *buf, int bufsize)
+{
+    BPTR lock = Lock((STRPTR)path, ACCESS_READ);
+    if (!lock) return NULL;
+    if (!NameFromLock(lock, (STRPTR)buf, (LONG)bufsize)) {
+        UnLock(lock);
+        return NULL;
+    }
+    UnLock(lock);
+    return buf;
 }
 
 /* --- TCP Socket I/O via bsdsocket.library (AmiTCP/Roadshow/Miami) --- */

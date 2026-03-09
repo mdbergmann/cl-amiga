@@ -1,4 +1,4 @@
-; Run CL-Amiga test suite
+; Load and test fiveam on Amiga
 cd CLAmiga:
-stack 400000
-build/amiga/clamiga --batch <tests/amiga/run-tests.lisp >build/amiga/test-results.log
+stack 600000
+build/amiga/clamiga --heap 24M --batch --load load-and-test-5am.lisp >build/amiga/test-results.log

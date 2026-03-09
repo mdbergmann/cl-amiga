@@ -302,7 +302,17 @@ static CL_Obj bi_load(CL_Obj *args, int n)
         load_pathname_obj = cl_parse_namestring(path_str->data,
                                                 (uint32_t)strlen(path_str->data));
     }
-    load_truename_obj = load_pathname_obj; /* truename = pathname for now */
+    /* Resolve truename to absolute path */
+    {
+        char resolved[512];
+        if (platform_realpath(path_str->data, resolved, (int)sizeof(resolved))) {
+            extern CL_Obj cl_parse_namestring(const char *str, uint32_t len);
+            load_truename_obj = cl_parse_namestring(resolved,
+                                                    (uint32_t)strlen(resolved));
+        } else {
+            load_truename_obj = load_pathname_obj;
+        }
+    }
     CL_GC_PROTECT(load_pathname_obj);
     CL_GC_PROTECT(load_truename_obj);
     lp_sym = (CL_Symbol *)CL_OBJ_TO_PTR(SYM_STAR_LOAD_PATHNAME);

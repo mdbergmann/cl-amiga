@@ -251,9 +251,13 @@ static CL_Obj read_radix_number(int radix)
             }
         }
         if (!overflow) {
-            long sv = neg ? -(long)val : (long)val;
-            if (sv >= CL_FIXNUM_MIN && sv <= CL_FIXNUM_MAX)
-                return CL_MAKE_FIXNUM((int32_t)sv);
+            /* Guard against unsigned→signed overflow on 32-bit:
+               if val > LONG_MAX, (long)val wraps to negative.
+               Check against fixnum range using unsigned comparisons. */
+            if (!neg && val <= (unsigned long)CL_FIXNUM_MAX)
+                return CL_MAKE_FIXNUM((int32_t)val);
+            if (neg && val <= ((unsigned long)CL_FIXNUM_MAX + 1u))
+                return CL_MAKE_FIXNUM(-(int32_t)val);
         }
     }
 

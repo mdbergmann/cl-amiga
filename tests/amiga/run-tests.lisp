@@ -3171,6 +3171,31 @@
   (macrolet ((add10 (x) `(+ ,x 10)))
     (funcall (lambda () (funcall (lambda () (add10 5)))))))
 
+; --- Bignum logand/logxor masking (CDB hash pattern) ---
+(check "logand mask 32bit 1" 2087597948 (logand #xFFFFFFFF 6382565244))
+(check "logand mask 32bit 2" 1356358965 (logand #xFFFFFFFF 6950613443893))
+(check "logand mask 32bit 3" 0 (logand #xFFFFFFFF 4294967296))
+(check "logand mask 32bit 4" 4294967295 (logand #xFFFFFFFF 4294967295))
+(check "logand mask 32bit 5" 4294967295 (logand #xFFFFFFFF 8589934591))
+(check "logand bignum+bignum 1" 4294967295 (logand #xFFFFFFFF #xFFFFFFFF))
+(check "logand bignum+bignum 2" 4294967295 (logand #x1FFFFFFFF #xFFFFFFFF))
+(check "logxor bignum 1" 2087597849 (logxor 2087597948 101))
+(check "logxor bignum 2" 4294967295 (logxor #xFFFFFFFF 0))
+(check "logxor bignum 3" 0 (logxor #xFFFFFFFF #xFFFFFFFF))
+(check "ash bignum left" 6189154176 (ash 193411068 5))
+(check "logand+ash" 1894186880 (logand #xFFFFFFFF (ash 193411068 5)))
+(check "cdb hash fiveam" 1356358965
+  (let ((h 5381))
+    (dolist (c '(102 105 118 101 97 109) h)
+      (setf h (logand #xFFFFFFFF (+ h (ash h 5))))
+      (setf h (logxor h c)))))
+(check "cdb hash step f" 177603 (logxor (logand #xFFFFFFFF (+ 5381 (ash 5381 5))) 102))
+(check "cdb hash step i" 5860938 (logxor (logand #xFFFFFFFF (+ 177603 (ash 177603 5))) 105))
+(check "cdb hash step v" 193411068 (logxor (logand #xFFFFFFFF (+ 5860938 (ash 5860938 5))) 118))
+(check "cdb hash add e" 6382565244 (+ 193411068 (ash 193411068 5)))
+(check "cdb hash mask e" 2087597948 (logand #xFFFFFFFF 6382565244))
+(check "cdb hash xor e" 2087597849 (logxor 2087597948 101))
+
 ; --- Summary ---
 (format t "~%=== Results ===~%")
 (format t "Passed: ~A~%" *pass-count*)

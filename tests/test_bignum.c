@@ -692,6 +692,68 @@ TEST(c_arith_compare)
 }
 
 /* ================================================================
+ * Bignum logand masking to 32 bits (CDB hash pattern)
+ * ================================================================ */
+
+TEST(logand_mask_32bit)
+{
+    /* logand with #xFFFFFFFF should truncate to 32 bits */
+    ASSERT_STR_EQ(eval_print("(logand #xFFFFFFFF 6382565244)"), "2087597948");
+    ASSERT_STR_EQ(eval_print("(logand #xFFFFFFFF 6950613443893)"), "1356358965");
+    ASSERT_STR_EQ(eval_print("(logand #xFFFFFFFF 4294967296)"), "0");
+    ASSERT_STR_EQ(eval_print("(logand #xFFFFFFFF 4294967295)"), "4294967295");
+    ASSERT_STR_EQ(eval_print("(logand #xFFFFFFFF 8589934591)"), "4294967295");
+}
+
+TEST(logand_bignum_with_bignum)
+{
+    /* Both args bignums */
+    ASSERT_STR_EQ(eval_print("(logand #xFFFFFFFF #xFFFFFFFF)"), "4294967295");
+    ASSERT_STR_EQ(eval_print("(logand #x1FFFFFFFF #xFFFFFFFF)"), "4294967295");
+    ASSERT_STR_EQ(eval_print("(logand #xFFFF0000FFFF #x0000FFFFFFFF)"), "65535");
+}
+
+TEST(logxor_bignum)
+{
+    ASSERT_STR_EQ(eval_print("(logxor 2087597948 101)"), "2087597849");
+    ASSERT_STR_EQ(eval_print("(logxor #xFFFFFFFF 0)"), "4294967295");
+    ASSERT_STR_EQ(eval_print("(logxor #xFFFFFFFF #xFFFFFFFF)"), "0");
+}
+
+TEST(ash_bignum_left)
+{
+    /* Shift that produces bignum, then mask */
+    ASSERT_STR_EQ(eval_print("(ash 193411068 5)"), "6189154176");
+    ASSERT_STR_EQ(eval_print("(logand #xFFFFFFFF (ash 193411068 5))"), "1894186880");
+}
+
+TEST(cdb_hash_fiveam)
+{
+    /* Full CDB hash of "fiveam" — the exact pattern that fails */
+    ASSERT_STR_EQ(eval_print(
+        "(let ((h 5381))"
+        "  (dolist (c '(102 105 118 101 97 109) h)"
+        "    (setf h (logand #xFFFFFFFF (+ h (ash h 5))))"
+        "    (setf h (logxor h c))))"),
+        "1356358965");
+}
+
+TEST(cdb_hash_intermediate_steps)
+{
+    /* Step-by-step CDB hash to find where it diverges */
+    /* After 'f' (102): (logand #xFFFFFFFF (+ 5381 (ash 5381 5))) = 177573, xor 102 = 177603 */
+    ASSERT_STR_EQ(eval_print("(logxor (logand #xFFFFFFFF (+ 5381 (ash 5381 5))) 102)"), "177603");
+    /* After 'i' (105): */
+    ASSERT_STR_EQ(eval_print("(logxor (logand #xFFFFFFFF (+ 177603 (ash 177603 5))) 105)"), "5860938");
+    /* After 'v' (118): */
+    ASSERT_STR_EQ(eval_print("(logxor (logand #xFFFFFFFF (+ 5860938 (ash 5860938 5))) 118)"), "193411068");
+    /* After 'e' (101): h + ash h 5 = 193411068 + 6189154176 = 6382565244 */
+    ASSERT_STR_EQ(eval_print("(+ 193411068 (ash 193411068 5))"), "6382565244");
+    ASSERT_STR_EQ(eval_print("(logand #xFFFFFFFF 6382565244)"), "2087597948");
+    ASSERT_STR_EQ(eval_print("(logxor 2087597948 101)"), "2087597849");
+}
+
+/* ================================================================
  * main
  * ================================================================ */
 
@@ -829,6 +891,14 @@ int main(void)
     /* Multi-arg */
     RUN(multi_arg_add);
     RUN(multi_arg_mul);
+
+    /* Bignum logand masking / CDB hash pattern */
+    RUN(logand_mask_32bit);
+    RUN(logand_bignum_with_bignum);
+    RUN(logxor_bignum);
+    RUN(ash_bignum_left);
+    RUN(cdb_hash_fiveam);
+    RUN(cdb_hash_intermediate_steps);
 
     /* C-level API */
     RUN(c_bignum_from_int32);

@@ -77,6 +77,9 @@ int      platform_mkdir(const char *path);       /* Create single directory, 0=s
 /* Directory listing — returns NULL-terminated array of names (caller frees each + array) */
 char **platform_directory(const char *pattern, int *count_out);
 
+/* Resolve path to absolute — returns static buffer or NULL on error */
+const char *platform_realpath(const char *path, char *buf, int bufsize);
+
 /* Environment */
 const char *platform_getenv(const char *name, char *buf, int bufsize);
 

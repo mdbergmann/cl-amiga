@@ -41,6 +41,7 @@ static CL_Obj KW_DIRECTION = CL_NIL;
 static CL_Obj KW_INPUT = CL_NIL;
 static CL_Obj KW_OUTPUT = CL_NIL;
 static CL_Obj KW_IO = CL_NIL;
+static CL_Obj KW_PROBE = CL_NIL;
 static CL_Obj KW_IF_EXISTS = CL_NIL;
 static CL_Obj KW_IF_DOES_NOT_EXIST = CL_NIL;
 static CL_Obj KW_SUPERSEDE = CL_NIL;
@@ -539,6 +540,27 @@ static CL_Obj bi_open(CL_Obj *args, int n)
         if_dne    = (if_dne_val != CL_UNBOUND)    ? if_dne_val    : KW_CREATE;
         stream_dir = CL_STREAM_IO;
         platform_mode = PLATFORM_FILE_APPEND; /* read+write, no truncate */
+    } else if (direction == KW_PROBE) {
+        /* :probe — check existence, optionally create, return NIL */
+        if_dne = (if_dne_val != CL_UNBOUND) ? if_dne_val : CL_NIL;
+        if (if_dne == KW_CREATE) {
+            /* Create the file if it doesn't exist */
+            PlatformFile test = platform_file_open(path_str->data, PLATFORM_FILE_READ);
+            if (test != PLATFORM_FILE_INVALID) {
+                platform_file_close(test);
+            } else {
+                test = platform_file_open(path_str->data, PLATFORM_FILE_WRITE);
+                if (test != PLATFORM_FILE_INVALID)
+                    platform_file_close(test);
+            }
+        } else if (if_dne == KW_ERROR_KW) {
+            PlatformFile test = platform_file_open(path_str->data, PLATFORM_FILE_READ);
+            if (test == PLATFORM_FILE_INVALID)
+                cl_error(CL_ERR_GENERAL, "OPEN: file does not exist \"%s\"",
+                         path_str->data);
+            platform_file_close(test);
+        }
+        return CL_NIL;
     } else {
         cl_error(CL_ERR_GENERAL, "OPEN: invalid :direction");
         return CL_NIL;
@@ -982,6 +1004,7 @@ void cl_builtins_stream_init(void)
     KW_INPUT   = cl_intern_keyword("INPUT", 5);
     KW_OUTPUT  = cl_intern_keyword("OUTPUT", 6);
     KW_IO      = cl_intern_keyword("IO", 2);
+    KW_PROBE   = cl_intern_keyword("PROBE", 5);
     KW_IF_EXISTS = cl_intern_keyword("IF-EXISTS", 9);
     KW_IF_DOES_NOT_EXIST = cl_intern_keyword("IF-DOES-NOT-EXIST", 17);
     KW_SUPERSEDE = cl_intern_keyword("SUPERSEDE", 9);

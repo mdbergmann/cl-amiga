@@ -23,7 +23,7 @@ static void print_usage(void)
         "Usage: clamiga [options]\n"
         "Options:\n"
         "  --heap <size>    Heap arena size (default: 4M)\n"
-        "  --stack <size>   VM value stack size (default: 64K)\n"
+        "  --vm-stack <size>   VM value stack size (default: 64K)\n"
         "  --frames <n>     Max call frame depth (default: 256)\n"
         "  --batch          Batch mode (no prompts, read from stdin)\n"
         "  --load <file>    Load Lisp file before REPL (multiple allowed)\n"
@@ -159,9 +159,9 @@ int main(int argc, char *argv[])
                 print_usage();
                 exit(1);
             }
-        } else if (strcmp(argv[i], "--stack") == 0) {
+        } else if (strcmp(argv[i], "--vm-stack") == 0) {
             if (i + 1 >= argc) {
-                fprintf(stderr, "Error: --stack requires a size argument\n");
+                fprintf(stderr, "Error: --vm-stack requires a size argument\n");
                 print_usage();
                 exit(1);
             }
