@@ -14,7 +14,7 @@
  * Slots 2-3: available for copy-readtable
  */
 
-#define CL_RT_POOL_SIZE  4
+#define CL_RT_POOL_SIZE  16
 #define CL_RT_CHARS      128
 
 /* Character syntax types */
@@ -48,6 +48,9 @@ int cl_readtable_copy(int from, int to);
 
 /* Free a readtable slot (not 0 or 1) */
 void cl_readtable_free(int idx);
+
+/* Reclaim readtable slots not referenced by *readtable* or dynamic stack */
+void cl_readtable_reclaim(void);
 
 
 #endif /* CL_READTABLE_H */

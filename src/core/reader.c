@@ -762,6 +762,8 @@ static CL_Obj read_expr(void)
                 name[nlen] = '\0';
                 if (nlen == 1) return CL_MAKE_CHAR(name[0]);
                 /* Named characters */
+                if (strcasecmp(name, "Null") == 0) return CL_MAKE_CHAR('\0');
+                if (strcasecmp(name, "Nul") == 0) return CL_MAKE_CHAR('\0');
                 if (strcasecmp(name, "Space") == 0) return CL_MAKE_CHAR(' ');
                 if (strcasecmp(name, "Newline") == 0) return CL_MAKE_CHAR('\n');
                 if (strcasecmp(name, "Linefeed") == 0) return CL_MAKE_CHAR('\n');

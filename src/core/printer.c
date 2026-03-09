@@ -747,6 +747,7 @@ static void print_obj(CL_Obj obj)
         if (print_escape_p() || print_readably_p()) {
             out_str("#\\");
             switch (ch) {
+            case '\0': out_str("Null"); break;
             case ' ':  out_str("Space"); break;
             case '\n': out_str("Newline"); break;
             case '\t': out_str("Tab"); break;

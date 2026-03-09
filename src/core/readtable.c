@@ -1,5 +1,6 @@
 #include "readtable.h"
 #include "symbol.h"
+#include "vm.h"
 #include "mem.h"
 #include <string.h>
 
@@ -91,6 +92,16 @@ int cl_readtable_copy(int from, int to)
                 break;
             }
         }
+        if (to == -1) {
+            /* Try to reclaim unreferenced slots */
+            cl_readtable_reclaim();
+            for (i = 2; i < CL_RT_POOL_SIZE; i++) {
+                if (!(cl_readtable_alloc_mask & (1u << i))) {
+                    to = i;
+                    break;
+                }
+            }
+        }
         if (to == -1)
             return -1; /* No free slots */
     }
@@ -108,5 +119,36 @@ void cl_readtable_free(int idx)
     if (idx < 2 || idx >= CL_RT_POOL_SIZE)
         return; /* Don't free slots 0 or 1 */
     cl_readtable_alloc_mask &= ~(1u << idx);
+}
+
+/* Reclaim readtable slots not referenced by *readtable* or
+   any saved binding on the dynamic binding stack. */
+void cl_readtable_reclaim(void)
+{
+    uint32_t in_use = 0x03; /* slots 0 and 1 are always in use */
+    int i, idx;
+    CL_Symbol *rt_sym = (CL_Symbol *)CL_OBJ_TO_PTR(SYM_STAR_READTABLE);
+
+    /* Mark current *readtable* value */
+    if (CL_FIXNUM_P(rt_sym->value)) {
+        idx = CL_FIXNUM_VAL(rt_sym->value);
+        if (idx >= 0 && idx < CL_RT_POOL_SIZE)
+            in_use |= (1u << idx);
+    }
+
+    /* Mark slots referenced by saved bindings on the dynamic stack */
+    for (i = 0; i < cl_dyn_top; i++) {
+        if (cl_dyn_stack[i].symbol == SYM_STAR_READTABLE) {
+            CL_Obj val = cl_dyn_stack[i].old_value;
+            if (CL_FIXNUM_P(val)) {
+                idx = CL_FIXNUM_VAL(val);
+                if (idx >= 0 && idx < CL_RT_POOL_SIZE)
+                    in_use |= (1u << idx);
+            }
+        }
+    }
+
+    /* Free any allocated slot that's not in use */
+    cl_readtable_alloc_mask &= in_use;
 }
 

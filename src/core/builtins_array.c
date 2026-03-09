@@ -864,6 +864,25 @@ static CL_Obj bi_vector_push_extend(CL_Obj *args, int n)
     return CL_MAKE_FIXNUM((int32_t)fp);
 }
 
+/* (vector-pop vector) → element
+   Decrements fill pointer and returns the element at the new position. */
+static CL_Obj bi_vector_pop(CL_Obj *args, int n)
+{
+    CL_Vector *vec;
+    uint32_t fp;
+    CL_UNUSED(n);
+    if (!CL_VECTOR_P(args[0]))
+        cl_error(CL_ERR_TYPE, "VECTOR-POP: not a vector");
+    vec = (CL_Vector *)CL_OBJ_TO_PTR(args[0]);
+    if (vec->fill_pointer == CL_NO_FILL_POINTER)
+        cl_error(CL_ERR_TYPE, "VECTOR-POP: vector has no fill pointer");
+    fp = vec->fill_pointer;
+    if (fp == 0)
+        cl_error(CL_ERR_GENERAL, "VECTOR-POP: fill pointer is zero");
+    vec->fill_pointer = fp - 1;
+    return cl_vector_data(vec)[fp - 1];
+}
+
 /* ======================================================= */
 /* ADJUST-ARRAY                                            */
 /* ======================================================= */
@@ -1005,5 +1024,6 @@ void cl_builtins_array_init(void)
     defun("ARRAY-HAS-FILL-POINTER-P", bi_array_has_fill_pointer_p, 1, 1);
     defun("VECTOR-PUSH", bi_vector_push, 2, 2);
     defun("VECTOR-PUSH-EXTEND", bi_vector_push_extend, 2, 3);
+    defun("VECTOR-POP", bi_vector_pop, 1, 1);
     defun("ADJUST-ARRAY", bi_adjust_array, 2, -1);
 }

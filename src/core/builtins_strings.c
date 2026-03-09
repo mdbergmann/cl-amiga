@@ -781,6 +781,7 @@ static CL_Obj bi_nstring_capitalize(CL_Obj *args, int n)
 
 /* char-name table */
 static const struct { int code; const char *name; } char_names[] = {
+    {'\0', "Null"},
     {' ',  "Space"},
     {'\n', "Newline"},
     {'\t', "Tab"},
