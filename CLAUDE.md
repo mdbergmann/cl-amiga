@@ -63,6 +63,7 @@ Any C code that holds `CL_Obj` values across allocating calls **must** GC-protec
 - **Every bug fix must include a regression test** that reproduces the bug and verifies the fix
 - Host tests: `tests/test_*.c` using framework in `tests/test.h`; `make test` must pass before any commit
 - Amiga tests: `tests/amiga/run-tests.lisp` — Lisp-based test suite run on AmigaOS via FS-UAE
+- **Tests must be tight on production code** — test the exact behavior, not just the happy path; cover edge cases, boundary conditions, and error paths thoroughly
 
 ## Usability
 
