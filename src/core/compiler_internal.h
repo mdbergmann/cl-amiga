@@ -175,6 +175,7 @@ void compile_quasiquote(CL_Compiler *c, CL_Obj form);
 void compile_case(CL_Compiler *c, CL_Obj form, int error_if_no_match);
 void compile_typecase(CL_Compiler *c, CL_Obj form, int error_if_no_match);
 void compile_multiple_value_bind(CL_Compiler *c, CL_Obj form);
+void compile_multiple_value_call(CL_Compiler *c, CL_Obj form);
 void compile_multiple_value_list(CL_Compiler *c, CL_Obj form);
 void compile_nth_value(CL_Compiler *c, CL_Obj form);
 void compile_multiple_value_prog1(CL_Compiler *c, CL_Obj form);

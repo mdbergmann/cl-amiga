@@ -1696,6 +1696,7 @@ void compile_expr(CL_Compiler *c, CL_Obj expr)
         if (head == SYM_DEFSETF)     { compile_defsetf(c, expr); return; }
         if (head == SYM_DEFTYPE)     { compile_deftype(c, expr); return; }
         if (head == SYM_MULTIPLE_VALUE_BIND)  { compile_multiple_value_bind(c, expr); return; }
+        if (head == SYM_MULTIPLE_VALUE_CALL)  { compile_multiple_value_call(c, expr); return; }
         if (head == SYM_MULTIPLE_VALUE_LIST)  { compile_multiple_value_list(c, expr); return; }
         if (head == SYM_MULTIPLE_VALUE_PROG1) { compile_multiple_value_prog1(c, expr); return; }
         if (head == SYM_NTH_VALUE)            { compile_nth_value(c, expr); return; }

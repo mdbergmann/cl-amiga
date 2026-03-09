@@ -846,6 +846,50 @@ void compile_multiple_value_prog1(CL_Compiler *c, CL_Obj form)
     env->local_count = saved_local_count;
 }
 
+void compile_multiple_value_call(CL_Compiler *c, CL_Obj form)
+{
+    /* (multiple-value-call fn form1 form2 ...)
+     * => (apply fn (append (multiple-value-list form1) ...))
+     * Build the expansion at compile time and compile it. */
+    CL_Obj fn_form = cl_car(cl_cdr(form));
+    CL_Obj value_forms = cl_cdr(cl_cdr(form));
+    CL_Obj append_args = CL_NIL;
+    CL_Obj result, f;
+    CL_Obj sym_apply, sym_append, sym_mvl;
+
+    sym_apply  = cl_intern_in("APPLY", 5, cl_package_cl);
+    sym_append = cl_intern_in("APPEND", 6, cl_package_cl);
+    sym_mvl    = cl_intern_in("MULTIPLE-VALUE-LIST", 19, cl_package_cl);
+
+    CL_GC_PROTECT(fn_form);
+    CL_GC_PROTECT(append_args);
+
+    /* Build list of (multiple-value-list formN) in reverse */
+    for (f = value_forms; !CL_NULL_P(f); f = cl_cdr(f)) {
+        CL_Obj mvl_call = cl_cons(sym_mvl, cl_cons(cl_car(f), CL_NIL));
+        append_args = cl_cons(mvl_call, append_args);
+    }
+
+    /* Reverse to restore order */
+    {
+        CL_Obj rev = CL_NIL;
+        while (!CL_NULL_P(append_args)) {
+            rev = cl_cons(cl_car(append_args), rev);
+            append_args = cl_cdr(append_args);
+        }
+        append_args = rev;
+    }
+
+    /* Build (apply fn (append mvl1 mvl2 ...)) */
+    result = cl_cons(sym_apply,
+                cl_cons(fn_form,
+                    cl_cons(cl_cons(sym_append, append_args),
+                        CL_NIL)));
+    CL_GC_UNPROTECT(2);
+
+    compile_expr(c, result);
+}
+
 /* --- Eval-when / Defsetf --- */
 
 void compile_eval_when(CL_Compiler *c, CL_Obj form)
