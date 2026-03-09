@@ -109,6 +109,45 @@ static void file_table_ensure_init(void)
     }
 }
 
+/* --- I/O buffer for sockets --- */
+
+#define PLATFORM_IOBUF_SIZE 4096
+
+typedef struct {
+    char *rbuf;     /* read buffer (malloc'd) */
+    int   rpos;     /* current read position */
+    int   rlen;     /* valid bytes in read buffer */
+    char *wbuf;     /* write buffer (malloc'd) */
+    int   wlen;     /* pending bytes in write buffer */
+} IOBuf;
+
+static IOBuf *iobuf_alloc(void)
+{
+    IOBuf *b = (IOBuf *)malloc(sizeof(IOBuf));
+    if (!b) return NULL;
+    b->rbuf = (char *)malloc(PLATFORM_IOBUF_SIZE);
+    b->wbuf = (char *)malloc(PLATFORM_IOBUF_SIZE);
+    if (!b->rbuf || !b->wbuf) {
+        free(b->rbuf);
+        free(b->wbuf);
+        free(b);
+        return NULL;
+    }
+    b->rpos = 0;
+    b->rlen = 0;
+    b->wlen = 0;
+    return b;
+}
+
+static void iobuf_free(IOBuf *b)
+{
+    if (b) {
+        free(b->rbuf);
+        free(b->wbuf);
+        free(b);
+    }
+}
+
 PlatformFile platform_file_open(const char *path, int mode)
 {
     FILE *f;
@@ -166,6 +205,20 @@ int platform_file_write_char(PlatformFile fh, int ch)
 {
     if (fh > 0 && fh < PLATFORM_FILE_TABLE_SIZE && file_table[fh])
         return fputc(ch, file_table[fh]) != EOF ? 0 : -1;
+    return -1;
+}
+
+int platform_file_write_buf(PlatformFile fh, const char *buf, uint32_t len)
+{
+    if (fh > 0 && fh < PLATFORM_FILE_TABLE_SIZE && file_table[fh])
+        return (fwrite(buf, 1, (size_t)len, file_table[fh]) == (size_t)len) ? 0 : -1;
+    return -1;
+}
+
+int platform_file_flush(PlatformFile fh)
+{
+    if (fh > 0 && fh < PLATFORM_FILE_TABLE_SIZE && file_table[fh])
+        return (fflush(file_table[fh]) == 0) ? 0 : -1;
     return -1;
 }
 
@@ -318,14 +371,17 @@ const char *platform_realpath(const char *path, char *buf, int bufsize)
 #define PLATFORM_SOCKET_TABLE_SIZE 16
 
 static int socket_table[PLATFORM_SOCKET_TABLE_SIZE];
+static IOBuf *socket_buf[PLATFORM_SOCKET_TABLE_SIZE];
 static int socket_table_init = 0;
 
 static void socket_table_ensure_init(void)
 {
     if (!socket_table_init) {
         int i;
-        for (i = 0; i < PLATFORM_SOCKET_TABLE_SIZE; i++)
+        for (i = 0; i < PLATFORM_SOCKET_TABLE_SIZE; i++) {
             socket_table[i] = -1;
+            socket_buf[i] = NULL;
+        }
         socket_table_init = 1;
     }
 }
@@ -358,6 +414,7 @@ PlatformSocket platform_socket_connect(const char *host, int port)
     for (i = 1; i < PLATFORM_SOCKET_TABLE_SIZE; i++) {
         if (socket_table[i] == -1) {
             socket_table[i] = fd;
+            socket_buf[i] = iobuf_alloc();
             return (PlatformSocket)i;
         }
     }
@@ -366,56 +423,120 @@ PlatformSocket platform_socket_connect(const char *host, int port)
     return PLATFORM_SOCKET_INVALID;
 }
 
+/* Flush socket write buffer to the wire */
+static int socket_flush_wbuf(PlatformSocket sh)
+{
+    IOBuf *b;
+    int fd;
+    ssize_t total = 0;
+    if (sh == 0 || sh >= PLATFORM_SOCKET_TABLE_SIZE) return -1;
+    b = socket_buf[sh];
+    if (!b || b->wlen == 0) return 0;
+    fd = socket_table[sh];
+    while (total < b->wlen) {
+        ssize_t n = write(fd, b->wbuf + total, (size_t)(b->wlen - total));
+        if (n <= 0) return -1;
+        total += n;
+    }
+    b->wlen = 0;
+    return 0;
+}
+
 void platform_socket_close(PlatformSocket sh)
 {
     if (sh > 0 && sh < PLATFORM_SOCKET_TABLE_SIZE && socket_table[sh] >= 0) {
+        socket_flush_wbuf(sh);
         close(socket_table[sh]);
         socket_table[sh] = -1;
+        iobuf_free(socket_buf[sh]);
+        socket_buf[sh] = NULL;
     }
 }
 
 int platform_socket_read(PlatformSocket sh)
 {
-    unsigned char byte;
-    ssize_t n;
+    IOBuf *b;
     if (sh == 0 || sh >= PLATFORM_SOCKET_TABLE_SIZE || socket_table[sh] < 0)
         return -1;
-    n = read(socket_table[sh], &byte, 1);
-    if (n <= 0) return -1;
-    return (int)byte;
+    b = socket_buf[sh];
+    if (b) {
+        if (b->rpos < b->rlen)
+            return (unsigned char)b->rbuf[b->rpos++];
+        /* Refill read buffer */
+        {
+            ssize_t n = read(socket_table[sh], b->rbuf, PLATFORM_IOBUF_SIZE);
+            if (n <= 0) return -1;
+            b->rpos = 1;
+            b->rlen = (int)n;
+            return (unsigned char)b->rbuf[0];
+        }
+    }
+    /* Fallback: no buffer */
+    {
+        unsigned char byte;
+        ssize_t n = read(socket_table[sh], &byte, 1);
+        if (n <= 0) return -1;
+        return (int)byte;
+    }
 }
 
 int platform_socket_write(PlatformSocket sh, int byte)
 {
-    unsigned char b = (unsigned char)byte;
-    ssize_t n;
+    IOBuf *b;
     if (sh == 0 || sh >= PLATFORM_SOCKET_TABLE_SIZE || socket_table[sh] < 0)
         return -1;
-    n = write(socket_table[sh], &b, 1);
-    return (n == 1) ? 0 : -1;
+    b = socket_buf[sh];
+    if (b) {
+        b->wbuf[b->wlen++] = (char)byte;
+        if (b->wlen >= PLATFORM_IOBUF_SIZE)
+            return socket_flush_wbuf(sh);
+        return 0;
+    }
+    /* Fallback: no buffer */
+    {
+        unsigned char bb = (unsigned char)byte;
+        ssize_t n = write(socket_table[sh], &bb, 1);
+        return (n == 1) ? 0 : -1;
+    }
 }
 
 int platform_socket_write_buf(PlatformSocket sh, const char *buf, uint32_t len)
 {
-    ssize_t total = 0;
-    int fd;
+    IOBuf *b;
     if (sh == 0 || sh >= PLATFORM_SOCKET_TABLE_SIZE || socket_table[sh] < 0)
         return -1;
-    fd = socket_table[sh];
-    while ((uint32_t)total < len) {
-        ssize_t n = write(fd, buf + total, (size_t)(len - (uint32_t)total));
-        if (n <= 0) return -1;
-        total += n;
+    b = socket_buf[sh];
+    if (b) {
+        uint32_t pos = 0;
+        while (pos < len) {
+            int avail = PLATFORM_IOBUF_SIZE - b->wlen;
+            int chunk = (int)(len - pos);
+            if (chunk > avail) chunk = avail;
+            memcpy(b->wbuf + b->wlen, buf + pos, (size_t)chunk);
+            b->wlen += chunk;
+            pos += (uint32_t)chunk;
+            if (b->wlen >= PLATFORM_IOBUF_SIZE) {
+                if (socket_flush_wbuf(sh) != 0) return -1;
+            }
+        }
+        return 0;
     }
-    return 0;
+    /* Fallback: direct write */
+    {
+        ssize_t total = 0;
+        int fd = socket_table[sh];
+        while ((uint32_t)total < len) {
+            ssize_t n = write(fd, buf + total, (size_t)(len - (uint32_t)total));
+            if (n <= 0) return -1;
+            total += n;
+        }
+        return 0;
+    }
 }
 
 int platform_socket_flush(PlatformSocket sh)
 {
-    /* TCP sockets don't need explicit flush — data is sent immediately.
-     * For completeness, this is a no-op. */
-    (void)sh;
-    return 0;
+    return socket_flush_wbuf(sh);
 }
 
 void platform_init(void)

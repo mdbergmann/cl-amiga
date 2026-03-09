@@ -400,8 +400,7 @@ void cl_stream_write_string(CL_Obj stream, const char *str, uint32_t len)
         break;
     }
     case CL_STREAM_FILE:
-        for (i = 0; i < len; i++)
-            platform_file_write_char((PlatformFile)st->handle_id, (unsigned char)str[i]);
+        platform_file_write_buf((PlatformFile)st->handle_id, str, len);
         break;
     case CL_STREAM_STRING:
         for (i = 0; i < len; i++)
@@ -462,8 +461,10 @@ void cl_stream_close(CL_Obj stream)
 
     switch (st->stream_type) {
     case CL_STREAM_FILE:
-        if (st->handle_id != 0)
+        if (st->handle_id != 0) {
+            platform_file_flush((PlatformFile)st->handle_id);
             platform_file_close((PlatformFile)st->handle_id);
+        }
         break;
     case CL_STREAM_STRING:
         if ((st->direction & CL_STREAM_OUTPUT) && st->out_buf_handle != 0)
@@ -478,8 +479,10 @@ void cl_stream_close(CL_Obj stream)
         break;
     }
     case CL_STREAM_SOCKET:
-        if (st->handle_id != 0)
+        if (st->handle_id != 0) {
+            platform_socket_flush((PlatformSocket)st->handle_id);
             platform_socket_close((PlatformSocket)st->handle_id);
+        }
         break;
     default:
         break;

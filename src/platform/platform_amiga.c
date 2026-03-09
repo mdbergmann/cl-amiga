@@ -99,6 +99,45 @@ char *platform_file_read(const char *path, unsigned long *size_out)
     return buf;
 }
 
+/* --- I/O buffer --- */
+
+#define PLATFORM_IOBUF_SIZE 4096
+
+typedef struct {
+    char *rbuf;     /* read buffer (AllocVec'd) */
+    int   rpos;     /* current read position */
+    int   rlen;     /* valid bytes in read buffer */
+    char *wbuf;     /* write buffer (AllocVec'd) */
+    int   wlen;     /* pending bytes in write buffer */
+} IOBuf;
+
+static IOBuf *iobuf_alloc(void)
+{
+    IOBuf *b = (IOBuf *)AllocVec(sizeof(IOBuf), MEMF_CLEAR);
+    if (!b) return NULL;
+    b->rbuf = (char *)AllocVec(PLATFORM_IOBUF_SIZE, 0);
+    b->wbuf = (char *)AllocVec(PLATFORM_IOBUF_SIZE, 0);
+    if (!b->rbuf || !b->wbuf) {
+        if (b->rbuf) FreeVec(b->rbuf);
+        if (b->wbuf) FreeVec(b->wbuf);
+        FreeVec(b);
+        return NULL;
+    }
+    b->rpos = 0;
+    b->rlen = 0;
+    b->wlen = 0;
+    return b;
+}
+
+static void iobuf_free(IOBuf *b)
+{
+    if (b) {
+        if (b->rbuf) FreeVec(b->rbuf);
+        if (b->wbuf) FreeVec(b->wbuf);
+        FreeVec(b);
+    }
+}
+
 /* --- Handle-based file I/O --- */
 
 /* On Amiga, BPTR is a LONG (32-bit). We store them directly as uint32_t.
@@ -107,14 +146,17 @@ char *platform_file_read(const char *path, unsigned long *size_out)
 #define PLATFORM_FILE_TABLE_SIZE 64
 
 static BPTR file_table[PLATFORM_FILE_TABLE_SIZE];
+static IOBuf *file_buf[PLATFORM_FILE_TABLE_SIZE];
 static int file_table_init = 0;
 
 static void file_table_ensure_init(void)
 {
     if (!file_table_init) {
         int i;
-        for (i = 0; i < PLATFORM_FILE_TABLE_SIZE; i++)
+        for (i = 0; i < PLATFORM_FILE_TABLE_SIZE; i++) {
             file_table[i] = 0;
+            file_buf[i] = NULL;
+        }
         file_table_init = 1;
     }
 }
@@ -146,6 +188,7 @@ PlatformFile platform_file_open(const char *path, int mode)
     for (i = 1; i < PLATFORM_FILE_TABLE_SIZE; i++) {
         if (file_table[i] == 0) {
             file_table[i] = fh;
+            file_buf[i] = iobuf_alloc();
             return (PlatformFile)i;
         }
     }
@@ -154,36 +197,107 @@ PlatformFile platform_file_open(const char *path, int mode)
     return PLATFORM_FILE_INVALID;
 }
 
+/* Flush file write buffer to disk */
+static int file_flush_wbuf(PlatformFile fh)
+{
+    IOBuf *b;
+    LONG written;
+    if (fh == 0 || fh >= PLATFORM_FILE_TABLE_SIZE) return -1;
+    b = file_buf[fh];
+    if (!b || b->wlen == 0) return 0;
+    written = Write(file_table[fh], (APTR)b->wbuf, (LONG)b->wlen);
+    if (written != (LONG)b->wlen) return -1;
+    b->wlen = 0;
+    return 0;
+}
+
 void platform_file_close(PlatformFile fh)
 {
     if (fh > 0 && fh < PLATFORM_FILE_TABLE_SIZE && file_table[fh]) {
+        file_flush_wbuf(fh);
         Close(file_table[fh]);
         file_table[fh] = 0;
+        iobuf_free(file_buf[fh]);
+        file_buf[fh] = NULL;
     }
 }
 
 int platform_file_getchar(PlatformFile fh)
 {
-    if (fh > 0 && fh < PLATFORM_FILE_TABLE_SIZE && file_table[fh])
-        return FGetC(file_table[fh]);
-    return -1;
+    IOBuf *b;
+    if (fh == 0 || fh >= PLATFORM_FILE_TABLE_SIZE || !file_table[fh])
+        return -1;
+    b = file_buf[fh];
+    if (b) {
+        if (b->rpos < b->rlen)
+            return (unsigned char)b->rbuf[b->rpos++];
+        /* Refill read buffer */
+        {
+            LONG n = Read(file_table[fh], (APTR)b->rbuf, PLATFORM_IOBUF_SIZE);
+            if (n <= 0) return -1;
+            b->rpos = 1;
+            b->rlen = (int)n;
+            return (unsigned char)b->rbuf[0];
+        }
+    }
+    return FGetC(file_table[fh]);
 }
 
 int platform_file_write_string(PlatformFile fh, const char *str)
 {
-    if (fh > 0 && fh < PLATFORM_FILE_TABLE_SIZE && file_table[fh]) {
-        LONG len = strlen(str);
-        LONG written = Write(file_table[fh], (APTR)str, len);
-        return (written == len) ? 0 : -1;
-    }
-    return -1;
+    LONG len;
+    if (fh == 0 || fh >= PLATFORM_FILE_TABLE_SIZE || !file_table[fh])
+        return -1;
+    len = strlen(str);
+    return platform_file_write_buf(fh, str, (uint32_t)len);
 }
 
 int platform_file_write_char(PlatformFile fh, int ch)
 {
-    if (fh > 0 && fh < PLATFORM_FILE_TABLE_SIZE && file_table[fh])
-        return (FPutC(file_table[fh], ch) != -1) ? 0 : -1;
-    return -1;
+    IOBuf *b;
+    if (fh == 0 || fh >= PLATFORM_FILE_TABLE_SIZE || !file_table[fh])
+        return -1;
+    b = file_buf[fh];
+    if (b) {
+        b->wbuf[b->wlen++] = (char)ch;
+        if (b->wlen >= PLATFORM_IOBUF_SIZE)
+            return file_flush_wbuf(fh);
+        return 0;
+    }
+    return (FPutC(file_table[fh], ch) != -1) ? 0 : -1;
+}
+
+int platform_file_write_buf(PlatformFile fh, const char *buf, uint32_t len)
+{
+    IOBuf *b;
+    if (fh == 0 || fh >= PLATFORM_FILE_TABLE_SIZE || !file_table[fh])
+        return -1;
+    b = file_buf[fh];
+    if (b) {
+        uint32_t pos = 0;
+        while (pos < len) {
+            int avail = PLATFORM_IOBUF_SIZE - b->wlen;
+            int chunk = (int)(len - pos);
+            if (chunk > avail) chunk = avail;
+            memcpy(b->wbuf + b->wlen, buf + pos, (size_t)chunk);
+            b->wlen += chunk;
+            pos += (uint32_t)chunk;
+            if (b->wlen >= PLATFORM_IOBUF_SIZE) {
+                if (file_flush_wbuf(fh) != 0) return -1;
+            }
+        }
+        return 0;
+    }
+    /* Fallback: direct write */
+    {
+        LONG written = Write(file_table[fh], (APTR)buf, (LONG)len);
+        return (written == (LONG)len) ? 0 : -1;
+    }
+}
+
+int platform_file_flush(PlatformFile fh)
+{
+    return file_flush_wbuf(fh);
 }
 
 int platform_file_eof(PlatformFile fh)
@@ -196,15 +310,32 @@ int platform_file_eof(PlatformFile fh)
 
 long platform_file_position(PlatformFile fh)
 {
-    if (fh > 0 && fh < PLATFORM_FILE_TABLE_SIZE && file_table[fh])
-        return (long)Seek(file_table[fh], 0, OFFSET_CURRENT);
+    if (fh > 0 && fh < PLATFORM_FILE_TABLE_SIZE && file_table[fh]) {
+        long pos = (long)Seek(file_table[fh], 0, OFFSET_CURRENT);
+        /* Adjust for buffered but unread data */
+        IOBuf *b = file_buf[fh];
+        if (b && b->rlen > 0)
+            pos -= (long)(b->rlen - b->rpos);
+        /* Adjust for buffered but unflushed writes */
+        if (b && b->wlen > 0)
+            pos += (long)b->wlen;
+        return pos;
+    }
     return -1;
 }
 
 int platform_file_set_position(PlatformFile fh, long pos)
 {
-    if (fh > 0 && fh < PLATFORM_FILE_TABLE_SIZE && file_table[fh])
+    if (fh > 0 && fh < PLATFORM_FILE_TABLE_SIZE && file_table[fh]) {
+        IOBuf *b = file_buf[fh];
+        /* Flush writes and invalidate read buffer on seek */
+        if (b) {
+            file_flush_wbuf(fh);
+            b->rpos = 0;
+            b->rlen = 0;
+        }
         return Seek(file_table[fh], pos, OFFSET_BEGINNING) >= 0 ? 0 : -1;
+    }
     return -1;
 }
 
@@ -452,14 +583,17 @@ struct Library *SocketBase = NULL;
 #define PLATFORM_SOCKET_TABLE_SIZE 16
 
 static LONG socket_table[PLATFORM_SOCKET_TABLE_SIZE];
+static IOBuf *socket_buf[PLATFORM_SOCKET_TABLE_SIZE];
 static int socket_table_init = 0;
 
 static void socket_table_ensure_init(void)
 {
     if (!socket_table_init) {
         int i;
-        for (i = 0; i < PLATFORM_SOCKET_TABLE_SIZE; i++)
+        for (i = 0; i < PLATFORM_SOCKET_TABLE_SIZE; i++) {
             socket_table[i] = -1;
+            socket_buf[i] = NULL;
+        }
         socket_table_init = 1;
     }
 }
@@ -508,6 +642,7 @@ PlatformSocket platform_socket_connect(const char *host, int port)
     for (i = 1; i < PLATFORM_SOCKET_TABLE_SIZE; i++) {
         if (socket_table[i] == -1) {
             socket_table[i] = fd;
+            socket_buf[i] = iobuf_alloc();
             return (PlatformSocket)i;
         }
     }
@@ -516,55 +651,119 @@ PlatformSocket platform_socket_connect(const char *host, int port)
     return PLATFORM_SOCKET_INVALID;
 }
 
+/* Flush socket write buffer to the wire */
+static int socket_flush_wbuf(PlatformSocket sh)
+{
+    IOBuf *b;
+    LONG fd, total = 0;
+    if (sh == 0 || sh >= PLATFORM_SOCKET_TABLE_SIZE) return -1;
+    b = socket_buf[sh];
+    if (!b || b->wlen == 0) return 0;
+    fd = socket_table[sh];
+    while (total < (LONG)b->wlen) {
+        LONG n = send(fd, (APTR)(b->wbuf + total), (LONG)(b->wlen - total), 0);
+        if (n <= 0) return -1;
+        total += n;
+    }
+    b->wlen = 0;
+    return 0;
+}
+
 void platform_socket_close(PlatformSocket sh)
 {
     if (sh > 0 && sh < PLATFORM_SOCKET_TABLE_SIZE && socket_table[sh] >= 0) {
+        socket_flush_wbuf(sh);
         CloseSocket(socket_table[sh]);
         socket_table[sh] = -1;
+        iobuf_free(socket_buf[sh]);
+        socket_buf[sh] = NULL;
     }
 }
 
 int platform_socket_read(PlatformSocket sh)
 {
-    unsigned char byte;
-    LONG n;
+    IOBuf *b;
     if (sh == 0 || sh >= PLATFORM_SOCKET_TABLE_SIZE || socket_table[sh] < 0)
         return -1;
-    n = recv(socket_table[sh], &byte, 1, 0);
-    if (n <= 0) return -1;
-    return (int)byte;
+    b = socket_buf[sh];
+    if (b) {
+        if (b->rpos < b->rlen)
+            return (unsigned char)b->rbuf[b->rpos++];
+        /* Refill read buffer */
+        {
+            LONG n = recv(socket_table[sh], (APTR)b->rbuf, PLATFORM_IOBUF_SIZE, 0);
+            if (n <= 0) return -1;
+            b->rpos = 1;
+            b->rlen = (int)n;
+            return (unsigned char)b->rbuf[0];
+        }
+    }
+    /* Fallback: no buffer */
+    {
+        unsigned char byte;
+        LONG n = recv(socket_table[sh], &byte, 1, 0);
+        if (n <= 0) return -1;
+        return (int)byte;
+    }
 }
 
 int platform_socket_write(PlatformSocket sh, int byte)
 {
-    unsigned char b = (unsigned char)byte;
-    LONG n;
+    IOBuf *b;
     if (sh == 0 || sh >= PLATFORM_SOCKET_TABLE_SIZE || socket_table[sh] < 0)
         return -1;
-    n = send(socket_table[sh], &b, 1, 0);
-    return (n == 1) ? 0 : -1;
+    b = socket_buf[sh];
+    if (b) {
+        b->wbuf[b->wlen++] = (char)byte;
+        if (b->wlen >= PLATFORM_IOBUF_SIZE)
+            return socket_flush_wbuf(sh);
+        return 0;
+    }
+    /* Fallback: no buffer */
+    {
+        unsigned char bb = (unsigned char)byte;
+        LONG n = send(socket_table[sh], &bb, 1, 0);
+        return (n == 1) ? 0 : -1;
+    }
 }
 
 int platform_socket_write_buf(PlatformSocket sh, const char *buf, uint32_t len)
 {
-    LONG total = 0;
-    LONG fd;
+    IOBuf *b;
     if (sh == 0 || sh >= PLATFORM_SOCKET_TABLE_SIZE || socket_table[sh] < 0)
         return -1;
-    fd = socket_table[sh];
-    while ((uint32_t)total < len) {
-        LONG n = send(fd, (APTR)(buf + total), (LONG)(len - (uint32_t)total), 0);
-        if (n <= 0) return -1;
-        total += n;
+    b = socket_buf[sh];
+    if (b) {
+        uint32_t pos = 0;
+        while (pos < len) {
+            int avail = PLATFORM_IOBUF_SIZE - b->wlen;
+            int chunk = (int)(len - pos);
+            if (chunk > avail) chunk = avail;
+            memcpy(b->wbuf + b->wlen, buf + pos, (size_t)chunk);
+            b->wlen += chunk;
+            pos += (uint32_t)chunk;
+            if (b->wlen >= PLATFORM_IOBUF_SIZE) {
+                if (socket_flush_wbuf(sh) != 0) return -1;
+            }
+        }
+        return 0;
     }
-    return 0;
+    /* Fallback: direct send */
+    {
+        LONG total = 0;
+        LONG fd = socket_table[sh];
+        while ((uint32_t)total < len) {
+            LONG n = send(fd, (APTR)(buf + total), (LONG)(len - (uint32_t)total), 0);
+            if (n <= 0) return -1;
+            total += n;
+        }
+        return 0;
+    }
 }
 
 int platform_socket_flush(PlatformSocket sh)
 {
-    /* TCP sockets don't need explicit flush */
-    (void)sh;
-    return 0;
+    return socket_flush_wbuf(sh);
 }
 
 void platform_init(void)
@@ -579,8 +778,11 @@ void platform_shutdown(void)
         int i;
         for (i = 1; i < PLATFORM_SOCKET_TABLE_SIZE; i++) {
             if (socket_table[i] >= 0) {
+                socket_flush_wbuf((PlatformSocket)i);
                 CloseSocket(socket_table[i]);
                 socket_table[i] = -1;
+                iobuf_free(socket_buf[i]);
+                socket_buf[i] = NULL;
             }
         }
         CloseLibrary(SocketBase);

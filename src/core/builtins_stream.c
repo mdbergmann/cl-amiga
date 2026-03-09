@@ -362,7 +362,9 @@ static CL_Obj bi_finish_output(CL_Obj *args, int n)
     if (n > 0 && !CL_NULL_P(args[0]) && CL_STREAM_P(args[0])) {
         stream = args[0];
         st = (CL_Stream *)CL_OBJ_TO_PTR(stream);
-        if (st->stream_type == CL_STREAM_SOCKET)
+        if (st->stream_type == CL_STREAM_FILE)
+            platform_file_flush((PlatformFile)st->handle_id);
+        else if (st->stream_type == CL_STREAM_SOCKET)
             platform_socket_flush((PlatformSocket)st->handle_id);
     }
     return CL_NIL;
@@ -371,7 +373,16 @@ static CL_Obj bi_finish_output(CL_Obj *args, int n)
 /* (force-output &optional stream) => NIL */
 static CL_Obj bi_force_output(CL_Obj *args, int n)
 {
-    CL_UNUSED(args); CL_UNUSED(n);
+    CL_Obj stream;
+    CL_Stream *st;
+    if (n > 0 && !CL_NULL_P(args[0]) && CL_STREAM_P(args[0])) {
+        stream = args[0];
+        st = (CL_Stream *)CL_OBJ_TO_PTR(stream);
+        if (st->stream_type == CL_STREAM_FILE)
+            platform_file_flush((PlatformFile)st->handle_id);
+        else if (st->stream_type == CL_STREAM_SOCKET)
+            platform_socket_flush((PlatformSocket)st->handle_id);
+    }
     return CL_NIL;
 }
 
