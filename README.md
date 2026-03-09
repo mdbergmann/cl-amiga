@@ -87,6 +87,7 @@ CL-USER> (ql:quickload "fiveam")
 - **compile-file** — currently copies source as-is; no proper fasl/bytecode file format yet
 - **ANSI CL gaps** — while major subsystems work (CLOS, conditions, packages, the full numeric tower, arrays, pathnames, streams, loop, format), some corners of the spec remain unimplemented
 - **Amiga networking** — bsdsocket.library integration is partial
+- **Full AmigaOS API support** — Intuition, Graphics, and other AmigaOS libraries for native GUI and multimedia applications
 - **Native MorphOS port** — planned as a future target platform
 
 ## Project Structure
