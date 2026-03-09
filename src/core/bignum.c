@@ -1690,4 +1690,134 @@ void cl_bignum_init(void)
     def_const("BOOLE-ANDC2", 11, 13, &SYM_BOOLE_ANDC2);
     def_const("BOOLE-ORC1",  10, 14, &SYM_BOOLE_ORC1);
     def_const("BOOLE-ORC2",  10, 15, &SYM_BOOLE_ORC2);
+
+    /* CHAR-CODE-LIMIT — upper exclusive bound on char-code values */
+    def_const("CHAR-CODE-LIMIT", 15, 256, NULL);
+
+    /* Float limit constants */
+    {
+        CL_Obj fsym;
+        CL_Symbol *fs;
+
+        fsym = cl_intern_in("MOST-POSITIVE-SINGLE-FLOAT", 26, cl_package_cl);
+        fs = (CL_Symbol *)CL_OBJ_TO_PTR(fsym);
+        fs->value = cl_make_single_float(3.4028235e+38f);
+        fs->flags |= CL_SYM_CONSTANT;
+
+        fsym = cl_intern_in("MOST-NEGATIVE-SINGLE-FLOAT", 26, cl_package_cl);
+        fs = (CL_Symbol *)CL_OBJ_TO_PTR(fsym);
+        fs->value = cl_make_single_float(-3.4028235e+38f);
+        fs->flags |= CL_SYM_CONSTANT;
+
+        fsym = cl_intern_in("MOST-POSITIVE-DOUBLE-FLOAT", 26, cl_package_cl);
+        fs = (CL_Symbol *)CL_OBJ_TO_PTR(fsym);
+        fs->value = cl_make_double_float(1.7976931348623157e+308);
+        fs->flags |= CL_SYM_CONSTANT;
+
+        fsym = cl_intern_in("MOST-NEGATIVE-DOUBLE-FLOAT", 26, cl_package_cl);
+        fs = (CL_Symbol *)CL_OBJ_TO_PTR(fsym);
+        fs->value = cl_make_double_float(-1.7976931348623157e+308);
+        fs->flags |= CL_SYM_CONSTANT;
+
+        fsym = cl_intern_in("LEAST-POSITIVE-SINGLE-FLOAT", 27, cl_package_cl);
+        fs = (CL_Symbol *)CL_OBJ_TO_PTR(fsym);
+        fs->value = cl_make_single_float(1.17549435e-38f);
+        fs->flags |= CL_SYM_CONSTANT;
+
+        fsym = cl_intern_in("LEAST-NEGATIVE-SINGLE-FLOAT", 27, cl_package_cl);
+        fs = (CL_Symbol *)CL_OBJ_TO_PTR(fsym);
+        fs->value = cl_make_single_float(-1.17549435e-38f);
+        fs->flags |= CL_SYM_CONSTANT;
+
+        fsym = cl_intern_in("LEAST-POSITIVE-DOUBLE-FLOAT", 27, cl_package_cl);
+        fs = (CL_Symbol *)CL_OBJ_TO_PTR(fsym);
+        fs->value = cl_make_double_float(2.2250738585072014e-308);
+        fs->flags |= CL_SYM_CONSTANT;
+
+        fsym = cl_intern_in("LEAST-NEGATIVE-DOUBLE-FLOAT", 27, cl_package_cl);
+        fs = (CL_Symbol *)CL_OBJ_TO_PTR(fsym);
+        fs->value = cl_make_double_float(-2.2250738585072014e-308);
+        fs->flags |= CL_SYM_CONSTANT;
+
+        fsym = cl_intern_in("SINGLE-FLOAT-EPSILON", 20, cl_package_cl);
+        fs = (CL_Symbol *)CL_OBJ_TO_PTR(fsym);
+        fs->value = cl_make_single_float(1.1920929e-7f);
+        fs->flags |= CL_SYM_CONSTANT;
+
+        fsym = cl_intern_in("DOUBLE-FLOAT-EPSILON", 20, cl_package_cl);
+        fs = (CL_Symbol *)CL_OBJ_TO_PTR(fsym);
+        fs->value = cl_make_double_float(2.2204460492503131e-16);
+        fs->flags |= CL_SYM_CONSTANT;
+
+        fsym = cl_intern_in("SHORT-FLOAT-EPSILON", 19, cl_package_cl);
+        fs = (CL_Symbol *)CL_OBJ_TO_PTR(fsym);
+        fs->value = cl_make_single_float(1.1920929e-7f);
+        fs->flags |= CL_SYM_CONSTANT;
+
+        fsym = cl_intern_in("LONG-FLOAT-EPSILON", 18, cl_package_cl);
+        fs = (CL_Symbol *)CL_OBJ_TO_PTR(fsym);
+        fs->value = cl_make_double_float(2.2204460492503131e-16);
+        fs->flags |= CL_SYM_CONSTANT;
+
+        /* short-float/long-float aliases for most-positive/negative */
+        fsym = cl_intern_in("MOST-POSITIVE-SHORT-FLOAT", 25, cl_package_cl);
+        fs = (CL_Symbol *)CL_OBJ_TO_PTR(fsym);
+        fs->value = cl_make_single_float(3.4028235e+38f);
+        fs->flags |= CL_SYM_CONSTANT;
+
+        fsym = cl_intern_in("MOST-NEGATIVE-SHORT-FLOAT", 25, cl_package_cl);
+        fs = (CL_Symbol *)CL_OBJ_TO_PTR(fsym);
+        fs->value = cl_make_single_float(-3.4028235e+38f);
+        fs->flags |= CL_SYM_CONSTANT;
+
+        fsym = cl_intern_in("MOST-POSITIVE-LONG-FLOAT", 24, cl_package_cl);
+        fs = (CL_Symbol *)CL_OBJ_TO_PTR(fsym);
+        fs->value = cl_make_double_float(1.7976931348623157e+308);
+        fs->flags |= CL_SYM_CONSTANT;
+
+        fsym = cl_intern_in("MOST-NEGATIVE-LONG-FLOAT", 24, cl_package_cl);
+        fs = (CL_Symbol *)CL_OBJ_TO_PTR(fsym);
+        fs->value = cl_make_double_float(-1.7976931348623157e+308);
+        fs->flags |= CL_SYM_CONSTANT;
+
+        fsym = cl_intern_in("LEAST-POSITIVE-SHORT-FLOAT", 26, cl_package_cl);
+        fs = (CL_Symbol *)CL_OBJ_TO_PTR(fsym);
+        fs->value = cl_make_single_float(1.17549435e-38f);
+        fs->flags |= CL_SYM_CONSTANT;
+
+        fsym = cl_intern_in("LEAST-NEGATIVE-SHORT-FLOAT", 26, cl_package_cl);
+        fs = (CL_Symbol *)CL_OBJ_TO_PTR(fsym);
+        fs->value = cl_make_single_float(-1.17549435e-38f);
+        fs->flags |= CL_SYM_CONSTANT;
+
+        fsym = cl_intern_in("LEAST-POSITIVE-LONG-FLOAT", 25, cl_package_cl);
+        fs = (CL_Symbol *)CL_OBJ_TO_PTR(fsym);
+        fs->value = cl_make_double_float(2.2250738585072014e-308);
+        fs->flags |= CL_SYM_CONSTANT;
+
+        fsym = cl_intern_in("LEAST-NEGATIVE-LONG-FLOAT", 25, cl_package_cl);
+        fs = (CL_Symbol *)CL_OBJ_TO_PTR(fsym);
+        fs->value = cl_make_double_float(-2.2250738585072014e-308);
+        fs->flags |= CL_SYM_CONSTANT;
+
+        fsym = cl_intern_in("SINGLE-FLOAT-NEGATIVE-EPSILON", 29, cl_package_cl);
+        fs = (CL_Symbol *)CL_OBJ_TO_PTR(fsym);
+        fs->value = cl_make_single_float(5.9604645e-8f);
+        fs->flags |= CL_SYM_CONSTANT;
+
+        fsym = cl_intern_in("DOUBLE-FLOAT-NEGATIVE-EPSILON", 29, cl_package_cl);
+        fs = (CL_Symbol *)CL_OBJ_TO_PTR(fsym);
+        fs->value = cl_make_double_float(1.1102230246251566e-16);
+        fs->flags |= CL_SYM_CONSTANT;
+
+        fsym = cl_intern_in("SHORT-FLOAT-NEGATIVE-EPSILON", 28, cl_package_cl);
+        fs = (CL_Symbol *)CL_OBJ_TO_PTR(fsym);
+        fs->value = cl_make_single_float(5.9604645e-8f);
+        fs->flags |= CL_SYM_CONSTANT;
+
+        fsym = cl_intern_in("LONG-FLOAT-NEGATIVE-EPSILON", 27, cl_package_cl);
+        fs = (CL_Symbol *)CL_OBJ_TO_PTR(fsym);
+        fs->value = cl_make_double_float(1.1102230246251566e-16);
+        fs->flags |= CL_SYM_CONSTANT;
+    }
 }

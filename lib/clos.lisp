@@ -196,21 +196,23 @@
 (%make-bootstrap-class 'double-float
   (list (find-class 'float)))
 
-;; Other built-in classes
+;; Other built-in classes — CL type hierarchy
+(%make-bootstrap-class 'sequence
+  (list (find-class 't)))
+(%make-bootstrap-class 'list
+  (list (find-class 'sequence)))
 (%make-bootstrap-class 'symbol
   (list (find-class 't)))
 (%make-bootstrap-class 'null
-  (list (find-class 'symbol)))
+  (list (find-class 'symbol) (find-class 'list)))
 (%make-bootstrap-class 'cons
-  (list (find-class 't)))
-(%make-bootstrap-class 'list
-  (list (find-class 't)))
-(%make-bootstrap-class 'string
-  (list (find-class 't)))
+  (list (find-class 'list)))
 (%make-bootstrap-class 'character
   (list (find-class 't)))
 (%make-bootstrap-class 'vector
-  (list (find-class 't)))
+  (list (find-class 'sequence)))
+(%make-bootstrap-class 'string
+  (list (find-class 'vector)))
 (%make-bootstrap-class 'bit-vector
   (list (find-class 'vector)))
 (%make-bootstrap-class 'function
