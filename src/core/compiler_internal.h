@@ -62,6 +62,27 @@ typedef struct {
 /* Source line map tracking during compilation */
 #define CL_MAX_LINE_ENTRIES 256
 
+/* Parsed lambda list structure */
+typedef struct {
+    CL_Obj required[CL_MAX_LOCALS];
+    int n_required;
+    CL_Obj opt_names[CL_MAX_LOCALS];
+    CL_Obj opt_defaults[CL_MAX_LOCALS]; /* CL_NIL if no default */
+    CL_Obj opt_suppliedp[CL_MAX_LOCALS]; /* supplied-p var or CL_NIL */
+    int n_optional;
+    CL_Obj rest_name;       /* CL_NIL if no &rest */
+    int has_rest;
+    CL_Obj key_names[CL_MAX_LOCALS];
+    CL_Obj key_keywords[CL_MAX_LOCALS]; /* keyword symbols */
+    CL_Obj key_defaults[CL_MAX_LOCALS];
+    CL_Obj key_suppliedp[CL_MAX_LOCALS]; /* supplied-p var or CL_NIL */
+    int n_keys;
+    int allow_other_keys;
+    CL_Obj aux_names[CL_MAX_LOCALS];
+    CL_Obj aux_inits[CL_MAX_LOCALS]; /* init form or CL_NIL */
+    int n_aux;
+} CL_ParsedLambdaList;
+
 /* Compiler state */
 typedef struct {
     uint8_t code[CL_MAX_CODE_SIZE];
@@ -85,28 +106,14 @@ typedef struct {
     /* Outer tagbody tags visible from enclosing scopes (for cross-closure go) */
     CL_OuterTagInfo outer_tags[CL_MAX_BLOCKS * 4];
     int outer_tag_count;
+    /* Lambda compilation scratch (in struct to avoid stack overflow on AmigaOS) */
+    CL_ParsedLambdaList ll;
+    int key_slot_indices[CL_MAX_LOCALS];
+    int key_suppliedp_indices[CL_MAX_LOCALS];
+    CL_Obj param_vars[CL_MAX_LOCALS];
+    int param_slots[CL_MAX_LOCALS];
+    uint8_t lambda_needs_boxing[CL_MAX_LOCALS];
 } CL_Compiler;
-
-/* Parsed lambda list structure */
-typedef struct {
-    CL_Obj required[CL_MAX_LOCALS];
-    int n_required;
-    CL_Obj opt_names[CL_MAX_LOCALS];
-    CL_Obj opt_defaults[CL_MAX_LOCALS]; /* CL_NIL if no default */
-    CL_Obj opt_suppliedp[CL_MAX_LOCALS]; /* supplied-p var or CL_NIL */
-    int n_optional;
-    CL_Obj rest_name;       /* CL_NIL if no &rest */
-    int has_rest;
-    CL_Obj key_names[CL_MAX_LOCALS];
-    CL_Obj key_keywords[CL_MAX_LOCALS]; /* keyword symbols */
-    CL_Obj key_defaults[CL_MAX_LOCALS];
-    CL_Obj key_suppliedp[CL_MAX_LOCALS]; /* supplied-p var or CL_NIL */
-    int n_keys;
-    int allow_other_keys;
-    CL_Obj aux_names[CL_MAX_LOCALS];
-    CL_Obj aux_inits[CL_MAX_LOCALS]; /* init form or CL_NIL */
-    int n_aux;
-} CL_ParsedLambdaList;
 
 /* --- Shared globals (defined in compiler.c) --- */
 

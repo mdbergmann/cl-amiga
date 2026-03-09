@@ -278,19 +278,20 @@ void compile_lambda(CL_Compiler *c, CL_Obj form)
     CL_Obj body = cl_cdr(cl_cdr(form));
     CL_Compiler *inner;
     CL_CompEnv *env;
-    CL_ParsedLambdaList ll;
     CL_Bytecode *bc;
     int const_idx;
     int i;
-    int key_slot_indices[CL_MAX_LOCALS];
-    int key_suppliedp_indices[CL_MAX_LOCALS];
+    /* ll, key_slot_indices, key_suppliedp_indices, param_vars, param_slots,
+     * lambda_needs_boxing are all in CL_Compiler struct (heap-allocated)
+     * to avoid stack overflow on AmigaOS 65KB stack */
 
-    parse_lambda_list(params, &ll);
-
-    /* Heap-allocate inner compiler (~45KB — too large for AmigaOS stack) */
+    /* Heap-allocate inner compiler (too large for AmigaOS stack) */
     inner = (CL_Compiler *)platform_alloc(sizeof(CL_Compiler));
     if (!inner) return;
     memset(inner, 0, sizeof(*inner));
+
+    parse_lambda_list(params, &inner->ll);
+
     env = cl_env_create(c->env);
     inner->env = env;
     inner->in_tail = 1;
@@ -328,44 +329,44 @@ void compile_lambda(CL_Compiler *c, CL_Obj form)
         }
     }
 
-    for (i = 0; i < ll.n_required; i++)
-        cl_env_add_local(env, ll.required[i]);
+    for (i = 0; i < inner->ll.n_required; i++)
+        cl_env_add_local(env, inner->ll.required[i]);
 
     /* Emit prologue for optional defaults.
      * Add each optional local AFTER compiling its default expression,
      * so the default can refer to earlier params but not the current one.
      * This is critical for &optional (*special* *special*) where the
      * default should read the dynamic/global value, not the uninitialized slot. */
-    for (i = 0; i < ll.n_optional; i++) {
-        if (!CL_NULL_P(ll.opt_defaults[i])) {
+    for (i = 0; i < inner->ll.n_optional; i++) {
+        if (!CL_NULL_P(inner->ll.opt_defaults[i])) {
             int skip_pos;
             cl_emit(inner, OP_ARGC);
-            cl_emit_const(inner, CL_MAKE_FIXNUM(ll.n_required + i + 1));
+            cl_emit_const(inner, CL_MAKE_FIXNUM(inner->ll.n_required + i + 1));
             cl_emit(inner, OP_GE);
             skip_pos = cl_emit_jump(inner, OP_JTRUE);
             {
                 int saved = inner->in_tail;
                 inner->in_tail = 0;
-                compile_expr(inner, ll.opt_defaults[i]);
+                compile_expr(inner, inner->ll.opt_defaults[i]);
                 inner->in_tail = saved;
             }
             cl_emit(inner, OP_STORE);
-            cl_emit(inner, (uint8_t)(ll.n_required + i));
+            cl_emit(inner, (uint8_t)(inner->ll.n_required + i));
             cl_emit(inner, OP_POP);
             cl_patch_jump(inner, skip_pos);
         }
-        cl_env_add_local(env, ll.opt_names[i]);
+        cl_env_add_local(env, inner->ll.opt_names[i]);
     }
     /* Allocate slots for &optional supplied-p variables and emit init code.
      * Each supplied-p var is T if argc >= n_required + i + 1, else NIL. */
-    for (i = 0; i < ll.n_optional; i++) {
-        if (!CL_NULL_P(ll.opt_suppliedp[i])) {
-            int sp_slot = cl_env_add_local(env, ll.opt_suppliedp[i]);
+    for (i = 0; i < inner->ll.n_optional; i++) {
+        if (!CL_NULL_P(inner->ll.opt_suppliedp[i])) {
+            int sp_slot = cl_env_add_local(env, inner->ll.opt_suppliedp[i]);
             int skip_pos;
             /* Default is NIL (already zero-initialized by VM).
              * If argument was supplied, set to T. */
             cl_emit(inner, OP_ARGC);
-            cl_emit_const(inner, CL_MAKE_FIXNUM(ll.n_required + i + 1));
+            cl_emit_const(inner, CL_MAKE_FIXNUM(inner->ll.n_required + i + 1));
             cl_emit(inner, OP_GE);
             skip_pos = cl_emit_jump(inner, OP_JNIL);
             cl_emit_const(inner, CL_T);
@@ -376,49 +377,49 @@ void compile_lambda(CL_Compiler *c, CL_Obj form)
         }
     }
 
-    if (ll.has_rest)
-        cl_env_add_local(env, ll.rest_name);
-    for (i = 0; i < ll.n_keys; i++)
-        key_slot_indices[i] = cl_env_add_local(env, ll.key_names[i]);
+    if (inner->ll.has_rest)
+        cl_env_add_local(env, inner->ll.rest_name);
+    for (i = 0; i < inner->ll.n_keys; i++)
+        inner->key_slot_indices[i] = cl_env_add_local(env, inner->ll.key_names[i]);
     /* Always allocate a tracking slot per key for VM-level supplied-p.
      * If user also declared a supplied-p var, reuse the same slot. */
-    for (i = 0; i < ll.n_keys; i++) {
-        if (!CL_NULL_P(ll.key_suppliedp[i]))
-            key_suppliedp_indices[i] = cl_env_add_local(env, ll.key_suppliedp[i]);
+    for (i = 0; i < inner->ll.n_keys; i++) {
+        if (!CL_NULL_P(inner->ll.key_suppliedp[i]))
+            inner->key_suppliedp_indices[i] = cl_env_add_local(env, inner->ll.key_suppliedp[i]);
         else
-            key_suppliedp_indices[i] = alloc_temp_slot(env);
+            inner->key_suppliedp_indices[i] = alloc_temp_slot(env);
     }
-    for (i = 0; i < ll.n_aux; i++)
-        cl_env_add_local(env, ll.aux_names[i]);
+    for (i = 0; i < inner->ll.n_aux; i++)
+        cl_env_add_local(env, inner->ll.aux_names[i]);
 
     /* Emit prologue for key defaults: check the VM-set tracking slot,
      * not the key value itself (which could legitimately be NIL). */
-    for (i = 0; i < ll.n_keys; i++) {
-        if (!CL_NULL_P(ll.key_defaults[i])) {
+    for (i = 0; i < inner->ll.n_keys; i++) {
+        if (!CL_NULL_P(inner->ll.key_defaults[i])) {
             int skip_pos;
             cl_emit(inner, OP_LOAD);
-            cl_emit(inner, (uint8_t)key_suppliedp_indices[i]);
+            cl_emit(inner, (uint8_t)inner->key_suppliedp_indices[i]);
             skip_pos = cl_emit_jump(inner, OP_JTRUE);
             {
                 int saved = inner->in_tail;
                 inner->in_tail = 0;
-                compile_expr(inner, ll.key_defaults[i]);
+                compile_expr(inner, inner->ll.key_defaults[i]);
                 inner->in_tail = saved;
             }
             cl_emit(inner, OP_STORE);
-            cl_emit(inner, (uint8_t)key_slot_indices[i]);
+            cl_emit(inner, (uint8_t)inner->key_slot_indices[i]);
             cl_emit(inner, OP_POP);
             cl_patch_jump(inner, skip_pos);
         }
     }
 
     /* Emit prologue for &aux bindings */
-    for (i = 0; i < ll.n_aux; i++) {
-        int aux_slot = cl_env_lookup(env, ll.aux_names[i]);
+    for (i = 0; i < inner->ll.n_aux; i++) {
+        int aux_slot = cl_env_lookup(env, inner->ll.aux_names[i]);
         {
             int saved = inner->in_tail;
             inner->in_tail = 0;
-            compile_expr(inner, ll.aux_inits[i]);
+            compile_expr(inner, inner->ll.aux_inits[i]);
             inner->in_tail = saved;
         }
         cl_emit(inner, OP_STORE);
@@ -428,48 +429,45 @@ void compile_lambda(CL_Compiler *c, CL_Obj form)
 
     /* Box params that are both mutated and captured across closure boundary */
     {
-        CL_Obj param_vars[CL_MAX_LOCALS];
-        int param_slots[CL_MAX_LOCALS];
         int n_params = 0;
-        uint8_t needs_boxing[CL_MAX_LOCALS];
 
-        for (i = 0; i < ll.n_required; i++) {
-            param_slots[n_params] = cl_env_lookup(env, ll.required[i]);
-            param_vars[n_params] = ll.required[i];
+        for (i = 0; i < inner->ll.n_required; i++) {
+            inner->param_slots[n_params] = cl_env_lookup(env, inner->ll.required[i]);
+            inner->param_vars[n_params] = inner->ll.required[i];
             n_params++;
         }
-        for (i = 0; i < ll.n_optional; i++) {
-            param_slots[n_params] = cl_env_lookup(env, ll.opt_names[i]);
-            param_vars[n_params] = ll.opt_names[i];
+        for (i = 0; i < inner->ll.n_optional; i++) {
+            inner->param_slots[n_params] = cl_env_lookup(env, inner->ll.opt_names[i]);
+            inner->param_vars[n_params] = inner->ll.opt_names[i];
             n_params++;
         }
-        if (ll.has_rest) {
-            param_slots[n_params] = cl_env_lookup(env, ll.rest_name);
-            param_vars[n_params] = ll.rest_name;
+        if (inner->ll.has_rest) {
+            inner->param_slots[n_params] = cl_env_lookup(env, inner->ll.rest_name);
+            inner->param_vars[n_params] = inner->ll.rest_name;
             n_params++;
         }
-        for (i = 0; i < ll.n_keys; i++) {
-            param_slots[n_params] = key_slot_indices[i];
-            param_vars[n_params] = ll.key_names[i];
+        for (i = 0; i < inner->ll.n_keys; i++) {
+            inner->param_slots[n_params] = inner->key_slot_indices[i];
+            inner->param_vars[n_params] = inner->ll.key_names[i];
             n_params++;
         }
-        for (i = 0; i < ll.n_aux; i++) {
-            param_slots[n_params] = cl_env_lookup(env, ll.aux_names[i]);
-            param_vars[n_params] = ll.aux_names[i];
+        for (i = 0; i < inner->ll.n_aux; i++) {
+            inner->param_slots[n_params] = cl_env_lookup(env, inner->ll.aux_names[i]);
+            inner->param_vars[n_params] = inner->ll.aux_names[i];
             n_params++;
         }
 
         if (n_params > 0) {
-            determine_boxed_vars(body, param_vars, n_params, needs_boxing);
+            determine_boxed_vars(body, inner->param_vars, n_params, inner->lambda_needs_boxing);
             for (i = 0; i < n_params; i++) {
-                if (needs_boxing[i] && param_slots[i] >= 0) {
+                if (inner->lambda_needs_boxing[i] && inner->param_slots[i] >= 0) {
                     cl_emit(inner, OP_LOAD);
-                    cl_emit(inner, (uint8_t)param_slots[i]);
+                    cl_emit(inner, (uint8_t)inner->param_slots[i]);
                     cl_emit(inner, OP_MAKE_CELL);
                     cl_emit(inner, OP_STORE);
-                    cl_emit(inner, (uint8_t)param_slots[i]);
+                    cl_emit(inner, (uint8_t)inner->param_slots[i]);
                     cl_emit(inner, OP_POP);
-                    env->boxed[param_slots[i]] = 1;
+                    env->boxed[inner->param_slots[i]] = 1;
                 }
             }
         }
@@ -499,23 +497,23 @@ void compile_lambda(CL_Compiler *c, CL_Obj form)
         bc->n_constants = 0;
     }
 
-    bc->arity = ll.has_rest ? (ll.n_required | 0x8000) : ll.n_required;
+    bc->arity = inner->ll.has_rest ? (inner->ll.n_required | 0x8000) : inner->ll.n_required;
     bc->n_locals = env->max_locals;
     bc->n_upvalues = env->upvalue_count;
     bc->name = pending_lambda_name;
     pending_lambda_name = CL_NIL;
-    bc->n_optional = (uint8_t)ll.n_optional;
-    bc->flags = (ll.n_keys > 0 ? 1 : 0) | (ll.allow_other_keys ? 2 : 0);
-    bc->n_keys = (uint8_t)ll.n_keys;
+    bc->n_optional = (uint8_t)inner->ll.n_optional;
+    bc->flags = (inner->ll.n_keys > 0 ? 1 : 0) | (inner->ll.allow_other_keys ? 2 : 0);
+    bc->n_keys = (uint8_t)inner->ll.n_keys;
 
-    if (ll.n_keys > 0) {
-        bc->key_syms = (CL_Obj *)platform_alloc(ll.n_keys * sizeof(CL_Obj));
-        bc->key_slots = (uint8_t *)platform_alloc(ll.n_keys);
-        bc->key_suppliedp_slots = (uint8_t *)platform_alloc(ll.n_keys);
-        for (i = 0; i < ll.n_keys; i++) {
-            bc->key_syms[i] = ll.key_keywords[i];
-            bc->key_slots[i] = (uint8_t)key_slot_indices[i];
-            bc->key_suppliedp_slots[i] = (uint8_t)key_suppliedp_indices[i];
+    if (inner->ll.n_keys > 0) {
+        bc->key_syms = (CL_Obj *)platform_alloc(inner->ll.n_keys * sizeof(CL_Obj));
+        bc->key_slots = (uint8_t *)platform_alloc(inner->ll.n_keys);
+        bc->key_suppliedp_slots = (uint8_t *)platform_alloc(inner->ll.n_keys);
+        for (i = 0; i < inner->ll.n_keys; i++) {
+            bc->key_syms[i] = inner->ll.key_keywords[i];
+            bc->key_slots[i] = (uint8_t)inner->key_slot_indices[i];
+            bc->key_suppliedp_slots[i] = (uint8_t)inner->key_suppliedp_indices[i];
         }
     } else {
         bc->key_syms = NULL;
@@ -771,13 +769,14 @@ void scan_body_for_boxing(CL_Obj form, CL_Obj *vars, int n_vars,
 void determine_boxed_vars(CL_Obj body, CL_Obj *vars, int n_vars,
                           uint8_t *boxed_out)
 {
-    uint8_t mutated[CL_MAX_LOCALS];
-    uint8_t captured[CL_MAX_LOCALS];
+    uint8_t mutated[CL_MAX_BINDINGS];
+    uint8_t captured[CL_MAX_BINDINGS];
     int i;
 
-    memset(mutated, 0, n_vars);
-    memset(captured, 0, n_vars);
-    memset(boxed_out, 0, n_vars);
+    if (n_vars > CL_MAX_BINDINGS) n_vars = CL_MAX_BINDINGS;
+    memset(mutated, 0, (size_t)n_vars);
+    memset(captured, 0, (size_t)n_vars);
+    memset(boxed_out, 0, (size_t)n_vars);
 
     /* Scan all body forms */
     {
@@ -815,19 +814,19 @@ static void compile_let(CL_Compiler *c, CL_Obj form, int sequential)
 
     if (sequential) {
         /* Pre-scan all bindings + body for boxing analysis */
-        CL_Obj all_vars[CL_MAX_LOCALS];
-        uint8_t needs_boxing[CL_MAX_LOCALS];
+        CL_Obj all_vars[CL_MAX_BINDINGS];
+        uint8_t needs_boxing[CL_MAX_BINDINGS];
         int n_all = 0;
         {
             CL_Obj b = bindings;
-            while (!CL_NULL_P(b) && n_all < CL_MAX_LOCALS) {
+            while (!CL_NULL_P(b) && n_all < CL_MAX_BINDINGS) {
                 CL_Obj binding = cl_car(b);
                 all_vars[n_all++] = CL_CONS_P(binding) ? cl_car(binding) : binding;
                 b = cl_cdr(b);
             }
         }
         {
-            uint8_t mutated[CL_MAX_LOCALS], captured[CL_MAX_LOCALS];
+            uint8_t mutated[CL_MAX_BINDINGS], captured[CL_MAX_BINDINGS];
             int bi;
             CL_Obj b;
             memset(mutated, 0, (size_t)n_all);
@@ -903,12 +902,12 @@ static void compile_let(CL_Compiler *c, CL_Obj form, int sequential)
             }
         }
     } else {
-        CL_Obj vars[CL_MAX_LOCALS];
-        CL_Obj vals[CL_MAX_LOCALS];
+        CL_Obj vars[CL_MAX_BINDINGS];
+        CL_Obj vals[CL_MAX_BINDINGS];
         int n = 0, i;
         CL_Obj b = bindings;
 
-        while (!CL_NULL_P(b) && n < CL_MAX_LOCALS) {
+        while (!CL_NULL_P(b) && n < CL_MAX_BINDINGS) {
             CL_Obj binding = cl_car(b);
             if (CL_CONS_P(binding)) {
                 vars[n] = cl_car(binding);
@@ -927,7 +926,7 @@ static void compile_let(CL_Compiler *c, CL_Obj form, int sequential)
         }
 
         {
-            int lexical_slots[CL_MAX_LOCALS];
+            int lexical_slots[CL_MAX_BINDINGS];
             for (i = 0; i < n; i++) {
                 if (var_is_special(vars[i], local_specials)) {
                     lexical_slots[i] = -1;
@@ -950,10 +949,10 @@ static void compile_let(CL_Compiler *c, CL_Obj form, int sequential)
 
             /* Box lexical vars that are both mutated and captured */
             {
-                CL_Obj lex_vars[CL_MAX_LOCALS];
-                int lex_slots[CL_MAX_LOCALS];
+                CL_Obj lex_vars[CL_MAX_BINDINGS];
+                int lex_slots[CL_MAX_BINDINGS];
                 int n_lex = 0;
-                uint8_t needs_boxing[CL_MAX_LOCALS];
+                uint8_t needs_boxing[CL_MAX_BINDINGS];
 
                 for (i = 0; i < n; i++) {
                     if (lexical_slots[i] >= 0) {

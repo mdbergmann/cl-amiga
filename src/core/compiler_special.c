@@ -1341,11 +1341,11 @@ void compile_do(CL_Compiler *c, CL_Obj form)
     int saved_block_count = c->block_count;
 
     /* Parse bindings into arrays */
-    CL_Obj vars[CL_MAX_LOCALS];
-    CL_Obj inits[CL_MAX_LOCALS];
-    CL_Obj steps[CL_MAX_LOCALS];  /* CL_NIL if no step form */
-    int has_step[CL_MAX_LOCALS];
-    uint8_t do_boxed[CL_MAX_LOCALS];
+    CL_Obj vars[CL_MAX_BINDINGS];
+    CL_Obj inits[CL_MAX_BINDINGS];
+    CL_Obj steps[CL_MAX_BINDINGS];  /* CL_NIL if no step form */
+    int has_step[CL_MAX_BINDINGS];
+    uint8_t do_boxed[CL_MAX_BINDINGS];
     int n = 0;
     int i;
     int loop_start, jtrue_pos;
@@ -1354,7 +1354,7 @@ void compile_do(CL_Compiler *c, CL_Obj form)
 
     {
         CL_Obj vc = var_clauses;
-        while (!CL_NULL_P(vc) && n < CL_MAX_LOCALS) {
+        while (!CL_NULL_P(vc) && n < CL_MAX_BINDINGS) {
             CL_Obj clause = cl_car(vc);
             vars[n] = cl_car(clause);
             inits[n] = cl_car(cl_cdr(clause));
@@ -1372,7 +1372,7 @@ void compile_do(CL_Compiler *c, CL_Obj form)
 
     /* Check which do vars are captured (all stepped vars are mutated by loop) */
     {
-        uint8_t mutated[CL_MAX_LOCALS], captured[CL_MAX_LOCALS];
+        uint8_t mutated[CL_MAX_BINDINGS], captured[CL_MAX_BINDINGS];
         CL_Obj cur;
         memset(mutated, 0, (size_t)n);
         memset(captured, 0, (size_t)n);
