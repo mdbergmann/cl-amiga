@@ -558,31 +558,6 @@
         (setq p (cddr p))))
     `(let ,(reverse temps) ,@(reverse sets) nil)))
 
-;; rotatef — rotate values among places
-(defmacro rotatef (&rest places)
-  (if (null places) nil
-    (if (null (cdr places)) nil
-      (let ((temps (mapcar (lambda (p) (declare (ignore p)) (gensym)) places)))
-        `(let ,(mapcar #'list temps places)
-           ,@(mapcar (lambda (p v) `(setf ,p ,v))
-                     places
-                     (append (cdr temps) (list (car temps))))
-           nil)))))
-
-;; shiftf — shift values left among places, return first
-(defmacro shiftf (&rest places-and-newval)
-  (if (null (cdr places-and-newval)) (car places-and-newval)
-    (let* ((places (butlast places-and-newval))
-           (newval (car (last places-and-newval)))
-           (temps (mapcar (lambda (p) (declare (ignore p)) (gensym)) places))
-           (tval (gensym)))
-      `(let (,@(mapcar #'list temps places)
-             (,tval ,newval))
-         ,@(mapcar (lambda (p v) `(setf ,p ,v))
-                   places
-                   (append (cdr temps) (list tval)))
-         ,(car temps)))))
-
 ;; read-from-string — read an S-expression from a string
 (defun read-from-string (string &optional eof-error-p eof-value)
   (let ((s (make-string-input-stream string)))
