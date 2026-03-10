@@ -1003,24 +1003,49 @@ static CL_Obj bi_substitute_if(CL_Obj *args, int n)
                 if (match) replaced++;
             }
         }
+    } else if (CL_STRING_P(seq)) {
+        /* String: return a new string with substitutions */
+        CL_String *s = (CL_String *)CL_OBJ_TO_PTR(seq);
+        uint32_t slen = s->length;
+        char *buf = (char *)platform_alloc(slen + 1);
+        if (!buf) { CL_GC_UNPROTECT(3); return seq; }
+        memcpy(buf, s->data, slen);
+        buf[slen] = '\0';
+        for (i = sa.start; i < end && i < (int32_t)slen; i++) {
+            if (sa.count >= 0 && replaced >= sa.count) break;
+            {
+                CL_Obj elem = CL_MAKE_CHAR((unsigned char)buf[i]);
+                if (seq_pred_match(pred, sa.key_fn, elem)) {
+                    if (CL_CHAR_P(newitem))
+                        buf[i] = (char)CL_CHAR_VAL(newitem);
+                    replaced++;
+                }
+            }
+        }
+        result = cl_make_string(buf, slen);
+        platform_free(buf);
     } else if (CL_VECTOR_P(seq)) {
         CL_Vector *v = (CL_Vector *)CL_OBJ_TO_PTR(seq);
         int32_t vlen = (int32_t)cl_vector_active_length(v);
-        CL_Obj *elts = cl_vector_data(v);
-        for (i = 0; i < vlen; i++) {
-            CL_Obj elem = elts[i];
-            int match = 0;
-            if (i >= sa.start && i < end && (sa.count < 0 || replaced < sa.count))
-                match = seq_pred_match(pred, sa.key_fn, elem);
-            {
-                CL_Obj val = match ? newitem : elem;
-                CL_Obj cell = cl_cons(val, CL_NIL);
-                if (CL_NULL_P(result)) result = cell;
-                else ((CL_Cons *)CL_OBJ_TO_PTR(tail))->cdr = cell;
-                tail = cell;
+        CL_Obj *elts;
+        /* Build a new vector with substitutions */
+        result = cl_make_vector((uint32_t)vlen);
+        CL_GC_PROTECT(result);
+        v = (CL_Vector *)CL_OBJ_TO_PTR(seq); /* refresh after alloc */
+        elts = cl_vector_data(v);
+        {
+            CL_Vector *rv = (CL_Vector *)CL_OBJ_TO_PTR(result);
+            CL_Obj *relts = cl_vector_data(rv);
+            for (i = 0; i < vlen; i++) {
+                CL_Obj elem = elts[i];
+                int match = 0;
+                if (i >= sa.start && i < end && (sa.count < 0 || replaced < sa.count))
+                    match = seq_pred_match(pred, sa.key_fn, elem);
+                relts[i] = match ? newitem : elem;
                 if (match) replaced++;
             }
         }
+        CL_GC_UNPROTECT(1); /* extra protect for result */
     }
 
     CL_GC_UNPROTECT(3);

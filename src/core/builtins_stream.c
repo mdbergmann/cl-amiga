@@ -697,7 +697,7 @@ static CL_Obj bi_delete_file(CL_Obj *args, int n)
     if (!path)
         cl_error(CL_ERR_TYPE, "DELETE-FILE: argument must be a pathname designator");
     if (platform_file_delete(path) != 0)
-        cl_error(CL_ERR_GENERAL, "DELETE-FILE: cannot delete file");
+        cl_error(CL_ERR_FILE, "DELETE-FILE: cannot delete file");
     return CL_T;
 }
 

@@ -848,8 +848,9 @@ static void print_obj(CL_Obj obj)
                 out_str("#:");
             out_symbol_name(cl_symbol_name(obj));
         } else if (sym->package == cl_package_keyword) {
-            /* Keyword */
-            out_char(':');
+            /* Keyword — colon prefix only when *print-escape* is true */
+            if (print_escape_p())
+                out_char(':');
             out_symbol_name(cl_symbol_name(obj));
         } else if (sym->package == cl_current_package ||
                    cl_package_find_symbol(cl_symbol_name(obj),

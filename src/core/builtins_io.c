@@ -16,6 +16,9 @@
 #include <string.h>
 #include <stdlib.h>
 
+/* Forward declarations for helpers used in bi_load before definition */
+static int make_fasl_cache_path(const char *input, char *output, uint32_t outsize);
+
 /* Helper to register a builtin */
 static void defun(const char *name, CL_CFunc func, int min, int max)
 {
@@ -293,6 +296,80 @@ static CL_Obj bi_load(CL_Obj *args, int n)
         cl_error(CL_ERR_TYPE, "LOAD: argument must be a string or pathname");
 
     path_str = (CL_String *)CL_OBJ_TO_PTR(args[0]);
+
+    /* Check for cached FASL before reading source */
+    {
+        char cache_path[1024];
+        if (make_fasl_cache_path(path_str->data, cache_path, sizeof(cache_path)) &&
+            platform_file_exists(cache_path))
+        {
+            uint32_t src_mtime = platform_file_mtime(path_str->data);
+            uint32_t fasl_mtime = platform_file_mtime(cache_path);
+            if (fasl_mtime > 0 && fasl_mtime >= src_mtime) {
+                /* Load cached FASL instead of source */
+                buf = platform_file_read(cache_path, &size);
+                if (buf) {
+                    /* Verify it's actually a FASL */
+                    if (size >= 4) {
+                        uint32_t magic = ((uint32_t)(uint8_t)buf[0] << 24) |
+                                         ((uint32_t)(uint8_t)buf[1] << 16) |
+                                         ((uint32_t)(uint8_t)buf[2] << 8) |
+                                         ((uint32_t)(uint8_t)buf[3]);
+                        if (magic == CL_FASL_MAGIC) {
+                            /* Bind load-pathname and load-truename */
+                            {
+                                extern CL_Obj cl_parse_namestring(const char *str, uint32_t len);
+                                load_pathname_obj = cl_parse_namestring(path_str->data,
+                                    (uint32_t)strlen(path_str->data));
+                            }
+                            {
+                                char resolved[512];
+                                if (platform_realpath(path_str->data, resolved, (int)sizeof(resolved))) {
+                                    extern CL_Obj cl_parse_namestring(const char *str, uint32_t len);
+                                    load_truename_obj = cl_parse_namestring(resolved,
+                                        (uint32_t)strlen(resolved));
+                                } else {
+                                    load_truename_obj = load_pathname_obj;
+                                }
+                            }
+                            CL_GC_PROTECT(load_pathname_obj);
+                            CL_GC_PROTECT(load_truename_obj);
+                            lp_sym = (CL_Symbol *)CL_OBJ_TO_PTR(SYM_STAR_LOAD_PATHNAME);
+                            lt_sym = (CL_Symbol *)CL_OBJ_TO_PTR(SYM_STAR_LOAD_TRUENAME);
+                            saved_load_pathname = lp_sym->value;
+                            saved_load_truename = lt_sym->value;
+                            lp_sym->value = load_pathname_obj;
+                            lt_sym->value = load_truename_obj;
+
+                            {
+                                CL_Symbol *lv_sym = (CL_Symbol *)CL_OBJ_TO_PTR(SYM_STAR_LOAD_VERBOSE);
+                                if (!CL_NULL_P(lv_sym->value)) {
+                                    platform_write_string("; Loading cached FASL ");
+                                    platform_write_string(cache_path);
+                                    platform_write_string("\n");
+                                }
+                            }
+
+                            cl_fasl_load((const uint8_t *)buf, (uint32_t)size);
+                            platform_free(buf);
+
+                            lp_sym->value = saved_load_pathname;
+                            lt_sym->value = saved_load_truename;
+                            CL_GC_UNPROTECT(2);
+                            cl_current_package = saved_package;
+                            {
+                                CL_Symbol *pkg_sym = (CL_Symbol *)CL_OBJ_TO_PTR(SYM_STAR_PACKAGE);
+                                pkg_sym->value = saved_package;
+                            }
+                            return SYM_T;
+                        }
+                    }
+                    platform_free(buf);
+                }
+            }
+        }
+    }
+
     buf = platform_file_read(path_str->data, &size);
     if (!buf)
         cl_error(CL_ERR_GENERAL, "LOAD: cannot open file");
@@ -423,6 +500,159 @@ static CL_Obj bi_load(CL_Obj *args, int n)
     return SYM_T;
 }
 
+/* --- Helper: recursive mkdir (like mkdir -p) --- */
+
+static void mkdir_p(const char *path)
+{
+    char buf[1024];
+    int i, len;
+    len = (int)strlen(path);
+    if (len >= (int)sizeof(buf)) return;
+    memcpy(buf, path, (size_t)len + 1);
+    for (i = 1; i < len; i++) {
+#ifdef PLATFORM_AMIGA
+        if (buf[i] == '/') {
+            /* Don't mkdir before the colon (volume name) */
+            int has_colon = 0;
+            int j;
+            for (j = 0; j < i; j++) {
+                if (buf[j] == ':') { has_colon = 1; break; }
+            }
+            if (!has_colon) continue;
+            buf[i] = '\0';
+            platform_mkdir(buf);
+            buf[i] = '/';
+        }
+#else
+        if (buf[i] == '/') {
+            buf[i] = '\0';
+            platform_mkdir(buf);
+            buf[i] = '/';
+        }
+#endif
+    }
+    platform_mkdir(buf);
+}
+
+/* --- Helper: construct FASL cache path from source path --- */
+
+static int make_fasl_cache_path(const char *input, char *output, uint32_t outsize)
+{
+    char resolved[1024];
+    char root[512];
+    const char *src;
+    const char *dot;
+    size_t root_len, src_len, base_len, total;
+
+    /* Resolve to absolute path — try realpath first, fall back to
+       resolving directory + filename for non-existent files */
+    if (!platform_realpath(input, resolved, (int)sizeof(resolved))) {
+        /* File doesn't exist yet — try resolving directory */
+        const char *last_sep = strrchr(input, '/');
+#ifdef PLATFORM_AMIGA
+        const char *colon = strrchr(input, ':');
+        if (colon && (!last_sep || colon > last_sep))
+            last_sep = colon;
+#endif
+        if (last_sep) {
+            char dir_buf[1024];
+            size_t dir_len = (size_t)(last_sep - input + 1);
+            if (dir_len >= sizeof(dir_buf)) return 0;
+            memcpy(dir_buf, input, dir_len);
+            dir_buf[dir_len] = '\0';
+            if (platform_realpath(dir_buf, resolved, (int)sizeof(resolved))) {
+                size_t rlen = strlen(resolved);
+                const char *fname = last_sep + 1;
+                size_t flen = strlen(fname);
+                if (rlen + 1 + flen >= sizeof(resolved)) return 0;
+                if (rlen > 0 && resolved[rlen - 1] != '/') {
+                    resolved[rlen] = '/';
+                    rlen++;
+                }
+                memcpy(resolved + rlen, fname, flen + 1);
+            } else {
+                return 0;
+            }
+        } else if (input[0] == '/') {
+            /* Already absolute but doesn't exist */
+            if (strlen(input) >= sizeof(resolved)) return 0;
+            strcpy(resolved, input);
+        } else {
+            /* Relative path, resolve from cwd */
+            char cwd[512];
+            size_t clen, ilen;
+            if (!platform_getcwd(cwd, (int)sizeof(cwd))) return 0;
+            clen = strlen(cwd);
+            ilen = strlen(input);
+            if (clen + 1 + ilen >= sizeof(resolved)) return 0;
+            memcpy(resolved, cwd, clen);
+            resolved[clen] = '/';
+            memcpy(resolved + clen + 1, input, ilen + 1);
+        }
+    }
+
+    /* Build cache root */
+#ifdef PLATFORM_AMIGA
+    snprintf(root, sizeof(root), "S:cl-amiga/faslcache/%s/", CL_VERSION_STRING);
+    /* Transform "DH0:path" -> "DH0/path" by replacing ':' with '/' */
+    {
+        char *colon = strchr(resolved, ':');
+        if (colon) *colon = '/';
+    }
+    src = resolved;
+#else
+    {
+        const char *home = platform_getenv("HOME", root, sizeof(root));
+        if (!home) return 0;
+        snprintf(root, sizeof(root), "%s/.cache/common-lisp/cl-amiga-%s/",
+                 home, CL_VERSION_STRING);
+    }
+    /* Strip leading '/' */
+    src = resolved;
+    if (src[0] == '/') src++;
+#endif
+
+    root_len = strlen(root);
+    src_len = strlen(src);
+
+    /* Find last dot for extension replacement */
+    dot = strrchr(src, '.');
+    if (dot && dot > strrchr(src, '/')) {
+        base_len = (size_t)(dot - src);
+    } else {
+        base_len = src_len;
+    }
+
+    total = root_len + base_len + 5; /* ".fasl" */
+    if (total + 1 > outsize) return 0;
+
+    memcpy(output, root, root_len);
+    memcpy(output + root_len, src, base_len);
+    memcpy(output + root_len + base_len, ".fasl", 5);
+    output[root_len + base_len + 5] = '\0';
+    return 1;
+}
+
+/* --- Helper: get directory portion of path --- */
+
+static void path_directory(const char *path, char *dir, uint32_t dirsize)
+{
+    const char *last_sep = strrchr(path, '/');
+#ifdef PLATFORM_AMIGA
+    const char *colon = strrchr(path, ':');
+    if (colon && (!last_sep || colon > last_sep))
+        last_sep = colon;
+#endif
+    if (last_sep) {
+        size_t len = (size_t)(last_sep - path + 1);
+        if (len >= dirsize) len = dirsize - 1;
+        memcpy(dir, path, len);
+        dir[len] = '\0';
+    } else {
+        dir[0] = '\0';
+    }
+}
+
 /* --- Helper: replace extension with .fasl --- */
 
 static void make_fasl_path(const char *input, char *output, uint32_t outsize)
@@ -512,8 +742,11 @@ static CL_Obj bi_compile_file(CL_Obj *args, int n)
         return CL_NIL;
     }
 
+    /* Default output: cache path, fallback to next-to-source */
+    if (!make_fasl_cache_path(in_path, out_path, sizeof(out_path)))
+        make_fasl_path(in_path, out_path, sizeof(out_path));
+
     /* Parse keyword args: :output-file, :verbose */
-    make_fasl_path(in_path, out_path, sizeof(out_path));
     for (i = 1; i + 1 < n; i += 2) {
         if (args[i] == cl_intern_keyword("OUTPUT-FILE", 11)) {
             if (CL_PATHNAME_P(args[i + 1])) {
@@ -666,6 +899,13 @@ static CL_Obj bi_compile_file(CL_Obj *args, int n)
     fasl_buf[10] = (uint8_t)(n_units >> 8);
     fasl_buf[11] = (uint8_t)(n_units);
 
+    /* Ensure output directory exists */
+    {
+        char dir[1024];
+        path_directory(out_path, dir, sizeof(dir));
+        if (dir[0]) mkdir_p(dir);
+    }
+
     /* Write FASL file to disk */
     {
         PlatformFile fh = platform_file_open(out_path, PLATFORM_FILE_WRITE);
@@ -738,8 +978,9 @@ static CL_Obj bi_compile_file_pathname(CL_Obj *args, int n)
         return CL_NIL;
     }
 
-    /* Default: replace extension with .fasl */
-    make_fasl_path(in_path, out_path, sizeof(out_path));
+    /* Default: cache path, fallback to next-to-source */
+    if (!make_fasl_cache_path(in_path, out_path, sizeof(out_path)))
+        make_fasl_path(in_path, out_path, sizeof(out_path));
 
     /* Check for :output-file keyword override */
     for (i = 1; i + 1 < n; i += 2) {

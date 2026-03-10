@@ -18,6 +18,9 @@
 #include <stdint.h>
 #include <stddef.h>
 
+/* Version string — used for FASL cache paths */
+#define CL_VERSION_STRING "0.1"
+
 typedef uint32_t CL_Obj;
 
 /* Arena base pointer — needed for offset↔pointer conversion */

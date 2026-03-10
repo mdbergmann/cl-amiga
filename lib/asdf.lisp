@@ -2243,7 +2243,7 @@ then returning the non-empty string value of the variable"
      '(:abcl (:acl :allegro) (:ccl :clozure) :clisp (:corman :cormanlisp)
        (:cmu :cmucl :cmu) :clasp :ecl :gcl
        (:lwpe :lispworks-personal-edition) (:lw :lispworks)
-       :mcl :mezzano :mkcl :sbcl :scl (:smbx :symbolics) :xcl)))
+       :mcl :mezzano :mkcl :sbcl :scl (:smbx :symbolics) :xcl :cl-amiga)))
 
   (defvar *implementation-type* (implementation-type)
     "The type of Lisp implementation used, as a short UIOP-standardized keyword")
@@ -2258,6 +2258,7 @@ then returning the non-empty string value of the variable"
        (:solaris :solaris :sunos)
        (:bsd :bsd :freebsd :netbsd :openbsd :dragonfly)
        :unix
+       :amigaos
        :genera
        :mezzano)))
 
@@ -2271,6 +2272,7 @@ then returning the non-empty string value of the variable"
        :mipsel :mipseb :mips :alpha
        (:arm64 :arm64 :aarch64 :armv8l :armv8b :aarch64_be :|aarch64|)
        (:arm :arm :arm-target) :vlm :imach
+       :m68k
        ;; Java comes last: if someone uses C via CFFI or otherwise JNA or JNI,
        ;; we may have to segregate the code still by architecture.
        (:java :java :java-1.4 :java-1.5 :java-1.6 :java-1.7))))

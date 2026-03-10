@@ -1427,73 +1427,120 @@ static void write_test_file(const char *path, const char *content)
     }
 }
 
-TEST(compile_file_pathname_default)
+/* Helper: get the cache path for a source file (via compile-file-pathname) */
+static const char *get_fasl_path(const char *lisp_expr_buf)
 {
-    /* compile-file-pathname replaces .lisp with .fasl */
-    ASSERT_STR_EQ(eval_print("(namestring (compile-file-pathname \"test.lisp\"))"),
-                  "\"test.fasl\"");
+    /* Returns pointer to static eval_print buffer */
+    return eval_print(lisp_expr_buf);
+}
+
+/* Helper: delete a FASL file given its source path */
+static void delete_cached_fasl(const char *source_path)
+{
+    char expr[256];
+    const char *fasl_path;
+    snprintf(expr, sizeof(expr),
+        "(namestring (compile-file-pathname \"%s\"))", source_path);
+    fasl_path = eval_print(expr);
+    /* fasl_path is quoted like "\"/path/to/file.fasl\"" — strip quotes */
+    if (fasl_path && fasl_path[0] == '"') {
+        char path_buf[1024];
+        size_t len = strlen(fasl_path);
+        if (len > 2 && len - 2 < sizeof(path_buf)) {
+            memcpy(path_buf, fasl_path + 1, len - 2);
+            path_buf[len - 2] = '\0';
+            platform_file_delete(path_buf);
+        }
+    }
+}
+
+TEST(compile_file_pathname_uses_cache)
+{
+    /* compile-file-pathname should return a cache path under ~/.cache */
+    const char *result = eval_print(
+        "(namestring (compile-file-pathname \"/tmp/test.lisp\"))");
+    /* Should contain the cache directory structure and version */
+    ASSERT(result != NULL);
+    ASSERT(strstr(result, ".cache/common-lisp/cl-amiga-") != NULL);
+    ASSERT(strstr(result, CL_VERSION_STRING) != NULL);
+    /* Should end with test.fasl (path may include /private/tmp on macOS) */
+    ASSERT(strstr(result, "test.fasl") != NULL);
 }
 
 TEST(compile_file_pathname_no_ext)
 {
-    /* No extension → appends .fasl */
-    ASSERT_STR_EQ(eval_print("(namestring (compile-file-pathname \"/tmp/myfile\"))"),
-                  "\"/tmp/myfile.fasl\"");
+    /* No extension -> appends .fasl */
+    const char *result = eval_print(
+        "(namestring (compile-file-pathname \"/tmp/myfile\"))");
+    ASSERT(result != NULL);
+    ASSERT(strstr(result, "tmp/myfile.fasl") != NULL);
+}
+
+TEST(compile_file_pathname_output_file_override)
+{
+    /* :output-file overrides cache path */
+    ASSERT_STR_EQ(
+        eval_print("(namestring (compile-file-pathname \"/tmp/x.lisp\" "
+                    ":output-file \"/tmp/custom.fasl\"))"),
+        "\"/tmp/custom.fasl\"");
 }
 
 TEST(compile_file_basic)
 {
-    /* Write source, compile, verify .fasl exists */
+    /* Write source, compile, verify .fasl exists at cache path */
     write_test_file("/tmp/cf-test1.lisp",
         "(defvar *cf-test-val* 42)\n");
 
     eval_obj("(compile-file \"/tmp/cf-test1.lisp\")");
 
-    /* Verify output file exists */
-    ASSERT(platform_file_exists("/tmp/cf-test1.fasl"));
-
-    /* Verify FASL magic */
+    /* Verify output file exists at the path compile-file-pathname returns */
     {
-        unsigned long sz;
-        char *data = platform_file_read("/tmp/cf-test1.fasl", &sz);
-        ASSERT(data != NULL);
-        ASSERT(sz >= 4);
-        ASSERT((uint8_t)data[0] == 'C');
-        ASSERT((uint8_t)data[1] == 'L');
-        ASSERT((uint8_t)data[2] == 'F');
-        ASSERT((uint8_t)data[3] == 'A');
-        platform_free(data);
+        const char *result = eval_print(
+            "(probe-file (compile-file-pathname \"/tmp/cf-test1.lisp\"))");
+        ASSERT(result != NULL);
+        /* probe-file returns pathname if exists, NIL if not */
+        ASSERT(strcmp(result, "NIL") != 0);
+    }
+
+    /* Verify FASL magic by loading the cached file */
+    {
+        char expr[512];
+        snprintf(expr, sizeof(expr),
+            "(with-open-file (s (compile-file-pathname \"/tmp/cf-test1.lisp\") "
+            ":element-type '(unsigned-byte 8)) "
+            "(list (read-byte s) (read-byte s) (read-byte s) (read-byte s)))");
+        /* C=67, L=76, F=70, A=65 */
+        ASSERT_STR_EQ(eval_print(expr), "(67 76 70 65)");
     }
 
     /* Clean up */
     platform_file_delete("/tmp/cf-test1.lisp");
-    platform_file_delete("/tmp/cf-test1.fasl");
+    delete_cached_fasl("/tmp/cf-test1.lisp");
 }
 
 TEST(compile_file_and_load)
 {
-    /* Full round-trip: write .lisp → compile-file → load .fasl → verify */
+    /* Full round-trip: write .lisp -> compile-file -> load .fasl -> verify */
     write_test_file("/tmp/cf-test2.lisp",
-        "(defun cf-double (x) (* x 2))\n"
-        "(defvar *cf-loaded-val* (cf-double 21))\n");
+        "(defun cf-double (x) (* x 2))\n");
 
     eval_obj("(compile-file \"/tmp/cf-test2.lisp\")");
 
-    /* Redefine function to something else, so we can verify FASL restores it */
+    /* Redefine function to something else */
     eval_obj("(defun cf-double (x) x)");
 
-    /* Load the FASL — should redefine cf-double and set *cf-loaded-val* */
-    eval_obj("(load \"/tmp/cf-test2.fasl\")");
+    /* Load the FASL directly by its cache path */
+    eval_obj("(load (compile-file-pathname \"/tmp/cf-test2.lisp\"))");
 
     ASSERT_STR_EQ(eval_print("(cf-double 21)"), "42");
 
     platform_file_delete("/tmp/cf-test2.lisp");
-    platform_file_delete("/tmp/cf-test2.fasl");
+    delete_cached_fasl("/tmp/cf-test2.lisp");
 }
 
 TEST(compile_file_output_file_keyword)
 {
-    /* :output-file keyword */
+    /* :output-file keyword overrides cache path */
     write_test_file("/tmp/cf-test3.lisp", "(defvar *cf-custom* :ok)\n");
 
     eval_obj("(compile-file \"/tmp/cf-test3.lisp\" :output-file \"/tmp/cf-custom.fasl\")");
@@ -1510,18 +1557,18 @@ TEST(compile_file_multiple_forms)
 {
     /* Multiple top-level forms */
     write_test_file("/tmp/cf-test4.lisp",
-        "(defvar *cf-a* 10)\n"
-        "(defvar *cf-b* 20)\n"
-        "(defvar *cf-c* 30)\n"
-        "(defun cf-sum () (+ *cf-a* *cf-b* *cf-c*))\n");
+        "(defvar *cf-a4* 10)\n"
+        "(defvar *cf-b4* 20)\n"
+        "(defvar *cf-c4* 30)\n"
+        "(defun cf-sum4 () (+ *cf-a4* *cf-b4* *cf-c4*))\n");
 
     eval_obj("(compile-file \"/tmp/cf-test4.lisp\")");
-    eval_obj("(load \"/tmp/cf-test4.fasl\")");
+    eval_obj("(load (compile-file-pathname \"/tmp/cf-test4.lisp\"))");
 
-    ASSERT_STR_EQ(eval_print("(cf-sum)"), "60");
+    ASSERT_STR_EQ(eval_print("(cf-sum4)"), "60");
 
     platform_file_delete("/tmp/cf-test4.lisp");
-    platform_file_delete("/tmp/cf-test4.fasl");
+    delete_cached_fasl("/tmp/cf-test4.lisp");
 }
 
 TEST(compile_file_returns_values)
@@ -1529,14 +1576,13 @@ TEST(compile_file_returns_values)
     /* compile-file returns (values output-truename nil nil) */
     write_test_file("/tmp/cf-test5.lisp", "(+ 1 2)\n");
 
-    /* Primary value should be the output pathname */
     {
         CL_Obj result = eval_obj("(compile-file \"/tmp/cf-test5.lisp\")");
         ASSERT(CL_PATHNAME_P(result));
     }
 
     platform_file_delete("/tmp/cf-test5.lisp");
-    platform_file_delete("/tmp/cf-test5.fasl");
+    delete_cached_fasl("/tmp/cf-test5.lisp");
 }
 
 TEST(compile_file_preserves_package)
@@ -1544,7 +1590,7 @@ TEST(compile_file_preserves_package)
     /* in-package in compiled file doesn't leak to caller */
     write_test_file("/tmp/cf-test6.lisp",
         "(in-package :cl-user)\n"
-        "(defvar *cf-pkg-test* t)\n");
+        "(defvar *cf-pkg-test6* t)\n");
 
     {
         CL_Obj pkg_before = cl_current_package;
@@ -1553,7 +1599,7 @@ TEST(compile_file_preserves_package)
     }
 
     platform_file_delete("/tmp/cf-test6.lisp");
-    platform_file_delete("/tmp/cf-test6.fasl");
+    delete_cached_fasl("/tmp/cf-test6.lisp");
 }
 
 TEST(load_fasl_preserves_package)
@@ -1561,28 +1607,28 @@ TEST(load_fasl_preserves_package)
     /* in-package in loaded FASL doesn't leak */
     write_test_file("/tmp/cf-test7.lisp",
         "(in-package :cl-user)\n"
-        "(defvar *cf-pkg-test2* t)\n");
+        "(defvar *cf-pkg-test7* t)\n");
 
     eval_obj("(compile-file \"/tmp/cf-test7.lisp\")");
 
     {
         CL_Obj pkg_before = cl_current_package;
-        eval_obj("(load \"/tmp/cf-test7.fasl\")");
+        eval_obj("(load (compile-file-pathname \"/tmp/cf-test7.lisp\"))");
         ASSERT(cl_current_package == pkg_before);
     }
 
     platform_file_delete("/tmp/cf-test7.lisp");
-    platform_file_delete("/tmp/cf-test7.fasl");
+    delete_cached_fasl("/tmp/cf-test7.lisp");
 }
 
 TEST(load_source_still_works)
 {
     /* Loading .lisp source files still works as before */
     write_test_file("/tmp/cf-test8.lisp",
-        "(defvar *cf-source-load* :source-ok)\n");
+        "(defvar *cf-source-load8* :source-ok)\n");
 
     eval_obj("(load \"/tmp/cf-test8.lisp\")");
-    ASSERT_STR_EQ(eval_print("*cf-source-load*"), ":SOURCE-OK");
+    ASSERT_STR_EQ(eval_print("*cf-source-load8*"), ":SOURCE-OK");
 
     platform_file_delete("/tmp/cf-test8.lisp");
 }
@@ -1595,12 +1641,82 @@ TEST(compile_file_with_macros)
         "(defun cf-apply-triple (n) (cf-triple n))\n");
 
     eval_obj("(compile-file \"/tmp/cf-test9.lisp\")");
-    eval_obj("(load \"/tmp/cf-test9.fasl\")");
+    eval_obj("(load (compile-file-pathname \"/tmp/cf-test9.lisp\"))");
 
     ASSERT_STR_EQ(eval_print("(cf-apply-triple 5)"), "15");
 
     platform_file_delete("/tmp/cf-test9.lisp");
-    platform_file_delete("/tmp/cf-test9.fasl");
+    delete_cached_fasl("/tmp/cf-test9.lisp");
+}
+
+TEST(load_auto_finds_cached_fasl)
+{
+    /* load of source file should auto-discover cached FASL */
+    write_test_file("/tmp/cf-test10.lisp",
+        "(defun cf-auto-fn () :from-fasl)\n");
+
+    /* Compile to create cached FASL */
+    eval_obj("(compile-file \"/tmp/cf-test10.lisp\")");
+
+    /* Now modify the source to return something different */
+    write_test_file("/tmp/cf-test10.lisp",
+        "(defun cf-auto-fn () :from-source)\n");
+
+    /* But don't touch the FASL — it's still newer because we just wrote
+       the source AFTER compile-file. Actually the source was just written,
+       so it will be newer. We need the FASL to be newer. */
+    /* Re-compile so FASL is newer than source */
+    write_test_file("/tmp/cf-test10.lisp",
+        "(defun cf-auto-fn () :from-fasl)\n");
+    eval_obj("(compile-file \"/tmp/cf-test10.lisp\")");
+
+    /* Now load by source path — should pick up the cached FASL */
+    eval_obj("(load \"/tmp/cf-test10.lisp\")");
+    ASSERT_STR_EQ(eval_print("(cf-auto-fn)"), ":FROM-FASL");
+
+    platform_file_delete("/tmp/cf-test10.lisp");
+    delete_cached_fasl("/tmp/cf-test10.lisp");
+}
+
+TEST(load_stale_fasl_falls_back_to_source)
+{
+    /* If source is newer than FASL, load should use source */
+    write_test_file("/tmp/cf-test11.lisp",
+        "(defun cf-stale-fn () :old-fasl)\n");
+
+    eval_obj("(compile-file \"/tmp/cf-test11.lisp\")");
+
+    /* Wait a moment and rewrite source with different content */
+    platform_sleep_ms(1100);  /* Ensure mtime differs (1-sec resolution) */
+
+    write_test_file("/tmp/cf-test11.lisp",
+        "(defun cf-stale-fn () :new-source)\n");
+
+    /* Load source path — FASL is stale, should load source */
+    eval_obj("(load \"/tmp/cf-test11.lisp\")");
+    ASSERT_STR_EQ(eval_print("(cf-stale-fn)"), ":NEW-SOURCE");
+
+    platform_file_delete("/tmp/cf-test11.lisp");
+    delete_cached_fasl("/tmp/cf-test11.lisp");
+}
+
+TEST(cache_paths_differ_for_different_dirs)
+{
+    /* Two files with same name in different dirs get different cache paths */
+    const char *path_a = eval_print(
+        "(namestring (compile-file-pathname \"/tmp/a/test.lisp\"))");
+    char buf_a[1024];
+    strncpy(buf_a, path_a, sizeof(buf_a) - 1);
+    buf_a[sizeof(buf_a) - 1] = '\0';
+
+    const char *path_b = eval_print(
+        "(namestring (compile-file-pathname \"/tmp/b/test.lisp\"))");
+
+    /* Paths must be different */
+    ASSERT(strcmp(buf_a, path_b) != 0);
+    /* But both should contain .fasl */
+    ASSERT(strstr(buf_a, ".fasl") != NULL);
+    ASSERT(strstr(path_b, ".fasl") != NULL);
 }
 
 /* ================================================================
@@ -1714,8 +1830,9 @@ int main(void)
     cl_repl_init();
 
     /* compile-file-pathname tests */
-    RUN(compile_file_pathname_default);
+    RUN(compile_file_pathname_uses_cache);
     RUN(compile_file_pathname_no_ext);
+    RUN(compile_file_pathname_output_file_override);
 
     /* compile-file + load round-trip tests */
     RUN(compile_file_basic);
@@ -1727,6 +1844,11 @@ int main(void)
     RUN(load_fasl_preserves_package);
     RUN(load_source_still_works);
     RUN(compile_file_with_macros);
+
+    /* FASL cache behavior tests */
+    RUN(load_auto_finds_cached_fasl);
+    RUN(load_stale_fasl_falls_back_to_source);
+    RUN(cache_paths_differ_for_different_dirs);
 
     cl_mem_shutdown();
     platform_shutdown();

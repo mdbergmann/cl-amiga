@@ -3196,6 +3196,43 @@
 (check "cdb hash mask e" 2087597948 (logand #xFFFFFFFF 6382565244))
 (check "cdb hash xor e" 2087597849 (logxor 2087597948 101))
 
+; --- FASL compile-file and load ---
+
+; Write a test Lisp file, compile it, load the FASL
+(with-open-file (s "T:fasl-test1.lisp" :direction :output :if-exists :supersede)
+  (write-string "(defun fasl-test-fn (x) (* x 3))" s)
+  (terpri s))
+(compile-file "T:fasl-test1.lisp" :output-file "T:fasl-test1.fasl")
+(check "compile-file creates FASL" t (probe-file "T:fasl-test1.fasl"))
+
+; Load the FASL and verify function works
+(load "T:fasl-test1.fasl")
+(check "load FASL defines function" 15 (fasl-test-fn 5))
+
+; compile-file with multiple forms
+(with-open-file (s "T:fasl-test2.lisp" :direction :output :if-exists :supersede)
+  (write-string "(defvar *fasl-var-a* 100)" s) (terpri s)
+  (write-string "(defvar *fasl-var-b* 200)" s) (terpri s)
+  (write-string "(defun fasl-sum () (+ *fasl-var-a* *fasl-var-b*))" s) (terpri s))
+(compile-file "T:fasl-test2.lisp" :output-file "T:fasl-test2.fasl")
+(load "T:fasl-test2.fasl")
+(check "FASL multiple forms" 300 (fasl-sum))
+
+; compile-file-pathname returns a pathname
+(check "compile-file-pathname type" t (pathnamep (compile-file-pathname "T:foo.lisp")))
+
+; compile-file returns a pathname
+(check "compile-file return type" t
+  (pathnamep (compile-file "T:fasl-test1.lisp" :output-file "T:fasl-test1.fasl")))
+
+; FASL with macros (eval-during-compile)
+(with-open-file (s "T:fasl-test3.lisp" :direction :output :if-exists :supersede)
+  (write-string "(defmacro fasl-triple (x) `(* 3 ,x))" s) (terpri s)
+  (write-string "(defun fasl-apply-triple (n) (fasl-triple n))" s) (terpri s))
+(compile-file "T:fasl-test3.lisp" :output-file "T:fasl-test3.fasl")
+(load "T:fasl-test3.fasl")
+(check "FASL with macros" 21 (fasl-apply-triple 7))
+
 ; --- Summary ---
 (format t "~%=== Results ===~%")
 (format t "Passed: ~A~%" *pass-count*)

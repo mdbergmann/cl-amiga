@@ -758,9 +758,8 @@ CL_Obj cl_fasl_load(const uint8_t *data, uint32_t size)
     }
 
     for (i = 0; i < n_units; i++) {
-        uint32_t bc_len = cl_fasl_read_u32(&r);
         CL_Obj bc_obj;
-        CL_UNUSED(bc_len);
+        cl_fasl_read_u32(&r); /* skip unit length */
 
         if (r.error) {
             cl_error(CL_ERR_GENERAL, "FASL: truncated unit header");

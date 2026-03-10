@@ -21,6 +21,7 @@
 #define CL_ERR_UNDEFINED  8
 #define CL_ERR_STORAGE    9
 #define CL_ERR_EXIT      10
+#define CL_ERR_FILE      11
 
 /* Error handler frame stack */
 #define CL_MAX_ERROR_FRAMES 16

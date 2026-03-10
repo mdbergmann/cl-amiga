@@ -646,6 +646,7 @@ CL_Obj cl_create_condition_from_error(int code, const char *msg)
     case CL_ERR_DIVZERO:   type_sym = SYM_DIVISION_BY_ZERO; break;
     case CL_ERR_OVERFLOW:  type_sym = SYM_ARITHMETIC_ERROR; break;
     case CL_ERR_ARGS:      type_sym = SYM_PROGRAM_ERROR; break;
+    case CL_ERR_FILE:      type_sym = SYM_FILE_ERROR; break;
     default:               type_sym = SYM_SIMPLE_ERROR; break;
     }
 
