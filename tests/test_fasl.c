@@ -1411,6 +1411,199 @@ TEST(full_fasl_zero_units)
 }
 
 /* ================================================================
+ * compile-file and load tests (require full boot.lisp)
+ *
+ * These write temp .lisp files, compile-file them to .fasl,
+ * then load the .fasl and verify the results.
+ * ================================================================ */
+
+/* Helper: write a string to a file */
+static void write_test_file(const char *path, const char *content)
+{
+    PlatformFile fh = platform_file_open(path, PLATFORM_FILE_WRITE);
+    if (fh != PLATFORM_FILE_INVALID) {
+        platform_file_write_buf(fh, content, (uint32_t)strlen(content));
+        platform_file_close(fh);
+    }
+}
+
+TEST(compile_file_pathname_default)
+{
+    /* compile-file-pathname replaces .lisp with .fasl */
+    ASSERT_STR_EQ(eval_print("(namestring (compile-file-pathname \"test.lisp\"))"),
+                  "\"test.fasl\"");
+}
+
+TEST(compile_file_pathname_no_ext)
+{
+    /* No extension → appends .fasl */
+    ASSERT_STR_EQ(eval_print("(namestring (compile-file-pathname \"/tmp/myfile\"))"),
+                  "\"/tmp/myfile.fasl\"");
+}
+
+TEST(compile_file_basic)
+{
+    /* Write source, compile, verify .fasl exists */
+    write_test_file("/tmp/cf-test1.lisp",
+        "(defvar *cf-test-val* 42)\n");
+
+    eval_obj("(compile-file \"/tmp/cf-test1.lisp\")");
+
+    /* Verify output file exists */
+    ASSERT(platform_file_exists("/tmp/cf-test1.fasl"));
+
+    /* Verify FASL magic */
+    {
+        unsigned long sz;
+        char *data = platform_file_read("/tmp/cf-test1.fasl", &sz);
+        ASSERT(data != NULL);
+        ASSERT(sz >= 4);
+        ASSERT((uint8_t)data[0] == 'C');
+        ASSERT((uint8_t)data[1] == 'L');
+        ASSERT((uint8_t)data[2] == 'F');
+        ASSERT((uint8_t)data[3] == 'A');
+        platform_free(data);
+    }
+
+    /* Clean up */
+    platform_file_delete("/tmp/cf-test1.lisp");
+    platform_file_delete("/tmp/cf-test1.fasl");
+}
+
+TEST(compile_file_and_load)
+{
+    /* Full round-trip: write .lisp → compile-file → load .fasl → verify */
+    write_test_file("/tmp/cf-test2.lisp",
+        "(defun cf-double (x) (* x 2))\n"
+        "(defvar *cf-loaded-val* (cf-double 21))\n");
+
+    eval_obj("(compile-file \"/tmp/cf-test2.lisp\")");
+
+    /* Redefine function to something else, so we can verify FASL restores it */
+    eval_obj("(defun cf-double (x) x)");
+
+    /* Load the FASL — should redefine cf-double and set *cf-loaded-val* */
+    eval_obj("(load \"/tmp/cf-test2.fasl\")");
+
+    ASSERT_STR_EQ(eval_print("(cf-double 21)"), "42");
+
+    platform_file_delete("/tmp/cf-test2.lisp");
+    platform_file_delete("/tmp/cf-test2.fasl");
+}
+
+TEST(compile_file_output_file_keyword)
+{
+    /* :output-file keyword */
+    write_test_file("/tmp/cf-test3.lisp", "(defvar *cf-custom* :ok)\n");
+
+    eval_obj("(compile-file \"/tmp/cf-test3.lisp\" :output-file \"/tmp/cf-custom.fasl\")");
+    ASSERT(platform_file_exists("/tmp/cf-custom.fasl"));
+
+    eval_obj("(load \"/tmp/cf-custom.fasl\")");
+    ASSERT_STR_EQ(eval_print("*cf-custom*"), ":OK");
+
+    platform_file_delete("/tmp/cf-test3.lisp");
+    platform_file_delete("/tmp/cf-custom.fasl");
+}
+
+TEST(compile_file_multiple_forms)
+{
+    /* Multiple top-level forms */
+    write_test_file("/tmp/cf-test4.lisp",
+        "(defvar *cf-a* 10)\n"
+        "(defvar *cf-b* 20)\n"
+        "(defvar *cf-c* 30)\n"
+        "(defun cf-sum () (+ *cf-a* *cf-b* *cf-c*))\n");
+
+    eval_obj("(compile-file \"/tmp/cf-test4.lisp\")");
+    eval_obj("(load \"/tmp/cf-test4.fasl\")");
+
+    ASSERT_STR_EQ(eval_print("(cf-sum)"), "60");
+
+    platform_file_delete("/tmp/cf-test4.lisp");
+    platform_file_delete("/tmp/cf-test4.fasl");
+}
+
+TEST(compile_file_returns_values)
+{
+    /* compile-file returns (values output-truename nil nil) */
+    write_test_file("/tmp/cf-test5.lisp", "(+ 1 2)\n");
+
+    /* Primary value should be the output pathname */
+    {
+        CL_Obj result = eval_obj("(compile-file \"/tmp/cf-test5.lisp\")");
+        ASSERT(CL_PATHNAME_P(result));
+    }
+
+    platform_file_delete("/tmp/cf-test5.lisp");
+    platform_file_delete("/tmp/cf-test5.fasl");
+}
+
+TEST(compile_file_preserves_package)
+{
+    /* in-package in compiled file doesn't leak to caller */
+    write_test_file("/tmp/cf-test6.lisp",
+        "(in-package :cl-user)\n"
+        "(defvar *cf-pkg-test* t)\n");
+
+    {
+        CL_Obj pkg_before = cl_current_package;
+        eval_obj("(compile-file \"/tmp/cf-test6.lisp\")");
+        ASSERT(cl_current_package == pkg_before);
+    }
+
+    platform_file_delete("/tmp/cf-test6.lisp");
+    platform_file_delete("/tmp/cf-test6.fasl");
+}
+
+TEST(load_fasl_preserves_package)
+{
+    /* in-package in loaded FASL doesn't leak */
+    write_test_file("/tmp/cf-test7.lisp",
+        "(in-package :cl-user)\n"
+        "(defvar *cf-pkg-test2* t)\n");
+
+    eval_obj("(compile-file \"/tmp/cf-test7.lisp\")");
+
+    {
+        CL_Obj pkg_before = cl_current_package;
+        eval_obj("(load \"/tmp/cf-test7.fasl\")");
+        ASSERT(cl_current_package == pkg_before);
+    }
+
+    platform_file_delete("/tmp/cf-test7.lisp");
+    platform_file_delete("/tmp/cf-test7.fasl");
+}
+
+TEST(load_source_still_works)
+{
+    /* Loading .lisp source files still works as before */
+    write_test_file("/tmp/cf-test8.lisp",
+        "(defvar *cf-source-load* :source-ok)\n");
+
+    eval_obj("(load \"/tmp/cf-test8.lisp\")");
+    ASSERT_STR_EQ(eval_print("*cf-source-load*"), ":SOURCE-OK");
+
+    platform_file_delete("/tmp/cf-test8.lisp");
+}
+
+TEST(compile_file_with_macros)
+{
+    /* Macros defined early must work for later forms (eval-during-compile) */
+    write_test_file("/tmp/cf-test9.lisp",
+        "(defmacro cf-triple (x) `(* 3 ,x))\n"
+        "(defun cf-apply-triple (n) (cf-triple n))\n");
+
+    eval_obj("(compile-file \"/tmp/cf-test9.lisp\")");
+    eval_obj("(load \"/tmp/cf-test9.fasl\")");
+
+    ASSERT_STR_EQ(eval_print("(cf-apply-triple 5)"), "15");
+
+    platform_file_delete("/tmp/cf-test9.lisp");
+    platform_file_delete("/tmp/cf-test9.fasl");
+}
+
+/* ================================================================
  * main
  * ================================================================ */
 
@@ -1504,6 +1697,36 @@ int main(void)
     RUN(full_fasl_defun_via_compile);
     RUN(full_fasl_defvar_via_compile);
     RUN(full_fasl_zero_units);
+
+    /* === Reinit with full boot.lisp for compile-file tests === */
+    cl_mem_shutdown();
+    platform_shutdown();
+    platform_init();
+    cl_error_init();
+    cl_mem_init(CL_DEFAULT_HEAP_SIZE);
+    cl_package_init();
+    cl_symbol_init();
+    cl_reader_init();
+    cl_printer_init();
+    cl_compiler_init();
+    cl_vm_init(0, 0);
+    cl_builtins_init();
+    cl_repl_init();
+
+    /* compile-file-pathname tests */
+    RUN(compile_file_pathname_default);
+    RUN(compile_file_pathname_no_ext);
+
+    /* compile-file + load round-trip tests */
+    RUN(compile_file_basic);
+    RUN(compile_file_and_load);
+    RUN(compile_file_output_file_keyword);
+    RUN(compile_file_multiple_forms);
+    RUN(compile_file_returns_values);
+    RUN(compile_file_preserves_package);
+    RUN(load_fasl_preserves_package);
+    RUN(load_source_still_works);
+    RUN(compile_file_with_macros);
 
     cl_mem_shutdown();
     platform_shutdown();

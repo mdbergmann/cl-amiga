@@ -10,6 +10,7 @@
 #include "vm.h"
 #include "opcodes.h"
 #include "float.h"
+#include "fasl.h"
 #include "../platform/platform.h"
 #include <stdio.h>
 #include <string.h>
@@ -332,6 +333,40 @@ static CL_Obj bi_load(CL_Obj *args, int n)
         }
     }
 
+    /* Check if this is a FASL file (by magic bytes or extension) */
+    {
+        int is_fasl = 0;
+
+        /* Check magic bytes first (most reliable) */
+        if (size >= 4) {
+            uint32_t magic = ((uint32_t)(uint8_t)buf[0] << 24) |
+                             ((uint32_t)(uint8_t)buf[1] << 16) |
+                             ((uint32_t)(uint8_t)buf[2] << 8) |
+                             ((uint32_t)(uint8_t)buf[3]);
+            if (magic == CL_FASL_MAGIC)
+                is_fasl = 1;
+        }
+
+        if (is_fasl) {
+            /* FASL binary loading — no source parsing needed */
+            cl_fasl_load((const uint8_t *)buf, (uint32_t)size);
+            platform_free(buf);
+
+            /* Restore *load-pathname*, *load-truename*, *package* */
+            lp_sym->value = saved_load_pathname;
+            lt_sym->value = saved_load_truename;
+            CL_GC_UNPROTECT(2);
+            cl_current_package = saved_package;
+            {
+                CL_Symbol *pkg_sym = (CL_Symbol *)CL_OBJ_TO_PTR(SYM_STAR_PACKAGE);
+                pkg_sym->value = saved_package;
+            }
+            return SYM_T;
+        }
+    }
+
+    /* Source loading (existing path) */
+
     /* Save and set source file context */
     prev_file = cl_current_source_file;
     prev_file_id = cl_current_file_id;
@@ -386,6 +421,343 @@ static CL_Obj bi_load(CL_Obj *args, int n)
     }
 
     return SYM_T;
+}
+
+/* --- Helper: replace extension with .fasl --- */
+
+static void make_fasl_path(const char *input, char *output, uint32_t outsize)
+{
+    const char *dot;
+    size_t base_len;
+
+    /* Find last dot */
+    dot = strrchr(input, '.');
+    if (dot) {
+        base_len = (size_t)(dot - input);
+    } else {
+        base_len = strlen(input);
+    }
+
+    if (base_len + 5 >= outsize) {
+        /* Truncate if needed */
+        base_len = outsize - 6;
+    }
+    memcpy(output, input, base_len);
+    memcpy(output + base_len, ".fasl", 5);
+    output[base_len + 5] = '\0';
+}
+
+/* --- compile-file ---
+ *
+ * (compile-file input-file &key output-file verbose)
+ * Reads source, compiles+evals each top-level form, serializes bytecode to FASL.
+ * Returns (values output-truename nil nil) per CL spec.
+ */
+
+static CL_Obj bi_compile_file(CL_Obj *args, int n)
+{
+    char in_path[1024], out_path[1024];
+    char *src_buf;
+    unsigned long src_size;
+    CL_Obj stream, expr, bytecode;
+    const char *prev_file;
+    uint16_t prev_file_id;
+    int prev_line;
+    CL_Obj saved_package = cl_current_package;
+    CL_Symbol *cfp_sym, *cft_sym;
+    CL_Obj saved_cfp, saved_cft;
+    CL_Obj output_pathname;
+    int verbose = 0;
+    int i;
+
+    /* Dynamic serialization buffer */
+    uint8_t *fasl_buf = NULL;
+    uint32_t fasl_capacity = 64 * 1024;  /* Start with 64KB */
+    CL_FaslWriter w;
+
+    /* Temp buffer for each unit */
+    uint8_t *unit_buf = NULL;
+    uint32_t unit_capacity = 32 * 1024;  /* 32KB per unit */
+
+    /* Collected bytecodes — we need to serialize after eval */
+    /* We use a two-pass approach: first serialize each unit to unit_buf,
+       write length + data to fasl_buf. We don't know n_units upfront,
+       so we reserve the header and patch it at the end. */
+    uint32_t n_units = 0;
+
+    extern const char *cl_coerce_to_namestring(CL_Obj arg, char *buf, uint32_t bufsz);
+    extern CL_Obj cl_parse_namestring(const char *str, uint32_t len);
+
+    /* Sync *package* */
+    {
+        CL_Symbol *pkg_sym = (CL_Symbol *)CL_OBJ_TO_PTR(SYM_STAR_PACKAGE);
+        if (!CL_NULL_P(pkg_sym->value))
+            cl_current_package = pkg_sym->value;
+    }
+
+    /* Resolve input path */
+    if (CL_PATHNAME_P(args[0])) {
+        cl_coerce_to_namestring(args[0], in_path, sizeof(in_path));
+    } else if (CL_STRING_P(args[0])) {
+        CL_String *s = (CL_String *)CL_OBJ_TO_PTR(args[0]);
+        if (s->length < sizeof(in_path)) {
+            memcpy(in_path, s->data, s->length);
+            in_path[s->length] = '\0';
+        } else {
+            cl_error(CL_ERR_GENERAL, "COMPILE-FILE: path too long");
+            return CL_NIL;
+        }
+    } else {
+        cl_error(CL_ERR_TYPE, "COMPILE-FILE: argument must be a string or pathname");
+        return CL_NIL;
+    }
+
+    /* Parse keyword args: :output-file, :verbose */
+    make_fasl_path(in_path, out_path, sizeof(out_path));
+    for (i = 1; i + 1 < n; i += 2) {
+        if (args[i] == cl_intern_keyword("OUTPUT-FILE", 11)) {
+            if (CL_PATHNAME_P(args[i + 1])) {
+                cl_coerce_to_namestring(args[i + 1], out_path, sizeof(out_path));
+            } else if (CL_STRING_P(args[i + 1])) {
+                CL_String *s = (CL_String *)CL_OBJ_TO_PTR(args[i + 1]);
+                if (s->length < sizeof(out_path)) {
+                    memcpy(out_path, s->data, s->length);
+                    out_path[s->length] = '\0';
+                }
+            }
+        } else if (args[i] == cl_intern_keyword("VERBOSE", 7)) {
+            verbose = !CL_NULL_P(args[i + 1]);
+        }
+        /* Ignore unknown keywords (allow-other-keys behavior) */
+    }
+
+    /* Check *compile-verbose* if :verbose not explicitly given */
+    if (!verbose) {
+        CL_Symbol *cv = (CL_Symbol *)CL_OBJ_TO_PTR(SYM_STAR_COMPILE_VERBOSE);
+        if (!CL_NULL_P(cv->value))
+            verbose = 1;
+    }
+
+    /* Read source file */
+    src_buf = platform_file_read(in_path, &src_size);
+    if (!src_buf) {
+        cl_error(CL_ERR_GENERAL, "COMPILE-FILE: cannot open file");
+        return CL_NIL;
+    }
+
+    if (verbose) {
+        platform_write_string("; Compiling ");
+        platform_write_string(in_path);
+        platform_write_string("\n");
+    }
+
+    /* Bind *compile-file-pathname* and *compile-file-truename* */
+    {
+        CL_Obj cfp_path = cl_parse_namestring(in_path, (uint32_t)strlen(in_path));
+        CL_GC_PROTECT(cfp_path);
+        CL_Obj cft_path;
+        char resolved[512];
+        if (platform_realpath(in_path, resolved, (int)sizeof(resolved)))
+            cft_path = cl_parse_namestring(resolved, (uint32_t)strlen(resolved));
+        else
+            cft_path = cfp_path;
+        CL_GC_PROTECT(cft_path);
+
+        cfp_sym = (CL_Symbol *)CL_OBJ_TO_PTR(SYM_STAR_COMPILE_FILE_PATHNAME);
+        cft_sym = (CL_Symbol *)CL_OBJ_TO_PTR(SYM_STAR_COMPILE_FILE_TRUENAME);
+        saved_cfp = cfp_sym->value;
+        saved_cft = cft_sym->value;
+        cfp_sym->value = cfp_path;
+        cft_sym->value = cft_path;
+        CL_GC_UNPROTECT(2);
+    }
+
+    /* Save source file context */
+    prev_file = cl_current_source_file;
+    prev_file_id = cl_current_file_id;
+    prev_line = cl_reader_get_line();
+    cl_current_source_file = in_path;
+    cl_current_file_id++;
+    cl_reader_reset_line();
+
+    /* Allocate FASL and unit buffers */
+    fasl_buf = (uint8_t *)platform_alloc(fasl_capacity);
+    unit_buf = (uint8_t *)platform_alloc(unit_capacity);
+    if (!fasl_buf || !unit_buf) {
+        if (fasl_buf) platform_free(fasl_buf);
+        if (unit_buf) platform_free(unit_buf);
+        platform_free(src_buf);
+        cl_error(CL_ERR_GENERAL, "COMPILE-FILE: out of memory");
+        return CL_NIL;
+    }
+
+    /* Write header placeholder (n_units=0, patched later) */
+    cl_fasl_writer_init(&w, fasl_buf, fasl_capacity);
+    cl_fasl_write_header(&w, 0);
+
+    /* Create source stream */
+    stream = cl_make_cbuf_input_stream(src_buf, (uint32_t)src_size);
+    CL_GC_PROTECT(stream);
+
+    /* Read-compile-eval-serialize loop */
+    for (;;) {
+        int err;
+        CL_FaslWriter uw;
+
+        expr = cl_read_from_stream(stream);
+        if (cl_reader_eof()) break;
+
+        err = CL_CATCH();
+        if (err == CL_ERR_NONE) {
+            CL_GC_PROTECT(expr);
+            bytecode = cl_compile(expr);
+            CL_GC_UNPROTECT(1);
+            if (!CL_NULL_P(bytecode)) {
+                /* Eval the form (macros, defvar, etc. must take effect) */
+                cl_vm_eval(bytecode);
+
+                /* Serialize this unit */
+                cl_fasl_writer_init(&uw, unit_buf, unit_capacity);
+                cl_fasl_serialize_bytecode(&uw, bytecode);
+
+                /* If unit_buf was too small, grow and retry */
+                while (uw.error == FASL_ERR_OVERFLOW) {
+                    platform_free(unit_buf);
+                    unit_capacity *= 2;
+                    unit_buf = (uint8_t *)platform_alloc(unit_capacity);
+                    if (!unit_buf) break;
+                    cl_fasl_writer_init(&uw, unit_buf, unit_capacity);
+                    cl_fasl_serialize_bytecode(&uw, bytecode);
+                }
+
+                if (unit_buf && uw.error == FASL_OK) {
+                    /* Grow fasl_buf if needed */
+                    while (w.pos + 4 + uw.pos > fasl_capacity) {
+                        uint8_t *new_buf;
+                        fasl_capacity *= 2;
+                        new_buf = (uint8_t *)platform_alloc(fasl_capacity);
+                        if (!new_buf) break;
+                        memcpy(new_buf, fasl_buf, w.pos);
+                        platform_free(fasl_buf);
+                        fasl_buf = new_buf;
+                        w.data = fasl_buf;
+                        w.capacity = fasl_capacity;
+                    }
+
+                    cl_fasl_write_u32(&w, uw.pos);
+                    cl_fasl_write_bytes(&w, unit_buf, uw.pos);
+                    n_units++;
+                }
+            }
+            CL_UNCATCH();
+        } else {
+            cl_error_print();
+            CL_UNCATCH();
+        }
+    }
+
+    CL_GC_UNPROTECT(1); /* stream */
+    cl_stream_close(stream);
+    platform_free(src_buf);
+
+    /* Patch n_units in the header (bytes 8-11, big-endian) */
+    fasl_buf[8]  = (uint8_t)(n_units >> 24);
+    fasl_buf[9]  = (uint8_t)(n_units >> 16);
+    fasl_buf[10] = (uint8_t)(n_units >> 8);
+    fasl_buf[11] = (uint8_t)(n_units);
+
+    /* Write FASL file to disk */
+    {
+        PlatformFile fh = platform_file_open(out_path, PLATFORM_FILE_WRITE);
+        if (fh == PLATFORM_FILE_INVALID) {
+            platform_free(fasl_buf);
+            platform_free(unit_buf);
+            cl_error(CL_ERR_GENERAL, "COMPILE-FILE: cannot create output file");
+            return CL_NIL;
+        }
+        platform_file_write_buf(fh, (const char *)fasl_buf, w.pos);
+        platform_file_close(fh);
+    }
+
+    platform_free(fasl_buf);
+    platform_free(unit_buf);
+
+    /* Restore *compile-file-pathname* and *compile-file-truename* */
+    cfp_sym->value = saved_cfp;
+    cft_sym->value = saved_cft;
+
+    /* Restore source file context */
+    cl_current_source_file = prev_file;
+    cl_current_file_id = prev_file_id;
+    cl_reader_set_line(prev_line);
+
+    /* Restore *package* */
+    cl_current_package = saved_package;
+    {
+        CL_Symbol *pkg_sym = (CL_Symbol *)CL_OBJ_TO_PTR(SYM_STAR_PACKAGE);
+        pkg_sym->value = saved_package;
+    }
+
+    /* Return (values output-truename nil nil) per CL spec */
+    output_pathname = cl_parse_namestring(out_path, (uint32_t)strlen(out_path));
+    /* Set multiple values: truename, warnings-p, failure-p */
+    cl_mv_values[0] = output_pathname;
+    cl_mv_values[1] = CL_NIL;  /* warnings-p */
+    cl_mv_values[2] = CL_NIL;  /* failure-p */
+    cl_mv_count = 3;
+    return output_pathname;
+}
+
+/* --- compile-file-pathname ---
+ *
+ * (compile-file-pathname input-file &key output-file)
+ * Returns the pathname of the FASL that compile-file would produce.
+ */
+
+static CL_Obj bi_compile_file_pathname(CL_Obj *args, int n)
+{
+    char in_path[1024], out_path[1024];
+    int i;
+    extern const char *cl_coerce_to_namestring(CL_Obj arg, char *buf, uint32_t bufsz);
+    extern CL_Obj cl_parse_namestring(const char *str, uint32_t len);
+
+    /* Resolve input path */
+    if (CL_PATHNAME_P(args[0])) {
+        cl_coerce_to_namestring(args[0], in_path, sizeof(in_path));
+    } else if (CL_STRING_P(args[0])) {
+        CL_String *s = (CL_String *)CL_OBJ_TO_PTR(args[0]);
+        if (s->length < sizeof(in_path)) {
+            memcpy(in_path, s->data, s->length);
+            in_path[s->length] = '\0';
+        } else {
+            cl_error(CL_ERR_GENERAL, "COMPILE-FILE-PATHNAME: path too long");
+            return CL_NIL;
+        }
+    } else {
+        cl_error(CL_ERR_TYPE, "COMPILE-FILE-PATHNAME: argument must be a string or pathname");
+        return CL_NIL;
+    }
+
+    /* Default: replace extension with .fasl */
+    make_fasl_path(in_path, out_path, sizeof(out_path));
+
+    /* Check for :output-file keyword override */
+    for (i = 1; i + 1 < n; i += 2) {
+        if (args[i] == cl_intern_keyword("OUTPUT-FILE", 11)) {
+            if (CL_PATHNAME_P(args[i + 1])) {
+                cl_coerce_to_namestring(args[i + 1], out_path, sizeof(out_path));
+            } else if (CL_STRING_P(args[i + 1])) {
+                CL_String *s = (CL_String *)CL_OBJ_TO_PTR(args[i + 1]);
+                if (s->length < sizeof(out_path)) {
+                    memcpy(out_path, s->data, s->length);
+                    out_path[s->length] = '\0';
+                }
+            }
+            break;
+        }
+    }
+
+    return cl_parse_namestring(out_path, (uint32_t)strlen(out_path));
 }
 
 /* --- Read --- */
@@ -1465,6 +1837,8 @@ void cl_builtins_io_init(void)
 
     /* Compile */
     defun("COMPILE", bi_compile, 1, 2);
+    defun("COMPILE-FILE", bi_compile_file, 1, -1);
+    defun("COMPILE-FILE-PATHNAME", bi_compile_file_pathname, 1, -1);
 
     /* Modules */
     defun("PROVIDE", bi_provide, 1, 1);

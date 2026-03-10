@@ -164,27 +164,8 @@
          (locally ,@body)
          (when ,var (close ,var))))))
 
-;; compile-file: interpreted-only implementation for ASDF compatibility
-;; Copies source to output-file so ASDF can rename and later load it.
-(defun compile-file (input-file &key (output-file (compile-file-pathname input-file))
-                     (verbose *compile-verbose*) &allow-other-keys)
-  (let ((in-path (namestring (pathname input-file)))
-        (out-path (namestring (pathname output-file))))
-    (when verbose
-      (format t "; Compiling ~A~%" in-path))
-    (with-open-file (in in-path :direction :input)
-      (with-open-file (out out-path :direction :output :if-exists :supersede)
-        (block nil
-          (tagbody copy-loop
-            (let ((line (read-line in nil nil)))
-              (if line
-                  (progn (write-line line out) (go copy-loop))
-                  (return nil)))))))
-    (values (truename (pathname output-file)) nil nil)))
-
-(defun compile-file-pathname (input-file &rest args)
-  (declare (ignore args))
-  (pathname input-file))
+;; compile-file and compile-file-pathname are C builtins (builtins_io.c).
+;; compile-file produces real FASL binary files that load without reparsing.
 
 (defmacro with-compilation-unit ((&rest options) &body body)
   (declare (ignore options))
