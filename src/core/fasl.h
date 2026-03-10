@@ -45,6 +45,8 @@
 #define FASL_TAG_UNBOUND     0x0E
 #define FASL_TAG_BIT_VECTOR  0x0F
 #define FASL_TAG_PATHNAME    0x10
+#define FASL_TAG_CLOSURE     0x11
+#define FASL_TAG_FUNCTION    0x12
 
 /* Error codes for FASL operations */
 #define FASL_OK              0

@@ -1649,6 +1649,38 @@ TEST(compile_file_with_macros)
     delete_cached_fasl("/tmp/cf-test9.lisp");
 }
 
+TEST(compile_file_defclass_initform)
+{
+    /* defclass with :initform creates closures that must survive FASL round-trip */
+    write_test_file("/tmp/cf-test-dc.lisp",
+        "(defclass cf-test-cls () ((x :initform 42) (y :initform \"hello\")))\n");
+
+    eval_obj("(compile-file \"/tmp/cf-test-dc.lisp\")");
+    eval_obj("(load (compile-file-pathname \"/tmp/cf-test-dc.lisp\"))");
+
+    ASSERT_STR_EQ(eval_print("(slot-value (make-instance 'cf-test-cls) 'x)"), "42");
+    ASSERT_STR_EQ(eval_print("(slot-value (make-instance 'cf-test-cls) 'y)"),
+                  "\"hello\"");
+
+    platform_file_delete("/tmp/cf-test-dc.lisp");
+    delete_cached_fasl("/tmp/cf-test-dc.lisp");
+}
+
+TEST(compile_file_lambda_constant)
+{
+    /* Lambda in compiled code must be serialized as closure in FASL */
+    write_test_file("/tmp/cf-test-lam.lisp",
+        "(defvar *cf-fn* (lambda (x) (* x 10)))\n");
+
+    eval_obj("(compile-file \"/tmp/cf-test-lam.lisp\")");
+    eval_obj("(load (compile-file-pathname \"/tmp/cf-test-lam.lisp\"))");
+
+    ASSERT_STR_EQ(eval_print("(funcall *cf-fn* 5)"), "50");
+
+    platform_file_delete("/tmp/cf-test-lam.lisp");
+    delete_cached_fasl("/tmp/cf-test-lam.lisp");
+}
+
 TEST(load_auto_finds_cached_fasl)
 {
     /* load of source file should auto-discover cached FASL */
@@ -1844,6 +1876,8 @@ int main(void)
     RUN(load_fasl_preserves_package);
     RUN(load_source_still_works);
     RUN(compile_file_with_macros);
+    RUN(compile_file_defclass_initform);
+    RUN(compile_file_lambda_constant);
 
     /* FASL cache behavior tests */
     RUN(load_auto_finds_cached_fasl);

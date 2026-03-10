@@ -155,6 +155,36 @@ void cl_fasl_serialize_obj(CL_FaslWriter *w, CL_Obj obj)
         return;
     }
 
+    case TYPE_CLOSURE: {
+        CL_Closure *cl = (CL_Closure *)CL_OBJ_TO_PTR(obj);
+        uint16_t n_upvalues = 0;
+        uint16_t i;
+        /* Count upvalues from the bytecode's n_upvalues field */
+        if (!CL_NULL_P(cl->bytecode)) {
+            CL_Bytecode *bc = (CL_Bytecode *)CL_OBJ_TO_PTR(cl->bytecode);
+            n_upvalues = bc->n_upvalues;
+        }
+        cl_fasl_write_u8(w, FASL_TAG_CLOSURE);
+        cl_fasl_serialize_obj(w, cl->bytecode);
+        cl_fasl_write_u16(w, n_upvalues);
+        for (i = 0; i < n_upvalues; i++)
+            cl_fasl_serialize_obj(w, cl->upvalues[i]);
+        return;
+    }
+
+    case TYPE_FUNCTION: {
+        /* C builtin function — serialize by name for symbol lookup at load */
+        CL_Function *fn = (CL_Function *)CL_OBJ_TO_PTR(obj);
+        if (!CL_NULL_P(fn->name) && CL_HEAP_P(fn->name) &&
+            CL_HDR_TYPE(CL_OBJ_TO_PTR(fn->name)) == TYPE_SYMBOL) {
+            cl_fasl_write_u8(w, FASL_TAG_FUNCTION);
+            cl_fasl_serialize_obj(w, fn->name);
+        } else {
+            cl_fasl_write_u8(w, FASL_TAG_NIL);
+        }
+        return;
+    }
+
     case TYPE_SINGLE_FLOAT: {
         CL_SingleFloat *sf = (CL_SingleFloat *)CL_OBJ_TO_PTR(obj);
         uint32_t bits;
@@ -576,6 +606,42 @@ CL_Obj cl_fasl_deserialize_obj(CL_FaslReader *r)
                                   components[4], components[5]);
         CL_GC_UNPROTECT(6);
         return result;
+    }
+
+    case FASL_TAG_CLOSURE: {
+        CL_Obj bc_val = cl_fasl_deserialize_obj(r);
+        uint16_t n_upvals = cl_fasl_read_u16(r);
+        CL_Closure *cl;
+        CL_Obj result;
+        uint16_t i;
+        if (r->error) { return CL_NIL; }
+        CL_GC_PROTECT(bc_val);
+        cl = (CL_Closure *)cl_alloc(TYPE_CLOSURE,
+            sizeof(CL_Closure) + n_upvals * sizeof(CL_Obj));
+        if (!cl) { CL_GC_UNPROTECT(1); return CL_NIL; }
+        cl->bytecode = bc_val;
+        result = CL_PTR_TO_OBJ(cl);
+        CL_GC_PROTECT(result);
+        for (i = 0; i < n_upvals; i++) {
+            CL_Obj uv = cl_fasl_deserialize_obj(r);
+            cl = (CL_Closure *)CL_OBJ_TO_PTR(result); /* refresh */
+            cl->upvalues[i] = uv;
+        }
+        CL_GC_UNPROTECT(2);
+        return result;
+    }
+
+    case FASL_TAG_FUNCTION: {
+        /* C builtin — deserialize name symbol and look up its function */
+        CL_Obj name_sym = cl_fasl_deserialize_obj(r);
+        if (r->error || CL_NULL_P(name_sym)) return CL_NIL;
+        if (CL_HEAP_P(name_sym) &&
+            CL_HDR_TYPE(CL_OBJ_TO_PTR(name_sym)) == TYPE_SYMBOL) {
+            CL_Symbol *sym = (CL_Symbol *)CL_OBJ_TO_PTR(name_sym);
+            if (!CL_NULL_P(sym->function))
+                return sym->function;
+        }
+        return CL_NIL;
     }
 
     default:
