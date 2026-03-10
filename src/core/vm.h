@@ -9,7 +9,7 @@
  */
 
 #define CL_VM_STACK_SIZE  (16 * 1024)  /* 16K entries = 64KB */
-#define CL_VM_FRAME_SIZE  256          /* Max call frames */
+#define CL_VM_FRAME_SIZE  1024         /* Max call frames */
 
 /* Call frame */
 typedef struct {

@@ -581,17 +581,7 @@
 ;; --- Stream output control ---
 ;; No-ops: console/file output is unbuffered, socket send() is immediate.
 
-(defun finish-output (&optional (stream *standard-output*))
-  (declare (ignore stream))
-  nil)
-
-(defun force-output (&optional (stream *standard-output*))
-  (declare (ignore stream))
-  nil)
-
-(defun clear-output (&optional (stream *standard-output*))
-  (declare (ignore stream))
-  nil)
+;; finish-output, force-output, and clear-output are C builtins — do not redefine here
 
 ;; --- Byte and sequence I/O ---
 
@@ -1507,7 +1497,9 @@
                    (final-else nil)
                    (cur-test (car rest))
                    (cur-negate (%loop-keyword-p kw "UNLESS"))
-                   (cur-then nil))
+                   (cur-then nil)
+                   (it-var (gensym "IT"))   ;; gensym for LOOP IT variable
+                   (it-raw-test (car rest))) ;; save raw test before negation
                (setq rest (cdr rest))
                (block parse-cond-chain
                  (tagbody
@@ -1584,6 +1576,9 @@
                       (when cur-negate (setq cur-test `(not ,cur-test)))
                       (push (cons cur-test (nreverse cur-then)) cond-clauses)))))
                ;; Build nested if/else from cond-clauses (reverse order) + final-else
+               ;; Bind IT to the when-test value per CL spec (LOOP IT variable).
+               ;; IT refers to the value of the test-form; we bind IT first, then
+               ;; use it as the condition to avoid double evaluation.
                (let ((result (if final-else
                                  `(progn ,@(nreverse final-else))
                                  nil)))
@@ -1593,7 +1588,29 @@
                      (if result
                          (setq result `(if ,test (progn ,@forms) ,result))
                          (setq result `(when ,test ,@forms)))))
-                 (push result body))))
+                 ;; Bind IT to the when-test value per CL spec (LOOP IT
+                 ;; variable).  We use a gensym and substitute any reference
+                 ;; to the symbol IT (by name) in the body forms.
+                 (labels ((%subst-it (form)
+                            (cond
+                              ((and (symbolp form)
+                                    (string= (symbol-name form) "IT"))
+                               it-var)
+                              ((consp form)
+                               (cons (%subst-it (car form))
+                                     (%subst-it (cdr form))))
+                              (t form))))
+                   (if (and (= (length cond-clauses) 1) (null final-else))
+                       (let ((forms (%subst-it (cdar cond-clauses))))
+                         (push `(let ((,it-var ,it-raw-test))
+                                  ,(if cur-negate
+                                       `(unless ,it-var ,@forms)
+                                       `(when ,it-var ,@forms)))
+                               body))
+                       ;; Multi-clause: substitute IT and wrap
+                       (push `(let ((,it-var ,it-raw-test))
+                                ,(%subst-it result))
+                             body))))))
             (t
              (error "LOOP: unrecognized clause ~S" kw))))
         (go parse-next)))
