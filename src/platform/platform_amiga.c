@@ -416,6 +416,13 @@ int platform_file_delete(const char *path)
 
 int platform_file_rename(const char *oldpath, const char *newpath)
 {
+    /* AmigaOS Rename() fails if target exists; delete target first to match
+       POSIX rename() semantics (atomic overwrite) */
+    BPTR lock = Lock((STRPTR)newpath, ACCESS_READ);
+    if (lock) {
+        UnLock(lock);
+        DeleteFile((STRPTR)newpath);
+    }
     return Rename((STRPTR)oldpath, (STRPTR)newpath) ? 0 : -1;
 }
 

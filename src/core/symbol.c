@@ -690,7 +690,7 @@ void cl_symbol_init(void)
         CL_Symbol *s;
         sym = cl_intern_in("*LOAD-VERBOSE*", 14, cl_package_cl);
         s = (CL_Symbol *)CL_OBJ_TO_PTR(sym);
-        s->flags |= CL_SYM_SPECIAL; s->value = CL_NIL;
+        s->flags |= CL_SYM_SPECIAL; s->value = SYM_T;
         sym = cl_intern_in("*LOAD-PRINT*", 12, cl_package_cl);
         s = (CL_Symbol *)CL_OBJ_TO_PTR(sym);
         s->flags |= CL_SYM_SPECIAL; s->value = CL_NIL;

@@ -713,7 +713,8 @@ static CL_Obj bi_rename_file(CL_Obj *args, int n)
     if (!new_path)
         cl_error(CL_ERR_TYPE, "RENAME-FILE: second argument must be a pathname designator");
     if (platform_file_rename(old_path, new_path) != 0)
-        cl_error(CL_ERR_GENERAL, "RENAME-FILE: cannot rename file");
+        cl_error(CL_ERR_GENERAL, "RENAME-FILE: cannot rename '%s' to '%s'",
+                 old_path, new_path);
     /* Return 3 values: new-name, old-truename, new-truename */
     cl_mv_values[0] = args[1];
     cl_mv_values[1] = args[0];

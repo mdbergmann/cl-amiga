@@ -26,7 +26,7 @@
 #include "../platform/platform.h"
 
 #define CL_FASL_MAGIC    0x434C4641  /* "CLFA" */
-#define CL_FASL_VERSION  1
+#define CL_FASL_VERSION  2
 
 /* Serialized constant type tags */
 #define FASL_TAG_NIL         0x00
@@ -47,6 +47,9 @@
 #define FASL_TAG_PATHNAME    0x10
 #define FASL_TAG_CLOSURE     0x11
 #define FASL_TAG_FUNCTION    0x12
+#define FASL_TAG_CONST_REF   0x13  /* u16 index: back-reference to earlier constant in same bytecode */
+#define FASL_TAG_GENSYM_DEF  0x14  /* u16 id, u16 name_len, bytes: define new uninterned symbol */
+#define FASL_TAG_GENSYM_REF  0x15  /* u16 id: reference to previously defined gensym */
 
 /* Error codes for FASL operations */
 #define FASL_OK              0
@@ -56,6 +59,9 @@
 #define FASL_ERR_BAD_VERSION -4   /* Unsupported version */
 #define FASL_ERR_BAD_TAG     -5   /* Unknown constant type tag */
 
+/* Max uninterned symbols tracked per FASL file (for gensym dedup) */
+#define FASL_MAX_GENSYMS 1024
+
 /* --- Serialization buffer --- */
 
 typedef struct {
@@ -63,6 +69,9 @@ typedef struct {
     uint32_t capacity;
     uint32_t pos;
     int error;          /* FASL_OK or error code */
+    /* Uninterned symbol dedup table */
+    CL_Obj   gensym_objs[FASL_MAX_GENSYMS];  /* original CL_Obj values */
+    uint16_t gensym_count;
 } CL_FaslWriter;
 
 /* --- Deserialization buffer --- */
@@ -72,6 +81,9 @@ typedef struct {
     uint32_t size;
     uint32_t pos;
     int error;
+    /* Uninterned symbol dedup table */
+    CL_Obj   gensym_objs[FASL_MAX_GENSYMS];  /* deserialized symbol objects */
+    uint16_t gensym_count;
 } CL_FaslReader;
 
 /* --- Writer API --- */

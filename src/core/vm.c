@@ -1126,6 +1126,28 @@ CL_Obj cl_vm_eval(CL_Obj bytecode_obj)
             break;
         }
 
+        case OP_DEFSETF: {
+            extern CL_Obj setf_table;
+            uint16_t acc_idx = read_u16(code, &ip);
+            uint16_t upd_idx = read_u16(code, &ip);
+            CL_Obj accessor = constants[acc_idx];
+            CL_Obj updater  = constants[upd_idx];
+            setf_table = cl_cons(cl_cons(accessor, updater), setf_table);
+            cl_vm_push(accessor);
+            break;
+        }
+
+        case OP_DEFVAR: {
+            uint16_t sym_idx = read_u16(code, &ip);
+            CL_Obj sym_obj = constants[sym_idx];
+            CL_Symbol *sym = (CL_Symbol *)CL_OBJ_TO_PTR(sym_obj);
+            CL_Obj val = cl_vm_pop();
+            sym->flags |= CL_SYM_SPECIAL;
+            if (sym->value == CL_UNBOUND)
+                sym->value = val;
+            break;
+        }
+
         case OP_HANDLER_PUSH: {
             uint16_t idx = read_u16(code, &ip);
             CL_Obj type_sym = constants[idx];

@@ -731,7 +731,30 @@ void cl_repl_init_no_userinit(int no_userinit)
         lv->value = CL_NIL;
     }
 
-    load_boot_file();
+    /* Load boot.lisp — try known paths; uses bi_load which auto-caches to FASL */
+    {
+        static const char *boot_paths[] = {
+            "(load \"lib/boot.lisp\")",
+#ifdef PLATFORM_AMIGA
+            "(load \"PROGDIR:lib/boot.lisp\")",
+#endif
+            NULL
+        };
+        int boot_loaded = 0;
+        int bi;
+        for (bi = 0; boot_paths[bi] != NULL; bi++) {
+            int err = CL_CATCH();
+            if (err == CL_ERR_NONE) {
+                cl_eval_string(boot_paths[bi]);
+                boot_loaded = 1;
+                CL_UNCATCH();
+                break;
+            } else {
+                CL_UNCATCH();
+            }
+        }
+        (void)boot_loaded;
+    }
 
     /* Load CLOS so defclass/defgeneric/defmethod are available */
     cl_eval_string("(require \"clos\")");

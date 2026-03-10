@@ -1,4 +1,4 @@
 ; Load and test fiveam on Amiga
 cd CLAmiga:
-stack 600000
-build/amiga/clamiga --heap 24M --batch --load trunk/load-and-test-5am.lisp >build/amiga/test-results.log
+stack 800000
+build/amiga/clamiga --heap 48M --batch --load trunk/load-and-test-5am.lisp >build/amiga/test-results.log

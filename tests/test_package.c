@@ -857,10 +857,12 @@ TEST(eval_defpackage_nickname_in_package)
 TEST(eval_cl_no_stray_exports)
 {
     /* Symbols like PREFIX that are local variable names in boot.lisp macros
-       should NOT be exported from CL (regression test for Fix 35) */
-    ASSERT_STR_EQ(eval_print(
-        "(multiple-value-bind (sym status) (find-symbol \"PREFIX\" \"CL\") status)"),
-        ":INTERNAL");
+       should NOT be exported from CL (regression test for Fix 35).
+       When loading from FASL cache, PREFIX may not be interned at all (NIL)
+       since FASL loading doesn't intern stray symbols — both are acceptable. */
+    const char *status = eval_print(
+        "(multiple-value-bind (sym status) (find-symbol \"PREFIX\" \"CL\") status)");
+    ASSERT(strcmp(status, ":INTERNAL") == 0 || strcmp(status, "NIL") == 0);
 }
 
 TEST(eval_cl_legitimate_exports)

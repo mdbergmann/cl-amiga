@@ -18,6 +18,8 @@
 
 /* Forward declarations for helpers used in bi_load before definition */
 static int make_fasl_cache_path(const char *input, char *output, uint32_t outsize);
+static void path_directory(const char *path, char *dir, uint32_t dirsz);
+static void mkdir_p(const char *path);
 
 /* Helper to register a builtin */
 static void defun(const char *name, CL_CFunc func, int min, int max)
@@ -316,6 +318,8 @@ static CL_Obj bi_load(CL_Obj *args, int n)
                                          ((uint32_t)(uint8_t)buf[2] << 8) |
                                          ((uint32_t)(uint8_t)buf[3]);
                         if (magic == CL_FASL_MAGIC) {
+                            /* Try loading from FASL; fall back to source on error */
+                            int fasl_err;
                             /* Bind load-pathname and load-truename */
                             {
                                 extern CL_Obj cl_parse_namestring(const char *str, uint32_t len);
@@ -344,24 +348,42 @@ static CL_Obj bi_load(CL_Obj *args, int n)
                             {
                                 CL_Symbol *lv_sym = (CL_Symbol *)CL_OBJ_TO_PTR(SYM_STAR_LOAD_VERBOSE);
                                 if (!CL_NULL_P(lv_sym->value)) {
-                                    platform_write_string("; Loading cached FASL ");
+                                    platform_write_string("; Loading ");
                                     platform_write_string(cache_path);
                                     platform_write_string("\n");
                                 }
                             }
 
-                            cl_fasl_load((const uint8_t *)buf, (uint32_t)size);
-                            platform_free(buf);
+                            fasl_err = CL_CATCH();
+                            if (fasl_err == CL_ERR_NONE) {
+                                cl_fasl_load((const uint8_t *)buf, (uint32_t)size);
+                                platform_free(buf);
+                                CL_UNCATCH();
 
-                            lp_sym->value = saved_load_pathname;
-                            lt_sym->value = saved_load_truename;
-                            CL_GC_UNPROTECT(2);
-                            cl_current_package = saved_package;
-                            {
-                                CL_Symbol *pkg_sym = (CL_Symbol *)CL_OBJ_TO_PTR(SYM_STAR_PACKAGE);
-                                pkg_sym->value = saved_package;
+                                lp_sym->value = saved_load_pathname;
+                                lt_sym->value = saved_load_truename;
+                                CL_GC_UNPROTECT(2);
+                                cl_current_package = saved_package;
+                                {
+                                    CL_Symbol *pkg_sym = (CL_Symbol *)CL_OBJ_TO_PTR(SYM_STAR_PACKAGE);
+                                    pkg_sym->value = saved_package;
+                                }
+                                return SYM_T;
+                            } else {
+                                /* FASL load failed — restore state, fall through to source */
+                                CL_UNCATCH();
+                                platform_free(buf);
+                                lp_sym->value = saved_load_pathname;
+                                lt_sym->value = saved_load_truename;
+                                CL_GC_UNPROTECT(2);
+                                cl_current_package = saved_package;
+                                {
+                                    CL_Symbol *pkg_sym = (CL_Symbol *)CL_OBJ_TO_PTR(SYM_STAR_PACKAGE);
+                                    pkg_sym->value = saved_package;
+                                }
+                                /* Delete broken FASL so we don't retry it */
+                                platform_file_delete(cache_path);
                             }
-                            return SYM_T;
                         }
                     }
                     platform_free(buf);
@@ -442,7 +464,33 @@ static CL_Obj bi_load(CL_Obj *args, int n)
         }
     }
 
-    /* Source loading (existing path) */
+    /* Source loading — also auto-cache to FASL for faster subsequent loads */
+
+    /* Set up FASL auto-cache if cache path is available */
+    {
+        char auto_cache_path[1024];
+        uint8_t *fasl_buf = NULL;
+        uint8_t *unit_buf = NULL;
+        uint32_t fasl_capacity = 64 * 1024;
+        uint32_t unit_capacity = 32 * 1024;
+        uint32_t n_units = 0;
+        CL_FaslWriter fw;
+        int do_cache = 0;
+
+        if (make_fasl_cache_path(path_str->data, auto_cache_path, sizeof(auto_cache_path))) {
+            fasl_buf = (uint8_t *)platform_alloc(fasl_capacity);
+            unit_buf = (uint8_t *)platform_alloc(unit_capacity);
+            if (fasl_buf && unit_buf) {
+                do_cache = 1;
+                cl_fasl_writer_init(&fw, fasl_buf, fasl_capacity);
+                cl_fasl_write_header(&fw, 0); /* patch n_units later */
+            } else {
+                if (fasl_buf) platform_free(fasl_buf);
+                if (unit_buf) platform_free(unit_buf);
+                fasl_buf = NULL;
+                unit_buf = NULL;
+            }
+        }
 
     /* Save and set source file context */
     prev_file = cl_current_source_file;
@@ -467,18 +515,90 @@ static CL_Obj bi_load(CL_Obj *args, int n)
             CL_GC_PROTECT(expr);
             bytecode = cl_compile(expr);
             CL_GC_UNPROTECT(1);
-            if (!CL_NULL_P(bytecode))
+            if (!CL_NULL_P(bytecode)) {
+                /* GC-protect bytecode across eval + serialization */
+                CL_GC_PROTECT(bytecode);
                 cl_vm_eval(bytecode);
+
+                /* Serialize bytecode to FASL cache buffer */
+                if (do_cache) {
+                    CL_FaslWriter uw;
+                    cl_fasl_writer_init(&uw, unit_buf, unit_capacity);
+                    /* Share gensym dedup table across units */
+                    memcpy(uw.gensym_objs, fw.gensym_objs, fw.gensym_count * sizeof(CL_Obj));
+                    uw.gensym_count = fw.gensym_count;
+                    cl_fasl_serialize_bytecode(&uw, bytecode);
+                    while (uw.error == FASL_ERR_OVERFLOW) {
+                        platform_free(unit_buf);
+                        unit_capacity *= 2;
+                        unit_buf = (uint8_t *)platform_alloc(unit_capacity);
+                        if (!unit_buf) { do_cache = 0; break; }
+                        cl_fasl_writer_init(&uw, unit_buf, unit_capacity);
+                        memcpy(uw.gensym_objs, fw.gensym_objs, fw.gensym_count * sizeof(CL_Obj));
+                        uw.gensym_count = fw.gensym_count;
+                        cl_fasl_serialize_bytecode(&uw, bytecode);
+                    }
+                    /* Update file-level gensym table */
+                    if (do_cache && uw.error == FASL_OK) {
+                        memcpy(fw.gensym_objs, uw.gensym_objs, uw.gensym_count * sizeof(CL_Obj));
+                        fw.gensym_count = uw.gensym_count;
+                    }
+                    if (do_cache && uw.error == FASL_OK) {
+                        while (fw.pos + 4 + uw.pos > fasl_capacity) {
+                            uint8_t *new_buf;
+                            fasl_capacity *= 2;
+                            new_buf = (uint8_t *)platform_alloc(fasl_capacity);
+                            if (!new_buf) { do_cache = 0; break; }
+                            memcpy(new_buf, fasl_buf, fw.pos);
+                            platform_free(fasl_buf);
+                            fasl_buf = new_buf;
+                            fw.data = fasl_buf;
+                            fw.capacity = fasl_capacity;
+                        }
+                        if (do_cache) {
+                            cl_fasl_write_u32(&fw, uw.pos);
+                            cl_fasl_write_bytes(&fw, unit_buf, uw.pos);
+                            n_units++;
+                        }
+                    }
+                }
+                CL_GC_UNPROTECT(1); /* bytecode */
+            }
             CL_UNCATCH();
         } else {
             cl_error_print();
             CL_UNCATCH();
+            do_cache = 0; /* Don't cache files with errors */
         }
     }
 
     CL_GC_UNPROTECT(1); /* stream */
     cl_stream_close(stream);
     platform_free(buf);
+
+    /* Write FASL cache file if we collected units */
+    if (do_cache && n_units > 0) {
+        char dir[1024];
+        /* Patch n_units in header */
+        fasl_buf[8]  = (uint8_t)(n_units >> 24);
+        fasl_buf[9]  = (uint8_t)(n_units >> 16);
+        fasl_buf[10] = (uint8_t)(n_units >> 8);
+        fasl_buf[11] = (uint8_t)(n_units);
+        /* Ensure directory exists */
+        path_directory(auto_cache_path, dir, sizeof(dir));
+        if (dir[0]) mkdir_p(dir);
+        /* Write file */
+        {
+            PlatformFile fh = platform_file_open(auto_cache_path, PLATFORM_FILE_WRITE);
+            if (fh != PLATFORM_FILE_INVALID) {
+                platform_file_write_buf(fh, (const char *)fasl_buf, fw.pos);
+                platform_file_close(fh);
+            }
+        }
+    }
+    if (fasl_buf) platform_free(fasl_buf);
+    if (unit_buf) platform_free(unit_buf);
+    } /* end auto-cache scope */
 
     /* Restore *load-pathname* and *load-truename* */
     lp_sym->value = saved_load_pathname;
@@ -851,6 +971,8 @@ static CL_Obj bi_compile_file(CL_Obj *args, int n)
 
                 /* Serialize this unit */
                 cl_fasl_writer_init(&uw, unit_buf, unit_capacity);
+                memcpy(uw.gensym_objs, w.gensym_objs, w.gensym_count * sizeof(CL_Obj));
+                uw.gensym_count = w.gensym_count;
                 cl_fasl_serialize_bytecode(&uw, bytecode);
 
                 /* If unit_buf was too small, grow and retry */
@@ -860,10 +982,15 @@ static CL_Obj bi_compile_file(CL_Obj *args, int n)
                     unit_buf = (uint8_t *)platform_alloc(unit_capacity);
                     if (!unit_buf) break;
                     cl_fasl_writer_init(&uw, unit_buf, unit_capacity);
+                    memcpy(uw.gensym_objs, w.gensym_objs, w.gensym_count * sizeof(CL_Obj));
+                    uw.gensym_count = w.gensym_count;
                     cl_fasl_serialize_bytecode(&uw, bytecode);
                 }
 
                 if (unit_buf && uw.error == FASL_OK) {
+                    /* Update file-level gensym table */
+                    memcpy(w.gensym_objs, uw.gensym_objs, uw.gensym_count * sizeof(CL_Obj));
+                    w.gensym_count = uw.gensym_count;
                     /* Grow fasl_buf if needed */
                     while (w.pos + 4 + uw.pos > fasl_capacity) {
                         uint8_t *new_buf;

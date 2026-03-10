@@ -102,6 +102,9 @@ enum CL_Opcode {
     OP_PROGV_BIND   = 0xA4, /* Pop values-list, pop symbols-list, push dyn_mark, bind all */
     OP_PROGV_UNBIND = 0xA5, /* Pop body result, pop dyn_mark, restore bindings, push result */
 
+    OP_DEFSETF      = 0xA6, /* u16 accessor_idx, u16 updater_idx: register setf mapping */
+    OP_DEFVAR       = 0xA7, /* u16 sym_idx: pop value; if sym unbound, store value; mark special */
+
     OP_HALT      = 0xFF   /* Stop VM */
 };
 

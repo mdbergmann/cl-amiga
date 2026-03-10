@@ -19,6 +19,7 @@ void cl_fasl_writer_init(CL_FaslWriter *w, uint8_t *buf, uint32_t capacity)
     w->capacity = capacity;
     w->pos = 0;
     w->error = FASL_OK;
+    w->gensym_count = 0;
 }
 
 void cl_fasl_write_u8(CL_FaslWriter *w, uint8_t val)
@@ -112,12 +113,35 @@ void cl_fasl_serialize_obj(CL_FaslWriter *w, CL_Obj obj)
     case TYPE_SYMBOL: {
         CL_Symbol *sym = (CL_Symbol *)CL_OBJ_TO_PTR(obj);
         CL_String *name = (CL_String *)CL_OBJ_TO_PTR(sym->name);
-        cl_fasl_write_u8(w, FASL_TAG_SYMBOL);
 
         if (CL_NULL_P(sym->package)) {
-            /* Uninterned symbol: package_name_len = 0 */
-            cl_fasl_write_u16(w, 0);
-        } else {
+            /* Uninterned symbol — check gensym dedup table */
+            uint16_t gi;
+            for (gi = 0; gi < w->gensym_count; gi++) {
+                if (w->gensym_objs[gi] == obj) {
+                    cl_fasl_write_u8(w, FASL_TAG_GENSYM_REF);
+                    cl_fasl_write_u16(w, gi);
+                    return;
+                }
+            }
+            /* New gensym — register and emit definition */
+            if (w->gensym_count < FASL_MAX_GENSYMS) {
+                w->gensym_objs[w->gensym_count] = obj;
+                cl_fasl_write_u8(w, FASL_TAG_GENSYM_DEF);
+                cl_fasl_write_u16(w, w->gensym_count);
+                w->gensym_count++;
+            } else {
+                /* Fallback: emit as plain uninterned symbol (no dedup) */
+                cl_fasl_write_u8(w, FASL_TAG_SYMBOL);
+                cl_fasl_write_u16(w, 0);
+            }
+            cl_fasl_write_u16(w, (uint16_t)name->length);
+            cl_fasl_write_bytes(w, name->data, name->length);
+            return;
+        }
+
+        cl_fasl_write_u8(w, FASL_TAG_SYMBOL);
+        {
             CL_Package *pkg = (CL_Package *)CL_OBJ_TO_PTR(sym->package);
             CL_String *pkg_name = (CL_String *)CL_OBJ_TO_PTR(pkg->name);
             if (pkg == (CL_Package *)CL_OBJ_TO_PTR(
@@ -292,10 +316,25 @@ void cl_fasl_serialize_bytecode(CL_FaslWriter *w, CL_Obj bc_obj)
     cl_fasl_write_u32(w, bc->code_len);
     cl_fasl_write_bytes(w, bc->code, bc->code_len);
 
-    /* Constants */
+    /* Constants — deduplicate eq-identical objects (critical for gensym catch tags) */
     cl_fasl_write_u16(w, bc->n_constants);
-    for (i = 0; i < bc->n_constants; i++)
-        cl_fasl_serialize_obj(w, bc->constants[i]);
+    for (i = 0; i < bc->n_constants; i++) {
+        uint16_t j;
+        int found_dup = 0;
+        /* Check if this constant is eq to an earlier one */
+        if (CL_HEAP_P(bc->constants[i])) {
+            for (j = 0; j < i; j++) {
+                if (bc->constants[j] == bc->constants[i]) {
+                    cl_fasl_write_u8(w, FASL_TAG_CONST_REF);
+                    cl_fasl_write_u16(w, j);
+                    found_dup = 1;
+                    break;
+                }
+            }
+        }
+        if (!found_dup)
+            cl_fasl_serialize_obj(w, bc->constants[i]);
+    }
 
     /* Metadata */
     cl_fasl_write_u16(w, bc->arity);
@@ -344,6 +383,7 @@ void cl_fasl_reader_init(CL_FaslReader *r, const uint8_t *data, uint32_t size)
     r->size = size;
     r->pos = 0;
     r->error = FASL_OK;
+    r->gensym_count = 0;
 }
 
 uint8_t cl_fasl_read_u8(CL_FaslReader *r)
@@ -471,6 +511,29 @@ CL_Obj cl_fasl_deserialize_obj(CL_FaslReader *r)
             pkg_obj = cl_find_package("COMMON-LISP-USER", 16);
         }
         return cl_intern_in(sym_buf, sym_len, pkg_obj);
+    }
+
+    case FASL_TAG_GENSYM_DEF: {
+        uint16_t id = cl_fasl_read_u16(r);
+        uint16_t sym_len = cl_fasl_read_u16(r);
+        char sym_buf[256];
+        CL_Obj sym_obj;
+        if (r->error || sym_len >= sizeof(sym_buf)) return CL_NIL;
+        cl_fasl_read_bytes(r, sym_buf, sym_len);
+        sym_buf[sym_len] = '\0';
+        sym_obj = cl_make_symbol(cl_make_string(sym_buf, sym_len));
+        if (id < FASL_MAX_GENSYMS) {
+            r->gensym_objs[id] = sym_obj;
+            if (id >= r->gensym_count)
+                r->gensym_count = id + 1;
+        }
+        return sym_obj;
+    }
+
+    case FASL_TAG_GENSYM_REF: {
+        uint16_t id = cl_fasl_read_u16(r);
+        if (r->error || id >= r->gensym_count) return CL_NIL;
+        return r->gensym_objs[id];
     }
 
     case FASL_TAG_STRING: {
@@ -713,7 +776,19 @@ CL_Obj cl_fasl_deserialize_bytecode(CL_FaslReader *r)
     }
 
     for (i = 0; i < n_consts; i++) {
-        CL_Obj val = cl_fasl_deserialize_obj(r);
+        CL_Obj val;
+        /* Check for back-reference to earlier constant (dedup) */
+        if (!r->error && r->pos < r->size &&
+            r->data[r->pos] == FASL_TAG_CONST_REF) {
+            uint16_t ref_idx;
+            cl_fasl_read_u8(r);  /* consume tag */
+            ref_idx = cl_fasl_read_u16(r);
+            if (r->error) { CL_GC_UNPROTECT(1); return CL_NIL; }
+            bc = (CL_Bytecode *)CL_OBJ_TO_PTR(bc_obj);
+            bc->constants[i] = bc->constants[ref_idx];
+            continue;
+        }
+        val = cl_fasl_deserialize_obj(r);
         if (r->error) { CL_GC_UNPROTECT(1); return CL_NIL; }
         bc = (CL_Bytecode *)CL_OBJ_TO_PTR(bc_obj); /* refresh */
         bc->constants[i] = val;

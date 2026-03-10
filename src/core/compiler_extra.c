@@ -916,6 +916,8 @@ void compile_eval_when(CL_Compiler *c, CL_Obj form)
             }
         }
         if (has_def) {
+            /* First pass: compile and eval each form individually so
+               macros/types are available for later forms in this body */
             for (rest = body; !CL_NULL_P(rest); rest = cl_cdr(rest)) {
                 CL_Obj sub = cl_car(rest);
                 CL_Obj bc;
@@ -925,7 +927,11 @@ void compile_eval_when(CL_Compiler *c, CL_Obj form)
                     cl_vm_eval(bc);
                 CL_GC_UNPROTECT(1);
             }
-            cl_emit(c, OP_NIL);
+            /* Second pass: compile body as progn so bytecodes are
+               preserved for FASL serialization (compile-file).
+               Macros are now available so this compiles correctly.
+               Definitions may eval twice — harmless for defs. */
+            compile_progn(c, body);
             return;
         }
     }
@@ -938,12 +944,19 @@ void compile_defsetf(CL_Compiler *c, CL_Obj form)
      * Registers that (setf (accessor args...) val) → (updater args... val) */
     CL_Obj accessor = cl_car(cl_cdr(form));
     CL_Obj updater = cl_car(cl_cdr(cl_cdr(form)));
+    int acc_idx, upd_idx;
 
     /* Store mapping in setf_table at compile time (immediate side effect) */
     setf_table = cl_cons(cl_cons(accessor, updater), setf_table);
 
-    /* Return the accessor name */
-    cl_emit_const(c, accessor);
+    /* Emit OP_DEFSETF so the mapping is registered at load time (FASL) */
+    acc_idx = cl_add_constant(c, accessor);
+    upd_idx = cl_add_constant(c, updater);
+    cl_emit(c, OP_DEFSETF);
+    cl_emit(c, (uint8_t)(acc_idx >> 8));
+    cl_emit(c, (uint8_t)(acc_idx));
+    cl_emit(c, (uint8_t)(upd_idx >> 8));
+    cl_emit(c, (uint8_t)(upd_idx));
 }
 
 /* --- Deftype --- */
@@ -982,13 +995,13 @@ void compile_defvar(CL_Compiler *c, CL_Obj form)
 
     sym->flags |= CL_SYM_SPECIAL;
 
-    if (!CL_NULL_P(rest) && sym->value == CL_UNBOUND) {
+    if (!CL_NULL_P(rest)) {
         int idx;
         compile_expr(c, cl_car(rest));
         idx = cl_add_constant(c, name);
-        cl_emit(c, OP_GSTORE);
+        /* OP_DEFVAR: mark special, store only if unbound (runtime check) */
+        cl_emit(c, OP_DEFVAR);
         cl_emit_u16(c, (uint16_t)idx);
-        cl_emit(c, OP_POP);
     }
     cl_emit_const(c, name);
 }

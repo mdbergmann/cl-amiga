@@ -3289,7 +3289,9 @@ you need to still be able to use compile-op on that lisp file."))
         #+sbcl (sb-ext:native-namestring p)
         #-(or clozure cmucl sbcl scl)
         (os-cond
-         ((or (os-unix-p) (os-amigaos-p)) (unix-namestring p))
+         ((os-unix-p) (unix-namestring p))
+         ;; AmigaOS uses Device:path — unix-namestring loses device component
+         ((os-amigaos-p) (namestring p))
          (t (namestring p))))))
 
   (defun parse-native-namestring (string &rest constraints &key ensure-directory &allow-other-keys)
@@ -3305,7 +3307,9 @@ a CL pathname satisfying all the specified constraints as per ENSURE-PATHNAME"
                  #+scl (lisp::parse-unix-namestring string)
                  #-(or clozure cmucl sbcl scl)
                  (os-cond
-                  ((or (os-unix-p) (os-amigaos-p)) (parse-unix-namestring string :ensure-directory ensure-directory))
+                  ((os-unix-p) (parse-unix-namestring string :ensure-directory ensure-directory))
+                  ;; AmigaOS uses Device:path — parse-unix-namestring loses device component
+                  ((os-amigaos-p) (parse-namestring string))
                   (t (parse-namestring string))))))
            (pathname
              (if ensure-directory
