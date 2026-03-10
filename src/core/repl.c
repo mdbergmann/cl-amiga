@@ -774,3 +774,27 @@ void cl_repl_init(void)
 {
     cl_repl_init_no_userinit(0);
 }
+
+void cl_repl_init_minimal(void)
+{
+    /* Minimal init: set up when/unless macros and export CL symbols,
+     * but skip boot.lisp, CLOS, and user init.
+     * For unit tests that need cl_compile/cl_eval_string. */
+    CL_Obj saved_pkg = cl_current_package;
+    cl_current_package = cl_package_cl;
+    {
+        CL_Symbol *pkg_sym = (CL_Symbol *)CL_OBJ_TO_PTR(SYM_STAR_PACKAGE);
+        pkg_sym->value = cl_package_cl;
+    }
+
+    cl_eval_string("(defmacro when (test &rest body) (list 'if test (cons 'progn body)))");
+    cl_eval_string("(defmacro unless (test &rest body) (list 'if test nil (cons 'progn body)))");
+
+    cl_package_export_all_cl_symbols();
+
+    cl_current_package = saved_pkg;
+    {
+        CL_Symbol *pkg_sym = (CL_Symbol *)CL_OBJ_TO_PTR(SYM_STAR_PACKAGE);
+        pkg_sym->value = saved_pkg;
+    }
+}

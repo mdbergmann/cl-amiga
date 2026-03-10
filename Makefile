@@ -49,6 +49,7 @@ CORE_SRC     = $(SRCDIR)/core/types.c \
                $(SRCDIR)/core/float_math.c \
                $(SRCDIR)/core/debugger.c \
                $(SRCDIR)/core/repl.c \
+               $(SRCDIR)/core/fasl.c \
                $(SRCDIR)/core/color.c
 MAIN_SRC     = $(SRCDIR)/main.c
 

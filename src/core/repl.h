@@ -23,6 +23,10 @@ void cl_load_file(const char *path);
 void cl_repl_init(void);
 void cl_repl_init_no_userinit(int no_userinit);
 
+/* Minimal init: C builtins only, no boot.lisp/CLOS loading.
+ * For unit tests that need cl_compile/cl_eval_string but not macros. */
+void cl_repl_init_minimal(void);
+
 /* Compute net parenthesis depth, skipping strings/comments/char literals */
 int cl_paren_depth(const char *str);
 
