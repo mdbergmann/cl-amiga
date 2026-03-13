@@ -11,6 +11,9 @@
 #include "compiler.h"
 #include "../platform/platform.h"
 #include <string.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <unistd.h>
 
 /* Shared: register a builtin in a specific package */
 void cl_register_builtin(const char *name, CL_CFunc func,
@@ -453,6 +456,10 @@ static CL_Obj bi_apply(CL_Obj *args, int n)
 
     if (CL_FUNCTION_P(func)) {
         CL_Function *f = (CL_Function *)CL_OBJ_TO_PTR(func);
+        if (!f->func) {
+            cl_error(CL_ERR_TYPE, "APPLY: NULL function pointer in %s",
+                     CL_NULL_P(f->name) ? "?" : cl_symbol_name(f->name));
+        }
         return f->func(flat_args, nflat);
     }
     if (CL_BYTECODE_P(func) || CL_CLOSURE_P(func)) {
@@ -475,6 +482,10 @@ static CL_Obj bi_funcall(CL_Obj *args, int n)
     }
     if (CL_FUNCTION_P(func)) {
         CL_Function *f = (CL_Function *)CL_OBJ_TO_PTR(func);
+        if (!f->func) {
+            cl_error(CL_ERR_TYPE, "FUNCALL: NULL function pointer in %s",
+                     CL_NULL_P(f->name) ? "?" : cl_symbol_name(f->name));
+        }
         return f->func(args + 1, n - 1);
     }
     if (CL_BYTECODE_P(func) || CL_CLOSURE_P(func)) {

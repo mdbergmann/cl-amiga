@@ -79,6 +79,8 @@ CL_Obj SYM_MACROLET = CL_NIL;
 CL_Obj SYM_SYMBOL_MACROLET = CL_NIL;
 CL_Obj SYM_THE = CL_NIL;
 CL_Obj SYM_PROGV = CL_NIL;
+CL_Obj SYM_FUNCALL = CL_NIL;
+CL_Obj SYM_APPLY = CL_NIL;
 
 /* Declaration specifier symbols */
 CL_Obj SYM_SPECIAL_DECL = CL_NIL;
@@ -440,6 +442,8 @@ void cl_symbol_init(void)
     SYM_SYMBOL_MACROLET      = cl_intern_in("SYMBOL-MACROLET", 15, cl_package_cl);
     SYM_THE                  = cl_intern_in("THE", 3, cl_package_cl);
     SYM_PROGV                = cl_intern_in("PROGV", 5, cl_package_cl);
+    SYM_FUNCALL              = cl_intern_in("FUNCALL", 7, cl_package_cl);
+    SYM_APPLY                = cl_intern_in("APPLY", 5, cl_package_cl);
 
     /* Declaration specifier symbols */
     SYM_SPECIAL_DECL         = cl_intern_in("SPECIAL", 7, cl_package_cl);

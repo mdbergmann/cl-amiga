@@ -13,6 +13,7 @@
 #include "package.h"
 #include "mem.h"
 #include "float.h"
+#include "vm.h"
 #include "error.h"
 #include "vm.h"
 #include "debugger.h"
@@ -84,7 +85,8 @@ typedef struct {
 } CL_ParsedLambdaList;
 
 /* Compiler state */
-typedef struct {
+typedef struct CL_Compiler_s {
+    struct CL_Compiler_s *parent; /* for GC root chain */
     uint8_t code[CL_MAX_CODE_SIZE];
     CL_Obj constants[CL_MAX_CONSTANTS];
     int code_pos;
@@ -114,6 +116,9 @@ typedef struct {
     int param_slots[CL_MAX_LOCALS];
     uint8_t lambda_needs_boxing[CL_MAX_LOCALS];
 } CL_Compiler;
+
+/* --- Active compiler chain for GC root marking --- */
+extern CL_Compiler *cl_active_compiler;
 
 /* --- Shared globals (defined in compiler.c) --- */
 
@@ -194,6 +199,9 @@ void compile_defparameter(CL_Compiler *c, CL_Obj form);
 void compile_defconstant(CL_Compiler *c, CL_Obj form);
 void compile_defun(CL_Compiler *c, CL_Obj form);
 void compile_defmacro(CL_Compiler *c, CL_Obj form);
+CL_Obj defmacro_gensym(void);
+int defmacro_is_ll_keyword(CL_Obj param);
+int defmacro_needs_destructuring(CL_Obj ll);
 void compile_declaim(CL_Compiler *c, CL_Obj form);
 void compile_locally(CL_Compiler *c, CL_Obj form);
 void compile_trace(CL_Compiler *c, CL_Obj form);

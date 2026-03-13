@@ -16,6 +16,104 @@
 #include <string.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <signal.h>
+#include <unistd.h>
+
+#ifdef PLATFORM_POSIX
+/* Crash handler on alternate stack for stack overflow debugging */
+static char crash_alt_stack[SIGSTKSZ];
+
+/* Defined in vm.c — dump last N VM opcodes for crash diagnostics */
+extern void vm_trace_dump(void);
+extern volatile uint8_t dbg_last_op;
+extern volatile uint32_t dbg_last_ip;
+extern volatile int dbg_last_fp;
+extern volatile uint8_t *dbg_last_code;
+
+static void crash_handler(int sig, siginfo_t *info, void *ctx)
+{
+    char buf[512];
+    int len;
+    (void)ctx;
+    len = snprintf(buf, sizeof(buf),
+                   "\n[FATAL] Signal %d at addr=%p, vm.fp=%d/%d, vm.sp=%d/%u\n",
+                   sig, info ? info->si_addr : NULL,
+                   cl_vm.fp, cl_vm.frame_size, cl_vm.sp, cl_vm.stack_size);
+    (void)write(2, buf, len);
+    len = snprintf(buf, sizeof(buf),
+                   "[FATAL] last_op=0x%02x last_ip=%u last_fp=%d last_code=%p\n",
+                   (unsigned)dbg_last_op, (unsigned)dbg_last_ip,
+                   dbg_last_fp, (void *)dbg_last_code);
+    (void)write(2, buf, len);
+    /* Print current frame info */
+    if (cl_vm.fp > 0) {
+        CL_Frame *f = &cl_vm.frames[cl_vm.fp - 1];
+        CL_Bytecode *bc = NULL;
+        if (CL_CLOSURE_P(f->bytecode)) {
+            CL_Closure *cl = (CL_Closure *)CL_OBJ_TO_PTR(f->bytecode);
+            bc = (CL_Bytecode *)CL_OBJ_TO_PTR(cl->bytecode);
+        } else if (CL_BYTECODE_P(f->bytecode)) {
+            bc = (CL_Bytecode *)CL_OBJ_TO_PTR(f->bytecode);
+        }
+        if (bc) {
+            len = snprintf(buf, sizeof(buf),
+                           "[FATAL] frame: ip=%u/%u code=%p name=%s src=%s:%u\n",
+                           f->ip, bc->code_len, (void *)bc->code,
+                           (bc->name != CL_NIL && CL_SYMBOL_P(bc->name))
+                               ? cl_symbol_name(bc->name) : "<anon>",
+                           bc->source_file ? bc->source_file : "?",
+                           bc->source_line);
+            (void)write(2, buf, len);
+        }
+    }
+    /* Dump all VM frames for backtrace */
+    {
+        int fi;
+        for (fi = cl_vm.fp - 1; fi >= 0; fi--) {
+            CL_Frame *ff = &cl_vm.frames[fi];
+            CL_Bytecode *fbc = NULL;
+            if (CL_CLOSURE_P(ff->bytecode)) {
+                CL_Closure *cc = (CL_Closure *)CL_OBJ_TO_PTR(ff->bytecode);
+                fbc = (CL_Bytecode *)CL_OBJ_TO_PTR(cc->bytecode);
+            } else if (CL_BYTECODE_P(ff->bytecode)) {
+                fbc = (CL_Bytecode *)CL_OBJ_TO_PTR(ff->bytecode);
+            }
+            if (fbc) {
+                len = snprintf(buf, sizeof(buf),
+                    "[BT] frame[%d] ip=%u/%u name=%s src=%s:%u\n",
+                    fi, ff->ip, fbc->code_len,
+                    (fbc->name != CL_NIL && CL_SYMBOL_P(fbc->name))
+                        ? cl_symbol_name(fbc->name) : "<anon>",
+                    fbc->source_file ? fbc->source_file : "?",
+                    fbc->source_line);
+            } else {
+                len = snprintf(buf, sizeof(buf),
+                    "[BT] frame[%d] ip=%u bytecode=0x%08x\n",
+                    fi, ff->ip, ff->bytecode);
+            }
+            (void)write(2, buf, len);
+        }
+    }
+    vm_trace_dump();
+    _exit(128 + sig);
+}
+
+static void install_crash_handler(void)
+{
+    stack_t ss;
+    struct sigaction sa;
+    ss.ss_sp = crash_alt_stack;
+    ss.ss_size = SIGSTKSZ;
+    ss.ss_flags = 0;
+    sigaltstack(&ss, NULL);
+    sa.sa_sigaction = crash_handler;
+    sa.sa_flags = SA_ONSTACK | SA_SIGINFO;
+    sigemptyset(&sa.sa_mask);
+    sigaction(SIGSEGV, &sa, NULL);
+    sigaction(SIGBUS, &sa, NULL);
+    sigaction(SIGABRT, &sa, NULL);
+}
+#endif
 
 static void print_usage(void)
 {
@@ -100,6 +198,15 @@ int main(int argc, char *argv[])
     uint32_t heap_size = 0;
     uint32_t stack_entries = 0;
     int frame_count = 0;
+
+    /* Initialize C stack base for overflow detection using address of a local
+     * in main's stack frame. Using 'batch' since it's a normal int that
+     * can't be optimized away. */
+    cl_c_stack_base = (char *)&batch;
+
+#ifdef PLATFORM_POSIX
+    install_crash_handler();
+#endif
 
     for (i = 1; i < argc; i++) {
         if (strcmp(argv[i], "--batch") == 0) {
@@ -308,40 +415,40 @@ int main(int argc, char *argv[])
         /* Drain residual CLI data from stdin (AmigaOS leaks command line to Input()) */
         platform_drain_input();
         platform_write_string("\n");
-        /* Line 1:   ))     \ */
+        /* Line 1:   )))     \\ */
         cl_color_set(CL_COLOR_LIGHT_BLUE);
-        platform_write_string("  ))     ");
+        platform_write_string("  )))     ");
         cl_color_set(CL_COLOR_RED);
-        platform_write_string("\\\n");
-        /* Line 2:  ))       \          CL-Amiga v0.1 */
+        platform_write_string("\\\\\n");
+        /* Line 2:  )))       \\          CL-Amiga v0.1 */
         cl_color_set(CL_COLOR_LIGHT_BLUE);
-        platform_write_string(" ))       ");
+        platform_write_string(" )))       ");
         cl_color_set(CL_COLOR_RED);
-        platform_write_string("\\          ");
+        platform_write_string("\\\\          ");
         cl_color_set(CL_COLOR_DIM_CYAN);
         platform_write_string("CL-Amiga v0.1\n");
-        /* Line 3: ))         \ */
+        /* Line 3: )))         \\ */
         cl_color_set(CL_COLOR_LIGHT_BLUE);
-        platform_write_string("))         ");
+        platform_write_string(")))         ");
         cl_color_set(CL_COLOR_RED);
-        platform_write_string("\\\n");
-        /* Line 4: ))         /\        Common Lisp for AmigaOS 3+ */
+        platform_write_string("\\\\\n");
+        /* Line 4: )))         /\\        Common Lisp for AmigaOS 3+ */
         cl_color_set(CL_COLOR_LIGHT_BLUE);
-        platform_write_string("))         ");
+        platform_write_string(")))         ");
         cl_color_set(CL_COLOR_RED);
-        platform_write_string("/\\        ");
+        platform_write_string("//\\\\        ");
         cl_color_set(CL_COLOR_DIM_CYAN);
         platform_write_string("Common Lisp for AmigaOS 3+\n");
-        /* Line 5:  ))       /  \ */
+        /* Line 5:  )))       //  \\ */
         cl_color_set(CL_COLOR_LIGHT_BLUE);
-        platform_write_string(" ))       ");
+        platform_write_string(" )))       ");
         cl_color_set(CL_COLOR_RED);
-        platform_write_string("/  \\\n");
-        /* Line 6:   ))     /    \ */
+        platform_write_string("//  \\\\\n");
+        /* Line 6:   )))     //    \\ */
         cl_color_set(CL_COLOR_LIGHT_BLUE);
-        platform_write_string("  ))     ");
+        platform_write_string("  )))     ");
         cl_color_set(CL_COLOR_RED);
-        platform_write_string("/    \\\n");
+        platform_write_string("//    \\\\\n");
         cl_color_reset();
         platform_write_string("\nType (quit) to exit.\n\n");
 

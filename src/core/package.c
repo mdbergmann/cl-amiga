@@ -447,6 +447,7 @@ static int symbol_has_binding(CL_Obj sym)
 {
     extern int cl_is_struct_type(CL_Obj type_sym);
     extern int cl_clos_class_exists(CL_Obj name);
+    extern int cl_is_builtin_type_name(const char *name);
 
     CL_Symbol *s = (CL_Symbol *)CL_OBJ_TO_PTR(sym);
 
@@ -464,6 +465,9 @@ static int symbol_has_binding(CL_Obj sym)
     /* Is a struct type or CLOS class */
     if (cl_is_struct_type(sym))   return 1;
     if (cl_clos_class_exists(sym)) return 1;
+
+    /* Is a built-in type name recognized by typep */
+    if (cl_is_builtin_type_name(cl_symbol_name(sym))) return 1;
 
     return 0;
 }
@@ -561,6 +565,26 @@ void cl_package_init(void)
     cl_use_package(cl_package_clamiga, cl_package_cl);
 
     cl_current_package = cl_package_cl_user;
+
+    /* Pre-intern and export standard CL type names that are recognized by
+       the C-level typep but have no Lisp-level function/value binding.
+       Must happen early so packages that :use CL inherit them correctly. */
+    {
+        static const char *builtin_type_names[] = {
+            "SIMPLE-VECTOR", "SIMPLE-ARRAY", "SIMPLE-BIT-VECTOR",
+            "BASE-CHAR", "STANDARD-CHAR",
+            "COMPILED-FUNCTION", "ATOM", "BOOLEAN",
+            "FIXNUM", "BIGNUM", "BIT-VECTOR",
+            "SINGLE-FLOAT", "DOUBLE-FLOAT", "SHORT-FLOAT", "LONG-FLOAT",
+            NULL
+        };
+        const char **p;
+        for (p = builtin_type_names; *p; p++) {
+            CL_Obj sym = cl_intern_in(*p, (uint32_t)strlen(*p), cl_package_cl);
+            CL_Symbol *s = (CL_Symbol *)CL_OBJ_TO_PTR(sym);
+            s->flags |= CL_SYM_EXPORTED;
+        }
+    }
 
     /* Note: roots are kept protected permanently (they're globals) */
     CL_GC_UNPROTECT(5);

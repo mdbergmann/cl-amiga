@@ -112,6 +112,8 @@ extern CL_Obj SYM_MACROLET;
 extern CL_Obj SYM_SYMBOL_MACROLET;
 extern CL_Obj SYM_THE;
 extern CL_Obj SYM_PROGV;
+extern CL_Obj SYM_FUNCALL;
+extern CL_Obj SYM_APPLY;
 
 /* Declaration specifier symbols */
 extern CL_Obj SYM_SPECIAL_DECL;

@@ -350,10 +350,44 @@ static CL_Obj read_atom(void)
     int ch;
     int is_number = 1;
     int has_digit = 0;
+    int has_escape = 0;  /* Set if | or \ escaping was used */
     int i;
+    CL_Readtable *rt = cl_readtable_current();
 
     while (len < 255) {
         ch = read_char();
+        if (ch < 0) break;  /* EOF */
+
+        /* Multiple escape: |...| — read literally until closing | */
+        if (ch < CL_RT_CHARS && rt->syntax[ch] == CL_CHAR_MULTI_ESCAPE) {
+            has_escape = 1;
+            for (;;) {
+                ch = read_char();
+                if (ch < 0) {
+                    cl_error(CL_ERR_PARSE, "Unterminated | in symbol name");
+                    return CL_NIL;
+                }
+                if (ch < CL_RT_CHARS && rt->syntax[ch] == CL_CHAR_MULTI_ESCAPE)
+                    break;  /* closing | */
+                /* Single escape inside multiple escape */
+                if (ch < CL_RT_CHARS && rt->syntax[ch] == CL_CHAR_ESCAPE) {
+                    ch = read_char();
+                    if (ch < 0) break;
+                }
+                if (len < 255) buf[len++] = (char)ch;  /* NO case conversion */
+            }
+            continue;
+        }
+
+        /* Single escape: \ — read next char literally */
+        if (ch < CL_RT_CHARS && rt->syntax[ch] == CL_CHAR_ESCAPE) {
+            has_escape = 1;
+            ch = read_char();
+            if (ch < 0) break;
+            if (len < 255) buf[len++] = (char)ch;  /* NO case conversion */
+            continue;
+        }
+
         if (is_delimiter(ch)) {
             unread_char(ch);
             break;
@@ -362,10 +396,13 @@ static CL_Obj read_atom(void)
     }
     buf[len] = '\0';
 
-    if (len == 0) {
+    if (len == 0 && !has_escape) {
         cl_error(CL_ERR_PARSE, "Unexpected end of input");
         return CL_NIL;
     }
+
+    /* Escaped tokens (|...|, \x) are always symbols — skip numeric parsing */
+    if (has_escape) goto intern_symbol;
 
     /* Check for number: optional sign followed by digits */
     i = 0;
@@ -535,7 +572,8 @@ static CL_Obj read_atom(void)
         return CL_NIL;
     }
 
-    /* Regular symbol */
+intern_symbol:
+    /* Regular symbol (also reached via goto for escaped tokens) */
     return cl_intern(buf, (uint32_t)len);
 }
 
@@ -939,24 +977,132 @@ static CL_Obj read_expr(void)
         if (ch == 'O' || ch == 'o') {
             return read_radix_number(8);
         }
-        /* #nR — arbitrary radix */
+        /* #nR — arbitrary radix, #nA — multi-dimensional array */
         if (ch >= '0' && ch <= '9') {
-            int radix_val = ch - '0';
+            int num_val = ch - '0';
             while (1) {
                 ch = read_char();
                 if (ch == 'R' || ch == 'r') break;
+                if (ch == 'A' || ch == 'a') {
+                    /* #nA(...) — n-dimensional array */
+                    int rank = num_val;
+                    CL_Obj contents = read_expr();
+                    uint32_t dims[8];
+                    uint32_t total = 1;
+                    int d;
+                    CL_Obj arr;
+                    CL_Vector *vp;
+                    CL_Obj flat_elems = CL_NIL;
+                    CL_Obj flat_tail = CL_NIL;
+
+                    if (read_suppress) return CL_NIL;
+                    if (rank < 0 || rank > 8) {
+                        cl_error(CL_ERR_PARSE, "#%dA: rank must be 0-8", rank);
+                        return CL_NIL;
+                    }
+
+                    CL_GC_PROTECT(contents);
+                    CL_GC_PROTECT(flat_elems);
+                    CL_GC_PROTECT(flat_tail);
+
+                    if (rank == 0) {
+                        /* #0A datum — 0-dimensional array containing datum */
+                        arr = cl_make_array(1, 0, NULL, 0, CL_NO_FILL_POINTER);
+                        vp = (CL_Vector *)CL_OBJ_TO_PTR(arr);
+                        cl_vector_data(vp)[0] = contents;
+                        CL_GC_UNPROTECT(3);
+                        return arr;
+                    }
+
+                    /* Derive dimensions from nested list structure */
+                    {
+                        CL_Obj probe = contents;
+                        for (d = 0; d < rank; d++) {
+                            if (CL_CONS_P(probe)) {
+                                uint32_t len = 0;
+                                CL_Obj p = probe;
+                                while (CL_CONS_P(p)) { len++; p = cl_cdr(p); }
+                                dims[d] = len;
+                                probe = cl_car(probe);
+                            } else {
+                                dims[d] = 0;
+                            }
+                        }
+                    }
+                    for (d = 0; d < rank; d++) total *= dims[d];
+
+                    /* Recursively flatten nested lists into flat_elems */
+                    {
+                        /* Use a simple iterative approach with a work stack */
+                        /* For simplicity, we flatten recursively for depth = rank */
+                        CL_Obj work[8]; /* One per dimension level */
+                        int level = 0;
+                        uint32_t fi = 0;
+                        work[0] = contents;
+                        while (fi < total) {
+                            if (level == rank - 1) {
+                                /* Innermost: collect elements from list */
+                                CL_Obj lst = work[level];
+                                while (CL_CONS_P(lst) && fi < total) {
+                                    CL_Obj cell = cl_cons(cl_car(lst), CL_NIL);
+                                    if (CL_NULL_P(flat_elems)) {
+                                        flat_elems = cell;
+                                    } else {
+                                        ((CL_Cons *)CL_OBJ_TO_PTR(flat_tail))->cdr = cell;
+                                    }
+                                    flat_tail = cell;
+                                    fi++;
+                                    lst = cl_cdr(lst);
+                                }
+                                /* Go back up */
+                                level--;
+                                if (level < 0) break;
+                                work[level] = cl_cdr(work[level]);
+                            } else {
+                                /* Descend into sublists */
+                                if (CL_CONS_P(work[level])) {
+                                    work[level + 1] = cl_car(work[level]);
+                                    level++;
+                                } else {
+                                    level--;
+                                    if (level < 0) break;
+                                    work[level] = cl_cdr(work[level]);
+                                }
+                            }
+                        }
+                    }
+
+                    arr = cl_make_array(total, (uint8_t)rank, dims, 0,
+                                        CL_NO_FILL_POINTER);
+                    CL_GC_UNPROTECT(3);
+                    vp = (CL_Vector *)CL_OBJ_TO_PTR(arr);
+                    {
+                        uint32_t i;
+                        CL_Obj *data = cl_vector_data(vp);
+                        CL_Obj p = flat_elems;
+                        for (i = 0; i < total; i++) {
+                            if (CL_CONS_P(p)) {
+                                data[i] = cl_car(p);
+                                p = cl_cdr(p);
+                            } else {
+                                data[i] = CL_NIL;
+                            }
+                        }
+                    }
+                    return arr;
+                }
                 if (ch >= '0' && ch <= '9') {
-                    radix_val = radix_val * 10 + (ch - '0');
+                    num_val = num_val * 10 + (ch - '0');
                 } else {
-                    cl_error(CL_ERR_PARSE, "Invalid radix prefix #%d%c", radix_val, ch);
+                    cl_error(CL_ERR_PARSE, "Invalid radix prefix #%d%c", num_val, ch);
                     return CL_NIL;
                 }
             }
-            if (radix_val < 2 || radix_val > 36) {
-                cl_error(CL_ERR_PARSE, "Radix %d out of range (2-36)", radix_val);
+            if (num_val < 2 || num_val > 36) {
+                cl_error(CL_ERR_PARSE, "Radix %d out of range (2-36)", num_val);
                 return CL_NIL;
             }
-            return read_radix_number(radix_val);
+            return read_radix_number(num_val);
         }
         if (read_suppress) return CL_NIL;
         cl_error(CL_ERR_PARSE, "Unknown dispatch macro: #%c", ch);

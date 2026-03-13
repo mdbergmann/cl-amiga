@@ -16,6 +16,7 @@
 #include "error.h"
 #include "vm.h"
 #include "compiler.h"
+#include "readtable.h"
 #include "../platform/platform.h"
 #include <string.h>
 
@@ -144,6 +145,11 @@ static int typep_symbol(CL_Obj obj, CL_Obj type_sym)
     if (strcmp(tname, "RANDOM-STATE") == 0) return CL_RANDOM_STATE_P(obj);
     if (strcmp(tname, "PATHNAME") == 0)     return CL_PATHNAME_P(obj);
     if (strcmp(tname, "LOGICAL-PATHNAME") == 0) return 0;
+    if (strcmp(tname, "READTABLE") == 0) {
+        /* Readtables are fixnum pool indices */
+        if (!CL_FIXNUM_P(obj)) return 0;
+        { int idx = CL_FIXNUM_VAL(obj); return idx >= 0 && idx < CL_RT_POOL_SIZE; }
+    }
 
     /* Structure types — check hierarchy for struct objects */
     if (strcmp(tname, "STRUCTURE") == 0 || strcmp(tname, "STRUCTURE-OBJECT") == 0)
@@ -801,6 +807,12 @@ static int type_name_to_id(const char *name)
     if (strcmp(name, "BOOLEAN") == 0) return TID_BOOLEAN;
     if (strcmp(name, "T") == 0) return TID_T;
     return TID_UNKNOWN;
+}
+
+/* Public API: check if a name is a built-in type recognized by typep */
+int cl_is_builtin_type_name(const char *name)
+{
+    return type_name_to_id(name) != TID_UNKNOWN;
 }
 
 /* Check if type1 is a subtype of type2 using the known hierarchy.

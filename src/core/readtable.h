@@ -25,10 +25,17 @@
 #define CL_CHAR_ESCAPE        4
 #define CL_CHAR_MULTI_ESCAPE  5
 
+/* Readtable case modes (matches CL spec order) */
+#define CL_RT_CASE_UPCASE    0
+#define CL_RT_CASE_DOWNCASE  1
+#define CL_RT_CASE_PRESERVE  2
+#define CL_RT_CASE_INVERT    3
+
 typedef struct {
     uint8_t  syntax[CL_RT_CHARS];      /* Syntax type per char */
     CL_Obj   macro_fn[CL_RT_CHARS];    /* Reader macro closure or CL_NIL (= built-in) */
     CL_Obj   dispatch_fn[CL_RT_CHARS]; /* Sub-dispatch fn for dispatch macro chars */
+    uint8_t  case_mode;                 /* CL_RT_CASE_UPCASE etc. */
 } CL_Readtable;
 
 extern CL_Readtable cl_readtable_pool[CL_RT_POOL_SIZE];

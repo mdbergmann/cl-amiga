@@ -263,7 +263,6 @@ static CL_Obj qq_expand(CL_Obj x, int depth)
     {
         CL_Obj result = CL_NIL;
         CL_Obj cursor = x;
-        CL_Obj sym_list_star;
 
         CL_GC_PROTECT(result);
 
@@ -272,53 +271,15 @@ static CL_Obj qq_expand(CL_Obj x, int depth)
             CL_Obj rest = cl_cdr(cursor);
 
             /* Detect dotted unquote: (... UNQUOTE expr) where UNQUOTE is bare symbol
-             * This comes from reader: `(a b . ,x) → (a b UNQUOTE x) */
+             * This comes from reader: `(a b . ,x) → (a b UNQUOTE x)
+             * Add tail_expr as the last APPEND segment and break out —
+             * the normal APPEND path handles splices correctly. */
             if (depth == 0 && elem == SYM_UNQUOTE &&
                 CL_CONS_P(rest) && CL_NULL_P(cl_cdr(rest))) {
                 CL_Obj tail_expr = cl_car(rest);
-                CL_Obj args, rev;
-
-                sym_list_star = cl_intern_in("LIST*", 5, cl_package_cl);
-
-                /* result has (LIST val) segments in reverse order.
-                 * Extract the values, build LIST* args in correct order. */
-
-                /* Reverse result to get correct order */
-                rev = CL_NIL;
-                while (!CL_NULL_P(result)) {
-                    rev = cl_cons(cl_car(result), rev);
-                    result = cl_cdr(result);
-                }
-
-                /* Extract single value from each (LIST val) segment */
-                args = CL_NIL;
-                while (!CL_NULL_P(rev)) {
-                    CL_Obj seg = cl_car(rev);
-                    CL_Obj v;
-                    /* seg is (LIST expr) → extract expr */
-                    if (CL_CONS_P(seg) &&
-                        cl_car(seg) == cl_intern_in("LIST", 4, cl_package_cl) &&
-                        CL_CONS_P(cl_cdr(seg)) && CL_NULL_P(cl_cdr(cl_cdr(seg)))) {
-                        v = cl_car(cl_cdr(seg));
-                    } else {
-                        v = seg; /* fallback (e.g. splice segment) */
-                    }
-                    args = cl_cons(v, args);
-                    rev = cl_cdr(rev);
-                }
-                /* args is now reversed; add tail, then reverse again */
-                args = cl_cons(tail_expr, args);
-                rev = CL_NIL;
-                while (!CL_NULL_P(args)) {
-                    rev = cl_cons(cl_car(args), rev);
-                    args = cl_cdr(args);
-                }
-
-                {
-                    CL_Obj val = cl_cons(sym_list_star, rev);
-                    CL_GC_UNPROTECT(1);
-                    return val;
-                }
+                result = cl_cons(tail_expr, result);
+                cursor = CL_NIL;  /* tail already handled */
+                break;
             }
 
             {
@@ -1116,7 +1077,7 @@ void compile_defun(CL_Compiler *c, CL_Obj form)
 }
 
 /* Generate a unique uninterned symbol for defmacro destructuring */
-static CL_Obj defmacro_gensym(void)
+CL_Obj defmacro_gensym(void)
 {
     static uint32_t counter = 0;
     char buf[32];
@@ -1127,7 +1088,7 @@ static CL_Obj defmacro_gensym(void)
 }
 
 /* Check if param is a lambda list keyword (&optional, &key, etc.) */
-static int is_ll_keyword(CL_Obj param)
+int defmacro_is_ll_keyword(CL_Obj param)
 {
     return CL_SYMBOL_P(param) &&
            (param == SYM_AMP_OPTIONAL || param == SYM_AMP_KEY ||
@@ -1139,7 +1100,7 @@ static int is_ll_keyword(CL_Obj param)
  * Returns 1 if any required parameter is a list (not a symbol),
  * or if &body/&rest is followed by a list pattern.
  * List params after &optional/&key are (name default) specs, not destructuring. */
-static int defmacro_needs_destructuring(CL_Obj ll)
+int defmacro_needs_destructuring(CL_Obj ll)
 {
     int in_optional_or_key = 0;
 
@@ -1164,7 +1125,7 @@ static int defmacro_needs_destructuring(CL_Obj ll)
             ll = cl_cdr(ll);
             continue;
         }
-        if (is_ll_keyword(param)) {
+        if (defmacro_is_ll_keyword(param)) {
             ll = cl_cdr(ll);
             continue;
         }

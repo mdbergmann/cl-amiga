@@ -40,7 +40,7 @@ typedef struct {
     CL_Obj old_value;
 } CL_DynBinding;
 
-#define CL_MAX_DYN_BINDINGS 256
+#define CL_MAX_DYN_BINDINGS 1024
 
 extern CL_DynBinding cl_dyn_stack[CL_MAX_DYN_BINDINGS];
 extern int cl_dyn_top;
@@ -54,7 +54,7 @@ void cl_dynbind_restore_to(int mark);
 #define CL_NLX_UWPROT   1
 #define CL_NLX_BLOCK    2
 #define CL_NLX_TAGBODY  3
-#define CL_MAX_NLX_FRAMES 256
+#define CL_MAX_NLX_FRAMES 1024
 
 typedef struct {
     uint8_t type;          /* CL_NLX_CATCH or CL_NLX_UWPROT */
@@ -94,6 +94,7 @@ typedef struct {
 #define CL_MAX_HANDLER_BINDINGS 64
 extern CL_HandlerBinding cl_handler_stack[CL_MAX_HANDLER_BINDINGS];
 extern int cl_handler_top;
+extern int cl_handler_floor;  /* Lower bound for signal dispatch (GC still marks full stack) */
 
 /* --- Restart binding stack --- */
 
@@ -106,6 +107,7 @@ typedef struct {
 #define CL_MAX_RESTART_BINDINGS 64
 extern CL_RestartBinding cl_restart_stack[CL_MAX_RESTART_BINDINGS];
 extern int cl_restart_top;
+extern int cl_restart_floor;  /* Lower bound for restart search (GC still marks full stack) */
 
 /* Signal a condition — walks handler stack, returns NIL if no handler transferred */
 CL_Obj cl_signal_condition(CL_Obj condition);
@@ -147,5 +149,13 @@ CL_Obj cl_vm_apply(CL_Obj func, CL_Obj *args, int nargs);
 /* Push/pop on VM value stack (for builtins) */
 void cl_vm_push(CL_Obj val);
 CL_Obj cl_vm_pop(void);
+
+/* C stack overflow detection (DEBUG_VM only) */
+extern char *cl_c_stack_base;
+#ifdef DEBUG_VM
+extern long c_stack_max_seen;
+extern int vm_eval_depth;
+void cl_check_c_stack(const char *context);
+#endif
 
 #endif /* CL_VM_H */

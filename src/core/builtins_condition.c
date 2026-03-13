@@ -692,7 +692,7 @@ CL_Obj cl_signal_condition(CL_Obj condition)
     }
 #endif
 
-    for (i = cl_handler_top - 1; i >= 0; i--) {
+    for (i = cl_handler_top - 1; i >= cl_handler_floor; i--) {
         if (cl_condition_type_matches(cond->type_name,
                                       cl_handler_stack[i].type_name)) {
             /* Truncate handler stack to this handler's mark so that
@@ -904,9 +904,12 @@ void cl_throw_to_tag(CL_Obj tag, CL_Obj value)
         if (cl_nlx_stack[i].type == CL_NLX_CATCH &&
             cl_nlx_stack[i].tag == tag) {
             int j;
-            /* Check for interposing UWPROT frames */
+            /* Check for interposing UWPROT frames (skip stale ones) */
             for (j = cl_nlx_top - 1; j > i; j--) {
                 if (cl_nlx_stack[j].type == CL_NLX_UWPROT) {
+                    /* Skip stale NLX frames (frame was reused by tail call) */
+                    CL_Frame *tf = &cl_vm.frames[cl_nlx_stack[j].vm_fp - 1];
+                    if (tf->code != cl_nlx_stack[j].code) continue;
                     cl_pending_throw = 1;
                     cl_pending_tag = tag;
                     cl_pending_value = value;
@@ -928,8 +931,8 @@ static CL_Obj bi_invoke_restart(CL_Obj *args, int n)
     CL_Obj name = args[0];
     int i;
 
-    /* Search restart stack top-down */
-    for (i = cl_restart_top - 1; i >= 0; i--) {
+    /* Search restart stack top-down (respecting floor) */
+    for (i = cl_restart_top - 1; i >= cl_restart_floor; i--) {
         if (cl_restart_stack[i].name == name) {
             /* Call the restart handler closure with remaining args */
             CL_Obj result = cl_vm_apply(cl_restart_stack[i].handler,
@@ -953,7 +956,7 @@ static CL_Obj bi_find_restart(CL_Obj *args, int n)
     int i;
     CL_UNUSED(n);
 
-    for (i = cl_restart_top - 1; i >= 0; i--) {
+    for (i = cl_restart_top - 1; i >= cl_restart_floor; i--) {
         if (cl_restart_stack[i].name == name)
             return name;
     }
@@ -969,7 +972,7 @@ static CL_Obj bi_compute_restarts(CL_Obj *args, int n)
     CL_UNUSED(n);
 
     CL_GC_PROTECT(result);
-    for (i = 0; i < cl_restart_top; i++) {
+    for (i = cl_restart_floor; i < cl_restart_top; i++) {
         result = cl_cons(cl_restart_stack[i].name, result);
     }
     CL_GC_UNPROTECT(1);
@@ -994,7 +997,7 @@ static CL_Obj bi_continue_restart(CL_Obj *args, int n)
     CL_UNUSED(n);
 
     /* Only invoke if CONTINUE restart is available */
-    for (i = cl_restart_top - 1; i >= 0; i--) {
+    for (i = cl_restart_top - 1; i >= cl_restart_floor; i--) {
         if (cl_restart_stack[i].name == SYM_CONTINUE) {
             CL_Obj cont_args[1];
             cont_args[0] = SYM_CONTINUE;

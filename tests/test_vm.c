@@ -3134,8 +3134,8 @@ TEST(eval_locally_declare)
 
 TEST(eval_declare_misplaced)
 {
-    /* declare at top level should error */
-    ASSERT_STR_EQ(eval_print("(declare (special x))"), "ERROR:1");
+    /* declare at top level is now a warning (ignored), returns NIL */
+    ASSERT_STR_EQ(eval_print("(declare (special x))"), "NIL");
 }
 
 TEST(eval_declare_in_lambda)

@@ -2,6 +2,7 @@
 
 /* --- Shared globals --- */
 
+CL_Compiler *cl_active_compiler = NULL;
 CL_Obj macro_table = CL_NIL;
 CL_Obj setf_table = CL_NIL;
 CL_Obj setf_fn_table = CL_NIL;  /* (setf name) functions: ((accessor . setf-fn-sym) ...) val-first calling */
@@ -290,6 +291,10 @@ void compile_lambda(CL_Compiler *c, CL_Obj form)
     if (!inner) return;
     memset(inner, 0, sizeof(*inner));
 
+    /* Register inner compiler for GC root marking */
+    inner->parent = cl_active_compiler;
+    cl_active_compiler = inner;
+
     parse_lambda_list(params, &inner->ll);
 
     env = cl_env_create(c->env);
@@ -493,7 +498,7 @@ void compile_lambda(CL_Compiler *c, CL_Obj form)
 
     /* Build bytecode object */
     bc = (CL_Bytecode *)cl_alloc(TYPE_BYTECODE, sizeof(CL_Bytecode));
-    if (!bc) { cl_env_destroy(env); platform_free(inner); return; }
+    if (!bc) { cl_active_compiler = inner->parent; cl_env_destroy(env); platform_free(inner); return; }
 
     bc->code = (uint8_t *)platform_alloc(inner->code_pos);
     if (bc->code) memcpy(bc->code, inner->code, inner->code_pos);
@@ -561,6 +566,9 @@ void compile_lambda(CL_Compiler *c, CL_Obj form)
         cl_emit(c, (uint8_t)env->upvalues[i].index);
     }
 
+    /* Unregister inner compiler from GC root chain */
+    cl_active_compiler = inner->parent;
+
     cl_env_destroy(env);
     platform_free(inner);
 }
@@ -612,13 +620,24 @@ static void scan_qq_for_boxing(CL_Obj tmpl, CL_Obj *vars, int n_vars,
  * and which are captured (referenced inside a lambda/flet/labels body).
  * closure_depth starts at 0; increments when entering closure-creating forms.
  */
+/* Recursion depth limits for scanner — prevents C stack overflow from deeply
+ * nested forms and macro chains (e.g., misc-extensions new-let in fset) */
+static int scan_macro_depth = 0;
+#define SCAN_MACRO_MAX_DEPTH 50
+static int scan_recurse_depth = 0;
+#define SCAN_MAX_RECURSE_DEPTH 500
+
 void scan_body_for_boxing(CL_Obj form, CL_Obj *vars, int n_vars,
                           uint8_t *mutated, uint8_t *captured,
                           int closure_depth)
 {
     CL_Obj head, rest;
 
+top:
     if (CL_NULL_P(form) || CL_FIXNUM_P(form) || CL_CHAR_P(form))
+        return;
+
+    if (scan_recurse_depth >= SCAN_MAX_RECURSE_DEPTH)
         return;
 
     /* Symbol reference */
@@ -658,6 +677,17 @@ void scan_body_for_boxing(CL_Obj form, CL_Obj *vars, int n_vars,
                 int idx = find_var_index(place, vars, n_vars);
                 if (idx >= 0) mutated[idx] = 1;
                 if (closure_depth > 0 && idx >= 0) captured[idx] = 1;
+            } else if (CL_CONS_P(place) && cl_car(place) == SYM_THE) {
+                /* (setf (the type var) val) — the inner var is mutated */
+                CL_Obj inner = cl_car(cl_cdr(cl_cdr(place)));
+                if (CL_SYMBOL_P(inner)) {
+                    int idx = find_var_index(inner, vars, n_vars);
+                    if (idx >= 0) mutated[idx] = 1;
+                    if (closure_depth > 0 && idx >= 0) captured[idx] = 1;
+                } else {
+                    scan_body_for_boxing(place, vars, n_vars,
+                                         mutated, captured, closure_depth);
+                }
             } else {
                 /* Generalized place — scan sub-expressions for references */
                 scan_body_for_boxing(place, vars, n_vars,
@@ -699,6 +729,34 @@ void scan_body_for_boxing(CL_Obj form, CL_Obj *vars, int n_vars,
      * that shouldn't be scanned for variable mutations */
     if (head == SYM_DEFMACRO) return;
 
+    /* (case/ecase/typecase/etypecase keyform (key body...)...) —
+     * Scan keyform and clause bodies, but NOT the keys (they are literals,
+     * not evaluable forms; a key like TUPLE could be a macro name). */
+    if (head == SYM_CASE || head == SYM_ECASE ||
+        head == SYM_TYPECASE || head == SYM_ETYPECASE) {
+        CL_Obj clauses;
+        if (!CL_CONS_P(rest)) return;
+        /* Scan keyform */
+        scan_body_for_boxing(cl_car(rest), vars, n_vars,
+                             mutated, captured, closure_depth);
+        /* Scan clause bodies (skip keys) */
+        clauses = cl_cdr(rest);
+        while (CL_CONS_P(clauses)) {
+            CL_Obj clause = cl_car(clauses);
+            if (CL_CONS_P(clause)) {
+                /* Skip key (car), scan body forms (cdr) */
+                CL_Obj cbody = cl_cdr(clause);
+                while (CL_CONS_P(cbody)) {
+                    scan_body_for_boxing(cl_car(cbody), vars, n_vars,
+                                         mutated, captured, closure_depth);
+                    cbody = cl_cdr(cbody);
+                }
+            }
+            clauses = cl_cdr(clauses);
+        }
+        return;
+    }
+
     /* (flet/labels ((name params . body) ...) . body) */
     if (head == SYM_FLET || head == SYM_LABELS) {
         CL_Obj defs, body;
@@ -730,7 +788,8 @@ void scan_body_for_boxing(CL_Obj form, CL_Obj *vars, int n_vars,
     /* Expand macros before scanning so we can see through macro-generated
      * lambdas and setf forms. Save/restore VM state to handle expansion
      * errors gracefully without corrupting compiler state. */
-    if (CL_SYMBOL_P(head) && cl_macro_p(head)) {
+    if (CL_SYMBOL_P(head) && cl_macro_p(head) &&
+        scan_macro_depth < SCAN_MACRO_MAX_DEPTH) {
         int saved_sp = cl_vm.sp;
         int saved_fp = cl_vm.fp;
         int saved_dyn = cl_dyn_top;
@@ -742,14 +801,20 @@ void scan_body_for_boxing(CL_Obj form, CL_Obj *vars, int n_vars,
 #ifdef DEBUG_SCANNER
         fprintf(stderr, "[scanner] expanding macro: %s\n", cl_symbol_name(head));
 #endif
+        scan_macro_depth++;
         int err = CL_CATCH();
         if (err == 0) {
             CL_Obj expanded = cl_macroexpand_1(form);
             CL_UNCATCH();
             cl_debugger_enabled = saved_debugger;
+            cl_handler_top = saved_handler;
+            cl_restart_top = saved_restart;
             if (expanded != form) {
+                CL_GC_PROTECT(expanded);
                 scan_body_for_boxing(expanded, vars, n_vars,
                                      mutated, captured, closure_depth);
+                CL_GC_UNPROTECT(1);
+                scan_macro_depth--;
                 return;
             }
         } else {
@@ -763,16 +828,26 @@ void scan_body_for_boxing(CL_Obj form, CL_Obj *vars, int n_vars,
             cl_restart_top = saved_restart;
             cl_debugger_enabled = saved_debugger;
         }
+        scan_macro_depth--;
     }
 
-    /* General form: scan all sub-expressions */
+    /* General form: scan all sub-expressions (iterative list walk) */
     {
         CL_Obj cur = form;
+        scan_recurse_depth++;
         while (CL_CONS_P(cur)) {
-            scan_body_for_boxing(cl_car(cur), vars, n_vars,
-                                 mutated, captured, closure_depth);
+            CL_Obj elem = cl_car(cur);
             cur = cl_cdr(cur);
+            if (CL_NULL_P(cur)) {
+                /* Last element: tail-call via goto to save stack */
+                scan_recurse_depth--;
+                form = elem;
+                goto top;
+            }
+            scan_body_for_boxing(elem, vars, n_vars,
+                                 mutated, captured, closure_depth);
         }
+        scan_recurse_depth--;
     }
 }
 
@@ -1216,6 +1291,25 @@ static void compile_setf_place(CL_Compiler *c, CL_Obj place, CL_Obj val_form)
 
             CL_GC_UNPROTECT(2);
             compile_expr(c, mvb_form);
+            c->in_tail = saved_tail;
+            return;
+        }
+
+        /* (setf (the type place) val) → (setf place (the type val))
+         * Per CL spec, THE is transparent to setf. */
+        if (head == SYM_THE) {
+            CL_Obj type_spec = cl_car(cl_cdr(place));
+            CL_Obj inner_place = cl_car(cl_cdr(cl_cdr(place)));
+            CL_Obj typed_val;
+            CL_GC_PROTECT(type_spec);
+            CL_GC_PROTECT(inner_place);
+            CL_GC_PROTECT(val_form);
+            /* Build (the type val_form) */
+            typed_val = cl_cons(SYM_THE,
+                          cl_cons(type_spec,
+                            cl_cons(val_form, CL_NIL)));
+            CL_GC_UNPROTECT(3);
+            compile_setf_place(c, inner_place, typed_val);
             c->in_tail = saved_tail;
             return;
         }
@@ -1732,7 +1826,11 @@ void compile_expr(CL_Compiler *c, CL_Obj expr)
         if (head == SYM_HANDLER_BIND) { compile_handler_bind(c, expr); return; }
         if (head == SYM_RESTART_CASE) { compile_restart_case(c, expr); return; }
         if (head == SYM_DECLARE) {
-            cl_error(CL_ERR_GENERAL, "DECLARE is not allowed here -- it must appear at the start of a body form");
+            /* Tolerate misplaced declares (ignore them with a warning).
+             * Some macro expansions place declares outside body position;
+             * standard CL implementations just ignore them there. */
+            platform_write_string("\033[33mWARNING: DECLARE is not allowed here -- ignoring\033[0m\n");
+            cl_emit(c, OP_NIL);
             return;
         }
         if (head == SYM_DECLAIM)     { compile_declaim(c, expr); return; }
@@ -1744,6 +1842,63 @@ void compile_expr(CL_Compiler *c, CL_Obj expr)
         if (head == SYM_MACROLET)        { compile_macrolet(c, expr); return; }
         if (head == SYM_SYMBOL_MACROLET) { compile_symbol_macrolet(c, expr); return; }
         if (head == SYM_THE)             { compile_the(c, expr); return; }
+
+        /* (funcall fn arg1 arg2 ...) → compile fn as value, args, OP_CALL
+         * Avoids C stack nesting by keeping the call in the VM dispatch loop. */
+        if (head == SYM_FUNCALL) {
+            CL_Obj fargs = cl_cdr(expr);
+            int nargs = 0;
+            int saved_tail;
+            if (CL_NULL_P(fargs))
+                cl_error(CL_ERR_ARGS, "FUNCALL requires at least one argument");
+            saved_tail = c->in_tail;
+            c->in_tail = 0;
+            /* Compile the function expression */
+            compile_expr(c, cl_car(fargs));
+            /* Compile remaining arguments */
+            fargs = cl_cdr(fargs);
+            while (!CL_NULL_P(fargs)) {
+                compile_expr(c, cl_car(fargs));
+                nargs++;
+                fargs = cl_cdr(fargs);
+            }
+            c->in_tail = saved_tail;
+            if (c->in_tail)
+                cl_emit(c, OP_TAILCALL);
+            else
+                cl_emit(c, OP_CALL);
+            cl_emit(c, (uint8_t)nargs);
+            return;
+        }
+
+        /* (apply fn arg1 ... arglist) → build full arglist via CONS, OP_APPLY
+         * Avoids C stack nesting by using the VM's inline OP_APPLY handler. */
+        if (head == SYM_APPLY) {
+            CL_Obj fargs = cl_cdr(expr);
+            int napply_args = 0;
+            int saved_tail, i;
+            if (CL_NULL_P(fargs) || CL_NULL_P(cl_cdr(fargs)))
+                cl_error(CL_ERR_ARGS, "APPLY requires at least two arguments");
+            saved_tail = c->in_tail;
+            c->in_tail = 0;
+            /* Compile the function expression */
+            compile_expr(c, cl_car(fargs));
+            /* Compile all remaining args (leading args + final arglist) */
+            fargs = cl_cdr(fargs);
+            while (!CL_NULL_P(fargs)) {
+                compile_expr(c, cl_car(fargs));
+                napply_args++;
+                fargs = cl_cdr(fargs);
+            }
+            /* CONS leading args onto the final arglist to build full arglist.
+             * Stack has: fn a1 a2 ... arglist
+             * We need (n-1) CONS ops to produce: fn (a1 a2 ... . arglist) */
+            for (i = 0; i < napply_args - 1; i++)
+                cl_emit(c, OP_CONS);
+            c->in_tail = saved_tail;
+            cl_emit(c, OP_APPLY);
+            return;
+        }
 
         compile_call(c, expr);
         return;
@@ -1865,6 +2020,10 @@ CL_Obj cl_compile(CL_Obj expr)
     comp->env = env;
     comp->in_tail = 0;
 
+    /* Register compiler for GC root marking */
+    comp->parent = cl_active_compiler;
+    cl_active_compiler = comp;
+
     compile_expr(comp, expr);
     cl_emit(comp, OP_HALT);
 
@@ -1917,6 +2076,9 @@ CL_Obj cl_compile(CL_Obj expr)
     bc->source_line = (uint16_t)comp->current_line;
     bc->source_file = cl_current_source_file;
 
+    /* Unregister compiler from GC root chain */
+    cl_active_compiler = comp->parent;
+
     cl_env_destroy(env);
     platform_free(comp);
     return CL_PTR_TO_OBJ(bc);
@@ -1928,6 +2090,33 @@ CL_Obj cl_compile_defun(CL_Obj name, CL_Obj lambda_list, CL_Obj body)
                           cl_cons(name,
                                   cl_cons(lambda_list, body)));
     return cl_compile(form);
+}
+
+void cl_compiler_gc_mark(void)
+{
+    extern void gc_mark_obj(CL_Obj obj);
+    CL_Compiler *c = cl_active_compiler;
+    while (c) {
+        int i;
+        for (i = 0; i < c->const_count; i++)
+            gc_mark_obj(c->constants[i]);
+        /* Also mark block/tagbody tags and outer block/tag references */
+        for (i = 0; i < c->block_count; i++)
+            gc_mark_obj(c->blocks[i].tag);
+        for (i = 0; i < c->tagbody_count; i++) {
+            int j;
+            gc_mark_obj(c->tagbodies[i].id);
+            for (j = 0; j < c->tagbodies[i].n_tags; j++)
+                gc_mark_obj(c->tagbodies[i].tags[j].tag);
+        }
+        for (i = 0; i < c->outer_block_count; i++)
+            gc_mark_obj(c->outer_blocks[i]);
+        for (i = 0; i < c->outer_tag_count; i++) {
+            gc_mark_obj(c->outer_tags[i].tag);
+            gc_mark_obj(c->outer_tags[i].tagbody_id);
+        }
+        c = c->parent;
+    }
 }
 
 void cl_compiler_init(void)

@@ -51,4 +51,7 @@ extern CL_OptimizeSettings cl_optimize_settings;
 /* Process a single declaration specifier (for proclaim/declaim) */
 void cl_process_declaration_specifier(CL_Obj spec);
 
+/* GC marking: mark all CL_Obj values referenced by active compiler(s) */
+void cl_compiler_gc_mark(void);
+
 #endif /* CL_COMPILER_H */

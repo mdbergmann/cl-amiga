@@ -1660,6 +1660,84 @@ void compile_macrolet(CL_Compiler *c, CL_Obj form)
             CL_Obj mbody = cl_cdr(cl_cdr(binding));
             CL_Obj lambda_form, bytecode, closure;
 
+            CL_GC_PROTECT(lambda_list);
+            CL_GC_PROTECT(mbody);
+
+            /* Transform destructuring lambda lists (same as defmacro) */
+            if (defmacro_needs_destructuring(lambda_list)) {
+                CL_Obj new_ll = CL_NIL, new_ll_tail = CL_NIL;
+                CL_Obj cur = lambda_list;
+                int in_opt_key = 0;
+
+                CL_GC_PROTECT(new_ll);
+                CL_GC_PROTECT(new_ll_tail);
+
+                while (!CL_NULL_P(cur)) {
+                    CL_Obj param = cl_car(cur);
+                    CL_Obj cell;
+
+                    if (CL_SYMBOL_P(param) &&
+                        (param == SYM_AMP_OPTIONAL || param == SYM_AMP_KEY)) {
+                        in_opt_key = 1;
+                        cell = cl_cons(param, CL_NIL);
+                        if (CL_NULL_P(new_ll)) { new_ll = cell; }
+                        else { ((CL_Cons *)CL_OBJ_TO_PTR(new_ll_tail))->cdr = cell; }
+                        new_ll_tail = cell;
+                        cur = cl_cdr(cur);
+                        continue;
+                    }
+
+                    if (!in_opt_key && CL_CONS_P(param)) {
+                        CL_Obj gs = defmacro_gensym();
+                        CL_Obj db_form;
+                        CL_GC_PROTECT(gs);
+                        db_form = cl_cons(SYM_DESTRUCTURING_BIND,
+                                   cl_cons(param, cl_cons(gs, mbody)));
+                        mbody = cl_cons(db_form, CL_NIL);
+                        cell = cl_cons(gs, CL_NIL);
+                        if (CL_NULL_P(new_ll)) { new_ll = cell; }
+                        else { ((CL_Cons *)CL_OBJ_TO_PTR(new_ll_tail))->cdr = cell; }
+                        new_ll_tail = cell;
+                        CL_GC_UNPROTECT(1); /* gs */
+                    } else if (CL_SYMBOL_P(param) &&
+                               (param == SYM_AMP_BODY || param == SYM_AMP_REST)) {
+                        CL_Obj next_param = CL_NULL_P(cl_cdr(cur)) ? CL_NIL : cl_car(cl_cdr(cur));
+                        in_opt_key = 0;
+                        if (CL_CONS_P(next_param)) {
+                            CL_Obj gs = defmacro_gensym();
+                            CL_Obj db_form;
+                            CL_GC_PROTECT(gs);
+                            db_form = cl_cons(SYM_DESTRUCTURING_BIND,
+                                       cl_cons(next_param, cl_cons(gs, mbody)));
+                            mbody = cl_cons(db_form, CL_NIL);
+                            cell = cl_cons(param, CL_NIL);
+                            if (CL_NULL_P(new_ll)) { new_ll = cell; }
+                            else { ((CL_Cons *)CL_OBJ_TO_PTR(new_ll_tail))->cdr = cell; }
+                            new_ll_tail = cell;
+                            cell = cl_cons(gs, CL_NIL);
+                            ((CL_Cons *)CL_OBJ_TO_PTR(new_ll_tail))->cdr = cell;
+                            new_ll_tail = cell;
+                            cur = cl_cdr(cur); /* skip the list pattern */
+                            CL_GC_UNPROTECT(1); /* gs */
+                        } else {
+                            cell = cl_cons(param, CL_NIL);
+                            if (CL_NULL_P(new_ll)) { new_ll = cell; }
+                            else { ((CL_Cons *)CL_OBJ_TO_PTR(new_ll_tail))->cdr = cell; }
+                            new_ll_tail = cell;
+                        }
+                    } else {
+                        cell = cl_cons(param, CL_NIL);
+                        if (CL_NULL_P(new_ll)) { new_ll = cell; }
+                        else { ((CL_Cons *)CL_OBJ_TO_PTR(new_ll_tail))->cdr = cell; }
+                        new_ll_tail = cell;
+                    }
+                    cur = cl_cdr(cur);
+                }
+
+                lambda_list = new_ll;
+                CL_GC_UNPROTECT(2); /* new_ll, new_ll_tail */
+            }
+
             /* Build (lambda (params) body...) */
             lambda_form = cl_cons(SYM_LAMBDA, cl_cons(lambda_list, mbody));
             CL_GC_PROTECT(lambda_form);
@@ -1668,7 +1746,7 @@ void compile_macrolet(CL_Compiler *c, CL_Obj form)
             bytecode = cl_compile(lambda_form);
             CL_GC_PROTECT(bytecode);
             closure = cl_vm_eval(bytecode);
-            CL_GC_UNPROTECT(2);
+            CL_GC_UNPROTECT(4); /* bytecode, lambda_form, mbody, lambda_list */
 
             cl_env_add_local_macro(env, mname, closure);
 

@@ -439,6 +439,82 @@ TEST(read_time_eval_in_list)
     ASSERT_STR_EQ(read_print("(a #.(+ 10 20) b)"), "(A 30 B)");
 }
 
+/* --- #nA multi-dimensional array reader --- */
+
+TEST(read_2d_array)
+{
+    /* #2A((1 2) (3 4)) => 2x2 array */
+    CL_Obj obj = reads("#2A((1 2) (3 4))");
+    ASSERT(CL_VECTOR_P(obj));
+    {
+        CL_Vector *v = (CL_Vector *)CL_OBJ_TO_PTR(obj);
+        ASSERT_EQ_INT(v->rank, 2);
+        ASSERT_EQ_INT(v->length, 4);
+        /* dims stored in data[0..rank-1] */
+        ASSERT_EQ_INT(CL_FIXNUM_VAL(v->data[0]), 2);
+        ASSERT_EQ_INT(CL_FIXNUM_VAL(v->data[1]), 2);
+        /* elements at data[rank..] */
+        ASSERT_EQ_INT(CL_FIXNUM_VAL(v->data[2]), 1);
+        ASSERT_EQ_INT(CL_FIXNUM_VAL(v->data[3]), 2);
+        ASSERT_EQ_INT(CL_FIXNUM_VAL(v->data[4]), 3);
+        ASSERT_EQ_INT(CL_FIXNUM_VAL(v->data[5]), 4);
+    }
+}
+
+TEST(read_2d_array_print)
+{
+    /* Verify printed form round-trips */
+    ASSERT_STR_EQ(read_print("#2A((1 2) (3 4))"), "#2A((1 2) (3 4))");
+}
+
+TEST(read_2d_array_3x2)
+{
+    /* #2A((1 2) (3 4) (5 6)) => 3x2 array */
+    CL_Obj obj = reads("#2A((1 2) (3 4) (5 6))");
+    CL_Vector *v = (CL_Vector *)CL_OBJ_TO_PTR(obj);
+    ASSERT_EQ_INT(v->rank, 2);
+    ASSERT_EQ_INT(CL_FIXNUM_VAL(v->data[0]), 3);  /* dim 0 */
+    ASSERT_EQ_INT(CL_FIXNUM_VAL(v->data[1]), 2);  /* dim 1 */
+    ASSERT_EQ_INT(CL_FIXNUM_VAL(v->data[2]), 1);
+    ASSERT_EQ_INT(CL_FIXNUM_VAL(v->data[7]), 6);
+}
+
+TEST(read_1d_array_reader)
+{
+    /* #1A(1 2 3) => same as #(1 2 3) */
+    CL_Obj obj = reads("#1A(1 2 3)");
+    ASSERT(CL_VECTOR_P(obj));
+    {
+        CL_Vector *v = (CL_Vector *)CL_OBJ_TO_PTR(obj);
+        ASSERT_EQ_INT(v->length, 3);
+    }
+}
+
+TEST(read_0d_array)
+{
+    /* #0A 42 => 0-dimensional array containing 42 */
+    CL_Obj obj = reads("#0A 42");
+    ASSERT(CL_VECTOR_P(obj));
+    {
+        CL_Vector *v = (CL_Vector *)CL_OBJ_TO_PTR(obj);
+        ASSERT_EQ_INT(v->length, 1);
+        ASSERT_EQ_INT(CL_FIXNUM_VAL(cl_vector_data(v)[0]), 42);
+    }
+}
+
+TEST(read_2d_array_lowercase)
+{
+    /* #2a also works (lowercase) */
+    CL_Obj obj = reads("#2a((10 20) (30 40))");
+    ASSERT(CL_VECTOR_P(obj));
+    {
+        CL_Vector *v = (CL_Vector *)CL_OBJ_TO_PTR(obj);
+        ASSERT_EQ_INT(v->rank, 2);
+        ASSERT_EQ_INT(CL_FIXNUM_VAL(v->data[2]), 10);
+        ASSERT_EQ_INT(CL_FIXNUM_VAL(v->data[5]), 40);
+    }
+}
+
 int main(void)
 {
     test_init();
@@ -499,6 +575,14 @@ int main(void)
     RUN(read_time_eval_arithmetic);
     RUN(read_time_eval_list);
     RUN(read_time_eval_in_list);
+
+    /* #nA multi-dimensional array reader */
+    RUN(read_2d_array);
+    RUN(read_2d_array_print);
+    RUN(read_2d_array_3x2);
+    RUN(read_1d_array_reader);
+    RUN(read_0d_array);
+    RUN(read_2d_array_lowercase);
 
     teardown();
     REPORT();

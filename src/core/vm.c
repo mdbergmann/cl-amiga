@@ -75,10 +75,12 @@ int cl_dyn_top = 0;
 /* Handler binding stack */
 CL_HandlerBinding cl_handler_stack[CL_MAX_HANDLER_BINDINGS];
 int cl_handler_top = 0;
+int cl_handler_floor = 0;
 
 /* Restart binding stack */
 CL_RestartBinding cl_restart_stack[CL_MAX_RESTART_BINDINGS];
 int cl_restart_top = 0;
+int cl_restart_floor = 0;
 
 void cl_dynbind_restore_to(int mark)
 {
@@ -149,80 +151,73 @@ CL_Obj cl_vm_pop(void)
     return cl_vm.stack[--cl_vm.sp];
 }
 
+/* Forward declarations */
+static CL_Obj call_builtin(CL_Function *func, CL_Obj *args, int nargs);
+static CL_Obj cl_vm_run(int base_fp, int base_nlx);
+void vm_trace_dump(void);
+
 CL_Obj cl_vm_apply(CL_Obj func, CL_Obj *args, int nargs)
 {
     /*
-     * Build a temporary bytecode stub:
-     *   CONST func_idx      (3 bytes)
-     *   CONST arg0_idx      (3 bytes per arg)
-     *   ...
-     *   CALL nargs           (2 bytes)
-     *   HALT                 (1 byte)
+     * Apply: C builtins called directly (no VM entry),
+     * bytecode/closures use a stack-local stub frame + cl_vm_run
+     * (no heap allocation, no cl_vm_eval recursion).
      */
-    uint8_t stub_code[1024];
-    CL_Obj stub_consts[256];
-    int cp = 0, cc = 0, i;
-    CL_Bytecode *bc;
-    CL_Obj bc_obj, result;
+    int i;
 
     /* Clamp nargs to 255 (OP_CALL u8 limit) */
     if (nargs > 255) nargs = 255;
 
-    /* Constant 0 = function */
-    stub_consts[cc] = func;
-    stub_code[cp++] = OP_CONST;
-    stub_code[cp++] = (uint8_t)(cc >> 8);
-    stub_code[cp++] = (uint8_t)cc;
-    cc++;
-
-    /* Constants 1..nargs = arguments */
-    for (i = 0; i < nargs; i++) {
-        stub_consts[cc] = args[i];
-        stub_code[cp++] = OP_CONST;
-        stub_code[cp++] = (uint8_t)(cc >> 8);
-        stub_code[cp++] = (uint8_t)cc;
-        cc++;
+    /* C builtins: call directly, no VM entry needed. */
+    if (CL_FUNCTION_P(func)) {
+        CL_Function *f = (CL_Function *)CL_OBJ_TO_PTR(func);
+        return call_builtin(f, args, nargs);
     }
 
-    stub_code[cp++] = OP_CALL;
-    stub_code[cp++] = (uint8_t)nargs;
-    stub_code[cp++] = OP_HALT;
+    /* Bytecode / closure: push func+args on VM stack, set up a tiny
+     * stub frame with OP_CALL+OP_HALT, and run the dispatch loop.
+     * No heap allocation — the stub code is a 3-byte stack local. */
+    {
+        uint8_t stub_code[3]; /* OP_CALL, nargs, OP_HALT */
+        CL_Frame *frame;
+        int base_fp, base_nlx;
+        CL_Obj result;
 
-    /* Allocate bytecode on the heap (arena) */
-    bc = (CL_Bytecode *)cl_alloc(TYPE_BYTECODE, sizeof(CL_Bytecode));
-    if (!bc) return CL_NIL;
+#ifdef DEBUG_VM
+        cl_check_c_stack("cl_vm_apply");
+#endif
 
-    bc->code = (uint8_t *)platform_alloc(cp);
-    if (bc->code) memcpy(bc->code, stub_code, cp);
-    bc->code_len = cp;
+        /* Push a minimal stub frame BEFORE pushing func+args.
+         * bp = current sp, n_locals = 0.  After OP_CALL consumes
+         * func+args and pushes the result, sp = bp+1 so OP_HALT
+         * sees the result. */
+        base_fp = cl_vm.fp;
+        base_nlx = cl_nlx_top;
+        if (cl_vm.fp >= cl_vm.frame_size)
+            cl_error(CL_ERR_OVERFLOW, "VM frame stack overflow");
 
-    bc->constants = (CL_Obj *)platform_alloc(cc * sizeof(CL_Obj));
-    if (bc->constants) {
-        for (i = 0; i < cc; i++)
-            bc->constants[i] = stub_consts[i];
+        /* Build stub code: OP_CALL nargs OP_HALT */
+        stub_code[0] = OP_CALL;
+        stub_code[1] = (uint8_t)nargs;
+        stub_code[2] = OP_HALT;
+
+        frame = &cl_vm.frames[cl_vm.fp++];
+        frame->bytecode = CL_NIL;
+        frame->code = stub_code;
+        frame->constants = NULL;
+        frame->ip = 0;
+        frame->bp = cl_vm.sp;  /* bp before func+args */
+        frame->n_locals = 0;
+        frame->nargs = 0;
+
+        /* Push function and arguments onto VM stack */
+        cl_vm_push(func);
+        for (i = 0; i < nargs; i++)
+            cl_vm_push(args[i]);
+
+        result = cl_vm_run(base_fp, base_nlx);
+        return result;
     }
-    bc->n_constants = cc;
-    bc->arity = 0;
-    bc->n_locals = 0;
-    bc->n_upvalues = 0;
-    bc->name = CL_NIL;
-    bc->n_optional = 0;
-    bc->flags = 0;
-    bc->n_keys = 0;
-    bc->key_syms = NULL;
-    bc->key_slots = NULL;
-    bc->key_suppliedp_slots = NULL;
-
-    bc_obj = CL_PTR_TO_OBJ(bc);
-    result = cl_vm_eval(bc_obj);
-
-    /* Free the temporary code/constants (bc itself is in the GC arena) */
-    platform_free(bc->code);
-    platform_free(bc->constants);
-    bc->code = NULL;
-    bc->constants = NULL;
-
-    return result;
 }
 
 static uint16_t read_u16(uint8_t *code, uint32_t *ip)
@@ -392,10 +387,22 @@ void cl_capture_backtrace(void)
     }
 }
 
+/* Check if an NLX frame is stale (its target frame was reused by a different function).
+ * This happens when a tail call or return reuses a frame after an NLX frame was established. */
+static int nlx_frame_is_stale(CL_NLXFrame *nlx)
+{
+    CL_Frame *target = &cl_vm.frames[nlx->vm_fp - 1];
+    return target->code != nlx->code;
+}
+
 /* Call a built-in C function */
 static CL_Obj call_builtin(CL_Function *func, CL_Obj *args, int nargs)
 {
     CL_Obj result;
+    CL_CFunc fptr;
+#ifdef DEBUG_VM
+    cl_check_c_stack("call_builtin");
+#endif
     if (nargs < func->min_args) {
         cl_error(CL_ERR_ARGS, "%s: too few arguments (got %d, need %d)",
                  CL_NULL_P(func->name) ? "?" : cl_symbol_name(func->name),
@@ -406,58 +413,132 @@ static CL_Obj call_builtin(CL_Function *func, CL_Obj *args, int nargs)
                  CL_NULL_P(func->name) ? "?" : cl_symbol_name(func->name),
                  nargs, func->max_args);
     }
-    cl_mv_count = 1;  /* default; bi_values/bi_values_list may override */
-    result = func->func(args, nargs);
-    cl_mv_values[0] = result;  /* primary always in buffer */
+    cl_mv_count = 1;
+    fptr = func->func;
+    if (!fptr) {
+        cl_error(CL_ERR_TYPE, "NULL C function pointer in %s",
+                 CL_NULL_P(func->name) ? "?" : cl_symbol_name(func->name));
+    }
+    result = fptr(args, nargs);
+    cl_mv_values[0] = result;
     return result;
 }
 
-CL_Obj cl_vm_eval(CL_Obj bytecode_obj)
+/* C stack base for overflow detection */
+char *cl_c_stack_base = NULL;
+
+#ifdef DEBUG_VM
+/* Recursion depth tracking for cl_vm_eval */
+int vm_eval_depth = 0;
+static int vm_eval_max_depth = 0;
+
+#define C_STACK_LIMIT (4 * 1024 * 1024)  /* 4MB of 8MB, leave 4MB margin */
+
+long c_stack_max_seen = 0;
+
+void cl_check_c_stack(const char *context)
 {
-    CL_Bytecode *bc;
-    CL_Frame *frame;
-    uint8_t *code;
-    CL_Obj *constants;
+    volatile char probe;
+    long used;
+    if (!cl_c_stack_base) cl_c_stack_base = (char *)&probe;
+    used = (long)(cl_c_stack_base - (char *)&probe);
+    if (used < 0) used = -used;  /* Handle stack growing up or down */
+    if (used > c_stack_max_seen) {
+        c_stack_max_seen = used;
+        if (c_stack_max_seen > 1024 * 1024)  /* Print only above 1MB */
+            fprintf(stderr, "[STACK] %s: %ldKB\n", context, used / 1024);
+    }
+    if (used > C_STACK_LIMIT) {
+        fprintf(stderr, "[STACK] OVERFLOW in %s: %ldKB (limit=%ldKB)\n",
+                context, used / 1024, (long)C_STACK_LIMIT / 1024);
+        cl_error(CL_ERR_OVERFLOW,
+                 "C stack overflow in %s (used=%ldKB)",
+                 context, used / 1024);
+    }
+}
+#endif /* DEBUG_VM */
+
+/* Shared buffers for OP_CALL keyword processing and OP_APPLY argument flattening.
+ * Moved out of cl_vm_eval to keep the per-recursion stack frame small.
+ * Safe because these buffers are fully consumed before any recursive call. */
+static CL_Obj vm_extra_args[256];
+static CL_Obj vm_flat_args[64];
+
+/* Last-dispatch diagnostic globals (readable from crash handler / debugger) */
+volatile uint8_t dbg_last_op;
+volatile uint32_t dbg_last_ip;
+volatile int dbg_last_fp;
+volatile uint8_t *dbg_last_code;
+
+/* Circular trace buffer for crash diagnostics */
+#define VM_TRACE_SIZE 64
+static struct {
+    uint8_t op;
     uint32_t ip;
-    int base_fp;
+    int fp;
+    int sp;
+    uint8_t *code;
+} vm_trace[VM_TRACE_SIZE];
+static int vm_trace_idx = 0;
 
-    if (CL_NULL_P(bytecode_obj)) return CL_NIL;
-
-    /* Handle both bytecode and closure */
-    if (CL_CLOSURE_P(bytecode_obj)) {
-        CL_Closure *cl = (CL_Closure *)CL_OBJ_TO_PTR(bytecode_obj);
-        bc = (CL_Bytecode *)CL_OBJ_TO_PTR(cl->bytecode);
-    } else {
-        bc = (CL_Bytecode *)CL_OBJ_TO_PTR(bytecode_obj);
+void vm_trace_dump(void)
+{
+    int i, idx;
+    fprintf(stderr, "=== VM trace (last %d ops) ===\n", VM_TRACE_SIZE);
+    for (i = 0; i < VM_TRACE_SIZE; i++) {
+        idx = (vm_trace_idx + i) % VM_TRACE_SIZE;
+        if (vm_trace[idx].code == NULL && vm_trace[idx].op == 0) continue;
+        fprintf(stderr, "  [%d] op=0x%02x ip=%u fp=%d sp=%d code=%p\n",
+                i, vm_trace[idx].op, vm_trace[idx].ip,
+                vm_trace[idx].fp, vm_trace[idx].sp,
+                (void *)vm_trace[idx].code);
     }
+}
 
-    if (!bc || !bc->code) return CL_NIL;
+/*
+ * cl_vm_run — the shared dispatch loop.
+ * Expects a frame to already be pushed on cl_vm.frames[].
+ * Runs until cl_vm.fp drops to base_fp, then returns the result.
+ * Both cl_vm_eval and cl_vm_apply use this.
+ */
+static CL_Obj cl_vm_run(int base_fp, int base_nlx)
+{
+    CL_Frame *frame = &cl_vm.frames[cl_vm.fp - 1];
+    uint8_t *code = frame->code;
+    CL_Obj *constants = frame->constants;
+    uint32_t ip = frame->ip;
 
-    /* Set up initial frame */
-    base_fp = cl_vm.fp;
-    frame = &cl_vm.frames[cl_vm.fp++];
-    frame->bytecode = bytecode_obj;
-    frame->code = bc->code;
-    frame->constants = bc->constants;
-    frame->ip = 0;
-    frame->bp = cl_vm.sp;
-    frame->n_locals = bc->n_locals;
-    frame->nargs = 0;
-
-    /* Allocate space for locals */
-    {
-        int i;
-        for (i = 0; i < bc->n_locals; i++)
-            cl_vm_push(CL_NIL);
-    }
-
-    code = frame->code;
-    constants = frame->constants;
-    ip = 0;
-
-    /* Main dispatch loop */
     for (;;) {
-        uint8_t op = code[ip++];
+        uint8_t op;
+
+        /* Record trace for crash diagnostics */
+        vm_trace[vm_trace_idx].op = code ? code[ip] : 0;
+        vm_trace[vm_trace_idx].ip = ip;
+        vm_trace[vm_trace_idx].fp = cl_vm.fp;
+        vm_trace[vm_trace_idx].sp = cl_vm.sp;
+        vm_trace[vm_trace_idx].code = code;
+        vm_trace_idx = (vm_trace_idx + 1) % VM_TRACE_SIZE;
+
+        /* Validate code pointer before each dispatch */
+        if (!code) {
+            const char *fn = "?";
+            CL_Bytecode *fbc = NULL;
+            if (frame && CL_CLOSURE_P(frame->bytecode)) {
+                CL_Closure *cc = (CL_Closure *)CL_OBJ_TO_PTR(frame->bytecode);
+                fbc = (CL_Bytecode *)CL_OBJ_TO_PTR(cc->bytecode);
+            } else if (frame && CL_BYTECODE_P(frame->bytecode)) {
+                fbc = (CL_Bytecode *)CL_OBJ_TO_PTR(frame->bytecode);
+            }
+            if (fbc && fbc->name != CL_NIL && CL_SYMBOL_P(fbc->name))
+                fn = cl_symbol_name(fbc->name);
+            fprintf(stderr, "[VM] NULL code pointer in dispatch: ip=%u fn=%s fp=%d sp=%d\n",
+                    ip, fn, cl_vm.fp, cl_vm.sp);
+            cl_capture_backtrace();
+            fprintf(stderr, "%s", cl_backtrace_buf);
+            cl_error(CL_ERR_GENERAL, "NULL code pointer in VM dispatch (fn=%s)", fn);
+        }
+
+        op = code[ip++];
 
         /* Debug: check watchpoint before instruction dispatch */
 #ifdef CL_DEBUG_UWP
@@ -466,18 +547,35 @@ CL_Obj cl_vm_eval(CL_Obj bytecode_obj)
         }
 #endif
 
+        /* Save last dispatched opcode for crash diagnostics */
+        dbg_last_op = op;
+        dbg_last_ip = ip;
+        dbg_last_fp = cl_vm.fp;
+        dbg_last_code = code;
+        if (op == 0x00) goto unknown_opcode;
         switch (op) {
+        case 0x00:
+            /* Invalid opcode 0 — explicitly handled to prevent computed-goto
+             * jump table from branching to address 0 when reading stale bytecode */
+            goto unknown_opcode;
+
         case OP_HALT: {
             CL_Obj result = (cl_vm.sp > (int)(frame->bp + frame->n_locals))
                             ? cl_vm_pop() : CL_NIL;
-            /* Restore stack to before locals */
+            /* Restore stack and NLX to before this run */
             cl_vm.sp = frame->bp;
             cl_vm.fp = base_fp;
+            cl_nlx_top = base_nlx;
             return result;
         }
 
         case OP_CONST: {
             uint16_t idx = read_u16(code, &ip);
+            if (!constants) {
+                fprintf(stderr, "[VM] BUG: OP_CONST with NULL constants (idx=%u fp=%d ip=%u)\n",
+                        idx, cl_vm.fp, ip);
+                cl_error(CL_ERR_GENERAL, "OP_CONST with NULL constants ptr");
+            }
             cl_vm_push(constants[idx]);
             cl_mv_count = 1;
             break;
@@ -528,7 +626,13 @@ CL_Obj cl_vm_eval(CL_Obj bytecode_obj)
 
         case OP_FLOAD: {
             uint16_t idx = read_u16(code, &ip);
-            CL_Obj sym = constants[idx];
+            CL_Obj sym;
+            if (!constants) {
+                fprintf(stderr, "[VM] BUG: OP_FLOAD with NULL constants (idx=%u fp=%d ip=%u)\n",
+                        idx, cl_vm.fp, ip);
+                cl_error(CL_ERR_GENERAL, "OP_FLOAD with NULL constants ptr");
+            }
+            sym = constants[idx];
             CL_Symbol *s = (CL_Symbol *)CL_OBJ_TO_PTR(sym);
             if (s->function != CL_UNBOUND) {
                 cl_vm_push(s->function);
@@ -762,6 +866,16 @@ CL_Obj cl_vm_eval(CL_Obj bytecode_obj)
             arg_base = &cl_vm.stack[cl_vm.sp - nargs];
             func_obj = cl_vm.stack[cl_vm.sp - nargs - 1];
 
+            /* Resolve symbol to its function binding (for funcall/apply) */
+            if (CL_SYMBOL_P(func_obj)) {
+                CL_Symbol *s = (CL_Symbol *)CL_OBJ_TO_PTR(func_obj);
+                func_obj = s->function;
+                if (CL_NULL_P(func_obj) || func_obj == CL_UNBOUND)
+                    cl_error(CL_ERR_TYPE, "Not a function: symbol %s",
+                             cl_symbol_name(cl_vm.stack[cl_vm.sp - nargs - 1]));
+                cl_vm.stack[cl_vm.sp - nargs - 1] = func_obj;
+            }
+
             if (CL_FUNCTION_P(func_obj)) {
                 /* Built-in C function */
                 CL_Function *f = (CL_Function *)CL_OBJ_TO_PTR(func_obj);
@@ -786,9 +900,29 @@ CL_Obj cl_vm_eval(CL_Obj bytecode_obj)
 
                 if (CL_CLOSURE_P(func_obj)) {
                     CL_Closure *cl = (CL_Closure *)CL_OBJ_TO_PTR(func_obj);
+                    if (!CL_BYTECODE_P(cl->bytecode)) {
+                        fprintf(stderr, "[VM] CORRUPT: closure 0x%x bytecode field 0x%x type=%u\n",
+                                (unsigned)func_obj, (unsigned)cl->bytecode,
+                                CL_HEAP_P(cl->bytecode) ?
+                                (unsigned)CL_HDR_TYPE(CL_OBJ_TO_PTR(cl->bytecode)) : 999);
+                        cl_capture_backtrace();
+                        fprintf(stderr, "%s", cl_backtrace_buf);
+                        cl_error(CL_ERR_TYPE, "Corrupted closure: bytecode field is type %u",
+                                 CL_HEAP_P(cl->bytecode) ?
+                                 (unsigned)CL_HDR_TYPE(CL_OBJ_TO_PTR(cl->bytecode)) : 999);
+                    }
                     callee_bc = (CL_Bytecode *)CL_OBJ_TO_PTR(cl->bytecode);
                 } else {
                     callee_bc = (CL_Bytecode *)CL_OBJ_TO_PTR(func_obj);
+                }
+
+                /* Validate bytecode has valid code pointer */
+                if (!callee_bc->code || callee_bc->code_len == 0) {
+                    CL_Obj fname = callee_bc->name;
+                    cl_error(CL_ERR_TYPE, "Bytecode %s has NULL/empty code (code=%p len=%u)",
+                             (!CL_NULL_P(fname) && CL_SYMBOL_P(fname))
+                                 ? cl_symbol_name(fname) : "<anon>",
+                             (void *)callee_bc->code, (unsigned)callee_bc->code_len);
                 }
 
                 callee_arity = callee_bc->arity & 0x7FFF;
@@ -815,9 +949,14 @@ CL_Obj cl_vm_eval(CL_Obj bytecode_obj)
                              max_args, nargs);
                 }
 
+                /* GC-protect func_obj: it gets removed from the VM stack
+                 * before &rest processing which calls cl_cons (allocating).
+                 * Without this, GC can sweep the closure/bytecode. */
+                if (has_rest || has_key)
+                    CL_GC_PROTECT(func_obj);
+
                 if (is_tail && cl_vm.fp > base_fp + 1) {
                     CL_Obj *src = arg_base;
-                    CL_Obj extra_args[256];
                     int n_extra = 0;
                     int n_positional = callee_arity + n_opt;
 
@@ -848,7 +987,7 @@ CL_Obj cl_vm_eval(CL_Obj bytecode_obj)
                     /* Save extra args for keyword processing */
                     if (has_key || has_rest) {
                         for (i = n_positional; i < nargs; i++) {
-                            if (n_extra < 256) extra_args[n_extra++] = src[i];
+                            if (n_extra < 256) vm_extra_args[n_extra++] = src[i];
                         }
                     }
 
@@ -857,7 +996,7 @@ CL_Obj cl_vm_eval(CL_Obj bytecode_obj)
                         CL_Obj rest = CL_NIL;
                         int j;
                         for (j = n_extra - 1; j >= 0; j--)
-                            rest = cl_cons(extra_args[j], rest);
+                            rest = cl_cons(vm_extra_args[j], rest);
                         cl_vm_push(rest);
                     }
 
@@ -872,16 +1011,16 @@ CL_Obj cl_vm_eval(CL_Obj bytecode_obj)
                         /* Check for :allow-other-keys t in caller args */
                         if (!allow) {
                             for (ki = 0; ki + 1 < n_extra; ki += 2) {
-                                if (extra_args[ki] == KW_ALLOW_OTHER_KEYS &&
-                                    !CL_NULL_P(extra_args[ki + 1])) {
+                                if (vm_extra_args[ki] == KW_ALLOW_OTHER_KEYS &&
+                                    !CL_NULL_P(vm_extra_args[ki + 1])) {
                                     allow = 1;
                                     break;
                                 }
                             }
                         }
                         for (ki = 0; ki + 1 < n_extra; ki += 2) {
-                            CL_Obj key = extra_args[ki];
-                            CL_Obj val = extra_args[ki + 1];
+                            CL_Obj key = vm_extra_args[ki];
+                            CL_Obj val = vm_extra_args[ki + 1];
                             int j, found = 0;
                             for (j = 0; j < callee_bc->n_keys; j++) {
                                 if (key == callee_bc->key_syms[j]) {
@@ -899,6 +1038,9 @@ CL_Obj cl_vm_eval(CL_Obj bytecode_obj)
                         }
                     }
 
+                    if (has_rest || has_key)
+                        CL_GC_UNPROTECT(1);
+
                     frame->bytecode = func_obj;
                     frame->code = callee_bc->code;
                     frame->constants = callee_bc->constants;
@@ -908,10 +1050,21 @@ CL_Obj cl_vm_eval(CL_Obj bytecode_obj)
                     code = callee_bc->code;
                     constants = callee_bc->constants;
                     ip = 0;
+
+                    if (!constants && callee_bc->n_constants > 0) {
+                        CL_Obj fname = callee_bc->name;
+                        fprintf(stderr, "[VM] BUG: tailcall '%s' has %d constants but NULL constants ptr\n",
+                                (!CL_NULL_P(fname) && CL_SYMBOL_P(fname)) ? cl_symbol_name(fname) : "<anon>",
+                                callee_bc->n_constants);
+                        cl_capture_backtrace();
+                        fprintf(stderr, "%s", cl_backtrace_buf);
+                        cl_error(CL_ERR_GENERAL, "Bytecode %s has NULL constants with n_constants=%d",
+                                 (!CL_NULL_P(fname) && CL_SYMBOL_P(fname)) ? cl_symbol_name(fname) : "<anon>",
+                                 callee_bc->n_constants);
+                    }
                 } else {
                     /* Normal call: push new frame */
                     uint32_t new_bp;
-                    CL_Obj extra_args[256];
                     int n_extra = 0;
                     int n_positional = callee_arity + n_opt;
 
@@ -936,7 +1089,7 @@ CL_Obj cl_vm_eval(CL_Obj bytecode_obj)
                     if (has_key || has_rest) {
                         for (i = n_positional; i < nargs; i++) {
                             if (n_extra < 256)
-                                extra_args[n_extra++] = cl_vm.stack[new_bp + i];
+                                vm_extra_args[n_extra++] = cl_vm.stack[new_bp + i];
                         }
                     }
 
@@ -953,7 +1106,7 @@ CL_Obj cl_vm_eval(CL_Obj bytecode_obj)
                         CL_Obj rest = CL_NIL;
                         int j;
                         for (j = n_extra - 1; j >= 0; j--)
-                            rest = cl_cons(extra_args[j], rest);
+                            rest = cl_cons(vm_extra_args[j], rest);
                         cl_vm_push(rest);
                     }
 
@@ -968,16 +1121,16 @@ CL_Obj cl_vm_eval(CL_Obj bytecode_obj)
                         /* Check for :allow-other-keys t in caller args */
                         if (!allow) {
                             for (ki = 0; ki + 1 < n_extra; ki += 2) {
-                                if (extra_args[ki] == KW_ALLOW_OTHER_KEYS &&
-                                    !CL_NULL_P(extra_args[ki + 1])) {
+                                if (vm_extra_args[ki] == KW_ALLOW_OTHER_KEYS &&
+                                    !CL_NULL_P(vm_extra_args[ki + 1])) {
                                     allow = 1;
                                     break;
                                 }
                             }
                         }
                         for (ki = 0; ki + 1 < n_extra; ki += 2) {
-                            CL_Obj key = extra_args[ki];
-                            CL_Obj val = extra_args[ki + 1];
+                            CL_Obj key = vm_extra_args[ki];
+                            CL_Obj val = vm_extra_args[ki + 1];
                             int j, found = 0;
                             for (j = 0; j < callee_bc->n_keys; j++) {
                                 if (key == callee_bc->key_syms[j]) {
@@ -995,6 +1148,9 @@ CL_Obj cl_vm_eval(CL_Obj bytecode_obj)
                                          cl_symbol_name(key));
                         }
                     }
+
+                    if (has_rest || has_key)
+                        CL_GC_UNPROTECT(1);
 
                     /* Save current frame state */
                     frame->ip = ip;
@@ -1015,6 +1171,19 @@ CL_Obj cl_vm_eval(CL_Obj bytecode_obj)
                     code = callee_bc->code;
                     constants = callee_bc->constants;
                     ip = 0;
+
+                    /* Validate: bytecode with constants must have non-NULL constants ptr */
+                    if (!constants && callee_bc->n_constants > 0) {
+                        CL_Obj fname = callee_bc->name;
+                        fprintf(stderr, "[VM] BUG: bytecode '%s' has %d constants but NULL constants ptr (code=%p)\n",
+                                (!CL_NULL_P(fname) && CL_SYMBOL_P(fname)) ? cl_symbol_name(fname) : "<anon>",
+                                callee_bc->n_constants, (void *)callee_bc->code);
+                        cl_capture_backtrace();
+                        fprintf(stderr, "%s", cl_backtrace_buf);
+                        cl_error(CL_ERR_GENERAL, "Bytecode %s has NULL constants with n_constants=%d",
+                                 (!CL_NULL_P(fname) && CL_SYMBOL_P(fname)) ? cl_symbol_name(fname) : "<anon>",
+                                 callee_bc->n_constants);
+                    }
                 }
             } else {
                 /* Print what we got for debugging */
@@ -1066,6 +1235,37 @@ CL_Obj cl_vm_eval(CL_Obj bytecode_obj)
             code = frame->code;
             constants = frame->constants;
             ip = frame->ip;
+
+            /* Safety check: if code is non-null and next instruction uses constants, constants must be valid */
+            if (code && !constants) {
+                uint8_t next_op = code[ip];
+                if (next_op == OP_CONST || next_op == OP_FLOAD || next_op == OP_DYNBIND ||
+                    next_op == OP_FSTORE || next_op == OP_CLOSURE || next_op == OP_DEFMACRO ||
+                    next_op == OP_DEFTYPE || next_op == OP_DEFSETF || next_op == OP_DEFVAR ||
+                    next_op == OP_ASSERT_TYPE || next_op == OP_BLOCK_PUSH ||
+                    next_op == OP_TAGBODY_PUSH || next_op == OP_BLOCK_RETURN ||
+                    next_op == OP_TAGBODY_GO || next_op == OP_HANDLER_PUSH ||
+                    next_op == OP_RESTART_PUSH) {
+                    CL_Bytecode *fbc = NULL;
+                    if (CL_CLOSURE_P(frame->bytecode)) {
+                        CL_Closure *cc = (CL_Closure *)CL_OBJ_TO_PTR(frame->bytecode);
+                        fbc = (CL_Bytecode *)CL_OBJ_TO_PTR(cc->bytecode);
+                    } else if (CL_BYTECODE_P(frame->bytecode)) {
+                        fbc = (CL_Bytecode *)CL_OBJ_TO_PTR(frame->bytecode);
+                    }
+                    fprintf(stderr, "[VM] BUG: RET restored frame with NULL constants but next op=0x%02x needs them\n", next_op);
+                    fprintf(stderr, "[VM]   frame fp=%d ip=%u bytecode=0x%08x\n",
+                            cl_vm.fp, ip, frame->bytecode);
+                    if (fbc) {
+                        fprintf(stderr, "[VM]   fn=%s src=%s:%u n_constants=%d\n",
+                                (fbc->name != CL_NIL && CL_SYMBOL_P(fbc->name))
+                                    ? cl_symbol_name(fbc->name) : "<anon>",
+                                fbc->source_file ? fbc->source_file : "?",
+                                fbc->source_line, fbc->n_constants);
+                    }
+                    cl_error(CL_ERR_GENERAL, "NULL constants in restored frame");
+                }
+            }
 
             cl_vm_push(result);
             break;
@@ -1298,9 +1498,10 @@ CL_Obj cl_vm_eval(CL_Obj bytecode_obj)
                 if (cl_nlx_stack[i].type == CL_NLX_BLOCK &&
                     cl_nlx_stack[i].tag == block_tag) {
                     int j;
-                    /* Check for interposing UWPROT frames */
+                    /* Check for interposing UWPROT frames (skip stale ones) */
                     for (j = cl_nlx_top - 1; j > i; j--) {
-                        if (cl_nlx_stack[j].type == CL_NLX_UWPROT) {
+                        if (cl_nlx_stack[j].type == CL_NLX_UWPROT &&
+                            !nlx_frame_is_stale(&cl_nlx_stack[j])) {
                             cl_pending_throw = 1;
                             cl_pending_tag = block_tag;
                             cl_pending_value = value;
@@ -1399,9 +1600,10 @@ CL_Obj cl_vm_eval(CL_Obj bytecode_obj)
                 if (cl_nlx_stack[i].type == CL_NLX_TAGBODY &&
                     cl_nlx_stack[i].tag == tagbody_id) {
                     int j;
-                    /* Check for interposing UWPROT frames */
+                    /* Check for interposing UWPROT frames (skip stale ones) */
                     for (j = cl_nlx_top - 1; j > i; j--) {
-                        if (cl_nlx_stack[j].type == CL_NLX_UWPROT) {
+                        if (cl_nlx_stack[j].type == CL_NLX_UWPROT &&
+                            !nlx_frame_is_stale(&cl_nlx_stack[j])) {
                             cl_pending_throw = 1;
                             cl_pending_tag = tagbody_id;
                             cl_pending_value = tag_index;
@@ -1472,49 +1674,180 @@ CL_Obj cl_vm_eval(CL_Obj bytecode_obj)
         }
 
         case OP_APPLY: {
-            /* (apply func arglist) */
+            /* (apply func arglist) — inline dispatch to avoid C stack nesting */
             CL_Obj arglist = cl_vm_pop();
-            CL_Obj func_obj = cl_vm_pop();
-            CL_Obj flat_args[64];
+            CL_Obj apply_func = cl_vm_pop();
             int nflat = 0;
-            CL_Obj result;
+            int ai;
 
-            /* Flatten arglist into C array */
+            /* Flatten arglist into static buffer */
             {
                 CL_Obj a = arglist;
                 while (!CL_NULL_P(a) && nflat < 64) {
-                    flat_args[nflat++] = cl_car(a);
+                    vm_flat_args[nflat++] = cl_car(a);
                     a = cl_cdr(a);
                 }
             }
 
             /* Resolve symbol to its function binding */
-            if (CL_SYMBOL_P(func_obj)) {
-                CL_Symbol *s = (CL_Symbol *)CL_OBJ_TO_PTR(func_obj);
-                func_obj = s->function;
-                if (CL_NULL_P(func_obj) || func_obj == CL_UNBOUND)
+            if (CL_SYMBOL_P(apply_func)) {
+                CL_Symbol *s = (CL_Symbol *)CL_OBJ_TO_PTR(apply_func);
+                apply_func = s->function;
+                if (CL_NULL_P(apply_func) || apply_func == CL_UNBOUND)
                     cl_error(CL_ERR_TYPE, "APPLY: symbol has no function binding");
             }
 
-            if (CL_FUNCTION_P(func_obj)) {
-                CL_Function *f = (CL_Function *)CL_OBJ_TO_PTR(func_obj);
-                int traced = is_func_traced(func_obj);
+            if (CL_FUNCTION_P(apply_func)) {
+                CL_Function *f = (CL_Function *)CL_OBJ_TO_PTR(apply_func);
+                int traced = is_func_traced(apply_func);
+                CL_Obj result;
                 if (traced) {
-                    trace_print_entry(f->name, flat_args, nflat);
+                    trace_print_entry(f->name, vm_flat_args, nflat);
                     cl_trace_depth++;
                 }
-                result = call_builtin(f, flat_args, nflat);
+                result = call_builtin(f, vm_flat_args, nflat);
                 if (traced) {
                     cl_trace_depth--;
                     trace_print_exit(f->name, result);
                 }
-            } else if (CL_BYTECODE_P(func_obj) || CL_CLOSURE_P(func_obj)) {
-                result = cl_vm_apply(func_obj, flat_args, nflat);
+                cl_vm_push(result);
+            } else if (CL_BYTECODE_P(apply_func) || CL_CLOSURE_P(apply_func)) {
+                /* Push func + flattened args onto VM stack and dispatch
+                 * inline like OP_CALL — avoids cl_vm_apply C stack nesting */
+                cl_vm_push(apply_func);
+                for (ai = 0; ai < nflat; ai++)
+                    cl_vm_push(vm_flat_args[ai]);
+
+                /* Now set up the call frame inline (same as OP_CALL non-tail path) */
+                {
+                    uint8_t call_nargs = (uint8_t)nflat;
+                    CL_Obj call_func = cl_vm.stack[cl_vm.sp - call_nargs - 1];
+                    CL_Bytecode *callee_bc;
+                    CL_Frame *new_frame;
+                    int callee_arity, has_rest, n_opt, has_key;
+                    int min_args, max_args, new_bp, n_extra = 0;
+                    int n_positional;
+
+                    if (CL_CLOSURE_P(call_func)) {
+                        CL_Closure *cl = (CL_Closure *)CL_OBJ_TO_PTR(call_func);
+                        callee_bc = (CL_Bytecode *)CL_OBJ_TO_PTR(cl->bytecode);
+                    } else {
+                        callee_bc = (CL_Bytecode *)CL_OBJ_TO_PTR(call_func);
+                    }
+
+                    callee_arity = callee_bc->arity & 0x7FFF;
+                    has_rest = callee_bc->arity & 0x8000;
+                    n_opt = callee_bc->n_optional;
+                    has_key = callee_bc->flags & 1;
+                    min_args = callee_arity;
+                    max_args = (has_rest || has_key) ? 255 : callee_arity + n_opt;
+                    n_positional = callee_arity + n_opt;
+
+                    if (call_nargs < min_args)
+                        cl_error(CL_ERR_ARGS, "APPLY: too few arguments (got %d, need %d)",
+                                 call_nargs, min_args);
+                    if (call_nargs > max_args)
+                        cl_error(CL_ERR_ARGS, "APPLY: too many arguments (got %d, max %d)",
+                                 call_nargs, max_args);
+
+                    if (has_rest || has_key)
+                        CL_GC_PROTECT(call_func);
+
+                    /* Remove func slot, shift args down */
+                    {
+                        int j;
+                        for (j = 0; j < call_nargs; j++)
+                            cl_vm.stack[cl_vm.sp - call_nargs - 1 + j] =
+                                cl_vm.stack[cl_vm.sp - call_nargs + j];
+                        cl_vm.sp--;
+                    }
+
+                    new_bp = cl_vm.sp - call_nargs;
+
+                    /* Save extra args for &rest/&key */
+                    if (has_key || has_rest) {
+                        for (ai = n_positional; ai < call_nargs; ai++) {
+                            if (n_extra < 256)
+                                vm_extra_args[n_extra++] = cl_vm.stack[new_bp + ai];
+                        }
+                    }
+
+                    /* Truncate to positional */
+                    if (call_nargs > n_positional)
+                        cl_vm.sp = new_bp + n_positional;
+
+                    /* Fill missing optionals */
+                    while (cl_vm.sp < (int)(new_bp + n_positional))
+                        cl_vm_push(CL_NIL);
+
+                    /* &rest */
+                    if (has_rest) {
+                        CL_Obj rest = CL_NIL;
+                        int j;
+                        for (j = n_extra - 1; j >= 0; j--)
+                            rest = cl_cons(vm_extra_args[j], rest);
+                        cl_vm_push(rest);
+                    }
+
+                    /* Fill remaining locals */
+                    while (cl_vm.sp < (int)(new_bp + callee_bc->n_locals))
+                        cl_vm_push(CL_NIL);
+
+                    /* Keyword matching */
+                    if (has_key) {
+                        int allow = (callee_bc->flags & 2) != 0;
+                        int ki;
+                        if (!allow) {
+                            for (ki = 0; ki + 1 < n_extra; ki += 2) {
+                                if (vm_extra_args[ki] == KW_ALLOW_OTHER_KEYS &&
+                                    !CL_NULL_P(vm_extra_args[ki + 1])) {
+                                    allow = 1; break;
+                                }
+                            }
+                        }
+                        for (ki = 0; ki + 1 < n_extra; ki += 2) {
+                            CL_Obj key = vm_extra_args[ki];
+                            CL_Obj val = vm_extra_args[ki + 1];
+                            int j, found = 0;
+                            for (j = 0; j < callee_bc->n_keys; j++) {
+                                if (key == callee_bc->key_syms[j]) {
+                                    cl_vm.stack[new_bp + callee_bc->key_slots[j]] = val;
+                                    if (callee_bc->key_suppliedp_slots)
+                                        cl_vm.stack[new_bp + callee_bc->key_suppliedp_slots[j]] = CL_T;
+                                    found = 1; break;
+                                }
+                            }
+                            if (!found && key != KW_ALLOW_OTHER_KEYS && !allow)
+                                cl_error(CL_ERR_ARGS, "APPLY: unknown keyword argument: %s",
+                                         cl_symbol_name(key));
+                        }
+                    }
+
+                    if (has_rest || has_key)
+                        CL_GC_UNPROTECT(1);
+
+                    /* Save current frame state and push new frame */
+                    frame->ip = ip;
+                    if (cl_vm.fp >= cl_vm.frame_size)
+                        cl_error(CL_ERR_OVERFLOW, "Call stack overflow");
+
+                    new_frame = &cl_vm.frames[cl_vm.fp++];
+                    new_frame->bytecode = call_func;
+                    new_frame->code = callee_bc->code;
+                    new_frame->constants = callee_bc->constants;
+                    new_frame->ip = 0;
+                    new_frame->bp = new_bp;
+                    new_frame->n_locals = callee_bc->n_locals;
+                    new_frame->nargs = call_nargs;
+
+                    frame = new_frame;
+                    code = callee_bc->code;
+                    constants = callee_bc->constants;
+                    ip = 0;
+                }
             } else {
                 cl_error(CL_ERR_TYPE, "APPLY: not a callable function");
-                result = CL_NIL;
             }
-            cl_vm_push(result);
             break;
         }
 
@@ -1640,7 +1973,6 @@ CL_Obj cl_vm_eval(CL_Obj bytecode_obj)
                 base_fp = nlx->base_fp;
                 ip = nlx->catch_ip + nlx->offset;
 
-
 #ifdef CL_DEBUG_UWP
                 /* Detect slot corruption after UWP longjmp */
                 {
@@ -1720,10 +2052,11 @@ CL_Obj cl_vm_eval(CL_Obj bytecode_obj)
                          cl_nlx_stack[i].type == CL_NLX_BLOCK ||
                          cl_nlx_stack[i].type == CL_NLX_TAGBODY) &&
                         cl_nlx_stack[i].tag == ptag) {
-                        /* Check for interposing UWPROT */
+                        /* Check for interposing UWPROT (skip stale ones) */
                         int j;
                         for (j = cl_nlx_top - 1; j > i; j--) {
-                            if (cl_nlx_stack[j].type == CL_NLX_UWPROT) {
+                            if (cl_nlx_stack[j].type == CL_NLX_UWPROT &&
+                                !nlx_frame_is_stale(&cl_nlx_stack[j])) {
                                 /* Jump to interposing UWPROT first */
                                 cl_nlx_top = j;
                                 longjmp(cl_nlx_stack[j].buf, 1);
@@ -1740,10 +2073,11 @@ CL_Obj cl_vm_eval(CL_Obj bytecode_obj)
                 cl_pending_throw = 0;
                 cl_error(CL_ERR_GENERAL, "No catch for tag during re-throw");
             } else if (cl_pending_throw == 2) {
-                /* Re-throw error: find interposing UWPROT or error frame */
+                /* Re-throw error: find interposing UWPROT or error frame (skip stale) */
                 int i;
                 for (i = cl_nlx_top - 1; i >= 0; i--) {
-                    if (cl_nlx_stack[i].type == CL_NLX_UWPROT) {
+                    if (cl_nlx_stack[i].type == CL_NLX_UWPROT &&
+                        !nlx_frame_is_stale(&cl_nlx_stack[i])) {
                         cl_nlx_top = i;
                         longjmp(cl_nlx_stack[i].buf, 1);
                     }
@@ -1908,9 +2242,123 @@ CL_Obj cl_vm_eval(CL_Obj bytecode_obj)
         }
 
         default:
+        unknown_opcode:
+        {
+            CL_Bytecode *dbg_bc;
+            uint8_t dbg_type = CL_HDR_TYPE(CL_OBJ_TO_PTR(frame->bytecode));
+            if (dbg_type == TYPE_CLOSURE) {
+                CL_Closure *cl = (CL_Closure *)CL_OBJ_TO_PTR(frame->bytecode);
+                dbg_bc = (CL_Bytecode *)CL_OBJ_TO_PTR(cl->bytecode);
+                fprintf(stderr, "[VM] Unknown opcode 0x%02x at ip=%u (CLOSURE 0x%x -> BC 0x%x)\n",
+                        op, ip - 1, (unsigned)frame->bytecode,
+                        (unsigned)cl->bytecode);
+            } else {
+                dbg_bc = (CL_Bytecode *)CL_OBJ_TO_PTR(frame->bytecode);
+                fprintf(stderr, "[VM] Unknown opcode 0x%02x at ip=%u (BYTECODE 0x%x)\n",
+                        op, ip - 1, (unsigned)frame->bytecode);
+            }
+            fprintf(stderr, "[VM]   code_len=%u, code=%p\n",
+                    dbg_bc->code_len, (void *)dbg_bc->code);
+            if (CL_SYMBOL_P(dbg_bc->name))
+                fprintf(stderr, "[VM]   name: %s\n",
+                        cl_symbol_name(dbg_bc->name));
+            if (dbg_bc->source_file)
+                fprintf(stderr, "[VM]   source: %s:%u\n",
+                        dbg_bc->source_file, dbg_bc->source_line);
+            /* Print surrounding bytes from frame->code using code_len as limit */
+            if (dbg_bc->code_len > 0) {
+                uint32_t start = (ip > 10) ? ip - 10 : 0;
+                uint32_t end = (ip + 10 < dbg_bc->code_len) ? ip + 10 : dbg_bc->code_len;
+                uint32_t j;
+                fprintf(stderr, "[VM]   bytes around ip=%u:", ip - 1);
+                for (j = start; j < end; j++)
+                    fprintf(stderr, " %02x", frame->code[j]);
+                fprintf(stderr, "\n");
+            }
+            /* Dump all VM frames */
+            {
+                int fi;
+                fprintf(stderr, "[VM]   fp=%d sp=%d base_fp=%d\n",
+                        cl_vm.fp, cl_vm.sp, base_fp);
+                for (fi = cl_vm.fp - 1; fi >= 0; fi--) {
+                    CL_Frame *df = &cl_vm.frames[fi];
+                    CL_Bytecode *dbc;
+                    uint8_t ft = CL_HDR_TYPE(CL_OBJ_TO_PTR(df->bytecode));
+                    if (ft == TYPE_CLOSURE) {
+                        CL_Closure *dcl = (CL_Closure *)CL_OBJ_TO_PTR(df->bytecode);
+                        dbc = (CL_Bytecode *)CL_OBJ_TO_PTR(dcl->bytecode);
+                    } else {
+                        dbc = (CL_Bytecode *)CL_OBJ_TO_PTR(df->bytecode);
+                    }
+                    fprintf(stderr, "[VM]   frame[%d] ip=%u/%u bp=%u",
+                            fi, df->ip, dbc->code_len, df->bp);
+                    if (CL_SYMBOL_P(dbc->name))
+                        fprintf(stderr, " %s", cl_symbol_name(dbc->name));
+                    fprintf(stderr, "\n");
+                }
+            }
             cl_error(CL_ERR_GENERAL, "Unknown opcode: 0x%02x at ip=%u",
                      op, ip - 1);
             return CL_NIL;
         }
+        }
     }
+}
+
+/*
+ * cl_vm_eval — execute a bytecode object.
+ * Thin wrapper: pushes initial frame, calls cl_vm_run.
+ */
+CL_Obj cl_vm_eval(CL_Obj bytecode_obj)
+{
+    CL_Bytecode *bc;
+    CL_Frame *frame;
+    int base_fp, base_nlx;
+    CL_Obj result;
+
+#ifdef DEBUG_VM
+    vm_eval_depth++;
+    if (vm_eval_depth > vm_eval_max_depth)
+        vm_eval_max_depth = vm_eval_depth;
+    cl_check_c_stack("cl_vm_eval");
+#endif
+
+    if (CL_NULL_P(bytecode_obj)) return CL_NIL;
+
+    /* Handle both bytecode and closure */
+    if (CL_CLOSURE_P(bytecode_obj)) {
+        CL_Closure *cl = (CL_Closure *)CL_OBJ_TO_PTR(bytecode_obj);
+        bc = (CL_Bytecode *)CL_OBJ_TO_PTR(cl->bytecode);
+    } else {
+        bc = (CL_Bytecode *)CL_OBJ_TO_PTR(bytecode_obj);
+    }
+
+    if (!bc || !bc->code) return CL_NIL;
+
+    /* Set up initial frame */
+    base_fp = cl_vm.fp;
+    base_nlx = cl_nlx_top;
+    if (cl_vm.fp >= cl_vm.frame_size)
+        cl_error(CL_ERR_OVERFLOW, "VM frame stack overflow");
+    frame = &cl_vm.frames[cl_vm.fp++];
+    frame->bytecode = bytecode_obj;
+    frame->code = bc->code;
+    frame->constants = bc->constants;
+    frame->ip = 0;
+    frame->bp = cl_vm.sp;
+    frame->n_locals = bc->n_locals;
+    frame->nargs = 0;
+
+    /* Allocate space for locals */
+    {
+        int i;
+        for (i = 0; i < bc->n_locals; i++)
+            cl_vm_push(CL_NIL);
+    }
+
+    result = cl_vm_run(base_fp, base_nlx);
+#ifdef DEBUG_VM
+    vm_eval_depth--;
+#endif
+    return result;
 }

@@ -18,6 +18,10 @@ extern CL_Obj struct_table;  /* builtins_struct.c: struct type registry */
 extern CL_Obj condition_hierarchy;     /* builtins_condition.c */
 extern CL_Obj condition_slot_table;    /* builtins_condition.c */
 
+/* Active compiler chain for GC root marking (compiler_internal.h) */
+typedef struct CL_Compiler_s CL_Compiler;
+extern CL_Compiler *cl_active_compiler;
+
 CL_Heap cl_heap;
 uint8_t *cl_arena_base = NULL;  /* Global arena base for offset↔pointer conversion */
 
@@ -33,7 +37,7 @@ static int gc_mark_overflow = 0;  /* Set when mark stack overflows */
 /* Forward declarations */
 static void gc_mark(void);
 static void gc_sweep(void);
-static void gc_mark_obj(CL_Obj obj);
+void gc_mark_obj(CL_Obj obj);
 static void gc_mark_push(CL_Obj obj);
 static void *alloc_from_free_list(uint32_t *sizep);
 static void *alloc_from_bump(uint32_t size);
@@ -649,7 +653,7 @@ static void gc_mark_children(void *ptr, uint8_t type)
     }
 }
 
-static void gc_mark_obj(CL_Obj obj)
+void gc_mark_obj(CL_Obj obj)
 {
     void *ptr;
     if (CL_NULL_P(obj) || CL_FIXNUM_P(obj) || CL_CHAR_P(obj))
@@ -756,6 +760,13 @@ static void gc_mark(void)
                     gc_mark_obj(cl_readtable_pool[rt].dispatch_fn[ch]);
             }
         }
+    }
+
+    /* Mark compiler constants (active compilers may hold CL_Obj values
+     * in platform_alloc'd memory not reachable from the GC arena) */
+    {
+        extern void cl_compiler_gc_mark(void);
+        cl_compiler_gc_mark();
     }
 
     /* Drain mark stack iteratively (children pushed by gc_mark_obj above).

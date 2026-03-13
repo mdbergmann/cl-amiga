@@ -1004,6 +1004,51 @@ static CL_Obj bi_copy_readtable(CL_Obj *args, int n)
     return CL_MAKE_FIXNUM(result);
 }
 
+/* (readtable-case &optional readtable) => keyword */
+static CL_Obj bi_readtable_case(CL_Obj *args, int n)
+{
+    int rt_idx = resolve_readtable_idx(args, n, 0);
+    CL_Readtable *rt = cl_readtable_get(rt_idx);
+    switch (rt->case_mode) {
+        case CL_RT_CASE_UPCASE:   return cl_intern_keyword("UPCASE", 6);
+        case CL_RT_CASE_DOWNCASE: return cl_intern_keyword("DOWNCASE", 8);
+        case CL_RT_CASE_PRESERVE: return cl_intern_keyword("PRESERVE", 8);
+        case CL_RT_CASE_INVERT:   return cl_intern_keyword("INVERT", 6);
+        default:                  return cl_intern_keyword("UPCASE", 6);
+    }
+}
+
+/* (%setf-readtable-case readtable mode) => mode
+ * defsetf passes place args first, then new value last */
+static CL_Obj bi_setf_readtable_case(CL_Obj *args, int n)
+{
+    CL_Obj mode = args[1];
+    int rt_idx;
+    CL_Readtable *rt;
+    const char *name;
+
+    (void)n;
+    rt_idx = resolve_readtable_idx(args, n, 0);
+    rt = cl_readtable_get(rt_idx);
+
+    name = cl_symbol_name(mode);
+    if (!name)
+        cl_error(CL_ERR_TYPE, "READTABLE-CASE: mode must be a keyword");
+
+    if (strcmp(name, "UPCASE") == 0)
+        rt->case_mode = CL_RT_CASE_UPCASE;
+    else if (strcmp(name, "DOWNCASE") == 0)
+        rt->case_mode = CL_RT_CASE_DOWNCASE;
+    else if (strcmp(name, "PRESERVE") == 0)
+        rt->case_mode = CL_RT_CASE_PRESERVE;
+    else if (strcmp(name, "INVERT") == 0)
+        rt->case_mode = CL_RT_CASE_INVERT;
+    else
+        cl_error(CL_ERR_TYPE, "READTABLE-CASE: invalid mode, expected :UPCASE, :DOWNCASE, :PRESERVE, or :INVERT");
+
+    return mode;
+}
+
 /* --- Registration --- */
 
 void cl_builtins_stream_init(void)
@@ -1077,4 +1122,6 @@ void cl_builtins_stream_init(void)
     defun("SET-DISPATCH-MACRO-CHARACTER", bi_set_dispatch_macro_character, 3, 4);
     defun("GET-DISPATCH-MACRO-CHARACTER", bi_get_dispatch_macro_character, 2, 3);
     defun("COPY-READTABLE", bi_copy_readtable, 0, 2);
+    defun("READTABLE-CASE", bi_readtable_case, 0, 1);
+    cl_register_builtin("%SETF-READTABLE-CASE", bi_setf_readtable_case, 2, 2, cl_package_clamiga);
 }

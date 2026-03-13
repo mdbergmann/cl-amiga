@@ -299,10 +299,14 @@ static CL_Obj bi_load(CL_Obj *args, int n)
 
     path_str = (CL_String *)CL_OBJ_TO_PTR(args[0]);
 
-    /* Check for cached FASL before reading source */
+    /* Check for cached FASL before reading source (skip .asd — they share
+       base names with .lisp source files and must not be FASL-substituted) */
     {
         char cache_path[1024];
-        if (make_fasl_cache_path(path_str->data, cache_path, sizeof(cache_path)) &&
+        size_t plen2 = strlen(path_str->data);
+        int skip_cache = (plen2 >= 4 && strcmp(path_str->data + plen2 - 4, ".asd") == 0);
+        if (!skip_cache &&
+            make_fasl_cache_path(path_str->data, cache_path, sizeof(cache_path)) &&
             platform_file_exists(cache_path))
         {
             uint32_t src_mtime = platform_file_mtime(path_str->data);
@@ -354,25 +358,32 @@ static CL_Obj bi_load(CL_Obj *args, int n)
                                 }
                             }
 
-                            fasl_err = CL_CATCH();
-                            if (fasl_err == CL_ERR_NONE) {
-                                cl_fasl_load((const uint8_t *)buf, (uint32_t)size);
-                                platform_free(buf);
-                                CL_UNCATCH();
+                            {
+                                int sf = cl_vm.fp, ss = cl_vm.sp, sn = cl_nlx_top;
+                                fasl_err = CL_CATCH();
+                                if (fasl_err == CL_ERR_NONE) {
+                                    cl_fasl_load((const uint8_t *)buf, (uint32_t)size);
+                                    platform_free(buf);
+                                    CL_UNCATCH();
 
-                                lp_sym->value = saved_load_pathname;
-                                lt_sym->value = saved_load_truename;
-                                CL_GC_UNPROTECT(2);
-                                cl_current_package = saved_package;
-                                {
-                                    CL_Symbol *pkg_sym = (CL_Symbol *)CL_OBJ_TO_PTR(SYM_STAR_PACKAGE);
-                                    pkg_sym->value = saved_package;
-                                }
-                                return SYM_T;
-                            } else {
-                                /* FASL load failed — restore state, fall through to source */
-                                CL_UNCATCH();
+                                    lp_sym->value = saved_load_pathname;
+                                    lt_sym->value = saved_load_truename;
+                                    CL_GC_UNPROTECT(2);
+                                    cl_current_package = saved_package;
+                                    {
+                                        CL_Symbol *pkg_sym = (CL_Symbol *)CL_OBJ_TO_PTR(SYM_STAR_PACKAGE);
+                                        pkg_sym->value = saved_package;
+                                    }
+                                    return SYM_T;
+                                } else {
+                                    /* Restore VM state leaked by aborted cl_vm_eval */
+                                    cl_vm.fp = sf;
+                                    cl_vm.sp = ss;
+                                    cl_nlx_top = sn;
+                                    /* FASL load failed — restore state, fall through to source */
+                                    CL_UNCATCH();
                                 platform_free(buf);
+                                buf = NULL;
                                 lp_sym->value = saved_load_pathname;
                                 lt_sym->value = saved_load_truename;
                                 CL_GC_UNPROTECT(2);
@@ -384,9 +395,10 @@ static CL_Obj bi_load(CL_Obj *args, int n)
                                 /* Delete broken FASL so we don't retry it */
                                 platform_file_delete(cache_path);
                             }
+                            }
                         }
                     }
-                    platform_free(buf);
+                    if (buf) platform_free(buf);
                 }
             }
         }
@@ -478,6 +490,13 @@ static CL_Obj bi_load(CL_Obj *args, int n)
         int do_cache = 0;
 
         if (make_fasl_cache_path(path_str->data, auto_cache_path, sizeof(auto_cache_path))) {
+            /* Skip auto-caching for .asd files — they are ASDF system definitions
+             * and would collide with .lisp files of the same name in the cache
+             * (e.g. mt19937.asd and mt19937.lisp both map to mt19937.fasl) */
+            size_t plen = strlen(path_str->data);
+            int is_asd = (plen >= 4 && strcmp(path_str->data + plen - 4, ".asd") == 0);
+            int is_fasl = (plen >= 5 && strcmp(path_str->data + plen - 5, ".fasl") == 0);
+            if (!is_asd && !is_fasl) {
             fasl_buf = (uint8_t *)platform_alloc(fasl_capacity);
             unit_buf = (uint8_t *)platform_alloc(unit_capacity);
             if (fasl_buf && unit_buf) {
@@ -490,6 +509,7 @@ static CL_Obj bi_load(CL_Obj *args, int n)
                 fasl_buf = NULL;
                 unit_buf = NULL;
             }
+            } /* !is_asd */
         }
 
     /* Save and set source file context */
@@ -506,9 +526,16 @@ static CL_Obj bi_load(CL_Obj *args, int n)
 
     for (;;) {
         int err;
+        int saved_fp, saved_sp, saved_nlx;
 
         expr = cl_read_from_stream(stream);
         if (cl_reader_eof()) break;
+
+        /* Save VM state so we can restore on error (cl_error longjmps
+           past cl_vm_eval's OP_HALT, leaving fp/sp/nlx leaked) */
+        saved_fp = cl_vm.fp;
+        saved_sp = cl_vm.sp;
+        saved_nlx = cl_nlx_top;
 
         err = CL_CATCH();
         if (err == CL_ERR_NONE) {
@@ -566,6 +593,10 @@ static CL_Obj bi_load(CL_Obj *args, int n)
             }
             CL_UNCATCH();
         } else {
+            /* Restore VM state leaked by aborted cl_vm_eval */
+            cl_vm.fp = saved_fp;
+            cl_vm.sp = saved_sp;
+            cl_nlx_top = saved_nlx;
             cl_error_print();
             CL_UNCATCH();
             do_cache = 0; /* Don't cache files with errors */
@@ -953,21 +984,59 @@ static CL_Obj bi_compile_file(CL_Obj *args, int n)
     CL_GC_PROTECT(stream);
 
     /* Read-compile-eval-serialize loop */
+    int cf_form_count = 0;
     for (;;) {
         int err;
         CL_FaslWriter uw;
+        int saved_fp, saved_sp, saved_nlx;
+        int saved_handler_top, saved_restart_top;
 
-        expr = cl_read_from_stream(stream);
-        if (cl_reader_eof()) break;
+        /* Save VM state so we can restore on error (cl_error longjmps
+           past cl_vm_eval's OP_HALT, leaving fp/sp/nlx leaked) */
+        saved_fp = cl_vm.fp;
+        saved_sp = cl_vm.sp;
+        saved_nlx = cl_nlx_top;
+        /* Hide outer Lisp handlers so compile-file errors don't escape
+         * to handler-case frames installed by the caller (e.g. ASDF).
+         * Use floor instead of zeroing top — GC must still mark the
+         * full handler/restart stacks to avoid collecting referenced objects. */
+        saved_handler_top = cl_handler_floor;
+        saved_restart_top = cl_restart_floor;
+        cl_handler_floor = cl_handler_top;
+        cl_restart_floor = cl_restart_top;
 
         err = CL_CATCH();
         if (err == CL_ERR_NONE) {
+            expr = cl_read_from_stream(stream);
+            if (cl_reader_eof()) {
+                CL_UNCATCH();
+                cl_handler_floor = saved_handler_top;
+                cl_restart_floor = saved_restart_top;
+                break;
+            }
+
+            cf_form_count++;
+#ifdef DEBUG_COMPILER
+            fprintf(stderr, "[compile-file %s] form %d read\n",
+                    in_path, cf_form_count);
+            fflush(stderr);
+#endif
             CL_GC_PROTECT(expr);
             bytecode = cl_compile(expr);
             CL_GC_UNPROTECT(1);
             if (!CL_NULL_P(bytecode)) {
+#ifdef DEBUG_COMPILER
+                fprintf(stderr, "[compile-file %s] form %d compiled, evaluating\n",
+                        in_path, cf_form_count);
+                fflush(stderr);
+#endif
+                /* GC-protect bytecode: it must survive eval for FASL serialization */
+                CL_GC_PROTECT(bytecode);
+
                 /* Eval the form (macros, defvar, etc. must take effect) */
                 cl_vm_eval(bytecode);
+
+                CL_GC_UNPROTECT(1); /* bytecode */
 
                 /* Serialize this unit */
                 cl_fasl_writer_init(&uw, unit_buf, unit_capacity);
@@ -1011,9 +1080,16 @@ static CL_Obj bi_compile_file(CL_Obj *args, int n)
             }
             CL_UNCATCH();
         } else {
+            /* Restore VM state leaked by aborted cl_vm_eval */
+            cl_vm.fp = saved_fp;
+            cl_vm.sp = saved_sp;
+            cl_nlx_top = saved_nlx;
             cl_error_print();
             CL_UNCATCH();
         }
+        /* Restore outer Lisp handler/restart floor */
+        cl_handler_floor = saved_handler_top;
+        cl_restart_floor = saved_restart_top;
     }
 
     CL_GC_UNPROTECT(1); /* stream */
@@ -1203,9 +1279,12 @@ static CL_Obj bi_throw(CL_Obj *args, int n)
         if (cl_nlx_stack[i].type == CL_NLX_CATCH &&
             cl_nlx_stack[i].tag == tag) {
             int j;
-            /* Check for interposing UWPROT frames */
+            /* Check for interposing UWPROT frames (skip stale ones) */
             for (j = cl_nlx_top - 1; j > i; j--) {
                 if (cl_nlx_stack[j].type == CL_NLX_UWPROT) {
+                    /* Skip stale NLX frames (frame was reused by tail call) */
+                    CL_Frame *tf = &cl_vm.frames[cl_nlx_stack[j].vm_fp - 1];
+                    if (tf->code != cl_nlx_stack[j].code) continue;
                     /* Set pending throw, longjmp to UWPROT */
                     cl_pending_throw = 1;
                     cl_pending_tag = tag;

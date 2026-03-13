@@ -286,6 +286,15 @@ void cl_fasl_serialize_obj(CL_FaslWriter *w, CL_Obj obj)
         return;
     }
 
+    case TYPE_PACKAGE: {
+        CL_Package *pkg = (CL_Package *)CL_OBJ_TO_PTR(obj);
+        CL_String *pname = (CL_String *)CL_OBJ_TO_PTR(pkg->name);
+        cl_fasl_write_u8(w, FASL_TAG_PACKAGE);
+        cl_fasl_write_u16(w, (uint16_t)pname->length);
+        cl_fasl_write_bytes(w, pname->data, pname->length);
+        return;
+    }
+
     case TYPE_PATHNAME: {
         CL_Pathname *pn = (CL_Pathname *)CL_OBJ_TO_PTR(obj);
         cl_fasl_write_u8(w, FASL_TAG_PATHNAME);
@@ -692,6 +701,15 @@ CL_Obj cl_fasl_deserialize_obj(CL_FaslReader *r)
         }
         CL_GC_UNPROTECT(2);
         return result;
+    }
+
+    case FASL_TAG_PACKAGE: {
+        uint16_t name_len = cl_fasl_read_u16(r);
+        char pkg_buf[256];
+        if (r->error || name_len >= sizeof(pkg_buf)) return CL_NIL;
+        cl_fasl_read_bytes(r, pkg_buf, name_len);
+        pkg_buf[name_len] = '\0';
+        return cl_find_package(pkg_buf, name_len);
     }
 
     case FASL_TAG_FUNCTION: {

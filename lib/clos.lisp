@@ -229,6 +229,14 @@
   (list (find-class 't)))
 (%make-bootstrap-class 'random-state
   (list (find-class 't)))
+(%make-bootstrap-class 'readtable
+  (list (find-class 't)))
+(%make-bootstrap-class 'complex
+  (list (find-class 'number)))
+(%make-bootstrap-class 'array
+  (list (find-class 't)))
+(%make-bootstrap-class 'class
+  (list (find-class 'standard-object)))
 (%make-bootstrap-class 'condition
   (list (find-class 't)))
 
@@ -1217,16 +1225,16 @@ When called with no arguments, passes the original method arguments."
                 initform-pairs))
         ;; Generate GF-based accessor methods
         (dolist (accessor accessors)
-          (let ((setter-name (intern (concatenate 'string
-                                      "%SETF-" (symbol-name accessor))
-                                    (or (symbol-package accessor) *package*))))
-            (push `(defgeneric ,accessor (obj)) accessor-defs)
-            (push `(defmethod ,accessor ((obj ,name))
-                     (slot-value obj ',slot-name))
-                  accessor-defs)
-            (push `(defun ,setter-name (val obj)
-                     (setf (slot-value obj ',slot-name) val))
-                  accessor-defs)))
+          (push `(defgeneric ,accessor (obj)) accessor-defs)
+          (push `(defmethod ,accessor ((obj ,name))
+                   (slot-value obj ',slot-name))
+                accessor-defs)
+          ;; Writer: use defgeneric + defmethod for (setf accessor)
+          ;; so additional methods can be added without replacing the original
+          (push `(defgeneric (setf ,accessor) (val obj)) accessor-defs)
+          (push `(defmethod (setf ,accessor) (val (obj ,name))
+                   (setf (slot-value obj ',slot-name) val))
+                accessor-defs))
         (dolist (reader readers)
           (push `(defgeneric ,reader (obj)) accessor-defs)
           (push `(defmethod ,reader ((obj ,name))

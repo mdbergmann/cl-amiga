@@ -42,12 +42,30 @@
 (defmacro prog1 (first &rest body) (let ((g (gensym))) `(let ((,g ,first)) ,@body ,g)))
 (defmacro prog2 (first second &rest body) (let ((g (gensym))) `(progn ,first (let ((,g ,second)) ,@body ,g))))
 
+;; prog — block nil + let + tagbody
+(defmacro prog (bindings &body body)
+  `(block nil (let ,bindings (tagbody ,@body))))
+(defmacro prog* (bindings &body body)
+  `(block nil (let* ,bindings (tagbody ,@body))))
+
+;; constantp — returns T for self-evaluating forms and (quote ...) forms
+(defun constantp (form &optional environment)
+  (declare (ignore environment))
+  (cond ((null form) t)              ; NIL
+        ((eq form t) t)              ; T
+        ((keywordp form) t)          ; keywords
+        ((symbolp form) nil)         ; non-keyword symbols are variables
+        ((consp form)                ; (quote ...) is constant
+         (eq (car form) 'quote))
+        (t t)))                      ; numbers, chars, strings, etc.
+
 ;; setf modify macros
 (defmacro push (item place) `(setf ,place (cons ,item ,place)))
 (defmacro pop (place) (let ((g (gensym))) `(let ((,g (car ,place))) (setf ,place (cdr ,place)) ,g)))
 (defmacro incf (place &optional (delta 1)) `(setf ,place (+ ,place ,delta)))
 (defmacro decf (place &optional (delta 1)) `(setf ,place (- ,place ,delta)))
 (defsetf elt %setf-elt)
+(defsetf readtable-case %setf-readtable-case)
 
 ;; rotatef — rotate values among places
 (defmacro rotatef (&rest places)
@@ -93,6 +111,14 @@
 (defun compiler-macro-function (name &optional env)
   (declare (ignore name env))
   nil)
+
+;; define-symbol-macro — stores expansion but current compiler doesn't expand;
+;; serves as stub so code using it compiles without error.
+(defmacro define-symbol-macro (symbol expansion)
+  `(eval-when (:compile-toplevel :load-toplevel :execute)
+     ;; Store so we can at least query it; actual expansion not yet supported
+     (setf (get ',symbol '%symbol-macro-expansion) ',expansion)
+     ',symbol))
 
 ;; Setf expanders (stub — CL-Amiga uses defsetf for setf places)
 (defmacro define-setf-expander (access-fn lambda-list &body body)
@@ -329,7 +355,7 @@
         (:shadow (setq shadows (append shadows (cdr opt))))
         (:shadowing-import-from (setq shadowing-import-froms (cons (cdr opt) shadowing-import-froms)))
         (:intern (setq interns (append interns (cdr opt))))))
-    `(progn
+    `(eval-when (:compile-toplevel :load-toplevel :execute)
        (let ((pkg (or (find-package ,pkg-name)
                       (make-package ,pkg-name :nicknames ',nicknames))))
          ,@(when shadows
@@ -416,6 +442,7 @@
          ;; Parse options
          (conc-name-opt nil) (conc-name-set nil)
          (constructor-opt nil) (constructor-set nil)
+         (boa-lambda-list nil)
          (predicate-opt nil) (predicate-set nil)
          (copier-opt nil) (copier-set nil)
          (include-name nil) (include-slots nil))
@@ -430,7 +457,9 @@
          (setq conc-name-opt nil))
         ((and (consp opt) (eq (car opt) :constructor))
          (setq constructor-set t)
-         (setq constructor-opt (cadr opt)))
+         (setq constructor-opt (cadr opt))
+         (when (cddr opt)
+           (setq boa-lambda-list (caddr opt))))
         ((eq opt :constructor)
          (setq constructor-set t)
          (setq constructor-opt nil))
@@ -454,6 +483,9 @@
         (dolist (spec parent-specs)
           (push spec include-slots))
         (setq include-slots (reverse include-slots))))
+    ;; Skip docstring if first element is a string
+    (when (and slot-specs (stringp (car slot-specs)))
+      (pop slot-specs))
     ;; Build full slot list: inherited + own
     (let* ((own-parsed (mapcar #'%defstruct-parse-slot slot-specs))
            (all-slots (append include-slots own-parsed))
@@ -487,12 +519,34 @@
             forms)
       ;; Constructor
       (when ctor-name
-        (let ((key-params (mapcar (lambda (s)
-                                    (list (car s) (cadr s)))
-                                  all-slots)))
-          (push `(defun ,ctor-name (&key ,@key-params)
-                   (%make-struct ',name ,@(mapcar #'car all-slots)))
-                forms)))
+        (if boa-lambda-list
+            ;; BOA constructor: positional args mapped to slots by name
+            (let ((slot-inits (mapcar (lambda (s)
+                                        ;; For each slot, use the BOA param if named,
+                                        ;; otherwise use the slot default
+                                        (let* ((sname (car s))
+                                               (sdefault (cadr s)))
+                                          ;; Check if slot name appears in BOA params
+                                          (if (member sname boa-lambda-list
+                                                      :test (lambda (name p)
+                                                              (cond ((symbolp p)
+                                                                     (and (not (member p '(&optional &key &rest &aux)))
+                                                                          (eq name p)))
+                                                                    ((consp p) (eq name (car p)))
+                                                                    (t nil))))
+                                              sname
+                                              sdefault)))
+                                      all-slots)))
+              (push `(defun ,ctor-name ,boa-lambda-list
+                       (%make-struct ',name ,@slot-inits))
+                    forms))
+            ;; Standard keyword constructor
+            (let ((key-params (mapcar (lambda (s)
+                                        (list (car s) (cadr s)))
+                                      all-slots)))
+              (push `(defun ,ctor-name (&key ,@key-params)
+                       (%make-struct ',name ,@(mapcar #'car all-slots)))
+                    forms))))
       ;; Predicate
       (when pred-name
         (push `(defun ,pred-name (obj) (typep obj ',name))
