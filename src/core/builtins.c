@@ -261,6 +261,13 @@ static CL_Obj bi_stringp(CL_Obj *args, int n)
     return CL_STRING_P(args[0]) ? SYM_T : CL_NIL;
 }
 
+static CL_Obj bi_simple_string_p(CL_Obj *args, int n)
+{
+    CL_UNUSED(n);
+    /* All CL-Amiga strings are simple (no fill-pointer/displaced) */
+    return CL_STRING_P(args[0]) ? SYM_T : CL_NIL;
+}
+
 static CL_Obj bi_functionp(CL_Obj *args, int n)
 {
     CL_UNUSED(n);
@@ -725,6 +732,7 @@ void cl_builtins_init(void)
     defun("LISTP", bi_listp, 1, 1);
     defun("SYMBOLP", bi_symbolp, 1, 1);
     defun("STRINGP", bi_stringp, 1, 1);
+    defun("SIMPLE-STRING-P", bi_simple_string_p, 1, 1);
     defun("FUNCTIONP", bi_functionp, 1, 1);
     defun("EQ", bi_eq, 2, 2);
     defun("EQL", bi_eql, 2, 2);

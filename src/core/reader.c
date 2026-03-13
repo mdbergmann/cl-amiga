@@ -898,6 +898,30 @@ static CL_Obj read_expr(void)
                 return cl_parse_namestring(s->data, s->length);
             }
         }
+        if (ch == 'c' || ch == 'C') {
+            /* #C(real imag) => cons pair (complex numbers not natively supported) */
+            CL_Obj parts;
+            if (read_suppress) {
+                skip_whitespace();
+                ch = read_char();
+                if (ch == '(') { read_list(); }
+                return CL_NIL;
+            }
+            skip_whitespace();
+            ch = read_char();
+            if (ch != '(') {
+                cl_error(CL_ERR_PARSE, "#C must be followed by (real imag)");
+                return CL_NIL;
+            }
+            parts = read_list();
+            /* Return as cons pair (real . imag) */
+            if (CL_CONS_P(parts) && CL_CONS_P(cl_cdr(parts)) &&
+                CL_NULL_P(cl_cdr(cl_cdr(parts)))) {
+                return cl_cons(cl_car(parts), cl_car(cl_cdr(parts)));
+            }
+            cl_error(CL_ERR_PARSE, "#C requires exactly two elements: (real imag)");
+            return CL_NIL;
+        }
         if (ch == '(') {
             /* #(e1 e2 ...) => simple vector */
             CL_Obj elems = CL_NIL;

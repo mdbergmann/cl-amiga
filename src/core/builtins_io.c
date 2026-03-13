@@ -896,7 +896,6 @@ static CL_Obj bi_compile_file(CL_Obj *args, int n)
     /* Default output: cache path, fallback to next-to-source */
     if (!make_fasl_cache_path(in_path, out_path, sizeof(out_path)))
         make_fasl_path(in_path, out_path, sizeof(out_path));
-
     /* Parse keyword args: :output-file, :verbose */
     for (i = 1; i + 1 < n; i += 2) {
         if (args[i] == cl_intern_keyword("OUTPUT-FILE", 11)) {
@@ -1115,7 +1114,7 @@ static CL_Obj bi_compile_file(CL_Obj *args, int n)
         if (fh == PLATFORM_FILE_INVALID) {
             platform_free(fasl_buf);
             platform_free(unit_buf);
-            cl_error(CL_ERR_GENERAL, "COMPILE-FILE: cannot create output file");
+            cl_error(CL_ERR_GENERAL, "COMPILE-FILE: cannot create output file: %s", out_path);
             return CL_NIL;
         }
         platform_file_write_buf(fh, (const char *)fasl_buf, w.pos);

@@ -516,6 +516,16 @@ static CL_Obj bi_hash_table_pairs(CL_Obj *args, int n)
     return result;
 }
 
+/* --- sxhash --- */
+
+static CL_Obj bi_sxhash(CL_Obj *args, int n)
+{
+    (void)n;
+    uint32_t h = hash_obj(args[0], CL_HT_TEST_EQUAL);
+    /* Return as non-negative fixnum (mask to 30 bits) */
+    return CL_MAKE_FIXNUM((int32_t)(h & 0x3FFFFFFFu));
+}
+
 /* --- Registration --- */
 
 void cl_builtins_hashtable_init(void)
@@ -537,4 +547,5 @@ void cl_builtins_hashtable_init(void)
     defun("HASH-TABLE-P", bi_hash_table_p, 1, 1);
     cl_register_builtin("%SETF-GETHASH", bi_setf_gethash, 3, 3, cl_package_clamiga);
     cl_register_builtin("%HASH-TABLE-PAIRS", bi_hash_table_pairs, 1, 1, cl_package_clamiga);
+    defun("SXHASH", bi_sxhash, 1, 1);
 }

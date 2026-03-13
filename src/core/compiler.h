@@ -9,7 +9,7 @@
  */
 
 #define CL_MAX_CODE_SIZE   16384
-#define CL_MAX_CONSTANTS   512
+#define CL_MAX_CONSTANTS   2048
 
 /* Compile a top-level expression, returns a CL_Bytecode object */
 CL_Obj cl_compile(CL_Obj expr);
