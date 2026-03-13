@@ -104,6 +104,7 @@ enum CL_Opcode {
 
     OP_DEFSETF      = 0xA6, /* u16 accessor_idx, u16 updater_idx: register setf mapping */
     OP_DEFVAR       = 0xA7, /* u16 sym_idx: pop value; if sym unbound, store value; mark special */
+    OP_MV_RESET     = 0xA8, /* Reset multiple-value count to 1 (no operands) */
 
     OP_HALT      = 0xFF   /* Stop VM */
 };

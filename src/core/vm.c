@@ -2174,6 +2174,10 @@ static CL_Obj cl_vm_run(int base_fp, int base_nlx)
             break;
         }
 
+        case OP_MV_RESET:
+            cl_mv_count = 1;
+            break;
+
         case OP_RPLACA: {
             CL_Obj new_car = cl_vm_pop();
             CL_Obj cons_obj = cl_vm_pop();

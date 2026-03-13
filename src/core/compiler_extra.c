@@ -42,6 +42,7 @@ void compile_and(CL_Compiler *c, CL_Obj form)
             cl_emit(c, OP_DUP);
             nil_patches[n_patches++] = cl_emit_jump(c, OP_JNIL);
             cl_emit(c, OP_POP);
+            cl_emit(c, OP_MV_RESET);
         }
         args = cl_cdr(args);
     }
@@ -85,6 +86,7 @@ void compile_or(CL_Compiler *c, CL_Obj form)
             cl_emit(c, OP_DUP);
             true_patches[n_patches++] = cl_emit_jump(c, OP_JTRUE);
             cl_emit(c, OP_POP);
+            cl_emit(c, OP_MV_RESET);
         }
         args = cl_cdr(args);
     }

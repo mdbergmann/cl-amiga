@@ -1,4 +1,4 @@
-; Load and test fiveam on Amiga
+; Install quicklisp to S:quicklisp/
 cd CLAmiga:
-stack 800000
-build/amiga/clamiga --heap 48M --batch --load trunk/load-and-test-5am.lisp >build/amiga/test-results.log
+stack 400000
+build/amiga/clamiga --heap 48M --non-interactive --load tests/amiga/install-quicklisp.lisp >build/amiga/test-results.log

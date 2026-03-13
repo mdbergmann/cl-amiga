@@ -1431,6 +1431,7 @@ static DisasmInfo disasm_opcode_info(uint8_t op)
     case OP_RPLACA:     info.name = "RPLACA";     break;
     case OP_RPLACD:     info.name = "RPLACD";     break;
     case OP_ASET:       info.name = "ASET";       break;
+    case OP_MV_RESET:   info.name = "MV_RESET";   break;
     case OP_HALT:       info.name = "HALT";       break;
     default: break;
     }

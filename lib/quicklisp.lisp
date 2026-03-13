@@ -1505,11 +1505,18 @@ the indexes in the header accordingly."
     (t :unsupported)))
 
 (defun full-path (header)
-  (let ((prefix (prefix header))
-        (name (name header)))
-    (if prefix
-        (format nil "~A/~A" prefix name)
-        name)))
+  (let* ((prefix (prefix header))
+         (name (name header))
+         (path (if prefix
+                     (format nil "~A/~A" prefix name)
+                     name)))
+    ;; Strip leading "./" — AmigaOS has no "." directory concept
+    #+amigaos
+    (when (and (>= (length path) 2)
+               (char= (char path 0) #\.)
+               (char= (char path 1) #\/))
+      (setf path (subseq path 2)))
+    path))
 
 (defun save-file (file size stream)
   (multiple-value-bind (full-blocks partial)
@@ -1701,6 +1708,10 @@ the indexes in the header accordingly."
         (setup (qmerge "setup.lisp"))
         (asdf (qmerge "asdf.lisp")))
     (renaming-fetch (client-tar-url client-info) tmptar)
+    ;; "./" is a no-op on Unix but creates a literal "." directory on AmigaOS
+    #+amigaos
+    (unpack-tarball tmptar :directory *home*)
+    #-amigaos
     (unpack-tarball tmptar :directory (qmerge "./"))
     (renaming-fetch (setup-url client-info) setup)
     (renaming-fetch (asdf-url client-info) asdf)
