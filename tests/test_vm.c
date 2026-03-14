@@ -1205,6 +1205,44 @@ TEST(eval_throw_unmatched)
     ASSERT_STR_EQ(eval_print("(catch 'a (throw 'b 1))"), "ERROR:1");
 }
 
+TEST(eval_catch_throw_deep_chain)
+{
+    /* Regression: throw across deep call chain — exercises NLX frame sync
+     * when longjmp restores frame state after potential tail calls in callees */
+    eval_print("(defun nlx-deep-a (f) (funcall f))");
+    eval_print("(defun nlx-deep-b (f) (nlx-deep-a f))");
+    eval_print("(defun nlx-deep-c (f) (nlx-deep-b f))");
+    ASSERT_EQ_INT(eval_int(
+        "(catch 'deep-tag (nlx-deep-c (lambda () (throw 'deep-tag 77))))"), 77);
+    /* Verify computation continues correctly after catch restores frame */
+    ASSERT_EQ_INT(eval_int(
+        "(+ 1 (catch 'deep-tag (nlx-deep-c (lambda () (throw 'deep-tag 77)))))"), 78);
+}
+
+TEST(eval_block_return_deep_chain)
+{
+    /* Regression: return-from across deep call chain */
+    eval_print("(defun blk-caller (f) (funcall f))");
+    ASSERT_EQ_INT(eval_int(
+        "(block done (blk-caller (lambda () (return-from done 99))) 0)"), 99);
+    /* Normal path still works */
+    ASSERT_EQ_INT(eval_int(
+        "(block done (blk-caller (lambda () 50)) 42)"), 42);
+}
+
+TEST(eval_uwp_throw_deep_cleanup)
+{
+    /* Regression: unwind-protect cleanup runs correctly after throw across deep calls */
+    ASSERT_STR_EQ(eval_print(
+        "(let ((log nil))"
+        "  (catch 'x"
+        "    (unwind-protect"
+        "      (nlx-deep-c (lambda () (throw 'x 1)))"
+        "      (setq log 'cleaned)))"
+        "  log)"),
+        "CLEANED");
+}
+
 /* --- Phase 4 Tier 2: unwind-protect --- */
 
 TEST(eval_uwp_normal)
@@ -6224,6 +6262,9 @@ int main(void)
     RUN(eval_catch_nested_outer);
     RUN(eval_catch_no_value);
     RUN(eval_throw_unmatched);
+    RUN(eval_catch_throw_deep_chain);
+    RUN(eval_block_return_deep_chain);
+    RUN(eval_uwp_throw_deep_cleanup);
     RUN(eval_uwp_normal);
     RUN(eval_uwp_throw_cleanup);
     RUN(eval_uwp_throw_value);

@@ -1236,6 +1236,36 @@ static CL_Obj cl_vm_run(int base_fp, int base_nlx)
             constants = frame->constants;
             ip = frame->ip;
 
+            /* Safety check: validate restored ip is within bytecode bounds */
+            if (code && !CL_NULL_P(frame->bytecode)) {
+                CL_Bytecode *ret_bc = NULL;
+                if (CL_CLOSURE_P(frame->bytecode)) {
+                    CL_Closure *cc = (CL_Closure *)CL_OBJ_TO_PTR(frame->bytecode);
+                    ret_bc = (CL_Bytecode *)CL_OBJ_TO_PTR(cc->bytecode);
+                } else if (CL_BYTECODE_P(frame->bytecode)) {
+                    ret_bc = (CL_Bytecode *)CL_OBJ_TO_PTR(frame->bytecode);
+                }
+                if (ret_bc && ip > ret_bc->code_len) {
+                    fprintf(stderr, "[VM] BUG: OP_RET restored ip=%u but code_len=%u\n",
+                            ip, ret_bc->code_len);
+                    fprintf(stderr, "[VM]   frame fp=%d bytecode=0x%08x code=%p bc->code=%p\n",
+                            cl_vm.fp, (unsigned)frame->bytecode,
+                            (void *)code, (void *)ret_bc->code);
+                    if (code != ret_bc->code)
+                        fprintf(stderr, "[VM]   *** frame->code DIFFERS from bytecode->code! ***\n");
+                    if (CL_SYMBOL_P(ret_bc->name))
+                        fprintf(stderr, "[VM]   name: %s src=%s:%u\n",
+                                cl_symbol_name(ret_bc->name),
+                                ret_bc->source_file ? ret_bc->source_file : "?",
+                                ret_bc->source_line);
+                    vm_trace_dump();
+                    cl_capture_backtrace();
+                    fprintf(stderr, "%s", cl_backtrace_buf);
+                    cl_error(CL_ERR_GENERAL, "OP_RET: restored ip=%u exceeds code_len=%u",
+                             ip, ret_bc->code_len);
+                }
+            }
+
             /* Safety check: if code is non-null and next instruction uses constants, constants must be valid */
             if (code && !constants) {
                 uint8_t next_op = code[ip];
@@ -1439,6 +1469,7 @@ static CL_Obj cl_vm_run(int base_fp, int base_nlx)
             nlx->offset = block_offset;
             nlx->code = code;
             nlx->constants = constants;
+            nlx->bytecode = frame->bytecode;
             nlx->base_fp = base_fp;
             nlx->dyn_mark = cl_dyn_top;
             nlx->handler_mark = cl_handler_top;
@@ -1462,6 +1493,12 @@ static CL_Obj cl_vm_run(int base_fp, int base_nlx)
                     constants = nlx->constants;
                     base_fp = nlx->base_fp;
                     ip = nlx->catch_ip + nlx->offset;
+                    /* Sync frame with NLX-restored state — a tail call
+                     * between BLOCK_PUSH and longjmp may have changed
+                     * frame->code/constants/bytecode to the tail target */
+                    frame->code = code;
+                    frame->constants = constants;
+                    frame->bytecode = nlx->bytecode;
                     cl_mv_count = 1;
                     cl_vm_push(block_result);
                 }
@@ -1540,6 +1577,7 @@ static CL_Obj cl_vm_run(int base_fp, int base_nlx)
             nlx->offset = tb_offset;
             nlx->code = code;
             nlx->constants = constants;
+            nlx->bytecode = frame->bytecode;
             nlx->base_fp = base_fp;
             nlx->dyn_mark = cl_dyn_top;
             nlx->handler_mark = cl_handler_top;
@@ -1563,6 +1601,10 @@ static CL_Obj cl_vm_run(int base_fp, int base_nlx)
                     constants = nlx->constants;
                     base_fp = nlx->base_fp;
                     ip = nlx->catch_ip + nlx->offset;
+                    /* Sync frame with NLX-restored state */
+                    frame->code = code;
+                    frame->constants = constants;
+                    frame->bytecode = nlx->bytecode;
                     cl_mv_count = 1;
                     /* Re-arm: keep NLX frame active for repeated GO */
                     cl_nlx_top++;
@@ -1869,6 +1911,7 @@ static CL_Obj cl_vm_run(int base_fp, int base_nlx)
             nlx->offset = catch_offset;
             nlx->code = code;
             nlx->constants = constants;
+            nlx->bytecode = frame->bytecode;
             nlx->base_fp = base_fp;
             nlx->dyn_mark = cl_dyn_top;
             nlx->handler_mark = cl_handler_top;
@@ -1894,6 +1937,10 @@ static CL_Obj cl_vm_run(int base_fp, int base_nlx)
                     constants = nlx->constants;
                     base_fp = nlx->base_fp;
                     ip = nlx->catch_ip + nlx->offset;
+                    /* Sync frame with NLX-restored state */
+                    frame->code = code;
+                    frame->constants = constants;
+                    frame->bytecode = nlx->bytecode;
                     cl_mv_count = 1;  /* throw delivers single value */
                     cl_vm_push(throw_result);
                 }
@@ -1936,6 +1983,7 @@ static CL_Obj cl_vm_run(int base_fp, int base_nlx)
             nlx->offset = uwp_offset;
             nlx->code = code;
             nlx->constants = constants;
+            nlx->bytecode = frame->bytecode;
             nlx->base_fp = base_fp;
             nlx->dyn_mark = cl_dyn_top;
             nlx->handler_mark = cl_handler_top;
@@ -1972,6 +2020,10 @@ static CL_Obj cl_vm_run(int base_fp, int base_nlx)
                 constants = nlx->constants;
                 base_fp = nlx->base_fp;
                 ip = nlx->catch_ip + nlx->offset;
+                /* Sync frame with NLX-restored state */
+                frame->code = code;
+                frame->constants = constants;
+                frame->bytecode = nlx->bytecode;
 
 #ifdef CL_DEBUG_UWP
                 /* Detect slot corruption after UWP longjmp */
@@ -2301,6 +2353,7 @@ static CL_Obj cl_vm_run(int base_fp, int base_nlx)
                     fprintf(stderr, "\n");
                 }
             }
+            vm_trace_dump();
             cl_error(CL_ERR_GENERAL, "Unknown opcode: 0x%02x at ip=%u",
                      op, ip - 1);
             return CL_NIL;

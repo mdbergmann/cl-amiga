@@ -707,10 +707,11 @@ static void gc_mark(void)
         gc_mark_obj(cl_dyn_stack[i].old_value);
     }
 
-    /* Mark NLX stack (catch tags and results) */
+    /* Mark NLX stack (catch tags, results, and saved bytecodes) */
     for (i = 0; i < cl_nlx_top; i++) {
         gc_mark_obj(cl_nlx_stack[i].tag);
         gc_mark_obj(cl_nlx_stack[i].result);
+        gc_mark_obj(cl_nlx_stack[i].bytecode);
     }
 
     /* Mark handler stack */

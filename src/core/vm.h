@@ -67,6 +67,7 @@ typedef struct {
     int16_t offset;        /* jump offset to landing */
     uint8_t *code;         /* code pointer to restore */
     CL_Obj *constants;     /* constants pointer to restore */
+    CL_Obj bytecode;       /* frame->bytecode at NLX push time */
     int base_fp;           /* base_fp of the cl_vm_eval call */
     int dyn_mark;          /* binding stack depth at frame creation */
     int handler_mark;      /* handler stack depth at frame creation */
