@@ -176,9 +176,9 @@ CL_Obj cl_vm_apply(CL_Obj func, CL_Obj *args, int nargs)
 
     /* Bytecode / closure: push func+args on VM stack, set up a tiny
      * stub frame with OP_CALL+OP_HALT, and run the dispatch loop.
-     * No heap allocation — the stub code is a 3-byte stack local. */
+     * The stub code lives in frame->stub_code (heap-allocated with the
+     * frame array) so it survives longjmp past this C frame. */
     {
-        uint8_t stub_code[3]; /* OP_CALL, nargs, OP_HALT */
         CL_Frame *frame;
         int base_fp, base_nlx;
         CL_Obj result;
@@ -196,14 +196,13 @@ CL_Obj cl_vm_apply(CL_Obj func, CL_Obj *args, int nargs)
         if (cl_vm.fp >= cl_vm.frame_size)
             cl_error(CL_ERR_OVERFLOW, "VM frame stack overflow");
 
-        /* Build stub code: OP_CALL nargs OP_HALT */
-        stub_code[0] = OP_CALL;
-        stub_code[1] = (uint8_t)nargs;
-        stub_code[2] = OP_HALT;
-
         frame = &cl_vm.frames[cl_vm.fp++];
+        /* Build stub code in the frame itself (not on C stack) */
+        frame->stub_code[0] = OP_CALL;
+        frame->stub_code[1] = (uint8_t)nargs;
+        frame->stub_code[2] = OP_HALT;
         frame->bytecode = CL_NIL;
-        frame->code = stub_code;
+        frame->code = frame->stub_code;
         frame->constants = NULL;
         frame->ip = 0;
         frame->bp = cl_vm.sp;  /* bp before func+args */
@@ -539,6 +538,42 @@ static CL_Obj cl_vm_run(int base_fp, int base_nlx)
         }
 
         op = code[ip++];
+
+        /* Trap opcode 0 explicitly — prevents jump-table jump to NULL */
+        if (__builtin_expect(op == 0x00, 0)) {
+            const char *fn = "?";
+            CL_Bytecode *fbc = NULL;
+            if (CL_CLOSURE_P(frame->bytecode)) {
+                CL_Closure *cc = (CL_Closure *)CL_OBJ_TO_PTR(frame->bytecode);
+                if (CL_BYTECODE_P(cc->bytecode))
+                    fbc = (CL_Bytecode *)CL_OBJ_TO_PTR(cc->bytecode);
+            } else if (CL_BYTECODE_P(frame->bytecode)) {
+                fbc = (CL_Bytecode *)CL_OBJ_TO_PTR(frame->bytecode);
+            }
+            if (fbc && fbc->name != CL_NIL && CL_SYMBOL_P(fbc->name))
+                fn = cl_symbol_name(fbc->name);
+            fprintf(stderr, "[VM] ZERO opcode at ip=%u fn=%s code=%p code_len=%u fp=%d sp=%d\n",
+                    ip - 1, fn, (void *)code, fbc ? fbc->code_len : 0, cl_vm.fp, cl_vm.sp);
+            if (fbc) {
+                uint32_t j;
+                fprintf(stderr, "[VM]   code bytes: ");
+                for (j = 0; j < fbc->code_len && j < 32; j++)
+                    fprintf(stderr, "%02x ", code[j]);
+                fprintf(stderr, "\n");
+                fprintf(stderr, "[VM]   bc->code bytes: ");
+                for (j = 0; j < fbc->code_len && j < 32; j++)
+                    fprintf(stderr, "%02x ", fbc->code[j]);
+                fprintf(stderr, "\n");
+                if (code != fbc->code)
+                    fprintf(stderr, "[VM]   *** code ptrs DIFFER: frame->code=%p bc->code=%p ***\n",
+                            (void *)code, (void *)fbc->code);
+            }
+            fflush(stderr);
+            cl_capture_backtrace();
+            fprintf(stderr, "%s", cl_backtrace_buf);
+            vm_trace_dump();
+            abort();
+        }
 
         /* Debug: check watchpoint before instruction dispatch */
 #ifdef CL_DEBUG_UWP
@@ -1474,6 +1509,8 @@ static CL_Obj cl_vm_run(int base_fp, int base_nlx)
             nlx->dyn_mark = cl_dyn_top;
             nlx->handler_mark = cl_handler_top;
             nlx->restart_mark = cl_restart_top;
+            nlx->gc_root_mark = gc_root_count;
+            nlx->compiler_mark = cl_compiler_mark();
 
             if (setjmp(nlx->buf) == 0) {
                 /* Normal path: block body executes */
@@ -1484,6 +1521,8 @@ static CL_Obj cl_vm_run(int base_fp, int base_nlx)
                 cl_dynbind_restore_to(nlx->dyn_mark);
                 cl_handler_top = nlx->handler_mark;
                 cl_restart_top = nlx->restart_mark;
+                gc_root_count = nlx->gc_root_mark;
+                cl_compiler_restore_to(nlx->compiler_mark);
                 {
                     CL_Obj block_result = nlx->result;
                     cl_vm.sp = nlx->vm_sp;
@@ -1582,6 +1621,8 @@ static CL_Obj cl_vm_run(int base_fp, int base_nlx)
             nlx->dyn_mark = cl_dyn_top;
             nlx->handler_mark = cl_handler_top;
             nlx->restart_mark = cl_restart_top;
+            nlx->gc_root_mark = gc_root_count;
+            nlx->compiler_mark = cl_compiler_mark();
 
             if (setjmp(nlx->buf) == 0) {
                 /* Normal path: tagbody body executes */
@@ -1592,6 +1633,8 @@ static CL_Obj cl_vm_run(int base_fp, int base_nlx)
                 cl_dynbind_restore_to(nlx->dyn_mark);
                 cl_handler_top = nlx->handler_mark;
                 cl_restart_top = nlx->restart_mark;
+                gc_root_count = nlx->gc_root_mark;
+                cl_compiler_restore_to(nlx->compiler_mark);
                 {
                     CL_Obj tag_index = nlx->result;
                     cl_vm.sp = nlx->vm_sp;
@@ -1752,6 +1795,47 @@ static CL_Obj cl_vm_run(int base_fp, int base_nlx)
                     cl_trace_depth--;
                     trace_print_exit(f->name, result);
                 }
+#ifdef DEBUG_COMPILER
+                /* Validate code pointer after builtin returns */
+                if (!code) {
+                    fprintf(stderr, "[VM] BUG: OP_APPLY builtin returned but code=NULL! fn=%s ip=%u fp=%d\n",
+                            CL_SYMBOL_P(f->name) ? cl_symbol_name(f->name) : "?",
+                            ip, cl_vm.fp);
+                    fflush(stderr);
+                } else {
+                    /* Check if next opcode is valid */
+                    uint8_t next_op = code[ip];
+                    if (next_op == 0x00) {
+                        CL_Bytecode *fbc = NULL;
+                        if (CL_CLOSURE_P(frame->bytecode)) {
+                            CL_Closure *cc = (CL_Closure *)CL_OBJ_TO_PTR(frame->bytecode);
+                            fbc = (CL_Bytecode *)CL_OBJ_TO_PTR(cc->bytecode);
+                        } else if (CL_BYTECODE_P(frame->bytecode)) {
+                            fbc = (CL_Bytecode *)CL_OBJ_TO_PTR(frame->bytecode);
+                        }
+                        fprintf(stderr, "[VM] BUG: OP_APPLY builtin returned, next op=0x00 at code[%u]! "
+                                "builtin=%s caller=%s code=%p frame->code=%p code_len=%u fp=%d\n",
+                                ip,
+                                CL_SYMBOL_P(f->name) ? cl_symbol_name(f->name) : "?",
+                                (fbc && CL_SYMBOL_P(fbc->name)) ? cl_symbol_name(fbc->name) : "<anon>",
+                                (void *)code, (void *)frame->code,
+                                fbc ? fbc->code_len : 0, cl_vm.fp);
+                        /* Dump bytecodes */
+                        if (fbc) {
+                            uint32_t j;
+                            fprintf(stderr, "[VM]   bytecodes: ");
+                            for (j = 0; j < fbc->code_len && j < 32; j++)
+                                fprintf(stderr, "%02x ", fbc->code[j]);
+                            fprintf(stderr, "\n");
+                            fprintf(stderr, "[VM]   code ptr: ");
+                            for (j = 0; j < fbc->code_len && j < 32; j++)
+                                fprintf(stderr, "%02x ", code[j]);
+                            fprintf(stderr, "\n");
+                        }
+                        fflush(stderr);
+                    }
+                }
+#endif
                 cl_vm_push(result);
             } else if (CL_BYTECODE_P(apply_func) || CL_CLOSURE_P(apply_func)) {
                 /* Push func + flattened args onto VM stack and dispatch
@@ -1772,9 +1856,29 @@ static CL_Obj cl_vm_run(int base_fp, int base_nlx)
 
                     if (CL_CLOSURE_P(call_func)) {
                         CL_Closure *cl = (CL_Closure *)CL_OBJ_TO_PTR(call_func);
+                        if (!CL_BYTECODE_P(cl->bytecode)) {
+                            fprintf(stderr, "[VM] CORRUPT: APPLY closure 0x%x bytecode field 0x%x type=%u\n",
+                                    (unsigned)call_func, (unsigned)cl->bytecode,
+                                    CL_HEAP_P(cl->bytecode) ?
+                                    (unsigned)CL_HDR_TYPE(CL_OBJ_TO_PTR(cl->bytecode)) : 999);
+                            cl_capture_backtrace();
+                            fprintf(stderr, "%s", cl_backtrace_buf);
+                            cl_error(CL_ERR_TYPE, "APPLY: corrupted closure (bytecode type %u)",
+                                     CL_HEAP_P(cl->bytecode) ?
+                                     (unsigned)CL_HDR_TYPE(CL_OBJ_TO_PTR(cl->bytecode)) : 999);
+                        }
                         callee_bc = (CL_Bytecode *)CL_OBJ_TO_PTR(cl->bytecode);
                     } else {
                         callee_bc = (CL_Bytecode *)CL_OBJ_TO_PTR(call_func);
+                    }
+
+                    /* Validate bytecode has valid code pointer */
+                    if (!callee_bc->code || callee_bc->code_len == 0) {
+                        CL_Obj fname = callee_bc->name;
+                        cl_error(CL_ERR_TYPE, "APPLY: bytecode %s has NULL/empty code (code=%p len=%u)",
+                                 (!CL_NULL_P(fname) && CL_SYMBOL_P(fname))
+                                     ? cl_symbol_name(fname) : "<anon>",
+                                 (void *)callee_bc->code, (unsigned)callee_bc->code_len);
                     }
 
                     callee_arity = callee_bc->arity & 0x7FFF;
@@ -1916,6 +2020,8 @@ static CL_Obj cl_vm_run(int base_fp, int base_nlx)
             nlx->dyn_mark = cl_dyn_top;
             nlx->handler_mark = cl_handler_top;
             nlx->restart_mark = cl_restart_top;
+            nlx->gc_root_mark = gc_root_count;
+            nlx->compiler_mark = cl_compiler_mark();
 
             if (setjmp(nlx->buf) == 0) {
                 /* Normal path: body executes */
@@ -1928,6 +2034,8 @@ static CL_Obj cl_vm_run(int base_fp, int base_nlx)
                 cl_dynbind_restore_to(nlx->dyn_mark);
                 cl_handler_top = nlx->handler_mark;
                 cl_restart_top = nlx->restart_mark;
+                gc_root_count = nlx->gc_root_mark;
+                cl_compiler_restore_to(nlx->compiler_mark);
                 {
                     CL_Obj throw_result = nlx->result;
                     cl_vm.sp = nlx->vm_sp;
@@ -1988,6 +2096,8 @@ static CL_Obj cl_vm_run(int base_fp, int base_nlx)
             nlx->dyn_mark = cl_dyn_top;
             nlx->handler_mark = cl_handler_top;
             nlx->restart_mark = cl_restart_top;
+            nlx->gc_root_mark = gc_root_count;
+            nlx->compiler_mark = cl_compiler_mark();
 
             if (setjmp(nlx->buf) == 0) {
                 /* Normal path: protected form executes */
@@ -2013,6 +2123,8 @@ static CL_Obj cl_vm_run(int base_fp, int base_nlx)
                 cl_dynbind_restore_to(nlx->dyn_mark);
                 cl_handler_top = nlx->handler_mark;
                 cl_restart_top = nlx->restart_mark;
+                gc_root_count = nlx->gc_root_mark;
+                cl_compiler_restore_to(nlx->compiler_mark);
                 cl_vm.sp = nlx->vm_sp;
                 cl_vm.fp = nlx->vm_fp;
                 frame = &cl_vm.frames[cl_vm.fp - 1];

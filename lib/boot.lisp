@@ -120,10 +120,49 @@
      (setf (get ',symbol '%symbol-macro-expansion) ',expansion)
      ',symbol))
 
-;; Setf expanders (stub — CL-Amiga uses defsetf for setf places)
+;; Setf expanders — define-setf-expander registers an expander function.
+;; The expander takes (place-form value-form) and returns a single form
+;; that the compiler compiles instead of the original setf.
+;; This is a simplified but functional implementation.
+
+;; Minimal get-setf-expansion for symbols (variables).
+;; Returns 5 values: temps, vals, stores, store-form, access-form.
+(defun get-setf-expansion (place &optional env)
+  (declare (ignore env))
+  (if (symbolp place)
+      (let ((store (gensym "NEW")))
+        (values nil nil (list store) (list 'setq place store) place))
+    ;; For function call places, return a basic expansion
+    (let ((temps (mapcar (lambda (x) (declare (ignore x)) (gensym "T"))
+                         (cdr place)))
+          (store (gensym "NEW")))
+      (values temps (cdr place) (list store)
+              (list* 'funcall (list 'function (list 'setf (car place)))
+                     store temps)
+              (cons (car place) temps)))))
+
 (defmacro define-setf-expander (access-fn lambda-list &body body)
-  (declare (ignore lambda-list body))
-  `',access-fn)
+  ;; Strip &environment from lambda-list, pass nil for it
+  (let ((env-pos (position-if (lambda (x) (and (symbolp x)
+                                                (string= (symbol-name x) "&ENVIRONMENT")))
+                              lambda-list))
+        (clean-ll lambda-list)
+        (env-var nil))
+    (when env-pos
+      (setq env-var (nth (1+ env-pos) lambda-list))
+      (setq clean-ll (append (subseq lambda-list 0 env-pos)
+                             (subseq lambda-list (+ env-pos 2)))))
+    `(clamiga::%register-setf-expander
+      ',access-fn
+      (lambda (place-form value-form)
+        (multiple-value-bind (temps vals stores store-form access-form)
+            (let (,@(when env-var (list (list env-var nil))))
+              (apply (lambda ,clean-ll ,@body) (cdr place-form)))
+          (declare (ignore access-form))
+          ;; Build: (let ((t1 v1) ... (store value-form)) store-form)
+          (let ((bindings (append (mapcar #'list temps vals)
+                                  (list (list (car stores) value-form)))))
+            (list 'let bindings store-form)))))))
 
 ;; List searching
 (defun member (item list &key (test #'eql))
@@ -445,7 +484,8 @@
          (boa-lambda-list nil)
          (predicate-opt nil) (predicate-set nil)
          (copier-opt nil) (copier-set nil)
-         (include-name nil) (include-slots nil))
+         (include-name nil) (include-slots nil)
+         (type-opt nil))
     ;; Process options
     (dolist (opt options)
       (cond
@@ -476,7 +516,9 @@
          (setq copier-set t)
          (setq copier-opt nil))
         ((and (consp opt) (eq (car opt) :include))
-         (setq include-name (cadr opt)))))
+         (setq include-name (cadr opt)))
+        ((and (consp opt) (eq (car opt) :type))
+         (setq type-opt (cadr opt)))))
     ;; Compute inherited slots from :include (with defaults)
     (when include-name
       (let ((parent-specs (%struct-slot-specs include-name)))
@@ -512,64 +554,115 @@
                         ((null copier-opt) nil)
                         (t copier-opt)))
            (forms nil))
-      ;; Register the struct type (store slot specs with defaults for :include)
-      (push `(%register-struct-type ',name ,n-slots
-               ,(if include-name `',include-name nil)
-               ',all-slots)
-            forms)
-      ;; Constructor
-      (when ctor-name
-        (if boa-lambda-list
-            ;; BOA constructor: positional args mapped to slots by name
-            (let ((slot-inits (mapcar (lambda (s)
-                                        ;; For each slot, use the BOA param if named,
-                                        ;; otherwise use the slot default
-                                        (let* ((sname (car s))
-                                               (sdefault (cadr s)))
-                                          ;; Check if slot name appears in BOA params
-                                          (if (member sname boa-lambda-list
-                                                      :test (lambda (name p)
-                                                              (cond ((symbolp p)
-                                                                     (and (not (member p '(&optional &key &rest &aux)))
-                                                                          (eq name p)))
-                                                                    ((consp p) (eq name (car p)))
-                                                                    (t nil))))
-                                              sname
-                                              sdefault)))
-                                      all-slots)))
-              (push `(defun ,ctor-name ,boa-lambda-list
-                       (%make-struct ',name ,@slot-inits))
-                    forms))
-            ;; Standard keyword constructor
-            (let ((key-params (mapcar (lambda (s)
-                                        (list (car s) (cadr s)))
-                                      all-slots)))
-              (push `(defun ,ctor-name (&key ,@key-params)
-                       (%make-struct ',name ,@(mapcar #'car all-slots)))
-                    forms))))
-      ;; Predicate
-      (when pred-name
-        (push `(defun ,pred-name (obj) (typep obj ',name))
-              forms))
-      ;; Copier
-      (when copy-name
-        (push `(defun ,copy-name (obj) (%copy-struct obj))
-              forms))
-      ;; Accessors and setf writers
-      (let ((idx 0))
-        (dolist (sname slot-names)
-          (let* ((acc-name (intern (concatenate 'string prefix (symbol-name sname))))
-                 (setter-name (intern (concatenate 'string "%SET-" (symbol-name acc-name)))))
-            (push `(defun ,acc-name (obj) (%struct-ref obj ,idx)) forms)
-            (push `(defun ,setter-name (obj val) (%struct-set obj ,idx val)) forms)
-            (push `(defsetf ,acc-name ,setter-name) forms))
-          (setq idx (+ idx 1))))
-      ;; Register struct as CLOS class if CLOS is loaded
-      (push `(when (fboundp '%make-bootstrap-class)
-               (%make-bootstrap-class ',name
-                 (list (find-class ',(or include-name 'structure-object)))))
-            forms)
-      `(progn ,@(reverse forms) ',name))))
+      (if (eq type-opt 'vector)
+          ;; --- (:type vector) mode: represent as simple-vector, not a real struct ---
+          (progn
+            ;; Constructor
+            (when ctor-name
+              (if boa-lambda-list
+                  (let ((slot-inits (mapcar (lambda (s)
+                                              (let* ((sname (car s))
+                                                     (sdefault (cadr s)))
+                                                (if (member sname boa-lambda-list
+                                                            :test (lambda (name p)
+                                                                    (cond ((symbolp p)
+                                                                           (and (not (member p '(&optional &key &rest &aux)))
+                                                                                (eq name p)))
+                                                                          ((consp p) (eq name (car p)))
+                                                                          (t nil))))
+                                                    sname
+                                                    sdefault)))
+                                            all-slots)))
+                    (push `(defun ,ctor-name ,boa-lambda-list
+                             (vector ,@slot-inits))
+                          forms))
+                  (let ((key-params (mapcar (lambda (s) (list (car s) (cadr s)))
+                                            all-slots)))
+                    (push `(defun ,ctor-name (&key ,@key-params)
+                             (vector ,@(mapcar #'car all-slots)))
+                          forms))))
+            ;; No predicate or copier for (:type vector) — no type discrimination
+            ;; Accessors use svref, setters use (setf (svref ...))
+            (let ((idx 0))
+              (dolist (sname slot-names)
+                (let* ((acc-name (intern (concatenate 'string prefix (symbol-name sname))))
+                       (setter-name (intern (concatenate 'string "%SET-" (symbol-name acc-name)))))
+                  (push `(defun ,acc-name (obj) (svref obj ,idx)) forms)
+                  (push `(defun ,setter-name (obj val) (setf (svref obj ,idx) val)) forms)
+                  (push `(defsetf ,acc-name ,setter-name) forms))
+                (setq idx (+ idx 1))))
+            `(progn ,@(reverse forms) ',name))
+        ;; --- Normal struct mode ---
+        (progn
+          ;; Register the struct type (store slot specs with defaults for :include)
+          (push `(%register-struct-type ',name ,n-slots
+                   ,(if include-name `',include-name nil)
+                   ',all-slots)
+                forms)
+          ;; Constructor
+          (when ctor-name
+            (if boa-lambda-list
+                ;; BOA constructor: positional args mapped to slots by name
+                (let ((slot-inits (mapcar (lambda (s)
+                                            ;; For each slot, use the BOA param if named,
+                                            ;; otherwise use the slot default
+                                            (let* ((sname (car s))
+                                                   (sdefault (cadr s)))
+                                              ;; Check if slot name appears in BOA params
+                                              (if (member sname boa-lambda-list
+                                                          :test (lambda (name p)
+                                                                  (cond ((symbolp p)
+                                                                         (and (not (member p '(&optional &key &rest &aux)))
+                                                                              (eq name p)))
+                                                                        ((consp p) (eq name (car p)))
+                                                                        (t nil))))
+                                                  sname
+                                                  sdefault)))
+                                          all-slots)))
+                  (push `(defun ,ctor-name ,boa-lambda-list
+                           (%make-struct ',name ,@slot-inits))
+                        forms))
+                ;; Standard keyword constructor
+                (let ((key-params (mapcar (lambda (s)
+                                            (list (car s) (cadr s)))
+                                          all-slots)))
+                  (push `(defun ,ctor-name (&key ,@key-params)
+                           (%make-struct ',name ,@(mapcar #'car all-slots)))
+                        forms))))
+          ;; Predicate
+          (when pred-name
+            (push `(defun ,pred-name (obj) (typep obj ',name))
+                  forms))
+          ;; Copier
+          (when copy-name
+            (push `(defun ,copy-name (obj) (%copy-struct obj))
+                  forms))
+          ;; Accessors and setf writers
+          (let ((idx 0))
+            (dolist (sname slot-names)
+              (let* ((acc-name (intern (concatenate 'string prefix (symbol-name sname))))
+                     (setter-name (intern (concatenate 'string "%SET-" (symbol-name acc-name)))))
+                (push `(defun ,acc-name (obj) (%struct-ref obj ,idx)) forms)
+                (push `(defun ,setter-name (obj val) (%struct-set obj ,idx val)) forms)
+                (push `(defsetf ,acc-name ,setter-name) forms))
+              (setq idx (+ idx 1))))
+          ;; Register struct as CLOS class if CLOS is loaded
+          (push `(when (fboundp '%make-bootstrap-class)
+                   (%make-bootstrap-class ',name
+                     (list (find-class ',(or include-name 'structure-object)))))
+                forms)
+          `(progn ,@(reverse forms) ',name))))))
+
+;; CL bitwise functions not in C builtins
+(defun logandc1 (integer-1 integer-2) (logand (lognot integer-1) integer-2))
+(defun logandc2 (integer-1 integer-2) (logand integer-1 (lognot integer-2)))
+(defun logorc1  (integer-1 integer-2) (logior (lognot integer-1) integer-2))
+(defun logorc2  (integer-1 integer-2) (logior integer-1 (lognot integer-2)))
+(defun lognand  (integer-1 integer-2) (lognot (logand integer-1 integer-2)))
+(defun lognor   (integer-1 integer-2) (lognot (logior integer-1 integer-2)))
+(defun logeqv   (&rest integers)
+  (if (null integers) -1
+    (reduce (lambda (a b) (lognot (logxor a b))) integers)))
 
 ;; psetq — parallel setq: evaluate all values, then assign
 (defmacro psetq (&rest pairs)

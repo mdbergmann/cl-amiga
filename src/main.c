@@ -35,6 +35,16 @@ static void crash_handler(int sig, siginfo_t *info, void *ctx)
     char buf[512];
     int len;
     (void)ctx;
+    /* Canary: first thing in handler, before any pointer dereference */
+    {
+        const char canary[] = "\n[CRASH] handler entered, sig=";
+        char sigbuf[8];
+        (void)write(2, canary, sizeof(canary) - 1);
+        sigbuf[0] = '0' + (sig / 10);
+        sigbuf[1] = '0' + (sig % 10);
+        sigbuf[2] = '\n';
+        (void)write(2, sigbuf, 3);
+    }
     len = snprintf(buf, sizeof(buf),
                    "\n[FATAL] Signal %d at addr=%p, vm.fp=%d/%d, vm.sp=%d/%u\n",
                    sig, info ? info->si_addr : NULL,

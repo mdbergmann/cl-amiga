@@ -125,6 +125,7 @@ extern CL_Compiler *cl_active_compiler;
 extern CL_Obj macro_table;
 extern CL_Obj setf_table;
 extern CL_Obj setf_fn_table;
+extern CL_Obj setf_expander_table;
 extern CL_Obj type_table;
 extern CL_Obj pending_lambda_name;
 extern CL_Obj SETF_SYM_CAR, SETF_SYM_CDR, SETF_SYM_FIRST, SETF_SYM_REST;

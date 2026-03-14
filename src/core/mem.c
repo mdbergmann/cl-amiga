@@ -12,7 +12,7 @@
 #include <stdlib.h>
 
 /* External roots needed for GC marking */
-extern CL_Obj macro_table, setf_table, setf_fn_table, type_table;
+extern CL_Obj macro_table, setf_table, setf_fn_table, setf_expander_table, type_table;
 extern CL_Obj cl_clos_class_table;
 extern CL_Obj struct_table;  /* builtins_struct.c: struct type registry */
 extern CL_Obj condition_hierarchy;     /* builtins_condition.c */
@@ -27,7 +27,7 @@ uint8_t *cl_arena_base = NULL;  /* Global arena base for offset↔pointer conver
 
 /* GC root stack — stores pointers to CL_Obj variables */
 static CL_Obj *gc_root_stack[CL_GC_ROOT_STACK_SIZE];
-static int gc_root_count = 0;
+int gc_root_count = 0;
 
 /* GC mark stack (iterative marking) */
 static CL_Obj gc_mark_stack[CL_GC_MARK_STACK_SIZE];
@@ -695,6 +695,7 @@ static void gc_mark(void)
     gc_mark_obj(macro_table);
     gc_mark_obj(setf_table);
     gc_mark_obj(setf_fn_table);
+    gc_mark_obj(setf_expander_table);
     gc_mark_obj(type_table);
     gc_mark_obj(cl_clos_class_table);
     gc_mark_obj(struct_table);

@@ -20,6 +20,9 @@ typedef struct {
     uint32_t bp;         /* Base pointer (locals start) */
     int n_locals;
     uint8_t nargs;       /* Actual argument count (for OP_ARGC) */
+    uint8_t stub_code[3]; /* For cl_vm_apply stub frames: OP_CALL,nargs,OP_HALT.
+                             Embedded here so it survives longjmp past the
+                             cl_vm_apply C frame (stack-use-after-return fix). */
 } CL_Frame;
 
 typedef struct {
@@ -72,6 +75,8 @@ typedef struct {
     int dyn_mark;          /* binding stack depth at frame creation */
     int handler_mark;      /* handler stack depth at frame creation */
     int restart_mark;      /* restart stack depth at frame creation */
+    int gc_root_mark;      /* GC root stack depth at frame creation */
+    void *compiler_mark;   /* active compiler chain head at frame creation */
 } CL_NLXFrame;
 
 extern CL_NLXFrame cl_nlx_stack[CL_MAX_NLX_FRAMES];

@@ -74,6 +74,7 @@ CL_Obj cl_make_cell(CL_Obj value);
 void cl_gc_push_root(CL_Obj *root);
 void cl_gc_pop_roots(int n);
 void cl_gc_reset_roots(void);
+extern int gc_root_count;  /* current depth, saved/restored by NLX frames */
 
 /* Manually trigger GC */
 void cl_gc(void);

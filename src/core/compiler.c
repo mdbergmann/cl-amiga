@@ -6,6 +6,7 @@ CL_Compiler *cl_active_compiler = NULL;
 CL_Obj macro_table = CL_NIL;
 CL_Obj setf_table = CL_NIL;
 CL_Obj setf_fn_table = CL_NIL;  /* (setf name) functions: ((accessor . setf-fn-sym) ...) val-first calling */
+CL_Obj setf_expander_table = CL_NIL;  /* define-setf-expander: ((name . expander-fn) ...) */
 CL_Obj type_table = CL_NIL;
 CL_Obj pending_lambda_name = CL_NIL;
 
@@ -785,6 +786,51 @@ top:
         return;
     }
 
+    /* (do/do* ((var init [step])...) (end-test result...) body...)
+     * Must NOT scan binding clauses as macro calls — the var name in
+     * (TUPLE TUPLE (CDR TUPLE)) would be mistaken for a macro call
+     * when the var name has a macro definition (e.g. FSet's TUPLE macro). */
+    if (head == SYM_DO) {
+        CL_Obj var_clauses, end_clause, body;
+        if (!CL_CONS_P(rest)) return;
+        var_clauses = cl_car(rest);
+        if (!CL_CONS_P(cl_cdr(rest))) return;
+        end_clause = cl_car(cl_cdr(rest));
+        body = cl_cdr(cl_cdr(rest));
+        /* Scan init and step forms (skip var names) */
+        while (CL_CONS_P(var_clauses)) {
+            CL_Obj clause = cl_car(var_clauses);
+            if (CL_CONS_P(clause) && CL_CONS_P(cl_cdr(clause))) {
+                /* init form */
+                scan_body_for_boxing(cl_car(cl_cdr(clause)), vars, n_vars,
+                                     mutated, captured, closure_depth);
+                /* step form (if present) */
+                if (CL_CONS_P(cl_cdr(cl_cdr(clause))))
+                    scan_body_for_boxing(cl_car(cl_cdr(cl_cdr(clause))), vars, n_vars,
+                                         mutated, captured, closure_depth);
+            }
+            var_clauses = cl_cdr(var_clauses);
+        }
+        /* Scan end-test and result forms */
+        if (CL_CONS_P(end_clause)) {
+            scan_body_for_boxing(cl_car(end_clause), vars, n_vars,
+                                 mutated, captured, closure_depth);
+            CL_Obj res = cl_cdr(end_clause);
+            while (CL_CONS_P(res)) {
+                scan_body_for_boxing(cl_car(res), vars, n_vars,
+                                     mutated, captured, closure_depth);
+                res = cl_cdr(res);
+            }
+        }
+        /* Scan body */
+        while (CL_CONS_P(body)) {
+            scan_body_for_boxing(cl_car(body), vars, n_vars,
+                                 mutated, captured, closure_depth);
+            body = cl_cdr(body);
+        }
+        return;
+    }
+
     /* Expand macros before scanning so we can see through macro-generated
      * lambdas and setf forms. Save/restore VM state to handle expansion
      * errors gracefully without corrupting compiler state. */
@@ -1475,6 +1521,30 @@ static void compile_setf_place(CL_Compiler *c, CL_Obj place, CL_Obj val_form)
                 cl_emit(c, OP_CALL);
                 cl_emit(c, (uint8_t)nargs);
             } else {
+                /* Check define-setf-expander table.
+                 * Expander fn takes (place-form value-form) and returns
+                 * a single expansion form to compile. */
+                {
+                    CL_Obj exp_entry = setf_expander_table;
+                    while (!CL_NULL_P(exp_entry)) {
+                        CL_Obj pair = cl_car(exp_entry);
+                        if (cl_car(pair) == head) {
+                            /* Found expander — call it to get expansion */
+                            CL_Obj expander_fn = cl_cdr(pair);
+                            CL_Obj call_args[2];
+                            CL_Obj expansion;
+                            call_args[0] = place;
+                            call_args[1] = val_form;
+                            CL_GC_PROTECT(place);
+                            CL_GC_PROTECT(val_form);
+                            expansion = cl_vm_apply(expander_fn, call_args, 2);
+                            CL_GC_UNPROTECT(2);
+                            compile_expr(c, expansion);
+                            return;
+                        }
+                        exp_entry = cl_cdr(exp_entry);
+                    }
+                }
                 /* Setf function (late-bound): construct %SETF-<name> symbol,
                  * emit FLOAD — resolved at runtime like normal function calls.
                  * Handles both (defun (setf name) ...) and
@@ -2155,4 +2225,22 @@ void cl_compiler_init(void)
     SETF_HELPER_GET          = cl_intern_in("%SETF-GET", 9, cl_package_clamiga);
     SETF_SYM_GETF            = cl_intern_in("GETF", 4, cl_package_cl);
     SETF_HELPER_GETF         = cl_intern_in("%SETF-GETF", 10, cl_package_clamiga);
+}
+
+/* --- Compiler chain save/restore for NLX --- */
+
+void *cl_compiler_mark(void)
+{
+    return (void *)cl_active_compiler;
+}
+
+void cl_compiler_restore_to(void *saved)
+{
+    CL_Compiler *target = (CL_Compiler *)saved;
+    while (cl_active_compiler != target) {
+        CL_Compiler *c = cl_active_compiler;
+        cl_active_compiler = c->parent;
+        if (c->env) cl_env_destroy(c->env);
+        platform_free(c);
+    }
 }

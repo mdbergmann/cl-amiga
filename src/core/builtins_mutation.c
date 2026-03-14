@@ -160,6 +160,17 @@ static CL_Obj bi_register_setf_function(CL_Obj *args, int n)
     return args[0];
 }
 
+extern CL_Obj setf_expander_table;
+
+static CL_Obj bi_register_setf_expander(CL_Obj *args, int n)
+{
+    /* (%register-setf-expander accessor-sym expander-fn) */
+    CL_UNUSED(n);
+    CL_Obj pair = cl_cons(args[0], args[1]);
+    setf_expander_table = cl_cons(pair, setf_expander_table);
+    return args[0];
+}
+
 /* --- Registration --- */
 
 void cl_builtins_mutation_init(void)
@@ -184,4 +195,5 @@ void cl_builtins_mutation_init(void)
     defun("FBOUNDP", bi_fboundp, 1, 1);
     defun("FMAKUNBOUND", bi_fmakunbound, 1, 1);
     cl_register_builtin("%REGISTER-SETF-FUNCTION", bi_register_setf_function, 2, 2, cl_package_clamiga);
+    cl_register_builtin("%REGISTER-SETF-EXPANDER", bi_register_setf_expander, 2, 2, cl_package_clamiga);
 }

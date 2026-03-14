@@ -42,4 +42,70 @@
   (defmethod (setf planned-action-count) (val (obj (eql nil))) val)
   (defmethod (setf planned-output-action-count) (val (obj (eql nil))) val))
 
+;;; CL-Amiga source-loading mode for ASDF
+;;;
+;;; CL-Amiga's LOAD already compiles each form to bytecode, so the
+;;; compile-file → FASL → load-fasl round-trip adds complexity without
+;;; benefit. Override ASDF's compilation and FASL loading to use direct
+;;; source loading instead. This avoids the tmpize-pathname / staging
+;;; machinery and eliminates FASL-related crashes.
+;;;
+;;; compile-op: load the source (compiles at load time), write a
+;;;   marker FASL so ASDF doesn't re-trigger compilation.
+;;; load-op: prefer loading the source file directly.
+
+(in-package #:asdf/lisp-action)
+
+(defun perform-lisp-compilation (o c)
+  "CL-Amiga override: load source form-by-form instead of compile-file.
+CL-Amiga compiles each form at load time, so source loading achieves
+the same result as compile-file without the FASL round-trip.
+Errors in individual forms (e.g. bytecode-too-large) are reported as
+warnings but do not abort the file."
+  (let* ((input-file (first (input-files o c)))
+         (outputs (output-files o c))
+         (output-file (first outputs)))
+    (handler-case
+      (call-with-around-compile-hook
+       c #'(lambda (&rest flags)
+             (declare (ignore flags))
+             (let ((*package* *package*)
+                   (*readtable* *readtable*))
+               (with-open-file (stream input-file :direction :input)
+                 (let ((eof (gensym "EOF"))
+                       (nerrors 0))
+                   (loop
+                     (let ((form (handler-case (read stream nil eof)
+                                   (error (e)
+                                     (format t "~&;; [CL-Amiga] read error in ~A: ~A~%"
+                                             input-file e)
+                                     (return)))))
+                       (when (eq form eof) (return))
+                       (handler-case (eval form)
+                         (error (e)
+                           (incf nerrors)
+                           (format t "~&;; [CL-Amiga] WARNING in ~A: ~A~%"
+                                   input-file e)))))
+                   (when (> nerrors 0)
+                     (format t "~&;; [CL-Amiga] ~A: ~D form~:P skipped~%"
+                             input-file nerrors)))))))
+      (error (e)
+        (format t "~&;; [CL-Amiga] ERROR loading ~A: ~A (continuing)~%"
+                input-file e)))
+    ;; Create a marker FASL so ASDF considers the file compiled.
+    ;; Without this, ASDF would re-compile on every load.
+    (when output-file
+      (ensure-directories-exist output-file)
+      (with-open-file (s output-file :direction :output
+                                      :if-exists :supersede)
+        (format s ";; CL-Amiga marker FASL for ~A~%" input-file)))
+    (values output-file nil nil)))
+
+(defun perform-lisp-load-fasl (o c)
+  "CL-Amiga override: no-op since perform-lisp-compilation already loaded
+the source (which compiles and evaluates all forms).  Loading again would
+redundantly re-compile everything and can crash on large functions."
+  (declare (ignore o c))
+  nil)
+
 (in-package #:cl-user)

@@ -854,11 +854,12 @@ static CL_Obj bi_compile_file(CL_Obj *args, int n)
     /* Dynamic serialization buffer */
     uint8_t *fasl_buf = NULL;
     uint32_t fasl_capacity = 64 * 1024;  /* Start with 64KB */
-    CL_FaslWriter w;
+    CL_FaslWriter *w = NULL;   /* heap-allocated — too large for stack (~4KB) */
 
     /* Temp buffer for each unit */
     uint8_t *unit_buf = NULL;
     uint32_t unit_capacity = 32 * 1024;  /* 32KB per unit */
+    CL_FaslWriter *uw = NULL;  /* heap-allocated — too large for stack (~4KB) */
 
     /* Collected bytecodes — we need to serialize after eval */
     /* We use a two-pass approach: first serialize each unit to unit_buf,
@@ -963,30 +964,38 @@ static CL_Obj bi_compile_file(CL_Obj *args, int n)
     cl_current_file_id++;
     cl_reader_reset_line();
 
-    /* Allocate FASL and unit buffers */
+    /* Allocate FASL and unit buffers + FASL writers (heap-allocated to
+     * keep bi_compile_file's stack frame small — CL_FaslWriter is ~4KB
+     * due to gensym_objs[1024], and two on the stack would interact
+     * badly with setjmp/longjmp error recovery) */
     fasl_buf = (uint8_t *)platform_alloc(fasl_capacity);
     unit_buf = (uint8_t *)platform_alloc(unit_capacity);
-    if (!fasl_buf || !unit_buf) {
+    w = (CL_FaslWriter *)platform_alloc(sizeof(CL_FaslWriter));
+    uw = (CL_FaslWriter *)platform_alloc(sizeof(CL_FaslWriter));
+    if (!fasl_buf || !unit_buf || !w || !uw) {
         if (fasl_buf) platform_free(fasl_buf);
         if (unit_buf) platform_free(unit_buf);
+        if (w) platform_free(w);
+        if (uw) platform_free(uw);
         platform_free(src_buf);
         cl_error(CL_ERR_GENERAL, "COMPILE-FILE: out of memory");
         return CL_NIL;
     }
 
     /* Write header placeholder (n_units=0, patched later) */
-    cl_fasl_writer_init(&w, fasl_buf, fasl_capacity);
-    cl_fasl_write_header(&w, 0);
+    cl_fasl_writer_init(w, fasl_buf, fasl_capacity);
+    cl_fasl_write_header(w, 0);
 
     /* Create source stream */
     stream = cl_make_cbuf_input_stream(src_buf, (uint32_t)src_size);
     CL_GC_PROTECT(stream);
 
     /* Read-compile-eval-serialize loop */
+#ifdef DEBUG_COMPILER
     int cf_form_count = 0;
+#endif
     for (;;) {
         int err;
-        CL_FaslWriter uw;
         int saved_fp, saved_sp, saved_nlx;
         int saved_handler_top, saved_restart_top;
 
@@ -1014,8 +1023,8 @@ static CL_Obj bi_compile_file(CL_Obj *args, int n)
                 break;
             }
 
-            cf_form_count++;
 #ifdef DEBUG_COMPILER
+            cf_form_count++;
             fprintf(stderr, "[compile-file %s] form %d read\n",
                     in_path, cf_form_count);
             fflush(stderr);
@@ -1038,42 +1047,42 @@ static CL_Obj bi_compile_file(CL_Obj *args, int n)
                 CL_GC_UNPROTECT(1); /* bytecode */
 
                 /* Serialize this unit */
-                cl_fasl_writer_init(&uw, unit_buf, unit_capacity);
-                memcpy(uw.gensym_objs, w.gensym_objs, w.gensym_count * sizeof(CL_Obj));
-                uw.gensym_count = w.gensym_count;
-                cl_fasl_serialize_bytecode(&uw, bytecode);
+                cl_fasl_writer_init(uw, unit_buf, unit_capacity);
+                memcpy(uw->gensym_objs, w->gensym_objs, w->gensym_count * sizeof(CL_Obj));
+                uw->gensym_count = w->gensym_count;
+                cl_fasl_serialize_bytecode(uw, bytecode);
 
                 /* If unit_buf was too small, grow and retry */
-                while (uw.error == FASL_ERR_OVERFLOW) {
+                while (uw->error == FASL_ERR_OVERFLOW) {
                     platform_free(unit_buf);
                     unit_capacity *= 2;
                     unit_buf = (uint8_t *)platform_alloc(unit_capacity);
                     if (!unit_buf) break;
-                    cl_fasl_writer_init(&uw, unit_buf, unit_capacity);
-                    memcpy(uw.gensym_objs, w.gensym_objs, w.gensym_count * sizeof(CL_Obj));
-                    uw.gensym_count = w.gensym_count;
-                    cl_fasl_serialize_bytecode(&uw, bytecode);
+                    cl_fasl_writer_init(uw, unit_buf, unit_capacity);
+                    memcpy(uw->gensym_objs, w->gensym_objs, w->gensym_count * sizeof(CL_Obj));
+                    uw->gensym_count = w->gensym_count;
+                    cl_fasl_serialize_bytecode(uw, bytecode);
                 }
 
-                if (unit_buf && uw.error == FASL_OK) {
+                if (unit_buf && uw->error == FASL_OK) {
                     /* Update file-level gensym table */
-                    memcpy(w.gensym_objs, uw.gensym_objs, uw.gensym_count * sizeof(CL_Obj));
-                    w.gensym_count = uw.gensym_count;
+                    memcpy(w->gensym_objs, uw->gensym_objs, uw->gensym_count * sizeof(CL_Obj));
+                    w->gensym_count = uw->gensym_count;
                     /* Grow fasl_buf if needed */
-                    while (w.pos + 4 + uw.pos > fasl_capacity) {
+                    while (w->pos + 4 + uw->pos > fasl_capacity) {
                         uint8_t *new_buf;
                         fasl_capacity *= 2;
                         new_buf = (uint8_t *)platform_alloc(fasl_capacity);
                         if (!new_buf) break;
-                        memcpy(new_buf, fasl_buf, w.pos);
+                        memcpy(new_buf, fasl_buf, w->pos);
                         platform_free(fasl_buf);
                         fasl_buf = new_buf;
-                        w.data = fasl_buf;
-                        w.capacity = fasl_capacity;
+                        w->data = fasl_buf;
+                        w->capacity = fasl_capacity;
                     }
 
-                    cl_fasl_write_u32(&w, uw.pos);
-                    cl_fasl_write_bytes(&w, unit_buf, uw.pos);
+                    cl_fasl_write_u32(w, uw->pos);
+                    cl_fasl_write_bytes(w, unit_buf, uw->pos);
                     n_units++;
                 }
             }
@@ -1095,6 +1104,12 @@ static CL_Obj bi_compile_file(CL_Obj *args, int n)
     cl_stream_close(stream);
     platform_free(src_buf);
 
+#ifdef DEBUG_COMPILER
+    fprintf(stderr, "[compile-file %s] all forms done, n_units=%u, writing FASL\n",
+            in_path, n_units);
+    fflush(stderr);
+#endif
+
     /* Patch n_units in the header (bytes 8-11, big-endian) */
     fasl_buf[8]  = (uint8_t)(n_units >> 24);
     fasl_buf[9]  = (uint8_t)(n_units >> 16);
@@ -1114,15 +1129,19 @@ static CL_Obj bi_compile_file(CL_Obj *args, int n)
         if (fh == PLATFORM_FILE_INVALID) {
             platform_free(fasl_buf);
             platform_free(unit_buf);
+            platform_free(w);
+            platform_free(uw);
             cl_error(CL_ERR_GENERAL, "COMPILE-FILE: cannot create output file: %s", out_path);
             return CL_NIL;
         }
-        platform_file_write_buf(fh, (const char *)fasl_buf, w.pos);
+        platform_file_write_buf(fh, (const char *)fasl_buf, w->pos);
         platform_file_close(fh);
     }
 
     platform_free(fasl_buf);
     platform_free(unit_buf);
+    platform_free(w);
+    platform_free(uw);
 
     /* Restore *compile-file-pathname* and *compile-file-truename* */
     cfp_sym->value = saved_cfp;
@@ -1141,6 +1160,10 @@ static CL_Obj bi_compile_file(CL_Obj *args, int n)
     }
 
     /* Return (values output-truename nil nil) per CL spec */
+#ifdef DEBUG_COMPILER
+    fprintf(stderr, "[compile-file %s] FASL written, returning to caller\n", in_path);
+    fflush(stderr);
+#endif
     output_pathname = cl_parse_namestring(out_path, (uint32_t)strlen(out_path));
     /* Set multiple values: truename, warnings-p, failure-p */
     cl_mv_values[0] = output_pathname;

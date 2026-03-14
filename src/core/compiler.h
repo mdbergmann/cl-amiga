@@ -54,4 +54,10 @@ void cl_process_declaration_specifier(CL_Obj spec);
 /* GC marking: mark all CL_Obj values referenced by active compiler(s) */
 void cl_compiler_gc_mark(void);
 
+/* Save/restore active compiler chain across non-local exits.
+ * cl_compiler_mark() returns an opaque snapshot.
+ * cl_compiler_restore_to() frees any compilers allocated since the mark. */
+void *cl_compiler_mark(void);
+void cl_compiler_restore_to(void *saved);
+
 #endif /* CL_COMPILER_H */
