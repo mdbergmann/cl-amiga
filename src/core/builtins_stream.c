@@ -1049,6 +1049,53 @@ static CL_Obj bi_setf_readtable_case(CL_Obj *args, int n)
     return mode;
 }
 
+/* (set-syntax-from-char to-char from-char &optional to-readtable from-readtable) => T */
+static CL_Obj bi_set_syntax_from_char(CL_Obj *args, int n)
+{
+    int to_ch, from_ch, to_idx, from_idx = 0;
+    CL_Readtable *to_rt, *from_rt;
+
+    if (!CL_CHAR_P(args[0]))
+        cl_error(CL_ERR_TYPE, "SET-SYNTAX-FROM-CHAR: to-char must be a character");
+    if (!CL_CHAR_P(args[1]))
+        cl_error(CL_ERR_TYPE, "SET-SYNTAX-FROM-CHAR: from-char must be a character");
+
+    to_ch = CL_CHAR_VAL(args[0]);
+    from_ch = CL_CHAR_VAL(args[1]);
+
+    if (to_ch < 0 || to_ch >= CL_RT_CHARS)
+        cl_error(CL_ERR_TYPE, "SET-SYNTAX-FROM-CHAR: to-char out of range");
+    if (from_ch < 0 || from_ch >= CL_RT_CHARS)
+        cl_error(CL_ERR_TYPE, "SET-SYNTAX-FROM-CHAR: from-char out of range");
+
+    /* to-readtable: NIL = current readtable */
+    to_idx = resolve_readtable_idx(args, n, 2);
+
+    /* from-readtable: NIL = standard readtable (slot 0) per CL spec */
+    if (n > 3 && !CL_NULL_P(args[3])) {
+        if (CL_FIXNUM_P(args[3])) {
+            from_idx = CL_FIXNUM_VAL(args[3]);
+            if (from_idx < 0 || from_idx >= CL_RT_POOL_SIZE)
+                cl_error(CL_ERR_TYPE, "SET-SYNTAX-FROM-CHAR: invalid from-readtable");
+        } else {
+            cl_error(CL_ERR_TYPE, "SET-SYNTAX-FROM-CHAR: from-readtable must be a readtable or NIL");
+        }
+    } else {
+        from_idx = 0; /* standard readtable */
+    }
+
+    to_rt = cl_readtable_get(to_idx);
+    from_rt = cl_readtable_get(from_idx);
+
+    /* Copy syntax type */
+    to_rt->syntax[to_ch] = from_rt->syntax[from_ch];
+
+    /* Copy reader macro function */
+    to_rt->macro_fn[to_ch] = from_rt->macro_fn[from_ch];
+
+    return CL_T;
+}
+
 /* --- Registration --- */
 
 void cl_builtins_stream_init(void)
@@ -1122,6 +1169,7 @@ void cl_builtins_stream_init(void)
     defun("SET-DISPATCH-MACRO-CHARACTER", bi_set_dispatch_macro_character, 3, 4);
     defun("GET-DISPATCH-MACRO-CHARACTER", bi_get_dispatch_macro_character, 2, 3);
     defun("COPY-READTABLE", bi_copy_readtable, 0, 2);
+    defun("SET-SYNTAX-FROM-CHAR", bi_set_syntax_from_char, 2, 4);
     defun("READTABLE-CASE", bi_readtable_case, 0, 1);
     cl_register_builtin("%SETF-READTABLE-CASE", bi_setf_readtable_case, 2, 2, cl_package_clamiga);
 }

@@ -1,19 +1,15 @@
 ;; Test loading fset via ASDF/quicklisp on Amiga
-;; Verifies that compile-file works correctly (NLX frame sync fix)
 ;; Dependencies loaded via ASDF compile-file, fset loaded from source
 ;; Run: clamiga --heap 48M --non-interactive --load tests/amiga/test-fset-asdf.lisp
 
 (format t "~%; === FSet ASDF compile-file test ===~%")
 
-;; 1. Load named-readtables stub (fset dependency)
-(format t "; Loading named-readtables stub~%")
-(load "lib/named-readtables-stub.lisp")
-
-;; 2. Load ASDF
+;; 1. Load ASDF
 (format t "; Loading ASDF~%")
 (load "lib/asdf.lisp")
+(load "lib/asdf-compat.lisp")
 
-;; 3. Load quicklisp
+;; 2. Load quicklisp
 (format t "; Loading quicklisp~%")
 (let ((amiga-setup "S:quicklisp/setup.lisp"))
   (if (probe-file amiga-setup)
@@ -22,10 +18,11 @@
                           (namestring (user-homedir-pathname))
                           "quicklisp/setup.lisp")))
         (load host-setup))))
+(load "lib/quicklisp-compat.lisp")
 
-;; 4. Quickload fset dependencies via ASDF compile-file
-;;    This is the key test: compile-file must not crash (NLX frame sync fix)
-(format t "~%; === Testing ASDF compile-file (NLX fix) ===~%")
+;; 3. Quickload fset dependencies via ASDF compile-file
+;;    named-readtables loads through ASDF (real library, not stub)
+(format t "~%; === Testing ASDF compile-file ===~%")
 
 (format t "; Quickloading misc-extensions via ASDF...~%")
 (handler-case
@@ -39,9 +36,15 @@
   (error (c)
     (format t "~%FAIL: mt19937 quickload: ~A~%" c)))
 
+(format t "; Quickloading named-readtables via ASDF...~%")
+(handler-case
+  (ql:quickload :named-readtables)
+  (error (c)
+    (format t "~%FAIL: named-readtables quickload: ~A~%" c)))
+
 (format t "~%; ASDF compile-file test PASSED~%")
 
-;; 5. Load fset from source (ASDF quickload of fset has a separate
+;; 4. Load fset from source (ASDF quickload of fset has a separate
 ;;    session-management bug unrelated to the NLX fix)
 (format t "~%; === Loading fset from source ===~%")
 

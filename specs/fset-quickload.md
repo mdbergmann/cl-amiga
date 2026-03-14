@@ -77,18 +77,32 @@ Removed `lib/fset-compat.lisp` — no longer needed. Updated test scripts (`test
 
 FSet loads and core operations (sets, maps, lookups, unions) work on host.
 
-### Step 4: Load named-readtables through ASDF
+### Step 4: Load named-readtables through ASDF — DONE
 
-Remove `lib/named-readtables-stub.lisp` from the load sequence. Let ASDF load the real `named-readtables` from quicklisp dists. If loading fails due to missing CL features, implement those features:
+Implemented `set-syntax-from-char` (CL spec) and loaded the real named-readtables library via ASDF, including its full dependency chain: `mgl-pax.asdf` → `autoload` → `mgl-pax-bootstrap` → `named-readtables`.
 
-- `set-syntax-from-char` — if needed by named-readtables (check first)
-- Any other missing readtable operations
+#### 4a: Implement `set-syntax-from-char` — DONE
 
-If named-readtables loads without issues, no changes needed. If it requires features too complex to implement now, keep the stub but register it as a proper ASDF system so ASDF's dependency resolution works transparently.
+Implemented in `builtins_stream.c` as `bi_set_syntax_from_char`. Registered as `SET-SYNTAX-FROM-CHAR` builtin (4 params: 2 required, 2 optional). Copies syntax type and reader macro function from `from-char` to `to-char`. Default `from-readtable` is standard readtable (slot 0) per CL spec. 4 host tests added.
+
+#### 4b: Dependencies already satisfied — DONE
+
+All required CL spec features were already implemented.
+
+#### 4c: Load named-readtables dependency chain via ASDF — DONE
+
+`(ql:quickload :named-readtables)` works end-to-end. Required fix: added `(:implementation cl-amiga ...)` for `directory-entries` in quicklisp's `impl-util.lisp` (local-projects searcher needed this). Named-readtables uses portable readtable iterator (grovels chars 0..`char-code-limit`), works fine.
+
+#### 4d: Remove stub — DONE
+
+- Deleted `lib/named-readtables-stub.lisp`
+- Updated `tests/amiga/test-fset-asdf.lisp` to quickload named-readtables via ASDF instead of loading stub
+- Updated `tests/amiga/test-fset.lisp` to load named-readtables from source (full dependency chain)
+- FSet loads and works on host with real named-readtables
 
 ### Step 5: Remove fset-compat.lisp — DONE
 
-`lib/fset-compat.lisp` removed (replaced by port.lisp `#+cl-amiga` patch + EXT threading primitives). `lib/named-readtables-stub.lisp` still needed until named-readtables loads through ASDF (step 4).
+`lib/fset-compat.lisp` removed (replaced by port.lisp `#+cl-amiga` patch + EXT threading primitives). `lib/named-readtables-stub.lisp` also removed (step 4d).
 
 ### Step 6: End-to-end test
 
@@ -130,14 +144,17 @@ Test on both host and Amiga via FS-UAE.
 | `lib/asdf-compat.lisp` | All 11 session null-safe methods — DONE (fcf0fec) |
 | `~/quicklisp/local-projects/fset-v2.2.0/Code/port.lisp` | `#+cl-amiga` section — DONE |
 | `lib/fset-compat.lisp` | Removed — DONE |
-| `lib/named-readtables-stub.lisp` | Still needed until step 4 |
+| `src/core/builtins_stream.c` | `set-syntax-from-char` builtin — DONE |
+| `tests/test_vm.c` | `set-syntax-from-char` tests (4 tests) — DONE |
+| `lib/named-readtables-stub.lisp` | Removed — DONE |
+| `~/quicklisp/quicklisp/impl-util.lisp` | Added `directory-entries` for CL-Amiga — DONE |
 | `tests/amiga/test-fset-asdf.lisp` | End-to-end quickload test |
 
 ## Priority Order
 
 1. ~~Fix the crash (blocker — nothing works without this)~~ DONE
-2. Threading primitives in EXT (enables fset and other libraries)
-3. Port.lisp patch (enables fset specifically)
-4. Named-readtables via ASDF (cleanup)
-5. Remove compat shims (cleanup)
+2. ~~Threading primitives in EXT (enables fset and other libraries)~~ DONE
+3. ~~Port.lisp patch (enables fset specifically)~~ DONE
+4. ~~Implement `set-syntax-from-char`, load real named-readtables via ASDF~~ DONE
+5. ~~Remove compat shims~~ DONE
 6. Amiga test (validation)

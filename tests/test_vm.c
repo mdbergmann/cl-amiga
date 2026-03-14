@@ -6143,6 +6143,46 @@ TEST(eval_progv_nested)
     ASSERT_EQ_INT(eval_int("*pv-f*"), 0);
 }
 
+/* --- set-syntax-from-char tests --- */
+
+TEST(eval_set_syntax_from_char_basic)
+{
+    /* set-syntax-from-char returns T */
+    ASSERT_STR_EQ(eval_print(
+        "(let ((*readtable* (copy-readtable)))"
+        "  (set-syntax-from-char #\\{ #\\( *readtable*))"), "T");
+}
+
+TEST(eval_set_syntax_from_char_copies_macro)
+{
+    /* Set a custom reader macro on {, then copy it to [ via set-syntax-from-char */
+    ASSERT_STR_EQ(eval_print(
+        "(let ((*readtable* (copy-readtable)))"
+        "  (set-macro-character #\\{ (lambda (s c) (declare (ignore s c)) 42))"
+        "  (set-syntax-from-char #\\[ #\\{ *readtable* *readtable*)"
+        "  (functionp (get-macro-character #\\[)))"), "T");
+}
+
+TEST(eval_set_syntax_from_char_reset_constituent)
+{
+    /* Copy constituent syntax (A) to macro char ({) — resets it */
+    ASSERT_STR_EQ(eval_print(
+        "(let ((*readtable* (copy-readtable)))"
+        "  (set-macro-character #\\{ (lambda (s c) (declare (ignore s c)) 42))"
+        "  (set-syntax-from-char #\\{ #\\A *readtable* *readtable*)"
+        "  (get-macro-character #\\{))"), "NIL");
+}
+
+TEST(eval_set_syntax_from_char_default_from)
+{
+    /* Default from-readtable is standard (slot 0) */
+    /* Copy ( from standard to { — should make { a terminating macro */
+    ASSERT_STR_EQ(eval_print(
+        "(let ((*readtable* (copy-readtable)))"
+        "  (set-syntax-from-char #\\{ #\\())"
+        ), "T");
+}
+
 TEST(eval_heap_exhaustion_error)
 {
     /* Accumulating live data until heap is full should signal CL_ERR_STORAGE
@@ -6918,6 +6958,12 @@ int main(void)
     RUN(eval_progv_empty_symbols);
     RUN(eval_progv_restore_on_throw);
     RUN(eval_progv_nested);
+
+    /* set-syntax-from-char */
+    RUN(eval_set_syntax_from_char_basic);
+    RUN(eval_set_syntax_from_char_copies_macro);
+    RUN(eval_set_syntax_from_char_reset_constituent);
+    RUN(eval_set_syntax_from_char_default_from);
 
     /* heap exhaustion / storage errors */
     RUN(eval_heap_exhaustion_error);

@@ -19,9 +19,25 @@
 
 (format t "; Using quicklisp software at: ~A~%" *ql-software*)
 
-;; Load named-readtables stub
-(format t "~%; Loading named-readtables stub~%")
-(load "lib/named-readtables-stub.lisp")
+;; Load named-readtables from source (via its dependency chain)
+(format t "~%; Loading named-readtables from source~%")
+(let ((mgl-base (concatenate 'string *ql-software* "mgl-pax-20260101-git/"))
+      (nrt-base (concatenate 'string *ql-software* "named-readtables-20260101-git/src/")))
+  ;; 1. mgl-pax.asdf
+  (load (concatenate 'string mgl-base "src/asdf.lisp"))
+  ;; 2. autoload
+  (load (concatenate 'string mgl-base "autoload/package.lisp"))
+  (load (concatenate 'string mgl-base "autoload/autoload.lisp"))
+  ;; 3. mgl-pax-bootstrap
+  (load (concatenate 'string mgl-base "src/bootstrap/package.lisp"))
+  (load (concatenate 'string mgl-base "src/bootstrap/basics.lisp"))
+  (load (concatenate 'string mgl-base "src/bootstrap/pax-world.lisp"))
+  ;; 4. named-readtables
+  (dolist (f '("package" "utils" "define-api" "cruft" "named-readtables" "doc"))
+    (format t ";  ~A.lisp~%" f)
+    (handler-case
+      (load (concatenate 'string nrt-base f ".lisp"))
+      (error (c) (format t "~%ERROR loading named-readtables/~A: ~A~%" f c)))))
 
 ;; Load misc-extensions from source
 (let ((base (concatenate 'string *ql-software* "misc-extensions-20260101-git/src/")))
