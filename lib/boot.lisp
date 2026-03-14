@@ -1735,3 +1735,45 @@
           do (write (car tail) :stream s)
           when (cdr tail) do (terpri s))
     (when colon-p (write-char #\) s))))
+
+;;; ============================================================
+;;; EXT package: single-threaded threading primitives
+;;; ============================================================
+;;; These stubs allow libraries that expect threading support
+;;; (e.g., FSet, Bordeaux-threads consumers) to load on CL-Amiga's
+;;; single-threaded runtime without modification.
+
+(in-package :ext)
+
+(defun make-lock (&optional name)
+  (declare (ignore name))
+  nil)
+
+(defun make-recursive-lock (&optional name)
+  (declare (ignore name))
+  nil)
+
+(defmacro with-lock-held ((lock) &body body)
+  (declare (ignore lock))
+  `(progn ,@body))
+
+(defmacro with-recursive-lock-held ((lock) &body body)
+  (declare (ignore lock))
+  `(progn ,@body))
+
+(defun read-memory-barrier ()
+  nil)
+
+(defun write-memory-barrier ()
+  nil)
+
+(defmacro defglobal (name value &optional doc)
+  (declare (ignore doc))
+  `(defvar ,name ,value))
+
+(export '(make-lock make-recursive-lock
+          with-lock-held with-recursive-lock-held
+          read-memory-barrier write-memory-barrier
+          defglobal))
+
+(in-package :cl-user)

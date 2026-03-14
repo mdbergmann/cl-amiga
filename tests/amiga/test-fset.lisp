@@ -41,11 +41,7 @@
 (format t "~%; Loading fset/defs.lisp~%")
 (load (concatenate 'string *ql-software* "fset-v2.2.0/Code/defs.lisp"))
 
-;; Load compat stubs now that FSET package exists
-(format t "~%; Loading fset-compat.lisp~%")
-(load "lib/fset-compat.lisp")
-
-;; Load fset source files directly
+;; Load fset source files directly (port.lisp has #+cl-amiga stubs)
 (let ((base (concatenate 'string *ql-software* "fset-v2.2.0/Code/")))
   (dolist (f '("port" "macros" "order" "hash" "wb-trees" "champ"
                "reader" "fset" "replay" "tuples" "interval"

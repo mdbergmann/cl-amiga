@@ -5898,6 +5898,45 @@ TEST(eval_getcwd)
     ASSERT(result[1] == '/');  /* absolute path */
 }
 
+/* --- ext: threading primitives (single-threaded stubs) --- */
+
+TEST(eval_ext_make_lock)
+{
+    ASSERT_STR_EQ(eval_print("(ext:make-lock)"), "NIL");
+    ASSERT_STR_EQ(eval_print("(ext:make-lock \"my-lock\")"), "NIL");
+}
+
+TEST(eval_ext_make_recursive_lock)
+{
+    ASSERT_STR_EQ(eval_print("(ext:make-recursive-lock)"), "NIL");
+    ASSERT_STR_EQ(eval_print("(ext:make-recursive-lock \"rec\")"), "NIL");
+}
+
+TEST(eval_ext_with_lock_held)
+{
+    ASSERT_STR_EQ(eval_print(
+        "(let ((lk (ext:make-lock))) (ext:with-lock-held (lk) 42))"), "42");
+}
+
+TEST(eval_ext_with_recursive_lock_held)
+{
+    ASSERT_STR_EQ(eval_print(
+        "(let ((lk (ext:make-recursive-lock))) "
+        "  (ext:with-recursive-lock-held (lk) 99))"), "99");
+}
+
+TEST(eval_ext_memory_barriers)
+{
+    ASSERT_STR_EQ(eval_print("(ext:read-memory-barrier)"), "NIL");
+    ASSERT_STR_EQ(eval_print("(ext:write-memory-barrier)"), "NIL");
+}
+
+TEST(eval_ext_defglobal)
+{
+    ASSERT_STR_EQ(eval_print(
+        "(progn (ext:defglobal *ext-test-glob* 77) *ext-test-glob*)"), "77");
+}
+
 /* --- Quicklisp/ASDF compatibility regression tests --- */
 
 TEST(eval_remove_if_not_string)
@@ -6841,6 +6880,14 @@ int main(void)
     RUN(eval_system_command_false);
     RUN(eval_system_command_echo);
     RUN(eval_getcwd);
+
+    /* ext: threading primitives */
+    RUN(eval_ext_make_lock);
+    RUN(eval_ext_make_recursive_lock);
+    RUN(eval_ext_with_lock_held);
+    RUN(eval_ext_with_recursive_lock_held);
+    RUN(eval_ext_memory_barriers);
+    RUN(eval_ext_defglobal);
 
     /* quicklisp/ASDF compatibility regressions */
     RUN(eval_remove_if_not_string);
