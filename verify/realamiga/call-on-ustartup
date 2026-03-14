@@ -1,4 +1,4 @@
-; Install quicklisp to S:quicklisp/
+; Load and test fset on Amiga
 cd CLAmiga:
-stack 400000
-build/amiga/clamiga --heap 48M --non-interactive --load tests/amiga/install-quicklisp.lisp >build/amiga/test-results.log
+stack 800000
+build/amiga/clamiga --heap 48M --non-interactive --load tests/amiga/test-fset.lisp >build/amiga/test-results.log
