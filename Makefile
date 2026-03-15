@@ -100,6 +100,13 @@ test: $(TEST_BINS) host
 		echo "FAIL"; \
 		failed=1; \
 	fi; \
+	echo "--- test_fasl_compat ---"; \
+	if sh $(TEST_SRCDIR)/test_fasl_compat.sh $(BUILDDIR)/clamiga; then \
+		echo "PASS"; \
+	else \
+		echo "FAIL"; \
+		failed=1; \
+	fi; \
 	if [ $$failed -eq 0 ]; then echo "=== All tests passed ==="; \
 	else echo "=== Some tests failed ==="; exit 1; fi
 
