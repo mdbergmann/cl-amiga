@@ -714,6 +714,27 @@ TEST(eval_do)
         "(do ((i 0 (+ i 1))) ((= i 1)))"), "NIL");
 }
 
+TEST(eval_do_star)
+{
+    /* Sequential binding: j sees current i (not previous) */
+    ASSERT_STR_EQ(eval_print(
+        "(let ((r nil))"
+        "  (do* ((i 0 (+ i 1)) (j (* i 10) (* i 10)))"
+        "       ((>= i 3) (reverse r))"
+        "    (push (list i j) r)))"),
+        "((0 0) (1 10) (2 20))");
+    /* Contrast with do (parallel): j would see old i */
+    ASSERT_STR_EQ(eval_print(
+        "(let ((r nil))"
+        "  (do ((i 0 (+ i 1)) (j 0 (* i 10)))"
+        "      ((>= i 3) (reverse r))"
+        "    (push (list i j) r)))"),
+        "((0 0) (1 0) (2 10))");
+    /* Simple do* */
+    ASSERT_EQ_INT(eval_int(
+        "(do* ((i 10 (- i 1))) ((= i 0) 42))"), 42);
+}
+
 /* --- Quasiquote --- */
 
 TEST(eval_quasiquote_atom)
@@ -6343,6 +6364,7 @@ int main(void)
     RUN(eval_dolist);
     RUN(eval_dotimes);
     RUN(eval_do);
+    RUN(eval_do_star);
     RUN(eval_quasiquote_atom);
     RUN(eval_quasiquote_simple_list);
     RUN(eval_quasiquote_unquote);

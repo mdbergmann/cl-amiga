@@ -809,7 +809,7 @@ top:
      * Must NOT scan binding clauses as macro calls — the var name in
      * (TUPLE TUPLE (CDR TUPLE)) would be mistaken for a macro call
      * when the var name has a macro definition (e.g. FSet's TUPLE macro). */
-    if (head == SYM_DO) {
+    if (head == SYM_DO || head == SYM_DO_STAR) {
         CL_Obj var_clauses, end_clause, body;
         if (!CL_CONS_P(rest)) return;
         var_clauses = cl_car(rest);
@@ -1946,6 +1946,7 @@ void compile_expr(CL_Compiler *c, CL_Obj expr)
         if (head == SYM_FLET)        { compile_flet(c, expr); return; }
         if (head == SYM_LABELS)      { compile_labels(c, expr); return; }
         if (head == SYM_DO)          { compile_do(c, expr); return; }
+        if (head == SYM_DO_STAR)     { compile_do_star(c, expr); return; }
         if (head == SYM_DOLIST)      { compile_dolist(c, expr); return; }
         if (head == SYM_DOTIMES)     { compile_dotimes(c, expr); return; }
         if (head == SYM_TAGBODY)     { compile_tagbody(c, expr); return; }

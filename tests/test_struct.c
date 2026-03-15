@@ -231,6 +231,23 @@ TEST(struct_slot_no_default)
     ASSERT_STR_EQ(eval_print("(nd22-x (make-nd22 :x 7))"), "7");
 }
 
+TEST(struct_boa_constructor)
+{
+    /* BOA constructor with positional args */
+    eval_print("(defstruct (boa1 (:constructor make-boa1 (x y))) x y)");
+    ASSERT_STR_EQ(eval_print("(boa1-x (make-boa1 10 20))"), "10");
+    ASSERT_STR_EQ(eval_print("(boa1-y (make-boa1 10 20))"), "20");
+    /* BOA with &optional — bare param inherits slot default (CL spec 3.4.6) */
+    eval_print("(defstruct (boa2 (:constructor make-boa2 (a &optional b)))"
+               "  (a nil) (b t))");
+    ASSERT_STR_EQ(eval_print("(boa2-b (make-boa2 1))"), "T");
+    ASSERT_STR_EQ(eval_print("(boa2-b (make-boa2 1 42))"), "42");
+    /* BOA with &optional explicit default overrides slot default */
+    eval_print("(defstruct (boa3 (:constructor make-boa3 (a &optional (b 99))))"
+               "  (a nil) (b t))");
+    ASSERT_STR_EQ(eval_print("(boa3-b (make-boa3 1))"), "99");
+}
+
 int main(void)
 {
     test_init();
@@ -264,6 +281,7 @@ int main(void)
     /* Multiple slots / defaults */
     RUN(struct_no_slots);
     RUN(struct_slot_no_default);
+    RUN(struct_boa_constructor);
 
     teardown();
     REPORT();

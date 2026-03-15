@@ -1539,6 +1539,166 @@ void compile_do(CL_Compiler *c, CL_Obj form)
     env->local_count = saved_local_count;
 }
 
+void compile_do_star(CL_Compiler *c, CL_Obj form)
+{
+    /* (do* ((var init [step])...) (end-test result...) body...)
+     * Like do, but bindings and steps are sequential. */
+    CL_Obj var_clauses = cl_car(cl_cdr(form));
+    CL_Obj end_clause = cl_car(cl_cdr(cl_cdr(form)));
+    CL_Obj body = cl_cdr(cl_cdr(cl_cdr(form)));
+    CL_Obj end_test = cl_car(end_clause);
+    CL_Obj result_forms = cl_cdr(end_clause);
+    CL_CompEnv *env = c->env;
+    int saved_local_count = env->local_count;
+    int saved_tail = c->in_tail;
+    int saved_block_count = c->block_count;
+
+    CL_Obj vars[CL_MAX_BINDINGS];
+    CL_Obj inits[CL_MAX_BINDINGS];
+    CL_Obj steps[CL_MAX_BINDINGS];
+    int has_step[CL_MAX_BINDINGS];
+    uint8_t do_boxed[CL_MAX_BINDINGS];
+    int n = 0;
+    int i;
+    int loop_start, jtrue_pos;
+    int result_slot;
+    CL_BlockInfo *bi;
+
+    {
+        CL_Obj vc = var_clauses;
+        while (!CL_NULL_P(vc) && n < CL_MAX_BINDINGS) {
+            CL_Obj clause = cl_car(vc);
+            vars[n] = cl_car(clause);
+            inits[n] = cl_car(cl_cdr(clause));
+            if (!CL_NULL_P(cl_cdr(cl_cdr(clause)))) {
+                steps[n] = cl_car(cl_cdr(cl_cdr(clause)));
+                has_step[n] = 1;
+            } else {
+                steps[n] = CL_NIL;
+                has_step[n] = 0;
+            }
+            n++;
+            vc = cl_cdr(vc);
+        }
+    }
+
+    /* Check which vars need boxing */
+    {
+        uint8_t mutated[CL_MAX_BINDINGS], captured[CL_MAX_BINDINGS];
+        CL_Obj cur;
+        memset(mutated, 0, (size_t)n);
+        memset(captured, 0, (size_t)n);
+        memset(do_boxed, 0, (size_t)n);
+        cur = body;
+        while (CL_CONS_P(cur)) {
+            scan_body_for_boxing(cl_car(cur), vars, n, mutated, captured, 0);
+            cur = cl_cdr(cur);
+        }
+        scan_body_for_boxing(end_test, vars, n, mutated, captured, 0);
+        cur = result_forms;
+        while (CL_CONS_P(cur)) {
+            scan_body_for_boxing(cl_car(cur), vars, n, mutated, captured, 0);
+            cur = cl_cdr(cur);
+        }
+        for (i = 0; i < n; i++)
+            scan_body_for_boxing(steps[i], vars, n, mutated, captured, 0);
+        for (i = 0; i < n; i++) {
+            do_boxed[i] = (has_step[i] && captured[i]) ? 1 :
+                          (mutated[i] && captured[i]) ? 1 : 0;
+        }
+    }
+
+    c->in_tail = 0;
+
+    /* Sequential init: evaluate and store each var immediately */
+    for (i = 0; i < n; i++) {
+        compile_expr(c, inits[i]);
+        cl_env_add_local(env, vars[i]);
+        if (do_boxed[i]) {
+            cl_emit(c, OP_MAKE_CELL);
+            env->boxed[saved_local_count + i] = 1;
+        }
+        cl_emit(c, OP_STORE);
+        cl_emit(c, (uint8_t)(saved_local_count + i));
+        cl_emit(c, OP_POP);
+    }
+
+    /* Allocate result slot for implicit block NIL */
+    result_slot = env->local_count;
+    env->locals[result_slot] = CL_NIL;
+    env->local_count++;
+    if (env->local_count > env->max_locals)
+        env->max_locals = env->local_count;
+
+    bi = &c->blocks[c->block_count++];
+    bi->tag = CL_NIL;
+    bi->n_patches = 0;
+    bi->result_slot = result_slot;
+
+    /* loop_start: compile end-test, JTRUE -> end */
+    loop_start = c->code_pos;
+    compile_expr(c, end_test);
+    jtrue_pos = cl_emit_jump(c, OP_JTRUE);
+
+    /* Compile body */
+    {
+        CL_Obj b = body;
+        CL_GC_PROTECT(b);
+        while (!CL_NULL_P(b)) {
+            CL_Obj bform = cl_car(b);
+            if (CL_CONS_P(bform) && cl_car(bform) == SYM_DECLARE) {
+                b = cl_cdr(b);
+                continue;
+            }
+            compile_expr(c, bform);
+            cl_emit(c, OP_POP);
+            b = cl_cdr(b);
+        }
+        CL_GC_UNPROTECT(1);
+    }
+
+    /* Sequential step: evaluate and store each immediately */
+    for (i = 0; i < n; i++) {
+        if (has_step[i]) {
+            compile_expr(c, steps[i]);
+            if (do_boxed[i]) {
+                cl_emit(c, OP_CELL_SET_LOCAL);
+            } else {
+                cl_emit(c, OP_STORE);
+            }
+            cl_emit(c, (uint8_t)(saved_local_count + i));
+            cl_emit(c, OP_POP);
+        }
+    }
+
+    cl_emit_loop_jump(c, OP_JMP, loop_start);
+
+    /* end: */
+    cl_patch_jump(c, jtrue_pos);
+
+    /* Compile result forms or NIL */
+    c->in_tail = saved_tail;
+    if (!CL_NULL_P(result_forms)) {
+        compile_progn(c, result_forms);
+    } else {
+        cl_emit(c, OP_NIL);
+    }
+    cl_emit(c, OP_STORE);
+    cl_emit(c, (uint8_t)result_slot);
+    cl_emit(c, OP_POP);
+
+    for (i = 0; i < bi->n_patches; i++)
+        cl_patch_jump(c, bi->exit_patches[i]);
+
+    cl_emit(c, OP_LOAD);
+    cl_emit(c, (uint8_t)result_slot);
+
+    cl_env_clear_boxed(env, saved_local_count);
+
+    c->block_count = saved_block_count;
+    env->local_count = saved_local_count;
+}
+
 /* --- handler-bind --- */
 
 void compile_handler_bind(CL_Compiler *c, CL_Obj form)

@@ -62,6 +62,7 @@ extern CL_Obj SYM_AND;
 extern CL_Obj SYM_OR;
 extern CL_Obj SYM_COND;
 extern CL_Obj SYM_DO;
+extern CL_Obj SYM_DO_STAR;
 extern CL_Obj SYM_DOLIST;
 extern CL_Obj SYM_DOTIMES;
 extern CL_Obj SYM_RETURN;

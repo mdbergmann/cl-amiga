@@ -29,6 +29,7 @@ CL_Obj SYM_AND = CL_NIL;
 CL_Obj SYM_OR = CL_NIL;
 CL_Obj SYM_COND = CL_NIL;
 CL_Obj SYM_DO = CL_NIL;
+CL_Obj SYM_DO_STAR = CL_NIL;
 CL_Obj SYM_DOLIST = CL_NIL;
 CL_Obj SYM_DOTIMES = CL_NIL;
 CL_Obj SYM_RETURN = CL_NIL;
@@ -364,6 +365,7 @@ void cl_symbol_init(void)
     SYM_OR            = cl_intern_in("OR", 2, cl_package_cl);
     SYM_COND          = cl_intern_in("COND", 4, cl_package_cl);
     SYM_DO            = cl_intern_in("DO", 2, cl_package_cl);
+    SYM_DO_STAR       = cl_intern_in("DO*", 3, cl_package_cl);
     SYM_DOLIST        = cl_intern_in("DOLIST", 6, cl_package_cl);
     SYM_DOTIMES       = cl_intern_in("DOTIMES", 7, cl_package_cl);
     SYM_RETURN        = cl_intern_in("RETURN", 6, cl_package_cl);

@@ -474,6 +474,32 @@
       (list (car spec) (cadr spec))
       (list spec nil)))
 
+(defun %boa-patch-defaults (boa-lambda-list all-slots)
+  "Patch &optional and &key params in a BOA lambda list to use slot defaults
+when the param has no explicit default.  CL spec 3.4.6 requires this."
+  (let ((state :required)
+        (result nil))
+    (dolist (p boa-lambda-list)
+      (cond
+        ((member p '(&optional &key &rest &aux &allow-other-keys))
+         (setq state p)
+         (push p result))
+        ((or (eq state :required) (eq state '&rest))
+         (push p result))
+        ((or (eq state '&optional) (eq state '&key))
+         (if (and (symbolp p)
+                  ;; bare symbol &optional/&key param — inject slot default
+                  (not (member p '(&optional &key &rest &aux &allow-other-keys))))
+             (let ((slot (assoc p all-slots)))
+               (if (and slot (cadr slot))
+                   ;; Slot has a default form, wrap param with it
+                   (push (list p (cadr slot)) result)
+                   (push p result)))
+             ;; Already a list (has explicit default) — keep as-is
+             (push p result)))
+        (t (push p result))))
+    (reverse result)))
+
 (defmacro defstruct (name-and-options &rest slot-specs)
   (let* ((name (if (consp name-and-options) (car name-and-options) name-and-options))
          (options (if (consp name-and-options) (cdr name-and-options) nil))
@@ -573,7 +599,7 @@
                                                     sname
                                                     sdefault)))
                                             all-slots)))
-                    (push `(defun ,ctor-name ,boa-lambda-list
+                    (push `(defun ,ctor-name ,(%boa-patch-defaults boa-lambda-list all-slots)
                              (vector ,@slot-inits))
                           forms))
                   (let ((key-params (mapcar (lambda (s) (list (car s) (cadr s)))
@@ -619,7 +645,7 @@
                                                   sname
                                                   sdefault)))
                                           all-slots)))
-                  (push `(defun ,ctor-name ,boa-lambda-list
+                  (push `(defun ,ctor-name ,(%boa-patch-defaults boa-lambda-list all-slots)
                            (%make-struct ',name ,@slot-inits))
                         forms))
                 ;; Standard keyword constructor
