@@ -682,6 +682,38 @@ static CL_Obj bi_coerce(CL_Obj *args, int n)
         return CL_NIL;
     }
 
+    /* (coerce x 'function) — CL spec: identity for functions,
+     * fdefinition for symbols, compile for lambda exprs */
+    if (strcmp(tname, "FUNCTION") == 0 ||
+        strcmp(tname, "COMPILED-FUNCTION") == 0) {
+        if (CL_FUNCTION_P(obj) || CL_BYTECODE_P(obj) || CL_CLOSURE_P(obj))
+            return obj;
+        if (CL_SYMBOL_P(obj))
+            return cl_coerce_funcdesig(obj, "COERCE");
+        /* Lambda expression: (lambda (...) ...) — compile (function <expr>) */
+        if (CL_CONS_P(obj)) {
+            CL_Obj head = cl_car(obj);
+            if (CL_SYMBOL_P(head) &&
+                strcmp(cl_symbol_name(head), "LAMBDA") == 0) {
+                extern CL_Obj cl_compile(CL_Obj form);
+                extern CL_Obj cl_vm_eval(CL_Obj bytecode);
+                extern CL_Obj cl_intern_in(const char *name, uint32_t len, CL_Obj pkg);
+                extern CL_Obj cl_package_cl;
+                CL_Obj fn_sym = cl_intern_in("FUNCTION", 8, cl_package_cl);
+                CL_Obj form = cl_cons(fn_sym, cl_cons(obj, CL_NIL));
+                CL_Obj bytecode;
+                CL_GC_PROTECT(form);
+                bytecode = cl_compile(form);
+                CL_GC_UNPROTECT(1);
+                if (CL_NULL_P(bytecode))
+                    cl_error(CL_ERR_TYPE, "COERCE: failed to compile lambda");
+                return cl_vm_eval(bytecode);
+            }
+        }
+        cl_error(CL_ERR_TYPE, "COERCE: cannot coerce to FUNCTION");
+        return CL_NIL;
+    }
+
     /* (coerce x 'pathname) */
     if (strcmp(tname, "PATHNAME") == 0) {
         if (CL_PATHNAME_P(obj)) return obj;

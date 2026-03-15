@@ -2959,6 +2959,11 @@ TEST(eval_coerce)
     ASSERT_STR_EQ(eval_print("(coerce nil 'list)"), "NIL");
     ASSERT_STR_EQ(eval_print("(coerce (vector) 'list)"), "NIL");
     ASSERT_STR_EQ(eval_print("(coerce nil 'vector)"), "#()");
+    /* coerce to function */
+    ASSERT_STR_EQ(eval_print("(functionp (coerce #'car 'function))"), "T");
+    ASSERT_STR_EQ(eval_print("(funcall (coerce #'+ 'function) 1 2)"), "3");
+    ASSERT_STR_EQ(eval_print("(funcall (coerce '+ 'function) 3 4)"), "7");
+    ASSERT_STR_EQ(eval_print("(funcall (coerce '(lambda (x) (* x 2)) 'function) 5)"), "10");
 }
 
 /* --- Compound typep --- */
