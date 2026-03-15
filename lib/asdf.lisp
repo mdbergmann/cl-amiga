@@ -14209,57 +14209,34 @@ using (SYS:UPDATE-ALLEGRO)."))
   (defmethod (setf planned-action-count) (val (obj (eql nil))) val)
   (defmethod (setf planned-output-action-count) (val (obj (eql nil))) val))
 
-;;; --- Source loading mode ---
-;;; CL-Amiga compiles each form at load time, so the compile-file →
-;;; FASL → load-fasl round-trip adds complexity without benefit.
-;;; Override ASDF's compilation to use form-by-form source loading.
+;;; --- FASL compilation mode ---
+;;; CL-Amiga uses real compile-file to produce binary FASLs, and
+;;; real FASL loading via load.  This ensures cross-session compatibility:
+;;; compiled FASLs persist and can be loaded in subsequent sessions
+;;; without recompiling from source.
 
 #+cl-amiga
 (in-package #:asdf/lisp-action)
 
 #+cl-amiga
 (defun perform-lisp-compilation (o c)
-  "CL-Amiga: load source form-by-form instead of compile-file.
-Errors in individual forms are reported as warnings but do not abort the file."
+  "CL-Amiga: compile source to binary FASL using compile-file.
+Our compile-file reads, compiles, evaluates, and serializes each form."
   (let* ((input-file (first (input-files o c)))
          (outputs (output-files o c))
          (output-file (first outputs)))
-    (handler-case
-      (let ((*package* *package*)
-            (*readtable* *readtable*))
-        (with-open-file (stream input-file :direction :input)
-          (let ((eof (gensym "EOF"))
-                (nerrors 0))
-            (loop
-              (let ((form (handler-case (read stream nil eof)
-                            (error (e)
-                              (format t "~&;; [CL-Amiga] read error in ~A: ~A~%"
-                                      input-file e)
-                              (return)))))
-                (when (eq form eof) (return))
-                (handler-case (eval form)
-                  (error (e)
-                    (incf nerrors)
-                    (format t "~&;; [CL-Amiga] WARNING in ~A: ~A~%"
-                            input-file e)))))
-            (when (> nerrors 0)
-              (format t "~&;; [CL-Amiga] ~A: ~D form~:P skipped~%"
-                      input-file nerrors)))))
-      (error (e)
-        (format t "~&;; [CL-Amiga] ERROR loading ~A: ~A (continuing)~%"
-                input-file e)))
     (when output-file
-      (ensure-directories-exist output-file)
-      (with-open-file (s output-file :direction :output
-                                      :if-exists :supersede)
-        (format s ";; CL-Amiga marker FASL for ~A~%" input-file)))
-    (values output-file nil nil)))
+      (ensure-directories-exist output-file))
+    (let ((*package* *package*)
+          (*readtable* *readtable*))
+      (compile-file input-file :output-file output-file))))
 
 #+cl-amiga
 (defun perform-lisp-load-fasl (o c)
-  "CL-Amiga: no-op since perform-lisp-compilation already loaded the source."
-  (declare (ignore o c))
-  nil)
+  "CL-Amiga: load the compiled FASL."
+  (if-let (fasl (first (input-files o c)))
+    (let ((*package* (find-package '#:common-lisp-user)))
+      (load* fasl))))
 
 #+cl-amiga
 (in-package #:cl-user)
