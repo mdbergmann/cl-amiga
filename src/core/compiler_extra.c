@@ -554,6 +554,8 @@ void compile_case(CL_Compiler *c, CL_Obj form, int error_if_no_match)
             cl_patch_jump(c, done_patches[i]);
     }
 
+    cl_env_clear_boxed(env, saved_local_count);
+
     /* Restore scope */
     env->local_count = saved_local_count;
 }
@@ -663,6 +665,8 @@ void compile_typecase(CL_Compiler *c, CL_Obj form, int error_if_no_match)
             cl_patch_jump(c, done_patches[i]);
     }
 
+    cl_env_clear_boxed(env, saved_local_count);
+
     env->local_count = saved_local_count;
 }
 
@@ -718,6 +722,8 @@ void compile_multiple_value_bind(CL_Compiler *c, CL_Obj form)
     /* Compile body */
     c->in_tail = saved_tail;
     compile_body(c, body);
+
+    cl_env_clear_boxed(env, saved_local_count);
 
     /* Restore scope */
     env->local_count = saved_local_count;
@@ -818,6 +824,9 @@ void compile_multiple_value_prog1(CL_Compiler *c, CL_Obj form)
     }
 
     c->in_tail = saved_tail;
+
+    cl_env_clear_boxed(env, saved_local_count);
+
     env->local_count = saved_local_count;
 }
 

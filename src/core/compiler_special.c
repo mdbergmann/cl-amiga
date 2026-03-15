@@ -339,6 +339,8 @@ void compile_destructuring_bind(CL_Compiler *c, CL_Obj form)
     c->in_tail = saved_tail;
     compile_body(c, body);
 
+    cl_env_clear_boxed(env, saved_local_count);
+
     /* Restore scope */
     env->local_count = saved_local_count;
 }
@@ -433,6 +435,9 @@ void compile_block(CL_Compiler *c, CL_Obj form)
         /* Load result from slot */
         cl_emit(c, OP_LOAD);
         cl_emit(c, (uint8_t)result_slot);
+
+        /* Clear boxed flags so reused slots aren't treated as boxed */
+        cl_env_clear_boxed(env, saved_local_count);
 
         env->local_count = saved_local_count;
     }
@@ -855,6 +860,8 @@ void compile_unwind_protect(CL_Compiler *c, CL_Obj form)
     cl_emit(c, OP_LOAD);
     cl_emit(c, (uint8_t)result_slot);
 
+    cl_env_clear_boxed(env, saved_local_count);
+
     /* Restore */
     c->in_tail = saved_tail;
     env->local_count = saved_local_count;
@@ -920,6 +927,8 @@ void compile_flet(CL_Compiler *c, CL_Obj form)
     /* Phase 2: compile body */
     c->in_tail = saved_tail;
     compile_body(c, body);
+
+    cl_env_clear_boxed(env, saved_local_count);
 
     /* Restore */
     env->local_count = saved_local_count;
@@ -1028,11 +1037,7 @@ void compile_labels(CL_Compiler *c, CL_Obj form)
     compile_body(c, body);
 
     /* Restore — clear boxed flags so reused slots aren't treated as boxed */
-    {
-        int i;
-        for (i = saved_local_count; i < env->local_count; i++)
-            env->boxed[i] = 0;
-    }
+    cl_env_clear_boxed(env, saved_local_count);
     env->local_count = saved_local_count;
     env->local_fun_count = saved_fun_count;
 }
@@ -1189,6 +1194,8 @@ void compile_dolist(CL_Compiler *c, CL_Obj form)
     cl_emit(c, OP_LOAD);
     cl_emit(c, (uint8_t)result_slot);
 
+    cl_env_clear_boxed(env, saved_local_count);
+
     /* Restore */
     c->block_count = saved_block_count;
     env->local_count = saved_local_count;
@@ -1331,6 +1338,8 @@ void compile_dotimes(CL_Compiler *c, CL_Obj form)
     /* Load result */
     cl_emit(c, OP_LOAD);
     cl_emit(c, (uint8_t)result_slot);
+
+    cl_env_clear_boxed(env, saved_local_count);
 
     /* Restore */
     c->block_count = saved_block_count;
@@ -1522,6 +1531,8 @@ void compile_do(CL_Compiler *c, CL_Obj form)
     /* Load result */
     cl_emit(c, OP_LOAD);
     cl_emit(c, (uint8_t)result_slot);
+
+    cl_env_clear_boxed(env, saved_local_count);
 
     /* Restore */
     c->block_count = saved_block_count;

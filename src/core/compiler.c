@@ -1157,6 +1157,7 @@ static void compile_let(CL_Compiler *c, CL_Obj form, int sequential)
         cl_emit(c, (uint8_t)special_count);
     }
 
+    cl_env_clear_boxed(env, saved_local_count);
     env->local_count = saved_local_count;
     CL_GC_UNPROTECT(2);  /* bindings, body */
 }

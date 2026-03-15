@@ -443,7 +443,7 @@ static CL_Obj bi_mismatch(CL_Obj *args, int n)
     /* Parse keywords */
     for (ki = 2; ki + 1 < n; ki += 2) {
         if (args[ki] == KW_TEST) test_fn = cl_coerce_funcdesig(args[ki + 1], ":TEST");
-        else if (args[ki] == KW_KEY) key_fn = cl_coerce_funcdesig(args[ki + 1], ":KEY");
+        else if (args[ki] == KW_KEY) key_fn = CL_NULL_P(args[ki + 1]) ? CL_NIL : cl_coerce_funcdesig(args[ki + 1], ":KEY");
         else if (args[ki] == KW_START1 && CL_FIXNUM_P(args[ki + 1])) start1 = CL_FIXNUM_VAL(args[ki + 1]);
         else if (args[ki] == KW_END1 && !CL_NULL_P(args[ki + 1]) && CL_FIXNUM_P(args[ki + 1])) end1 = CL_FIXNUM_VAL(args[ki + 1]);
         else if (args[ki] == KW_START2 && CL_FIXNUM_P(args[ki + 1])) start2 = CL_FIXNUM_VAL(args[ki + 1]);
@@ -497,7 +497,7 @@ static CL_Obj bi_search(CL_Obj *args, int n)
     /* Parse keywords */
     for (ki = 2; ki + 1 < n; ki += 2) {
         if (args[ki] == KW_TEST) test_fn = cl_coerce_funcdesig(args[ki + 1], ":TEST");
-        else if (args[ki] == KW_KEY) key_fn = cl_coerce_funcdesig(args[ki + 1], ":KEY");
+        else if (args[ki] == KW_KEY) key_fn = CL_NULL_P(args[ki + 1]) ? CL_NIL : cl_coerce_funcdesig(args[ki + 1], ":KEY");
         else if (args[ki] == KW_START1 && CL_FIXNUM_P(args[ki + 1])) start1 = CL_FIXNUM_VAL(args[ki + 1]);
         else if (args[ki] == KW_START2 && CL_FIXNUM_P(args[ki + 1])) start2 = CL_FIXNUM_VAL(args[ki + 1]);
     }
@@ -641,7 +641,7 @@ static CL_Obj bi_sort(CL_Obj *args, int n)
     /* Parse :key */
     for (i = 2; i + 1 < n; i += 2) {
         if (args[i] == KW_KEY)
-            key_fn = cl_coerce_funcdesig(args[i + 1], ":KEY");
+            key_fn = CL_NULL_P(args[i + 1]) ? CL_NIL : cl_coerce_funcdesig(args[i + 1], ":KEY");
     }
 
     if (CL_NULL_P(seq)) return CL_NIL;

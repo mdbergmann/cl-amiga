@@ -60,7 +60,7 @@ static void parse_seq_args(CL_Obj *args, int n, int kw_start, SeqArgs *sa)
         if (kw == KW_TEST) {
             sa->test_fn = cl_coerce_funcdesig(val, ":TEST");
         } else if (kw == KW_KEY) {
-            sa->key_fn = cl_coerce_funcdesig(val, ":KEY");
+            sa->key_fn = CL_NULL_P(val) ? CL_NIL : cl_coerce_funcdesig(val, ":KEY");
         } else if (kw == KW_START) {
             if (CL_FIXNUM_P(val)) sa->start = CL_FIXNUM_VAL(val);
         } else if (kw == KW_END) {

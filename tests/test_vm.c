@@ -2623,6 +2623,8 @@ TEST(eval_find)
     ASSERT_STR_EQ(eval_print("(find 9 '(1 2 3))"), "NIL");
     ASSERT_STR_EQ(eval_print("(find 2 '(1 2 3 2 1) :start 2)"), "2");
     ASSERT_STR_EQ(eval_print("(find \"b\" '(\"a\" \"b\" \"c\") :test #'equal)"), "\"b\"");
+    /* Regression: :key nil must work (treated as identity) */
+    ASSERT_STR_EQ(eval_print("(find 3 '(1 2 3 4) :key nil)"), "3");
 }
 
 TEST(eval_find_if)
@@ -2879,6 +2881,41 @@ TEST(eval_sort_with_key)
     ASSERT_STR_EQ(eval_print(
         "(let ((items (loop for i from 1 to 200 collect (format nil \"item~3,'0d\" i))))"
         "  (length (sort items #'string<)))"), "200");
+}
+
+TEST(eval_sort_key_nil)
+{
+    /* Regression: :key nil must be treated as identity (CL spec) */
+    ASSERT_STR_EQ(eval_print("(sort (list 3 1 2) #'< :key nil)"), "(1 2 3)");
+    ASSERT_STR_EQ(eval_print("(sort (vector 3 1 2) #'< :key nil)"), "#(1 2 3)");
+    ASSERT_STR_EQ(eval_print("(stable-sort (list 3 1 2) #'< :key nil)"), "(1 2 3)");
+}
+
+TEST(eval_stale_boxed_flag)
+{
+    /* Regression: labels in one cond branch boxing a variable must not
+     * corrupt sibling branches that reuse the same local slot.
+     * The bug was that env->boxed[] flags were not cleared when a let
+     * scope exited, causing CELL_REF to be emitted for plain locals. */
+    ASSERT_STR_EQ(eval_print(
+        "(defun test-stale-boxed (x fn)"
+        "  (cond ((consp x)"
+        "         (let ((acc 0))"
+        "           (labels ((body (k v)"
+        "                      (declare (ignore k))"
+        "                      (setf acc (+ acc (funcall fn v)))))"
+        "             (body (car x) (cdr x)))"
+        "           acc))"
+        "        ((vectorp x)"
+        "         (let ((result 0))"
+        "           (dotimes (i (length x))"
+        "             (let ((h (funcall fn (svref x i))))"
+        "               (setf result (logxor result h))))"
+        "           result))))"), "TEST-STALE-BOXED");
+    /* cons branch: acc = identity(42) = 42 */
+    ASSERT_STR_EQ(eval_print("(test-stale-boxed '(a . 42) #'identity)"), "42");
+    /* vector branch must not crash (was SIGSEGV before fix) */
+    ASSERT_STR_EQ(eval_print("(test-stale-boxed #(3 5) #'identity)"), "6");
 }
 
 TEST(eval_typep)
@@ -6535,6 +6572,8 @@ int main(void)
     RUN(eval_sort);
     RUN(eval_stable_sort);
     RUN(eval_sort_with_key);
+    RUN(eval_sort_key_nil);
+    RUN(eval_stale_boxed_flag);
 
     /* Phase 5 — Type system */
     RUN(eval_typep);

@@ -54,6 +54,16 @@ typedef struct CL_CompEnv {
     int symbol_macro_count;
 } CL_CompEnv;
 
+/* Clear boxed flags for slots [from, env->local_count) so reused slots
+ * aren't incorrectly treated as heap-boxed cells.  Must be called before
+ * restoring local_count when leaving a scope that may have boxed locals. */
+static void cl_env_clear_boxed(CL_CompEnv *env, int from)
+{
+    int j;
+    for (j = from; j < env->local_count; j++)
+        env->boxed[j] = 0;
+}
+
 /* Create a new compile-time environment */
 CL_CompEnv *cl_env_create(CL_CompEnv *parent);
 
