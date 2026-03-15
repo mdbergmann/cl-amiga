@@ -2301,8 +2301,28 @@ TEST(eval_subseq)
 
 TEST(eval_concatenate)
 {
+    /* String result */
     ASSERT_STR_EQ(eval_print("(concatenate 'string \"hello\" \" \" \"world\")"),
         "\"hello world\"");
+    ASSERT_STR_EQ(eval_print("(concatenate 'string \"ab\" (list #\\c #\\d))"),
+        "\"abcd\"");
+    ASSERT_STR_EQ(eval_print("(concatenate 'string (vector #\\x #\\y))"),
+        "\"xy\"");
+    /* Vector result */
+    ASSERT_STR_EQ(eval_print("(concatenate 'simple-vector #(a b) #(c d))"),
+        "#(A B C D)");
+    ASSERT_STR_EQ(eval_print("(concatenate 'vector '(1 2) #(3 4))"),
+        "#(1 2 3 4)");
+    ASSERT_STR_EQ(eval_print("(concatenate 'vector \"ab\")"),
+        "#(#\\a #\\b)");
+    /* List result */
+    ASSERT_STR_EQ(eval_print("(concatenate 'list #(1 2) '(3 4))"),
+        "(1 2 3 4)");
+    ASSERT_STR_EQ(eval_print("(concatenate 'list)"),
+        "NIL");
+    /* Empty inputs */
+    ASSERT_STR_EQ(eval_print("(concatenate 'string)"), "\"\"");
+    ASSERT_STR_EQ(eval_print("(concatenate 'vector)"), "#()");
 }
 
 TEST(eval_char_accessor)

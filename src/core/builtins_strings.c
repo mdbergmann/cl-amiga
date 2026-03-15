@@ -487,25 +487,149 @@ static CL_Obj bi_subseq(CL_Obj *args, int n)
     }
 }
 
-static CL_Obj bi_concatenate(CL_Obj *args, int n)
+/* Helper: count total elements across sequences args[1..n-1] */
+static uint32_t concat_total_length(CL_Obj *args, int n)
 {
-    char buf[4096];
-    int pos = 0;
+    uint32_t total = 0;
     int i;
-    CL_UNUSED(n);
     for (i = 1; i < n; i++) {
         if (CL_STRING_P(args[i])) {
             CL_String *s = (CL_String *)CL_OBJ_TO_PTR(args[i]);
-            if (pos + (int)s->length < (int)sizeof(buf)) {
-                memcpy(buf + pos, s->data, s->length);
-                pos += (int)s->length;
-            }
-        } else if (CL_CHAR_P(args[i])) {
-            if (pos < (int)sizeof(buf) - 1)
-                buf[pos++] = (char)CL_CHAR_VAL(args[i]);
+            total += s->length;
+        } else if (CL_VECTOR_P(args[i])) {
+            CL_Vector *v = (CL_Vector *)CL_OBJ_TO_PTR(args[i]);
+            total += cl_vector_active_length(v);
+        } else if (CL_NULL_P(args[i])) {
+            /* empty */
+        } else if (CL_CONS_P(args[i])) {
+            CL_Obj p = args[i];
+            while (CL_CONS_P(p)) { total++; p = cl_cdr(p); }
+        } else if (CL_BIT_VECTOR_P(args[i])) {
+            CL_BitVector *bv = (CL_BitVector *)CL_OBJ_TO_PTR(args[i]);
+            total += bv->length;
         }
     }
-    return cl_make_string(buf, (uint32_t)pos);
+    return total;
+}
+
+/* Helper: iterate over sequence seq, calling cb(elem, ctx) for each element */
+typedef void (*concat_cb)(CL_Obj elem, void *ctx);
+
+static void concat_iterate(CL_Obj seq, concat_cb cb, void *ctx)
+{
+    if (CL_STRING_P(seq)) {
+        CL_String *s = (CL_String *)CL_OBJ_TO_PTR(seq);
+        uint32_t j;
+        for (j = 0; j < s->length; j++)
+            cb(CL_MAKE_CHAR((unsigned char)s->data[j]), ctx);
+    } else if (CL_VECTOR_P(seq)) {
+        CL_Vector *v = (CL_Vector *)CL_OBJ_TO_PTR(seq);
+        uint32_t len = cl_vector_active_length(v);
+        uint32_t j;
+        for (j = 0; j < len; j++)
+            cb(cl_vector_data(v)[j], ctx);
+    } else if (CL_NULL_P(seq)) {
+        /* empty */
+    } else if (CL_CONS_P(seq)) {
+        CL_Obj p = seq;
+        while (CL_CONS_P(p)) {
+            cb(cl_car(p), ctx);
+            p = cl_cdr(p);
+        }
+    } else if (CL_BIT_VECTOR_P(seq)) {
+        CL_BitVector *bv = (CL_BitVector *)CL_OBJ_TO_PTR(seq);
+        uint32_t j;
+        for (j = 0; j < bv->length; j++)
+            cb(CL_MAKE_FIXNUM(cl_bv_get_bit(bv, j)), ctx);
+    }
+}
+
+/* Callback context for string result */
+typedef struct { char *buf; uint32_t pos; uint32_t cap; } concat_str_ctx;
+static void concat_str_cb(CL_Obj elem, void *ctx_)
+{
+    concat_str_ctx *ctx = (concat_str_ctx *)ctx_;
+    if (CL_CHAR_P(elem)) {
+        if (ctx->pos < ctx->cap)
+            ctx->buf[ctx->pos++] = (char)CL_CHAR_VAL(elem);
+    } else {
+        cl_error(CL_ERR_TYPE, "CONCATENATE: element is not a character for string result");
+    }
+}
+
+/* Callback context for vector result */
+typedef struct { CL_Obj vec; uint32_t pos; } concat_vec_ctx;
+static void concat_vec_cb(CL_Obj elem, void *ctx_)
+{
+    concat_vec_ctx *ctx = (concat_vec_ctx *)ctx_;
+    CL_Vector *v = (CL_Vector *)CL_OBJ_TO_PTR(ctx->vec);
+    if (ctx->pos < cl_vector_active_length(v))
+        cl_vector_data(v)[ctx->pos++] = elem;
+}
+
+/* Callback context for list result */
+typedef struct { CL_Obj head; CL_Obj tail; } concat_list_ctx;
+static void concat_list_cb(CL_Obj elem, void *ctx_)
+{
+    concat_list_ctx *ctx = (concat_list_ctx *)ctx_;
+    CL_Obj cell = cl_cons(elem, CL_NIL);
+    if (CL_NULL_P(ctx->head)) {
+        ctx->head = cell;
+        ctx->tail = cell;
+    } else {
+        ((CL_Cons *)CL_OBJ_TO_PTR(ctx->tail))->cdr = cell;
+        ctx->tail = cell;
+    }
+}
+
+static CL_Obj bi_concatenate(CL_Obj *args, int n)
+{
+    CL_Obj result_type = args[0];
+    const char *tname;
+    int i;
+
+    if (CL_NULL_P(result_type))
+        cl_error(CL_ERR_TYPE, "CONCATENATE: result type must not be NIL");
+    if (!CL_SYMBOL_P(result_type))
+        cl_error(CL_ERR_TYPE, "CONCATENATE: result type must be a type specifier");
+    tname = cl_symbol_name(result_type);
+
+    /* String result types */
+    if (strcmp(tname, "STRING") == 0 || strcmp(tname, "SIMPLE-STRING") == 0 ||
+        strcmp(tname, "BASE-STRING") == 0 || strcmp(tname, "SIMPLE-BASE-STRING") == 0) {
+        char buf[4096];
+        concat_str_ctx ctx = { buf, 0, sizeof(buf) };
+        for (i = 1; i < n; i++)
+            concat_iterate(args[i], concat_str_cb, &ctx);
+        return cl_make_string(buf, ctx.pos);
+    }
+
+    /* Vector result types */
+    if (strcmp(tname, "VECTOR") == 0 || strcmp(tname, "SIMPLE-VECTOR") == 0) {
+        uint32_t total = concat_total_length(args, n);
+        concat_vec_ctx ctx;
+        ctx.vec = cl_make_vector(total);
+        ctx.pos = 0;
+        CL_GC_PROTECT(ctx.vec);
+        for (i = 1; i < n; i++)
+            concat_iterate(args[i], concat_vec_cb, &ctx);
+        CL_GC_UNPROTECT(1);
+        return ctx.vec;
+    }
+
+    /* List result type */
+    if (strcmp(tname, "LIST") == 0) {
+        concat_list_ctx ctx = { CL_NIL, CL_NIL };
+        CL_GC_PROTECT(ctx.head);
+        CL_GC_PROTECT(ctx.tail);
+        for (i = 1; i < n; i++)
+            concat_iterate(args[i], concat_list_cb, &ctx);
+        CL_GC_UNPROTECT(2);
+        return ctx.head;
+    }
+
+    cl_error(CL_ERR_TYPE, "CONCATENATE: unsupported result type %s", tname);
+    return CL_NIL;
 }
 
 static CL_Obj bi_char_accessor(CL_Obj *args, int n)
