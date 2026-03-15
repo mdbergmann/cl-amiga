@@ -100,14 +100,20 @@ int cl_emit_jump(CL_Compiler *c, uint8_t op)
 void cl_patch_jump(CL_Compiler *c, int patch_pos)
 {
     int offset = c->code_pos - (patch_pos + 2);
+    if (offset < -32768 || offset > 32767)
+        cl_error(CL_ERR_OVERFLOW, "Jump offset too large (%d bytes)", offset);
     c->code[patch_pos]     = (uint8_t)(offset >> 8);
     c->code[patch_pos + 1] = (uint8_t)(offset & 0xFF);
 }
 
 void cl_emit_loop_jump(CL_Compiler *c, uint8_t op, int target)
 {
+    int offset;
     cl_emit(c, op);
-    cl_emit_i16(c, (int16_t)(target - (c->code_pos + 2)));
+    offset = target - (c->code_pos + 2);
+    if (offset < -32768 || offset > 32767)
+        cl_error(CL_ERR_OVERFLOW, "Jump offset too large (%d bytes)", offset);
+    cl_emit_i16(c, (int16_t)offset);
 }
 
 /* --- Helper --- */
@@ -2093,7 +2099,7 @@ CL_Obj cl_compile(CL_Obj expr)
     CL_CompEnv *env;
     CL_Bytecode *bc;
 
-    /* Heap-allocate compiler state (~45KB — too large for AmigaOS stack) */
+    /* Heap-allocate compiler state (~155KB — too large for AmigaOS stack) */
     comp = (CL_Compiler *)platform_alloc(sizeof(CL_Compiler));
     if (!comp) return CL_NIL;
     memset(comp, 0, sizeof(*comp));
