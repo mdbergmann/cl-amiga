@@ -31,6 +31,7 @@ void compile_and(CL_Compiler *c, CL_Obj form)
     }
 
     /* Multiple args: short-circuit chain */
+    CL_GC_PROTECT(args);
     while (!CL_NULL_P(args)) {
         int is_last = CL_NULL_P(cl_cdr(args));
         if (is_last) {
@@ -46,6 +47,7 @@ void compile_and(CL_Compiler *c, CL_Obj form)
         }
         args = cl_cdr(args);
     }
+    CL_GC_UNPROTECT(1);
 
     /* Patch all nil-jumps to here (done label) */
     {
@@ -75,6 +77,7 @@ void compile_or(CL_Compiler *c, CL_Obj form)
     }
 
     /* Multiple args: short-circuit chain */
+    CL_GC_PROTECT(args);
     while (!CL_NULL_P(args)) {
         int is_last = CL_NULL_P(cl_cdr(args));
         if (is_last) {
@@ -90,6 +93,7 @@ void compile_or(CL_Compiler *c, CL_Obj form)
         }
         args = cl_cdr(args);
     }
+    CL_GC_UNPROTECT(1);
 
     /* Patch all true-jumps to here (done label) */
     {
@@ -113,6 +117,7 @@ void compile_cond(CL_Compiler *c, CL_Obj form)
         return;
     }
 
+    CL_GC_PROTECT(clauses);
     while (!CL_NULL_P(clauses)) {
         CL_Obj clause = cl_car(clauses);
         CL_Obj test = cl_car(clause);
@@ -157,6 +162,7 @@ void compile_cond(CL_Compiler *c, CL_Obj form)
 
         clauses = cl_cdr(clauses);
     }
+    CL_GC_UNPROTECT(1);
 
     /* If the last clause wasn't a t-default, we need a NIL fallthrough */
     {

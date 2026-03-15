@@ -142,6 +142,26 @@ void cl_vm_push(CL_Obj val)
     if (dbg_watch_idx >= 0 && (cl_vm.sp - 1) == dbg_watch_idx && val != dbg_watch_orig)
         DBG_CHECK_WATCH("cl_vm_push");
 #endif
+#ifdef DEBUG_GC
+    /* Detect push of a freed (poison-filled) heap object */
+    if (CL_HEAP_P(val) && val < cl_heap.arena_size) {
+        uint8_t *p = (uint8_t *)CL_OBJ_TO_PTR(val);
+        /* Check if bytes 8-11 (after CL_FreeBlock header) are poison 0xDE */
+        if (p[8] == 0xDE && p[9] == 0xDE && p[10] == 0xDE && p[11] == 0xDE) {
+            char buf[256];
+            CL_Obj cur_bc = (cl_vm.fp > 0) ? cl_vm.frames[cl_vm.fp - 1].bytecode : CL_NIL;
+            snprintf(buf, sizeof(buf),
+                     "VM-PUSH-FREED: sp=%d val=0x%08x hdr=0x%08x bc=0x%08x fp=%d\n",
+                     cl_vm.sp - 1, (unsigned)val,
+                     (unsigned)*(uint32_t *)p,
+                     (unsigned)cur_bc, cl_vm.fp);
+            platform_write_string(buf);
+            cl_capture_backtrace();
+            platform_write_string(cl_backtrace_buf);
+            platform_write_string("\n");
+        }
+    }
+#endif
 }
 
 CL_Obj cl_vm_pop(void)
@@ -459,9 +479,24 @@ void cl_check_c_stack(const char *context)
 
 /* Shared buffers for OP_CALL keyword processing and OP_APPLY argument flattening.
  * Moved out of cl_vm_eval to keep the per-recursion stack frame small.
- * Safe because these buffers are fully consumed before any recursive call. */
+ *
+ * IMPORTANT: vm_extra_args holds CL_Obj values removed from the VM stack
+ * during &rest/&key processing.  cl_cons (called to build the &rest list)
+ * can trigger GC.  These arrays MUST be GC-rooted — see cl_vm_gc_mark_extra. */
 static CL_Obj vm_extra_args[256];
+static int vm_extra_args_count = 0;  /* Valid entries (for GC root marking) */
 static CL_Obj vm_flat_args[64];
+
+/* GC root marking for VM-internal buffers.
+ * Called from gc_mark() in mem.c to mark CL_Obj values held in static
+ * arrays that are not on the VM stack (e.g., during &rest list building). */
+void cl_vm_gc_mark_extra(void)
+{
+    extern void gc_mark_obj(CL_Obj obj);
+    int i;
+    for (i = 0; i < vm_extra_args_count; i++)
+        gc_mark_obj(vm_extra_args[i]);
+}
 
 /* Last-dispatch diagnostic globals (readable from crash handler / debugger) */
 volatile uint8_t dbg_last_op;
@@ -1024,6 +1059,7 @@ static CL_Obj cl_vm_run(int base_fp, int base_nlx)
                         for (i = n_positional; i < nargs; i++) {
                             if (n_extra < 256) vm_extra_args[n_extra++] = src[i];
                         }
+                        vm_extra_args_count = n_extra;
                     }
 
                     /* Handle &rest */
@@ -1073,6 +1109,7 @@ static CL_Obj cl_vm_run(int base_fp, int base_nlx)
                         }
                     }
 
+                    vm_extra_args_count = 0;
                     if (has_rest || has_key)
                         CL_GC_UNPROTECT(1);
 
@@ -1126,6 +1163,7 @@ static CL_Obj cl_vm_run(int base_fp, int base_nlx)
                             if (n_extra < 256)
                                 vm_extra_args[n_extra++] = cl_vm.stack[new_bp + i];
                         }
+                        vm_extra_args_count = n_extra;
                     }
 
                     /* Truncate stack to positional args */
@@ -1184,6 +1222,7 @@ static CL_Obj cl_vm_run(int base_fp, int base_nlx)
                         }
                     }
 
+                    vm_extra_args_count = 0;
                     if (has_rest || has_key)
                         CL_GC_UNPROTECT(1);
 
@@ -1916,6 +1955,7 @@ static CL_Obj cl_vm_run(int base_fp, int base_nlx)
                             if (n_extra < 256)
                                 vm_extra_args[n_extra++] = cl_vm.stack[new_bp + ai];
                         }
+                        vm_extra_args_count = n_extra;
                     }
 
                     /* Truncate to positional */
@@ -1969,6 +2009,7 @@ static CL_Obj cl_vm_run(int base_fp, int base_nlx)
                         }
                     }
 
+                    vm_extra_args_count = 0;
                     if (has_rest || has_key)
                         CL_GC_UNPROTECT(1);
 

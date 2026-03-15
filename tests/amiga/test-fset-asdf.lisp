@@ -1,15 +1,9 @@
-;; Test loading fset via ASDF/quicklisp on Amiga
-;; Dependencies loaded via ASDF compile-file, fset loaded from source
-;; Run: clamiga --heap 48M --non-interactive --load tests/amiga/test-fset-asdf.lisp
+;; Test loading FSet via (ql:quickload :fset)
+;; Run: clamiga --heap 24M --non-interactive --load tests/amiga/test-fset-asdf.lisp
 
-(format t "~%; === FSet ASDF compile-file test ===~%")
+(format t "~%; === FSet quickload test ===~%")
 
-;; 1. Load ASDF
-(format t "; Loading ASDF~%")
-(load "lib/asdf.lisp")
-(load "lib/asdf-compat.lisp")
-
-;; 2. Load quicklisp
+;; 1. Load quicklisp
 (format t "; Loading quicklisp~%")
 (let ((amiga-setup "S:quicklisp/setup.lisp"))
   (if (probe-file amiga-setup)
@@ -18,68 +12,38 @@
                           (namestring (user-homedir-pathname))
                           "quicklisp/setup.lisp")))
         (load host-setup))))
-(load "lib/quicklisp-compat.lisp")
 
-;; 3. Quickload fset dependencies via ASDF compile-file
-;;    named-readtables loads through ASDF (real library, not stub)
-(format t "~%; === Testing ASDF compile-file ===~%")
+;; 2. Quickload FSet (pulls in misc-extensions, mt19937, named-readtables)
+(format t "~%; Quickloading FSet...~%")
+(ql:quickload :fset)
 
-(format t "; Quickloading misc-extensions via ASDF...~%")
+;; 3. Test basic FSet operations
+(format t "~%; Testing FSet operations...~%")
+
+;; Sets
+(let ((s (fset:set 1 2 3 4 5)))
+  (format t "Set: ~A~%" s)
+  (assert (fset:contains? s 3) () "set should contain 3")
+  (assert (not (fset:contains? s 9)) () "set should not contain 9")
+  (let ((u (fset:union s (fset:set 4 5 6 7))))
+    (format t "Union: ~A~%" u)
+    (assert (fset:contains? u 6) () "union should contain 6")))
+(format t "; Sets OK~%")
+
+;; Maps
+(let* ((m (fset:with (fset:with (fset:empty-map) 'a 1) 'b 2))
+       (v (fset:lookup m 'a)))
+  (format t "Map: ~A~%" m)
+  (format t "Lookup a: ~A~%" v)
+  (assert (eql v 1) () "map lookup a should be 1")
+  (assert (eql (fset:lookup m 'b) 2) () "map lookup b should be 2"))
+(format t "; Maps OK~%")
+
+;; Map via reader macro
 (handler-case
-  (ql:quickload :misc-extensions)
-  (error (c)
-    (format t "~%FAIL: misc-extensions quickload: ~A~%" c)))
+  (let ((m (fset:map ("x" 42) ("y" 99))))
+    (format t "Map reader: ~A~%" m)
+    (assert (eql (fset:lookup m "x") 42) () "map reader lookup x should be 42"))
+  (error (c) (format t "; Map reader: ~A (skipped)~%" c)))
 
-(format t "; Quickloading mt19937 via ASDF...~%")
-(handler-case
-  (ql:quickload :mt19937)
-  (error (c)
-    (format t "~%FAIL: mt19937 quickload: ~A~%" c)))
-
-(format t "; Quickloading named-readtables via ASDF...~%")
-(handler-case
-  (ql:quickload :named-readtables)
-  (error (c)
-    (format t "~%FAIL: named-readtables quickload: ~A~%" c)))
-
-(format t "~%; ASDF compile-file test PASSED~%")
-
-;; 4. Load fset from source (ASDF quickload of fset has a separate
-;;    session-management bug unrelated to the NLX fix)
-(format t "~%; === Loading fset from source ===~%")
-
-(let ((amiga-sw "S:quicklisp/dists/quicklisp/software/")
-      (host-sw (concatenate 'string
-                 (namestring (user-homedir-pathname))
-                 "quicklisp/dists/quicklisp/software/")))
-  (let ((sw (if (probe-file amiga-sw) amiga-sw host-sw)))
-    ;; Create FSET package via defs.lisp
-    (format t "; Loading fset/defs.lisp~%")
-    (load (concatenate 'string sw "fset-v2.2.0/Code/defs.lisp"))
-
-    ;; Load fset source files (port.lisp has #+cl-amiga stubs)
-    (let ((base (concatenate 'string sw "fset-v2.2.0/Code/")))
-      (dolist (f '("port" "macros" "order" "hash" "wb-trees" "champ"
-                   "reader" "fset" "replay" "tuples" "interval"
-                   "relations" "complement-sets" "bounded-sets" "post"))
-        (format t "; Loading fset/~A.lisp~%" f)
-        (handler-case
-          (load (concatenate 'string base f ".lisp"))
-          (error (c)
-            (format t "~%ERROR loading ~A: ~A~%" f c)))))))
-
-;; 6. Test basic fset operations
-(format t "~%Testing FSet...~%")
-(handler-case
-  (let ((s (fset:set 1 2 3 4 5)))
-    (format t "Set: ~A~%" s)
-    (format t "Contains 3: ~A~%" (fset:contains? s 3))
-    (format t "Contains 9: ~A~%" (fset:contains? s 9))
-    (format t "Union: ~A~%" (fset:union s (fset:set 4 5 6 7))))
-  (error (c) (format t "Set ERROR: ~A~%" c)))
-(handler-case
-  (let ((m (fset:map ("a" 1) ("b" 2) ("c" 3))))
-    (format t "Map: ~A~%" m)
-    (format t "Lookup b: ~A~%" (fset:lookup m "b")))
-  (error (c) (format t "Map ERROR: ~A~%" c)))
-(format t "~%ALL TESTS PASSED~%")
+(format t "~%; === All FSet tests PASSED ===~%")

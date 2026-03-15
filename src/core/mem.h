@@ -17,10 +17,16 @@
 #define CL_MIN_ALLOC_SIZE     16  /* Minimum allocation (aligned) */
 #define CL_ALIGN              4   /* 4-byte alignment */
 
-/* Free block header (overlays CL_Header in freed objects) */
+/* Free block header (overlays CL_Header in freed objects).
+ * Uses arena-relative offsets (not native pointers) for the free-list
+ * link so that sizeof(CL_FreeBlock) == 8 on every platform.  This is
+ * critical on 64-bit hosts: a native pointer would be 8 bytes and
+ * expand the struct to 16 bytes via alignment padding, consuming the
+ * entire CL_MIN_ALLOC_SIZE block and making poison-fill ineffective
+ * for detecting use-after-free on small objects (e.g. cons cells). */
 typedef struct CL_FreeBlock {
     uint32_t size;              /* Total size including this header */
-    struct CL_FreeBlock *next;  /* Next free block */
+    uint32_t next_offset;       /* Arena offset of next free block (0 = end) */
 } CL_FreeBlock;
 
 /* Heap state */
@@ -28,7 +34,7 @@ typedef struct {
     uint8_t *arena;             /* Base of arena */
     uint32_t arena_size;        /* Total arena size */
     uint32_t bump;              /* Bump pointer offset from arena */
-    CL_FreeBlock *free_list;    /* Free list head */
+    uint32_t free_list;         /* Arena offset of first free block (0 = empty) */
     uint32_t total_allocated;   /* Bytes currently allocated */
     uint32_t total_consed;      /* Bytes ever allocated (monotonic, never reset) */
     uint32_t gc_count;          /* Number of GC cycles */

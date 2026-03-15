@@ -6,9 +6,9 @@ CL-Amiga is a bytecode-compiled Common Lisp environment written in C (C89/C99). 
 
 ## Status
 
-CL-Amiga can load **ASDF**, install and run **Quicklisp**, and successfully quickload and run the **fiveam** test framework (57/57 self-tests passing). The **Alexandria** library loads without issues.
+CL-Amiga can load **ASDF**, install and run **Quicklisp**, and successfully quickload libraries including **Alexandria**, **fiveam** (57/57 self-tests passing), and **FSet** (functional collections).
 
-Over 620 host tests cover the implementation.
+Over 1600 host tests cover the implementation.
 
 ## Building
 
@@ -53,9 +53,10 @@ The default heap is **4 MB**. Larger workloads need more:
 | Use case                        | Heap             | Amiga stack       |
 |---------------------------------|------------------|-------------------|
 | REPL / small programs           | 4M (default)     | `stack 65000`     |
-| Loading ASDF                    | `--heap 8M`      | `stack 65000`     |
+| Loading ASDF                    | `--heap 11M`     | `stack 65000`     |
 | Quicklisp + quickload libraries | `--heap 24M`     | `stack 400000`    |
-| Fiveam (load + self-tests)      | `--heap 24M`     | `stack 600000`    |
+| FSet (functional collections)   | `--heap 24M`     | `stack 400000`    |
+| Fiveam (load + self-tests)      | `--heap 24M`     | `stack 800000`    |
 
 On AmigaOS, set the process stack before launching (the default 4 KB is too small):
 
@@ -71,6 +72,7 @@ clamiga --heap 24M
 CL-USER> (load "quicklisp/setup.lisp")
 CL-USER> (ql:quickload "alexandria")
 CL-USER> (ql:quickload "fiveam")
+CL-USER> (ql:quickload "fset")
 ```
 
 ## Architecture
@@ -85,7 +87,7 @@ CL-USER> (ql:quickload "fiveam")
 
 - **Threading** — no threading support yet; green threads are a possible future direction
 - **Buffered socket I/O** — network streams currently use byte-at-a-time recv/send, making Quicklisp downloads on Amiga very slow
-- **compile-file** — currently copies source as-is; no proper fasl/bytecode file format yet
+- **compile-file** — ASDF uses form-by-form source loading (CL-Amiga compiles at load time); no proper fasl/bytecode file format yet
 - **ANSI CL gaps** — while major subsystems work (CLOS, conditions, packages, the full numeric tower, arrays, pathnames, streams, loop, format), some corners of the spec remain unimplemented
 - **Amiga networking** — bsdsocket.library integration is partial
 - **Full AmigaOS API support** — Intuition, Graphics, and other AmigaOS libraries for native GUI and multimedia applications
@@ -101,7 +103,7 @@ src/
 lib/
   boot.lisp       Standard library bootstrap
   clos.lisp       CLOS implementation
-  asdf.lisp       ASDF (Another System Definition Facility)
+  asdf.lisp       ASDF (Another System Definition Facility, with CL-Amiga adaptations)
 tests/
   test_*.c        Host test suites (C)
   amiga/          Amiga test suite (Lisp)

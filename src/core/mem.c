@@ -61,7 +61,7 @@ void cl_mem_init(uint32_t heap_size)
     cl_arena_base = cl_heap.arena;
     cl_heap.arena_size = heap_size;
     cl_heap.bump = CL_ALIGN;  /* Skip offset 0 so it stays NIL */
-    cl_heap.free_list = NULL;
+    cl_heap.free_list = 0;
     cl_heap.total_allocated = 0;
     cl_heap.total_consed = 0;
     cl_heap.gc_count = 0;
@@ -91,29 +91,31 @@ static void *alloc_from_bump(uint32_t size)
 static void *alloc_from_free_list(uint32_t *sizep)
 {
     uint32_t size = *sizep;
-    CL_FreeBlock **prev = &cl_heap.free_list;
-    CL_FreeBlock *block = cl_heap.free_list;
+    uint32_t *prev_off = &cl_heap.free_list;
+    uint32_t cur_off = cl_heap.free_list;
 
-    while (block) {
+    while (cur_off) {
+        CL_FreeBlock *block = (CL_FreeBlock *)(cl_heap.arena + cur_off);
         if (block->size >= size) {
             uint32_t remainder = block->size - size;
             if (remainder >= CL_MIN_ALLOC_SIZE) {
                 /* Split block */
-                CL_FreeBlock *new_free = (CL_FreeBlock *)((uint8_t *)block + size);
+                uint32_t new_off = cur_off + size;
+                CL_FreeBlock *new_free = (CL_FreeBlock *)(cl_heap.arena + new_off);
                 new_free->size = remainder;
-                new_free->next = block->next;
-                *prev = new_free;
+                new_free->next_offset = block->next_offset;
+                *prev_off = new_off;
             } else {
                 /* Use entire block — report actual size so header matches */
                 size = block->size;
                 *sizep = size;
-                *prev = block->next;
+                *prev_off = block->next_offset;
             }
             memset(block, 0, size);
             return block;
         }
-        prev = &block->next;
-        block = block->next;
+        prev_off = &block->next_offset;
+        cur_off = block->next_offset;
     }
     return NULL;
 }
@@ -771,6 +773,12 @@ static void gc_mark(void)
         cl_compiler_gc_mark();
     }
 
+    /* Mark VM-internal buffers (e.g. vm_extra_args during &rest processing) */
+    {
+        extern void cl_vm_gc_mark_extra(void);
+        cl_vm_gc_mark_extra();
+    }
+
     /* Drain mark stack iteratively (children pushed by gc_mark_obj above).
      * Do NOT clear gc_mark_overflow here — it may have been set during
      * root marking above, and the re-scan loop below must handle it. */
@@ -810,7 +818,7 @@ static void gc_sweep(void)
     uint8_t *ptr = cl_heap.arena + CL_ALIGN;  /* Skip offset 0 (reserved for NIL) */
     uint8_t *end = cl_heap.arena + cl_heap.bump;
 
-    cl_heap.free_list = NULL;
+    cl_heap.free_list = 0;
     cl_heap.total_allocated = 0;
 
     while (ptr < end) {
@@ -855,13 +863,316 @@ static void gc_sweep(void)
             }
 
             fb->size = total;
-            fb->next = cl_heap.free_list;
-            cl_heap.free_list = fb;
+            fb->next_offset = cl_heap.free_list;
+            cl_heap.free_list = (uint32_t)(ptr - cl_heap.arena);
+#ifdef DEBUG_GC
+            /* Poison free block data after the 8-byte header (size +
+             * next_offset) to detect use-after-free. */
+            if (total > sizeof(CL_FreeBlock))
+                memset((uint8_t *)fb + sizeof(CL_FreeBlock), 0xDE,
+                       total - sizeof(CL_FreeBlock));
+#endif
             size = total;  /* advance past entire coalesced region */
         }
         ptr += size;
     }
 }
+
+/* Post-GC verification: check all marked objects have valid children.
+ * Must be called AFTER gc_mark() but BEFORE gc_sweep() (marks still set).
+ * Reports any marked object that points to an unmarked heap object. */
+#ifdef DEBUG_GC
+static int gc_verify_errors;
+
+static void gc_verify_check_ref(CL_Obj parent_offset, const char *field,
+                                CL_Obj child)
+{
+    void *child_ptr;
+    if (CL_NULL_P(child) || CL_FIXNUM_P(child) || CL_CHAR_P(child))
+        return;
+    if (child >= cl_heap.arena_size) {
+        char buf[256];
+        snprintf(buf, sizeof(buf),
+                 "GC VERIFY: marked @0x%08x.%s -> OUT OF BOUNDS 0x%08x (arena 0x%08x)\n",
+                 (unsigned)parent_offset, field,
+                 (unsigned)child, (unsigned)cl_heap.arena_size);
+        platform_write_string(buf);
+        gc_verify_errors++;
+        return;
+    }
+    child_ptr = CL_OBJ_TO_PTR(child);
+    if (!CL_HDR_MARKED(child_ptr)) {
+        char buf[256];
+        snprintf(buf, sizeof(buf),
+                 "GC VERIFY: marked @0x%08x.%s -> unmarked @0x%08x (type %u)\n",
+                 (unsigned)parent_offset, field,
+                 (unsigned)child, (unsigned)CL_HDR_TYPE(child_ptr));
+        platform_write_string(buf);
+        gc_verify_errors++;
+    }
+}
+
+static void gc_verify_marked(void)
+{
+    uint8_t *ptr = cl_heap.arena + CL_ALIGN;
+    uint8_t *end = cl_heap.arena + cl_heap.bump;
+    gc_verify_errors = 0;
+
+    while (ptr < end) {
+        uint32_t size = CL_HDR_SIZE(ptr);
+        if (size == 0) break;
+
+        if (CL_HDR_MARKED(ptr)) {
+            CL_Obj parent_off = (CL_Obj)(ptr - cl_heap.arena);
+            uint8_t type = CL_HDR_TYPE(ptr);
+
+            switch (type) {
+            case TYPE_CONS: {
+                CL_Cons *c = (CL_Cons *)ptr;
+                gc_verify_check_ref(parent_off, "car", c->car);
+                gc_verify_check_ref(parent_off, "cdr", c->cdr);
+                break;
+            }
+            case TYPE_SYMBOL: {
+                CL_Symbol *s = (CL_Symbol *)ptr;
+                gc_verify_check_ref(parent_off, "name", s->name);
+                if (s->value != CL_UNBOUND)
+                    gc_verify_check_ref(parent_off, "value", s->value);
+                if (s->function != CL_UNBOUND)
+                    gc_verify_check_ref(parent_off, "function", s->function);
+                gc_verify_check_ref(parent_off, "plist", s->plist);
+                gc_verify_check_ref(parent_off, "package", s->package);
+                break;
+            }
+            case TYPE_CLOSURE: {
+                CL_Closure *cl = (CL_Closure *)ptr;
+                uint32_t n = (size - sizeof(CL_Closure)) / sizeof(CL_Obj);
+                uint32_t i;
+                gc_verify_check_ref(parent_off, "bytecode", cl->bytecode);
+                for (i = 0; i < n; i++)
+                    gc_verify_check_ref(parent_off, "upval", cl->upvalues[i]);
+                break;
+            }
+            case TYPE_BYTECODE: {
+                CL_Bytecode *bc = (CL_Bytecode *)ptr;
+                uint16_t i;
+                gc_verify_check_ref(parent_off, "name", bc->name);
+                for (i = 0; i < bc->n_constants; i++)
+                    gc_verify_check_ref(parent_off, "const", bc->constants[i]);
+                break;
+            }
+            case TYPE_VECTOR: {
+                CL_Vector *v = (CL_Vector *)ptr;
+                uint32_t i;
+                if (v->flags & CL_VEC_FLAG_DISPLACED) {
+                    gc_verify_check_ref(parent_off, "displaced", v->data[0]);
+                } else {
+                    uint32_t n = (v->rank > 1) ? (uint32_t)v->rank + v->length : v->length;
+                    for (i = 0; i < n; i++)
+                        gc_verify_check_ref(parent_off, "elt", v->data[i]);
+                }
+                break;
+            }
+            case TYPE_HASHTABLE: {
+                CL_Hashtable *ht = (CL_Hashtable *)ptr;
+                uint32_t i;
+                for (i = 0; i < ht->bucket_count; i++)
+                    gc_verify_check_ref(parent_off, "bucket", ht->buckets[i]);
+                break;
+            }
+            case TYPE_STRUCT: {
+                CL_Struct *st = (CL_Struct *)ptr;
+                uint32_t i;
+                gc_verify_check_ref(parent_off, "type_desc", st->type_desc);
+                for (i = 0; i < st->n_slots; i++)
+                    gc_verify_check_ref(parent_off, "slot", st->slots[i]);
+                break;
+            }
+            case TYPE_CONDITION: {
+                CL_Condition *cond = (CL_Condition *)ptr;
+                gc_verify_check_ref(parent_off, "type_name", cond->type_name);
+                gc_verify_check_ref(parent_off, "slots", cond->slots);
+                gc_verify_check_ref(parent_off, "report", cond->report_string);
+                break;
+            }
+            case TYPE_STREAM: {
+                CL_Stream *st = (CL_Stream *)ptr;
+                gc_verify_check_ref(parent_off, "string_buf", st->string_buf);
+                gc_verify_check_ref(parent_off, "element_type", st->element_type);
+                break;
+            }
+            case TYPE_FUNCTION: {
+                CL_Function *f = (CL_Function *)ptr;
+                gc_verify_check_ref(parent_off, "name", f->name);
+                break;
+            }
+            case TYPE_RATIO: {
+                CL_Ratio *r = (CL_Ratio *)ptr;
+                gc_verify_check_ref(parent_off, "num", r->numerator);
+                gc_verify_check_ref(parent_off, "den", r->denominator);
+                break;
+            }
+            case TYPE_PATHNAME: {
+                CL_Pathname *pn = (CL_Pathname *)ptr;
+                gc_verify_check_ref(parent_off, "host", pn->host);
+                gc_verify_check_ref(parent_off, "device", pn->device);
+                gc_verify_check_ref(parent_off, "dir", pn->directory);
+                gc_verify_check_ref(parent_off, "name", pn->name);
+                gc_verify_check_ref(parent_off, "type", pn->type);
+                gc_verify_check_ref(parent_off, "version", pn->version);
+                break;
+            }
+            case TYPE_CELL: {
+                CL_Cell *cell = (CL_Cell *)ptr;
+                gc_verify_check_ref(parent_off, "value", cell->value);
+                break;
+            }
+            case TYPE_PACKAGE: {
+                CL_Package *p = (CL_Package *)ptr;
+                gc_verify_check_ref(parent_off, "name", p->name);
+                gc_verify_check_ref(parent_off, "symbols", p->symbols);
+                gc_verify_check_ref(parent_off, "use_list", p->use_list);
+                gc_verify_check_ref(parent_off, "nicknames", p->nicknames);
+                gc_verify_check_ref(parent_off, "local_nicknames", p->local_nicknames);
+                gc_verify_check_ref(parent_off, "shadowing", p->shadowing_symbols);
+                break;
+            }
+            default:
+                break;
+            }
+            if (gc_verify_errors > 20) {
+                platform_write_string("GC VERIFY: too many errors, stopping\n");
+                return;
+            }
+        }
+        ptr += size;
+    }
+}
+
+/* Check if an arena offset points to a freed block by testing for poison
+ * fill at offset 8 (sizeof(CL_FreeBlock) = 8).  All freed blocks >= 16
+ * bytes (CL_MIN_ALLOC_SIZE) have bytes 8-11 poisoned with 0xDE. */
+static int gc_is_freed(uint32_t offset)
+{
+    uint8_t *p = cl_heap.arena + offset;
+    /* Freed blocks have poison at offset 8 (after the 8-byte CL_FreeBlock header) */
+    return (p[8] == 0xDE && p[9] == 0xDE && p[10] == 0xDE && p[11] == 0xDE);
+}
+
+/* Post-sweep verification: check that no live object contains a reference
+ * to a freed block (use-after-free detection).  Uses poison fill pattern
+ * to identify freed blocks (can't use type==0 since TYPE_CONS==0). */
+static void gc_verify_after_sweep(void)
+{
+    uint8_t *ptr = cl_heap.arena + CL_ALIGN;
+    uint8_t *end = cl_heap.arena + cl_heap.bump;
+    int errors = 0;
+
+    while (ptr < end) {
+        uint32_t obj_size = CL_HDR_SIZE(ptr);
+        CL_Obj parent_off = (CL_Obj)(ptr - cl_heap.arena);
+
+        if (obj_size == 0) break;
+
+        /* Skip free blocks */
+        if (gc_is_freed(parent_off)) {
+            ptr += obj_size;
+            continue;
+        }
+
+        /* Live object — check CL_Obj fields for poison or dead refs */
+        {
+            uint8_t type = CL_HDR_TYPE(ptr);
+
+            #define CHECK_FIELD(val, fname) do { \
+                CL_Obj _v = (val); \
+                if (_v == 0xDEDEDEDEu) { \
+                    char buf[256]; \
+                    snprintf(buf, sizeof(buf), \
+                             "POST-SWEEP: @0x%08x.%s = POISON 0xDEDEDEDE (type %u)\n", \
+                             (unsigned)parent_off, fname, (unsigned)type); \
+                    platform_write_string(buf); \
+                    errors++; \
+                } else if (!CL_NULL_P(_v) && !CL_FIXNUM_P(_v) && !CL_CHAR_P(_v) \
+                           && _v < cl_heap.arena_size && gc_is_freed(_v)) { \
+                    char buf[256]; \
+                    snprintf(buf, sizeof(buf), \
+                             "POST-SWEEP: @0x%08x.%s -> freed @0x%08x (type %u)\n", \
+                             (unsigned)parent_off, fname, (unsigned)_v, (unsigned)type); \
+                    platform_write_string(buf); \
+                    errors++; \
+                } \
+            } while(0)
+
+            switch (type) {
+            case TYPE_CONS: {
+                CL_Cons *c = (CL_Cons *)ptr;
+                CHECK_FIELD(c->car, "car");
+                CHECK_FIELD(c->cdr, "cdr");
+                break;
+            }
+            case TYPE_SYMBOL: {
+                CL_Symbol *s = (CL_Symbol *)ptr;
+                CHECK_FIELD(s->name, "name");
+                if (s->value != CL_UNBOUND) CHECK_FIELD(s->value, "value");
+                if (s->function != CL_UNBOUND) CHECK_FIELD(s->function, "function");
+                CHECK_FIELD(s->plist, "plist");
+                CHECK_FIELD(s->package, "package");
+                break;
+            }
+            case TYPE_CLOSURE: {
+                CL_Closure *cl = (CL_Closure *)ptr;
+                uint32_t n = (obj_size - sizeof(CL_Closure)) / sizeof(CL_Obj);
+                uint32_t i;
+                CHECK_FIELD(cl->bytecode, "bytecode");
+                for (i = 0; i < n; i++)
+                    CHECK_FIELD(cl->upvalues[i], "upval");
+                break;
+            }
+            case TYPE_BYTECODE: {
+                CL_Bytecode *bc = (CL_Bytecode *)ptr;
+                CHECK_FIELD(bc->name, "name");
+                break;
+            }
+            case TYPE_VECTOR: {
+                CL_Vector *v = (CL_Vector *)ptr;
+                uint32_t i;
+                if (v->flags & CL_VEC_FLAG_DISPLACED) {
+                    CHECK_FIELD(v->data[0], "displaced");
+                } else {
+                    uint32_t n = (v->rank > 1) ? (uint32_t)v->rank + v->length : v->length;
+                    for (i = 0; i < n; i++)
+                        CHECK_FIELD(v->data[i], "elt");
+                }
+                break;
+            }
+            case TYPE_HASHTABLE: {
+                CL_Hashtable *ht = (CL_Hashtable *)ptr;
+                uint32_t i;
+                for (i = 0; i < ht->bucket_count; i++)
+                    CHECK_FIELD(ht->buckets[i], "bucket");
+                break;
+            }
+            default:
+                break;
+            }
+            #undef CHECK_FIELD
+
+            if (errors > 10) {
+                platform_write_string("POST-SWEEP: too many errors, stopping\n");
+                return;
+            }
+        }
+        ptr += obj_size;
+    }
+
+    if (errors > 0) {
+        char buf[128];
+        snprintf(buf, sizeof(buf), "POST-SWEEP: %d use-after-free errors detected\n", errors);
+        platform_write_string(buf);
+    }
+}
+#endif
 
 void cl_gc(void)
 {
@@ -874,7 +1185,64 @@ void cl_gc(void)
     }
 #endif
     gc_mark();
+#ifdef DEBUG_GC
+    gc_verify_marked();
+    /* After marking, find unmarked objects still referenced from VM stack.
+     * Walk each VM stack slot: if it's a heap object that IS marked but is
+     * a cons whose car or cdr points to an UNMARKED heap object, that child
+     * should have been transitively marked.  This catches cases where a
+     * marked cons references an unmarked child — indicating a marking bug. */
+    {
+        int si;
+        char dbuf[256];
+        for (si = 0; si < cl_vm.sp; si++) {
+            CL_Obj v = cl_vm.stack[si];
+            if (CL_NULL_P(v) || CL_FIXNUM_P(v) || CL_CHAR_P(v)) continue;
+            if (v >= cl_heap.arena_size) continue;
+            if (!CL_HDR_MARKED(CL_OBJ_TO_PTR(v))) {
+                snprintf(dbuf, sizeof(dbuf),
+                         "GC-DIAG: VM stack[%d]=0x%08x type=%d UNMARKED!\n",
+                         si, (unsigned)v, CL_HDR_TYPE(CL_OBJ_TO_PTR(v)));
+                platform_write_string(dbuf);
+            }
+        }
+        /* Also check frame bytecodes: if a bytecode's constant references
+         * an unmarked object, the constant wasn't transitively marked */
+        for (si = 0; si < cl_vm.fp; si++) {
+            CL_Obj bc_obj = cl_vm.frames[si].bytecode;
+            if (CL_NULL_P(bc_obj) || CL_FIXNUM_P(bc_obj) || CL_CHAR_P(bc_obj)) continue;
+            if (bc_obj >= cl_heap.arena_size) continue;
+            if (!CL_HDR_MARKED(CL_OBJ_TO_PTR(bc_obj))) {
+                snprintf(dbuf, sizeof(dbuf),
+                         "GC-DIAG: frame[%d] bytecode=0x%08x UNMARKED!\n",
+                         si, (unsigned)bc_obj);
+                platform_write_string(dbuf);
+            } else {
+                void *ptr = CL_OBJ_TO_PTR(bc_obj);
+                if (CL_HDR_TYPE(ptr) == TYPE_BYTECODE) {
+                    CL_Bytecode *bc = (CL_Bytecode *)ptr;
+                    int ci;
+                    for (ci = 0; ci < bc->n_constants; ci++) {
+                        CL_Obj cval = bc->constants[ci];
+                        if (CL_NULL_P(cval) || CL_FIXNUM_P(cval) || CL_CHAR_P(cval)) continue;
+                        if (cval >= cl_heap.arena_size) continue;
+                        if (!CL_HDR_MARKED(CL_OBJ_TO_PTR(cval))) {
+                            snprintf(dbuf, sizeof(dbuf),
+                                     "GC-DIAG: frame[%d] bc=0x%08x const[%d]=0x%08x type=%d UNMARKED!\n",
+                                     si, (unsigned)bc_obj, ci, (unsigned)cval,
+                                     CL_HDR_TYPE(CL_OBJ_TO_PTR(cval)));
+                            platform_write_string(dbuf);
+                        }
+                    }
+                }
+            }
+        }
+    }
+#endif
     gc_sweep();
+#ifdef DEBUG_GC
+    gc_verify_after_sweep();
+#endif
     cl_heap.gc_count++;
 #ifdef DEBUG_GC
     {

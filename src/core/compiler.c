@@ -168,6 +168,7 @@ void compile_progn(CL_Compiler *c, CL_Obj forms)
         cl_emit(c, OP_NIL);
         return;
     }
+    CL_GC_PROTECT(forms);
     while (!CL_NULL_P(forms)) {
         int is_last = CL_NULL_P(cl_cdr(forms));
         if (!is_last) {
@@ -181,6 +182,7 @@ void compile_progn(CL_Compiler *c, CL_Obj forms)
         }
         forms = cl_cdr(forms);
     }
+    CL_GC_UNPROTECT(1);
 }
 
 /* --- Lambda --- */
@@ -945,6 +947,10 @@ static void compile_let(CL_Compiler *c, CL_Obj form, int sequential)
     int saved_tail = c->in_tail;
     int special_count = 0;
 
+    /* GC-protect form components that survive across allocating calls */
+    CL_GC_PROTECT(bindings);
+    CL_GC_PROTECT(body);
+
     /* Pre-scan body for (declare (special ...)) to find locally-special vars */
     CL_Obj local_specials = scan_local_specials(body);
 
@@ -1129,6 +1135,7 @@ static void compile_let(CL_Compiler *c, CL_Obj form, int sequential)
     }
 
     env->local_count = saved_local_count;
+    CL_GC_UNPROTECT(2);  /* bindings, body */
 }
 
 /* --- Setq / Setf --- */
@@ -1139,6 +1146,7 @@ static void compile_setq(CL_Compiler *c, CL_Obj form)
 {
     CL_Obj rest = cl_cdr(form);
 
+    CL_GC_PROTECT(rest);
     while (!CL_NULL_P(rest)) {
         CL_Obj var = cl_car(rest);
         CL_Obj val = cl_car(cl_cdr(rest));
@@ -1210,6 +1218,7 @@ static void compile_setq(CL_Compiler *c, CL_Obj form)
             cl_emit(c, OP_POP);
         }
     }
+    CL_GC_UNPROTECT(1);
 }
 
 static void compile_setf_place(CL_Compiler *c, CL_Obj place, CL_Obj val_form)
@@ -1390,10 +1399,12 @@ static void compile_setf_place(CL_Compiler *c, CL_Obj place, CL_Obj val_form)
                 compile_expr(c, cl_car(cl_cdr(place)));  /* array */
                 compile_expr(c, val_form);               /* value */
                 tmp = indices;
+                CL_GC_PROTECT(tmp);
                 while (!CL_NULL_P(tmp)) {
                     compile_expr(c, cl_car(tmp));
                     tmp = cl_cdr(tmp);
                 }
+                CL_GC_UNPROTECT(1);
                 cl_emit(c, OP_CALL);
                 cl_emit(c, (uint8_t)(2 + nindices));
             }
@@ -2184,6 +2195,25 @@ void cl_compiler_gc_mark(void)
         for (i = 0; i < c->outer_tag_count; i++) {
             gc_mark_obj(c->outer_tags[i].tag);
             gc_mark_obj(c->outer_tags[i].tagbody_id);
+        }
+        /* Mark compile-time environment (platform_alloc'd, holds CL_Obj refs) */
+        if (c->env) {
+            CL_CompEnv *env = c->env;
+            while (env) {
+                for (i = 0; i < env->local_count; i++)
+                    gc_mark_obj(env->locals[i]);
+                for (i = 0; i < env->local_fun_count; i++)
+                    gc_mark_obj(env->local_funs[i].name);
+                for (i = 0; i < env->local_macro_count; i++) {
+                    gc_mark_obj(env->local_macros[i].name);
+                    gc_mark_obj(env->local_macros[i].expander);
+                }
+                for (i = 0; i < env->symbol_macro_count; i++) {
+                    gc_mark_obj(env->symbol_macros[i].name);
+                    gc_mark_obj(env->symbol_macros[i].expansion);
+                }
+                env = env->parent;
+            }
         }
         c = c->parent;
     }

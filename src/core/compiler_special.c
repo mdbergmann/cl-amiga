@@ -839,11 +839,13 @@ void compile_unwind_protect(CL_Compiler *c, CL_Obj form)
     /* Compile cleanup forms, discarding results */
     {
         CL_Obj cf = cleanup_forms;
+        CL_GC_PROTECT(cf);
         while (!CL_NULL_P(cf)) {
             compile_expr(c, cl_car(cf));
             cl_emit(c, OP_POP);
             cf = cl_cdr(cf);
         }
+        CL_GC_UNPROTECT(1);
     }
 
     /* OP_UWRETHROW: if pending throw, re-initiate (never returns); else nop */
@@ -1134,6 +1136,7 @@ void compile_dolist(CL_Compiler *c, CL_Obj form)
     /* Compile body forms, each followed by POP (skip declarations) */
     {
         CL_Obj b = body;
+        CL_GC_PROTECT(b);
         while (!CL_NULL_P(b)) {
             CL_Obj form = cl_car(b);
             if (CL_CONS_P(form) && cl_car(form) == SYM_DECLARE) {
@@ -1144,6 +1147,7 @@ void compile_dolist(CL_Compiler *c, CL_Obj form)
             cl_emit(c, OP_POP);
             b = cl_cdr(b);
         }
+        CL_GC_UNPROTECT(1);
     }
 
     /* Backward jump to loop_start */
@@ -1271,6 +1275,7 @@ void compile_dotimes(CL_Compiler *c, CL_Obj form)
     /* Compile body forms, each followed by POP (skip declarations) */
     {
         CL_Obj b = body;
+        CL_GC_PROTECT(b);
         while (!CL_NULL_P(b)) {
             CL_Obj form = cl_car(b);
             if (CL_CONS_P(form) && cl_car(form) == SYM_DECLARE) {
@@ -1281,6 +1286,7 @@ void compile_dotimes(CL_Compiler *c, CL_Obj form)
             cl_emit(c, OP_POP);
             b = cl_cdr(b);
         }
+        CL_GC_UNPROTECT(1);
     }
 
     /* Increment: var = var + 1 */
@@ -1452,6 +1458,7 @@ void compile_do(CL_Compiler *c, CL_Obj form)
     /* Compile body forms, each followed by POP (skip declarations) */
     {
         CL_Obj b = body;
+        CL_GC_PROTECT(b);
         while (!CL_NULL_P(b)) {
             CL_Obj form = cl_car(b);
             if (CL_CONS_P(form) && cl_car(form) == SYM_DECLARE) {
@@ -1462,6 +1469,7 @@ void compile_do(CL_Compiler *c, CL_Obj form)
             cl_emit(c, OP_POP);
             b = cl_cdr(b);
         }
+        CL_GC_UNPROTECT(1);
     }
 
     /* Parallel step: evaluate all step forms (or load current value) */
