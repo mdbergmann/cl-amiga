@@ -251,6 +251,16 @@ static int16_t read_i16(uint8_t *code, uint32_t *ip)
     return (int16_t)read_u16(code, ip);
 }
 
+static int32_t read_i32(uint8_t *code, uint32_t *ip)
+{
+    int32_t val = (int32_t)(((uint32_t)code[*ip] << 24) |
+                            ((uint32_t)code[*ip + 1] << 16) |
+                            ((uint32_t)code[*ip + 2] << 8) |
+                            (uint32_t)code[*ip + 3]);
+    *ip += 4;
+    return val;
+}
+
 /* --- Trace helpers --- */
 
 static CL_Obj get_func_name(CL_Obj func_obj)
@@ -892,20 +902,20 @@ static CL_Obj cl_vm_run(int base_fp, int base_nlx)
         }
 
         case OP_JMP: {
-            int16_t offset = read_i16(code, &ip);
+            int32_t offset = read_i32(code, &ip);
             ip += offset;
             break;
         }
 
         case OP_JNIL: {
-            int16_t offset = read_i16(code, &ip);
+            int32_t offset = read_i32(code, &ip);
             CL_Obj val = cl_vm_pop();
             if (CL_NULL_P(val)) ip += offset;
             break;
         }
 
         case OP_JTRUE: {
-            int16_t offset = read_i16(code, &ip);
+            int32_t offset = read_i32(code, &ip);
             CL_Obj val = cl_vm_pop();
             if (!CL_NULL_P(val)) ip += offset;
             break;
@@ -1526,7 +1536,7 @@ static CL_Obj cl_vm_run(int base_fp, int base_nlx)
         case OP_BLOCK_PUSH: {
             /* Set up NLX block frame for return-from support */
             uint16_t tag_idx = read_u16(code, &ip);
-            int16_t block_offset = read_i16(code, &ip);
+            int32_t block_offset = read_i32(code, &ip);
             CL_Obj block_tag = constants[tag_idx];
             CL_NLXFrame *nlx;
 
@@ -1638,7 +1648,7 @@ static CL_Obj cl_vm_run(int base_fp, int base_nlx)
         case OP_TAGBODY_PUSH: {
             /* Set up NLX tagbody frame for cross-closure GO support */
             uint16_t id_idx = read_u16(code, &ip);
-            int16_t tb_offset = read_i16(code, &ip);
+            int32_t tb_offset = read_i32(code, &ip);
             CL_Obj tagbody_id = constants[id_idx];
             CL_NLXFrame *nlx;
 
@@ -2039,7 +2049,7 @@ static CL_Obj cl_vm_run(int base_fp, int base_nlx)
         }
 
         case OP_CATCH: {
-            int16_t catch_offset = read_i16(code, &ip);
+            int32_t catch_offset = read_i32(code, &ip);
             CL_Obj catch_tag = cl_vm_pop();
             CL_NLXFrame *nlx;
 
@@ -2116,7 +2126,7 @@ static CL_Obj cl_vm_run(int base_fp, int base_nlx)
         }
 
         case OP_UWPROT: {
-            int16_t uwp_offset = read_i16(code, &ip);
+            int32_t uwp_offset = read_i32(code, &ip);
             CL_NLXFrame *nlx;
 
             if (cl_nlx_top >= CL_MAX_NLX_FRAMES)

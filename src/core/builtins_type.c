@@ -87,6 +87,7 @@ static int typep_symbol(CL_Obj obj, CL_Obj type_sym)
         return CL_DOUBLE_FLOAT_P(obj);
     if (strcmp(tname, "FLOAT") == 0)  return CL_FLOATP(obj);
     if (strcmp(tname, "REAL") == 0)   return CL_REALP(obj);
+    if (strcmp(tname, "COMPLEX") == 0) return CL_COMPLEX_P(obj);
     if (strcmp(tname, "NUMBER") == 0) return CL_NUMBER_P(obj);
     if (strcmp(tname, "CHARACTER") == 0)      return CL_CHAR_P(obj);
     if (strcmp(tname, "BASE-CHAR") == 0)     return CL_CHAR_P(obj);

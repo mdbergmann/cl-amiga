@@ -360,6 +360,7 @@ static CL_Obj bi_load(CL_Obj *args, int n)
 
                             {
                                 int sf = cl_vm.fp, ss = cl_vm.sp, sn = cl_nlx_top;
+                                int saved_gc_roots_fasl = gc_root_count;
                                 fasl_err = CL_CATCH();
                                 if (fasl_err == CL_ERR_NONE) {
                                     cl_fasl_load((const uint8_t *)buf, (uint32_t)size);
@@ -380,6 +381,7 @@ static CL_Obj bi_load(CL_Obj *args, int n)
                                     cl_vm.fp = sf;
                                     cl_vm.sp = ss;
                                     cl_nlx_top = sn;
+                                    gc_root_count = saved_gc_roots_fasl;  /* Restore leaked GC roots */
                                     /* FASL load failed — restore state, fall through to source */
                                     CL_UNCATCH();
                                 platform_free(buf);
@@ -536,6 +538,8 @@ static CL_Obj bi_load(CL_Obj *args, int n)
         saved_fp = cl_vm.fp;
         saved_sp = cl_vm.sp;
         saved_nlx = cl_nlx_top;
+        {
+        int saved_gc_roots = gc_root_count;
 
         err = CL_CATCH();
         if (err == CL_ERR_NONE) {
@@ -597,9 +601,11 @@ static CL_Obj bi_load(CL_Obj *args, int n)
             cl_vm.fp = saved_fp;
             cl_vm.sp = saved_sp;
             cl_nlx_top = saved_nlx;
+            gc_root_count = saved_gc_roots;  /* Restore leaked GC roots */
             cl_error_print();
             CL_UNCATCH();
             do_cache = 0; /* Don't cache files with errors */
+        }
         }
     }
 
@@ -1012,6 +1018,8 @@ static CL_Obj bi_compile_file(CL_Obj *args, int n)
         saved_restart_top = cl_restart_floor;
         cl_handler_floor = cl_handler_top;
         cl_restart_floor = cl_restart_top;
+        {
+        int saved_gc_roots_cf = gc_root_count;
 
         err = CL_CATCH();
         if (err == CL_ERR_NONE) {
@@ -1092,8 +1100,10 @@ static CL_Obj bi_compile_file(CL_Obj *args, int n)
             cl_vm.fp = saved_fp;
             cl_vm.sp = saved_sp;
             cl_nlx_top = saved_nlx;
+            gc_root_count = saved_gc_roots_cf;  /* Restore leaked GC roots */
             cl_error_print();
             CL_UNCATCH();
+        }
         }
         /* Restore outer Lisp handler/restart floor */
         cl_handler_floor = saved_handler_top;
@@ -1412,9 +1422,9 @@ static DisasmInfo disasm_opcode_info(uint8_t op)
     case OP_GE:         info.name = "GE";         break;
     case OP_NUMEQ:      info.name = "NUMEQ";     break;
     case OP_NOT:        info.name = "NOT";        break;
-    case OP_JMP:        info.name = "JMP";        info.arg_type = OP_ARG_I16; break;
-    case OP_JNIL:       info.name = "JNIL";       info.arg_type = OP_ARG_I16; break;
-    case OP_JTRUE:      info.name = "JTRUE";      info.arg_type = OP_ARG_I16; break;
+    case OP_JMP:        info.name = "JMP";        info.arg_type = OP_ARG_I32; break;
+    case OP_JNIL:       info.name = "JNIL";       info.arg_type = OP_ARG_I32; break;
+    case OP_JTRUE:      info.name = "JTRUE";      info.arg_type = OP_ARG_I32; break;
     case OP_CALL:       info.name = "CALL";       info.arg_type = OP_ARG_U8;  break;
     case OP_TAILCALL:   info.name = "TAILCALL";   info.arg_type = OP_ARG_U8;  break;
     case OP_RET:        info.name = "RET";        break;
@@ -1440,9 +1450,9 @@ static DisasmInfo disasm_opcode_info(uint8_t op)
     case OP_BLOCK_POP:    info.name = "BLOCK_POP";   break;
     case OP_BLOCK_RETURN: info.name = "BLOCK_RETURN"; info.arg_type = OP_ARG_U16; break;
     case OP_ARGC:       info.name = "ARGC";       break;
-    case OP_CATCH:      info.name = "CATCH";      info.arg_type = OP_ARG_I16; break;
+    case OP_CATCH:      info.name = "CATCH";      info.arg_type = OP_ARG_I32; break;
     case OP_UNCATCH:    info.name = "UNCATCH";    break;
-    case OP_UWPROT:     info.name = "UWPROT";     info.arg_type = OP_ARG_I16; break;
+    case OP_UWPROT:     info.name = "UWPROT";     info.arg_type = OP_ARG_I32; break;
     case OP_UWPOP:      info.name = "UWPOP";      break;
     case OP_UWRETHROW:  info.name = "UWRETHROW";  break;
     case OP_MV_LOAD:    info.name = "MV_LOAD";    info.arg_type = OP_ARG_U8;  break;
@@ -1544,13 +1554,16 @@ static void disasm_bytecode(CL_Bytecode *bc)
             }
             platform_write_string(line);
 
-            /* OP_BLOCK_PUSH: also has i16 offset after u16 const_idx */
+            /* OP_BLOCK_PUSH: also has i32 offset after u16 const_idx */
             if (op == OP_BLOCK_PUSH) {
-                int16_t boff = (int16_t)((code[ip] << 8) | code[ip + 1]);
-                ip += 2;
+                int32_t boff = (int32_t)(((uint32_t)code[ip] << 24) |
+                                         ((uint32_t)code[ip + 1] << 16) |
+                                         ((uint32_t)code[ip + 2] << 8) |
+                                         (uint32_t)code[ip + 3]);
+                ip += 4;
                 snprintf(line, sizeof(line),
                         "          offset %+d -> %04lu\n",
-                        (int)boff, (unsigned long)((int32_t)ip + (int32_t)boff));
+                        (int)boff, (unsigned long)((int32_t)ip + boff));
                 platform_write_string(line);
             }
 
@@ -1580,6 +1593,19 @@ static void disasm_bytecode(CL_Bytecode *bc)
             snprintf(line, sizeof(line), "  %04lu: %-12s %+d    ; -> %04lu\n",
                     (unsigned long)start_ip, info.name, (int)val,
                     (unsigned long)((int32_t)ip + (int32_t)val));
+            platform_write_string(line);
+            break;
+        }
+
+        case OP_ARG_I32: {
+            int32_t val = (int32_t)(((uint32_t)code[ip] << 24) |
+                                    ((uint32_t)code[ip + 1] << 16) |
+                                    ((uint32_t)code[ip + 2] << 8) |
+                                    (uint32_t)code[ip + 3]);
+            ip += 4;
+            snprintf(line, sizeof(line), "  %04lu: %-12s %+d    ; -> %04lu\n",
+                    (unsigned long)start_ip, info.name, (int)val,
+                    (unsigned long)((int32_t)ip + val));
             platform_write_string(line);
             break;
         }

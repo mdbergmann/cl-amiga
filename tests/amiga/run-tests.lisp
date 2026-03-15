@@ -1440,6 +1440,27 @@
 (check "subtypep bignum<integer" t (subtypep 'bignum 'integer))
 (check "subtypep bignum<number" t (subtypep 'bignum 'number))
 
+; --- Complex numbers ---
+(check "complex reader" #C(5 16) #C(5 16))
+(check "complex eql" t (eql #C(5 16) #C(5 16)))
+(check "complex eql diff" nil (eql #C(5 16) #C(5 17)))
+(check "complex equal" t (equal #C(3 4) #C(3 4)))
+(check "complex complexp" t (complexp #C(5 16)))
+(check "complex complexp not" nil (complexp 42))
+(check "complex realpart" 5 (realpart #C(5 16)))
+(check "complex imagpart" 16 (imagpart #C(5 16)))
+(check "complex realpart real" 42 (realpart 42))
+(check "complex imagpart real" 0 (imagpart 42))
+(check "complex constructor" #C(3 4) (complex 3 4))
+(check "complex zero imag" 5 (complex 5 0))
+(check "complex type-of" 'complex (type-of #C(1 2)))
+(check "complex typep" t (typep #C(1 2) 'complex))
+(check "complex numberp" t (numberp #C(1 2)))
+(check "complex conjugate" #C(3 -4) (conjugate #C(3 4)))
+(check "complex conjugate real" 5 (conjugate 5))
+(check "complex negative" #C(-4 15) #C(-4 15))
+(check "complex hash-table" 42 (let ((ht (make-hash-table :test 'eql))) (setf (gethash #C(5 16) ht) 42) (gethash #C(5 16) ht)))
+
 ; --- Float basics (Steps 1-8) ---
 (check "float read single" 3.14 3.14)
 (check "float read double" 1.0d0 1.0d0)

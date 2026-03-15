@@ -66,6 +66,14 @@ void cl_emit_i16(CL_Compiler *c, int16_t val)
     cl_emit_u16(c, (uint16_t)val);
 }
 
+void cl_emit_i32(CL_Compiler *c, int32_t val)
+{
+    cl_emit(c, (uint8_t)((val >> 24) & 0xFF));
+    cl_emit(c, (uint8_t)((val >> 16) & 0xFF));
+    cl_emit(c, (uint8_t)((val >> 8) & 0xFF));
+    cl_emit(c, (uint8_t)(val & 0xFF));
+}
+
 int cl_add_constant(CL_Compiler *c, CL_Obj obj)
 {
     int i;
@@ -93,27 +101,25 @@ int cl_emit_jump(CL_Compiler *c, uint8_t op)
     int pos;
     cl_emit(c, op);
     pos = c->code_pos;
-    cl_emit_i16(c, 0); /* placeholder */
+    cl_emit_i32(c, 0); /* placeholder */
     return pos;
 }
 
 void cl_patch_jump(CL_Compiler *c, int patch_pos)
 {
-    int offset = c->code_pos - (patch_pos + 2);
-    if (offset < -32768 || offset > 32767)
-        cl_error(CL_ERR_OVERFLOW, "Jump offset too large (%d bytes)", offset);
-    c->code[patch_pos]     = (uint8_t)(offset >> 8);
-    c->code[patch_pos + 1] = (uint8_t)(offset & 0xFF);
+    int32_t offset = c->code_pos - (patch_pos + 4);
+    c->code[patch_pos]     = (uint8_t)((offset >> 24) & 0xFF);
+    c->code[patch_pos + 1] = (uint8_t)((offset >> 16) & 0xFF);
+    c->code[patch_pos + 2] = (uint8_t)((offset >> 8) & 0xFF);
+    c->code[patch_pos + 3] = (uint8_t)(offset & 0xFF);
 }
 
 void cl_emit_loop_jump(CL_Compiler *c, uint8_t op, int target)
 {
-    int offset;
+    int32_t offset;
     cl_emit(c, op);
-    offset = target - (c->code_pos + 2);
-    if (offset < -32768 || offset > 32767)
-        cl_error(CL_ERR_OVERFLOW, "Jump offset too large (%d bytes)", offset);
-    cl_emit_i16(c, (int16_t)offset);
+    offset = target - (c->code_pos + 4);
+    cl_emit_i32(c, offset);
 }
 
 /* --- Helper --- */
@@ -150,6 +156,9 @@ static void compile_if(CL_Compiler *c, CL_Obj form)
     int saved_tail = c->in_tail;
     int jnil_pos, jmp_pos;
 
+    /* GC-protect form: sub-forms may trigger macro expansion + GC */
+    CL_GC_PROTECT(form);
+
     c->in_tail = 0;
     compile_expr(c, test);
     jnil_pos = cl_emit_jump(c, OP_JNIL);
@@ -166,6 +175,7 @@ static void compile_if(CL_Compiler *c, CL_Obj form)
         cl_emit(c, OP_NIL);
     }
     cl_patch_jump(c, jmp_pos);
+    CL_GC_UNPROTECT(1);
 }
 
 void compile_progn(CL_Compiler *c, CL_Obj forms)
@@ -176,15 +186,16 @@ void compile_progn(CL_Compiler *c, CL_Obj forms)
     }
     CL_GC_PROTECT(forms);
     while (!CL_NULL_P(forms)) {
+        CL_Obj cur_form = cl_car(forms);
         int is_last = CL_NULL_P(cl_cdr(forms));
         if (!is_last) {
             int saved_tail = c->in_tail;
             c->in_tail = 0;
-            compile_expr(c, cl_car(forms));
+            compile_expr(c, cur_form);
             c->in_tail = saved_tail;
             cl_emit(c, OP_POP);
         } else {
-            compile_expr(c, cl_car(forms));
+            compile_expr(c, cur_form);
         }
         forms = cl_cdr(forms);
     }
@@ -851,6 +862,7 @@ top:
         int saved_handler = cl_handler_top;
         int saved_restart = cl_restart_top;
         int saved_debugger = cl_debugger_enabled;
+        int saved_gc_roots = gc_root_count;
         cl_debugger_enabled = 0;  /* Suppress debugger during expansion */
 #ifdef DEBUG_SCANNER
         fprintf(stderr, "[scanner] expanding macro: %s\n", cl_symbol_name(head));
@@ -873,7 +885,11 @@ top:
             }
         } else {
             CL_UNCATCH();
-            /* Macro expansion failed — restore VM state and fall through */
+            /* Macro expansion failed — restore VM state and fall through.
+             * Must also restore gc_root_count: cl_macroexpand_1 pushes
+             * GC roots before calling cl_vm_apply; if the expansion
+             * errors out (longjmp), those roots are never popped, leaving
+             * stale pointers on the GC root stack. */
             cl_vm.sp = saved_sp;
             cl_vm.fp = saved_fp;
             cl_dynbind_restore_to(saved_dyn);
@@ -881,6 +897,7 @@ top:
             cl_handler_top = saved_handler;
             cl_restart_top = saved_restart;
             cl_debugger_enabled = saved_debugger;
+            gc_root_count = saved_gc_roots;
         }
         scan_macro_depth--;
     }
@@ -1627,6 +1644,7 @@ static void compile_setf(CL_Compiler *c, CL_Obj form)
 {
     CL_Obj rest = cl_cdr(form);
 
+    CL_GC_PROTECT(rest);
     while (!CL_NULL_P(rest)) {
         CL_Obj place = cl_car(rest);
         CL_Obj val_form;
@@ -1642,6 +1660,7 @@ static void compile_setf(CL_Compiler *c, CL_Obj form)
             cl_emit(c, OP_POP);
         }
     }
+    CL_GC_UNPROTECT(1);
 }
 
 /* --- Function ref --- */
@@ -1692,7 +1711,16 @@ static void compile_call(CL_Compiler *c, CL_Obj form)
     int nargs = 0;
     int saved_tail = c->in_tail;
 
+    /* Validate form structure — CDR must be a proper list */
+    if (!CL_NULL_P(args) && !CL_CONS_P(args)) {
+        cl_error(CL_ERR_GENERAL, "Compiler: malformed call form (dotted pair in argument list)");
+        return;
+    }
+
     c->in_tail = 0;
+
+    /* GC-protect args: compile_expr for each arg may trigger macro expansion + GC */
+    CL_GC_PROTECT(args);
 
     if (CL_SYMBOL_P(func)) {
         int fun_slot = cl_env_lookup_local_fun(c->env, func);
@@ -1723,11 +1751,17 @@ static void compile_call(CL_Compiler *c, CL_Obj form)
     }
 
     while (!CL_NULL_P(args)) {
-        compile_expr(c, cl_car(args));
+        CL_Obj arg_val = cl_car(args);
+        if (CL_HEAP_P(arg_val) && arg_val >= cl_heap.arena_size) {
+            fprintf(stderr, "[compile_call] BUG: arg %d = 0x%08x exceeds heap (args=0x%08x nargs=%d code_pos=%d)\n",
+                    nargs, (unsigned)arg_val, (unsigned)args, nargs, c->code_pos);
+        }
+        compile_expr(c, arg_val);
         nargs++;
         args = cl_cdr(args);
     }
 
+    CL_GC_UNPROTECT(1);
     c->in_tail = saved_tail;
 
     if (c->in_tail) {
@@ -1805,6 +1839,7 @@ void compile_expr(CL_Compiler *c, CL_Obj expr)
     if (CL_STRING_P(expr))  { cl_emit_const(c, expr); return; }
     if (CL_BIGNUM_P(expr))  { cl_emit_const(c, expr); return; }
     if (CL_RATIO_P(expr))   { cl_emit_const(c, expr); return; }
+    if (CL_COMPLEX_P(expr)) { cl_emit_const(c, expr); return; }
     if (CL_FLOATP(expr))    { cl_emit_const(c, expr); return; }
     if (CL_VECTOR_P(expr))  { cl_emit_const(c, expr); return; }
     if (CL_BIT_VECTOR_P(expr)) { cl_emit_const(c, expr); return; }
@@ -1853,14 +1888,22 @@ void compile_expr(CL_Compiler *c, CL_Obj expr)
                 CL_GC_PROTECT(local_expander);
                 expanded = cl_vm_apply(local_expander, arg_array, nargs);
                 CL_GC_UNPROTECT(2);
+                /* GC-protect expanded form during compilation — recursive
+                 * compile_expr may trigger further macro expansions + GC */
+                CL_GC_PROTECT(expanded);
                 compile_expr(c, expanded);
+                CL_GC_UNPROTECT(1);
                 return;
             }
         }
 
         if (CL_SYMBOL_P(head) && cl_macro_p(head)) {
             CL_Obj expanded = cl_macroexpand_1(expr);
+            /* GC-protect expanded form during compilation — recursive
+             * compile_expr may trigger further macro expansions + GC */
+            CL_GC_PROTECT(expanded);
             compile_expr(c, expanded);
+            CL_GC_UNPROTECT(1);
             return;
         }
 
@@ -1940,6 +1983,8 @@ void compile_expr(CL_Compiler *c, CL_Obj expr)
                 cl_error(CL_ERR_ARGS, "FUNCALL requires at least one argument");
             saved_tail = c->in_tail;
             c->in_tail = 0;
+            /* GC-protect fargs: compile_expr may trigger macro expansion + GC */
+            CL_GC_PROTECT(fargs);
             /* Compile the function expression */
             compile_expr(c, cl_car(fargs));
             /* Compile remaining arguments */
@@ -1949,6 +1994,7 @@ void compile_expr(CL_Compiler *c, CL_Obj expr)
                 nargs++;
                 fargs = cl_cdr(fargs);
             }
+            CL_GC_UNPROTECT(1);
             c->in_tail = saved_tail;
             if (c->in_tail)
                 cl_emit(c, OP_TAILCALL);
@@ -1968,6 +2014,8 @@ void compile_expr(CL_Compiler *c, CL_Obj expr)
                 cl_error(CL_ERR_ARGS, "APPLY requires at least two arguments");
             saved_tail = c->in_tail;
             c->in_tail = 0;
+            /* GC-protect fargs: compile_expr may trigger macro expansion + GC */
+            CL_GC_PROTECT(fargs);
             /* Compile the function expression */
             compile_expr(c, cl_car(fargs));
             /* Compile all remaining args (leading args + final arglist) */
@@ -1977,6 +2025,7 @@ void compile_expr(CL_Compiler *c, CL_Obj expr)
                 napply_args++;
                 fargs = cl_cdr(fargs);
             }
+            CL_GC_UNPROTECT(1);
             /* CONS leading args onto the final arglist to build full arglist.
              * Stack has: fn a1 a2 ... arglist
              * We need (n-1) CONS ops to produce: fn (a1 a2 ... . arglist) */

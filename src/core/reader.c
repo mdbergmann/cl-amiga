@@ -899,7 +899,7 @@ static CL_Obj read_expr(void)
             }
         }
         if (ch == 'c' || ch == 'C') {
-            /* #C(real imag) => cons pair (complex numbers not natively supported) */
+            /* #C(real imag) => complex number */
             CL_Obj parts;
             if (read_suppress) {
                 skip_whitespace();
@@ -914,10 +914,13 @@ static CL_Obj read_expr(void)
                 return CL_NIL;
             }
             parts = read_list();
-            /* Return as cons pair (real . imag) */
             if (CL_CONS_P(parts) && CL_CONS_P(cl_cdr(parts)) &&
                 CL_NULL_P(cl_cdr(cl_cdr(parts)))) {
-                return cl_cons(cl_car(parts), cl_car(cl_cdr(parts)));
+                CL_Obj real = cl_car(parts);
+                CL_Obj imag = cl_car(cl_cdr(parts));
+                if (!CL_REALP(real) || !CL_REALP(imag))
+                    cl_error(CL_ERR_PARSE, "#C components must be real numbers");
+                return cl_make_complex(real, imag);
             }
             cl_error(CL_ERR_PARSE, "#C requires exactly two elements: (real imag)");
             return CL_NIL;

@@ -384,6 +384,22 @@ CL_Obj cl_make_ratio(CL_Obj numerator, CL_Obj denominator)
     return CL_PTR_TO_OBJ(r);
 }
 
+CL_Obj cl_make_complex(CL_Obj realpart, CL_Obj imagpart)
+{
+    CL_Complex *c;
+
+    CL_GC_PROTECT(realpart);
+    CL_GC_PROTECT(imagpart);
+
+    c = (CL_Complex *)cl_alloc(TYPE_COMPLEX, sizeof(CL_Complex));
+    CL_GC_UNPROTECT(2);
+
+    if (!c) return CL_NIL;
+    c->realpart = realpart;
+    c->imagpart = imagpart;
+    return CL_PTR_TO_OBJ(c);
+}
+
 CL_Obj cl_make_single_float(float value)
 {
     CL_SingleFloat *sf = (CL_SingleFloat *)cl_alloc(TYPE_SINGLE_FLOAT,
@@ -483,6 +499,9 @@ void cl_gc_push_root(CL_Obj *root)
 {
     if (gc_root_count < CL_GC_ROOT_STACK_SIZE) {
         gc_root_stack[gc_root_count++] = root;
+    } else {
+        fprintf(stderr, "FATAL: GC root stack overflow (%d/%d) — increase CL_GC_ROOT_STACK_SIZE\n",
+                gc_root_count, CL_GC_ROOT_STACK_SIZE);
     }
 }
 
@@ -626,6 +645,12 @@ static void gc_mark_children(void *ptr, uint8_t type)
         CL_Ratio *r = (CL_Ratio *)ptr;
         gc_mark_push(r->numerator);
         gc_mark_push(r->denominator);
+        break;
+    }
+    case TYPE_COMPLEX: {
+        CL_Complex *cx = (CL_Complex *)ptr;
+        gc_mark_push(cx->realpart);
+        gc_mark_push(cx->imagpart);
         break;
     }
     case TYPE_PATHNAME: {
@@ -1010,6 +1035,12 @@ static void gc_verify_marked(void)
                 CL_Ratio *r = (CL_Ratio *)ptr;
                 gc_verify_check_ref(parent_off, "num", r->numerator);
                 gc_verify_check_ref(parent_off, "den", r->denominator);
+                break;
+            }
+            case TYPE_COMPLEX: {
+                CL_Complex *cx = (CL_Complex *)ptr;
+                gc_verify_check_ref(parent_off, "real", cx->realpart);
+                gc_verify_check_ref(parent_off, "imag", cx->imagpart);
                 break;
             }
             case TYPE_PATHNAME: {

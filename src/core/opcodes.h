@@ -115,5 +115,6 @@ enum CL_Opcode {
 #define OP_ARG_U16   2
 #define OP_ARG_I16   3
 #define OP_ARG_U8U8  4
+#define OP_ARG_I32   5
 
 #endif /* CL_OPCODES_H */

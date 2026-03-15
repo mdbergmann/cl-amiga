@@ -825,6 +825,16 @@ static void print_obj(CL_Obj obj)
         return;
     }
 
+    if (CL_COMPLEX_P(obj)) {
+        CL_Complex *cx = (CL_Complex *)CL_OBJ_TO_PTR(obj);
+        out_str("#C(");
+        print_obj(cx->realpart);
+        out_char(' ');
+        print_obj(cx->imagpart);
+        out_char(')');
+        return;
+    }
+
     if (CL_SINGLE_FLOAT_P(obj)) {
         print_single_float(((CL_SingleFloat *)CL_OBJ_TO_PTR(obj))->value);
         return;

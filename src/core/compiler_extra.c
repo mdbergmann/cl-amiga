@@ -463,6 +463,7 @@ void compile_case(CL_Compiler *c, CL_Obj form, int error_if_no_match)
     cl_emit(c, OP_POP);
 
     /* Process clauses */
+    CL_GC_PROTECT(clauses);
     while (!CL_NULL_P(clauses)) {
         CL_Obj clause = cl_car(clauses);
         CL_Obj keys = cl_car(clause);
@@ -527,6 +528,7 @@ void compile_case(CL_Compiler *c, CL_Obj form, int error_if_no_match)
 
         clauses = cl_cdr(clauses);
     }
+    CL_GC_UNPROTECT(1);
 
     /* No default matched */
     if (!had_default) {
@@ -592,6 +594,7 @@ void compile_typecase(CL_Compiler *c, CL_Obj form, int error_if_no_match)
     typep_idx = cl_add_constant(c, sym_typep);
 
     /* Process clauses */
+    CL_GC_PROTECT(clauses);
     while (!CL_NULL_P(clauses)) {
         CL_Obj clause = cl_car(clauses);
         CL_Obj type_spec = cl_car(clause);
@@ -631,6 +634,7 @@ void compile_typecase(CL_Compiler *c, CL_Obj form, int error_if_no_match)
 
         clauses = cl_cdr(clauses);
     }
+    CL_GC_UNPROTECT(1);
 
     /* No default */
     if (!had_default) {
@@ -792,11 +796,13 @@ void compile_multiple_value_prog1(CL_Compiler *c, CL_Obj form)
     /* Evaluate remaining forms for effect */
     {
         CL_Obj rf = rest_forms;
+        CL_GC_PROTECT(rf);
         while (!CL_NULL_P(rf)) {
             compile_expr(c, cl_car(rf));
             cl_emit(c, OP_POP);
             rf = cl_cdr(rf);
         }
+        CL_GC_UNPROTECT(1);
     }
 
     /* Restore MV state by calling VALUES-LIST on saved list */

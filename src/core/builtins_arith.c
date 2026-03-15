@@ -907,6 +907,65 @@ static CL_Obj bi_rationalp(CL_Obj *args, int n)
     return CL_RATIONAL_P(args[0]) ? SYM_T : CL_NIL;
 }
 
+/* --- Complex number functions --- */
+
+static CL_Obj bi_complex(CL_Obj *args, int n)
+{
+    CL_Obj real = args[0], imag;
+    if (!CL_REALP(real))
+        cl_error(CL_ERR_TYPE, "COMPLEX: not a real number: %s", cl_type_name(real));
+    imag = (n >= 2) ? args[1] : CL_MAKE_FIXNUM(0);
+    if (!CL_REALP(imag))
+        cl_error(CL_ERR_TYPE, "COMPLEX: not a real number: %s", cl_type_name(imag));
+    /* If imagpart is zero, return just the real part (CL spec) */
+    if (CL_FIXNUM_P(imag) && CL_FIXNUM_VAL(imag) == 0)
+        return real;
+    return cl_make_complex(real, imag);
+}
+
+static CL_Obj bi_complexp(CL_Obj *args, int n)
+{
+    CL_UNUSED(n);
+    return CL_COMPLEX_P(args[0]) ? SYM_T : CL_NIL;
+}
+
+static CL_Obj bi_realpart(CL_Obj *args, int n)
+{
+    CL_UNUSED(n);
+    if (CL_COMPLEX_P(args[0]))
+        return ((CL_Complex *)CL_OBJ_TO_PTR(args[0]))->realpart;
+    if (CL_REALP(args[0]))
+        return args[0];
+    cl_error(CL_ERR_TYPE, "REALPART: not a number: %s", cl_type_name(args[0]));
+    return CL_NIL;
+}
+
+static CL_Obj bi_imagpart(CL_Obj *args, int n)
+{
+    CL_UNUSED(n);
+    if (CL_COMPLEX_P(args[0]))
+        return ((CL_Complex *)CL_OBJ_TO_PTR(args[0]))->imagpart;
+    if (CL_REALP(args[0]))
+        return CL_MAKE_FIXNUM(0);
+    cl_error(CL_ERR_TYPE, "IMAGPART: not a number: %s", cl_type_name(args[0]));
+    return CL_NIL;
+}
+
+static CL_Obj bi_conjugate(CL_Obj *args, int n)
+{
+    CL_UNUSED(n);
+    if (CL_COMPLEX_P(args[0])) {
+        CL_Complex *cx = (CL_Complex *)CL_OBJ_TO_PTR(args[0]);
+        /* Negate imaginary part */
+        CL_Obj neg_imag = cl_arith_negate(cx->imagpart);
+        return cl_make_complex(cx->realpart, neg_imag);
+    }
+    if (CL_REALP(args[0]))
+        return args[0];
+    cl_error(CL_ERR_TYPE, "CONJUGATE: not a number: %s", cl_type_name(args[0]));
+    return CL_NIL;
+}
+
 /* --- Ratio accessors --- */
 
 static CL_Obj bi_numerator(CL_Obj *args, int n)
@@ -1282,6 +1341,13 @@ void cl_builtins_arith_init(void)
     defun("MASK-FIELD", bi_mask_field, 2, 2);
     defun("DEPOSIT-FIELD", bi_deposit_field, 3, 3);
     defun("BOOLE", bi_boole, 3, 3);
+
+    /* Complex number functions */
+    defun("COMPLEX", bi_complex, 1, 2);
+    defun("COMPLEXP", bi_complexp, 1, 1);
+    defun("REALPART", bi_realpart, 1, 1);
+    defun("IMAGPART", bi_imagpart, 1, 1);
+    defun("CONJUGATE", bi_conjugate, 1, 1);
 
     /* Ratio accessors */
     defun("NUMERATOR", bi_numerator, 1, 1);

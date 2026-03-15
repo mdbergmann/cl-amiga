@@ -36,7 +36,7 @@ typedef struct {
 #define CL_FLOATP(obj) (CL_SINGLE_FLOAT_P(obj) || CL_DOUBLE_FLOAT_P(obj))
 
 #define CL_REALP(obj)   (CL_INTEGER_P(obj) || CL_RATIO_P(obj) || CL_FLOATP(obj))
-#define CL_NUMBER_P(obj) CL_REALP(obj)  /* No complex numbers yet */
+#define CL_NUMBER_P(obj) (CL_REALP(obj) || CL_COMPLEX_P(obj))
 
 /* --- Allocation (defined in mem.c) --- */
 

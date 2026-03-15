@@ -300,6 +300,14 @@ static CL_Obj bi_eql(CL_Obj *args, int n)
                ((CL_DoubleFloat *)CL_OBJ_TO_PTR(args[1]))->value ? SYM_T : CL_NIL;
     if (CL_RATIO_P(args[0]) && CL_RATIO_P(args[1]))
         return cl_ratio_equal(args[0], args[1]) ? SYM_T : CL_NIL;
+    if (CL_COMPLEX_P(args[0]) && CL_COMPLEX_P(args[1])) {
+        CL_Complex *ca = (CL_Complex *)CL_OBJ_TO_PTR(args[0]);
+        CL_Complex *cb = (CL_Complex *)CL_OBJ_TO_PTR(args[1]);
+        CL_Obj ra[2], ia[2];
+        ra[0] = ca->realpart; ra[1] = cb->realpart;
+        ia[0] = ca->imagpart; ia[1] = cb->imagpart;
+        return (!CL_NULL_P(bi_eql(ra, 2)) && !CL_NULL_P(bi_eql(ia, 2))) ? SYM_T : CL_NIL;
+    }
     return (args[0] == args[1]) ? SYM_T : CL_NIL;
 }
 
@@ -313,6 +321,11 @@ static CL_Obj bi_equal(CL_Obj *args, int n)
         return cl_bignum_equal(a, b) ? SYM_T : CL_NIL;
     if (CL_RATIO_P(a) && CL_RATIO_P(b))
         return cl_ratio_equal(a, b) ? SYM_T : CL_NIL;
+    if (CL_COMPLEX_P(a) && CL_COMPLEX_P(b)) {
+        CL_Obj pair[2];
+        pair[0] = a; pair[1] = b;
+        return bi_eql(pair, 2);
+    }
     /* Floats: equal is same as eql (same type, same value) */
     if (CL_SINGLE_FLOAT_P(a) && CL_SINGLE_FLOAT_P(b))
         return ((CL_SingleFloat *)CL_OBJ_TO_PTR(a))->value ==

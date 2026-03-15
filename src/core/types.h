@@ -92,6 +92,7 @@ enum CL_ObjType {
     TYPE_SINGLE_FLOAT,
     TYPE_DOUBLE_FLOAT,
     TYPE_RATIO,
+    TYPE_COMPLEX,
     TYPE_STREAM,
     TYPE_RANDOM_STATE,
     TYPE_BIT_VECTOR,
@@ -323,6 +324,16 @@ typedef struct {
 
 #define CL_RATIO_P(obj) (CL_HEAP_P(obj) && CL_HDR_TYPE(CL_OBJ_TO_PTR(obj)) == TYPE_RATIO)
 #define CL_RATIONAL_P(obj) (CL_INTEGER_P(obj) || CL_RATIO_P(obj))
+
+/* --- Complex number (a + bi) --- */
+
+typedef struct {
+    CL_Header hdr;          /* 4 bytes */
+    CL_Obj realpart;        /* Real part (any real number) */
+    CL_Obj imagpart;        /* Imaginary part (any real number) */
+} CL_Complex;               /* 12 bytes total */
+
+#define CL_COMPLEX_P(obj) (CL_HEAP_P(obj) && CL_HDR_TYPE(CL_OBJ_TO_PTR(obj)) == TYPE_COMPLEX)
 
 /* --- Stream --- */
 

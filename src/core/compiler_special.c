@@ -393,7 +393,7 @@ void compile_block(CL_Compiler *c, CL_Obj form)
         cl_emit(c, OP_BLOCK_PUSH);
         cl_emit_u16(c, (uint16_t)tag_idx);
         block_push_pos = c->code_pos;
-        cl_emit_i16(c, 0); /* placeholder offset to landing */
+        cl_emit_i32(c, 0); /* placeholder offset to landing */
 
         compile_body(c, body);
 
@@ -622,7 +622,7 @@ void compile_tagbody(CL_Compiler *c, CL_Obj form)
         cl_emit(c, OP_TAGBODY_PUSH);
         cl_emit_u16(c, (uint16_t)id_idx);
         push_pos = c->code_pos;
-        cl_emit_i16(c, 0);  /* placeholder offset to landing */
+        cl_emit_i32(c, 0);  /* placeholder offset to landing */
 
         /* Compile body (same as non-NLX) */
         cursor = body;
@@ -767,7 +767,7 @@ void compile_catch(CL_Compiler *c, CL_Obj form)
     /* OP_CATCH offset_to_landing: setjmp; on throw jumps to landing */
     cl_emit(c, OP_CATCH);
     catch_pos = c->code_pos;
-    cl_emit_i16(c, 0); /* placeholder */
+    cl_emit_i32(c, 0); /* placeholder */
 
     /* Compile body (progn) */
     c->in_tail = saved_tail;
@@ -814,7 +814,7 @@ void compile_unwind_protect(CL_Compiler *c, CL_Obj form)
     /* OP_UWPROT offset_to_cleanup_landing */
     cl_emit(c, OP_UWPROT);
     uwprot_pos = c->code_pos;
-    cl_emit_i16(c, 0); /* placeholder */
+    cl_emit_i32(c, 0); /* placeholder */
 
     /* Compile protected form */
     compile_expr(c, protected_form);
@@ -875,6 +875,7 @@ void compile_flet(CL_Compiler *c, CL_Obj form)
     /* Phase 1: compile each function in outer scope, store in anonymous slots */
     {
         CL_Obj b = bindings;
+        CL_GC_PROTECT(b);
         while (!CL_NULL_P(b)) {
             CL_Obj binding = cl_car(b);
             CL_Obj fname = cl_car(binding);
@@ -913,6 +914,7 @@ void compile_flet(CL_Compiler *c, CL_Obj form)
 
             b = cl_cdr(b);
         }
+        CL_GC_UNPROTECT(1);
     }
 
     /* Phase 2: compile body */
@@ -989,6 +991,7 @@ void compile_labels(CL_Compiler *c, CL_Obj form)
     {
         CL_Obj b = bindings;
         int slot = saved_local_count;  /* first allocated slot */
+        CL_GC_PROTECT(b);
         while (!CL_NULL_P(b)) {
             CL_Obj binding = cl_car(b);
             CL_Obj fname = cl_car(binding);
@@ -1017,6 +1020,7 @@ void compile_labels(CL_Compiler *c, CL_Obj form)
             slot++;
             b = cl_cdr(b);
         }
+        CL_GC_UNPROTECT(1);
     }
 
     /* Phase 3: compile body */
@@ -1535,6 +1539,7 @@ void compile_handler_bind(CL_Compiler *c, CL_Obj form)
     CL_Obj cl;
 
     /* For each (type handler) clause: compile handler, push onto handler stack */
+    CL_GC_PROTECT(clauses);
     for (cl = clauses; !CL_NULL_P(cl); cl = cl_cdr(cl)) {
         CL_Obj clause = cl_car(cl);
         CL_Obj type_sym = cl_car(clause);
@@ -1547,6 +1552,7 @@ void compile_handler_bind(CL_Compiler *c, CL_Obj form)
         cl_emit_u16(c, (uint16_t)type_idx);
         count++;
     }
+    CL_GC_UNPROTECT(1);
 
     /* Compile body as progn */
     compile_progn(c, body);
@@ -1605,9 +1611,10 @@ void compile_restart_case(CL_Compiler *c, CL_Obj form)
     cl_emit_const(c, catch_tag);  /* push tag */
     cl_emit(c, OP_CATCH);
     catch_pos = c->code_pos;
-    cl_emit_i16(c, 0);  /* placeholder for landing offset */
+    cl_emit_i32(c, 0);  /* placeholder for landing offset */
 
     /* Push restart bindings: for each clause, compile lambda + push tag + OP_RESTART_PUSH */
+    CL_GC_PROTECT(clauses);
     for (cl_iter = clauses; !CL_NULL_P(cl_iter); cl_iter = cl_cdr(cl_iter)) {
         CL_Obj clause = cl_car(cl_iter);
         CL_Obj restart_name = cl_car(clause);
@@ -1629,6 +1636,7 @@ void compile_restart_case(CL_Compiler *c, CL_Obj form)
         cl_emit_u16(c, (uint16_t)name_idx);
         count++;
     }
+    CL_GC_UNPROTECT(1);
 
     /* Compile the main form */
     compile_expr(c, main_form);
@@ -1661,6 +1669,7 @@ void compile_macrolet(CL_Compiler *c, CL_Obj form)
     /* Compile each macro expander at compile time */
     {
         CL_Obj b = bindings;
+        CL_GC_PROTECT(b);
         while (!CL_NULL_P(b)) {
             CL_Obj binding = cl_car(b);
             CL_Obj mname = cl_car(binding);
@@ -1760,6 +1769,7 @@ void compile_macrolet(CL_Compiler *c, CL_Obj form)
 
             b = cl_cdr(b);
         }
+        CL_GC_UNPROTECT(1);
     }
 
     /* Compile body with local macros active */

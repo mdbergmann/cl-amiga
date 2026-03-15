@@ -252,6 +252,14 @@ void cl_fasl_serialize_obj(CL_FaslWriter *w, CL_Obj obj)
         return;
     }
 
+    case TYPE_COMPLEX: {
+        CL_Complex *cx = (CL_Complex *)CL_OBJ_TO_PTR(obj);
+        cl_fasl_write_u8(w, FASL_TAG_COMPLEX);
+        cl_fasl_serialize_obj(w, cx->realpart);
+        cl_fasl_serialize_obj(w, cx->imagpart);
+        return;
+    }
+
     case TYPE_BIGNUM: {
         CL_Bignum *bn = (CL_Bignum *)CL_OBJ_TO_PTR(obj);
         uint32_t i;
@@ -613,6 +621,19 @@ CL_Obj cl_fasl_deserialize_obj(CL_FaslReader *r)
         CL_GC_PROTECT(den);
         {
             CL_Obj result = cl_make_ratio(num, den);
+            CL_GC_UNPROTECT(2);
+            return result;
+        }
+    }
+
+    case FASL_TAG_COMPLEX: {
+        CL_Obj real, imag;
+        real = cl_fasl_deserialize_obj(r);
+        CL_GC_PROTECT(real);
+        imag = cl_fasl_deserialize_obj(r);
+        CL_GC_PROTECT(imag);
+        {
+            CL_Obj result = cl_make_complex(real, imag);
             CL_GC_UNPROTECT(2);
             return result;
         }

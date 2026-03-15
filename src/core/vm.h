@@ -67,7 +67,7 @@ typedef struct {
     CL_Obj tag;            /* catch tag (CATCH only) */
     CL_Obj result;         /* value to propagate */
     uint32_t catch_ip;     /* IP after the CATCH/UWPROT instruction */
-    int16_t offset;        /* jump offset to landing */
+    int32_t offset;        /* jump offset to landing */
     uint8_t *code;         /* code pointer to restore */
     CL_Obj *constants;     /* constants pointer to restore */
     CL_Obj bytecode;       /* frame->bytecode at NLX push time */

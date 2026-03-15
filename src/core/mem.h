@@ -13,7 +13,7 @@
 
 #define CL_DEFAULT_HEAP_SIZE  (4 * 1024 * 1024)  /* 4MB */
 #define CL_GC_MARK_STACK_SIZE 4096
-#define CL_GC_ROOT_STACK_SIZE 256
+#define CL_GC_ROOT_STACK_SIZE 1024
 #define CL_MIN_ALLOC_SIZE     16  /* Minimum allocation (aligned) */
 #define CL_ALIGN              4   /* 4-byte alignment */
 
@@ -65,6 +65,7 @@ CL_Obj cl_make_condition(CL_Obj type_name, CL_Obj slots, CL_Obj report_string);
 CL_Obj cl_make_struct(CL_Obj type_name, uint32_t n_slots);
 CL_Obj cl_make_bignum(uint32_t n_limbs, uint32_t sign);
 CL_Obj cl_make_ratio(CL_Obj numerator, CL_Obj denominator);
+CL_Obj cl_make_complex(CL_Obj realpart, CL_Obj imagpart);
 CL_Obj cl_make_single_float(float value);
 CL_Obj cl_make_double_float(double value);
 CL_Obj cl_make_random_state(uint32_t seed);

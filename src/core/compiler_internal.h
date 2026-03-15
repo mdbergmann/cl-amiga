@@ -145,6 +145,7 @@ extern CL_Obj SETF_SYM_GET, SETF_HELPER_GET;
 void cl_emit(CL_Compiler *c, uint8_t byte);
 void cl_emit_u16(CL_Compiler *c, uint16_t val);
 void cl_emit_i16(CL_Compiler *c, int16_t val);
+void cl_emit_i32(CL_Compiler *c, int32_t val);
 int cl_add_constant(CL_Compiler *c, CL_Obj obj);
 void cl_emit_const(CL_Compiler *c, CL_Obj obj);
 int cl_emit_jump(CL_Compiler *c, uint8_t op);

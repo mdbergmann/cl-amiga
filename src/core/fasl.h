@@ -51,6 +51,7 @@
 #define FASL_TAG_GENSYM_DEF  0x14  /* u16 id, u16 name_len, bytes: define new uninterned symbol */
 #define FASL_TAG_GENSYM_REF  0x15  /* u16 id: reference to previously defined gensym */
 #define FASL_TAG_PACKAGE     0x16  /* u16 name_len, bytes: package lookup by name */
+#define FASL_TAG_COMPLEX     0x17  /* realpart, imagpart: complex number */
 
 /* Error codes for FASL operations */
 #define FASL_OK              0
