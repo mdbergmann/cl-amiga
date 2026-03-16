@@ -844,8 +844,16 @@ When called with no arguments, passes the original method arguments."
          (as args (cdr as)))
         ((or (null sp1) (null sp2)) nil)
       (let ((c1 (car sp1))
-            (c2 (car sp2)))
-        (unless (eq c1 c2)
+            (c2 (car sp2))
+            (same nil))
+        ;; Check if specializers are equal (same object, or both eql with same value)
+        (when (eq c1 c2)
+          (setq same t))
+        (when (and (not same) (consp c1) (eq (car c1) 'eql)
+                   (consp c2) (eq (car c2) 'eql)
+                   (eql (cadr c1) (cadr c2)))
+          (setq same t))
+        (unless same
           ;; EQL specializers are more specific than class specializers
           (cond
             ((and (consp c1) (eq (car c1) 'eql)) (return t))

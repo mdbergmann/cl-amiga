@@ -1171,6 +1171,8 @@ void compile_dolist(CL_Compiler *c, CL_Obj form)
     bi->tag = CL_NIL;
     bi->n_patches = 0;
     bi->result_slot = result_slot;
+    bi->uses_nlx = 0;
+    bi->dyn_depth = c->special_depth;
 
     /* loop_start: LOAD iter_slot, JNIL -> end */
     loop_start = c->code_pos;
@@ -1321,6 +1323,8 @@ void compile_dotimes(CL_Compiler *c, CL_Obj form)
     bi->tag = CL_NIL;
     bi->n_patches = 0;
     bi->result_slot = result_slot;
+    bi->uses_nlx = 0;
+    bi->dyn_depth = c->special_depth;
 
     /* var = 0 (boxed: wrap in cell) */
     cl_emit_const(c, CL_MAKE_FIXNUM(0));
@@ -1521,6 +1525,8 @@ void compile_do(CL_Compiler *c, CL_Obj form)
     bi->tag = CL_NIL;
     bi->n_patches = 0;
     bi->result_slot = result_slot;
+    bi->uses_nlx = 0;
+    bi->dyn_depth = c->special_depth;
 
     /* loop_start: compile end-test, JTRUE -> end */
     loop_start = c->code_pos;
@@ -1693,6 +1699,8 @@ void compile_do_star(CL_Compiler *c, CL_Obj form)
     bi->tag = CL_NIL;
     bi->n_patches = 0;
     bi->result_slot = result_slot;
+    bi->uses_nlx = 0;
+    bi->dyn_depth = c->special_depth;
 
     /* loop_start: compile end-test, JTRUE -> end */
     loop_start = c->code_pos;

@@ -6364,6 +6364,51 @@ TEST(eval_set_syntax_from_char_default_from)
         ), "T");
 }
 
+TEST(eval_nth_value_mv_reset)
+{
+    /* Regression: nth-value must reset MV state so callers using
+     * multiple-value-list see only the single extracted value,
+     * not the stale MV buffer from the inner form. */
+    ASSERT_STR_EQ(eval_print(
+        "(multiple-value-list (funcall (lambda () (nth-value 1 (values 'a 'b)))))"),
+        "(B)");
+    /* Primary value path too */
+    ASSERT_STR_EQ(eval_print(
+        "(multiple-value-list (funcall (lambda () (nth-value 0 (values 'x 'y)))))"),
+        "(X)");
+}
+
+TEST(eval_do_return_after_nlx_block)
+{
+    /* Regression: do, do*, dolist, dotimes create implicit NIL block.
+     * If block_info.uses_nlx is stale from a prior block, RETURN inside
+     * the loop body emits OP_BLOCK_RETURN (NLX) instead of a local jump,
+     * causing "RETURN-FROM: no block named NIL" at runtime. */
+    ASSERT_EQ_INT(eval_int(
+        "(block foo (return-from foo 1) (do ((i 0 (1+ i))) ((= i 3) 99) (return 42)))"),
+        1);
+    /* do with return in body */
+    ASSERT_EQ_INT(eval_int(
+        "(do ((i 0 (1+ i))) (nil) (when (= i 5) (return i)))"),
+        5);
+    /* do* with return */
+    ASSERT_EQ_INT(eval_int(
+        "(do* ((i 0 (1+ i))) (nil) (when (= i 3) (return (* i 10))))"),
+        30);
+    /* dolist with return */
+    ASSERT_EQ_INT(eval_int(
+        "(dolist (x '(1 2 3 4 5)) (when (= x 3) (return x)))"),
+        3);
+    /* dotimes with return */
+    ASSERT_EQ_INT(eval_int(
+        "(dotimes (i 100) (when (= i 7) (return i)))"),
+        7);
+    /* Nested: NLX block followed by do with return */
+    ASSERT_EQ_INT(eval_int(
+        "(progn (block outer (return-from outer 0)) (do ((i 0 (1+ i))) (nil) (when (= i 2) (return i))))"),
+        2);
+}
+
 TEST(eval_heap_exhaustion_error)
 {
     /* Accumulating live data until heap is full should signal CL_ERR_STORAGE
@@ -7152,6 +7197,10 @@ int main(void)
     RUN(eval_set_syntax_from_char_copies_macro);
     RUN(eval_set_syntax_from_char_reset_constituent);
     RUN(eval_set_syntax_from_char_default_from);
+
+    /* FSet regressions: nth-value MV reset, loop block uses_nlx */
+    RUN(eval_nth_value_mv_reset);
+    RUN(eval_do_return_after_nlx_block);
 
     /* heap exhaustion / storage errors */
     RUN(eval_heap_exhaustion_error);

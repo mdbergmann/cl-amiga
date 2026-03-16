@@ -761,6 +761,9 @@ void compile_nth_value(CL_Compiler *c, CL_Obj form)
             cl_emit(c, OP_MV_LOAD);
             cl_emit(c, (uint8_t)(idx < 0 ? 255 : idx > 255 ? 255 : idx));
         }
+        /* nth-value returns a single value per CL spec — clear stale MV state
+         * so callers using multiple-value-list see only this one value */
+        cl_emit(c, OP_MV_RESET);
     } else {
         /* Dynamic index: stack will be [index] [primary] */
         compile_expr(c, n_form);
