@@ -6409,6 +6409,48 @@ TEST(eval_do_return_after_nlx_block)
         2);
 }
 
+TEST(eval_block_return_preserves_mv)
+{
+    /* Regression: return-from across NLX must preserve multiple values,
+     * not just the primary value. */
+    ASSERT_STR_EQ(eval_print(
+        "(multiple-value-list (block b (return-from b (values 1 2 3))))"),
+        "(1 2 3)");
+    /* Cross-closure return (do-map pattern) */
+    ASSERT_STR_EQ(eval_print(
+        "(multiple-value-list (block nil (funcall (lambda () (return (values :a :b))))))"),
+        "(:A :B)");
+    /* catch/throw: throw is currently a function (not special operator),
+     * so MV from the result form is lost in the function call.
+     * Test single-value throw works correctly. */
+    ASSERT_EQ_INT(eval_int(
+        "(catch 'tag (throw 'tag 42))"), 42);
+}
+
+TEST(eval_setf_composite_cadr)
+{
+    /* (setf (cdar x) val) should work like (rplacd (car x) val) */
+    ASSERT_EQ_INT(eval_int(
+        "(let ((x (cons (cons 1 2) 3))) (setf (cdar x) 99) (cdar x))"),
+        99);
+    /* (setf (caar x) val) */
+    ASSERT_EQ_INT(eval_int(
+        "(let ((x (cons (cons 1 2) 3))) (setf (caar x) 77) (caar x))"),
+        77);
+    /* (setf (cadr x) val) */
+    ASSERT_EQ_INT(eval_int(
+        "(let ((x (list 1 2 3))) (setf (cadr x) 88) (cadr x))"),
+        88);
+    /* (setf (cddr x) val) */
+    ASSERT_STR_EQ(eval_print(
+        "(let ((x (list 1 2 3))) (setf (cddr x) '(99)) x)"),
+        "(1 2 99)");
+    /* 3-deep: (setf (cadar x) val) */
+    ASSERT_EQ_INT(eval_int(
+        "(let ((x (list (cons 1 (cons 2 3))))) (setf (cadar x) 55) (cadar x))"),
+        55);
+}
+
 TEST(eval_heap_exhaustion_error)
 {
     /* Accumulating live data until heap is full should signal CL_ERR_STORAGE
@@ -7201,6 +7243,12 @@ int main(void)
     /* FSet regressions: nth-value MV reset, loop block uses_nlx */
     RUN(eval_nth_value_mv_reset);
     RUN(eval_do_return_after_nlx_block);
+
+    /* NLX preserves multiple values */
+    RUN(eval_block_return_preserves_mv);
+
+    /* setf composite c[ad]+r accessors */
+    RUN(eval_setf_composite_cadr);
 
     /* heap exhaustion / storage errors */
     RUN(eval_heap_exhaustion_error);

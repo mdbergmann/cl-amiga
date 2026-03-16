@@ -1562,6 +1562,7 @@ static CL_Obj cl_vm_run(int base_fp, int base_nlx)
             nlx->restart_mark = cl_restart_top;
             nlx->gc_root_mark = gc_root_count;
             nlx->compiler_mark = cl_compiler_mark();
+            nlx->mv_count = 1;
 
             if (setjmp(nlx->buf) == 0) {
                 /* Normal path: block body executes */
@@ -1589,7 +1590,10 @@ static CL_Obj cl_vm_run(int base_fp, int base_nlx)
                     frame->code = code;
                     frame->constants = constants;
                     frame->bytecode = nlx->bytecode;
-                    cl_mv_count = 1;
+                    /* Restore multiple values preserved across NLX */
+                    cl_mv_count = nlx->mv_count;
+                    { int mi; for (mi = 0; mi < cl_mv_count && mi < CL_MAX_MV; mi++)
+                        cl_mv_values[mi] = nlx->mv_values[mi]; }
                     cl_vm_push(block_result);
                 }
             }
@@ -1638,6 +1642,10 @@ static CL_Obj cl_vm_run(int base_fp, int base_nlx)
                     }
                     /* No interposing UWPROT — longjmp directly to block */
                     cl_nlx_stack[i].result = value;
+                    /* Preserve multiple values across NLX */
+                    cl_nlx_stack[i].mv_count = cl_mv_count;
+                    { int mi; for (mi = 0; mi < cl_mv_count && mi < CL_MAX_MV; mi++)
+                        cl_nlx_stack[i].mv_values[mi] = cl_mv_values[mi]; }
                     cl_nlx_top = i;
                     longjmp(cl_nlx_stack[i].buf, 1);
                 }
@@ -2075,6 +2083,7 @@ static CL_Obj cl_vm_run(int base_fp, int base_nlx)
             nlx->restart_mark = cl_restart_top;
             nlx->gc_root_mark = gc_root_count;
             nlx->compiler_mark = cl_compiler_mark();
+            nlx->mv_count = 1;
 
             if (setjmp(nlx->buf) == 0) {
                 /* Normal path: body executes */
@@ -2102,7 +2111,10 @@ static CL_Obj cl_vm_run(int base_fp, int base_nlx)
                     frame->code = code;
                     frame->constants = constants;
                     frame->bytecode = nlx->bytecode;
-                    cl_mv_count = 1;  /* throw delivers single value */
+                    /* Restore multiple values preserved across NLX */
+                    cl_mv_count = nlx->mv_count;
+                    { int mi; for (mi = 0; mi < cl_mv_count && mi < CL_MAX_MV; mi++)
+                        cl_mv_values[mi] = nlx->mv_values[mi]; }
                     cl_vm_push(throw_result);
                 }
             }

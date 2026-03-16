@@ -1308,6 +1308,24 @@ static void compile_setq(CL_Compiler *c, CL_Obj form)
     CL_GC_UNPROTECT(1);
 }
 
+/* Check if sym is a composite c[ad]+r accessor (caar, cadr, cdar, cddr, etc.)
+ * Returns 1 if so, 0 otherwise. */
+static int is_composite_cadr(CL_Obj sym)
+{
+    CL_Symbol *s;
+    CL_String *name;
+    uint32_t k;
+    if (!CL_SYMBOL_P(sym)) return 0;
+    s = (CL_Symbol *)CL_OBJ_TO_PTR(sym);
+    name = (CL_String *)CL_OBJ_TO_PTR(s->name);
+    if (name->length < 4 || name->length > 6) return 0;
+    if (name->data[0] != 'C' || name->data[name->length - 1] != 'R') return 0;
+    for (k = 1; k < name->length - 1; k++) {
+        if (name->data[k] != 'A' && name->data[k] != 'D') return 0;
+    }
+    return 1;
+}
+
 static void compile_setf_place(CL_Compiler *c, CL_Obj place, CL_Obj val_form)
 {
     int saved_tail = c->in_tail;
@@ -1464,6 +1482,30 @@ static void compile_setf_place(CL_Compiler *c, CL_Obj place, CL_Obj val_form)
             compile_expr(c, cl_car(cl_cdr(place)));
             compile_expr(c, val_form);
             cl_emit(c, OP_RPLACD);
+        } else if (is_composite_cadr(head)) {
+            /* Composite c[ad]+r: decompose (setf (cXY..Zr arg) val)
+             * into (setf (cXr (cY..Zr arg)) val) per CL spec */
+            CL_Symbol *hsym = (CL_Symbol *)CL_OBJ_TO_PTR(head);
+            CL_String *hname = (CL_String *)CL_OBJ_TO_PTR(hsym->name);
+            CL_Obj outer_sym = (hname->data[1] == 'A') ? SETF_SYM_CAR : SETF_SYM_CDR;
+            CL_Obj arg = cl_car(cl_cdr(place));
+            char ibuf[8];
+            uint32_t ilen = hname->length - 1, ki;
+            CL_Obj isym, iplace, nplace;
+            ibuf[0] = 'C';
+            for (ki = 0; ki < ilen - 2; ki++)
+                ibuf[ki + 1] = hname->data[ki + 2];
+            ibuf[ilen - 1] = 'R';
+            ibuf[ilen] = '\0';
+            isym = cl_intern_in(ibuf, ilen, cl_package_cl);
+            CL_GC_PROTECT(outer_sym);
+            CL_GC_PROTECT(arg);
+            iplace = cl_cons(isym, cl_cons(arg, CL_NIL));
+            nplace = cl_cons(outer_sym, cl_cons(iplace, CL_NIL));
+            CL_GC_UNPROTECT(2);
+            compile_setf_place(c, nplace, val_form);
+            c->in_tail = saved_tail;
+            return;
         } else if (head == SETF_SYM_AREF || head == SETF_SYM_SVREF ||
                    head == SETF_SYM_CHAR || head == SETF_SYM_SCHAR) {
             /* Count indices: place = (aref arr idx1 idx2 ...) */

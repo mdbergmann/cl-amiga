@@ -54,6 +54,9 @@ extern int cl_dyn_top;
 /* Restore dynamic bindings down to mark */
 void cl_dynbind_restore_to(int mark);
 
+/* --- Multiple Values --- */
+#define CL_MAX_MV 20
+
 /* --- Non-Local eXit (NLX) stack for catch/throw and unwind-protect --- */
 
 #define CL_NLX_CATCH    0
@@ -80,6 +83,8 @@ typedef struct {
     int restart_mark;      /* restart stack depth at frame creation */
     int gc_root_mark;      /* GC root stack depth at frame creation */
     void *compiler_mark;   /* active compiler chain head at frame creation */
+    int mv_count;          /* multiple value count to preserve across NLX */
+    CL_Obj mv_values[CL_MAX_MV]; /* multiple values to preserve across NLX */
 } CL_NLXFrame;
 
 extern CL_NLXFrame cl_nlx_stack[CL_MAX_NLX_FRAMES];
@@ -127,8 +132,6 @@ void cl_throw_to_tag(CL_Obj tag, CL_Obj value);
 /* Create a condition from an error code and message */
 CL_Obj cl_create_condition_from_error(int code, const char *msg);
 
-/* --- Multiple Values --- */
-#define CL_MAX_MV 20
 extern CL_Obj cl_mv_values[CL_MAX_MV];
 extern int cl_mv_count;
 

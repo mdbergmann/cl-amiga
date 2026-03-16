@@ -1385,6 +1385,10 @@ static CL_Obj bi_throw(CL_Obj *args, int n)
             }
             /* No interposing UWPROT — go directly to catch */
             cl_nlx_stack[i].result = value;
+            /* Preserve multiple values across NLX */
+            cl_nlx_stack[i].mv_count = cl_mv_count;
+            { int mi; for (mi = 0; mi < cl_mv_count && mi < CL_MAX_MV; mi++)
+                cl_nlx_stack[i].mv_values[mi] = cl_mv_values[mi]; }
             cl_nlx_top = i;
             longjmp(cl_nlx_stack[i].buf, 1);
         }
