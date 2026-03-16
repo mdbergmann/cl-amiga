@@ -480,6 +480,8 @@ static CL_Obj bi_vector(CL_Obj *args, int n)
 static CL_Obj bi_vectorp(CL_Obj *args, int n)
 {
     CL_UNUSED(n);
+    /* Strings and bit-vectors are vectors per CL spec */
+    if (CL_STRING_P(args[0])) return SYM_T;
     if (CL_BIT_VECTOR_P(args[0])) return SYM_T;
     if (!CL_VECTOR_P(args[0])) return CL_NIL;
     /* vectorp is false for multi-dim arrays */

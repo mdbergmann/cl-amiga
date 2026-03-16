@@ -20,6 +20,7 @@ static void defun(const char *name, CL_CFunc func, int min, int max)
 /* --- Pre-interned keyword symbols --- */
 
 static CL_Obj KW_TEST = CL_NIL;
+static CL_Obj KW_TEST_NOT = CL_NIL;
 static CL_Obj KW_KEY = CL_NIL;
 static CL_Obj KW_START = CL_NIL;
 static CL_Obj KW_END = CL_NIL;
@@ -37,6 +38,7 @@ static CL_Obj SYM_EQL_FN = CL_NIL;
 /* Parsed keyword arguments for sequence functions */
 typedef struct {
     CL_Obj test_fn;     /* :test function (default eql) */
+    CL_Obj test_not_fn; /* :test-not function (default NIL) */
     CL_Obj key_fn;      /* :key function (default NIL = identity) */
     int32_t start;      /* :start (default 0) */
     int32_t end;        /* :end (default -1 = length) */
@@ -48,6 +50,7 @@ static void parse_seq_args(CL_Obj *args, int n, int kw_start, SeqArgs *sa)
 {
     int i;
     sa->test_fn = SYM_EQL_FN;
+    sa->test_not_fn = CL_NIL;
     sa->key_fn = CL_NIL;
     sa->start = 0;
     sa->end = -1;
@@ -59,6 +62,8 @@ static void parse_seq_args(CL_Obj *args, int n, int kw_start, SeqArgs *sa)
         CL_Obj val = args[i + 1];
         if (kw == KW_TEST) {
             sa->test_fn = cl_coerce_funcdesig(val, ":TEST");
+        } else if (kw == KW_TEST_NOT) {
+            sa->test_not_fn = cl_coerce_funcdesig(val, ":TEST-NOT");
         } else if (kw == KW_KEY) {
             sa->key_fn = CL_NULL_P(val) ? CL_NIL : cl_coerce_funcdesig(val, ":KEY");
         } else if (kw == KW_START) {
@@ -125,6 +130,8 @@ static CL_Obj apply_key(CL_Obj key_fn, CL_Obj elem)
 static int seq_test_match(SeqArgs *sa, CL_Obj item, CL_Obj elem)
 {
     CL_Obj keyed = apply_key(sa->key_fn, elem);
+    if (!CL_NULL_P(sa->test_not_fn))
+        return CL_NULL_P(call_test(sa->test_not_fn, item, keyed));
     return !CL_NULL_P(call_test(sa->test_fn, item, keyed));
 }
 
@@ -484,16 +491,39 @@ static CL_Obj bi_count(CL_Obj *args, int n)
     len = seq_length(seq);
     end = (sa.end < 0) ? len : sa.end;
 
-    if (CL_CONS_P(seq) || CL_NULL_P(seq)) {
-        CL_Obj cur = seq;
-        for (i = 0; i < end && !CL_NULL_P(cur); i++, cur = cl_cdr(cur)) {
-            if (i >= sa.start && seq_test_match(&sa, item, cl_car(cur)))
-                cnt++;
+    if (sa.from_end) {
+        if (CL_CONS_P(seq) || CL_NULL_P(seq)) {
+            int32_t range = end - sa.start;
+            if (range > 0) {
+                CL_Obj cur = seq;
+                CL_Obj *tmp = (CL_Obj *)platform_alloc(range * sizeof(CL_Obj));
+                int32_t j = 0;
+                for (i = 0; i < end && !CL_NULL_P(cur); i++, cur = cl_cdr(cur)) {
+                    if (i >= sa.start) tmp[j++] = cl_car(cur);
+                }
+                for (i = j - 1; i >= 0; i--) {
+                    if (seq_test_match(&sa, item, tmp[i])) cnt++;
+                }
+                platform_free(tmp);
+            }
+        } else {
+            for (i = end - 1; i >= sa.start; i--) {
+                if (seq_test_match(&sa, item, seq_elt(seq, i)))
+                    cnt++;
+            }
         }
     } else {
-        for (i = sa.start; i < end; i++) {
-            if (seq_test_match(&sa, item, seq_elt(seq, i)))
-                cnt++;
+        if (CL_CONS_P(seq) || CL_NULL_P(seq)) {
+            CL_Obj cur = seq;
+            for (i = 0; i < end && !CL_NULL_P(cur); i++, cur = cl_cdr(cur)) {
+                if (i >= sa.start && seq_test_match(&sa, item, cl_car(cur)))
+                    cnt++;
+            }
+        } else {
+            for (i = sa.start; i < end; i++) {
+                if (seq_test_match(&sa, item, seq_elt(seq, i)))
+                    cnt++;
+            }
         }
     }
     return CL_MAKE_FIXNUM(cnt);
@@ -509,16 +539,41 @@ static CL_Obj bi_count_if(CL_Obj *args, int n)
     len = seq_length(seq);
     end = (sa.end < 0) ? len : sa.end;
 
-    if (CL_CONS_P(seq) || CL_NULL_P(seq)) {
-        CL_Obj cur = seq;
-        for (i = 0; i < end && !CL_NULL_P(cur); i++, cur = cl_cdr(cur)) {
-            if (i >= sa.start && seq_pred_match(pred, sa.key_fn, cl_car(cur)))
-                cnt++;
+    if (sa.from_end) {
+        /* :from-end — iterate in reverse order (matters for stateful predicates) */
+        if (CL_CONS_P(seq) || CL_NULL_P(seq)) {
+            /* Collect elements in range into temp array, then iterate backwards */
+            int32_t range = end - sa.start;
+            if (range > 0) {
+                CL_Obj cur = seq;
+                CL_Obj *tmp = (CL_Obj *)platform_alloc(range * sizeof(CL_Obj));
+                int32_t j = 0;
+                for (i = 0; i < end && !CL_NULL_P(cur); i++, cur = cl_cdr(cur)) {
+                    if (i >= sa.start) tmp[j++] = cl_car(cur);
+                }
+                for (i = j - 1; i >= 0; i--) {
+                    if (seq_pred_match(pred, sa.key_fn, tmp[i])) cnt++;
+                }
+                platform_free(tmp);
+            }
+        } else {
+            for (i = end - 1; i >= sa.start; i--) {
+                if (seq_pred_match(pred, sa.key_fn, seq_elt(seq, i)))
+                    cnt++;
+            }
         }
     } else {
-        for (i = sa.start; i < end; i++) {
-            if (seq_pred_match(pred, sa.key_fn, seq_elt(seq, i)))
-                cnt++;
+        if (CL_CONS_P(seq) || CL_NULL_P(seq)) {
+            CL_Obj cur = seq;
+            for (i = 0; i < end && !CL_NULL_P(cur); i++, cur = cl_cdr(cur)) {
+                if (i >= sa.start && seq_pred_match(pred, sa.key_fn, cl_car(cur)))
+                    cnt++;
+            }
+        } else {
+            for (i = sa.start; i < end; i++) {
+                if (seq_pred_match(pred, sa.key_fn, seq_elt(seq, i)))
+                    cnt++;
+            }
         }
     }
     return CL_MAKE_FIXNUM(cnt);
@@ -534,16 +589,39 @@ static CL_Obj bi_count_if_not(CL_Obj *args, int n)
     len = seq_length(seq);
     end = (sa.end < 0) ? len : sa.end;
 
-    if (CL_CONS_P(seq) || CL_NULL_P(seq)) {
-        CL_Obj cur = seq;
-        for (i = 0; i < end && !CL_NULL_P(cur); i++, cur = cl_cdr(cur)) {
-            if (i >= sa.start && !seq_pred_match(pred, sa.key_fn, cl_car(cur)))
-                cnt++;
+    if (sa.from_end) {
+        if (CL_CONS_P(seq) || CL_NULL_P(seq)) {
+            int32_t range = end - sa.start;
+            if (range > 0) {
+                CL_Obj cur = seq;
+                CL_Obj *tmp = (CL_Obj *)platform_alloc(range * sizeof(CL_Obj));
+                int32_t j = 0;
+                for (i = 0; i < end && !CL_NULL_P(cur); i++, cur = cl_cdr(cur)) {
+                    if (i >= sa.start) tmp[j++] = cl_car(cur);
+                }
+                for (i = j - 1; i >= 0; i--) {
+                    if (!seq_pred_match(pred, sa.key_fn, tmp[i])) cnt++;
+                }
+                platform_free(tmp);
+            }
+        } else {
+            for (i = end - 1; i >= sa.start; i--) {
+                if (!seq_pred_match(pred, sa.key_fn, seq_elt(seq, i)))
+                    cnt++;
+            }
         }
     } else {
-        for (i = sa.start; i < end; i++) {
-            if (!seq_pred_match(pred, sa.key_fn, seq_elt(seq, i)))
-                cnt++;
+        if (CL_CONS_P(seq) || CL_NULL_P(seq)) {
+            CL_Obj cur = seq;
+            for (i = 0; i < end && !CL_NULL_P(cur); i++, cur = cl_cdr(cur)) {
+                if (i >= sa.start && !seq_pred_match(pred, sa.key_fn, cl_car(cur)))
+                    cnt++;
+            }
+        } else {
+            for (i = sa.start; i < end; i++) {
+                if (!seq_pred_match(pred, sa.key_fn, seq_elt(seq, i)))
+                    cnt++;
+            }
         }
     }
     return CL_MAKE_FIXNUM(cnt);
@@ -558,7 +636,7 @@ static CL_Obj bi_count_if_not(CL_Obj *args, int n)
 static CL_Obj remove_from_list(CL_Obj seq, int32_t start, int32_t end,
                                int32_t count, int from_end,
                                CL_Obj item, CL_Obj test_fn, CL_Obj key_fn,
-                               int mode) /* 0=test-item, 1=pred, 2=pred-not */
+                               int mode) /* 0=test-item, 1=pred, 2=pred-not, 3=test-not-item */
 {
     CL_Obj result = CL_NIL, tail = CL_NIL;
     CL_Obj cur;
@@ -579,6 +657,9 @@ static CL_Obj remove_from_list(CL_Obj seq, int32_t start, int32_t end,
                 if (mode == 0) {
                     CL_Obj keyed = apply_key(key_fn, elem);
                     match = !CL_NULL_P(call_test(test_fn, item, keyed));
+                } else if (mode == 3) {
+                    CL_Obj keyed = apply_key(key_fn, elem);
+                    match = CL_NULL_P(call_test(test_fn, item, keyed));
                 } else if (mode == 1) {
                     match = seq_pred_match(item, key_fn, elem);
                 } else {
@@ -599,6 +680,9 @@ static CL_Obj remove_from_list(CL_Obj seq, int32_t start, int32_t end,
                 if (mode == 0) {
                     CL_Obj keyed = apply_key(key_fn, elem);
                     match = !CL_NULL_P(call_test(test_fn, item, keyed));
+                } else if (mode == 3) {
+                    CL_Obj keyed = apply_key(key_fn, elem);
+                    match = CL_NULL_P(call_test(test_fn, item, keyed));
                 } else if (mode == 1) {
                     match = seq_pred_match(item, key_fn, elem);
                 } else {
@@ -629,6 +713,9 @@ static CL_Obj remove_from_list(CL_Obj seq, int32_t start, int32_t end,
                 if (mode == 0) {
                     CL_Obj keyed = apply_key(key_fn, elem);
                     should_remove = !CL_NULL_P(call_test(test_fn, item, keyed));
+                } else if (mode == 3) {
+                    CL_Obj keyed = apply_key(key_fn, elem);
+                    should_remove = CL_NULL_P(call_test(test_fn, item, keyed));
                 } else if (mode == 1) {
                     should_remove = seq_pred_match(item, key_fn, elem);
                 } else {
@@ -697,6 +784,9 @@ static CL_Obj bi_remove(CL_Obj *args, int n)
     if (CL_CONS_P(seq)) {
         int32_t len = seq_length(seq);
         int32_t end = (sa.end < 0) ? len : sa.end;
+        if (!CL_NULL_P(sa.test_not_fn))
+            return remove_from_list(seq, sa.start, end, sa.count, sa.from_end,
+                                    item, sa.test_not_fn, sa.key_fn, 3);
         return remove_from_list(seq, sa.start, end, sa.count, sa.from_end,
                                 item, sa.test_fn, sa.key_fn, 0);
     }
@@ -721,7 +811,10 @@ static CL_Obj bi_remove(CL_Obj *args, int n)
             int should_remove = 0;
             if (i >= sa.start && i < end && (sa.count < 0 || removed < sa.count)) {
                 CL_Obj keyed = apply_key(sa.key_fn, elem);
-                should_remove = !CL_NULL_P(call_test(sa.test_fn, item, keyed));
+                if (!CL_NULL_P(sa.test_not_fn))
+                    should_remove = CL_NULL_P(call_test(sa.test_not_fn, item, keyed));
+                else
+                    should_remove = !CL_NULL_P(call_test(sa.test_fn, item, keyed));
             }
             if (should_remove) {
                 removed++;
@@ -930,40 +1023,136 @@ static CL_Obj bi_substitute(CL_Obj *args, int n)
     CL_GC_PROTECT(tail);
     CL_GC_PROTECT(newitem);
 
-    if (CL_CONS_P(seq) || CL_NULL_P(seq)) {
-        CL_Obj cur = seq;
-        for (i = 0; !CL_NULL_P(cur); i++, cur = cl_cdr(cur)) {
-            CL_Obj elem = cl_car(cur);
-            int match = 0;
-            if (i >= sa.start && i < end && (sa.count < 0 || replaced < sa.count)) {
-                match = seq_test_match(&sa, olditem, elem);
+    if (sa.from_end && sa.count >= 0) {
+        /* :from-end with :count — find all matches first, then keep only the last count */
+        int32_t total_matches = 0;
+        int32_t skip;
+        if (CL_CONS_P(seq) || CL_NULL_P(seq)) {
+            CL_Obj cur = seq;
+            for (i = 0; !CL_NULL_P(cur); i++, cur = cl_cdr(cur)) {
+                if (i >= sa.start && i < end && seq_test_match(&sa, olditem, cl_car(cur)))
+                    total_matches++;
             }
-            {
-                CL_Obj val = match ? newitem : elem;
-                CL_Obj cell = cl_cons(val, CL_NIL);
-                if (CL_NULL_P(result)) result = cell;
-                else ((CL_Cons *)CL_OBJ_TO_PTR(tail))->cdr = cell;
-                tail = cell;
-                if (match) replaced++;
+            skip = total_matches - sa.count;
+            if (skip < 0) skip = 0;
+            cur = seq;
+            for (i = 0; !CL_NULL_P(cur); i++, cur = cl_cdr(cur)) {
+                CL_Obj elem = cl_car(cur);
+                int match = 0;
+                if (i >= sa.start && i < end && seq_test_match(&sa, olditem, elem)) {
+                    replaced++;
+                    if (replaced > skip) match = 1;
+                }
+                {
+                    CL_Obj val = match ? newitem : elem;
+                    CL_Obj cell = cl_cons(val, CL_NIL);
+                    if (CL_NULL_P(result)) result = cell;
+                    else ((CL_Cons *)CL_OBJ_TO_PTR(tail))->cdr = cell;
+                    tail = cell;
+                }
+            }
+        } else if (CL_STRING_P(seq)) {
+            /* String from-end: return string */
+            CL_String *s = (CL_String *)CL_OBJ_TO_PTR(seq);
+            uint32_t slen = s->length;
+            char *buf = (char *)platform_alloc(slen + 1);
+            memcpy(buf, s->data, slen);
+            buf[slen] = '\0';
+            for (i = sa.start; i < end && i < (int32_t)slen; i++) {
+                CL_Obj elem = CL_MAKE_CHAR((unsigned char)buf[i]);
+                if (seq_test_match(&sa, olditem, elem))
+                    total_matches++;
+            }
+            skip = total_matches - sa.count;
+            if (skip < 0) skip = 0;
+            for (i = sa.start; i < end && i < (int32_t)slen; i++) {
+                CL_Obj elem = CL_MAKE_CHAR((unsigned char)buf[i]);
+                if (seq_test_match(&sa, olditem, elem)) {
+                    replaced++;
+                    if (replaced > skip && CL_CHAR_P(newitem))
+                        buf[i] = (char)CL_CHAR_VAL(newitem);
+                }
+            }
+            result = cl_make_string(buf, slen);
+            platform_free(buf);
+        } else if (CL_VECTOR_P(seq)) {
+            int32_t vlen = seq_length(seq);
+            for (i = sa.start; i < end && i < vlen; i++) {
+                if (seq_test_match(&sa, olditem, seq_elt(seq, i)))
+                    total_matches++;
+            }
+            skip = total_matches - sa.count;
+            if (skip < 0) skip = 0;
+            for (i = 0; i < vlen; i++) {
+                CL_Obj elem = seq_elt(seq, i);
+                int match = 0;
+                if (i >= sa.start && i < end && seq_test_match(&sa, olditem, elem)) {
+                    replaced++;
+                    if (replaced > skip) match = 1;
+                }
+                {
+                    CL_Obj val = match ? newitem : elem;
+                    CL_Obj cell = cl_cons(val, CL_NIL);
+                    if (CL_NULL_P(result)) result = cell;
+                    else ((CL_Cons *)CL_OBJ_TO_PTR(tail))->cdr = cell;
+                    tail = cell;
+                }
             }
         }
-    } else if (CL_VECTOR_P(seq)) {
-        CL_Vector *v = (CL_Vector *)CL_OBJ_TO_PTR(seq);
-        int32_t vlen = (int32_t)cl_vector_active_length(v);
-        CL_Obj *elts = cl_vector_data(v);
-        for (i = 0; i < vlen; i++) {
-            CL_Obj elem = elts[i];
-            int match = 0;
-            if (i >= sa.start && i < end && (sa.count < 0 || replaced < sa.count)) {
-                match = seq_test_match(&sa, olditem, elem);
+    } else {
+        if (CL_CONS_P(seq) || CL_NULL_P(seq)) {
+            CL_Obj cur = seq;
+            for (i = 0; !CL_NULL_P(cur); i++, cur = cl_cdr(cur)) {
+                CL_Obj elem = cl_car(cur);
+                int match = 0;
+                if (i >= sa.start && i < end && (sa.count < 0 || replaced < sa.count)) {
+                    match = seq_test_match(&sa, olditem, elem);
+                }
+                {
+                    CL_Obj val = match ? newitem : elem;
+                    CL_Obj cell = cl_cons(val, CL_NIL);
+                    if (CL_NULL_P(result)) result = cell;
+                    else ((CL_Cons *)CL_OBJ_TO_PTR(tail))->cdr = cell;
+                    tail = cell;
+                    if (match) replaced++;
+                }
             }
-            {
-                CL_Obj val = match ? newitem : elem;
-                CL_Obj cell = cl_cons(val, CL_NIL);
-                if (CL_NULL_P(result)) result = cell;
-                else ((CL_Cons *)CL_OBJ_TO_PTR(tail))->cdr = cell;
-                tail = cell;
-                if (match) replaced++;
+        } else if (CL_STRING_P(seq)) {
+            /* String: return a new string with character substitutions */
+            CL_String *s = (CL_String *)CL_OBJ_TO_PTR(seq);
+            uint32_t slen = s->length;
+            char *buf = (char *)platform_alloc(slen + 1);
+            memcpy(buf, s->data, slen);
+            buf[slen] = '\0';
+            for (i = sa.start; i < end && i < (int32_t)slen; i++) {
+                if (sa.count >= 0 && replaced >= sa.count) break;
+                {
+                    CL_Obj elem = CL_MAKE_CHAR((unsigned char)buf[i]);
+                    if (seq_test_match(&sa, olditem, elem)) {
+                        if (CL_CHAR_P(newitem))
+                            buf[i] = (char)CL_CHAR_VAL(newitem);
+                        replaced++;
+                    }
+                }
+            }
+            result = cl_make_string(buf, slen);
+            platform_free(buf);
+        } else if (CL_VECTOR_P(seq)) {
+            int32_t vlen = seq_length(seq);
+            for (i = 0; i < vlen; i++) {
+                CL_Obj elem = seq_elt(seq, i);
+                int match = 0;
+                if (i >= sa.start && i < end && (sa.count < 0 || replaced < sa.count)) {
+                    match = seq_test_match(&sa, olditem, elem);
+                }
+                {
+                    CL_Obj val = match ? newitem : elem;
+                    CL_Obj cell = cl_cons(val, CL_NIL);
+                    if (CL_NULL_P(result)) result = cell;
+                    else ((CL_Cons *)CL_OBJ_TO_PTR(tail))->cdr = cell;
+                    tail = cell;
+                    if (match) replaced++;
+                }
             }
         }
     }
@@ -987,7 +1176,33 @@ static CL_Obj bi_substitute_if(CL_Obj *args, int n)
     CL_GC_PROTECT(tail);
     CL_GC_PROTECT(newitem);
 
-    if (CL_CONS_P(seq) || CL_NULL_P(seq)) {
+    if (sa.from_end && sa.count >= 0 && (CL_CONS_P(seq) || CL_NULL_P(seq))) {
+        /* :from-end with :count on list — two-pass */
+        int32_t total_matches = 0, skip;
+        CL_Obj cur = seq;
+        for (i = 0; !CL_NULL_P(cur); i++, cur = cl_cdr(cur)) {
+            if (i >= sa.start && i < end && seq_pred_match(pred, sa.key_fn, cl_car(cur)))
+                total_matches++;
+        }
+        skip = total_matches - sa.count;
+        if (skip < 0) skip = 0;
+        cur = seq;
+        for (i = 0; !CL_NULL_P(cur); i++, cur = cl_cdr(cur)) {
+            CL_Obj elem = cl_car(cur);
+            int match = 0;
+            if (i >= sa.start && i < end && seq_pred_match(pred, sa.key_fn, elem)) {
+                replaced++;
+                if (replaced > skip) match = 1;
+            }
+            {
+                CL_Obj val = match ? newitem : elem;
+                CL_Obj cell = cl_cons(val, CL_NIL);
+                if (CL_NULL_P(result)) result = cell;
+                else ((CL_Cons *)CL_OBJ_TO_PTR(tail))->cdr = cell;
+                tail = cell;
+            }
+        }
+    } else if (CL_CONS_P(seq) || CL_NULL_P(seq)) {
         CL_Obj cur = seq;
         for (i = 0; !CL_NULL_P(cur); i++, cur = cl_cdr(cur)) {
             CL_Obj elem = cl_car(cur);
@@ -1067,7 +1282,32 @@ static CL_Obj bi_substitute_if_not(CL_Obj *args, int n)
     CL_GC_PROTECT(tail);
     CL_GC_PROTECT(newitem);
 
-    if (CL_CONS_P(seq) || CL_NULL_P(seq)) {
+    if (sa.from_end && sa.count >= 0 && (CL_CONS_P(seq) || CL_NULL_P(seq))) {
+        int32_t total_matches = 0, skip;
+        CL_Obj cur = seq;
+        for (i = 0; !CL_NULL_P(cur); i++, cur = cl_cdr(cur)) {
+            if (i >= sa.start && i < end && !seq_pred_match(pred, sa.key_fn, cl_car(cur)))
+                total_matches++;
+        }
+        skip = total_matches - sa.count;
+        if (skip < 0) skip = 0;
+        cur = seq;
+        for (i = 0; !CL_NULL_P(cur); i++, cur = cl_cdr(cur)) {
+            CL_Obj elem = cl_car(cur);
+            int match = 0;
+            if (i >= sa.start && i < end && !seq_pred_match(pred, sa.key_fn, elem)) {
+                replaced++;
+                if (replaced > skip) match = 1;
+            }
+            {
+                CL_Obj val = match ? newitem : elem;
+                CL_Obj cell = cl_cons(val, CL_NIL);
+                if (CL_NULL_P(result)) result = cell;
+                else ((CL_Cons *)CL_OBJ_TO_PTR(tail))->cdr = cell;
+                tail = cell;
+            }
+        }
+    } else if (CL_CONS_P(seq) || CL_NULL_P(seq)) {
         CL_Obj cur = seq;
         for (i = 0; !CL_NULL_P(cur); i++, cur = cl_cdr(cur)) {
             CL_Obj elem = cl_car(cur);
@@ -1704,6 +1944,7 @@ void cl_builtins_sequence_init(void)
 {
     /* Pre-intern keyword symbols */
     KW_TEST          = cl_intern_keyword("TEST", 4);
+    KW_TEST_NOT      = cl_intern_keyword("TEST-NOT", 8);
     KW_KEY           = cl_intern_keyword("KEY", 3);
     KW_START         = cl_intern_keyword("START", 5);
     KW_END           = cl_intern_keyword("END", 3);

@@ -644,9 +644,21 @@ static CL_Obj bi_coerce(CL_Obj *args, int n)
         return CL_NIL;
     }
 
-    /* (coerce x 'vector) */
-    if (strcmp(tname, "VECTOR") == 0) {
+    /* (coerce x 'vector) or (coerce x 'simple-vector) */
+    if (strcmp(tname, "VECTOR") == 0 || strcmp(tname, "SIMPLE-VECTOR") == 0) {
         if (CL_VECTOR_P(obj)) return obj;
+        if (CL_STRING_P(obj)) {
+            CL_String *s = (CL_String *)CL_OBJ_TO_PTR(obj);
+            uint32_t slen = s->length;
+            uint32_t ii;
+            CL_Obj vec = cl_make_vector(slen);
+            CL_Vector *v;
+            s = (CL_String *)CL_OBJ_TO_PTR(obj);
+            v = (CL_Vector *)CL_OBJ_TO_PTR(vec);
+            for (ii = 0; ii < slen; ii++)
+                cl_vector_data(v)[ii] = CL_MAKE_CHAR((unsigned char)s->data[ii]);
+            return vec;
+        }
         if (CL_BIT_VECTOR_P(obj)) {
             CL_BitVector *bv = (CL_BitVector *)CL_OBJ_TO_PTR(obj);
             uint32_t bvlen = bv->length;

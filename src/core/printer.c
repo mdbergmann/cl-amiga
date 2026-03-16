@@ -1164,6 +1164,7 @@ void cl_write_to_stream(CL_Obj obj, CL_Obj stream)
     int32_t prev_column = current_column;
     int32_t prev_indent_top = pp_indent_top;
     int prev_circle_active = circle_active;
+    int prev_to_buffer = to_buffer;
     current_depth = 0;
     current_column = 0;
     pp_indent_top = 0;
@@ -1185,6 +1186,7 @@ void cl_write_to_stream(CL_Obj obj, CL_Obj stream)
     }
 
     printer_stream = prev;
+    to_buffer = prev_to_buffer;
     current_depth = prev_depth;
     current_column = prev_column;
     pp_indent_top = prev_indent_top;

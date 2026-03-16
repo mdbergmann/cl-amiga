@@ -192,29 +192,55 @@
              (setf ,place (cons ,g ,place)))
            ,place))))
 
-;; Set operations
-(defun intersection (list1 list2 &key (test #'eql))
-  (let ((result nil))
+;; Set operations — support :test, :test-not, :key per CL spec
+;; Helper: check if keyed-item is in list under test+key
+(defun %set-member (keyed-item list test key)
+  (dolist (y list nil)
+    (when (funcall test keyed-item (if key (funcall key y) y))
+      (return t))))
+
+(defun intersection (list1 list2 &key (test nil test-p) (test-not nil test-not-p) (key nil))
+  (when (and test-p test-not-p)
+    (error "Cannot supply both :TEST and :TEST-NOT"))
+  (let ((result nil)
+        (actual-test (cond (test-not-p (complement test-not))
+                           (test-p test)
+                           (t #'eql))))
     (dolist (x list1 (nreverse result))
-      (when (member x list2 :test test)
+      (when (%set-member (if key (funcall key x) x) list2 actual-test key)
         (push x result)))))
 
-(defun union (list1 list2 &key (test #'eql))
-  (let ((result (copy-list list1)))
+(defun union (list1 list2 &key (test nil test-p) (test-not nil test-not-p) (key nil))
+  (when (and test-p test-not-p)
+    (error "Cannot supply both :TEST and :TEST-NOT"))
+  (let ((result (copy-list list1))
+        (actual-test (cond (test-not-p (complement test-not))
+                           (test-p test)
+                           (t #'eql))))
     (dolist (x list2 (nreverse result))
-      (unless (member x list1 :test test)
+      (unless (%set-member (if key (funcall key x) x) list1 actual-test key)
         (push x result)))))
 
-(defun set-difference (list1 list2 &key (test #'eql))
-  (let ((result nil))
+(defun set-difference (list1 list2 &key (test nil test-p) (test-not nil test-not-p) (key nil))
+  (when (and test-p test-not-p)
+    (error "Cannot supply both :TEST and :TEST-NOT"))
+  (let ((result nil)
+        (actual-test (cond (test-not-p (complement test-not))
+                           (test-p test)
+                           (t #'eql))))
     (dolist (x list1 (nreverse result))
-      (unless (member x list2 :test test)
+      (unless (%set-member (if key (funcall key x) x) list2 actual-test key)
         (push x result)))))
 
-(defun subsetp (list1 list2 &key (test #'eql))
-  (dolist (x list1 t)
-    (unless (member x list2 :test test)
-      (return-from subsetp nil))))
+(defun subsetp (list1 list2 &key (test nil test-p) (test-not nil test-not-p) (key nil))
+  (when (and test-p test-not-p)
+    (error "Cannot supply both :TEST and :TEST-NOT"))
+  (let ((actual-test (cond (test-not-p (complement test-not))
+                           (test-p test)
+                           (t #'eql))))
+    (dolist (x list1 t)
+      (unless (%set-member (if key (funcall key x) x) list2 actual-test key)
+        (return-from subsetp nil)))))
 
 ;; documentation — CL standard documentation function
 (defvar *documentation-table* (make-hash-table :test 'equal))
@@ -519,7 +545,8 @@ when the param has no explicit default.  CL spec 3.4.6 requires this."
          (predicate-opt nil) (predicate-set nil)
          (copier-opt nil) (copier-set nil)
          (include-name nil) (include-slots nil)
-         (type-opt nil))
+         (type-opt nil)
+         (print-function-opt nil) (print-object-opt nil))
     ;; Process options
     (dolist (opt options)
       (cond
@@ -552,7 +579,11 @@ when the param has no explicit default.  CL spec 3.4.6 requires this."
         ((and (consp opt) (eq (car opt) :include))
          (setq include-name (cadr opt)))
         ((and (consp opt) (eq (car opt) :type))
-         (setq type-opt (cadr opt)))))
+         (setq type-opt (cadr opt)))
+        ((and (consp opt) (eq (car opt) :print-function))
+         (setq print-function-opt (cadr opt)))
+        ((and (consp opt) (eq (car opt) :print-object))
+         (setq print-object-opt (cadr opt)))))
     ;; Compute inherited slots from :include (with defaults)
     (when include-name
       (let ((parent-specs (%struct-slot-specs include-name)))
@@ -685,6 +716,18 @@ when the param has no explicit default.  CL spec 3.4.6 requires this."
                    (%make-bootstrap-class ',name
                      (list (find-class ',(or include-name 'structure-object)))))
                 forms)
+          ;; :print-function — defmethod print-object calling (fn obj stream depth)
+          (when print-function-opt
+            (push `(when (fboundp 'print-object)
+                     (defmethod print-object ((object ,name) stream)
+                       (,print-function-opt object stream 0)))
+                  forms))
+          ;; :print-object — defmethod print-object calling (fn obj stream)
+          (when print-object-opt
+            (push `(when (fboundp 'print-object)
+                     (defmethod print-object ((object ,name) stream)
+                       (,print-object-opt object stream)))
+                  forms))
           `(progn ,@(reverse forms) ',name))))))
 
 ;; CL bitwise functions not in C builtins

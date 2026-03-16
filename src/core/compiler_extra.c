@@ -719,6 +719,9 @@ void compile_multiple_value_bind(CL_Compiler *c, CL_Obj form)
     if (env->local_count > env->max_locals)
         env->max_locals = env->local_count;
 
+    /* Reset MV state so stale values don't leak through the body */
+    cl_emit(c, OP_MV_RESET);
+
     /* Compile body */
     c->in_tail = saved_tail;
     compile_body(c, body);

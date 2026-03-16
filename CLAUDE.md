@@ -74,6 +74,22 @@ Any C code that holds `CL_Obj` values across allocating calls **must** GC-protec
 - Strive for helpful, precise diagnostics that guide the user to the problem and solution
 - When loading Lisp code and fixing bugs, **improve compiler error messages** — include source location (file, line), the offending form, and actionable guidance where possible
 
+## Running clamiga
+
+- When running `clamiga` to capture output (e.g. for debugging or verification), use **small timeouts (10 seconds)** and check periodically — the process may hang or run indefinitely on certain inputs
+
+## Integration Test Scripts
+
+Reusable Lisp scripts in `trunk/` for loading and testing third-party libraries:
+
+```
+./build/host/clamiga --heap 24M --load trunk/load-and-test-5am.lisp    # Fiveam (57/57 tests)
+./build/host/clamiga --heap 24M --load trunk/load-and-test-fset.lisp   # FSet test suite
+```
+
+- These scripts work on both host and Amiga (use `#+amigaos`/`#-amigaos` for platform differences)
+- On Amiga, use `--heap 48M` and increase C stack as needed
+
 ## Reference
 
 - **Common Lisp HyperSpec**: https://www.lispworks.com/documentation/HyperSpec/Front/

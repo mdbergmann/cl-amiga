@@ -2641,18 +2641,24 @@ TEST(eval_intersection)
 {
     ASSERT_STR_EQ(eval_print("(intersection '(1 2 3 4) '(2 4 6))"), "(2 4)");
     ASSERT_STR_EQ(eval_print("(intersection '(1 2) '(3 4))"), "NIL");
+    /* :test-not support */
+    ASSERT_STR_EQ(eval_print("(intersection '(0 1 2) '(1 2 3 4) :test-not (lambda (x y) (not (and (eql x y) (> x 1)))))"), "(2)");
 }
 
 TEST(eval_union)
 {
     /* union returns list1 elements plus list2 elements not in list1 */
     ASSERT_STR_EQ(eval_print("(union '(1 2 3) '(2 3 4))"), "(3 2 1 4)");
+    /* :test-not support */
+    ASSERT_STR_EQ(eval_print("(sort (copy-list (union '(1 2) '(1 3) :test-not #'/=)) #'<)"), "(1 2 3)");
 }
 
 TEST(eval_set_difference)
 {
     ASSERT_STR_EQ(eval_print("(set-difference '(1 2 3 4) '(2 4))"), "(1 3)");
     ASSERT_STR_EQ(eval_print("(set-difference '(1 2) '(1 2))"), "NIL");
+    /* :test-not support */
+    ASSERT_STR_EQ(eval_print("(sort (copy-list (set-difference '(1 2 3 4 5) '(4 2 8 0) :test-not (lambda (x y) (not (and (eql x y) (> x 3)))))) #'<)"), "(1 2 3 5)");
 }
 
 TEST(eval_subsetp)
@@ -2838,11 +2844,18 @@ TEST(eval_substitute)
 {
     ASSERT_STR_EQ(eval_print("(substitute 99 3 '(1 2 3 4 3))"), "(1 2 99 4 99)");
     ASSERT_STR_EQ(eval_print("(substitute 0 3 '(1 2 3 4 3) :count 1)"), "(1 2 0 4 3)");
+    /* :from-end with :count — substitute last match */
+    ASSERT_STR_EQ(eval_print("(substitute 'a 'b '(a b b c) :count 1 :from-end t)"), "(A B A C)");
+    ASSERT_STR_EQ(eval_print("(substitute 0 3 '(3 1 3 2 3) :count 2 :from-end t)"), "(3 1 0 2 0)");
+    /* substitute on strings */
+    ASSERT_STR_EQ(eval_print("(substitute #\\Space #\\/ \"foo/bar\")"), "\"foo bar\"");
 }
 
 TEST(eval_substitute_if)
 {
     ASSERT_STR_EQ(eval_print("(substitute-if 0 #'my-evenp '(1 2 3 4 5))"), "(1 0 3 0 5)");
+    /* :from-end with :count */
+    ASSERT_STR_EQ(eval_print("(substitute-if 'a #'null '(nil 1 b nil c) :count 1 :from-end t)"), "(NIL 1 B A C)");
 }
 
 TEST(eval_substitute_if_not)
@@ -3184,6 +3197,32 @@ TEST(eval_typep_numeric_range)
 
     /* check-type with range type */
     ASSERT_STR_EQ(eval_print("(let ((x 5)) (check-type x (integer 0 7)) x)"), "5");
+}
+
+/* --- vectorp: strings are vectors per CL spec --- */
+
+TEST(eval_vectorp)
+{
+    ASSERT_STR_EQ(eval_print("(vectorp #(1 2 3))"), "T");
+    ASSERT_STR_EQ(eval_print("(vectorp \"hello\")"), "T");
+    ASSERT_STR_EQ(eval_print("(vectorp '(1 2))"), "NIL");
+    ASSERT_STR_EQ(eval_print("(vectorp 42)"), "NIL");
+}
+
+/* --- coerce simple-vector --- */
+
+TEST(eval_coerce_simple_vector)
+{
+    ASSERT_STR_EQ(eval_print("(coerce '(1 2 3) 'simple-vector)"), "#(1 2 3)");
+    ASSERT_STR_EQ(eval_print("(coerce #(1 2) 'simple-vector)"), "#(1 2)");
+}
+
+/* --- count/count-if with :from-end --- */
+
+TEST(eval_count_from_end)
+{
+    ASSERT_STR_EQ(eval_print("(let ((i 0)) (count-if (lambda (x) (> (+ x (incf i)) 4)) '(0 1 2 3 4 5) :from-end t))"), "6");
+    ASSERT_STR_EQ(eval_print("(count-if #'oddp '(1 2 3 4 5) :from-end t)"), "3");
 }
 
 /* --- deftype --- */
@@ -6427,6 +6466,22 @@ TEST(eval_block_return_preserves_mv)
         "(catch 'tag (throw 'tag 42))"), 42);
 }
 
+TEST(eval_seq_test_not)
+{
+    /* :test-not for count, find, position, remove, etc. */
+    ASSERT_EQ_INT(eval_int(
+        "(count 3 '(1 2 3 2 5 6) :test-not #'>=)"), 2);
+    ASSERT_EQ_INT(eval_int(
+        "(count 3 '(1 2 3 4 5) :test-not #'eql)"), 4);
+    ASSERT_STR_EQ(eval_print(
+        "(find 3 '(1 2 3 4 5) :test-not #'eql)"), "1");
+    ASSERT_STR_EQ(eval_print(
+        "(remove 3 '(1 2 3 4 3) :test-not #'eql)"), "(3 3)");
+    /* position: first element where (not (eql 3 elem)) = true is index 0 */
+    ASSERT_EQ_INT(eval_int(
+        "(position 3 '(3 2 3 4 5) :test-not #'eql)"), 1);
+}
+
 TEST(eval_setf_composite_cadr)
 {
     /* (setf (cdar x) val) should work like (rplacd (car x) val) */
@@ -6816,6 +6871,9 @@ int main(void)
     RUN(eval_coerce);
     RUN(eval_typep_compound);
     RUN(eval_typep_numeric_range);
+    RUN(eval_vectorp);
+    RUN(eval_coerce_simple_vector);
+    RUN(eval_count_from_end);
     RUN(eval_deftype);
     RUN(eval_subtypep);
     RUN(eval_typecase_compound);
@@ -7246,6 +7304,9 @@ int main(void)
 
     /* NLX preserves multiple values */
     RUN(eval_block_return_preserves_mv);
+
+    /* :test-not keyword for sequence functions */
+    RUN(eval_seq_test_not);
 
     /* setf composite c[ad]+r accessors */
     RUN(eval_setf_composite_cadr);
