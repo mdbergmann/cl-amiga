@@ -1268,6 +1268,64 @@ static CL_Obj bi_read(CL_Obj *args, int n)
     return result;
 }
 
+/* (read-delimited-list char &optional stream recursive-p) */
+static CL_Obj bi_read_delimited_list(CL_Obj *args, int n)
+{
+    CL_Obj stream;
+    int delim_char;
+    int ch;
+    CL_Obj result = CL_NIL, tail = CL_NIL, obj, cell;
+
+    if (!CL_CHAR_P(args[0]))
+        cl_error(CL_ERR_TYPE, "READ-DELIMITED-LIST: first argument must be a character");
+    delim_char = CL_CHAR_VAL(args[0]);
+
+    /* Resolve stream */
+    if (n < 2 || CL_NULL_P(args[1])) {
+        CL_Symbol *sym = (CL_Symbol *)CL_OBJ_TO_PTR(SYM_STANDARD_INPUT);
+        stream = sym->value;
+    } else if (args[1] == CL_T) {
+        CL_Symbol *sym = (CL_Symbol *)CL_OBJ_TO_PTR(SYM_TERMINAL_IO);
+        stream = sym->value;
+    } else {
+        stream = args[1];
+    }
+
+    CL_GC_PROTECT(result);
+    CL_GC_PROTECT(tail);
+
+    for (;;) {
+        /* Skip whitespace */
+        for (;;) {
+            ch = cl_stream_read_char(stream);
+            if (ch == -1)
+                cl_error(CL_ERR_GENERAL, "READ-DELIMITED-LIST: unexpected end of file");
+            if (ch == delim_char) {
+                CL_GC_UNPROTECT(2);
+                return result;
+            }
+            if (ch != ' ' && ch != '\t' && ch != '\n' && ch != '\r')
+                break;
+        }
+        /* Unread the non-whitespace char and read an object */
+        cl_stream_unread_char(stream, ch);
+        obj = cl_read_from_stream(stream);
+        if (cl_reader_eof()) {
+            CL_GC_UNPROTECT(2);
+            cl_error(CL_ERR_GENERAL, "READ-DELIMITED-LIST: unexpected end of file");
+            return CL_NIL;
+        }
+        /* Append to list */
+        cell = cl_cons(obj, CL_NIL);
+        if (CL_NULL_P(result)) {
+            result = cell;
+        } else {
+            ((CL_Cons *)CL_OBJ_TO_PTR(tail))->cdr = cell;
+        }
+        tail = cell;
+    }
+}
+
 /* --- Eval / Macroexpand --- */
 
 static CL_Obj bi_eval(CL_Obj *args, int n)
@@ -2297,6 +2355,7 @@ void cl_builtins_io_init(void)
 
     /* Read / Load / Eval */
     defun("READ", bi_read, 0, -1);
+    defun("READ-DELIMITED-LIST", bi_read_delimited_list, 1, 3);
     defun("LOAD", bi_load, 1, -1);  /* accepts keyword args: :verbose, :print */
     defun("EVAL", bi_eval, 1, 1);
     defun("MACROEXPAND-1", bi_macroexpand_1, 1, 1);

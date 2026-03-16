@@ -51,6 +51,7 @@ static CL_Obj bi_make_array(CL_Obj *args, int n)
     int has_initial_element = 0;
     int has_initial_contents = 0;
     int element_type_bit = 0;
+    int element_type_char = 0;
     uint32_t fill_ptr = CL_NO_FILL_POINTER;
     uint8_t flags = 0;
     int i;
@@ -78,9 +79,15 @@ static CL_Obj bi_make_array(CL_Obj *args, int n)
                 flags |= CL_VEC_FLAG_ADJUSTABLE;
         } else if (args[i] == KW_ELEMENT_TYPE) {
             element_type = args[i + 1];
-            if (CL_SYMBOL_P(element_type) &&
-                strcmp(cl_symbol_name(element_type), "BIT") == 0)
-                element_type_bit = 1;
+            if (CL_SYMBOL_P(element_type)) {
+                const char *ename = cl_symbol_name(element_type);
+                if (strcmp(ename, "BIT") == 0)
+                    element_type_bit = 1;
+                else if (strcmp(ename, "CHARACTER") == 0 ||
+                         strcmp(ename, "BASE-CHAR") == 0 ||
+                         strcmp(ename, "STANDARD-CHAR") == 0)
+                    element_type_char = 1;
+            }
         }
     }
 
@@ -125,18 +132,38 @@ static CL_Obj bi_make_array(CL_Obj *args, int n)
             return result;
         }
 
+        /* Character element-type: create a string (TYPE_STRING) */
+        if (element_type_char) {
+            char init_char = ' ';
+            CL_Obj str;
+            CL_String *s;
+            if (has_initial_element) {
+                if (!CL_CHAR_P(initial_element))
+                    cl_error(CL_ERR_TYPE, "MAKE-ARRAY: :initial-element for character array must be a character");
+                init_char = (char)CL_CHAR_VAL(initial_element);
+            }
+            str = cl_make_string(NULL, length);
+            s = (CL_String *)CL_OBJ_TO_PTR(str);
+            memset(s->data, init_char, length);
+            s->data[length] = '\0';
+            if (has_initial_contents) {
+                CL_Obj cur = initial_contents;
+                uint32_t j;
+                for (j = 0; j < length && !CL_NULL_P(cur); j++) {
+                    CL_Obj elem = cl_car(cur);
+                    if (CL_CHAR_P(elem))
+                        s->data[j] = (char)CL_CHAR_VAL(elem);
+                    cur = cl_cdr(cur);
+                }
+            }
+            return str;
+        }
+
         /* For numeric element types, default initial-element to 0 */
         if (!has_initial_element && !has_initial_contents && !CL_NULL_P(element_type)) {
-            /* Check if element-type is a numeric subtype (unsigned-byte, integer, etc.) */
-            if (!element_type_bit) {
-                /* Treat any non-character element-type as numeric → init to 0 */
-                if (CL_CONS_P(element_type) ||
-                    (CL_SYMBOL_P(element_type) &&
-                     strcmp(cl_symbol_name(element_type), "CHARACTER") != 0 &&
-                     strcmp(cl_symbol_name(element_type), "BASE-CHAR") != 0)) {
-                    initial_element = CL_MAKE_FIXNUM(0);
-                    has_initial_element = 1;
-                }
+            if (!element_type_bit && !element_type_char) {
+                initial_element = CL_MAKE_FIXNUM(0);
+                has_initial_element = 1;
             }
         }
 
@@ -188,6 +215,32 @@ static CL_Obj bi_make_array(CL_Obj *args, int n)
         if (rank == 0) {
             /* 0-dimensional array: single element */
             return cl_make_array(1, 0, NULL, flags, fill_ptr);
+        }
+        if (rank == 1 && element_type_char) {
+            /* 1D character array from list dimension: create string */
+            char init_char = ' ';
+            CL_Obj str;
+            CL_String *s;
+            if (has_initial_element) {
+                if (!CL_CHAR_P(initial_element))
+                    cl_error(CL_ERR_TYPE, "MAKE-ARRAY: :initial-element for character array must be a character");
+                init_char = (char)CL_CHAR_VAL(initial_element);
+            }
+            str = cl_make_string(NULL, dims[0]);
+            s = (CL_String *)CL_OBJ_TO_PTR(str);
+            memset(s->data, init_char, dims[0]);
+            s->data[dims[0]] = '\0';
+            if (has_initial_contents) {
+                uint32_t j;
+                cur = initial_contents;
+                for (j = 0; j < dims[0] && !CL_NULL_P(cur); j++) {
+                    CL_Obj elem = cl_car(cur);
+                    if (CL_CHAR_P(elem))
+                        s->data[j] = (char)CL_CHAR_VAL(elem);
+                    cur = cl_cdr(cur);
+                }
+            }
+            return str;
         }
         if (rank == 1) {
             /* List of one element = 1D array */

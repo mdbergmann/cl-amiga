@@ -109,6 +109,7 @@ CL_Obj SYM_SIMPLE_CONDITION = CL_NIL;
 CL_Obj SYM_SIMPLE_ERROR = CL_NIL;
 CL_Obj SYM_SIMPLE_WARNING = CL_NIL;
 CL_Obj SYM_TYPE_ERROR = CL_NIL;
+CL_Obj SYM_SIMPLE_TYPE_ERROR = CL_NIL;
 CL_Obj SYM_UNBOUND_VARIABLE_COND = CL_NIL;
 CL_Obj SYM_UNDEFINED_FUNCTION_COND = CL_NIL;
 CL_Obj SYM_PROGRAM_ERROR = CL_NIL;
@@ -473,6 +474,7 @@ void cl_symbol_init(void)
     SYM_SIMPLE_ERROR             = cl_intern_in("SIMPLE-ERROR", 12, cl_package_cl);
     SYM_SIMPLE_WARNING           = cl_intern_in("SIMPLE-WARNING", 14, cl_package_cl);
     SYM_TYPE_ERROR               = cl_intern_in("TYPE-ERROR", 10, cl_package_cl);
+    SYM_SIMPLE_TYPE_ERROR        = cl_intern_in("SIMPLE-TYPE-ERROR", 17, cl_package_cl);
     SYM_UNBOUND_VARIABLE_COND    = cl_intern_in("UNBOUND-VARIABLE", 16, cl_package_cl);
     SYM_UNDEFINED_FUNCTION_COND  = cl_intern_in("UNDEFINED-FUNCTION", 18, cl_package_cl);
     SYM_PROGRAM_ERROR            = cl_intern_in("PROGRAM-ERROR", 13, cl_package_cl);

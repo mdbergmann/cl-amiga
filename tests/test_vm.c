@@ -1748,6 +1748,53 @@ TEST(eval_defsetf_cadr)
         "(1 99 3)");
 }
 
+/* get-setf-expansion must return proper store-form for defsetf places,
+ * so that define-setf-expander on higher-level accessors can compose. */
+TEST(eval_get_setf_expansion_defsetf)
+{
+    /* Define a struct with a mutable slot */
+    eval_print("(defstruct (box (:copier nil)) (val nil))");
+    /* Define a higher-level setf expander that composes with the struct setter.
+     * (setf (box-val-plus-one b) v) => set box-val to (1- v) */
+    eval_print(
+        "(define-setf-expander box-val-plus-one (b &environment env)"
+        "  (multiple-value-bind (temps vals stores store-form access-form)"
+        "      (get-setf-expansion (list 'box-val b) env)"
+        "    (let ((store (gensym)))"
+        "      (values temps vals (list store)"
+        "              (list 'let (list (list (car stores) (list '1- store)))"
+        "                    store-form)"
+        "              (list '1+ access-form)))))");
+    eval_print("(defun box-val-plus-one (b) (1+ (box-val b)))");
+    ASSERT_EQ_INT(eval_int(
+        "(let ((b (make-box :val 10)))"
+        "  (setf (box-val-plus-one b) 100)"
+        "  (box-val b))"),
+        99);
+}
+
+TEST(eval_equalp)
+{
+    /* Case-insensitive chars and strings */
+    ASSERT_STR_EQ(eval_print("(equalp #\\a #\\A)"), "T");
+    ASSERT_STR_EQ(eval_print("(equalp \"hello\" \"HELLO\")"), "T");
+    ASSERT_STR_EQ(eval_print("(equalp \"abc\" \"ABD\")"), "NIL");
+    /* Numeric cross-type */
+    ASSERT_STR_EQ(eval_print("(equalp 1 1.0)"), "T");
+    ASSERT_STR_EQ(eval_print("(equalp 0 0.0)"), "T");
+    /* Vectors element-wise */
+    ASSERT_STR_EQ(eval_print("(equalp #(1 2 3) #(1 2 3))"), "T");
+    ASSERT_STR_EQ(eval_print("(equalp #(1 2 3) #(1 2 4))"), "NIL");
+    /* Structs */
+    eval_print("(defstruct ep-test (x nil) (y nil))");
+    ASSERT_STR_EQ(eval_print("(equalp (make-ep-test :x 1 :y \"hi\") (make-ep-test :x 1.0 :y \"HI\"))"), "T");
+    /* make-array with :element-type character creates string */
+    ASSERT_STR_EQ(eval_print(
+        "(stringp (make-array 3 :element-type 'character :initial-element #\\x))"), "T");
+    ASSERT_STR_EQ(eval_print(
+        "(stringp (make-array '(3) :element-type 'base-char :initial-element #\\x))"), "T");
+}
+
 /* --- defun block (return-from inside do) --- */
 
 TEST(eval_defun_return_from)
@@ -1874,6 +1921,57 @@ TEST(eval_uwp_nlx_leak_tailcall)
         "    :normal))");
     ASSERT_STR_EQ(eval_print("(wrapper)"), ":EARLY");
     ASSERT_STR_EQ(eval_print("*uwp-cleanup-val*"), "MY-SESSION");
+}
+
+/* Regression: NLX block frame precision.  Functions with closures that
+ * don't use return-from should NOT push NLX BLOCK frames.  Previously,
+ * any function containing lambda/labels/flet pushed an NLX frame even
+ * when return-from was never used, leaking NLX frames during deep
+ * recursion (e.g. CLOS dispatch + FSet WB tree operations). */
+TEST(eval_block_nlx_precision)
+{
+    /* Defun with labels but no return-from — should use local block path.
+     * Deep mutual recursion shouldn't overflow NLX stack. */
+    eval_print(
+        "(defun nlx-prec-a (n)"
+        "  (labels ((even? (x) (if (= x 0) t (odd? (1- x))))"
+        "           (odd? (x) (if (= x 0) nil (even? (1- x)))))"
+        "    (even? n)))");
+    ASSERT_STR_EQ(eval_print("(nlx-prec-a 100)"), "T");
+    ASSERT_STR_EQ(eval_print("(nlx-prec-a 99)"), "NIL");
+
+    /* Same with lambda — no return-from, so no NLX needed */
+    eval_print(
+        "(defun nlx-prec-b (lst)"
+        "  (let ((result nil))"
+        "    (dolist (x lst)"
+        "      (push (funcall (lambda (v) (* v v)) x) result))"
+        "    (nreverse result)))");
+    ASSERT_STR_EQ(eval_print("(nlx-prec-b '(1 2 3))"), "(1 4 9)");
+}
+
+/* Regression: dolist variable shadowing.  CL spec requires the list-form
+ * to be evaluated BEFORE the loop variable is bound.  Previously, the
+ * loop variable was added to the environment before compiling the list-form,
+ * so (dolist (x x) ...) would see the new uninitialized x. */
+TEST(eval_dolist_var_shadowing)
+{
+    /* The classic pattern from FSet's Do-WB-Set-Tree-Members:
+     * (dolist (val (some-accessor val)) ...) where val shadows outer val */
+    ASSERT_STR_EQ(eval_print(
+        "(let ((mylist '(a b c)))"
+        "  (let ((result nil))"
+        "    (dolist (mylist mylist)"
+        "      (push mylist result))"
+        "    (nreverse result)))"), "(A B C)");
+
+    /* dotimes equivalent: (dotimes (n n) ...) where n shadows outer n */
+    ASSERT_EQ_INT(eval_int(
+        "(let ((n 5))"
+        "  (let ((sum 0))"
+        "    (dotimes (n n)"
+        "      (incf sum n))"
+        "    sum))"), 10);  /* 0+1+2+3+4 = 10 */
 }
 
 /* --- Phase 5 Tier 1: Character functions --- */
@@ -6486,6 +6584,8 @@ int main(void)
     RUN(eval_destructuring_bind_key);
     RUN(eval_defsetf_short);
     RUN(eval_defsetf_cadr);
+    RUN(eval_get_setf_expansion_defsetf);
+    RUN(eval_equalp);
     RUN(eval_defun_return_from);
 
     /* Cross-closure return-from */
@@ -6495,6 +6595,8 @@ int main(void)
     RUN(eval_return_from_nested_labels);
     RUN(eval_block_with_unwind_protect);
     RUN(eval_uwp_nlx_leak_tailcall);
+    RUN(eval_block_nlx_precision);
+    RUN(eval_dolist_var_shadowing);
 
     /* Phase 5 Tier 1 */
     RUN(eval_characterp);

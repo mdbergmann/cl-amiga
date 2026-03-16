@@ -161,6 +161,22 @@ static CL_Obj bi_register_setf_function(CL_Obj *args, int n)
 }
 
 extern CL_Obj setf_expander_table;
+extern CL_Obj setf_table;
+
+/* (%get-defsetf-setter accessor-sym) — look up defsetf setter for accessor */
+static CL_Obj bi_get_defsetf_setter(CL_Obj *args, int n)
+{
+    CL_Obj name = args[0];
+    CL_Obj entry = setf_table;
+    CL_UNUSED(n);
+    while (!CL_NULL_P(entry)) {
+        CL_Obj pair = cl_car(entry);
+        if (cl_car(pair) == name)
+            return cl_cdr(pair);
+        entry = cl_cdr(entry);
+    }
+    return CL_NIL;
+}
 
 static CL_Obj bi_register_setf_expander(CL_Obj *args, int n)
 {
@@ -196,4 +212,5 @@ void cl_builtins_mutation_init(void)
     defun("FMAKUNBOUND", bi_fmakunbound, 1, 1);
     cl_register_builtin("%REGISTER-SETF-FUNCTION", bi_register_setf_function, 2, 2, cl_package_clamiga);
     cl_register_builtin("%REGISTER-SETF-EXPANDER", bi_register_setf_expander, 2, 2, cl_package_clamiga);
+    cl_register_builtin("%GET-DEFSETF-SETTER", bi_get_defsetf_setter, 1, 1, cl_package_clamiga);
 }

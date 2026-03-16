@@ -23,6 +23,9 @@ typedef struct {
     uint8_t stub_code[3]; /* For cl_vm_apply stub frames: OP_CALL,nargs,OP_HALT.
                              Embedded here so it survives longjmp past the
                              cl_vm_apply C frame (stack-use-after-return fix). */
+    int nlx_level;       /* NLX stack depth when this frame was entered.
+                            Used by OP_TAILCALL to pop BLOCK/CATCH frames
+                            from the current function before reusing the frame. */
 } CL_Frame;
 
 typedef struct {
@@ -57,7 +60,7 @@ void cl_dynbind_restore_to(int mark);
 #define CL_NLX_UWPROT   1
 #define CL_NLX_BLOCK    2
 #define CL_NLX_TAGBODY  3
-#define CL_MAX_NLX_FRAMES 1024
+#define CL_MAX_NLX_FRAMES 2048
 
 typedef struct {
     uint8_t type;          /* CL_NLX_CATCH or CL_NLX_UWPROT */

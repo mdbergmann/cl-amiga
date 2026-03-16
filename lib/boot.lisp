@@ -135,11 +135,19 @@
     ;; For function call places, return a basic expansion
     (let ((temps (mapcar (lambda (x) (declare (ignore x)) (gensym "T"))
                          (cdr place)))
-          (store (gensym "NEW")))
-      (values temps (cdr place) (list store)
-              (list* 'funcall (list 'function (list 'setf (car place)))
-                     store temps)
-              (cons (car place) temps)))))
+          (store (gensym "NEW"))
+          (setter (%get-defsetf-setter (car place))))
+      (if setter
+          ;; defsetf registered: use the setter function directly
+          ;; Convention: (setter place-args... new-value)
+          (values temps (cdr place) (list store)
+                  (append (list* setter temps) (list store))
+                  (cons (car place) temps))
+        ;; Fall back to (setf name) function
+        (values temps (cdr place) (list store)
+                (list* 'funcall (list 'function (list 'setf (car place)))
+                       store temps)
+                (cons (car place) temps))))))
 
 (defmacro define-setf-expander (access-fn lambda-list &body body)
   ;; Strip &environment from lambda-list, pass nil for it

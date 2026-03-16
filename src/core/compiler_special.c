@@ -348,8 +348,8 @@ void compile_destructuring_bind(CL_Compiler *c, CL_Obj form)
 /* --- Block / Return --- */
 
 /* Check if an S-expression tree contains closure-creating forms
- * (lambda, labels, flet). Used to decide if a block needs NLX
- * for cross-closure return-from support. */
+ * (lambda, labels, flet). Used to decide if a block/tagbody needs NLX
+ * for cross-closure return-from/go support. */
 static int tree_has_closure_forms(CL_Obj tree)
 {
     while (CL_CONS_P(tree)) {
@@ -370,12 +370,58 @@ static int tree_has_closure_forms(CL_Obj tree)
     return 0;
 }
 
+/* Check if (return-from <tag> ...) appears anywhere in tree. */
+static int tree_contains_return_from(CL_Obj tree, CL_Obj tag)
+{
+    while (CL_CONS_P(tree)) {
+        CL_Obj head = cl_car(tree);
+        if (CL_CONS_P(head)) {
+            CL_Obj op = cl_car(head);
+            if (op == SYM_RETURN_FROM && CL_CONS_P(cl_cdr(head))
+                && cl_car(cl_cdr(head)) == tag)
+                return 1;
+            if (tree_contains_return_from(head, tag))
+                return 1;
+        }
+        tree = cl_cdr(tree);
+    }
+    return 0;
+}
+
+/* Precise check: does a closure form (lambda/labels/flet) in the tree
+ * contain (return-from <tag> ...)?  Only returns true when the block
+ * actually needs NLX — i.e. return-from crosses a closure boundary.
+ * Falls back to tree_has_closure_forms for NIL tags (anonymous blocks). */
+static int tree_needs_nlx_block(CL_Obj body, CL_Obj tag)
+{
+    CL_Obj tree;
+    if (CL_NULL_P(tag))
+        return tree_has_closure_forms(body);
+
+    tree = body;
+    while (CL_CONS_P(tree)) {
+        CL_Obj head = cl_car(tree);
+        if (CL_CONS_P(head)) {
+            CL_Obj op = cl_car(head);
+            if (op == SYM_LAMBDA || op == SYM_LABELS || op == SYM_FLET
+                || op == SYM_RESTART_CASE) {
+                if (tree_contains_return_from(head, tag))
+                    return 1;
+            }
+            if (tree_needs_nlx_block(head, tag))
+                return 1;
+        }
+        tree = cl_cdr(tree);
+    }
+    return 0;
+}
+
 void compile_block(CL_Compiler *c, CL_Obj form)
 {
     CL_Obj tag = cl_car(cl_cdr(form));
     CL_Obj body = cl_cdr(cl_cdr(form));
     int saved_block_count = c->block_count;
-    int needs_nlx = tree_has_closure_forms(body);
+    int needs_nlx = tree_needs_nlx_block(body, tag);
     CL_BlockInfo *bi;
 
     /* Push block info (for compile-time lookup by return-from) */
@@ -388,6 +434,7 @@ void compile_block(CL_Compiler *c, CL_Obj form)
     if (needs_nlx) {
         /* NLX path: set up NLX frame for cross-closure return-from */
         int tag_idx, block_push_pos, jmp_pos;
+        int saved_tail = c->in_tail;
 
         bi->result_slot = -1;
 
@@ -397,7 +444,12 @@ void compile_block(CL_Compiler *c, CL_Obj form)
         block_push_pos = c->code_pos;
         cl_emit_i32(c, 0); /* placeholder offset to landing */
 
+        /* Disable tail calls inside NLX blocks — the body must
+         * return to OP_BLOCK_POP so the NLX frame is properly popped.
+         * Without this, tail calls leak NLX BLOCK frames. */
+        c->in_tail = 0;
         compile_body(c, body);
+        c->in_tail = saved_tail;
 
         /* Normal exit: pop NLX frame, jump past landing */
         cl_emit(c, OP_BLOCK_POP);
@@ -1064,7 +1116,24 @@ void compile_dolist(CL_Compiler *c, CL_Obj form)
 
     c->in_tail = 0;
 
-    /* Allocate var slot */
+    /* Allocate iter slot FIRST — list-form must be evaluated before
+     * the loop variable is bound (CL spec), so we compile list-form
+     * into iter_slot while the outer env is still visible. */
+    iter_slot = env->local_count;
+    env->locals[iter_slot] = CL_NIL;
+    env->local_count++;
+    if (env->local_count > env->max_locals)
+        env->max_locals = env->local_count;
+
+    /* Compile list-form BEFORE adding var to env.
+     * This ensures (dolist (x (f x)) ...) evaluates (f x) using
+     * the OUTER binding of x, not the new loop variable. */
+    compile_expr(c, list_form);
+    cl_emit(c, OP_STORE);
+    cl_emit(c, (uint8_t)iter_slot);
+    cl_emit(c, OP_POP);
+
+    /* NOW allocate var slot — after list-form is compiled */
     var_slot = cl_env_add_local(env, var);
 
     /* Check if loop var is captured in body (always mutated by loop) */
@@ -1090,16 +1159,9 @@ void compile_dolist(CL_Compiler *c, CL_Obj form)
         env->boxed[var_slot] = 1;
     }
 
-    /* Allocate internal iter slot (no symbol, never looked up) */
-    iter_slot = env->local_count;
-    env->locals[iter_slot] = CL_NIL;  /* Clear stale binding */
-    env->local_count++;
-    if (env->local_count > env->max_locals)
-        env->max_locals = env->local_count;
-
     /* Allocate result slot for implicit block NIL */
     result_slot = env->local_count;
-    env->locals[result_slot] = CL_NIL;  /* Clear stale binding */
+    env->locals[result_slot] = CL_NIL;
     env->local_count++;
     if (env->local_count > env->max_locals)
         env->max_locals = env->local_count;
@@ -1109,12 +1171,6 @@ void compile_dolist(CL_Compiler *c, CL_Obj form)
     bi->tag = CL_NIL;
     bi->n_patches = 0;
     bi->result_slot = result_slot;
-
-    /* Compile list-form, store into iter_slot */
-    compile_expr(c, list_form);
-    cl_emit(c, OP_STORE);
-    cl_emit(c, (uint8_t)iter_slot);
-    cl_emit(c, OP_POP);
 
     /* loop_start: LOAD iter_slot, JNIL -> end */
     loop_start = c->code_pos;
@@ -1221,7 +1277,23 @@ void compile_dotimes(CL_Compiler *c, CL_Obj form)
 
     c->in_tail = 0;
 
-    /* Allocate var slot */
+    /* Allocate limit slot FIRST — count-form must be evaluated before
+     * the loop variable is bound (CL spec). */
+    limit_slot = env->local_count;
+    env->locals[limit_slot] = CL_NIL;
+    env->local_count++;
+    if (env->local_count > env->max_locals)
+        env->max_locals = env->local_count;
+
+    /* Compile count-form BEFORE adding var to env.
+     * This ensures (dotimes (x (f x)) ...) evaluates (f x) using
+     * the OUTER binding of x, not the new loop variable. */
+    compile_expr(c, count_form);
+    cl_emit(c, OP_STORE);
+    cl_emit(c, (uint8_t)limit_slot);
+    cl_emit(c, OP_POP);
+
+    /* NOW allocate var slot — after count-form is compiled */
     var_slot = cl_env_add_local(env, var);
 
     /* Check if loop var is captured in body (always mutated by loop) */
@@ -1237,16 +1309,9 @@ void compile_dotimes(CL_Compiler *c, CL_Obj form)
         var_boxed = captured;
     }
 
-    /* Allocate internal limit slot */
-    limit_slot = env->local_count;
-    env->locals[limit_slot] = CL_NIL;  /* Clear stale binding */
-    env->local_count++;
-    if (env->local_count > env->max_locals)
-        env->max_locals = env->local_count;
-
     /* Allocate result slot for implicit block NIL */
     result_slot = env->local_count;
-    env->locals[result_slot] = CL_NIL;  /* Clear stale binding */
+    env->locals[result_slot] = CL_NIL;
     env->local_count++;
     if (env->local_count > env->max_locals)
         env->max_locals = env->local_count;
@@ -1256,12 +1321,6 @@ void compile_dotimes(CL_Compiler *c, CL_Obj form)
     bi->tag = CL_NIL;
     bi->n_patches = 0;
     bi->result_slot = result_slot;
-
-    /* Compile count-form, store into limit_slot */
-    compile_expr(c, count_form);
-    cl_emit(c, OP_STORE);
-    cl_emit(c, (uint8_t)limit_slot);
-    cl_emit(c, OP_POP);
 
     /* var = 0 (boxed: wrap in cell) */
     cl_emit_const(c, CL_MAKE_FIXNUM(0));

@@ -375,6 +375,95 @@ static CL_Obj bi_equal(CL_Obj *args, int n)
     return CL_NIL;
 }
 
+/* EQUALP: case-insensitive, numeric =, recursive on arrays/structs */
+static CL_Obj bi_equalp(CL_Obj *args, int n)
+{
+    CL_Obj a = args[0], b = args[1];
+    CL_UNUSED(n);
+
+    if (a == b) return SYM_T;
+    /* Characters: case-insensitive */
+    if (CL_CHAR_P(a) && CL_CHAR_P(b)) {
+        int ca = CL_CHAR_VAL(a), cb = CL_CHAR_VAL(b);
+        if (ca >= 'a' && ca <= 'z') ca -= 32;
+        if (cb >= 'a' && cb <= 'z') cb -= 32;
+        return ca == cb ? SYM_T : CL_NIL;
+    }
+    /* Numbers: use numeric = (cross-type) */
+    if (CL_NUMBER_P(a) && CL_NUMBER_P(b))
+        return cl_arith_compare(a, b) == 0 ? SYM_T : CL_NIL;
+    /* Conses: recursive */
+    if (CL_CONS_P(a) && CL_CONS_P(b)) {
+        CL_Obj pair[2];
+        pair[0] = cl_car(a); pair[1] = cl_car(b);
+        if (CL_NULL_P(bi_equalp(pair, 2))) return CL_NIL;
+        pair[0] = cl_cdr(a); pair[1] = cl_cdr(b);
+        return bi_equalp(pair, 2);
+    }
+    /* Strings: case-insensitive */
+    if (CL_STRING_P(a) && CL_STRING_P(b)) {
+        CL_String *sa = (CL_String *)CL_OBJ_TO_PTR(a);
+        CL_String *sb = (CL_String *)CL_OBJ_TO_PTR(b);
+        uint32_t i;
+        if (sa->length != sb->length) return CL_NIL;
+        for (i = 0; i < sa->length; i++) {
+            int ca = (unsigned char)sa->data[i], cb = (unsigned char)sb->data[i];
+            if (ca >= 'a' && ca <= 'z') ca -= 32;
+            if (cb >= 'a' && cb <= 'z') cb -= 32;
+            if (ca != cb) return CL_NIL;
+        }
+        return SYM_T;
+    }
+    /* Vectors/arrays: element-wise equalp */
+    if (CL_VECTOR_P(a) && CL_VECTOR_P(b)) {
+        CL_Vector *va = (CL_Vector *)CL_OBJ_TO_PTR(a);
+        CL_Vector *vb = (CL_Vector *)CL_OBJ_TO_PTR(b);
+        uint32_t i;
+        if (va->length != vb->length) return CL_NIL;
+        for (i = 0; i < va->length; i++) {
+            CL_Obj pair[2];
+            pair[0] = va->data[i]; pair[1] = vb->data[i];
+            if (CL_NULL_P(bi_equalp(pair, 2))) return CL_NIL;
+        }
+        return SYM_T;
+    }
+    /* Bit vectors */
+    if (CL_BIT_VECTOR_P(a) && CL_BIT_VECTOR_P(b)) {
+        CL_BitVector *ba = (CL_BitVector *)CL_OBJ_TO_PTR(a);
+        CL_BitVector *bb_bv = (CL_BitVector *)CL_OBJ_TO_PTR(b);
+        uint32_t nwords;
+        if (ba->length != bb_bv->length) return CL_NIL;
+        nwords = CL_BV_WORDS(ba->length);
+        if (nwords == 0) return SYM_T;
+        return memcmp(ba->data, bb_bv->data, nwords * sizeof(uint32_t)) == 0 ? SYM_T : CL_NIL;
+    }
+    /* Structs: same type, slot-wise equalp */
+    if (CL_STRUCT_P(a) && CL_STRUCT_P(b)) {
+        CL_Struct *sa = (CL_Struct *)CL_OBJ_TO_PTR(a);
+        CL_Struct *sb = (CL_Struct *)CL_OBJ_TO_PTR(b);
+        uint32_t i;
+        if (sa->type_desc != sb->type_desc) return CL_NIL;
+        if (sa->n_slots != sb->n_slots) return CL_NIL;
+        for (i = 0; i < sa->n_slots; i++) {
+            CL_Obj pair[2];
+            pair[0] = sa->slots[i]; pair[1] = sb->slots[i];
+            if (CL_NULL_P(bi_equalp(pair, 2))) return CL_NIL;
+        }
+        return SYM_T;
+    }
+    /* Hash tables: same count, same test, all keys present with equalp values */
+    if (CL_HASHTABLE_P(a) && CL_HASHTABLE_P(b)) {
+        /* Simplified: just check same object or use equal */
+        return bi_equal(args, n);
+    }
+    /* Pathnames: same as equal */
+    if (CL_PATHNAME_P(a) && CL_PATHNAME_P(b)) {
+        extern int cl_pathname_equal(CL_Obj a, CL_Obj b);
+        return cl_pathname_equal(a, b) ? SYM_T : CL_NIL;
+    }
+    return CL_NIL;
+}
+
 static CL_Obj bi_not(CL_Obj *args, int n)
 {
     CL_UNUSED(n);
@@ -750,6 +839,7 @@ void cl_builtins_init(void)
     defun("EQ", bi_eq, 2, 2);
     defun("EQL", bi_eql, 2, 2);
     defun("EQUAL", bi_equal, 2, 2);
+    defun("EQUALP", bi_equalp, 2, 2);
     defun("NOT", bi_not, 1, 1);
 
     /* Higher-order */

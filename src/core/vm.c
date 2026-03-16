@@ -228,6 +228,7 @@ CL_Obj cl_vm_apply(CL_Obj func, CL_Obj *args, int nargs)
         frame->bp = cl_vm.sp;  /* bp before func+args */
         frame->n_locals = 0;
         frame->nargs = 0;
+        frame->nlx_level = cl_nlx_top;
 
         /* Push function and arguments onto VM stack */
         cl_vm_push(func);
@@ -1250,6 +1251,7 @@ static CL_Obj cl_vm_run(int base_fp, int base_nlx)
                     new_frame->bp = new_bp;
                     new_frame->n_locals = callee_bc->n_locals;
                     new_frame->nargs = nargs;
+                    new_frame->nlx_level = cl_nlx_top;
 
                     frame = new_frame;
                     code = callee_bc->code;
@@ -2568,6 +2570,7 @@ CL_Obj cl_vm_eval(CL_Obj bytecode_obj)
     frame->bp = cl_vm.sp;
     frame->n_locals = bc->n_locals;
     frame->nargs = 0;
+    frame->nlx_level = cl_nlx_top;
 
     /* Allocate space for locals */
     {

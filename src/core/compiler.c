@@ -708,8 +708,71 @@ top:
                     scan_body_for_boxing(place, vars, n_vars,
                                          mutated, captured, closure_depth);
                 }
+            } else if (CL_CONS_P(place)) {
+                /* Generalized place — check for define-setf-expander.
+                 * If one is registered, call it to get the expansion form
+                 * and scan THAT for mutations.  This catches cases like
+                 * (setf (lookup coll key) val) where the expander generates
+                 * (setq coll ...) internally. */
+                CL_Obj place_head = cl_car(place);
+                int expanded_setf = 0;
+                if (CL_SYMBOL_P(place_head) && scan_macro_depth < SCAN_MACRO_MAX_DEPTH) {
+                    CL_Obj exp_entry = setf_expander_table;
+                    while (!CL_NULL_P(exp_entry)) {
+                        CL_Obj pair = cl_car(exp_entry);
+                        if (cl_car(pair) == place_head) {
+                            /* Found expander — call it with error recovery */
+                            CL_Obj expander_fn = cl_cdr(pair);
+                            CL_Obj call_args[2];
+                            int saved_sp = cl_vm.sp;
+                            int saved_fp = cl_vm.fp;
+                            int saved_dyn = cl_dyn_top;
+                            int saved_nlx = cl_nlx_top;
+                            int saved_handler = cl_handler_top;
+                            int saved_restart = cl_restart_top;
+                            int saved_debugger = cl_debugger_enabled;
+                            int saved_gc_roots = gc_root_count;
+                            cl_debugger_enabled = 0;
+                            call_args[0] = place;
+                            call_args[1] = val;
+                            scan_macro_depth++;
+                            {
+                                int err = CL_CATCH();
+                                if (err == 0) {
+                                    CL_Obj expansion = cl_vm_apply(expander_fn, call_args, 2);
+                                    CL_UNCATCH();
+                                    cl_debugger_enabled = saved_debugger;
+                                    cl_handler_top = saved_handler;
+                                    cl_restart_top = saved_restart;
+                                    CL_GC_PROTECT(expansion);
+                                    scan_body_for_boxing(expansion, vars, n_vars,
+                                                         mutated, captured, closure_depth);
+                                    CL_GC_UNPROTECT(1);
+                                    expanded_setf = 1;
+                                } else {
+                                    CL_UNCATCH();
+                                    cl_vm.sp = saved_sp;
+                                    cl_vm.fp = saved_fp;
+                                    cl_dynbind_restore_to(saved_dyn);
+                                    cl_nlx_top = saved_nlx;
+                                    cl_handler_top = saved_handler;
+                                    cl_restart_top = saved_restart;
+                                    cl_debugger_enabled = saved_debugger;
+                                    gc_root_count = saved_gc_roots;
+                                }
+                            }
+                            scan_macro_depth--;
+                            break;
+                        }
+                        exp_entry = cl_cdr(exp_entry);
+                    }
+                }
+                if (!expanded_setf) {
+                    /* No expander or expansion failed — scan sub-expressions */
+                    scan_body_for_boxing(place, vars, n_vars,
+                                         mutated, captured, closure_depth);
+                }
             } else {
-                /* Generalized place — scan sub-expressions for references */
                 scan_body_for_boxing(place, vars, n_vars,
                                      mutated, captured, closure_depth);
             }

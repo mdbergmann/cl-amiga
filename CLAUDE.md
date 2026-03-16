@@ -35,6 +35,8 @@ make -f Makefile.cross clean        # Remove cross-build artifacts
 
 ## Coding Guidelines
 
+- **All Common Lisp code in the runtime and compiler must conform to the HyperSpec** — when implementing or modifying CL functions, macros, or special forms, consult the [HyperSpec](https://www.lispworks.com/documentation/HyperSpec/Front/) as the authoritative reference
+- **Tests must be written and verified against the HyperSpec** — test cases should validate behavior as specified by the standard, not just observed behavior
 - **Memory/CPU efficiency is critical** — target is 68020 @ 14MHz with 8MB RAM
 - All structs must work at 32-bit — no `size_t` or pointer-sized fields in heap objects
 - Use `uint32_t`/`int32_t` explicitly, not `int` or `long` for sized data
@@ -64,6 +66,7 @@ Any C code that holds `CL_Obj` values across allocating calls **must** GC-protec
 - Host tests: `tests/test_*.c` using framework in `tests/test.h`; `make test` must pass before any commit
 - Amiga tests: `tests/amiga/run-tests.lisp` — Lisp-based test suite run on AmigaOS via FS-UAE
 - **Tests must be tight on production code** — test the exact behavior, not just the happy path; cover edge cases, boundary conditions, and error paths thoroughly
+- **Target 90% test coverage** — aim for at least 90% coverage across the codebase
 
 ## Usability
 

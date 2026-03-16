@@ -179,6 +179,13 @@ static void build_hierarchy(void)
                 cl_cons(SYM_ERROR_COND, CL_NIL)),
         condition_hierarchy);
 
+    /* simple-type-error -> type-error, simple-condition */
+    condition_hierarchy = cl_cons(
+        cl_cons(SYM_SIMPLE_TYPE_ERROR,
+                cl_cons(SYM_TYPE_ERROR,
+                        cl_cons(SYM_SIMPLE_CONDITION, CL_NIL))),
+        condition_hierarchy);
+
     /* simple-error -> error, simple-condition */
     condition_hierarchy = cl_cons(
         cl_cons(SYM_SIMPLE_ERROR,
