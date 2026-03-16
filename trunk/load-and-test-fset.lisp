@@ -11,7 +11,7 @@
 #+amigaos (load "quicklisp/setup.lisp")
 #-amigaos (load (merge-pathnames "quicklisp/setup.lisp" (user-homedir-pathname)))
 
-#+amigaos (load "lib/quicklisp-compat.lisp")
+(load "lib/quicklisp-compat.lisp")
 
 (format t "~%--- Loading FSet via quicklisp ---~%")
 (ql:quickload :fset)

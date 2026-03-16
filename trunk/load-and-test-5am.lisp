@@ -7,7 +7,7 @@
 #+amigaos (load "quicklisp/setup.lisp")
 #-amigaos (load (merge-pathnames "quicklisp/setup.lisp" (user-homedir-pathname)))
 
-#+amigaos (load "lib/quicklisp-compat.lisp")
+(load "lib/quicklisp-compat.lisp")
 
 (format t "~%--- Loading fiveam via quicklisp ---~%")
 (ql:quickload :fiveam)
