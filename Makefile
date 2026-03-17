@@ -2,7 +2,7 @@
 # Targets: host (Linux), amiga-m68k, amiga-ppc
 
 CC_HOST     = gcc
-CFLAGS_HOST = -std=c99 -Wall -Wextra -Wpedantic -g -O2 -DPLATFORM_POSIX $(DEBUG_FLAGS)
+CFLAGS_HOST = -std=c99 -Wall -Wextra -Wpedantic -g -O3 -flto -DPLATFORM_POSIX $(DEBUG_FLAGS)
 
 SRCDIR   = src
 BUILDDIR = build/host
@@ -129,6 +129,17 @@ verify-amiga:
 		echo "=== Amiga verification FAILED ==="; \
 		exit 1; \
 	fi
+
+# Pre-compile boot files to FASL for faster startup
+fasl: $(BUILDDIR)/clamiga
+	@echo "=== Compiling boot.lisp → lib/boot.fasl ==="
+	$(BUILDDIR)/clamiga --heap 24M \
+		--eval '(compile-file "lib/boot.lisp" :output-file "lib/boot.fasl")' \
+		--eval '(quit)'
+	@echo "=== Compiling clos.lisp → lib/clos.fasl ==="
+	$(BUILDDIR)/clamiga --heap 24M \
+		--eval '(compile-file "lib/clos.lisp" :output-file "lib/clos.fasl")' \
+		--eval '(quit)'
 
 clean:
 	rm -rf build

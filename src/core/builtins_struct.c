@@ -139,7 +139,7 @@ static CL_Obj ht_eq_lookup(CL_Obj ht_obj, CL_Obj key)
     hash ^= hash >> 16;
     hash *= 0x45d9f3bU;
     hash ^= hash >> 16;
-    bucket_idx = hash % ht->bucket_count;
+    bucket_idx = hash & (ht->bucket_count - 1);
     chain = ht->buckets[bucket_idx];
 
     while (!CL_NULL_P(chain)) {
@@ -401,8 +401,12 @@ static CL_Obj bi_class_of(CL_Obj *args, int n)
             return cl_intern("FUNCTION", 8);
         case TYPE_BYTECODE:
             return cl_intern("COMPILED-FUNCTION", 17);
-        case TYPE_VECTOR:
-            return cl_intern("VECTOR", 6);
+        case TYPE_VECTOR: {
+            CL_Vector *v = (CL_Vector *)CL_OBJ_TO_PTR(obj);
+            return (v->rank <= 1)
+                ? cl_intern("VECTOR", 6)
+                : cl_intern("ARRAY", 5);
+        }
         case TYPE_PACKAGE:
             return cl_intern("PACKAGE", 7);
         case TYPE_HASHTABLE:

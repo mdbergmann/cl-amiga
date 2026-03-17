@@ -4,8 +4,8 @@
 
 TOOLCHAIN = $(CURDIR)/tools/m68k-amigaos-gcc/prefix
 CC        = $(TOOLCHAIN)/bin/m68k-amigaos-gcc
-CFLAGS    = -noixemul -mcpu=68020 -msoft-float -std=c99 -Wall -O2 -DPLATFORM_AMIGA
-LDFLAGS   = -noixemul -mcpu=68020 -msoft-float
+CFLAGS    = -noixemul -mcpu=68020 -msoft-float -std=c99 -Wall -O3 -flto -DPLATFORM_AMIGA
+LDFLAGS   = -noixemul -mcpu=68020 -msoft-float -flto
 
 SRCDIR   = src
 BUILDDIR = build/cross

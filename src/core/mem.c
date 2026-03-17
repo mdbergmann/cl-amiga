@@ -313,8 +313,19 @@ CL_Obj *cl_vector_data_fn(CL_Vector *v)
 
 CL_Obj cl_make_hashtable(uint32_t bucket_count, uint32_t test)
 {
-    uint32_t alloc_size = sizeof(CL_Hashtable) + bucket_count * sizeof(CL_Obj);
-    CL_Hashtable *ht = (CL_Hashtable *)cl_alloc(TYPE_HASHTABLE, alloc_size);
+    uint32_t alloc_size;
+    CL_Hashtable *ht;
+
+    /* Round up to power of 2 for fast bitmask indexing (avoids division) */
+    if (bucket_count < 2) bucket_count = 2;
+    {
+        uint32_t p = 1;
+        while (p < bucket_count) p <<= 1;
+        bucket_count = p;
+    }
+
+    alloc_size = sizeof(CL_Hashtable) + bucket_count * sizeof(CL_Obj);
+    ht = (CL_Hashtable *)cl_alloc(TYPE_HASHTABLE, alloc_size);
     if (!ht) return CL_NIL;
     ht->test = test;
     ht->count = 0;

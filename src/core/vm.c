@@ -449,6 +449,19 @@ static CL_Obj call_builtin(CL_Function *func, CL_Obj *args, int nargs)
         cl_error(CL_ERR_TYPE, "NULL C function pointer in %s",
                  CL_NULL_P(func->name) ? "?" : cl_symbol_name(func->name));
     }
+    /* Validate function pointer is in a reasonable range (not obviously corrupted) */
+    {
+        uintptr_t fp_val = (uintptr_t)fptr;
+        if (fp_val < 0x1000 || (fp_val & 0x3) != 0) {
+            fprintf(stderr, "[VM] call_builtin: CORRUPT func ptr %p in %s (obj=0x%08x)\n",
+                    (void *)fptr,
+                    CL_NULL_P(func->name) ? "?" : cl_symbol_name(func->name),
+                    (unsigned)CL_PTR_TO_OBJ(func));
+            cl_capture_backtrace();
+            fprintf(stderr, "%s", cl_backtrace_buf);
+            cl_error(CL_ERR_GENERAL, "Corrupted C function pointer");
+        }
+    }
     result = fptr(args, nargs);
     cl_mv_values[0] = result;
     return result;
@@ -556,13 +569,15 @@ static CL_Obj cl_vm_run(int base_fp, int base_nlx)
     for (;;) {
         uint8_t op;
 
-        /* Record trace for crash diagnostics */
+        /* Record trace for crash diagnostics (hot path — debug only) */
+#ifdef DEBUG_VM
         vm_trace[vm_trace_idx].op = code ? code[ip] : 0;
         vm_trace[vm_trace_idx].ip = ip;
         vm_trace[vm_trace_idx].fp = cl_vm.fp;
         vm_trace[vm_trace_idx].sp = cl_vm.sp;
         vm_trace[vm_trace_idx].code = code;
         vm_trace_idx = (vm_trace_idx + 1) % VM_TRACE_SIZE;
+#endif
 
         /* Validate code pointer before each dispatch */
         if (!code) {
@@ -628,11 +643,13 @@ static CL_Obj cl_vm_run(int base_fp, int base_nlx)
         }
 #endif
 
-        /* Save last dispatched opcode for crash diagnostics */
+        /* Save last dispatched opcode for crash diagnostics (debug only) */
+#ifdef DEBUG_VM
         dbg_last_op = op;
         dbg_last_ip = ip;
         dbg_last_fp = cl_vm.fp;
         dbg_last_code = code;
+#endif
         if (op == 0x00) goto unknown_opcode;
         switch (op) {
         case 0x00:
@@ -714,9 +731,33 @@ static CL_Obj cl_vm_run(int base_fp, int base_nlx)
                 cl_error(CL_ERR_GENERAL, "OP_FLOAD with NULL constants ptr");
             }
             sym = constants[idx];
+            /* Validate sym is a valid symbol before dereferencing */
+            if (!CL_HEAP_P(sym) || sym >= cl_heap.arena_size ||
+                CL_HDR_TYPE(CL_OBJ_TO_PTR(sym)) != TYPE_SYMBOL) {
+                fprintf(stderr, "[VM] FLOAD: constant[%d] = 0x%08x is NOT a symbol "
+                        "(heap=%d, arena_bound=%d, type=%d) fp=%d ip=%u bc=0x%08x\n",
+                        idx, (unsigned)sym, CL_HEAP_P(sym),
+                        (sym < cl_heap.arena_size),
+                        (CL_HEAP_P(sym) && sym < cl_heap.arena_size)
+                            ? CL_HDR_TYPE(CL_OBJ_TO_PTR(sym)) : -1,
+                        cl_vm.fp, ip, (unsigned)frame->bytecode);
+                cl_capture_backtrace();
+                fprintf(stderr, "%s", cl_backtrace_buf);
+                cl_error(CL_ERR_GENERAL, "OP_FLOAD: corrupted constant pool entry");
+            }
+            {
             CL_Symbol *s = (CL_Symbol *)CL_OBJ_TO_PTR(sym);
             if (s->function != CL_UNBOUND) {
-                cl_vm_push(s->function);
+                CL_Obj fval = s->function;
+                /* Validate function value is a sane heap object */
+                if (CL_HEAP_P(fval) && fval >= cl_heap.arena_size) {
+                    fprintf(stderr, "[VM] FLOAD: symbol %s function=0x%08x out of arena (size=0x%08x)\n",
+                            cl_symbol_name(sym), (unsigned)fval, (unsigned)cl_heap.arena_size);
+                    cl_capture_backtrace();
+                    fprintf(stderr, "%s", cl_backtrace_buf);
+                    cl_error(CL_ERR_GENERAL, "OP_FLOAD: corrupted function binding");
+                }
+                cl_vm_push(fval);
             } else if (s->value != CL_UNBOUND) {
                 /* Fall back to value slot (for labels/flet value bindings) */
                 cl_vm_push(s->value);
@@ -725,6 +766,7 @@ static CL_Obj cl_vm_run(int base_fp, int base_nlx)
                          cl_symbol_name(sym));
             }
             cl_mv_count = 1;
+            }
             break;
         }
 
@@ -957,6 +999,15 @@ static CL_Obj cl_vm_run(int base_fp, int base_nlx)
                 cl_vm.stack[cl_vm.sp - nargs - 1] = func_obj;
             }
 
+            /* Bounds-check before type predicate macros dereference func_obj */
+            if (CL_HEAP_P(func_obj) && func_obj >= cl_heap.arena_size) {
+                fprintf(stderr, "[VM] CALL: func_obj=0x%08x out of arena (size=0x%08x) nargs=%d fp=%d ip=%u\n",
+                        (unsigned)func_obj, (unsigned)cl_heap.arena_size, nargs, cl_vm.fp, ip);
+                cl_capture_backtrace();
+                fprintf(stderr, "%s", cl_backtrace_buf);
+                cl_error(CL_ERR_GENERAL, "OP_CALL: corrupted function object (out of arena)");
+            }
+
             if (CL_FUNCTION_P(func_obj)) {
                 /* Built-in C function */
                 CL_Function *f = (CL_Function *)CL_OBJ_TO_PTR(func_obj);
@@ -981,6 +1032,14 @@ static CL_Obj cl_vm_run(int base_fp, int base_nlx)
 
                 if (CL_CLOSURE_P(func_obj)) {
                     CL_Closure *cl = (CL_Closure *)CL_OBJ_TO_PTR(func_obj);
+                    /* Bounds-check bytecode field before type predicate dereferences it */
+                    if (CL_HEAP_P(cl->bytecode) && cl->bytecode >= cl_heap.arena_size) {
+                        fprintf(stderr, "[VM] CALL: closure 0x%08x bytecode=0x%08x out of arena (size=0x%08x)\n",
+                                (unsigned)func_obj, (unsigned)cl->bytecode, (unsigned)cl_heap.arena_size);
+                        cl_capture_backtrace();
+                        fprintf(stderr, "%s", cl_backtrace_buf);
+                        cl_error(CL_ERR_GENERAL, "OP_CALL: closure bytecode out of arena");
+                    }
                     if (!CL_BYTECODE_P(cl->bytecode)) {
                         fprintf(stderr, "[VM] CORRUPT: closure 0x%x bytecode field 0x%x type=%u\n",
                                 (unsigned)func_obj, (unsigned)cl->bytecode,

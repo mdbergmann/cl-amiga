@@ -731,11 +731,13 @@ void cl_repl_init_no_userinit(int no_userinit)
         lv->value = CL_NIL;
     }
 
-    /* Load boot.lisp — try known paths; uses bi_load which auto-caches to FASL */
+    /* Load boot — try pre-compiled FASL first, fall back to source */
     {
         static const char *boot_paths[] = {
+            "(load \"lib/boot.fasl\")",
             "(load \"lib/boot.lisp\")",
 #ifdef PLATFORM_AMIGA
+            "(load \"PROGDIR:lib/boot.fasl\")",
             "(load \"PROGDIR:lib/boot.lisp\")",
 #endif
             NULL

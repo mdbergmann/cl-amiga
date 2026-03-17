@@ -238,14 +238,13 @@ CL_Obj KW_UNIX = CL_NIL;
 CL_Obj KW_AMIGAOS = CL_NIL;
 CL_Obj KW_M68K = CL_NIL;
 
-/* FNV-1a hash */
+/* Rotate-XOR hash — fast on 68020 (no multiply, just shift/or/xor) */
 uint32_t cl_hash_string(const char *str, uint32_t len)
 {
-    uint32_t hash = 2166136261u;
+    uint32_t hash = 0;
     uint32_t i;
     for (i = 0; i < len; i++) {
-        hash ^= (uint8_t)str[i];
-        hash *= 16777619u;
+        hash = ((hash << 5) | (hash >> 27)) ^ (uint8_t)str[i];
     }
     return hash;
 }

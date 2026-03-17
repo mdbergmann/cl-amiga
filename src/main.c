@@ -51,6 +51,10 @@ static void crash_handler(int sig, siginfo_t *info, void *ctx)
                    cl_vm.fp, cl_vm.frame_size, cl_vm.sp, cl_vm.stack_size);
     (void)write(2, buf, len);
     len = snprintf(buf, sizeof(buf),
+                   "[FATAL] arena=%p arena_size=0x%08x bump=0x%08x\n",
+                   (void *)cl_heap.arena, (unsigned)cl_heap.arena_size, (unsigned)cl_heap.bump);
+    (void)write(2, buf, len);
+    len = snprintf(buf, sizeof(buf),
                    "[FATAL] last_op=0x%02x last_ip=%u last_fp=%d last_code=%p\n",
                    (unsigned)dbg_last_op, (unsigned)dbg_last_ip,
                    dbg_last_fp, (void *)dbg_last_code);
@@ -101,6 +105,24 @@ static void crash_handler(int sig, siginfo_t *info, void *ctx)
                     "[BT] frame[%d] ip=%u bytecode=0x%08x\n",
                     fi, ff->ip, ff->bytecode);
             }
+            (void)write(2, buf, len);
+        }
+    }
+    /* Dump VM stack around crash point */
+    {
+        int si;
+        int start = cl_vm.sp - 8;
+        int end_s = cl_vm.sp + 2;
+        if (start < 0) start = 0;
+        if (end_s > (int)cl_vm.stack_size) end_s = (int)cl_vm.stack_size;
+        for (si = start; si < end_s; si++) {
+            CL_Obj v = cl_vm.stack[si];
+            int is_heap = CL_HEAP_P(v);
+            int in_bounds = is_heap && (v < cl_heap.arena_size);
+            len = snprintf(buf, sizeof(buf),
+                "[STACK] [%d] = 0x%08x (heap=%d inbounds=%d type=%d)\n",
+                si, (unsigned)v, is_heap, in_bounds,
+                in_bounds ? (int)CL_HDR_TYPE(CL_OBJ_TO_PTR(v)) : -1);
             (void)write(2, buf, len);
         }
     }

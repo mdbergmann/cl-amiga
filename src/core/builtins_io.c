@@ -2172,28 +2172,40 @@ static CL_Obj bi_require(CL_Obj *args, int n)
             cl_error(CL_ERR_TYPE, "REQUIRE: pathnames must be a string, pathname, or list");
         }
     } else {
-        /* Implementation-defined search: try lib/<module-name>.lisp */
+        /* Implementation-defined search: try .fasl first, then .lisp */
         char path[256];
         CL_Obj load_args[1];
         CL_Obj path_obj;
         char *buf;
         unsigned long size;
+        int found = 0;
 
-        snprintf(path, sizeof(path), "lib/%.*s.lisp", (int)len, name);
-
-        /* Check if file exists */
+        /* Try pre-compiled FASL first */
+        snprintf(path, sizeof(path), "lib/%.*s.fasl", (int)len, name);
         buf = platform_file_read(path, &size);
-        if (!buf) {
+        if (buf) { found = 1; platform_free(buf); }
+
+        if (!found) {
+            snprintf(path, sizeof(path), "lib/%.*s.lisp", (int)len, name);
+            buf = platform_file_read(path, &size);
+            if (buf) { found = 1; platform_free(buf); }
+        }
+
 #ifdef PLATFORM_AMIGA
+        if (!found) {
+            snprintf(path, sizeof(path), "PROGDIR:lib/%.*s.fasl", (int)len, name);
+            buf = platform_file_read(path, &size);
+            if (buf) { found = 1; platform_free(buf); }
+        }
+        if (!found) {
             snprintf(path, sizeof(path), "PROGDIR:lib/%.*s.lisp", (int)len, name);
             buf = platform_file_read(path, &size);
-            if (!buf)
-                cl_error(CL_ERR_GENERAL, "REQUIRE: cannot find module file");
-#else
-            cl_error(CL_ERR_GENERAL, "REQUIRE: cannot find module file");
-#endif
+            if (buf) { found = 1; platform_free(buf); }
         }
-        platform_free(buf);
+#endif
+
+        if (!found)
+            cl_error(CL_ERR_GENERAL, "REQUIRE: cannot find module file");
 
         path_obj = cl_make_string(path, (uint32_t)strlen(path));
         CL_GC_PROTECT(path_obj);

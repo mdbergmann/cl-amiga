@@ -462,17 +462,15 @@ int cl_bignum_equal(CL_Obj a, CL_Obj b)
 uint32_t cl_bignum_hash(CL_Obj obj)
 {
     CL_Bignum *bn = (CL_Bignum *)CL_OBJ_TO_PTR(obj);
-    uint32_t h = 0x811c9dc5u; /* FNV-1a offset basis */
+    uint32_t h = 0;
     uint32_t i;
 
     /* Hash sign */
-    h ^= bn->sign;
-    h *= 0x01000193u;
+    h = ((h << 5) | (h >> 27)) ^ bn->sign;
 
-    /* Hash limbs */
+    /* Hash limbs — rotate-XOR (no multiply, fast on 68020) */
     for (i = 0; i < bn->length; i++) {
-        h ^= bn->limbs[i];
-        h *= 0x01000193u;
+        h = ((h << 5) | (h >> 27)) ^ bn->limbs[i];
     }
     return h;
 }

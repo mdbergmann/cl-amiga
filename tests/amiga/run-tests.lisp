@@ -857,6 +857,17 @@
 (check "remove-if" '(1 3 5) (remove-if #'my-evenp '(1 2 3 4 5)))
 (check "remove-if-not" '(2 4) (remove-if-not #'my-evenp '(1 2 3 4 5)))
 
+; remove/remove-if/remove-if-not on bit-vectors
+(check "remove 0 bv" "#*111" (format nil "~A" (remove 0 #*10101)))
+(check "remove 1 bv" "#*00" (format nil "~A" (remove 1 #*10101)))
+(check "remove-if bv" "#*111" (format nil "~A" (remove-if #'zerop #*10101)))
+(check "remove-if-not bv" "#*111"
+  (format nil "~A" (remove-if-not (lambda (b) (= b 1)) #*10101)))
+(check "remove bv type" t (bit-vector-p (remove 0 #*101)))
+(check "remove bv empty" "#*" (format nil "~A" (remove 0 #*)))
+(check "remove bv all" "#*" (format nil "~A" (remove 1 #*1111)))
+(check "remove bv none" "#*1111" (format nil "~A" (remove 0 #*1111)))
+
 ; remove-duplicates
 (check "remove-duplicates" '(1 3 2 4) (remove-duplicates '(1 2 1 3 2 4)))
 (check "remove-dup symbols" '(b a c) (remove-duplicates '(a b a c)))

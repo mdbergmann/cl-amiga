@@ -513,6 +513,71 @@ TEST(eval_array_row_major_index_bv)
     ASSERT_STR_EQ(eval_print("(array-row-major-index #*10110 3)"), "3");
 }
 
+/* ========================================================
+ * Step 11: Remove/remove-if/remove-if-not on bit-vectors
+ * ======================================================== */
+
+TEST(eval_remove_bv)
+{
+    /* Remove 0 from bit-vector — should keep only 1s */
+    ASSERT_STR_EQ(eval_print("(remove 0 #*10101)"), "#*111");
+    /* Remove 1 from bit-vector — should keep only 0s */
+    ASSERT_STR_EQ(eval_print("(remove 1 #*10101)"), "#*00");
+}
+
+TEST(eval_remove_if_bv)
+{
+    /* Remove bits that are 0 */
+    ASSERT_STR_EQ(eval_print(
+        "(remove-if (lambda (b) (= b 0)) #*10101)"), "#*111");
+    /* Remove bits that are 1 */
+    ASSERT_STR_EQ(eval_print(
+        "(remove-if (lambda (b) (= b 1)) #*10101)"), "#*00");
+}
+
+TEST(eval_remove_if_not_bv)
+{
+    /* Keep only 1s (remove those that are NOT 1) */
+    ASSERT_STR_EQ(eval_print(
+        "(remove-if-not (lambda (b) (= b 1)) #*10101)"), "#*111");
+    /* Keep only 0s */
+    ASSERT_STR_EQ(eval_print(
+        "(remove-if-not (lambda (b) (= b 0)) #*10101)"), "#*00");
+}
+
+TEST(eval_remove_bv_empty)
+{
+    /* Remove from empty bit-vector */
+    ASSERT_STR_EQ(eval_print("(remove 0 #*)"), "#*");
+    ASSERT_STR_EQ(eval_print("(remove-if #'zerop #*)"), "#*");
+    ASSERT_STR_EQ(eval_print("(remove-if-not #'zerop #*)"), "#*");
+}
+
+TEST(eval_remove_bv_all)
+{
+    /* Remove all elements */
+    ASSERT_STR_EQ(eval_print("(remove 1 #*1111)"), "#*");
+    ASSERT_STR_EQ(eval_print("(remove 0 #*0000)"), "#*");
+}
+
+TEST(eval_remove_bv_none)
+{
+    /* Remove nothing (no matches) */
+    ASSERT_STR_EQ(eval_print("(remove 0 #*1111)"), "#*1111");
+    ASSERT_STR_EQ(eval_print("(remove 1 #*0000)"), "#*0000");
+}
+
+TEST(eval_remove_bv_result_type)
+{
+    /* Result should be a bit-vector */
+    ASSERT_STR_EQ(eval_print(
+        "(bit-vector-p (remove 0 #*101))"), "T");
+    ASSERT_STR_EQ(eval_print(
+        "(bit-vector-p (remove-if #'zerop #*101))"), "T");
+    ASSERT_STR_EQ(eval_print(
+        "(bit-vector-p (remove-if-not #'zerop #*101))"), "T");
+}
+
 /* ======================================================== */
 
 int main(void)
@@ -607,6 +672,15 @@ int main(void)
     RUN(eval_array_has_fill_pointer_p_bv);
     RUN(eval_adjustable_array_p_bv);
     RUN(eval_array_row_major_index_bv);
+
+    /* Step 11: Remove/remove-if/remove-if-not on bit-vectors */
+    RUN(eval_remove_bv);
+    RUN(eval_remove_if_bv);
+    RUN(eval_remove_if_not_bv);
+    RUN(eval_remove_bv_empty);
+    RUN(eval_remove_bv_all);
+    RUN(eval_remove_bv_none);
+    RUN(eval_remove_bv_result_type);
 
     teardown();
     REPORT();

@@ -209,8 +209,10 @@
   (list (find-class 'list)))
 (%make-bootstrap-class 'character
   (list (find-class 't)))
+(%make-bootstrap-class 'array
+  (list (find-class 't)))
 (%make-bootstrap-class 'vector
-  (list (find-class 'sequence)))
+  (list (find-class 'array) (find-class 'sequence)))
 (%make-bootstrap-class 'string
   (list (find-class 'vector)))
 (%make-bootstrap-class 'bit-vector
@@ -233,8 +235,6 @@
   (list (find-class 't)))
 (%make-bootstrap-class 'complex
   (list (find-class 'number)))
-(%make-bootstrap-class 'array
-  (list (find-class 't)))
 (%make-bootstrap-class 'class
   (list (find-class 'standard-object)))
 (%make-bootstrap-class 'condition

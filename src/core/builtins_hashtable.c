@@ -25,12 +25,12 @@ static void defun(const char *name, CL_CFunc func, int min, int max)
 
 static uint32_t hash_string_ci(const char *str, uint32_t len)
 {
-    uint32_t hash = 5381;
+    uint32_t hash = 0;
     uint32_t i;
     for (i = 0; i < len; i++) {
         char ch = str[i];
         if (ch >= 'A' && ch <= 'Z') ch += 32;
-        hash = hash * 33 + (unsigned char)ch;
+        hash = ((hash << 5) | (hash >> 27)) ^ (uint8_t)ch;
     }
     return hash;
 }
@@ -316,7 +316,7 @@ static CL_Obj bi_gethash(CL_Obj *args, int n)
         cl_error(CL_ERR_TYPE, "GETHASH: not a hash table");
 
     ht = (CL_Hashtable *)CL_OBJ_TO_PTR(ht_obj);
-    bucket_idx = hash_obj(key, ht->test) % ht->bucket_count;
+    bucket_idx = hash_obj(key, ht->test) & (ht->bucket_count - 1);
     chain = ht->buckets[bucket_idx];
 
     while (!CL_NULL_P(chain)) {
@@ -353,7 +353,7 @@ static CL_Obj bi_setf_gethash(CL_Obj *args, int n)
         cl_error(CL_ERR_TYPE, "(SETF GETHASH): not a hash table");
 
     ht = (CL_Hashtable *)CL_OBJ_TO_PTR(ht_obj);
-    bucket_idx = hash_obj(key, ht->test) % ht->bucket_count;
+    bucket_idx = hash_obj(key, ht->test) & (ht->bucket_count - 1);
     chain = ht->buckets[bucket_idx];
 
     /* Check if key already exists */
@@ -407,7 +407,7 @@ static CL_Obj bi_remhash(CL_Obj *args, int n)
         cl_error(CL_ERR_TYPE, "REMHASH: not a hash table");
 
     ht = (CL_Hashtable *)CL_OBJ_TO_PTR(ht_obj);
-    bucket_idx = hash_obj(key, ht->test) % ht->bucket_count;
+    bucket_idx = hash_obj(key, ht->test) & (ht->bucket_count - 1);
 
     prev = CL_NIL;
     cursor = ht->buckets[bucket_idx];

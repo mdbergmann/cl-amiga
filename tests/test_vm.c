@@ -2192,6 +2192,25 @@ TEST(eval_array_total_size)
     ASSERT_EQ_INT(eval_int("(array-total-size (make-array '(2 3 4)))"), 24);
 }
 
+TEST(eval_array_element_type)
+{
+    ASSERT_STR_EQ(eval_print("(array-element-type (make-array 5))"), "T");
+    ASSERT_STR_EQ(eval_print("(array-element-type (make-array '(3 4)))"), "T");
+    ASSERT_STR_EQ(eval_print("(array-element-type \"hello\")"), "CHARACTER");
+    ASSERT_STR_EQ(eval_print("(array-element-type #*1010)"), "BIT");
+    ASSERT_STR_EQ(eval_print("(array-element-type (vector 1 2 3))"), "T");
+}
+
+TEST(eval_class_of_array_vs_vector)
+{
+    /* vectorp should return T for 1D arrays, NIL for 2D+ */
+    ASSERT_STR_EQ(eval_print("(vectorp (make-array 5))"), "T");
+    ASSERT_STR_EQ(eval_print("(vectorp (make-array '(2 3)))"), "NIL");
+    /* %class-of should return VECTOR for 1D, ARRAY for 2D+ */
+    ASSERT_STR_EQ(eval_print("(clamiga::%class-of (vector 1 2))"), "VECTOR");
+    ASSERT_STR_EQ(eval_print("(clamiga::%class-of (make-array '(2 3)))"), "ARRAY");
+}
+
 TEST(eval_array_row_major_index)
 {
     /* 1D: identity */
@@ -6763,6 +6782,8 @@ int main(void)
     RUN(eval_setf_aref_multidim);
     RUN(eval_array_dimension);
     RUN(eval_array_total_size);
+    RUN(eval_array_element_type);
+    RUN(eval_class_of_array_vs_vector);
     RUN(eval_array_row_major_index);
     RUN(eval_row_major_aref);
     RUN(eval_fill_pointer);
