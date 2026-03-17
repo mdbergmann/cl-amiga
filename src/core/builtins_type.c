@@ -93,9 +93,9 @@ static int typep_symbol(CL_Obj obj, CL_Obj type_sym)
     if (strcmp(tname, "BASE-CHAR") == 0)     return CL_CHAR_P(obj);
     if (strcmp(tname, "STANDARD-CHAR") == 0) return CL_CHAR_P(obj);
     if (strcmp(tname, "EXTENDED-CHAR") == 0) return 0;
-    if (strcmp(tname, "STRING") == 0)         return CL_STRING_P(obj);
+    if (strcmp(tname, "STRING") == 0)         return CL_STRING_P(obj) || CL_STRING_VECTOR_P(obj);
     if (strcmp(tname, "SIMPLE-STRING") == 0)  return CL_STRING_P(obj);
-    if (strcmp(tname, "BASE-STRING") == 0)    return CL_STRING_P(obj);
+    if (strcmp(tname, "BASE-STRING") == 0)    return CL_STRING_P(obj) || CL_STRING_VECTOR_P(obj);
     if (strcmp(tname, "SIMPLE-BASE-STRING") == 0) return CL_STRING_P(obj);
     if (strcmp(tname, "BIT-VECTOR") == 0)
         return CL_BIT_VECTOR_P(obj);
@@ -449,7 +449,9 @@ static CL_Obj bi_type_of(CL_Obj *args, int n)
     /* For vectors/arrays, return specific type */
     if (CL_VECTOR_P(args[0])) {
         CL_Vector *v = (CL_Vector *)CL_OBJ_TO_PTR(args[0]);
-        if (v->rank > 1)
+        if (v->flags & CL_VEC_FLAG_STRING)
+            name = "STRING";
+        else if (v->rank > 1)
             name = !(v->flags & (CL_VEC_FLAG_FILL_POINTER | CL_VEC_FLAG_ADJUSTABLE))
                    ? "SIMPLE-ARRAY" : "ARRAY";
         else if (v->flags == 0)

@@ -132,31 +132,56 @@ static CL_Obj bi_make_array(CL_Obj *args, int n)
             return result;
         }
 
-        /* Character element-type: create a string (TYPE_STRING) */
+        /* Character element-type */
         if (element_type_char) {
-            char init_char = ' ';
-            CL_Obj str;
-            CL_String *s;
-            if (has_initial_element) {
-                if (!CL_CHAR_P(initial_element))
-                    cl_error(CL_ERR_TYPE, "MAKE-ARRAY: :initial-element for character array must be a character");
-                init_char = (char)CL_CHAR_VAL(initial_element);
-            }
-            str = cl_make_string(NULL, length);
-            s = (CL_String *)CL_OBJ_TO_PTR(str);
-            memset(s->data, init_char, length);
-            s->data[length] = '\0';
-            if (has_initial_contents) {
-                CL_Obj cur = initial_contents;
+            /* If fill-pointer or adjustable, use CL_Vector with STRING flag */
+            if (flags & (CL_VEC_FLAG_FILL_POINTER | CL_VEC_FLAG_ADJUSTABLE)) {
+                CL_Obj init_char = CL_MAKE_CHAR(' ');
                 uint32_t j;
-                for (j = 0; j < length && !CL_NULL_P(cur); j++) {
-                    CL_Obj elem = cl_car(cur);
-                    if (CL_CHAR_P(elem))
-                        s->data[j] = (char)CL_CHAR_VAL(elem);
-                    cur = cl_cdr(cur);
+                if (has_initial_element) {
+                    if (!CL_CHAR_P(initial_element))
+                        cl_error(CL_ERR_TYPE, "MAKE-ARRAY: :initial-element for character array must be a character");
+                    init_char = initial_element;
                 }
+                result = cl_make_array(length, 0, NULL, flags | CL_VEC_FLAG_STRING, fill_ptr);
+                v = (CL_Vector *)CL_OBJ_TO_PTR(result);
+                for (j = 0; j < length; j++)
+                    cl_vector_data(v)[j] = init_char;
+                if (has_initial_contents) {
+                    CL_Obj cur = initial_contents;
+                    for (j = 0; j < length && !CL_NULL_P(cur); j++) {
+                        cl_vector_data(v)[j] = cl_car(cur);
+                        cur = cl_cdr(cur);
+                    }
+                }
+                return result;
             }
-            return str;
+            /* Simple string: use TYPE_STRING */
+            {
+                char init_char = ' ';
+                CL_Obj str;
+                CL_String *s;
+                if (has_initial_element) {
+                    if (!CL_CHAR_P(initial_element))
+                        cl_error(CL_ERR_TYPE, "MAKE-ARRAY: :initial-element for character array must be a character");
+                    init_char = (char)CL_CHAR_VAL(initial_element);
+                }
+                str = cl_make_string(NULL, length);
+                s = (CL_String *)CL_OBJ_TO_PTR(str);
+                memset(s->data, init_char, length);
+                s->data[length] = '\0';
+                if (has_initial_contents) {
+                    CL_Obj cur = initial_contents;
+                    uint32_t j;
+                    for (j = 0; j < length && !CL_NULL_P(cur); j++) {
+                        CL_Obj elem = cl_car(cur);
+                        if (CL_CHAR_P(elem))
+                            s->data[j] = (char)CL_CHAR_VAL(elem);
+                        cur = cl_cdr(cur);
+                    }
+                }
+                return str;
+            }
         }
 
         /* For numeric element types, default initial-element to 0 */
@@ -619,6 +644,30 @@ static CL_Obj bi_array_total_size(CL_Obj *args, int n)
 }
 
 /* ======================================================= */
+/* ARRAY-ELEMENT-TYPE                                      */
+/* ======================================================= */
+
+/* (array-element-type array) → typespec
+ * Returns the element type of the array.
+ * CL-Amiga: strings → CHARACTER, bit-vectors → BIT, all others → T. */
+static CL_Obj bi_array_element_type(CL_Obj *args, int n)
+{
+    CL_UNUSED(n);
+    if (CL_STRING_P(args[0]))
+        return cl_intern("CHARACTER", 9);
+    if (CL_BIT_VECTOR_P(args[0]))
+        return cl_intern("BIT", 3);
+    if (CL_VECTOR_P(args[0])) {
+        CL_Vector *v = (CL_Vector *)CL_OBJ_TO_PTR(args[0]);
+        if (v->flags & CL_VEC_FLAG_STRING)
+            return cl_intern("CHARACTER", 9);
+        return SYM_T;
+    }
+    cl_error(CL_ERR_TYPE, "ARRAY-ELEMENT-TYPE: not an array");
+    return CL_NIL;
+}
+
+/* ======================================================= */
 /* ARRAY-ROW-MAJOR-INDEX                                   */
 /* ======================================================= */
 
@@ -1069,6 +1118,7 @@ void cl_builtins_array_init(void)
     defun("ARRAY-RANK", bi_array_rank, 1, 1);
     defun("ARRAY-DIMENSION", bi_array_dimension, 2, 2);
     defun("ARRAY-TOTAL-SIZE", bi_array_total_size, 1, 1);
+    defun("ARRAY-ELEMENT-TYPE", bi_array_element_type, 1, 1);
     defun("ARRAY-ROW-MAJOR-INDEX", bi_array_row_major_index, 2, -1);
     defun("ROW-MAJOR-AREF", bi_row_major_aref, 2, 2);
     cl_register_builtin("%SETF-ROW-MAJOR-AREF", bi_setf_row_major_aref, 3, 3, cl_package_clamiga);

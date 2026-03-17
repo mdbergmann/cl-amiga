@@ -926,6 +926,22 @@ static void print_obj(CL_Obj obj)
         int32_t max_depth = print_level();
         int32_t max_len = print_length();
 
+        /* String vector: print like a string */
+        if (v->flags & CL_VEC_FLAG_STRING) {
+            uint32_t slen = cl_vector_active_length(v);
+            CL_Obj *elts = cl_vector_data(v);
+            uint32_t i;
+            if (print_escape_p()) out_char('"');
+            for (i = 0; i < slen; i++) {
+                char ch = CL_CHAR_P(elts[i]) ? (char)CL_CHAR_VAL(elts[i]) : '?';
+                if (print_escape_p() && (ch == '"' || ch == '\\'))
+                    out_char('\\');
+                out_char(ch);
+            }
+            if (print_escape_p()) out_char('"');
+            break;
+        }
+
         if (!print_array_p()) {
             if (v->rank > 1)
                 out_str("#<ARRAY>");

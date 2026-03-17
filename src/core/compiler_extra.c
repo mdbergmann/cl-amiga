@@ -1122,7 +1122,8 @@ int defmacro_is_ll_keyword(CL_Obj param)
     return CL_SYMBOL_P(param) &&
            (param == SYM_AMP_OPTIONAL || param == SYM_AMP_KEY ||
             param == SYM_AMP_REST || param == SYM_AMP_BODY ||
-            param == SYM_AMP_ALLOW_OTHER_KEYS);
+            param == SYM_AMP_ALLOW_OTHER_KEYS ||
+            param == SYM_AMP_ENVIRONMENT);
 }
 
 /* Check if a lambda list needs destructuring transformation.
@@ -1180,6 +1181,37 @@ void compile_defmacro(CL_Compiler *c, CL_Obj form)
     CL_GC_PROTECT(name);
     CL_GC_PROTECT(lambda_list);
     CL_GC_PROTECT(body);
+
+    /* Strip &environment var from lambda list and bind var to NIL in body.
+     * Our macro expanders are called with just the arguments, not
+     * (form env) like the CL spec says, so we provide NIL for the env. */
+    {
+        CL_Obj cur = lambda_list;
+        CL_Obj prev = CL_NIL;
+        while (!CL_NULL_P(cur)) {
+            CL_Obj param = cl_car(cur);
+            if (param == SYM_AMP_ENVIRONMENT) {
+                CL_Obj next = cl_cdr(cur);
+                CL_Obj env_var = CL_NULL_P(next) ? CL_NIL : cl_car(next);
+                CL_Obj after = CL_NULL_P(next) ? CL_NIL : cl_cdr(next);
+                /* Remove &environment and its var from the lambda list */
+                if (CL_NULL_P(prev))
+                    lambda_list = after;
+                else
+                    ((CL_Cons *)CL_OBJ_TO_PTR(prev))->cdr = after;
+                /* Wrap body: (let ((env-var nil)) ...body) */
+                if (CL_SYMBOL_P(env_var)) {
+                    CL_Obj binding = cl_cons(env_var, cl_cons(CL_NIL, CL_NIL));
+                    CL_Obj bindings = cl_cons(binding, CL_NIL);
+                    CL_Obj let_form = cl_cons(SYM_LET, cl_cons(bindings, body));
+                    body = cl_cons(let_form, CL_NIL);
+                }
+                break;
+            }
+            prev = cur;
+            cur = cl_cdr(cur);
+        }
+    }
 
     /* Transform destructuring lambda lists:
      * Replace list parameters with gensyms and wrap body in

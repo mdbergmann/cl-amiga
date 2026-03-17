@@ -774,6 +774,225 @@ static CL_Obj remove_from_string(CL_Obj seq, CL_Obj item_or_pred,
     return cl_make_string(buf, (uint32_t)out);
 }
 
+/* remove_from_bitvector: shared bit-vector path for remove/remove-if/remove-if-not.
+   mode: 0=test-item, 1=pred, 2=pred-not, 3=test-not-item */
+static CL_Obj remove_from_bitvector(CL_Obj seq, int32_t start, int32_t end,
+                                     int32_t count, int from_end,
+                                     CL_Obj item, CL_Obj test_fn, CL_Obj key_fn,
+                                     int mode)
+{
+    CL_BitVector *bv = (CL_BitVector *)CL_OBJ_TO_PTR(seq);
+    int32_t bvlen = (int32_t)cl_bv_active_length(bv);
+    int32_t i, out = 0, removed = 0;
+    uint8_t *keep;
+    CL_Obj result;
+
+    if (end < 0) end = bvlen;
+    if (bvlen == 0) return cl_make_bit_vector(0);
+
+    keep = (uint8_t *)platform_alloc((uint32_t)bvlen);
+    memset(keep, 1, (uint32_t)bvlen);
+
+    if (from_end && count >= 0) {
+        /* Two-pass: count total matches, then skip first (total-count) from front */
+        int32_t total_matches = 0, skip_count;
+        for (i = 0; i < bvlen; i++) {
+            if (i >= start && i < end) {
+                CL_Obj elem, keyed;
+                int match;
+                bv = (CL_BitVector *)CL_OBJ_TO_PTR(seq);
+                elem = CL_MAKE_FIXNUM(cl_bv_get_bit(bv, (uint32_t)i));
+                keyed = apply_key(key_fn, elem);
+                if (mode == 0)
+                    match = !CL_NULL_P(call_test(test_fn, item, keyed));
+                else if (mode == 3)
+                    match = CL_NULL_P(call_test(test_fn, item, keyed));
+                else if (mode == 1)
+                    match = !CL_NULL_P(call_1(item, keyed));
+                else
+                    match = CL_NULL_P(call_1(item, keyed));
+                if (match) total_matches++;
+            }
+        }
+        skip_count = total_matches - count;
+        if (skip_count < 0) skip_count = 0;
+        for (i = 0; i < bvlen; i++) {
+            if (i >= start && i < end) {
+                CL_Obj elem, keyed;
+                int match;
+                bv = (CL_BitVector *)CL_OBJ_TO_PTR(seq);
+                elem = CL_MAKE_FIXNUM(cl_bv_get_bit(bv, (uint32_t)i));
+                keyed = apply_key(key_fn, elem);
+                if (mode == 0)
+                    match = !CL_NULL_P(call_test(test_fn, item, keyed));
+                else if (mode == 3)
+                    match = CL_NULL_P(call_test(test_fn, item, keyed));
+                else if (mode == 1)
+                    match = !CL_NULL_P(call_1(item, keyed));
+                else
+                    match = CL_NULL_P(call_1(item, keyed));
+                if (match) {
+                    if (skip_count > 0) {
+                        skip_count--;
+                    } else {
+                        keep[i] = 0;
+                    }
+                }
+            }
+        }
+    } else {
+        /* Forward removal */
+        for (i = 0; i < bvlen; i++) {
+            int should_remove = 0;
+            if (i >= start && i < end && (count < 0 || removed < count)) {
+                CL_Obj elem, keyed;
+                bv = (CL_BitVector *)CL_OBJ_TO_PTR(seq);
+                elem = CL_MAKE_FIXNUM(cl_bv_get_bit(bv, (uint32_t)i));
+                keyed = apply_key(key_fn, elem);
+                if (mode == 0)
+                    should_remove = !CL_NULL_P(call_test(test_fn, item, keyed));
+                else if (mode == 3)
+                    should_remove = CL_NULL_P(call_test(test_fn, item, keyed));
+                else if (mode == 1)
+                    should_remove = !CL_NULL_P(call_1(item, keyed));
+                else
+                    should_remove = CL_NULL_P(call_1(item, keyed));
+            }
+            if (should_remove) {
+                keep[i] = 0;
+                removed++;
+            }
+        }
+    }
+
+    /* Count surviving bits */
+    for (i = 0; i < bvlen; i++)
+        if (keep[i]) out++;
+
+    result = cl_make_bit_vector((uint32_t)out);
+    bv = (CL_BitVector *)CL_OBJ_TO_PTR(seq);
+    {
+        CL_BitVector *rbv = (CL_BitVector *)CL_OBJ_TO_PTR(result);
+        int32_t j = 0;
+        for (i = 0; i < bvlen; i++) {
+            if (keep[i]) {
+                if (cl_bv_get_bit(bv, (uint32_t)i))
+                    cl_bv_set_bit(rbv, (uint32_t)j, 1);
+                j++;
+            }
+        }
+    }
+
+    platform_free(keep);
+    return result;
+}
+
+/* remove_from_vector: shared vector path for remove/remove-if/remove-if-not.
+   mode: 0=test-item, 1=pred, 2=pred-not, 3=test-not-item */
+static CL_Obj remove_from_vector(CL_Obj seq, int32_t start, int32_t end,
+                                  int32_t count, int from_end,
+                                  CL_Obj item, CL_Obj test_fn, CL_Obj key_fn,
+                                  int mode)
+{
+    CL_Vector *v = (CL_Vector *)CL_OBJ_TO_PTR(seq);
+    int32_t vlen = (int32_t)cl_vector_active_length(v);
+    int32_t i, out = 0, removed = 0;
+    uint8_t *keep;
+    CL_Obj result;
+
+    if (end < 0) end = vlen;
+    if (vlen == 0) return cl_make_vector(0);
+
+    keep = (uint8_t *)platform_alloc((uint32_t)vlen);
+    memset(keep, 1, (uint32_t)vlen);
+
+    if (from_end && count >= 0) {
+        int32_t total_matches = 0, skip_count;
+        for (i = 0; i < vlen; i++) {
+            if (i >= start && i < end) {
+                CL_Obj elem, keyed;
+                int match;
+                v = (CL_Vector *)CL_OBJ_TO_PTR(seq);
+                elem = cl_vector_data(v)[i];
+                keyed = apply_key(key_fn, elem);
+                if (mode == 0)
+                    match = !CL_NULL_P(call_test(test_fn, item, keyed));
+                else if (mode == 3)
+                    match = CL_NULL_P(call_test(test_fn, item, keyed));
+                else if (mode == 1)
+                    match = !CL_NULL_P(call_1(item, keyed));
+                else
+                    match = CL_NULL_P(call_1(item, keyed));
+                if (match) total_matches++;
+            }
+        }
+        skip_count = total_matches - count;
+        if (skip_count < 0) skip_count = 0;
+        for (i = 0; i < vlen; i++) {
+            if (i >= start && i < end) {
+                CL_Obj elem, keyed;
+                int match;
+                v = (CL_Vector *)CL_OBJ_TO_PTR(seq);
+                elem = cl_vector_data(v)[i];
+                keyed = apply_key(key_fn, elem);
+                if (mode == 0)
+                    match = !CL_NULL_P(call_test(test_fn, item, keyed));
+                else if (mode == 3)
+                    match = CL_NULL_P(call_test(test_fn, item, keyed));
+                else if (mode == 1)
+                    match = !CL_NULL_P(call_1(item, keyed));
+                else
+                    match = CL_NULL_P(call_1(item, keyed));
+                if (match) {
+                    if (skip_count > 0) skip_count--;
+                    else keep[i] = 0;
+                }
+            }
+        }
+    } else {
+        for (i = 0; i < vlen; i++) {
+            int should_remove = 0;
+            if (i >= start && i < end && (count < 0 || removed < count)) {
+                CL_Obj elem, keyed;
+                v = (CL_Vector *)CL_OBJ_TO_PTR(seq);
+                elem = cl_vector_data(v)[i];
+                keyed = apply_key(key_fn, elem);
+                if (mode == 0)
+                    should_remove = !CL_NULL_P(call_test(test_fn, item, keyed));
+                else if (mode == 3)
+                    should_remove = CL_NULL_P(call_test(test_fn, item, keyed));
+                else if (mode == 1)
+                    should_remove = !CL_NULL_P(call_1(item, keyed));
+                else
+                    should_remove = CL_NULL_P(call_1(item, keyed));
+            }
+            if (should_remove) {
+                keep[i] = 0;
+                removed++;
+            }
+        }
+    }
+
+    for (i = 0; i < vlen; i++)
+        if (keep[i]) out++;
+
+    result = cl_make_vector((uint32_t)out);
+    v = (CL_Vector *)CL_OBJ_TO_PTR(seq);
+    {
+        CL_Vector *rv = (CL_Vector *)CL_OBJ_TO_PTR(result);
+        CL_Obj *relts = cl_vector_data(rv);
+        CL_Obj *elts = cl_vector_data(v);
+        int32_t j = 0;
+        for (i = 0; i < vlen; i++) {
+            if (keep[i])
+                relts[j++] = elts[i];
+        }
+    }
+
+    platform_free(keep);
+    return result;
+}
+
 static CL_Obj bi_remove(CL_Obj *args, int n)
 {
     CL_Obj item = args[0], seq = args[1];
@@ -794,41 +1013,19 @@ static CL_Obj bi_remove(CL_Obj *args, int n)
         return remove_from_string(seq, item, sa.test_fn, sa.key_fn,
                                   sa.start, sa.end, sa.count, 0);
     }
-    /* Vector path */
-    {
-        CL_Vector *v = (CL_Vector *)CL_OBJ_TO_PTR(seq);
-        int32_t vlen = (int32_t)cl_vector_active_length(v);
-        int32_t end = (sa.end < 0) ? vlen : sa.end;
-        CL_Obj *elts = cl_vector_data(v);
-        CL_Obj result = CL_NIL, tail = CL_NIL;
-        int32_t i, removed = 0;
-
-        CL_GC_PROTECT(result);
-        CL_GC_PROTECT(tail);
-
-        for (i = 0; i < vlen; i++) {
-            CL_Obj elem = elts[i];
-            int should_remove = 0;
-            if (i >= sa.start && i < end && (sa.count < 0 || removed < sa.count)) {
-                CL_Obj keyed = apply_key(sa.key_fn, elem);
-                if (!CL_NULL_P(sa.test_not_fn))
-                    should_remove = CL_NULL_P(call_test(sa.test_not_fn, item, keyed));
-                else
-                    should_remove = !CL_NULL_P(call_test(sa.test_fn, item, keyed));
-            }
-            if (should_remove) {
-                removed++;
-            } else {
-                CL_Obj cell = cl_cons(elem, CL_NIL);
-                if (CL_NULL_P(result)) result = cell;
-                else ((CL_Cons *)CL_OBJ_TO_PTR(tail))->cdr = cell;
-                tail = cell;
-            }
-        }
-
-        CL_GC_UNPROTECT(2);
-        return result;
+    if (CL_BIT_VECTOR_P(seq)) {
+        if (!CL_NULL_P(sa.test_not_fn))
+            return remove_from_bitvector(seq, sa.start, sa.end, sa.count, sa.from_end,
+                                         item, sa.test_not_fn, sa.key_fn, 3);
+        return remove_from_bitvector(seq, sa.start, sa.end, sa.count, sa.from_end,
+                                     item, sa.test_fn, sa.key_fn, 0);
     }
+    /* Vector path */
+    if (!CL_NULL_P(sa.test_not_fn))
+        return remove_from_vector(seq, sa.start, sa.end, sa.count, sa.from_end,
+                                  item, sa.test_not_fn, sa.key_fn, 3);
+    return remove_from_vector(seq, sa.start, sa.end, sa.count, sa.from_end,
+                              item, sa.test_fn, sa.key_fn, 0);
 }
 
 static CL_Obj bi_remove_if(CL_Obj *args, int n)
@@ -848,37 +1045,13 @@ static CL_Obj bi_remove_if(CL_Obj *args, int n)
         return remove_from_string(seq, pred, CL_NIL, sa.key_fn,
                                   sa.start, sa.end, sa.count, 1);
     }
-    /* Vector path */
-    {
-        CL_Vector *v = (CL_Vector *)CL_OBJ_TO_PTR(seq);
-        int32_t vlen = (int32_t)cl_vector_active_length(v);
-        int32_t end = (sa.end < 0) ? vlen : sa.end;
-        CL_Obj *elts = cl_vector_data(v);
-        CL_Obj result = CL_NIL, tail = CL_NIL;
-        int32_t i, removed = 0;
-
-        CL_GC_PROTECT(result);
-        CL_GC_PROTECT(tail);
-
-        for (i = 0; i < vlen; i++) {
-            CL_Obj elem = elts[i];
-            int should_remove = 0;
-            if (i >= sa.start && i < end && (sa.count < 0 || removed < sa.count)) {
-                should_remove = seq_pred_match(pred, sa.key_fn, elem);
-            }
-            if (should_remove) {
-                removed++;
-            } else {
-                CL_Obj cell = cl_cons(elem, CL_NIL);
-                if (CL_NULL_P(result)) result = cell;
-                else ((CL_Cons *)CL_OBJ_TO_PTR(tail))->cdr = cell;
-                tail = cell;
-            }
-        }
-
-        CL_GC_UNPROTECT(2);
-        return result;
+    if (CL_BIT_VECTOR_P(seq)) {
+        return remove_from_bitvector(seq, sa.start, sa.end, sa.count, sa.from_end,
+                                     pred, CL_NIL, sa.key_fn, 1);
     }
+    /* Vector path */
+    return remove_from_vector(seq, sa.start, sa.end, sa.count, sa.from_end,
+                              pred, CL_NIL, sa.key_fn, 1);
 }
 
 static CL_Obj bi_remove_if_not(CL_Obj *args, int n)
@@ -898,37 +1071,13 @@ static CL_Obj bi_remove_if_not(CL_Obj *args, int n)
         return remove_from_string(seq, pred, CL_NIL, sa.key_fn,
                                   sa.start, sa.end, sa.count, 2);
     }
-    /* Vector path */
-    {
-        CL_Vector *v = (CL_Vector *)CL_OBJ_TO_PTR(seq);
-        int32_t vlen = (int32_t)cl_vector_active_length(v);
-        int32_t end = (sa.end < 0) ? vlen : sa.end;
-        CL_Obj *elts = cl_vector_data(v);
-        CL_Obj result = CL_NIL, tail = CL_NIL;
-        int32_t i, removed = 0;
-
-        CL_GC_PROTECT(result);
-        CL_GC_PROTECT(tail);
-
-        for (i = 0; i < vlen; i++) {
-            CL_Obj elem = elts[i];
-            int should_remove = 0;
-            if (i >= sa.start && i < end && (sa.count < 0 || removed < sa.count)) {
-                should_remove = !seq_pred_match(pred, sa.key_fn, elem);
-            }
-            if (should_remove) {
-                removed++;
-            } else {
-                CL_Obj cell = cl_cons(elem, CL_NIL);
-                if (CL_NULL_P(result)) result = cell;
-                else ((CL_Cons *)CL_OBJ_TO_PTR(tail))->cdr = cell;
-                tail = cell;
-            }
-        }
-
-        CL_GC_UNPROTECT(2);
-        return result;
+    if (CL_BIT_VECTOR_P(seq)) {
+        return remove_from_bitvector(seq, sa.start, sa.end, sa.count, sa.from_end,
+                                     pred, CL_NIL, sa.key_fn, 2);
     }
+    /* Vector path */
+    return remove_from_vector(seq, sa.start, sa.end, sa.count, sa.from_end,
+                              pred, CL_NIL, sa.key_fn, 2);
 }
 
 static CL_Obj bi_remove_duplicates(CL_Obj *args, int n)
@@ -975,29 +1124,45 @@ static CL_Obj bi_remove_duplicates(CL_Obj *args, int n)
     } else if (CL_VECTOR_P(seq)) {
         CL_Vector *v = (CL_Vector *)CL_OBJ_TO_PTR(seq);
         int32_t vlen = (int32_t)cl_vector_active_length(v);
-        CL_Obj *elts = cl_vector_data(v);
-        for (i = 0; i < vlen; i++) {
-            CL_Obj elem = elts[i];
-            int dup = 0;
+        int32_t out_count = 0;
+        uint8_t *keep = (uint8_t *)platform_alloc((uint32_t)vlen);
+        memset(keep, 1, (uint32_t)vlen);
 
-            if (i >= sa.start && i < end) {
+        for (i = 0; i < vlen; i++) {
+            if (i >= sa.start && i < end && keep[i]) {
+                v = (CL_Vector *)CL_OBJ_TO_PTR(seq);
                 for (j = i + 1; j < end; j++) {
-                    CL_Obj keyed_i = apply_key(sa.key_fn, elem);
-                    CL_Obj keyed_j = apply_key(sa.key_fn, elts[j]);
-                    if (!CL_NULL_P(call_test(sa.test_fn, keyed_i, keyed_j))) {
-                        dup = 1;
-                        break;
+                    if (keep[j]) {
+                        CL_Obj keyed_i, keyed_j;
+                        v = (CL_Vector *)CL_OBJ_TO_PTR(seq);
+                        keyed_i = apply_key(sa.key_fn, cl_vector_data(v)[i]);
+                        v = (CL_Vector *)CL_OBJ_TO_PTR(seq);
+                        keyed_j = apply_key(sa.key_fn, cl_vector_data(v)[j]);
+                        if (!CL_NULL_P(call_test(sa.test_fn, keyed_i, keyed_j))) {
+                            keep[i] = 0;
+                            break;
+                        }
                     }
                 }
             }
+        }
 
-            if (!dup) {
-                CL_Obj cell = cl_cons(elem, CL_NIL);
-                if (CL_NULL_P(result)) result = cell;
-                else ((CL_Cons *)CL_OBJ_TO_PTR(tail))->cdr = cell;
-                tail = cell;
+        for (i = 0; i < vlen; i++)
+            if (keep[i]) out_count++;
+
+        result = cl_make_vector((uint32_t)out_count);
+        v = (CL_Vector *)CL_OBJ_TO_PTR(seq);
+        {
+            CL_Vector *rv = (CL_Vector *)CL_OBJ_TO_PTR(result);
+            CL_Obj *relts = cl_vector_data(rv);
+            CL_Obj *elts = cl_vector_data(v);
+            int32_t k = 0;
+            for (i = 0; i < vlen; i++) {
+                if (keep[i])
+                    relts[k++] = elts[i];
             }
         }
+        platform_free(keep);
     }
 
     CL_GC_UNPROTECT(2);
@@ -1083,6 +1248,7 @@ static CL_Obj bi_substitute(CL_Obj *args, int n)
             }
             skip = total_matches - sa.count;
             if (skip < 0) skip = 0;
+            result = cl_make_vector((uint32_t)vlen);
             for (i = 0; i < vlen; i++) {
                 CL_Obj elem = seq_elt(seq, i);
                 int match = 0;
@@ -1091,11 +1257,8 @@ static CL_Obj bi_substitute(CL_Obj *args, int n)
                     if (replaced > skip) match = 1;
                 }
                 {
-                    CL_Obj val = match ? newitem : elem;
-                    CL_Obj cell = cl_cons(val, CL_NIL);
-                    if (CL_NULL_P(result)) result = cell;
-                    else ((CL_Cons *)CL_OBJ_TO_PTR(tail))->cdr = cell;
-                    tail = cell;
+                    CL_Vector *rv = (CL_Vector *)CL_OBJ_TO_PTR(result);
+                    cl_vector_data(rv)[i] = match ? newitem : elem;
                 }
             }
         }
@@ -1139,6 +1302,7 @@ static CL_Obj bi_substitute(CL_Obj *args, int n)
             platform_free(buf);
         } else if (CL_VECTOR_P(seq)) {
             int32_t vlen = seq_length(seq);
+            result = cl_make_vector((uint32_t)vlen);
             for (i = 0; i < vlen; i++) {
                 CL_Obj elem = seq_elt(seq, i);
                 int match = 0;
@@ -1146,11 +1310,8 @@ static CL_Obj bi_substitute(CL_Obj *args, int n)
                     match = seq_test_match(&sa, olditem, elem);
                 }
                 {
-                    CL_Obj val = match ? newitem : elem;
-                    CL_Obj cell = cl_cons(val, CL_NIL);
-                    if (CL_NULL_P(result)) result = cell;
-                    else ((CL_Cons *)CL_OBJ_TO_PTR(tail))->cdr = cell;
-                    tail = cell;
+                    CL_Vector *rv = (CL_Vector *)CL_OBJ_TO_PTR(result);
+                    cl_vector_data(rv)[i] = match ? newitem : elem;
                     if (match) replaced++;
                 }
             }
@@ -1326,18 +1487,17 @@ static CL_Obj bi_substitute_if_not(CL_Obj *args, int n)
     } else if (CL_VECTOR_P(seq)) {
         CL_Vector *v = (CL_Vector *)CL_OBJ_TO_PTR(seq);
         int32_t vlen = (int32_t)cl_vector_active_length(v);
-        CL_Obj *elts = cl_vector_data(v);
+        result = cl_make_vector((uint32_t)vlen);
+        v = (CL_Vector *)CL_OBJ_TO_PTR(seq);
         for (i = 0; i < vlen; i++) {
-            CL_Obj elem = elts[i];
+            CL_Obj elem = cl_vector_data(v)[i];
             int match = 0;
             if (i >= sa.start && i < end && (sa.count < 0 || replaced < sa.count))
                 match = !seq_pred_match(pred, sa.key_fn, elem);
             {
-                CL_Obj val = match ? newitem : elem;
-                CL_Obj cell = cl_cons(val, CL_NIL);
-                if (CL_NULL_P(result)) result = cell;
-                else ((CL_Cons *)CL_OBJ_TO_PTR(tail))->cdr = cell;
-                tail = cell;
+                CL_Vector *rv = (CL_Vector *)CL_OBJ_TO_PTR(result);
+                v = (CL_Vector *)CL_OBJ_TO_PTR(seq);
+                cl_vector_data(rv)[i] = match ? newitem : cl_vector_data(v)[i];
                 if (match) replaced++;
             }
         }

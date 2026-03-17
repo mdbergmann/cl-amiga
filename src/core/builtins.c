@@ -258,13 +258,13 @@ static CL_Obj bi_symbolp(CL_Obj *args, int n)
 static CL_Obj bi_stringp(CL_Obj *args, int n)
 {
     CL_UNUSED(n);
-    return CL_STRING_P(args[0]) ? SYM_T : CL_NIL;
+    return (CL_STRING_P(args[0]) || CL_STRING_VECTOR_P(args[0])) ? SYM_T : CL_NIL;
 }
 
 static CL_Obj bi_simple_string_p(CL_Obj *args, int n)
 {
     CL_UNUSED(n);
-    /* All CL-Amiga strings are simple (no fill-pointer/displaced) */
+    /* Simple strings are TYPE_STRING (no fill-pointer/displaced) */
     return CL_STRING_P(args[0]) ? SYM_T : CL_NIL;
 }
 

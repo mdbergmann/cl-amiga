@@ -43,6 +43,7 @@ CL_Obj SYM_LABELS = CL_NIL;
 CL_Obj SYM_AMP_KEY = CL_NIL;
 CL_Obj SYM_AMP_ALLOW_OTHER_KEYS = CL_NIL;
 CL_Obj SYM_AMP_AUX = CL_NIL;
+CL_Obj SYM_AMP_ENVIRONMENT = CL_NIL;
 CL_Obj KW_ALLOW_OTHER_KEYS = CL_NIL;
 CL_Obj SYM_TAGBODY = CL_NIL;
 CL_Obj SYM_GO = CL_NIL;
@@ -380,6 +381,7 @@ void cl_symbol_init(void)
     SYM_AMP_KEY       = cl_intern_in("&KEY", 4, cl_package_cl);
     SYM_AMP_ALLOW_OTHER_KEYS = cl_intern_in("&ALLOW-OTHER-KEYS", 17, cl_package_cl);
     SYM_AMP_AUX       = cl_intern_in("&AUX", 4, cl_package_cl);
+    SYM_AMP_ENVIRONMENT = cl_intern_in("&ENVIRONMENT", 12, cl_package_cl);
     KW_ALLOW_OTHER_KEYS = cl_intern_keyword("ALLOW-OTHER-KEYS", 16);
     SYM_TAGBODY        = cl_intern_in("TAGBODY", 7, cl_package_cl);
     SYM_GO             = cl_intern_in("GO", 2, cl_package_cl);
@@ -682,6 +684,7 @@ void cl_symbol_init(void)
         CL_Obj sym = cl_intern_in("LAMBDA-LIST-KEYWORDS", 20, cl_package_cl);
         CL_Symbol *s = (CL_Symbol *)CL_OBJ_TO_PTR(sym);
         CL_Obj kws = CL_NIL;
+        kws = cl_cons(SYM_AMP_ENVIRONMENT, kws);
         kws = cl_cons(SYM_AMP_AUX, kws);
         kws = cl_cons(SYM_AMP_ALLOW_OTHER_KEYS, kws);
         kws = cl_cons(SYM_AMP_KEY, kws);

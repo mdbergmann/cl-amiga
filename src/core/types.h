@@ -219,6 +219,7 @@ typedef struct {
 #define CL_VEC_FLAG_ADJUSTABLE    0x02
 #define CL_VEC_FLAG_MULTIDIM      0x04
 #define CL_VEC_FLAG_DISPLACED     0x08  /* data[0] = CL_Obj ref to backing vector */
+#define CL_VEC_FLAG_STRING        0x10  /* character vector (elements are CL_MAKE_CHAR) */
 
 /* Sentinel: no fill pointer */
 #define CL_NO_FILL_POINTER  0xFFFFFFFFu
@@ -234,6 +235,10 @@ typedef struct {
 } CL_Vector;
 
 #define CL_VECTOR_P(obj) (CL_HEAP_P(obj) && CL_HDR_TYPE(CL_OBJ_TO_PTR(obj)) == TYPE_VECTOR)
+
+/* String-like vector: CL_Vector with CL_VEC_FLAG_STRING (adjustable/fill-pointer character arrays) */
+#define CL_STRING_VECTOR_P(obj) \
+    (CL_VECTOR_P(obj) && (((CL_Vector *)CL_OBJ_TO_PTR(obj))->flags & CL_VEC_FLAG_STRING))
 
 /* Access helpers: data pointer (skips dimension storage for multi-dim) */
 /* For displaced vectors, follow data[0] to the backing vector */
