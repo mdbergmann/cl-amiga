@@ -805,6 +805,177 @@ TEST(typep_multiple_inheritance_negative)
     ASSERT_STR_EQ(eval_print("(typep *mc* 'unrelated)"), "NIL");
 }
 
+/* === Phase 11: Dispatch cache === */
+
+TEST(cache_basic_dispatch)
+{
+    /* Define a GF and method, call it — should work with cache */
+    eval_print(
+        "(defgeneric cache-test-1 (x))");
+    eval_print(
+        "(defmethod cache-test-1 ((x point)) (point-x x))");
+    ASSERT_STR_EQ(eval_print(
+        "(cache-test-1 (make-instance 'point :x 42 :y 0))"),
+        "42");
+}
+
+TEST(cache_hit_correct_result)
+{
+    /* Call GF twice with same-class arg — second call uses cache */
+    ASSERT_STR_EQ(eval_print(
+        "(cache-test-1 (make-instance 'point :x 77 :y 0))"),
+        "77");
+    /* Verify cache is populated (non-NIL) */
+    ASSERT_STR_EQ(eval_print(
+        "(let ((gf (gethash 'cache-test-1 *generic-function-table*))) "
+        "  (not (null (gf-dispatch-cache gf))))"),
+        "T");
+}
+
+TEST(cache_different_classes)
+{
+    /* GF dispatches correctly for different classes */
+    eval_print(
+        "(defmethod cache-test-1 ((x point3d)) (+ (point-x x) (point-z x)))");
+    ASSERT_STR_EQ(eval_print(
+        "(cache-test-1 (make-instance 'point3d :x 10 :y 0 :z 5))"),
+        "15");
+    /* point dispatch still works (cache rebuilt after defmethod) */
+    ASSERT_STR_EQ(eval_print(
+        "(cache-test-1 (make-instance 'point :x 33 :y 0))"),
+        "33");
+}
+
+TEST(cache_invalidated_on_defmethod)
+{
+    /* Adding a method clears the cache */
+    /* First populate cache */
+    eval_print("(cache-test-1 (make-instance 'point :x 1 :y 0))");
+    ASSERT_STR_EQ(eval_print(
+        "(let ((gf (gethash 'cache-test-1 *generic-function-table*))) "
+        "  (not (null (gf-dispatch-cache gf))))"),
+        "T");
+    /* Add another method — cache should be cleared */
+    eval_print(
+        "(defclass cache-thing () ((v :initarg :v :accessor cache-thing-v)))");
+    eval_print(
+        "(defmethod cache-test-1 ((x cache-thing)) (cache-thing-v x))");
+    ASSERT_STR_EQ(eval_print(
+        "(let ((gf (gethash 'cache-test-1 *generic-function-table*))) "
+        "  (gf-dispatch-cache gf))"),
+        "NIL");
+    /* New method works */
+    ASSERT_STR_EQ(eval_print(
+        "(cache-test-1 (make-instance 'cache-thing :v 99))"),
+        "99");
+}
+
+TEST(cache_invalidated_on_defclass)
+{
+    /* Defining a new class clears all GF caches */
+    /* Populate cache */
+    eval_print("(cache-test-1 (make-instance 'point :x 1 :y 0))");
+    ASSERT_STR_EQ(eval_print(
+        "(let ((gf (gethash 'cache-test-1 *generic-function-table*))) "
+        "  (not (null (gf-dispatch-cache gf))))"),
+        "T");
+    /* Define a new class — all caches cleared */
+    eval_print("(defclass cache-invalidation-test () ())");
+    ASSERT_STR_EQ(eval_print(
+        "(let ((gf (gethash 'cache-test-1 *generic-function-table*))) "
+        "  (gf-dispatch-cache gf))"),
+        "NIL");
+}
+
+TEST(cache_eql_specializer_bypass)
+{
+    /* GF with EQL specializer should NOT be cached */
+    eval_print(
+        "(defgeneric cache-eql-test (x))");
+    eval_print(
+        "(defmethod cache-eql-test ((x (eql 42))) 'forty-two)");
+    eval_print(
+        "(defmethod cache-eql-test ((x integer)) 'other-int)");
+    /* Should dispatch correctly */
+    ASSERT_STR_EQ(eval_print("(cache-eql-test 42)"), "FORTY-TWO");
+    ASSERT_STR_EQ(eval_print("(cache-eql-test 7)"), "OTHER-INT");
+    /* cacheable-p should be NIL */
+    ASSERT_STR_EQ(eval_print(
+        "(let ((gf (gethash 'cache-eql-test *generic-function-table*))) "
+        "  (gf-cacheable-p gf))"),
+        "NIL");
+}
+
+TEST(cache_multi_dispatch_bypass)
+{
+    /* GF with specialization beyond arg1 should NOT be cached */
+    eval_print(
+        "(defgeneric cache-multi-test (x y))");
+    eval_print(
+        "(defmethod cache-multi-test ((x point) (y point)) 'both-points)");
+    ASSERT_STR_EQ(eval_print(
+        "(cache-multi-test (make-instance 'point :x 1 :y 2) "
+        "                  (make-instance 'point :x 3 :y 4))"),
+        "BOTH-POINTS");
+    /* cacheable-p should be NIL */
+    ASSERT_STR_EQ(eval_print(
+        "(let ((gf (gethash 'cache-multi-test *generic-function-table*))) "
+        "  (gf-cacheable-p gf))"),
+        "NIL");
+}
+
+TEST(cache_no_applicable_method)
+{
+    /* No-applicable-method error should still work with cache */
+    eval_print(
+        "(defgeneric cache-err-test (x))");
+    eval_print(
+        "(defmethod cache-err-test ((x point)) 'point-ok)");
+    /* This should work */
+    ASSERT_STR_EQ(eval_print(
+        "(cache-err-test (make-instance 'point :x 0 :y 0))"),
+        "POINT-OK");
+    /* Calling with a string (no applicable method) should error */
+    ASSERT_STR_EQ(eval_print(
+        "(handler-case (cache-err-test \"hello\") "
+        "  (error (c) 'got-error))"),
+        "GOT-ERROR");
+}
+
+TEST(cache_before_after_around)
+{
+    /* Standard method combination works correctly with cache */
+    eval_print("(defparameter *cache-trace* nil)");
+    eval_print(
+        "(defgeneric cache-combo-test (x))");
+    eval_print(
+        "(defmethod cache-combo-test :before ((x point)) "
+        "  (push 'before *cache-trace*))");
+    eval_print(
+        "(defmethod cache-combo-test ((x point)) "
+        "  (push 'primary *cache-trace*) 'done)");
+    eval_print(
+        "(defmethod cache-combo-test :after ((x point)) "
+        "  (push 'after *cache-trace*))");
+    eval_print(
+        "(defmethod cache-combo-test :around ((x point)) "
+        "  (push 'around *cache-trace*) (call-next-method))");
+    /* First call */
+    eval_print("(setq *cache-trace* nil)");
+    ASSERT_STR_EQ(eval_print(
+        "(cache-combo-test (make-instance 'point :x 0 :y 0))"),
+        "DONE");
+    ASSERT_STR_EQ(eval_print("(nreverse *cache-trace*)"),
+        "(AROUND BEFORE PRIMARY AFTER)");
+    /* Second call (should use cache) — same result */
+    eval_print("(setq *cache-trace* nil)");
+    ASSERT_STR_EQ(eval_print(
+        "(cache-combo-test (make-instance 'point :x 1 :y 1))"),
+        "DONE");
+    ASSERT_STR_EQ(eval_print("(nreverse *cache-trace*)"),
+        "(AROUND BEFORE PRIMARY AFTER)");
+}
+
 int main(void)
 {
     test_init();
@@ -922,6 +1093,17 @@ int main(void)
     RUN(typep_multiple_inheritance);
     RUN(typep_multiple_inheritance_or);
     RUN(typep_multiple_inheritance_negative);
+
+    /* Phase 11: dispatch cache */
+    RUN(cache_basic_dispatch);
+    RUN(cache_hit_correct_result);
+    RUN(cache_different_classes);
+    RUN(cache_invalidated_on_defmethod);
+    RUN(cache_invalidated_on_defclass);
+    RUN(cache_eql_specializer_bypass);
+    RUN(cache_multi_dispatch_bypass);
+    RUN(cache_no_applicable_method);
+    RUN(cache_before_after_around);
 
     teardown();
     REPORT();

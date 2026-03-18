@@ -602,6 +602,9 @@ Specialize via defmethod to provide lazy initialization."
     (dolist (super supers)
       (%set-class-direct-subclasses super
         (cons class (class-direct-subclasses super))))
+    ;; Invalidate all GF dispatch caches (class hierarchy changed)
+    (when (fboundp '%invalidate-all-gf-caches)
+      (%invalidate-all-gf-caches))
     class))
 
 ;;; --- defclass macro ---
@@ -748,12 +751,13 @@ Specialize via defmethod to provide lazy initialization."
 
 ;;; --- Generic function and method struct types ---
 
-;;; standard-generic-function: 5 slots
+;;; standard-generic-function: 7 slots
 ;;;   0: name, 1: lambda-list, 2: methods, 3: discriminating-function,
-;;;   4: method-combination
-(%register-struct-type 'standard-generic-function 5 nil
+;;;   4: method-combination, 5: dispatch-cache, 6: cacheable-p
+(%register-struct-type 'standard-generic-function 7 nil
   '((name nil) (lambda-list nil) (methods nil)
-    (discriminating-function nil) (method-combination nil)))
+    (discriminating-function nil) (method-combination nil)
+    (dispatch-cache nil) (cacheable-p nil)))
 
 ;;; standard-method: 5 slots
 ;;;   0: generic-function, 1: specializers, 2: qualifiers, 3: function,
@@ -777,6 +781,10 @@ Specialize via defmethod to provide lazy initialization."
 (defun %set-gf-methods (gf val) (%struct-set gf 2 val))
 (defun gf-discriminating-function (gf) (%struct-ref gf 3))
 (defun %set-gf-discriminating-function (gf val) (%struct-set gf 3 val))
+(defun gf-dispatch-cache (gf) (%struct-ref gf 5))
+(defun %set-gf-dispatch-cache (gf val) (%struct-set gf 5 val))
+(defun gf-cacheable-p (gf) (%struct-ref gf 6))
+(defun %set-gf-cacheable-p (gf val) (%struct-set gf 6 val))
 
 (defun method-specializers (m) (%struct-ref m 1))
 (defun method-qualifiers (m) (%struct-ref m 2))
@@ -970,11 +978,54 @@ When called with no arguments, passes the original method arguments."
                  (*next-method-p-function* (lambda () t)))
             (apply (method-function m) actual-args))))))
 
+;;; --- GF dispatch cache ---
+
+(defun %compute-gf-cacheable-p (gf)
+  "Return T if GF can use single-dispatch class cache.
+   Cacheable when: no EQL specializers, no method specializes beyond arg1."
+  (let ((t-class (find-class 't)))
+    (dolist (m (gf-methods gf) t)
+      (let ((specs (method-specializers m)))
+        ;; Check first specializer for EQL
+        (when (and (consp specs) (consp (car specs)) (eq (caar specs) 'eql))
+          (return nil))
+        ;; Check remaining specializers: must all be T class
+        (let ((rest (cdr specs)))
+          (dolist (s rest)
+            (when (or (and (consp s) (eq (car s) 'eql))
+                      (not (eq s t-class)))
+              (return-from %compute-gf-cacheable-p nil))))))))
+
+(defun %invalidate-all-gf-caches ()
+  "Clear dispatch caches of all generic functions."
+  (maphash (lambda (name gf)
+             (declare (ignore name))
+             (%set-gf-dispatch-cache gf nil))
+           *generic-function-table*))
+
+(defun %gf-dispatch-cached (gf args)
+  "Look up or compute applicable methods using class cache."
+  (let* ((class (class-of (car args)))
+         (cache (gf-dispatch-cache gf)))
+    (unless cache
+      (setq cache (make-hash-table :test 'eq))
+      (%set-gf-dispatch-cache gf cache))
+    (multiple-value-bind (methods found)
+        (gethash class cache)
+      (if found
+          methods
+          (let ((computed (%compute-applicable-methods gf args)))
+            (setf (gethash class cache) computed)
+            computed)))))
+
 ;;; --- GF dispatch ---
 
 (defun %gf-dispatch (gf args)
   "Dispatch a generic function call."
-  (let ((methods (%compute-applicable-methods gf args)))
+  (let ((methods
+          (if (gf-cacheable-p gf)
+              (%gf-dispatch-cached gf args)
+              (%compute-applicable-methods gf args))))
     (when (null methods)
       (error "No applicable method for ~S with args of types ~S"
                      (gf-name gf) (mapcar #'type-of args)))
@@ -1000,7 +1051,7 @@ When called with no arguments, passes the original method arguments."
                  (setf (symbol-function hidden-sym) dispatch-fn)))))
           existing)
         (let* ((gf (%make-struct 'standard-generic-function
-                     name lambda-list nil nil nil))
+                     name lambda-list nil nil nil nil nil))
                (dispatch-fn
                  (lambda (&rest args)
                    (%gf-dispatch gf args))))
@@ -1131,6 +1182,9 @@ When called with no arguments, passes the original method arguments."
                  (gf-methods gf)))
     ;; Add new method
     (%set-gf-methods gf (cons method (gf-methods gf)))
+    ;; Invalidate dispatch cache and recompute cacheability
+    (%set-gf-dispatch-cache gf nil)
+    (%set-gf-cacheable-p gf (%compute-gf-cacheable-p gf))
     method))
 
 ;;; ====================================================================

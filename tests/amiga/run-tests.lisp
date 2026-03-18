@@ -3265,6 +3265,65 @@
 (load "T:fasl-test3.fasl")
 (check "FASL with macros" 21 (fasl-apply-triple 7))
 
+; --- Dispatch cache ---
+(defgeneric dcache-test (x))
+(defmethod dcache-test ((x point)) (point-x x))
+(check "cache basic dispatch" 42 (dcache-test (make-instance 'point :x 42 :y 0)))
+; second call uses cache
+(check "cache hit correct" 77 (dcache-test (make-instance 'point :x 77 :y 0)))
+; cache populated
+(check "cache populated" t
+  (let ((gf (gethash 'dcache-test *generic-function-table*)))
+    (not (null (gf-dispatch-cache gf)))))
+; cacheable-p is T for single-dispatch
+(check "cache cacheable-p" t
+  (let ((gf (gethash 'dcache-test *generic-function-table*)))
+    (gf-cacheable-p gf)))
+; invalidation on defmethod
+(defmethod dcache-test ((x point3d)) (+ (point-x x) (point-z x)))
+(check "cache cleared on defmethod" nil
+  (let ((gf (gethash 'dcache-test *generic-function-table*)))
+    (gf-dispatch-cache gf)))
+(check "cache new method works" 15
+  (dcache-test (make-instance 'point3d :x 10 :y 0 :z 5)))
+; EQL specializer bypass
+(defgeneric dcache-eql-test (x))
+(defmethod dcache-eql-test ((x (eql 42))) 'forty-two)
+(defmethod dcache-eql-test ((x integer)) 'other-int)
+(check "cache eql dispatch 42" 'forty-two (dcache-eql-test 42))
+(check "cache eql dispatch 7" 'other-int (dcache-eql-test 7))
+(check "cache eql not cacheable" nil
+  (let ((gf (gethash 'dcache-eql-test *generic-function-table*)))
+    (gf-cacheable-p gf)))
+; Multi-dispatch bypass
+(defgeneric dcache-multi (x y))
+(defmethod dcache-multi ((x point) (y point)) 'both-points)
+(check "cache multi dispatch" 'both-points
+  (dcache-multi (make-instance 'point :x 1 :y 2)
+                (make-instance 'point :x 3 :y 4)))
+(check "cache multi not cacheable" nil
+  (let ((gf (gethash 'dcache-multi *generic-function-table*)))
+    (gf-cacheable-p gf)))
+; before/after/around with cache
+(defparameter *dcache-trace* nil)
+(defgeneric dcache-combo (x))
+(defmethod dcache-combo :before ((x point)) (push 'before *dcache-trace*))
+(defmethod dcache-combo ((x point)) (push 'primary *dcache-trace*) 'done)
+(defmethod dcache-combo :after ((x point)) (push 'after *dcache-trace*))
+(defmethod dcache-combo :around ((x point)) (push 'around *dcache-trace*) (call-next-method))
+(setq *dcache-trace* nil)
+(check "cache combo result" 'done (dcache-combo (make-instance 'point :x 0 :y 0)))
+(check "cache combo order" '(around before primary after) (nreverse *dcache-trace*))
+; second call uses cache, same result
+(setq *dcache-trace* nil)
+(dcache-combo (make-instance 'point :x 1 :y 1))
+(check "cache combo cached order" '(around before primary after) (nreverse *dcache-trace*))
+; no applicable method with cache
+(defgeneric dcache-err (x))
+(defmethod dcache-err ((x point)) 'point-ok)
+(check "cache no-applicable errors" 'got-error
+  (handler-case (dcache-err "hello") (error (c) 'got-error)))
+
 ; --- Summary ---
 (format t "~%=== Results ===~%")
 (format t "Passed: ~A~%" *pass-count*)
