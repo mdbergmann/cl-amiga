@@ -751,13 +751,14 @@ Specialize via defmethod to provide lazy initialization."
 
 ;;; --- Generic function and method struct types ---
 
-;;; standard-generic-function: 7 slots
+;;; standard-generic-function: 8 slots
 ;;;   0: name, 1: lambda-list, 2: methods, 3: discriminating-function,
-;;;   4: method-combination, 5: dispatch-cache, 6: cacheable-p
-(%register-struct-type 'standard-generic-function 7 nil
+;;;   4: method-combination, 5: dispatch-cache, 6: cacheable-p,
+;;;   7: eql-value-sets
+(%register-struct-type 'standard-generic-function 8 nil
   '((name nil) (lambda-list nil) (methods nil)
     (discriminating-function nil) (method-combination nil)
-    (dispatch-cache nil) (cacheable-p nil)))
+    (dispatch-cache nil) (cacheable-p nil) (eql-value-sets nil)))
 
 ;;; standard-method: 5 slots
 ;;;   0: generic-function, 1: specializers, 2: qualifiers, 3: function,
@@ -785,6 +786,8 @@ Specialize via defmethod to provide lazy initialization."
 (defun %set-gf-dispatch-cache (gf val) (%struct-set gf 5 val))
 (defun gf-cacheable-p (gf) (%struct-ref gf 6))
 (defun %set-gf-cacheable-p (gf val) (%struct-set gf 6 val))
+(defun gf-eql-value-sets (gf) (%struct-ref gf 7))
+(defun %set-gf-eql-value-sets (gf val) (%struct-set gf 7 val))
 
 (defun method-specializers (m) (%struct-ref m 1))
 (defun method-qualifiers (m) (%struct-ref m 2))
@@ -798,6 +801,7 @@ Specialize via defmethod to provide lazy initialization."
 (defvar *call-next-method-function* nil)
 (defvar *call-next-method-args* nil)
 (defvar *next-method-p-function* nil)
+(defvar *current-method-args* nil)
 
 (defun call-next-method (&rest args)
   "Call the next most-specific method.
@@ -908,8 +912,8 @@ When called with no arguments, passes the original method arguments."
 
 ;;; --- Standard method combination ---
 
-(defun %call-with-method-combination (methods args)
-  "Execute standard method combination on sorted applicable METHODS."
+(defun %build-effective-method (methods)
+  "Build a cacheable effective method closure (args-independent)."
   (let ((around nil)
         (before nil)
         (primary nil)
@@ -924,55 +928,60 @@ When called with no arguments, passes the original method arguments."
           ((equal q '(:after)) (push m after)))))
     (setq primary (nreverse primary))
     (setq before (nreverse before))
-    ;; after is already most-specific-first; we want least-specific-first
-    ;; (after was pushed most-specific-first from sorted list, so it's reversed)
-    ;; Actually: methods are sorted most-specific-first, we push them, so
-    ;; after list is reversed (least-specific-first). That's what we want.
+    ;; after list is reversed (least-specific-first) — that's what we want
     (setq around (nreverse around))
     (unless primary
       (error "No applicable primary method"))
     ;; Build the effective method
-    (let* ((primary-chain
-             (%make-method-chain primary args))
+    (let* ((primary-chain (%make-method-chain primary))
            (call-primary
-             (lambda (&rest args)
-               ;; Execute :before methods
-               (dolist (m before)
-                 (apply (method-function m) args))
-               ;; Execute primary chain (preserve multiple values)
-               (let ((results (multiple-value-list (apply primary-chain args))))
-                 ;; Execute :after methods
-                 (dolist (m after)
-                   (apply (method-function m) args))
-                 (values-list results)))))
+             (if (and (null before) (null after))
+                 ;; Optimization: no before/after, use primary chain directly
+                 primary-chain
+                 (lambda (&rest call-args)
+                   (let ((args (if call-args call-args *current-method-args*)))
+                     ;; Execute :before methods
+                     (dolist (m before)
+                       (apply (method-function m) args))
+                     ;; Execute primary chain (preserve multiple values)
+                     (let ((results (multiple-value-list (apply primary-chain args))))
+                       ;; Execute :after methods
+                       (dolist (m after)
+                         (apply (method-function m) args))
+                       (values-list results)))))))
       (if around
-          ;; Wrap :around methods
-          (apply (%make-around-chain around call-primary args) args)
-          (apply call-primary args)))))
+          (%make-around-chain around call-primary)
+          call-primary))))
 
-(defun %make-method-chain (methods args)
+(defun %call-with-method-combination (methods args)
+  "Execute standard method combination on sorted applicable METHODS."
+  (let ((*current-method-args* args))
+    (apply (%build-effective-method methods) args)))
+
+(defun %make-method-chain (methods)
   "Build a call-next-method chain from primary methods."
   (if (null methods)
-      (lambda (&rest args)
+      (lambda (&rest call-args)
+        (declare (ignore call-args))
         (error "No next method"))
       (let* ((m (car methods))
-             (rest-chain (%make-method-chain (cdr methods) args)))
+             (rest-chain (%make-method-chain (cdr methods)))
+             (has-next (not (null (cdr methods)))))
         (lambda (&rest call-args)
-          (let* ((actual-args (or call-args args))
+          (let* ((actual-args (if call-args call-args *current-method-args*))
                  (*call-next-method-function* rest-chain)
                  (*call-next-method-args* actual-args)
-                 (*next-method-p-function*
-                   (lambda () (not (null (cdr methods))))))
+                 (*next-method-p-function* (lambda () has-next)))
             (apply (method-function m) actual-args))))))
 
-(defun %make-around-chain (around-methods inner args)
+(defun %make-around-chain (around-methods inner)
   "Build an :around chain that wraps INNER."
   (if (null around-methods)
       inner
       (let* ((m (car around-methods))
-             (rest-chain (%make-around-chain (cdr around-methods) inner args)))
+             (rest-chain (%make-around-chain (cdr around-methods) inner)))
         (lambda (&rest call-args)
-          (let* ((actual-args (or call-args args))
+          (let* ((actual-args (if call-args call-args *current-method-args*))
                  (*call-next-method-function* rest-chain)
                  (*call-next-method-args* actual-args)
                  (*next-method-p-function* (lambda () t)))
@@ -981,20 +990,24 @@ When called with no arguments, passes the original method arguments."
 ;;; --- GF dispatch cache ---
 
 (defun %compute-gf-cacheable-p (gf)
-  "Return T if GF can use single-dispatch class cache.
-   Cacheable when: no EQL specializers, no method specializes beyond arg1."
-  (let ((t-class (find-class 't)))
-    (dolist (m (gf-methods gf) t)
-      (let ((specs (method-specializers m)))
-        ;; Check first specializer for EQL
-        (when (and (consp specs) (consp (car specs)) (eq (caar specs) 'eql))
-          (return nil))
-        ;; Check remaining specializers: must all be T class
-        (let ((rest (cdr specs)))
-          (dolist (s rest)
-            (when (or (and (consp s) (eq (car s) 'eql))
-                      (not (eq s t-class)))
-              (return-from %compute-gf-cacheable-p nil))))))))
+  "Return dispatch mode for GF:
+   N (integer) = number of specialized arg positions (class cache)
+   :EQL = has EQL specializers (EQL cache)
+   Always returns at least 1 for class-only dispatch."
+  (let ((t-class (find-class 't))
+        (has-eql nil)
+        (max-specialized 1))
+    (dolist (m (gf-methods gf))
+      (let ((pos 0))
+        (dolist (s (method-specializers m))
+          (cond
+            ((and (consp s) (eq (car s) 'eql))
+             (setq has-eql t))
+            ((not (eq s t-class))
+             (when (> (1+ pos) max-specialized)
+               (setq max-specialized (1+ pos)))))
+          (setq pos (1+ pos)))))
+    (if has-eql :eql max-specialized)))
 
 (defun %invalidate-all-gf-caches ()
   "Clear dispatch caches of all generic functions."
@@ -1003,33 +1016,151 @@ When called with no arguments, passes the original method arguments."
              (%set-gf-dispatch-cache gf nil))
            *generic-function-table*))
 
-(defun %gf-dispatch-cached (gf args)
-  "Look up or compute applicable methods using class cache."
-  (let* ((class (class-of (car args)))
+(defun %compute-eql-value-sets (gf)
+  "Compute per-position EQL value sets for GF.
+   Returns a list: NIL for positions without EQL specializers,
+   or a hash table mapping known EQL values to T."
+  (let ((max-pos 0))
+    ;; Find max specializer position
+    (dolist (m (gf-methods gf))
+      (let ((len (length (method-specializers m))))
+        (when (> len max-pos) (setq max-pos len))))
+    ;; Build per-position hash tables
+    (let ((result nil))
+      (dotimes (pos max-pos)
+        (let ((ht nil))
+          (dolist (m (gf-methods gf))
+            (let ((specs (method-specializers m)))
+              (when (> (length specs) pos)
+                (let ((s (nth pos specs)))
+                  (when (and (consp s) (eq (car s) 'eql))
+                    (unless ht
+                      (setq ht (make-hash-table :test 'eql)))
+                    (setf (gethash (cadr s) ht) t))))))
+          (push ht result)))
+      (nreverse result))))
+
+(defun %gf-dispatch-eql (gf args)
+  "Dispatch a GF with EQL specializers using mixed EQL/class cache.
+   Cache structure at each level: (eql-ht . class-ht) cons.
+   EQL-HT keys are EQL values, CLASS-HT keys are class objects.
+   Values at intermediate levels are (eql-ht . class-ht) conses.
+   Values at final level are EMF closures (or NIL for negative cache)."
+  (let* ((eql-sets (gf-eql-value-sets gf))
          (cache (gf-dispatch-cache gf)))
+    (unless cache
+      ;; Initialize: (eql-ht . class-ht) cons
+      (setq cache (cons (make-hash-table :test 'eql)
+                        (make-hash-table :test 'eq)))
+      (%set-gf-dispatch-cache gf cache))
+    ;; Navigate/create nested levels for each position with EQL/class specializers
+    (let ((node cache)
+          (a args)
+          (sets eql-sets)
+          (depth 0)
+          (n-levels (length eql-sets)))
+      ;; Navigate intermediate levels (0..n-levels-2)
+      (loop
+        (when (>= depth (1- n-levels))
+          (return))
+        (let* ((eql-set (car sets))
+               (arg (car a))
+               (use-eql (and eql-set (gethash arg eql-set)))
+               (ht (if use-eql (car node) (cdr node)))
+               (key (if use-eql arg (class-of arg)))
+               (next (gethash key ht)))
+          (unless next
+            (setq next (cons (make-hash-table :test 'eql)
+                             (make-hash-table :test 'eq)))
+            (setf (gethash key ht) next))
+          (setq node next)
+          (setq a (cdr a))
+          (setq sets (cdr sets))
+          (setq depth (1+ depth))))
+      ;; Final level: lookup EMF
+      (let* ((eql-set (car sets))
+             (arg (car a))
+             (use-eql (and eql-set (gethash arg eql-set)))
+             (ht (if use-eql (car node) (cdr node)))
+             (key (if use-eql arg (class-of arg)))
+             (*current-method-args* args))
+        (multiple-value-bind (emf found)
+            (gethash key ht)
+          (if found
+              (if emf
+                  (apply emf args)
+                  (error "No applicable method for ~S with args of types ~S"
+                         (gf-name gf) (mapcar #'type-of args)))
+              (let ((methods (%compute-applicable-methods gf args)))
+                (if methods
+                    (let ((new-emf (%build-effective-method methods)))
+                      (setf (gethash key ht) new-emf)
+                      (apply new-emf args))
+                    (progn
+                      (setf (gethash key ht) nil)
+                      (error "No applicable method for ~S with args of types ~S"
+                             (gf-name gf) (mapcar #'type-of args)))))))))))
+
+(defun %gf-dispatch-cached (gf args n-specialized)
+  "Look up or compute effective method using nested class cache.
+   N-SPECIALIZED is the number of specialized arg positions."
+  (let ((cache (gf-dispatch-cache gf)))
     (unless cache
       (setq cache (make-hash-table :test 'eq))
       (%set-gf-dispatch-cache gf cache))
-    (multiple-value-bind (methods found)
-        (gethash class cache)
-      (if found
-          methods
-          (let ((computed (%compute-applicable-methods gf args)))
-            (setf (gethash class cache) computed)
-            computed)))))
+    ;; Navigate/create nested hash tables for positions 0..n-specialized-2
+    (let ((table cache)
+          (a args)
+          (depth 0))
+      ;; Navigate intermediate levels
+      (loop
+        (when (>= depth (1- n-specialized))
+          (return))
+        (let* ((class (class-of (car a)))
+               (next (gethash class table)))
+          (unless next
+            (setq next (make-hash-table :test 'eq))
+            (setf (gethash class table) next))
+          (setq table next)
+          (setq a (cdr a))
+          (setq depth (1+ depth))))
+      ;; Final level: lookup EMF by class of last specialized arg
+      (let* ((class (class-of (car a)))
+             (*current-method-args* args))
+        (multiple-value-bind (emf found)
+            (gethash class table)
+          (if found
+              (if emf
+                  (apply emf args)
+                  (error "No applicable method for ~S with args of types ~S"
+                         (gf-name gf) (mapcar #'type-of args)))
+              (let ((methods (%compute-applicable-methods gf args)))
+                (if methods
+                    (let ((new-emf (%build-effective-method methods)))
+                      (setf (gethash class table) new-emf)
+                      (apply new-emf args))
+                    (progn
+                      (setf (gethash class table) nil)
+                      (error "No applicable method for ~S with args of types ~S"
+                             (gf-name gf) (mapcar #'type-of args)))))))))))
 
 ;;; --- GF dispatch ---
 
 (defun %gf-dispatch (gf args)
   "Dispatch a generic function call."
-  (let ((methods
-          (if (gf-cacheable-p gf)
-              (%gf-dispatch-cached gf args)
-              (%compute-applicable-methods gf args))))
-    (when (null methods)
-      (error "No applicable method for ~S with args of types ~S"
-                     (gf-name gf) (mapcar #'type-of args)))
-    (%call-with-method-combination methods args)))
+  (let ((mode (gf-cacheable-p gf)))
+    (cond
+      ((integerp mode)
+       (%gf-dispatch-cached gf args mode))
+      ((eq mode :eql)
+       (%gf-dispatch-eql gf args))
+      (t
+       (let ((methods (%compute-applicable-methods gf args)))
+         (when (null methods)
+           (error "No applicable method for ~S with args of types ~S"
+                  (gf-name gf) (mapcar #'type-of args)))
+         (let ((*current-method-args* args))
+           (apply (%build-effective-method methods) args)))))))
 
 ;;; --- ensure-generic-function ---
 
@@ -1051,7 +1182,7 @@ When called with no arguments, passes the original method arguments."
                  (setf (symbol-function hidden-sym) dispatch-fn)))))
           existing)
         (let* ((gf (%make-struct 'standard-generic-function
-                     name lambda-list nil nil nil nil nil))
+                     name lambda-list nil nil nil nil nil nil))
                (dispatch-fn
                  (lambda (&rest args)
                    (%gf-dispatch gf args))))
@@ -1184,7 +1315,11 @@ When called with no arguments, passes the original method arguments."
     (%set-gf-methods gf (cons method (gf-methods gf)))
     ;; Invalidate dispatch cache and recompute cacheability
     (%set-gf-dispatch-cache gf nil)
-    (%set-gf-cacheable-p gf (%compute-gf-cacheable-p gf))
+    (let ((mode (%compute-gf-cacheable-p gf)))
+      (%set-gf-cacheable-p gf mode)
+      (if (eq mode :eql)
+          (%set-gf-eql-value-sets gf (%compute-eql-value-sets gf))
+          (%set-gf-eql-value-sets gf nil)))
     method))
 
 ;;; ====================================================================

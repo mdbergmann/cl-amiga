@@ -18,34 +18,36 @@ Maximize throughput and minimize latency of the CL-Amiga bytecode VM and runtime
 
 ## Tier 1 — High Impact
 
-### 1.1 CLOS Method Dispatch Cache
+### 1.1 CLOS Method Dispatch Cache ✅ DONE (b315f2a, enhanced)
 
 **Problem**: Every generic function call performs a full linear scan of all methods, O(n^2) insertion sort by specificity, and repeated CPL walks. No results are cached. For a GF with 50 methods, this is the dominant bottleneck in ASDF, Quicklisp, and FSet.
 
-**Current code** (`lib/clos.lisp`, `%compute-applicable-methods`):
-- Linear scan of `(gf-methods gf)` testing `%method-applicable-p` per method
-- `%method-applicable-p` iterates specializers with `do` loop + `typep`/`eq` checks
-- `%method-more-specific-p` walks class-precedence-list linearly for each comparison
-- Applicable methods sorted by O(n^2) insertion sort
+**Design**: Multi-level dispatch cache with three modes:
 
-**Design**:
-- Add a dispatch cache to each generic function: hash table mapping `(class-of arg1, class-of arg2, ...)` tuple to precomputed effective method list
-- Cache key: vector of class objects for required arguments (use `eq` hash)
-- Cache invalidation: clear cache on `add-method`, `remove-method`, `defclass` that affects CPL
-- Store cache as a slot on the generic function struct (or side table if struct size is constrained)
+**Phase 1: Effective Method Closure (EMF) caching** — cache the fully-built method combination closure, not just the method list. On cache hit: bind `*current-method-args*` and `(apply emf args)` — zero closure allocation per call. Negative caching for no-applicable-method cases.
 
-**Expected gain**: 10-100x for dispatch-heavy code paths.
+**Phase 2: Multi-dispatch cache** — nested `eq` hash tables for GFs specializing on 2+ args. `cacheable-p` returns N (number of specialized positions) instead of boolean. For N=1: identical to single-dispatch. For N>1: navigate N-1 intermediate hash tables keyed by `class-of` each arg.
 
-**Invalidation strategy**:
-- `add-method` / `remove-method`: clear the cache of the affected GF
-- `defclass`: clear caches of all GFs that have methods specializing on the redefined class or its subclasses
-- Conservative: clear all GF caches on any `defclass` (simpler, still large net win since class redefinition is rare vs. dispatch)
+**Phase 3: EQL specializer cache** — mixed EQL/class cache for GFs with `(eql value)` specializers. Each cache level is a `(eql-ht . class-ht)` cons pair. Per-position EQL value sets determine whether to route through the EQL or class hash table.
 
-**Files**: `lib/clos.lisp`
+**Implementation**:
+- Expanded `standard-generic-function` from 5→8 slots (`dispatch-cache`, `cacheable-p`, `eql-value-sets`)
+- `%compute-gf-cacheable-p`: returns integer N (class positions), `:eql` (has EQL specializers)
+- `%build-effective-method`: builds args-independent closure from sorted method list
+- `%make-method-chain` / `%make-around-chain`: use `*current-method-args*` dynamic var instead of captured args
+- `%gf-dispatch-cached`: nested hash tables for N specialized positions, stores EMF closures
+- `%gf-dispatch-eql`: mixed `(eql-ht . class-ht)` cache with per-position EQL value sets
+- `%compute-eql-value-sets`: scans methods, builds per-position hash tables of known EQL values
+- Invalidation: per-GF on `defmethod` (clears cache + recomputes cacheable-p + EQL sets), all GFs on `defclass`
+- 20 new host tests (118 total CLOS) + 30 new Amiga tests; Fiveam 114/114, FSet 17/17 pass
+
+**Expected gain**: 10-100x for dispatch-heavy code paths; eliminates per-call closure allocation.
+
+**Files**: `lib/clos.lisp`, `tests/test_clos.c`, `tests/amiga/run-tests.lisp`
 
 ---
 
-### 1.2 Pre-compiled FASL for Boot Files
+### 1.2 Pre-compiled FASL for Boot Files ✅ DONE (7f51164)
 
 **Problem**: `boot.lisp` (1949 lines) and `clos.lisp` (1388 lines) are parsed from source on every startup. The reader, compiler, and macro expander all run at full cost.
 
@@ -116,7 +118,7 @@ Maximize throughput and minimize latency of the CL-Amiga bytecode VM and runtime
 
 ## Tier 2 — Medium Impact
 
-### 2.1 VM Debug Instrumentation Gating
+### 2.1 VM Debug Instrumentation Gating ✅ DONE (7f51164)
 
 **Problem**: `dbg_last_op`, `dbg_last_ip`, and trace buffer writes execute on every opcode dispatch in production builds.
 
@@ -133,7 +135,7 @@ Maximize throughput and minimize latency of the CL-Amiga bytecode VM and runtime
 
 ---
 
-### 2.2 Rotate-XOR Hash Function
+### 2.2 Rotate-XOR Hash Function ✅ DONE (7f51164)
 
 **Problem**: FNV-1a hash uses `hash *= 16777619`, which takes ~70 cycles on 68020 (microcode multiply). Symbol interning and hash table operations are pervasive.
 
@@ -161,7 +163,7 @@ for (...) { hash ^= byte; hash *= 16777619u; }
 
 ---
 
-### 2.3 Hash Table Power-of-2 Buckets
+### 2.3 Hash Table Power-of-2 Buckets ✅ DONE (7f51164)
 
 **Problem**: Bucket index computed as `hash % bucket_count` — division is extremely slow on 68020 (~140 cycles for 32-bit divide).
 
@@ -221,7 +223,7 @@ for (...) { hash ^= byte; hash *= 16777619u; }
 
 ---
 
-### 2.6 Build Flags: `-O3` and `-flto`
+### 2.6 Build Flags: `-O3` and `-flto` ✅ DONE (7f51164)
 
 **Problem**: Cross-compile uses `-O2`. LTO would allow GCC to inline across translation units — critical for small helper functions called from the VM loop (`cl_vm_push`, `cl_vm_pop`, type checks).
 
@@ -293,14 +295,14 @@ for (...) { hash ^= byte; hash *= 16777619u; }
 
 Recommended sequence balancing impact vs. risk:
 
-| Phase | Items | Rationale |
-|-------|-------|-----------|
-| 1 | 2.1 (debug gating), 2.2 (hash function), 2.6 (build flags) | Very low risk, immediate gains |
-| 2 | 2.3 (HT power-of-2), 1.2 (pre-FASL boot), 3.3 (mv_count) | Low risk, measurable improvement |
-| 3 | 1.1 (CLOS dispatch cache) | Biggest single win, needs careful invalidation |
-| 4 | 1.3 (constant folding), 2.4 (set ops in C) | Compiler and runtime improvements |
-| 5 | 1.4 (computed goto), 2.5 (free-list segregation) | Larger refactors, need thorough testing |
-| 6 | 3.1 (slot access), 3.2 (keyword pre-comp) | Polish and refinement |
+| Phase | Items | Status |
+|-------|-------|--------|
+| 1 | 2.1 (debug gating), 2.2 (hash function), 2.6 (build flags) | ✅ DONE (7f51164) |
+| 2 | 2.3 (HT power-of-2), 1.2 (pre-FASL boot), 3.3 (mv_count) | ✅ 2.3+1.2 DONE (7f51164), 3.3 pending |
+| 3 | 1.1 (CLOS dispatch cache) | ✅ DONE (b315f2a) |
+| 4 | 1.3 (constant folding), 2.4 (set ops in C) | Pending |
+| 5 | 1.4 (computed goto), 2.5 (free-list segregation) | Pending |
+| 6 | 3.1 (slot access), 3.2 (keyword pre-comp) | Pending |
 
 ## Validation
 

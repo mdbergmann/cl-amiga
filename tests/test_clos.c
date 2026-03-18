@@ -889,7 +889,7 @@ TEST(cache_invalidated_on_defclass)
 
 TEST(cache_eql_specializer_bypass)
 {
-    /* GF with EQL specializer should NOT be cached */
+    /* GF with EQL specializer uses :EQL mode */
     eval_print(
         "(defgeneric cache-eql-test (x))");
     eval_print(
@@ -899,16 +899,16 @@ TEST(cache_eql_specializer_bypass)
     /* Should dispatch correctly */
     ASSERT_STR_EQ(eval_print("(cache-eql-test 42)"), "FORTY-TWO");
     ASSERT_STR_EQ(eval_print("(cache-eql-test 7)"), "OTHER-INT");
-    /* cacheable-p should be NIL */
+    /* cacheable-p should be :EQL */
     ASSERT_STR_EQ(eval_print(
         "(let ((gf (gethash 'cache-eql-test *generic-function-table*))) "
         "  (gf-cacheable-p gf))"),
-        "NIL");
+        ":EQL");
 }
 
 TEST(cache_multi_dispatch_bypass)
 {
-    /* GF with specialization beyond arg1 should NOT be cached */
+    /* GF with specialization beyond arg1 uses multi-dispatch cache */
     eval_print(
         "(defgeneric cache-multi-test (x y))");
     eval_print(
@@ -917,11 +917,11 @@ TEST(cache_multi_dispatch_bypass)
         "(cache-multi-test (make-instance 'point :x 1 :y 2) "
         "                  (make-instance 'point :x 3 :y 4))"),
         "BOTH-POINTS");
-    /* cacheable-p should be NIL */
+    /* cacheable-p should be 2 (two specialized positions) */
     ASSERT_STR_EQ(eval_print(
         "(let ((gf (gethash 'cache-multi-test *generic-function-table*))) "
         "  (gf-cacheable-p gf))"),
-        "NIL");
+        "2");
 }
 
 TEST(cache_no_applicable_method)
@@ -974,6 +974,379 @@ TEST(cache_before_after_around)
         "DONE");
     ASSERT_STR_EQ(eval_print("(nreverse *cache-trace*)"),
         "(AROUND BEFORE PRIMARY AFTER)");
+}
+
+/* === Phase 12: EMF cache (effective method closure caching) === */
+
+TEST(emf_cache_call_next_method_no_args)
+{
+    /* call-next-method with no args should pass original args through EMF cache */
+    eval_print(
+        "(defgeneric emf-cnm-test (x))");
+    eval_print(
+        "(defmethod emf-cnm-test ((x point3d)) "
+        "  (list 'p3d (point-x x) (call-next-method)))");
+    eval_print(
+        "(defmethod emf-cnm-test ((x point)) "
+        "  (list 'pt (point-x x)))");
+    /* First call — populates cache */
+    ASSERT_STR_EQ(eval_print(
+        "(emf-cnm-test (make-instance 'point3d :x 10 :y 20 :z 30))"),
+        "(P3D 10 (PT 10))");
+    /* Second call — uses cached EMF, call-next-method still works */
+    ASSERT_STR_EQ(eval_print(
+        "(emf-cnm-test (make-instance 'point3d :x 99 :y 0 :z 0))"),
+        "(P3D 99 (PT 99))");
+}
+
+TEST(emf_cache_call_next_method_with_args)
+{
+    /* call-next-method with explicit args should forward them */
+    eval_print(
+        "(defgeneric emf-cnm-args-test (x))");
+    eval_print(
+        "(defmethod emf-cnm-args-test ((x point3d)) "
+        "  (call-next-method (make-instance 'point :x 42 :y 0)))");
+    eval_print(
+        "(defmethod emf-cnm-args-test ((x point)) "
+        "  (point-x x))");
+    ASSERT_STR_EQ(eval_print(
+        "(emf-cnm-args-test (make-instance 'point3d :x 1 :y 2 :z 3))"),
+        "42");
+    /* Cached call */
+    ASSERT_STR_EQ(eval_print(
+        "(emf-cnm-args-test (make-instance 'point3d :x 7 :y 8 :z 9))"),
+        "42");
+}
+
+TEST(emf_cache_before_after_around)
+{
+    /* Full method combination with EMF cache */
+    eval_print("(defparameter *emf-trace* nil)");
+    eval_print(
+        "(defgeneric emf-combo (x))");
+    eval_print(
+        "(defmethod emf-combo :before ((x point)) "
+        "  (push (list 'before (point-x x)) *emf-trace*))");
+    eval_print(
+        "(defmethod emf-combo ((x point)) "
+        "  (push 'primary *emf-trace*) (point-x x))");
+    eval_print(
+        "(defmethod emf-combo :after ((x point)) "
+        "  (push 'after *emf-trace*))");
+    eval_print(
+        "(defmethod emf-combo :around ((x point)) "
+        "  (push 'around *emf-trace*) (call-next-method))");
+    /* First call — builds EMF */
+    eval_print("(setq *emf-trace* nil)");
+    ASSERT_STR_EQ(eval_print(
+        "(emf-combo (make-instance 'point :x 5 :y 0))"),
+        "5");
+    ASSERT_STR_EQ(eval_print("(nreverse *emf-trace*)"),
+        "(AROUND (BEFORE 5) PRIMARY AFTER)");
+    /* Second call — uses cached EMF, different arg values */
+    eval_print("(setq *emf-trace* nil)");
+    ASSERT_STR_EQ(eval_print(
+        "(emf-combo (make-instance 'point :x 88 :y 0))"),
+        "88");
+    ASSERT_STR_EQ(eval_print("(nreverse *emf-trace*)"),
+        "(AROUND (BEFORE 88) PRIMARY AFTER)");
+}
+
+TEST(emf_cache_next_method_p)
+{
+    /* next-method-p returns correct values in cached path */
+    eval_print(
+        "(defgeneric emf-nmp (x))");
+    eval_print(
+        "(defmethod emf-nmp ((x point3d)) "
+        "  (list (next-method-p) (call-next-method)))");
+    eval_print(
+        "(defmethod emf-nmp ((x point)) "
+        "  (next-method-p))");
+    /* point3d has next, point does not */
+    ASSERT_STR_EQ(eval_print(
+        "(emf-nmp (make-instance 'point3d :x 0 :y 0 :z 0))"),
+        "(T NIL)");
+    /* Cached call */
+    ASSERT_STR_EQ(eval_print(
+        "(emf-nmp (make-instance 'point3d :x 1 :y 1 :z 1))"),
+        "(T NIL)");
+}
+
+TEST(emf_cache_no_applicable_cached)
+{
+    /* Negative caching: no-applicable-method error is cached */
+    eval_print(
+        "(defgeneric emf-neg (x))");
+    eval_print(
+        "(defmethod emf-neg ((x point)) 'ok)");
+    /* Works for point */
+    ASSERT_STR_EQ(eval_print(
+        "(emf-neg (make-instance 'point :x 0 :y 0))"),
+        "OK");
+    /* Errors for string — first call */
+    ASSERT_STR_EQ(eval_print(
+        "(handler-case (emf-neg \"hello\") "
+        "  (error (c) 'no-method))"),
+        "NO-METHOD");
+    /* Errors for string — second call uses negative cache */
+    ASSERT_STR_EQ(eval_print(
+        "(handler-case (emf-neg \"world\") "
+        "  (error (c) 'no-method))"),
+        "NO-METHOD");
+}
+
+/* === Phase 13: Multi-dispatch cache === */
+
+TEST(multi_cache_two_arg)
+{
+    /* 2-arg GF dispatches correctly with multi-dispatch cache */
+    eval_print(
+        "(defgeneric mc-test (x y))");
+    eval_print(
+        "(defmethod mc-test ((x point) (y point)) "
+        "  (+ (point-x x) (point-x y)))");
+    eval_print(
+        "(defmethod mc-test ((x point3d) (y point)) "
+        "  (+ (point-x x) (point-z x) (point-x y)))");
+    ASSERT_STR_EQ(eval_print(
+        "(mc-test (make-instance 'point :x 10 :y 0) "
+        "         (make-instance 'point :x 20 :y 0))"),
+        "30");
+    ASSERT_STR_EQ(eval_print(
+        "(mc-test (make-instance 'point3d :x 10 :y 0 :z 5) "
+        "         (make-instance 'point :x 20 :y 0))"),
+        "35");
+}
+
+TEST(multi_cache_hit)
+{
+    /* Second call with same class combo uses cache */
+    ASSERT_STR_EQ(eval_print(
+        "(mc-test (make-instance 'point :x 1 :y 0) "
+        "         (make-instance 'point :x 2 :y 0))"),
+        "3");
+    /* Cache should be populated */
+    ASSERT_STR_EQ(eval_print(
+        "(let ((gf (gethash 'mc-test *generic-function-table*))) "
+        "  (not (null (gf-dispatch-cache gf))))"),
+        "T");
+}
+
+TEST(multi_cache_different_combos)
+{
+    /* Different class pairs cached separately */
+    eval_print(
+        "(defmethod mc-test ((x point) (y point3d)) "
+        "  (+ (point-x x) (point-z y)))");
+    ASSERT_STR_EQ(eval_print(
+        "(mc-test (make-instance 'point :x 10 :y 0) "
+        "         (make-instance 'point3d :x 1 :y 2 :z 30))"),
+        "40");
+    /* Previous combo still works */
+    ASSERT_STR_EQ(eval_print(
+        "(mc-test (make-instance 'point :x 5 :y 0) "
+        "         (make-instance 'point :x 7 :y 0))"),
+        "12");
+}
+
+TEST(multi_cache_cacheable_p_value)
+{
+    /* cacheable-p returns correct integer for multi-dispatch */
+    ASSERT_STR_EQ(eval_print(
+        "(let ((gf (gethash 'mc-test *generic-function-table*))) "
+        "  (gf-cacheable-p gf))"),
+        "2");
+    /* Single-dispatch GF still returns 1 */
+    ASSERT_STR_EQ(eval_print(
+        "(let ((gf (gethash 'cache-test-1 *generic-function-table*))) "
+        "  (gf-cacheable-p gf))"),
+        "1");
+}
+
+TEST(multi_cache_invalidation)
+{
+    /* defmethod clears multi cache */
+    /* Populate cache */
+    eval_print(
+        "(mc-test (make-instance 'point :x 1 :y 0) "
+        "         (make-instance 'point :x 2 :y 0))");
+    ASSERT_STR_EQ(eval_print(
+        "(let ((gf (gethash 'mc-test *generic-function-table*))) "
+        "  (not (null (gf-dispatch-cache gf))))"),
+        "T");
+    /* Add method — cache cleared */
+    eval_print(
+        "(defmethod mc-test ((x point3d) (y point3d)) "
+        "  (+ (point-z x) (point-z y)))");
+    ASSERT_STR_EQ(eval_print(
+        "(let ((gf (gethash 'mc-test *generic-function-table*))) "
+        "  (gf-dispatch-cache gf))"),
+        "NIL");
+    /* New method works */
+    ASSERT_STR_EQ(eval_print(
+        "(mc-test (make-instance 'point3d :x 0 :y 0 :z 7) "
+        "         (make-instance 'point3d :x 0 :y 0 :z 3))"),
+        "10");
+}
+
+TEST(multi_cache_call_next_method)
+{
+    /* call-next-method works in multi-dispatch */
+    eval_print(
+        "(defgeneric mc-cnm (x y))");
+    eval_print(
+        "(defmethod mc-cnm ((x point) (y point)) "
+        "  (list 'base (point-x x) (point-x y)))");
+    eval_print(
+        "(defmethod mc-cnm ((x point3d) (y point)) "
+        "  (list 'p3d (call-next-method)))");
+    ASSERT_STR_EQ(eval_print(
+        "(mc-cnm (make-instance 'point3d :x 10 :y 0 :z 5) "
+        "        (make-instance 'point :x 20 :y 0))"),
+        "(P3D (BASE 10 20))");
+    /* Cached */
+    ASSERT_STR_EQ(eval_print(
+        "(mc-cnm (make-instance 'point3d :x 99 :y 0 :z 1) "
+        "        (make-instance 'point :x 88 :y 0))"),
+        "(P3D (BASE 99 88))");
+}
+
+/* === Phase 14: EQL specializer cache === */
+
+TEST(eql_cache_basic)
+{
+    /* EQL dispatch works with cache */
+    eval_print(
+        "(defgeneric eql-c-test (x))");
+    eval_print(
+        "(defmethod eql-c-test ((x (eql 42))) 'forty-two)");
+    eval_print(
+        "(defmethod eql-c-test ((x integer)) 'some-int)");
+    ASSERT_STR_EQ(eval_print("(eql-c-test 42)"), "FORTY-TWO");
+    ASSERT_STR_EQ(eval_print("(eql-c-test 7)"), "SOME-INT");
+}
+
+TEST(eql_cache_hit)
+{
+    /* Second call with same EQL value uses cache */
+    ASSERT_STR_EQ(eval_print("(eql-c-test 42)"), "FORTY-TWO");
+    ASSERT_STR_EQ(eval_print("(eql-c-test 7)"), "SOME-INT");
+    /* Cache should be populated */
+    ASSERT_STR_EQ(eval_print(
+        "(let ((gf (gethash 'eql-c-test *generic-function-table*))) "
+        "  (not (null (gf-dispatch-cache gf))))"),
+        "T");
+}
+
+TEST(eql_cache_mixed_eql_class)
+{
+    /* Multiple EQL specializers with class fallback */
+    eval_print(
+        "(defgeneric eql-mix (x))");
+    eval_print(
+        "(defmethod eql-mix ((x (eql :alpha))) 'got-alpha)");
+    eval_print(
+        "(defmethod eql-mix ((x (eql :beta))) 'got-beta)");
+    eval_print(
+        "(defmethod eql-mix ((x symbol)) 'some-symbol)");
+    ASSERT_STR_EQ(eval_print("(eql-mix :alpha)"), "GOT-ALPHA");
+    ASSERT_STR_EQ(eval_print("(eql-mix :beta)"), "GOT-BETA");
+    ASSERT_STR_EQ(eval_print("(eql-mix :gamma)"), "SOME-SYMBOL");
+    ASSERT_STR_EQ(eval_print("(eql-mix 'foo)"), "SOME-SYMBOL");
+}
+
+TEST(eql_cache_class_fallback)
+{
+    /* Non-EQL value falls back to class cache */
+    ASSERT_STR_EQ(eval_print("(eql-c-test 100)"), "SOME-INT");
+    ASSERT_STR_EQ(eval_print("(eql-c-test 200)"), "SOME-INT");
+}
+
+TEST(eql_cache_call_next_method)
+{
+    /* EQL method calls next class method via call-next-method */
+    eval_print(
+        "(defgeneric eql-cnm (x))");
+    eval_print(
+        "(defmethod eql-cnm ((x (eql 99))) "
+        "  (list 'eql-99 (call-next-method)))");
+    eval_print(
+        "(defmethod eql-cnm ((x integer)) "
+        "  (list 'int x))");
+    ASSERT_STR_EQ(eval_print("(eql-cnm 99)"), "(EQL-99 (INT 99))");
+    /* Cached */
+    ASSERT_STR_EQ(eval_print("(eql-cnm 99)"), "(EQL-99 (INT 99))");
+    /* Non-EQL path */
+    ASSERT_STR_EQ(eval_print("(eql-cnm 50)"), "(INT 50)");
+}
+
+TEST(eql_cache_nil_value)
+{
+    /* (eql nil) specializer works correctly */
+    eval_print(
+        "(defgeneric eql-nil-test (x))");
+    eval_print(
+        "(defmethod eql-nil-test ((x (eql nil))) 'got-nil)");
+    eval_print(
+        "(defmethod eql-nil-test ((x t)) 'got-other)");
+    ASSERT_STR_EQ(eval_print("(eql-nil-test nil)"), "GOT-NIL");
+    ASSERT_STR_EQ(eval_print("(eql-nil-test 'foo)"), "GOT-OTHER");
+    /* Cached */
+    ASSERT_STR_EQ(eval_print("(eql-nil-test nil)"), "GOT-NIL");
+}
+
+TEST(eql_cache_arg2_eql)
+{
+    /* EQL on arg2 (ASDF pattern) */
+    eval_print(
+        "(defgeneric eql-arg2 (x y))");
+    eval_print(
+        "(defmethod eql-arg2 ((x t) (y (eql :load))) "
+        "  (list 'loading x))");
+    eval_print(
+        "(defmethod eql-arg2 ((x t) (y (eql :compile))) "
+        "  (list 'compiling x))");
+    eval_print(
+        "(defmethod eql-arg2 ((x t) (y t)) "
+        "  (list 'default x y))");
+    ASSERT_STR_EQ(eval_print("(eql-arg2 'foo :load)"), "(LOADING FOO)");
+    ASSERT_STR_EQ(eval_print("(eql-arg2 'bar :compile)"), "(COMPILING BAR)");
+    ASSERT_STR_EQ(eval_print("(eql-arg2 'baz :other)"), "(DEFAULT BAZ :OTHER)");
+    /* Cached */
+    ASSERT_STR_EQ(eval_print("(eql-arg2 'x :load)"), "(LOADING X)");
+}
+
+TEST(eql_cache_invalidation)
+{
+    /* Adding EQL method clears cache + recomputes sets */
+    /* Populate cache */
+    eval_print("(eql-c-test 42)");
+    ASSERT_STR_EQ(eval_print(
+        "(let ((gf (gethash 'eql-c-test *generic-function-table*))) "
+        "  (not (null (gf-dispatch-cache gf))))"),
+        "T");
+    /* Add new EQL method — cache cleared */
+    eval_print(
+        "(defmethod eql-c-test ((x (eql 0))) 'zero)");
+    ASSERT_STR_EQ(eval_print(
+        "(let ((gf (gethash 'eql-c-test *generic-function-table*))) "
+        "  (gf-dispatch-cache gf))"),
+        "NIL");
+    /* New method works */
+    ASSERT_STR_EQ(eval_print("(eql-c-test 0)"), "ZERO");
+    /* Old methods still work */
+    ASSERT_STR_EQ(eval_print("(eql-c-test 42)"), "FORTY-TWO");
+}
+
+TEST(eql_cache_cacheable_p)
+{
+    /* cacheable-p returns :EQL for EQL-specialized GFs */
+    ASSERT_STR_EQ(eval_print(
+        "(let ((gf (gethash 'eql-c-test *generic-function-table*))) "
+        "  (gf-cacheable-p gf))"),
+        ":EQL");
 }
 
 int main(void)
@@ -1104,6 +1477,32 @@ int main(void)
     RUN(cache_multi_dispatch_bypass);
     RUN(cache_no_applicable_method);
     RUN(cache_before_after_around);
+
+    /* Phase 12: EMF cache */
+    RUN(emf_cache_call_next_method_no_args);
+    RUN(emf_cache_call_next_method_with_args);
+    RUN(emf_cache_before_after_around);
+    RUN(emf_cache_next_method_p);
+    RUN(emf_cache_no_applicable_cached);
+
+    /* Phase 13: Multi-dispatch cache */
+    RUN(multi_cache_two_arg);
+    RUN(multi_cache_hit);
+    RUN(multi_cache_different_combos);
+    RUN(multi_cache_cacheable_p_value);
+    RUN(multi_cache_invalidation);
+    RUN(multi_cache_call_next_method);
+
+    /* Phase 14: EQL specializer cache */
+    RUN(eql_cache_basic);
+    RUN(eql_cache_hit);
+    RUN(eql_cache_mixed_eql_class);
+    RUN(eql_cache_class_fallback);
+    RUN(eql_cache_call_next_method);
+    RUN(eql_cache_nil_value);
+    RUN(eql_cache_arg2_eql);
+    RUN(eql_cache_invalidation);
+    RUN(eql_cache_cacheable_p);
 
     teardown();
     REPORT();

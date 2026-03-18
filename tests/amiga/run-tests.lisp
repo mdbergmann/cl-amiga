@@ -3275,8 +3275,8 @@
 (check "cache populated" t
   (let ((gf (gethash 'dcache-test *generic-function-table*)))
     (not (null (gf-dispatch-cache gf)))))
-; cacheable-p is T for single-dispatch
-(check "cache cacheable-p" t
+; cacheable-p is 1 for single-dispatch
+(check "cache cacheable-p" 1
   (let ((gf (gethash 'dcache-test *generic-function-table*)))
     (gf-cacheable-p gf)))
 ; invalidation on defmethod
@@ -3292,7 +3292,7 @@
 (defmethod dcache-eql-test ((x integer)) 'other-int)
 (check "cache eql dispatch 42" 'forty-two (dcache-eql-test 42))
 (check "cache eql dispatch 7" 'other-int (dcache-eql-test 7))
-(check "cache eql not cacheable" nil
+(check "cache eql cacheable-p" :eql
   (let ((gf (gethash 'dcache-eql-test *generic-function-table*)))
     (gf-cacheable-p gf)))
 ; Multi-dispatch bypass
@@ -3301,7 +3301,7 @@
 (check "cache multi dispatch" 'both-points
   (dcache-multi (make-instance 'point :x 1 :y 2)
                 (make-instance 'point :x 3 :y 4)))
-(check "cache multi not cacheable" nil
+(check "cache multi cacheable-p" 2
   (let ((gf (gethash 'dcache-multi *generic-function-table*)))
     (gf-cacheable-p gf)))
 ; before/after/around with cache
@@ -3323,6 +3323,167 @@
 (defmethod dcache-err ((x point)) 'point-ok)
 (check "cache no-applicable errors" 'got-error
   (handler-case (dcache-err "hello") (error (c) 'got-error)))
+
+; --- EQL specializer cache ---
+(defgeneric eql-c-test (x))
+(defmethod eql-c-test ((x (eql 42))) 'forty-two)
+(defmethod eql-c-test ((x integer)) 'some-int)
+(check "eql cache 42" 'forty-two (eql-c-test 42))
+(check "eql cache 7" 'some-int (eql-c-test 7))
+; cache hit
+(check "eql cache hit 42" 'forty-two (eql-c-test 42))
+(check "eql cache populated" t
+  (let ((gf (gethash 'eql-c-test *generic-function-table*)))
+    (not (null (gf-dispatch-cache gf)))))
+; mixed eql + class
+(defgeneric eql-mix (x))
+(defmethod eql-mix ((x (eql :alpha))) 'got-alpha)
+(defmethod eql-mix ((x (eql :beta))) 'got-beta)
+(defmethod eql-mix ((x symbol)) 'some-symbol)
+(check "eql cache alpha" 'got-alpha (eql-mix :alpha))
+(check "eql cache beta" 'got-beta (eql-mix :beta))
+(check "eql cache gamma fallback" 'some-symbol (eql-mix :gamma))
+; class fallback
+(check "eql cache class fallback" 'some-int (eql-c-test 100))
+; call-next-method
+(defgeneric eql-cnm (x))
+(defmethod eql-cnm ((x (eql 99))) (list 'eql-99 (call-next-method)))
+(defmethod eql-cnm ((x integer)) (list 'int x))
+(check "eql cache cnm" '(eql-99 (int 99)) (eql-cnm 99))
+(check "eql cache cnm cached" '(eql-99 (int 99)) (eql-cnm 99))
+(check "eql cache cnm fallback" '(int 50) (eql-cnm 50))
+; (eql nil)
+(defgeneric eql-nil-test (x))
+(defmethod eql-nil-test ((x (eql nil))) 'got-nil)
+(defmethod eql-nil-test ((x t)) 'got-other)
+(check "eql cache nil" 'got-nil (eql-nil-test nil))
+(check "eql cache nil other" 'got-other (eql-nil-test 'foo))
+(check "eql cache nil cached" 'got-nil (eql-nil-test nil))
+; EQL on arg2
+(defgeneric eql-arg2 (x y))
+(defmethod eql-arg2 ((x t) (y (eql :load))) (list 'loading x))
+(defmethod eql-arg2 ((x t) (y (eql :compile))) (list 'compiling x))
+(defmethod eql-arg2 ((x t) (y t)) (list 'default x y))
+(check "eql cache arg2 load" '(loading foo) (eql-arg2 'foo :load))
+(check "eql cache arg2 compile" '(compiling bar) (eql-arg2 'bar :compile))
+(check "eql cache arg2 default" '(default baz :other) (eql-arg2 'baz :other))
+(check "eql cache arg2 cached" '(loading x) (eql-arg2 'x :load))
+; invalidation
+(eql-c-test 42) ; populate cache
+(defmethod eql-c-test ((x (eql 0))) 'zero)
+(check "eql cache invalidated" nil
+  (let ((gf (gethash 'eql-c-test *generic-function-table*)))
+    (gf-dispatch-cache gf)))
+(check "eql cache new method" 'zero (eql-c-test 0))
+(check "eql cache old still works" 'forty-two (eql-c-test 42))
+; cacheable-p
+(check "eql cache cacheable-p" :eql
+  (let ((gf (gethash 'eql-c-test *generic-function-table*)))
+    (gf-cacheable-p gf)))
+
+; --- Multi-dispatch cache ---
+(defgeneric mc-test (x y))
+(defmethod mc-test ((x point) (y point))
+  (+ (point-x x) (point-x y)))
+(defmethod mc-test ((x point3d) (y point))
+  (+ (point-x x) (point-z x) (point-x y)))
+(check "multi cache point+point" 30
+  (mc-test (make-instance 'point :x 10 :y 0)
+           (make-instance 'point :x 20 :y 0)))
+(check "multi cache point3d+point" 35
+  (mc-test (make-instance 'point3d :x 10 :y 0 :z 5)
+           (make-instance 'point :x 20 :y 0)))
+; cache hit
+(check "multi cache hit" 3
+  (mc-test (make-instance 'point :x 1 :y 0)
+           (make-instance 'point :x 2 :y 0)))
+(check "multi cache populated" t
+  (let ((gf (gethash 'mc-test *generic-function-table*)))
+    (not (null (gf-dispatch-cache gf)))))
+(check "multi cache cacheable-p" 2
+  (let ((gf (gethash 'mc-test *generic-function-table*)))
+    (gf-cacheable-p gf)))
+; invalidation
+(defmethod mc-test ((x point) (y point3d))
+  (+ (point-x x) (point-z y)))
+(check "multi cache invalidated" nil
+  (let ((gf (gethash 'mc-test *generic-function-table*)))
+    (gf-dispatch-cache gf)))
+(check "multi cache new method" 40
+  (mc-test (make-instance 'point :x 10 :y 0)
+           (make-instance 'point3d :x 1 :y 2 :z 30)))
+; call-next-method in multi-dispatch
+(defgeneric mc-cnm (x y))
+(defmethod mc-cnm ((x point) (y point))
+  (list 'base (point-x x) (point-x y)))
+(defmethod mc-cnm ((x point3d) (y point))
+  (list 'p3d (call-next-method)))
+(check "multi cache cnm" '(p3d (base 10 20))
+  (mc-cnm (make-instance 'point3d :x 10 :y 0 :z 5)
+          (make-instance 'point :x 20 :y 0)))
+(check "multi cache cnm cached" '(p3d (base 99 88))
+  (mc-cnm (make-instance 'point3d :x 99 :y 0 :z 1)
+          (make-instance 'point :x 88 :y 0)))
+
+; --- EMF cache (effective method closure caching) ---
+(defgeneric emf-cnm-test (x))
+(defmethod emf-cnm-test ((x point3d))
+  (list 'p3d (point-x x) (call-next-method)))
+(defmethod emf-cnm-test ((x point))
+  (list 'pt (point-x x)))
+; First call — populates cache
+(check "emf cache cnm no-args 1st" '(p3d 10 (pt 10))
+  (emf-cnm-test (make-instance 'point3d :x 10 :y 20 :z 30)))
+; Second call — uses cached EMF
+(check "emf cache cnm no-args cached" '(p3d 99 (pt 99))
+  (emf-cnm-test (make-instance 'point3d :x 99 :y 0 :z 0)))
+
+; call-next-method with explicit args
+(defgeneric emf-cnm-args (x))
+(defmethod emf-cnm-args ((x point3d))
+  (call-next-method (make-instance 'point :x 42 :y 0)))
+(defmethod emf-cnm-args ((x point))
+  (point-x x))
+(check "emf cache cnm with-args" 42
+  (emf-cnm-args (make-instance 'point3d :x 1 :y 2 :z 3)))
+(check "emf cache cnm with-args cached" 42
+  (emf-cnm-args (make-instance 'point3d :x 7 :y 8 :z 9)))
+
+; Full method combination with EMF cache
+(defparameter *emf-trace* nil)
+(defgeneric emf-combo (x))
+(defmethod emf-combo :before ((x point)) (push (list 'before (point-x x)) *emf-trace*))
+(defmethod emf-combo ((x point)) (push 'primary *emf-trace*) (point-x x))
+(defmethod emf-combo :after ((x point)) (push 'after *emf-trace*))
+(defmethod emf-combo :around ((x point)) (push 'around *emf-trace*) (call-next-method))
+(setq *emf-trace* nil)
+(check "emf cache combo result" 5
+  (emf-combo (make-instance 'point :x 5 :y 0)))
+(check "emf cache combo order" '(around (before 5) primary after) (nreverse *emf-trace*))
+; Cached call
+(setq *emf-trace* nil)
+(check "emf cache combo cached" 88
+  (emf-combo (make-instance 'point :x 88 :y 0)))
+(check "emf cache combo cached order" '(around (before 88) primary after) (nreverse *emf-trace*))
+
+; next-method-p in cached path
+(defgeneric emf-nmp (x))
+(defmethod emf-nmp ((x point3d)) (list (next-method-p) (call-next-method)))
+(defmethod emf-nmp ((x point)) (next-method-p))
+(check "emf cache next-method-p" '(t nil)
+  (emf-nmp (make-instance 'point3d :x 0 :y 0 :z 0)))
+(check "emf cache next-method-p cached" '(t nil)
+  (emf-nmp (make-instance 'point3d :x 1 :y 1 :z 1)))
+
+; Negative caching
+(defgeneric emf-neg (x))
+(defmethod emf-neg ((x point)) 'ok)
+(check "emf cache negative ok" 'ok
+  (emf-neg (make-instance 'point :x 0 :y 0)))
+(check "emf cache negative error" 'no-method
+  (handler-case (emf-neg "hello") (error (c) 'no-method)))
+(check "emf cache negative cached" 'no-method
+  (handler-case (emf-neg "world") (error (c) 'no-method)))
 
 ; --- Summary ---
 (format t "~%=== Results ===~%")
