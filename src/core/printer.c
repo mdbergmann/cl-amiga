@@ -108,15 +108,12 @@ static int print_case(void)
     return 0; /* :UPCASE or unknown */
 }
 
-/* Current nesting depth for *print-level* tracking */
-static int32_t current_depth = 0;
-
-/* Pretty-printing: column tracking and indentation stack */
-static int32_t current_column = 0;
-
-#define PP_INDENT_MAX 32
-static int32_t pp_indent_stack[PP_INDENT_MAX];
-static int32_t pp_indent_top = 0;
+/* Printer state now lives in CL_Thread.  Local macros redirect old names. */
+#define current_depth   (CT->pr_depth)
+#define current_column  (CT->pr_column)
+#define PP_INDENT_MAX   CL_PP_INDENT_MAX
+#define pp_indent_stack (CT->pr_indent_stack)
+#define pp_indent_top   (CT->pr_indent_top)
 
 /* Forward declaration — out_char is defined after the circle detection section */
 static void out_char(int ch);
@@ -172,12 +169,12 @@ static int32_t print_right_margin(void)
  *   >=2 = assigned label (label = val - 2)
  *   <0 = already printed (negated label - 2)
  */
-#define CIRCLE_HT_SIZE 256
-static CL_Obj  circle_keys[CIRCLE_HT_SIZE];
-static int32_t circle_vals[CIRCLE_HT_SIZE];
-static int circle_count;
-static int circle_next_label;
-static int circle_active;
+#define CIRCLE_HT_SIZE CL_CIRCLE_HT_SIZE
+#define circle_keys       (CT->pr_circle_keys)
+#define circle_vals       (CT->pr_circle_vals)
+#define circle_count      (CT->pr_circle_count)
+#define circle_next_label (CT->pr_circle_next_label)
+#define circle_active     (CT->pr_circle_active)
 
 static void circle_clear(void)
 {
@@ -309,14 +306,11 @@ static void circle_assign_labels(void)
  * Output target state (stream or C buffer)
  * ================================================================ */
 
-/* Stream-based output target (CL_NIL when using buffer mode) */
-static CL_Obj printer_stream = CL_NIL;
-
-/* Buffer output (for cl_prin1_to_string / cl_princ_to_string) */
-static int to_buffer = 0;
-static char *out_buf = NULL;
-static int out_pos = 0;
-static int out_size = 0;
+#define printer_stream (CT->pr_stream)
+#define to_buffer      (CT->pr_to_buffer)
+#define out_buf        (CT->pr_out_buf)
+#define out_pos        (CT->pr_out_pos)
+#define out_size       (CT->pr_out_size)
 
 static void out_char(int ch)
 {
@@ -672,7 +666,7 @@ static void print_array_slice(CL_Obj *elts, uint32_t *dims, uint8_t rank,
  * Check *print-pprint-dispatch* for a custom printer function.
  * Returns 1 if handled (dispatched), 0 if not.
  */
-static int pprint_dispatch_active = 0; /* recursion guard */
+#define pprint_dispatch_active (CT->pr_pprint_dispatch_active)
 
 static int try_pprint_dispatch(CL_Obj obj)
 {
@@ -1363,7 +1357,7 @@ int cl_princ_to_string(CL_Obj obj, char *buf, int bufsize)
  * ================================================================ */
 
 /* Block start column stack (parallel to pp_indent_stack) */
-static int32_t pp_block_start[PP_INDENT_MAX];
+#define pp_block_start (CT->pr_block_start)
 
 int32_t cl_pp_get_column(void)
 {

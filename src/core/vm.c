@@ -13,7 +13,14 @@
 #include <string.h>
 #include <stdlib.h>
 
-CL_VM cl_vm;
+/* Local macros for statics moved into CL_Thread */
+#define vm_extra_args       (CT->vm_extra_args_buf)
+#define vm_extra_args_count (CT->vm_extra_count)
+#define vm_flat_args        (CT->vm_flat_args_buf)
+#define vm_trace            (CT->vm_trace_buf)
+#define vm_trace_idx        (CT->vm_trace_pos)
+#define vm_eval_max_depth   (CT->vm_max_eval_depth)
+#define VM_TRACE_SIZE       CL_VM_TRACE_SIZE
 
 /* Debug: UWP stack watchpoint.  Activate with -DCL_DEBUG_UWP */
 #ifdef CL_DEBUG_UWP
@@ -53,34 +60,9 @@ static void dbg_check_watch_impl(const char *where) {
 #define DBG_CHECK_WATCH(w) ((void)0)
 #endif
 
-/* Multiple values */
-CL_Obj cl_mv_values[CL_MAX_MV];
-int cl_mv_count = 1;
-
-/* Trace */
-int cl_trace_depth = 0;
-int cl_trace_count = 0;
-
-/* Backtrace */
-char cl_backtrace_buf[CL_BACKTRACE_BUF_SIZE];
-
-/* NLX stack */
-CL_NLXFrame cl_nlx_stack[CL_MAX_NLX_FRAMES];
-int cl_nlx_top = 0;
-
-/* Dynamic binding stack */
-CL_DynBinding cl_dyn_stack[CL_MAX_DYN_BINDINGS];
-int cl_dyn_top = 0;
-
-/* Handler binding stack */
-CL_HandlerBinding cl_handler_stack[CL_MAX_HANDLER_BINDINGS];
-int cl_handler_top = 0;
-int cl_handler_floor = 0;
-
-/* Restart binding stack */
-CL_RestartBinding cl_restart_stack[CL_MAX_RESTART_BINDINGS];
-int cl_restart_top = 0;
-int cl_restart_floor = 0;
+/* All per-thread state (VM, NLX, dyn/handler/restart stacks, MV,
+ * trace, backtrace, pending throw) now lives in CL_Thread.
+ * Compatibility macros in thread.h redirect the old names. */
 
 void cl_dynbind_restore_to(int mark)
 {
@@ -92,13 +74,6 @@ void cl_dynbind_restore_to(int mark)
         }
     }
 }
-
-/* Pending throw state */
-int cl_pending_throw = 0;
-CL_Obj cl_pending_tag = 0;
-CL_Obj cl_pending_value = 0;
-int cl_pending_error_code = 0;
-char cl_pending_error_msg[512];
 
 void cl_vm_init(uint32_t stack_size, int frame_size)
 {
@@ -467,17 +442,9 @@ static CL_Obj call_builtin(CL_Function *func, CL_Obj *args, int nargs)
     return result;
 }
 
-/* C stack base for overflow detection */
-char *cl_c_stack_base = NULL;
-
 #ifdef DEBUG_VM
-/* Recursion depth tracking for cl_vm_eval */
-int vm_eval_depth = 0;
-static int vm_eval_max_depth = 0;
 
 #define C_STACK_LIMIT (4 * 1024 * 1024)  /* 4MB of 8MB, leave 4MB margin */
-
-long c_stack_max_seen = 0;
 
 void cl_check_c_stack(const char *context)
 {
@@ -507,9 +474,8 @@ void cl_check_c_stack(const char *context)
  * IMPORTANT: vm_extra_args holds CL_Obj values removed from the VM stack
  * during &rest/&key processing.  cl_cons (called to build the &rest list)
  * can trigger GC.  These arrays MUST be GC-rooted — see cl_vm_gc_mark_extra. */
-static CL_Obj vm_extra_args[256];
-static int vm_extra_args_count = 0;  /* Valid entries (for GC root marking) */
-static CL_Obj vm_flat_args[64];
+/* vm_extra_args, vm_extra_args_count, vm_flat_args are now in CL_Thread.
+ * Local macros above redirect the old names. */
 
 /* GC root marking for VM-internal buffers.
  * Called from gc_mark() in mem.c to mark CL_Obj values held in static
@@ -522,22 +488,8 @@ void cl_vm_gc_mark_extra(void)
         gc_mark_obj(vm_extra_args[i]);
 }
 
-/* Last-dispatch diagnostic globals (readable from crash handler / debugger) */
-volatile uint8_t dbg_last_op;
-volatile uint32_t dbg_last_ip;
-volatile int dbg_last_fp;
-volatile uint8_t *dbg_last_code;
-
-/* Circular trace buffer for crash diagnostics */
-#define VM_TRACE_SIZE 64
-static struct {
-    uint8_t op;
-    uint32_t ip;
-    int fp;
-    int sp;
-    uint8_t *code;
-} vm_trace[VM_TRACE_SIZE];
-static int vm_trace_idx = 0;
+/* dbg_last_*, vm_trace[], vm_trace_idx are now in CL_Thread.
+ * Local macros above redirect the old names. */
 
 void vm_trace_dump(void)
 {

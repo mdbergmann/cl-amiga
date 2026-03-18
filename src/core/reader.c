@@ -32,19 +32,15 @@ static int cl_strcasecmp(const char *a, const char *b)
 #include <strings.h>
 #endif
 
-/* Current stream being read from */
-static CL_Obj reader_stream = 0;
-static int eof_seen = 0;
+/* Reader state now lives in CL_Thread.  Local macros redirect old names. */
+#define reader_stream  (CT->rd_stream)
+#define eof_seen       (CT->rd_eof)
+#define read_suppress  (CT->rd_suppress)
+#define reader_line    (CT->rd_line)
+/* cl_current_source_file and cl_current_file_id are macros from thread.h */
 
-/* Read-suppress mode: when > 0, suppress errors from skipped feature conditionals.
- * Counter (not bool) to handle nested #+/#- correctly. */
-static int read_suppress = 0;
-
-/* Source location tracking */
+/* Source location tracking (shared, not per-thread) */
 CL_SrcLoc cl_srcloc_table[CL_SRCLOC_SIZE];
-const char *cl_current_source_file = NULL;
-uint16_t cl_current_file_id = 0;
-static int reader_line = 1;  /* Line counter for reads */
 
 static int read_char(void)
 {

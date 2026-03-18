@@ -1778,6 +1778,7 @@ int main(void)
 
     /* === Init CL runtime (once, minimal — no boot.lisp) === */
     platform_init();
+    cl_thread_init();
     cl_error_init();
     cl_mem_init(CL_DEFAULT_HEAP_SIZE);
     cl_package_init();
@@ -1850,6 +1851,7 @@ int main(void)
     cl_mem_shutdown();
     platform_shutdown();
     platform_init();
+    cl_thread_init();
     cl_error_init();
     cl_mem_init(CL_DEFAULT_HEAP_SIZE);
     cl_package_init();

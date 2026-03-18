@@ -48,10 +48,6 @@ extern CL_SrcLoc cl_srcloc_table[CL_SRCLOC_SIZE];
 /* Look up source line for a cons cell. Returns 0 if not found. */
 int cl_srcloc_lookup(CL_Obj cons_obj);
 
-/* Current source file tracking (set by load) */
-extern const char *cl_current_source_file;
-extern uint16_t cl_current_file_id;
-
 void cl_reader_init(void);
 
 /* Reset reader line counter to 1 (call before reading a new file) */

@@ -18,16 +18,16 @@ extern CL_Obj struct_table;  /* builtins_struct.c: struct type registry */
 extern CL_Obj condition_hierarchy;     /* builtins_condition.c */
 extern CL_Obj condition_slot_table;    /* builtins_condition.c */
 
-/* Active compiler chain for GC root marking (compiler_internal.h) */
+/* Active compiler chain is accessed via cl_active_compiler macro (thread.h) */
 typedef struct CL_Compiler_s CL_Compiler;
-extern CL_Compiler *cl_active_compiler;
 
 CL_Heap cl_heap;
 uint8_t *cl_arena_base = NULL;  /* Global arena base for offset↔pointer conversion */
 
-/* GC root stack — stores pointers to CL_Obj variables */
-static CL_Obj *gc_root_stack[CL_GC_ROOT_STACK_SIZE];
-int gc_root_count = 0;
+/* GC root stack now lives in CL_Thread.
+ * gc_root_count is a macro from thread.h.
+ * gc_root_stack is a local macro below. */
+#define gc_root_stack (CT->gc_roots)
 
 /* GC mark stack (iterative marking) */
 static CL_Obj gc_mark_stack[CL_GC_MARK_STACK_SIZE];

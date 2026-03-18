@@ -117,9 +117,6 @@ typedef struct CL_Compiler_s {
     uint8_t lambda_needs_boxing[CL_MAX_LOCALS];
 } CL_Compiler;
 
-/* --- Active compiler chain for GC root marking --- */
-extern CL_Compiler *cl_active_compiler;
-
 /* --- Shared globals (defined in compiler.c) --- */
 
 extern CL_Obj macro_table;
@@ -127,7 +124,6 @@ extern CL_Obj setf_table;
 extern CL_Obj setf_fn_table;
 extern CL_Obj setf_expander_table;
 extern CL_Obj type_table;
-extern CL_Obj pending_lambda_name;
 extern CL_Obj SETF_SYM_CAR, SETF_SYM_CDR, SETF_SYM_FIRST, SETF_SYM_REST;
 extern CL_Obj SETF_SYM_NTH, SETF_SYM_AREF, SETF_SYM_SVREF, SETF_SYM_CHAR, SETF_SYM_SCHAR;
 extern CL_Obj SETF_SYM_SYMBOL_VALUE, SETF_SYM_SYMBOL_FUNCTION, SETF_SYM_FDEFINITION;

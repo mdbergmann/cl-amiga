@@ -18,6 +18,7 @@
 static void setup(void)
 {
     platform_init();
+    cl_thread_init();
     cl_error_init();
     cl_mem_init(ASDF_HEAP_SIZE);
     cl_package_init();

@@ -25,10 +25,7 @@ static char crash_alt_stack[SIGSTKSZ];
 
 /* Defined in vm.c — dump last N VM opcodes for crash diagnostics */
 extern void vm_trace_dump(void);
-extern volatile uint8_t dbg_last_op;
-extern volatile uint32_t dbg_last_ip;
-extern volatile int dbg_last_fp;
-extern volatile uint8_t *dbg_last_code;
+/* dbg_last_op/ip/fp/code are now macros from thread.h (CL_Thread fields) */
 
 static void crash_handler(int sig, siginfo_t *info, void *ctx)
 {
@@ -231,11 +228,6 @@ int main(int argc, char *argv[])
     uint32_t stack_entries = 0;
     int frame_count = 0;
 
-    /* Initialize C stack base for overflow detection using address of a local
-     * in main's stack frame. Using 'batch' since it's a normal int that
-     * can't be optimized away. */
-    cl_c_stack_base = (char *)&batch;
-
 #ifdef PLATFORM_POSIX
     install_crash_handler();
 #endif
@@ -347,6 +339,10 @@ int main(int argc, char *argv[])
         cl_repl_color = !(batch || script || non_interactive);
 
     platform_init();
+    cl_thread_init();  /* Must be first — sets up CT for all other init */
+
+    /* Initialize C stack base for overflow detection */
+    cl_c_stack_base = (char *)&batch;
 
     /* Initialize subsystems in dependency order */
     cl_error_init();
@@ -511,6 +507,7 @@ int main(int argc, char *argv[])
 shutdown:
     cl_stream_shutdown();
     cl_vm_shutdown();
+    cl_thread_shutdown();
     cl_mem_shutdown();
     platform_shutdown();
 

@@ -37,8 +37,6 @@ typedef struct {
     int fp;              /* Frame pointer (current frame index) */
 } CL_VM;
 
-extern CL_VM cl_vm;
-
 /* --- Dynamic (special) variable binding stack --- */
 
 typedef struct {
@@ -47,9 +45,6 @@ typedef struct {
 } CL_DynBinding;
 
 #define CL_MAX_DYN_BINDINGS 1024
-
-extern CL_DynBinding cl_dyn_stack[CL_MAX_DYN_BINDINGS];
-extern int cl_dyn_top;
 
 /* Restore dynamic bindings down to mark */
 void cl_dynbind_restore_to(int mark);
@@ -87,16 +82,6 @@ typedef struct {
     CL_Obj mv_values[CL_MAX_MV]; /* multiple values to preserve across NLX */
 } CL_NLXFrame;
 
-extern CL_NLXFrame cl_nlx_stack[CL_MAX_NLX_FRAMES];
-extern int cl_nlx_top;
-
-/* Pending throw state (for unwind-protect re-throw) */
-extern int cl_pending_throw;      /* 0=none, 1=throw, 2=error */
-extern CL_Obj cl_pending_tag;
-extern CL_Obj cl_pending_value;
-extern int cl_pending_error_code;
-extern char cl_pending_error_msg[512];
-
 /* --- Condition handler binding stack --- */
 
 typedef struct {
@@ -106,10 +91,6 @@ typedef struct {
 } CL_HandlerBinding;
 
 #define CL_MAX_HANDLER_BINDINGS 64
-extern CL_HandlerBinding cl_handler_stack[CL_MAX_HANDLER_BINDINGS];
-extern int cl_handler_top;
-extern int cl_handler_floor;  /* Lower bound for signal dispatch (GC still marks full stack) */
-
 /* --- Restart binding stack --- */
 
 typedef struct {
@@ -119,10 +100,6 @@ typedef struct {
 } CL_RestartBinding;
 
 #define CL_MAX_RESTART_BINDINGS 64
-extern CL_RestartBinding cl_restart_stack[CL_MAX_RESTART_BINDINGS];
-extern int cl_restart_top;
-extern int cl_restart_floor;  /* Lower bound for restart search (GC still marks full stack) */
-
 /* Signal a condition — walks handler stack, returns NIL if no handler transferred */
 CL_Obj cl_signal_condition(CL_Obj condition);
 
@@ -132,16 +109,8 @@ void cl_throw_to_tag(CL_Obj tag, CL_Obj value);
 /* Create a condition from an error code and message */
 CL_Obj cl_create_condition_from_error(int code, const char *msg);
 
-extern CL_Obj cl_mv_values[CL_MAX_MV];
-extern int cl_mv_count;
-
-/* --- Trace --- */
-extern int cl_trace_depth;
-extern int cl_trace_count;
-
 /* --- Backtrace --- */
 #define CL_BACKTRACE_BUF_SIZE 2048
-extern char cl_backtrace_buf[CL_BACKTRACE_BUF_SIZE];
 
 /* Capture current VM call stack into cl_backtrace_buf */
 void cl_capture_backtrace(void);
@@ -163,11 +132,10 @@ void cl_vm_push(CL_Obj val);
 CL_Obj cl_vm_pop(void);
 
 /* C stack overflow detection (DEBUG_VM only) */
-extern char *cl_c_stack_base;
 #ifdef DEBUG_VM
-extern long c_stack_max_seen;
-extern int vm_eval_depth;
 void cl_check_c_stack(const char *context);
 #endif
+
+#include "thread.h"
 
 #endif /* CL_VM_H */

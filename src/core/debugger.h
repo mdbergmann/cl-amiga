@@ -6,9 +6,6 @@
 /* 1 = debugger enabled (interactive REPL), 0 = disabled (batch/tests) */
 extern int cl_debugger_enabled;
 
-/* Recursion guard: 1 while inside debugger loop */
-extern int cl_in_debugger;
-
 /* Initialize debugger subsystem (intern symbols, register builtins) */
 void cl_debugger_init(void);
 

@@ -22,7 +22,7 @@
 #include <stdlib.h>
 
 int cl_debugger_enabled = 0;
-int cl_in_debugger = 0;
+/* cl_in_debugger is now in CL_Thread (macro from thread.h) */
 
 static CL_Obj SYM_DEBUGGER_HOOK;
 

@@ -1,14 +1,13 @@
 #include "compiler_internal.h"
 
 /* --- Shared globals --- */
+/* cl_active_compiler and pending_lambda_name are now in CL_Thread */
 
-CL_Compiler *cl_active_compiler = NULL;
 CL_Obj macro_table = CL_NIL;
 CL_Obj setf_table = CL_NIL;
 CL_Obj setf_fn_table = CL_NIL;  /* (setf name) functions: ((accessor . setf-fn-sym) ...) val-first calling */
 CL_Obj setf_expander_table = CL_NIL;  /* define-setf-expander: ((name . expander-fn) ...) */
 CL_Obj type_table = CL_NIL;
-CL_Obj pending_lambda_name = CL_NIL;
 
 CL_Obj SETF_SYM_CAR = CL_NIL;
 CL_Obj SETF_SYM_CDR = CL_NIL;

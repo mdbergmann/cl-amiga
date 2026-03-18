@@ -50,7 +50,8 @@ CORE_SRC     = $(SRCDIR)/core/types.c \
                $(SRCDIR)/core/debugger.c \
                $(SRCDIR)/core/repl.c \
                $(SRCDIR)/core/fasl.c \
-               $(SRCDIR)/core/color.c
+               $(SRCDIR)/core/color.c \
+               $(SRCDIR)/core/thread.c
 MAIN_SRC     = $(SRCDIR)/main.c
 
 HOST_SRCS = $(MAIN_SRC) $(PLATFORM_SRC) $(CORE_SRC)

@@ -31,12 +31,6 @@ typedef struct {
     int active;
 } CL_ErrorFrame;
 
-extern CL_ErrorFrame cl_error_frames[CL_MAX_ERROR_FRAMES];
-extern int cl_error_frame_top;
-extern int cl_error_code;
-extern char cl_error_msg[512];
-extern int cl_exit_code;
-
 /* Push a new error frame, returns 0 on setjmp, error code on longjmp */
 #define CL_CATCH() \
     (cl_error_frame_top < CL_MAX_ERROR_FRAMES ? \
@@ -59,5 +53,7 @@ void cl_error_print(void);
 
 /* Initialize error system */
 void cl_error_init(void);
+
+#include "thread.h"
 
 #endif /* CL_ERROR_H */

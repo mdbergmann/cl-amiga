@@ -16,6 +16,7 @@
 static void setup(void)
 {
     platform_init();
+    cl_thread_init();
     cl_error_init();
     cl_mem_init(CL_DEFAULT_HEAP_SIZE);
     cl_package_init();
@@ -210,8 +211,6 @@ TEST(c_create_condition_from_error)
 TEST(c_handler_stack_nlx)
 {
     /* Push a handler, set up NLX frame, verify handler_top restored after NLX */
-    extern CL_HandlerBinding cl_handler_stack[];
-    extern int cl_handler_top;
 
     cl_handler_top = 0;
     cl_handler_stack[0].type_name = SYM_CONDITION;
@@ -661,7 +660,6 @@ TEST(lisp_assert_fail)
 TEST(lisp_restart_stack_nlx)
 {
     /* Verify restart stack is properly cleaned up after NLX */
-    extern int cl_restart_top;
 
     /* After error recovery, restart_top should be 0 */
     {

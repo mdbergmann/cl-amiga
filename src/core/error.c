@@ -9,11 +9,8 @@
 #include <stdlib.h>
 #include <string.h>
 
-CL_ErrorFrame cl_error_frames[CL_MAX_ERROR_FRAMES];
-int cl_error_frame_top = 0;
-int cl_error_code = CL_ERR_NONE;
-char cl_error_msg[512];
-int cl_exit_code = 0;
+/* All error state now lives in CL_Thread.
+ * Compatibility macros in thread.h redirect the old names. */
 
 void cl_error_init(void)
 {
