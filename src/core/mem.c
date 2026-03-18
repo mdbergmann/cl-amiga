@@ -812,6 +812,19 @@ static void gc_mark_thread_roots(CL_Thread *t)
         extern void cl_vm_gc_mark_extra_thread(CL_Thread *t);
         cl_vm_gc_mark_extra_thread(t);
     }
+
+    /* Thread-Local Value (TLV) table — mark both symbol and value
+     * for non-empty, non-tombstone entries */
+    {
+        int ti;
+        for (ti = 0; ti < CL_TLV_TABLE_SIZE; ti++) {
+            CL_Obj sym = t->tlv_table[ti].symbol;
+            if (sym != CL_NIL && sym != CL_UNBOUND) {
+                gc_mark_obj(sym);
+                gc_mark_obj(t->tlv_table[ti].value);
+            }
+        }
+    }
 }
 /* Restore gc_root_count macro for the rest of mem.c */
 #define gc_root_count (CT->gc_root_count)

@@ -66,11 +66,16 @@ static void dbg_check_watch_impl(const char *where) {
 
 void cl_dynbind_restore_to(int mark)
 {
+    CL_Thread *t = CT;
     while (cl_dyn_top > mark) {
         cl_dyn_top--;
         {
-            CL_Symbol *s = (CL_Symbol *)CL_OBJ_TO_PTR(cl_dyn_stack[cl_dyn_top].symbol);
-            s->value = cl_dyn_stack[cl_dyn_top].old_value;
+            CL_Obj old_val = cl_dyn_stack[cl_dyn_top].old_value;
+            CL_Obj sym = cl_dyn_stack[cl_dyn_top].symbol;
+            if (old_val == CL_TLV_ABSENT)
+                cl_tlv_remove(t, sym);
+            else
+                cl_tlv_set(t, sym, old_val);
         }
     }
 }
@@ -664,11 +669,11 @@ static CL_Obj cl_vm_run(int base_fp, int base_nlx)
         case OP_GLOAD: {
             uint16_t idx = read_u16(code, &ip);
             CL_Obj sym = constants[idx];
-            CL_Symbol *s = (CL_Symbol *)CL_OBJ_TO_PTR(sym);
-            if (s->value == CL_UNBOUND)
+            CL_Obj val = cl_symbol_value(sym);
+            if (val == CL_UNBOUND)
                 cl_error(CL_ERR_UNBOUND, "Unbound variable: %s",
                          cl_symbol_name(sym));
-            cl_vm_push(s->value);
+            cl_vm_push(val);
             cl_mv_count = 1;
             break;
         }
@@ -676,8 +681,7 @@ static CL_Obj cl_vm_run(int base_fp, int base_nlx)
         case OP_GSTORE: {
             uint16_t idx = read_u16(code, &ip);
             CL_Obj sym = constants[idx];
-            CL_Symbol *s = (CL_Symbol *)CL_OBJ_TO_PTR(sym);
-            s->value = cl_vm.stack[cl_vm.sp - 1];
+            cl_set_symbol_value(sym, cl_vm.stack[cl_vm.sp - 1]);
             break;
         }
 
@@ -717,9 +721,9 @@ static CL_Obj cl_vm_run(int base_fp, int base_nlx)
                     cl_error(CL_ERR_GENERAL, "OP_FLOAD: corrupted function binding");
                 }
                 cl_vm_push(fval);
-            } else if (s->value != CL_UNBOUND) {
+            } else if (cl_symbol_value(sym) != CL_UNBOUND) {
                 /* Fall back to value slot (for labels/flet value bindings) */
-                cl_vm_push(s->value);
+                cl_vm_push(cl_symbol_value(sym));
             } else {
                 cl_error(CL_ERR_UNDEFINED, "Undefined function: %s",
                          cl_symbol_name(sym));
@@ -1790,6 +1794,7 @@ static CL_Obj cl_vm_run(int base_fp, int base_nlx)
             CL_Obj values_list = cl_vm_pop();
             CL_Obj symbols_list = cl_vm_pop();
             int mark = cl_dyn_top;
+            CL_Thread *thr = CT;
 
             /* Push saved dyn_mark as fixnum */
             cl_vm_push(CL_MAKE_FIXNUM(mark));
@@ -1798,7 +1803,7 @@ static CL_Obj cl_vm_run(int base_fp, int base_nlx)
             while (!CL_NULL_P(symbols_list)) {
                 CL_Obj sym_obj = cl_car(symbols_list);
                 CL_Obj val;
-                CL_Symbol *s;
+                CL_Obj old_tlv;
 
                 if (!CL_SYMBOL_P(sym_obj))
                     cl_error(CL_ERR_TYPE, "PROGV: expected symbol, got non-symbol");
@@ -1808,11 +1813,11 @@ static CL_Obj cl_vm_run(int base_fp, int base_nlx)
                 if (cl_dyn_top >= CL_MAX_DYN_BINDINGS)
                     cl_error(CL_ERR_OVERFLOW, "Dynamic binding stack overflow");
 
-                s = (CL_Symbol *)CL_OBJ_TO_PTR(sym_obj);
+                old_tlv = cl_tlv_get(thr, sym_obj);
                 cl_dyn_stack[cl_dyn_top].symbol = sym_obj;
-                cl_dyn_stack[cl_dyn_top].old_value = s->value;
+                cl_dyn_stack[cl_dyn_top].old_value = old_tlv;
                 cl_dyn_top++;
-                s->value = val;
+                cl_tlv_set(thr, sym_obj, val);
 
                 symbols_list = cl_cdr(symbols_list);
                 if (!CL_NULL_P(values_list))
@@ -2409,13 +2414,14 @@ static CL_Obj cl_vm_run(int base_fp, int base_nlx)
             uint16_t idx = read_u16(code, &ip);
             CL_Obj sym = constants[idx];
             CL_Obj new_val = cl_vm_pop();
-            CL_Symbol *s = (CL_Symbol *)CL_OBJ_TO_PTR(sym);
+            CL_Thread *thr = CT;
+            CL_Obj old_tlv = cl_tlv_get(thr, sym);
             if (cl_dyn_top >= CL_MAX_DYN_BINDINGS)
                 cl_error(CL_ERR_OVERFLOW, "Dynamic binding stack overflow");
             cl_dyn_stack[cl_dyn_top].symbol = sym;
-            cl_dyn_stack[cl_dyn_top].old_value = s->value;
+            cl_dyn_stack[cl_dyn_top].old_value = old_tlv; /* CL_TLV_ABSENT if none */
             cl_dyn_top++;
-            s->value = new_val;
+            cl_tlv_set(thr, sym, new_val);
             break;
         }
 

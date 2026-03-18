@@ -262,8 +262,7 @@ static CL_Obj resolve_synonym(CL_Obj stream)
     CL_Stream *st = (CL_Stream *)CL_OBJ_TO_PTR(stream);
     while (st->stream_type == CL_STREAM_SYNONYM) {
         CL_Obj sym = st->string_buf;  /* symbol stored here */
-        CL_Symbol *s = (CL_Symbol *)CL_OBJ_TO_PTR(sym);
-        stream = s->value;
+        stream = cl_symbol_value(sym);
         if (CL_NULL_P(stream) || !CL_HEAP_P(stream))
             return CL_NIL;
         st = (CL_Stream *)CL_OBJ_TO_PTR(stream);

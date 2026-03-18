@@ -45,15 +45,15 @@ static CL_Obj bi_rplacd(CL_Obj *args, int n)
 
 static CL_Obj bi_symbol_value(CL_Obj *args, int n)
 {
-    CL_Symbol *s;
+    CL_Obj val;
     CL_UNUSED(n);
     if (!CL_SYMBOL_P(args[0]))
         cl_error(CL_ERR_TYPE, "SYMBOL-VALUE: not a symbol");
-    s = (CL_Symbol *)CL_OBJ_TO_PTR(args[0]);
-    if (s->value == CL_UNBOUND)
+    val = cl_symbol_value(args[0]);
+    if (val == CL_UNBOUND)
         cl_error(CL_ERR_UNBOUND, "SYMBOL-VALUE: unbound variable: %s",
                  cl_symbol_name(args[0]));
-    return s->value;
+    return val;
 }
 
 static CL_Obj bi_symbol_function(CL_Obj *args, int n)
@@ -103,7 +103,7 @@ static CL_Obj bi_set_symbol_value(CL_Obj *args, int n)
     if (s->flags & CL_SYM_CONSTANT)
         cl_error(CL_ERR_GENERAL, "Cannot assign to constant variable: %s",
                  cl_symbol_name(args[0]));
-    s->value = args[1];
+    cl_set_symbol_value(args[0], args[1]);
     return args[1];
 }
 
@@ -122,12 +122,10 @@ static CL_Obj bi_set_symbol_function(CL_Obj *args, int n)
 
 static CL_Obj bi_boundp(CL_Obj *args, int n)
 {
-    CL_Symbol *s;
     CL_UNUSED(n);
     if (!CL_SYMBOL_P(args[0]))
         cl_error(CL_ERR_TYPE, "BOUNDP: not a symbol");
-    s = (CL_Symbol *)CL_OBJ_TO_PTR(args[0]);
-    return (s->value != CL_UNBOUND) ? SYM_T : CL_NIL;
+    return cl_symbol_boundp(args[0]) ? SYM_T : CL_NIL;
 }
 
 static CL_Obj bi_fboundp(CL_Obj *args, int n)

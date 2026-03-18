@@ -55,16 +55,11 @@ static CL_Obj KW_NEW_VERSION = CL_NIL;
 static CL_Obj resolve_input_stream(CL_Obj *args, int n, int idx)
 {
     CL_Obj s;
-    CL_Symbol *sym;
-    if (idx >= n || CL_NULL_P(args[idx])) {
-        sym = (CL_Symbol *)CL_OBJ_TO_PTR(SYM_STANDARD_INPUT);
-        return sym->value;
-    }
+    if (idx >= n || CL_NULL_P(args[idx]))
+        return cl_symbol_value(SYM_STANDARD_INPUT);
     s = args[idx];
-    if (s == CL_T) {
-        sym = (CL_Symbol *)CL_OBJ_TO_PTR(SYM_TERMINAL_IO);
-        return sym->value;
-    }
+    if (s == CL_T)
+        return cl_symbol_value(SYM_TERMINAL_IO);
     if (!CL_STREAM_P(s))
         cl_error(CL_ERR_TYPE, "argument is not a stream");
     return s;
@@ -73,16 +68,11 @@ static CL_Obj resolve_input_stream(CL_Obj *args, int n, int idx)
 static CL_Obj resolve_output_stream(CL_Obj *args, int n, int idx)
 {
     CL_Obj s;
-    CL_Symbol *sym;
-    if (idx >= n || CL_NULL_P(args[idx])) {
-        sym = (CL_Symbol *)CL_OBJ_TO_PTR(SYM_STANDARD_OUTPUT);
-        return sym->value;
-    }
+    if (idx >= n || CL_NULL_P(args[idx]))
+        return cl_symbol_value(SYM_STANDARD_OUTPUT);
     s = args[idx];
-    if (s == CL_T) {
-        sym = (CL_Symbol *)CL_OBJ_TO_PTR(SYM_TERMINAL_IO);
-        return sym->value;
-    }
+    if (s == CL_T)
+        return cl_symbol_value(SYM_TERMINAL_IO);
     if (!CL_STREAM_P(s))
         cl_error(CL_ERR_TYPE, "argument is not a stream");
     return s;
@@ -843,8 +833,7 @@ static int resolve_readtable_idx(CL_Obj *args, int n, int arg_idx)
     }
     /* Default: current readtable */
     {
-        CL_Symbol *sym = (CL_Symbol *)CL_OBJ_TO_PTR(SYM_STAR_READTABLE);
-        CL_Obj val = sym->value;
+        CL_Obj val = cl_symbol_value(SYM_STAR_READTABLE);
         if (CL_FIXNUM_P(val)) {
             int idx = CL_FIXNUM_VAL(val);
             if (idx >= 0 && idx < CL_RT_POOL_SIZE)

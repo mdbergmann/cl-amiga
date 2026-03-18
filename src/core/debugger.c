@@ -178,8 +178,7 @@ void cl_invoke_debugger(CL_Obj condition)
      * debugger is disabled (e.g., batch mode or tests) */
     if (!CL_NULL_P(SYM_DEBUGGER_HOOK) && CL_SYMBOL_P(SYM_DEBUGGER_HOOK))
     {
-        CL_Symbol *hook_sym = (CL_Symbol *)CL_OBJ_TO_PTR(SYM_DEBUGGER_HOOK);
-        CL_Obj hook_val = hook_sym->value;
+        CL_Obj hook_val = cl_symbol_value(SYM_DEBUGGER_HOOK);
 
         if (!CL_NULL_P(hook_val)) {
             CL_Obj saved_hook = hook_val;
@@ -187,7 +186,7 @@ void cl_invoke_debugger(CL_Obj condition)
             int err;
 
             /* Set *debugger-hook* to NIL before calling hook */
-            hook_sym->value = CL_NIL;
+            cl_set_symbol_value(SYM_DEBUGGER_HOOK, CL_NIL);
 
             hook_args[0] = condition;
             hook_args[1] = saved_hook;
@@ -204,7 +203,7 @@ void cl_invoke_debugger(CL_Obj condition)
             }
 
             /* Restore hook value */
-            hook_sym->value = saved_hook;
+            cl_set_symbol_value(SYM_DEBUGGER_HOOK, saved_hook);
         }
     }
 

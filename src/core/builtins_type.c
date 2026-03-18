@@ -364,7 +364,7 @@ static int typep_check(CL_Obj obj, CL_Obj type_spec)
             pred_sym = (CL_Symbol *)CL_OBJ_TO_PTR(pred_name);
             pred_fn = pred_sym->function;
             if (CL_NULL_P(pred_fn) || pred_fn == CL_UNBOUND) {
-                pred_fn = pred_sym->value;
+                pred_fn = cl_symbol_value(pred_name);
                 if (CL_NULL_P(pred_fn) || pred_fn == CL_UNBOUND)
                     cl_error(CL_ERR_UNDEFINED, "TYPEP: undefined predicate %s",
                              cl_symbol_name(pred_name));

@@ -47,16 +47,11 @@ static void extfun(const char *name, CL_CFunc func, int min, int max)
 static CL_Obj resolve_output_stream_io(CL_Obj *args, int n, int idx)
 {
     CL_Obj s;
-    CL_Symbol *sym;
-    if (idx >= n || CL_NULL_P(args[idx])) {
-        sym = (CL_Symbol *)CL_OBJ_TO_PTR(SYM_STANDARD_OUTPUT);
-        return sym->value;
-    }
+    if (idx >= n || CL_NULL_P(args[idx]))
+        return cl_symbol_value(SYM_STANDARD_OUTPUT);
     s = args[idx];
-    if (s == CL_T) {
-        sym = (CL_Symbol *)CL_OBJ_TO_PTR(SYM_TERMINAL_IO);
-        return sym->value;
-    }
+    if (s == CL_T)
+        return cl_symbol_value(SYM_TERMINAL_IO);
     if (!CL_STREAM_P(s))
         cl_error(CL_ERR_TYPE, "argument is not a stream");
     return s;
@@ -104,23 +99,22 @@ static CL_Obj bi_write(CL_Obj *args, int n)
     CL_Obj prev_d;
 
     /* Default: *standard-output* */
-    sym = (CL_Symbol *)CL_OBJ_TO_PTR(SYM_STANDARD_OUTPUT);
-    stream = sym->value;
+    stream = cl_symbol_value(SYM_STANDARD_OUTPUT);
 
     /* Save current values */
-    se = (CL_Symbol *)CL_OBJ_TO_PTR(SYM_PRINT_ESCAPE);    prev_e = se->value;
-    sr = (CL_Symbol *)CL_OBJ_TO_PTR(SYM_PRINT_READABLY);  prev_r = sr->value;
-    sb = (CL_Symbol *)CL_OBJ_TO_PTR(SYM_PRINT_BASE);      prev_b = sb->value;
-    sx = (CL_Symbol *)CL_OBJ_TO_PTR(SYM_PRINT_RADIX);     prev_x = sx->value;
-    sl = (CL_Symbol *)CL_OBJ_TO_PTR(SYM_PRINT_LEVEL);     prev_l = sl->value;
-    sn = (CL_Symbol *)CL_OBJ_TO_PTR(SYM_PRINT_LENGTH);    prev_n = sn->value;
-    sc = (CL_Symbol *)CL_OBJ_TO_PTR(SYM_PRINT_CASE);      prev_c = sc->value;
-    sg = (CL_Symbol *)CL_OBJ_TO_PTR(SYM_PRINT_GENSYM);    prev_g = sg->value;
-    sa = (CL_Symbol *)CL_OBJ_TO_PTR(SYM_PRINT_ARRAY);     prev_a = sa->value;
-    si = (CL_Symbol *)CL_OBJ_TO_PTR(SYM_PRINT_CIRCLE);    prev_i = si->value;
-    sp = (CL_Symbol *)CL_OBJ_TO_PTR(SYM_PRINT_PRETTY);    prev_p = sp->value;
-    sm = (CL_Symbol *)CL_OBJ_TO_PTR(SYM_PRINT_RIGHT_MARGIN); prev_m = sm->value;
-    sd = (CL_Symbol *)CL_OBJ_TO_PTR(SYM_PRINT_PPRINT_DISPATCH); prev_d = sd->value;
+    se = (CL_Symbol *)CL_OBJ_TO_PTR(SYM_PRINT_ESCAPE);    prev_e = cl_symbol_value(SYM_PRINT_ESCAPE);
+    sr = (CL_Symbol *)CL_OBJ_TO_PTR(SYM_PRINT_READABLY);  prev_r = cl_symbol_value(SYM_PRINT_READABLY);
+    sb = (CL_Symbol *)CL_OBJ_TO_PTR(SYM_PRINT_BASE);      prev_b = cl_symbol_value(SYM_PRINT_BASE);
+    sx = (CL_Symbol *)CL_OBJ_TO_PTR(SYM_PRINT_RADIX);     prev_x = cl_symbol_value(SYM_PRINT_RADIX);
+    sl = (CL_Symbol *)CL_OBJ_TO_PTR(SYM_PRINT_LEVEL);     prev_l = cl_symbol_value(SYM_PRINT_LEVEL);
+    sn = (CL_Symbol *)CL_OBJ_TO_PTR(SYM_PRINT_LENGTH);    prev_n = cl_symbol_value(SYM_PRINT_LENGTH);
+    sc = (CL_Symbol *)CL_OBJ_TO_PTR(SYM_PRINT_CASE);      prev_c = cl_symbol_value(SYM_PRINT_CASE);
+    sg = (CL_Symbol *)CL_OBJ_TO_PTR(SYM_PRINT_GENSYM);    prev_g = cl_symbol_value(SYM_PRINT_GENSYM);
+    sa = (CL_Symbol *)CL_OBJ_TO_PTR(SYM_PRINT_ARRAY);     prev_a = cl_symbol_value(SYM_PRINT_ARRAY);
+    si = (CL_Symbol *)CL_OBJ_TO_PTR(SYM_PRINT_CIRCLE);    prev_i = cl_symbol_value(SYM_PRINT_CIRCLE);
+    sp = (CL_Symbol *)CL_OBJ_TO_PTR(SYM_PRINT_PRETTY);    prev_p = cl_symbol_value(SYM_PRINT_PRETTY);
+    sm = (CL_Symbol *)CL_OBJ_TO_PTR(SYM_PRINT_RIGHT_MARGIN); prev_m = cl_symbol_value(SYM_PRINT_RIGHT_MARGIN);
+    sd = (CL_Symbol *)CL_OBJ_TO_PTR(SYM_PRINT_PPRINT_DISPATCH); prev_d = cl_symbol_value(SYM_PRINT_PPRINT_DISPATCH);
 
     /* Parse keyword arguments (start at index 1, pairs) */
     for (i = 1; i + 1 < n; i += 2) {
@@ -128,56 +122,55 @@ static CL_Obj bi_write(CL_Obj *args, int n)
         CL_Obj val = args[i + 1];
         if (kw == KW_WR_STREAM) {
             if (val == CL_T) {
-                sym = (CL_Symbol *)CL_OBJ_TO_PTR(SYM_TERMINAL_IO);
-                stream = sym->value;
+                stream = cl_symbol_value(SYM_TERMINAL_IO);
             } else if (!CL_NULL_P(val)) {
                 stream = val;
             }
         } else if (kw == KW_WR_ESCAPE) {
-            se->value = val;
+            cl_set_symbol_value(SYM_PRINT_ESCAPE, val);
         } else if (kw == KW_WR_READABLY) {
-            sr->value = val;
+            cl_set_symbol_value(SYM_PRINT_READABLY, val);
         } else if (kw == KW_WR_BASE) {
-            sb->value = val;
+            cl_set_symbol_value(SYM_PRINT_BASE, val);
         } else if (kw == KW_WR_RADIX) {
-            sx->value = val;
+            cl_set_symbol_value(SYM_PRINT_RADIX, val);
         } else if (kw == KW_WR_LEVEL) {
-            sl->value = val;
+            cl_set_symbol_value(SYM_PRINT_LEVEL, val);
         } else if (kw == KW_WR_LENGTH) {
-            sn->value = val;
+            cl_set_symbol_value(SYM_PRINT_LENGTH, val);
         } else if (kw == KW_WR_CASE) {
-            sc->value = val;
+            cl_set_symbol_value(SYM_PRINT_CASE, val);
         } else if (kw == KW_WR_GENSYM) {
-            sg->value = val;
+            cl_set_symbol_value(SYM_PRINT_GENSYM, val);
         } else if (kw == KW_WR_ARRAY) {
-            sa->value = val;
+            cl_set_symbol_value(SYM_PRINT_ARRAY, val);
         } else if (kw == KW_WR_CIRCLE) {
-            si->value = val;
+            cl_set_symbol_value(SYM_PRINT_CIRCLE, val);
         } else if (kw == KW_WR_PRETTY) {
-            sp->value = val;
+            cl_set_symbol_value(SYM_PRINT_PRETTY, val);
         } else if (kw == KW_WR_RIGHT_MARGIN) {
-            sm->value = val;
+            cl_set_symbol_value(SYM_PRINT_RIGHT_MARGIN, val);
         } else if (kw == KW_WR_PPRINT_DISPATCH) {
-            sd->value = val;
+            cl_set_symbol_value(SYM_PRINT_PPRINT_DISPATCH, val);
         }
     }
 
     cl_write_to_stream(obj, stream);
 
     /* Restore all values */
-    se->value = prev_e;
-    sr->value = prev_r;
-    sb->value = prev_b;
-    sx->value = prev_x;
-    sl->value = prev_l;
-    sn->value = prev_n;
-    sc->value = prev_c;
-    sg->value = prev_g;
-    sa->value = prev_a;
-    si->value = prev_i;
-    sp->value = prev_p;
-    sm->value = prev_m;
-    sd->value = prev_d;
+    cl_set_symbol_value(SYM_PRINT_ESCAPE, prev_e);
+    cl_set_symbol_value(SYM_PRINT_READABLY, prev_r);
+    cl_set_symbol_value(SYM_PRINT_BASE, prev_b);
+    cl_set_symbol_value(SYM_PRINT_RADIX, prev_x);
+    cl_set_symbol_value(SYM_PRINT_LEVEL, prev_l);
+    cl_set_symbol_value(SYM_PRINT_LENGTH, prev_n);
+    cl_set_symbol_value(SYM_PRINT_CASE, prev_c);
+    cl_set_symbol_value(SYM_PRINT_GENSYM, prev_g);
+    cl_set_symbol_value(SYM_PRINT_ARRAY, prev_a);
+    cl_set_symbol_value(SYM_PRINT_CIRCLE, prev_i);
+    cl_set_symbol_value(SYM_PRINT_PRETTY, prev_p);
+    cl_set_symbol_value(SYM_PRINT_RIGHT_MARGIN, prev_m);
+    cl_set_symbol_value(SYM_PRINT_PPRINT_DISPATCH, prev_d);
 
     return obj;
 }
@@ -206,16 +199,14 @@ static CL_Obj bi_princ(CL_Obj *args, int n)
 static CL_Obj bi_pprint(CL_Obj *args, int n)
 {
     CL_Obj stream = resolve_output_stream_io(args, n, 1);
-    CL_Symbol *se = (CL_Symbol *)CL_OBJ_TO_PTR(SYM_PRINT_ESCAPE);
-    CL_Symbol *sp = (CL_Symbol *)CL_OBJ_TO_PTR(SYM_PRINT_PRETTY);
-    CL_Obj prev_e = se->value;
-    CL_Obj prev_p = sp->value;
-    se->value = SYM_T;
-    sp->value = SYM_T;
+    CL_Obj prev_e = cl_symbol_value(SYM_PRINT_ESCAPE);
+    CL_Obj prev_p = cl_symbol_value(SYM_PRINT_PRETTY);
+    cl_set_symbol_value(SYM_PRINT_ESCAPE, SYM_T);
+    cl_set_symbol_value(SYM_PRINT_PRETTY, SYM_T);
     cl_stream_write_char(stream, '\n');
     cl_write_to_stream(args[0], stream);
-    se->value = prev_e;
-    sp->value = prev_p;
+    cl_set_symbol_value(SYM_PRINT_ESCAPE, prev_e);
+    cl_set_symbol_value(SYM_PRINT_PRETTY, prev_p);
     return CL_NIL;
 }
 
@@ -244,14 +235,12 @@ static CL_Obj bi_format(CL_Obj *args, int n)
         /* T => *standard-output*, stream => that stream */
         CL_Obj stream;
         if (dest == CL_T) {
-            CL_Symbol *sym = (CL_Symbol *)CL_OBJ_TO_PTR(SYM_STANDARD_OUTPUT);
-            stream = sym->value;
+            stream = cl_symbol_value(SYM_STANDARD_OUTPUT);
         } else if (CL_STREAM_P(dest)) {
             stream = dest;
         } else {
             /* Treat anything else as T for backward compat */
-            CL_Symbol *sym = (CL_Symbol *)CL_OBJ_TO_PTR(SYM_STANDARD_OUTPUT);
-            stream = sym->value;
+            stream = cl_symbol_value(SYM_STANDARD_OUTPUT);
         }
         cl_format_to_stream(stream, args, n);
         return CL_NIL;
@@ -282,9 +271,9 @@ static CL_Obj bi_load(CL_Obj *args, int n)
     /* Sync cl_current_package from *package* special variable,
        so Lisp-level let-bindings of *package* are respected by the reader */
     {
-        CL_Symbol *pkg_sym = (CL_Symbol *)CL_OBJ_TO_PTR(SYM_STAR_PACKAGE);
-        if (!CL_NULL_P(pkg_sym->value))
-            cl_current_package = pkg_sym->value;
+        CL_Obj pkg_val = cl_symbol_value(SYM_STAR_PACKAGE);
+        if (!CL_NULL_P(pkg_val))
+            cl_current_package = pkg_val;
     }
 
     if (CL_PATHNAME_P(args[0])) {
@@ -344,14 +333,14 @@ static CL_Obj bi_load(CL_Obj *args, int n)
                             CL_GC_PROTECT(load_truename_obj);
                             lp_sym = (CL_Symbol *)CL_OBJ_TO_PTR(SYM_STAR_LOAD_PATHNAME);
                             lt_sym = (CL_Symbol *)CL_OBJ_TO_PTR(SYM_STAR_LOAD_TRUENAME);
-                            saved_load_pathname = lp_sym->value;
-                            saved_load_truename = lt_sym->value;
-                            lp_sym->value = load_pathname_obj;
-                            lt_sym->value = load_truename_obj;
+                            saved_load_pathname = cl_symbol_value(SYM_STAR_LOAD_PATHNAME);
+                            saved_load_truename = cl_symbol_value(SYM_STAR_LOAD_TRUENAME);
+                            cl_set_symbol_value(SYM_STAR_LOAD_PATHNAME, load_pathname_obj);
+                            cl_set_symbol_value(SYM_STAR_LOAD_TRUENAME, load_truename_obj);
 
                             {
                                 CL_Symbol *lv_sym = (CL_Symbol *)CL_OBJ_TO_PTR(SYM_STAR_LOAD_VERBOSE);
-                                if (!CL_NULL_P(lv_sym->value)) {
+                                if (!CL_NULL_P(cl_symbol_value(SYM_STAR_LOAD_VERBOSE))) {
                                     platform_write_string("; Loading ");
                                     platform_write_string(cache_path);
                                     platform_write_string("\n");
@@ -367,13 +356,13 @@ static CL_Obj bi_load(CL_Obj *args, int n)
                                     platform_free(buf);
                                     CL_UNCATCH();
 
-                                    lp_sym->value = saved_load_pathname;
-                                    lt_sym->value = saved_load_truename;
+                                    cl_set_symbol_value(SYM_STAR_LOAD_PATHNAME, saved_load_pathname);
+                                    cl_set_symbol_value(SYM_STAR_LOAD_TRUENAME, saved_load_truename);
                                     CL_GC_UNPROTECT(2);
                                     cl_current_package = saved_package;
                                     {
                                         CL_Symbol *pkg_sym = (CL_Symbol *)CL_OBJ_TO_PTR(SYM_STAR_PACKAGE);
-                                        pkg_sym->value = saved_package;
+                                        cl_set_symbol_value(SYM_STAR_PACKAGE, saved_package);
                                     }
                                     return SYM_T;
                                 } else {
@@ -386,13 +375,13 @@ static CL_Obj bi_load(CL_Obj *args, int n)
                                     CL_UNCATCH();
                                 platform_free(buf);
                                 buf = NULL;
-                                lp_sym->value = saved_load_pathname;
-                                lt_sym->value = saved_load_truename;
+                                cl_set_symbol_value(SYM_STAR_LOAD_PATHNAME, saved_load_pathname);
+                                cl_set_symbol_value(SYM_STAR_LOAD_TRUENAME, saved_load_truename);
                                 CL_GC_UNPROTECT(2);
                                 cl_current_package = saved_package;
                                 {
                                     CL_Symbol *pkg_sym = (CL_Symbol *)CL_OBJ_TO_PTR(SYM_STAR_PACKAGE);
-                                    pkg_sym->value = saved_package;
+                                    cl_set_symbol_value(SYM_STAR_PACKAGE, saved_package);
                                 }
                                 /* Delete broken FASL so we don't retry it */
                                 platform_file_delete(cache_path);
@@ -431,15 +420,15 @@ static CL_Obj bi_load(CL_Obj *args, int n)
     CL_GC_PROTECT(load_truename_obj);
     lp_sym = (CL_Symbol *)CL_OBJ_TO_PTR(SYM_STAR_LOAD_PATHNAME);
     lt_sym = (CL_Symbol *)CL_OBJ_TO_PTR(SYM_STAR_LOAD_TRUENAME);
-    saved_load_pathname = lp_sym->value;
-    saved_load_truename = lt_sym->value;
-    lp_sym->value = load_pathname_obj;
-    lt_sym->value = load_truename_obj;
+    saved_load_pathname = cl_symbol_value(SYM_STAR_LOAD_PATHNAME);
+    saved_load_truename = cl_symbol_value(SYM_STAR_LOAD_TRUENAME);
+    cl_set_symbol_value(SYM_STAR_LOAD_PATHNAME, load_pathname_obj);
+    cl_set_symbol_value(SYM_STAR_LOAD_TRUENAME, load_truename_obj);
 
     /* Print loading message if *load-verbose* is true */
     {
         CL_Symbol *lv_sym = (CL_Symbol *)CL_OBJ_TO_PTR(SYM_STAR_LOAD_VERBOSE);
-        if (!CL_NULL_P(lv_sym->value)) {
+        if (!CL_NULL_P(cl_symbol_value(SYM_STAR_LOAD_VERBOSE))) {
             platform_write_string("; Loading ");
             platform_write_string(path_str->data);
             platform_write_string("\n");
@@ -466,13 +455,13 @@ static CL_Obj bi_load(CL_Obj *args, int n)
             platform_free(buf);
 
             /* Restore *load-pathname*, *load-truename*, *package* */
-            lp_sym->value = saved_load_pathname;
-            lt_sym->value = saved_load_truename;
+            cl_set_symbol_value(SYM_STAR_LOAD_PATHNAME, saved_load_pathname);
+            cl_set_symbol_value(SYM_STAR_LOAD_TRUENAME, saved_load_truename);
             CL_GC_UNPROTECT(2);
             cl_current_package = saved_package;
             {
                 CL_Symbol *pkg_sym = (CL_Symbol *)CL_OBJ_TO_PTR(SYM_STAR_PACKAGE);
-                pkg_sym->value = saved_package;
+                cl_set_symbol_value(SYM_STAR_PACKAGE, saved_package);
             }
             return SYM_T;
         }
@@ -638,8 +627,8 @@ static CL_Obj bi_load(CL_Obj *args, int n)
     } /* end auto-cache scope */
 
     /* Restore *load-pathname* and *load-truename* */
-    lp_sym->value = saved_load_pathname;
-    lt_sym->value = saved_load_truename;
+    cl_set_symbol_value(SYM_STAR_LOAD_PATHNAME, saved_load_pathname);
+    cl_set_symbol_value(SYM_STAR_LOAD_TRUENAME, saved_load_truename);
     CL_GC_UNPROTECT(2); /* load_truename_obj, load_pathname_obj */
 
     /* Restore source file context */
@@ -651,7 +640,7 @@ static CL_Obj bi_load(CL_Obj *args, int n)
     cl_current_package = saved_package;
     {
         CL_Symbol *pkg_sym = (CL_Symbol *)CL_OBJ_TO_PTR(SYM_STAR_PACKAGE);
-        pkg_sym->value = saved_package;
+        cl_set_symbol_value(SYM_STAR_PACKAGE, saved_package);
     }
 
     return SYM_T;
@@ -878,9 +867,9 @@ static CL_Obj bi_compile_file(CL_Obj *args, int n)
 
     /* Sync *package* */
     {
-        CL_Symbol *pkg_sym = (CL_Symbol *)CL_OBJ_TO_PTR(SYM_STAR_PACKAGE);
-        if (!CL_NULL_P(pkg_sym->value))
-            cl_current_package = pkg_sym->value;
+        CL_Obj pkg_val2 = cl_symbol_value(SYM_STAR_PACKAGE);
+        if (!CL_NULL_P(pkg_val2))
+            cl_current_package = pkg_val2;
     }
 
     /* Resolve input path */
@@ -923,8 +912,7 @@ static CL_Obj bi_compile_file(CL_Obj *args, int n)
 
     /* Check *compile-verbose* if :verbose not explicitly given */
     if (!verbose) {
-        CL_Symbol *cv = (CL_Symbol *)CL_OBJ_TO_PTR(SYM_STAR_COMPILE_VERBOSE);
-        if (!CL_NULL_P(cv->value))
+        if (!CL_NULL_P(cl_symbol_value(SYM_STAR_COMPILE_VERBOSE)))
             verbose = 1;
     }
 
@@ -955,10 +943,10 @@ static CL_Obj bi_compile_file(CL_Obj *args, int n)
 
         cfp_sym = (CL_Symbol *)CL_OBJ_TO_PTR(SYM_STAR_COMPILE_FILE_PATHNAME);
         cft_sym = (CL_Symbol *)CL_OBJ_TO_PTR(SYM_STAR_COMPILE_FILE_TRUENAME);
-        saved_cfp = cfp_sym->value;
-        saved_cft = cft_sym->value;
-        cfp_sym->value = cfp_path;
-        cft_sym->value = cft_path;
+        saved_cfp = cl_symbol_value(SYM_STAR_COMPILE_FILE_PATHNAME);
+        saved_cft = cl_symbol_value(SYM_STAR_COMPILE_FILE_TRUENAME);
+        cl_set_symbol_value(SYM_STAR_COMPILE_FILE_PATHNAME, cfp_path);
+        cl_set_symbol_value(SYM_STAR_COMPILE_FILE_TRUENAME, cft_path);
         CL_GC_UNPROTECT(2);
     }
 
@@ -1154,8 +1142,8 @@ static CL_Obj bi_compile_file(CL_Obj *args, int n)
     platform_free(uw);
 
     /* Restore *compile-file-pathname* and *compile-file-truename* */
-    cfp_sym->value = saved_cfp;
-    cft_sym->value = saved_cft;
+    cl_set_symbol_value(SYM_STAR_COMPILE_FILE_PATHNAME, saved_cfp);
+    cl_set_symbol_value(SYM_STAR_COMPILE_FILE_TRUENAME, saved_cft);
 
     /* Restore source file context */
     cl_current_source_file = prev_file;
@@ -1166,7 +1154,7 @@ static CL_Obj bi_compile_file(CL_Obj *args, int n)
     cl_current_package = saved_package;
     {
         CL_Symbol *pkg_sym = (CL_Symbol *)CL_OBJ_TO_PTR(SYM_STAR_PACKAGE);
-        pkg_sym->value = saved_package;
+        cl_set_symbol_value(SYM_STAR_PACKAGE, saved_package);
     }
 
     /* Return (values output-truename nil nil) per CL spec */
@@ -1247,11 +1235,9 @@ static CL_Obj bi_read(CL_Obj *args, int n)
 
     /* Resolve stream argument (nil->*standard-input*, t->*terminal-io*) */
     if (n < 1 || CL_NULL_P(args[0])) {
-        CL_Symbol *sym = (CL_Symbol *)CL_OBJ_TO_PTR(SYM_STANDARD_INPUT);
-        stream = sym->value;
+        stream = cl_symbol_value(SYM_STANDARD_INPUT);
     } else if (args[0] == CL_T) {
-        CL_Symbol *sym = (CL_Symbol *)CL_OBJ_TO_PTR(SYM_TERMINAL_IO);
-        stream = sym->value;
+        stream = cl_symbol_value(SYM_TERMINAL_IO);
     } else {
         stream = args[0];
     }
@@ -1282,11 +1268,9 @@ static CL_Obj bi_read_delimited_list(CL_Obj *args, int n)
 
     /* Resolve stream */
     if (n < 2 || CL_NULL_P(args[1])) {
-        CL_Symbol *sym = (CL_Symbol *)CL_OBJ_TO_PTR(SYM_STANDARD_INPUT);
-        stream = sym->value;
+        stream = cl_symbol_value(SYM_STANDARD_INPUT);
     } else if (args[1] == CL_T) {
-        CL_Symbol *sym = (CL_Symbol *)CL_OBJ_TO_PTR(SYM_TERMINAL_IO);
-        stream = sym->value;
+        stream = cl_symbol_value(SYM_TERMINAL_IO);
     } else {
         stream = args[1];
     }
@@ -1699,10 +1683,13 @@ static CL_Obj bi_disassemble(CL_Obj *args, int n)
         CL_Symbol *sym = (CL_Symbol *)CL_OBJ_TO_PTR(arg);
         if (sym->function != CL_UNBOUND && !CL_NULL_P(sym->function))
             arg = sym->function;
-        else if (sym->value != CL_UNBOUND && !CL_NULL_P(sym->value))
-            arg = sym->value;
-        else
-            cl_error(CL_ERR_UNDEFINED, "DISASSEMBLE: no function binding");
+        else {
+            CL_Obj sv = cl_symbol_value(arg);
+            if (sv != CL_UNBOUND && !CL_NULL_P(sv))
+                arg = sv;
+            else
+                cl_error(CL_ERR_UNDEFINED, "DISASSEMBLE: no function binding");
+        }
     }
 
     if (CL_BYTECODE_P(arg)) {
@@ -1942,7 +1929,7 @@ static CL_Obj bi_set_pprint_dispatch(CL_Obj *args, int n)
     if (n >= 4 && !CL_NULL_P(args[3]))
         table = args[3];
     else
-        table = sym->value;
+        table = cl_symbol_value(SYM_PRINT_PPRINT_DISPATCH);
 
     /* If function is nil, remove matching entry */
     if (CL_NULL_P(function)) {
@@ -1971,7 +1958,7 @@ static CL_Obj bi_set_pprint_dispatch(CL_Obj *args, int n)
             prev = cur;
             cur = cl_cdr(cur);
         }
-        sym->value = table;
+        cl_set_symbol_value(SYM_PRINT_PPRINT_DISPATCH, table);
         return CL_NIL;
     }
 
@@ -2001,7 +1988,7 @@ static CL_Obj bi_set_pprint_dispatch(CL_Obj *args, int n)
     table = cl_cons(new_entry, table);
     CL_GC_UNPROTECT(1);
 
-    sym->value = table;
+    cl_set_symbol_value(SYM_PRINT_PPRINT_DISPATCH, table);
     return CL_NIL;
 }
 
@@ -2012,8 +1999,7 @@ static CL_Obj bi_set_pprint_dispatch(CL_Obj *args, int n)
 static CL_Obj bi_pprint_dispatch(CL_Obj *args, int n)
 {
     CL_Obj object = args[0];
-    CL_Symbol *sym = (CL_Symbol *)CL_OBJ_TO_PTR(SYM_PRINT_PPRINT_DISPATCH);
-    CL_Obj table = (n >= 2 && !CL_NULL_P(args[1])) ? args[1] : sym->value;
+    CL_Obj table = (n >= 2 && !CL_NULL_P(args[1])) ? args[1] : cl_symbol_value(SYM_PRINT_PPRINT_DISPATCH);
     CL_Obj best_fn = CL_NIL;
     int32_t best_priority = -999999;
     CL_Obj cur, entry;
@@ -2057,8 +2043,7 @@ static CL_Obj bi_pprint_dispatch(CL_Obj *args, int n)
  */
 static CL_Obj bi_copy_pprint_dispatch(CL_Obj *args, int n)
 {
-    CL_Symbol *sym = (CL_Symbol *)CL_OBJ_TO_PTR(SYM_PRINT_PPRINT_DISPATCH);
-    CL_Obj table = (n >= 1 && !CL_NULL_P(args[0])) ? args[0] : sym->value;
+    CL_Obj table = (n >= 1 && !CL_NULL_P(args[0])) ? args[0] : cl_symbol_value(SYM_PRINT_PPRINT_DISPATCH);
     CL_Obj result = CL_NIL;
     CL_Obj cur;
 
@@ -2097,8 +2082,7 @@ static const char *module_name_cstr(CL_Obj arg, uint32_t *len_out)
 /* Check if module name is in *modules* list (string= comparison) */
 static int module_provided_p(const char *name, uint32_t len)
 {
-    CL_Symbol *mod_sym = (CL_Symbol *)CL_OBJ_TO_PTR(SYM_STAR_MODULES);
-    CL_Obj list = mod_sym->value;
+    CL_Obj list = cl_symbol_value(SYM_STAR_MODULES);
     while (!CL_NULL_P(list)) {
         CL_Obj entry = cl_car(list);
         if (CL_STRING_P(entry)) {
@@ -2129,10 +2113,9 @@ static CL_Obj bi_provide(CL_Obj *args, int n)
         return SYM_T;
 
     /* Push string onto *modules* */
-    mod_sym = (CL_Symbol *)CL_OBJ_TO_PTR(SYM_STAR_MODULES);
     name_str = cl_make_string(name, len);
     CL_GC_PROTECT(name_str);
-    mod_sym->value = cl_cons(name_str, mod_sym->value);
+    cl_set_symbol_value(SYM_STAR_MODULES, cl_cons(name_str, cl_symbol_value(SYM_STAR_MODULES)));
     CL_GC_UNPROTECT(1);
     return SYM_T;
 }

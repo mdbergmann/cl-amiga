@@ -57,16 +57,11 @@ static void write_obj(CL_Obj stream, CL_Obj obj)
 static CL_Obj resolve_stream(CL_Obj *args, int n)
 {
     if (n >= 2 && !CL_NULL_P(args[1])) {
-        if (args[1] == CL_T) {
-            CL_Symbol *sym = (CL_Symbol *)CL_OBJ_TO_PTR(SYM_STANDARD_OUTPUT);
-            return sym->value;
-        }
+        if (args[1] == CL_T)
+            return cl_symbol_value(SYM_STANDARD_OUTPUT);
         return args[1];
     }
-    {
-        CL_Symbol *sym = (CL_Symbol *)CL_OBJ_TO_PTR(SYM_STANDARD_OUTPUT);
-        return sym->value;
-    }
+    return cl_symbol_value(SYM_STANDARD_OUTPUT);
 }
 
 /* Count length of a proper list. Returns -1 if dotted/circular. */
@@ -146,12 +141,15 @@ static void describe_symbol(CL_Obj obj, CL_Obj stream)
         write_line(stream, "  Package: NIL (uninterned)");
     }
 
-    if (sym->value != CL_UNBOUND) {
-        write_str(stream, "  Value: ");
-        write_obj(stream, sym->value);
-        write_nl(stream);
-    } else {
-        write_line(stream, "  Value: <unbound>");
+    {
+        CL_Obj sv = cl_symbol_value(obj);
+        if (sv != CL_UNBOUND) {
+            write_str(stream, "  Value: ");
+            write_obj(stream, sv);
+            write_nl(stream);
+        } else {
+            write_line(stream, "  Value: <unbound>");
+        }
     }
 
     if (sym->function != CL_UNBOUND) {

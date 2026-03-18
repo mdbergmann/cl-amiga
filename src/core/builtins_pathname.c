@@ -433,11 +433,13 @@ static CL_Obj bi_merge_pathnames(CL_Obj *args, int n)
         def_obj = coerce_to_pathname(args[1]);
     } else {
         /* Use *default-pathname-defaults* */
-        CL_Symbol *dpd = (CL_Symbol *)CL_OBJ_TO_PTR(SYM_STAR_DEFAULT_PATHNAME_DEFAULTS);
-        if (!CL_NULL_P(dpd->value) && CL_PATHNAME_P(dpd->value))
-            def_obj = dpd->value;
-        else
-            def_obj = cl_make_pathname(CL_NIL, CL_NIL, CL_NIL, CL_NIL, CL_NIL, CL_NIL);
+        {
+            CL_Obj dpd_val = cl_symbol_value(SYM_STAR_DEFAULT_PATHNAME_DEFAULTS);
+            if (!CL_NULL_P(dpd_val) && CL_PATHNAME_P(dpd_val))
+                def_obj = dpd_val;
+            else
+                def_obj = cl_make_pathname(CL_NIL, CL_NIL, CL_NIL, CL_NIL, CL_NIL, CL_NIL);
+        }
     }
 
     pn = (CL_Pathname *)CL_OBJ_TO_PTR(pn_obj);

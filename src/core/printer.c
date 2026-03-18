@@ -22,87 +22,75 @@
 
 static int print_escape_p(void)
 {
-    CL_Symbol *s;
     if (CL_NULL_P(SYM_PRINT_ESCAPE)) return 1; /* before init */
-    s = (CL_Symbol *)CL_OBJ_TO_PTR(SYM_PRINT_ESCAPE);
-    return !CL_NULL_P(s->value);
+    return !CL_NULL_P(cl_symbol_value(SYM_PRINT_ESCAPE));
 }
 
 static int print_readably_p(void)
 {
-    CL_Symbol *s;
     if (CL_NULL_P(SYM_PRINT_READABLY)) return 0;
-    s = (CL_Symbol *)CL_OBJ_TO_PTR(SYM_PRINT_READABLY);
-    return !CL_NULL_P(s->value);
+    return !CL_NULL_P(cl_symbol_value(SYM_PRINT_READABLY));
 }
 
 /* Returns -1 for NIL (no limit), else fixnum value */
 static int32_t print_level(void)
 {
-    CL_Symbol *s;
+    CL_Obj val;
     if (CL_NULL_P(SYM_PRINT_LEVEL)) return -1;
-    s = (CL_Symbol *)CL_OBJ_TO_PTR(SYM_PRINT_LEVEL);
-    if (CL_NULL_P(s->value)) return -1;
-    if (CL_FIXNUM_P(s->value)) return CL_FIXNUM_VAL(s->value);
+    val = cl_symbol_value(SYM_PRINT_LEVEL);
+    if (CL_NULL_P(val)) return -1;
+    if (CL_FIXNUM_P(val)) return CL_FIXNUM_VAL(val);
     return -1;
 }
 
 /* Returns -1 for NIL (no limit), else fixnum value */
 static int32_t print_length(void)
 {
-    CL_Symbol *s;
+    CL_Obj val;
     if (CL_NULL_P(SYM_PRINT_LENGTH)) return -1;
-    s = (CL_Symbol *)CL_OBJ_TO_PTR(SYM_PRINT_LENGTH);
-    if (CL_NULL_P(s->value)) return -1;
-    if (CL_FIXNUM_P(s->value)) return CL_FIXNUM_VAL(s->value);
+    val = cl_symbol_value(SYM_PRINT_LENGTH);
+    if (CL_NULL_P(val)) return -1;
+    if (CL_FIXNUM_P(val)) return CL_FIXNUM_VAL(val);
     return -1;
 }
 
 /* Returns current *print-base* (2-36), default 10 */
 static int32_t print_base(void)
 {
-    CL_Symbol *s;
+    CL_Obj v;
     int32_t val;
     if (CL_NULL_P(SYM_PRINT_BASE)) return 10;
-    s = (CL_Symbol *)CL_OBJ_TO_PTR(SYM_PRINT_BASE);
-    if (!CL_FIXNUM_P(s->value)) return 10;
-    val = CL_FIXNUM_VAL(s->value);
+    v = cl_symbol_value(SYM_PRINT_BASE);
+    if (!CL_FIXNUM_P(v)) return 10;
+    val = CL_FIXNUM_VAL(v);
     if (val < 2 || val > 36) return 10;
     return val;
 }
 
 static int print_radix_p(void)
 {
-    CL_Symbol *s;
     if (CL_NULL_P(SYM_PRINT_RADIX)) return 0;
-    s = (CL_Symbol *)CL_OBJ_TO_PTR(SYM_PRINT_RADIX);
-    return !CL_NULL_P(s->value);
+    return !CL_NULL_P(cl_symbol_value(SYM_PRINT_RADIX));
 }
 
 static int print_gensym_p(void)
 {
-    CL_Symbol *s;
     if (CL_NULL_P(SYM_PRINT_GENSYM)) return 1; /* before init */
-    s = (CL_Symbol *)CL_OBJ_TO_PTR(SYM_PRINT_GENSYM);
-    return !CL_NULL_P(s->value);
+    return !CL_NULL_P(cl_symbol_value(SYM_PRINT_GENSYM));
 }
 
 static int print_array_p(void)
 {
-    CL_Symbol *s;
     if (CL_NULL_P(SYM_PRINT_ARRAY)) return 1; /* before init */
-    s = (CL_Symbol *)CL_OBJ_TO_PTR(SYM_PRINT_ARRAY);
-    return !CL_NULL_P(s->value);
+    return !CL_NULL_P(cl_symbol_value(SYM_PRINT_ARRAY));
 }
 
 /* Returns 0=UPCASE, 1=DOWNCASE, 2=CAPITALIZE */
 static int print_case(void)
 {
-    CL_Symbol *s;
     CL_Obj val;
     if (CL_NULL_P(SYM_PRINT_CASE)) return 0;
-    s = (CL_Symbol *)CL_OBJ_TO_PTR(SYM_PRINT_CASE);
-    val = s->value;
+    val = cl_symbol_value(SYM_PRINT_CASE);
     if (val == KW_DOWNCASE) return 1;
     if (val == KW_CAPITALIZE) return 2;
     return 0; /* :UPCASE or unknown */
@@ -135,28 +123,24 @@ static void pp_newline_indent(void)
 
 static int print_circle_p(void)
 {
-    CL_Symbol *s;
     if (CL_NULL_P(SYM_PRINT_CIRCLE)) return 0;
-    s = (CL_Symbol *)CL_OBJ_TO_PTR(SYM_PRINT_CIRCLE);
-    return !CL_NULL_P(s->value);
+    return !CL_NULL_P(cl_symbol_value(SYM_PRINT_CIRCLE));
 }
 
 static int print_pretty_p(void)
 {
-    CL_Symbol *s;
     if (CL_NULL_P(SYM_PRINT_PRETTY)) return 0;
-    s = (CL_Symbol *)CL_OBJ_TO_PTR(SYM_PRINT_PRETTY);
-    return !CL_NULL_P(s->value);
+    return !CL_NULL_P(cl_symbol_value(SYM_PRINT_PRETTY));
 }
 
 /* Returns right margin (default 72 when NIL), or fixnum value */
 static int32_t print_right_margin(void)
 {
-    CL_Symbol *s;
+    CL_Obj val;
     if (CL_NULL_P(SYM_PRINT_RIGHT_MARGIN)) return 72;
-    s = (CL_Symbol *)CL_OBJ_TO_PTR(SYM_PRINT_RIGHT_MARGIN);
-    if (CL_NULL_P(s->value)) return 72;
-    if (CL_FIXNUM_P(s->value)) return CL_FIXNUM_VAL(s->value);
+    val = cl_symbol_value(SYM_PRINT_RIGHT_MARGIN);
+    if (CL_NULL_P(val)) return 72;
+    if (CL_FIXNUM_P(val)) return CL_FIXNUM_VAL(val);
     return 72;
 }
 
@@ -676,8 +660,7 @@ static int try_pprint_dispatch(CL_Obj obj)
 
     if (pprint_dispatch_active) return 0; /* prevent recursion */
     if (CL_NULL_P(SYM_PRINT_PPRINT_DISPATCH)) return 0;
-    sd = (CL_Symbol *)CL_OBJ_TO_PTR(SYM_PRINT_PPRINT_DISPATCH);
-    table = sd->value;
+    table = cl_symbol_value(SYM_PRINT_PPRINT_DISPATCH);
     if (CL_NULL_P(table)) return 0;
     if (!print_pretty_p()) return 0;
 
@@ -1049,12 +1032,12 @@ static void print_obj(CL_Obj obj)
          * Hook takes (object) and returns a string to output, or NIL
          * to fall through to default printing. */
         if (!CL_NULL_P(SYM_PRINT_OBJECT_HOOK)) {
-            CL_Symbol *hook_sym = (CL_Symbol *)CL_OBJ_TO_PTR(SYM_PRINT_OBJECT_HOOK);
-            if (!CL_NULL_P(hook_sym->value)) {
+            CL_Obj hook_val = cl_symbol_value(SYM_PRINT_OBJECT_HOOK);
+            if (!CL_NULL_P(hook_val)) {
                 CL_Obj hook_args[1];
                 CL_Obj result;
                 hook_args[0] = obj;
-                result = cl_vm_apply(hook_sym->value, hook_args, 1);
+                result = cl_vm_apply(hook_val, hook_args, 1);
                 if (!CL_NULL_P(result) && CL_HEAP_P(result) &&
                     CL_HDR_TYPE(CL_OBJ_TO_PTR(result)) == TYPE_STRING) {
                     CL_String *rs = (CL_String *)CL_OBJ_TO_PTR(result);
@@ -1215,16 +1198,14 @@ void cl_prin1_to_stream(CL_Obj obj, CL_Obj stream)
         printer_stream = prev;
         return;
     }
-    se = (CL_Symbol *)CL_OBJ_TO_PTR(SYM_PRINT_ESCAPE);
-    prev_e = se->value;
-    se->value = CL_T;
+    prev_e = cl_symbol_value(SYM_PRINT_ESCAPE);
+    cl_set_symbol_value(SYM_PRINT_ESCAPE, CL_T);
     cl_write_to_stream(obj, stream);
-    se->value = prev_e;
+    cl_set_symbol_value(SYM_PRINT_ESCAPE, prev_e);
 }
 
 void cl_princ_to_stream(CL_Obj obj, CL_Obj stream)
 {
-    CL_Symbol *se, *sr;
     CL_Obj prev_e, prev_r;
     if (CL_NULL_P(SYM_PRINT_ESCAPE)) {
         CL_Obj prev = printer_stream;
@@ -1234,15 +1215,13 @@ void cl_princ_to_stream(CL_Obj obj, CL_Obj stream)
         printer_stream = prev;
         return;
     }
-    se = (CL_Symbol *)CL_OBJ_TO_PTR(SYM_PRINT_ESCAPE);
-    sr = (CL_Symbol *)CL_OBJ_TO_PTR(SYM_PRINT_READABLY);
-    prev_e = se->value;
-    prev_r = sr->value;
-    se->value = CL_NIL;
-    sr->value = CL_NIL;
+    prev_e = cl_symbol_value(SYM_PRINT_ESCAPE);
+    prev_r = cl_symbol_value(SYM_PRINT_READABLY);
+    cl_set_symbol_value(SYM_PRINT_ESCAPE, CL_NIL);
+    cl_set_symbol_value(SYM_PRINT_READABLY, CL_NIL);
     cl_write_to_stream(obj, stream);
-    se->value = prev_e;
-    sr->value = prev_r;
+    cl_set_symbol_value(SYM_PRINT_ESCAPE, prev_e);
+    cl_set_symbol_value(SYM_PRINT_READABLY, prev_r);
 }
 
 void cl_print_to_stream(CL_Obj obj, CL_Obj stream)
@@ -1256,20 +1235,17 @@ void cl_print_to_stream(CL_Obj obj, CL_Obj stream)
 
 void cl_prin1(CL_Obj obj)
 {
-    CL_Symbol *sym = (CL_Symbol *)CL_OBJ_TO_PTR(SYM_STANDARD_OUTPUT);
-    cl_prin1_to_stream(obj, sym->value);
+    cl_prin1_to_stream(obj, cl_symbol_value(SYM_STANDARD_OUTPUT));
 }
 
 void cl_princ(CL_Obj obj)
 {
-    CL_Symbol *sym = (CL_Symbol *)CL_OBJ_TO_PTR(SYM_STANDARD_OUTPUT);
-    cl_princ_to_stream(obj, sym->value);
+    cl_princ_to_stream(obj, cl_symbol_value(SYM_STANDARD_OUTPUT));
 }
 
 void cl_print(CL_Obj obj)
 {
-    CL_Symbol *sym = (CL_Symbol *)CL_OBJ_TO_PTR(SYM_STANDARD_OUTPUT);
-    cl_print_to_stream(obj, sym->value);
+    cl_print_to_stream(obj, cl_symbol_value(SYM_STANDARD_OUTPUT));
 }
 
 /* ================================================================
@@ -1317,38 +1293,33 @@ static int write_to_buffer_internal(CL_Obj obj, char *buf, int bufsize)
 
 int cl_prin1_to_string(CL_Obj obj, char *buf, int bufsize)
 {
-    CL_Symbol *se;
     CL_Obj prev_e;
     int result;
     if (CL_NULL_P(SYM_PRINT_ESCAPE)) {
         /* Before init */
         return write_to_buffer_internal(obj, buf, bufsize);
     }
-    se = (CL_Symbol *)CL_OBJ_TO_PTR(SYM_PRINT_ESCAPE);
-    prev_e = se->value;
-    se->value = CL_T;
+    prev_e = cl_symbol_value(SYM_PRINT_ESCAPE);
+    cl_set_symbol_value(SYM_PRINT_ESCAPE, CL_T);
     result = write_to_buffer_internal(obj, buf, bufsize);
-    se->value = prev_e;
+    cl_set_symbol_value(SYM_PRINT_ESCAPE, prev_e);
     return result;
 }
 
 int cl_princ_to_string(CL_Obj obj, char *buf, int bufsize)
 {
-    CL_Symbol *se, *sr;
     CL_Obj prev_e, prev_r;
     int result;
     if (CL_NULL_P(SYM_PRINT_ESCAPE)) {
         return write_to_buffer_internal(obj, buf, bufsize);
     }
-    se = (CL_Symbol *)CL_OBJ_TO_PTR(SYM_PRINT_ESCAPE);
-    sr = (CL_Symbol *)CL_OBJ_TO_PTR(SYM_PRINT_READABLY);
-    prev_e = se->value;
-    prev_r = sr->value;
-    se->value = CL_NIL;
-    sr->value = CL_NIL;
+    prev_e = cl_symbol_value(SYM_PRINT_ESCAPE);
+    prev_r = cl_symbol_value(SYM_PRINT_READABLY);
+    cl_set_symbol_value(SYM_PRINT_ESCAPE, CL_NIL);
+    cl_set_symbol_value(SYM_PRINT_READABLY, CL_NIL);
     result = write_to_buffer_internal(obj, buf, bufsize);
-    se->value = prev_e;
-    sr->value = prev_r;
+    cl_set_symbol_value(SYM_PRINT_ESCAPE, prev_e);
+    cl_set_symbol_value(SYM_PRINT_READABLY, prev_r);
     return result;
 }
 

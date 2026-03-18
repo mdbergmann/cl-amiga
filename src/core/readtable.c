@@ -68,8 +68,7 @@ CL_Readtable *cl_readtable_current(void)
 {
     CL_Obj rt_val;
     int idx;
-    CL_Symbol *sym = (CL_Symbol *)CL_OBJ_TO_PTR(SYM_STAR_READTABLE);
-    rt_val = sym->value;
+    rt_val = cl_symbol_value(SYM_STAR_READTABLE);
     if (CL_FIXNUM_P(rt_val)) {
         idx = CL_FIXNUM_VAL(rt_val);
         if (idx >= 0 && idx < CL_RT_POOL_SIZE)
@@ -127,11 +126,12 @@ void cl_readtable_reclaim(void)
 {
     uint32_t in_use = 0x03; /* slots 0 and 1 are always in use */
     int i, idx;
-    CL_Symbol *rt_sym = (CL_Symbol *)CL_OBJ_TO_PTR(SYM_STAR_READTABLE);
+    CL_Obj rt_cur;
 
     /* Mark current *readtable* value */
-    if (CL_FIXNUM_P(rt_sym->value)) {
-        idx = CL_FIXNUM_VAL(rt_sym->value);
+    rt_cur = cl_symbol_value(SYM_STAR_READTABLE);
+    if (CL_FIXNUM_P(rt_cur)) {
+        idx = CL_FIXNUM_VAL(rt_cur);
         if (idx >= 0 && idx < CL_RT_POOL_SIZE)
             in_use |= (1u << idx);
     }

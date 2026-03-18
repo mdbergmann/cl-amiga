@@ -267,17 +267,15 @@ static char *render_integer(CL_Obj obj, int32_t base, char *buf, int bufsz,
                             int *len_out)
 {
     /* Use printer to render in given base */
-    CL_Symbol *sb = (CL_Symbol *)CL_OBJ_TO_PTR(SYM_PRINT_BASE);
-    CL_Symbol *sx = (CL_Symbol *)CL_OBJ_TO_PTR(SYM_PRINT_RADIX);
-    CL_Obj prev_b = sb->value;
-    CL_Obj prev_x = sx->value;
+    CL_Obj prev_b = cl_symbol_value(SYM_PRINT_BASE);
+    CL_Obj prev_x = cl_symbol_value(SYM_PRINT_RADIX);
     int len;
 
-    sb->value = CL_MAKE_FIXNUM(base);
-    sx->value = CL_NIL;
+    cl_set_symbol_value(SYM_PRINT_BASE, CL_MAKE_FIXNUM(base));
+    cl_set_symbol_value(SYM_PRINT_RADIX, CL_NIL);
     len = cl_princ_to_string(obj, buf, bufsz);
-    sb->value = prev_b;
-    sx->value = prev_x;
+    cl_set_symbol_value(SYM_PRINT_BASE, prev_b);
+    cl_set_symbol_value(SYM_PRINT_RADIX, prev_x);
     *len_out = len;
     return buf;
 }

@@ -748,52 +748,52 @@ static CL_Obj bi_write_to_string(CL_Obj *args, int n)
     int has_keywords = (n > 1);
 
     if (has_keywords) {
-        se = (CL_Symbol *)CL_OBJ_TO_PTR(SYM_PRINT_ESCAPE);    prev_e = se->value;
-        sr = (CL_Symbol *)CL_OBJ_TO_PTR(SYM_PRINT_READABLY);  prev_r = sr->value;
-        sb = (CL_Symbol *)CL_OBJ_TO_PTR(SYM_PRINT_BASE);      prev_b = sb->value;
-        sx = (CL_Symbol *)CL_OBJ_TO_PTR(SYM_PRINT_RADIX);     prev_x = sx->value;
-        sl = (CL_Symbol *)CL_OBJ_TO_PTR(SYM_PRINT_LEVEL);     prev_l = sl->value;
-        sn = (CL_Symbol *)CL_OBJ_TO_PTR(SYM_PRINT_LENGTH);    prev_n = sn->value;
-        sc = (CL_Symbol *)CL_OBJ_TO_PTR(SYM_PRINT_CASE);      prev_c = sc->value;
-        sg = (CL_Symbol *)CL_OBJ_TO_PTR(SYM_PRINT_GENSYM);    prev_g = sg->value;
-        sa = (CL_Symbol *)CL_OBJ_TO_PTR(SYM_PRINT_ARRAY);     prev_a = sa->value;
-        si = (CL_Symbol *)CL_OBJ_TO_PTR(SYM_PRINT_CIRCLE);    prev_i = si->value;
-        sp = (CL_Symbol *)CL_OBJ_TO_PTR(SYM_PRINT_PRETTY);    prev_p = sp->value;
-        sm = (CL_Symbol *)CL_OBJ_TO_PTR(SYM_PRINT_RIGHT_MARGIN); prev_m = sm->value;
+        prev_e = cl_symbol_value(SYM_PRINT_ESCAPE);
+        prev_r = cl_symbol_value(SYM_PRINT_READABLY);
+        prev_b = cl_symbol_value(SYM_PRINT_BASE);
+        prev_x = cl_symbol_value(SYM_PRINT_RADIX);
+        prev_l = cl_symbol_value(SYM_PRINT_LEVEL);
+        prev_n = cl_symbol_value(SYM_PRINT_LENGTH);
+        prev_c = cl_symbol_value(SYM_PRINT_CASE);
+        prev_g = cl_symbol_value(SYM_PRINT_GENSYM);
+        prev_a = cl_symbol_value(SYM_PRINT_ARRAY);
+        prev_i = cl_symbol_value(SYM_PRINT_CIRCLE);
+        prev_p = cl_symbol_value(SYM_PRINT_PRETTY);
+        prev_m = cl_symbol_value(SYM_PRINT_RIGHT_MARGIN);
 
         for (i = 1; i + 1 < n; i += 2) {
             CL_Obj kw = args[i];
             CL_Obj val = args[i + 1];
-            if (kw == KW_WTS_ESCAPE)        se->value = val;
-            else if (kw == KW_WTS_READABLY) sr->value = val;
-            else if (kw == KW_WTS_BASE)     sb->value = val;
-            else if (kw == KW_WTS_RADIX)    sx->value = val;
-            else if (kw == KW_WTS_LEVEL)    sl->value = val;
-            else if (kw == KW_WTS_LENGTH)   sn->value = val;
-            else if (kw == KW_WTS_CASE)     sc->value = val;
-            else if (kw == KW_WTS_GENSYM)   sg->value = val;
-            else if (kw == KW_WTS_ARRAY)    sa->value = val;
-            else if (kw == KW_WTS_CIRCLE)   si->value = val;
-            else if (kw == KW_WTS_PRETTY)   sp->value = val;
-            else if (kw == KW_WTS_RIGHT_MARGIN) sm->value = val;
+            if (kw == KW_WTS_ESCAPE)        cl_set_symbol_value(SYM_PRINT_ESCAPE, val);
+            else if (kw == KW_WTS_READABLY) cl_set_symbol_value(SYM_PRINT_READABLY, val);
+            else if (kw == KW_WTS_BASE)     cl_set_symbol_value(SYM_PRINT_BASE, val);
+            else if (kw == KW_WTS_RADIX)    cl_set_symbol_value(SYM_PRINT_RADIX, val);
+            else if (kw == KW_WTS_LEVEL)    cl_set_symbol_value(SYM_PRINT_LEVEL, val);
+            else if (kw == KW_WTS_LENGTH)   cl_set_symbol_value(SYM_PRINT_LENGTH, val);
+            else if (kw == KW_WTS_CASE)     cl_set_symbol_value(SYM_PRINT_CASE, val);
+            else if (kw == KW_WTS_GENSYM)   cl_set_symbol_value(SYM_PRINT_GENSYM, val);
+            else if (kw == KW_WTS_ARRAY)    cl_set_symbol_value(SYM_PRINT_ARRAY, val);
+            else if (kw == KW_WTS_CIRCLE)   cl_set_symbol_value(SYM_PRINT_CIRCLE, val);
+            else if (kw == KW_WTS_PRETTY)   cl_set_symbol_value(SYM_PRINT_PRETTY, val);
+            else if (kw == KW_WTS_RIGHT_MARGIN) cl_set_symbol_value(SYM_PRINT_RIGHT_MARGIN, val);
         }
     }
 
     len = cl_prin1_to_string(args[0], buf, sizeof(buf));
 
     if (has_keywords) {
-        se->value = prev_e;
-        sr->value = prev_r;
-        sb->value = prev_b;
-        sx->value = prev_x;
-        sl->value = prev_l;
-        sn->value = prev_n;
-        sc->value = prev_c;
-        sg->value = prev_g;
-        sa->value = prev_a;
-        si->value = prev_i;
-        sp->value = prev_p;
-        sm->value = prev_m;
+        cl_set_symbol_value(SYM_PRINT_ESCAPE, prev_e);
+        cl_set_symbol_value(SYM_PRINT_READABLY, prev_r);
+        cl_set_symbol_value(SYM_PRINT_BASE, prev_b);
+        cl_set_symbol_value(SYM_PRINT_RADIX, prev_x);
+        cl_set_symbol_value(SYM_PRINT_LEVEL, prev_l);
+        cl_set_symbol_value(SYM_PRINT_LENGTH, prev_n);
+        cl_set_symbol_value(SYM_PRINT_CASE, prev_c);
+        cl_set_symbol_value(SYM_PRINT_GENSYM, prev_g);
+        cl_set_symbol_value(SYM_PRINT_ARRAY, prev_a);
+        cl_set_symbol_value(SYM_PRINT_CIRCLE, prev_i);
+        cl_set_symbol_value(SYM_PRINT_PRETTY, prev_p);
+        cl_set_symbol_value(SYM_PRINT_RIGHT_MARGIN, prev_m);
     }
 
     return cl_make_string(buf, (uint32_t)len);

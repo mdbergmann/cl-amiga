@@ -9,6 +9,7 @@
 
 #define CL_THREAD_NO_MACROS  /* access struct members directly */
 #include "thread.h"
+#include "symbol.h"
 #include "../platform/platform.h"
 #include "../platform/platform_thread.h"
 #include <string.h>
@@ -128,6 +129,99 @@ void cl_gc_resume_the_world(void)
     /* Wake all waiting threads */
     platform_condvar_broadcast(gc_condvar);
     platform_mutex_unlock(gc_mutex);
+}
+
+/* ---- TLV table operations (Phase 3) ---- */
+
+CL_Obj cl_tlv_get(CL_Thread *t, CL_Obj sym)
+{
+    uint32_t idx = (sym >> 2) & (CL_TLV_TABLE_SIZE - 1);
+    uint32_t i;
+    for (i = 0; i < CL_TLV_TABLE_SIZE; i++) {
+        uint32_t slot = (idx + i) & (CL_TLV_TABLE_SIZE - 1);
+        CL_Obj k = t->tlv_table[slot].symbol;
+        if (k == CL_NIL) return CL_TLV_ABSENT;
+        if (k == sym)     return t->tlv_table[slot].value;
+    }
+    return CL_TLV_ABSENT;
+}
+
+void cl_tlv_set(CL_Thread *t, CL_Obj sym, CL_Obj val)
+{
+    uint32_t idx = (sym >> 2) & (CL_TLV_TABLE_SIZE - 1);
+    uint32_t first_tombstone = CL_TLV_TABLE_SIZE;
+    uint32_t i;
+    for (i = 0; i < CL_TLV_TABLE_SIZE; i++) {
+        uint32_t slot = (idx + i) & (CL_TLV_TABLE_SIZE - 1);
+        CL_Obj k = t->tlv_table[slot].symbol;
+        if (k == sym) {
+            t->tlv_table[slot].value = val;
+            return;
+        }
+        if (k == CL_UNBOUND && first_tombstone == CL_TLV_TABLE_SIZE)
+            first_tombstone = slot;
+        if (k == CL_NIL) {
+            uint32_t target = (first_tombstone < CL_TLV_TABLE_SIZE)
+                              ? first_tombstone : slot;
+            t->tlv_table[target].symbol = sym;
+            t->tlv_table[target].value  = val;
+            return;
+        }
+    }
+    if (first_tombstone < CL_TLV_TABLE_SIZE) {
+        t->tlv_table[first_tombstone].symbol = sym;
+        t->tlv_table[first_tombstone].value  = val;
+    }
+}
+
+void cl_tlv_remove(CL_Thread *t, CL_Obj sym)
+{
+    uint32_t idx = (sym >> 2) & (CL_TLV_TABLE_SIZE - 1);
+    uint32_t i;
+    for (i = 0; i < CL_TLV_TABLE_SIZE; i++) {
+        uint32_t slot = (idx + i) & (CL_TLV_TABLE_SIZE - 1);
+        CL_Obj k = t->tlv_table[slot].symbol;
+        if (k == CL_NIL) return;
+        if (k == sym) {
+            t->tlv_table[slot].symbol = CL_UNBOUND;
+            t->tlv_table[slot].value  = CL_NIL;
+            return;
+        }
+    }
+}
+
+/* High-level TLV-aware accessors */
+
+CL_Obj cl_symbol_value(CL_Obj sym)
+{
+    CL_Thread *t = (CL_Thread *)platform_tls_get();
+    CL_Obj v = cl_tlv_get(t, sym);
+    if (v != CL_TLV_ABSENT) return v;
+    return ((CL_Symbol *)CL_OBJ_TO_PTR(sym))->value;
+}
+
+void cl_set_symbol_value(CL_Obj sym, CL_Obj val)
+{
+    CL_Thread *t = (CL_Thread *)platform_tls_get();
+    CL_Obj v = cl_tlv_get(t, sym);
+    if (v != CL_TLV_ABSENT)
+        cl_tlv_set(t, sym, val);
+    else
+        ((CL_Symbol *)CL_OBJ_TO_PTR(sym))->value = val;
+}
+
+int cl_symbol_boundp(CL_Obj sym)
+{
+    CL_Thread *t = (CL_Thread *)platform_tls_get();
+    CL_Obj v = cl_tlv_get(t, sym);
+    if (v != CL_TLV_ABSENT) return v != CL_UNBOUND;
+    return ((CL_Symbol *)CL_OBJ_TO_PTR(sym))->value != CL_UNBOUND;
+}
+
+/* TLV snapshot (for Phase 4 thread inheritance) */
+void cl_tlv_snapshot(CL_Thread *dst, CL_Thread *src)
+{
+    memcpy(dst->tlv_table, src->tlv_table, sizeof(src->tlv_table));
 }
 
 /* ---- Init / Shutdown ---- */

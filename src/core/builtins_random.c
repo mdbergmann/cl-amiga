@@ -43,8 +43,7 @@ static uint32_t xorshift128_next(CL_RandomState *rs)
 /* Get the current *random-state* value */
 static CL_RandomState *get_default_random_state(void)
 {
-    CL_Symbol *s = (CL_Symbol *)CL_OBJ_TO_PTR(SYM_RANDOM_STATE);
-    return (CL_RandomState *)CL_OBJ_TO_PTR(s->value);
+    return (CL_RandomState *)CL_OBJ_TO_PTR(cl_symbol_value(SYM_RANDOM_STATE));
 }
 
 /* --- (random limit &optional random-state) --- */

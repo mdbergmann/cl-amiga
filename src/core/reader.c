@@ -114,8 +114,7 @@ static CL_Obj read_list(void);
 /* Check if a keyword symbol is in the *features* list */
 static int feature_member(CL_Obj keyword)
 {
-    CL_Symbol *feat_sym = (CL_Symbol *)CL_OBJ_TO_PTR(SYM_STAR_FEATURES);
-    CL_Obj list = feat_sym->value;
+    CL_Obj list = cl_symbol_value(SYM_STAR_FEATURES);
     while (CL_CONS_P(list)) {
         if (cl_car(list) == keyword)
             return 1;
@@ -978,8 +977,8 @@ static CL_Obj read_expr(void)
             if (read_suppress) return CL_NIL;
 
             /* Check *read-eval* */
-            re_sym = (CL_Symbol *)CL_OBJ_TO_PTR(SYM_STAR_READ_EVAL);
-            if (CL_NULL_P(re_sym->value))
+            (void)re_sym;
+            if (CL_NULL_P(cl_symbol_value(SYM_STAR_READ_EVAL)))
                 cl_error(CL_ERR_GENERAL, "#. disabled: *READ-EVAL* is NIL");
 
             CL_GC_PROTECT(form);

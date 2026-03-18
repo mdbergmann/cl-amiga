@@ -135,7 +135,6 @@ void cl_load_file(const char *path)
            doesn't affect the caller */
         CL_Obj saved_package = cl_current_package;
         CL_Obj stream, load_pathname_obj, load_truename_obj;
-        CL_Symbol *lp_sym, *lt_sym;
         CL_Obj saved_load_pathname, saved_load_truename;
 
         /* Bind *load-pathname* and *load-truename* per CL spec */
@@ -146,12 +145,10 @@ void cl_load_file(const char *path)
         load_truename_obj = load_pathname_obj;
         CL_GC_PROTECT(load_pathname_obj);
         CL_GC_PROTECT(load_truename_obj);
-        lp_sym = (CL_Symbol *)CL_OBJ_TO_PTR(SYM_STAR_LOAD_PATHNAME);
-        lt_sym = (CL_Symbol *)CL_OBJ_TO_PTR(SYM_STAR_LOAD_TRUENAME);
-        saved_load_pathname = lp_sym->value;
-        saved_load_truename = lt_sym->value;
-        lp_sym->value = load_pathname_obj;
-        lt_sym->value = load_truename_obj;
+        saved_load_pathname = cl_symbol_value(SYM_STAR_LOAD_PATHNAME);
+        saved_load_truename = cl_symbol_value(SYM_STAR_LOAD_TRUENAME);
+        cl_set_symbol_value(SYM_STAR_LOAD_PATHNAME, load_pathname_obj);
+        cl_set_symbol_value(SYM_STAR_LOAD_TRUENAME, load_truename_obj);
 
         cl_current_source_file = path;
         cl_current_file_id++;
@@ -187,8 +184,8 @@ void cl_load_file(const char *path)
         platform_free(buf);
 
         /* Restore *load-pathname* and *load-truename* */
-        lp_sym->value = saved_load_pathname;
-        lt_sym->value = saved_load_truename;
+        cl_set_symbol_value(SYM_STAR_LOAD_PATHNAME, saved_load_pathname);
+        cl_set_symbol_value(SYM_STAR_LOAD_TRUENAME, saved_load_truename);
         CL_GC_UNPROTECT(2); /* load_truename_obj, load_pathname_obj */
 
         cl_current_source_file = prev_file;
@@ -197,10 +194,7 @@ void cl_load_file(const char *path)
 
         /* Restore *package* — in-package in loaded file must not leak */
         cl_current_package = saved_package;
-        {
-            CL_Symbol *pkg_sym = (CL_Symbol *)CL_OBJ_TO_PTR(SYM_STAR_PACKAGE);
-            pkg_sym->value = saved_package;
-        }
+        cl_set_symbol_value(SYM_STAR_PACKAGE, saved_package);
     }
 }
 
@@ -462,27 +456,15 @@ CL_Obj cl_eval_string(const char *str)
  * form = the expression that was read, result = the value it produced. */
 void cl_repl_update_history(CL_Obj form, CL_Obj result)
 {
-    CL_Symbol *s;
-
     /* Shift ***: *** <- **, ** <- *, * <- result */
-    s = (CL_Symbol *)CL_OBJ_TO_PTR(SYM_STARSTARSTAR);
-    s->value = ((CL_Symbol *)CL_OBJ_TO_PTR(SYM_STARSTAR))->value;
-
-    s = (CL_Symbol *)CL_OBJ_TO_PTR(SYM_STARSTAR);
-    s->value = ((CL_Symbol *)CL_OBJ_TO_PTR(SYM_STAR))->value;
-
-    s = (CL_Symbol *)CL_OBJ_TO_PTR(SYM_STAR);
-    s->value = result;
+    cl_set_symbol_value(SYM_STARSTARSTAR, cl_symbol_value(SYM_STARSTAR));
+    cl_set_symbol_value(SYM_STARSTAR, cl_symbol_value(SYM_STAR));
+    cl_set_symbol_value(SYM_STAR, result);
 
     /* Shift +++: +++ <- ++, ++ <- +, + <- form */
-    s = (CL_Symbol *)CL_OBJ_TO_PTR(SYM_PLUSPLUSPLUS);
-    s->value = ((CL_Symbol *)CL_OBJ_TO_PTR(SYM_PLUSPLUS))->value;
-
-    s = (CL_Symbol *)CL_OBJ_TO_PTR(SYM_PLUSPLUS);
-    s->value = ((CL_Symbol *)CL_OBJ_TO_PTR(SYM_PLUS))->value;
-
-    s = (CL_Symbol *)CL_OBJ_TO_PTR(SYM_PLUS);
-    s->value = form;
+    cl_set_symbol_value(SYM_PLUSPLUSPLUS, cl_symbol_value(SYM_PLUSPLUS));
+    cl_set_symbol_value(SYM_PLUSPLUS, cl_symbol_value(SYM_PLUS));
+    cl_set_symbol_value(SYM_PLUS, form);
 }
 
 void cl_repl(void)
@@ -554,11 +536,8 @@ void cl_repl(void)
 
                 expr = cl_read_from_string(&stream);
                 if (!CL_NULL_P(expr) && !cl_reader_eof()) {
-                    CL_Symbol *s;
-
                     /* Set - to current form */
-                    s = (CL_Symbol *)CL_OBJ_TO_PTR(SYM_MINUS);
-                    s->value = expr;
+                    cl_set_symbol_value(SYM_MINUS, expr);
 
                     CL_GC_PROTECT(expr);
                     bytecode = cl_compile(expr);

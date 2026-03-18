@@ -21,6 +21,15 @@ struct CL_Compiler_s;
 #define CL_CIRCLE_HT_SIZE    256
 #define CL_VM_TRACE_SIZE     64
 
+/* ---- Thread-Local Value (TLV) table ---- */
+#define CL_TLV_TABLE_SIZE  256
+#define CL_TLV_ABSENT      ((CL_Obj)0xFFFFFFFE)  /* "no TLV entry" sentinel */
+
+typedef struct {
+    CL_Obj symbol;  /* CL_NIL = empty slot, CL_UNBOUND = tombstone */
+    CL_Obj value;
+} CL_TLVEntry;
+
 typedef struct CL_Thread_s {
     /* ---- Thread metadata (Phase 1+) ---- */
     uint32_t id;
@@ -137,6 +146,9 @@ typedef struct CL_Thread_s {
     /* ---- Debugger state ---- */
     int in_debugger;
 
+    /* ---- Thread-Local Value (TLV) table (Phase 3+) ---- */
+    CL_TLVEntry tlv_table[CL_TLV_TABLE_SIZE];
+
     /* ---- GC coordination (Phase 2+) ---- */
     volatile uint8_t gc_requested;
     volatile uint8_t gc_stopped;
@@ -176,6 +188,21 @@ void cl_thread_unregister(CL_Thread *t);
     do { if (cl_get_current_thread()->gc_requested) cl_gc_safepoint(); } while (0)
 
 void cl_gc_safepoint(void);  /* slow path: stop until GC completes */
+
+/* ---- TLV functions ---- */
+
+/* Snapshot TLV table from src to dst (for Phase 4 thread inheritance) */
+void cl_tlv_snapshot(CL_Thread *dst, CL_Thread *src);
+
+/* TLV table operations */
+CL_Obj cl_tlv_get(CL_Thread *t, CL_Obj sym);
+void   cl_tlv_set(CL_Thread *t, CL_Obj sym, CL_Obj val);
+void   cl_tlv_remove(CL_Thread *t, CL_Obj sym);
+
+/* High-level TLV-aware accessors */
+CL_Obj cl_symbol_value(CL_Obj sym);
+void   cl_set_symbol_value(CL_Obj sym, CL_Obj val);
+int    cl_symbol_boundp(CL_Obj sym);
 
 /* ================================================================
  * Compatibility macros
