@@ -8,7 +8,8 @@ SRCDIR   = src
 BUILDDIR = build/host
 
 # Source files
-PLATFORM_SRC = $(SRCDIR)/platform/platform_posix.c
+PLATFORM_SRC = $(SRCDIR)/platform/platform_posix.c \
+               $(SRCDIR)/platform/platform_thread_posix.c
 CORE_SRC     = $(SRCDIR)/core/types.c \
                $(SRCDIR)/core/mem.c \
                $(SRCDIR)/core/error.c \

@@ -146,8 +146,14 @@ typedef struct CL_Thread_s {
     void *platform_handle;
 } CL_Thread;
 
-/* Current thread pointer — single global for Phase 0, TLS in Phase 1+ */
-extern CL_Thread *cl_current_thread;
+/* Current thread pointer — TLS-backed (Phase 1+).
+ * platform_tls_get() returns the CL_Thread* for the calling OS thread.
+ * A fast-path global is kept for single-threaded hot paths (Phase 0 compat). */
+extern CL_Thread *cl_main_thread_ptr;   /* fast access to main thread */
+
+CL_Thread *cl_get_current_thread(void); /* TLS-based accessor */
+
+#define cl_current_thread cl_get_current_thread()
 #define CT cl_current_thread
 
 /* Initialize/shutdown thread system */

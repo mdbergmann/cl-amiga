@@ -11,7 +11,8 @@ SRCDIR   = src
 BUILDDIR = build/cross
 
 # Source files
-PLATFORM_SRC = $(SRCDIR)/platform/platform_amiga.c
+PLATFORM_SRC = $(SRCDIR)/platform/platform_amiga.c \
+               $(SRCDIR)/platform/platform_thread_amiga.c
 CORE_SRC     = $(SRCDIR)/core/types.c \
                $(SRCDIR)/core/mem.c \
                $(SRCDIR)/core/error.c \
