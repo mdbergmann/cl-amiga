@@ -2334,10 +2334,12 @@ CL_Obj cl_compile_defun(CL_Obj name, CL_Obj lambda_list, CL_Obj body)
     return cl_compile(form);
 }
 
-void cl_compiler_gc_mark(void)
+/* Mark compiler constants for a specific thread's active compiler chain.
+ * Used by multi-thread GC (Phase 2+). */
+void cl_compiler_gc_mark_thread(CL_Thread *t)
 {
     extern void gc_mark_obj(CL_Obj obj);
-    CL_Compiler *c = cl_active_compiler;
+    CL_Compiler *c = t->active_compiler;
     while (c) {
         int i;
         for (i = 0; i < c->const_count; i++)
@@ -2378,6 +2380,12 @@ void cl_compiler_gc_mark(void)
         }
         c = c->parent;
     }
+}
+
+/* Legacy wrapper — marks current thread's compiler chain */
+void cl_compiler_gc_mark(void)
+{
+    cl_compiler_gc_mark_thread(cl_get_current_thread());
 }
 
 void cl_compiler_init(void)

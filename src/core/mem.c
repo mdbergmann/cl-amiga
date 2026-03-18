@@ -6,6 +6,7 @@
 #include "package.h"
 #include "stream.h"
 #include "../platform/platform.h"
+#include "../platform/platform_thread.h"
 #include <stdarg.h>
 #include <string.h>
 #include <stdio.h>
@@ -20,6 +21,13 @@ extern CL_Obj condition_slot_table;    /* builtins_condition.c */
 
 /* Active compiler chain is accessed via cl_active_compiler macro (thread.h) */
 typedef struct CL_Compiler_s CL_Compiler;
+
+/* STW GC coordination (defined in thread.c) */
+extern void cl_gc_stop_the_world(void);
+extern void cl_gc_resume_the_world(void);
+
+/* Allocation mutex — protects bump pointer, free list, and heap metadata */
+static void *alloc_mutex = NULL;
 
 CL_Heap cl_heap;
 uint8_t *cl_arena_base = NULL;  /* Global arena base for offset↔pointer conversion */
@@ -68,6 +76,9 @@ void cl_mem_init(uint32_t heap_size)
 
     gc_root_count = 0;
     gc_mark_top = 0;
+
+    /* Initialize allocation mutex */
+    platform_mutex_init(&alloc_mutex);
 }
 
 void cl_mem_shutdown(void)
@@ -75,6 +86,10 @@ void cl_mem_shutdown(void)
     if (cl_heap.arena) {
         platform_free(cl_heap.arena);
         cl_heap.arena = NULL;
+    }
+    if (alloc_mutex) {
+        platform_mutex_destroy(alloc_mutex);
+        alloc_mutex = NULL;
     }
 }
 
@@ -156,9 +171,15 @@ void *cl_alloc(uint8_t type, uint32_t size)
 {
     void *ptr;
 
+    /* GC safepoint before allocation — if another thread initiated GC,
+     * we must stop here before touching the heap */
+    CL_SAFEPOINT();
+
     size = align_up(size);
     if (size < CL_MIN_ALLOC_SIZE)
         size = CL_MIN_ALLOC_SIZE;
+
+    platform_mutex_lock(alloc_mutex);
 
     /* Try bump allocator first */
     ptr = alloc_from_bump(size);
@@ -167,20 +188,25 @@ void *cl_alloc(uint8_t type, uint32_t size)
         ptr = alloc_from_free_list(&size);
     }
     if (!ptr) {
-        /* Run GC and retry */
+        /* Need GC — release alloc_mutex so other threads can reach safepoints,
+         * then run STW GC, then re-acquire and retry */
+        platform_mutex_unlock(alloc_mutex);
         cl_gc();
+        platform_mutex_lock(alloc_mutex);
         ptr = alloc_from_free_list(&size);
         if (!ptr) {
             ptr = alloc_from_bump(size);
         }
     }
     if (!ptr) {
+        platform_mutex_unlock(alloc_mutex);
         cl_storage_error("Heap exhausted (requested %u bytes)", (unsigned)size);
     }
 
     /* Guard: size must fit in the 23-bit header size field.
      * If this fires, an object exceeds ~8MB — architecturally unsupported. */
     if (size > CL_HDR_SIZE_MASK) {
+        platform_mutex_unlock(alloc_mutex);
         cl_storage_error("Allocation too large for header: %u bytes (max %u)",
                          (unsigned)size, (unsigned)CL_HDR_SIZE_MASK);
     }
@@ -189,6 +215,8 @@ void *cl_alloc(uint8_t type, uint32_t size)
     ((CL_Header *)ptr)->header = CL_MAKE_HDR(type, size);
     cl_heap.total_allocated += size;
     cl_heap.total_consed += size;
+
+    platform_mutex_unlock(alloc_mutex);
 
     return ptr;
 }
@@ -708,9 +736,89 @@ void gc_mark_obj(CL_Obj obj)
     gc_mark_children(ptr, CL_HDR_TYPE(ptr));
 }
 
-static void gc_mark(void)
+/* Mark all per-thread roots for a single thread.
+ * Called during STW GC — no locking needed, thread is stopped.
+ *
+ * We must #undef gc_root_count here because thread.h defines it as
+ * (CT->gc_root_count), which collides with t->gc_root_count member access. */
+#undef gc_root_count
+static void gc_mark_thread_roots(CL_Thread *t)
 {
     int i;
+
+    /* GC root stack */
+    for (i = 0; i < t->gc_root_count; i++) {
+        gc_mark_obj(*t->gc_roots[i]);
+    }
+
+    /* Dynamic binding stack (saved old values) */
+    for (i = 0; i < t->dyn_top; i++) {
+        gc_mark_obj(t->dyn_stack[i].symbol);
+        gc_mark_obj(t->dyn_stack[i].old_value);
+    }
+
+    /* NLX stack (catch tags, results, and saved bytecodes) */
+    for (i = 0; i < t->nlx_top; i++) {
+        gc_mark_obj(t->nlx_stack[i].tag);
+        gc_mark_obj(t->nlx_stack[i].result);
+        gc_mark_obj(t->nlx_stack[i].bytecode);
+    }
+
+    /* Handler stack */
+    for (i = 0; i < t->handler_top; i++) {
+        gc_mark_obj(t->handler_stack[i].type_name);
+        gc_mark_obj(t->handler_stack[i].handler);
+    }
+
+    /* Restart stack */
+    for (i = 0; i < t->restart_top; i++) {
+        gc_mark_obj(t->restart_stack[i].name);
+        gc_mark_obj(t->restart_stack[i].handler);
+        gc_mark_obj(t->restart_stack[i].tag);
+    }
+
+    /* VM execution stack */
+    if (t->vm.stack) {
+        for (i = 0; i < t->vm.sp; i++) {
+            gc_mark_obj(t->vm.stack[i]);
+        }
+    }
+
+    /* Bytecode objects referenced by active VM frames */
+    for (i = 0; i < t->vm.fp; i++) {
+        gc_mark_obj(t->vm.frames[i].bytecode);
+    }
+
+    /* Multiple values and pending throw state */
+    for (i = 0; i < CL_MAX_MV; i++) {
+        gc_mark_obj(t->mv_values[i]);
+    }
+    gc_mark_obj(t->pending_tag);
+    gc_mark_obj(t->pending_value);
+
+    /* Thread metadata */
+    gc_mark_obj(t->name);
+    gc_mark_obj(t->result);
+
+    /* Compiler constants (active compilers may hold CL_Obj values
+     * in platform_alloc'd memory not reachable from the GC arena) */
+    {
+        extern void cl_compiler_gc_mark_thread(CL_Thread *t);
+        cl_compiler_gc_mark_thread(t);
+    }
+
+    /* VM-internal buffers (e.g. vm_extra_args during &rest processing) */
+    {
+        extern void cl_vm_gc_mark_extra_thread(CL_Thread *t);
+        cl_vm_gc_mark_extra_thread(t);
+    }
+}
+/* Restore gc_root_count macro for the rest of mem.c */
+#define gc_root_count (CT->gc_root_count)
+
+static void gc_mark(void)
+{
+    CL_Thread *t;
 
     gc_mark_overflow = 0;
 
@@ -721,15 +829,21 @@ static void gc_mark(void)
      * heap re-scan couldn't recover them (it only processes children of
      * already-marked objects).  With gc_mark_obj, even if children
      * overflow, the root itself IS marked and recoverable by re-scan. */
-    for (i = 0; i < gc_root_count; i++) {
-        gc_mark_obj(*gc_root_stack[i]);
+
+    /* Mark per-thread roots for ALL registered threads.
+     * During STW GC, all other threads are stopped, so the thread list
+     * is stable — no lock needed for iteration. */
+    for (t = cl_thread_list; t; t = t->next) {
+        gc_mark_thread_roots(t);
     }
 
-    /* Mark package registry — transitively marks all packages, all symbols,
+    /* Mark shared globals (not per-thread) */
+
+    /* Package registry — transitively marks all packages, all symbols,
      * and all their values/functions/plists */
     gc_mark_obj(cl_package_registry);
 
-    /* Mark compiler tables (alists not reachable through packages) */
+    /* Compiler tables (alists not reachable through packages) */
     gc_mark_obj(macro_table);
     gc_mark_obj(setf_table);
     gc_mark_obj(setf_fn_table);
@@ -740,54 +854,7 @@ static void gc_mark(void)
     gc_mark_obj(condition_hierarchy);
     gc_mark_obj(condition_slot_table);
 
-    /* Mark dynamic binding stack (saved old values) */
-    for (i = 0; i < cl_dyn_top; i++) {
-        gc_mark_obj(cl_dyn_stack[i].symbol);
-        gc_mark_obj(cl_dyn_stack[i].old_value);
-    }
-
-    /* Mark NLX stack (catch tags, results, and saved bytecodes) */
-    for (i = 0; i < cl_nlx_top; i++) {
-        gc_mark_obj(cl_nlx_stack[i].tag);
-        gc_mark_obj(cl_nlx_stack[i].result);
-        gc_mark_obj(cl_nlx_stack[i].bytecode);
-    }
-
-    /* Mark handler stack */
-    for (i = 0; i < cl_handler_top; i++) {
-        gc_mark_obj(cl_handler_stack[i].type_name);
-        gc_mark_obj(cl_handler_stack[i].handler);
-    }
-
-    /* Mark restart stack */
-    for (i = 0; i < cl_restart_top; i++) {
-        gc_mark_obj(cl_restart_stack[i].name);
-        gc_mark_obj(cl_restart_stack[i].handler);
-        gc_mark_obj(cl_restart_stack[i].tag);
-    }
-
-    /* Mark VM execution stack */
-    if (cl_vm.stack) {
-        for (i = 0; i < cl_vm.sp; i++) {
-            gc_mark_obj(cl_vm.stack[i]);
-        }
-    }
-
-    /* Mark bytecode objects referenced by active VM frames.
-     * Stub bytecodes from cl_vm_apply are only reachable through
-     * frame->bytecode — without this, GC sweeps them during nested calls. */
-    for (i = 0; i < cl_vm.fp; i++) {
-        gc_mark_obj(cl_vm.frames[i].bytecode);
-    }
-
-    /* Mark multiple values and pending throw state */
-    for (i = 0; i < CL_MAX_MV; i++) {
-        gc_mark_obj(cl_mv_values[i]);
-    }
-    gc_mark_obj(cl_pending_tag);
-    gc_mark_obj(cl_pending_value);
-
-    /* Mark readtable user macro closures */
+    /* Readtable user macro closures */
     {
         int rt, ch;
         for (rt = 0; rt < CL_RT_POOL_SIZE; rt++) {
@@ -800,19 +867,6 @@ static void gc_mark(void)
                     gc_mark_obj(cl_readtable_pool[rt].dispatch_fn[ch]);
             }
         }
-    }
-
-    /* Mark compiler constants (active compilers may hold CL_Obj values
-     * in platform_alloc'd memory not reachable from the GC arena) */
-    {
-        extern void cl_compiler_gc_mark(void);
-        cl_compiler_gc_mark();
-    }
-
-    /* Mark VM-internal buffers (e.g. vm_extra_args during &rest processing) */
-    {
-        extern void cl_vm_gc_mark_extra(void);
-        cl_vm_gc_mark_extra();
     }
 
     /* Drain mark stack iteratively (children pushed by gc_mark_obj above).
@@ -1218,6 +1272,12 @@ static void gc_verify_after_sweep(void)
 
 void cl_gc(void)
 {
+    int multithread = (cl_thread_count > 1);
+
+    /* Stop all other threads if multi-threaded */
+    if (multithread)
+        cl_gc_stop_the_world();
+
 #ifdef DEBUG_GC
     {
         char buf[128];
@@ -1296,6 +1356,10 @@ void cl_gc(void)
         platform_write_string(buf);
     }
 #endif
+
+    /* Resume all stopped threads */
+    if (multithread)
+        cl_gc_resume_the_world();
 }
 
 void cl_mem_stats(void)

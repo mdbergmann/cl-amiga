@@ -53,6 +53,8 @@ void cl_process_declaration_specifier(CL_Obj spec);
 
 /* GC marking: mark all CL_Obj values referenced by active compiler(s) */
 void cl_compiler_gc_mark(void);
+struct CL_Thread_s;
+void cl_compiler_gc_mark_thread(struct CL_Thread_s *t);
 
 /* Save/restore active compiler chain across non-local exits.
  * cl_compiler_mark() returns an opaque snapshot.

@@ -4,9 +4,9 @@
 /*
  * CL_Thread: per-thread execution state.
  *
- * Phase 0: single global instance, no actual threading.
- * All legacy global/static per-thread variables are redirected here
- * via compatibility macros (e.g. cl_vm -> CT->vm).
+ * Phase 0: single global instance, compatibility macros.
+ * Phase 1: TLS-backed cl_current_thread.
+ * Phase 2: thread registry, GC coordination (safepoints, STW).
  */
 
 #include "vm.h"
@@ -159,6 +159,23 @@ CL_Thread *cl_get_current_thread(void); /* TLS-based accessor */
 /* Initialize/shutdown thread system */
 void cl_thread_init(void);
 void cl_thread_shutdown(void);
+
+/* ---- Thread registry (Phase 2+) ---- */
+extern CL_Thread  *cl_thread_list;      /* linked list of all threads */
+extern void       *cl_thread_list_lock; /* mutex protecting the list */
+extern uint32_t    cl_thread_count;     /* number of registered threads */
+
+void cl_thread_register(CL_Thread *t);
+void cl_thread_unregister(CL_Thread *t);
+
+/* ---- GC coordination (Phase 2+) ---- */
+
+/* Safepoint check — insert at function calls and backward jumps.
+ * The volatile read is cheap; cl_gc_safepoint() is the slow path. */
+#define CL_SAFEPOINT() \
+    do { if (cl_get_current_thread()->gc_requested) cl_gc_safepoint(); } while (0)
+
+void cl_gc_safepoint(void);  /* slow path: stop until GC completes */
 
 /* ================================================================
  * Compatibility macros

@@ -480,12 +480,19 @@ void cl_check_c_stack(const char *context)
 /* GC root marking for VM-internal buffers.
  * Called from gc_mark() in mem.c to mark CL_Obj values held in static
  * arrays that are not on the VM stack (e.g., during &rest list building). */
-void cl_vm_gc_mark_extra(void)
+/* Mark VM extra args for a specific thread (Phase 2+ multi-thread GC) */
+void cl_vm_gc_mark_extra_thread(CL_Thread *t)
 {
     extern void gc_mark_obj(CL_Obj obj);
     int i;
-    for (i = 0; i < vm_extra_args_count; i++)
-        gc_mark_obj(vm_extra_args[i]);
+    for (i = 0; i < t->vm_extra_count; i++)
+        gc_mark_obj(t->vm_extra_args_buf[i]);
+}
+
+/* Legacy wrapper — marks current thread's extra args */
+void cl_vm_gc_mark_extra(void)
+{
+    cl_vm_gc_mark_extra_thread(cl_get_current_thread());
 }
 
 /* dbg_last_*, vm_trace[], vm_trace_idx are now in CL_Thread.
@@ -898,6 +905,7 @@ static CL_Obj cl_vm_run(int base_fp, int base_nlx)
 
         case OP_JMP: {
             int32_t offset = read_i32(code, &ip);
+            if (offset < 0) CL_SAFEPOINT();  /* backward jump = loop body */
             ip += offset;
             break;
         }
@@ -933,6 +941,7 @@ static CL_Obj cl_vm_run(int base_fp, int base_nlx)
         case OP_TAILCALL: {
             uint8_t nargs = code[ip++];
             int is_tail = (op == OP_TAILCALL);
+            CL_SAFEPOINT();
             CL_Obj *arg_base;
             CL_Obj func_obj;
 
@@ -1830,7 +1839,9 @@ static CL_Obj cl_vm_run(int base_fp, int base_nlx)
 
         case OP_APPLY: {
             /* (apply func arglist) — inline dispatch to avoid C stack nesting */
-            CL_Obj arglist = cl_vm_pop();
+            CL_Obj arglist;
+            CL_SAFEPOINT();
+            arglist = cl_vm_pop();
             CL_Obj apply_func = cl_vm_pop();
             int nflat = 0;
             int ai;

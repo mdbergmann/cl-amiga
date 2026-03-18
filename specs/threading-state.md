@@ -16,18 +16,29 @@
   - `src/core/thread.c` — calls `platform_tls_init/set` in `cl_thread_init()`; `cl_main_thread_ptr` exposed for fast access
   - `Makefile` — added `platform_thread_posix.c` to PLATFORM_SRC
   - `Makefile.cross` — added `platform_thread_amiga.c` to PLATFORM_SRC
-- **Tests**: `tests/test_thread_platform.c` — 17 tests (mutex, condvar, thread create/join, atomics, TLS isolation, CL_Thread TLS integration)
-- All 658+ existing tests pass unchanged; 17 new tests pass
+- **Tests**: `tests/test_thread_platform.c` — 17 tests
+- Committed: `76bcbbb`
 
-## Phase 2: GC Coordination — NEXT
-- Thread registry (linked list + mutex)
-- Allocation mutex around `cl_alloc()`
-- Safepoints (`CL_SAFEPOINT()`) at OP_CALL, OP_TAILCALL, cl_alloc, backward jumps
-- Stop-the-world protocol (set gc_requested on all threads, wait for gc_stopped)
-- Multi-thread root marking in `gc_mark()`
-- Test: `test_gc_threaded.c` — concurrent allocation stress test
+## Phase 2: GC Coordination — COMPLETE
+- **Thread registry**: linked list (`cl_thread_list`) + mutex (`cl_thread_list_lock`) + count
+  - `cl_thread_register()`/`cl_thread_unregister()` in `thread.c`
+  - Main thread auto-registered in `cl_thread_init()`
+- **Allocation mutex**: `alloc_mutex` in `mem.c` protects bump pointer and free list
+  - `cl_alloc()` locks/unlocks around allocation; releases before GC so other threads can reach safepoints
+- **Safepoints**: `CL_SAFEPOINT()` macro checks `CT->gc_requested`
+  - Inserted at: `OP_CALL`, `OP_TAILCALL`, `OP_APPLY`, backward `OP_JMP`, and `cl_alloc()` entry
+  - Slow path `cl_gc_safepoint()`: sets `gc_stopped=1`, signals GC initiator, waits until `gc_requested` cleared
+- **Stop-the-world protocol**: `cl_gc_stop_the_world()` / `cl_gc_resume_the_world()` in `thread.c`
+  - GC initiator: acquires `gc_mutex`, sets `gc_requested` on all other threads, waits for all `gc_stopped`, runs GC, clears flags, broadcasts condvar
+  - Skipped when `cl_thread_count == 1` (single-thread fast path)
+- **Multi-thread root marking**: `gc_mark()` refactored
+  - `gc_mark_thread_roots(CL_Thread *t)` — marks all per-thread roots for one thread
+  - Iterates `cl_thread_list` to mark all threads, then marks shared globals
+  - `cl_compiler_gc_mark_thread(CL_Thread *t)` and `cl_vm_gc_mark_extra_thread(CL_Thread *t)` — per-thread variants
+- **Tests**: `tests/test_gc_threaded.c` — 8 tests (registry, single-thread regression, concurrent alloc 2/4 threads, concurrent alloc with forced GC, safepoint smoke)
+- All 658+ existing tests pass; 8 new gc_threaded tests + 17 thread_platform tests pass
 
-## Phase 3: Thread-Local Dynamic Bindings
+## Phase 3: Thread-Local Dynamic Bindings — NEXT
 - Per-thread TLV table for special variable isolation
 - OP_GLOAD/OP_DYNBIND/OP_DYNUNBIND updated for TLV lookup
 - Dynamic variable inheritance on child thread creation
