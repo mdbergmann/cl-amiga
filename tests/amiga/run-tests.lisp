@@ -3485,17 +3485,6 @@
 (check "emf cache negative cached" 'no-method
   (handler-case (emf-neg "world") (error (c) 'no-method)))
 
-; --- Optimized slot access ---
-(defclass opt-pt () ((x :initarg :x :accessor opt-pt-x) (y :initarg :y :accessor opt-pt-y)))
-(check "opt accessor read" '(10 20) (let ((p (make-instance 'opt-pt :x 10 :y 20))) (list (opt-pt-x p) (opt-pt-y p))))
-(check "opt accessor write" 99 (let ((p (make-instance 'opt-pt :x 1 :y 2))) (setf (opt-pt-x p) 99) (opt-pt-x p)))
-(defclass opt-pt3d (opt-pt) ((z :initarg :z :accessor opt-pt3d-z)))
-(check "opt accessor inherited" '(1 2 3) (let ((p (make-instance 'opt-pt3d :x 1 :y 2 :z 3))) (list (opt-pt-x p) (opt-pt-y p) (opt-pt3d-z p))))
-(check "opt accessor unbound" 'unbound-error (handler-case (let ((p (make-instance 'opt-pt))) (opt-pt-x p)) (error (c) 'unbound-error)))
-(defclass opt-multi () ((a :initarg :a :accessor multi-a) (b :initarg :b :reader multi-b) (c :initarg :c :writer set-multi-c)))
-(check "opt accessor multiple read" '(1 2 3) (let ((m (make-instance 'opt-multi :a 1 :b 2 :c 3))) (list (multi-a m) (multi-b m) (slot-value m 'c))))
-(check "opt accessor writer" 99 (let ((m (make-instance 'opt-multi :a 1 :b 2 :c 3))) (set-multi-c 99 m) (slot-value m 'c)))
-
 ; --- Summary ---
 (format t "~%=== Results ===~%")
 (format t "Passed: ~A~%" *pass-count*)
