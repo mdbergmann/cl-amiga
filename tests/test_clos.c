@@ -1349,6 +1349,115 @@ TEST(eql_cache_cacheable_p)
         ":EQL");
 }
 
+/* === Phase 15: Optimized slot access === */
+
+TEST(opt_accessor_read)
+{
+    /* Optimized accessor should read correct slot value */
+    eval_print(
+        "(defclass opt-pt () "
+        "  ((x :initarg :x :accessor opt-pt-x) "
+        "   (y :initarg :y :accessor opt-pt-y)))");
+    ASSERT_STR_EQ(eval_print(
+        "(let ((p (make-instance 'opt-pt :x 10 :y 20))) "
+        "  (list (opt-pt-x p) (opt-pt-y p)))"),
+        "(10 20)");
+}
+
+TEST(opt_accessor_write)
+{
+    /* (setf accessor) should write correctly via optimized method */
+    ASSERT_STR_EQ(eval_print(
+        "(let ((p (make-instance 'opt-pt :x 1 :y 2))) "
+        "  (setf (opt-pt-x p) 99) "
+        "  (opt-pt-x p))"),
+        "99");
+}
+
+TEST(opt_accessor_inherited)
+{
+    /* Accessor on parent class works for subclass instances */
+    eval_print(
+        "(defclass opt-pt3d (opt-pt) "
+        "  ((z :initarg :z :accessor opt-pt3d-z)))");
+    ASSERT_STR_EQ(eval_print(
+        "(let ((p (make-instance 'opt-pt3d :x 1 :y 2 :z 3))) "
+        "  (list (opt-pt-x p) (opt-pt-y p) (opt-pt3d-z p)))"),
+        "(1 2 3)");
+}
+
+TEST(opt_accessor_unbound)
+{
+    /* Accessing unbound slot should signal slot-unbound error */
+    ASSERT_STR_EQ(eval_print(
+        "(handler-case "
+        "  (let ((p (make-instance 'opt-pt))) (opt-pt-x p)) "
+        "  (error (c) 'unbound-error))"),
+        "UNBOUND-ERROR");
+}
+
+TEST(opt_accessor_multiple)
+{
+    /* Class with multiple accessor/reader/writer slots */
+    eval_print(
+        "(defclass opt-multi () "
+        "  ((a :initarg :a :accessor multi-a) "
+        "   (b :initarg :b :reader multi-b) "
+        "   (c :initarg :c :writer set-multi-c)))");
+    ASSERT_STR_EQ(eval_print(
+        "(let ((m (make-instance 'opt-multi :a 1 :b 2 :c 3))) "
+        "  (list (multi-a m) (multi-b m) (slot-value m 'c)))"),
+        "(1 2 3)");
+    /* Writer */
+    ASSERT_STR_EQ(eval_print(
+        "(let ((m (make-instance 'opt-multi :a 1 :b 2 :c 3))) "
+        "  (set-multi-c 99 m) "
+        "  (slot-value m 'c))"),
+        "99");
+    /* Accessor setf */
+    ASSERT_STR_EQ(eval_print(
+        "(let ((m (make-instance 'opt-multi :a 1 :b 2 :c 3))) "
+        "  (setf (multi-a m) 42) "
+        "  (multi-a m))"),
+        "42");
+}
+
+TEST(opt_accessor_after_defmethod)
+{
+    /* User-added :after method on accessor still fires */
+    eval_print("(defvar *opt-log* nil)");
+    eval_print(
+        "(defmethod opt-pt-x :after ((p opt-pt)) "
+        "  (push 'accessor-called *opt-log*))");
+    eval_print("(setq *opt-log* nil)");
+    eval_print(
+        "(let ((p (make-instance 'opt-pt :x 5 :y 6))) (opt-pt-x p))");
+    ASSERT_STR_EQ(eval_print("*opt-log*"), "(ACCESSOR-CALLED)");
+}
+
+TEST(opt_accessor_redefined_class)
+{
+    /* Accessor works after class redefinition */
+    eval_print(
+        "(defclass opt-redef () "
+        "  ((a :initarg :a :accessor opt-redef-a) "
+        "   (b :initarg :b :accessor opt-redef-b)))");
+    ASSERT_STR_EQ(eval_print(
+        "(let ((p (make-instance 'opt-redef :a 10 :b 20))) "
+        "  (list (opt-redef-a p) (opt-redef-b p)))"),
+        "(10 20)");
+    /* Redefine with additional slot */
+    eval_print(
+        "(defclass opt-redef () "
+        "  ((a :initarg :a :accessor opt-redef-a) "
+        "   (b :initarg :b :accessor opt-redef-b) "
+        "   (c :initarg :c :accessor opt-redef-c)))");
+    ASSERT_STR_EQ(eval_print(
+        "(let ((p (make-instance 'opt-redef :a 1 :b 2 :c 3))) "
+        "  (list (opt-redef-a p) (opt-redef-b p) (opt-redef-c p)))"),
+        "(1 2 3)");
+}
+
 int main(void)
 {
     test_init();
@@ -1503,6 +1612,15 @@ int main(void)
     RUN(eql_cache_arg2_eql);
     RUN(eql_cache_invalidation);
     RUN(eql_cache_cacheable_p);
+
+    /* Phase 15: Optimized slot access */
+    RUN(opt_accessor_read);
+    RUN(opt_accessor_write);
+    RUN(opt_accessor_inherited);
+    RUN(opt_accessor_unbound);
+    RUN(opt_accessor_multiple);
+    RUN(opt_accessor_after_defmethod);
+    RUN(opt_accessor_redefined_class);
 
     teardown();
     REPORT();

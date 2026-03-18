@@ -516,16 +516,16 @@ Specialize via defmethod to provide lazy initialization."
 
 (defun %compute-effective-slots (cpl)
   "Compute effective slots from class precedence list.
-   Walk CPL from most-specific to least-specific, collecting slots.
-   If a slot name already exists, merge options (subclass wins)."
+   Walk CPL from least-specific to most-specific so that parent slots
+   occupy lower indices, ensuring stable slot positions in subclasses."
   (let ((effective nil))
-    (dolist (class cpl)
+    (dolist (class (reverse cpl))
       (dolist (slot (class-direct-slots class))
         (let* ((name (%slot-spec-name slot))
                (existing (assoc name effective :test #'eq)))
           (if existing
-              ;; Merge parent options into existing (child already there)
-              (let ((merged (%merge-slot-specs existing slot)))
+              ;; Merge: child (slot) takes precedence over parent (existing)
+              (let ((merged (%merge-slot-specs slot existing)))
                 (setq effective
                       (mapcar (lambda (s)
                                 (if (eq (car s) name) merged s))
@@ -609,9 +609,45 @@ Specialize via defmethod to provide lazy initialization."
 
 ;;; --- defclass macro ---
 
+(defun %install-bootstrap-accessors (class-name accessor-specs)
+  "Install optimized defun-based accessors with captured slot indices.
+   ACCESSOR-SPECS is a list of (accessor-name slot-name type) where
+   type is :reader, :writer, or :accessor."
+  (let* ((class (find-class class-name))
+         (index-table (class-slot-index-table class)))
+    (dolist (spec accessor-specs)
+      (let* ((acc-name (first spec))
+             (slot-name (second spec))
+             (type (third spec))
+             (idx (gethash slot-name index-table)))
+        (unless idx
+          (error "Slot ~S not found in class ~S" slot-name class-name))
+        ;; Reader or accessor: direct %struct-ref with unbound check
+        (when (or (eq type :reader) (eq type :accessor))
+          (setf (symbol-function acc-name)
+            (lambda (obj)
+              (let ((val (%struct-ref obj idx)))
+                (if (eq val *slot-unbound-marker*)
+                    (slot-unbound (class-of obj) obj slot-name)
+                    val)))))
+        ;; Accessor also needs (setf name) writer
+        (when (eq type :accessor)
+          (let ((setter-name (intern (concatenate 'string
+                                       "%SETF-" (symbol-name acc-name))
+                                     (or (symbol-package acc-name) *package*))))
+            (setf (symbol-function setter-name)
+              (lambda (val obj)
+                (%struct-set obj idx val) val))
+            (%register-setf-function acc-name setter-name)))
+        ;; Writer: direct %struct-set
+        (when (eq type :writer)
+          (setf (symbol-function acc-name)
+            (lambda (val obj)
+              (%struct-set obj idx val) val)))))))
+
 (defmacro defclass (name direct-superclasses slot-specifiers &rest class-options)
   "Define a new CLOS class."
-  (let ((accessor-defs nil)
+  (let ((accessor-spec-list nil)
         (parsed-slots nil)
         (initform-pairs nil)
         (default-initarg-forms nil))
@@ -636,34 +672,23 @@ Specialize via defmethod to provide lazy initialization."
           (push `(cons ',slot-name
                        (lambda () ,(%slot-spec-option parsed :initform)))
                 initform-pairs))
-        ;; Generate accessor functions
+        ;; Collect accessor specs for optimized installation
         (dolist (accessor accessors)
-          (let ((setter-name (intern (concatenate 'string
-                                      "%SETF-" (symbol-name accessor))
-                                    (or (symbol-package accessor) *package*))))
-            (push `(defun ,accessor (obj)
-                     (slot-value obj ',slot-name))
-                  accessor-defs)
-            (push `(defun ,setter-name (val obj)
-                     (setf (slot-value obj ',slot-name) val))
-                  accessor-defs)))
+          (push (list accessor slot-name :accessor) accessor-spec-list))
         (dolist (reader readers)
-          (push `(defun ,reader (obj)
-                   (slot-value obj ',slot-name))
-                accessor-defs))
+          (push (list reader slot-name :reader) accessor-spec-list))
         (dolist (writer writers)
-          (push `(defun ,writer (val obj)
-                   (setf (slot-value obj ',slot-name) val))
-                accessor-defs))))
+          (push (list writer slot-name :writer) accessor-spec-list))))
     (setq parsed-slots (nreverse parsed-slots))
-    (setq accessor-defs (nreverse accessor-defs))
     `(progn
        (%ensure-class ',name
                       ',direct-superclasses
                       ',parsed-slots
                       (list ,@(nreverse initform-pairs))
                       (list ,@(nreverse default-initarg-forms)))
-       ,@accessor-defs
+       ,@(when accessor-spec-list
+           `((%install-bootstrap-accessors ',name
+               ',(nreverse accessor-spec-list))))
        (find-class ',name))))
 
 ;;; ====================================================================
@@ -1389,12 +1414,53 @@ When called with no arguments, passes the original method arguments."
     (funcall %su-fn class instance slot-name)))
 
 ;;; --- Update defclass to generate GF-based accessors ---
-;;; Redefine the defclass macro to use defmethod instead of defun
-;;; for :accessor, :reader, :writer
+;;; Redefine the defclass macro to use optimized accessor methods
+;;; that capture slot indices at class-finalization time.
+
+(defun %install-optimized-accessors (class-name accessor-specs)
+  "Install GF accessor methods with captured slot indices.
+   ACCESSOR-SPECS is a list of (accessor-name slot-name type) where
+   type is :reader, :writer, or :accessor."
+  (let* ((class (find-class class-name))
+         (index-table (class-slot-index-table class)))
+    (dolist (spec accessor-specs)
+      (let* ((acc-name (first spec))
+             (slot-name (second spec))
+             (type (third spec))
+             (idx (gethash slot-name index-table)))
+        (unless idx
+          (error "Slot ~S not found in class ~S" slot-name class-name))
+        ;; Reader: direct %struct-ref with unbound check
+        (when (or (eq type :reader) (eq type :accessor))
+          (ensure-generic-function acc-name :lambda-list '(obj))
+          (%add-method-to-gf acc-name nil (list class-name)
+            (lambda (obj)
+              (let ((val (%struct-ref obj idx)))
+                (if (eq val *slot-unbound-marker*)
+                    (slot-unbound (class-of obj) obj slot-name)
+                    val)))
+            '(obj)))
+        ;; Writer: direct %struct-set
+        (when (eq type :writer)
+          (ensure-generic-function acc-name :lambda-list '(val obj))
+          (%add-method-to-gf acc-name nil (list 't class-name)
+            (lambda (val obj)
+              (%struct-set obj idx val)
+              val)
+            '(val obj)))
+        ;; Accessor also needs (setf name) writer
+        (when (eq type :accessor)
+          (let ((setf-name (list 'setf acc-name)))
+            (ensure-generic-function setf-name :lambda-list '(val obj))
+            (%add-method-to-gf setf-name nil (list 't class-name)
+              (lambda (val obj)
+                (%struct-set obj idx val)
+                val)
+              '(val obj))))))))
 
 (defmacro defclass (name direct-superclasses slot-specifiers &rest class-options)
   "Define a new CLOS class (with generic function accessors)."
-  (let ((accessor-defs nil)
+  (let ((accessor-spec-list nil)
         (parsed-slots nil)
         (initform-pairs nil)
         (default-initarg-forms nil))
@@ -1420,37 +1486,23 @@ When called with no arguments, passes the original method arguments."
           (push `(cons ',slot-name
                        (lambda () ,(%slot-spec-option parsed :initform)))
                 initform-pairs))
-        ;; Generate GF-based accessor methods
+        ;; Collect accessor specs for optimized installation
         (dolist (accessor accessors)
-          (push `(defgeneric ,accessor (obj)) accessor-defs)
-          (push `(defmethod ,accessor ((obj ,name))
-                   (slot-value obj ',slot-name))
-                accessor-defs)
-          ;; Writer: use defgeneric + defmethod for (setf accessor)
-          ;; so additional methods can be added without replacing the original
-          (push `(defgeneric (setf ,accessor) (val obj)) accessor-defs)
-          (push `(defmethod (setf ,accessor) (val (obj ,name))
-                   (setf (slot-value obj ',slot-name) val))
-                accessor-defs))
+          (push (list accessor slot-name :accessor) accessor-spec-list))
         (dolist (reader readers)
-          (push `(defgeneric ,reader (obj)) accessor-defs)
-          (push `(defmethod ,reader ((obj ,name))
-                   (slot-value obj ',slot-name))
-                accessor-defs))
+          (push (list reader slot-name :reader) accessor-spec-list))
         (dolist (writer writers)
-          (push `(defgeneric ,writer (val obj)) accessor-defs)
-          (push `(defmethod ,writer (val (obj ,name))
-                   (setf (slot-value obj ',slot-name) val))
-                accessor-defs))))
+          (push (list writer slot-name :writer) accessor-spec-list))))
     (setq parsed-slots (nreverse parsed-slots))
-    (setq accessor-defs (nreverse accessor-defs))
     `(progn
        (%ensure-class ',name
                       ',direct-superclasses
                       ',parsed-slots
                       (list ,@(nreverse initform-pairs))
                       (list ,@(nreverse default-initarg-forms)))
-       ,@accessor-defs
+       ,@(when accessor-spec-list
+           `((%install-optimized-accessors ',name
+               ',(nreverse accessor-spec-list))))
        (find-class ',name))))
 
 ;;; ====================================================================
