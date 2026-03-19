@@ -66,7 +66,7 @@ static CL_Obj find_external_nolock(const char *name, uint32_t len, CL_Obj packag
     return CL_NIL;
 }
 
-static CL_Obj find_symbol_nolock(const char *name, uint32_t len, CL_Obj package)
+CL_Obj cl_package_find_symbol_nolock(const char *name, uint32_t len, CL_Obj package)
 {
     CL_Obj sym;
     sym = find_own_symbol(name, len, package);
@@ -171,7 +171,7 @@ CL_Obj cl_package_find_symbol(const char *name, uint32_t len, CL_Obj package)
 {
     CL_Obj result;
     if (CL_MT()) platform_rwlock_rdlock(cl_package_rwlock);
-    result = find_symbol_nolock(name, len, package);
+    result = cl_package_find_symbol_nolock(name, len, package);
     if (CL_MT()) platform_rwlock_unlock(cl_package_rwlock);
     return result;
 }

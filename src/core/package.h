@@ -33,6 +33,9 @@ void cl_package_add_symbol(CL_Obj package, CL_Obj symbol);
 /* Look up a symbol in a package (and its use-list) */
 CL_Obj cl_package_find_symbol(const char *name, uint32_t len, CL_Obj package);
 
+/* No-lock variant for use from within locked sections (e.g. cl_intern_in) */
+CL_Obj cl_package_find_symbol_nolock(const char *name, uint32_t len, CL_Obj package);
+
 /* Find only exported symbols in a package (no use-list search) */
 CL_Obj cl_package_find_external(const char *name, uint32_t len, CL_Obj package);
 
