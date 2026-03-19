@@ -51,6 +51,17 @@ static CL_Obj TYPE_SYM_BIGNUM = CL_NIL;
 static CL_Obj TYPE_SYM_RATIO = CL_NIL;
 static CL_Obj TYPE_SYM_NUMBER = CL_NIL;
 static CL_Obj TYPE_SYM_STAR = CL_NIL; /* * for wildcard bounds in range types */
+/* Compound vector/array type specifier head symbols */
+static CL_Obj TYPE_SYM_SIMPLE_VECTOR = CL_NIL;
+static CL_Obj TYPE_SYM_VECTOR = CL_NIL;
+static CL_Obj TYPE_SYM_SIMPLE_ARRAY = CL_NIL;
+static CL_Obj TYPE_SYM_ARRAY = CL_NIL;
+static CL_Obj TYPE_SYM_STRING = CL_NIL;
+static CL_Obj TYPE_SYM_SIMPLE_STRING = CL_NIL;
+static CL_Obj TYPE_SYM_BASE_STRING = CL_NIL;
+static CL_Obj TYPE_SYM_SIMPLE_BASE_STRING = CL_NIL;
+static CL_Obj TYPE_SYM_BIT_VECTOR = CL_NIL;
+static CL_Obj TYPE_SYM_SIMPLE_BIT_VECTOR = CL_NIL;
 
 /* Forward declaration */
 static int typep_check(CL_Obj obj, CL_Obj type_spec);
@@ -381,6 +392,77 @@ static int typep_check(CL_Obj obj, CL_Obj type_spec)
             head == TYPE_SYM_SHORT_FLOAT || head == TYPE_SYM_DOUBLE_FLOAT ||
             head == TYPE_SYM_LONG_FLOAT || head == TYPE_SYM_NUMBER) {
             return check_numeric_range(obj, head, args);
+        }
+
+        /* (simple-vector size) */
+        if (head == TYPE_SYM_SIMPLE_VECTOR) {
+            if (!typep_symbol(obj, head)) return 0;
+            if (!CL_NULL_P(args)) {
+                CL_Obj size_spec = cl_car(args);
+                if (CL_FIXNUM_P(size_spec)) {
+                    CL_Vector *v = (CL_Vector *)CL_OBJ_TO_PTR(obj);
+                    return v->length == (uint32_t)CL_FIXNUM_VAL(size_spec);
+                }
+                /* * means any size */
+            }
+            return 1;
+        }
+
+        /* (vector element-type size) */
+        if (head == TYPE_SYM_VECTOR) {
+            if (!typep_symbol(obj, head)) return 0;
+            /* Skip element-type check (we only have T vectors) */
+            if (!CL_NULL_P(args) && !CL_NULL_P(cl_cdr(args))) {
+                CL_Obj size_spec = cl_car(cl_cdr(args));
+                if (CL_FIXNUM_P(size_spec)) {
+                    CL_Vector *v = (CL_Vector *)CL_OBJ_TO_PTR(obj);
+                    return v->length == (uint32_t)CL_FIXNUM_VAL(size_spec);
+                }
+            }
+            return 1;
+        }
+
+        /* (string size), (simple-string size), (base-string size),
+           (simple-base-string size) */
+        if (head == TYPE_SYM_STRING || head == TYPE_SYM_SIMPLE_STRING ||
+            head == TYPE_SYM_BASE_STRING || head == TYPE_SYM_SIMPLE_BASE_STRING) {
+            if (!CL_STRING_P(obj)) return 0;
+            if (!CL_NULL_P(args)) {
+                CL_Obj size_spec = cl_car(args);
+                if (CL_FIXNUM_P(size_spec)) {
+                    CL_String *s = (CL_String *)CL_OBJ_TO_PTR(obj);
+                    return s->length == (uint32_t)CL_FIXNUM_VAL(size_spec);
+                }
+            }
+            return 1;
+        }
+
+        /* (bit-vector size), (simple-bit-vector size) */
+        if (head == TYPE_SYM_BIT_VECTOR || head == TYPE_SYM_SIMPLE_BIT_VECTOR) {
+            if (!CL_BIT_VECTOR_P(obj)) return 0;
+            if (!CL_NULL_P(args)) {
+                CL_Obj size_spec = cl_car(args);
+                if (CL_FIXNUM_P(size_spec)) {
+                    CL_BitVector *bv = (CL_BitVector *)CL_OBJ_TO_PTR(obj);
+                    return bv->length == (uint32_t)CL_FIXNUM_VAL(size_spec);
+                }
+            }
+            return 1;
+        }
+
+        /* (array element-type dims), (simple-array element-type dims) */
+        if (head == TYPE_SYM_ARRAY || head == TYPE_SYM_SIMPLE_ARRAY) {
+            if (!typep_symbol(obj, head)) return 0;
+            /* Skip element-type, check rank/dimensions if provided */
+            if (!CL_NULL_P(args) && !CL_NULL_P(cl_cdr(args))) {
+                CL_Obj dims = cl_car(cl_cdr(args));
+                if (CL_FIXNUM_P(dims)) {
+                    /* dims is a rank */
+                    CL_Vector *v = (CL_Vector *)CL_OBJ_TO_PTR(obj);
+                    return v->rank == (uint32_t)CL_FIXNUM_VAL(dims);
+                }
+            }
+            return 1;
         }
 
         /* User-defined parameterized type: (my-type args...) */
@@ -1080,6 +1162,17 @@ void cl_builtins_type_init(void)
     TYPE_SYM_RATIO        = cl_intern_in("RATIO", 5, cl_package_cl);
     TYPE_SYM_NUMBER       = cl_intern_in("NUMBER", 6, cl_package_cl);
     TYPE_SYM_STAR         = cl_intern_in("*", 1, cl_package_cl);
+    /* Compound vector/array type specifier head symbols */
+    TYPE_SYM_SIMPLE_VECTOR     = cl_intern_in("SIMPLE-VECTOR", 13, cl_package_cl);
+    TYPE_SYM_VECTOR            = cl_intern_in("VECTOR", 6, cl_package_cl);
+    TYPE_SYM_SIMPLE_ARRAY      = cl_intern_in("SIMPLE-ARRAY", 12, cl_package_cl);
+    TYPE_SYM_ARRAY             = cl_intern_in("ARRAY", 5, cl_package_cl);
+    TYPE_SYM_STRING            = cl_intern_in("STRING", 6, cl_package_cl);
+    TYPE_SYM_SIMPLE_STRING     = cl_intern_in("SIMPLE-STRING", 13, cl_package_cl);
+    TYPE_SYM_BASE_STRING       = cl_intern_in("BASE-STRING", 11, cl_package_cl);
+    TYPE_SYM_SIMPLE_BASE_STRING = cl_intern_in("SIMPLE-BASE-STRING", 18, cl_package_cl);
+    TYPE_SYM_BIT_VECTOR        = cl_intern_in("BIT-VECTOR", 10, cl_package_cl);
+    TYPE_SYM_SIMPLE_BIT_VECTOR = cl_intern_in("SIMPLE-BIT-VECTOR", 17, cl_package_cl);
 
     defun("TYPE-OF", bi_type_of, 1, 1);
     defun("TYPEP", bi_typep, 2, 2);

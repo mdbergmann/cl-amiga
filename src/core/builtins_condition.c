@@ -264,10 +264,6 @@ int cl_condition_type_matches(CL_Obj cond_type, CL_Obj handler_type)
 {
     CL_Obj parents;
 
-    /* T matches all condition types (CL spec: T is supertype of everything) */
-    if (handler_type == CL_T)
-        return 1;
-
     /* Identity check */
     if (cond_type == handler_type)
         return 1;
