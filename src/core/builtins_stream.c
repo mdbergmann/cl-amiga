@@ -19,6 +19,8 @@
 #include "bignum.h"
 #include "readtable.h"
 #include "../platform/platform.h"
+#include "../platform/platform_thread.h"
+#include "thread.h"
 #include <string.h>
 #include <stdlib.h>
 
@@ -902,8 +904,10 @@ static CL_Obj bi_set_macro_character(CL_Obj *args, int n)
     rt_idx = resolve_readtable_idx(args, n, 3);
     rt = cl_readtable_get(rt_idx);
 
+    if (CL_MT()) platform_rwlock_wrlock(cl_readtable_rwlock);
     rt->syntax[ch] = non_term ? CL_CHAR_NONTERM_MACRO : CL_CHAR_TERM_MACRO;
     rt->macro_fn[ch] = args[1];
+    if (CL_MT()) platform_rwlock_unlock(cl_readtable_rwlock);
     return CL_T;
 }
 
@@ -925,8 +929,10 @@ static CL_Obj bi_make_dispatch_macro_character(CL_Obj *args, int n)
     rt_idx = resolve_readtable_idx(args, n, 2);
     rt = cl_readtable_get(rt_idx);
 
+    if (CL_MT()) platform_rwlock_wrlock(cl_readtable_rwlock);
     rt->syntax[ch] = non_term ? CL_CHAR_NONTERM_MACRO : CL_CHAR_TERM_MACRO;
     rt->macro_fn[ch] = CL_NIL; /* built-in dispatch handling */
+    if (CL_MT()) platform_rwlock_unlock(cl_readtable_rwlock);
     return CL_T;
 }
 
@@ -947,7 +953,9 @@ static CL_Obj bi_set_dispatch_macro_character(CL_Obj *args, int n)
     rt_idx = resolve_readtable_idx(args, n, 3);
     rt = cl_readtable_get(rt_idx);
 
+    if (CL_MT()) platform_rwlock_wrlock(cl_readtable_rwlock);
     rt->dispatch_fn[sub_ch] = args[2]; /* fn */
+    if (CL_MT()) platform_rwlock_unlock(cl_readtable_rwlock);
     return CL_T;
 }
 
@@ -1076,11 +1084,13 @@ static CL_Obj bi_set_syntax_from_char(CL_Obj *args, int n)
     to_rt = cl_readtable_get(to_idx);
     from_rt = cl_readtable_get(from_idx);
 
+    if (CL_MT()) platform_rwlock_wrlock(cl_readtable_rwlock);
     /* Copy syntax type */
     to_rt->syntax[to_ch] = from_rt->syntax[from_ch];
 
     /* Copy reader macro function */
     to_rt->macro_fn[to_ch] = from_rt->macro_fn[from_ch];
+    if (CL_MT()) platform_rwlock_unlock(cl_readtable_rwlock);
 
     return CL_T;
 }

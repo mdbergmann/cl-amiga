@@ -10,6 +10,7 @@
 #include "vm.h"
 #include "compiler.h"
 #include "../platform/platform.h"
+#include "../platform/platform_thread.h"
 #include <string.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -627,7 +628,9 @@ static CL_Obj bi_trace_function(CL_Obj *args, int n)
     if (!(s->flags & CL_SYM_TRACED)) {
         s->flags |= CL_SYM_TRACED;
         cl_trace_count++;
+        if (CL_MT()) platform_rwlock_wrlock(cl_tables_rwlock);
         trace_list = cl_cons(args[0], trace_list);
+        if (CL_MT()) platform_rwlock_unlock(cl_tables_rwlock);
     }
     return args[0];
 }
@@ -640,44 +643,56 @@ static CL_Obj bi_untrace_function(CL_Obj *args, int n)
         cl_error(CL_ERR_TYPE, "UNTRACE: not a symbol");
     s = (CL_Symbol *)CL_OBJ_TO_PTR(args[0]);
     if (s->flags & CL_SYM_TRACED) {
-        CL_Obj prev = CL_NIL, curr = trace_list;
         s->flags &= ~CL_SYM_TRACED;
         cl_trace_count--;
-        while (!CL_NULL_P(curr)) {
-            if (cl_car(curr) == args[0]) {
-                if (CL_NULL_P(prev))
-                    trace_list = cl_cdr(curr);
-                else
-                    ((CL_Cons *)CL_OBJ_TO_PTR(prev))->cdr = cl_cdr(curr);
-                break;
+        if (CL_MT()) platform_rwlock_wrlock(cl_tables_rwlock);
+        {
+            CL_Obj prev = CL_NIL, curr = trace_list;
+            while (!CL_NULL_P(curr)) {
+                if (cl_car(curr) == args[0]) {
+                    if (CL_NULL_P(prev))
+                        trace_list = cl_cdr(curr);
+                    else
+                        ((CL_Cons *)CL_OBJ_TO_PTR(prev))->cdr = cl_cdr(curr);
+                    break;
+                }
+                prev = curr;
+                curr = cl_cdr(curr);
             }
-            prev = curr;
-            curr = cl_cdr(curr);
         }
+        if (CL_MT()) platform_rwlock_unlock(cl_tables_rwlock);
     }
     return args[0];
 }
 
 static CL_Obj bi_traced_functions(CL_Obj *args, int n)
 {
+    CL_Obj result;
     CL_UNUSED(args);
     CL_UNUSED(n);
-    return trace_list;
+    if (CL_MT()) platform_rwlock_rdlock(cl_tables_rwlock);
+    result = trace_list;
+    if (CL_MT()) platform_rwlock_unlock(cl_tables_rwlock);
+    return result;
 }
 
 static CL_Obj bi_untrace_all(CL_Obj *args, int n)
 {
-    CL_Obj list = trace_list;
     CL_UNUSED(args);
     CL_UNUSED(n);
-    while (!CL_NULL_P(list)) {
-        CL_Obj sym = cl_car(list);
-        if (CL_SYMBOL_P(sym)) {
-            ((CL_Symbol *)CL_OBJ_TO_PTR(sym))->flags &= ~CL_SYM_TRACED;
+    if (CL_MT()) platform_rwlock_wrlock(cl_tables_rwlock);
+    {
+        CL_Obj list = trace_list;
+        while (!CL_NULL_P(list)) {
+            CL_Obj sym = cl_car(list);
+            if (CL_SYMBOL_P(sym)) {
+                ((CL_Symbol *)CL_OBJ_TO_PTR(sym))->flags &= ~CL_SYM_TRACED;
+            }
+            list = cl_cdr(list);
         }
-        list = cl_cdr(list);
+        trace_list = CL_NIL;
     }
-    trace_list = CL_NIL;
+    if (CL_MT()) platform_rwlock_unlock(cl_tables_rwlock);
     cl_trace_count = 0;
     cl_trace_depth = 0;
     return CL_NIL;

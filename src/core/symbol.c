@@ -1,7 +1,9 @@
 #include "symbol.h"
 #include "package.h"
 #include "mem.h"
+#include "thread.h"
 #include "../platform/platform.h"
+#include "../platform/platform_thread.h"
 #include <string.h>
 
 /* Well-known symbols */
@@ -255,22 +257,31 @@ CL_Obj cl_intern_in(const char *name, uint32_t len, CL_Obj package)
     CL_Obj name_str, sym;
     CL_Symbol *s;
 
-    /* Check if already interned */
+    /* Fast path: read-lock check */
+    if (CL_MT()) platform_rwlock_rdlock(cl_package_rwlock);
     existing = cl_package_find_symbol(name, len, package);
+    if (CL_MT()) platform_rwlock_unlock(cl_package_rwlock);
     if (!CL_NULL_P(existing))
         return existing;
 
-    /* Create new symbol */
+    /* Slow path: create symbol outside lock */
     name_str = cl_make_string(name, len);
     CL_GC_PROTECT(name_str);
-
     sym = cl_make_symbol(name_str);
     CL_GC_UNPROTECT(1);
 
     s = (CL_Symbol *)CL_OBJ_TO_PTR(sym);
     s->hash = cl_hash_string(name, len);
 
+    /* Write-lock with re-check */
+    if (CL_MT()) platform_rwlock_wrlock(cl_package_rwlock);
+    existing = cl_package_find_symbol(name, len, package);
+    if (!CL_NULL_P(existing)) {
+        if (CL_MT()) platform_rwlock_unlock(cl_package_rwlock);
+        return existing;
+    }
     cl_package_add_symbol(package, sym);
+    if (CL_MT()) platform_rwlock_unlock(cl_package_rwlock);
     return sym;
 }
 

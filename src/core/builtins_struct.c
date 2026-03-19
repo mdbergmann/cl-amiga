@@ -13,8 +13,10 @@
 #include "package.h"
 #include "mem.h"
 #include "error.h"
+#include "compiler.h"
 #include "vm.h"
 #include "../platform/platform.h"
+#include "../platform/platform_thread.h"
 #include <string.h>
 
 /* Helper to register a builtin */
@@ -37,14 +39,20 @@ CL_Obj struct_table = CL_NIL;
  * Returns the entry (name n-slots parent (slot-names...)) or NIL. */
 static CL_Obj find_struct_entry(CL_Obj type_name)
 {
-    CL_Obj list = struct_table;
+    CL_Obj result = CL_NIL;
+    CL_Obj list;
+    if (CL_MT()) platform_rwlock_rdlock(cl_tables_rwlock);
+    list = struct_table;
     while (!CL_NULL_P(list)) {
         CL_Obj entry = cl_car(list);
-        if (cl_car(entry) == type_name)
-            return entry;
+        if (cl_car(entry) == type_name) {
+            result = entry;
+            break;
+        }
         list = cl_cdr(list);
     }
-    return CL_NIL;
+    if (CL_MT()) platform_rwlock_unlock(cl_tables_rwlock);
+    return result;
 }
 
 /* --- Public C API for printer and typep integration --- */
@@ -157,17 +165,27 @@ int cl_clos_type_matches(CL_Obj obj_type, CL_Obj test_type)
 {
     CL_Obj class_obj, cpl;
     CL_Struct *class_st;
+    int result = 0;
 
-    if (CL_NULL_P(cl_clos_class_table)) return 0;
+    if (CL_MT()) platform_rwlock_rdlock(cl_tables_rwlock);
+    if (CL_NULL_P(cl_clos_class_table)) {
+        if (CL_MT()) platform_rwlock_unlock(cl_tables_rwlock);
+        return 0;
+    }
 
     /* Look up the class metaobject for obj_type */
     class_obj = ht_eq_lookup(cl_clos_class_table, obj_type);
-    if (CL_NULL_P(class_obj)) return 0;
-    if (!CL_STRUCT_P(class_obj)) return 0;
+    if (CL_NULL_P(class_obj) || !CL_STRUCT_P(class_obj)) {
+        if (CL_MT()) platform_rwlock_unlock(cl_tables_rwlock);
+        return 0;
+    }
 
     /* CPL is in slot 3 of the class metaobject */
     class_st = (CL_Struct *)CL_OBJ_TO_PTR(class_obj);
-    if (class_st->n_slots < 4) return 0;
+    if (class_st->n_slots < 4) {
+        if (CL_MT()) platform_rwlock_unlock(cl_tables_rwlock);
+        return 0;
+    }
     cpl = class_st->slots[3];
 
     /* Walk CPL — each element is a class metaobject, slot 0 = name */
@@ -175,25 +193,37 @@ int cl_clos_type_matches(CL_Obj obj_type, CL_Obj test_type)
         CL_Obj cpl_class = cl_car(cpl);
         if (CL_STRUCT_P(cpl_class)) {
             CL_Struct *cpl_st = (CL_Struct *)CL_OBJ_TO_PTR(cpl_class);
-            if (cpl_st->n_slots > 0 && cpl_st->slots[0] == test_type)
-                return 1;
+            if (cpl_st->n_slots > 0 && cpl_st->slots[0] == test_type) {
+                result = 1;
+                break;
+            }
         }
         cpl = cl_cdr(cpl);
     }
-    return 0;
+    if (CL_MT()) platform_rwlock_unlock(cl_tables_rwlock);
+    return result;
 }
 
 /* Check if a name is in the CLOS class table. */
 int cl_clos_class_exists(CL_Obj name)
 {
-    if (CL_NULL_P(cl_clos_class_table)) return 0;
-    return !CL_NULL_P(ht_eq_lookup(cl_clos_class_table, name));
+    int result;
+    if (CL_MT()) platform_rwlock_rdlock(cl_tables_rwlock);
+    if (CL_NULL_P(cl_clos_class_table)) {
+        if (CL_MT()) platform_rwlock_unlock(cl_tables_rwlock);
+        return 0;
+    }
+    result = !CL_NULL_P(ht_eq_lookup(cl_clos_class_table, name));
+    if (CL_MT()) platform_rwlock_unlock(cl_tables_rwlock);
+    return result;
 }
 
 static CL_Obj bi_set_clos_class_table(CL_Obj *args, int n)
 {
     CL_UNUSED(n);
+    if (CL_MT()) platform_rwlock_wrlock(cl_tables_rwlock);
     cl_clos_class_table = args[0];
+    if (CL_MT()) platform_rwlock_unlock(cl_tables_rwlock);
     return args[0];
 }
 
@@ -223,7 +253,9 @@ static CL_Obj bi_register_struct_type(CL_Obj *args, int n)
     entry = cl_cons(parent, entry);
     entry = cl_cons(n_slots_obj, entry);
     entry = cl_cons(name, entry);
+    if (CL_MT()) platform_rwlock_wrlock(cl_tables_rwlock);
     struct_table = cl_cons(entry, struct_table);
+    if (CL_MT()) platform_rwlock_unlock(cl_tables_rwlock);
 
     CL_GC_UNPROTECT(3);
     return name;

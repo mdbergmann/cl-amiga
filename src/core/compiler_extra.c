@@ -7,6 +7,7 @@
  */
 
 #include "compiler_internal.h"
+#include "../platform/platform_thread.h"
 #include <stdio.h>
 
 /* --- And / Or --- */
@@ -937,7 +938,12 @@ void compile_defsetf(CL_Compiler *c, CL_Obj form)
     int acc_idx, upd_idx;
 
     /* Store mapping in setf_table at compile time (immediate side effect) */
-    setf_table = cl_cons(cl_cons(accessor, updater), setf_table);
+    {
+        CL_Obj pair = cl_cons(accessor, updater);
+        if (CL_MT()) platform_rwlock_wrlock(cl_tables_rwlock);
+        setf_table = cl_cons(pair, setf_table);
+        if (CL_MT()) platform_rwlock_unlock(cl_tables_rwlock);
+    }
 
     /* Emit OP_DEFSETF so the mapping is registered at load time (FASL) */
     acc_idx = cl_add_constant(c, accessor);
@@ -1074,7 +1080,12 @@ void compile_defun(CL_Compiler *c, CL_Obj form)
         }
 
         /* Register in setf_fn_table: (accessor . store_sym) */
-        setf_fn_table = cl_cons(cl_cons(accessor, store_sym), setf_fn_table);
+        {
+            CL_Obj pair = cl_cons(accessor, store_sym);
+            if (CL_MT()) platform_rwlock_wrlock(cl_tables_rwlock);
+            setf_fn_table = cl_cons(pair, setf_fn_table);
+            if (CL_MT()) platform_rwlock_unlock(cl_tables_rwlock);
+        }
     }
 
     /* CL spec: defun wraps body in (block name ...) */
@@ -1108,10 +1119,11 @@ void compile_defun(CL_Compiler *c, CL_Obj form)
 /* Generate a unique uninterned symbol for defmacro destructuring */
 CL_Obj defmacro_gensym(void)
 {
-    static uint32_t counter = 0;
+    static volatile uint32_t counter = 0;
     char buf[32];
     CL_Obj name_str;
-    snprintf(buf, sizeof(buf), "%%DMAC%lu", (unsigned long)counter++);
+    snprintf(buf, sizeof(buf), "%%DMAC%lu",
+             (unsigned long)(platform_atomic_inc(&counter) - 1));
     name_str = cl_make_string(buf, (uint32_t)strlen(buf));
     return cl_make_symbol(name_str);
 }
@@ -1379,10 +1391,12 @@ void cl_process_declaration_specifier(CL_Obj spec)
             }
             if (val < 0) val = 0;
             if (val > 3) val = 3;
+            if (CL_MT()) platform_rwlock_wrlock(cl_tables_rwlock);
             if (name == SYM_SPEED) cl_optimize_settings.speed = (uint8_t)val;
             else if (name == SYM_SAFETY) cl_optimize_settings.safety = (uint8_t)val;
             else if (name == SYM_DEBUG) cl_optimize_settings.debug = (uint8_t)val;
             else if (name == SYM_SPACE) cl_optimize_settings.space = (uint8_t)val;
+            if (CL_MT()) platform_rwlock_unlock(cl_tables_rwlock);
             quals = cl_cdr(quals);
         }
     }

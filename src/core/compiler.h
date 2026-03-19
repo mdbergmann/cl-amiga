@@ -48,6 +48,9 @@ typedef struct {
 
 extern CL_OptimizeSettings cl_optimize_settings;
 
+/* Thread-safety: rwlock protecting all compiler/definition tables */
+extern void *cl_tables_rwlock;
+
 /* Process a single declaration specifier (for proclaim/declaim) */
 void cl_process_declaration_specifier(CL_Obj spec);
 

@@ -101,6 +101,45 @@ int platform_mutex_trylock(void *handle)
 }
 
 /* ================================================================
+ * Read-Write Lock
+ * ================================================================ */
+
+int platform_rwlock_init(void **handle)
+{
+    pthread_rwlock_t *rw = (pthread_rwlock_t *)malloc(sizeof(pthread_rwlock_t));
+    if (!rw) return -1;
+
+    if (pthread_rwlock_init(rw, NULL) != 0) {
+        free(rw);
+        return -1;
+    }
+    *handle = rw;
+    return 0;
+}
+
+void platform_rwlock_destroy(void *handle)
+{
+    pthread_rwlock_t *rw = (pthread_rwlock_t *)handle;
+    pthread_rwlock_destroy(rw);
+    free(rw);
+}
+
+void platform_rwlock_rdlock(void *handle)
+{
+    pthread_rwlock_rdlock((pthread_rwlock_t *)handle);
+}
+
+void platform_rwlock_wrlock(void *handle)
+{
+    pthread_rwlock_wrlock((pthread_rwlock_t *)handle);
+}
+
+void platform_rwlock_unlock(void *handle)
+{
+    pthread_rwlock_unlock((pthread_rwlock_t *)handle);
+}
+
+/* ================================================================
  * Condition variable
  * ================================================================ */
 

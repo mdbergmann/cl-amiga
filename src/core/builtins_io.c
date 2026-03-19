@@ -12,6 +12,7 @@
 #include "float.h"
 #include "fasl.h"
 #include "../platform/platform.h"
+#include "../platform/platform_thread.h"
 #include <stdio.h>
 #include <string.h>
 #include <stdlib.h>
@@ -1409,7 +1410,7 @@ static CL_Obj bi_values_list(CL_Obj *args, int n)
 
 /* --- Gensym --- */
 
-static uint32_t gensym_counter = 0;
+static volatile uint32_t gensym_counter = 0;
 
 static CL_Obj bi_gensym(CL_Obj *args, int n)
 {
@@ -1424,7 +1425,10 @@ static CL_Obj bi_gensym(CL_Obj *args, int n)
     }
 
     /* Manual int-to-string for vbcc compatibility */
-    len = snprintf(buf, sizeof(buf), "%s%lu", prefix, (unsigned long)gensym_counter++);
+    {
+        uint32_t cnt = platform_atomic_inc(&gensym_counter) - 1;
+        len = snprintf(buf, sizeof(buf), "%s%lu", prefix, (unsigned long)cnt);
+    }
     name_str = cl_make_string(buf, (uint32_t)len);
     CL_GC_PROTECT(name_str);
     sym = cl_make_symbol(name_str);  /* Uninterned — not in any package */

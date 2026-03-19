@@ -41,6 +41,9 @@ typedef struct {
 extern CL_Readtable cl_readtable_pool[CL_RT_POOL_SIZE];
 extern uint32_t cl_readtable_alloc_mask; /* Bitmask: which slots are in use */
 
+/* Thread-safety: rwlock protecting the readtable pool and alloc mask */
+extern void *cl_readtable_rwlock;
+
 /* Initialize default (slot 0) and initial (slot 1) readtables */
 void cl_readtable_init(void);
 

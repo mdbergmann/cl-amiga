@@ -32,7 +32,7 @@ typedef struct {
 } CL_TLVEntry;
 
 typedef struct CL_Thread_s {
-    /* ---- Thread metadata (Phase 1+) ---- */
+    /* ---- Thread metadata ---- */
     uint32_t id;
     CL_Obj   name;           /* CL string or NIL */
     uint8_t  status;         /* 0=created, 1=running, 2=finished, 3=aborted */
@@ -147,19 +147,19 @@ typedef struct CL_Thread_s {
     /* ---- Debugger state ---- */
     int in_debugger;
 
-    /* ---- Thread-Local Value (TLV) table (Phase 3+) ---- */
+    /* ---- Thread-Local Value (TLV) table ---- */
     CL_TLVEntry tlv_table[CL_TLV_TABLE_SIZE];
 
-    /* ---- GC coordination (Phase 2+) ---- */
+    /* ---- GC coordination ---- */
     volatile uint8_t gc_requested;
     volatile uint8_t gc_stopped;
 
-    /* ---- Thread registry (Phase 2+) ---- */
+    /* ---- Thread registry ---- */
     struct CL_Thread_s *next;
     void *platform_handle;
 } CL_Thread;
 
-/* Current thread pointer — TLS-backed (Phase 1+).
+/* Current thread pointer — TLS-backed.
  * platform_tls_get() returns the CL_Thread* for the calling OS thread.
  * A fast-path global is kept for single-threaded hot paths (Phase 0 compat). */
 extern CL_Thread *cl_main_thread_ptr;   /* fast access to main thread */
@@ -181,7 +181,7 @@ static inline CL_Thread *cl_get_current_thread(void)
 void cl_thread_init(void);
 void cl_thread_shutdown(void);
 
-/* ---- Phase 4: Thread creation API ---- */
+/* ---- Thread creation API ---- */
 
 /* Worker thread VM/NLX sizes (compact: ~123KB per thread on Amiga) */
 #define CL_WORKER_VM_STACK_SIZE  4096   /* 4K entries = 16KB */
@@ -218,7 +218,7 @@ void cl_lock_table_free(int id);
 int cl_condvar_table_alloc(void *handle);
 void cl_condvar_table_free(int id);
 
-/* ---- Thread registry (Phase 2+) ---- */
+/* ---- Thread registry ---- */
 extern CL_Thread  *cl_thread_list;      /* linked list of all threads */
 extern void       *cl_thread_list_lock; /* mutex protecting the list */
 extern uint32_t    cl_thread_count;     /* number of registered threads */
@@ -226,7 +226,12 @@ extern uint32_t    cl_thread_count;     /* number of registered threads */
 void cl_thread_register(CL_Thread *t);
 void cl_thread_unregister(CL_Thread *t);
 
-/* ---- GC coordination (Phase 2+) ---- */
+/* ---- GC coordination ---- */
+
+/* ---- Multi-thread check ---- */
+/* True when more than one thread is registered — used to skip locking
+ * in the common single-threaded case for zero overhead on 68020. */
+#define CL_MT() (cl_thread_count > 1)
 
 /* Safepoint check — insert at function calls and backward jumps.
  * The volatile read is cheap; cl_gc_safepoint() is the slow path. */
@@ -237,7 +242,7 @@ void cl_gc_safepoint(void);  /* slow path: stop until GC completes */
 
 /* ---- TLV functions ---- */
 
-/* Snapshot TLV table from src to dst (for Phase 4 thread inheritance) */
+/* Snapshot TLV table from src to dst (for thread inheritance) */
 void cl_tlv_snapshot(CL_Thread *dst, CL_Thread *src);
 
 /* TLV table operations */

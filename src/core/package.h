@@ -18,6 +18,9 @@ extern CL_Obj cl_current_package;  /* *PACKAGE* */
 /* Package registry — alist ((name-str . pkg) ...) */
 extern CL_Obj cl_package_registry;
 
+/* Thread-safety: rwlock protecting package registry and symbol tables */
+extern void *cl_package_rwlock;
+
 /* Initialize the three standard packages */
 void cl_package_init(void);
 

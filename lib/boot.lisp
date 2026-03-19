@@ -1927,6 +1927,11 @@ when the param has no explicit default.  CL spec 3.4.6 requires this."
 
 (in-package :mp)
 
+;; Shadow these names so they are interned in MP, not inherited from CL
+;; (cl_package_export_defined_cl_symbols would otherwise claim them)
+(shadow '(with-lock-held make-recursive-lock with-recursive-lock-held
+          read-memory-barrier write-memory-barrier))
+
 (defmacro with-lock-held ((lock) &body body)
   (let ((l (gensym "LOCK")))
     `(let ((,l ,lock))

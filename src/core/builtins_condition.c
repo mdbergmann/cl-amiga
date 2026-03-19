@@ -14,10 +14,12 @@
 #include "mem.h"
 #include "error.h"
 #include "vm.h"
+#include "compiler.h"
 #include "printer.h"
 #include "color.h"
 #include "stream.h"
 #include "../platform/platform.h"
+#include "../platform/platform_thread.h"
 #include <string.h>
 
 /* Defined in builtins_format.c */
@@ -240,14 +242,20 @@ static void build_hierarchy(void)
  * Returns CDR of the matching entry (list of parents), or NIL. */
 static CL_Obj find_parents(CL_Obj type_sym)
 {
-    CL_Obj list = condition_hierarchy;
+    CL_Obj result = CL_NIL;
+    CL_Obj list;
+    if (CL_MT()) platform_rwlock_rdlock(cl_tables_rwlock);
+    list = condition_hierarchy;
     while (!CL_NULL_P(list)) {
         CL_Obj entry = cl_car(list);
-        if (cl_car(entry) == type_sym)
-            return cl_cdr(entry);
+        if (cl_car(entry) == type_sym) {
+            result = cl_cdr(entry);
+            break;
+        }
         list = cl_cdr(list);
     }
-    return CL_NIL;
+    if (CL_MT()) platform_rwlock_unlock(cl_tables_rwlock);
+    return result;
 }
 
 /* Check if cond_type is a subtype of (or equal to) handler_type.
@@ -333,14 +341,20 @@ static CL_Obj format_condition_report(CL_Condition *c)
 /* Check if a symbol is a known condition type in the hierarchy */
 int cl_is_condition_type(CL_Obj type_sym)
 {
-    CL_Obj list = condition_hierarchy;
+    int result = 0;
+    CL_Obj list;
+    if (CL_MT()) platform_rwlock_rdlock(cl_tables_rwlock);
+    list = condition_hierarchy;
     while (!CL_NULL_P(list)) {
         CL_Obj entry = cl_car(list);
-        if (cl_car(entry) == type_sym)
-            return 1;
+        if (cl_car(entry) == type_sym) {
+            result = 1;
+            break;
+        }
         list = cl_cdr(list);
     }
-    return 0;
+    if (CL_MT()) platform_rwlock_unlock(cl_tables_rwlock);
+    return result;
 }
 
 /* --- Builtins --- */
@@ -527,11 +541,15 @@ static CL_Obj bi_register_condition_type(CL_Obj *args, int n)
     CL_GC_PROTECT(slot_pairs);
     entry = cl_cons(name, cl_cons(parent, CL_NIL));
     CL_GC_PROTECT(entry);
+    if (CL_MT()) platform_rwlock_wrlock(cl_tables_rwlock);
     condition_hierarchy = cl_cons(entry, condition_hierarchy);
+    if (CL_MT()) platform_rwlock_unlock(cl_tables_rwlock);
 
     /* Add (name . slot-pairs) to condition_slot_table */
     entry = cl_cons(name, slot_pairs);
+    if (CL_MT()) platform_rwlock_wrlock(cl_tables_rwlock);
     condition_slot_table = cl_cons(entry, condition_slot_table);
+    if (CL_MT()) platform_rwlock_unlock(cl_tables_rwlock);
     CL_GC_UNPROTECT(2);
 
     return name;
@@ -554,29 +572,31 @@ static CL_Obj bi_condition_slot_value(CL_Obj *args, int n)
     cond = (CL_Condition *)CL_OBJ_TO_PTR(cond_obj);
     type_name = cond->type_name;
 
-    /* Find type in slot table */
+    /* Find initarg under rdlock */
+    initarg = CL_NIL;
+    if (CL_MT()) platform_rwlock_rdlock(cl_tables_rwlock);
     table_entry = condition_slot_table;
     while (!CL_NULL_P(table_entry)) {
         CL_Obj entry = cl_car(table_entry);
         if (cl_car(entry) == type_name) {
-            /* Found — walk slot pairs to find matching slot-name */
             slot_pairs = cl_cdr(entry);
             while (!CL_NULL_P(slot_pairs)) {
                 CL_Obj pair = cl_car(slot_pairs);
                 if (cl_car(pair) == slot_name) {
-                    /* Found slot — get initarg keyword */
                     initarg = cl_cdr(pair);
-                    /* Look up initarg in condition's slots */
-                    return slot_lookup(cond->slots, initarg);
+                    break;
                 }
                 slot_pairs = cl_cdr(slot_pairs);
             }
-            return CL_NIL; /* Slot name not found */
+            break;
         }
         table_entry = cl_cdr(table_entry);
     }
+    if (CL_MT()) platform_rwlock_unlock(cl_tables_rwlock);
 
-    return CL_NIL; /* Type not in slot table */
+    if (CL_NULL_P(initarg))
+        return CL_NIL;
+    return slot_lookup(cond->slots, initarg);
 }
 
 /* (%set-condition-slot-value condition slot-name value) */
@@ -595,7 +615,9 @@ static CL_Obj bi_set_condition_slot_value(CL_Obj *args, int n)
     cond = (CL_Condition *)CL_OBJ_TO_PTR(cond_obj);
     type_name = cond->type_name;
 
-    /* Find initarg for this slot name */
+    /* Find initarg for this slot name under rdlock */
+    initarg = CL_NIL;
+    if (CL_MT()) platform_rwlock_rdlock(cl_tables_rwlock);
     table_entry = condition_slot_table;
     while (!CL_NULL_P(table_entry)) {
         CL_Obj entry = cl_car(table_entry);
@@ -605,36 +627,43 @@ static CL_Obj bi_set_condition_slot_value(CL_Obj *args, int n)
                 CL_Obj pair = cl_car(slot_pairs);
                 if (cl_car(pair) == slot_name) {
                     initarg = cl_cdr(pair);
-                    /* Update existing slot value */
-                    {
-                        CL_Obj slots = cond->slots;
-                        while (!CL_NULL_P(slots)) {
-                            CL_Obj sp = cl_car(slots);
-                            if (cl_car(sp) == initarg) {
-                                ((CL_Cons *)CL_OBJ_TO_PTR(sp))->cdr = value;
-                                return value;
-                            }
-                            slots = cl_cdr(slots);
-                        }
-                    }
-                    /* Slot not found in alist — add it */
-                    {
-                        CL_Obj new_pair;
-                        CL_GC_PROTECT(cond_obj);
-                        new_pair = cl_cons(initarg, value);
-                        cond = (CL_Condition *)CL_OBJ_TO_PTR(cond_obj);
-                        cond->slots = cl_cons(new_pair, cond->slots);
-                        CL_GC_UNPROTECT(1);
-                    }
-                    return value;
+                    break;
                 }
                 slot_pairs = cl_cdr(slot_pairs);
             }
+            break;
         }
         table_entry = cl_cdr(table_entry);
     }
-    cl_error(CL_ERR_ARGS, "%SET-CONDITION-SLOT-VALUE: unknown slot");
-    return CL_NIL;
+    if (CL_MT()) platform_rwlock_unlock(cl_tables_rwlock);
+
+    if (CL_NULL_P(initarg)) {
+        cl_error(CL_ERR_ARGS, "%SET-CONDITION-SLOT-VALUE: unknown slot");
+        return CL_NIL;
+    }
+
+    /* Update existing slot value */
+    {
+        CL_Obj slots = cond->slots;
+        while (!CL_NULL_P(slots)) {
+            CL_Obj sp = cl_car(slots);
+            if (cl_car(sp) == initarg) {
+                ((CL_Cons *)CL_OBJ_TO_PTR(sp))->cdr = value;
+                return value;
+            }
+            slots = cl_cdr(slots);
+        }
+    }
+    /* Slot not found in alist — add it */
+    {
+        CL_Obj new_pair;
+        CL_GC_PROTECT(cond_obj);
+        new_pair = cl_cons(initarg, value);
+        cond = (CL_Condition *)CL_OBJ_TO_PTR(cond_obj);
+        cond->slots = cl_cons(new_pair, cond->slots);
+        CL_GC_UNPROTECT(1);
+    }
+    return value;
 }
 
 /* --- Signaling --- */

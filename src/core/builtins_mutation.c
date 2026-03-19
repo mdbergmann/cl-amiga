@@ -5,6 +5,7 @@
 #include "error.h"
 #include "compiler.h"
 #include "../platform/platform.h"
+#include "../platform/platform_thread.h"
 #include <string.h>
 
 /* Helper to register a builtin */
@@ -165,23 +166,32 @@ extern CL_Obj setf_table;
 static CL_Obj bi_get_defsetf_setter(CL_Obj *args, int n)
 {
     CL_Obj name = args[0];
-    CL_Obj entry = setf_table;
+    CL_Obj result = CL_NIL;
+    CL_Obj entry;
     CL_UNUSED(n);
+    if (CL_MT()) platform_rwlock_rdlock(cl_tables_rwlock);
+    entry = setf_table;
     while (!CL_NULL_P(entry)) {
         CL_Obj pair = cl_car(entry);
-        if (cl_car(pair) == name)
-            return cl_cdr(pair);
+        if (cl_car(pair) == name) {
+            result = cl_cdr(pair);
+            break;
+        }
         entry = cl_cdr(entry);
     }
-    return CL_NIL;
+    if (CL_MT()) platform_rwlock_unlock(cl_tables_rwlock);
+    return result;
 }
 
 static CL_Obj bi_register_setf_expander(CL_Obj *args, int n)
 {
     /* (%register-setf-expander accessor-sym expander-fn) */
+    CL_Obj pair;
     CL_UNUSED(n);
-    CL_Obj pair = cl_cons(args[0], args[1]);
+    pair = cl_cons(args[0], args[1]);
+    if (CL_MT()) platform_rwlock_wrlock(cl_tables_rwlock);
     setf_expander_table = cl_cons(pair, setf_expander_table);
+    if (CL_MT()) platform_rwlock_unlock(cl_tables_rwlock);
     return args[0];
 }
 

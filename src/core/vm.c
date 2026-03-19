@@ -9,6 +9,7 @@
 #include "compiler.h"
 #include "printer.h"
 #include "../platform/platform.h"
+#include "../platform/platform_thread.h"
 #include <stdio.h>
 #include <string.h>
 #include <stdlib.h>
@@ -485,7 +486,7 @@ void cl_check_c_stack(const char *context)
 /* GC root marking for VM-internal buffers.
  * Called from gc_mark() in mem.c to mark CL_Obj values held in static
  * arrays that are not on the VM stack (e.g., during &rest list building). */
-/* Mark VM extra args for a specific thread (Phase 2+ multi-thread GC) */
+/* Mark VM extra args for a specific thread (multi-thread GC) */
 void cl_vm_gc_mark_extra_thread(CL_Thread *t)
 {
     extern void gc_mark_obj(CL_Obj obj);
@@ -1468,11 +1469,17 @@ static CL_Obj cl_vm_run(int base_fp, int base_nlx)
 
         case OP_DEFSETF: {
             extern CL_Obj setf_table;
+            extern void *cl_tables_rwlock;
             uint16_t acc_idx = read_u16(code, &ip);
             uint16_t upd_idx = read_u16(code, &ip);
             CL_Obj accessor = constants[acc_idx];
             CL_Obj updater  = constants[upd_idx];
-            setf_table = cl_cons(cl_cons(accessor, updater), setf_table);
+            {
+                CL_Obj pair = cl_cons(accessor, updater);
+                if (CL_MT()) platform_rwlock_wrlock(cl_tables_rwlock);
+                setf_table = cl_cons(pair, setf_table);
+                if (CL_MT()) platform_rwlock_unlock(cl_tables_rwlock);
+            }
             cl_vm_push(accessor);
             break;
         }

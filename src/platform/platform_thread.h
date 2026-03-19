@@ -25,6 +25,13 @@ void platform_mutex_lock(void *handle);
 void platform_mutex_unlock(void *handle);
 int  platform_mutex_trylock(void *handle);   /* 0 = acquired, non-zero = busy */
 
+/* ---- Read-Write Lock ---- */
+int  platform_rwlock_init(void **handle);
+void platform_rwlock_destroy(void *handle);
+void platform_rwlock_rdlock(void *handle);
+void platform_rwlock_wrlock(void *handle);
+void platform_rwlock_unlock(void *handle);
+
 /* ---- Condition variable ---- */
 int  platform_condvar_init(void **handle);
 void platform_condvar_destroy(void *handle);

@@ -162,6 +162,43 @@ int platform_mutex_trylock(void *handle)
 }
 
 /* ================================================================
+ * Read-Write Lock (SignalSemaphore shared/exclusive modes)
+ *
+ * AmigaOS SignalSemaphore natively supports shared (read) and
+ * exclusive (write) access — a perfect fit for rwlock semantics.
+ * ================================================================ */
+
+int platform_rwlock_init(void **handle)
+{
+    struct SignalSemaphore *sem;
+    sem = (struct SignalSemaphore *)AllocVec(sizeof(struct SignalSemaphore), MEMF_CLEAR);
+    if (!sem) return -1;
+    InitSemaphore(sem);
+    *handle = sem;
+    return 0;
+}
+
+void platform_rwlock_destroy(void *handle)
+{
+    FreeVec(handle);
+}
+
+void platform_rwlock_rdlock(void *handle)
+{
+    ObtainSemaphoreShared((struct SignalSemaphore *)handle);
+}
+
+void platform_rwlock_wrlock(void *handle)
+{
+    ObtainSemaphore((struct SignalSemaphore *)handle);
+}
+
+void platform_rwlock_unlock(void *handle)
+{
+    ReleaseSemaphore((struct SignalSemaphore *)handle);
+}
+
+/* ================================================================
  * Condition variable
  *
  * AmigaOS has no native condvar.  We implement one using a
@@ -247,7 +284,7 @@ int platform_condvar_wait_timeout(void *handle, void *mutex, uint32_t ms)
      * Proper timer.device usage would be more precise but much more code. */
     timer_sig = AllocSignal(-1);
     if (timer_sig >= 0) {
-        /* Poll with short delays — crude but functional for Phase 1 */
+        /* Poll with short delays — crude but functional */
         uint32_t elapsed = 0;
         uint32_t step = ms < 50 ? ms : 50;  /* 50ms steps */
         while (elapsed < ms) {

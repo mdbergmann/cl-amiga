@@ -1,5 +1,5 @@
 /*
- * thread.c — Thread system initialization and registry (Phase 2).
+ * thread.c — Thread system initialization and registry.
  *
  * Allocates and initializes the main thread's CL_Thread struct.
  * cl_current_thread is TLS-backed via platform_tls_get/set.
@@ -126,7 +126,7 @@ void cl_gc_resume_the_world(void)
     platform_mutex_unlock(gc_mutex);
 }
 
-/* ---- TLV table operations (Phase 3) ---- */
+/* ---- TLV table operations ---- */
 
 CL_Obj cl_tlv_get(CL_Thread *t, CL_Obj sym)
 {
@@ -219,13 +219,13 @@ int cl_symbol_boundp(CL_Obj sym)
     return ((CL_Symbol *)CL_OBJ_TO_PTR(sym))->value != CL_UNBOUND;
 }
 
-/* TLV snapshot (for Phase 4 thread inheritance) */
+/* TLV snapshot (for thread inheritance) */
 void cl_tlv_snapshot(CL_Thread *dst, CL_Thread *src)
 {
     memcpy(dst->tlv_table, src->tlv_table, sizeof(src->tlv_table));
 }
 
-/* ---- Phase 4: Side tables and worker thread allocation ---- */
+/* ---- Side tables and worker thread allocation ---- */
 
 CL_Thread *cl_thread_table[CL_MAX_THREADS];
 void *cl_lock_table[CL_MAX_LOCKS];
