@@ -6,7 +6,9 @@
 #include "symbol.h"
 #include "mem.h"
 #include "error.h"
+#include "vm.h"
 #include "../platform/platform.h"
+#include "../platform/platform_thread.h"
 #include <string.h>
 #ifdef DEBUG_STREAM
 #include <stdio.h>
@@ -28,6 +30,12 @@ typedef struct {
 static CL_OutBuf outbuf_table[CL_STREAM_BUF_TABLE_SIZE];
 static int stream_initialized = 0;
 
+/* Mutex protecting outbuf_table and cbuf_table slot allocation/deallocation */
+static void *cl_stream_table_mutex = NULL;
+
+/* Mutex protecting console/file/socket I/O (prevents interleaved output) */
+static void *cl_stream_io_mutex = NULL;
+
 /* --- C-buffer input stream side table --- */
 
 #define CL_CBUF_TABLE_SIZE 8
@@ -41,6 +49,11 @@ void cl_stream_init(void)
 {
     int i;
     CL_Symbol *s;
+
+    if (!cl_stream_table_mutex)
+        platform_mutex_init(&cl_stream_table_mutex);
+    if (!cl_stream_io_mutex)
+        platform_mutex_init(&cl_stream_io_mutex);
 
     for (i = 0; i < CL_STREAM_BUF_TABLE_SIZE; i++) {
         outbuf_table[i].data = NULL;
@@ -121,12 +134,16 @@ uint32_t cl_stream_alloc_outbuf(uint32_t initial_size)
     if (!stream_initialized) cl_stream_init();
     if (initial_size == 0) initial_size = 256;
 
+    if (CL_MT()) platform_mutex_lock(cl_stream_table_mutex);
     for (retry = 0; retry < 2; retry++) {
     /* Slot 0 is reserved as invalid */
     for (i = 1; i < CL_STREAM_BUF_TABLE_SIZE; i++) {
         if (outbuf_table[i].data == NULL) {
             data = (char *)platform_alloc(initial_size);
-            if (!data) return 0;
+            if (!data) {
+                if (CL_MT()) platform_mutex_unlock(cl_stream_table_mutex);
+                return 0;
+            }
             outbuf_table[i].data = data;
             outbuf_table[i].capacity = initial_size;
             outbuf_table[i].length = 0;
@@ -141,15 +158,19 @@ uint32_t cl_stream_alloc_outbuf(uint32_t initial_size)
                 platform_write_string(dbg);
             }
 #endif
+            if (CL_MT()) platform_mutex_unlock(cl_stream_table_mutex);
             return (uint32_t)i;
         }
     }
     /* All slots occupied — run GC to finalize dead streams, then retry */
     if (retry == 0) {
         extern void cl_gc(void);
+        if (CL_MT()) platform_mutex_unlock(cl_stream_table_mutex);
         cl_gc();
+        if (CL_MT()) platform_mutex_lock(cl_stream_table_mutex);
     }
     } /* end retry loop */
+    if (CL_MT()) platform_mutex_unlock(cl_stream_table_mutex);
 #ifdef DEBUG_STREAM
     platform_write_string("[STREAM] outbuf table FULL after GC\n");
 #endif
@@ -160,6 +181,7 @@ void cl_stream_free_outbuf(uint32_t handle)
 {
     if (handle > 0 && handle < CL_STREAM_BUF_TABLE_SIZE &&
         outbuf_table[handle].data) {
+        if (CL_MT()) platform_mutex_lock(cl_stream_table_mutex);
         platform_free(outbuf_table[handle].data);
         outbuf_table[handle].data = NULL;
         outbuf_table[handle].capacity = 0;
@@ -175,6 +197,7 @@ void cl_stream_free_outbuf(uint32_t handle)
             platform_write_string(dbg);
         }
 #endif
+        if (CL_MT()) platform_mutex_unlock(cl_stream_table_mutex);
     }
 }
 
@@ -275,7 +298,7 @@ static CL_Obj resolve_synonym(CL_Obj stream)
 int cl_stream_read_char(CL_Obj stream)
 {
     CL_Stream *st;
-    int ch;
+    int ch, need_lock;
 
     stream = resolve_synonym(stream);
     if (CL_NULL_P(stream)) return -1;
@@ -286,10 +309,16 @@ int cl_stream_read_char(CL_Obj stream)
     if (!(st->direction & CL_STREAM_INPUT))
         return -1;
 
+    need_lock = CL_MT() && (st->stream_type == CL_STREAM_CONSOLE ||
+                             st->stream_type == CL_STREAM_FILE ||
+                             st->stream_type == CL_STREAM_SOCKET);
+    if (need_lock) platform_mutex_lock(cl_stream_io_mutex);
+
     /* Check for pushed-back character */
     if (st->unread_char != -1) {
         ch = st->unread_char;
         st->unread_char = -1;
+        if (need_lock) platform_mutex_unlock(cl_stream_io_mutex);
         return ch;
     }
 
@@ -302,20 +331,28 @@ int cl_stream_read_char(CL_Obj stream)
         break;
     case CL_STREAM_STRING: {
         CL_String *s;
-        if (CL_NULL_P(st->string_buf))
+        if (CL_NULL_P(st->string_buf)) {
+            if (need_lock) platform_mutex_unlock(cl_stream_io_mutex);
             return -1;
+        }
         s = (CL_String *)CL_OBJ_TO_PTR(st->string_buf);
-        if (st->position >= st->out_buf_len)  /* out_buf_len stores end limit */
+        if (st->position >= st->out_buf_len) {
+            if (need_lock) platform_mutex_unlock(cl_stream_io_mutex);
             return -1;
+        }
         ch = (unsigned char)s->data[st->position++];
         break;
     }
     case CL_STREAM_CBUF: {
         uint32_t idx = st->handle_id;
-        if (idx == 0 || idx >= CL_CBUF_TABLE_SIZE || !cbuf_table[idx].data)
+        if (idx == 0 || idx >= CL_CBUF_TABLE_SIZE || !cbuf_table[idx].data) {
+            if (need_lock) platform_mutex_unlock(cl_stream_io_mutex);
             return -1;
-        if (st->position >= st->out_buf_len)
+        }
+        if (st->position >= st->out_buf_len) {
+            if (need_lock) platform_mutex_unlock(cl_stream_io_mutex);
             return -1;
+        }
         ch = (unsigned char)cbuf_table[idx].data[st->position++];
         break;
     }
@@ -323,11 +360,13 @@ int cl_stream_read_char(CL_Obj stream)
         ch = platform_socket_read((PlatformSocket)st->handle_id);
         break;
     default:
+        if (need_lock) platform_mutex_unlock(cl_stream_io_mutex);
         return -1;
     }
 
     if (ch == -1)
         st->flags |= CL_STREAM_FLAG_EOF;
+    if (need_lock) platform_mutex_unlock(cl_stream_io_mutex);
     return ch;
 }
 
@@ -335,6 +374,7 @@ void cl_stream_write_char(CL_Obj stream, int ch)
 {
     CL_Stream *st;
     char buf[2];
+    int need_lock;
 
     stream = resolve_synonym(stream);
     if (CL_NULL_P(stream)) return;
@@ -344,6 +384,11 @@ void cl_stream_write_char(CL_Obj stream, int ch)
         return;
     if (!(st->direction & CL_STREAM_OUTPUT))
         return;
+
+    need_lock = CL_MT() && (st->stream_type == CL_STREAM_CONSOLE ||
+                             st->stream_type == CL_STREAM_FILE ||
+                             st->stream_type == CL_STREAM_SOCKET);
+    if (need_lock) platform_mutex_lock(cl_stream_io_mutex);
 
     switch (st->stream_type) {
     case CL_STREAM_CONSOLE:
@@ -362,17 +407,19 @@ void cl_stream_write_char(CL_Obj stream, int ch)
         break;
     }
 
-    /* Track column position */
     if (ch == '\n')
         st->charpos = 0;
     else
         st->charpos++;
+
+    if (need_lock) platform_mutex_unlock(cl_stream_io_mutex);
 }
 
 void cl_stream_write_string(CL_Obj stream, const char *str, uint32_t len)
 {
     CL_Stream *st;
     uint32_t i;
+    int need_lock;
 
     stream = resolve_synonym(stream);
     if (CL_NULL_P(stream)) return;
@@ -382,6 +429,11 @@ void cl_stream_write_string(CL_Obj stream, const char *str, uint32_t len)
         return;
     if (!(st->direction & CL_STREAM_OUTPUT))
         return;
+
+    need_lock = CL_MT() && (st->stream_type == CL_STREAM_CONSOLE ||
+                             st->stream_type == CL_STREAM_FILE ||
+                             st->stream_type == CL_STREAM_SOCKET);
+    if (need_lock) platform_mutex_lock(cl_stream_io_mutex);
 
     switch (st->stream_type) {
     case CL_STREAM_CONSOLE: {
@@ -422,6 +474,8 @@ void cl_stream_write_string(CL_Obj stream, const char *str, uint32_t len)
         else
             st->charpos += len;
     }
+
+    if (need_lock) platform_mutex_unlock(cl_stream_io_mutex);
 }
 
 int cl_stream_peek_char(CL_Obj stream)
@@ -450,11 +504,16 @@ void cl_stream_unread_char(CL_Obj stream, int ch)
 void cl_stream_close(CL_Obj stream)
 {
     CL_Stream *st;
+    int need_lock;
     stream = resolve_synonym(stream);
     if (CL_NULL_P(stream)) return;
     st = (CL_Stream *)CL_OBJ_TO_PTR(stream);
     if (!(st->flags & CL_STREAM_FLAG_OPEN))
         return;
+
+    need_lock = CL_MT() && (st->stream_type == CL_STREAM_FILE ||
+                             st->stream_type == CL_STREAM_SOCKET);
+    if (need_lock) platform_mutex_lock(cl_stream_io_mutex);
 
     st->flags &= ~CL_STREAM_FLAG_OPEN;
 
@@ -486,6 +545,8 @@ void cl_stream_close(CL_Obj stream)
     default:
         break;
     }
+
+    if (need_lock) platform_mutex_unlock(cl_stream_io_mutex);
 }
 
 CL_Obj cl_make_string_input_stream(CL_Obj string, uint32_t start, uint32_t end)
@@ -509,10 +570,12 @@ CL_Obj cl_make_cbuf_input_stream(const char *data, uint32_t len)
     if (CL_NULL_P(s)) return CL_NIL;
 
     /* Find a free slot in the cbuf table */
+    if (CL_MT()) platform_mutex_lock(cl_stream_table_mutex);
     for (i = 1; i < CL_CBUF_TABLE_SIZE; i++) {
         if (cbuf_table[i].data == NULL) {
             cbuf_table[i].data = data;
             cbuf_table[i].len = len;
+            if (CL_MT()) platform_mutex_unlock(cl_stream_table_mutex);
             st = (CL_Stream *)CL_OBJ_TO_PTR(s);
             st->handle_id = (uint32_t)i;
             st->position = 0;
@@ -520,6 +583,7 @@ CL_Obj cl_make_cbuf_input_stream(const char *data, uint32_t len)
             return s;
         }
     }
+    if (CL_MT()) platform_mutex_unlock(cl_stream_table_mutex);
     return CL_NIL;  /* No free slots */
 }
 

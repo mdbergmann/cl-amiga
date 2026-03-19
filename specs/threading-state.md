@@ -64,6 +64,17 @@
 - **Tests**: `tests/test_threads.c` — 21 tests (create/join, alive-p, current-thread, all-threads, yield, locks, lock contention, condvar, TLV inheritance, error in thread, multiple concurrent, GC stress)
 - All 679+ host tests pass (658 existing + 21 new)
 
-## Phase 5: Shared State Protection — NEXT
-- Read-write locks for package registry, macro/type tables
-- Per-stream mutex, gensym atomic counter
+## Phase 5: Shared State Protection — COMPLETE
+- **Platform rwlock**: `pthread_rwlock_t` (POSIX), `ObtainSemaphoreShared`/`ObtainSemaphore` (Amiga)
+- **`CL_MT()` macro**: skips all locking when `cl_thread_count <= 1` (zero overhead single-threaded)
+- **`cl_tables_rwlock`**: protects macro_table, setf_table, setf_fn_table, setf_expander_table, type_table, struct_table, condition_hierarchy, condition_slot_table, cl_clos_class_table, trace_list, cl_optimize_settings
+- **`cl_package_rwlock`**: protects package registry, symbol tables, intern/export/import/use-package; double-checked locking for `cl_intern_in()`
+- **`cl_readtable_rwlock`**: protects readtable pool and alloc mask
+- **`cl_stream_table_mutex`**: protects outbuf_table and cbuf_table slot allocation
+- **`cl_stream_io_mutex`**: protects console/file/socket I/O (prevents interleaved output)
+- **Thread side tables**: cl_thread_table, cl_lock_table, cl_condvar_table protected by cl_thread_list_lock
+- **Atomic counters**: gensym_counter, defmacro_gensym counter via `platform_atomic_inc()`
+- **Lock ordering**: stream_io < stream_table < readtable_rwlock < tables_rwlock < package_rwlock < alloc_mutex
+- **MP package fix**: shadow with-lock-held et al. in MP to prevent CL inheritance
+- All 679+ host tests pass, fiveam 57/57, fset 17/17
+- Committed: `e312a7c`

@@ -233,56 +233,71 @@ void *cl_condvar_table[CL_MAX_CONDVARS];
 
 int cl_thread_table_alloc(CL_Thread *t)
 {
-    int i;
+    int i, result = -1;
+    platform_mutex_lock(cl_thread_list_lock);
     for (i = 0; i < CL_MAX_THREADS; i++) {
         if (!cl_thread_table[i]) {
             cl_thread_table[i] = t;
-            return i;
+            result = i;
+            break;
         }
     }
-    return -1;
+    platform_mutex_unlock(cl_thread_list_lock);
+    return result;
 }
 
 void cl_thread_table_free(int id)
 {
+    platform_mutex_lock(cl_thread_list_lock);
     if (id >= 0 && id < CL_MAX_THREADS)
         cl_thread_table[id] = NULL;
+    platform_mutex_unlock(cl_thread_list_lock);
 }
 
 int cl_lock_table_alloc(void *handle)
 {
-    int i;
+    int i, result = -1;
+    platform_mutex_lock(cl_thread_list_lock);
     for (i = 0; i < CL_MAX_LOCKS; i++) {
         if (!cl_lock_table[i]) {
             cl_lock_table[i] = handle;
-            return i;
+            result = i;
+            break;
         }
     }
-    return -1;
+    platform_mutex_unlock(cl_thread_list_lock);
+    return result;
 }
 
 void cl_lock_table_free(int id)
 {
+    platform_mutex_lock(cl_thread_list_lock);
     if (id >= 0 && id < CL_MAX_LOCKS)
         cl_lock_table[id] = NULL;
+    platform_mutex_unlock(cl_thread_list_lock);
 }
 
 int cl_condvar_table_alloc(void *handle)
 {
-    int i;
+    int i, result = -1;
+    platform_mutex_lock(cl_thread_list_lock);
     for (i = 0; i < CL_MAX_CONDVARS; i++) {
         if (!cl_condvar_table[i]) {
             cl_condvar_table[i] = handle;
-            return i;
+            result = i;
+            break;
         }
     }
-    return -1;
+    platform_mutex_unlock(cl_thread_list_lock);
+    return result;
 }
 
 void cl_condvar_table_free(int id)
 {
+    platform_mutex_lock(cl_thread_list_lock);
     if (id >= 0 && id < CL_MAX_CONDVARS)
         cl_condvar_table[id] = NULL;
+    platform_mutex_unlock(cl_thread_list_lock);
 }
 
 CL_Thread *cl_thread_alloc_worker(void)
