@@ -15,6 +15,7 @@
 
 /* Forward declarations */
 struct CL_Compiler_s;
+void *platform_tls_get(void);  /* from platform_thread.h */
 
 /* Constants for thread-local array sizes */
 #define CL_PP_INDENT_MAX     32
@@ -162,8 +163,16 @@ typedef struct CL_Thread_s {
  * platform_tls_get() returns the CL_Thread* for the calling OS thread.
  * A fast-path global is kept for single-threaded hot paths (Phase 0 compat). */
 extern CL_Thread *cl_main_thread_ptr;   /* fast access to main thread */
+extern uint32_t    cl_thread_count;      /* number of registered threads */
 
-CL_Thread *cl_get_current_thread(void); /* TLS-based accessor */
+/* Inline fast path: when single-threaded (the common case), return the
+ * cached main thread pointer directly, avoiding the TLS lookup. */
+static inline CL_Thread *cl_get_current_thread(void)
+{
+    if (cl_thread_count <= 1)
+        return cl_main_thread_ptr;
+    return (CL_Thread *)platform_tls_get();
+}
 
 #define cl_current_thread cl_get_current_thread()
 #define CT cl_current_thread
@@ -171,6 +180,43 @@ CL_Thread *cl_get_current_thread(void); /* TLS-based accessor */
 /* Initialize/shutdown thread system */
 void cl_thread_init(void);
 void cl_thread_shutdown(void);
+
+/* ---- Phase 4: Thread creation API ---- */
+
+/* Worker thread VM/NLX sizes (compact: ~123KB per thread on Amiga) */
+#define CL_WORKER_VM_STACK_SIZE  4096   /* 4K entries = 16KB */
+#define CL_WORKER_VM_FRAME_SIZE  256    /* 256 frames = ~15KB */
+#define CL_WORKER_NLX_FRAMES     256    /* 256 NLX frames = ~50KB */
+
+/* Thread side table: maps thread_id -> CL_Thread* */
+#define CL_MAX_THREADS 32
+extern CL_Thread *cl_thread_table[CL_MAX_THREADS];
+
+/* Lock side table: maps lock_id -> void* (platform mutex) */
+#define CL_MAX_LOCKS 64
+extern void *cl_lock_table[CL_MAX_LOCKS];
+
+/* Condvar side table: maps condvar_id -> void* (platform condvar) */
+#define CL_MAX_CONDVARS 32
+extern void *cl_condvar_table[CL_MAX_CONDVARS];
+
+/* Allocate and initialize a new CL_Thread for a worker */
+CL_Thread *cl_thread_alloc_worker(void);
+
+/* Free a worker CL_Thread's resources */
+void cl_thread_free_worker(CL_Thread *t);
+
+/* Allocate a side table slot for a thread, returns id or -1 */
+int cl_thread_table_alloc(CL_Thread *t);
+void cl_thread_table_free(int id);
+
+/* Allocate a side table slot for a lock, returns id or -1 */
+int cl_lock_table_alloc(void *handle);
+void cl_lock_table_free(int id);
+
+/* Allocate a side table slot for a condvar, returns id or -1 */
+int cl_condvar_table_alloc(void *handle);
+void cl_condvar_table_free(int id);
 
 /* ---- Thread registry (Phase 2+) ---- */
 extern CL_Thread  *cl_thread_list;      /* linked list of all threads */

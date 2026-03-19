@@ -793,6 +793,7 @@ void cl_builtins_random_init(void);
 void cl_builtins_bitvector_init(void);
 void cl_builtins_pathname_init(void);
 void cl_builtins_describe_init(void);
+void cl_builtins_thread_init(void);
 
 static CL_Obj bi_quit(CL_Obj *args, int n)
 {
@@ -882,6 +883,7 @@ void cl_builtins_init(void)
     cl_builtins_bitvector_init();
     cl_builtins_pathname_init();
     cl_builtins_describe_init();
+    cl_builtins_thread_init();
 
     /* All CL symbols now interned — mark them exported */
     cl_package_export_all_cl_symbols();

@@ -12,6 +12,7 @@ extern CL_Obj cl_package_cl_user;  /* COMMON-LISP-USER package */
 extern CL_Obj cl_package_keyword;  /* KEYWORD package */
 extern CL_Obj cl_package_ext;      /* EXT (implementation extensions) package */
 extern CL_Obj cl_package_clamiga;  /* CLAMIGA (implementation internals) package */
+extern CL_Obj cl_package_mp;      /* MP (multiprocessing) package */
 extern CL_Obj cl_current_package;  /* *PACKAGE* */
 
 /* Package registry — alist ((name-str . pkg) ...) */

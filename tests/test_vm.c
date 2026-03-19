@@ -6138,37 +6138,43 @@ TEST(eval_getcwd)
     ASSERT(result[1] == '/');  /* absolute path */
 }
 
-/* --- ext: threading primitives (single-threaded stubs) --- */
+/* --- mp: threading primitives (real implementations + stubs) --- */
 
-TEST(eval_ext_make_lock)
+TEST(eval_mp_make_lock)
 {
-    ASSERT_STR_EQ(eval_print("(ext:make-lock)"), "NIL");
-    ASSERT_STR_EQ(eval_print("(ext:make-lock \"my-lock\")"), "NIL");
+    /* Real lock objects now, not NIL */
+    const char *r = eval_print("(mp:make-lock)");
+    ASSERT(strstr(r, "#<LOCK") != NULL);
+    r = eval_print("(mp:make-lock \"my-lock\")");
+    ASSERT(strstr(r, "#<LOCK") != NULL);
 }
 
-TEST(eval_ext_make_recursive_lock)
+TEST(eval_mp_make_recursive_lock)
 {
-    ASSERT_STR_EQ(eval_print("(ext:make-recursive-lock)"), "NIL");
-    ASSERT_STR_EQ(eval_print("(ext:make-recursive-lock \"rec\")"), "NIL");
+    /* Stub delegates to make-lock, returns real lock */
+    const char *r = eval_print("(mp:make-recursive-lock)");
+    ASSERT(strstr(r, "#<LOCK") != NULL);
+    r = eval_print("(mp:make-recursive-lock \"rec\")");
+    ASSERT(strstr(r, "#<LOCK") != NULL);
 }
 
-TEST(eval_ext_with_lock_held)
+TEST(eval_mp_with_lock_held)
 {
     ASSERT_STR_EQ(eval_print(
-        "(let ((lk (ext:make-lock))) (ext:with-lock-held (lk) 42))"), "42");
+        "(let ((lk (mp:make-lock))) (mp:with-lock-held (lk) 42))"), "42");
 }
 
-TEST(eval_ext_with_recursive_lock_held)
+TEST(eval_mp_with_recursive_lock_held)
 {
     ASSERT_STR_EQ(eval_print(
-        "(let ((lk (ext:make-recursive-lock))) "
-        "  (ext:with-recursive-lock-held (lk) 99))"), "99");
+        "(let ((lk (mp:make-recursive-lock))) "
+        "  (mp:with-recursive-lock-held (lk) 99))"), "99");
 }
 
-TEST(eval_ext_memory_barriers)
+TEST(eval_mp_memory_barriers)
 {
-    ASSERT_STR_EQ(eval_print("(ext:read-memory-barrier)"), "NIL");
-    ASSERT_STR_EQ(eval_print("(ext:write-memory-barrier)"), "NIL");
+    ASSERT_STR_EQ(eval_print("(mp:read-memory-barrier)"), "NIL");
+    ASSERT_STR_EQ(eval_print("(mp:write-memory-barrier)"), "NIL");
 }
 
 TEST(eval_ext_defglobal)
@@ -7276,12 +7282,12 @@ int main(void)
     RUN(eval_system_command_echo);
     RUN(eval_getcwd);
 
-    /* ext: threading primitives */
-    RUN(eval_ext_make_lock);
-    RUN(eval_ext_make_recursive_lock);
-    RUN(eval_ext_with_lock_held);
-    RUN(eval_ext_with_recursive_lock_held);
-    RUN(eval_ext_memory_barriers);
+    /* mp: threading primitives */
+    RUN(eval_mp_make_lock);
+    RUN(eval_mp_make_recursive_lock);
+    RUN(eval_mp_with_lock_held);
+    RUN(eval_mp_with_recursive_lock_held);
+    RUN(eval_mp_memory_barriers);
     RUN(eval_ext_defglobal);
 
     /* quicklisp/ASDF compatibility regressions */

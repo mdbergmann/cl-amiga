@@ -1140,6 +1140,32 @@ static void print_obj(CL_Obj obj)
         break;
     }
 
+    case TYPE_THREAD: {
+        CL_ThreadObj *to = (CL_ThreadObj *)CL_OBJ_TO_PTR(obj);
+        out_str("#<THREAD");
+        if (!CL_NULL_P(to->name)) {
+            out_char(' ');
+            print_obj(to->name);
+        }
+        out_char('>');
+        break;
+    }
+
+    case TYPE_LOCK: {
+        CL_Lock *lk = (CL_Lock *)CL_OBJ_TO_PTR(obj);
+        out_str("#<LOCK");
+        if (!CL_NULL_P(lk->name)) {
+            out_char(' ');
+            print_obj(lk->name);
+        }
+        out_char('>');
+        break;
+    }
+
+    case TYPE_CONDVAR:
+        out_str("#<CONDITION-VARIABLE>");
+        break;
+
     default:
         out_str("#<unknown>");
         break;

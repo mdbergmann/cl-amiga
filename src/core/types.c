@@ -90,6 +90,9 @@ const char *cl_type_name(CL_Obj obj)
         case TYPE_BIT_VECTOR: return "BIT-VECTOR";
         case TYPE_PATHNAME: return "PATHNAME";
         case TYPE_CELL:     return "CELL";
+        case TYPE_THREAD:   return "THREAD";
+        case TYPE_LOCK:     return "LOCK";
+        case TYPE_CONDVAR:  return "CONDITION-VARIABLE";
         default:            return "UNKNOWN";
         }
     }

@@ -170,16 +170,17 @@ void cl_storage_error(const char *fmt, ...)
 void *cl_alloc(uint8_t type, uint32_t size)
 {
     void *ptr;
+    int multi = (cl_thread_count > 1);
 
     /* GC safepoint before allocation — if another thread initiated GC,
      * we must stop here before touching the heap */
-    CL_SAFEPOINT();
+    if (multi) CL_SAFEPOINT();
 
     size = align_up(size);
     if (size < CL_MIN_ALLOC_SIZE)
         size = CL_MIN_ALLOC_SIZE;
 
-    platform_mutex_lock(alloc_mutex);
+    if (multi) platform_mutex_lock(alloc_mutex);
 
     /* Try bump allocator first */
     ptr = alloc_from_bump(size);
@@ -190,23 +191,23 @@ void *cl_alloc(uint8_t type, uint32_t size)
     if (!ptr) {
         /* Need GC — release alloc_mutex so other threads can reach safepoints,
          * then run STW GC, then re-acquire and retry */
-        platform_mutex_unlock(alloc_mutex);
+        if (multi) platform_mutex_unlock(alloc_mutex);
         cl_gc();
-        platform_mutex_lock(alloc_mutex);
+        if (multi) platform_mutex_lock(alloc_mutex);
         ptr = alloc_from_free_list(&size);
         if (!ptr) {
             ptr = alloc_from_bump(size);
         }
     }
     if (!ptr) {
-        platform_mutex_unlock(alloc_mutex);
+        if (multi) platform_mutex_unlock(alloc_mutex);
         cl_storage_error("Heap exhausted (requested %u bytes)", (unsigned)size);
     }
 
     /* Guard: size must fit in the 23-bit header size field.
      * If this fires, an object exceeds ~8MB — architecturally unsupported. */
     if (size > CL_HDR_SIZE_MASK) {
-        platform_mutex_unlock(alloc_mutex);
+        if (multi) platform_mutex_unlock(alloc_mutex);
         cl_storage_error("Allocation too large for header: %u bytes (max %u)",
                          (unsigned)size, (unsigned)CL_HDR_SIZE_MASK);
     }
@@ -216,7 +217,7 @@ void *cl_alloc(uint8_t type, uint32_t size)
     cl_heap.total_allocated += size;
     cl_heap.total_consed += size;
 
-    platform_mutex_unlock(alloc_mutex);
+    if (multi) platform_mutex_unlock(alloc_mutex);
 
     return ptr;
 }
@@ -707,6 +708,19 @@ static void gc_mark_children(void *ptr, uint8_t type)
         gc_mark_push(cell->value);
         break;
     }
+    case TYPE_THREAD: {
+        CL_ThreadObj *to = (CL_ThreadObj *)ptr;
+        gc_mark_push(to->name);
+        break;
+    }
+    case TYPE_LOCK: {
+        CL_Lock *lk = (CL_Lock *)ptr;
+        gc_mark_push(lk->name);
+        break;
+    }
+    case TYPE_CONDVAR:
+        /* No CL_Obj children */
+        break;
     case TYPE_BIGNUM:
     case TYPE_SINGLE_FLOAT:
     case TYPE_DOUBLE_FLOAT:
@@ -866,6 +880,13 @@ static void gc_mark(void)
     gc_mark_obj(struct_table);
     gc_mark_obj(condition_hierarchy);
     gc_mark_obj(condition_slot_table);
+
+    /* Thread system: main thread's Lisp object */
+    {
+        extern CL_Obj cl_main_thread_lisp_obj(void);
+        CL_Obj mto = cl_main_thread_lisp_obj();
+        if (!CL_NULL_P(mto)) gc_mark_obj(mto);
+    }
 
     /* Readtable user macro closures */
     {

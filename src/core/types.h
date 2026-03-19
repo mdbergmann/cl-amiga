@@ -97,7 +97,10 @@ enum CL_ObjType {
     TYPE_RANDOM_STATE,
     TYPE_BIT_VECTOR,
     TYPE_PATHNAME,
-    TYPE_CELL
+    TYPE_CELL,
+    TYPE_THREAD,
+    TYPE_LOCK,
+    TYPE_CONDVAR
 };
 
 /* Header access macros */
@@ -439,6 +442,35 @@ typedef struct {
 } CL_Cell;
 
 #define CL_CELL_P(obj) (CL_HEAP_P(obj) && CL_HDR_TYPE(CL_OBJ_TO_PTR(obj)) == TYPE_CELL)
+
+/* --- Thread object (Lisp-visible wrapper for CL_Thread) --- */
+
+typedef struct {
+    CL_Header hdr;
+    uint32_t thread_id;   /* Side table index -> CL_Thread* */
+    CL_Obj name;          /* CL string or NIL */
+} CL_ThreadObj;
+
+#define CL_THREAD_P(obj) (CL_HEAP_P(obj) && CL_HDR_TYPE(CL_OBJ_TO_PTR(obj)) == TYPE_THREAD)
+
+/* --- Lock (mutex wrapper) --- */
+
+typedef struct {
+    CL_Header hdr;
+    uint32_t lock_id;     /* Side table index -> void* (platform mutex) */
+    CL_Obj name;          /* CL string or NIL */
+} CL_Lock;
+
+#define CL_LOCK_P(obj) (CL_HEAP_P(obj) && CL_HDR_TYPE(CL_OBJ_TO_PTR(obj)) == TYPE_LOCK)
+
+/* --- Condition variable wrapper --- */
+
+typedef struct {
+    CL_Header hdr;
+    uint32_t condvar_id;  /* Side table index -> void* (platform condvar) */
+} CL_CondVar;
+
+#define CL_CONDVAR_P(obj) (CL_HEAP_P(obj) && CL_HDR_TYPE(CL_OBJ_TO_PTR(obj)) == TYPE_CONDVAR)
 
 /* --- Convenience accessors --- */
 

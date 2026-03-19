@@ -1907,29 +1907,38 @@ when the param has no explicit default.  CL spec 3.4.6 requires this."
     (when colon-p (write-char #\) s))))
 
 ;;; ============================================================
-;;; EXT package: single-threaded threading primitives
+;;; EXT package: defglobal
 ;;; ============================================================
-;;; These stubs allow libraries that expect threading support
-;;; (e.g., FSet, Bordeaux-threads consumers) to load on CL-Amiga's
-;;; single-threaded runtime without modification.
 
 (in-package :ext)
 
-(defun make-lock (&optional name)
-  (declare (ignore name))
-  nil)
+(defmacro defglobal (name value &optional doc)
+  (declare (ignore doc))
+  `(defvar ,name ,value))
 
-(defun make-recursive-lock (&optional name)
-  (declare (ignore name))
-  nil)
+(export '(defglobal))
+
+;;; ============================================================
+;;; MP package: threading macros and stubs
+;;; ============================================================
+;;; Real threading primitives are C builtins (make-thread, make-lock,
+;;; acquire-lock, release-lock, etc.).  Convenience macros and stubs
+;;; for recursive locks and memory barriers live here.
+
+(in-package :mp)
 
 (defmacro with-lock-held ((lock) &body body)
-  (declare (ignore lock))
-  `(progn ,@body))
+  (let ((l (gensym "LOCK")))
+    `(let ((,l ,lock))
+       (acquire-lock ,l t)
+       (unwind-protect (progn ,@body)
+         (release-lock ,l)))))
+
+(defun make-recursive-lock (&optional name)
+  (make-lock name))
 
 (defmacro with-recursive-lock-held ((lock) &body body)
-  (declare (ignore lock))
-  `(progn ,@body))
+  `(with-lock-held (,lock) ,@body))
 
 (defun read-memory-barrier ()
   nil)
@@ -1937,13 +1946,8 @@ when the param has no explicit default.  CL spec 3.4.6 requires this."
 (defun write-memory-barrier ()
   nil)
 
-(defmacro defglobal (name value &optional doc)
-  (declare (ignore doc))
-  `(defvar ,name ,value))
-
-(export '(make-lock make-recursive-lock
-          with-lock-held with-recursive-lock-held
-          read-memory-barrier write-memory-barrier
-          defglobal))
+(export '(with-lock-held make-recursive-lock
+          with-recursive-lock-held
+          read-memory-barrier write-memory-barrier))
 
 (in-package :cl-user)

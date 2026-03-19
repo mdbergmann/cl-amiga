@@ -26,11 +26,6 @@ uint32_t    cl_thread_count     = 0;
 static void *gc_mutex   = NULL;  /* protects GC state transitions */
 static void *gc_condvar = NULL;  /* threads wait here during STW; initiator waits for all stopped */
 
-CL_Thread *cl_get_current_thread(void)
-{
-    return (CL_Thread *)platform_tls_get();
-}
-
 /* Register a thread in the global thread list */
 void cl_thread_register(CL_Thread *t)
 {
@@ -194,7 +189,9 @@ void cl_tlv_remove(CL_Thread *t, CL_Obj sym)
 
 CL_Obj cl_symbol_value(CL_Obj sym)
 {
-    CL_Thread *t = (CL_Thread *)platform_tls_get();
+    CL_Thread *t = (cl_thread_count <= 1)
+                   ? cl_main_thread_ptr
+                   : (CL_Thread *)platform_tls_get();
     CL_Obj v = cl_tlv_get(t, sym);
     if (v != CL_TLV_ABSENT) return v;
     return ((CL_Symbol *)CL_OBJ_TO_PTR(sym))->value;
@@ -202,7 +199,9 @@ CL_Obj cl_symbol_value(CL_Obj sym)
 
 void cl_set_symbol_value(CL_Obj sym, CL_Obj val)
 {
-    CL_Thread *t = (CL_Thread *)platform_tls_get();
+    CL_Thread *t = (cl_thread_count <= 1)
+                   ? cl_main_thread_ptr
+                   : (CL_Thread *)platform_tls_get();
     CL_Obj v = cl_tlv_get(t, sym);
     if (v != CL_TLV_ABSENT)
         cl_tlv_set(t, sym, val);
@@ -212,7 +211,9 @@ void cl_set_symbol_value(CL_Obj sym, CL_Obj val)
 
 int cl_symbol_boundp(CL_Obj sym)
 {
-    CL_Thread *t = (CL_Thread *)platform_tls_get();
+    CL_Thread *t = (cl_thread_count <= 1)
+                   ? cl_main_thread_ptr
+                   : (CL_Thread *)platform_tls_get();
     CL_Obj v = cl_tlv_get(t, sym);
     if (v != CL_TLV_ABSENT) return v != CL_UNBOUND;
     return ((CL_Symbol *)CL_OBJ_TO_PTR(sym))->value != CL_UNBOUND;
@@ -222,6 +223,113 @@ int cl_symbol_boundp(CL_Obj sym)
 void cl_tlv_snapshot(CL_Thread *dst, CL_Thread *src)
 {
     memcpy(dst->tlv_table, src->tlv_table, sizeof(src->tlv_table));
+}
+
+/* ---- Phase 4: Side tables and worker thread allocation ---- */
+
+CL_Thread *cl_thread_table[CL_MAX_THREADS];
+void *cl_lock_table[CL_MAX_LOCKS];
+void *cl_condvar_table[CL_MAX_CONDVARS];
+
+int cl_thread_table_alloc(CL_Thread *t)
+{
+    int i;
+    for (i = 0; i < CL_MAX_THREADS; i++) {
+        if (!cl_thread_table[i]) {
+            cl_thread_table[i] = t;
+            return i;
+        }
+    }
+    return -1;
+}
+
+void cl_thread_table_free(int id)
+{
+    if (id >= 0 && id < CL_MAX_THREADS)
+        cl_thread_table[id] = NULL;
+}
+
+int cl_lock_table_alloc(void *handle)
+{
+    int i;
+    for (i = 0; i < CL_MAX_LOCKS; i++) {
+        if (!cl_lock_table[i]) {
+            cl_lock_table[i] = handle;
+            return i;
+        }
+    }
+    return -1;
+}
+
+void cl_lock_table_free(int id)
+{
+    if (id >= 0 && id < CL_MAX_LOCKS)
+        cl_lock_table[id] = NULL;
+}
+
+int cl_condvar_table_alloc(void *handle)
+{
+    int i;
+    for (i = 0; i < CL_MAX_CONDVARS; i++) {
+        if (!cl_condvar_table[i]) {
+            cl_condvar_table[i] = handle;
+            return i;
+        }
+    }
+    return -1;
+}
+
+void cl_condvar_table_free(int id)
+{
+    if (id >= 0 && id < CL_MAX_CONDVARS)
+        cl_condvar_table[id] = NULL;
+}
+
+CL_Thread *cl_thread_alloc_worker(void)
+{
+    CL_Thread *t = (CL_Thread *)platform_alloc(sizeof(CL_Thread));
+    if (!t) return NULL;
+    memset(t, 0, sizeof(CL_Thread));
+
+    /* Allocate VM stack and frames (compact worker sizes) */
+    t->vm.stack = (CL_Obj *)platform_alloc(
+        CL_WORKER_VM_STACK_SIZE * sizeof(CL_Obj));
+    if (!t->vm.stack) { platform_free(t); return NULL; }
+    t->vm.stack_size = CL_WORKER_VM_STACK_SIZE;
+    t->vm.frames = (CL_Frame *)platform_alloc(
+        CL_WORKER_VM_FRAME_SIZE * sizeof(CL_Frame));
+    if (!t->vm.frames) {
+        platform_free(t->vm.stack);
+        platform_free(t);
+        return NULL;
+    }
+    t->vm.frame_size = CL_WORKER_VM_FRAME_SIZE;
+
+    /* Allocate NLX stack */
+    t->nlx_stack = (CL_NLXFrame *)platform_alloc(
+        CL_WORKER_NLX_FRAMES * sizeof(CL_NLXFrame));
+    if (!t->nlx_stack) {
+        platform_free(t->vm.frames);
+        platform_free(t->vm.stack);
+        platform_free(t);
+        return NULL;
+    }
+    t->nlx_max = CL_WORKER_NLX_FRAMES;
+
+    /* Default: single-value mode */
+    t->mv_count = 1;
+    t->status = 0; /* created */
+
+    return t;
+}
+
+void cl_thread_free_worker(CL_Thread *t)
+{
+    if (!t) return;
+    if (t->nlx_stack)  platform_free(t->nlx_stack);
+    if (t->vm.frames)  platform_free(t->vm.frames);
+    if (t->vm.stack)   platform_free(t->vm.stack);
+    platform_free(t);
 }
 
 /* ---- Init / Shutdown ---- */
@@ -257,8 +365,14 @@ void cl_thread_init(void)
     cl_main_thread.id = 0;
     cl_main_thread.status = 1; /* running */
 
-    /* Register main thread */
+    /* Initialize side tables */
+    memset(cl_thread_table, 0, sizeof(cl_thread_table));
+    memset(cl_lock_table, 0, sizeof(cl_lock_table));
+    memset(cl_condvar_table, 0, sizeof(cl_condvar_table));
+
+    /* Register main thread in both registry and side table */
     cl_thread_register(&cl_main_thread);
+    cl_thread_table[0] = &cl_main_thread;
 }
 
 void cl_thread_shutdown(void)
@@ -270,7 +384,9 @@ void cl_thread_shutdown(void)
         platform_free(cl_main_thread.nlx_stack);
         cl_main_thread.nlx_stack = NULL;
     }
-    cl_main_thread_ptr = NULL;
+    /* Keep cl_main_thread_ptr valid — the crash handler accesses
+     * thread state (cl_vm.sp, etc.) via the CT macro.  Setting it
+     * to NULL would cause a SIGSEGV in the handler itself. */
 
     /* Destroy GC coordination */
     if (gc_condvar) {

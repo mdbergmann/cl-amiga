@@ -15,6 +15,7 @@ CL_Obj cl_package_cl_user = CL_NIL;
 CL_Obj cl_package_keyword = CL_NIL;
 CL_Obj cl_package_ext = CL_NIL;
 CL_Obj cl_package_clamiga = CL_NIL;
+CL_Obj cl_package_mp = CL_NIL;
 CL_Obj cl_current_package = CL_NIL;
 CL_Obj cl_package_registry = CL_NIL;
 
@@ -532,12 +533,16 @@ void cl_package_init(void)
     cl_package_clamiga = cl_make_package("CLAMIGA");
     CL_GC_PROTECT(cl_package_clamiga);
 
+    cl_package_mp = cl_make_package("MP");
+    CL_GC_PROTECT(cl_package_mp);
+
     /* Register in global registry */
     cl_register_package(cl_package_cl);
     cl_register_package(cl_package_keyword);
     cl_register_package(cl_package_cl_user);
     cl_register_package(cl_package_ext);
     cl_register_package(cl_package_clamiga);
+    cl_register_package(cl_package_mp);
 
     /* Add nicknames */
     {
@@ -551,13 +556,17 @@ void cl_package_init(void)
         user_pkg->nicknames = cl_cons(nick, CL_NIL);
     }
 
-    /* CL-USER uses CL, EXT, and CLAMIGA */
+    /* CL-USER uses CL, EXT, CLAMIGA, and MP */
     cl_use_package(cl_package_cl, cl_package_cl_user);
     cl_use_package(cl_package_ext, cl_package_cl_user);
     cl_use_package(cl_package_clamiga, cl_package_cl_user);
+    cl_use_package(cl_package_mp, cl_package_cl_user);
 
     /* EXT uses CL */
     cl_use_package(cl_package_cl, cl_package_ext);
+
+    /* MP uses CL */
+    cl_use_package(cl_package_cl, cl_package_mp);
 
     /* CLAMIGA uses CL; CL uses CLAMIGA so boot.lisp/clos.lisp can
        access internal builtins without package qualification */
