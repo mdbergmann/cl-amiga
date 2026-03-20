@@ -41,7 +41,6 @@ make -f Makefile.amiga
 
 ```
 ./clamiga                      # Start REPL
-./clamiga hello.lisp           # Load and execute a file
 ./clamiga --load hello.lisp    # Same as above
 ./clamiga --heap 8M            # Start with 8 MB heap
 ```
@@ -69,6 +68,8 @@ clamiga --heap 24M
 
 ```
 ./clamiga --heap 24M
+CL-USER> (require "asdf")
+CL-USER> (load "lib/quicklisp-compat.lisp")
 CL-USER> (load "quicklisp/setup.lisp")
 CL-USER> (ql:quickload "alexandria")
 CL-USER> (ql:quickload "fiveam")
