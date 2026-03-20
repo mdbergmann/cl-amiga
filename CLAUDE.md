@@ -32,6 +32,9 @@ make -f Makefile.cross clean        # Remove cross-build artifacts
 - Single arena, bump allocator with free-list fallback, mark-and-sweep GC
 - Single-pass compiler: S-expressions → bytecode; stack-based VM
 - All OS calls go through `platform.h` (`platform_posix.c` / `platform_amiga.c`)
+- **Threading** (MP package): kernel threads with per-thread VM, TLV dynamic bindings, stop-the-world GC coordination, locks, condition variables
+  - POSIX: pthreads, pthread_rwlock, `__sync_*` atomics
+  - AmigaOS: `CreateNewProc()`, `SignalSemaphore` (shared/exclusive), custom condvars via signal bits, `Forbid()`/`Permit()` atomics, `tc_UserData` TLS
 
 ## Coding Guidelines
 
