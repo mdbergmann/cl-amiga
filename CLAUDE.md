@@ -78,17 +78,25 @@ Any C code that holds `CL_Obj` values across allocating calls **must** GC-protec
 
 - When running `clamiga` to capture output (e.g. for debugging or verification), use **small timeouts (10 seconds)** and check periodically — the process may hang or run indefinitely on certain inputs
 
+## Amiga Stack Requirements
+
+- **64K** (AmigaOS default) — sufficient for core runtime and full test suite (2042 tests)
+- **128K** — comfortable headroom for general use
+- **800K** — recommended for ASDF/Quicklisp/CLOS-heavy workloads (deep dispatch chains)
+
+The `stack` CLI command sets the stack before launching clamiga. For quicklisp/FSet/fiveam testing, use `stack 800000`.
+
 ## Integration Test Scripts
 
 Reusable Lisp scripts in `trunk/` for loading and testing third-party libraries:
 
 ```
-./build/host/clamiga --heap 24M --load trunk/load-and-test-5am.lisp    # Fiveam (57/57 tests)
-./build/host/clamiga --heap 24M --load trunk/load-and-test-fset.lisp   # FSet test suite
+./build/host/clamiga --heap 24M --load trunk/load-and-test-5am.lisp    # Fiveam (114/114 tests)
+./build/host/clamiga --heap 24M --load trunk/load-and-test-fset.lisp   # FSet (17/17 tests)
 ```
 
 - These scripts work on both host and Amiga (use `#+amigaos`/`#-amigaos` for platform differences)
-- On Amiga, use `--heap 48M` and increase C stack as needed
+- On Amiga, use `--heap 48M` and `stack 800000` for quicklisp-based tests
 
 ## Reference
 

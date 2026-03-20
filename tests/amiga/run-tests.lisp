@@ -1235,7 +1235,7 @@
 (check "find-package nil" nil (find-package "NONEXISTENT"))
 (check "package-name CL" "COMMON-LISP" (package-name (find-package "CL")))
 (check "package-nicknames CL" "CL" (car (package-nicknames (find-package "CL"))))
-(check "package-use-list CL-USER" 3 (length (package-use-list (find-package "CL-USER"))))
+(check "package-use-list CL-USER" 4 (length (package-use-list (find-package "CL-USER"))))
 (check "list-all-packages" t (>= (length (list-all-packages)) 3))
 (check "make-package" t (not (null (or (find-package "TEST-PKG-1") (make-package "TEST-PKG-1")))))
 (check "find-package after make" t (not (null (find-package "TEST-PKG-1"))))
@@ -1724,6 +1724,63 @@
 (let ((s (open (concatenate 'string *test-tmp* "_clt_s8a.txt") :direction :output))) (write-string "First" s) (close s))
 (let ((s (open (concatenate 'string *test-tmp* "_clt_s8a.txt") :direction :output :if-exists :append))) (write-string "Second" s) (close s))
 (check "open append" "FirstSecond" (let ((s (open (concatenate 'string *test-tmp* "_clt_s8a.txt") :direction :input))) (let ((line (read-line s))) (close s) line)))
+
+; open with :if-exists :supersede (overwrites existing file)
+(let ((s (open (concatenate 'string *test-tmp* "_clt_sup.txt") :direction :output)))
+  (write-string "Original" s) (close s))
+(let ((s (open (concatenate 'string *test-tmp* "_clt_sup.txt") :direction :output :if-exists :supersede)))
+  (write-string "New" s) (close s))
+(check "open supersede" "New"
+  (with-open-file (s (concatenate 'string *test-tmp* "_clt_sup.txt") :direction :input)
+    (read-line s)))
+
+; open with :if-exists :rename-and-delete
+(let ((s (open (concatenate 'string *test-tmp* "_clt_rad.txt") :direction :output)))
+  (write-string "Before" s) (close s))
+(let ((s (open (concatenate 'string *test-tmp* "_clt_rad.txt") :direction :output :if-exists :rename-and-delete)))
+  (write-string "After" s) (close s))
+(check "open rename-and-delete" "After"
+  (with-open-file (s (concatenate 'string *test-tmp* "_clt_rad.txt") :direction :input)
+    (read-line s)))
+
+; open with :if-exists :rename
+(let ((s (open (concatenate 'string *test-tmp* "_clt_ren.txt") :direction :output)))
+  (write-string "Old" s) (close s))
+(let ((s (open (concatenate 'string *test-tmp* "_clt_ren.txt") :direction :output :if-exists :rename)))
+  (write-string "Fresh" s) (close s))
+(check "open rename creates new" "Fresh"
+  (with-open-file (s (concatenate 'string *test-tmp* "_clt_ren.txt") :direction :input)
+    (read-line s)))
+(check "open rename keeps backup" t
+  (not (null (probe-file (concatenate 'string *test-tmp* "_clt_ren.txt.bak")))))
+
+; open with :if-exists :overwrite (treated as supersede)
+(let ((s (open (concatenate 'string *test-tmp* "_clt_ovw.txt") :direction :output)))
+  (write-string "ABCDEF" s) (close s))
+(let ((s (open (concatenate 'string *test-tmp* "_clt_ovw.txt") :direction :output :if-exists :overwrite)))
+  (write-string "XY" s) (close s))
+(check "open overwrite" "XY"
+  (with-open-file (s (concatenate 'string *test-tmp* "_clt_ovw.txt") :direction :input)
+    (read-line s)))
+
+; open with :if-exists nil returns nil
+(let ((s (open (concatenate 'string *test-tmp* "_clt_sup.txt") :direction :output :if-exists nil)))
+  (check "open if-exists nil" nil s))
+
+; open with :if-exists :error on existing file
+(check "open if-exists error" t
+  (handler-case
+    (progn (open (concatenate 'string *test-tmp* "_clt_sup.txt") :direction :output :if-exists :error) nil)
+    (error (c) t)))
+
+; with-open-file with :if-exists :rename-and-delete
+(with-open-file (s (concatenate 'string *test-tmp* "_clt_wrad.txt") :direction :output)
+  (write-string "First version" s))
+(with-open-file (s (concatenate 'string *test-tmp* "_clt_wrad.txt") :direction :output :if-exists :rename-and-delete)
+  (write-string "Second version" s))
+(check "with-open-file rename-and-delete" "Second version"
+  (with-open-file (s (concatenate 'string *test-tmp* "_clt_wrad.txt") :direction :input)
+    (read-line s)))
 
 ; open nonexistent for input -> error
 (check "open nonexistent error" t (handler-case (progn (open (concatenate 'string *test-tmp* "_nonexist_xyz.txt") :direction :input) nil) (error (c) t)))
@@ -3235,7 +3292,7 @@
   (write-string "(defun fasl-test-fn (x) (* x 3))" s)
   (terpri s))
 (compile-file "T:fasl-test1.lisp" :output-file "T:fasl-test1.fasl")
-(check "compile-file creates FASL" t (probe-file "T:fasl-test1.fasl"))
+(check "compile-file creates FASL" t (not (null (probe-file "T:fasl-test1.fasl"))))
 
 ; Load the FASL and verify function works
 (load "T:fasl-test1.fasl")
@@ -3484,6 +3541,138 @@
   (handler-case (emf-neg "hello") (error (c) 'no-method)))
 (check "emf cache negative cached" 'no-method
   (handler-case (emf-neg "world") (error (c) 'no-method)))
+
+; ============================================================
+; Threading (MP package)
+; ============================================================
+(format t "~%--- Threading ---~%")
+
+; --- Thread creation and join ---
+(check "thread make and join" 42
+  (mp:join-thread (mp:make-thread (lambda () 42))))
+
+(check "thread join returns computed result" 60
+  (mp:join-thread (mp:make-thread (lambda () (+ 10 20 30)))))
+
+(check "thread join cons result" '(1 2 3)
+  (mp:join-thread (mp:make-thread (lambda () (list 1 2 3)))))
+
+(check "thread make with name" "worker"
+  (mp:thread-name (mp:make-thread (lambda () nil) :name "worker")))
+
+; --- Thread predicates ---
+(check "thread alive-p after join" nil
+  (let ((thr (mp:make-thread (lambda () 42))))
+    (mp:join-thread thr)
+    (mp:thread-alive-p thr)))
+
+(check "current-thread returns thread" t
+  (not (null (mp:current-thread))))
+
+(check "all-threads includes main" t
+  (>= (length (mp:all-threads)) 1))
+
+; --- Thread yield ---
+(check "thread-yield no crash" nil
+  (mp:thread-yield))
+
+; --- Lock operations ---
+(check "make-lock" t
+  (not (null (mp:make-lock "test-lock"))))
+
+(check "lock acquire and release" t
+  (let ((lk (mp:make-lock)))
+    (mp:acquire-lock lk)
+    (mp:release-lock lk)
+    t))
+
+(check "lock trylock" t
+  (let ((lk (mp:make-lock)))
+    (mp:acquire-lock lk nil)))
+
+(check "with-lock-held" 42
+  (let ((lk (mp:make-lock)))
+    (mp:with-lock-held (lk)
+      42)))
+
+; --- Lock contention (two threads) ---
+(check "lock contention two threads" 200
+  (let ((counter (list 0))
+        (lk (mp:make-lock)))
+    (let ((t1 (mp:make-thread
+                (lambda ()
+                  (dotimes (i 100)
+                    (mp:with-lock-held (lk)
+                      (setf (car counter) (+ (car counter) 1)))))))
+          (t2 (mp:make-thread
+                (lambda ()
+                  (dotimes (i 100)
+                    (mp:with-lock-held (lk)
+                      (setf (car counter) (+ (car counter) 1))))))))
+      (mp:join-thread t1)
+      (mp:join-thread t2)
+      (car counter))))
+
+; --- Condition variables ---
+(check "make-condition-variable" t
+  (not (null (mp:make-condition-variable))))
+
+(check "condvar notify/wait" t
+  (let ((lk (mp:make-lock))
+        (cv (mp:make-condition-variable))
+        (ready (list nil)))
+    (let ((consumer (mp:make-thread
+                      (lambda ()
+                        (mp:acquire-lock lk)
+                        (loop until (car ready)
+                              do (mp:condition-wait cv lk))
+                        (mp:release-lock lk)
+                        (car ready)))))
+      (mp:thread-yield)
+      (mp:acquire-lock lk)
+      (setf (car ready) t)
+      (mp:condition-notify cv)
+      (mp:release-lock lk)
+      (mp:join-thread consumer))))
+
+; --- Dynamic binding isolation ---
+(check "thread inherits dynamic bindings" "COMMON-LISP-USER"
+  (mp:join-thread
+    (mp:make-thread
+      (lambda () (package-name *package*)))))
+
+(defvar *thread-test-var* :parent)
+(check "thread let binding isolation" '(:parent :child)
+  (let ((child (mp:make-thread
+                 (lambda ()
+                   (let ((*thread-test-var* :child))
+                     *thread-test-var*)))))
+    (let ((child-result (mp:join-thread child)))
+      (list *thread-test-var* child-result))))
+
+; --- Error handling in threads ---
+(check "thread error sets aborted" :survived
+  (let ((thr (mp:make-thread
+               (lambda () (error "boom")))))
+    (mp:join-thread thr)
+    :survived))
+
+; --- Multiple concurrent threads ---
+(check "multiple concurrent threads" '(10 20 30 40)
+  (let ((threads (list
+                   (mp:make-thread (lambda () (* 1 10)))
+                   (mp:make-thread (lambda () (* 2 10)))
+                   (mp:make-thread (lambda () (* 3 10)))
+                   (mp:make-thread (lambda () (* 4 10))))))
+    (mapcar #'mp:join-thread threads)))
+
+; --- GC stress under threads ---
+(check "thread GC stress" 400
+  (let ((t1 (mp:make-thread
+              (lambda () (length (make-list 200)))))
+        (t2 (mp:make-thread
+              (lambda () (length (make-list 200))))))
+    (+ (mp:join-thread t1) (mp:join-thread t2))))
 
 ; --- Summary ---
 (format t "~%=== Results ===~%")

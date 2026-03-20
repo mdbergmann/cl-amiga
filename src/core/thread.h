@@ -193,7 +193,7 @@ void cl_thread_shutdown(void);
 extern CL_Thread *cl_thread_table[CL_MAX_THREADS];
 
 /* Lock side table: maps lock_id -> void* (platform mutex) */
-#define CL_MAX_LOCKS 64
+#define CL_MAX_LOCKS 256
 extern void *cl_lock_table[CL_MAX_LOCKS];
 
 /* Condvar side table: maps condvar_id -> void* (platform condvar) */

@@ -23,6 +23,7 @@
 #include "thread.h"
 #include <string.h>
 #include <stdlib.h>
+#include <stdio.h>
 
 /* Helper to register a builtin */
 static void defun(const char *name, CL_CFunc func, int min, int max)
@@ -51,6 +52,9 @@ static CL_Obj KW_APPEND = CL_NIL;
 static CL_Obj KW_ERROR_KW = CL_NIL;
 static CL_Obj KW_CREATE = CL_NIL;
 static CL_Obj KW_NEW_VERSION = CL_NIL;
+static CL_Obj KW_RENAME = CL_NIL;
+static CL_Obj KW_RENAME_AND_DELETE = CL_NIL;
+static CL_Obj KW_OVERWRITE = CL_NIL;
 
 /* --- Stream argument resolution helpers --- */
 
@@ -535,7 +539,8 @@ static CL_Obj bi_open(CL_Obj *args, int n)
         if (if_exists == KW_APPEND) {
             platform_mode = PLATFORM_FILE_APPEND;
         } else {
-            /* :supersede, :new-version, or default → truncate/create */
+            /* :supersede, :new-version, :overwrite, :rename,
+             * :rename-and-delete → truncate/create */
             platform_mode = PLATFORM_FILE_WRITE;
         }
     } else if (direction == KW_IO) {
@@ -569,12 +574,37 @@ static CL_Obj bi_open(CL_Obj *args, int n)
         return CL_NIL;
     }
 
-    /* Handle :if-exists :error — check if file already exists */
-    if (direction != KW_INPUT && if_exists == KW_ERROR_KW) {
+    /* Handle :if-exists for output/io directions */
+    if (direction != KW_INPUT && direction != KW_PROBE) {
         PlatformFile test = platform_file_open(path_str->data, PLATFORM_FILE_READ);
-        if (test != PLATFORM_FILE_INVALID) {
-            platform_file_close(test);
-            cl_error(CL_ERR_GENERAL, "OPEN: file already exists");
+        int file_exists = (test != PLATFORM_FILE_INVALID);
+        if (file_exists) platform_file_close(test);
+
+        if (file_exists) {
+            if (if_exists == KW_ERROR_KW) {
+                cl_error(CL_ERR_GENERAL, "OPEN: file already exists \"%s\"",
+                         path_str->data);
+            } else if (CL_NULL_P(if_exists)) {
+                /* :if-exists nil — return NIL */
+                return CL_NIL;
+            } else if (if_exists == KW_RENAME || if_exists == KW_RENAME_AND_DELETE) {
+                /* Rename existing file to .bak, then open fresh */
+                char backup[512];
+                snprintf(backup, sizeof(backup), "%s.bak", path_str->data);
+                platform_file_rename(path_str->data, backup);
+                if (if_exists == KW_RENAME_AND_DELETE) {
+                    /* Delete backup after rename (per spec: old file is
+                     * deleted once new stream is successfully opened) */
+                    platform_file_delete(backup);
+                }
+            } else if (if_exists == KW_SUPERSEDE || if_exists == KW_NEW_VERSION
+                       || if_exists == KW_OVERWRITE) {
+                /* Delete existing file first so platform_file_open can
+                 * create a fresh one (required on AmigaOS where
+                 * MODE_NEWFILE fails on existing files) */
+                platform_file_delete(path_str->data);
+            }
+            /* :append — handled by platform_mode above */
         }
     }
 
@@ -1115,6 +1145,9 @@ void cl_builtins_stream_init(void)
     KW_ERROR_KW = cl_intern_keyword("ERROR", 5);
     KW_CREATE  = cl_intern_keyword("CREATE", 6);
     KW_NEW_VERSION = cl_intern_keyword("NEW-VERSION", 11);
+    KW_RENAME  = cl_intern_keyword("RENAME", 6);
+    KW_RENAME_AND_DELETE = cl_intern_keyword("RENAME-AND-DELETE", 17);
+    KW_OVERWRITE = cl_intern_keyword("OVERWRITE", 9);
 
     /* Step 1 */
     defun("STREAMP", bi_streamp, 1, 1);

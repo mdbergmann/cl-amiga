@@ -77,6 +77,11 @@ int platform_thread_create(void **handle, void *(*func)(void *), void *arg,
 
     if (stack_size == 0) stack_size = 65536;
 
+    /* Forbid() prevents task switching so the child process won't
+     * start running before we set tc_UserData.  This is the standard
+     * AmigaOS pattern for passing data to a newly created process. */
+    Forbid();
+
     proc = CreateNewProcTags(
         NP_Entry,     (ULONG)amiga_thread_entry,
         NP_StackSize, (ULONG)stack_size,
@@ -85,6 +90,7 @@ int platform_thread_create(void **handle, void *(*func)(void *), void *arg,
     );
 
     if (!proc) {
+        Permit();
         FreeSignal(at->join_sig);
         FreeVec(at);
         return -1;
@@ -93,6 +99,8 @@ int platform_thread_create(void **handle, void *(*func)(void *), void *arg,
     at->proc = proc;
     /* Set UserData so the child can find its AmigaThread struct */
     ((struct Task *)proc)->tc_UserData = at;
+
+    Permit();  /* Now child can start and read tc_UserData safely */
 
     *handle = at;
     return 0;

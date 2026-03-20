@@ -433,7 +433,12 @@ static CL_Obj call_builtin(CL_Function *func, CL_Obj *args, int nargs)
     /* Validate function pointer is in a reasonable range (not obviously corrupted) */
     {
         uintptr_t fp_val = (uintptr_t)fptr;
+#ifdef PLATFORM_AMIGA
+        /* 68k: functions need only 2-byte alignment (even addresses) */
+        if (fp_val < 0x1000 || (fp_val & 0x1) != 0) {
+#else
         if (fp_val < 0x1000 || (fp_val & 0x3) != 0) {
+#endif
             fprintf(stderr, "[VM] call_builtin: CORRUPT func ptr %p in %s (obj=0x%08x)\n",
                     (void *)fptr,
                     CL_NULL_P(func->name) ? "?" : cl_symbol_name(func->name),

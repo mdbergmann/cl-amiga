@@ -3,8 +3,8 @@
 
 (require "asdf")
 
-;; Host: ~/quicklisp/setup.lisp, Amiga: local quicklisp/setup.lisp
-#+amigaos (load "quicklisp/setup.lisp")
+;; Host: ~/quicklisp/setup.lisp, Amiga: S:quicklisp/setup.lisp
+#+amigaos (load "S:quicklisp/setup.lisp")
 #-amigaos (load (merge-pathnames "quicklisp/setup.lisp" (user-homedir-pathname)))
 
 (load "lib/quicklisp-compat.lisp")

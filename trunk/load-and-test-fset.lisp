@@ -5,10 +5,11 @@
 ;;   ./build/host/clamiga --heap 24M --load trunk/load-and-test-fset.lisp
 ;;   (on Amiga: clamiga --heap 48M --load trunk/load-and-test-fset.lisp)
 
+(setq *load-verbose* t)
 (require "asdf")
 
-;; Host: ~/quicklisp/setup.lisp, Amiga: local quicklisp/setup.lisp
-#+amigaos (load "quicklisp/setup.lisp")
+;; Host: ~/quicklisp/setup.lisp, Amiga: S:quicklisp/setup.lisp
+#+amigaos (load "S:quicklisp/setup.lisp")
 #-amigaos (load (merge-pathnames "quicklisp/setup.lisp" (user-homedir-pathname)))
 
 (load "lib/quicklisp-compat.lisp")
