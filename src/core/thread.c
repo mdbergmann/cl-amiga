@@ -160,12 +160,14 @@ void cl_tlv_set(CL_Thread *t, CL_Obj sym, CL_Obj val)
                               ? first_tombstone : slot;
             t->tlv_table[target].symbol = sym;
             t->tlv_table[target].value  = val;
+            t->tlv_entry_count++;
             return;
         }
     }
     if (first_tombstone < CL_TLV_TABLE_SIZE) {
         t->tlv_table[first_tombstone].symbol = sym;
         t->tlv_table[first_tombstone].value  = val;
+        t->tlv_entry_count++;
     }
 }
 
@@ -180,20 +182,27 @@ void cl_tlv_remove(CL_Thread *t, CL_Obj sym)
         if (k == sym) {
             t->tlv_table[slot].symbol = CL_UNBOUND;
             t->tlv_table[slot].value  = CL_NIL;
+            if (t->tlv_entry_count > 0)
+                t->tlv_entry_count--;
             return;
         }
     }
 }
 
-/* High-level TLV-aware accessors */
+/* High-level TLV-aware accessors.
+ * Fast path: when tlv_entry_count == 0, no dynamic bindings are active
+ * on this thread, so skip the TLV hash probe entirely.  This turns a
+ * 30-50 cycle probe into a single compare + direct field read. */
 
 CL_Obj cl_symbol_value(CL_Obj sym)
 {
     CL_Thread *t = (cl_thread_count <= 1)
                    ? cl_main_thread_ptr
                    : (CL_Thread *)platform_tls_get();
-    CL_Obj v = cl_tlv_get(t, sym);
-    if (v != CL_TLV_ABSENT) return v;
+    if (t->tlv_entry_count > 0) {
+        CL_Obj v = cl_tlv_get(t, sym);
+        if (v != CL_TLV_ABSENT) return v;
+    }
     return ((CL_Symbol *)CL_OBJ_TO_PTR(sym))->value;
 }
 
@@ -202,11 +211,14 @@ void cl_set_symbol_value(CL_Obj sym, CL_Obj val)
     CL_Thread *t = (cl_thread_count <= 1)
                    ? cl_main_thread_ptr
                    : (CL_Thread *)platform_tls_get();
-    CL_Obj v = cl_tlv_get(t, sym);
-    if (v != CL_TLV_ABSENT)
-        cl_tlv_set(t, sym, val);
-    else
-        ((CL_Symbol *)CL_OBJ_TO_PTR(sym))->value = val;
+    if (t->tlv_entry_count > 0) {
+        CL_Obj v = cl_tlv_get(t, sym);
+        if (v != CL_TLV_ABSENT) {
+            cl_tlv_set(t, sym, val);
+            return;
+        }
+    }
+    ((CL_Symbol *)CL_OBJ_TO_PTR(sym))->value = val;
 }
 
 int cl_symbol_boundp(CL_Obj sym)
@@ -214,15 +226,25 @@ int cl_symbol_boundp(CL_Obj sym)
     CL_Thread *t = (cl_thread_count <= 1)
                    ? cl_main_thread_ptr
                    : (CL_Thread *)platform_tls_get();
-    CL_Obj v = cl_tlv_get(t, sym);
-    if (v != CL_TLV_ABSENT) return v != CL_UNBOUND;
+    if (t->tlv_entry_count > 0) {
+        CL_Obj v = cl_tlv_get(t, sym);
+        if (v != CL_TLV_ABSENT) return v != CL_UNBOUND;
+    }
     return ((CL_Symbol *)CL_OBJ_TO_PTR(sym))->value != CL_UNBOUND;
 }
 
 /* TLV snapshot (for thread inheritance) */
 void cl_tlv_snapshot(CL_Thread *dst, CL_Thread *src)
 {
+    uint32_t i, count = 0;
     memcpy(dst->tlv_table, src->tlv_table, sizeof(src->tlv_table));
+    /* Recompute entry count from the copied table */
+    for (i = 0; i < CL_TLV_TABLE_SIZE; i++) {
+        if (dst->tlv_table[i].symbol != CL_NIL &&
+            dst->tlv_table[i].symbol != CL_UNBOUND)
+            count++;
+    }
+    dst->tlv_entry_count = count;
 }
 
 /* ---- Side tables and worker thread allocation ---- */

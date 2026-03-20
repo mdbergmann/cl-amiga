@@ -149,6 +149,7 @@ typedef struct CL_Thread_s {
 
     /* ---- Thread-Local Value (TLV) table ---- */
     CL_TLVEntry tlv_table[CL_TLV_TABLE_SIZE];
+    uint32_t    tlv_entry_count;  /* number of active TLV entries — 0 = skip probes */
 
     /* ---- GC coordination ---- */
     volatile uint8_t gc_requested;
