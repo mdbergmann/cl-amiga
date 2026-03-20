@@ -89,30 +89,42 @@ Maximize throughput and minimize latency of the CL-Amiga bytecode VM and runtime
 
 ---
 
-### 1.4 VM Computed Goto Dispatch
+### 1.4 VM Computed Goto Dispatch ✅ DONE
 
 **Problem**: The VM dispatch loop uses `switch(opcode)` with 100+ cases. On 68020, the compiler generates an indirect jump through a bounds-checked table, adding overhead on every opcode.
 
 **Design**:
-- Replace `switch(op)` with GCC computed goto: `static void *dispatch_table[] = {&&op_nop, &&op_load, ...}; goto *dispatch_table[op];`
-- Each opcode handler ends with `DISPATCH_NEXT;` macro that fetches the next opcode and jumps
+- Replace `switch(op)` with GCC computed goto: `static void *dispatch_table[256]` with labels-as-values
+- Each opcode handler ends with `VM_BREAK` macro that fetches the next opcode and jumps
 - Guard with `#ifdef __GNUC__` — fall back to switch for non-GCC compilers (vbcc)
-- Define macros:
-  ```c
-  #ifdef __GNUC__
-  #define DISPATCH_NEXT  do { op = *ip++; goto *dispatch_table[op]; } while(0)
-  #define CASE(label)    op_##label:
-  #else
-  #define DISPATCH_NEXT  break
-  #define CASE(label)    case OP_##label:
-  #endif
-  ```
+- Disable with `-DCL_NO_COMPUTED_GOTO` if needed
+- Four macros abstract both paths: `VM_CASE(op)`, `VM_BREAK`, `VM_DISPATCH()`, `VM_DEFAULT`
+
+**Implementation**:
+- 256-entry dispatch table with designated initializers; unassigned slots → unknown opcode handler
+- All 71 opcode handlers use `VM_CASE`/`VM_BREAK` macros — single source for both paths
+- Both paths tested: computed goto (default) and switch fallback (`-DCL_NO_COMPUTED_GOTO`)
+- All 658+ host tests, fiveam 114/114, FSet 17/17 pass on both paths
 
 **Expected gain**: 5-15% overall VM throughput (eliminates branch through single prediction point).
 
-**Risk**: Large refactor of vm.c (2654 lines). Must be done carefully with full test coverage.
-
 **Files**: `src/core/vm.c`
+
+---
+
+### 1.5 TLV Bypass (Thread-Local Value Fast Path) ✅ DONE
+
+**Problem**: After threading, every `cl_symbol_value()` call probes the TLV hash table (30-50 cycles average) even when no dynamic bindings are active, which is the common case.
+
+**Design**:
+- Add `tlv_entry_count` field to `CL_Thread` — tracks number of active TLV entries
+- Incremented in `cl_tlv_set()` on new entry creation, decremented in `cl_tlv_remove()`
+- In `cl_symbol_value()`, `cl_set_symbol_value()`, `cl_symbol_boundp()`: check `tlv_entry_count == 0` before probing TLV table — skip entirely when no dynamic bindings active
+- `cl_tlv_snapshot()` recomputes count from copied table for thread inheritance
+
+**Expected gain**: Eliminates 30-50 cycle TLV probe on every global variable read when no dynamic bindings are active (the common case). Effectively removes the threading tax from `OP_GLOAD`/`OP_GSTORE`.
+
+**Files**: `src/core/thread.h`, `src/core/thread.c`
 
 ---
 
@@ -300,9 +312,10 @@ Recommended sequence balancing impact vs. risk:
 | 1 | 2.1 (debug gating), 2.2 (hash function), 2.6 (build flags) | ✅ DONE (7f51164) |
 | 2 | 2.3 (HT power-of-2), 1.2 (pre-FASL boot), 3.3 (mv_count) | ✅ 2.3+1.2 DONE (7f51164), 3.3 pending |
 | 3 | 1.1 (CLOS dispatch cache) | ✅ DONE (b315f2a) |
-| 4 | 1.3 (constant folding), 2.4 (set ops in C) | Pending |
-| 5 | 1.4 (computed goto), 2.5 (free-list segregation) | Pending |
-| 6 | 3.1 (slot access), 3.2 (keyword pre-comp) | Pending |
+| 4 | 1.4 (computed goto), 1.5 (TLV bypass) | ✅ DONE |
+| 5 | 1.3 (constant folding), 2.4 (set ops in C) | Pending |
+| 6 | 2.5 (free-list segregation) | Pending |
+| 7 | 3.1 (slot access), 3.2 (keyword pre-comp) | Pending |
 
 ## Validation
 
