@@ -84,10 +84,9 @@ Any C code that holds `CL_Obj` values across allocating calls **must** GC-protec
 ## Amiga Stack Requirements
 
 - **64K** (AmigaOS default) — sufficient for core runtime and full test suite (2042 tests)
-- **128K** — comfortable headroom for general use
-- **800K** — recommended for ASDF/Quicklisp/CLOS-heavy workloads (deep dispatch chains)
+- **128K** — sufficient for Quicklisp/FSet/fiveam (deep CLOS dispatch chains)
 
-The `stack` CLI command sets the stack before launching clamiga. For quicklisp/FSet/fiveam testing, use `stack 800000`.
+The `stack` CLI command sets the stack before launching clamiga.
 
 ## Integration Test Scripts
 

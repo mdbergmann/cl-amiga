@@ -6,9 +6,9 @@ CL-Amiga is a bytecode-compiled Common Lisp environment written in C (C89/C99). 
 
 ## Status
 
-CL-Amiga can load **ASDF**, install and run **Quicklisp**, and successfully quickload libraries including **Alexandria**, **fiveam** (57/57 self-tests passing), and **FSet** (functional collections).
+CL-Amiga can load **ASDF**, install and run **Quicklisp**, and successfully quickload libraries including **Alexandria**, **fiveam** (114/114 self-tests passing), and **FSet** (17/17 tests passing).
 
-Over 1600 host tests cover the implementation.
+Over 2000 Amiga tests and 670+ host tests cover the implementation, including threading, CLOS, conditions, and full numeric tower.
 
 ## Building
 
@@ -52,13 +52,13 @@ The default heap is **4 MB**. Larger workloads need more:
 
 | Use case                        | Heap             | Amiga stack       |
 |---------------------------------|------------------|-------------------|
-| REPL / small programs           | 4M (default)     | `stack 65000`     |
-| Loading ASDF                    | `--heap 11M`     | `stack 65000`     |
-| Quicklisp + quickload libraries | `--heap 24M`     | `stack 400000`    |
-| FSet (functional collections)   | `--heap 24M`     | `stack 400000`    |
-| Fiveam (load + self-tests)      | `--heap 24M`     | `stack 800000`    |
+| REPL / small programs           | 4M (default)     | 64K (default)     |
+| Loading ASDF                    | `--heap 11M`     | 64K (default)     |
+| Quicklisp + quickload libraries | `--heap 24M`     | `stack 128000`    |
+| FSet (functional collections)   | `--heap 24M`     | `stack 128000`    |
+| Fiveam (load + self-tests)      | `--heap 24M`     | `stack 128000`    |
 
-On AmigaOS, set the process stack before launching (the default 4 KB is too small):
+On AmigaOS, the default 64K stack is sufficient for basic use. For Quicklisp/ASDF workloads with deep CLOS dispatch chains, increase the stack:
 
 ```
 stack 400000
@@ -81,11 +81,12 @@ CL-USER> (ql:quickload "fset")
 - **Tagged 32-bit values** (`CL_Obj = uint32_t`) — heap pointers are arena-relative byte offsets
 - **Memory-efficient** — bump allocator with free-list fallback, mark-and-sweep GC; designed for 68020 @ 14 MHz with 8 MB RAM
 - **Platform abstraction** — all OS calls go through `platform.h` (POSIX and AmigaOS implementations)
+- **Threading** (MP package) — kernel threads, per-thread dynamic bindings (TLV), locks, condition variables, stop-the-world GC; POSIX pthreads and AmigaOS processes/SignalSemaphores
 - **TCP networking** — BSD sockets (POSIX) and bsdsocket.library (AmigaOS)
 
 ## Known Limitations and Future Work
 
-- **Threading** — no threading support yet; green threads are a possible future direction
+- **Threading** — basic MP package works (threads, locks, condvars); no bordeaux-threads compatibility layer yet
 - **Buffered socket I/O** — network streams currently use byte-at-a-time recv/send, making Quicklisp downloads on Amiga very slow
 - **compile-file** — ASDF uses form-by-form source loading (CL-Amiga compiles at load time); no proper fasl/bytecode file format yet
 - **ANSI CL gaps** — while major subsystems work (CLOS, conditions, packages, the full numeric tower, arrays, pathnames, streams, loop, format), some corners of the spec remain unimplemented
