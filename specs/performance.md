@@ -128,6 +128,58 @@ Maximize throughput and minimize latency of the CL-Amiga bytecode VM and runtime
 
 ---
 
+### 1.6 Hash Table Rehashing + Hash Distribution Fix ✅ DONE (3c58761)
+
+**Problem**: Hash tables used a fixed 16-bucket array with no rehashing. Inserting 100K entries created chains of ~6250 average length — O(n) lookup. Additionally, the EQUAL/EQUALP hash function for fixnums returned raw tagged bits (`(uint32_t)obj`), wasting 50% of buckets for sequential integer keys (all fixnums are odd due to tag bit).
+
+**Design**:
+- **Hash mixer**: Extract `hash_mix()` helper (xor-shift-multiply avalanche), apply to all fixnum/identity paths including EQUAL/EQUALP (was only used for EQ)
+- **Growable buckets**: Add `bucket_vec` field to `CL_Hashtable` — when `CL_NIL`, use inline `buckets[]` flexible array; after rehash, points to a `CL_Vector` holding the new bucket array
+- **Automatic rehashing**: `ht_maybe_rehash()` triggers when load factor > 75%. Allocates new `CL_Vector` with doubled bucket count, redistributes entries by relinking existing cons cells (zero allocation during redistribution). GC-safe: protects `ht_obj` during vector allocation
+- **`:size` parameter**: `make-hash-table :size N` now computes initial bucket count as `ceil(N / 0.75)` rounded to power-of-2, preventing immediate rehash after filling
+- **Updated all access paths**: `ht_get_buckets()` helper for bucket indirection in gethash, setf-gethash, remhash, maphash, clrhash, hash-table-pairs, and `builtins_struct.c` CLOS class table lookup
+- **GC marking**: marks `bucket_vec` field; when non-NIL, vector's own marking traverses bucket contents
+
+**Result**: hash 100K benchmark: **4.129s → 0.037s (112x speedup)**. ECL: 0.025s.
+
+**Files**: `src/core/builtins_hashtable.c`, `src/core/types.h`, `src/core/mem.c`, `src/core/builtins_struct.c`
+
+---
+
+### 1.7 Bignum 32-bit Limb Multiplication on 64-bit Hosts ✅ DONE (fbb7e29)
+
+**Problem**: Bignum multiplication used 16-bit limbs with `uint32_t` intermediates (designed for 68020). On 64-bit hosts, this wastes the processor's native word size — `1000!` requires ~534 16-bit limbs, giving ~285K inner-loop iterations for schoolbook O(n²) multiply.
+
+**Design**:
+- **`CL_Bignum` heap format unchanged**: 16-bit limbs for Amiga compatibility, FASL serialization, GC
+- **Pack/unpack at computation boundary**: `pack_16_to_32()` pairs 16-bit limbs into 32-bit limbs; `unpack_32_to_16()` converts back after computation
+- **`bignum_mul_mag32()`**: schoolbook multiplication with `uint32_t` limbs and `uint64_t` intermediates — halves limb count, giving ~4x fewer inner-loop iterations
+- **Stack buffers for small operands** (≤256 32-bit limbs), heap-allocated for larger
+- **Amiga path unchanged**: `#else` branch keeps 16-bit limbs with `uint32_t` products
+- Guarded by `#ifdef PLATFORM_POSIX`
+
+**Result**: factorial 1000 x5000 benchmark: **5.908s → 2.677s (2.2x speedup)**. ECL (GMP): 1.348s. Remaining gap is algorithmic (schoolbook O(n²) vs GMP's Karatsuba O(n^1.585)).
+
+**Files**: `src/core/bignum.c`
+
+---
+
+## Benchmark Summary (vs ECL 24.5.10)
+
+Benchmark suite: `bench.lisp` — factorial, fibonacci, Takeuchi, list-ops, hash-table.
+
+| Benchmark | CL-Amiga (before) | CL-Amiga (after) | ECL | vs ECL |
+|-----------|-------------------|------------------|-----|--------|
+| factorial 1000 x5000 | 5.908s | **2.677s** | 1.348s | 2.0x slower |
+| fib-iter 1000 x5000 | 0.590s | 0.595s | 0.919s | **1.5x faster** |
+| tak 18 12 6 x100 | 0.469s | 0.473s | 0.853s | **1.8x faster** |
+| list-ops 10000 | 0.032s | 0.034s | 0.062s | **1.8x faster** |
+| hash 100000 | 4.129s | **0.037s** | 0.025s | 1.5x slower |
+
+CL-Amiga beats ECL on 3/5 benchmarks. The two remaining gaps are in bignum-heavy arithmetic (schoolbook vs Karatsuba) and hash table implementation (cons-chain vs open addressing).
+
+---
+
 ## Tier 2 — Medium Impact
 
 ### 2.1 VM Debug Instrumentation Gating ✅ DONE (7f51164)
@@ -313,9 +365,10 @@ Recommended sequence balancing impact vs. risk:
 | 2 | 2.3 (HT power-of-2), 1.2 (pre-FASL boot), 3.3 (mv_count) | ✅ 2.3+1.2 DONE (7f51164), 3.3 pending |
 | 3 | 1.1 (CLOS dispatch cache) | ✅ DONE (b315f2a) |
 | 4 | 1.4 (computed goto), 1.5 (TLV bypass) | ✅ DONE |
-| 5 | 1.3 (constant folding), 2.4 (set ops in C) | Pending |
-| 6 | 2.5 (free-list segregation) | Pending |
-| 7 | 3.1 (slot access), 3.2 (keyword pre-comp) | Pending |
+| 5 | 1.6 (HT rehash + hash fix), 1.7 (32-bit limb bignum mul) | ✅ DONE (3c58761, fbb7e29) |
+| 6 | 1.3 (constant folding), 2.4 (set ops in C) | Pending |
+| 7 | 2.5 (free-list segregation) | Pending |
+| 8 | 3.1 (slot access), 3.2 (keyword pre-comp) | Pending |
 
 ## Validation
 
