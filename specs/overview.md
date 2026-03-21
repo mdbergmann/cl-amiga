@@ -2,7 +2,7 @@
 
 ## Vision
 
-A Common Lisp environment built from scratch for AmigaOS 3+, running on both m68k and PPC hardware. The bytecode VM ensures architecture-agnostic execution — the same compiled Lisp code runs on both platforms. Starting with a minimal core and growing incrementally toward full ANSI CL compliance, with ASDF as the ultimate validation target.
+A Common Lisp environment built from scratch for AmigaOS 3+, running on both m68k and PPC hardware. The bytecode VM ensures architecture-agnostic execution — the same compiled Lisp code runs on both platforms. Starting with a minimal core and growing incrementally toward full ANSI CL compliance. ASDF, Quicklisp, Alexandria, FSet, and fiveam all load and pass their test suites on both host and Amiga.
 
 ## Target Hardware
 
@@ -39,7 +39,7 @@ CL_Obj (uint32_t):
 Heap object header (uint32_t):
   [type:8][gc_mark:1][size:23]       max object size = 8MB
 
-Types: CONS, SYMBOL, STRING, FUNCTION, CLOSURE, BYTECODE, VECTOR, PACKAGE, HASHTABLE, CONDITION, STRUCT, BIGNUM, SINGLE_FLOAT, DOUBLE_FLOAT, RATIO, STREAM, ARRAY, RANDOM_STATE, BIT_VECTOR, PATHNAME
+Types: CONS, SYMBOL, STRING, FUNCTION, CLOSURE, BYTECODE, VECTOR, PACKAGE, HASHTABLE, CONDITION, STRUCT, BIGNUM, SINGLE_FLOAT, DOUBLE_FLOAT, RATIO, STREAM, ARRAY, RANDOM_STATE, BIT_VECTOR, PATHNAME, COMPLEX, THREAD, LOCK, CONDVAR
 ```
 
 ## Memory Budget (8MB System)
@@ -58,11 +58,11 @@ Types: CONS, SYMBOL, STRING, FUNCTION, CLOSURE, BYTECODE, VECTOR, PACKAGE, HASHT
 
 ## Bytecode VM
 
-Stack-based, byte-oriented instruction encoding. 56 opcodes:
+Stack-based, byte-oriented instruction encoding. 72 opcodes:
 
 | Category | Opcodes |
 |----------|---------|
-| Constants/vars | CONST, LOAD, STORE, GLOAD, GSTORE, UPVAL, NIL, T, FLOAD |
+| Constants/vars | CONST, LOAD, STORE, GLOAD, GSTORE, UPVAL, NIL, T, FLOAD, FSTORE, DEFVAR |
 | Stack | POP, DUP |
 | List ops | CONS, CAR, CDR |
 | Arithmetic | ADD, SUB, MUL, DIV |
@@ -71,11 +71,15 @@ Stack-based, byte-oriented instruction encoding. 56 opcodes:
 | Control flow | JMP, JNIL, JTRUE |
 | Functions | CALL, TAILCALL, RET, CLOSURE, APPLY |
 | NLX | CATCH, UNCATCH, UWPROT, UWPOP, UWRETHROW |
-| Multiple values | MV_LOAD, MV_TO_LIST, NTH_VALUE |
-| Dynamic binding | DYNBIND, DYNUNBIND |
+| Block/return | BLOCK_PUSH, BLOCK_POP, BLOCK_RETURN |
+| Tagbody/go | TAGBODY_PUSH, TAGBODY_POP, TAGBODY_GO |
+| Multiple values | MV_LOAD, MV_TO_LIST, NTH_VALUE, MV_RESET |
+| Dynamic binding | DYNBIND, DYNUNBIND, PROGV_BIND, PROGV_UNBIND |
 | Mutation | RPLACA, RPLACD, ASET |
+| Heap-boxed cells | MAKE_CELL, CELL_REF, CELL_SET_LOCAL, CELL_SET_UPVAL |
 | Condition handling | HANDLER_PUSH, HANDLER_POP, RESTART_PUSH, RESTART_POP |
 | Type checking | ASSERT_TYPE |
+| Setf | DEFSETF |
 | Misc | LIST, HALT, DEFMACRO, DEFTYPE, ARGC |
 
 ## Compiler
@@ -87,13 +91,13 @@ Single-pass recursive compiler from S-expressions to bytecode:
 - Macro expansion before compilation (defmacro destructuring lambda lists supported)
 - Backward jump support for loop forms
 
-**Special forms:** `quote`, `if`, `progn`, `lambda`, `let`, `let*`, `setq`, `setf`, `defun`, `defvar`, `defparameter`, `defconstant`, `defmacro`, `function (#')`, `block`, `return-from`, `return`, `and`, `or`, `cond`, `do`, `dolist`, `dotimes`, `case`, `ecase`, `typecase`, `etypecase`, `flet`, `labels`, `tagbody`, `go`, `catch`, `unwind-protect`, `multiple-value-bind`, `multiple-value-list`, `multiple-value-prog1`, `nth-value`, `eval-when`, `destructuring-bind`, `defsetf`, `deftype`, `trace`, `untrace`, `time`, `handler-bind`, `restart-case`, `in-package`, `macrolet`, `symbol-macrolet`, `the`, `declare`, `declaim`, `locally`
+**Special forms:** `quote`, `if`, `progn`, `lambda`, `let`, `let*`, `setq`, `setf`, `defun`, `defvar`, `defparameter`, `defconstant`, `defmacro`, `function (#')`, `block`, `return-from`, `return`, `and`, `or`, `cond`, `do`, `dolist`, `dotimes`, `case`, `ecase`, `typecase`, `etypecase`, `flet`, `labels`, `tagbody`, `go`, `catch`, `unwind-protect`, `progv`, `multiple-value-bind`, `multiple-value-list`, `multiple-value-prog1`, `nth-value`, `eval-when`, `destructuring-bind`, `defsetf`, `deftype`, `trace`, `untrace`, `time`, `handler-bind`, `restart-case`, `in-package`, `macrolet`, `symbol-macrolet`, `the`, `declare`, `declaim`, `locally`
 
 **Bootstrap macros (boot.lisp):** `when`, `unless`, `prog1`, `prog2`, `push`, `pop`, `incf`, `decf`, `pushnew`, `handler-case`, `ignore-errors`, `with-simple-restart`, `define-condition`, `check-type`, `assert`, `defpackage`, `do-symbols`, `do-external-symbols`, `defstruct`, `with-open-file`, `with-output-to-string`, `with-input-from-string`, `with-standard-io-syntax`, `loop`, `define-modify-macro`
 
-**CLOS (lib/clos.lisp, loaded via require):** `defclass`, `make-instance`, `slot-value`, `(setf slot-value)`, `slot-boundp`, `slot-makunbound`, `slot-exists-p`, `defgeneric`, `defmethod`, `call-next-method`, `next-method-p`, `with-slots`, `class-of`, `find-class`, `(setf find-class)`, `ensure-generic-function`, `allocate-instance`, `initialize-instance`, `shared-initialize`, `reinitialize-instance`, `change-class`, `print-object`
+**CLOS (lib/clos.lisp, loaded via require):** `defclass`, `make-instance`, `slot-value`, `(setf slot-value)`, `slot-boundp`, `slot-makunbound`, `slot-exists-p`, `defgeneric`, `defmethod`, `call-next-method`, `next-method-p`, `with-slots`, `class-of`, `find-class`, `(setf find-class)`, `ensure-generic-function`, `allocate-instance`, `initialize-instance`, `shared-initialize`, `reinitialize-instance`, `change-class`, `print-object`, `slot-unbound` (GF), multiple `:accessor`/`:reader`/`:writer` per slot
 
-## Built-in Functions (414 C functions + 35 boot.lisp functions)
+## Built-in Functions (519 C functions + ~135 boot.lisp functions/macros)
 
 | Category | Functions |
 |----------|-----------|
@@ -131,52 +135,58 @@ Single-pass recursive compiler from S-expressions to bytecode:
 | Type system | `type-of` `typep` `coerce` `subtypep` |
 | Packages | `make-package` `find-package` `delete-package` `rename-package` `export` `unexport` `import` `use-package` `unuse-package` `shadow` `find-symbol` `intern` `unintern` `package-name` `package-use-list` `package-nicknames` `list-all-packages` `%package-symbols` `%package-external-symbols` `package-local-nicknames` `add-package-local-nickname` `remove-package-local-nickname` |
 | Introspection | `describe` |
+| Complex | `complex` `complexp` `realpart` `imagpart` `conjugate` |
+| Threading (MP) | `mp:make-thread` `mp:join-thread` `mp:thread-alive-p` `mp:current-thread` `mp:all-threads` `mp:thread-name` `mp:thread-yield` `mp:make-lock` `mp:acquire-lock` `mp:release-lock` `mp:make-condition-variable` `mp:condition-wait` `mp:condition-notify` `mp:condition-broadcast` |
+| Sockets | `ext:open-tcp-stream` |
+| Compilation | `compile-file` |
 | Misc | `gensym` |
 
 ## Current Status
 
-1391 host tests (17 suites), 1748+ Amiga batch tests — all passing.
+1798 host tests (25 suites), 2037+ Amiga batch tests — all passing.
 
-ASDF 3.3.7 (~14K lines of CL) loads with only 1 non-code error remaining (missing file path).
+### Validation Milestones
+
+- **ASDF 3.3.7** (~14K lines of CL) — loads with zero errors at 11M heap
+- **Quicklisp** — installs, downloads, and loads packages on both host and Amiga
+- **Alexandria** — loads via quickload at 24M heap (552 symbols)
+- **FSet** — loads and passes 17/17 tests at 24M heap
+- **fiveam** — loads and passes 57/57 self-tests on host (24M) and Amiga (48M + 800K C stack)
 
 ### What's Implemented
 
 Phases 1-10 are complete. The system has:
 
-- Full numeric tower: fixnums, bignums (arbitrary precision), ratios, single/double floats, bit operations, random numbers
-- Complete control flow: closures, macros, tagbody/go, catch/throw, unwind-protect, multiple values, dynamic variables, block/return-from
+- Full numeric tower: fixnums, bignums (arbitrary precision), ratios, single/double floats, complex numbers, bit operations, random numbers
+- Complete control flow: closures (flat + heap-boxed cells for mutated bindings), macros, tagbody/go, catch/throw, unwind-protect, progv, multiple values, dynamic variables, block/return-from
 - Condition system: handler-bind/handler-case, restart-case, interactive debugger with backtrace and source locations
 - Package system: full CL packages with CDR-10 local nicknames, reader/printer package qualification
-- CLOS: defclass, make-instance, defgeneric/defmethod (multiple dispatch, method combination, EQL specializers), change-class, print-object
-- I/O: streams (console/file/string), readtable, pathnames (Amiga/POSIX), format directives, pretty printer
+- CLOS: defclass, make-instance, defgeneric/defmethod (multiple dispatch, method combination, EQL specializers), change-class, print-object, slot-boundp/slot-makunbound/slot-unbound
+- I/O: streams (console/file/string/synonym/socket), readtable, pathnames (Amiga/POSIX), format directives, pretty printer
 - Extended LOOP: for/as, collect/append/nconc/sum/count/maximize/minimize, when/if/unless with nesting, hash-table/package iteration, destructuring
-- defstruct, arrays (multi-dim, adjustable, fill pointers), bit vectors, hash tables
+- defstruct, arrays (multi-dim, adjustable, fill pointers, displaced), bit vectors, hash tables (eq/eql/equal/equalp)
 - Type system: typep, subtypep, coerce, deftype, compound type specifiers
-- Printer control, trace/untrace, time, disassemble, compile, describe
+- Printer control, trace/untrace, time, disassemble, compile, compile-file, describe
+- TCP sockets: `ext:open-tcp-stream` (POSIX BSD sockets, Amiga bsdsocket.library)
+- Threading (MP package): kernel threads with per-thread VM, TLV dynamic bindings, locks, condition variables, stop-the-world GC coordination
+- Nested quasiquote (depth-tracking expansion)
+- i32 jump offsets (256KB bytecode limit per function)
 - REPL with error recovery, debugger, history variables, ASCII banner, --load/--eval/--script CLI options
 
 ### What's Not Yet Implemented
 
 **Numeric:**
-- Complex numbers (`#C(1 2)`, `realpart`, `imagpart`, `conjugate`, `phase`)
+- `phase` (complex argument)
 - Constants: `pi`, float limits, `*read-default-float-format*`
 
 **Control / Compiler:**
 - `multiple-value-call`, `multiple-value-setq`
-- `progv` — dynamic binding with computed symbols
 - `psetq`, `psetf` — parallel assignment
 - `load-time-value`
 - Unused variable warnings with `ignore`/`ignorable`
-- `define-compiler-macro`, `compiler-macro-function`
-
-**Setf:**
-- `defsetf` long form, `define-setf-expander`
 
 **Format:**
 - Justification `~<~>` — remaining unimplemented directive
-
-**Arrays:**
-- Displaced arrays (`:displaced-to`, `:displaced-index-offset`)
 
 **Structures:**
 - `defstruct` `:type list/vector`, `:print-function`/`:print-object`, `#S()` reader, `:named`, `:read-only`, BOA constructors
@@ -192,13 +202,11 @@ Phases 1-10 are complete. The system has:
 - `read-preserving-whitespace`
 
 **Pathnames:**
-- `wild-pathname-p`, `translate-pathname`, `directory`
 - Logical pathnames
 
 **Environment:**
 - `lisp-implementation-type`, `lisp-implementation-version`, `machine-type`, `machine-version`, `software-type`, `software-version`, `room`
 - `documentation` strings
-- `compile-file`
 - `make-load-form`, `make-load-form-saving-slots`
 - `inspect`, `apropos`, `apropos-list`
 - `gentemp`, `*gensym-counter*`
@@ -218,10 +226,14 @@ Phases 1-10 are complete. The system has:
 - Line editing (history, tab completion)
 - Amiga-specific FFI (calling library functions)
 - Intuition/gadtools bindings for GUI
-- Green threads (cooperative threading with VM-level scheduling)
 - Image save/restore (`save-image`, `load-image`)
 - Standalone executables (prepend runtime to saved image)
 - 64-bit `CL_Obj` on 64-bit hosts (break ~4GB arena limit)
+
+### TODO
+
+- **CAS (compare-and-swap)** — atomic CAS primitive for lock-free data structures; on Amiga can possibly stay with lock-based implementation due to cooperative multitasking / `Forbid()`/`Permit()` semantics
+- **Full bordeaux-threads support** — named condition variables (`mp:make-condition-variable` needs `&optional name` parameter), plus any remaining bordeaux-threads API gaps
 
 ## Project Structure
 
@@ -229,23 +241,27 @@ Phases 1-10 are complete. The system has:
 cl-amiga/
 ├── CLAUDE.md              # Dev conventions and quick reference
 ├── Makefile               # Build system (host)
+├── Makefile.cross         # Build system (cross-compile, m68k-amigaos-gcc)
 ├── Makefile.amiga         # Build system (AmigaOS/vbcc)
 ├── specs/
 │   └── overview.md        # This file
 ├── src/
 │   ├── main.c             # Entry point
-│   ├── core/              # Language implementation (37 .c + 20 .h modules)
+│   ├── core/              # Language implementation (44 .c + 23 .h modules)
 │   └── platform/          # OS abstraction (posix, amiga)
 ├── include/
 │   └── clamiga.h          # Public umbrella header
 ├── lib/
-│   ├── boot.lisp          # Bootstrap macros/functions
-│   └── clos.lisp          # CLOS implementation (loaded via require)
+│   ├── boot.lisp          # Bootstrap macros/functions (~135 defs)
+│   ├── clos.lisp          # CLOS implementation (loaded via require)
+│   ├── asdf.lisp          # ASDF 3.3.7 build system
+│   ├── quicklisp.lisp     # Quicklisp package manager
+│   └── quicklisp-compat.lisp  # Quicklisp compatibility layer
 ├── tests/
 │   ├── test.h             # Test framework
-│   ├── test_*.c           # Host test suites (17 files, 1391 tests)
+│   ├── test_*.c           # Host test suites (25 files, 1798 tests)
 │   └── amiga/
-│       └── run-tests.lisp # AmigaOS batch tests (1748 tests)
+│       └── run-tests.lisp # AmigaOS batch tests (2037+ tests)
 ├── build/                 # Build output (gitignored)
 └── verify/
     └── realamiga/          # FS-UAE config + AmigaOS system image
@@ -264,5 +280,9 @@ cl-amiga/
 3. `(mapcar #'1+ '(1 2 3))` → `(2 3 4)` ✅
 4. Cross-compile to m68k, run in FS-UAE ✅
 5. Run on real A1200 hardware
-6. Load and execute multi-file Lisp programs
-7. `(require "asdf")` — load and run ASDF 3.3 (loads with 1 non-code error)
+6. Load and execute multi-file Lisp programs ✅
+7. `(require "asdf")` — ASDF 3.3.7 loads with zero errors ✅
+8. Quicklisp installs, downloads, and loads packages ✅
+9. Alexandria loads (552 symbols) ✅
+10. fiveam loads and passes 57/57 self-tests (host + Amiga) ✅
+11. FSet loads and passes 17/17 tests ✅
