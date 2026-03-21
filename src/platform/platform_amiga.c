@@ -581,6 +581,29 @@ const char *platform_realpath(const char *path, char *buf, int bufsize)
     return buf;
 }
 
+const char *platform_expand_home(const char *path, char *buf, int bufsize)
+{
+    size_t plen;
+
+    if (!path || path[0] != '~') return path;
+    /* Only expand ~/... or bare ~ (not ~user) */
+    if (path[1] != '\0' && path[1] != '/') return path;
+
+    /* ~ maps to PROGDIR: on AmigaOS */
+    if (path[1] == '\0') {
+        /* bare ~ -> "PROGDIR:" */
+        if (bufsize < 9) return path;
+        memcpy(buf, "PROGDIR:", 9);
+        return buf;
+    }
+    /* ~/rest -> PROGDIR:rest */
+    plen = strlen(path + 2); /* skip ~/ */
+    if ((int)(8 + plen + 1) > bufsize) return path;
+    memcpy(buf, "PROGDIR:", 8);
+    memcpy(buf + 8, path + 2, plen + 1);
+    return buf;
+}
+
 /* --- TCP Socket I/O via bsdsocket.library (AmiTCP/Roadshow/Miami) --- */
 
 #include <proto/bsdsocket.h>

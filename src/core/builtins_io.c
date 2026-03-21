@@ -286,6 +286,18 @@ static CL_Obj bi_load(CL_Obj *args, int n)
     }
     if (!CL_STRING_P(args[0]))
         cl_error(CL_ERR_TYPE, "LOAD: argument must be a string or pathname");
+    /* Expand leading ~ to home directory */
+    {
+        CL_String *tmp_s = (CL_String *)CL_OBJ_TO_PTR(args[0]);
+        if (tmp_s->length > 0 && tmp_s->data[0] == '~') {
+            char expand_buf[1024];
+            const char *expanded = platform_expand_home(tmp_s->data,
+                expand_buf, (int)sizeof(expand_buf));
+            if (expanded != tmp_s->data) {
+                args[0] = cl_make_string(expanded, (uint32_t)strlen(expanded));
+            }
+        }
+    }
 
     path_str = (CL_String *)CL_OBJ_TO_PTR(args[0]);
 
@@ -878,13 +890,18 @@ static CL_Obj bi_compile_file(CL_Obj *args, int n)
         cl_coerce_to_namestring(args[0], in_path, sizeof(in_path));
     } else if (CL_STRING_P(args[0])) {
         CL_String *s = (CL_String *)CL_OBJ_TO_PTR(args[0]);
-        if (s->length < sizeof(in_path)) {
-            memcpy(in_path, s->data, s->length);
-            in_path[s->length] = '\0';
-        } else {
-            cl_error(CL_ERR_GENERAL, "COMPILE-FILE: path too long");
-            return CL_NIL;
+        const char *expanded = platform_expand_home(s->data, in_path, (int)sizeof(in_path));
+        if (expanded != in_path) {
+            /* No expansion — copy raw string */
+            if (s->length < sizeof(in_path)) {
+                memcpy(in_path, s->data, s->length);
+                in_path[s->length] = '\0';
+            } else {
+                cl_error(CL_ERR_GENERAL, "COMPILE-FILE: path too long");
+                return CL_NIL;
+            }
         }
+        /* else: expanded path is already in in_path */
     } else {
         cl_error(CL_ERR_TYPE, "COMPILE-FILE: argument must be a string or pathname");
         return CL_NIL;
@@ -1190,12 +1207,15 @@ static CL_Obj bi_compile_file_pathname(CL_Obj *args, int n)
         cl_coerce_to_namestring(args[0], in_path, sizeof(in_path));
     } else if (CL_STRING_P(args[0])) {
         CL_String *s = (CL_String *)CL_OBJ_TO_PTR(args[0]);
-        if (s->length < sizeof(in_path)) {
-            memcpy(in_path, s->data, s->length);
-            in_path[s->length] = '\0';
-        } else {
-            cl_error(CL_ERR_GENERAL, "COMPILE-FILE-PATHNAME: path too long");
-            return CL_NIL;
+        const char *expanded = platform_expand_home(s->data, in_path, (int)sizeof(in_path));
+        if (expanded != in_path) {
+            if (s->length < sizeof(in_path)) {
+                memcpy(in_path, s->data, s->length);
+                in_path[s->length] = '\0';
+            } else {
+                cl_error(CL_ERR_GENERAL, "COMPILE-FILE-PATHNAME: path too long");
+                return CL_NIL;
+            }
         }
     } else {
         cl_error(CL_ERR_TYPE, "COMPILE-FILE-PATHNAME: argument must be a string or pathname");

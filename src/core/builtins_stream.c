@@ -498,6 +498,18 @@ static const char *coerce_to_filename(CL_Obj *arg)
         *arg = cl_make_string(ns_buf, (uint32_t)strlen(ns_buf));
     }
     if (!CL_STRING_P(*arg)) return NULL;
+    /* Expand leading ~ to home directory */
+    {
+        CL_String *s = (CL_String *)CL_OBJ_TO_PTR(*arg);
+        if (s->length > 0 && s->data[0] == '~') {
+            char expand_buf[1024];
+            const char *expanded = platform_expand_home(s->data,
+                expand_buf, (int)sizeof(expand_buf));
+            if (expanded != s->data) {
+                *arg = cl_make_string(expanded, (uint32_t)strlen(expanded));
+            }
+        }
+    }
     return ((CL_String *)CL_OBJ_TO_PTR(*arg))->data;
 }
 
