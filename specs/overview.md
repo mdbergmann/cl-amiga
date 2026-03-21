@@ -162,7 +162,7 @@ Phases 1-10 are complete. The system has:
 - Condition system: handler-bind/handler-case, restart-case, interactive debugger with backtrace and source locations
 - Package system: full CL packages with CDR-10 local nicknames, reader/printer package qualification
 - CLOS: defclass, make-instance, defgeneric/defmethod (multiple dispatch, method combination, EQL specializers), change-class, print-object, slot-boundp/slot-makunbound/slot-unbound
-- I/O: streams (console/file/string/synonym/socket), readtable, pathnames (Amiga/POSIX), format directives, pretty printer
+- I/O: streams (console/file/string/synonym/socket), readtable, pathnames (Amiga/POSIX, tilde expansion), format directives, pretty printer
 - Extended LOOP: for/as, collect/append/nconc/sum/count/maximize/minimize, when/if/unless with nesting, hash-table/package iteration, destructuring
 - defstruct, arrays (multi-dim, adjustable, fill pointers, displaced), bit vectors, hash tables (eq/eql/equal/equalp)
 - Type system: typep, subtypep, coerce, deftype, compound type specifiers
@@ -203,6 +203,7 @@ Phases 1-10 are complete. The system has:
 
 **Pathnames:**
 - Logical pathnames
+- `~user` expansion (only `~` and `~/` are currently supported)
 
 **Environment:**
 - `lisp-implementation-type`, `lisp-implementation-version`, `machine-type`, `machine-version`, `software-type`, `software-version`, `room`

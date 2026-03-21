@@ -82,6 +82,10 @@ char **platform_directory(const char *pattern, int *count_out);
 /* Resolve path to absolute — returns static buffer or NULL on error */
 const char *platform_realpath(const char *path, char *buf, int bufsize);
 
+/* Expand leading ~ to home directory ($HOME on POSIX, PROGDIR: on Amiga).
+ * Returns buf if expansion occurred, or the original path if no ~ prefix. */
+const char *platform_expand_home(const char *path, char *buf, int bufsize);
+
 /* Environment */
 const char *platform_getenv(const char *name, char *buf, int bufsize);
 

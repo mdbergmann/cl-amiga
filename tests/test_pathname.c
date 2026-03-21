@@ -1,4 +1,5 @@
 #include "test.h"
+#include <stdlib.h>
 #include "core/types.h"
 #include "core/mem.h"
 #include "core/error.h"
@@ -457,6 +458,70 @@ TEST(file_write_date_accepts_pathname)
     ASSERT_STR_EQ(eval_print("(integerp (file-write-date #P\"/tmp/\"))"), "T");
 }
 
+/* --- Tilde expansion --- */
+
+TEST(tilde_bare_expands_to_home)
+{
+    /* ~ should expand to $HOME */
+    const char *result = eval_print("(namestring (pathname \"~\"))");
+    const char *home = getenv("HOME");
+    /* Result must start with home dir */
+    ASSERT(home != NULL);
+    ASSERT(strncmp(result + 1, home, strlen(home)) == 0);  /* skip leading " */
+}
+
+TEST(tilde_slash_expands_to_home)
+{
+    /* ~/foo should expand to $HOME/foo */
+    const char *result = eval_print("(namestring (pathname \"~/foo\"))");
+    const char *home = getenv("HOME");
+    char expected[512];
+    snprintf(expected, sizeof(expected), "\"%s/foo\"", home);
+    ASSERT_STR_EQ(result, expected);
+}
+
+TEST(tilde_path_expands_in_directory)
+{
+    /* ~/foo/bar.lisp should have absolute directory with home components */
+    const char *result = eval_print("(pathname-directory (pathname \"~/foo/bar.lisp\"))");
+    /* Directory must be :ABSOLUTE */
+    ASSERT(strstr(result, ":ABSOLUTE") != NULL);
+    ASSERT(strstr(result, "\"foo\"") != NULL);
+}
+
+TEST(tilde_not_expanded_mid_path)
+{
+    /* foo/~bar.txt should NOT expand tilde */
+    ASSERT_STR_EQ(eval_print("(namestring (pathname \"foo/~bar.txt\"))"),
+                  "\"foo/~bar.txt\"");
+}
+
+TEST(tilde_user_not_expanded)
+{
+    /* ~user should NOT be expanded (only ~ and ~/ are supported) */
+    ASSERT_STR_EQ(eval_print("(namestring (pathname \"~user/foo\"))"),
+                  "\"~user/foo\"");
+}
+
+TEST(tilde_probe_file_works)
+{
+    /* probe-file with ~ should work for existing files */
+    ASSERT_STR_EQ(eval_print("(not (null (probe-file \"/tmp/\")))"), "T");
+}
+
+TEST(tilde_open_read_works)
+{
+    /* open with ~ should expand the path */
+    const char *result = eval_print(
+        "(progn "
+        "  (with-open-file (s \"/tmp/cl-tilde-test.txt\" :direction :output "
+        "                   :if-exists :supersede) "
+        "    (write-string \"tilde-ok\" s)) "
+        "  (with-open-file (s \"/tmp/cl-tilde-test.txt\") "
+        "    (read-line s)))");
+    ASSERT_STR_EQ(result, "\"tilde-ok\"");
+}
+
 /* --- Run all tests --- */
 
 int main(void)
@@ -530,6 +595,13 @@ int main(void)
     RUN(probe_file_nonexistent_returns_nil);
     RUN(file_write_date_accepts_string);
     RUN(file_write_date_accepts_pathname);
+    RUN(tilde_bare_expands_to_home);
+    RUN(tilde_slash_expands_to_home);
+    RUN(tilde_path_expands_in_directory);
+    RUN(tilde_not_expanded_mid_path);
+    RUN(tilde_user_not_expanded);
+    RUN(tilde_probe_file_works);
+    RUN(tilde_open_read_works);
 
     teardown();
     REPORT();

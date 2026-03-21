@@ -47,8 +47,25 @@ CL_Obj cl_parse_namestring(const char *str, uint32_t len)
     CL_Obj pn_name = CL_NIL;
     CL_Obj pn_type = CL_NIL;
     CL_Obj version = CL_NIL;
-    const char *p = str;
-    const char *end = str + len;
+    char expand_buf[1024];
+    const char *p;
+    const char *end;
+
+    /* Expand leading ~ to home directory */
+    if (len > 0 && str[0] == '~' && len < sizeof(expand_buf)) {
+        char tmp[1024];
+        const char *expanded;
+        memcpy(tmp, str, len);
+        tmp[len] = '\0';
+        expanded = platform_expand_home(tmp, expand_buf, (int)sizeof(expand_buf));
+        if (expanded != tmp) {
+            str = expanded;
+            len = (uint32_t)strlen(expanded);
+        }
+    }
+
+    p = str;
+    end = str + len;
     const char *dir_start;
     const char *filename;
     const char *last_slash;
@@ -259,7 +276,8 @@ const char *cl_coerce_to_namestring(CL_Obj arg, char *buf, uint32_t bufsz)
 {
     if (CL_STRING_P(arg)) {
         CL_String *s = (CL_String *)CL_OBJ_TO_PTR(arg);
-        return s->data;
+        /* Expand leading ~ to home directory */
+        return platform_expand_home(s->data, buf, (int)bufsz);
     }
     if (CL_PATHNAME_P(arg)) {
         CL_Pathname *pn = (CL_Pathname *)CL_OBJ_TO_PTR(arg);

@@ -366,6 +366,27 @@ const char *platform_realpath(const char *path, char *buf, int bufsize)
     return buf;
 }
 
+const char *platform_expand_home(const char *path, char *buf, int bufsize)
+{
+    const char *home;
+    size_t hlen, plen;
+
+    if (!path || path[0] != '~') return path;
+    /* Only expand ~/... or bare ~ (not ~user) */
+    if (path[1] != '\0' && path[1] != '/') return path;
+
+    home = getenv("HOME");
+    if (!home) home = "/";
+    hlen = strlen(home);
+    plen = strlen(path + 1); /* everything after ~ */
+
+    if ((int)(hlen + plen + 1) > bufsize) return path;
+    memcpy(buf, home, hlen);
+    /* path+1 is either "" or "/rest..." — copy including NUL */
+    memcpy(buf + hlen, path + 1, plen + 1);
+    return buf;
+}
+
 /* --- TCP Socket I/O --- */
 
 #define PLATFORM_SOCKET_TABLE_SIZE 16
