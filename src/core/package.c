@@ -18,6 +18,8 @@ CL_Obj cl_package_keyword = CL_NIL;
 CL_Obj cl_package_ext = CL_NIL;
 CL_Obj cl_package_clamiga = CL_NIL;
 CL_Obj cl_package_mp = CL_NIL;
+CL_Obj cl_package_ffi = CL_NIL;
+CL_Obj cl_package_amiga = CL_NIL;
 CL_Obj cl_current_package = CL_NIL;
 CL_Obj cl_package_registry = CL_NIL;
 
@@ -617,6 +619,14 @@ void cl_package_init(void)
     cl_package_mp = cl_make_package("MP");
     CL_GC_PROTECT(cl_package_mp);
 
+    cl_package_ffi = cl_make_package("FFI");
+    CL_GC_PROTECT(cl_package_ffi);
+
+#ifdef PLATFORM_AMIGA
+    cl_package_amiga = cl_make_package("AMIGA");
+    CL_GC_PROTECT(cl_package_amiga);
+#endif
+
     /* Register in global registry */
     cl_register_package(cl_package_cl);
     cl_register_package(cl_package_keyword);
@@ -624,6 +634,10 @@ void cl_package_init(void)
     cl_register_package(cl_package_ext);
     cl_register_package(cl_package_clamiga);
     cl_register_package(cl_package_mp);
+    cl_register_package(cl_package_ffi);
+#ifdef PLATFORM_AMIGA
+    cl_register_package(cl_package_amiga);
+#endif
 
     /* Add nicknames */
     {
@@ -637,17 +651,30 @@ void cl_package_init(void)
         user_pkg->nicknames = cl_cons(nick, CL_NIL);
     }
 
-    /* CL-USER uses CL, EXT, CLAMIGA, and MP */
+    /* CL-USER uses CL, EXT, CLAMIGA, MP, FFI, AMIGA */
     cl_use_package(cl_package_cl, cl_package_cl_user);
     cl_use_package(cl_package_ext, cl_package_cl_user);
     cl_use_package(cl_package_clamiga, cl_package_cl_user);
     cl_use_package(cl_package_mp, cl_package_cl_user);
+    cl_use_package(cl_package_ffi, cl_package_cl_user);
+#ifdef PLATFORM_AMIGA
+    cl_use_package(cl_package_amiga, cl_package_cl_user);
+#endif
 
     /* EXT uses CL */
     cl_use_package(cl_package_cl, cl_package_ext);
 
     /* MP uses CL */
     cl_use_package(cl_package_cl, cl_package_mp);
+
+    /* FFI uses CL */
+    cl_use_package(cl_package_cl, cl_package_ffi);
+
+    /* AMIGA uses CL and FFI (Amiga only) */
+#ifdef PLATFORM_AMIGA
+    cl_use_package(cl_package_cl, cl_package_amiga);
+    cl_use_package(cl_package_ffi, cl_package_amiga);
+#endif
 
     /* CLAMIGA uses CL; CL uses CLAMIGA so boot.lisp/clos.lisp can
        access internal builtins without package qualification */
@@ -677,5 +704,9 @@ void cl_package_init(void)
     }
 
     /* Note: roots are kept protected permanently (they're globals) */
-    CL_GC_UNPROTECT(5);
+#ifdef PLATFORM_AMIGA
+    CL_GC_UNPROTECT(7);
+#else
+    CL_GC_UNPROTECT(6);
+#endif
 }

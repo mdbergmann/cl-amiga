@@ -509,6 +509,18 @@ CL_Obj cl_make_cell(CL_Obj value)
     return CL_PTR_TO_OBJ(cell);
 }
 
+CL_Obj cl_make_foreign_pointer(uint32_t address, uint32_t size, uint8_t flags)
+{
+    CL_ForeignPtr *fp = (CL_ForeignPtr *)cl_alloc(TYPE_FOREIGN_POINTER,
+                                                    sizeof(CL_ForeignPtr));
+    if (!fp) return CL_NIL;
+    fp->address = address;
+    fp->size = size;
+    fp->flags = flags;
+    fp->_pad[0] = fp->_pad[1] = fp->_pad[2] = 0;
+    return CL_PTR_TO_OBJ(fp);
+}
+
 CL_Obj cl_make_pathname(CL_Obj host, CL_Obj device, CL_Obj directory,
                         CL_Obj name, CL_Obj type, CL_Obj version)
 {
@@ -725,6 +737,7 @@ static void gc_mark_children(void *ptr, uint8_t type)
         break;
     }
     case TYPE_CONDVAR:
+    case TYPE_FOREIGN_POINTER:
         /* No CL_Obj children */
         break;
     case TYPE_BIGNUM:
