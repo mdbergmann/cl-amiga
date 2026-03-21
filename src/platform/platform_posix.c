@@ -569,3 +569,128 @@ void platform_shutdown(void)
 {
     /* Nothing needed on POSIX */
 }
+
+/* =============================================================
+ * Generic FFI: foreign memory (POSIX implementation)
+ *
+ * On 64-bit POSIX, pointers don't fit in uint32_t, so we use a
+ * side table that maps handles (1-based indices) to real pointers.
+ * ============================================================= */
+
+#define FFI_MEM_TABLE_SIZE 1024
+
+static struct {
+    void    *ptr;
+    uint32_t size;
+} ffi_mem_table[FFI_MEM_TABLE_SIZE];
+
+uint32_t platform_ffi_alloc(uint32_t size)
+{
+    int i;
+    void *p;
+    if (size == 0) return 0;
+    p = malloc((size_t)size);
+    if (!p) return 0;
+    memset(p, 0, (size_t)size);
+    for (i = 0; i < FFI_MEM_TABLE_SIZE; i++) {
+        if (!ffi_mem_table[i].ptr) {
+            ffi_mem_table[i].ptr = p;
+            ffi_mem_table[i].size = size;
+            return (uint32_t)(i + 1);  /* 1-based handle */
+        }
+    }
+    free(p);  /* Table full */
+    return 0;
+}
+
+void platform_ffi_free(uint32_t handle, uint32_t size)
+{
+    (void)size;
+    if (handle == 0 || handle > FFI_MEM_TABLE_SIZE) return;
+    if (ffi_mem_table[handle - 1].ptr) {
+        free(ffi_mem_table[handle - 1].ptr);
+        ffi_mem_table[handle - 1].ptr = NULL;
+        ffi_mem_table[handle - 1].size = 0;
+    }
+}
+
+void *platform_ffi_resolve(uint32_t handle)
+{
+    if (handle == 0 || handle > FFI_MEM_TABLE_SIZE) return NULL;
+    return ffi_mem_table[handle - 1].ptr;
+}
+
+uint32_t platform_ffi_peek32(uint32_t handle, uint32_t offset)
+{
+    void *base = platform_ffi_resolve(handle);
+    if (!base) return 0;
+    return *(uint32_t *)((uint8_t *)base + offset);
+}
+
+uint16_t platform_ffi_peek16(uint32_t handle, uint32_t offset)
+{
+    void *base = platform_ffi_resolve(handle);
+    if (!base) return 0;
+    return *(uint16_t *)((uint8_t *)base + offset);
+}
+
+uint8_t platform_ffi_peek8(uint32_t handle, uint32_t offset)
+{
+    void *base = platform_ffi_resolve(handle);
+    if (!base) return 0;
+    return *(uint8_t *)((uint8_t *)base + offset);
+}
+
+void platform_ffi_poke32(uint32_t handle, uint32_t offset, uint32_t val)
+{
+    void *base = platform_ffi_resolve(handle);
+    if (!base) return;
+    *(uint32_t *)((uint8_t *)base + offset) = val;
+}
+
+void platform_ffi_poke16(uint32_t handle, uint32_t offset, uint16_t val)
+{
+    void *base = platform_ffi_resolve(handle);
+    if (!base) return;
+    *(uint16_t *)((uint8_t *)base + offset) = val;
+}
+
+void platform_ffi_poke8(uint32_t handle, uint32_t offset, uint8_t val)
+{
+    void *base = platform_ffi_resolve(handle);
+    if (!base) return;
+    *(uint8_t *)((uint8_t *)base + offset) = val;
+}
+
+/* =============================================================
+ * Amiga-specific FFI stubs (not available on POSIX)
+ * ============================================================= */
+
+uint32_t platform_amiga_open_library(const char *name, uint32_t version)
+{
+    (void)name; (void)version;
+    return 0;  /* Not available on POSIX */
+}
+
+void platform_amiga_close_library(uint32_t lib_base)
+{
+    (void)lib_base;
+}
+
+uint32_t platform_amiga_call(uint32_t lib_base, int16_t offset,
+                              uint32_t *regs, uint16_t reg_mask)
+{
+    (void)lib_base; (void)offset; (void)regs; (void)reg_mask;
+    return 0;  /* Not available on POSIX */
+}
+
+uint32_t platform_amiga_alloc_chip(uint32_t size)
+{
+    /* On POSIX, chip memory is just regular memory */
+    return platform_ffi_alloc(size);
+}
+
+void platform_amiga_free_chip(uint32_t addr, uint32_t size)
+{
+    platform_ffi_free(addr, size);
+}

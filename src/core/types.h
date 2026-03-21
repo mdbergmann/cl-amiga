@@ -100,7 +100,8 @@ enum CL_ObjType {
     TYPE_CELL,
     TYPE_THREAD,
     TYPE_LOCK,
-    TYPE_CONDVAR
+    TYPE_CONDVAR,
+    TYPE_FOREIGN_POINTER
 };
 
 /* Header access macros */
@@ -472,6 +473,22 @@ typedef struct {
 } CL_CondVar;
 
 #define CL_CONDVAR_P(obj) (CL_HEAP_P(obj) && CL_HDR_TYPE(CL_OBJ_TO_PTR(obj)) == TYPE_CONDVAR)
+
+/* --- Foreign Pointer (wraps a raw machine address, opaque to GC) --- */
+
+#define CL_FPTR_FLAG_OWNED   0x01  /* We allocated this, should free on cleanup */
+#define CL_FPTR_FLAG_CHIP    0x02  /* Amiga chip memory (MEMF_CHIP) */
+
+typedef struct {
+    CL_Header hdr;
+    uint32_t  address;    /* Raw 32-bit machine address (Amiga) or side-table handle (POSIX) */
+    uint32_t  size;       /* Allocated size in bytes (0 = unknown/external) */
+    uint8_t   flags;      /* CL_FPTR_FLAG_* */
+    uint8_t   _pad[3];
+} CL_ForeignPtr;           /* 16 bytes */
+
+#define CL_FOREIGN_POINTER_P(obj) \
+    (CL_HEAP_P(obj) && CL_HDR_TYPE(CL_OBJ_TO_PTR(obj)) == TYPE_FOREIGN_POINTER)
 
 /* --- Convenience accessors --- */
 

@@ -73,6 +73,7 @@ CL_Obj cl_make_bit_vector(uint32_t nbits);
 CL_Obj cl_make_pathname(CL_Obj host, CL_Obj device, CL_Obj directory,
                         CL_Obj name, CL_Obj type, CL_Obj version);
 CL_Obj cl_make_cell(CL_Obj value);
+CL_Obj cl_make_foreign_pointer(uint32_t address, uint32_t size, uint8_t flags);
 
 /* GC root protection */
 #define CL_GC_PROTECT(var) cl_gc_push_root(&(var))

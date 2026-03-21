@@ -99,4 +99,52 @@ int platform_getcwd(char *buf, int bufsize);
 void  platform_init(void);
 void  platform_shutdown(void);
 
+/* =============================================================
+ * Generic FFI: foreign memory access
+ * ============================================================= */
+
+/* Foreign memory allocation/deallocation.
+ * Returns a handle (POSIX: side-table index, Amiga: raw address).
+ * Returns 0 on failure. */
+uint32_t platform_ffi_alloc(uint32_t size);
+void     platform_ffi_free(uint32_t handle, uint32_t size);
+
+/* Resolve handle to a dereferenceable address.
+ * On Amiga: identity (handle IS the address).
+ * On POSIX: looks up side table.
+ * Returns NULL on invalid handle. */
+void    *platform_ffi_resolve(uint32_t handle);
+
+/* Peek/poke at handle + byte offset.
+ * The handle must come from platform_ffi_alloc or (on Amiga) a raw address. */
+uint32_t platform_ffi_peek32(uint32_t handle, uint32_t offset);
+uint16_t platform_ffi_peek16(uint32_t handle, uint32_t offset);
+uint8_t  platform_ffi_peek8(uint32_t handle, uint32_t offset);
+void     platform_ffi_poke32(uint32_t handle, uint32_t offset, uint32_t val);
+void     platform_ffi_poke16(uint32_t handle, uint32_t offset, uint16_t val);
+void     platform_ffi_poke8(uint32_t handle, uint32_t offset, uint8_t val);
+
+/* =============================================================
+ * Amiga-specific FFI: shared library calls
+ * ============================================================= */
+
+/* Open/close AmigaOS shared library.
+ * Returns library base as uint32_t (0 on failure).
+ * On POSIX: stubs that return 0 / do nothing. */
+uint32_t platform_amiga_open_library(const char *name, uint32_t version);
+void     platform_amiga_close_library(uint32_t lib_base);
+
+/* Call an AmigaOS library function via register dispatch.
+ * regs[0..7] = d0..d7, regs[8..13] = a0..a5.
+ * reg_mask: bitmask of which registers to load (bit 0=d0, ..., bit 13=a5).
+ * Returns d0 result.
+ * On POSIX: returns 0 (not supported). */
+uint32_t platform_amiga_call(uint32_t lib_base, int16_t offset,
+                              uint32_t *regs, uint16_t reg_mask);
+
+/* Amiga chip memory allocation (MEMF_CHIP|MEMF_CLEAR).
+ * On POSIX: same as platform_ffi_alloc. */
+uint32_t platform_amiga_alloc_chip(uint32_t size);
+void     platform_amiga_free_chip(uint32_t addr, uint32_t size);
+
 #endif /* CL_PLATFORM_H */

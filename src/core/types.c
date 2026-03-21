@@ -93,6 +93,7 @@ const char *cl_type_name(CL_Obj obj)
         case TYPE_THREAD:   return "THREAD";
         case TYPE_LOCK:     return "LOCK";
         case TYPE_CONDVAR:  return "CONDITION-VARIABLE";
+        case TYPE_FOREIGN_POINTER: return "FOREIGN-POINTER";
         default:            return "UNKNOWN";
         }
     }

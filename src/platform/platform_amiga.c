@@ -819,3 +819,109 @@ void platform_shutdown(void)
         SocketBase = NULL;
     }
 }
+
+/* =============================================================
+ * Generic FFI: foreign memory (Amiga implementation)
+ *
+ * On Amiga (32-bit), handles ARE raw addresses — no side table needed.
+ * ============================================================= */
+
+uint32_t platform_ffi_alloc(uint32_t size)
+{
+    void *p;
+    if (size == 0) return 0;
+    p = AllocVec(size, MEMF_CLEAR);
+    return (uint32_t)p;
+}
+
+void platform_ffi_free(uint32_t handle, uint32_t size)
+{
+    (void)size;
+    if (handle == 0) return;
+    FreeVec((void *)handle);
+}
+
+void *platform_ffi_resolve(uint32_t handle)
+{
+    return (void *)handle;
+}
+
+uint32_t platform_ffi_peek32(uint32_t handle, uint32_t offset)
+{
+    return *(volatile uint32_t *)((uint8_t *)handle + offset);
+}
+
+uint16_t platform_ffi_peek16(uint32_t handle, uint32_t offset)
+{
+    return *(volatile uint16_t *)((uint8_t *)handle + offset);
+}
+
+uint8_t platform_ffi_peek8(uint32_t handle, uint32_t offset)
+{
+    return *(volatile uint8_t *)((uint8_t *)handle + offset);
+}
+
+void platform_ffi_poke32(uint32_t handle, uint32_t offset, uint32_t val)
+{
+    *(volatile uint32_t *)((uint8_t *)handle + offset) = val;
+}
+
+void platform_ffi_poke16(uint32_t handle, uint32_t offset, uint16_t val)
+{
+    *(volatile uint16_t *)((uint8_t *)handle + offset) = val;
+}
+
+void platform_ffi_poke8(uint32_t handle, uint32_t offset, uint8_t val)
+{
+    *(volatile uint8_t *)((uint8_t *)handle + offset) = val;
+}
+
+/* =============================================================
+ * Amiga-specific FFI: shared library calls
+ * ============================================================= */
+
+/* Library handle table (maps to opened library bases) */
+#define FFI_LIB_TABLE_SIZE 32
+static struct Library *ffi_lib_table[FFI_LIB_TABLE_SIZE];
+
+uint32_t platform_amiga_open_library(const char *name, uint32_t version)
+{
+    struct Library *lib = OpenLibrary((CONST_STRPTR)name, (ULONG)version);
+    if (!lib) return 0;
+    return (uint32_t)lib;
+}
+
+void platform_amiga_close_library(uint32_t lib_base)
+{
+    if (lib_base == 0) return;
+    CloseLibrary((struct Library *)lib_base);
+}
+
+/* Register-based library call dispatch.
+ * This is a placeholder — the real implementation for m68k will be
+ * in ffi_dispatch_m68k.s (assembly).  For now, use a C approximation
+ * that works for functions with simple calling conventions. */
+uint32_t platform_amiga_call(uint32_t lib_base, int16_t offset,
+                              uint32_t *regs, uint16_t reg_mask)
+{
+    /* TODO: Replace with assembly trampoline (ffi_dispatch_m68k.s)
+     * that properly loads d0-d7/a0-a5 from regs[] per reg_mask
+     * and does jsr offset(a6). */
+    (void)regs; (void)reg_mask;
+    (void)lib_base; (void)offset;
+    return 0;
+}
+
+uint32_t platform_amiga_alloc_chip(uint32_t size)
+{
+    void *p;
+    if (size == 0) return 0;
+    p = AllocMem(size, MEMF_CHIP | MEMF_CLEAR);
+    return (uint32_t)p;
+}
+
+void platform_amiga_free_chip(uint32_t addr, uint32_t size)
+{
+    if (addr == 0) return;
+    FreeMem((void *)addr, size);
+}

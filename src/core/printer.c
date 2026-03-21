@@ -1166,6 +1166,15 @@ static void print_obj(CL_Obj obj)
         out_str("#<CONDITION-VARIABLE>");
         break;
 
+    case TYPE_FOREIGN_POINTER: {
+        CL_ForeignPtr *fp = (CL_ForeignPtr *)CL_OBJ_TO_PTR(obj);
+        char buf[48];
+        snprintf(buf, sizeof(buf), "#<FOREIGN-POINTER #x%08X [%u]>",
+                 (unsigned)fp->address, (unsigned)fp->size);
+        out_str(buf);
+        break;
+    }
+
     default:
         out_str("#<unknown>");
         break;
