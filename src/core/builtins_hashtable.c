@@ -35,18 +35,35 @@ static uint32_t hash_string_ci(const char *str, uint32_t len)
     return hash;
 }
 
+/* --- Bit mixer for identity/fixnum hashing --- */
+
+static inline uint32_t hash_mix(uint32_t h)
+{
+    h ^= h >> 16;
+    h *= 0x45d9f3bU;
+    h ^= h >> 16;
+    return h;
+}
+
+/* --- Bucket accessor: returns pointer to bucket array --- */
+
+static inline CL_Obj *ht_get_buckets(CL_Hashtable *ht)
+{
+    if (!CL_NULL_P(ht->bucket_vec)) {
+        CL_Vector *v = (CL_Vector *)CL_OBJ_TO_PTR(ht->bucket_vec);
+        return v->data;
+    }
+    return ht->buckets;
+}
+
 /* --- Hash function for CL objects --- */
 
 static uint32_t hash_obj(CL_Obj obj, uint32_t test)
 {
     /* For eq: hash by identity */
-    if (test == CL_HT_TEST_EQ) {
-        uint32_t h = obj;
-        h ^= h >> 16;
-        h *= 0x45d9f3bU;
-        h ^= h >> 16;
-        return h;
-    }
+    if (test == CL_HT_TEST_EQ)
+        return hash_mix(obj);
+
     /* For eql: bignums, ratios, floats, and complex need value-based hash */
     if (test == CL_HT_TEST_EQL) {
         if (CL_BIGNUM_P(obj)) return cl_bignum_hash(obj);
@@ -66,18 +83,12 @@ static uint32_t hash_obj(CL_Obj obj, uint32_t test)
             conv.d = ((CL_DoubleFloat *)CL_OBJ_TO_PTR(obj))->value;
             return (conv.u[0] ^ conv.u[1]) * 2654435761u;
         }
-        {
-            uint32_t h = obj;
-            h ^= h >> 16;
-            h *= 0x45d9f3bU;
-            h ^= h >> 16;
-            return h;
-        }
+        return hash_mix(obj);
     }
 
     /* For equal/equalp: structural hash */
     if (CL_NULL_P(obj)) return 0;
-    if (CL_FIXNUM_P(obj)) return (uint32_t)obj;
+    if (CL_FIXNUM_P(obj)) return hash_mix(obj);
     if (CL_CHAR_P(obj)) {
         if (test == CL_HT_TEST_EQUALP) {
             /* Case-insensitive char hash */
@@ -113,14 +124,8 @@ static uint32_t hash_obj(CL_Obj obj, uint32_t test)
                 return hash_string_ci(s->data, s->length);
             return cl_hash_string(s->data, s->length);
         }
-        if (type == TYPE_SYMBOL) {
-            /* Symbols are eq-unique, hash by identity */
-            uint32_t h = obj;
-            h ^= h >> 16;
-            h *= 0x45d9f3bU;
-            h ^= h >> 16;
-            return h;
-        }
+        if (type == TYPE_SYMBOL)
+            return hash_mix(obj);
         if (type == TYPE_CONS) {
             /* Hash first element only (avoid deep recursion) */
             return hash_obj(cl_car(obj), test) * 31 + 1;
@@ -128,13 +133,7 @@ static uint32_t hash_obj(CL_Obj obj, uint32_t test)
     }
 
     /* Fallback: identity hash */
-    {
-        uint32_t h = obj;
-        h ^= h >> 16;
-        h *= 0x45d9f3bU;
-        h ^= h >> 16;
-        return h;
-    }
+    return hash_mix(obj);
 }
 
 /* --- Key comparison --- */
@@ -246,6 +245,57 @@ static CL_Obj SYM_EQL_HT = CL_NIL;
 static CL_Obj SYM_EQUAL_HT = CL_NIL;
 static CL_Obj SYM_EQUALP_HT = CL_NIL;
 
+/* --- Rehashing --- */
+
+/* Grow the hash table when load factor > 75%.
+ * Allocates a new CL_Vector for buckets, redistributes entries by relinking
+ * existing cons cells (no new allocations during redistribution). */
+static void ht_maybe_rehash(CL_Obj ht_obj)
+{
+    CL_Hashtable *ht = (CL_Hashtable *)CL_OBJ_TO_PTR(ht_obj);
+    uint32_t old_count = ht->bucket_count;
+    uint32_t new_count, i;
+    CL_Obj new_vec;
+    CL_Obj *old_bkts, *new_bkts;
+
+    /* Check load factor: rehash if count > bucket_count * 3/4 */
+    if (ht->count <= (old_count * 3) / 4)
+        return;
+
+    new_count = old_count * 2;
+
+    /* Allocate new bucket vector — GC may fire */
+    CL_GC_PROTECT(ht_obj);
+    new_vec = cl_make_vector(new_count);
+    CL_GC_UNPROTECT(1);
+
+    if (CL_NULL_P(new_vec)) return;  /* allocation failed, skip rehash */
+
+    /* Re-dereference after potential GC */
+    ht = (CL_Hashtable *)CL_OBJ_TO_PTR(ht_obj);
+    old_bkts = ht_get_buckets(ht);
+    new_bkts = ((CL_Vector *)CL_OBJ_TO_PTR(new_vec))->data;
+
+    /* Redistribute all entries — no allocations, just relinking cons cells */
+    for (i = 0; i < old_count; i++) {
+        CL_Obj chain = old_bkts[i];
+        while (!CL_NULL_P(chain)) {
+            CL_Obj next = cl_cdr(chain);
+            CL_Obj pair = cl_car(chain);
+            CL_Obj key = cl_car(pair);
+            uint32_t new_idx = hash_obj(key, ht->test) & (new_count - 1);
+            /* Splice this chain cell into the new bucket */
+            ((CL_Cons *)CL_OBJ_TO_PTR(chain))->cdr = new_bkts[new_idx];
+            new_bkts[new_idx] = chain;
+            chain = next;
+        }
+    }
+
+    /* Switch to new bucket storage */
+    ht->bucket_vec = new_vec;
+    ht->bucket_count = new_count;
+}
+
 /* --- Builtins --- */
 
 static CL_Obj bi_make_hash_table(CL_Obj *args, int n)
@@ -293,10 +343,14 @@ static CL_Obj bi_make_hash_table(CL_Obj *args, int n)
                 cl_error(CL_ERR_ARGS, "MAKE-HASH-TABLE: :test must be EQ, EQL, EQUAL, or EQUALP");
             }
         } else if (args[i] == KW_SIZE) {
+            uint32_t requested;
             if (!CL_FIXNUM_P(args[i + 1]))
                 cl_error(CL_ERR_TYPE, "MAKE-HASH-TABLE: :size must be a number");
-            size = (uint32_t)CL_FIXNUM_VAL(args[i + 1]);
-            if (size < 1) size = 1;
+            requested = (uint32_t)CL_FIXNUM_VAL(args[i + 1]);
+            if (requested < 1) requested = 1;
+            /* :size is expected entry count; set bucket_count = ceil(size / 0.75)
+             * so we don't immediately rehash after filling to :size entries */
+            size = (requested * 4 + 2) / 3;
         }
     }
 
@@ -316,8 +370,11 @@ static CL_Obj bi_gethash(CL_Obj *args, int n)
         cl_error(CL_ERR_TYPE, "GETHASH: not a hash table");
 
     ht = (CL_Hashtable *)CL_OBJ_TO_PTR(ht_obj);
-    bucket_idx = hash_obj(key, ht->test) & (ht->bucket_count - 1);
-    chain = ht->buckets[bucket_idx];
+    {
+        CL_Obj *bkts = ht_get_buckets(ht);
+        bucket_idx = hash_obj(key, ht->test) & (ht->bucket_count - 1);
+        chain = bkts[bucket_idx];
+    }
 
     while (!CL_NULL_P(chain)) {
         CL_Obj pair = cl_car(chain);
@@ -353,8 +410,11 @@ static CL_Obj bi_setf_gethash(CL_Obj *args, int n)
         cl_error(CL_ERR_TYPE, "(SETF GETHASH): not a hash table");
 
     ht = (CL_Hashtable *)CL_OBJ_TO_PTR(ht_obj);
-    bucket_idx = hash_obj(key, ht->test) & (ht->bucket_count - 1);
-    chain = ht->buckets[bucket_idx];
+    {
+        CL_Obj *bkts = ht_get_buckets(ht);
+        bucket_idx = hash_obj(key, ht->test) & (ht->bucket_count - 1);
+        chain = bkts[bucket_idx];
+    }
 
     /* Check if key already exists */
     {
@@ -387,9 +447,12 @@ static CL_Obj bi_setf_gethash(CL_Obj *args, int n)
 
         /* Re-dereference ht_obj after potential GC */
         ht = (CL_Hashtable *)CL_OBJ_TO_PTR(ht_obj);
-        ht->buckets[bucket_idx] = new_chain;
+        ht_get_buckets(ht)[bucket_idx] = new_chain;
         ht->count++;
     }
+
+    /* Rehash if load factor exceeded */
+    ht_maybe_rehash(ht_obj);
 
     return value;
 }
@@ -407,17 +470,20 @@ static CL_Obj bi_remhash(CL_Obj *args, int n)
         cl_error(CL_ERR_TYPE, "REMHASH: not a hash table");
 
     ht = (CL_Hashtable *)CL_OBJ_TO_PTR(ht_obj);
-    bucket_idx = hash_obj(key, ht->test) & (ht->bucket_count - 1);
+    {
+        CL_Obj *bkts = ht_get_buckets(ht);
+        bucket_idx = hash_obj(key, ht->test) & (ht->bucket_count - 1);
+        cursor = bkts[bucket_idx];
+    }
 
     prev = CL_NIL;
-    cursor = ht->buckets[bucket_idx];
 
     while (!CL_NULL_P(cursor)) {
         CL_Obj pair = cl_car(cursor);
         if (keys_equal(cl_car(pair), key, ht->test)) {
             /* Remove from chain */
             if (CL_NULL_P(prev)) {
-                ht->buckets[bucket_idx] = cl_cdr(cursor);
+                ht_get_buckets(ht)[bucket_idx] = cl_cdr(cursor);
             } else {
                 ((CL_Cons *)CL_OBJ_TO_PTR(prev))->cdr = cl_cdr(cursor);
             }
@@ -448,7 +514,7 @@ static CL_Obj bi_maphash(CL_Obj *args, int n)
     CL_GC_PROTECT(ht_obj);
 
     for (i = 0; i < ht->bucket_count; i++) {
-        CL_Obj chain = ht->buckets[i];
+        CL_Obj chain = ht_get_buckets(ht)[i];
         while (!CL_NULL_P(chain)) {
             CL_Obj pair = cl_car(chain);
             CL_Obj call_args[2];
@@ -484,8 +550,11 @@ static CL_Obj bi_clrhash(CL_Obj *args, int n)
         cl_error(CL_ERR_TYPE, "CLRHASH: not a hash table");
 
     ht = (CL_Hashtable *)CL_OBJ_TO_PTR(args[0]);
-    for (i = 0; i < ht->bucket_count; i++)
-        ht->buckets[i] = CL_NIL;
+    {
+        CL_Obj *bkts = ht_get_buckets(ht);
+        for (i = 0; i < ht->bucket_count; i++)
+            bkts[i] = CL_NIL;
+    }
     ht->count = 0;
     return args[0];
 }
@@ -524,7 +593,7 @@ static CL_Obj bi_hash_table_pairs(CL_Obj *args, int n)
 
     ht = (CL_Hashtable *)CL_OBJ_TO_PTR(ht_obj);
     for (i = 0; i < ht->bucket_count; i++) {
-        CL_Obj chain = ht->buckets[i];
+        CL_Obj chain = ht_get_buckets(ht)[i];
         while (!CL_NULL_P(chain)) {
             CL_Obj pair = cl_car(chain);
             result = cl_cons(pair, result);

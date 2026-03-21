@@ -282,8 +282,9 @@ typedef struct {
     CL_Header hdr;
     uint32_t test;          /* CL_HT_TEST_EQ/EQL/EQUAL */
     uint32_t count;         /* Number of entries */
-    uint32_t bucket_count;  /* Number of buckets */
-    CL_Obj buckets[];       /* Flexible array: each is a list of (key . value) pairs */
+    uint32_t bucket_count;  /* Number of buckets (always power of 2) */
+    CL_Obj bucket_vec;      /* CL_NIL = use inline buckets[], else CL_Vector */
+    CL_Obj buckets[];       /* Flexible array: initial buckets (used when bucket_vec==NIL) */
 } CL_Hashtable;
 
 #define CL_HASHTABLE_P(obj) (CL_HEAP_P(obj) && CL_HDR_TYPE(CL_OBJ_TO_PTR(obj)) == TYPE_HASHTABLE)
