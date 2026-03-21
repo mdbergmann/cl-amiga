@@ -359,6 +359,7 @@ CL_Obj cl_make_hashtable(uint32_t bucket_count, uint32_t test)
     ht->test = test;
     ht->count = 0;
     ht->bucket_count = bucket_count;
+    ht->bucket_vec = CL_NIL;
     /* buckets[] already zeroed (= CL_NIL) by cl_alloc */
     return CL_PTR_TO_OBJ(ht);
 }
@@ -656,8 +657,13 @@ static void gc_mark_children(void *ptr, uint8_t type)
     case TYPE_HASHTABLE: {
         CL_Hashtable *ht = (CL_Hashtable *)ptr;
         uint32_t i;
-        for (i = 0; i < ht->bucket_count; i++)
-            gc_mark_push(ht->buckets[i]);
+        gc_mark_push(ht->bucket_vec);
+        if (!CL_NULL_P(ht->bucket_vec)) {
+            /* Buckets in external vector — marking the vector marks its contents */
+        } else {
+            for (i = 0; i < ht->bucket_count; i++)
+                gc_mark_push(ht->buckets[i]);
+        }
         break;
     }
     case TYPE_CONDITION: {
@@ -1100,8 +1106,11 @@ static void gc_verify_marked(void)
             case TYPE_HASHTABLE: {
                 CL_Hashtable *ht = (CL_Hashtable *)ptr;
                 uint32_t i;
-                for (i = 0; i < ht->bucket_count; i++)
-                    gc_verify_check_ref(parent_off, "bucket", ht->buckets[i]);
+                gc_verify_check_ref(parent_off, "bucket_vec", ht->bucket_vec);
+                if (CL_NULL_P(ht->bucket_vec)) {
+                    for (i = 0; i < ht->bucket_count; i++)
+                        gc_verify_check_ref(parent_off, "bucket", ht->buckets[i]);
+                }
                 break;
             }
             case TYPE_STRUCT: {
@@ -1279,8 +1288,11 @@ static void gc_verify_after_sweep(void)
             case TYPE_HASHTABLE: {
                 CL_Hashtable *ht = (CL_Hashtable *)ptr;
                 uint32_t i;
-                for (i = 0; i < ht->bucket_count; i++)
-                    CHECK_FIELD(ht->buckets[i], "bucket");
+                CHECK_FIELD(ht->bucket_vec, "bucket_vec");
+                if (CL_NULL_P(ht->bucket_vec)) {
+                    for (i = 0; i < ht->bucket_count; i++)
+                        CHECK_FIELD(ht->buckets[i], "bucket");
+                }
                 break;
             }
             default:

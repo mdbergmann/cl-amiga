@@ -14,6 +14,7 @@
 #include "error.h"
 #include "vm.h"
 #include "stream.h"
+#include "float.h"
 #include "../platform/platform.h"
 #include "../platform/platform_thread.h"
 #include <string.h>
@@ -451,13 +452,13 @@ static CL_Obj bi_make_condition_variable(CL_Obj *args, int n)
     return CL_PTR_TO_OBJ(cv);
 }
 
-/* (mp:condition-wait cv lock) -> t */
+/* (mp:condition-wait cv lock &optional timeout) -> bool
+ * timeout is in seconds (real number).  Returns T if signaled, NIL if timed out. */
 static CL_Obj bi_condition_wait(CL_Obj *args, int n)
 {
     CL_CondVar *cv;
     CL_Lock *lk;
     void *cv_handle, *mutex;
-    CL_UNUSED(n);
 
     if (!CL_CONDVAR_P(args[0]))
         cl_error(CL_ERR_TYPE,
@@ -475,6 +476,20 @@ static CL_Obj bi_condition_wait(CL_Obj *args, int n)
     if (!cv_handle || !mutex)
         cl_error(CL_ERR_GENERAL,
                  "MP:CONDITION-WAIT: condvar or lock has been destroyed");
+
+    if (n > 2 && !CL_NULL_P(args[2])) {
+        /* Timed wait: convert seconds to milliseconds */
+        double secs = cl_to_double(args[2]);
+        uint32_t ms;
+        if (secs <= 0.0)
+            ms = 0;
+        else if (secs > 4294967.0)
+            ms = 0xFFFFFFFFu;
+        else
+            ms = (uint32_t)(secs * 1000.0);
+        /* Returns 1 if timed out, 0 if signaled */
+        return platform_condvar_wait_timeout(cv_handle, mutex, ms) ? CL_NIL : CL_T;
+    }
 
     platform_condvar_wait(cv_handle, mutex);
     return CL_T;
@@ -499,6 +514,28 @@ static CL_Obj bi_condition_notify(CL_Obj *args, int n)
                  "MP:CONDITION-NOTIFY: condvar has been destroyed");
 
     platform_condvar_signal(cv_handle);
+    return CL_NIL;
+}
+
+/* (mp:condition-broadcast cv) -> nil */
+static CL_Obj bi_condition_broadcast(CL_Obj *args, int n)
+{
+    CL_CondVar *cv;
+    void *cv_handle;
+    CL_UNUSED(n);
+
+    if (!CL_CONDVAR_P(args[0]))
+        cl_error(CL_ERR_TYPE,
+                 "MP:CONDITION-BROADCAST: argument must be a condition-variable");
+
+    cv = (CL_CondVar *)CL_OBJ_TO_PTR(args[0]);
+    cv_handle = cl_condvar_table[cv->condvar_id];
+
+    if (!cv_handle)
+        cl_error(CL_ERR_GENERAL,
+                 "MP:CONDITION-BROADCAST: condvar has been destroyed");
+
+    platform_condvar_broadcast(cv_handle);
     return CL_NIL;
 }
 
@@ -546,6 +583,7 @@ void cl_builtins_thread_init(void)
     mp_defun("RELEASE-LOCK",            bi_release_lock,            1, 1);
 
     mp_defun("MAKE-CONDITION-VARIABLE",  bi_make_condition_variable, 0, 0);
-    mp_defun("CONDITION-WAIT",           bi_condition_wait,          2, 2);
+    mp_defun("CONDITION-WAIT",           bi_condition_wait,          2, 3);
     mp_defun("CONDITION-NOTIFY",         bi_condition_notify,        1, 1);
+    mp_defun("CONDITION-BROADCAST",      bi_condition_broadcast,     1, 1);
 }

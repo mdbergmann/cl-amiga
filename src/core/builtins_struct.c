@@ -148,7 +148,13 @@ static CL_Obj ht_eq_lookup(CL_Obj ht_obj, CL_Obj key)
     hash *= 0x45d9f3bU;
     hash ^= hash >> 16;
     bucket_idx = hash & (ht->bucket_count - 1);
-    chain = ht->buckets[bucket_idx];
+    /* Access buckets through indirection (supports rehashed tables) */
+    if (!CL_NULL_P(ht->bucket_vec)) {
+        CL_Vector *v = (CL_Vector *)CL_OBJ_TO_PTR(ht->bucket_vec);
+        chain = v->data[bucket_idx];
+    } else {
+        chain = ht->buckets[bucket_idx];
+    }
 
     while (!CL_NULL_P(chain)) {
         CL_Obj pair = cl_car(chain);
