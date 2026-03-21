@@ -120,6 +120,68 @@ static uint32_t bignum_mul_mag(const uint16_t *a, uint32_t a_len,
     return r_len;
 }
 
+#ifdef PLATFORM_POSIX
+/* ================================================================
+ * 32-bit limb operations for 64-bit hosts.
+ * On 64-bit hosts, uint64_t intermediates are native — using 32-bit
+ * limbs halves the limb count and gives ~4x speedup for multiplication.
+ * The CL_Bignum heap format stays 16-bit; we pack/unpack at boundaries.
+ * ================================================================ */
+
+/* Pack 16-bit limbs into 32-bit limbs (pairs).  Returns number of 32-bit limbs. */
+static uint32_t pack_16_to_32(const uint16_t *src, uint32_t n16, uint32_t *dst)
+{
+    uint32_t n32 = (n16 + 1) / 2;
+    uint32_t i;
+    for (i = 0; i < n16 / 2; i++)
+        dst[i] = (uint32_t)src[2*i] | ((uint32_t)src[2*i+1] << 16);
+    if (n16 & 1)
+        dst[n32 - 1] = (uint32_t)src[n16 - 1];
+    return n32;
+}
+
+/* Unpack 32-bit limbs back to 16-bit limbs.  Returns number of 16-bit limbs. */
+static uint32_t unpack_32_to_16(const uint32_t *src, uint32_t n32, uint16_t *dst)
+{
+    uint32_t i;
+    uint32_t n16 = n32 * 2;
+    for (i = 0; i < n32; i++) {
+        dst[2*i]     = (uint16_t)(src[i] & 0xFFFF);
+        dst[2*i + 1] = (uint16_t)(src[i] >> 16);
+    }
+    /* Strip trailing zero limbs */
+    while (n16 > 1 && dst[n16 - 1] == 0)
+        n16--;
+    return n16;
+}
+
+/* Schoolbook multiplication with 32-bit limbs and 64-bit intermediates */
+static uint32_t bignum_mul_mag32(const uint32_t *a, uint32_t a_len,
+                                  const uint32_t *b, uint32_t b_len,
+                                  uint32_t *result)
+{
+    uint32_t i, j;
+    uint32_t r_len = a_len + b_len;
+
+    memset(result, 0, r_len * sizeof(uint32_t));
+
+    for (i = 0; i < a_len; i++) {
+        uint64_t carry = 0;
+        for (j = 0; j < b_len; j++) {
+            uint64_t prod = (uint64_t)a[i] * (uint64_t)b[j]
+                          + (uint64_t)result[i + j] + carry;
+            result[i + j] = (uint32_t)(prod & 0xFFFFFFFFULL);
+            carry = prod >> 32;
+        }
+        result[i + b_len] += (uint32_t)carry;
+    }
+
+    while (r_len > 1 && result[r_len - 1] == 0)
+        r_len--;
+    return r_len;
+}
+#endif /* PLATFORM_POSIX */
+
 /* Single-limb division: divide a[a_len] by d (uint16_t).
  * Quotient in quot, returns remainder. */
 static uint16_t bignum_div_single(const uint16_t *a, uint32_t a_len,
@@ -677,8 +739,7 @@ bignum_mul:
         uint16_t ta[2], tb[2];
         uint32_t a_len, b_len, a_sign, b_sign;
         const uint16_t *al, *bl;
-        uint16_t result[256];
-        uint32_t r_len, r_sign;
+        uint32_t r_sign;
 
         al = to_limbs(a, &a_len, &a_sign, ta);
         bl = to_limbs(b, &b_len, &b_sign, tb);
@@ -687,20 +748,70 @@ bignum_mul:
         if (a_len == 1 && al[0] == 0) return CL_MAKE_FIXNUM(0);
         if (b_len == 1 && bl[0] == 0) return CL_MAKE_FIXNUM(0);
 
-        if (a_len + b_len > 256) {
-            /* Need heap-allocated temp buffer */
-            uint16_t *heap_result = (uint16_t *)platform_alloc((a_len + b_len) * sizeof(uint16_t));
-            CL_Obj res;
-            r_len = bignum_mul_mag(al, a_len, bl, b_len, heap_result);
-            r_sign = a_sign ^ b_sign;
-            res = bignum_from_limbs(heap_result, r_len, r_sign);
-            platform_free(heap_result);
-            return res;
-        }
-
-        r_len = bignum_mul_mag(al, a_len, bl, b_len, result);
         r_sign = a_sign ^ b_sign;
-        return bignum_from_limbs(result, r_len, r_sign);
+
+#ifdef PLATFORM_POSIX
+        /* 32-bit limb fast path: pack 16→32, multiply with uint64_t, unpack */
+        {
+            uint32_t a32_len = (a_len + 1) / 2;
+            uint32_t b32_len = (b_len + 1) / 2;
+            uint32_t r32_max = a32_len + b32_len;
+            uint32_t r32_len;
+
+            /* Use stack buffers for small operands, heap for large */
+            if (r32_max <= 256) {
+                uint32_t a32[256], b32[256], r32[256];
+                uint16_t r16[512];
+                uint32_t r16_len;
+
+                a32_len = pack_16_to_32(al, a_len, a32);
+                b32_len = pack_16_to_32(bl, b_len, b32);
+                r32_len = bignum_mul_mag32(a32, a32_len, b32, b32_len, r32);
+                r16_len = unpack_32_to_16(r32, r32_len, r16);
+                return bignum_from_limbs(r16, r16_len, r_sign);
+            } else {
+                uint32_t *ha32 = (uint32_t *)platform_alloc(a32_len * sizeof(uint32_t));
+                uint32_t *hb32 = (uint32_t *)platform_alloc(b32_len * sizeof(uint32_t));
+                uint32_t *hr32;
+                uint16_t *hr16;
+                uint32_t r16_len;
+                CL_Obj res;
+
+                a32_len = pack_16_to_32(al, a_len, ha32);
+                b32_len = pack_16_to_32(bl, b_len, hb32);
+                hr32 = (uint32_t *)platform_alloc(r32_max * sizeof(uint32_t));
+                r32_len = bignum_mul_mag32(ha32, a32_len, hb32, b32_len, hr32);
+                platform_free(ha32);
+                platform_free(hb32);
+
+                hr16 = (uint16_t *)platform_alloc(r32_len * 2 * sizeof(uint16_t));
+                r16_len = unpack_32_to_16(hr32, r32_len, hr16);
+                platform_free(hr32);
+
+                res = bignum_from_limbs(hr16, r16_len, r_sign);
+                platform_free(hr16);
+                return res;
+            }
+        }
+#else
+        /* 16-bit limb path (Amiga / 68020) */
+        {
+            uint16_t result[256];
+            uint32_t r_len;
+
+            if (a_len + b_len > 256) {
+                uint16_t *heap_result = (uint16_t *)platform_alloc((a_len + b_len) * sizeof(uint16_t));
+                CL_Obj res;
+                r_len = bignum_mul_mag(al, a_len, bl, b_len, heap_result);
+                res = bignum_from_limbs(heap_result, r_len, r_sign);
+                platform_free(heap_result);
+                return res;
+            }
+
+            r_len = bignum_mul_mag(al, a_len, bl, b_len, result);
+            return bignum_from_limbs(result, r_len, r_sign);
+        }
+#endif
     }
 }
 
