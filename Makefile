@@ -43,6 +43,7 @@ CORE_SRC     = $(SRCDIR)/core/types.c \
                $(SRCDIR)/core/builtins_bitvector.c \
                $(SRCDIR)/core/builtins_pathname.c \
                $(SRCDIR)/core/builtins_describe.c \
+               $(SRCDIR)/core/builtins_inspect.c \
                $(SRCDIR)/core/builtins_thread.c \
                $(SRCDIR)/core/stream.c \
                $(SRCDIR)/core/bignum.c \
