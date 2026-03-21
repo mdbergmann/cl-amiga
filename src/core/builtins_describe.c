@@ -13,6 +13,7 @@
 #include "printer.h"
 #include "stream.h"
 #include "vm.h"
+#include "float.h"
 #include "../platform/platform.h"
 #include <string.h>
 #include <stdio.h>
@@ -523,7 +524,7 @@ static void describe_pathname(CL_Obj obj, CL_Obj stream)
 
 /* --- Main dispatch --- */
 
-static void describe_to_stream(CL_Obj obj, CL_Obj stream)
+void cl_describe_to_stream(CL_Obj obj, CL_Obj stream)
 {
     /* NIL */
     if (CL_NULL_P(obj)) {
@@ -543,31 +544,26 @@ static void describe_to_stream(CL_Obj obj, CL_Obj stream)
         return;
     }
 
-    /* Heap objects */
-    if (CL_HEAP_P(obj)) {
-        uint8_t type = CL_HDR_TYPE(CL_OBJ_TO_PTR(obj));
-        switch (type) {
-            case TYPE_SYMBOL:       describe_symbol(obj, stream);       return;
-            case TYPE_CONS:         describe_cons(obj, stream);         return;
-            case TYPE_STRING:       describe_string(obj, stream);       return;
-            case TYPE_FUNCTION:     describe_function(obj, stream);     return;
-            case TYPE_CLOSURE:      describe_closure(obj, stream);      return;
-            case TYPE_VECTOR:       describe_vector(obj, stream);       return;
-            case TYPE_PACKAGE:      describe_package(obj, stream);      return;
-            case TYPE_HASHTABLE:    describe_hashtable(obj, stream);    return;
-            case TYPE_STRUCT:       describe_struct(obj, stream);       return;
-            case TYPE_CONDITION:    describe_condition(obj, stream);    return;
-            case TYPE_BIGNUM:       describe_bignum(obj, stream);       return;
-            case TYPE_SINGLE_FLOAT: describe_single_float(obj, stream); return;
-            case TYPE_DOUBLE_FLOAT: describe_double_float(obj, stream); return;
-            case TYPE_RATIO:        describe_ratio(obj, stream);        return;
-            case TYPE_STREAM:       describe_stream(obj, stream);       return;
-            case TYPE_RANDOM_STATE: describe_random_state(obj, stream); return;
-            case TYPE_BIT_VECTOR:   describe_bit_vector(obj, stream);   return;
-            case TYPE_PATHNAME:     describe_pathname(obj, stream);     return;
-            default: break;
-        }
-    }
+    /* Heap objects — use if-else to avoid m68k-amigaos-gcc LTO
+     * jump table bug (undefined .L labels during link) */
+    if (CL_SYMBOL_P(obj))       { describe_symbol(obj, stream);       return; }
+    if (CL_CONS_P(obj))         { describe_cons(obj, stream);         return; }
+    if (CL_STRING_P(obj))       { describe_string(obj, stream);       return; }
+    if (CL_FUNCTION_P(obj))     { describe_function(obj, stream);     return; }
+    if (CL_CLOSURE_P(obj))      { describe_closure(obj, stream);      return; }
+    if (CL_VECTOR_P(obj))       { describe_vector(obj, stream);       return; }
+    if (CL_PACKAGE_P(obj))      { describe_package(obj, stream);      return; }
+    if (CL_HASHTABLE_P(obj))    { describe_hashtable(obj, stream);    return; }
+    if (CL_STRUCT_P(obj))       { describe_struct(obj, stream);       return; }
+    if (CL_CONDITION_P(obj))    { describe_condition(obj, stream);    return; }
+    if (CL_BIGNUM_P(obj))       { describe_bignum(obj, stream);       return; }
+    if (CL_SINGLE_FLOAT_P(obj)) { describe_single_float(obj, stream); return; }
+    if (CL_DOUBLE_FLOAT_P(obj)) { describe_double_float(obj, stream); return; }
+    if (CL_RATIO_P(obj))        { describe_ratio(obj, stream);        return; }
+    if (CL_STREAM_P(obj))       { describe_stream(obj, stream);       return; }
+    if (CL_RANDOM_STATE_P(obj)) { describe_random_state(obj, stream); return; }
+    if (CL_BIT_VECTOR_P(obj))   { describe_bit_vector(obj, stream);   return; }
+    if (CL_PATHNAME_P(obj))     { describe_pathname(obj, stream);     return; }
 
     /* Fallback */
     write_obj(stream, obj);
@@ -580,7 +576,7 @@ static CL_Obj bi_describe(CL_Obj *args, int n)
     CL_Obj obj = args[0];
     CL_Obj stream = resolve_stream(args, n);
 
-    describe_to_stream(obj, stream);
+    cl_describe_to_stream(obj, stream);
 
     /* describe returns no values */
     cl_mv_count = 0;
