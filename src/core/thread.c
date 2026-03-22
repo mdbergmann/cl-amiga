@@ -10,6 +10,8 @@
 #define CL_THREAD_NO_MACROS  /* access struct members directly */
 #include "thread.h"
 #include "symbol.h"
+#include "error.h"
+#include "vm.h"
 #include "../platform/platform.h"
 #include "../platform/platform_thread.h"
 #include <string.h>
@@ -124,6 +126,34 @@ void cl_gc_resume_the_world(void)
     /* Wake all waiting threads */
     platform_condvar_broadcast(gc_condvar);
     platform_mutex_unlock(gc_mutex);
+}
+
+/* ---- Thread interrupt handling (slow path) ---- */
+
+void cl_thread_handle_interrupt(CL_Thread *t)
+{
+    CL_Obj func;
+
+    if (!t->interrupt_pending)
+        return;
+
+    /* destroy-thread: abort the thread by raising an error */
+    if (t->destroy_requested) {
+        t->destroy_requested = 0;
+        t->interrupt_pending = 0;
+        t->interrupt_func = CL_NIL;
+        cl_error(CL_ERR_GENERAL, "Thread destroyed");
+        return;  /* not reached — cl_error longjmps */
+    }
+
+    /* interrupt-thread: call the pending function */
+    func = t->interrupt_func;
+    t->interrupt_func = CL_NIL;
+    t->interrupt_pending = 0;
+
+    if (!CL_NULL_P(func)) {
+        cl_vm_apply(func, NULL, 0);
+    }
 }
 
 /* ---- TLV table operations ---- */

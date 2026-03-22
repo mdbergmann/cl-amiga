@@ -3666,6 +3666,87 @@
                    (mp:make-thread (lambda () (* 4 10))))))
     (mapcar #'mp:join-thread threads)))
 
+; --- Named condition variables ---
+(check "make-condition-variable with name" t
+  (not (null (mp:make-condition-variable "my-cv"))))
+
+(check "condition-name accessor" "test-cv"
+  (mp:condition-name (mp:make-condition-variable "test-cv")))
+
+(check "condition-name nil when unnamed" nil
+  (mp:condition-name (mp:make-condition-variable)))
+
+; --- Lock name accessor ---
+(check "lock-name accessor" "my-lock"
+  (mp:lock-name (mp:make-lock "my-lock")))
+
+(check "lock-name nil when unnamed" nil
+  (mp:lock-name (mp:make-lock)))
+
+; --- Type predicates ---
+(check "threadp true" t
+  (mp:threadp (mp:current-thread)))
+
+(check "threadp false" nil
+  (mp:threadp 42))
+
+(check "lockp true" t
+  (mp:lockp (mp:make-lock)))
+
+(check "lockp false" nil
+  (mp:lockp "not-a-lock"))
+
+(check "condition-variable-p true" t
+  (mp:condition-variable-p (mp:make-condition-variable)))
+
+(check "condition-variable-p false" nil
+  (mp:condition-variable-p nil))
+
+; --- interrupt-thread ---
+(check "interrupt-thread self" 42
+  (let ((x 0))
+    (mp:interrupt-thread (mp:current-thread)
+      (lambda () (setf x 42)))
+    x))
+
+(check "interrupt-thread basic" :interrupted
+  (let ((flag (list nil))
+        (lk (mp:make-lock))
+        (cv (mp:make-condition-variable)))
+    (let ((thr (mp:make-thread
+                 (lambda ()
+                   (mp:acquire-lock lk)
+                   (loop until (car flag)
+                         do (mp:condition-wait cv lk))
+                   (mp:release-lock lk)
+                   (car flag)))))
+      (mp:thread-yield)
+      (mp:interrupt-thread thr
+        (lambda () (setf (car flag) :interrupted)))
+      (mp:acquire-lock lk)
+      (mp:condition-notify cv)
+      (mp:release-lock lk)
+      (mp:join-thread thr))))
+
+; --- destroy-thread ---
+(check "destroy-thread basic" :destroyed
+  (let ((thr (mp:make-thread
+               (lambda ()
+                 (loop (mp:thread-yield))))))
+    (mp:thread-yield)
+    (mp:destroy-thread thr)
+    (mp:join-thread thr)
+    :destroyed))
+
+(check "destroy-thread not alive after" nil
+  (let ((thr (mp:make-thread
+               (lambda ()
+                 (loop (mp:thread-yield))))))
+    (mp:thread-yield)
+    (mp:destroy-thread thr)
+    (mp:join-thread thr)
+    (mp:thread-alive-p thr)))
+
 ; --- GC stress under threads ---
 (check "thread GC stress" 400
   (let ((t1 (mp:make-thread

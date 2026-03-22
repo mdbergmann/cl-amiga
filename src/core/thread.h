@@ -155,6 +155,11 @@ typedef struct CL_Thread_s {
     volatile uint8_t gc_requested;
     volatile uint8_t gc_stopped;
 
+    /* ---- Thread interruption ---- */
+    volatile uint8_t interrupt_pending;   /* 1 = check interrupt_func or destroy */
+    volatile uint8_t destroy_requested;   /* 1 = abort at next safepoint */
+    CL_Obj interrupt_func;               /* function for interrupt-thread */
+
     /* ---- Thread registry ---- */
     struct CL_Thread_s *next;
     void *platform_handle;
@@ -235,11 +240,17 @@ void cl_thread_unregister(CL_Thread *t);
 #define CL_MT() (cl_thread_count > 1)
 
 /* Safepoint check — insert at function calls and backward jumps.
- * The volatile read is cheap; cl_gc_safepoint() is the slow path. */
+ * The volatile reads are cheap; the slow paths handle GC and interrupts.
+ * GC is handled first (critical), then pending interrupts. */
 #define CL_SAFEPOINT() \
-    do { if (cl_get_current_thread()->gc_requested) cl_gc_safepoint(); } while (0)
+    do { \
+        CL_Thread *_sp = cl_get_current_thread(); \
+        if (_sp->gc_requested) cl_gc_safepoint(); \
+        if (_sp->interrupt_pending) cl_thread_handle_interrupt(_sp); \
+    } while (0)
 
-void cl_gc_safepoint(void);  /* slow path: stop until GC completes */
+void cl_gc_safepoint(void);           /* slow path: stop until GC completes */
+void cl_thread_handle_interrupt(CL_Thread *t);  /* slow path: handle pending interrupt */
 
 /* ---- TLV functions ---- */
 
