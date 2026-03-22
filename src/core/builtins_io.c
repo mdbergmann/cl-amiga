@@ -1759,6 +1759,14 @@ static CL_Obj bi_get_gc_count(CL_Obj *args, int n)
     return CL_MAKE_FIXNUM((int32_t)(cl_heap.gc_count & 0x7FFFFFFF));
 }
 
+/* ext:gc — trigger garbage collection */
+static CL_Obj bi_ext_gc(CL_Obj *args, int n)
+{
+    CL_UNUSED(args); CL_UNUSED(n);
+    cl_gc();
+    return CL_NIL;
+}
+
 static CL_Obj bi_time_report(CL_Obj *args, int n)
 {
     uint32_t start_time, end_time, elapsed;
@@ -2431,6 +2439,7 @@ void cl_builtins_io_init(void)
     defun("MACHINE-VERSION", bi_machine_version, 0, 0);
     defun("MACHINE-INSTANCE", bi_machine_instance, 0, 0);
     /* Extension functions (EXT package) */
+    extfun("GC", bi_ext_gc, 0, 0);
     extfun("GETENV", bi_getenv, 1, 1);
     extfun("GETCWD", bi_getcwd, 0, 0);
     extfun("SYSTEM-COMMAND", bi_system_command, 1, 1);
