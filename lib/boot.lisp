@@ -1269,19 +1269,21 @@ when the param has no explicit default.  CL spec 3.4.6 requires this."
          (setq rest (cdr rest)))
        (if step-expr
            ;; WITH THEN: first iteration uses init-expr, subsequent use step-expr
+           ;; Assignment must be in preamble (before body), not steps (after body)
            (let ((flag (gensym "FIRST")))
              (list rest
                    (list (list var nil) (list flag t))
-                   nil
                    (list `(if ,flag
                               (progn (setq ,var ,init-expr) (setq ,flag nil))
                               (setq ,var ,step-expr)))
+                   nil
                    nil))
            ;; WITHOUT THEN: re-evaluate expr each iteration
+           ;; Assignment in preamble so variable is set before body runs
            (list rest
                  (list (list var nil))
-                 nil
                  (list `(setq ,var ,init-expr))
+                 nil
                  nil))))
     ;; FOR var FROM/UPFROM/DOWNFROM start ...
     ((or (%loop-keyword-p sub-kw "FROM")

@@ -1323,6 +1323,42 @@ static void compile_setq(CL_Compiler *c, CL_Obj form)
 
 /* Check if sym is a composite c[ad]+r accessor (caar, cadr, cdar, cddr, etc.)
  * Returns 1 if so, 0 otherwise. */
+/* SECOND..TENTH → NTH index mapping for setf */
+static int is_nth_accessor(CL_Obj sym)
+{
+    CL_Symbol *s = (CL_Symbol *)CL_OBJ_TO_PTR(sym);
+    CL_String *name = (CL_String *)CL_OBJ_TO_PTR(s->name);
+    if (s->package != cl_package_cl) return 0;
+    static const char *names[] = {
+        "SECOND", "THIRD", "FOURTH", "FIFTH", "SIXTH",
+        "SEVENTH", "EIGHTH", "NINTH", "TENTH", NULL
+    };
+    int i;
+    for (i = 0; names[i]; i++) {
+        if (name->length == strlen(names[i]) &&
+            memcmp(name->data, names[i], name->length) == 0)
+            return 1;
+    }
+    return 0;
+}
+
+static int get_nth_index(CL_Obj sym)
+{
+    CL_Symbol *s = (CL_Symbol *)CL_OBJ_TO_PTR(sym);
+    CL_String *name = (CL_String *)CL_OBJ_TO_PTR(s->name);
+    static const struct { const char *n; int idx; } map[] = {
+        {"SECOND",1}, {"THIRD",2}, {"FOURTH",3}, {"FIFTH",4}, {"SIXTH",5},
+        {"SEVENTH",6}, {"EIGHTH",7}, {"NINTH",8}, {"TENTH",9}, {NULL,0}
+    };
+    int i;
+    for (i = 0; map[i].n; i++) {
+        if (name->length == strlen(map[i].n) &&
+            memcmp(name->data, map[i].n, name->length) == 0)
+            return map[i].idx;
+    }
+    return -1;
+}
+
 static int is_composite_cadr(CL_Obj sym)
 {
     CL_Symbol *s;
@@ -1395,6 +1431,34 @@ static void compile_setf_place(CL_Compiler *c, CL_Obj place, CL_Obj val_form)
         }
     } else if (CL_CONS_P(place)) {
         CL_Obj head = cl_car(place);
+
+        /* Per CL spec: if place is a macro invocation, macroexpand first.
+         * Check local macros (macrolet) first, then global macros. */
+        if (CL_SYMBOL_P(head)) {
+            CL_Obj local_exp = cl_env_lookup_local_macro(c->env, head);
+            if (!CL_NULL_P(local_exp)) {
+                /* Local macro: apply expander to args */
+                CL_Obj arg_array[255];
+                int nargs = 0;
+                CL_Obj args_list = cl_cdr(place);
+                while (!CL_NULL_P(args_list) && nargs < 255) {
+                    arg_array[nargs++] = cl_car(args_list);
+                    args_list = cl_cdr(args_list);
+                }
+                CL_Obj expanded = cl_vm_apply(local_exp, arg_array, nargs);
+                compile_setf_place(c, expanded, val_form);
+                c->in_tail = saved_tail;
+                return;
+            }
+            if (!CL_NULL_P(cl_get_macro(head))) {
+                CL_Obj expanded = cl_macroexpand_1(place);
+                if (expanded != place) {
+                    compile_setf_place(c, expanded, val_form);
+                    c->in_tail = saved_tail;
+                    return;
+                }
+            }
+        }
 
         /* (setf (values p1 p2 ...) val-form) →
          * (multiple-value-bind (t1 t2 ...) val-form (setf p1 t1) (setf p2 t2) ... t1) */
@@ -1495,6 +1559,19 @@ static void compile_setf_place(CL_Compiler *c, CL_Obj place, CL_Obj val_form)
             compile_expr(c, cl_car(cl_cdr(place)));
             compile_expr(c, val_form);
             cl_emit(c, OP_RPLACD);
+        } else if (CL_SYMBOL_P(head) && is_nth_accessor(head)) {
+            /* SECOND..TENTH: rewrite as (setf (nth N list) val) */
+            int nth_idx = get_nth_index(head);
+            CL_Obj arg = cl_car(cl_cdr(place));
+            CL_Obj nth_place;
+            CL_GC_PROTECT(arg);
+            nth_place = cl_cons(SETF_SYM_NTH,
+                          cl_cons(CL_MAKE_FIXNUM(nth_idx),
+                            cl_cons(arg, CL_NIL)));
+            CL_GC_UNPROTECT(1);
+            compile_setf_place(c, nth_place, val_form);
+            c->in_tail = saved_tail;
+            return;
         } else if (is_composite_cadr(head)) {
             /* Composite c[ad]+r: decompose (setf (cXY..Zr arg) val)
              * into (setf (cXr (cY..Zr arg)) val) per CL spec */

@@ -8,6 +8,9 @@
 ;;; This provides the TCP networking that quicklisp needs to download
 ;;; archives, and works around CL-Amiga compiler limitations.
 
+;; Load Gray Streams implementation (needed by trivial-gray-streams)
+(load (merge-pathnames "lib/gray-streams.lisp" *default-pathname-defaults*))
+
 (in-package #:ql-impl)
 
 ;; Register CL-Amiga as a known implementation so *implementation* is non-NIL.

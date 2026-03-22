@@ -597,16 +597,40 @@ CL_Obj cl_fasl_deserialize_obj(CL_FaslReader *r)
 #endif
 
     case FASL_TAG_CONS: {
-        CL_Obj car_val, cdr_val;
-        car_val = cl_fasl_deserialize_obj(r);
+        /* Iterative list building to avoid O(N) GC root stack depth.
+         * Consecutive CONS tags are common (proper lists), so we build
+         * the list with only 3 GC roots instead of one per element. */
+        CL_Obj result = CL_NIL, tail = CL_NIL, car_val = CL_NIL;
+        int first = 1;
+        CL_GC_PROTECT(result);
+        CL_GC_PROTECT(tail);
         CL_GC_PROTECT(car_val);
-        cdr_val = cl_fasl_deserialize_obj(r);
-        CL_GC_PROTECT(cdr_val);
+
+        do {
+            if (!first)
+                r->pos++;  /* consume peeked FASL_TAG_CONS */
+            first = 0;
+
+            car_val = cl_fasl_deserialize_obj(r);
+
+            if (CL_NULL_P(result)) {
+                result = cl_cons(car_val, CL_NIL);
+                tail = result;
+            } else {
+                CL_Obj new_cell = cl_cons(car_val, CL_NIL);
+                ((CL_Cons *)CL_OBJ_TO_PTR(tail))->cdr = new_cell;
+                tail = new_cell;
+            }
+        } while (r->pos < r->size && r->data[r->pos] == FASL_TAG_CONS);
+
+        /* Deserialize final cdr (NIL for proper lists, atom for dotted) */
         {
-            CL_Obj result = cl_cons(car_val, cdr_val);
-            CL_GC_UNPROTECT(2);
-            return result;
+            CL_Obj final_cdr = cl_fasl_deserialize_obj(r);
+            ((CL_Cons *)CL_OBJ_TO_PTR(tail))->cdr = final_cdr;
         }
+
+        CL_GC_UNPROTECT(3);
+        return result;
     }
 
     case FASL_TAG_BYTECODE:
