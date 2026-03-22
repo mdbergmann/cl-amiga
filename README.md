@@ -169,6 +169,13 @@ When the abstractions aren't enough, drop to raw library calls:
 - **Buffered socket I/O** — network streams currently use byte-at-a-time recv/send, making Quicklisp downloads on Amiga very slow
 - **ANSI CL gaps** — while major subsystems work (CLOS, conditions, packages, the full numeric tower, arrays, pathnames, streams, loop, format), some corners of the spec remain unimplemented
 
+## TODO
+
+- **CAS (compare-and-swap)** — atomic CAS primitive for lock-free data structures; on Amiga can possibly stay with lock-based implementation
+- **Full bordeaux-threads support** — remaining API gaps (semaphores, atomic integers, `with-timeout`)
+- **Native MorphOS version** — PowerPC native build targeting MorphOS
+- **Bignum performance** — optional GMP backend for faster arbitrary-precision arithmetic
+
 ## Project Structure
 
 ```
