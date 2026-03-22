@@ -136,7 +136,7 @@ Single-pass recursive compiler from S-expressions to bytecode:
 | Packages | `make-package` `find-package` `delete-package` `rename-package` `export` `unexport` `import` `use-package` `unuse-package` `shadow` `find-symbol` `intern` `unintern` `package-name` `package-use-list` `package-nicknames` `list-all-packages` `%package-symbols` `%package-external-symbols` `package-local-nicknames` `add-package-local-nickname` `remove-package-local-nickname` |
 | Introspection | `describe` |
 | Complex | `complex` `complexp` `realpart` `imagpart` `conjugate` |
-| Threading (MP) | `mp:make-thread` `mp:join-thread` `mp:thread-alive-p` `mp:current-thread` `mp:all-threads` `mp:thread-name` `mp:thread-yield` `mp:make-lock` `mp:acquire-lock` `mp:release-lock` `mp:make-condition-variable` `mp:condition-wait` `mp:condition-notify` `mp:condition-broadcast` |
+| Threading (MP) | `mp:make-thread` `mp:join-thread` `mp:thread-alive-p` `mp:current-thread` `mp:all-threads` `mp:thread-name` `mp:thread-yield` `mp:threadp` `mp:make-lock` `mp:acquire-lock` `mp:release-lock` `mp:lock-name` `mp:lockp` `mp:make-condition-variable` `mp:condition-wait` `mp:condition-notify` `mp:condition-broadcast` `mp:condition-name` `mp:condition-variable-p` `mp:interrupt-thread` `mp:destroy-thread` |
 | Sockets | `ext:open-tcp-stream` |
 | FFI | `ffi:make-foreign-pointer` `ffi:foreign-pointer-address` `ffi:foreign-pointer-p` `ffi:null-pointer-p` `ffi:alloc-foreign` `ffi:free-foreign` `ffi:peek-u32` `ffi:peek-u16` `ffi:peek-u8` `ffi:poke-u32` `ffi:poke-u16` `ffi:poke-u8` `ffi:foreign-string` `ffi:foreign-to-string` `ffi:pointer+` |
 | Amiga | `amiga:open-library` `amiga:close-library` `amiga:call-library` `amiga:alloc-chip` `amiga:free-chip` |
@@ -170,7 +170,7 @@ Phases 1-10 are complete. The system has:
 - Type system: typep, subtypep, coerce, deftype, compound type specifiers
 - Printer control, trace/untrace, time, disassemble, compile, compile-file, describe
 - TCP sockets: `ext:open-tcp-stream` (POSIX BSD sockets, Amiga bsdsocket.library)
-- Threading (MP package): kernel threads with per-thread VM, TLV dynamic bindings, locks, condition variables, stop-the-world GC coordination
+- Threading (MP package): kernel threads with per-thread VM, TLV dynamic bindings, locks, named condition variables, interrupt/destroy-thread, type predicates (`threadp`, `lockp`, `condition-variable-p`), stop-the-world GC coordination with safepoint-based interruption
 - FFI (Foreign Function Interface): TYPE_FOREIGN_POINTER, peek/poke memory access, foreign string conversion, platform-independent `FFI` package
 - AmigaOS native API (`AMIGA` package): register-based library call dispatch via 68k asm trampoline, chip memory allocation, `defcstruct` for C struct access
 - AmigaOS GUI libraries (loaded on demand via `require`, zero binary impact):
@@ -241,7 +241,7 @@ Phases 1-10 are complete. The system has:
 ### TODO
 
 - **CAS (compare-and-swap)** — atomic CAS primitive for lock-free data structures; on Amiga can possibly stay with lock-based implementation due to cooperative multitasking / `Forbid()`/`Permit()` semantics
-- **Full bordeaux-threads support** — named condition variables (`mp:make-condition-variable` needs `&optional name` parameter), plus any remaining bordeaux-threads API gaps
+- **Full bordeaux-threads support** — remaining gaps: semaphores (`make-semaphore`, `signal-semaphore`, `wait-on-semaphore`), atomic integers, `with-timeout`, `*default-special-bindings*`
 
 ## Project Structure
 
