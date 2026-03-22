@@ -488,7 +488,9 @@ static CL_Obj find_keyword_arg(CL_Obj *args, int n, int start, CL_Obj keyword)
 }
 
 /* Coerce pathname designator to a CL string object, modifying *arg in place.
-   Returns the C string data pointer, or NULL if not a valid designator. */
+   Returns the C string data pointer, or NULL if not a valid designator.
+   Per CL spec, pathname designators include strings, pathnames, and
+   file streams (which use the pathname associated with the stream). */
 static const char *coerce_to_filename(CL_Obj *arg)
 {
     if (CL_PATHNAME_P(*arg)) {
@@ -496,6 +498,15 @@ static const char *coerce_to_filename(CL_Obj *arg)
         extern const char *cl_coerce_to_namestring(CL_Obj, char *, uint32_t);
         cl_coerce_to_namestring(*arg, ns_buf, sizeof(ns_buf));
         *arg = cl_make_string(ns_buf, (uint32_t)strlen(ns_buf));
+    }
+    /* File streams are pathname designators — extract stored pathname */
+    if (CL_STREAM_P(*arg)) {
+        CL_Stream *st = (CL_Stream *)CL_OBJ_TO_PTR(*arg);
+        if (st->stream_type == CL_STREAM_FILE && CL_STRING_P(st->string_buf)) {
+            *arg = st->string_buf;
+        } else {
+            return NULL;
+        }
     }
     if (!CL_STRING_P(*arg)) return NULL;
     /* Expand leading ~ to home directory */
@@ -635,6 +646,7 @@ static CL_Obj bi_open(CL_Obj *args, int n)
     stream = cl_make_stream(stream_dir, CL_STREAM_FILE);
     st = (CL_Stream *)CL_OBJ_TO_PTR(stream);
     st->handle_id = (uint32_t)fh;
+    st->string_buf = args[0];  /* Store pathname string for probe-file/pathname */
 
     return stream;
 }
@@ -775,6 +787,7 @@ static CL_Obj bi_file_write_date(CL_Obj *args, int n)
 static CL_Obj bi_directory(CL_Obj *args, int n)
 {
     const char *pattern;
+    char adjusted_pattern[1024];
     char **entries;
     int count, i;
     CL_Obj result = CL_NIL;
@@ -783,6 +796,22 @@ static CL_Obj bi_directory(CL_Obj *args, int n)
     pattern = coerce_to_filename(&args[0]);
     if (!pattern)
         cl_error(CL_ERR_TYPE, "DIRECTORY: argument must be a pathname designator");
+
+    /* CL wildcard *.*  means "any name, any type (including no type)".
+       POSIX glob *.*  only matches names containing a dot.
+       Detect trailing *.* and replace with just * so glob matches everything. */
+    {
+        size_t plen = strlen(pattern);
+        if (plen >= 3 &&
+            pattern[plen - 1] == '*' && pattern[plen - 2] == '.' &&
+            pattern[plen - 3] == '*') {
+            if (plen - 3 < sizeof(adjusted_pattern)) {
+                memcpy(adjusted_pattern, pattern, plen - 2);
+                adjusted_pattern[plen - 2] = '\0';
+                pattern = adjusted_pattern;
+            }
+        }
+    }
 
     entries = platform_directory(pattern, &count);
     if (!entries) return CL_NIL;

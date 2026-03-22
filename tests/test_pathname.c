@@ -1,5 +1,6 @@
 #include "test.h"
 #include <stdlib.h>
+#include <stdio.h>
 #include "core/types.h"
 #include "core/mem.h"
 #include "core/error.h"
@@ -522,6 +523,99 @@ TEST(tilde_open_read_works)
     ASSERT_STR_EQ(result, "\"tilde-ok\"");
 }
 
+/* --- Wildcard pathname tests --- */
+
+TEST(wild_namestring_name_type)
+{
+    ASSERT_STR_EQ(eval_print("(namestring (make-pathname :name :wild :type :wild))"),
+                  "\"*.*\"");
+}
+
+TEST(wild_namestring_name_only)
+{
+    ASSERT_STR_EQ(eval_print("(namestring (make-pathname :name :wild))"),
+                  "\"*\"");
+}
+
+TEST(wild_namestring_merged)
+{
+    ASSERT_STR_EQ(eval_print(
+        "(namestring (merge-pathnames (make-pathname :name :wild :type :wild) #P\"/tmp/dir/\"))"),
+        "\"/tmp/dir/*.*\"");
+}
+
+TEST(wild_parse_name)
+{
+    ASSERT_STR_EQ(eval_print("(pathname-name #P\"*.*\")"), ":WILD");
+}
+
+TEST(wild_parse_type)
+{
+    ASSERT_STR_EQ(eval_print("(pathname-type #P\"*.*\")"), ":WILD");
+}
+
+TEST(wild_parse_name_only)
+{
+    ASSERT_STR_EQ(eval_print("(pathname-name #P\"*\")"), ":WILD");
+}
+
+TEST(wild_parse_dir_component)
+{
+    ASSERT_STR_EQ(eval_print("(second (pathname-directory #P\"/*/foo\"))"), ":WILD");
+}
+
+TEST(wild_pathname_p_true)
+{
+    ASSERT_STR_EQ(eval_print("(wild-pathname-p (make-pathname :name :wild))"), "T");
+}
+
+TEST(wild_pathname_p_false)
+{
+    ASSERT_STR_EQ(eval_print("(wild-pathname-p #P\"foo.lisp\")"), "NIL");
+}
+
+TEST(wild_pathname_p_field_name)
+{
+    ASSERT_STR_EQ(eval_print(
+        "(wild-pathname-p (make-pathname :name :wild :type :wild) :name)"), "T");
+}
+
+TEST(wild_pathname_p_field_type)
+{
+    ASSERT_STR_EQ(eval_print(
+        "(wild-pathname-p (make-pathname :name :wild :type :wild) :type)"), "T");
+}
+
+TEST(wild_pathname_p_field_dir)
+{
+    ASSERT_STR_EQ(eval_print("(wild-pathname-p #P\"/*/foo\" :directory)"), "T");
+}
+
+TEST(wild_namestring_roundtrip)
+{
+    ASSERT_STR_EQ(eval_print("(namestring #P\"*.*\")"), "\"*.*\"");
+}
+
+TEST(wild_directory_lists_dirs)
+{
+    /* Ensure directory with *.* pattern returns both files and dirs */
+    const char *result;
+    /* Create test structure */
+    eval_print("(ensure-directories-exist #P\"/tmp/cl-wild-test/sub/\")");
+    platform_file_delete("/tmp/cl-wild-test/f.txt");
+    {
+        FILE *f = fopen("/tmp/cl-wild-test/f.txt", "w");
+        if (f) { fprintf(f, "hi"); fclose(f); }
+    }
+    result = eval_print(
+        "(let ((entries (directory (merge-pathnames (make-pathname :name :wild :type :wild)"
+        " #P\"/tmp/cl-wild-test/\"))))"
+        "  (list (> (length entries) 0)"
+        "    (some (lambda (e) (not (or (pathname-name e) (pathname-type e)))) entries)))");
+    /* Should find at least one entry, and at least one directory */
+    ASSERT_STR_EQ(result, "(T T)");
+}
+
 /* --- Run all tests --- */
 
 int main(void)
@@ -602,6 +696,20 @@ int main(void)
     RUN(tilde_user_not_expanded);
     RUN(tilde_probe_file_works);
     RUN(tilde_open_read_works);
+    RUN(wild_namestring_name_type);
+    RUN(wild_namestring_name_only);
+    RUN(wild_namestring_merged);
+    RUN(wild_parse_name);
+    RUN(wild_parse_type);
+    RUN(wild_parse_name_only);
+    RUN(wild_parse_dir_component);
+    RUN(wild_pathname_p_true);
+    RUN(wild_pathname_p_false);
+    RUN(wild_pathname_p_field_name);
+    RUN(wild_pathname_p_field_type);
+    RUN(wild_pathname_p_field_dir);
+    RUN(wild_namestring_roundtrip);
+    RUN(wild_directory_lists_dirs);
 
     teardown();
     REPORT();

@@ -145,10 +145,17 @@ CL_Obj cl_parse_namestring(const char *str, uint32_t len)
             const char *comp_start = dp;
             while (dp < end && dp <= dir_end && *dp != '/') dp++;
             if (dp > comp_start) {
-                CL_Obj comp = cl_make_string(comp_start, (uint32_t)(dp - comp_start));
-                CL_Obj cell = cl_cons(comp, CL_NIL);
-                ((CL_Cons *)CL_OBJ_TO_PTR(dir_tail))->cdr = cell;
-                dir_tail = cell;
+                CL_Obj comp;
+                uint32_t clen = (uint32_t)(dp - comp_start);
+                if (clen == 1 && *comp_start == '*')
+                    comp = KW_WILD;
+                else
+                    comp = cl_make_string(comp_start, clen);
+                {
+                    CL_Obj cell = cl_cons(comp, CL_NIL);
+                    ((CL_Cons *)CL_OBJ_TO_PTR(dir_tail))->cdr = cell;
+                    dir_tail = cell;
+                }
             }
             if (dp < end && *dp == '/') dp++;
         }
@@ -179,12 +186,24 @@ CL_Obj cl_parse_namestring(const char *str, uint32_t len)
             }
         }
         if (dot && dot > filename) {
-            pn_name = cl_make_string(filename, (uint32_t)(dot - filename));
-            if (dot + 1 < end)
-                pn_type = cl_make_string(dot + 1, (uint32_t)(end - dot - 1));
+            uint32_t nlen = (uint32_t)(dot - filename);
+            if (nlen == 1 && *filename == '*')
+                pn_name = KW_WILD;
+            else
+                pn_name = cl_make_string(filename, nlen);
+            if (dot + 1 < end) {
+                uint32_t tlen = (uint32_t)(end - dot - 1);
+                if (tlen == 1 && *(dot + 1) == '*')
+                    pn_type = KW_WILD;
+                else
+                    pn_type = cl_make_string(dot + 1, tlen);
+            }
         } else if (flen > 0) {
             /* No extension */
-            pn_name = cl_make_string(filename, flen);
+            if (flen == 1 && *filename == '*')
+                pn_name = KW_WILD;
+            else
+                pn_name = cl_make_string(filename, flen);
         }
     }
 
@@ -236,7 +255,9 @@ uint32_t cl_pathname_to_namestring(CL_Pathname *pn, char *buf, uint32_t bufsz)
 
         while (!CL_NULL_P(rest)) {
             CL_Obj comp = cl_car(rest);
-            if (CL_STRING_P(comp)) {
+            if (comp == KW_WILD) {
+                EMIT_CHAR('*');
+            } else if (CL_STRING_P(comp)) {
                 CL_String *cs = (CL_String *)CL_OBJ_TO_PTR(comp);
                 EMIT_STR(cs->data, cs->length);
             }
@@ -247,13 +268,18 @@ uint32_t cl_pathname_to_namestring(CL_Pathname *pn, char *buf, uint32_t bufsz)
     }
 
     /* Name */
-    if (!COMP_EMPTY(pn->name) && CL_STRING_P(pn->name)) {
+    if (pn->name == KW_WILD) {
+        EMIT_CHAR('*');
+    } else if (!COMP_EMPTY(pn->name) && CL_STRING_P(pn->name)) {
         CL_String *nm = (CL_String *)CL_OBJ_TO_PTR(pn->name);
         EMIT_STR(nm->data, nm->length);
     }
 
     /* Type (with dot) */
-    if (!COMP_EMPTY(pn->type) && CL_STRING_P(pn->type)) {
+    if (pn->type == KW_WILD) {
+        EMIT_CHAR('.');
+        EMIT_CHAR('*');
+    } else if (!COMP_EMPTY(pn->type) && CL_STRING_P(pn->type)) {
         CL_String *tp = (CL_String *)CL_OBJ_TO_PTR(pn->type);
         EMIT_CHAR('.');
         EMIT_STR(tp->data, tp->length);
@@ -686,11 +712,47 @@ static CL_Obj bi_user_homedir_pathname(CL_Obj *args, int n)
     }
 }
 
-/* wild-pathname-p — we don't support wildcards, always returns NIL */
+/* wild-pathname-p — check for :WILD components */
 static CL_Obj bi_wild_pathname_p(CL_Obj *args, int n)
 {
-    CL_UNUSED(args);
-    CL_UNUSED(n);
+    CL_Obj pn_obj = coerce_to_pathname(args[0]);
+    CL_Pathname *pn = (CL_Pathname *)CL_OBJ_TO_PTR(pn_obj);
+    CL_Obj field = (n >= 2 && !CL_NULL_P(args[1])) ? args[1] : CL_NIL;
+
+    if (!CL_NULL_P(field)) {
+        /* Check specific field */
+        CL_Obj val = CL_NIL;
+        if (field == KW_NAME)           val = pn->name;
+        else if (field == KW_TYPE)      val = pn->type;
+        else if (field == KW_DIRECTORY) {
+            /* Check all directory components */
+            if (CL_CONS_P(pn->directory)) {
+                CL_Obj d = cl_cdr(pn->directory);
+                while (CL_CONS_P(d)) {
+                    if (cl_car(d) == KW_WILD) return CL_T;
+                    d = cl_cdr(d);
+                }
+            }
+            return CL_NIL;
+        }
+        else if (field == KW_HOST)      val = pn->host;
+        else if (field == KW_DEVICE)    val = pn->device;
+        else if (field == KW_VERSION)   val = pn->version;
+        return (val == KW_WILD) ? CL_T : CL_NIL;
+    }
+
+    /* Check all components */
+    if (pn->name == KW_WILD || pn->type == KW_WILD ||
+        pn->host == KW_WILD || pn->device == KW_WILD ||
+        pn->version == KW_WILD)
+        return CL_T;
+    if (CL_CONS_P(pn->directory)) {
+        CL_Obj d = cl_cdr(pn->directory);
+        while (CL_CONS_P(d)) {
+            if (cl_car(d) == KW_WILD) return CL_T;
+            d = cl_cdr(d);
+        }
+    }
     return CL_NIL;
 }
 
