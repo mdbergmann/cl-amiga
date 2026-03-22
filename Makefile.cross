@@ -13,6 +13,7 @@ BUILDDIR = build/cross
 # Source files
 PLATFORM_SRC = $(SRCDIR)/platform/platform_amiga.c \
                $(SRCDIR)/platform/platform_thread_amiga.c
+PLATFORM_ASM = $(SRCDIR)/platform/ffi_dispatch_m68k.s
 CORE_SRC     = $(SRCDIR)/core/types.c \
                $(SRCDIR)/core/mem.c \
                $(SRCDIR)/core/error.c \
@@ -63,7 +64,8 @@ CORE_SRC     = $(SRCDIR)/core/types.c \
 MAIN_SRC     = $(SRCDIR)/main.c
 
 ALL_SRCS = $(MAIN_SRC) $(PLATFORM_SRC) $(CORE_SRC)
-ALL_OBJS = $(patsubst $(SRCDIR)/%.c,$(BUILDDIR)/%.o,$(ALL_SRCS))
+ALL_OBJS = $(patsubst $(SRCDIR)/%.c,$(BUILDDIR)/%.o,$(ALL_SRCS)) \
+           $(patsubst $(SRCDIR)/%.s,$(BUILDDIR)/%.o,$(PLATFORM_ASM))
 
 .PHONY: amiga test-amiga clean
 
@@ -76,6 +78,10 @@ $(BUILDDIR)/clamiga: $(ALL_OBJS)
 $(BUILDDIR)/%.o: $(SRCDIR)/%.c
 	@mkdir -p $(dir $@)
 	$(CC) $(CFLAGS) -I$(SRCDIR) -c -o $@ $<
+
+$(BUILDDIR)/%.o: $(SRCDIR)/%.s
+	@mkdir -p $(dir $@)
+	$(CC) -mcpu=68020 -c -o $@ $<
 
 # Cross-compile, place binary, launch FS-UAE for testing
 # The boot script tries vbcc build (fails without vbcc), then runs the pre-placed binary
