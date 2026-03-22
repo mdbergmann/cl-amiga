@@ -1800,6 +1800,11 @@ void cl_bignum_init(void)
     def_const("BOOLE-ORC1",  10, 14, &SYM_BOOLE_ORC1);
     def_const("BOOLE-ORC2",  10, 15, &SYM_BOOLE_ORC2);
 
+    /* Array limit constants (CL spec minimums: rank>=8, dim>=1024, total>=1024) */
+    def_const("ARRAY-RANK-LIMIT", 16, 256, NULL);
+    def_const("ARRAY-DIMENSION-LIMIT", 21, (1 << 20), NULL);    /* ~1M elements per dim */
+    def_const("ARRAY-TOTAL-SIZE-LIMIT", 22, (1 << 20), NULL);   /* ~1M total elements */
+
     /* CHAR-CODE-LIMIT — upper exclusive bound on char-code values */
 #ifdef CL_WIDE_STRINGS
     /* Full Unicode range: U+0000 to U+10FFFF (1114112 values) */

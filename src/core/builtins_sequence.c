@@ -6,6 +6,7 @@
 #include "vm.h"
 #include "../platform/platform.h"
 #include <string.h>
+#include <stdio.h>
 
 /* Helper to register a builtin */
 static void defun(const char *name, CL_CFunc func, int min, int max)
