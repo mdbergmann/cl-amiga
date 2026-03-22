@@ -32,7 +32,11 @@
    "+WFLG-GIMMEZEROZERO+" "+WFLG-REPORTMOUSE+" "+WFLG-RMBTRAP+"
    ;; Tag constants
    "+WA-LEFT+" "+WA-TOP+" "+WA-WIDTH+" "+WA-HEIGHT+"
-   "+WA-TITLE+" "+WA-IDCMP+" "+WA-FLAGS+" "+WA-CUSTOMSCREEN+"))
+   "+WA-TITLE+" "+WA-IDCMP+" "+WA-FLAGS+" "+WA-CUSTOMSCREEN+"
+   "+WA-GADGETS+"
+   ;; Menu/gadget list
+   "SET-MENU-STRIP" "CLEAR-MENU-STRIP"
+   "ADD-GADGET-LIST" "REFRESH-GADGET-LIST"))
 
 (in-package "AMIGA.INTUITION")
 
@@ -54,6 +58,10 @@
 (defconstant +lvo-close-screen+         -66)
 (defconstant +lvo-open-window-tag-list+ -606)
 (defconstant +lvo-open-screen-tag-list+ -612)
+(defconstant +lvo-set-menu-strip+      -264)
+(defconstant +lvo-clear-menu-strip+     -54)
+(defconstant +lvo-add-g-list+          -438)
+(defconstant +lvo-refresh-g-list+      -432)
 
 ;;; Exec LVOs for message handling
 (defvar *exec-base* (ffi:make-foreign-pointer 4))  ; ExecBase at absolute addr 4
@@ -75,7 +83,7 @@
 (defconstant +idcmp-menupick+       #x00000100)
 (defconstant +idcmp-closewindow+    #x00000200)
 (defconstant +idcmp-rawkey+         #x00000400)
-(defconstant +idcmp-vanillakey+     #x00000200000)
+(defconstant +idcmp-vanillakey+     #x00200000)
 
 ;;; ================================================================
 ;;; Window flag constants
@@ -107,6 +115,7 @@
 (defconstant +wa-flags+       (+ +tag-user+ #x08))
 (defconstant +wa-title+       (+ +tag-user+ #x0B))
 (defconstant +wa-customscreen+ (+ +tag-user+ #x0F))
+(defconstant +wa-gadgets+      (+ +tag-user+ #x0E))
 
 ;;; ================================================================
 ;;; Struct layouts
@@ -271,6 +280,35 @@ Example:
                               (declare (ignorable ,msg-var))
                               ,@body))))
                       clauses))))))))))
+
+;;; ================================================================
+;;; Menu strip and gadget list management
+;;; ================================================================
+
+(defun set-menu-strip (window menu)
+  "Attach a menu strip to a window."
+  (amiga:call-library *intuition-base* +lvo-set-menu-strip+
+                      (list :a0 window :a1 menu)))
+
+(defun clear-menu-strip (window)
+  "Remove the menu strip from a window."
+  (amiga:call-library *intuition-base* +lvo-clear-menu-strip+
+                      (list :a0 window)))
+
+(defun add-gadget-list (window gadget-list)
+  "Add a gadget list to a window. Returns position."
+  (amiga:call-library *intuition-base* +lvo-add-g-list+
+                      (list :a0 window :a1 gadget-list
+                            :d0 -1  ; position = end
+                            :d1 -1  ; numgad = all
+                            :a2 (ffi:make-foreign-pointer 0))))  ; requester = NULL
+
+(defun refresh-gadget-list (window gadget-list)
+  "Refresh all gadgets in the list."
+  (amiga:call-library *intuition-base* +lvo-refresh-g-list+
+                      (list :a0 gadget-list :a1 window
+                            :a2 (ffi:make-foreign-pointer 0)  ; requester = NULL
+                            :d0 -1)))  ; numgad = all
 
 ;;; ================================================================
 ;;; Provide module
