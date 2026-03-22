@@ -1042,7 +1042,10 @@ when the param has no explicit default.  CL spec 3.4.6 requires this."
        (if ie-p
            (make-array size :initial-element initial-element)
            (make-array size)))
-      ((string= tname "STRING")
+      ((or (string= tname "STRING")
+           (string= tname "SIMPLE-STRING")
+           (string= tname "BASE-STRING")
+           (string= tname "SIMPLE-BASE-STRING"))
        (if ie-p
            (make-string size :initial-element initial-element)
            (make-string size)))
