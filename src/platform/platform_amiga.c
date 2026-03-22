@@ -880,10 +880,6 @@ void platform_ffi_poke8(uint32_t handle, uint32_t offset, uint8_t val)
  * Amiga-specific FFI: shared library calls
  * ============================================================= */
 
-/* Library handle table (maps to opened library bases) */
-#define FFI_LIB_TABLE_SIZE 32
-static struct Library *ffi_lib_table[FFI_LIB_TABLE_SIZE];
-
 uint32_t platform_amiga_open_library(const char *name, uint32_t version)
 {
     struct Library *lib = OpenLibrary((CONST_STRPTR)name, (ULONG)version);
@@ -897,20 +893,8 @@ void platform_amiga_close_library(uint32_t lib_base)
     CloseLibrary((struct Library *)lib_base);
 }
 
-/* Register-based library call dispatch.
- * This is a placeholder — the real implementation for m68k will be
- * in ffi_dispatch_m68k.s (assembly).  For now, use a C approximation
- * that works for functions with simple calling conventions. */
-uint32_t platform_amiga_call(uint32_t lib_base, int16_t offset,
-                              uint32_t *regs, uint16_t reg_mask)
-{
-    /* TODO: Replace with assembly trampoline (ffi_dispatch_m68k.s)
-     * that properly loads d0-d7/a0-a5 from regs[] per reg_mask
-     * and does jsr offset(a6). */
-    (void)regs; (void)reg_mask;
-    (void)lib_base; (void)offset;
-    return 0;
-}
+/* platform_amiga_call() is implemented in ffi_dispatch_m68k.s
+ * (68k assembly trampoline for register-based library calls) */
 
 uint32_t platform_amiga_alloc_chip(uint32_t size)
 {
