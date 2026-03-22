@@ -36,7 +36,9 @@
    "+WA-GADGETS+"
    ;; Menu/gadget list
    "SET-MENU-STRIP" "CLEAR-MENU-STRIP"
-   "ADD-GADGET-LIST" "REFRESH-GADGET-LIST"))
+   "ADD-GADGET-LIST" "REFRESH-GADGET-LIST"
+   ;; Public screens
+   "LOCK-PUB-SCREEN" "UNLOCK-PUB-SCREEN" "WITH-PUB-SCREEN"))
 
 (in-package "AMIGA.INTUITION")
 
@@ -62,6 +64,8 @@
 (defconstant +lvo-clear-menu-strip+     -54)
 (defconstant +lvo-add-g-list+          -438)
 (defconstant +lvo-refresh-g-list+      -432)
+(defconstant +lvo-lock-pub-screen+     -510)
+(defconstant +lvo-unlock-pub-screen+   -516)
 
 ;;; Exec LVOs for message handling
 (defvar *exec-base* (ffi:make-foreign-pointer 4))  ; ExecBase at absolute addr 4
@@ -309,6 +313,36 @@ Example:
                       (list :a0 gadget-list :a1 window
                             :a2 (ffi:make-foreign-pointer 0)  ; requester = NULL
                             :d0 -1)))  ; numgad = all
+
+;;; ================================================================
+;;; Public screen management
+;;; ================================================================
+
+(defun lock-pub-screen (&optional name)
+  "Lock a public screen by name (NIL = default/Workbench).
+Returns a foreign pointer to the Screen, or NIL."
+  (let ((result (amiga:call-library *intuition-base* +lvo-lock-pub-screen+
+                                    (list :a0 (if name
+                                                  (ffi:foreign-string name)
+                                                  (ffi:make-foreign-pointer 0))))))
+    (if (zerop result) nil (ffi:make-foreign-pointer result))))
+
+(defun unlock-pub-screen (screen &optional name)
+  "Unlock a previously locked public screen."
+  (amiga:call-library *intuition-base* +lvo-unlock-pub-screen+
+                      (list :a0 (if name
+                                    (ffi:foreign-string name)
+                                    (ffi:make-foreign-pointer 0))
+                            :a1 screen)))
+
+(defmacro with-pub-screen ((var &optional name) &body body)
+  "Lock a public screen, bind to VAR, unlock on exit."
+  `(let ((,var (lock-pub-screen ,name)))
+     (unless ,var
+       (error "Cannot lock public screen ~A" ,(or name "default")))
+     (unwind-protect
+       (progn ,@body)
+       (unlock-pub-screen ,var ,name))))
 
 ;;; ================================================================
 ;;; Provide module
