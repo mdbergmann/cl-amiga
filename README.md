@@ -158,14 +158,14 @@ When the abstractions aren't enough, drop to raw library calls:
 - **Memory-efficient** — bump allocator with free-list fallback, mark-and-sweep GC; designed for 68020 @ 14 MHz with 8 MB RAM
 - **Platform abstraction** — all OS calls go through `platform.h` (POSIX and AmigaOS implementations)
 - **FFI** — generic foreign pointer type + peek/poke (all platforms); 68k assembly trampoline for AmigaOS register-based library calls
-- **Threading** (MP package) — kernel threads, per-thread dynamic bindings (TLV), locks, condition variables, stop-the-world GC; POSIX pthreads and AmigaOS processes/SignalSemaphores
+- **Threading** (MP package) — kernel threads, per-thread dynamic bindings (TLV), locks, named condition variables, thread interruption/destruction, type predicates; stop-the-world GC with safepoints; POSIX pthreads and AmigaOS processes/SignalSemaphores
 - **TCP networking** — BSD sockets (POSIX) and bsdsocket.library (AmigaOS)
 
 ## Known Limitations and Future Work
 
 - **Alpha status** — the core language works well enough to run real CL libraries, but many corners of the ANSI CL spec remain unimplemented (broadcast/two-way streams, logical pathnames, `multiple-value-call`, some `defstruct` options, full CLOS MOP)
 - **Amiga GUI bindings are incomplete** — the Intuition/Graphics/GadTools abstractions cover common use cases (windows, drawing, gadgets, menus) but not the full API surface; more libraries (ASL requesters, Layers, Commodities) are not yet wrapped
-- **Threading** — basic MP package works (threads, locks, condvars); no bordeaux-threads compatibility layer yet
+- **Threading** — MP package covers core bordeaux-threads API (threads, locks, named condvars, interrupt/destroy-thread, type predicates); some gaps remain (semaphores, atomic integers, `with-timeout`)
 - **Buffered socket I/O** — network streams currently use byte-at-a-time recv/send, making Quicklisp downloads on Amiga very slow
 - **ANSI CL gaps** — while major subsystems work (CLOS, conditions, packages, the full numeric tower, arrays, pathnames, streams, loop, format), some corners of the spec remain unimplemented
 
