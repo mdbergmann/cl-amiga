@@ -255,6 +255,21 @@ CL_Obj cl_make_string(const char *str, uint32_t len)
     return CL_PTR_TO_OBJ(s);
 }
 
+#ifdef CL_WIDE_STRINGS
+CL_Obj cl_make_wide_string(const uint32_t *chars, uint32_t len)
+{
+    uint32_t alloc_size = sizeof(CL_WideString) + len * sizeof(uint32_t);
+    CL_WideString *s = (CL_WideString *)cl_alloc(TYPE_WIDE_STRING, alloc_size);
+    if (!s) return CL_NIL;
+    s->length = len;
+    if (chars)
+        memcpy(s->data, chars, len * sizeof(uint32_t));
+    else
+        memset(s->data, 0, len * sizeof(uint32_t));
+    return CL_PTR_TO_OBJ(s);
+}
+#endif
+
 CL_Obj cl_make_symbol(CL_Obj name)
 {
     CL_Symbol *sym;
@@ -749,6 +764,9 @@ static void gc_mark_children(void *ptr, uint8_t type)
     case TYPE_DOUBLE_FLOAT:
     case TYPE_RANDOM_STATE:
     case TYPE_BIT_VECTOR:
+#ifdef CL_WIDE_STRINGS
+    case TYPE_WIDE_STRING:
+#endif
         /* No children — raw numeric/state data */
         break;
     default:

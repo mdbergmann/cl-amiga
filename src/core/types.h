@@ -102,6 +102,9 @@ enum CL_ObjType {
     TYPE_LOCK,
     TYPE_CONDVAR,
     TYPE_FOREIGN_POINTER
+#ifdef CL_WIDE_STRINGS
+    , TYPE_WIDE_STRING
+#endif
 };
 
 /* Header access macros */
@@ -158,6 +161,26 @@ typedef struct {
 } CL_String;
 
 #define CL_STRING_P(obj) (CL_HEAP_P(obj) && CL_HDR_TYPE(CL_OBJ_TO_PTR(obj)) == TYPE_STRING)
+
+#ifdef CL_WIDE_STRINGS
+/* --- Wide String (UTF-32, 4 bytes per character) --- */
+
+typedef struct {
+    CL_Header hdr;
+    uint32_t length;       /* Character count */
+    uint32_t data[];       /* Code points (flexible array) */
+} CL_WideString;
+
+#define CL_WIDE_STRING_P(obj) \
+    (CL_HEAP_P(obj) && CL_HDR_TYPE(CL_OBJ_TO_PTR(obj)) == TYPE_WIDE_STRING)
+
+/* True for any string type (base or wide) */
+#define CL_ANY_STRING_P(obj) (CL_STRING_P(obj) || CL_WIDE_STRING_P(obj))
+
+#else
+/* No wide string support — CL_ANY_STRING_P is just CL_STRING_P */
+#define CL_ANY_STRING_P(obj)  CL_STRING_P(obj)
+#endif /* CL_WIDE_STRINGS */
 
 /* --- Function (built-in C function) --- */
 

@@ -54,67 +54,6 @@ static void repl_continuation_prompt(void)
     cl_color_reset();
 }
 
-/* Try to load boot.lisp from known locations */
-static void load_boot_file(void)
-{
-    /* Paths to try, in order */
-    static const char *paths[] = {
-        "lib/boot.lisp",
-#ifdef PLATFORM_AMIGA
-        "PROGDIR:lib/boot.lisp",
-#endif
-        NULL
-    };
-    int i;
-
-    for (i = 0; paths[i] != NULL; i++) {
-        unsigned long size;
-        char *buf = platform_file_read(paths[i], &size);
-        if (buf) {
-            const char *prev_file = cl_current_source_file;
-            uint16_t prev_file_id = cl_current_file_id;
-            int prev_line = cl_reader_get_line();
-            CL_Obj stream;
-            cl_current_source_file = paths[i];
-            cl_current_file_id++;
-            cl_reader_reset_line();
-
-            /* Use C-buffer stream — file content stays outside GC arena */
-            stream = cl_make_cbuf_input_stream(buf, (uint32_t)size);
-            CL_GC_PROTECT(stream);
-
-            for (;;) {
-                CL_Obj expr, bytecode;
-                int err;
-
-                expr = cl_read_from_stream(stream);
-                if (cl_reader_eof()) break;
-
-                err = CL_CATCH();
-                if (err == CL_ERR_NONE) {
-                    CL_GC_PROTECT(expr);
-                    bytecode = cl_compile(expr);
-                    CL_GC_UNPROTECT(1);
-                    if (!CL_NULL_P(bytecode))
-                        cl_vm_eval(bytecode);
-                    CL_UNCATCH();
-                } else {
-                    CL_UNCATCH();
-                }
-            }
-
-            CL_GC_UNPROTECT(1);
-            cl_stream_close(stream);
-            platform_free(buf);
-            cl_current_source_file = prev_file;
-            cl_current_file_id = prev_file_id;
-            cl_reader_set_line(prev_line);
-            return;  /* Loaded successfully, stop trying */
-        }
-    }
-    /* If no boot file found, silently continue */
-}
-
 /* Load a file by path (C string). Used by --load and --script. */
 void cl_load_file(const char *path)
 {
@@ -710,27 +649,64 @@ void cl_repl_init_no_userinit(int no_userinit)
         lv->value = CL_NIL;
     }
 
-    /* Load boot — try pre-compiled FASL first, fall back to source */
+    /* Load boot — try pre-compiled FASL first, fall back to source.
+       Skip stale FASLs (source newer than FASL) and recompile after
+       loading from source so the next startup is fast. */
     {
-        static const char *boot_paths[] = {
-            "(load \"lib/boot.fasl\")",
-            "(load \"lib/boot.lisp\")",
+        static const char *fasl_src_pairs[][2] = {
+            { "lib/boot.fasl", "lib/boot.lisp" },
 #ifdef PLATFORM_AMIGA
-            "(load \"PROGDIR:lib/boot.fasl\")",
-            "(load \"PROGDIR:lib/boot.lisp\")",
+            { "PROGDIR:lib/boot.fasl", "PROGDIR:lib/boot.lisp" },
 #endif
-            NULL
         };
         int boot_loaded = 0;
         int bi;
-        for (bi = 0; boot_paths[bi] != NULL; bi++) {
-            int err = CL_CATCH();
-            if (err == CL_ERR_NONE) {
-                cl_eval_string(boot_paths[bi]);
-                boot_loaded = 1;
+        int npairs = (int)(sizeof(fasl_src_pairs) / sizeof(fasl_src_pairs[0]));
+
+        for (bi = 0; bi < npairs && !boot_loaded; bi++) {
+            const char *fasl_path = fasl_src_pairs[bi][0];
+            const char *src_path  = fasl_src_pairs[bi][1];
+            int fasl_fresh = 0;
+
+            /* Try FASL if it exists and is not stale */
+            if (platform_file_exists(fasl_path)) {
+                uint32_t fasl_mt = platform_file_mtime(fasl_path);
+                uint32_t src_mt  = platform_file_mtime(src_path);
+                if (fasl_mt > 0 && fasl_mt >= src_mt) {
+                    int err = CL_CATCH();
+                    if (err == CL_ERR_NONE) {
+                        char cmd[256];
+                        snprintf(cmd, sizeof(cmd), "(load \"%s\")", fasl_path);
+                        cl_eval_string(cmd);
+                        boot_loaded = 1;
+                        fasl_fresh = 1;
+                    }
+                    CL_UNCATCH();
+                }
+            }
+
+            /* Fall back to source */
+            if (!boot_loaded && platform_file_exists(src_path)) {
+                int err = CL_CATCH();
+                if (err == CL_ERR_NONE) {
+                    char cmd[256];
+                    snprintf(cmd, sizeof(cmd), "(load \"%s\")", src_path);
+                    cl_eval_string(cmd);
+                    boot_loaded = 1;
+                }
                 CL_UNCATCH();
-                break;
-            } else {
+            }
+
+            /* Recompile FASL if we loaded from source */
+            if (boot_loaded && !fasl_fresh) {
+                int err = CL_CATCH();
+                if (err == CL_ERR_NONE) {
+                    char cmd[512];
+                    snprintf(cmd, sizeof(cmd),
+                        "(compile-file \"%s\" :output-file \"%s\")",
+                        src_path, fasl_path);
+                    cl_eval_string(cmd);
+                }
                 CL_UNCATCH();
             }
         }

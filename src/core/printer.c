@@ -864,6 +864,44 @@ static void print_obj(CL_Obj obj)
         print_string(obj);
         break;
 
+#ifdef CL_WIDE_STRINGS
+    case TYPE_WIDE_STRING: {
+        CL_WideString *ws = (CL_WideString *)CL_OBJ_TO_PTR(obj);
+        if (print_escape_p() || print_readably_p()) {
+            uint32_t i;
+            out_char('"');
+            for (i = 0; i < ws->length; i++) {
+                uint32_t ch = ws->data[i];
+                if (ch == '"' || ch == '\\') out_char('\\');
+                if (ch == '\n') { out_char('\\'); out_char('n'); continue; }
+                if (ch == '\t') { out_char('\\'); out_char('t'); continue; }
+                if (ch < 128)
+                    out_char((char)ch);
+                else {
+                    /* Print non-ASCII as \uXXXX or \UXXXXXXXX */
+                    char esc[12];
+                    if (ch <= 0xFFFF)
+                        snprintf(esc, sizeof(esc), "\\u%04X", ch);
+                    else
+                        snprintf(esc, sizeof(esc), "\\U%08X", ch);
+                    out_str(esc);
+                }
+            }
+            out_char('"');
+        } else {
+            uint32_t i;
+            for (i = 0; i < ws->length; i++) {
+                uint32_t ch = ws->data[i];
+                if (ch < 128)
+                    out_char((char)ch);
+                else
+                    out_char('?');  /* TODO: UTF-8 output in Phase 2 */
+            }
+        }
+        break;
+    }
+#endif
+
     case TYPE_FUNCTION: {
         CL_Function *f = (CL_Function *)CL_OBJ_TO_PTR(obj);
         out_str("#<FUNCTION ");

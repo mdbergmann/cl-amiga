@@ -52,6 +52,9 @@
 #define FASL_TAG_GENSYM_REF  0x15  /* u16 id: reference to previously defined gensym */
 #define FASL_TAG_PACKAGE     0x16  /* u16 name_len, bytes: package lookup by name */
 #define FASL_TAG_COMPLEX     0x17  /* realpart, imagpart: complex number */
+#ifdef CL_WIDE_STRINGS
+#define FASL_TAG_WIDE_STRING 0x18  /* u32 length, u32[] codepoints */
+#endif
 
 /* Error codes for FASL operations */
 #define FASL_OK              0

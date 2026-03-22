@@ -555,42 +555,67 @@ static CL_Obj bi_register_condition_type(CL_Obj *args, int n)
     return name;
 }
 
+/* Find the parent type of a condition type in the hierarchy.
+ * Must be called under rdlock if MT. */
+static CL_Obj condition_parent_type(CL_Obj type_name)
+{
+    CL_Obj entry = condition_hierarchy;
+    while (!CL_NULL_P(entry)) {
+        CL_Obj pair = cl_car(entry);
+        if (cl_car(pair) == type_name)
+            return cl_car(cl_cdr(pair));
+        entry = cl_cdr(entry);
+    }
+    return CL_NIL;
+}
+
+/* Find initarg keyword for a slot-name in a specific type's slot table.
+ * Must be called under rdlock if MT. */
+static CL_Obj find_slot_initarg(CL_Obj type_name, CL_Obj slot_name)
+{
+    CL_Obj table_entry = condition_slot_table;
+    while (!CL_NULL_P(table_entry)) {
+        CL_Obj entry = cl_car(table_entry);
+        if (cl_car(entry) == type_name) {
+            CL_Obj slot_pairs = cl_cdr(entry);
+            while (!CL_NULL_P(slot_pairs)) {
+                CL_Obj pair = cl_car(slot_pairs);
+                if (cl_car(pair) == slot_name)
+                    return cl_cdr(pair);
+                slot_pairs = cl_cdr(slot_pairs);
+            }
+            break;
+        }
+        table_entry = cl_cdr(table_entry);
+    }
+    return CL_NIL;
+}
+
 /* (condition-slot-value condition slot-name)
  * Look up slot-name in condition_slot_table to find the initarg keyword,
- * then look up that keyword in the condition's slots alist. */
+ * then look up that keyword in the condition's slots alist.
+ * Walks up the type hierarchy to find inherited slots. */
 static CL_Obj bi_condition_slot_value(CL_Obj *args, int n)
 {
     CL_Obj cond_obj = args[0];
     CL_Obj slot_name = args[1];
     CL_Condition *cond;
-    CL_Obj type_name, table_entry, slot_pairs, initarg;
+    CL_Obj cur_type, initarg;
     CL_UNUSED(n);
 
     if (!CL_CONDITION_P(cond_obj))
         cl_error(CL_ERR_TYPE, "CONDITION-SLOT-VALUE: not a condition");
 
     cond = (CL_Condition *)CL_OBJ_TO_PTR(cond_obj);
-    type_name = cond->type_name;
+    cur_type = cond->type_name;
 
-    /* Find initarg under rdlock */
+    /* Search this type and all ancestors for the slot */
     initarg = CL_NIL;
     if (CL_MT()) platform_rwlock_rdlock(cl_tables_rwlock);
-    table_entry = condition_slot_table;
-    while (!CL_NULL_P(table_entry)) {
-        CL_Obj entry = cl_car(table_entry);
-        if (cl_car(entry) == type_name) {
-            slot_pairs = cl_cdr(entry);
-            while (!CL_NULL_P(slot_pairs)) {
-                CL_Obj pair = cl_car(slot_pairs);
-                if (cl_car(pair) == slot_name) {
-                    initarg = cl_cdr(pair);
-                    break;
-                }
-                slot_pairs = cl_cdr(slot_pairs);
-            }
-            break;
-        }
-        table_entry = cl_cdr(table_entry);
+    while (!CL_NULL_P(cur_type) && CL_NULL_P(initarg)) {
+        initarg = find_slot_initarg(cur_type, slot_name);
+        if (CL_NULL_P(initarg))
+            cur_type = condition_parent_type(cur_type);
     }
     if (CL_MT()) platform_rwlock_unlock(cl_tables_rwlock);
 
@@ -606,34 +631,22 @@ static CL_Obj bi_set_condition_slot_value(CL_Obj *args, int n)
     CL_Obj slot_name = args[1];
     CL_Obj value = args[2];
     CL_Condition *cond;
-    CL_Obj type_name, table_entry, slot_pairs, initarg;
+    CL_Obj cur_type, initarg;
     CL_UNUSED(n);
 
     if (!CL_CONDITION_P(cond_obj))
         cl_error(CL_ERR_TYPE, "%SET-CONDITION-SLOT-VALUE: not a condition");
 
     cond = (CL_Condition *)CL_OBJ_TO_PTR(cond_obj);
-    type_name = cond->type_name;
+    cur_type = cond->type_name;
 
-    /* Find initarg for this slot name under rdlock */
+    /* Search this type and all ancestors for the slot */
     initarg = CL_NIL;
     if (CL_MT()) platform_rwlock_rdlock(cl_tables_rwlock);
-    table_entry = condition_slot_table;
-    while (!CL_NULL_P(table_entry)) {
-        CL_Obj entry = cl_car(table_entry);
-        if (cl_car(entry) == type_name) {
-            slot_pairs = cl_cdr(entry);
-            while (!CL_NULL_P(slot_pairs)) {
-                CL_Obj pair = cl_car(slot_pairs);
-                if (cl_car(pair) == slot_name) {
-                    initarg = cl_cdr(pair);
-                    break;
-                }
-                slot_pairs = cl_cdr(slot_pairs);
-            }
-            break;
-        }
-        table_entry = cl_cdr(table_entry);
+    while (!CL_NULL_P(cur_type) && CL_NULL_P(initarg)) {
+        initarg = find_slot_initarg(cur_type, slot_name);
+        if (CL_NULL_P(initarg))
+            cur_type = condition_parent_type(cur_type);
     }
     if (CL_MT()) platform_rwlock_unlock(cl_tables_rwlock);
 
