@@ -343,7 +343,9 @@ char **platform_directory(const char *pattern, int *count_out)
     int i;
 
     *count_out = 0;
-    if (glob(pattern, 0, NULL, &g) != 0) {
+    /* GLOB_MARK appends '/' to directory entries so callers can
+       distinguish directories from files (needed for CL DIRECTORY). */
+    if (glob(pattern, GLOB_MARK, NULL, &g) != 0) {
         return NULL;
     }
     result = (char **)malloc(((size_t)g.gl_pathc + 1) * sizeof(char *));

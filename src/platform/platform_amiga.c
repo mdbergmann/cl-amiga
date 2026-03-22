@@ -546,14 +546,24 @@ char **platform_directory(const char *pattern, int *count_out)
 
     rc = MatchFirst((STRPTR)amiga_pat, ap);
     while (rc == 0) {
-        /* Skip directories — we want files matching the pattern */
-        if (!(ap->ap_Info.fib_DirEntryType > 0)) {
-            if (count >= capacity) {
-                capacity *= 2;
-                result = (char **)realloc(result,
-                             (size_t)(capacity + 1) * sizeof(char *));
-                if (!result) break;
+        if (count >= capacity) {
+            capacity *= 2;
+            result = (char **)realloc(result,
+                         (size_t)(capacity + 1) * sizeof(char *));
+            if (!result) break;
+        }
+        if (ap->ap_Info.fib_DirEntryType > 0) {
+            /* Directory entry — append '/' so parser creates directory pathname */
+            size_t slen = strlen((char *)ap->ap_Buf);
+            char *dname = (char *)malloc(slen + 2);
+            if (dname) {
+                memcpy(dname, ap->ap_Buf, slen);
+                dname[slen] = '/';
+                dname[slen + 1] = '\0';
+                result[count] = dname;
+                count++;
             }
+        } else {
             result[count] = strdup((char *)ap->ap_Buf);
             count++;
         }
