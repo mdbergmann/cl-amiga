@@ -2,7 +2,7 @@
 # Targets: host (Linux), amiga-m68k, amiga-ppc
 
 CC_HOST     = gcc
-CFLAGS_HOST = -std=c99 -Wall -Wextra -Wpedantic -g -O3 -flto -DPLATFORM_POSIX $(DEBUG_FLAGS)
+CFLAGS_HOST = -std=c99 -Wall -Wextra -Wpedantic -g -O3 -flto -DPLATFORM_POSIX -DCL_WIDE_STRINGS $(DEBUG_FLAGS)
 
 SRCDIR   = src
 BUILDDIR = build/host
@@ -56,7 +56,8 @@ CORE_SRC     = $(SRCDIR)/core/types.c \
                $(SRCDIR)/core/repl.c \
                $(SRCDIR)/core/fasl.c \
                $(SRCDIR)/core/color.c \
-               $(SRCDIR)/core/thread.c
+               $(SRCDIR)/core/thread.c \
+               $(SRCDIR)/core/string_utils.c
 MAIN_SRC     = $(SRCDIR)/main.c
 
 HOST_SRCS = $(MAIN_SRC) $(PLATFORM_SRC) $(CORE_SRC)

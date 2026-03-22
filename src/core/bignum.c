@@ -1801,7 +1801,12 @@ void cl_bignum_init(void)
     def_const("BOOLE-ORC2",  10, 15, &SYM_BOOLE_ORC2);
 
     /* CHAR-CODE-LIMIT — upper exclusive bound on char-code values */
+#ifdef CL_WIDE_STRINGS
+    /* Full Unicode range: U+0000 to U+10FFFF (1114112 values) */
+    def_const("CHAR-CODE-LIMIT", 15, 1114112, NULL);
+#else
     def_const("CHAR-CODE-LIMIT", 15, 256, NULL);
+#endif
 
     /* Float limit constants */
     {

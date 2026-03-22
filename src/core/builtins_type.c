@@ -101,6 +101,15 @@ static int typep_symbol(CL_Obj obj, CL_Obj type_sym)
     if (strcmp(tname, "COMPLEX") == 0) return CL_COMPLEX_P(obj);
     if (strcmp(tname, "NUMBER") == 0) return CL_NUMBER_P(obj);
     if (strcmp(tname, "CHARACTER") == 0)      return CL_CHAR_P(obj);
+#ifdef CL_WIDE_STRINGS
+    if (strcmp(tname, "BASE-CHAR") == 0)     return CL_CHAR_P(obj) && CL_CHAR_VAL(obj) <= 255;
+    if (strcmp(tname, "STANDARD-CHAR") == 0) return CL_CHAR_P(obj) && CL_CHAR_VAL(obj) < 128;
+    if (strcmp(tname, "EXTENDED-CHAR") == 0) return CL_CHAR_P(obj) && CL_CHAR_VAL(obj) > 255;
+    if (strcmp(tname, "STRING") == 0)         return CL_ANY_STRING_P(obj) || CL_STRING_VECTOR_P(obj);
+    if (strcmp(tname, "SIMPLE-STRING") == 0)  return CL_ANY_STRING_P(obj);
+    if (strcmp(tname, "BASE-STRING") == 0)    return CL_STRING_P(obj) || CL_STRING_VECTOR_P(obj);
+    if (strcmp(tname, "SIMPLE-BASE-STRING") == 0) return CL_STRING_P(obj);
+#else
     if (strcmp(tname, "BASE-CHAR") == 0)     return CL_CHAR_P(obj);
     if (strcmp(tname, "STANDARD-CHAR") == 0) return CL_CHAR_P(obj);
     if (strcmp(tname, "EXTENDED-CHAR") == 0) return 0;
@@ -108,6 +117,7 @@ static int typep_symbol(CL_Obj obj, CL_Obj type_sym)
     if (strcmp(tname, "SIMPLE-STRING") == 0)  return CL_STRING_P(obj);
     if (strcmp(tname, "BASE-STRING") == 0)    return CL_STRING_P(obj) || CL_STRING_VECTOR_P(obj);
     if (strcmp(tname, "SIMPLE-BASE-STRING") == 0) return CL_STRING_P(obj);
+#endif
     if (strcmp(tname, "BIT-VECTOR") == 0)
         return CL_BIT_VECTOR_P(obj);
     if (strcmp(tname, "SIMPLE-BIT-VECTOR") == 0) {
@@ -116,7 +126,7 @@ static int typep_symbol(CL_Obj obj, CL_Obj type_sym)
           return !(bv->flags & (CL_VEC_FLAG_FILL_POINTER | CL_VEC_FLAG_ADJUSTABLE)); }
     }
     if (strcmp(tname, "ARRAY") == 0 || strcmp(tname, "SIMPLE-ARRAY") == 0) {
-        if (CL_STRING_P(obj)) return 1;
+        if (CL_ANY_STRING_P(obj)) return 1;
         if (CL_BIT_VECTOR_P(obj)) {
             if (strcmp(tname, "SIMPLE-ARRAY") == 0) {
                 CL_BitVector *bv = (CL_BitVector *)CL_OBJ_TO_PTR(obj);
@@ -133,7 +143,7 @@ static int typep_symbol(CL_Obj obj, CL_Obj type_sym)
         return 1;
     }
     if (strcmp(tname, "VECTOR") == 0) {
-        if (CL_STRING_P(obj)) return 1;
+        if (CL_ANY_STRING_P(obj)) return 1;
         if (CL_BIT_VECTOR_P(obj)) return 1;
         if (!CL_VECTOR_P(obj)) return 0;
         { CL_Vector *v = (CL_Vector *)CL_OBJ_TO_PTR(obj); return v->rank <= 1; }
@@ -146,7 +156,7 @@ static int typep_symbol(CL_Obj obj, CL_Obj type_sym)
         return v->rank <= 1 && v->flags == 0;
     }
     if (strcmp(tname, "SEQUENCE") == 0)
-        return CL_NULL_P(obj) || CL_CONS_P(obj) || CL_STRING_P(obj) || CL_VECTOR_P(obj) || CL_BIT_VECTOR_P(obj);
+        return CL_NULL_P(obj) || CL_CONS_P(obj) || CL_ANY_STRING_P(obj) || CL_VECTOR_P(obj) || CL_BIT_VECTOR_P(obj);
     if (strcmp(tname, "FUNCTION") == 0)
         return CL_FUNCTION_P(obj) || CL_CLOSURE_P(obj) || CL_BYTECODE_P(obj);
     if (strcmp(tname, "COMPILED-FUNCTION") == 0)
@@ -880,6 +890,13 @@ enum TypeId {
     TID_PATHNAME,
     TID_BOOLEAN,
     TID_T,
+#ifdef CL_WIDE_STRINGS
+    TID_BASE_CHAR,
+    TID_STANDARD_CHAR,
+    TID_EXTENDED_CHAR,
+    TID_BASE_STRING,
+    TID_SIMPLE_BASE_STRING,
+#endif
     TID_COUNT
 };
 
@@ -895,8 +912,14 @@ static int type_name_to_id(const char *name)
     if (strcmp(name, "REAL") == 0) return TID_REAL;
     if (strcmp(name, "NUMBER") == 0) return TID_NUMBER;
     if (strcmp(name, "CHARACTER") == 0) return TID_CHARACTER;
+#ifdef CL_WIDE_STRINGS
+    if (strcmp(name, "BASE-CHAR") == 0) return TID_BASE_CHAR;
+    if (strcmp(name, "STANDARD-CHAR") == 0) return TID_STANDARD_CHAR;
+    if (strcmp(name, "EXTENDED-CHAR") == 0) return TID_EXTENDED_CHAR;
+#else
     if (strcmp(name, "BASE-CHAR") == 0) return TID_CHARACTER;
     if (strcmp(name, "STANDARD-CHAR") == 0) return TID_CHARACTER;
+#endif
     if (strcmp(name, "KEYWORD") == 0) return TID_KEYWORD;
     if (strcmp(name, "SYMBOL") == 0) return TID_SYMBOL;
     if (strcmp(name, "CONS") == 0) return TID_CONS;
@@ -1006,6 +1029,14 @@ static int subtype_check(int id1, int id2)
 
     /* Function hierarchy: compiled-function < function */
     if (id1 == TID_COMPILED_FUNCTION && id2 == TID_FUNCTION) return 1;
+
+#ifdef CL_WIDE_STRINGS
+    /* Character hierarchy: base-char < character, standard-char < base-char < character,
+       extended-char < character */
+    if (id1 == TID_BASE_CHAR && id2 == TID_CHARACTER) return 1;
+    if (id1 == TID_STANDARD_CHAR && (id2 == TID_BASE_CHAR || id2 == TID_CHARACTER)) return 1;
+    if (id1 == TID_EXTENDED_CHAR && id2 == TID_CHARACTER) return 1;
+#endif
 
     /* Fixnum/integer/number are atoms */
     if (id2 == TID_ATOM) {

@@ -686,6 +686,12 @@ void cl_symbol_init(void)
 #endif
         features = cl_cons(KW_COMMON_LISP, features);
         features = cl_cons(KW_CL_AMIGA, features);
+#ifdef CL_WIDE_STRINGS
+        {
+            CL_Obj kw_unicode = cl_intern_keyword("UNICODE", 7);
+            features = cl_cons(kw_unicode, features);
+        }
+#endif
         s->value = features;
     }
 

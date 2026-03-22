@@ -55,6 +55,9 @@ void *cl_alloc(uint8_t type, uint32_t size);
 /* Convenience allocators */
 CL_Obj cl_cons(CL_Obj car, CL_Obj cdr);
 CL_Obj cl_make_string(const char *str, uint32_t len);
+#ifdef CL_WIDE_STRINGS
+CL_Obj cl_make_wide_string(const uint32_t *chars, uint32_t len);
+#endif
 CL_Obj cl_make_symbol(CL_Obj name);
 CL_Obj cl_make_function(CL_CFunc func, CL_Obj name, int min_args, int max_args);
 CL_Obj cl_make_vector(uint32_t length);

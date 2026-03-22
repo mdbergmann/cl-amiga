@@ -166,6 +166,18 @@ void cl_fasl_serialize_obj(CL_FaslWriter *w, CL_Obj obj)
         return;
     }
 
+#ifdef CL_WIDE_STRINGS
+    case TYPE_WIDE_STRING: {
+        CL_WideString *ws = (CL_WideString *)CL_OBJ_TO_PTR(obj);
+        uint32_t i;
+        cl_fasl_write_u8(w, FASL_TAG_WIDE_STRING);
+        cl_fasl_write_u32(w, ws->length);
+        for (i = 0; i < ws->length; i++)
+            cl_fasl_write_u32(w, ws->data[i]);
+        return;
+    }
+#endif
+
     case TYPE_CONS: {
         cl_fasl_write_u8(w, FASL_TAG_CONS);
         cl_fasl_serialize_obj(w, cl_car(obj));
@@ -566,6 +578,23 @@ CL_Obj cl_fasl_deserialize_obj(CL_FaslReader *r)
         platform_free(tmp);
         return result;
     }
+
+#ifdef CL_WIDE_STRINGS
+    case FASL_TAG_WIDE_STRING: {
+        uint32_t len = cl_fasl_read_u32(r);
+        uint32_t *tmp;
+        uint32_t i;
+        CL_Obj result;
+        if (r->error) return CL_NIL;
+        tmp = (uint32_t *)platform_alloc(len * sizeof(uint32_t));
+        if (!tmp) return CL_NIL;
+        for (i = 0; i < len; i++)
+            tmp[i] = cl_fasl_read_u32(r);
+        result = cl_make_wide_string(tmp, len);
+        platform_free(tmp);
+        return result;
+    }
+#endif
 
     case FASL_TAG_CONS: {
         CL_Obj car_val, cdr_val;

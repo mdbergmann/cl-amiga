@@ -263,6 +263,12 @@
          (locally ,@body)
          (when ,var (close ,var))))))
 
+(defmacro with-open-stream ((var stream) &body body)
+  `(let ((,var ,stream))
+     (unwind-protect
+       (locally ,@body)
+       (when ,var (close ,var)))))
+
 ;; compile-file and compile-file-pathname are C builtins (builtins_io.c).
 ;; compile-file produces real FASL binary files that load without reparsing.
 
@@ -828,15 +834,19 @@ when the param has no explicit default.  CL spec 3.4.6 requires this."
 
 (defun read-sequence (sequence stream &key (start 0) end)
   (let ((e (or end (length sequence)))
-        (i start))
+        (i start)
+        (use-char (and (arrayp sequence)
+                       (subtypep (array-element-type sequence) 'character))))
     ;; Cannot use loop here — loop macro is defined later in boot.lisp
     (block nil
       (tagbody
        loop-top
        (when (>= i e) (go loop-end))
-       (let ((b (read-byte stream nil nil)))
-         (if b
-             (progn (setf (aref sequence i) b) (setf i (1+ i)))
+       (let ((elem (if use-char
+                       (read-char stream nil nil)
+                       (read-byte stream nil nil))))
+         (if elem
+             (progn (setf (aref sequence i) elem) (setf i (1+ i)))
              (return i)))
        (go loop-top)
        loop-end))

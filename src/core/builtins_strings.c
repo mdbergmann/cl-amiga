@@ -215,29 +215,53 @@ static const char *obj_to_cstr(CL_Obj obj, uint32_t *out_len)
     return NULL;
 }
 
+/* Parse :start1 :end1 :start2 :end2 keyword args for string comparison.
+ * args[0] and args[1] are the two strings; args[2..n-1] are keyword pairs.
+ * Sets s1,e1,s2,e2 to the substring bounds. */
+static void parse_string_bounds(CL_Obj *args, int n,
+    uint32_t la, uint32_t lb,
+    uint32_t *s1, uint32_t *e1, uint32_t *s2, uint32_t *e2)
+{
+    int i;
+    *s1 = 0; *e1 = la; *s2 = 0; *e2 = lb;
+    for (i = 2; i + 1 < n; i += 2) {
+        CL_Obj key = args[i];
+        int32_t val = CL_FIXNUM_P(args[i + 1]) ? CL_FIXNUM_VAL(args[i + 1]) : 0;
+        if (CL_NULL_P(args[i + 1])) continue; /* NIL means default */
+        if (key == cl_intern_keyword("START1", 6)) *s1 = (uint32_t)val;
+        else if (key == cl_intern_keyword("END1", 4)) *e1 = (uint32_t)val;
+        else if (key == cl_intern_keyword("START2", 6)) *s2 = (uint32_t)val;
+        else if (key == cl_intern_keyword("END2", 4)) *e2 = (uint32_t)val;
+    }
+    if (*e1 > la) *e1 = la;
+    if (*e2 > lb) *e2 = lb;
+    if (*s1 > *e1) *s1 = *e1;
+    if (*s2 > *e2) *s2 = *e2;
+}
+
 static CL_Obj bi_string_eq(CL_Obj *args, int n)
 {
-    uint32_t la, lb;
+    uint32_t la, lb, s1, e1, s2, e2;
     const char *a, *b;
-    CL_UNUSED(n);
     a = obj_to_cstr(args[0], &la);
     b = obj_to_cstr(args[1], &lb);
     if (!a || !b) cl_error(CL_ERR_TYPE, "STRING=: not a string designator");
-    if (la != lb) return CL_NIL;
-    return (memcmp(a, b, la) == 0) ? SYM_T : CL_NIL;
+    parse_string_bounds(args, n, la, lb, &s1, &e1, &s2, &e2);
+    if ((e1 - s1) != (e2 - s2)) return CL_NIL;
+    return (memcmp(a + s1, b + s2, e1 - s1) == 0) ? SYM_T : CL_NIL;
 }
 
 static CL_Obj bi_string_equal(CL_Obj *args, int n)
 {
-    uint32_t la, lb, i;
+    uint32_t la, lb, s1, e1, s2, e2, i;
     const char *a, *b;
-    CL_UNUSED(n);
     a = obj_to_cstr(args[0], &la);
     b = obj_to_cstr(args[1], &lb);
     if (!a || !b) cl_error(CL_ERR_TYPE, "STRING-EQUAL: not a string designator");
-    if (la != lb) return CL_NIL;
-    for (i = 0; i < la; i++) {
-        int ca = a[i], cb = b[i];
+    parse_string_bounds(args, n, la, lb, &s1, &e1, &s2, &e2);
+    if ((e1 - s1) != (e2 - s2)) return CL_NIL;
+    for (i = 0; i < (e1 - s1); i++) {
+        int ca = (unsigned char)a[s1 + i], cb = (unsigned char)b[s2 + i];
         if (ca >= 'a' && ca <= 'z') ca -= 32;
         if (cb >= 'a' && cb <= 'z') cb -= 32;
         if (ca != cb) return CL_NIL;
@@ -247,61 +271,65 @@ static CL_Obj bi_string_equal(CL_Obj *args, int n)
 
 static CL_Obj bi_string_lt(CL_Obj *args, int n)
 {
-    uint32_t la, lb, min;
+    uint32_t la, lb, s1, e1, s2, e2, len1, len2, min_len;
     const char *a, *b;
     int cmp;
-    CL_UNUSED(n);
     a = obj_to_cstr(args[0], &la);
     b = obj_to_cstr(args[1], &lb);
     if (!a || !b) cl_error(CL_ERR_TYPE, "STRING<: not a string designator");
-    min = la < lb ? la : lb;
-    cmp = memcmp(a, b, min);
-    if (cmp < 0 || (cmp == 0 && la < lb)) return SYM_T;
+    parse_string_bounds(args, n, la, lb, &s1, &e1, &s2, &e2);
+    len1 = e1 - s1; len2 = e2 - s2;
+    min_len = len1 < len2 ? len1 : len2;
+    cmp = memcmp(a + s1, b + s2, min_len);
+    if (cmp < 0 || (cmp == 0 && len1 < len2)) return SYM_T;
     return CL_NIL;
 }
 
 static CL_Obj bi_string_gt(CL_Obj *args, int n)
 {
-    uint32_t la, lb, min;
+    uint32_t la, lb, s1, e1, s2, e2, len1, len2, min_len;
     const char *a, *b;
     int cmp;
-    CL_UNUSED(n);
     a = obj_to_cstr(args[0], &la);
     b = obj_to_cstr(args[1], &lb);
     if (!a || !b) cl_error(CL_ERR_TYPE, "STRING>: not a string designator");
-    min = la < lb ? la : lb;
-    cmp = memcmp(a, b, min);
-    if (cmp > 0 || (cmp == 0 && la > lb)) return SYM_T;
+    parse_string_bounds(args, n, la, lb, &s1, &e1, &s2, &e2);
+    len1 = e1 - s1; len2 = e2 - s2;
+    min_len = len1 < len2 ? len1 : len2;
+    cmp = memcmp(a + s1, b + s2, min_len);
+    if (cmp > 0 || (cmp == 0 && len1 > len2)) return SYM_T;
     return CL_NIL;
 }
 
 static CL_Obj bi_string_le(CL_Obj *args, int n)
 {
-    uint32_t la, lb, min;
+    uint32_t la, lb, s1, e1, s2, e2, len1, len2, min_len;
     const char *a, *b;
     int cmp;
-    CL_UNUSED(n);
     a = obj_to_cstr(args[0], &la);
     b = obj_to_cstr(args[1], &lb);
     if (!a || !b) cl_error(CL_ERR_TYPE, "STRING<=: not a string designator");
-    min = la < lb ? la : lb;
-    cmp = memcmp(a, b, min);
-    if (cmp < 0 || (cmp == 0 && la <= lb)) return SYM_T;
+    parse_string_bounds(args, n, la, lb, &s1, &e1, &s2, &e2);
+    len1 = e1 - s1; len2 = e2 - s2;
+    min_len = len1 < len2 ? len1 : len2;
+    cmp = memcmp(a + s1, b + s2, min_len);
+    if (cmp < 0 || (cmp == 0 && len1 <= len2)) return SYM_T;
     return CL_NIL;
 }
 
 static CL_Obj bi_string_ge(CL_Obj *args, int n)
 {
-    uint32_t la, lb, min;
+    uint32_t la, lb, s1, e1, s2, e2, len1, len2, min_len;
     const char *a, *b;
     int cmp;
-    CL_UNUSED(n);
     a = obj_to_cstr(args[0], &la);
     b = obj_to_cstr(args[1], &lb);
     if (!a || !b) cl_error(CL_ERR_TYPE, "STRING>=: not a string designator");
-    min = la < lb ? la : lb;
-    cmp = memcmp(a, b, min);
-    if (cmp > 0 || (cmp == 0 && la >= lb)) return SYM_T;
+    parse_string_bounds(args, n, la, lb, &s1, &e1, &s2, &e2);
+    len1 = e1 - s1; len2 = e2 - s2;
+    min_len = len1 < len2 ? len1 : len2;
+    cmp = memcmp(a + s1, b + s2, min_len);
+    if (cmp > 0 || (cmp == 0 && len1 >= len2)) return SYM_T;
     return CL_NIL;
 }
 
@@ -311,6 +339,11 @@ static CL_String *coerce_to_cl_string(CL_Obj obj, const char *func_name)
 {
     if (CL_STRING_P(obj))
         return (CL_String *)CL_OBJ_TO_PTR(obj);
+    if (CL_NULL_P(obj)) {
+        /* NIL is a symbol with name "NIL" */
+        CL_Symbol *sym = (CL_Symbol *)CL_OBJ_TO_PTR(SYM_NIL);
+        return (CL_String *)CL_OBJ_TO_PTR(sym->name);
+    }
     if (CL_SYMBOL_P(obj)) {
         CL_Symbol *sym = (CL_Symbol *)CL_OBJ_TO_PTR(obj);
         return (CL_String *)CL_OBJ_TO_PTR(sym->name);
@@ -1175,12 +1208,12 @@ void cl_builtins_strings_init(void)
     defun("KEYWORDP", bi_keywordp, 1, 1);
 
     /* String functions */
-    defun("STRING=", bi_string_eq, 2, 2);
-    defun("STRING-EQUAL", bi_string_equal, 2, 2);
-    defun("STRING<", bi_string_lt, 2, 2);
-    defun("STRING>", bi_string_gt, 2, 2);
-    defun("STRING<=", bi_string_le, 2, 2);
-    defun("STRING>=", bi_string_ge, 2, 2);
+    defun("STRING=", bi_string_eq, 2, -1);
+    defun("STRING-EQUAL", bi_string_equal, 2, -1);
+    defun("STRING<", bi_string_lt, 2, -1);
+    defun("STRING>", bi_string_gt, 2, -1);
+    defun("STRING<=", bi_string_le, 2, -1);
+    defun("STRING>=", bi_string_ge, 2, -1);
     defun("STRING-UPCASE", bi_string_upcase, 1, 1);
     defun("STRING-DOWNCASE", bi_string_downcase, 1, 1);
     defun("STRING-TRIM", bi_string_trim, 2, 2);

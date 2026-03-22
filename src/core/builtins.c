@@ -9,6 +9,7 @@
 #include "error.h"
 #include "vm.h"
 #include "compiler.h"
+#include "string_utils.h"
 #include "../platform/platform.h"
 #include "../platform/platform_thread.h"
 #include <string.h>
@@ -98,6 +99,13 @@ static CL_Obj bi_length(CL_Obj *args, int n)
         CL_String *s = (CL_String *)CL_OBJ_TO_PTR(obj);
         return CL_MAKE_FIXNUM(s->length);
     }
+
+#ifdef CL_WIDE_STRINGS
+    if (CL_WIDE_STRING_P(obj)) {
+        CL_WideString *ws = (CL_WideString *)CL_OBJ_TO_PTR(obj);
+        return CL_MAKE_FIXNUM(ws->length);
+    }
+#endif
 
     if (CL_VECTOR_P(obj)) {
         CL_Vector *v = (CL_Vector *)CL_OBJ_TO_PTR(obj);
@@ -259,14 +267,14 @@ static CL_Obj bi_symbolp(CL_Obj *args, int n)
 static CL_Obj bi_stringp(CL_Obj *args, int n)
 {
     CL_UNUSED(n);
-    return (CL_STRING_P(args[0]) || CL_STRING_VECTOR_P(args[0])) ? SYM_T : CL_NIL;
+    return (CL_ANY_STRING_P(args[0]) || CL_STRING_VECTOR_P(args[0])) ? SYM_T : CL_NIL;
 }
 
 static CL_Obj bi_simple_string_p(CL_Obj *args, int n)
 {
     CL_UNUSED(n);
-    /* Simple strings are TYPE_STRING (no fill-pointer/displaced) */
-    return CL_STRING_P(args[0]) ? SYM_T : CL_NIL;
+    /* Simple strings are TYPE_STRING or TYPE_WIDE_STRING (no fill-pointer/displaced) */
+    return CL_ANY_STRING_P(args[0]) ? SYM_T : CL_NIL;
 }
 
 static CL_Obj bi_functionp(CL_Obj *args, int n)
@@ -348,6 +356,20 @@ static CL_Obj bi_equal(CL_Obj *args, int n)
             memcmp(sa->data, sb->data, sa->length) == 0)
             return SYM_T;
     }
+#ifdef CL_WIDE_STRINGS
+    /* Mixed or wide-wide string comparison */
+    if (CL_ANY_STRING_P(a) && CL_ANY_STRING_P(b) &&
+        !(CL_STRING_P(a) && CL_STRING_P(b))) {
+        uint32_t la = cl_string_length(a), lb = cl_string_length(b);
+        uint32_t i;
+        if (la != lb) return CL_NIL;
+        for (i = 0; i < la; i++) {
+            if (cl_string_char_at(a, i) != cl_string_char_at(b, i))
+                return CL_NIL;
+        }
+        return SYM_T;
+    }
+#endif
     if (CL_VECTOR_P(a) && CL_VECTOR_P(b)) {
         CL_Vector *va = (CL_Vector *)CL_OBJ_TO_PTR(a);
         CL_Vector *vb = (CL_Vector *)CL_OBJ_TO_PTR(b);
