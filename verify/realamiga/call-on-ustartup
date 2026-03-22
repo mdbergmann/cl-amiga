@@ -1,4 +1,4 @@
-; Run Amiga test suite (stack size test: 64K)
+; Run Amiga test suite (includes FFI/Intuition/Graphics/GadTools tests)
 cd CLAmiga:
-stack 64000
+stack 128000
 build/amiga/clamiga --heap 48M --non-interactive --load tests/amiga/run-tests.lisp >build/amiga/test-results.log
