@@ -7,7 +7,7 @@
 
 (defpackage "AMIGA.FFI"
   (:use "CL" "FFI")
-  (:export "WITH-LIBRARY" "WITH-TAG-LIST" "DEFCFUN"))
+  (:export "WITH-LIBRARY" "WITH-TAG-LIST" "MAKE-TAG-LIST" "DEFCFUN"))
 
 (in-package "AMIGA.FFI")
 

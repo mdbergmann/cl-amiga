@@ -111,26 +111,31 @@
 ;;; ================================================================
 
 (defconstant +tag-user+       #x80000000)
-(defconstant +wa-left+        (+ +tag-user+ #x01))
-(defconstant +wa-top+         (+ +tag-user+ #x02))
-(defconstant +wa-width+       (+ +tag-user+ #x03))
-(defconstant +wa-height+      (+ +tag-user+ #x04))
-(defconstant +wa-idcmp+       (+ +tag-user+ #x07))
-(defconstant +wa-flags+       (+ +tag-user+ #x08))
-(defconstant +wa-title+       (+ +tag-user+ #x0B))
-(defconstant +wa-customscreen+ (+ +tag-user+ #x0F))
-(defconstant +wa-gadgets+      (+ +tag-user+ #x0E))
+(defconstant +wa-dummy+       (+ +tag-user+ 99))   ; 0x80000063
+(defconstant +wa-left+        (+ +wa-dummy+ #x01))
+(defconstant +wa-top+         (+ +wa-dummy+ #x02))
+(defconstant +wa-width+       (+ +wa-dummy+ #x03))
+(defconstant +wa-height+      (+ +wa-dummy+ #x04))
+(defconstant +wa-idcmp+       (+ +wa-dummy+ #x07))
+(defconstant +wa-flags+       (+ +wa-dummy+ #x08))
+(defconstant +wa-gadgets+     (+ +wa-dummy+ #x09))
+(defconstant +wa-title+       (+ +wa-dummy+ #x0B))
+(defconstant +wa-customscreen+ (+ +wa-dummy+ #x0D))
 
 ;;; ================================================================
 ;;; Struct layouts
 ;;; ================================================================
 
 ;;; struct Window (partial — key fields only)
+;;; struct Window layout (from intuition/intuition.h):
+;;;   0: NextWindow*    4: LeftEdge(W)  6: TopEdge(W)
+;;;   8: Width(W)      10: Height(W)   32: Title*
+;;;  50: RPort*         86: UserPort*
 (ffi:defcstruct window
-  (left-edge   :u16  0)
-  (top-edge    :u16  2)
-  (width       :u16  4)
-  (height      :u16  6)
+  (left-edge   :u16  4)
+  (top-edge    :u16  6)
+  (width       :u16  8)
+  (height      :u16 10)
   (rport       :pointer 50)    ; Window->RPort
   (user-port   :pointer 86)    ; Window->UserPort (MsgPort for IDCMP)
   (title       :pointer 32))
