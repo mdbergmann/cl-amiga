@@ -39,7 +39,7 @@ CL_Obj (uint32_t):
 Heap object header (uint32_t):
   [type:8][gc_mark:1][size:23]       max object size = 8MB
 
-Types: CONS, SYMBOL, STRING, FUNCTION, CLOSURE, BYTECODE, VECTOR, PACKAGE, HASHTABLE, CONDITION, STRUCT, BIGNUM, SINGLE_FLOAT, DOUBLE_FLOAT, RATIO, STREAM, ARRAY, RANDOM_STATE, BIT_VECTOR, PATHNAME, COMPLEX, THREAD, LOCK, CONDVAR
+Types: CONS, SYMBOL, STRING, FUNCTION, CLOSURE, BYTECODE, VECTOR, PACKAGE, HASHTABLE, CONDITION, STRUCT, BIGNUM, SINGLE_FLOAT, DOUBLE_FLOAT, RATIO, STREAM, ARRAY, RANDOM_STATE, BIT_VECTOR, PATHNAME, COMPLEX, THREAD, LOCK, CONDVAR, FOREIGN_POINTER
 ```
 
 ## Memory Budget (8MB System)
@@ -47,7 +47,7 @@ Types: CONS, SYMBOL, STRING, FUNCTION, CLOSURE, BYTECODE, VECTOR, PACKAGE, HASHT
 | Component | Size |
 |-----------|------|
 | OS + Workbench | ~1.5MB |
-| CL-Amiga binary | ~100KB |
+| CL-Amiga binary | ~535KB |
 | Heap arena | 4MB (configurable) |
 | VM value stack | 64KB (16K entries) |
 | VM call stack | 256 frames |
@@ -138,12 +138,14 @@ Single-pass recursive compiler from S-expressions to bytecode:
 | Complex | `complex` `complexp` `realpart` `imagpart` `conjugate` |
 | Threading (MP) | `mp:make-thread` `mp:join-thread` `mp:thread-alive-p` `mp:current-thread` `mp:all-threads` `mp:thread-name` `mp:thread-yield` `mp:make-lock` `mp:acquire-lock` `mp:release-lock` `mp:make-condition-variable` `mp:condition-wait` `mp:condition-notify` `mp:condition-broadcast` |
 | Sockets | `ext:open-tcp-stream` |
+| FFI | `ffi:make-foreign-pointer` `ffi:foreign-pointer-address` `ffi:foreign-pointer-p` `ffi:null-pointer-p` `ffi:alloc-foreign` `ffi:free-foreign` `ffi:peek-u32` `ffi:peek-u16` `ffi:peek-u8` `ffi:poke-u32` `ffi:poke-u16` `ffi:poke-u8` `ffi:foreign-string` `ffi:foreign-to-string` `ffi:pointer+` |
+| Amiga | `amiga:open-library` `amiga:close-library` `amiga:call-library` `amiga:alloc-chip` `amiga:free-chip` |
 | Compilation | `compile-file` |
 | Misc | `gensym` |
 
 ## Current Status
 
-1798 host tests (25 suites), 2037+ Amiga batch tests — all passing.
+1798+ host tests (26 suites), 2077 Amiga batch tests — all passing.
 
 ### Validation Milestones
 
@@ -169,6 +171,13 @@ Phases 1-10 are complete. The system has:
 - Printer control, trace/untrace, time, disassemble, compile, compile-file, describe
 - TCP sockets: `ext:open-tcp-stream` (POSIX BSD sockets, Amiga bsdsocket.library)
 - Threading (MP package): kernel threads with per-thread VM, TLV dynamic bindings, locks, condition variables, stop-the-world GC coordination
+- FFI (Foreign Function Interface): TYPE_FOREIGN_POINTER, peek/poke memory access, foreign string conversion, platform-independent `FFI` package
+- AmigaOS native API (`AMIGA` package): register-based library call dispatch via 68k asm trampoline, chip memory allocation, `defcstruct` for C struct access
+- AmigaOS GUI libraries (loaded on demand via `require`, zero binary impact):
+  - `AMIGA.INTUITION`: windows, screens, IDCMP event loop, public screen management
+  - `AMIGA.GFX`: RastPort drawing (Move, Draw, SetAPen, RectFill, Text)
+  - `AMIGA.GADTOOLS`: GadTools gadgets (button, checkbox, string, slider, etc.), menus, bevel boxes, VisualInfo
+  - `AMIGA.FFI`: tag list construction, `defcfun` for named library function wrappers
 - Nested quasiquote (depth-tracking expansion)
 - i32 jump offsets (256KB bytecode limit per function)
 - REPL with error recovery, debugger, history variables, ASCII banner, --load/--eval/--script CLI options
@@ -225,8 +234,6 @@ Phases 1-10 are complete. The system has:
 **Aspirational:**
 - Advanced debugger: single-stepper, frame inspection, local variable display
 - Line editing (history, tab completion)
-- Amiga-specific FFI (calling library functions)
-- Intuition/gadtools bindings for GUI
 - Image save/restore (`save-image`, `load-image`)
 - Standalone executables (prepend runtime to saved image)
 - 64-bit `CL_Obj` on 64-bit hosts (break ~4GB arena limit)
@@ -248,21 +255,31 @@ cl-amiga/
 │   └── overview.md        # This file
 ├── src/
 │   ├── main.c             # Entry point
-│   ├── core/              # Language implementation (44 .c + 23 .h modules)
+│   ├── core/              # Language implementation (46 .c + 23 .h modules)
+│   │   ├── builtins_ffi.c # FFI package builtins (platform-independent)
+│   │   └── builtins_amiga.c # AMIGA package builtins (AmigaOS only)
 │   └── platform/          # OS abstraction (posix, amiga)
+│       └── ffi_dispatch_m68k.s  # 68k asm trampoline for library calls
 ├── include/
 │   └── clamiga.h          # Public umbrella header
 ├── lib/
 │   ├── boot.lisp          # Bootstrap macros/functions (~135 defs)
 │   ├── clos.lisp          # CLOS implementation (loaded via require)
+│   ├── ffi.lisp           # FFI utilities: defcstruct, with-foreign-alloc
 │   ├── asdf.lisp          # ASDF 3.3.7 build system
 │   ├── quicklisp.lisp     # Quicklisp package manager
-│   └── quicklisp-compat.lisp  # Quicklisp compatibility layer
+│   ├── quicklisp-compat.lisp  # Quicklisp compatibility layer
+│   └── amiga/             # AmigaOS-specific Lisp libraries
+│       ├── ffi.lisp       # with-library, with-tag-list, defcfun
+│       ├── intuition.lisp # Windows, screens, IDCMP, pub screens
+│       ├── graphics.lisp  # RastPort drawing, text rendering
+│       └── gadtools.lisp  # GadTools gadgets, menus, bevel boxes
 ├── tests/
 │   ├── test.h             # Test framework
-│   ├── test_*.c           # Host test suites (25 files, 1798 tests)
+│   ├── test_*.c           # Host test suites (26 files, 1798+ tests)
 │   └── amiga/
-│       └── run-tests.lisp # AmigaOS batch tests (2037+ tests)
+│       ├── run-tests.lisp # AmigaOS batch tests (2077 tests)
+│       └── test-gui.lisp  # Intuition/Graphics/GadTools tests
 ├── build/                 # Build output (gitignored)
 └── verify/
     └── realamiga/          # FS-UAE config + AmigaOS system image
