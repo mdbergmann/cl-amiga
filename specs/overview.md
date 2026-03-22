@@ -242,6 +242,8 @@ Phases 1-10 are complete. The system has:
 
 - **CAS (compare-and-swap)** — atomic CAS primitive for lock-free data structures; on Amiga can possibly stay with lock-based implementation due to cooperative multitasking / `Forbid()`/`Permit()` semantics
 - **Full bordeaux-threads support** — remaining gaps: semaphores (`make-semaphore`, `signal-semaphore`, `wait-on-semaphore`), atomic integers, `with-timeout`, `*default-special-bindings*`
+- **Native MorphOS version** — PowerPC native build targeting MorphOS
+- **Bignum performance** — optional GMP backend for faster arbitrary-precision arithmetic
 
 ## Project Structure
 
