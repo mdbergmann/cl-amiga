@@ -736,7 +736,11 @@ static void gc_mark_children(void *ptr, uint8_t type)
         gc_mark_push(lk->name);
         break;
     }
-    case TYPE_CONDVAR:
+    case TYPE_CONDVAR: {
+        CL_CondVar *cv = (CL_CondVar *)ptr;
+        gc_mark_push(cv->name);
+        break;
+    }
     case TYPE_FOREIGN_POINTER:
         /* No CL_Obj children */
         break;
@@ -832,6 +836,7 @@ static void gc_mark_thread_roots(CL_Thread *t)
     /* Thread metadata */
     gc_mark_obj(t->name);
     gc_mark_obj(t->result);
+    gc_mark_obj(t->interrupt_func);
 
     /* Compiler constants (active compilers may hold CL_Obj values
      * in platform_alloc'd memory not reachable from the GC arena) */

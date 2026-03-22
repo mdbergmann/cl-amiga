@@ -419,14 +419,13 @@ static CL_Obj bi_release_lock(CL_Obj *args, int n)
  * Condition variable builtins
  * ================================================================ */
 
-/* (mp:make-condition-variable) -> cv */
+/* (mp:make-condition-variable &optional name) -> cv */
 static CL_Obj bi_make_condition_variable(CL_Obj *args, int n)
 {
+    CL_Obj name = (n > 0) ? args[0] : CL_NIL;
     void *cv_handle = NULL;
     int cv_id;
     CL_CondVar *cv;
-    CL_UNUSED(args);
-    CL_UNUSED(n);
 
     if (platform_condvar_init(&cv_handle) != 0)
         cl_error(CL_ERR_GENERAL,
@@ -440,7 +439,9 @@ static CL_Obj bi_make_condition_variable(CL_Obj *args, int n)
                  CL_MAX_CONDVARS);
     }
 
+    CL_GC_PROTECT(name);
     cv = (CL_CondVar *)cl_alloc(TYPE_CONDVAR, sizeof(CL_CondVar));
+    CL_GC_UNPROTECT(1);
     if (!cv) {
         cl_condvar_table_free(cv_id);
         platform_condvar_destroy(cv_handle);
@@ -449,6 +450,7 @@ static CL_Obj bi_make_condition_variable(CL_Obj *args, int n)
     }
 
     cv->condvar_id = (uint32_t)cv_id;
+    cv->name = name;
     return CL_PTR_TO_OBJ(cv);
 }
 
@@ -540,6 +542,143 @@ static CL_Obj bi_condition_broadcast(CL_Obj *args, int n)
 }
 
 /* ================================================================
+ * Thread interruption
+ * ================================================================ */
+
+/* (mp:interrupt-thread thread function) -> t */
+static CL_Obj bi_interrupt_thread(CL_Obj *args, int n)
+{
+    CL_ThreadObj *tobj;
+    CL_Thread *self, *target;
+    CL_Obj func;
+    CL_UNUSED(n);
+
+    if (!CL_THREAD_P(args[0]))
+        cl_error(CL_ERR_TYPE,
+                 "MP:INTERRUPT-THREAD: first argument must be a thread");
+
+    func = cl_coerce_funcdesig(args[1], "MP:INTERRUPT-THREAD");
+
+    tobj = (CL_ThreadObj *)CL_OBJ_TO_PTR(args[0]);
+    if (tobj->thread_id >= CL_MAX_THREADS)
+        cl_error(CL_ERR_GENERAL, "MP:INTERRUPT-THREAD: invalid thread id");
+
+    self = (CL_Thread *)platform_tls_get();
+
+    /* Self-interruption: call the function directly */
+    if (tobj->thread_id == self->id) {
+        cl_vm_apply(func, NULL, 0);
+        return CL_T;
+    }
+
+    target = cl_thread_table[tobj->thread_id];
+    if (!target)
+        cl_error(CL_ERR_GENERAL,
+                 "MP:INTERRUPT-THREAD: thread has already exited");
+
+    /* status: 0=created, 1=running, 2=finished, 3=aborted */
+    if (target->status >= 2)
+        cl_error(CL_ERR_GENERAL,
+                 "MP:INTERRUPT-THREAD: thread is no longer running");
+
+    /* Store function and set pending flag.
+     * Write order matters: func before flag (strongly ordered on x86/68020). */
+    target->interrupt_func = func;
+    target->interrupt_pending = 1;
+
+    return CL_T;
+}
+
+/* (mp:destroy-thread thread) -> t */
+static CL_Obj bi_destroy_thread(CL_Obj *args, int n)
+{
+    CL_ThreadObj *tobj;
+    CL_Thread *self, *target;
+    CL_UNUSED(n);
+
+    if (!CL_THREAD_P(args[0]))
+        cl_error(CL_ERR_TYPE,
+                 "MP:DESTROY-THREAD: argument must be a thread");
+
+    tobj = (CL_ThreadObj *)CL_OBJ_TO_PTR(args[0]);
+    if (tobj->thread_id >= CL_MAX_THREADS)
+        cl_error(CL_ERR_GENERAL, "MP:DESTROY-THREAD: invalid thread id");
+
+    self = (CL_Thread *)platform_tls_get();
+
+    /* Self-destruction: error immediately */
+    if (tobj->thread_id == self->id)
+        cl_error(CL_ERR_GENERAL, "Thread destroyed");
+
+    target = cl_thread_table[tobj->thread_id];
+    if (!target)
+        cl_error(CL_ERR_GENERAL,
+                 "MP:DESTROY-THREAD: thread has already exited");
+
+    if (target->status >= 2)
+        cl_error(CL_ERR_GENERAL,
+                 "MP:DESTROY-THREAD: thread is no longer running");
+
+    /* Set destroy flag and pending flag */
+    target->destroy_requested = 1;
+    target->interrupt_pending = 1;
+
+    return CL_T;
+}
+
+/* ================================================================
+ * Accessors and predicates
+ * ================================================================ */
+
+/* (mp:condition-name cv) -> string/nil */
+static CL_Obj bi_condition_name(CL_Obj *args, int n)
+{
+    CL_CondVar *cv;
+    CL_UNUSED(n);
+
+    if (!CL_CONDVAR_P(args[0]))
+        cl_error(CL_ERR_TYPE,
+                 "MP:CONDITION-NAME: argument must be a condition-variable");
+
+    cv = (CL_CondVar *)CL_OBJ_TO_PTR(args[0]);
+    return cv->name;
+}
+
+/* (mp:lock-name lock) -> string/nil */
+static CL_Obj bi_lock_name(CL_Obj *args, int n)
+{
+    CL_Lock *lk;
+    CL_UNUSED(n);
+
+    if (!CL_LOCK_P(args[0]))
+        cl_error(CL_ERR_TYPE, "MP:LOCK-NAME: argument must be a lock");
+
+    lk = (CL_Lock *)CL_OBJ_TO_PTR(args[0]);
+    return lk->name;
+}
+
+/* (mp:threadp obj) -> bool */
+static CL_Obj bi_threadp(CL_Obj *args, int n)
+{
+    CL_UNUSED(n);
+    return CL_THREAD_P(args[0]) ? CL_T : CL_NIL;
+}
+
+/* (mp:lockp obj) -> bool */
+static CL_Obj bi_lockp(CL_Obj *args, int n)
+{
+    CL_UNUSED(n);
+    return CL_LOCK_P(args[0]) ? CL_T : CL_NIL;
+}
+
+/* (mp:condition-variable-p obj) -> bool */
+static CL_Obj bi_condition_variable_p(CL_Obj *args, int n)
+{
+    CL_UNUSED(n);
+    return CL_CONDVAR_P(args[0]) ? CL_T : CL_NIL;
+}
+
+/* ================================================================
  * Registration
  * ================================================================ */
 
@@ -582,8 +721,18 @@ void cl_builtins_thread_init(void)
     mp_defun("ACQUIRE-LOCK",            bi_acquire_lock,            1, 2);
     mp_defun("RELEASE-LOCK",            bi_release_lock,            1, 1);
 
-    mp_defun("MAKE-CONDITION-VARIABLE",  bi_make_condition_variable, 0, 0);
+    mp_defun("MAKE-CONDITION-VARIABLE",  bi_make_condition_variable, 0, 1);
     mp_defun("CONDITION-WAIT",           bi_condition_wait,          2, 3);
     mp_defun("CONDITION-NOTIFY",         bi_condition_notify,        1, 1);
     mp_defun("CONDITION-BROADCAST",      bi_condition_broadcast,     1, 1);
+    mp_defun("CONDITION-NAME",           bi_condition_name,          1, 1);
+
+    mp_defun("LOCK-NAME",               bi_lock_name,               1, 1);
+
+    mp_defun("INTERRUPT-THREAD",         bi_interrupt_thread,        2, 2);
+    mp_defun("DESTROY-THREAD",           bi_destroy_thread,          1, 1);
+
+    mp_defun("THREADP",                  bi_threadp,                 1, 1);
+    mp_defun("LOCKP",                    bi_lockp,                   1, 1);
+    mp_defun("CONDITION-VARIABLE-P",     bi_condition_variable_p,    1, 1);
 }

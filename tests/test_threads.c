@@ -307,6 +307,161 @@ TEST(thread_multiple_concurrent)
 }
 
 /* ================================================================
+ * Named condition variables
+ * ================================================================ */
+
+TEST(condvar_make_with_name)
+{
+    const char *r = eval_print(
+        "(mp:make-condition-variable \"my-cv\")");
+    ASSERT(strstr(r, "#<CONDITION-VARIABLE") != NULL);
+    ASSERT(strstr(r, "my-cv") != NULL);
+}
+
+TEST(condvar_name_accessor)
+{
+    const char *r = eval_print(
+        "(mp:condition-name (mp:make-condition-variable \"test-cv\"))");
+    ASSERT_STR_EQ(r, "\"test-cv\"");
+}
+
+TEST(condvar_name_nil_when_unnamed)
+{
+    const char *r = eval_print(
+        "(mp:condition-name (mp:make-condition-variable))");
+    ASSERT_STR_EQ(r, "NIL");
+}
+
+/* ================================================================
+ * Lock name accessor
+ * ================================================================ */
+
+TEST(lock_name_accessor)
+{
+    const char *r = eval_print(
+        "(mp:lock-name (mp:make-lock \"my-lock\"))");
+    ASSERT_STR_EQ(r, "\"my-lock\"");
+}
+
+TEST(lock_name_nil_when_unnamed)
+{
+    const char *r = eval_print(
+        "(mp:lock-name (mp:make-lock))");
+    ASSERT_STR_EQ(r, "NIL");
+}
+
+/* ================================================================
+ * Type predicates
+ * ================================================================ */
+
+TEST(threadp_true)
+{
+    const char *r = eval_print("(mp:threadp (mp:current-thread))");
+    ASSERT_STR_EQ(r, "T");
+}
+
+TEST(threadp_false)
+{
+    const char *r = eval_print("(mp:threadp 42)");
+    ASSERT_STR_EQ(r, "NIL");
+}
+
+TEST(lockp_true)
+{
+    const char *r = eval_print("(mp:lockp (mp:make-lock))");
+    ASSERT_STR_EQ(r, "T");
+}
+
+TEST(lockp_false)
+{
+    const char *r = eval_print("(mp:lockp \"not-a-lock\")");
+    ASSERT_STR_EQ(r, "NIL");
+}
+
+TEST(condition_variable_p_true)
+{
+    const char *r = eval_print(
+        "(mp:condition-variable-p (mp:make-condition-variable))");
+    ASSERT_STR_EQ(r, "T");
+}
+
+TEST(condition_variable_p_false)
+{
+    const char *r = eval_print("(mp:condition-variable-p nil)");
+    ASSERT_STR_EQ(r, "NIL");
+}
+
+/* ================================================================
+ * interrupt-thread
+ * ================================================================ */
+
+TEST(interrupt_thread_basic)
+{
+    /* Interrupt a running thread to set a shared flag */
+    const char *r = eval_print(
+        "(let ((flag (list nil))"
+        "      (lk (mp:make-lock))"
+        "      (cv (mp:make-condition-variable)))"
+        "  (let ((thr (mp:make-thread"
+        "               (lambda ()"
+        "                 (mp:acquire-lock lk)"
+        "                 (loop until (car flag)"
+        "                       do (mp:condition-wait cv lk))"
+        "                 (mp:release-lock lk)"
+        "                 (car flag)))))"
+        "    (mp:thread-yield)"
+        "    (mp:interrupt-thread thr"
+        "      (lambda () (setf (car flag) :interrupted)))"
+        "    (mp:acquire-lock lk)"
+        "    (mp:condition-notify cv)"
+        "    (mp:release-lock lk)"
+        "    (mp:join-thread thr)))");
+    ASSERT_STR_EQ(r, ":INTERRUPTED");
+}
+
+TEST(interrupt_thread_self)
+{
+    /* Interrupting current thread calls function immediately */
+    const char *r = eval_print(
+        "(let ((x 0))"
+        "  (mp:interrupt-thread (mp:current-thread)"
+        "    (lambda () (setf x 42)))"
+        "  x)");
+    ASSERT_STR_EQ(r, "42");
+}
+
+/* ================================================================
+ * destroy-thread
+ * ================================================================ */
+
+TEST(destroy_thread_basic)
+{
+    /* Destroyed thread should be joinable and report aborted status */
+    const char *r = eval_print(
+        "(let ((thr (mp:make-thread"
+        "             (lambda ()"
+        "               (loop (mp:thread-yield))))))"
+        "  (mp:thread-yield)"
+        "  (mp:destroy-thread thr)"
+        "  (mp:join-thread thr)"
+        "  :destroyed)");
+    ASSERT_STR_EQ(r, ":DESTROYED");
+}
+
+TEST(destroy_thread_not_alive_after)
+{
+    const char *r = eval_print(
+        "(let ((thr (mp:make-thread"
+        "             (lambda ()"
+        "               (loop (mp:thread-yield))))))"
+        "  (mp:thread-yield)"
+        "  (mp:destroy-thread thr)"
+        "  (mp:join-thread thr)"
+        "  (mp:thread-alive-p thr))");
+    ASSERT_STR_EQ(r, "NIL");
+}
+
+/* ================================================================
  * GC stress under threads
  * ================================================================ */
 
@@ -357,6 +512,29 @@ int main(void)
     /* Condition variables */
     RUN(condvar_make);
     RUN(condvar_notify_wait);
+    RUN(condvar_make_with_name);
+    RUN(condvar_name_accessor);
+    RUN(condvar_name_nil_when_unnamed);
+
+    /* Lock name */
+    RUN(lock_name_accessor);
+    RUN(lock_name_nil_when_unnamed);
+
+    /* Type predicates */
+    RUN(threadp_true);
+    RUN(threadp_false);
+    RUN(lockp_true);
+    RUN(lockp_false);
+    RUN(condition_variable_p_true);
+    RUN(condition_variable_p_false);
+
+    /* Interrupt thread */
+    RUN(interrupt_thread_basic);
+    RUN(interrupt_thread_self);
+
+    /* Destroy thread */
+    RUN(destroy_thread_basic);
+    RUN(destroy_thread_not_alive_after);
 
     /* Dynamic bindings */
     RUN(thread_inherits_dynamic_bindings);

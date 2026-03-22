@@ -1162,9 +1162,16 @@ static void print_obj(CL_Obj obj)
         break;
     }
 
-    case TYPE_CONDVAR:
-        out_str("#<CONDITION-VARIABLE>");
+    case TYPE_CONDVAR: {
+        CL_CondVar *cv = (CL_CondVar *)CL_OBJ_TO_PTR(obj);
+        out_str("#<CONDITION-VARIABLE");
+        if (!CL_NULL_P(cv->name)) {
+            out_char(' ');
+            print_obj(cv->name);
+        }
+        out_char('>');
         break;
+    }
 
     case TYPE_FOREIGN_POINTER: {
         CL_ForeignPtr *fp = (CL_ForeignPtr *)CL_OBJ_TO_PTR(obj);

@@ -470,6 +470,7 @@ typedef struct {
 typedef struct {
     CL_Header hdr;
     uint32_t condvar_id;  /* Side table index -> void* (platform condvar) */
+    CL_Obj name;          /* CL string or NIL */
 } CL_CondVar;
 
 #define CL_CONDVAR_P(obj) (CL_HEAP_P(obj) && CL_HDR_TYPE(CL_OBJ_TO_PTR(obj)) == TYPE_CONDVAR)
