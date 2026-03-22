@@ -3674,6 +3674,76 @@
               (lambda () (length (make-list 200))))))
     (+ (mp:join-thread t1) (mp:join-thread t2))))
 
+; --- FFI (generic) ---
+(require "ffi")
+
+(check "ffi-package-exists" "FFI" (package-name (find-package "FFI")))
+(check "ffi-make-foreign-pointer" 'foreign-pointer (type-of (ffi:make-foreign-pointer 42)))
+(check "ffi-foreign-pointer-p" t (ffi:foreign-pointer-p (ffi:make-foreign-pointer 0)))
+(check "ffi-foreign-pointer-p-int" nil (ffi:foreign-pointer-p 42))
+(check "ffi-null-pointer-p-zero" t (ffi:null-pointer-p (ffi:make-foreign-pointer 0)))
+(check "ffi-null-pointer-p-nonzero" nil (ffi:null-pointer-p (ffi:make-foreign-pointer 1)))
+(check "ffi-foreign-pointer-address" 42 (ffi:foreign-pointer-address (ffi:make-foreign-pointer 42)))
+(check "ffi-alloc-free" nil
+  (let ((p (ffi:alloc-foreign 64)))
+    (prog1 (ffi:null-pointer-p p)
+      (ffi:free-foreign p))))
+(check "ffi-peek-poke-u32" 12345
+  (let ((p (ffi:alloc-foreign 16)))
+    (ffi:poke-u32 p 12345)
+    (prog1 (ffi:peek-u32 p)
+      (ffi:free-foreign p))))
+(check "ffi-peek-poke-u32-offset" 300
+  (let ((p (ffi:alloc-foreign 16)))
+    (ffi:poke-u32 p 100 0)
+    (ffi:poke-u32 p 200 4)
+    (prog1 (+ (ffi:peek-u32 p 0) (ffi:peek-u32 p 4))
+      (ffi:free-foreign p))))
+(check "ffi-peek-poke-u16" 1234
+  (let ((p (ffi:alloc-foreign 16)))
+    (ffi:poke-u16 p 1234)
+    (prog1 (ffi:peek-u16 p)
+      (ffi:free-foreign p))))
+(check "ffi-peek-poke-u8" 255
+  (let ((p (ffi:alloc-foreign 16)))
+    (ffi:poke-u8 p 255)
+    (prog1 (ffi:peek-u8 p)
+      (ffi:free-foreign p))))
+(check "ffi-foreign-string-roundtrip" "hello"
+  (let ((p (ffi:foreign-string "hello")))
+    (prog1 (ffi:foreign-to-string p)
+      (ffi:free-foreign p))))
+(check "ffi-pointer-plus" 120
+  (ffi:foreign-pointer-address (ffi:pointer+ (ffi:make-foreign-pointer 100) 20)))
+(check "ffi-with-foreign-alloc" 42
+  (ffi:with-foreign-alloc (p 16)
+    (ffi:poke-u32 p 42)
+    (ffi:peek-u32 p)))
+(check "ffi-defcstruct" '(100 200)
+  (progn
+    (ffi:defcstruct test-point (x :u16 0) (y :u16 2))
+    (ffi:with-foreign-alloc (p 4)
+      (setf (test-point-x p) 100)
+      (setf (test-point-y p) 200)
+      (list (test-point-x p) (test-point-y p)))))
+
+; --- FFI (Amiga-specific) ---
+#+amigaos
+(progn
+  (check "amiga-package-exists" "AMIGA" (package-name (find-package "AMIGA")))
+  (check "amiga-open-close-library" t
+    (let ((lib (amiga:open-library "dos.library" 36)))
+      (prog1 (not (null lib))
+        (amiga:close-library lib))))
+  ;; ExecBase is at absolute address 4 on all Amigas
+  (check "amiga-peek-execbase" t
+    (let ((p (ffi:make-foreign-pointer 4)))
+      (> (ffi:peek-u32 p) 0)))
+  (check "amiga-alloc-chip" t
+    (let ((p (amiga:alloc-chip 256)))
+      (prog1 (not (ffi:null-pointer-p p))
+        (amiga:free-chip p)))))
+
 ; --- Summary ---
 (format t "~%=== Results ===~%")
 (format t "Passed: ~A~%" *pass-count*)
