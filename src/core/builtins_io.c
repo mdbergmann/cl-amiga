@@ -2191,33 +2191,46 @@ static CL_Obj bi_require(CL_Obj *args, int n)
         char path[256];
         CL_Obj load_args[1];
         CL_Obj path_obj;
-        char *buf;
-        unsigned long size;
         int found = 0;
 
-        /* Try pre-compiled FASL first */
-        snprintf(path, sizeof(path), "lib/%.*s.fasl", (int)len, name);
-        buf = platform_file_read(path, &size);
-        if (buf) { found = 1; platform_free(buf); }
+        /* Try .fasl and .lisp; prefer .fasl only if newer than .lisp */
+        {
+            char fasl_path[256], lisp_path[256];
+            int have_fasl = 0, have_lisp = 0;
 
-        if (!found) {
-            snprintf(path, sizeof(path), "lib/%.*s.lisp", (int)len, name);
-            buf = platform_file_read(path, &size);
-            if (buf) { found = 1; platform_free(buf); }
-        }
+            snprintf(fasl_path, sizeof(fasl_path), "lib/%.*s.fasl", (int)len, name);
+            snprintf(lisp_path, sizeof(lisp_path), "lib/%.*s.lisp", (int)len, name);
+            have_fasl = platform_file_exists(fasl_path);
+            have_lisp = platform_file_exists(lisp_path);
 
 #ifdef PLATFORM_AMIGA
-        if (!found) {
-            snprintf(path, sizeof(path), "PROGDIR:lib/%.*s.fasl", (int)len, name);
-            buf = platform_file_read(path, &size);
-            if (buf) { found = 1; platform_free(buf); }
-        }
-        if (!found) {
-            snprintf(path, sizeof(path), "PROGDIR:lib/%.*s.lisp", (int)len, name);
-            buf = platform_file_read(path, &size);
-            if (buf) { found = 1; platform_free(buf); }
-        }
+            if (!have_fasl && !have_lisp) {
+                snprintf(fasl_path, sizeof(fasl_path), "PROGDIR:lib/%.*s.fasl", (int)len, name);
+                snprintf(lisp_path, sizeof(lisp_path), "PROGDIR:lib/%.*s.lisp", (int)len, name);
+                have_fasl = platform_file_exists(fasl_path);
+                have_lisp = platform_file_exists(lisp_path);
+            }
 #endif
+
+            if (have_fasl && have_lisp) {
+                /* Both exist: prefer FASL only if at least as new as source */
+                uint32_t fasl_mt = platform_file_mtime(fasl_path);
+                uint32_t lisp_mt = platform_file_mtime(lisp_path);
+                if (fasl_mt > 0 && fasl_mt >= lisp_mt) {
+                    snprintf(path, sizeof(path), "%s", fasl_path);
+                    found = 1;
+                } else {
+                    snprintf(path, sizeof(path), "%s", lisp_path);
+                    found = 1;
+                }
+            } else if (have_fasl) {
+                snprintf(path, sizeof(path), "%s", fasl_path);
+                found = 1;
+            } else if (have_lisp) {
+                snprintf(path, sizeof(path), "%s", lisp_path);
+                found = 1;
+            }
+        }
 
         if (!found)
             cl_error(CL_ERR_GENERAL, "REQUIRE: cannot find module file");

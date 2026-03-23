@@ -1104,6 +1104,25 @@ static CL_Obj bi_subtypep(CL_Obj *args, int n)
     int id1, id2, result;
     CL_UNUSED(n);
 
+    /* Expand deftype'd symbols before anything else */
+    if (CL_SYMBOL_P(type1)) {
+        CL_Obj expander = cl_get_type_expander(type1);
+        if (!CL_NULL_P(expander)) {
+            type1 = cl_vm_apply(expander, &type1, 0);
+            /* Recurse with expanded types */
+            CL_Obj rargs[2] = { type1, type2 };
+            return bi_subtypep(rargs, 2);
+        }
+    }
+    if (CL_SYMBOL_P(type2)) {
+        CL_Obj expander = cl_get_type_expander(type2);
+        if (!CL_NULL_P(expander)) {
+            type2 = cl_vm_apply(expander, &type2, 0);
+            CL_Obj rargs[2] = { type1, type2 };
+            return bi_subtypep(rargs, 2);
+        }
+    }
+
     /* Class objects as type specifiers: extract class name (slot 0) */
     if (CL_STRUCT_P(type1)) {
         CL_Struct *st = (CL_Struct *)CL_OBJ_TO_PTR(type1);

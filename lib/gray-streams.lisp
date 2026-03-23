@@ -255,7 +255,11 @@
       (orig-streamp (symbol-function 'streamp))
       (orig-input-stream-p (symbol-function 'input-stream-p))
       (orig-output-stream-p (symbol-function 'output-stream-p))
-      (orig-close (symbol-function 'close)))
+      (orig-close (symbol-function 'close))
+      (orig-open-stream-p (symbol-function 'open-stream-p))
+      (orig-stream-element-type (if (fboundp 'stream-element-type)
+                                    (symbol-function 'stream-element-type)
+                                    nil)))
 
   (defun %gray-stream-p (x)
     "Return T if X is a Gray stream (CLOS instance of fundamental-stream)."
@@ -277,27 +281,44 @@
     (or (funcall orig-streamp x)
         (%gray-stream-p x)))
 
-  ;; INPUT-STREAM-P — also true for gray input streams
-  (defun input-stream-p (x)
-    (if (%gray-stream-p x)
-        (typep x 'gray:fundamental-input-stream)
-        (funcall orig-input-stream-p x)))
+  ;; INPUT-STREAM-P — GF so libraries can add methods
+  (defgeneric input-stream-p (stream))
+  (defmethod input-stream-p ((stream gray:fundamental-input-stream))
+    t)
+  (defmethod input-stream-p ((stream t))
+    (funcall orig-input-stream-p stream))
 
-  ;; OUTPUT-STREAM-P — also true for gray output streams
-  (defun output-stream-p (x)
-    (if (%gray-stream-p x)
-        (typep x 'gray:fundamental-output-stream)
-        (funcall orig-output-stream-p x)))
+  ;; OUTPUT-STREAM-P — GF so libraries can add methods
+  (defgeneric output-stream-p (stream))
+  (defmethod output-stream-p ((stream gray:fundamental-output-stream))
+    t)
+  (defmethod output-stream-p ((stream t))
+    (funcall orig-output-stream-p stream))
 
-  ;; CLOSE — handle gray streams
-  (defun close (stream &key abort)
+  ;; CLOSE — define as GF so libraries can add methods (e.g. flexi-streams)
+  ;; while built-in streams keep working via the default (T) method.
+  (defgeneric close (stream &key abort))
+  (defmethod close ((stream gray:fundamental-stream) &key abort)
     (declare (ignore abort))
-    (if (%gray-stream-p stream)
-        (progn (setf (slot-value stream 'open-p) nil) t)
-        (funcall orig-close stream)))
+    (setf (slot-value stream 'open-p) nil)
+    t)
+  (defmethod close ((stream t) &key abort)
+    (declare (ignore abort))
+    (funcall orig-close stream))
 
-  ;; OPEN-STREAM-P — handle gray streams
-  ;; (the C builtin is already defined, we override at Lisp level)
+  ;; OPEN-STREAM-P — GF so libraries can add methods
+  (defgeneric open-stream-p (stream))
+  (defmethod open-stream-p ((stream gray:fundamental-stream))
+    (slot-value stream 'open-p))
+  (defmethod open-stream-p ((stream t))
+    (funcall orig-open-stream-p stream))
+
+  ;; STREAM-ELEMENT-TYPE — GF so libraries can add methods
+  (defgeneric stream-element-type (stream))
+  (defmethod stream-element-type ((stream t))
+    (if orig-stream-element-type
+        (funcall orig-stream-element-type stream)
+        'character))
 
   ;; READ-CHAR
   (defun read-char (&optional stream (eof-error-p t) eof-value recursive-p)

@@ -621,6 +621,22 @@
 (check "eval-when multiple" 30 (eval-when (:compile-toplevel :load-toplevel :execute) (+ 10 20)))
 (check "eval-when body" 3 (eval-when (:execute) 1 2 3))
 
+; --- load-time-value ---
+(check "ltv basic" 3 (load-time-value (+ 1 2)))
+(check "ltv list" '(1 2 3) (load-time-value (list 1 2 3)))
+(check "ltv constant" 42 (load-time-value 42))
+(check "ltv t" t (load-time-value t))
+(check "ltv nil" nil (load-time-value nil))
+(check "ltv read-only" 30 (load-time-value (+ 10 20) t))
+(defun ltv-fn () (load-time-value (cons 'a 'b)))
+(check "ltv in function" '(a . b) (ltv-fn))
+(check "ltv same object" t (eq (ltv-fn) (ltv-fn)))
+
+; --- get-properties ---
+(check "get-properties found" '(:b 2 (:b 2 :c 3)) (multiple-value-list (get-properties '(:a 1 :b 2 :c 3) '(:b :c))))
+(check "get-properties not found" '(nil nil nil) (multiple-value-list (get-properties '(:a 1) '(:x))))
+(check "get-properties empty" '(nil nil nil) (multiple-value-list (get-properties '() '(:a))))
+
 ; --- destructuring-bind ---
 (check "d-bind simple" '(1 2 3) (destructuring-bind (a b c) '(1 2 3) (list a b c)))
 (check "d-bind nested" '(1 2 3 (4 5)) (destructuring-bind (a (b c) &rest d) '(1 (2 3) 4 5) (list a b c d)))
