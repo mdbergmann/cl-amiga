@@ -101,13 +101,40 @@ TEST(make_array_initial_contents)
 
 TEST(make_array_fill_pointer)
 {
-    /* :fill-pointer T starts at 0 */
-    ASSERT_EQ_INT(eval_int("(fill-pointer (make-array 10 :fill-pointer t))"), 0);
+    /* :fill-pointer T starts at array size (CLHS) */
+    ASSERT_EQ_INT(eval_int("(fill-pointer (make-array 10 :fill-pointer t))"), 10);
     /* :fill-pointer integer */
     ASSERT_EQ_INT(eval_int("(fill-pointer (make-array 10 :fill-pointer 5))"), 5);
     /* length respects fill pointer */
     ASSERT_EQ_INT(eval_int(
         "(length (make-array 10 :fill-pointer 3))"), 3);
+}
+
+TEST(make_array_fill_pointer_t_string)
+{
+    /* :fill-pointer T for character arrays should init to array size */
+    ASSERT_EQ_INT(eval_int(
+        "(fill-pointer (make-array 3 :element-type 'character :fill-pointer t :adjustable t))"), 3);
+    /* Verify content is accessible */
+    ASSERT_STR_EQ(eval_print(
+        "(let ((s (make-array 2 :element-type 'character :fill-pointer t :adjustable t)))"
+        "  (setf (aref s 0) #\\a) (setf (aref s 1) #\\b) s)"), "\"ab\"");
+    /* vector-push-extend works after fill-pointer T */
+    ASSERT_STR_EQ(eval_print(
+        "(let ((s (make-array 2 :element-type 'character :fill-pointer t :adjustable t)))"
+        "  (setf (aref s 0) #\\x) (setf (aref s 1) #\\y)"
+        "  (vector-push-extend #\\z s) s)"), "\"xyz\"");
+}
+
+TEST(make_array_initial_contents_string)
+{
+    /* :initial-contents with a string source */
+    ASSERT_STR_EQ(eval_print(
+        "(coerce (make-array 3 :element-type 'character :fill-pointer t :adjustable t"
+        "                    :initial-contents \"abc\") 'string)"), "\"abc\"");
+    /* :initial-contents with a vector source */
+    ASSERT_STR_EQ(eval_print(
+        "(make-array 3 :element-type 'character :initial-contents '(#\\x #\\y #\\z))"), "\"xyz\"");
 }
 
 TEST(make_array_adjustable)
@@ -684,6 +711,8 @@ int main(void)
     RUN(make_array_initial_element);
     RUN(make_array_initial_contents);
     RUN(make_array_fill_pointer);
+    RUN(make_array_fill_pointer_t_string);
+    RUN(make_array_initial_contents_string);
     RUN(make_array_adjustable);
     RUN(make_array_2d);
     RUN(make_array_3d);

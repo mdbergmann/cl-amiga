@@ -17,6 +17,7 @@
 #include "vm.h"
 #include "compiler.h"
 #include "readtable.h"
+#include "string_utils.h"
 #include "../platform/platform.h"
 #include <string.h>
 
@@ -436,7 +437,7 @@ static int typep_check(CL_Obj obj, CL_Obj type_spec)
            (simple-base-string size) */
         if (head == TYPE_SYM_STRING || head == TYPE_SYM_SIMPLE_STRING ||
             head == TYPE_SYM_BASE_STRING || head == TYPE_SYM_SIMPLE_BASE_STRING) {
-            if (!CL_STRING_P(obj)) return 0;
+            if (!CL_ANY_STRING_P(obj)) return 0;
             if (!CL_NULL_P(args)) {
                 CL_Obj size_spec = cl_car(args);
                 if (CL_FIXNUM_P(size_spec)) {
@@ -614,7 +615,7 @@ static CL_Obj bi_coerce(CL_Obj *args, int n)
     /* (coerce x 'string) or 'simple-string or 'base-string or 'simple-base-string */
     if (strcmp(tname, "STRING") == 0 || strcmp(tname, "SIMPLE-STRING") == 0 ||
         strcmp(tname, "BASE-STRING") == 0 || strcmp(tname, "SIMPLE-BASE-STRING") == 0) {
-        if (CL_STRING_P(obj)) return obj;
+        if (CL_ANY_STRING_P(obj)) return obj;
         if (CL_NULL_P(obj)) return cl_make_string("NIL", 3);
         if (CL_SYMBOL_P(obj)) {
             const char *sname = cl_symbol_name(obj);
@@ -630,16 +631,14 @@ static CL_Obj bi_coerce(CL_Obj *args, int n)
             uint32_t len = 0;
             uint32_t i;
             CL_Obj result;
-            CL_String *s;
             while (!CL_NULL_P(p)) { len++; p = cl_cdr(p); }
             result = cl_make_string(NULL, len);
-            s = (CL_String *)CL_OBJ_TO_PTR(result);
             p = obj;
             for (i = 0; i < len; i++) {
                 CL_Obj elem = cl_car(p);
                 if (!CL_CHAR_P(elem))
                     cl_error(CL_ERR_TYPE, "COERCE: list element is not a character");
-                s->data[i] = (char)CL_CHAR_VAL(elem);
+                cl_string_set_char_at(result, i, CL_CHAR_VAL(elem));
                 p = cl_cdr(p);
             }
             return result;
@@ -651,11 +650,10 @@ static CL_Obj bi_coerce(CL_Obj *args, int n)
             CL_Obj *elts = cl_vector_data(v);
             uint32_t i;
             CL_Obj result = cl_make_string(NULL, len);
-            CL_String *s = (CL_String *)CL_OBJ_TO_PTR(result);
             for (i = 0; i < len; i++) {
                 if (!CL_CHAR_P(elts[i]))
                     cl_error(CL_ERR_TYPE, "COERCE: vector element is not a character");
-                s->data[i] = (char)CL_CHAR_VAL(elts[i]);
+                cl_string_set_char_at(result, i, CL_CHAR_VAL(elts[i]));
             }
             return result;
         }
@@ -719,17 +717,14 @@ static CL_Obj bi_coerce(CL_Obj *args, int n)
             CL_GC_UNPROTECT(1);
             return result;
         }
-        if (CL_STRING_P(obj)) {
-            CL_String *s;
+        if (CL_ANY_STRING_P(obj)) {
             CL_Obj result = CL_NIL;
             uint32_t i;
             CL_GC_PROTECT(result);
-            s = (CL_String *)CL_OBJ_TO_PTR(obj);
-            i = s->length;
+            i = cl_string_length(obj);
             while (i > 0) {
                 i--;
-                s = (CL_String *)CL_OBJ_TO_PTR(obj);
-                result = cl_cons(CL_MAKE_CHAR((unsigned char)s->data[i]), result);
+                result = cl_cons(CL_MAKE_CHAR(cl_string_char_at(obj, i)), result);
             }
             CL_GC_UNPROTECT(1);
             return result;
@@ -741,16 +736,13 @@ static CL_Obj bi_coerce(CL_Obj *args, int n)
     /* (coerce x 'vector) or (coerce x 'simple-vector) */
     if (strcmp(tname, "VECTOR") == 0 || strcmp(tname, "SIMPLE-VECTOR") == 0) {
         if (CL_VECTOR_P(obj)) return obj;
-        if (CL_STRING_P(obj)) {
-            CL_String *s = (CL_String *)CL_OBJ_TO_PTR(obj);
-            uint32_t slen = s->length;
+        if (CL_ANY_STRING_P(obj)) {
+            uint32_t slen = cl_string_length(obj);
             uint32_t ii;
             CL_Obj vec = cl_make_vector(slen);
-            CL_Vector *v;
-            s = (CL_String *)CL_OBJ_TO_PTR(obj);
-            v = (CL_Vector *)CL_OBJ_TO_PTR(vec);
+            CL_Vector *v = (CL_Vector *)CL_OBJ_TO_PTR(vec);
             for (ii = 0; ii < slen; ii++)
-                cl_vector_data(v)[ii] = CL_MAKE_CHAR((unsigned char)s->data[ii]);
+                cl_vector_data(v)[ii] = CL_MAKE_CHAR(cl_string_char_at(obj, ii));
             return vec;
         }
         if (CL_BIT_VECTOR_P(obj)) {
@@ -823,7 +815,7 @@ static CL_Obj bi_coerce(CL_Obj *args, int n)
     /* (coerce x 'pathname) */
     if (strcmp(tname, "PATHNAME") == 0) {
         if (CL_PATHNAME_P(obj)) return obj;
-        if (CL_STRING_P(obj)) {
+        if (CL_ANY_STRING_P(obj)) {
             extern CL_Obj cl_parse_namestring(const char *str, uint32_t len);
             CL_String *s = (CL_String *)CL_OBJ_TO_PTR(obj);
             return cl_parse_namestring(s->data, s->length);

@@ -3,6 +3,7 @@
 #include "package.h"
 #include "mem.h"
 #include "error.h"
+#include "string_utils.h"
 #include "../platform/platform.h"
 #include <string.h>
 
@@ -14,6 +15,44 @@ static void defun(const char *name, CL_CFunc func, int min, int max)
     CL_Symbol *s = (CL_Symbol *)CL_OBJ_TO_PTR(sym);
     s->function = fn;
     s->value = fn;
+}
+
+/* Helper: get element from any 1D sequence (list, string, vector) */
+static CL_Obj seq_elt(CL_Obj seq, uint32_t index)
+{
+    if (CL_ANY_STRING_P(seq)) {
+        return CL_MAKE_CHAR(cl_string_char_at(seq, index));
+    }
+    if (CL_VECTOR_P(seq)) {
+        CL_Vector *v = (CL_Vector *)CL_OBJ_TO_PTR(seq);
+        return cl_vector_data(v)[index];
+    }
+    /* List: iterate to index (slow, but correct) */
+    {
+        uint32_t i;
+        CL_Obj cur = seq;
+        for (i = 0; i < index && CL_CONS_P(cur); i++)
+            cur = cl_cdr(cur);
+        return CL_CONS_P(cur) ? cl_car(cur) : CL_NIL;
+    }
+}
+
+static uint32_t seq_length(CL_Obj seq)
+{
+    if (CL_ANY_STRING_P(seq)) {
+        return cl_string_length(seq);
+    }
+    if (CL_VECTOR_P(seq)) {
+        CL_Vector *v = (CL_Vector *)CL_OBJ_TO_PTR(seq);
+        return cl_vector_active_length(v);
+    }
+    /* List: count */
+    {
+        uint32_t len = 0;
+        CL_Obj cur = seq;
+        while (CL_CONS_P(cur)) { len++; cur = cl_cdr(cur); }
+        return len;
+    }
 }
 
 /* --- Pre-interned keyword symbols --- */
@@ -53,6 +92,7 @@ static CL_Obj bi_make_array(CL_Obj *args, int n)
     int element_type_bit = 0;
     int element_type_char = 0;
     uint32_t fill_ptr = CL_NO_FILL_POINTER;
+    int fill_pointer_is_t = 0;
     uint8_t flags = 0;
     int i;
 
@@ -65,9 +105,9 @@ static CL_Obj bi_make_array(CL_Obj *args, int n)
             initial_contents = args[i + 1];
             has_initial_contents = 1;
         } else if (args[i] == KW_FILL_POINTER) {
-            /* :fill-pointer T means start at 0, integer means that value */
+            /* :fill-pointer T means start at array size (CLHS), integer means that value */
             if (args[i + 1] == SYM_T) {
-                fill_ptr = 0;
+                fill_pointer_is_t = 1;
                 flags |= CL_VEC_FLAG_FILL_POINTER;
             } else if (CL_FIXNUM_P(args[i + 1])) {
                 fill_ptr = (uint32_t)CL_FIXNUM_VAL(args[i + 1]);
@@ -99,6 +139,10 @@ static CL_Obj bi_make_array(CL_Obj *args, int n)
         uint32_t length = (uint32_t)CL_FIXNUM_VAL(dim_arg);
         CL_Obj result;
         CL_Vector *v;
+
+        /* :fill-pointer T means fill-pointer = array size (CLHS) */
+        if (fill_pointer_is_t)
+            fill_ptr = length;
 
         /* Bit vector path */
         if (element_type_bit) {
@@ -148,11 +192,10 @@ static CL_Obj bi_make_array(CL_Obj *args, int n)
                 for (j = 0; j < length; j++)
                     cl_vector_data(v)[j] = init_char;
                 if (has_initial_contents) {
-                    CL_Obj cur = initial_contents;
-                    for (j = 0; j < length && !CL_NULL_P(cur); j++) {
-                        cl_vector_data(v)[j] = cl_car(cur);
-                        cur = cl_cdr(cur);
-                    }
+                    uint32_t ic_len = seq_length(initial_contents);
+                    if (ic_len > length) ic_len = length;
+                    for (j = 0; j < ic_len; j++)
+                        cl_vector_data(v)[j] = seq_elt(initial_contents, j);
                 }
                 return result;
             }
@@ -160,24 +203,25 @@ static CL_Obj bi_make_array(CL_Obj *args, int n)
             {
                 char init_char = ' ';
                 CL_Obj str;
-                CL_String *s;
                 if (has_initial_element) {
                     if (!CL_CHAR_P(initial_element))
                         cl_error(CL_ERR_TYPE, "MAKE-ARRAY: :initial-element for character array must be a character");
                     init_char = (char)CL_CHAR_VAL(initial_element);
                 }
                 str = cl_make_string(NULL, length);
-                s = (CL_String *)CL_OBJ_TO_PTR(str);
-                memset(s->data, init_char, length);
-                s->data[length] = '\0';
-                if (has_initial_contents) {
-                    CL_Obj cur = initial_contents;
+                {
                     uint32_t j;
-                    for (j = 0; j < length && !CL_NULL_P(cur); j++) {
-                        CL_Obj elem = cl_car(cur);
+                    for (j = 0; j < length; j++)
+                        cl_string_set_char_at(str, j, init_char);
+                }
+                if (has_initial_contents) {
+                    uint32_t j;
+                    uint32_t ic_len = seq_length(initial_contents);
+                    if (ic_len > length) ic_len = length;
+                    for (j = 0; j < ic_len; j++) {
+                        CL_Obj elem = seq_elt(initial_contents, j);
                         if (CL_CHAR_P(elem))
-                            s->data[j] = (char)CL_CHAR_VAL(elem);
-                        cur = cl_cdr(cur);
+                            cl_string_set_char_at(str, j, CL_CHAR_VAL(elem));
                     }
                 }
                 return str;
@@ -206,14 +250,13 @@ static CL_Obj bi_make_array(CL_Obj *args, int n)
             for (j = 0; j < length; j++)
                 elts[j] = initial_element;
         } else if (has_initial_contents) {
-            /* :initial-contents is a list for 1D */
-            uint32_t j = 0;
-            CL_Obj cur = initial_contents;
+            /* :initial-contents can be any sequence for 1D */
+            uint32_t j;
+            uint32_t ic_len = seq_length(initial_contents);
             CL_Obj *elts = cl_vector_data(v);
-            while (!CL_NULL_P(cur) && j < length) {
-                elts[j++] = cl_car(cur);
-                cur = cl_cdr(cur);
-            }
+            if (ic_len > length) ic_len = length;
+            for (j = 0; j < ic_len; j++)
+                elts[j] = seq_elt(initial_contents, j);
         }
         return result;
     }
@@ -237,6 +280,12 @@ static CL_Obj bi_make_array(CL_Obj *args, int n)
             cur = cl_cdr(cur);
         }
 
+        /* :fill-pointer T means fill-pointer = array size (CLHS) */
+        if (fill_pointer_is_t && rank == 1)
+            fill_ptr = dims[0];
+        else if (fill_pointer_is_t && rank == 0)
+            fill_ptr = 1;
+
         if (rank == 0) {
             /* 0-dimensional array: single element */
             return cl_make_array(1, 0, NULL, flags, fill_ptr);
@@ -245,24 +294,25 @@ static CL_Obj bi_make_array(CL_Obj *args, int n)
             /* 1D character array from list dimension: create string */
             char init_char = ' ';
             CL_Obj str;
-            CL_String *s;
             if (has_initial_element) {
                 if (!CL_CHAR_P(initial_element))
                     cl_error(CL_ERR_TYPE, "MAKE-ARRAY: :initial-element for character array must be a character");
                 init_char = (char)CL_CHAR_VAL(initial_element);
             }
             str = cl_make_string(NULL, dims[0]);
-            s = (CL_String *)CL_OBJ_TO_PTR(str);
-            memset(s->data, init_char, dims[0]);
-            s->data[dims[0]] = '\0';
+            {
+                uint32_t j;
+                for (j = 0; j < dims[0]; j++)
+                    cl_string_set_char_at(str, j, init_char);
+            }
             if (has_initial_contents) {
                 uint32_t j;
-                cur = initial_contents;
-                for (j = 0; j < dims[0] && !CL_NULL_P(cur); j++) {
-                    CL_Obj elem = cl_car(cur);
+                uint32_t ic_len = seq_length(initial_contents);
+                if (ic_len > dims[0]) ic_len = dims[0];
+                for (j = 0; j < ic_len; j++) {
+                    CL_Obj elem = seq_elt(initial_contents, j);
                     if (CL_CHAR_P(elem))
-                        s->data[j] = (char)CL_CHAR_VAL(elem);
-                    cur = cl_cdr(cur);
+                        cl_string_set_char_at(str, j, CL_CHAR_VAL(elem));
                 }
             }
             return str;
@@ -327,17 +377,16 @@ static CL_Obj bi_aref(CL_Obj *args, int n)
             cl_error(CL_ERR_ARGS, "AREF: index %d out of range", (int)idx);
         return CL_MAKE_FIXNUM(cl_bv_get_bit(bv, (uint32_t)idx));
     }
-    if (CL_STRING_P(args[0])) {
-        CL_String *s = (CL_String *)CL_OBJ_TO_PTR(args[0]);
+    if (CL_ANY_STRING_P(args[0])) {
         int32_t idx;
         if (n < 2)
             cl_error(CL_ERR_ARGS, "AREF: too few arguments");
         if (!CL_FIXNUM_P(args[1]))
             cl_error(CL_ERR_TYPE, "AREF: index must be a fixnum");
         idx = CL_FIXNUM_VAL(args[1]);
-        if (idx < 0 || (uint32_t)idx >= s->length)
+        if (idx < 0 || (uint32_t)idx >= cl_string_length(args[0]))
             cl_error(CL_ERR_ARGS, "AREF: index %d out of range", (int)idx);
-        return CL_MAKE_CHAR((unsigned char)s->data[idx]);
+        return CL_MAKE_CHAR(cl_string_char_at(args[0], (uint32_t)idx));
     }
     if (!CL_VECTOR_P(args[0]))
         cl_error(CL_ERR_TYPE, "AREF: not an array");
@@ -431,19 +480,18 @@ static CL_Obj bi_setf_aref(CL_Obj *args, int n)
         return value;
     }
 
-    if (CL_STRING_P(array)) {
-        CL_String *s = (CL_String *)CL_OBJ_TO_PTR(array);
+    if (CL_ANY_STRING_P(array)) {
         int32_t idx;
         if (nindices != 1)
             cl_error(CL_ERR_ARGS, "%SETF-AREF: expected 1 index for string");
         if (!CL_FIXNUM_P(args[2]))
             cl_error(CL_ERR_TYPE, "%SETF-AREF: index must be a fixnum");
         idx = CL_FIXNUM_VAL(args[2]);
-        if (idx < 0 || (uint32_t)idx >= s->length)
+        if (idx < 0 || (uint32_t)idx >= cl_string_length(array))
             cl_error(CL_ERR_ARGS, "%SETF-AREF: index %d out of range", (int)idx);
         if (!CL_CHAR_P(value))
             cl_error(CL_ERR_TYPE, "%SETF-AREF: value must be a character for string");
-        s->data[idx] = (char)CL_CHAR_VAL(value);
+        cl_string_set_char_at(array, (uint32_t)idx, CL_CHAR_VAL(value));
         return value;
     }
 
@@ -506,7 +554,7 @@ static CL_Obj bi_vectorp(CL_Obj *args, int n)
 {
     CL_UNUSED(n);
     /* Strings and bit-vectors are vectors per CL spec */
-    if (CL_STRING_P(args[0])) return SYM_T;
+    if (CL_ANY_STRING_P(args[0])) return SYM_T;
     if (CL_BIT_VECTOR_P(args[0])) return SYM_T;
     if (!CL_VECTOR_P(args[0])) return CL_NIL;
     /* vectorp is false for multi-dim arrays */
@@ -520,7 +568,7 @@ static CL_Obj bi_vectorp(CL_Obj *args, int n)
 static CL_Obj bi_arrayp(CL_Obj *args, int n)
 {
     CL_UNUSED(n);
-    return (CL_VECTOR_P(args[0]) || CL_STRING_P(args[0]) || CL_BIT_VECTOR_P(args[0])) ? SYM_T : CL_NIL;
+    return (CL_VECTOR_P(args[0]) || CL_ANY_STRING_P(args[0]) || CL_BIT_VECTOR_P(args[0])) ? SYM_T : CL_NIL;
 }
 
 /* (simple-vector-p obj) — true for 1D, element-type T, no fill-pointer, not adjustable */
@@ -542,9 +590,9 @@ static CL_Obj bi_adjustable_array_p(CL_Obj *args, int n)
         CL_BitVector *bv = (CL_BitVector *)CL_OBJ_TO_PTR(args[0]);
         return (bv->flags & CL_VEC_FLAG_ADJUSTABLE) ? SYM_T : CL_NIL;
     }
-    if (!CL_VECTOR_P(args[0]) && !CL_STRING_P(args[0]))
+    if (!CL_VECTOR_P(args[0]) && !CL_ANY_STRING_P(args[0]))
         cl_error(CL_ERR_TYPE, "ADJUSTABLE-ARRAY-P: not an array");
-    if (CL_STRING_P(args[0])) return CL_NIL;  /* strings are never adjustable */
+    if (CL_ANY_STRING_P(args[0])) return CL_NIL;  /* strings are never adjustable */
     v = (CL_Vector *)CL_OBJ_TO_PTR(args[0]);
     return (v->flags & CL_VEC_FLAG_ADJUSTABLE) ? SYM_T : CL_NIL;
 }
@@ -653,7 +701,7 @@ static CL_Obj bi_array_total_size(CL_Obj *args, int n)
 static CL_Obj bi_array_element_type(CL_Obj *args, int n)
 {
     CL_UNUSED(n);
-    if (CL_STRING_P(args[0]))
+    if (CL_ANY_STRING_P(args[0]))
         return cl_intern("CHARACTER", 9);
     if (CL_BIT_VECTOR_P(args[0]))
         return cl_intern("BIT", 3);
@@ -744,14 +792,13 @@ static CL_Obj bi_row_major_aref(CL_Obj *args, int n)
             cl_error(CL_ERR_ARGS, "ROW-MAJOR-AREF: index out of range");
         return CL_MAKE_FIXNUM(cl_bv_get_bit(bv, (uint32_t)idx));
     }
-    if (CL_STRING_P(args[0])) {
-        CL_String *s = (CL_String *)CL_OBJ_TO_PTR(args[0]);
+    if (CL_ANY_STRING_P(args[0])) {
         if (!CL_FIXNUM_P(args[1]))
             cl_error(CL_ERR_TYPE, "ROW-MAJOR-AREF: index must be a fixnum");
         idx = CL_FIXNUM_VAL(args[1]);
-        if (idx < 0 || (uint32_t)idx >= s->length)
+        if (idx < 0 || (uint32_t)idx >= cl_string_length(args[0]))
             cl_error(CL_ERR_ARGS, "ROW-MAJOR-AREF: index %d out of range", (int)idx);
-        return CL_MAKE_CHAR((unsigned char)s->data[idx]);
+        return CL_MAKE_CHAR(cl_string_char_at(args[0], (uint32_t)idx));
     }
     if (!CL_VECTOR_P(args[0]))
         cl_error(CL_ERR_TYPE, "ROW-MAJOR-AREF: not an array");
@@ -787,16 +834,15 @@ static CL_Obj bi_setf_row_major_aref(CL_Obj *args, int n)
         cl_bv_set_bit(bv, (uint32_t)idx, val);
         return args[2];
     }
-    if (CL_STRING_P(args[0])) {
-        CL_String *s = (CL_String *)CL_OBJ_TO_PTR(args[0]);
+    if (CL_ANY_STRING_P(args[0])) {
         if (!CL_FIXNUM_P(args[1]))
             cl_error(CL_ERR_TYPE, "%SETF-ROW-MAJOR-AREF: index must be a fixnum");
         idx = CL_FIXNUM_VAL(args[1]);
-        if (idx < 0 || (uint32_t)idx >= s->length)
+        if (idx < 0 || (uint32_t)idx >= cl_string_length(args[0]))
             cl_error(CL_ERR_ARGS, "%SETF-ROW-MAJOR-AREF: index %d out of range", (int)idx);
         if (!CL_CHAR_P(args[2]))
             cl_error(CL_ERR_TYPE, "%SETF-ROW-MAJOR-AREF: value must be a character for string");
-        s->data[idx] = (char)CL_CHAR_VAL(args[2]);
+        cl_string_set_char_at(args[0], (uint32_t)idx, CL_CHAR_VAL(args[2]));
         return args[2];
     }
     if (!CL_VECTOR_P(args[0]))
@@ -1028,8 +1074,8 @@ static CL_Obj bi_adjust_array(CL_Obj *args, int n)
             has_ie = 1;
         } else if (args[i] == KW_FILL_POINTER) {
             if (args[i + 1] == SYM_T) {
-                new_fp = (old_vec->fill_pointer != CL_NO_FILL_POINTER)
-                         ? old_vec->fill_pointer : new_len;
+                /* :fill-pointer T means set to total size (CLHS) */
+                new_fp = new_len;
                 has_fp = 1;
             } else if (CL_FIXNUM_P(args[i + 1])) {
                 new_fp = (uint32_t)CL_FIXNUM_VAL(args[i + 1]);

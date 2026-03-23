@@ -4,6 +4,7 @@
 #include "mem.h"
 #include "error.h"
 #include "vm.h"
+#include "string_utils.h"
 #include "../platform/platform.h"
 #include <string.h>
 
@@ -80,9 +81,8 @@ static int32_t seq_length(CL_Obj seq)
         CL_Vector *v = (CL_Vector *)CL_OBJ_TO_PTR(seq);
         return (int32_t)cl_vector_active_length(v);
     }
-    if (CL_STRING_P(seq)) {
-        CL_String *s = (CL_String *)CL_OBJ_TO_PTR(seq);
-        return (int32_t)s->length;
+    if (CL_ANY_STRING_P(seq)) {
+        return (int32_t)cl_string_length(seq);
     }
     if (CL_BIT_VECTOR_P(seq)) {
         CL_BitVector *bv = (CL_BitVector *)CL_OBJ_TO_PTR(seq);
@@ -103,10 +103,9 @@ static CL_Obj seq_elt(CL_Obj seq, int32_t idx)
         if ((uint32_t)idx >= cl_vector_active_length(v)) cl_error(CL_ERR_ARGS, "index out of bounds");
         return cl_vector_data(v)[idx];
     }
-    if (CL_STRING_P(seq)) {
-        CL_String *s = (CL_String *)CL_OBJ_TO_PTR(seq);
-        if ((uint32_t)idx >= s->length) cl_error(CL_ERR_ARGS, "index out of bounds");
-        return CL_MAKE_CHAR((unsigned char)s->data[idx]);
+    if (CL_ANY_STRING_P(seq)) {
+        if ((uint32_t)idx >= cl_string_length(seq)) cl_error(CL_ERR_ARGS, "index out of bounds");
+        return CL_MAKE_CHAR(cl_string_char_at(seq, (uint32_t)idx));
     }
     if (CL_BIT_VECTOR_P(seq)) {
         CL_BitVector *bv = (CL_BitVector *)CL_OBJ_TO_PTR(seq);
@@ -125,8 +124,8 @@ static CL_Obj seq_elt(CL_Obj seq, int32_t idx)
 static int32_t every_seq_len(CL_Obj seq)
 {
     if (CL_NULL_P(seq)) return 0;
-    if (CL_STRING_P(seq))
-        return (int32_t)((CL_String *)CL_OBJ_TO_PTR(seq))->length;
+    if (CL_ANY_STRING_P(seq))
+        return (int32_t)cl_string_length(seq);
     if (CL_VECTOR_P(seq)) {
         CL_Vector *v = (CL_Vector *)CL_OBJ_TO_PTR(seq);
         return (int32_t)cl_vector_active_length(v);
@@ -141,9 +140,8 @@ static int32_t every_seq_len(CL_Obj seq)
 /* Helper: get element at index for non-list sequences */
 static CL_Obj every_seq_elt(CL_Obj seq, int32_t idx)
 {
-    if (CL_STRING_P(seq)) {
-        CL_String *s = (CL_String *)CL_OBJ_TO_PTR(seq);
-        return CL_MAKE_CHAR((unsigned char)s->data[idx]);
+    if (CL_ANY_STRING_P(seq)) {
+        return CL_MAKE_CHAR(cl_string_char_at(seq, (uint32_t)idx));
     }
     if (CL_VECTOR_P(seq)) {
         CL_Vector *v = (CL_Vector *)CL_OBJ_TO_PTR(seq);

@@ -8,6 +8,7 @@
 #include "error.h"
 #include "compiler.h"
 #include "printer.h"
+#include "string_utils.h"
 #include "../platform/platform.h"
 #include "../platform/platform_thread.h"
 #include <stdio.h>
@@ -2627,14 +2628,14 @@ static CL_Obj cl_vm_run(int base_fp, int base_nlx)
                 if (v != 0 && v != 1)
                     cl_error(CL_ERR_TYPE, "ASET: value must be 0 or 1 for bit vector");
                 cl_bv_set_bit(bv, (uint32_t)idx, v);
-            } else if (CL_STRING_P(vec_obj)) {
-                CL_String *str = (CL_String *)CL_OBJ_TO_PTR(vec_obj);
-                if (idx < 0 || (uint32_t)idx >= str->length)
+            } else if (CL_ANY_STRING_P(vec_obj)) {
+                uint32_t slen = cl_string_length(vec_obj);
+                if (idx < 0 || (uint32_t)idx >= slen)
                     cl_error(CL_ERR_ARGS, "ASET: index %d out of range (0-%lu)",
-                             (int)idx, (unsigned long)(str->length - 1));
+                             (int)idx, (unsigned long)(slen - 1));
                 if (!CL_CHAR_P(val))
                     cl_error(CL_ERR_TYPE, "ASET: value must be a character for string");
-                str->data[idx] = (char)CL_CHAR_VAL(val);
+                cl_string_set_char_at(vec_obj, (uint32_t)idx, CL_CHAR_VAL(val));
             } else if (CL_VECTOR_P(vec_obj)) {
                 CL_Vector *vec = (CL_Vector *)CL_OBJ_TO_PTR(vec_obj);
                 if (idx < 0 || (uint32_t)idx >= vec->length)

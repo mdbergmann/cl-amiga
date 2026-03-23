@@ -7,6 +7,7 @@
 #include "mem.h"
 #include "error.h"
 #include "vm.h"
+#include "string_utils.h"
 #include "../platform/platform.h"
 #include <string.h>
 #include <stdio.h>
@@ -198,21 +199,23 @@ static int keys_equal(CL_Obj a, CL_Obj b, uint32_t test)
         return ((CL_DoubleFloat *)CL_OBJ_TO_PTR(a))->value ==
                ((CL_DoubleFloat *)CL_OBJ_TO_PTR(b))->value;
 
-    if (CL_STRING_P(a) && CL_STRING_P(b)) {
-        CL_String *sa = (CL_String *)CL_OBJ_TO_PTR(a);
-        CL_String *sb = (CL_String *)CL_OBJ_TO_PTR(b);
-        if (sa->length != sb->length) return 0;
+    if (CL_ANY_STRING_P(a) && CL_ANY_STRING_P(b)) {
+        uint32_t la = cl_string_length(a), lb = cl_string_length(b);
+        uint32_t i;
+        if (la != lb) return 0;
         if (test == CL_HT_TEST_EQUALP) {
-            uint32_t i;
-            for (i = 0; i < sa->length; i++) {
-                char ca = sa->data[i], cb = sb->data[i];
+            for (i = 0; i < la; i++) {
+                int ca = cl_string_char_at(a, i), cb = cl_string_char_at(b, i);
                 if (ca >= 'A' && ca <= 'Z') ca += 32;
                 if (cb >= 'A' && cb <= 'Z') cb += 32;
                 if (ca != cb) return 0;
             }
             return 1;
         }
-        return memcmp(sa->data, sb->data, sa->length) == 0;
+        for (i = 0; i < la; i++) {
+            if (cl_string_char_at(a, i) != cl_string_char_at(b, i)) return 0;
+        }
+        return 1;
     }
 
     if (CL_CONS_P(a) && CL_CONS_P(b)) {

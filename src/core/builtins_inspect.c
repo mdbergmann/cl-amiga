@@ -19,6 +19,7 @@
 #include "vm.h"
 #include "color.h"
 #include "repl.h"
+#include "string_utils.h"
 #include "../platform/platform.h"
 #include <string.h>
 #include <stdio.h>
@@ -163,12 +164,11 @@ CL_Obj cl_inspect_get_component(CL_Obj obj, int idx, const char **label)
         if (idx == 4) return s->package;
     }
 
-    if (CL_STRING_P(obj)) {
-        CL_String *s = (CL_String *)CL_OBJ_TO_PTR(obj);
-        if (idx < 0 || (uint32_t)idx >= s->length) return CL_NIL;
+    if (CL_ANY_STRING_P(obj)) {
+        if (idx < 0 || (uint32_t)idx >= cl_string_length(obj)) return CL_NIL;
         snprintf(idx_label, sizeof(idx_label), "[%d]", idx);
         *label = idx_label;
-        return CL_MAKE_CHAR(s->data[idx]);
+        return CL_MAKE_CHAR(cl_string_char_at(obj, (uint32_t)idx));
     }
 
     if (CL_VECTOR_P(obj)) {
