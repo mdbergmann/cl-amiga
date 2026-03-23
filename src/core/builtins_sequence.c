@@ -4,6 +4,7 @@
 #include "mem.h"
 #include "error.h"
 #include "vm.h"
+#include "string_utils.h"
 #include "../platform/platform.h"
 #include <string.h>
 #include <stdio.h>
@@ -157,9 +158,8 @@ static int32_t seq_length(CL_Obj seq)
         CL_Vector *v = (CL_Vector *)CL_OBJ_TO_PTR(seq);
         return (int32_t)cl_vector_active_length(v);
     }
-    if (CL_STRING_P(seq)) {
-        CL_String *s = (CL_String *)CL_OBJ_TO_PTR(seq);
-        return (int32_t)s->length;
+    if (CL_ANY_STRING_P(seq)) {
+        return (int32_t)cl_string_length(seq);
     }
     if (CL_BIT_VECTOR_P(seq)) {
         CL_BitVector *bv = (CL_BitVector *)CL_OBJ_TO_PTR(seq);
@@ -180,10 +180,9 @@ static CL_Obj seq_elt(CL_Obj seq, int32_t idx)
         if ((uint32_t)idx >= cl_vector_active_length(v)) cl_error(CL_ERR_ARGS, "index out of bounds");
         return cl_vector_data(v)[idx];
     }
-    if (CL_STRING_P(seq)) {
-        CL_String *s = (CL_String *)CL_OBJ_TO_PTR(seq);
-        if ((uint32_t)idx >= s->length) cl_error(CL_ERR_ARGS, "index out of bounds");
-        return CL_MAKE_CHAR((unsigned char)s->data[idx]);
+    if (CL_ANY_STRING_P(seq)) {
+        if ((uint32_t)idx >= cl_string_length(seq)) cl_error(CL_ERR_ARGS, "index out of bounds");
+        return CL_MAKE_CHAR(cl_string_char_at(seq, (uint32_t)idx));
     }
     if (CL_BIT_VECTOR_P(seq)) {
         CL_BitVector *bv = (CL_BitVector *)CL_OBJ_TO_PTR(seq);
@@ -746,15 +745,14 @@ static CL_Obj remove_from_string(CL_Obj seq, CL_Obj item_or_pred,
                                   int32_t start, int32_t end,
                                   int32_t count, int mode)
 {
-    CL_String *s = (CL_String *)CL_OBJ_TO_PTR(seq);
-    int32_t slen = (int32_t)s->length;
+    int32_t slen = (int32_t)cl_string_length(seq);
     char buf[1024];
     int32_t out = 0, i, removed = 0;
 
     if (end < 0) end = slen;
 
     for (i = 0; i < slen && out < (int32_t)sizeof(buf) - 1; i++) {
-        CL_Obj elem = CL_MAKE_CHAR((unsigned char)s->data[i]);
+        CL_Obj elem = CL_MAKE_CHAR(cl_string_char_at(seq, (uint32_t)i));
         int should_remove = 0;
         if (i >= start && i < end && (count < 0 || removed < count)) {
             CL_Obj keyed = apply_key(key_fn, elem);
@@ -769,7 +767,7 @@ static CL_Obj remove_from_string(CL_Obj seq, CL_Obj item_or_pred,
         if (should_remove) {
             removed++;
         } else {
-            buf[out++] = s->data[i];
+            buf[out++] = (char)cl_string_char_at(seq, (uint32_t)i);
         }
     }
     return cl_make_string(buf, (uint32_t)out);
@@ -1010,7 +1008,7 @@ static CL_Obj bi_remove(CL_Obj *args, int n)
         return remove_from_list(seq, sa.start, end, sa.count, sa.from_end,
                                 item, sa.test_fn, sa.key_fn, 0);
     }
-    if (CL_STRING_P(seq)) {
+    if (CL_ANY_STRING_P(seq)) {
         return remove_from_string(seq, item, sa.test_fn, sa.key_fn,
                                   sa.start, sa.end, sa.count, 0);
     }
@@ -1042,7 +1040,7 @@ static CL_Obj bi_remove_if(CL_Obj *args, int n)
         return remove_from_list(seq, sa.start, end, sa.count, sa.from_end,
                                 pred, CL_NIL, sa.key_fn, 1);
     }
-    if (CL_STRING_P(seq)) {
+    if (CL_ANY_STRING_P(seq)) {
         return remove_from_string(seq, pred, CL_NIL, sa.key_fn,
                                   sa.start, sa.end, sa.count, 1);
     }
@@ -1068,7 +1066,7 @@ static CL_Obj bi_remove_if_not(CL_Obj *args, int n)
         return remove_from_list(seq, sa.start, end, sa.count, sa.from_end,
                                 pred, CL_NIL, sa.key_fn, 2);
     }
-    if (CL_STRING_P(seq)) {
+    if (CL_ANY_STRING_P(seq)) {
         return remove_from_string(seq, pred, CL_NIL, sa.key_fn,
                                   sa.start, sa.end, sa.count, 2);
     }
@@ -1217,30 +1215,25 @@ static CL_Obj bi_substitute(CL_Obj *args, int n)
                     tail = cell;
                 }
             }
-        } else if (CL_STRING_P(seq)) {
+        } else if (CL_ANY_STRING_P(seq)) {
             /* String from-end: return string */
-            CL_String *s = (CL_String *)CL_OBJ_TO_PTR(seq);
-            uint32_t slen = s->length;
-            char *buf = (char *)platform_alloc(slen + 1);
-            memcpy(buf, s->data, slen);
-            buf[slen] = '\0';
+            uint32_t slen = cl_string_length(seq);
+            result = cl_string_copy(seq);
             for (i = sa.start; i < end && i < (int32_t)slen; i++) {
-                CL_Obj elem = CL_MAKE_CHAR((unsigned char)buf[i]);
+                CL_Obj elem = CL_MAKE_CHAR(cl_string_char_at(seq, (uint32_t)i));
                 if (seq_test_match(&sa, olditem, elem))
                     total_matches++;
             }
             skip = total_matches - sa.count;
             if (skip < 0) skip = 0;
             for (i = sa.start; i < end && i < (int32_t)slen; i++) {
-                CL_Obj elem = CL_MAKE_CHAR((unsigned char)buf[i]);
+                CL_Obj elem = CL_MAKE_CHAR(cl_string_char_at(result, (uint32_t)i));
                 if (seq_test_match(&sa, olditem, elem)) {
                     replaced++;
                     if (replaced > skip && CL_CHAR_P(newitem))
-                        buf[i] = (char)CL_CHAR_VAL(newitem);
+                        cl_string_set_char_at(result, (uint32_t)i, CL_CHAR_VAL(newitem));
                 }
             }
-            result = cl_make_string(buf, slen);
-            platform_free(buf);
         } else if (CL_VECTOR_P(seq)) {
             int32_t vlen = seq_length(seq);
             for (i = sa.start; i < end && i < vlen; i++) {
@@ -1281,26 +1274,21 @@ static CL_Obj bi_substitute(CL_Obj *args, int n)
                     if (match) replaced++;
                 }
             }
-        } else if (CL_STRING_P(seq)) {
+        } else if (CL_ANY_STRING_P(seq)) {
             /* String: return a new string with character substitutions */
-            CL_String *s = (CL_String *)CL_OBJ_TO_PTR(seq);
-            uint32_t slen = s->length;
-            char *buf = (char *)platform_alloc(slen + 1);
-            memcpy(buf, s->data, slen);
-            buf[slen] = '\0';
+            uint32_t slen = cl_string_length(seq);
+            result = cl_string_copy(seq);
             for (i = sa.start; i < end && i < (int32_t)slen; i++) {
                 if (sa.count >= 0 && replaced >= sa.count) break;
                 {
-                    CL_Obj elem = CL_MAKE_CHAR((unsigned char)buf[i]);
+                    CL_Obj elem = CL_MAKE_CHAR(cl_string_char_at(result, (uint32_t)i));
                     if (seq_test_match(&sa, olditem, elem)) {
                         if (CL_CHAR_P(newitem))
-                            buf[i] = (char)CL_CHAR_VAL(newitem);
+                            cl_string_set_char_at(result, (uint32_t)i, CL_CHAR_VAL(newitem));
                         replaced++;
                     }
                 }
             }
-            result = cl_make_string(buf, slen);
-            platform_free(buf);
         } else if (CL_VECTOR_P(seq)) {
             int32_t vlen = seq_length(seq);
             result = cl_make_vector((uint32_t)vlen);
@@ -1380,27 +1368,21 @@ static CL_Obj bi_substitute_if(CL_Obj *args, int n)
                 if (match) replaced++;
             }
         }
-    } else if (CL_STRING_P(seq)) {
+    } else if (CL_ANY_STRING_P(seq)) {
         /* String: return a new string with substitutions */
-        CL_String *s = (CL_String *)CL_OBJ_TO_PTR(seq);
-        uint32_t slen = s->length;
-        char *buf = (char *)platform_alloc(slen + 1);
-        if (!buf) { CL_GC_UNPROTECT(3); return seq; }
-        memcpy(buf, s->data, slen);
-        buf[slen] = '\0';
+        uint32_t slen = cl_string_length(seq);
+        result = cl_string_copy(seq);
         for (i = sa.start; i < end && i < (int32_t)slen; i++) {
             if (sa.count >= 0 && replaced >= sa.count) break;
             {
-                CL_Obj elem = CL_MAKE_CHAR((unsigned char)buf[i]);
+                CL_Obj elem = CL_MAKE_CHAR(cl_string_char_at(result, (uint32_t)i));
                 if (seq_pred_match(pred, sa.key_fn, elem)) {
                     if (CL_CHAR_P(newitem))
-                        buf[i] = (char)CL_CHAR_VAL(newitem);
+                        cl_string_set_char_at(result, (uint32_t)i, CL_CHAR_VAL(newitem));
                     replaced++;
                 }
             }
         }
-        result = cl_make_string(buf, slen);
-        platform_free(buf);
     } else if (CL_VECTOR_P(seq)) {
         CL_Vector *v = (CL_Vector *)CL_OBJ_TO_PTR(seq);
         int32_t vlen = (int32_t)cl_vector_active_length(v);
@@ -1790,12 +1772,12 @@ static CL_Obj bi_fill(CL_Obj *args, int n)
         int32_t vlen = (int32_t)cl_vector_active_length(v);
         for (i = start; i < end_val && i < vlen; i++)
             elts[i] = item;
-    } else if (CL_STRING_P(seq)) {
-        CL_String *s = (CL_String *)CL_OBJ_TO_PTR(seq);
+    } else if (CL_ANY_STRING_P(seq)) {
+        int32_t slen = (int32_t)cl_string_length(seq);
         if (!CL_CHAR_P(item))
             cl_error(CL_ERR_TYPE, "FILL: string requires a character");
-        for (i = start; i < end_val && i < (int32_t)s->length; i++)
-            s->data[i] = (char)CL_CHAR_VAL(item);
+        for (i = start; i < end_val && i < slen; i++)
+            cl_string_set_char_at(seq, (uint32_t)i, CL_CHAR_VAL(item));
     } else if (CL_BIT_VECTOR_P(seq)) {
         CL_BitVector *bv = (CL_BitVector *)CL_OBJ_TO_PTR(seq);
         int32_t bvlen = (int32_t)cl_bv_active_length(bv);
@@ -1843,18 +1825,17 @@ static CL_Obj bi_replace(CL_Obj *args, int n)
     count = end1 - start1;
     if (end2 - start2 < count) count = end2 - start2;
 
-    if (CL_STRING_P(seq1)) {
+    if (CL_ANY_STRING_P(seq1)) {
         /* String target */
-        CL_String *s1 = (CL_String *)CL_OBJ_TO_PTR(seq1);
-        if (CL_STRING_P(seq2)) {
-            CL_String *s2 = (CL_String *)CL_OBJ_TO_PTR(seq2);
-            for (i = 0; i < count; i++)
-                s1->data[start1 + i] = s2->data[start2 + i];
-        } else {
-            for (i = 0; i < count; i++) {
-                CL_Obj ch = seq_elt(seq2, start2 + i);
-                s1->data[start1 + i] = (char)CL_CHAR_VAL(ch);
+        for (i = 0; i < count; i++) {
+            int ch;
+            if (CL_ANY_STRING_P(seq2))
+                ch = cl_string_char_at(seq2, (uint32_t)(start2 + i));
+            else {
+                CL_Obj chobj = seq_elt(seq2, start2 + i);
+                ch = CL_CHAR_VAL(chobj);
             }
+            cl_string_set_char_at(seq1, (uint32_t)(start1 + i), ch);
         }
     } else if (CL_VECTOR_P(seq1) && CL_VECTOR_P(seq2)) {
         CL_Obj *elts1 = cl_vector_data((CL_Vector *)CL_OBJ_TO_PTR(seq1));
@@ -1918,13 +1899,12 @@ static CL_Obj bi_setf_elt(CL_Obj *args, int n)
         cl_vector_data(v)[idx] = val;
         return val;
     }
-    if (CL_STRING_P(seq)) {
-        CL_String *s = (CL_String *)CL_OBJ_TO_PTR(seq);
-        if ((uint32_t)idx >= s->length)
+    if (CL_ANY_STRING_P(seq)) {
+        if ((uint32_t)idx >= cl_string_length(seq))
             cl_error(CL_ERR_ARGS, "(SETF ELT): index out of bounds");
         if (!CL_CHAR_P(val))
             cl_error(CL_ERR_TYPE, "(SETF ELT): value must be a character for string");
-        s->data[idx] = (char)CL_CHAR_VAL(val);
+        cl_string_set_char_at(seq, (uint32_t)idx, CL_CHAR_VAL(val));
         return val;
     }
     if (CL_BIT_VECTOR_P(seq)) {
@@ -1976,9 +1956,8 @@ static CL_Obj bi_copy_seq(CL_Obj *args, int n)
         memcpy(cl_vector_data(rv), cl_vector_data(v), alen * sizeof(CL_Obj));
         return result;
     }
-    if (CL_STRING_P(seq)) {
-        CL_String *s = (CL_String *)CL_OBJ_TO_PTR(seq);
-        return cl_make_string(s->data, s->length);
+    if (CL_ANY_STRING_P(seq)) {
+        return cl_string_copy(seq);
     }
     if (CL_BIT_VECTOR_P(seq)) {
         CL_BitVector *bv = (CL_BitVector *)CL_OBJ_TO_PTR(seq);
@@ -2057,9 +2036,8 @@ static CL_Obj bi_map_into(CL_Obj *args, int n)
         /* Store into result */
         if (CL_VECTOR_P(result_seq)) {
             cl_vector_data((CL_Vector *)CL_OBJ_TO_PTR(result_seq))[idx] = val;
-        } else if (CL_STRING_P(result_seq)) {
-            CL_String *s = (CL_String *)CL_OBJ_TO_PTR(result_seq);
-            if (CL_CHAR_P(val)) s->data[idx] = (char)CL_CHAR_VAL(val);
+        } else if (CL_ANY_STRING_P(result_seq)) {
+            if (CL_CHAR_P(val)) cl_string_set_char_at(result_seq, (uint32_t)idx, CL_CHAR_VAL(val));
         }
         /* For list result, handled below */
     }

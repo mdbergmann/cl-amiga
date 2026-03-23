@@ -5,6 +5,7 @@
 #include "error.h"
 #include "printer.h"
 #include "vm.h"
+#include "string_utils.h"
 #include "../platform/platform.h"
 #include <stdio.h>
 #include <string.h>
@@ -30,50 +31,75 @@ static CL_Obj bi_characterp(CL_Obj *args, int n)
 
 static CL_Obj bi_char_eq(CL_Obj *args, int n)
 {
-    CL_UNUSED(n);
-    if (!CL_CHAR_P(args[0]) || !CL_CHAR_P(args[1]))
-        cl_error(CL_ERR_TYPE, "CHAR=: not a character");
-    return (CL_CHAR_VAL(args[0]) == CL_CHAR_VAL(args[1])) ? SYM_T : CL_NIL;
+    int i;
+    for (i = 0; i < n; i++)
+        if (!CL_CHAR_P(args[i]))
+            cl_error(CL_ERR_TYPE, "CHAR=: not a character");
+    for (i = 1; i < n; i++)
+        if (CL_CHAR_VAL(args[i-1]) != CL_CHAR_VAL(args[i]))
+            return CL_NIL;
+    return SYM_T;
 }
 
 static CL_Obj bi_char_ne(CL_Obj *args, int n)
 {
-    CL_UNUSED(n);
-    if (!CL_CHAR_P(args[0]) || !CL_CHAR_P(args[1]))
-        cl_error(CL_ERR_TYPE, "CHAR/=: not a character");
-    return (CL_CHAR_VAL(args[0]) != CL_CHAR_VAL(args[1])) ? SYM_T : CL_NIL;
+    int i, j;
+    for (i = 0; i < n; i++)
+        if (!CL_CHAR_P(args[i]))
+            cl_error(CL_ERR_TYPE, "CHAR/=: not a character");
+    for (i = 0; i < n; i++)
+        for (j = i + 1; j < n; j++)
+            if (CL_CHAR_VAL(args[i]) == CL_CHAR_VAL(args[j]))
+                return CL_NIL;
+    return SYM_T;
 }
 
 static CL_Obj bi_char_lt(CL_Obj *args, int n)
 {
-    CL_UNUSED(n);
-    if (!CL_CHAR_P(args[0]) || !CL_CHAR_P(args[1]))
-        cl_error(CL_ERR_TYPE, "CHAR<: not a character");
-    return (CL_CHAR_VAL(args[0]) < CL_CHAR_VAL(args[1])) ? SYM_T : CL_NIL;
+    int i;
+    for (i = 0; i < n; i++)
+        if (!CL_CHAR_P(args[i]))
+            cl_error(CL_ERR_TYPE, "CHAR<: not a character");
+    for (i = 1; i < n; i++)
+        if (!(CL_CHAR_VAL(args[i-1]) < CL_CHAR_VAL(args[i])))
+            return CL_NIL;
+    return SYM_T;
 }
 
 static CL_Obj bi_char_gt(CL_Obj *args, int n)
 {
-    CL_UNUSED(n);
-    if (!CL_CHAR_P(args[0]) || !CL_CHAR_P(args[1]))
-        cl_error(CL_ERR_TYPE, "CHAR>: not a character");
-    return (CL_CHAR_VAL(args[0]) > CL_CHAR_VAL(args[1])) ? SYM_T : CL_NIL;
+    int i;
+    for (i = 0; i < n; i++)
+        if (!CL_CHAR_P(args[i]))
+            cl_error(CL_ERR_TYPE, "CHAR>: not a character");
+    for (i = 1; i < n; i++)
+        if (!(CL_CHAR_VAL(args[i-1]) > CL_CHAR_VAL(args[i])))
+            return CL_NIL;
+    return SYM_T;
 }
 
 static CL_Obj bi_char_le(CL_Obj *args, int n)
 {
-    CL_UNUSED(n);
-    if (!CL_CHAR_P(args[0]) || !CL_CHAR_P(args[1]))
-        cl_error(CL_ERR_TYPE, "CHAR<=: not a character");
-    return (CL_CHAR_VAL(args[0]) <= CL_CHAR_VAL(args[1])) ? SYM_T : CL_NIL;
+    int i;
+    for (i = 0; i < n; i++)
+        if (!CL_CHAR_P(args[i]))
+            cl_error(CL_ERR_TYPE, "CHAR<=: not a character");
+    for (i = 1; i < n; i++)
+        if (!(CL_CHAR_VAL(args[i-1]) <= CL_CHAR_VAL(args[i])))
+            return CL_NIL;
+    return SYM_T;
 }
 
 static CL_Obj bi_char_ge(CL_Obj *args, int n)
 {
-    CL_UNUSED(n);
-    if (!CL_CHAR_P(args[0]) || !CL_CHAR_P(args[1]))
-        cl_error(CL_ERR_TYPE, "CHAR>=: not a character");
-    return (CL_CHAR_VAL(args[0]) >= CL_CHAR_VAL(args[1])) ? SYM_T : CL_NIL;
+    int i;
+    for (i = 0; i < n; i++)
+        if (!CL_CHAR_P(args[i]))
+            cl_error(CL_ERR_TYPE, "CHAR>=: not a character");
+    for (i = 1; i < n; i++)
+        if (!(CL_CHAR_VAL(args[i-1]) >= CL_CHAR_VAL(args[i])))
+            return CL_NIL;
+    return SYM_T;
 }
 
 static CL_Obj bi_char_code(CL_Obj *args, int n)
@@ -183,7 +209,7 @@ static CL_Obj bi_symbol_package(CL_Obj *args, int n)
 static CL_Obj bi_make_symbol(CL_Obj *args, int n)
 {
     CL_UNUSED(n);
-    if (!CL_STRING_P(args[0]))
+    if (!CL_ANY_STRING_P(args[0]))
         cl_error(CL_ERR_TYPE, "MAKE-SYMBOL: not a string");
     return cl_make_symbol(args[0]);
 }
@@ -200,19 +226,42 @@ static CL_Obj bi_keywordp(CL_Obj *args, int n)
 
 /* --- String functions --- */
 
-static const char *obj_to_cstr(CL_Obj obj, uint32_t *out_len)
+/* Coerce a string designator (string, symbol) to a CL_Obj string.
+ * Returns the string object (TYPE_STRING or TYPE_WIDE_STRING).
+ * For symbols, returns the symbol's name string.
+ * Sets *out_len to string length.
+ * Returns CL_NIL if not a valid string designator. */
+static CL_Obj string_designator_to_obj(CL_Obj obj, uint32_t *out_len)
 {
-    if (CL_STRING_P(obj)) {
-        CL_String *s = (CL_String *)CL_OBJ_TO_PTR(obj);
-        *out_len = s->length;
-        return s->data;
+    if (CL_ANY_STRING_P(obj)) {
+        *out_len = cl_string_length(obj);
+        return obj;
     }
-    if (CL_SYMBOL_P(obj) || CL_NULL_P(obj)) {
-        const char *name = cl_symbol_name(obj);
-        *out_len = (uint32_t)strlen(name);
-        return name;
+    if (CL_NULL_P(obj)) {
+        CL_Symbol *sym = (CL_Symbol *)CL_OBJ_TO_PTR(SYM_NIL);
+        *out_len = cl_string_length(sym->name);
+        return sym->name;
     }
-    return NULL;
+    if (CL_SYMBOL_P(obj)) {
+        CL_Symbol *sym = (CL_Symbol *)CL_OBJ_TO_PTR(obj);
+        *out_len = cl_string_length(sym->name);
+        return sym->name;
+    }
+    return CL_NIL;
+}
+
+/* Compare characters of two strings in subranges.
+ * Returns <0, 0, or >0 like memcmp. */
+static int string_compare_range(CL_Obj a, uint32_t a_start,
+                                CL_Obj b, uint32_t b_start, uint32_t len)
+{
+    uint32_t i;
+    for (i = 0; i < len; i++) {
+        int ca = cl_string_char_at(a, a_start + i);
+        int cb = cl_string_char_at(b, b_start + i);
+        if (ca != cb) return ca - cb;
+    }
+    return 0;
 }
 
 /* Parse :start1 :end1 :start2 :end2 keyword args for string comparison.
@@ -242,26 +291,27 @@ static void parse_string_bounds(CL_Obj *args, int n,
 static CL_Obj bi_string_eq(CL_Obj *args, int n)
 {
     uint32_t la, lb, s1, e1, s2, e2;
-    const char *a, *b;
-    a = obj_to_cstr(args[0], &la);
-    b = obj_to_cstr(args[1], &lb);
-    if (!a || !b) cl_error(CL_ERR_TYPE, "STRING=: not a string designator");
+    CL_Obj a, b;
+    a = string_designator_to_obj(args[0], &la);
+    b = string_designator_to_obj(args[1], &lb);
+    if (CL_NULL_P(a) || CL_NULL_P(b)) cl_error(CL_ERR_TYPE, "STRING=: not a string designator");
     parse_string_bounds(args, n, la, lb, &s1, &e1, &s2, &e2);
     if ((e1 - s1) != (e2 - s2)) return CL_NIL;
-    return (memcmp(a + s1, b + s2, e1 - s1) == 0) ? SYM_T : CL_NIL;
+    return (string_compare_range(a, s1, b, s2, e1 - s1) == 0) ? SYM_T : CL_NIL;
 }
 
 static CL_Obj bi_string_equal(CL_Obj *args, int n)
 {
     uint32_t la, lb, s1, e1, s2, e2, i;
-    const char *a, *b;
-    a = obj_to_cstr(args[0], &la);
-    b = obj_to_cstr(args[1], &lb);
-    if (!a || !b) cl_error(CL_ERR_TYPE, "STRING-EQUAL: not a string designator");
+    CL_Obj a, b;
+    a = string_designator_to_obj(args[0], &la);
+    b = string_designator_to_obj(args[1], &lb);
+    if (CL_NULL_P(a) || CL_NULL_P(b)) cl_error(CL_ERR_TYPE, "STRING-EQUAL: not a string designator");
     parse_string_bounds(args, n, la, lb, &s1, &e1, &s2, &e2);
     if ((e1 - s1) != (e2 - s2)) return CL_NIL;
     for (i = 0; i < (e1 - s1); i++) {
-        int ca = (unsigned char)a[s1 + i], cb = (unsigned char)b[s2 + i];
+        int ca = cl_string_char_at(a, s1 + i);
+        int cb = cl_string_char_at(b, s2 + i);
         if (ca >= 'a' && ca <= 'z') ca -= 32;
         if (cb >= 'a' && cb <= 'z') cb -= 32;
         if (ca != cb) return CL_NIL;
@@ -272,15 +322,15 @@ static CL_Obj bi_string_equal(CL_Obj *args, int n)
 static CL_Obj bi_string_lt(CL_Obj *args, int n)
 {
     uint32_t la, lb, s1, e1, s2, e2, len1, len2, min_len;
-    const char *a, *b;
+    CL_Obj a, b;
     int cmp;
-    a = obj_to_cstr(args[0], &la);
-    b = obj_to_cstr(args[1], &lb);
-    if (!a || !b) cl_error(CL_ERR_TYPE, "STRING<: not a string designator");
+    a = string_designator_to_obj(args[0], &la);
+    b = string_designator_to_obj(args[1], &lb);
+    if (CL_NULL_P(a) || CL_NULL_P(b)) cl_error(CL_ERR_TYPE, "STRING<: not a string designator");
     parse_string_bounds(args, n, la, lb, &s1, &e1, &s2, &e2);
     len1 = e1 - s1; len2 = e2 - s2;
     min_len = len1 < len2 ? len1 : len2;
-    cmp = memcmp(a + s1, b + s2, min_len);
+    cmp = string_compare_range(a, s1, b, s2, min_len);
     if (cmp < 0 || (cmp == 0 && len1 < len2)) return SYM_T;
     return CL_NIL;
 }
@@ -288,15 +338,15 @@ static CL_Obj bi_string_lt(CL_Obj *args, int n)
 static CL_Obj bi_string_gt(CL_Obj *args, int n)
 {
     uint32_t la, lb, s1, e1, s2, e2, len1, len2, min_len;
-    const char *a, *b;
+    CL_Obj a, b;
     int cmp;
-    a = obj_to_cstr(args[0], &la);
-    b = obj_to_cstr(args[1], &lb);
-    if (!a || !b) cl_error(CL_ERR_TYPE, "STRING>: not a string designator");
+    a = string_designator_to_obj(args[0], &la);
+    b = string_designator_to_obj(args[1], &lb);
+    if (CL_NULL_P(a) || CL_NULL_P(b)) cl_error(CL_ERR_TYPE, "STRING>: not a string designator");
     parse_string_bounds(args, n, la, lb, &s1, &e1, &s2, &e2);
     len1 = e1 - s1; len2 = e2 - s2;
     min_len = len1 < len2 ? len1 : len2;
-    cmp = memcmp(a + s1, b + s2, min_len);
+    cmp = string_compare_range(a, s1, b, s2, min_len);
     if (cmp > 0 || (cmp == 0 && len1 > len2)) return SYM_T;
     return CL_NIL;
 }
@@ -304,15 +354,15 @@ static CL_Obj bi_string_gt(CL_Obj *args, int n)
 static CL_Obj bi_string_le(CL_Obj *args, int n)
 {
     uint32_t la, lb, s1, e1, s2, e2, len1, len2, min_len;
-    const char *a, *b;
+    CL_Obj a, b;
     int cmp;
-    a = obj_to_cstr(args[0], &la);
-    b = obj_to_cstr(args[1], &lb);
-    if (!a || !b) cl_error(CL_ERR_TYPE, "STRING<=: not a string designator");
+    a = string_designator_to_obj(args[0], &la);
+    b = string_designator_to_obj(args[1], &lb);
+    if (CL_NULL_P(a) || CL_NULL_P(b)) cl_error(CL_ERR_TYPE, "STRING<=: not a string designator");
     parse_string_bounds(args, n, la, lb, &s1, &e1, &s2, &e2);
     len1 = e1 - s1; len2 = e2 - s2;
     min_len = len1 < len2 ? len1 : len2;
-    cmp = memcmp(a + s1, b + s2, min_len);
+    cmp = string_compare_range(a, s1, b, s2, min_len);
     if (cmp < 0 || (cmp == 0 && len1 <= len2)) return SYM_T;
     return CL_NIL;
 }
@@ -320,117 +370,115 @@ static CL_Obj bi_string_le(CL_Obj *args, int n)
 static CL_Obj bi_string_ge(CL_Obj *args, int n)
 {
     uint32_t la, lb, s1, e1, s2, e2, len1, len2, min_len;
-    const char *a, *b;
+    CL_Obj a, b;
     int cmp;
-    a = obj_to_cstr(args[0], &la);
-    b = obj_to_cstr(args[1], &lb);
-    if (!a || !b) cl_error(CL_ERR_TYPE, "STRING>=: not a string designator");
+    a = string_designator_to_obj(args[0], &la);
+    b = string_designator_to_obj(args[1], &lb);
+    if (CL_NULL_P(a) || CL_NULL_P(b)) cl_error(CL_ERR_TYPE, "STRING>=: not a string designator");
     parse_string_bounds(args, n, la, lb, &s1, &e1, &s2, &e2);
     len1 = e1 - s1; len2 = e2 - s2;
     min_len = len1 < len2 ? len1 : len2;
-    cmp = memcmp(a + s1, b + s2, min_len);
+    cmp = string_compare_range(a, s1, b, s2, min_len);
     if (cmp > 0 || (cmp == 0 && len1 >= len2)) return SYM_T;
     return CL_NIL;
 }
 
-/* Coerce a string designator (string, symbol, or character) to CL_String*.
+/* Coerce a string designator (string, symbol, or character) to CL_Obj string.
  * Per CL spec, string designators are accepted by string functions. */
-static CL_String *coerce_to_cl_string(CL_Obj obj, const char *func_name)
+static CL_Obj coerce_to_string_obj(CL_Obj obj, const char *func_name)
 {
-    if (CL_STRING_P(obj))
-        return (CL_String *)CL_OBJ_TO_PTR(obj);
+    if (CL_ANY_STRING_P(obj))
+        return obj;
     if (CL_NULL_P(obj)) {
-        /* NIL is a symbol with name "NIL" */
         CL_Symbol *sym = (CL_Symbol *)CL_OBJ_TO_PTR(SYM_NIL);
-        return (CL_String *)CL_OBJ_TO_PTR(sym->name);
+        return sym->name;
     }
     if (CL_SYMBOL_P(obj)) {
         CL_Symbol *sym = (CL_Symbol *)CL_OBJ_TO_PTR(obj);
-        return (CL_String *)CL_OBJ_TO_PTR(sym->name);
+        return sym->name;
     }
     (void)func_name;
     cl_error(CL_ERR_TYPE, "not a string designator");
-    return NULL;
+    return CL_NIL;
 }
 
 static CL_Obj bi_string_upcase(CL_Obj *args, int n)
 {
-    CL_String *s;
-    CL_Obj result;
-    CL_String *rs;
-    uint32_t i;
+    CL_Obj str, result;
+    uint32_t i, len;
     CL_UNUSED(n);
-    s = coerce_to_cl_string(args[0], "STRING-UPCASE");
-    result = cl_make_string(s->data, s->length);
-    rs = (CL_String *)CL_OBJ_TO_PTR(result);
-    for (i = 0; i < rs->length; i++) {
-        if (rs->data[i] >= 'a' && rs->data[i] <= 'z')
-            rs->data[i] -= 32;
+    str = coerce_to_string_obj(args[0], "STRING-UPCASE");
+    result = cl_string_copy(str);
+    len = cl_string_length(result);
+    for (i = 0; i < len; i++) {
+        int ch = cl_string_char_at(result, i);
+        if (ch >= 'a' && ch <= 'z')
+            cl_string_set_char_at(result, i, ch - 32);
     }
     return result;
 }
 
 static CL_Obj bi_string_downcase(CL_Obj *args, int n)
 {
-    CL_String *s;
-    CL_Obj result;
-    CL_String *rs;
-    uint32_t i;
+    CL_Obj str, result;
+    uint32_t i, len;
     CL_UNUSED(n);
-    s = coerce_to_cl_string(args[0], "STRING-DOWNCASE");
-    result = cl_make_string(s->data, s->length);
-    rs = (CL_String *)CL_OBJ_TO_PTR(result);
-    for (i = 0; i < rs->length; i++) {
-        if (rs->data[i] >= 'A' && rs->data[i] <= 'Z')
-            rs->data[i] += 32;
+    str = coerce_to_string_obj(args[0], "STRING-DOWNCASE");
+    result = cl_string_copy(str);
+    len = cl_string_length(result);
+    for (i = 0; i < len; i++) {
+        int ch = cl_string_char_at(result, i);
+        if (ch >= 'A' && ch <= 'Z')
+            cl_string_set_char_at(result, i, ch + 32);
     }
     return result;
 }
 
-static int trim_char_in_set(int ch, CL_String *set)
+static int trim_char_in_set(int ch, CL_Obj set)
 {
-    uint32_t i;
-    for (i = 0; i < set->length; i++)
-        if (set->data[i] == ch) return 1;
+    uint32_t i, len = cl_string_length(set);
+    for (i = 0; i < len; i++)
+        if (cl_string_char_at(set, i) == ch) return 1;
     return 0;
 }
 
 static CL_Obj bi_string_trim(CL_Obj *args, int n)
 {
-    CL_String *set, *s;
+    CL_Obj set, str;
     uint32_t start, end;
     CL_UNUSED(n);
-    set = coerce_to_cl_string(args[0], "STRING-TRIM");
-    s = coerce_to_cl_string(args[1], "STRING-TRIM");
+    set = coerce_to_string_obj(args[0], "STRING-TRIM");
+    str = coerce_to_string_obj(args[1], "STRING-TRIM");
     start = 0;
-    end = s->length;
-    while (start < end && trim_char_in_set(s->data[start], set)) start++;
-    while (end > start && trim_char_in_set(s->data[end - 1], set)) end--;
-    return cl_make_string(s->data + start, end - start);
+    end = cl_string_length(str);
+    while (start < end && trim_char_in_set(cl_string_char_at(str, start), set)) start++;
+    while (end > start && trim_char_in_set(cl_string_char_at(str, end - 1), set)) end--;
+    return cl_string_substring(str, start, end);
 }
 
 static CL_Obj bi_string_left_trim(CL_Obj *args, int n)
 {
-    CL_String *set, *s;
-    uint32_t start;
+    CL_Obj set, str;
+    uint32_t start, len;
     CL_UNUSED(n);
-    set = coerce_to_cl_string(args[0], "STRING-LEFT-TRIM");
-    s = coerce_to_cl_string(args[1], "STRING-LEFT-TRIM");
+    set = coerce_to_string_obj(args[0], "STRING-LEFT-TRIM");
+    str = coerce_to_string_obj(args[1], "STRING-LEFT-TRIM");
     start = 0;
-    while (start < s->length && trim_char_in_set(s->data[start], set)) start++;
-    return cl_make_string(s->data + start, s->length - start);
+    len = cl_string_length(str);
+    while (start < len && trim_char_in_set(cl_string_char_at(str, start), set)) start++;
+    return cl_string_substring(str, start, len);
 }
 
 static CL_Obj bi_string_right_trim(CL_Obj *args, int n)
 {
-    CL_String *set, *s;
+    CL_Obj set, str;
     uint32_t end;
     CL_UNUSED(n);
-    set = coerce_to_cl_string(args[0], "STRING-RIGHT-TRIM");
-    s = coerce_to_cl_string(args[1], "STRING-RIGHT-TRIM");
-    end = s->length;
-    while (end > 0 && trim_char_in_set(s->data[end - 1], set)) end--;
-    return cl_make_string(s->data, end);
+    set = coerce_to_string_obj(args[0], "STRING-RIGHT-TRIM");
+    str = coerce_to_string_obj(args[1], "STRING-RIGHT-TRIM");
+    end = cl_string_length(str);
+    while (end > 0 && trim_char_in_set(cl_string_char_at(str, end - 1), set)) end--;
+    return cl_string_substring(str, 0, end);
 }
 
 static CL_Obj bi_subseq(CL_Obj *args, int n)
@@ -440,14 +488,14 @@ static CL_Obj bi_subseq(CL_Obj *args, int n)
         cl_error(CL_ERR_TYPE, "SUBSEQ: start must be an integer");
     start = CL_FIXNUM_VAL(args[1]);
 
-    if (CL_STRING_P(args[0])) {
-        CL_String *s = (CL_String *)CL_OBJ_TO_PTR(args[0]);
+    if (CL_ANY_STRING_P(args[0])) {
+        uint32_t slen = cl_string_length(args[0]);
         end = (n > 2 && !CL_NULL_P(args[2]) && CL_FIXNUM_P(args[2]))
-            ? CL_FIXNUM_VAL(args[2]) : (int32_t)s->length;
+            ? CL_FIXNUM_VAL(args[2]) : (int32_t)slen;
         if (start < 0) start = 0;
-        if (end > (int32_t)s->length) end = (int32_t)s->length;
+        if (end > (int32_t)slen) end = (int32_t)slen;
         if (start > end) start = end;
-        return cl_make_string(s->data + start, (uint32_t)(end - start));
+        return cl_string_substring(args[0], (uint32_t)start, (uint32_t)end);
     }
     /* Vector subseq */
     if (CL_VECTOR_P(args[0])) {
@@ -526,9 +574,8 @@ static uint32_t concat_total_length(CL_Obj *args, int n)
     uint32_t total = 0;
     int i;
     for (i = 1; i < n; i++) {
-        if (CL_STRING_P(args[i])) {
-            CL_String *s = (CL_String *)CL_OBJ_TO_PTR(args[i]);
-            total += s->length;
+        if (CL_ANY_STRING_P(args[i])) {
+            total += cl_string_length(args[i]);
         } else if (CL_VECTOR_P(args[i])) {
             CL_Vector *v = (CL_Vector *)CL_OBJ_TO_PTR(args[i]);
             total += cl_vector_active_length(v);
@@ -550,11 +597,10 @@ typedef void (*concat_cb)(CL_Obj elem, void *ctx);
 
 static void concat_iterate(CL_Obj seq, concat_cb cb, void *ctx)
 {
-    if (CL_STRING_P(seq)) {
-        CL_String *s = (CL_String *)CL_OBJ_TO_PTR(seq);
-        uint32_t j;
-        for (j = 0; j < s->length; j++)
-            cb(CL_MAKE_CHAR((unsigned char)s->data[j]), ctx);
+    if (CL_ANY_STRING_P(seq)) {
+        uint32_t slen = cl_string_length(seq), j;
+        for (j = 0; j < slen; j++)
+            cb(CL_MAKE_CHAR(cl_string_char_at(seq, j)), ctx);
     } else if (CL_VECTOR_P(seq)) {
         CL_Vector *v = (CL_Vector *)CL_OBJ_TO_PTR(seq);
         uint32_t len = cl_vector_active_length(v);
@@ -667,28 +713,26 @@ static CL_Obj bi_concatenate(CL_Obj *args, int n)
 
 static CL_Obj bi_char_accessor(CL_Obj *args, int n)
 {
-    CL_String *s;
     int32_t idx;
     CL_UNUSED(n);
-    if (!CL_STRING_P(args[0]))
+    if (!CL_ANY_STRING_P(args[0]))
         cl_error(CL_ERR_TYPE, "CHAR: not a string");
     if (!CL_FIXNUM_P(args[1]))
         cl_error(CL_ERR_TYPE, "CHAR: index must be an integer");
-    s = (CL_String *)CL_OBJ_TO_PTR(args[0]);
     idx = CL_FIXNUM_VAL(args[1]);
-    if (idx < 0 || (uint32_t)idx >= s->length)
+    if (idx < 0 || (uint32_t)idx >= cl_string_length(args[0]))
         cl_error(CL_ERR_ARGS, "CHAR: index %d out of range", (int)idx);
-    return CL_MAKE_CHAR((unsigned char)s->data[idx]);
+    return CL_MAKE_CHAR(cl_string_char_at(args[0], (uint32_t)idx));
 }
 
 static CL_Obj bi_string_coerce(CL_Obj *args, int n)
 {
     CL_UNUSED(n);
-    if (CL_STRING_P(args[0])) return args[0];
+    if (CL_ANY_STRING_P(args[0])) return args[0];
     if (CL_NULL_P(args[0])) return cl_make_string("NIL", 3);
     if (CL_SYMBOL_P(args[0])) {
-        const char *name = cl_symbol_name(args[0]);
-        return cl_make_string(name, (uint32_t)strlen(name));
+        CL_Symbol *sym = (CL_Symbol *)CL_OBJ_TO_PTR(args[0]);
+        return sym->name;
     }
     if (CL_CHAR_P(args[0])) {
         char c = (char)CL_CHAR_VAL(args[0]);
@@ -700,16 +744,14 @@ static CL_Obj bi_string_coerce(CL_Obj *args, int n)
 
 static CL_Obj bi_parse_integer(CL_Obj *args, int n)
 {
-    CL_String *s;
     int32_t start = 0, end, radix = 10;
     int32_t result = 0, sign = 1;
     int32_t i;
     int found = 0;
 
-    if (!CL_STRING_P(args[0]))
+    if (!CL_ANY_STRING_P(args[0]))
         cl_error(CL_ERR_TYPE, "PARSE-INTEGER: not a string");
-    s = (CL_String *)CL_OBJ_TO_PTR(args[0]);
-    end = (int32_t)s->length;
+    end = (int32_t)cl_string_length(args[0]);
 
     {
         int k;
@@ -726,17 +768,19 @@ static CL_Obj bi_parse_integer(CL_Obj *args, int n)
         }
     }
 
-    while (start < end && (s->data[start] == ' ' || s->data[start] == '\t'))
+    while (start < end && (cl_string_char_at(args[0], start) == ' ' ||
+                           cl_string_char_at(args[0], start) == '\t'))
         start++;
 
-    if (start < end && (s->data[start] == '+' || s->data[start] == '-')) {
-        if (s->data[start] == '-') sign = -1;
+    if (start < end && (cl_string_char_at(args[0], start) == '+' ||
+                        cl_string_char_at(args[0], start) == '-')) {
+        if (cl_string_char_at(args[0], start) == '-') sign = -1;
         start++;
     }
 
     for (i = start; i < end; i++) {
         int digit;
-        char c = s->data[i];
+        int c = cl_string_char_at(args[0], (uint32_t)i);
         if (c >= '0' && c <= '9') digit = c - '0';
         else if (c >= 'A' && c <= 'Z') digit = c - 'A' + 10;
         else if (c >= 'a' && c <= 'z') digit = c - 'a' + 10;
@@ -854,26 +898,22 @@ static CL_Obj bi_princ_to_string_fn(CL_Obj *args, int n)
 
 static CL_Obj bi_string_capitalize(CL_Obj *args, int n)
 {
-    CL_String *s;
-    CL_Obj result;
-    CL_String *rs;
-    uint32_t i;
+    CL_Obj str, result;
+    uint32_t i, len;
     int in_word = 0;
     CL_UNUSED(n);
-    s = coerce_to_cl_string(args[0], "STRING-CAPITALIZE");
-    result = cl_make_string(s->data, s->length);
-    rs = (CL_String *)CL_OBJ_TO_PTR(result);
-    for (i = 0; i < rs->length; i++) {
-        char c = rs->data[i];
+    str = coerce_to_string_obj(args[0], "STRING-CAPITALIZE");
+    result = cl_string_copy(str);
+    len = cl_string_length(result);
+    for (i = 0; i < len; i++) {
+        int c = cl_string_char_at(result, i);
         int is_alpha = (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z');
         int is_alnum = is_alpha || (c >= '0' && c <= '9');
         if (!in_word && is_alpha) {
-            /* Capitalize first char of word */
-            if (c >= 'a' && c <= 'z') rs->data[i] = c - 32;
+            if (c >= 'a' && c <= 'z') cl_string_set_char_at(result, i, c - 32);
             in_word = 1;
         } else if (in_word && is_alnum) {
-            /* Downcase rest of word */
-            if (c >= 'A' && c <= 'Z') rs->data[i] = c + 32;
+            if (c >= 'A' && c <= 'Z') cl_string_set_char_at(result, i, c + 32);
         } else {
             in_word = is_alnum;
         }
@@ -883,52 +923,51 @@ static CL_Obj bi_string_capitalize(CL_Obj *args, int n)
 
 static CL_Obj bi_nstring_upcase(CL_Obj *args, int n)
 {
-    CL_String *s;
-    uint32_t i;
+    uint32_t i, len;
     CL_UNUSED(n);
-    if (!CL_STRING_P(args[0]))
+    if (!CL_ANY_STRING_P(args[0]))
         cl_error(CL_ERR_TYPE, "NSTRING-UPCASE: not a string");
-    s = (CL_String *)CL_OBJ_TO_PTR(args[0]);
-    for (i = 0; i < s->length; i++) {
-        if (s->data[i] >= 'a' && s->data[i] <= 'z')
-            s->data[i] -= 32;
+    len = cl_string_length(args[0]);
+    for (i = 0; i < len; i++) {
+        int ch = cl_string_char_at(args[0], i);
+        if (ch >= 'a' && ch <= 'z')
+            cl_string_set_char_at(args[0], i, ch - 32);
     }
     return args[0];
 }
 
 static CL_Obj bi_nstring_downcase(CL_Obj *args, int n)
 {
-    CL_String *s;
-    uint32_t i;
+    uint32_t i, len;
     CL_UNUSED(n);
-    if (!CL_STRING_P(args[0]))
+    if (!CL_ANY_STRING_P(args[0]))
         cl_error(CL_ERR_TYPE, "NSTRING-DOWNCASE: not a string");
-    s = (CL_String *)CL_OBJ_TO_PTR(args[0]);
-    for (i = 0; i < s->length; i++) {
-        if (s->data[i] >= 'A' && s->data[i] <= 'Z')
-            s->data[i] += 32;
+    len = cl_string_length(args[0]);
+    for (i = 0; i < len; i++) {
+        int ch = cl_string_char_at(args[0], i);
+        if (ch >= 'A' && ch <= 'Z')
+            cl_string_set_char_at(args[0], i, ch + 32);
     }
     return args[0];
 }
 
 static CL_Obj bi_nstring_capitalize(CL_Obj *args, int n)
 {
-    CL_String *s;
-    uint32_t i;
+    uint32_t i, len;
     int in_word = 0;
     CL_UNUSED(n);
-    if (!CL_STRING_P(args[0]))
+    if (!CL_ANY_STRING_P(args[0]))
         cl_error(CL_ERR_TYPE, "NSTRING-CAPITALIZE: not a string");
-    s = (CL_String *)CL_OBJ_TO_PTR(args[0]);
-    for (i = 0; i < s->length; i++) {
-        char c = s->data[i];
+    len = cl_string_length(args[0]);
+    for (i = 0; i < len; i++) {
+        int c = cl_string_char_at(args[0], i);
         int is_alpha = (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z');
         int is_alnum = is_alpha || (c >= '0' && c <= '9');
         if (!in_word && is_alpha) {
-            if (c >= 'a' && c <= 'z') s->data[i] = c - 32;
+            if (c >= 'a' && c <= 'z') cl_string_set_char_at(args[0], i, c - 32);
             in_word = 1;
         } else if (in_word && is_alnum) {
-            if (c >= 'A' && c <= 'Z') s->data[i] = c + 32;
+            if (c >= 'A' && c <= 'Z') cl_string_set_char_at(args[0], i, c + 32);
         } else {
             in_word = is_alnum;
         }
@@ -986,20 +1025,24 @@ static int cl_local_strcasecmp(const char *a, const char *b)
 
 static CL_Obj bi_name_char(CL_Obj *args, int n)
 {
-    const char *name;
-    uint32_t len;
+    uint32_t len, j;
     int i;
     CL_UNUSED(n);
-    if (!CL_STRING_P(args[0]))
+    if (!CL_ANY_STRING_P(args[0]))
         cl_error(CL_ERR_TYPE, "NAME-CHAR: not a string");
-    {
-        CL_String *s = (CL_String *)CL_OBJ_TO_PTR(args[0]);
-        name = s->data;
-        len = s->length;
-    }
+    len = cl_string_length(args[0]);
     for (i = 0; char_names[i].name; i++) {
-        if (strlen(char_names[i].name) == len &&
-            STRCASECMP(char_names[i].name, name) == 0)
+        const char *cname = char_names[i].name;
+        uint32_t clen = (uint32_t)strlen(cname);
+        if (clen != len) continue;
+        for (j = 0; j < len; j++) {
+            int ca = cl_string_char_at(args[0], j);
+            int cb = (unsigned char)cname[j];
+            if (ca >= 'a' && ca <= 'z') ca -= 32;
+            if (cb >= 'a' && cb <= 'z') cb -= 32;
+            if (ca != cb) break;
+        }
+        if (j == len)
             return CL_MAKE_CHAR(char_names[i].code);
     }
     return CL_NIL;
@@ -1064,82 +1107,84 @@ static CL_Obj bi_both_case_p(CL_Obj *args, int n)
         ? SYM_T : CL_NIL;
 }
 
+static int char_upcase_val(CL_Obj c)
+{
+    int v = CL_CHAR_VAL(c);
+    if (v >= 'a' && v <= 'z') v -= 32;
+    return v;
+}
+
 static CL_Obj bi_char_equal(CL_Obj *args, int n)
 {
-    int a, b;
-    CL_UNUSED(n);
-    if (!CL_CHAR_P(args[0]) || !CL_CHAR_P(args[1]))
-        cl_error(CL_ERR_TYPE, "CHAR-EQUAL: not a character");
-    a = CL_CHAR_VAL(args[0]);
-    b = CL_CHAR_VAL(args[1]);
-    if (a >= 'a' && a <= 'z') a -= 32;
-    if (b >= 'a' && b <= 'z') b -= 32;
-    return (a == b) ? SYM_T : CL_NIL;
+    int i;
+    for (i = 0; i < n; i++)
+        if (!CL_CHAR_P(args[i]))
+            cl_error(CL_ERR_TYPE, "CHAR-EQUAL: not a character");
+    for (i = 1; i < n; i++)
+        if (char_upcase_val(args[i-1]) != char_upcase_val(args[i]))
+            return CL_NIL;
+    return SYM_T;
 }
 
 static CL_Obj bi_char_not_equal(CL_Obj *args, int n)
 {
-    int a, b;
-    CL_UNUSED(n);
-    if (!CL_CHAR_P(args[0]) || !CL_CHAR_P(args[1]))
-        cl_error(CL_ERR_TYPE, "CHAR-NOT-EQUAL: not a character");
-    a = CL_CHAR_VAL(args[0]);
-    b = CL_CHAR_VAL(args[1]);
-    if (a >= 'a' && a <= 'z') a -= 32;
-    if (b >= 'a' && b <= 'z') b -= 32;
-    return (a != b) ? SYM_T : CL_NIL;
+    int i, j;
+    for (i = 0; i < n; i++)
+        if (!CL_CHAR_P(args[i]))
+            cl_error(CL_ERR_TYPE, "CHAR-NOT-EQUAL: not a character");
+    for (i = 0; i < n; i++)
+        for (j = i + 1; j < n; j++)
+            if (char_upcase_val(args[i]) == char_upcase_val(args[j]))
+                return CL_NIL;
+    return SYM_T;
 }
 
 static CL_Obj bi_char_lessp(CL_Obj *args, int n)
 {
-    int a, b;
-    CL_UNUSED(n);
-    if (!CL_CHAR_P(args[0]) || !CL_CHAR_P(args[1]))
-        cl_error(CL_ERR_TYPE, "CHAR-LESSP: not a character");
-    a = CL_CHAR_VAL(args[0]);
-    b = CL_CHAR_VAL(args[1]);
-    if (a >= 'a' && a <= 'z') a -= 32;
-    if (b >= 'a' && b <= 'z') b -= 32;
-    return (a < b) ? SYM_T : CL_NIL;
+    int i;
+    for (i = 0; i < n; i++)
+        if (!CL_CHAR_P(args[i]))
+            cl_error(CL_ERR_TYPE, "CHAR-LESSP: not a character");
+    for (i = 1; i < n; i++)
+        if (!(char_upcase_val(args[i-1]) < char_upcase_val(args[i])))
+            return CL_NIL;
+    return SYM_T;
 }
 
 static CL_Obj bi_char_greaterp(CL_Obj *args, int n)
 {
-    int a, b;
-    CL_UNUSED(n);
-    if (!CL_CHAR_P(args[0]) || !CL_CHAR_P(args[1]))
-        cl_error(CL_ERR_TYPE, "CHAR-GREATERP: not a character");
-    a = CL_CHAR_VAL(args[0]);
-    b = CL_CHAR_VAL(args[1]);
-    if (a >= 'a' && a <= 'z') a -= 32;
-    if (b >= 'a' && b <= 'z') b -= 32;
-    return (a > b) ? SYM_T : CL_NIL;
+    int i;
+    for (i = 0; i < n; i++)
+        if (!CL_CHAR_P(args[i]))
+            cl_error(CL_ERR_TYPE, "CHAR-GREATERP: not a character");
+    for (i = 1; i < n; i++)
+        if (!(char_upcase_val(args[i-1]) > char_upcase_val(args[i])))
+            return CL_NIL;
+    return SYM_T;
 }
 
 static CL_Obj bi_char_not_greaterp(CL_Obj *args, int n)
 {
-    int a, b;
-    CL_UNUSED(n);
-    if (!CL_CHAR_P(args[0]) || !CL_CHAR_P(args[1]))
-        cl_error(CL_ERR_TYPE, "CHAR-NOT-GREATERP: not a character");
-    a = CL_CHAR_VAL(args[0]);
-    b = CL_CHAR_VAL(args[1]);
-    if (a >= 'a' && a <= 'z') a -= 32;
-    if (b >= 'a' && b <= 'z') b -= 32;
-    return (a <= b) ? SYM_T : CL_NIL;
+    int i;
+    for (i = 0; i < n; i++)
+        if (!CL_CHAR_P(args[i]))
+            cl_error(CL_ERR_TYPE, "CHAR-NOT-GREATERP: not a character");
+    for (i = 1; i < n; i++)
+        if (!(char_upcase_val(args[i-1]) <= char_upcase_val(args[i])))
+            return CL_NIL;
+    return SYM_T;
 }
 
 static CL_Obj bi_char_not_lessp(CL_Obj *args, int n)
 {
-    int a, b;
-    CL_UNUSED(n);
-    if (!CL_CHAR_P(args[0]) || !CL_CHAR_P(args[1]))
-        cl_error(CL_ERR_TYPE, "CHAR-NOT-LESSP: not a character");
-    a = CL_CHAR_VAL(args[0]);
-    b = CL_CHAR_VAL(args[1]);
-    if (a >= 'a' && a <= 'z') a -= 32;
-    if (b >= 'a' && b <= 'z') b -= 32;
-    return (a >= b) ? SYM_T : CL_NIL;
+    int i;
+    for (i = 0; i < n; i++)
+        if (!CL_CHAR_P(args[i]))
+            cl_error(CL_ERR_TYPE, "CHAR-NOT-LESSP: not a character");
+    for (i = 1; i < n; i++)
+        if (!(char_upcase_val(args[i-1]) >= char_upcase_val(args[i])))
+            return CL_NIL;
+    return SYM_T;
 }
 
 /* --- MAKE-STRING --- */
@@ -1153,7 +1198,6 @@ static CL_Obj bi_make_string_fn(CL_Obj *args, int n)
     char fill_char = ' ';  /* default fill */
     int i;
     CL_Obj result;
-    CL_String *s;
 
     if (!CL_FIXNUM_P(args[0]) || CL_FIXNUM_VAL(args[0]) < 0)
         cl_error(CL_ERR_TYPE, "MAKE-STRING: size must be a non-negative integer");
@@ -1171,11 +1215,10 @@ static CL_Obj bi_make_string_fn(CL_Obj *args, int n)
     }
 
     result = cl_make_string(NULL, size);
-    s = (CL_String *)CL_OBJ_TO_PTR(result);
     {
         uint32_t j;
         for (j = 0; j < size; j++)
-            s->data[j] = fill_char;
+            cl_string_set_char_at(result, j, fill_char);
     }
     return result;
 }
@@ -1186,12 +1229,12 @@ void cl_builtins_strings_init(void)
 {
     /* Character functions */
     defun("CHARACTERP", bi_characterp, 1, 1);
-    defun("CHAR=", bi_char_eq, 2, 2);
-    defun("CHAR/=", bi_char_ne, 2, 2);
-    defun("CHAR<", bi_char_lt, 2, 2);
-    defun("CHAR>", bi_char_gt, 2, 2);
-    defun("CHAR<=", bi_char_le, 2, 2);
-    defun("CHAR>=", bi_char_ge, 2, 2);
+    defun("CHAR=", bi_char_eq, 1, -1);
+    defun("CHAR/=", bi_char_ne, 1, -1);
+    defun("CHAR<", bi_char_lt, 1, -1);
+    defun("CHAR>", bi_char_gt, 1, -1);
+    defun("CHAR<=", bi_char_le, 1, -1);
+    defun("CHAR>=", bi_char_ge, 1, -1);
     defun("CHAR-CODE", bi_char_code, 1, 1);
     defun("CODE-CHAR", bi_code_char, 1, 1);
     defun("CHAR-UPCASE", bi_char_upcase, 1, 1);
@@ -1255,12 +1298,12 @@ void cl_builtins_strings_init(void)
     defun("ALPHANUMERICP", bi_alphanumericp, 1, 1);
     defun("DIGIT-CHAR", bi_digit_char, 1, 2);
     defun("BOTH-CASE-P", bi_both_case_p, 1, 1);
-    defun("CHAR-EQUAL", bi_char_equal, 2, 2);
-    defun("CHAR-NOT-EQUAL", bi_char_not_equal, 2, 2);
-    defun("CHAR-LESSP", bi_char_lessp, 2, 2);
-    defun("CHAR-GREATERP", bi_char_greaterp, 2, 2);
-    defun("CHAR-NOT-GREATERP", bi_char_not_greaterp, 2, 2);
-    defun("CHAR-NOT-LESSP", bi_char_not_lessp, 2, 2);
+    defun("CHAR-EQUAL", bi_char_equal, 1, -1);
+    defun("CHAR-NOT-EQUAL", bi_char_not_equal, 1, -1);
+    defun("CHAR-LESSP", bi_char_lessp, 1, -1);
+    defun("CHAR-GREATERP", bi_char_greaterp, 1, -1);
+    defun("CHAR-NOT-GREATERP", bi_char_not_greaterp, 1, -1);
+    defun("CHAR-NOT-LESSP", bi_char_not_lessp, 1, -1);
     defun("MAKE-STRING", bi_make_string_fn, 1, -1);
 
     KW_INITIAL_ELEMENT = cl_intern_keyword("INITIAL-ELEMENT", 15);

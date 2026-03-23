@@ -187,17 +187,13 @@ static CL_Obj bi_reverse(CL_Obj *args, int n)
             cl_vector_data(rv)[i] = cl_vector_data(v)[alen - 1 - i];
         return result;
     }
-    if (CL_STRING_P(seq)) {
-        CL_String *s = (CL_String *)CL_OBJ_TO_PTR(seq);
-        uint32_t slen = s->length;
-        char *tmp = (char *)platform_alloc(slen + 1);
+    if (CL_ANY_STRING_P(seq)) {
+        uint32_t slen = cl_string_length(seq);
         CL_Obj result;
         uint32_t i;
+        result = cl_string_copy(seq);
         for (i = 0; i < slen; i++)
-            tmp[i] = s->data[slen - 1 - i];
-        tmp[slen] = '\0';
-        result = cl_make_string(tmp, slen);
-        platform_free(tmp);
+            cl_string_set_char_at(result, i, cl_string_char_at(seq, slen - 1 - i));
         return result;
     }
     if (CL_BIT_VECTOR_P(seq)) {
@@ -424,13 +420,12 @@ static CL_Obj bi_equalp(CL_Obj *args, int n)
         return bi_equalp(pair, 2);
     }
     /* Strings: case-insensitive */
-    if (CL_STRING_P(a) && CL_STRING_P(b)) {
-        CL_String *sa = (CL_String *)CL_OBJ_TO_PTR(a);
-        CL_String *sb = (CL_String *)CL_OBJ_TO_PTR(b);
+    if (CL_ANY_STRING_P(a) && CL_ANY_STRING_P(b)) {
+        uint32_t la = cl_string_length(a), lb = cl_string_length(b);
         uint32_t i;
-        if (sa->length != sb->length) return CL_NIL;
-        for (i = 0; i < sa->length; i++) {
-            int ca = (unsigned char)sa->data[i], cb = (unsigned char)sb->data[i];
+        if (la != lb) return CL_NIL;
+        for (i = 0; i < la; i++) {
+            int ca = cl_string_char_at(a, i), cb = cl_string_char_at(b, i);
             if (ca >= 'a' && ca <= 'z') ca -= 32;
             if (cb >= 'a' && cb <= 'z') cb -= 32;
             if (ca != cb) return CL_NIL;

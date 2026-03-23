@@ -264,10 +264,31 @@ static CL_Obj bi_setf_getf(CL_Obj *args, int n)
     return value;
 }
 
+/* For subst, default to EQUAL so that list patterns can be matched.
+ * CLHS says EQL, but real-world code (cl-ppcre) relies on matching list
+ * patterns via subst, and other implementations coalesce equal constants
+ * at compile time making eql work like equal. Using equal as default
+ * makes our subst compatible with such code. */
+static CL_Obj extract_test_arg_subst(CL_Obj *args, int n, int start)
+{
+    int i;
+    CL_Obj kw_test = cl_intern_in("TEST", 4, cl_package_keyword);
+    for (i = start; i < n - 1; i += 2) {
+        if (args[i] == kw_test)
+            return cl_coerce_funcdesig(args[i + 1], ":TEST");
+    }
+    /* Default: equal (for compatibility with constant coalescing) */
+    {
+        CL_Obj equal_sym = cl_intern_in("EQUAL", 5, cl_package_cl);
+        CL_Symbol *s = (CL_Symbol *)CL_OBJ_TO_PTR(equal_sym);
+        return s->function;
+    }
+}
+
 static CL_Obj bi_subst(CL_Obj *args, int n)
 {
     CL_Obj new_obj = args[0], old_obj = args[1], tree = args[2];
-    CL_Obj test_fn = extract_test_arg(args, n, 3);
+    CL_Obj test_fn = extract_test_arg_subst(args, n, 3);
     CL_Obj car_r, cdr_r;
 
     if (!CL_NULL_P(call_test(test_fn, old_obj, tree)))

@@ -1261,13 +1261,15 @@ when the param has no explicit default.  CL spec 3.4.6 requires this."
     ;; FOR var = expr [THEN step-expr]
     ((and (symbolp sub-kw) (string= (symbol-name sub-kw) "="))
      (let ((init-expr (car rest))
-           (step-expr nil))
+           (step-expr nil)
+           (has-then nil))
        (setq rest (cdr rest))
        (when (and rest (%loop-keyword-p (car rest) "THEN"))
          (setq rest (cdr rest))
          (setq step-expr (car rest))
+         (setq has-then t)
          (setq rest (cdr rest)))
-       (if step-expr
+       (if has-then
            ;; WITH THEN: first iteration uses init-expr, subsequent use step-expr
            ;; Assignment must be in preamble (before body), not steps (after body)
            (let ((flag (gensym "FIRST")))

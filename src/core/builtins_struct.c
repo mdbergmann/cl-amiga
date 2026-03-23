@@ -441,6 +441,8 @@ static CL_Obj bi_class_of(CL_Obj *args, int n)
             return cl_intern("COMPILED-FUNCTION", 17);
         case TYPE_VECTOR: {
             CL_Vector *v = (CL_Vector *)CL_OBJ_TO_PTR(obj);
+            if (v->flags & CL_VEC_FLAG_STRING)
+                return cl_intern("STRING", 6);
             return (v->rank <= 1)
                 ? cl_intern("VECTOR", 6)
                 : cl_intern("ARRAY", 5);

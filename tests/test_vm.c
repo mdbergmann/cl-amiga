@@ -1999,6 +1999,20 @@ TEST(eval_char_comparison)
     ASSERT_STR_EQ(eval_print("(char>= #\\A #\\A)"), "T");
 }
 
+TEST(eval_char_comparison_variadic)
+{
+    /* Variadic char comparisons (CLHS allows 1+ args) */
+    ASSERT_STR_EQ(eval_print("(char<= #\\a #\\b #\\c)"), "T");
+    ASSERT_STR_EQ(eval_print("(char<= #\\a #\\c #\\b)"), "NIL");
+    ASSERT_STR_EQ(eval_print("(char= #\\a #\\a #\\a)"), "T");
+    ASSERT_STR_EQ(eval_print("(char= #\\a #\\a #\\b)"), "NIL");
+    ASSERT_STR_EQ(eval_print("(char< #\\a #\\b #\\c)"), "T");
+    ASSERT_STR_EQ(eval_print("(char> #\\c #\\b #\\a)"), "T");
+    /* Single arg always returns T */
+    ASSERT_STR_EQ(eval_print("(char= #\\x)"), "T");
+    ASSERT_STR_EQ(eval_print("(char<= #\\x)"), "T");
+}
+
 TEST(eval_char_code_conversion)
 {
     ASSERT_EQ_INT(eval_int("(char-code #\\A)"), 65);
@@ -2250,9 +2264,9 @@ TEST(eval_fill_pointer)
     ASSERT_EQ_INT(eval_int(
         "(fill-pointer (make-array 10 :fill-pointer 5))"), 5);
 
-    /* fill-pointer T means start at 0 */
+    /* fill-pointer T means start at array size (CLHS) */
     ASSERT_EQ_INT(eval_int(
-        "(fill-pointer (make-array 10 :fill-pointer t))"), 0);
+        "(fill-pointer (make-array 10 :fill-pointer t))"), 10);
 
     /* array-has-fill-pointer-p */
     ASSERT_STR_EQ(eval_print(
@@ -2567,6 +2581,10 @@ TEST(eval_subst)
 {
     ASSERT_STR_EQ(eval_print("(subst 'x 'b '(a b (c b)))"), "(A X (C X))");
     ASSERT_STR_EQ(eval_print("(subst 99 1 '(1 (2 1) 3))"), "(99 (2 99) 3)");
+    /* subst should match list patterns (using equal by default) */
+    ASSERT_STR_EQ(eval_print(
+        "(subst 'REPLACED '(TARGET) '(a (b (TARGET) c) d))"),
+        "(A (B REPLACED C) D)");
 }
 
 TEST(eval_sublis)
@@ -5168,6 +5186,17 @@ TEST(eval_loop_for_eq_then)
         "  (nreverse r))"), "(1 2 4 8 16)");
 }
 
+TEST(eval_loop_for_eq_then_nil)
+{
+    /* for var = init then nil -- step form is literal nil */
+    ASSERT_STR_EQ(eval_print(
+        "(let ((r nil))"
+        "  (loop for first = t then nil"
+        "    for i from 0 to 3"
+        "    do (push first r))"
+        "  (nreverse r))"), "(T NIL NIL NIL)");
+}
+
 TEST(eval_loop_repeat)
 {
     /* repeat n */
@@ -6769,6 +6798,7 @@ int main(void)
     /* Phase 5 Tier 1 */
     RUN(eval_characterp);
     RUN(eval_char_comparison);
+    RUN(eval_char_comparison_variadic);
     RUN(eval_char_code_conversion);
     RUN(eval_char_case);
     RUN(eval_char_predicates);
@@ -7024,6 +7054,7 @@ int main(void)
     RUN(eval_loop_for_downfrom_above);
     RUN(eval_loop_for_across);
     RUN(eval_loop_for_eq_then);
+    RUN(eval_loop_for_eq_then_nil);
     RUN(eval_loop_repeat);
     RUN(eval_loop_for_multiple);
     RUN(eval_loop_collect);
