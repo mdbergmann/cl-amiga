@@ -6582,6 +6582,106 @@ TEST(eval_heap_exhaustion_error)
     cl_vm.fp = 0;
 }
 
+/* --- load-time-value --- */
+
+static void test_eval_load_time_value_basic(void)
+{
+    /* Evaluates the form and returns the result */
+    ASSERT_STR_EQ(eval_print("(load-time-value (+ 1 2))"), "3");
+    ASSERT_STR_EQ(eval_print("(load-time-value (list 1 2 3))"), "(1 2 3)");
+    ASSERT_STR_EQ(eval_print("(load-time-value 42)"), "42");
+    ASSERT_STR_EQ(eval_print("(load-time-value t)"), "T");
+    ASSERT_STR_EQ(eval_print("(load-time-value nil)"), "NIL");
+    ASSERT_STR_EQ(eval_print("(load-time-value \"hello\")"), "\"hello\"");
+}
+
+static void test_eval_load_time_value_in_function(void)
+{
+    /* load-time-value inside a function returns the same object each call */
+    eval_print("(defun ltv-test () (load-time-value (cons 1 2)))");
+    ASSERT_STR_EQ(eval_print("(ltv-test)"), "(1 . 2)");
+    ASSERT_STR_EQ(eval_print("(eq (ltv-test) (ltv-test))"), "T");
+}
+
+static void test_eval_load_time_value_with_read_only(void)
+{
+    /* read-only-p is accepted (second argument) */
+    ASSERT_STR_EQ(eval_print("(load-time-value (+ 10 20) t)"), "30");
+    ASSERT_STR_EQ(eval_print("(load-time-value (list 'a 'b) nil)"), "(A B)");
+}
+
+static void test_eval_load_time_value_null_lex_env(void)
+{
+    /* Form is evaluated in the null lexical environment —
+     * surrounding lexical bindings should NOT be visible.
+     * In a single-pass system this is best-effort, but we test
+     * that the form at least evaluates correctly. */
+    ASSERT_STR_EQ(eval_print("(load-time-value (* 6 7))"), "42");
+}
+
+static void test_eval_load_time_value_side_effect(void)
+{
+    /* Side effects happen at load time (compilation) */
+    eval_print("(defvar *ltv-counter* 0)");
+    eval_print("(defun ltv-side () (load-time-value (incf *ltv-counter*)))");
+    /* The incf happened during compilation of ltv-side, so counter is 1 */
+    ASSERT_STR_EQ(eval_print("*ltv-counter*"), "1");
+    /* Calling the function just returns the cached value, no further incf */
+    ASSERT_STR_EQ(eval_print("(ltv-side)"), "1");
+    ASSERT_STR_EQ(eval_print("(ltv-side)"), "1");
+    ASSERT_STR_EQ(eval_print("*ltv-counter*"), "1");
+}
+
+static void test_eval_load_time_value_complex_form(void)
+{
+    /* Complex form: hash table creation at load time */
+    eval_print("(defun ltv-ht () (load-time-value (let ((h (make-hash-table))) (setf (gethash 'x h) 42) h)))");
+    ASSERT_STR_EQ(eval_print("(gethash 'x (ltv-ht))"), "42");
+    /* Same hash table each time */
+    ASSERT_STR_EQ(eval_print("(eq (ltv-ht) (ltv-ht))"), "T");
+}
+
+static void test_eval_load_time_value_nested(void)
+{
+    /* load-time-value nested inside other forms */
+    ASSERT_STR_EQ(eval_print("(+ 1 (load-time-value (+ 2 3)))"), "6");
+    ASSERT_STR_EQ(eval_print("(list (load-time-value 'a) (load-time-value 'b))"), "(A B)");
+}
+
+/* --- get-properties --- */
+
+static void test_eval_get_properties_found(void)
+{
+    ASSERT_STR_EQ(eval_print(
+        "(multiple-value-list (get-properties '(:a 1 :b 2 :c 3) '(:b :c)))"),
+        "(:B 2 (:B 2 :C 3))");
+}
+
+static void test_eval_get_properties_first_match(void)
+{
+    /* Returns the first matching indicator */
+    ASSERT_STR_EQ(eval_print(
+        "(multiple-value-list (get-properties '(:a 1 :b 2 :c 3) '(:c :a)))"),
+        "(:A 1 (:A 1 :B 2 :C 3))");
+}
+
+static void test_eval_get_properties_not_found(void)
+{
+    ASSERT_STR_EQ(eval_print(
+        "(multiple-value-list (get-properties '(:a 1 :b 2) '(:x :y)))"),
+        "(NIL NIL NIL)");
+}
+
+static void test_eval_get_properties_empty(void)
+{
+    ASSERT_STR_EQ(eval_print(
+        "(multiple-value-list (get-properties '() '(:a)))"),
+        "(NIL NIL NIL)");
+    ASSERT_STR_EQ(eval_print(
+        "(multiple-value-list (get-properties '(:a 1) '()))"),
+        "(NIL NIL NIL)");
+}
+
 int main(void)
 {
     test_init();
@@ -7372,6 +7472,21 @@ int main(void)
 
     /* heap exhaustion / storage errors */
     RUN(eval_heap_exhaustion_error);
+
+    /* load-time-value */
+    RUN(eval_load_time_value_basic);
+    RUN(eval_load_time_value_in_function);
+    RUN(eval_load_time_value_with_read_only);
+    RUN(eval_load_time_value_null_lex_env);
+    RUN(eval_load_time_value_side_effect);
+    RUN(eval_load_time_value_complex_form);
+    RUN(eval_load_time_value_nested);
+
+    /* get-properties */
+    RUN(eval_get_properties_found);
+    RUN(eval_get_properties_first_match);
+    RUN(eval_get_properties_not_found);
+    RUN(eval_get_properties_empty);
 
     teardown();
     REPORT();

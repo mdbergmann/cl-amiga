@@ -62,6 +62,7 @@ CL_Obj SYM_DEFPARAMETER = CL_NIL;
 CL_Obj SYM_DEFCONSTANT = CL_NIL;
 CL_Obj SYM_SETF = CL_NIL;
 CL_Obj SYM_EVAL_WHEN = CL_NIL;
+CL_Obj SYM_LOAD_TIME_VALUE = CL_NIL;
 CL_Obj SYM_DESTRUCTURING_BIND = CL_NIL;
 CL_Obj SYM_DEFSETF = CL_NIL;
 CL_Obj SYM_DEFTYPE = CL_NIL;
@@ -408,6 +409,7 @@ void cl_symbol_init(void)
     SYM_DEFCONSTANT          = cl_intern_in("DEFCONSTANT", 11, cl_package_cl);
     SYM_SETF                 = cl_intern_in("SETF", 4, cl_package_cl);
     SYM_EVAL_WHEN            = cl_intern_in("EVAL-WHEN", 9, cl_package_cl);
+    SYM_LOAD_TIME_VALUE      = cl_intern_in("LOAD-TIME-VALUE", 15, cl_package_cl);
     SYM_DESTRUCTURING_BIND   = cl_intern_in("DESTRUCTURING-BIND", 18, cl_package_cl);
     SYM_DEFSETF              = cl_intern_in("DEFSETF", 7, cl_package_cl);
     SYM_DEFTYPE              = cl_intern_in("DEFTYPE", 7, cl_package_cl);

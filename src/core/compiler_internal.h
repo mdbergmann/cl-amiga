@@ -191,6 +191,7 @@ void compile_multiple_value_list(CL_Compiler *c, CL_Obj form);
 void compile_nth_value(CL_Compiler *c, CL_Obj form);
 void compile_multiple_value_prog1(CL_Compiler *c, CL_Obj form);
 void compile_eval_when(CL_Compiler *c, CL_Obj form);
+void compile_load_time_value(CL_Compiler *c, CL_Obj form);
 void compile_defsetf(CL_Compiler *c, CL_Obj form);
 void compile_deftype(CL_Compiler *c, CL_Obj form);
 void compile_defvar(CL_Compiler *c, CL_Obj form);

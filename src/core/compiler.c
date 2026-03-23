@@ -2289,6 +2289,7 @@ void compile_expr(CL_Compiler *c, CL_Obj expr)
         if (head == SYM_ETYPECASE)   { compile_typecase(c, expr, 1); return; }
         if (head == SYM_QUASIQUOTE)  { compile_quasiquote(c, expr); return; }
         if (head == SYM_EVAL_WHEN)   { compile_eval_when(c, expr); return; }
+        if (head == SYM_LOAD_TIME_VALUE) { compile_load_time_value(c, expr); return; }
         if (head == SYM_DEFSETF)     { compile_defsetf(c, expr); return; }
         if (head == SYM_DEFTYPE)     { compile_deftype(c, expr); return; }
         if (head == SYM_MULTIPLE_VALUE_BIND)  { compile_multiple_value_bind(c, expr); return; }

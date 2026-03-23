@@ -264,6 +264,43 @@ static CL_Obj bi_setf_getf(CL_Obj *args, int n)
     return value;
 }
 
+/* GET-PROPERTIES: (get-properties plist indicator-list)
+ * Returns 3 values: indicator, value, tail.
+ * Searches plist for any indicator in indicator-list (using EQ).
+ * If found, returns the indicator, its value, and the tail of the
+ * plist starting at that indicator. If not found, returns NIL NIL NIL. */
+static CL_Obj bi_get_properties(CL_Obj *args, int n)
+{
+    CL_Obj plist = args[0], indicators = args[1];
+    CL_UNUSED(n);
+
+    while (!CL_NULL_P(plist)) {
+        CL_Obj key = cl_car(plist);
+        CL_Obj val_cell = cl_cdr(plist);
+        if (CL_NULL_P(val_cell)) break;
+        /* Check if key is in indicator-list */
+        CL_Obj ind = indicators;
+        while (!CL_NULL_P(ind)) {
+            if (cl_car(ind) == key) {
+                /* Found — return indicator, value, tail */
+                cl_mv_values[0] = key;
+                cl_mv_values[1] = cl_car(val_cell);
+                cl_mv_values[2] = plist;
+                cl_mv_count = 3;
+                return key;
+            }
+            ind = cl_cdr(ind);
+        }
+        plist = cl_cdr(val_cell);
+    }
+    /* Not found */
+    cl_mv_values[0] = CL_NIL;
+    cl_mv_values[1] = CL_NIL;
+    cl_mv_values[2] = CL_NIL;
+    cl_mv_count = 3;
+    return CL_NIL;
+}
+
 /* For subst, default to EQUAL so that list patterns can be matched.
  * CLHS says EQL, but real-world code (cl-ppcre) relies on matching list
  * patterns via subst, and other implementations coalesce equal constants
@@ -885,6 +922,7 @@ void cl_builtins_lists_init(void)
     defun("ASSOC", bi_assoc, 2, -1);
     defun("RASSOC", bi_rassoc, 2, -1);
     defun("GETF", bi_getf, 2, 3);
+    defun("GET-PROPERTIES", bi_get_properties, 2, 2);
     cl_register_builtin("%SETF-GETF", bi_setf_getf, 3, 3, cl_package_clamiga);
     defun("SUBST", bi_subst, 3, -1);
     defun("SUBLIS", bi_sublis, 2, -1);

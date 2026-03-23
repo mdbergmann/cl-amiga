@@ -929,6 +929,41 @@ void compile_eval_when(CL_Compiler *c, CL_Obj form)
     compile_progn(c, body);
 }
 
+void compile_load_time_value(CL_Compiler *c, CL_Obj form)
+{
+    /* (load-time-value form &optional read-only-p)
+     * In single-pass compile-and-eval, compile-time IS load-time.
+     * Evaluate the form now in the null lexical environment,
+     * then emit the result as a constant. */
+    CL_Obj value_form = cl_car(cl_cdr(form));
+    CL_Obj bytecode, result;
+
+    CL_GC_PROTECT(form);
+
+    /* Compile and evaluate the form */
+    bytecode = cl_compile(value_form);
+    if (CL_NULL_P(bytecode)) {
+        /* Form compiled to nothing (shouldn't happen, but be safe) */
+        cl_emit(c, OP_NIL);
+        CL_GC_UNPROTECT(1);
+        return;
+    }
+
+    CL_GC_PROTECT(bytecode);
+    result = cl_vm_eval(bytecode);
+    CL_GC_UNPROTECT(1); /* bytecode */
+
+    /* Emit the evaluated result as a constant */
+    if (CL_NULL_P(result))
+        cl_emit(c, OP_NIL);
+    else if (result == SYM_T)
+        cl_emit(c, OP_T);
+    else
+        cl_emit_const(c, result);
+
+    CL_GC_UNPROTECT(1); /* form */
+}
+
 void compile_defsetf(CL_Compiler *c, CL_Obj form)
 {
     /* Short form: (defsetf accessor updater)
