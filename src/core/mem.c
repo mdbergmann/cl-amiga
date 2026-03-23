@@ -50,6 +50,15 @@ static void gc_mark_push(CL_Obj obj);
 static void *alloc_from_free_list(uint32_t *sizep);
 static void *alloc_from_bump(uint32_t size);
 
+/* Compaction forwarding table — maps old_offset/CL_ALIGN -> new_offset.
+ * Allocated via platform_alloc during compaction, freed afterwards. */
+static uint32_t *gc_fwd_table = NULL;
+static uint32_t gc_fwd_table_entries = 0;
+
+/* Track last GC cycle at which compaction ran — prevents infinite loops
+ * when the heap is genuinely full (no fragmentation to reclaim). */
+static uint32_t gc_last_compact_cycle = 0xFFFFFFFF;
+
 /* Align size up to CL_ALIGN boundary */
 static uint32_t align_up(uint32_t size)
 {
@@ -73,6 +82,7 @@ void cl_mem_init(uint32_t heap_size)
     cl_heap.total_allocated = 0;
     cl_heap.total_consed = 0;
     cl_heap.gc_count = 0;
+    cl_heap.compact_count = 0;
 
     gc_root_count = 0;
     gc_mark_top = 0;
@@ -198,6 +208,15 @@ void *cl_alloc(uint8_t type, uint32_t size)
         if (!ptr) {
             ptr = alloc_from_bump(size);
         }
+    }
+    if (!ptr && gc_last_compact_cycle != cl_heap.gc_count) {
+        /* Normal GC didn't help — try compaction to eliminate fragmentation.
+         * Skip if compaction already ran this cycle (heap genuinely full). */
+        if (multi) platform_mutex_unlock(alloc_mutex);
+        gc_last_compact_cycle = cl_heap.gc_count;
+        cl_gc_compact();
+        if (multi) platform_mutex_lock(alloc_mutex);
+        ptr = alloc_from_bump(size);
     }
     if (!ptr) {
         if (multi) platform_mutex_unlock(alloc_mutex);
@@ -1042,6 +1061,555 @@ static void gc_sweep(void)
         }
         ptr += size;
     }
+}
+
+/* ================================================================
+ * Compacting GC (Lisp-2 style sliding compaction)
+ *
+ * 4-pass algorithm:
+ *   Pass 1: Mark (reuse existing gc_mark)
+ *   Pass 2: Compute forwarding addresses
+ *   Pass 3: Update all references (roots + heap objects)
+ *   Pass 4: Slide live objects to their new positions
+ *
+ * Triggered when normal GC + free-list can't satisfy an allocation
+ * (fragmentation is the bottleneck), or explicitly via cl_gc_compact().
+ * ================================================================ */
+
+/* Allocate / free forwarding table */
+static int gc_fwd_alloc(void)
+{
+    gc_fwd_table_entries = cl_heap.bump / CL_ALIGN;
+    gc_fwd_table = (uint32_t *)platform_alloc(
+        gc_fwd_table_entries * sizeof(uint32_t));
+    if (!gc_fwd_table) return 0;
+    memset(gc_fwd_table, 0, gc_fwd_table_entries * sizeof(uint32_t));
+    return 1;
+}
+
+static void gc_fwd_free(void)
+{
+    if (gc_fwd_table) {
+        platform_free(gc_fwd_table);
+        gc_fwd_table = NULL;
+        gc_fwd_table_entries = 0;
+    }
+}
+
+/* Pass 2: Walk arena linearly, assign forwarding addresses to marked objects */
+static void gc_compute_forwarding(void)
+{
+    uint8_t *ptr = cl_heap.arena + CL_ALIGN;
+    uint8_t *end = cl_heap.arena + cl_heap.bump;
+    uint32_t new_offset = CL_ALIGN;  /* Skip offset 0 (NIL sentinel) */
+
+    while (ptr < end) {
+        uint32_t size = CL_HDR_SIZE(ptr);
+        if (size == 0) break;
+
+        if (CL_HDR_MARKED(ptr)) {
+            uint32_t old_offset = (uint32_t)(ptr - cl_heap.arena);
+            gc_fwd_table[old_offset / CL_ALIGN] = new_offset;
+            new_offset += size;
+        }
+        ptr += size;
+    }
+}
+
+/* Translate a CL_Obj through the forwarding table.
+ * Returns obj unchanged if it's not a movable heap pointer. */
+static CL_Obj gc_forward(CL_Obj obj)
+{
+    uint32_t idx, fwd;
+    if (CL_NULL_P(obj) || CL_FIXNUM_P(obj) || CL_CHAR_P(obj))
+        return obj;
+    if (obj == CL_UNBOUND)
+        return obj;
+    if (obj >= cl_heap.bump)
+        return obj;
+    idx = obj / CL_ALIGN;
+    if (idx >= gc_fwd_table_entries)
+        return obj;
+    fwd = gc_fwd_table[idx];
+    return fwd ? fwd : obj;
+}
+
+/* Update a CL_Obj slot in place via forwarding table */
+static void gc_update_slot(CL_Obj *slot)
+{
+    *slot = gc_forward(*slot);
+}
+
+/* Pass 3a: Update children of a single heap object (mirrors gc_mark_children) */
+static void gc_update_children(void *ptr, uint8_t type)
+{
+    switch (type) {
+    case TYPE_CONS: {
+        CL_Cons *c = (CL_Cons *)ptr;
+        gc_update_slot(&c->car);
+        gc_update_slot(&c->cdr);
+        break;
+    }
+    case TYPE_SYMBOL: {
+        CL_Symbol *s = (CL_Symbol *)ptr;
+        gc_update_slot(&s->name);
+        if (s->value != CL_UNBOUND) gc_update_slot(&s->value);
+        if (s->function != CL_UNBOUND) gc_update_slot(&s->function);
+        gc_update_slot(&s->plist);
+        gc_update_slot(&s->package);
+        break;
+    }
+    case TYPE_FUNCTION: {
+        CL_Function *f = (CL_Function *)ptr;
+        gc_update_slot(&f->name);
+        break;
+    }
+    case TYPE_CLOSURE: {
+        CL_Closure *cl = (CL_Closure *)ptr;
+        uint32_t size = CL_HDR_SIZE(ptr);
+        uint32_t n_upvals = (size - sizeof(CL_Closure)) / sizeof(CL_Obj);
+        uint32_t i;
+        gc_update_slot(&cl->bytecode);
+        for (i = 0; i < n_upvals; i++)
+            gc_update_slot(&cl->upvalues[i]);
+        break;
+    }
+    case TYPE_BYTECODE: {
+        CL_Bytecode *bc = (CL_Bytecode *)ptr;
+        uint16_t i;
+        gc_update_slot(&bc->name);
+        for (i = 0; i < bc->n_constants; i++)
+            gc_update_slot(&bc->constants[i]);
+        if (bc->key_syms) {
+            for (i = 0; i < bc->n_keys; i++)
+                gc_update_slot(&bc->key_syms[i]);
+        }
+        break;
+    }
+    case TYPE_VECTOR: {
+        CL_Vector *v = (CL_Vector *)ptr;
+        uint32_t i;
+        if (v->flags & CL_VEC_FLAG_DISPLACED) {
+            gc_update_slot(&v->data[0]);
+        } else {
+            uint32_t n_entries = (v->rank > 1) ? (uint32_t)v->rank + v->length : v->length;
+            for (i = 0; i < n_entries; i++)
+                gc_update_slot(&v->data[i]);
+        }
+        break;
+    }
+    case TYPE_PACKAGE: {
+        CL_Package *p = (CL_Package *)ptr;
+        gc_update_slot(&p->name);
+        gc_update_slot(&p->symbols);
+        gc_update_slot(&p->use_list);
+        gc_update_slot(&p->nicknames);
+        gc_update_slot(&p->local_nicknames);
+        gc_update_slot(&p->shadowing_symbols);
+        break;
+    }
+    case TYPE_HASHTABLE: {
+        CL_Hashtable *ht = (CL_Hashtable *)ptr;
+        uint32_t i;
+        gc_update_slot(&ht->bucket_vec);
+        if (!CL_NULL_P(ht->bucket_vec)) {
+            /* External bucket vector — its contents updated when we walk that object */
+        } else {
+            for (i = 0; i < ht->bucket_count; i++)
+                gc_update_slot(&ht->buckets[i]);
+        }
+        break;
+    }
+    case TYPE_CONDITION: {
+        CL_Condition *cond = (CL_Condition *)ptr;
+        gc_update_slot(&cond->type_name);
+        gc_update_slot(&cond->slots);
+        gc_update_slot(&cond->report_string);
+        break;
+    }
+    case TYPE_STRUCT: {
+        CL_Struct *st = (CL_Struct *)ptr;
+        uint32_t i;
+        gc_update_slot(&st->type_desc);
+        for (i = 0; i < st->n_slots; i++)
+            gc_update_slot(&st->slots[i]);
+        break;
+    }
+    case TYPE_STREAM: {
+        CL_Stream *st = (CL_Stream *)ptr;
+        gc_update_slot(&st->string_buf);
+        gc_update_slot(&st->element_type);
+        break;
+    }
+    case TYPE_RATIO: {
+        CL_Ratio *r = (CL_Ratio *)ptr;
+        gc_update_slot(&r->numerator);
+        gc_update_slot(&r->denominator);
+        break;
+    }
+    case TYPE_COMPLEX: {
+        CL_Complex *cx = (CL_Complex *)ptr;
+        gc_update_slot(&cx->realpart);
+        gc_update_slot(&cx->imagpart);
+        break;
+    }
+    case TYPE_PATHNAME: {
+        CL_Pathname *pn = (CL_Pathname *)ptr;
+        gc_update_slot(&pn->host);
+        gc_update_slot(&pn->device);
+        gc_update_slot(&pn->directory);
+        gc_update_slot(&pn->name);
+        gc_update_slot(&pn->type);
+        gc_update_slot(&pn->version);
+        break;
+    }
+    case TYPE_CELL: {
+        CL_Cell *cell = (CL_Cell *)ptr;
+        gc_update_slot(&cell->value);
+        break;
+    }
+    case TYPE_THREAD: {
+        CL_ThreadObj *to = (CL_ThreadObj *)ptr;
+        gc_update_slot(&to->name);
+        break;
+    }
+    case TYPE_LOCK: {
+        CL_Lock *lk = (CL_Lock *)ptr;
+        gc_update_slot(&lk->name);
+        break;
+    }
+    case TYPE_CONDVAR: {
+        CL_CondVar *cv = (CL_CondVar *)ptr;
+        gc_update_slot(&cv->name);
+        break;
+    }
+    case TYPE_STRING:
+    case TYPE_BIGNUM:
+    case TYPE_SINGLE_FLOAT:
+    case TYPE_DOUBLE_FLOAT:
+    case TYPE_RANDOM_STATE:
+    case TYPE_BIT_VECTOR:
+    case TYPE_FOREIGN_POINTER:
+#ifdef CL_WIDE_STRINGS
+    case TYPE_WIDE_STRING:
+#endif
+        break;
+    default:
+        break;
+    }
+}
+
+/* Pass 3b: Update per-thread roots (mirrors gc_mark_thread_roots).
+ * Must #undef gc_root_count to avoid macro collision with t->gc_root_count. */
+#undef gc_root_count
+static void gc_update_thread_roots(CL_Thread *t)
+{
+    int i;
+
+    /* GC root stack — CL_Obj* pointers to C stack variables */
+    for (i = 0; i < t->gc_root_count; i++)
+        gc_update_slot(t->gc_roots[i]);
+
+    /* Dynamic binding stack */
+    for (i = 0; i < t->dyn_top; i++) {
+        gc_update_slot(&t->dyn_stack[i].symbol);
+        gc_update_slot(&t->dyn_stack[i].old_value);
+    }
+
+    /* NLX stack */
+    for (i = 0; i < t->nlx_top; i++) {
+        gc_update_slot(&t->nlx_stack[i].tag);
+        gc_update_slot(&t->nlx_stack[i].result);
+        gc_update_slot(&t->nlx_stack[i].bytecode);
+    }
+
+    /* Handler stack */
+    for (i = 0; i < t->handler_top; i++) {
+        gc_update_slot(&t->handler_stack[i].type_name);
+        gc_update_slot(&t->handler_stack[i].handler);
+    }
+
+    /* Restart stack */
+    for (i = 0; i < t->restart_top; i++) {
+        gc_update_slot(&t->restart_stack[i].name);
+        gc_update_slot(&t->restart_stack[i].handler);
+        gc_update_slot(&t->restart_stack[i].tag);
+    }
+
+    /* VM execution stack */
+    if (t->vm.stack) {
+        for (i = 0; i < t->vm.sp; i++)
+            gc_update_slot(&t->vm.stack[i]);
+    }
+
+    /* VM frame bytecodes */
+    for (i = 0; i < t->vm.fp; i++)
+        gc_update_slot(&t->vm.frames[i].bytecode);
+
+    /* Multiple values and pending throw state */
+    for (i = 0; i < CL_MAX_MV; i++)
+        gc_update_slot(&t->mv_values[i]);
+    gc_update_slot(&t->pending_tag);
+    gc_update_slot(&t->pending_value);
+
+    /* Thread metadata */
+    gc_update_slot(&t->name);
+    gc_update_slot(&t->result);
+    gc_update_slot(&t->interrupt_func);
+
+    /* Compiler constants (platform_alloc'd, hold CL_Obj refs) */
+    {
+        extern void cl_compiler_gc_update_thread(CL_Thread *t,
+                                                  void (*update_fn)(CL_Obj *));
+        cl_compiler_gc_update_thread(t, gc_update_slot);
+    }
+
+    /* VM extra args buffer */
+    {
+        extern void cl_vm_gc_update_extra_thread(CL_Thread *t,
+                                                  void (*update_fn)(CL_Obj *));
+        cl_vm_gc_update_extra_thread(t, gc_update_slot);
+    }
+
+    /* TLV table */
+    {
+        int ti;
+        for (ti = 0; ti < CL_TLV_TABLE_SIZE; ti++) {
+            CL_Obj sym = t->tlv_table[ti].symbol;
+            if (sym != CL_NIL && sym != CL_UNBOUND) {
+                gc_update_slot(&t->tlv_table[ti].symbol);
+                gc_update_slot(&t->tlv_table[ti].value);
+            }
+        }
+    }
+}
+#define gc_root_count (CT->gc_root_count)
+
+/* Pass 3c: Update shared (non-per-thread) roots (mirrors gc_mark shared section) */
+static void gc_update_shared_roots(void)
+{
+    /* Package registry */
+    gc_update_slot(&cl_package_registry);
+
+    /* Compiler tables */
+    gc_update_slot(&macro_table);
+    gc_update_slot(&setf_table);
+    gc_update_slot(&setf_fn_table);
+    gc_update_slot(&setf_expander_table);
+    gc_update_slot(&type_table);
+    gc_update_slot(&cl_clos_class_table);
+    gc_update_slot(&struct_table);
+    gc_update_slot(&condition_hierarchy);
+    gc_update_slot(&condition_slot_table);
+
+    /* Main thread Lisp object */
+    {
+        extern CL_Obj *cl_main_thread_lisp_obj_ptr(void);
+        CL_Obj *ptr = cl_main_thread_lisp_obj_ptr();
+        if (ptr) gc_update_slot(ptr);
+    }
+
+    /* Readtable user macro closures */
+    {
+        int rt, ch;
+        for (rt = 0; rt < CL_RT_POOL_SIZE; rt++) {
+            if (!(cl_readtable_alloc_mask & (1u << rt)))
+                continue;
+            for (ch = 0; ch < CL_RT_CHARS; ch++) {
+                gc_update_slot(&cl_readtable_pool[rt].macro_fn[ch]);
+                gc_update_slot(&cl_readtable_pool[rt].dispatch_fn[ch]);
+            }
+        }
+    }
+}
+
+/* Pass 3: Walk all live heap objects + all roots and update references */
+static void gc_update_all_references(void)
+{
+    uint8_t *ptr, *end;
+    CL_Thread *t;
+
+    /* Update per-thread roots */
+    for (t = cl_thread_list; t; t = t->next)
+        gc_update_thread_roots(t);
+
+    /* Update shared globals */
+    gc_update_shared_roots();
+
+    /* Walk all live heap objects and update their children */
+    ptr = cl_heap.arena + CL_ALIGN;
+    end = cl_heap.arena + cl_heap.bump;
+    while (ptr < end) {
+        uint32_t size = CL_HDR_SIZE(ptr);
+        if (size == 0) break;
+        if (CL_HDR_MARKED(ptr))
+            gc_update_children(ptr, CL_HDR_TYPE(ptr));
+        ptr += size;
+    }
+}
+
+/* Pass 4: Slide live objects to their forwarding addresses.
+ * Objects only move downward (or stay), so forward copy is safe. */
+static void gc_slide(void)
+{
+    uint8_t *ptr = cl_heap.arena + CL_ALIGN;
+    uint8_t *end = cl_heap.arena + cl_heap.bump;
+    uint32_t new_bump = CL_ALIGN;
+
+    while (ptr < end) {
+        uint32_t size = CL_HDR_SIZE(ptr);
+        if (size == 0) break;
+
+        if (CL_HDR_MARKED(ptr)) {
+            uint32_t old_offset = (uint32_t)(ptr - cl_heap.arena);
+            uint32_t new_offset = gc_fwd_table[old_offset / CL_ALIGN];
+
+            /* Clear mark bit before copying */
+            CL_HDR_CLR_MARK(ptr);
+
+            if (new_offset != old_offset)
+                memmove(cl_heap.arena + new_offset, ptr, size);
+            new_bump = new_offset + size;
+        } else {
+            /* Dead object — finalize streams before overwriting */
+            if (CL_HDR_TYPE(ptr) == TYPE_STREAM) {
+                CL_Stream *st = (CL_Stream *)ptr;
+                if ((st->direction & CL_STREAM_OUTPUT) && st->out_buf_handle != 0)
+                    cl_stream_free_outbuf(st->out_buf_handle);
+            }
+        }
+        ptr += size;
+    }
+
+    cl_heap.bump = new_bump;
+    cl_heap.free_list = 0;  /* No fragmentation after compaction */
+    cl_heap.total_allocated = new_bump - CL_ALIGN;
+}
+
+/* Rehash a single eq hash table after compaction (no allocation) */
+static void gc_rehash_eq_table(CL_Hashtable *ht)
+{
+    CL_Obj *bkts;
+    uint32_t bucket_count = ht->bucket_count;
+    uint32_t i;
+    CL_Obj all_entries = CL_NIL;
+
+    /* Get bucket array */
+    if (!CL_NULL_P(ht->bucket_vec)) {
+        CL_Vector *v = (CL_Vector *)CL_OBJ_TO_PTR(ht->bucket_vec);
+        bkts = v->data;
+    } else {
+        bkts = ht->buckets;
+    }
+
+    /* Collect all entries into a single linked list, clear buckets */
+    for (i = 0; i < bucket_count; i++) {
+        CL_Obj chain = bkts[i];
+        while (!CL_NULL_P(chain)) {
+            CL_Cons *entry = (CL_Cons *)CL_OBJ_TO_PTR(chain);
+            CL_Obj next = entry->cdr;
+            entry->cdr = all_entries;
+            all_entries = chain;
+            chain = next;
+        }
+        bkts[i] = CL_NIL;
+    }
+
+    /* Redistribute using new identity hashes */
+    while (!CL_NULL_P(all_entries)) {
+        CL_Cons *entry = (CL_Cons *)CL_OBJ_TO_PTR(all_entries);
+        CL_Obj next = entry->cdr;
+        CL_Obj pair = entry->car;
+        CL_Obj key = ((CL_Cons *)CL_OBJ_TO_PTR(pair))->car;
+        /* hash_mix for eq: identity hash on the CL_Obj value */
+        uint32_t h = key;
+        h ^= h >> 16;
+        h *= 0x45d9f3bU;
+        h ^= h >> 16;
+        {
+            uint32_t idx = h & (bucket_count - 1);
+            entry->cdr = bkts[idx];
+            bkts[idx] = all_entries;
+        }
+        all_entries = next;
+    }
+}
+
+/* Rehash ALL eq hash tables in the arena after compaction */
+static void gc_rehash_eq_tables(void)
+{
+    uint8_t *ptr = cl_heap.arena + CL_ALIGN;
+    uint8_t *end = cl_heap.arena + cl_heap.bump;
+
+    while (ptr < end) {
+        uint32_t size = CL_HDR_SIZE(ptr);
+        if (size == 0) break;
+        if (CL_HDR_TYPE(ptr) == TYPE_HASHTABLE) {
+            CL_Hashtable *ht = (CL_Hashtable *)ptr;
+            if (ht->test == CL_HT_TEST_EQ && ht->count > 0)
+                gc_rehash_eq_table(ht);
+        }
+        ptr += size;
+    }
+}
+
+/* Main compaction entry point */
+void cl_gc_compact(void)
+{
+    int multithread = (cl_thread_count > 1);
+
+    if (multithread)
+        cl_gc_stop_the_world();
+
+#ifdef DEBUG_GC
+    platform_write_string("GC: compaction starting...\n");
+#endif
+
+    /* Pass 1: Mark (standard) */
+    gc_mark();
+
+    /* Allocate forwarding table */
+    if (!gc_fwd_alloc()) {
+#ifdef DEBUG_GC
+        platform_write_string("GC: compact failed (no memory for fwd table), "
+                              "falling back to sweep\n");
+#endif
+        gc_sweep();
+        cl_heap.gc_count++;
+        if (multithread) cl_gc_resume_the_world();
+        return;
+    }
+
+    /* Pass 2: Compute forwarding addresses */
+    gc_compute_forwarding();
+
+    /* Pass 3: Update all references */
+    gc_update_all_references();
+
+    /* Pass 4: Slide objects */
+    gc_slide();
+
+    /* Clean up forwarding table */
+    gc_fwd_free();
+
+    /* Rehash eq hash tables (object identity changed) */
+    gc_rehash_eq_tables();
+
+    cl_heap.gc_count++;
+    cl_heap.compact_count++;
+
+#ifdef DEBUG_GC
+    {
+        char buf[128];
+        snprintf(buf, sizeof(buf), "GC: compact done: %lu/%lu bytes used\n",
+                 (unsigned long)cl_heap.total_allocated,
+                 (unsigned long)cl_heap.arena_size);
+        platform_write_string(buf);
+    }
+#endif
+
+    if (multithread)
+        cl_gc_resume_the_world();
 }
 
 /* Post-GC verification: check all marked objects have valid children.

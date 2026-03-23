@@ -507,6 +507,14 @@ void cl_vm_gc_mark_extra(void)
     cl_vm_gc_mark_extra_thread(cl_get_current_thread());
 }
 
+/* Update VM extra args during compaction (mirrors gc_mark_extra_thread) */
+void cl_vm_gc_update_extra_thread(CL_Thread *t, void (*update)(CL_Obj *))
+{
+    int i;
+    for (i = 0; i < t->vm_extra_count; i++)
+        update(&t->vm_extra_args_buf[i]);
+}
+
 /* dbg_last_*, vm_trace[], vm_trace_idx are now in CL_Thread.
  * Local macros above redirect the old names. */
 
