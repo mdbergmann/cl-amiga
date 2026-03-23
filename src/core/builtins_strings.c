@@ -568,6 +568,131 @@ static CL_Obj bi_subseq(CL_Obj *args, int n)
     }
 }
 
+/* (setf (subseq seq start end) new-seq)
+ * → (%setf-subseq new-seq seq start &optional end)
+ * Per CLHS: copies min(end-start, length(new-seq)) elements from
+ * new-seq into seq[start..end).  Returns new-seq. */
+static CL_Obj bi_setf_subseq(CL_Obj *args, int n)
+{
+    CL_Obj new_seq = args[0], seq = args[1];
+    int32_t start, end, seq_len, new_len, copy_len, i;
+
+    if (!CL_FIXNUM_P(args[2]))
+        cl_error(CL_ERR_TYPE, "(SETF SUBSEQ): start must be an integer");
+    start = CL_FIXNUM_VAL(args[2]);
+
+    /* Get sequence length */
+    if (CL_ANY_STRING_P(seq))
+        seq_len = (int32_t)cl_string_length(seq);
+    else if (CL_VECTOR_P(seq)) {
+        CL_Vector *v = (CL_Vector *)CL_OBJ_TO_PTR(seq);
+        seq_len = (int32_t)cl_vector_active_length(v);
+    } else if (CL_CONS_P(seq) || CL_NULL_P(seq)) {
+        int32_t cnt = 0;
+        CL_Obj tmp = seq;
+        while (!CL_NULL_P(tmp)) { cnt++; tmp = cl_cdr(tmp); }
+        seq_len = cnt;
+    } else {
+        cl_error(CL_ERR_TYPE, "(SETF SUBSEQ): not a sequence");
+        return new_seq;
+    }
+
+    end = (n > 3 && !CL_NULL_P(args[3]) && CL_FIXNUM_P(args[3]))
+        ? CL_FIXNUM_VAL(args[3]) : seq_len;
+    if (start < 0) start = 0;
+    if (end > seq_len) end = seq_len;
+    if (start > end) start = end;
+
+    /* Get new-seq length */
+    if (CL_ANY_STRING_P(new_seq))
+        new_len = (int32_t)cl_string_length(new_seq);
+    else if (CL_VECTOR_P(new_seq)) {
+        CL_Vector *v = (CL_Vector *)CL_OBJ_TO_PTR(new_seq);
+        new_len = (int32_t)cl_vector_active_length(v);
+    } else if (CL_CONS_P(new_seq) || CL_NULL_P(new_seq)) {
+        int32_t cnt = 0;
+        CL_Obj tmp = new_seq;
+        while (!CL_NULL_P(tmp)) { cnt++; tmp = cl_cdr(tmp); }
+        new_len = cnt;
+    } else {
+        cl_error(CL_ERR_TYPE, "(SETF SUBSEQ): new value is not a sequence");
+        return new_seq;
+    }
+
+    copy_len = (end - start < new_len) ? (end - start) : new_len;
+
+    /* String target */
+    if (CL_ANY_STRING_P(seq)) {
+        for (i = 0; i < copy_len; i++) {
+            int ch;
+            if (CL_ANY_STRING_P(new_seq))
+                ch = cl_string_char_at(new_seq, (uint32_t)i);
+            else if (CL_VECTOR_P(new_seq)) {
+                CL_Obj elem = cl_vector_data((CL_Vector *)CL_OBJ_TO_PTR(new_seq))[i];
+                ch = CL_CHAR_P(elem) ? CL_CHAR_VAL(elem) : 0;
+            } else {
+                /* list */
+                CL_Obj elem = CL_NIL;
+                CL_Obj tmp = new_seq;
+                int32_t j;
+                for (j = 0; j < i && !CL_NULL_P(tmp); j++) tmp = cl_cdr(tmp);
+                elem = CL_NULL_P(tmp) ? CL_NIL : cl_car(tmp);
+                ch = CL_CHAR_P(elem) ? CL_CHAR_VAL(elem) : 0;
+            }
+            cl_string_set_char_at(seq, (uint32_t)(start + i), ch);
+        }
+        return new_seq;
+    }
+
+    /* Vector target */
+    if (CL_VECTOR_P(seq)) {
+        CL_Vector *v = (CL_Vector *)CL_OBJ_TO_PTR(seq);
+        CL_Obj *data = cl_vector_data(v);
+        for (i = 0; i < copy_len; i++) {
+            CL_Obj elem;
+            if (CL_ANY_STRING_P(new_seq))
+                elem = CL_MAKE_CHAR(cl_string_char_at(new_seq, (uint32_t)i));
+            else if (CL_VECTOR_P(new_seq))
+                elem = cl_vector_data((CL_Vector *)CL_OBJ_TO_PTR(new_seq))[i];
+            else {
+                CL_Obj tmp = new_seq;
+                int32_t j;
+                for (j = 0; j < i && !CL_NULL_P(tmp); j++) tmp = cl_cdr(tmp);
+                elem = CL_NULL_P(tmp) ? CL_NIL : cl_car(tmp);
+            }
+            data[start + i] = elem;
+        }
+        return new_seq;
+    }
+
+    /* List target */
+    if (CL_CONS_P(seq)) {
+        CL_Obj cell = seq;
+        int32_t j;
+        /* Skip to start */
+        for (j = 0; j < start && !CL_NULL_P(cell); j++)
+            cell = cl_cdr(cell);
+        for (i = 0; i < copy_len && !CL_NULL_P(cell); i++) {
+            CL_Obj elem;
+            if (CL_ANY_STRING_P(new_seq))
+                elem = CL_MAKE_CHAR(cl_string_char_at(new_seq, (uint32_t)i));
+            else if (CL_VECTOR_P(new_seq))
+                elem = cl_vector_data((CL_Vector *)CL_OBJ_TO_PTR(new_seq))[i];
+            else {
+                CL_Obj tmp = new_seq;
+                int32_t k;
+                for (k = 0; k < i && !CL_NULL_P(tmp); k++) tmp = cl_cdr(tmp);
+                elem = CL_NULL_P(tmp) ? CL_NIL : cl_car(tmp);
+            }
+            ((CL_Cons *)CL_OBJ_TO_PTR(cell))->car = elem;
+            cell = cl_cdr(cell);
+        }
+        return new_seq;
+    }
+
+    return new_seq;
+}
+
 /* Helper: count total elements across sequences args[1..n-1] */
 static uint32_t concat_total_length(CL_Obj *args, int n)
 {
@@ -1263,6 +1388,7 @@ void cl_builtins_strings_init(void)
     defun("STRING-LEFT-TRIM", bi_string_left_trim, 2, 2);
     defun("STRING-RIGHT-TRIM", bi_string_right_trim, 2, 2);
     defun("SUBSEQ", bi_subseq, 2, 3);
+    defun("%SETF-SUBSEQ", bi_setf_subseq, 3, 4);
     defun("CONCATENATE", bi_concatenate, 1, -1);
     defun("CHAR", bi_char_accessor, 2, 2);
     defun("SCHAR", bi_char_accessor, 2, 2);

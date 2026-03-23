@@ -424,6 +424,59 @@ int cl_stream_read_char(CL_Obj stream)
     return ch;
 }
 
+/* Read one raw byte from stream — no UTF-8 decoding.
+ * For binary (unsigned-byte 8) streams. */
+int cl_stream_read_byte(CL_Obj stream)
+{
+    CL_Stream *st;
+    int ch, need_lock;
+
+    stream = resolve_synonym(stream);
+    if (CL_NULL_P(stream)) return -1;
+    st = (CL_Stream *)CL_OBJ_TO_PTR(stream);
+
+    if (!(st->flags & CL_STREAM_FLAG_OPEN))
+        return -1;
+    if (!(st->direction & CL_STREAM_INPUT))
+        return -1;
+
+    need_lock = CL_MT() && (st->stream_type == CL_STREAM_CONSOLE ||
+                             st->stream_type == CL_STREAM_FILE ||
+                             st->stream_type == CL_STREAM_SOCKET);
+    if (need_lock) platform_mutex_lock(cl_stream_io_mutex);
+
+    /* Check for pushed-back byte */
+    if (st->unread_char != -1) {
+        ch = st->unread_char;
+        st->unread_char = -1;
+        if (need_lock) platform_mutex_unlock(cl_stream_io_mutex);
+        return ch;
+    }
+
+    /* String streams: return code point (for string-as-bytes) */
+    if (st->stream_type == CL_STREAM_STRING) {
+        if (CL_NULL_P(st->string_buf)) {
+            if (need_lock) platform_mutex_unlock(cl_stream_io_mutex);
+            return -1;
+        }
+        if (st->position >= st->out_buf_len) {
+            if (need_lock) platform_mutex_unlock(cl_stream_io_mutex);
+            return -1;
+        }
+        ch = cl_string_char_at(st->string_buf, st->position++);
+        if (need_lock) platform_mutex_unlock(cl_stream_io_mutex);
+        return ch;
+    }
+
+    /* Raw byte read — no UTF-8 decoding */
+    ch = stream_read_raw_byte(st);
+
+    if (ch == -1)
+        st->flags |= CL_STREAM_FLAG_EOF;
+    if (need_lock) platform_mutex_unlock(cl_stream_io_mutex);
+    return ch;
+}
+
 void cl_stream_write_char(CL_Obj stream, int ch)
 {
     CL_Stream *st;
@@ -501,6 +554,49 @@ void cl_stream_write_char(CL_Obj stream, int ch)
         st->charpos = 0;
     else
         st->charpos++;
+
+    if (need_lock) platform_mutex_unlock(cl_stream_io_mutex);
+}
+
+/* Write one raw byte to stream — no UTF-8 encoding.
+ * For binary (unsigned-byte 8) streams. */
+void cl_stream_write_byte(CL_Obj stream, int byte)
+{
+    CL_Stream *st;
+    int need_lock;
+
+    stream = resolve_synonym(stream);
+    if (CL_NULL_P(stream)) return;
+    st = (CL_Stream *)CL_OBJ_TO_PTR(stream);
+
+    if (!(st->flags & CL_STREAM_FLAG_OPEN))
+        return;
+    if (!(st->direction & CL_STREAM_OUTPUT))
+        return;
+
+    need_lock = CL_MT() && (st->stream_type == CL_STREAM_CONSOLE ||
+                             st->stream_type == CL_STREAM_FILE ||
+                             st->stream_type == CL_STREAM_SOCKET);
+    if (need_lock) platform_mutex_lock(cl_stream_io_mutex);
+
+    switch (st->stream_type) {
+    case CL_STREAM_CONSOLE: {
+        char buf[2];
+        buf[0] = (char)(unsigned char)byte;
+        buf[1] = '\0';
+        platform_write_string(buf);
+        break;
+    }
+    case CL_STREAM_FILE:
+        platform_file_write_char((PlatformFile)st->handle_id, byte);
+        break;
+    case CL_STREAM_STRING:
+        cl_stream_outbuf_putchar(st, byte);
+        break;
+    case CL_STREAM_SOCKET:
+        platform_socket_write((PlatformSocket)st->handle_id, byte);
+        break;
+    }
 
     if (need_lock) platform_mutex_unlock(cl_stream_io_mutex);
 }

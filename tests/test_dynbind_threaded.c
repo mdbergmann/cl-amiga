@@ -375,6 +375,53 @@ TEST(regression_symbol_value_set_boundp)
 }
 
 /* ================================================================
+ * Regression: fixnum -1 must not collide with CL_UNBOUND
+ * ================================================================ */
+
+TEST(fixnum_minus1_not_unbound)
+{
+    /* CL_MAKE_FIXNUM(-1) must be distinct from CL_UNBOUND */
+    ASSERT(CL_MAKE_FIXNUM(-1) != CL_UNBOUND);
+    ASSERT(CL_MAKE_FIXNUM(-1) != CL_TLV_ABSENT);
+}
+
+TEST(tlv_stores_fixnum_minus1)
+{
+    /* Storing fixnum -1 in TLV must not be confused with CL_UNBOUND */
+    CL_Thread *t = cl_get_current_thread();
+    CL_Obj sym = cl_intern("*TLV-MINUS1*", 13);
+
+    cl_tlv_set(t, sym, CL_MAKE_FIXNUM(-1));
+    ASSERT_EQ(cl_tlv_get(t, sym), CL_MAKE_FIXNUM(-1));
+    ASSERT(cl_tlv_get(t, sym) != CL_UNBOUND);
+    ASSERT(cl_tlv_get(t, sym) != CL_TLV_ABSENT);
+
+    cl_tlv_remove(t, sym);
+}
+
+TEST(dynbind_fixnum_minus1)
+{
+    /* Special variable bound to -1 must be accessible in labels closure */
+    ASSERT_STR_EQ(eval_print(
+        "(progn (defvar *dyn-m1* nil)"
+        "  (let ((*dyn-m1* -1)) *dyn-m1*))"), "-1");
+    ASSERT_STR_EQ(eval_print("*dyn-m1*"), "NIL");
+}
+
+TEST(dynbind_fixnum_minus1_labels)
+{
+    /* Regression: fixnum -1 in special var inside labels closure */
+    ASSERT_STR_EQ(eval_print(
+        "(progn (defvar *dyn-m1-lab* nil)"
+        "  (funcall (lambda (start)"
+        "    (let* ((*dyn-m1-lab* (1- start)))"
+        "      (labels ((f () *dyn-m1-lab*))"
+        "        (f))))"
+        "  0))"), "-1");
+    ASSERT_STR_EQ(eval_print("*dyn-m1-lab*"), "NIL");
+}
+
+/* ================================================================
  * main
  * ================================================================ */
 
@@ -410,6 +457,12 @@ int main(void)
     /* Regression */
     RUN(regression_defvar_defparameter);
     RUN(regression_symbol_value_set_boundp);
+
+    /* Fixnum -1 / CL_UNBOUND collision regression */
+    RUN(fixnum_minus1_not_unbound);
+    RUN(tlv_stores_fixnum_minus1);
+    RUN(dynbind_fixnum_minus1);
+    RUN(dynbind_fixnum_minus1_labels);
 
     teardown();
     REPORT();

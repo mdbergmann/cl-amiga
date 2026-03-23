@@ -759,17 +759,30 @@ when the param has no explicit default.  CL spec 3.4.6 requires this."
         (setq p (cddr p))))
     `(let ,(reverse temps) ,@(reverse sets) nil)))
 
-;; psetf — parallel setf: evaluate all values, then assign
+;; psetf — parallel setf: evaluate all values AND place subforms, then assign.
+;; For compound places like (cdr x), captures x before any assignments so
+;; that cross-referencing pairs work correctly.
 (defmacro psetf (&rest pairs)
-  (let ((temps nil) (sets nil) (p pairs))
+  (let ((bindings nil) (sets nil) (p pairs))
     (do () ((null p))
       (let ((place (car p))
             (val (cadr p))
-            (tmp (gensym)))
-        (push (list tmp val) temps)
-        (push `(setf ,place ,tmp) sets)
+            (val-tmp (gensym "PVAL")))
+        (push (list val-tmp val) bindings)
+        (if (symbolp place)
+            ;; Simple variable — just assign the temp
+            (push `(setf ,place ,val-tmp) sets)
+            ;; Compound place — capture subforms in temps
+            (let ((head (car place))
+                  (args (cdr place))
+                  (arg-temps nil))
+              (dolist (arg args)
+                (let ((at (gensym "PARG")))
+                  (push (list at arg) bindings)
+                  (push at arg-temps)))
+              (push `(setf (,head ,@(reverse arg-temps)) ,val-tmp) sets)))
         (setq p (cddr p))))
-    `(let ,(reverse temps) ,@(reverse sets) nil)))
+    `(let ,(reverse bindings) ,@(reverse sets) nil)))
 
 ;; read-from-string — read an S-expression from a string
 (defun read-from-string (string &optional eof-error-p eof-value)
@@ -814,14 +827,8 @@ when the param has no explicit default.  CL spec 3.4.6 requires this."
 ;; finish-output, force-output, and clear-output are C builtins — do not redefine here
 
 ;; --- Byte and sequence I/O ---
-
-(defun write-byte (byte &optional stream)
-  (write-char (code-char byte) stream)
-  byte)
-
-(defun read-byte (stream &optional (eof-error-p t) eof-value)
-  (let ((ch (read-char stream eof-error-p nil)))
-    (if ch (char-code ch) (if eof-error-p (error "End of file on ~A" stream) eof-value))))
+;; read-byte and write-byte are C builtins (builtins_stream.c)
+;; They use raw byte I/O without UTF-8 encoding/decoding.
 
 (defun write-sequence (sequence stream &key (start 0) end)
   (let ((e (or end (length sequence))))

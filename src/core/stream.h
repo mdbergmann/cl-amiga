@@ -57,11 +57,21 @@ void cl_stream_outbuf_reset(uint32_t handle);
 
 /* --- Stream I/O operations --- */
 
-/* Read one character from stream. Returns -1 on EOF. */
+/* Read one character from stream. Returns -1 on EOF.
+ * With CL_WIDE_STRINGS, decodes UTF-8 multi-byte sequences. */
 int  cl_stream_read_char(CL_Obj stream);
 
-/* Write one character to stream. */
+/* Read one raw byte from stream. Returns -1 on EOF.
+ * Never decodes UTF-8 — for binary (unsigned-byte 8) streams. */
+int  cl_stream_read_byte(CL_Obj stream);
+
+/* Write one character to stream.
+ * With CL_WIDE_STRINGS, encodes non-ASCII as UTF-8. */
 void cl_stream_write_char(CL_Obj stream, int ch);
+
+/* Write one raw byte to stream.
+ * Never encodes UTF-8 — for binary (unsigned-byte 8) streams. */
+void cl_stream_write_byte(CL_Obj stream, int byte);
 
 /* Write a string (len bytes) to stream. */
 void cl_stream_write_string(CL_Obj stream, const char *str, uint32_t len);
