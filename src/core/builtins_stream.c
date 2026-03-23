@@ -18,6 +18,7 @@
 #include "vm.h"
 #include "bignum.h"
 #include "readtable.h"
+#include "string_utils.h"
 #include "../platform/platform.h"
 #include "../platform/platform_thread.h"
 #include "thread.h"
@@ -255,6 +256,28 @@ static CL_Obj bi_read_line(CL_Obj *args, int n)
             missing_newline = 0;
             break;
         }
+#ifdef CL_WIDE_STRINGS
+        /* Encode code points as UTF-8 into the byte buffer */
+        {
+            char utf8[4];
+            int nb = cl_utf8_encode(ch, utf8);
+            int j;
+            if (nb == 0) { nb = 1; utf8[0] = '?'; }
+            if (len + (uint32_t)nb >= cap) {
+                uint32_t new_cap = cap * 2;
+                char *new_buf;
+                while (new_cap < len + (uint32_t)nb + 1) new_cap *= 2;
+                new_buf = (char *)platform_alloc(new_cap);
+                if (!new_buf) break;
+                memcpy(new_buf, buf, len);
+                if (buf != stack_buf) platform_free(buf);
+                buf = new_buf;
+                cap = new_cap;
+            }
+            for (j = 0; j < nb; j++)
+                buf[len++] = utf8[j];
+        }
+#else
         if (len + 1 >= cap) {
             uint32_t new_cap = cap * 2;
             char *new_buf = (char *)platform_alloc(new_cap);
@@ -265,6 +288,7 @@ static CL_Obj bi_read_line(CL_Obj *args, int n)
             cap = new_cap;
         }
         buf[len++] = (char)ch;
+#endif
     }
 
     if (!got_any && ch == -1) {
@@ -277,7 +301,12 @@ static CL_Obj bi_read_line(CL_Obj *args, int n)
         return eof_value;
     }
 
+#ifdef CL_WIDE_STRINGS
+    /* Buffer contains UTF-8 bytes; decode to proper CL string */
+    result = cl_utf8_to_cl_string(buf, len);
+#else
     result = cl_make_string(buf, len);
+#endif
     if (buf != stack_buf) platform_free(buf);
 
     cl_mv_values[0] = result;
@@ -290,14 +319,13 @@ static CL_Obj bi_read_line(CL_Obj *args, int n)
 static CL_Obj bi_write_string(CL_Obj *args, int n)
 {
     CL_Obj stream;
-    CL_String *str;
-    uint32_t start = 0, end;
+    uint32_t start = 0, end, slen;
     int i;
 
-    if (!CL_STRING_P(args[0]))
+    if (!CL_ANY_STRING_P(args[0]))
         cl_error(CL_ERR_TYPE, "WRITE-STRING: argument is not a string");
-    str = (CL_String *)CL_OBJ_TO_PTR(args[0]);
-    end = str->length;
+    slen = cl_string_length(args[0]);
+    end = slen;
 
     stream = resolve_output_stream(args, n, 1);
 
@@ -311,10 +339,18 @@ static CL_Obj bi_write_string(CL_Obj *args, int n)
             end = (uint32_t)CL_FIXNUM_VAL(val);
     }
 
-    if (start > str->length) start = str->length;
-    if (end > str->length) end = str->length;
-    if (start < end)
-        cl_stream_write_string(stream, str->data + start, end - start);
+    if (start > slen) start = slen;
+    if (end > slen) end = slen;
+    if (start < end) {
+        /* Fast path for base strings */
+        if (cl_string_is_base(args[0])) {
+            cl_stream_write_string(stream, cl_string_base_data(args[0]) + start, end - start);
+        } else {
+            uint32_t j;
+            for (j = start; j < end; j++)
+                cl_stream_write_char(stream, cl_string_char_at(args[0], j));
+        }
+    }
 
     return args[0];
 }
@@ -416,7 +452,7 @@ static CL_Obj bi_make_string_input_stream(CL_Obj *args, int n)
     CL_String *str;
     uint32_t start = 0, end;
 
-    if (!CL_STRING_P(args[0]))
+    if (!CL_ANY_STRING_P(args[0]))
         cl_error(CL_ERR_TYPE, "MAKE-STRING-INPUT-STREAM: argument is not a string");
     str = (CL_String *)CL_OBJ_TO_PTR(args[0]);
     end = str->length;
@@ -502,12 +538,20 @@ static const char *coerce_to_filename(CL_Obj *arg)
     /* File streams are pathname designators — extract stored pathname */
     if (CL_STREAM_P(*arg)) {
         CL_Stream *st = (CL_Stream *)CL_OBJ_TO_PTR(*arg);
-        if (st->stream_type == CL_STREAM_FILE && CL_STRING_P(st->string_buf)) {
+        if (st->stream_type == CL_STREAM_FILE && CL_ANY_STRING_P(st->string_buf)) {
             *arg = st->string_buf;
         } else {
             return NULL;
         }
     }
+#ifdef CL_WIDE_STRINGS
+    /* Convert wide string to base string (UTF-8) for OS path calls */
+    if (CL_WIDE_STRING_P(*arg)) {
+        char path_buf[1024];
+        uint32_t nb = cl_wide_string_to_utf8(*arg, path_buf, sizeof(path_buf));
+        *arg = cl_make_string(path_buf, nb);
+    }
+#endif
     if (!CL_STRING_P(*arg)) return NULL;
     /* Expand leading ~ to home directory */
     {
@@ -845,7 +889,7 @@ static CL_Obj bi_mkdir(CL_Obj *args, int n)
 {
     CL_String *str;
     CL_UNUSED(n);
-    if (!CL_STRING_P(args[0]))
+    if (!CL_ANY_STRING_P(args[0]))
         cl_error(CL_ERR_TYPE, "%MKDIR: argument must be a string");
     str = (CL_String *)CL_OBJ_TO_PTR(args[0]);
     return (platform_mkdir(str->data) == 0) ? CL_T : CL_NIL;
@@ -858,7 +902,7 @@ static CL_Obj bi_file_namestring(CL_Obj *args, int n)
     const char *data;
     uint32_t len, i, last_sep;
     CL_UNUSED(n);
-    if (!CL_STRING_P(args[0]))
+    if (!CL_ANY_STRING_P(args[0]))
         cl_error(CL_ERR_TYPE, "FILE-NAMESTRING: argument must be a string");
     str = (CL_String *)CL_OBJ_TO_PTR(args[0]);
     data = str->data;
@@ -878,7 +922,7 @@ static CL_Obj bi_directory_namestring(CL_Obj *args, int n)
     const char *data;
     uint32_t len, i, last_sep;
     CL_UNUSED(n);
-    if (!CL_STRING_P(args[0]))
+    if (!CL_ANY_STRING_P(args[0]))
         cl_error(CL_ERR_TYPE, "DIRECTORY-NAMESTRING: argument must be a string");
     str = (CL_String *)CL_OBJ_TO_PTR(args[0]);
     data = str->data;

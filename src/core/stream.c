@@ -7,6 +7,7 @@
 #include "mem.h"
 #include "error.h"
 #include "vm.h"
+#include "string_utils.h"
 #include "../platform/platform.h"
 #include "../platform/platform_thread.h"
 #include <string.h>
@@ -295,6 +296,77 @@ static CL_Obj resolve_synonym(CL_Obj stream)
 
 /* --- Stream I/O operations --- */
 
+/* Read a single raw byte from a byte-oriented stream.
+ * Caller must hold the I/O mutex if needed.
+ * Does NOT handle UTF-8 decoding — use cl_stream_read_char for that. */
+static int stream_read_raw_byte(CL_Stream *st)
+{
+    switch (st->stream_type) {
+    case CL_STREAM_CONSOLE:
+        return platform_getchar();
+    case CL_STREAM_FILE:
+        return platform_file_getchar((PlatformFile)st->handle_id);
+    case CL_STREAM_CBUF: {
+        uint32_t idx = st->handle_id;
+        if (idx == 0 || idx >= CL_CBUF_TABLE_SIZE || !cbuf_table[idx].data)
+            return -1;
+        if (st->position >= st->out_buf_len)
+            return -1;
+        return (unsigned char)cbuf_table[idx].data[st->position++];
+    }
+    case CL_STREAM_SOCKET:
+        return platform_socket_read((PlatformSocket)st->handle_id);
+    default:
+        return -1;
+    }
+}
+
+#ifdef CL_WIDE_STRINGS
+/* Decode a UTF-8 character from a byte-oriented stream.
+ * first_byte is already read; reads continuation bytes as needed. */
+static int stream_decode_utf8(CL_Stream *st, int first_byte)
+{
+    unsigned char b0 = (unsigned char)first_byte;
+    int cp, expected, i;
+
+    if (b0 <= 0x7F)
+        return b0;
+
+    if ((b0 & 0xE0) == 0xC0) {
+        cp = b0 & 0x1F;
+        expected = 2;
+    } else if ((b0 & 0xF0) == 0xE0) {
+        cp = b0 & 0x0F;
+        expected = 3;
+    } else if ((b0 & 0xF8) == 0xF0) {
+        cp = b0 & 0x07;
+        expected = 4;
+    } else {
+        return 0xFFFD;  /* Invalid lead byte → replacement char */
+    }
+
+    for (i = 1; i < expected; i++) {
+        int b = stream_read_raw_byte(st);
+        if (b == -1 || (b & 0xC0) != 0x80) {
+            return 0xFFFD;  /* Truncated or invalid continuation */
+        }
+        cp = (cp << 6) | (b & 0x3F);
+    }
+
+    /* Reject overlong encodings */
+    if ((expected == 2 && cp < 0x80) ||
+        (expected == 3 && cp < 0x800) ||
+        (expected == 4 && cp < 0x10000))
+        return 0xFFFD;
+
+    /* Reject surrogates and out-of-range */
+    if ((cp >= 0xD800 && cp <= 0xDFFF) || cp > 0x10FFFF)
+        return 0xFFFD;
+
+    return cp;
+}
+#endif /* CL_WIDE_STRINGS */
+
 int cl_stream_read_char(CL_Obj stream)
 {
     CL_Stream *st;
@@ -314,7 +386,7 @@ int cl_stream_read_char(CL_Obj stream)
                              st->stream_type == CL_STREAM_SOCKET);
     if (need_lock) platform_mutex_lock(cl_stream_io_mutex);
 
-    /* Check for pushed-back character */
+    /* Check for pushed-back character (already decoded code point) */
     if (st->unread_char != -1) {
         ch = st->unread_char;
         st->unread_char = -1;
@@ -322,47 +394,29 @@ int cl_stream_read_char(CL_Obj stream)
         return ch;
     }
 
-    switch (st->stream_type) {
-    case CL_STREAM_CONSOLE:
-        ch = platform_getchar();
-        break;
-    case CL_STREAM_FILE:
-        ch = platform_file_getchar((PlatformFile)st->handle_id);
-        break;
-    case CL_STREAM_STRING: {
-        CL_String *s;
+    /* String streams return code points directly (no UTF-8 layer) */
+    if (st->stream_type == CL_STREAM_STRING) {
         if (CL_NULL_P(st->string_buf)) {
             if (need_lock) platform_mutex_unlock(cl_stream_io_mutex);
             return -1;
         }
-        s = (CL_String *)CL_OBJ_TO_PTR(st->string_buf);
         if (st->position >= st->out_buf_len) {
             if (need_lock) platform_mutex_unlock(cl_stream_io_mutex);
             return -1;
         }
-        ch = (unsigned char)s->data[st->position++];
-        break;
-    }
-    case CL_STREAM_CBUF: {
-        uint32_t idx = st->handle_id;
-        if (idx == 0 || idx >= CL_CBUF_TABLE_SIZE || !cbuf_table[idx].data) {
-            if (need_lock) platform_mutex_unlock(cl_stream_io_mutex);
-            return -1;
-        }
-        if (st->position >= st->out_buf_len) {
-            if (need_lock) platform_mutex_unlock(cl_stream_io_mutex);
-            return -1;
-        }
-        ch = (unsigned char)cbuf_table[idx].data[st->position++];
-        break;
-    }
-    case CL_STREAM_SOCKET:
-        ch = platform_socket_read((PlatformSocket)st->handle_id);
-        break;
-    default:
+        ch = cl_string_char_at(st->string_buf, st->position++);
         if (need_lock) platform_mutex_unlock(cl_stream_io_mutex);
-        return -1;
+        return ch;
     }
+
+    /* Byte-oriented streams: read raw byte, then UTF-8 decode */
+    ch = stream_read_raw_byte(st);
+
+#ifdef CL_WIDE_STRINGS
+    /* Decode UTF-8 multi-byte sequences for byte-oriented streams */
+    if (ch > 0x7F && ch != -1)
+        ch = stream_decode_utf8(st, ch);
+#endif
 
     if (ch == -1)
         st->flags |= CL_STREAM_FLAG_EOF;
@@ -373,7 +427,6 @@ int cl_stream_read_char(CL_Obj stream)
 void cl_stream_write_char(CL_Obj stream, int ch)
 {
     CL_Stream *st;
-    char buf[2];
     int need_lock;
 
     stream = resolve_synonym(stream);
@@ -391,18 +444,55 @@ void cl_stream_write_char(CL_Obj stream, int ch)
     if (need_lock) platform_mutex_lock(cl_stream_io_mutex);
 
     switch (st->stream_type) {
-    case CL_STREAM_CONSOLE:
-        buf[0] = (char)ch;
-        buf[1] = '\0';
-        platform_write_string(buf);
+    case CL_STREAM_CONSOLE: {
+#ifdef CL_WIDE_STRINGS
+        if (ch > 0x7F) {
+            char utf8[5];
+            int nb = cl_utf8_encode(ch, utf8);
+            if (nb > 0) { utf8[nb] = '\0'; platform_write_string(utf8); }
+        } else
+#endif
+        {
+            char buf[2];
+            buf[0] = (char)ch;
+            buf[1] = '\0';
+            platform_write_string(buf);
+        }
         break;
+    }
     case CL_STREAM_FILE:
+#ifdef CL_WIDE_STRINGS
+        if (ch > 0x7F) {
+            char utf8[4];
+            int nb = cl_utf8_encode(ch, utf8);
+            if (nb > 0)
+                platform_file_write_buf((PlatformFile)st->handle_id, utf8, (uint32_t)nb);
+        } else
+#endif
         platform_file_write_char((PlatformFile)st->handle_id, ch);
         break;
     case CL_STREAM_STRING:
+        /* String output buffers store raw bytes; encode UTF-8 for non-ASCII */
+#ifdef CL_WIDE_STRINGS
+        if (ch > 0x7F) {
+            char utf8[4];
+            int nb = cl_utf8_encode(ch, utf8);
+            int j;
+            for (j = 0; j < nb; j++)
+                cl_stream_outbuf_putchar(st, (unsigned char)utf8[j]);
+        } else
+#endif
         cl_stream_outbuf_putchar(st, ch);
         break;
     case CL_STREAM_SOCKET:
+#ifdef CL_WIDE_STRINGS
+        if (ch > 0x7F) {
+            char utf8[4];
+            int nb = cl_utf8_encode(ch, utf8);
+            if (nb > 0)
+                platform_socket_write_buf((PlatformSocket)st->handle_id, utf8, (uint32_t)nb);
+        } else
+#endif
         platform_socket_write((PlatformSocket)st->handle_id, ch);
         break;
     }
@@ -618,8 +708,14 @@ CL_Obj cl_get_output_stream_string(CL_Obj stream)
     len = cl_stream_outbuf_len(st->out_buf_handle);
     if (!data || len == 0)
         result = cl_make_string("", 0);
-    else
+    else {
+#ifdef CL_WIDE_STRINGS
+        /* Output buffer contains UTF-8 bytes; decode to CL string */
+        result = cl_utf8_to_cl_string(data, len);
+#else
         result = cl_make_string(data, len);
+#endif
+    }
 
     cl_stream_outbuf_reset(st->out_buf_handle);
     st->out_buf_len = 0;

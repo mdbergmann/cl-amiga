@@ -1655,6 +1655,332 @@ TEST(eval_open_tcp_stream_write_byte)
     { int status; waitpid(pid, &status, 0); }
 }
 
+/* --- UTF-8 Stream I/O tests --- */
+
+#ifdef CL_WIDE_STRINGS
+
+#include "core/string_utils.h"
+
+TEST(utf8_encode_ascii)
+{
+    char buf[4];
+    ASSERT_EQ_INT(cl_utf8_encode('A', buf), 1);
+    ASSERT_EQ_INT(buf[0], 'A');
+}
+
+TEST(utf8_encode_2byte)
+{
+    /* U+00E9 = é = C3 A9 */
+    char buf[4];
+    int nb = cl_utf8_encode(0xE9, buf);
+    ASSERT_EQ_INT(nb, 2);
+    ASSERT_EQ_INT((unsigned char)buf[0], 0xC3);
+    ASSERT_EQ_INT((unsigned char)buf[1], 0xA9);
+}
+
+TEST(utf8_encode_3byte)
+{
+    /* U+20AC = € = E2 82 AC */
+    char buf[4];
+    int nb = cl_utf8_encode(0x20AC, buf);
+    ASSERT_EQ_INT(nb, 3);
+    ASSERT_EQ_INT((unsigned char)buf[0], 0xE2);
+    ASSERT_EQ_INT((unsigned char)buf[1], 0x82);
+    ASSERT_EQ_INT((unsigned char)buf[2], 0xAC);
+}
+
+TEST(utf8_encode_4byte)
+{
+    /* U+1F600 = 😀 = F0 9F 98 80 */
+    char buf[4];
+    int nb = cl_utf8_encode(0x1F600, buf);
+    ASSERT_EQ_INT(nb, 4);
+    ASSERT_EQ_INT((unsigned char)buf[0], 0xF0);
+    ASSERT_EQ_INT((unsigned char)buf[1], 0x9F);
+    ASSERT_EQ_INT((unsigned char)buf[2], 0x98);
+    ASSERT_EQ_INT((unsigned char)buf[3], 0x80);
+}
+
+TEST(utf8_encode_reject_surrogate)
+{
+    char buf[4];
+    ASSERT_EQ_INT(cl_utf8_encode(0xD800, buf), 0);
+    ASSERT_EQ_INT(cl_utf8_encode(0xDFFF, buf), 0);
+}
+
+TEST(utf8_encode_reject_too_large)
+{
+    char buf[4];
+    ASSERT_EQ_INT(cl_utf8_encode(0x110000, buf), 0);
+}
+
+TEST(utf8_decode_ascii)
+{
+    const unsigned char buf[] = { 'Z' };
+    int cp;
+    ASSERT_EQ_INT(cl_utf8_decode(buf, 1, &cp), 1);
+    ASSERT_EQ_INT(cp, 'Z');
+}
+
+TEST(utf8_decode_2byte)
+{
+    /* U+00E9 = C3 A9 */
+    const unsigned char buf[] = { 0xC3, 0xA9 };
+    int cp;
+    ASSERT_EQ_INT(cl_utf8_decode(buf, 2, &cp), 2);
+    ASSERT_EQ_INT(cp, 0xE9);
+}
+
+TEST(utf8_decode_3byte)
+{
+    /* U+20AC = E2 82 AC */
+    const unsigned char buf[] = { 0xE2, 0x82, 0xAC };
+    int cp;
+    ASSERT_EQ_INT(cl_utf8_decode(buf, 3, &cp), 3);
+    ASSERT_EQ_INT(cp, 0x20AC);
+}
+
+TEST(utf8_decode_4byte)
+{
+    /* U+1F600 = F0 9F 98 80 */
+    const unsigned char buf[] = { 0xF0, 0x9F, 0x98, 0x80 };
+    int cp;
+    ASSERT_EQ_INT(cl_utf8_decode(buf, 4, &cp), 4);
+    ASSERT_EQ_INT(cp, 0x1F600);
+}
+
+TEST(utf8_decode_overlong_rejected)
+{
+    /* Overlong encoding of U+0041 as C1 81 */
+    const unsigned char buf[] = { 0xC1, 0x81 };
+    int cp;
+    cl_utf8_decode(buf, 2, &cp);
+    ASSERT_EQ_INT(cp, 0xFFFD);  /* replacement */
+}
+
+TEST(utf8_decode_truncated)
+{
+    /* Start of 3-byte but only 1 byte available */
+    const unsigned char buf[] = { 0xE2 };
+    int cp;
+    int nb = cl_utf8_decode(buf, 1, &cp);
+    ASSERT_EQ_INT(nb, 1);
+    ASSERT_EQ_INT(cp, 0xFFFD);
+}
+
+TEST(utf8_roundtrip)
+{
+    /* Encode then decode various code points */
+    int test_cps[] = { 0x41, 0xE9, 0x20AC, 0x1F600, 0x10FFFF };
+    int i;
+    for (i = 0; i < 5; i++) {
+        char buf[4];
+        int nb, cp;
+        nb = cl_utf8_encode(test_cps[i], buf);
+        ASSERT(nb > 0);
+        cl_utf8_decode((const unsigned char *)buf, (uint32_t)nb, &cp);
+        ASSERT_EQ_INT(cp, test_cps[i]);
+    }
+}
+
+TEST(utf8_to_cl_string_ascii)
+{
+    CL_Obj s = cl_utf8_to_cl_string("hello", 5);
+    /* Pure ASCII → base string */
+    ASSERT(CL_STRING_P(s));
+    ASSERT_EQ_INT((int)cl_string_length(s), 5);
+    ASSERT_EQ_INT(cl_string_char_at(s, 0), 'h');
+}
+
+TEST(utf8_to_cl_string_multibyte)
+{
+    /* "café" = 63 61 66 C3 A9 */
+    const char buf[] = { 'c', 'a', 'f', '\xC3', '\xA9' };
+    CL_Obj s = cl_utf8_to_cl_string(buf, 5);
+    /* Has non-ASCII → wide string */
+    ASSERT(CL_WIDE_STRING_P(s));
+    ASSERT_EQ_INT((int)cl_string_length(s), 4);  /* 4 code points */
+    ASSERT_EQ_INT(cl_string_char_at(s, 0), 'c');
+    ASSERT_EQ_INT(cl_string_char_at(s, 1), 'a');
+    ASSERT_EQ_INT(cl_string_char_at(s, 2), 'f');
+    ASSERT_EQ_INT(cl_string_char_at(s, 3), 0xE9);
+}
+
+TEST(wide_string_to_utf8_basic)
+{
+    /* Create a wide string with "café" */
+    uint32_t data[] = { 'c', 'a', 'f', 0xE9 };
+    CL_Obj ws = cl_make_wide_string(data, 4);
+    char buf[64];
+    uint32_t nb = cl_wide_string_to_utf8(ws, buf, sizeof(buf));
+    ASSERT_EQ_INT((int)nb, 5);  /* "caf" (3 bytes) + é (2 bytes) */
+    ASSERT_EQ_INT(buf[0], 'c');
+    ASSERT_EQ_INT(buf[1], 'a');
+    ASSERT_EQ_INT(buf[2], 'f');
+    ASSERT_EQ_INT((unsigned char)buf[3], 0xC3);
+    ASSERT_EQ_INT((unsigned char)buf[4], 0xA9);
+    ASSERT_EQ_INT(buf[5], '\0');
+}
+
+TEST(file_stream_utf8_write_read)
+{
+    /* Write Unicode chars to a file stream, read back as UTF-8 decoded */
+    const char *path = "/tmp/cl_test_utf8_stream.tmp";
+    PlatformFile wf, rf;
+    CL_Obj ws, rs;
+    CL_Stream *wst, *rst;
+    int ch;
+
+    wf = platform_file_open(path, PLATFORM_FILE_WRITE);
+    ASSERT(wf != PLATFORM_FILE_INVALID);
+    ws = cl_make_stream(CL_STREAM_OUTPUT, CL_STREAM_FILE);
+    wst = (CL_Stream *)CL_OBJ_TO_PTR(ws);
+    wst->handle_id = (uint32_t)wf;
+
+    /* Write: ASCII 'A', U+00E9 (é), U+20AC (€) */
+    cl_stream_write_char(ws, 'A');
+    cl_stream_write_char(ws, 0xE9);
+    cl_stream_write_char(ws, 0x20AC);
+    cl_stream_close(ws);
+
+    /* Read back and verify UTF-8 decoding */
+    rf = platform_file_open(path, PLATFORM_FILE_READ);
+    ASSERT(rf != PLATFORM_FILE_INVALID);
+    rs = cl_make_stream(CL_STREAM_INPUT, CL_STREAM_FILE);
+    rst = (CL_Stream *)CL_OBJ_TO_PTR(rs);
+    rst->handle_id = (uint32_t)rf;
+
+    ch = cl_stream_read_char(rs);
+    ASSERT_EQ_INT(ch, 'A');
+    ch = cl_stream_read_char(rs);
+    ASSERT_EQ_INT(ch, 0xE9);
+    ch = cl_stream_read_char(rs);
+    ASSERT_EQ_INT(ch, 0x20AC);
+    ch = cl_stream_read_char(rs);
+    ASSERT_EQ_INT(ch, -1);  /* EOF */
+    cl_stream_close(rs);
+
+    remove(path);
+}
+
+TEST(cbuf_stream_utf8_decode)
+{
+    /* CBUF with UTF-8 encoded "Aé€" */
+    const char buf[] = { 'A', '\xC3', '\xA9', '\xE2', '\x82', '\xAC' };
+    CL_Obj s = cl_make_cbuf_input_stream(buf, 6);
+    int ch;
+
+    ch = cl_stream_read_char(s);
+    ASSERT_EQ_INT(ch, 'A');
+    ch = cl_stream_read_char(s);
+    ASSERT_EQ_INT(ch, 0xE9);
+    ch = cl_stream_read_char(s);
+    ASSERT_EQ_INT(ch, 0x20AC);
+    ch = cl_stream_read_char(s);
+    ASSERT_EQ_INT(ch, -1);
+    cl_stream_close(s);
+}
+
+TEST(string_output_stream_utf8_roundtrip)
+{
+    /* Write Unicode code points to string output stream,
+       get-output-stream-string should return a proper CL string */
+    CL_Obj s = cl_make_string_output_stream();
+    CL_Obj result;
+
+    cl_stream_write_char(s, 'c');
+    cl_stream_write_char(s, 'a');
+    cl_stream_write_char(s, 'f');
+    cl_stream_write_char(s, 0xE9);  /* é */
+
+    result = cl_get_output_stream_string(s);
+    ASSERT(CL_WIDE_STRING_P(result));
+    ASSERT_EQ_INT((int)cl_string_length(result), 4);
+    ASSERT_EQ_INT(cl_string_char_at(result, 0), 'c');
+    ASSERT_EQ_INT(cl_string_char_at(result, 1), 'a');
+    ASSERT_EQ_INT(cl_string_char_at(result, 2), 'f');
+    ASSERT_EQ_INT(cl_string_char_at(result, 3), 0xE9);
+
+    cl_stream_close(s);
+}
+
+TEST(string_output_stream_ascii_stays_base)
+{
+    /* Pure ASCII should produce a base string */
+    CL_Obj s = cl_make_string_output_stream();
+    CL_Obj result;
+
+    cl_stream_write_char(s, 'h');
+    cl_stream_write_char(s, 'i');
+
+    result = cl_get_output_stream_string(s);
+    ASSERT(CL_STRING_P(result));  /* base string, not wide */
+    ASSERT_EQ_INT((int)cl_string_length(result), 2);
+
+    cl_stream_close(s);
+}
+
+TEST(read_line_utf8_file)
+{
+    /* Write a line with UTF-8 chars to a file, read it back with read-line */
+    const char *path = "/tmp/cl_test_utf8_readline.tmp";
+    PlatformFile wf, rf;
+    CL_Obj ws, rs;
+    CL_Stream *wst, *rst;
+    CL_Obj result;
+
+    wf = platform_file_open(path, PLATFORM_FILE_WRITE);
+    ASSERT(wf != PLATFORM_FILE_INVALID);
+    ws = cl_make_stream(CL_STREAM_OUTPUT, CL_STREAM_FILE);
+    wst = (CL_Stream *)CL_OBJ_TO_PTR(ws);
+    wst->handle_id = (uint32_t)wf;
+
+    /* Write "café\n" in UTF-8 */
+    cl_stream_write_char(ws, 'c');
+    cl_stream_write_char(ws, 'a');
+    cl_stream_write_char(ws, 'f');
+    cl_stream_write_char(ws, 0xE9);
+    cl_stream_write_char(ws, '\n');
+    cl_stream_close(ws);
+
+    /* Read back via eval of read-line */
+    {
+        char expr[256];
+        snprintf(expr, sizeof(expr),
+                 "(with-open-file (s \"%s\" :direction :input) (read-line s))",
+                 path);
+        result = cl_eval_string(expr);
+    }
+    ASSERT(CL_WIDE_STRING_P(result));
+    ASSERT_EQ_INT((int)cl_string_length(result), 4);
+    ASSERT_EQ_INT(cl_string_char_at(result, 0), 'c');
+    ASSERT_EQ_INT(cl_string_char_at(result, 3), 0xE9);
+
+    remove(path);
+}
+
+TEST(unread_char_utf8)
+{
+    /* Unread a multibyte char, re-read it */
+    const char buf[] = { '\xC3', '\xA9', 'x' };
+    CL_Obj s = cl_make_cbuf_input_stream(buf, 3);
+    int ch;
+
+    ch = cl_stream_read_char(s);
+    ASSERT_EQ_INT(ch, 0xE9);
+
+    /* Push it back and re-read */
+    cl_stream_unread_char(s, ch);
+    ch = cl_stream_read_char(s);
+    ASSERT_EQ_INT(ch, 0xE9);
+
+    ch = cl_stream_read_char(s);
+    ASSERT_EQ_INT(ch, 'x');
+    cl_stream_close(s);
+}
+
+#endif /* CL_WIDE_STRINGS */
+
 int main(void)
 {
     test_init();
@@ -1778,6 +2104,36 @@ int main(void)
     RUN(eval_open_tcp_stream_connect_failure);
     RUN(eval_open_tcp_stream_read_byte);
     RUN(eval_open_tcp_stream_write_byte);
+
+#ifdef CL_WIDE_STRINGS
+    /* UTF-8 codec tests */
+    RUN(utf8_encode_ascii);
+    RUN(utf8_encode_2byte);
+    RUN(utf8_encode_3byte);
+    RUN(utf8_encode_4byte);
+    RUN(utf8_encode_reject_surrogate);
+    RUN(utf8_encode_reject_too_large);
+    RUN(utf8_decode_ascii);
+    RUN(utf8_decode_2byte);
+    RUN(utf8_decode_3byte);
+    RUN(utf8_decode_4byte);
+    RUN(utf8_decode_overlong_rejected);
+    RUN(utf8_decode_truncated);
+    RUN(utf8_roundtrip);
+
+    /* UTF-8 string conversion tests */
+    RUN(utf8_to_cl_string_ascii);
+    RUN(utf8_to_cl_string_multibyte);
+    RUN(wide_string_to_utf8_basic);
+
+    /* UTF-8 stream I/O tests */
+    RUN(file_stream_utf8_write_read);
+    RUN(cbuf_stream_utf8_decode);
+    RUN(string_output_stream_utf8_roundtrip);
+    RUN(string_output_stream_ascii_stays_base);
+    RUN(read_line_utf8_file);
+    RUN(unread_char_utf8);
+#endif
 
     teardown();
     REPORT();
