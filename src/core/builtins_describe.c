@@ -605,7 +605,9 @@ static CL_Obj bi_room(CL_Obj *args, int n)
     sprintf(buf, "  %lu bytes consed (total ever allocated)\n",
             (unsigned long)cl_heap.total_consed);
     platform_write_string(buf);
-    sprintf(buf, "GC:\n  %lu collections\n", (unsigned long)cl_heap.gc_count);
+    sprintf(buf, "GC:\n  %lu collections\n  %lu compactions\n",
+            (unsigned long)cl_heap.gc_count,
+            (unsigned long)cl_heap.compact_count);
     platform_write_string(buf);
 
     cl_mv_count = 0;

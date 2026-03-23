@@ -38,6 +38,12 @@ CL_Obj cl_main_thread_lisp_obj(void)
     return main_thread_obj;
 }
 
+/* Pointer accessor for GC compaction (called from mem.c) */
+CL_Obj *cl_main_thread_lisp_obj_ptr(void)
+{
+    return &main_thread_obj;
+}
+
 /* ================================================================
  * Thread entry wrapper
  *

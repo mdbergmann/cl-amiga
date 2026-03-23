@@ -38,6 +38,7 @@ typedef struct {
     uint32_t total_allocated;   /* Bytes currently allocated */
     uint32_t total_consed;      /* Bytes ever allocated (monotonic, never reset) */
     uint32_t gc_count;          /* Number of GC cycles */
+    uint32_t compact_count;     /* Number of compaction cycles */
 } CL_Heap;
 
 extern CL_Heap cl_heap;
@@ -88,6 +89,11 @@ void cl_gc_reset_roots(void);
 
 /* Manually trigger GC */
 void cl_gc(void);
+
+/* Compacting GC — slides live objects to eliminate fragmentation.
+ * Triggered automatically when allocation fails after normal GC,
+ * or explicitly via cl_gc_compact(). */
+void cl_gc_compact(void);
 
 /* Debug/stats */
 void cl_mem_stats(void);

@@ -2660,6 +2660,50 @@ void cl_compiler_gc_mark(void)
     cl_compiler_gc_mark_thread(cl_get_current_thread());
 }
 
+/* Update compiler roots during compaction (mirrors gc_mark_thread but rewrites) */
+void cl_compiler_gc_update_thread(CL_Thread *t, void (*update)(CL_Obj *))
+{
+    CL_Compiler *c = t->active_compiler;
+    while (c) {
+        int i;
+        for (i = 0; i < c->const_count; i++)
+            update(&c->constants[i]);
+        for (i = 0; i < c->block_count; i++)
+            update(&c->blocks[i].tag);
+        for (i = 0; i < c->tagbody_count; i++) {
+            int j;
+            update(&c->tagbodies[i].id);
+            for (j = 0; j < c->tagbodies[i].n_tags; j++)
+                update(&c->tagbodies[i].tags[j].tag);
+        }
+        for (i = 0; i < c->outer_block_count; i++)
+            update(&c->outer_blocks[i]);
+        for (i = 0; i < c->outer_tag_count; i++) {
+            update(&c->outer_tags[i].tag);
+            update(&c->outer_tags[i].tagbody_id);
+        }
+        if (c->env) {
+            CL_CompEnv *env = c->env;
+            while (env) {
+                for (i = 0; i < env->local_count; i++)
+                    update(&env->locals[i]);
+                for (i = 0; i < env->local_fun_count; i++)
+                    update(&env->local_funs[i].name);
+                for (i = 0; i < env->local_macro_count; i++) {
+                    update(&env->local_macros[i].name);
+                    update(&env->local_macros[i].expander);
+                }
+                for (i = 0; i < env->symbol_macro_count; i++) {
+                    update(&env->symbol_macros[i].name);
+                    update(&env->symbol_macros[i].expansion);
+                }
+                env = env->parent;
+            }
+        }
+        c = c->parent;
+    }
+}
+
 void cl_compiler_init(void)
 {
     macro_table = CL_NIL;
