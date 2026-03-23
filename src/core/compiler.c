@@ -710,6 +710,26 @@ top:
                     scan_body_for_boxing(place, vars, n_vars,
                                          mutated, captured, closure_depth);
                 }
+            } else if (CL_CONS_P(place) && cl_car(place) == SYM_PROGN) {
+                /* (setf (progn form... var) val) — the inner place is mutated */
+                CL_Obj pforms = cl_cdr(place);
+                /* Walk to last element (the actual place) */
+                while (CL_CONS_P(pforms) && CL_CONS_P(cl_cdr(pforms))) {
+                    scan_body_for_boxing(cl_car(pforms), vars, n_vars,
+                                         mutated, captured, closure_depth);
+                    pforms = cl_cdr(pforms);
+                }
+                if (CL_CONS_P(pforms)) {
+                    CL_Obj inner = cl_car(pforms);
+                    if (CL_SYMBOL_P(inner)) {
+                        int idx = find_var_index(inner, vars, n_vars);
+                        if (idx >= 0) mutated[idx] = 1;
+                        if (closure_depth > 0 && idx >= 0) captured[idx] = 1;
+                    } else {
+                        scan_body_for_boxing(inner, vars, n_vars,
+                                             mutated, captured, closure_depth);
+                    }
+                }
             } else if (CL_CONS_P(place)) {
                 /* Generalized place — check for define-setf-expander.
                  * If one is registered, call it to get the expansion form
@@ -1432,24 +1452,60 @@ static void compile_setf_place(CL_Compiler *c, CL_Obj place, CL_Obj val_form)
     } else if (CL_CONS_P(place)) {
         CL_Obj head = cl_car(place);
 
-        /* Per CL spec: if place is a macro invocation, macroexpand first.
-         * Check local macros (macrolet) first, then global macros. */
+        /* Per CLHS 5.1.2.9: if a setf expander exists for the head,
+         * use it even if head is also a macro.  Only macro-expand if
+         * no setf expander is found. */
         if (CL_SYMBOL_P(head)) {
-            CL_Obj local_exp = cl_env_lookup_local_macro(c->env, head);
-            if (!CL_NULL_P(local_exp)) {
-                /* Local macro: apply expander to args */
-                CL_Obj arg_array[255];
-                int nargs = 0;
-                CL_Obj args_list = cl_cdr(place);
-                while (!CL_NULL_P(args_list) && nargs < 255) {
-                    arg_array[nargs++] = cl_car(args_list);
-                    args_list = cl_cdr(args_list);
+            /* Check define-setf-expander table FIRST (takes precedence over macros) */
+            {
+                CL_Obj expander_fn = CL_NIL;
+                CL_Obj exp_entry;
+                if (CL_MT()) platform_rwlock_rdlock(cl_tables_rwlock);
+                exp_entry = setf_expander_table;
+                while (!CL_NULL_P(exp_entry)) {
+                    CL_Obj pair = cl_car(exp_entry);
+                    if (cl_car(pair) == head) {
+                        expander_fn = cl_cdr(pair);
+                        break;
+                    }
+                    exp_entry = cl_cdr(exp_entry);
                 }
-                CL_Obj expanded = cl_vm_apply(local_exp, arg_array, nargs);
-                compile_setf_place(c, expanded, val_form);
-                c->in_tail = saved_tail;
-                return;
+                if (CL_MT()) platform_rwlock_unlock(cl_tables_rwlock);
+                if (!CL_NULL_P(expander_fn)) {
+                    CL_Obj call_args[2];
+                    CL_Obj expansion;
+                    call_args[0] = place;
+                    call_args[1] = val_form;
+                    CL_GC_PROTECT(place);
+                    CL_GC_PROTECT(val_form);
+                    expansion = cl_vm_apply(expander_fn, call_args, 2);
+                    CL_GC_UNPROTECT(2);
+                    compile_expr(c, expansion);
+                    c->in_tail = saved_tail;
+                    return;
+                }
             }
+            /* No setf expander — try local macros */
+            {
+                CL_Obj local_exp = cl_env_lookup_local_macro(c->env, head);
+                if (!CL_NULL_P(local_exp)) {
+                    /* Local macro: apply expander to args */
+                    CL_Obj arg_array[255];
+                    int nargs = 0;
+                    CL_Obj args_list = cl_cdr(place);
+                    while (!CL_NULL_P(args_list) && nargs < 255) {
+                        arg_array[nargs++] = cl_car(args_list);
+                        args_list = cl_cdr(args_list);
+                    }
+                    {
+                        CL_Obj expanded = cl_vm_apply(local_exp, arg_array, nargs);
+                        compile_setf_place(c, expanded, val_form);
+                        c->in_tail = saved_tail;
+                        return;
+                    }
+                }
+            }
+            /* No setf expander, no local macro — try global macros */
             if (!CL_NULL_P(cl_get_macro(head))) {
                 CL_Obj expanded = cl_macroexpand_1(place);
                 if (expanded != place) {
@@ -1528,6 +1584,98 @@ static void compile_setf_place(CL_Compiler *c, CL_Obj place, CL_Obj val_form)
 
             CL_GC_UNPROTECT(2);
             compile_expr(c, mvb_form);
+            c->in_tail = saved_tail;
+            return;
+        }
+
+        /* (setf (progn form... place) val) → (progn form... (setf place val))
+         * Per CLHS 5.1.2.3, PROGN is transparent to setf. */
+        if (head == SYM_PROGN) {
+            CL_Obj forms = cl_cdr(place);
+            CL_Obj inner_place;
+            /* Walk to last form (the actual place), compile leading forms */
+            while (CL_CONS_P(forms) && CL_CONS_P(cl_cdr(forms))) {
+                compile_expr(c, cl_car(forms));
+                cl_emit(c, OP_POP);
+                forms = cl_cdr(forms);
+            }
+            /* Last element is the place */
+            inner_place = CL_CONS_P(forms) ? cl_car(forms) : CL_NIL;
+            compile_setf_place(c, inner_place, val_form);
+            c->in_tail = saved_tail;
+            return;
+        }
+
+        /* (setf (if test then-place else-place) val)
+         * → (if test (setf then-place val) (setf else-place val))
+         * Extension supported by SBCL/CCL; required by FSet. */
+        if (head == SYM_IF) {
+            CL_Obj test_form = cl_car(cl_cdr(place));
+            CL_Obj then_place = cl_car(cl_cdr(cl_cdr(place)));
+            CL_Obj else_place = cl_car(cl_cdr(cl_cdr(cl_cdr(place))));
+            CL_Obj setf_then, setf_else, new_if;
+
+            CL_GC_PROTECT(test_form);
+            CL_GC_PROTECT(then_place);
+            CL_GC_PROTECT(else_place);
+            CL_GC_PROTECT(val_form);
+
+            setf_then = cl_cons(SYM_SETF,
+                          cl_cons(then_place,
+                            cl_cons(val_form, CL_NIL)));
+            setf_else = CL_NULL_P(else_place) ? CL_NIL
+                        : cl_cons(SYM_SETF,
+                            cl_cons(else_place,
+                              cl_cons(val_form, CL_NIL)));
+            new_if = cl_cons(SYM_IF,
+                       cl_cons(test_form,
+                         cl_cons(setf_then,
+                           CL_NULL_P(else_place) ? CL_NIL
+                           : cl_cons(setf_else, CL_NIL))));
+
+            CL_GC_UNPROTECT(4);
+            compile_expr(c, new_if);
+            c->in_tail = saved_tail;
+            return;
+        }
+
+        /* (setf (let/let* bindings body... place) val)
+         * → (let/let* bindings body... (setf place val))
+         * Extension supported by SBCL/CCL; required by FSet. */
+        if (head == SYM_LET || head == SYM_LETSTAR) {
+            CL_Obj bindings = cl_car(cl_cdr(place));
+            CL_Obj body = cl_cdr(cl_cdr(place));
+            CL_Obj inner_place, new_body, setf_form, new_let;
+            CL_Obj rev = CL_NIL;
+
+            CL_GC_PROTECT(bindings);
+            CL_GC_PROTECT(body);
+            CL_GC_PROTECT(val_form);
+
+            /* Find last body form (the place), collect preceding in reverse */
+            while (CL_CONS_P(body) && CL_CONS_P(cl_cdr(body))) {
+                rev = cl_cons(cl_car(body), rev);
+                body = cl_cdr(body);
+            }
+            inner_place = CL_CONS_P(body) ? cl_car(body) : CL_NIL;
+
+            /* Build (setf inner-place val) */
+            setf_form = cl_cons(SYM_SETF,
+                          cl_cons(inner_place,
+                            cl_cons(val_form, CL_NIL)));
+
+            /* Build new body: preceding-forms... (setf place val) */
+            new_body = cl_cons(setf_form, CL_NIL);
+            while (!CL_NULL_P(rev)) {
+                new_body = cl_cons(cl_car(rev), new_body);
+                rev = cl_cdr(rev);
+            }
+
+            /* Build (let/let* bindings new-body...) */
+            new_let = cl_cons(head, cl_cons(bindings, new_body));
+
+            CL_GC_UNPROTECT(3);
+            compile_expr(c, new_let);
             c->in_tail = saved_tail;
             return;
         }

@@ -49,6 +49,11 @@ static void compile_destructure_pattern(CL_Compiler *c, int pos_slot,
                 CL_Obj default_val = CL_NIL;
                 int slot, skip_pos;
 
+                if (elem == SYM_AMP_KEY) {
+                    /* &key after &optional: break to outer loop to process keys */
+                    pattern = rest;  /* rest starts at &key */
+                    goto optional_done;
+                }
                 if (elem == SYM_AMP_REST || elem == SYM_AMP_BODY) {
                     /* &rest after &optional */
                     CL_Obj rest_var = cl_car(cl_cdr(rest));
@@ -124,6 +129,9 @@ static void compile_destructure_pattern(CL_Compiler *c, int pos_slot,
                 elem = CL_NULL_P(rest) ? CL_NIL : cl_car(rest);
             }
             goto done;
+        optional_done:
+            /* Continue outer loop — pattern points to &key */
+            continue;
         }
 
         /* &key — keyword destructuring (plist-based) */

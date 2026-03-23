@@ -52,7 +52,7 @@ extern CL_Obj CL_T;  /* Pre-allocated symbol, set during init */
 
 /* --- Heap pointer (low 2 bits = 00, arena-relative offset) --- */
 
-#define CL_HEAP_P(obj)      ((obj) != CL_NIL && !CL_FIXNUM_P(obj) && !CL_CHAR_P(obj))
+#define CL_HEAP_P(obj)      ((obj) != CL_NIL && ((obj) & CL_TAG_MASK_LO2) == 0)
 #define CL_OBJ_TO_PTR(obj)  ((void *)(cl_arena_base + (obj)))
 #define CL_PTR_TO_OBJ(ptr)  ((CL_Obj)((uint8_t *)(ptr) - cl_arena_base))
 
@@ -150,7 +150,7 @@ typedef struct {
 
 #define CL_SYMBOL_P(obj) (CL_HEAP_P(obj) && CL_HDR_TYPE(CL_OBJ_TO_PTR(obj)) == TYPE_SYMBOL)
 
-#define CL_UNBOUND  ((CL_Obj)0xFFFFFFFF)  /* Sentinel for unbound variables */
+#define CL_UNBOUND  ((CL_Obj)0xFFFFFFF6)  /* Sentinel for unbound variables (low 2 bits=10, not a valid CL_Obj) */
 
 /* --- String --- */
 

@@ -240,6 +240,8 @@
 ;; Save original C builtins
 (let ((orig-read-char (symbol-function 'read-char))
       (orig-write-char (symbol-function 'write-char))
+      (orig-read-byte (symbol-function 'read-byte))
+      (orig-write-byte (symbol-function 'write-byte))
       (orig-peek-char (symbol-function 'peek-char))
       (orig-unread-char (symbol-function 'unread-char))
       (orig-read-line (symbol-function 'read-line))
@@ -316,6 +318,25 @@
       (if (%gray-stream-p s)
           (progn (gray:stream-write-char s character) character)
           (funcall orig-write-char character s))))
+
+  ;; READ-BYTE
+  (defun read-byte (stream &optional (eof-error-p t) eof-value)
+    (let ((s (%resolve-input-stream stream)))
+      (if (%gray-stream-p s)
+          (let ((result (gray:stream-read-byte s)))
+            (if (eq result :eof)
+                (if eof-error-p
+                    (error "READ-BYTE: end of file on ~A" s)
+                    eof-value)
+                result))
+          (funcall orig-read-byte s eof-error-p eof-value))))
+
+  ;; WRITE-BYTE
+  (defun write-byte (byte stream)
+    (let ((s (%resolve-output-stream stream)))
+      (if (%gray-stream-p s)
+          (progn (gray:stream-write-byte s byte) byte)
+          (funcall orig-write-byte byte s))))
 
   ;; PEEK-CHAR
   (defun peek-char (&optional peek-type stream (eof-error-p t) eof-value recursive-p)

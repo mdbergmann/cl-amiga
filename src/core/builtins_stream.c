@@ -171,6 +171,44 @@ static CL_Obj bi_write_char(CL_Obj *args, int n)
     return args[0];
 }
 
+/* (read-byte stream &optional eof-error-p eof-value) => byte */
+static CL_Obj bi_read_byte(CL_Obj *args, int n)
+{
+    CL_Obj stream = args[0];
+    int eof_error_p = (n < 2 || !CL_NULL_P(args[1]));
+    CL_Obj eof_value = (n >= 3) ? args[2] : CL_NIL;
+    int byte;
+
+    if (!CL_STREAM_P(stream))
+        cl_error(CL_ERR_TYPE, "READ-BYTE: argument is not a stream");
+    byte = cl_stream_read_byte(stream);
+    if (byte == -1) {
+        if (eof_error_p)
+            cl_error(CL_ERR_GENERAL, "READ-BYTE: end of file");
+        return eof_value;
+    }
+    return CL_MAKE_FIXNUM(byte);
+}
+
+/* (write-byte byte stream) => byte */
+static CL_Obj bi_write_byte(CL_Obj *args, int n)
+{
+    CL_Obj stream;
+    int32_t byte;
+    (void)n;
+
+    if (!CL_FIXNUM_P(args[0]))
+        cl_error(CL_ERR_TYPE, "WRITE-BYTE: argument is not an integer");
+    byte = CL_FIXNUM_VAL(args[0]);
+    if (byte < 0 || byte > 255)
+        cl_error(CL_ERR_GENERAL, "WRITE-BYTE: byte value %d out of range 0-255", byte);
+    stream = args[1];
+    if (!CL_STREAM_P(stream))
+        cl_error(CL_ERR_TYPE, "WRITE-BYTE: second argument is not a stream");
+    cl_stream_write_byte(stream, byte);
+    return args[0];
+}
+
 /* (peek-char &optional peek-type stream eof-error-p eof-value recursive-p) */
 static CL_Obj bi_peek_char(CL_Obj *args, int n)
 {
@@ -1244,6 +1282,8 @@ void cl_builtins_stream_init(void)
     /* Step 3: Character I/O */
     defun("READ-CHAR", bi_read_char, 0, 4);
     defun("WRITE-CHAR", bi_write_char, 1, 2);
+    defun("READ-BYTE", bi_read_byte, 1, 3);
+    defun("WRITE-BYTE", bi_write_byte, 2, 2);
     defun("PEEK-CHAR", bi_peek_char, 0, 5);
     defun("UNREAD-CHAR", bi_unread_char, 1, 2);
     defun("READ-LINE", bi_read_line, 0, 4);
