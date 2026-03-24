@@ -476,6 +476,77 @@ static int typep_check(CL_Obj obj, CL_Obj type_spec)
             return 1;
         }
 
+        /* (unsigned-byte n) — integer [0, 2^n) */
+        if (CL_SYMBOL_P(head) &&
+            strcmp(cl_symbol_name(head), "UNSIGNED-BYTE") == 0) {
+            if (!CL_FIXNUM_P(obj) && !CL_BIGNUM_P(obj)) return 0;
+            if (cl_arith_minusp(obj)) return 0;
+            if (!CL_NULL_P(args) && CL_FIXNUM_P(cl_car(args))) {
+                int32_t bits = CL_FIXNUM_VAL(cl_car(args));
+                CL_Obj limit = cl_arith_ash(CL_MAKE_FIXNUM(1), CL_MAKE_FIXNUM(bits));
+                return cl_arith_minusp(cl_arith_sub(obj, limit));
+            }
+            return 1;
+        }
+
+        /* (signed-byte n) — integer [-2^(n-1), 2^(n-1)) */
+        if (CL_SYMBOL_P(head) &&
+            strcmp(cl_symbol_name(head), "SIGNED-BYTE") == 0) {
+            if (!CL_FIXNUM_P(obj) && !CL_BIGNUM_P(obj)) return 0;
+            if (!CL_NULL_P(args) && CL_FIXNUM_P(cl_car(args))) {
+                int32_t bits = CL_FIXNUM_VAL(cl_car(args));
+                CL_Obj half = cl_arith_ash(CL_MAKE_FIXNUM(1),
+                                           CL_MAKE_FIXNUM(bits - 1));
+                CL_Obj neg_half = cl_arith_negate(half);
+                /* obj >= -half && obj < half */
+                return !cl_arith_minusp(cl_arith_sub(obj, neg_half)) &&
+                        cl_arith_minusp(cl_arith_sub(obj, half));
+            }
+            return 1;
+        }
+
+        /* (integer low high) — integer in range */
+        if (CL_SYMBOL_P(head) &&
+            strcmp(cl_symbol_name(head), "INTEGER") == 0) {
+            if (!CL_FIXNUM_P(obj) && !CL_BIGNUM_P(obj)) return 0;
+            /* Check bounds if provided */
+            if (!CL_NULL_P(args)) {
+                CL_Obj low = cl_car(args);
+                if (CL_FIXNUM_P(low) || CL_BIGNUM_P(low)) {
+                    if (cl_arith_minusp(cl_arith_sub(obj, low))) return 0;
+                }
+                if (!CL_NULL_P(cl_cdr(args))) {
+                    CL_Obj high = cl_car(cl_cdr(args));
+                    if (CL_FIXNUM_P(high) || CL_BIGNUM_P(high)) {
+                        if (cl_arith_minusp(cl_arith_sub(high, obj))) return 0;
+                    }
+                }
+            }
+            return 1;
+        }
+
+        /* (cons [car-type [cdr-type]]) — cons cell type */
+        if (CL_SYMBOL_P(head) &&
+            strcmp(cl_symbol_name(head), "CONS") == 0) {
+            if (!CL_CONS_P(obj)) return 0;
+            /* Optionally check car/cdr types */
+            if (!CL_NULL_P(args)) {
+                CL_Obj car_type = cl_car(args);
+                if (CL_SYMBOL_P(car_type) &&
+                    strcmp(cl_symbol_name(car_type), "*") != 0) {
+                    if (!typep_check(cl_car(obj), car_type)) return 0;
+                }
+                if (!CL_NULL_P(cl_cdr(args))) {
+                    CL_Obj cdr_type = cl_car(cl_cdr(args));
+                    if (CL_SYMBOL_P(cdr_type) &&
+                        strcmp(cl_symbol_name(cdr_type), "*") != 0) {
+                        if (!typep_check(cl_cdr(obj), cdr_type)) return 0;
+                    }
+                }
+            }
+            return 1;
+        }
+
         /* User-defined parameterized type: (my-type args...) */
         if (CL_SYMBOL_P(head)) {
             CL_Obj expander = cl_get_type_expander(head);
@@ -569,6 +640,27 @@ static CL_Obj bi_coerce(CL_Obj *args, int n)
     CL_Obj result_type = args[1];
     const char *tname;
     CL_UNUSED(n);
+
+    /* Handle compound type specifiers like (simple-array fixnum (*)):
+     * extract the base type name and coerce as that sequence type. */
+    if (CL_CONS_P(result_type)) {
+        extern CL_Obj cl_package_cl;
+        CL_Obj head = cl_car(result_type);
+        if (CL_SYMBOL_P(head)) {
+            const char *hname = cl_symbol_name(head);
+            /* (simple-array ...) / (array ...) / (vector ...) / (simple-vector ...) */
+            if (strcmp(hname, "SIMPLE-ARRAY") == 0 || strcmp(hname, "ARRAY") == 0 ||
+                strcmp(hname, "VECTOR") == 0 || strcmp(hname, "SIMPLE-VECTOR") == 0) {
+                /* Coerce to vector (we don't specialize element types) */
+                result_type = cl_intern_in("VECTOR", 6, cl_package_cl);
+            } else {
+                /* For other compound types, try the base type name */
+                result_type = head;
+            }
+        } else {
+            cl_error(CL_ERR_TYPE, "COERCE: invalid result type");
+        }
+    }
 
     if (!CL_SYMBOL_P(result_type) && !CL_NULL_P(result_type))
         cl_error(CL_ERR_TYPE, "COERCE: result type must be a symbol");

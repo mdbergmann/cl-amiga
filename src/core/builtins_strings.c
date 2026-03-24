@@ -384,8 +384,15 @@ static CL_Obj bi_string_greaterp(CL_Obj *a, int n) { return string_cmp_op(a, n, 
 static CL_Obj bi_string_not_greaterp(CL_Obj *a, int n) { return string_cmp_op(a, n, STR_CMP_LE, string_compare_range_ci, "STRING-NOT-GREATERP"); }
 static CL_Obj bi_string_not_lessp(CL_Obj *a, int n) { return string_cmp_op(a, n, STR_CMP_GE, string_compare_range_ci, "STRING-NOT-LESSP"); }
 
+static CL_Obj bi_string_neq(CL_Obj *args, int n)
+{
+    /* STRING/= — case-sensitive not-equal */
+    return CL_NULL_P(bi_string_eq(args, n)) ? SYM_T : CL_NIL;
+}
+
 static CL_Obj bi_string_not_equal(CL_Obj *args, int n)
 {
+    /* STRING-NOT-EQUAL — case-insensitive not-equal */
     return CL_NULL_P(bi_string_equal(args, n)) ? SYM_T : CL_NIL;
 }
 
@@ -1419,6 +1426,7 @@ void cl_builtins_strings_init(void)
 
     /* String functions */
     defun("STRING=", bi_string_eq, 2, -1);
+    defun("STRING/=", bi_string_neq, 2, -1);
     defun("STRING-EQUAL", bi_string_equal, 2, -1);
     defun("STRING-NOT-EQUAL", bi_string_not_equal, 2, -1);
     defun("STRING<", bi_string_lt, 2, -1);
