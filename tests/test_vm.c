@@ -3016,6 +3016,10 @@ TEST(eval_map_fn)
     /* map stops at shortest sequence */
     ASSERT_STR_EQ(eval_print("(map 'list #'+ '(1 2 3 4) #(10 20))"), "(11 22)");
     ASSERT_STR_EQ(eval_print("(map 'list #'identity \"ab\")"), "(#\\a #\\b)");
+    /* map with subtype result-type specifiers */
+    ASSERT_STR_EQ(eval_print("(map 'simple-vector #'1+ '(1 2 3))"), "#(2 3 4)");
+    ASSERT_STR_EQ(eval_print("(map 'simple-string #'char-upcase \"hello\")"), "\"HELLO\"");
+    ASSERT_STR_EQ(eval_print("(map 'cons #'1+ '(1 2 3))"), "(2 3 4)");
 }
 
 TEST(eval_every_sequences)

@@ -320,11 +320,18 @@ static CL_Obj bi_map(CL_Obj *args, int n)
         rt = 0;
     else if (map_result_type_match(result_type, "NULL", 4))
         rt = 0;
-    else if (map_result_type_match(result_type, "LIST", 4))
+    else if (map_result_type_match(result_type, "LIST", 4) ||
+             map_result_type_match(result_type, "CONS", 4))
         rt = 1;
-    else if (map_result_type_match(result_type, "STRING", 6))
+    else if (map_result_type_match(result_type, "STRING", 6) ||
+             map_result_type_match(result_type, "SIMPLE-STRING", 13) ||
+             map_result_type_match(result_type, "BASE-STRING", 11) ||
+             map_result_type_match(result_type, "SIMPLE-BASE-STRING", 18))
         rt = 2;
-    else if (map_result_type_match(result_type, "VECTOR", 6))
+    else if (map_result_type_match(result_type, "VECTOR", 6) ||
+             map_result_type_match(result_type, "SIMPLE-VECTOR", 13) ||
+             map_result_type_match(result_type, "ARRAY", 5) ||
+             map_result_type_match(result_type, "SIMPLE-ARRAY", 12))
         rt = 3;
 
     if (rt < 0) {
