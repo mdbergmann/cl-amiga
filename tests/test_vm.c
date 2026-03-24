@@ -2099,6 +2099,10 @@ TEST(eval_fboundp)
     ASSERT_STR_EQ(eval_print("(progn (fmakunbound '(setf test-fbp-acc)) (fboundp '(setf test-fbp-acc)))"), "NIL");
     /* fmakunbound on unregistered (setf name) should not error */
     ASSERT_STR_EQ(eval_print("(fmakunbound '(setf no-such-setter))"), "(SETF NO-SUCH-SETTER)");
+    /* makunbound */
+    ASSERT_STR_EQ(eval_print("(progn (defvar *mak-test-var* 99) (boundp '*mak-test-var*))"), "T");
+    ASSERT_STR_EQ(eval_print("(progn (makunbound '*mak-test-var*) (boundp '*mak-test-var*))"), "NIL");
+    ASSERT_STR_EQ(eval_print("(makunbound '*mak-test-var*)"), "*MAK-TEST-VAR*");
 }
 
 TEST(eval_fdefinition)

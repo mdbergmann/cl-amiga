@@ -3198,6 +3198,9 @@
 (fmakunbound '(setf amiga-setf-test))
 (check "fmakunbound (setf name)" nil (fboundp '(setf amiga-setf-test)))
 (check "fmakunbound unknown (setf name)" '(setf no-such-fn) (fmakunbound '(setf no-such-fn)))
+(defvar *amiga-mak-test* 123)
+(check "makunbound returns symbol" '*amiga-mak-test* (makunbound '*amiga-mak-test*))
+(check "makunbound unbinds" nil (boundp '*amiga-mak-test*))
 
 ; --- ext:getenv ---
 (check "getenv non-existent returns NIL" nil (ext:getenv "CLAMIGA_NONEXISTENT_VAR_12345"))
