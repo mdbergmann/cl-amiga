@@ -42,6 +42,13 @@
 (defmacro prog1 (first &rest body) (let ((g (gensym))) `(let ((,g ,first)) ,@body ,g)))
 (defmacro prog2 (first second &rest body) (let ((g (gensym))) `(progn ,first (let ((,g ,second)) ,@body ,g))))
 
+;; multiple-value-setq — assign multiple values to variables
+(defmacro multiple-value-setq (vars form)
+  (let ((tmps (mapcar (lambda (v) (declare (ignore v)) (gensym)) vars)))
+    `(multiple-value-bind ,tmps ,form
+       ,@(mapcar (lambda (var tmp) `(setq ,var ,tmp)) vars tmps)
+       ,(car tmps))))
+
 ;; prog — block nil + let + tagbody
 (defmacro prog (bindings &body body)
   `(block nil (let ,bindings (tagbody ,@body))))
@@ -1614,13 +1621,13 @@ when the param has no explicit default.  CL spec 3.4.6 requires this."
         (let ((kw (car rest)))
           (setq rest (cdr rest))
           (cond
-            ;; WHILE
+            ;; WHILE — termination test at the point where it appears (CLHS 6.1.4)
             ((%loop-keyword-p kw "WHILE")
-             (push `(unless ,(car rest) (go ,end-tag)) preamble)
+             (push `(unless ,(car rest) (go ,end-tag)) body)
              (setq rest (cdr rest)))
-            ;; UNTIL
+            ;; UNTIL — termination test at the point where it appears (CLHS 6.1.4)
             ((%loop-keyword-p kw "UNTIL")
-             (push `(when ,(car rest) (go ,end-tag)) preamble)
+             (push `(when ,(car rest) (go ,end-tag)) body)
              (setq rest (cdr rest)))
             ;; DO / DOING
             ((or (%loop-keyword-p kw "DO") (%loop-keyword-p kw "DOING"))

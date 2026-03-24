@@ -172,12 +172,20 @@ static CL_Obj bi_alpha_char_p(CL_Obj *args, int n)
 
 static CL_Obj bi_digit_char_p(CL_Obj *args, int n)
 {
-    int c;
-    CL_UNUSED(n);
+    int c, radix, weight;
     if (!CL_CHAR_P(args[0]))
         cl_error(CL_ERR_TYPE, "DIGIT-CHAR-P: not a character");
     c = CL_CHAR_VAL(args[0]);
-    return (c >= '0' && c <= '9') ? SYM_T : CL_NIL;
+    radix = (n > 1 && CL_FIXNUM_P(args[1])) ? CL_FIXNUM_VAL(args[1]) : 10;
+    if (c >= '0' && c <= '9')
+        weight = c - '0';
+    else if (c >= 'A' && c <= 'Z')
+        weight = c - 'A' + 10;
+    else if (c >= 'a' && c <= 'z')
+        weight = c - 'a' + 10;
+    else
+        return CL_NIL;
+    return (weight < radix) ? CL_MAKE_FIXNUM(weight) : CL_NIL;
 }
 
 /* --- Symbol functions --- */
@@ -1401,7 +1409,7 @@ void cl_builtins_strings_init(void)
     defun("UPPER-CASE-P", bi_upper_case_p, 1, 1);
     defun("LOWER-CASE-P", bi_lower_case_p, 1, 1);
     defun("ALPHA-CHAR-P", bi_alpha_char_p, 1, 1);
-    defun("DIGIT-CHAR-P", bi_digit_char_p, 1, 1);
+    defun("DIGIT-CHAR-P", bi_digit_char_p, 1, 2);
 
     /* Symbol functions */
     defun("SYMBOL-NAME", bi_symbol_name, 1, 1);
