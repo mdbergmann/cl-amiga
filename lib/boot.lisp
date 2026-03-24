@@ -54,7 +54,8 @@
   (cond ((null form) t)              ; NIL
         ((eq form t) t)              ; T
         ((keywordp form) t)          ; keywords
-        ((symbolp form) nil)         ; non-keyword symbols are variables
+        ((symbolp form)              ; check defconstant flag
+         (%symbol-constant-p form))
         ((consp form)                ; (quote ...) is constant
          (eq (car form) 'quote))
         (t t)))                      ; numbers, chars, strings, etc.

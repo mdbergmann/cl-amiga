@@ -1089,6 +1089,20 @@ void compile_defconstant(CL_Compiler *c, CL_Obj form)
     cl_emit_const(c, name);
 }
 
+/* --- named-lambda --- */
+
+void compile_named_lambda(CL_Compiler *c, CL_Obj form)
+{
+    /* (named-lambda name lambda-list &body body) → named closure */
+    CL_Obj name = cl_car(cl_cdr(form));
+    CL_Obj rest = cl_cdr(cl_cdr(form));
+    CL_Obj lambda_form = cl_cons(SYM_LAMBDA, rest);
+    CL_GC_PROTECT(lambda_form);
+    pending_lambda_name = name;
+    compile_expr(c, lambda_form);
+    CL_GC_UNPROTECT(1);
+}
+
 /* --- Defun / Defmacro --- */
 
 void compile_defun(CL_Compiler *c, CL_Obj form)

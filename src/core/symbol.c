@@ -61,6 +61,7 @@ CL_Obj SYM_NTH_VALUE = CL_NIL;
 CL_Obj SYM_DEFVAR = CL_NIL;
 CL_Obj SYM_DEFPARAMETER = CL_NIL;
 CL_Obj SYM_DEFCONSTANT = CL_NIL;
+CL_Obj SYM_NAMED_LAMBDA = CL_NIL;
 CL_Obj SYM_SETF = CL_NIL;
 CL_Obj SYM_EVAL_WHEN = CL_NIL;
 CL_Obj SYM_LOAD_TIME_VALUE = CL_NIL;
@@ -411,6 +412,7 @@ void cl_symbol_init(void)
     SYM_DEFVAR               = cl_intern_in("DEFVAR", 6, cl_package_cl);
     SYM_DEFPARAMETER         = cl_intern_in("DEFPARAMETER", 12, cl_package_cl);
     SYM_DEFCONSTANT          = cl_intern_in("DEFCONSTANT", 11, cl_package_cl);
+    SYM_NAMED_LAMBDA         = cl_intern_in("NAMED-LAMBDA", 12, cl_package_cl);
     SYM_SETF                 = cl_intern_in("SETF", 4, cl_package_cl);
     SYM_EVAL_WHEN            = cl_intern_in("EVAL-WHEN", 9, cl_package_cl);
     SYM_LOAD_TIME_VALUE      = cl_intern_in("LOAD-TIME-VALUE", 15, cl_package_cl);
@@ -612,6 +614,20 @@ void cl_symbol_init(void)
         s->flags |= CL_SYM_SPECIAL; s->value = CL_NIL;
     }
 
+    /* *PRINT-LINES* — CL spec, default NIL (no line limit) */
+    {
+        CL_Obj sym = cl_intern_in("*PRINT-LINES*", 13, cl_package_cl);
+        CL_Symbol *s = (CL_Symbol *)CL_OBJ_TO_PTR(sym);
+        s->flags |= CL_SYM_SPECIAL; s->value = CL_NIL;
+    }
+
+    /* *PRINT-MISER-WIDTH* — CL spec, default NIL */
+    {
+        CL_Obj sym = cl_intern_in("*PRINT-MISER-WIDTH*", 19, cl_package_cl);
+        CL_Symbol *s = (CL_Symbol *)CL_OBJ_TO_PTR(sym);
+        s->flags |= CL_SYM_SPECIAL; s->value = CL_NIL;
+    }
+
     /* *PRINT-PPRINT-DISPATCH* — default is NIL (no custom dispatch) */
     SYM_PRINT_PPRINT_DISPATCH = cl_intern_in("*PRINT-PPRINT-DISPATCH*", 23, cl_package_cl);
     {
@@ -661,6 +677,28 @@ void cl_symbol_init(void)
         CL_Symbol *s = (CL_Symbol *)CL_OBJ_TO_PTR(SYM_STAR_READ_EVAL);
         s->flags |= CL_SYM_SPECIAL;
         s->value = SYM_T;
+    }
+
+    /* *READ-BASE* — CL spec, default 10 */
+    {
+        CL_Obj sym = cl_intern_in("*READ-BASE*", 11, cl_package_cl);
+        CL_Symbol *s = (CL_Symbol *)CL_OBJ_TO_PTR(sym);
+        s->flags |= CL_SYM_SPECIAL; s->value = CL_MAKE_FIXNUM(10);
+    }
+
+    /* *READ-DEFAULT-FLOAT-FORMAT* — CL spec, default SINGLE-FLOAT */
+    {
+        CL_Obj sym = cl_intern_in("*READ-DEFAULT-FLOAT-FORMAT*", 27, cl_package_cl);
+        CL_Symbol *s = (CL_Symbol *)CL_OBJ_TO_PTR(sym);
+        s->flags |= CL_SYM_SPECIAL;
+        s->value = cl_intern("SINGLE-FLOAT", 12);
+    }
+
+    /* *READ-SUPPRESS* — CL spec, default NIL */
+    {
+        CL_Obj sym = cl_intern_in("*READ-SUPPRESS*", 15, cl_package_cl);
+        CL_Symbol *s = (CL_Symbol *)CL_OBJ_TO_PTR(sym);
+        s->flags |= CL_SYM_SPECIAL; s->value = CL_NIL;
     }
 
     /* *MODULES* — list of provided module names */

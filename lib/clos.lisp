@@ -1184,7 +1184,7 @@ When called with no arguments, passes the original method arguments."
         (let* ((gf (%make-struct 'standard-generic-function
                      name lambda-list nil nil nil nil nil nil))
                (dispatch-fn
-                 (lambda (&rest args)
+                 (named-lambda %gf-dispatch-entry (&rest args)
                    (%gf-dispatch gf args))))
           (%set-gf-discriminating-function gf dispatch-fn)
           (setf (gethash name *generic-function-table*) gf)

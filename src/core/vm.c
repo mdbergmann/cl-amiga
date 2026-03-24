@@ -332,6 +332,85 @@ static CL_Bytecode *get_frame_bytecode(CL_Frame *f)
     return NULL;
 }
 
+/* Format a single backtrace frame into buf+pos, return new pos */
+static int bt_format_frame(int pos, int depth, CL_Obj name,
+                           const char *file, int line)
+{
+    int n;
+    n = snprintf(cl_backtrace_buf + pos,
+                 CL_BACKTRACE_BUF_SIZE - pos, "  %d: ", depth);
+    pos += n;
+    if (pos >= CL_BACKTRACE_BUF_SIZE - 1) return pos;
+
+    if (!CL_NULL_P(name) && CL_SYMBOL_P(name)) {
+        if (file && line > 0) {
+            n = snprintf(cl_backtrace_buf + pos,
+                         CL_BACKTRACE_BUF_SIZE - pos,
+                         "%s (%s:%d)\n", cl_symbol_name(name), file, line);
+        } else if (line > 0) {
+            n = snprintf(cl_backtrace_buf + pos,
+                         CL_BACKTRACE_BUF_SIZE - pos,
+                         "%s (line %d)\n", cl_symbol_name(name), line);
+        } else {
+            n = snprintf(cl_backtrace_buf + pos,
+                         CL_BACKTRACE_BUF_SIZE - pos,
+                         "%s\n", cl_symbol_name(name));
+        }
+    } else {
+        if (file && line > 0) {
+            n = snprintf(cl_backtrace_buf + pos,
+                         CL_BACKTRACE_BUF_SIZE - pos,
+                         "<anonymous> (%s:%d)\n", file, line);
+        } else if (line > 0) {
+            n = snprintf(cl_backtrace_buf + pos,
+                         CL_BACKTRACE_BUF_SIZE - pos,
+                         "<anonymous> (line %d)\n", line);
+        } else {
+            n = snprintf(cl_backtrace_buf + pos,
+                         CL_BACKTRACE_BUF_SIZE - pos,
+                         "<anonymous>\n");
+        }
+    }
+    pos += n;
+    return pos;
+}
+
+/* Detect repeating frame pattern starting at frame index i (descending).
+ * Returns the cycle length (2..8) if found, 0 otherwise.
+ * A cycle is detected when the same sequence of (name, source_line) repeats
+ * at least 3 times consecutively. */
+static int bt_detect_cycle(int start, int *repeat_count)
+{
+    int total = start + 1;  /* number of frames available */
+    int cycle_len;
+
+    for (cycle_len = 2; cycle_len <= 8 && cycle_len * 3 <= total; cycle_len++) {
+        int repeats = 1;
+        int k;
+        /* Check if the pattern at [start..start-cycle_len+1] repeats */
+        for (k = 1; k * cycle_len <= total - cycle_len; k++) {
+            int j, match = 1;
+            for (j = 0; j < cycle_len; j++) {
+                CL_Frame *f1 = &cl_vm.frames[start - j];
+                CL_Frame *f2 = &cl_vm.frames[start - j - k * cycle_len];
+                CL_Obj n1 = get_func_name(f1->bytecode);
+                CL_Obj n2 = get_func_name(f2->bytecode);
+                CL_Bytecode *bc1 = get_frame_bytecode(f1);
+                CL_Bytecode *bc2 = get_frame_bytecode(f2);
+                int line1 = bc1 ? lookup_source_line(bc1, f1->ip) : 0;
+                int line2 = bc2 ? lookup_source_line(bc2, f2->ip) : 0;
+                if (n1 != n2 || line1 != line2) { match = 0; break; }
+            }
+            if (match) repeats++; else break;
+        }
+        if (repeats >= 3) {
+            *repeat_count = repeats;
+            return cycle_len;
+        }
+    }
+    return 0;
+}
+
 void cl_capture_backtrace(void)
 {
     int i, pos = 0;
@@ -341,54 +420,68 @@ void cl_capture_backtrace(void)
     cl_backtrace_buf[0] = '\0';
     if (cl_vm.fp <= 0) return;
 
+    /* Check for repeating patterns (likely infinite recursion).
+     * Try starting from each of the first few frames to find the cycle. */
+    for (i = cl_vm.fp - 1; i >= cl_vm.fp - 5 && i >= 0; i--) {
+        int repeat_count = 0;
+        int cycle_len = bt_detect_cycle(i, &repeat_count);
+        if (cycle_len > 0 && repeat_count >= 5) {
+            int j, n;
+            int prefix_frames = cl_vm.fp - 1 - i;
+            /* Show prefix frames (before the cycle starts) */
+            for (j = 0; j < prefix_frames && pos < CL_BACKTRACE_BUF_SIZE - 64; j++) {
+                CL_Frame *f = &cl_vm.frames[cl_vm.fp - 1 - j];
+                CL_Obj nm = get_func_name(f->bytecode);
+                CL_Bytecode *bc = get_frame_bytecode(f);
+                int line = bc ? lookup_source_line(bc, f->ip) : 0;
+                const char *file = bc ? bc->source_file : NULL;
+                pos = bt_format_frame(pos, j, nm, file, line);
+            }
+            depth = prefix_frames;
+            /* Show one cycle */
+            for (j = 0; j < cycle_len && pos < CL_BACKTRACE_BUF_SIZE - 64; j++, depth++) {
+                CL_Frame *f = &cl_vm.frames[i - j];
+                CL_Obj nm = get_func_name(f->bytecode);
+                CL_Bytecode *bc = get_frame_bytecode(f);
+                int line = bc ? lookup_source_line(bc, f->ip) : 0;
+                const char *file = bc ? bc->source_file : NULL;
+                pos = bt_format_frame(pos, depth, nm, file, line);
+            }
+            n = snprintf(cl_backtrace_buf + pos,
+                         CL_BACKTRACE_BUF_SIZE - pos,
+                         "  --- above %d frames repeat %d times (%d frames total) ---\n",
+                         cycle_len, repeat_count, cycle_len * repeat_count);
+            pos += n;
+            /* Skip past the repeated frames, show remaining */
+            {
+                int skip_to = i - cycle_len * repeat_count;
+                for (j = skip_to; j >= 0 && depth < max_show + 5; j--, depth++) {
+                    CL_Frame *f = &cl_vm.frames[j];
+                    CL_Obj nm = get_func_name(f->bytecode);
+                    CL_Bytecode *bc = get_frame_bytecode(f);
+                    int line = bc ? lookup_source_line(bc, f->ip) : 0;
+                    const char *file = bc ? bc->source_file : NULL;
+                    pos = bt_format_frame(pos, depth, nm, file, line);
+                    if (pos >= CL_BACKTRACE_BUF_SIZE - 1) break;
+                }
+                if (j >= 0) {
+                    snprintf(cl_backtrace_buf + pos,
+                             CL_BACKTRACE_BUF_SIZE - pos,
+                             "  ... %d more frames\n", j + 1);
+                }
+            }
+            return;
+        }
+    }
+
+    /* Normal backtrace (no detected cycle) */
     for (i = cl_vm.fp - 1; i >= 0 && depth < max_show; i--, depth++) {
         CL_Frame *f = &cl_vm.frames[i];
         CL_Obj name = get_func_name(f->bytecode);
         CL_Bytecode *bc = get_frame_bytecode(f);
-        int line = 0;
-        const char *file = NULL;
-        int n;
-
-        if (bc) {
-            line = lookup_source_line(bc, f->ip);
-            file = bc->source_file;
-        }
-
-        n = snprintf(cl_backtrace_buf + pos,
-                     CL_BACKTRACE_BUF_SIZE - pos, "  %d: ", depth);
-        pos += n;
-        if (pos >= CL_BACKTRACE_BUF_SIZE - 1) break;
-
-        if (!CL_NULL_P(name) && CL_SYMBOL_P(name)) {
-            if (file && line > 0) {
-                n = snprintf(cl_backtrace_buf + pos,
-                             CL_BACKTRACE_BUF_SIZE - pos,
-                             "%s (%s:%d)\n", cl_symbol_name(name), file, line);
-            } else if (line > 0) {
-                n = snprintf(cl_backtrace_buf + pos,
-                             CL_BACKTRACE_BUF_SIZE - pos,
-                             "%s (line %d)\n", cl_symbol_name(name), line);
-            } else {
-                n = snprintf(cl_backtrace_buf + pos,
-                             CL_BACKTRACE_BUF_SIZE - pos,
-                             "%s\n", cl_symbol_name(name));
-            }
-        } else {
-            if (file && line > 0) {
-                n = snprintf(cl_backtrace_buf + pos,
-                             CL_BACKTRACE_BUF_SIZE - pos,
-                             "<anonymous> (%s:%d)\n", file, line);
-            } else if (line > 0) {
-                n = snprintf(cl_backtrace_buf + pos,
-                             CL_BACKTRACE_BUF_SIZE - pos,
-                             "<anonymous> (line %d)\n", line);
-            } else {
-                n = snprintf(cl_backtrace_buf + pos,
-                             CL_BACKTRACE_BUF_SIZE - pos,
-                             "<anonymous>\n");
-            }
-        }
-        pos += n;
+        int line = bc ? lookup_source_line(bc, f->ip) : 0;
+        const char *file = bc ? bc->source_file : NULL;
+        pos = bt_format_frame(pos, depth, name, file, line);
         if (pos >= CL_BACKTRACE_BUF_SIZE - 1) break;
     }
 
