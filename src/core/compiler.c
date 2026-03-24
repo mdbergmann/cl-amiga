@@ -313,8 +313,11 @@ void compile_lambda(CL_Compiler *c, CL_Obj form)
     if (!inner) return;
     memset(inner, 0, sizeof(*inner));
 
-    /* Register inner compiler for GC root marking */
+    /* Register inner compiler for GC root marking.
+     * Protect from NLX-triggered cl_compiler_restore_to: this compiler
+     * is referenced by C stack frames throughout compile_lambda. */
     inner->parent = cl_active_compiler;
+    inner->protect = 1;
     cl_active_compiler = inner;
 
     parse_lambda_list(params, &inner->ll);
@@ -520,7 +523,7 @@ void compile_lambda(CL_Compiler *c, CL_Obj form)
 
     /* Build bytecode object */
     bc = (CL_Bytecode *)cl_alloc(TYPE_BYTECODE, sizeof(CL_Bytecode));
-    if (!bc) { cl_active_compiler = inner->parent; cl_env_destroy(env); platform_free(inner); return; }
+    if (!bc) { inner->protect = 0; cl_active_compiler = inner->parent; cl_env_destroy(env); platform_free(inner); return; }
 
     bc->code = (uint8_t *)platform_alloc(inner->code_pos);
     if (bc->code) memcpy(bc->code, inner->code, inner->code_pos);
@@ -589,6 +592,7 @@ void compile_lambda(CL_Compiler *c, CL_Obj form)
     }
 
     /* Unregister inner compiler from GC root chain */
+    inner->protect = 0;
     cl_active_compiler = inner->parent;
 
     cl_env_destroy(env);
@@ -2803,8 +2807,14 @@ void *cl_compiler_mark(void)
 void cl_compiler_restore_to(void *saved)
 {
     CL_Compiler *target = (CL_Compiler *)saved;
-    while (cl_active_compiler != target) {
+    while (cl_active_compiler != target && cl_active_compiler != NULL) {
         CL_Compiler *c = cl_active_compiler;
+        if (c->protect) {
+            /* Compiler is still in use by C code (e.g., compile_lambda's
+             * determine_boxed_vars which re-enters the VM for macroexpansion).
+             * Don't free it — it will be freed when compilation completes. */
+            return;
+        }
         cl_active_compiler = c->parent;
         if (c->env) cl_env_destroy(c->env);
         platform_free(c);

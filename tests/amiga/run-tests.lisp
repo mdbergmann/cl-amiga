@@ -2232,6 +2232,7 @@
 ; Loop accumulation
 (check "loop collect" '(1 2 3) (loop for x in '(1 2 3) collect x))
 (check "loop collect expr" '(1 4 9) (loop for x in '(1 2 3) collect (* x x)))
+(check "loop for type-spec" '(0 1 2 3) (loop for i fixnum from 0 to 3 collect i))
 (check "loop collect into" '(1 2 3) (loop for x in '(1 2 3 4 5) collect x into r do (when (= x 3) (return (nreverse r)))))
 (check "loop sum" 15 (loop for x in '(1 2 3 4 5) sum x))
 (check "loop sum into" 6 (loop for x in '(1 2 3 4 5) sum x into tot do (when (= x 3) (return tot))))

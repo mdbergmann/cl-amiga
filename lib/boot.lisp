@@ -1456,7 +1456,24 @@ when the param has no explicit default.  CL spec 3.4.6 requires this."
            (real-rest (cddr rest)))
        (%loop-parse-for real-rest var real-sub-kw end-tag)))
     (t
-     (error "LOOP: unrecognized FOR sub-clause ~S" sub-kw))))
+     ;; sub-kw might be an inline type declaration (e.g., FIXNUM in
+     ;; "FOR I FIXNUM FROM 0").  Per CL spec, a type-spec can appear
+     ;; between the variable and the sub-clause keyword.  Skip it and
+     ;; use the next element as the real sub-keyword.
+     (let ((next (car rest)))
+       (if (and rest (symbolp next)
+                (or (%loop-keyword-p next "IN")
+                    (%loop-keyword-p next "ON")
+                    (%loop-keyword-p next "ACROSS")
+                    (%loop-keyword-p next "FROM")
+                    (%loop-keyword-p next "UPFROM")
+                    (%loop-keyword-p next "DOWNFROM")
+                    (%loop-keyword-p next "BELOW")
+                    (%loop-keyword-p next "ABOVE")
+                    (%loop-keyword-p next "BEING")
+                    (and (symbolp next) (string= (symbol-name next) "="))))
+           (%loop-parse-for (cdr rest) var next end-tag)
+           (error "LOOP: unrecognized FOR sub-clause ~S" sub-kw))))))
 
 (defun %loop-parse-cond-subclause (sub rest block-name
                                     bindings into-vars default-accum
