@@ -1138,6 +1138,42 @@ TEST(eval_macroexpand)
     ASSERT_STR_EQ(eval_print("(macroexpand '(+ 1 2))"), "(+ 1 2)");
 }
 
+/* --- &whole support in defmacro --- */
+
+TEST(eval_defmacro_whole_basic)
+{
+    /* &whole captures the entire macro call form */
+    eval_print("(defmacro wtest (&whole w x y) (list 'quote w))");
+    ASSERT_STR_EQ(eval_print("(wtest 1 2)"), "(WTEST 1 2)");
+}
+
+TEST(eval_defmacro_whole_with_body)
+{
+    /* &whole with &body */
+    eval_print("(defmacro wbody (&whole w tag &body body)"
+               "  (list 'quote (list w tag body)))");
+    ASSERT_STR_EQ(eval_print("(wbody :x 1 2 3)"),
+                  "((WBODY :X 1 2 3) :X (1 2 3))");
+}
+
+TEST(eval_defmacro_whole_with_optional)
+{
+    /* &whole with &optional — matches the global-vars pattern */
+    eval_print("(defmacro wopt (&whole w name value &optional doc)"
+               "  (list 'quote (list w name value doc)))");
+    ASSERT_STR_EQ(eval_print("(wopt a b)"),
+                  "((WOPT A B) A B NIL)");
+    ASSERT_STR_EQ(eval_print("(wopt a b \"d\")"),
+                  "((WOPT A B \"d\") A B \"d\")");
+}
+
+TEST(eval_defmacro_no_whole_still_works)
+{
+    /* Macros without &whole still work with extra hidden param */
+    eval_print("(defmacro nw-test (x) `(+ ,x 10))");
+    ASSERT_STR_EQ(eval_print("(nw-test 5)"), "15");
+}
+
 /* --- Phase 4 Tier 2: tagbody/go --- */
 
 TEST(eval_tagbody_basic)
@@ -6807,6 +6843,10 @@ int main(void)
     RUN(eval_eval_builtin);
     RUN(eval_macroexpand_1);
     RUN(eval_macroexpand);
+    RUN(eval_defmacro_whole_basic);
+    RUN(eval_defmacro_whole_with_body);
+    RUN(eval_defmacro_whole_with_optional);
+    RUN(eval_defmacro_no_whole_still_works);
     RUN(eval_tagbody_basic);
     RUN(eval_tagbody_forward_go);
     RUN(eval_tagbody_backward_go);

@@ -1174,7 +1174,7 @@ int defmacro_is_ll_keyword(CL_Obj param)
            (param == SYM_AMP_OPTIONAL || param == SYM_AMP_KEY ||
             param == SYM_AMP_REST || param == SYM_AMP_BODY ||
             param == SYM_AMP_ALLOW_OTHER_KEYS ||
-            param == SYM_AMP_ENVIRONMENT);
+            param == SYM_AMP_ENVIRONMENT || param == SYM_AMP_WHOLE);
 }
 
 /* Check if a lambda list needs destructuring transformation.
@@ -1234,8 +1234,8 @@ void compile_defmacro(CL_Compiler *c, CL_Obj form)
     CL_GC_PROTECT(body);
 
     /* Strip &environment var from lambda list and bind var to NIL in body.
-     * Our macro expanders are called with just the arguments, not
-     * (form env) like the CL spec says, so we provide NIL for the env. */
+     * Our macro expanders are called with (whole-form arg1 arg2 ...),
+     * not (form env) like the CL spec says, so we provide NIL for the env. */
     {
         CL_Obj cur = lambda_list;
         CL_Obj prev = CL_NIL;
@@ -1262,6 +1262,28 @@ void compile_defmacro(CL_Compiler *c, CL_Obj form)
             prev = cur;
             cur = cl_cdr(cur);
         }
+    }
+
+    /* Handle &whole: strip it from the lambda list and use its variable
+     * as the first parameter (receives the whole form from expander).
+     * If no &whole, add a hidden gensym to receive (and ignore) the form.
+     * Macro expanders are always called with (whole-form arg1 arg2 ...). */
+    {
+        CL_Obj whole_var = CL_NIL;
+        if (!CL_NULL_P(lambda_list) && cl_car(lambda_list) == SYM_AMP_WHOLE) {
+            /* (&whole var ...) — strip &whole, use var */
+            CL_Obj rest = cl_cdr(lambda_list);
+            if (!CL_NULL_P(rest)) {
+                whole_var = cl_car(rest);
+                lambda_list = cl_cdr(rest); /* skip &whole and var */
+            }
+        }
+        if (CL_NULL_P(whole_var)) {
+            /* No &whole — generate hidden gensym to receive the form arg */
+            whole_var = defmacro_gensym();
+        }
+        /* Prepend whole_var as the first parameter */
+        lambda_list = cl_cons(whole_var, lambda_list);
     }
 
     /* Transform destructuring lambda lists:

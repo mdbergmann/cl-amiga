@@ -1209,7 +1209,15 @@ static CL_Obj cl_vm_run(int base_fp, int base_nlx)
                            ? 255 : callee_arity + n_opt;
 
                 if (nargs < min_args) {
-                    cl_error(CL_ERR_ARGS, "Too few arguments: expected %s%d, got %d",
+                    CL_Obj fname = callee_bc->name;
+                    const char *fn = (!CL_NULL_P(fname) && CL_SYMBOL_P(fname))
+                                     ? cl_symbol_name(fname) : "<lambda>";
+                    const char *src = callee_bc->source_file
+                                      ? callee_bc->source_file : "?";
+                    unsigned src_line = callee_bc->source_line;
+                    cl_error(CL_ERR_ARGS,
+                             "Too few arguments to %s (%s:%u): expected %s%d, got %d",
+                             fn, src, src_line,
                              (n_opt || has_rest || has_key) ? "at least " : "",
                              min_args, nargs);
                 }
@@ -1217,8 +1225,12 @@ static CL_Obj cl_vm_run(int base_fp, int base_nlx)
                     CL_Obj fname = callee_bc->name;
                     const char *fn = (!CL_NULL_P(fname) && CL_SYMBOL_P(fname))
                                      ? cl_symbol_name(fname) : "<lambda>";
-                    cl_error(CL_ERR_ARGS, "Too many arguments to %s: expected %s%d, got %d",
-                             fn, n_opt ? "at most " : "",
+                    const char *src = callee_bc->source_file
+                                      ? callee_bc->source_file : "?";
+                    unsigned src_line = callee_bc->source_line;
+                    cl_error(CL_ERR_ARGS,
+                             "Too many arguments to %s (%s:%u): expected %s%d, got %d",
+                             fn, src, src_line, n_opt ? "at most " : "",
                              max_args, nargs);
                 }
 

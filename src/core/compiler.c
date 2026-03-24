@@ -1493,6 +1493,8 @@ static void compile_setf_place(CL_Compiler *c, CL_Obj place, CL_Obj val_form)
                     CL_Obj arg_array[255];
                     int nargs = 0;
                     CL_Obj args_list = cl_cdr(place);
+                    /* First argument is the whole form (for &whole support) */
+                    arg_array[nargs++] = place;
                     while (!CL_NULL_P(args_list) && nargs < 255) {
                         arg_array[nargs++] = cl_car(args_list);
                         args_list = cl_cdr(args_list);
@@ -2246,6 +2248,8 @@ void compile_expr(CL_Compiler *c, CL_Obj expr)
                 CL_Obj arg_array[255];
                 int nargs = 0;
                 CL_Obj args_list = cl_cdr(expr);
+                /* First argument is the whole form (for &whole support) */
+                arg_array[nargs++] = expr;
                 while (!CL_NULL_P(args_list) && nargs < 255) {
                     arg_array[nargs++] = cl_car(args_list);
                     args_list = cl_cdr(args_list);
@@ -2424,6 +2428,9 @@ CL_Obj cl_macroexpand_1(CL_Obj form)
     CL_Obj args_list;
 
     if (CL_NULL_P(expander)) return form;
+
+    /* First argument is the whole form (for &whole support) */
+    arg_array[nargs++] = form;
 
     args_list = cl_cdr(form);
     while (!CL_NULL_P(args_list) && nargs < 255) {
