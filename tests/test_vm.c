@@ -2094,6 +2094,11 @@ TEST(eval_fboundp)
 {
     ASSERT_STR_EQ(eval_print("(fboundp '+)"), "T");
     ASSERT_STR_EQ(eval_print("(fboundp (gensym))"), "NIL");
+    /* fboundp/fmakunbound with (setf name) */
+    ASSERT_STR_EQ(eval_print("(progn (defun (setf test-fbp-acc) (v o) v) (fboundp '(setf test-fbp-acc)))"), "T");
+    ASSERT_STR_EQ(eval_print("(progn (fmakunbound '(setf test-fbp-acc)) (fboundp '(setf test-fbp-acc)))"), "NIL");
+    /* fmakunbound on unregistered (setf name) should not error */
+    ASSERT_STR_EQ(eval_print("(fmakunbound '(setf no-such-setter))"), "(SETF NO-SUCH-SETTER)");
 }
 
 TEST(eval_fdefinition)

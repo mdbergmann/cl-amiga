@@ -3193,6 +3193,11 @@
 (check "fboundp defined function" t (fboundp 'amiga-fboundp-test))
 (fmakunbound 'amiga-fboundp-test)
 (check "fmakunbound removes binding" nil (fboundp 'amiga-fboundp-test))
+(defun (setf amiga-setf-test) (v o) (declare (ignore o)) v)
+(check "fboundp (setf name)" t (fboundp '(setf amiga-setf-test)))
+(fmakunbound '(setf amiga-setf-test))
+(check "fmakunbound (setf name)" nil (fboundp '(setf amiga-setf-test)))
+(check "fmakunbound unknown (setf name)" '(setf no-such-fn) (fmakunbound '(setf no-such-fn)))
 
 ; --- ext:getenv ---
 (check "getenv non-existent returns NIL" nil (ext:getenv "CLAMIGA_NONEXISTENT_VAR_12345"))
