@@ -139,12 +139,48 @@ static CL_Obj bi_symbol_constant_p(CL_Obj *args, int n)
     return (s->flags & CL_SYM_CONSTANT) ? SYM_T : CL_NIL;
 }
 
+extern CL_Obj setf_fn_table;
+
+/* Helper: if name is (setf sym), look up the setf-fn symbol in setf_fn_table.
+   Returns CL_NIL if not found. */
+static CL_Obj lookup_setf_fn_sym(CL_Obj name)
+{
+    if (CL_CONS_P(name) && cl_car(name) == SYM_SETF) {
+        CL_Obj accessor = cl_car(cl_cdr(name));
+        CL_Obj entry;
+        if (!CL_SYMBOL_P(accessor))
+            return CL_NIL;
+        if (CL_MT()) platform_rwlock_rdlock(cl_tables_rwlock);
+        entry = setf_fn_table;
+        while (!CL_NULL_P(entry)) {
+            CL_Obj pair = cl_car(entry);
+            if (cl_car(pair) == accessor) {
+                CL_Obj result = cl_cdr(pair);
+                if (CL_MT()) platform_rwlock_unlock(cl_tables_rwlock);
+                return result;
+            }
+            entry = cl_cdr(entry);
+        }
+        if (CL_MT()) platform_rwlock_unlock(cl_tables_rwlock);
+        return CL_NIL;
+    }
+    return CL_NIL;
+}
+
 static CL_Obj bi_fboundp(CL_Obj *args, int n)
 {
     CL_Symbol *s;
     CL_UNUSED(n);
+    if (CL_CONS_P(args[0])) {
+        /* (fboundp '(setf name)) */
+        CL_Obj setf_sym = lookup_setf_fn_sym(args[0]);
+        if (CL_NULL_P(setf_sym)) return CL_NIL;
+        s = (CL_Symbol *)CL_OBJ_TO_PTR(setf_sym);
+        return (s->function != CL_UNBOUND && !CL_NULL_P(s->function))
+            ? SYM_T : CL_NIL;
+    }
     if (!CL_SYMBOL_P(args[0]))
-        cl_error(CL_ERR_TYPE, "FBOUNDP: not a symbol");
+        cl_error(CL_ERR_TYPE, "FBOUNDP: argument must be a function name");
     s = (CL_Symbol *)CL_OBJ_TO_PTR(args[0]);
     return (s->function != CL_UNBOUND && !CL_NULL_P(s->function))
         ? SYM_T : CL_NIL;
@@ -154,8 +190,17 @@ static CL_Obj bi_fmakunbound(CL_Obj *args, int n)
 {
     CL_Symbol *s;
     CL_UNUSED(n);
+    if (CL_CONS_P(args[0])) {
+        /* (fmakunbound '(setf name)) */
+        CL_Obj setf_sym = lookup_setf_fn_sym(args[0]);
+        if (!CL_NULL_P(setf_sym)) {
+            s = (CL_Symbol *)CL_OBJ_TO_PTR(setf_sym);
+            s->function = CL_UNBOUND;
+        }
+        return args[0];
+    }
     if (!CL_SYMBOL_P(args[0]))
-        cl_error(CL_ERR_TYPE, "FMAKUNBOUND: not a symbol");
+        cl_error(CL_ERR_TYPE, "FMAKUNBOUND: argument must be a function name");
     s = (CL_Symbol *)CL_OBJ_TO_PTR(args[0]);
     s->function = CL_UNBOUND;
     return args[0];
