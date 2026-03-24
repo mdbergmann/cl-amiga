@@ -1009,6 +1009,9 @@
 (check "map str result" "HELLO" (map 'string #'char-upcase "hello"))
 (check "map vec result" #(2 3 4) (map 'vector #'1+ '(1 2 3)))
 (check "map shortest" '(11 22) (map 'list #'+ '(1 2 3 4) #(10 20)))
+(check "map simple-vector" #(2 3 4) (map 'simple-vector #'1+ '(1 2 3)))
+(check "map simple-string" "HELLO" (map 'simple-string #'char-upcase "hello"))
+(check "map cons" '(2 3 4) (map 'cons #'1+ '(1 2 3)))
 
 ; reduce with key
 (check "reduce with key" 6 (reduce #'+ '((1 a) (2 b) (3 c)) :key #'car))
