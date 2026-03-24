@@ -802,7 +802,7 @@ static CL_Obj read_expr(void)
                 }
                 name[nlen] = '\0';
                 if (nlen == 1) return CL_MAKE_CHAR(name[0]);
-                /* Named characters */
+                /* Named characters — CL standard */
                 if (strcasecmp(name, "Null") == 0) return CL_MAKE_CHAR('\0');
                 if (strcasecmp(name, "Nul") == 0) return CL_MAKE_CHAR('\0');
                 if (strcasecmp(name, "Space") == 0) return CL_MAKE_CHAR(' ');
@@ -813,6 +813,51 @@ static CL_Obj read_expr(void)
                 if (strcasecmp(name, "Backspace") == 0) return CL_MAKE_CHAR('\b');
                 if (strcasecmp(name, "Page") == 0) return CL_MAKE_CHAR('\f');
                 if (strcasecmp(name, "Rubout") == 0) return CL_MAKE_CHAR(0x7F);
+                /* Extended character names (common across implementations) */
+                if (strcasecmp(name, "Escape") == 0 ||
+                    strcasecmp(name, "Esc") == 0) return CL_MAKE_CHAR(0x1B);
+                if (strcasecmp(name, "Vt") == 0) return CL_MAKE_CHAR(0x0B);
+                if (strcasecmp(name, "Bell") == 0 ||
+                    strcasecmp(name, "Bel") == 0) return CL_MAKE_CHAR(0x07);
+                if (strcasecmp(name, "Delete") == 0 ||
+                    strcasecmp(name, "Del") == 0) return CL_MAKE_CHAR(0x7F);
+                if (strcasecmp(name, "Soh") == 0) return CL_MAKE_CHAR(0x01);
+                if (strcasecmp(name, "Stx") == 0) return CL_MAKE_CHAR(0x02);
+                if (strcasecmp(name, "Etx") == 0) return CL_MAKE_CHAR(0x03);
+                if (strcasecmp(name, "Eot") == 0) return CL_MAKE_CHAR(0x04);
+                if (strcasecmp(name, "Enq") == 0) return CL_MAKE_CHAR(0x05);
+                if (strcasecmp(name, "Ack") == 0) return CL_MAKE_CHAR(0x06);
+                if (strcasecmp(name, "So") == 0) return CL_MAKE_CHAR(0x0E);
+                if (strcasecmp(name, "Si") == 0) return CL_MAKE_CHAR(0x0F);
+                if (strcasecmp(name, "Dle") == 0) return CL_MAKE_CHAR(0x10);
+                if (strcasecmp(name, "Dc1") == 0) return CL_MAKE_CHAR(0x11);
+                if (strcasecmp(name, "Dc2") == 0) return CL_MAKE_CHAR(0x12);
+                if (strcasecmp(name, "Dc3") == 0) return CL_MAKE_CHAR(0x13);
+                if (strcasecmp(name, "Dc4") == 0) return CL_MAKE_CHAR(0x14);
+                if (strcasecmp(name, "Nak") == 0) return CL_MAKE_CHAR(0x15);
+                if (strcasecmp(name, "Syn") == 0) return CL_MAKE_CHAR(0x16);
+                if (strcasecmp(name, "Etb") == 0) return CL_MAKE_CHAR(0x17);
+                if (strcasecmp(name, "Can") == 0) return CL_MAKE_CHAR(0x18);
+                if (strcasecmp(name, "Em") == 0) return CL_MAKE_CHAR(0x19);
+                if (strcasecmp(name, "Sub") == 0) return CL_MAKE_CHAR(0x1A);
+                if (strcasecmp(name, "Fs") == 0) return CL_MAKE_CHAR(0x1C);
+                if (strcasecmp(name, "Gs") == 0) return CL_MAKE_CHAR(0x1D);
+                if (strcasecmp(name, "Rs") == 0) return CL_MAKE_CHAR(0x1E);
+                if (strcasecmp(name, "Us") == 0) return CL_MAKE_CHAR(0x1F);
+                /* Unicode-named whitespace characters */
+                if (strcasecmp(name, "No-Break_Space") == 0 ||
+                    strcasecmp(name, "No-break_space") == 0 ||
+                    strcasecmp(name, "NO-BREAK_SPACE") == 0) return CL_MAKE_CHAR(0xA0);
+                if (strcasecmp(name, "Ideographic_Space") == 0 ||
+                    strcasecmp(name, "Ideographic_space") == 0 ||
+                    strcasecmp(name, "IDEOGRAPHIC_SPACE") == 0) return CL_MAKE_CHAR(0x3000);
+                /* Hex codepoint: #\U+XXXX or #\u+XXXX */
+                if ((name[0] == 'U' || name[0] == 'u') && name[1] == '+') {
+                    char *endp;
+                    unsigned long cp = strtoul(name + 2, &endp, 16);
+                    if (*endp == '\0' && cp <= 0x10FFFF)
+                        return CL_MAKE_CHAR((int)cp);
+                }
                 if (read_suppress) return CL_NIL;
                 cl_error(CL_ERR_PARSE, "Unknown character name: %s", name);
                 return CL_NIL;

@@ -308,11 +308,13 @@ static CL_Obj qq_expand(CL_Obj x, int depth)
         /* Reverse */
         {
             CL_Obj rev = CL_NIL;
+            CL_GC_PROTECT(rev);
             while (!CL_NULL_P(result)) {
                 rev = cl_cons(cl_car(result), rev);
                 result = cl_cdr(result);
             }
             result = rev;
+            CL_GC_UNPROTECT(1);
         }
 
         {
@@ -864,11 +866,13 @@ void compile_multiple_value_call(CL_Compiler *c, CL_Obj form)
     /* Reverse to restore order */
     {
         CL_Obj rev = CL_NIL;
+        CL_GC_PROTECT(rev);
         while (!CL_NULL_P(append_args)) {
             rev = cl_cons(cl_car(append_args), rev);
             append_args = cl_cdr(append_args);
         }
         append_args = rev;
+        CL_GC_UNPROTECT(1);
     }
 
     /* Build (apply fn (append mvl1 mvl2 ...)) */

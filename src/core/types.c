@@ -1,5 +1,6 @@
 #include "types.h"
 #include "mem.h"
+#include "error.h"
 #include "../platform/platform.h"
 
 #ifdef DEBUG_GC
@@ -12,6 +13,15 @@ CL_Obj CL_T = CL_NIL;  /* Set properly during init by symbol/package setup */
 CL_Obj cl_car(CL_Obj obj)
 {
     if (CL_NULL_P(obj)) return CL_NIL;
+    if (!CL_HEAP_P(obj)) {
+        if (obj == CL_UNBOUND)
+            cl_error(CL_ERR_TYPE, "CAR: value is unbound (did you reference an uninitialized variable?)");
+        if (CL_FIXNUM_P(obj))
+            cl_error(CL_ERR_TYPE, "CAR: %d is not a list", CL_FIXNUM_VAL(obj));
+        if (CL_CHAR_P(obj))
+            cl_error(CL_ERR_TYPE, "CAR: #\\%c is not a list", (char)CL_CHAR_VAL(obj));
+        cl_error(CL_ERR_TYPE, "CAR: invalid object 0x%08x is not a list", (unsigned)obj);
+    }
     if (obj >= cl_heap.arena_size)
         cl_storage_error("CAR: corrupted pointer 0x%08x (arena size 0x%08x)",
                          (unsigned)obj, (unsigned)cl_heap.arena_size);
@@ -21,6 +31,15 @@ CL_Obj cl_car(CL_Obj obj)
 CL_Obj cl_cdr(CL_Obj obj)
 {
     if (CL_NULL_P(obj)) return CL_NIL;
+    if (!CL_HEAP_P(obj)) {
+        if (obj == CL_UNBOUND)
+            cl_error(CL_ERR_TYPE, "CDR: value is unbound (did you reference an uninitialized variable?)");
+        if (CL_FIXNUM_P(obj))
+            cl_error(CL_ERR_TYPE, "CDR: %d is not a list", CL_FIXNUM_VAL(obj));
+        if (CL_CHAR_P(obj))
+            cl_error(CL_ERR_TYPE, "CDR: #\\%c is not a list", (char)CL_CHAR_VAL(obj));
+        cl_error(CL_ERR_TYPE, "CDR: invalid object 0x%08x is not a list", (unsigned)obj);
+    }
     if (obj >= cl_heap.arena_size)
         cl_storage_error("CDR: corrupted pointer 0x%08x (arena size 0x%08x)",
                          (unsigned)obj, (unsigned)cl_heap.arena_size);

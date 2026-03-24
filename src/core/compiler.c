@@ -1551,6 +1551,8 @@ static void compile_setf_place(CL_Compiler *c, CL_Obj place, CL_Obj val_form)
             /* Reverse tmps and setfs */
             {
                 CL_Obj rev_tmps = CL_NIL, rev_setfs = CL_NIL;
+                CL_GC_PROTECT(rev_tmps);
+                CL_GC_PROTECT(rev_setfs);
                 while (!CL_NULL_P(tmps)) {
                     rev_tmps = cl_cons(cl_car(tmps), rev_tmps);
                     tmps = cl_cdr(tmps);
@@ -1561,6 +1563,7 @@ static void compile_setf_place(CL_Compiler *c, CL_Obj place, CL_Obj val_form)
                 }
                 tmps = rev_tmps;
                 setfs = rev_setfs;
+                CL_GC_UNPROTECT(2);
             }
 
             /* Build: (multiple-value-bind tmps val-form (setf p1 t1) ... (setf pn tn) t1) */
@@ -1571,6 +1574,8 @@ static void compile_setf_place(CL_Compiler *c, CL_Obj place, CL_Obj val_form)
                 CL_Obj s = setfs;
                 /* Reverse setfs to prepend to body */
                 CL_Obj rev_s = CL_NIL;
+                CL_GC_PROTECT(body);
+                CL_GC_PROTECT(rev_s);
                 while (!CL_NULL_P(s)) {
                     rev_s = cl_cons(cl_car(s), rev_s);
                     s = cl_cdr(s);
@@ -1580,6 +1585,7 @@ static void compile_setf_place(CL_Compiler *c, CL_Obj place, CL_Obj val_form)
                     rev_s = cl_cdr(rev_s);
                 }
                 mvb_form = cl_cons(sym_mvb, cl_cons(tmps, cl_cons(val_form, body)));
+                CL_GC_UNPROTECT(2);
             }
 
             CL_GC_UNPROTECT(2);
@@ -1651,6 +1657,7 @@ static void compile_setf_place(CL_Compiler *c, CL_Obj place, CL_Obj val_form)
             CL_GC_PROTECT(bindings);
             CL_GC_PROTECT(body);
             CL_GC_PROTECT(val_form);
+            CL_GC_PROTECT(rev);
 
             /* Find last body form (the place), collect preceding in reverse */
             while (CL_CONS_P(body) && CL_CONS_P(cl_cdr(body))) {
@@ -1666,6 +1673,7 @@ static void compile_setf_place(CL_Compiler *c, CL_Obj place, CL_Obj val_form)
 
             /* Build new body: preceding-forms... (setf place val) */
             new_body = cl_cons(setf_form, CL_NIL);
+            CL_GC_PROTECT(new_body);
             while (!CL_NULL_P(rev)) {
                 new_body = cl_cons(cl_car(rev), new_body);
                 rev = cl_cdr(rev);
@@ -1674,7 +1682,7 @@ static void compile_setf_place(CL_Compiler *c, CL_Obj place, CL_Obj val_form)
             /* Build (let/let* bindings new-body...) */
             new_let = cl_cons(head, cl_cons(bindings, new_body));
 
-            CL_GC_UNPROTECT(3);
+            CL_GC_UNPROTECT(5);
             compile_expr(c, new_let);
             c->in_tail = saved_tail;
             return;
