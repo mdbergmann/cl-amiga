@@ -44,7 +44,7 @@ typedef struct {
     CL_Obj old_value;
 } CL_DynBinding;
 
-#define CL_MAX_DYN_BINDINGS 1024
+#define CL_MAX_DYN_BINDINGS 4096
 
 /* Restore dynamic bindings down to mark */
 void cl_dynbind_restore_to(int mark);

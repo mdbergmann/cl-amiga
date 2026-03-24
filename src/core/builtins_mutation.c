@@ -129,6 +129,16 @@ static CL_Obj bi_boundp(CL_Obj *args, int n)
     return cl_symbol_boundp(args[0]) ? SYM_T : CL_NIL;
 }
 
+static CL_Obj bi_symbol_constant_p(CL_Obj *args, int n)
+{
+    CL_Symbol *s;
+    CL_UNUSED(n);
+    if (!CL_SYMBOL_P(args[0]))
+        return CL_NIL;
+    s = (CL_Symbol *)CL_OBJ_TO_PTR(args[0]);
+    return (s->flags & CL_SYM_CONSTANT) ? SYM_T : CL_NIL;
+}
+
 static CL_Obj bi_fboundp(CL_Obj *args, int n)
 {
     CL_Symbol *s;
@@ -216,6 +226,7 @@ void cl_builtins_mutation_init(void)
 
     /* Boundp / Fboundp */
     defun("BOUNDP", bi_boundp, 1, 1);
+    cl_register_builtin("%SYMBOL-CONSTANT-P", bi_symbol_constant_p, 1, 1, cl_package_clamiga);
     defun("FBOUNDP", bi_fboundp, 1, 1);
     defun("FMAKUNBOUND", bi_fmakunbound, 1, 1);
     cl_register_builtin("%REGISTER-SETF-FUNCTION", bi_register_setf_function, 2, 2, cl_package_clamiga);

@@ -2287,6 +2287,7 @@ void compile_expr(CL_Compiler *c, CL_Obj expr)
         if (head == SYM_SETF)        { compile_setf(c, expr); return; }
         if (head == SYM_FUNCTION)    { compile_function(c, expr); return; }
         /* compiler_extra.c */
+        if (head == SYM_NAMED_LAMBDA) { compile_named_lambda(c, expr); return; }
         if (head == SYM_DEFUN)       { compile_defun(c, expr); return; }
         if (head == SYM_DEFVAR)      { compile_defvar(c, expr); return; }
         if (head == SYM_DEFPARAMETER) { compile_defparameter(c, expr); return; }
