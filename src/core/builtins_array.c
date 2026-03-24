@@ -1177,4 +1177,11 @@ void cl_builtins_array_init(void)
     defun("VECTOR-PUSH-EXTEND", bi_vector_push_extend, 2, 3);
     defun("VECTOR-POP", bi_vector_pop, 1, 1);
     defun("ADJUST-ARRAY", bi_adjust_array, 2, -1);
+
+    /* Register cached symbols for GC compaction forwarding */
+    cl_gc_register_root(&KW_INITIAL_ELEMENT);
+    cl_gc_register_root(&KW_INITIAL_CONTENTS);
+    cl_gc_register_root(&KW_FILL_POINTER);
+    cl_gc_register_root(&KW_ADJUSTABLE);
+    cl_gc_register_root(&KW_ELEMENT_TYPE);
 }

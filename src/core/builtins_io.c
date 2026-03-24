@@ -553,6 +553,9 @@ static CL_Obj bi_load(CL_Obj *args, int n)
                 CL_GC_PROTECT(bytecode);
                 cl_vm_eval(bytecode);
 
+                /* Safe point: run pending compaction between top-level forms */
+                cl_gc_compact_if_pending();
+
                 /* Serialize bytecode to FASL cache buffer */
                 if (do_cache) {
                     CL_FaslWriter uw;
@@ -1057,6 +1060,9 @@ static CL_Obj bi_compile_file(CL_Obj *args, int n)
 
                 /* Eval the form (macros, defvar, etc. must take effect) */
                 cl_vm_eval(bytecode);
+
+                /* Safe point: run pending compaction between top-level forms */
+                cl_gc_compact_if_pending();
 
                 CL_GC_UNPROTECT(1); /* bytecode */
 
@@ -1759,11 +1765,12 @@ static CL_Obj bi_get_gc_count(CL_Obj *args, int n)
     return CL_MAKE_FIXNUM((int32_t)(cl_heap.gc_count & 0x7FFFFFFF));
 }
 
-/* ext:gc — trigger garbage collection */
+/* ext:gc — trigger garbage collection + pending compaction */
 static CL_Obj bi_ext_gc(CL_Obj *args, int n)
 {
     CL_UNUSED(args); CL_UNUSED(n);
     cl_gc();
+    cl_gc_compact_if_pending();
     return CL_NIL;
 }
 
@@ -2478,4 +2485,26 @@ void cl_builtins_io_init(void)
     defun("SET-PPRINT-DISPATCH", bi_set_pprint_dispatch, 2, 4);
     defun("PPRINT-DISPATCH", bi_pprint_dispatch, 1, 2);
     defun("COPY-PPRINT-DISPATCH", bi_copy_pprint_dispatch, 0, 1);
+
+    /* Register cached symbols for GC compaction forwarding */
+    cl_gc_register_root(&KW_WR_STREAM);
+    cl_gc_register_root(&KW_WR_ESCAPE);
+    cl_gc_register_root(&KW_WR_READABLY);
+    cl_gc_register_root(&KW_WR_BASE);
+    cl_gc_register_root(&KW_WR_RADIX);
+    cl_gc_register_root(&KW_WR_LEVEL);
+    cl_gc_register_root(&KW_WR_LENGTH);
+    cl_gc_register_root(&KW_WR_CASE);
+    cl_gc_register_root(&KW_WR_GENSYM);
+    cl_gc_register_root(&KW_WR_ARRAY);
+    cl_gc_register_root(&KW_WR_CIRCLE);
+    cl_gc_register_root(&KW_WR_PRETTY);
+    cl_gc_register_root(&KW_WR_RIGHT_MARGIN);
+    cl_gc_register_root(&KW_WR_PPRINT_DISPATCH);
+    cl_gc_register_root(&KW_LINEAR);
+    cl_gc_register_root(&KW_FILL);
+    cl_gc_register_root(&KW_MISER);
+    cl_gc_register_root(&KW_MANDATORY);
+    cl_gc_register_root(&KW_BLOCK);
+    cl_gc_register_root(&KW_CURRENT);
 }

@@ -723,4 +723,12 @@ void cl_builtins_package_init(void)
     defun("SHADOWING-IMPORT", bi_shadowing_import, 1, 2);
     defun("PACKAGE-SHADOWING-SYMBOLS", bi_package_shadowing_symbols, 1, 1);
     defun("COPY-SYMBOL", bi_copy_symbol, 1, 2);
+
+    /* Register cached symbols for GC compaction forwarding */
+    cl_gc_register_root(&KW_INTERNAL);
+    cl_gc_register_root(&KW_EXTERNAL);
+    cl_gc_register_root(&KW_INHERITED);
+    cl_gc_register_root(&KW_NICKNAMES);
+    cl_gc_register_root(&KW_USE);
+    cl_gc_register_root(&KW_LOCAL_NICKNAMES);
 }

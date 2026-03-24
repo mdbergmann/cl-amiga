@@ -79,7 +79,7 @@ CL_Obj cl_make_pathname(CL_Obj host, CL_Obj device, CL_Obj directory,
 CL_Obj cl_make_cell(CL_Obj value);
 CL_Obj cl_make_foreign_pointer(uint32_t address, uint32_t size, uint8_t flags);
 
-/* GC root protection */
+/* GC root protection (temporary, C-stack variables) */
 #define CL_GC_PROTECT(var) cl_gc_push_root(&(var))
 #define CL_GC_UNPROTECT(n) cl_gc_pop_roots(n)
 
@@ -87,13 +87,23 @@ void cl_gc_push_root(CL_Obj *root);
 void cl_gc_pop_roots(int n);
 void cl_gc_reset_roots(void);
 
+/* Global root registration (static/global CL_Obj variables).
+ * Registered roots are marked during GC and updated during compaction.
+ * Use for cached interned symbols (keywords, type symbols, etc.). */
+#define CL_MAX_GLOBAL_ROOTS 512
+void cl_gc_register_root(CL_Obj *root_ptr);
+
+
 /* Manually trigger GC */
 void cl_gc(void);
 
 /* Compacting GC — slides live objects to eliminate fragmentation.
- * Triggered automatically when allocation fails after normal GC,
- * or explicitly via cl_gc_compact(). */
+ * MUST be called at a safe point where no C locals hold CL_Obj values.
+ * Safe points: REPL top-level, explicit (ext:gc), after top-level eval. */
 void cl_gc_compact(void);
+
+/* Run pending compaction if needed.  Call at safe points (REPL, top-level). */
+void cl_gc_compact_if_pending(void);
 
 /* Debug/stats */
 void cl_mem_stats(void);

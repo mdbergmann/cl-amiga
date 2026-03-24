@@ -704,4 +704,14 @@ void cl_builtins_sequence2_init(void)
     /* Sorting */
     defun("SORT", bi_sort, 2, -1);
     defun("STABLE-SORT", bi_stable_sort, 2, -1);
+
+    /* Register cached symbols for GC compaction forwarding */
+    cl_gc_register_root(&KW_TEST);
+    cl_gc_register_root(&KW_KEY);
+    cl_gc_register_root(&KW_START1);
+    cl_gc_register_root(&KW_END1);
+    cl_gc_register_root(&KW_START2);
+    cl_gc_register_root(&KW_END2);
+    cl_gc_register_root(&SYM_EQL_FN);
+    cl_gc_register_root(&SYM_LIST);
 }

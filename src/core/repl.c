@@ -419,6 +419,9 @@ void cl_repl(void)
     while (platform_read_line(line, sizeof(line))) {
         int line_len = (int)strlen(line);
 
+        /* Safe point: run pending compaction (no C locals hold CL_Obj here) */
+        cl_gc_compact_if_pending();
+
         /* When accumulator is empty, apply line-level skip rules */
         if (accum_len == 0) {
             /* Empty line: skip */

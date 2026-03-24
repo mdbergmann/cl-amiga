@@ -265,11 +265,13 @@ CL_Obj cl_intern_in(const char *name, uint32_t len, CL_Obj package)
     if (!CL_NULL_P(existing))
         return existing;
 
-    /* Slow path: create symbol outside lock */
+    /* Slow path: create symbol outside lock.
+     * Protect package — allocations below may trigger GC/compaction. */
+    CL_GC_PROTECT(package);
     name_str = cl_make_string(name, len);
     CL_GC_PROTECT(name_str);
     sym = cl_make_symbol(name_str);
-    CL_GC_UNPROTECT(1);
+    CL_GC_UNPROTECT(2);
 
     s = (CL_Symbol *)CL_OBJ_TO_PTR(sym);
     s->hash = cl_hash_string(name, len);

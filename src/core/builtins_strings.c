@@ -1434,4 +1434,20 @@ void cl_builtins_strings_init(void)
 
     KW_INITIAL_ELEMENT = cl_intern_keyword("INITIAL-ELEMENT", 15);
     KW_ELEMENT_TYPE    = cl_intern_keyword("ELEMENT-TYPE", 12);
+
+    /* Register cached symbols for GC compaction forwarding */
+    cl_gc_register_root(&KW_WTS_ESCAPE);
+    cl_gc_register_root(&KW_WTS_READABLY);
+    cl_gc_register_root(&KW_WTS_BASE);
+    cl_gc_register_root(&KW_WTS_RADIX);
+    cl_gc_register_root(&KW_WTS_LEVEL);
+    cl_gc_register_root(&KW_WTS_LENGTH);
+    cl_gc_register_root(&KW_WTS_CASE);
+    cl_gc_register_root(&KW_WTS_GENSYM);
+    cl_gc_register_root(&KW_WTS_ARRAY);
+    cl_gc_register_root(&KW_WTS_CIRCLE);
+    cl_gc_register_root(&KW_WTS_PRETTY);
+    cl_gc_register_root(&KW_WTS_RIGHT_MARGIN);
+    cl_gc_register_root(&KW_INITIAL_ELEMENT);
+    cl_gc_register_root(&KW_ELEMENT_TYPE);
 }

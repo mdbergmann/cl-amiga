@@ -135,6 +135,10 @@ static void ensure_feature_keywords(void)
         kw_and = cl_intern_keyword("AND", 3);
         kw_or  = cl_intern_keyword("OR", 2);
         kw_not = cl_intern_keyword("NOT", 3);
+        /* Register cached symbols for GC compaction forwarding */
+        cl_gc_register_root(&kw_and);
+        cl_gc_register_root(&kw_or);
+        cl_gc_register_root(&kw_not);
     }
 }
 

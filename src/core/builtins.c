@@ -42,7 +42,7 @@ CL_Obj cl_coerce_funcdesig(CL_Obj obj, const char *context)
     if (CL_SYMBOL_P(obj)) {
         CL_Symbol *s = (CL_Symbol *)CL_OBJ_TO_PTR(obj);
         CL_Obj fn = s->function;
-        if (!CL_NULL_P(fn))
+        if (fn != CL_UNBOUND && !CL_NULL_P(fn))
             return fn;
         cl_error(CL_ERR_UNDEFINED, "Undefined function: %s", cl_symbol_name(obj));
     }
@@ -944,4 +944,7 @@ void cl_builtins_init(void)
         s->function = fn;
         s->value = fn;
     }
+
+    /* Register cached symbols for GC compaction forwarding */
+    cl_gc_register_root(&trace_list);
 }
