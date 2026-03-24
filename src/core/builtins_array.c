@@ -164,13 +164,25 @@ static CL_Obj bi_make_array(CL_Obj *args, int n)
                         bv->data[nw - 1] &= (1u << (length % 32)) - 1;
                 }
             } else if (has_initial_contents) {
-                CL_Obj cur = initial_contents;
                 uint32_t j;
-                for (j = 0; j < length && !CL_NULL_P(cur); j++) {
-                    CL_Obj elem = cl_car(cur);
-                    if (CL_FIXNUM_P(elem) && CL_FIXNUM_VAL(elem) == 1)
-                        bv->data[j / 32] |= (1u << (j % 32));
-                    cur = cl_cdr(cur);
+                if (CL_VECTOR_P(initial_contents)) {
+                    /* Vector initial-contents */
+                    CL_Vector *iv = (CL_Vector *)CL_OBJ_TO_PTR(initial_contents);
+                    CL_Obj *idata = cl_vector_data(iv);
+                    uint32_t ilen = iv->length < length ? iv->length : length;
+                    for (j = 0; j < ilen; j++) {
+                        if (CL_FIXNUM_P(idata[j]) && CL_FIXNUM_VAL(idata[j]) == 1)
+                            bv->data[j / 32] |= (1u << (j % 32));
+                    }
+                } else {
+                    /* List initial-contents */
+                    CL_Obj cur = initial_contents;
+                    for (j = 0; j < length && !CL_NULL_P(cur); j++) {
+                        CL_Obj elem = cl_car(cur);
+                        if (CL_FIXNUM_P(elem) && CL_FIXNUM_VAL(elem) == 1)
+                            bv->data[j / 32] |= (1u << (j % 32));
+                        cur = cl_cdr(cur);
+                    }
                 }
             }
             return result;

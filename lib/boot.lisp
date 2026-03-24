@@ -180,6 +180,15 @@
                                   (list (list (car stores) value-form)))))
             (list 'let bindings store-form)))))))
 
+;; (setf (ldb bytespec place) new-byte) → (setf place (dpb new-byte bytespec place))
+(clamiga::%register-setf-expander 'ldb
+  (lambda (place-form value-form)
+    (let ((bytespec-var (gensym "BS"))
+          (bytespec (cadr place-form))
+          (int-place (caddr place-form)))
+      `(let ((,bytespec-var ,bytespec))
+         (setf ,int-place (dpb ,value-form ,bytespec-var ,int-place))))))
+
 ;; List searching
 (defun member (item list &key (test #'eql))
   (do ((l list (cdr l)))
