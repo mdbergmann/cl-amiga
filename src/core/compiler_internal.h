@@ -87,6 +87,7 @@ typedef struct {
 /* Compiler state */
 typedef struct CL_Compiler_s {
     struct CL_Compiler_s *parent; /* for GC root chain */
+    uint8_t protect;  /* If set, cl_compiler_restore_to won't free this compiler */
     uint8_t code[CL_MAX_CODE_SIZE];
     CL_Obj constants[CL_MAX_CONSTANTS];
     int code_pos;

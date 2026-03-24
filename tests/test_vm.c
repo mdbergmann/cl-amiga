@@ -5281,6 +5281,11 @@ TEST(eval_loop_collect_expr)
     /* collect expression */
     ASSERT_STR_EQ(eval_print(
         "(loop for x in '(1 2 3) collect (* x x))"), "(1 4 9)");
+    /* inline type declarations in FOR clauses */
+    ASSERT_STR_EQ(eval_print(
+        "(loop for i fixnum from 0 to 3 collect i)"), "(0 1 2 3)");
+    ASSERT_STR_EQ(eval_print(
+        "(loop for x float = 1.0 then (* x 2.0) for i from 1 to 3 collect x)"), "(1.0 2.0 4.0)");
 }
 
 TEST(eval_loop_collect_into)
