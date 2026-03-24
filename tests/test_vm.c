@@ -2072,8 +2072,12 @@ TEST(eval_char_predicates)
     ASSERT_STR_EQ(eval_print("(lower-case-p #\\A)"), "NIL");
     ASSERT_STR_EQ(eval_print("(alpha-char-p #\\A)"), "T");
     ASSERT_STR_EQ(eval_print("(alpha-char-p #\\1)"), "NIL");
-    ASSERT_STR_EQ(eval_print("(digit-char-p #\\5)"), "T");
+    ASSERT_STR_EQ(eval_print("(digit-char-p #\\5)"), "5");
+    ASSERT_STR_EQ(eval_print("(digit-char-p #\\0)"), "0");
+    ASSERT_STR_EQ(eval_print("(digit-char-p #\\9)"), "9");
     ASSERT_STR_EQ(eval_print("(digit-char-p #\\A)"), "NIL");
+    ASSERT_STR_EQ(eval_print("(digit-char-p #\\A 16)"), "10");
+    ASSERT_STR_EQ(eval_print("(digit-char-p #\\f 16)"), "15");
 }
 
 /* --- Phase 5 Tier 1: Symbol functions --- */
@@ -3052,7 +3056,7 @@ TEST(eval_every_sequences)
 TEST(eval_some_sequences)
 {
     /* some with string */
-    ASSERT_STR_EQ(eval_print("(some #'digit-char-p \"abc1\")"), "T");
+    ASSERT_STR_EQ(eval_print("(some #'digit-char-p \"abc1\")"), "1");
     ASSERT_STR_EQ(eval_print("(some #'digit-char-p \"abcd\")"), "NIL");
     /* some with vector */
     ASSERT_STR_EQ(eval_print("(some #'zerop #(1 2 0 3))"), "T");
@@ -5636,6 +5640,54 @@ TEST(eval_loop_destructuring_on)
         "  collect (list a b))"), "((1 (2 3)) (2 (3)) (3 NIL))");
 }
 
+/* --- Loop WHILE/UNTIL positional semantics (CLHS 6.1.4) --- */
+
+TEST(eval_loop_while_after_collect)
+{
+    /* while AFTER collect: last element collected before termination */
+    ASSERT_STR_EQ(eval_print(
+        "(loop for x = 0 then (1+ x)"
+        "  collect x"
+        "  while (< x 3))"), "(0 1 2 3)");
+}
+
+TEST(eval_loop_until_after_collect)
+{
+    /* until AFTER collect: element collected before termination test */
+    ASSERT_STR_EQ(eval_print(
+        "(loop for x = 0 then (1+ x)"
+        "  collect x"
+        "  until (= x 3))"), "(0 1 2 3)");
+}
+
+TEST(eval_loop_while_before_collect)
+{
+    /* while BEFORE collect: stop before collecting when test fails */
+    ASSERT_STR_EQ(eval_print(
+        "(loop for i from 0"
+        "  while (< i 4)"
+        "  collect i)"), "(0 1 2 3)");
+}
+
+TEST(eval_loop_if_collect_while)
+{
+    /* conditional collect + while — both should apply correctly */
+    ASSERT_STR_EQ(eval_print(
+        "(loop for i from 0 to 10"
+        "  if (evenp i) collect i"
+        "  while (< i 6))"), "(0 2 4 6)");
+}
+
+TEST(eval_loop_collect_while_search)
+{
+    /* split-string pattern from log4cl — the original trigger */
+    ASSERT_STR_EQ(eval_print(
+        "(loop for start = 0 then (+ pos 1)"
+        "  as pos = (position #\\. \"FOO.BAR.BAZ\" :start start)"
+        "  collect (subseq \"FOO.BAR.BAZ\" start pos)"
+        "  while pos)"), "(\"FOO\" \"BAR\" \"BAZ\")");
+}
+
 /* --- Pretty-printing / *print-pretty* --- */
 
 TEST(eval_print_pretty_default)
@@ -7254,6 +7306,11 @@ int main(void)
     RUN(eval_loop_destructuring_dotted);
     RUN(eval_loop_destructuring_nested);
     RUN(eval_loop_destructuring_on);
+    RUN(eval_loop_while_after_collect);
+    RUN(eval_loop_until_after_collect);
+    RUN(eval_loop_while_before_collect);
+    RUN(eval_loop_if_collect_while);
+    RUN(eval_loop_collect_while_search);
 
     /* Paren depth */
     RUN(paren_depth_balanced);

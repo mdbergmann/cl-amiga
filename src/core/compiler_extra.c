@@ -1121,15 +1121,19 @@ void compile_defun(CL_Compiler *c, CL_Obj form)
         is_setf_fn = 1;
         real_name = accessor;  /* block name = accessor name */
 
-        /* Create hidden symbol %SETF-<name> for storing the function */
+        /* Create hidden symbol %SETF-<name> for storing the function.
+         * Use the accessor's home package so it matches the symbol
+         * created by compile_setf_place's late-binding path. */
         {
             CL_Symbol *sym = (CL_Symbol *)CL_OBJ_TO_PTR(accessor);
             CL_String *sname = (CL_String *)CL_OBJ_TO_PTR(sym->name);
+            CL_Obj pkg = sym->package;
             char buf[128];
             int len;
+            if (CL_NULL_P(pkg)) pkg = cl_package_cl;
             len = snprintf(buf, sizeof(buf), "%%SETF-%.*s",
                            (int)sname->length, sname->data);
-            store_sym = cl_intern_in(buf, (uint32_t)len, cl_package_cl);
+            store_sym = cl_intern_in(buf, (uint32_t)len, pkg);
         }
 
         /* Register in setf_fn_table: (accessor . store_sym) */

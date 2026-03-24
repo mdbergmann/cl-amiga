@@ -55,6 +55,7 @@
 #ifdef CL_WIDE_STRINGS
 #define FASL_TAG_WIDE_STRING 0x18  /* u32 length, u32[] codepoints */
 #endif
+#define FASL_TAG_STRUCT      0x19  /* type_desc(sym), u32 n_slots, slots... */
 
 /* Error codes for FASL operations */
 #define FASL_OK              0

@@ -1367,6 +1367,27 @@ static CL_Obj bi_macroexpand(CL_Obj *args, int n)
     }
 }
 
+/* --- macro-function / (setf macro-function) --- */
+
+static CL_Obj bi_macro_function(CL_Obj *args, int n)
+{
+    /* (macro-function symbol &optional env) */
+    CL_UNUSED(n);
+    if (!CL_SYMBOL_P(args[0]))
+        cl_error(CL_ERR_TYPE, "MACRO-FUNCTION: not a symbol");
+    return cl_get_macro(args[0]);
+}
+
+static CL_Obj bi_set_macro_function(CL_Obj *args, int n)
+{
+    /* (setf (macro-function symbol) function) — args: new-value, symbol */
+    CL_UNUSED(n);
+    if (!CL_SYMBOL_P(args[1]))
+        cl_error(CL_ERR_TYPE, "(SETF MACRO-FUNCTION): not a symbol");
+    cl_register_macro(args[1], args[0]);
+    return args[0];
+}
+
 /* --- Throw --- */
 
 static CL_Obj bi_throw(CL_Obj *args, int n)
@@ -2411,6 +2432,8 @@ void cl_builtins_io_init(void)
     defun("EVAL", bi_eval, 1, 1);
     defun("MACROEXPAND-1", bi_macroexpand_1, 1, 1);
     defun("MACROEXPAND", bi_macroexpand, 1, 1);
+    defun("MACRO-FUNCTION", bi_macro_function, 1, 2);
+    cl_register_builtin("%SETF-MACRO-FUNCTION", bi_set_macro_function, 2, 2, cl_package_cl);
 
     /* Throw (ERROR is now in builtins_condition.c) */
     defun("THROW", bi_throw, 1, 2);

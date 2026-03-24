@@ -327,6 +327,17 @@ void cl_fasl_serialize_obj(CL_FaslWriter *w, CL_Obj obj)
         return;
     }
 
+    case TYPE_STRUCT: {
+        CL_Struct *st = (CL_Struct *)CL_OBJ_TO_PTR(obj);
+        uint32_t i;
+        cl_fasl_write_u8(w, FASL_TAG_STRUCT);
+        cl_fasl_serialize_obj(w, st->type_desc);
+        cl_fasl_write_u32(w, st->n_slots);
+        for (i = 0; i < st->n_slots; i++)
+            cl_fasl_serialize_obj(w, st->slots[i]);
+        return;
+    }
+
     default:
         /* Unsupported type — write NIL as fallback */
         cl_fasl_write_u8(w, FASL_TAG_NIL);
@@ -752,6 +763,28 @@ CL_Obj cl_fasl_deserialize_obj(CL_FaslReader *r)
                                   components[4], components[5]);
         CL_GC_UNPROTECT(6);
         return result;
+    }
+
+    case FASL_TAG_STRUCT: {
+        CL_Obj type_desc = cl_fasl_deserialize_obj(r);
+        uint32_t n_slots = cl_fasl_read_u32(r);
+        uint32_t i;
+        CL_Obj st_obj;
+        if (r->error) return CL_NIL;
+        CL_GC_PROTECT(type_desc);
+        st_obj = cl_make_struct(type_desc, n_slots);
+        CL_GC_PROTECT(st_obj);
+        {
+            CL_Struct *st = (CL_Struct *)CL_OBJ_TO_PTR(st_obj);
+            for (i = 0; i < n_slots; i++) {
+                CL_Obj val = cl_fasl_deserialize_obj(r);
+                /* Re-fetch pointer — GC may have moved during deserialization */
+                st = (CL_Struct *)CL_OBJ_TO_PTR(st_obj);
+                st->slots[i] = val;
+            }
+        }
+        CL_GC_UNPROTECT(2);
+        return st_obj;
     }
 
     case FASL_TAG_CLOSURE: {
