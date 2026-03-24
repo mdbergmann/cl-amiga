@@ -206,6 +206,15 @@ static CL_Obj bi_fmakunbound(CL_Obj *args, int n)
     return args[0];
 }
 
+static CL_Obj bi_makunbound(CL_Obj *args, int n)
+{
+    CL_UNUSED(n);
+    if (!CL_SYMBOL_P(args[0]))
+        cl_error(CL_ERR_TYPE, "MAKUNBOUND: argument must be a symbol");
+    cl_set_symbol_value(args[0], CL_UNBOUND);
+    return args[0];
+}
+
 static CL_Obj bi_register_setf_function(CL_Obj *args, int n)
 {
     /* (%register-setf-function accessor-sym setf-fn-sym) */
@@ -274,6 +283,7 @@ void cl_builtins_mutation_init(void)
     cl_register_builtin("%SYMBOL-CONSTANT-P", bi_symbol_constant_p, 1, 1, cl_package_clamiga);
     defun("FBOUNDP", bi_fboundp, 1, 1);
     defun("FMAKUNBOUND", bi_fmakunbound, 1, 1);
+    defun("MAKUNBOUND", bi_makunbound, 1, 1);
     cl_register_builtin("%REGISTER-SETF-FUNCTION", bi_register_setf_function, 2, 2, cl_package_clamiga);
     cl_register_builtin("%REGISTER-SETF-EXPANDER", bi_register_setf_expander, 2, 2, cl_package_clamiga);
     cl_register_builtin("%GET-DEFSETF-SETTER", bi_get_defsetf_setter, 1, 1, cl_package_clamiga);
