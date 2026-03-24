@@ -319,68 +319,66 @@ static CL_Obj bi_string_equal(CL_Obj *args, int n)
     return SYM_T;
 }
 
-static CL_Obj bi_string_lt(CL_Obj *args, int n)
+/* Case-insensitive string comparison (for STRING-LESSP etc.) */
+static int string_compare_range_ci(CL_Obj a, uint32_t a_start,
+                                   CL_Obj b, uint32_t b_start, uint32_t len)
 {
-    uint32_t la, lb, s1, e1, s2, e2, len1, len2, min_len;
-    CL_Obj a, b;
-    int cmp;
-    a = string_designator_to_obj(args[0], &la);
-    b = string_designator_to_obj(args[1], &lb);
-    if (CL_NULL_P(a) || CL_NULL_P(b)) cl_error(CL_ERR_TYPE, "STRING<: not a string designator");
-    parse_string_bounds(args, n, la, lb, &s1, &e1, &s2, &e2);
-    len1 = e1 - s1; len2 = e2 - s2;
-    min_len = len1 < len2 ? len1 : len2;
-    cmp = string_compare_range(a, s1, b, s2, min_len);
-    if (cmp < 0 || (cmp == 0 && len1 < len2)) return SYM_T;
-    return CL_NIL;
+    uint32_t i;
+    for (i = 0; i < len; i++) {
+        int ca = cl_string_char_at(a, a_start + i);
+        int cb = cl_string_char_at(b, b_start + i);
+        if (ca >= 'a' && ca <= 'z') ca -= 32;
+        if (cb >= 'a' && cb <= 'z') cb -= 32;
+        if (ca != cb) return ca - cb;
+    }
+    return 0;
 }
 
-static CL_Obj bi_string_gt(CL_Obj *args, int n)
+/* Comparison ops for string_cmp_op */
+#define STR_CMP_LT  0  /* cmp < 0  || (cmp == 0 && len1 <  len2) */
+#define STR_CMP_GT  1  /* cmp > 0  || (cmp == 0 && len1 >  len2) */
+#define STR_CMP_LE  2  /* cmp < 0  || (cmp == 0 && len1 <= len2) */
+#define STR_CMP_GE  3  /* cmp > 0  || (cmp == 0 && len1 >= len2) */
+
+typedef int (*str_cmp_fn)(CL_Obj, uint32_t, CL_Obj, uint32_t, uint32_t);
+
+static CL_Obj string_cmp_op(CL_Obj *args, int n, int op, str_cmp_fn cmp_fn,
+                             const char *name)
 {
     uint32_t la, lb, s1, e1, s2, e2, len1, len2, min_len;
     CL_Obj a, b;
     int cmp;
     a = string_designator_to_obj(args[0], &la);
     b = string_designator_to_obj(args[1], &lb);
-    if (CL_NULL_P(a) || CL_NULL_P(b)) cl_error(CL_ERR_TYPE, "STRING>: not a string designator");
+    if (CL_NULL_P(a) || CL_NULL_P(b)) cl_error(CL_ERR_TYPE, "%s: not a string designator", name);
     parse_string_bounds(args, n, la, lb, &s1, &e1, &s2, &e2);
     len1 = e1 - s1; len2 = e2 - s2;
     min_len = len1 < len2 ? len1 : len2;
-    cmp = string_compare_range(a, s1, b, s2, min_len);
-    if (cmp > 0 || (cmp == 0 && len1 > len2)) return SYM_T;
-    return CL_NIL;
+    cmp = cmp_fn(a, s1, b, s2, min_len);
+    switch (op) {
+    case STR_CMP_LT: return (cmp < 0 || (cmp == 0 && len1 <  len2)) ? SYM_T : CL_NIL;
+    case STR_CMP_GT: return (cmp > 0 || (cmp == 0 && len1 >  len2)) ? SYM_T : CL_NIL;
+    case STR_CMP_LE: return (cmp < 0 || (cmp == 0 && len1 <= len2)) ? SYM_T : CL_NIL;
+    case STR_CMP_GE: return (cmp > 0 || (cmp == 0 && len1 >= len2)) ? SYM_T : CL_NIL;
+    default: return CL_NIL;
+    }
 }
 
-static CL_Obj bi_string_le(CL_Obj *args, int n)
-{
-    uint32_t la, lb, s1, e1, s2, e2, len1, len2, min_len;
-    CL_Obj a, b;
-    int cmp;
-    a = string_designator_to_obj(args[0], &la);
-    b = string_designator_to_obj(args[1], &lb);
-    if (CL_NULL_P(a) || CL_NULL_P(b)) cl_error(CL_ERR_TYPE, "STRING<=: not a string designator");
-    parse_string_bounds(args, n, la, lb, &s1, &e1, &s2, &e2);
-    len1 = e1 - s1; len2 = e2 - s2;
-    min_len = len1 < len2 ? len1 : len2;
-    cmp = string_compare_range(a, s1, b, s2, min_len);
-    if (cmp < 0 || (cmp == 0 && len1 <= len2)) return SYM_T;
-    return CL_NIL;
-}
+/* Case-sensitive: STRING<, STRING>, STRING<=, STRING>= */
+static CL_Obj bi_string_lt(CL_Obj *a, int n) { return string_cmp_op(a, n, STR_CMP_LT, string_compare_range, "STRING<"); }
+static CL_Obj bi_string_gt(CL_Obj *a, int n) { return string_cmp_op(a, n, STR_CMP_GT, string_compare_range, "STRING>"); }
+static CL_Obj bi_string_le(CL_Obj *a, int n) { return string_cmp_op(a, n, STR_CMP_LE, string_compare_range, "STRING<="); }
+static CL_Obj bi_string_ge(CL_Obj *a, int n) { return string_cmp_op(a, n, STR_CMP_GE, string_compare_range, "STRING>="); }
 
-static CL_Obj bi_string_ge(CL_Obj *args, int n)
+/* Case-insensitive: STRING-LESSP, STRING-GREATERP, STRING-NOT-GREATERP, STRING-NOT-LESSP */
+static CL_Obj bi_string_lessp(CL_Obj *a, int n) { return string_cmp_op(a, n, STR_CMP_LT, string_compare_range_ci, "STRING-LESSP"); }
+static CL_Obj bi_string_greaterp(CL_Obj *a, int n) { return string_cmp_op(a, n, STR_CMP_GT, string_compare_range_ci, "STRING-GREATERP"); }
+static CL_Obj bi_string_not_greaterp(CL_Obj *a, int n) { return string_cmp_op(a, n, STR_CMP_LE, string_compare_range_ci, "STRING-NOT-GREATERP"); }
+static CL_Obj bi_string_not_lessp(CL_Obj *a, int n) { return string_cmp_op(a, n, STR_CMP_GE, string_compare_range_ci, "STRING-NOT-LESSP"); }
+
+static CL_Obj bi_string_not_equal(CL_Obj *args, int n)
 {
-    uint32_t la, lb, s1, e1, s2, e2, len1, len2, min_len;
-    CL_Obj a, b;
-    int cmp;
-    a = string_designator_to_obj(args[0], &la);
-    b = string_designator_to_obj(args[1], &lb);
-    if (CL_NULL_P(a) || CL_NULL_P(b)) cl_error(CL_ERR_TYPE, "STRING>=: not a string designator");
-    parse_string_bounds(args, n, la, lb, &s1, &e1, &s2, &e2);
-    len1 = e1 - s1; len2 = e2 - s2;
-    min_len = len1 < len2 ? len1 : len2;
-    cmp = string_compare_range(a, s1, b, s2, min_len);
-    if (cmp > 0 || (cmp == 0 && len1 >= len2)) return SYM_T;
-    return CL_NIL;
+    return CL_NULL_P(bi_string_equal(args, n)) ? SYM_T : CL_NIL;
 }
 
 /* Coerce a string designator (string, symbol, or character) to CL_Obj string.
@@ -1100,7 +1098,7 @@ static CL_Obj bi_nstring_capitalize(CL_Obj *args, int n)
     return args[0];
 }
 
-/* char-name table */
+/* char-name table — primary name first for each code, aliases follow */
 static const struct { int code; const char *name; } char_names[] = {
     {'\0', "Null"},
     {' ',  "Space"},
@@ -1111,6 +1109,18 @@ static const struct { int code; const char *name; } char_names[] = {
     {127,  "Rubout"},
     {'\f', "Page"},
     {'\n', "Linefeed"},
+    {0x1B, "Escape"},
+    {0x0B, "Vt"},
+    {0x07, "Bell"},
+    {127,  "Delete"},
+    {0x01, "Soh"}, {0x02, "Stx"}, {0x03, "Etx"}, {0x04, "Eot"},
+    {0x05, "Enq"}, {0x06, "Ack"}, {0x0E, "So"},  {0x0F, "Si"},
+    {0x10, "Dle"}, {0x11, "Dc1"}, {0x12, "Dc2"}, {0x13, "Dc3"},
+    {0x14, "Dc4"}, {0x15, "Nak"}, {0x16, "Syn"}, {0x17, "Etb"},
+    {0x18, "Can"}, {0x19, "Em"},  {0x1A, "Sub"}, {0x1C, "Fs"},
+    {0x1D, "Gs"},  {0x1E, "Rs"},  {0x1F, "Us"},
+    {0xA0, "No-Break_Space"},
+    {0x3000, "Ideographic_Space"},
     {0, NULL}
 };
 
@@ -1148,6 +1158,14 @@ static int cl_local_strcasecmp(const char *a, const char *b)
 #define STRCASECMP strcasecmp
 #endif
 
+/* Normalize character for name comparison: uppercase, treat _ and - as equal */
+static int char_name_normalize(int c)
+{
+    if (c >= 'a' && c <= 'z') c -= 32;
+    if (c == '_') c = '-';
+    return c;
+}
+
 static CL_Obj bi_name_char(CL_Obj *args, int n)
 {
     uint32_t len, j;
@@ -1156,19 +1174,35 @@ static CL_Obj bi_name_char(CL_Obj *args, int n)
     if (!CL_ANY_STRING_P(args[0]))
         cl_error(CL_ERR_TYPE, "NAME-CHAR: not a string");
     len = cl_string_length(args[0]);
+    /* Check table entries (case-insensitive, _ == -) */
     for (i = 0; char_names[i].name; i++) {
         const char *cname = char_names[i].name;
         uint32_t clen = (uint32_t)strlen(cname);
         if (clen != len) continue;
         for (j = 0; j < len; j++) {
-            int ca = cl_string_char_at(args[0], j);
-            int cb = (unsigned char)cname[j];
-            if (ca >= 'a' && ca <= 'z') ca -= 32;
-            if (cb >= 'a' && cb <= 'z') cb -= 32;
+            int ca = char_name_normalize(cl_string_char_at(args[0], j));
+            int cb = char_name_normalize((unsigned char)cname[j]);
             if (ca != cb) break;
         }
         if (j == len)
             return CL_MAKE_CHAR(char_names[i].code);
+    }
+    /* Check U+XXXX hex syntax */
+    if (len >= 3 && len <= 8) {
+        int c0 = cl_string_char_at(args[0], 0);
+        int c1 = cl_string_char_at(args[0], 1);
+        if ((c0 == 'U' || c0 == 'u') && c1 == '+') {
+            unsigned long cp = 0;
+            for (j = 2; j < len; j++) {
+                int ch = cl_string_char_at(args[0], j);
+                if (ch >= '0' && ch <= '9') cp = cp * 16 + (unsigned long)(ch - '0');
+                else if (ch >= 'A' && ch <= 'F') cp = cp * 16 + (unsigned long)(ch - 'A' + 10);
+                else if (ch >= 'a' && ch <= 'f') cp = cp * 16 + (unsigned long)(ch - 'a' + 10);
+                else break;
+            }
+            if (j == len && cp <= 0x10FFFF)
+                return CL_MAKE_CHAR((int)cp);
+        }
     }
     return CL_NIL;
 }
@@ -1378,10 +1412,15 @@ void cl_builtins_strings_init(void)
     /* String functions */
     defun("STRING=", bi_string_eq, 2, -1);
     defun("STRING-EQUAL", bi_string_equal, 2, -1);
+    defun("STRING-NOT-EQUAL", bi_string_not_equal, 2, -1);
     defun("STRING<", bi_string_lt, 2, -1);
     defun("STRING>", bi_string_gt, 2, -1);
     defun("STRING<=", bi_string_le, 2, -1);
     defun("STRING>=", bi_string_ge, 2, -1);
+    defun("STRING-LESSP", bi_string_lessp, 2, -1);
+    defun("STRING-GREATERP", bi_string_greaterp, 2, -1);
+    defun("STRING-NOT-GREATERP", bi_string_not_greaterp, 2, -1);
+    defun("STRING-NOT-LESSP", bi_string_not_lessp, 2, -1);
     defun("STRING-UPCASE", bi_string_upcase, 1, 1);
     defun("STRING-DOWNCASE", bi_string_downcase, 1, 1);
     defun("STRING-TRIM", bi_string_trim, 2, 2);

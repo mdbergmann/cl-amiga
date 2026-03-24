@@ -2088,12 +2088,12 @@ static CL_Obj bi_copy_pprint_dispatch(CL_Obj *args, int n)
 
     /* Rebuild list (reverses order, but that's fine for alists) */
     cur = table;
+    CL_GC_PROTECT(result);
     while (!CL_NULL_P(cur)) {
-        CL_GC_PROTECT(result);
         result = cl_cons(cl_car(cur), result);
-        CL_GC_UNPROTECT(1);
         cur = cl_cdr(cur);
     }
+    CL_GC_UNPROTECT(1);
     return result;
 }
 
