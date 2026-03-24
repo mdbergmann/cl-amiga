@@ -1926,6 +1926,49 @@ void compile_macrolet(CL_Compiler *c, CL_Obj form)
             CL_GC_PROTECT(lambda_list);
             CL_GC_PROTECT(mbody);
 
+            /* Strip &environment (same as defmacro) */
+            {
+                CL_Obj cur2 = lambda_list;
+                CL_Obj prev2 = CL_NIL;
+                while (!CL_NULL_P(cur2)) {
+                    CL_Obj p = cl_car(cur2);
+                    if (p == SYM_AMP_ENVIRONMENT) {
+                        CL_Obj next2 = cl_cdr(cur2);
+                        CL_Obj env_var = CL_NULL_P(next2) ? CL_NIL : cl_car(next2);
+                        CL_Obj after2 = CL_NULL_P(next2) ? CL_NIL : cl_cdr(next2);
+                        if (CL_NULL_P(prev2))
+                            lambda_list = after2;
+                        else
+                            ((CL_Cons *)CL_OBJ_TO_PTR(prev2))->cdr = after2;
+                        if (CL_SYMBOL_P(env_var)) {
+                            CL_Obj bind = cl_cons(env_var, cl_cons(CL_NIL, CL_NIL));
+                            CL_Obj binds = cl_cons(bind, CL_NIL);
+                            CL_Obj let_f = cl_cons(SYM_LET, cl_cons(binds, mbody));
+                            mbody = cl_cons(let_f, CL_NIL);
+                        }
+                        break;
+                    }
+                    prev2 = cur2;
+                    cur2 = cl_cdr(cur2);
+                }
+            }
+
+            /* Handle &whole (same as defmacro) */
+            {
+                CL_Obj whole_var = CL_NIL;
+                if (!CL_NULL_P(lambda_list) && cl_car(lambda_list) == SYM_AMP_WHOLE) {
+                    CL_Obj rest2 = cl_cdr(lambda_list);
+                    if (!CL_NULL_P(rest2)) {
+                        whole_var = cl_car(rest2);
+                        lambda_list = cl_cdr(rest2);
+                    }
+                }
+                if (CL_NULL_P(whole_var)) {
+                    whole_var = defmacro_gensym();
+                }
+                lambda_list = cl_cons(whole_var, lambda_list);
+            }
+
             /* Transform destructuring lambda lists (same as defmacro) */
             if (defmacro_needs_destructuring(lambda_list)) {
                 CL_Obj new_ll = CL_NIL, new_ll_tail = CL_NIL;
