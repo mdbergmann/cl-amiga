@@ -59,6 +59,23 @@ static uint32_t gc_fwd_table_entries = 0;
  * when the heap is genuinely full (no fragmentation to reclaim). */
 static uint32_t gc_last_compact_cycle = 0xFFFFFFFF;
 
+/* Pending compaction flag — set when cl_alloc detects fragmentation,
+ * cleared when compaction runs at a safe point.
+ * Non-static: accessed by VM dispatch loop for safe-point checks. */
+int gc_compact_pending = 0;
+
+/* Global root registration table — static CL_Obj variables that must be
+ * marked during GC and updated (forwarded) during compaction.
+ * Used for cached interned keyword symbols, type symbols, etc. */
+static CL_Obj *global_roots[CL_MAX_GLOBAL_ROOTS];
+static int n_global_roots = 0;
+
+void cl_gc_register_root(CL_Obj *root_ptr)
+{
+    if (n_global_roots < CL_MAX_GLOBAL_ROOTS)
+        global_roots[n_global_roots++] = root_ptr;
+}
+
 /* Align size up to CL_ALIGN boundary */
 static uint32_t align_up(uint32_t size)
 {
@@ -211,10 +228,23 @@ void *cl_alloc(uint8_t type, uint32_t size)
     }
     if (!ptr && gc_last_compact_cycle != cl_heap.gc_count) {
         /* Normal GC didn't help — try compaction to eliminate fragmentation.
-         * Skip if compaction already ran this cycle (heap genuinely full). */
-        if (multi) platform_mutex_unlock(alloc_mutex);
+         * First attempt: set pending flag for VM-level safe-point compaction.
+         * If the VM dispatch loop runs compaction before we retry, great.
+         * If not, we fall through to heap-exhausted error.
+         *
+         * NOTE: compaction is a moving GC.  All CL_Obj C locals that survive
+         * across allocating calls MUST be GC-protected so compaction can
+         * update them.  Raw C pointers derived from CL_Obj (e.g. via
+         * CL_OBJ_TO_PTR) must be re-derived after any allocating call. */
+        gc_compact_pending = 1;
         gc_last_compact_cycle = cl_heap.gc_count;
+        /* Try inline compaction as last resort before heap exhaustion.
+         * This is safe for the heap (all heap refs are updated), but C
+         * locals on the stack may be stale — callers must GC-protect
+         * all CL_Obj locals before allocating calls. */
+        if (multi) platform_mutex_unlock(alloc_mutex);
         cl_gc_compact();
+        gc_compact_pending = 0;
         if (multi) platform_mutex_lock(alloc_mutex);
         ptr = alloc_from_bump(size);
     }
@@ -263,14 +293,42 @@ CL_Obj cl_cons(CL_Obj car, CL_Obj cdr)
 CL_Obj cl_make_string(const char *str, uint32_t len)
 {
     uint32_t alloc_size = sizeof(CL_String) + len + 1;
-    CL_String *s = (CL_String *)cl_alloc(TYPE_STRING, alloc_size);
-    if (!s) return CL_NIL;
+    CL_String *s;
+    char stack_buf[256];
+    char *safe_str = NULL;
+
+    /* If str points into the arena, copy to a safe buffer first.
+     * cl_alloc below may trigger GC compaction which moves arena objects,
+     * making the original pointer stale. */
+    if (str && (const uint8_t *)str >= cl_heap.arena &&
+        (const uint8_t *)str < cl_heap.arena + cl_heap.arena_size) {
+        if (len < sizeof(stack_buf)) {
+            memcpy(stack_buf, str, len);
+            stack_buf[len] = '\0';
+            safe_str = stack_buf;
+        } else {
+            safe_str = (char *)platform_alloc(len + 1);
+            if (safe_str) {
+                memcpy(safe_str, str, len);
+                safe_str[len] = '\0';
+            }
+        }
+        str = safe_str ? safe_str : str;
+    }
+
+    s = (CL_String *)cl_alloc(TYPE_STRING, alloc_size);
+    if (!s) {
+        if (safe_str && safe_str != stack_buf) platform_free(safe_str);
+        return CL_NIL;
+    }
     s->length = len;
     if (str)
         memcpy(s->data, str, len);
     else
         memset(s->data, 0, len);
     s->data[len] = '\0';
+
+    if (safe_str && safe_str != stack_buf) platform_free(safe_str);
     return CL_PTR_TO_OBJ(s);
 }
 
@@ -964,6 +1022,13 @@ static void gc_mark(void)
         }
     }
 
+    /* Registered global roots (cached keyword/type symbols, etc.) */
+    {
+        int gi;
+        for (gi = 0; gi < n_global_roots; gi++)
+            gc_mark_obj(*global_roots[gi]);
+    }
+
     /* Drain mark stack iteratively (children pushed by gc_mark_obj above).
      * Do NOT clear gc_mark_overflow here — it may have been set during
      * root marking above, and the re-scan loop below must handle it. */
@@ -1421,6 +1486,13 @@ static void gc_update_shared_roots(void)
             }
         }
     }
+
+    /* Registered global roots (cached keyword/type symbols, etc.) */
+    {
+        int gi;
+        for (gi = 0; gi < n_global_roots; gi++)
+            gc_update_slot(global_roots[gi]);
+    }
 }
 
 /* Pass 3: Walk all live heap objects + all roots and update references */
@@ -1553,6 +1625,16 @@ static void gc_rehash_eq_tables(void)
     }
 }
 
+/* Run compaction if pending (called from safe points). */
+void cl_gc_compact_if_pending(void)
+{
+    if (gc_compact_pending) {
+        gc_compact_pending = 0;
+        gc_last_compact_cycle = cl_heap.gc_count;
+        cl_gc_compact();
+    }
+}
+
 /* Main compaction entry point */
 void cl_gc_compact(void)
 {
@@ -1597,6 +1679,60 @@ void cl_gc_compact(void)
 
     cl_heap.gc_count++;
     cl_heap.compact_count++;
+
+#ifdef DEBUG_GC
+    /* Post-compaction verification: check all live objects have valid refs */
+    {
+        uint8_t *vptr = cl_heap.arena + CL_ALIGN;
+        uint8_t *vend = cl_heap.arena + cl_heap.bump;
+        int vc_errs = 0;
+        char vbuf[256];
+        while (vptr < vend && vc_errs < 5) {
+            uint32_t vsize = CL_HDR_SIZE(vptr);
+            uint8_t vtype = CL_HDR_TYPE(vptr);
+            uint32_t voff = (uint32_t)(vptr - cl_heap.arena);
+            if (vsize == 0) break;
+            if (vtype == TYPE_CONS) {
+                CL_Cons *c = (CL_Cons *)vptr;
+                if (!CL_NULL_P(c->car) && !CL_FIXNUM_P(c->car) && !CL_CHAR_P(c->car)
+                    && c->car != CL_UNBOUND && c->car >= cl_heap.bump) {
+                    snprintf(vbuf, sizeof(vbuf),
+                        "COMPACT-VERIFY: @0x%08x.car -> 0x%08x (OOB, bump=0x%08x)\n",
+                        (unsigned)voff, (unsigned)c->car, (unsigned)cl_heap.bump);
+                    platform_write_string(vbuf);
+                    vc_errs++;
+                }
+                if (!CL_NULL_P(c->cdr) && !CL_FIXNUM_P(c->cdr) && !CL_CHAR_P(c->cdr)
+                    && c->cdr != CL_UNBOUND && c->cdr >= cl_heap.bump) {
+                    snprintf(vbuf, sizeof(vbuf),
+                        "COMPACT-VERIFY: @0x%08x.cdr -> 0x%08x (OOB, bump=0x%08x)\n",
+                        (unsigned)voff, (unsigned)c->cdr, (unsigned)cl_heap.bump);
+                    platform_write_string(vbuf);
+                    vc_errs++;
+                }
+            } else if (vtype == TYPE_VECTOR) {
+                CL_Vector *v = (CL_Vector *)vptr;
+                uint32_t vi;
+                uint32_t nelt = (v->flags & CL_VEC_FLAG_DISPLACED) ? 1 :
+                                ((v->rank > 1) ? (uint32_t)v->rank + v->length : v->length);
+                for (vi = 0; vi < nelt && vc_errs < 5; vi++) {
+                    CL_Obj elt = v->data[vi];
+                    if (!CL_NULL_P(elt) && !CL_FIXNUM_P(elt) && !CL_CHAR_P(elt)
+                        && elt != CL_UNBOUND && (elt & CL_TAG_MASK_LO2) == 0
+                        && elt >= cl_heap.bump) {
+                        snprintf(vbuf, sizeof(vbuf),
+                            "COMPACT-VERIFY: @0x%08x vec[%u] -> 0x%08x (OOB, bump=0x%08x)\n",
+                            (unsigned)voff, (unsigned)vi, (unsigned)elt,
+                            (unsigned)cl_heap.bump);
+                        platform_write_string(vbuf);
+                        vc_errs++;
+                    }
+                }
+            }
+            vptr += vsize;
+        }
+    }
+#endif
 
 #ifdef DEBUG_GC
     {

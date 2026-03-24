@@ -2144,4 +2144,19 @@ void cl_builtins_sequence_init(void)
     cl_register_builtin("%SETF-ELT", bi_setf_elt, 3, 3, cl_package_clamiga);
     defun("COPY-SEQ", bi_copy_seq, 1, 1);
     defun("MAP-INTO", bi_map_into, 2, -1);
+
+    /* Register cached symbols for GC compaction forwarding */
+    cl_gc_register_root(&KW_TEST);
+    cl_gc_register_root(&KW_TEST_NOT);
+    cl_gc_register_root(&KW_KEY);
+    cl_gc_register_root(&KW_START);
+    cl_gc_register_root(&KW_END);
+    cl_gc_register_root(&KW_COUNT);
+    cl_gc_register_root(&KW_FROM_END);
+    cl_gc_register_root(&KW_INITIAL_VALUE);
+    cl_gc_register_root(&KW_START1);
+    cl_gc_register_root(&KW_END1);
+    cl_gc_register_root(&KW_START2);
+    cl_gc_register_root(&KW_END2);
+    cl_gc_register_root(&SYM_EQL_FN);
 }

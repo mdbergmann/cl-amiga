@@ -149,12 +149,20 @@ void cl_package_add_symbol(CL_Obj package, CL_Obj symbol)
     CL_Vector *tbl = (CL_Vector *)CL_OBJ_TO_PTR(pkg->symbols);
     CL_Symbol *sym = (CL_Symbol *)CL_OBJ_TO_PTR(symbol);
     uint32_t idx = sym->hash % tbl->length;
+    CL_Obj chain = tbl->data[idx];
 
-    /* Prepend to bucket */
+    /* Prepend to bucket — cl_cons may trigger GC/compaction */
     CL_GC_PROTECT(package);
     CL_GC_PROTECT(symbol);
-    tbl->data[idx] = cl_cons(symbol, tbl->data[idx]);
-    CL_GC_UNPROTECT(2);
+    CL_GC_PROTECT(chain);
+    chain = cl_cons(symbol, chain);
+    CL_GC_UNPROTECT(3);
+
+    /* Re-derive pointers after potential GC/compaction */
+    pkg = (CL_Package *)CL_OBJ_TO_PTR(package);
+    tbl = (CL_Vector *)CL_OBJ_TO_PTR(pkg->symbols);
+    sym = (CL_Symbol *)CL_OBJ_TO_PTR(symbol);
+    tbl->data[idx] = chain;
 
     sym->package = package;
     pkg->sym_count++;
@@ -709,4 +717,17 @@ void cl_package_init(void)
 #else
     CL_GC_UNPROTECT(6);
 #endif
+
+    /* Register package globals for GC compaction forwarding */
+    cl_gc_register_root(&cl_package_cl);
+    cl_gc_register_root(&cl_package_cl_user);
+    cl_gc_register_root(&cl_package_keyword);
+    cl_gc_register_root(&cl_package_ext);
+    cl_gc_register_root(&cl_package_clamiga);
+    cl_gc_register_root(&cl_package_mp);
+    cl_gc_register_root(&cl_package_ffi);
+#ifdef PLATFORM_AMIGA
+    cl_gc_register_root(&cl_package_amiga);
+#endif
+    cl_gc_register_root(&cl_current_package);
 }

@@ -247,5 +247,21 @@ void cl_builtins_amiga_init(void)
     amiga_defun("CALL-LIBRARY",   bi_amiga_call_library,    3, 3);
     amiga_defun("ALLOC-CHIP",     bi_amiga_alloc_chip,      1, 1);
     amiga_defun("FREE-CHIP",      bi_amiga_free_chip,       1, 1);
+
+    /* Register cached symbols for GC compaction forwarding */
+    cl_gc_register_root(&kw_d0);
+    cl_gc_register_root(&kw_d1);
+    cl_gc_register_root(&kw_d2);
+    cl_gc_register_root(&kw_d3);
+    cl_gc_register_root(&kw_d4);
+    cl_gc_register_root(&kw_d5);
+    cl_gc_register_root(&kw_d6);
+    cl_gc_register_root(&kw_d7);
+    cl_gc_register_root(&kw_a0);
+    cl_gc_register_root(&kw_a1);
+    cl_gc_register_root(&kw_a2);
+    cl_gc_register_root(&kw_a3);
+    cl_gc_register_root(&kw_a4);
+    cl_gc_register_root(&kw_a5);
 #endif /* PLATFORM_AMIGA */
 }

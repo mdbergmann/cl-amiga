@@ -659,13 +659,20 @@ static CL_Obj cl_vm_run(int base_fp, int base_nlx)
     }
 
 /* Dispatch macros for computed goto */
-#define VM_DISPATCH() do { op = code[ip++]; goto *dispatch_table[op]; } while(0)
+#define VM_DISPATCH() do { \
+        extern int gc_compact_pending; \
+        if (gc_compact_pending) { \
+            frame->ip = ip; \
+            cl_gc_compact_if_pending(); \
+        } \
+        op = code[ip++]; goto *dispatch_table[op]; \
+    } while(0)
 #define VM_CASE(opname) vm_op_##opname
 #define VM_BREAK VM_DISPATCH()
 #define VM_DEFAULT vm_op_unknown
 
-    /* Initial dispatch */
-    VM_DISPATCH();
+    /* Initial dispatch (skip compaction check on first op) */
+    op = code[ip++]; goto *dispatch_table[op];
 
 #else /* Standard switch dispatch */
 
@@ -675,6 +682,17 @@ static CL_Obj cl_vm_run(int base_fp, int base_nlx)
 #define VM_DEFAULT default
 
     for (;;) {
+
+        /* Safe point: run pending compaction between opcodes.
+         * All CL_Obj values are on the VM stack (updated during compaction).
+         * code/constants point to platform_alloc'd memory (unaffected). */
+        {
+            extern int gc_compact_pending;
+            if (gc_compact_pending) {
+                frame->ip = ip;
+                cl_gc_compact_if_pending();
+            }
+        }
 
         /* Record trace for crash diagnostics (hot path — debug only) */
 #ifdef DEBUG_VM

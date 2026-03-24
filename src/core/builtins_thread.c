@@ -741,4 +741,7 @@ void cl_builtins_thread_init(void)
     mp_defun("THREADP",                  bi_threadp,                 1, 1);
     mp_defun("LOCKP",                    bi_lockp,                   1, 1);
     mp_defun("CONDITION-VARIABLE-P",     bi_condition_variable_p,    1, 1);
+
+    /* Register cached symbols for GC compaction forwarding */
+    cl_gc_register_root(&KW_NAME_THR);
 }

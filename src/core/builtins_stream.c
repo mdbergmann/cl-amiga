@@ -1329,4 +1329,24 @@ void cl_builtins_stream_init(void)
     defun("SET-SYNTAX-FROM-CHAR", bi_set_syntax_from_char, 2, 4);
     defun("READTABLE-CASE", bi_readtable_case, 0, 1);
     cl_register_builtin("%SETF-READTABLE-CASE", bi_setf_readtable_case, 2, 2, cl_package_clamiga);
+
+    /* Register cached symbols for GC compaction forwarding */
+    cl_gc_register_root(&KW_START);
+    cl_gc_register_root(&KW_END);
+    cl_gc_register_root(&KW_ABORT_KW);
+    cl_gc_register_root(&KW_DIRECTION);
+    cl_gc_register_root(&KW_INPUT);
+    cl_gc_register_root(&KW_OUTPUT);
+    cl_gc_register_root(&KW_IO);
+    cl_gc_register_root(&KW_PROBE);
+    cl_gc_register_root(&KW_IF_EXISTS);
+    cl_gc_register_root(&KW_IF_DOES_NOT_EXIST);
+    cl_gc_register_root(&KW_SUPERSEDE);
+    cl_gc_register_root(&KW_APPEND);
+    cl_gc_register_root(&KW_ERROR_KW);
+    cl_gc_register_root(&KW_CREATE);
+    cl_gc_register_root(&KW_NEW_VERSION);
+    cl_gc_register_root(&KW_RENAME);
+    cl_gc_register_root(&KW_RENAME_AND_DELETE);
+    cl_gc_register_root(&KW_OVERWRITE);
 }

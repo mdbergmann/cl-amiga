@@ -441,12 +441,13 @@ static CL_Obj bi_setf_gethash(CL_Obj *args, int n)
         CL_GC_PROTECT(key);
         CL_GC_PROTECT(ht_obj);
         CL_GC_PROTECT(value);
+        CL_GC_PROTECT(chain);
 
         pair = cl_cons(key, value);
         CL_GC_PROTECT(pair);
 
         new_chain = cl_cons(pair, chain);
-        CL_GC_UNPROTECT(4);
+        CL_GC_UNPROTECT(5);
 
         /* Re-dereference ht_obj after potential GC */
         ht = (CL_Hashtable *)CL_OBJ_TO_PTR(ht_obj);
@@ -642,4 +643,12 @@ void cl_builtins_hashtable_init(void)
     cl_register_builtin("%SETF-GETHASH", bi_setf_gethash, 3, 3, cl_package_clamiga);
     cl_register_builtin("%HASH-TABLE-PAIRS", bi_hash_table_pairs, 1, 1, cl_package_clamiga);
     defun("SXHASH", bi_sxhash, 1, 1);
+
+    /* Register cached symbols for GC compaction forwarding */
+    cl_gc_register_root(&KW_TEST);
+    cl_gc_register_root(&KW_SIZE);
+    cl_gc_register_root(&SYM_EQ_HT);
+    cl_gc_register_root(&SYM_EQL_HT);
+    cl_gc_register_root(&SYM_EQUAL_HT);
+    cl_gc_register_root(&SYM_EQUALP_HT);
 }

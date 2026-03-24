@@ -2743,6 +2743,38 @@ void cl_compiler_init(void)
     SETF_HELPER_GET          = cl_intern_in("%SETF-GET", 9, cl_package_clamiga);
     SETF_SYM_GETF            = cl_intern_in("GETF", 4, cl_package_cl);
     SETF_HELPER_GETF         = cl_intern_in("%SETF-GETF", 10, cl_package_clamiga);
+
+    /* Register cached symbols for GC compaction forwarding */
+    cl_gc_register_root(&SETF_SYM_CAR);
+    cl_gc_register_root(&SETF_SYM_CDR);
+    cl_gc_register_root(&SETF_SYM_FIRST);
+    cl_gc_register_root(&SETF_SYM_REST);
+    cl_gc_register_root(&SETF_SYM_NTH);
+    cl_gc_register_root(&SETF_SYM_AREF);
+    cl_gc_register_root(&SETF_SYM_SVREF);
+    cl_gc_register_root(&SETF_SYM_CHAR);
+    cl_gc_register_root(&SETF_SYM_SCHAR);
+    cl_gc_register_root(&SETF_SYM_SYMBOL_VALUE);
+    cl_gc_register_root(&SETF_SYM_SYMBOL_FUNCTION);
+    cl_gc_register_root(&SETF_SYM_FDEFINITION);
+    cl_gc_register_root(&SETF_HELPER_NTH);
+    cl_gc_register_root(&SETF_HELPER_SV);
+    cl_gc_register_root(&SETF_HELPER_SF);
+    cl_gc_register_root(&SETF_SYM_GETHASH);
+    cl_gc_register_root(&SETF_HELPER_GETHASH);
+    cl_gc_register_root(&SETF_HELPER_AREF);
+    cl_gc_register_root(&SETF_SYM_ROW_MAJOR_AREF);
+    cl_gc_register_root(&SETF_HELPER_ROW_MAJOR_AREF);
+    cl_gc_register_root(&SETF_SYM_FILL_POINTER);
+    cl_gc_register_root(&SETF_HELPER_FILL_POINTER);
+    cl_gc_register_root(&SETF_SYM_BIT);
+    cl_gc_register_root(&SETF_HELPER_BIT);
+    cl_gc_register_root(&SETF_SYM_SBIT);
+    cl_gc_register_root(&SETF_HELPER_SBIT);
+    cl_gc_register_root(&SETF_SYM_GET);
+    cl_gc_register_root(&SETF_HELPER_GET);
+    cl_gc_register_root(&SETF_SYM_GETF);
+    cl_gc_register_root(&SETF_HELPER_GETF);
 }
 
 /* --- Compiler chain save/restore for NLX --- */

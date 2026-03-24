@@ -329,4 +329,7 @@ void cl_debugger_init(void)
 
     /* Register invoke-debugger builtin */
     defun("INVOKE-DEBUGGER", bi_invoke_debugger, 1, 1);
+
+    /* Register cached symbols for GC compaction forwarding */
+    cl_gc_register_root(&SYM_DEBUGGER_HOOK);
 }

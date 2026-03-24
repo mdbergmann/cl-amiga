@@ -1220,4 +1220,35 @@ void cl_builtins_type_init(void)
     defun("TYPEP", bi_typep, 2, 2);
     defun("COERCE", bi_coerce, 2, 2);
     defun("SUBTYPEP", bi_subtypep, 2, 2);
+
+    /* Register cached symbols for GC compaction forwarding */
+    cl_gc_register_root(&TYPE_SYM_OR);
+    cl_gc_register_root(&TYPE_SYM_AND);
+    cl_gc_register_root(&TYPE_SYM_NOT);
+    cl_gc_register_root(&TYPE_SYM_MEMBER);
+    cl_gc_register_root(&TYPE_SYM_EQL);
+    cl_gc_register_root(&TYPE_SYM_SATISFIES);
+    cl_gc_register_root(&TYPE_SYM_INTEGER);
+    cl_gc_register_root(&TYPE_SYM_RATIONAL);
+    cl_gc_register_root(&TYPE_SYM_REAL);
+    cl_gc_register_root(&TYPE_SYM_FLOAT);
+    cl_gc_register_root(&TYPE_SYM_SINGLE_FLOAT);
+    cl_gc_register_root(&TYPE_SYM_SHORT_FLOAT);
+    cl_gc_register_root(&TYPE_SYM_DOUBLE_FLOAT);
+    cl_gc_register_root(&TYPE_SYM_LONG_FLOAT);
+    cl_gc_register_root(&TYPE_SYM_FIXNUM);
+    cl_gc_register_root(&TYPE_SYM_BIGNUM);
+    cl_gc_register_root(&TYPE_SYM_RATIO);
+    cl_gc_register_root(&TYPE_SYM_NUMBER);
+    cl_gc_register_root(&TYPE_SYM_STAR);
+    cl_gc_register_root(&TYPE_SYM_SIMPLE_VECTOR);
+    cl_gc_register_root(&TYPE_SYM_VECTOR);
+    cl_gc_register_root(&TYPE_SYM_SIMPLE_ARRAY);
+    cl_gc_register_root(&TYPE_SYM_ARRAY);
+    cl_gc_register_root(&TYPE_SYM_STRING);
+    cl_gc_register_root(&TYPE_SYM_SIMPLE_STRING);
+    cl_gc_register_root(&TYPE_SYM_BASE_STRING);
+    cl_gc_register_root(&TYPE_SYM_SIMPLE_BASE_STRING);
+    cl_gc_register_root(&TYPE_SYM_BIT_VECTOR);
+    cl_gc_register_root(&TYPE_SYM_SIMPLE_BIT_VECTOR);
 }
