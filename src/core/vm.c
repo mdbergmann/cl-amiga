@@ -185,9 +185,7 @@ CL_Obj cl_vm_apply(CL_Obj func, CL_Obj *args, int nargs)
         int base_fp, base_nlx;
         CL_Obj result;
 
-#ifdef DEBUG_VM
         cl_check_c_stack("cl_vm_apply");
-#endif
 
         /* Push a minimal stub frame BEFORE pushing func+args.
          * bp = current sp, n_locals = 0.  After OP_CALL consumes
@@ -505,9 +503,7 @@ static CL_Obj call_builtin(CL_Function *func, CL_Obj *args, int nargs)
 {
     CL_Obj result;
     CL_CFunc fptr;
-#ifdef DEBUG_VM
     cl_check_c_stack("call_builtin");
-#endif
     if (nargs < func->min_args) {
         cl_error(CL_ERR_ARGS, "%s: too few arguments (got %d, need %d)",
                  CL_NULL_P(func->name) ? "?" : cl_symbol_name(func->name),
@@ -547,9 +543,7 @@ static CL_Obj call_builtin(CL_Function *func, CL_Obj *args, int nargs)
     return result;
 }
 
-#ifdef DEBUG_VM
-
-#define C_STACK_LIMIT (4 * 1024 * 1024)  /* 4MB of 8MB, leave 4MB margin */
+#define C_STACK_LIMIT (3 * 1024 * 1024)  /* 3MB of 8MB, leave 5MB margin */
 
 void cl_check_c_stack(const char *context)
 {
@@ -558,20 +552,19 @@ void cl_check_c_stack(const char *context)
     if (!cl_c_stack_base) cl_c_stack_base = (char *)&probe;
     used = (long)(cl_c_stack_base - (char *)&probe);
     if (used < 0) used = -used;  /* Handle stack growing up or down */
+#ifdef DEBUG_VM
     if (used > c_stack_max_seen) {
         c_stack_max_seen = used;
-        if (c_stack_max_seen > 1024 * 1024)  /* Print only above 1MB */
+        if (c_stack_max_seen > 1024 * 1024)
             fprintf(stderr, "[STACK] %s: %ldKB\n", context, used / 1024);
     }
+#endif
     if (used > C_STACK_LIMIT) {
-        fprintf(stderr, "[STACK] OVERFLOW in %s: %ldKB (limit=%ldKB)\n",
-                context, used / 1024, (long)C_STACK_LIMIT / 1024);
         cl_error(CL_ERR_OVERFLOW,
-                 "C stack overflow in %s (used=%ldKB)",
-                 context, used / 1024);
+                 "C stack overflow in %s (used %ldKB, limit %ldKB)",
+                 context, used / 1024, (long)C_STACK_LIMIT / 1024);
     }
 }
-#endif /* DEBUG_VM */
 
 /* Shared buffers for OP_CALL keyword processing and OP_APPLY argument flattening.
  * Moved out of cl_vm_eval to keep the per-recursion stack frame small.
@@ -2875,11 +2868,11 @@ CL_Obj cl_vm_eval(CL_Obj bytecode_obj)
     int base_fp, base_nlx;
     CL_Obj result;
 
+    cl_check_c_stack("cl_vm_eval");
 #ifdef DEBUG_VM
     vm_eval_depth++;
     if (vm_eval_depth > vm_eval_max_depth)
         vm_eval_max_depth = vm_eval_depth;
-    cl_check_c_stack("cl_vm_eval");
 #endif
 
     if (CL_NULL_P(bytecode_obj)) return CL_NIL;

@@ -499,6 +499,125 @@ TEST(adjust_array_identity)
 }
 
 /* ============================================================ */
+/* Displaced arrays                                             */
+/* ============================================================ */
+
+TEST(displaced_vector_basic)
+{
+    /* Displaced vector shares data with target */
+    ASSERT_EQ_INT(eval_int(
+        "(let* ((a (vector 10 20 30 40 50))"
+        "       (d (make-array 3 :displaced-to a :displaced-index-offset 1)))"
+        "  (aref d 0))"), 20);
+    ASSERT_EQ_INT(eval_int(
+        "(let* ((a (vector 10 20 30 40 50))"
+        "       (d (make-array 3 :displaced-to a :displaced-index-offset 1)))"
+        "  (aref d 2))"), 40);
+}
+
+TEST(displaced_vector_offset_zero)
+{
+    /* Default offset = 0 */
+    ASSERT_EQ_INT(eval_int(
+        "(let* ((a (vector 10 20 30))"
+        "       (d (make-array 2 :displaced-to a)))"
+        "  (aref d 0))"), 10);
+    ASSERT_EQ_INT(eval_int(
+        "(let* ((a (vector 10 20 30))"
+        "       (d (make-array 2 :displaced-to a)))"
+        "  (aref d 1))"), 20);
+}
+
+TEST(displaced_vector_write_through)
+{
+    /* Writes through displaced array modify the backing array */
+    ASSERT_EQ_INT(eval_int(
+        "(let* ((a (vector 1 2 3 4 5))"
+        "       (d (make-array 3 :displaced-to a :displaced-index-offset 2)))"
+        "  (setf (aref d 0) 99)"
+        "  (aref a 2))"), 99);
+}
+
+TEST(displaced_vector_length)
+{
+    /* Length of displaced vector is the specified length */
+    ASSERT_EQ_INT(eval_int(
+        "(let* ((a (vector 1 2 3 4 5))"
+        "       (d (make-array 3 :displaced-to a :displaced-index-offset 1)))"
+        "  (length d))"), 3);
+}
+
+TEST(displaced_string_copy)
+{
+    /* Displaced to string: creates a copy of the substring */
+    ASSERT_STR_EQ(eval_print(
+        "(make-array 4 :element-type 'character"
+        "  :displaced-to \"hello world\" :displaced-index-offset 6)"),
+        "\"worl\"");
+}
+
+TEST(displaced_string_equalp)
+{
+    /* The log4cl kw= pattern: displaced string compared with equalp */
+    ASSERT_STR_EQ(eval_print(
+        "(let* ((s \":downcase\")"
+        "       (sub (make-array (1- (length s))"
+        "              :element-type (array-element-type s)"
+        "              :displaced-to s :displaced-index-offset 1)))"
+        "  (equalp sub \"downcase\"))"), "T");
+}
+
+TEST(displaced_char_vector)
+{
+    /* Displaced to a character vector (fill-pointer string) */
+    ASSERT_STR_EQ(eval_print(
+        "(let* ((a (make-array 5 :element-type 'character"
+        "           :fill-pointer t :initial-element #\\x))"
+        "       (d (make-array 3 :displaced-to a :displaced-index-offset 1)))"
+        "  d)"), "\"xxx\"");
+}
+
+TEST(array_displacement_query)
+{
+    /* array-displacement returns backing array and offset */
+    ASSERT_STR_EQ(eval_print(
+        "(let* ((a (vector 1 2 3))"
+        "       (d (make-array 2 :displaced-to a :displaced-index-offset 1)))"
+        "  (multiple-value-bind (arr off) (array-displacement d)"
+        "    (list (eq arr a) off)))"), "(T 1)");
+}
+
+TEST(array_displacement_not_displaced)
+{
+    /* Non-displaced array returns NIL, 0 */
+    ASSERT_STR_EQ(eval_print(
+        "(multiple-value-bind (arr off) (array-displacement (vector 1 2 3))"
+        "  (list arr off))"), "(NIL 0)");
+}
+
+TEST(displaced_vector_error_bounds)
+{
+    /* Error when displaced bounds exceed target */
+    ASSERT(eval_errors(
+        "(make-array 5 :displaced-to (vector 1 2 3) :displaced-index-offset 0)"));
+}
+
+TEST(displaced_with_fill_pointer)
+{
+    /* Displaced vector with fill pointer */
+    ASSERT_EQ_INT(eval_int(
+        "(let* ((a (vector 10 20 30 40 50))"
+        "       (d (make-array 4 :displaced-to a :displaced-index-offset 1"
+        "           :fill-pointer 2)))"
+        "  (length d))"), 2);
+    ASSERT_EQ_INT(eval_int(
+        "(let* ((a (vector 10 20 30 40 50))"
+        "       (d (make-array 4 :displaced-to a :displaced-index-offset 1"
+        "           :fill-pointer 2)))"
+        "  (aref d 1))"), 30);
+}
+
+/* ============================================================ */
 /* Type predicates: arrayp, vectorp, simple-vector-p,           */
 /*                  adjustable-array-p                          */
 /* ============================================================ */
@@ -758,6 +877,19 @@ int main(void)
     RUN(adjust_array_preserves_fp);
     RUN(adjust_array_override_fp);
     RUN(adjust_array_identity);
+
+    /* Displaced arrays */
+    RUN(displaced_vector_basic);
+    RUN(displaced_vector_offset_zero);
+    RUN(displaced_vector_write_through);
+    RUN(displaced_vector_length);
+    RUN(displaced_string_copy);
+    RUN(displaced_string_equalp);
+    RUN(displaced_char_vector);
+    RUN(array_displacement_query);
+    RUN(array_displacement_not_displaced);
+    RUN(displaced_vector_error_bounds);
+    RUN(displaced_with_fill_pointer);
 
     /* Type predicates */
     RUN(arrayp);

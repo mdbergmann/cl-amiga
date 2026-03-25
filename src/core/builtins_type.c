@@ -165,6 +165,23 @@ static int typep_symbol(CL_Obj obj, CL_Obj type_sym)
     if (strcmp(tname, "HASH-TABLE") == 0)     return CL_HASHTABLE_P(obj);
     if (strcmp(tname, "PACKAGE") == 0)        return CL_PACKAGE_P(obj);
     if (strcmp(tname, "STREAM") == 0)        return CL_STREAM_P(obj);
+    if (strcmp(tname, "SYNONYM-STREAM") == 0) {
+        if (!CL_STREAM_P(obj)) return 0;
+        return ((CL_Stream *)CL_OBJ_TO_PTR(obj))->stream_type == CL_STREAM_SYNONYM;
+    }
+    if (strcmp(tname, "FILE-STREAM") == 0) {
+        if (!CL_STREAM_P(obj)) return 0;
+        { uint32_t st = ((CL_Stream *)CL_OBJ_TO_PTR(obj))->stream_type;
+          return st == CL_STREAM_FILE || st == CL_STREAM_CONSOLE; }
+    }
+    if (strcmp(tname, "STRING-STREAM") == 0) {
+        if (!CL_STREAM_P(obj)) return 0;
+        return ((CL_Stream *)CL_OBJ_TO_PTR(obj))->stream_type == CL_STREAM_STRING;
+    }
+    if (strcmp(tname, "TWO-WAY-STREAM") == 0 ||
+        strcmp(tname, "BROADCAST-STREAM") == 0 ||
+        strcmp(tname, "CONCATENATED-STREAM") == 0 ||
+        strcmp(tname, "ECHO-STREAM") == 0) return 0;
     if (strcmp(tname, "RANDOM-STATE") == 0) return CL_RANDOM_STATE_P(obj);
     if (strcmp(tname, "PATHNAME") == 0)     return CL_PATHNAME_P(obj);
     if (strcmp(tname, "LOGICAL-PATHNAME") == 0) return 0;

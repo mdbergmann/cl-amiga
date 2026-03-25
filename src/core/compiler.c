@@ -548,7 +548,8 @@ void compile_lambda(CL_Compiler *c, CL_Obj form)
     bc->name = pending_lambda_name;
     pending_lambda_name = CL_NIL;
     bc->n_optional = (uint8_t)inner->ll.n_optional;
-    bc->flags = (inner->ll.n_keys > 0 ? 1 : 0) | (inner->ll.allow_other_keys ? 2 : 0);
+    bc->flags = ((inner->ll.n_keys > 0 || inner->ll.allow_other_keys) ? 1 : 0)
+              | (inner->ll.allow_other_keys ? 2 : 0);
     bc->n_keys = (uint8_t)inner->ll.n_keys;
 
     if (inner->ll.n_keys > 0) {
