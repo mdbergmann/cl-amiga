@@ -922,7 +922,15 @@ static CL_Obj cl_vm_run(int base_fp, int base_nlx)
 
         VM_CASE(OP_GLOAD): {
             uint16_t idx = read_u16(code, &ip);
-            CL_Obj sym = constants[idx];
+            CL_Obj sym;
+            if (!constants) {
+                fprintf(stderr, "[VM] BUG: OP_GLOAD with NULL constants (idx=%u fp=%d ip=%u)\n",
+                        idx, cl_vm.fp, ip);
+                cl_capture_backtrace();
+                fprintf(stderr, "%s", cl_backtrace_buf);
+                cl_error(CL_ERR_GENERAL, "OP_GLOAD with NULL constants ptr");
+            }
+            sym = constants[idx];
             CL_Obj val = cl_symbol_value(sym);
             if (val == CL_UNBOUND)
                 cl_error(CL_ERR_UNBOUND, "Unbound variable: %s",
@@ -934,7 +942,13 @@ static CL_Obj cl_vm_run(int base_fp, int base_nlx)
 
         VM_CASE(OP_GSTORE): {
             uint16_t idx = read_u16(code, &ip);
-            CL_Obj sym = constants[idx];
+            CL_Obj sym;
+            if (!constants) {
+                fprintf(stderr, "[VM] BUG: OP_GSTORE with NULL constants (idx=%u fp=%d ip=%u)\n",
+                        idx, cl_vm.fp, ip);
+                cl_error(CL_ERR_GENERAL, "OP_GSTORE with NULL constants ptr");
+            }
+            sym = constants[idx];
             cl_set_symbol_value(sym, cl_vm.stack[cl_vm.sp - 1]);
             VM_BREAK;
         }
@@ -1370,6 +1384,18 @@ static CL_Obj cl_vm_run(int base_fp, int base_nlx)
                         for (j = n_extra - 1; j >= 0; j--)
                             rest = cl_cons(vm_extra_args[j], rest);
                         cl_vm_push(rest);
+
+                        /* Re-derive callee_bc: cl_cons() above may trigger GC
+                         * compaction which moves arena objects.  func_obj was
+                         * GC-protected so its CL_Obj was updated, but the raw
+                         * C pointer callee_bc still points to the OLD arena
+                         * location (now potentially reused by new allocations). */
+                        if (CL_CLOSURE_P(func_obj)) {
+                            CL_Closure *cl2 = (CL_Closure *)CL_OBJ_TO_PTR(func_obj);
+                            callee_bc = (CL_Bytecode *)CL_OBJ_TO_PTR(cl2->bytecode);
+                        } else {
+                            callee_bc = (CL_Bytecode *)CL_OBJ_TO_PTR(func_obj);
+                        }
                     }
 
                     /* Fill remaining locals with NIL (including key slots) */
@@ -1482,6 +1508,18 @@ static CL_Obj cl_vm_run(int base_fp, int base_nlx)
                         for (j = n_extra - 1; j >= 0; j--)
                             rest = cl_cons(vm_extra_args[j], rest);
                         cl_vm_push(rest);
+
+                        /* Re-derive callee_bc: cl_cons() above may trigger GC
+                         * compaction which moves arena objects.  func_obj was
+                         * GC-protected so its CL_Obj was updated, but the raw
+                         * C pointer callee_bc still points to the OLD arena
+                         * location (now potentially reused by new allocations). */
+                        if (CL_CLOSURE_P(func_obj)) {
+                            CL_Closure *cl2 = (CL_Closure *)CL_OBJ_TO_PTR(func_obj);
+                            callee_bc = (CL_Bytecode *)CL_OBJ_TO_PTR(cl2->bytecode);
+                        } else {
+                            callee_bc = (CL_Bytecode *)CL_OBJ_TO_PTR(func_obj);
+                        }
                     }
 
                     /* Fill remaining locals with NIL (including key slots) */
@@ -1559,6 +1597,28 @@ static CL_Obj cl_vm_run(int base_fp, int base_nlx)
                         cl_error(CL_ERR_GENERAL, "Bytecode %s has NULL constants with n_constants=%d",
                                  (!CL_NULL_P(fname) && CL_SYMBOL_P(fname)) ? cl_symbol_name(fname) : "<anon>",
                                  callee_bc->n_constants);
+                    }
+                    /* Extra safety: if first opcode needs constants but ptr is NULL,
+                     * catch it before we SIGSEGV.  This also catches corruption where
+                     * n_constants was zeroed but code actually uses constants. */
+                    if (!constants && code) {
+                        uint8_t first_op = code[0];
+                        if (first_op == OP_CONST || first_op == OP_FLOAD ||
+                            first_op == OP_GLOAD || first_op == OP_GSTORE ||
+                            first_op == OP_DYNBIND || first_op == OP_FSTORE ||
+                            first_op == OP_CLOSURE) {
+                            CL_Obj fname = callee_bc->name;
+                            fprintf(stderr, "[VM] BUG: bytecode '%s' first_op=0x%02x needs constants but constants=NULL n_constants=%d\n",
+                                    (!CL_NULL_P(fname) && CL_SYMBOL_P(fname)) ? cl_symbol_name(fname) : "<anon>",
+                                    first_op, callee_bc->n_constants);
+                            fprintf(stderr, "[VM]   bytecode=0x%08x code=%p code_len=%u\n",
+                                    (unsigned)func_obj, (void *)code, callee_bc->code_len);
+                            cl_capture_backtrace();
+                            fprintf(stderr, "%s", cl_backtrace_buf);
+                            cl_error(CL_ERR_GENERAL, "Bytecode %s: NULL constants but first op (0x%02x) needs them",
+                                     (!CL_NULL_P(fname) && CL_SYMBOL_P(fname)) ? cl_symbol_name(fname) : "<anon>",
+                                     first_op);
+                        }
                     }
                 }
             } else {
@@ -2292,6 +2352,18 @@ static CL_Obj cl_vm_run(int base_fp, int base_nlx)
                         for (j = n_extra - 1; j >= 0; j--)
                             rest = cl_cons(vm_extra_args[j], rest);
                         cl_vm_push(rest);
+
+                        /* Re-derive callee_bc: cl_cons() above may trigger GC
+                         * compaction which moves arena objects.  call_func was
+                         * GC-protected so its CL_Obj was updated, but the raw
+                         * C pointer callee_bc still points to the OLD arena
+                         * location (now potentially reused by new allocations). */
+                        if (CL_CLOSURE_P(call_func)) {
+                            CL_Closure *cl2 = (CL_Closure *)CL_OBJ_TO_PTR(call_func);
+                            callee_bc = (CL_Bytecode *)CL_OBJ_TO_PTR(cl2->bytecode);
+                        } else {
+                            callee_bc = (CL_Bytecode *)CL_OBJ_TO_PTR(call_func);
+                        }
                     }
 
                     /* Fill remaining locals */

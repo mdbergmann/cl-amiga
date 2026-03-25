@@ -55,12 +55,13 @@ Any C code that holds `CL_Obj` values across allocating calls **must** GC-protec
 - **Why it matters**: this is a non-moving GC, but unprotected objects can be swept (freed) and their memory reused, silently corrupting whatever is allocated in their place
 - **Note**: values on the VM stack (`cl_vm.stack`) and in `args[]` (builtin function arguments) are already GC-rooted — no need to protect those
 
-## Debugging
+## Debugging & Troubleshooting
 
 - **Debug instrumentation** should be guarded by preprocessor flags (e.g. `#ifdef DEBUG_GC`, `#ifdef DEBUG_COMPILER`, `#ifdef DEBUG_VM`) — never leave unconditional debug output in the code
 - Activate debug instrumentation via make flags: `make host DEBUG_FLAGS="-DDEBUG_GC -DDEBUG_COMPILER"` (or any combination of flags)
 - The Makefile passes `$(DEBUG_FLAGS)` to `CFLAGS`, so any `-D` defines can be added without editing the Makefile
 - Keep debug output behind these guards so it compiles to nothing in normal builds — zero overhead when not debugging
+- **When fixing bugs and troubleshooting**, maximize the diagnostic and bug-source visibility built into clamiga itself — add clear error messages, runtime checks, assertions, and debug instrumentation so that problems can be diagnosed from clamiga's own output rather than requiring external tools or guesswork
 
 ## Tests
 

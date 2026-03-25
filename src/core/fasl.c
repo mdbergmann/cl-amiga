@@ -65,8 +65,29 @@ void cl_fasl_write_header(CL_FaslWriter *w, uint32_t n_units)
 
 /* --- Serialize a CL_Obj constant --- */
 
+/* C stack base for overflow detection in recursive serialization.
+ * Deep object graphs (CLOS dispatch closures with nested bytecodes and
+ * cons chains) can overflow the C stack.  We check the current stack
+ * depth against this baseline and error out before hitting the guard page. */
+static __thread const char *fasl_stack_base = NULL;
+
+/* Maximum allowed C stack usage for FASL serialization (6MB of 8MB default) */
+#define FASL_MAX_STACK_DEPTH (6 * 1024 * 1024)
+
 void cl_fasl_serialize_obj(CL_FaslWriter *w, CL_Obj obj)
 {
+    char stack_probe;
+    if (fasl_stack_base) {
+        long depth = fasl_stack_base - &stack_probe;
+        if (depth < 0) depth = -depth;  /* handle either stack direction */
+        if (depth > FASL_MAX_STACK_DEPTH) {
+            w->error = 1;
+            cl_error(CL_ERR_GENERAL,
+                     "FASL serialization: object graph too deep (C stack > 6MB)");
+            return;
+        }
+    }
+restart:
     if (w->error) return;
 
     /* NIL */
@@ -179,10 +200,13 @@ void cl_fasl_serialize_obj(CL_FaslWriter *w, CL_Obj obj)
 #endif
 
     case TYPE_CONS: {
+        /* Iterate on cdr to avoid C stack overflow on long lists.
+         * Each cons emits FASL_TAG_CONS + car; the final cdr (NIL or
+         * dotted atom) falls through to the top of serialize_obj. */
         cl_fasl_write_u8(w, FASL_TAG_CONS);
         cl_fasl_serialize_obj(w, cl_car(obj));
-        cl_fasl_serialize_obj(w, cl_cdr(obj));
-        return;
+        obj = cl_cdr(obj);
+        goto restart;  /* tail-call: serialize cdr iteratively */
     }
 
     case TYPE_BYTECODE: {
@@ -350,6 +374,12 @@ void cl_fasl_serialize_obj(CL_FaslWriter *w, CL_Obj obj)
 void cl_fasl_serialize_bytecode(CL_FaslWriter *w, CL_Obj bc_obj)
 {
     CL_Bytecode *bc = (CL_Bytecode *)CL_OBJ_TO_PTR(bc_obj);
+    char stack_mark;
+    int restore_base = 0;
+    if (!fasl_stack_base) {
+        fasl_stack_base = &stack_mark;
+        restore_base = 1;
+    }
     uint16_t i;
 
     /* Code */
@@ -411,6 +441,8 @@ void cl_fasl_serialize_bytecode(CL_FaslWriter *w, CL_Obj bc_obj)
 
     /* Name */
     cl_fasl_serialize_obj(w, bc->name);
+
+    if (restore_base) fasl_stack_base = NULL;
 }
 
 /* ================================================================
