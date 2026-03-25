@@ -2,7 +2,7 @@
 # Targets: host (Linux), amiga-m68k, amiga-ppc
 
 CC_HOST     = gcc
-CFLAGS_HOST = -std=c99 -Wall -Wextra -Wpedantic -g -O3 -flto -DPLATFORM_POSIX -DCL_WIDE_STRINGS $(DEBUG_FLAGS)
+CFLAGS_HOST = -std=c99 -D_GNU_SOURCE -Wall -Wextra -Wpedantic -g -O3 -flto -DPLATFORM_POSIX -DCL_WIDE_STRINGS $(DEBUG_FLAGS)
 
 SRCDIR   = src
 BUILDDIR = build/host
