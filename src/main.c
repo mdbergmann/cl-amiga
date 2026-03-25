@@ -21,7 +21,9 @@
 
 #ifdef PLATFORM_POSIX
 /* Crash handler on alternate stack for stack overflow debugging */
-static char crash_alt_stack[SIGSTKSZ];
+/* Use fixed size — SIGSTKSZ is not a compile-time constant on glibc 2.34+ */
+#define CRASH_ALT_STACK_SIZE 16384
+static char crash_alt_stack[CRASH_ALT_STACK_SIZE];
 
 /* Defined in vm.c — dump last N VM opcodes for crash diagnostics */
 extern void vm_trace_dump(void);
@@ -132,7 +134,7 @@ static void install_crash_handler(void)
     stack_t ss;
     struct sigaction sa;
     ss.ss_sp = crash_alt_stack;
-    ss.ss_size = SIGSTKSZ;
+    ss.ss_size = CRASH_ALT_STACK_SIZE;
     ss.ss_flags = 0;
     sigaltstack(&ss, NULL);
     sa.sa_sigaction = crash_handler;
