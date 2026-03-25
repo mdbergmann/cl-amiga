@@ -846,6 +846,7 @@ static void make_fasl_path(const char *input, char *output, uint32_t outsize)
  * Returns (values output-truename nil nil) per CL spec.
  */
 
+__attribute__((no_stack_protector))
 static CL_Obj bi_compile_file(CL_Obj *args, int n)
 {
     char in_path[1024], out_path[1024];

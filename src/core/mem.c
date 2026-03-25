@@ -403,9 +403,10 @@ CL_Obj cl_make_array(uint32_t total, uint8_t rank, uint32_t *dims,
     uint32_t n_data = (rank > 1) ? (uint32_t)rank + total : total;
     uint32_t alloc_size;
     CL_Vector *v;
-    /* Adjustable vectors need at least 1 data slot for displacement pointer */
-    if ((flags & CL_VEC_FLAG_ADJUSTABLE) && n_data == 0)
-        n_data = 1;
+    /* Adjustable vectors need at least 2 data slots for displacement:
+       data[0] = backing vector, data[1] = displaced-index-offset */
+    if ((flags & CL_VEC_FLAG_ADJUSTABLE) && n_data < 2)
+        n_data = 2;
     alloc_size = sizeof(CL_Vector) + n_data * sizeof(CL_Obj);
     v = (CL_Vector *)cl_alloc(TYPE_VECTOR, alloc_size);
     if (!v) return CL_NIL;
@@ -424,12 +425,21 @@ CL_Obj cl_make_array(uint32_t total, uint8_t rank, uint32_t *dims,
     return CL_PTR_TO_OBJ(v);
 }
 
-/* Follow displacement chain to get the actual data pointer */
+/* Follow displacement chain to get the actual data pointer.
+   Accumulates displaced-index-offset stored in data[1] at each level. */
 CL_Obj *cl_vector_data_fn(CL_Vector *v)
 {
-    while (v->flags & CL_VEC_FLAG_DISPLACED)
+    uint32_t offset = 0;
+    while (v->flags & CL_VEC_FLAG_DISPLACED) {
+        /* data[1] stores displaced-index-offset as a fixnum (0 for internal displacement) */
+        if (CL_FIXNUM_P(v->data[1]))
+            offset += (uint32_t)CL_FIXNUM_VAL(v->data[1]);
         v = (CL_Vector *)CL_OBJ_TO_PTR(v->data[0]);
-    return v->rank > 1 ? &v->data[v->rank] : v->data;
+    }
+    {
+        CL_Obj *base = v->rank > 1 ? &v->data[v->rank] : v->data;
+        return base + offset;
+    }
 }
 
 CL_Obj cl_make_hashtable(uint32_t bucket_count, uint32_t test)

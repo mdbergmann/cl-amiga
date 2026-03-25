@@ -131,10 +131,8 @@ CL_Obj cl_vm_apply(CL_Obj func, CL_Obj *args, int nargs);
 void cl_vm_push(CL_Obj val);
 CL_Obj cl_vm_pop(void);
 
-/* C stack overflow detection (DEBUG_VM only) */
-#ifdef DEBUG_VM
+/* C stack overflow detection */
 void cl_check_c_stack(const char *context);
-#endif
 
 #include "thread.h"
 

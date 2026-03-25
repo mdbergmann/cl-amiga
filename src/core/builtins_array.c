@@ -4,6 +4,7 @@
 #include "mem.h"
 #include "error.h"
 #include "string_utils.h"
+#include "thread.h"
 #include "../platform/platform.h"
 #include <string.h>
 
@@ -62,6 +63,8 @@ static CL_Obj KW_INITIAL_CONTENTS = CL_NIL;
 static CL_Obj KW_FILL_POINTER = CL_NIL;
 static CL_Obj KW_ADJUSTABLE = CL_NIL;
 static CL_Obj KW_ELEMENT_TYPE = CL_NIL;
+static CL_Obj KW_DISPLACED_TO = CL_NIL;
+static CL_Obj KW_DISPLACED_INDEX_OFFSET = CL_NIL;
 
 /* Helper: recursively flatten nested lists into array elements */
 static void flatten_contents(CL_Obj contents, CL_Obj *elts, uint32_t total, uint32_t *j)
@@ -87,11 +90,14 @@ static CL_Obj bi_make_array(CL_Obj *args, int n)
     CL_Obj initial_element = CL_NIL;
     CL_Obj initial_contents = CL_NIL;
     CL_Obj element_type = CL_NIL;
+    CL_Obj displaced_to = CL_NIL;
     int has_initial_element = 0;
     int has_initial_contents = 0;
+    int has_displaced_to = 0;
     int element_type_bit = 0;
     int element_type_char = 0;
     uint32_t fill_ptr = CL_NO_FILL_POINTER;
+    uint32_t displaced_offset = 0;
     int fill_pointer_is_t = 0;
     uint8_t flags = 0;
     int i;
@@ -128,11 +134,21 @@ static CL_Obj bi_make_array(CL_Obj *args, int n)
                          strcmp(ename, "STANDARD-CHAR") == 0)
                     element_type_char = 1;
             }
+        } else if (args[i] == KW_DISPLACED_TO) {
+            displaced_to = args[i + 1];
+            if (!CL_NULL_P(displaced_to))
+                has_displaced_to = 1;
+        } else if (args[i] == KW_DISPLACED_INDEX_OFFSET) {
+            if (CL_FIXNUM_P(args[i + 1]))
+                displaced_offset = (uint32_t)CL_FIXNUM_VAL(args[i + 1]);
         }
     }
 
     if (has_initial_element && has_initial_contents)
         cl_error(CL_ERR_ARGS, "MAKE-ARRAY: cannot specify both :initial-element and :initial-contents");
+
+    if (has_displaced_to && (has_initial_element || has_initial_contents))
+        cl_error(CL_ERR_ARGS, "MAKE-ARRAY: cannot specify :displaced-to with :initial-element or :initial-contents");
 
     /* --- 1D case: dim_arg is a fixnum --- */
     if (CL_FIXNUM_P(dim_arg)) {
@@ -143,6 +159,66 @@ static CL_Obj bi_make_array(CL_Obj *args, int n)
         /* :fill-pointer T means fill-pointer = array size (CLHS) */
         if (fill_pointer_is_t)
             fill_ptr = length;
+
+        /* --- :displaced-to handling --- */
+        if (has_displaced_to) {
+            /* Displaced to a string: copy substring (TYPE_STRING uses packed
+               bytes, incompatible with CL_Obj element storage) */
+            if (CL_ANY_STRING_P(displaced_to)) {
+                uint32_t slen = cl_string_length(displaced_to);
+                if (displaced_offset + length > slen)
+                    cl_error(CL_ERR_ARGS, "MAKE-ARRAY: displaced bounds exceed target string length");
+                /* Create new string with copied characters */
+                {
+                    CL_Obj str = cl_make_string(NULL, length);
+                    uint32_t j;
+                    for (j = 0; j < length; j++)
+                        cl_string_set_char_at(str, j,
+                            cl_string_char_at(displaced_to, displaced_offset + j));
+                    return str;
+                }
+            }
+            /* Displaced to a character vector (CL_VEC_FLAG_STRING) */
+            if (CL_VECTOR_P(displaced_to)) {
+                CL_Vector *target = (CL_Vector *)CL_OBJ_TO_PTR(displaced_to);
+                uint32_t target_total = target->length;
+                uint32_t n_data;
+
+                if (displaced_offset + length > target_total)
+                    cl_error(CL_ERR_ARGS, "MAKE-ARRAY: displaced bounds exceed target array");
+
+                /* Allocate vector with 2 data slots: backing ref + offset */
+                n_data = 2;
+                {
+                    uint32_t alloc_size = sizeof(CL_Vector) + n_data * sizeof(CL_Obj);
+                    CL_Vector *dv;
+                    uint8_t dflags = flags | CL_VEC_FLAG_DISPLACED;
+
+                    /* Preserve string flag from target */
+                    if (target->flags & CL_VEC_FLAG_STRING)
+                        dflags |= CL_VEC_FLAG_STRING;
+
+                    CL_GC_PROTECT(displaced_to);
+                    result = CL_PTR_TO_OBJ((CL_Vector *)cl_alloc(TYPE_VECTOR, alloc_size));
+                    CL_GC_UNPROTECT(1);
+
+                    dv = (CL_Vector *)CL_OBJ_TO_PTR(result);
+                    dv->length = length;
+                    dv->fill_pointer = fill_ptr;
+                    dv->flags = dflags;
+                    dv->rank = 0;
+                    dv->_reserved = 0;
+                    dv->data[0] = displaced_to;
+                    dv->data[1] = CL_MAKE_FIXNUM((int32_t)displaced_offset);
+                    return result;
+                }
+            }
+            /* Displaced to a bit vector */
+            if (CL_BIT_VECTOR_P(displaced_to)) {
+                cl_error(CL_ERR_GENERAL, "MAKE-ARRAY: displacement to bit-vectors not yet supported");
+            }
+            cl_error(CL_ERR_TYPE, "MAKE-ARRAY: :displaced-to target must be an array");
+        }
 
         /* Bit vector path */
         if (element_type_bit) {
@@ -610,6 +686,36 @@ static CL_Obj bi_adjustable_array_p(CL_Obj *args, int n)
 }
 
 /* ======================================================= */
+/* ARRAY-DISPLACEMENT                                      */
+/* ======================================================= */
+
+/* (array-displacement array) → displaced-to, displaced-index-offset
+   Returns two values: the array this one is displaced to (or NIL),
+   and the displaced-index-offset (or 0). */
+static CL_Obj bi_array_displacement(CL_Obj *args, int n)
+{
+    CL_UNUSED(n);
+    if (CL_VECTOR_P(args[0])) {
+        CL_Vector *v = (CL_Vector *)CL_OBJ_TO_PTR(args[0]);
+        if (v->flags & CL_VEC_FLAG_DISPLACED) {
+            CL_Obj backing = v->data[0];
+            uint32_t offset = 0;
+            if (CL_FIXNUM_P(v->data[1]))
+                offset = (uint32_t)CL_FIXNUM_VAL(v->data[1]);
+            cl_mv_count = 2;
+            cl_mv_values[0] = backing;
+            cl_mv_values[1] = CL_MAKE_FIXNUM((int32_t)offset);
+            return backing;
+        }
+    }
+    /* Not displaced: return NIL, 0 */
+    cl_mv_count = 2;
+    cl_mv_values[0] = CL_NIL;
+    cl_mv_values[1] = CL_MAKE_FIXNUM(0);
+    return CL_NIL;
+}
+
+/* ======================================================= */
 /* ARRAY-DIMENSIONS / ARRAY-RANK                           */
 /* ======================================================= */
 
@@ -1019,6 +1125,7 @@ static CL_Obj bi_vector_push_extend(CL_Obj *args, int n)
 
     /* Displace old vector to new backing vector */
     vec->data[0] = new_arr;
+    vec->data[1] = CL_MAKE_FIXNUM(0);  /* displacement offset = 0 */
     vec->flags |= CL_VEC_FLAG_DISPLACED;
     vec->length = new_cap;
     vec->fill_pointer = fp + 1;
@@ -1134,6 +1241,7 @@ static CL_Obj bi_adjust_array(CL_Obj *args, int n)
     if (old_vec->flags & CL_VEC_FLAG_ADJUSTABLE) {
         /* Adjustable: modify in place via displacement (CL spec identity) */
         old_vec->data[0] = new_arr;
+        old_vec->data[1] = CL_MAKE_FIXNUM(0);  /* displacement offset = 0 */
         old_vec->flags |= CL_VEC_FLAG_DISPLACED;
         old_vec->length = new_len;
         old_vec->fill_pointer = new_fp;
@@ -1155,6 +1263,8 @@ void cl_builtins_array_init(void)
     KW_FILL_POINTER     = cl_intern_keyword("FILL-POINTER", 12);
     KW_ADJUSTABLE       = cl_intern_keyword("ADJUSTABLE", 10);
     KW_ELEMENT_TYPE     = cl_intern_keyword("ELEMENT-TYPE", 12);
+    KW_DISPLACED_TO     = cl_intern_keyword("DISPLACED-TO", 12);
+    KW_DISPLACED_INDEX_OFFSET = cl_intern_keyword("DISPLACED-INDEX-OFFSET", 22);
 
     /* Array construction */
     defun("MAKE-ARRAY", bi_make_array, 1, -1);
@@ -1170,6 +1280,7 @@ void cl_builtins_array_init(void)
     defun("ARRAYP", bi_arrayp, 1, 1);
     defun("SIMPLE-VECTOR-P", bi_simple_vector_p, 1, 1);
     defun("ADJUSTABLE-ARRAY-P", bi_adjustable_array_p, 1, 1);
+    defun("ARRAY-DISPLACEMENT", bi_array_displacement, 1, 1);
 
     /* Query */
     defun("ARRAY-DIMENSIONS", bi_array_dimensions, 1, 1);
@@ -1196,4 +1307,6 @@ void cl_builtins_array_init(void)
     cl_gc_register_root(&KW_FILL_POINTER);
     cl_gc_register_root(&KW_ADJUSTABLE);
     cl_gc_register_root(&KW_ELEMENT_TYPE);
+    cl_gc_register_root(&KW_DISPLACED_TO);
+    cl_gc_register_root(&KW_DISPLACED_INDEX_OFFSET);
 }
