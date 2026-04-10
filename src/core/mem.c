@@ -261,7 +261,11 @@ void *cl_alloc(uint8_t type, uint32_t size)
                          (unsigned)size, (unsigned)CL_HDR_SIZE_MASK);
     }
 
-    /* Initialize header */
+    /* Initialize: zero entire block, then set header.
+     * Zeroing prevents stale data in padding/trailing bytes from being
+     * misinterpreted by GC (e.g. closure padding read as upvalue slots)
+     * or FASL serializer (traverses object graph by following CL_Obj fields). */
+    memset(ptr, 0, size);
     ((CL_Header *)ptr)->header = CL_MAKE_HDR(type, size);
     cl_heap.total_allocated += size;
     cl_heap.total_consed += size;

@@ -64,6 +64,7 @@
 #define FASL_ERR_BAD_MAGIC   -3   /* Invalid magic number */
 #define FASL_ERR_BAD_VERSION -4   /* Unsupported version */
 #define FASL_ERR_BAD_TAG     -5   /* Unknown constant type tag */
+#define FASL_ERR_TOO_DEEP   -6   /* Object graph too deep for C stack */
 
 /* Max uninterned symbols tracked per FASL file (for gensym dedup) */
 #define FASL_MAX_GENSYMS 1024

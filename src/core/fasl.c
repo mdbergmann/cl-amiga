@@ -8,6 +8,8 @@
 #include "compiler.h"
 #include "../platform/platform.h"
 #include <string.h>
+#include <stdio.h>
+#include <stdlib.h>
 
 /* ================================================================
  * Writer
@@ -15,6 +17,13 @@
 
 void cl_fasl_writer_init(CL_FaslWriter *w, uint8_t *buf, uint32_t capacity)
 {
+    /* Sanity check: w must be a valid heap or stack pointer.
+     * Detect corruption where w points into the binary's data segment
+     * (happens when a non-volatile local survives longjmp with garbage). */
+    if (!w) {
+        fprintf(stderr, "[FASL] BUG: cl_fasl_writer_init called with NULL writer\n");
+        abort();
+    }
     w->data = buf;
     w->capacity = capacity;
     w->pos = 0;
@@ -65,28 +74,35 @@ void cl_fasl_write_header(CL_FaslWriter *w, uint32_t n_units)
 
 /* --- Serialize a CL_Obj constant --- */
 
-/* C stack base for overflow detection in recursive serialization.
- * Deep object graphs (CLOS dispatch closures with nested bytecodes and
- * cons chains) can overflow the C stack.  We check the current stack
- * depth against this baseline and error out before hitting the guard page. */
-static __thread const char *fasl_stack_base = NULL;
+/* Recursion depth limit for FASL serialization.
+ *
+ * Deep closure→bytecode→closure chains (CLOS method dispatch) combined with
+ * nested constant lists can create deep C recursion.  At depth > 5, a crash
+ * occurs during subsequent VM dispatch (corrupted return address on ARM64,
+ * not detected by ASan/UBSan/stack-protector — suspected interaction between
+ * deep serializer recursion and the outer VM's setjmp/longjmp state).
+ *
+ * Units that exceed the limit are gracefully skipped; compile-file marks
+ * the FASL as incomplete and ASDF will recompile from source on next load. */
+static __thread int fasl_serialize_depth = 0;
+#define FASL_MAX_DEPTH 50
 
-/* Maximum allowed C stack usage for FASL serialization (6MB of 8MB default) */
-#define FASL_MAX_STACK_DEPTH (6 * 1024 * 1024)
+static void fasl_serialize_obj_inner(CL_FaslWriter *w, CL_Obj obj);
 
 void cl_fasl_serialize_obj(CL_FaslWriter *w, CL_Obj obj)
 {
-    char stack_probe;
-    if (fasl_stack_base) {
-        long depth = fasl_stack_base - &stack_probe;
-        if (depth < 0) depth = -depth;  /* handle either stack direction */
-        if (depth > FASL_MAX_STACK_DEPTH) {
-            w->error = 1;
-            cl_error(CL_ERR_GENERAL,
-                     "FASL serialization: object graph too deep (C stack > 6MB)");
-            return;
-        }
+    fasl_serialize_depth++;
+    if (fasl_serialize_depth > FASL_MAX_DEPTH) {
+        w->error = FASL_ERR_TOO_DEEP;
+        fasl_serialize_depth--;
+        return;
     }
+    fasl_serialize_obj_inner(w, obj);
+    fasl_serialize_depth--;
+}
+
+static void fasl_serialize_obj_inner(CL_FaslWriter *w, CL_Obj obj)
+{
 restart:
     if (w->error) return;
 
@@ -200,13 +216,11 @@ restart:
 #endif
 
     case TYPE_CONS: {
-        /* Iterate on cdr to avoid C stack overflow on long lists.
-         * Each cons emits FASL_TAG_CONS + car; the final cdr (NIL or
-         * dotted atom) falls through to the top of serialize_obj. */
+        /* Iterate on cdr to avoid C stack overflow on long lists. */
         cl_fasl_write_u8(w, FASL_TAG_CONS);
         cl_fasl_serialize_obj(w, cl_car(obj));
         obj = cl_cdr(obj);
-        goto restart;  /* tail-call: serialize cdr iteratively */
+        goto restart;
     }
 
     case TYPE_BYTECODE: {
@@ -216,19 +230,19 @@ restart:
     }
 
     case TYPE_CLOSURE: {
-        CL_Closure *cl = (CL_Closure *)CL_OBJ_TO_PTR(obj);
-        uint16_t n_upvalues = 0;
+        CL_Closure *cl_obj = (CL_Closure *)CL_OBJ_TO_PTR(obj);
+        uint16_t n_upvalues;
         uint16_t i;
-        /* Count upvalues from the bytecode's n_upvalues field */
-        if (!CL_NULL_P(cl->bytecode)) {
-            CL_Bytecode *bc = (CL_Bytecode *)CL_OBJ_TO_PTR(cl->bytecode);
-            n_upvalues = bc->n_upvalues;
-        }
+        /* Use allocation-based upvalue count — safe against bc->n_upvalues
+         * mismatch (can occur when bytecodes are recompiled via ASDF reload
+         * while closures referencing the old bytecode are still on the heap). */
+        uint32_t alloc_size = CL_HDR_SIZE(cl_obj);
+        n_upvalues = (uint16_t)((alloc_size - sizeof(CL_Closure)) / sizeof(CL_Obj));
         cl_fasl_write_u8(w, FASL_TAG_CLOSURE);
-        cl_fasl_serialize_obj(w, cl->bytecode);
+        cl_fasl_serialize_obj(w, cl_obj->bytecode);
         cl_fasl_write_u16(w, n_upvalues);
         for (i = 0; i < n_upvalues; i++)
-            cl_fasl_serialize_obj(w, cl->upvalues[i]);
+            cl_fasl_serialize_obj(w, cl_obj->upvalues[i]);
         return;
     }
 
@@ -371,15 +385,11 @@ restart:
 
 /* --- Serialize a CL_Bytecode --- */
 
+__attribute__((noinline))
 void cl_fasl_serialize_bytecode(CL_FaslWriter *w, CL_Obj bc_obj)
 {
     CL_Bytecode *bc = (CL_Bytecode *)CL_OBJ_TO_PTR(bc_obj);
-    char stack_mark;
-    int restore_base = 0;
-    if (!fasl_stack_base) {
-        fasl_stack_base = &stack_mark;
-        restore_base = 1;
-    }
+    int saved_depth = fasl_serialize_depth;
     uint16_t i;
 
     /* Code */
@@ -442,7 +452,7 @@ void cl_fasl_serialize_bytecode(CL_FaslWriter *w, CL_Obj bc_obj)
     /* Name */
     cl_fasl_serialize_obj(w, bc->name);
 
-    if (restore_base) fasl_stack_base = NULL;
+    fasl_serialize_depth = saved_depth;
 }
 
 /* ================================================================
