@@ -15,7 +15,13 @@
 #define CL_GC_MARK_STACK_SIZE 4096
 #define CL_GC_ROOT_STACK_SIZE 1024
 #define CL_MIN_ALLOC_SIZE     16  /* Minimum allocation (aligned) */
-#define CL_ALIGN              4   /* 4-byte alignment */
+/* Arena alignment: 8-byte on 64-bit hosts (CL_Bytecode et al. have pointer
+ * fields that require natural alignment), 4-byte on 32-bit (Amiga). */
+#if UINTPTR_MAX > 0xFFFFFFFFu
+#define CL_ALIGN              8
+#else
+#define CL_ALIGN              4
+#endif
 
 /* Free block header (overlays CL_Header in freed objects).
  * Uses arena-relative offsets (not native pointers) for the free-list

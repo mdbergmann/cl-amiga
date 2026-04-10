@@ -498,7 +498,11 @@ static int nlx_frame_is_stale(CL_NLXFrame *nlx)
     return target->code != nlx->code;
 }
 
-/* Call a built-in C function */
+/* Call a built-in C function.
+ * MUST NOT be inlined: fptr calls may use setjmp/longjmp internally
+ * (e.g. bi_compile_file), and inlining would put them in cl_vm_run's
+ * frame, corrupting its register-cached locals after longjmp. */
+__attribute__((noinline))
 static CL_Obj call_builtin(CL_Function *func, CL_Obj *args, int nargs)
 {
     CL_Obj result;
@@ -543,7 +547,7 @@ static CL_Obj call_builtin(CL_Function *func, CL_Obj *args, int nargs)
     return result;
 }
 
-#define C_STACK_LIMIT (3 * 1024 * 1024)  /* 3MB of 8MB, leave 5MB margin */
+#define C_STACK_LIMIT (2 * 1024 * 1024)  /* 2MB of 8MB, leave margin for large callee frames */
 
 void cl_check_c_stack(const char *context)
 {
@@ -626,6 +630,8 @@ void vm_trace_dump(void)
  */
 static CL_Obj cl_vm_run(int base_fp, int base_nlx)
 {
+    cl_check_c_stack("cl_vm_run");
+
     /* Cache thread pointer once — push/pop/mv_count use it directly,
      * eliminating the cl_get_current_thread() call on each access.
      * CT itself is NOT redefined — only the hot-path accessors are shadowed. */

@@ -56,11 +56,18 @@ void cl_error(int code, const char *fmt, ...)
         cl_invoke_debugger(cond);
     }
 
-    /* Check for interposing unwind-protect frames in NLX stack */
+    /* Check for interposing unwind-protect frames in NLX stack.
+     * Skip stale frames whose VM frame was reused by a tail call —
+     * longjmping to a stale UWPROT restores wrong code/constants. */
     {
         int i;
         for (i = cl_nlx_top - 1; i >= 0; i--) {
             if (cl_nlx_stack[i].type == CL_NLX_UWPROT) {
+                /* Stale check: if the VM frame was reused by a different
+                 * function (tail call), the UWPROT's saved state is invalid */
+                CL_Frame *tf = &cl_vm.frames[cl_nlx_stack[i].vm_fp - 1];
+                if (tf->code != cl_nlx_stack[i].code)
+                    continue;
                 /* Set pending error, longjmp to UWPROT cleanup */
                 cl_pending_throw = 2;
                 cl_pending_error_code = code;
