@@ -528,7 +528,77 @@ void compile_lambda(CL_Compiler *c, CL_Obj form)
         }
     }
 
-    compile_body(inner, body);
+    /* Emit OP_DYNBIND for parameters that are globally special.
+     * The VM stores parameter values in local slots, but called functions
+     * and closures need to see them via the dynamic binding stack. */
+    {
+        int special_param_count = 0;
+        int pi;
+        for (pi = 0; pi < inner->ll.n_required; pi++) {
+            if (cl_symbol_specialp(inner->ll.required[pi])) {
+                int slot = cl_env_lookup(env, inner->ll.required[pi]);
+                int idx = cl_add_constant(inner, inner->ll.required[pi]);
+                cl_emit(inner, OP_LOAD);
+                cl_emit(inner, (uint8_t)slot);
+                cl_emit(inner, OP_DYNBIND);
+                cl_emit_u16(inner, (uint16_t)idx);
+                special_param_count++;
+            }
+        }
+        for (pi = 0; pi < inner->ll.n_optional; pi++) {
+            if (cl_symbol_specialp(inner->ll.opt_names[pi])) {
+                int slot = cl_env_lookup(env, inner->ll.opt_names[pi]);
+                int idx = cl_add_constant(inner, inner->ll.opt_names[pi]);
+                cl_emit(inner, OP_LOAD);
+                cl_emit(inner, (uint8_t)slot);
+                cl_emit(inner, OP_DYNBIND);
+                cl_emit_u16(inner, (uint16_t)idx);
+                special_param_count++;
+            }
+        }
+        if (inner->ll.has_rest && cl_symbol_specialp(inner->ll.rest_name)) {
+            int slot = cl_env_lookup(env, inner->ll.rest_name);
+            int idx = cl_add_constant(inner, inner->ll.rest_name);
+            cl_emit(inner, OP_LOAD);
+            cl_emit(inner, (uint8_t)slot);
+            cl_emit(inner, OP_DYNBIND);
+            cl_emit_u16(inner, (uint16_t)idx);
+            special_param_count++;
+        }
+        for (pi = 0; pi < inner->ll.n_keys; pi++) {
+            if (cl_symbol_specialp(inner->ll.key_names[pi])) {
+                int slot = inner->key_slot_indices[pi];
+                int idx = cl_add_constant(inner, inner->ll.key_names[pi]);
+                cl_emit(inner, OP_LOAD);
+                cl_emit(inner, (uint8_t)slot);
+                cl_emit(inner, OP_DYNBIND);
+                cl_emit_u16(inner, (uint16_t)idx);
+                special_param_count++;
+            }
+        }
+        for (pi = 0; pi < inner->ll.n_aux; pi++) {
+            if (cl_symbol_specialp(inner->ll.aux_names[pi])) {
+                int slot = cl_env_lookup(env, inner->ll.aux_names[pi]);
+                int idx = cl_add_constant(inner, inner->ll.aux_names[pi]);
+                cl_emit(inner, OP_LOAD);
+                cl_emit(inner, (uint8_t)slot);
+                cl_emit(inner, OP_DYNBIND);
+                cl_emit_u16(inner, (uint16_t)idx);
+                special_param_count++;
+            }
+        }
+        if (special_param_count > 0)
+            inner->in_tail = 0;
+        inner->special_depth += special_param_count;
+
+        compile_body(inner, body);
+
+        inner->special_depth -= special_param_count;
+        if (special_param_count > 0) {
+            cl_emit(inner, OP_DYNUNBIND);
+            cl_emit(inner, (uint8_t)special_param_count);
+        }
+    }
     cl_emit(inner, OP_RET);
 
     /* Build bytecode object */
