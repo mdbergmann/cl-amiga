@@ -5,6 +5,7 @@
 #include "error.h"
 #include "printer.h"
 #include "vm.h"
+#include "string_utils.h"
 #include "../platform/platform.h"
 #include <stdio.h>
 #include <string.h>
@@ -451,17 +452,58 @@ static CL_Obj bi_nconc(CL_Obj *args, int n)
 
 static CL_Obj bi_nreverse(CL_Obj *args, int n)
 {
-    CL_Obj list = args[0];
-    CL_Obj prev = CL_NIL;
+    CL_Obj seq = args[0];
     CL_UNUSED(n);
 
-    while (CL_CONS_P(list)) {
-        CL_Obj next = cl_cdr(list);
-        ((CL_Cons *)CL_OBJ_TO_PTR(list))->cdr = prev;
-        prev = list;
-        list = next;
+    if (CL_NULL_P(seq)) return CL_NIL;
+
+    if (CL_CONS_P(seq)) {
+        CL_Obj prev = CL_NIL;
+        while (CL_CONS_P(seq)) {
+            CL_Obj next = cl_cdr(seq);
+            ((CL_Cons *)CL_OBJ_TO_PTR(seq))->cdr = prev;
+            prev = seq;
+            seq = next;
+        }
+        return prev;
     }
-    return prev;
+    if (CL_ANY_STRING_P(seq)) {
+        uint32_t slen = cl_string_length(seq);
+        uint32_t i, half = slen / 2;
+        for (i = 0; i < half; i++) {
+            int a = cl_string_char_at(seq, i);
+            int b = cl_string_char_at(seq, slen - 1 - i);
+            cl_string_set_char_at(seq, i, b);
+            cl_string_set_char_at(seq, slen - 1 - i, a);
+        }
+        return seq;
+    }
+    if (CL_VECTOR_P(seq)) {
+        CL_Vector *v = (CL_Vector *)CL_OBJ_TO_PTR(seq);
+        uint32_t alen = cl_vector_active_length(v);
+        uint32_t i, half = alen / 2;
+        CL_Obj *data = cl_vector_data(v);
+        for (i = 0; i < half; i++) {
+            CL_Obj tmp = data[i];
+            data[i] = data[alen - 1 - i];
+            data[alen - 1 - i] = tmp;
+        }
+        return seq;
+    }
+    if (CL_BIT_VECTOR_P(seq)) {
+        CL_BitVector *bv = (CL_BitVector *)CL_OBJ_TO_PTR(seq);
+        uint32_t blen = bv->length;
+        uint32_t i, half = blen / 2;
+        for (i = 0; i < half; i++) {
+            uint32_t a = cl_bv_get_bit(bv, i);
+            uint32_t b = cl_bv_get_bit(bv, blen - 1 - i);
+            cl_bv_set_bit(bv, i, b);
+            cl_bv_set_bit(bv, blen - 1 - i, a);
+        }
+        return seq;
+    }
+    cl_error(CL_ERR_TYPE, "NREVERSE: not a sequence");
+    return CL_NIL;
 }
 
 static CL_Obj bi_delete(CL_Obj *args, int n)

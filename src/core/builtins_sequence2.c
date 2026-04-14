@@ -26,6 +26,7 @@ static CL_Obj KW_START1 = CL_NIL;
 static CL_Obj KW_END1 = CL_NIL;
 static CL_Obj KW_START2 = CL_NIL;
 static CL_Obj KW_END2 = CL_NIL;
+static CL_Obj KW_FROM_END = CL_NIL;
 static CL_Obj SYM_EQL_FN = CL_NIL;
 static CL_Obj SYM_LIST = CL_NIL;
 
@@ -444,6 +445,7 @@ static CL_Obj bi_mismatch(CL_Obj *args, int n)
     int32_t len1, len2;
     int32_t i, j;
     int ki;
+    int from_end = 0;
 
     /* Parse keywords */
     for (ki = 2; ki + 1 < n; ki += 2) {
@@ -453,6 +455,7 @@ static CL_Obj bi_mismatch(CL_Obj *args, int n)
         else if (args[ki] == KW_END1 && !CL_NULL_P(args[ki + 1]) && CL_FIXNUM_P(args[ki + 1])) end1 = CL_FIXNUM_VAL(args[ki + 1]);
         else if (args[ki] == KW_START2 && CL_FIXNUM_P(args[ki + 1])) start2 = CL_FIXNUM_VAL(args[ki + 1]);
         else if (args[ki] == KW_END2 && !CL_NULL_P(args[ki + 1]) && CL_FIXNUM_P(args[ki + 1])) end2 = CL_FIXNUM_VAL(args[ki + 1]);
+        else if (args[ki] == KW_FROM_END && !CL_NULL_P(args[ki + 1])) from_end = 1;
     }
 
     len1 = seq_length(seq1);
@@ -466,6 +469,35 @@ static CL_Obj bi_mismatch(CL_Obj *args, int n)
             end1 = CL_FIXNUM_VAL(args[ki + 1]);
         if (args[ki] == KW_END2 && !CL_NULL_P(args[ki + 1]) && CL_FIXNUM_P(args[ki + 1]))
             end2 = CL_FIXNUM_VAL(args[ki + 1]);
+    }
+
+    if (from_end) {
+        /* Search from the end; return position in seq1 of rightmost mismatch + 1,
+         * or NIL if subsequences are identical. Per CL spec, the returned index
+         * is the leftmost position such that elements at or after it don't all match. */
+        int32_t sublen1 = end1 - start1;
+        int32_t sublen2 = end2 - start2;
+        int32_t mismatch_pos = -1;
+        i = end1 - 1;
+        j = end2 - 1;
+        while (i >= start1 && j >= start2) {
+            CL_Obj e1 = apply_key(key_fn, seq_elt(seq1, i));
+            CL_Obj e2 = apply_key(key_fn, seq_elt(seq2, j));
+            if (CL_NULL_P(call_test(test_fn, e1, e2))) {
+                mismatch_pos = i + 1;
+                break;
+            }
+            i--;
+            j--;
+        }
+        if (mismatch_pos >= 0) return CL_MAKE_FIXNUM(mismatch_pos);
+        /* All compared elements matched; check if lengths differ */
+        if (sublen1 != sublen2) {
+            /* Shorter sequence ran out first */
+            if (sublen1 < sublen2) return CL_MAKE_FIXNUM(start1);
+            else return CL_MAKE_FIXNUM(start1 + (sublen1 - sublen2));
+        }
+        return CL_NIL;
     }
 
     i = start1;
@@ -684,6 +716,7 @@ void cl_builtins_sequence2_init(void)
     KW_END1   = cl_intern_keyword("END1", 4);
     KW_START2 = cl_intern_keyword("START2", 6);
     KW_END2   = cl_intern_keyword("END2", 4);
+    KW_FROM_END = cl_intern_keyword("FROM-END", 8);
 
     /* Cache eql function */
     {
@@ -719,6 +752,7 @@ void cl_builtins_sequence2_init(void)
     cl_gc_register_root(&KW_END1);
     cl_gc_register_root(&KW_START2);
     cl_gc_register_root(&KW_END2);
+    cl_gc_register_root(&KW_FROM_END);
     cl_gc_register_root(&SYM_EQL_FN);
     cl_gc_register_root(&SYM_LIST);
 }

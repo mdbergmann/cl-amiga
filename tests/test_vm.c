@@ -1552,6 +1552,29 @@ TEST(eval_special_mixed_let)
     ASSERT_EQ_INT(eval_int("*m*"), 10);
 }
 
+TEST(eval_special_lambda_param_dynbind)
+{
+    /* Lambda params that are globally special must create dynamic bindings
+     * visible to called functions and closures (not just lexical). */
+    eval_print("(defvar *sp1* nil)");
+    eval_print("(defun read-sp1 () *sp1*)");
+    /* Required param */
+    ASSERT_EQ_INT(eval_int("(funcall (lambda (*sp1*) (read-sp1)) 42)"), 42);
+    ASSERT_STR_EQ(eval_print("*sp1*"), "NIL");
+    /* Key param */
+    ASSERT_EQ_INT(eval_int("(funcall (lambda (&key (*sp1* nil)) (read-sp1)) :*sp1* 99)"), 99);
+    ASSERT_STR_EQ(eval_print("*sp1*"), "NIL");
+    /* Key param with alias */
+    ASSERT_EQ_INT(eval_int(
+        "(funcall (lambda (&key ((:k *sp1*) nil)) (read-sp1)) :k 77)"), 77);
+    ASSERT_STR_EQ(eval_print("*sp1*"), "NIL");
+    /* Pre-created closure sees dynamic binding */
+    ASSERT_EQ_INT(eval_int(
+        "(let ((cl (lambda () *sp1*)))"
+        "  (funcall (lambda (x &key ((:k *sp1*) nil)) (funcall x))"
+        "    cl :k 55))"), 55);
+}
+
 /* --- setf and mutation --- */
 
 TEST(eval_setf_car_cdr)
@@ -2492,6 +2515,15 @@ TEST(eval_string_trim)
     ASSERT_STR_EQ(eval_print("(string-trim \" \" \"  hello  \")"), "\"hello\"");
     ASSERT_STR_EQ(eval_print("(string-left-trim \" \" \"  hello  \")"), "\"hello  \"");
     ASSERT_STR_EQ(eval_print("(string-right-trim \" \" \"  hello  \")"), "\"  hello\"");
+    /* char-bag as list of characters (CL spec: sequence of characters) */
+    ASSERT_STR_EQ(eval_print("(string-trim (list #\\Space #\\Tab) \"  hello  \")"), "\"hello\"");
+    ASSERT_STR_EQ(eval_print("(string-left-trim (list #\\Space) \"  hello  \")"), "\"hello  \"");
+    ASSERT_STR_EQ(eval_print("(string-right-trim (list #\\Space) \"  hello  \")"), "\"  hello\"");
+    /* char-bag as vector */
+    ASSERT_STR_EQ(eval_print("(string-trim (vector #\\* #\\+) \"**+hello+**\")"), "\"hello\"");
+    /* empty char-bag */
+    ASSERT_STR_EQ(eval_print("(string-trim nil \"  hello  \")"), "\"  hello  \"");
+    ASSERT_STR_EQ(eval_print("(string-trim (list) \"  hello  \")"), "\"  hello  \"");
 }
 
 TEST(eval_subseq)
@@ -2659,6 +2691,13 @@ TEST(eval_nreverse)
     ASSERT_STR_EQ(eval_print("(nreverse (list 1 2 3))"), "(3 2 1)");
     ASSERT_STR_EQ(eval_print("(nreverse nil)"), "NIL");
     ASSERT_STR_EQ(eval_print("(nreverse (list 1))"), "(1)");
+    /* nreverse on strings */
+    ASSERT_STR_EQ(eval_print("(nreverse (copy-seq \"hello\"))"), "\"olleh\"");
+    ASSERT_STR_EQ(eval_print("(nreverse (copy-seq \"\"))"), "\"\"");
+    ASSERT_STR_EQ(eval_print("(nreverse (copy-seq \"a\"))"), "\"a\"");
+    /* nreverse on vectors */
+    ASSERT_STR_EQ(eval_print("(nreverse (vector 1 2 3))"), "#(3 2 1)");
+    ASSERT_STR_EQ(eval_print("(nreverse (vector))"), "#()");
 }
 
 TEST(eval_delete)
@@ -6961,6 +7000,7 @@ int main(void)
     RUN(eval_special_unwind_protect);
     RUN(eval_special_error_restore);
     RUN(eval_special_mixed_let);
+    RUN(eval_special_lambda_param_dynbind);
     RUN(eval_setf_car_cdr);
     RUN(eval_setf_first_rest);
     RUN(eval_setf_nth);

@@ -447,11 +447,35 @@ static CL_Obj bi_string_downcase(CL_Obj *args, int n)
     return result;
 }
 
+/* Check if character ch is in the char-bag (a sequence of characters).
+ * Per CL spec, char-bag can be a string, list, or vector of characters. */
 static int trim_char_in_set(int ch, CL_Obj set)
 {
-    uint32_t i, len = cl_string_length(set);
-    for (i = 0; i < len; i++)
-        if (cl_string_char_at(set, i) == ch) return 1;
+    if (CL_ANY_STRING_P(set)) {
+        uint32_t i, len = cl_string_length(set);
+        for (i = 0; i < len; i++)
+            if (cl_string_char_at(set, i) == ch) return 1;
+        return 0;
+    }
+    if (CL_CONS_P(set) || CL_NULL_P(set)) {
+        CL_Obj cursor = set;
+        while (CL_CONS_P(cursor)) {
+            CL_Obj elt = cl_car(cursor);
+            if (CL_CHAR_P(elt) && CL_CHAR_VAL(elt) == (uint32_t)ch) return 1;
+            cursor = cl_cdr(cursor);
+        }
+        return 0;
+    }
+    if (CL_VECTOR_P(set)) {
+        CL_Vector *v = (CL_Vector *)CL_OBJ_TO_PTR(set);
+        uint32_t i, len = cl_vector_active_length(v);
+        CL_Obj *data = cl_vector_data(v);
+        for (i = 0; i < len; i++) {
+            if (CL_CHAR_P(data[i]) && CL_CHAR_VAL(data[i]) == (uint32_t)ch) return 1;
+        }
+        return 0;
+    }
+    cl_error(CL_ERR_TYPE, "STRING-TRIM: character bag must be a sequence");
     return 0;
 }
 
@@ -460,7 +484,7 @@ static CL_Obj bi_string_trim(CL_Obj *args, int n)
     CL_Obj set, str;
     uint32_t start, end;
     CL_UNUSED(n);
-    set = coerce_to_string_obj(args[0], "STRING-TRIM");
+    set = args[0];
     str = coerce_to_string_obj(args[1], "STRING-TRIM");
     start = 0;
     end = cl_string_length(str);
@@ -474,7 +498,7 @@ static CL_Obj bi_string_left_trim(CL_Obj *args, int n)
     CL_Obj set, str;
     uint32_t start, len;
     CL_UNUSED(n);
-    set = coerce_to_string_obj(args[0], "STRING-LEFT-TRIM");
+    set = args[0];
     str = coerce_to_string_obj(args[1], "STRING-LEFT-TRIM");
     start = 0;
     len = cl_string_length(str);
@@ -487,7 +511,7 @@ static CL_Obj bi_string_right_trim(CL_Obj *args, int n)
     CL_Obj set, str;
     uint32_t end;
     CL_UNUSED(n);
-    set = coerce_to_string_obj(args[0], "STRING-RIGHT-TRIM");
+    set = args[0];
     str = coerce_to_string_obj(args[1], "STRING-RIGHT-TRIM");
     end = cl_string_length(str);
     while (end > 0 && trim_char_in_set(cl_string_char_at(str, end - 1), set)) end--;
