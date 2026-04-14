@@ -29,6 +29,8 @@ void cl_fasl_writer_init(CL_FaslWriter *w, uint8_t *buf, uint32_t capacity)
     w->pos = 0;
     w->error = FASL_OK;
     w->gensym_count = 0;
+    w->shared_count = 0;
+    w->shared_objs = NULL;  /* lazily allocated on first use */
 }
 
 void cl_fasl_write_u8(CL_FaslWriter *w, uint8_t val)
@@ -85,7 +87,7 @@ void cl_fasl_write_header(CL_FaslWriter *w, uint32_t n_units)
  * Units that exceed the limit are gracefully skipped; compile-file marks
  * the FASL as incomplete and ASDF will recompile from source on next load. */
 static __thread int fasl_serialize_depth = 0;
-#define FASL_MAX_DEPTH 50
+#define FASL_MAX_DEPTH 2048
 
 static void fasl_serialize_obj_inner(CL_FaslWriter *w, CL_Obj obj);
 
@@ -144,6 +146,37 @@ restart:
         cl_fasl_write_u8(w, FASL_TAG_FIXNUM);
         cl_fasl_write_u32(w, obj);
         return;
+    }
+
+    /* Shared-object dedup: closures & bytecodes form deep/cyclic chains
+     * through CLOS dispatch.  Check if already serialized; if so, emit
+     * a back-reference instead of recursing. */
+    {
+        uint8_t htype = CL_HDR_TYPE(CL_OBJ_TO_PTR(obj));
+        if (htype == TYPE_CLOSURE || htype == TYPE_BYTECODE) {
+            /* Lazily allocate shared-object table */
+            if (!w->shared_objs) {
+                w->shared_objs = (CL_Obj *)platform_alloc(FASL_MAX_SHARED * sizeof(CL_Obj));
+            }
+            if (w->shared_objs) {
+                uint16_t si;
+                for (si = 0; si < w->shared_count; si++) {
+                    if (w->shared_objs[si] == obj) {
+                        cl_fasl_write_u8(w, FASL_TAG_OBJ_REF);
+                        cl_fasl_write_u16(w, si);
+                        return;
+                    }
+                }
+                /* Register this object before serializing (handles cycles) */
+                if (w->shared_count < FASL_MAX_SHARED) {
+                    w->shared_objs[w->shared_count] = obj;
+                    cl_fasl_write_u8(w, FASL_TAG_OBJ_DEF);
+                    cl_fasl_write_u16(w, w->shared_count);
+                    w->shared_count++;
+                }
+            }
+            /* Fall through to normal serialization */
+        }
     }
 
     switch (CL_HDR_TYPE(CL_OBJ_TO_PTR(obj))) {
@@ -466,6 +499,8 @@ void cl_fasl_reader_init(CL_FaslReader *r, const uint8_t *data, uint32_t size)
     r->pos = 0;
     r->error = FASL_OK;
     r->gensym_count = 0;
+    r->shared_count = 0;
+    r->shared_objs = NULL;  /* lazily allocated when OBJ_DEF tag is encountered */
 }
 
 uint8_t cl_fasl_read_u8(CL_FaslReader *r)
@@ -616,6 +651,33 @@ CL_Obj cl_fasl_deserialize_obj(CL_FaslReader *r)
         uint16_t id = cl_fasl_read_u16(r);
         if (r->error || id >= r->gensym_count) return CL_NIL;
         return r->gensym_objs[id];
+    }
+
+    case FASL_TAG_OBJ_DEF: {
+        uint16_t id = cl_fasl_read_u16(r);
+        CL_Obj result;
+        if (r->error) return CL_NIL;
+        /* Lazily allocate shared table */
+        if (!r->shared_objs) {
+            r->shared_objs = (CL_Obj *)platform_alloc(FASL_MAX_SHARED * sizeof(CL_Obj));
+            if (r->shared_objs)
+                memset(r->shared_objs, 0, FASL_MAX_SHARED * sizeof(CL_Obj));
+        }
+        /* Recursively deserialize the actual object that follows */
+        result = cl_fasl_deserialize_obj(r);
+        /* Register it in the shared table */
+        if (r->shared_objs && id < FASL_MAX_SHARED) {
+            r->shared_objs[id] = result;
+            if (id >= r->shared_count)
+                r->shared_count = id + 1;
+        }
+        return result;
+    }
+
+    case FASL_TAG_OBJ_REF: {
+        uint16_t id = cl_fasl_read_u16(r);
+        if (r->error || !r->shared_objs || id >= r->shared_count) return CL_NIL;
+        return r->shared_objs[id];
     }
 
     case FASL_TAG_STRING: {

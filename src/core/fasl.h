@@ -26,7 +26,7 @@
 #include "../platform/platform.h"
 
 #define CL_FASL_MAGIC    0x434C4641  /* "CLFA" */
-#define CL_FASL_VERSION  2
+#define CL_FASL_VERSION  3
 
 /* Serialized constant type tags */
 #define FASL_TAG_NIL         0x00
@@ -56,6 +56,8 @@
 #define FASL_TAG_WIDE_STRING 0x18  /* u32 length, u32[] codepoints */
 #endif
 #define FASL_TAG_STRUCT      0x19  /* type_desc(sym), u32 n_slots, slots... */
+#define FASL_TAG_OBJ_DEF    0x1A  /* u16 id: define shared object (followed by object data) */
+#define FASL_TAG_OBJ_REF    0x1B  /* u16 id: back-reference to previously defined shared object */
 
 /* Error codes for FASL operations */
 #define FASL_OK              0
@@ -69,6 +71,9 @@
 /* Max uninterned symbols tracked per FASL file (for gensym dedup) */
 #define FASL_MAX_GENSYMS 1024
 
+/* Max shared objects tracked per unit (for cycle/sharing detection) */
+#define FASL_MAX_SHARED 4096
+
 /* --- Serialization buffer --- */
 
 typedef struct {
@@ -79,6 +84,9 @@ typedef struct {
     /* Uninterned symbol dedup table */
     CL_Obj   gensym_objs[FASL_MAX_GENSYMS];  /* original CL_Obj values */
     uint16_t gensym_count;
+    /* Shared object dedup table (cycle/sharing detection for closures, bytecodes, etc.) */
+    CL_Obj  *shared_objs;      /* heap-allocated, FASL_MAX_SHARED entries */
+    uint16_t shared_count;
 } CL_FaslWriter;
 
 /* --- Deserialization buffer --- */
@@ -91,6 +99,9 @@ typedef struct {
     /* Uninterned symbol dedup table */
     CL_Obj   gensym_objs[FASL_MAX_GENSYMS];  /* deserialized symbol objects */
     uint16_t gensym_count;
+    /* Shared object dedup table */
+    CL_Obj  *shared_objs;      /* heap-allocated, FASL_MAX_SHARED entries */
+    uint16_t shared_count;
 } CL_FaslReader;
 
 /* --- Writer API --- */
