@@ -40,7 +40,7 @@ static const char *eval_print(const char *str)
     static char buf[256];
     int err;
 
-    err = CL_CATCH();
+    CL_CATCH(err);
     if (err == CL_ERR_NONE) {
         CL_Obj result = cl_eval_string(str);
         cl_prin1_to_string(result, buf, sizeof(buf));
@@ -3625,7 +3625,7 @@ TEST(eval_backtrace_named)
     int err;
     eval_print("(defun bt-inner () (error \"oops\"))");
     eval_print("(defun bt-outer () (+ 1 (bt-inner)))");
-    err = CL_CATCH();
+    CL_CATCH(err);
     if (err == CL_ERR_NONE) {
         cl_eval_string("(bt-outer)");
         CL_UNCATCH();
@@ -3643,7 +3643,7 @@ TEST(eval_backtrace_anonymous)
 {
     /* Top-level error shows <anonymous> */
     int err;
-    err = CL_CATCH();
+    CL_CATCH(err);
     if (err == CL_ERR_NONE) {
         cl_eval_string("(+ undefined-var 1)");
         CL_UNCATCH();
@@ -3660,7 +3660,7 @@ TEST(eval_backtrace_recursive)
     /* Recursive function shows multiple frames */
     int err;
     eval_print("(defun bt-rec (n) (if (= n 0) (error \"bottom\") (+ 1 (bt-rec (1- n)))))");
-    err = CL_CATCH();
+    CL_CATCH(err);
     if (err == CL_ERR_NONE) {
         cl_eval_string("(bt-rec 3)");
         CL_UNCATCH();
@@ -3687,7 +3687,7 @@ TEST(eval_backtrace_uwprot)
     int err;
     eval_print("(defun bt-uwp-inner () (error \"err\"))");
     eval_print("(defun bt-uwp-outer () (unwind-protect (bt-uwp-inner) nil))");
-    err = CL_CATCH();
+    CL_CATCH(err);
     if (err == CL_ERR_NONE) {
         cl_eval_string("(bt-uwp-outer)");
         CL_UNCATCH();
@@ -3707,7 +3707,7 @@ TEST(eval_backtrace_empty)
     cl_vm.sp = 0;
     cl_vm.fp = 0;
     cl_backtrace_buf[0] = '\0';
-    err = CL_CATCH();
+    CL_CATCH(err);
     if (err == CL_ERR_NONE) {
         cl_eval_string("(+ 1");  /* unterminated — reader error */
         CL_UNCATCH();
@@ -3776,7 +3776,7 @@ TEST(eval_srcloc_load_backtrace)
     cl_vm.sp = 0;
     cl_vm.fp = 0;
 
-    err = CL_CATCH();
+    CL_CATCH(err);
     if (err == CL_ERR_NONE) {
         cl_eval_string("(load \"tests/test_srcloc.lisp\")");
         CL_UNCATCH();
@@ -6674,7 +6674,7 @@ TEST(eval_heap_exhaustion_error)
      * NOTE: this must be the LAST test — heap state is unreliable after. */
     int err;
     cl_gc_reset_roots();  /* Clear any stale roots from previous tests */
-    err = CL_CATCH();
+    CL_CATCH(err);
     if (err == CL_ERR_NONE) {
         cl_eval_string("(let ((x nil)) (dotimes (i 500000) (push i x)) x)");
         CL_UNCATCH();

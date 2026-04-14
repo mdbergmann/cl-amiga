@@ -78,6 +78,18 @@ static void crash_handler(int sig, siginfo_t *info, void *ctx)
                            bc->source_line);
             (void)write(2, buf, len);
         }
+        /* Print last builtin called */
+        {
+            extern volatile const char *last_builtin_name;
+            extern volatile void *last_builtin_fptr;
+            extern volatile CL_Obj last_builtin_obj;
+            len = snprintf(buf, sizeof(buf),
+                           "[FATAL] last_builtin: %s fptr=%p obj=0x%08x\n",
+                           last_builtin_name ? last_builtin_name : "(null)",
+                           last_builtin_fptr,
+                           (unsigned)last_builtin_obj);
+            (void)write(2, buf, len);
+        }
     }
     /* Dump all VM frames for backtrace */
     {
@@ -231,7 +243,11 @@ int main(int argc, char *argv[])
     int frame_count = 0;
 
 #ifdef PLATFORM_POSIX
+#ifndef __SANITIZE_ADDRESS__
+#if !__has_feature(address_sanitizer)
     install_crash_handler();
+#endif
+#endif
 #endif
 
     for (i = 1; i < argc; i++) {
@@ -363,7 +379,7 @@ int main(int argc, char *argv[])
     if (script) {
         /* Script/batch: execute --load/--eval actions before mode entry */
         for (i = 0; i < action_count; i++) {
-            int err = CL_CATCH();
+            int err; CL_CATCH(err);
             if (err == CL_ERR_NONE) {
                 if (actions[i].is_eval) {
                     eval_string_in_cl_user(actions[i].arg);
@@ -384,7 +400,7 @@ int main(int argc, char *argv[])
 
         /* Script mode: load file and exit */
         {
-            int err = CL_CATCH();
+            int err; CL_CATCH(err);
             if (err == CL_ERR_NONE) {
                 cl_load_file(script_file);
                 CL_UNCATCH();
@@ -401,7 +417,7 @@ int main(int argc, char *argv[])
     } else if (non_interactive) {
         /* Non-interactive: execute --load/--eval actions and exit */
         for (i = 0; i < action_count; i++) {
-            int err = CL_CATCH();
+            int err; CL_CATCH(err);
             if (err == CL_ERR_NONE) {
                 if (actions[i].is_eval) {
                     eval_string_in_cl_user(actions[i].arg);
@@ -422,7 +438,7 @@ int main(int argc, char *argv[])
     } else if (batch) {
         /* Batch: execute --load/--eval actions before batch REPL */
         for (i = 0; i < action_count; i++) {
-            int err = CL_CATCH();
+            int err; CL_CATCH(err);
             if (err == CL_ERR_NONE) {
                 if (actions[i].is_eval) {
                     eval_string_in_cl_user(actions[i].arg);
@@ -484,7 +500,7 @@ int main(int argc, char *argv[])
 
         /* Interactive: execute --load/--eval actions after banner */
         for (i = 0; i < action_count; i++) {
-            int err = CL_CATCH();
+            int err; CL_CATCH(err);
             if (err == CL_ERR_NONE) {
                 if (actions[i].is_eval) {
                     eval_string_in_cl_user(actions[i].arg);

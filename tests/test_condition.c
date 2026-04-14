@@ -42,7 +42,7 @@ static const char *eval_print(const char *str)
     static char buf[512];
     int err;
 
-    err = CL_CATCH();
+    CL_CATCH(err);
     if (err == CL_ERR_NONE) {
         CL_Obj result = cl_eval_string(str);
         cl_prin1_to_string(result, buf, sizeof(buf));
@@ -165,7 +165,7 @@ TEST(c_signal_no_handlers)
 TEST(c_error_creates_condition)
 {
     /* Verify cl_error() still recovers via CL_CATCH (backward compat) */
-    int err = CL_CATCH();
+    int err; CL_CATCH(err);
     if (err == CL_ERR_NONE) {
         cl_error(CL_ERR_GENERAL, "test backward compat");
         CL_UNCATCH();
@@ -219,7 +219,7 @@ TEST(c_handler_stack_nlx)
     cl_handler_top = 1;
 
     {
-        int err = CL_CATCH();
+        int err; CL_CATCH(err);
         if (err == CL_ERR_NONE) {
             /* handler_top should be 1 here */
             ASSERT_EQ_INT(cl_handler_top, 1);
@@ -663,7 +663,7 @@ TEST(lisp_restart_stack_nlx)
 
     /* After error recovery, restart_top should be 0 */
     {
-        int err = CL_CATCH();
+        int err; CL_CATCH(err);
         if (err == CL_ERR_NONE) {
             cl_error(CL_ERR_GENERAL, "test nlx");
             CL_UNCATCH();

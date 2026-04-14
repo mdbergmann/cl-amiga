@@ -41,7 +41,7 @@ static const char *eval_str(const char *expr)
     static char buf[1024];
     int err;
 
-    err = CL_CATCH();
+    CL_CATCH(err);
     if (err == CL_ERR_NONE) {
         CL_Obj result = cl_eval_string(expr);
         cl_prin1_to_string(result, buf, sizeof(buf));

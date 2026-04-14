@@ -31,12 +31,19 @@ typedef struct {
     int active;
 } CL_ErrorFrame;
 
-/* Push a new error frame, returns 0 on setjmp, error code on longjmp */
-#define CL_CATCH() \
-    (cl_error_frame_top < CL_MAX_ERROR_FRAMES ? \
-     (cl_error_frames[cl_error_frame_top].active = 1, \
-      setjmp(cl_error_frames[cl_error_frame_top++].buf)) : \
-     CL_ERR_OVERFLOW)
+/* Push an error frame.  Returns the frame index, or -1 on overflow.
+ * Must be called BEFORE setjmp so that all side-effects are sequenced
+ * before the setjmp point (C99 7.13.1.1 restricts contexts for setjmp). */
+int cl_error_frame_push(void);
+
+/* Push a new error frame and setjmp into it.
+ * Stores 0 (direct return), an error code (longjmp return),
+ * or CL_ERR_OVERFLOW into err_var. */
+#define CL_CATCH(err_var) do { \
+    int _cl_cf_ = cl_error_frame_push(); \
+    (err_var) = (_cl_cf_ < 0) ? CL_ERR_OVERFLOW \
+              : setjmp(cl_error_frames[_cl_cf_].buf); \
+} while(0)
 
 /* Pop error frame (call in matching block after CL_CATCH) */
 #define CL_UNCATCH() \

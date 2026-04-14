@@ -193,7 +193,7 @@ void cl_invoke_debugger(CL_Obj condition)
 
             /* Call hook protected by CL_CATCH — if hook transfers
              * control (longjmp), we never reach the restore */
-            err = CL_CATCH();
+            CL_CATCH(err);
             if (err == CL_ERR_NONE) {
                 cl_vm_apply(saved_hook, hook_args, 2);
                 CL_UNCATCH();
@@ -287,7 +287,7 @@ void cl_invoke_debugger(CL_Obj condition)
             cl_vm.sp = 0;
             cl_vm.fp = 0;
 
-            err = CL_CATCH();
+            CL_CATCH(err);
             if (err == CL_ERR_NONE) {
                 CL_Obj result = cl_eval_string(line);
                 char buf[512];
