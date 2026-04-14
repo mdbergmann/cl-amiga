@@ -13,6 +13,7 @@
 #include "fasl.h"
 #include "../platform/platform.h"
 #include "../platform/platform_thread.h"
+
 #include <stdio.h>
 #include <string.h>
 #include <stdlib.h>
@@ -363,7 +364,7 @@ static CL_Obj bi_load(CL_Obj *args, int n)
                             {
                                 int sf = cl_vm.fp, ss = cl_vm.sp, sn = cl_nlx_top;
                                 int saved_gc_roots_fasl = gc_root_count;
-                                fasl_err = CL_CATCH();
+                                CL_CATCH(fasl_err);
                                 if (fasl_err == CL_ERR_NONE) {
                                     cl_fasl_load((const uint8_t *)buf, (uint32_t)size);
                                     platform_free(buf);
@@ -543,7 +544,7 @@ static CL_Obj bi_load(CL_Obj *args, int n)
         {
         int saved_gc_roots = gc_root_count;
 
-        err = CL_CATCH();
+        CL_CATCH(err);
         if (err == CL_ERR_NONE) {
             CL_GC_PROTECT(expr);
             bytecode = cl_compile(expr);
@@ -846,10 +847,10 @@ static void make_fasl_path(const char *input, char *output, uint32_t outsize)
  * Returns (values output-truename nil nil) per CL spec.
  */
 
-__attribute__((no_stack_protector))
 static CL_Obj bi_compile_file(CL_Obj *args, int n)
 {
-    char in_path[1024], out_path[1024];
+    char in_path[1024];
+    char out_path[1024];
     char *src_buf;
     unsigned long src_size;
     CL_Obj stream, expr, bytecode;
@@ -862,6 +863,9 @@ static CL_Obj bi_compile_file(CL_Obj *args, int n)
     CL_Obj output_pathname;
     int verbose = 0;
     int i;
+#ifdef DEBUG_COMPILER
+    int cf_form_count = 0;
+#endif
 
     /* Dynamic serialization buffers. */
     uint8_t *fasl_buf = NULL;
@@ -873,15 +877,13 @@ static CL_Obj bi_compile_file(CL_Obj *args, int n)
     uint32_t unit_capacity = 32 * 1024;  /* 32KB per unit */
     CL_FaslWriter *uw = NULL;
 
-    /* Collected bytecodes — serialization is deferred until after the
-       compile+eval loop completes, to avoid FASL serializer's closure
-       traversal interacting with the outer VM's setjmp/longjmp state. */
+    /* Collected bytecodes for deferred FASL serialization */
     CL_Obj *bc_collected = NULL;
     int bc_collect_count = 0;
     uint32_t bc_collect_capacity = 4096;
 
-    volatile uint32_t n_units = 0;
-    volatile int fasl_incomplete = 0;  /* set if any unit fails to serialize */
+    uint32_t n_units = 0;
+    int fasl_incomplete = 0;  /* set if any unit fails to serialize */
 
     extern const char *cl_coerce_to_namestring(CL_Obj arg, char *buf, uint32_t bufsz);
     extern CL_Obj cl_parse_namestring(const char *str, uint32_t len);
@@ -1016,9 +1018,6 @@ static CL_Obj bi_compile_file(CL_Obj *args, int n)
     CL_GC_PROTECT(stream);
 
     /* Read-compile-eval-serialize loop */
-#ifdef DEBUG_COMPILER
-    int cf_form_count = 0;
-#endif
     for (;;) {
         int err;
         int saved_fp, saved_sp, saved_nlx;
@@ -1040,7 +1039,7 @@ static CL_Obj bi_compile_file(CL_Obj *args, int n)
         {
         int saved_gc_roots_cf = gc_root_count;
 
-        err = CL_CATCH();
+        CL_CATCH(err);
         if (err == CL_ERR_NONE) {
             expr = cl_read_from_stream(stream);
             if (cl_reader_eof()) {
@@ -1060,11 +1059,6 @@ static CL_Obj bi_compile_file(CL_Obj *args, int n)
             bytecode = cl_compile(expr);
             CL_GC_UNPROTECT(1);
             if (!CL_NULL_P(bytecode)) {
-#ifdef DEBUG_COMPILER
-                fprintf(stderr, "[compile-file %s] form %d compiled, evaluating\n",
-                        in_path, cf_form_count);
-                fflush(stderr);
-#endif
                 /* GC-protect bytecode across eval (cl_vm_eval may
                  * allocate and trigger GC). */
                 CL_GC_PROTECT(bytecode);
@@ -1103,7 +1097,7 @@ static CL_Obj bi_compile_file(CL_Obj *args, int n)
             cl_vm.fp = saved_fp;
             cl_vm.sp = saved_sp;
             cl_nlx_top = saved_nlx;
-            gc_root_count = saved_gc_roots_cf;  /* Restore leaked GC roots */
+            gc_root_count = saved_gc_roots_cf;
             cl_error_print();
             CL_UNCATCH();
         }
@@ -1259,7 +1253,6 @@ static CL_Obj bi_compile_file(CL_Obj *args, int n)
     platform_free(w);
     platform_free(uw);
     if (bc_collected) platform_free(bc_collected);
-
     /* Restore *compile-file-pathname* and *compile-file-truename* */
     cl_set_symbol_value(SYM_STAR_COMPILE_FILE_PATHNAME, saved_cfp);
     cl_set_symbol_value(SYM_STAR_COMPILE_FILE_TRUENAME, saved_cft);

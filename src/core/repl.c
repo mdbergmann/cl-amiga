@@ -104,7 +104,7 @@ void cl_load_file(const char *path)
             expr = cl_read_from_stream(stream);
             if (cl_reader_eof()) break;
 
-            err = CL_CATCH();
+            CL_CATCH(err);
             if (err == CL_ERR_NONE) {
                 CL_GC_PROTECT(expr);
                 bytecode = cl_compile(expr);
@@ -183,7 +183,7 @@ static void load_user_init(void)
                     expr = cl_read_from_stream(stream);
                     if (cl_reader_eof()) break;
 
-                    err = CL_CATCH();
+                    CL_CATCH(err);
                     if (err == CL_ERR_NONE) {
                         CL_GC_PROTECT(expr);
                         bytecode = cl_compile(expr);
@@ -465,7 +465,7 @@ void cl_repl(void)
 
         {
             int err;
-            err = CL_CATCH();
+            CL_CATCH(err);
             if (err == CL_ERR_NONE) {
                 /* Inline read/compile/eval for history variable support */
                 CL_ReadStream stream;
@@ -579,7 +579,7 @@ void cl_repl_batch(void)
 
             while (stream.pos < stream.len && !quit) {
                 int err;
-                err = CL_CATCH();
+                CL_CATCH(err);
                 if (err == CL_ERR_NONE) {
                     CL_Obj expr, bytecode, result;
 
@@ -676,7 +676,7 @@ void cl_repl_init_no_userinit(int no_userinit)
                 uint32_t fasl_mt = platform_file_mtime(fasl_path);
                 uint32_t src_mt  = platform_file_mtime(src_path);
                 if (fasl_mt > 0 && fasl_mt >= src_mt) {
-                    int err = CL_CATCH();
+                    int err; CL_CATCH(err);
                     if (err == CL_ERR_NONE) {
                         char cmd[256];
                         snprintf(cmd, sizeof(cmd), "(load \"%s\")", fasl_path);
@@ -690,7 +690,7 @@ void cl_repl_init_no_userinit(int no_userinit)
 
             /* Fall back to source */
             if (!boot_loaded && platform_file_exists(src_path)) {
-                int err = CL_CATCH();
+                int err; CL_CATCH(err);
                 if (err == CL_ERR_NONE) {
                     char cmd[256];
                     snprintf(cmd, sizeof(cmd), "(load \"%s\")", src_path);
@@ -702,7 +702,7 @@ void cl_repl_init_no_userinit(int no_userinit)
 
             /* Recompile FASL if we loaded from source */
             if (boot_loaded && !fasl_fresh) {
-                int err = CL_CATCH();
+                int err; CL_CATCH(err);
                 if (err == CL_ERR_NONE) {
                     char cmd[512];
                     snprintf(cmd, sizeof(cmd),

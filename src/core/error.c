@@ -12,6 +12,13 @@
 /* All error state now lives in CL_Thread.
  * Compatibility macros in thread.h redirect the old names. */
 
+int cl_error_frame_push(void)
+{
+    if (cl_error_frame_top >= CL_MAX_ERROR_FRAMES) return -1;
+    cl_error_frames[cl_error_frame_top].active = 1;
+    return cl_error_frame_top++;
+}
+
 void cl_error_init(void)
 {
     cl_error_frame_top = 0;

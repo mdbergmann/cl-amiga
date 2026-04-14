@@ -226,7 +226,7 @@ TEST(inspect_is_bound)
     /* Verify inspect is a bound function */
     const char *r;
     static char buf[64];
-    int err = CL_CATCH();
+    int err; CL_CATCH(err);
     if (err == CL_ERR_NONE) {
         CL_Obj result = cl_eval_string("(fboundp 'inspect)");
         cl_prin1_to_string(result, buf, sizeof(buf));

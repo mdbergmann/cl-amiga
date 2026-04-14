@@ -182,7 +182,7 @@ CL_Obj cl_vm_apply(CL_Obj func, CL_Obj *args, int nargs)
      * frame array) so it survives longjmp past this C frame. */
     {
         CL_Frame *frame;
-        int base_fp, base_nlx;
+        int base_fp, base_nlx, saved_sp;
         CL_Obj result;
 
         cl_check_c_stack("cl_vm_apply");
@@ -192,6 +192,7 @@ CL_Obj cl_vm_apply(CL_Obj func, CL_Obj *args, int nargs)
          * func+args and pushes the result, sp = bp+1 so OP_HALT
          * sees the result. */
         base_fp = cl_vm.fp;
+        saved_sp = cl_vm.sp;
         base_nlx = cl_nlx_top;
         if (cl_vm.fp >= cl_vm.frame_size)
             cl_error(CL_ERR_OVERFLOW, "VM frame stack overflow");
@@ -216,6 +217,13 @@ CL_Obj cl_vm_apply(CL_Obj func, CL_Obj *args, int nargs)
             cl_vm_push(args[i]);
 
         result = cl_vm_run(base_fp, base_nlx);
+
+        /* Restore fp/sp: OP_HALT doesn't decrement fp, so the stub
+         * frame would leak.  Without this restore, each cl_vm_apply
+         * call leaves fp one higher than it should be, causing OP_RET
+         * in the caller's cl_vm_run to restore the wrong frame. */
+        cl_vm.fp = base_fp;
+        cl_vm.sp = saved_sp;
         return result;
     }
 }
@@ -498,14 +506,11 @@ static int nlx_frame_is_stale(CL_NLXFrame *nlx)
     return target->code != nlx->code;
 }
 
-/* Call a built-in C function.
- * MUST NOT be inlined: fptr calls may use setjmp/longjmp internally
- * (e.g. bi_compile_file), and inlining would put them in cl_vm_run's
- * frame, corrupting its register-cached locals after longjmp. */
-__attribute__((noinline))
-static CL_Obj call_builtin(CL_Function *func, CL_Obj *args, int nargs)
+/* Validate builtin call arguments — called before the actual fptr dispatch.
+ * Separated from call_builtin to keep call_builtin's stack frame tiny
+ * (minimizes surface area for stack corruption). */
+static void validate_builtin(CL_Function *func, int nargs)
 {
-    CL_Obj result;
     CL_CFunc fptr;
     cl_check_c_stack("call_builtin");
     if (nargs < func->min_args) {
@@ -518,17 +523,14 @@ static CL_Obj call_builtin(CL_Function *func, CL_Obj *args, int nargs)
                  CL_NULL_P(func->name) ? "?" : cl_symbol_name(func->name),
                  nargs, func->max_args);
     }
-    cl_mv_count = 1;
     fptr = func->func;
     if (!fptr) {
         cl_error(CL_ERR_TYPE, "NULL C function pointer in %s",
                  CL_NULL_P(func->name) ? "?" : cl_symbol_name(func->name));
     }
-    /* Validate function pointer is in a reasonable range (not obviously corrupted) */
     {
         uintptr_t fp_val = (uintptr_t)fptr;
 #ifdef PLATFORM_AMIGA
-        /* 68k: functions need only 2-byte alignment (even addresses) */
         if (fp_val < 0x1000 || (fp_val & 0x1) != 0) {
 #else
         if (fp_val < 0x1000 || (fp_val & 0x3) != 0) {
@@ -542,12 +544,37 @@ static CL_Obj call_builtin(CL_Function *func, CL_Obj *args, int nargs)
             cl_error(CL_ERR_GENERAL, "Corrupted C function pointer");
         }
     }
-    result = fptr(args, nargs);
-    cl_mv_values[0] = result;
+}
+
+/* Call a built-in C function.
+ * MUST NOT be inlined: fptr calls may use setjmp/longjmp internally
+ * (e.g. bi_compile_file), and inlining would put them in cl_vm_run's
+ * frame, corrupting its register-cached locals after longjmp.
+ *
+ * Kept deliberately minimal (no large locals, no cached pointers that
+ * survive across the fptr call) to avoid stack-corruption exposure.
+ * All validation is done in validate_builtin() before we get here. */
+/* Crash diagnostics: last builtin called (survives crashes) */
+volatile const char *last_builtin_name = "(none)";
+volatile void *last_builtin_fptr = NULL;
+volatile CL_Obj last_builtin_obj = 0;
+
+static CL_Obj call_builtin(CL_Function *func, CL_Obj *args, int nargs)
+{
+    CL_Obj result;
+    validate_builtin(func, nargs);
+    /* Record for crash diagnostics */
+    last_builtin_name = (!CL_NULL_P(func->name) && CL_SYMBOL_P(func->name))
+                        ? cl_symbol_name(func->name) : "?";
+    last_builtin_fptr = (void *)func->func;
+    last_builtin_obj = CL_PTR_TO_OBJ(func);
+    cl_get_current_thread()->mv_count = 1;
+    result = func->func(args, nargs);
+    cl_get_current_thread()->mv_values[0] = result;
     return result;
 }
 
-#define C_STACK_LIMIT (2 * 1024 * 1024)  /* 2MB of 8MB, leave margin for large callee frames */
+#define C_STACK_LIMIT (3 * 1024 * 1024)  /* 3MB of 8MB, leave 5MB margin */
 
 void cl_check_c_stack(const char *context)
 {
@@ -642,13 +669,24 @@ static CL_Obj cl_vm_run(int base_fp, int base_nlx)
      * a pop (double sp modification without sequence point). */
 #define cl_vm_push(v) do { \
         CL_Obj _pv = (v); \
+        if (thr->vm.sp >= (int)thr->vm.stack_size) \
+            cl_error(CL_ERR_OVERFLOW, "VM stack overflow"); \
         thr->vm.stack[thr->vm.sp++] = _pv; \
     } while(0)
 #define cl_vm_pop() (thr->vm.stack[--thr->vm.sp])
 
-    /* Inline mv_count: written on nearly every opcode */
+    /* Cache all hot-path thread accessors through local thr pointer.
+     * Without this, cl_vm/cl_mv_values/cl_mv_count each call
+     * cl_get_current_thread() on every access, which at -O0 is a
+     * full function call whose return value can be corrupted by
+     * stack memory reuse between the callee's ret and the caller's
+     * use of the return register. */
+#undef cl_vm
+#define cl_vm (thr->vm)
 #undef cl_mv_count
 #define cl_mv_count (thr->mv_count)
+#undef cl_mv_values
+#define cl_mv_values (thr->mv_values)
 
     CL_Frame *frame = &cl_vm.frames[cl_vm.fp - 1];
     uint8_t *code = frame->code;
@@ -750,21 +788,30 @@ static CL_Obj cl_vm_run(int base_fp, int base_nlx)
         }
     }
 
-/* Dispatch macros for computed goto */
 #define VM_DISPATCH() do { \
         extern int gc_compact_pending; \
         if (gc_compact_pending) { \
             frame->ip = ip; \
             cl_gc_compact_if_pending(); \
         } \
-        op = code[ip++]; goto *dispatch_table[op]; \
+        op = code[ip++]; \
+        if (__builtin_expect(!dispatch_table[op], 0)) { \
+            fprintf(stderr, "[VM] NULL dispatch for op=0x%02x ip=%u fp=%d\n", op, ip-1, cl_vm.fp); \
+            cl_capture_backtrace(); fprintf(stderr, "%s", cl_backtrace_buf); fflush(stderr); abort(); \
+        } \
+        goto *dispatch_table[op]; \
     } while(0)
 #define VM_CASE(opname) vm_op_##opname
 #define VM_BREAK VM_DISPATCH()
 #define VM_DEFAULT vm_op_unknown
 
     /* Initial dispatch (skip compaction check on first op) */
-    op = code[ip++]; goto *dispatch_table[op];
+    op = code[ip++];
+    if (__builtin_expect(!dispatch_table[op], 0)) {
+        fprintf(stderr, "[VM] NULL initial dispatch for op=0x%02x ip=%u fp=%d\n", op, ip-1, cl_vm.fp);
+        cl_capture_backtrace(); fprintf(stderr, "%s", cl_backtrace_buf); fflush(stderr); abort();
+    }
+    goto *dispatch_table[op];
 
 #else /* Standard switch dispatch */
 
@@ -796,7 +843,6 @@ static CL_Obj cl_vm_run(int base_fp, int base_nlx)
         vm_trace_idx = (vm_trace_idx + 1) % VM_TRACE_SIZE;
 #endif
 
-        /* Validate code pointer before each dispatch */
         if (!code) {
             const char *fn = "?";
             CL_Bytecode *fbc = NULL;
@@ -860,13 +906,57 @@ static CL_Obj cl_vm_run(int base_fp, int base_nlx)
         }
 #endif
 
+        /* CRASH HUNT: check if we're about to dispatch CLASS-SLOT-INDEX-TABLE at fp=45 */
+        if (cl_vm.fp == 45 && ip == 0) {
+            CL_Bytecode *_chk = NULL;
+            if (CL_BYTECODE_P(frame->bytecode))
+                _chk = (CL_Bytecode *)CL_OBJ_TO_PTR(frame->bytecode);
+            else if (CL_CLOSURE_P(frame->bytecode)) {
+                CL_Closure *_cc = (CL_Closure *)CL_OBJ_TO_PTR(frame->bytecode);
+                if (CL_BYTECODE_P(_cc->bytecode))
+                    _chk = (CL_Bytecode *)CL_OBJ_TO_PTR(_cc->bytecode);
+            }
+            if (_chk && _chk->name != CL_NIL && CL_SYMBOL_P(_chk->name)) {
+                const char *_fn = cl_symbol_name(_chk->name);
+                if (_fn && _fn[0] == 'C' && _fn[5] == '-' && _fn[6] == 'S') {
+                    fprintf(stderr, "[CRASH-HUNT] About to dispatch fp=%d ip=0 fn=%s code=%p code[0]=0x%02x thr=%p\n",
+                            cl_vm.fp, _fn, (void *)code, (unsigned)code[0], (void *)thr);
+                    fprintf(stderr, "[CRASH-HUNT] frame=%p frame->code=%p frame->bytecode=0x%08x base_fp=%d\n",
+                            (void *)frame, (void *)frame->code, (unsigned)frame->bytecode, base_fp);
+                    fflush(stderr);
+                }
+            }
+        }
+
         /* Save last dispatched opcode for crash diagnostics (debug only) */
 #ifdef DEBUG_VM
         dbg_last_op = op;
         dbg_last_ip = ip;
         dbg_last_fp = cl_vm.fp;
         dbg_last_code = code;
+
+        /* Targeted: dump state when dispatching CLASS-SLOT-INDEX-TABLE */
+        {
+            CL_Bytecode *_fbc = NULL;
+            if (CL_BYTECODE_P(frame->bytecode))
+                _fbc = (CL_Bytecode *)CL_OBJ_TO_PTR(frame->bytecode);
+            else if (CL_CLOSURE_P(frame->bytecode)) {
+                CL_Closure *_cc = (CL_Closure *)CL_OBJ_TO_PTR(frame->bytecode);
+                if (CL_BYTECODE_P(_cc->bytecode))
+                    _fbc = (CL_Bytecode *)CL_OBJ_TO_PTR(_cc->bytecode);
+            }
+            if (_fbc && _fbc->name != CL_NIL && CL_SYMBOL_P(_fbc->name)) {
+                const char *_fn = cl_symbol_name(_fbc->name);
+                if (_fn && _fn[0] == 'C' && _fn[5] == '-' && _fn[6] == 'S' && _fn[10] == '-') {
+                    fprintf(stderr, "[CSIT-DISP] op=0x%02x ip=%u fp=%d fn=%s code=%p frame_code=%p base_fp=%d\n",
+                            op, ip-1, cl_vm.fp, _fn, (void *)code, (void *)frame->code, base_fp);
+                    fflush(stderr);
+                }
+            }
+        }
 #endif
+        /* [TRACE] suppressed */
+
         if (op == 0x00) goto unknown_opcode;
         switch (op) {
         case 0x00:
@@ -1456,6 +1546,16 @@ static CL_Obj cl_vm_run(int base_fp, int base_nlx)
                     constants = callee_bc->constants;
                     ip = 0;
 
+                    /* Targeted crash diagnostic: tailcall path */
+                    if (0 && cl_vm.fp >= 44) {
+                        const char *_fn = "?";
+                        if (callee_bc->name != CL_NIL && CL_SYMBOL_P(callee_bc->name))
+                            _fn = cl_symbol_name(callee_bc->name);
+                        fprintf(stderr, "[DIAG-FP45] TAILCALL fp=%d fn=%s code=%p\n",
+                                cl_vm.fp, _fn, (void *)code);
+                        fflush(stderr);
+                    }
+
                     if (!constants && callee_bc->n_constants > 0) {
                         CL_Obj fname = callee_bc->name;
                         fprintf(stderr, "[VM] BUG: tailcall '%s' has %d constants but NULL constants ptr\n",
@@ -1592,6 +1692,68 @@ static CL_Obj cl_vm_run(int base_fp, int base_nlx)
                     constants = callee_bc->constants;
                     ip = 0;
 
+                    /* Targeted crash diagnostic: detect frame push at fp=44→45 */
+                    if (0 && cl_vm.fp >= 44) {
+                        const char *_fn = "?";
+                        if (callee_bc->name != CL_NIL && CL_SYMBOL_P(callee_bc->name))
+                            _fn = cl_symbol_name(callee_bc->name);
+                        fprintf(stderr, "[DIAG-FP45] NORMAL-CALL fp=%d→%d fn=%s code=%p\n",
+                                cl_vm.fp - 1, cl_vm.fp, _fn, (void *)code);
+                        fflush(stderr);
+                    }
+
+                    /* Validate: code pointer must be valid */
+                    if (!code) {
+                        CL_Obj fname = callee_bc->name;
+                        fprintf(stderr, "[VM] BUG: bytecode '%s' has NULL code ptr (bc=0x%08x)\n",
+                                (!CL_NULL_P(fname) && CL_SYMBOL_P(fname)) ? cl_symbol_name(fname) : "<anon>",
+                                (unsigned)func_obj);
+                        cl_capture_backtrace();
+                        fprintf(stderr, "%s", cl_backtrace_buf);
+                        cl_error(CL_ERR_GENERAL, "Bytecode has NULL code pointer");
+                    }
+                    /* Validate: first byte of code should be a valid opcode.
+                     * If code was freed, reading it may crash. Use a signal-safe
+                     * probe: read the first byte and check it's a known opcode. */
+                    {
+                        uint8_t first_op = code[0]; /* may crash here if freed */
+                        if (first_op == 0x00 && callee_bc->code_len > 1) {
+                            CL_Obj fname = callee_bc->name;
+                            fprintf(stderr,
+                                "[VM] WARNING: bytecode '%s' starts with opcode 0x00 "
+                                "(code=%p code_len=%u bc=0x%08x)\n",
+                                (!CL_NULL_P(fname) && CL_SYMBOL_P(fname))
+                                    ? cl_symbol_name(fname) : "<anon>",
+                                (void *)code, callee_bc->code_len,
+                                (unsigned)func_obj);
+                            cl_capture_backtrace();
+                            fprintf(stderr, "%s", cl_backtrace_buf);
+                            fflush(stderr);
+                        }
+                    }
+
+                    /* Validate: bytecode object must still be valid (not GC'd and reused) */
+                    {
+                        CL_Obj bc_obj = CL_CLOSURE_P(func_obj)
+                            ? ((CL_Closure *)CL_OBJ_TO_PTR(func_obj))->bytecode
+                            : func_obj;
+                        if (!CL_BYTECODE_P(bc_obj)) {
+                            fprintf(stderr,
+                                "[VM] BUG: bytecode 0x%08x type=%u (expected BYTECODE=%u) "
+                                "— GC swept/reused? fn=%s code=%p\n",
+                                (unsigned)bc_obj,
+                                (unsigned)CL_HDR_TYPE(CL_OBJ_TO_PTR(bc_obj)),
+                                (unsigned)TYPE_BYTECODE,
+                                callee_bc->name != CL_NIL && CL_SYMBOL_P(callee_bc->name)
+                                    ? cl_symbol_name(callee_bc->name) : "<anon>",
+                                (void *)callee_bc->code);
+                            cl_capture_backtrace();
+                            fprintf(stderr, "%s", cl_backtrace_buf);
+                            cl_error(CL_ERR_GENERAL,
+                                     "Bytecode object type changed — likely GC'd and reused");
+                        }
+                    }
+
                     /* Validate: bytecode with constants must have non-NULL constants ptr */
                     if (!constants && callee_bc->n_constants > 0) {
                         CL_Obj fname = callee_bc->name;
@@ -1650,7 +1812,8 @@ static CL_Obj cl_vm_run(int base_fp, int base_nlx)
         }
 
         VM_CASE(OP_RET): {
-            CL_Obj result = (cl_vm.sp > (int)(frame->bp + frame->n_locals))
+            CL_Obj result;
+            result = (cl_vm.sp > (int)(frame->bp + frame->n_locals))
                             ? cl_vm_pop() : CL_NIL;
 
             /* Trace: print return value */
@@ -1738,6 +1901,9 @@ static CL_Obj cl_vm_run(int base_fp, int base_nlx)
                     cl_error(CL_ERR_GENERAL, "NULL constants in restored frame");
                 }
             }
+
+            /* CRASH HUNT: check before/after push when returning from CLASS-SLOT-INDEX-TABLE at fp >= 44 */
+            /* [RET-DIAG] suppressed */
 
             cl_vm_push(result);
             VM_BREAK;
@@ -2196,6 +2362,9 @@ static CL_Obj cl_vm_run(int base_fp, int base_nlx)
                     vm_flat_args[nflat++] = cl_car(a);
                     a = cl_cdr(a);
                 }
+                if (!CL_NULL_P(a)) {
+                    cl_error(CL_ERR_ARGS, "APPLY: too many arguments (>64) in arglist");
+                }
             }
 
             /* Resolve symbol to its function binding */
@@ -2423,6 +2592,16 @@ static CL_Obj cl_vm_run(int base_fp, int base_nlx)
                     new_frame->bp = new_bp;
                     new_frame->n_locals = callee_bc->n_locals;
                     new_frame->nargs = call_nargs;
+
+                    /* DIAG: OP_APPLY frame push */
+                    if (0 && cl_vm.fp >= 44) {
+                        const char *_fn = "?";
+                        if (callee_bc->name != CL_NIL && CL_SYMBOL_P(callee_bc->name))
+                            _fn = cl_symbol_name(callee_bc->name);
+                        fprintf(stderr, "[DIAG-FP45] APPLY fp=%d fn=%s code=%p\n",
+                                cl_vm.fp, _fn, (void *)callee_bc->code);
+                        fflush(stderr);
+                    }
 
                     frame = new_frame;
                     code = callee_bc->code;
@@ -2923,8 +3102,12 @@ static CL_Obj cl_vm_run(int base_fp, int base_nlx)
 /* end of inline hot-path macros */
 #undef cl_vm_push
 #undef cl_vm_pop
+#undef cl_vm
+#define cl_vm (CT->vm)
 #undef cl_mv_count
 #define cl_mv_count (CT->mv_count)
+#undef cl_mv_values
+#define cl_mv_values (CT->mv_values)
 
 #undef VM_DISPATCH
 #undef VM_CASE
@@ -2943,7 +3126,7 @@ CL_Obj cl_vm_eval(CL_Obj bytecode_obj)
 {
     CL_Bytecode *bc;
     CL_Frame *frame;
-    int base_fp, base_nlx;
+    int base_fp, base_nlx, saved_sp;
     CL_Obj result;
 
     cl_check_c_stack("cl_vm_eval");
@@ -2967,6 +3150,7 @@ CL_Obj cl_vm_eval(CL_Obj bytecode_obj)
 
     /* Set up initial frame */
     base_fp = cl_vm.fp;
+    saved_sp = cl_vm.sp;
     base_nlx = cl_nlx_top;
     if (cl_vm.fp >= cl_vm.frame_size)
         cl_error(CL_ERR_OVERFLOW, "VM frame stack overflow");
@@ -2987,7 +3171,29 @@ CL_Obj cl_vm_eval(CL_Obj bytecode_obj)
             cl_vm_push(CL_NIL);
     }
 
+    /* Targeted crash diagnostic: cl_vm_eval path (disabled) */
+#if 0
+    if (bc->name != CL_NIL && CL_SYMBOL_P(bc->name)) {
+        const char *_fn = cl_symbol_name(bc->name);
+        if (_fn && _fn[0] == 'C' && _fn[1] == 'L' && _fn[2] == 'A' &&
+            _fn[3] == 'S' && _fn[4] == 'S' && _fn[5] == '-' &&
+            _fn[6] == 'S' && _fn[7] == 'L' && _fn[8] == 'O' &&
+            _fn[9] == 'T') {
+            fprintf(stderr, "[DIAG-EVAL] Entering %s: code=%p fp=%d sp=%d\n",
+                    _fn, (void *)bc->code, cl_vm.fp, cl_vm.sp);
+            fflush(stderr);
+        }
+    }
+#endif
+
     result = cl_vm_run(base_fp, base_nlx);
+
+    /* Restore fp/sp: OP_HALT doesn't decrement fp, so the eval frame
+     * would leak.  Without this restore, each cl_vm_eval call leaves
+     * fp one higher, corrupting the frame stack for the caller. */
+    cl_vm.fp = base_fp;
+    cl_vm.sp = saved_sp;
+
 #ifdef DEBUG_VM
     vm_eval_depth--;
 #endif

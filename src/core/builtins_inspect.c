@@ -450,7 +450,7 @@ static void inspect_loop(InspectState *state)
             cl_vm.sp = 0;
             cl_vm.fp = 0;
 
-            err = CL_CATCH();
+            CL_CATCH(err);
             if (err == CL_ERR_NONE) {
                 CL_Obj result = cl_eval_string(line + 2);
                 char buf[512];

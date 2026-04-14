@@ -40,7 +40,7 @@ static const char *eval_print(const char *str)
     static char buf[512];
     int err;
 
-    err = CL_CATCH();
+    CL_CATCH(err);
     if (err == CL_ERR_NONE) {
         CL_Obj result = cl_eval_string(str);
         cl_prin1_to_string(result, buf, sizeof(buf));
@@ -63,7 +63,7 @@ static int eval_int(const char *str)
 /* Helper: eval and expect an error, return 1 if error occurred */
 static int eval_errors(const char *str)
 {
-    int err = CL_CATCH();
+    int err; CL_CATCH(err);
     if (err == CL_ERR_NONE) {
         cl_eval_string(str);
         CL_UNCATCH();

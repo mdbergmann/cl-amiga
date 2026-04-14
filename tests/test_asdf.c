@@ -10,6 +10,7 @@
 #include "core/vm.h"
 #include "core/builtins.h"
 #include "core/repl.h"
+#include "core/stream.h"
 #include "platform/platform.h"
 
 /* 12MB heap — boot.lisp + CLOS + ASDF live data is ~11.1MB */
@@ -27,6 +28,7 @@ static void setup(void)
     cl_printer_init();
     cl_compiler_init();
     cl_vm_init(0, 0);
+    cl_stream_init();
     cl_builtins_init();
     cl_repl_init();  /* Loads boot.lisp + CLOS via (require "clos") */
 }
@@ -43,7 +45,7 @@ static const char *eval_print(const char *str)
     static char buf[512];
     int err;
 
-    err = CL_CATCH();
+    CL_CATCH(err);
     if (err == CL_ERR_NONE) {
         CL_Obj result = cl_eval_string(str);
         cl_prin1_to_string(result, buf, sizeof(buf));
@@ -61,7 +63,7 @@ static const char *eval_print(const char *str)
 /* Helper: load a file, return 0 on success, error code on failure */
 static int load_file(const char *path)
 {
-    int err = CL_CATCH();
+    int err; CL_CATCH(err);
     if (err == CL_ERR_NONE) {
         cl_load_file(path);
         CL_UNCATCH();

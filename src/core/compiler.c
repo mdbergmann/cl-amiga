@@ -226,6 +226,8 @@ static void parse_lambda_list(CL_Obj params, CL_ParsedLambdaList *ll)
 
         switch (state) {
         case 0:
+            if (ll->n_required >= CL_MAX_LOCALS)
+                cl_error(CL_ERR_GENERAL, "Too many required parameters (max %d)", CL_MAX_LOCALS);
             ll->required[ll->n_required++] = item;
             break;
         case 1:
@@ -242,6 +244,8 @@ static void parse_lambda_list(CL_Obj params, CL_ParsedLambdaList *ll)
                 ll->opt_defaults[ll->n_optional] = CL_NIL;
                 ll->opt_suppliedp[ll->n_optional] = CL_NIL;
             }
+            if (ll->n_optional >= CL_MAX_LOCALS)
+                cl_error(CL_ERR_GENERAL, "Too many optional parameters (max %d)", CL_MAX_LOCALS);
             ll->n_optional++;
             break;
         case 2:
@@ -279,6 +283,8 @@ static void parse_lambda_list(CL_Obj params, CL_ParsedLambdaList *ll)
                 ll->key_keywords[ll->n_keys] = cl_intern_keyword(
                     name_str, (uint32_t)strlen(name_str));
             }
+            if (ll->n_keys >= CL_MAX_LOCALS)
+                cl_error(CL_ERR_GENERAL, "Too many keyword parameters (max %d)", CL_MAX_LOCALS);
             ll->n_keys++;
             break;
         case 4:
@@ -289,6 +295,8 @@ static void parse_lambda_list(CL_Obj params, CL_ParsedLambdaList *ll)
                 ll->aux_names[ll->n_aux] = item;
                 ll->aux_inits[ll->n_aux] = CL_NIL;
             }
+            if (ll->n_aux >= CL_MAX_LOCALS)
+                cl_error(CL_ERR_GENERAL, "Too many &aux bindings (max %d)", CL_MAX_LOCALS);
             ll->n_aux++;
             break;
         }
@@ -307,6 +315,7 @@ void compile_lambda(CL_Compiler *c, CL_Obj form)
     /* ll, key_slot_indices, key_suppliedp_indices, param_vars, param_slots,
      * lambda_needs_boxing are all in CL_Compiler struct (heap-allocated)
      * to avoid stack overflow on AmigaOS 65KB stack */
+
 
     /* Heap-allocate inner compiler (too large for AmigaOS stack) */
     inner = (CL_Compiler *)platform_alloc(sizeof(CL_Compiler));
@@ -358,6 +367,7 @@ void compile_lambda(CL_Compiler *c, CL_Obj form)
             inner->outer_tag_count++;
         }
     }
+
 
     for (i = 0; i < inner->ll.n_required; i++)
         cl_env_add_local(env, inner->ll.required[i]);
@@ -777,9 +787,10 @@ top:
                             call_args[1] = val;
                             scan_macro_depth++;
                             {
-                                int err = CL_CATCH();
+                                int err; CL_CATCH(err);
                                 if (err == 0) {
-                                    CL_Obj expansion = cl_vm_apply(expander_fn, call_args, 2);
+                                    CL_Obj expansion;
+                                    expansion = cl_vm_apply(expander_fn, call_args, 2);
                                     CL_UNCATCH();
                                     cl_debugger_enabled = saved_debugger;
                                     cl_handler_top = saved_handler;
@@ -951,6 +962,7 @@ top:
         return;
     }
 
+
     /* Expand macros before scanning so we can see through macro-generated
      * lambdas and setf forms. Save/restore VM state to handle expansion
      * errors gracefully without corrupting compiler state. */
@@ -969,9 +981,11 @@ top:
         fprintf(stderr, "[scanner] expanding macro: %s\n", cl_symbol_name(head));
 #endif
         scan_macro_depth++;
-        int err = CL_CATCH();
+        {
+        int err; CL_CATCH(err);
         if (err == 0) {
-            CL_Obj expanded = cl_macroexpand_1(form);
+            CL_Obj expanded;
+            expanded = cl_macroexpand_1(form);
             CL_UNCATCH();
             cl_debugger_enabled = saved_debugger;
             cl_handler_top = saved_handler;
@@ -986,11 +1000,6 @@ top:
             }
         } else {
             CL_UNCATCH();
-            /* Macro expansion failed — restore VM state and fall through.
-             * Must also restore gc_root_count: cl_macroexpand_1 pushes
-             * GC roots before calling cl_vm_apply; if the expansion
-             * errors out (longjmp), those roots are never popped, leaving
-             * stale pointers on the GC root stack. */
             cl_vm.sp = saved_sp;
             cl_vm.fp = saved_fp;
             cl_dynbind_restore_to(saved_dyn);
@@ -999,6 +1008,7 @@ top:
             cl_restart_top = saved_restart;
             cl_debugger_enabled = saved_debugger;
             gc_root_count = saved_gc_roots;
+        }
         }
         scan_macro_depth--;
     }
@@ -1505,7 +1515,8 @@ static void compile_setf_place(CL_Compiler *c, CL_Obj place, CL_Obj val_form)
                         args_list = cl_cdr(args_list);
                     }
                     {
-                        CL_Obj expanded = cl_vm_apply(local_exp, arg_array, nargs);
+                        CL_Obj expanded;
+                        expanded = cl_vm_apply(local_exp, arg_array, nargs);
                         compile_setf_place(c, expanded, val_form);
                         c->in_tail = saved_tail;
                         return;
@@ -1742,9 +1753,10 @@ static void compile_setf_place(CL_Compiler *c, CL_Obj place, CL_Obj val_form)
             CL_String *hname = (CL_String *)CL_OBJ_TO_PTR(hsym->name);
             CL_Obj outer_sym = (hname->data[1] == 'A') ? SETF_SYM_CAR : SETF_SYM_CDR;
             CL_Obj arg = cl_car(cl_cdr(place));
-            char ibuf[8];
+            char ibuf[32];
             uint32_t ilen = hname->length - 1, ki;
             CL_Obj isym, iplace, nplace;
+            if (ilen >= sizeof(ibuf)) ilen = sizeof(ibuf) - 1;
             ibuf[0] = 'C';
             for (ki = 0; ki < ilen - 2; ki++)
                 ibuf[ki + 1] = hname->data[ki + 2];
@@ -1976,9 +1988,10 @@ static void compile_setf_place(CL_Compiler *c, CL_Obj place, CL_Obj val_form)
                     CL_Symbol *sym = (CL_Symbol *)CL_OBJ_TO_PTR(head);
                     CL_String *sname = (CL_String *)CL_OBJ_TO_PTR(sym->name);
                     CL_Obj pkg = sym->package;
-                    char buf[128];
+                    char buf[256];
                     int len = snprintf(buf, sizeof(buf), "%%SETF-%.*s",
                                        (int)sname->length, sname->data);
+                    if (len >= (int)sizeof(buf)) len = (int)sizeof(buf) - 1;
                     if (CL_NULL_P(pkg)) pkg = cl_package_cl;
                     setf_fn = cl_intern_in(buf, (uint32_t)len, pkg);
                 }
@@ -2261,7 +2274,15 @@ void compile_expr(CL_Compiler *c, CL_Obj expr)
                 }
                 CL_GC_PROTECT(expr);
                 CL_GC_PROTECT(local_expander);
-                expanded = cl_vm_apply(local_expander, arg_array, nargs);
+                {
+                    int _fp0 = cl_vm.fp, _sp0 = cl_vm.sp;
+                    expanded = cl_vm_apply(local_expander, arg_array, nargs);
+                    if (cl_vm.fp != _fp0 || cl_vm.sp != _sp0) {
+                        fprintf(stderr, "[MXLEAK-LOCAL] local macrolet vm_apply leaked fp:%d→%d sp:%d→%d\n",
+                                _fp0, cl_vm.fp, _sp0, cl_vm.sp);
+                        fflush(stderr);
+                    }
+                }
                 CL_GC_UNPROTECT(2);
                 /* GC-protect expanded form during compilation — recursive
                  * compile_expr may trigger further macro expansions + GC */
@@ -2273,12 +2294,22 @@ void compile_expr(CL_Compiler *c, CL_Obj expr)
         }
 
         if (CL_SYMBOL_P(head) && cl_macro_p(head)) {
-            CL_Obj expanded = cl_macroexpand_1(expr);
+            {
+            int _fp0 = cl_vm.fp, _sp0 = cl_vm.sp;
+            CL_Obj expanded;
+            expanded = cl_macroexpand_1(expr);
+            if (cl_vm.fp != _fp0 || cl_vm.sp != _sp0) {
+                const char *_mname = CL_SYMBOL_P(head) ? cl_symbol_name(head) : "?";
+                fprintf(stderr, "[MXLEAK-GLOBAL] macroexpand_1(%s) leaked fp:%d→%d sp:%d→%d\n",
+                        _mname, _fp0, cl_vm.fp, _sp0, cl_vm.sp);
+                fflush(stderr);
+            }
             /* GC-protect expanded form during compilation — recursive
              * compile_expr may trigger further macro expansions + GC */
             CL_GC_PROTECT(expanded);
             compile_expr(c, expanded);
             CL_GC_UNPROTECT(1);
+            }
             return;
         }
 
@@ -2560,6 +2591,7 @@ CL_Obj cl_compile(CL_Obj expr)
     cl_active_compiler = comp;
 
     compile_expr(comp, expr);
+
     cl_emit(comp, OP_HALT);
 
     bc = (CL_Bytecode *)cl_alloc(TYPE_BYTECODE, sizeof(CL_Bytecode));
@@ -2615,7 +2647,9 @@ CL_Obj cl_compile(CL_Obj expr)
     cl_active_compiler = comp->parent;
 
     cl_env_destroy(env);
+
     platform_free(comp);
+
     return CL_PTR_TO_OBJ(bc);
 }
 
