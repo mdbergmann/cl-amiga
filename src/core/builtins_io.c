@@ -1149,14 +1149,37 @@ static CL_Obj bi_compile_file(CL_Obj *args, int n)
                 cl_fasl_serialize_bytecode(uw, bc);
             }
 
-            /* Object graph too deep or buffer exceeds cap — skip this unit */
+            /* Object graph too deep or buffer exceeds cap — emit a no-op
+             * placeholder so the FASL has the correct unit count.  The
+             * compile-file eval already executed this form's side effects;
+             * the placeholder just prevents load-time errors. */
             if (uw->error == FASL_ERR_TOO_DEEP ||
                 (uw->error == FASL_ERR_OVERFLOW && unit_capacity >= 64 * 1024 * 1024)) {
-                platform_write_string("; Warning: FASL unit skipped (object graph too deep for serialization)\n");
-                fasl_incomplete = 1;
+                platform_write_string("; Warning: FASL unit too deep, emitting no-op placeholder\n");
+                /* Serialize a minimal bytecode: just OP_HALT, no constants */
+                cl_fasl_writer_init(uw, unit_buf, unit_capacity);
+                memcpy(uw->gensym_objs, w->gensym_objs, w->gensym_count * sizeof(CL_Obj));
+                uw->gensym_count = w->gensym_count;
+                {
+                    /* Emit bytecode blob: 1-byte code (OP_HALT=0x00), 0 constants,
+                     * arity=0, locals=0, upvalues=0, opt=0, flags=0, keys=0,
+                     * source_line=0, source_file="", line_map_count=0, name=NIL */
+                    cl_fasl_write_u32(uw, 1);         /* code_len */
+                    cl_fasl_write_u8(uw, 0xFF);       /* OP_HALT */
+                    cl_fasl_write_u16(uw, 0);         /* n_constants */
+                    cl_fasl_write_u16(uw, 0);         /* arity */
+                    cl_fasl_write_u16(uw, 0);         /* n_locals */
+                    cl_fasl_write_u16(uw, 0);         /* n_upvalues */
+                    cl_fasl_write_u8(uw, 0);          /* n_optional */
+                    cl_fasl_write_u8(uw, 0);          /* flags */
+                    cl_fasl_write_u8(uw, 0);          /* n_keys */
+                    cl_fasl_write_u16(uw, 0);         /* source_line */
+                    cl_fasl_write_u16(uw, 0);         /* source_file len */
+                    cl_fasl_write_u16(uw, 0);         /* line_map_count */
+                    cl_fasl_write_u8(uw, FASL_TAG_NIL); /* name = NIL */
+                }
                 /* Reset capacity for subsequent units */
                 unit_capacity = 32 * 1024;
-                continue;
             }
 
             if (unit_buf && uw->error == FASL_OK) {
@@ -1194,11 +1217,7 @@ static CL_Obj bi_compile_file(CL_Obj *args, int n)
     fflush(stderr);
 #endif
 
-    /* Write FASL file to disk.
-     * When some units were skipped (too deep for serialization), the FASL
-     * still includes successfully serialized units.  Since compile-file
-     * already eval'd ALL forms, the skipped units' side effects are in
-     * memory.  The FASL must exist for ASDF's subsequent load step. */
+    /* Write FASL file to disk. */
     if (n_units > 0) {
         /* Patch n_units in the header (bytes 8-11, big-endian) */
         fasl_buf[8]  = (uint8_t)(n_units >> 24);
@@ -1227,24 +1246,6 @@ static CL_Obj bi_compile_file(CL_Obj *args, int n)
             }
             platform_file_write_buf(fh, (const char *)fasl_buf, w->pos);
             platform_file_close(fh);
-        }
-    } else if (fasl_incomplete) {
-        /* No units at all — write an empty FASL so the file exists */
-        {
-            char dir[1024];
-            path_directory(out_path, dir, sizeof(dir));
-            if (dir[0]) mkdir_p(dir);
-        }
-        {
-            PlatformFile fh = platform_file_open(out_path, PLATFORM_FILE_WRITE);
-            if (fh != PLATFORM_FILE_INVALID) {
-                /* Write header with 0 units */
-                uint8_t hdr[12] = {0};
-                hdr[0] = 0x43; hdr[1] = 0x4C; hdr[2] = 0x46; hdr[3] = 0x41; /* "CLFA" */
-                hdr[4] = 0; hdr[5] = CL_FASL_VERSION;
-                platform_file_write_buf(fh, (const char *)hdr, 12);
-                platform_file_close(fh);
-            }
         }
     }
 
