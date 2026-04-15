@@ -8,6 +8,7 @@
 #include "compiler.h"
 #include "../platform/platform.h"
 #include <string.h>
+#include <time.h>
 #include <stdio.h>
 #include <stdlib.h>
 
@@ -87,17 +88,30 @@ void cl_fasl_write_header(CL_FaslWriter *w, uint32_t n_units)
  * Units that exceed the limit are gracefully skipped; compile-file marks
  * the FASL as incomplete and ASDF will recompile from source on next load. */
 static __thread int fasl_serialize_depth = 0;
-#define FASL_MAX_DEPTH 2048
+static __thread int fasl_serialize_count = 0;
+static __thread time_t fasl_serialize_start = 0;
+#define FASL_MAX_DEPTH 16384
+/* Time limit: abort serialization if a single unit takes > 5 seconds */
+#define FASL_SERIALIZE_TIMEOUT 5
 
 static void fasl_serialize_obj_inner(CL_FaslWriter *w, CL_Obj obj);
 
 void cl_fasl_serialize_obj(CL_FaslWriter *w, CL_Obj obj)
 {
     fasl_serialize_depth++;
+    fasl_serialize_count++;
     if (fasl_serialize_depth > FASL_MAX_DEPTH) {
         w->error = FASL_ERR_TOO_DEEP;
         fasl_serialize_depth--;
         return;
+    }
+    /* Check timeout */
+    if ((fasl_serialize_count & 0xFF) == 0 && fasl_serialize_start > 0) {
+        if (time(NULL) - fasl_serialize_start >= FASL_SERIALIZE_TIMEOUT) {
+            w->error = FASL_ERR_TOO_DEEP;
+            fasl_serialize_depth--;
+            return;
+        }
     }
     fasl_serialize_obj_inner(w, obj);
     fasl_serialize_depth--;
@@ -107,6 +121,15 @@ static void fasl_serialize_obj_inner(CL_FaslWriter *w, CL_Obj obj)
 {
 restart:
     if (w->error) return;
+    /* Periodic timeout check for CDR tail calls that bypass the wrapper */
+    fasl_serialize_count++;
+    if ((fasl_serialize_count & 0xFFFF) == 0 && fasl_serialize_start > 0) {
+        time_t elapsed = time(NULL) - fasl_serialize_start;
+        if (elapsed >= FASL_SERIALIZE_TIMEOUT) {
+            w->error = FASL_ERR_TOO_DEEP;
+            return;
+        }
+    }
 
     /* NIL */
     if (CL_NULL_P(obj)) {
@@ -414,6 +437,12 @@ restart:
         cl_fasl_write_u8(w, FASL_TAG_NIL);
         return;
     }
+}
+
+void cl_fasl_reset_serialize_count(void)
+{
+    fasl_serialize_count = 0;
+    fasl_serialize_start = time(NULL);
 }
 
 /* --- Serialize a CL_Bytecode --- */

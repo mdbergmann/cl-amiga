@@ -385,8 +385,18 @@ static CL_Obj bi_load(CL_Obj *args, int n)
                                     cl_vm.sp = ss;
                                     cl_nlx_top = sn;
                                     gc_root_count = saved_gc_roots_fasl;  /* Restore leaked GC roots */
-                                    /* FASL load failed — restore state, fall through to source */
                                     CL_UNCATCH();
+                                    /* Propagate exit request — don't swallow (quit) */
+                                    if (fasl_err == CL_ERR_EXIT) {
+                                        platform_free(buf);
+                                        cl_set_symbol_value(SYM_STAR_LOAD_PATHNAME, saved_load_pathname);
+                                        cl_set_symbol_value(SYM_STAR_LOAD_TRUENAME, saved_load_truename);
+                                        CL_GC_UNPROTECT(2);
+                                        cl_current_package = saved_package;
+                                        cl_set_symbol_value(SYM_STAR_PACKAGE, saved_package);
+                                        cl_error(CL_ERR_EXIT, "");
+                                    }
+                                    /* FASL load failed — restore state, fall through to source */
                                 platform_free(buf);
                                 buf = NULL;
                                 cl_set_symbol_value(SYM_STAR_LOAD_PATHNAME, saved_load_pathname);
@@ -608,8 +618,21 @@ static CL_Obj bi_load(CL_Obj *args, int n)
             cl_vm.sp = saved_sp;
             cl_nlx_top = saved_nlx;
             gc_root_count = saved_gc_roots;  /* Restore leaked GC roots */
-            cl_error_print();
             CL_UNCATCH();
+            /* Propagate exit request — don't swallow (quit) */
+            if (err == CL_ERR_EXIT) {
+                CL_GC_UNPROTECT(1); /* stream */
+                cl_stream_close(stream);
+                platform_free(buf);
+                if (unit_buf) platform_free(unit_buf);
+                if (fasl_buf) platform_free(fasl_buf);
+                cl_set_symbol_value(SYM_STAR_LOAD_PATHNAME, saved_load_pathname);
+                cl_set_symbol_value(SYM_STAR_LOAD_TRUENAME, saved_load_truename);
+                cl_current_package = saved_package;
+                cl_set_symbol_value(SYM_STAR_PACKAGE, saved_package);
+                cl_error(CL_ERR_EXIT, "");
+            }
+            cl_error_print();
             do_cache = 0; /* Don't cache files with errors */
         }
         }
@@ -1069,12 +1092,11 @@ static CL_Obj bi_compile_file(CL_Obj *args, int n)
                 /* Safe point: run pending compaction between top-level forms */
                 cl_gc_compact_if_pending();
 
-                CL_GC_UNPROTECT(1); /* bytecode — safe after eval */
+                CL_GC_UNPROTECT(1); /* bytecode — eval done */
 
                 /* Collect bytecode for deferred FASL serialization.
-                 * Serialization is done after the entire compile+eval loop
-                 * to avoid the FASL serializer's closure traversal interacting
-                 * with the outer VM's setjmp/longjmp state during eval. */
+                 * Note: bc_collected entries are NOT individually GC-protected
+                 * here. They are bulk-protected before the serialization loop. */
                 if (bc_collect_count >= (int)bc_collect_capacity) {
                     CL_Obj *new_bc;
                     bc_collect_capacity *= 2;
@@ -1084,8 +1106,6 @@ static CL_Obj bi_compile_file(CL_Obj *args, int n)
                         platform_free(bc_collected);
                         bc_collected = new_bc;
                     }
-                    /* If alloc fails, bc_collected still valid at old capacity;
-                     * we just stop collecting (shouldn't happen in practice). */
                 }
                 if (bc_collect_count < (int)bc_collect_capacity) {
                     bc_collected[bc_collect_count++] = bytecode;
@@ -1098,8 +1118,16 @@ static CL_Obj bi_compile_file(CL_Obj *args, int n)
             cl_vm.sp = saved_sp;
             cl_nlx_top = saved_nlx;
             gc_root_count = saved_gc_roots_cf;
-            cl_error_print();
             CL_UNCATCH();
+            /* Propagate exit request — don't swallow (quit) */
+            if (err == CL_ERR_EXIT) {
+                CL_GC_UNPROTECT(1); /* stream */
+                cl_stream_close(stream);
+                platform_free(src_buf);
+                if (bc_collected) platform_free(bc_collected);
+                cl_error(CL_ERR_EXIT, "");
+            }
+            cl_error_print();
         }
         }
         /* Restore outer Lisp handler/restart floor */
@@ -1111,16 +1139,13 @@ static CL_Obj bi_compile_file(CL_Obj *args, int n)
     cl_stream_close(stream);
     platform_free(src_buf);
 
-    /* --- Deferred FASL serialization ---
-     * Serialize all collected bytecodes now that the compile+eval loop is
-     * complete.  This avoids the FASL serializer's closure/bytecode traversal
-     * interacting with the outer VM's setjmp/longjmp state during eval. */
+    /* --- Deferred FASL serialization --- */
     {
         int bci;
 
         /* GC-protect all collected bytecodes during serialization.
-         * They are heap objects that could be swept if a GC is triggered
-         * by cl_error() inside the serializer (condition allocation). */
+         * They are heap objects that could have been swept/compacted
+         * during earlier evaluations if not protected. */
         for (bci = 0; bci < bc_collect_count; bci++) {
             CL_GC_PROTECT(bc_collected[bci]);
         }
@@ -1128,7 +1153,20 @@ static CL_Obj bi_compile_file(CL_Obj *args, int n)
         for (bci = 0; bci < bc_collect_count && !fasl_incomplete; bci++) {
             CL_Obj bc = bc_collected[bci];
 
+#ifdef DEBUG_COMPILER
+            {
+                CL_Bytecode *bcobj = (CL_Bytecode *)CL_OBJ_TO_PTR(bc);
+                CL_String *bname = CL_NULL_P(bcobj->name) ? NULL :
+                    (CL_String *)CL_OBJ_TO_PTR(((CL_Symbol *)CL_OBJ_TO_PTR(bcobj->name))->name);
+                fprintf(stderr, "[compile-file] serializing unit %d/%d name=%s\n",
+                        bci + 1, bc_collect_count,
+                        bname ? bname->data : "<anon>");
+                fflush(stderr);
+            }
+#endif
+
             /* Serialize this unit */
+            cl_fasl_reset_serialize_count();
             cl_fasl_writer_init(uw, unit_buf, unit_capacity);
             memcpy(uw->gensym_objs, w->gensym_objs, w->gensym_count * sizeof(CL_Obj));
             uw->gensym_count = w->gensym_count;
@@ -1155,31 +1193,12 @@ static CL_Obj bi_compile_file(CL_Obj *args, int n)
              * the placeholder just prevents load-time errors. */
             if (uw->error == FASL_ERR_TOO_DEEP ||
                 (uw->error == FASL_ERR_OVERFLOW && unit_capacity >= 64 * 1024 * 1024)) {
-                platform_write_string("; Warning: FASL unit too deep, emitting no-op placeholder\n");
-                /* Serialize a minimal bytecode: just OP_HALT, no constants */
-                cl_fasl_writer_init(uw, unit_buf, unit_capacity);
-                memcpy(uw->gensym_objs, w->gensym_objs, w->gensym_count * sizeof(CL_Obj));
-                uw->gensym_count = w->gensym_count;
-                {
-                    /* Emit bytecode blob: 1-byte code (OP_HALT=0x00), 0 constants,
-                     * arity=0, locals=0, upvalues=0, opt=0, flags=0, keys=0,
-                     * source_line=0, source_file="", line_map_count=0, name=NIL */
-                    cl_fasl_write_u32(uw, 1);         /* code_len */
-                    cl_fasl_write_u8(uw, 0xFF);       /* OP_HALT */
-                    cl_fasl_write_u16(uw, 0);         /* n_constants */
-                    cl_fasl_write_u16(uw, 0);         /* arity */
-                    cl_fasl_write_u16(uw, 0);         /* n_locals */
-                    cl_fasl_write_u16(uw, 0);         /* n_upvalues */
-                    cl_fasl_write_u8(uw, 0);          /* n_optional */
-                    cl_fasl_write_u8(uw, 0);          /* flags */
-                    cl_fasl_write_u8(uw, 0);          /* n_keys */
-                    cl_fasl_write_u16(uw, 0);         /* source_line */
-                    cl_fasl_write_u16(uw, 0);         /* source_file len */
-                    cl_fasl_write_u16(uw, 0);         /* line_map_count */
-                    cl_fasl_write_u8(uw, FASL_TAG_NIL); /* name = NIL */
-                }
-                /* Reset capacity for subsequent units */
-                unit_capacity = 32 * 1024;
+                platform_write_string("; Warning: FASL unit too deep, skipping FASL cache for this file\n");
+                /* Don't write an incomplete FASL — missing definitions would
+                 * cause errors when the FASL is loaded in a fresh session.
+                 * The file will be recompiled from source next time. */
+                fasl_incomplete = 1;
+                break;
             }
 
             if (unit_buf && uw->error == FASL_OK) {
@@ -1217,8 +1236,8 @@ static CL_Obj bi_compile_file(CL_Obj *args, int n)
     fflush(stderr);
 #endif
 
-    /* Write FASL file to disk. */
-    if (n_units > 0) {
+    /* Write FASL file to disk (skip if any units failed to serialize). */
+    if (n_units > 0 && !fasl_incomplete) {
         /* Patch n_units in the header (bytes 8-11, big-endian) */
         fasl_buf[8]  = (uint8_t)(n_units >> 24);
         fasl_buf[9]  = (uint8_t)(n_units >> 16);
@@ -1272,7 +1291,12 @@ static CL_Obj bi_compile_file(CL_Obj *args, int n)
 
     /* Return (values output-truename nil nil) per CL spec */
     fprintf(stderr, "; Done compiling %s\n", in_path);
-    output_pathname = cl_parse_namestring(out_path, (uint32_t)strlen(out_path));
+    if (fasl_incomplete) {
+        /* FASL was not written — return NIL so caller falls back to source */
+        output_pathname = CL_NIL;
+    } else {
+        output_pathname = cl_parse_namestring(out_path, (uint32_t)strlen(out_path));
+    }
     /* Set multiple values: truename, warnings-p, failure-p */
     cl_mv_values[0] = output_pathname;
     cl_mv_values[1] = CL_NIL;  /* warnings-p */

@@ -14233,10 +14233,15 @@ Our compile-file reads, compiles, evaluates, and serializes each form."
 
 #+cl-amiga
 (defun perform-lisp-load-fasl (o c)
-  "CL-Amiga: load the compiled FASL."
+  "CL-Amiga: load the compiled FASL.
+If the FASL file doesn't exist (compile-file skipped caching), load from source."
   (if-let (fasl (first (input-files o c)))
     (let ((*package* (find-package '#:common-lisp-user)))
-      (load* fasl))))
+      (if (probe-file fasl)
+          (load* fasl)
+          ;; FASL missing (serialization was too complex) — load from source
+          (let ((source (first (input-files (make-operation 'compile-op) c))))
+            (when source (load* source)))))))
 
 #+cl-amiga
 (in-package #:cl-user)

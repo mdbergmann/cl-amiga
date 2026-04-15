@@ -123,6 +123,7 @@ typedef struct CL_Thread_s {
     int    vm_extra_count;
     CL_Obj vm_flat_args_buf[64];
 
+
     /* ---- VM eval depth tracking ---- */
     int    vm_eval_depth_val;
     int    vm_max_eval_depth;

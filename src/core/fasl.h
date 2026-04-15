@@ -119,6 +119,7 @@ void cl_fasl_serialize_obj(CL_FaslWriter *w, CL_Obj obj);
 
 /* Serialize a CL_Bytecode object (the full blob) */
 void cl_fasl_serialize_bytecode(CL_FaslWriter *w, CL_Obj bc_obj);
+void cl_fasl_reset_serialize_count(void);
 
 /* Write a complete FASL file header */
 void cl_fasl_write_header(CL_FaslWriter *w, uint32_t n_units);

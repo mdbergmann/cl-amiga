@@ -18,6 +18,7 @@
 #include "../platform/platform.h"
 #include "../platform/platform_thread.h"
 #include <string.h>
+#include <stdio.h>
 
 /* Helper to register a builtin */
 static void defun(const char *name, CL_CFunc func, int min, int max)
@@ -300,13 +301,43 @@ static CL_Obj bi_struct_ref(CL_Obj *args, int n)
     if (!CL_FIXNUM_P(args[1]))
         cl_error(CL_ERR_TYPE, "%%STRUCT-REF: index must be a fixnum");
 
+    /* Validate struct object is within arena bounds */
+    if (obj >= cl_heap.arena_size) {
+        fprintf(stderr, "[BUG] %%STRUCT-REF: obj 0x%08x beyond arena (size 0x%08x)\n",
+                (unsigned)obj, (unsigned)cl_heap.arena_size);
+        cl_capture_backtrace();
+        fprintf(stderr, "%s", cl_backtrace_buf);
+        cl_error(CL_ERR_GENERAL, "%%STRUCT-REF: struct 0x%08x out of arena", (unsigned)obj);
+    }
+
     idx = CL_FIXNUM_VAL(args[1]);
     st = (CL_Struct *)CL_OBJ_TO_PTR(obj);
 
-    if (idx < 0 || (uint32_t)idx >= st->n_slots)
-        cl_error(CL_ERR_ARGS, "%%STRUCT-REF: index %d out of range", idx);
+    /* Validate n_slots field is sane */
+    if (st->n_slots > 1000) {
+        fprintf(stderr, "[BUG] %%STRUCT-REF: obj 0x%08x n_slots=%u (likely corrupt)\n",
+                (unsigned)obj, (unsigned)st->n_slots);
+        cl_capture_backtrace();
+        fprintf(stderr, "%s", cl_backtrace_buf);
+        cl_error(CL_ERR_GENERAL, "%%STRUCT-REF: corrupt struct (n_slots=%u)", (unsigned)st->n_slots);
+    }
 
-    return st->slots[idx];
+    if (idx < 0 || (uint32_t)idx >= st->n_slots)
+        cl_error(CL_ERR_ARGS, "%%STRUCT-REF: index %d out of range (n_slots=%u)",
+                 idx, (unsigned)st->n_slots);
+
+    /* Validate slot value is a valid CL_Obj before returning */
+    {
+        CL_Obj val = st->slots[idx];
+        if (CL_HEAP_P(val) && val >= cl_heap.arena_size) {
+            fprintf(stderr, "[BUG] %%STRUCT-REF: obj 0x%08x slot[%d]=0x%08x beyond arena\n",
+                    (unsigned)obj, idx, (unsigned)val);
+            cl_capture_backtrace();
+            fprintf(stderr, "%s", cl_backtrace_buf);
+            cl_error(CL_ERR_GENERAL, "%%STRUCT-REF: slot[%d]=0x%08x out of arena", idx, (unsigned)val);
+        }
+        return val;
+    }
 }
 
 /* (%struct-set obj index val) */
