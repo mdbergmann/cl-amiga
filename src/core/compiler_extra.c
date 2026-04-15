@@ -10,13 +10,18 @@
 #include "../platform/platform_thread.h"
 #include <stdio.h>
 
+/* Maximum number of clauses/arguments in AND/OR/COND/CASE/TYPECASE.
+ * Each clause needs one patch entry (jump offset to fix up later).
+ * Stack usage: MAX_PATCHES * sizeof(int) = 2KB per array. */
+#define MAX_PATCHES 512
+
 /* --- And / Or --- */
 
 void compile_and(CL_Compiler *c, CL_Obj form)
 {
     CL_Obj args = cl_cdr(form);
     int saved_tail = c->in_tail;
-    int nil_patches[64];
+    int nil_patches[MAX_PATCHES];
     int n_patches = 0;
 
     if (CL_NULL_P(args)) {
@@ -42,6 +47,8 @@ void compile_and(CL_Compiler *c, CL_Obj form)
             c->in_tail = 0;
             compile_expr(c, cl_car(args));
             cl_emit(c, OP_DUP);
+            if (n_patches >= MAX_PATCHES)
+                cl_error(CL_ERR_GENERAL, "AND: too many arguments (max %d)", MAX_PATCHES);
             nil_patches[n_patches++] = cl_emit_jump(c, OP_JNIL);
             cl_emit(c, OP_POP);
             cl_emit(c, OP_MV_RESET);
@@ -62,7 +69,7 @@ void compile_or(CL_Compiler *c, CL_Obj form)
 {
     CL_Obj args = cl_cdr(form);
     int saved_tail = c->in_tail;
-    int true_patches[64];
+    int true_patches[MAX_PATCHES];
     int n_patches = 0;
 
     if (CL_NULL_P(args)) {
@@ -88,6 +95,8 @@ void compile_or(CL_Compiler *c, CL_Obj form)
             c->in_tail = 0;
             compile_expr(c, cl_car(args));
             cl_emit(c, OP_DUP);
+            if (n_patches >= MAX_PATCHES)
+                cl_error(CL_ERR_GENERAL, "OR: too many arguments (max %d)", MAX_PATCHES);
             true_patches[n_patches++] = cl_emit_jump(c, OP_JTRUE);
             cl_emit(c, OP_POP);
             cl_emit(c, OP_MV_RESET);
@@ -110,7 +119,7 @@ void compile_cond(CL_Compiler *c, CL_Obj form)
 {
     CL_Obj clauses = cl_cdr(form);
     int saved_tail = c->in_tail;
-    int done_patches[64];
+    int done_patches[MAX_PATCHES];
     int n_done = 0;
 
     if (CL_NULL_P(clauses)) {
@@ -152,6 +161,8 @@ void compile_cond(CL_Compiler *c, CL_Obj form)
             }
 
             /* Always JMP past NIL fallthrough (even last non-t clause) */
+            if (n_done >= MAX_PATCHES)
+                cl_error(CL_ERR_GENERAL, "COND: too many clauses (max %d)", MAX_PATCHES);
             done_patches[n_done++] = cl_emit_jump(c, OP_JMP);
 
             cl_patch_jump(c, jnil_pos);
@@ -447,7 +458,7 @@ void compile_case(CL_Compiler *c, CL_Obj form, int error_if_no_match)
     int saved_local_count = env->local_count;
     int saved_tail = c->in_tail;
     int temp_slot;
-    int done_patches[64];
+    int done_patches[MAX_PATCHES];
     int n_done = 0;
     int had_default = 0;
 
@@ -480,9 +491,11 @@ void compile_case(CL_Compiler *c, CL_Obj form, int error_if_no_match)
                 cl_emit(c, OP_NIL);
             else
                 compile_progn(c, body);
+            if (n_done >= MAX_PATCHES)
+                cl_error(CL_ERR_GENERAL, "CASE: too many clauses (max %d)", MAX_PATCHES);
             done_patches[n_done++] = cl_emit_jump(c, OP_JMP);
         } else {
-            int body_patches[64];
+            int body_patches[MAX_PATCHES];
             int n_body = 0;
             int next_clause_pos;
 
@@ -495,6 +508,8 @@ void compile_case(CL_Compiler *c, CL_Obj form, int error_if_no_match)
                     cl_emit(c, (uint8_t)temp_slot);
                     cl_emit_const(c, cl_car(k));
                     cl_emit(c, OP_EQ);
+                    if (n_body >= MAX_PATCHES)
+                        cl_error(CL_ERR_GENERAL, "CASE: too many keys in clause (max %d)", MAX_PATCHES);
                     body_patches[n_body++] = cl_emit_jump(c, OP_JTRUE);
                     k = cl_cdr(k);
                 }
@@ -523,6 +538,8 @@ void compile_case(CL_Compiler *c, CL_Obj form, int error_if_no_match)
                 cl_emit(c, OP_NIL);
             else
                 compile_progn(c, body);
+            if (n_done >= MAX_PATCHES)
+                cl_error(CL_ERR_GENERAL, "CASE: too many clauses (max %d)", MAX_PATCHES);
             done_patches[n_done++] = cl_emit_jump(c, OP_JMP);
 
             /* next_clause: */
@@ -573,7 +590,7 @@ void compile_typecase(CL_Compiler *c, CL_Obj form, int error_if_no_match)
     int saved_local_count = env->local_count;
     int saved_tail = c->in_tail;
     int temp_slot;
-    int done_patches[64];
+    int done_patches[MAX_PATCHES];
     int n_done = 0;
     int had_default = 0;
     CL_Obj sym_typep;
@@ -612,6 +629,8 @@ void compile_typecase(CL_Compiler *c, CL_Obj form, int error_if_no_match)
                 cl_emit(c, OP_NIL);
             else
                 compile_progn(c, body);
+            if (n_done >= MAX_PATCHES)
+                cl_error(CL_ERR_GENERAL, "TYPECASE: too many clauses (max %d)", MAX_PATCHES);
             done_patches[n_done++] = cl_emit_jump(c, OP_JMP);
         } else {
             int jnil_pos;
@@ -632,6 +651,8 @@ void compile_typecase(CL_Compiler *c, CL_Obj form, int error_if_no_match)
                 cl_emit(c, OP_NIL);
             else
                 compile_progn(c, body);
+            if (n_done >= MAX_PATCHES)
+                cl_error(CL_ERR_GENERAL, "TYPECASE: too many clauses (max %d)", MAX_PATCHES);
             done_patches[n_done++] = cl_emit_jump(c, OP_JMP);
 
             cl_patch_jump(c, jnil_pos);
@@ -918,8 +939,9 @@ void compile_eval_when(CL_Compiler *c, CL_Obj form)
                 CL_Obj bc;
                 CL_GC_PROTECT(rest);
                 bc = cl_compile(sub);
-                if (!CL_NULL_P(bc))
+                if (!CL_NULL_P(bc)) {
                     cl_vm_eval(bc);
+                }
                 CL_GC_UNPROTECT(1);
             }
             /* Second pass: compile body as progn so bytecodes are
@@ -1043,7 +1065,7 @@ void compile_defvar(CL_Compiler *c, CL_Obj form)
 
 void compile_defparameter(CL_Compiler *c, CL_Obj form)
 {
-    /* (defparameter name init-form) — always sets value */
+    /* (defparameter name init-form) — always sets value, marks special */
     CL_Obj name = cl_car(cl_cdr(form));
     CL_Obj rest = cl_cdr(cl_cdr(form));
     CL_Symbol *sym = (CL_Symbol *)CL_OBJ_TO_PTR(name);
@@ -1054,9 +1076,15 @@ void compile_defparameter(CL_Compiler *c, CL_Obj form)
     if (!CL_NULL_P(rest)) {
         compile_expr(c, cl_car(rest));
         idx = cl_add_constant(c, name);
+        /* OP_GSTORE always sets the value (defparameter semantics).
+         * Then OP_DEFVAR with NIL marks the symbol special at load time
+         * (critical for FASL — compile-time side effect is lost). */
         cl_emit(c, OP_GSTORE);
         cl_emit_u16(c, (uint16_t)idx);
         cl_emit(c, OP_POP);
+        cl_emit_const(c, CL_NIL);
+        cl_emit(c, OP_DEFVAR);
+        cl_emit_u16(c, (uint16_t)idx);
     }
     cl_emit_const(c, name);
 }
@@ -1128,11 +1156,12 @@ void compile_defun(CL_Compiler *c, CL_Obj form)
             CL_Symbol *sym = (CL_Symbol *)CL_OBJ_TO_PTR(accessor);
             CL_String *sname = (CL_String *)CL_OBJ_TO_PTR(sym->name);
             CL_Obj pkg = sym->package;
-            char buf[128];
+            char buf[256];
             int len;
             if (CL_NULL_P(pkg)) pkg = cl_package_cl;
             len = snprintf(buf, sizeof(buf), "%%SETF-%.*s",
                            (int)sname->length, sname->data);
+            if (len >= (int)sizeof(buf)) len = (int)sizeof(buf) - 1;
             store_sym = cl_intern_in(buf, (uint32_t)len, pkg);
         }
 
@@ -1535,7 +1564,6 @@ int is_locally_special(CL_Obj var, CL_Obj local_specials)
 CL_Obj process_body_declarations(CL_Compiler *c, CL_Obj body)
 {
     CL_Obj forms = body;
-    CL_UNUSED(c);
 
     while (!CL_NULL_P(forms)) {
         CL_Obj form = cl_car(forms);
@@ -1554,7 +1582,8 @@ CL_Obj process_body_declarations(CL_Compiler *c, CL_Obj body)
         {
             CL_Obj specs = cl_cdr(form);
             while (!CL_NULL_P(specs)) {
-                cl_process_declaration_specifier(cl_car(specs));
+                CL_Obj spec = cl_car(specs);
+                cl_process_declaration_specifier(spec);
                 specs = cl_cdr(specs);
             }
         }

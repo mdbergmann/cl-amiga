@@ -239,6 +239,10 @@ static CL_Obj bi_keywordp(CL_Obj *args, int n)
  * For symbols, returns the symbol's name string.
  * Sets *out_len to string length.
  * Returns CL_NIL if not a valid string designator. */
+/* Thread-local scratch buffer for character-as-string-designator.
+ * Only one active at a time per string comparison call. */
+static CL_Obj char_desig_str = CL_NIL;
+
 static CL_Obj string_designator_to_obj(CL_Obj obj, uint32_t *out_len)
 {
     if (CL_ANY_STRING_P(obj)) {
@@ -254,6 +258,14 @@ static CL_Obj string_designator_to_obj(CL_Obj obj, uint32_t *out_len)
         CL_Symbol *sym = (CL_Symbol *)CL_OBJ_TO_PTR(obj);
         *out_len = cl_string_length(sym->name);
         return sym->name;
+    }
+    if (CL_CHAR_P(obj)) {
+        char buf[2];
+        buf[0] = (char)CL_CHAR_VAL(obj);
+        buf[1] = '\0';
+        char_desig_str = cl_make_string(buf, 1);
+        *out_len = 1;
+        return char_desig_str;
     }
     return CL_NIL;
 }
@@ -409,6 +421,12 @@ static CL_Obj coerce_to_string_obj(CL_Obj obj, const char *func_name)
     if (CL_SYMBOL_P(obj)) {
         CL_Symbol *sym = (CL_Symbol *)CL_OBJ_TO_PTR(obj);
         return sym->name;
+    }
+    if (CL_CHAR_P(obj)) {
+        char buf[2];
+        buf[0] = (char)CL_CHAR_VAL(obj);
+        buf[1] = '\0';
+        return cl_make_string(buf, 1);
     }
     (void)func_name;
     cl_error(CL_ERR_TYPE, "not a string designator");
