@@ -806,15 +806,26 @@ static CL_Obj bi_truename(CL_Obj *args, int n)
 {
     const char *path;
     char resolved[512];
+    size_t plen, rlen;
     CL_UNUSED(n);
     path = coerce_to_filename(&args[0]);
     if (!path)
         cl_error(CL_ERR_TYPE, "TRUENAME: argument must be a pathname designator");
     if (!platform_realpath(path, resolved, (int)sizeof(resolved)))
         cl_error(CL_ERR_FILE, "TRUENAME: file does not exist \"%s\"", path);
+    /* Preserve trailing slash for directory pathnames — realpath strips it,
+     * but CL directory pathnames need it for directoryp checks. */
+    plen = strlen(path);
+    rlen = strlen(resolved);
+    if (plen > 0 && path[plen - 1] == '/' &&
+        rlen > 0 && resolved[rlen - 1] != '/' && rlen + 1 < sizeof(resolved)) {
+        resolved[rlen] = '/';
+        resolved[rlen + 1] = '\0';
+        rlen++;
+    }
     {
         extern CL_Obj cl_parse_namestring(const char *str, uint32_t len);
-        return cl_parse_namestring(resolved, (uint32_t)strlen(resolved));
+        return cl_parse_namestring(resolved, (uint32_t)rlen);
     }
 }
 
@@ -830,8 +841,19 @@ static CL_Obj bi_probe_file(CL_Obj *args, int n)
     if (!platform_file_exists(path)) return CL_NIL;
     /* Return truename (symlinks resolved) per CL spec */
     if (platform_realpath(path, resolved, (int)sizeof(resolved))) {
-        extern CL_Obj cl_parse_namestring(const char *str, uint32_t len);
-        return cl_parse_namestring(resolved, (uint32_t)strlen(resolved));
+        size_t plen = strlen(path);
+        size_t rlen = strlen(resolved);
+        /* Preserve trailing slash for directory pathnames */
+        if (plen > 0 && path[plen - 1] == '/' &&
+            rlen > 0 && resolved[rlen - 1] != '/' && rlen + 1 < sizeof(resolved)) {
+            resolved[rlen] = '/';
+            resolved[rlen + 1] = '\0';
+            rlen++;
+        }
+        {
+            extern CL_Obj cl_parse_namestring(const char *str, uint32_t len);
+            return cl_parse_namestring(resolved, (uint32_t)rlen);
+        }
     }
     {
         extern CL_Obj cl_parse_namestring(const char *str, uint32_t len);
