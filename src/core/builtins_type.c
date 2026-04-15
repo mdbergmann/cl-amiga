@@ -692,6 +692,8 @@ static CL_Obj bi_coerce(CL_Obj *args, int n)
     if (strcmp(tname, "CHARACTER") == 0) {
         if (CL_CHAR_P(obj)) return obj;
         if (CL_FIXNUM_P(obj)) return CL_MAKE_CHAR((uint32_t)CL_FIXNUM_VAL(obj));
+        if (CL_ANY_STRING_P(obj) && cl_string_length(obj) == 1)
+            return CL_MAKE_CHAR(cl_string_char_at(obj, 0));
         cl_error(CL_ERR_TYPE, "COERCE: cannot coerce to CHARACTER");
         return CL_NIL;
     }
