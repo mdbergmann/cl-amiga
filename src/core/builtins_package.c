@@ -630,22 +630,97 @@ static CL_Obj bi_package_used_by_list(CL_Obj *args, int nargs)
     return result;
 }
 
+/* Helper: unintern a symbol from a package's own symbol table (no lock). */
+static void unintern_own_nolock(CL_Obj sym, CL_Obj package)
+{
+    CL_Package *pkg = (CL_Package *)CL_OBJ_TO_PTR(package);
+    CL_Vector *tbl = (CL_Vector *)CL_OBJ_TO_PTR(pkg->symbols);
+    CL_Symbol *s = (CL_Symbol *)CL_OBJ_TO_PTR(sym);
+    uint32_t idx = s->hash % tbl->length;
+    CL_Obj prev = CL_NIL, list = tbl->data[idx];
+
+    while (!CL_NULL_P(list)) {
+        if (cl_car(list) == sym) {
+            if (CL_NULL_P(prev))
+                tbl->data[idx] = cl_cdr(list);
+            else {
+                CL_Cons *c = (CL_Cons *)CL_OBJ_TO_PTR(prev);
+                c->cdr = cl_cdr(list);
+            }
+            pkg->sym_count--;
+            if (s->package == package)
+                s->package = CL_NIL;
+            return;
+        }
+        prev = list;
+        list = cl_cdr(list);
+    }
+}
+
+/* Per CLHS, shadowing-import replaces conflicting symbols instead of
+   signaling an error.  If sym is already present (same object), just
+   ensure it is on the shadowing list.  If a *different* symbol with
+   the same name is present, unintern the old one first, then import. */
+static void shadowing_import_one(CL_Obj sym, CL_Obj package)
+{
+    CL_Symbol *s = (CL_Symbol *)CL_OBJ_TO_PTR(sym);
+    CL_String *sname = (CL_String *)CL_OBJ_TO_PTR(s->name);
+    CL_Package *pkg = (CL_Package *)CL_OBJ_TO_PTR(package);
+    CL_Obj existing = cl_package_find_symbol_nolock(sname->data, sname->length, package);
+
+    if (existing == sym) {
+        /* Already present — just ensure on shadowing list */
+    } else if (!CL_NULL_P(existing)) {
+        /* Different symbol with same name — remove old, import new */
+        unintern_own_nolock(existing, package);
+        /* Re-fetch pkg pointer (unintern doesn't allocate, but be safe) */
+        pkg = (CL_Package *)CL_OBJ_TO_PTR(package);
+        {
+            CL_Vector *tbl = (CL_Vector *)CL_OBJ_TO_PTR(pkg->symbols);
+            uint32_t idx = s->hash % tbl->length;
+            CL_GC_PROTECT(package);
+            CL_GC_PROTECT(sym);
+            tbl->data[idx] = cl_cons(sym, tbl->data[idx]);
+            CL_GC_UNPROTECT(2);
+            pkg->sym_count++;
+        }
+    } else {
+        /* Not present at all — plain import */
+        CL_Vector *tbl = (CL_Vector *)CL_OBJ_TO_PTR(pkg->symbols);
+        uint32_t idx = s->hash % tbl->length;
+        CL_GC_PROTECT(package);
+        CL_GC_PROTECT(sym);
+        tbl->data[idx] = cl_cons(sym, tbl->data[idx]);
+        CL_GC_UNPROTECT(2);
+        pkg->sym_count++;
+    }
+
+    /* Add to shadowing symbols list if not already there */
+    {
+        CL_Obj sl = pkg->shadowing_symbols;
+        while (!CL_NULL_P(sl)) {
+            if (cl_car(sl) == sym) return;
+            sl = cl_cdr(sl);
+        }
+        CL_GC_PROTECT(package);
+        CL_GC_PROTECT(sym);
+        pkg = (CL_Package *)CL_OBJ_TO_PTR(package);
+        pkg->shadowing_symbols = cl_cons(sym, pkg->shadowing_symbols);
+        CL_GC_UNPROTECT(2);
+    }
+}
+
 /* (shadowing-import symbol &optional package) */
 static CL_Obj bi_shadowing_import(CL_Obj *args, int nargs)
 {
     CL_Obj symbols = args[0];
     CL_Obj pkg = (nargs > 1) ? coerce_to_package(args[1]) : cl_current_package;
-    CL_Package *p = (CL_Package *)CL_OBJ_TO_PTR(pkg);
 
     if (CL_SYMBOL_P(symbols)) {
-        cl_import_symbol(symbols, pkg);
-        /* Add to shadowing symbols list */
-        p->shadowing_symbols = cl_cons(symbols, p->shadowing_symbols);
+        shadowing_import_one(symbols, pkg);
     } else {
         while (!CL_NULL_P(symbols)) {
-            CL_Obj sym = cl_car(symbols);
-            cl_import_symbol(sym, pkg);
-            p->shadowing_symbols = cl_cons(sym, p->shadowing_symbols);
+            shadowing_import_one(cl_car(symbols), pkg);
             symbols = cl_cdr(symbols);
         }
     }

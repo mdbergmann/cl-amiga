@@ -6190,6 +6190,31 @@ TEST(eval_shadowing_import)
     ASSERT_STR_EQ(eval_print("(if (member 'cons (package-shadowing-symbols (find-package \"TEST-SHAD-PKG\"))) t nil)"), "T");
 }
 
+/* shadowing-import must replace a conflicting same-named symbol (CLHS) */
+TEST(eval_shadowing_import_conflict)
+{
+    /* Create package with its own FOO symbol */
+    eval_print("(defpackage \"TEST-SHAD-CONF\" (:use) (:intern \"FOO\"))");
+    /* Create a different FOO in another package */
+    eval_print("(defpackage \"TEST-SHAD-SRC\" (:use) (:export \"FOO\"))");
+    /* shadowing-import the external FOO — must replace the internal one */
+    eval_print("(shadowing-import 'test-shad-src::foo (find-package \"TEST-SHAD-CONF\"))");
+    /* The symbol should now be the one from TEST-SHAD-SRC */
+    ASSERT_STR_EQ(eval_print("(symbol-package (find-symbol \"FOO\" \"TEST-SHAD-CONF\"))"),
+                  "#<PACKAGE TEST-SHAD-SRC>");
+    /* It should be on the shadowing list */
+    ASSERT_STR_EQ(eval_print("(if (member 'test-shad-src::foo (package-shadowing-symbols (find-package \"TEST-SHAD-CONF\"))) t nil)"), "T");
+}
+
+/* shadowing-import of the same symbol is a no-op (no duplicate in shadowing list) */
+TEST(eval_shadowing_import_same_symbol)
+{
+    eval_print("(defpackage \"TEST-SHAD-SAME\" (:use))");
+    eval_print("(shadowing-import 'cons (find-package \"TEST-SHAD-SAME\"))");
+    eval_print("(shadowing-import 'cons (find-package \"TEST-SHAD-SAME\"))");
+    ASSERT_STR_EQ(eval_print("(length (package-shadowing-symbols (find-package \"TEST-SHAD-SAME\")))"), "1");
+}
+
 /* --- copy-symbol --- */
 
 TEST(eval_copy_symbol_basic)
@@ -7657,6 +7682,8 @@ int main(void)
 
     /* shadowing-import */
     RUN(eval_shadowing_import);
+    RUN(eval_shadowing_import_conflict);
+    RUN(eval_shadowing_import_same_symbol);
 
     /* copy-symbol */
     RUN(eval_copy_symbol_basic);
