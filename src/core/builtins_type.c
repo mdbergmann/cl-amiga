@@ -546,17 +546,18 @@ static int typep_check(CL_Obj obj, CL_Obj type_spec)
         if (CL_SYMBOL_P(head) &&
             strcmp(cl_symbol_name(head), "CONS") == 0) {
             if (!CL_CONS_P(obj)) return 0;
-            /* Optionally check car/cdr types */
+            /* Optionally check car/cdr types (symbol or compound) */
             if (!CL_NULL_P(args)) {
                 CL_Obj car_type = cl_car(args);
-                if (CL_SYMBOL_P(car_type) &&
-                    strcmp(cl_symbol_name(car_type), "*") != 0) {
+                /* Skip only the * wildcard */
+                if (!(CL_SYMBOL_P(car_type) &&
+                      strcmp(cl_symbol_name(car_type), "*") == 0)) {
                     if (!typep_check(cl_car(obj), car_type)) return 0;
                 }
                 if (!CL_NULL_P(cl_cdr(args))) {
                     CL_Obj cdr_type = cl_car(cl_cdr(args));
-                    if (CL_SYMBOL_P(cdr_type) &&
-                        strcmp(cl_symbol_name(cdr_type), "*") != 0) {
+                    if (!(CL_SYMBOL_P(cdr_type) &&
+                          strcmp(cl_symbol_name(cdr_type), "*") == 0)) {
                         if (!typep_check(cl_cdr(obj), cdr_type)) return 0;
                     }
                 }

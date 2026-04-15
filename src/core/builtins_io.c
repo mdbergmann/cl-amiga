@@ -970,7 +970,7 @@ static CL_Obj bi_compile_file(CL_Obj *args, int n)
     /* Read source file */
     src_buf = platform_file_read(in_path, &src_size);
     if (!src_buf) {
-        cl_error(CL_ERR_GENERAL, "COMPILE-FILE: cannot open file");
+        cl_error(CL_ERR_GENERAL, "COMPILE-FILE: cannot open file \"%s\"", in_path);
         return CL_NIL;
     }
 

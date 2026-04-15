@@ -1093,11 +1093,7 @@ when the param has no explicit default.  CL spec 3.4.6 requires this."
 ;; Core pathname functions (pathname, pathnamep, parse-namestring, namestring,
 ;; make-pathname, merge-pathnames, pathname-host/device/directory/name/type/version,
 ;; file-namestring, directory-namestring, enough-namestring) are C builtins.
-;; Only truename remains in boot.lisp for now.
-
-(defun truename (pathname)
-  "Return the true name of PATHNAME."
-  (pathname (namestring pathname)))
+;; truename is now a C builtin (resolves symlinks via platform_realpath).
 
 (defun %ensure-dirs-helper (dir pos len created)
   "Helper for ensure-directories-exist. Walks dir string creating directories."

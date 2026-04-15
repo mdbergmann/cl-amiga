@@ -800,15 +800,39 @@ static CL_Obj bi_get_universal_time(CL_Obj *args, int n)
 
 /* --- File system functions (Step 10) --- */
 
-/* (probe-file pathname) => pathname or NIL */
+/* (truename pathname) => resolved pathname (symlinks resolved)
+ * Signals FILE-ERROR if the file does not exist. */
+static CL_Obj bi_truename(CL_Obj *args, int n)
+{
+    const char *path;
+    char resolved[512];
+    CL_UNUSED(n);
+    path = coerce_to_filename(&args[0]);
+    if (!path)
+        cl_error(CL_ERR_TYPE, "TRUENAME: argument must be a pathname designator");
+    if (!platform_realpath(path, resolved, (int)sizeof(resolved)))
+        cl_error(CL_ERR_FILE, "TRUENAME: file does not exist \"%s\"", path);
+    {
+        extern CL_Obj cl_parse_namestring(const char *str, uint32_t len);
+        return cl_parse_namestring(resolved, (uint32_t)strlen(resolved));
+    }
+}
+
+/* (probe-file pathname) => truename or NIL */
 static CL_Obj bi_probe_file(CL_Obj *args, int n)
 {
     const char *path;
+    char resolved[512];
     CL_UNUSED(n);
     path = coerce_to_filename(&args[0]);
     if (!path)
         cl_error(CL_ERR_TYPE, "PROBE-FILE: argument must be a pathname designator");
     if (!platform_file_exists(path)) return CL_NIL;
+    /* Return truename (symlinks resolved) per CL spec */
+    if (platform_realpath(path, resolved, (int)sizeof(resolved))) {
+        extern CL_Obj cl_parse_namestring(const char *str, uint32_t len);
+        return cl_parse_namestring(resolved, (uint32_t)strlen(resolved));
+    }
     {
         extern CL_Obj cl_parse_namestring(const char *str, uint32_t len);
         CL_String *s = (CL_String *)CL_OBJ_TO_PTR(args[0]);
@@ -1309,6 +1333,7 @@ void cl_builtins_stream_init(void)
 
     /* Step 10: Time and file system */
     defun("GET-UNIVERSAL-TIME", bi_get_universal_time, 0, 0);
+    defun("TRUENAME", bi_truename, 1, 1);
     defun("PROBE-FILE", bi_probe_file, 1, 1);
     defun("DELETE-FILE", bi_delete_file, 1, 1);
     defun("RENAME-FILE", bi_rename_file, 2, 2);

@@ -3287,6 +3287,21 @@ TEST(eval_typep_compound)
     /* nested compound */
     ASSERT_STR_EQ(eval_print("(typep 42 '(or (and integer atom) string))"), "T");
     ASSERT_STR_EQ(eval_print("(typep #\\A '(or integer string))"), "NIL");
+
+    /* (cons car-type cdr-type) with compound car/cdr types */
+    ASSERT_STR_EQ(eval_print("(typep '(a . b) '(cons symbol symbol))"), "T");
+    ASSERT_STR_EQ(eval_print("(typep '(a . b) '(cons symbol integer))"), "NIL");
+    ASSERT_STR_EQ(eval_print("(typep '(a . 1) '(cons symbol integer))"), "T");
+    ASSERT_STR_EQ(eval_print("(typep '(a . b) '(cons * *))"), "T");
+    ASSERT_STR_EQ(eval_print("(typep 42 '(cons * *))"), "NIL");
+    /* compound car/cdr: (eql ...) must be checked, not skipped */
+    ASSERT_STR_EQ(eval_print("(typep '(~ \"x\") '(cons (eql ~) (cons t null)))"), "T");
+    ASSERT_STR_EQ(eval_print("(typep '(and a) '(cons (eql ~) (cons t null)))"), "NIL");
+    ASSERT_STR_EQ(eval_print("(typep '(? x) '(cons (eql ?) (cons t null)))"), "T");
+    ASSERT_STR_EQ(eval_print("(typep '(! x) '(cons (eql ?) (cons t null)))"), "NIL");
+    /* nested cons types */
+    ASSERT_STR_EQ(eval_print("(typep '(a b) '(cons symbol (cons symbol null)))"), "T");
+    ASSERT_STR_EQ(eval_print("(typep '(a b c) '(cons symbol (cons symbol null)))"), "NIL");
 }
 
 /* --- numeric range type specifiers --- */
