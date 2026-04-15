@@ -423,10 +423,16 @@
 
 ;; assert — signal error if test-form is false
 (defmacro assert (test-form &optional places string &rest args)
-  `(unless ,test-form
-     (error 'simple-error
-            :format-control ,(or string "Assertion failed: ~S")
-            :format-arguments (list ',test-form))))
+  (declare (ignore places))
+  (if (and string args)
+      `(unless ,test-form
+         (error 'simple-error
+                :format-control ,string
+                :format-arguments (list ,@args)))
+      `(unless ,test-form
+         (error 'simple-error
+                :format-control ,(or string "Assertion failed: ~S")
+                :format-arguments (list ',test-form)))))
 
 ;; defpackage — define a package with :use, :export, :nicknames, :local-nicknames,
 ;;   :import-from, :shadow, :shadowing-import-from, :intern options

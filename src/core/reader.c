@@ -8,6 +8,7 @@
 #include "ratio.h"
 #include "error.h"
 #include "stream.h"
+#include "string_utils.h"
 #include "vm.h"
 #include "compiler.h"
 #include "../platform/platform.h"
@@ -579,7 +580,7 @@ intern_symbol:
 /* Read a string literal */
 static CL_Obj read_string(void)
 {
-    char buf[1024];
+    char buf[4096]; /* UTF-8 encoded buffer */
     int len = 0;
     int ch;
 
@@ -604,10 +605,25 @@ static CL_Obj read_string(void)
             default: break;
             }
         }
-        if (len < 1023) buf[len++] = (char)ch;
+#ifdef CL_WIDE_STRINGS
+        if (ch > 0x7F) {
+            char tmp[4];
+            int nb = cl_utf8_encode(ch, tmp);
+            int j;
+            for (j = 0; j < nb && len < 4095; j++)
+                buf[len++] = tmp[j];
+        } else
+#endif
+        {
+            if (len < 4095) buf[len++] = (char)ch;
+        }
     }
     buf[len] = '\0';
+#ifdef CL_WIDE_STRINGS
+    return cl_utf8_to_cl_string(buf, (uint32_t)len);
+#else
     return cl_make_string(buf, (uint32_t)len);
+#endif
 }
 
 int cl_srcloc_lookup(CL_Obj cons_obj)

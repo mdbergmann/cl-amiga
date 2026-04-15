@@ -238,10 +238,6 @@ void *cl_alloc(uint8_t type, uint32_t size)
          * CL_OBJ_TO_PTR) must be re-derived after any allocating call. */
         gc_compact_pending = 1;
         gc_last_compact_cycle = cl_heap.gc_count;
-        /* Try inline compaction as last resort before heap exhaustion.
-         * This is safe for the heap (all heap refs are updated), but C
-         * locals on the stack may be stale — callers must GC-protect
-         * all CL_Obj locals before allocating calls. */
         if (multi) platform_mutex_unlock(alloc_mutex);
         cl_gc_compact();
         gc_compact_pending = 0;
@@ -656,18 +652,45 @@ CL_Obj cl_make_pathname(CL_Obj host, CL_Obj device, CL_Obj directory,
 
 void cl_gc_push_root(CL_Obj *root)
 {
+    if (gc_root_count > CL_GC_ROOT_STACK_SIZE || gc_root_count < 0) {
+        fprintf(stderr, "[GC-ROOT-BUG] push_root: gc_root_count=%d is CORRUPT (max=%d)\n",
+                gc_root_count, CL_GC_ROOT_STACK_SIZE);
+        cl_capture_backtrace();
+        fprintf(stderr, "%s", cl_backtrace_buf);
+        fflush(stderr);
+        abort();
+    }
     if (gc_root_count < CL_GC_ROOT_STACK_SIZE) {
         gc_root_stack[gc_root_count++] = root;
     } else {
         fprintf(stderr, "FATAL: GC root stack overflow (%d/%d) — increase CL_GC_ROOT_STACK_SIZE\n",
                 gc_root_count, CL_GC_ROOT_STACK_SIZE);
+        cl_capture_backtrace();
+        fprintf(stderr, "%s", cl_backtrace_buf);
+        fflush(stderr);
+        abort();
     }
 }
 
 void cl_gc_pop_roots(int n)
 {
+    if (gc_root_count > CL_GC_ROOT_STACK_SIZE || gc_root_count < 0) {
+        fprintf(stderr, "[GC-ROOT-BUG] pop_roots(%d): gc_root_count=%d is CORRUPT (max=%d)\n",
+                n, gc_root_count, CL_GC_ROOT_STACK_SIZE);
+        cl_capture_backtrace();
+        fprintf(stderr, "%s", cl_backtrace_buf);
+        fflush(stderr);
+        abort();
+    }
     gc_root_count -= n;
-    if (gc_root_count < 0) gc_root_count = 0;
+    if (gc_root_count < 0) {
+        fprintf(stderr, "[GC-ROOT-BUG] pop_roots(%d): gc_root_count went negative -> %d\n",
+                n, gc_root_count);
+        cl_capture_backtrace();
+        fprintf(stderr, "%s", cl_backtrace_buf);
+        fflush(stderr);
+        abort();
+    }
 }
 
 void cl_gc_reset_roots(void)

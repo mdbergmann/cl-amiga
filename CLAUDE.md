@@ -96,6 +96,7 @@ Reusable Lisp scripts in `trunk/` for loading and testing third-party libraries:
 ```
 ./build/host/clamiga --heap 24M --load trunk/load-and-test-5am.lisp    # Fiveam (114/114 tests)
 ./build/host/clamiga --heap 24M --load trunk/load-and-test-fset.lisp   # FSet (17/17 tests)
+./build/host/clamiga --heap 64M --load trunk/load-and-test-str.lisp    # str (399/400 tests)
 ```
 
 - These scripts work on both host and Amiga (use `#+amigaos`/`#-amigaos` for platform differences)

@@ -11,9 +11,15 @@
 #include "core/builtins.h"
 #include "core/repl.h"
 #include "platform/platform.h"
+#ifdef PLATFORM_POSIX
+#include <locale.h>
+#endif
 
 static void setup(void)
 {
+#ifdef PLATFORM_POSIX
+    setlocale(LC_CTYPE, "");
+#endif
     platform_init();
     cl_thread_init();
     cl_error_init();
@@ -6827,6 +6833,109 @@ static void test_eval_get_properties_empty(void)
         "(NIL NIL NIL)");
 }
 
+/* --- str test regressions: declare special scoping --- */
+
+/* (declare (special x)) in a function body must NOT globally pollute x.
+ * Inner let* rebinding x should be lexical (capturable by closures). */
+static void test_eval_declare_special_scoped(void)
+{
+    ASSERT_STR_EQ(eval_print(
+        "(progn "
+        "  (defun %test-make-closure () "
+        "    (declare (special %test-es)) "
+        "    (let* ((%test-es (concatenate 'string \"inner:\" %test-es))) "
+        "      (lambda () %test-es))) "
+        "  (let ((%test-es \"HELLO\")) "
+        "    (declare (special %test-es)) "
+        "    (funcall (%test-make-closure))))"),
+        "\"inner:HELLO\"");
+}
+
+/* Free special declaration: reference a special variable not bound locally */
+static void test_eval_declare_special_free_ref(void)
+{
+    ASSERT_STR_EQ(eval_print(
+        "(progn "
+        "  (defun %test-read-special () "
+        "    (declare (special %test-sv)) "
+        "    %test-sv) "
+        "  (let ((%test-sv 42)) "
+        "    (declare (special %test-sv)) "
+        "    (%test-read-special)))"),
+        "42");
+}
+
+/* Parameter special declaration */
+static void test_eval_declare_special_param(void)
+{
+    ASSERT_STR_EQ(eval_print(
+        "(progn "
+        "  (defun %test-param-sp (x) "
+        "    (declare (special x)) "
+        "    (let ((result (locally (declare (special x)) x))) result)) "
+        "  (%test-param-sp 77))"),
+        "77");
+}
+
+/* alpha-char-p must recognize Latin-1 letters */
+static void test_eval_alpha_char_p_unicode(void)
+{
+    /* code 241 = ñ, code 209 = Ñ */
+    ASSERT_STR_EQ(eval_print("(alpha-char-p (code-char 241))"), "T");
+    ASSERT_STR_EQ(eval_print("(alpha-char-p (code-char 209))"), "T");
+    ASSERT_STR_EQ(eval_print("(alpha-char-p (code-char 233))"), "T"); /* é */
+}
+
+/* upper-case-p/lower-case-p for Unicode */
+static void test_eval_upper_lower_case_unicode(void)
+{
+    ASSERT_STR_EQ(eval_print("(upper-case-p (code-char 209))"), "T");  /* Ñ */
+    ASSERT_STR_EQ(eval_print("(lower-case-p (code-char 241))"), "T");  /* ñ */
+    ASSERT_STR_EQ(eval_print("(upper-case-p (code-char 241))"), "NIL");
+    ASSERT_STR_EQ(eval_print("(lower-case-p (code-char 209))"), "NIL");
+}
+
+#ifdef CL_WIDE_STRINGS
+/* Wide string in reader: non-ASCII char in string literal */
+static void test_eval_wide_string_reader(void)
+{
+    /* (string (code-char 12288)) creates a 1-char wide string with U+3000 */
+    ASSERT_STR_EQ(eval_print("(char-code (char (string (code-char 12288)) 0))"), "12288");
+    /* Concatenate preserves wide characters */
+    ASSERT_STR_EQ(eval_print(
+        "(char-code (char (concatenate 'string (string (code-char 12288)) \"a\") 0))"),
+        "12288");
+    ASSERT_STR_EQ(eval_print(
+        "(length (concatenate 'string (string (code-char 12288)) \"abc\"))"),
+        "4");
+}
+
+/* string-trim with wide characters */
+static void test_eval_string_trim_wide(void)
+{
+    /* Trim U+3000 (fullwidth space) from both sides */
+    ASSERT_STR_EQ(eval_print(
+        "(string-trim (list (code-char 12288)) "
+        "  (concatenate 'string (string (code-char 12288)) \"rst\" "
+        "    (string (code-char 12288))))"),
+        "\"rst\"");
+    /* Trim with mixed ASCII and wide whitespace */
+    ASSERT_STR_EQ(eval_print(
+        "(string-trim (list #\\Space (code-char 12288)) "
+        "  (concatenate 'string \" \" (string (code-char 12288)) \"abc\" \" \"))"),
+        "\"abc\"");
+}
+#endif
+
+/* concatenate must signal error for non-sequence arguments */
+static void test_eval_concatenate_type_error(void)
+{
+    ASSERT_STR_EQ(eval_print(
+        "(handler-case (concatenate 'string \"a\" 1) "
+        "  (type-error () :got-type-error))"),
+        ":GOT-TYPE-ERROR");
+}
+
 int main(void)
 {
     test_init();
@@ -7642,6 +7751,18 @@ int main(void)
     RUN(eval_get_properties_first_match);
     RUN(eval_get_properties_not_found);
     RUN(eval_get_properties_empty);
+
+    /* str test regressions */
+    RUN(eval_declare_special_scoped);
+    RUN(eval_declare_special_free_ref);
+    RUN(eval_declare_special_param);
+    RUN(eval_alpha_char_p_unicode);
+    RUN(eval_upper_lower_case_unicode);
+    RUN(eval_concatenate_type_error);
+#ifdef CL_WIDE_STRINGS
+    RUN(eval_wide_string_reader);
+    RUN(eval_string_trim_wide);
+#endif
 
     teardown();
     REPORT();

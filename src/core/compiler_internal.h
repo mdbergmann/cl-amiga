@@ -8,6 +8,7 @@
 
 #include "compiler.h"
 #include "env.h"
+#include <stdlib.h>
 #include "opcodes.h"
 #include "symbol.h"
 #include "package.h"

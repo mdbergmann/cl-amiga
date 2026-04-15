@@ -1564,12 +1564,13 @@ int is_locally_special(CL_Obj var, CL_Obj local_specials)
 CL_Obj process_body_declarations(CL_Compiler *c, CL_Obj body)
 {
     CL_Obj forms = body;
+    (void)c;
 
     while (!CL_NULL_P(forms)) {
         CL_Obj form = cl_car(forms);
 
         /* Skip docstrings among declarations (string followed by more forms) */
-        if (CL_STRING_P(form) && !CL_NULL_P(cl_cdr(forms))) {
+        if (CL_ANY_STRING_P(form) && !CL_NULL_P(cl_cdr(forms))) {
             forms = cl_cdr(forms);
             continue;
         }
@@ -1578,12 +1579,18 @@ CL_Obj process_body_declarations(CL_Compiler *c, CL_Obj body)
         if (!CL_CONS_P(form) || cl_car(form) != SYM_DECLARE)
             break;
 
-        /* Process each specifier */
+        /* Process each specifier.
+         * Skip (special ...) — those are scoped declarations handled by
+         * scan_local_specials() in compile_let/compile_lambda.
+         * Setting the global CL_SYM_SPECIAL flag here would permanently
+         * pollute the symbol, making ALL future bindings dynamic even in
+         * scopes that didn't declare it special. */
         {
             CL_Obj specs = cl_cdr(form);
             while (!CL_NULL_P(specs)) {
                 CL_Obj spec = cl_car(specs);
-                cl_process_declaration_specifier(spec);
+                if (!(CL_CONS_P(spec) && cl_car(spec) == SYM_SPECIAL_DECL))
+                    cl_process_declaration_specifier(spec);
                 specs = cl_cdr(specs);
             }
         }

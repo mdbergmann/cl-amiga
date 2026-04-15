@@ -10,6 +10,74 @@
 #include <stdio.h>
 #include <string.h>
 #include <ctype.h>
+#ifdef PLATFORM_POSIX
+#include <wctype.h>
+#endif
+
+/* Unicode character classification helpers.
+ * POSIX: use wctype.h functions for full Unicode support.
+ * AmigaOS: Latin-1 range checks (sufficient for most CL code). */
+static int cl_isalpha(int c)
+{
+    if ((c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z')) return 1;
+#ifdef PLATFORM_POSIX
+    if (c > 127) return iswalpha((wint_t)c);
+#else
+    /* Latin-1 Supplement letters */
+    if (c >= 0xC0 && c <= 0xD6) return 1;  /* À-Ö */
+    if (c >= 0xD8 && c <= 0xF6) return 1;  /* Ø-ö */
+    if (c >= 0xF8 && c <= 0xFF) return 1;  /* ø-ÿ */
+#endif
+    return 0;
+}
+
+static int cl_isupper(int c)
+{
+    if (c >= 'A' && c <= 'Z') return 1;
+#ifdef PLATFORM_POSIX
+    if (c > 127) return iswupper((wint_t)c);
+#else
+    if (c >= 0xC0 && c <= 0xD6) return 1;  /* À-Ö */
+    if (c >= 0xD8 && c <= 0xDE) return 1;  /* Ø-Þ */
+#endif
+    return 0;
+}
+
+static int cl_islower(int c)
+{
+    if (c >= 'a' && c <= 'z') return 1;
+#ifdef PLATFORM_POSIX
+    if (c > 127) return iswlower((wint_t)c);
+#else
+    if (c >= 0xE0 && c <= 0xF6) return 1;  /* à-ö */
+    if (c >= 0xF8 && c <= 0xFF) return 1;  /* ø-ÿ */
+#endif
+    return 0;
+}
+
+static int cl_toupper(int c)
+{
+    if (c >= 'a' && c <= 'z') return c - 32;
+#ifdef PLATFORM_POSIX
+    if (c > 127) return (int)towupper((wint_t)c);
+#else
+    if (c >= 0xE0 && c <= 0xF6) return c - 32;  /* à-ö → À-Ö */
+    if (c >= 0xF8 && c <= 0xFE) return c - 32;  /* ø-þ → Ø-Þ */
+#endif
+    return c;
+}
+
+static int cl_tolower(int c)
+{
+    if (c >= 'A' && c <= 'Z') return c + 32;
+#ifdef PLATFORM_POSIX
+    if (c > 127) return (int)towlower((wint_t)c);
+#else
+    if (c >= 0xC0 && c <= 0xD6) return c + 32;  /* À-Ö → à-ö */
+    if (c >= 0xD8 && c <= 0xDE) return c + 32;  /* Ø-Þ → ø-þ */
+#endif
+    return c;
+}
 
 /* Helper to register a builtin */
 static void defun(const char *name, CL_CFunc func, int min, int max)
@@ -125,8 +193,7 @@ static CL_Obj bi_char_upcase(CL_Obj *args, int n)
     if (!CL_CHAR_P(args[0]))
         cl_error(CL_ERR_TYPE, "CHAR-UPCASE: not a character");
     c = CL_CHAR_VAL(args[0]);
-    if (c >= 'a' && c <= 'z') c -= 32;
-    return CL_MAKE_CHAR(c);
+    return CL_MAKE_CHAR(cl_toupper(c));
 }
 
 static CL_Obj bi_char_downcase(CL_Obj *args, int n)
@@ -136,8 +203,7 @@ static CL_Obj bi_char_downcase(CL_Obj *args, int n)
     if (!CL_CHAR_P(args[0]))
         cl_error(CL_ERR_TYPE, "CHAR-DOWNCASE: not a character");
     c = CL_CHAR_VAL(args[0]);
-    if (c >= 'A' && c <= 'Z') c += 32;
-    return CL_MAKE_CHAR(c);
+    return CL_MAKE_CHAR(cl_tolower(c));
 }
 
 static CL_Obj bi_upper_case_p(CL_Obj *args, int n)
@@ -147,7 +213,7 @@ static CL_Obj bi_upper_case_p(CL_Obj *args, int n)
     if (!CL_CHAR_P(args[0]))
         cl_error(CL_ERR_TYPE, "UPPER-CASE-P: not a character");
     c = CL_CHAR_VAL(args[0]);
-    return (c >= 'A' && c <= 'Z') ? SYM_T : CL_NIL;
+    return cl_isupper(c) ? SYM_T : CL_NIL;
 }
 
 static CL_Obj bi_lower_case_p(CL_Obj *args, int n)
@@ -157,7 +223,7 @@ static CL_Obj bi_lower_case_p(CL_Obj *args, int n)
     if (!CL_CHAR_P(args[0]))
         cl_error(CL_ERR_TYPE, "LOWER-CASE-P: not a character");
     c = CL_CHAR_VAL(args[0]);
-    return (c >= 'a' && c <= 'z') ? SYM_T : CL_NIL;
+    return cl_islower(c) ? SYM_T : CL_NIL;
 }
 
 static CL_Obj bi_alpha_char_p(CL_Obj *args, int n)
@@ -167,7 +233,7 @@ static CL_Obj bi_alpha_char_p(CL_Obj *args, int n)
     if (!CL_CHAR_P(args[0]))
         cl_error(CL_ERR_TYPE, "ALPHA-CHAR-P: not a character");
     c = CL_CHAR_VAL(args[0]);
-    return ((c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z')) ? SYM_T : CL_NIL;
+    return cl_isalpha(c) ? SYM_T : CL_NIL;
 }
 
 static CL_Obj bi_digit_char_p(CL_Obj *args, int n)
@@ -443,8 +509,9 @@ static CL_Obj bi_string_upcase(CL_Obj *args, int n)
     len = cl_string_length(result);
     for (i = 0; i < len; i++) {
         int ch = cl_string_char_at(result, i);
-        if (ch >= 'a' && ch <= 'z')
-            cl_string_set_char_at(result, i, ch - 32);
+        int up = cl_toupper(ch);
+        if (up != ch)
+            cl_string_set_char_at(result, i, up);
     }
     return result;
 }
@@ -459,8 +526,9 @@ static CL_Obj bi_string_downcase(CL_Obj *args, int n)
     len = cl_string_length(result);
     for (i = 0; i < len; i++) {
         int ch = cl_string_char_at(result, i);
-        if (ch >= 'A' && ch <= 'Z')
-            cl_string_set_char_at(result, i, ch + 32);
+        int lo = cl_tolower(ch);
+        if (lo != ch)
+            cl_string_set_char_at(result, i, lo);
     }
     return result;
 }
@@ -767,6 +835,8 @@ static uint32_t concat_total_length(CL_Obj *args, int n)
         } else if (CL_BIT_VECTOR_P(args[i])) {
             CL_BitVector *bv = (CL_BitVector *)CL_OBJ_TO_PTR(args[i]);
             total += bv->length;
+        } else {
+            cl_error(CL_ERR_TYPE, "CONCATENATE: argument is not a sequence");
         }
     }
     return total;
@@ -800,10 +870,27 @@ static void concat_iterate(CL_Obj seq, concat_cb cb, void *ctx)
         uint32_t j;
         for (j = 0; j < bv->length; j++)
             cb(CL_MAKE_FIXNUM(cl_bv_get_bit(bv, j)), ctx);
+    } else {
+        cl_error(CL_ERR_TYPE, "CONCATENATE: argument is not a sequence");
     }
 }
 
 /* Callback context for string result */
+#ifdef CL_WIDE_STRINGS
+typedef struct { uint32_t *buf; uint32_t pos; uint32_t cap; int has_wide; } concat_str_ctx;
+static void concat_str_cb(CL_Obj elem, void *ctx_)
+{
+    concat_str_ctx *ctx = (concat_str_ctx *)ctx_;
+    if (CL_CHAR_P(elem)) {
+        int code = CL_CHAR_VAL(elem);
+        if (ctx->pos < ctx->cap)
+            ctx->buf[ctx->pos++] = (uint32_t)code;
+        if (code > 0x7F) ctx->has_wide = 1;
+    } else {
+        cl_error(CL_ERR_TYPE, "CONCATENATE: element is not a character for string result");
+    }
+}
+#else
 typedef struct { char *buf; uint32_t pos; uint32_t cap; } concat_str_ctx;
 static void concat_str_cb(CL_Obj elem, void *ctx_)
 {
@@ -815,6 +902,7 @@ static void concat_str_cb(CL_Obj elem, void *ctx_)
         cl_error(CL_ERR_TYPE, "CONCATENATE: element is not a character for string result");
     }
 }
+#endif
 
 /* Callback context for vector result */
 typedef struct { CL_Obj vec; uint32_t pos; } concat_vec_ctx;
@@ -856,11 +944,27 @@ static CL_Obj bi_concatenate(CL_Obj *args, int n)
     /* String result types */
     if (strcmp(tname, "STRING") == 0 || strcmp(tname, "SIMPLE-STRING") == 0 ||
         strcmp(tname, "BASE-STRING") == 0 || strcmp(tname, "SIMPLE-BASE-STRING") == 0) {
+#ifdef CL_WIDE_STRINGS
+        uint32_t cpbuf[4096];
+        concat_str_ctx ctx = { cpbuf, 0, 4096, 0 };
+        for (i = 1; i < n; i++)
+            concat_iterate(args[i], concat_str_cb, &ctx);
+        if (ctx.has_wide)
+            return cl_make_wide_string(cpbuf, ctx.pos);
+        {
+            char buf[4096];
+            uint32_t j;
+            for (j = 0; j < ctx.pos; j++)
+                buf[j] = (char)cpbuf[j];
+            return cl_make_string(buf, ctx.pos);
+        }
+#else
         char buf[4096];
         concat_str_ctx ctx = { buf, 0, sizeof(buf) };
         for (i = 1; i < n; i++)
             concat_iterate(args[i], concat_str_cb, &ctx);
         return cl_make_string(buf, ctx.pos);
+#endif
     }
 
     /* Vector result types */
@@ -915,8 +1019,17 @@ static CL_Obj bi_string_coerce(CL_Obj *args, int n)
         return sym->name;
     }
     if (CL_CHAR_P(args[0])) {
-        char c = (char)CL_CHAR_VAL(args[0]);
-        return cl_make_string(&c, 1);
+        int code = CL_CHAR_VAL(args[0]);
+#ifdef CL_WIDE_STRINGS
+        if (code > 0x7F) {
+            uint32_t cp = (uint32_t)code;
+            return cl_make_wide_string(&cp, 1);
+        }
+#endif
+        {
+            char c = (char)code;
+            return cl_make_string(&c, 1);
+        }
     }
     cl_error(CL_ERR_TYPE, "STRING: cannot coerce to string");
     return CL_NIL;
@@ -1087,13 +1200,13 @@ static CL_Obj bi_string_capitalize(CL_Obj *args, int n)
     len = cl_string_length(result);
     for (i = 0; i < len; i++) {
         int c = cl_string_char_at(result, i);
-        int is_alpha = (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z');
-        int is_alnum = is_alpha || (c >= '0' && c <= '9');
-        if (!in_word && is_alpha) {
-            if (c >= 'a' && c <= 'z') cl_string_set_char_at(result, i, c - 32);
+        int is_alpha_c = cl_isalpha(c);
+        int is_alnum = is_alpha_c || (c >= '0' && c <= '9');
+        if (!in_word && is_alpha_c) {
+            cl_string_set_char_at(result, i, cl_toupper(c));
             in_word = 1;
         } else if (in_word && is_alnum) {
-            if (c >= 'A' && c <= 'Z') cl_string_set_char_at(result, i, c + 32);
+            cl_string_set_char_at(result, i, cl_tolower(c));
         } else {
             in_word = is_alnum;
         }
@@ -1110,8 +1223,9 @@ static CL_Obj bi_nstring_upcase(CL_Obj *args, int n)
     len = cl_string_length(args[0]);
     for (i = 0; i < len; i++) {
         int ch = cl_string_char_at(args[0], i);
-        if (ch >= 'a' && ch <= 'z')
-            cl_string_set_char_at(args[0], i, ch - 32);
+        int up = cl_toupper(ch);
+        if (up != ch)
+            cl_string_set_char_at(args[0], i, up);
     }
     return args[0];
 }
@@ -1125,8 +1239,9 @@ static CL_Obj bi_nstring_downcase(CL_Obj *args, int n)
     len = cl_string_length(args[0]);
     for (i = 0; i < len; i++) {
         int ch = cl_string_char_at(args[0], i);
-        if (ch >= 'A' && ch <= 'Z')
-            cl_string_set_char_at(args[0], i, ch + 32);
+        int lo = cl_tolower(ch);
+        if (lo != ch)
+            cl_string_set_char_at(args[0], i, lo);
     }
     return args[0];
 }
@@ -1141,13 +1256,13 @@ static CL_Obj bi_nstring_capitalize(CL_Obj *args, int n)
     len = cl_string_length(args[0]);
     for (i = 0; i < len; i++) {
         int c = cl_string_char_at(args[0], i);
-        int is_alpha = (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z');
-        int is_alnum = is_alpha || (c >= '0' && c <= '9');
-        if (!in_word && is_alpha) {
-            if (c >= 'a' && c <= 'z') cl_string_set_char_at(args[0], i, c - 32);
+        int is_alpha_c = cl_isalpha(c);
+        int is_alnum = is_alpha_c || (c >= '0' && c <= '9');
+        if (!in_word && is_alpha_c) {
+            cl_string_set_char_at(args[0], i, cl_toupper(c));
             in_word = 1;
         } else if (in_word && is_alnum) {
-            if (c >= 'A' && c <= 'Z') cl_string_set_char_at(args[0], i, c + 32);
+            cl_string_set_char_at(args[0], i, cl_tolower(c));
         } else {
             in_word = is_alnum;
         }
@@ -1292,8 +1407,7 @@ static CL_Obj bi_alphanumericp(CL_Obj *args, int n)
     if (!CL_CHAR_P(args[0]))
         cl_error(CL_ERR_TYPE, "ALPHANUMERICP: not a character");
     c = CL_CHAR_VAL(args[0]);
-    return ((c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') ||
-            (c >= '0' && c <= '9')) ? SYM_T : CL_NIL;
+    return (cl_isalpha(c) || (c >= '0' && c <= '9')) ? SYM_T : CL_NIL;
 }
 
 static CL_Obj bi_digit_char(CL_Obj *args, int n)
@@ -1319,8 +1433,7 @@ static CL_Obj bi_both_case_p(CL_Obj *args, int n)
     if (!CL_CHAR_P(args[0]))
         cl_error(CL_ERR_TYPE, "BOTH-CASE-P: not a character");
     c = CL_CHAR_VAL(args[0]);
-    return ((c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z'))
-        ? SYM_T : CL_NIL;
+    return cl_isalpha(c) ? SYM_T : CL_NIL;
 }
 
 static int char_upcase_val(CL_Obj c)

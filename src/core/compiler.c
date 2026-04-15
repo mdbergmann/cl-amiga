@@ -528,14 +528,18 @@ void compile_lambda(CL_Compiler *c, CL_Obj form)
         }
     }
 
-    /* Emit OP_DYNBIND for parameters that are globally special.
+    /* Emit OP_DYNBIND for parameters that are special.
+     * Check both globally-proclaimed specials and locally-declared specials
+     * from (declare (special ...)) in the function body.
      * The VM stores parameter values in local slots, but called functions
      * and closures need to see them via the dynamic binding stack. */
     {
         int special_param_count = 0;
         int pi;
+        CL_Obj local_specials = scan_local_specials(body);
         for (pi = 0; pi < inner->ll.n_required; pi++) {
-            if (cl_symbol_specialp(inner->ll.required[pi])) {
+            if (cl_symbol_specialp(inner->ll.required[pi]) ||
+                is_locally_special(inner->ll.required[pi], local_specials)) {
                 int slot = cl_env_lookup(env, inner->ll.required[pi]);
                 int idx = cl_add_constant(inner, inner->ll.required[pi]);
                 cl_emit(inner, OP_LOAD);
@@ -546,7 +550,8 @@ void compile_lambda(CL_Compiler *c, CL_Obj form)
             }
         }
         for (pi = 0; pi < inner->ll.n_optional; pi++) {
-            if (cl_symbol_specialp(inner->ll.opt_names[pi])) {
+            if (cl_symbol_specialp(inner->ll.opt_names[pi]) ||
+                is_locally_special(inner->ll.opt_names[pi], local_specials)) {
                 int slot = cl_env_lookup(env, inner->ll.opt_names[pi]);
                 int idx = cl_add_constant(inner, inner->ll.opt_names[pi]);
                 cl_emit(inner, OP_LOAD);
@@ -556,7 +561,8 @@ void compile_lambda(CL_Compiler *c, CL_Obj form)
                 special_param_count++;
             }
         }
-        if (inner->ll.has_rest && cl_symbol_specialp(inner->ll.rest_name)) {
+        if (inner->ll.has_rest && (cl_symbol_specialp(inner->ll.rest_name) ||
+            is_locally_special(inner->ll.rest_name, local_specials))) {
             int slot = cl_env_lookup(env, inner->ll.rest_name);
             int idx = cl_add_constant(inner, inner->ll.rest_name);
             cl_emit(inner, OP_LOAD);
@@ -566,7 +572,8 @@ void compile_lambda(CL_Compiler *c, CL_Obj form)
             special_param_count++;
         }
         for (pi = 0; pi < inner->ll.n_keys; pi++) {
-            if (cl_symbol_specialp(inner->ll.key_names[pi])) {
+            if (cl_symbol_specialp(inner->ll.key_names[pi]) ||
+                is_locally_special(inner->ll.key_names[pi], local_specials)) {
                 int slot = inner->key_slot_indices[pi];
                 int idx = cl_add_constant(inner, inner->ll.key_names[pi]);
                 cl_emit(inner, OP_LOAD);
@@ -577,7 +584,8 @@ void compile_lambda(CL_Compiler *c, CL_Obj form)
             }
         }
         for (pi = 0; pi < inner->ll.n_aux; pi++) {
-            if (cl_symbol_specialp(inner->ll.aux_names[pi])) {
+            if (cl_symbol_specialp(inner->ll.aux_names[pi]) ||
+                is_locally_special(inner->ll.aux_names[pi], local_specials)) {
                 int slot = cl_env_lookup(env, inner->ll.aux_names[pi]);
                 int idx = cl_add_constant(inner, inner->ll.aux_names[pi]);
                 cl_emit(inner, OP_LOAD);
@@ -2292,7 +2300,7 @@ void compile_expr(CL_Compiler *c, CL_Obj expr)
     if (CL_NULL_P(expr))    { cl_emit(c, OP_NIL); return; }
     if (CL_FIXNUM_P(expr))  { cl_emit_const(c, expr); return; }
     if (CL_CHAR_P(expr))    { cl_emit_const(c, expr); return; }
-    if (CL_STRING_P(expr))  { cl_emit_const(c, expr); return; }
+    if (CL_ANY_STRING_P(expr)) { cl_emit_const(c, expr); return; }
     if (CL_BIGNUM_P(expr))  { cl_emit_const(c, expr); return; }
     if (CL_RATIO_P(expr))   { cl_emit_const(c, expr); return; }
     if (CL_COMPLEX_P(expr)) { cl_emit_const(c, expr); return; }

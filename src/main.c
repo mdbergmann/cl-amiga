@@ -18,6 +18,9 @@
 #include <stdlib.h>
 #include <signal.h>
 #include <unistd.h>
+#ifdef PLATFORM_POSIX
+#include <locale.h>
+#endif
 
 #ifdef PLATFORM_POSIX
 /* Crash handler on alternate stack for stack overflow debugging */
@@ -243,6 +246,7 @@ int main(int argc, char *argv[])
     int frame_count = 0;
 
 #ifdef PLATFORM_POSIX
+    setlocale(LC_CTYPE, "");  /* enable Unicode character classification */
 #ifndef __SANITIZE_ADDRESS__
 #if !__has_feature(address_sanitizer)
     install_crash_handler();
