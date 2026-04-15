@@ -38,11 +38,18 @@ int cl_error_frame_push(void);
 
 /* Push a new error frame and setjmp into it.
  * Stores 0 (direct return), an error code (longjmp return),
- * or CL_ERR_OVERFLOW into err_var. */
+ * or CL_ERR_OVERFLOW into err_var.
+ *
+ * C99 §7.13.1.1 restricts setjmp to specific contexts — using it inside
+ * a ternary expression is undefined behavior.  With -O3/LTO the compiler
+ * may exploit this UB and corrupt the stack after longjmp. */
 #define CL_CATCH(err_var) do { \
     int _cl_cf_ = cl_error_frame_push(); \
-    (err_var) = (_cl_cf_ < 0) ? CL_ERR_OVERFLOW \
-              : setjmp(cl_error_frames[_cl_cf_].buf); \
+    if (_cl_cf_ < 0) { \
+        (err_var) = CL_ERR_OVERFLOW; \
+    } else { \
+        (err_var) = setjmp(cl_error_frames[_cl_cf_].buf); \
+    } \
 } while(0)
 
 /* Pop error frame (call in matching block after CL_CATCH) */
