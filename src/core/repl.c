@@ -100,6 +100,7 @@ void cl_load_file(const char *path)
         for (;;) {
             CL_Obj expr, bytecode;
             int err;
+            int saved_gc_roots = gc_root_count;
 
             expr = cl_read_from_stream(stream);
             if (cl_reader_eof()) break;
@@ -113,8 +114,24 @@ void cl_load_file(const char *path)
                     cl_vm_eval(bytecode);
                 CL_UNCATCH();
             } else {
-                cl_error_print();
+                gc_root_count = saved_gc_roots;
                 CL_UNCATCH();
+                /* Propagate exit request — don't swallow (quit) */
+                if (err == CL_ERR_EXIT) {
+                    cl_stream_close(stream);
+                    platform_free(buf);
+                    cl_set_symbol_value(SYM_STAR_LOAD_PATHNAME, saved_load_pathname);
+                    cl_set_symbol_value(SYM_STAR_LOAD_TRUENAME, saved_load_truename);
+                    CL_GC_UNPROTECT(1); /* stream */
+                    CL_GC_UNPROTECT(2); /* load_truename_obj, load_pathname_obj */
+                    cl_current_source_file = prev_file;
+                    cl_current_file_id = prev_file_id;
+                    cl_reader_set_line(prev_line);
+                    cl_current_package = saved_package;
+                    cl_set_symbol_value(SYM_STAR_PACKAGE, saved_package);
+                    cl_error(CL_ERR_EXIT, "");
+                }
+                cl_error_print();
             }
         }
 
@@ -179,6 +196,7 @@ static void load_user_init(void)
                 for (;;) {
                     CL_Obj expr, bytecode;
                     int err;
+                    int saved_gc_roots = gc_root_count;
 
                     expr = cl_read_from_stream(stream);
                     if (cl_reader_eof()) break;
@@ -192,8 +210,16 @@ static void load_user_init(void)
                             cl_vm_eval(bytecode);
                         CL_UNCATCH();
                     } else {
-                        cl_error_print();
+                        gc_root_count = saved_gc_roots;
                         CL_UNCATCH();
+                        if (err == CL_ERR_EXIT) {
+                            CL_GC_UNPROTECT(2); /* stream, cl_str */
+                            cl_current_source_file = prev_file;
+                            cl_current_file_id = prev_file_id;
+                            cl_reader_set_line(prev_line);
+                            cl_error(CL_ERR_EXIT, "");
+                        }
+                        cl_error_print();
                     }
                 }
 
