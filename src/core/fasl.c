@@ -1175,5 +1175,6 @@ CL_Obj cl_fasl_load(const uint8_t *data, uint32_t size)
             cl_vm_eval(bc_obj);
     }
 
+    if (r.shared_objs) platform_free(r.shared_objs);
     return CL_T;
 }

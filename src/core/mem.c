@@ -183,9 +183,8 @@ void cl_storage_error(const char *fmt, ...)
     cl_handler_top = 0;
     cl_restart_top = 0;
     if (cl_error_frame_top > 0) {
-        cl_error_frame_top--;
-        cl_error_frames[cl_error_frame_top].active = 0;
-        longjmp(cl_error_frames[cl_error_frame_top].buf, CL_ERR_STORAGE);
+        /* Don't decrement here — CL_UNCATCH at the catch site pops */
+        longjmp(cl_error_frames[cl_error_frame_top - 1].buf, CL_ERR_STORAGE);
     }
     /* No error frame — fatal */
     platform_write_string("FATAL: ");

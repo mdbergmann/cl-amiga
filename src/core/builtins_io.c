@@ -1165,8 +1165,9 @@ static CL_Obj bi_compile_file(CL_Obj *args, int n)
             }
 #endif
 
-            /* Serialize this unit */
+            /* Serialize this unit — free shared_objs from previous iteration */
             cl_fasl_reset_serialize_count();
+            if (uw->shared_objs) { platform_free(uw->shared_objs); uw->shared_objs = NULL; }
             cl_fasl_writer_init(uw, unit_buf, unit_capacity);
             memcpy(uw->gensym_objs, w->gensym_objs, w->gensym_count * sizeof(CL_Obj));
             uw->gensym_count = w->gensym_count;
@@ -1181,6 +1182,7 @@ static CL_Obj bi_compile_file(CL_Obj *args, int n)
                 unit_capacity *= 2;
                 unit_buf = (uint8_t *)platform_alloc(unit_capacity);
                 if (!unit_buf) break;
+                if (uw->shared_objs) { platform_free(uw->shared_objs); uw->shared_objs = NULL; }
                 cl_fasl_writer_init(uw, unit_buf, unit_capacity);
                 memcpy(uw->gensym_objs, w->gensym_objs, w->gensym_count * sizeof(CL_Obj));
                 uw->gensym_count = w->gensym_count;
@@ -1270,6 +1272,8 @@ static CL_Obj bi_compile_file(CL_Obj *args, int n)
 
     platform_free(fasl_buf);
     platform_free(unit_buf);
+    if (w && w->shared_objs) platform_free(w->shared_objs);
+    if (uw && uw->shared_objs) platform_free(uw->shared_objs);
     platform_free(w);
     platform_free(uw);
     if (bc_collected) platform_free(bc_collected);
