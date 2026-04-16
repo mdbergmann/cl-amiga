@@ -2883,9 +2883,8 @@ static CL_Obj cl_vm_run(int base_fp, int base_nlx)
                     strncpy(cl_error_msg, cl_pending_error_msg, sizeof(cl_error_msg) - 1);
                     cl_error_msg[sizeof(cl_error_msg) - 1] = '\0';
                     if (cl_error_frame_top > 0) {
-                        cl_error_frame_top--;
-                        cl_error_frames[cl_error_frame_top].active = 0;
-                        longjmp(cl_error_frames[cl_error_frame_top].buf, err_code);
+                        /* Don't decrement here — CL_UNCATCH at the catch site pops */
+                        longjmp(cl_error_frames[cl_error_frame_top - 1].buf, err_code);
                     }
                     platform_write_string("FATAL ERROR: ");
                     platform_write_string(cl_error_msg);
