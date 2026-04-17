@@ -995,6 +995,54 @@ top:
         return;
     }
 
+    /* (let/let* ((var value)...) body...)
+     * Must NOT scan binding clauses as macro calls — the var name in
+     * (check-type (unless ...)) would be mistaken for a macro call
+     * when the var name shadows a registered macro (e.g. log4cl's use of
+     * CHECK-TYPE as a let* variable shadowing the standard macro). */
+    if (head == SYM_LET || head == SYM_LETSTAR) {
+        CL_Obj bindings, body;
+        if (!CL_CONS_P(rest)) return;
+        bindings = cl_car(rest);
+        body = cl_cdr(rest);
+        /* Scan value forms only (skip var names) */
+        while (CL_CONS_P(bindings)) {
+            CL_Obj clause = cl_car(bindings);
+            if (CL_CONS_P(clause) && CL_CONS_P(cl_cdr(clause))) {
+                /* (var value-form) — scan value-form */
+                scan_body_for_boxing(cl_car(cl_cdr(clause)), vars, n_vars,
+                                     mutated, captured, closure_depth);
+            }
+            /* (var) with no value-form, or bare symbol: nothing to scan */
+            bindings = cl_cdr(bindings);
+        }
+        /* Scan body */
+        while (CL_CONS_P(body)) {
+            scan_body_for_boxing(cl_car(body), vars, n_vars,
+                                 mutated, captured, closure_depth);
+            body = cl_cdr(body);
+        }
+        return;
+    }
+
+    /* (multiple-value-bind (var...) values-form body...)
+     * Same reasoning as let/let*: the var list is not a macro call. */
+    if (head == SYM_MULTIPLE_VALUE_BIND) {
+        CL_Obj body;
+        if (!CL_CONS_P(rest) || !CL_CONS_P(cl_cdr(rest))) return;
+        /* Scan values-form (second element of rest) */
+        scan_body_for_boxing(cl_car(cl_cdr(rest)), vars, n_vars,
+                             mutated, captured, closure_depth);
+        /* Scan body */
+        body = cl_cdr(cl_cdr(rest));
+        while (CL_CONS_P(body)) {
+            scan_body_for_boxing(cl_car(body), vars, n_vars,
+                                 mutated, captured, closure_depth);
+            body = cl_cdr(body);
+        }
+        return;
+    }
+
     /* (do/do* ((var init [step])...) (end-test result...) body...)
      * Must NOT scan binding clauses as macro calls — the var name in
      * (TUPLE TUPLE (CDR TUPLE)) would be mistaken for a macro call
@@ -1077,6 +1125,11 @@ top:
                 return;
             }
         } else {
+#ifdef DEBUG_SCANNER
+            fprintf(stderr, "[scanner-err] macro %s expansion failed: %s\n",
+                    cl_symbol_name(head), cl_error_msg);
+            fflush(stderr);
+#endif
             CL_UNCATCH();
             cl_vm.sp = saved_sp;
             cl_vm.fp = saved_fp;

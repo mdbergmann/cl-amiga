@@ -6540,6 +6540,32 @@ TEST(eval_let_star_shadow_no_closure)
     ASSERT_STR_EQ(eval_print("(let* ((x 1) (x (+ x 100))) x)"), "101");
 }
 
+TEST(eval_let_bind_name_shadows_macro)
+{
+    /* Regression: the compiler's scan_body_for_boxing must not treat the
+       binding variable name in (let/let* ((VAR VALUE)...) ...) as a macro
+       call when VAR happens to shadow a registered macro.
+       This was triggered by log4cl's expand-log-with-level which binds
+       the local variable CHECK-TYPE, shadowing the standard macro. */
+    ASSERT_STR_EQ(eval_print(
+        "(defun regress-let-shadow-check-type (x)"
+        "  (let* ((check-type x))"
+        "    (list check-type)))"), "REGRESS-LET-SHADOW-CHECK-TYPE");
+    ASSERT_STR_EQ(eval_print(
+        "(regress-let-shadow-check-type 42)"), "(42)");
+}
+
+TEST(eval_mvbind_var_shadows_macro)
+{
+    /* Regression: multiple-value-bind var list must not be scanned as a
+       macro call when a var name shadows a registered macro. */
+    ASSERT_STR_EQ(eval_print(
+        "(defun regress-mvbind-shadow (x)"
+        "  (multiple-value-bind (check-type) (values x)"
+        "    check-type))"), "REGRESS-MVBIND-SHADOW");
+    ASSERT_EQ_INT(eval_int("(regress-mvbind-shadow 7)"), 7);
+}
+
 /* --- Heap exhaustion / storage error tests --- */
 
 /* --- PROGV tests --- */
@@ -7747,6 +7773,8 @@ int main(void)
     RUN(eval_let_star_shadow_closure_mutation);
     RUN(eval_let_star_shadow_initform_ref);
     RUN(eval_let_star_shadow_no_closure);
+    RUN(eval_let_bind_name_shadows_macro);
+    RUN(eval_mvbind_var_shadows_macro);
 
     /* PROGV */
     RUN(eval_progv_basic);
