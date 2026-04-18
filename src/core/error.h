@@ -62,6 +62,11 @@ int cl_error_frame_push(void);
 /* Signal an error — jumps to nearest CL_CATCH */
 void cl_error(int code, const char *fmt, ...);
 
+/* Unwind with an existing condition object. Caller must have already
+ * signaled via cl_signal_condition. Preserves the condition so the
+ * debugger can dispatch PRINT-OBJECT for a meaningful report. */
+void cl_error_from_condition(CL_Obj condition);
+
 /* Print the current error message */
 void cl_error_print(void);
 

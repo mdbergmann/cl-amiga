@@ -38,18 +38,44 @@ static void defun(const char *name, CL_CFunc func, int min, int max)
     cl_export_symbol(sym, cl_package_cl);
 }
 
-/* Display condition info */
+/* Display condition info.
+ *
+ * Format: "Debugger entered: <TYPE>: <report>"
+ * The report is obtained via *print-object-hook* if the condition's class
+ * has a PRINT-OBJECT method (e.g. ASDF conditions), falling back to the
+ * condition's :format-control/:format-arguments report string, and
+ * finally to just the type name. */
 static void display_condition(CL_Obj condition)
 {
     CL_Condition *cond = (CL_Condition *)CL_OBJ_TO_PTR(condition);
     char buf[256];
+    CL_Obj report_str = CL_NIL;
+
+    /* Try PRINT-OBJECT dispatch via the hook set up by clos.lisp. */
+    if (!CL_NULL_P(SYM_PRINT_OBJECT_HOOK)) {
+        CL_Obj hook_val = cl_symbol_value(SYM_PRINT_OBJECT_HOOK);
+        if (!CL_NULL_P(hook_val)) {
+            CL_Obj hook_args[1];
+            CL_Obj result;
+            hook_args[0] = condition;
+            result = cl_vm_apply(hook_val, hook_args, 1);
+            if (!CL_NULL_P(result) && CL_HEAP_P(result) &&
+                CL_HDR_TYPE(CL_OBJ_TO_PTR(result)) == TYPE_STRING) {
+                report_str = result;
+            }
+        }
+    }
 
     cl_color_set(CL_COLOR_BOLD_RED);
     platform_write_string("\nDebugger entered: ");
     cl_prin1_to_string(cond->type_name, buf, sizeof(buf));
     platform_write_string(buf);
 
-    if (!CL_NULL_P(cond->report_string)) {
+    if (!CL_NULL_P(report_str)) {
+        CL_String *s = (CL_String *)CL_OBJ_TO_PTR(report_str);
+        platform_write_string(": ");
+        platform_write_string(s->data);
+    } else if (!CL_NULL_P(cond->report_string)) {
         CL_String *s = (CL_String *)CL_OBJ_TO_PTR(cond->report_string);
         platform_write_string(": ");
         platform_write_string(s->data);

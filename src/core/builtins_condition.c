@@ -925,22 +925,30 @@ static CL_Obj bi_warn(CL_Obj *args, int n)
 static CL_Obj bi_error(CL_Obj *args, int n)
 {
     CL_Obj cond = coerce_to_condition(args, n, SYM_SIMPLE_ERROR);
-    cl_signal_condition(cond);
+    CL_Condition *c;
 
-    /* No handler transferred control — fall to C error handler */
+    /* Replace report_string with the FORMATTED report so debuggers and
+     * observers see the interpolated message rather than the raw
+     * format-control (e.g. "foo ~S" → "foo <value>"). format_condition_report
+     * returns the existing report_string unchanged when there is no
+     * :format-control, so conditions signaled by name keep a NIL report
+     * and let PRINT-OBJECT dispatch supply the text. */
     {
-        CL_Condition *c = (CL_Condition *)CL_OBJ_TO_PTR(cond);
-        CL_Obj report = format_condition_report(c);
-        if (!CL_NULL_P(report) && CL_STRING_P(report)) {
-            CL_String *s = (CL_String *)CL_OBJ_TO_PTR(report);
-            cl_error(CL_ERR_GENERAL, "%s", s->data);
-        } else {
-            char buf[128];
-            cl_prin1_to_string(c->type_name, buf, sizeof(buf));
-            cl_error(CL_ERR_GENERAL, "%s", buf);
+        c = (CL_Condition *)CL_OBJ_TO_PTR(cond);
+        CL_Obj rpt = format_condition_report(c);
+        if (!CL_NULL_P(rpt) && CL_STRING_P(rpt)) {
+            c = (CL_Condition *)CL_OBJ_TO_PTR(cond);  /* GC may have moved it */
+            c->report_string = rpt;
         }
     }
-    return CL_NIL;
+
+    cl_signal_condition(cond);
+
+    /* No handler transferred control — invoke debugger with the
+     * original condition so its type and slots (and PRINT-OBJECT
+     * method, if any) are visible. */
+    cl_error_from_condition(cond);
+    return CL_NIL;  /* unreachable */
 }
 
 /* --- Restart builtins --- */

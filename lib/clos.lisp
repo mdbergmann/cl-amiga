@@ -320,32 +320,42 @@
 ;;; Sentinel value for unbound slots — uninterned so it can't collide
 (defvar *slot-unbound-marker* (make-symbol "SLOT-UNBOUND"))
 
+;;; Structure slot lookup: when CLASS-OF returns a class without a
+;;; slot-index-table (i.e. a DEFSTRUCT instance), resolve slot names
+;;; against the struct's slot list so SLOT-VALUE / WITH-SLOTS work on
+;;; structures as they do in SBCL/CCL.
+(defun %find-struct-slot-index (instance slot-name)
+  "Return the slot index in INSTANCE for SLOT-NAME, or NIL if not found.
+   INSTANCE must be a structure."
+  (let ((names (%struct-slot-names (%struct-type-name instance)))
+        (idx 0))
+    (block found
+      (dolist (n names nil)
+        (when (eq n slot-name)
+          (return-from found idx))
+        (incf idx)))))
+
 (defun slot-value (instance slot-name)
   "Return the value of SLOT-NAME in INSTANCE."
   (let* ((class (class-of instance))
          (index-table (class-slot-index-table class)))
-    (unless index-table
-      (error "~S has no slot-index-table (not a CLOS instance)" instance))
-    (multiple-value-bind (index found-p)
-        (gethash slot-name index-table)
-      (unless found-p
-        (error "~S has no slot named ~S" instance slot-name))
-      (let ((val (%struct-ref instance index)))
-        (if (eq val *slot-unbound-marker*)
-            (slot-unbound class instance slot-name)
-            val)))))
-
-(defun slot-boundp (instance slot-name)
-  "Return true if the slot SLOT-NAME in INSTANCE is bound."
-  (let* ((class (class-of instance))
-         (index-table (class-slot-index-table class)))
-    (unless index-table
-      (error "~S has no slot-index-table (not a CLOS instance)" instance))
-    (multiple-value-bind (index found-p)
-        (gethash slot-name index-table)
-      (unless found-p
-        (error "~S has no slot named ~S" instance slot-name))
-      (not (eq (%struct-ref instance index) *slot-unbound-marker*)))))
+    (cond
+      (index-table
+       (multiple-value-bind (index found-p)
+           (gethash slot-name index-table)
+         (unless found-p
+           (error "~S has no slot named ~S" instance slot-name))
+         (let ((val (%struct-ref instance index)))
+           (if (eq val *slot-unbound-marker*)
+               (slot-unbound class instance slot-name)
+               val))))
+      ((structurep instance)
+       (let ((idx (%find-struct-slot-index instance slot-name)))
+         (unless idx
+           (error "~S has no slot named ~S" instance slot-name))
+         (%struct-ref instance idx)))
+      (t
+       (error "~S has no slot-index-table (not a CLOS instance)" instance)))))
 
 (defun slot-unbound (class instance slot-name)
   "Called when an unbound slot is accessed. Default signals an error.
@@ -353,68 +363,79 @@ Specialize via defmethod to provide lazy initialization."
   (declare (ignore class))
   (error "The slot ~S is unbound in ~S" slot-name instance))
 
-(defun slot-makunbound (instance slot-name)
-  "Make the slot SLOT-NAME in INSTANCE unbound."
-  (let* ((class (class-of instance))
-         (index-table (class-slot-index-table class)))
-    (unless index-table
-      (error "~S has no slot-index-table (not a CLOS instance)" instance))
-    (multiple-value-bind (index found-p)
-        (gethash slot-name index-table)
-      (unless found-p
-        (error "~S has no slot named ~S" instance slot-name))
-      (%struct-set instance index *slot-unbound-marker*)
-      instance)))
-
 (defun %set-slot-value (instance slot-name new-value)
   "Set the value of SLOT-NAME in INSTANCE to NEW-VALUE."
   (let* ((class (class-of instance))
          (index-table (class-slot-index-table class)))
-    (unless index-table
-      (error "~S has no slot-index-table (not a CLOS instance)" instance))
-    (multiple-value-bind (index found-p)
-        (gethash slot-name index-table)
-      (unless found-p
-        (error "~S has no slot named ~S" instance slot-name))
-      (%struct-set instance index new-value)
-      new-value)))
+    (cond
+      (index-table
+       (multiple-value-bind (index found-p)
+           (gethash slot-name index-table)
+         (unless found-p
+           (error "~S has no slot named ~S" instance slot-name))
+         (%struct-set instance index new-value)
+         new-value))
+      ((structurep instance)
+       (let ((idx (%find-struct-slot-index instance slot-name)))
+         (unless idx
+           (error "~S has no slot named ~S" instance slot-name))
+         (%struct-set instance idx new-value)
+         new-value))
+      (t
+       (error "~S has no slot-index-table (not a CLOS instance)" instance)))))
 
 (defsetf slot-value %set-slot-value)
 
 (defun slot-boundp (instance slot-name)
-  "Return T if SLOT-NAME is bound in INSTANCE."
+  "Return T if SLOT-NAME is bound in INSTANCE.
+   Structures are always considered bound (DEFSTRUCT slots have initial values)."
   (let* ((class (class-of instance))
          (index-table (class-slot-index-table class)))
-    (unless index-table
-      (error "~S has no slot-index-table (not a CLOS instance)" instance))
-    (multiple-value-bind (index found-p)
-        (gethash slot-name index-table)
-      (unless found-p
-        (error "~S has no slot named ~S" instance slot-name))
-      (not (eq (%struct-ref instance index) *slot-unbound-marker*)))))
+    (cond
+      (index-table
+       (multiple-value-bind (index found-p)
+           (gethash slot-name index-table)
+         (unless found-p
+           (error "~S has no slot named ~S" instance slot-name))
+         (not (eq (%struct-ref instance index) *slot-unbound-marker*))))
+      ((structurep instance)
+       (unless (%find-struct-slot-index instance slot-name)
+         (error "~S has no slot named ~S" instance slot-name))
+       t)
+      (t
+       (error "~S has no slot-index-table (not a CLOS instance)" instance)))))
 
 (defun slot-makunbound (instance slot-name)
-  "Make SLOT-NAME unbound in INSTANCE."
+  "Make SLOT-NAME unbound in INSTANCE.
+   Signals an error for structures per CLHS (undefined behavior)."
   (let* ((class (class-of instance))
          (index-table (class-slot-index-table class)))
-    (unless index-table
-      (error "~S has no slot-index-table (not a CLOS instance)" instance))
-    (multiple-value-bind (index found-p)
-        (gethash slot-name index-table)
-      (unless found-p
-        (error "~S has no slot named ~S" instance slot-name))
-      (%struct-set instance index *slot-unbound-marker*)
-      instance)))
+    (cond
+      (index-table
+       (multiple-value-bind (index found-p)
+           (gethash slot-name index-table)
+         (unless found-p
+           (error "~S has no slot named ~S" instance slot-name))
+         (%struct-set instance index *slot-unbound-marker*)
+         instance))
+      ((structurep instance)
+       (error "SLOT-MAKUNBOUND is not supported for structures: ~S" instance))
+      (t
+       (error "~S has no slot-index-table (not a CLOS instance)" instance)))))
 
 (defun slot-exists-p (instance slot-name)
   "Return T if INSTANCE has a slot named SLOT-NAME."
   (let* ((class (class-of instance))
          (index-table (class-slot-index-table class)))
-    (if index-table
-        (multiple-value-bind (index found-p)
-            (gethash slot-name index-table)
-          found-p)
-        nil)))
+    (cond
+      (index-table
+       (multiple-value-bind (index found-p)
+           (gethash slot-name index-table)
+         (declare (ignore index))
+         found-p))
+      ((structurep instance)
+       (if (%find-struct-slot-index instance slot-name) t nil))
+      (t nil))))
 
 ;;; ====================================================================
 ;;; Phase 2: C3 Linearization

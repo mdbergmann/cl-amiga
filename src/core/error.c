@@ -1,7 +1,9 @@
 #include "error.h"
 #include "mem.h"
 #include "vm.h"
+#include "symbol.h"
 #include "debugger.h"
+#include "printer.h"
 #include "color.h"
 #include "../platform/platform.h"
 #include <stdio.h>
@@ -24,6 +26,64 @@ void cl_error_init(void)
     cl_error_frame_top = 0;
     cl_error_code = CL_ERR_NONE;
     cl_error_msg[0] = '\0';
+}
+
+/* Unwind after the debugger returned — shared between cl_error and
+ * cl_error_from_condition. Assumes cl_error_code/cl_error_msg are set. */
+static void cl_error_unwind(int code)
+{
+    /* Check for interposing unwind-protect frames in NLX stack.
+     * Skip stale frames whose VM frame was reused by a tail call —
+     * longjmping to a stale UWPROT restores wrong code/constants. */
+    {
+        int i;
+        for (i = cl_nlx_top - 1; i >= 0; i--) {
+            if (cl_nlx_stack[i].type == CL_NLX_UWPROT) {
+                CL_Frame *tf = &cl_vm.frames[cl_nlx_stack[i].vm_fp - 1];
+                if (tf->code != cl_nlx_stack[i].code)
+                    continue;
+                cl_pending_throw = 2;
+                cl_pending_error_code = code;
+                strncpy(cl_pending_error_msg, cl_error_msg,
+                        sizeof(cl_pending_error_msg) - 1);
+                cl_pending_error_msg[sizeof(cl_pending_error_msg) - 1] = '\0';
+                cl_nlx_top = i;
+                longjmp(cl_nlx_stack[i].buf, 1);
+            }
+        }
+    }
+
+    /* No UWPROT found — propagating to C error handler. */
+    if (cl_error_frame_top > 1) {
+        /* Nested error frame — jump to it without destroying global state.
+         * The caller is responsible for restoring VM/binding state.
+         * Don't decrement here — CL_UNCATCH at the catch site pops. */
+        longjmp(cl_error_frames[cl_error_frame_top - 1].buf, code);
+    }
+
+    /* Outermost error frame (REPL) — full cleanup.
+     * NLX frames (catch/uwprot) are invalid once we leave the VM,
+     * so clear the NLX stack and reset pending state.
+     * Restore all dynamic bindings before leaving the VM.
+     * Reset GC root stack — longjmp invalidates stack-local roots. */
+    cl_nlx_top = 0;
+    cl_pending_throw = 0;
+    cl_dynbind_restore_to(0);
+    cl_handler_top = 0;
+    cl_restart_top = 0;
+    cl_gc_reset_roots();
+
+    if (cl_error_frame_top > 0) {
+        longjmp(cl_error_frames[cl_error_frame_top - 1].buf, code);
+    }
+
+    /* No error frame — fatal */
+    cl_color_set(CL_COLOR_RED);
+    platform_write_string("FATAL ERROR: ");
+    platform_write_string(cl_error_msg);
+    cl_color_reset();
+    platform_write_string("\n");
+    exit(1);
 }
 
 void cl_error(int code, const char *fmt, ...)
@@ -62,62 +122,62 @@ void cl_error(int code, const char *fmt, ...)
         cl_invoke_debugger(cond);
     }
 
-    /* Check for interposing unwind-protect frames in NLX stack.
-     * Skip stale frames whose VM frame was reused by a tail call —
-     * longjmping to a stale UWPROT restores wrong code/constants. */
-    {
-        int i;
-        for (i = cl_nlx_top - 1; i >= 0; i--) {
-            if (cl_nlx_stack[i].type == CL_NLX_UWPROT) {
-                /* Stale check: if the VM frame was reused by a different
-                 * function (tail call), the UWPROT's saved state is invalid */
-                CL_Frame *tf = &cl_vm.frames[cl_nlx_stack[i].vm_fp - 1];
-                if (tf->code != cl_nlx_stack[i].code)
-                    continue;
-                /* Set pending error, longjmp to UWPROT cleanup */
-                cl_pending_throw = 2;
-                cl_pending_error_code = code;
-                strncpy(cl_pending_error_msg, cl_error_msg,
-                        sizeof(cl_pending_error_msg) - 1);
-                cl_pending_error_msg[sizeof(cl_pending_error_msg) - 1] = '\0';
-                cl_nlx_top = i;
-                longjmp(cl_nlx_stack[i].buf, 1);
+    cl_error_unwind(code);
+}
+
+/* Unwind with an existing condition object (e.g. one built by the Lisp
+ * ERROR builtin). Caller is responsible for having already run
+ * cl_signal_condition — we skip re-signaling to avoid running handlers twice.
+ * Unlike cl_error, this preserves the original condition's type and slots
+ * so the debugger can dispatch PRINT-OBJECT and show a meaningful report. */
+void cl_error_from_condition(CL_Obj condition)
+{
+    CL_Condition *c;
+    CL_Obj report = CL_NIL;
+
+    if (!CL_CONDITION_P(condition)) {
+        cl_error(CL_ERR_GENERAL, "cl_error_from_condition: not a condition");
+        return;
+    }
+
+    cl_error_code = CL_ERR_GENERAL;
+
+    /* Try PRINT-OBJECT dispatch (e.g. ASDF conditions rely on it for their
+     * report). Falls through to the condition's report_string and finally
+     * the type name. */
+    if (!CL_NULL_P(SYM_PRINT_OBJECT_HOOK)) {
+        CL_Obj hook_val = cl_symbol_value(SYM_PRINT_OBJECT_HOOK);
+        if (!CL_NULL_P(hook_val)) {
+            CL_Obj hook_args[1];
+            CL_Obj result;
+            hook_args[0] = condition;
+            result = cl_vm_apply(hook_val, hook_args, 1);
+            if (!CL_NULL_P(result) && CL_HEAP_P(result) &&
+                CL_HDR_TYPE(CL_OBJ_TO_PTR(result)) == TYPE_STRING) {
+                report = result;
             }
         }
     }
 
-    /* No UWPROT found — propagating to C error handler. */
-    if (cl_error_frame_top > 1) {
-        /* Nested error frame — jump to it without destroying global state.
-         * The caller is responsible for restoring VM/binding state.
-         * Don't decrement here — CL_UNCATCH at the catch site pops. */
-        longjmp(cl_error_frames[cl_error_frame_top - 1].buf, code);
+    c = (CL_Condition *)CL_OBJ_TO_PTR(condition);
+    if (CL_NULL_P(report)) {
+        report = c->report_string;
     }
 
-    /* Outermost error frame (REPL) — full cleanup.
-     * NLX frames (catch/uwprot) are invalid once we leave the VM,
-     * so clear the NLX stack and reset pending state.
-     * Restore all dynamic bindings before leaving the VM.
-     * Reset GC root stack — longjmp invalidates stack-local roots. */
-    cl_nlx_top = 0;
-    cl_pending_throw = 0;
-    cl_dynbind_restore_to(0);
-    cl_handler_top = 0;
-    cl_restart_top = 0;
-    cl_gc_reset_roots();
-
-    if (cl_error_frame_top > 0) {
-        /* Don't decrement here — CL_UNCATCH at the catch site pops */
-        longjmp(cl_error_frames[cl_error_frame_top - 1].buf, code);
+    if (!CL_NULL_P(report) && CL_HEAP_P(report) &&
+        CL_HDR_TYPE(CL_OBJ_TO_PTR(report)) == TYPE_STRING) {
+        CL_String *s = (CL_String *)CL_OBJ_TO_PTR(report);
+        char typebuf[96];
+        cl_prin1_to_string(c->type_name, typebuf, sizeof(typebuf));
+        snprintf(cl_error_msg, sizeof(cl_error_msg), "%s: %s",
+                 typebuf, s->data);
+    } else {
+        cl_prin1_to_string(c->type_name, cl_error_msg, sizeof(cl_error_msg));
     }
 
-    /* No error frame — fatal */
-    cl_color_set(CL_COLOR_RED);
-    platform_write_string("FATAL ERROR: ");
-    platform_write_string(cl_error_msg);
-    cl_color_reset();
-    platform_write_string("\n");
-    exit(1);
+    cl_capture_backtrace();
+    cl_invoke_debugger(condition);
+    cl_error_unwind(CL_ERR_GENERAL);
 }
 
 void cl_error_print(void)
