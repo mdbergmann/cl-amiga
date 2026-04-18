@@ -772,6 +772,84 @@ TEST(print_object_default_struct)
         "#S(PLAIN-ST :A 1)");
 }
 
+/* === slot-value on DEFSTRUCT instances ===
+ * Regression: lisp-namespace and other libraries use (with-slots ...) on
+ * defstruct instances. slot-value must resolve slot names against the
+ * struct's slot list when CLASS-OF returns a class without a
+ * slot-index-table. */
+
+TEST(slot_value_on_struct)
+{
+    eval_print("(defstruct point3 (x 0) (y 0) (z 0))");
+    eval_print("(defvar *p3* (make-point3 :x 10 :y 20 :z 30))");
+    ASSERT_STR_EQ(eval_print("(slot-value *p3* 'x)"), "10");
+    ASSERT_STR_EQ(eval_print("(slot-value *p3* 'y)"), "20");
+    ASSERT_STR_EQ(eval_print("(slot-value *p3* 'z)"), "30");
+}
+
+TEST(setf_slot_value_on_struct)
+{
+    eval_print("(defstruct named-box (name \"\") (value 0))");
+    eval_print("(defvar *nb* (make-named-box :name \"n\" :value 1))");
+    ASSERT_STR_EQ(eval_print("(setf (slot-value *nb* 'value) 99)"), "99");
+    ASSERT_STR_EQ(eval_print("(slot-value *nb* 'value)"), "99");
+    ASSERT_STR_EQ(eval_print("(named-box-value *nb*)"), "99");
+}
+
+TEST(with_slots_on_struct)
+{
+    eval_print("(defstruct ws-rec (alpha 1) (beta 2))");
+    eval_print("(defvar *wsr* (make-ws-rec))");
+    /* with-slots expands to slot-value — must work on structs */
+    ASSERT_STR_EQ(eval_print(
+        "(with-slots (alpha beta) *wsr* (+ alpha beta))"),
+        "3");
+    /* with-slots also supports setf of its bindings via symbol-macrolet */
+    ASSERT_STR_EQ(eval_print(
+        "(with-slots (alpha) *wsr* (setf alpha 42) alpha)"),
+        "42");
+    ASSERT_STR_EQ(eval_print("(ws-rec-alpha *wsr*)"), "42");
+}
+
+TEST(slot_boundp_on_struct)
+{
+    eval_print("(defstruct sb-rec (a 1))");
+    eval_print("(defvar *sbr* (make-sb-rec))");
+    /* Struct slots always report bound (they have defaults) */
+    ASSERT_STR_EQ(eval_print("(slot-boundp *sbr* 'a)"), "T");
+}
+
+TEST(slot_exists_p_on_struct)
+{
+    eval_print("(defstruct sxp-rec (foo 1) (bar 2))");
+    eval_print("(defvar *sxp* (make-sxp-rec))");
+    ASSERT_STR_EQ(eval_print("(slot-exists-p *sxp* 'foo)"), "T");
+    ASSERT_STR_EQ(eval_print("(slot-exists-p *sxp* 'bar)"), "T");
+    ASSERT_STR_EQ(eval_print("(slot-exists-p *sxp* 'missing)"), "NIL");
+}
+
+TEST(slot_value_unknown_slot_struct)
+{
+    eval_print("(defstruct usk-rec (a 1))");
+    eval_print("(defvar *usk* (make-usk-rec))");
+    /* Accessing an unknown slot name signals an error */
+    ASSERT(strncmp(eval_print("(slot-value *usk* 'nope)"), "ERROR:", 6) == 0);
+}
+
+/* === ERROR with :format-control formats its report (regression for ~S) === */
+
+TEST(error_format_control_interpolates)
+{
+    /* Previously, (error "~S foo" x) left ~S literal in the report. */
+    const char *out = eval_print(
+        "(handler-case (error \"msg: ~S\" 42) "
+        "  (simple-error (c) "
+        "    (format nil \"~A\" c)))");
+    /* Report must contain the interpolated "42", not the literal "~S" */
+    ASSERT(strstr(out, "42") != NULL);
+    ASSERT(strstr(out, "~S") == NULL);
+}
+
 /* === Phase 10: typep with multiple inheritance === */
 
 TEST(typep_multiple_inheritance)
@@ -1462,6 +1540,17 @@ int main(void)
     RUN(print_object_gf);
     RUN(print_object_custom);
     RUN(print_object_default_struct);
+
+    /* slot-value on DEFSTRUCT instances */
+    RUN(slot_value_on_struct);
+    RUN(setf_slot_value_on_struct);
+    RUN(with_slots_on_struct);
+    RUN(slot_boundp_on_struct);
+    RUN(slot_exists_p_on_struct);
+    RUN(slot_value_unknown_slot_struct);
+
+    /* ERROR :format-control formats its report */
+    RUN(error_format_control_interpolates);
 
     /* Phase 10: typep with multiple inheritance */
     RUN(typep_multiple_inheritance);
