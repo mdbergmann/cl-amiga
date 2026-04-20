@@ -87,6 +87,10 @@ typedef struct CL_Thread_s {
     int         rd_eof;
     int         rd_suppress;   /* counter for nested #+/#- */
     int         rd_line;
+    int         rd_last_eof;   /* EOF flag of the most recently completed
+                                * cl_read_from_stream — survives across
+                                * nested reader invocations, so bi_read
+                                * still sees whether its own read hit EOF. */
     const char *current_source_file;
     uint16_t    current_file_id;
 

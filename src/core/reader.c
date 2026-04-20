@@ -15,6 +15,8 @@
 #include <string.h>
 #include <ctype.h>
 #include <stdlib.h>
+#include <stdarg.h>
+#include <stdio.h>
 
 /* strcasecmp: available via <strings.h> on POSIX, provide fallback for AmigaOS */
 #ifdef PLATFORM_AMIGA
@@ -42,6 +44,32 @@ static int cl_strcasecmp(const char *a, const char *b)
 
 /* Source location tracking (shared, not per-thread) */
 CL_SrcLoc cl_srcloc_table[CL_SRCLOC_SIZE];
+
+/* Reader error helper — prepends source file and line to the message so
+ * diagnostics point at the actual location, not always "(line 1)". */
+static void cl_reader_error(int code, const char *fmt, ...)
+{
+    char msg[512];
+    va_list ap;
+    const char *file;
+
+    va_start(ap, fmt);
+    vsnprintf(msg, sizeof(msg), fmt, ap);
+    va_end(ap);
+
+    file = cl_current_source_file;
+    if (file && file[0]) {
+        /* Show only the basename to keep messages compact */
+        const char *base = file;
+        const char *p;
+        for (p = file; *p; p++) {
+            if (*p == '/' || *p == ':') base = p + 1;
+        }
+        cl_error(code, "%s:%d: %s", base, reader_line, msg);
+    } else {
+        cl_error(code, "line %d: %s", reader_line, msg);
+    }
+}
 
 static int read_char(void)
 {
@@ -212,7 +240,7 @@ static CL_Obj read_radix_number(int radix)
 
     if (read_suppress) return CL_NIL;
     if (len == 0) {
-        cl_error(CL_ERR_PARSE, "No digits after #radix prefix");
+        cl_reader_error(CL_ERR_PARSE, "No digits after #radix prefix");
         return CL_NIL;
     }
 
@@ -222,7 +250,7 @@ static CL_Obj read_radix_number(int radix)
     else if (buf[0] == '-') { neg = 1; i = 1; }
 
     if (i >= len) {
-        cl_error(CL_ERR_PARSE, "No digits after sign in #radix number");
+        cl_reader_error(CL_ERR_PARSE, "No digits after sign in #radix number");
         return CL_NIL;
     }
 
@@ -237,11 +265,11 @@ static CL_Obj read_radix_number(int radix)
             if (c >= '0' && c <= '9') dv = c - '0';
             else if (c >= 'A' && c <= 'Z') dv = c - 'A' + 10;
             else {
-                cl_error(CL_ERR_PARSE, "Invalid digit '%c' for radix %d", buf[j], radix);
+                cl_reader_error(CL_ERR_PARSE, "Invalid digit '%c' for radix %d", buf[j], radix);
                 return CL_NIL;
             }
             if (dv >= radix) {
-                cl_error(CL_ERR_PARSE, "Invalid digit '%c' for radix %d", buf[j], radix);
+                cl_reader_error(CL_ERR_PARSE, "Invalid digit '%c' for radix %d", buf[j], radix);
                 return CL_NIL;
             }
             if (!overflow) {
@@ -364,7 +392,7 @@ static CL_Obj read_atom(void)
             for (;;) {
                 ch = read_char();
                 if (ch < 0) {
-                    cl_error(CL_ERR_PARSE, "Unterminated | in symbol name");
+                    cl_reader_error(CL_ERR_PARSE, "Unterminated | in symbol name");
                     return CL_NIL;
                 }
                 if (ch < CL_RT_CHARS && rt->syntax[ch] == CL_CHAR_MULTI_ESCAPE)
@@ -397,7 +425,7 @@ static CL_Obj read_atom(void)
     buf[len] = '\0';
 
     if (len == 0 && !has_escape) {
-        cl_error(CL_ERR_PARSE, "Unexpected end of input");
+        cl_reader_error(CL_ERR_PARSE, "Unexpected end of input");
         return CL_NIL;
     }
 
@@ -537,7 +565,7 @@ static CL_Obj read_atom(void)
 
             if (sym_len <= 0) {
                 if (read_suppress) return CL_NIL;
-                cl_error(CL_ERR_PARSE, "Missing symbol name after package qualifier");
+                cl_reader_error(CL_ERR_PARSE, "Missing symbol name after package qualifier");
             }
 
             memcpy(pkg_name, buf, (uint32_t)colon_pos);
@@ -548,7 +576,7 @@ static CL_Obj read_atom(void)
             package = cl_find_package(pkg_name, (uint32_t)colon_pos);
             if (CL_NULL_P(package)) {
                 if (read_suppress) return CL_NIL;
-                cl_error(CL_ERR_PARSE, "Package %s not found", pkg_name);
+                cl_reader_error(CL_ERR_PARSE, "Package %s not found", pkg_name);
             }
 
             if (double_colon) {
@@ -559,7 +587,7 @@ static CL_Obj read_atom(void)
                 CL_Obj sym = cl_package_find_external(sym_name, (uint32_t)sym_len, package);
                 if (CL_NULL_P(sym)) {
                     if (read_suppress) return CL_NIL;
-                    cl_error(CL_ERR_PARSE, "Symbol %s not exported from %s",
+                    cl_reader_error(CL_ERR_PARSE, "Symbol %s not exported from %s",
                              sym_name, pkg_name);
                 }
                 return sym;
@@ -587,14 +615,14 @@ static CL_Obj read_string(void)
     for (;;) {
         ch = read_char();
         if (ch < 0) {
-            cl_error(CL_ERR_PARSE, "Unterminated string");
+            cl_reader_error(CL_ERR_PARSE, "Unterminated string");
             return CL_NIL;
         }
         if (ch == '"') break;
         if (ch == '\\') {
             ch = read_char();
             if (ch < 0) {
-                cl_error(CL_ERR_PARSE, "Unterminated string escape");
+                cl_reader_error(CL_ERR_PARSE, "Unterminated string escape");
                 return CL_NIL;
             }
             switch (ch) {
@@ -649,7 +677,7 @@ static CL_Obj read_list(void)
         skip_whitespace();
         if (eof_seen) {
             CL_GC_UNPROTECT(2);
-            cl_error(CL_ERR_PARSE, "Unterminated list");
+            cl_reader_error(CL_ERR_PARSE, "Unterminated list");
             return CL_NIL;
         }
 
@@ -674,7 +702,7 @@ static CL_Obj read_list(void)
                     ch = read_char();
                     if (ch != ')') {
                         CL_GC_UNPROTECT(2);
-                        cl_error(CL_ERR_PARSE, "Expected ')' after dotted pair");
+                        cl_reader_error(CL_ERR_PARSE, "Expected ')' after dotted pair");
                     }
                     CL_GC_UNPROTECT(2);
                     return head;
@@ -777,7 +805,7 @@ static CL_Obj read_expr(void)
             while (depth > 0) {
                 int c2 = read_char();
                 if (c2 < 0) {
-                    cl_error(CL_ERR_PARSE, "Unterminated block comment #|...|#");
+                    cl_reader_error(CL_ERR_PARSE, "Unterminated block comment #|...|#");
                     return CL_NIL;
                 }
                 if (prev == '#' && c2 == '|') {
@@ -803,7 +831,7 @@ static CL_Obj read_expr(void)
             /* #\x => character literal */
             ch = read_char();
             if (ch < 0) {
-                cl_error(CL_ERR_PARSE, "Unexpected EOF in character literal");
+                cl_reader_error(CL_ERR_PARSE, "Unexpected EOF in character literal");
                 return CL_NIL;
             }
             /* Check for named characters */
@@ -875,7 +903,7 @@ static CL_Obj read_expr(void)
                         return CL_MAKE_CHAR((int)cp);
                 }
                 if (read_suppress) return CL_NIL;
-                cl_error(CL_ERR_PARSE, "Unknown character name: %s", name);
+                cl_reader_error(CL_ERR_PARSE, "Unknown character name: %s", name);
                 return CL_NIL;
             }
             return CL_MAKE_CHAR(ch);
@@ -894,7 +922,7 @@ static CL_Obj read_expr(void)
             sym_buf[sym_len] = '\0';
             if (sym_len == 0) {
                 if (read_suppress) return CL_NIL;
-                cl_error(CL_ERR_PARSE, "Missing symbol name after #:");
+                cl_reader_error(CL_ERR_PARSE, "Missing symbol name after #:");
             }
             name_str = cl_make_string(sym_buf, (uint32_t)sym_len);
             return cl_make_uninterned_symbol(name_str);
@@ -949,7 +977,7 @@ static CL_Obj read_expr(void)
             ch = read_char();
             if (ch != '"') {
                 if (read_suppress) { unread_char(ch); return CL_NIL; }
-                cl_error(CL_ERR_PARSE, "#P must be followed by a string");
+                cl_reader_error(CL_ERR_PARSE, "#P must be followed by a string");
                 return CL_NIL;
             }
             path_str = read_string();
@@ -970,7 +998,7 @@ static CL_Obj read_expr(void)
             skip_whitespace();
             ch = read_char();
             if (ch != '(') {
-                cl_error(CL_ERR_PARSE, "#C must be followed by (real imag)");
+                cl_reader_error(CL_ERR_PARSE, "#C must be followed by (real imag)");
                 return CL_NIL;
             }
             parts = read_list();
@@ -979,10 +1007,10 @@ static CL_Obj read_expr(void)
                 CL_Obj real = cl_car(parts);
                 CL_Obj imag = cl_car(cl_cdr(parts));
                 if (!CL_REALP(real) || !CL_REALP(imag))
-                    cl_error(CL_ERR_PARSE, "#C components must be real numbers");
+                    cl_reader_error(CL_ERR_PARSE, "#C components must be real numbers");
                 return cl_make_complex(real, imag);
             }
-            cl_error(CL_ERR_PARSE, "#C requires exactly two elements: (real imag)");
+            cl_reader_error(CL_ERR_PARSE, "#C requires exactly two elements: (real imag)");
             return CL_NIL;
         }
         if (ch == '(') {
@@ -1002,7 +1030,7 @@ static CL_Obj read_expr(void)
                 skip_whitespace();
                 if (eof_seen) {
                     CL_GC_UNPROTECT(2);
-                    cl_error(CL_ERR_PARSE, "Unterminated #( vector literal");
+                    cl_reader_error(CL_ERR_PARSE, "Unterminated #( vector literal");
                     return CL_NIL;
                 }
                 {
@@ -1044,7 +1072,7 @@ static CL_Obj read_expr(void)
             /* Check *read-eval* */
             (void)re_sym;
             if (CL_NULL_P(cl_symbol_value(SYM_STAR_READ_EVAL)))
-                cl_error(CL_ERR_GENERAL, "#. disabled: *READ-EVAL* is NIL");
+                cl_reader_error(CL_ERR_GENERAL, "#. disabled: *READ-EVAL* is NIL");
 
             CL_GC_PROTECT(form);
             bytecode = cl_compile(form);
@@ -1084,7 +1112,7 @@ static CL_Obj read_expr(void)
 
                     if (read_suppress) return CL_NIL;
                     if (rank < 0 || rank > 8) {
-                        cl_error(CL_ERR_PARSE, "#%dA: rank must be 0-8", rank);
+                        cl_reader_error(CL_ERR_PARSE, "#%dA: rank must be 0-8", rank);
                         return CL_NIL;
                     }
 
@@ -1181,18 +1209,18 @@ static CL_Obj read_expr(void)
                 if (ch >= '0' && ch <= '9') {
                     num_val = num_val * 10 + (ch - '0');
                 } else {
-                    cl_error(CL_ERR_PARSE, "Invalid radix prefix #%d%c", num_val, ch);
+                    cl_reader_error(CL_ERR_PARSE, "Invalid radix prefix #%d%c", num_val, ch);
                     return CL_NIL;
                 }
             }
             if (num_val < 2 || num_val > 36) {
-                cl_error(CL_ERR_PARSE, "Radix %d out of range (2-36)", num_val);
+                cl_reader_error(CL_ERR_PARSE, "Radix %d out of range (2-36)", num_val);
                 return CL_NIL;
             }
             return read_radix_number(num_val);
         }
         if (read_suppress) return CL_NIL;
-        cl_error(CL_ERR_PARSE, "Unknown dispatch macro: #%c", ch);
+        cl_reader_error(CL_ERR_PARSE, "Unknown dispatch macro: #%c", ch);
         return CL_NIL;
     }
 
@@ -1200,7 +1228,7 @@ static CL_Obj read_expr(void)
         return read_string();
 
     case ')':
-        cl_error(CL_ERR_PARSE, "Unexpected ')'");
+        cl_reader_error(CL_ERR_PARSE, "Unexpected ')'");
         return CL_NIL;
 
     default:
@@ -1233,20 +1261,38 @@ CL_Obj cl_read(void)
     reader_line = 1;
     eof_seen = 0;
     do { result = read_expr(); } while (result == CL_READER_SKIP && !eof_seen);
+    CT->rd_last_eof = eof_seen;
     return result;
 }
 
 CL_Obj cl_read_from_stream(CL_Obj stream)
 {
+    /* Save/restore reader state so nested reads (e.g. read-from-string
+     * called from inside a dispatch-macro function that is itself running
+     * during a parent read) don't leak state back to the parent reader.
+     * The innermost EOF is preserved in rd_last_eof for cl_reader_eof(). */
+    CL_Obj saved_stream = reader_stream;
+    int    saved_eof    = eof_seen;
+    int    saved_line   = reader_line;
     CL_Obj result;
+
     reader_stream = stream;
     eof_seen = 0;
+    reader_line = 1;
     do { result = read_expr(); } while (result == CL_READER_SKIP && !eof_seen);
+
+    CT->rd_last_eof = eof_seen;
+    reader_stream = saved_stream;
+    reader_line   = saved_line;
+    eof_seen      = saved_eof;
     return result;
 }
 
 CL_Obj cl_read_from_string(CL_ReadStream *stream)
 {
+    CL_Obj saved_stream = reader_stream;
+    int    saved_eof    = eof_seen;
+    int    saved_line   = reader_line;
     CL_Obj str, s;
     CL_Stream *st;
     CL_Obj result;
@@ -1266,12 +1312,22 @@ CL_Obj cl_read_from_string(CL_ReadStream *stream)
     st = (CL_Stream *)CL_OBJ_TO_PTR(s);
     stream->pos = (int)st->position;
     stream->line = reader_line;
+
+    CT->rd_last_eof = eof_seen;
+    reader_stream = saved_stream;
+    reader_line   = saved_line;
+    eof_seen      = saved_eof;
     return result;
 }
 
 int cl_reader_eof(void)
 {
-    return eof_seen;
+    /* Reflect the most recently completed top-level/embedded read.
+     * When a nested reader invocation runs (e.g. read-from-string
+     * inside a dispatch-macro), the saved eof_seen is restored on
+     * return — rd_last_eof captures the innermost read's EOF state
+     * so bi_read can still detect end-of-file on its own call. */
+    return CT->rd_last_eof;
 }
 
 void cl_reader_init(void)
