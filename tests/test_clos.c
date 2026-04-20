@@ -1428,6 +1428,205 @@ TEST(eql_cache_cacheable_p)
         ":EQL");
 }
 
+/* === Slot Definition Metaobjects (MOP) === */
+
+TEST(mop1_direct_slot_is_metaobject)
+{
+    /* class-direct-slots returns standard-direct-slot-definition instances */
+    ASSERT_STR_EQ(eval_print(
+        "(typep (first (class-direct-slots (find-class 'point))) "
+        "       'standard-direct-slot-definition)"),
+        "T");
+    /* Also satisfies slot-definition and standard-slot-definition */
+    ASSERT_STR_EQ(eval_print(
+        "(typep (first (class-direct-slots (find-class 'point))) "
+        "       'slot-definition)"),
+        "T");
+    ASSERT_STR_EQ(eval_print(
+        "(typep (first (class-direct-slots (find-class 'point))) "
+        "       'standard-slot-definition)"),
+        "T");
+}
+
+TEST(mop1_effective_slot_is_metaobject)
+{
+    /* class-slots returns standard-effective-slot-definition instances */
+    ASSERT_STR_EQ(eval_print(
+        "(typep (first (class-slots (find-class 'point))) "
+        "       'standard-effective-slot-definition)"),
+        "T");
+}
+
+TEST(mop1_class_slots_alias)
+{
+    /* class-slots is an alias for class-effective-slots */
+    ASSERT_STR_EQ(eval_print(
+        "(equal (class-slots (find-class 'point)) "
+        "       (class-effective-slots (find-class 'point)))"),
+        "T");
+    ASSERT_STR_EQ(eval_print(
+        "(length (class-slots (find-class 'point)))"),
+        "2");
+}
+
+TEST(mop1_slot_def_accessors_name)
+{
+    ASSERT_STR_EQ(eval_print(
+        "(slot-definition-name "
+        "  (first (class-direct-slots (find-class 'point))))"),
+        "X");
+    ASSERT_STR_EQ(eval_print(
+        "(slot-definition-name "
+        "  (second (class-direct-slots (find-class 'point))))"),
+        "Y");
+}
+
+TEST(mop1_slot_def_accessors_initargs)
+{
+    /* slot-definition-initargs returns a list (per AMOP) */
+    ASSERT_STR_EQ(eval_print(
+        "(slot-definition-initargs "
+        "  (first (class-direct-slots (find-class 'point))))"),
+        "(:X)");
+}
+
+TEST(mop1_slot_def_accessors_readers_writers)
+{
+    /* readers and writers are exposed on direct slot defs */
+    ASSERT_STR_EQ(eval_print(
+        "(slot-definition-readers "
+        "  (first (class-direct-slots (find-class 'point))))"),
+        "(POINT-X)");
+    ASSERT_STR_EQ(eval_print(
+        "(slot-definition-writers "
+        "  (first (class-direct-slots (find-class 'point))))"),
+        "((SETF POINT-X))");
+}
+
+TEST(mop1_slot_def_accessors_allocation)
+{
+    /* Default allocation is :instance */
+    ASSERT_STR_EQ(eval_print(
+        "(slot-definition-allocation "
+        "  (first (class-direct-slots (find-class 'point))))"),
+        ":INSTANCE");
+}
+
+TEST(mop1_slot_def_accessors_initform)
+{
+    /* A class with an explicit :initform */
+    eval_print(
+        "(defclass mop1-has-initform () "
+        "  ((n :initarg :n :initform 42)))");
+    ASSERT_STR_EQ(eval_print(
+        "(slot-definition-initform "
+        "  (first (class-direct-slots (find-class 'mop1-has-initform))))"),
+        "42");
+    ASSERT_STR_EQ(eval_print(
+        "(functionp "
+        "  (slot-definition-initfunction "
+        "    (first (class-direct-slots (find-class 'mop1-has-initform)))))"),
+        "T");
+    /* initfunction returns the initform value when called */
+    ASSERT_STR_EQ(eval_print(
+        "(funcall "
+        "  (slot-definition-initfunction "
+        "    (first (class-direct-slots (find-class 'mop1-has-initform)))))"),
+        "42");
+    /* make-instance uses the initform */
+    ASSERT_STR_EQ(eval_print(
+        "(slot-value (make-instance 'mop1-has-initform) 'n)"),
+        "42");
+}
+
+TEST(mop1_effective_slot_location)
+{
+    /* effective slot location is the integer instance index */
+    ASSERT_STR_EQ(eval_print(
+        "(slot-definition-location "
+        "  (first (class-slots (find-class 'point))))"),
+        "0");
+    ASSERT_STR_EQ(eval_print(
+        "(slot-definition-location "
+        "  (second (class-slots (find-class 'point))))"),
+        "1");
+}
+
+TEST(mop1_direct_slot_definition_class_gf)
+{
+    /* direct-slot-definition-class is a GF returning the standard class */
+    ASSERT_STR_EQ(eval_print(
+        "(class-name "
+        "  (direct-slot-definition-class (find-class 'standard-class)))"),
+        "STANDARD-DIRECT-SLOT-DEFINITION");
+    ASSERT_STR_EQ(eval_print(
+        "(class-name "
+        "  (effective-slot-definition-class (find-class 'standard-class)))"),
+        "STANDARD-EFFECTIVE-SLOT-DEFINITION");
+}
+
+TEST(mop1_direct_slot_definition_class_customizable)
+{
+    /* Users can add an :around method — shows the GF dispatches properly */
+    eval_print(
+        "(defvar *mop1-dsdc-calls* 0)");
+    eval_print(
+        "(defmethod direct-slot-definition-class :around "
+        "    ((class standard-class) &rest initargs) "
+        "  (declare (ignore initargs)) "
+        "  (incf *mop1-dsdc-calls*) "
+        "  (call-next-method))");
+    eval_print(
+        "(direct-slot-definition-class (find-class 'standard-class))");
+    /* The :around method ran at least once */
+    ASSERT_STR_EQ(eval_print("(> *mop1-dsdc-calls* 0)"), "T");
+    /* And still returned the standard slot-definition class */
+    ASSERT_STR_EQ(eval_print(
+        "(class-name "
+        "  (direct-slot-definition-class (find-class 'standard-class)))"),
+        "STANDARD-DIRECT-SLOT-DEFINITION");
+}
+
+TEST(mop1_inheritance_merges_slots)
+{
+    /* Effective slot count is the union of direct slots across CPL */
+    eval_print(
+        "(defclass mop1-base () "
+        "  ((a :initarg :a :initform 'a-val)))");
+    eval_print(
+        "(defclass mop1-sub (mop1-base) "
+        "  ((b :initarg :b :initform 'b-val)))");
+    ASSERT_STR_EQ(eval_print(
+        "(length (class-slots (find-class 'mop1-sub)))"),
+        "2");
+    /* Inherited slot's initfunction survives the merge */
+    ASSERT_STR_EQ(eval_print(
+        "(slot-value (make-instance 'mop1-sub) 'a)"),
+        "A-VAL");
+    ASSERT_STR_EQ(eval_print(
+        "(slot-value (make-instance 'mop1-sub) 'b)"),
+        "B-VAL");
+}
+
+TEST(mop1_inheritance_initargs_unioned)
+{
+    /* Per AMOP, initargs are unioned across all direct slots for an
+       effective slot of that name. */
+    eval_print(
+        "(defclass mop1-p1 () "
+        "  ((x :initarg :a)))");
+    eval_print(
+        "(defclass mop1-p2 (mop1-p1) "
+        "  ((x :initarg :b)))");
+    /* Both :a and :b should be valid initargs for the effective x slot */
+    ASSERT_STR_EQ(eval_print(
+        "(slot-value (make-instance 'mop1-p2 :a 1) 'x)"),
+        "1");
+    ASSERT_STR_EQ(eval_print(
+        "(slot-value (make-instance 'mop1-p2 :b 2) 'x)"),
+        "2");
+}
+
 int main(void)
 {
     test_init();
@@ -1593,6 +1792,21 @@ int main(void)
     RUN(eql_cache_arg2_eql);
     RUN(eql_cache_invalidation);
     RUN(eql_cache_cacheable_p);
+
+    /* Slot definition metaobjects (MOP) */
+    RUN(mop1_direct_slot_is_metaobject);
+    RUN(mop1_effective_slot_is_metaobject);
+    RUN(mop1_class_slots_alias);
+    RUN(mop1_slot_def_accessors_name);
+    RUN(mop1_slot_def_accessors_initargs);
+    RUN(mop1_slot_def_accessors_readers_writers);
+    RUN(mop1_slot_def_accessors_allocation);
+    RUN(mop1_slot_def_accessors_initform);
+    RUN(mop1_effective_slot_location);
+    RUN(mop1_direct_slot_definition_class_gf);
+    RUN(mop1_direct_slot_definition_class_customizable);
+    RUN(mop1_inheritance_merges_slots);
+    RUN(mop1_inheritance_initargs_unioned);
 
     teardown();
     REPORT();
