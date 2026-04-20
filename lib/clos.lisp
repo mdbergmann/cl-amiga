@@ -1185,6 +1185,8 @@ Specialize via defmethod to provide lazy initialization."
 (defun gf-eql-value-sets (gf) (%struct-ref gf 7))
 (defun %set-gf-eql-value-sets (gf val) (%struct-set gf 7 val))
 
+(defun method-generic-function (m) (%struct-ref m 0))
+(defun %set-method-generic-function (m gf) (%struct-set m 0 gf))
 (defun method-specializers (m) (%struct-ref m 1))
 (defun method-qualifiers (m) (%struct-ref m 2))
 (defun method-function (m) (%struct-ref m 3))
@@ -1656,21 +1658,36 @@ slot without touching the symbol-function cell."
                 (find-class s)))
           specializer-names))
 
-(defun extract-specializer-names (specializers)
-  "AMOP: for each specializer in SPECIALIZERS, return its name —
-   a class name for class specializers, or (EQL value) for EQL
-   specializer metaobjects. Mirrors what DEFMETHOD saw before
-   %RESOLVE-SPECIALIZERS was applied."
-  (mapcar (lambda (s)
-            (cond
-              ((eql-specializer-p s)
-               (list 'eql (eql-specializer-object s)))
-              ((and (structurep s)
-                    (or (eq (%struct-type-name s) 'standard-class)
-                        (eq (%struct-type-name s) 'built-in-class)))
-               (class-name s))
-              (t s)))
-          specializers))
+(defun extract-specializer-names (specialized-lambda-list)
+  "AMOP: given a specialized lambda list, return the list of specializer
+   names — class-name symbols or (EQL value) forms, padded with T for
+   unspecialized required parameters.  Non-required parameters are
+   skipped."
+  (let ((names nil))
+    (dolist (p specialized-lambda-list)
+      (cond
+        ((member p '(&optional &rest &key &body &allow-other-keys &aux) :test #'eq)
+         (return))
+        ((consp p)
+         (push (cadr p) names))
+        (t (push 't names))))
+    (nreverse names)))
+
+(defun extract-lambda-list (specialized-lambda-list)
+  "AMOP: given a specialized lambda list, return the corresponding plain
+   lambda list — specialized required parameters are replaced by their
+   variable names; non-required parameters are preserved verbatim."
+  (let ((unspec nil)
+        (in-required t))
+    (dolist (p specialized-lambda-list)
+      (cond
+        ((member p '(&optional &rest &key &body &allow-other-keys &aux) :test #'eq)
+         (setq in-required nil)
+         (push p unspec))
+        ((and in-required (consp p))
+         (push (car p) unspec))
+        (t (push p unspec))))
+    (nreverse unspec)))
 
 ;;; --- defmethod macro ---
 
@@ -1716,34 +1733,57 @@ slot without touching the symbol-function cell."
            (eq (car gf-name) 'setf)
            (eq (cadr gf-name) 'slot-value-using-class))))
 
-(defun %add-method-to-gf (gf-name qualifiers specializer-names fn lambda-list)
-  "Add a method to the named generic function."
-  (let* ((gf (ensure-generic-function gf-name))
-         (specializers (%resolve-specializers specializer-names))
-         (method (%make-struct 'standard-method
-                   gf specializers qualifiers fn lambda-list)))
-    ;; Remove existing method with same specializers and qualifiers
+(defun %install-method-in-gf (gf method)
+  "Low-level install: put METHOD into GF's method list, replacing any
+   method with matching qualifiers and specializers.  Invalidates the
+   dispatch cache and recomputes cacheability.  Returns METHOD.
+   Primitive; does not dispatch through the ADD-METHOD GF so it is safe
+   during bootstrap and from DEFMETHOD expansion."
+  (let ((qualifiers (method-qualifiers method))
+        (specializers (method-specializers method))
+        (gf-name (gf-name gf)))
+    (%set-method-generic-function method gf)
     (%set-gf-methods gf
       (remove-if (lambda (m)
                    (and (equal (method-qualifiers m) qualifiers)
                         (equal (method-specializers m) specializers)))
                  (gf-methods gf)))
-    ;; Add new method
     (%set-gf-methods gf (cons method (gf-methods gf)))
-    ;; Invalidate dispatch cache and recompute cacheability
     (%set-gf-dispatch-cache gf nil)
     (let ((mode (%compute-gf-cacheable-p gf)))
       (%set-gf-cacheable-p gf mode)
       (if (eq mode :eql)
           (%set-gf-eql-value-sets gf (%compute-eql-value-sets gf))
           (%set-gf-eql-value-sets gf nil)))
-    ;; Once any slot-access protocol GF has more than its single default
-    ;; method, SLOT-VALUE / SLOT-BOUNDP / SLOT-MAKUNBOUND (and SETF) must
-    ;; route through the GF so user methods are observed.
     (when (and (%slot-access-protocol-gf-p gf-name)
                (> (length (gf-methods gf)) 1))
       (setq *slot-access-protocol-extended-p* t))
     method))
+
+(defun %uninstall-method-from-gf (gf method)
+  "Low-level remove: drop METHOD (by EQ identity) from GF and refresh
+   dispatch state.  Returns GF."
+  (%set-gf-methods gf
+    (remove method (gf-methods gf) :test #'eq))
+  (%set-gf-dispatch-cache gf nil)
+  (let ((mode (%compute-gf-cacheable-p gf)))
+    (%set-gf-cacheable-p gf mode)
+    (if (eq mode :eql)
+        (%set-gf-eql-value-sets gf (%compute-eql-value-sets gf))
+        (%set-gf-eql-value-sets gf nil)))
+  ;; Clear the back-link so the method object no longer claims membership.
+  (%set-method-generic-function method nil)
+  gf)
+
+(defun %add-method-to-gf (gf-name qualifiers specializer-names fn lambda-list)
+  "Bridge used by DEFMETHOD expansion — construct the method struct and
+   install it via the primitive install helper (bypasses the ADD-METHOD
+   GF dispatch that is itself built on this path during bootstrap)."
+  (let* ((gf (ensure-generic-function gf-name))
+         (specializers (%resolve-specializers specializer-names))
+         (method (%make-struct 'standard-method
+                   gf specializers qualifiers fn lambda-list)))
+    (%install-method-in-gf gf method)))
 
 ;;; ====================================================================
 ;;; Phase 6: with-slots
@@ -2201,6 +2241,118 @@ Default method returns the currently cached discriminating function;
 user methods may specialise to return a customised dispatcher, which
 can then be installed via SET-FUNCALLABLE-INSTANCE-FUNCTION."
   (gf-discriminating-function gf))
+
+;;; ====================================================================
+;;; Method metaobject protocol (MOP)
+;;; ====================================================================
+;;;
+;;; AMOP §5.4 exposes the pieces of DEFMETHOD expansion as public hooks:
+;;; ADD-METHOD / REMOVE-METHOD operate on already-constructed methods,
+;;; EXTRACT-LAMBDA-LIST and EXTRACT-SPECIALIZER-NAMES pull a specialized
+;;; lambda list apart, ENSURE-METHOD is the closer-mop convenience that
+;;; ties them together, and MAKE-METHOD-LAMBDA is the hook a metaclass
+;;; uses to rewrite the body of a method during code generation.
+;;;
+;;; DEFMETHOD itself does not dispatch through ADD-METHOD — it calls the
+;;; same primitive (%INSTALL-METHOD-IN-GF) directly.  That keeps
+;;; bootstrap simple (no chicken-and-egg when defining the GF), keeps
+;;; DEFMETHOD fast, and matches what SBCL and CCL do.  User-installed
+;;; (ADD-METHOD ...) still routes through the protocol so :around
+;;; methods on ADD-METHOD take effect.
+
+(defgeneric add-method (generic-function method))
+(defmethod add-method ((gf standard-generic-function) (method standard-method))
+  "AMOP: install METHOD in GF.  Returns GF."
+  (%install-method-in-gf gf method)
+  gf)
+
+(defgeneric remove-method (generic-function method))
+(defmethod remove-method ((gf standard-generic-function) (method standard-method))
+  "AMOP: uninstall METHOD from GF.  Returns GF.  Uses EQ identity — a
+method that is not installed is silently ignored, matching AMOP."
+  (%uninstall-method-from-gf gf method))
+
+(defgeneric find-method (generic-function qualifiers specializers &optional errorp))
+(defmethod find-method ((gf standard-generic-function) qualifiers specializers
+                        &optional (errorp t))
+  "AMOP: locate the method on GF with the given QUALIFIERS list and
+SPECIALIZERS list.  SPECIALIZERS may contain class objects, class
+names, or (EQL value) / EQL-SPECIALIZER metaobjects — names are
+resolved to metaobjects via %RESOLVE-SPECIALIZERS before comparison."
+  (let* ((resolved (mapcar (lambda (s)
+                             (cond
+                               ((symbolp s) (find-class s))
+                               ((and (consp s) (eq (car s) 'eql))
+                                (intern-eql-specializer (cadr s)))
+                               (t s)))
+                           specializers))
+         (match (find-if (lambda (m)
+                           (and (equal (method-qualifiers m) qualifiers)
+                                (equal (method-specializers m) resolved)))
+                         (gf-methods gf))))
+    (cond
+      (match match)
+      (errorp
+       (error "No method on ~S with qualifiers ~S and specializers ~S"
+              (gf-name gf) qualifiers specializers))
+      (t nil))))
+
+(defgeneric make-method-lambda (generic-function method lambda-expression environment))
+(defmethod make-method-lambda ((gf standard-generic-function) (method standard-method)
+                                lambda-expression environment)
+  "AMOP: rewrite a method LAMBDA-EXPRESSION before it is compiled.
+Default method returns LAMBDA-EXPRESSION and NIL — DEFMETHOD builds
+the lambda directly and does not consult this GF unless a user method
+overrides it.  Returns two values: the possibly-transformed lambda
+expression and a list of extra initargs for MAKE-METHOD-LAMBDA callers."
+  (declare (ignore gf method environment))
+  (values lambda-expression nil))
+
+(defun %gf-or-name (gf-or-name)
+  "Resolve a GF designator to a standard-generic-function metaobject —
+accepts a GF struct or a function-name (symbol or (SETF name))."
+  (cond
+    ((and (structurep gf-or-name)
+          (eq (%struct-type-name gf-or-name) 'standard-generic-function))
+     gf-or-name)
+    (t (ensure-generic-function gf-or-name))))
+
+(defun ensure-method (gf-or-name lambda-expression
+                      &key (qualifiers '())
+                           (lambda-list nil lambda-list-p)
+                           (specializers nil specializers-p)
+                           (method-class (find-class 'standard-method)))
+  "closer-mop: construct a method from LAMBDA-EXPRESSION and install it
+on GF-OR-NAME.  LAMBDA-EXPRESSION is either a lambda form or a
+specialized lambda method form — if :lambda-list and :specializers are
+not supplied, they are parsed from LAMBDA-EXPRESSION's first argument
+list.  METHOD-CLASS is accepted for API completeness but is not used
+since user-defined method classes are out of scope."
+  (declare (ignore method-class))
+  (let* ((gf (%gf-or-name gf-or-name))
+         (ll (cond
+               (lambda-list-p lambda-list)
+               ((and (consp lambda-expression)
+                     (eq (car lambda-expression) 'lambda))
+                (cadr lambda-expression))
+               (t (error "ENSURE-METHOD: :LAMBDA-LIST not supplied and ~S ~
+                          is not a lambda expression" lambda-expression))))
+         (specs (cond
+                  (specializers-p specializers)
+                  (t (make-list (length (extract-specializer-names ll))
+                                :initial-element 't))))
+         (resolved-specs (%resolve-specializers specs))
+         (fn (cond
+               ((functionp lambda-expression) lambda-expression)
+               ((and (consp lambda-expression)
+                     (eq (car lambda-expression) 'lambda))
+                (eval lambda-expression))
+               (t (error "ENSURE-METHOD: cannot coerce ~S to a method function"
+                         lambda-expression))))
+         (method (%make-struct 'standard-method
+                   gf resolved-specs qualifiers fn ll)))
+    (add-method gf method)
+    method))
 
 ;;; --- Provide module ---
 (provide "clos")
