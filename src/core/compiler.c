@@ -2018,15 +2018,55 @@ static void compile_setf_place(CL_Compiler *c, CL_Obj place, CL_Obj val_form)
             cl_emit(c, OP_CALL);
             cl_emit(c, 3);
         } else if (head == SETF_SYM_GETF) {
-            /* (setf (getf plist indicator) val) → (%setf-getf plist indicator val) */
-            int idx = cl_add_constant(c, SETF_HELPER_GETF);
-            cl_emit(c, OP_FLOAD);
-            cl_emit_u16(c, (uint16_t)idx);
-            compile_expr(c, cl_car(cl_cdr(place)));       /* plist-place */
-            compile_expr(c, cl_car(cl_cdr(cl_cdr(place)))); /* indicator */
-            compile_expr(c, val_form);                     /* value */
-            cl_emit(c, OP_CALL);
-            cl_emit(c, 3);
+            /* (setf (getf PLACE IND) VAL).
+             *
+             * CLHS §5.1.2.4: if IND is missing from the plist, a new
+             * (IND VAL) pair must be PREPENDED to PLACE — which means
+             * PLACE itself must be reassigned, not just the plist
+             * mutated.  We rewrite to
+             *   (let ((#:v VAL)) (setf PLACE (%setf-getf PLACE IND #:v)) #:v)
+             * and recompile, letting the existing SETF machinery handle
+             * whatever kind of place PLACE is (lexical, special, nested
+             * setf-expander, …).  VAL is evaluated once; IND and PLACE
+             * are evaluated twice — tolerable for symbol places, which
+             * is the only case that reaches here in practice. */
+            CL_Obj place_arg = cl_car(cl_cdr(place));          /* PLACE */
+            CL_Obj ind_arg   = cl_car(cl_cdr(cl_cdr(place)));  /* IND   */
+            CL_Obj gensym_v  = cl_gensym_with_name("V");
+            CL_Obj helper_call, setf_place_form, let_bindings, let_form;
+
+            CL_GC_PROTECT(place_arg);
+            CL_GC_PROTECT(ind_arg);
+            CL_GC_PROTECT(gensym_v);
+
+            /* (%setf-getf PLACE IND #:v) */
+            helper_call = cl_cons(gensym_v, CL_NIL);
+            CL_GC_PROTECT(helper_call);
+            helper_call = cl_cons(ind_arg, helper_call);
+            helper_call = cl_cons(place_arg, helper_call);
+            helper_call = cl_cons(SETF_HELPER_GETF, helper_call);
+
+            /* (setf PLACE helper_call) */
+            setf_place_form = cl_cons(helper_call, CL_NIL);
+            CL_GC_PROTECT(setf_place_form);
+            setf_place_form = cl_cons(place_arg, setf_place_form);
+            setf_place_form = cl_cons(SYM_SETF, setf_place_form);
+
+            /* ((#:v VAL)) */
+            let_bindings = cl_cons(val_form, CL_NIL);
+            CL_GC_PROTECT(let_bindings);
+            let_bindings = cl_cons(gensym_v, let_bindings);
+            let_bindings = cl_cons(let_bindings, CL_NIL);
+
+            /* (let ((#:v VAL)) (setf PLACE ...) #:v) */
+            let_form = cl_cons(gensym_v, CL_NIL);
+            CL_GC_PROTECT(let_form);
+            let_form = cl_cons(setf_place_form, let_form);
+            let_form = cl_cons(let_bindings, let_form);
+            let_form = cl_cons(SYM_LET, let_form);
+
+            compile_expr(c, let_form);
+            CL_GC_UNPROTECT(7);
         } else {
             /* Check defsetf table */
             CL_Obj updater = CL_NIL;
