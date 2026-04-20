@@ -241,9 +241,13 @@ static CL_Obj bi_getf(CL_Obj *args, int n)
 }
 
 /* %SETF-GETF: (setf (getf plist indicator) value)
- * Destructively modifies the value cell for INDICATOR in PLIST.
- * If not found, prepends indicator/value to the front and returns new plist.
- * Returns the value. */
+ * Returns the possibly-modified plist.  If INDICATOR is present,
+ * destructively updates its value cell (preserving EQ on PLIST);
+ * if absent, conses INDICATOR and VALUE onto the front and returns
+ * the new list.  CLHS §5.1.2.4 requires the place (PLIST) to be
+ * reassigned — the caller (compile_setf / the getf setf-expander)
+ * wraps this call in a SETF back onto the original place so the
+ * binding reflects the prepend branch. */
 static CL_Obj bi_setf_getf(CL_Obj *args, int n)
 {
     CL_Obj plist = args[0], indicator = args[1], value = args[2];
@@ -256,13 +260,22 @@ static CL_Obj bi_setf_getf(CL_Obj *args, int n)
         if (key == indicator) {
             /* Found — destructively update the value cell */
             ((CL_Cons *)CL_OBJ_TO_PTR(val_cell))->car = value;
-            return value;
+            return plist;
         }
         p = cl_cdr(val_cell);
     }
-    /* Not found — this case can't update the caller's variable,
-     * but we return value anyway. The caller should handle this. */
-    return value;
+    /* Not found — prepend (indicator value) to the plist and return
+     * the new list head.  GC protect during the two cl_cons calls. */
+    CL_GC_PROTECT(plist);
+    CL_GC_PROTECT(indicator);
+    {
+        CL_Obj rest = cl_cons(value, plist);
+        CL_Obj head;
+        CL_GC_PROTECT(rest);
+        head = cl_cons(indicator, rest);
+        CL_GC_UNPROTECT(3);
+        return head;
+    }
 }
 
 /* GET-PROPERTIES: (get-properties plist indicator-list)

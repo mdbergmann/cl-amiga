@@ -189,12 +189,22 @@
       `(let ((,bytespec-var ,bytespec))
          (setf ,int-place (dpb ,value-form ,bytespec-var ,int-place))))))
 
-;; List searching
-(defun member (item list &key (test #'eql))
+;; List searching — CLHS MEMBER accepts :test, :test-not, and :key.
+;; :test defaults to EQL; :key, if supplied, is applied to each list
+;; element before testing (item itself is NOT keyed, per spec).
+(defun member (item list &key (test nil test-p)
+                              (test-not nil test-not-p)
+                              (key nil key-p))
+  (when (and test-p test-not-p)
+    (error ":TEST and :TEST-NOT are mutually exclusive"))
   (do ((l list (cdr l)))
       ((null l) nil)
-    (when (funcall test item (car l))
-      (return-from member l))))
+    (let* ((elem (if key-p (funcall key (car l)) (car l)))
+           (match (cond (test-not-p (not (funcall test-not item elem)))
+                        (test-p (funcall test item elem))
+                        (t (eql item elem)))))
+      (when match
+        (return-from member l)))))
 
 ;; pushnew — push only if not already a member
 (defmacro pushnew (item place &key test)

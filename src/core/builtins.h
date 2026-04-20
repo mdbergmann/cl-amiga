@@ -20,4 +20,8 @@ void cl_register_builtin(const char *name, CL_CFunc func,
    Otherwise signals an error with the given context string. */
 CL_Obj cl_coerce_funcdesig(CL_Obj obj, const char *context);
 
+/* GENSYM a fresh uninterned symbol with the given prefix. NULL prefix
+ * defaults to "G". Shares the counter with CL GENSYM. */
+CL_Obj cl_gensym_with_name(const char *prefix);
+
 #endif /* CL_BUILTINS_H */

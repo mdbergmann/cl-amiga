@@ -1573,28 +1573,36 @@ static CL_Obj bi_values_list(CL_Obj *args, int n)
 
 static volatile uint32_t gensym_counter = 0;
 
-static CL_Obj bi_gensym(CL_Obj *args, int n)
+/* C-callable GENSYM with a C-string prefix.  Used by compiler code
+ * that needs fresh symbols when rewriting a form (e.g. SETF expansion
+ * for GETF) — keeping the gensym counter in sync with the Lisp
+ * GENSYM function and preserving uninterned status. */
+CL_Obj cl_gensym_with_name(const char *prefix)
 {
     char buf[64];
-    const char *prefix = "G";
     CL_Obj name_str, sym;
     int len;
+    uint32_t cnt;
 
-    if (n > 0 && CL_STRING_P(args[0])) {
-        CL_String *s = (CL_String *)CL_OBJ_TO_PTR(args[0]);
-        prefix = s->data;
-    }
-
-    /* Manual int-to-string for vbcc compatibility */
-    {
-        uint32_t cnt = platform_atomic_inc(&gensym_counter) - 1;
-        len = snprintf(buf, sizeof(buf), "%s%lu", prefix, (unsigned long)cnt);
-    }
+    if (prefix == NULL) prefix = "G";
+    cnt = platform_atomic_inc(&gensym_counter) - 1;
+    len = snprintf(buf, sizeof(buf), "%s%lu", prefix, (unsigned long)cnt);
     name_str = cl_make_string(buf, (uint32_t)len);
     CL_GC_PROTECT(name_str);
     sym = cl_make_symbol(name_str);  /* Uninterned — not in any package */
     CL_GC_UNPROTECT(1);
     return sym;
+}
+
+static CL_Obj bi_gensym(CL_Obj *args, int n)
+{
+    const char *prefix = "G";
+
+    if (n > 0 && CL_STRING_P(args[0])) {
+        CL_String *s = (CL_String *)CL_OBJ_TO_PTR(args[0]);
+        prefix = s->data;
+    }
+    return cl_gensym_with_name(prefix);
 }
 
 /* --- Disassemble --- */

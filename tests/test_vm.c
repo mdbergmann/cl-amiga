@@ -6778,6 +6778,90 @@ TEST(eval_setf_composite_cadr)
         55);
 }
 
+/* --- MEMBER with :key / :test / :test-not (CLHS) --- */
+
+TEST(eval_member_key_lambda)
+{
+    /* :KEY is applied to each element before :TEST.  Essential for
+     * libraries like trivia that do (MEMBER sym *list* :KEY #'CAR). */
+    ASSERT_STR_EQ(eval_print(
+        "(member 'b (list (list 'a 1) (list 'b 2)) :key #'car)"),
+        "((B 2))");
+}
+
+TEST(eval_member_test_not)
+{
+    /* :TEST-NOT inverts the match — returns the tail starting at the
+     * first element the predicate rejects. */
+    ASSERT_STR_EQ(eval_print("(member 1 (list 1 2 3) :test-not #'eql)"),
+                  "(2 3)");
+}
+
+TEST(eval_member_test_and_test_not_conflict)
+{
+    /* CLHS: supplying both :TEST and :TEST-NOT is an error. */
+    int err;
+    CL_CATCH(err);
+    if (err == CL_ERR_NONE) {
+        cl_eval_string("(member 1 '(1 2) :test #'eql :test-not #'eql)");
+        CL_UNCATCH();
+        ASSERT(0 && "expected error");
+    } else {
+        CL_UNCATCH();
+        cl_vm.sp = 0;
+        cl_vm.fp = 0;
+    }
+}
+
+/* --- (SETF (GETF place ind) val) semantics (CLHS §5.1.2.4) --- */
+
+TEST(eval_setf_getf_key_absent_prepends)
+{
+    /* When the indicator is not in the plist, SETF must prepend a new
+     * indicator/value pair and REASSIGN the place — so reading the
+     * variable afterwards reflects the update. */
+    ASSERT_STR_EQ(eval_print(
+        "(let ((p nil)) (setf (getf p :a) 1) p)"),
+        "(:A 1)");
+}
+
+TEST(eval_setf_getf_key_absent_returns_value)
+{
+    /* SETF returns the new value, not the new plist. */
+    ASSERT_STR_EQ(eval_print(
+        "(let ((p nil)) (setf (getf p :a) 42))"),
+        "42");
+}
+
+TEST(eval_setf_getf_key_present_updates_in_place)
+{
+    /* When the indicator is already present, update the value cell
+     * without prepending (preserves EQ on the plist head). */
+    ASSERT_STR_EQ(eval_print(
+        "(let ((p (list :a 1 :b 2))) (setf (getf p :a) 99) p)"),
+        "(:A 99 :B 2)");
+}
+
+TEST(eval_setf_getf_key_absent_preserves_existing)
+{
+    /* Prepending must not clobber the other pairs. */
+    ASSERT_STR_EQ(eval_print(
+        "(let ((p (list :a 1))) (setf (getf p :b) 2) p)"),
+        "(:B 2 :A 1)");
+}
+
+TEST(eval_setf_getf_value_evaluated_once)
+{
+    /* VAL must be evaluated exactly once — important when it has side
+     * effects.  We rewrite (setf (getf p i) v) to a LET that binds V
+     * to value; double evaluation of PLACE and IND is tolerated (only
+     * symbol places reach this path in practice). */
+    eval_print("(defvar *gcount* 0)");
+    eval_print(
+        "(let ((p (list :a 1))) (setf (getf p :a) (progn (incf *gcount*) 9)) p)");
+    ASSERT_STR_EQ(eval_print("*gcount*"), "1");
+}
+
 TEST(eval_heap_exhaustion_error)
 {
     /* Accumulating live data until heap is full should signal CL_ERR_STORAGE
@@ -7803,6 +7887,18 @@ int main(void)
 
     /* setf composite c[ad]+r accessors */
     RUN(eval_setf_composite_cadr);
+
+    /* MEMBER with :key / :test / :test-not */
+    RUN(eval_member_key_lambda);
+    RUN(eval_member_test_not);
+    RUN(eval_member_test_and_test_not_conflict);
+
+    /* (setf (getf place ind) val) — CLHS §5.1.2.4 prepend-on-absent */
+    RUN(eval_setf_getf_key_absent_prepends);
+    RUN(eval_setf_getf_key_absent_returns_value);
+    RUN(eval_setf_getf_key_present_updates_in_place);
+    RUN(eval_setf_getf_key_absent_preserves_existing);
+    RUN(eval_setf_getf_value_evaluated_once);
 
     /* heap exhaustion / storage errors */
     RUN(eval_heap_exhaustion_error);

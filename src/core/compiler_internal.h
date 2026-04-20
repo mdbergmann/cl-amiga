@@ -21,6 +21,7 @@
 #include "reader.h"
 #include "../platform/platform.h"
 #include "printer.h"
+#include "builtins.h"
 #include <string.h>
 #include <stdio.h>
 
