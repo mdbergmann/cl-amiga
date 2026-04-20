@@ -2790,6 +2790,315 @@ TEST(mmop_make_method_lambda_default_identity)
         "((LAMBDA (X) X) NIL)");
 }
 
+/* ============================================================
+ * Method combination (MOP) — built-in short forms, user-defined
+ * combinations (short + long), find-method-combination, and
+ * :method-combination DEFGENERIC option.
+ * ============================================================ */
+
+TEST(mc_standard_default)
+{
+    /* Every GF carries a method-combination metaobject.  When DEFGENERIC
+       omits :METHOD-COMBINATION, STANDARD is installed by default.
+       The combination is registered with the CL symbol (not exported),
+       so we compare on SYMBOL-NAME to stay package-agnostic. */
+    eval_print("(defgeneric mc-std-default (x))");
+    eval_print("(defmethod mc-std-default ((x t)) :ok)");
+    ASSERT_STR_EQ(eval_print(
+        "(symbol-name "
+        "  (method-combination-name "
+        "    (gf-method-combination "
+        "      (gethash 'mc-std-default *generic-function-table*))))"),
+        "\"STANDARD\"");
+}
+
+TEST(mc_plus_basic)
+{
+    /* The + built-in sums primary-method return values. */
+    eval_print("(defgeneric mc-plus (x) (:method-combination +))");
+    eval_print("(defmethod mc-plus + ((x t)) 1)");
+    eval_print("(defmethod mc-plus + ((x integer)) 10)");
+    eval_print("(defmethod mc-plus + ((x number)) 100)");
+    ASSERT_STR_EQ(eval_print("(mc-plus 42)"), "111");
+}
+
+TEST(mc_plus_identity_with_one_argument)
+{
+    /* With a single primary method + uses its value directly (the
+       :IDENTITY-WITH-ONE-ARGUMENT fast path). */
+    eval_print("(defgeneric mc-plus-id (x) (:method-combination +))");
+    eval_print("(defmethod mc-plus-id + ((x integer)) 7)");
+    ASSERT_STR_EQ(eval_print("(mc-plus-id 1)"), "7");
+}
+
+TEST(mc_list_collects)
+{
+    /* LIST collects return values in most-specific-first order. */
+    eval_print("(defgeneric mc-list (x) (:method-combination list))");
+    eval_print("(defmethod mc-list list ((x t)) :any)");
+    eval_print("(defmethod mc-list list ((x number)) :num)");
+    eval_print("(defmethod mc-list list ((x integer)) :int)");
+    ASSERT_STR_EQ(eval_print("(mc-list 42)"), "(:INT :NUM :ANY)");
+}
+
+TEST(mc_and_short_circuits)
+{
+    /* AND short-circuits: once a primary returns NIL, remaining methods
+       are not invoked. */
+    eval_print("(defvar *mc-and-count* 0)");
+    eval_print("(defgeneric mc-and (x) (:method-combination and))");
+    eval_print("(defmethod mc-and and ((x t)) "
+               "  (incf *mc-and-count*) t)");
+    eval_print("(defmethod mc-and and ((x integer)) "
+               "  (incf *mc-and-count*) nil)");
+    eval_print("(defmethod mc-and and ((x number)) "
+               "  (incf *mc-and-count*) "
+               "  (error \"should not be called\"))");
+    ASSERT_STR_EQ(eval_print("(mc-and 42)"), "NIL");
+    ASSERT_STR_EQ(eval_print("*mc-and-count*"), "1");
+}
+
+TEST(mc_or_returns_first_true)
+{
+    /* OR returns the first non-NIL value among primaries. */
+    eval_print("(defgeneric mc-or (x) (:method-combination or))");
+    eval_print("(defmethod mc-or or ((x t)) nil)");
+    eval_print("(defmethod mc-or or ((x integer)) :found)");
+    ASSERT_STR_EQ(eval_print("(mc-or 42)"), ":FOUND");
+}
+
+TEST(mc_progn_returns_last)
+{
+    /* PROGN returns the last primary-method value.  With
+       :IDENTITY-WITH-ONE-ARGUMENT on a single primary it returns that
+       method's value unchanged. */
+    eval_print("(defgeneric mc-progn (x) (:method-combination progn))");
+    eval_print("(defmethod mc-progn progn ((x t)) :a)");
+    eval_print("(defmethod mc-progn progn ((x integer)) :b)");
+    /* Most-specific-first: INTEGER then T -> last evaluated is T's :A */
+    ASSERT_STR_EQ(eval_print("(mc-progn 42)"), ":A");
+}
+
+TEST(mc_append_concatenates)
+{
+    /* APPEND splices primary return lists together. */
+    eval_print("(defgeneric mc-app (x) (:method-combination append))");
+    eval_print("(defmethod mc-app append ((x t)) '(:t))");
+    eval_print("(defmethod mc-app append ((x integer)) '(:int))");
+    ASSERT_STR_EQ(eval_print("(mc-app 42)"), "(:INT :T)");
+}
+
+TEST(mc_max_reduces)
+{
+    /* MAX returns the largest primary return value. */
+    eval_print("(defgeneric mc-max (x) (:method-combination max))");
+    eval_print("(defmethod mc-max max ((x t)) 1)");
+    eval_print("(defmethod mc-max max ((x integer)) 5)");
+    eval_print("(defmethod mc-max max ((x number)) 3)");
+    ASSERT_STR_EQ(eval_print("(mc-max 42)"), "5");
+}
+
+TEST(mc_around_wraps_short_form)
+{
+    /* :AROUND methods are honoured on short-form combinations.
+       The :AROUND method wraps the primary combination (here +). */
+    eval_print("(defgeneric mc-ar (x) (:method-combination +))");
+    eval_print("(defmethod mc-ar + ((x t)) 1)");
+    eval_print("(defmethod mc-ar + ((x integer)) 2)");
+    eval_print("(defmethod mc-ar :around ((x t)) "
+               "  (+ 1000 (call-next-method)))");
+    ASSERT_STR_EQ(eval_print("(mc-ar 42)"), "1003");
+}
+
+TEST(mc_invalid_qualifier_errors)
+{
+    /* A short-form combination rejects methods whose qualifier is not
+       the combination name (nor :AROUND). */
+    eval_print("(defgeneric mc-invalid (x) (:method-combination +))");
+    eval_print("(defmethod mc-invalid + ((x t)) 1)");
+    eval_print("(defmethod mc-invalid :before ((x t)) :bad)");
+    ASSERT_STR_EQ(eval_print(
+        "(handler-case (mc-invalid 1) (error () :rejected))"),
+        ":REJECTED");
+}
+
+TEST(mc_standard_still_supports_before_after)
+{
+    /* Sanity: switching other GFs to non-standard combinations does not
+       affect standard GFs — :BEFORE / :AFTER still work. */
+    eval_print("(defvar *mc-std-log* nil)");
+    eval_print("(defgeneric mc-std (x))");
+    eval_print("(defmethod mc-std ((x t)) "
+               "  (push :primary *mc-std-log*) :ok)");
+    eval_print("(defmethod mc-std :before ((x t)) "
+               "  (push :before *mc-std-log*))");
+    eval_print("(defmethod mc-std :after ((x t)) "
+               "  (push :after *mc-std-log*))");
+    ASSERT_STR_EQ(eval_print("(mc-std 1)"), ":OK");
+    ASSERT_STR_EQ(eval_print("(reverse *mc-std-log*)"),
+                  "(:BEFORE :PRIMARY :AFTER)");
+}
+
+TEST(mc_find_method_combination_standard)
+{
+    /* FIND-METHOD-COMBINATION with NIL as GF designator returns the
+       named combination metaobject from the registry.  Symbol-name
+       keying means this works regardless of which package spells
+       'STANDARD. */
+    ASSERT_STR_EQ(eval_print(
+        "(symbol-name "
+        "  (method-combination-name "
+        "    (find-method-combination nil 'standard nil)))"),
+        "\"STANDARD\"");
+}
+
+TEST(mc_find_method_combination_type)
+{
+    /* Built-in short-form combos report type :SHORT. */
+    ASSERT_STR_EQ(eval_print(
+        "(method-combination-type "
+        "  (find-method-combination nil '+ nil))"),
+        ":SHORT");
+}
+
+TEST(mc_find_method_combination_unknown_errors)
+{
+    /* Unknown combination names are signalled. */
+    ASSERT_STR_EQ(eval_print(
+        "(handler-case "
+        "  (find-method-combination nil 'no-such-combination nil) "
+        "  (error () :signaled))"),
+        ":SIGNALED");
+}
+
+TEST(mc_define_short_form_basic)
+{
+    /* DEFINE-METHOD-COMBINATION short form registers a combination that
+       wraps primary return values with :OPERATOR. */
+    eval_print("(define-method-combination mc-user-short "
+               "  :operator * :identity-with-one-argument t)");
+    eval_print("(defgeneric mc-us (x) (:method-combination mc-user-short))");
+    eval_print("(defmethod mc-us mc-user-short ((x t)) 2)");
+    eval_print("(defmethod mc-us mc-user-short ((x integer)) 3)");
+    ASSERT_STR_EQ(eval_print("(mc-us 42)"), "6");
+}
+
+TEST(mc_define_short_form_identity_default)
+{
+    /* Without :IDENTITY-WITH-ONE-ARGUMENT, a single primary method is
+       still wrapped through the operator (single-arg call). */
+    eval_print("(define-method-combination mc-short-no-id "
+               "  :operator list)");
+    eval_print("(defgeneric mc-sni (x) "
+               "  (:method-combination mc-short-no-id))");
+    eval_print("(defmethod mc-sni mc-short-no-id ((x integer)) :v)");
+    /* Single value wrapped: (list :v) -> (:V) */
+    ASSERT_STR_EQ(eval_print("(mc-sni 1)"), "(:V)");
+}
+
+TEST(mc_define_short_form_operator_defaults_to_name)
+{
+    /* Without :OPERATOR the combination name is used as the operator. */
+    eval_print("(define-method-combination mc-name-op)");
+    eval_print("(defgeneric mc-no (x) (:method-combination mc-name-op))");
+    eval_print("(defmethod mc-no mc-name-op ((x t)) 1)");
+    ASSERT_STR_EQ(eval_print(
+        "(method-combination-name "
+        "  (gf-method-combination "
+        "    (gethash 'mc-no *generic-function-table*)))"),
+        "MC-NAME-OP");
+}
+
+TEST(mc_define_long_form_basic)
+{
+    /* Long form: (define-method-combination NAME () (GROUPS) BODY) —
+       BODY returns a form that uses CALL-METHOD. */
+    eval_print(
+        "(define-method-combination mc-first ()"
+        "  ((primary ()))"
+        "  `(call-method ,(first primary)))");
+    eval_print("(defgeneric mc-f1 (x) (:method-combination mc-first))");
+    eval_print("(defmethod mc-f1 ((x t)) :t-method)");
+    eval_print("(defmethod mc-f1 ((x integer)) :int-method)");
+    /* Most-specific-first: (first primary) is the INTEGER method. */
+    ASSERT_STR_EQ(eval_print("(mc-f1 42)"), ":INT-METHOD");
+}
+
+TEST(mc_define_long_form_multiple_groups)
+{
+    /* Long form with two groups: :AROUND and primary.  Body passes
+       PRIMARY as :AROUND's next-methods so CALL-NEXT-METHOD inside the
+       :AROUND body walks into the primary chain. */
+    eval_print(
+        "(define-method-combination mc-ar-aware ()"
+        "  ((around (:around))"
+        "   (primary ()))"
+        "  (if around"
+        "      `(call-method ,(first around) ,primary)"
+        "      `(call-method ,(first primary))))");
+    eval_print("(defgeneric mc-ara (x) (:method-combination mc-ar-aware))");
+    eval_print("(defmethod mc-ara ((x t)) :primary)");
+    eval_print("(defmethod mc-ara :around ((x t)) "
+               "  (cons :around (call-next-method)))");
+    ASSERT_STR_EQ(eval_print("(mc-ara 1)"), "(:AROUND . :PRIMARY)");
+}
+
+TEST(mc_define_long_form_qualifier_pattern)
+{
+    /* Long-form pattern with a specific qualifier selects methods by
+       exact qualifier match. */
+    eval_print(
+        "(define-method-combination mc-tagged ()"
+        "  ((tagged (tag)))"
+        "  `(call-method ,(first tagged)))");
+    eval_print("(defgeneric mc-tg (x) (:method-combination mc-tagged))");
+    eval_print("(defmethod mc-tg tag ((x t)) :tagged)");
+    ASSERT_STR_EQ(eval_print("(mc-tg 1)"), ":TAGGED");
+}
+
+TEST(mc_method_combination_object_type)
+{
+    /* Registered combinations are STANDARD-METHOD-COMBINATION structs. */
+    ASSERT_STR_EQ(eval_print(
+        "(%struct-type-name (find-method-combination nil '+ nil))"),
+        "STANDARD-METHOD-COMBINATION");
+}
+
+TEST(mc_method_combination_class_bootstrapped)
+{
+    /* STANDARD-METHOD-COMBINATION is a first-class class in the
+       metaobject hierarchy. */
+    ASSERT_STR_EQ(eval_print(
+        "(class-name (find-class 'standard-method-combination))"),
+        "STANDARD-METHOD-COMBINATION");
+}
+
+TEST(mc_call_method_uses_current_args)
+{
+    /* CALL-METHOD invokes a method's function on *CURRENT-METHOD-ARGS*,
+       so long-form bodies do not need to thread arguments explicitly. */
+    eval_print(
+        "(define-method-combination mc-args ()"
+        "  ((primary ()))"
+        "  `(call-method ,(first primary)))");
+    eval_print("(defgeneric mc-pass (x y) (:method-combination mc-args))");
+    eval_print("(defmethod mc-pass ((x integer) (y integer)) (+ x y))");
+    ASSERT_STR_EQ(eval_print("(mc-pass 3 4)"), "7");
+}
+
+TEST(mc_redefine_updates_combination)
+{
+    /* Re-DEFGENERICing a GF with a different :METHOD-COMBINATION swaps
+       the combination metaobject on the existing GF. */
+    eval_print("(defgeneric mc-swap (x))");
+    eval_print("(defgeneric mc-swap (x) (:method-combination +))");
+    ASSERT_STR_EQ(eval_print(
+        "(method-combination-name "
+        "  (gf-method-combination "
+        "    (gethash 'mc-swap *generic-function-table*)))"),
+        "+");
+}
+
 int main(void)
 {
     test_init();
@@ -3060,6 +3369,33 @@ int main(void)
     RUN(mmop_ensure_method_default_specializers_are_t);
     RUN(mmop_ensure_method_returns_method);
     RUN(mmop_make_method_lambda_default_identity);
+
+    /* Method combination (MOP) */
+    RUN(mc_standard_default);
+    RUN(mc_plus_basic);
+    RUN(mc_plus_identity_with_one_argument);
+    RUN(mc_list_collects);
+    RUN(mc_and_short_circuits);
+    RUN(mc_or_returns_first_true);
+    RUN(mc_progn_returns_last);
+    RUN(mc_append_concatenates);
+    RUN(mc_max_reduces);
+    RUN(mc_around_wraps_short_form);
+    RUN(mc_invalid_qualifier_errors);
+    RUN(mc_standard_still_supports_before_after);
+    RUN(mc_find_method_combination_standard);
+    RUN(mc_find_method_combination_type);
+    RUN(mc_find_method_combination_unknown_errors);
+    RUN(mc_define_short_form_basic);
+    RUN(mc_define_short_form_identity_default);
+    RUN(mc_define_short_form_operator_defaults_to_name);
+    RUN(mc_define_long_form_basic);
+    RUN(mc_define_long_form_multiple_groups);
+    RUN(mc_define_long_form_qualifier_pattern);
+    RUN(mc_method_combination_object_type);
+    RUN(mc_method_combination_class_bootstrapped);
+    RUN(mc_call_method_uses_current_args);
+    RUN(mc_redefine_updates_combination);
 
     teardown();
     REPORT();
