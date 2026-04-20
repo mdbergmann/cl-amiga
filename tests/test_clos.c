@@ -2402,6 +2402,168 @@ TEST(calloc_svuc_protocol_sees_class_slots)
         "          (find-class 'standard-effective-slot-definition))))");
 }
 
+/* ==================================================================
+ * Funcallable standard class (MOP)
+ * ================================================================== */
+
+TEST(funcallable_class_bootstrapped)
+{
+    /* Classes exist and are properly registered. */
+    ASSERT_STR_EQ(eval_print(
+        "(class-name (find-class 'funcallable-standard-class))"),
+        "FUNCALLABLE-STANDARD-CLASS");
+    ASSERT_STR_EQ(eval_print(
+        "(class-name (find-class 'funcallable-standard-object))"),
+        "FUNCALLABLE-STANDARD-OBJECT");
+}
+
+TEST(funcallable_gf_is_funcallable_standard_object)
+{
+    /* Every generic function is a funcallable-standard-object. */
+    eval_print("(defgeneric fsc-foo (x))");
+    eval_print("(defmethod fsc-foo ((x integer)) (* x 2))");
+    ASSERT_STR_EQ(eval_print("(typep #'fsc-foo 'funcallable-standard-object)"), "T");
+    ASSERT_STR_EQ(eval_print("(typep #'fsc-foo 'standard-generic-function)"), "T");
+    /* And it's typep 'function via the CPL chain. */
+    ASSERT_STR_EQ(eval_print("(typep #'fsc-foo 'function)"), "T");
+    ASSERT_STR_EQ(eval_print("(functionp #'fsc-foo)"), "T");
+}
+
+TEST(funcallable_class_of_gf)
+{
+    /* class-of on a GF returns standard-generic-function. */
+    eval_print("(defgeneric fsc-co (x))");
+    eval_print("(defmethod fsc-co ((x t)) x)");
+    ASSERT_STR_EQ(eval_print(
+        "(eq (class-of #'fsc-co) (find-class 'standard-generic-function))"),
+        "T");
+}
+
+TEST(funcallable_gf_still_callable_via_symbol)
+{
+    /* Regression guard: installing the GF struct in symbol-function did not
+       break ordinary (foo args) dispatch. */
+    eval_print("(defgeneric fsc-call (x))");
+    eval_print("(defmethod fsc-call ((x integer)) (* x 3))");
+    eval_print("(defmethod fsc-call ((x string)) (length x))");
+    ASSERT_STR_EQ(eval_print("(fsc-call 7)"), "21");
+    ASSERT_STR_EQ(eval_print("(fsc-call \"hello\")"), "5");
+}
+
+TEST(funcallable_gf_via_funcall_and_apply)
+{
+    /* FUNCALL and APPLY of the GF metaobject both route through the
+       discriminating function (cl_unwrap_funcallable). */
+    eval_print("(defgeneric fsc-fa (x))");
+    eval_print("(defmethod fsc-fa ((x integer)) (+ x 100))");
+    ASSERT_STR_EQ(eval_print("(funcall #'fsc-fa 5)"), "105");
+    ASSERT_STR_EQ(eval_print("(apply #'fsc-fa '(10))"), "110");
+    /* Also works if you capture the GF struct separately. */
+    ASSERT_STR_EQ(eval_print(
+        "(funcall (ensure-generic-function 'fsc-fa) 3)"), "103");
+}
+
+TEST(funcallable_set_funcallable_instance_function)
+{
+    /* User can override dispatch completely via set-funcallable-instance-function. */
+    eval_print("(defgeneric fsc-sfi (x))");
+    eval_print("(defmethod fsc-sfi ((x integer)) :default)");
+    ASSERT_STR_EQ(eval_print("(fsc-sfi 1)"), ":DEFAULT");
+    eval_print(
+        "(set-funcallable-instance-function "
+        "  (ensure-generic-function 'fsc-sfi) "
+        "  (lambda (&rest args) (cons :replaced args)))");
+    ASSERT_STR_EQ(eval_print("(fsc-sfi 1)"), "(:REPLACED 1)");
+    ASSERT_STR_EQ(eval_print("(funcall #'fsc-sfi 2 3)"), "(:REPLACED 2 3)");
+}
+
+TEST(funcallable_sfi_returns_gf)
+{
+    /* set-funcallable-instance-function returns the GF, per AMOP. */
+    eval_print("(defgeneric fsc-sfir (x))");
+    eval_print("(defmethod fsc-sfir ((x t)) nil)");
+    ASSERT_STR_EQ(eval_print(
+        "(eq (set-funcallable-instance-function "
+        "      (ensure-generic-function 'fsc-sfir) "
+        "      (lambda (&rest args) args)) "
+        "    (ensure-generic-function 'fsc-sfir))"),
+        "T");
+}
+
+TEST(funcallable_standard_instance_access)
+{
+    /* Raw slot access by integer location — bypasses GF dispatch. */
+    eval_print("(defclass sia-p () ((a :initarg :a) (b :initarg :b)))");
+    eval_print("(defvar *sia-inst* (make-instance 'sia-p :a 10 :b 20))");
+    /* Layout: slot 0 = A, slot 1 = B. */
+    ASSERT_STR_EQ(eval_print("(standard-instance-access *sia-inst* 0)"), "10");
+    ASSERT_STR_EQ(eval_print("(standard-instance-access *sia-inst* 1)"), "20");
+    /* SETF works. */
+    eval_print("(setf (standard-instance-access *sia-inst* 0) 99)");
+    ASSERT_STR_EQ(eval_print("(slot-value *sia-inst* 'a)"), "99");
+}
+
+TEST(funcallable_standard_instance_access_equals_struct_ref)
+{
+    /* Spec: (standard-instance-access inst idx) equals (%struct-ref inst idx). */
+    eval_print("(defclass siaq () ((q :initarg :q)))");
+    eval_print("(defvar *siaq-inst* (make-instance 'siaq :q 'hello))");
+    ASSERT_STR_EQ(eval_print(
+        "(eq (standard-instance-access *siaq-inst* 0) "
+        "    (%struct-ref *siaq-inst* 0))"),
+        "T");
+}
+
+TEST(funcallable_standard_instance_access_variant)
+{
+    /* funcallable-standard-instance-access is the funcallable twin. */
+    eval_print("(defclass fsia () ((r :initarg :r)))");
+    eval_print("(defvar *fsia-inst* (make-instance 'fsia :r 77))");
+    ASSERT_STR_EQ(eval_print("(funcallable-standard-instance-access *fsia-inst* 0)"), "77");
+    eval_print("(setf (funcallable-standard-instance-access *fsia-inst* 0) 88)");
+    ASSERT_STR_EQ(eval_print("(slot-value *fsia-inst* 'r)"), "88");
+}
+
+TEST(funcallable_compute_discriminating_function_default)
+{
+    /* Default method returns the current discriminating function; it must
+       be something callable. */
+    eval_print("(defgeneric fsc-cdf (x))");
+    eval_print("(defmethod fsc-cdf ((x integer)) :int-case)");
+    ASSERT_STR_EQ(eval_print(
+        "(functionp (compute-discriminating-function "
+        "             (ensure-generic-function 'fsc-cdf)))"),
+        "T");
+    /* Calling the returned function does the same dispatch as the GF. */
+    ASSERT_STR_EQ(eval_print(
+        "(funcall (compute-discriminating-function "
+        "           (ensure-generic-function 'fsc-cdf)) 5)"),
+        ":INT-CASE");
+}
+
+TEST(funcallable_gf_type_of)
+{
+    eval_print("(defgeneric fsc-to (x))");
+    eval_print("(defmethod fsc-to ((x t)) x)");
+    ASSERT_STR_EQ(eval_print("(type-of #'fsc-to)"), "STANDARD-GENERIC-FUNCTION");
+}
+
+TEST(funcallable_gf_cpl_has_function)
+{
+    /* The CPL of standard-generic-function includes funcallable-standard-object
+       and function above standard-object — callers checking (typep ... 'function)
+       rely on that relationship. */
+    ASSERT_STR_EQ(eval_print(
+        "(let ((cpl-names (mapcar #'class-name "
+        "                   (class-precedence-list "
+        "                     (find-class 'standard-generic-function))))) "
+        "  (list (find 'funcallable-standard-object cpl-names) "
+        "        (find 'function cpl-names) "
+        "        (find 'standard-object cpl-names) "
+        "        (find 't cpl-names)))"),
+        "(FUNCALLABLE-STANDARD-OBJECT FUNCTION STANDARD-OBJECT T)");
+}
+
 int main(void)
 {
     test_init();
@@ -2636,6 +2798,21 @@ int main(void)
     RUN(eqlspec_extract_class_specializers);
     RUN(eqlspec_method_equal_replaces_on_redef);
     RUN(eqlspec_cacheable_p_still_eql);
+
+    /* Funcallable standard class (MOP) */
+    RUN(funcallable_class_bootstrapped);
+    RUN(funcallable_gf_is_funcallable_standard_object);
+    RUN(funcallable_class_of_gf);
+    RUN(funcallable_gf_still_callable_via_symbol);
+    RUN(funcallable_gf_via_funcall_and_apply);
+    RUN(funcallable_set_funcallable_instance_function);
+    RUN(funcallable_sfi_returns_gf);
+    RUN(funcallable_standard_instance_access);
+    RUN(funcallable_standard_instance_access_equals_struct_ref);
+    RUN(funcallable_standard_instance_access_variant);
+    RUN(funcallable_compute_discriminating_function_default);
+    RUN(funcallable_gf_type_of);
+    RUN(funcallable_gf_cpl_has_function);
 
     teardown();
     REPORT();

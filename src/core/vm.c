@@ -158,6 +158,29 @@ static CL_Obj call_builtin(CL_Function *func, CL_Obj *args, int nargs);
 static CL_Obj cl_vm_run(int base_fp, int base_nlx);
 void vm_trace_dump(void);
 
+/* Funcallable instance support: a standard-generic-function struct is a
+ * callable object whose "discriminating function" lives at slot 3.  The
+ * VM + funcall/apply treat it as transparent — they unwrap to slot 3 and
+ * dispatch normally.  Slot 3 may itself be any callable (closure, bytecode,
+ * builtin), including one installed by SET-FUNCALLABLE-INSTANCE-FUNCTION. */
+int cl_funcallable_instance_p(CL_Obj obj)
+{
+    static CL_Obj sym_sgf = CL_NIL;
+    if (!CL_STRUCT_P(obj)) return 0;
+    if (sym_sgf == CL_NIL)
+        sym_sgf = cl_intern("STANDARD-GENERIC-FUNCTION", 25);
+    return ((CL_Struct *)CL_OBJ_TO_PTR(obj))->type_desc == sym_sgf;
+}
+
+CL_Obj cl_unwrap_funcallable(CL_Obj obj)
+{
+    if (cl_funcallable_instance_p(obj)) {
+        CL_Struct *st = (CL_Struct *)CL_OBJ_TO_PTR(obj);
+        if (st->n_slots > 3) return st->slots[3];
+    }
+    return obj;
+}
+
 CL_Obj cl_vm_apply(CL_Obj func, CL_Obj *args, int nargs)
 {
     /*
@@ -169,6 +192,10 @@ CL_Obj cl_vm_apply(CL_Obj func, CL_Obj *args, int nargs)
 
     /* Clamp nargs to 255 (OP_CALL u8 limit) */
     if (nargs > 255) nargs = 255;
+
+    /* Unwrap funcallable instances (e.g. a generic-function struct) so the
+     * standard call path sees the underlying discriminating function. */
+    func = cl_unwrap_funcallable(func);
 
     /* C builtins: call directly, no VM entry needed. */
     if (CL_FUNCTION_P(func)) {
@@ -1328,6 +1355,12 @@ static CL_Obj cl_vm_run(int base_fp, int base_nlx)
                 cl_vm.stack[cl_vm.sp - nargs - 1] = func_obj;
             }
 
+            /* Unwrap funcallable instances (GF struct → discriminating fn). */
+            if (cl_funcallable_instance_p(func_obj)) {
+                func_obj = cl_unwrap_funcallable(func_obj);
+                cl_vm.stack[cl_vm.sp - nargs - 1] = func_obj;
+            }
+
             /* Bounds-check before type predicate macros dereference func_obj */
             if (CL_HEAP_P(func_obj) && func_obj >= cl_heap.arena_size) {
                 fprintf(stderr, "[VM] CALL: func_obj=0x%08x out of arena (size=0x%08x) nargs=%d fp=%d ip=%u\n",
@@ -2374,6 +2407,8 @@ static CL_Obj cl_vm_run(int base_fp, int base_nlx)
                 if (CL_NULL_P(apply_func) || apply_func == CL_UNBOUND)
                     cl_error(CL_ERR_TYPE, "APPLY: symbol has no function binding");
             }
+            /* Unwrap funcallable instances (GF struct → discriminating fn). */
+            apply_func = cl_unwrap_funcallable(apply_func);
 
             if (CL_FUNCTION_P(apply_func)) {
                 CL_Function *f = (CL_Function *)CL_OBJ_TO_PTR(apply_func);

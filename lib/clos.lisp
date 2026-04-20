@@ -1145,9 +1145,27 @@ Specialize via defmethod to provide lazy initialization."
   '((generic-function nil) (specializers nil) (qualifiers nil)
     (function nil) (lambda-list nil)))
 
+;;; Funcallable metaclass hierarchy (AMOP §5.5).
+;;;
+;;; A funcallable instance is a metaobject that can be invoked as a
+;;; function; in our implementation, the C-side call path recognises a
+;;; STANDARD-GENERIC-FUNCTION struct and dispatches through its
+;;; discriminating-function slot (see cl_unwrap_funcallable in vm.c).
+;;;
+;;; User-defined metaclasses are out of scope (see specs/mop.md), so
+;;; FUNCALLABLE-STANDARD-CLASS exists as a placeholder for API
+;;; completeness — DEFCLASS ignores `:metaclass`. FUNCALLABLE-STANDARD-OBJECT
+;;; is a real superclass of STANDARD-GENERIC-FUNCTION so that
+;;;   (typep #'foo 'funcallable-standard-object) => T
+;;; and typep on 'function succeeds too (function is in the CPL).
+(%make-bootstrap-class 'funcallable-standard-class
+  (list (find-class 'standard-class)))
+(%make-bootstrap-class 'funcallable-standard-object
+  (list (find-class 'function) (find-class 'standard-object)))
+
 ;;; Register these as classes so dispatch works on them
 (%make-bootstrap-class 'standard-generic-function
-  (list (find-class 'standard-object)))
+  (list (find-class 'funcallable-standard-object)))
 (%make-bootstrap-class 'standard-method
   (list (find-class 'standard-object)))
 ;; standard-class is already registered from the bootstrap section
@@ -1533,21 +1551,26 @@ When called with no arguments, passes the original method arguments."
 ;;; --- ensure-generic-function ---
 
 (defun ensure-generic-function (name &key lambda-list)
-  "Find or create a generic function named NAME."
+  "Find or create a generic function named NAME.
+Installs the GF metaobject itself in the symbol-function cell; the VM
+transparently unwraps funcallable instances to their discriminating
+function, so (FOO ...) and (FUNCALL #'FOO ...) both dispatch through
+the GF's slot 3. SET-FUNCALLABLE-INSTANCE-FUNCTION can retarget that
+slot without touching the symbol-function cell."
   (multiple-value-bind (existing found-p)
       (gethash name *generic-function-table*)
     (if found-p
         (progn
-          ;; Re-install dispatch function (may have been overwritten by defun reload)
-          (let ((dispatch-fn (%struct-ref existing 3)))
-            (cond
-              ((symbolp name)
-               (setf (symbol-function name) dispatch-fn))
-              ((and (consp name) (eq (car name) 'setf) (consp (cdr name)))
-               (let* ((accessor (cadr name))
-                      (hidden-name (concatenate 'string "%SETF-" (symbol-name accessor)))
-                      (hidden-sym (intern hidden-name (or (symbol-package accessor) "COMMON-LISP"))))
-                 (setf (symbol-function hidden-sym) dispatch-fn)))))
+          ;; Re-install the GF object in the function cell, in case a
+          ;; (defun ...) reload overwrote it.
+          (cond
+            ((symbolp name)
+             (setf (symbol-function name) existing))
+            ((and (consp name) (eq (car name) 'setf) (consp (cdr name)))
+             (let* ((accessor (cadr name))
+                    (hidden-name (concatenate 'string "%SETF-" (symbol-name accessor)))
+                    (hidden-sym (intern hidden-name (or (symbol-package accessor) "COMMON-LISP"))))
+               (setf (symbol-function hidden-sym) existing))))
           existing)
         (let* ((gf (%make-struct 'standard-generic-function
                      name lambda-list nil nil nil nil nil nil))
@@ -1558,13 +1581,13 @@ When called with no arguments, passes the original method arguments."
           (setf (gethash name *generic-function-table*) gf)
           (cond
             ((symbolp name)
-             (setf (symbol-function name) dispatch-fn))
-            ;; (setf accessor) — install dispatch fn on hidden symbol
+             (setf (symbol-function name) gf))
+            ;; (setf accessor) — install GF on hidden symbol
             ((and (consp name) (eq (car name) 'setf) (consp (cdr name)))
              (let* ((accessor (cadr name))
                     (hidden-name (concatenate 'string "%SETF-" (symbol-name accessor)))
                     (hidden-sym (intern hidden-name (or (symbol-package accessor) "COMMON-LISP"))))
-               (setf (symbol-function hidden-sym) dispatch-fn)
+               (setf (symbol-function hidden-sym) gf)
                (%register-setf-function accessor hidden-sym))))
           gf))))
 
@@ -2135,6 +2158,49 @@ When called with no arguments, passes the original method arguments."
         ((and (stringp s) (> (length s) 0)) s)  ; stream-writing method
         ((stringp result) result)                 ; string-returning method
         (t nil)))))
+
+;;; ====================================================================
+;;; Funcallable instance protocol (MOP)
+;;; ====================================================================
+;;;
+;;; AMOP §5.5 treats generic functions as callable metaobjects — the
+;;; "funcallable instance" concept.  Our STANDARD-GENERIC-FUNCTION struct
+;;; serves that role: its slot 3 (discriminating-function) is what the
+;;; VM reaches when it sees a call whose operator is a GF metaobject
+;;; (see cl_unwrap_funcallable in src/core/vm.c).
+
+(defun set-funcallable-instance-function (gf fn)
+  "AMOP: install FN as the discriminating function of GF.  Future calls
+to GF invoke FN in place of the standard dispatch.  Returns GF."
+  (%set-gf-discriminating-function gf fn)
+  gf)
+
+(defun standard-instance-access (instance location)
+  "AMOP: unchecked slot access by integer location.  No bound check,
+no GF dispatch — useful inside SLOT-VALUE-USING-CLASS methods that want
+to sidestep the protocol they are implementing."
+  (%struct-ref instance location))
+
+(defun %set-standard-instance-access (instance location new-value)
+  (%struct-set instance location new-value)
+  new-value)
+
+(defsetf standard-instance-access %set-standard-instance-access)
+
+(defun funcallable-standard-instance-access (instance location)
+  "AMOP: same as STANDARD-INSTANCE-ACCESS but typed for funcallable
+metaobjects (e.g. generic functions)."
+  (%struct-ref instance location))
+
+(defsetf funcallable-standard-instance-access %set-standard-instance-access)
+
+(defgeneric compute-discriminating-function (gf))
+(defmethod compute-discriminating-function ((gf standard-generic-function))
+  "AMOP: return the function that will be called when GF is invoked.
+Default method returns the currently cached discriminating function;
+user methods may specialise to return a customised dispatcher, which
+can then be installed via SET-FUNCALLABLE-INSTANCE-FUNCTION."
+  (gf-discriminating-function gf))
 
 ;;; --- Provide module ---
 (provide "clos")

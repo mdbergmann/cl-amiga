@@ -127,6 +127,13 @@ CL_Obj cl_vm_eval(CL_Obj bytecode);
 /* Apply a function to arguments (builds temp bytecode, calls cl_vm_eval) */
 CL_Obj cl_vm_apply(CL_Obj func, CL_Obj *args, int nargs);
 
+/* Unwrap a funcallable instance (standard-generic-function struct) to its
+ * discriminating function. Returns the input unchanged for other types. */
+CL_Obj cl_unwrap_funcallable(CL_Obj obj);
+
+/* True if OBJ is a funcallable instance (i.e. a GF struct). */
+int cl_funcallable_instance_p(CL_Obj obj);
+
 /* Push/pop on VM value stack (for builtins) */
 void cl_vm_push(CL_Obj val);
 CL_Obj cl_vm_pop(void);

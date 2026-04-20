@@ -275,9 +275,11 @@ static CL_Obj bi_simple_string_p(CL_Obj *args, int n)
 
 static CL_Obj bi_functionp(CL_Obj *args, int n)
 {
+    CL_Obj obj = args[0];
     CL_UNUSED(n);
-    return (CL_FUNCTION_P(args[0]) || CL_CLOSURE_P(args[0]) ||
-            CL_BYTECODE_P(args[0])) ? SYM_T : CL_NIL;
+    return (CL_FUNCTION_P(obj) || CL_CLOSURE_P(obj) ||
+            CL_BYTECODE_P(obj) || cl_funcallable_instance_p(obj))
+        ? SYM_T : CL_NIL;
 }
 
 static CL_Obj bi_eq(CL_Obj *args, int n)
@@ -580,6 +582,7 @@ static CL_Obj bi_apply(CL_Obj *args, int n)
         if (CL_NULL_P(func) || func == CL_UNBOUND)
             cl_error(CL_ERR_TYPE, "APPLY: symbol has no function binding");
     }
+    func = cl_unwrap_funcallable(func);
 
     if (CL_FUNCTION_P(func)) {
         CL_Function *f = (CL_Function *)CL_OBJ_TO_PTR(func);
@@ -607,6 +610,7 @@ static CL_Obj bi_funcall(CL_Obj *args, int n)
         if (CL_NULL_P(func) || func == CL_UNBOUND)
             cl_error(CL_ERR_TYPE, "FUNCALL: symbol has no function binding");
     }
+    func = cl_unwrap_funcallable(func);
     if (CL_FUNCTION_P(func)) {
         CL_Function *f = (CL_Function *)CL_OBJ_TO_PTR(func);
         if (!f->func) {
