@@ -419,6 +419,49 @@
   (declare (ignore class initargs))
   (find-class 'standard-effective-slot-definition))
 
+;;; ====================================================================
+;;; EQL specializer metaobjects (MOP)
+;;; ====================================================================
+;;;
+;;; AMOP §5.4 reifies (eql value) specializers as metaobjects interned
+;;; per value (by EQL on the object). Callers that previously built a
+;;; cons (eql value) now call INTERN-EQL-SPECIALIZER so that
+;;;   (eq (intern-eql-specializer 42) (intern-eql-specializer 42)) => T
+;;; and user code can reach them via the MOP accessor.
+;;;
+;;; One slot: OBJECT. The intern table never shrinks — we have no weak
+;;; hash tables and the leak is bounded by the set of literal values
+;;; used in DEFMETHOD forms.
+
+(%register-struct-type 'eql-specializer 1 nil
+  '((object nil)))
+
+(%make-bootstrap-class 'eql-specializer
+  (list (find-class 'standard-object)))
+
+(defvar *eql-specializer-table* (make-hash-table :test 'eql))
+
+(defun eql-specializer-p (object)
+  "Return T if OBJECT is an EQL-SPECIALIZER metaobject."
+  (and (structurep object)
+       (eq (%struct-type-name object) 'eql-specializer)))
+
+(defun eql-specializer-object (spec)
+  "AMOP: return the object associated with an EQL specializer metaobject."
+  (%struct-ref spec 0))
+
+(defun intern-eql-specializer (object)
+  "AMOP: return the canonical EQL-SPECIALIZER for OBJECT. Repeated calls
+   with EQL-identical OBJECTs return the same metaobject so that method
+   equality and dispatch caching can use EQ."
+  (multiple-value-bind (existing found-p)
+      (gethash object *eql-specializer-table*)
+    (if found-p
+        existing
+        (let ((spec (%make-struct 'eql-specializer object)))
+          (setf (gethash object *eql-specializer-table*) spec)
+          spec))))
+
 ;;; --- Register condition types as CLOS classes (for method dispatch) ---
 
 (defun %register-condition-class (name direct-super-names)
@@ -1170,12 +1213,10 @@ When called with no arguments, passes the original method arguments."
       (let ((spec (car specs))
             (arg (car as)))
         (cond
-          ;; EQL specializer: (eql value)
-          ((and (consp spec) (eq (car spec) 'eql))
-           (unless (eql arg (cadr spec))
+          ((eql-specializer-p spec)
+           (unless (eql arg (eql-specializer-object spec))
              (setq applicable nil)
              (return nil)))
-          ;; Class specializer
           (t
            (let ((arg-class (class-of arg)))
              (unless (%subclassp arg-class spec)
@@ -1191,22 +1232,14 @@ When called with no arguments, passes the original method arguments."
          (as args (cdr as)))
         ((or (null sp1) (null sp2)) nil)
       (let ((c1 (car sp1))
-            (c2 (car sp2))
-            (same nil))
-        ;; Check if specializers are equal (same object, or both eql with same value)
-        (when (eq c1 c2)
-          (setq same t))
-        (when (and (not same) (consp c1) (eq (car c1) 'eql)
-                   (consp c2) (eq (car c2) 'eql)
-                   (eql (cadr c1) (cadr c2)))
-          (setq same t))
-        (unless same
-          ;; EQL specializers are more specific than class specializers
+            (c2 (car sp2)))
+        ;; EQ handles the interned-EQL-specializer case as well as class
+        ;; identity; only unequal specializers need ordering.
+        (unless (eq c1 c2)
           (cond
-            ((and (consp c1) (eq (car c1) 'eql)) (return t))
-            ((and (consp c2) (eq (car c2) 'eql)) (return nil))
+            ((eql-specializer-p c1) (return t))
+            ((eql-specializer-p c2) (return nil))
             (t
-             ;; Compare by position in arg's CPL
              (let* ((arg-class (class-of (car as)))
                     (cpl (class-precedence-list arg-class)))
                (dolist (c cpl)
@@ -1336,7 +1369,7 @@ When called with no arguments, passes the original method arguments."
       (let ((pos 0))
         (dolist (s (method-specializers m))
           (cond
-            ((and (consp s) (eq (car s) 'eql))
+            ((eql-specializer-p s)
              (setq has-eql t))
             ((not (eq s t-class))
              (when (> (1+ pos) max-specialized)
@@ -1368,10 +1401,10 @@ When called with no arguments, passes the original method arguments."
             (let ((specs (method-specializers m)))
               (when (> (length specs) pos)
                 (let ((s (nth pos specs)))
-                  (when (and (consp s) (eq (car s) 'eql))
+                  (when (eql-specializer-p s)
                     (unless ht
                       (setq ht (make-hash-table :test 'eql)))
-                    (setf (gethash (cadr s) ht) t))))))
+                    (setf (gethash (eql-specializer-object s) ht) t))))))
           (push ht result)))
       (nreverse result))))
 
@@ -1591,13 +1624,30 @@ When called with no arguments, passes the original method arguments."
     (cons (nreverse unspec) (nreverse specs))))
 
 (defun %resolve-specializers (specializer-names)
-  "Resolve specializer names to class objects.
-   Symbols -> (find-class sym), (eql val) evaluates val."
+  "Resolve specializer names to specializer metaobjects.
+   Symbols -> (find-class sym), (eql val) -> interned EQL-SPECIALIZER
+   for the evaluated value."
   (mapcar (lambda (s)
             (if (and (consp s) (eq (car s) 'eql))
-                (list 'eql (eval (cadr s)))
+                (intern-eql-specializer (eval (cadr s)))
                 (find-class s)))
           specializer-names))
+
+(defun extract-specializer-names (specializers)
+  "AMOP: for each specializer in SPECIALIZERS, return its name —
+   a class name for class specializers, or (EQL value) for EQL
+   specializer metaobjects. Mirrors what DEFMETHOD saw before
+   %RESOLVE-SPECIALIZERS was applied."
+  (mapcar (lambda (s)
+            (cond
+              ((eql-specializer-p s)
+               (list 'eql (eql-specializer-object s)))
+              ((and (structurep s)
+                    (or (eq (%struct-type-name s) 'standard-class)
+                        (eq (%struct-type-name s) 'built-in-class)))
+               (class-name s))
+              (t s)))
+          specializers))
 
 ;;; --- defmethod macro ---
 
@@ -2057,13 +2107,14 @@ When called with no arguments, passes the original method arguments."
          (specs (method-specializers object))
          (quals (method-qualifiers object))
          (spec-names (mapcar (lambda (s)
-                               (if (and (structurep s)
-                                        (eq (%struct-type-name s)
-                                            'standard-class))
-                                   (symbol-name (class-name s))
-                                   (if (consp s)
-                                       (format nil "(EQL ~S)" (cadr s))
-                                       "?")))
+                               (cond
+                                 ((eql-specializer-p s)
+                                  (format nil "(EQL ~S)" (eql-specializer-object s)))
+                                 ((and (structurep s)
+                                       (eq (%struct-type-name s)
+                                           'standard-class))
+                                  (symbol-name (class-name s)))
+                                 (t "?")))
                              specs)))
     (concatenate 'string "#<STANDARD-METHOD"
                  (if quals
