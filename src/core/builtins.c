@@ -34,16 +34,27 @@ static void defun(const char *name, CL_CFunc func, int min, int max)
     cl_register_builtin(name, func, min, max, cl_package_cl);
 }
 
-/* Coerce function designator: symbol -> its function binding */
+/* Coerce function designator: symbol -> its function binding.
+ * A function designator is a function object or a symbol that names one.
+ * A funcallable instance (STANDARD-GENERIC-FUNCTION struct) is unwrapped
+ * to its discriminating-function slot here, so every higher-order
+ * builtin (MAPCAR, REMOVE-IF-NOT, SORT, MAPHASH, ...) sees a callable
+ * of one of the three flat types their dispatch already handles — no
+ * per-callsite change needed to accept GFs as arguments. */
 CL_Obj cl_coerce_funcdesig(CL_Obj obj, const char *context)
 {
+    if (cl_funcallable_instance_p(obj))
+        obj = cl_unwrap_funcallable(obj);
     if (CL_FUNCTION_P(obj) || CL_BYTECODE_P(obj) || CL_CLOSURE_P(obj))
         return obj;
     if (CL_SYMBOL_P(obj)) {
         CL_Symbol *s = (CL_Symbol *)CL_OBJ_TO_PTR(obj);
         CL_Obj fn = s->function;
-        if (fn != CL_UNBOUND && !CL_NULL_P(fn))
+        if (fn != CL_UNBOUND && !CL_NULL_P(fn)) {
+            if (cl_funcallable_instance_p(fn))
+                fn = cl_unwrap_funcallable(fn);
             return fn;
+        }
         cl_error(CL_ERR_UNDEFINED, "Undefined function: %s", cl_symbol_name(obj));
     }
     cl_error(CL_ERR_TYPE, "%s: not a function", context);

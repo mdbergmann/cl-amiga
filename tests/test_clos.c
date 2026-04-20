@@ -3314,6 +3314,307 @@ TEST(dep_isolated_between_metaobjects)
     ASSERT_STR_EQ(eval_print("*dep-log6*"), "0");
 }
 
+/* ==================================================================== */
+/* Portable MOP shims (closer-mop compatibility layer)                   */
+/* ==================================================================== */
+
+TEST(cmshim_metaobject_class_registered)
+{
+    /* METAOBJECT names a real class — closer-mop imports the symbol and
+       downstream code TYPEPs against it. */
+    ASSERT_STR_EQ(eval_print("(class-name (find-class 'metaobject))"),
+                  "METAOBJECT");
+}
+
+TEST(cmshim_specializer_class_registered)
+{
+    ASSERT_STR_EQ(eval_print("(class-name (find-class 'specializer))"),
+                  "SPECIALIZER");
+}
+
+TEST(cmshim_forward_referenced_class_registered)
+{
+    ASSERT_STR_EQ(
+        eval_print("(class-name (find-class 'forward-referenced-class))"),
+        "FORWARD-REFERENCED-CLASS");
+}
+
+TEST(cmshim_accessor_method_subclass_of_standard_method)
+{
+    /* Accessor-method stubs sit below STANDARD-METHOD in the CPL so that
+       libraries that `(typep m 'standard-method)` on generated accessors
+       keep working. */
+    ASSERT_STR_EQ(eval_print(
+        "(not (null (member (find-class 'standard-method)"
+        "                   (class-precedence-list"
+        "                     (find-class 'standard-reader-method)))))"),
+        "T");
+}
+
+TEST(cmshim_reader_and_writer_method_classes_distinct)
+{
+    ASSERT_STR_EQ(eval_print(
+        "(not (eq (find-class 'standard-reader-method)"
+        "         (find-class 'standard-writer-method)))"),
+        "T");
+}
+
+TEST(cmshim_direct_slot_definition_abstract_parent)
+{
+    /* DIRECT-SLOT-DEFINITION is an abstract parent of our reified
+       STANDARD-DIRECT-SLOT-DEFINITION; TYPEP succeeds. */
+    eval_print("(defclass cmshim-c1 () ((x :initarg :x)))");
+    ASSERT_STR_EQ(eval_print(
+        "(typep (car (class-direct-slots (find-class 'cmshim-c1)))"
+        "       'direct-slot-definition)"),
+        "T");
+}
+
+TEST(cmshim_effective_slot_definition_abstract_parent)
+{
+    eval_print("(defclass cmshim-c2 () ((y :initarg :y)))");
+    ASSERT_STR_EQ(eval_print(
+        "(typep (car (class-slots (find-class 'cmshim-c2)))"
+        "       'effective-slot-definition)"),
+        "T");
+}
+
+TEST(cmshim_classp_true_for_standard_class_instance)
+{
+    ASSERT_STR_EQ(eval_print("(classp (find-class 'standard-object))"), "T");
+}
+
+TEST(cmshim_classp_false_for_non_class)
+{
+    ASSERT_STR_EQ(eval_print("(classp 42)"), "NIL");
+    ASSERT_STR_EQ(eval_print("(classp \"foo\")"), "NIL");
+    ASSERT_STR_EQ(eval_print("(classp '(a b c))"), "NIL");
+}
+
+TEST(cmshim_generic_function_name_alias)
+{
+    eval_print("(defgeneric cmshim-gf1 (x))");
+    ASSERT_STR_EQ(eval_print("(generic-function-name #'cmshim-gf1)"),
+                  "CMSHIM-GF1");
+}
+
+TEST(cmshim_generic_function_lambda_list_alias)
+{
+    eval_print("(defgeneric cmshim-gf2 (x y))");
+    ASSERT_STR_EQ(eval_print("(generic-function-lambda-list #'cmshim-gf2)"),
+                  "(X Y)");
+}
+
+TEST(cmshim_generic_function_methods_alias)
+{
+    eval_print("(defgeneric cmshim-gf3 (x))");
+    eval_print("(defmethod cmshim-gf3 ((x integer)) :int)");
+    ASSERT_STR_EQ(eval_print("(length (generic-function-methods #'cmshim-gf3))"),
+                  "1");
+}
+
+TEST(cmshim_generic_function_method_combination_alias)
+{
+    eval_print("(defgeneric cmshim-gf4 (x) (:method-combination +))");
+    ASSERT_STR_EQ(eval_print(
+        "(method-combination-name (generic-function-method-combination "
+        "                           #'cmshim-gf4))"),
+        "+");
+}
+
+TEST(cmshim_generic_function_method_class_default)
+{
+    eval_print("(defgeneric cmshim-gf5 (x))");
+    ASSERT_STR_EQ(eval_print(
+        "(eq (generic-function-method-class #'cmshim-gf5)"
+        "    (find-class 'standard-method))"),
+        "T");
+}
+
+TEST(cmshim_generic_function_argument_precedence_order)
+{
+    eval_print("(defgeneric cmshim-gf6 (a b &optional c))");
+    ASSERT_STR_EQ(eval_print(
+        "(generic-function-argument-precedence-order #'cmshim-gf6)"),
+        "(A B)");
+}
+
+TEST(cmshim_generic_function_declarations_empty)
+{
+    eval_print("(defgeneric cmshim-gf7 (x))");
+    ASSERT_STR_EQ(eval_print("(generic-function-declarations #'cmshim-gf7)"),
+                  "NIL");
+}
+
+TEST(cmshim_camuc_class_specializers_valid)
+{
+    /* With only class-specialized methods, the result is determined
+       from classes alone — VALIDP is T. */
+    eval_print("(defgeneric cmshim-camuc1 (x))");
+    eval_print("(defmethod cmshim-camuc1 ((x integer)) :int)");
+    ASSERT_STR_EQ(eval_print(
+        "(multiple-value-bind (ms validp)"
+        "    (compute-applicable-methods-using-classes"
+        "      #'cmshim-camuc1 (list (find-class 'integer)))"
+        "  (list (length ms) validp))"),
+        "(1 T)");
+}
+
+TEST(cmshim_camuc_eql_specializer_invalidates)
+{
+    /* When a method has an EQL specializer, we cannot decide purely from
+       classes — the dispatcher falls back to COMPUTE-APPLICABLE-METHODS
+       and closer-mop signals that via VALIDP=NIL. */
+    eval_print("(defgeneric cmshim-camuc2 (x))");
+    eval_print("(defmethod cmshim-camuc2 ((x (eql 1))) :one)");
+    eval_print("(defmethod cmshim-camuc2 ((x integer)) :int)");
+    ASSERT_STR_EQ(eval_print(
+        "(multiple-value-bind (ms validp)"
+        "    (compute-applicable-methods-using-classes"
+        "      #'cmshim-camuc2 (list (find-class 'integer)))"
+        "  validp)"),
+        "NIL");
+}
+
+TEST(cmshim_compute_effective_method_single)
+{
+    /* COMPUTE-EFFECTIVE-METHOD returns a CALL-METHOD form for a single
+       applicable method. */
+    eval_print("(defgeneric cmshim-cem1 (x))");
+    eval_print("(defmethod cmshim-cem1 ((x integer)) :int)");
+    ASSERT_STR_EQ(eval_print(
+        "(car (compute-effective-method"
+        "       #'cmshim-cem1"
+        "       (generic-function-method-combination #'cmshim-cem1)"
+        "       (generic-function-methods #'cmshim-cem1)))"),
+        "CALL-METHOD");
+}
+
+TEST(cmshim_ensure_generic_function_using_class_delegates)
+{
+    /* ENSURE-GENERIC-FUNCTION-USING-CLASS forwards to the primary
+       ENSURE-GENERIC-FUNCTION regardless of the leading GF arg. */
+    ASSERT_STR_EQ(eval_print(
+        "(progn (ensure-generic-function-using-class nil 'cmshim-egf1"
+        "         :lambda-list '(x))"
+        "       (generic-function-name #'cmshim-egf1))"),
+        "CMSHIM-EGF1");
+}
+
+TEST(cmshim_specializer_direct_methods_stub)
+{
+    /* Stubbed — we don't track the back-link, so return NIL. */
+    ASSERT_STR_EQ(eval_print(
+        "(specializer-direct-methods (find-class 'integer))"),
+        "NIL");
+}
+
+TEST(cmshim_specializer_direct_generic_functions_stub)
+{
+    ASSERT_STR_EQ(eval_print(
+        "(specializer-direct-generic-functions (find-class 'integer))"),
+        "NIL");
+}
+
+TEST(cmshim_add_remove_direct_method_noop)
+{
+    /* No back-link maintenance — both calls return NIL and do not
+       signal. */
+    eval_print("(defgeneric cmshim-drm (x))");
+    eval_print("(defmethod cmshim-drm ((x integer)) :i)");
+    ASSERT_STR_EQ(eval_print(
+        "(add-direct-method (find-class 'integer)"
+        "                   (car (generic-function-methods #'cmshim-drm)))"),
+        "NIL");
+    ASSERT_STR_EQ(eval_print(
+        "(remove-direct-method (find-class 'integer)"
+        "                      (car (generic-function-methods #'cmshim-drm)))"),
+        "NIL");
+}
+
+TEST(cmshim_add_direct_subclass_records)
+{
+    /* ADD-DIRECT-SUBCLASS must update CLASS-DIRECT-SUBCLASSES. */
+    eval_print("(defclass cmshim-super1 () ())");
+    eval_print("(defclass cmshim-sub1 () ())");
+    eval_print(
+        "(add-direct-subclass (find-class 'cmshim-super1)"
+        "                     (find-class 'cmshim-sub1))");
+    ASSERT_STR_EQ(eval_print(
+        "(not (null (member (find-class 'cmshim-sub1)"
+        "                   (class-direct-subclasses (find-class 'cmshim-super1))"
+        "                   :test #'eq)))"),
+        "T");
+}
+
+TEST(cmshim_add_direct_subclass_idempotent)
+{
+    /* Adding the same subclass twice must not duplicate the entry. */
+    eval_print("(defclass cmshim-super2 () ())");
+    eval_print("(defclass cmshim-sub2 () ())");
+    eval_print(
+        "(add-direct-subclass (find-class 'cmshim-super2)"
+        "                     (find-class 'cmshim-sub2))");
+    eval_print(
+        "(add-direct-subclass (find-class 'cmshim-super2)"
+        "                     (find-class 'cmshim-sub2))");
+    ASSERT_STR_EQ(eval_print(
+        "(count (find-class 'cmshim-sub2)"
+        "       (class-direct-subclasses (find-class 'cmshim-super2))"
+        "       :test #'eq)"),
+        "1");
+}
+
+TEST(cmshim_remove_direct_subclass_drops)
+{
+    eval_print("(defclass cmshim-super3 () ())");
+    eval_print("(defclass cmshim-sub3 () ())");
+    eval_print(
+        "(add-direct-subclass (find-class 'cmshim-super3)"
+        "                     (find-class 'cmshim-sub3))");
+    eval_print(
+        "(remove-direct-subclass (find-class 'cmshim-super3)"
+        "                        (find-class 'cmshim-sub3))");
+    ASSERT_STR_EQ(eval_print(
+        "(member (find-class 'cmshim-sub3)"
+        "        (class-direct-subclasses (find-class 'cmshim-super3))"
+        "        :test #'eq)"),
+        "NIL");
+}
+
+TEST(cmshim_accessor_method_slot_definition_stub)
+{
+    /* We don't back-link accessors to their slot-defs. */
+    eval_print("(defclass cmshim-c4 () ((z :accessor cmshim-c4-z)))");
+    eval_print("(defmethod cmshim-c4-z ((x cmshim-c4)) (call-next-method))");
+    ASSERT_STR_EQ(eval_print(
+        "(accessor-method-slot-definition"
+        "  (car (generic-function-methods #'cmshim-c4-z)))"),
+        "NIL");
+}
+
+TEST(cmshim_reader_method_class_returns_standard)
+{
+    eval_print("(defclass cmshim-c5 () ((a)))");
+    ASSERT_STR_EQ(eval_print(
+        "(eq (reader-method-class (find-class 'cmshim-c5)"
+        "                         (car (class-direct-slots"
+        "                                (find-class 'cmshim-c5))))"
+        "    (find-class 'standard-reader-method))"),
+        "T");
+}
+
+TEST(cmshim_writer_method_class_returns_standard)
+{
+    eval_print("(defclass cmshim-c6 () ((a)))");
+    ASSERT_STR_EQ(eval_print(
+        "(eq (writer-method-class (find-class 'cmshim-c6)"
+        "                         (car (class-direct-slots"
+        "                                (find-class 'cmshim-c6))))"
+        "    (find-class 'standard-writer-method))"),
+        "T");
+}
+
 int main(void)
 {
     test_init();
@@ -3627,6 +3928,37 @@ int main(void)
     RUN(dep_gf_combination_swap_notifies);
     RUN(dep_gf_same_combination_no_notify);
     RUN(dep_isolated_between_metaobjects);
+
+    /* Portable MOP shims (closer-mop compatibility layer) */
+    RUN(cmshim_metaobject_class_registered);
+    RUN(cmshim_specializer_class_registered);
+    RUN(cmshim_forward_referenced_class_registered);
+    RUN(cmshim_accessor_method_subclass_of_standard_method);
+    RUN(cmshim_reader_and_writer_method_classes_distinct);
+    RUN(cmshim_direct_slot_definition_abstract_parent);
+    RUN(cmshim_effective_slot_definition_abstract_parent);
+    RUN(cmshim_classp_true_for_standard_class_instance);
+    RUN(cmshim_classp_false_for_non_class);
+    RUN(cmshim_generic_function_name_alias);
+    RUN(cmshim_generic_function_lambda_list_alias);
+    RUN(cmshim_generic_function_methods_alias);
+    RUN(cmshim_generic_function_method_combination_alias);
+    RUN(cmshim_generic_function_method_class_default);
+    RUN(cmshim_generic_function_argument_precedence_order);
+    RUN(cmshim_generic_function_declarations_empty);
+    RUN(cmshim_camuc_class_specializers_valid);
+    RUN(cmshim_camuc_eql_specializer_invalidates);
+    RUN(cmshim_compute_effective_method_single);
+    RUN(cmshim_ensure_generic_function_using_class_delegates);
+    RUN(cmshim_specializer_direct_methods_stub);
+    RUN(cmshim_specializer_direct_generic_functions_stub);
+    RUN(cmshim_add_remove_direct_method_noop);
+    RUN(cmshim_add_direct_subclass_records);
+    RUN(cmshim_add_direct_subclass_idempotent);
+    RUN(cmshim_remove_direct_subclass_drops);
+    RUN(cmshim_accessor_method_slot_definition_stub);
+    RUN(cmshim_reader_method_class_returns_standard);
+    RUN(cmshim_writer_method_class_returns_standard);
 
     teardown();
     REPORT();

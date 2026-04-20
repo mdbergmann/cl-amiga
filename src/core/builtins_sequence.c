@@ -91,6 +91,10 @@ static CL_Obj call_test(CL_Obj test_fn, CL_Obj a, CL_Obj b)
         CL_Symbol *s = (CL_Symbol *)CL_OBJ_TO_PTR(test_fn);
         test_fn = s->function;
     }
+    /* Unwrap funcallable instances (e.g. a generic function) — the
+     * discriminating-function slot is a closure, handled below. */
+    if (cl_funcallable_instance_p(test_fn))
+        test_fn = cl_unwrap_funcallable(test_fn);
     if (CL_FUNCTION_P(test_fn)) {
         CL_Function *f = (CL_Function *)CL_OBJ_TO_PTR(test_fn);
         return f->func(targs, 2);
@@ -111,6 +115,8 @@ static CL_Obj call_1(CL_Obj fn, CL_Obj arg)
         CL_Symbol *s = (CL_Symbol *)CL_OBJ_TO_PTR(fn);
         fn = s->function;
     }
+    if (cl_funcallable_instance_p(fn))
+        fn = cl_unwrap_funcallable(fn);
     if (CL_FUNCTION_P(fn)) {
         CL_Function *f = (CL_Function *)CL_OBJ_TO_PTR(fn);
         return f->func(pargs, 1);

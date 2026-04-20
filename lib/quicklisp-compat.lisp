@@ -11,6 +11,26 @@
 ;; Load Gray Streams implementation (needed by trivial-gray-streams)
 (load (merge-pathnames "lib/gray-streams.lisp" *default-pathname-defaults*))
 
+;; Register CL-Amiga's bundled local-projects tree so ASDF/quicklisp
+;; find the closer-mop shim (and any other project-local Lisp systems)
+;; before falling back to the downloaded quicklisp dist.  PROBE-FILE is
+;; used to resolve the relative path to an absolute one — ASDF
+;; *central-registry* entries must be absolute directory pathnames for
+;; sysdef-central-registry-search to locate the .asd file.
+(let* ((probe (probe-file
+               (merge-pathnames "lib/local-projects/closer-mop/closer-mop.asd"
+                                *default-pathname-defaults*)))
+       (asd-dir (when probe (make-pathname :defaults probe :name nil :type nil))))
+  (when asd-dir
+    (pushnew asd-dir asdf:*central-registry* :test #'equal)
+    (when (find-package :ql)
+      (let ((sym (find-symbol "*LOCAL-PROJECT-DIRECTORIES*" :ql)))
+        (when (and sym (boundp sym))
+          (pushnew (make-pathname :defaults asd-dir
+                                  :directory
+                                  (butlast (pathname-directory asd-dir)))
+                   (symbol-value sym) :test #'equal))))))
+
 (in-package #:ql-impl)
 
 ;; Register CL-Amiga as a known implementation so *implementation* is non-NIL.
