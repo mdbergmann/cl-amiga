@@ -3331,14 +3331,10 @@
 (check "eql-spec shared across methods" t
   (eq (first (method-specializers (first (gf-methods (gethash 'es-amiga-share1 *generic-function-table*)))))
       (first (method-specializers (first (gf-methods (gethash 'es-amiga-share2 *generic-function-table*)))))))
-(defgeneric es-amiga-esn (x y))
-(defmethod es-amiga-esn ((x (eql 99)) (y string)) :ok)
-(check "eql-spec extract-specializer-names" '((eql 99) string)
-  (extract-specializer-names (method-specializers (first (gf-methods (gethash 'es-amiga-esn *generic-function-table*))))))
-(defgeneric es-amiga-cls (x))
-(defmethod es-amiga-cls ((x integer)) :int)
-(check "eql-spec extract names class-only" '(integer)
-  (extract-specializer-names (method-specializers (first (gf-methods (gethash 'es-amiga-cls *generic-function-table*))))))
+(check "extract-specializer-names eql+class" '((eql 99) string)
+  (extract-specializer-names '((x (eql 99)) (y string))))
+(check "extract-specializer-names class-only" '(integer)
+  (extract-specializer-names '((x integer))))
 (defgeneric es-amiga-rep (x))
 (defmethod es-amiga-rep ((x (eql 1))) :first)
 (defmethod es-amiga-rep ((x (eql 1))) :second)
@@ -3396,6 +3392,99 @@
   (functionp (compute-discriminating-function (ensure-generic-function 'fsc-amiga-cdf))))
 (check "compute-discriminating-function dispatches" :int-case
   (funcall (compute-discriminating-function (ensure-generic-function 'fsc-amiga-cdf)) 7))
+
+; --- Method metaobject protocol (MOP) ---
+(defgeneric mmop-amiga-bl (x))
+(defmethod mmop-amiga-bl ((x integer)) :int)
+(check "method-generic-function back-link" t
+  (eq (method-generic-function (first (gf-methods (gethash 'mmop-amiga-bl *generic-function-table*))))
+      (gethash 'mmop-amiga-bl *generic-function-table*)))
+(check "extract-lambda-list plain" '(x y z)
+  (extract-lambda-list '((x point) (y (eql 3)) z)))
+(check "extract-lambda-list preserves tail" '(x &optional (y 5) &rest rest &key k)
+  (extract-lambda-list '((x integer) &optional (y 5) &rest rest &key k)))
+(check "extract-specializer-names padded t" '(t integer t)
+  (extract-specializer-names '(x (y integer) z)))
+(check "extract-specializer-names stops at &" '(string)
+  (extract-specializer-names '((a string) &optional b &key c)))
+
+(defgeneric mmop-amiga-add (x))
+(defmethod mmop-amiga-add ((x t)) :default)
+(let* ((gf (ensure-generic-function 'mmop-amiga-add))
+       (fn (lambda (x) (declare (ignore x)) :added))
+       (m (%make-struct 'standard-method
+            nil (list (find-class 'integer)) '() fn '(x))))
+  (add-method gf m))
+(check "add-method installs" :added (mmop-amiga-add 42))
+(check "add-method keeps default" :default (mmop-amiga-add "hi"))
+
+(defgeneric mmop-amiga-addret (x))
+(check "add-method returns gf" t
+  (let* ((gf (ensure-generic-function 'mmop-amiga-addret))
+         (m (%make-struct 'standard-method
+              nil (list (find-class 't)) '()
+              (lambda (x) (declare (ignore x)) :ok) '(x))))
+    (eq (add-method gf m) gf)))
+
+(defgeneric mmop-amiga-rm (x))
+(defmethod mmop-amiga-rm ((x t)) :default)
+(defmethod mmop-amiga-rm ((x integer)) :int)
+(check "remove-method before" :int (mmop-amiga-rm 42))
+(let* ((gf (gethash 'mmop-amiga-rm *generic-function-table*))
+       (m  (find-if (lambda (m)
+                      (equal (method-specializers m) (list (find-class 'integer))))
+                    (gf-methods gf))))
+  (remove-method gf m))
+(check "remove-method after" :default (mmop-amiga-rm 42))
+
+(defgeneric mmop-amiga-rmbl (x))
+(defmethod mmop-amiga-rmbl ((x integer)) :int)
+(defvar *mmop-amiga-rm-m*
+  (first (gf-methods (gethash 'mmop-amiga-rmbl *generic-function-table*))))
+(remove-method (gethash 'mmop-amiga-rmbl *generic-function-table*) *mmop-amiga-rm-m*)
+(check "remove-method clears back-link" nil
+  (method-generic-function *mmop-amiga-rm-m*))
+
+(defgeneric mmop-amiga-fm (x))
+(defmethod mmop-amiga-fm ((x string)) :s)
+(defmethod mmop-amiga-fm :before ((x string)) :before)
+(check "find-method locates" t
+  (not (null (find-method (gethash 'mmop-amiga-fm *generic-function-table*)
+                          '() (list (find-class 'string))))))
+(check "find-method resolves class names" t
+  (not (null (find-method (gethash 'mmop-amiga-fm *generic-function-table*)
+                          '() '(string)))))
+(check "find-method resolves (eql v)" t
+  (progn
+    (defgeneric mmop-amiga-fmeql (x))
+    (defmethod mmop-amiga-fmeql ((x (eql 7))) :seven)
+    (not (null (find-method (gethash 'mmop-amiga-fmeql *generic-function-table*)
+                            '() '((eql 7)))))))
+(check "find-method missing returns nil" nil
+  (progn
+    (defgeneric mmop-amiga-fmnil (x))
+    (find-method (gethash 'mmop-amiga-fmnil *generic-function-table*)
+                 '() '(integer) nil)))
+
+(defgeneric mmop-amiga-em (x))
+(ensure-method 'mmop-amiga-em
+  '(lambda (x) (declare (ignore x)) :ensured)
+  :specializers '(integer))
+(check "ensure-method installs" :ensured (mmop-amiga-em 99))
+
+(defgeneric mmop-amiga-emdef (x))
+(ensure-method 'mmop-amiga-emdef
+  '(lambda (x) (declare (ignore x)) :any))
+(check "ensure-method default specs catches string" :any (mmop-amiga-emdef "a"))
+(check "ensure-method default specs catches integer" :any (mmop-amiga-emdef 42))
+
+(defgeneric mmop-amiga-mml (x))
+(check "make-method-lambda default identity" '((lambda (x) x) nil)
+  (let* ((gf (ensure-generic-function 'mmop-amiga-mml))
+         (m (%make-struct 'standard-method
+              gf (list (find-class 't)) '()
+              (lambda (x) x) '(x))))
+    (multiple-value-list (make-method-lambda gf m '(lambda (x) x) nil))))
 
 ; --- CLOS Phase 9: print-object ---
 (check "print-object class" "#<STANDARD-CLASS INTEGER>" (print-object (find-class 'integer) nil))

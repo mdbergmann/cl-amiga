@@ -2334,25 +2334,19 @@ TEST(eqlspec_method_specializers_shared_across_methods)
 
 TEST(eqlspec_extract_specializer_names_roundtrips)
 {
-    /* extract-specializer-names returns (eql value) form for BWC. */
-    eval_print("(defgeneric es-esn (x y))");
-    eval_print("(defmethod es-esn ((x (eql 99)) (y string)) :ok)");
+    /* extract-specializer-names pulls specializer names from a
+       specialized lambda list (AMOP). */
     ASSERT_STR_EQ(eval_print(
-        "(let* ((gf (gethash 'es-esn *generic-function-table*)) "
-        "       (m  (first (gf-methods gf)))) "
-        "  (extract-specializer-names (method-specializers m)))"),
+        "(extract-specializer-names '((x (eql 99)) (y string)))"),
         "((EQL 99) STRING)");
 }
 
 TEST(eqlspec_extract_class_specializers)
 {
-    /* extract-specializer-names maps class objects to class names. */
-    eval_print("(defgeneric es-cls (x))");
-    eval_print("(defmethod es-cls ((x integer)) :int)");
+    /* extract-specializer-names from a specialized lambda list —
+       class specializers returned as their class names. */
     ASSERT_STR_EQ(eval_print(
-        "(let* ((gf (gethash 'es-cls *generic-function-table*)) "
-        "       (m  (first (gf-methods gf)))) "
-        "  (extract-specializer-names (method-specializers m)))"),
+        "(extract-specializer-names '((x integer)))"),
         "(INTEGER)");
 }
 
@@ -2562,6 +2556,238 @@ TEST(funcallable_gf_cpl_has_function)
         "        (find 'standard-object cpl-names) "
         "        (find 't cpl-names)))"),
         "(FUNCALLABLE-STANDARD-OBJECT FUNCTION STANDARD-OBJECT T)");
+}
+
+/* ============================================================
+ * Method metaobject protocol (MOP)
+ * ============================================================ */
+
+TEST(mmop_method_generic_function_backlink)
+{
+    /* DEFMETHOD stores the installing GF on the method so metaobject
+       introspection can walk from method back to its GF. */
+    eval_print("(defgeneric mmop-bl (x))");
+    eval_print("(defmethod mmop-bl ((x integer)) :int)");
+    ASSERT_STR_EQ(eval_print(
+        "(let* ((gf (gethash 'mmop-bl *generic-function-table*)) "
+        "       (m  (first (gf-methods gf)))) "
+        "  (eq (method-generic-function m) gf))"),
+        "T");
+}
+
+TEST(mmop_extract_lambda_list_plain)
+{
+    /* EXTRACT-LAMBDA-LIST strips specializers from required params. */
+    ASSERT_STR_EQ(eval_print(
+        "(extract-lambda-list '((x point) (y (eql 3)) z))"),
+        "(X Y Z)");
+}
+
+TEST(mmop_extract_lambda_list_preserves_keywords)
+{
+    /* Non-required parameters pass through untouched. */
+    ASSERT_STR_EQ(eval_print(
+        "(extract-lambda-list '((x integer) &optional (y 5) &rest rest &key k))"),
+        "(X &OPTIONAL (Y 5) &REST REST &KEY K)");
+}
+
+TEST(mmop_extract_specializer_names_padded_t)
+{
+    /* Unspecialized required params get T. */
+    ASSERT_STR_EQ(eval_print(
+        "(extract-specializer-names '(x (y integer) z))"),
+        "(T INTEGER T)");
+}
+
+TEST(mmop_extract_specializer_names_stops_at_keywords)
+{
+    /* Specializer harvest ignores non-required tail. */
+    ASSERT_STR_EQ(eval_print(
+        "(extract-specializer-names '((a string) &optional b &key c))"),
+        "(STRING)");
+}
+
+TEST(mmop_add_method_installs_new_method)
+{
+    /* Calling the ADD-METHOD GF with a programmatically-built method
+       makes it dispatchable — same end state as DEFMETHOD. */
+    eval_print("(defgeneric mmop-add (x))");
+    eval_print("(defmethod mmop-add ((x t)) :default)");
+    eval_print(
+        "(let* ((gf (ensure-generic-function 'mmop-add)) "
+        "       (fn (lambda (x) (declare (ignore x)) :added)) "
+        "       (m (%make-struct 'standard-method "
+        "            nil (list (find-class 'integer)) '() fn '(x)))) "
+        "  (add-method gf m))");
+    ASSERT_STR_EQ(eval_print("(mmop-add 42)"), ":ADDED");
+    ASSERT_STR_EQ(eval_print("(mmop-add \"hi\")"), ":DEFAULT");
+}
+
+TEST(mmop_add_method_sets_back_link)
+{
+    /* ADD-METHOD fills in the method's generic-function slot so the
+       metaobject knows where it lives. */
+    eval_print("(defgeneric mmop-addbl (x))");
+    eval_print(
+        "(let* ((gf (ensure-generic-function 'mmop-addbl)) "
+        "       (fn (lambda (x) (declare (ignore x)) :ok)) "
+        "       (m (%make-struct 'standard-method "
+        "            nil (list (find-class 't)) '() fn '(x)))) "
+        "  (add-method gf m) "
+        "  (setq *mmop-m* m) "
+        "  (setq *mmop-gf* gf))");
+    ASSERT_STR_EQ(eval_print("(eq (method-generic-function *mmop-m*) *mmop-gf*)"), "T");
+}
+
+TEST(mmop_add_method_returns_gf)
+{
+    /* AMOP: ADD-METHOD returns the GF. */
+    eval_print("(defgeneric mmop-ret (x))");
+    ASSERT_STR_EQ(eval_print(
+        "(let* ((gf (ensure-generic-function 'mmop-ret)) "
+        "       (m (%make-struct 'standard-method "
+        "            nil (list (find-class 't)) '() "
+        "            (lambda (x) (declare (ignore x)) :ok) '(x)))) "
+        "  (eq (add-method gf m) gf))"),
+        "T");
+}
+
+TEST(mmop_remove_method_drops_dispatch)
+{
+    /* REMOVE-METHOD eliminates the method — subsequent calls no longer
+       see it. */
+    eval_print("(defgeneric mmop-rm (x))");
+    eval_print("(defmethod mmop-rm ((x t)) :default)");
+    eval_print("(defmethod mmop-rm ((x integer)) :int)");
+    ASSERT_STR_EQ(eval_print("(mmop-rm 42)"), ":INT");
+    eval_print(
+        "(let* ((gf (gethash 'mmop-rm *generic-function-table*)) "
+        "       (m (find-if (lambda (m) "
+        "                     (equal (method-specializers m) "
+        "                            (list (find-class 'integer)))) "
+        "                   (gf-methods gf)))) "
+        "  (remove-method gf m))");
+    ASSERT_STR_EQ(eval_print("(mmop-rm 42)"), ":DEFAULT");
+}
+
+TEST(mmop_remove_method_clears_backlink)
+{
+    /* REMOVE-METHOD severs method->GF back-link. */
+    eval_print("(defgeneric mmop-rmbl (x))");
+    eval_print("(defmethod mmop-rmbl ((x integer)) :int)");
+    eval_print(
+        "(let* ((gf (gethash 'mmop-rmbl *generic-function-table*)) "
+        "       (m (first (gf-methods gf)))) "
+        "  (setq *mmop-rm-m* m) "
+        "  (remove-method gf m))");
+    ASSERT_STR_EQ(eval_print("(method-generic-function *mmop-rm-m*)"), "NIL");
+}
+
+TEST(mmop_find_method_returns_existing)
+{
+    /* FIND-METHOD locates the method by qualifiers + specializers. */
+    eval_print("(defgeneric mmop-fm (x))");
+    eval_print("(defmethod mmop-fm ((x string)) :s)");
+    eval_print("(defmethod mmop-fm :before ((x string)) :before)");
+    ASSERT_STR_EQ(eval_print(
+        "(let ((gf (gethash 'mmop-fm *generic-function-table*))) "
+        "  (eq (find-method gf '() (list (find-class 'string))) "
+        "      (find-if (lambda (m) (null (method-qualifiers m))) "
+        "               (gf-methods gf))))"),
+        "T");
+}
+
+TEST(mmop_find_method_accepts_class_names)
+{
+    /* FIND-METHOD resolves specializer class *names* to class
+       metaobjects before comparing. */
+    eval_print("(defgeneric mmop-fmn (x))");
+    eval_print("(defmethod mmop-fmn ((x integer)) :int)");
+    ASSERT_STR_EQ(eval_print(
+        "(let ((gf (gethash 'mmop-fmn *generic-function-table*))) "
+        "  (not (null (find-method gf '() '(integer)))))"),
+        "T");
+}
+
+TEST(mmop_find_method_eql_names)
+{
+    /* FIND-METHOD resolves (EQL val) names to EQL specializer metaobjects. */
+    eval_print("(defgeneric mmop-fmeql (x))");
+    eval_print("(defmethod mmop-fmeql ((x (eql 7))) :seven)");
+    ASSERT_STR_EQ(eval_print(
+        "(let ((gf (gethash 'mmop-fmeql *generic-function-table*))) "
+        "  (not (null (find-method gf '() '((eql 7))))))"),
+        "T");
+}
+
+TEST(mmop_find_method_missing_errors)
+{
+    /* FIND-METHOD signals when no match and ERRORP is T (the default). */
+    eval_print("(defgeneric mmop-fmmiss (x))");
+    ASSERT_STR_EQ(eval_print(
+        "(handler-case "
+        "  (find-method (gethash 'mmop-fmmiss *generic-function-table*) "
+        "               '() '(integer)) "
+        "  (error () :signaled))"),
+        ":SIGNALED");
+}
+
+TEST(mmop_find_method_missing_returns_nil)
+{
+    /* With ERRORP NIL, FIND-METHOD returns NIL. */
+    eval_print("(defgeneric mmop-fmnil (x))");
+    ASSERT_STR_EQ(eval_print(
+        "(find-method (gethash 'mmop-fmnil *generic-function-table*) "
+        "             '() '(integer) nil)"),
+        "NIL");
+}
+
+TEST(mmop_ensure_method_installs)
+{
+    /* ENSURE-METHOD constructs and installs a method from a lambda. */
+    eval_print("(defgeneric mmop-em (x))");
+    eval_print(
+        "(ensure-method 'mmop-em '(lambda (x) (declare (ignore x)) :added) "
+        "               :specializers '(integer))");
+    ASSERT_STR_EQ(eval_print("(mmop-em 99)"), ":ADDED");
+}
+
+TEST(mmop_ensure_method_default_specializers_are_t)
+{
+    /* Without :specializers, ENSURE-METHOD pads with T specializers,
+       giving a catch-all default method. */
+    eval_print("(defgeneric mmop-emdef (x))");
+    eval_print(
+        "(ensure-method 'mmop-emdef '(lambda (x) (declare (ignore x)) :any))");
+    ASSERT_STR_EQ(eval_print("(mmop-emdef \"any\")"), ":ANY");
+    ASSERT_STR_EQ(eval_print("(mmop-emdef 42)"), ":ANY");
+}
+
+TEST(mmop_ensure_method_returns_method)
+{
+    /* ENSURE-METHOD returns the newly constructed method metaobject. */
+    eval_print("(defgeneric mmop-emret (x))");
+    ASSERT_STR_EQ(eval_print(
+        "(let ((m (ensure-method 'mmop-emret "
+        "            '(lambda (x) (declare (ignore x)) :ok) "
+        "            :specializers '(integer)))) "
+        "  (eq (%struct-type-name m) 'standard-method))"),
+        "T");
+}
+
+TEST(mmop_make_method_lambda_default_identity)
+{
+    /* MAKE-METHOD-LAMBDA returns (values lambda-expr nil) by default —
+       a no-op hook point that metaclasses can specialise. */
+    eval_print("(defgeneric mmop-mml-host (x))");
+    ASSERT_STR_EQ(eval_print(
+        "(let* ((gf (ensure-generic-function 'mmop-mml-host)) "
+        "       (m (%make-struct 'standard-method "
+        "            gf (list (find-class 't)) '() "
+        "            (lambda (x) x) '(x)))) "
+        "  (multiple-value-list "
+        "    (make-method-lambda gf m '(lambda (x) x) nil)))"),
+        "((LAMBDA (X) X) NIL)");
 }
 
 int main(void)
@@ -2813,6 +3039,27 @@ int main(void)
     RUN(funcallable_compute_discriminating_function_default);
     RUN(funcallable_gf_type_of);
     RUN(funcallable_gf_cpl_has_function);
+
+    /* Method metaobject protocol (MOP) */
+    RUN(mmop_method_generic_function_backlink);
+    RUN(mmop_extract_lambda_list_plain);
+    RUN(mmop_extract_lambda_list_preserves_keywords);
+    RUN(mmop_extract_specializer_names_padded_t);
+    RUN(mmop_extract_specializer_names_stops_at_keywords);
+    RUN(mmop_add_method_installs_new_method);
+    RUN(mmop_add_method_sets_back_link);
+    RUN(mmop_add_method_returns_gf);
+    RUN(mmop_remove_method_drops_dispatch);
+    RUN(mmop_remove_method_clears_backlink);
+    RUN(mmop_find_method_returns_existing);
+    RUN(mmop_find_method_accepts_class_names);
+    RUN(mmop_find_method_eql_names);
+    RUN(mmop_find_method_missing_errors);
+    RUN(mmop_find_method_missing_returns_nil);
+    RUN(mmop_ensure_method_installs);
+    RUN(mmop_ensure_method_default_specializers_are_t);
+    RUN(mmop_ensure_method_returns_method);
+    RUN(mmop_make_method_lambda_default_identity);
 
     teardown();
     REPORT();
