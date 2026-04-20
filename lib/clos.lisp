@@ -290,6 +290,120 @@
 (%make-bootstrap-class 'print-not-readable
   (list (find-class 'error)))
 
+;;; ====================================================================
+;;; Slot Definition Metaobjects (MOP)
+;;; ====================================================================
+;;;
+;;; Reified slot definitions: struct instances rather than cons+plist.
+;;; STANDARD-DIRECT-SLOT-DEFINITION — one per slot declared in defclass.
+;;; STANDARD-EFFECTIVE-SLOT-DEFINITION — one per merged slot in a class.
+
+;;; standard-direct-slot-definition layout (9 slots):
+;;;   0: name           1: initargs      2: initform
+;;;   3: initfunction   4: type          5: allocation
+;;;   6: readers        7: writers       8: documentation
+(%register-struct-type 'standard-direct-slot-definition 9 nil
+  '((name nil) (initargs nil) (initform nil) (initfunction nil)
+    (type nil) (allocation :instance)
+    (readers nil) (writers nil) (documentation nil)))
+
+;;; standard-effective-slot-definition layout (5 slots) — compact form
+;;; sharing indices 0/1/3 with direct-slot-definition so that the
+;;; runtime hot path (shared-initialize) needs no type dispatch:
+;;;   0: name           1: initargs      2: location
+;;;   3: initfunction   4: allocation
+;;;
+;;; Introspection accessors for type/initform/documentation return NIL
+;;; on effective slot defs (the source form lives on the primary direct
+;;; slot reachable via class-direct-slots).
+(%register-struct-type 'standard-effective-slot-definition 5 nil
+  '((name nil) (initargs nil) (location nil)
+    (initfunction nil) (allocation :instance)))
+
+;;; Class hierarchy for slot-definition metaobjects
+(%make-bootstrap-class 'slot-definition
+  (list (find-class 'standard-object)))
+(%make-bootstrap-class 'standard-slot-definition
+  (list (find-class 'slot-definition)))
+(%make-bootstrap-class 'standard-direct-slot-definition
+  (list (find-class 'standard-slot-definition)))
+(%make-bootstrap-class 'standard-effective-slot-definition
+  (list (find-class 'standard-slot-definition)))
+
+;;; --- Accessors (AMOP / closer-mop names) ---
+;;; Slots 0, 1, 3 share indices between direct and effective so name,
+;;; initargs, and initfunction reads avoid any per-call dispatch.
+
+(defun slot-definition-name         (sd) (%struct-ref sd 0))
+(defun slot-definition-initargs     (sd) (%struct-ref sd 1))
+(defun slot-definition-initfunction (sd) (%struct-ref sd 3))
+
+(defun %effective-slot-def-p (sd)
+  (eq (%struct-type-name sd) 'standard-effective-slot-definition))
+
+(defun slot-definition-initform (sd)
+  (if (%effective-slot-def-p sd) nil (%struct-ref sd 2)))
+
+(defun slot-definition-type (sd)
+  (if (%effective-slot-def-p sd) nil (%struct-ref sd 4)))
+
+(defun slot-definition-allocation (sd)
+  (if (%effective-slot-def-p sd) (%struct-ref sd 4) (%struct-ref sd 5)))
+
+(defun slot-definition-documentation (sd)
+  (if (%effective-slot-def-p sd) nil (%struct-ref sd 8)))
+
+;; Direct-only: readers, writers
+(defun slot-definition-readers (dsd) (%struct-ref dsd 6))
+(defun slot-definition-writers (dsd) (%struct-ref dsd 7))
+
+;; Effective-only: location
+(defun slot-definition-location (esd) (%struct-ref esd 2))
+
+;;; Internal setters (used by the effective-slot builder and class
+;;; finalization; not part of the MOP API).
+(defun %set-slot-definition-initargs (sd v) (%struct-set sd 1 v))
+(defun %set-slot-definition-initfunction (sd v) (%struct-set sd 3 v))
+
+(defun %set-slot-definition-initform (sd v)
+  (unless (%effective-slot-def-p sd) (%struct-set sd 2 v)))
+
+(defun %set-slot-definition-type (sd v)
+  (unless (%effective-slot-def-p sd) (%struct-set sd 4 v)))
+
+(defun %set-slot-definition-location (esd v) (%struct-set esd 2 v))
+
+(defun %set-slot-definition-documentation (sd v)
+  (unless (%effective-slot-def-p sd) (%struct-set sd 8 v)))
+
+;;; --- Constructors ---
+;;; Positional args (no &key) so defclass expansion stays small and the
+;;; call site is a plain %make-struct with no keyword-argument dispatch.
+
+(defun %make-direct-slot-def (name initargs initform initfunction
+                              type allocation readers writers documentation)
+  (%make-struct 'standard-direct-slot-definition
+    name initargs initform initfunction type allocation
+    readers writers documentation))
+
+(defun %make-effective-slot-def (name initargs initfunction allocation location)
+  (%make-struct 'standard-effective-slot-definition
+    name initargs location initfunction allocation))
+
+;;; --- Slot-definition-class protocol ---
+;;;
+;;; Plain functions for now; upgraded to GFs at the bottom of clos.lisp
+;;; once defgeneric/defmethod are available. User-defined metaclasses
+;;; are out of scope, so the customization point is an :around method
+;;; on the standard-class specializer.
+(defun direct-slot-definition-class (class &rest initargs)
+  (declare (ignore class initargs))
+  (find-class 'standard-direct-slot-definition))
+
+(defun effective-slot-definition-class (class &rest initargs)
+  (declare (ignore class initargs))
+  (find-class 'standard-effective-slot-definition))
+
 ;;; --- Register condition types as CLOS classes (for method dispatch) ---
 
 (defun %register-condition-class (name direct-super-names)
@@ -520,63 +634,88 @@ Specialize via defmethod to provide lazy initialization."
       (setq tail (cddr tail)))))
 
 ;;; --- Effective slot computation ---
+;;;
+;;; Direct slots arrive as STANDARD-DIRECT-SLOT-DEFINITION structs already
+;;; built by the defclass expansion. Effective slots are fresh
+;;; STANDARD-EFFECTIVE-SLOT-DEFINITION structs, merged per AMOP §5.5:
+;;; most-specific direct slot supplies initform/type/allocation; initargs
+;;; are unioned across all direct slots with that name.
 
-(defun %merge-slot-option (child-spec parent-spec key)
-  "If CHILD-SPEC lacks KEY, inherit it from PARENT-SPEC."
-  (if (and (not (%slot-spec-has-option-p child-spec key))
-           (%slot-spec-has-option-p parent-spec key))
-      (append child-spec (list key (%slot-spec-option parent-spec key)))
-      child-spec))
+(defun %find-slot-def (name slot-defs)
+  "Return the first slot-definition in SLOT-DEFS with the given NAME, or NIL."
+  (dolist (sd slot-defs nil)
+    (when (eq (slot-definition-name sd) name)
+      (return sd))))
 
-(defun %merge-slot-specs (child-spec parent-spec)
-  "Merge parent slot options into child spec (child takes precedence)."
-  (let ((result child-spec))
-    (dolist (key '(:initarg :initform :type :documentation))
-      (setq result (%merge-slot-option result parent-spec key)))
-    result))
+(defun %direct-to-effective (dsd)
+  "Build a fresh effective-slot-definition from a direct-slot-definition.
+   Only runtime-critical fields are stored on the effective slot; type,
+   initform source, and documentation are introspected via the primary
+   direct slot (reachable from class-direct-slots)."
+  (%make-effective-slot-def (slot-definition-name dsd)
+    (copy-list (slot-definition-initargs dsd))
+    (slot-definition-initfunction dsd)
+    (slot-definition-allocation dsd)
+    nil))
+
+(defun %fold-parent-into-effective (eff parent-dsd)
+  "Fold inherited options from PARENT-DSD into effective slot EFF.
+   Most-specific already wins (EFF was seeded first); we union initargs
+   and fill in initfunction if the child left it blank."
+  ;; Union initargs
+  (let ((parent-initargs (slot-definition-initargs parent-dsd)))
+    (when parent-initargs
+      (let ((combined (slot-definition-initargs eff)))
+        (dolist (ia parent-initargs)
+          (unless (member ia combined :test #'eq)
+            (setq combined (append combined (list ia)))))
+        (%set-slot-definition-initargs eff combined))))
+  ;; initfunction: inherit only if child had none
+  (unless (slot-definition-initfunction eff)
+    (let ((pfn (slot-definition-initfunction parent-dsd)))
+      (when pfn
+        (%set-slot-definition-initfunction eff pfn))))
+  eff)
 
 (defun %compute-effective-slots (cpl)
-  "Compute effective slots from class precedence list.
-   Walk CPL from most-specific to least-specific, collecting slots.
-   If a slot name already exists, merge options (subclass wins)."
+  "Compute effective slots from a class precedence list of classes."
   (let ((effective nil))
     (dolist (class cpl)
-      (dolist (slot (class-direct-slots class))
-        (let* ((name (%slot-spec-name slot))
-               (existing (assoc name effective :test #'eq)))
+      (dolist (dsd (class-direct-slots class))
+        (let* ((name (slot-definition-name dsd))
+               (existing (%find-slot-def name effective)))
           (if existing
-              ;; Merge parent options into existing (child already there)
-              (let ((merged (%merge-slot-specs existing slot)))
-                (setq effective
-                      (mapcar (lambda (s)
-                                (if (eq (car s) name) merged s))
-                              effective)))
-              ;; New slot — add to end
-              (setq effective (append effective (list slot)))))))
+              (%fold-parent-into-effective existing dsd)
+              (setq effective
+                    (append effective (list (%direct-to-effective dsd))))))))
     effective))
 
 ;;; --- Build slot-index-table ---
 
 (defun %build-slot-index-table (effective-slots)
-  "Build hash table mapping slot-name -> index from effective slots list."
+  "Build a hash table mapping slot-name -> index from effective slots."
   (let ((table (make-hash-table :test 'eq))
         (i 0))
     (dolist (slot effective-slots)
-      (setf (gethash (%slot-spec-name slot) table) i)
+      (setf (gethash (slot-definition-name slot) table) i)
       (setq i (+ i 1)))
     table))
 
 ;;; --- Class creation at runtime ---
 
-(defun %ensure-class (name direct-super-names direct-slots initform-alist
+(defun %ensure-class (name direct-super-names direct-slot-defs
                       &optional default-initargs)
-  "Create or update a CLOS class. Called by defclass expansion."
-  (let* ((supers (if direct-super-names
+  "Create or update a CLOS class. Called by defclass expansion.
+   DIRECT-SLOT-DEFS is a list of STANDARD-DIRECT-SLOT-DEFINITION instances
+   (already constructed by the defclass macro with initfunctions closed
+   over the lexical environment)."
+  (let* ((old-class (find-class name nil))
+         (supers (if direct-super-names
                      (mapcar #'find-class direct-super-names)
                      (list (find-class 'standard-object))))
          ;; Create a temporary class to compute CPL
          (class (%make-struct 'standard-class
-                  name supers direct-slots
+                  name supers direct-slot-defs
                   nil nil nil nil nil nil nil nil))
          (cpl (%compute-class-precedence-list class))
          (effective (%compute-effective-slots cpl))
@@ -584,28 +723,13 @@ Specialize via defmethod to provide lazy initialization."
          (index-table (%build-slot-index-table effective))
          ;; Build slot specs for struct registration: ((name default) ...)
          (struct-slot-specs
-           (mapcar (lambda (s) (list (%slot-spec-name s) nil))
+           (mapcar (lambda (esd) (list (slot-definition-name esd) nil))
                    effective)))
-    ;; Patch initform functions into direct-slots
-    (dolist (pair initform-alist)
-      (let* ((slot-name (car pair))
-             (initfn (cdr pair))
-             (spec (assoc slot-name direct-slots :test #'eq)))
-        (when spec
-          ;; Store the initform function under :initform-function
-          (nconc spec (list :initform-function initfn)))))
-    ;; Also propagate initform-functions into effective slots
-    ;; Walk effective slots and find initform-functions from CPL
-    (dolist (eslot effective)
-      (unless (%slot-spec-has-option-p eslot :initform-function)
-        ;; Search CPL for a class that defines this slot with an initform
-        (let ((slot-name (%slot-spec-name eslot)))
-          (dolist (c cpl)
-            (let ((dslot (assoc slot-name (class-direct-slots c) :test #'eq)))
-              (when (and dslot (%slot-spec-has-option-p dslot :initform-function))
-                (nconc eslot (list :initform-function
-                                   (%slot-spec-option dslot :initform-function)))
-                (return)))))))
+    ;; Fill in effective-slot location with the instance index
+    (let ((i 0))
+      (dolist (esd effective)
+        (%set-slot-definition-location esd i)
+        (setq i (+ i 1))))
     ;; Register struct type (pass first direct super for typep hierarchy)
     (%register-struct-type name n-slots
                            (if direct-super-names (car direct-super-names) nil)
@@ -617,6 +741,13 @@ Specialize via defmethod to provide lazy initialization."
     (%set-class-finalized-p class t)
     (when default-initargs
       (%set-class-default-initargs class default-initargs))
+    ;; On redefinition, drop the old class from each former super's
+    ;; direct-subclasses so the old metaobject and its slot-defs are
+    ;; reachable only from find-class — which we're about to overwrite.
+    (when old-class
+      (dolist (old-super (class-direct-superclasses old-class))
+        (%set-class-direct-subclasses old-super
+          (remove old-class (class-direct-subclasses old-super) :test #'eq))))
     ;; Register class
     (setf (find-class name) class)
     ;; Register as subclass of each direct super
@@ -629,12 +760,38 @@ Specialize via defmethod to provide lazy initialization."
     class))
 
 ;;; --- defclass macro ---
+;;;
+;;; Emits a list of runtime %MAKE-DIRECT-SLOT-DEF calls. The initfunction
+;;; slot is a lambda closing over the defclass-site lexical environment,
+;;; so initforms can reference surrounding bindings.
+
+(defun %slot-spec->direct-def-form (spec)
+  "Turn a raw slot specifier into a form that builds a direct-slot-def."
+  (let* ((parsed (%parse-slot-spec spec))
+         (slot-name (%slot-spec-name parsed))
+         (initargs (%slot-spec-all-options parsed :initarg))
+         (has-initform (%slot-spec-has-option-p parsed :initform))
+         (initform (%slot-spec-option parsed :initform))
+         (type (%slot-spec-option parsed :type))
+         (allocation (or (%slot-spec-option parsed :allocation) :instance))
+         (readers (%slot-spec-all-options parsed :reader))
+         (writers (%slot-spec-all-options parsed :writer))
+         (accessors (%slot-spec-all-options parsed :accessor))
+         (documentation (%slot-spec-option parsed :documentation)))
+    `(%make-direct-slot-def ',slot-name
+       ',initargs
+       ',initform
+       ,(if has-initform `(lambda () ,initform) nil)
+       ',type
+       ',allocation
+       ',(append readers accessors)
+       ',(append writers (mapcar (lambda (a) `(setf ,a)) accessors))
+       ',documentation)))
 
 (defmacro defclass (name direct-superclasses slot-specifiers &rest class-options)
   "Define a new CLOS class."
   (let ((accessor-defs nil)
-        (parsed-slots nil)
-        (initform-pairs nil)
+        (slot-def-forms nil)
         (default-initarg-forms nil))
     ;; Parse class options
     (dolist (opt class-options)
@@ -651,12 +808,7 @@ Specialize via defmethod to provide lazy initialization."
              (accessors (%slot-spec-all-options parsed :accessor))
              (readers (%slot-spec-all-options parsed :reader))
              (writers (%slot-spec-all-options parsed :writer)))
-        (push parsed parsed-slots)
-        ;; Collect initform lambdas
-        (when (%slot-spec-has-option-p parsed :initform)
-          (push `(cons ',slot-name
-                       (lambda () ,(%slot-spec-option parsed :initform)))
-                initform-pairs))
+        (push (%slot-spec->direct-def-form spec) slot-def-forms)
         ;; Generate accessor functions
         (dolist (accessor accessors)
           (let ((setter-name (intern (concatenate 'string
@@ -676,13 +828,12 @@ Specialize via defmethod to provide lazy initialization."
           (push `(defun ,writer (val obj)
                    (setf (slot-value obj ',slot-name) val))
                 accessor-defs))))
-    (setq parsed-slots (nreverse parsed-slots))
+    (setq slot-def-forms (nreverse slot-def-forms))
     (setq accessor-defs (nreverse accessor-defs))
     `(progn
        (%ensure-class ',name
                       ',direct-superclasses
-                      ',parsed-slots
-                      (list ,@(nreverse initform-pairs))
+                      (list ,@slot-def-forms)
                       (list ,@(nreverse default-initarg-forms)))
        ,@accessor-defs
        (find-class ',name))))
@@ -704,10 +855,21 @@ Specialize via defmethod to provide lazy initialization."
   (let ((effective (class-effective-slots class))
         (i 0))
     (dolist (slot effective)
-      (when (eq (%slot-spec-option slot :initarg) initarg)
+      (when (member initarg (slot-definition-initargs slot) :test #'eq)
         (return-from %initarg-to-slot-index i))
       (setq i (+ i 1)))
     nil))
+
+(defun %find-initarg-value (initargs slot-initargs)
+  "Scan INITARGS (plist) for the first key that appears in SLOT-INITARGS.
+   Return (values value supplied-p)."
+  (let ((tail initargs))
+    (loop while tail
+          do (let ((key (car tail)))
+               (when (member key slot-initargs :test #'eq)
+                 (return-from %find-initarg-value (values (cadr tail) t)))
+               (setq tail (cddr tail)))))
+  (values nil nil))
 
 (defun shared-initialize (instance slot-names &rest initargs)
   "Initialize slots of INSTANCE from INITARGS and initforms."
@@ -715,27 +877,21 @@ Specialize via defmethod to provide lazy initialization."
          (effective (class-effective-slots class))
          (i 0))
     (dolist (slot effective)
-      (let* ((slot-name (%slot-spec-name slot))
-             (initarg (%slot-spec-option slot :initarg))
-             (initarg-val nil)
-             (initarg-supplied nil))
-        ;; Check if initarg was supplied
-        (when initarg
-          (let ((tail (member initarg initargs)))
-            (when tail
-              (setq initarg-val (cadr tail))
-              (setq initarg-supplied t))))
-        (cond
-          ;; Initarg supplied — always use it
-          (initarg-supplied
-           (%struct-set instance i initarg-val))
-          ;; Slot is unbound and has initform — apply it
-          ((and (or (eq slot-names t)
-                    (member slot-name slot-names :test #'eq))
-                (eq (%struct-ref instance i) *slot-unbound-marker*)
-                (%slot-spec-has-option-p slot :initform-function))
-           (%struct-set instance i
-                        (funcall (%slot-spec-option slot :initform-function))))))
+      (let ((slot-name (slot-definition-name slot))
+            (slot-initargs (slot-definition-initargs slot)))
+        (multiple-value-bind (initarg-val initarg-supplied)
+            (%find-initarg-value initargs slot-initargs)
+          (cond
+            ;; Initarg supplied — always use it
+            (initarg-supplied
+             (%struct-set instance i initarg-val))
+            ;; Slot is unbound and has initform — apply it
+            ((and (or (eq slot-names t)
+                      (member slot-name slot-names :test #'eq))
+                  (eq (%struct-ref instance i) *slot-unbound-marker*)
+                  (slot-definition-initfunction slot))
+             (%struct-set instance i
+                          (funcall (slot-definition-initfunction slot)))))))
       (setq i (+ i 1)))
     instance))
 
@@ -1409,6 +1565,25 @@ When called with no arguments, passes the original method arguments."
   (defmethod slot-unbound ((class t) instance slot-name)
     (funcall %su-fn class instance slot-name)))
 
+;;; --- Upgrade slot-definition-class protocol to GFs ---
+;;; So that libraries can customize the slot-definition class. User
+;;; metaclasses are out of scope, so specialization is via :around on
+;;; the standard-class specializer.
+(defgeneric direct-slot-definition-class (class &rest initargs))
+(defmethod direct-slot-definition-class ((class t) &rest initargs)
+  (declare (ignore initargs))
+  (find-class 'standard-direct-slot-definition))
+
+(defgeneric effective-slot-definition-class (class &rest initargs))
+(defmethod effective-slot-definition-class ((class t) &rest initargs)
+  (declare (ignore initargs))
+  (find-class 'standard-effective-slot-definition))
+
+;;; --- class-slots is the AMOP name for the effective-slot accessor ---
+(defun class-slots (class)
+  "AMOP: return the list of effective slot definitions of CLASS."
+  (class-effective-slots class))
+
 ;;; --- Update defclass to generate GF-based accessors ---
 ;;; Redefine the defclass macro to use defmethod instead of defun
 ;;; for :accessor, :reader, :writer
@@ -1416,8 +1591,7 @@ When called with no arguments, passes the original method arguments."
 (defmacro defclass (name direct-superclasses slot-specifiers &rest class-options)
   "Define a new CLOS class (with generic function accessors)."
   (let ((accessor-defs nil)
-        (parsed-slots nil)
-        (initform-pairs nil)
+        (slot-def-forms nil)
         (default-initarg-forms nil))
     ;; Parse class options
     (dolist (opt class-options)
@@ -1435,12 +1609,7 @@ When called with no arguments, passes the original method arguments."
              (accessors (%slot-spec-all-options parsed :accessor))
              (readers (%slot-spec-all-options parsed :reader))
              (writers (%slot-spec-all-options parsed :writer)))
-        (push parsed parsed-slots)
-        ;; Collect initform lambdas
-        (when (%slot-spec-has-option-p parsed :initform)
-          (push `(cons ',slot-name
-                       (lambda () ,(%slot-spec-option parsed :initform)))
-                initform-pairs))
+        (push (%slot-spec->direct-def-form spec) slot-def-forms)
         ;; Generate GF-based accessor methods
         (dolist (accessor accessors)
           (push `(defgeneric ,accessor (obj)) accessor-defs)
@@ -1463,13 +1632,12 @@ When called with no arguments, passes the original method arguments."
           (push `(defmethod ,writer (val (obj ,name))
                    (setf (slot-value obj ',slot-name) val))
                 accessor-defs))))
-    (setq parsed-slots (nreverse parsed-slots))
+    (setq slot-def-forms (nreverse slot-def-forms))
     (setq accessor-defs (nreverse accessor-defs))
     `(progn
        (%ensure-class ',name
                       ',direct-superclasses
-                      ',parsed-slots
-                      (list ,@(nreverse initform-pairs))
+                      (list ,@slot-def-forms)
                       (list ,@(nreverse default-initarg-forms)))
        ,@accessor-defs
        (find-class ',name))))
@@ -1502,7 +1670,7 @@ When called with no arguments, passes the original method arguments."
     (let ((saved-values nil))
       (let ((old-i 0))
         (dolist (old-slot old-slots)
-          (let ((name (%slot-spec-name old-slot)))
+          (let ((name (slot-definition-name old-slot)))
             (multiple-value-bind (new-i found-p)
                 (gethash name new-index-table)
               (when (and found-p
@@ -1526,7 +1694,7 @@ When called with no arguments, passes the original method arguments."
         (let ((new-instance (allocate-instance new-class-obj))
               (old-i 0))
           (dolist (old-slot old-slots)
-            (let ((name (%slot-spec-name old-slot)))
+            (let ((name (slot-definition-name old-slot)))
               (multiple-value-bind (new-i found-p)
                   (gethash name new-index-table)
                 (when (and found-p
@@ -1560,6 +1728,14 @@ When called with no arguments, passes the original method arguments."
 (defmethod print-object ((object standard-generic-function) stream)
   (concatenate 'string "#<STANDARD-GENERIC-FUNCTION "
                (symbol-name (gf-name object)) ">"))
+
+(defmethod print-object ((object standard-direct-slot-definition) stream)
+  (concatenate 'string "#<STANDARD-DIRECT-SLOT-DEFINITION "
+               (symbol-name (slot-definition-name object)) ">"))
+
+(defmethod print-object ((object standard-effective-slot-definition) stream)
+  (concatenate 'string "#<STANDARD-EFFECTIVE-SLOT-DEFINITION "
+               (symbol-name (slot-definition-name object)) ">"))
 
 (defmethod print-object ((object standard-method) stream)
   (let* ((gf (method-function object))
