@@ -276,7 +276,7 @@ TEST(direct_subclasses_integer)
     "(progn " \
     "  (%register-struct-type 'test-point 2 nil '((x nil) (y nil))) " \
     "  (let ((cls (%make-struct 'standard-class " \
-    "               'test-point nil nil nil nil nil nil nil nil t))) " \
+    "               'test-point nil nil nil nil nil nil nil nil t nil nil))) " \
     "    (let ((idx-table (make-hash-table :test 'eq))) " \
     "      (setf (gethash 'x idx-table) 0) " \
     "      (setf (gethash 'y idx-table) 1) " \
@@ -360,7 +360,7 @@ TEST(c3_diamond)
         "(let ((d (%make-struct 'standard-class "
         "           'c3-d "
         "           (list (find-class 'c3-b) (find-class 'c3-c)) "
-        "           nil nil nil nil nil nil nil t))) "
+        "           nil nil nil nil nil nil nil t nil nil))) "
         "  (setf (find-class 'c3-d) d) "
         "  (%set-class-cpl d (%compute-class-precedence-list d)) "
         "  (mapcar #'class-name (class-precedence-list d)))"),
@@ -1627,6 +1627,226 @@ TEST(mop1_inheritance_initargs_unioned)
         "2");
 }
 
+/* === Class finalization protocol (MOP) === */
+
+TEST(finalize_class_finalized_p)
+{
+    /* A defclassed class is finalized */
+    eval_print("(defclass cf-f1 () ((x :initarg :x)))");
+    ASSERT_STR_EQ(eval_print(
+        "(class-finalized-p (find-class 'cf-f1))"),
+        "T");
+    /* Bootstrap classes are pre-finalized too */
+    ASSERT_STR_EQ(eval_print(
+        "(class-finalized-p (find-class 'standard-object))"),
+        "T");
+}
+
+TEST(finalize_inheritance_idempotent)
+{
+    /* Calling finalize-inheritance on a finalized class must not error
+       and must leave it finalized. */
+    eval_print("(defclass cf-f2 () ((n :initarg :n :initform 7)))");
+    ASSERT_STR_EQ(eval_print(
+        "(progn (finalize-inheritance (find-class 'cf-f2)) "
+        "       (class-finalized-p (find-class 'cf-f2)))"),
+        "T");
+    /* Twice is still fine. */
+    ASSERT_STR_EQ(eval_print(
+        "(progn (finalize-inheritance (find-class 'cf-f2)) "
+        "       (finalize-inheritance (find-class 'cf-f2)) "
+        "       (class-finalized-p (find-class 'cf-f2)))"),
+        "T");
+    /* Slots are still accessible — core machinery intact. */
+    ASSERT_STR_EQ(eval_print(
+        "(slot-value (make-instance 'cf-f2) 'n)"),
+        "7");
+}
+
+TEST(compute_class_precedence_list_default)
+{
+    /* Default compute-class-precedence-list matches class-precedence-list */
+    eval_print("(defclass cf-a () ())");
+    eval_print("(defclass cf-b (cf-a) ())");
+    ASSERT_STR_EQ(eval_print(
+        "(mapcar #'class-name "
+        "  (compute-class-precedence-list (find-class 'cf-b)))"),
+        "(CF-B CF-A STANDARD-OBJECT T)");
+}
+
+TEST(compute_slots_returns_effective)
+{
+    eval_print("(defclass cf-cs () ((a :initarg :a) (b :initarg :b)))");
+    /* compute-slots returns a fresh list of effective slot defs */
+    ASSERT_STR_EQ(eval_print(
+        "(length (compute-slots (find-class 'cf-cs)))"),
+        "2");
+    ASSERT_STR_EQ(eval_print(
+        "(mapcar #'slot-definition-name "
+        "  (compute-slots (find-class 'cf-cs)))"),
+        "(A B)");
+}
+
+TEST(compute_effective_slot_definition_default)
+{
+    /* compute-effective-slot-definition merges a list of direct slots
+       into a single effective slot. */
+    eval_print("(defclass cf-ce () ((k :initarg :k :initform 1)))");
+    ASSERT_STR_EQ(eval_print(
+        "(slot-definition-name "
+        "  (compute-effective-slot-definition "
+        "    (find-class 'cf-ce) 'k "
+        "    (class-direct-slots (find-class 'cf-ce))))"),
+        "K");
+    ASSERT_STR_EQ(eval_print(
+        "(typep "
+        "  (compute-effective-slot-definition "
+        "    (find-class 'cf-ce) 'k "
+        "    (class-direct-slots (find-class 'cf-ce))) "
+        "  'standard-effective-slot-definition)"),
+        "T");
+}
+
+TEST(compute_slots_around_hook)
+{
+    /* A :around method on compute-slots observes the standard result
+       and can post-process — this is the key MOP acceptance test. */
+    eval_print("(defclass cf-around () ((x :initarg :x)))");
+    eval_print("(defvar *cf-around-saw* nil)");
+    eval_print(
+        "(defmethod compute-slots :around ((class standard-class)) "
+        "  (let ((slots (call-next-method))) "
+        "    (setq *cf-around-saw* (length slots)) "
+        "    slots))");
+    /* Force a re-finalization by redefining — defclass calls ensure-class
+       which runs finalize-inheritance, which runs compute-slots. */
+    eval_print(
+        "(defclass cf-around () ((x :initarg :x) (y :initarg :y)))");
+    ASSERT_STR_EQ(eval_print("*cf-around-saw*"), "2");
+    /* Clean up the :around method so it doesn't bleed into later tests */
+    eval_print(
+        "(remove-method #'compute-slots "
+        "  (find-method #'compute-slots '(:around) "
+        "    (list (find-class 'standard-class))))");
+}
+
+TEST(compute_default_initargs_inherits)
+{
+    /* Default initargs defined on a superclass are inherited by the
+       subclass's effective default-initargs. */
+    eval_print(
+        "(defclass cf-di-base () "
+        "  ((a :initarg :a)) "
+        "  (:default-initargs :a 99))");
+    eval_print("(defclass cf-di-sub (cf-di-base) ())");
+    /* The sub inherits :a default => slot a defaults to 99 */
+    ASSERT_STR_EQ(eval_print(
+        "(slot-value (make-instance 'cf-di-sub) 'a)"),
+        "99");
+    /* compute-default-initargs returns the merged list */
+    ASSERT_STR_EQ(eval_print(
+        "(first (first (compute-default-initargs "
+        "                (find-class 'cf-di-sub))))"),
+        ":A");
+}
+
+TEST(compute_default_initargs_most_specific_wins)
+{
+    /* When parent and child both specify a default for the same key,
+       the child wins. */
+    eval_print(
+        "(defclass cf-di-p () "
+        "  ((a :initarg :a)) "
+        "  (:default-initargs :a 'parent))");
+    eval_print(
+        "(defclass cf-di-c (cf-di-p) () "
+        "  (:default-initargs :a 'child))");
+    ASSERT_STR_EQ(eval_print(
+        "(slot-value (make-instance 'cf-di-c) 'a)"),
+        "CHILD");
+}
+
+TEST(validate_superclass_default)
+{
+    /* validate-superclass returns T for all pairs (single-metaclass world) */
+    ASSERT_STR_EQ(eval_print(
+        "(validate-superclass (find-class 'standard-class) "
+        "                     (find-class 'standard-object))"),
+        "T");
+    ASSERT_STR_EQ(eval_print(
+        "(validate-superclass (find-class 't) (find-class 't))"),
+        "T");
+}
+
+TEST(class_direct_default_initargs_accessor)
+{
+    eval_print(
+        "(defclass cf-ddi () "
+        "  ((x :initarg :x)) "
+        "  (:default-initargs :x 42))");
+    ASSERT_STR_EQ(eval_print(
+        "(first (first (class-direct-default-initargs "
+        "                (find-class 'cf-ddi))))"),
+        ":X");
+    /* The value slot is a lambda — invoking it yields the expression */
+    ASSERT_STR_EQ(eval_print(
+        "(funcall (second (first (class-direct-default-initargs "
+        "                          (find-class 'cf-ddi)))))"),
+        "42");
+}
+
+TEST(class_prototype_allocates)
+{
+    eval_print("(defclass cf-proto () ((x :initarg :x)))");
+    /* class-prototype returns a fresh instance, cached on the class */
+    ASSERT_STR_EQ(eval_print(
+        "(typep (class-prototype (find-class 'cf-proto)) 'cf-proto)"),
+        "T");
+    /* Cached: same object every call */
+    ASSERT_STR_EQ(eval_print(
+        "(eq (class-prototype (find-class 'cf-proto)) "
+        "    (class-prototype (find-class 'cf-proto)))"),
+        "T");
+}
+
+TEST(ensure_class_creates)
+{
+    /* ensure-class creates a new class when none exists */
+    eval_print(
+        "(ensure-class 'cf-ec "
+        "  :direct-superclasses '() "
+        "  :direct-slots (list (%make-direct-slot-def "
+        "                        'v '(:v) nil nil nil :instance nil nil nil)) "
+        "  :direct-default-initargs '())");
+    ASSERT_STR_EQ(eval_print(
+        "(class-name (find-class 'cf-ec))"),
+        "CF-EC");
+    ASSERT_STR_EQ(eval_print(
+        "(length (class-slots (find-class 'cf-ec)))"),
+        "1");
+}
+
+TEST(ensure_class_using_class_dispatches)
+{
+    /* ensure-class-using-class is a GF that dispatches on the existing
+       class (NIL when creating fresh). A user :around method sees the
+       calls — observable regardless of whether the class exists. */
+    eval_print("(defvar *cf-ecuc-calls* 0)");
+    eval_print(
+        "(defmethod ensure-class-using-class :around ((class t) name &rest keys) "
+        "  (declare (ignore keys)) "
+        "  (incf *cf-ecuc-calls*) "
+        "  (call-next-method))");
+    eval_print("(defclass cf-ecuc-a () ())");
+    eval_print("(defclass cf-ecuc-b () ())");
+    ASSERT_STR_EQ(eval_print("(>= *cf-ecuc-calls* 2)"), "T");
+    /* Clean up so the :around method doesn't bleed into later tests */
+    eval_print(
+        "(remove-method #'ensure-class-using-class "
+        "  (find-method #'ensure-class-using-class '(:around) "
+        "    (list (find-class 't))))");
+}
+
 int main(void)
 {
     test_init();
@@ -1807,6 +2027,21 @@ int main(void)
     RUN(mop1_direct_slot_definition_class_customizable);
     RUN(mop1_inheritance_merges_slots);
     RUN(mop1_inheritance_initargs_unioned);
+
+    /* Class finalization protocol (MOP) */
+    RUN(finalize_class_finalized_p);
+    RUN(finalize_inheritance_idempotent);
+    RUN(compute_class_precedence_list_default);
+    RUN(compute_slots_returns_effective);
+    RUN(compute_effective_slot_definition_default);
+    RUN(compute_slots_around_hook);
+    RUN(compute_default_initargs_inherits);
+    RUN(compute_default_initargs_most_specific_wins);
+    RUN(validate_superclass_default);
+    RUN(class_direct_default_initargs_accessor);
+    RUN(class_prototype_allocates);
+    RUN(ensure_class_creates);
+    RUN(ensure_class_using_class_dispatches);
 
     teardown();
     REPORT();

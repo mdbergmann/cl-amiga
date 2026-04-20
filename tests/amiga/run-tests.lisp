@@ -3023,7 +3023,7 @@
 ; --- CLOS Phase 1: Slot Access ---
 (%register-struct-type 'clos-test-pt 2 nil '((x nil) (y nil)))
 (let ((cls (%make-struct 'standard-class
-             'clos-test-pt nil nil nil nil nil nil nil nil t)))
+             'clos-test-pt nil nil nil nil nil nil nil nil t nil nil)))
   (let ((idx-table (make-hash-table :test 'eq)))
     (setf (gethash 'x idx-table) 0)
     (setf (gethash 'y idx-table) 1)
@@ -3049,7 +3049,7 @@
 (let ((d (%make-struct 'standard-class
            'c3-d
            (list (find-class 'c3-b) (find-class 'c3-c))
-           nil nil nil nil nil nil nil t)))
+           nil nil nil nil nil nil nil t nil nil)))
   (setf (find-class 'c3-d) d)
   (%set-class-cpl d (%compute-class-precedence-list d)))
 (check "c3 diamond" '(c3-d c3-b c3-c c3-a t) (mapcar #'class-name (class-precedence-list (find-class 'c3-d))))
@@ -3154,6 +3154,35 @@
 (defclass mop1-amiga-p2 (mop1-amiga-p1) ((x :initarg :b)))
 (check "mop1 inherited initarg :a" 1 (slot-value (make-instance 'mop1-amiga-p2 :a 1) 'x))
 (check "mop1 inherited initarg :b" 2 (slot-value (make-instance 'mop1-amiga-p2 :b 2) 'x))
+
+; --- Class finalization protocol (MOP) ---
+(defclass cf-amiga-f1 () ((x :initarg :x)))
+(check "class-finalized-p new class" t (class-finalized-p (find-class 'cf-amiga-f1)))
+(check "class-finalized-p bootstrap" t (class-finalized-p (find-class 'standard-object)))
+(check "finalize-inheritance idempotent" t (progn (finalize-inheritance (find-class 'cf-amiga-f1)) (finalize-inheritance (find-class 'cf-amiga-f1)) (class-finalized-p (find-class 'cf-amiga-f1))))
+(defclass cf-amiga-a () ())
+(defclass cf-amiga-b (cf-amiga-a) ())
+(check "compute-class-precedence-list" '(cf-amiga-b cf-amiga-a standard-object t) (mapcar #'class-name (compute-class-precedence-list (find-class 'cf-amiga-b))))
+(defclass cf-amiga-cs () ((a :initarg :a) (b :initarg :b)))
+(check "compute-slots length" 2 (length (compute-slots (find-class 'cf-amiga-cs))))
+(check "compute-slots names" '(a b) (mapcar #'slot-definition-name (compute-slots (find-class 'cf-amiga-cs))))
+(check "compute-effective-slot-definition name" 'a (slot-definition-name (compute-effective-slot-definition (find-class 'cf-amiga-cs) 'a (list (first (class-direct-slots (find-class 'cf-amiga-cs)))))))
+(defclass cf-amiga-di-base () ((a :initarg :a)) (:default-initargs :a 99))
+(defclass cf-amiga-di-sub (cf-amiga-di-base) ())
+(check "default-initargs inherited" 99 (slot-value (make-instance 'cf-amiga-di-sub) 'a))
+(defclass cf-amiga-di-p () ((a :initarg :a)) (:default-initargs :a 'parent))
+(defclass cf-amiga-di-c (cf-amiga-di-p) () (:default-initargs :a 'child))
+(check "default-initargs most-specific wins" 'child (slot-value (make-instance 'cf-amiga-di-c) 'a))
+(check "validate-superclass T" t (validate-superclass (find-class 'standard-class) (find-class 'standard-object)))
+(defclass cf-amiga-ddi () ((x :initarg :x)) (:default-initargs :x 42))
+(check "class-direct-default-initargs key" :x (first (first (class-direct-default-initargs (find-class 'cf-amiga-ddi)))))
+(check "class-direct-default-initargs value" 42 (funcall (second (first (class-direct-default-initargs (find-class 'cf-amiga-ddi))))))
+(defclass cf-amiga-proto () ((x :initarg :x)))
+(check "class-prototype typep" t (typep (class-prototype (find-class 'cf-amiga-proto)) 'cf-amiga-proto))
+(check "class-prototype cached" t (eq (class-prototype (find-class 'cf-amiga-proto)) (class-prototype (find-class 'cf-amiga-proto))))
+(ensure-class 'cf-amiga-ec :direct-superclasses '() :direct-slots (list (%make-direct-slot-def 'v '(:v) nil nil nil :instance nil nil nil)) :direct-default-initargs '())
+(check "ensure-class creates" 'cf-amiga-ec (class-name (find-class 'cf-amiga-ec)))
+(check "ensure-class slot count" 1 (length (class-slots (find-class 'cf-amiga-ec))))
 
 ; --- CLOS Phase 9: print-object ---
 (check "print-object class" "#<STANDARD-CLASS INTEGER>" (print-object (find-class 'integer) nil))

@@ -7,31 +7,35 @@
 ;;; Step 2: Bootstrap Core Classes
 ;;; ====================================================================
 
-;;; STANDARD-CLASS is a struct type with 10 slots.
+;;; STANDARD-CLASS is a struct type with 12 slots.
 ;;; Slot layout:
-;;;   0: name                 - symbol
-;;;   1: direct-superclasses  - list of class objects
-;;;   2: direct-slots         - list of canonical slot specs
-;;;   3: cpl                  - class precedence list
-;;;   4: effective-slots      - merged slots from CPL
-;;;   5: slot-index-table     - hash table: slot-name -> index
-;;;   6: direct-subclasses    - list of class objects
-;;;   7: direct-methods       - list
-;;;   8: prototype            - unused
-;;;   9: finalized-p          - t or nil
+;;;   0:  name                     - symbol
+;;;   1:  direct-superclasses      - list of class objects
+;;;   2:  direct-slots             - list of canonical slot specs
+;;;   3:  cpl                      - class precedence list
+;;;   4:  effective-slots          - merged slots from CPL
+;;;   5:  slot-index-table         - hash table: slot-name -> index
+;;;   6:  direct-subclasses        - list of class objects
+;;;   7:  direct-methods           - list
+;;;   8:  prototype                - lazily created by CLASS-PROTOTYPE
+;;;   9:  finalized-p              - t or nil
+;;;   10: default-initargs         - effective (CPL-merged) default initargs
+;;;   11: direct-default-initargs  - as supplied to DEFCLASS
 
-(%register-struct-type 'standard-class 11 nil
+(%register-struct-type 'standard-class 12 nil
   '((name nil) (direct-superclasses nil) (direct-slots nil)
     (cpl nil) (effective-slots nil) (slot-index-table nil)
     (direct-subclasses nil) (direct-methods nil)
-    (prototype nil) (finalized-p nil) (default-initargs nil)))
+    (prototype nil) (finalized-p nil) (default-initargs nil)
+    (direct-default-initargs nil)))
 
 ;; built-in-class: same layout as standard-class, used as metaclass for built-in types
-(%register-struct-type 'built-in-class 11 'standard-class
+(%register-struct-type 'built-in-class 12 'standard-class
   '((name nil) (direct-superclasses nil) (direct-slots nil)
     (cpl nil) (effective-slots nil) (slot-index-table nil)
     (direct-subclasses nil) (direct-methods nil)
-    (prototype nil) (finalized-p nil) (default-initargs nil)))
+    (prototype nil) (finalized-p nil) (default-initargs nil)
+    (direct-default-initargs nil)))
 
 ;;; --- Class metaobject accessors ---
 
@@ -88,6 +92,16 @@
 (defun %set-class-default-initargs (class val)
   (%struct-set class 10 val))
 
+(defun class-direct-default-initargs (class)
+  (%struct-ref class 11))
+
+(defun %set-class-direct-default-initargs (class val)
+  (%struct-set class 11 val))
+
+;;; MOP public reader for the finalized flag.
+(defun class-finalized-p (class)
+  (%struct-ref class 9))
+
 ;;; --- Class registry ---
 
 (defvar *class-table* (make-hash-table :test 'eq))
@@ -139,17 +153,18 @@
 (defun %make-bootstrap-class (name direct-superclasses)
   "Create a class metaobject during bootstrap. Supers must already exist."
   (let ((class (%make-struct 'standard-class
-                 name                    ; 0: name
-                 direct-superclasses     ; 1: direct-superclasses
-                 nil                     ; 2: direct-slots
-                 nil                     ; 3: cpl (set below)
-                 nil                     ; 4: effective-slots
-                 nil                     ; 5: slot-index-table
-                 nil                     ; 6: direct-subclasses
-                 nil                     ; 7: direct-methods
-                 nil                     ; 8: prototype
-                 t                       ; 9: finalized-p
-                 nil)))                  ; 10: default-initargs
+                 name                    ; 0:  name
+                 direct-superclasses     ; 1:  direct-superclasses
+                 nil                     ; 2:  direct-slots
+                 nil                     ; 3:  cpl (set below)
+                 nil                     ; 4:  effective-slots
+                 nil                     ; 5:  slot-index-table
+                 nil                     ; 6:  direct-subclasses
+                 nil                     ; 7:  direct-methods
+                 nil                     ; 8:  prototype
+                 t                       ; 9:  finalized-p
+                 nil                     ; 10: default-initargs
+                 nil)))                  ; 11: direct-default-initargs
     ;; Register in class table
     (setf (find-class name) class)
     ;; Compute CPL (supers already have theirs)
@@ -411,7 +426,7 @@
   (unless (find-class name nil)
     (let* ((supers (mapcar #'find-class direct-super-names))
            (class (%make-struct 'standard-class
-                    name supers nil nil nil nil nil nil nil t nil)))
+                    name supers nil nil nil nil nil nil nil t nil nil)))
       (%set-class-cpl class (%compute-builtin-cpl class))
       (setf (find-class name) class)
       (dolist (super supers)
@@ -704,43 +719,25 @@ Specialize via defmethod to provide lazy initialization."
 ;;; --- Class creation at runtime ---
 
 (defun %ensure-class (name direct-super-names direct-slot-defs
-                      &optional default-initargs)
-  "Create or update a CLOS class. Called by defclass expansion.
+                      &optional direct-default-initargs)
+  "Create or update a CLOS class. Called by defclass expansion (and by
+   the ENSURE-CLASS GF after keyword args have been destructured).
    DIRECT-SLOT-DEFS is a list of STANDARD-DIRECT-SLOT-DEFINITION instances
    (already constructed by the defclass macro with initfunctions closed
-   over the lexical environment)."
+   over the lexical environment).
+
+   The class struct is allocated here; the CPL, effective slots, and
+   effective default-initargs are computed by FINALIZE-INHERITANCE so
+   that MOP :around methods on COMPUTE-SLOTS, COMPUTE-CLASS-PRECEDENCE-LIST,
+   and COMPUTE-DEFAULT-INITARGS get a chance to run."
   (let* ((old-class (find-class name nil))
          (supers (if direct-super-names
                      (mapcar #'find-class direct-super-names)
                      (list (find-class 'standard-object))))
-         ;; Create a temporary class to compute CPL
          (class (%make-struct 'standard-class
                   name supers direct-slot-defs
-                  nil nil nil nil nil nil nil nil))
-         (cpl (%compute-class-precedence-list class))
-         (effective (%compute-effective-slots cpl))
-         (n-slots (length effective))
-         (index-table (%build-slot-index-table effective))
-         ;; Build slot specs for struct registration: ((name default) ...)
-         (struct-slot-specs
-           (mapcar (lambda (esd) (list (slot-definition-name esd) nil))
-                   effective)))
-    ;; Fill in effective-slot location with the instance index
-    (let ((i 0))
-      (dolist (esd effective)
-        (%set-slot-definition-location esd i)
-        (setq i (+ i 1))))
-    ;; Register struct type (pass first direct super for typep hierarchy)
-    (%register-struct-type name n-slots
-                           (if direct-super-names (car direct-super-names) nil)
-                           struct-slot-specs)
-    ;; Fill in class metaobject
-    (%set-class-cpl class cpl)
-    (%set-class-effective-slots class effective)
-    (%set-class-slot-index-table class index-table)
-    (%set-class-finalized-p class t)
-    (when default-initargs
-      (%set-class-default-initargs class default-initargs))
+                  nil nil nil nil nil nil nil nil nil)))
+    (%set-class-direct-default-initargs class direct-default-initargs)
     ;; On redefinition, drop the old class from each former super's
     ;; direct-subclasses so the old metaobject and its slot-defs are
     ;; reachable only from find-class — which we're about to overwrite.
@@ -748,6 +745,21 @@ Specialize via defmethod to provide lazy initialization."
       (dolist (old-super (class-direct-superclasses old-class))
         (%set-class-direct-subclasses old-super
           (remove old-class (class-direct-subclasses old-super) :test #'eq))))
+    ;; Run the finalization protocol. Routes through the GF if available
+    ;; (always the case once clos.lisp finishes loading), otherwise falls
+    ;; back to the internal body.
+    (if (fboundp 'finalize-inheritance)
+        (finalize-inheritance class)
+        (%finalize-inheritance-body class))
+    ;; Register struct type with the finalized slot layout
+    (let* ((effective (class-effective-slots class))
+           (n-slots (length effective))
+           (struct-slot-specs
+             (mapcar (lambda (esd) (list (slot-definition-name esd) nil))
+                     effective)))
+      (%register-struct-type name n-slots
+                             (if direct-super-names (car direct-super-names) nil)
+                             struct-slot-specs))
     ;; Register class
     (setf (find-class name) class)
     ;; Register as subclass of each direct super
@@ -758,6 +770,76 @@ Specialize via defmethod to provide lazy initialization."
     (when (fboundp '%invalidate-all-gf-caches)
       (%invalidate-all-gf-caches))
     class))
+
+;;; --- Class finalization body ---
+;;; Shared between the FINALIZE-INHERITANCE GF default method and the
+;;; bootstrap path used by %ENSURE-CLASS before the GFs are defined.
+;;; Calling twice is idempotent — the class struct is replaced on
+;;; redefinition, so a fresh class always starts with FINALIZED-P = NIL.
+
+(defun %finalize-inheritance-body (class)
+  (unless (class-finalized-p class)
+    (%set-class-cpl class (%compute-class-precedence-list class))
+    (let ((effective (%compute-slots-default class)))
+      (%set-class-effective-slots class effective)
+      (%set-class-slot-index-table class (%build-slot-index-table effective))
+      (let ((i 0))
+        (dolist (esd effective)
+          (%set-slot-definition-location esd i)
+          (setq i (+ i 1)))))
+    (%set-class-default-initargs class
+      (%compute-default-initargs-default class))
+    (%set-class-finalized-p class t))
+  class)
+
+;;; --- compute-slots default body ---
+;;; AMOP §5.5: collect direct slots across the CPL (most-specific first)
+;;; grouped by name, then call COMPUTE-EFFECTIVE-SLOT-DEFINITION for each
+;;; name. User methods on COMPUTE-EFFECTIVE-SLOT-DEFINITION see the full
+;;; per-name slot group.
+
+(defun %compute-slots-default (class)
+  (let* ((cpl (class-precedence-list class))
+         (order nil)
+         (groups (make-hash-table :test 'eq)))
+    (dolist (c cpl)
+      (dolist (dsd (class-direct-slots c))
+        (let ((name (slot-definition-name dsd)))
+          (unless (gethash name groups)
+            (push name order))
+          (setf (gethash name groups)
+                (append (gethash name groups) (list dsd))))))
+    (setq order (nreverse order))
+    (mapcar (lambda (name)
+              (%compute-effective-slot-definition-default
+                 class name (gethash name groups)))
+            order)))
+
+(defun %compute-effective-slot-definition-default (class name direct-slots)
+  "AMOP: build an effective slot def from a list of direct slot defs
+   (most-specific first). The most-specific supplies initform/type/
+   allocation; initargs are unioned and initfunction is inherited only
+   when the most-specific leaves it blank."
+  (declare (ignore class name))
+  (let ((primary (first direct-slots))
+        (parents (rest direct-slots)))
+    (let ((eff (%direct-to-effective primary)))
+      (dolist (p parents)
+        (%fold-parent-into-effective eff p))
+      eff)))
+
+(defun %compute-default-initargs-default (class)
+  "Collect effective default-initargs from the CPL, most-specific wins."
+  (let ((result nil)
+        (keys-seen nil))
+    (dolist (c (class-precedence-list class))
+      (let ((directs (class-direct-default-initargs c)))
+        (dolist (entry directs)
+          (let ((key (first entry)))
+            (unless (member key keys-seen :test #'eq)
+              (push key keys-seen)
+              (setq result (append result (list entry))))))))
+    result))
 
 ;;; --- defclass macro ---
 ;;;
@@ -1584,6 +1666,104 @@ When called with no arguments, passes the original method arguments."
   "AMOP: return the list of effective slot definitions of CLASS."
   (class-effective-slots class))
 
+;;; ====================================================================
+;;; Class finalization protocol (MOP)
+;;; ====================================================================
+;;;
+;;; AMOP exposes class finalization as a set of GFs so that user code
+;;; (typically closer-mop callers — serapeum, trivia, …) can intercept
+;;; CPL computation, effective-slot merging, and effective default-initargs.
+;;;
+;;; All defaults delegate to the internal helpers already used during
+;;; %ENSURE-CLASS, so the happy path is unchanged. Specialization is on
+;;; the class argument; since user-defined metaclasses are out of scope
+;;; (see specs/mop.md), practical customization is via :around methods.
+
+(defgeneric validate-superclass (class superclass))
+(defmethod validate-superclass ((class t) (super t))
+  "Accept all metaclass pairs — single-metaclass world."
+  t)
+
+(defgeneric compute-class-precedence-list (class))
+(defmethod compute-class-precedence-list ((class t))
+  (%compute-class-precedence-list class))
+
+(defgeneric compute-effective-slot-definition (class name direct-slots))
+(defmethod compute-effective-slot-definition ((class t) name direct-slots)
+  (%compute-effective-slot-definition-default class name direct-slots))
+
+(defgeneric compute-slots (class))
+(defmethod compute-slots ((class t))
+  ;; Re-implement the default here (rather than call %compute-slots-default)
+  ;; so that the GF dispatches to COMPUTE-EFFECTIVE-SLOT-DEFINITION and user
+  ;; methods on that GF are visible.
+  (let* ((cpl (class-precedence-list class))
+         (order nil)
+         (groups (make-hash-table :test 'eq)))
+    (dolist (c cpl)
+      (dolist (dsd (class-direct-slots c))
+        (let ((name (slot-definition-name dsd)))
+          (unless (gethash name groups)
+            (push name order))
+          (setf (gethash name groups)
+                (append (gethash name groups) (list dsd))))))
+    (setq order (nreverse order))
+    (mapcar (lambda (name)
+              (compute-effective-slot-definition class name (gethash name groups)))
+            order)))
+
+(defgeneric compute-default-initargs (class))
+(defmethod compute-default-initargs ((class t))
+  (%compute-default-initargs-default class))
+
+(defgeneric finalize-inheritance (class))
+(defmethod finalize-inheritance ((class t))
+  "Compute CPL, effective slots, and default initargs via the MOP GFs.
+   Idempotent: already-finalized classes return immediately (AMOP §3.4.2)."
+  (if (class-finalized-p class)
+      class
+      (progn
+        (%set-class-cpl class (compute-class-precedence-list class))
+        (let ((effective (compute-slots class)))
+          (%set-class-effective-slots class effective)
+          (%set-class-slot-index-table class (%build-slot-index-table effective))
+          (let ((i 0))
+            (dolist (esd effective)
+              (%set-slot-definition-location esd i)
+              (setq i (+ i 1)))))
+        (%set-class-default-initargs class (compute-default-initargs class))
+        (%set-class-finalized-p class t)
+        class)))
+
+(defgeneric class-prototype (class))
+(defmethod class-prototype ((class t))
+  "Return a (lazily allocated) prototype instance of CLASS. For classes
+   that cannot be instantiated (built-ins without a slot-index-table),
+   return NIL rather than signal — callers treat it as advisory."
+  (or (%struct-ref class 8)
+      (when (class-slot-index-table class)
+        (let ((proto (allocate-instance class)))
+          (%struct-set class 8 proto)
+          proto))))
+
+;;; --- ensure-class / ensure-class-using-class ---
+;;; AMOP-style entry point. DEFCLASS expands into a call to ENSURE-CLASS
+;;; so that :around methods on ENSURE-CLASS-USING-CLASS can observe the
+;;; keyword args.
+
+(defgeneric ensure-class-using-class (class name &rest keys))
+(defmethod ensure-class-using-class ((class t) name &rest keys)
+  (declare (ignore class))
+  (let ((direct-supers (getf keys :direct-superclasses))
+        (direct-slots  (getf keys :direct-slots))
+        (direct-inits  (getf keys :direct-default-initargs)))
+    (%ensure-class name direct-supers direct-slots direct-inits)))
+
+(defun ensure-class (name &rest keys)
+  "AMOP: look up the existing class (or NIL) and dispatch to
+   ENSURE-CLASS-USING-CLASS."
+  (apply #'ensure-class-using-class (find-class name nil) name keys))
+
 ;;; --- Update defclass to generate GF-based accessors ---
 ;;; Redefine the defclass macro to use defmethod instead of defun
 ;;; for :accessor, :reader, :writer
@@ -1635,10 +1815,10 @@ When called with no arguments, passes the original method arguments."
     (setq slot-def-forms (nreverse slot-def-forms))
     (setq accessor-defs (nreverse accessor-defs))
     `(progn
-       (%ensure-class ',name
-                      ',direct-superclasses
-                      (list ,@slot-def-forms)
-                      (list ,@(nreverse default-initarg-forms)))
+       (ensure-class ',name
+         :direct-superclasses ',direct-superclasses
+         :direct-slots (list ,@slot-def-forms)
+         :direct-default-initargs (list ,@(nreverse default-initarg-forms)))
        ,@accessor-defs
        (find-class ',name))))
 
