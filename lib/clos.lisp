@@ -449,6 +449,16 @@
 ;;; Sentinel value for unbound slots — uninterned so it can't collide
 (defvar *slot-unbound-marker* (make-symbol "SLOT-UNBOUND"))
 
+;;; When NIL, SLOT-VALUE / SLOT-BOUNDP / SLOT-MAKUNBOUND / (SETF SLOT-VALUE)
+;;; bypass generic dispatch and go straight to %STRUCT-REF / %STRUCT-SET —
+;;; preserving the tight loop we rely on for fiveam, fset, etc.
+;;;
+;;; Flipped to T the first time a user installs a non-default method on any
+;;; of the four SLOT-*-USING-CLASS GFs. Once set it stays set — tracking
+;;; method removals would cost more than it saves, and the slow path only
+;;; adds one GF call per slot access (still cache-friendly).
+(defvar *slot-access-protocol-extended-p* nil)
+
 ;;; Structure slot lookup: when CLASS-OF returns a class without a
 ;;; slot-index-table (i.e. a DEFSTRUCT instance), resolve slot names
 ;;; against the struct's slot list so SLOT-VALUE / WITH-SLOTS work on
@@ -474,10 +484,13 @@
            (gethash slot-name index-table)
          (unless found-p
            (error "~S has no slot named ~S" instance slot-name))
-         (let ((val (%struct-ref instance index)))
-           (if (eq val *slot-unbound-marker*)
-               (slot-unbound class instance slot-name)
-               val))))
+         (if *slot-access-protocol-extended-p*
+             (slot-value-using-class class instance
+                                     (nth index (class-effective-slots class)))
+             (let ((val (%struct-ref instance index)))
+               (if (eq val *slot-unbound-marker*)
+                   (slot-unbound class instance slot-name)
+                   val)))))
       ((structurep instance)
        (let ((idx (%find-struct-slot-index instance slot-name)))
          (unless idx
@@ -502,8 +515,13 @@ Specialize via defmethod to provide lazy initialization."
            (gethash slot-name index-table)
          (unless found-p
            (error "~S has no slot named ~S" instance slot-name))
-         (%struct-set instance index new-value)
-         new-value))
+         (if *slot-access-protocol-extended-p*
+             (setf (slot-value-using-class
+                    class instance
+                    (nth index (class-effective-slots class)))
+                   new-value)
+             (progn (%struct-set instance index new-value)
+                    new-value))))
       ((structurep instance)
        (let ((idx (%find-struct-slot-index instance slot-name)))
          (unless idx
@@ -526,7 +544,10 @@ Specialize via defmethod to provide lazy initialization."
            (gethash slot-name index-table)
          (unless found-p
            (error "~S has no slot named ~S" instance slot-name))
-         (not (eq (%struct-ref instance index) *slot-unbound-marker*))))
+         (if *slot-access-protocol-extended-p*
+             (slot-boundp-using-class class instance
+                                      (nth index (class-effective-slots class)))
+             (not (eq (%struct-ref instance index) *slot-unbound-marker*)))))
       ((structurep instance)
        (unless (%find-struct-slot-index instance slot-name)
          (error "~S has no slot named ~S" instance slot-name))
@@ -545,8 +566,11 @@ Specialize via defmethod to provide lazy initialization."
            (gethash slot-name index-table)
          (unless found-p
            (error "~S has no slot named ~S" instance slot-name))
-         (%struct-set instance index *slot-unbound-marker*)
-         instance))
+         (if *slot-access-protocol-extended-p*
+             (slot-makunbound-using-class class instance
+                                          (nth index (class-effective-slots class)))
+             (progn (%struct-set instance index *slot-unbound-marker*)
+                    instance))))
       ((structurep instance)
        (error "SLOT-MAKUNBOUND is not supported for structures: ~S" instance))
       (t
@@ -1558,6 +1582,15 @@ When called with no arguments, passes the original method arguments."
            (lambda ,effective-ll (block ,block-name ,@body))
            ',unspec-ll)))))
 
+(defun %slot-access-protocol-gf-p (gf-name)
+  "True when GF-NAME names one of the four slot-access protocol GFs."
+  (or (eq gf-name 'slot-value-using-class)
+      (eq gf-name 'slot-boundp-using-class)
+      (eq gf-name 'slot-makunbound-using-class)
+      (and (consp gf-name)
+           (eq (car gf-name) 'setf)
+           (eq (cadr gf-name) 'slot-value-using-class))))
+
 (defun %add-method-to-gf (gf-name qualifiers specializer-names fn lambda-list)
   "Add a method to the named generic function."
   (let* ((gf (ensure-generic-function gf-name))
@@ -1579,6 +1612,12 @@ When called with no arguments, passes the original method arguments."
       (if (eq mode :eql)
           (%set-gf-eql-value-sets gf (%compute-eql-value-sets gf))
           (%set-gf-eql-value-sets gf nil)))
+    ;; Once any slot-access protocol GF has more than its single default
+    ;; method, SLOT-VALUE / SLOT-BOUNDP / SLOT-MAKUNBOUND (and SETF) must
+    ;; route through the GF so user methods are observed.
+    (when (and (%slot-access-protocol-gf-p gf-name)
+               (> (length (gf-methods gf)) 1))
+      (setq *slot-access-protocol-extended-p* t))
     method))
 
 ;;; ====================================================================
@@ -1646,6 +1685,46 @@ When called with no arguments, passes the original method arguments."
   (defgeneric slot-unbound (class instance slot-name))
   (defmethod slot-unbound ((class t) instance slot-name)
     (funcall %su-fn class instance slot-name)))
+
+;;; ====================================================================
+;;; Slot-access protocol (MOP)
+;;; ====================================================================
+;;;
+;;; AMOP §5.6 exposes raw slot access as a set of generic functions
+;;; dispatching on (class instance effective-slot-definition). Libraries
+;;; hook these for lazy slots, change tracking, persistence, memoization,
+;;; and so on.
+;;;
+;;; The default methods encode the existing %STRUCT-REF / %STRUCT-SET
+;;; behavior. SLOT-VALUE etc. normally bypass this dispatch (see
+;;; *SLOT-ACCESS-PROTOCOL-EXTENDED-P*); the first user-installed method
+;;; flips the flag and the slot-access wrappers start routing through
+;;; the GFs. Struct slot access (non-CLOS) continues to bypass the
+;;; protocol entirely — it has no effective-slot-definition to pass.
+
+(defgeneric slot-value-using-class (class instance slot))
+(defmethod slot-value-using-class ((class t) instance slot)
+  (let ((val (%struct-ref instance (slot-definition-location slot))))
+    (if (eq val *slot-unbound-marker*)
+        (slot-unbound class instance (slot-definition-name slot))
+        val)))
+
+(defgeneric (setf slot-value-using-class) (new-value class instance slot))
+(defmethod (setf slot-value-using-class) (new-value (class t) instance slot)
+  (%struct-set instance (slot-definition-location slot) new-value)
+  new-value)
+
+(defgeneric slot-boundp-using-class (class instance slot))
+(defmethod slot-boundp-using-class ((class t) instance slot)
+  (declare (ignore class))
+  (not (eq (%struct-ref instance (slot-definition-location slot))
+           *slot-unbound-marker*)))
+
+(defgeneric slot-makunbound-using-class (class instance slot))
+(defmethod slot-makunbound-using-class ((class t) instance slot)
+  (declare (ignore class))
+  (%struct-set instance (slot-definition-location slot) *slot-unbound-marker*)
+  instance)
 
 ;;; --- Upgrade slot-definition-class protocol to GFs ---
 ;;; So that libraries can customize the slot-definition class. User

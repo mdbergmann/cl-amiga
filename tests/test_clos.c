@@ -1847,6 +1847,214 @@ TEST(ensure_class_using_class_dispatches)
         "    (list (find-class 't))))");
 }
 
+/* === Slot-access protocol (MOP) === */
+
+TEST(svuc_fast_path_flag_clean)
+{
+    /* With no user methods installed, the extension flag remains NIL and
+       slot-value takes the fast %struct-ref path. */
+    eval_print("(defclass svuc-a () ((x :initarg :x :initform 10)))");
+    ASSERT_STR_EQ(eval_print("*slot-access-protocol-extended-p*"), "NIL");
+    ASSERT_STR_EQ(eval_print("(slot-value (make-instance 'svuc-a :x 7) 'x)"), "7");
+}
+
+TEST(svuc_default_method_matches_struct_ref)
+{
+    /* The default slot-value-using-class method must be observationally
+       identical to %struct-ref — calling it directly yields the same
+       value as slot-value. */
+    eval_print("(defclass svuc-b () ((n :initarg :n)))");
+    eval_print("(defvar *svuc-b-inst* (make-instance 'svuc-b :n 42))");
+    ASSERT_STR_EQ(eval_print(
+        "(slot-value-using-class (class-of *svuc-b-inst*) *svuc-b-inst* "
+        "                        (first (class-slots (class-of *svuc-b-inst*))))"),
+        "42");
+}
+
+TEST(svuc_around_observes_reads)
+{
+    /* A user :around method is invoked on every slot-value call and can
+       see the effective-slot-definition. */
+    eval_print("(defclass svuc-c () ((k :initarg :k :initform 'orig)))");
+    eval_print("(defvar *svuc-c-log* nil)");
+    eval_print(
+        "(defmethod slot-value-using-class :around "
+        "    ((class t) (inst svuc-c) slot) "
+        "  (push (slot-definition-name slot) *svuc-c-log*) "
+        "  (call-next-method))");
+    ASSERT_STR_EQ(eval_print("*slot-access-protocol-extended-p*"), "T");
+    ASSERT_STR_EQ(eval_print("(slot-value (make-instance 'svuc-c) 'k)"), "ORIG");
+    ASSERT_STR_EQ(eval_print("(first *svuc-c-log*)"), "K");
+    /* Clean up */
+    eval_print(
+        "(remove-method #'slot-value-using-class "
+        "  (find-method #'slot-value-using-class '(:around) "
+        "    (list (find-class 't) (find-class 'svuc-c) "
+        "          (find-class 'standard-effective-slot-definition))))");
+}
+
+TEST(svuc_around_can_override_read)
+{
+    /* An :around method can transform the returned value by not calling
+       call-next-method or by wrapping its result. */
+    eval_print("(defclass svuc-d () ((v :initarg :v :initform 1)))");
+    eval_print(
+        "(defmethod slot-value-using-class :around "
+        "    ((class t) (inst svuc-d) slot) "
+        "  (declare (ignore slot)) "
+        "  (* 10 (call-next-method)))");
+    ASSERT_STR_EQ(eval_print("(slot-value (make-instance 'svuc-d :v 3) 'v)"), "30");
+    /* Clean up */
+    eval_print(
+        "(remove-method #'slot-value-using-class "
+        "  (find-method #'slot-value-using-class '(:around) "
+        "    (list (find-class 't) (find-class 'svuc-d) "
+        "          (find-class 'standard-effective-slot-definition))))");
+}
+
+TEST(svuc_setf_around_observes_writes)
+{
+    /* (setf (slot-value ...) val) dispatches through (setf slot-value-using-class)
+       when the protocol is extended. */
+    eval_print("(defclass svuc-e () ((w :initarg :w :initform 0)))");
+    eval_print("(defvar *svuc-e-writes* nil)");
+    eval_print(
+        "(defmethod (setf slot-value-using-class) :around "
+        "    (new-value (class t) (inst svuc-e) slot) "
+        "  (push (cons (slot-definition-name slot) new-value) *svuc-e-writes*) "
+        "  (call-next-method))");
+    eval_print("(defvar *svuc-e-inst* (make-instance 'svuc-e))");
+    eval_print("(setf (slot-value *svuc-e-inst* 'w) 99)");
+    ASSERT_STR_EQ(eval_print("(slot-value *svuc-e-inst* 'w)"), "99");
+    ASSERT_STR_EQ(eval_print("(cdr (first *svuc-e-writes*))"), "99");
+    ASSERT_STR_EQ(eval_print("(car (first *svuc-e-writes*))"), "W");
+    /* Clean up */
+    eval_print(
+        "(remove-method #'(setf slot-value-using-class) "
+        "  (find-method #'(setf slot-value-using-class) '(:around) "
+        "    (list (find-class 't) (find-class 't) (find-class 'svuc-e) "
+        "          (find-class 'standard-effective-slot-definition))))");
+}
+
+TEST(svuc_boundp_dispatches)
+{
+    /* slot-boundp goes through slot-boundp-using-class when extended. */
+    eval_print("(defclass svuc-f () ((q :initarg :q)))");
+    eval_print("(defvar *svuc-f-saw* nil)");
+    eval_print(
+        "(defmethod slot-boundp-using-class :around "
+        "    ((class t) (inst svuc-f) slot) "
+        "  (declare (ignore slot)) "
+        "  (setq *svuc-f-saw* t) "
+        "  (call-next-method))");
+    ASSERT_STR_EQ(eval_print(
+        "(slot-boundp (make-instance 'svuc-f :q 1) 'q)"),
+        "T");
+    ASSERT_STR_EQ(eval_print("*svuc-f-saw*"), "T");
+    ASSERT_STR_EQ(eval_print(
+        "(slot-boundp (make-instance 'svuc-f) 'q)"),
+        "NIL");
+    eval_print(
+        "(remove-method #'slot-boundp-using-class "
+        "  (find-method #'slot-boundp-using-class '(:around) "
+        "    (list (find-class 't) (find-class 'svuc-f) "
+        "          (find-class 'standard-effective-slot-definition))))");
+}
+
+TEST(svuc_makunbound_dispatches)
+{
+    /* slot-makunbound goes through slot-makunbound-using-class when extended. */
+    eval_print("(defclass svuc-g () ((r :initarg :r :initform 5)))");
+    eval_print("(defvar *svuc-g-cleared* nil)");
+    eval_print(
+        "(defmethod slot-makunbound-using-class :around "
+        "    ((class t) (inst svuc-g) slot) "
+        "  (push (slot-definition-name slot) *svuc-g-cleared*) "
+        "  (call-next-method))");
+    eval_print("(defvar *svuc-g-inst* (make-instance 'svuc-g))");
+    eval_print("(slot-makunbound *svuc-g-inst* 'r)");
+    ASSERT_STR_EQ(eval_print("(slot-boundp *svuc-g-inst* 'r)"), "NIL");
+    ASSERT_STR_EQ(eval_print("(first *svuc-g-cleared*)"), "R");
+    eval_print(
+        "(remove-method #'slot-makunbound-using-class "
+        "  (find-method #'slot-makunbound-using-class '(:around) "
+        "    (list (find-class 't) (find-class 'svuc-g) "
+        "          (find-class 'standard-effective-slot-definition))))");
+}
+
+TEST(svuc_struct_fallback_unaffected)
+{
+    /* Slot access on DEFSTRUCT instances must not go through the protocol
+       (structs have no effective-slot-definition). They keep using the
+       struct-slot-name lookup path. */
+    eval_print("(defstruct svuc-s a b)");
+    eval_print("(defvar *svuc-s-inst* (make-svuc-s :a 100 :b 200))");
+    /* Even after user methods extend the protocol for CLOS instances,
+       struct slot-value should still bypass them. Install a method that
+       would blow up if it saw a struct. */
+    eval_print(
+        "(defmethod slot-value-using-class :around ((class t) (inst t) slot) "
+        "  (declare (ignore slot)) "
+        "  (call-next-method))");
+    ASSERT_STR_EQ(eval_print("(slot-value *svuc-s-inst* 'a)"), "100");
+    ASSERT_STR_EQ(eval_print("(slot-value *svuc-s-inst* 'b)"), "200");
+    /* Clean up */
+    eval_print(
+        "(remove-method #'slot-value-using-class "
+        "  (find-method #'slot-value-using-class '(:around) "
+        "    (list (find-class 't) (find-class 't) "
+        "          (find-class 'standard-effective-slot-definition))))");
+}
+
+TEST(svuc_location_accessor)
+{
+    /* slot-definition-location returns the instance index on a finalized
+       class — the value the default slot-value-using-class uses to find
+       the slot in the struct layout. */
+    eval_print("(defclass svuc-loc () ((first-slot :initarg :first) "
+               "                       (second-slot :initarg :second)))");
+    ASSERT_STR_EQ(eval_print(
+        "(slot-definition-location "
+        "  (first (class-slots (find-class 'svuc-loc))))"),
+        "0");
+    ASSERT_STR_EQ(eval_print(
+        "(slot-definition-location "
+        "  (second (class-slots (find-class 'svuc-loc))))"),
+        "1");
+}
+
+TEST(svuc_setf_default_roundtrips)
+{
+    /* Calling the (setf slot-value-using-class) default directly
+       round-trips. */
+    eval_print("(defclass svuc-h () ((z :initarg :z :initform 1)))");
+    eval_print("(defvar *svuc-h-inst* (make-instance 'svuc-h))");
+    eval_print(
+        "(setf (slot-value-using-class (class-of *svuc-h-inst*) *svuc-h-inst* "
+        "                              (first (class-slots (class-of *svuc-h-inst*)))) "
+        "      77)");
+    ASSERT_STR_EQ(eval_print("(slot-value *svuc-h-inst* 'z)"), "77");
+}
+
+TEST(svuc_slot_unbound_still_fires)
+{
+    /* When a slot truly is unbound, the default method still dispatches
+       to slot-unbound — even when the protocol is extended. */
+    eval_print("(defclass svuc-i () ((u)))");
+    eval_print(
+        "(defmethod slot-unbound ((class t) (inst svuc-i) slot-name) "
+        "  (declare (ignore class slot-name)) "
+        "  :svuc-unbound-sentinel)");
+    ASSERT_STR_EQ(eval_print(
+        "(slot-value (make-instance 'svuc-i) 'u)"),
+        ":SVUC-UNBOUND-SENTINEL");
+    /* Clean up the slot-unbound method so later tests see the default */
+    eval_print(
+        "(remove-method #'slot-unbound "
+        "  (find-method #'slot-unbound nil "
+        "    (list (find-class 't) (find-class 'svuc-i) (find-class 't))))");
+}
+
 int main(void)
 {
     test_init();
@@ -2042,6 +2250,19 @@ int main(void)
     RUN(class_prototype_allocates);
     RUN(ensure_class_creates);
     RUN(ensure_class_using_class_dispatches);
+
+    /* Slot-access protocol (MOP) */
+    RUN(svuc_fast_path_flag_clean);
+    RUN(svuc_default_method_matches_struct_ref);
+    RUN(svuc_location_accessor);
+    RUN(svuc_setf_default_roundtrips);
+    RUN(svuc_around_observes_reads);
+    RUN(svuc_around_can_override_read);
+    RUN(svuc_setf_around_observes_writes);
+    RUN(svuc_boundp_dispatches);
+    RUN(svuc_makunbound_dispatches);
+    RUN(svuc_struct_fallback_unaffected);
+    RUN(svuc_slot_unbound_still_fires);
 
     teardown();
     REPORT();
