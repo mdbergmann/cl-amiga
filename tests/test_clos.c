@@ -2218,6 +2218,168 @@ TEST(calloc_struct_smaller_than_effective_slots)
     ASSERT_STR_EQ(eval_print("(%struct-ref *cs-sz-inst* 1)"), "20");
 }
 
+/* === Reified EQL specializers (MOP) === */
+
+TEST(eqlspec_intern_identity)
+{
+    /* Same value produces EQ metaobject (interned). */
+    ASSERT_STR_EQ(eval_print(
+        "(eq (intern-eql-specializer 42) (intern-eql-specializer 42))"),
+        "T");
+    ASSERT_STR_EQ(eval_print(
+        "(eq (intern-eql-specializer 'foo) (intern-eql-specializer 'foo))"),
+        "T");
+    /* Different values → distinct metaobjects. */
+    ASSERT_STR_EQ(eval_print(
+        "(eq (intern-eql-specializer 42) (intern-eql-specializer 43))"),
+        "NIL");
+}
+
+TEST(eqlspec_intern_eql_discriminates)
+{
+    /* Interning is by EQL, not EQ. Bignums that are EQL share a metaobject;
+       objects that are neither EQ nor EQL do not. */
+    ASSERT_STR_EQ(eval_print(
+        "(eq (intern-eql-specializer 1.5) (intern-eql-specializer 1.5))"),
+        "T");
+    ASSERT_STR_EQ(eval_print(
+        "(eq (intern-eql-specializer \"abc\") (intern-eql-specializer \"abc\"))"),
+        "NIL");
+}
+
+TEST(eqlspec_object_accessor)
+{
+    ASSERT_STR_EQ(eval_print(
+        "(eql-specializer-object (intern-eql-specializer 42))"),
+        "42");
+    ASSERT_STR_EQ(eval_print(
+        "(eql-specializer-object (intern-eql-specializer 'hello))"),
+        "HELLO");
+    ASSERT_STR_EQ(eval_print(
+        "(eql-specializer-object (intern-eql-specializer nil))"),
+        "NIL");
+}
+
+TEST(eqlspec_p_predicate)
+{
+    ASSERT_STR_EQ(eval_print(
+        "(eql-specializer-p (intern-eql-specializer 99))"),
+        "T");
+    /* Class objects are not eql-specializers. */
+    ASSERT_STR_EQ(eval_print(
+        "(eql-specializer-p (find-class 'integer))"),
+        "NIL");
+    /* Other things are not eql-specializers. */
+    ASSERT_STR_EQ(eval_print("(eql-specializer-p 42)"), "NIL");
+    ASSERT_STR_EQ(eval_print("(eql-specializer-p '(eql 42))"), "NIL");
+    ASSERT_STR_EQ(eval_print("(eql-specializer-p nil)"), "NIL");
+}
+
+TEST(eqlspec_class_bootstrapped)
+{
+    ASSERT_STR_EQ(eval_print(
+        "(class-name (class-of (intern-eql-specializer 42)))"),
+        "EQL-SPECIALIZER");
+    ASSERT_STR_EQ(eval_print(
+        "(not (null (find-class 'eql-specializer)))"),
+        "T");
+}
+
+TEST(eqlspec_dispatch_still_works)
+{
+    /* Regression guard: reification doesn't break EQL dispatch. */
+    eval_print("(defgeneric es-disp (x))");
+    eval_print("(defmethod es-disp ((x (eql 'alpha))) :got-alpha)");
+    eval_print("(defmethod es-disp ((x (eql 'beta))) :got-beta)");
+    eval_print("(defmethod es-disp ((x symbol)) :fallback)");
+    ASSERT_STR_EQ(eval_print("(es-disp 'alpha)"), ":GOT-ALPHA");
+    ASSERT_STR_EQ(eval_print("(es-disp 'beta)"),  ":GOT-BETA");
+    ASSERT_STR_EQ(eval_print("(es-disp 'other)"), ":FALLBACK");
+}
+
+TEST(eqlspec_method_specializers_contains_metaobject)
+{
+    /* method-specializers now stores eql-specializer structs, not (eql V) cons. */
+    eval_print("(defgeneric es-ms (x))");
+    eval_print("(defmethod es-ms ((x (eql 7))) :seven)");
+    ASSERT_STR_EQ(eval_print(
+        "(let* ((gf (gethash 'es-ms *generic-function-table*)) "
+        "       (m  (first (gf-methods gf))) "
+        "       (s  (first (method-specializers m)))) "
+        "  (eql-specializer-p s))"),
+        "T");
+    ASSERT_STR_EQ(eval_print(
+        "(let* ((gf (gethash 'es-ms *generic-function-table*)) "
+        "       (m  (first (gf-methods gf))) "
+        "       (s  (first (method-specializers m)))) "
+        "  (eql-specializer-object s))"),
+        "7");
+}
+
+TEST(eqlspec_method_specializers_shared_across_methods)
+{
+    /* Two methods with the same EQL value share the same specializer
+       metaobject (interned). */
+    eval_print("(defgeneric es-share1 (x))");
+    eval_print("(defgeneric es-share2 (x))");
+    eval_print("(defmethod es-share1 ((x (eql :shared))) :one)");
+    eval_print("(defmethod es-share2 ((x (eql :shared))) :two)");
+    ASSERT_STR_EQ(eval_print(
+        "(eq (first (method-specializers "
+        "      (first (gf-methods (gethash 'es-share1 *generic-function-table*))))) "
+        "    (first (method-specializers "
+        "      (first (gf-methods (gethash 'es-share2 *generic-function-table*))))))"),
+        "T");
+}
+
+TEST(eqlspec_extract_specializer_names_roundtrips)
+{
+    /* extract-specializer-names returns (eql value) form for BWC. */
+    eval_print("(defgeneric es-esn (x y))");
+    eval_print("(defmethod es-esn ((x (eql 99)) (y string)) :ok)");
+    ASSERT_STR_EQ(eval_print(
+        "(let* ((gf (gethash 'es-esn *generic-function-table*)) "
+        "       (m  (first (gf-methods gf)))) "
+        "  (extract-specializer-names (method-specializers m)))"),
+        "((EQL 99) STRING)");
+}
+
+TEST(eqlspec_extract_class_specializers)
+{
+    /* extract-specializer-names maps class objects to class names. */
+    eval_print("(defgeneric es-cls (x))");
+    eval_print("(defmethod es-cls ((x integer)) :int)");
+    ASSERT_STR_EQ(eval_print(
+        "(let* ((gf (gethash 'es-cls *generic-function-table*)) "
+        "       (m  (first (gf-methods gf)))) "
+        "  (extract-specializer-names (method-specializers m)))"),
+        "(INTEGER)");
+}
+
+TEST(eqlspec_method_equal_replaces_on_redef)
+{
+    /* Redefining a method with the same EQL value replaces the old one
+       (specializer lists compare via interned metaobject identity). */
+    eval_print("(defgeneric es-rep (x))");
+    eval_print("(defmethod es-rep ((x (eql 1))) :first)");
+    eval_print("(defmethod es-rep ((x (eql 1))) :second)");
+    ASSERT_STR_EQ(eval_print("(es-rep 1)"), ":SECOND");
+    ASSERT_STR_EQ(eval_print(
+        "(length (gf-methods (gethash 'es-rep *generic-function-table*)))"),
+        "1");
+}
+
+TEST(eqlspec_cacheable_p_still_eql)
+{
+    /* cacheable-p flag remains :EQL after reification. */
+    eval_print("(defgeneric es-cache (x))");
+    eval_print("(defmethod es-cache ((x (eql 42))) :fortytwo)");
+    eval_print("(defmethod es-cache ((x integer)) :int)");
+    ASSERT_STR_EQ(eval_print(
+        "(gf-cacheable-p (gethash 'es-cache *generic-function-table*))"),
+        ":EQL");
+}
+
 TEST(calloc_svuc_protocol_sees_class_slots)
 {
     /* The slot-value-using-class protocol fires on class-allocated slots
@@ -2460,6 +2622,20 @@ int main(void)
     RUN(calloc_initarg_writes_shared_cell);
     RUN(calloc_struct_smaller_than_effective_slots);
     RUN(calloc_svuc_protocol_sees_class_slots);
+
+    /* Reified EQL specializers (MOP) */
+    RUN(eqlspec_intern_identity);
+    RUN(eqlspec_intern_eql_discriminates);
+    RUN(eqlspec_object_accessor);
+    RUN(eqlspec_p_predicate);
+    RUN(eqlspec_class_bootstrapped);
+    RUN(eqlspec_dispatch_still_works);
+    RUN(eqlspec_method_specializers_contains_metaobject);
+    RUN(eqlspec_method_specializers_shared_across_methods);
+    RUN(eqlspec_extract_specializer_names_roundtrips);
+    RUN(eqlspec_extract_class_specializers);
+    RUN(eqlspec_method_equal_replaces_on_redef);
+    RUN(eqlspec_cacheable_p_still_eql);
 
     teardown();
     REPORT();
