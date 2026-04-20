@@ -335,15 +335,26 @@
   '((name nil) (initargs nil) (location nil)
     (initfunction nil) (allocation :instance)))
 
-;;; Class hierarchy for slot-definition metaobjects
+;;; Class hierarchy for slot-definition metaobjects.
+;;; AMOP places DIRECT-SLOT-DEFINITION and EFFECTIVE-SLOT-DEFINITION as
+;;; abstract siblings under SLOT-DEFINITION; the "standard-" classes
+;;; mix in STANDARD-SLOT-DEFINITION to inherit the default accessors.
+;;; We reproduce that shape so closer-mop's TYPEP on the abstract names
+;;; succeeds on our reified slot-definition objects.
 (%make-bootstrap-class 'slot-definition
   (list (find-class 'standard-object)))
+(%make-bootstrap-class 'direct-slot-definition
+  (list (find-class 'slot-definition)))
+(%make-bootstrap-class 'effective-slot-definition
+  (list (find-class 'slot-definition)))
 (%make-bootstrap-class 'standard-slot-definition
   (list (find-class 'slot-definition)))
 (%make-bootstrap-class 'standard-direct-slot-definition
-  (list (find-class 'standard-slot-definition)))
+  (list (find-class 'standard-slot-definition)
+        (find-class 'direct-slot-definition)))
 (%make-bootstrap-class 'standard-effective-slot-definition
-  (list (find-class 'standard-slot-definition)))
+  (list (find-class 'standard-slot-definition)
+        (find-class 'effective-slot-definition)))
 
 ;;; --- Accessors (AMOP / closer-mop names) ---
 ;;; Slots 0, 1, 3 share indices between direct and effective so name,
@@ -2869,6 +2880,245 @@ default method is a no-op; users specialise on their own dependent
 class to react."
   (declare (ignore metaobject dependent initargs))
   nil)
+
+;;; ====================================================================
+;;; Portable MOP shims (closer-mop compatibility layer)
+;;; ====================================================================
+;;;
+;;; Symbols and classes that closer-mop imports from an implementation's
+;;; MOP package.  We keep them in CL so `import-from :common-lisp` in a
+;;; closer-mop shim yields the right objects.  Most of these shims are
+;;; placeholders — user-defined metaclasses are out of scope — but the
+;;; names must exist for closer-mop's DEFPACKAGE :IMPORT-FROM to succeed
+;;; and for downstream libraries (serapeum, trivia, lisp-namespace) to
+;;; reference a non-bound-to-error symbol.
+
+;;; --- Abstract metaobject / specializer class stubs ---
+;;; AMOP places all reified MOP entities under METAOBJECT, with
+;;; SPECIALIZER an abstract parent of CLASS and EQL-SPECIALIZER.  We
+;;; register the names so they resolve to class objects — we do not
+;;; weave them into the existing CPLs because user-defined metaclasses
+;;; are out of scope; code that typep's against these names gets a
+;;; defined answer of NIL rather than an undefined-class error.
+(%make-bootstrap-class 'metaobject
+  (list (find-class 'standard-object)))
+(%make-bootstrap-class 'specializer
+  (list (find-class 'metaobject)))
+
+;;; --- Forward-referenced classes (stub) ---
+;;; We don't support forward references (defclass rejects unknown
+;;; superclass names at expansion time), but the symbol must name a
+;;; class because closer-mop imports it and libraries typep against it.
+(%make-bootstrap-class 'forward-referenced-class
+  (list (find-class 'class)))
+
+;;; --- Accessor method classes (stubs) ---
+;;; AMOP §5.4.1: reader and writer methods are distinct method subclasses
+;;; with an ACCESSOR-METHOD-SLOT-DEFINITION back-link to the slot def
+;;; they were generated from.  We generate plain STANDARD-METHOD
+;;; instances for reader/writer bodies, so the back-link is NIL.
+(%make-bootstrap-class 'standard-accessor-method
+  (list (find-class 'standard-method)))
+(%make-bootstrap-class 'standard-reader-method
+  (list (find-class 'standard-accessor-method)))
+(%make-bootstrap-class 'standard-writer-method
+  (list (find-class 'standard-accessor-method)))
+
+;;; --- CLASSP ---
+;;; closer-mop:classp — true for any class metaobject.
+(defun classp (object)
+  "Return T when OBJECT is a class metaobject (an instance of STANDARD-CLASS,
+BUILT-IN-CLASS, or FUNCALLABLE-STANDARD-CLASS).  closer-mop:CLASSP."
+  (and (structurep object)
+       (let ((type (%struct-type-name object)))
+         (or (eq type 'standard-class)
+             (eq type 'built-in-class)
+             (eq type 'funcallable-standard-class)
+             (eq type 'forward-referenced-class)))))
+
+;;; --- Generic-function accessor aliases (MOP names) ---
+;;; Our internal GF accessors are GF-NAME / GF-LAMBDA-LIST / GF-METHODS /
+;;; GF-METHOD-COMBINATION.  closer-mop imports them under their AMOP
+;;; names (GENERIC-FUNCTION-*) so alias them here.
+
+(defun generic-function-name (gf)
+  "AMOP: name of GF."
+  (gf-name gf))
+
+(defun generic-function-lambda-list (gf)
+  "AMOP: lambda-list of GF."
+  (gf-lambda-list gf))
+
+(defun generic-function-methods (gf)
+  "AMOP: list of METHOD metaobjects installed on GF."
+  (gf-methods gf))
+
+(defun generic-function-method-combination (gf)
+  "AMOP: method-combination metaobject for GF."
+  (gf-method-combination gf))
+
+(defun generic-function-method-class (gf)
+  "AMOP: the class of methods added to GF by DEFMETHOD.  We do not
+track a per-GF method class — every method is a STANDARD-METHOD."
+  (declare (ignore gf))
+  (find-class 'standard-method))
+
+(defun generic-function-argument-precedence-order (gf)
+  "AMOP: the argument names in the order they are consulted for
+dispatch.  We dispatch left-to-right, so return the required args of
+GF's lambda-list."
+  (let ((ll (gf-lambda-list gf))
+        (required nil))
+    (dolist (arg ll)
+      (when (member arg lambda-list-keywords) (return))
+      (push arg required))
+    (nreverse required)))
+
+(defun generic-function-declarations (gf)
+  "AMOP: the list of OPTIMIZE / declare-identifier declarations for GF.
+We do not track declarations — return NIL."
+  (declare (ignore gf))
+  nil)
+
+;;; --- Compute-applicable-methods-using-classes ---
+;;; AMOP 8.6.6 / closer-mop: determine applicable methods from a list
+;;; of argument classes alone.  Return (VALUES METHODS VALIDP).  VALIDP
+;;; is NIL when any applicable method has an EQL specializer on an arg
+;;; whose class is consistent with the EQL value — the caller must then
+;;; fall back to COMPUTE-APPLICABLE-METHODS with real arguments.
+(defgeneric compute-applicable-methods-using-classes (gf classes))
+(defmethod compute-applicable-methods-using-classes
+    ((gf standard-generic-function) classes)
+  "AMOP: applicable methods for GF given argument CLASSES.  Returns
+(VALUES APPLICABLE VALIDP); VALIDP is NIL if the result depends on
+particular EQL values that the caller would need to re-check."
+  (let ((applicable nil)
+        (validp t))
+    (dolist (m (gf-methods gf))
+      (let ((ok t)
+            (specs (method-specializers m))
+            (cs classes))
+        (loop
+          (when (or (null specs) (null cs)) (return))
+          (let ((spec (car specs))
+                (c (car cs)))
+            (cond
+              ((eql-specializer-p spec)
+               (setq validp nil)
+               (setq ok nil)
+               (return))
+              (t
+               (unless (%subclassp c spec)
+                 (setq ok nil)
+                 (return))))
+            (setq specs (cdr specs))
+            (setq cs (cdr cs))))
+        (when ok (push m applicable))))
+    (values (nreverse applicable) validp)))
+
+;;; --- Compute-effective-method ---
+;;; AMOP: given a GF, its method combination, and a list of applicable
+;;; methods, return an effective-method form.  Our internal dispatch
+;;; path builds the EMF directly via %DISPATCH-BUILD-EMF; this GF is
+;;; exposed so user code can introspect what standard combination would
+;;; produce.  We return a simple form that CALL-METHOD-wraps the primary
+;;; chain — enough for closer-mop users that want to see the structure.
+(defgeneric compute-effective-method (gf combination methods))
+(defmethod compute-effective-method ((gf standard-generic-function)
+                                     combination
+                                     methods)
+  "AMOP: produce an effective-method form for the given METHODS under
+COMBINATION.  Returns a form that chains primary methods via
+CALL-METHOD; callers typically pass the result to a compiler."
+  (declare (ignore gf combination))
+  (cond
+    ((null methods) '(error "No applicable method"))
+    ((null (cdr methods)) `(call-method ,(car methods) nil))
+    (t `(call-method ,(car methods) ,(cdr methods)))))
+
+;;; --- Ensure-generic-function-using-class ---
+;;; AMOP: low-level entry point used by ENSURE-GENERIC-FUNCTION.  We
+;;; don't carry a separate GF-class dispatch, so this delegates to the
+;;; single ENSURE-GENERIC-FUNCTION implementation.  The GF argument is
+;;; the existing generic-function metaobject or NIL.
+(defgeneric ensure-generic-function-using-class (gf name &rest args))
+(defmethod ensure-generic-function-using-class (gf name &rest args)
+  "AMOP: delegate to ENSURE-GENERIC-FUNCTION.  GF is the existing
+metaobject (or NIL) — it is reused or reinitialized by the underlying
+implementation."
+  (declare (ignore gf))
+  (apply #'ensure-generic-function name args))
+
+;;; --- Specializer / class introspection stubs ---
+;;; We don't maintain a cross-reference from specializers to methods or
+;;; GFs (memory cost too high on 8MB Amiga).  These GFs exist so
+;;; closer-mop's DEFPACKAGE imports succeed and downstream code that
+;;; calls them gets a defined but empty answer.
+
+(defgeneric specializer-direct-methods (specializer))
+(defmethod specializer-direct-methods (specializer)
+  "AMOP: methods that directly specialize on SPECIALIZER.  We don't
+track a back-link — return NIL."
+  (declare (ignore specializer))
+  nil)
+
+(defgeneric specializer-direct-generic-functions (specializer))
+(defmethod specializer-direct-generic-functions (specializer)
+  "AMOP: generic functions that have a method directly specializing on
+SPECIALIZER.  We don't track a back-link — return NIL."
+  (declare (ignore specializer))
+  nil)
+
+(defgeneric add-direct-method (specializer method))
+(defmethod add-direct-method (specializer method)
+  "AMOP: record METHOD as a direct method of SPECIALIZER.  We do not
+maintain the back-link — this is a no-op."
+  (declare (ignore specializer method))
+  nil)
+
+(defgeneric remove-direct-method (specializer method))
+(defmethod remove-direct-method (specializer method)
+  "AMOP: remove METHOD from SPECIALIZER's direct-method list.  No-op."
+  (declare (ignore specializer method))
+  nil)
+
+(defgeneric add-direct-subclass (class subclass))
+(defmethod add-direct-subclass (class subclass)
+  "AMOP: register SUBCLASS as a direct subclass of CLASS.  We already
+maintain this list in class slot 6 — add SUBCLASS unless it is already
+present."
+  (let ((subs (class-direct-subclasses class)))
+    (unless (member subclass subs :test #'eq)
+      (%set-class-direct-subclasses class (cons subclass subs))))
+  nil)
+
+(defgeneric remove-direct-subclass (class subclass))
+(defmethod remove-direct-subclass (class subclass)
+  "AMOP: drop SUBCLASS from CLASS's direct-subclass list."
+  (%set-class-direct-subclasses class
+    (remove subclass (class-direct-subclasses class) :test #'eq))
+  nil)
+
+(defgeneric accessor-method-slot-definition (method))
+(defmethod accessor-method-slot-definition (method)
+  "AMOP: the direct slot definition that generated METHOD.  We do not
+back-link slot accessors to their slot-definition source — return NIL."
+  (declare (ignore method))
+  nil)
+
+(defgeneric reader-method-class (class direct-slot &rest initargs))
+(defmethod reader-method-class (class direct-slot &rest initargs)
+  "AMOP: class of reader methods generated for DIRECT-SLOT on CLASS.
+We generate STANDARD-METHOD instances for accessors — this is the
+protocol hook a user metaclass would override to substitute a subclass."
+  (declare (ignore class direct-slot initargs))
+  (find-class 'standard-reader-method))
+
+(defgeneric writer-method-class (class direct-slot &rest initargs))
+(defmethod writer-method-class (class direct-slot &rest initargs)
+  "AMOP: class of writer methods generated for DIRECT-SLOT on CLASS."
+  (declare (ignore class direct-slot initargs))
+  (find-class 'standard-writer-method))
 
 ;;; --- Provide module ---
 (provide "clos")
