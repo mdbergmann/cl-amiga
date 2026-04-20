@@ -3351,6 +3351,52 @@
 (check "eql-spec cacheable-p :EQL" :eql
   (gf-cacheable-p (gethash 'es-amiga-cache *generic-function-table*)))
 
+; --- Funcallable standard class (MOP) ---
+(check "funcallable-standard-class bootstrapped" 'funcallable-standard-class
+  (class-name (find-class 'funcallable-standard-class)))
+(check "funcallable-standard-object bootstrapped" 'funcallable-standard-object
+  (class-name (find-class 'funcallable-standard-object)))
+(defgeneric fsc-amiga-foo (x))
+(defmethod fsc-amiga-foo ((x integer)) (* x 2))
+(check "gf typep funcallable-standard-object" t (typep #'fsc-amiga-foo 'funcallable-standard-object))
+(check "gf typep standard-generic-function" t (typep #'fsc-amiga-foo 'standard-generic-function))
+(check "gf typep function" t (typep #'fsc-amiga-foo 'function))
+(check "gf functionp" t (functionp #'fsc-amiga-foo))
+(check "gf class-of" t (eq (class-of #'fsc-amiga-foo) (find-class 'standard-generic-function)))
+(check "gf type-of" 'standard-generic-function (type-of #'fsc-amiga-foo))
+(check "gf callable via symbol" 14 (fsc-amiga-foo 7))
+(check "gf funcall"    20 (funcall #'fsc-amiga-foo 10))
+(check "gf apply"      50 (apply #'fsc-amiga-foo '(25)))
+(check "gf funcall ensure" 30 (funcall (ensure-generic-function 'fsc-amiga-foo) 15))
+(defgeneric fsc-amiga-sfi (x))
+(defmethod fsc-amiga-sfi ((x integer)) :default)
+(check "gf dispatch before sfi" :default (fsc-amiga-sfi 5))
+(set-funcallable-instance-function
+  (ensure-generic-function 'fsc-amiga-sfi)
+  (lambda (&rest args) (cons :replaced args)))
+(check "gf dispatch after sfi" '(:replaced 5) (fsc-amiga-sfi 5))
+(check "sfi returns gf" t
+  (eq (set-funcallable-instance-function
+        (ensure-generic-function 'fsc-amiga-sfi)
+        (lambda (&rest args) args))
+      (ensure-generic-function 'fsc-amiga-sfi)))
+(defclass sia-amiga () ((a :initarg :a) (b :initarg :b)))
+(defvar *sia-amiga-inst* (make-instance 'sia-amiga :a 10 :b 20))
+(check "standard-instance-access a" 10 (standard-instance-access *sia-amiga-inst* 0))
+(check "standard-instance-access b" 20 (standard-instance-access *sia-amiga-inst* 1))
+(setf (standard-instance-access *sia-amiga-inst* 0) 99)
+(check "standard-instance-access setf" 99 (slot-value *sia-amiga-inst* 'a))
+(check "standard-instance-access == struct-ref" t
+  (eq (standard-instance-access *sia-amiga-inst* 1) (%struct-ref *sia-amiga-inst* 1)))
+(check "funcallable-standard-instance-access" 99
+  (funcallable-standard-instance-access *sia-amiga-inst* 0))
+(defgeneric fsc-amiga-cdf (x))
+(defmethod fsc-amiga-cdf ((x integer)) :int-case)
+(check "compute-discriminating-function functionp" t
+  (functionp (compute-discriminating-function (ensure-generic-function 'fsc-amiga-cdf))))
+(check "compute-discriminating-function dispatches" :int-case
+  (funcall (compute-discriminating-function (ensure-generic-function 'fsc-amiga-cdf)) 7))
+
 ; --- CLOS Phase 9: print-object ---
 (check "print-object class" "#<STANDARD-CLASS INTEGER>" (print-object (find-class 'integer) nil))
 (check "print-object gf" "#<STANDARD-GENERIC-FUNCTION GREET>" (print-object (gethash 'greet *generic-function-table*) nil))
