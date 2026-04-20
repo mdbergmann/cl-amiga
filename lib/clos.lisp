@@ -1178,6 +1178,8 @@ Specialize via defmethod to provide lazy initialization."
 (defun %set-gf-methods (gf val) (%struct-set gf 2 val))
 (defun gf-discriminating-function (gf) (%struct-ref gf 3))
 (defun %set-gf-discriminating-function (gf val) (%struct-set gf 3 val))
+(defun gf-method-combination (gf) (%struct-ref gf 4))
+(defun %set-gf-method-combination (gf val) (%struct-set gf 4 val))
 (defun gf-dispatch-cache (gf) (%struct-ref gf 5))
 (defun %set-gf-dispatch-cache (gf val) (%struct-set gf 5 val))
 (defun gf-cacheable-p (gf) (%struct-ref gf 6))
@@ -1346,6 +1348,23 @@ When called with no arguments, passes the original method arguments."
   (let ((*current-method-args* args))
     (apply (%build-effective-method methods) args)))
 
+(defun %dispatch-build-emf (gf methods)
+  "Build an EMF honouring the GF's method combination.
+   GF is the generic-function metaobject.  When the combination slot is
+   NIL (pre-Phase-8 GFs) or names the standard combination, the original
+   %BUILD-EFFECTIVE-METHOD path is used — so existing dispatch is
+   preserved bit-for-bit.  Non-standard combinations route through
+   %BUILD-SHORT-EFFECTIVE-METHOD or %BUILD-LONG-EFFECTIVE-METHOD."
+  (let ((combo (gf-method-combination gf)))
+    (cond
+      ((null combo) (%build-effective-method methods))
+      ((eq (%struct-ref combo 2) :standard) (%build-effective-method methods))
+      ((eq (%struct-ref combo 2) :short)
+       (%build-short-effective-method combo methods))
+      ((eq (%struct-ref combo 2) :long)
+       (%build-long-effective-method gf combo methods))
+      (t (%build-effective-method methods)))))
+
 (defun %make-method-chain (methods)
   "Build a call-next-method chain from primary methods."
   (if (null methods)
@@ -1481,7 +1500,7 @@ When called with no arguments, passes the original method arguments."
                          (gf-name gf) (mapcar #'type-of args)))
               (let ((methods (%compute-applicable-methods gf args)))
                 (if methods
-                    (let ((new-emf (%build-effective-method methods)))
+                    (let ((new-emf (%dispatch-build-emf gf methods)))
                       (setf (gethash key ht) new-emf)
                       (apply new-emf args))
                     (progn
@@ -1524,7 +1543,7 @@ When called with no arguments, passes the original method arguments."
                          (gf-name gf) (mapcar #'type-of args)))
               (let ((methods (%compute-applicable-methods gf args)))
                 (if methods
-                    (let ((new-emf (%build-effective-method methods)))
+                    (let ((new-emf (%dispatch-build-emf gf methods)))
                       (setf (gethash class table) new-emf)
                       (apply new-emf args))
                     (progn
@@ -1548,17 +1567,23 @@ When called with no arguments, passes the original method arguments."
            (error "No applicable method for ~S with args of types ~S"
                   (gf-name gf) (mapcar #'type-of args)))
          (let ((*current-method-args* args))
-           (apply (%build-effective-method methods) args)))))))
+           (apply (%dispatch-build-emf gf methods) args)))))))
 
 ;;; --- ensure-generic-function ---
 
-(defun ensure-generic-function (name &key lambda-list)
+(defun ensure-generic-function (name &key lambda-list
+                                          (method-combination-name 'standard
+                                                                   method-combination-name-p)
+                                          method-combination-options)
   "Find or create a generic function named NAME.
 Installs the GF metaobject itself in the symbol-function cell; the VM
 transparently unwraps funcallable instances to their discriminating
 function, so (FOO ...) and (FUNCALL #'FOO ...) both dispatch through
 the GF's slot 3. SET-FUNCALLABLE-INSTANCE-FUNCTION can retarget that
-slot without touching the symbol-function cell."
+slot without touching the symbol-function cell.
+METHOD-COMBINATION-NAME + METHOD-COMBINATION-OPTIONS select the
+combination used to build the effective method; when omitted on an
+already-existing GF the installed combination is preserved."
   (multiple-value-bind (existing found-p)
       (gethash name *generic-function-table*)
     (if found-p
@@ -1573,9 +1598,23 @@ slot without touching the symbol-function cell."
                     (hidden-name (concatenate 'string "%SETF-" (symbol-name accessor)))
                     (hidden-sym (intern hidden-name (or (symbol-package accessor) "COMMON-LISP"))))
                (setf (symbol-function hidden-sym) existing))))
+          ;; Update method combination if explicitly supplied (or if we
+          ;; can now resolve STANDARD — important for GFs created before
+          ;; the combination registry was populated at boot).
+          (when method-combination-name-p
+            (let ((new-combo (%resolve-method-combination
+                               method-combination-name method-combination-options)))
+              (unless (eq new-combo (gf-method-combination existing))
+                (%set-gf-method-combination existing new-combo)
+                (%set-gf-dispatch-cache existing nil))))
+          (when (null (gf-method-combination existing))
+            (let ((combo (%resolve-method-combination 'standard nil)))
+              (when combo (%set-gf-method-combination existing combo))))
           existing)
-        (let* ((gf (%make-struct 'standard-generic-function
-                     name lambda-list nil nil nil nil nil nil))
+        (let* ((combo (%resolve-method-combination
+                        method-combination-name method-combination-options))
+               (gf (%make-struct 'standard-generic-function
+                     name lambda-list nil nil combo nil nil nil))
                (dispatch-fn
                  (named-lambda %gf-dispatch-entry (&rest args)
                    (%gf-dispatch gf args))))
@@ -1593,34 +1632,61 @@ slot without touching the symbol-function cell."
                (%register-setf-function accessor hidden-sym))))
           gf))))
 
+(defun %resolve-method-combination (name options)
+  "Look up NAME in *METHOD-COMBINATIONS*; return NIL if either the name
+   is unknown or the registry has not been initialised yet (this happens
+   during bootstrap before method-combination support has been loaded).
+   OPTIONS attaches a fresh copy of the combination prototype so each
+   GF can carry its own options without sharing mutable state."
+  (cond
+    ((not (boundp '*method-combinations*)) nil)
+    (t
+     (let ((proto (gethash (%method-combination-key name) *method-combinations*)))
+       (cond
+         ((null proto)
+          (error "Unknown method combination ~S" name))
+         ((null options) proto)
+         (t (%clone-method-combination proto options)))))))
+
 ;;; --- defgeneric macro ---
 
 (defmacro defgeneric (name lambda-list &rest options)
   "Define a generic function."
-  (let ((method-defs nil))
+  (let ((method-defs nil)
+        (combo-name 'standard)
+        (combo-options nil))
     (dolist (opt options)
-      (when (and (consp opt) (eq (car opt) :method))
-        ;; (:method [qualifiers...] specialized-lambda-list &body body)
-        (let ((rest (cdr opt))
-              (qualifiers nil))
-          ;; Collect qualifiers (keywords before the lambda-list)
-          (loop
-            (if (and rest (keywordp (car rest)))
-                (progn (push (car rest) qualifiers)
-                       (setq rest (cdr rest)))
-                (return)))
-          (setq qualifiers (nreverse qualifiers))
-          (let ((spec-ll (car rest))
-                (body (cdr rest)))
-            (if qualifiers
-                (push `(defmethod ,name ,@qualifiers ,spec-ll ,@body) method-defs)
-                (push `(defmethod ,name ,spec-ll ,@body) method-defs))))))
+      (cond
+        ;; Inline method definition
+        ((and (consp opt) (eq (car opt) :method))
+         ;; (:method [qualifiers...] specialized-lambda-list &body body)
+         (let ((rest (cdr opt))
+               (qualifiers nil))
+           ;; CLHS: qualifiers are non-list atoms.
+           (loop
+             (if (and rest (not (listp (car rest))))
+                 (progn (push (car rest) qualifiers)
+                        (setq rest (cdr rest)))
+                 (return)))
+           (setq qualifiers (nreverse qualifiers))
+           (let ((spec-ll (car rest))
+                 (body (cdr rest)))
+             (if qualifiers
+                 (push `(defmethod ,name ,@qualifiers ,spec-ll ,@body) method-defs)
+                 (push `(defmethod ,name ,spec-ll ,@body) method-defs)))))
+        ;; Method combination selection
+        ((and (consp opt) (eq (car opt) :method-combination))
+         (setq combo-name (cadr opt))
+         (setq combo-options (cddr opt)))))
     (setq method-defs (nreverse method-defs))
-    (if method-defs
-        `(progn
-           (ensure-generic-function ',name :lambda-list ',lambda-list)
-           ,@method-defs)
-        `(ensure-generic-function ',name :lambda-list ',lambda-list))))
+    (let ((egf-form
+            `(ensure-generic-function ',name
+               :lambda-list ',lambda-list
+               :method-combination-name ',combo-name
+               :method-combination-options ',combo-options)))
+      (if method-defs
+          `(progn ,egf-form ,@method-defs)
+          egf-form))))
 
 ;;; --- defmethod helpers ---
 
@@ -1693,11 +1759,14 @@ slot without touching the symbol-function cell."
 
 (defmacro defmethod (name &rest args)
   "Define a method on generic function NAME."
-  ;; Parse qualifiers (keywords before the lambda-list)
+  ;; CLHS: method qualifiers are non-list atoms (symbols or numbers)
+  ;; appearing before the specialized lambda list.  This permits `+`,
+  ;; `and`, `or`, etc. as qualifiers alongside keyword qualifiers such
+  ;; as :BEFORE / :AFTER / :AROUND.
   (let ((qualifiers nil)
         (rest args))
     (loop
-      (if (and rest (keywordp (car rest)))
+      (if (and rest (not (listp (car rest))))
           (progn
             (push (car rest) qualifiers)
             (setq rest (cdr rest)))
@@ -2353,6 +2422,360 @@ since user-defined method classes are out of scope."
                    gf resolved-specs qualifiers fn ll)))
     (add-method gf method)
     method))
+
+;;; ====================================================================
+;;; Method combination protocol (MOP)
+;;; ====================================================================
+;;;
+;;; CLHS 7.6.6 / AMOP §5.3: a method combination describes how the set
+;;; of applicable methods is woven into an effective method.  Each GF
+;;; carries one method-combination metaobject; the dispatcher consults
+;;; it via %DISPATCH-BUILD-EMF to assemble the EMF.
+;;;
+;;; Three combination flavours are recognised:
+;;;   :STANDARD — classic :around / :before / primary / :after wiring
+;;;   :SHORT    — short-form combinations (e.g. +, AND, OR, LIST, PROGN)
+;;;               built from a single operator and an optional
+;;;               identity-with-one-argument flag
+;;;   :LONG     — user-supplied combinations created via
+;;;               DEFINE-METHOD-COMBINATION with explicit method groups
+;;;               and a body returning a form that uses CALL-METHOD
+
+;;; standard-method-combination struct layout:
+;;;   0: name                         - symbol
+;;;   1: options                      - plist / list supplied at selection
+;;;   2: type                         - :STANDARD / :SHORT / :LONG
+;;;   3: operator                     - short-form operator symbol (or NIL)
+;;;   4: identity-with-one-argument   - short-form flag (or NIL)
+;;;   5: builder                      - long-form body closure (or NIL)
+(%register-struct-type 'standard-method-combination 6 nil
+  '((name nil) (options nil) (type nil)
+    (operator nil) (identity-with-one-argument nil) (builder nil)))
+
+(%make-bootstrap-class 'standard-method-combination
+  (list (find-class 'standard-object)))
+
+;;; Keyed by SYMBOL-NAME so a combination registered in one package
+;;; resolves from any other package (e.g. CL-USER refers to STANDARD
+;;; even though the registry entry was interned in CL).
+(defvar *method-combinations* (make-hash-table :test 'equal))
+
+(defun %method-combination-key (name)
+  (if (symbolp name) (symbol-name name) name))
+
+(defun method-combination-name (combo) (%struct-ref combo 0))
+(defun method-combination-options (combo) (%struct-ref combo 1))
+(defun method-combination-type (combo) (%struct-ref combo 2))
+
+(defun %clone-method-combination (proto options)
+  "Return a shallow clone of PROTO carrying fresh OPTIONS.  Called from
+%RESOLVE-METHOD-COMBINATION when a GF selects a combination with
+non-default options so every GF has its own metaobject to inspect."
+  (%make-struct 'standard-method-combination
+    (%struct-ref proto 0)
+    options
+    (%struct-ref proto 2)
+    (%struct-ref proto 3)
+    (%struct-ref proto 4)
+    (%struct-ref proto 5)))
+
+(defun %register-standard-combination ()
+  (setf (gethash (%method-combination-key 'standard) *method-combinations*)
+        (%make-struct 'standard-method-combination
+          'standard nil :standard nil nil nil)))
+
+(defun %define-short-method-combination (name operator identity-with-one-argument
+                                         documentation)
+  "Register a short-form method combination named NAME.  OPERATOR is the
+combining operator symbol (defaults to NAME).  IDENTITY-WITH-ONE-ARGUMENT
+controls the single-primary-method optimisation.  DOCUMENTATION is
+accepted for API completeness but not stored."
+  (declare (ignore documentation))
+  (setf (gethash (%method-combination-key name) *method-combinations*)
+        (%make-struct 'standard-method-combination
+          name nil :short operator identity-with-one-argument nil))
+  name)
+
+(defun %define-long-method-combination (name builder)
+  "Register a long-form method combination named NAME.  BUILDER is a
+function of two arguments (generic-function, applicable-methods) that
+returns a form to be evaluated in the dynamic scope of the dispatcher;
+the form typically uses CALL-METHOD on methods drawn from the method
+groups bound by DEFINE-METHOD-COMBINATION."
+  (setf (gethash (%method-combination-key name) *method-combinations*)
+        (%make-struct 'standard-method-combination
+          name nil :long nil nil builder))
+  name)
+
+;;; Built-in short-form combinations (CLHS 7.6.6.4).
+(%register-standard-combination)
+(%define-short-method-combination '+        '+     t   nil)
+(%define-short-method-combination 'and      'and   t   nil)
+(%define-short-method-combination 'or       'or    t   nil)
+(%define-short-method-combination 'list     'list  nil nil)
+(%define-short-method-combination 'progn    'progn t   nil)
+(%define-short-method-combination 'nconc    'nconc t   nil)
+(%define-short-method-combination 'append   'append t  nil)
+(%define-short-method-combination 'min      'min   t   nil)
+(%define-short-method-combination 'max      'max   t   nil)
+
+;;; Retroactively install the standard combination on GFs created before
+;;; the table was populated (bootstrap GFs such as SHARED-INITIALIZE).
+(let ((std (gethash (%method-combination-key 'standard) *method-combinations*)))
+  (maphash (lambda (name gf)
+             (declare (ignore name))
+             (when (null (gf-method-combination gf))
+               (%set-gf-method-combination gf std)))
+           *generic-function-table*))
+
+;;; --- find-method-combination ---
+(defgeneric find-method-combination (generic-function name options))
+(defmethod find-method-combination (gf name options)
+  "AMOP: return the method-combination metaobject named NAME, attached
+with OPTIONS.  Default method consults the global combination registry
+and ignores GF, so it accepts NIL as well as a generic-function object —
+the closer-mop calling convention."
+  (declare (ignore gf))
+  (%resolve-method-combination name options))
+
+;;; --- Short-form EMF builder ---
+
+(defun %short-combine (operator identity-one primary args)
+  "Combine PRIMARY method results with OPERATOR.  When IDENTITY-ONE is
+true and there is exactly one primary method the method's value is
+returned directly (no wrapping call), matching the
+:IDENTITY-WITH-ONE-ARGUMENT short-form contract."
+  (if (and identity-one (null (cdr primary)))
+      (apply (method-function (car primary)) args)
+      (case operator
+        ((and)
+         (let ((last t))
+           (dolist (m primary last)
+             (setq last (apply (method-function m) args))
+             (unless last (return nil)))))
+        ((or)
+         (let ((result nil))
+           (dolist (m primary result)
+             (let ((v (apply (method-function m) args)))
+               (when v (return v))))))
+        ((progn)
+         (let ((last nil))
+           (dolist (m primary last)
+             (setq last (apply (method-function m) args)))))
+        ((list)
+         (let ((result nil))
+           (dolist (m primary)
+             (push (apply (method-function m) args) result))
+           (nreverse result)))
+        ((append)
+         (let ((result nil))
+           (dolist (m primary result)
+             (setq result (append result (apply (method-function m) args))))))
+        ((nconc)
+         (let ((result nil))
+           (dolist (m primary result)
+             (setq result (nconc result (apply (method-function m) args))))))
+        ((+)
+         (let ((sum 0))
+           (dolist (m primary sum)
+             (setq sum (+ sum (apply (method-function m) args))))))
+        ((*)
+         (let ((prod 1))
+           (dolist (m primary prod)
+             (setq prod (* prod (apply (method-function m) args))))))
+        ((max)
+         (let ((result nil))
+           (dolist (m primary result)
+             (let ((v (apply (method-function m) args)))
+               (setq result (if result (max result v) v))))))
+        ((min)
+         (let ((result nil))
+           (dolist (m primary result)
+             (let ((v (apply (method-function m) args)))
+               (setq result (if result (min result v) v))))))
+        (t
+         (apply operator
+                (mapcar (lambda (m) (apply (method-function m) args)) primary))))))
+
+(defun %build-short-effective-method (combination methods)
+  "Assemble an EMF for a short-form COMBINATION over applicable METHODS.
+METHODS are already sorted most-specific-first.  Partitioning:
+  (:AROUND)          -> :around chain
+  (COMBINATION-NAME) -> primary methods
+  NIL                -> primary methods (accepted for convenience)
+Other qualifier sets are rejected per CLHS 7.6.6.4.
+The :MOST-SPECIFIC-LAST option (supplied via DEFGENERIC's
+:METHOD-COMBINATION form) reverses primary argument order."
+  (let ((operator (%struct-ref combination 3))
+        (identity-one (%struct-ref combination 4))
+        (options (%struct-ref combination 1))
+        (combo-name (method-combination-name combination))
+        (around nil)
+        (primary nil))
+    (dolist (m methods)
+      (let ((q (method-qualifiers m)))
+        (cond
+          ((equal q '(:around)) (push m around))
+          ((null q) (push m primary))
+          ((and (consp q) (null (cdr q)) (eq (car q) combo-name))
+           (push m primary))
+          (t (error "Method ~S has invalid qualifiers ~S for combination ~S"
+                    m q combo-name)))))
+    (setq around (nreverse around))
+    (setq primary (nreverse primary))
+    (when (member :most-specific-last options)
+      (setq primary (reverse primary)))
+    (unless primary
+      (error "No applicable primary method for combination ~S"
+             (method-combination-name combination)))
+    (let ((call-primary
+            (lambda (&rest call-args)
+              (let ((args (if call-args call-args *current-method-args*)))
+                (%short-combine operator identity-one primary args)))))
+      (if around
+          (%make-around-chain around call-primary)
+          call-primary))))
+
+;;; --- Long-form EMF builder ---
+
+;;; %CALL-METHOD-IMPL is the runtime that the CALL-METHOD macro expands
+;;; into.  It invokes METHOD on *CURRENT-METHOD-ARGS*; when NEXT-METHODS
+;;; is supplied it installs a call-next-method chain so the method body
+;;; can walk further.  Intended for the form emitted by a
+;;; DEFINE-METHOD-COMBINATION body.
+(defun %call-method-impl (method next-methods)
+  (let ((args *current-method-args*))
+    (if next-methods
+        (let* ((rest-chain (%make-method-chain next-methods))
+               (*call-next-method-function* rest-chain)
+               (*call-next-method-args* args)
+               (*next-method-p-function* (lambda () (not (null next-methods)))))
+          (apply (method-function method) args))
+        (apply (method-function method) args))))
+
+(defmacro call-method (method &optional next-methods)
+  "CLHS pseudo-operator used inside forms returned by
+DEFINE-METHOD-COMBINATION bodies.  Expands into a call to
+%CALL-METHOD-IMPL on METHOD with NEXT-METHODS as the call-next-method
+chain.  Both METHOD and NEXT-METHODS are spliced in as literal method
+objects / lists by the combination body's backquote — we wrap them in
+QUOTE so the compiler treats them as constants rather than nested
+function calls."
+  (list '%call-method-impl
+        (list 'quote method)
+        (list 'quote next-methods)))
+
+(defun %build-long-effective-method (gf combination methods)
+  "Build an EMF for a long-form COMBINATION.  The combination's builder
+closure receives GF and METHODS and returns a FORM; the form is wrapped
+into a lambda and evaluated once per unique method set (i.e. once per
+cache miss).  Any CALL-METHOD occurrences in the form are expanded by
+the global CALL-METHOD macro defined above."
+  (let* ((builder (%struct-ref combination 5))
+         (form (funcall builder gf methods)))
+    (eval `(lambda (&rest %emf-args)
+             (declare (ignorable %emf-args))
+             ,form))))
+
+;;; --- Method group filtering (long form) ---
+
+(defun %match-qualifier-pattern (qualifiers pattern)
+  "Match a method's QUALIFIERS list against a long-form group PATTERN.
+PATTERN elements are compared with EQL; a lone * in PATTERN means
+`any remaining qualifiers'."
+  (cond
+    ((and (null qualifiers) (null pattern)) t)
+    ((equal pattern '(*)) t)
+    ((and pattern (eq (car pattern) '*)) t)
+    ((or (null qualifiers) (null pattern)) nil)
+    ((eql (car qualifiers) (car pattern))
+     (%match-qualifier-pattern (cdr qualifiers) (cdr pattern)))
+    (t nil)))
+
+(defun %filter-methods-by-spec (methods spec-tail)
+  "Select methods that satisfy the group specifier SPEC-TAIL (the part
+after the group-variable name in a long-form group-spec).  Supported:
+  ()                 — unqualified methods
+  (qualifier...)     — exact qualifier list, optionally ending in *
+  (symbol)           — SYMBOL names a predicate of the qualifier list"
+  (let ((pattern (car spec-tail)))
+    (cond
+      ((null pattern)
+       (remove-if-not (lambda (m) (null (method-qualifiers m))) methods))
+      ((and (symbolp pattern)
+            (not (keywordp pattern))
+            (fboundp pattern))
+       (remove-if-not (lambda (m) (funcall pattern (method-qualifiers m))) methods))
+      ((listp pattern)
+       (remove-if-not (lambda (m)
+                        (%match-qualifier-pattern (method-qualifiers m) pattern))
+                      methods))
+      (t methods))))
+
+;;; --- define-method-combination ---
+
+(defmacro define-method-combination (name &rest args)
+  "Register a user method combination.  Two forms:
+
+Short form — all ARGS are :KEYWORD value pairs (or empty):
+  (define-method-combination NAME
+    [:documentation STRING]
+    [:identity-with-one-argument BOOL]
+    [:operator SYMBOL])
+
+Long form — first ARG is a lambda-list, second is a group-spec list:
+  (define-method-combination NAME LAMBDA-LIST ({GROUP-SPEC}*)
+    [(:arguments . ARG-LIST)] [(:generic-function VAR)]
+    [(:documentation STRING)]
+    BODY...)
+
+Each group-spec has the form (VAR QUALIFIER-PATTERN-OR-PREDICATE) and
+binds VAR within BODY to the methods whose qualifier list matches.
+BODY returns a form, normally written with backquote, using CALL-METHOD
+to dispatch the methods it pulls out of those groups."
+  (cond
+    ;; Short form — options only (or none).
+    ((or (null args) (keywordp (car args)))
+     (let ((documentation nil)
+           (identity-p nil)
+           (operator name)
+           (rest args))
+       (loop while rest
+             do (let ((k (pop rest))
+                      (v (pop rest)))
+                  (case k
+                    (:documentation (setq documentation v))
+                    (:identity-with-one-argument (setq identity-p v))
+                    (:operator (setq operator v)))))
+       `(%define-short-method-combination
+           ',name ',operator ',identity-p ',documentation)))
+    ;; Long form.
+    (t
+     (let* ((lambda-list (car args))
+            (group-specs (cadr args))
+            (body (cddr args))
+            (gf-var nil))
+       (declare (ignore lambda-list))
+       ;; Strip leading option forms: (:documentation ...), (:arguments ...),
+       ;; (:generic-function VAR).
+       (loop while (and body (consp (car body))
+                        (or (eq (caar body) :documentation)
+                            (eq (caar body) :arguments)
+                            (eq (caar body) :generic-function)))
+             do (let ((opt (pop body)))
+                  (case (car opt)
+                    (:generic-function (setq gf-var (cadr opt))))))
+       (let ((gf-sym (or gf-var (gensym "GF")))
+             (methods-sym (gensym "METHODS")))
+         `(%define-long-method-combination
+             ',name
+             (lambda (,gf-sym ,methods-sym)
+               (declare (ignorable ,gf-sym))
+               (let ,(mapcar (lambda (gs)
+                               `(,(car gs)
+                                 (%filter-methods-by-spec ,methods-sym ',(cdr gs))))
+                             group-specs)
+                 ,@body))))))))
 
 ;;; --- Provide module ---
 (provide "clos")
