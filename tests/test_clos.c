@@ -271,15 +271,20 @@ TEST(direct_subclasses_integer)
 
 /* === Phase 1: Slot Access Infrastructure === */
 
-/* Helper: create a simple CLOS class with slot-index-table for testing */
+/* Helper: create a simple CLOS class with slot-index-table for testing.
+   The table stores STANDARD-EFFECTIVE-SLOT-DEFINITION metaobjects; each
+   esd's location (slot 2) is the struct index used by %STRUCT-REF. */
 #define PHASE1_SETUP \
     "(progn " \
     "  (%register-struct-type 'test-point 2 nil '((x nil) (y nil))) " \
-    "  (let ((cls (%make-struct 'standard-class " \
-    "               'test-point nil nil nil nil nil nil nil nil t nil nil))) " \
+    "  (let* ((esd-x (%make-effective-slot-def 'x nil nil :instance 0)) " \
+    "         (esd-y (%make-effective-slot-def 'y nil nil :instance 1)) " \
+    "         (cls (%make-struct 'standard-class " \
+    "                'test-point nil nil nil nil nil nil nil nil t nil nil))) " \
     "    (let ((idx-table (make-hash-table :test 'eq))) " \
-    "      (setf (gethash 'x idx-table) 0) " \
-    "      (setf (gethash 'y idx-table) 1) " \
+    "      (setf (gethash 'x idx-table) esd-x) " \
+    "      (setf (gethash 'y idx-table) esd-y) " \
+    "      (%struct-set cls 4 (list esd-x esd-y)) " \
     "      (%struct-set cls 5 idx-table) " \
     "      (setf (find-class 'test-point) cls))) " \
     "  t)"
@@ -410,11 +415,15 @@ TEST(defclass_effective_slots)
 
 TEST(defclass_slot_index_table)
 {
+    /* The index-table maps slot-name -> effective-slot-definition;
+       SLOT-DEFINITION-LOCATION gives the struct storage index. */
     ASSERT_STR_EQ(eval_print(
-        "(gethash 'x (class-slot-index-table (find-class 'point)))"),
+        "(slot-definition-location "
+        " (gethash 'x (class-slot-index-table (find-class 'point))))"),
         "0");
     ASSERT_STR_EQ(eval_print(
-        "(gethash 'y (class-slot-index-table (find-class 'point)))"),
+        "(slot-definition-location "
+        " (gethash 'y (class-slot-index-table (find-class 'point))))"),
         "1");
 }
 
@@ -2055,6 +2064,182 @@ TEST(svuc_slot_unbound_still_fires)
         "    (list (find-class 't) (find-class 'svuc-i) (find-class 't))))");
 }
 
+/* === :allocation :class — shared slots === */
+
+TEST(calloc_two_instances_share)
+{
+    /* Two instances of a class with :allocation :class share writes
+       to that slot (AMOP §5.5: class-allocated storage is per-class). */
+    eval_print("(defclass cs-share () ((n :allocation :class :initform 0)))");
+    eval_print("(defvar *cs-a* (make-instance 'cs-share))");
+    eval_print("(defvar *cs-b* (make-instance 'cs-share))");
+    eval_print("(setf (slot-value *cs-a* 'n) 42)");
+    ASSERT_STR_EQ(eval_print("(slot-value *cs-b* 'n)"), "42");
+}
+
+TEST(calloc_subclass_inherits_cell)
+{
+    /* A subclass that does not redefine a class-allocated slot shares
+       the same storage cell with its parent. */
+    eval_print("(defclass cs-parent () ((x :allocation :class :initform 'hello)))");
+    eval_print("(defclass cs-child (cs-parent) ())");
+    eval_print("(defvar *cs-p* (make-instance 'cs-parent))");
+    eval_print("(defvar *cs-c* (make-instance 'cs-child))");
+    eval_print("(setf (slot-value *cs-p* 'x) 'world)");
+    ASSERT_STR_EQ(eval_print("(slot-value *cs-c* 'x)"), "WORLD");
+    ASSERT_STR_EQ(eval_print(
+        "(eq (slot-definition-location "
+        "      (first (class-slots (find-class 'cs-parent)))) "
+        "    (slot-definition-location "
+        "      (first (class-slots (find-class 'cs-child)))))"),
+        "T");
+}
+
+TEST(calloc_subclass_redefines_gets_own_cell)
+{
+    /* A subclass that redefines a class-allocated slot in its own direct
+       slots gets a fresh cell; writes stay separate from the parent. */
+    eval_print("(defclass cs-p2 () ((x :allocation :class :initform 1)))");
+    eval_print(
+        "(defclass cs-c2 (cs-p2) "
+        "  ((x :allocation :class :initform 2)))");
+    eval_print("(defvar *cs-p2-inst* (make-instance 'cs-p2))");
+    eval_print("(defvar *cs-c2-inst* (make-instance 'cs-c2))");
+    ASSERT_STR_EQ(eval_print("(slot-value *cs-p2-inst* 'x)"), "1");
+    ASSERT_STR_EQ(eval_print("(slot-value *cs-c2-inst* 'x)"), "2");
+    eval_print("(setf (slot-value *cs-p2-inst* 'x) 100)");
+    ASSERT_STR_EQ(eval_print("(slot-value *cs-c2-inst* 'x)"), "2");
+    ASSERT_STR_EQ(eval_print("(slot-value *cs-p2-inst* 'x)"), "100");
+}
+
+TEST(calloc_location_is_cons)
+{
+    /* AMOP §5.5: SLOT-DEFINITION-LOCATION returns a cons cell for
+       class-allocated slots. The cell's cdr is the actual storage —
+       initialized by MAKE-INSTANCE (initforms run on first instance). */
+    eval_print("(defclass cs-loc () ((shared :allocation :class :initform 'hi)))");
+    ASSERT_STR_EQ(eval_print(
+        "(consp (slot-definition-location "
+        "  (first (class-slots (find-class 'cs-loc)))))"),
+        "T");
+    eval_print("(make-instance 'cs-loc)");
+    ASSERT_STR_EQ(eval_print(
+        "(cdr (slot-definition-location "
+        "  (first (class-slots (find-class 'cs-loc)))))"),
+        "HI");
+}
+
+TEST(calloc_location_mixed)
+{
+    /* Instance-allocated slots keep integer locations even when
+       interleaved with class-allocated slots. */
+    eval_print(
+        "(defclass cs-mix () "
+        "  ((a :initarg :a) "
+        "   (b :allocation :class :initform 'shared) "
+        "   (c :initarg :c)))");
+    eval_print("(defvar *cs-mix-slots* (class-slots (find-class 'cs-mix)))");
+    ASSERT_STR_EQ(eval_print(
+        "(slot-definition-location "
+        "  (find 'a *cs-mix-slots* :key #'slot-definition-name))"),
+        "0");
+    ASSERT_STR_EQ(eval_print(
+        "(consp (slot-definition-location "
+        "  (find 'b *cs-mix-slots* :key #'slot-definition-name)))"),
+        "T");
+    ASSERT_STR_EQ(eval_print(
+        "(slot-definition-location "
+        "  (find 'c *cs-mix-slots* :key #'slot-definition-name))"),
+        "1");
+    /* Reading still works for all three */
+    eval_print("(defvar *cs-mix-i* (make-instance 'cs-mix :a 10 :c 30))");
+    ASSERT_STR_EQ(eval_print("(slot-value *cs-mix-i* 'a)"), "10");
+    ASSERT_STR_EQ(eval_print("(slot-value *cs-mix-i* 'b)"), "SHARED");
+    ASSERT_STR_EQ(eval_print("(slot-value *cs-mix-i* 'c)"), "30");
+}
+
+TEST(calloc_boundp_and_makunbound)
+{
+    /* SLOT-BOUNDP and SLOT-MAKUNBOUND operate on the shared cell for
+       class-allocated slots. */
+    eval_print("(defclass cs-bp () ((s :allocation :class)))");
+    eval_print("(defvar *cs-bp-a* (make-instance 'cs-bp))");
+    eval_print("(defvar *cs-bp-b* (make-instance 'cs-bp))");
+    ASSERT_STR_EQ(eval_print("(slot-boundp *cs-bp-a* 's)"), "NIL");
+    eval_print("(setf (slot-value *cs-bp-a* 's) 7)");
+    ASSERT_STR_EQ(eval_print("(slot-boundp *cs-bp-b* 's)"), "T");
+    eval_print("(slot-makunbound *cs-bp-a* 's)");
+    ASSERT_STR_EQ(eval_print("(slot-boundp *cs-bp-b* 's)"), "NIL");
+}
+
+TEST(calloc_initform_runs_once)
+{
+    /* A class-slot initform runs only when the cell is unbound — so the
+       first MAKE-INSTANCE fills it and subsequent calls see the existing
+       value. */
+    eval_print("(defvar *cs-init-counter* 0)");
+    eval_print(
+        "(defclass cs-init () "
+        "  ((k :allocation :class :initform (incf *cs-init-counter*))))");
+    eval_print("(defvar *cs-init-a* (make-instance 'cs-init))");
+    eval_print("(defvar *cs-init-b* (make-instance 'cs-init))");
+    ASSERT_STR_EQ(eval_print("*cs-init-counter*"), "1");
+    ASSERT_STR_EQ(eval_print("(slot-value *cs-init-a* 'k)"), "1");
+    ASSERT_STR_EQ(eval_print("(slot-value *cs-init-b* 'k)"), "1");
+}
+
+TEST(calloc_initarg_writes_shared_cell)
+{
+    /* An :initarg targeting a class slot writes to the shared cell —
+       so a later instance created without the initarg still sees that
+       value (the cell is no longer unbound, initform is skipped). */
+    eval_print(
+        "(defclass cs-ia () "
+        "  ((k :allocation :class :initarg :k :initform 0)))");
+    eval_print("(defvar *cs-ia-a* (make-instance 'cs-ia :k 99))");
+    eval_print("(defvar *cs-ia-b* (make-instance 'cs-ia))");
+    ASSERT_STR_EQ(eval_print("(slot-value *cs-ia-a* 'k)"), "99");
+    ASSERT_STR_EQ(eval_print("(slot-value *cs-ia-b* 'k)"), "99");
+}
+
+TEST(calloc_struct_smaller_than_effective_slots)
+{
+    /* With class slots, the underlying struct has fewer cells than the
+       effective slot list — the bytecode layout must not alias a class
+       slot onto an instance-slot struct index. */
+    eval_print(
+        "(defclass cs-sz () "
+        "  ((ix :initarg :ix) "
+        "   (shared :allocation :class :initform 'hi) "
+        "   (iy :initarg :iy)))");
+    eval_print("(defvar *cs-sz-inst* (make-instance 'cs-sz :ix 10 :iy 20))");
+    /* Only 2 instance slots → struct size 2 → index 1 must be iy, not shared. */
+    ASSERT_STR_EQ(eval_print("(%struct-ref *cs-sz-inst* 0)"), "10");
+    ASSERT_STR_EQ(eval_print("(%struct-ref *cs-sz-inst* 1)"), "20");
+}
+
+TEST(calloc_svuc_protocol_sees_class_slots)
+{
+    /* The slot-value-using-class protocol fires on class-allocated slots
+       too — user :around methods receive the effective-slot-definition. */
+    eval_print("(defclass cs-svuc () ((tag :allocation :class :initform 'default)))");
+    eval_print("(defvar *cs-svuc-log* nil)");
+    eval_print(
+        "(defmethod slot-value-using-class :around "
+        "    ((class t) (inst cs-svuc) slot) "
+        "  (push (slot-definition-name slot) *cs-svuc-log*) "
+        "  (call-next-method))");
+    ASSERT_STR_EQ(eval_print(
+        "(slot-value (make-instance 'cs-svuc) 'tag)"),
+        "DEFAULT");
+    ASSERT_STR_EQ(eval_print("(first *cs-svuc-log*)"), "TAG");
+    eval_print(
+        "(remove-method #'slot-value-using-class "
+        "  (find-method #'slot-value-using-class '(:around) "
+        "    (list (find-class 't) (find-class 'cs-svuc) "
+        "          (find-class 'standard-effective-slot-definition))))");
+}
+
 int main(void)
 {
     test_init();
@@ -2263,6 +2448,18 @@ int main(void)
     RUN(svuc_makunbound_dispatches);
     RUN(svuc_struct_fallback_unaffected);
     RUN(svuc_slot_unbound_still_fires);
+
+    /* :allocation :class (MOP) */
+    RUN(calloc_two_instances_share);
+    RUN(calloc_subclass_inherits_cell);
+    RUN(calloc_subclass_redefines_gets_own_cell);
+    RUN(calloc_location_is_cons);
+    RUN(calloc_location_mixed);
+    RUN(calloc_boundp_and_makunbound);
+    RUN(calloc_initform_runs_once);
+    RUN(calloc_initarg_writes_shared_cell);
+    RUN(calloc_struct_smaller_than_effective_slots);
+    RUN(calloc_svuc_protocol_sees_class_slots);
 
     teardown();
     REPORT();

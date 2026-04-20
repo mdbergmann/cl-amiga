@@ -14,7 +14,7 @@
 ;;;   2:  direct-slots             - list of canonical slot specs
 ;;;   3:  cpl                      - class precedence list
 ;;;   4:  effective-slots          - merged slots from CPL
-;;;   5:  slot-index-table         - hash table: slot-name -> index
+;;;   5:  slot-index-table         - hash table: slot-name -> effective-slot-def
 ;;;   6:  direct-subclasses        - list of class objects
 ;;;   7:  direct-methods           - list
 ;;;   8:  prototype                - lazily created by CLASS-PROTOTYPE
@@ -480,14 +480,15 @@
          (index-table (class-slot-index-table class)))
     (cond
       (index-table
-       (multiple-value-bind (index found-p)
-           (gethash slot-name index-table)
-         (unless found-p
+       (let ((esd (gethash slot-name index-table)))
+         (unless esd
            (error "~S has no slot named ~S" instance slot-name))
          (if *slot-access-protocol-extended-p*
-             (slot-value-using-class class instance
-                                     (nth index (class-effective-slots class)))
-             (let ((val (%struct-ref instance index)))
+             (slot-value-using-class class instance esd)
+             (let* ((location (slot-definition-location esd))
+                    (val (if (consp location)
+                             (cdr location)
+                             (%struct-ref instance location))))
                (if (eq val *slot-unbound-marker*)
                    (slot-unbound class instance slot-name)
                    val)))))
@@ -511,17 +512,16 @@ Specialize via defmethod to provide lazy initialization."
          (index-table (class-slot-index-table class)))
     (cond
       (index-table
-       (multiple-value-bind (index found-p)
-           (gethash slot-name index-table)
-         (unless found-p
+       (let ((esd (gethash slot-name index-table)))
+         (unless esd
            (error "~S has no slot named ~S" instance slot-name))
          (if *slot-access-protocol-extended-p*
-             (setf (slot-value-using-class
-                    class instance
-                    (nth index (class-effective-slots class)))
-                   new-value)
-             (progn (%struct-set instance index new-value)
-                    new-value))))
+             (setf (slot-value-using-class class instance esd) new-value)
+             (let ((location (slot-definition-location esd)))
+               (if (consp location)
+                   (rplacd location new-value)
+                   (%struct-set instance location new-value))
+               new-value))))
       ((structurep instance)
        (let ((idx (%find-struct-slot-index instance slot-name)))
          (unless idx
@@ -540,14 +540,16 @@ Specialize via defmethod to provide lazy initialization."
          (index-table (class-slot-index-table class)))
     (cond
       (index-table
-       (multiple-value-bind (index found-p)
-           (gethash slot-name index-table)
-         (unless found-p
+       (let ((esd (gethash slot-name index-table)))
+         (unless esd
            (error "~S has no slot named ~S" instance slot-name))
          (if *slot-access-protocol-extended-p*
-             (slot-boundp-using-class class instance
-                                      (nth index (class-effective-slots class)))
-             (not (eq (%struct-ref instance index) *slot-unbound-marker*)))))
+             (slot-boundp-using-class class instance esd)
+             (let ((location (slot-definition-location esd)))
+               (not (eq (if (consp location)
+                            (cdr location)
+                            (%struct-ref instance location))
+                        *slot-unbound-marker*))))))
       ((structurep instance)
        (unless (%find-struct-slot-index instance slot-name)
          (error "~S has no slot named ~S" instance slot-name))
@@ -562,15 +564,16 @@ Specialize via defmethod to provide lazy initialization."
          (index-table (class-slot-index-table class)))
     (cond
       (index-table
-       (multiple-value-bind (index found-p)
-           (gethash slot-name index-table)
-         (unless found-p
+       (let ((esd (gethash slot-name index-table)))
+         (unless esd
            (error "~S has no slot named ~S" instance slot-name))
          (if *slot-access-protocol-extended-p*
-             (slot-makunbound-using-class class instance
-                                          (nth index (class-effective-slots class)))
-             (progn (%struct-set instance index *slot-unbound-marker*)
-                    instance))))
+             (slot-makunbound-using-class class instance esd)
+             (let ((location (slot-definition-location esd)))
+               (if (consp location)
+                   (rplacd location *slot-unbound-marker*)
+                   (%struct-set instance location *slot-unbound-marker*))
+               instance))))
       ((structurep instance)
        (error "SLOT-MAKUNBOUND is not supported for structures: ~S" instance))
       (t
@@ -582,9 +585,9 @@ Specialize via defmethod to provide lazy initialization."
          (index-table (class-slot-index-table class)))
     (cond
       (index-table
-       (multiple-value-bind (index found-p)
+       (multiple-value-bind (esd found-p)
            (gethash slot-name index-table)
-         (declare (ignore index))
+         (declare (ignore esd))
          found-p))
       ((structurep instance)
        (if (%find-struct-slot-index instance slot-name) t nil))
@@ -732,12 +735,13 @@ Specialize via defmethod to provide lazy initialization."
 ;;; --- Build slot-index-table ---
 
 (defun %build-slot-index-table (effective-slots)
-  "Build a hash table mapping slot-name -> index from effective slots."
-  (let ((table (make-hash-table :test 'eq))
-        (i 0))
+  "Build a hash table mapping slot-name -> effective-slot-definition.
+   Callers reach the actual storage via SLOT-DEFINITION-LOCATION on the
+   returned slot-def — an integer struct index for :INSTANCE allocation,
+   or a cons cell (NAME . VALUE) for :CLASS allocation."
+  (let ((table (make-hash-table :test 'eq)))
     (dolist (slot effective-slots)
-      (setf (gethash (slot-definition-name slot) table) i)
-      (setq i (+ i 1)))
+      (setf (gethash (slot-definition-name slot) table) slot))
     table))
 
 ;;; --- Class creation at runtime ---
@@ -775,15 +779,20 @@ Specialize via defmethod to provide lazy initialization."
     (if (fboundp 'finalize-inheritance)
         (finalize-inheritance class)
         (%finalize-inheritance-body class))
-    ;; Register struct type with the finalized slot layout
-    (let* ((effective (class-effective-slots class))
-           (n-slots (length effective))
-           (struct-slot-specs
-             (mapcar (lambda (esd) (list (slot-definition-name esd) nil))
-                     effective)))
-      (%register-struct-type name n-slots
-                             (if direct-super-names (car direct-super-names) nil)
-                             struct-slot-specs))
+    ;; Register struct type with the finalized slot layout. The struct
+    ;; only holds :INSTANCE-allocated slots — :CLASS slots live on the
+    ;; class itself via the cons cell returned by SLOT-DEFINITION-LOCATION.
+    (let* ((instance-esds nil))
+      (dolist (esd (class-effective-slots class))
+        (when (eq (slot-definition-allocation esd) :instance)
+          (push esd instance-esds)))
+      (setq instance-esds (nreverse instance-esds))
+      (let ((struct-slot-specs
+              (mapcar (lambda (esd) (list (slot-definition-name esd) nil))
+                      instance-esds)))
+        (%register-struct-type name (length instance-esds)
+                               (if direct-super-names (car direct-super-names) nil)
+                               struct-slot-specs)))
     ;; Register class
     (setf (find-class name) class)
     ;; Register as subclass of each direct super
@@ -801,16 +810,48 @@ Specialize via defmethod to provide lazy initialization."
 ;;; Calling twice is idempotent — the class struct is replaced on
 ;;; redefinition, so a fresh class always starts with FINALIZED-P = NIL.
 
+(defun %find-inherited-class-slot-cell (class slot-name)
+  "Walk CLASS's direct-superclasses' effective slots looking for a
+   class-allocated slot with SLOT-NAME. Return its location cons cell
+   so the subclass can share the same storage — per AMOP §5.5,
+   subclasses inherit :class storage unless they redefine the slot."
+  (dolist (super (class-direct-superclasses class) nil)
+    (when (class-finalized-p super)
+      (let ((super-esd (%find-slot-def slot-name
+                                       (class-effective-slots super))))
+        (when (and super-esd
+                   (eq (slot-definition-allocation super-esd) :class))
+          (let ((super-loc (slot-definition-location super-esd)))
+            (when (consp super-loc)
+              (return super-loc))))))))
+
+(defun %assign-slot-locations (class effective-slots)
+  "Fill in SLOT-DEFINITION-LOCATION for each effective slot. Instance
+   slots get the next integer struct index. Class-allocated slots get
+   a cons (NAME . VALUE) — inherited from a superclass when the class
+   does not provide its own direct definition for the same name."
+  (let ((instance-i 0))
+    (dolist (esd effective-slots)
+      (let ((name (slot-definition-name esd)))
+        (cond
+          ((eq (slot-definition-allocation esd) :class)
+           (let ((own-direct (%find-slot-def name (class-direct-slots class))))
+             (%set-slot-definition-location esd
+               (if own-direct
+                   (cons name *slot-unbound-marker*)
+                   (or (%find-inherited-class-slot-cell class name)
+                       (cons name *slot-unbound-marker*))))))
+          (t
+           (%set-slot-definition-location esd instance-i)
+           (setq instance-i (+ instance-i 1))))))))
+
 (defun %finalize-inheritance-body (class)
   (unless (class-finalized-p class)
     (%set-class-cpl class (%compute-class-precedence-list class))
     (let ((effective (%compute-slots-default class)))
       (%set-class-effective-slots class effective)
       (%set-class-slot-index-table class (%build-slot-index-table effective))
-      (let ((i 0))
-        (dolist (esd effective)
-          (%set-slot-definition-location esd i)
-          (setq i (+ i 1)))))
+      (%assign-slot-locations class effective))
     (%set-class-default-initargs class
       (%compute-default-initargs-default class))
     (%set-class-finalized-p class t))
@@ -949,12 +990,16 @@ Specialize via defmethod to provide lazy initialization."
 ;;; ====================================================================
 
 (defun allocate-instance (class)
-  "Allocate a fresh instance of CLASS with all slots unbound."
-  (let* ((name (class-name class))
-         (effective (class-effective-slots class))
-         (n (length effective))
-         (args (make-list n :initial-element *slot-unbound-marker*)))
-    (apply #'%make-struct name args)))
+  "Allocate a fresh instance of CLASS with all instance slots unbound.
+   Class-allocated slots don't take struct storage — they live in the
+   cons cell attached to their effective-slot-definition."
+  (let ((name (class-name class))
+        (n 0))
+    (dolist (esd (class-effective-slots class))
+      (when (eq (slot-definition-allocation esd) :instance)
+        (setq n (+ n 1))))
+    (apply #'%make-struct name
+           (make-list n :initial-element *slot-unbound-marker*))))
 
 (defun %initarg-to-slot-index (class initarg)
   "Find the slot index for INITARG in CLASS, or NIL."
@@ -978,27 +1023,34 @@ Specialize via defmethod to provide lazy initialization."
   (values nil nil))
 
 (defun shared-initialize (instance slot-names &rest initargs)
-  "Initialize slots of INSTANCE from INITARGS and initforms."
+  "Initialize slots of INSTANCE from INITARGS and initforms.
+   Routes writes through SLOT-DEFINITION-LOCATION so that :CLASS slots
+   update their shared cons cell while :INSTANCE slots write into the
+   struct directly."
   (let* ((class (class-of instance))
-         (effective (class-effective-slots class))
-         (i 0))
+         (effective (class-effective-slots class)))
     (dolist (slot effective)
-      (let ((slot-name (slot-definition-name slot))
-            (slot-initargs (slot-definition-initargs slot)))
+      (let* ((slot-name (slot-definition-name slot))
+             (slot-initargs (slot-definition-initargs slot))
+             (location (slot-definition-location slot)))
         (multiple-value-bind (initarg-val initarg-supplied)
             (%find-initarg-value initargs slot-initargs)
           (cond
-            ;; Initarg supplied — always use it
             (initarg-supplied
-             (%struct-set instance i initarg-val))
-            ;; Slot is unbound and has initform — apply it
+             (if (consp location)
+                 (rplacd location initarg-val)
+                 (%struct-set instance location initarg-val)))
             ((and (or (eq slot-names t)
                       (member slot-name slot-names :test #'eq))
-                  (eq (%struct-ref instance i) *slot-unbound-marker*)
+                  (eq (if (consp location)
+                          (cdr location)
+                          (%struct-ref instance location))
+                      *slot-unbound-marker*)
                   (slot-definition-initfunction slot))
-             (%struct-set instance i
-                          (funcall (slot-definition-initfunction slot)))))))
-      (setq i (+ i 1)))
+             (let ((val (funcall (slot-definition-initfunction slot))))
+               (if (consp location)
+                   (rplacd location val)
+                   (%struct-set instance location val))))))))
     instance))
 
 (defun initialize-instance (instance &rest initargs)
@@ -1704,26 +1756,39 @@ When called with no arguments, passes the original method arguments."
 
 (defgeneric slot-value-using-class (class instance slot))
 (defmethod slot-value-using-class ((class t) instance slot)
-  (let ((val (%struct-ref instance (slot-definition-location slot))))
+  (let* ((location (slot-definition-location slot))
+         (val (if (consp location)
+                  (cdr location)
+                  (%struct-ref instance location))))
     (if (eq val *slot-unbound-marker*)
         (slot-unbound class instance (slot-definition-name slot))
         val)))
 
 (defgeneric (setf slot-value-using-class) (new-value class instance slot))
 (defmethod (setf slot-value-using-class) (new-value (class t) instance slot)
-  (%struct-set instance (slot-definition-location slot) new-value)
+  (declare (ignore class))
+  (let ((location (slot-definition-location slot)))
+    (if (consp location)
+        (rplacd location new-value)
+        (%struct-set instance location new-value)))
   new-value)
 
 (defgeneric slot-boundp-using-class (class instance slot))
 (defmethod slot-boundp-using-class ((class t) instance slot)
   (declare (ignore class))
-  (not (eq (%struct-ref instance (slot-definition-location slot))
-           *slot-unbound-marker*)))
+  (let ((location (slot-definition-location slot)))
+    (not (eq (if (consp location)
+                 (cdr location)
+                 (%struct-ref instance location))
+             *slot-unbound-marker*))))
 
 (defgeneric slot-makunbound-using-class (class instance slot))
 (defmethod slot-makunbound-using-class ((class t) instance slot)
   (declare (ignore class))
-  (%struct-set instance (slot-definition-location slot) *slot-unbound-marker*)
+  (let ((location (slot-definition-location slot)))
+    (if (consp location)
+        (rplacd location *slot-unbound-marker*)
+        (%struct-set instance location *slot-unbound-marker*)))
   instance)
 
 ;;; --- Upgrade slot-definition-class protocol to GFs ---
@@ -1806,10 +1871,7 @@ When called with no arguments, passes the original method arguments."
         (let ((effective (compute-slots class)))
           (%set-class-effective-slots class effective)
           (%set-class-slot-index-table class (%build-slot-index-table effective))
-          (let ((i 0))
-            (dolist (esd effective)
-              (%set-slot-definition-location esd i)
-              (setq i (+ i 1)))))
+          (%assign-slot-locations class effective))
         (%set-class-default-initargs class (compute-default-initargs class))
         (%set-class-finalized-p class t)
         class)))
@@ -1922,48 +1984,42 @@ When called with no arguments, passes the original method arguments."
          (old-class (class-of instance))
          (old-slots (class-effective-slots old-class))
          (new-slots (class-effective-slots new-class-obj))
-         (new-n-slots (length new-slots))
          (new-type-name (class-name new-class-obj))
-         (new-index-table (class-slot-index-table new-class-obj)))
-    ;; Save old slot values BEFORE changing class
+         (new-index-table (class-slot-index-table new-class-obj))
+         (new-n-slots 0))
+    (dolist (esd new-slots)
+      (when (eq (slot-definition-allocation esd) :instance)
+        (setq new-n-slots (+ new-n-slots 1))))
+    ;; Capture surviving slot values as (new-esd . value) pairs.
     (let ((saved-values nil))
-      (let ((old-i 0))
-        (dolist (old-slot old-slots)
-          (let ((name (slot-definition-name old-slot)))
-            (multiple-value-bind (new-i found-p)
-                (gethash name new-index-table)
-              (when (and found-p
-                         (not (eq (%struct-ref instance old-i)
-                                  *slot-unbound-marker*)))
-                (push (cons new-i (%struct-ref instance old-i)) saved-values))))
-          (setq old-i (+ old-i 1))))
-      ;; Try in-place modification
-      (if (%struct-change-class instance new-type-name new-n-slots)
-          (progn
-            ;; Clear all slots to unbound
-            (dotimes (i new-n-slots)
-              (%struct-set instance i *slot-unbound-marker*))
-            ;; Restore saved shared slot values
-            (dolist (pair saved-values)
-              (%struct-set instance (car pair) (cdr pair)))
-            ;; Initialize remaining slots from initargs and initforms
-            (apply #'shared-initialize instance t initargs)
-            instance)
-        ;; Fallback: allocate new instance
-        (let ((new-instance (allocate-instance new-class-obj))
-              (old-i 0))
-          (dolist (old-slot old-slots)
-            (let ((name (slot-definition-name old-slot)))
-              (multiple-value-bind (new-i found-p)
-                  (gethash name new-index-table)
-                (when (and found-p
-                           (not (eq (%struct-ref instance old-i)
-                                    *slot-unbound-marker*)))
-                  (%struct-set new-instance new-i
-                               (%struct-ref instance old-i)))))
-            (setq old-i (+ old-i 1)))
-          (apply #'shared-initialize new-instance t initargs)
-          new-instance)))))
+      (dolist (old-esd old-slots)
+        (let* ((name (slot-definition-name old-esd))
+               (old-loc (slot-definition-location old-esd))
+               (old-val (if (consp old-loc)
+                            (cdr old-loc)
+                            (%struct-ref instance old-loc))))
+          (unless (eq old-val *slot-unbound-marker*)
+            (let ((new-esd (gethash name new-index-table)))
+              (when new-esd
+                (push (cons new-esd old-val) saved-values))))))
+      (flet ((restore-to (target-instance)
+               (dolist (pair saved-values)
+                 (let ((loc (slot-definition-location (car pair))))
+                   (if (consp loc)
+                       (rplacd loc (cdr pair))
+                       (%struct-set target-instance loc (cdr pair)))))))
+        ;; Try in-place modification
+        (if (%struct-change-class instance new-type-name new-n-slots)
+            (progn
+              (dotimes (i new-n-slots)
+                (%struct-set instance i *slot-unbound-marker*))
+              (restore-to instance)
+              (apply #'shared-initialize instance t initargs)
+              instance)
+            (let ((new-instance (allocate-instance new-class-obj)))
+              (restore-to new-instance)
+              (apply #'shared-initialize new-instance t initargs)
+              new-instance))))))
 
 ;;; ====================================================================
 ;;; Phase 9: print-object generic function
