@@ -1203,6 +1203,29 @@ Specialize via defmethod to provide lazy initialization."
 (defvar *next-method-p-function* nil)
 (defvar *current-method-args* nil)
 
+;;; --- Dependent-maintenance protocol (AMOP §5.4) ---
+;;; Observer protocol for classes and generic functions.  Dependents
+;;; are stored in a side table keyed EQ on the metaobject, not a slot,
+;;; so metaobjects with no dependents (the overwhelming common case)
+;;; pay nothing.  ADD-DEPENDENT / REMOVE-DEPENDENT / MAP-DEPENDENTS /
+;;; UPDATE-DEPENDENT are defined later in this file; %NOTIFY-DEPENDENTS
+;;; is the internal broadcaster invoked from ENSURE-CLASS, ADD-METHOD,
+;;; REMOVE-METHOD, and ENSURE-GENERIC-FUNCTION.
+(defvar *metaobject-dependents* (make-hash-table :test 'eq)
+  "EQ hash from class or generic-function metaobject to a list of
+registered dependents (via ADD-DEPENDENT).")
+
+(defun %notify-dependents (metaobject &rest initargs)
+  "Broadcast UPDATE-DEPENDENT to each dependent of METAOBJECT with
+INITARGS describing the change.  Short-circuits when there are no
+dependents and (defensively) when the UPDATE-DEPENDENT GF is not yet
+bound — both conditions hold during bootstrap before the protocol GFs
+are defined."
+  (let ((deps (gethash metaobject *metaobject-dependents*)))
+    (when (and deps (fboundp 'update-dependent))
+      (dolist (dep deps)
+        (apply #'update-dependent metaobject dep initargs)))))
+
 (defun call-next-method (&rest args)
   "Call the next most-specific method.
 When called with no arguments, passes the original method arguments."
@@ -1606,7 +1629,9 @@ already-existing GF the installed combination is preserved."
                                method-combination-name method-combination-options)))
               (unless (eq new-combo (gf-method-combination existing))
                 (%set-gf-method-combination existing new-combo)
-                (%set-gf-dispatch-cache existing nil))))
+                (%set-gf-dispatch-cache existing nil)
+                (%notify-dependents existing 'reinitialize-instance
+                                    :method-combination new-combo))))
           (when (null (gf-method-combination existing))
             (let ((combo (%resolve-method-combination 'standard nil)))
               (when combo (%set-gf-method-combination existing combo))))
@@ -1807,7 +1832,9 @@ already-existing GF the installed combination is preserved."
    method with matching qualifiers and specializers.  Invalidates the
    dispatch cache and recomputes cacheability.  Returns METHOD.
    Primitive; does not dispatch through the ADD-METHOD GF so it is safe
-   during bootstrap and from DEFMETHOD expansion."
+   during bootstrap and from DEFMETHOD expansion.  Broadcasts
+   UPDATE-DEPENDENT so observers see every method change, whether the
+   caller went through ADD-METHOD or the primitive path."
   (let ((qualifiers (method-qualifiers method))
         (specializers (method-specializers method))
         (gf-name (gf-name gf)))
@@ -1827,11 +1854,14 @@ already-existing GF the installed combination is preserved."
     (when (and (%slot-access-protocol-gf-p gf-name)
                (> (length (gf-methods gf)) 1))
       (setq *slot-access-protocol-extended-p* t))
+    (%notify-dependents gf 'add-method method)
     method))
 
 (defun %uninstall-method-from-gf (gf method)
   "Low-level remove: drop METHOD (by EQ identity) from GF and refresh
-   dispatch state.  Returns GF."
+   dispatch state.  Returns GF.  Broadcasts UPDATE-DEPENDENT so
+   observers see removals regardless of whether the caller used the
+   REMOVE-METHOD GF or this primitive."
   (%set-gf-methods gf
     (remove method (gf-methods gf) :test #'eq))
   (%set-gf-dispatch-cache gf nil)
@@ -1842,6 +1872,7 @@ already-existing GF the installed combination is preserved."
         (%set-gf-eql-value-sets gf nil)))
   ;; Clear the back-link so the method object no longer claims membership.
   (%set-method-generic-function method nil)
+  (%notify-dependents gf 'remove-method method)
   gf)
 
 (defun %add-method-to-gf (gf-name qualifiers specializer-names fn lambda-list)
@@ -2076,11 +2107,21 @@ already-existing GF the installed combination is preserved."
 
 (defgeneric ensure-class-using-class (class name &rest keys))
 (defmethod ensure-class-using-class ((class t) name &rest keys)
-  (declare (ignore class))
-  (let ((direct-supers (getf keys :direct-superclasses))
-        (direct-slots  (getf keys :direct-slots))
-        (direct-inits  (getf keys :direct-default-initargs)))
-    (%ensure-class name direct-supers direct-slots direct-inits)))
+  (let* ((direct-supers (getf keys :direct-superclasses))
+         (direct-slots  (getf keys :direct-slots))
+         (direct-inits  (getf keys :direct-default-initargs))
+         (new-class (%ensure-class name direct-supers direct-slots direct-inits)))
+    ;; Redefinition: %ENSURE-CLASS allocates a fresh class struct, so
+    ;; any dependents previously registered on the old metaobject would
+    ;; be orphaned.  Migrate them to the new struct and then notify
+    ;; them with the initargs that drove the redefinition.
+    (when class
+      (let ((old-deps (gethash class *metaobject-dependents*)))
+        (when old-deps
+          (setf (gethash new-class *metaobject-dependents*) old-deps)
+          (remhash class *metaobject-dependents*)))
+      (apply #'%notify-dependents new-class 'reinitialize-instance keys))
+    new-class))
 
 (defun ensure-class (name &rest keys)
   "AMOP: look up the existing class (or NIL) and dispatch to
@@ -2331,15 +2372,20 @@ can then be installed via SET-FUNCALLABLE-INSTANCE-FUNCTION."
 
 (defgeneric add-method (generic-function method))
 (defmethod add-method ((gf standard-generic-function) (method standard-method))
-  "AMOP: install METHOD in GF.  Returns GF."
+  "AMOP: install METHOD in GF.  Returns GF.  The UPDATE-DEPENDENT
+broadcast is fired by %INSTALL-METHOD-IN-GF (the primitive used by
+both this GF and the bootstrap DEFMETHOD path), so observers see every
+method change regardless of which path installed it."
   (%install-method-in-gf gf method)
   gf)
 
 (defgeneric remove-method (generic-function method))
 (defmethod remove-method ((gf standard-generic-function) (method standard-method))
   "AMOP: uninstall METHOD from GF.  Returns GF.  Uses EQ identity — a
-method that is not installed is silently ignored, matching AMOP."
-  (%uninstall-method-from-gf gf method))
+method that is not installed is silently ignored, matching AMOP.  The
+UPDATE-DEPENDENT broadcast is fired by %UNINSTALL-METHOD-FROM-GF."
+  (%uninstall-method-from-gf gf method)
+  gf)
 
 (defgeneric find-method (generic-function qualifiers specializers &optional errorp))
 (defmethod find-method ((gf standard-generic-function) qualifiers specializers
@@ -2776,6 +2822,53 @@ to dispatch the methods it pulls out of those groups."
                                  (%filter-methods-by-spec ,methods-sym ',(cdr gs))))
                              group-specs)
                  ,@body))))))))
+
+;;; --- Dependent-maintenance protocol GFs (AMOP §5.4) ---
+;;; *METAOBJECT-DEPENDENTS* and %NOTIFY-DEPENDENTS are defined near the
+;;; top of this file so earlier hook sites can call them during
+;;; bootstrap without forward references.  The protocol GFs below are
+;;; deferred to the end so that DEFGENERIC / DEFMETHOD themselves are
+;;; fully operational before we create them.
+
+(defgeneric add-dependent (metaobject dependent))
+(defmethod add-dependent ((metaobject t) dependent)
+  "AMOP §5.4: register DEPENDENT so it receives UPDATE-DEPENDENT
+notifications when METAOBJECT is modified by ENSURE-CLASS, ADD-METHOD,
+REMOVE-METHOD, or ENSURE-GENERIC-FUNCTION.  Re-adding a dependent
+already present (EQ compare) is a no-op.  Returns NIL."
+  (let ((deps (gethash metaobject *metaobject-dependents*)))
+    (unless (member dependent deps :test #'eq)
+      (setf (gethash metaobject *metaobject-dependents*)
+            (cons dependent deps))))
+  nil)
+
+(defgeneric remove-dependent (metaobject dependent))
+(defmethod remove-dependent ((metaobject t) dependent)
+  "AMOP §5.4: unregister DEPENDENT from METAOBJECT.  Silently ignores
+dependents that were not previously registered.  Returns NIL."
+  (let ((deps (gethash metaobject *metaobject-dependents*)))
+    (setf (gethash metaobject *metaobject-dependents*)
+          (remove dependent deps :test #'eq)))
+  nil)
+
+(defgeneric map-dependents (metaobject function))
+(defmethod map-dependents ((metaobject t) function)
+  "AMOP §5.4: apply FUNCTION to each dependent of METAOBJECT in
+implementation-defined order.  Returns NIL.  FUNCTION is called with
+one argument (the dependent)."
+  (dolist (dep (gethash metaobject *metaobject-dependents*))
+    (funcall function dep))
+  nil)
+
+(defgeneric update-dependent (metaobject dependent &rest initargs))
+(defmethod update-dependent ((metaobject t) (dependent t) &rest initargs)
+  "AMOP §5.4: notify DEPENDENT that METAOBJECT changed.  INITARGS
+describes the change — the broadcaster passes ('ADD-METHOD METHOD),
+('REMOVE-METHOD METHOD), or ('REINITIALIZE-INSTANCE ...keys...).  The
+default method is a no-op; users specialise on their own dependent
+class to react."
+  (declare (ignore metaobject dependent initargs))
+  nil)
 
 ;;; --- Provide module ---
 (provide "clos")

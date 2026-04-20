@@ -3099,6 +3099,221 @@ TEST(mc_redefine_updates_combination)
         "+");
 }
 
+/* ==================================================================
+ * Dependent maintenance protocol (MOP) — AMOP §5.4
+ * ADD-DEPENDENT / REMOVE-DEPENDENT / MAP-DEPENDENTS / UPDATE-DEPENDENT
+ * with notification hooks on ENSURE-CLASS, ADD-METHOD, REMOVE-METHOD,
+ * ENSURE-GENERIC-FUNCTION.
+ * ================================================================== */
+
+TEST(dep_add_dependent_registers)
+{
+    /* ADD-DEPENDENT makes the dependent visible via MAP-DEPENDENTS. */
+    eval_print("(defclass dep-c1 () ())");
+    eval_print("(defvar *dep-d1* (list :observer))");
+    eval_print("(add-dependent (find-class 'dep-c1) *dep-d1*)");
+    ASSERT_STR_EQ(eval_print(
+        "(let ((seen nil))"
+        "  (map-dependents (find-class 'dep-c1) (lambda (d) (push d seen)))"
+        "  (eq (first seen) *dep-d1*))"),
+        "T");
+}
+
+TEST(dep_add_dependent_idempotent)
+{
+    /* Adding the same dependent twice registers it only once. */
+    eval_print("(defclass dep-c2 () ())");
+    eval_print("(defvar *dep-d2* (list :obs))");
+    eval_print("(add-dependent (find-class 'dep-c2) *dep-d2*)");
+    eval_print("(add-dependent (find-class 'dep-c2) *dep-d2*)");
+    ASSERT_STR_EQ(eval_print(
+        "(let ((n 0))"
+        "  (map-dependents (find-class 'dep-c2) (lambda (d) (declare (ignore d)) (incf n)))"
+        "  n)"),
+        "1");
+}
+
+TEST(dep_remove_dependent_drops)
+{
+    /* REMOVE-DEPENDENT removes a previously registered dependent. */
+    eval_print("(defclass dep-c3 () ())");
+    eval_print("(defvar *dep-d3* (list :obs))");
+    eval_print("(add-dependent (find-class 'dep-c3) *dep-d3*)");
+    eval_print("(remove-dependent (find-class 'dep-c3) *dep-d3*)");
+    ASSERT_STR_EQ(eval_print(
+        "(let ((n 0))"
+        "  (map-dependents (find-class 'dep-c3) (lambda (d) (declare (ignore d)) (incf n)))"
+        "  n)"),
+        "0");
+}
+
+TEST(dep_remove_unknown_is_silent)
+{
+    /* REMOVE-DEPENDENT silently ignores dependents that were never
+       registered — returns NIL, no error. */
+    eval_print("(defclass dep-c4 () ())");
+    ASSERT_STR_EQ(eval_print(
+        "(remove-dependent (find-class 'dep-c4) (list :ghost))"),
+        "NIL");
+}
+
+TEST(dep_map_dependents_visits_all)
+{
+    /* MAP-DEPENDENTS applies FUNCTION to every registered dependent. */
+    eval_print("(defclass dep-c5 () ())");
+    eval_print("(defvar *dep-d5a* (list :a))");
+    eval_print("(defvar *dep-d5b* (list :b))");
+    eval_print("(add-dependent (find-class 'dep-c5) *dep-d5a*)");
+    eval_print("(add-dependent (find-class 'dep-c5) *dep-d5b*)");
+    ASSERT_STR_EQ(eval_print(
+        "(let ((n 0))"
+        "  (map-dependents (find-class 'dep-c5) (lambda (d) (declare (ignore d)) (incf n)))"
+        "  n)"),
+        "2");
+}
+
+TEST(dep_update_dependent_default_is_noop)
+{
+    /* The default UPDATE-DEPENDENT method returns NIL and does nothing. */
+    eval_print("(defclass dep-c6 () ())");
+    ASSERT_STR_EQ(eval_print(
+        "(update-dependent (find-class 'dep-c6) (list :d) 'x)"),
+        "NIL");
+}
+
+TEST(dep_add_method_notifies)
+{
+    /* Installing a new method on a GF broadcasts UPDATE-DEPENDENT with
+       ('ADD-METHOD METHOD) to each registered dependent. */
+    eval_print("(defgeneric dep-gf1 (x))");
+    eval_print("(defvar *dep-log1* nil)");
+    eval_print(
+        "(defmethod update-dependent ((mo standard-generic-function) "
+        "                             (d (eql :dep-obs-1)) &rest args)"
+        "  (push args *dep-log1*))");
+    eval_print("(add-dependent (ensure-generic-function 'dep-gf1) :dep-obs-1)");
+    eval_print("(defmethod dep-gf1 ((x integer)) :int)");
+    ASSERT_STR_EQ(eval_print(
+        "(and (consp *dep-log1*)"
+        "     (eq (caar *dep-log1*) 'add-method))"),
+        "T");
+}
+
+TEST(dep_add_method_passes_method_object)
+{
+    /* The broadcast's second argument is the method metaobject that
+       was just installed. */
+    eval_print("(defgeneric dep-gf2 (x))");
+    eval_print("(defvar *dep-log2* nil)");
+    eval_print(
+        "(defmethod update-dependent ((mo standard-generic-function) "
+        "                             (d (eql :dep-obs-2)) &rest args)"
+        "  (setq *dep-log2* args))");
+    eval_print("(add-dependent (ensure-generic-function 'dep-gf2) :dep-obs-2)");
+    eval_print("(defmethod dep-gf2 ((x integer)) :i)");
+    ASSERT_STR_EQ(eval_print(
+        "(eq (%struct-type-name (second *dep-log2*)) 'standard-method)"),
+        "T");
+}
+
+TEST(dep_remove_method_notifies)
+{
+    /* REMOVE-METHOD broadcasts UPDATE-DEPENDENT with ('REMOVE-METHOD M). */
+    eval_print("(defgeneric dep-gf3 (x))");
+    eval_print("(defmethod dep-gf3 ((x integer)) :int)");
+    eval_print("(defvar *dep-log3* nil)");
+    eval_print(
+        "(defmethod update-dependent ((mo standard-generic-function) "
+        "                             (d (eql :dep-obs-3)) &rest args)"
+        "  (push (first args) *dep-log3*))");
+    eval_print("(add-dependent (ensure-generic-function 'dep-gf3) :dep-obs-3)");
+    eval_print(
+        "(remove-method (ensure-generic-function 'dep-gf3)"
+        "               (find-method #'dep-gf3 nil (list (find-class 'integer))))");
+    ASSERT_STR_EQ(eval_print("(first *dep-log3*)"), "REMOVE-METHOD");
+}
+
+TEST(dep_class_redefinition_notifies)
+{
+    /* Redefining a class via DEFCLASS fires UPDATE-DEPENDENT on the
+       class with 'REINITIALIZE-INSTANCE as the first initarg. */
+    eval_print("(defclass dep-c7 () ((a :initform 1)))");
+    eval_print("(defvar *dep-log7* nil)");
+    eval_print(
+        "(defmethod update-dependent ((mo standard-class) "
+        "                             (d (eql :dep-obs-7)) &rest args)"
+        "  (push (first args) *dep-log7*))");
+    eval_print("(add-dependent (find-class 'dep-c7) :dep-obs-7)");
+    eval_print("(defclass dep-c7 () ((a :initform 2) (b :initform 3)))");
+    ASSERT_STR_EQ(eval_print("(first *dep-log7*)"), "REINITIALIZE-INSTANCE");
+}
+
+TEST(dep_class_redefinition_migrates_dependents)
+{
+    /* %ENSURE-CLASS allocates a fresh class struct on redefinition,
+       so the dependents registry must migrate the entry to the new
+       metaobject — otherwise a second redefinition would not notify. */
+    eval_print("(defclass dep-c8 () ())");
+    eval_print("(defvar *dep-log8* 0)");
+    eval_print(
+        "(defmethod update-dependent ((mo standard-class) "
+        "                             (d (eql :dep-obs-8)) &rest args)"
+        "  (declare (ignore args))"
+        "  (incf *dep-log8*))");
+    eval_print("(add-dependent (find-class 'dep-c8) :dep-obs-8)");
+    eval_print("(defclass dep-c8 () ((x)))");
+    eval_print("(defclass dep-c8 () ((x) (y)))");
+    ASSERT_STR_EQ(eval_print("*dep-log8*"), "2");
+}
+
+TEST(dep_gf_combination_swap_notifies)
+{
+    /* Swapping a GF's :METHOD-COMBINATION via re-DEFGENERIC broadcasts
+       UPDATE-DEPENDENT on the existing GF metaobject. */
+    eval_print("(defgeneric dep-gf4 (x))");
+    eval_print("(defvar *dep-log4* nil)");
+    eval_print(
+        "(defmethod update-dependent ((mo standard-generic-function) "
+        "                             (d (eql :dep-obs-4)) &rest args)"
+        "  (setq *dep-log4* args))");
+    eval_print("(add-dependent (ensure-generic-function 'dep-gf4) :dep-obs-4)");
+    eval_print("(defgeneric dep-gf4 (x) (:method-combination +))");
+    ASSERT_STR_EQ(eval_print("(first *dep-log4*)"), "REINITIALIZE-INSTANCE");
+}
+
+TEST(dep_gf_same_combination_no_notify)
+{
+    /* Re-DEFGENERICing with the same combination must NOT broadcast —
+       only real changes trigger the notification. */
+    eval_print("(defgeneric dep-gf5 (x) (:method-combination +))");
+    eval_print("(defvar *dep-log5* 0)");
+    eval_print(
+        "(defmethod update-dependent ((mo standard-generic-function) "
+        "                             (d (eql :dep-obs-5)) &rest args)"
+        "  (declare (ignore args))"
+        "  (incf *dep-log5*))");
+    eval_print("(add-dependent (ensure-generic-function 'dep-gf5) :dep-obs-5)");
+    eval_print("(defgeneric dep-gf5 (x) (:method-combination +))");
+    ASSERT_STR_EQ(eval_print("*dep-log5*"), "0");
+}
+
+TEST(dep_isolated_between_metaobjects)
+{
+    /* Dependents registered on one metaobject must not see notifications
+       for another metaobject. */
+    eval_print("(defgeneric dep-gf6a (x))");
+    eval_print("(defgeneric dep-gf6b (x))");
+    eval_print("(defvar *dep-log6* 0)");
+    eval_print(
+        "(defmethod update-dependent ((mo standard-generic-function) "
+        "                             (d (eql :dep-obs-6)) &rest args)"
+        "  (declare (ignore args))"
+        "  (incf *dep-log6*))");
+    eval_print("(add-dependent (ensure-generic-function 'dep-gf6a) :dep-obs-6)");
+    eval_print("(defmethod dep-gf6b ((x integer)) :b)");
+    ASSERT_STR_EQ(eval_print("*dep-log6*"), "0");
+}
+
 int main(void)
 {
     test_init();
@@ -3396,6 +3611,22 @@ int main(void)
     RUN(mc_method_combination_class_bootstrapped);
     RUN(mc_call_method_uses_current_args);
     RUN(mc_redefine_updates_combination);
+
+    /* Dependent maintenance protocol (MOP) */
+    RUN(dep_add_dependent_registers);
+    RUN(dep_add_dependent_idempotent);
+    RUN(dep_remove_dependent_drops);
+    RUN(dep_remove_unknown_is_silent);
+    RUN(dep_map_dependents_visits_all);
+    RUN(dep_update_dependent_default_is_noop);
+    RUN(dep_add_method_notifies);
+    RUN(dep_add_method_passes_method_object);
+    RUN(dep_remove_method_notifies);
+    RUN(dep_class_redefinition_notifies);
+    RUN(dep_class_redefinition_migrates_dependents);
+    RUN(dep_gf_combination_swap_notifies);
+    RUN(dep_gf_same_combination_no_notify);
+    RUN(dep_isolated_between_metaobjects);
 
     teardown();
     REPORT();
