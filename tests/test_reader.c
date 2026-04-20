@@ -503,6 +503,36 @@ TEST(read_0d_array)
     }
 }
 
+/* Regression: a dispatch-macro function that invokes a nested read on a
+ * different stream (e.g. read-from-string inside the macro body) must not
+ * leak the temporary stream back to the outer reader. Before the fix,
+ * cl_read_from_stream overwrote reader_stream without saving it, so the
+ * outer read saw EOF on the inner string stream and reported
+ * "Unterminated list". */
+TEST(nested_read_preserves_outer_stream)
+{
+    const char *setup_src =
+        "(progn"
+        "  (defun %test-sharpl (stream subchar n-args)"
+        "    (declare (ignore subchar n-args))"
+        "    (let ((form (read stream t nil t)))"
+        /* Nested read on a temp string stream — this is what triggered the
+         * bug in iterate's sharpL-reader via read-from-string. */
+        "      (read-from-string \"99\")"
+        "      (list 'quote form)))"
+        "  (setf *readtable* (copy-readtable *readtable*))"
+        "  (set-dispatch-macro-character #\\# #\\L #'%test-sharpl))";
+    cl_eval_string(setup_src);
+
+    /* This outer list must parse correctly despite the inner read. */
+    {
+        CL_Obj obj = reads("(a b #L(x y z) c)");
+        char buf[128];
+        cl_prin1_to_string(obj, buf, sizeof(buf));
+        ASSERT_STR_EQ(buf, "(A B (QUOTE (X Y Z)) C)");
+    }
+}
+
 TEST(read_2d_array_lowercase)
 {
     /* #2a also works (lowercase) */
@@ -584,6 +614,9 @@ int main(void)
     RUN(read_1d_array_reader);
     RUN(read_0d_array);
     RUN(read_2d_array_lowercase);
+
+    /* Regression: nested reader invocation must not clobber outer stream */
+    RUN(nested_read_preserves_outer_stream);
 
     teardown();
     REPORT();

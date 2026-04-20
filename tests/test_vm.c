@@ -930,6 +930,40 @@ TEST(eval_gensym)
     ASSERT(g1 != g2);
 }
 
+TEST(eval_gentemp)
+{
+    /* gentemp returns a symbol */
+    ASSERT_STR_EQ(eval_print("(symbolp (gentemp))"), "T");
+
+    /* Unlike gensym, gentemp interns the symbol */
+    ASSERT_STR_EQ(eval_print(
+        "(let ((s (gentemp \"GTTEST-\")))"
+        "  (eq s (find-symbol (symbol-name s))))"),
+        "T");
+
+    /* Two calls produce distinct symbols */
+    ASSERT_STR_EQ(eval_print(
+        "(eq (gentemp \"GTX-\") (gentemp \"GTX-\"))"),
+        "NIL");
+
+    /* Explicit package designator (string) works */
+    ASSERT_STR_EQ(eval_print(
+        "(eq (symbol-package (gentemp \"GTP-\" \"CL-USER\"))"
+        "    (find-package \"CL-USER\"))"),
+        "T");
+
+    /* gentemp skips a name that is already interned in the package */
+    ASSERT_STR_EQ(eval_print(
+        "(let* ((s1 (gentemp \"GTSKIP-\"))"
+        "       (taken (intern (format nil \"GTSKIP-~a\""
+        "                               (1+ (parse-integer (symbol-name s1)"
+        "                                                  :start 7)))))"
+        "       (s2 (gentemp \"GTSKIP-\")))"
+        "  (and (not (eq s2 taken))"
+        "       (not (eq s2 s1))))"),
+        "T");
+}
+
 /* --- Load --- */
 
 TEST(eval_load)
@@ -7187,6 +7221,7 @@ int main(void)
     RUN(eval_setf_values_two);
     RUN(eval_define_setf_expander);
     RUN(eval_gensym);
+    RUN(eval_gentemp);
     RUN(eval_load);
     RUN(eval_boot_functions);
     RUN(eval_block_return);

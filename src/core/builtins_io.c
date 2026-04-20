@@ -1605,6 +1605,56 @@ static CL_Obj bi_gensym(CL_Obj *args, int n)
     return cl_gensym_with_name(prefix);
 }
 
+/* GENTEMP &optional prefix package => new-symbol
+ * Like GENSYM but interns the result in PACKAGE (default *PACKAGE*).
+ * Keeps bumping its counter until it finds a name not already present
+ * in the package, so every call returns a fresh interned symbol. */
+static volatile uint32_t gentemp_counter = 0;
+
+static CL_Obj bi_gentemp(CL_Obj *args, int n)
+{
+    const char *prefix = "T";
+    CL_Obj package;
+    char buf[64];
+    int plen;
+
+    if (n > 0 && CL_STRING_P(args[0])) {
+        CL_String *s = (CL_String *)CL_OBJ_TO_PTR(args[0]);
+        prefix = s->data;
+    }
+
+    if (n > 1 && !CL_NULL_P(args[1])) {
+        /* Accept a package object, a string, or a symbol designator */
+        CL_Obj arg = args[1];
+        if (CL_HEAP_P(arg) && CL_HDR_TYPE(CL_OBJ_TO_PTR(arg)) == TYPE_PACKAGE) {
+            package = arg;
+        } else if (CL_STRING_P(arg)) {
+            CL_String *s = (CL_String *)CL_OBJ_TO_PTR(arg);
+            package = cl_find_package(s->data, s->length);
+            if (CL_NULL_P(package))
+                cl_error(CL_ERR_GENERAL, "GENTEMP: package not found: %s", s->data);
+        } else if (CL_SYMBOL_P(arg)) {
+            const char *name = cl_symbol_name(arg);
+            package = cl_find_package(name, (uint32_t)strlen(name));
+            if (CL_NULL_P(package))
+                cl_error(CL_ERR_GENERAL, "GENTEMP: package not found: %s", name);
+        } else {
+            cl_error(CL_ERR_TYPE, "GENTEMP: bad package designator");
+            return CL_NIL;
+        }
+    } else {
+        package = cl_current_package;
+    }
+
+    for (;;) {
+        uint32_t cnt = platform_atomic_inc(&gentemp_counter) - 1;
+        plen = snprintf(buf, sizeof(buf), "%s%lu", prefix, (unsigned long)cnt);
+        /* Skip names already present to match CLHS guarantee of a new symbol */
+        if (CL_NULL_P(cl_package_find_symbol(buf, (uint32_t)plen, package)))
+            return cl_intern_in(buf, (uint32_t)plen, package);
+    }
+}
+
 /* --- Disassemble --- */
 
 typedef struct {
@@ -2564,8 +2614,9 @@ void cl_builtins_io_init(void)
     defun("VALUES", bi_values, 0, -1);
     defun("VALUES-LIST", bi_values_list, 1, 1);
 
-    /* Gensym */
+    /* Gensym / gentemp */
     defun("GENSYM", bi_gensym, 0, 1);
+    defun("GENTEMP", bi_gentemp, 0, 2);
 
     /* Debugging */
     defun("DISASSEMBLE", bi_disassemble, 1, 1);
