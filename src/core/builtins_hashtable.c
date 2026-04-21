@@ -581,6 +581,58 @@ static CL_Obj bi_hash_table_p(CL_Obj *args, int n)
     return CL_HASHTABLE_P(args[0]) ? SYM_T : CL_NIL;
 }
 
+/* CLHS: HASH-TABLE-SIZE — the "current size", i.e. the bucket capacity
+   that the table was allocated with.  We return bucket_count, which is
+   what we internally track. */
+static CL_Obj bi_hash_table_size(CL_Obj *args, int n)
+{
+    CL_Hashtable *ht;
+    CL_UNUSED(n);
+    if (!CL_HASHTABLE_P(args[0]))
+        cl_error(CL_ERR_TYPE, "HASH-TABLE-SIZE: not a hash table");
+    ht = (CL_Hashtable *)CL_OBJ_TO_PTR(args[0]);
+    return CL_MAKE_FIXNUM((int32_t)ht->bucket_count);
+}
+
+/* CLHS: HASH-TABLE-TEST — returns the test as a symbol for the four
+   standard tests (eq/eql/equal/equalp). */
+static CL_Obj bi_hash_table_test(CL_Obj *args, int n)
+{
+    CL_Hashtable *ht;
+    CL_UNUSED(n);
+    if (!CL_HASHTABLE_P(args[0]))
+        cl_error(CL_ERR_TYPE, "HASH-TABLE-TEST: not a hash table");
+    ht = (CL_Hashtable *)CL_OBJ_TO_PTR(args[0]);
+    switch (ht->test) {
+    case CL_HT_TEST_EQ:     return SYM_EQ_HT;
+    case CL_HT_TEST_EQL:    return SYM_EQL_HT;
+    case CL_HT_TEST_EQUAL:  return SYM_EQUAL_HT;
+    case CL_HT_TEST_EQUALP: return SYM_EQUALP_HT;
+    default:                return SYM_EQL_HT;
+    }
+}
+
+/* CLHS: HASH-TABLE-REHASH-SIZE — positive number, how the table grows.
+   We don't store this per-table; return a reasonable default (1.5). */
+static CL_Obj bi_hash_table_rehash_size(CL_Obj *args, int n)
+{
+    CL_UNUSED(n);
+    if (!CL_HASHTABLE_P(args[0]))
+        cl_error(CL_ERR_TYPE, "HASH-TABLE-REHASH-SIZE: not a hash table");
+    return cl_make_single_float(1.5f);
+}
+
+/* CLHS: HASH-TABLE-REHASH-THRESHOLD — load factor, 0 < x <= 1.
+   We don't store this per-table; return 0.75 which matches the load
+   factor used internally by maybe_rehash. */
+static CL_Obj bi_hash_table_rehash_threshold(CL_Obj *args, int n)
+{
+    CL_UNUSED(n);
+    if (!CL_HASHTABLE_P(args[0]))
+        cl_error(CL_ERR_TYPE, "HASH-TABLE-REHASH-THRESHOLD: not a hash table");
+    return cl_make_single_float(0.75f);
+}
+
 static CL_Obj bi_hash_table_pairs(CL_Obj *args, int n)
 {
     CL_Obj ht_obj = args[0];
@@ -640,6 +692,10 @@ void cl_builtins_hashtable_init(void)
     defun("CLRHASH", bi_clrhash, 1, 1);
     defun("HASH-TABLE-COUNT", bi_hash_table_count, 1, 1);
     defun("HASH-TABLE-P", bi_hash_table_p, 1, 1);
+    defun("HASH-TABLE-SIZE", bi_hash_table_size, 1, 1);
+    defun("HASH-TABLE-TEST", bi_hash_table_test, 1, 1);
+    defun("HASH-TABLE-REHASH-SIZE", bi_hash_table_rehash_size, 1, 1);
+    defun("HASH-TABLE-REHASH-THRESHOLD", bi_hash_table_rehash_threshold, 1, 1);
     cl_register_builtin("%SETF-GETHASH", bi_setf_gethash, 3, 3, cl_package_clamiga);
     cl_register_builtin("%HASH-TABLE-PAIRS", bi_hash_table_pairs, 1, 1, cl_package_clamiga);
     defun("SXHASH", bi_sxhash, 1, 1);

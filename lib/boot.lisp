@@ -206,6 +206,23 @@
       (when match
         (return-from member l)))))
 
+;; CLHS 14.2 MEMBER-IF / MEMBER-IF-NOT — return the tail whose car
+;; satisfies (or fails) PREDICATE.  :KEY is applied to the element, not
+;; to the predicate's result.
+(defun member-if (predicate list &key (key nil key-p))
+  (do ((l list (cdr l)))
+      ((null l) nil)
+    (let ((elem (if key-p (funcall key (car l)) (car l))))
+      (when (funcall predicate elem)
+        (return-from member-if l)))))
+
+(defun member-if-not (predicate list &key (key nil key-p))
+  (do ((l list (cdr l)))
+      ((null l) nil)
+    (let ((elem (if key-p (funcall key (car l)) (car l))))
+      (unless (funcall predicate elem)
+        (return-from member-if-not l)))))
+
 ;; pushnew — push only if not already a member
 (defmacro pushnew (item place &key test)
   (let ((g (gensym)))

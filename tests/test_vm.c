@@ -815,6 +815,18 @@ TEST(eval_subtypep_typep_env_arg)
     ASSERT_STR_EQ(eval_print("(typep 5 'integer nil)"), "T");
 }
 
+/* Bounded integer range specifiers are subtypes of INTEGER / NUMBER. */
+TEST(eval_subtypep_bounded_integer_ranges)
+{
+    ASSERT_STR_EQ(eval_print("(multiple-value-list (subtypep '(unsigned-byte 32) 'integer))"), "(T T)");
+    ASSERT_STR_EQ(eval_print("(multiple-value-list (subtypep '(unsigned-byte 16) 'integer))"), "(T T)");
+    ASSERT_STR_EQ(eval_print("(multiple-value-list (subtypep '(signed-byte 8) 'integer))"), "(T T)");
+    ASSERT_STR_EQ(eval_print("(multiple-value-list (subtypep '(mod 100) 'integer))"), "(T T)");
+    /* Integer ranges are also subtypes of NUMBER / T. */
+    ASSERT_STR_EQ(eval_print("(multiple-value-list (subtypep '(unsigned-byte 8) 'number))"), "(T T)");
+    ASSERT_STR_EQ(eval_print("(multiple-value-list (subtypep '(unsigned-byte 8) 't))"), "(T T)");
+}
+
 /* CLHS 6.1.3.1: accumulation clauses may include OF-TYPE after INTO.
  * split-sequence and serapeum use this.  We ignore the type spec but
  * must consume it so the clause parses. */
@@ -2984,6 +2996,30 @@ TEST(eval_gethash_mv)
     ASSERT_STR_EQ(eval_print("(multiple-value-bind (v p) (gethash 'missing *htmv*) p)"), "NIL");
 }
 
+/* CLHS hash-table accessors needed by serapeum and other libraries. */
+TEST(eval_hash_table_accessors)
+{
+    eval_print("(defvar *ht-accessors* (make-hash-table :test 'equal))");
+    /* hash-table-test returns the test as a symbol */
+    ASSERT_STR_EQ(eval_print("(hash-table-test *ht-accessors*)"), "EQUAL");
+    /* hash-table-size returns a positive integer */
+    ASSERT_STR_EQ(eval_print("(and (integerp (hash-table-size *ht-accessors*))"
+                             "     (plusp (hash-table-size *ht-accessors*)))"), "T");
+    /* rehash-size > 1, rehash-threshold in (0,1] */
+    ASSERT_STR_EQ(eval_print("(> (hash-table-rehash-size *ht-accessors*) 1)"), "T");
+    ASSERT_STR_EQ(eval_print("(and (> (hash-table-rehash-threshold *ht-accessors*) 0)"
+                             "     (<= (hash-table-rehash-threshold *ht-accessors*) 1))"), "T");
+}
+
+TEST(eval_hash_table_test_symbols)
+{
+    /* All four standard tests should round-trip through hash-table-test */
+    ASSERT_STR_EQ(eval_print("(hash-table-test (make-hash-table :test 'eq))"), "EQ");
+    ASSERT_STR_EQ(eval_print("(hash-table-test (make-hash-table :test 'eql))"), "EQL");
+    ASSERT_STR_EQ(eval_print("(hash-table-test (make-hash-table :test 'equal))"), "EQUAL");
+    ASSERT_STR_EQ(eval_print("(hash-table-test (make-hash-table :test 'equalp))"), "EQUALP");
+}
+
 /* --- Phase 5: Sequence functions --- */
 
 TEST(eval_find)
@@ -3251,6 +3287,17 @@ TEST(eval_sort)
 TEST(eval_stable_sort)
 {
     ASSERT_STR_EQ(eval_print("(stable-sort (list 3 1 2) #'<)"), "(1 2 3)");
+    /* Stability: when the predicate is NIL for all pairs (no element is
+       strictly less than any other), the order must be preserved.
+       Regression for list_merge reversing unrelated elements — caught by
+       serapeum's simplify-subtypes assertion (sort-subtypes is expected
+       to be idempotent when no subtype relationships exist). */
+    ASSERT_STR_EQ(eval_print("(stable-sort (list 'a 'b 'c 'd 'e) (lambda (x y) (declare (ignore x y)) nil))"),
+                  "(A B C D E)");
+    /* Stability: equal elements (by :key) preserve relative order. */
+    ASSERT_STR_EQ(eval_print(
+        "(stable-sort (list (cons 1 'a) (cons 1 'b) (cons 1 'c)) #'< :key #'car)"),
+        "((1 . A) (1 . B) (1 . C))");
 }
 
 TEST(eval_sort_with_key)
@@ -6950,6 +6997,18 @@ TEST(eval_member_test_and_test_not_conflict)
     }
 }
 
+TEST(eval_member_if_and_if_not)
+{
+    ASSERT_STR_EQ(eval_print("(member-if #'evenp '(1 3 5 6 7 8))"), "(6 7 8)");
+    ASSERT_STR_EQ(eval_print("(member-if-not #'oddp '(1 3 5 6 7 8))"), "(6 7 8)");
+    /* :key is applied to the element before the predicate. */
+    ASSERT_STR_EQ(eval_print("(member-if #'evenp '((1) (2) (3)) :key #'car)"),
+                  "((2) (3))");
+    /* No match returns NIL. */
+    ASSERT_STR_EQ(eval_print("(member-if #'evenp '(1 3 5))"), "NIL");
+    ASSERT_STR_EQ(eval_print("(member-if-not #'symbolp '(a b c))"), "NIL");
+}
+
 /* --- (SETF (GETF place ind) val) semantics (CLHS §5.1.2.4) --- */
 
 TEST(eval_setf_getf_key_absent_prepends)
@@ -7329,6 +7388,7 @@ int main(void)
     RUN(eval_quasiquote_splicing_nconc);
     RUN(eval_macroexpand_1_values_and_env);
     RUN(eval_subtypep_typep_env_arg);
+    RUN(eval_subtypep_bounded_integer_ranges);
     RUN(eval_loop_of_type_after_into);
     RUN(eval_quasiquote_nested_list);
     RUN(eval_quasiquote_dotted);
@@ -7555,6 +7615,8 @@ int main(void)
     RUN(eval_hash_table_equal_test);
     RUN(eval_hash_table_eq_test);
     RUN(eval_gethash_mv);
+    RUN(eval_hash_table_accessors);
+    RUN(eval_hash_table_test_symbols);
 
     /* Phase 5 — Sequence functions */
     RUN(eval_find);
@@ -8059,6 +8121,7 @@ int main(void)
     RUN(eval_member_key_lambda);
     RUN(eval_member_test_not);
     RUN(eval_member_test_and_test_not_conflict);
+    RUN(eval_member_if_and_if_not);
 
     /* (setf (getf place ind) val) — CLHS §5.1.2.4 prepend-on-absent */
     RUN(eval_setf_getf_key_absent_prepends);
