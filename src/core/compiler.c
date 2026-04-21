@@ -1422,6 +1422,8 @@ static void compile_setq(CL_Compiler *c, CL_Obj form)
         /* Check if var is a symbol macro — rewrite as (setf expansion val) */
         if (CL_SYMBOL_P(var)) {
             CL_Obj expansion = cl_env_lookup_symbol_macro(c->env, var);
+            if (CL_NULL_P(expansion))
+                expansion = cl_lookup_global_symbol_macro(var);
             if (!CL_NULL_P(expansion)) {
                 compile_setf_place(c, expansion, val);
                 rest = cl_cdr(cl_cdr(rest));
@@ -1550,6 +1552,8 @@ static void compile_setf_place(CL_Compiler *c, CL_Obj place, CL_Obj val_form)
         int slot;
         /* Check if place is a symbol macro — rewrite as (setf expansion val) */
         CL_Obj expansion = cl_env_lookup_symbol_macro(c->env, place);
+        if (CL_NULL_P(expansion))
+            expansion = cl_lookup_global_symbol_macro(place);
         if (!CL_NULL_P(expansion)) {
             compile_setf_place(c, expansion, val_form);
             c->in_tail = saved_tail;
@@ -2335,6 +2339,29 @@ void compile_body(CL_Compiler *c, CL_Obj forms)
     compile_progn(c, rest);
 }
 
+/* Look up a global symbol-macro expansion stored on the symbol's plist
+   under the CL::%SYMBOL-MACRO-EXPANSION indicator (set by the
+   DEFINE-SYMBOL-MACRO macro in boot.lisp).  Returns CL_NIL when none. */
+CL_Obj cl_lookup_global_symbol_macro(CL_Obj sym)
+{
+    static CL_Obj indicator = 0;
+    CL_Symbol *s;
+    CL_Obj plist;
+
+    if (!CL_SYMBOL_P(sym)) return CL_NIL;
+    if (indicator == 0)
+        indicator = cl_intern_in("%SYMBOL-MACRO-EXPANSION", 23, cl_package_cl);
+
+    s = (CL_Symbol *)CL_OBJ_TO_PTR(sym);
+    plist = s->plist;
+    while (!CL_NULL_P(plist) && !CL_NULL_P(cl_cdr(plist))) {
+        if (cl_car(plist) == indicator)
+            return cl_car(cl_cdr(plist));
+        plist = cl_cdr(cl_cdr(plist));
+    }
+    return CL_NIL;
+}
+
 static void compile_symbol(CL_Compiler *c, CL_Obj sym)
 {
     int slot;
@@ -2350,9 +2377,11 @@ static void compile_symbol(CL_Compiler *c, CL_Obj sym)
         }
     }
 
-    /* Check symbol macros before variable lookup */
+    /* Check symbol macros before variable lookup — lexical first, then global */
     {
         CL_Obj expansion = cl_env_lookup_symbol_macro(c->env, sym);
+        if (CL_NULL_P(expansion))
+            expansion = cl_lookup_global_symbol_macro(sym);
         if (!CL_NULL_P(expansion)) {
             compile_expr(c, expansion);
             return;

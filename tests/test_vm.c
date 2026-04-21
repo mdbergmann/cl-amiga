@@ -4098,6 +4098,51 @@ TEST(eval_symbol_macrolet_across_lambda)
         "  (funcall (lambda () (+ x y))))"), 30);
 }
 
+/* define-symbol-macro — global (stored on symbol plist, consulted by
+   compile_symbol via cl_lookup_global_symbol_macro).  Regression tests
+   for the sento/serapeum +alist-breakeven+ defconst pattern, which
+   defines a constant under a symbol-macro alias and then references it
+   via #. at read time later in the same file.  Each top-level form
+   must be compiled+evaluated in isolation to match LOAD semantics —
+   that's how the plist entry becomes visible before the next form is
+   compiled. */
+TEST(eval_define_symbol_macro_basic)
+{
+    eval_print("(defconstant +storage-dsm-basic+ 30)");
+    eval_print("(define-symbol-macro sm-basic +storage-dsm-basic+)");
+    ASSERT_EQ_INT(eval_int("sm-basic"), 30);
+}
+
+TEST(eval_define_symbol_macro_read_time_eval)
+{
+    /* #.symbol-macro must expand and evaluate at read time.  This is
+       the exact pattern that broke in serapeum/functions.lisp when
+       +alist-breakeven+ was referenced via #. */
+    eval_print("(defconstant +storage-dsm-rte+ 25)");
+    eval_print("(define-symbol-macro sm-rte +storage-dsm-rte+)");
+    ASSERT_EQ_INT(eval_int("'#.sm-rte"), 25);
+}
+
+TEST(eval_define_symbol_macro_macroexpand_1)
+{
+    /* macroexpand-1 on a symbol should return the symbol-macro
+       expansion and T as second value. */
+    eval_print("(define-symbol-macro sm-mx +sm-mx-backing+)");
+    ASSERT_STR_EQ(eval_print("(macroexpand-1 'sm-mx)"), "+SM-MX-BACKING+");
+    ASSERT_STR_EQ(eval_print(
+        "(multiple-value-bind (form expanded-p) (macroexpand-1 'sm-mx)"
+        "  (list form expanded-p))"), "(+SM-MX-BACKING+ T)");
+}
+
+TEST(eval_define_symbol_macro_setf)
+{
+    /* setf on a symbol-macro rewrites to setf on its expansion. */
+    eval_print("(defparameter *sm-setf-cell* (cons 1 2))");
+    eval_print("(define-symbol-macro sm-setf (car *sm-setf-cell*))");
+    eval_print("(setf sm-setf 99)");
+    ASSERT_STR_EQ(eval_print("*sm-setf-cell*"), "(99 . 2)");
+}
+
 /* --- Phase 8 Step 2: Missing string operations --- */
 
 TEST(eval_string_capitalize)
@@ -7628,6 +7673,10 @@ int main(void)
     RUN(eval_symbol_macrolet_nested);
     RUN(eval_symbol_macrolet_multiple);
     RUN(eval_symbol_macrolet_across_lambda);
+    RUN(eval_define_symbol_macro_basic);
+    RUN(eval_define_symbol_macro_read_time_eval);
+    RUN(eval_define_symbol_macro_macroexpand_1);
+    RUN(eval_define_symbol_macro_setf);
 
     /* Phase 8 Step 2 — Missing string operations */
     RUN(eval_string_capitalize);
