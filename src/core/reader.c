@@ -40,6 +40,7 @@ static int cl_strcasecmp(const char *a, const char *b)
 #define eof_seen       (CT->rd_eof)
 #define read_suppress  (CT->rd_suppress)
 #define reader_line    (CT->rd_line)
+#define rd_uninterned  (CT->rd_uninterned)
 /* cl_current_source_file and cl_current_file_id are macros from thread.h */
 
 /* Source location tracking (shared, not per-thread) */
@@ -914,11 +915,15 @@ static CL_Obj read_expr(void)
             return CL_MAKE_CHAR(ch);
         }
         if (ch == ':') {
-            /* #:sym — uninterned symbol */
+            /* #:sym — uninterned symbol.  Per CLHS 2.4.8.5, within a
+             * single call to READ, all #:foo with the same name must
+             * denote the *same* uninterned symbol.  We track this via
+             * CT->rd_uninterned (alist of (name-string . symbol)),
+             * saved/restored around each cl_read_from_stream call. */
             char sym_buf[256];
             int sym_len = 0;
             int ch2;
-            CL_Obj name_str;
+            CL_Obj name_str, new_sym, cell;
             while (sym_len < 255) {
                 ch2 = read_char();
                 if (is_delimiter(ch2)) { unread_char(ch2); break; }
@@ -929,8 +934,35 @@ static CL_Obj read_expr(void)
                 if (read_suppress) return CL_NIL;
                 cl_reader_error(CL_ERR_PARSE, "Missing symbol name after #:");
             }
+            /* Look up by name in the per-read alist. */
+            {
+                CL_Obj p = rd_uninterned;
+                while (!CL_NULL_P(p)) {
+                    CL_Obj pair = cl_car(p);
+                    CL_Obj nm   = cl_car(pair);
+                    if (CL_ANY_STRING_P(nm) &&
+                        cl_string_length(nm) == (uint32_t)sym_len) {
+                        uint32_t i;
+                        int match = 1;
+                        for (i = 0; i < (uint32_t)sym_len; i++) {
+                            if ((char)cl_string_char_at(nm, i) != sym_buf[i]) {
+                                match = 0; break;
+                            }
+                        }
+                        if (match) return cl_cdr(pair);
+                    }
+                    p = cl_cdr(p);
+                }
+            }
             name_str = cl_make_string(sym_buf, (uint32_t)sym_len);
-            return cl_make_uninterned_symbol(name_str);
+            CL_GC_PROTECT(name_str);
+            new_sym = cl_make_uninterned_symbol(name_str);
+            CL_GC_PROTECT(new_sym);
+            cell = cl_cons(name_str, new_sym);
+            CL_GC_PROTECT(cell);
+            rd_uninterned = cl_cons(cell, rd_uninterned);
+            CL_GC_UNPROTECT(3);
+            return new_sym;
         }
         if (ch == '+' || ch == '-') {
             /* #+ / #- feature conditionals.
@@ -1262,11 +1294,14 @@ void cl_reader_set_line(int line)
 CL_Obj cl_read(void)
 {
     CL_Obj result;
+    CL_Obj saved_uninterned = rd_uninterned;
     reader_stream = cl_stdin_stream;
     reader_line = 1;
     eof_seen = 0;
+    rd_uninterned = CL_NIL;
     do { result = read_expr(); } while (result == CL_READER_SKIP && !eof_seen);
     CT->rd_last_eof = eof_seen;
+    rd_uninterned = saved_uninterned;
     return result;
 }
 
@@ -1276,28 +1311,32 @@ CL_Obj cl_read_from_stream(CL_Obj stream)
      * called from inside a dispatch-macro function that is itself running
      * during a parent read) don't leak state back to the parent reader.
      * The innermost EOF is preserved in rd_last_eof for cl_reader_eof(). */
-    CL_Obj saved_stream = reader_stream;
-    int    saved_eof    = eof_seen;
-    int    saved_line   = reader_line;
+    CL_Obj saved_stream      = reader_stream;
+    int    saved_eof         = eof_seen;
+    int    saved_line        = reader_line;
+    CL_Obj saved_uninterned  = rd_uninterned;
     CL_Obj result;
 
     reader_stream = stream;
     eof_seen = 0;
     reader_line = 1;
+    rd_uninterned = CL_NIL;
     do { result = read_expr(); } while (result == CL_READER_SKIP && !eof_seen);
 
     CT->rd_last_eof = eof_seen;
     reader_stream = saved_stream;
     reader_line   = saved_line;
     eof_seen      = saved_eof;
+    rd_uninterned = saved_uninterned;
     return result;
 }
 
 CL_Obj cl_read_from_string(CL_ReadStream *stream)
 {
-    CL_Obj saved_stream = reader_stream;
-    int    saved_eof    = eof_seen;
-    int    saved_line   = reader_line;
+    CL_Obj saved_stream      = reader_stream;
+    int    saved_eof         = eof_seen;
+    int    saved_line        = reader_line;
+    CL_Obj saved_uninterned  = rd_uninterned;
     CL_Obj str, s;
     CL_Stream *st;
     CL_Obj result;
@@ -1310,6 +1349,7 @@ CL_Obj cl_read_from_string(CL_ReadStream *stream)
     reader_stream = s;
     reader_line = stream->line ? stream->line : 1;
     eof_seen = 0;
+    rd_uninterned = CL_NIL;
 
     do { result = read_expr(); } while (result == CL_READER_SKIP && !eof_seen);
 
@@ -1322,6 +1362,7 @@ CL_Obj cl_read_from_string(CL_ReadStream *stream)
     reader_stream = saved_stream;
     reader_line   = saved_line;
     eof_seen      = saved_eof;
+    rd_uninterned = saved_uninterned;
     return result;
 }
 

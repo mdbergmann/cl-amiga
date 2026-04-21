@@ -1687,24 +1687,36 @@ when the param has no explicit default.  CL spec 3.4.6 requires this."
                (setq rest (cdr rest))
                (push `(when (<= ,ctr 0) (go ,end-tag)) preamble)
                (push `(setq ,ctr (- ,ctr 1)) steps)))
-            ;; FOR / AS — delegated
+            ;; FOR / AS [var spec] { AND [var spec] }* — parallel iteration.
+            ;; CLHS 6.1.2.1: AND introduces another variable whose binding,
+            ;; end-test, and stepping happen in parallel with the preceding
+            ;; FOR.  For our simple expansion model each sub-clause's
+            ;; bindings / preamble / steps are merged at the same level,
+            ;; which matches parallel semantics for the iteration forms we
+            ;; support (IN, ON, FROM/TO/BY, =, = THEN).
             ((or (%loop-keyword-p kw "FOR") (%loop-keyword-p kw "AS"))
-             (let* ((raw-var (car rest))
-                    (destructuring (consp raw-var))
-                    (var (if destructuring (gensym "DVAR") raw-var))
-                    (sub-kw (cadr rest))
-                    (r (%loop-parse-for (cddr rest) var sub-kw end-tag)))
-               (setq rest (car r))
-               (dolist (b (cadr r)) (push b bindings))
-               (when destructuring
-                 (dolist (v (%loop-destructure-vars raw-var))
-                   (push (list v nil) bindings)))
-               (dolist (e (caddr r)) (push e preamble))
-               (dolist (p (car (cdddr r))) (push p preamble))
-               (when destructuring
-                 (dolist (a (%loop-destructure-assigns raw-var var))
-                   (push a preamble)))
-               (dolist (s (cadr (cdddr r))) (push s steps))))
+             (block parse-for-and
+               (tagbody
+                 for-and-next
+                 (let* ((raw-var (car rest))
+                        (destructuring (consp raw-var))
+                        (var (if destructuring (gensym "DVAR") raw-var))
+                        (sub-kw (cadr rest))
+                        (r (%loop-parse-for (cddr rest) var sub-kw end-tag)))
+                   (setq rest (car r))
+                   (dolist (b (cadr r)) (push b bindings))
+                   (when destructuring
+                     (dolist (v (%loop-destructure-vars raw-var))
+                       (push (list v nil) bindings)))
+                   (dolist (e (caddr r)) (push e preamble))
+                   (dolist (p (car (cdddr r))) (push p preamble))
+                   (when destructuring
+                     (dolist (a (%loop-destructure-assigns raw-var var))
+                       (push a preamble)))
+                   (dolist (s (cadr (cdddr r))) (push s steps)))
+                 (when (and rest (%loop-keyword-p (car rest) "AND"))
+                   (setq rest (cdr rest))
+                   (go for-and-next)))))
             ;; RETURN
             ((%loop-keyword-p kw "RETURN")
              (push `(return-from ,block-name ,(car rest)) body)

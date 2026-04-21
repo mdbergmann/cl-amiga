@@ -91,6 +91,11 @@ typedef struct CL_Thread_s {
                                 * cl_read_from_stream — survives across
                                 * nested reader invocations, so bi_read
                                 * still sees whether its own read hit EOF. */
+    CL_Obj      rd_uninterned; /* Alist (name . symbol) of #:foo tokens
+                                * read so far in the current READ call.
+                                * Per CLHS 2.4.8.5: within one READ, all
+                                * #:foo with the same name denote the
+                                * same uninterned symbol. */
     const char *current_source_file;
     uint16_t    current_file_id;
 

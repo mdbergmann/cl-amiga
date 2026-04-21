@@ -969,6 +969,11 @@ static void gc_mark_thread_roots(CL_Thread *t)
     gc_mark_obj(t->result);
     gc_mark_obj(t->interrupt_func);
 
+    /* Reader state — in-flight reader stream plus per-read uninterned
+     * symbol alist (so #:foo identity survives a GC during a long READ). */
+    gc_mark_obj(t->rd_stream);
+    gc_mark_obj(t->rd_uninterned);
+
     /* Compiler constants (active compilers may hold CL_Obj values
      * in platform_alloc'd memory not reachable from the GC arena) */
     {
