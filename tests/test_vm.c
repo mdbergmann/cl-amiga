@@ -372,6 +372,19 @@ TEST(eval_defmacro_unless)
     ASSERT_STR_EQ(eval_print("(my-unless t 1 2 99)"), "NIL");
 }
 
+/* CLHS 3.1.2.1.2.4: a defmacro body is enclosed in an implicit BLOCK
+ * named after the macro, so (return-from <name> ...) in the body exits
+ * the expander early.  Serapeum's fbind et al. rely on this. */
+TEST(eval_defmacro_implicit_block)
+{
+    eval_print("(defmacro early-out (x)"
+               "  (when (numberp x)"
+               "    (return-from early-out (list 'quote (list :num x))))"
+               "  (list 'quote (list :other x)))");
+    ASSERT_STR_EQ(eval_print("(early-out 42)"), "(:NUM 42)");
+    ASSERT_STR_EQ(eval_print("(early-out foo)"), "(:OTHER FOO)");
+}
+
 TEST(eval_defmacro_identity)
 {
     /* Macro receives unevaluated forms — verify by quoting the arg */
@@ -691,6 +704,38 @@ TEST(eval_dotimes)
 
     /* var accessible in result-form (equals count at end) */
     ASSERT_EQ_INT(eval_int("(dotimes (i 5 i))"), 5);
+}
+
+/* CLHS 3.6: DOLIST/DOTIMES bodies are implicit tagbodies — GO to tags
+ * defined within the body must work.  Regression for serapeum
+ * static-let.lisp :start/(go :start) usage and similar patterns. */
+TEST(eval_dolist_implicit_tagbody)
+{
+    /* (go :top) re-enters the loop body at :top without advancing the
+       iterator.  Repeats until the flag guarding the GO flips false. */
+    ASSERT_EQ_INT(eval_int(
+        "(let ((n 0) (retries 0))"
+        "  (dolist (x '(a))"
+        "    (declare (ignore x))"
+        "    :top"
+        "    (incf n)"
+        "    (when (< retries 3)"
+        "      (incf retries)"
+        "      (go :top)))"
+        "  n)"), 4);  /* first pass + 3 GO re-entries */
+}
+
+TEST(eval_dotimes_implicit_tagbody)
+{
+    /* Same principle for dotimes: i=0 goes back to :top twice before
+       falling through; i=1,2 each pass through once. */
+    ASSERT_EQ_INT(eval_int(
+        "(let ((hits 0))"
+        "  (dotimes (i 3)"
+        "    :top"
+        "    (incf hits)"
+        "    (when (and (zerop i) (< hits 2)) (go :top)))"
+        "  hits)"), 4);
 }
 
 TEST(eval_do)
@@ -7349,6 +7394,7 @@ int main(void)
     RUN(eval_defmacro_with_args);
     RUN(eval_defmacro_when);
     RUN(eval_defmacro_unless);
+    RUN(eval_defmacro_implicit_block);
     RUN(eval_defmacro_identity);
     RUN(eval_closure_capture_let);
     RUN(eval_closure_make_adder);
@@ -7379,6 +7425,8 @@ int main(void)
     RUN(eval_apply_closure);
     RUN(eval_dolist);
     RUN(eval_dotimes);
+    RUN(eval_dolist_implicit_tagbody);
+    RUN(eval_dotimes_implicit_tagbody);
     RUN(eval_do);
     RUN(eval_do_star);
     RUN(eval_quasiquote_atom);

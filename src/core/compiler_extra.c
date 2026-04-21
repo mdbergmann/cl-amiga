@@ -1426,7 +1426,18 @@ void compile_defmacro(CL_Compiler *c, CL_Obj form)
         CL_GC_UNPROTECT(2); /* new_ll, new_ll_tail */
     }
 
-    lambda_form = cl_cons(SYM_LAMBDA, cl_cons(lambda_list, body));
+    /* CL spec: a macro's body is enclosed in an implicit BLOCK named
+       after the macro.  Build (lambda (ll) (block name body...)).
+       Without this, (return-from <macro-name> ...) inside the body
+       errors with "no block named <macro-name>". */
+    {
+        CL_Obj block_body = cl_cons(SYM_BLOCK, cl_cons(name, body));
+        CL_GC_PROTECT(block_body);
+        lambda_form = cl_cons(SYM_LAMBDA,
+                              cl_cons(lambda_list,
+                                      cl_cons(block_body, CL_NIL)));
+        CL_GC_UNPROTECT(1);
+    }
     CL_GC_PROTECT(lambda_form);
 
     compile_expr(c, lambda_form);
