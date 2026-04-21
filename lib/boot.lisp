@@ -120,11 +120,11 @@
   (declare (ignore name env))
   nil)
 
-;; define-symbol-macro — stores expansion but current compiler doesn't expand;
-;; serves as stub so code using it compiles without error.
+;; define-symbol-macro — stores expansion on the symbol's plist under
+;; %SYMBOL-MACRO-EXPANSION; the compiler consults this when compiling a
+;; variable reference (see cl_lookup_global_symbol_macro in compiler.c).
 (defmacro define-symbol-macro (symbol expansion)
   `(eval-when (:compile-toplevel :load-toplevel :execute)
-     ;; Store so we can at least query it; actual expansion not yet supported
      (setf (get ',symbol '%symbol-macro-expansion) ',expansion)
      ',symbol))
 

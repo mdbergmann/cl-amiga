@@ -1474,6 +1474,15 @@ static CL_Obj bi_macroexpand_1(CL_Obj *args, int n)
     CL_Obj form = args[0];
     CL_Obj expansion;
     CL_UNUSED(n);  /* optional env arg ignored */
+    if (CL_SYMBOL_P(form) && !CL_NULL_P(form)) {
+        CL_Obj sm = cl_lookup_global_symbol_macro(form);
+        if (!CL_NULL_P(sm)) {
+            cl_mv_values[0] = sm;
+            cl_mv_values[1] = SYM_T;
+            cl_mv_count = 2;
+            return sm;
+        }
+    }
     if (!CL_CONS_P(form)) {
         cl_mv_values[0] = form;
         cl_mv_values[1] = CL_NIL;
@@ -1493,9 +1502,17 @@ static CL_Obj bi_macroexpand(CL_Obj *args, int n)
     CL_Obj form = args[0];
     CL_Obj any_expansion = CL_NIL;
     CL_UNUSED(n);  /* optional env arg ignored */
+    /* Symbol input: apply global symbol-macro once (chased below). */
+    if (CL_SYMBOL_P(form) && !CL_NULL_P(form)) {
+        CL_Obj sm = cl_lookup_global_symbol_macro(form);
+        if (!CL_NULL_P(sm)) {
+            any_expansion = SYM_T;
+            form = sm;
+        }
+    }
     if (!CL_CONS_P(form)) {
         cl_mv_values[0] = form;
-        cl_mv_values[1] = CL_NIL;
+        cl_mv_values[1] = any_expansion;
         cl_mv_count = 2;
         return form;
     }
