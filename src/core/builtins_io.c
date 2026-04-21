@@ -1464,21 +1464,52 @@ static CL_Obj bi_eval(CL_Obj *args, int n)
     return cl_vm_eval(bytecode);
 }
 
+/* CLHS: macroexpand-1 form &optional env => expansion, expanded-p
+ * The ENV argument is accepted for conformance but ignored — we don't
+ * carry lexical environments across macro boundaries.  Both values are
+ * returned so callers that use MULTIPLE-VALUE-BIND (iterate, trivia,
+ * etc.) see the correct second return. */
 static CL_Obj bi_macroexpand_1(CL_Obj *args, int n)
 {
-    CL_UNUSED(n);
-    return cl_macroexpand_1(args[0]);
+    CL_Obj form = args[0];
+    CL_Obj expansion;
+    CL_UNUSED(n);  /* optional env arg ignored */
+    if (!CL_CONS_P(form)) {
+        cl_mv_values[0] = form;
+        cl_mv_values[1] = CL_NIL;
+        cl_mv_count = 2;
+        return form;
+    }
+    expansion = cl_macroexpand_1(form);
+    cl_mv_values[0] = expansion;
+    cl_mv_values[1] = (expansion == form) ? CL_NIL : SYM_T;
+    cl_mv_count = 2;
+    return expansion;
 }
 
+/* CLHS: macroexpand form &optional env => expansion, expanded-p */
 static CL_Obj bi_macroexpand(CL_Obj *args, int n)
 {
     CL_Obj form = args[0];
-    CL_UNUSED(n);
+    CL_Obj any_expansion = CL_NIL;
+    CL_UNUSED(n);  /* optional env arg ignored */
+    if (!CL_CONS_P(form)) {
+        cl_mv_values[0] = form;
+        cl_mv_values[1] = CL_NIL;
+        cl_mv_count = 2;
+        return form;
+    }
     for (;;) {
         CL_Obj expanded = cl_macroexpand_1(form);
-        if (expanded == form) return form;
+        if (expanded == form) break;
+        any_expansion = SYM_T;
         form = expanded;
+        if (!CL_CONS_P(form)) break;
     }
+    cl_mv_values[0] = form;
+    cl_mv_values[1] = any_expansion;
+    cl_mv_count = 2;
+    return form;
 }
 
 /* --- macro-function / (setf macro-function) --- */
@@ -2602,8 +2633,8 @@ void cl_builtins_io_init(void)
     defun("READ-DELIMITED-LIST", bi_read_delimited_list, 1, 3);
     defun("LOAD", bi_load, 1, -1);  /* accepts keyword args: :verbose, :print */
     defun("EVAL", bi_eval, 1, 1);
-    defun("MACROEXPAND-1", bi_macroexpand_1, 1, 1);
-    defun("MACROEXPAND", bi_macroexpand, 1, 1);
+    defun("MACROEXPAND-1", bi_macroexpand_1, 1, 2);
+    defun("MACROEXPAND", bi_macroexpand, 1, 2);
     defun("MACRO-FUNCTION", bi_macro_function, 1, 2);
     cl_register_builtin("%SETF-MACRO-FUNCTION", bi_set_macro_function, 2, 2, cl_package_cl);
 

@@ -1541,6 +1541,9 @@ when the param has no explicit default.  CL spec 3.4.6 requires this."
                (setq rest (cdr rest))
                (setq accum-var (car rest))
                (setq rest (cdr rest))
+               ;; CLHS 6.1.3.1: INTO var may be followed by OF-TYPE type-spec.
+               (when (and rest (%loop-keyword-p (car rest) "OF-TYPE"))
+                 (setq rest (cddr rest)))
                (unless (member accum-var into-vars)
                  (push accum-var into-vars)
                  (push (list accum-var init-val) bindings)
@@ -1704,6 +1707,12 @@ when the param has no explicit default.  CL spec 3.4.6 requires this."
                      (setq rest (cdr rest))
                      (setq accum-var (car rest))
                      (setq rest (cdr rest))
+                     ;; CLHS 6.1.3.1: accumulation clauses accept an
+                     ;; optional OF-TYPE type-spec after INTO var.  We
+                     ;; don't use the type for optimization — just
+                     ;; consume it so the clause parses.
+                     (when (and rest (%loop-keyword-p (car rest) "OF-TYPE"))
+                       (setq rest (cddr rest)))
                      (unless (member accum-var into-vars)
                        (push accum-var into-vars)
                        (push (list accum-var init-val) bindings)
