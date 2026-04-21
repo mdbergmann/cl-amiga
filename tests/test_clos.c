@@ -3615,6 +3615,31 @@ TEST(cmshim_writer_method_class_returns_standard)
         "T");
 }
 
+/* DOCUMENTATION is a generic function in CLHS.  Regression: libraries
+ * like lisp-namespace add (defmethod documentation ((x symbol) (type (eql ...)))),
+ * which should leave plain (documentation 'foo 'function) still answerable
+ * via the (t t) fallback method — otherwise NO-APPLICABLE-METHOD blocks
+ * loading of introspect-environment and everything downstream. */
+TEST(documentation_generic_fallback_after_specialization)
+{
+    /* Fallback stores / retrieves through the existing doc-table */
+    ASSERT_STR_EQ(eval_print(
+        "(progn (setf (documentation 'docgf-sym 'function) \"docA\")"
+        "       (documentation 'docgf-sym 'function))"),
+        "\"docA\"");
+    /* After a user defmethod on a specific EQL doc-type, the (t t)
+     * method still handles the original doc-type */
+    eval_print(
+        "(defmethod documentation ((x symbol) (type (eql 'mynamespace)))"
+        "  'specialized-result)");
+    ASSERT_STR_EQ(eval_print(
+        "(documentation 'docgf-sym 'mynamespace)"),
+        "SPECIALIZED-RESULT");
+    ASSERT_STR_EQ(eval_print(
+        "(documentation 'docgf-sym 'function)"),
+        "\"docA\"");
+}
+
 int main(void)
 {
     test_init();
@@ -3959,6 +3984,8 @@ int main(void)
     RUN(cmshim_accessor_method_slot_definition_stub);
     RUN(cmshim_reader_method_class_returns_standard);
     RUN(cmshim_writer_method_class_returns_standard);
+
+    RUN(documentation_generic_fallback_after_specialization);
 
     teardown();
     REPORT();

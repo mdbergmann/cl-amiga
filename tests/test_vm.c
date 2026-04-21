@@ -7061,6 +7061,26 @@ static void test_eval_declare_special_param(void)
         "77");
 }
 
+/* CLHS: special-operator-p recognizes the 25 CL special operators.
+ * Regression for iterate which calls (special-operator-p (car form))
+ * to distinguish special forms from ordinary calls. */
+static void test_eval_special_operator_p(void)
+{
+    ASSERT_STR_EQ(eval_print(
+        "(list (special-operator-p 'quote)"
+        "      (special-operator-p 'if)"
+        "      (special-operator-p 'let*)"
+        "      (special-operator-p 'tagbody)"
+        "      (special-operator-p 'the))"),
+        "(T T T T T)");
+    /* Regular functions/macros, and undefined symbols, are not special ops */
+    ASSERT_STR_EQ(eval_print(
+        "(list (special-operator-p 'car)"
+        "      (special-operator-p 'defun)"
+        "      (special-operator-p 'no-such-symbol))"),
+        "(NIL NIL NIL)");
+}
+
 /* alpha-char-p must recognize Latin-1 letters */
 static void test_eval_alpha_char_p_unicode(void)
 {
@@ -7126,6 +7146,7 @@ int main(void)
     setup();
 
     RUN(eval_add);
+    RUN(eval_special_operator_p);
     RUN(eval_sub);
     RUN(eval_mul);
     RUN(eval_div);

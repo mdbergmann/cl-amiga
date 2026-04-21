@@ -4065,6 +4065,24 @@
 (check "lock-name nil when unnamed" nil
   (mp:lock-name (mp:make-lock)))
 
+; --- special-operator-p (CLHS) ---
+(check "special-operator-p quote" t (special-operator-p 'quote))
+(check "special-operator-p if" t (special-operator-p 'if))
+(check "special-operator-p tagbody" t (special-operator-p 'tagbody))
+(check "special-operator-p car" nil (special-operator-p 'car))
+(check "special-operator-p undefined" nil (special-operator-p 'no-such-sym))
+
+; --- documentation is a generic function ---
+; Storage via (setf documentation) + retrieval; adding a specialized
+; method for a user-defined doc-type must NOT break the (t t) fallback.
+(progn
+  (setf (documentation 'amiga-doc-sym 'function) "hello")
+  (defmethod documentation ((x symbol) (type (eql 'amiga-ns))) 'specialized))
+(check "documentation fallback retains string"
+  "hello" (documentation 'amiga-doc-sym 'function))
+(check "documentation specialized method used"
+  'specialized (documentation 'amiga-doc-sym 'amiga-ns))
+
 ; --- Type predicates ---
 (check "threadp true" t
   (mp:threadp (mp:current-thread)))

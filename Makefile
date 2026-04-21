@@ -148,5 +148,25 @@ fasl: $(BUILDDIR)/clamiga
 		--eval '(compile-file "lib/clos.lisp" :output-file "lib/clos.fasl")' \
 		--eval '(quit)'
 
+QL_LOCAL_PROJECTS ?= $(HOME)/quicklisp/local-projects
+
+# Install CL-Amiga's shim systems (closer-mop, trivial-cltl2) into
+# quicklisp's local-projects tree via symlink.  Needed on dev hosts
+# where quicklisp is installed — these shims are NOT required on
+# Amiga when quicklisp isn't in use.  Long-term goal: merge the
+# #+clamiga branches upstream so stock closer-mop / trivial-cltl2
+# work out of the box, at which point this target becomes obsolete.
+install-shims:
+	@mkdir -p $(QL_LOCAL_PROJECTS)
+	@for shim in closer-mop trivial-cltl2; do \
+	  src="$(CURDIR)/contrib/shims/$$shim"; \
+	  dst="$(QL_LOCAL_PROJECTS)/$$shim"; \
+	  if [ -L "$$dst" ] || [ -e "$$dst" ]; then \
+	    echo "=> $$dst already exists — leaving alone"; \
+	  else \
+	    ln -s "$$src" "$$dst" && echo "=> linked $$dst -> $$src"; \
+	  fi; \
+	done
+
 clean:
 	rm -rf build

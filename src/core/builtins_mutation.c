@@ -215,6 +215,34 @@ static CL_Obj bi_makunbound(CL_Obj *args, int n)
     return args[0];
 }
 
+/* CLHS special-operator-p: true if SYMBOL names a CL special operator.
+ * The set matches compile_expr() in compiler.c — any symbol dispatched
+ * there as a special form is reported here.  Keep the two lists in sync
+ * when adding or removing special-form compilation branches. */
+static CL_Obj bi_special_operator_p(CL_Obj *args, int n)
+{
+    CL_Obj sym;
+    CL_UNUSED(n);
+    if (!CL_SYMBOL_P(args[0]))
+        cl_error(CL_ERR_TYPE, "SPECIAL-OPERATOR-P: argument must be a symbol");
+    sym = args[0];
+    if (sym == SYM_QUOTE || sym == SYM_IF || sym == SYM_PROGN
+        || sym == SYM_LAMBDA || sym == SYM_LET || sym == SYM_LETSTAR
+        || sym == SYM_SETQ || sym == SYM_FUNCTION
+        || sym == SYM_BLOCK || sym == SYM_RETURN_FROM
+        || sym == SYM_FLET || sym == SYM_LABELS
+        || sym == SYM_TAGBODY || sym == SYM_GO
+        || sym == SYM_CATCH || sym == SYM_THROW
+        || sym == SYM_UNWIND_PROTECT
+        || sym == SYM_MULTIPLE_VALUE_CALL || sym == SYM_MULTIPLE_VALUE_PROG1
+        || sym == SYM_EVAL_WHEN || sym == SYM_LOAD_TIME_VALUE
+        || sym == SYM_LOCALLY || sym == SYM_PROGV
+        || sym == SYM_MACROLET || sym == SYM_SYMBOL_MACROLET
+        || sym == SYM_THE)
+        return SYM_T;
+    return CL_NIL;
+}
+
 static CL_Obj bi_register_setf_function(CL_Obj *args, int n)
 {
     /* (%register-setf-function accessor-sym setf-fn-sym) */
@@ -284,6 +312,7 @@ void cl_builtins_mutation_init(void)
     defun("FBOUNDP", bi_fboundp, 1, 1);
     defun("FMAKUNBOUND", bi_fmakunbound, 1, 1);
     defun("MAKUNBOUND", bi_makunbound, 1, 1);
+    defun("SPECIAL-OPERATOR-P", bi_special_operator_p, 1, 1);
     cl_register_builtin("%REGISTER-SETF-FUNCTION", bi_register_setf_function, 2, 2, cl_package_clamiga);
     cl_register_builtin("%REGISTER-SETF-EXPANDER", bi_register_setf_expander, 2, 2, cl_package_clamiga);
     cl_register_builtin("%GET-DEFSETF-SETTER", bi_get_defsetf_setter, 1, 1, cl_package_clamiga);
