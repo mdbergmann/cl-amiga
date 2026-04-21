@@ -1208,21 +1208,40 @@ void compile_dolist(CL_Compiler *c, CL_Obj form)
     cl_emit(c, (uint8_t)iter_slot);
     cl_emit(c, OP_POP);
 
-    /* Compile body forms, each followed by POP (skip declarations) */
+    /* CLHS 3.6: the body of DOLIST is an implicit TAGBODY.  Strip leading
+       declarations (they don't belong inside tagbody), then compile a
+       single (tagbody body...) form so go-tags in the body resolve and
+       (go tag) works.  TAGBODY returns NIL, which we POP — matching the
+       existing "body values are discarded" semantics. */
     {
         CL_Obj b = body;
+        CL_Obj tb_forms = CL_NIL, tb_tail = CL_NIL;
+        CL_Obj tagbody_form;
         CL_GC_PROTECT(b);
+        CL_GC_PROTECT(tb_forms);
+        CL_GC_PROTECT(tb_tail);
         while (!CL_NULL_P(b)) {
             CL_Obj form = cl_car(b);
             if (CL_CONS_P(form) && cl_car(form) == SYM_DECLARE) {
                 b = cl_cdr(b);
                 continue;
             }
-            compile_expr(c, form);
-            cl_emit(c, OP_POP);
+            {
+                CL_Obj cell = cl_cons(form, CL_NIL);
+                if (CL_NULL_P(tb_forms)) {
+                    tb_forms = cell;
+                } else {
+                    ((CL_Cons *)CL_OBJ_TO_PTR(tb_tail))->cdr = cell;
+                }
+                tb_tail = cell;
+            }
             b = cl_cdr(b);
         }
-        CL_GC_UNPROTECT(1);
+        tagbody_form = cl_cons(SYM_TAGBODY, tb_forms);
+        CL_GC_PROTECT(tagbody_form);
+        compile_expr(c, tagbody_form);
+        cl_emit(c, OP_POP);
+        CL_GC_UNPROTECT(4);
     }
 
     /* Backward jump to loop_start */
@@ -1354,21 +1373,36 @@ void compile_dotimes(CL_Compiler *c, CL_Obj form)
     cl_emit(c, OP_GE);
     jtrue_pos = cl_emit_jump(c, OP_JTRUE);
 
-    /* Compile body forms, each followed by POP (skip declarations) */
+    /* CLHS 3.6: the body of DOTIMES is an implicit TAGBODY. */
     {
         CL_Obj b = body;
+        CL_Obj tb_forms = CL_NIL, tb_tail = CL_NIL;
+        CL_Obj tagbody_form;
         CL_GC_PROTECT(b);
+        CL_GC_PROTECT(tb_forms);
+        CL_GC_PROTECT(tb_tail);
         while (!CL_NULL_P(b)) {
             CL_Obj form = cl_car(b);
             if (CL_CONS_P(form) && cl_car(form) == SYM_DECLARE) {
                 b = cl_cdr(b);
                 continue;
             }
-            compile_expr(c, form);
-            cl_emit(c, OP_POP);
+            {
+                CL_Obj cell = cl_cons(form, CL_NIL);
+                if (CL_NULL_P(tb_forms)) {
+                    tb_forms = cell;
+                } else {
+                    ((CL_Cons *)CL_OBJ_TO_PTR(tb_tail))->cdr = cell;
+                }
+                tb_tail = cell;
+            }
             b = cl_cdr(b);
         }
-        CL_GC_UNPROTECT(1);
+        tagbody_form = cl_cons(SYM_TAGBODY, tb_forms);
+        CL_GC_PROTECT(tagbody_form);
+        compile_expr(c, tagbody_form);
+        cl_emit(c, OP_POP);
+        CL_GC_UNPROTECT(4);
     }
 
     /* Increment: var = var + 1 */
