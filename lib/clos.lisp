@@ -3120,5 +3120,24 @@ protocol hook a user metaclass would override to substitute a subclass."
   (declare (ignore class direct-slot initargs))
   (find-class 'standard-writer-method))
 
+;;; --- DOCUMENTATION as a generic function ---
+;;;
+;;; CLHS specifies DOCUMENTATION / (SETF DOCUMENTATION) as generic
+;;; functions dispatched on the object and doc-type.  boot.lisp had to
+;;; define it as a plain DEFUN because CLOS isn't loaded yet; now that
+;;; CLOS is available, replace the plain function with a GF that
+;;; delegates to the existing *DOCUMENTATION-TABLE* storage.  Without
+;;; this, libraries that add methods (e.g. lisp-namespace) silently
+;;; shadow the function definition and plain calls like
+;;; (DOCUMENTATION 'FOO 'FUNCTION) signal NO-APPLICABLE-METHOD.
+(fmakunbound 'documentation)
+(defgeneric documentation (x doc-type))
+(defmethod documentation (x doc-type)
+  (gethash (cons x doc-type) *documentation-table*))
+
+(defgeneric (setf documentation) (new-value x doc-type))
+(defmethod (setf documentation) (new-value x doc-type)
+  (setf (gethash (cons x doc-type) *documentation-table*) new-value))
+
 ;;; --- Provide module ---
 (provide "clos")
