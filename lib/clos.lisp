@@ -110,7 +110,18 @@
 (%set-clos-class-table *class-table*)
 
 (defun find-class (name &optional (errorp t) environment)
-  "Find the class named NAME. Signal an error if not found and ERRORP is true."
+  "Find the class named NAME.  Signal an error if not found and
+ERRORP is true.  Common libraries (serapeum, closer-mop callers) pass
+an already-reified class metaobject in place of a class name and
+expect it to round-trip — when NAME is itself a class, return it
+directly instead of attempting a symbol lookup."
+  (declare (ignore environment))
+  (when (and (structurep name)
+             (member (%struct-type-name name)
+                     '(standard-class built-in-class
+                       funcallable-standard-class
+                       forward-referenced-class)))
+    (return-from find-class name))
   (multiple-value-bind (class found-p)
       (gethash name *class-table*)
     (if found-p

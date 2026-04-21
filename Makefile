@@ -158,7 +158,7 @@ QL_LOCAL_PROJECTS ?= $(HOME)/quicklisp/local-projects
 # work out of the box, at which point this target becomes obsolete.
 install-shims:
 	@mkdir -p $(QL_LOCAL_PROJECTS)
-	@for shim in closer-mop trivial-cltl2; do \
+	@for shim in closer-mop trivial-cltl2 trivial-garbage; do \
 	  src="$(CURDIR)/contrib/shims/$$shim"; \
 	  dst="$(QL_LOCAL_PROJECTS)/$$shim"; \
 	  if [ -L "$$dst" ] || [ -e "$$dst" ]; then \
