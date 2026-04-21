@@ -1681,6 +1681,33 @@ TEST(compile_file_lambda_constant)
     delete_cached_fasl("/tmp/cf-test-lam.lisp");
 }
 
+TEST(compile_file_skips_atom_top_level)
+{
+    /* Per CLHS 3.2.3.1: a top-level atom form (bare symbol, number,
+     * string) has no side effect worth evaluating at compile time.
+     * Libraries like string-case.lisp leave demo markers like `=>`
+     * at top level after a #+bad reader-conditional skip — compile-file
+     * must not raise "Unbound variable" for these.  The useful forms
+     * around the atom must still compile and load normally. */
+    write_test_file("/tmp/cf-test-atom.lisp",
+        "(defvar *cf-atom-before* 1)\n"
+        "=>\n"
+        "42\n"
+        "(defvar *cf-atom-after* 2)\n");
+
+    {
+        CL_Obj result = eval_obj("(compile-file \"/tmp/cf-test-atom.lisp\")");
+        ASSERT(CL_PATHNAME_P(result));  /* compile succeeded, FASL written */
+    }
+    eval_obj("(load (compile-file-pathname \"/tmp/cf-test-atom.lisp\"))");
+
+    ASSERT_STR_EQ(eval_print("*cf-atom-before*"), "1");
+    ASSERT_STR_EQ(eval_print("*cf-atom-after*"), "2");
+
+    platform_file_delete("/tmp/cf-test-atom.lisp");
+    delete_cached_fasl("/tmp/cf-test-atom.lisp");
+}
+
 TEST(load_auto_finds_cached_fasl)
 {
     /* load of source file should auto-discover cached FASL */
@@ -1880,6 +1907,7 @@ int main(void)
     RUN(compile_file_with_macros);
     RUN(compile_file_defclass_initform);
     RUN(compile_file_lambda_constant);
+    RUN(compile_file_skips_atom_top_level);
 
     /* FASL cache behavior tests */
     RUN(load_auto_finds_cached_fasl);
