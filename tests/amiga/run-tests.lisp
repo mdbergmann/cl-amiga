@@ -4065,6 +4065,12 @@
 (check "lock-name nil when unnamed" nil
   (mp:lock-name (mp:make-lock)))
 
+; --- Reader ,. (nconc-splice) — iterate/trivia need this in macros ---
+(check "quasi splice ,. basic" '(a 1 2 3 b)
+  (let ((xs '(1 2 3))) `(a ,.xs b)))
+(check "quasi splice ,. twice" '(1 2 3 4)
+  `(,.'(1 2) ,.'(3 4)))
+
 ; --- special-operator-p (CLHS) ---
 (check "special-operator-p quote" t (special-operator-p 'quote))
 (check "special-operator-p if" t (special-operator-p 'if))

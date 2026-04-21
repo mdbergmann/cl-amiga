@@ -769,6 +769,17 @@ TEST(eval_quasiquote_splicing)
     ASSERT_STR_EQ(eval_print("`(a ,@'(1 2))"), "(A 1 2)");
 }
 
+/* ,.  (destructive splice, CLHS "The Backquote").  iterate uses this
+ * in macros like `(for ,var ,.(nreverse kwd-clauses)); our reader must
+ * accept it — we collapse ,. to the same expansion as ,@.  Regression
+ * for trivia/iterate compilation which previously signalled
+ * "Unbound variable: ." because `.(...)` was read as a plain symbol. */
+TEST(eval_quasiquote_splicing_nconc)
+{
+    ASSERT_STR_EQ(eval_print("`(a ,.'(1 2 3) b)"), "(A 1 2 3 B)");
+    ASSERT_STR_EQ(eval_print("`(,.'(1 2) ,.'(3 4))"), "(1 2 3 4)");
+}
+
 TEST(eval_quasiquote_nested_list)
 {
     ASSERT_STR_EQ(eval_print("`(a (b ,(+ 1 2)))"), "(A (B 3))");
@@ -7223,6 +7234,7 @@ int main(void)
     RUN(eval_quasiquote_simple_list);
     RUN(eval_quasiquote_unquote);
     RUN(eval_quasiquote_splicing);
+    RUN(eval_quasiquote_splicing_nconc);
     RUN(eval_quasiquote_nested_list);
     RUN(eval_quasiquote_dotted);
     RUN(eval_quasiquote_in_macro);

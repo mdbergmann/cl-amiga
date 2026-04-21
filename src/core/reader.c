@@ -772,7 +772,12 @@ static CL_Obj read_expr(void)
 
     case ',': /* unquote / unquote-splicing */
         ch = read_char();
-        if (ch == '@') {
+        /* ,. is the destructive-splice variant of ,@ — ANSI CL permits
+         * implementations to expand it identically to ,@ (the
+         * difference is only whether APPEND or NCONC is used in the
+         * expansion, and iterate relies on the form being accepted at
+         * read time).  Treat them the same here. */
+        if (ch == '@' || ch == '.') {
             obj = read_expr();
             return cl_cons(SYM_UNQUOTE_SPLICING, cl_cons(obj, CL_NIL));
         }
