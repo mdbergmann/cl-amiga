@@ -4065,6 +4065,27 @@
 (check "lock-name nil when unnamed" nil
   (mp:lock-name (mp:make-lock)))
 
+; --- macroexpand-1 returns two values; accepts optional env ---
+(defmacro mx1amiga (x) `(* ,x 10))
+(check "macroexpand-1 returns two values"
+  '((* 3 10) t)
+  (multiple-value-list (macroexpand-1 '(mx1amiga 3))))
+(check "macroexpand-1 accepts env arg"
+  '((* 3 10) t)
+  (multiple-value-list (macroexpand-1 '(mx1amiga 3) nil)))
+(check "macroexpand non-macro"
+  '((+ 1 2) nil)
+  (multiple-value-list (macroexpand-1 '(+ 1 2))))
+
+; --- subtypep / typep accept optional env (CLHS) ---
+(check "subtypep with env" t (nth-value 0 (subtypep 'fixnum 'integer nil)))
+(check "typep with env" t (typep 5 'integer nil))
+
+; --- LOOP: OF-TYPE after INTO (CLHS 6.1.3.1) ---
+(check "loop sum into of-type fixnum" 55
+  (loop for i from 1 to 10 sum i into total of-type fixnum
+        finally (return total)))
+
 ; --- Reader ,. (nconc-splice) — iterate/trivia need this in macros ---
 (check "quasi splice ,. basic" '(a 1 2 3 b)
   (let ((xs '(1 2 3))) `(a ,.xs b)))

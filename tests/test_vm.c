@@ -780,6 +780,53 @@ TEST(eval_quasiquote_splicing_nconc)
     ASSERT_STR_EQ(eval_print("`(,.'(1 2) ,.'(3 4))"), "(1 2 3 4)");
 }
 
+/* CLHS: macroexpand-1 form &optional env => expansion, expanded-p
+ * (1) Returns two values
+ * (2) Accepts optional env argument (ignored)
+ * iterate calls (macroexpand-1 form *env*) so arity must be 2-wide. */
+TEST(eval_macroexpand_1_values_and_env)
+{
+    eval_print("(defmacro mx1-m (x) `(+ ,x 1))");
+    /* Multiple-value-list to inspect both return values */
+    ASSERT_STR_EQ(eval_print(
+        "(multiple-value-list (macroexpand-1 '(mx1-m 5)))"),
+        "((+ 5 1) T)");
+    /* env arg accepted, ignored */
+    ASSERT_STR_EQ(eval_print(
+        "(multiple-value-list (macroexpand-1 '(mx1-m 7) nil))"),
+        "((+ 7 1) T)");
+    /* Non-macro call: expansion is the form, expanded-p is NIL */
+    ASSERT_STR_EQ(eval_print(
+        "(multiple-value-list (macroexpand-1 '(+ 1 2)))"),
+        "((+ 1 2) NIL)");
+    /* Non-cons input: returns form unchanged with expanded-p = NIL */
+    ASSERT_STR_EQ(eval_print(
+        "(multiple-value-list (macroexpand-1 'plain-sym))"),
+        "(PLAIN-SYM NIL)");
+}
+
+/* CLHS: subtypep and typep take an optional environment argument.
+ * serapeum uses (subtypep t1 t2 env), iterate uses (typep x type env). */
+TEST(eval_subtypep_typep_env_arg)
+{
+    ASSERT_STR_EQ(eval_print("(nth-value 0 (subtypep 'fixnum 'integer))"), "T");
+    ASSERT_STR_EQ(eval_print("(nth-value 0 (subtypep 'fixnum 'integer nil))"), "T");
+    ASSERT_STR_EQ(eval_print("(typep 5 'integer)"), "T");
+    ASSERT_STR_EQ(eval_print("(typep 5 'integer nil)"), "T");
+}
+
+/* CLHS 6.1.3.1: accumulation clauses may include OF-TYPE after INTO.
+ * split-sequence and serapeum use this.  We ignore the type spec but
+ * must consume it so the clause parses. */
+TEST(eval_loop_of_type_after_into)
+{
+    ASSERT_EQ_INT(eval_int(
+        "(loop for i from 1 to 10 "
+        "      sum i into total of-type fixnum "
+        "      finally (return total))"),
+        55);
+}
+
 TEST(eval_quasiquote_nested_list)
 {
     ASSERT_STR_EQ(eval_print("`(a (b ,(+ 1 2)))"), "(A (B 3))");
@@ -7235,6 +7282,9 @@ int main(void)
     RUN(eval_quasiquote_unquote);
     RUN(eval_quasiquote_splicing);
     RUN(eval_quasiquote_splicing_nconc);
+    RUN(eval_macroexpand_1_values_and_env);
+    RUN(eval_subtypep_typep_env_arg);
+    RUN(eval_loop_of_type_after_into);
     RUN(eval_quasiquote_nested_list);
     RUN(eval_quasiquote_dotted);
     RUN(eval_quasiquote_in_macro);

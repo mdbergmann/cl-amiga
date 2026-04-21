@@ -1330,9 +1330,11 @@ void cl_builtins_type_init(void)
     TYPE_SYM_SIMPLE_BIT_VECTOR = cl_intern_in("SIMPLE-BIT-VECTOR", 17, cl_package_cl);
 
     defun("TYPE-OF", bi_type_of, 1, 1);
-    defun("TYPEP", bi_typep, 2, 2);
+    /* CLHS: typep and subtypep take an optional ENV argument.  We
+     * don't carry environment objects — accept and ignore it. */
+    defun("TYPEP", bi_typep, 2, 3);
     defun("COERCE", bi_coerce, 2, 2);
-    defun("SUBTYPEP", bi_subtypep, 2, 2);
+    defun("SUBTYPEP", bi_subtypep, 2, 3);
 
     /* Register cached symbols for GC compaction forwarding */
     cl_gc_register_root(&TYPE_SYM_OR);
