@@ -493,8 +493,15 @@ TEST(eval_read_uninterned)
 
 TEST(eval_read_uninterned_unique)
 {
-    /* Two #:SYM are not eq even with same name */
-    ASSERT_STR_EQ(eval_print("(eq '#:X '#:X)"), "NIL");
+    /* CLHS 2.4.8.5: within a single READ call, multiple #:foo with the
+     * same name denote the same uninterned symbol (needed for
+     * compile-file output to be re-readable — see SBCL / CCL).  The
+     * form (eq '#:X '#:X) is parsed by ONE read so the two #:X share. */
+    ASSERT_STR_EQ(eval_print("(eq '#:X '#:X)"), "T");
+    /* Two separate reads must produce distinct symbols. */
+    ASSERT_STR_EQ(eval_print(
+        "(eq (read-from-string \"#:X\") (read-from-string \"#:X\"))"),
+        "NIL");
 }
 
 TEST(eval_print_uninterned)

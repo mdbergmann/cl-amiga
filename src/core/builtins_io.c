@@ -1081,6 +1081,19 @@ static CL_Obj bi_compile_file(CL_Obj *args, int n)
             CL_GC_PROTECT(expr);
             bytecode = cl_compile(expr);
             CL_GC_UNPROTECT(1);
+            /* Per CLHS 3.2.3.1: a top-level form that is an atom (bare
+             * symbol, number, string, …) has no side effects worth
+             * running — evaluating it just discards the value.  Skip
+             * both compile-time eval and FASL serialization so demo
+             * markers like `=>` at top level (e.g. string-case.lisp's
+             * macroexpand example output) don't raise "Unbound
+             * variable" during compile-file. */
+            if (!CL_CONS_P(expr)) {
+                CL_UNCATCH();
+                cl_handler_floor = saved_handler_top;
+                cl_restart_floor = saved_restart_top;
+                continue;
+            }
             if (!CL_NULL_P(bytecode)) {
                 /* GC-protect bytecode across eval (cl_vm_eval may
                  * allocate and trigger GC). */
