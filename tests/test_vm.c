@@ -872,6 +872,36 @@ TEST(eval_subtypep_bounded_integer_ranges)
     ASSERT_STR_EQ(eval_print("(multiple-value-list (subtypep '(unsigned-byte 8) 't))"), "(T T)");
 }
 
+/* Serapeum's with-subtype-dispatch / with-simple-vector-dispatch needs
+ * (subtypep <vec-type> '(simple-array * (*))) to return T for simple 1-D
+ * vectors, otherwise it raises "X is not a subtype of (SIMPLE-ARRAY * (*))".
+ * See serapeum/types.lisp:411. */
+TEST(eval_subtypep_compound_array_specs)
+{
+    /* 1-D simple-array supertype: simple-vector, simple-bit-vector qualify. */
+    ASSERT_STR_EQ(eval_print("(multiple-value-list (subtypep 'simple-vector '(simple-array * (*))))"), "(T T)");
+    ASSERT_STR_EQ(eval_print("(multiple-value-list (subtypep 'simple-bit-vector '(simple-array * (*))))"), "(T T)");
+    /* (simple-array * *) ≡ SIMPLE-ARRAY (no restriction). */
+    ASSERT_STR_EQ(eval_print("(multiple-value-list (subtypep 'simple-vector '(simple-array * *)))"), "(T T)");
+    ASSERT_STR_EQ(eval_print("(multiple-value-list (subtypep 'simple-bit-vector '(simple-array * *)))"), "(T T)");
+    /* (array * (*)) ≡ VECTOR. */
+    ASSERT_STR_EQ(eval_print("(multiple-value-list (subtypep 'vector '(array * (*))))"), "(T T)");
+    ASSERT_STR_EQ(eval_print("(multiple-value-list (subtypep 'simple-vector '(array * (*))))"), "(T T)");
+    ASSERT_STR_EQ(eval_print("(multiple-value-list (subtypep 'string '(array * (*))))"), "(T T)");
+    /* (array * *) ≡ ARRAY. */
+    ASSERT_STR_EQ(eval_print("(multiple-value-list (subtypep 'vector '(array * *)))"), "(T T)");
+    ASSERT_STR_EQ(eval_print("(multiple-value-list (subtypep 'simple-array '(array * *)))"), "(T T)");
+    /* Compound on the subtype side. */
+    ASSERT_STR_EQ(eval_print("(multiple-value-list (subtypep '(simple-array * (*)) 'array))"), "(T T)");
+    ASSERT_STR_EQ(eval_print("(multiple-value-list (subtypep '(simple-array * (*)) 'simple-array))"), "(T T)");
+    ASSERT_STR_EQ(eval_print("(multiple-value-list (subtypep '(simple-array * (*)) 'vector))"), "(T T)");
+    ASSERT_STR_EQ(eval_print("(multiple-value-list (subtypep '(simple-array * (*)) 'sequence))"), "(T T)");
+    /* Negative: SIMPLE-ARRAY includes multi-dim so is NOT subtype of 1-D form. */
+    ASSERT_STR_EQ(eval_print("(multiple-value-list (subtypep 'simple-array '(simple-array * (*))))"), "(NIL T)");
+    /* Negative: unrelated type. */
+    ASSERT_STR_EQ(eval_print("(multiple-value-list (subtypep 'fixnum '(simple-array * (*))))"), "(NIL T)");
+}
+
 /* CLHS 6.1.3.1: accumulation clauses may include OF-TYPE after INTO.
  * split-sequence and serapeum use this.  We ignore the type spec but
  * must consume it so the clause parses. */
@@ -882,6 +912,26 @@ TEST(eval_loop_of_type_after_into)
         "      sum i into total of-type fixnum "
         "      finally (return total))"),
         55);
+}
+
+/* CLHS 6.1.2.1: AND introduces another parallel iteration variable.
+ * Serapeum uses `(loop for trail on list and head on head ...)`. */
+TEST(eval_loop_for_and_parallel)
+{
+    /* FOR/IN + AND/IN */
+    ASSERT_STR_EQ(eval_print(
+        "(loop for x in '(1 2 3) and y in '(10 20 30) collect (+ x y))"),
+        "(11 22 33)");
+    /* FOR/ON + AND/ON — serapeum partition pattern */
+    ASSERT_STR_EQ(eval_print(
+        "(loop for trail on '(a b c d) and head on '(x y) "
+        "      collect (list (car trail) (car head)))"),
+        "((A X) (B Y))");
+    /* FOR FROM/TO + AND = THEN */
+    ASSERT_STR_EQ(eval_print(
+        "(loop for i from 0 below 3 and x = 100 then (1+ x) "
+        "      collect (list i x))"),
+        "((0 100) (1 101) (2 102))");
 }
 
 TEST(eval_quasiquote_nested_list)
@@ -6462,6 +6512,25 @@ TEST(eval_copy_symbol_props)
     ASSERT_STR_EQ(eval_print("(symbol-value (copy-symbol '*copy-sym-test* t))"), "42");
 }
 
+/* CLHS 2.4.8.5: Within a single call to READ, all #:foo with the same
+ * name denote the same uninterned symbol.  Compile-file output from
+ * SBCL et al. relies on this — e.g. string-case.lisp has a pretty-printed
+ * macroexpansion containing a LET that binds #:input2056 and references
+ * it deeper inside, all parsed as one top-level form. */
+TEST(eval_reader_shared_uninterned_within_one_read)
+{
+    /* Multiple #:x in one read share identity (LET binding flows through). */
+    ASSERT_STR_EQ(eval_print("(eval (read-from-string \"(let ((#:x 10)) (+ #:x #:x))\"))"),
+                  "20");
+    /* Two #:foo in one read are EQ; two separate reads are NOT EQ. */
+    ASSERT_STR_EQ(eval_print(
+        "(let ((form (read-from-string \"(#:bar #:bar)\"))) (eq (car form) (cadr form)))"),
+        "T");
+    ASSERT_STR_EQ(eval_print(
+        "(eq (read-from-string \"#:foo\") (read-from-string \"#:foo\"))"),
+        "NIL");
+}
+
 /* --- LOOP nested :if sub-clause tests --- */
 
 TEST(eval_loop_nested_if)
@@ -7437,7 +7506,9 @@ int main(void)
     RUN(eval_macroexpand_1_values_and_env);
     RUN(eval_subtypep_typep_env_arg);
     RUN(eval_subtypep_bounded_integer_ranges);
+    RUN(eval_subtypep_compound_array_specs);
     RUN(eval_loop_of_type_after_into);
+    RUN(eval_loop_for_and_parallel);
     RUN(eval_quasiquote_nested_list);
     RUN(eval_quasiquote_dotted);
     RUN(eval_quasiquote_in_macro);
@@ -8076,6 +8147,7 @@ int main(void)
     RUN(eval_copy_symbol_basic);
     RUN(eval_copy_symbol_uninterned);
     RUN(eval_copy_symbol_props);
+    RUN(eval_reader_shared_uninterned_within_one_read);
 
     /* LOOP nested :if sub-clause */
     RUN(eval_loop_nested_if);

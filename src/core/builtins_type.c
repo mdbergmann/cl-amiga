@@ -995,6 +995,10 @@ enum TypeId {
     TID_PATHNAME,
     TID_BOOLEAN,
     TID_T,
+    /* Virtual TIDs for compound array specifiers more restrictive than
+     * any atomic type. Not reachable from type_name_to_id — only
+     * produced by compound_type_to_tid on a CONS type specifier. */
+    TID_SIMPLE_ARRAY_1D,   /* (simple-array * (*)) — 1-D simple-array */
 #ifdef CL_WIDE_STRINGS
     TID_BASE_CHAR,
     TID_STANDARD_CHAR,
@@ -1072,6 +1076,69 @@ int cl_is_builtin_type_name(const char *name)
     return type_name_to_id(name) != TID_UNKNOWN;
 }
 
+/* Map a compound array/vector/simple-array type specifier to a TID.
+ * Returns TID_UNKNOWN if the compound can't be normalized.
+ * Recognized patterns (et = element-type, dims = dimension-spec, any *):
+ *   (simple-array * *)    → TID_SIMPLE_ARRAY
+ *   (simple-array * (*))  → TID_SIMPLE_ARRAY_1D (virtual: rank-1 simple-array)
+ *   (array * *)           → TID_ARRAY
+ *   (array * (*))         → TID_VECTOR (vectors are by definition 1-D arrays)
+ *   (vector ...)          → TID_VECTOR
+ *   (simple-vector ...)   → TID_SIMPLE_VECTOR
+ *   (string ...)          → TID_STRING
+ *   (bit-vector ...)      → TID_BIT_VECTOR
+ *   (simple-bit-vector …) → TID_SIMPLE_BIT_VECTOR
+ */
+static int compound_type_to_tid(CL_Obj type)
+{
+    CL_Obj head, et, dims, tail, rest;
+    const char *hn;
+    int et_star, dims_star, dims_rank1;
+    if (!CL_CONS_P(type)) return TID_UNKNOWN;
+    head = cl_car(type);
+    if (!CL_SYMBOL_P(head)) return TID_UNKNOWN;
+    hn = cl_symbol_name(head);
+
+    tail = cl_cdr(type);
+    /* et defaults to * if missing */
+    et = (CL_NULL_P(tail)) ? TYPE_SYM_STAR : cl_car(tail);
+    rest = (CL_NULL_P(tail)) ? CL_NIL : cl_cdr(tail);
+    dims = (CL_NULL_P(rest)) ? TYPE_SYM_STAR : cl_car(rest);
+
+    et_star    = (CL_SYMBOL_P(et) && strcmp(cl_symbol_name(et), "*") == 0);
+    dims_star  = (CL_SYMBOL_P(dims) && strcmp(cl_symbol_name(dims), "*") == 0);
+    dims_rank1 = (CL_CONS_P(dims) && CL_NULL_P(cl_cdr(dims)) &&
+                  CL_SYMBOL_P(cl_car(dims)) &&
+                  strcmp(cl_symbol_name(cl_car(dims)), "*") == 0);
+
+    if (strcmp(hn, "SIMPLE-ARRAY") == 0) {
+        if (et_star && dims_star)  return TID_SIMPLE_ARRAY;
+        if (et_star && dims_rank1) return TID_SIMPLE_ARRAY_1D;
+        return TID_UNKNOWN;
+    }
+    if (strcmp(hn, "ARRAY") == 0) {
+        if (et_star && dims_star)  return TID_ARRAY;
+        if (et_star && dims_rank1) return TID_VECTOR;
+        return TID_UNKNOWN;
+    }
+    if (strcmp(hn, "VECTOR") == 0) {
+        /* (vector [et [size]]) — rank always 1, just ignore element-type/size */
+        return TID_VECTOR;
+    }
+    if (strcmp(hn, "SIMPLE-VECTOR") == 0) {
+        return TID_SIMPLE_VECTOR;
+    }
+    if (strcmp(hn, "STRING") == 0 || strcmp(hn, "SIMPLE-STRING") == 0 ||
+        strcmp(hn, "BASE-STRING") == 0 || strcmp(hn, "SIMPLE-BASE-STRING") == 0) {
+        return TID_STRING;
+    }
+    if (strcmp(hn, "BIT-VECTOR") == 0)        return TID_BIT_VECTOR;
+    if (strcmp(hn, "SIMPLE-BIT-VECTOR") == 0) return TID_SIMPLE_BIT_VECTOR;
+
+    return TID_UNKNOWN;
+}
+
+
 /* Check if type1 is a subtype of type2 using the known hierarchy.
  * Returns: 1 = yes, 0 = no, -1 = unknown */
 static int subtype_check(int id1, int id2)
@@ -1130,7 +1197,20 @@ static int subtype_check(int id1, int id2)
                                    id2 == TID_SEQUENCE)) return 1;
     if (id1 == TID_SIMPLE_BIT_VECTOR && (id2 == TID_BIT_VECTOR || id2 == TID_VECTOR ||
                                           id2 == TID_SIMPLE_ARRAY || id2 == TID_ARRAY ||
-                                          id2 == TID_SEQUENCE)) return 1;
+                                          id2 == TID_SEQUENCE ||
+                                          id2 == TID_SIMPLE_ARRAY_1D)) return 1;
+
+    /* Virtual: (simple-array * (*)) — 1-D simple-array of any element type.
+     * Subtypes: only types guaranteed simple AND 1-D — our atomic flags
+     * SIMPLE-VECTOR and SIMPLE-BIT-VECTOR qualify.  STRING / BIT-VECTOR
+     * may be non-simple; SIMPLE-ARRAY may be multi-dim. */
+    if (id2 == TID_SIMPLE_ARRAY_1D) {
+        if (id1 == TID_SIMPLE_VECTOR || id1 == TID_SIMPLE_BIT_VECTOR) return 1;
+    }
+    if (id1 == TID_SIMPLE_ARRAY_1D) {
+        if (id2 == TID_SIMPLE_ARRAY || id2 == TID_ARRAY ||
+            id2 == TID_VECTOR || id2 == TID_SEQUENCE) return 1;
+    }
 
     /* Function hierarchy: compiled-function < function */
     if (id1 == TID_COMPILED_FUNCTION && id2 == TID_FUNCTION) return 1;
@@ -1280,18 +1360,22 @@ static CL_Obj bi_subtypep(CL_Obj *args, int n)
         }
     }
 
-    /* Only handle symbol type specifiers */
-    if ((!CL_SYMBOL_P(type1) && !CL_NULL_P(type1)) ||
-        (!CL_SYMBOL_P(type2) && !CL_NULL_P(type2))) {
-        /* Compound types: return (NIL NIL) = "don't know" */
-        cl_mv_count = 2;
-        cl_mv_values[0] = CL_NIL;
-        cl_mv_values[1] = CL_NIL;
-        return CL_NIL;
+    /* Resolve TIDs.  Compound array/vector specifiers go through
+     * compound_type_to_tid; symbol specifiers through type_name_to_id. */
+    if (CL_SYMBOL_P(type1) || CL_NULL_P(type1)) {
+        id1 = type_name_to_id(cl_symbol_name(type1));
+    } else if (CL_CONS_P(type1)) {
+        id1 = compound_type_to_tid(type1);
+    } else {
+        id1 = TID_UNKNOWN;
     }
-
-    id1 = type_name_to_id(cl_symbol_name(type1));
-    id2 = type_name_to_id(cl_symbol_name(type2));
+    if (CL_SYMBOL_P(type2) || CL_NULL_P(type2)) {
+        id2 = type_name_to_id(cl_symbol_name(type2));
+    } else if (CL_CONS_P(type2)) {
+        id2 = compound_type_to_tid(type2);
+    } else {
+        id2 = TID_UNKNOWN;
+    }
 
     if (id1 == TID_UNKNOWN || id2 == TID_UNKNOWN) {
         /* Check struct type hierarchy (CLOS classes) */
