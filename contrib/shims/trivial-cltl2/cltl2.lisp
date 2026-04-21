@@ -60,15 +60,17 @@ fallback."
 (defun declaration-information (decl-name &optional env)
   "CLtL2 §8.5: return the value currently associated with DECL-NAME in
 ENV.  Since we don't track declarations lexically, ENV is ignored and
-we return the last value produced by the registered handler (or the
-OPTIMIZE settings, which we do track globally)."
+we return globally-proclaimed values where we can."
   (declare (ignore env))
   (cond
     ((eq decl-name 'optimize)
-     ;; Spec-required: OPTIMIZE returns an alist of (quality . value).
-     ;; We don't expose the compiler's optimize settings as an alist;
-     ;; return NIL to match serapeum's FBOUNDP-gated fallback.
-     nil)
+     ;; Spec: OPTIMIZE returns an alist of (quality value).  Our compiler
+     ;; tracks optimize settings internally but does not expose them to
+     ;; Lisp, so we answer with neutral defaults for all standard
+     ;; qualities.  Callers like serapeum's POLICY-QUALITY need the alist
+     ;; to contain every quality they query (speed, space, etc.) — a
+     ;; partial alist makes them error with 'Unknown policy quality'.
+     '((speed 1) (safety 1) (space 1) (debug 1) (compilation-speed 1)))
     (t (gethash decl-name *declaration-globals*))))
 
 (defun %store-declaration-information (decl-name value)

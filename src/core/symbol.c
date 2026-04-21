@@ -479,11 +479,16 @@ void cl_symbol_init(void)
     SYM_IGNORABLE_DECL       = cl_intern_in("IGNORABLE", 9, cl_package_cl);
     SYM_DYNAMIC_EXTENT_DECL  = cl_intern_in("DYNAMIC-EXTENT", 14, cl_package_cl);
 
-    /* Optimize quality symbols */
+    /* Optimize quality symbols.  COMPILATION-SPEED is the fifth standard
+       OPTIMIZE quality per CLHS; although CL does not strictly export it,
+       SBCL/CCL/most implementations treat it as a CL symbol so portable
+       libraries (serapeum macro-tools, etc.) read it as CL:COMPILATION-SPEED.
+       We intern it here so the bulk exporter picks it up. */
     SYM_SPEED                = cl_intern_in("SPEED", 5, cl_package_cl);
     SYM_SAFETY               = cl_intern_in("SAFETY", 6, cl_package_cl);
     SYM_DEBUG                = cl_intern_in("DEBUG", 5, cl_package_cl);
     SYM_SPACE                = cl_intern_in("SPACE", 5, cl_package_cl);
+    (void)cl_intern_in("COMPILATION-SPEED", 17, cl_package_cl);
 
     /* Condition type name symbols */
     SYM_CONDITION                = cl_intern_in("CONDITION", 9, cl_package_cl);

@@ -590,13 +590,16 @@ static CL_Obj list_merge(CL_Obj a, CL_Obj b, CL_Obj pred, CL_Obj key_fn)
         CL_Obj ka = apply_key(key_fn, cl_car(a));
         CL_Obj kb = apply_key(key_fn, cl_car(b));
         CL_Obj pick;
-        /* Pick a if pred(ka, kb) is true, otherwise pick b */
-        if (!CL_NULL_P(call_test(pred, ka, kb))) {
-            pick = a;
-            a = cl_cdr(a);
-        } else {
+        /* Stable merge: pick `b` only when pred(kb, ka) is true, i.e.
+           b is strictly less than a.  Otherwise (a strictly less, or
+           equal, or incomparable) pick `a` — this preserves the
+           original order of elements the predicate considers equal. */
+        if (!CL_NULL_P(call_test(pred, kb, ka))) {
             pick = b;
             b = cl_cdr(b);
+        } else {
+            pick = a;
+            a = cl_cdr(a);
         }
         if (CL_NULL_P(result)) {
             result = pick;

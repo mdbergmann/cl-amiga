@@ -1246,6 +1246,40 @@ static CL_Obj bi_subtypep(CL_Obj *args, int n)
         type2 = st->slots[0]; /* class name */
     }
 
+    /* Compound integer-range specifiers — (integer ...), (signed-byte N),
+       (unsigned-byte N), (mod N), (bit).  Every bounded integer range is
+       a subtype of INTEGER (and therefore of RATIONAL, REAL, NUMBER, T)
+       — treat as the symbol INTEGER for the rest of the computation. */
+    if (CL_CONS_P(type1)) {
+        CL_Obj head = cl_car(type1);
+        if (CL_SYMBOL_P(head)) {
+            const char *hn = cl_symbol_name(head);
+            if (strcmp(hn, "INTEGER") == 0 ||
+                strcmp(hn, "SIGNED-BYTE") == 0 ||
+                strcmp(hn, "UNSIGNED-BYTE") == 0 ||
+                strcmp(hn, "MOD") == 0)
+                type1 = cl_intern_in("INTEGER", 7, cl_package_cl);
+        }
+    }
+    if (CL_CONS_P(type2)) {
+        CL_Obj head = cl_car(type2);
+        if (CL_SYMBOL_P(head)) {
+            const char *hn = cl_symbol_name(head);
+            /* A bounded integer type on the right is a supertype only of
+               narrower integer types — that requires numeric reasoning we
+               don't do.  Fall through to (NIL NIL) for these. */
+            if (strcmp(hn, "INTEGER") == 0 ||
+                strcmp(hn, "SIGNED-BYTE") == 0 ||
+                strcmp(hn, "UNSIGNED-BYTE") == 0 ||
+                strcmp(hn, "MOD") == 0) {
+                cl_mv_count = 2;
+                cl_mv_values[0] = CL_NIL;
+                cl_mv_values[1] = CL_NIL;
+                return CL_NIL;
+            }
+        }
+    }
+
     /* Only handle symbol type specifiers */
     if ((!CL_SYMBOL_P(type1) && !CL_NULL_P(type1)) ||
         (!CL_SYMBOL_P(type2) && !CL_NULL_P(type2))) {
