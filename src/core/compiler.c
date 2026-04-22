@@ -2344,22 +2344,32 @@ void compile_body(CL_Compiler *c, CL_Obj forms)
    DEFINE-SYMBOL-MACRO macro in boot.lisp).  Returns CL_NIL when none. */
 CL_Obj cl_lookup_global_symbol_macro(CL_Obj sym)
 {
+    CL_Obj out;
+    if (cl_lookup_global_symbol_macro_p(sym, &out))
+        return out;
+    return CL_NIL;
+}
+
+int cl_lookup_global_symbol_macro_p(CL_Obj sym, CL_Obj *out)
+{
     static CL_Obj indicator = 0;
     CL_Symbol *s;
     CL_Obj plist;
 
-    if (!CL_SYMBOL_P(sym)) return CL_NIL;
+    if (!CL_SYMBOL_P(sym)) return 0;
     if (indicator == 0)
         indicator = cl_intern_in("%SYMBOL-MACRO-EXPANSION", 23, cl_package_cl);
 
     s = (CL_Symbol *)CL_OBJ_TO_PTR(sym);
     plist = s->plist;
     while (!CL_NULL_P(plist) && !CL_NULL_P(cl_cdr(plist))) {
-        if (cl_car(plist) == indicator)
-            return cl_car(cl_cdr(plist));
+        if (cl_car(plist) == indicator) {
+            *out = cl_car(cl_cdr(plist));
+            return 1;
+        }
         plist = cl_cdr(cl_cdr(plist));
     }
-    return CL_NIL;
+    return 0;
 }
 
 static void compile_symbol(CL_Compiler *c, CL_Obj sym)

@@ -40,15 +40,28 @@ int cl_error_frame_push(void);
  * Stores 0 (direct return), an error code (longjmp return),
  * or CL_ERR_OVERFLOW into err_var.
  *
- * C99 §7.13.1.1 restricts setjmp to specific contexts — using it inside
- * a ternary expression is undefined behavior.  With -O3/LTO the compiler
- * may exploit this UB and corrupt the stack after longjmp. */
+ * C99 §7.13.1.1 restricts setjmp invocation to one of:
+ *   - the entire controlling expression of a selection/iteration statement
+ *   - a single operand of a relational/equality comparison with an integer
+ *     constant expression, itself the entire controlling expression
+ *   - the operand of unary !, itself the entire controlling expression
+ *   - the entire expression of an expression statement (possibly (void)-cast)
+ *
+ * `err_var = setjmp(...)` is NOT in any of these contexts — it is UB.  With
+ * -O3/LTO the compiler can exploit this UB and emit code that corrupts the
+ * stack after longjmp (observed: saved fp/lr slots in the caller's frame
+ * get overwritten with stale register spills, so the next epilogue pops
+ * bogus return addresses).  The rewrite below puts setjmp in the controlling
+ * expression of an `else if`, which is conformant. The longjmp'd code
+ * is communicated via the thread-local cl_error_code (set by cl_error()). */
 #define CL_CATCH(err_var) do { \
     int _cl_cf_ = cl_error_frame_push(); \
     if (_cl_cf_ < 0) { \
         (err_var) = CL_ERR_OVERFLOW; \
+    } else if (setjmp(cl_error_frames[_cl_cf_].buf) != 0) { \
+        (err_var) = cl_error_code; \
     } else { \
-        (err_var) = setjmp(cl_error_frames[_cl_cf_].buf); \
+        (err_var) = CL_ERR_NONE; \
     } \
 } while(0)
 

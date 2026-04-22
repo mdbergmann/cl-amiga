@@ -32,8 +32,15 @@ void cl_compiler_init(void);
 CL_Obj cl_macroexpand_1(CL_Obj form);
 
 /* Look up a global symbol-macro expansion (from DEFINE-SYMBOL-MACRO).
-   Returns CL_NIL when the symbol has no global symbol-macro binding. */
+   Returns CL_NIL when the symbol has no global symbol-macro binding —
+   but also when the binding expands to NIL.  To distinguish, use
+   cl_lookup_global_symbol_macro_p. */
 CL_Obj cl_lookup_global_symbol_macro(CL_Obj sym);
+
+/* Like cl_lookup_global_symbol_macro, but writes the expansion to *out
+   and returns 1 iff sym has a binding (even if it expands to NIL).
+   Returns 0 and leaves *out untouched if there is no binding. */
+int cl_lookup_global_symbol_macro_p(CL_Obj sym, CL_Obj *out);
 
 /* Type expander table (for deftype) */
 void cl_register_type(CL_Obj name, CL_Obj expander);
