@@ -850,6 +850,28 @@ TEST(eval_macroexpand_1_values_and_env)
         "(PLAIN-SYM NIL)");
 }
 
+/* Regression: a symbol-macro that expands to NIL must still report
+ * expanded-p = T.  Serapeum's defining-types relies on
+ * (macroexpand-1 'serapeum/unlocked:%union env) returning NIL (not the
+ * symbol itself) when the symbol-macro is bound.  Previously the
+ * lookup returned CL_NIL both for "no binding" and "expands to NIL",
+ * causing the caller to see no expansion and treat %union as a bare
+ * symbol — surfacing as "No class named %UNION" at defunit time. */
+TEST(eval_macroexpand_symbol_macro_nil_expansion)
+{
+    eval_print("(define-symbol-macro mx1-nil nil)");
+    ASSERT_STR_EQ(eval_print(
+        "(multiple-value-list (macroexpand-1 'mx1-nil))"),
+        "(NIL T)");
+    ASSERT_STR_EQ(eval_print(
+        "(multiple-value-list (macroexpand 'mx1-nil))"),
+        "(NIL T)");
+    /* Caller pattern used by serapeum env-super */
+    ASSERT_STR_EQ(eval_print(
+        "(or (macroexpand-1 'mx1-nil) 'default)"),
+        "DEFAULT");
+}
+
 /* CLHS: subtypep and typep take an optional environment argument.
  * serapeum uses (subtypep t1 t2 env), iterate uses (typep x type env). */
 TEST(eval_subtypep_typep_env_arg)
@@ -7504,6 +7526,7 @@ int main(void)
     RUN(eval_quasiquote_splicing);
     RUN(eval_quasiquote_splicing_nconc);
     RUN(eval_macroexpand_1_values_and_env);
+    RUN(eval_macroexpand_symbol_macro_nil_expansion);
     RUN(eval_subtypep_typep_env_arg);
     RUN(eval_subtypep_bounded_integer_ranges);
     RUN(eval_subtypep_compound_array_specs);
