@@ -1443,6 +1443,28 @@ TEST(eval_tagbody_go_from_if)
         "(let ((x 0)) (tagbody start (setq x (+ x 1)) (if (< x 3) (go start))) x)"), 3);
 }
 
+TEST(eval_tagbody_local_named_lambda)
+{
+    /* Regression: a local variable named LAMBDA used inside a tagbody
+       with backward GO must not be confused with the LAMBDA special
+       operator by the compiler's NLX-detection scan. */
+    ASSERT_STR_EQ(eval_print(
+        "(loop for lambda in '(a b c) collect lambda)"), "(A B C)");
+    ASSERT_STR_EQ(eval_print(
+        "(let* ((lambda nil) (acc nil))"
+        "  (tagbody"
+        "     (setq lambda 'X)"
+        "     (push lambda acc)"
+        "     (go done)"
+        "     done)"
+        "  acc)"), "(X)");
+    /* Same for FLET, LABELS, RESTART-CASE — all four were affected. */
+    ASSERT_STR_EQ(eval_print(
+        "(loop for flet in '(1 2) collect flet)"), "(1 2)");
+    ASSERT_STR_EQ(eval_print(
+        "(loop for labels in '(1 2) collect labels)"), "(1 2)");
+}
+
 /* --- Phase 4 Tier 2: catch/throw --- */
 
 TEST(eval_catch_basic)
@@ -7586,6 +7608,7 @@ int main(void)
     RUN(eval_tagbody_nested);
     RUN(eval_tagbody_fixnum_tags);
     RUN(eval_tagbody_go_from_if);
+    RUN(eval_tagbody_local_named_lambda);
     RUN(eval_catch_basic);
     RUN(eval_catch_normal);
     RUN(eval_catch_throw_across_call);
