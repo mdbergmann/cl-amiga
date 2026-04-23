@@ -360,6 +360,13 @@ void compile_destructuring_bind(CL_Compiler *c, CL_Obj form)
  * for cross-closure return-from/go support. */
 static int tree_has_closure_forms(CL_Obj tree)
 {
+    /* Closure-creating forms must appear as (OP ...) — with LAMBDA/FLET/etc.
+     * in operator position.  A bare symbol such as `LAMBDA` used as a
+     * variable reference (e.g. `(setq lambda X)`) does NOT create a
+     * closure, so we must only inspect cons cells and only check their
+     * head.  Earlier code also matched bare symbols, which spuriously
+     * fired on user variables happening to be named LAMBDA/FLET/etc.,
+     * wrongly promoting a block/tagbody to the NLX path. */
     while (CL_CONS_P(tree)) {
         CL_Obj head = cl_car(tree);
         if (CL_CONS_P(head)) {
@@ -369,9 +376,6 @@ static int tree_has_closure_forms(CL_Obj tree)
                 return 1;
             if (tree_has_closure_forms(head))
                 return 1;
-        } else if (head == SYM_LAMBDA || head == SYM_LABELS || head == SYM_FLET
-                   || head == SYM_RESTART_CASE) {
-            return 1;
         }
         tree = cl_cdr(tree);
     }
