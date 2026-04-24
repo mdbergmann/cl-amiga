@@ -78,4 +78,12 @@ void cl_package_export_all_cl_symbols(void);
    Already-exported symbols are left unchanged. */
 void cl_package_export_defined_cl_symbols(void);
 
+/* Refresh cl_current_package from the dynamic *PACKAGE* binding
+   (TLV if set, else the symbol's global value).  Must be called
+   whenever the dynamic binding of *PACKAGE* changes at runtime —
+   currently from OP_DYNBIND / OP_DYNUNBIND / OP_GSTORE on *PACKAGE*,
+   so `let`-bindings propagate to every consumer of cl_current_package
+   (reader, printer, INTERN, etc.). */
+void cl_sync_current_package_from_dynamic(void);
+
 #endif /* CL_PACKAGE_H */

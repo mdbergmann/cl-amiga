@@ -829,15 +829,20 @@ static void print_obj(CL_Obj obj)
 
     case TYPE_SYMBOL: {
         CL_Symbol *sym = (CL_Symbol *)CL_OBJ_TO_PTR(obj);
-        if (CL_NULL_P(sym->package)) {
-            /* Uninterned symbol — #: prefix only if *print-gensym* AND *print-escape* */
-            if (print_gensym_p() && print_escape_p())
+        /* Per CLHS 22.1.3.3.1: when *print-escape* and *print-readably*
+         * are both NIL (PRINC / ~A), a symbol is written using just its
+         * name characters — no #:, no leading colon for keywords, no
+         * package qualifier.  Otherwise we print a readable form. */
+        int escape = print_escape_p() || print_readably_p();
+        if (!escape) {
+            out_symbol_name(cl_symbol_name(obj));
+        } else if (CL_NULL_P(sym->package)) {
+            /* Uninterned symbol — #: prefix only if *print-gensym* */
+            if (print_gensym_p())
                 out_str("#:");
             out_symbol_name(cl_symbol_name(obj));
         } else if (sym->package == cl_package_keyword) {
-            /* Keyword — colon prefix only when *print-escape* is true */
-            if (print_escape_p())
-                out_char(':');
+            out_char(':');
             out_symbol_name(cl_symbol_name(obj));
         } else if (sym->package == cl_current_package ||
                    cl_package_find_symbol(cl_symbol_name(obj),

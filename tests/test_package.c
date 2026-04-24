@@ -330,6 +330,41 @@ TEST(eval_intern_existing)
         ":INHERITED");
 }
 
+/* Regression: `(let ((*package* X)) (intern "FOO"))` must intern into X, not
+ * into the enclosing package.  Before the fix, C code read `cl_current_package`
+ * directly and therefore ignored dynamic let-bindings made from Lisp.  The bug
+ * manifested e.g. in lparallel's `symbolicate/package`, which binds *package*
+ * around an inner `intern` call to place a symbol in the caller's package. */
+TEST(eval_intern_respects_let_bound_package)
+{
+    eval_print("(make-package \"LB-PKG-A\")");
+    /* Intern inside a let-binding — symbol must end up in LB-PKG-A. */
+    ASSERT_STR_EQ(eval_print(
+        "(package-name (symbol-package"
+        "  (let ((*package* (find-package \"LB-PKG-A\")))"
+        "    (intern \"HELLO\"))))"), "\"LB-PKG-A\"");
+    /* After the let unwinds, *package* is restored to the prior value. */
+    ASSERT_STR_EQ(eval_print(
+        "(progn (let ((*package* (find-package \"LB-PKG-A\")))"
+        "         (intern \"X\"))"
+        "       (package-name *package*))"), "\"COMMON-LISP-USER\"");
+}
+
+/* Regression: `intern` called from inside a function whose caller wrapped
+ * the call in `(let ((*package* X)) ...)` must observe the dynamic binding.
+ * Mirrors lparallel's `symbolicate/package` pattern. */
+TEST(eval_intern_in_fn_respects_let_bound_package)
+{
+    eval_print("(make-package \"LB-PKG-B\")");
+    eval_print(
+        "(defun lb-wrap (pkg name)"
+        "  (let ((*package* (find-package pkg)))"
+        "    (intern name)))");
+    ASSERT_STR_EQ(eval_print(
+        "(package-name (symbol-package (lb-wrap \"LB-PKG-B\" \"MARKER\")))"),
+        "\"LB-PKG-B\"");
+}
+
 TEST(eval_export_unexport)
 {
     eval_print("(make-package \"EXP-TEST\")");
@@ -930,6 +965,8 @@ int main(void)
     RUN(eval_find_symbol_not_found);
     RUN(eval_intern_new);
     RUN(eval_intern_existing);
+    RUN(eval_intern_respects_let_bound_package);
+    RUN(eval_intern_in_fn_respects_let_bound_package);
     RUN(eval_export_unexport);
     RUN(eval_use_package);
     RUN(eval_delete_package);

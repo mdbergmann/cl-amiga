@@ -1,6 +1,7 @@
 #include "vm.h"
 #include "opcodes.h"
 #include "symbol.h"
+#include "package.h"
 #include "mem.h"
 #include "bignum.h"
 #include "ratio.h"
@@ -69,17 +70,22 @@ static void dbg_check_watch_impl(const char *where) {
 void cl_dynbind_restore_to(int mark)
 {
     CL_Thread *t = CT;
+    int touched_package = 0;
     while (cl_dyn_top > mark) {
         cl_dyn_top--;
         {
             CL_Obj old_val = cl_dyn_stack[cl_dyn_top].old_value;
             CL_Obj sym = cl_dyn_stack[cl_dyn_top].symbol;
+            if (sym == SYM_STAR_PACKAGE)
+                touched_package = 1;
             if (old_val == CL_TLV_ABSENT)
                 cl_tlv_remove(t, sym);
             else
                 cl_tlv_set(t, sym, old_val);
         }
     }
+    if (touched_package)
+        cl_sync_current_package_from_dynamic();
 }
 
 void cl_vm_init(uint32_t stack_size, int frame_size)
@@ -1073,6 +1079,8 @@ static CL_Obj cl_vm_run(int base_fp, int base_nlx)
             }
             sym = constants[idx];
             cl_set_symbol_value(sym, cl_vm.stack[cl_vm.sp - 1]);
+            if (sym == SYM_STAR_PACKAGE)
+                cl_sync_current_package_from_dynamic();
             VM_BREAK;
         }
 
@@ -2985,6 +2993,8 @@ static CL_Obj cl_vm_run(int base_fp, int base_nlx)
             cl_dyn_stack[cl_dyn_top].old_value = old_tlv; /* CL_TLV_ABSENT if none */
             cl_dyn_top++;
             cl_tlv_set(thr, sym, new_val);
+            if (sym == SYM_STAR_PACKAGE)
+                cl_sync_current_package_from_dynamic();
             VM_BREAK;
         }
 

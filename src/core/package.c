@@ -25,6 +25,22 @@ CL_Obj cl_package_registry = CL_NIL;
 
 void *cl_package_rwlock = NULL;
 
+/* Refresh cl_current_package from the dynamic *PACKAGE* binding.
+ * Safe to call before SYM_STAR_PACKAGE is interned (SYM_STAR_PACKAGE
+ * starts at CL_NIL during early init) or before a package object is
+ * installed — in both cases we leave cl_current_package unchanged. */
+void cl_sync_current_package_from_dynamic(void)
+{
+    CL_Obj sp = SYM_STAR_PACKAGE;
+    CL_Obj val;
+    if (!CL_SYMBOL_P(sp))
+        return;
+    val = cl_symbol_value(sp);
+    if (CL_NULL_P(val) || !CL_PACKAGE_P(val))
+        return;
+    cl_current_package = val;
+}
+
 /* ---- helpers ---- */
 
 /* Compare CL_String object against C string */

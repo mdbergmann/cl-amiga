@@ -2874,6 +2874,39 @@ TEST(eval_princ_to_string)
     ASSERT_STR_EQ(eval_print("(princ-to-string 42)"), "\"42\"");
 }
 
+/* CLHS 22.1.3.3.1 — when *PRINT-ESCAPE* is NIL (i.e. PRINC / ~A), a symbol is
+ * written using only its characters: no package prefix, no leading ':' for
+ * keywords, no '#:' for uninterned symbols.  Regression for the printer fix
+ * after teaching cl_current_package to track dynamic *PACKAGE* bindings. */
+TEST(eval_princ_symbol_no_package_prefix)
+{
+    eval_print("(make-package \"PRC-TEST\")");
+    eval_print("(intern \"HIDDEN\" (find-package \"PRC-TEST\"))");
+    /* Symbol from another package — PRINC must still emit just the name */
+    ASSERT_STR_EQ(eval_print(
+        "(princ-to-string (find-symbol \"HIDDEN\" (find-package \"PRC-TEST\")))"),
+        "\"HIDDEN\"");
+    /* Keyword — no leading colon */
+    ASSERT_STR_EQ(eval_print("(princ-to-string :hello)"), "\"HELLO\"");
+    /* Uninterned gensym — no #: prefix */
+    ASSERT_STR_EQ(eval_print("(princ-to-string (make-symbol \"ANON\"))"), "\"ANON\"");
+}
+
+/* Regression for the interaction that broke fiveam's def-special-environment:
+ * FORMAT ~A inside (let ((*package* X)) …) must still print a symbol from
+ * the outer package without a qualifier.  Before the printer fix, propagating
+ * the let-binding into cl_current_package caused ~A to print
+ * 'FOO from DSENV-TEST as \"DSENV-TEST::FOO\". */
+TEST(eval_format_aesthetic_respects_print_escape)
+{
+    eval_print("(make-package \"FMTA\")");
+    eval_print("(intern \"FOO\" (find-package \"FMTA\"))");
+    ASSERT_STR_EQ(eval_print(
+        "(let ((*package* (find-package :common-lisp-user)))"
+        "  (format nil \"~A\" (find-symbol \"FOO\" (find-package \"FMTA\"))))"),
+        "\"FOO\"");
+}
+
 /* --- Phase 5 Tier 3: List utilities --- */
 
 TEST(eval_nthcdr)
@@ -7887,6 +7920,8 @@ int main(void)
     RUN(eval_write_to_string);
     RUN(eval_prin1_to_string);
     RUN(eval_princ_to_string);
+    RUN(eval_princ_symbol_no_package_prefix);
+    RUN(eval_format_aesthetic_respects_print_escape);
 
     /* Phase 5 Tier 3 */
     RUN(eval_nthcdr);
