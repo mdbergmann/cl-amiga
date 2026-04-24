@@ -6908,6 +6908,32 @@ TEST(eval_mvbind_var_shadows_macro)
     ASSERT_EQ_INT(eval_int("(regress-mvbind-shadow 7)"), 7);
 }
 
+TEST(eval_destructuring_bind_pattern_shadows_macro)
+{
+    /* Regression: scan_body_for_boxing must not walk a destructuring-bind
+       pattern as a general form.  Without this, a pattern `(m)` whose
+       head symbol is a globally-registered macro gets macroexpanded
+       during boxing analysis — the expander runs with the wrong arity
+       and could crash the VM (serapeum types.lisp vs fiveam's TEST).
+
+       Side-effect detection: the macro counts its expansions.  If the
+       scanner wrongly expands the pattern during compilation of
+       dbp-outer, the counter will be > 0.  With the fix it must be 0. */
+    eval_print("(defparameter *dbp-expansions* 0)");
+    eval_print(
+        "(defmacro dbp-inner (&rest args)"
+        "  (declare (ignore args))"
+        "  (incf *dbp-expansions*)"
+        "  nil)");
+    /* Reset after any incidental expansions during defmacro itself */
+    eval_print("(setq *dbp-expansions* 0)");
+    eval_print(
+        "(defmacro dbp-outer ((dbp-inner) &body body)"
+        "  `(list ',dbp-inner ,@body))");
+    ASSERT_EQ_INT(eval_int("*dbp-expansions*"), 0);
+    ASSERT_STR_EQ(eval_print("(dbp-outer (y) 1 2 3)"), "(Y 1 2 3)");
+}
+
 /* --- Heap exhaustion / storage error tests --- */
 
 /* --- PROGV tests --- */
@@ -8254,6 +8280,7 @@ int main(void)
     RUN(eval_let_star_shadow_no_closure);
     RUN(eval_let_bind_name_shadows_macro);
     RUN(eval_mvbind_var_shadows_macro);
+    RUN(eval_destructuring_bind_pattern_shadows_macro);
 
     /* PROGV */
     RUN(eval_progv_basic);
