@@ -3640,6 +3640,25 @@ TEST(documentation_generic_fallback_after_specialization)
         "\"docA\"");
 }
 
+TEST(allocate_instance_gf_default_method)
+{
+    /* Regression: allocate-instance must be a GF so libraries (serapeum's
+       abstract-standard-class, ContextL, etc.) can define methods on it.
+       Without a default (class t) method, specializing on a user metaclass
+       or a specific class breaks make-instance for all OTHER classes with
+       "No applicable method for ALLOCATE-INSTANCE". */
+    eval_print("(defclass ai-gf-base () ((x :initarg :x :initform 42)))");
+    eval_print("(defclass ai-gf-special (ai-gf-base) ())");
+    /* Specialize allocate-instance on the special class */
+    eval_print(
+        "(defmethod allocate-instance ((c (eql (find-class 'ai-gf-special))) &rest initargs)"
+        "  (declare (ignore initargs))"
+        "  (error \"forbidden\"))");
+    /* Base class make-instance still works via the default (class t) method */
+    ASSERT_STR_EQ(eval_print("(slot-value (make-instance 'ai-gf-base) 'x)"), "42");
+    ASSERT_STR_EQ(eval_print("(slot-value (make-instance 'ai-gf-base :x 7) 'x)"), "7");
+}
+
 int main(void)
 {
     test_init();
@@ -3986,6 +4005,7 @@ int main(void)
     RUN(cmshim_writer_method_class_returns_standard);
 
     RUN(documentation_generic_fallback_after_specialization);
+    RUN(allocate_instance_gf_default_method);
 
     teardown();
     REPORT();
