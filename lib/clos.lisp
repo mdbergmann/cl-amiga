@@ -1973,6 +1973,17 @@ already-existing GF the installed combination is preserved."
   (defmethod slot-unbound ((class t) instance slot-name)
     (funcall %su-fn class instance slot-name)))
 
+;;; --- allocate-instance as a generic function (AMOP §5.3.4) ---
+;;; Libraries (serapeum/mop.lisp) define methods on allocate-instance
+;;; specialized on metaclasses (e.g. abstract-standard-class).  Without
+;;; a default (class t) method, calling (allocate-instance standard-class-obj)
+;;; after such a specialization errors with "No applicable method".
+(let ((%ai-fn #'allocate-instance))
+  (defgeneric allocate-instance (class &rest initargs))
+  (defmethod allocate-instance ((class t) &rest initargs)
+    (declare (ignore initargs))
+    (funcall %ai-fn class)))
+
 ;;; ====================================================================
 ;;; Slot-access protocol (MOP)
 ;;; ====================================================================
