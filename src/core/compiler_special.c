@@ -1764,13 +1764,15 @@ void compile_do_star(CL_Compiler *c, CL_Obj form)
 
     /* Compile body as an implicit tagbody per CLHS 6.1.6.  (go tag) inside
      * a DO / DO* body must find tags defined there.  Strip leading
-     * (declare ...) forms the same way tagbody ignores them. */
+     * (declare ...) forms the same way tagbody ignores them.
+     * `tail` is always reachable through `clean`'s cdr-chain, so only
+     * `clean` and the final tb_form need GC roots — keeps compiler
+     * root-stack pressure low (peak = 2 per nesting level). */
     {
         CL_Obj b = body;
         CL_Obj clean = CL_NIL, tail = CL_NIL;
         CL_Obj tb_form;
         CL_GC_PROTECT(clean);
-        CL_GC_PROTECT(tail);
         while (!CL_NULL_P(b)) {
             CL_Obj bform = cl_car(b);
             if (!(CL_CONS_P(bform) && cl_car(bform) == SYM_DECLARE)) {
@@ -1787,7 +1789,7 @@ void compile_do_star(CL_Compiler *c, CL_Obj form)
         CL_GC_PROTECT(tb_form);
         compile_expr(c, tb_form);
         cl_emit(c, OP_POP);  /* tagbody always leaves NIL */
-        CL_GC_UNPROTECT(3);
+        CL_GC_UNPROTECT(2);
     }
 
     /* Sequential step: evaluate and store each immediately */
