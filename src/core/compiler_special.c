@@ -1579,21 +1579,30 @@ void compile_do(CL_Compiler *c, CL_Obj form)
     compile_expr(c, end_test);
     jtrue_pos = cl_emit_jump(c, OP_JTRUE);
 
-    /* Compile body forms, each followed by POP (skip declarations) */
+    /* Compile body as an implicit tagbody per CLHS 6.1.6. */
     {
         CL_Obj b = body;
-        CL_GC_PROTECT(b);
+        CL_Obj clean = CL_NIL, tail = CL_NIL;
+        CL_Obj tb_form;
+        CL_GC_PROTECT(clean);
+        CL_GC_PROTECT(tail);
         while (!CL_NULL_P(b)) {
-            CL_Obj form = cl_car(b);
-            if (CL_CONS_P(form) && cl_car(form) == SYM_DECLARE) {
-                b = cl_cdr(b);
-                continue;
+            CL_Obj bform = cl_car(b);
+            if (!(CL_CONS_P(bform) && cl_car(bform) == SYM_DECLARE)) {
+                CL_Obj cell = cl_cons(bform, CL_NIL);
+                if (CL_NULL_P(clean)) { clean = cell; tail = cell; }
+                else {
+                    ((CL_Cons *)CL_OBJ_TO_PTR(tail))->cdr = cell;
+                    tail = cell;
+                }
             }
-            compile_expr(c, form);
-            cl_emit(c, OP_POP);
             b = cl_cdr(b);
         }
-        CL_GC_UNPROTECT(1);
+        tb_form = cl_cons(SYM_TAGBODY, clean);
+        CL_GC_PROTECT(tb_form);
+        compile_expr(c, tb_form);
+        cl_emit(c, OP_POP);  /* tagbody always leaves NIL */
+        CL_GC_UNPROTECT(3);
     }
 
     /* Parallel step: evaluate all step forms (or load current value) */
@@ -1753,21 +1762,32 @@ void compile_do_star(CL_Compiler *c, CL_Obj form)
     compile_expr(c, end_test);
     jtrue_pos = cl_emit_jump(c, OP_JTRUE);
 
-    /* Compile body */
+    /* Compile body as an implicit tagbody per CLHS 6.1.6.  (go tag) inside
+     * a DO / DO* body must find tags defined there.  Strip leading
+     * (declare ...) forms the same way tagbody ignores them. */
     {
         CL_Obj b = body;
-        CL_GC_PROTECT(b);
+        CL_Obj clean = CL_NIL, tail = CL_NIL;
+        CL_Obj tb_form;
+        CL_GC_PROTECT(clean);
+        CL_GC_PROTECT(tail);
         while (!CL_NULL_P(b)) {
             CL_Obj bform = cl_car(b);
-            if (CL_CONS_P(bform) && cl_car(bform) == SYM_DECLARE) {
-                b = cl_cdr(b);
-                continue;
+            if (!(CL_CONS_P(bform) && cl_car(bform) == SYM_DECLARE)) {
+                CL_Obj cell = cl_cons(bform, CL_NIL);
+                if (CL_NULL_P(clean)) { clean = cell; tail = cell; }
+                else {
+                    ((CL_Cons *)CL_OBJ_TO_PTR(tail))->cdr = cell;
+                    tail = cell;
+                }
             }
-            compile_expr(c, bform);
-            cl_emit(c, OP_POP);
             b = cl_cdr(b);
         }
-        CL_GC_UNPROTECT(1);
+        tb_form = cl_cons(SYM_TAGBODY, clean);
+        CL_GC_PROTECT(tb_form);
+        compile_expr(c, tb_form);
+        cl_emit(c, OP_POP);  /* tagbody always leaves NIL */
+        CL_GC_UNPROTECT(3);
     }
 
     /* Sequential step: evaluate and store each immediately */

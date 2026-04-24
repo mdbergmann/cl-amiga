@@ -6933,6 +6933,34 @@ TEST(eval_mvbind_var_shadows_macro)
     ASSERT_EQ_INT(eval_int("(regress-mvbind-shadow 7)"), 7);
 }
 
+TEST(eval_do_implicit_tagbody)
+{
+    /* CLHS 6.1.6: the body of do / do* is an implicit tagbody —
+       (go TAG) must find tags placed in the body.  Used by serapeum's
+       lines-limit in strings.lisp and countless other libraries. */
+    ASSERT_STR_EQ(eval_print(
+        "(let ((visited nil))"
+        "  (do* ((i 0 (1+ i)))"
+        "       ((= i 3) (nreverse visited))"
+        "    (push 'before visited)"
+        "    (when (= i 1) (go skip))"
+        "    (push 'body visited)"
+        "    skip"
+        "    (push 'after visited)))"),
+        "(BEFORE BODY AFTER BEFORE AFTER BEFORE BODY AFTER)");
+    /* Same for plain DO. */
+    ASSERT_STR_EQ(eval_print(
+        "(let ((visited nil))"
+        "  (do ((i 0 (1+ i)))"
+        "      ((= i 3) (nreverse visited))"
+        "    (push 'before visited)"
+        "    (when (= i 1) (go skip))"
+        "    (push 'body visited)"
+        "    skip"
+        "    (push 'after visited)))"),
+        "(BEFORE BODY AFTER BEFORE AFTER BEFORE BODY AFTER)");
+}
+
 TEST(eval_destructuring_bind_pattern_shadows_macro)
 {
     /* Regression: scan_body_for_boxing must not walk a destructuring-bind
@@ -8306,6 +8334,7 @@ int main(void)
     RUN(eval_let_star_shadow_no_closure);
     RUN(eval_let_bind_name_shadows_macro);
     RUN(eval_mvbind_var_shadows_macro);
+    RUN(eval_do_implicit_tagbody);
     RUN(eval_destructuring_bind_pattern_shadows_macro);
 
     /* PROGV */
