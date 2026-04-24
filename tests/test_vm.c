@@ -4309,6 +4309,41 @@ TEST(eval_symbol_macrolet_across_lambda)
         "  (funcall (lambda () (+ x y))))"), 30);
 }
 
+TEST(eval_symbol_macrolet_shadowed_by_lambda_param)
+{
+    /* A lambda parameter must shadow an outer symbol-macro of the same
+     * name.  The classic trigger is (symbol-macrolet ((x EXPR-USING-X))
+     * (defmethod foo ((x ...)) body)) — without proper shadowing the
+     * inner reference re-expands the symbol-macro infinitely.
+     * Regression for serapeum/internal-definitions.lisp's define-env-method
+     * which generated exactly that pattern for self / vars / decls / ... */
+    ASSERT_EQ_INT(eval_int(
+        "(symbol-macrolet ((x (+ x 100)))"
+        "  (funcall (lambda (x) x) 7))"), 7);
+    /* Same shadowing rule for nested lambdas with no parameter named X —
+     * those should still see the outer symbol-macro. */
+    ASSERT_EQ_INT(eval_int(
+        "(symbol-macrolet ((x 42))"
+        "  (funcall (lambda (y) (+ y x)) 1))"), 43);
+    /* Deepest case: parameter shadows in outer lambda, and inner closure
+     * captures the parameter (not the macro).  This is the exact pattern
+     * that re-recursed in serapeum. */
+    ASSERT_EQ_INT(eval_int(
+        "(symbol-macrolet ((self (+ self 999)))"
+        "  (funcall (funcall (lambda (self)"
+        "                      (lambda () self))"
+        "                    11)))"), 11);
+}
+
+TEST(eval_symbol_macrolet_shadowed_by_let)
+{
+    /* Inner symbol-macrolet inside a let still wins (locally added macro
+     * is more recent than the outer let binding). */
+    ASSERT_EQ_INT(eval_int(
+        "(let ((x 1))"
+        "  (symbol-macrolet ((x 99)) x))"), 99);
+}
+
 /* define-symbol-macro — global (stored on symbol plist, consulted by
    compile_symbol via cl_lookup_global_symbol_macro).  Regression tests
    for the sento/serapeum +alist-breakeven+ defconst pattern, which
@@ -7980,6 +8015,8 @@ int main(void)
     RUN(eval_symbol_macrolet_nested);
     RUN(eval_symbol_macrolet_multiple);
     RUN(eval_symbol_macrolet_across_lambda);
+    RUN(eval_symbol_macrolet_shadowed_by_lambda_param);
+    RUN(eval_symbol_macrolet_shadowed_by_let);
     RUN(eval_define_symbol_macro_basic);
     RUN(eval_define_symbol_macro_read_time_eval);
     RUN(eval_define_symbol_macro_macroexpand_1);

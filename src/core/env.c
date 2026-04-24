@@ -24,14 +24,40 @@ CL_CompEnv *cl_env_create(CL_CompEnv *parent)
             env->local_macros[i] = parent->local_macros[i];
         env->local_macro_count = n;
 
+        /* Inherit symbol-macros from parent, but skip any that are already
+         * shadowed by a local with the same name in the parent.  Without this
+         * filter, an inner lambda nested inside (symbol-macrolet ((self ...))
+         * (defmethod ... ((self ...)) (lambda () self)))) would re-expand the
+         * inherited symbol-macro for self, even though the outer parameter
+         * shadowed it — leading to infinite recursion when the macro
+         * expansion references the same name. */
         n = parent->symbol_macro_count;
         if (n > CL_MAX_SYMBOL_MACROS) n = CL_MAX_SYMBOL_MACROS;
-        for (i = 0; i < n; i++)
-            env->symbol_macros[i] = parent->symbol_macros[i];
-        env->symbol_macro_count = n;
+        {
+            int dst = 0;
+            for (i = 0; i < n; i++) {
+                CL_Obj sm_name = parent->symbol_macros[i].name;
+                int is_locally_shadowed = 0;
+                if (i < parent->inherited_symbol_macro_count) {
+                    int j;
+                    for (j = 0; j < parent->local_count; j++) {
+                        if (parent->locals[j] == sm_name) {
+                            is_locally_shadowed = 1;
+                            break;
+                        }
+                    }
+                }
+                if (!is_locally_shadowed) {
+                    env->symbol_macros[dst++] = parent->symbol_macros[i];
+                }
+            }
+            env->symbol_macro_count = dst;
+            env->inherited_symbol_macro_count = dst;
+        }
     } else {
         env->local_macro_count = 0;
         env->symbol_macro_count = 0;
+        env->inherited_symbol_macro_count = 0;
     }
     return env;
 }
@@ -178,8 +204,21 @@ CL_Obj cl_env_lookup_symbol_macro(CL_CompEnv *env, CL_Obj name)
 {
     int i;
     for (i = env->symbol_macro_count - 1; i >= 0; i--) {
-        if (env->symbol_macros[i].name == name)
+        if (env->symbol_macros[i].name != name) continue;
+        /* Locally-added symbol-macro (added via symbol-macrolet in this env) —
+         * always wins. */
+        if (i >= env->inherited_symbol_macro_count)
             return env->symbol_macros[i].expansion;
+        /* Inherited from parent — shadowed by any local of the same name in
+         * this env (e.g. a lambda parameter shadows an outer symbol-macrolet
+         * binding of the same name, per CL lexical scoping). */
+        {
+            int j;
+            for (j = 0; j < env->local_count; j++) {
+                if (env->locals[j] == name) return CL_NIL;
+            }
+        }
+        return env->symbol_macros[i].expansion;
     }
     return CL_NIL;
 }

@@ -52,6 +52,14 @@ typedef struct CL_CompEnv {
     int local_macro_count;
     CL_SymbolMacro symbol_macros[CL_MAX_SYMBOL_MACROS];
     int symbol_macro_count;
+    /* Count of symbol_macros[] entries inherited from the parent env at
+     * env-creation time.  Entries at indices [0, inherited_symbol_macro_count)
+     * are inherited from a parent scope and may be shadowed by a local with
+     * the same name added in this env (per CL lexical scoping).  Entries at
+     * indices [inherited_symbol_macro_count, symbol_macro_count) are added
+     * directly via symbol-macrolet in this env and shadow any existing local
+     * with the same name. */
+    int inherited_symbol_macro_count;
 } CL_CompEnv;
 
 /* Clear boxed flags for slots [from, env->local_count) so reused slots
