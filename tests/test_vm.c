@@ -3184,6 +3184,39 @@ TEST(eval_hash_table_test_symbols)
     ASSERT_STR_EQ(eval_print("(hash-table-test (make-hash-table :test 'equalp))"), "EQUALP");
 }
 
+/* CLHS 18.2 — WITH-HASH-TABLE-ITERATOR.
+ * Required by serapeum (DO-HASH-TABLE) and other libraries. */
+TEST(eval_with_hash_table_iterator_empty)
+{
+    /* Empty table: iter-fn immediately returns (values nil nil nil). */
+    eval_print("(defvar *htit-empty* (make-hash-table))");
+    ASSERT_STR_EQ(eval_print(
+        "(with-hash-table-iterator (it *htit-empty*)"
+        "  (multiple-value-bind (p k v) (it)"
+        "    (declare (ignore k v))"
+        "    p))"), "NIL");
+}
+
+TEST(eval_with_hash_table_iterator_walks_pairs)
+{
+    /* Two-entry table: first two calls return (values t key value);
+     * third call returns (values nil nil nil). Sum the values to verify
+     * we see every pair exactly once regardless of iteration order. */
+    eval_print("(defvar *htit-2* (make-hash-table))");
+    eval_print("(setf (gethash 'a *htit-2*) 11)");
+    eval_print("(setf (gethash 'b *htit-2*) 22)");
+    ASSERT_STR_EQ(eval_print(
+        "(with-hash-table-iterator (it *htit-2*)"
+        "  (let ((sum 0) (count 0))"
+        "    (loop"
+        "      (multiple-value-bind (p k v) (it)"
+        "        (declare (ignore k))"
+        "        (unless p (return))"
+        "        (incf sum v)"
+        "        (incf count)))"
+        "    (list sum count)))"), "(33 2)");
+}
+
 /* --- Phase 5: Sequence functions --- */
 
 TEST(eval_find)
@@ -7897,6 +7930,8 @@ int main(void)
     RUN(eval_gethash_mv);
     RUN(eval_hash_table_accessors);
     RUN(eval_hash_table_test_symbols);
+    RUN(eval_with_hash_table_iterator_empty);
+    RUN(eval_with_hash_table_iterator_walks_pairs);
 
     /* Phase 5 — Sequence functions */
     RUN(eval_find);

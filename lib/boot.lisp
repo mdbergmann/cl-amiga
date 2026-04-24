@@ -320,6 +320,22 @@
   (declare (ignore options))
   `(progn ,@body))
 
+;; with-hash-table-iterator — CLHS 18.2.
+;; Snapshots the table as a list of (key . value) pairs and exposes a
+;; local iterator function that returns three values per call:
+;;   (values t key value)  — for each remaining pair
+;;   (values nil nil nil)  — once exhausted
+(defmacro with-hash-table-iterator ((iter-name hash-table) &body body)
+  (let ((pairs (gensym "PAIRS"))
+        (pair (gensym "PAIR")))
+    `(let ((,pairs (%hash-table-pairs ,hash-table)))
+       (flet ((,iter-name ()
+                (if ,pairs
+                    (let ((,pair (pop ,pairs)))
+                      (values t (car ,pair) (cdr ,pair)))
+                    (values nil nil nil))))
+         ,@body))))
+
 (defmacro with-standard-io-syntax (&body body)
   `(let ((*package* (find-package :common-lisp-user))
          (*print-base* 10)
