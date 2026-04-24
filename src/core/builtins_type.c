@@ -1222,7 +1222,8 @@ static int subtype_check(int id1, int id2)
     if (id1 == TID_SIMPLE_ARRAY && id2 == TID_ARRAY) return 1;
     if (id1 == TID_VECTOR && (id2 == TID_ARRAY || id2 == TID_SEQUENCE)) return 1;
     if (id1 == TID_STRING && (id2 == TID_VECTOR || id2 == TID_SIMPLE_ARRAY ||
-                               id2 == TID_ARRAY || id2 == TID_SEQUENCE)) return 1;
+                               id2 == TID_ARRAY || id2 == TID_SEQUENCE ||
+                               id2 == TID_SIMPLE_ARRAY_1D)) return 1;
     if (id1 == TID_BIT_VECTOR && (id2 == TID_VECTOR || id2 == TID_ARRAY ||
                                    id2 == TID_SEQUENCE)) return 1;
     if (id1 == TID_SIMPLE_BIT_VECTOR && (id2 == TID_BIT_VECTOR || id2 == TID_VECTOR ||
