@@ -64,9 +64,20 @@ static CL_Obj bi_symbol_function(CL_Obj *args, int n)
     if (!CL_SYMBOL_P(args[0]))
         cl_error(CL_ERR_TYPE, "SYMBOL-FUNCTION: not a symbol");
     s = (CL_Symbol *)CL_OBJ_TO_PTR(args[0]);
-    if (s->function == CL_UNBOUND)
-        cl_error(CL_ERR_UNDEFINED, "SYMBOL-FUNCTION: undefined function: %s",
+    if (s->function == CL_UNBOUND) {
+        /* Include the home package so users can distinguish a legitimate
+         * lookup miss from a symbol interned in the wrong package. */
+        if (!CL_NULL_P(s->package)) {
+            CL_Package *p = (CL_Package *)CL_OBJ_TO_PTR(s->package);
+            CL_String *ns = (CL_String *)CL_OBJ_TO_PTR(p->name);
+            cl_error(CL_ERR_UNDEFINED,
+                     "SYMBOL-FUNCTION: undefined function: %.*s::%s",
+                     (int)ns->length, ns->data,
+                     cl_symbol_name(args[0]));
+        }
+        cl_error(CL_ERR_UNDEFINED, "SYMBOL-FUNCTION: undefined function: #:%s",
                  cl_symbol_name(args[0]));
+    }
     return s->function;
 }
 
