@@ -934,6 +934,7 @@ TEST(eval_subtypep_typed_compound_array_specs)
     ASSERT_STR_EQ(eval_print("(multiple-value-list (subtypep '(simple-array character (*)) 'vector))"), "(T T)");
     ASSERT_STR_EQ(eval_print("(multiple-value-list (subtypep '(simple-array character (*)) 'array))"), "(T T)");
     ASSERT_STR_EQ(eval_print("(multiple-value-list (subtypep '(simple-array character (*)) 'sequence))"), "(T T)");
+    ASSERT_STR_EQ(eval_print("(multiple-value-list (subtypep '(simple-array character (*)) '(simple-array * (*))))"), "(T T)");
     /* (simple-array base-char (*)) == simple-base-string. */
     ASSERT_STR_EQ(eval_print("(multiple-value-list (subtypep '(simple-array base-char (*)) 'string))"), "(T T)");
     /* (simple-array bit (*)) == simple-bit-vector. */
