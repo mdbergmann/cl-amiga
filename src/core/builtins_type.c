@@ -1034,6 +1034,9 @@ static int type_name_to_id(const char *name)
     if (strcmp(name, "CONS") == 0) return TID_CONS;
     if (strcmp(name, "LIST") == 0) return TID_LIST;
     if (strcmp(name, "STRING") == 0) return TID_STRING;
+    if (strcmp(name, "SIMPLE-STRING") == 0) return TID_STRING;
+    if (strcmp(name, "BASE-STRING") == 0) return TID_STRING;
+    if (strcmp(name, "SIMPLE-BASE-STRING") == 0) return TID_STRING;
     if (strcmp(name, "SIMPLE-VECTOR") == 0) return TID_SIMPLE_VECTOR;
     if (strcmp(name, "VECTOR") == 0) return TID_VECTOR;
     if (strcmp(name, "SIMPLE-ARRAY") == 0) return TID_SIMPLE_ARRAY;
@@ -1113,13 +1116,40 @@ static int compound_type_to_tid(CL_Obj type)
 
     if (strcmp(hn, "SIMPLE-ARRAY") == 0) {
         if (et_star && dims_star)  return TID_SIMPLE_ARRAY;
-        if (et_star && dims_rank1) return TID_SIMPLE_ARRAY_1D;
-        return TID_UNKNOWN;
+        if (dims_rank1) {
+            /* Specialize on common element types so that e.g.
+             *   (simple-array character (*)) is recognized as a subtype of
+             *   STRING / VECTOR / ARRAY / SEQUENCE (required by serapeum). */
+            if (CL_SYMBOL_P(et)) {
+                const char *etn = cl_symbol_name(et);
+                if (strcmp(etn, "CHARACTER") == 0 ||
+                    strcmp(etn, "BASE-CHAR") == 0 ||
+                    strcmp(etn, "STANDARD-CHAR") == 0)
+                    return TID_STRING;
+                if (strcmp(etn, "BIT") == 0)
+                    return TID_SIMPLE_BIT_VECTOR;
+                if (strcmp(etn, "T") == 0)
+                    return TID_SIMPLE_VECTOR;
+            }
+            return TID_SIMPLE_ARRAY_1D;
+        }
+        return TID_SIMPLE_ARRAY;
     }
     if (strcmp(hn, "ARRAY") == 0) {
         if (et_star && dims_star)  return TID_ARRAY;
-        if (et_star && dims_rank1) return TID_VECTOR;
-        return TID_UNKNOWN;
+        if (dims_rank1) {
+            if (CL_SYMBOL_P(et)) {
+                const char *etn = cl_symbol_name(et);
+                if (strcmp(etn, "CHARACTER") == 0 ||
+                    strcmp(etn, "BASE-CHAR") == 0 ||
+                    strcmp(etn, "STANDARD-CHAR") == 0)
+                    return TID_STRING;
+                if (strcmp(etn, "BIT") == 0)
+                    return TID_BIT_VECTOR;
+            }
+            return TID_VECTOR;
+        }
+        return TID_ARRAY;
     }
     if (strcmp(hn, "VECTOR") == 0) {
         /* (vector [et [size]]) — rank always 1, just ignore element-type/size */

@@ -924,6 +924,30 @@ TEST(eval_subtypep_compound_array_specs)
     ASSERT_STR_EQ(eval_print("(multiple-value-list (subtypep 'fixnum '(simple-array * (*))))"), "(NIL T)");
 }
 
+/* serapeum/types.lisp `subtypes-exhaustive?` errors if subtypep returns (NIL NIL)
+ * for a valid subtype pair.  Rank-1 simple-arrays with concrete element types
+ * must be recognized as subtypes of the obvious parents. */
+TEST(eval_subtypep_typed_compound_array_specs)
+{
+    /* (simple-array character (*)) == simple-string, a subtype of STRING, VECTOR, …. */
+    ASSERT_STR_EQ(eval_print("(multiple-value-list (subtypep '(simple-array character (*)) 'string))"), "(T T)");
+    ASSERT_STR_EQ(eval_print("(multiple-value-list (subtypep '(simple-array character (*)) 'vector))"), "(T T)");
+    ASSERT_STR_EQ(eval_print("(multiple-value-list (subtypep '(simple-array character (*)) 'array))"), "(T T)");
+    ASSERT_STR_EQ(eval_print("(multiple-value-list (subtypep '(simple-array character (*)) 'sequence))"), "(T T)");
+    /* (simple-array base-char (*)) == simple-base-string. */
+    ASSERT_STR_EQ(eval_print("(multiple-value-list (subtypep '(simple-array base-char (*)) 'string))"), "(T T)");
+    /* (simple-array bit (*)) == simple-bit-vector. */
+    ASSERT_STR_EQ(eval_print("(multiple-value-list (subtypep '(simple-array bit (*)) 'bit-vector))"), "(T T)");
+    ASSERT_STR_EQ(eval_print("(multiple-value-list (subtypep '(simple-array bit (*)) 'vector))"), "(T T)");
+    /* (simple-array t (*)) == simple-vector. */
+    ASSERT_STR_EQ(eval_print("(multiple-value-list (subtypep '(simple-array t (*)) 'simple-vector))"), "(T T)");
+    /* Atomic string subtypes: SIMPLE-STRING, BASE-STRING, SIMPLE-BASE-STRING. */
+    ASSERT_STR_EQ(eval_print("(multiple-value-list (subtypep 'simple-string 'string))"), "(T T)");
+    ASSERT_STR_EQ(eval_print("(multiple-value-list (subtypep 'simple-base-string 'string))"), "(T T)");
+    ASSERT_STR_EQ(eval_print("(multiple-value-list (subtypep 'base-string 'vector))"), "(T T)");
+    ASSERT_STR_EQ(eval_print("(multiple-value-list (subtypep 'simple-base-string 'vector))"), "(T T)");
+}
+
 /* CLHS 6.1.3.1: accumulation clauses may include OF-TYPE after INTO.
  * split-sequence and serapeum use this.  We ignore the type spec but
  * must consume it so the clause parses. */
@@ -7578,6 +7602,7 @@ int main(void)
     RUN(eval_subtypep_typep_env_arg);
     RUN(eval_subtypep_bounded_integer_ranges);
     RUN(eval_subtypep_compound_array_specs);
+    RUN(eval_subtypep_typed_compound_array_specs);
     RUN(eval_loop_of_type_after_into);
     RUN(eval_loop_for_and_parallel);
     RUN(eval_quasiquote_nested_list);
