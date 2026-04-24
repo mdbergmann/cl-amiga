@@ -863,6 +863,64 @@ static void make_fasl_path(const char *input, char *output, uint32_t outsize)
     output[base_len + 5] = '\0';
 }
 
+/* Process a single top-level form for compile-file.
+ * Per CLHS 3.2.3.1: when the form is (progn ...), each subform is processed
+ * as a top-level form recursively (so a (defmacro X) at the head of a progn
+ * is evaluated before the compiler tries to expand a sibling (X ...) form).
+ * Otherwise compile + eval + append bytecode for deferred FASL serialization.
+ *
+ * Top-level atoms (bare symbols / numbers / strings) are skipped, matching
+ * the existing convention — they have no side effects worth running and need
+ * no FASL serialization.
+ */
+static void cf_process_toplevel_form(CL_Obj expr,
+                                     CL_Obj **bc_collected_p,
+                                     int *bc_count_p,
+                                     uint32_t *bc_cap_p)
+{
+    CL_Obj bytecode;
+
+    if (CL_CONS_P(expr) && cl_car(expr) == SYM_PROGN) {
+        CL_Obj subs = cl_cdr(expr);
+        CL_GC_PROTECT(subs);
+        while (!CL_NULL_P(subs)) {
+            CL_Obj sub = cl_car(subs);
+            cf_process_toplevel_form(sub, bc_collected_p, bc_count_p, bc_cap_p);
+            subs = cl_cdr(subs);
+        }
+        CL_GC_UNPROTECT(1);
+        return;
+    }
+
+    if (!CL_CONS_P(expr)) return;
+
+    CL_GC_PROTECT(expr);
+    bytecode = cl_compile(expr);
+    CL_GC_UNPROTECT(1);
+
+    if (CL_NULL_P(bytecode)) return;
+
+    CL_GC_PROTECT(bytecode);
+    cl_vm_eval(bytecode);
+    cl_gc_compact_if_pending();
+    CL_GC_UNPROTECT(1);
+
+    if (*bc_count_p >= (int)*bc_cap_p) {
+        CL_Obj *nb;
+        uint32_t newcap = *bc_cap_p * 2;
+        nb = (CL_Obj *)platform_alloc(newcap * sizeof(CL_Obj));
+        if (nb) {
+            memcpy(nb, *bc_collected_p, *bc_count_p * sizeof(CL_Obj));
+            platform_free(*bc_collected_p);
+            *bc_collected_p = nb;
+            *bc_cap_p = newcap;
+        }
+    }
+    if (*bc_count_p < (int)*bc_cap_p) {
+        (*bc_collected_p)[(*bc_count_p)++] = bytecode;
+    }
+}
+
 /* --- compile-file ---
  *
  * (compile-file input-file &key output-file verbose)
@@ -876,7 +934,7 @@ static CL_Obj bi_compile_file(CL_Obj *args, int n)
     char out_path[1024];
     char *src_buf;
     unsigned long src_size;
-    CL_Obj stream, expr, bytecode;
+    CL_Obj stream, expr;
     const char *prev_file;
     uint16_t prev_file_id;
     int prev_line;
@@ -1079,51 +1137,9 @@ static CL_Obj bi_compile_file(CL_Obj *args, int n)
             fflush(stderr);
 #endif
             CL_GC_PROTECT(expr);
-            bytecode = cl_compile(expr);
+            cf_process_toplevel_form(expr, &bc_collected, &bc_collect_count,
+                                     &bc_collect_capacity);
             CL_GC_UNPROTECT(1);
-            /* Per CLHS 3.2.3.1: a top-level form that is an atom (bare
-             * symbol, number, string, …) has no side effects worth
-             * running — evaluating it just discards the value.  Skip
-             * both compile-time eval and FASL serialization so demo
-             * markers like `=>` at top level (e.g. string-case.lisp's
-             * macroexpand example output) don't raise "Unbound
-             * variable" during compile-file. */
-            if (!CL_CONS_P(expr)) {
-                CL_UNCATCH();
-                cl_handler_floor = saved_handler_top;
-                cl_restart_floor = saved_restart_top;
-                continue;
-            }
-            if (!CL_NULL_P(bytecode)) {
-                /* GC-protect bytecode across eval (cl_vm_eval may
-                 * allocate and trigger GC). */
-                CL_GC_PROTECT(bytecode);
-
-                /* Eval the form (macros, defvar, etc. must take effect) */
-                cl_vm_eval(bytecode);
-
-                /* Safe point: run pending compaction between top-level forms */
-                cl_gc_compact_if_pending();
-
-                CL_GC_UNPROTECT(1); /* bytecode — eval done */
-
-                /* Collect bytecode for deferred FASL serialization.
-                 * Note: bc_collected entries are NOT individually GC-protected
-                 * here. They are bulk-protected before the serialization loop. */
-                if (bc_collect_count >= (int)bc_collect_capacity) {
-                    CL_Obj *new_bc;
-                    bc_collect_capacity *= 2;
-                    new_bc = (CL_Obj *)platform_alloc(bc_collect_capacity * sizeof(CL_Obj));
-                    if (new_bc) {
-                        memcpy(new_bc, bc_collected, bc_collect_count * sizeof(CL_Obj));
-                        platform_free(bc_collected);
-                        bc_collected = new_bc;
-                    }
-                }
-                if (bc_collect_count < (int)bc_collect_capacity) {
-                    bc_collected[bc_collect_count++] = bytecode;
-                }
-            }
             CL_UNCATCH();
         } else {
             /* Restore VM state leaked by aborted cl_vm_eval */

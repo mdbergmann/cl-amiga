@@ -1708,6 +1708,47 @@ TEST(compile_file_skips_atom_top_level)
     delete_cached_fasl("/tmp/cf-test-atom.lisp");
 }
 
+TEST(compile_file_descends_toplevel_progn)
+{
+    /* Per CLHS 3.2.3.1: each subform of a top-level (progn ...) is
+     * itself processed as a top-level form. So a (defmacro X) at the
+     * head of a progn must take effect before sibling (X ...) forms
+     * are macroexpanded. Serapeum's range.lisp relies on exactly this
+     * pattern (progn (defmacro define-real-range ...) (define-real-range ...)). */
+    write_test_file("/tmp/cf-test-tl-progn.lisp",
+        "(progn"
+        "  (defmacro cf-tl-progn-double (x) `(* 2 ,x))"
+        "  (defvar *cf-tl-progn-val* (cf-tl-progn-double 21)))\n");
+
+    {
+        CL_Obj result = eval_obj("(compile-file \"/tmp/cf-test-tl-progn.lisp\")");
+        ASSERT(CL_PATHNAME_P(result));
+    }
+    eval_obj("(load (compile-file-pathname \"/tmp/cf-test-tl-progn.lisp\"))");
+    ASSERT_STR_EQ(eval_print("*cf-tl-progn-val*"), "42");
+
+    platform_file_delete("/tmp/cf-test-tl-progn.lisp");
+    delete_cached_fasl("/tmp/cf-test-tl-progn.lisp");
+}
+
+TEST(compile_file_descends_nested_toplevel_progn)
+{
+    /* Nested top-level progn: (progn (progn (defmacro X) (X ...)))
+     * also needs to descend recursively. */
+    write_test_file("/tmp/cf-test-tl-progn-nest.lisp",
+        "(progn"
+        "  (progn"
+        "    (defmacro cf-nested-triple (x) `(* 3 ,x))"
+        "    (defvar *cf-nested-val* (cf-nested-triple 14))))\n");
+
+    eval_obj("(compile-file \"/tmp/cf-test-tl-progn-nest.lisp\")");
+    eval_obj("(load (compile-file-pathname \"/tmp/cf-test-tl-progn-nest.lisp\"))");
+    ASSERT_STR_EQ(eval_print("*cf-nested-val*"), "42");
+
+    platform_file_delete("/tmp/cf-test-tl-progn-nest.lisp");
+    delete_cached_fasl("/tmp/cf-test-tl-progn-nest.lisp");
+}
+
 TEST(load_auto_finds_cached_fasl)
 {
     /* load of source file should auto-discover cached FASL */
@@ -1908,6 +1949,8 @@ int main(void)
     RUN(compile_file_defclass_initform);
     RUN(compile_file_lambda_constant);
     RUN(compile_file_skips_atom_top_level);
+    RUN(compile_file_descends_toplevel_progn);
+    RUN(compile_file_descends_nested_toplevel_progn);
 
     /* FASL cache behavior tests */
     RUN(load_auto_finds_cached_fasl);
