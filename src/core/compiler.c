@@ -1025,6 +1025,27 @@ top:
         return;
     }
 
+    /* (destructuring-bind pattern value-form body...)
+     * The pattern is a lambda-list-like structure, NOT a form to evaluate.
+     * Without this handler the general-form walk would recursively scan the
+     * pattern and try to macroexpand any cons whose head collides with a
+     * registered macro (e.g. fiveam's TEST vs a `(test)` pattern), which
+     * can invoke the expander with wrong arity and crash the VM. */
+    if (head == SYM_DESTRUCTURING_BIND) {
+        CL_Obj body;
+        if (!CL_CONS_P(rest) || !CL_CONS_P(cl_cdr(rest))) return;
+        /* Skip pattern (first element of rest) — structural, not evaluated */
+        scan_body_for_boxing(cl_car(cl_cdr(rest)), vars, n_vars,
+                             mutated, captured, closure_depth);
+        body = cl_cdr(cl_cdr(rest));
+        while (CL_CONS_P(body)) {
+            scan_body_for_boxing(cl_car(body), vars, n_vars,
+                                 mutated, captured, closure_depth);
+            body = cl_cdr(body);
+        }
+        return;
+    }
+
     /* (multiple-value-bind (var...) values-form body...)
      * Same reasoning as let/let*: the var list is not a macro call. */
     if (head == SYM_MULTIPLE_VALUE_BIND) {
