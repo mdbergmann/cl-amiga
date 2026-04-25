@@ -78,6 +78,27 @@ int platform_mutex_init(void **handle)
     return 0;
 }
 
+int platform_mutex_init_recursive(void **handle)
+{
+    pthread_mutexattr_t attr;
+    pthread_mutex_t *m = (pthread_mutex_t *)malloc(sizeof(pthread_mutex_t));
+    if (!m) return -1;
+
+    if (pthread_mutexattr_init(&attr) != 0) {
+        free(m);
+        return -1;
+    }
+    pthread_mutexattr_settype(&attr, PTHREAD_MUTEX_RECURSIVE);
+    if (pthread_mutex_init(m, &attr) != 0) {
+        pthread_mutexattr_destroy(&attr);
+        free(m);
+        return -1;
+    }
+    pthread_mutexattr_destroy(&attr);
+    *handle = m;
+    return 0;
+}
+
 void platform_mutex_destroy(void *handle)
 {
     pthread_mutex_t *m = (pthread_mutex_t *)handle;

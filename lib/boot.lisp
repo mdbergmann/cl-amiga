@@ -2064,7 +2064,7 @@ when the param has no explicit default.  CL spec 3.4.6 requires this."
          (release-lock ,l)))))
 
 (defun make-recursive-lock (&optional name)
-  (make-lock name))
+  (%make-recursive-lock name))
 
 (defmacro with-recursive-lock-held ((lock) &body body)
   `(with-lock-held (,lock) ,@body))

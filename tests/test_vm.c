@@ -1809,6 +1809,38 @@ TEST(eval_special_unwind_protect)
     ASSERT_EQ_INT(eval_int("*g*"), 1);
 }
 
+TEST(eval_unwind_protect_multiple_values)
+{
+    /* CLHS 5.2: unwind-protect returns the values of protected-form.
+     * Plural: must propagate all values, not just the primary.
+     * Regression for sento HANDLE-CALL deadlock — bordeaux-threads-2's
+     * (with-lock-held lk (gethash k h)) relies on the secondary presentp
+     * value flowing through the implicit unwind-protect. */
+    ASSERT_EQ_INT(eval_int(
+        "(multiple-value-bind (a b)"
+        "    (unwind-protect (values 1 2) nil)"
+        "  (+ a b))"), 3);
+    /* Cleanup forms must not leak into the value count */
+    ASSERT_EQ_INT(eval_int(
+        "(multiple-value-bind (a b c)"
+        "    (unwind-protect (values 10 20)"
+        "      (values 99 98 97))"
+        "  (+ a b (or c 0)))"), 30);
+    /* Cleanup runs and secondary value flows through (regression for the
+     * (with-lock-held l (gethash k h)) idiom in bordeaux-threads-2). */
+    eval_print("(defvar *uwp-cleanup* 0)");
+    eval_print(
+        "(progn"
+        "  (setq *uwp-cleanup* 0)"
+        "  (multiple-value-bind (val present-p)"
+        "      (let ((ht (make-hash-table :test 'eql)))"
+        "        (setf (gethash 'k ht) 'v)"
+        "        (unwind-protect (gethash 'k ht)"
+        "          (incf *uwp-cleanup*)))"
+        "    (and present-p (eq val 'v))))");
+    ASSERT_EQ_INT(eval_int("*uwp-cleanup*"), 1);
+}
+
 TEST(eval_special_error_restore)
 {
     /* Bindings restored on error */
@@ -7889,6 +7921,7 @@ int main(void)
     RUN(eval_special_nested_binding);
     RUN(eval_special_setq);
     RUN(eval_special_unwind_protect);
+    RUN(eval_unwind_protect_multiple_values);
     RUN(eval_special_error_restore);
     RUN(eval_special_mixed_let);
     RUN(eval_special_lambda_param_dynbind);

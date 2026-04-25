@@ -20,6 +20,7 @@ void platform_thread_yield(void);
 
 /* ---- Mutex ---- */
 int  platform_mutex_init(void **handle);
+int  platform_mutex_init_recursive(void **handle);
 void platform_mutex_destroy(void *handle);
 void platform_mutex_lock(void *handle);
 void platform_mutex_unlock(void *handle);

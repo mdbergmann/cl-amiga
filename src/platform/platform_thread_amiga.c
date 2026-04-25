@@ -149,6 +149,14 @@ int platform_mutex_init(void **handle)
     return 0;
 }
 
+/* SignalSemaphore is naturally recursive: the same task may ObtainSemaphore
+ * multiple times and must ReleaseSemaphore the same number of times. So a
+ * recursive lock on AmigaOS is just a regular SignalSemaphore. */
+int platform_mutex_init_recursive(void **handle)
+{
+    return platform_mutex_init(handle);
+}
+
 void platform_mutex_destroy(void *handle)
 {
     FreeVec(handle);

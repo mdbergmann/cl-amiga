@@ -862,20 +862,29 @@ void compile_catch(CL_Compiler *c, CL_Obj form)
 
 void compile_unwind_protect(CL_Compiler *c, CL_Obj form)
 {
-    /* (unwind-protect protected-form cleanup1 cleanup2 ...) */
+    /* (unwind-protect protected-form cleanup1 cleanup2 ...)
+     *
+     * Per CLHS: unwind-protect returns the values that result from
+     * evaluating protected-form. We must capture the full multiple-value
+     * state of protected-form across cleanup-form evaluation — single-value
+     * save/restore would silently drop secondary values, which breaks
+     * common idioms like (mv-bind (v p) (with-lock-held (l) (gethash k h)))
+     * where p (presentp) is the second value. */
     CL_Obj protected_form = cl_car(cl_cdr(form));
     CL_Obj cleanup_forms = cl_cdr(cl_cdr(form));
     CL_CompEnv *env = c->env;
     int saved_local_count = env->local_count;
     int saved_tail = c->in_tail;
     int uwprot_pos, jmp_pos;
-    int result_slot;
+    int list_slot;
+    CL_Obj vl_sym;
+    int vl_idx;
 
     c->in_tail = 0;
 
-    /* Allocate result slot */
-    result_slot = env->local_count;
-    env->locals[result_slot] = CL_NIL;  /* Clear stale binding */
+    /* Allocate slot to hold the saved values list */
+    list_slot = env->local_count;
+    env->locals[list_slot] = CL_NIL;  /* Clear stale binding */
     env->local_count++;
     if (env->local_count > env->max_locals)
         env->max_locals = env->local_count;
@@ -885,12 +894,15 @@ void compile_unwind_protect(CL_Compiler *c, CL_Obj form)
     uwprot_pos = c->code_pos;
     cl_emit_i32(c, 0); /* placeholder */
 
-    /* Compile protected form */
+    /* Compile protected form (leaves primary on stack, MV buffer holds rest) */
     compile_expr(c, protected_form);
 
-    /* Save result in slot */
+    /* OP_MV_TO_LIST: pop primary, build full list of all values, push list */
+    cl_emit(c, OP_MV_TO_LIST);
+
+    /* Save the list in slot */
     cl_emit(c, OP_STORE);
-    cl_emit(c, (uint8_t)result_slot);
+    cl_emit(c, (uint8_t)list_slot);
     cl_emit(c, OP_POP);
 
     /* OP_UWPOP: normal exit, pop frame, clear pending */
@@ -920,9 +932,16 @@ void compile_unwind_protect(CL_Compiler *c, CL_Obj form)
     /* OP_UWRETHROW: if pending throw, re-initiate (never returns); else nop */
     cl_emit(c, OP_UWRETHROW);
 
-    /* Normal path: load saved result */
+    /* Restore MV state by calling VALUES-LIST on saved list. The call leaves
+     * the primary on the stack and sets cl_mv_count / cl_mv_values. */
+    vl_sym = cl_intern_in("VALUES-LIST", 11, cl_package_cl);
+    vl_idx = cl_add_constant(c, vl_sym);
+    cl_emit(c, OP_FLOAD);
+    cl_emit_u16(c, (uint16_t)vl_idx);
     cl_emit(c, OP_LOAD);
-    cl_emit(c, (uint8_t)result_slot);
+    cl_emit(c, (uint8_t)list_slot);
+    cl_emit(c, OP_CALL);
+    cl_emit(c, 1);
 
     cl_env_clear_boxed(env, saved_local_count);
 

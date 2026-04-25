@@ -78,6 +78,12 @@ typedef struct CL_Thread_s {
     CL_Obj mv_values[CL_MAX_MV];
     int    mv_count;
 
+    /* ---- Lisp-visible thread object (CL_ThreadObj wrapping this thread) ----
+     * Set at thread creation, returned by (mp:current-thread). Must remain
+     * eq across calls so callers can use it as a hash-table key (e.g.
+     * bordeaux-threads-2's .known-threads. which keys by native-thread). */
+    CL_Obj thread_obj;
+
     /* ---- GC root stack (per-thread) ---- */
     CL_Obj *gc_roots[CL_GC_ROOT_STACK_SIZE];
     int     gc_root_count;
