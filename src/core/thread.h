@@ -214,15 +214,15 @@ void cl_thread_shutdown(void);
 #define CL_WORKER_NLX_FRAMES     256    /* 256 NLX frames = ~50KB */
 
 /* Thread side table: maps thread_id -> CL_Thread* */
-#define CL_MAX_THREADS 32
+#define CL_MAX_THREADS 256
 extern CL_Thread *cl_thread_table[CL_MAX_THREADS];
 
 /* Lock side table: maps lock_id -> void* (platform mutex) */
-#define CL_MAX_LOCKS 256
+#define CL_MAX_LOCKS 1024
 extern void *cl_lock_table[CL_MAX_LOCKS];
 
 /* Condvar side table: maps condvar_id -> void* (platform condvar) */
-#define CL_MAX_CONDVARS 32
+#define CL_MAX_CONDVARS 1024
 extern void *cl_condvar_table[CL_MAX_CONDVARS];
 
 /* Allocate and initialize a new CL_Thread for a worker */
