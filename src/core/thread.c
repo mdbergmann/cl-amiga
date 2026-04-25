@@ -73,16 +73,67 @@ void cl_gc_safepoint(void)
     platform_mutex_unlock(gc_mutex);
 }
 
+/* ---- Safe regions (blocking syscalls outside the heap) ---- */
+
+void cl_gc_enter_safe_region(void)
+{
+    CL_Thread *self = (CL_Thread *)platform_tls_get();
+    if (!self) return;
+    platform_mutex_lock(gc_mutex);
+    self->in_safe_region = 1;
+    /* Wake any STW initiator counting safe-region threads as stopped */
+    platform_condvar_broadcast(gc_condvar);
+    platform_mutex_unlock(gc_mutex);
+}
+
+void cl_gc_leave_safe_region(void)
+{
+    CL_Thread *self = (CL_Thread *)platform_tls_get();
+    if (!self) return;
+    platform_mutex_lock(gc_mutex);
+    /* If a GC is currently running, park here until it completes — we
+     * cannot return to the heap-touching caller while the world is
+     * stopped, otherwise we'd race the mark/sweep. */
+    while (self->gc_requested) {
+        self->gc_stopped = 1;
+        platform_condvar_broadcast(gc_condvar);
+        platform_condvar_wait(gc_condvar, gc_mutex);
+    }
+    self->gc_stopped = 0;
+    self->in_safe_region = 0;
+    platform_mutex_unlock(gc_mutex);
+}
+
 /* ---- Stop-the-world GC coordination ---- */
 
 /* Called by the GC initiator (from cl_gc) to stop all other threads.
- * The caller must NOT hold alloc_mutex when calling this. */
+ * The caller must NOT hold alloc_mutex when calling this.
+ *
+ * Reentrancy: if another thread is already inside STW we cannot blocking-lock
+ * gc_mutex — that other thread has already requested *us* to stop and is
+ * waiting for us to reach a safepoint, but a blocked mutex_lock never yields
+ * to one.  We use trylock and either (a) win the race and become initiator,
+ * (b) lose to a peer that hasn't requested us yet (yield + retry), or (c)
+ * acquire gc_mutex but find we've been requested to stop in the interim
+ * (drop the mutex so the requester can continue, park at a safepoint, and
+ * try again afterwards). */
 void cl_gc_stop_the_world(void)
 {
     CL_Thread *self = (CL_Thread *)platform_tls_get();
     CL_Thread *t;
 
-    platform_mutex_lock(gc_mutex);
+    for (;;) {
+        if (platform_mutex_trylock(gc_mutex) == 0) {
+            if (!self || !self->gc_requested) break;  /* initiator */
+            /* We won the race for gc_mutex but in the meantime another
+             * thread (that hasn't released yet through resume_the_world)
+             * already marked us for stop.  Release the mutex so they can
+             * see all_stopped, then park ourselves. */
+            platform_mutex_unlock(gc_mutex);
+        }
+        cl_gc_safepoint();           /* park if we've been requested */
+        platform_thread_yield();
+    }
 
     /* Request all other threads to stop */
     platform_mutex_lock(cl_thread_list_lock);
@@ -92,12 +143,14 @@ void cl_gc_stop_the_world(void)
     }
     platform_mutex_unlock(cl_thread_list_lock);
 
-    /* Wait until all other threads have reached a safepoint */
+    /* Wait until all other threads have reached a safepoint or are inside
+     * a safe region (blocking syscall not touching the heap). */
     for (;;) {
         int all_stopped = 1;
         platform_mutex_lock(cl_thread_list_lock);
         for (t = cl_thread_list; t; t = t->next) {
-            if (t != self && t->gc_requested && !t->gc_stopped) {
+            if (t != self && t->gc_requested
+                && !t->gc_stopped && !t->in_safe_region) {
                 all_stopped = 0;
                 break;
             }

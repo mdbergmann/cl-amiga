@@ -546,6 +546,42 @@ TEST(current_thread_identity_in_worker)
     ASSERT_STR_EQ(r, "T");
 }
 
+/* The lock-table is bounded (CL_MAX_LOCKS = 1024) but slots are reclaimed
+ * by GC when their wrapping CL_Lock heap object dies.  Heap pressure alone
+ * does not reliably trigger GC for tiny lock objects, so MAKE-LOCK does a
+ * GC + retry when the table is full.  Sento's `ask-s` allocates one lock
+ * per call; without this, 800 concurrent ask-s calls exhausted the table. */
+TEST(lock_table_slot_reclaimed_by_gc)
+{
+    const char *r = eval_print(
+        "(progn (dotimes (i 4000) (mp:make-lock)) :ok)");
+    ASSERT_STR_EQ(r, ":OK");
+}
+
+/* Same for condition-variables (CL_MAX_CONDVARS = 1024). */
+TEST(condvar_table_slot_reclaimed_by_gc)
+{
+    const char *r = eval_print(
+        "(progn (dotimes (i 4000) (mp:make-condition-variable)) :ok)");
+    ASSERT_STR_EQ(r, ":OK");
+}
+
+/* Two threads racing to allocate locks past the table limit must NOT
+ * deadlock.  Used to: thread A grabbed gc_mutex inside cl_gc_stop_the_world
+ * and waited for B to reach a safepoint; B was blocked on gc_mutex inside
+ * its own cl_gc call and never yielded.  Fixed by trylock+safepoint loop
+ * in cl_gc_stop_the_world. */
+TEST(make_lock_concurrent_no_deadlock)
+{
+    const char *r = eval_print(
+        "(let ((t1 (mp:make-thread"
+        "            (lambda () (dotimes (i 2000) (mp:make-lock)) :a)))"
+        "      (t2 (mp:make-thread"
+        "            (lambda () (dotimes (i 2000) (mp:make-lock)) :b))))"
+        "  (list (mp:join-thread t1) (mp:join-thread t2)))");
+    ASSERT_STR_EQ(r, "(:A :B)");
+}
+
 /* ================================================================
  * main
  * ================================================================ */
@@ -627,6 +663,11 @@ int main(void)
     /* Thread object identity (required by bordeaux-threads-2 hash registry) */
     RUN(current_thread_identity_main);
     RUN(current_thread_identity_in_worker);
+
+    /* GC reclaims MP table slots */
+    RUN(lock_table_slot_reclaimed_by_gc);
+    RUN(condvar_table_slot_reclaimed_by_gc);
+    RUN(make_lock_concurrent_no_deadlock);
 
     teardown();
 

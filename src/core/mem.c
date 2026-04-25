@@ -1109,6 +1109,46 @@ static void gc_mark(void)
 
 /* --- Sweep Phase --- */
 
+/* Release external resources owned by a dead heap object.
+ * Called from gc_sweep with the world stopped, so the per-table mutex used
+ * by cl_lock_table_alloc / cl_condvar_table_alloc is not needed: no other
+ * thread can mutate the tables here. */
+static void gc_finalize_dead(uint8_t *ptr)
+{
+    switch (CL_HDR_TYPE(ptr)) {
+    case TYPE_STREAM: {
+        CL_Stream *st = (CL_Stream *)ptr;
+        if ((st->direction & CL_STREAM_OUTPUT) && st->out_buf_handle != 0)
+            cl_stream_free_outbuf(st->out_buf_handle);
+        break;
+    }
+    case TYPE_LOCK: {
+        CL_Lock *lk = (CL_Lock *)ptr;
+        if (lk->lock_id < CL_MAX_LOCKS) {
+            void *h = cl_lock_table[lk->lock_id];
+            if (h) {
+                cl_lock_table[lk->lock_id] = NULL;
+                platform_mutex_destroy(h);
+            }
+        }
+        break;
+    }
+    case TYPE_CONDVAR: {
+        CL_CondVar *cv = (CL_CondVar *)ptr;
+        if (cv->condvar_id < CL_MAX_CONDVARS) {
+            void *h = cl_condvar_table[cv->condvar_id];
+            if (h) {
+                cl_condvar_table[cv->condvar_id] = NULL;
+                platform_condvar_destroy(h);
+            }
+        }
+        break;
+    }
+    default:
+        break;
+    }
+}
+
 static void gc_sweep(void)
 {
     uint8_t *ptr = cl_heap.arena + CL_ALIGN;  /* Skip offset 0 (reserved for NIL) */
@@ -1136,11 +1176,7 @@ static void gc_sweep(void)
             uint32_t total = size;
 
             /* Finalize: release external resources for dead objects */
-            if (CL_HDR_TYPE(ptr) == TYPE_STREAM) {
-                CL_Stream *st = (CL_Stream *)ptr;
-                if ((st->direction & CL_STREAM_OUTPUT) && st->out_buf_handle != 0)
-                    cl_stream_free_outbuf(st->out_buf_handle);
-            }
+            gc_finalize_dead(ptr);
 
             /* Coalesce adjacent free blocks up to max representable size */
             while (ptr + total < end) {
@@ -1150,11 +1186,7 @@ static void gc_sweep(void)
                 if (next->header & CL_HDR_MARK_BIT) break;  /* Next is live */
                 if (total + next_size > CL_HDR_SIZE_MASK) break;  /* Would overflow 23-bit size */
                 /* Finalize the coalesced dead object too */
-                if (CL_HDR_TYPE((uint8_t *)next) == TYPE_STREAM) {
-                    CL_Stream *st = (CL_Stream *)next;
-                    if ((st->direction & CL_STREAM_OUTPUT) && st->out_buf_handle != 0)
-                        cl_stream_free_outbuf(st->out_buf_handle);
-                }
+                gc_finalize_dead((uint8_t *)next);
                 total += next_size;
             }
 
@@ -1591,12 +1623,8 @@ static void gc_slide(void)
                 memmove(cl_heap.arena + new_offset, ptr, size);
             new_bump = new_offset + size;
         } else {
-            /* Dead object — finalize streams before overwriting */
-            if (CL_HDR_TYPE(ptr) == TYPE_STREAM) {
-                CL_Stream *st = (CL_Stream *)ptr;
-                if ((st->direction & CL_STREAM_OUTPUT) && st->out_buf_handle != 0)
-                    cl_stream_free_outbuf(st->out_buf_handle);
-            }
+            /* Dead object — release external resources before overwriting */
+            gc_finalize_dead(ptr);
         }
         ptr += size;
     }
