@@ -121,6 +121,15 @@ typedef struct CL_Thread_s {
     struct CL_Compiler_s *active_compiler;
     CL_Obj pending_lambda_name;
 
+    /* ---- Macroexpansion lexical environment ----
+     * Set by cl_macroexpand_1_env before cl_vm_apply of the expander,
+     * restored afterwards.  Exposed to user macros as the value of
+     * their &environment parameter via the CLAMIGA::%MACROEXPAND-ENV
+     * builtin.  Represented as an alist of (SYMBOL . EXPANSION) pairs
+     * capturing the symbol-macros active at the macro call site.
+     * CL_NIL = empty env. */
+    CL_Obj current_lex_env;
+
     /* ---- Trace & debug ---- */
     int    trace_depth;
     int    trace_count;
@@ -338,6 +347,9 @@ int    cl_symbol_boundp(CL_Obj sym);
 /* Compiler chain */
 #define cl_active_compiler  (CT->active_compiler)
 #define pending_lambda_name (CT->pending_lambda_name)
+
+/* Macroexpansion lexical environment (current &environment value) */
+#define cl_current_lex_env  (CT->current_lex_env)
 
 /* Source location tracking */
 #define cl_current_source_file (CT->current_source_file)

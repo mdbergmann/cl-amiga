@@ -1493,18 +1493,41 @@ static CL_Obj bi_eval(CL_Obj *args, int n)
     return cl_vm_eval(bytecode);
 }
 
+/* Look up a symbol in an ENV alist (as built by cl_build_lex_env).
+ * Returns 1 iff sym has a binding; writes the expansion to *out. */
+static int lex_env_lookup_symbol_macro(CL_Obj env, CL_Obj sym, CL_Obj *out)
+{
+    while (CL_CONS_P(env)) {
+        CL_Obj pair = cl_car(env);
+        if (CL_CONS_P(pair) && cl_car(pair) == sym) {
+            *out = cl_cdr(pair);
+            return 1;
+        }
+        env = cl_cdr(env);
+    }
+    return 0;
+}
+
 /* CLHS: macroexpand-1 form &optional env => expansion, expanded-p
- * The ENV argument is accepted for conformance but ignored — we don't
- * carry lexical environments across macro boundaries.  Both values are
- * returned so callers that use MULTIPLE-VALUE-BIND (iterate, trivia,
- * etc.) see the correct second return. */
+ *
+ * ENV is a Lisp alist of (SYMBOL . EXPANSION) pairs captured by the
+ * compiler at a macro call site (see cl_build_lex_env).  A macro
+ * expander receives ENV via its &environment parameter and can pass
+ * it back here to look up symbol-macros visible at its call site. */
 static CL_Obj bi_macroexpand_1(CL_Obj *args, int n)
 {
     CL_Obj form = args[0];
+    CL_Obj env = (n >= 2) ? args[1] : CL_NIL;
     CL_Obj expansion;
-    CL_UNUSED(n);  /* optional env arg ignored */
     if (CL_SYMBOL_P(form) && !CL_NULL_P(form)) {
         CL_Obj sm;
+        /* Lexical env wins over global symbol-macro table. */
+        if (!CL_NULL_P(env) && lex_env_lookup_symbol_macro(env, form, &sm)) {
+            cl_mv_values[0] = sm;
+            cl_mv_values[1] = SYM_T;
+            cl_mv_count = 2;
+            return sm;
+        }
         if (cl_lookup_global_symbol_macro_p(form, &sm)) {
             cl_mv_values[0] = sm;
             cl_mv_values[1] = SYM_T;
@@ -1518,7 +1541,7 @@ static CL_Obj bi_macroexpand_1(CL_Obj *args, int n)
         cl_mv_count = 2;
         return form;
     }
-    expansion = cl_macroexpand_1(form);
+    expansion = cl_macroexpand_1_env(form, env);
     cl_mv_values[0] = expansion;
     cl_mv_values[1] = (expansion == form) ? CL_NIL : SYM_T;
     cl_mv_count = 2;
@@ -1529,12 +1552,15 @@ static CL_Obj bi_macroexpand_1(CL_Obj *args, int n)
 static CL_Obj bi_macroexpand(CL_Obj *args, int n)
 {
     CL_Obj form = args[0];
+    CL_Obj env = (n >= 2) ? args[1] : CL_NIL;
     CL_Obj any_expansion = CL_NIL;
-    CL_UNUSED(n);  /* optional env arg ignored */
-    /* Symbol input: apply global symbol-macro once (chased below). */
+    /* Symbol input: apply symbol-macro once (chased below). */
     if (CL_SYMBOL_P(form) && !CL_NULL_P(form)) {
         CL_Obj sm;
-        if (cl_lookup_global_symbol_macro_p(form, &sm)) {
+        if (!CL_NULL_P(env) && lex_env_lookup_symbol_macro(env, form, &sm)) {
+            any_expansion = SYM_T;
+            form = sm;
+        } else if (cl_lookup_global_symbol_macro_p(form, &sm)) {
             any_expansion = SYM_T;
             form = sm;
         }
@@ -1546,7 +1572,7 @@ static CL_Obj bi_macroexpand(CL_Obj *args, int n)
         return form;
     }
     for (;;) {
-        CL_Obj expanded = cl_macroexpand_1(form);
+        CL_Obj expanded = cl_macroexpand_1_env(form, env);
         if (expanded == form) break;
         any_expansion = SYM_T;
         form = expanded;
@@ -1556,6 +1582,17 @@ static CL_Obj bi_macroexpand(CL_Obj *args, int n)
     cl_mv_values[1] = any_expansion;
     cl_mv_count = 2;
     return form;
+}
+
+/* CLAMIGA::%MACROEXPAND-ENV — read the current lexical environment
+ * installed by cl_macroexpand_1_env before calling an expander.
+ * Called from the body of a DEFMACRO / MACROLET expander to bind the
+ * user's &environment parameter. */
+static CL_Obj bi_macroexpand_env(CL_Obj *args, int n)
+{
+    CL_UNUSED(args);
+    CL_UNUSED(n);
+    return cl_current_lex_env;
 }
 
 /* --- macro-function / (setf macro-function) --- */
@@ -2683,6 +2720,7 @@ void cl_builtins_io_init(void)
     defun("MACROEXPAND", bi_macroexpand, 1, 2);
     defun("MACRO-FUNCTION", bi_macro_function, 1, 2);
     cl_register_builtin("%SETF-MACRO-FUNCTION", bi_set_macro_function, 2, 2, cl_package_cl);
+    cl_register_builtin("%MACROEXPAND-ENV", bi_macroexpand_env, 0, 0, cl_package_clamiga);
 
     /* Throw (ERROR is now in builtins_condition.c) */
     defun("THROW", bi_throw, 1, 2);

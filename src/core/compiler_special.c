@@ -1986,7 +1986,9 @@ void compile_macrolet(CL_Compiler *c, CL_Obj form)
             CL_GC_PROTECT(lambda_list);
             CL_GC_PROTECT(mbody);
 
-            /* Strip &environment (same as defmacro) */
+            /* Strip &environment (same as defmacro).  The env-var is
+             * bound at the top of the body to the current lexical env,
+             * captured by the caller and read via %MACROEXPAND-ENV. */
             {
                 CL_Obj cur2 = lambda_list;
                 CL_Obj prev2 = CL_NIL;
@@ -2001,7 +2003,12 @@ void compile_macrolet(CL_Compiler *c, CL_Obj form)
                         else
                             ((CL_Cons *)CL_OBJ_TO_PTR(prev2))->cdr = after2;
                         if (CL_SYMBOL_P(env_var)) {
-                            CL_Obj bind = cl_cons(env_var, cl_cons(CL_NIL, CL_NIL));
+                            CL_Obj capture_sym =
+                                cl_intern_in("%MACROEXPAND-ENV", 16,
+                                             cl_package_clamiga);
+                            CL_Obj capture_call = cl_cons(capture_sym, CL_NIL);
+                            CL_Obj bind = cl_cons(env_var,
+                                                  cl_cons(capture_call, CL_NIL));
                             CL_Obj binds = cl_cons(bind, CL_NIL);
                             CL_Obj let_f = cl_cons(SYM_LET, cl_cons(binds, mbody));
                             mbody = cl_cons(let_f, CL_NIL);

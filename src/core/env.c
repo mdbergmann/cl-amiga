@@ -1,4 +1,5 @@
 #include "env.h"
+#include "mem.h"
 #include "../platform/platform.h"
 #include <string.h>
 
@@ -221,6 +222,56 @@ CL_Obj cl_env_lookup_symbol_macro(CL_CompEnv *env, CL_Obj name)
         return env->symbol_macros[i].expansion;
     }
     return CL_NIL;
+}
+
+CL_Obj cl_build_lex_env(CL_CompEnv *env)
+{
+    CL_Obj result = CL_NIL;
+    int i;
+
+    if (!env || env->symbol_macro_count == 0) return CL_NIL;
+
+    CL_GC_PROTECT(result);
+    /* Walk from highest index (innermost / most recently added) to lowest.
+     * Innermost bindings end up at the head of the alist, so a plain
+     * ASSOC walk respects shadowing automatically. */
+    for (i = env->symbol_macro_count - 1; i >= 0; i--) {
+        CL_Obj name = env->symbol_macros[i].name;
+        CL_Obj expansion = env->symbol_macros[i].expansion;
+
+        /* Inherited entries are shadowed by a local of the same name. */
+        if (i < env->inherited_symbol_macro_count) {
+            int j;
+            int shadowed = 0;
+            for (j = 0; j < env->local_count; j++) {
+                if (env->locals[j] == name) { shadowed = 1; break; }
+            }
+            if (shadowed) continue;
+        }
+
+        /* Skip if a nearer binding with the same name is already in result. */
+        {
+            CL_Obj walk = result;
+            int dup = 0;
+            while (!CL_NULL_P(walk)) {
+                if (cl_car(cl_car(walk)) == name) { dup = 1; break; }
+                walk = cl_cdr(walk);
+            }
+            if (dup) continue;
+        }
+
+        {
+            CL_Obj pair;
+            CL_GC_PROTECT(name);
+            CL_GC_PROTECT(expansion);
+            pair = cl_cons(name, expansion);
+            CL_GC_PROTECT(pair);
+            result = cl_cons(pair, result);
+            CL_GC_UNPROTECT(3);
+        }
+    }
+    CL_GC_UNPROTECT(1);
+    return result;
 }
 
 int cl_env_resolve_fun_upvalue(CL_CompEnv *env, CL_Obj name)

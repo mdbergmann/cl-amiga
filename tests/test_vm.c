@@ -4410,6 +4410,69 @@ TEST(eval_symbol_macrolet_shadowed_by_let)
         "  (symbol-macrolet ((x 99)) x))"), 99);
 }
 
+/* --- &ENVIRONMENT / MACROEXPAND-1 with lexical env ---
+ * Macros that declare an &environment parameter receive a snapshot of
+ * the symbol-macros active at the call site.  Passing that env to
+ * MACROEXPAND-1 lets the macro read those bindings.  This is the core
+ * mechanism used by serapeum's WITH-BOOLEAN / BOOLEAN-IF pair. */
+TEST(eval_environment_symbol_macrolet_expand)
+{
+    /* Baseline: outside any symbol-macrolet, env lookup of x is
+     * unknown and MACROEXPAND-1 returns (values x nil). */
+    eval_print(
+        "(defmacro env-probe-expanded-p (&environment env)"
+        "  (multiple-value-bind (v p) (macroexpand-1 'x env)"
+        "    (declare (ignore v))"
+        "    (if p t nil)))");
+    ASSERT_STR_EQ(eval_print("(env-probe-expanded-p)"), "NIL");
+    /* Inside symbol-macrolet, env lookup finds x and the macro
+     * receives the expansion. */
+    eval_print(
+        "(defmacro env-probe-x (&environment env)"
+        "  (multiple-value-bind (v p) (macroexpand-1 'x env)"
+        "    (if p `(quote ,v) `(quote :not-found))))");
+    ASSERT_STR_EQ(eval_print("(symbol-macrolet ((x 42)) (env-probe-x))"),
+                  "42");
+}
+
+TEST(eval_environment_with_boolean_idiom)
+{
+    /* Replica of serapeum's WITH-BOOLEAN / report-branches idiom.  The
+     * outer macro stashes a value in a symbol-macrolet; the inner
+     * macro reads it back through its &environment parameter. */
+    eval_print(
+        "(defmacro wb (tag &body body &environment env)"
+        "  (multiple-value-bind (outer p) (macroexpand-1 '%branches env)"
+        "    (let ((chain (if p (cadr outer) nil)))"
+        "      `(symbol-macrolet ((%branches (quote ,(cons tag chain))))"
+        "         ,@body))))");
+    eval_print(
+        "(defmacro report-branches (&environment env)"
+        "  (multiple-value-bind (v p) (macroexpand-1 '%branches env)"
+        "    (if p `(quote ,(cadr v)) `(quote ()))))");
+    /* No surrounding wb -> NIL chain. */
+    ASSERT_STR_EQ(eval_print("(report-branches)"), "NIL");
+    /* Single wb -> (:A). */
+    ASSERT_STR_EQ(eval_print("(wb :a (report-branches))"), "(:A)");
+    /* Nested wb -> (:INNER :OUTER) — most recent first. */
+    ASSERT_STR_EQ(eval_print(
+        "(wb :outer (wb :inner (report-branches)))"),
+        "(:INNER :OUTER)");
+}
+
+TEST(eval_environment_macrolet_captures_symbol_macros)
+{
+    /* MACROLET-defined macros must also see the current lexical env
+     * via &environment — same plumbing as DEFMACRO. */
+    ASSERT_STR_EQ(eval_print(
+        "(macrolet ((probe (&environment env)"
+        "             (multiple-value-bind (v p) (macroexpand-1 'q env)"
+        "               (if p `(quote ,v) `(quote :none)))))"
+        "  (symbol-macrolet ((q 'found))"
+        "    (probe)))"),
+        "(QUOTE FOUND)");
+}
+
 /* define-symbol-macro — global (stored on symbol plist, consulted by
    compile_symbol via cl_lookup_global_symbol_macro).  Regression tests
    for the sento/serapeum +alist-breakeven+ defconst pattern, which
@@ -8087,6 +8150,9 @@ int main(void)
     RUN(eval_symbol_macrolet_across_lambda);
     RUN(eval_symbol_macrolet_shadowed_by_lambda_param);
     RUN(eval_symbol_macrolet_shadowed_by_let);
+    RUN(eval_environment_symbol_macrolet_expand);
+    RUN(eval_environment_with_boolean_idiom);
+    RUN(eval_environment_macrolet_captures_symbol_macros);
     RUN(eval_define_symbol_macro_basic);
     RUN(eval_define_symbol_macro_read_time_eval);
     RUN(eval_define_symbol_macro_macroexpand_1);

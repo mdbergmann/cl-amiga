@@ -107,4 +107,11 @@ CL_Obj cl_env_lookup_local_macro(CL_CompEnv *env, CL_Obj name);
 int cl_env_add_symbol_macro(CL_CompEnv *env, CL_Obj name, CL_Obj expansion);
 CL_Obj cl_env_lookup_symbol_macro(CL_CompEnv *env, CL_Obj name);
 
+/* Build a Lisp-visible snapshot of the lexical environment's symbol
+ * macros, for use as the &environment argument of a macro expander.
+ * Returns an alist of (SYMBOL . EXPANSION) pairs with innermost
+ * bindings first.  Inherited symbol-macros shadowed by a local with
+ * the same name in ENV are omitted.  NULL env -> NIL. */
+CL_Obj cl_build_lex_env(CL_CompEnv *env);
+
 #endif /* CL_ENV_H */
