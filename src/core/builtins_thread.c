@@ -187,6 +187,10 @@ static CL_Obj bi_make_thread(CL_Obj *args, int n)
     tobj->name = name;
     thread_obj = CL_PTR_TO_OBJ(tobj);
 
+    /* Cache it on the worker so (mp:current-thread) returns the same CL_Obj.
+     * Required for bordeaux-threads-2 .known-threads. eql lookups. */
+    child->thread_obj = thread_obj;
+
     /* Create OS thread */
     if (platform_thread_create(&child->platform_handle,
                                thread_entry, child, 0) != 0) {
@@ -265,19 +269,23 @@ static CL_Obj bi_current_thread(CL_Obj *args, int n)
     if (self->id == 0)
         return main_thread_obj;
 
-    /* For worker threads, search for the matching thread object.
-     * This is O(n) but thread count is small (max 32). */
-    /* Actually, we need to find the CL_Obj for this thread.
-     * The simplest approach: scan the heap... but that's expensive.
-     * Instead, just create a fresh thread object each time.
-     * This is cheap and correct (identity isn't guaranteed by the spec). */
+    /* Worker threads return the cached thread object set at make-thread time.
+     * Identity matters: bordeaux-threads-2 keys .known-threads. by the value
+     * returned here, then looks up via (mp:current-thread) inside the new
+     * thread; the two must be eql. */
+    if (!CL_NULL_P(self->thread_obj))
+        return self->thread_obj;
+
+    /* Fallback (should not normally happen): allocate a fresh wrapper and
+     * cache it so subsequent calls return the same object. */
     {
         CL_ThreadObj *tobj = (CL_ThreadObj *)cl_alloc(TYPE_THREAD,
                                                        sizeof(CL_ThreadObj));
         if (!tobj) return CL_NIL;
         tobj->thread_id = self->id;
         tobj->name = self->name;
-        return CL_PTR_TO_OBJ(tobj);
+        self->thread_obj = CL_PTR_TO_OBJ(tobj);
+        return self->thread_obj;
     }
 }
 
@@ -363,6 +371,45 @@ static CL_Obj bi_make_lock(CL_Obj *args, int n)
         cl_lock_table_free(lock_id);
         platform_mutex_destroy(mutex_handle);
         cl_error(CL_ERR_STORAGE, "MP:MAKE-LOCK: cannot allocate lock object");
+    }
+
+    lk->lock_id = (uint32_t)lock_id;
+    lk->name = name;
+    return CL_PTR_TO_OBJ(lk);
+}
+
+/* (mp:make-recursive-lock &optional name) -> lock
+ * A recursive lock can be acquired multiple times by the same thread; it must
+ * be released the same number of times before another thread can acquire it.
+ * On AmigaOS this is identical to make-lock (SignalSemaphore is naturally
+ * recursive); on POSIX it uses PTHREAD_MUTEX_RECURSIVE. */
+static CL_Obj bi_make_recursive_lock(CL_Obj *args, int n)
+{
+    CL_Obj name = (n > 0) ? args[0] : CL_NIL;
+    void *mutex_handle = NULL;
+    int lock_id;
+    CL_Lock *lk;
+
+    if (platform_mutex_init_recursive(&mutex_handle) != 0)
+        cl_error(CL_ERR_GENERAL,
+                 "MP:MAKE-RECURSIVE-LOCK: failed to create recursive mutex");
+
+    lock_id = cl_lock_table_alloc(mutex_handle);
+    if (lock_id < 0) {
+        platform_mutex_destroy(mutex_handle);
+        cl_error(CL_ERR_GENERAL,
+                 "MP:MAKE-RECURSIVE-LOCK: lock table full (max %d)",
+                 CL_MAX_LOCKS);
+    }
+
+    CL_GC_PROTECT(name);
+    lk = (CL_Lock *)cl_alloc(TYPE_LOCK, sizeof(CL_Lock));
+    CL_GC_UNPROTECT(1);
+    if (!lk) {
+        cl_lock_table_free(lock_id);
+        platform_mutex_destroy(mutex_handle);
+        cl_error(CL_ERR_STORAGE,
+                 "MP:MAKE-RECURSIVE-LOCK: cannot allocate lock object");
     }
 
     lk->lock_id = (uint32_t)lock_id;
@@ -724,6 +771,7 @@ void cl_builtins_thread_init(void)
     mp_defun("THREAD-YIELD",            bi_thread_yield,            0, 0);
 
     mp_defun("MAKE-LOCK",               bi_make_lock,               0, 1);
+    mp_defun("%MAKE-RECURSIVE-LOCK",    bi_make_recursive_lock,     0, 1);
     mp_defun("ACQUIRE-LOCK",            bi_acquire_lock,            1, 2);
     mp_defun("RELEASE-LOCK",            bi_release_lock,            1, 1);
 

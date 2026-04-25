@@ -476,6 +476,54 @@ TEST(thread_gc_stress)
     ASSERT_STR_EQ(r, "400");
 }
 
+/* Recursive lock: same thread acquires twice and releases twice without
+ * deadlocking. Required by log4cl/serapeum which use bt:make-recursive-lock
+ * and bt:with-recursive-lock-held with potential nesting. */
+TEST(recursive_lock_self_reacquire)
+{
+    const char *r = eval_print(
+        "(let ((lk (mp:make-recursive-lock \"rec\")))"
+        "  (mp:acquire-lock lk t)"
+        "  (mp:acquire-lock lk t)"
+        "  (mp:release-lock lk)"
+        "  (mp:release-lock lk)"
+        "  :ok)");
+    ASSERT_STR_EQ(r, ":OK");
+}
+
+TEST(recursive_lock_with_nested_macro)
+{
+    const char *r = eval_print(
+        "(let ((lk (mp:make-recursive-lock)))"
+        "  (mp:with-recursive-lock-held (lk)"
+        "    (mp:with-recursive-lock-held (lk)"
+        "      :inner)))");
+    ASSERT_STR_EQ(r, ":INNER");
+}
+
+/* (mp:current-thread) must return the same eq object across calls so it
+ * can be used as a hash-table key (required by bordeaux-threads-2's
+ * .known-threads. registry). */
+TEST(current_thread_identity_main)
+{
+    const char *r = eval_print(
+        "(eq (mp:current-thread) (mp:current-thread))");
+    ASSERT_STR_EQ(r, "T");
+}
+
+/* Identity must also hold inside a worker thread, AND between the value
+ * returned by mp:make-thread and (mp:current-thread) called from inside. */
+TEST(current_thread_identity_in_worker)
+{
+    const char *r = eval_print(
+        "(let* ((slot nil)"
+        "       (th (mp:make-thread"
+        "             (lambda () (setq slot (mp:current-thread)) t))))"
+        "  (mp:join-thread th)"
+        "  (eq slot th))");
+    ASSERT_STR_EQ(r, "T");
+}
+
 /* ================================================================
  * main
  * ================================================================ */
@@ -548,6 +596,14 @@ int main(void)
 
     /* GC stress */
     RUN(thread_gc_stress);
+
+    /* Recursive locks (required by log4cl/serapeum) */
+    RUN(recursive_lock_self_reacquire);
+    RUN(recursive_lock_with_nested_macro);
+
+    /* Thread object identity (required by bordeaux-threads-2 hash registry) */
+    RUN(current_thread_identity_main);
+    RUN(current_thread_identity_in_worker);
 
     teardown();
 
