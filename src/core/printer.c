@@ -1124,6 +1124,16 @@ static void print_obj(CL_Obj obj)
 
     case TYPE_CONDITION: {
         CL_Condition *cond = (CL_Condition *)CL_OBJ_TO_PTR(obj);
+        /* Per CLHS 9.1.3 / 22.3.1.3 (~A): when *print-escape* and
+         * *print-readably* are both NIL (PRINC / ~A), a condition is printed
+         * by invoking its report function — the human-readable message
+         * alone, no #<CONDITION ...> wrapper. */
+        if (!print_escape_p() && !print_readably_p() &&
+            !CL_NULL_P(cond->report_string)) {
+            CL_String *rs = (CL_String *)CL_OBJ_TO_PTR(cond->report_string);
+            out_str(rs->data);
+            break;
+        }
         out_str("#<CONDITION ");
         if (!CL_NULL_P(cond->type_name))
             out_str(cl_symbol_name(cond->type_name));
