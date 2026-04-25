@@ -225,8 +225,12 @@ static CL_Obj bi_join_thread(CL_Obj *args, int n)
     if (!t->platform_handle)
         cl_error(CL_ERR_GENERAL, "MP:JOIN-THREAD: cannot join main thread");
 
-    /* Wait for thread to finish */
+    /* Wait for thread to finish.  pthread_join blocks the caller outside
+     * the VM dispatch loop — bracket it with the safe-region marker so a
+     * concurrent stop-the-world GC counts us as already stopped. */
+    cl_gc_enter_safe_region();
     platform_thread_join(t->platform_handle, NULL);
+    cl_gc_leave_safe_region();
 
     result = t->result;
 
@@ -359,6 +363,13 @@ static CL_Obj bi_make_lock(CL_Obj *args, int n)
 
     lock_id = cl_lock_table_alloc(mutex_handle);
     if (lock_id < 0) {
+        /* Lock table is bounded but slots are reclaimed at GC sweep when
+         * the wrapping CL_Lock heap object becomes unreachable.  Run GC
+         * once and retry — typical pattern for GC-managed external slots. */
+        cl_gc();
+        lock_id = cl_lock_table_alloc(mutex_handle);
+    }
+    if (lock_id < 0) {
         platform_mutex_destroy(mutex_handle);
         cl_error(CL_ERR_GENERAL, "MP:MAKE-LOCK: lock table full (max %d)",
                  CL_MAX_LOCKS);
@@ -395,6 +406,11 @@ static CL_Obj bi_make_recursive_lock(CL_Obj *args, int n)
                  "MP:MAKE-RECURSIVE-LOCK: failed to create recursive mutex");
 
     lock_id = cl_lock_table_alloc(mutex_handle);
+    if (lock_id < 0) {
+        /* See bi_make_lock for rationale on the GC retry. */
+        cl_gc();
+        lock_id = cl_lock_table_alloc(mutex_handle);
+    }
     if (lock_id < 0) {
         platform_mutex_destroy(mutex_handle);
         cl_error(CL_ERR_GENERAL,
@@ -439,7 +455,11 @@ static CL_Obj bi_acquire_lock(CL_Obj *args, int n)
         cl_error(CL_ERR_GENERAL, "MP:ACQUIRE-LOCK: lock has been destroyed");
 
     if (wait_p) {
+        /* Blocking acquire — bracket with safe region so a concurrent
+         * stop-the-world GC does not deadlock waiting on this thread. */
+        cl_gc_enter_safe_region();
         platform_mutex_lock(mutex);
+        cl_gc_leave_safe_region();
         return CL_T;
     } else {
         return (platform_mutex_trylock(mutex) == 0) ? CL_T : CL_NIL;
@@ -485,6 +505,11 @@ static CL_Obj bi_make_condition_variable(CL_Obj *args, int n)
                  "MP:MAKE-CONDITION-VARIABLE: failed to create condvar");
 
     cv_id = cl_condvar_table_alloc(cv_handle);
+    if (cv_id < 0) {
+        /* See bi_make_lock for rationale on the GC retry. */
+        cl_gc();
+        cv_id = cl_condvar_table_alloc(cv_handle);
+    }
     if (cv_id < 0) {
         platform_condvar_destroy(cv_handle);
         cl_error(CL_ERR_GENERAL,
@@ -536,17 +561,22 @@ static CL_Obj bi_condition_wait(CL_Obj *args, int n)
         /* Timed wait: convert seconds to milliseconds */
         double secs = cl_to_double(args[2]);
         uint32_t ms;
+        int timed_out;
         if (secs <= 0.0)
             ms = 0;
         else if (secs > 4294967.0)
             ms = 0xFFFFFFFFu;
         else
             ms = (uint32_t)(secs * 1000.0);
-        /* Returns 1 if timed out, 0 if signaled */
-        return platform_condvar_wait_timeout(cv_handle, mutex, ms) ? CL_NIL : CL_T;
+        cl_gc_enter_safe_region();
+        timed_out = platform_condvar_wait_timeout(cv_handle, mutex, ms);
+        cl_gc_leave_safe_region();
+        return timed_out ? CL_NIL : CL_T;
     }
 
+    cl_gc_enter_safe_region();
     platform_condvar_wait(cv_handle, mutex);
+    cl_gc_leave_safe_region();
     return CL_T;
 }
 

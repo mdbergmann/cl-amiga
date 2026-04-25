@@ -179,6 +179,11 @@ typedef struct CL_Thread_s {
     /* ---- GC coordination ---- */
     volatile uint8_t gc_requested;
     volatile uint8_t gc_stopped;
+    /* Non-zero while the thread is in a blocking syscall that does not touch
+     * the heap (e.g. pthread_join).  STW treats such a thread as already
+     * stopped — it cannot reach a Lisp-level safepoint, but it also cannot
+     * race the GC. */
+    volatile uint8_t in_safe_region;
 
     /* ---- Thread interruption ---- */
     volatile uint8_t interrupt_pending;   /* 1 = check interrupt_func or destroy */
@@ -276,6 +281,13 @@ void cl_thread_unregister(CL_Thread *t);
 
 void cl_gc_safepoint(void);           /* slow path: stop until GC completes */
 void cl_thread_handle_interrupt(CL_Thread *t);  /* slow path: handle pending interrupt */
+
+/* Mark the current thread as entering / leaving a blocking syscall that does
+ * not touch the heap.  Bracket calls like platform_thread_join with
+ * cl_gc_enter_safe_region() / cl_gc_leave_safe_region() so STW does not
+ * deadlock waiting for a thread that cannot reach a safepoint. */
+void cl_gc_enter_safe_region(void);
+void cl_gc_leave_safe_region(void);
 
 /* ---- TLV functions ---- */
 
