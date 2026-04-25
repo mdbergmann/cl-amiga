@@ -2483,6 +2483,19 @@ void compile_expr(CL_Compiler *c, CL_Obj expr)
         return;
     }
 
+    /* Any non-cons heap object that isn't a symbol is self-evaluating per
+     * CLHS 3.1.2.1.3.  This catches streams, locks, condition-variables,
+     * thread objects, random-state, conditions, instances, etc. — none of
+     * them have a meaningful interpretation as a form, so EVAL returns them
+     * unchanged.  Without this, e.g. lparallel's
+     *   (loop for (nil . form) in specials collect (eval form))
+     * blows up with "Cannot compile: unexpected STREAM" the first time a
+     * thread is spawned with default special bindings. */
+    if (CL_HEAP_P(expr) && !CL_CONS_P(expr)) {
+        cl_emit_const(c, expr);
+        return;
+    }
+
     if (CL_CONS_P(expr)) {
         CL_Obj head = cl_car(expr);
 

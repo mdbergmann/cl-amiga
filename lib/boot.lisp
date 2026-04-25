@@ -464,6 +464,19 @@
        (unless (typep ,val ',type)
          (error 'type-error :datum ,val :expected-type ',type)))))
 
+;; ccase — like ecase (signals an error if no clause matches), but the error
+;; is continuable: in a real implementation a STORE-VALUE restart lets the user
+;; supply a new keyform value and retry.  We don't have a debugger that can
+;; offer restarts interactively, so we treat CCASE as ECASE (one-shot type
+;; error) — the host-incompatible difference is the restart presentation, not
+;; the value-on-success or value-on-mismatch behaviour.
+(defmacro ccase (keyplace &rest clauses)
+  `(ecase ,keyplace ,@clauses))
+
+;; ctypecase — same relationship to etypecase.
+(defmacro ctypecase (keyplace &rest clauses)
+  `(etypecase ,keyplace ,@clauses))
+
 ;; assert — signal error if test-form is false
 (defmacro assert (test-form &optional places string &rest args)
   (declare (ignore places))
