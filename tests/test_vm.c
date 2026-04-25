@@ -7509,6 +7509,41 @@ TEST(eval_reader_leading_dot_float_in_list)
     ASSERT_STR_EQ(eval_print("(symbol-name (car '(.foo)))"), "\".FOO\"");
 }
 
+TEST(eval_eval_self_evaluating_opaque)
+{
+    /* CLHS 3.1.2.1.3: standard objects without an explicit form
+     * interpretation evaluate to themselves.  The compiler used to error with
+     * "Cannot compile: unexpected STREAM in expression position" the first
+     * time bordeaux-threads fed `(eval *standard-output*)` through
+     * binding-default-specials — exactly the path lparallel hits when
+     * spawning workers with default special bindings.  Cover STREAM, LOCK,
+     * THREAD, RANDOM-STATE, CONDITION, and HASH-TABLE so a future
+     * regression doesn't sneak past unnoticed. */
+    ASSERT_STR_EQ(eval_print("(eq *standard-output* (eval *standard-output*))"), "T");
+    ASSERT_STR_EQ(eval_print("(eq *random-state* (eval *random-state*))"), "T");
+    ASSERT_STR_EQ(eval_print(
+        "(let ((lk (mp:make-lock \"x\"))) (eq lk (eval lk)))"), "T");
+    ASSERT_STR_EQ(eval_print(
+        "(let ((cv (mp:make-condition-variable))) (eq cv (eval cv)))"), "T");
+    ASSERT_STR_EQ(eval_print(
+        "(let ((c (make-condition 'simple-error :format-control \"x\")))"
+        "  (eq c (eval c)))"), "T");
+    ASSERT_STR_EQ(eval_print(
+        "(let ((h (make-hash-table))) (eq h (eval h)))"), "T");
+}
+
+TEST(eval_ccase_ctypecase)
+{
+    /* CCASE / CTYPECASE: continuable variants of ECASE / ETYPECASE.  We
+     * approximate as their non-continuable cousins (no STORE-VALUE restart).
+     * Required for lparallel's central scheduler. */
+    ASSERT_STR_EQ(eval_print("(ccase 'b ((a) 1) ((b) 2) ((c) 3))"), "2");
+    ASSERT_STR_EQ(eval_print("(ccase 5 ((1) :one) ((2 5) :two-or-five))"),
+                  ":TWO-OR-FIVE");
+    ASSERT_STR_EQ(eval_print("(ctypecase 42 (string :s) (integer :i))"), ":I");
+    ASSERT_STR_EQ(eval_print("(ctypecase \"hi\" (string :s) (integer :i))"), ":S");
+}
+
 TEST(eval_heap_exhaustion_error)
 {
     /* Accumulating live data until heap is full should signal CL_ERR_STORAGE
@@ -8604,6 +8639,11 @@ int main(void)
 
     /* reader: leading-dot float disambiguation vs dotted-pair `.` */
     RUN(eval_reader_leading_dot_float_in_list);
+
+    /* compiler: opaque heap objects (stream, lock, condvar, ...) are
+     * self-evaluating per CLHS 3.1.2.1.3 */
+    RUN(eval_eval_self_evaluating_opaque);
+    RUN(eval_ccase_ctypecase);
 
     /* heap exhaustion / storage errors */
     RUN(eval_heap_exhaustion_error);
