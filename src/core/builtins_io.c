@@ -585,12 +585,17 @@ static CL_Obj bi_load(CL_Obj *args, int n)
                         uw.gensym_count = fw.gensym_count;
                         cl_fasl_serialize_bytecode(&uw, bytecode);
                     }
-                    /* Update file-level gensym table */
-                    if (do_cache && uw.error == FASL_OK) {
+                    /* Any unit that fails to serialize (too deep, alloc fail
+                     * after retry, etc.) invalidates the whole cache.  Writing
+                     * a partial FASL would silently drop top-level forms (and
+                     * their DEFUN side effects), making the cached load behave
+                     * differently from the source load. */
+                    if (do_cache && uw.error != FASL_OK) {
+                        do_cache = 0;
+                    }
+                    if (do_cache) {
                         memcpy(fw.gensym_objs, uw.gensym_objs, uw.gensym_count * sizeof(CL_Obj));
                         fw.gensym_count = uw.gensym_count;
-                    }
-                    if (do_cache && uw.error == FASL_OK) {
                         while (fw.pos + 4 + uw.pos > fasl_capacity) {
                             uint8_t *new_buf;
                             fasl_capacity *= 2;
@@ -1252,6 +1257,15 @@ static CL_Obj bi_compile_file(CL_Obj *args, int n)
                 cl_fasl_write_u32(w, uw->pos);
                 cl_fasl_write_bytes(w, unit_buf, uw->pos);
                 n_units++;
+            } else {
+                /* Any non-OK error other than the too-deep / overflow cases
+                 * handled above — out of memory, unknown tag, etc. — must
+                 * invalidate the whole FASL, not silently drop the unit.
+                 * Otherwise the loaded FASL would be missing top-level
+                 * DEFUN side effects and behave differently from source. */
+                platform_write_string("; Warning: FASL unit failed to serialize, skipping FASL cache for this file\n");
+                fasl_incomplete = 1;
+                break;
             }
         }
 
