@@ -31,6 +31,14 @@ void cl_compiler_init(void);
 /* Expand one level of macro (returns form unchanged if not a macro call) */
 CL_Obj cl_macroexpand_1(CL_Obj form);
 
+/* Same as cl_macroexpand_1, but installs LEX_ENV (an alist of
+ * (SYMBOL . EXPANSION) pairs, or CL_NIL) as the current lexical
+ * environment before invoking the expander, so the user's
+ * &environment parameter sees it via %MACROEXPAND-ENV.  The previous
+ * value is saved and restored around the expander call, so nested
+ * macroexpansion is safe. */
+CL_Obj cl_macroexpand_1_env(CL_Obj form, CL_Obj lex_env);
+
 /* Look up a global symbol-macro expansion (from DEFINE-SYMBOL-MACRO).
    Returns CL_NIL when the symbol has no global symbol-macro binding —
    but also when the binding expands to NIL.  To distinguish, use

@@ -969,6 +969,10 @@ static void gc_mark_thread_roots(CL_Thread *t)
     gc_mark_obj(t->result);
     gc_mark_obj(t->interrupt_func);
 
+    /* Current lexical env installed for a macro expander — keeps the
+     * &environment alist alive while the expander runs. */
+    gc_mark_obj(t->current_lex_env);
+
     /* Reader state — in-flight reader stream plus per-read uninterned
      * symbol alist (so #:foo identity survives a GC during a long READ). */
     gc_mark_obj(t->rd_stream);
@@ -1462,6 +1466,7 @@ static void gc_update_thread_roots(CL_Thread *t)
     gc_update_slot(&t->name);
     gc_update_slot(&t->result);
     gc_update_slot(&t->interrupt_func);
+    gc_update_slot(&t->current_lex_env);
 
     /* Compiler constants (platform_alloc'd, hold CL_Obj refs) */
     {

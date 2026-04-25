@@ -1132,7 +1132,10 @@ top:
         int err; CL_CATCH(err);
         if (err == 0) {
             CL_Obj expanded;
-            expanded = cl_macroexpand_1(form);
+            CL_Obj scan_env = CL_NIL;
+            if (cl_active_compiler)
+                scan_env = cl_build_lex_env(cl_active_compiler->env);
+            expanded = cl_macroexpand_1_env(form, scan_env);
             CL_UNCATCH();
             cl_debugger_enabled = saved_debugger;
             cl_handler_top = saved_handler;
@@ -1664,15 +1667,22 @@ static void compile_setf_place(CL_Compiler *c, CL_Obj place, CL_Obj val_form)
                     CL_Obj arg_array[255];
                     int nargs = 0;
                     CL_Obj args_list = cl_cdr(place);
+                    CL_Obj lex_env = cl_build_lex_env(c->env);
+                    CL_Obj saved_lex_env;
                     /* First argument is the whole form (for &whole support) */
                     arg_array[nargs++] = place;
                     while (!CL_NULL_P(args_list) && nargs < 255) {
                         arg_array[nargs++] = cl_car(args_list);
                         args_list = cl_cdr(args_list);
                     }
+                    CL_GC_PROTECT(lex_env);
+                    saved_lex_env = cl_current_lex_env;
+                    cl_current_lex_env = lex_env;
                     {
                         CL_Obj expanded;
                         expanded = cl_vm_apply(local_exp, arg_array, nargs);
+                        cl_current_lex_env = saved_lex_env;
+                        CL_GC_UNPROTECT(1);
                         compile_setf_place(c, expanded, val_form);
                         c->in_tail = saved_tail;
                         return;
@@ -1681,7 +1691,11 @@ static void compile_setf_place(CL_Compiler *c, CL_Obj place, CL_Obj val_form)
             }
             /* No setf expander, no local macro — try global macros */
             if (!CL_NULL_P(cl_get_macro(head))) {
-                CL_Obj expanded = cl_macroexpand_1(place);
+                CL_Obj lex_env = cl_build_lex_env(c->env);
+                CL_Obj expanded;
+                CL_GC_PROTECT(lex_env);
+                expanded = cl_macroexpand_1_env(place, lex_env);
+                CL_GC_UNPROTECT(1);
                 if (expanded != place) {
                     compile_setf_place(c, expanded, val_form);
                     c->in_tail = saved_tail;
@@ -2497,6 +2511,8 @@ void compile_expr(CL_Compiler *c, CL_Obj expr)
                 CL_Obj arg_array[255];
                 int nargs = 0;
                 CL_Obj args_list = cl_cdr(expr);
+                CL_Obj lex_env = cl_build_lex_env(c->env);
+                CL_Obj saved_lex_env;
                 /* First argument is the whole form (for &whole support) */
                 arg_array[nargs++] = expr;
                 while (!CL_NULL_P(args_list) && nargs < 255) {
@@ -2505,6 +2521,9 @@ void compile_expr(CL_Compiler *c, CL_Obj expr)
                 }
                 CL_GC_PROTECT(expr);
                 CL_GC_PROTECT(local_expander);
+                CL_GC_PROTECT(lex_env);
+                saved_lex_env = cl_current_lex_env;
+                cl_current_lex_env = lex_env;
                 {
                     int _fp0 = cl_vm.fp, _sp0 = cl_vm.sp;
                     expanded = cl_vm_apply(local_expander, arg_array, nargs);
@@ -2514,7 +2533,8 @@ void compile_expr(CL_Compiler *c, CL_Obj expr)
                         fflush(stderr);
                     }
                 }
-                CL_GC_UNPROTECT(2);
+                cl_current_lex_env = saved_lex_env;
+                CL_GC_UNPROTECT(3);
                 /* GC-protect expanded form during compilation — recursive
                  * compile_expr may trigger further macro expansions + GC */
                 CL_GC_PROTECT(expanded);
@@ -2528,7 +2548,10 @@ void compile_expr(CL_Compiler *c, CL_Obj expr)
             {
             int _fp0 = cl_vm.fp, _sp0 = cl_vm.sp;
             CL_Obj expanded;
-            expanded = cl_macroexpand_1(expr);
+            CL_Obj lex_env = cl_build_lex_env(c->env);
+            CL_GC_PROTECT(lex_env);
+            expanded = cl_macroexpand_1_env(expr, lex_env);
+            CL_GC_UNPROTECT(1);
             if (cl_vm.fp != _fp0 || cl_vm.sp != _sp0) {
                 const char *_mname = CL_SYMBOL_P(head) ? cl_symbol_name(head) : "?";
                 fprintf(stderr, "[MXLEAK-GLOBAL] macroexpand_1(%s) leaked fp:%d→%d sp:%d→%d\n",
@@ -2688,12 +2711,18 @@ void compile_expr(CL_Compiler *c, CL_Obj expr)
 
 CL_Obj cl_macroexpand_1(CL_Obj form)
 {
+    return cl_macroexpand_1_env(form, CL_NIL);
+}
+
+CL_Obj cl_macroexpand_1_env(CL_Obj form, CL_Obj lex_env)
+{
     CL_Obj head = cl_car(form);
     CL_Obj expander = cl_get_macro(head);
     CL_Obj expanded;
     CL_Obj arg_array[255];
     int nargs = 0;
     CL_Obj args_list;
+    CL_Obj saved_env;
 
     if (CL_NULL_P(expander)) return form;
 
@@ -2708,8 +2737,14 @@ CL_Obj cl_macroexpand_1(CL_Obj form)
 
     CL_GC_PROTECT(form);
     CL_GC_PROTECT(expander);
+    CL_GC_PROTECT(lex_env);
+
+    saved_env = cl_current_lex_env;
+    cl_current_lex_env = lex_env;
     expanded = cl_vm_apply(expander, arg_array, nargs);
-    CL_GC_UNPROTECT(2);
+    cl_current_lex_env = saved_env;
+
+    CL_GC_UNPROTECT(3);
 
     return expanded;
 }

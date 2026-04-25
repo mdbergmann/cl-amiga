@@ -1280,9 +1280,12 @@ void compile_defmacro(CL_Compiler *c, CL_Obj form)
     CL_GC_PROTECT(lambda_list);
     CL_GC_PROTECT(body);
 
-    /* Strip &environment var from lambda list and bind var to NIL in body.
-     * Our macro expanders are called with (whole-form arg1 arg2 ...),
-     * not (form env) like the CL spec says, so we provide NIL for the env. */
+    /* Strip &environment var from lambda list and bind it to the current
+     * lexical env (captured by the caller, read via %MACROEXPAND-ENV)
+     * at the head of the expander body.  Macro expanders are called
+     * with (whole-form arg1 arg2 ...) — the env is threaded through a
+     * thread-local rather than the arg list, so the user's &environment
+     * parameter is realized here as a plain LET binding. */
     {
         CL_Obj cur = lambda_list;
         CL_Obj prev = CL_NIL;
@@ -1297,9 +1300,12 @@ void compile_defmacro(CL_Compiler *c, CL_Obj form)
                     lambda_list = after;
                 else
                     ((CL_Cons *)CL_OBJ_TO_PTR(prev))->cdr = after;
-                /* Wrap body: (let ((env-var nil)) ...body) */
+                /* Wrap body: (let ((env-var (CLAMIGA::%MACROEXPAND-ENV))) ...body) */
                 if (CL_SYMBOL_P(env_var)) {
-                    CL_Obj binding = cl_cons(env_var, cl_cons(CL_NIL, CL_NIL));
+                    CL_Obj capture_sym =
+                        cl_intern_in("%MACROEXPAND-ENV", 16, cl_package_clamiga);
+                    CL_Obj capture_call = cl_cons(capture_sym, CL_NIL);
+                    CL_Obj binding = cl_cons(env_var, cl_cons(capture_call, CL_NIL));
                     CL_Obj bindings = cl_cons(binding, CL_NIL);
                     CL_Obj let_form = cl_cons(SYM_LET, cl_cons(bindings, body));
                     body = cl_cons(let_form, CL_NIL);
