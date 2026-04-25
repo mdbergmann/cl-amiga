@@ -371,8 +371,14 @@ static CL_Obj try_parse_float(const char *buf, int len)
     return cl_make_single_float((float)val);
 }
 
-/* Read an atom (number, symbol, keyword) */
-static CL_Obj read_atom(void)
+/* Read an atom (number, symbol, keyword).
+ *
+ * If prefix is non-NULL, the first prefix_len characters are seeded into the
+ * token buffer (already-consumed characters from upstream callers).  This is
+ * used by read_list when it has read a leading `.` plus a non-delimiter
+ * lookahead character but cannot push both back through the stream's
+ * single-slot unread buffer. */
+static CL_Obj read_atom_with_prefix(const char *prefix, int prefix_len)
 {
     char buf[256];
     int len = 0;
@@ -382,6 +388,13 @@ static CL_Obj read_atom(void)
     int has_escape = 0;  /* Set if | or \ escaping was used */
     int i;
     CL_Readtable *rt = cl_readtable_current();
+
+    if (prefix && prefix_len > 0) {
+        int p;
+        if (prefix_len > 255) prefix_len = 255;
+        for (p = 0; p < prefix_len; p++)
+            buf[len++] = (char)toupper((unsigned char)prefix[p]);
+    }
 
     while (len < 255) {
         ch = read_char();
@@ -708,15 +721,21 @@ static CL_Obj read_list(void)
                     CL_GC_UNPROTECT(2);
                     return head;
                 }
-                /* Not a dot — put back both chars and read as atom */
+                /* Not a dotted-pair `.` — the token starts with `.` followed
+                 * by a non-delimiter character (e.g. `.5`, `.foo`).  The
+                 * stream only has a single-slot unread buffer, so we cannot
+                 * push back both `ch` and `next`.  Push back only `next` and
+                 * seed the atom reader with the consumed `.`. */
                 unread_char(next);
-                unread_char(ch);
+                elem = read_atom_with_prefix(".", 1);
+                goto have_elem;
             } else {
                 unread_char(ch);
             }
         }
 
         elem = read_expr();
+    have_elem:
         if (elem == CL_READER_SKIP) continue;  /* #+ / #- skipped form */
 
         {
@@ -1270,7 +1289,7 @@ static CL_Obj read_expr(void)
 
     default:
         unread_char(ch);
-        return read_atom();
+        return read_atom_with_prefix(NULL, 0);
     }
 }
 
