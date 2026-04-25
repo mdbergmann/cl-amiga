@@ -309,6 +309,26 @@ TEST(lisp_printer)
                   "#<CONDITION SIMPLE-ERROR: \"bad thing\">");
 }
 
+TEST(lisp_printer_aesthetic_uses_report)
+{
+    /* CLHS 9.1.3: PRINC / ~A on a condition prints just the report
+     * (the human-readable message), not the #<CONDITION ...> wrapper.
+     * Sento's actor-cell-test::error-in-handler relies on
+     *   (string= "Foo Error" (format nil "~a" cond))
+     * which only holds when ~A drops the wrapper. */
+    ASSERT_STR_EQ(eval_print(
+        "(format nil \"~a\" (make-condition 'simple-error :format-control \"Foo Error\"))"),
+        "\"Foo Error\"");
+    /* PRIN1 / ~S keeps the readable wrapper. */
+    ASSERT_STR_EQ(eval_print(
+        "(format nil \"~s\" (make-condition 'simple-error :format-control \"Foo Error\"))"),
+        "\"#<CONDITION SIMPLE-ERROR: \\\"Foo Error\\\">\"");
+    /* No report_string ⇒ ~A still gives the wrapper (nothing else to say). */
+    ASSERT_STR_EQ(eval_print(
+        "(format nil \"~a\" (make-condition 'type-error :datum 42))"),
+        "\"#<CONDITION TYPE-ERROR>\"");
+}
+
 /* --- Lisp-level signal/warn/error tests --- */
 
 TEST(lisp_signal_returns_nil)
@@ -762,6 +782,7 @@ int main(void)
     RUN(lisp_type_of);
     RUN(lisp_typep_condition);
     RUN(lisp_printer);
+    RUN(lisp_printer_aesthetic_uses_report);
 
     /* Signal/warn/error tests */
     RUN(lisp_signal_returns_nil);

@@ -461,6 +461,28 @@ TEST(destroy_thread_not_alive_after)
     ASSERT_STR_EQ(r, "NIL");
 }
 
+TEST(destroy_thread_interrupts_sleep)
+{
+    /* SLEEP must surface a pending MP:DESTROY-THREAD before the full
+     * nominal duration elapses; otherwise sento's
+     * stop--with-wait--destroy-thread test (and any caller of
+     * bt2:destroy-thread on a thread blocked in (sleep …)) waits the
+     * full sleep and the test's wall-clock budget blows up.
+     *
+     * Spawn a thread that sleeps 30s, destroy it, then time the join.
+     * Should join in well under one second on a healthy build. */
+    const char *r = eval_print(
+        "(let* ((thr (mp:make-thread (lambda () (sleep 30))))"
+        "       (start (get-internal-real-time)))"
+        "  (sleep 0.05)"
+        "  (mp:destroy-thread thr)"
+        "  (mp:join-thread thr)"
+        "  (let ((elapsed-ms (* 1000.0 (/ (- (get-internal-real-time) start)"
+        "                                 internal-time-units-per-second))))"
+        "    (if (< elapsed-ms 1000) :ok elapsed-ms)))");
+    ASSERT_STR_EQ(r, ":OK");
+}
+
 /* ================================================================
  * GC stress under threads
  * ================================================================ */
@@ -583,6 +605,7 @@ int main(void)
     /* Destroy thread */
     RUN(destroy_thread_basic);
     RUN(destroy_thread_not_alive_after);
+    RUN(destroy_thread_interrupts_sleep);
 
     /* Dynamic bindings */
     RUN(thread_inherits_dynamic_bindings);

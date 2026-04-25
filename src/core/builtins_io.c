@@ -11,6 +11,7 @@
 #include "opcodes.h"
 #include "float.h"
 #include "fasl.h"
+#include "thread.h"
 #include "../platform/platform.h"
 #include "../platform/platform_thread.h"
 
@@ -2141,6 +2142,7 @@ static CL_Obj bi_get_internal_real_time(CL_Obj *args, int n)
 static CL_Obj bi_sleep(CL_Obj *args, int n)
 {
     uint32_t ms;
+    uint32_t remaining;
     CL_UNUSED(n);
     if (CL_FIXNUM_P(args[0])) {
         int32_t sec = CL_FIXNUM_VAL(args[0]);
@@ -2154,11 +2156,29 @@ static CL_Obj bi_sleep(CL_Obj *args, int n)
         if (val < 0.0)
             cl_error(CL_ERR_TYPE, "SLEEP: argument must be non-negative");
         ms = (uint32_t)(val * 1000.0);
+    } else if (CL_HEAP_P(args[0]) &&
+               CL_HDR_TYPE(CL_OBJ_TO_PTR(args[0])) == TYPE_RATIO) {
+        double val = cl_to_double(args[0]);
+        if (val < 0.0)
+            cl_error(CL_ERR_TYPE, "SLEEP: argument must be non-negative");
+        ms = (uint32_t)(val * 1000.0);
     } else {
         cl_error(CL_ERR_TYPE, "SLEEP: argument must be a non-negative real number");
         return CL_NIL;
     }
-    platform_sleep_ms(ms);
+    /* Sleep in 100ms chunks so a concurrent MP:DESTROY-THREAD or
+     * MP:INTERRUPT-THREAD aimed at this thread is honored within ~100ms,
+     * rather than after the full nominal duration.  CL_SAFEPOINT() is the
+     * supported way to surface the pending interrupt — it longjmps via
+     * cl_error("Thread destroyed") for destroy, or invokes the pending
+     * interrupt thunk otherwise. */
+    remaining = ms;
+    while (remaining > 0) {
+        uint32_t chunk = remaining > 100 ? 100 : remaining;
+        platform_sleep_ms(chunk);
+        remaining -= chunk;
+        CL_SAFEPOINT();
+    }
     return CL_NIL;
 }
 
