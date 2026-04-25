@@ -7491,6 +7491,24 @@ TEST(eval_setf_getf_value_evaluated_once)
     ASSERT_STR_EQ(eval_print("*gcount*"), "1");
 }
 
+TEST(eval_reader_leading_dot_float_in_list)
+{
+    /* CLHS 2.3.1: a token of the form `.<digit>...` is a potential number.
+     * The reader peeks one character past the `.` to disambiguate dotted-pair
+     * syntax from a leading-decimal float; the stream's single-slot pushback
+     * means `unread_char(next); unread_char('.')` would lose the digit and
+     * leave the reader staring at a bare `.` symbol.  This regression
+     * exercises every leg of the form so the seeded-prefix path stays honest. */
+    ASSERT_STR_EQ(eval_print(".5"), "0.5");
+    ASSERT_STR_EQ(eval_print("(list .2 .5 1.5)"), "(0.2 0.5 1.5)");
+    ASSERT_STR_EQ(eval_print("(+ .25 .25)"), "0.5");
+    /* Genuine dotted pair must still work after the refactor. */
+    ASSERT_STR_EQ(eval_print("(car '(1 . 2))"), "1");
+    ASSERT_STR_EQ(eval_print("(cdr '(1 . 2))"), "2");
+    /* `.foo` reads as a symbol named `.FOO` (constituent-only token). */
+    ASSERT_STR_EQ(eval_print("(symbol-name (car '(.foo)))"), "\".FOO\"");
+}
+
 TEST(eval_heap_exhaustion_error)
 {
     /* Accumulating live data until heap is full should signal CL_ERR_STORAGE
@@ -8583,6 +8601,9 @@ int main(void)
     RUN(eval_setf_getf_key_present_updates_in_place);
     RUN(eval_setf_getf_key_absent_preserves_existing);
     RUN(eval_setf_getf_value_evaluated_once);
+
+    /* reader: leading-dot float disambiguation vs dotted-pair `.` */
+    RUN(eval_reader_leading_dot_float_in_list);
 
     /* heap exhaustion / storage errors */
     RUN(eval_heap_exhaustion_error);
