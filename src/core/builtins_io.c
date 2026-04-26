@@ -1216,8 +1216,14 @@ static CL_Obj bi_compile_file(CL_Obj *args, int n)
 
             /* If unit_buf was too small, grow and retry.
              * Cap retries: 17 doublings from 32KB reaches 4GB (uint32 overflow).
-             * Also stop if capacity would exceed 64MB (no single form should
-             * need more than that). */
+             * Also stop if capacity would exceed 64MB.  A handful of
+             * CLOS-heavy files (log4cl/configurator, sento mbox/actor-cell,
+             * etc.) blow this on cold cache because their compiled top-level
+             * forms reference tens of thousands of structurally-similar
+             * closures whose dedup quickly saturates FASL_MAX_SHARED.
+             * Caching is skipped for those files; they're recompiled from
+             * source each session.  Long-term fix: compiler should emit
+             * fewer redundant closures, or dedup should switch to a hash. */
             while (uw->error == FASL_ERR_OVERFLOW && unit_capacity < 64 * 1024 * 1024) {
                 platform_free(unit_buf);
                 unit_capacity *= 2;
@@ -1236,7 +1242,7 @@ static CL_Obj bi_compile_file(CL_Obj *args, int n)
              * the placeholder just prevents load-time errors. */
             if (uw->error == FASL_ERR_TOO_DEEP ||
                 (uw->error == FASL_ERR_OVERFLOW && unit_capacity >= 64 * 1024 * 1024)) {
-                platform_write_string("; Warning: FASL unit too deep, skipping FASL cache for this file\n");
+                platform_write_string("; Warning: FASL unit too large, skipping FASL cache for this file\n");
                 /* Don't write an incomplete FASL — missing definitions would
                  * cause errors when the FASL is loaded in a fresh session.
                  * The file will be recompiled from source next time. */

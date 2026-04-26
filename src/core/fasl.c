@@ -75,446 +75,625 @@ void cl_fasl_write_header(CL_FaslWriter *w, uint32_t n_units)
     cl_fasl_write_u32(w, n_units);
 }
 
-/* --- Serialize a CL_Obj constant --- */
-
-/* Recursion depth limit for FASL serialization.
+/* --- Serialize a CL_Obj constant (iterative) ---
  *
- * Deep closure→bytecode→closure chains (CLOS method dispatch) combined with
- * nested constant lists can create deep C recursion.  At depth > 5, a crash
- * occurs during subsequent VM dispatch (corrupted return address on ARM64,
- * not detected by ASan/UBSan/stack-protector — suspected interaction between
- * deep serializer recursion and the outer VM's setjmp/longjmp state).
+ * Serialization is a pre-order tree walk over the constant graph.  An
+ * earlier recursive implementation overflowed the C stack on deeply-nested
+ * graphs (lparallel/cognate/psort.lisp, sento dispatch chains): each
+ * recursion level cost ~150-300B, and inputs >4096 deep tripped a stack-
+ * protector canary in bi_compile_file or crashed outright.
  *
- * Units that exceed the limit are gracefully skipped; compile-file marks
- * the FASL as incomplete and ASDF will recompile from source on next load. */
-static __thread int fasl_serialize_depth = 0;
-static __thread int fasl_serialize_count = 0;
-static __thread time_t fasl_serialize_start = 0;
-#define FASL_MAX_DEPTH 16384
-/* Time limit: abort serialization if a single unit takes > 5 seconds */
-#define FASL_SERIALIZE_TIMEOUT 5
+ * The iterative driver below uses an explicit, heap-allocated worklist of
+ * frames.  Each frame represents one in-progress object; it carries a
+ * phase counter and a child index so a frame can yield to a child mid-way
+ * and resume after the child completes.  Worklist capacity grows by
+ * doubling, capped at FASL_SER_STACK_MAX_CAP frames.  The C stack stays
+ * shallow and bounded regardless of input depth.
+ *
+ * GC safety: the serializer makes no allocations (only memcpys into the
+ * pre-allocated writer buffer + read-only package lookups).  Therefore GC
+ * never runs during a serialize call, and CL_Obj values held on the
+ * worklist do not need explicit GC protection — they remain reachable
+ * from their parents which are themselves on the worklist or the C stack.
+ */
 
-static void fasl_serialize_obj_inner(CL_FaslWriter *w, CL_Obj obj);
+/* Worklist sizing: 256 initial capacity (doubles on demand), hard-capped
+ * at 2M frames (~24 MB at 12B/frame including padding).  No realistic
+ * input should ever come close — this only guards against runaway
+ * graphs (e.g. accidental cycles in non-shared types). */
+#define FASL_SER_STACK_INIT_CAP 256
+#define FASL_SER_STACK_MAX_CAP  (1u << 21)
 
-void cl_fasl_serialize_obj(CL_FaslWriter *w, CL_Obj obj)
+/* Frame phase tags.  Leaf types finish in PHASE_START with no children.
+ * Composite types write their header in PHASE_START, push children in
+ * reverse, set phase to PHASE_DONE, and yield (return 0).  When children
+ * drain and the parent frame becomes top again, PHASE_DONE returns 1
+ * so the driver pops it.  This dance is needed because the driver pops
+ * the top frame on "done", and after pushing children the parent is no
+ * longer on top — only the eventual re-entry at PHASE_DONE pops correctly.
+ * BYTECODE/CLOSURE/STRUCT use additional phases to interleave header
+ * bytes between children. */
+#define PHASE_START          0  /* dispatch on type, write header, push children */
+#define PHASE_BC_AFTER_TAG   1  /* code prefix written next */
+#define PHASE_BC_CONSTANTS   2  /* constants iteration */
+#define PHASE_BC_METADATA    3  /* metadata bytes */
+#define PHASE_BC_KEY_SYMS    4  /* key_syms iteration */
+#define PHASE_BC_POSTLUDE    5  /* key_slots, source info, line map; push name */
+#define PHASE_CLOSURE_AFTER_BC    0xF0  /* write n_upvalues, transition to NEXT_UPVAL */
+#define PHASE_STRUCT_AFTER_TYPEDESC 0xF1 /* write n_slots, transition to NEXT_SLOT */
+#define PHASE_CONS_NEXT_CAR       0xF2  /* iterating CDR chain inline */
+#define PHASE_VECTOR_NEXT         0xF3  /* push one element per step (index = cursor) */
+#define PHASE_STRUCT_NEXT_SLOT    0xF4  /* push one slot per step */
+#define PHASE_CLOSURE_NEXT_UPVAL  0xF5  /* push one upvalue per step */
+#define PHASE_DONE          0xFF  /* sentinel: return 1, frame is popped */
+
+typedef struct {
+    CL_Obj   obj;
+    uint32_t index;  /* child cursor for arrays (constants, slots, vector elts) */
+    uint8_t  phase;
+    uint8_t  pad[3];
+} FaslSerFrame;
+
+typedef struct {
+    FaslSerFrame *frames;
+    uint32_t      depth;
+    uint32_t      capacity;
+} FaslSerStack;
+
+static int fasl_ser_stack_push(CL_FaslWriter *w, FaslSerStack *s,
+                               CL_Obj obj, uint8_t phase)
 {
-    fasl_serialize_depth++;
-    fasl_serialize_count++;
-    if (fasl_serialize_depth > FASL_MAX_DEPTH) {
-        w->error = FASL_ERR_TOO_DEEP;
-        fasl_serialize_depth--;
-        return;
-    }
-    /* Check timeout */
-    if ((fasl_serialize_count & 0xFF) == 0 && fasl_serialize_start > 0) {
-        if (time(NULL) - fasl_serialize_start >= FASL_SERIALIZE_TIMEOUT) {
+    if (s->depth == s->capacity) {
+        uint32_t new_cap = s->capacity ? s->capacity * 2 : FASL_SER_STACK_INIT_CAP;
+        FaslSerFrame *nf;
+        if (new_cap > FASL_SER_STACK_MAX_CAP) {
             w->error = FASL_ERR_TOO_DEEP;
-            fasl_serialize_depth--;
-            return;
+            return 0;
         }
+        nf = (FaslSerFrame *)platform_alloc(new_cap * sizeof(FaslSerFrame));
+        if (!nf) { w->error = FASL_ERR_OVERFLOW; return 0; }
+        if (s->frames) {
+            memcpy(nf, s->frames, s->depth * sizeof(FaslSerFrame));
+            platform_free(s->frames);
+        }
+        s->frames = nf;
+        s->capacity = new_cap;
     }
-    fasl_serialize_obj_inner(w, obj);
-    fasl_serialize_depth--;
+    s->frames[s->depth].obj    = obj;
+    s->frames[s->depth].phase  = phase;
+    s->frames[s->depth].index  = 0;
+    s->frames[s->depth].pad[0] = 0;
+    s->frames[s->depth].pad[1] = 0;
+    s->frames[s->depth].pad[2] = 0;
+    s->depth++;
+    return 1;
 }
 
-static void fasl_serialize_obj_inner(CL_FaslWriter *w, CL_Obj obj)
+/* Step the topmost frame.  Returns 1 if the frame is done (caller pops),
+ * 0 if it pushed children (frame stays on stack, children processed first). */
+static int fasl_ser_step(CL_FaslWriter *w, FaslSerStack *s)
 {
-restart:
-    if (w->error) return;
-    /* Periodic timeout check for CDR tail calls that bypass the wrapper */
-    fasl_serialize_count++;
-    if ((fasl_serialize_count & 0xFFFF) == 0 && fasl_serialize_start > 0) {
-        time_t elapsed = time(NULL) - fasl_serialize_start;
-        if (elapsed >= FASL_SERIALIZE_TIMEOUT) {
-            w->error = FASL_ERR_TOO_DEEP;
-            return;
+    /* Cache frame fields locally — push() may reallocate s->frames. */
+    uint32_t      idx   = s->depth - 1;
+    FaslSerFrame *f     = &s->frames[idx];
+    CL_Obj        obj   = f->obj;
+    uint8_t       phase = f->phase;
+
+    /* Sentinel: composite frame's children have drained, pop it. */
+    if (phase == PHASE_DONE) return 1;
+
+    /* PHASE_START handles all immediate / leaf cases inline and dispatches
+     * heap-object types.  BYTECODE may transition to its phase chain. */
+    if (phase == PHASE_START) {
+        /* Immediates first */
+        if (CL_NULL_P(obj))   { cl_fasl_write_u8(w, FASL_TAG_NIL);     return 1; }
+        if (obj == CL_T)      { cl_fasl_write_u8(w, FASL_TAG_T);       return 1; }
+        if (obj == CL_UNBOUND){ cl_fasl_write_u8(w, FASL_TAG_UNBOUND); return 1; }
+        if (CL_FIXNUM_P(obj)) {
+            cl_fasl_write_u8(w, FASL_TAG_FIXNUM);
+            cl_fasl_write_u32(w, obj);
+            return 1;
         }
-    }
+        if (CL_CHAR_P(obj)) {
+            cl_fasl_write_u8(w, FASL_TAG_CHARACTER);
+            cl_fasl_write_u32(w, obj);
+            return 1;
+        }
+        if (!CL_HEAP_P(obj)) {
+            cl_fasl_write_u8(w, FASL_TAG_FIXNUM);
+            cl_fasl_write_u32(w, obj);
+            return 1;
+        }
 
-    /* NIL */
-    if (CL_NULL_P(obj)) {
-        cl_fasl_write_u8(w, FASL_TAG_NIL);
-        return;
-    }
-
-    /* T */
-    if (obj == CL_T) {
-        cl_fasl_write_u8(w, FASL_TAG_T);
-        return;
-    }
-
-    /* Unbound marker */
-    if (obj == CL_UNBOUND) {
-        cl_fasl_write_u8(w, FASL_TAG_UNBOUND);
-        return;
-    }
-
-    /* Fixnum */
-    if (CL_FIXNUM_P(obj)) {
-        cl_fasl_write_u8(w, FASL_TAG_FIXNUM);
-        cl_fasl_write_u32(w, obj);  /* raw tagged value */
-        return;
-    }
-
-    /* Character */
-    if (CL_CHAR_P(obj)) {
-        cl_fasl_write_u8(w, FASL_TAG_CHARACTER);
-        cl_fasl_write_u32(w, obj);  /* raw tagged value */
-        return;
-    }
-
-    /* Heap objects */
-    if (!CL_HEAP_P(obj)) {
-        /* Unknown immediate — treat as fixnum fallback */
-        cl_fasl_write_u8(w, FASL_TAG_FIXNUM);
-        cl_fasl_write_u32(w, obj);
-        return;
-    }
-
-    /* Shared-object dedup: closures & bytecodes form deep/cyclic chains
-     * through CLOS dispatch.  Check if already serialized; if so, emit
-     * a back-reference instead of recursing. */
-    {
-        uint8_t htype = CL_HDR_TYPE(CL_OBJ_TO_PTR(obj));
-        if (htype == TYPE_CLOSURE || htype == TYPE_BYTECODE) {
-            /* Lazily allocate shared-object table */
-            if (!w->shared_objs) {
-                w->shared_objs = (CL_Obj *)platform_alloc(FASL_MAX_SHARED * sizeof(CL_Obj));
-            }
-            if (w->shared_objs) {
-                uint16_t si;
-                for (si = 0; si < w->shared_count; si++) {
-                    if (w->shared_objs[si] == obj) {
-                        cl_fasl_write_u8(w, FASL_TAG_OBJ_REF);
-                        cl_fasl_write_u16(w, si);
-                        return;
+        /* Shared-object dedup for closures & bytecodes (deep/cyclic CLOS chains).
+         * If found, emit OBJ_REF and we're done.  If new, register and emit
+         * OBJ_DEF, then fall through to the type-specific case. */
+        {
+            uint8_t htype = CL_HDR_TYPE(CL_OBJ_TO_PTR(obj));
+            if (htype == TYPE_CLOSURE || htype == TYPE_BYTECODE) {
+                if (!w->shared_objs) {
+                    w->shared_objs = (CL_Obj *)platform_alloc(
+                        FASL_MAX_SHARED * sizeof(CL_Obj));
+                }
+                if (w->shared_objs) {
+                    uint16_t si;
+                    for (si = 0; si < w->shared_count; si++) {
+                        if (w->shared_objs[si] == obj) {
+                            cl_fasl_write_u8(w, FASL_TAG_OBJ_REF);
+                            cl_fasl_write_u16(w, si);
+                            return 1;
+                        }
+                    }
+                    if (w->shared_count < FASL_MAX_SHARED) {
+                        w->shared_objs[w->shared_count] = obj;
+                        cl_fasl_write_u8(w, FASL_TAG_OBJ_DEF);
+                        cl_fasl_write_u16(w, w->shared_count);
+                        w->shared_count++;
                     }
                 }
-                /* Register this object before serializing (handles cycles) */
-                if (w->shared_count < FASL_MAX_SHARED) {
-                    w->shared_objs[w->shared_count] = obj;
-                    cl_fasl_write_u8(w, FASL_TAG_OBJ_DEF);
-                    cl_fasl_write_u16(w, w->shared_count);
-                    w->shared_count++;
-                }
             }
-            /* Fall through to normal serialization */
         }
-    }
 
-    switch (CL_HDR_TYPE(CL_OBJ_TO_PTR(obj))) {
-    case TYPE_SYMBOL: {
-        CL_Symbol *sym = (CL_Symbol *)CL_OBJ_TO_PTR(obj);
-        CL_String *name = (CL_String *)CL_OBJ_TO_PTR(sym->name);
-
-        if (CL_NULL_P(sym->package)) {
-            /* Uninterned symbol — check gensym dedup table */
-            uint16_t gi;
-            for (gi = 0; gi < w->gensym_count; gi++) {
-                if (w->gensym_objs[gi] == obj) {
-                    cl_fasl_write_u8(w, FASL_TAG_GENSYM_REF);
-                    cl_fasl_write_u16(w, gi);
-                    return;
+        switch (CL_HDR_TYPE(CL_OBJ_TO_PTR(obj))) {
+        case TYPE_SYMBOL: {
+            CL_Symbol *sym = (CL_Symbol *)CL_OBJ_TO_PTR(obj);
+            CL_String *name = (CL_String *)CL_OBJ_TO_PTR(sym->name);
+            if (CL_NULL_P(sym->package)) {
+                uint16_t gi;
+                for (gi = 0; gi < w->gensym_count; gi++) {
+                    if (w->gensym_objs[gi] == obj) {
+                        cl_fasl_write_u8(w, FASL_TAG_GENSYM_REF);
+                        cl_fasl_write_u16(w, gi);
+                        return 1;
+                    }
                 }
+                if (w->gensym_count < FASL_MAX_GENSYMS) {
+                    w->gensym_objs[w->gensym_count] = obj;
+                    cl_fasl_write_u8(w, FASL_TAG_GENSYM_DEF);
+                    cl_fasl_write_u16(w, w->gensym_count);
+                    w->gensym_count++;
+                } else {
+                    cl_fasl_write_u8(w, FASL_TAG_SYMBOL);
+                    cl_fasl_write_u16(w, 0);
+                }
+                cl_fasl_write_u16(w, (uint16_t)name->length);
+                cl_fasl_write_bytes(w, name->data, name->length);
+                return 1;
             }
-            /* New gensym — register and emit definition */
-            if (w->gensym_count < FASL_MAX_GENSYMS) {
-                w->gensym_objs[w->gensym_count] = obj;
-                cl_fasl_write_u8(w, FASL_TAG_GENSYM_DEF);
-                cl_fasl_write_u16(w, w->gensym_count);
-                w->gensym_count++;
-            } else {
-                /* Fallback: emit as plain uninterned symbol (no dedup) */
-                cl_fasl_write_u8(w, FASL_TAG_SYMBOL);
-                cl_fasl_write_u16(w, 0);
+            cl_fasl_write_u8(w, FASL_TAG_SYMBOL);
+            {
+                CL_Package *pkg = (CL_Package *)CL_OBJ_TO_PTR(sym->package);
+                CL_String  *pname = (CL_String *)CL_OBJ_TO_PTR(pkg->name);
+                if (pkg == (CL_Package *)CL_OBJ_TO_PTR(
+                        cl_find_package("KEYWORD", 7))) {
+                    cl_fasl_write_u16(w, 0xFFFF);
+                } else {
+                    cl_fasl_write_u16(w, (uint16_t)pname->length);
+                    cl_fasl_write_bytes(w, pname->data, pname->length);
+                }
             }
             cl_fasl_write_u16(w, (uint16_t)name->length);
             cl_fasl_write_bytes(w, name->data, name->length);
-            return;
+            return 1;
         }
 
-        cl_fasl_write_u8(w, FASL_TAG_SYMBOL);
-        {
-            CL_Package *pkg = (CL_Package *)CL_OBJ_TO_PTR(sym->package);
-            CL_String *pkg_name = (CL_String *)CL_OBJ_TO_PTR(pkg->name);
-            if (pkg == (CL_Package *)CL_OBJ_TO_PTR(
-                    cl_find_package("KEYWORD", 7))) {
-                /* Keyword: package_name_len = 0xFFFF */
-                cl_fasl_write_u16(w, 0xFFFF);
-            } else {
-                cl_fasl_write_u16(w, (uint16_t)pkg_name->length);
-                cl_fasl_write_bytes(w, pkg_name->data, pkg_name->length);
-            }
+        case TYPE_STRING: {
+            CL_String *str = (CL_String *)CL_OBJ_TO_PTR(obj);
+            cl_fasl_write_u8(w, FASL_TAG_STRING);
+            cl_fasl_write_u32(w, str->length);
+            cl_fasl_write_bytes(w, str->data, str->length);
+            return 1;
         }
-        cl_fasl_write_u16(w, (uint16_t)name->length);
-        cl_fasl_write_bytes(w, name->data, name->length);
-        return;
-    }
-
-    case TYPE_STRING: {
-        CL_String *str = (CL_String *)CL_OBJ_TO_PTR(obj);
-        cl_fasl_write_u8(w, FASL_TAG_STRING);
-        cl_fasl_write_u32(w, str->length);
-        cl_fasl_write_bytes(w, str->data, str->length);
-        return;
-    }
 
 #ifdef CL_WIDE_STRINGS
-    case TYPE_WIDE_STRING: {
-        CL_WideString *ws = (CL_WideString *)CL_OBJ_TO_PTR(obj);
-        uint32_t i;
-        cl_fasl_write_u8(w, FASL_TAG_WIDE_STRING);
-        cl_fasl_write_u32(w, ws->length);
-        for (i = 0; i < ws->length; i++)
-            cl_fasl_write_u32(w, ws->data[i]);
-        return;
-    }
+        case TYPE_WIDE_STRING: {
+            CL_WideString *ws = (CL_WideString *)CL_OBJ_TO_PTR(obj);
+            uint32_t i;
+            cl_fasl_write_u8(w, FASL_TAG_WIDE_STRING);
+            cl_fasl_write_u32(w, ws->length);
+            for (i = 0; i < ws->length; i++)
+                cl_fasl_write_u32(w, ws->data[i]);
+            return 1;
+        }
 #endif
 
-    case TYPE_CONS: {
-        /* Iterate on cdr to avoid C stack overflow on long lists. */
-        cl_fasl_write_u8(w, FASL_TAG_CONS);
-        cl_fasl_serialize_obj(w, cl_car(obj));
-        obj = cl_cdr(obj);
-        goto restart;
-    }
-
-    case TYPE_BYTECODE: {
-        cl_fasl_write_u8(w, FASL_TAG_BYTECODE);
-        cl_fasl_serialize_bytecode(w, obj);
-        return;
-    }
-
-    case TYPE_CLOSURE: {
-        CL_Closure *cl_obj = (CL_Closure *)CL_OBJ_TO_PTR(obj);
-        uint16_t n_upvalues;
-        uint16_t i;
-        /* Use allocation-based upvalue count — safe against bc->n_upvalues
-         * mismatch (can occur when bytecodes are recompiled via ASDF reload
-         * while closures referencing the old bytecode are still on the heap). */
-        uint32_t alloc_size = CL_HDR_SIZE(cl_obj);
-        n_upvalues = (uint16_t)((alloc_size - sizeof(CL_Closure)) / sizeof(CL_Obj));
-        cl_fasl_write_u8(w, FASL_TAG_CLOSURE);
-        cl_fasl_serialize_obj(w, cl_obj->bytecode);
-        cl_fasl_write_u16(w, n_upvalues);
-        for (i = 0; i < n_upvalues; i++)
-            cl_fasl_serialize_obj(w, cl_obj->upvalues[i]);
-        return;
-    }
-
-    case TYPE_FUNCTION: {
-        /* C builtin function — serialize by name for symbol lookup at load */
-        CL_Function *fn = (CL_Function *)CL_OBJ_TO_PTR(obj);
-        if (!CL_NULL_P(fn->name) && CL_HEAP_P(fn->name) &&
-            CL_HDR_TYPE(CL_OBJ_TO_PTR(fn->name)) == TYPE_SYMBOL) {
-            cl_fasl_write_u8(w, FASL_TAG_FUNCTION);
-            cl_fasl_serialize_obj(w, fn->name);
-        } else {
-            cl_fasl_write_u8(w, FASL_TAG_NIL);
+        case TYPE_CONS: {
+            /* Walk the CDR spine inline using the frame's obj as a cursor:
+             * write a CONS tag, push the CAR, advance to PHASE_CONS_NEXT_CAR.
+             * After the CAR completes, that phase consumes the next CDR cell
+             * (writing another tag) until the spine ends, then pushes the
+             * final CDR (NIL or atom).  Peak worklist depth stays O(1) for
+             * proper lists of any length — the prior naive push-cdr-as-frame
+             * approach grew O(N), exhausting the 2M cap on long lists. */
+            CL_Obj car_v = cl_car(obj);
+            CL_Obj cdr_v = cl_cdr(obj);
+            cl_fasl_write_u8(w, FASL_TAG_CONS);
+            s->frames[idx].obj   = cdr_v;
+            s->frames[idx].phase = PHASE_CONS_NEXT_CAR;
+            if (!fasl_ser_stack_push(w, s, car_v, PHASE_START)) return 1;
+            return 0;
         }
-        return;
-    }
 
-    case TYPE_SINGLE_FLOAT: {
-        CL_SingleFloat *sf = (CL_SingleFloat *)CL_OBJ_TO_PTR(obj);
-        uint32_t bits;
-        cl_fasl_write_u8(w, FASL_TAG_SINGLE_FLOAT);
-        memcpy(&bits, &sf->value, 4);
-        cl_fasl_write_u32(w, bits);
-        return;
-    }
+        case TYPE_BYTECODE:
+            /* Tag here, body via phase chain.  Stay on stack. */
+            cl_fasl_write_u8(w, FASL_TAG_BYTECODE);
+            s->frames[idx].phase = PHASE_BC_AFTER_TAG;
+            return 0;
 
-    case TYPE_DOUBLE_FLOAT: {
-        CL_DoubleFloat *df = (CL_DoubleFloat *)CL_OBJ_TO_PTR(obj);
-        uint32_t hi, lo;
-        uint8_t bytes[8];
-        cl_fasl_write_u8(w, FASL_TAG_DOUBLE_FLOAT);
-        memcpy(bytes, &df->value, 8);
-        /* Write in big-endian order regardless of host endianness */
-        /* IEEE 754 double: check endianness */
-        {
-            union { double d; uint8_t b[8]; } u;
-            u.d = 1.0;
-            if (u.b[0] == 0x3F) {
-                /* Already big-endian */
-                cl_fasl_write_bytes(w, bytes, 8);
-            } else {
-                /* Little-endian host: reverse */
-                uint8_t rev[8];
-                int i;
-                for (i = 0; i < 8; i++) rev[i] = bytes[7 - i];
-                cl_fasl_write_bytes(w, rev, 8);
+        case TYPE_CLOSURE: {
+            /* Wire format: tag | bytecode-bytes | n_upvalues | upval-bytes...
+             * The n_upvalues u16 appears after the bytecode subtree, so we
+             * can't push everything at once.  Push bytecode now, defer
+             * n_upvalues + upvalues to PHASE_CLOSURE_AFTER_BC. */
+            CL_Closure *cl_obj = (CL_Closure *)CL_OBJ_TO_PTR(obj);
+            cl_fasl_write_u8(w, FASL_TAG_CLOSURE);
+            s->frames[idx].phase = PHASE_CLOSURE_AFTER_BC;
+            if (!fasl_ser_stack_push(w, s, cl_obj->bytecode, PHASE_START))
+                return 1;
+            return 0;
+        }
+
+        case TYPE_FUNCTION: {
+            CL_Function *fn = (CL_Function *)CL_OBJ_TO_PTR(obj);
+            if (!CL_NULL_P(fn->name) && CL_HEAP_P(fn->name) &&
+                CL_HDR_TYPE(CL_OBJ_TO_PTR(fn->name)) == TYPE_SYMBOL) {
+                cl_fasl_write_u8(w, FASL_TAG_FUNCTION);
+                s->frames[idx].phase = PHASE_DONE;
+                if (!fasl_ser_stack_push(w, s, fn->name, PHASE_START)) return 1;
+                return 0;
             }
+            cl_fasl_write_u8(w, FASL_TAG_NIL);
+            return 1;
         }
-        (void)hi; (void)lo;
-        return;
-    }
 
-    case TYPE_RATIO: {
-        CL_Ratio *rat = (CL_Ratio *)CL_OBJ_TO_PTR(obj);
-        cl_fasl_write_u8(w, FASL_TAG_RATIO);
-        cl_fasl_serialize_obj(w, rat->numerator);
-        cl_fasl_serialize_obj(w, rat->denominator);
-        return;
-    }
+        case TYPE_SINGLE_FLOAT: {
+            CL_SingleFloat *sf = (CL_SingleFloat *)CL_OBJ_TO_PTR(obj);
+            uint32_t bits;
+            cl_fasl_write_u8(w, FASL_TAG_SINGLE_FLOAT);
+            memcpy(&bits, &sf->value, 4);
+            cl_fasl_write_u32(w, bits);
+            return 1;
+        }
 
-    case TYPE_COMPLEX: {
-        CL_Complex *cx = (CL_Complex *)CL_OBJ_TO_PTR(obj);
-        cl_fasl_write_u8(w, FASL_TAG_COMPLEX);
-        cl_fasl_serialize_obj(w, cx->realpart);
-        cl_fasl_serialize_obj(w, cx->imagpart);
-        return;
-    }
-
-    case TYPE_BIGNUM: {
-        CL_Bignum *bn = (CL_Bignum *)CL_OBJ_TO_PTR(obj);
-        uint32_t i;
-        cl_fasl_write_u8(w, FASL_TAG_BIGNUM);
-        cl_fasl_write_u8(w, (uint8_t)bn->sign);
-        cl_fasl_write_u32(w, bn->length);
-        for (i = 0; i < bn->length; i++)
-            cl_fasl_write_u16(w, bn->limbs[i]);
-        return;
-    }
-
-    case TYPE_VECTOR: {
-        CL_Vector *v = (CL_Vector *)CL_OBJ_TO_PTR(obj);
-        CL_Obj *data = cl_vector_data(v);
-        uint32_t len = v->length;
-        uint32_t i;
-        cl_fasl_write_u8(w, FASL_TAG_VECTOR);
-        cl_fasl_write_u32(w, len);
-        for (i = 0; i < len; i++)
-            cl_fasl_serialize_obj(w, data[i]);
-        return;
-    }
-
-    case TYPE_BIT_VECTOR: {
-        CL_BitVector *bv = (CL_BitVector *)CL_OBJ_TO_PTR(obj);
-        uint32_t n_words = CL_BV_WORDS(bv->length);
-        uint32_t i;
-        cl_fasl_write_u8(w, FASL_TAG_BIT_VECTOR);
-        cl_fasl_write_u32(w, bv->length);
-        for (i = 0; i < n_words; i++)
-            cl_fasl_write_u32(w, bv->data[i]);
-        return;
-    }
-
-    case TYPE_PACKAGE: {
-        CL_Package *pkg = (CL_Package *)CL_OBJ_TO_PTR(obj);
-        CL_String *pname = (CL_String *)CL_OBJ_TO_PTR(pkg->name);
-        cl_fasl_write_u8(w, FASL_TAG_PACKAGE);
-        cl_fasl_write_u16(w, (uint16_t)pname->length);
-        cl_fasl_write_bytes(w, pname->data, pname->length);
-        return;
-    }
-
-    case TYPE_PATHNAME: {
-        CL_Pathname *pn = (CL_Pathname *)CL_OBJ_TO_PTR(obj);
-        cl_fasl_write_u8(w, FASL_TAG_PATHNAME);
-        cl_fasl_serialize_obj(w, pn->host);
-        cl_fasl_serialize_obj(w, pn->device);
-        cl_fasl_serialize_obj(w, pn->directory);
-        cl_fasl_serialize_obj(w, pn->name);
-        cl_fasl_serialize_obj(w, pn->type);
-        cl_fasl_serialize_obj(w, pn->version);
-        return;
-    }
-
-    case TYPE_STRUCT: {
-        CL_Struct *st = (CL_Struct *)CL_OBJ_TO_PTR(obj);
-        uint32_t i;
-        cl_fasl_write_u8(w, FASL_TAG_STRUCT);
-        cl_fasl_serialize_obj(w, st->type_desc);
-        cl_fasl_write_u32(w, st->n_slots);
-        for (i = 0; i < st->n_slots; i++)
-            cl_fasl_serialize_obj(w, st->slots[i]);
-        return;
-    }
-
-    default:
-        /* Unsupported type — write NIL as fallback */
-        cl_fasl_write_u8(w, FASL_TAG_NIL);
-        return;
-    }
-}
-
-void cl_fasl_reset_serialize_count(void)
-{
-    fasl_serialize_count = 0;
-    fasl_serialize_start = time(NULL);
-}
-
-/* --- Serialize a CL_Bytecode --- */
-
-__attribute__((noinline))
-void cl_fasl_serialize_bytecode(CL_FaslWriter *w, CL_Obj bc_obj)
-{
-    CL_Bytecode *bc = (CL_Bytecode *)CL_OBJ_TO_PTR(bc_obj);
-    int saved_depth = fasl_serialize_depth;
-    uint16_t i;
-
-    /* Code */
-    cl_fasl_write_u32(w, bc->code_len);
-    cl_fasl_write_bytes(w, bc->code, bc->code_len);
-
-    /* Constants — deduplicate eq-identical objects (critical for gensym catch tags) */
-    cl_fasl_write_u16(w, bc->n_constants);
-    for (i = 0; i < bc->n_constants; i++) {
-        uint16_t j;
-        int found_dup = 0;
-        /* Check if this constant is eq to an earlier one */
-        if (CL_HEAP_P(bc->constants[i])) {
-            for (j = 0; j < i; j++) {
-                if (bc->constants[j] == bc->constants[i]) {
-                    cl_fasl_write_u8(w, FASL_TAG_CONST_REF);
-                    cl_fasl_write_u16(w, j);
-                    found_dup = 1;
-                    break;
+        case TYPE_DOUBLE_FLOAT: {
+            CL_DoubleFloat *df = (CL_DoubleFloat *)CL_OBJ_TO_PTR(obj);
+            uint8_t bytes[8];
+            cl_fasl_write_u8(w, FASL_TAG_DOUBLE_FLOAT);
+            memcpy(bytes, &df->value, 8);
+            {
+                union { double d; uint8_t b[8]; } u;
+                u.d = 1.0;
+                if (u.b[0] == 0x3F) {
+                    cl_fasl_write_bytes(w, bytes, 8);
+                } else {
+                    uint8_t rev[8];
+                    int i;
+                    for (i = 0; i < 8; i++) rev[i] = bytes[7 - i];
+                    cl_fasl_write_bytes(w, rev, 8);
                 }
             }
+            return 1;
         }
-        if (!found_dup)
-            cl_fasl_serialize_obj(w, bc->constants[i]);
+
+        case TYPE_RATIO: {
+            CL_Ratio *rat = (CL_Ratio *)CL_OBJ_TO_PTR(obj);
+            CL_Obj num = rat->numerator;
+            CL_Obj den = rat->denominator;
+            cl_fasl_write_u8(w, FASL_TAG_RATIO);
+            s->frames[idx].phase = PHASE_DONE;
+            if (!fasl_ser_stack_push(w, s, den, PHASE_START)) return 1;
+            if (!fasl_ser_stack_push(w, s, num, PHASE_START)) return 1;
+            return 0;
+        }
+
+        case TYPE_COMPLEX: {
+            CL_Complex *cx = (CL_Complex *)CL_OBJ_TO_PTR(obj);
+            CL_Obj re = cx->realpart;
+            CL_Obj im = cx->imagpart;
+            cl_fasl_write_u8(w, FASL_TAG_COMPLEX);
+            s->frames[idx].phase = PHASE_DONE;
+            if (!fasl_ser_stack_push(w, s, im, PHASE_START)) return 1;
+            if (!fasl_ser_stack_push(w, s, re, PHASE_START)) return 1;
+            return 0;
+        }
+
+        case TYPE_BIGNUM: {
+            CL_Bignum *bn = (CL_Bignum *)CL_OBJ_TO_PTR(obj);
+            uint32_t i;
+            cl_fasl_write_u8(w, FASL_TAG_BIGNUM);
+            cl_fasl_write_u8(w, (uint8_t)bn->sign);
+            cl_fasl_write_u32(w, bn->length);
+            for (i = 0; i < bn->length; i++)
+                cl_fasl_write_u16(w, bn->limbs[i]);
+            return 1;
+        }
+
+        case TYPE_VECTOR: {
+            CL_Vector *v = (CL_Vector *)CL_OBJ_TO_PTR(obj);
+            uint32_t len = v->length;
+            cl_fasl_write_u8(w, FASL_TAG_VECTOR);
+            cl_fasl_write_u32(w, len);
+            if (len == 0) return 1;
+            /* Push elements one-at-a-time via PHASE_VECTOR_NEXT — keeps
+             * worklist depth O(1) per vector regardless of length. */
+            s->frames[idx].phase = PHASE_VECTOR_NEXT;
+            s->frames[idx].index = 0;
+            return 0;
+        }
+
+        case TYPE_BIT_VECTOR: {
+            CL_BitVector *bv = (CL_BitVector *)CL_OBJ_TO_PTR(obj);
+            uint32_t n_words = CL_BV_WORDS(bv->length);
+            uint32_t i;
+            cl_fasl_write_u8(w, FASL_TAG_BIT_VECTOR);
+            cl_fasl_write_u32(w, bv->length);
+            for (i = 0; i < n_words; i++)
+                cl_fasl_write_u32(w, bv->data[i]);
+            return 1;
+        }
+
+        case TYPE_PACKAGE: {
+            CL_Package *pkg = (CL_Package *)CL_OBJ_TO_PTR(obj);
+            CL_String  *pname = (CL_String *)CL_OBJ_TO_PTR(pkg->name);
+            cl_fasl_write_u8(w, FASL_TAG_PACKAGE);
+            cl_fasl_write_u16(w, (uint16_t)pname->length);
+            cl_fasl_write_bytes(w, pname->data, pname->length);
+            return 1;
+        }
+
+        case TYPE_PATHNAME: {
+            CL_Pathname *pn = (CL_Pathname *)CL_OBJ_TO_PTR(obj);
+            CL_Obj host = pn->host, dev = pn->device, dir = pn->directory;
+            CL_Obj name = pn->name, type = pn->type, ver = pn->version;
+            cl_fasl_write_u8(w, FASL_TAG_PATHNAME);
+            s->frames[idx].phase = PHASE_DONE;
+            if (!fasl_ser_stack_push(w, s, ver,  PHASE_START)) return 1;
+            if (!fasl_ser_stack_push(w, s, type, PHASE_START)) return 1;
+            if (!fasl_ser_stack_push(w, s, name, PHASE_START)) return 1;
+            if (!fasl_ser_stack_push(w, s, dir,  PHASE_START)) return 1;
+            if (!fasl_ser_stack_push(w, s, dev,  PHASE_START)) return 1;
+            if (!fasl_ser_stack_push(w, s, host, PHASE_START)) return 1;
+            return 0;
+        }
+
+        case TYPE_STRUCT: {
+            /* Wire format: tag | type_desc-bytes | n_slots | slot-bytes...
+             * The n_slots u32 appears after the type_desc subtree, so we
+             * defer slots to PHASE_STRUCT_AFTER_TYPEDESC. */
+            CL_Struct *st = (CL_Struct *)CL_OBJ_TO_PTR(obj);
+            cl_fasl_write_u8(w, FASL_TAG_STRUCT);
+            s->frames[idx].phase = PHASE_STRUCT_AFTER_TYPEDESC;
+            if (!fasl_ser_stack_push(w, s, st->type_desc, PHASE_START)) return 1;
+            return 0;
+        }
+
+        default:
+            cl_fasl_write_u8(w, FASL_TAG_NIL);
+            return 1;
+        }
     }
 
-    /* Metadata */
-    cl_fasl_write_u16(w, bc->arity);
-    cl_fasl_write_u16(w, bc->n_locals);
-    cl_fasl_write_u16(w, bc->n_upvalues);
-    cl_fasl_write_u8(w, bc->n_optional);
-    cl_fasl_write_u8(w, bc->flags);
-    cl_fasl_write_u8(w, bc->n_keys);
-
-    /* Key params */
-    for (i = 0; i < bc->n_keys; i++)
-        cl_fasl_serialize_obj(w, bc->key_syms[i]);
-    for (i = 0; i < bc->n_keys; i++)
-        cl_fasl_write_u8(w, bc->key_slots[i]);
-    for (i = 0; i < bc->n_keys; i++)
-        cl_fasl_write_u8(w, bc->key_suppliedp_slots[i]);
-
-    /* Source info */
-    cl_fasl_write_u16(w, bc->source_line);
-    if (bc->source_file) {
-        uint16_t slen = (uint16_t)strlen(bc->source_file);
-        cl_fasl_write_u16(w, slen);
-        cl_fasl_write_bytes(w, bc->source_file, slen);
-    } else {
-        cl_fasl_write_u16(w, 0);
+    /* CONS resumption: the most recent CAR has been serialized; obj is the
+     * remaining CDR.  If still a CONS, write another tag, push next CAR,
+     * stay in this phase.  Else push the final CDR and exit. */
+    if (phase == PHASE_CONS_NEXT_CAR) {
+        if (CL_HEAP_P(obj) && CL_HDR_TYPE(CL_OBJ_TO_PTR(obj)) == TYPE_CONS) {
+            CL_Obj car_v = cl_car(obj);
+            CL_Obj cdr_v = cl_cdr(obj);
+            cl_fasl_write_u8(w, FASL_TAG_CONS);
+            s->frames[idx].obj = cdr_v;
+            /* phase stays PHASE_CONS_NEXT_CAR */
+            if (!fasl_ser_stack_push(w, s, car_v, PHASE_START)) return 1;
+            return 0;
+        }
+        /* End of spine — push final cdr (NIL or atom). */
+        s->frames[idx].phase = PHASE_DONE;
+        if (!fasl_ser_stack_push(w, s, obj, PHASE_START)) return 1;
+        return 0;
     }
 
-    /* Line map */
-    cl_fasl_write_u16(w, bc->line_map_count);
-    for (i = 0; i < bc->line_map_count; i++) {
-        cl_fasl_write_u16(w, bc->line_map[i].pc);
-        cl_fasl_write_u16(w, bc->line_map[i].line);
+    /* CLOSURE resumption: bytecode child has been serialized; now write
+     * n_upvalues and transition to one-at-a-time upvalue iteration.  Use
+     * the allocation-based upvalue count — safe against bc->n_upvalues
+     * mismatch (can occur when bytecodes are recompiled via ASDF reload
+     * while old closures are still live). */
+    if (phase == PHASE_CLOSURE_AFTER_BC) {
+        CL_Closure *cl_obj = (CL_Closure *)CL_OBJ_TO_PTR(obj);
+        uint32_t alloc_size = CL_HDR_SIZE(cl_obj);
+        uint16_t n_upvalues = (uint16_t)(
+            (alloc_size - sizeof(CL_Closure)) / sizeof(CL_Obj));
+        cl_fasl_write_u16(w, n_upvalues);
+        if (n_upvalues == 0) return 1;
+        s->frames[idx].phase = PHASE_CLOSURE_NEXT_UPVAL;
+        s->frames[idx].index = 0;
+        return 0;
     }
 
-    /* Name */
-    cl_fasl_serialize_obj(w, bc->name);
+    if (phase == PHASE_CLOSURE_NEXT_UPVAL) {
+        CL_Closure *cl_obj = (CL_Closure *)CL_OBJ_TO_PTR(obj);
+        uint32_t alloc_size = CL_HDR_SIZE(cl_obj);
+        uint16_t n_upvalues = (uint16_t)(
+            (alloc_size - sizeof(CL_Closure)) / sizeof(CL_Obj));
+        uint32_t k = s->frames[idx].index;
+        if (k >= n_upvalues) return 1;
+        s->frames[idx].index = k + 1;
+        if (!fasl_ser_stack_push(w, s, cl_obj->upvalues[k], PHASE_START))
+            return 1;
+        return 0;
+    }
 
-    fasl_serialize_depth = saved_depth;
+    /* STRUCT resumption: type_desc child done; write n_slots and transition
+     * to one-at-a-time slot iteration. */
+    if (phase == PHASE_STRUCT_AFTER_TYPEDESC) {
+        CL_Struct *st = (CL_Struct *)CL_OBJ_TO_PTR(obj);
+        cl_fasl_write_u32(w, st->n_slots);
+        if (st->n_slots == 0) return 1;
+        s->frames[idx].phase = PHASE_STRUCT_NEXT_SLOT;
+        s->frames[idx].index = 0;
+        return 0;
+    }
+
+    if (phase == PHASE_STRUCT_NEXT_SLOT) {
+        CL_Struct *st = (CL_Struct *)CL_OBJ_TO_PTR(obj);
+        uint32_t k = s->frames[idx].index;
+        if (k >= st->n_slots) return 1;
+        s->frames[idx].index = k + 1;
+        if (!fasl_ser_stack_push(w, s, st->slots[k], PHASE_START))
+            return 1;
+        return 0;
+    }
+
+    /* VECTOR resumption: write tag+len happens in PHASE_START; this just
+     * iterates elements one at a time. */
+    if (phase == PHASE_VECTOR_NEXT) {
+        CL_Vector *v = (CL_Vector *)CL_OBJ_TO_PTR(obj);
+        CL_Obj *data = cl_vector_data(v);
+        uint32_t k = s->frames[idx].index;
+        if (k >= v->length) return 1;
+        s->frames[idx].index = k + 1;
+        if (!fasl_ser_stack_push(w, s, data[k], PHASE_START))
+            return 1;
+        return 0;
+    }
+
+    /* BYTECODE phase chain — see PHASE_BC_* definitions above. */
+    {
+        CL_Bytecode *bc = (CL_Bytecode *)CL_OBJ_TO_PTR(obj);
+        uint16_t i;
+
+        switch (phase) {
+        case PHASE_BC_AFTER_TAG:
+            cl_fasl_write_u32(w, bc->code_len);
+            cl_fasl_write_bytes(w, bc->code, bc->code_len);
+            cl_fasl_write_u16(w, bc->n_constants);
+            s->frames[idx].phase = PHASE_BC_CONSTANTS;
+            s->frames[idx].index = 0;
+            return 0;
+
+        case PHASE_BC_CONSTANTS: {
+            uint16_t k = s->frames[idx].index;
+            while (k < bc->n_constants) {
+                CL_Obj cst = bc->constants[k];
+                int found = 0;
+                if (CL_HEAP_P(cst)) {
+                    uint16_t j;
+                    for (j = 0; j < k; j++) {
+                        if (bc->constants[j] == cst) {
+                            cl_fasl_write_u8(w, FASL_TAG_CONST_REF);
+                            cl_fasl_write_u16(w, j);
+                            found = 1;
+                            break;
+                        }
+                    }
+                }
+                if (found) { k++; continue; }
+                /* Push child, advance index, yield. */
+                s->frames[idx].index = k + 1;
+                if (!fasl_ser_stack_push(w, s, cst, PHASE_START)) return 1;
+                return 0;
+            }
+            s->frames[idx].phase = PHASE_BC_METADATA;
+            s->frames[idx].index = 0;
+            return 0;
+        }
+
+        case PHASE_BC_METADATA:
+            cl_fasl_write_u16(w, bc->arity);
+            cl_fasl_write_u16(w, bc->n_locals);
+            cl_fasl_write_u16(w, bc->n_upvalues);
+            cl_fasl_write_u8(w, bc->n_optional);
+            cl_fasl_write_u8(w, bc->flags);
+            cl_fasl_write_u8(w, bc->n_keys);
+            s->frames[idx].phase = PHASE_BC_KEY_SYMS;
+            s->frames[idx].index = 0;
+            return 0;
+
+        case PHASE_BC_KEY_SYMS: {
+            uint16_t k = s->frames[idx].index;
+            if (k < bc->n_keys) {
+                CL_Obj ks = bc->key_syms[k];
+                s->frames[idx].index = k + 1;
+                if (!fasl_ser_stack_push(w, s, ks, PHASE_START)) return 1;
+                return 0;
+            }
+            s->frames[idx].phase = PHASE_BC_POSTLUDE;
+            s->frames[idx].index = 0;
+            return 0;
+        }
+
+        case PHASE_BC_POSTLUDE:
+            for (i = 0; i < bc->n_keys; i++)
+                cl_fasl_write_u8(w, bc->key_slots[i]);
+            for (i = 0; i < bc->n_keys; i++)
+                cl_fasl_write_u8(w, bc->key_suppliedp_slots[i]);
+            cl_fasl_write_u16(w, bc->source_line);
+            if (bc->source_file) {
+                uint16_t slen = (uint16_t)strlen(bc->source_file);
+                cl_fasl_write_u16(w, slen);
+                cl_fasl_write_bytes(w, bc->source_file, slen);
+            } else {
+                cl_fasl_write_u16(w, 0);
+            }
+            cl_fasl_write_u16(w, bc->line_map_count);
+            for (i = 0; i < bc->line_map_count; i++) {
+                cl_fasl_write_u16(w, bc->line_map[i].pc);
+                cl_fasl_write_u16(w, bc->line_map[i].line);
+            }
+            s->frames[idx].phase = PHASE_DONE;
+            if (!fasl_ser_stack_push(w, s, bc->name, PHASE_START)) return 1;
+            return 0;
+
+        case PHASE_DONE:
+            return 1;
+
+        default:
+            /* Unknown phase — treat as done to avoid infinite loop. */
+            return 1;
+        }
+    }
+}
+
+static void fasl_serialize_drive(CL_FaslWriter *w, FaslSerStack *s)
+{
+    while (s->depth > 0 && !w->error) {
+        if (fasl_ser_step(w, s)) {
+            s->depth--;
+        }
+    }
+}
+
+void cl_fasl_serialize_obj(CL_FaslWriter *w, CL_Obj obj)
+{
+    FaslSerStack s;
+    s.frames = NULL;
+    s.depth = 0;
+    s.capacity = 0;
+    if (fasl_ser_stack_push(w, &s, obj, PHASE_START))
+        fasl_serialize_drive(w, &s);
+    if (s.frames) platform_free(s.frames);
+}
+
+/* Kept as a no-op for ABI compatibility; the iterative serializer no
+ * longer uses recursion-depth or timeout state. */
+void cl_fasl_reset_serialize_count(void)
+{
+}
+
+/* --- Serialize a CL_Bytecode body (no leading tag) ---
+ *
+ * Used by bi_compile_file to write each top-level form as a length-prefixed
+ * unit.  Skips the FASL_TAG_BYTECODE byte (the unit framing has its own
+ * length prefix) and the shared-object dedup wrapper. */
+void cl_fasl_serialize_bytecode(CL_FaslWriter *w, CL_Obj bc_obj)
+{
+    FaslSerStack s;
+    s.frames = NULL;
+    s.depth = 0;
+    s.capacity = 0;
+    /* Initial frame: skip dispatch+tag, jump directly to the BC body phases. */
+    if (fasl_ser_stack_push(w, &s, bc_obj, PHASE_BC_AFTER_TAG))
+        fasl_serialize_drive(w, &s);
+    if (s.frames) platform_free(s.frames);
 }
 
 /* ================================================================

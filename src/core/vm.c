@@ -607,7 +607,12 @@ static CL_Obj call_builtin(CL_Function *func, CL_Obj *args, int nargs)
     return result;
 }
 
+#if defined(CL_ASAN_BUILD) || defined(__SANITIZE_ADDRESS__) || \
+    (defined(__has_feature) && __has_feature(address_sanitizer))
+#define C_STACK_LIMIT (64 * 1024 * 1024)  /* ASAN frames are huge — bump cap */
+#else
 #define C_STACK_LIMIT (3 * 1024 * 1024)  /* 3MB of 8MB, leave 5MB margin */
+#endif
 
 void cl_check_c_stack(const char *context)
 {

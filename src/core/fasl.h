@@ -71,8 +71,13 @@
 /* Max uninterned symbols tracked per FASL file (for gensym dedup) */
 #define FASL_MAX_GENSYMS 1024
 
-/* Max shared objects tracked per unit (for cycle/sharing detection) */
-#define FASL_MAX_SHARED 4096
+/* Max shared objects tracked per unit (for cycle/sharing detection).
+ * Capped at uint16_t max because the wire format encodes IDs as u16.
+ * Keeping a generous limit avoids re-serializing the same closure many
+ * times when a single top-level form (e.g. a CLOS dispatch table) builds
+ * thousands of structurally-shared closures — without dedup, the FASL
+ * unit balloons exponentially. */
+#define FASL_MAX_SHARED 65535
 
 /* --- Serialization buffer --- */
 

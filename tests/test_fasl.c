@@ -744,6 +744,119 @@ TEST(serialize_deeply_nested_list)
     ASSERT_EQ_INT(CL_FIXNUM_VAL(cl_car(result)), 42);
 }
 
+/* Regression for the iterative-serializer rewrite: the old recursive
+ * serializer overflowed the C stack at ~16k depth (per-frame ~150-300B at
+ * -O3), tripping a stack-protector canary in the caller before its own
+ * epilogue ran.  50k deep here is well past the prior FASL_MAX_DEPTH 4096
+ * cap and verifies that no depth limit is enforced by the serializer.
+ *
+ * Note: the deserializer is still recursive and protects 3 GC roots per
+ * CONS frame, so deep-CAR-chain round-trip is bounded by CL_GC_ROOT_STACK_SIZE
+ * (currently 1024).  This test only verifies serialization-side handling. */
+TEST(serialize_deep_car_chain_no_overflow)
+{
+    const uint32_t depth = 50000;
+    uint32_t buf_size = depth * 8 + 4096;
+    uint8_t *buf = (uint8_t *)platform_alloc(buf_size);
+    CL_FaslWriter w;
+    CL_Obj list;
+    uint32_t i;
+
+    ASSERT(buf != NULL);
+
+    list = cl_cons(CL_MAKE_FIXNUM(42), CL_NIL);
+    CL_GC_PROTECT(list);
+    for (i = 1; i < depth; i++)
+        list = cl_cons(list, CL_NIL);
+
+    cl_fasl_writer_init(&w, buf, buf_size);
+    cl_fasl_serialize_obj(&w, list);
+    ASSERT_EQ_INT(w.error, FASL_OK);
+    /* Each level emits FASL_TAG_CONS (1B); innermost emits FIXNUM (1+4B)
+     * and the trailing NILs (1B each).  Just verify a sane lower bound. */
+    ASSERT(w.pos > depth);
+
+    CL_GC_UNPROTECT(1);
+    platform_free(buf);
+}
+
+/* Long proper list: stresses the CONS frame's CDR-as-child path.  Peak
+ * worklist depth stays O(1) (cons frame + at most one pending cdr + one
+ * car), regardless of list length.  Round-trips because the deserializer's
+ * CONS spine is iterative on CDR. */
+TEST(serialize_long_proper_list_50k)
+{
+    const uint32_t len = 50000;
+    uint32_t buf_size = len * 8 + 4096;
+    uint8_t *buf = (uint8_t *)platform_alloc(buf_size);
+    CL_FaslWriter w;
+    CL_FaslReader r;
+    CL_Obj list, result, p;
+    uint32_t i;
+
+    ASSERT(buf != NULL);
+
+    list = CL_NIL;
+    CL_GC_PROTECT(list);
+    for (i = 0; i < len; i++)
+        list = cl_cons(CL_MAKE_FIXNUM(i & 0xFFFF), list);
+
+    cl_fasl_writer_init(&w, buf, buf_size);
+    cl_fasl_serialize_obj(&w, list);
+    ASSERT_EQ_INT(w.error, FASL_OK);
+
+    cl_fasl_reader_init(&r, buf, w.pos);
+    result = cl_fasl_deserialize_obj(&r);
+    ASSERT_EQ_INT(r.error, FASL_OK);
+
+    p = result;
+    for (i = 0; i < len; i++) {
+        ASSERT(CL_CONS_P(p));
+        ASSERT_EQ_INT(CL_FIXNUM_VAL(cl_car(p)), (int)((len - 1 - i) & 0xFFFF));
+        p = cl_cdr(p);
+    }
+    ASSERT(CL_NULL_P(p));
+
+    CL_GC_UNPROTECT(1);
+    platform_free(buf);
+}
+
+/* Deep nested vectors: each level is a 1-element vector pointing to the
+ * next.  Exercises the VECTOR case's reverse-push + PHASE_DONE resumption
+ * across many levels — serializer side only (deserializer's per-frame GC
+ * protection limits round-trip depth). */
+TEST(serialize_deep_vector_chain_no_overflow)
+{
+    const uint32_t depth = 20000;
+    uint32_t buf_size = depth * 16 + 4096;
+    uint8_t *buf = (uint8_t *)platform_alloc(buf_size);
+    CL_FaslWriter w;
+    CL_Obj cur;
+    uint32_t i;
+
+    ASSERT(buf != NULL);
+
+    cur = cl_make_vector(1);
+    CL_GC_PROTECT(cur);
+    {
+        CL_Vector *v = (CL_Vector *)CL_OBJ_TO_PTR(cur);
+        v->data[0] = CL_MAKE_FIXNUM(99);
+    }
+    for (i = 1; i < depth; i++) {
+        CL_Obj outer = cl_make_vector(1);
+        CL_Vector *v = (CL_Vector *)CL_OBJ_TO_PTR(outer);
+        v->data[0] = cur;
+        cur = outer;
+    }
+
+    cl_fasl_writer_init(&w, buf, buf_size);
+    cl_fasl_serialize_obj(&w, cur);
+    ASSERT_EQ_INT(w.error, FASL_OK);
+
+    CL_GC_UNPROTECT(1);
+    platform_free(buf);
+}
+
 TEST(serialize_single_float)
 {
     uint8_t buf[128];
@@ -1931,6 +2044,9 @@ int main(void)
     RUN(serialize_dotted_list);
     RUN(serialize_nested_cons);
     RUN(serialize_deeply_nested_list);
+    RUN(serialize_deep_car_chain_no_overflow);
+    RUN(serialize_long_proper_list_50k);
+    RUN(serialize_deep_vector_chain_no_overflow);
     RUN(serialize_single_float);
     RUN(serialize_single_float_zero);
     RUN(serialize_single_float_negative);
