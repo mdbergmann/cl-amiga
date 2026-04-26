@@ -46,6 +46,61 @@ CL_Obj SETF_HELPER_GETF = CL_NIL;
 /* Global optimization settings */
 CL_OptimizeSettings cl_optimize_settings = {1, 1, 1, 1};
 
+/* --- Source-file intern pool --- */
+/* CL_Bytecode.source_file holds a const char* that must outlive the bytecode
+ * (which can persist for the entire process lifetime).  Earlier versions
+ * stored a pointer into bi_compile_file's stack-local in_path[] buffer; once
+ * compile-file returned the pointer dangled and any later access (FASL
+ * serialize, FATAL crash trace, debugger backtrace, vm dispatch) would read
+ * arbitrary bytes from a re-used stack frame, occasionally corrupting CLOS
+ * metadata referenced by ASDF and crashing in completely unrelated code.
+ *
+ * Fix: intern paths once into a process-lifetime pool and hand back a stable
+ * pointer.  Linear search is fine — typical sessions touch a few hundred
+ * source files at most. */
+typedef struct CL_SourceFileEntry_s {
+    char *path;
+    struct CL_SourceFileEntry_s *next;
+} CL_SourceFileEntry;
+
+static CL_SourceFileEntry *cl_source_file_pool = NULL;
+static void *cl_source_file_pool_lock = NULL;
+
+const char *cl_intern_source_file(const char *path)
+{
+    CL_SourceFileEntry *e;
+    char *copy;
+    size_t len;
+
+    if (!path || !path[0]) return NULL;
+    len = strlen(path);
+
+    if (!cl_source_file_pool_lock)
+        platform_rwlock_init(&cl_source_file_pool_lock);
+
+    platform_rwlock_wrlock(cl_source_file_pool_lock);
+    for (e = cl_source_file_pool; e != NULL; e = e->next) {
+        if (strcmp(e->path, path) == 0) {
+            platform_rwlock_unlock(cl_source_file_pool_lock);
+            return e->path;
+        }
+    }
+    e = (CL_SourceFileEntry *)platform_alloc(sizeof(CL_SourceFileEntry));
+    copy = (char *)platform_alloc(len + 1);
+    if (!e || !copy) {
+        if (e) platform_free(e);
+        if (copy) platform_free(copy);
+        platform_rwlock_unlock(cl_source_file_pool_lock);
+        return NULL;
+    }
+    memcpy(copy, path, len + 1);
+    e->path = copy;
+    e->next = cl_source_file_pool;
+    cl_source_file_pool = e;
+    platform_rwlock_unlock(cl_source_file_pool_lock);
+    return copy;
+}
+
 /* --- Code emission --- */
 
 void cl_emit(CL_Compiler *c, uint8_t byte)

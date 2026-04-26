@@ -528,11 +528,13 @@ static CL_Obj bi_load(CL_Obj *args, int n)
             } /* !is_asd */
         }
 
-    /* Save and set source file context */
+    /* Save and set source file context.  The path is interned into the
+     * source-file pool so any bytecode compiled here can hold a stable
+     * pointer that outlives the CL_String (which may be GC-collected). */
     prev_file = cl_current_source_file;
     prev_file_id = cl_current_file_id;
     prev_line = cl_reader_get_line();
-    cl_current_source_file = path_str->data;
+    cl_current_source_file = cl_intern_source_file(path_str->data);
     cl_current_file_id++;
     cl_reader_reset_line();
 
@@ -1065,11 +1067,15 @@ static CL_Obj bi_compile_file(CL_Obj *args, int n)
         CL_GC_UNPROTECT(2);
     }
 
-    /* Save source file context */
+    /* Save source file context.  in_path is a stack-local buffer; intern
+     * it into the process-lifetime source-file pool so that bytecodes
+     * compiled below can keep referencing the path string after this
+     * function returns (CL_Bytecode.source_file is read by the FATAL
+     * crash trace, debugger, and FASL serialize paths). */
     prev_file = cl_current_source_file;
     prev_file_id = cl_current_file_id;
     prev_line = cl_reader_get_line();
-    cl_current_source_file = in_path;
+    cl_current_source_file = cl_intern_source_file(in_path);
     cl_current_file_id++;
     cl_reader_reset_line();
 

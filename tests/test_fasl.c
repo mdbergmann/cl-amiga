@@ -1749,6 +1749,57 @@ TEST(compile_file_descends_nested_toplevel_progn)
     delete_cached_fasl("/tmp/cf-test-tl-progn-nest.lisp");
 }
 
+TEST(compile_file_source_file_outlives_compile_file)
+{
+    /* Regression: bi_compile_file used to assign cl_current_source_file
+     * (and thus every CL_Bytecode->source_file emitted while compiling)
+     * to its stack-local in_path[1024] buffer. After compile-file
+     * returned that pointer dangled; later access (debugger backtrace,
+     * crash trace, FASL serialize) read whatever bytes happened to
+     * occupy the re-used stack frame. With ASDF + CLOS this manifested
+     * as garbled source paths in backtraces and (eventually) a SIGSEGV
+     * inside a CLOS GF dispatch chain after compile-file returned.
+     *
+     * Fix: intern paths into a process-lifetime pool. After compile-file
+     * returns, every bytecode's source_file must still point to a valid,
+     * unchanged C string equal to the original input path. */
+    write_test_file("/tmp/cf-test-srcfile-A.lisp",
+        "(defun cf-srcfile-fn-A () 42)\n");
+    write_test_file("/tmp/cf-test-srcfile-different-name-B.lisp",
+        "(defun cf-srcfile-fn-B () 99)\n");
+
+    /* Compile A, then immediately compile B with a longer/different path.
+     * If A's CL_Bytecode->source_file pointed into bi_compile_file's
+     * stack-local in_path[], B's compile would overwrite that buffer
+     * with B's path string, and A's source_file would now read garbage
+     * (or B's path, depending on how the stack is reused). */
+    eval_obj("(compile-file \"/tmp/cf-test-srcfile-A.lisp\")");
+    eval_obj("(compile-file \"/tmp/cf-test-srcfile-different-name-B.lisp\")");
+
+    /* Inspect A's bytecode source_file — it must still be A's path. */
+    {
+        CL_Obj fn_sym = cl_eval_string("(find-symbol \"CF-SRCFILE-FN-A\" *package*)");
+        CL_Obj fn_obj;
+        CL_Bytecode *bc;
+        ASSERT(!CL_NULL_P(fn_sym));
+        fn_obj = ((CL_Symbol *)CL_OBJ_TO_PTR(fn_sym))->function;
+        ASSERT(CL_BYTECODE_P(fn_obj) || CL_CLOSURE_P(fn_obj));
+        if (CL_CLOSURE_P(fn_obj)) {
+            CL_Closure *c = (CL_Closure *)CL_OBJ_TO_PTR(fn_obj);
+            bc = (CL_Bytecode *)CL_OBJ_TO_PTR(c->bytecode);
+        } else {
+            bc = (CL_Bytecode *)CL_OBJ_TO_PTR(fn_obj);
+        }
+        ASSERT(bc->source_file != NULL);
+        ASSERT_STR_EQ(bc->source_file, "/tmp/cf-test-srcfile-A.lisp");
+    }
+
+    platform_file_delete("/tmp/cf-test-srcfile-A.lisp");
+    platform_file_delete("/tmp/cf-test-srcfile-different-name-B.lisp");
+    delete_cached_fasl("/tmp/cf-test-srcfile-A.lisp");
+    delete_cached_fasl("/tmp/cf-test-srcfile-different-name-B.lisp");
+}
+
 TEST(load_auto_finds_cached_fasl)
 {
     /* load of source file should auto-discover cached FASL */
@@ -1951,6 +2002,7 @@ int main(void)
     RUN(compile_file_skips_atom_top_level);
     RUN(compile_file_descends_toplevel_progn);
     RUN(compile_file_descends_nested_toplevel_progn);
+    RUN(compile_file_source_file_outlives_compile_file);
 
     /* FASL cache behavior tests */
     RUN(load_auto_finds_cached_fasl);

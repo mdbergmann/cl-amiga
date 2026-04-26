@@ -89,7 +89,7 @@ void cl_load_file(const char *path)
         cl_set_symbol_value(SYM_STAR_LOAD_PATHNAME, load_pathname_obj);
         cl_set_symbol_value(SYM_STAR_LOAD_TRUENAME, load_truename_obj);
 
-        cl_current_source_file = path;
+        cl_current_source_file = cl_intern_source_file(path);
         cl_current_file_id++;
         cl_reader_reset_line();
 
@@ -182,7 +182,7 @@ static void load_user_init(void)
                 const char *prev_file = cl_current_source_file;
                 uint16_t prev_file_id = cl_current_file_id;
                 int prev_line = cl_reader_get_line();
-                cl_current_source_file = paths[i];
+                cl_current_source_file = cl_intern_source_file(paths[i]);
                 cl_current_file_id++;
                 cl_reader_reset_line();
 

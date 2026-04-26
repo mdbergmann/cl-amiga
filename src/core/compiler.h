@@ -84,4 +84,11 @@ void cl_compiler_gc_mark_thread(struct CL_Thread_s *t);
 void *cl_compiler_mark(void);
 void cl_compiler_restore_to(void *saved);
 
+/* Intern a source-file path into a process-lifetime pool and return
+ * the stable pointer.  Use this anywhere a const char* is stored long-term
+ * (in particular CL_Bytecode.source_file and cl_current_source_file when
+ * the input came from a stack buffer or a CL_String that may be GC'd).
+ * NULL/empty input returns NULL. */
+const char *cl_intern_source_file(const char *path);
+
 #endif /* CL_COMPILER_H */
