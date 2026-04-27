@@ -1913,6 +1913,44 @@ TEST(compile_file_source_file_outlives_compile_file)
     delete_cached_fasl("/tmp/cf-test-srcfile-different-name-B.lisp");
 }
 
+TEST(compile_file_declare_with_macro_named_type)
+{
+    /* Regression: scan_body_for_boxing used to walk DECLARE forms with the
+     * general fall-through, which tried to macroexpand any cons inside the
+     * declaration whose head named a registered macro.  When a symbol is
+     * BOTH deftype'd and defmacro'd (CL allows this — type and function
+     * namespaces are separate), a (declare (ftype (THE-SYM ...) NAME))
+     * would call the macro with the type spec as argument, corrupting
+     * compiler state — manifesting as a stack canary smash on
+     * compile-file return.  Trigger came from serapeum's `->`, which is
+     * `(deftype -> (args &optional values) ...)` and
+     * `(defmacro -> (functions (&rest args) &optional values) ...)`.
+     * The macro destructures `(&rest args)` against a single type spec and
+     * fails violently. */
+    write_test_file("/tmp/cf-test-decl-macroty.lisp",
+        "(defmacro cf-decl-macroty (functions (&rest args) &optional values)"
+        "  (declare (ignore functions args values))"
+        "  '(progn))"
+        "\n"
+        "(deftype cf-decl-macroty (args &optional values)"
+        "  `(function ,args ,@(when values (list values))))"
+        "\n"
+        "(defun cf-decl-macroty-victim (test)"
+        "  (flet ((ge (a b) (funcall test a b)))"
+        "    (declare (ftype (cf-decl-macroty (t t) t) ge))"
+        "    (ge 1 2)))\n");
+
+    {
+        CL_Obj result = eval_obj("(compile-file \"/tmp/cf-test-decl-macroty.lisp\")");
+        ASSERT(CL_PATHNAME_P(result));
+    }
+    eval_obj("(load (compile-file-pathname \"/tmp/cf-test-decl-macroty.lisp\"))");
+    ASSERT_STR_EQ(eval_print("(cf-decl-macroty-victim #'eql)"), "NIL");
+
+    platform_file_delete("/tmp/cf-test-decl-macroty.lisp");
+    delete_cached_fasl("/tmp/cf-test-decl-macroty.lisp");
+}
+
 TEST(load_auto_finds_cached_fasl)
 {
     /* load of source file should auto-discover cached FASL */
@@ -2119,6 +2157,7 @@ int main(void)
     RUN(compile_file_descends_toplevel_progn);
     RUN(compile_file_descends_nested_toplevel_progn);
     RUN(compile_file_source_file_outlives_compile_file);
+    RUN(compile_file_declare_with_macro_named_type);
 
     /* FASL cache behavior tests */
     RUN(load_auto_finds_cached_fasl);

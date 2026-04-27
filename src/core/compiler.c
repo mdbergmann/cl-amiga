@@ -827,6 +827,15 @@ top:
     /* (quote ...) — skip entirely */
     if (head == SYM_QUOTE) return;
 
+    /* (declare specifier...) — declarations are metadata, never evaluated.
+     * Walking them with the general fall-through tries to macroexpand any
+     * cons whose head names a registered macro, but inside (type T-SPEC ...)
+     * or (ftype T-SPEC ...) the T-SPEC is a *type* specifier, not a form.
+     * Symbols can be both deftype'd and macrobound to different things
+     * (e.g. serapeum's `->`), so the spurious expansion calls the macro
+     * with type-spec arguments and corrupts compiler state. */
+    if (head == SYM_DECLARE) return;
+
     /* (quasiquote tmpl) — only scan unquoted subforms, not the template
      * structure itself. Without this, macro calls inside backquote templates
      * get spuriously expanded by the scanner with raw UNQUOTE forms. */
