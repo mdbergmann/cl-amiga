@@ -147,6 +147,60 @@ static int fasl_ser_stack_push(CL_FaslWriter *w, FaslSerStack *s,
         uint32_t new_cap = s->capacity ? s->capacity * 2 : FASL_SER_STACK_INIT_CAP;
         FaslSerFrame *nf;
         if (new_cap > FASL_SER_STACK_MAX_CAP) {
+#ifdef DEBUG_FASL_DEEP
+            {
+                /* Diagnostic dump on hitting the worklist cap.  The cap is
+                 * deliberately huge (2M frames ~= 24MB) — anything that
+                 * trips it is almost certainly an undetected cycle in the
+                 * constant graph, not legitimate depth.  Histogram + top
+                 * frames usually identify the cyclic type. */
+                uint32_t i;
+                uint32_t type_counts[64] = {0};
+                fprintf(stderr,
+                  "[FASL] hit FASL_SER_STACK_MAX_CAP=%u while pushing obj=0x%08x phase=%u\n",
+                  FASL_SER_STACK_MAX_CAP, (unsigned)obj, phase);
+                if (CL_HEAP_P(obj) && CL_HDR_TYPE(CL_OBJ_TO_PTR(obj)) == TYPE_STRUCT) {
+                    CL_Struct *st = (CL_Struct *)CL_OBJ_TO_PTR(obj);
+                    fprintf(stderr, "[FASL] pushed obj is STRUCT type_desc=0x%08x n_slots=%u\n",
+                            (unsigned)st->type_desc, (unsigned)st->n_slots);
+                    if (CL_HEAP_P(st->type_desc) &&
+                        CL_HDR_TYPE(CL_OBJ_TO_PTR(st->type_desc)) == TYPE_SYMBOL) {
+                        CL_Symbol *sym = (CL_Symbol *)CL_OBJ_TO_PTR(st->type_desc);
+                        CL_String *nm = (CL_String *)CL_OBJ_TO_PTR(sym->name);
+                        fprintf(stderr, "[FASL] type_desc symbol name=%.*s\n",
+                                (int)nm->length, nm->data);
+                    }
+                }
+                for (i = 0; i < s->depth; i++) {
+                    CL_Obj fobj = s->frames[i].obj;
+                    if (CL_HEAP_P(fobj)) {
+                        uint8_t t = CL_HDR_TYPE(CL_OBJ_TO_PTR(fobj));
+                        if (t < 64) type_counts[t]++;
+                    } else {
+                        type_counts[63]++;
+                    }
+                }
+                fprintf(stderr, "[FASL] frame type histogram (depth=%u):\n", s->depth);
+                for (i = 0; i < 64; i++) {
+                    if (type_counts[i] > 0)
+                        fprintf(stderr, "  type %u: %u frames\n", i, type_counts[i]);
+                }
+                fprintf(stderr, "[FASL] top 20 frames:\n");
+                for (i = (s->depth >= 20 ? s->depth - 20 : 0); i < s->depth; i++) {
+                    CL_Obj fobj = s->frames[i].obj;
+                    int t = CL_HEAP_P(fobj) ? CL_HDR_TYPE(CL_OBJ_TO_PTR(fobj)) : -1;
+                    fprintf(stderr, "  [%u] obj=0x%08x phase=%u type=%d",
+                            i, (unsigned)fobj, s->frames[i].phase, t);
+                    if (t == TYPE_STRUCT) {
+                        CL_Struct *st = (CL_Struct *)CL_OBJ_TO_PTR(fobj);
+                        fprintf(stderr, " td=0x%08x n_slots=%u idx=%u",
+                                (unsigned)st->type_desc, st->n_slots, s->frames[i].index);
+                    }
+                    fprintf(stderr, "\n");
+                }
+                fflush(stderr);
+            }
+#endif
             w->error = FASL_ERR_TOO_DEEP;
             return 0;
         }
@@ -461,6 +515,33 @@ static int fasl_ser_step(CL_FaslWriter *w, FaslSerStack *s)
              * The n_slots u32 appears after the type_desc subtree, so we
              * defer slots to PHASE_STRUCT_AFTER_TYPEDESC. */
             CL_Struct *st = (CL_Struct *)CL_OBJ_TO_PTR(obj);
+            /* CLOS class metaobjects (STANDARD-CLASS / BUILT-IN-CLASS
+             * structs) are cyclic by design: their effective-slots,
+             * precedence-list, and direct-subclasses slots back-reference
+             * the class.  Naive struct serialization walks the cycle
+             * forever (FASL_ERR_TOO_DEEP).  Even if we broke the cycle,
+             * deserializing into a *new* struct would lose identity —
+             * defmethod specializers would no longer EQ the live class.
+             *
+             * Instead, emit a class-by-name reference that resolves via
+             * (find-class 'name) at load time.  Identity is preserved
+             * because find-class returns the singleton metaobject. */
+            if (CL_HEAP_P(st->type_desc) &&
+                CL_HDR_TYPE(CL_OBJ_TO_PTR(st->type_desc)) == TYPE_SYMBOL) {
+                CL_Symbol *td_sym = (CL_Symbol *)CL_OBJ_TO_PTR(st->type_desc);
+                CL_String *td_nm = (CL_String *)CL_OBJ_TO_PTR(td_sym->name);
+                if ((td_nm->length == 14 &&
+                     (memcmp(td_nm->data, "STANDARD-CLASS", 14) == 0 ||
+                      memcmp(td_nm->data, "BUILT-IN-CLASS", 14) == 0)) ||
+                    (td_nm->length == 26 &&
+                     memcmp(td_nm->data, "FUNCALLABLE-STANDARD-CLASS", 26) == 0)) {
+                    CL_Obj cname = st->slots[0];
+                    cl_fasl_write_u8(w, FASL_TAG_CLASS_REF);
+                    s->frames[idx].phase = PHASE_DONE;
+                    if (!fasl_ser_stack_push(w, s, cname, PHASE_START)) return 1;
+                    return 0;
+                }
+            }
             cl_fasl_write_u8(w, FASL_TAG_STRUCT);
             s->frames[idx].phase = PHASE_STRUCT_AFTER_TYPEDESC;
             if (!fasl_ser_stack_push(w, s, st->type_desc, PHASE_START)) return 1;
@@ -879,6 +960,31 @@ CL_Obj cl_fasl_deserialize_obj(CL_FaslReader *r)
             if (id >= r->shared_count)
                 r->shared_count = id + 1;
         }
+        return result;
+    }
+
+    case FASL_TAG_CLASS_REF: {
+        /* Counterpart to FASL_TAG_CLASS_REF in the writer.  The class is
+         * looked up by name at load time so identity matches the live
+         * metaobject (defmethod specializers EQ the runtime class). */
+        CL_Obj name = cl_fasl_deserialize_obj(r);
+        CL_Obj find_class_sym, fn, arg, result;
+        CL_Symbol *fc_sym;
+        if (r->error || CL_NULL_P(name) ||
+            !CL_HEAP_P(name) ||
+            CL_HDR_TYPE(CL_OBJ_TO_PTR(name)) != TYPE_SYMBOL)
+            return CL_NIL;
+        CL_GC_PROTECT(name);
+        find_class_sym = cl_intern_in("FIND-CLASS", 10, cl_package_cl);
+        fc_sym = (CL_Symbol *)CL_OBJ_TO_PTR(find_class_sym);
+        fn = fc_sym->function;
+        if (CL_NULL_P(fn)) {
+            CL_GC_UNPROTECT(1);
+            return CL_NIL;
+        }
+        arg = name;
+        result = cl_vm_apply(fn, &arg, 1);
+        CL_GC_UNPROTECT(1);
         return result;
     }
 

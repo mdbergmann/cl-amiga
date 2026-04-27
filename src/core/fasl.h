@@ -26,7 +26,7 @@
 #include "../platform/platform.h"
 
 #define CL_FASL_MAGIC    0x434C4641  /* "CLFA" */
-#define CL_FASL_VERSION  3
+#define CL_FASL_VERSION  4
 
 /* Serialized constant type tags */
 #define FASL_TAG_NIL         0x00
@@ -58,6 +58,10 @@
 #define FASL_TAG_STRUCT      0x19  /* type_desc(sym), u32 n_slots, slots... */
 #define FASL_TAG_OBJ_DEF    0x1A  /* u16 id: define shared object (followed by object data) */
 #define FASL_TAG_OBJ_REF    0x1B  /* u16 id: back-reference to previously defined shared object */
+#define FASL_TAG_CLASS_REF  0x1C  /* class-name(symbol): (find-class name) at load time.
+                                     CLOS class metaobjects (STANDARD-CLASS/BUILT-IN-CLASS
+                                     structs) are cyclic by design — preserves identity
+                                     and avoids re-creating broken stand-ins. */
 
 /* Error codes for FASL operations */
 #define FASL_OK              0
