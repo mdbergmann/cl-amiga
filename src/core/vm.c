@@ -618,6 +618,15 @@ void cl_check_c_stack(const char *context)
 {
     volatile char probe;
     long used;
+#if defined(CL_ASAN_BUILD) || defined(__SANITIZE_ADDRESS__) || \
+    (defined(__has_feature) && __has_feature(address_sanitizer))
+    /* ASan's fake-stack puts each function's locals in a heap-allocated
+     * region.  &probe and cl_c_stack_base end up in unrelated mappings,
+     * so the simple subtraction returns nonsense values (often >1GB).
+     * The check is meaningless under ASan — skip it. */
+    (void)probe; (void)used; (void)context;
+    return;
+#else
     if (!cl_c_stack_base) cl_c_stack_base = (char *)&probe;
     used = (long)(cl_c_stack_base - (char *)&probe);
     if (used < 0) used = -used;  /* Handle stack growing up or down */
@@ -633,6 +642,7 @@ void cl_check_c_stack(const char *context)
                  "C stack overflow in %s (used %ldKB, limit %ldKB)",
                  context, used / 1024, (long)C_STACK_LIMIT / 1024);
     }
+#endif
 }
 
 /* Shared buffers for OP_CALL keyword processing and OP_APPLY argument flattening.
