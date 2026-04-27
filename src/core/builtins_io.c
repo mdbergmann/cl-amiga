@@ -1242,7 +1242,17 @@ static CL_Obj bi_compile_file(CL_Obj *args, int n)
              * the placeholder just prevents load-time errors. */
             if (uw->error == FASL_ERR_TOO_DEEP ||
                 (uw->error == FASL_ERR_OVERFLOW && unit_capacity >= 64 * 1024 * 1024)) {
-                platform_write_string("; Warning: FASL unit too large, skipping FASL cache for this file\n");
+                CL_Bytecode *bcobj = (CL_Bytecode *)CL_OBJ_TO_PTR(bc);
+                CL_String *bname = CL_NULL_P(bcobj->name) ? NULL :
+                    (CL_String *)CL_OBJ_TO_PTR(((CL_Symbol *)CL_OBJ_TO_PTR(bcobj->name))->name);
+                char msg[1024];
+                snprintf(msg, sizeof(msg),
+                         "; Warning: FASL unit too large in %s "
+                         "(unit %d/%d, name=%s, reason=%s) — skipping FASL cache for this file\n",
+                         in_path, bci + 1, bc_collect_count,
+                         bname ? bname->data : "<anon>",
+                         uw->error == FASL_ERR_TOO_DEEP ? "graph too deep" : "buffer overflow >64MB");
+                platform_write_string(msg);
                 /* Don't write an incomplete FASL — missing definitions would
                  * cause errors when the FASL is loaded in a fresh session.
                  * The file will be recompiled from source next time. */
@@ -1276,7 +1286,17 @@ static CL_Obj bi_compile_file(CL_Obj *args, int n)
                  * invalidate the whole FASL, not silently drop the unit.
                  * Otherwise the loaded FASL would be missing top-level
                  * DEFUN side effects and behave differently from source. */
-                platform_write_string("; Warning: FASL unit failed to serialize, skipping FASL cache for this file\n");
+                CL_Bytecode *bcobj = (CL_Bytecode *)CL_OBJ_TO_PTR(bc);
+                CL_String *bname = CL_NULL_P(bcobj->name) ? NULL :
+                    (CL_String *)CL_OBJ_TO_PTR(((CL_Symbol *)CL_OBJ_TO_PTR(bcobj->name))->name);
+                char msg[1024];
+                snprintf(msg, sizeof(msg),
+                         "; Warning: FASL unit failed to serialize in %s "
+                         "(unit %d/%d, name=%s, error=%d) — skipping FASL cache for this file\n",
+                         in_path, bci + 1, bc_collect_count,
+                         bname ? bname->data : "<anon>",
+                         uw->error);
+                platform_write_string(msg);
                 fasl_incomplete = 1;
                 break;
             }

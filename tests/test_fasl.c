@@ -1951,6 +1951,40 @@ TEST(compile_file_declare_with_macro_named_type)
     delete_cached_fasl("/tmp/cf-test-decl-macroty.lisp");
 }
 
+TEST(compile_file_class_metaobject_in_constants)
+{
+    /* Regression: a top-level form whose bytecode constant pool contains a
+     * CLOS class metaobject (e.g. defmethod with `#.(class-of foo)` as a
+     * specializer) used to crash compile-file with FASL_ERR_TOO_DEEP after
+     * spinning the FASL serializer up to its 2M-frame cap.  Class metaobjects
+     * are STANDARD-CLASS / BUILT-IN-CLASS structs whose effective-slots,
+     * precedence-list, and direct-subclasses slots back-reference the class
+     * (cycles by design).  Even if we walked the cycle once, deserializing
+     * into a *new* struct would lose identity — the live class would no
+     * longer EQ the deserialized one, and (defmethod foo ((x #.cls)) ...)
+     * would dispatch to the wrong specializer.  Fix: writer detects the
+     * metaclass and emits FASL_TAG_CLASS_REF + name; reader resolves via
+     * (find-class 'name) so identity matches the runtime metaobject. */
+    write_test_file("/tmp/cf-class-metaobj.lisp",
+        "(defclass cf-cls-mo () ((x :initarg :x :reader cf-cls-mo-x)))\n"
+        "(defun cf-make-cls-mo () (make-instance 'cf-cls-mo :x 42))\n"
+        "(defmethod cf-cls-mo-method ((self #.(find-class 'cf-cls-mo)))\n"
+        "  (cf-cls-mo-x self))\n");
+    {
+        CL_Obj result = eval_obj("(compile-file \"/tmp/cf-class-metaobj.lisp\")");
+        ASSERT(CL_PATHNAME_P(result));
+    }
+    /* Wipe the class binding so the cached FASL must rebuild it via the
+     * compiled defclass form, *then* the cached defmethod must EQ the
+     * freshly-built class metaobject (because of the find-class lookup). */
+    eval_obj("(setf (find-class 'cf-cls-mo) nil)");
+    eval_obj("(load (compile-file-pathname \"/tmp/cf-class-metaobj.lisp\"))");
+    ASSERT_STR_EQ(eval_print("(cf-cls-mo-method (cf-make-cls-mo))"), "42");
+
+    platform_file_delete("/tmp/cf-class-metaobj.lisp");
+    delete_cached_fasl("/tmp/cf-class-metaobj.lisp");
+}
+
 TEST(load_auto_finds_cached_fasl)
 {
     /* load of source file should auto-discover cached FASL */
@@ -2158,6 +2192,7 @@ int main(void)
     RUN(compile_file_descends_nested_toplevel_progn);
     RUN(compile_file_source_file_outlives_compile_file);
     RUN(compile_file_declare_with_macro_named_type);
+    RUN(compile_file_class_metaobject_in_constants);
 
     /* FASL cache behavior tests */
     RUN(load_auto_finds_cached_fasl);
