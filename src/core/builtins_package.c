@@ -539,29 +539,28 @@ static CL_Obj bi_package_symbols(CL_Obj *args, int nargs)
     return result;
 }
 
-/* (%package-external-symbols package) — list of exported symbols in package */
+/* (%package-external-symbols package) — list of exported symbols in package.
+ * Source of truth is the package's own exported_symbols list (per-package,
+ * not the global CL_SYM_EXPORTED flag). */
 static CL_Obj bi_package_external_symbols(CL_Obj *args, int nargs)
 {
     CL_Obj pkg_obj = coerce_to_package(args[0]);
-    CL_Package *pkg = (CL_Package *)CL_OBJ_TO_PTR(pkg_obj);
-    CL_Vector *tbl = (CL_Vector *)CL_OBJ_TO_PTR(pkg->symbols);
+    CL_Obj list;
     CL_Obj result = CL_NIL;
-    uint32_t i;
     (void)nargs;
-
+    CL_GC_PROTECT(pkg_obj);
     CL_GC_PROTECT(result);
-    for (i = 0; i < tbl->length; i++) {
-        CL_Obj bucket = tbl->data[i];
-        while (!CL_NULL_P(bucket)) {
-            CL_Obj sym = cl_car(bucket);
-            CL_Symbol *s = (CL_Symbol *)CL_OBJ_TO_PTR(sym);
-            if (s->flags & CL_SYM_EXPORTED) {
-                result = cl_cons(sym, result);
-            }
-            bucket = cl_cdr(bucket);
-        }
+    list = ((CL_Package *)CL_OBJ_TO_PTR(pkg_obj))->exported_symbols;
+    while (!CL_NULL_P(list)) {
+        result = cl_cons(cl_car(list), result);
+        /* cl_cons may have GC-compacted; re-walk by stepping cdr from
+         * a fresh pkg pointer — but since the list is itself rooted
+         * via pkg_obj (GC_PROTECT keeps the package alive), the list's
+         * spine survives compaction.  Re-read cdr through the cons cell
+         * we just observed. */
+        list = cl_cdr(list);
     }
-    CL_GC_UNPROTECT(1);
+    CL_GC_UNPROTECT(2);
     return result;
 }
 

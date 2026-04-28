@@ -851,11 +851,12 @@ static void print_obj(CL_Obj obj)
             /* Accessible in current package — no prefix */
             out_symbol_name(cl_symbol_name(obj));
         } else {
-            /* Symbol from another package */
+            /* Symbol from another package — single colon if its home
+             * package exports it, double colon otherwise. */
             CL_Package *pkg = (CL_Package *)CL_OBJ_TO_PTR(sym->package);
             CL_String *pkg_name = (CL_String *)CL_OBJ_TO_PTR(pkg->name);
             out_symbol_name(pkg_name->data);
-            if (sym->flags & CL_SYM_EXPORTED) {
+            if (cl_symbol_external_p(obj, sym->package)) {
                 out_char(':');
             } else {
                 out_str("::");

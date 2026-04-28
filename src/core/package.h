@@ -56,6 +56,10 @@ void cl_register_package(CL_Obj pkg);
 void cl_export_symbol(CL_Obj sym, CL_Obj package);
 void cl_unexport_symbol(CL_Obj sym, CL_Obj package);
 
+/* True iff PACKAGE's exported_symbols list contains SYM.  Per-package
+ * source of truth; the global CL_SYM_EXPORTED flag is a hint at best. */
+int cl_symbol_external_p(CL_Obj sym, CL_Obj package);
+
 /* Import symbol into package */
 void cl_import_symbol(CL_Obj sym, CL_Obj package);
 

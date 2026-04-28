@@ -37,23 +37,26 @@ CL_Obj struct_table = CL_NIL;
 /* --- Registry lookup helpers --- */
 
 /* Find registry entry for a struct type name.
- * Returns the entry (name n-slots parent (slot-names...)) or NIL. */
+ * Returns the entry (name n-slots parent (slot-names...)) or NIL.
+ *
+ * Snapshot-and-release: struct_table is only ever PREPENDED to, so once
+ * we capture the head pointer under the rdlock we can release the lock
+ * and walk the snapshot.  Holding the rdlock across cl_car (which can
+ * cl_error → longjmp on a corrupt cell) leaked readers and ultimately
+ * tripped the bi_condition_wait safety abort in sento dispatcher tests. */
 static CL_Obj find_struct_entry(CL_Obj type_name)
 {
-    CL_Obj result = CL_NIL;
     CL_Obj list;
     cl_tables_rdlock();
     list = struct_table;
+    cl_tables_rwunlock();
     while (!CL_NULL_P(list)) {
         CL_Obj entry = cl_car(list);
-        if (cl_car(entry) == type_name) {
-            result = entry;
-            break;
-        }
+        if (cl_car(entry) == type_name)
+            return entry;
         list = cl_cdr(list);
     }
-    cl_tables_rwunlock();
-    return result;
+    return CL_NIL;
 }
 
 /* --- Public C API for printer and typep integration --- */
@@ -167,48 +170,44 @@ static CL_Obj ht_eq_lookup(CL_Obj ht_obj, CL_Obj key)
 }
 
 /* Check CLOS class hierarchy via class-precedence-list.
- * Returns 1 if obj_type is a subtype of test_type per CLOS CPL. */
+ * Returns 1 if obj_type is a subtype of test_type per CLOS CPL.
+ *
+ * Snapshot-and-release: capture the class metaobject under the rdlock,
+ * release, then walk its CPL.  Holding the rdlock across cl_car (which
+ * can cl_error→longjmp on a corrupt cell) leaks readers — and the CPL
+ * walker calls into CLOS-aware code (cl_car can hit a malformed cell). */
 int cl_clos_type_matches(CL_Obj obj_type, CL_Obj test_type)
 {
     CL_Obj class_obj, cpl;
     CL_Struct *class_st;
-    int result = 0;
 
     cl_tables_rdlock();
     if (CL_NULL_P(cl_clos_class_table)) {
         cl_tables_rwunlock();
         return 0;
     }
-
-    /* Look up the class metaobject for obj_type */
     class_obj = ht_eq_lookup(cl_clos_class_table, obj_type);
-    if (CL_NULL_P(class_obj) || !CL_STRUCT_P(class_obj)) {
-        cl_tables_rwunlock();
+    cl_tables_rwunlock();
+
+    if (CL_NULL_P(class_obj) || !CL_STRUCT_P(class_obj))
         return 0;
-    }
 
     /* CPL is in slot 3 of the class metaobject */
     class_st = (CL_Struct *)CL_OBJ_TO_PTR(class_obj);
-    if (class_st->n_slots < 4) {
-        cl_tables_rwunlock();
+    if (class_st->n_slots < 4)
         return 0;
-    }
     cpl = class_st->slots[3];
 
-    /* Walk CPL — each element is a class metaobject, slot 0 = name */
     while (!CL_NULL_P(cpl)) {
         CL_Obj cpl_class = cl_car(cpl);
         if (CL_STRUCT_P(cpl_class)) {
             CL_Struct *cpl_st = (CL_Struct *)CL_OBJ_TO_PTR(cpl_class);
-            if (cpl_st->n_slots > 0 && cpl_st->slots[0] == test_type) {
-                result = 1;
-                break;
-            }
+            if (cpl_st->n_slots > 0 && cpl_st->slots[0] == test_type)
+                return 1;
         }
         cpl = cl_cdr(cpl);
     }
-    cl_tables_rwunlock();
-    return result;
+    return 0;
 }
 
 /* Check if a name is in the CLOS class table. */
