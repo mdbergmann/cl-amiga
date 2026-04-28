@@ -330,13 +330,27 @@ void cl_export_symbol(CL_Obj sym, CL_Obj package)
     if (CL_MT()) platform_rwlock_unlock(cl_package_rwlock);
 }
 
+/* Unexport SYM from PACKAGE.
+ *
+ * The CL_SYM_EXPORTED flag lives on the symbol, not per-package, so a naive
+ * implementation that ignores PACKAGE would clobber the export status in the
+ * symbol's home package whenever a using package tries to unexport an
+ * inherited or imported symbol.  uiop:define-package's "remove no-longer
+ * listed externals" pass relies on (unexport sym other-pkg) being safe; if we
+ * cleared the flag globally, alexandria:array-index would lose its EXTERNAL
+ * status the moment serapeum's define-package walked its own external list.
+ *
+ * Strategy: only clear the flag when SYM's home package is PACKAGE.  For
+ * cross-package calls (sym home != package), this is a no-op — matching the
+ * intent of "stop including this in package's external view" while preserving
+ * the home package's export. */
 void cl_unexport_symbol(CL_Obj sym, CL_Obj package)
 {
     CL_Symbol *s;
-    (void)package;
     if (CL_NULL_P(sym)) return;
-    if (CL_MT()) platform_rwlock_wrlock(cl_package_rwlock);
     s = (CL_Symbol *)CL_OBJ_TO_PTR(sym);
+    if (s->package != package) return;
+    if (CL_MT()) platform_rwlock_wrlock(cl_package_rwlock);
     s->flags &= ~CL_SYM_EXPORTED;
     if (CL_MT()) platform_rwlock_unlock(cl_package_rwlock);
 }
