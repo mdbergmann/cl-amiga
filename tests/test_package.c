@@ -385,6 +385,29 @@ TEST(eval_export_unexport)
         ":INTERNAL");
 }
 
+/* Regression: unexport must not strip the EXPORTED flag from symbols whose
+ * home package isn't the one being unexported from.  uiop:define-package
+ * iterates a package's external symbols and unexports those not in the
+ * explicit :export list — including symbols imported from other packages.
+ * If unexport cleared the global flag, the home package would silently lose
+ * its export.  Repro: serapeum imported alexandria:array-index, then
+ * uiop:define-package's pruning pass called (unexport array-index serapeum),
+ * after which (read "alexandria:array-index") errored "not exported". */
+TEST(eval_unexport_preserves_other_package_export)
+{
+    eval_print("(make-package \"UE-HOME\")");
+    eval_print("(intern \"SHARED-SYM\" (find-package \"UE-HOME\"))");
+    eval_print("(export (find-symbol \"SHARED-SYM\" (find-package \"UE-HOME\")) (find-package \"UE-HOME\"))");
+    /* Borrower imports (not :uses) the symbol */
+    eval_print("(make-package \"UE-BORROW\")");
+    eval_print("(import (find-symbol \"SHARED-SYM\" (find-package \"UE-HOME\")) (find-package \"UE-BORROW\"))");
+    /* Borrower attempts to unexport — must NOT clobber HOME's export */
+    eval_print("(unexport (find-symbol \"SHARED-SYM\" (find-package \"UE-BORROW\")) (find-package \"UE-BORROW\"))");
+    ASSERT_STR_EQ(eval_print(
+        "(multiple-value-bind (s st) (find-symbol \"SHARED-SYM\" (find-package \"UE-HOME\")) st)"),
+        ":EXTERNAL");
+}
+
 TEST(eval_use_package)
 {
     eval_print("(make-package \"USE-SRC\")");
@@ -968,6 +991,7 @@ int main(void)
     RUN(eval_intern_respects_let_bound_package);
     RUN(eval_intern_in_fn_respects_let_bound_package);
     RUN(eval_export_unexport);
+    RUN(eval_unexport_preserves_other_package_export);
     RUN(eval_use_package);
     RUN(eval_delete_package);
     RUN(eval_rename_package);
