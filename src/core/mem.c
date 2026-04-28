@@ -1144,6 +1144,40 @@ static void gc_finalize_dead(uint8_t *ptr)
         }
         break;
     }
+    case TYPE_THREAD: {
+        /* Wrapper for an MP thread becoming dead means the OS thread must
+         * already be finished: while the worker is registered, gc_mark
+         * marks t->thread_obj from gc_mark_thread_roots, so the wrapper
+         * is reachable.  thread_entry only calls cl_thread_unregister
+         * AFTER setting status to 2 (finished) or 3 (aborted).  So if
+         * the wrapper is sweeping here, status is guaranteed >= 2.
+         *
+         * Three guards:
+         *  - status >= 2: defense-in-depth; never free a still-running
+         *    worker that some other path failed to keep the wrapper
+         *    reachable for.
+         *  - t->thread_obj points back to THIS wrapper: required to
+         *    avoid a slot-reuse double-free.  After bi_join_thread or
+         *    the bi_make_thread zombie reaper releases the slot, the
+         *    next make-thread can reuse it for an unrelated worker.
+         *    The old wrapper still holds the now-stale thread_id;
+         *    without this check we'd free the new worker on the old
+         *    wrapper's finalize. */
+        CL_ThreadObj *to = (CL_ThreadObj *)ptr;
+        if (to->thread_id != 0 && to->thread_id < CL_MAX_THREADS) {
+            CL_Thread *t = cl_thread_table[to->thread_id];
+            if (t && t != cl_main_thread_ptr && t->status >= 2 &&
+                t->thread_obj == CL_PTR_TO_OBJ(ptr)) {
+                cl_thread_table[to->thread_id] = NULL;
+                if (t->platform_handle) {
+                    platform_thread_detach(t->platform_handle);
+                    t->platform_handle = NULL;
+                }
+                cl_thread_free_worker(t);
+            }
+        }
+        break;
+    }
     default:
         break;
     }

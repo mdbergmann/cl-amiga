@@ -70,6 +70,28 @@ extern CL_OptimizeSettings cl_optimize_settings;
 /* Thread-safety: rwlock protecting all compiler/definition tables */
 extern void *cl_tables_rwlock;
 
+/* Helpers around cl_tables_rwlock that maintain per-thread reader-hold
+ * counts (CL_Thread.rdlock_tables_held) and a per-thread stack of the
+ * rdlock call sites still outstanding.  Use these in preference to
+ * platform_rwlock_{rd,wr,un}lock(cl_tables_rwlock) so that a stuck
+ * writer can be diagnosed ("which thread leaked a reader, and from
+ * where?") and so bi_condition_wait can refuse to sleep while holding
+ * one.  The single-threaded fast path (CL_MT() == 0) skips the
+ * underlying platform call entirely. */
+void cl_tables_rdlock_at(const char *site);
+void cl_tables_wrlock(void);
+void cl_tables_rwunlock(void);
+/* Snapshot per-thread cl_tables_rwlock reader counts (and the sites
+ * that took them) to stderr. */
+void cl_tables_dump_rdlock_holders(const char *header);
+
+/* Compile-time stringification of __LINE__ so each rdlock site reports
+ * its file:line in the diagnostic output. */
+#define _CL_RWL_STR(x)  #x
+#define _CL_RWL_XSTR(x) _CL_RWL_STR(x)
+#define cl_tables_rdlock() \
+    cl_tables_rdlock_at(__FILE__ ":" _CL_RWL_XSTR(__LINE__))
+
 /* Process a single declaration specifier (for proclaim/declaim) */
 void cl_process_declaration_specifier(CL_Obj spec);
 

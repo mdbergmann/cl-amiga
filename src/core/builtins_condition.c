@@ -244,7 +244,7 @@ static CL_Obj find_parents(CL_Obj type_sym)
 {
     CL_Obj result = CL_NIL;
     CL_Obj list;
-    if (CL_MT()) platform_rwlock_rdlock(cl_tables_rwlock);
+    cl_tables_rdlock();
     list = condition_hierarchy;
     while (!CL_NULL_P(list)) {
         CL_Obj entry = cl_car(list);
@@ -254,7 +254,7 @@ static CL_Obj find_parents(CL_Obj type_sym)
         }
         list = cl_cdr(list);
     }
-    if (CL_MT()) platform_rwlock_unlock(cl_tables_rwlock);
+    cl_tables_rwunlock();
     return result;
 }
 
@@ -343,7 +343,7 @@ int cl_is_condition_type(CL_Obj type_sym)
 {
     int result = 0;
     CL_Obj list;
-    if (CL_MT()) platform_rwlock_rdlock(cl_tables_rwlock);
+    cl_tables_rdlock();
     list = condition_hierarchy;
     while (!CL_NULL_P(list)) {
         CL_Obj entry = cl_car(list);
@@ -353,7 +353,7 @@ int cl_is_condition_type(CL_Obj type_sym)
         }
         list = cl_cdr(list);
     }
-    if (CL_MT()) platform_rwlock_unlock(cl_tables_rwlock);
+    cl_tables_rwunlock();
     return result;
 }
 
@@ -541,15 +541,15 @@ static CL_Obj bi_register_condition_type(CL_Obj *args, int n)
     CL_GC_PROTECT(slot_pairs);
     entry = cl_cons(name, cl_cons(parent, CL_NIL));
     CL_GC_PROTECT(entry);
-    if (CL_MT()) platform_rwlock_wrlock(cl_tables_rwlock);
+    cl_tables_wrlock();
     condition_hierarchy = cl_cons(entry, condition_hierarchy);
-    if (CL_MT()) platform_rwlock_unlock(cl_tables_rwlock);
+    cl_tables_rwunlock();
 
     /* Add (name . slot-pairs) to condition_slot_table */
     entry = cl_cons(name, slot_pairs);
-    if (CL_MT()) platform_rwlock_wrlock(cl_tables_rwlock);
+    cl_tables_wrlock();
     condition_slot_table = cl_cons(entry, condition_slot_table);
-    if (CL_MT()) platform_rwlock_unlock(cl_tables_rwlock);
+    cl_tables_rwunlock();
     CL_GC_UNPROTECT(2);
 
     return name;
@@ -611,13 +611,13 @@ static CL_Obj bi_condition_slot_value(CL_Obj *args, int n)
 
     /* Search this type and all ancestors for the slot */
     initarg = CL_NIL;
-    if (CL_MT()) platform_rwlock_rdlock(cl_tables_rwlock);
+    cl_tables_rdlock();
     while (!CL_NULL_P(cur_type) && CL_NULL_P(initarg)) {
         initarg = find_slot_initarg(cur_type, slot_name);
         if (CL_NULL_P(initarg))
             cur_type = condition_parent_type(cur_type);
     }
-    if (CL_MT()) platform_rwlock_unlock(cl_tables_rwlock);
+    cl_tables_rwunlock();
 
     if (CL_NULL_P(initarg))
         return CL_NIL;
@@ -642,13 +642,13 @@ static CL_Obj bi_set_condition_slot_value(CL_Obj *args, int n)
 
     /* Search this type and all ancestors for the slot */
     initarg = CL_NIL;
-    if (CL_MT()) platform_rwlock_rdlock(cl_tables_rwlock);
+    cl_tables_rdlock();
     while (!CL_NULL_P(cur_type) && CL_NULL_P(initarg)) {
         initarg = find_slot_initarg(cur_type, slot_name);
         if (CL_NULL_P(initarg))
             cur_type = condition_parent_type(cur_type);
     }
-    if (CL_MT()) platform_rwlock_unlock(cl_tables_rwlock);
+    cl_tables_rwunlock();
 
     if (CL_NULL_P(initarg)) {
         cl_error(CL_ERR_ARGS, "%SET-CONDITION-SLOT-VALUE: unknown slot");

@@ -193,6 +193,19 @@ typedef struct CL_Thread_s {
     /* ---- Thread registry ---- */
     struct CL_Thread_s *next;
     void *platform_handle;
+
+    /* ---- rwlock leak diagnostics ----
+     * Per-thread reader-hold count for cl_tables_rwlock and cl_package_rwlock.
+     * Bumped/decremented by cl_tables_rdlock / cl_tables_rwunlock (and the
+     * package equivalents) so a writer that gets stuck can identify which
+     * thread leaked a reader lock, and bi_condition_wait can refuse to sleep
+     * while holding one.  rdlock_tables_sites stores the call-site of each
+     * outstanding rdlock so the diagnostic can name the leaking caller. */
+#define CL_RDLOCK_SITES_MAX 32
+    int         rdlock_tables_held;
+    const char *rdlock_tables_sites[CL_RDLOCK_SITES_MAX];
+    int         rdlock_tables_sites_top;
+    int         rdlock_package_held;
 } CL_Thread;
 
 /* Current thread pointer — TLS-backed.
