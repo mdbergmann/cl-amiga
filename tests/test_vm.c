@@ -4011,6 +4011,19 @@ TEST(eval_the_nested)
     ASSERT_EQ_INT(eval_int("(the fixnum (the fixnum (+ 1 2)))"), 3);
 }
 
+TEST(eval_the_values_type_spec)
+{
+    /* (the (values ...) form) — values type specifier (CLHS 4.2.3).
+     * Per CLHS 5.3.2, an implementation is permitted (not required) to
+     * check value counts/types.  We skip the check; (values) and friends
+     * must not signal "invalid compound type specifier head: VALUES". */
+    ASSERT_EQ_INT(eval_int("(the (values) (+ 1 2))"), 3);
+    ASSERT_EQ_INT(eval_int("(the (values fixnum) 42)"), 42);
+    ASSERT_EQ_INT(eval_int("(the (values fixnum &optional) 42)"), 42);
+    ASSERT_EQ_INT(eval_int("(the (values &optional) 42)"), 42);
+    ASSERT_EQ_INT(eval_int("(the (values fixnum string) 42)"), 42);
+}
+
 /* ===== Phase 5 — Trace/Untrace ===== */
 
 TEST(eval_trace_basic)
@@ -8196,6 +8209,7 @@ int main(void)
     RUN(eval_the_type_error);
     RUN(eval_the_safety_zero);
     RUN(eval_the_nested);
+    RUN(eval_the_values_type_spec);
 
     /* Phase 5 — Trace/Untrace */
     RUN(eval_trace_basic);

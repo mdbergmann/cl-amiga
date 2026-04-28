@@ -398,6 +398,15 @@
     `(restart-case (progn ,@body)
        (,name () :report ,format-control (values nil t)))))
 
+;; restart-bind — like restart-case but the body is *not* wrapped in a
+;; non-local exit; if a restart handler is invoked it is called as a regular
+;; function and execution continues after restart-bind returns its value.
+;; CL-Amiga has no interactive debugger driver so we cannot really invoke
+;; user-provided restart handlers; the pragmatic stub just runs the body.
+(defmacro restart-bind (bindings &rest body)
+  (declare (ignore bindings))
+  `(progn ,@body))
+
 ;; cerror — continuable error: establish CONTINUE restart around error
 (defun cerror (format-control datum &rest args)
   (restart-case (apply #'error datum args)

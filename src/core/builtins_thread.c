@@ -87,9 +87,21 @@ static void *thread_entry(void *arg)
     }
 
     if (err == 0) {
-        CL_Obj result = cl_vm_apply(func, NULL, 0);
+        CL_Obj result;
+#ifdef DEBUG_THREAD
+        fprintf(stderr, "[THR] tid=%u CT=%p func=0x%08x type=%d starting\n",
+                t->id, (void *)t, func,
+                CL_HEAP_P(func) ? (int)CL_HDR_TYPE(CL_OBJ_TO_PTR(func)) : -1);
+        fflush(stderr);
+#endif
+        result = cl_vm_apply(func, NULL, 0);
         t->result = result;
         t->status = 2; /* finished */
+#ifdef DEBUG_THREAD
+        fprintf(stderr, "[THR] tid=%u CT=%p finished result=0x%08x\n",
+                t->id, (void *)t, result);
+        fflush(stderr);
+#endif
     } else {
         /* Thread aborted due to error */
         t->status = 3; /* aborted */

@@ -20,6 +20,8 @@
 #include <unistd.h>
 #ifdef PLATFORM_POSIX
 #include <locale.h>
+#include <pthread.h>
+#include <execinfo.h>
 #endif
 
 #ifdef PLATFORM_POSIX
@@ -52,6 +54,16 @@ static void crash_handler(int sig, siginfo_t *info, void *ctx)
                    sig, info ? info->si_addr : NULL,
                    cl_vm.fp, cl_vm.frame_size, cl_vm.sp, cl_vm.stack_size);
     (void)write(2, buf, len);
+    {
+        unsigned long long tid = 0;
+#ifdef PLATFORM_POSIX
+        pthread_threadid_np(NULL, &tid);
+#endif
+        len = snprintf(buf, sizeof(buf),
+                       "[FATAL] thread tid=%llu CT=%p\n",
+                       tid, (void *)cl_current_thread);
+        (void)write(2, buf, len);
+    }
     len = snprintf(buf, sizeof(buf),
                    "[FATAL] arena=%p arena_size=0x%08x bump=0x%08x\n",
                    (void *)cl_heap.arena, (unsigned)cl_heap.arena_size, (unsigned)cl_heap.bump);
@@ -141,6 +153,16 @@ static void crash_handler(int sig, siginfo_t *info, void *ctx)
         }
     }
     vm_trace_dump();
+#ifdef PLATFORM_POSIX
+    /* Native C backtrace */
+    {
+        void *frames[40];
+        int nframes = backtrace(frames, 40);
+        const char hdr[] = "=== Native C backtrace ===\n";
+        (void)write(2, hdr, sizeof(hdr) - 1);
+        backtrace_symbols_fd(frames, nframes, 2);
+    }
+#endif
     _exit(128 + sig);
 }
 
