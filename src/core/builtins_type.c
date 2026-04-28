@@ -344,6 +344,16 @@ static int typep_check(CL_Obj obj, CL_Obj type_spec)
         CL_Obj head = cl_car(type_spec);
         CL_Obj args = cl_cdr(type_spec);
 
+        /* (values ...) is a values type specifier (CLHS 4.2.3); only valid in
+         * THE / FTYPE contexts, not as a typep argument.  Be lenient and treat
+         * a typep on a values-type-spec as always true so that pre-existing
+         * FASLs containing OP_ASSERT_TYPE for a values spec don't break. */
+        if (CL_SYMBOL_P(head) &&
+            head == cl_intern_in("VALUES", 6, cl_package_cl)) {
+            (void)args;
+            return 1;
+        }
+
         /* (or t1 t2 ...) */
         if (head == TYPE_SYM_OR) {
             CL_Obj rest = args;

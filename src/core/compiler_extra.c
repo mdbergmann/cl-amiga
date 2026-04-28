@@ -1652,6 +1652,20 @@ void compile_the(CL_Compiler *c, CL_Obj form)
     type_spec = cl_car(args);
     value_form = cl_car(cl_cdr(args));
 
+    /* Values type specifier (CLHS 4.2.3): (values ...) is only meaningful for
+     * multi-value return-type annotation, not for runtime typep on a single
+     * value.  Per CLHS 5.3.2 "the", implementations are permitted but not
+     * required to check that the number of values matches.  We skip the
+     * assertion entirely, matching the behavior of major implementations. */
+    if (CL_CONS_P(type_spec)) {
+        CL_Obj head = cl_car(type_spec);
+        if (CL_SYMBOL_P(head) &&
+            head == cl_intern_in("VALUES", 6, cl_package_cl)) {
+            compile_expr(c, value_form);
+            return;
+        }
+    }
+
     if (cl_optimize_settings.safety >= 1) {
         /* Disable tail position: ASSERT_TYPE must run after value form */
         int saved_tail = c->in_tail;
