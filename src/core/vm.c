@@ -2962,11 +2962,23 @@ static CL_Obj cl_vm_run(int base_fp, int base_nlx)
 
         VM_CASE(OP_MV_TO_LIST): {
             /* Pops primary from stack, builds list from MV buffer.
-             * For single values (inline opcodes), uses the popped primary. */
+             * For single values (inline opcodes), uses the popped primary.
+             *
+             * cl_mv_count == 0 normally means (values) — no values, empty
+             * list.  But many value-propagating opcodes (OP_LOAD, OP_DUP,
+             * OP_POP, …) don't reset cl_mv_count, so a non-NIL primary on
+             * the stack with cl_mv_count == 0 indicates a stale leak from
+             * an earlier (values) call rather than a true zero-value
+             * return.  Treat non-NIL primary with count 0 as a single
+             * value to preserve the value through (multiple-value-list …)
+             * and unwind-protect's MV round-trip.  Legitimate (values)
+             * keeps primary=NIL, so the empty-list case still fires for
+             * it. */
             CL_Obj primary = cl_vm_pop();
             CL_Obj list = CL_NIL;
             if (cl_mv_count == 0) {
-                /* (values) — no values, empty list */
+                if (!CL_NULL_P(primary))
+                    list = cl_cons(primary, CL_NIL);
             } else if (cl_mv_count == 1) {
                 list = cl_cons(primary, CL_NIL);
             } else {

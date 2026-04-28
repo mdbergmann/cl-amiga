@@ -241,12 +241,20 @@ void cl_thread_shutdown(void);
 #define CL_MAX_THREADS 256
 extern CL_Thread *cl_thread_table[CL_MAX_THREADS];
 
-/* Lock side table: maps lock_id -> void* (platform mutex) */
-#define CL_MAX_LOCKS 1024
+/* Lock side table: maps lock_id -> void* (platform mutex).
+ * Sized for sento workloads: each actor allocates ~3 locks (queue, mbox state,
+ * eventstream registry), plus one withreply-lock per ASK in flight.  Tests
+ * like ASK--SHARED--TIMEOUT--MANY create 2000 actors × ASK simultaneously,
+ * needing >6000 simultaneously-live locks.  16384 fits in 128KB on 64-bit
+ * (64KB on 32-bit Amiga) and absorbs that working set with headroom.  GC
+ * still reclaims dead slots; this is the upper bound when the entire working
+ * set is reachable. */
+#define CL_MAX_LOCKS 16384
 extern void *cl_lock_table[CL_MAX_LOCKS];
 
-/* Condvar side table: maps condvar_id -> void* (platform condvar) */
-#define CL_MAX_CONDVARS 1024
+/* Condvar side table: maps condvar_id -> void* (platform condvar).
+ * Sized to mirror CL_MAX_LOCKS so condvar-paired lock workloads scale. */
+#define CL_MAX_CONDVARS 16384
 extern void *cl_condvar_table[CL_MAX_CONDVARS];
 
 /* Allocate and initialize a new CL_Thread for a worker */

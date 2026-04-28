@@ -289,6 +289,10 @@ typedef struct {
     CL_Obj nicknames;   /* List of nickname strings */
     CL_Obj local_nicknames; /* CDR-10: alist ((nick-string . package) ...) */
     CL_Obj shadowing_symbols; /* List of shadowing symbols */
+    CL_Obj exported_symbols;  /* List of symbols this package exports.
+                               * Per-package because the symbol's home pkg
+                               * may have it exported while a using/importing
+                               * package does not (or vice versa). */
     uint32_t sym_count;
 } CL_Package;
 

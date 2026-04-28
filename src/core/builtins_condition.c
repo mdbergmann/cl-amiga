@@ -239,23 +239,21 @@ static void build_hierarchy(void)
 }
 
 /* Look up parent list for a type in the hierarchy alist.
- * Returns CDR of the matching entry (list of parents), or NIL. */
+ * Returns CDR of the matching entry (list of parents), or NIL.
+ * Snapshot-and-release: condition_hierarchy is only prepended to. */
 static CL_Obj find_parents(CL_Obj type_sym)
 {
-    CL_Obj result = CL_NIL;
     CL_Obj list;
     cl_tables_rdlock();
     list = condition_hierarchy;
+    cl_tables_rwunlock();
     while (!CL_NULL_P(list)) {
         CL_Obj entry = cl_car(list);
-        if (cl_car(entry) == type_sym) {
-            result = cl_cdr(entry);
-            break;
-        }
+        if (cl_car(entry) == type_sym)
+            return cl_cdr(entry);
         list = cl_cdr(list);
     }
-    cl_tables_rwunlock();
-    return result;
+    return CL_NIL;
 }
 
 /* Check if cond_type is a subtype of (or equal to) handler_type.
@@ -338,23 +336,21 @@ static CL_Obj format_condition_report(CL_Condition *c)
     }
 }
 
-/* Check if a symbol is a known condition type in the hierarchy */
+/* Check if a symbol is a known condition type in the hierarchy.
+ * Snapshot-and-release. */
 int cl_is_condition_type(CL_Obj type_sym)
 {
-    int result = 0;
     CL_Obj list;
     cl_tables_rdlock();
     list = condition_hierarchy;
+    cl_tables_rwunlock();
     while (!CL_NULL_P(list)) {
         CL_Obj entry = cl_car(list);
-        if (cl_car(entry) == type_sym) {
-            result = 1;
-            break;
-        }
+        if (cl_car(entry) == type_sym)
+            return 1;
         list = cl_cdr(list);
     }
-    cl_tables_rwunlock();
-    return result;
+    return 0;
 }
 
 /* --- Builtins --- */
@@ -555,11 +551,12 @@ static CL_Obj bi_register_condition_type(CL_Obj *args, int n)
     return name;
 }
 
-/* Find the parent type of a condition type in the hierarchy.
- * Must be called under rdlock if MT. */
-static CL_Obj condition_parent_type(CL_Obj type_name)
+/* Find the parent type of a condition type in a snapshot of the
+ * condition hierarchy.  Caller is responsible for capturing the
+ * snapshot head under cl_tables_rdlock. */
+static CL_Obj condition_parent_in(CL_Obj hierarchy, CL_Obj type_name)
 {
-    CL_Obj entry = condition_hierarchy;
+    CL_Obj entry = hierarchy;
     while (!CL_NULL_P(entry)) {
         CL_Obj pair = cl_car(entry);
         if (cl_car(pair) == type_name)
@@ -569,11 +566,11 @@ static CL_Obj condition_parent_type(CL_Obj type_name)
     return CL_NIL;
 }
 
-/* Find initarg keyword for a slot-name in a specific type's slot table.
- * Must be called under rdlock if MT. */
-static CL_Obj find_slot_initarg(CL_Obj type_name, CL_Obj slot_name)
+/* Find initarg keyword for a slot-name in a snapshot of the condition
+ * slot table.  Caller is responsible for the snapshot. */
+static CL_Obj find_slot_initarg_in(CL_Obj slot_table, CL_Obj type_name, CL_Obj slot_name)
 {
-    CL_Obj table_entry = condition_slot_table;
+    CL_Obj table_entry = slot_table;
     while (!CL_NULL_P(table_entry)) {
         CL_Obj entry = cl_car(table_entry);
         if (cl_car(entry) == type_name) {
@@ -609,15 +606,23 @@ static CL_Obj bi_condition_slot_value(CL_Obj *args, int n)
     cond = (CL_Condition *)CL_OBJ_TO_PTR(cond_obj);
     cur_type = cond->type_name;
 
-    /* Search this type and all ancestors for the slot */
+    /* Search this type and all ancestors for the slot.  Both tables
+     * are only ever prepended to, so snapshot under the lock and walk
+     * without it — avoids leaking the rdlock on cl_car-corrupt-cell
+     * longjmps and the resulting condition-wait safety abort. */
     initarg = CL_NIL;
-    cl_tables_rdlock();
-    while (!CL_NULL_P(cur_type) && CL_NULL_P(initarg)) {
-        initarg = find_slot_initarg(cur_type, slot_name);
-        if (CL_NULL_P(initarg))
-            cur_type = condition_parent_type(cur_type);
+    {
+        CL_Obj hierarchy_snap, slot_table_snap;
+        cl_tables_rdlock();
+        hierarchy_snap = condition_hierarchy;
+        slot_table_snap = condition_slot_table;
+        cl_tables_rwunlock();
+        while (!CL_NULL_P(cur_type) && CL_NULL_P(initarg)) {
+            initarg = find_slot_initarg_in(slot_table_snap, cur_type, slot_name);
+            if (CL_NULL_P(initarg))
+                cur_type = condition_parent_in(hierarchy_snap, cur_type);
+        }
     }
-    cl_tables_rwunlock();
 
     if (CL_NULL_P(initarg))
         return CL_NIL;
@@ -640,15 +645,23 @@ static CL_Obj bi_set_condition_slot_value(CL_Obj *args, int n)
     cond = (CL_Condition *)CL_OBJ_TO_PTR(cond_obj);
     cur_type = cond->type_name;
 
-    /* Search this type and all ancestors for the slot */
+    /* Search this type and all ancestors for the slot.  Both tables
+     * are only ever prepended to, so snapshot under the lock and walk
+     * without it — avoids leaking the rdlock on cl_car-corrupt-cell
+     * longjmps and the resulting condition-wait safety abort. */
     initarg = CL_NIL;
-    cl_tables_rdlock();
-    while (!CL_NULL_P(cur_type) && CL_NULL_P(initarg)) {
-        initarg = find_slot_initarg(cur_type, slot_name);
-        if (CL_NULL_P(initarg))
-            cur_type = condition_parent_type(cur_type);
+    {
+        CL_Obj hierarchy_snap, slot_table_snap;
+        cl_tables_rdlock();
+        hierarchy_snap = condition_hierarchy;
+        slot_table_snap = condition_slot_table;
+        cl_tables_rwunlock();
+        while (!CL_NULL_P(cur_type) && CL_NULL_P(initarg)) {
+            initarg = find_slot_initarg_in(slot_table_snap, cur_type, slot_name);
+            if (CL_NULL_P(initarg))
+                cur_type = condition_parent_in(hierarchy_snap, cur_type);
+        }
     }
-    cl_tables_rwunlock();
 
     if (CL_NULL_P(initarg)) {
         cl_error(CL_ERR_ARGS, "%SET-CONDITION-SLOT-VALUE: unknown slot");

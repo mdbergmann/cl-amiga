@@ -792,6 +792,7 @@ static void gc_mark_children(void *ptr, uint8_t type)
         gc_mark_push(p->nicknames);
         gc_mark_push(p->local_nicknames);
         gc_mark_push(p->shadowing_symbols);
+        gc_mark_push(p->exported_symbols);
         break;
     }
     case TYPE_HASHTABLE: {
@@ -1383,6 +1384,7 @@ static void gc_update_children(void *ptr, uint8_t type)
         gc_update_slot(&p->nicknames);
         gc_update_slot(&p->local_nicknames);
         gc_update_slot(&p->shadowing_symbols);
+        gc_update_slot(&p->exported_symbols);
         break;
     }
     case TYPE_HASHTABLE: {
@@ -2024,6 +2026,7 @@ static void gc_verify_marked(void)
                 gc_verify_check_ref(parent_off, "nicknames", p->nicknames);
                 gc_verify_check_ref(parent_off, "local_nicknames", p->local_nicknames);
                 gc_verify_check_ref(parent_off, "shadowing", p->shadowing_symbols);
+                gc_verify_check_ref(parent_off, "exported", p->exported_symbols);
                 break;
             }
             default:

@@ -73,15 +73,37 @@ static CL_Obj find_own_symbol(const char *name, uint32_t len, CL_Obj package)
 
 /* ---- nolock helpers for internal use under existing lock ---- */
 
+/* Per-package exported-symbols list membership check.  Each package
+ * tracks its own export set so a symbol can be EXTERNAL in its home
+ * and INTERNAL in a using/importing package (CLHS 11.1).  Holders must
+ * already own cl_package_rwlock for read or write. */
+static int exported_p_nolock(CL_Obj sym, CL_Obj package)
+{
+    CL_Package *pkg = (CL_Package *)CL_OBJ_TO_PTR(package);
+    CL_Obj list = pkg->exported_symbols;
+    while (!CL_NULL_P(list)) {
+        if (cl_car(list) == sym) return 1;
+        list = cl_cdr(list);
+    }
+    return 0;
+}
+
 static CL_Obj find_external_nolock(const char *name, uint32_t len, CL_Obj package)
 {
     CL_Obj sym = find_own_symbol(name, len, package);
-    if (!CL_NULL_P(sym)) {
-        CL_Symbol *s = (CL_Symbol *)CL_OBJ_TO_PTR(sym);
-        if (s->flags & CL_SYM_EXPORTED)
-            return sym;
-    }
+    if (!CL_NULL_P(sym) && exported_p_nolock(sym, package))
+        return sym;
     return CL_NIL;
+}
+
+int cl_symbol_external_p(CL_Obj sym, CL_Obj package)
+{
+    int r;
+    if (CL_NULL_P(sym) || CL_NULL_P(package)) return 0;
+    if (CL_MT()) platform_rwlock_rdlock(cl_package_rwlock);
+    r = exported_p_nolock(sym, package);
+    if (CL_MT()) platform_rwlock_unlock(cl_package_rwlock);
+    return r;
 }
 
 CL_Obj cl_package_find_symbol_nolock(const char *name, uint32_t len, CL_Obj package)
@@ -155,6 +177,7 @@ CL_Obj cl_make_package(const char *name)
     pkg->nicknames = CL_NIL;
     pkg->local_nicknames = CL_NIL;
     pkg->shadowing_symbols = CL_NIL;
+    pkg->exported_symbols = CL_NIL;
     pkg->sym_count = 0;
     return CL_PTR_TO_OBJ(pkg);
 }
@@ -212,8 +235,7 @@ CL_Obj cl_find_symbol_with_status(const char *name, uint32_t len,
     /* Search own symbol table first */
     sym = find_own_symbol(name, len, package);
     if (!CL_NULL_P(sym)) {
-        CL_Symbol *s = (CL_Symbol *)CL_OBJ_TO_PTR(sym);
-        if (s->flags & CL_SYM_EXPORTED) {
+        if (exported_p_nolock(sym, package)) {
             *status = 2; /* :EXTERNAL */
         } else {
             *status = 1; /* :INTERNAL */
@@ -326,32 +348,51 @@ void cl_export_symbol(CL_Obj sym, CL_Obj package)
         import_symbol_nolock(sym, package);
     }
 
+    /* Add to package's exported list (idempotent). */
+    if (!exported_p_nolock(sym, package)) {
+        CL_Package *pkg;
+        CL_GC_PROTECT(package);
+        CL_GC_PROTECT(sym);
+        pkg = (CL_Package *)CL_OBJ_TO_PTR(package);
+        pkg->exported_symbols = cl_cons(sym, pkg->exported_symbols);
+        CL_GC_UNPROTECT(2);
+    }
+    /* Keep the legacy global flag in sync (used by printer / describe
+     * fast paths and by FASL loader as a "any package exports this"
+     * heuristic).  Source of truth for find-symbol is the per-package
+     * list above. */
     s->flags |= CL_SYM_EXPORTED;
     if (CL_MT()) platform_rwlock_unlock(cl_package_rwlock);
 }
 
-/* Unexport SYM from PACKAGE.
- *
- * The CL_SYM_EXPORTED flag lives on the symbol, not per-package, so a naive
- * implementation that ignores PACKAGE would clobber the export status in the
- * symbol's home package whenever a using package tries to unexport an
- * inherited or imported symbol.  uiop:define-package's "remove no-longer
- * listed externals" pass relies on (unexport sym other-pkg) being safe; if we
- * cleared the flag globally, alexandria:array-index would lose its EXTERNAL
- * status the moment serapeum's define-package walked its own external list.
- *
- * Strategy: only clear the flag when SYM's home package is PACKAGE.  For
- * cross-package calls (sym home != package), this is a no-op — matching the
- * intent of "stop including this in package's external view" while preserving
- * the home package's export. */
+/* Unexport SYM from PACKAGE.  Removes SYM from PACKAGE's exported list
+ * (the per-package source of truth).  The legacy CL_SYM_EXPORTED flag is
+ * cleared only when the symbol's home package is PACKAGE — keeping the
+ * "any package considers this symbol exported" hint useful for printer
+ * and describe fast paths. */
 void cl_unexport_symbol(CL_Obj sym, CL_Obj package)
 {
     CL_Symbol *s;
+    CL_Package *pkg;
+    CL_Obj prev = CL_NIL;
+    CL_Obj list;
     if (CL_NULL_P(sym)) return;
     s = (CL_Symbol *)CL_OBJ_TO_PTR(sym);
-    if (s->package != package) return;
     if (CL_MT()) platform_rwlock_wrlock(cl_package_rwlock);
-    s->flags &= ~CL_SYM_EXPORTED;
+    pkg = (CL_Package *)CL_OBJ_TO_PTR(package);
+    list = pkg->exported_symbols;
+    while (!CL_NULL_P(list)) {
+        if (cl_car(list) == sym) {
+            CL_Obj next = cl_cdr(list);
+            if (CL_NULL_P(prev)) pkg->exported_symbols = next;
+            else ((CL_Cons *)CL_OBJ_TO_PTR(prev))->cdr = next;
+            break;
+        }
+        prev = list;
+        list = cl_cdr(list);
+    }
+    if (s->package == package)
+        s->flags &= ~CL_SYM_EXPORTED;
     if (CL_MT()) platform_rwlock_unlock(cl_package_rwlock);
 }
 
@@ -516,47 +557,57 @@ void cl_remove_package_local_nickname(const char *name, uint32_t len, CL_Obj fro
     if (CL_MT()) platform_rwlock_unlock(cl_package_rwlock);
 }
 
+/* Export every symbol presently in PACKAGE's own symbol table.
+ * Sets the legacy CL_SYM_EXPORTED flag and pushes each symbol onto
+ * pkg->exported_symbols.
+ *
+ * GC compaction during cl_cons can relocate the package, the symbol
+ * table vector, and the chain conses, so we re-read the chain pointer
+ * for each iteration and use a counted advance to make progress. */
+static void export_all_present_symbols(CL_Obj package)
+{
+    uint32_t i, table_len;
+    CL_GC_PROTECT(package);
+    {
+        CL_Package *pkg = (CL_Package *)CL_OBJ_TO_PTR(package);
+        CL_Vector *tbl = (CL_Vector *)CL_OBJ_TO_PTR(pkg->symbols);
+        table_len = tbl->length;
+    }
+    for (i = 0; i < table_len; i++) {
+        uint32_t consumed = 0;
+        for (;;) {
+            CL_Package *pkg = (CL_Package *)CL_OBJ_TO_PTR(package);
+            CL_Vector *tbl = (CL_Vector *)CL_OBJ_TO_PTR(pkg->symbols);
+            CL_Obj list = tbl->data[i];
+            uint32_t skip = consumed;
+            CL_Obj sym;
+            CL_Symbol *s;
+            while (skip-- > 0 && !CL_NULL_P(list)) list = cl_cdr(list);
+            if (CL_NULL_P(list)) break;
+            sym = cl_car(list);
+            s = (CL_Symbol *)CL_OBJ_TO_PTR(sym);
+            if (!(s->flags & CL_SYM_EXPORTED))
+                s->flags |= CL_SYM_EXPORTED;
+            if (!exported_p_nolock(sym, package)) {
+                CL_Obj cell;
+                CL_GC_PROTECT(sym);
+                cell = cl_cons(sym, CL_NIL);
+                CL_GC_UNPROTECT(1);
+                pkg = (CL_Package *)CL_OBJ_TO_PTR(package);
+                ((CL_Cons *)CL_OBJ_TO_PTR(cell))->cdr = pkg->exported_symbols;
+                pkg->exported_symbols = cell;
+            }
+            consumed++;
+        }
+    }
+    CL_GC_UNPROTECT(1);
+}
+
 void cl_package_export_all_cl_symbols(void)
 {
-    CL_Package *pkg = (CL_Package *)CL_OBJ_TO_PTR(cl_package_cl);
-    CL_Vector *tbl = (CL_Vector *)CL_OBJ_TO_PTR(pkg->symbols);
-    uint32_t i;
-
-    for (i = 0; i < tbl->length; i++) {
-        CL_Obj list = tbl->data[i];
-        while (!CL_NULL_P(list)) {
-            CL_Obj sym = cl_car(list);
-            CL_Symbol *s = (CL_Symbol *)CL_OBJ_TO_PTR(sym);
-            s->flags |= CL_SYM_EXPORTED;
-            list = cl_cdr(list);
-        }
-    }
-
-    /* Also export all keywords */
-    pkg = (CL_Package *)CL_OBJ_TO_PTR(cl_package_keyword);
-    tbl = (CL_Vector *)CL_OBJ_TO_PTR(pkg->symbols);
-    for (i = 0; i < tbl->length; i++) {
-        CL_Obj list = tbl->data[i];
-        while (!CL_NULL_P(list)) {
-            CL_Obj sym = cl_car(list);
-            CL_Symbol *s = (CL_Symbol *)CL_OBJ_TO_PTR(sym);
-            s->flags |= CL_SYM_EXPORTED;
-            list = cl_cdr(list);
-        }
-    }
-
-    /* Also export all CLAMIGA internal symbols */
-    pkg = (CL_Package *)CL_OBJ_TO_PTR(cl_package_clamiga);
-    tbl = (CL_Vector *)CL_OBJ_TO_PTR(pkg->symbols);
-    for (i = 0; i < tbl->length; i++) {
-        CL_Obj list = tbl->data[i];
-        while (!CL_NULL_P(list)) {
-            CL_Obj sym = cl_car(list);
-            CL_Symbol *s = (CL_Symbol *)CL_OBJ_TO_PTR(sym);
-            s->flags |= CL_SYM_EXPORTED;
-            list = cl_cdr(list);
-        }
-    }
+    export_all_present_symbols(cl_package_cl);
+    export_all_present_symbols(cl_package_keyword);
+    export_all_present_symbols(cl_package_clamiga);
 }
 
 /* Helper: check if a CL symbol has a real definition (function, value,
@@ -593,44 +644,55 @@ static int symbol_has_binding(CL_Obj sym)
 
 void cl_package_export_defined_cl_symbols(void)
 {
-    CL_Package *pkg = (CL_Package *)CL_OBJ_TO_PTR(cl_package_cl);
-    CL_Vector *tbl = (CL_Vector *)CL_OBJ_TO_PTR(pkg->symbols);
-    uint32_t i;
-
-    for (i = 0; i < tbl->length; i++) {
-        CL_Obj list = tbl->data[i];
-        while (!CL_NULL_P(list)) {
-            CL_Obj sym = cl_car(list);
-            CL_Symbol *s = (CL_Symbol *)CL_OBJ_TO_PTR(sym);
-            /* Skip already-exported (from pre-boot export) */
-            if (!(s->flags & CL_SYM_EXPORTED)) {
-                if (symbol_has_binding(sym))
-                    s->flags |= CL_SYM_EXPORTED;
-            }
-            list = cl_cdr(list);
-        }
-    }
-
-    /* Keywords and CLAMIGA are always fully exported */
+    /* Walk CL package, exporting each symbol with a real binding (or
+     * already pre-flagged from boot).  Pushes onto cl_package_cl's
+     * exported_symbols list so find-symbol returns :EXTERNAL.
+     * Counted-advance pattern handles cl_cons-induced GC compaction. */
+    uint32_t i, table_len;
+    CL_Obj package = cl_package_cl;
+    CL_GC_PROTECT(package);
     {
-        CL_Obj pkgs[2];
-        int p;
-        pkgs[0] = cl_package_keyword;
-        pkgs[1] = cl_package_clamiga;
-        for (p = 0; p < 2; p++) {
-            pkg = (CL_Package *)CL_OBJ_TO_PTR(pkgs[p]);
-            tbl = (CL_Vector *)CL_OBJ_TO_PTR(pkg->symbols);
-            for (i = 0; i < tbl->length; i++) {
-                CL_Obj list = tbl->data[i];
-                while (!CL_NULL_P(list)) {
-                    CL_Obj sym = cl_car(list);
-                    CL_Symbol *s = (CL_Symbol *)CL_OBJ_TO_PTR(sym);
+        CL_Package *pkg = (CL_Package *)CL_OBJ_TO_PTR(package);
+        CL_Vector *tbl = (CL_Vector *)CL_OBJ_TO_PTR(pkg->symbols);
+        table_len = tbl->length;
+    }
+    for (i = 0; i < table_len; i++) {
+        uint32_t consumed = 0;
+        for (;;) {
+            CL_Package *pkg = (CL_Package *)CL_OBJ_TO_PTR(package);
+            CL_Vector *tbl = (CL_Vector *)CL_OBJ_TO_PTR(pkg->symbols);
+            CL_Obj list = tbl->data[i];
+            uint32_t skip = consumed;
+            CL_Obj sym;
+            CL_Symbol *s;
+            int should_export;
+            while (skip-- > 0 && !CL_NULL_P(list)) list = cl_cdr(list);
+            if (CL_NULL_P(list)) break;
+            sym = cl_car(list);
+            s = (CL_Symbol *)CL_OBJ_TO_PTR(sym);
+            should_export = (s->flags & CL_SYM_EXPORTED)
+                            || symbol_has_binding(sym);
+            if (should_export) {
+                if (!(s->flags & CL_SYM_EXPORTED))
                     s->flags |= CL_SYM_EXPORTED;
-                    list = cl_cdr(list);
+                if (!exported_p_nolock(sym, package)) {
+                    CL_Obj cell;
+                    CL_GC_PROTECT(sym);
+                    cell = cl_cons(sym, CL_NIL);
+                    CL_GC_UNPROTECT(1);
+                    pkg = (CL_Package *)CL_OBJ_TO_PTR(package);
+                    ((CL_Cons *)CL_OBJ_TO_PTR(cell))->cdr = pkg->exported_symbols;
+                    pkg->exported_symbols = cell;
                 }
             }
+            consumed++;
         }
     }
+    CL_GC_UNPROTECT(1);
+
+    /* Keywords and CLAMIGA are always fully exported */
+    export_all_present_symbols(cl_package_keyword);
+    export_all_present_symbols(cl_package_clamiga);
 }
 
 void cl_package_init(void)
@@ -736,8 +798,7 @@ void cl_package_init(void)
         const char **p;
         for (p = builtin_type_names; *p; p++) {
             CL_Obj sym = cl_intern_in(*p, (uint32_t)strlen(*p), cl_package_cl);
-            CL_Symbol *s = (CL_Symbol *)CL_OBJ_TO_PTR(sym);
-            s->flags |= CL_SYM_EXPORTED;
+            cl_export_symbol(sym, cl_package_cl);
         }
     }
 
