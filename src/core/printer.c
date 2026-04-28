@@ -1128,12 +1128,35 @@ static void print_obj(CL_Obj obj)
         /* Per CLHS 9.1.3 / 22.3.1.3 (~A): when *print-escape* and
          * *print-readably* are both NIL (PRINC / ~A), a condition is printed
          * by invoking its report function — the human-readable message
-         * alone, no #<CONDITION ...> wrapper. */
-        if (!print_escape_p() && !print_readably_p() &&
-            !CL_NULL_P(cond->report_string)) {
-            CL_String *rs = (CL_String *)CL_OBJ_TO_PTR(cond->report_string);
-            out_str(rs->data);
-            break;
+         * alone, no #<CONDITION ...> wrapper.
+         *
+         * If define-condition installed a print-object method (e.g. via
+         * `:report (lambda (c s) (format s …))`) for this class, dispatch
+         * through *print-object-hook* to get the user's output.  Falls
+         * back to cond->report_string and the #<CONDITION …> default. */
+        if (!print_escape_p() && !print_readably_p()) {
+            if (!CL_NULL_P(SYM_PRINT_OBJECT_HOOK)) {
+                CL_Obj hook_val = cl_symbol_value(SYM_PRINT_OBJECT_HOOK);
+                if (!CL_NULL_P(hook_val)) {
+                    CL_Obj hook_args[1];
+                    CL_Obj result;
+                    hook_args[0] = obj;
+                    result = cl_vm_apply(hook_val, hook_args, 1);
+                    if (!CL_NULL_P(result) && CL_HEAP_P(result) &&
+                        CL_HDR_TYPE(CL_OBJ_TO_PTR(result)) == TYPE_STRING) {
+                        CL_String *rs = (CL_String *)CL_OBJ_TO_PTR(result);
+                        if (rs->length > 0) {
+                            out_str(rs->data);
+                            break;
+                        }
+                    }
+                }
+            }
+            if (!CL_NULL_P(cond->report_string)) {
+                CL_String *rs = (CL_String *)CL_OBJ_TO_PTR(cond->report_string);
+                out_str(rs->data);
+                break;
+            }
         }
         out_str("#<CONDITION ");
         if (!CL_NULL_P(cond->type_name))
@@ -1355,6 +1378,18 @@ static int write_to_buffer_internal(CL_Obj obj, char *buf, int bufsize)
     int32_t prev_column = current_column;
     int32_t prev_indent_top = pp_indent_top;
     int prev_circle_active = circle_active;
+    /* Save the entire buffer-mode context: re-entry from a print hook
+     * (e.g. *print-object-hook* dispatches to a user method that calls
+     * format, which itself uses cl_princ_to_string for ~A) would clobber
+     * out_buf/out_pos/out_size/to_buffer otherwise — losing whatever the
+     * outer caller had accumulated and writing into a now-stale buffer
+     * after the inner returns. */
+    int prev_to_buffer = to_buffer;
+    char *prev_out_buf = out_buf;
+    int prev_out_pos = out_pos;
+    int prev_out_size = out_size;
+    int result_pos;
+
     current_depth = 0;
     current_column = 0;
     pp_indent_top = 0;
@@ -1379,12 +1414,17 @@ static int write_to_buffer_internal(CL_Obj obj, char *buf, int bufsize)
     }
 
     if (out_pos < out_size) out_buf[out_pos] = '\0';
-    to_buffer = 0;
+    result_pos = out_pos;
+
+    to_buffer = prev_to_buffer;
+    out_buf = prev_out_buf;
+    out_pos = prev_out_pos;
+    out_size = prev_out_size;
     printer_stream = prev;
     current_depth = prev_depth;
     current_column = prev_column;
     pp_indent_top = prev_indent_top;
-    return out_pos;
+    return result_pos;
 }
 
 int cl_prin1_to_string(CL_Obj obj, char *buf, int bufsize)
