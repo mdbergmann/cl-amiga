@@ -566,6 +566,101 @@ TEST(condvar_table_slot_reclaimed_by_gc)
     ASSERT_STR_EQ(r, ":OK");
 }
 
+/* CL_MAX_THREADS = 256, but sento's actor-system pattern creates many
+ * worker threads per test fixture and shuts them down without explicitly
+ * calling mp:join-thread.  thread_entry sets status=2 and unregisters
+ * the worker from cl_thread_list, but until 2026-04-28 the side-table
+ * slot was never reclaimed.  After ~50 sento tests the cascade
+ * "MP:MAKE-THREAD: thread table full (max 256)" failed every fixture in
+ * AGENT.ARRAY-TESTS and beyond.
+ *
+ * Fix: gc_finalize_dead reclaims the slot when the wrapping CL_ThreadObj
+ * is unreachable (which implies the worker is unregistered, since while
+ * registered gc_mark_thread_roots keeps the wrapper alive via
+ * t->thread_obj).  bi_make_thread runs cl_gc and retries on table-full,
+ * mirroring the lock-allocator pattern.
+ *
+ * Test creates >> 256 unjoined threads.  Polls thread-alive-p so each
+ * worker is guaranteed to have set status=2 + unregistered before we
+ * drop the wrapper, eliminating scheduling flakiness. */
+TEST(thread_table_slot_reclaimed_by_gc)
+{
+    const char *r = eval_print(
+        "(progn"
+        "  (dotimes (i 400)"
+        "    (let ((th (mp:make-thread (lambda () nil))))"
+        "      (do () ((not (mp:thread-alive-p th)))"
+        "        (mp:thread-yield))))"
+        "  :ok)");
+    ASSERT_STR_EQ(r, ":OK");
+}
+
+/* Slot-reuse race: bi_join_thread frees the side-table slot, but the
+ * Lisp-visible CL_ThreadObj wrapper keeps the now-stale thread_id.  If
+ * MAKE-THREAD reuses that slot for a new worker, and the OLD wrapper
+ * later becomes unreachable, gc_finalize_dead would key off the stale
+ * id and free the unrelated new worker — corrupting whatever code was
+ * still holding the new thread.  Fixed by setting tobj->thread_id to
+ * (uint32_t)-1 in bi_join_thread after the slot is released. */
+TEST(thread_slot_reuse_after_join_no_double_free)
+{
+    const char *r = eval_print(
+        "(let ((th1 (mp:make-thread (lambda () 42))))"
+        "  (mp:join-thread th1)"
+        "  (let ((th2 (mp:make-thread (lambda () 99))))"
+        "    (setq th1 nil)"
+        "    (gc)"
+        "    (mp:join-thread th2)))");
+    ASSERT_STR_EQ(r, "99");
+}
+
+/* Zombie reaper: when GC can't reclaim slots because user code still
+ * holds wrappers (e.g. bordeaux-threads' .known-threads. registry, which
+ * is non-weak in cl-amiga), bi_make_thread falls back to scanning the
+ * table for status>=2 entries and reaps them, invalidating the
+ * wrapper's thread_id so it becomes a zombie (alive-p => NIL).
+ *
+ * Test: pin every spawned wrapper into a hash table so GC can't free
+ * them, then create > CL_MAX_THREADS workers.  Without the reaper,
+ * make-thread would error after 256.  After the reaper kicks in, the
+ * pinned wrappers should report thread-alive-p => NIL (zombie), and
+ * make-thread should keep working. */
+TEST(thread_zombie_reaper_under_pinned_wrappers)
+{
+    const char *r = eval_print(
+        "(let ((registry (make-hash-table)))"
+        "  (dotimes (i 400)"
+        "    (let ((th (mp:make-thread (lambda () nil))))"
+        "      (do () ((not (mp:thread-alive-p th)))"
+        "        (mp:thread-yield))"
+        "      (setf (gethash i registry) th)))"
+        "  (let ((alive 0) (zombie 0))"
+        "    (maphash (lambda (k v) (declare (ignore k))"
+        "               (if (mp:thread-alive-p v)"
+        "                   (incf alive)"
+        "                   (incf zombie)))"
+        "             registry)"
+        "    (list :total (hash-table-count registry)"
+        "          :alive alive :zombie zombie)))");
+    /* All 400 wrappers retained, all should be zombie now. */
+    ASSERT_STR_EQ(r, "(:TOTAL 400 :ALIVE 0 :ZOMBIE 400)");
+}
+
+/* MP:ALL-THREADS used to allocate fresh CL_ThreadObj wrappers for each
+ * non-main slot, producing aliases that pointed to the same thread_id
+ * as the canonical wrapper.  Now it reuses the canonical wrapper from
+ * CL_Thread.thread_obj so that EQ identity matches across (current-
+ * thread), (make-thread) and (all-threads). */
+TEST(all_threads_returns_canonical_wrapper)
+{
+    const char *r = eval_print(
+        "(let* ((th  (mp:make-thread (lambda () (mp:thread-yield) :done)))"
+        "       (lst (mp:all-threads)))"
+        "  (prog1 (eq th (find th lst))"
+        "    (mp:join-thread th)))");
+    ASSERT_STR_EQ(r, "T");
+}
+
 /* Two threads racing to allocate locks past the table limit must NOT
  * deadlock.  Used to: thread A grabbed gc_mutex inside cl_gc_stop_the_world
  * and waited for B to reach a safepoint; B was blocked on gc_mutex inside
@@ -667,6 +762,10 @@ int main(void)
     /* GC reclaims MP table slots */
     RUN(lock_table_slot_reclaimed_by_gc);
     RUN(condvar_table_slot_reclaimed_by_gc);
+    RUN(thread_table_slot_reclaimed_by_gc);
+    RUN(thread_slot_reuse_after_join_no_double_free);
+    RUN(thread_zombie_reaper_under_pinned_wrappers);
+    RUN(all_threads_returns_canonical_wrapper);
     RUN(make_lock_concurrent_no_deadlock);
 
     teardown();

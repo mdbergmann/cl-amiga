@@ -56,6 +56,19 @@ int platform_thread_join(void *handle, void **result)
     return ret == 0 ? 0 : -1;
 }
 
+void platform_thread_detach(void *handle)
+{
+    pthread_t *th = (pthread_t *)handle;
+    if (!th) return;
+    /* pthread_detach is safe whether the thread is still running or has
+     * already terminated: in the running case it flags the kernel to
+     * reclaim resources at exit; in the terminated case it reaps now.
+     * Either way no one can pthread_join *th afterwards, so freeing our
+     * heap-allocated pthread_t wrapper is sound. */
+    pthread_detach(*th);
+    free(th);
+}
+
 void platform_thread_yield(void)
 {
     sched_yield();

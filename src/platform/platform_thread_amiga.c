@@ -128,6 +128,19 @@ int platform_thread_join(void *handle, void **result)
     return 0;
 }
 
+/* AmigaOS detach: caller guarantees the worker is finished (status >= 2),
+ * so amiga_thread_entry has already executed the post-Signal section by
+ * the time the OS scheduler completes the process exit.  However, we have
+ * no portable way to wait specifically for the process structure to be
+ * reclaimed without joining, so we conservatively leak the AmigaThread
+ * struct (small — ~32 bytes per detached thread) and the join signal.
+ * This avoids any race where amiga_thread_entry's epilogue is still
+ * touching `at` after we'd freed it. */
+void platform_thread_detach(void *handle)
+{
+    (void)handle;
+}
+
 void platform_thread_yield(void)
 {
     /* Let other tasks of same/higher priority run */

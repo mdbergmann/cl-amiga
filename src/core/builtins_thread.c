@@ -15,10 +15,12 @@
 #include "vm.h"
 #include "stream.h"
 #include "float.h"
+#include "compiler.h"
 #include "../platform/platform.h"
 #include "../platform/platform_thread.h"
 #include <string.h>
 #include <stdio.h>
+#include <stdlib.h>
 
 /* ================================================================
  * Pre-interned keyword symbols
@@ -152,8 +154,43 @@ static CL_Obj bi_make_thread(CL_Obj *args, int n)
     if (!child)
         cl_error(CL_ERR_STORAGE, "MP:MAKE-THREAD: cannot allocate thread");
 
-    /* Allocate side table slot */
+    /* Allocate side table slot.  The table is bounded but slots are
+     * reclaimed at GC sweep when the wrapping CL_ThreadObj becomes
+     * unreachable (see gc_finalize_dead, TYPE_THREAD).  Run GC once
+     * and retry — same pattern as bi_make_lock. */
     thread_id = cl_thread_table_alloc(child);
+    if (thread_id < 0) {
+        cl_gc();
+        thread_id = cl_thread_table_alloc(child);
+    }
+    if (thread_id < 0) {
+        /* GC didn't free any slot: every occupant has a still-reachable
+         * wrapper.  In real workloads this happens because external
+         * registries (e.g. bordeaux-threads' .known-threads. weak hash
+         * — which is non-weak under cl-amiga today) hold wrappers for
+         * workers that have long since finished.  Reap any slot whose
+         * worker reached status >= 2 (finished/aborted): NULL the slot,
+         * detach the OS handle, free the worker.  The wrapper stays
+         * alive (so EQ identity survives, name accessor still works),
+         * and gc_finalize_dead's `t->thread_obj == this wrapper` guard
+         * prevents the wrapper's eventual finalize from double-freeing
+         * an unrelated worker if the slot is later reused. */
+        CL_Thread *zombie;
+        int i;
+        platform_mutex_lock(cl_thread_list_lock);
+        for (i = 1; i < CL_MAX_THREADS; i++) {
+            zombie = cl_thread_table[i];
+            if (!zombie || zombie->status < 2) continue;
+            cl_thread_table[i] = NULL;
+            if (zombie->platform_handle) {
+                platform_thread_detach(zombie->platform_handle);
+                zombie->platform_handle = NULL;
+            }
+            cl_thread_free_worker(zombie);
+        }
+        platform_mutex_unlock(cl_thread_list_lock);
+        thread_id = cl_thread_table_alloc(child);
+    }
     if (thread_id < 0) {
         cl_thread_free_worker(child);
         cl_error(CL_ERR_GENERAL, "MP:MAKE-THREAD: thread table full (max %d)",
@@ -246,9 +283,18 @@ static CL_Obj bi_join_thread(CL_Obj *args, int n)
 
     result = t->result;
 
-    /* Clean up worker thread resources */
+    /* Clean up worker thread resources, then invalidate this wrapper's
+     * slot index.  Without the invalidation, if MAKE-THREAD reuses the
+     * slot for a new worker, this wrapper still points at thread_id=N
+     * which now refers to a different CL_Thread; when the wrapper later
+     * dies, gc_finalize_dead would free the unrelated worker.  Setting
+     * thread_id out of range makes finalize skip this wrapper. */
     cl_thread_table_free((int)tobj->thread_id);
     cl_thread_free_worker(t);
+    tobj->thread_id = (uint32_t)-1;
+    /* platform_handle was free()d inside platform_thread_join; clear so
+     * any subsequent code that might pick up `t` doesn't dereference. */
+    /* (t itself is gone now — nothing more to do) */
 
     return result;
 }
@@ -309,8 +355,7 @@ static CL_Obj bi_current_thread(CL_Obj *args, int n)
 static CL_Obj bi_all_threads(CL_Obj *args, int n)
 {
     CL_Obj result = CL_NIL;
-    CL_Obj thread_obj;
-    CL_ThreadObj *tobj;
+    CL_Obj wrapper;
     int i;
     CL_UNUSED(args);
     CL_UNUSED(n);
@@ -323,13 +368,14 @@ static CL_Obj bi_all_threads(CL_Obj *args, int n)
             /* Main thread */
             result = cl_cons(main_thread_obj, result);
         } else {
-            tobj = (CL_ThreadObj *)cl_alloc(TYPE_THREAD,
-                                             sizeof(CL_ThreadObj));
-            if (!tobj) break;
-            tobj->thread_id = (uint32_t)i;
-            tobj->name = cl_thread_table[i]->name;
-            thread_obj = CL_PTR_TO_OBJ(tobj);
-            result = cl_cons(thread_obj, result);
+            /* Reuse the canonical wrapper that was created at make-thread
+             * time (stashed in CL_Thread->thread_obj).  Allocating a
+             * fresh wrapper would create an alias with the same
+             * thread_id; when one wrapper later dies, gc_finalize_dead
+             * would race over which one "owns" the slot. */
+            wrapper = cl_thread_table[i]->thread_obj;
+            if (CL_NULL_P(wrapper)) continue;
+            result = cl_cons(wrapper, result);
         }
     }
     CL_GC_UNPROTECT(1);
@@ -568,6 +614,19 @@ static CL_Obj bi_condition_wait(CL_Obj *args, int n)
     if (!cv_handle || !mutex)
         cl_error(CL_ERR_GENERAL,
                  "MP:CONDITION-WAIT: condvar or lock has been destroyed");
+
+    /* If we're about to park while holding a cl_tables_rwlock reader, every
+     * other thread that needs to take the writer lock will block forever.
+     * Treat as a hard bug: dump the holders and abort so we can find the
+     * leaky path before we ship a deadlock. */
+    if (CL_MT() && cl_get_current_thread()->rdlock_tables_held > 0) {
+        cl_tables_dump_rdlock_holders(
+            "[BUG] mp:condition-wait while holding cl_tables_rwlock reader:");
+        cl_capture_backtrace();
+        fprintf(stderr, "%s", cl_get_current_thread()->backtrace_buf);
+        fflush(stderr);
+        abort();
+    }
 
     if (n > 2 && !CL_NULL_P(args[2])) {
         /* Timed wait: convert seconds to milliseconds */

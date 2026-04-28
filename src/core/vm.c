@@ -2029,9 +2029,9 @@ static CL_Obj cl_vm_run(int base_fp, int base_nlx)
             CL_Obj updater  = constants[upd_idx];
             {
                 CL_Obj pair = cl_cons(accessor, updater);
-                if (CL_MT()) platform_rwlock_wrlock(cl_tables_rwlock);
+                cl_tables_wrlock();
                 setf_table = cl_cons(pair, setf_table);
-                if (CL_MT()) platform_rwlock_unlock(cl_tables_rwlock);
+                cl_tables_rwunlock();
             }
             cl_vm_push(accessor);
             VM_BREAK;

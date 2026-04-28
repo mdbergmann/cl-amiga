@@ -1001,9 +1001,9 @@ void compile_defsetf(CL_Compiler *c, CL_Obj form)
     /* Store mapping in setf_table at compile time (immediate side effect) */
     {
         CL_Obj pair = cl_cons(accessor, updater);
-        if (CL_MT()) platform_rwlock_wrlock(cl_tables_rwlock);
+        cl_tables_wrlock();
         setf_table = cl_cons(pair, setf_table);
-        if (CL_MT()) platform_rwlock_unlock(cl_tables_rwlock);
+        cl_tables_rwunlock();
     }
 
     /* Emit OP_DEFSETF so the mapping is registered at load time (FASL) */
@@ -1168,9 +1168,9 @@ void compile_defun(CL_Compiler *c, CL_Obj form)
         /* Register in setf_fn_table: (accessor . store_sym) */
         {
             CL_Obj pair = cl_cons(accessor, store_sym);
-            if (CL_MT()) platform_rwlock_wrlock(cl_tables_rwlock);
+            cl_tables_wrlock();
             setf_fn_table = cl_cons(pair, setf_fn_table);
-            if (CL_MT()) platform_rwlock_unlock(cl_tables_rwlock);
+            cl_tables_rwunlock();
         }
     }
 
@@ -1516,12 +1516,12 @@ void cl_process_declaration_specifier(CL_Obj spec)
             }
             if (val < 0) val = 0;
             if (val > 3) val = 3;
-            if (CL_MT()) platform_rwlock_wrlock(cl_tables_rwlock);
+            cl_tables_wrlock();
             if (name == SYM_SPEED) cl_optimize_settings.speed = (uint8_t)val;
             else if (name == SYM_SAFETY) cl_optimize_settings.safety = (uint8_t)val;
             else if (name == SYM_DEBUG) cl_optimize_settings.debug = (uint8_t)val;
             else if (name == SYM_SPACE) cl_optimize_settings.space = (uint8_t)val;
-            if (CL_MT()) platform_rwlock_unlock(cl_tables_rwlock);
+            cl_tables_rwunlock();
             quals = cl_cdr(quals);
         }
     }

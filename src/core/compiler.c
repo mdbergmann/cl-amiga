@@ -1,5 +1,7 @@
 #include "compiler_internal.h"
+#include "thread.h"
 #include "../platform/platform_thread.h"
+#include <stdio.h>
 
 /* --- Shared globals --- */
 /* cl_active_compiler and pending_lambda_name are now in CL_Thread */
@@ -11,6 +13,67 @@ CL_Obj setf_expander_table = CL_NIL;  /* define-setf-expander: ((name . expander
 CL_Obj type_table = CL_NIL;
 
 void *cl_tables_rwlock = NULL;
+
+/* Per-thread-tracked rwlock helpers (see compiler.h).
+ * cl_tables_rdlock is a macro at every call site that tags the call
+ * with __FILE__ ":" __LINE__ and forwards to cl_tables_rdlock_at. */
+void cl_tables_rdlock_at(const char *site)
+{
+    if (!CL_MT()) return;
+    platform_rwlock_rdlock(cl_tables_rwlock);
+    if (CT->rdlock_tables_sites_top < CL_RDLOCK_SITES_MAX)
+        CT->rdlock_tables_sites[CT->rdlock_tables_sites_top] = site;
+    CT->rdlock_tables_sites_top++;
+    CT->rdlock_tables_held++;
+}
+
+void cl_tables_wrlock(void)
+{
+    if (!CL_MT()) return;
+    platform_rwlock_wrlock(cl_tables_rwlock);
+}
+
+void cl_tables_rwunlock(void)
+{
+    if (!CL_MT()) return;
+    if (CT->rdlock_tables_held > 0) {
+        CT->rdlock_tables_held--;
+        if (CT->rdlock_tables_sites_top > 0)
+            CT->rdlock_tables_sites_top--;
+    }
+    platform_rwlock_unlock(cl_tables_rwlock);
+}
+
+void cl_tables_dump_rdlock_holders(const char *header)
+{
+    int i;
+    if (!CL_MT()) return;
+    fprintf(stderr, "%s\n", header ? header : "[rwlock] cl_tables_rwlock readers:");
+    for (i = 0; i < CL_MAX_THREADS; i++) {
+        CL_Thread *t = cl_thread_table[i];
+        if (t && t->rdlock_tables_held > 0) {
+            int s, top;
+            fprintf(stderr, "  thread tid=%u status=%u name=", t->id, t->status);
+            if (CL_NULL_P(t->name)) {
+                fprintf(stderr, "(unnamed)");
+            } else if (CL_STRING_P(t->name)) {
+                CL_String *str = (CL_String *)CL_OBJ_TO_PTR(t->name);
+                fprintf(stderr, "\"%.*s\"", (int)str->length, str->data);
+            } else {
+                fprintf(stderr, "?");
+            }
+            fprintf(stderr, " held=%d\n", t->rdlock_tables_held);
+            top = t->rdlock_tables_sites_top;
+            if (top > CL_RDLOCK_SITES_MAX) top = CL_RDLOCK_SITES_MAX;
+            for (s = top - 1; s >= 0; s--) {
+                fprintf(stderr, "    [%d] %s\n", s,
+                        t->rdlock_tables_sites[s]
+                          ? t->rdlock_tables_sites[s] : "(unknown)");
+            }
+        }
+    }
+    fflush(stderr);
+}
 
 CL_Obj SETF_SYM_CAR = CL_NIL;
 CL_Obj SETF_SYM_CDR = CL_NIL;
@@ -899,7 +962,7 @@ top:
                     CL_Obj expander_fn_found = CL_NIL;
                     {
                         CL_Obj exp_entry;
-                        if (CL_MT()) platform_rwlock_rdlock(cl_tables_rwlock);
+                        cl_tables_rdlock();
                         exp_entry = setf_expander_table;
                         while (!CL_NULL_P(exp_entry)) {
                             CL_Obj pair = cl_car(exp_entry);
@@ -909,7 +972,7 @@ top:
                             }
                             exp_entry = cl_cdr(exp_entry);
                         }
-                        if (CL_MT()) platform_rwlock_unlock(cl_tables_rwlock);
+                        cl_tables_rwunlock();
                     }
                     if (!CL_NULL_P(expander_fn_found)) {
                         {
@@ -1698,7 +1761,7 @@ static void compile_setf_place(CL_Compiler *c, CL_Obj place, CL_Obj val_form)
             {
                 CL_Obj expander_fn = CL_NIL;
                 CL_Obj exp_entry;
-                if (CL_MT()) platform_rwlock_rdlock(cl_tables_rwlock);
+                cl_tables_rdlock();
                 exp_entry = setf_expander_table;
                 while (!CL_NULL_P(exp_entry)) {
                     CL_Obj pair = cl_car(exp_entry);
@@ -1708,7 +1771,7 @@ static void compile_setf_place(CL_Compiler *c, CL_Obj place, CL_Obj val_form)
                     }
                     exp_entry = cl_cdr(exp_entry);
                 }
-                if (CL_MT()) platform_rwlock_unlock(cl_tables_rwlock);
+                cl_tables_rwunlock();
                 if (!CL_NULL_P(expander_fn)) {
                     CL_Obj call_args[2];
                     CL_Obj expansion;
@@ -2176,7 +2239,7 @@ static void compile_setf_place(CL_Compiler *c, CL_Obj place, CL_Obj val_form)
             int found = 0;
             {
                 CL_Obj entry;
-                if (CL_MT()) platform_rwlock_rdlock(cl_tables_rwlock);
+                cl_tables_rdlock();
                 entry = setf_table;
                 while (!CL_NULL_P(entry)) {
                     CL_Obj pair = cl_car(entry);
@@ -2187,7 +2250,7 @@ static void compile_setf_place(CL_Compiler *c, CL_Obj place, CL_Obj val_form)
                     }
                     entry = cl_cdr(entry);
                 }
-                if (CL_MT()) platform_rwlock_unlock(cl_tables_rwlock);
+                cl_tables_rwunlock();
             }
             if (found) {
                 CL_Obj args = cl_cdr(place);
@@ -2211,7 +2274,7 @@ static void compile_setf_place(CL_Compiler *c, CL_Obj place, CL_Obj val_form)
                 {
                     CL_Obj expander_fn = CL_NIL;
                     CL_Obj exp_entry;
-                    if (CL_MT()) platform_rwlock_rdlock(cl_tables_rwlock);
+                    cl_tables_rdlock();
                     exp_entry = setf_expander_table;
                     while (!CL_NULL_P(exp_entry)) {
                         CL_Obj pair = cl_car(exp_entry);
@@ -2221,7 +2284,7 @@ static void compile_setf_place(CL_Compiler *c, CL_Obj place, CL_Obj val_form)
                         }
                         exp_entry = cl_cdr(exp_entry);
                     }
-                    if (CL_MT()) platform_rwlock_unlock(cl_tables_rwlock);
+                    cl_tables_rwunlock();
                     if (!CL_NULL_P(expander_fn)) {
                         CL_Obj call_args[2];
                         CL_Obj expansion;
@@ -2243,7 +2306,7 @@ static void compile_setf_place(CL_Compiler *c, CL_Obj place, CL_Obj val_form)
                 CL_Obj setf_fn = CL_NIL;
                 {
                     CL_Obj sfe;
-                    if (CL_MT()) platform_rwlock_rdlock(cl_tables_rwlock);
+                    cl_tables_rdlock();
                     sfe = setf_fn_table;
                     while (!CL_NULL_P(sfe)) {
                         CL_Obj pair = cl_car(sfe);
@@ -2253,7 +2316,7 @@ static void compile_setf_place(CL_Compiler *c, CL_Obj place, CL_Obj val_form)
                         }
                         sfe = cl_cdr(sfe);
                     }
-                    if (CL_MT()) platform_rwlock_unlock(cl_tables_rwlock);
+                    cl_tables_rwunlock();
                 }
                 if (CL_NULL_P(setf_fn)) {
                     /* Optimistic late binding: intern %SETF-<name> in the
@@ -2835,39 +2898,47 @@ void cl_register_macro(CL_Obj name, CL_Obj expander)
     CL_GC_PROTECT(name);
     CL_GC_PROTECT(expander);
     pair = cl_cons(name, expander);
-    if (CL_MT()) platform_rwlock_wrlock(cl_tables_rwlock);
+    cl_tables_wrlock();
     macro_table = cl_cons(pair, macro_table);
-    if (CL_MT()) platform_rwlock_unlock(cl_tables_rwlock);
+    cl_tables_rwunlock();
     CL_GC_UNPROTECT(2);
 }
 
+/* Snapshot-and-release iteration:
+ *   macro_table is only ever PREPENDED-to (cl_register_macro builds a
+ *   new head whose cdr is the prior head).  Old cells stay reachable
+ *   from the new head's cdr chain, so once we capture the head pointer
+ *   under the lock we can release the lock and walk the snapshot
+ *   without races.  Holding the rdlock across cl_car (which can
+ *   cl_error → longjmp on a corrupt cell) was leaking readers and
+ *   blocking later writers — see the cl_tables_rwlock deadlock fix. */
 int cl_macro_p(CL_Obj name)
 {
-    int result = 0;
     CL_Obj list;
-    if (CL_MT()) platform_rwlock_rdlock(cl_tables_rwlock);
+    cl_tables_rdlock();
     list = macro_table;
+    cl_tables_rwunlock();
     while (!CL_NULL_P(list)) {
-        if (cl_car(cl_car(list)) == name) { result = 1; break; }
+        if (cl_car(cl_car(list)) == name)
+            return 1;
         list = cl_cdr(list);
     }
-    if (CL_MT()) platform_rwlock_unlock(cl_tables_rwlock);
-    return result;
+    return 0;
 }
 
 CL_Obj cl_get_macro(CL_Obj name)
 {
-    CL_Obj result = CL_NIL;
     CL_Obj list;
-    if (CL_MT()) platform_rwlock_rdlock(cl_tables_rwlock);
+    cl_tables_rdlock();
     list = macro_table;
+    cl_tables_rwunlock();
     while (!CL_NULL_P(list)) {
         CL_Obj pair = cl_car(list);
-        if (cl_car(pair) == name) { result = cl_cdr(pair); break; }
+        if (cl_car(pair) == name)
+            return cl_cdr(pair);
         list = cl_cdr(list);
     }
-    if (CL_MT()) platform_rwlock_unlock(cl_tables_rwlock);
-    return result;
+    return CL_NIL;
 }
 
 /* --- Type table (for deftype) --- */
@@ -2878,25 +2949,25 @@ void cl_register_type(CL_Obj name, CL_Obj expander)
     CL_GC_PROTECT(name);
     CL_GC_PROTECT(expander);
     pair = cl_cons(name, expander);
-    if (CL_MT()) platform_rwlock_wrlock(cl_tables_rwlock);
+    cl_tables_wrlock();
     type_table = cl_cons(pair, type_table);
-    if (CL_MT()) platform_rwlock_unlock(cl_tables_rwlock);
+    cl_tables_rwunlock();
     CL_GC_UNPROTECT(2);
 }
 
 CL_Obj cl_get_type_expander(CL_Obj name)
 {
-    CL_Obj result = CL_NIL;
     CL_Obj list;
-    if (CL_MT()) platform_rwlock_rdlock(cl_tables_rwlock);
+    cl_tables_rdlock();
     list = type_table;
+    cl_tables_rwunlock();
     while (!CL_NULL_P(list)) {
         CL_Obj pair = cl_car(list);
-        if (cl_car(pair) == name) { result = cl_cdr(pair); break; }
+        if (cl_car(pair) == name)
+            return cl_cdr(pair);
         list = cl_cdr(list);
     }
-    if (CL_MT()) platform_rwlock_unlock(cl_tables_rwlock);
-    return result;
+    return CL_NIL;
 }
 
 /* --- Setf function table --- */
@@ -2907,9 +2978,9 @@ void cl_register_setf_function(CL_Obj accessor, CL_Obj setf_fn_sym)
     CL_GC_PROTECT(accessor);
     CL_GC_PROTECT(setf_fn_sym);
     pair = cl_cons(accessor, setf_fn_sym);
-    if (CL_MT()) platform_rwlock_wrlock(cl_tables_rwlock);
+    cl_tables_wrlock();
     setf_fn_table = cl_cons(pair, setf_fn_table);
-    if (CL_MT()) platform_rwlock_unlock(cl_tables_rwlock);
+    cl_tables_rwunlock();
     CL_GC_UNPROTECT(2);
 }
 

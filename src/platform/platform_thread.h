@@ -16,6 +16,10 @@
 int  platform_thread_create(void **handle, void *(*func)(void *), void *arg,
                             uint32_t stack_size);
 int  platform_thread_join(void *handle, void **result);
+/* Release OS-side resources without joining.  Caller must guarantee the
+ * worker has already finished (status >= 2) so no further use of `handle`
+ * will occur.  After this call, `handle` is invalid. */
+void platform_thread_detach(void *handle);
 void platform_thread_yield(void);
 
 /* ---- Mutex ---- */

@@ -660,9 +660,9 @@ static CL_Obj bi_trace_function(CL_Obj *args, int n)
     if (!(s->flags & CL_SYM_TRACED)) {
         s->flags |= CL_SYM_TRACED;
         cl_trace_count++;
-        if (CL_MT()) platform_rwlock_wrlock(cl_tables_rwlock);
+        cl_tables_wrlock();
         trace_list = cl_cons(args[0], trace_list);
-        if (CL_MT()) platform_rwlock_unlock(cl_tables_rwlock);
+        cl_tables_rwunlock();
     }
     return args[0];
 }
@@ -677,7 +677,7 @@ static CL_Obj bi_untrace_function(CL_Obj *args, int n)
     if (s->flags & CL_SYM_TRACED) {
         s->flags &= ~CL_SYM_TRACED;
         cl_trace_count--;
-        if (CL_MT()) platform_rwlock_wrlock(cl_tables_rwlock);
+        cl_tables_wrlock();
         {
             CL_Obj prev = CL_NIL, curr = trace_list;
             while (!CL_NULL_P(curr)) {
@@ -692,7 +692,7 @@ static CL_Obj bi_untrace_function(CL_Obj *args, int n)
                 curr = cl_cdr(curr);
             }
         }
-        if (CL_MT()) platform_rwlock_unlock(cl_tables_rwlock);
+        cl_tables_rwunlock();
     }
     return args[0];
 }
@@ -702,9 +702,9 @@ static CL_Obj bi_traced_functions(CL_Obj *args, int n)
     CL_Obj result;
     CL_UNUSED(args);
     CL_UNUSED(n);
-    if (CL_MT()) platform_rwlock_rdlock(cl_tables_rwlock);
+    cl_tables_rdlock();
     result = trace_list;
-    if (CL_MT()) platform_rwlock_unlock(cl_tables_rwlock);
+    cl_tables_rwunlock();
     return result;
 }
 
@@ -712,7 +712,7 @@ static CL_Obj bi_untrace_all(CL_Obj *args, int n)
 {
     CL_UNUSED(args);
     CL_UNUSED(n);
-    if (CL_MT()) platform_rwlock_wrlock(cl_tables_rwlock);
+    cl_tables_wrlock();
     {
         CL_Obj list = trace_list;
         while (!CL_NULL_P(list)) {
@@ -724,7 +724,7 @@ static CL_Obj bi_untrace_all(CL_Obj *args, int n)
         }
         trace_list = CL_NIL;
     }
-    if (CL_MT()) platform_rwlock_unlock(cl_tables_rwlock);
+    cl_tables_rwunlock();
     cl_trace_count = 0;
     cl_trace_depth = 0;
     return CL_NIL;

@@ -161,18 +161,18 @@ static CL_Obj lookup_setf_fn_sym(CL_Obj name)
         CL_Obj entry;
         if (!CL_SYMBOL_P(accessor))
             return CL_NIL;
-        if (CL_MT()) platform_rwlock_rdlock(cl_tables_rwlock);
+        cl_tables_rdlock();
         entry = setf_fn_table;
         while (!CL_NULL_P(entry)) {
             CL_Obj pair = cl_car(entry);
             if (cl_car(pair) == accessor) {
                 CL_Obj result = cl_cdr(pair);
-                if (CL_MT()) platform_rwlock_unlock(cl_tables_rwlock);
+                cl_tables_rwunlock();
                 return result;
             }
             entry = cl_cdr(entry);
         }
-        if (CL_MT()) platform_rwlock_unlock(cl_tables_rwlock);
+        cl_tables_rwunlock();
         return CL_NIL;
     }
     return CL_NIL;
@@ -272,7 +272,7 @@ static CL_Obj bi_get_defsetf_setter(CL_Obj *args, int n)
     CL_Obj result = CL_NIL;
     CL_Obj entry;
     CL_UNUSED(n);
-    if (CL_MT()) platform_rwlock_rdlock(cl_tables_rwlock);
+    cl_tables_rdlock();
     entry = setf_table;
     while (!CL_NULL_P(entry)) {
         CL_Obj pair = cl_car(entry);
@@ -282,7 +282,7 @@ static CL_Obj bi_get_defsetf_setter(CL_Obj *args, int n)
         }
         entry = cl_cdr(entry);
     }
-    if (CL_MT()) platform_rwlock_unlock(cl_tables_rwlock);
+    cl_tables_rwunlock();
     return result;
 }
 
@@ -292,9 +292,9 @@ static CL_Obj bi_register_setf_expander(CL_Obj *args, int n)
     CL_Obj pair;
     CL_UNUSED(n);
     pair = cl_cons(args[0], args[1]);
-    if (CL_MT()) platform_rwlock_wrlock(cl_tables_rwlock);
+    cl_tables_wrlock();
     setf_expander_table = cl_cons(pair, setf_expander_table);
-    if (CL_MT()) platform_rwlock_unlock(cl_tables_rwlock);
+    cl_tables_rwunlock();
     return args[0];
 }
 
