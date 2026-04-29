@@ -1046,21 +1046,33 @@ static void fmt_iteration(FmtCtx *ctx, FmtDirective *d)
             iter_count++;
         }
     } else {
-        /* ~{body~} — consume list, elements become args */
+        /* ~{body~} — consume list, elements become args.
+         * CLHS 22.3.7.4: NIL → no iterations.  Non-list non-NIL is allowed
+         * (SBCL behavior): treated as a non-empty source with no extractable
+         * args, so iteration runs until V cap (or ~^ / FMT_MAX_ITERATIONS).
+         * Termination otherwise: iteration consumed args AND exhausted them. */
         CL_Obj list = fmt_next_arg(ctx);
         int list_n = 0;
         CL_Obj list_args[256];
-        CL_Obj tmp;
         int list_ai = 0;
 
-        tmp = list;
-        while (!CL_NULL_P(tmp) && list_n < 256) {
-            list_args[list_n++] = cl_car(tmp);
-            tmp = cl_cdr(tmp);
+        if (CL_NULL_P(list)) {
+            platform_free(body_copy);
+            ctx->pos = body_end;
+            return;
         }
 
-        while (list_ai < list_n && iter_count < max_iter) {
+        if (CL_CONS_P(list)) {
+            CL_Obj tmp = list;
+            while (CL_CONS_P(tmp) && list_n < 256) {
+                list_args[list_n++] = cl_car(tmp);
+                tmp = cl_cdr(tmp);
+            }
+        }
+
+        while (iter_count < max_iter) {
             FmtCtx sub;
+            int prev_ai;
             sub.stream = ctx->stream;
             sub.fmt = body_copy;
             sub.pos = body_copy;
@@ -1068,10 +1080,12 @@ static void fmt_iteration(FmtCtx *ctx, FmtDirective *d)
             sub.nargs = list_n;
             sub.ai = list_ai;
             sub.escape = 0;
+            prev_ai = sub.ai;
             fmt_run(&sub);
             list_ai = sub.ai;
             if (sub.escape) break;
             iter_count++;
+            if (sub.ai > prev_ai && sub.ai >= list_n) break;
         }
     }
 
@@ -1226,19 +1240,46 @@ static void fmt_dispatch(FmtCtx *ctx, FmtDirective *d)
     case '$': {
         /* ~F: fixed-format float — ~w,d,k,ovf,padcharF
            ~$: monetary — ~d,n,w,padchar$ (d=2 dec digits, n=1 min int digits)
-           Simplified: just format number with d decimal digits */
+           CLHS 22.3.3.1: non-number arg falls back to ~A behavior using
+           the same width parameter. */
         CL_Obj arg = fmt_next_arg(ctx);
-        double val = cl_to_double(arg);
-        int32_t digs = (d->directive == '$') ? fmt_param(d, 0, 2) : fmt_param(d, 1, -1);
+        int32_t mincol = (d->directive == '$') ? fmt_param(d, 2, 0)
+                                               : fmt_param(d, 0, 0);
+        int32_t digs = (d->directive == '$') ? fmt_param(d, 0, 2)
+                                             : fmt_param(d, 1, -1);
         char buf[64];
-        if (digs < 0) {
-            snprintf(buf, sizeof(buf), "%g", val);
+        int len;
+        int is_num = CL_FIXNUM_P(arg) ||
+                     (CL_HEAP_P(arg) &&
+                      (CL_HDR_TYPE(CL_OBJ_TO_PTR(arg)) == TYPE_SINGLE_FLOAT ||
+                       CL_HDR_TYPE(CL_OBJ_TO_PTR(arg)) == TYPE_DOUBLE_FLOAT ||
+                       CL_HDR_TYPE(CL_OBJ_TO_PTR(arg)) == TYPE_RATIO ||
+                       CL_HDR_TYPE(CL_OBJ_TO_PTR(arg)) == TYPE_BIGNUM));
+        if (is_num) {
+            double val = cl_to_double(arg);
+            if (digs < 0)
+                len = snprintf(buf, sizeof(buf), "%g", val);
+            else
+                len = snprintf(buf, sizeof(buf), "%.*f", (int)digs, val);
+            if (len < 0) len = 0;
+            if (len > (int)sizeof(buf) - 1) len = (int)sizeof(buf) - 1;
         } else {
-            snprintf(buf, sizeof(buf), "%.*f", (int)digs, val);
+            len = cl_princ_to_string(arg, buf, sizeof(buf));
+        }
+        if (d->atsign && mincol > len) {
+            int i;
+            for (i = 0; i < (int)(mincol - len); i++)
+                cl_stream_write_char(ctx->stream, ' ');
         }
         {
-            const char *p = buf;
-            while (*p) cl_stream_write_char(ctx->stream, *p++);
+            int i;
+            for (i = 0; i < len; i++)
+                cl_stream_write_char(ctx->stream, buf[i]);
+        }
+        if (!d->atsign && mincol > len) {
+            int i;
+            for (i = 0; i < (int)(mincol - len); i++)
+                cl_stream_write_char(ctx->stream, ' ');
         }
         break;
     }

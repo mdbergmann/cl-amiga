@@ -1517,6 +1517,32 @@ TEST(eval_tagbody_local_named_lambda)
         "(loop for labels in '(1 2) collect labels)"), "(1 2)");
 }
 
+TEST(eval_tagbody_nlx_dispatch_stack_balance)
+{
+    /* Regression: when a tagbody uses the NLX path (because its body
+       contains a closure-creating form, like an inline lambda), each `go`
+       compiles to OP_TAGBODY_GO.  The longjmp-landing dispatch table
+       previously jumped straight to the matched tag's code position with
+       the tag-index still on the value stack — but the body resumes at
+       fall-through stack height, so the leftover tag-index polluted the
+       containing form's stack.  In a parallel `let` with two bindings,
+       the first binding's STORE then consumed the stale tag-index instead
+       of its own init result.  Fix: per-tag dispatch shims pop the
+       tag-index before jumping to the tag body. */
+    ASSERT_STR_EQ(eval_print(
+        "(let ((header (cons :hdr '(a b)))"
+        "      (rows (let ((acc nil) (i 3))"
+        "              (tagbody loop-here"
+        "                 (when (zerop i) (go done))"
+        "                 (push (funcall (lambda (x) x) i) acc)"
+        "                 (decf i)"
+        "                 (go loop-here)"
+        "                 done)"
+        "              acc)))"
+        "  (cons header rows))"),
+        "((:HDR A B) 1 2 3)");
+}
+
 /* --- Phase 4 Tier 2: catch/throw --- */
 
 TEST(eval_catch_basic)
@@ -5685,6 +5711,40 @@ TEST(eval_format_iteration_limit)
     ASSERT_STR_EQ(eval_print("(format nil \"~2{~A ~}\" '(1 2 3 4 5))"), "\"1 2 \"");
 }
 
+TEST(eval_format_iteration_nil_list)
+{
+    /* CLHS 22.3.7.4: NIL list arg → no iterations, even with v-prefix. */
+    ASSERT_STR_EQ(eval_print("(format nil \"[~{X~}]\" nil)"), "\"[]\"");
+    ASSERT_STR_EQ(eval_print("(format nil \"[~v{X~}]\" 3 nil)"), "\"[]\"");
+}
+
+TEST(eval_format_iteration_non_list_arg)
+{
+    /* SBCL behavior (matches print-table's ~v{─~} pattern in
+       trivial-benchmark): ~{ with a non-NIL non-list arg treats the arg
+       as a "non-empty source" with no extractable elements.  Iteration
+       runs until the v-prefix cap is reached when body consumes nothing.
+       Body that tries to consume args from such a source would error. */
+    ASSERT_STR_EQ(eval_print("(format nil \"[~v{X~}]\" 3 5)"), "\"[XXX]\"");
+    ASSERT_STR_EQ(eval_print("(format nil \"[~v{X~}]\" 0 5)"), "\"[]\"");
+    /* Print-table-style: outer iterates a list of widths, inner runs
+       v iterations of a literal char per element.  Previously errored
+       with `CAR: 5 is not a list`. */
+    ASSERT_STR_EQ(eval_print(
+        "(format nil \"[~{~v{X~}~^|~:*~}]\" '(3 5 2))"),
+        "\"[XXX|XXXXX]\"");
+}
+
+TEST(eval_format_fixed_non_number_arg)
+{
+    /* CLHS 22.3.3.1: ~F on a non-number arg falls back to ~A behavior
+       using the same width (mincol) parameter.  Without this fallback,
+       trivial-benchmark's print-table chokes on the symbol header row. */
+    ASSERT_STR_EQ(eval_print("(format nil \"[~vf]\" 8 'total)"),  "\"[TOTAL   ]\"");
+    ASSERT_STR_EQ(eval_print("(format nil \"[~v,2f]\" 8 1.5)"),   "\"[1.50    ]\"");
+    ASSERT_STR_EQ(eval_print("(format nil \"[~v,2f]\" 8 :total)"),"\"[TOTAL   ]\"");
+}
+
 TEST(eval_format_escape)
 {
     /* ~^ — escape iteration when no args remain */
@@ -8025,6 +8085,7 @@ int main(void)
     RUN(eval_tagbody_fixnum_tags);
     RUN(eval_tagbody_go_from_if);
     RUN(eval_tagbody_local_named_lambda);
+    RUN(eval_tagbody_nlx_dispatch_stack_balance);
     RUN(eval_catch_basic);
     RUN(eval_catch_normal);
     RUN(eval_catch_throw_across_call);
@@ -8529,6 +8590,9 @@ int main(void)
     RUN(eval_format_iteration_atsign);
     RUN(eval_format_iteration_colon_atsign);
     RUN(eval_format_iteration_limit);
+    RUN(eval_format_iteration_nil_list);
+    RUN(eval_format_iteration_non_list_arg);
+    RUN(eval_format_fixed_non_number_arg);
     RUN(eval_format_escape);
 
     /* Advanced format: ~? recursive and ~R radix */
