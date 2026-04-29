@@ -720,21 +720,42 @@ void compile_tagbody(CL_Compiler *c, CL_Obj form)
         jmp_pos = cl_emit_jump(c, OP_JMP);
 
         /* Landing: longjmp from cross-closure GO arrives here.
-         * TOS = tag index (fixnum). Dispatch to the right tag position. */
-        cl_patch_jump(c, push_pos);
+         * TOS = tag index (fixnum). Dispatch to the right tag position.
+         * Each JTRUE lands in a per-tag shim that pops the tag index
+         * before jumping to the tag's body, so the body resumes with the
+         * stack at the same height as it was at OP_TAGBODY_PUSH (matching
+         * the fall-through / local-go entry conditions). */
+        {
+            int shim_jumps[CL_MAX_TAGBODY_TAGS];
+            int default_jmp;
 
-        /* Dispatch table: compare tag index against each known tag */
-        for (i = 0; i < tb->n_tags; i++) {
-            if (tb->tags[i].code_pos >= 0) {
-                /* DUP, CONST i, EQ, JTRUE -> tag_pos */
-                cl_emit(c, OP_DUP);
-                cl_emit_const(c, CL_MAKE_FIXNUM(i));
-                cl_emit(c, OP_EQ);
-                cl_emit_loop_jump(c, OP_JTRUE, tb->tags[i].code_pos);
+            cl_patch_jump(c, push_pos);
+
+            for (i = 0; i < tb->n_tags; i++) {
+                if (tb->tags[i].code_pos >= 0) {
+                    cl_emit(c, OP_DUP);
+                    cl_emit_const(c, CL_MAKE_FIXNUM(i));
+                    cl_emit(c, OP_EQ);
+                    shim_jumps[i] = cl_emit_jump(c, OP_JTRUE);
+                } else {
+                    shim_jumps[i] = -1;
+                }
             }
+            /* Default fallthrough: pop tag index, jump past shims. */
+            cl_emit(c, OP_POP);
+            default_jmp = cl_emit_jump(c, OP_JMP);
+
+            /* Per-tag shims: pop tag index then jump to tag body. */
+            for (i = 0; i < tb->n_tags; i++) {
+                if (shim_jumps[i] >= 0) {
+                    cl_patch_jump(c, shim_jumps[i]);
+                    cl_emit(c, OP_POP);
+                    cl_emit_loop_jump(c, OP_JMP, tb->tags[i].code_pos);
+                }
+            }
+
+            cl_patch_jump(c, default_jmp);
         }
-        /* Pop the tag index (shouldn't reach here, but be safe) */
-        cl_emit(c, OP_POP);
 
         /* Past dispatch */
         cl_patch_jump(c, jmp_pos);
