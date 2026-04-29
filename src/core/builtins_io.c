@@ -2165,10 +2165,31 @@ static CL_Obj bi_time_report(CL_Obj *args, int n)
     return CL_NIL;
 }
 
+/* Internal-time epoch: captured on first call so values stay small enough for
+ * fixnum range (CLHS 25.1.4.1 only requires epoch no later than Lisp start). */
+static uint32_t cl_internal_time_epoch_ms = 0;
+static int cl_internal_time_epoch_set = 0;
+
+static uint32_t cl_internal_time_now_ms(void)
+{
+    uint32_t now = platform_time_ms();
+    if (!cl_internal_time_epoch_set) {
+        cl_internal_time_epoch_ms = now;
+        cl_internal_time_epoch_set = 1;
+    }
+    return now - cl_internal_time_epoch_ms;
+}
+
 static CL_Obj bi_get_internal_real_time(CL_Obj *args, int n)
 {
     CL_UNUSED(args); CL_UNUSED(n);
-    return CL_MAKE_FIXNUM((int32_t)(platform_time_ms() & 0x7FFFFFFF));
+    return CL_MAKE_FIXNUM((int32_t)(cl_internal_time_now_ms() & CL_FIXNUM_MAX));
+}
+
+static CL_Obj bi_get_internal_run_time(CL_Obj *args, int n)
+{
+    CL_UNUSED(args); CL_UNUSED(n);
+    return CL_MAKE_FIXNUM((int32_t)(cl_internal_time_now_ms() & CL_FIXNUM_MAX));
 }
 
 static CL_Obj bi_sleep(CL_Obj *args, int n)
@@ -2808,6 +2829,7 @@ void cl_builtins_io_init(void)
     cl_register_builtin("%GET-GC-COUNT", bi_get_gc_count, 0, 0, cl_package_clamiga);
     cl_register_builtin("%TIME-REPORT", bi_time_report, 3, 3, cl_package_clamiga);
     defun("GET-INTERNAL-REAL-TIME", bi_get_internal_real_time, 0, 0);
+    defun("GET-INTERNAL-RUN-TIME", bi_get_internal_run_time, 0, 0);
     {
         /* INTERNAL-TIME-UNITS-PER-SECOND — milliseconds */
         CL_Obj sym = cl_intern_in("INTERNAL-TIME-UNITS-PER-SECOND", 30, cl_package_cl);
