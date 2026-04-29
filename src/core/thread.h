@@ -123,6 +123,15 @@ typedef struct CL_Thread_s {
     int     pr_out_size;
     int     pr_pprint_dispatch_active;
 
+    /* In-progress object stack for print-object-hook re-entrancy detection.
+     * Pushed before cl_vm_apply on a hook, popped after.  If the hook would
+     * be fired for an object already on the stack, we emit "#<...>" and
+     * skip the apply — terminates Lisp-side circular print-object recursion
+     * (e.g. sento's actor-cell ↔ message-box ↔ queue ↔ message-item cycle). */
+#define CL_PR_INPROG_MAX 32
+    CL_Obj  pr_inprog[CL_PR_INPROG_MAX];
+    int     pr_inprog_top;
+
     /* ---- Compiler chain ---- */
     struct CL_Compiler_s *active_compiler;
     CL_Obj pending_lambda_name;

@@ -102,6 +102,18 @@ static int print_case(void)
 #define PP_INDENT_MAX   CL_PP_INDENT_MAX
 #define pp_indent_stack (CT->pr_indent_stack)
 #define pp_indent_top   (CT->pr_indent_top)
+#define pr_inprog       (CT->pr_inprog)
+#define pr_inprog_top   (CT->pr_inprog_top)
+
+/* Returns 1 if obj is currently being printed (re-entrant on same object).
+ * Used to short-circuit print-object-hook dispatch on circular structures. */
+static int pr_inprog_contains(CL_Obj obj)
+{
+    int i;
+    for (i = 0; i < pr_inprog_top; i++)
+        if (pr_inprog[i] == obj) return 1;
+    return 0;
+}
 
 /* Forward declaration — out_char is defined after the circle detection section */
 static void out_char(int ch);
@@ -1089,14 +1101,25 @@ static void print_obj(CL_Obj obj)
 
         /* *print-object-hook*: if set, call it for custom struct printing.
          * Hook takes (object) and returns a string to output, or NIL
-         * to fall through to default printing. */
-        if (!CL_NULL_P(SYM_PRINT_OBJECT_HOOK)) {
+         * to fall through to default printing.  Bump current_depth
+         * across the apply so the hard recursion cap sees the nesting
+         * (the hook re-enters the printer via format ~A → cl_princ_to_string
+         * → write_to_buffer_internal → print_obj).  Skip the hook entirely
+         * if obj is already on the in-progress stack — terminates Lisp-side
+         * circular print-object recursion. */
+        if (!CL_NULL_P(SYM_PRINT_OBJECT_HOOK) && !pr_inprog_contains(obj)) {
             CL_Obj hook_val = cl_symbol_value(SYM_PRINT_OBJECT_HOOK);
             if (!CL_NULL_P(hook_val)) {
                 CL_Obj hook_args[1];
-                CL_Obj result;
+                CL_Obj result = CL_NIL;
                 hook_args[0] = obj;
-                result = cl_vm_apply(hook_val, hook_args, 1);
+                if (pr_inprog_top < CL_PR_INPROG_MAX) {
+                    pr_inprog[pr_inprog_top++] = obj;
+                    current_depth++;
+                    result = cl_vm_apply(hook_val, hook_args, 1);
+                    current_depth--;
+                    pr_inprog_top--;
+                }
                 if (!CL_NULL_P(result) && CL_HEAP_P(result) &&
                     CL_HDR_TYPE(CL_OBJ_TO_PTR(result)) == TYPE_STRING) {
                     CL_String *rs = (CL_String *)CL_OBJ_TO_PTR(result);
@@ -1104,6 +1127,10 @@ static void print_obj(CL_Obj obj)
                     break; /* hook handled it */
                 }
             }
+        } else if (!CL_NULL_P(SYM_PRINT_OBJECT_HOOK) && pr_inprog_contains(obj)) {
+            /* Re-entrant on the same object — emit a marker and stop. */
+            out_str("#<...>");
+            break;
         }
 
         slot_names = cl_struct_slot_names(st->type_desc);
@@ -1150,13 +1177,19 @@ static void print_obj(CL_Obj obj)
          * through *print-object-hook* to get the user's output.  Falls
          * back to cond->report_string and the #<CONDITION …> default. */
         if (!print_escape_p() && !print_readably_p()) {
-            if (!CL_NULL_P(SYM_PRINT_OBJECT_HOOK)) {
+            if (!CL_NULL_P(SYM_PRINT_OBJECT_HOOK) && !pr_inprog_contains(obj)) {
                 CL_Obj hook_val = cl_symbol_value(SYM_PRINT_OBJECT_HOOK);
                 if (!CL_NULL_P(hook_val)) {
                     CL_Obj hook_args[1];
-                    CL_Obj result;
+                    CL_Obj result = CL_NIL;
                     hook_args[0] = obj;
-                    result = cl_vm_apply(hook_val, hook_args, 1);
+                    if (pr_inprog_top < CL_PR_INPROG_MAX) {
+                        pr_inprog[pr_inprog_top++] = obj;
+                        current_depth++;
+                        result = cl_vm_apply(hook_val, hook_args, 1);
+                        current_depth--;
+                        pr_inprog_top--;
+                    }
                     if (!CL_NULL_P(result) && CL_HEAP_P(result) &&
                         CL_HDR_TYPE(CL_OBJ_TO_PTR(result)) == TYPE_STRING) {
                         CL_String *rs = (CL_String *)CL_OBJ_TO_PTR(result);
