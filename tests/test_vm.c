@@ -4288,6 +4288,13 @@ TEST(eval_get_internal_real_time)
     ASSERT_STR_EQ(eval_print("(integerp (get-internal-real-time))"), "T");
 }
 
+TEST(eval_get_internal_run_time)
+{
+    /* CLHS 25.1.4.2: get-internal-run-time returns a non-negative integer */
+    ASSERT_STR_EQ(eval_print("(integerp (get-internal-run-time))"), "T");
+    ASSERT_STR_EQ(eval_print("(>= (get-internal-run-time) 0)"), "T");
+}
+
 /* --- Source location tracking --- */
 
 TEST(eval_srcloc_load_backtrace)
@@ -8300,6 +8307,7 @@ int main(void)
     RUN(eval_time_defun);
     RUN(eval_time_stats);
     RUN(eval_get_internal_real_time);
+    RUN(eval_get_internal_run_time);
     RUN(eval_srcloc_load_backtrace);
     RUN(eval_srcloc_reader_line);
 
