@@ -100,9 +100,9 @@ int cl_symbol_external_p(CL_Obj sym, CL_Obj package)
 {
     int r;
     if (CL_NULL_P(sym) || CL_NULL_P(package)) return 0;
-    if (CL_MT()) platform_rwlock_rdlock(cl_package_rwlock);
+    if (cl_package_rwlock) platform_rwlock_rdlock(cl_package_rwlock);
     r = exported_p_nolock(sym, package);
-    if (CL_MT()) platform_rwlock_unlock(cl_package_rwlock);
+    if (cl_package_rwlock) platform_rwlock_unlock(cl_package_rwlock);
     return r;
 }
 
@@ -210,18 +210,18 @@ void cl_package_add_symbol(CL_Obj package, CL_Obj symbol)
 CL_Obj cl_package_find_external(const char *name, uint32_t len, CL_Obj package)
 {
     CL_Obj result;
-    if (CL_MT()) platform_rwlock_rdlock(cl_package_rwlock);
+    if (cl_package_rwlock) platform_rwlock_rdlock(cl_package_rwlock);
     result = find_external_nolock(name, len, package);
-    if (CL_MT()) platform_rwlock_unlock(cl_package_rwlock);
+    if (cl_package_rwlock) platform_rwlock_unlock(cl_package_rwlock);
     return result;
 }
 
 CL_Obj cl_package_find_symbol(const char *name, uint32_t len, CL_Obj package)
 {
     CL_Obj result;
-    if (CL_MT()) platform_rwlock_rdlock(cl_package_rwlock);
+    if (cl_package_rwlock) platform_rwlock_rdlock(cl_package_rwlock);
     result = cl_package_find_symbol_nolock(name, len, package);
-    if (CL_MT()) platform_rwlock_unlock(cl_package_rwlock);
+    if (cl_package_rwlock) platform_rwlock_unlock(cl_package_rwlock);
     return result;
 }
 
@@ -230,7 +230,7 @@ CL_Obj cl_find_symbol_with_status(const char *name, uint32_t len,
 {
     CL_Obj sym;
 
-    if (CL_MT()) platform_rwlock_rdlock(cl_package_rwlock);
+    if (cl_package_rwlock) platform_rwlock_rdlock(cl_package_rwlock);
 
     /* Search own symbol table first */
     sym = find_own_symbol(name, len, package);
@@ -240,7 +240,7 @@ CL_Obj cl_find_symbol_with_status(const char *name, uint32_t len,
         } else {
             *status = 1; /* :INTERNAL */
         }
-        if (CL_MT()) platform_rwlock_unlock(cl_package_rwlock);
+        if (cl_package_rwlock) platform_rwlock_unlock(cl_package_rwlock);
         return sym;
     }
 
@@ -252,7 +252,7 @@ CL_Obj cl_find_symbol_with_status(const char *name, uint32_t len,
             CL_Obj found = find_external_nolock(name, len, cl_car(uses));
             if (!CL_NULL_P(found)) {
                 *status = 3; /* :INHERITED */
-                if (CL_MT()) platform_rwlock_unlock(cl_package_rwlock);
+                if (cl_package_rwlock) platform_rwlock_unlock(cl_package_rwlock);
                 return found;
             }
             uses = cl_cdr(uses);
@@ -260,7 +260,7 @@ CL_Obj cl_find_symbol_with_status(const char *name, uint32_t len,
     }
 
     *status = 0; /* not found */
-    if (CL_MT()) platform_rwlock_unlock(cl_package_rwlock);
+    if (cl_package_rwlock) platform_rwlock_unlock(cl_package_rwlock);
     return CL_NIL;
 }
 
@@ -269,7 +269,7 @@ CL_Obj cl_find_package(const char *name, uint32_t len)
     CL_Obj reg;
     CL_Obj result = CL_NIL;
 
-    if (CL_MT()) platform_rwlock_rdlock(cl_package_rwlock);
+    if (cl_package_rwlock) platform_rwlock_rdlock(cl_package_rwlock);
 
     /* CDR-10: Check local nicknames of current package first */
     if (!CL_NULL_P(cl_current_package)) {
@@ -279,7 +279,7 @@ CL_Obj cl_find_package(const char *name, uint32_t len)
             CL_Obj entry = cl_car(lnicks);
             if (str_eq(cl_car(entry), name, len)) {
                 result = cl_cdr(entry);
-                if (CL_MT()) platform_rwlock_unlock(cl_package_rwlock);
+                if (cl_package_rwlock) platform_rwlock_unlock(cl_package_rwlock);
                 return result;
             }
             lnicks = cl_cdr(lnicks);
@@ -295,7 +295,7 @@ CL_Obj cl_find_package(const char *name, uint32_t len)
 
         /* Check primary name */
         if (str_eq(p->name, name, len)) {
-            if (CL_MT()) platform_rwlock_unlock(cl_package_rwlock);
+            if (cl_package_rwlock) platform_rwlock_unlock(cl_package_rwlock);
             return pkg;
         }
 
@@ -304,7 +304,7 @@ CL_Obj cl_find_package(const char *name, uint32_t len)
             CL_Obj nicks = p->nicknames;
             while (!CL_NULL_P(nicks)) {
                 if (str_eq(cl_car(nicks), name, len)) {
-                    if (CL_MT()) platform_rwlock_unlock(cl_package_rwlock);
+                    if (cl_package_rwlock) platform_rwlock_unlock(cl_package_rwlock);
                     return pkg;
                 }
                 nicks = cl_cdr(nicks);
@@ -313,7 +313,7 @@ CL_Obj cl_find_package(const char *name, uint32_t len)
 
         reg = cl_cdr(reg);
     }
-    if (CL_MT()) platform_rwlock_unlock(cl_package_rwlock);
+    if (cl_package_rwlock) platform_rwlock_unlock(cl_package_rwlock);
     return CL_NIL;
 }
 
@@ -325,9 +325,9 @@ void cl_register_package(CL_Obj pkg)
     CL_GC_PROTECT(pkg);
     entry = cl_cons(p->name, pkg);
     CL_GC_PROTECT(entry);
-    if (CL_MT()) platform_rwlock_wrlock(cl_package_rwlock);
+    if (cl_package_rwlock) platform_rwlock_wrlock(cl_package_rwlock);
     cl_package_registry = cl_cons(entry, cl_package_registry);
-    if (CL_MT()) platform_rwlock_unlock(cl_package_rwlock);
+    if (cl_package_rwlock) platform_rwlock_unlock(cl_package_rwlock);
     CL_GC_UNPROTECT(2);
 }
 
@@ -339,7 +339,7 @@ void cl_export_symbol(CL_Obj sym, CL_Obj package)
     s = (CL_Symbol *)CL_OBJ_TO_PTR(sym);
     sname = (CL_String *)CL_OBJ_TO_PTR(s->name);
 
-    if (CL_MT()) platform_rwlock_wrlock(cl_package_rwlock);
+    if (cl_package_rwlock) platform_rwlock_wrlock(cl_package_rwlock);
 
     /* If symbol is not present in package's own table, import it first.
        Per CL spec: "If the symbol is accessible via use-package,
@@ -362,7 +362,7 @@ void cl_export_symbol(CL_Obj sym, CL_Obj package)
      * heuristic).  Source of truth for find-symbol is the per-package
      * list above. */
     s->flags |= CL_SYM_EXPORTED;
-    if (CL_MT()) platform_rwlock_unlock(cl_package_rwlock);
+    if (cl_package_rwlock) platform_rwlock_unlock(cl_package_rwlock);
 }
 
 /* Unexport SYM from PACKAGE.  Removes SYM from PACKAGE's exported list
@@ -378,7 +378,7 @@ void cl_unexport_symbol(CL_Obj sym, CL_Obj package)
     CL_Obj list;
     if (CL_NULL_P(sym)) return;
     s = (CL_Symbol *)CL_OBJ_TO_PTR(sym);
-    if (CL_MT()) platform_rwlock_wrlock(cl_package_rwlock);
+    if (cl_package_rwlock) platform_rwlock_wrlock(cl_package_rwlock);
     pkg = (CL_Package *)CL_OBJ_TO_PTR(package);
     list = pkg->exported_symbols;
     while (!CL_NULL_P(list)) {
@@ -393,27 +393,27 @@ void cl_unexport_symbol(CL_Obj sym, CL_Obj package)
     }
     if (s->package == package)
         s->flags &= ~CL_SYM_EXPORTED;
-    if (CL_MT()) platform_rwlock_unlock(cl_package_rwlock);
+    if (cl_package_rwlock) platform_rwlock_unlock(cl_package_rwlock);
 }
 
 void cl_import_symbol(CL_Obj sym, CL_Obj package)
 {
     if (CL_NULL_P(sym)) return;
-    if (CL_MT()) platform_rwlock_wrlock(cl_package_rwlock);
+    if (cl_package_rwlock) platform_rwlock_wrlock(cl_package_rwlock);
     import_symbol_nolock(sym, package);
-    if (CL_MT()) platform_rwlock_unlock(cl_package_rwlock);
+    if (cl_package_rwlock) platform_rwlock_unlock(cl_package_rwlock);
 }
 
 void cl_shadow_symbol(const char *name, uint32_t len, CL_Obj package)
 {
     CL_Obj existing;
 
-    if (CL_MT()) platform_rwlock_wrlock(cl_package_rwlock);
+    if (cl_package_rwlock) platform_rwlock_wrlock(cl_package_rwlock);
     existing = find_own_symbol(name, len, package);
 
     if (!CL_NULL_P(existing)) {
         /* Symbol already directly present — nothing to do */
-        if (CL_MT()) platform_rwlock_unlock(cl_package_rwlock);
+        if (cl_package_rwlock) platform_rwlock_unlock(cl_package_rwlock);
         return;
     }
 
@@ -432,7 +432,7 @@ void cl_shadow_symbol(const char *name, uint32_t len, CL_Obj package)
         s->hash = cl_hash_string(name, len);
         cl_package_add_symbol(package, sym);
     }
-    if (CL_MT()) platform_rwlock_unlock(cl_package_rwlock);
+    if (cl_package_rwlock) platform_rwlock_unlock(cl_package_rwlock);
 }
 
 void cl_use_package(CL_Obj pkg_to_use, CL_Obj using_pkg)
@@ -442,14 +442,14 @@ void cl_use_package(CL_Obj pkg_to_use, CL_Obj using_pkg)
 
     if (pkg_to_use == using_pkg) return;
 
-    if (CL_MT()) platform_rwlock_wrlock(cl_package_rwlock);
+    if (cl_package_rwlock) platform_rwlock_wrlock(cl_package_rwlock);
     user = (CL_Package *)CL_OBJ_TO_PTR(using_pkg);
 
     /* Check if already in use-list */
     list = user->use_list;
     while (!CL_NULL_P(list)) {
         if (cl_car(list) == pkg_to_use) {
-            if (CL_MT()) platform_rwlock_unlock(cl_package_rwlock);
+            if (cl_package_rwlock) platform_rwlock_unlock(cl_package_rwlock);
             return; /* already using */
         }
         list = cl_cdr(list);
@@ -460,7 +460,7 @@ void cl_use_package(CL_Obj pkg_to_use, CL_Obj using_pkg)
     CL_GC_PROTECT(pkg_to_use);
     user->use_list = cl_cons(pkg_to_use, user->use_list);
     CL_GC_UNPROTECT(2);
-    if (CL_MT()) platform_rwlock_unlock(cl_package_rwlock);
+    if (cl_package_rwlock) platform_rwlock_unlock(cl_package_rwlock);
 }
 
 void cl_unuse_package(CL_Obj pkg_to_unuse, CL_Obj using_pkg)
@@ -468,7 +468,7 @@ void cl_unuse_package(CL_Obj pkg_to_unuse, CL_Obj using_pkg)
     CL_Package *user;
     CL_Obj prev, list;
 
-    if (CL_MT()) platform_rwlock_wrlock(cl_package_rwlock);
+    if (cl_package_rwlock) platform_rwlock_wrlock(cl_package_rwlock);
     user = (CL_Package *)CL_OBJ_TO_PTR(using_pkg);
     prev = CL_NIL;
     list = user->use_list;
@@ -481,13 +481,13 @@ void cl_unuse_package(CL_Obj pkg_to_unuse, CL_Obj using_pkg)
                 CL_Cons *c = (CL_Cons *)CL_OBJ_TO_PTR(prev);
                 c->cdr = cl_cdr(list);
             }
-            if (CL_MT()) platform_rwlock_unlock(cl_package_rwlock);
+            if (cl_package_rwlock) platform_rwlock_unlock(cl_package_rwlock);
             return;
         }
         prev = list;
         list = cl_cdr(list);
     }
-    if (CL_MT()) platform_rwlock_unlock(cl_package_rwlock);
+    if (cl_package_rwlock) platform_rwlock_unlock(cl_package_rwlock);
 }
 
 void cl_add_package_local_nickname(CL_Obj nick_str, CL_Obj target_pkg, CL_Obj in_pkg)
@@ -496,7 +496,7 @@ void cl_add_package_local_nickname(CL_Obj nick_str, CL_Obj target_pkg, CL_Obj in
     CL_String *ns;
     CL_Obj list;
 
-    if (CL_MT()) platform_rwlock_wrlock(cl_package_rwlock);
+    if (cl_package_rwlock) platform_rwlock_wrlock(cl_package_rwlock);
     p = (CL_Package *)CL_OBJ_TO_PTR(in_pkg);
     ns = (CL_String *)CL_OBJ_TO_PTR(nick_str);
     list = p->local_nicknames;
@@ -508,7 +508,7 @@ void cl_add_package_local_nickname(CL_Obj nick_str, CL_Obj target_pkg, CL_Obj in
             /* Replace target */
             CL_Cons *c = (CL_Cons *)CL_OBJ_TO_PTR(entry);
             c->cdr = target_pkg;
-            if (CL_MT()) platform_rwlock_unlock(cl_package_rwlock);
+            if (cl_package_rwlock) platform_rwlock_unlock(cl_package_rwlock);
             return;
         }
         list = cl_cdr(list);
@@ -526,7 +526,7 @@ void cl_add_package_local_nickname(CL_Obj nick_str, CL_Obj target_pkg, CL_Obj in
         p->local_nicknames = cl_cons(entry, p->local_nicknames);
         CL_GC_UNPROTECT(4);
     }
-    if (CL_MT()) platform_rwlock_unlock(cl_package_rwlock);
+    if (cl_package_rwlock) platform_rwlock_unlock(cl_package_rwlock);
 }
 
 void cl_remove_package_local_nickname(const char *name, uint32_t len, CL_Obj from_pkg)
@@ -534,7 +534,7 @@ void cl_remove_package_local_nickname(const char *name, uint32_t len, CL_Obj fro
     CL_Package *p;
     CL_Obj prev, list;
 
-    if (CL_MT()) platform_rwlock_wrlock(cl_package_rwlock);
+    if (cl_package_rwlock) platform_rwlock_wrlock(cl_package_rwlock);
     p = (CL_Package *)CL_OBJ_TO_PTR(from_pkg);
     prev = CL_NIL;
     list = p->local_nicknames;
@@ -548,13 +548,13 @@ void cl_remove_package_local_nickname(const char *name, uint32_t len, CL_Obj fro
                 CL_Cons *c = (CL_Cons *)CL_OBJ_TO_PTR(prev);
                 c->cdr = cl_cdr(list);
             }
-            if (CL_MT()) platform_rwlock_unlock(cl_package_rwlock);
+            if (cl_package_rwlock) platform_rwlock_unlock(cl_package_rwlock);
             return;
         }
         prev = list;
         list = cl_cdr(list);
     }
-    if (CL_MT()) platform_rwlock_unlock(cl_package_rwlock);
+    if (cl_package_rwlock) platform_rwlock_unlock(cl_package_rwlock);
 }
 
 /* Export every symbol presently in PACKAGE's own symbol table.

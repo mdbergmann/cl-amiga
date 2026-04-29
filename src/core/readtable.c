@@ -88,7 +88,7 @@ int cl_readtable_copy(int from, int to)
     if (from < 0 || from >= CL_RT_POOL_SIZE)
         return -1;
 
-    if (CL_MT()) platform_rwlock_wrlock(cl_readtable_rwlock);
+    if (cl_readtable_rwlock) platform_rwlock_wrlock(cl_readtable_rwlock);
 
     if (to == -1) {
         /* Allocate a new slot */
@@ -110,19 +110,19 @@ int cl_readtable_copy(int from, int to)
             }
         }
         if (to == -1) {
-            if (CL_MT()) platform_rwlock_unlock(cl_readtable_rwlock);
+            if (cl_readtable_rwlock) platform_rwlock_unlock(cl_readtable_rwlock);
             return -1; /* No free slots */
         }
     }
 
     if (to < 0 || to >= CL_RT_POOL_SIZE) {
-        if (CL_MT()) platform_rwlock_unlock(cl_readtable_rwlock);
+        if (cl_readtable_rwlock) platform_rwlock_unlock(cl_readtable_rwlock);
         return -1;
     }
 
     memcpy(&cl_readtable_pool[to], &cl_readtable_pool[from], sizeof(CL_Readtable));
     cl_readtable_alloc_mask |= (1u << to);
-    if (CL_MT()) platform_rwlock_unlock(cl_readtable_rwlock);
+    if (cl_readtable_rwlock) platform_rwlock_unlock(cl_readtable_rwlock);
     return to;
 }
 
@@ -130,9 +130,9 @@ void cl_readtable_free(int idx)
 {
     if (idx < 2 || idx >= CL_RT_POOL_SIZE)
         return; /* Don't free slots 0 or 1 */
-    if (CL_MT()) platform_rwlock_wrlock(cl_readtable_rwlock);
+    if (cl_readtable_rwlock) platform_rwlock_wrlock(cl_readtable_rwlock);
     cl_readtable_alloc_mask &= ~(1u << idx);
-    if (CL_MT()) platform_rwlock_unlock(cl_readtable_rwlock);
+    if (cl_readtable_rwlock) platform_rwlock_unlock(cl_readtable_rwlock);
 }
 
 /* Reclaim readtable slots not referenced by *readtable* or
