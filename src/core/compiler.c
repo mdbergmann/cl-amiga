@@ -833,6 +833,18 @@ static void scan_qq_for_boxing(CL_Obj tmpl, CL_Obj *vars, int n_vars,
                                uint8_t *mutated, uint8_t *captured,
                                int closure_depth)
 {
+    /* Vector template — scan each element as a sub-template
+     * (unquotes inside #(... ,foo ...) need to box `foo` if captured). */
+    if (CL_VECTOR_P(tmpl)) {
+        CL_Vector *v = (CL_Vector *)CL_OBJ_TO_PTR(tmpl);
+        uint32_t i, n = cl_vector_active_length(v);
+        CL_Obj *data = cl_vector_data(v);
+        for (i = 0; i < n; i++)
+            scan_qq_for_boxing(data[i], vars, n_vars,
+                               mutated, captured, closure_depth);
+        return;
+    }
+
     if (!CL_CONS_P(tmpl)) return;
 
     if (cl_car(tmpl) == SYM_UNQUOTE || cl_car(tmpl) == SYM_UNQUOTE_SPLICING) {

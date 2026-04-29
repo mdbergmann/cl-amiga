@@ -240,6 +240,29 @@ static CL_Obj qq_expand(CL_Obj x, int depth)
             return CL_NIL;
         if (CL_SYMBOL_P(x))
             return qq_quote(x);
+        /* Vector template: convert elements to a list, expand quasiquote
+         * on the list, then wrap so it builds a vector at runtime.
+         * Form returned: (COERCE <list-form> 'SIMPLE-VECTOR).  Splices
+         * inside the vector work for free since the list expansion
+         * already handles them. */
+        if (CL_VECTOR_P(x)) {
+            CL_Vector *v = (CL_Vector *)CL_OBJ_TO_PTR(x);
+            uint32_t i, n = cl_vector_active_length(v);
+            CL_Obj elems = CL_NIL, list_form;
+            CL_Obj *data = cl_vector_data(v);
+            CL_GC_PROTECT(elems);
+            for (i = n; i > 0; i--)
+                elems = cl_cons(data[i - 1], elems);
+            list_form = qq_expand(elems, depth);
+            CL_GC_UNPROTECT(1);
+            {
+                CL_Obj sym_coerce = cl_intern_in("COERCE", 6, cl_package_cl);
+                CL_Obj sym_sv = cl_intern_in("SIMPLE-VECTOR", 13, cl_package_cl);
+                return cl_cons(sym_coerce,
+                               cl_cons(list_form,
+                                       cl_cons(qq_quote(sym_sv), CL_NIL)));
+            }
+        }
         /* Self-evaluating: fixnum, char, string, etc. */
         return x;
     }

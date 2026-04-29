@@ -1054,6 +1054,27 @@ TEST(eval_quasiquote_once_only_pattern)
                   eval_print("(macroexpand-1 '(test-oo x (+ 1 2)))"));
 }
 
+/* `#(,x) and `#(,@xs) — quasiquote inside vector templates.  Sento's FSM
+ * BUNCHER tests build per-event vectors with
+ *   (concatenate 'vector vec `#(,(queue-num *received-event*)))
+ * which previously evaluated to a literal #((UNQUOTE …)) because the qq
+ * expander treated vectors as opaque atoms. */
+TEST(eval_quasiquote_vector_unquote)
+{
+    ASSERT_STR_EQ(eval_print("(let ((x 42)) `#(,x))"), "#(42)");
+    ASSERT_STR_EQ(eval_print("(let ((x 1) (y 2)) `#(,x ,y))"), "#(1 2)");
+    ASSERT_STR_EQ(eval_print("(let ((s 'foo)) `#(a ,s c))"),
+                  "#(A FOO C)");
+}
+
+TEST(eval_quasiquote_vector_splice)
+{
+    ASSERT_STR_EQ(eval_print("(let ((items (list 1 2 3))) `#(,@items))"),
+                  "#(1 2 3)");
+    ASSERT_STR_EQ(eval_print("(let ((items '(b c))) `#(a ,@items d))"),
+                  "#(A B C D)");
+}
+
 /* --- Standard condition accessors --- */
 
 TEST(eval_reader_error_condition)
@@ -7912,6 +7933,8 @@ int main(void)
     RUN(eval_quasiquote_unquote);
     RUN(eval_quasiquote_splicing);
     RUN(eval_quasiquote_splicing_nconc);
+    RUN(eval_quasiquote_vector_unquote);
+    RUN(eval_quasiquote_vector_splice);
     RUN(eval_macroexpand_1_values_and_env);
     RUN(eval_macroexpand_symbol_macro_nil_expansion);
     RUN(eval_subtypep_typep_env_arg);
