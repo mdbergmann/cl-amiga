@@ -547,8 +547,12 @@ void compile_lambda(CL_Compiler *c, CL_Obj form)
         else
             inner->key_suppliedp_indices[i] = alloc_temp_slot(env);
     }
-    for (i = 0; i < inner->ll.n_aux; i++)
-        cl_env_add_local(env, inner->ll.aux_names[i]);
+    /* &aux locals are added one at a time during prologue emission
+     * (see below) so each init form is compiled in an environment where
+     * the variable being bound is NOT yet visible — matching LET* semantics
+     * per CLHS 3.4.1.4.  This lets `(&aux (record (list record)))` see the
+     * outer parameter `record` in the init form rather than the freshly-
+     * shadowed (NIL) slot. */
 
     /* Emit prologue for key defaults: check the VM-set tracking slot,
      * not the key value itself (which could legitimately be NIL).
@@ -586,15 +590,19 @@ void compile_lambda(CL_Compiler *c, CL_Obj form)
         }
     }
 
-    /* Emit prologue for &aux bindings */
+    /* Emit prologue for &aux bindings.  Add the local AFTER compiling
+     * its init form so the init sees the outer scope (parameter or earlier
+     * binding) rather than a freshly-shadowed NIL slot of the same name —
+     * LET* semantics per CLHS 3.4.1.4. */
     for (i = 0; i < inner->ll.n_aux; i++) {
-        int aux_slot = cl_env_lookup(env, inner->ll.aux_names[i]);
+        int aux_slot;
         {
             int saved = inner->in_tail;
             inner->in_tail = 0;
             compile_expr(inner, inner->ll.aux_inits[i]);
             inner->in_tail = saved;
         }
+        aux_slot = cl_env_add_local(env, inner->ll.aux_names[i]);
         cl_emit(inner, OP_STORE);
         cl_emit(inner, (uint8_t)aux_slot);
         cl_emit(inner, OP_POP);
