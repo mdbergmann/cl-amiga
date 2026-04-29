@@ -17,9 +17,17 @@ void *cl_tables_rwlock = NULL;
 /* Per-thread-tracked rwlock helpers (see compiler.h).
  * cl_tables_rdlock is a macro at every call site that tags the call
  * with __FILE__ ":" __LINE__ and forwards to cl_tables_rdlock_at. */
+/* Lock state tracking is keyed off whether the rwlock has been
+ * initialized, NOT off CL_MT() — the latter can flip from true → false
+ * while a thread holds an rdlock (e.g. when the last sento worker exits
+ * after a test fixture's actor-system shutdown), which would skip the
+ * unlock and leave the held counter — and the underlying platform
+ * rwlock — permanently leaked.  As long as cl_tables_rwlock is non-NULL
+ * (initialized in cl_compiler_init), pair every rdlock with a rwunlock
+ * regardless of current thread count. */
 void cl_tables_rdlock_at(const char *site)
 {
-    if (!CL_MT()) return;
+    if (!cl_tables_rwlock) return;
     platform_rwlock_rdlock(cl_tables_rwlock);
     if (CT->rdlock_tables_sites_top < CL_RDLOCK_SITES_MAX)
         CT->rdlock_tables_sites[CT->rdlock_tables_sites_top] = site;
@@ -29,13 +37,13 @@ void cl_tables_rdlock_at(const char *site)
 
 void cl_tables_wrlock(void)
 {
-    if (!CL_MT()) return;
+    if (!cl_tables_rwlock) return;
     platform_rwlock_wrlock(cl_tables_rwlock);
 }
 
 void cl_tables_rwunlock(void)
 {
-    if (!CL_MT()) return;
+    if (!cl_tables_rwlock) return;
     if (CT->rdlock_tables_held > 0) {
         CT->rdlock_tables_held--;
         if (CT->rdlock_tables_sites_top > 0)
