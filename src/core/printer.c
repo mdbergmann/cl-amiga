@@ -697,8 +697,23 @@ static int try_pprint_dispatch(CL_Obj obj)
     return 1;
 }
 
+/* Hard cap on recursive printing depth — independent of *print-level*.
+ * Default *print-level* is NIL (unlimited), but custom print-object methods
+ * that call into our printer via the *print-object-hook* path each enter
+ * a fresh write_to_buffer_internal context; circular references between
+ * objects (e.g. sento's actor-cell ↔ message-box ↔ queue ↔ message-item's
+ * handler-fun-args containing the actor-cell) recurse without bound and
+ * either stack-overflow or corrupt the print buffer.  This cap fires
+ * regardless of *print-level* and short-circuits to "..." once the
+ * cumulative recursion exceeds CL_PRINT_HARD_CAP. */
+#define CL_PRINT_HARD_CAP 64
+
 static void print_obj(CL_Obj obj)
 {
+    if (current_depth >= CL_PRINT_HARD_CAP) {
+        out_str("...");
+        return;
+    }
     /* Circle check: emit #n= or #n# for shared/circular objects */
     {
         int cc = circle_check(obj);
@@ -1390,7 +1405,10 @@ static int write_to_buffer_internal(CL_Obj obj, char *buf, int bufsize)
     int prev_out_size = out_size;
     int result_pos;
 
-    current_depth = 0;
+    /* Preserve current_depth across nested write_to_buffer_internal
+     * calls so the hard recursion cap in print_obj sees the cumulative
+     * depth.  current_depth is restored by save/restore below — this
+     * just means a nested call picks up where the outer left off. */
     current_column = 0;
     pp_indent_top = 0;
     to_buffer = 1;
