@@ -72,6 +72,14 @@
 (defmacro pop (place) (let ((g (gensym))) `(let ((,g (car ,place))) (setf ,place (cdr ,place)) ,g)))
 (defmacro incf (place &optional (delta 1)) `(setf ,place (+ ,place ,delta)))
 (defmacro decf (place &optional (delta 1)) `(setf ,place (- ,place ,delta)))
+(defmacro remf (place indicator)
+  ;; CLHS 5.1.2: remf modifies the place.  %remf returns the new list as
+  ;; primary value and T/NIL as second; we setf the place and return the
+  ;; second value as a generalized boolean.
+  (let ((new (gensym)) (found (gensym)))
+    `(multiple-value-bind (,new ,found) (clamiga::%remf ,place ,indicator)
+       (setf ,place ,new)
+       ,found)))
 (defsetf elt %setf-elt)
 (defsetf readtable-case %setf-readtable-case)
 
