@@ -980,6 +980,14 @@ static void gc_mark_thread_roots(CL_Thread *t)
     gc_mark_obj(t->rd_stream);
     gc_mark_obj(t->rd_uninterned);
 
+    /* Printer in-progress object stack (re-entrancy detection in
+     * print-object-hook).  Pinned across hook apply so a GC inside the
+     * Lisp print-object method doesn't sweep the object whose recursion
+     * we're guarding. */
+    for (i = 0; i < t->pr_inprog_top; i++) {
+        gc_mark_obj(t->pr_inprog[i]);
+    }
+
     /* Compiler constants (active compilers may hold CL_Obj values
      * in platform_alloc'd memory not reachable from the GC arena) */
     {
@@ -1537,6 +1545,11 @@ static void gc_update_thread_roots(CL_Thread *t)
     gc_update_slot(&t->interrupt_func);
     gc_update_slot(&t->current_lex_env);
     gc_update_slot(&t->thread_obj);
+
+    /* Printer in-progress object stack — heap pointers can be relocated
+     * by compaction during a Lisp print-object hook (which can allocate). */
+    for (i = 0; i < t->pr_inprog_top; i++)
+        gc_update_slot(&t->pr_inprog[i]);
 
     /* Compiler constants (platform_alloc'd, hold CL_Obj refs) */
     {
