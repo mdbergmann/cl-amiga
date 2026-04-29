@@ -261,9 +261,9 @@ CL_Obj cl_intern_in(const char *name, uint32_t len, CL_Obj package)
     CL_Symbol *s;
 
     /* Fast path: read-lock check */
-    if (CL_MT()) platform_rwlock_rdlock(cl_package_rwlock);
+    if (cl_package_rwlock) platform_rwlock_rdlock(cl_package_rwlock);
     existing = cl_package_find_symbol_nolock(name, len, package);
-    if (CL_MT()) platform_rwlock_unlock(cl_package_rwlock);
+    if (cl_package_rwlock) platform_rwlock_unlock(cl_package_rwlock);
     if (!CL_NULL_P(existing))
         return existing;
 
@@ -279,14 +279,14 @@ CL_Obj cl_intern_in(const char *name, uint32_t len, CL_Obj package)
     s->hash = cl_hash_string(name, len);
 
     /* Write-lock with re-check */
-    if (CL_MT()) platform_rwlock_wrlock(cl_package_rwlock);
+    if (cl_package_rwlock) platform_rwlock_wrlock(cl_package_rwlock);
     existing = cl_package_find_symbol_nolock(name, len, package);
     if (!CL_NULL_P(existing)) {
-        if (CL_MT()) platform_rwlock_unlock(cl_package_rwlock);
+        if (cl_package_rwlock) platform_rwlock_unlock(cl_package_rwlock);
         return existing;
     }
     cl_package_add_symbol(package, sym);
-    if (CL_MT()) platform_rwlock_unlock(cl_package_rwlock);
+    if (cl_package_rwlock) platform_rwlock_unlock(cl_package_rwlock);
     return sym;
 }
 
