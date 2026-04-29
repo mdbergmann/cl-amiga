@@ -4864,14 +4864,27 @@ TEST(eval_rassoc_if)
 
 TEST(eval_remf)
 {
+    /* CLHS 5.1.2: REMF is a place-modifying macro that destructively
+       removes the indicator/value pair from the plist named by place,
+       and returns a single generalized boolean (T if removed, NIL if
+       the indicator was not present). */
     ASSERT_STR_EQ(eval_print(
         "(let ((p (list :a 1 :b 2 :c 3)))"
         "  (remf p :b)"
         "  p)"), "(:A 1 :C 3)");
+    /* Removing the head of the plist must update the variable. */
     ASSERT_STR_EQ(eval_print(
-        "(multiple-value-list (remf (list :a 1 :b 2) :a))"), "((:B 2) T)");
+        "(let ((p (list :a 1 :b 2)))"
+        "  (remf p :a)"
+        "  p)"), "(:B 2)");
+    /* Return value is the boolean. */
     ASSERT_STR_EQ(eval_print(
-        "(multiple-value-list (remf (list :a 1 :b 2) :z))"), "((:A 1 :B 2) NIL)");
+        "(let ((p (list :a 1 :b 2))) (remf p :a))"), "T");
+    ASSERT_STR_EQ(eval_print(
+        "(let ((p (list :a 1 :b 2))) (remf p :z))"), "NIL");
+    /* Place is unchanged when indicator absent. */
+    ASSERT_STR_EQ(eval_print(
+        "(let ((p (list :a 1 :b 2))) (remf p :z) p)"), "(:A 1 :B 2)");
 }
 
 /* --- Paren depth --- */

@@ -1012,7 +1012,7 @@ void cl_builtins_lists_init(void)
     /* Phase 8 Step 1 */
     defun("LIST*", bi_list_star, 1, -1);
     defun("MAKE-LIST", bi_make_list, 1, -1);
-    defun("REMF", bi_remf, 2, 2);
+    cl_register_builtin("%REMF", bi_remf, 2, 2, cl_package_clamiga);
 
     /* Mapping variants */
     defun("MAPC", bi_mapc, 2, -1);
