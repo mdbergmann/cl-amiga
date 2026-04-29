@@ -3073,6 +3073,26 @@ TEST(eval_delete)
     ASSERT_STR_EQ(eval_print("(delete \"b\" (list \"a\" \"b\" \"c\") :test #'equal)"), "(\"a\" \"c\")");
 }
 
+/* DELETE on non-list sequences delegates to REMOVE (CLHS allows
+ * destructive operations to return a fresh sequence).  Sento's array-
+ * agent calls (apply #'delete item array :test #'string=) on the
+ * underlying vector — previously the list-only loop tripped on cl_car
+ * of an empty vector. */
+TEST(eval_delete_vector)
+{
+    ASSERT_STR_EQ(eval_print("(delete \"foo\" #() :test #'string=)"), "#()");
+    ASSERT_STR_EQ(eval_print(
+        "(delete \"foo\" (vector \"bar\" \"foo\" \"baz\") :test #'string=)"),
+        "#(\"bar\" \"baz\")");
+    ASSERT_STR_EQ(eval_print("(delete 2 #(1 2 3 2 4))"), "#(1 3 4)");
+}
+
+TEST(eval_delete_string)
+{
+    ASSERT_STR_EQ(eval_print("(delete #\\b \"abcb\")"), "\"ac\"");
+    ASSERT_STR_EQ(eval_print("(delete #\\x \"abc\")"), "\"abc\"");
+}
+
 TEST(eval_delete_if)
 {
     ASSERT_STR_EQ(eval_print("(delete-if #'zerop (list 0 1 0 2 0 3))"), "(1 2 3)");
@@ -8147,6 +8167,8 @@ int main(void)
     RUN(eval_nconc);
     RUN(eval_nreverse);
     RUN(eval_delete);
+    RUN(eval_delete_vector);
+    RUN(eval_delete_string);
     RUN(eval_delete_if);
     RUN(eval_nsubst);
     RUN(eval_butlast);

@@ -998,6 +998,11 @@ static CL_Obj remove_from_vector(CL_Obj seq, int32_t start, int32_t end,
     return result;
 }
 
+CL_Obj bi_remove_export(CL_Obj *args, int n);
+static CL_Obj bi_remove(CL_Obj *args, int n);
+
+CL_Obj bi_remove_export(CL_Obj *args, int n) { return bi_remove(args, n); }
+
 static CL_Obj bi_remove(CL_Obj *args, int n)
 {
     CL_Obj item = args[0], seq = args[1];

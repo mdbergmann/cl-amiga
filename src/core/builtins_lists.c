@@ -521,14 +521,29 @@ static CL_Obj bi_nreverse(CL_Obj *args, int n)
 
 static CL_Obj bi_delete(CL_Obj *args, int n)
 {
-    CL_Obj item = args[0], list = args[1];
-    CL_Obj test_fn = extract_test_arg(args, n, 2);
-    CL_Obj prev = CL_NIL, curr = list;
+    CL_Obj item = args[0], seq = args[1];
+    CL_Obj test_fn;
+    CL_Obj prev = CL_NIL, curr;
+
+    /* DELETE permits destructive modification per CLHS, but the result is
+     * defined by REMOVE's semantics.  For non-list sequences (vectors,
+     * strings, bit-vectors) we delegate to REMOVE — yielding a fresh
+     * sequence is permitted ("the destructive operations may, but need
+     * not, modify the argument") and avoids tripping the list-only loop
+     * below on cl_car of a vector. */
+    if (CL_NULL_P(seq)) return CL_NIL;
+    if (!CL_CONS_P(seq)) {
+        extern CL_Obj bi_remove_export(CL_Obj *args, int n);
+        return bi_remove_export(args, n);
+    }
+
+    test_fn = extract_test_arg(args, n, 2);
+    curr = seq;
 
     while (!CL_NULL_P(curr)) {
         if (!CL_NULL_P(call_test(test_fn, item, cl_car(curr)))) {
             if (CL_NULL_P(prev)) {
-                list = cl_cdr(curr);
+                seq = cl_cdr(curr);
             } else {
                 ((CL_Cons *)CL_OBJ_TO_PTR(prev))->cdr = cl_cdr(curr);
             }
@@ -538,7 +553,7 @@ static CL_Obj bi_delete(CL_Obj *args, int n)
             curr = cl_cdr(curr);
         }
     }
-    return list;
+    return seq;
 }
 
 static CL_Obj bi_delete_if(CL_Obj *args, int n)
