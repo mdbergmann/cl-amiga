@@ -5779,6 +5779,48 @@ TEST(eval_format_recursive_atsign)
     ASSERT_STR_EQ(eval_print("(format nil \"~@? and ~A\" \"~A ~A\" 1 2 3)"), "\"1 2 and 3\"");
 }
 
+#ifdef CL_WIDE_STRINGS
+TEST(eval_format_wide_string_passthrough)
+{
+    /* Wide-string format strings (e.g. trivial-benchmark's box-drawing chars)
+     * used to be rejected by cl_format_to_stream, silently dropping the entire
+     * format. Now literal non-ASCII codepoints flow through verbatim. */
+
+    /* U+2502 BOX DRAWINGS LIGHT VERTICAL (= 9474). */
+    ASSERT_STR_EQ(eval_print(
+        "(length (format nil"
+        "  (concatenate 'string (string (code-char 9474)) \"hi\""
+        "                       (string (code-char 9474)))))"),
+        "4");
+    ASSERT_STR_EQ(eval_print(
+        "(char-code (char (format nil"
+        "  (concatenate 'string (string (code-char 9474)) \"hi\")) 0))"),
+        "9474");
+
+    /* Mixed ASCII directives + wide literal chars in a single format string. */
+    ASSERT_STR_EQ(eval_print(
+        "(char-code (char (format nil"
+        "  (concatenate 'string (string (code-char 9474)) \"~A\") 1) 0))"),
+        "9474");
+    ASSERT_STR_EQ(eval_print(
+        "(char-code (char (format nil"
+        "  (concatenate 'string (string (code-char 9474)) \"~A\") 1) 1))"),
+        "49");
+
+    /* ~~ and ~% still parse inside a wide format string. */
+    ASSERT_STR_EQ(eval_print(
+        "(length (format nil"
+        "  (concatenate 'string (string (code-char 9474)) \"~~~%\")))"),
+        "3");
+
+    /* ~? recursive format accepts a wide format string. */
+    ASSERT_STR_EQ(eval_print(
+        "(length (format nil \"~?\""
+        "  (concatenate 'string (string (code-char 9474)) \"~A\") '(1)))"),
+        "2");
+}
+#endif
+
 TEST(eval_format_radix_cardinal)
 {
     /* ~R — cardinal English */
@@ -8611,6 +8653,9 @@ int main(void)
     /* Advanced format: ~? recursive and ~R radix */
     RUN(eval_format_recursive);
     RUN(eval_format_recursive_atsign);
+#ifdef CL_WIDE_STRINGS
+    RUN(eval_format_wide_string_passthrough);
+#endif
     RUN(eval_format_radix_cardinal);
     RUN(eval_format_radix_ordinal);
     RUN(eval_format_radix_roman);

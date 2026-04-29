@@ -12,6 +12,7 @@
 #include "error.h"
 #include "printer.h"
 #include "stream.h"
+#include "string_utils.h"
 #include "float.h"
 #include "../platform/platform.h"
 #include <stdio.h>
@@ -47,6 +48,31 @@ typedef struct {
 /* Forward declarations */
 static void fmt_dispatch(FmtCtx *ctx, FmtDirective *d);
 static void fmt_run(FmtCtx *ctx);
+
+/*
+ * Return a NUL-terminated UTF-8 byte buffer for a CL string.
+ *   - Base strings (TYPE_STRING) are pure ASCII; return their inline data.
+ *   - Wide strings (TYPE_WIDE_STRING) are transcoded into a fresh buffer;
+ *     *out_alloc receives the heap pointer and the caller must platform_free it.
+ * In both cases the returned pointer is safe to scan with byte-oriented code:
+ * '~' (0x7E) only ever appears as a literal '~' in valid UTF-8.
+ */
+static const char *fmt_str_as_utf8(CL_Obj str_obj, char **out_alloc)
+{
+    *out_alloc = NULL;
+#ifdef CL_WIDE_STRINGS
+    if (CL_WIDE_STRING_P(str_obj)) {
+        CL_WideString *ws = (CL_WideString *)CL_OBJ_TO_PTR(str_obj);
+        uint32_t budget = ws->length * 4 + 1;
+        char *buf = (char *)platform_alloc(budget);
+        if (!buf) return "";
+        cl_wide_string_to_utf8(str_obj, buf, budget);
+        *out_alloc = buf;
+        return buf;
+    }
+#endif
+    return ((CL_String *)CL_OBJ_TO_PTR(str_obj))->data;
+}
 
 /* ================================================================
  * Parsing
@@ -1100,18 +1126,19 @@ static void fmt_iteration(FmtCtx *ctx, FmtDirective *d)
 static void fmt_recursive(FmtCtx *ctx, FmtDirective *d)
 {
     CL_Obj fmt_str_obj = fmt_next_arg(ctx);
-    CL_String *fmt_str;
+    char *alloc = NULL;
+    const char *fmt;
     FmtCtx sub;
 
-    if (!CL_STRING_P(fmt_str_obj)) {
+    if (!CL_ANY_STRING_P(fmt_str_obj)) {
         cl_error(CL_ERR_TYPE, "FORMAT ~?: argument must be a string");
         return;
     }
-    fmt_str = (CL_String *)CL_OBJ_TO_PTR(fmt_str_obj);
+    fmt = fmt_str_as_utf8(fmt_str_obj, &alloc);
 
     sub.stream = ctx->stream;
-    sub.fmt = fmt_str->data;
-    sub.pos = fmt_str->data;
+    sub.fmt = fmt;
+    sub.pos = fmt;
     sub.escape = 0;
 
     if (d->atsign) {
@@ -1139,6 +1166,8 @@ static void fmt_recursive(FmtCtx *ctx, FmtDirective *d)
         sub.ai = 0;
         fmt_run(&sub);
     }
+
+    if (alloc) platform_free(alloc);
 }
 
 /* ================================================================
@@ -1340,15 +1369,34 @@ static void fmt_dispatch(FmtCtx *ctx, FmtDirective *d)
 static void fmt_run(FmtCtx *ctx)
 {
     while (*ctx->pos && !ctx->escape) {
-        if (*ctx->pos == '~') {
+        unsigned char b = (unsigned char)*ctx->pos;
+        if (b == '~') {
             FmtDirective d;
             ctx->pos++; /* skip '~' */
             if (!*ctx->pos) break;
             fmt_parse_directive(ctx, &d);
             fmt_dispatch(ctx, &d);
-        } else {
-            cl_stream_write_char(ctx->stream, *ctx->pos);
+        } else if (b < 0x80) {
+            cl_stream_write_char(ctx->stream, (int)b);
             ctx->pos++;
+        } else {
+#ifdef CL_WIDE_STRINGS
+            /* UTF-8 lead byte — decode the codepoint so the stream re-encodes
+             * it consistently (and charpos advances by one character, not
+             * one byte). */
+            const unsigned char *bytes = (const unsigned char *)ctx->pos;
+            uint32_t avail = 0;
+            int cp = 0xFFFD;
+            int nb;
+            while (avail < 4 && bytes[avail] != 0) avail++;
+            nb = cl_utf8_decode(bytes, avail, &cp);
+            if (nb < 1) nb = 1;
+            cl_stream_write_char(ctx->stream, cp);
+            ctx->pos += nb;
+#else
+            cl_stream_write_char(ctx->stream, (int)b);
+            ctx->pos++;
+#endif
         }
     }
 }
@@ -1359,21 +1407,24 @@ static void fmt_run(FmtCtx *ctx)
 
 void cl_format_to_stream(CL_Obj stream, CL_Obj *args, int n)
 {
-    CL_String *s;
+    char *alloc = NULL;
+    const char *fmt;
     FmtCtx ctx;
 
-    if (n < 2 || !CL_STRING_P(args[1]))
+    if (n < 2 || !CL_ANY_STRING_P(args[1]))
         return;
 
-    s = (CL_String *)CL_OBJ_TO_PTR(args[1]);
+    fmt = fmt_str_as_utf8(args[1], &alloc);
 
     ctx.stream = stream;
-    ctx.fmt = s->data;
-    ctx.pos = s->data;
+    ctx.fmt = fmt;
+    ctx.pos = fmt;
     ctx.args = args;
     ctx.nargs = n;
     ctx.ai = 2;  /* args start after destination and format string */
     ctx.escape = 0;
 
     fmt_run(&ctx);
+
+    if (alloc) platform_free(alloc);
 }

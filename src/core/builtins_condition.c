@@ -296,7 +296,7 @@ static CL_Obj format_condition_report(CL_Condition *c)
 {
     CL_Obj fmt_ctrl = slot_lookup(c->slots, KW_FORMAT_CONTROL);
     CL_Obj fmt_args;
-    if (CL_NULL_P(fmt_ctrl) || !CL_STRING_P(fmt_ctrl))
+    if (CL_NULL_P(fmt_ctrl) || !CL_ANY_STRING_P(fmt_ctrl))
         return c->report_string;  /* fallback to raw report_string */
 
     fmt_args = slot_lookup(c->slots, KW_FORMAT_ARGUMENTS);
