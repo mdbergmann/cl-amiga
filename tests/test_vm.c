@@ -6724,6 +6724,24 @@ TEST(eval_defun_aux)
     ASSERT_EQ_INT(eval_int("(test-aux-fn 10)"), 11);
 }
 
+/* CLHS 3.4.1.4: &aux init forms see outer scope (LET* semantics) — the
+ * variable being bound is NOT yet visible inside its own init form, so
+ * `(&aux (record (list record)))` must use the outer parameter `record`,
+ * not the freshly-shadowed NIL slot. */
+TEST(eval_aux_self_shadowing_init)
+{
+    ASSERT_STR_EQ(eval_print(
+        "(funcall (lambda (record &aux (record (list record))) record) 'hello)"),
+        "(HELLO)");
+}
+
+TEST(eval_aux_init_sees_earlier_aux)
+{
+    ASSERT_EQ_INT(eval_int(
+        "(funcall (lambda (x &aux (a (* x 2)) (b (+ a 1))) b) 3)"),
+        7);
+}
+
 /* --- apply with symbols --- */
 
 TEST(eval_apply_symbol)
@@ -8535,6 +8553,8 @@ int main(void)
     RUN(eval_aux_uses_param);
     RUN(eval_aux_with_key);
     RUN(eval_defun_aux);
+    RUN(eval_aux_self_shadowing_init);
+    RUN(eval_aux_init_sees_earlier_aux);
 
     /* apply with symbols */
     RUN(eval_apply_symbol);
