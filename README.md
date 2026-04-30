@@ -1,5 +1,7 @@
 # CL-Amiga
 
+[![CI](https://github.com/mdbergmann/cl-amiga/actions/workflows/ci.yml/badge.svg)](https://github.com/mdbergmann/cl-amiga/actions/workflows/ci.yml)
+
 A Common Lisp implementation for AmigaOS 3+, targeting 68020+ processors.
 
 > **Alpha software** — CL-Amiga is under active development. The core language is functional and can run real-world CL libraries, but ANSI CL compliance is incomplete and APIs may change. See [Known Limitations](#known-limitations-and-future-work) for details.
