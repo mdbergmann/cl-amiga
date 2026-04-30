@@ -18,7 +18,13 @@
 static void setup(void)
 {
 #ifdef PLATFORM_POSIX
-    setlocale(LC_CTYPE, "");
+    /* Match the runtime's locale strategy in src/main.c so Unicode
+     * classification (iswalpha/iswupper/iswlower) works in stock
+     * containers where LANG is unset. */
+    if (!setlocale(LC_CTYPE, "C.UTF-8") &&
+        !setlocale(LC_CTYPE, "en_US.UTF-8")) {
+        setlocale(LC_CTYPE, "");
+    }
 #endif
     platform_init();
     cl_thread_init();
@@ -8659,9 +8665,6 @@ int main(void)
     RUN(eval_eval_self_evaluating_opaque);
     RUN(eval_ccase_ctypecase);
 
-    /* heap exhaustion / storage errors */
-    RUN(eval_heap_exhaustion_error);
-
     /* load-time-value */
     RUN(eval_load_time_value_basic);
     RUN(eval_load_time_value_in_function);
@@ -8688,6 +8691,11 @@ int main(void)
     RUN(eval_wide_string_reader);
     RUN(eval_string_trim_wide);
 #endif
+
+    /* heap exhaustion / storage errors — must be the last RUN: the heap
+     * is intentionally driven to exhaustion and subsequent allocations
+     * are not guaranteed to succeed. */
+    RUN(eval_heap_exhaustion_error);
 
     teardown();
     REPORT();

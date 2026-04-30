@@ -10,6 +10,13 @@
 #include <stddef.h>
 #include <stdint.h>
 
+/* GCC lacks Clang's __has_feature builtin; define a no-op fallback so that
+ * `__has_feature(address_sanitizer)` and similar probes parse on every
+ * compiler. Must be visible wherever those probes appear. */
+#ifndef __has_feature
+#define __has_feature(x) 0
+#endif
+
 /* Suppress unused-parameter warnings portably.
  * vbcc warns on (void)x ("statement has no effect", warning 153),
  * gcc/clang warn on unused parameters without (void)x. */
