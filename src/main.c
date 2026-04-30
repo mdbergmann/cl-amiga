@@ -22,6 +22,9 @@
 #include <locale.h>
 #include <pthread.h>
 #include <execinfo.h>
+#ifdef __linux__
+#include <sys/syscall.h>
+#endif
 #endif
 
 #ifdef PLATFORM_POSIX
@@ -56,8 +59,10 @@ static void crash_handler(int sig, siginfo_t *info, void *ctx)
     (void)write(2, buf, len);
     {
         unsigned long long tid = 0;
-#ifdef PLATFORM_POSIX
+#if defined(__APPLE__)
         pthread_threadid_np(NULL, &tid);
+#elif defined(__linux__)
+        tid = (unsigned long long)syscall(SYS_gettid);
 #endif
         len = snprintf(buf, sizeof(buf),
                        "[FATAL] thread tid=%llu CT=%p\n",
@@ -268,7 +273,15 @@ int main(int argc, char *argv[])
     int frame_count = 0;
 
 #ifdef PLATFORM_POSIX
-    setlocale(LC_CTYPE, "");  /* enable Unicode character classification */
+    /* Enable Unicode character classification.  Try a UTF-8 locale explicitly
+     * before falling back to LC_CTYPE from the environment — stock containers
+     * (e.g. ubuntu:24.04) leave LANG unset, where setlocale("") yields the
+     * POSIX `C` locale and iswalpha/iswupper return 0 for non-ASCII chars.
+     * `C.UTF-8` is universally available on glibc and modern macOS. */
+    if (!setlocale(LC_CTYPE, "C.UTF-8") &&
+        !setlocale(LC_CTYPE, "en_US.UTF-8")) {
+        setlocale(LC_CTYPE, "");
+    }
 #ifndef __SANITIZE_ADDRESS__
 #if !__has_feature(address_sanitizer)
     install_crash_handler();

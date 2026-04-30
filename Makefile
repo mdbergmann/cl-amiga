@@ -72,7 +72,7 @@ TEST_BINS   = $(patsubst $(TEST_SRCDIR)/%.c,$(BUILDDIR)/tests/%,$(TEST_SRCS))
 LIB_SRCS = $(PLATFORM_SRC) $(CORE_SRC)
 LIB_OBJS = $(patsubst $(SRCDIR)/%.c,$(BUILDDIR)/%.o,$(LIB_SRCS))
 
-.PHONY: host test clean verify-amiga
+.PHONY: host test linux-test clean verify-amiga
 
 host: $(BUILDDIR)/clamiga
 
@@ -120,6 +120,25 @@ test: $(TEST_BINS) host
 $(BUILDDIR)/tests/%: $(TEST_SRCDIR)/%.c $(LIB_OBJS)
 	@mkdir -p $(dir $@)
 	$(CC_HOST) $(CFLAGS_HOST) -I$(SRCDIR) -I$(TEST_SRCDIR) -o $@ $< $(LIB_OBJS) -lm
+
+# Run host build + tests inside an Ubuntu container (matches GitHub Actions
+# `ubuntu-latest`).  Requires a working `docker` CLI (Docker Desktop, OrbStack,
+# Colima, ...).  Mounts the working tree read-write so build artifacts land in
+# build/host inside the container — wipe with `make clean` afterwards if
+# needed since they are Linux ELFs, not host binaries.
+LINUX_TEST_IMAGE ?= ubuntu:24.04
+linux-test:
+	@command -v docker >/dev/null 2>&1 || { \
+	  echo "docker CLI not found — install Docker Desktop, OrbStack, or Colima"; \
+	  exit 1; \
+	}
+	docker run --rm -v "$(CURDIR)":/work -w /work $(LINUX_TEST_IMAGE) bash -c '\
+	  set -e; \
+	  export DEBIAN_FRONTEND=noninteractive; \
+	  apt-get update -qq >/dev/null; \
+	  apt-get install -y -qq build-essential >/dev/null; \
+	  make clean >/dev/null; \
+	  make host && make test'
 
 # Verify Amiga test results (after FS-UAE run)
 verify-amiga:
