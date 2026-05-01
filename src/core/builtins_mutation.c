@@ -180,10 +180,12 @@ static CL_Obj lookup_setf_fn_sym(CL_Obj name)
 
 static CL_Obj bi_fboundp(CL_Obj *args, int n)
 {
+    extern int cl_macro_p(CL_Obj name);
+    extern CL_Obj bi_special_operator_p(CL_Obj *args, int n);
     CL_Symbol *s;
     CL_UNUSED(n);
     if (CL_CONS_P(args[0])) {
-        /* (fboundp '(setf name)) */
+        /* (fboundp '(setf name)) — only a function binding is meaningful here. */
         CL_Obj setf_sym = lookup_setf_fn_sym(args[0]);
         if (CL_NULL_P(setf_sym)) return CL_NIL;
         s = (CL_Symbol *)CL_OBJ_TO_PTR(setf_sym);
@@ -193,8 +195,14 @@ static CL_Obj bi_fboundp(CL_Obj *args, int n)
     if (!CL_SYMBOL_P(args[0]))
         cl_error(CL_ERR_TYPE, "FBOUNDP: argument must be a function name");
     s = (CL_Symbol *)CL_OBJ_TO_PTR(args[0]);
-    return (s->function != CL_UNBOUND && !CL_NULL_P(s->function))
-        ? SYM_T : CL_NIL;
+    /* CLHS: fboundp is true for functions, macros, AND special operators. */
+    if (s->function != CL_UNBOUND && !CL_NULL_P(s->function))
+        return SYM_T;
+    if (cl_macro_p(args[0]))
+        return SYM_T;
+    if (bi_special_operator_p(args, 1) == SYM_T)
+        return SYM_T;
+    return CL_NIL;
 }
 
 static CL_Obj bi_fmakunbound(CL_Obj *args, int n)
@@ -230,7 +238,7 @@ static CL_Obj bi_makunbound(CL_Obj *args, int n)
  * The set matches compile_expr() in compiler.c — any symbol dispatched
  * there as a special form is reported here.  Keep the two lists in sync
  * when adding or removing special-form compilation branches. */
-static CL_Obj bi_special_operator_p(CL_Obj *args, int n)
+CL_Obj bi_special_operator_p(CL_Obj *args, int n)
 {
     CL_Obj sym;
     CL_UNUSED(n);

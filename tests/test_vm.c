@@ -955,6 +955,380 @@ TEST(eval_subtypep_typed_compound_array_specs)
     ASSERT_STR_EQ(eval_print("(multiple-value-list (subtypep 'simple-base-string 'vector))"), "(T T)");
 }
 
+/* SUBTYPEP must descend into compound (OR ...) / (AND ...) / (MEMBER ...)
+ * and through user-defined deftype aliases with compound bodies — serapeum
+ * deftypes like KEY-DESIGNATOR = (or null function-name function) used to
+ * yield (NIL NIL) and produce hundreds of compile-time warnings. */
+TEST(eval_subtypep_compound_combinators)
+{
+    /* (subtypep X (or A B C)) — yes if X ⊆ some Ai. */
+    ASSERT_STR_EQ(eval_print(
+        "(multiple-value-list (subtypep 'null '(or null symbol function)))"), "(T T)");
+    ASSERT_STR_EQ(eval_print(
+        "(multiple-value-list (subtypep 'function '(or null symbol function)))"), "(T T)");
+    /* Disjoint from every branch — certain no. */
+    ASSERT_STR_EQ(eval_print(
+        "(multiple-value-list (subtypep 'integer '(or null symbol function)))"), "(NIL T)");
+
+    /* Deftype alias with OR body. */
+    eval_print("(deftype kd-test () '(or null symbol function))");
+    ASSERT_STR_EQ(eval_print("(multiple-value-list (subtypep 'null 'kd-test))"), "(T T)");
+    ASSERT_STR_EQ(eval_print("(multiple-value-list (subtypep 'symbol 'kd-test))"), "(T T)");
+    ASSERT_STR_EQ(eval_print("(multiple-value-list (subtypep 'function 'kd-test))"), "(T T)");
+    /* Identical aliases — equality fast-path. */
+    ASSERT_STR_EQ(eval_print("(multiple-value-list (subtypep 'kd-test 'kd-test))"), "(T T)");
+
+    /* (subtypep (or A B) X) — yes iff every Ai ⊆ X. */
+    ASSERT_STR_EQ(eval_print(
+        "(multiple-value-list (subtypep '(or null symbol) 'kd-test))"), "(T T)");
+
+    /* (subtypep (member ...) (member ...)) — element-wise typep. */
+    ASSERT_STR_EQ(eval_print(
+        "(multiple-value-list (subtypep '(member :a) '(member :a :b)))"), "(T T)");
+    ASSERT_STR_EQ(eval_print(
+        "(multiple-value-list (subtypep '(member :c) '(member :a :b)))"), "(NIL T)");
+
+    /* (and ...) on the left — true if any branch is. */
+    ASSERT_STR_EQ(eval_print(
+        "(multiple-value-list (subtypep '(and integer symbol) 'integer))"), "(T T)");
+
+    /* Both sides OR — distribute T1 (every Ai ⊆ T2), don't try to find
+     * T1 ⊆ Ci which is the wrong simplification direction.
+     * Pre-fix: returned (NIL T) because head2=OR fired before head1=OR
+     * and the multi-branch T1 wasn't a subtype of any single Ci. */
+    ASSERT_STR_EQ(eval_print(
+        "(multiple-value-list (subtypep '(or null symbol) '(or symbol null)))"),
+        "(T T)");
+    ASSERT_STR_EQ(eval_print(
+        "(multiple-value-list (subtypep '(or string null fixnum) '(or string symbol fixnum)))"),
+        "(T T)");
+    /* Reordered branches still match. */
+    ASSERT_STR_EQ(eval_print(
+        "(multiple-value-list (subtypep '(or fixnum string) '(or string fixnum)))"),
+        "(T T)");
+    /* Cross-type via subtype rule: NULL ⊆ SYMBOL should be transitive. */
+    ASSERT_STR_EQ(eval_print(
+        "(multiple-value-list "
+        " (subtypep '(or string character pathname null symbol fixnum)"
+        "           '(or string character symbol pathname fixnum)))"),
+        "(T T)");
+    /* Deftype's expanded form on either side. */
+    eval_print("(deftype fplt-test () '(or string character symbol pathname fixnum))");
+    ASSERT_STR_EQ(eval_print(
+        "(multiple-value-list "
+        " (subtypep '(or string character pathname null symbol fixnum) 'fplt-test))"),
+        "(T T)");
+}
+
+TEST(eval_subtypep_integer_range_subset)
+{
+    /* Range subset: [L1, H1] ⊆ [L2, H2] iff L1 >= L2 and H1 <= H2.
+     * Pre-fix: integer-on-RHS just returned (NIL NIL). */
+    ASSERT_STR_EQ(eval_print(
+        "(multiple-value-list (subtypep '(integer 0 1023) '(integer 0 *)))"),
+        "(T T)");
+    ASSERT_STR_EQ(eval_print(
+        "(multiple-value-list (subtypep '(integer 5 10) '(integer 0 100)))"),
+        "(T T)");
+    /* Out of range — certain no. */
+    ASSERT_STR_EQ(eval_print(
+        "(multiple-value-list (subtypep '(integer 0 *) '(integer 0 1023)))"),
+        "(NIL T)");
+    ASSERT_STR_EQ(eval_print(
+        "(multiple-value-list (subtypep '(integer -1 5) '(integer 0 10)))"),
+        "(NIL T)");
+
+    /* Bounded integer ⊆ FIXNUM — works when bounds fit in fixnum range. */
+    ASSERT_STR_EQ(eval_print(
+        "(multiple-value-list (subtypep '(integer 0 1023) 'fixnum))"),
+        "(T T)");
+    ASSERT_STR_EQ(eval_print(
+        "(multiple-value-list (subtypep '(integer -100 100) 'fixnum))"),
+        "(T T)");
+    /* (integer 0 *) extends past most-positive-fixnum, so it's NOT a
+     * subtype of FIXNUM. */
+    ASSERT_STR_EQ(eval_print(
+        "(multiple-value-list (subtypep '(integer 0 *) 'fixnum))"),
+        "(NIL T)");
+
+    /* (mod N) = (integer 0 (1- N)). */
+    ASSERT_STR_EQ(eval_print(
+        "(multiple-value-list (subtypep '(mod 10) '(integer 0 9)))"),
+        "(T T)");
+    ASSERT_STR_EQ(eval_print(
+        "(multiple-value-list (subtypep '(mod 10) '(integer 0 8)))"),
+        "(NIL T)");
+
+    /* (unsigned-byte N) range. */
+    ASSERT_STR_EQ(eval_print(
+        "(multiple-value-list (subtypep '(unsigned-byte 8) '(integer 0 255)))"),
+        "(T T)");
+    /* (signed-byte N) range. */
+    ASSERT_STR_EQ(eval_print(
+        "(multiple-value-list (subtypep '(signed-byte 8) '(integer -128 127)))"),
+        "(T T)");
+    /* BIT = (integer 0 1). */
+    ASSERT_STR_EQ(eval_print(
+        "(multiple-value-list (subtypep 'bit '(integer 0 1)))"),
+        "(T T)");
+
+    /* Empty range (mod 0) is empty type — subtype of everything. */
+    ASSERT_STR_EQ(eval_print(
+        "(multiple-value-list (subtypep '(mod 0) '(integer 1 2)))"),
+        "(T T)");
+
+    /* Non-integer numeric supertype on the LHS with integer-typed RHS:
+     * RATIONAL, REAL, FLOAT, NUMBER, COMPLEX include non-integer values
+     * (1/2, 0.5, etc.) so they are certainly NOT subtypes of any
+     * integer-only spec.  Pre-fix returned (NIL NIL) "uncertain";
+     * trivia logged "Can't check exhaustiveness" warnings under
+     * serapeum's range.lisp typecase-of REAL*.  Now returns (NIL T). */
+    ASSERT_STR_EQ(eval_print(
+        "(multiple-value-list (subtypep 'rational '(integer 0 1023)))"),
+        "(NIL T)");
+    ASSERT_STR_EQ(eval_print(
+        "(multiple-value-list (subtypep 'real 'integer))"),
+        "(NIL T)");
+    ASSERT_STR_EQ(eval_print(
+        "(multiple-value-list (subtypep 'float 'fixnum))"),
+        "(NIL T)");
+    ASSERT_STR_EQ(eval_print(
+        "(multiple-value-list (subtypep 'number '(unsigned-byte 32)))"),
+        "(NIL T)");
+}
+
+TEST(eval_subtypep_universal_t_and_nil)
+{
+    /* CLHS 4.2.5: T is the universal supertype.  Every type — including
+     * unknown / undefined ones — is a subtype of T.  Pre-fix, our
+     * subtypep returned (NIL NIL) for `(subtypep <undefined> 't)` which
+     * tripped serapeum's `assure` macro into spurious "Required type
+     * X is not a subtypep of declared type T" warnings. */
+    ASSERT_STR_EQ(eval_print(
+        "(multiple-value-list (subtypep 'undefined-type 't))"), "(T T)");
+    ASSERT_STR_EQ(eval_print(
+        "(multiple-value-list (subtypep 'integer 't))"), "(T T)");
+    ASSERT_STR_EQ(eval_print(
+        "(multiple-value-list (subtypep '(or string null) 't))"), "(T T)");
+    ASSERT_STR_EQ(eval_print(
+        "(multiple-value-list (subtypep '(integer 0 100) 't))"), "(T T)");
+
+    /* NIL is the empty type — only NIL is a subtype of NIL.
+     * Used by serapeum's `(assert (not (subtypep type-spec nil)))`. */
+    ASSERT_STR_EQ(eval_print(
+        "(multiple-value-list (subtypep 'nil 'nil))"), "(T T)");
+    ASSERT_STR_EQ(eval_print(
+        "(multiple-value-list (subtypep 'integer 'nil))"), "(NIL T)");
+    ASSERT_STR_EQ(eval_print(
+        "(multiple-value-list (subtypep 'undefined-type 'nil))"), "(NIL T)");
+}
+
+/* The compiler must handle deeply-nested forms in tail position without
+ * exhausting the C stack.  Pre-trampoline-refactor (2026-04-29), this
+ * blew the C stack at ~700 levels because every compile_let /
+ * compile_block / compile_if / compile_progn frame stayed alive while
+ * the next nesting level compiled.  Now the trampoline in compile_expr
+ * iterates these forms in a flat loop, with postludes drained from a
+ * heap-allocated tail-frame stack. */
+TEST(eval_compiler_trampoline_deep_if_chain)
+{
+    /* 1000-deep (if eq-i (return) (if eq-i ... (if eq-i ... :default))).
+     * Our heap-built form bypasses the COND clause-cap limit and stresses
+     * the IF ELSE-branch trampoline. */
+    ASSERT_STR_EQ(eval_print(
+        "(let ((form :default))"
+        "  (dotimes (i 1000) (setf form `(if (eq i ,i) ',i ,form)))"
+        "  (eval `(let ((i 999)) ,form)))"), "999");
+}
+
+TEST(eval_compiler_trampoline_deep_let_chain)
+{
+    /* 200-deep nested LET in body-tail position.  Each level adds one
+     * lexical slot so we cap at <CL_MAX_LOCALS=256.  Pre-trampoline this
+     * grew C stack ~2.8 KB per level (compile_let frame). */
+    ASSERT_STR_EQ(eval_print(
+        "(let ((form 'x))"
+        "  (dotimes (i 200) (setf form `(let ((x ,i)) ,form)))"
+        "  (eval form))"), "0");
+}
+
+TEST(eval_compiler_trampoline_deep_handler_bind)
+{
+    /* 60-deep nested HANDLER-BIND.  Capped by the VM-level handler stack
+     * (a runtime limit, unrelated to the compiler trampoline).  The
+     * trampoline itself handles arbitrary depth — this just needs to
+     * verify deep nesting compiles in flat C stack. */
+    ASSERT_STR_EQ(eval_print(
+        "(let ((form 42))"
+        "  (dotimes (i 60)"
+        "    (setf form `(handler-bind ((error (lambda (c) c))) ,form)))"
+        "  (eval form))"), "42");
+}
+
+TEST(eval_compiler_trampoline_deep_mvb)
+{
+    /* 200-deep nested MULTIPLE-VALUE-BIND in body-tail position. */
+    ASSERT_STR_EQ(eval_print(
+        "(let ((form 42))"
+        "  (dotimes (i 200)"
+        "    (setf form `(multiple-value-bind (a b) (values ,i ,i) "
+        "                   (declare (ignore a b)) ,form)))"
+        "  (eval form))"), "42");
+}
+
+TEST(eval_compiler_trampoline_deep_flet)
+{
+    /* 200-deep nested FLET in body-tail position.  Each level adds one
+     * local slot for the function (flet stores funcs in anonymous slots),
+     * so we cap below CL_MAX_LOCALS. */
+    ASSERT_STR_EQ(eval_print(
+        "(let ((form 42))"
+        "  (dotimes (i 200)"
+        "    (setf form `(flet ((nop () nil)) ,form)))"
+        "  (eval form))"), "42");
+}
+
+TEST(eval_compiler_trampoline_deep_labels)
+{
+    /* 200-deep nested LABELS in body-tail position.  Same slot budget
+     * as FLET. */
+    ASSERT_STR_EQ(eval_print(
+        "(let ((form 42))"
+        "  (dotimes (i 200)"
+        "    (setf form `(labels ((nop () nil)) ,form)))"
+        "  (eval form))"), "42");
+}
+
+TEST(eval_compiler_trampoline_deep_eval_when)
+{
+    /* 500-deep nested EVAL-WHEN bodies. */
+    ASSERT_STR_EQ(eval_print(
+        "(let ((form 42))"
+        "  (dotimes (i 500)"
+        "    (setf form `(eval-when (:execute) ,form)))"
+        "  (eval form))"), "42");
+}
+
+TEST(eval_compiler_trampoline_deep_if_then)
+{
+    /* 1000-deep IF chain on the THEN side: (if t (if t (if t ... 42))).
+     * Pre-IF-THEN-trampoline (2026-04-30), this grew one C frame per
+     * level via compile_if's recursive compile_expr(c, then_form).
+     * Now driven by IF_AFTER_THEN/IF_AFTER_ELSE continuation frames so
+     * the C stack stays flat. */
+    ASSERT_STR_EQ(eval_print(
+        "(let ((form 42))"
+        "  (dotimes (i 1000) (setf form `(if t ,form 0)))"
+        "  (eval form))"), "42");
+}
+
+TEST(eval_compiler_trampoline_deep_if_then_with_else)
+{
+    /* 1000-deep IF chain alternating THEN and ELSE.  Stresses both the
+     * IF_AFTER_THEN postlude (which dispatches the ELSE) and the
+     * IF_AFTER_ELSE postlude (which patches the JMP). */
+    ASSERT_STR_EQ(eval_print(
+        "(let ((form 42))"
+        "  (dotimes (i 1000) "
+        "    (setf form (if (oddp i) `(if t ,form 0) `(if nil 0 ,form))))"
+        "  (eval form))"), "42");
+}
+
+TEST(eval_compiler_trampoline_deep_block_multi_body)
+{
+    /* Block whose body has 200 non-tail forms before the tail.  Each
+     * non-tail form previously recursed into compile_expr through
+     * compile_nontail_body's loop.  Now driven by PROGN_ITER frames so
+     * iteration stays off the C stack. */
+    ASSERT_STR_EQ(eval_print(
+        "(let ((forms (list 42)))"
+        "  (dotimes (i 200) (push 1 forms))"
+        "  (eval `(block xx ,@forms)))"), "42");
+}
+
+TEST(eval_compiler_trampoline_block_return_from_nontail)
+{
+    /* Regression: BLOCK frame must drain AFTER PROGN_ITER frames pushed
+     * by the body iteration.  Pre-fix, BLOCK_LOCAL drained first and
+     * emitted its closing STORE/POP/LOAD before the body's non-tail
+     * forms compiled, so return-from from the first body form would
+     * land at the wrong place — the block returned 'no instead of 'yes. */
+    ASSERT_STR_EQ(eval_print(
+        "(block xx (return-from xx 'yes) 'no)"), "YES");
+}
+
+TEST(eval_compiler_deeply_nested_blocks)
+{
+    /* Regression: pre-fix CL_MAX_BLOCKS=16 was too small for code with
+     * many nested BLOCKs (trivia's macroexpansion of MATCH produces 30+
+     * nested blocks).  When c->block_count reached the limit, the next
+     * compile_block did `c->blocks[c->block_count++]` which wrote past
+     * the array end onto the adjacent block_count field — corrupting it
+     * with a CL_Obj value (the block tag).  This surfaced later as a
+     * SIGBUS in compile_return_from when iterating c->blocks[].tag with
+     * the corrupted block_count.
+     *
+     * Fix: bump CL_MAX_BLOCKS to 256 + add a clean overflow error in
+     * compile_block.  This test builds 200 nested BLOCKs (each using
+     * a unique gensym tag so each one allocates a distinct slot) and
+     * verifies the deepest body value still flows out. */
+    ASSERT_EQ_INT(eval_int(
+        "(let ((expr 99))"
+        "  (dotimes (i 200)"
+        "    (setf expr `(block ,(intern (format nil \"B~a\" i)) ,expr)))"
+        "  (eval expr))"),
+        99);
+    /* Inner return-from threading from inside a chain of 50 nested
+     * blocks back to a named outer block.  Pre-fix this would either
+     * SIGBUS during compile or, with smaller depths, miscompile because
+     * compile_return_from iterated a corrupted blocks[] array. */
+    ASSERT_EQ_INT(eval_int(
+        "(let ((expr '(return-from top 7)))"
+        "  (dotimes (i 50)"
+        "    (setf expr `(block ,(intern (format nil \"B~a\" i)) ,expr)))"
+        "  (eval `(block top ,expr 'fall-through)))"),
+        7);
+}
+
+TEST(eval_labels_shadows_global_macro)
+{
+    /* CLHS 3.1.2.1.2.4 / 3.1.2.1.2: a function form's CAR can be a
+     * global function, a local FLET/LABELS function, OR a macro.
+     * Local FLET/LABELS bindings SHADOW global macro definitions of
+     * the same symbol.
+     *
+     * Pre-fix, our compile_expr_step checked `cl_macro_p(head)` BEFORE
+     * looking up local FLET/LABELS, so a labels-bound function named
+     * `test` (or any other symbol with a global macro defined elsewhere
+     * — e.g. fiveam:test from a co-loaded library) would expand to the
+     * macro's body instead of calling the labels function.  This
+     * surfaced as "Undefined function: REGISTER-TEST" during cold
+     * compile of trivia.balland2006/optimizer.lisp's `apply-fusion`,
+     * which uses `(labels ((test (c) ...)) ... #'test ... (test c) ...)`. */
+    eval_print("(defmacro shadow-mac (x) `(error \"macro called: ~a\" ,x))");
+    /* Local labels function with the same name should shadow the macro. */
+    ASSERT_EQ_INT(eval_int(
+        "(labels ((shadow-mac (n) (* n 2)))"
+        "  (shadow-mac 21))"),
+        42);
+    /* Same for FLET. */
+    ASSERT_EQ_INT(eval_int(
+        "(flet ((shadow-mac (n) (* n 3)))"
+        "  (shadow-mac 14))"),
+        42);
+    /* Mutual recursion via labels: the recursive call from inside
+     * shadow-mac itself must also resolve to the labels binding. */
+    ASSERT_EQ_INT(eval_int(
+        "(labels ((shadow-mac (n) (if (zerop n) 99 (shadow-mac (1- n)))))"
+        "  (shadow-mac 5))"),
+        99);
+    /* #'name should also reach the labels binding (not the macro). */
+    ASSERT_EQ_INT(eval_int(
+        "(labels ((shadow-mac (n) (+ n 1000)))"
+        "  (funcall #'shadow-mac 42))"),
+        1042);
+}
+
 /* CLHS 6.1.3.1: accumulation clauses may include OF-TYPE after INTO.
  * split-sequence and serapeum use this.  We ignore the type spec but
  * must consume it so the clause parses. */
@@ -2489,6 +2863,17 @@ TEST(eval_fboundp)
     ASSERT_STR_EQ(eval_print("(progn (defvar *mak-test-var* 99) (boundp '*mak-test-var*))"), "T");
     ASSERT_STR_EQ(eval_print("(progn (makunbound '*mak-test-var*) (boundp '*mak-test-var*))"), "NIL");
     ASSERT_STR_EQ(eval_print("(makunbound '*mak-test-var*)"), "*MAK-TEST-VAR*");
+
+    /* CLHS: fboundp is true for macros AND special operators, not just
+     * functions.  Pre-fix, our bi_fboundp only checked s->function which
+     * left every defmacro'd symbol reading as NIL — broke serapeum's
+     * compile-time `(fboundp 'trivia:defpattern)` checks under cold
+     * cache loads. */
+    eval_print("(defmacro fbp-test-macro () `(progn))");
+    ASSERT_STR_EQ(eval_print("(fboundp 'fbp-test-macro)"), "T");
+    ASSERT_STR_EQ(eval_print("(fboundp 'if)"), "T");           /* special op */
+    ASSERT_STR_EQ(eval_print("(fboundp 'block)"), "T");        /* special op */
+    ASSERT_STR_EQ(eval_print("(fboundp 'unwind-protect)"), "T"); /* special op */
 }
 
 TEST(eval_fdefinition)
@@ -8083,6 +8468,22 @@ int main(void)
     RUN(eval_subtypep_bounded_integer_ranges);
     RUN(eval_subtypep_compound_array_specs);
     RUN(eval_subtypep_typed_compound_array_specs);
+    RUN(eval_subtypep_compound_combinators);
+    RUN(eval_subtypep_universal_t_and_nil);
+    RUN(eval_subtypep_integer_range_subset);
+    RUN(eval_compiler_trampoline_deep_if_chain);
+    RUN(eval_compiler_trampoline_deep_let_chain);
+    RUN(eval_compiler_trampoline_deep_handler_bind);
+    RUN(eval_compiler_trampoline_deep_mvb);
+    RUN(eval_compiler_trampoline_deep_flet);
+    RUN(eval_compiler_trampoline_deep_labels);
+    RUN(eval_compiler_trampoline_deep_eval_when);
+    RUN(eval_compiler_trampoline_deep_if_then);
+    RUN(eval_compiler_trampoline_deep_if_then_with_else);
+    RUN(eval_compiler_trampoline_deep_block_multi_body);
+    RUN(eval_compiler_trampoline_block_return_from_nontail);
+    RUN(eval_compiler_deeply_nested_blocks);
+    RUN(eval_labels_shadows_global_macro);
     RUN(eval_loop_of_type_after_into);
     RUN(eval_loop_for_and_parallel);
     RUN(eval_quasiquote_nested_list);
@@ -8887,9 +9288,8 @@ int main(void)
     RUN(eval_string_trim_wide);
 #endif
 
-    /* heap exhaustion / storage errors — must be the last RUN: the heap
-     * is intentionally driven to exhaustion and subsequent allocations
-     * are not guaranteed to succeed. */
+    /* heap exhaustion / storage errors — MUST stay last; heap state is
+     * unreliable afterwards.  Append new tests ABOVE this line. */
     RUN(eval_heap_exhaustion_error);
 
     teardown();

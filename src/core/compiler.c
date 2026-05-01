@@ -275,59 +275,137 @@ static void compile_quote(CL_Compiler *c, CL_Obj form)
         cl_emit_const(c, val);
 }
 
-static void compile_if(CL_Compiler *c, CL_Obj form)
+/* Trampoline-aware IF using a two-stage continuation pattern.
+ *
+ * Stage 1 (this fn): compile TEST, emit JNIL → jnil_pos, push an
+ *   IF_AFTER_THEN frame carrying jnil_pos + the ELSE form, and return
+ *   the THEN form.  The driver compiles THEN inside its trampoline,
+ *   keeping the C stack flat.
+ * Stage 2 (IF_AFTER_THEN postlude): emit JMP → jmp_pos, patch jnil_pos.
+ *   If there's an ELSE form to dispatch, push an IF_AFTER_ELSE frame
+ *   (carrying jmp_pos) and return the ELSE form so the driver
+ *   trampolines into it; otherwise emit OP_NIL inline and patch jmp_pos
+ *   immediately.
+ * Stage 3 (IF_AFTER_ELSE postlude): patch jmp_pos.
+ *
+ * Without this, the ELSE branch was already trampolined but the THEN
+ * branch still recursed via compile_expr — every IF nesting level on
+ * the THEN side ate one C frame.  Heavily-inlined macro output
+ * (serapeum's dispatch-case) blew the stack at a few hundred levels. */
+static CL_Obj compile_if(CL_Compiler *c, CL_Obj form)
 {
     CL_Obj rest = cl_cdr(form);
     CL_Obj test = cl_car(rest);
     CL_Obj then_form = cl_car(cl_cdr(rest));
-    CL_Obj else_form = cl_car(cl_cdr(cl_cdr(rest)));
+    CL_Obj else_form;
     int saved_tail = c->in_tail;
-    int jnil_pos, jmp_pos;
+    int jnil_pos;
+    CL_TailFrame *tf;
 
-    /* GC-protect form: sub-forms may trigger macro expansion + GC */
+    /* `(if test then)` and `(if test then nil)` are equivalent (CLHS
+     * 5.2): treat both as "no else" — we'll emit OP_NIL inline in the
+     * AFTER_THEN postlude rather than dispatching the literal NIL. */
+    {
+        CL_Obj cdr2 = cl_cdr(cl_cdr(rest));
+        else_form = CL_NULL_P(cdr2) ? CL_NIL : cl_car(cdr2);
+    }
+
     CL_GC_PROTECT(form);
 
     c->in_tail = 0;
     compile_expr(c, test);
     jnil_pos = cl_emit_jump(c, OP_JNIL);
 
-    c->in_tail = saved_tail;
-    compile_expr(c, then_form);
-    jmp_pos = cl_emit_jump(c, OP_JMP);
-    cl_patch_jump(c, jnil_pos);
+    CL_GC_UNPROTECT(1);
 
     c->in_tail = saved_tail;
-    if (!CL_NULL_P(cl_cdr(cl_cdr(rest)))) {
-        compile_expr(c, else_form);
-    } else {
-        cl_emit(c, OP_NIL);
-    }
-    cl_patch_jump(c, jmp_pos);
-    CL_GC_UNPROTECT(1);
+    tf = cl_tail_push(c);
+    tf->kind = CL_TAIL_IF_AFTER_THEN;
+    tf->block_push_pos = jnil_pos;
+    tf->saved_tail = saved_tail;
+    tf->cont_form = else_form;  /* GC-traced via tail_stack walk */
+    return then_form;
 }
 
+/* --- Tail-trampoline frame management --- */
+
+/* Push a new tail frame, growing the stack lazily.  Returns a pointer to
+ * the frame (caller fills in kind/state).  Aborts on alloc failure — the
+ * compiler can't continue in that state. */
+CL_TailFrame *cl_tail_push(CL_Compiler *c)
+{
+    CL_TailFrame *tf;
+    if (c->tail_count == c->tail_capacity) {
+        int new_cap = c->tail_capacity ? c->tail_capacity * 2 : 64;
+        CL_TailFrame *nf = (CL_TailFrame *)platform_alloc((size_t)new_cap * sizeof(CL_TailFrame));
+        if (!nf) cl_error(CL_ERR_STORAGE, "compiler: out of memory growing tail stack");
+        if (c->tail_stack) {
+            memcpy(nf, c->tail_stack, (size_t)c->tail_count * sizeof(CL_TailFrame));
+            platform_free(c->tail_stack);
+        }
+        c->tail_stack = nf;
+        c->tail_capacity = new_cap;
+    }
+    tf = &c->tail_stack[c->tail_count++];
+    tf->cont_form = CL_NIL;  /* default: no continuation */
+    return tf;
+}
+
+/* Forward declaration: drain helper used by compile_progn below to
+ * handle any PROGN_ITER frames left over after compile_progn_tail. */
+static CL_Obj emit_tail_postlude(CL_Compiler *c, CL_TailFrame *tf);
+
+/* Compile every form in `forms` for value, with OP_POP between non-last
+ * forms.  Used by trampoline-aware callers that want to splice the
+ * body's first form into their outer trampoline.
+ *
+ * Returns CL_NIL for an empty body (caller emits OP_NIL itself).
+ * Returns the only body form when forms has length 1 (no frame pushed).
+ * Otherwise pushes a CL_TAIL_PROGN_ITER frame carrying the remainder
+ * of the form list and returns the first form — the postlude emits
+ * OP_POP and continues with the next form, keeping body iteration off
+ * the C stack. */
+CL_Obj compile_progn_tail(CL_Compiler *c, CL_Obj forms)
+{
+    CL_TailFrame *tf;
+    int saved_tail;
+
+    if (CL_NULL_P(forms)) return CL_NIL;
+    if (CL_NULL_P(cl_cdr(forms)))
+        return cl_car(forms);  /* single tail form — caller dispatches */
+
+    saved_tail = c->in_tail;
+    c->in_tail = 0;  /* non-tail position for first body form */
+    tf = cl_tail_push(c);
+    tf->kind = CL_TAIL_PROGN_ITER;
+    tf->saved_tail = saved_tail;
+    tf->cont_form = cl_cdr(forms);  /* remaining forms after the first */
+    return cl_car(forms);
+}
+
+/* Backward-compatible wrapper for callers that don't want to manage the
+ * tail form themselves.  Compiles the entire sequence inline.
+ *
+ * compile_progn_tail may push PROGN_ITER frames whose postludes need to
+ * drain.  compile_expr's drain stops at its own tail_base (which
+ * captures c->tail_count at entry, including any frames we pushed
+ * before calling it).  So we run a manual drain here to clean those
+ * PROGN_ITER frames up. */
 void compile_progn(CL_Compiler *c, CL_Obj forms)
 {
-    if (CL_NULL_P(forms)) {
+    int tail_base = c->tail_count;
+    CL_Obj tail = compile_progn_tail(c, forms);
+    if (CL_NULL_P(tail)) {
         cl_emit(c, OP_NIL);
         return;
     }
-    CL_GC_PROTECT(forms);
-    while (!CL_NULL_P(forms)) {
-        CL_Obj cur_form = cl_car(forms);
-        int is_last = CL_NULL_P(cl_cdr(forms));
-        if (!is_last) {
-            int saved_tail = c->in_tail;
-            c->in_tail = 0;
-            compile_expr(c, cur_form);
-            c->in_tail = saved_tail;
-            cl_emit(c, OP_POP);
-        } else {
-            compile_expr(c, cur_form);
-        }
-        forms = cl_cdr(forms);
+    compile_expr(c, tail);
+    while (c->tail_count > tail_base) {
+        CL_TailFrame frame = c->tail_stack[--c->tail_count];
+        CL_Obj cont = emit_tail_postlude(c, &frame);
+        if (!CL_NULL_P(cont))
+            compile_expr(c, cont);
     }
-    CL_GC_UNPROTECT(1);
 }
 
 /* --- Lambda --- */
@@ -745,7 +823,7 @@ void compile_lambda(CL_Compiler *c, CL_Obj form)
 
     /* Build bytecode object */
     bc = (CL_Bytecode *)cl_alloc(TYPE_BYTECODE, sizeof(CL_Bytecode));
-    if (!bc) { inner->protect = 0; cl_active_compiler = inner->parent; cl_env_destroy(env); platform_free(inner); return; }
+    if (!bc) { inner->protect = 0; cl_active_compiler = inner->parent; cl_env_destroy(env); if (inner->tail_stack) platform_free(inner->tail_stack); platform_free(inner); return; }
 
     bc->code = (uint8_t *)platform_alloc(inner->code_pos);
     if (bc->code) memcpy(bc->code, inner->code, inner->code_pos);
@@ -819,6 +897,7 @@ void compile_lambda(CL_Compiler *c, CL_Obj form)
     cl_active_compiler = inner->parent;
 
     cl_env_destroy(env);
+    if (inner->tail_stack) platform_free(inner->tail_stack);
     platform_free(inner);
 }
 
@@ -1382,7 +1461,18 @@ static int var_is_special(CL_Obj var, CL_Obj local_specials)
     return cl_symbol_specialp(var) || is_locally_special(var, local_specials);
 }
 
-static void compile_let(CL_Compiler *c, CL_Obj form, int sequential)
+/* Prelude for (let ...) / (let* ...).  Does all the binding setup and
+ * compiles every non-tail body form, then pushes a CL_TAIL_LET frame
+ * carrying the postlude state so compile_expr's drain can emit OP_DYNUNBIND
+ * and restore env->local_count.  Returns the body's last form so the
+ * trampoline can continue with it (no extra C frame), or CL_NIL when the
+ * body is empty (caller emits OP_NIL).
+ *
+ * Splitting compile_let into prelude+postlude is what lets a chain of
+ * nested LETs compile in a flat C stack: each let-prelude runs in a
+ * transient C frame, returns, and the trampoline loops back to dispatch
+ * the next form — instead of a fresh compile_let frame for each level. */
+static CL_Obj compile_let(CL_Compiler *c, CL_Obj form, int sequential)
 {
     CL_Obj bindings = cl_car(cl_cdr(form));
     CL_Obj body = cl_cdr(cl_cdr(form));
@@ -1570,17 +1660,176 @@ static void compile_let(CL_Compiler *c, CL_Obj form, int sequential)
      * a tail call would replace the frame and skip the unwind. */
     c->in_tail = (special_count > 0) ? 0 : saved_tail;
     c->special_depth += special_count;
-    compile_body(c, body);
-    c->special_depth -= special_count;
 
-    if (special_count > 0) {
-        cl_emit(c, OP_DYNUNBIND);
-        cl_emit(c, (uint8_t)special_count);
+    /* Compile non-tail body forms here; return the last form for the
+     * trampoline to take over.  Mirrors compile_body→compile_progn but
+     * splits off the last form. */
+    {
+        CL_Obj rest = process_body_declarations(c, body);
+        CL_Obj tail;
+        CL_TailFrame *tf;
+
+        if (CL_NULL_P(rest)) {
+            tail = CL_NIL;  /* empty body — caller emits OP_NIL */
+        } else {
+            while (!CL_NULL_P(cl_cdr(rest))) {
+                int prev_tail = c->in_tail;
+                c->in_tail = 0;
+                compile_expr(c, cl_car(rest));
+                c->in_tail = prev_tail;
+                cl_emit(c, OP_POP);
+                rest = cl_cdr(rest);
+            }
+            tail = cl_car(rest);
+        }
+
+        CL_GC_UNPROTECT(2);  /* bindings, body */
+
+        tf = cl_tail_push(c);
+        tf->kind = CL_TAIL_LET;
+        tf->saved_local_count = saved_local_count;
+        tf->special_count = special_count;
+        tf->saved_tail = saved_tail;
+        tf->n_gc_roots = 0;
+        return tail;
     }
+}
 
-    cl_env_clear_boxed(env, saved_local_count);
-    env->local_count = saved_local_count;
-    CL_GC_UNPROTECT(2);  /* bindings, body */
+/* Emit the deferred postlude for a popped tail frame.  Called from
+ * compile_expr's drain loop in LIFO order.  Returns a "continuation
+ * form" the driver should dispatch next, or CL_NIL if no further work
+ * is needed.  Most postludes return CL_NIL; only IF_AFTER_THEN uses
+ * the continuation channel (to dispatch the ELSE form after THEN has
+ * compiled). */
+static CL_Obj emit_tail_postlude(CL_Compiler *c, CL_TailFrame *tf)
+{
+    switch ((CL_TailKind)tf->kind) {
+    case CL_TAIL_LET:
+        c->special_depth -= tf->special_count;
+        if (tf->special_count > 0) {
+            cl_emit(c, OP_DYNUNBIND);
+            cl_emit(c, (uint8_t)tf->special_count);
+        }
+        cl_env_clear_boxed(c->env, tf->saved_local_count);
+        c->env->local_count = tf->saved_local_count;
+        return CL_NIL;
+    case CL_TAIL_PROGN:
+    case CL_TAIL_LOCALLY:
+        /* No postlude — pure body wrapper. */
+        return CL_NIL;
+    case CL_TAIL_SYMBOL_MACROLET:
+        c->env->symbol_macro_count = tf->saved_macro_count;
+        return CL_NIL;
+    case CL_TAIL_MACROLET:
+        c->env->local_macro_count = tf->saved_macro_count;
+        return CL_NIL;
+    case CL_TAIL_PROGV:
+        cl_emit(c, OP_PROGV_UNBIND);
+        c->in_tail = tf->saved_tail;
+        return CL_NIL;
+    case CL_TAIL_IF_AFTER_THEN: {
+        /* THEN's bytecode is fully emitted.  We now need to JMP past
+         * the ELSE branch, patch the JNIL landing, and either dispatch
+         * the ELSE form (if there is one) or emit OP_NIL inline. */
+        int jmp_pos = cl_emit_jump(c, OP_JMP);
+        cl_patch_jump(c, tf->block_push_pos);  /* jnil_pos: JNIL → here */
+        if (CL_NULL_P(tf->cont_form)) {
+            /* No ELSE (or `(if t b nil)` collapsed): emit NIL inline
+             * and patch the JMP immediately. */
+            cl_emit(c, OP_NIL);
+            cl_patch_jump(c, jmp_pos);
+            return CL_NIL;
+        } else {
+            /* Push AFTER_ELSE frame to patch jmp_pos once ELSE drains,
+             * and return the ELSE form so the driver trampolines into
+             * it without growing the C stack. */
+            CL_TailFrame *new_tf = cl_tail_push(c);
+            new_tf->kind = CL_TAIL_IF_AFTER_ELSE;
+            new_tf->block_push_pos = jmp_pos;
+            new_tf->saved_tail = tf->saved_tail;
+            c->in_tail = tf->saved_tail;
+            return tf->cont_form;
+        }
+    }
+    case CL_TAIL_IF_AFTER_ELSE:
+        cl_patch_jump(c, tf->block_push_pos);  /* jmp_pos: JMP past ELSE → here */
+        return CL_NIL;
+    case CL_TAIL_HANDLER_BIND:
+        cl_emit(c, OP_HANDLER_POP);
+        cl_emit(c, (uint8_t)tf->saved_macro_count); /* count of handlers */
+        return CL_NIL;
+    case CL_TAIL_MULTIPLE_VALUE_BIND:
+        cl_env_clear_boxed(c->env, tf->saved_local_count);
+        c->env->local_count = tf->saved_local_count;
+        c->in_tail = tf->saved_tail;
+        return CL_NIL;
+    case CL_TAIL_FLET:
+    case CL_TAIL_LABELS:
+        cl_env_clear_boxed(c->env, tf->saved_local_count);
+        c->env->local_count = tf->saved_local_count;
+        c->env->local_fun_count = tf->saved_block_count;  /* reused: saved_local_fun_count */
+        c->in_tail = tf->saved_tail;
+        return CL_NIL;
+    case CL_TAIL_EVAL_WHEN:
+        /* No postlude — pure body wrapper. */
+        return CL_NIL;
+    case CL_TAIL_PROGN_ITER: {
+        /* Non-tail body form just drained; emit OP_POP and continue
+         * with the next form in cont_form.
+         *
+         * GOTCHA: the drain loop in compile_expr uses CL_NIL as the
+         * "no continuation" sentinel.  But CL_NIL is also a perfectly
+         * valid body form: iter expands BLOCK bodies to
+         * `((TAGBODY ...) NIL)`, where the final NIL is the body's
+         * tail value.  Returning CL_NIL here would make the drain
+         * loop *skip* dispatching it — leaving no value on the stack
+         * for the surrounding BLOCK_LOCAL postlude to peek-store,
+         * which then captures whatever was below (e.g. a function
+         * loaded for the enclosing CALL) and corrupts the caller's
+         * stack frame.  Workaround: handle literal-NIL body forms
+         * inline by emitting OP_NIL + (OP_POP for non-last) directly
+         * here, so the drain never sees CL_NIL as a continuation.  We
+         * loop, advancing past consecutive NIL non-last forms. */
+        CL_Obj forms = tf->cont_form;
+        cl_emit(c, OP_POP);  /* discard the just-drained form's value */
+
+        /* Skip over leading NIL non-last forms inline. */
+        while (!CL_NULL_P(cl_cdr(forms)) && CL_NULL_P(cl_car(forms))) {
+            cl_emit(c, OP_NIL);
+            cl_emit(c, OP_POP);
+            forms = cl_cdr(forms);
+        }
+
+        if (CL_NULL_P(cl_cdr(forms))) {
+            /* Single remaining form (the body tail). */
+            CL_Obj last = cl_car(forms);
+            c->in_tail = tf->saved_tail;
+            if (CL_NULL_P(last)) {
+                cl_emit(c, OP_NIL);
+                return CL_NIL;
+            }
+            return last;
+        }
+        /* More forms remain; first form is non-NIL (we skipped any leading
+         * NILs above).  Push a fresh PROGN_ITER frame. */
+        {
+            CL_TailFrame *new_tf = cl_tail_push(c);
+            new_tf->kind = CL_TAIL_PROGN_ITER;
+            new_tf->saved_tail = tf->saved_tail;
+            new_tf->cont_form = cl_cdr(forms);
+            c->in_tail = 0;
+            return cl_car(forms);
+        }
+    }
+    case CL_TAIL_BLOCK_LOCAL:
+    case CL_TAIL_BLOCK_NLX:
+    case CL_TAIL_RETURN_FROM_LOCAL:
+    case CL_TAIL_RETURN_FROM_NLX:
+    case CL_TAIL_OUTER_RETURN_FROM:
+        emit_block_or_return_postlude(c, tf);
+        return CL_NIL;
+    }
+    return CL_NIL;
 }
 
 /* --- Setq / Setf --- */
@@ -2523,10 +2772,32 @@ static void compile_call(CL_Compiler *c, CL_Obj form)
     cl_emit(c, (uint8_t)nargs);
 }
 
-void compile_body(CL_Compiler *c, CL_Obj forms)
+/* Trampoline-aware analog of compile_body.  Strips leading declarations
+ * + docstrings, then returns the tail form (or CL_NIL for empty body). */
+CL_Obj compile_body_tail(CL_Compiler *c, CL_Obj forms)
 {
     CL_Obj rest = process_body_declarations(c, forms);
-    compile_progn(c, rest);
+    return compile_progn_tail(c, rest);
+}
+
+void compile_body(CL_Compiler *c, CL_Obj forms)
+{
+    /* Mirrors compile_progn: compile_body_tail may push PROGN_ITER frames
+     * that compile_expr won't drain (its own tail_base captures them
+     * as already-existing).  We drain explicitly afterward. */
+    int tail_base = c->tail_count;
+    CL_Obj tail = compile_body_tail(c, forms);
+    if (CL_NULL_P(tail)) {
+        cl_emit(c, OP_NIL);
+        return;
+    }
+    compile_expr(c, tail);
+    while (c->tail_count > tail_base) {
+        CL_TailFrame frame = c->tail_stack[--c->tail_count];
+        CL_Obj cont = emit_tail_postlude(c, &frame);
+        if (!CL_NULL_P(cont))
+            compile_expr(c, cont);
+    }
 }
 
 /* Look up a global symbol-macro expansion stored on the symbol's plist
@@ -2615,27 +2886,38 @@ static void compile_symbol(CL_Compiler *c, CL_Obj sym)
     }
 }
 
-/* --- Main dispatcher --- */
+/* --- Main dispatcher ---
+ *
+ * compile_expr_step processes one form and either:
+ *   - finishes by emitting bytecode (returns 0), or
+ *   - tail-trampolines by writing a new form to *expr_p (returns 1).
+ *
+ * The driver compile_expr() runs compile_expr_step() in a loop, then
+ * drains any tail frames pushed during the chain.  This keeps the C
+ * stack flat across deeply nested forms like (let A (let B (let C ...))).
+ */
 
-void compile_expr(CL_Compiler *c, CL_Obj expr)
+static int compile_expr_step(CL_Compiler *c, CL_Obj *expr_p)
 {
-    if (CL_NULL_P(expr))    { cl_emit(c, OP_NIL); return; }
-    if (CL_FIXNUM_P(expr))  { cl_emit_const(c, expr); return; }
-    if (CL_CHAR_P(expr))    { cl_emit_const(c, expr); return; }
-    if (CL_ANY_STRING_P(expr)) { cl_emit_const(c, expr); return; }
-    if (CL_BIGNUM_P(expr))  { cl_emit_const(c, expr); return; }
-    if (CL_RATIO_P(expr))   { cl_emit_const(c, expr); return; }
-    if (CL_COMPLEX_P(expr)) { cl_emit_const(c, expr); return; }
-    if (CL_FLOATP(expr))    { cl_emit_const(c, expr); return; }
-    if (CL_VECTOR_P(expr))  { cl_emit_const(c, expr); return; }
-    if (CL_BIT_VECTOR_P(expr)) { cl_emit_const(c, expr); return; }
-    if (CL_PATHNAME_P(expr))   { cl_emit_const(c, expr); return; }
-    if (CL_STRUCT_P(expr))     { cl_emit_const(c, expr); return; }
-    if (CL_HASHTABLE_P(expr))  { cl_emit_const(c, expr); return; }
+    CL_Obj expr = *expr_p;
+
+    if (CL_NULL_P(expr))    { cl_emit(c, OP_NIL); return 0; }
+    if (CL_FIXNUM_P(expr))  { cl_emit_const(c, expr); return 0; }
+    if (CL_CHAR_P(expr))    { cl_emit_const(c, expr); return 0; }
+    if (CL_ANY_STRING_P(expr)) { cl_emit_const(c, expr); return 0; }
+    if (CL_BIGNUM_P(expr))  { cl_emit_const(c, expr); return 0; }
+    if (CL_RATIO_P(expr))   { cl_emit_const(c, expr); return 0; }
+    if (CL_COMPLEX_P(expr)) { cl_emit_const(c, expr); return 0; }
+    if (CL_FLOATP(expr))    { cl_emit_const(c, expr); return 0; }
+    if (CL_VECTOR_P(expr))  { cl_emit_const(c, expr); return 0; }
+    if (CL_BIT_VECTOR_P(expr)) { cl_emit_const(c, expr); return 0; }
+    if (CL_PATHNAME_P(expr))   { cl_emit_const(c, expr); return 0; }
+    if (CL_STRUCT_P(expr))     { cl_emit_const(c, expr); return 0; }
+    if (CL_HASHTABLE_P(expr))  { cl_emit_const(c, expr); return 0; }
 
     if (CL_SYMBOL_P(expr)) {
         compile_symbol(c, expr);
-        return;
+        return 0;
     }
 
     /* Any non-cons heap object that isn't a symbol is self-evaluating per
@@ -2648,7 +2930,7 @@ void compile_expr(CL_Compiler *c, CL_Obj expr)
      * thread is spawned with default special bindings. */
     if (CL_HEAP_P(expr) && !CL_CONS_P(expr)) {
         cl_emit_const(c, expr);
-        return;
+        return 0;
     }
 
     if (CL_CONS_P(expr)) {
@@ -2687,7 +2969,6 @@ void compile_expr(CL_Compiler *c, CL_Obj expr)
                     arg_array[nargs++] = cl_car(args_list);
                     args_list = cl_cdr(args_list);
                 }
-                CL_GC_PROTECT(expr);
                 CL_GC_PROTECT(local_expander);
                 CL_GC_PROTECT(lex_env);
                 saved_lex_env = cl_current_lex_env;
@@ -2702,18 +2983,33 @@ void compile_expr(CL_Compiler *c, CL_Obj expr)
                     }
                 }
                 cl_current_lex_env = saved_lex_env;
-                CL_GC_UNPROTECT(3);
-                /* GC-protect expanded form during compilation — recursive
-                 * compile_expr may trigger further macro expansions + GC */
-                CL_GC_PROTECT(expanded);
-                compile_expr(c, expanded);
-                CL_GC_UNPROTECT(1);
-                return;
+                CL_GC_UNPROTECT(2);
+                /* Trampoline into the expansion — outer compile_expr
+                 * driver keeps `expr` GC-protected via &expr. */
+                *expr_p = expanded;
+                return 1;
             }
         }
 
+        /* CLHS 3.1.2.1.2.4: a function form's CAR can be a global function,
+         * a local FLET/LABELS function, OR a macro.  Local FLET/LABELS
+         * bindings SHADOW global macro definitions of the same symbol
+         * (per CLHS 3.1.2.1.2 "kinds of forms").  Without this check, a
+         * `(labels ((test (c) ...)) ... (test c) ...)` whose `test`
+         * symbol also has a global macro binding (e.g. fiveam:test from
+         * a co-loaded library) would expand to the macro's body
+         * `(register-test ...)`, breaking the labels invocation.  This
+         * surfaced specifically as "Undefined function: REGISTER-TEST"
+         * during cold compile of trivia.balland2006/optimizer.lisp's
+         * `apply-fusion`, which uses `(labels ((test (c) ...)) ...)`. */
+        if (CL_SYMBOL_P(head)) {
+            if (cl_env_lookup_local_fun(c->env, head) >= 0)
+                goto do_call;
+            if (c->env && cl_env_resolve_fun_upvalue(c->env, head) >= 0)
+                goto do_call;
+        }
+
         if (CL_SYMBOL_P(head) && cl_macro_p(head)) {
-            {
             int _fp0 = cl_vm.fp, _sp0 = cl_vm.sp;
             CL_Obj expanded;
             CL_Obj lex_env = cl_build_lex_env(c->env);
@@ -2726,83 +3022,170 @@ void compile_expr(CL_Compiler *c, CL_Obj expr)
                         _mname, _fp0, cl_vm.fp, _sp0, cl_vm.sp);
                 fflush(stderr);
             }
-            /* GC-protect expanded form during compilation — recursive
-             * compile_expr may trigger further macro expansions + GC */
-            CL_GC_PROTECT(expanded);
-            compile_expr(c, expanded);
-            CL_GC_UNPROTECT(1);
-            }
-            return;
+            /* Trampoline into the expansion — outer driver protects expr. */
+            *expr_p = expanded;
+            return 1;
         }
 
-        if (head == SYM_QUOTE)       { compile_quote(c, expr); return; }
-        if (head == SYM_IF)          { compile_if(c, expr); return; }
-        if (head == SYM_PROGN)       { compile_progn(c, cl_cdr(expr)); return; }
-        if (head == SYM_LAMBDA)      { compile_lambda(c, expr); return; }
-        if (head == SYM_LET)         { compile_let(c, expr, 0); return; }
-        if (head == SYM_LETSTAR)     { compile_let(c, expr, 1); return; }
-        if (head == SYM_SETQ)        { compile_setq(c, expr); return; }
-        if (head == SYM_SETF)        { compile_setf(c, expr); return; }
-        if (head == SYM_FUNCTION)    { compile_function(c, expr); return; }
+        if (head == SYM_QUOTE)       { compile_quote(c, expr); return 0; }
+        if (head == SYM_IF) {
+            /* Always returns the THEN form; ELSE handling deferred to
+             * the IF_AFTER_THEN postlude. */
+            *expr_p = compile_if(c, expr);
+            return 1;
+        }
+        /* Trampoline PROGN: walk all but last, then continue with last. */
+        if (head == SYM_PROGN) {
+            CL_Obj forms = cl_cdr(expr);
+            if (CL_NULL_P(forms)) { cl_emit(c, OP_NIL); return 0; }
+            while (!CL_NULL_P(cl_cdr(forms))) {
+                int prev_tail = c->in_tail;
+                c->in_tail = 0;
+                compile_expr(c, cl_car(forms));
+                c->in_tail = prev_tail;
+                cl_emit(c, OP_POP);
+                forms = cl_cdr(forms);
+            }
+            *expr_p = cl_car(forms);
+            return 1;
+        }
+        if (head == SYM_LAMBDA)      { compile_lambda(c, expr); return 0; }
+        /* Trampoline LET / LET*: prelude pushes a CL_TAIL_LET frame and
+         * returns the tail body form (or CL_NIL for empty body). */
+        if (head == SYM_LET || head == SYM_LETSTAR) {
+            CL_Obj tail = compile_let(c, expr, head == SYM_LETSTAR);
+            if (CL_NULL_P(tail)) {
+                cl_emit(c, OP_NIL);
+                return 0;
+            }
+            *expr_p = tail;
+            return 1;
+        }
+        if (head == SYM_SETQ)        { compile_setq(c, expr); return 0; }
+        if (head == SYM_SETF)        { compile_setf(c, expr); return 0; }
+        if (head == SYM_FUNCTION)    { compile_function(c, expr); return 0; }
         /* compiler_extra.c */
-        if (head == SYM_NAMED_LAMBDA) { compile_named_lambda(c, expr); return; }
-        if (head == SYM_DEFUN)       { compile_defun(c, expr); return; }
-        if (head == SYM_DEFVAR)      { compile_defvar(c, expr); return; }
-        if (head == SYM_DEFPARAMETER) { compile_defparameter(c, expr); return; }
-        if (head == SYM_DEFCONSTANT)  { compile_defconstant(c, expr); return; }
-        if (head == SYM_DEFMACRO)    { compile_defmacro(c, expr); return; }
-        if (head == SYM_AND)         { compile_and(c, expr); return; }
-        if (head == SYM_OR)          { compile_or(c, expr); return; }
-        if (head == SYM_COND)        { compile_cond(c, expr); return; }
-        if (head == SYM_CASE)        { compile_case(c, expr, 0); return; }
-        if (head == SYM_ECASE)       { compile_case(c, expr, 1); return; }
-        if (head == SYM_TYPECASE)    { compile_typecase(c, expr, 0); return; }
-        if (head == SYM_ETYPECASE)   { compile_typecase(c, expr, 1); return; }
-        if (head == SYM_QUASIQUOTE)  { compile_quasiquote(c, expr); return; }
-        if (head == SYM_EVAL_WHEN)   { compile_eval_when(c, expr); return; }
-        if (head == SYM_LOAD_TIME_VALUE) { compile_load_time_value(c, expr); return; }
-        if (head == SYM_DEFSETF)     { compile_defsetf(c, expr); return; }
-        if (head == SYM_DEFTYPE)     { compile_deftype(c, expr); return; }
-        if (head == SYM_MULTIPLE_VALUE_BIND)  { compile_multiple_value_bind(c, expr); return; }
-        if (head == SYM_MULTIPLE_VALUE_CALL)  { compile_multiple_value_call(c, expr); return; }
-        if (head == SYM_MULTIPLE_VALUE_LIST)  { compile_multiple_value_list(c, expr); return; }
-        if (head == SYM_MULTIPLE_VALUE_PROG1) { compile_multiple_value_prog1(c, expr); return; }
-        if (head == SYM_NTH_VALUE)            { compile_nth_value(c, expr); return; }
+        if (head == SYM_NAMED_LAMBDA) { compile_named_lambda(c, expr); return 0; }
+        if (head == SYM_DEFUN)       { compile_defun(c, expr); return 0; }
+        if (head == SYM_DEFVAR)      { compile_defvar(c, expr); return 0; }
+        if (head == SYM_DEFPARAMETER) { compile_defparameter(c, expr); return 0; }
+        if (head == SYM_DEFCONSTANT)  { compile_defconstant(c, expr); return 0; }
+        if (head == SYM_DEFMACRO)    { compile_defmacro(c, expr); return 0; }
+        if (head == SYM_AND)         { compile_and(c, expr); return 0; }
+        if (head == SYM_OR)          { compile_or(c, expr); return 0; }
+        if (head == SYM_COND)        { compile_cond(c, expr); return 0; }
+        if (head == SYM_CASE)        { compile_case(c, expr, 0); return 0; }
+        if (head == SYM_ECASE)       { compile_case(c, expr, 1); return 0; }
+        if (head == SYM_TYPECASE)    { compile_typecase(c, expr, 0); return 0; }
+        if (head == SYM_ETYPECASE)   { compile_typecase(c, expr, 1); return 0; }
+        if (head == SYM_QUASIQUOTE)  { compile_quasiquote(c, expr); return 0; }
+        if (head == SYM_EVAL_WHEN) {
+            CL_Obj tail = compile_eval_when(c, expr);
+            if (CL_NULL_P(tail)) { cl_emit(c, OP_NIL); return 0; }
+            *expr_p = tail;
+            return 1;
+        }
+        if (head == SYM_LOAD_TIME_VALUE) { compile_load_time_value(c, expr); return 0; }
+        if (head == SYM_DEFSETF)     { compile_defsetf(c, expr); return 0; }
+        if (head == SYM_DEFTYPE)     { compile_deftype(c, expr); return 0; }
+        if (head == SYM_MULTIPLE_VALUE_BIND) {
+            CL_Obj tail = compile_multiple_value_bind(c, expr);
+            if (CL_NULL_P(tail)) { cl_emit(c, OP_NIL); return 0; }
+            *expr_p = tail;
+            return 1;
+        }
+        if (head == SYM_MULTIPLE_VALUE_CALL)  { compile_multiple_value_call(c, expr); return 0; }
+        if (head == SYM_MULTIPLE_VALUE_LIST)  { compile_multiple_value_list(c, expr); return 0; }
+        if (head == SYM_MULTIPLE_VALUE_PROG1) { compile_multiple_value_prog1(c, expr); return 0; }
+        if (head == SYM_NTH_VALUE)            { compile_nth_value(c, expr); return 0; }
         /* compiler_special.c */
-        if (head == SYM_BLOCK)       { compile_block(c, expr); return; }
-        if (head == SYM_RETURN_FROM) { compile_return_from(c, expr); return; }
-        if (head == SYM_RETURN)      { compile_return(c, expr); return; }
-        if (head == SYM_FLET)        { compile_flet(c, expr); return; }
-        if (head == SYM_LABELS)      { compile_labels(c, expr); return; }
-        if (head == SYM_DO)          { compile_do(c, expr); return; }
-        if (head == SYM_DO_STAR)     { compile_do_star(c, expr); return; }
-        if (head == SYM_DOLIST)      { compile_dolist(c, expr); return; }
-        if (head == SYM_DOTIMES)     { compile_dotimes(c, expr); return; }
-        if (head == SYM_TAGBODY)     { compile_tagbody(c, expr); return; }
-        if (head == SYM_GO)          { compile_go(c, expr); return; }
-        if (head == SYM_CATCH)       { compile_catch(c, expr); return; }
-        if (head == SYM_UNWIND_PROTECT) { compile_unwind_protect(c, expr); return; }
-        if (head == SYM_PROGV) { compile_progv(c, expr); return; }
-        if (head == SYM_DESTRUCTURING_BIND) { compile_destructuring_bind(c, expr); return; }
-        if (head == SYM_HANDLER_BIND) { compile_handler_bind(c, expr); return; }
-        if (head == SYM_RESTART_CASE) { compile_restart_case(c, expr); return; }
+        /* BLOCK / RETURN-FROM / RETURN trampoline.  The prelude emits any
+         * setup bytecode and pushes a tail frame; we continue the trampoline
+         * with the tail body / value form (or emit OP_NIL for empty body). */
+        if (head == SYM_BLOCK) {
+            CL_Obj tail = compile_block(c, expr);
+            if (CL_NULL_P(tail)) { cl_emit(c, OP_NIL); return 0; }
+            *expr_p = tail;
+            return 1;
+        }
+        if (head == SYM_RETURN_FROM) {
+            CL_Obj tail = compile_return_from(c, expr);
+            if (CL_NULL_P(tail)) { cl_emit(c, OP_NIL); return 0; }
+            *expr_p = tail;
+            return 1;
+        }
+        if (head == SYM_RETURN) {
+            CL_Obj tail = compile_return(c, expr);
+            if (CL_NULL_P(tail)) { cl_emit(c, OP_NIL); return 0; }
+            *expr_p = tail;
+            return 1;
+        }
+        if (head == SYM_FLET) {
+            CL_Obj tail = compile_flet(c, expr);
+            if (CL_NULL_P(tail)) { cl_emit(c, OP_NIL); return 0; }
+            *expr_p = tail;
+            return 1;
+        }
+        if (head == SYM_LABELS) {
+            CL_Obj tail = compile_labels(c, expr);
+            if (CL_NULL_P(tail)) { cl_emit(c, OP_NIL); return 0; }
+            *expr_p = tail;
+            return 1;
+        }
+        if (head == SYM_DO)          { compile_do(c, expr); return 0; }
+        if (head == SYM_DO_STAR)     { compile_do_star(c, expr); return 0; }
+        if (head == SYM_DOLIST)      { compile_dolist(c, expr); return 0; }
+        if (head == SYM_DOTIMES)     { compile_dotimes(c, expr); return 0; }
+        if (head == SYM_TAGBODY)     { compile_tagbody(c, expr); return 0; }
+        if (head == SYM_GO)          { compile_go(c, expr); return 0; }
+        if (head == SYM_CATCH)       { compile_catch(c, expr); return 0; }
+        if (head == SYM_UNWIND_PROTECT) { compile_unwind_protect(c, expr); return 0; }
+        if (head == SYM_PROGV) {
+            CL_Obj tail = compile_progv(c, expr);
+            if (CL_NULL_P(tail)) { cl_emit(c, OP_NIL); return 0; }
+            *expr_p = tail;
+            return 1;
+        }
+        if (head == SYM_DESTRUCTURING_BIND) { compile_destructuring_bind(c, expr); return 0; }
+        if (head == SYM_HANDLER_BIND) {
+            CL_Obj tail = compile_handler_bind(c, expr);
+            if (CL_NULL_P(tail)) { cl_emit(c, OP_NIL); return 0; }
+            *expr_p = tail;
+            return 1;
+        }
+        if (head == SYM_RESTART_CASE) { compile_restart_case(c, expr); return 0; }
         if (head == SYM_DECLARE) {
             /* Tolerate misplaced declares (ignore them with a warning).
              * Some macro expansions place declares outside body position;
              * standard CL implementations just ignore them there. */
             platform_write_string("\033[33mWARNING: DECLARE is not allowed here -- ignoring\033[0m\n");
             cl_emit(c, OP_NIL);
-            return;
+            return 0;
         }
-        if (head == SYM_DECLAIM)     { compile_declaim(c, expr); return; }
-        if (head == SYM_LOCALLY)     { compile_locally(c, expr); return; }
-        if (head == SYM_TRACE)       { compile_trace(c, expr); return; }
-        if (head == SYM_UNTRACE)     { compile_untrace(c, expr); return; }
-        if (head == SYM_TIME)        { compile_time(c, expr); return; }
-        if (head == SYM_IN_PACKAGE)  { compile_in_package(c, expr); return; }
-        if (head == SYM_MACROLET)        { compile_macrolet(c, expr); return; }
-        if (head == SYM_SYMBOL_MACROLET) { compile_symbol_macrolet(c, expr); return; }
-        if (head == SYM_THE)             { compile_the(c, expr); return; }
+        if (head == SYM_DECLAIM)     { compile_declaim(c, expr); return 0; }
+        if (head == SYM_LOCALLY) {
+            CL_Obj tail = compile_locally(c, expr);
+            if (CL_NULL_P(tail)) { cl_emit(c, OP_NIL); return 0; }
+            *expr_p = tail;
+            return 1;
+        }
+        if (head == SYM_TRACE)       { compile_trace(c, expr); return 0; }
+        if (head == SYM_UNTRACE)     { compile_untrace(c, expr); return 0; }
+        if (head == SYM_TIME)        { compile_time(c, expr); return 0; }
+        if (head == SYM_IN_PACKAGE)  { compile_in_package(c, expr); return 0; }
+        if (head == SYM_MACROLET) {
+            CL_Obj tail = compile_macrolet(c, expr);
+            if (CL_NULL_P(tail)) { cl_emit(c, OP_NIL); return 0; }
+            *expr_p = tail;
+            return 1;
+        }
+        if (head == SYM_SYMBOL_MACROLET) {
+            CL_Obj tail = compile_symbol_macrolet(c, expr);
+            if (CL_NULL_P(tail)) { cl_emit(c, OP_NIL); return 0; }
+            *expr_p = tail;
+            return 1;
+        }
+        if (head == SYM_THE)             { compile_the(c, expr); return 0; }
 
         /* (funcall fn arg1 arg2 ...) → compile fn as value, args, OP_CALL
          * Avoids C stack nesting by keeping the call in the VM dispatch loop. */
@@ -2832,7 +3215,7 @@ void compile_expr(CL_Compiler *c, CL_Obj expr)
             else
                 cl_emit(c, OP_CALL);
             cl_emit(c, (uint8_t)nargs);
-            return;
+            return 0;
         }
 
         /* (apply fn arg1 ... arglist) → build full arglist via CONS, OP_APPLY
@@ -2864,15 +3247,53 @@ void compile_expr(CL_Compiler *c, CL_Obj expr)
                 cl_emit(c, OP_CONS);
             c->in_tail = saved_tail;
             cl_emit(c, OP_APPLY);
-            return;
+            return 0;
         }
 
+    do_call:
         compile_call(c, expr);
-        return;
+        return 0;
     }
 
     cl_error(CL_ERR_GENERAL, "Cannot compile: unexpected %s in expression position",
              cl_type_name(expr));
+    return 0;  /* unreachable */
+}
+
+/* Driver: trampoline-loop over compile_expr_step and drain pending tail
+ * frames.  Each step either finishes (return 0) or sets a new form for
+ * the trampoline (return 1).  The drain emits postludes (env restore,
+ * OP_DYNUNBIND, etc.) for any frames the chain pushed.
+ *
+ * A postlude can return a continuation form (non-CL_NIL) — that form
+ * becomes the next trampoline target, after which the drain resumes.
+ * IF_AFTER_THEN uses this to dispatch the ELSE branch once THEN has
+ * compiled, keeping both branches off the C stack. */
+void compile_expr(CL_Compiler *c, CL_Obj expr)
+{
+    int tail_base = c->tail_count;
+
+    /* expr is updated in place via compile_expr_step's *expr_p; protect &expr
+     * for the entire chain so macroexpand/let-prelude allocations don't
+     * dangling our current form. */
+    CL_GC_PROTECT(expr);
+
+    while (compile_expr_step(c, &expr)) { /* trampoline */ }
+
+    while (c->tail_count > tail_base) {
+        /* Copy by value: emit_tail_postlude may push new frames which
+         * could realloc tail_stack and invalidate any pointer into it. */
+        CL_TailFrame frame = c->tail_stack[--c->tail_count];
+        CL_Obj cont = emit_tail_postlude(c, &frame);
+        if (!CL_NULL_P(cont)) {
+            /* expr is GC-protected via &expr; reassigning carries the
+             * continuation form into protected territory. */
+            expr = cont;
+            while (compile_expr_step(c, &expr)) { /* trampoline */ }
+        }
+    }
+
+    CL_GC_UNPROTECT(1);
 }
 
 /* --- Macro expansion (runtime, via VM) --- */
@@ -3037,7 +3458,7 @@ CL_Obj cl_compile(CL_Obj expr)
     cl_emit(comp, OP_HALT);
 
     bc = (CL_Bytecode *)cl_alloc(TYPE_BYTECODE, sizeof(CL_Bytecode));
-    if (!bc) { cl_env_destroy(env); platform_free(comp); return CL_NIL; }
+    if (!bc) { cl_env_destroy(env); if (comp->tail_stack) platform_free(comp->tail_stack); platform_free(comp); return CL_NIL; }
 
     bc->code = (uint8_t *)platform_alloc(comp->code_pos);
     if (bc->code) memcpy(bc->code, comp->code, comp->code_pos);
@@ -3090,6 +3511,7 @@ CL_Obj cl_compile(CL_Obj expr)
 
     cl_env_destroy(env);
 
+    if (comp->tail_stack) platform_free(comp->tail_stack);
     platform_free(comp);
 
     return CL_PTR_TO_OBJ(bc);
@@ -3128,6 +3550,11 @@ void cl_compiler_gc_mark_thread(CL_Thread *t)
             gc_mark_obj(c->outer_tags[i].tag);
             gc_mark_obj(c->outer_tags[i].tagbody_id);
         }
+        /* Pending tail frames hold continuation forms (e.g. the ELSE
+         * branch of an IF whose THEN is still compiling) that must
+         * survive GC during the body's compilation. */
+        for (i = 0; i < c->tail_count; i++)
+            gc_mark_obj(c->tail_stack[i].cont_form);
         /* Mark compile-time environment (platform_alloc'd, holds CL_Obj refs) */
         if (c->env) {
             CL_CompEnv *env = c->env;
@@ -3179,6 +3606,9 @@ void cl_compiler_gc_update_thread(CL_Thread *t, void (*update)(CL_Obj *))
             update(&c->outer_tags[i].tag);
             update(&c->outer_tags[i].tagbody_id);
         }
+        /* Pending tail-frame continuation forms — see mark side. */
+        for (i = 0; i < c->tail_count; i++)
+            update(&c->tail_stack[i].cont_form);
         if (c->env) {
             CL_CompEnv *env = c->env;
             while (env) {
@@ -3294,6 +3724,7 @@ void cl_compiler_restore_to(void *saved)
         }
         cl_active_compiler = c->parent;
         if (c->env) cl_env_destroy(c->env);
+        if (c->tail_stack) platform_free(c->tail_stack);
         platform_free(c);
     }
 }
