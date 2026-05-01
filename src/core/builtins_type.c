@@ -1331,6 +1331,254 @@ static int subtype_check(int id1, int id2)
     return 0;
 }
 
+/* Structural equality on type specs: interned symbols are EQ, conses are
+ * compared recursively.  Sufficient for the (deftype) bodies subtypep sees. */
+static int tspec_equal_p(CL_Obj a, CL_Obj b)
+{
+    if (a == b) return 1;
+    if (CL_CONS_P(a) && CL_CONS_P(b))
+        return tspec_equal_p(cl_car(a), cl_car(b)) &&
+               tspec_equal_p(cl_cdr(a), cl_cdr(b));
+    return 0;
+}
+
+/* --- Bounded integer range support for subtypep ---
+ *
+ * Range bounds are represented as int64_t with INT64_MIN/INT64_MAX as
+ * sentinels for ±∞.  Exclusive bounds `(N)` are normalized to inclusive
+ * (lo: lo+1, hi: hi-1) so compare_ranges does plain ≥/≤.  Bignum bounds
+ * are not supported — we punt to "uncertain" via the int_range_unknown
+ * sentinel so the caller falls back to other rules. */
+typedef struct {
+    int64_t lo, hi;       /* inclusive after normalization */
+    int known;            /* 0 = couldn't parse (e.g. bignum), 1 = ok */
+    int integer_typed;    /* 1 if this is an integer-based type spec */
+} int_range_t;
+
+#define INT_RANGE_LO_INF INT64_MIN
+#define INT_RANGE_HI_INF INT64_MAX
+
+/* Parse a bound from `(integer L H)` or `(signed-byte N)` etc.  bound is
+ * the raw form: `*`, an integer, or `(N)` (exclusive).  Returns the
+ * inclusive value via *out, with *out_inf set if the bound is unbounded
+ * (in the direction indicated by `is_low`).  Returns 1 on success, 0 if
+ * we couldn't represent the bound (bignum etc.). */
+static int parse_int_bound(CL_Obj bound, int is_low, int64_t *out, int *out_inf)
+{
+    *out_inf = 0;
+    /* `*` (the symbol star) means unbounded. */
+    if (CL_SYMBOL_P(bound)) {
+        if (strcmp(cl_symbol_name(bound), "*") == 0) {
+            *out_inf = 1;
+            *out = is_low ? INT_RANGE_LO_INF : INT_RANGE_HI_INF;
+            return 1;
+        }
+        return 0;
+    }
+    /* Exclusive bound: (N) — single-element list. */
+    if (CL_CONS_P(bound) && CL_NULL_P(cl_cdr(bound))) {
+        int64_t v;
+        int inf;
+        if (!parse_int_bound(cl_car(bound), is_low, &v, &inf)) return 0;
+        if (inf) { *out_inf = 1; *out = v; return 1; }
+        /* Exclude the bound: low → +1, high → -1. */
+        *out = is_low ? v + 1 : v - 1;
+        return 1;
+    }
+    /* Plain fixnum bound. */
+    if (CL_FIXNUM_P(bound)) {
+        *out = (int64_t)CL_FIXNUM_VAL(bound);
+        return 1;
+    }
+    /* Bignum / non-integer: punt. */
+    return 0;
+}
+
+/* Decompose an integer-typed compound spec into a range.  Returns:
+ *  - integer_typed=0 if not an integer-based spec (caller should use other rules)
+ *  - known=0 if we recognize it but can't compute bounds (bignums, etc.)
+ *  - known=1 with lo/hi populated otherwise. */
+static int_range_t parse_integer_spec(CL_Obj type)
+{
+    int_range_t r;
+    r.lo = INT_RANGE_LO_INF;
+    r.hi = INT_RANGE_HI_INF;
+    r.known = 0;
+    r.integer_typed = 0;
+
+    /* Atomic INTEGER, FIXNUM, BIT. */
+    if (CL_SYMBOL_P(type)) {
+        const char *n = cl_symbol_name(type);
+        if (strcmp(n, "INTEGER") == 0) {
+            r.integer_typed = 1; r.known = 1;
+            return r;
+        }
+        if (strcmp(n, "FIXNUM") == 0) {
+            r.integer_typed = 1; r.known = 1;
+            r.lo = (int64_t)CL_FIXNUM_MIN;
+            r.hi = (int64_t)CL_FIXNUM_MAX;
+            return r;
+        }
+        if (strcmp(n, "BIT") == 0) {
+            r.integer_typed = 1; r.known = 1;
+            r.lo = 0; r.hi = 1;
+            return r;
+        }
+        return r;  /* not integer-typed */
+    }
+
+    /* Compound forms. */
+    if (!CL_CONS_P(type)) return r;
+    {
+        CL_Obj head = cl_car(type);
+        if (!CL_SYMBOL_P(head)) return r;
+        {
+            const char *hn = cl_symbol_name(head);
+            CL_Obj args = cl_cdr(type);
+            if (strcmp(hn, "INTEGER") == 0) {
+                int64_t lo = INT_RANGE_LO_INF, hi = INT_RANGE_HI_INF;
+                int lo_inf = 1, hi_inf = 1;
+                r.integer_typed = 1;
+                if (CL_NULL_P(args)) { r.known = 1; return r; }
+                if (!parse_int_bound(cl_car(args), 1, &lo, &lo_inf)) return r;
+                args = cl_cdr(args);
+                if (!CL_NULL_P(args)) {
+                    if (!parse_int_bound(cl_car(args), 0, &hi, &hi_inf)) return r;
+                }
+                r.known = 1;
+                r.lo = lo;
+                r.hi = hi;
+                return r;
+            }
+            if (strcmp(hn, "MOD") == 0) {
+                /* (mod N) = (integer 0 (N-1)) */
+                if (CL_NULL_P(args)) return r;
+                {
+                    CL_Obj n = cl_car(args);
+                    r.integer_typed = 1;
+                    if (CL_FIXNUM_P(n)) {
+                        int64_t nv = (int64_t)CL_FIXNUM_VAL(n);
+                        if (nv > 0) { r.known = 1; r.lo = 0; r.hi = nv - 1; }
+                        else if (nv == 0) { /* (mod 0) = NIL — empty type */
+                            r.known = 1; r.lo = 1; r.hi = 0;  /* lo>hi means empty */
+                        }
+                    }
+                }
+                return r;
+            }
+            if (strcmp(hn, "UNSIGNED-BYTE") == 0) {
+                /* (unsigned-byte N) = (integer 0 (1- (expt 2 N))) */
+                r.integer_typed = 1;
+                if (CL_NULL_P(args)) {
+                    /* No bound → INTEGER */
+                    r.known = 1; r.lo = 0;
+                    return r;
+                }
+                {
+                    CL_Obj n = cl_car(args);
+                    if (CL_SYMBOL_P(n)) {
+                        const char *ns = cl_symbol_name(n);
+                        if (strcmp(ns, "*") == 0) { r.known = 1; r.lo = 0; return r; }
+                    } else if (CL_FIXNUM_P(n)) {
+                        int32_t nv = CL_FIXNUM_VAL(n);
+                        if (nv >= 0 && nv < 62) {
+                            r.known = 1;
+                            r.lo = 0;
+                            r.hi = (int64_t)((uint64_t)1 << nv) - 1;
+                            return r;
+                        }
+                        /* nv >= 62 won't fit in int64_t */
+                    }
+                }
+                return r;
+            }
+            if (strcmp(hn, "SIGNED-BYTE") == 0) {
+                /* (signed-byte N) = (integer (- (expt 2 (1- N))) (1- (expt 2 (1- N)))) */
+                r.integer_typed = 1;
+                if (CL_NULL_P(args)) { r.known = 1; return r; }
+                {
+                    CL_Obj n = cl_car(args);
+                    if (CL_SYMBOL_P(n)) {
+                        const char *ns = cl_symbol_name(n);
+                        if (strcmp(ns, "*") == 0) { r.known = 1; return r; }
+                    } else if (CL_FIXNUM_P(n)) {
+                        int32_t nv = CL_FIXNUM_VAL(n);
+                        if (nv >= 1 && nv <= 63) {
+                            r.known = 1;
+                            r.lo = -(int64_t)((uint64_t)1 << (nv - 1));
+                            r.hi = (int64_t)((uint64_t)1 << (nv - 1)) - 1;
+                            return r;
+                        }
+                    }
+                }
+                return r;
+            }
+        }
+    }
+    return r;
+}
+
+/* True if `type` is a numeric supertype strictly broader than INTEGER:
+ * RATIONAL, REAL, FLOAT, NUMBER, COMPLEX, SHORT/SINGLE/DOUBLE/LONG-FLOAT,
+ * etc.  Used to short-circuit `(subtypep <broader-numeric> <integer-spec>)`
+ * to a certain NO (rationals/reals/floats aren't integers).  */
+static int is_non_integer_numeric_supertype(CL_Obj type)
+{
+    if (!CL_SYMBOL_P(type)) return 0;
+    {
+        const char *n = cl_symbol_name(type);
+        return strcmp(n, "RATIONAL") == 0 ||
+               strcmp(n, "REAL") == 0 ||
+               strcmp(n, "NUMBER") == 0 ||
+               strcmp(n, "COMPLEX") == 0 ||
+               strcmp(n, "FLOAT") == 0 ||
+               strcmp(n, "SHORT-FLOAT") == 0 ||
+               strcmp(n, "SINGLE-FLOAT") == 0 ||
+               strcmp(n, "DOUBLE-FLOAT") == 0 ||
+               strcmp(n, "LONG-FLOAT") == 0 ||
+               strcmp(n, "RATIO") == 0;
+    }
+}
+
+/* Attempt subtypep using bounded integer range arithmetic.
+ * Returns:
+ *   1 = (T T)         certain subtype
+ *   0 = (NIL T)       certain non-subtype
+ *  -1 = uncertain / not applicable; caller should try other rules. */
+int cl_subtypep_integer_ranges(CL_Obj t1, CL_Obj t2)
+{
+    int_range_t r1 = parse_integer_spec(t1);
+    int_range_t r2 = parse_integer_spec(t2);
+
+    /* If neither side is integer-typed, this rule doesn't apply. */
+    if (!r1.integer_typed && !r2.integer_typed) return -1;
+
+    /* Type1 is a non-integer numeric supertype (RATIONAL, REAL, FLOAT,
+     * NUMBER, etc.) and type2 is integer-typed.  These supertypes
+     * include non-integer values (1/2, 0.5, etc.), so they're certainly
+     * NOT subtypes of any integer-only type.  Returns certain NO. */
+    if (!r1.integer_typed && r2.integer_typed
+        && is_non_integer_numeric_supertype(t1)) {
+        return 0;
+    }
+
+    /* If only one side is integer-typed, fall through to other rules
+     * (the caller's atomic-INTEGER coalescing handles t1 integer ⊆ rational
+     * etc., and t2 integer with non-integer t1 returns uncertain). */
+    if (!r1.integer_typed || !r2.integer_typed) return -1;
+
+    /* Either side known=0 (e.g. bignum bound) → uncertain. */
+    if (!r1.known || !r2.known) return -1;
+
+    /* Empty t1 (lo > hi) means t1 = NIL, which is a subtype of anything. */
+    if (r1.lo > r1.hi) return 1;
+    /* Empty t2 with non-empty t1 → certainly not a subtype. */
+    if (r2.lo > r2.hi) return 0;
+
+    /* r1 ⊆ r2 iff [r1.lo, r1.hi] ⊆ [r2.lo, r2.hi]. */
+    return (r1.lo >= r2.lo && r1.hi <= r2.hi) ? 1 : 0;
+}
+
 static CL_Obj bi_subtypep(CL_Obj *args, int n)
 {
     CL_Obj type1 = args[0];
@@ -1357,6 +1605,174 @@ static CL_Obj bi_subtypep(CL_Obj *args, int n)
         }
     }
 
+    /* Structural equality fast-path: identical specs are subtypes. */
+    if (tspec_equal_p(type1, type2)) {
+        cl_mv_count = 2;
+        cl_mv_values[0] = SYM_T;
+        cl_mv_values[1] = SYM_T;
+        return SYM_T;
+    }
+
+    /* T is the universal supertype: every type — including unknown / unbound
+     * types — is a subtype of T (CLHS 4.2.5).  Fire this BEFORE TID
+     * resolution so undefined deftype symbols (e.g. trivial-cltl2 not
+     * loaded → serapeum's variable-type defaults to T) don't fall into
+     * the (NIL NIL) "unknown" branch and trigger spurious "Required type
+     * X is not a subtypep of declared type T" warnings under serapeum's
+     * `assure` macro. */
+    if (type2 == SYM_T) {
+        cl_mv_count = 2;
+        cl_mv_values[0] = SYM_T;
+        cl_mv_values[1] = SYM_T;
+        return SYM_T;
+    }
+    /* Symmetric: NIL is the empty type, so only NIL is a subtype of NIL.
+     * `(subtypep X NIL)` for any non-NIL spec is certainly false.  This
+     * complements the SYM_T fast-path above and short-circuits serapeum's
+     * `(assert (not (subtypep type-spec nil)))` cleanly. */
+    if (CL_NULL_P(type2)) {
+        if (CL_NULL_P(type1)) {
+            cl_mv_count = 2;
+            cl_mv_values[0] = SYM_T;
+            cl_mv_values[1] = SYM_T;
+            return SYM_T;
+        }
+        cl_mv_count = 2;
+        cl_mv_values[0] = CL_NIL;
+        cl_mv_values[1] = SYM_T;
+        return CL_NIL;
+    }
+
+    /* Compound combinator rules: (OR ...), (AND ...), (MEMBER ...).
+     * These fire after symbol-expansion so deftype'd aliases reduce to
+     * their bodies before we get here. */
+    {
+        CL_Obj head1 = CL_CONS_P(type1) ? cl_car(type1) : CL_NIL;
+        CL_Obj head2 = CL_CONS_P(type2) ? cl_car(type2) : CL_NIL;
+
+        /* (or A B ...) ⊆ T2 — true iff every Ai ⊆ T2.  A single certain "no"
+         * makes the whole thing a certain "no".
+         *
+         * IMPORTANT: head1=OR must be checked BEFORE head2=OR.  When both
+         * type1 and type2 are OR, distributing T1 (recursing each Ai
+         * against T2) is what gives the correct answer; the reverse
+         * direction (T1 ⊆ Ci for some i) returns a spurious NIL because
+         * a multi-branch T1 is rarely contained in any single Ci of T2.
+         * Pre-fix, `(subtypep '(or A B C) '(or B C A))` returned (NIL T)
+         * which broke serapeum's exhaustiveness checks under
+         * typecase-of / etypecase-of. */
+        if (head1 == TYPE_SYM_OR) {
+            CL_Obj rest = cl_cdr(type1);
+            int saw_unknown = 0;
+            while (!CL_NULL_P(rest)) {
+                CL_Obj sub_args[2]; CL_Obj prim;
+                sub_args[0] = cl_car(rest); sub_args[1] = type2;
+                prim = bi_subtypep(sub_args, 2);
+                if (cl_mv_values[1] == SYM_T && prim == CL_NIL) {
+                    cl_mv_count = 2;
+                    cl_mv_values[0] = CL_NIL;
+                    cl_mv_values[1] = SYM_T;
+                    return CL_NIL;
+                }
+                if (cl_mv_values[1] != SYM_T) saw_unknown = 1;
+                rest = cl_cdr(rest);
+            }
+            cl_mv_count = 2;
+            cl_mv_values[0] = saw_unknown ? CL_NIL : SYM_T;
+            cl_mv_values[1] = saw_unknown ? CL_NIL : SYM_T;
+            return cl_mv_values[0];
+        }
+
+        /* T1 ⊆ (or A B ...) — true if T1 ⊆ Ai for some i; otherwise unknown
+         * unless every branch returned a certain "no". */
+        if (head2 == TYPE_SYM_OR) {
+            CL_Obj rest = cl_cdr(type2);
+            int saw_unknown = 0;
+            while (!CL_NULL_P(rest)) {
+                CL_Obj sub_args[2]; CL_Obj prim;
+                sub_args[0] = type1; sub_args[1] = cl_car(rest);
+                prim = bi_subtypep(sub_args, 2);
+                if (cl_mv_values[1] == SYM_T && prim == SYM_T) {
+                    cl_mv_count = 2;
+                    cl_mv_values[0] = SYM_T;
+                    cl_mv_values[1] = SYM_T;
+                    return SYM_T;
+                }
+                if (cl_mv_values[1] != SYM_T) saw_unknown = 1;
+                rest = cl_cdr(rest);
+            }
+            cl_mv_count = 2;
+            cl_mv_values[0] = CL_NIL;
+            cl_mv_values[1] = saw_unknown ? CL_NIL : SYM_T;
+            return CL_NIL;
+        }
+
+        /* (and A B ...) ⊆ T2 — true if any Ai ⊆ T2 (intersection narrows). */
+        if (head1 == TYPE_SYM_AND) {
+            CL_Obj rest = cl_cdr(type1);
+            int saw_unknown = 0;
+            while (!CL_NULL_P(rest)) {
+                CL_Obj sub_args[2]; CL_Obj prim;
+                sub_args[0] = cl_car(rest); sub_args[1] = type2;
+                prim = bi_subtypep(sub_args, 2);
+                if (cl_mv_values[1] == SYM_T && prim == SYM_T) {
+                    cl_mv_count = 2;
+                    cl_mv_values[0] = SYM_T;
+                    cl_mv_values[1] = SYM_T;
+                    return SYM_T;
+                }
+                if (cl_mv_values[1] != SYM_T) saw_unknown = 1;
+                rest = cl_cdr(rest);
+            }
+            cl_mv_count = 2;
+            cl_mv_values[0] = CL_NIL;
+            cl_mv_values[1] = saw_unknown ? CL_NIL : SYM_T;
+            return CL_NIL;
+        }
+
+        /* T1 ⊆ (and A B ...) iff T1 ⊆ Ai for every i.  Any certain "no"
+         * proves the whole result. */
+        if (head2 == TYPE_SYM_AND) {
+            CL_Obj rest = cl_cdr(type2);
+            int saw_unknown = 0;
+            while (!CL_NULL_P(rest)) {
+                CL_Obj sub_args[2]; CL_Obj prim;
+                sub_args[0] = type1; sub_args[1] = cl_car(rest);
+                prim = bi_subtypep(sub_args, 2);
+                if (cl_mv_values[1] == SYM_T && prim == CL_NIL) {
+                    cl_mv_count = 2;
+                    cl_mv_values[0] = CL_NIL;
+                    cl_mv_values[1] = SYM_T;
+                    return CL_NIL;
+                }
+                if (cl_mv_values[1] != SYM_T) saw_unknown = 1;
+                rest = cl_cdr(rest);
+            }
+            cl_mv_count = 2;
+            cl_mv_values[0] = saw_unknown ? CL_NIL : SYM_T;
+            cl_mv_values[1] = saw_unknown ? CL_NIL : SYM_T;
+            return cl_mv_values[0];
+        }
+
+        /* (member x1 x2 ...) ⊆ T2 iff every xi is typep T2. */
+        if (head1 == TYPE_SYM_MEMBER) {
+            CL_Obj rest = cl_cdr(type1);
+            while (!CL_NULL_P(rest)) {
+                if (!cl_typep(cl_car(rest), type2)) {
+                    cl_mv_count = 2;
+                    cl_mv_values[0] = CL_NIL;
+                    cl_mv_values[1] = SYM_T;
+                    return CL_NIL;
+                }
+                rest = cl_cdr(rest);
+            }
+            cl_mv_count = 2;
+            cl_mv_values[0] = SYM_T;
+            cl_mv_values[1] = SYM_T;
+            return SYM_T;
+        }
+    }
+
     /* Class objects as type specifiers: extract class name (slot 0) */
     if (CL_STRUCT_P(type1)) {
         CL_Struct *st = (CL_Struct *)CL_OBJ_TO_PTR(type1);
@@ -1367,10 +1783,28 @@ static CL_Obj bi_subtypep(CL_Obj *args, int n)
         type2 = st->slots[0]; /* class name */
     }
 
-    /* Compound integer-range specifiers — (integer ...), (signed-byte N),
-       (unsigned-byte N), (mod N), (bit).  Every bounded integer range is
-       a subtype of INTEGER (and therefore of RATIONAL, REAL, NUMBER, T)
-       — treat as the symbol INTEGER for the rest of the computation. */
+    /* Compound integer-range specifiers: do range arithmetic before
+     * collapsing to atomic INTEGER.  Handles `(integer L1 H1) ⊆ (integer L2 H2)`
+     * (range subset), `(integer L1 H1) ⊆ FIXNUM` (bounds inside fixnum range),
+     * and `(integer L1 H1) ⊆ (signed-byte N) / (unsigned-byte N) / (mod N) / BIT`
+     * via canonicalization.  Returns 1 if the rule fired (and populated
+     * cl_mv_values); 0 to fall through to atomic-INTEGER handling. */
+    {
+        extern int cl_subtypep_integer_ranges(CL_Obj t1, CL_Obj t2);
+        int result_code = cl_subtypep_integer_ranges(type1, type2);
+        if (result_code != -1) {
+            /* result_code: 1 = certain yes, 0 = certain no */
+            cl_mv_count = 2;
+            cl_mv_values[0] = result_code ? SYM_T : CL_NIL;
+            cl_mv_values[1] = SYM_T;
+            return result_code ? SYM_T : CL_NIL;
+        }
+    }
+
+    /* If we fall through, either the integer-range rule didn't apply
+     * (one side wasn't an integer-y type) or the answer is uncertain.
+     * Collapse compound integer types on the LEFT to atomic INTEGER so
+     * the rest of the chain can use the type-id hierarchy. */
     if (CL_CONS_P(type1)) {
         CL_Obj head = cl_car(type1);
         if (CL_SYMBOL_P(head)) {
@@ -1386,9 +1820,9 @@ static CL_Obj bi_subtypep(CL_Obj *args, int n)
         CL_Obj head = cl_car(type2);
         if (CL_SYMBOL_P(head)) {
             const char *hn = cl_symbol_name(head);
-            /* A bounded integer type on the right is a supertype only of
-               narrower integer types — that requires numeric reasoning we
-               don't do.  Fall through to (NIL NIL) for these. */
+            /* Bounded integer on the right with non-integer LHS — we
+             * don't know.  (Integer-on-both-sides was handled by
+             * cl_subtypep_integer_ranges above.) */
             if (strcmp(hn, "INTEGER") == 0 ||
                 strcmp(hn, "SIGNED-BYTE") == 0 ||
                 strcmp(hn, "UNSIGNED-BYTE") == 0 ||

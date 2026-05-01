@@ -428,13 +428,36 @@ static int tree_needs_nlx_block(CL_Obj body, CL_Obj tag)
     return 0;
 }
 
-void compile_block(CL_Compiler *c, CL_Obj form)
+/* Strip leading declarations from body, then delegate to the
+ * trampoline-aware compile_progn_tail (which pushes a PROGN_ITER frame
+ * when the body has multiple forms so iteration stays off the C stack).
+ * Body must be GC-protected by caller. */
+static CL_Obj compile_nontail_body(CL_Compiler *c, CL_Obj body)
+{
+    CL_Obj rest = process_body_declarations(c, body);
+    return compile_progn_tail(c, rest);
+}
+
+CL_Obj compile_block(CL_Compiler *c, CL_Obj form)
 {
     CL_Obj tag = cl_car(cl_cdr(form));
     CL_Obj body = cl_cdr(cl_cdr(form));
     int saved_block_count = c->block_count;
     int needs_nlx = tree_needs_nlx_block(body, tag);
     CL_BlockInfo *bi;
+    CL_TailFrame *tf;
+
+    /* Hard cap: writing to c->blocks[CL_MAX_BLOCKS] would clobber the
+     * adjacent block_count field (silent stack-corruption that surfaces
+     * later as a SIGBUS in compile_return_from when iterating
+     * c->blocks[].tag).  Raise a clean compile error instead. */
+    if (c->block_count >= CL_MAX_BLOCKS) {
+        cl_error(CL_ERR_OVERFLOW,
+                 "BLOCK nesting depth exceeded (%d): "
+                 "consider raising CL_MAX_BLOCKS", CL_MAX_BLOCKS);
+    }
+
+    CL_GC_PROTECT(body);
 
     /* Push block info (for compile-time lookup by return-from) */
     bi = &c->blocks[c->block_count++];
@@ -443,9 +466,12 @@ void compile_block(CL_Compiler *c, CL_Obj form)
     bi->uses_nlx = needs_nlx;
     bi->dyn_depth = c->special_depth;
 
+    /* CRITICAL: push the BLOCK frame BEFORE compile_nontail_body so the
+     * BLOCK postlude drains AFTER any PROGN_ITER frames the body
+     * iteration pushes.  Otherwise BLOCK_LOCAL would emit its closing
+     * STORE/POP/LOAD before non-tail body forms had been compiled. */
     if (needs_nlx) {
-        /* NLX path: set up NLX frame for cross-closure return-from */
-        int tag_idx, block_push_pos, jmp_pos;
+        int tag_idx, block_push_pos;
         int saved_tail = c->in_tail;
 
         bi->result_slot = -1;
@@ -460,23 +486,22 @@ void compile_block(CL_Compiler *c, CL_Obj form)
          * return to OP_BLOCK_POP so the NLX frame is properly popped.
          * Without this, tail calls leak NLX BLOCK frames. */
         c->in_tail = 0;
-        compile_body(c, body);
-        c->in_tail = saved_tail;
 
-        /* Normal exit: pop NLX frame, jump past landing */
-        cl_emit(c, OP_BLOCK_POP);
-        jmp_pos = cl_emit_jump(c, OP_JMP);
+        tf = cl_tail_push(c);
+        tf->kind = CL_TAIL_BLOCK_NLX;
+        tf->saved_block_count = saved_block_count;
+        tf->saved_tail = saved_tail;
+        tf->block_push_pos = block_push_pos;
 
-        /* Landing: longjmp arrives here with result on stack */
-        cl_patch_jump(c, block_push_pos);
-
-        /* End: both paths converge with result on TOS */
-        cl_patch_jump(c, jmp_pos);
+        {
+            CL_Obj tail = compile_nontail_body(c, body);
+            CL_GC_UNPROTECT(1);
+            return tail;  /* CL_NIL means caller emits OP_NIL for empty body */
+        }
     } else {
-        /* Local path: efficient local jumps (no NLX overhead) */
         CL_CompEnv *env = c->env;
         int saved_local_count = env->local_count;
-        int result_slot, i;
+        int result_slot;
 
         result_slot = env->local_count;
         env->locals[result_slot] = CL_NIL;  /* Clear stale binding */
@@ -485,158 +510,143 @@ void compile_block(CL_Compiler *c, CL_Obj form)
             env->max_locals = env->local_count;
         bi->result_slot = result_slot;
 
-        compile_body(c, body);
+        tf = cl_tail_push(c);
+        tf->kind = CL_TAIL_BLOCK_LOCAL;
+        tf->saved_block_count = saved_block_count;
+        tf->saved_local_count = saved_local_count;
+        tf->result_slot = result_slot;
 
-        /* Normal exit: store result in slot */
-        cl_emit(c, OP_STORE);
-        cl_emit(c, (uint8_t)result_slot);
-        cl_emit(c, OP_POP);
-
-        /* Patch all return-from jumps to here */
-        for (i = 0; i < bi->n_patches; i++)
-            cl_patch_jump(c, bi->exit_patches[i]);
-
-        /* Load result from slot */
-        cl_emit(c, OP_LOAD);
-        cl_emit(c, (uint8_t)result_slot);
-
-        /* Clear boxed flags so reused slots aren't treated as boxed */
-        cl_env_clear_boxed(env, saved_local_count);
-
-        env->local_count = saved_local_count;
+        {
+            CL_Obj tail = compile_nontail_body(c, body);
+            CL_GC_UNPROTECT(1);
+            return tail;
+        }
     }
-
-    /* Restore */
-    c->block_count = saved_block_count;
 }
 
-void compile_return_from(CL_Compiler *c, CL_Obj form)
+/* Helper: trampoline prelude common to RETURN-FROM and RETURN.
+ * `tag` is the block tag (possibly NIL for RETURN), `val_form` is the value
+ * (CL_NIL means "no value form supplied — emit OP_NIL inline"), and
+ * `has_value` distinguishes (return-from X) from (return-from X NIL).
+ * Returns the value form for the trampoline, or CL_NIL when the caller
+ * should emit OP_NIL (then drain). */
+static CL_Obj return_from_prelude(CL_Compiler *c, CL_Obj tag,
+                                  CL_Obj val_form, int has_value)
 {
-    CL_Obj tag = cl_car(cl_cdr(form));
-    CL_Obj val_form = cl_car(cl_cdr(cl_cdr(form)));
     int saved_tail = c->in_tail;
     int i, tag_idx;
+    CL_TailFrame *tf;
 
-    /* Find matching block (innermost first) — check local blocks */
     for (i = c->block_count - 1; i >= 0; i--) {
         if (c->blocks[i].tag == tag) {
             CL_BlockInfo *bi = &c->blocks[i];
-
-            /* Compile value */
             c->in_tail = 0;
-            if (!CL_NULL_P(cl_cdr(cl_cdr(form))))
-                compile_expr(c, val_form);
-            else
-                cl_emit(c, OP_NIL);
-            c->in_tail = saved_tail;
-
+            tf = cl_tail_push(c);
             if (bi->uses_nlx) {
-                /* NLX-based block: emit OP_BLOCK_RETURN */
                 tag_idx = cl_add_constant(c, tag);
-                cl_emit(c, OP_BLOCK_RETURN);
-                cl_emit_u16(c, (uint16_t)tag_idx);
+                tf->kind = CL_TAIL_RETURN_FROM_NLX;
+                tf->saved_tail = saved_tail;
+                tf->tag_idx = tag_idx;
             } else {
-                /* Local-jump block: unwind dynamic bindings before jumping */
-                {
-                    int unwind_count = c->special_depth - bi->dyn_depth;
-                    if (unwind_count > 0) {
-                        cl_emit(c, OP_DYNUNBIND);
-                        cl_emit(c, (uint8_t)unwind_count);
-                    }
-                }
-                cl_emit(c, OP_STORE);
-                cl_emit(c, (uint8_t)bi->result_slot);
-                cl_emit(c, OP_POP);
-                if (bi->n_patches < CL_MAX_BLOCK_PATCHES)
-                    bi->exit_patches[bi->n_patches++] = cl_emit_jump(c, OP_JMP);
+                tf->kind = CL_TAIL_RETURN_FROM_LOCAL;
+                tf->saved_tail = saved_tail;
+                tf->bi_index = i;
+                tf->unwind_count = c->special_depth - bi->dyn_depth;
             }
-            return;
+            return has_value ? val_form : CL_NIL;
         }
     }
 
-    /* Check outer blocks (from enclosing scopes, for cross-closure return-from) */
     for (i = 0; i < c->outer_block_count; i++) {
         if (c->outer_blocks[i] == tag) {
-            /* Compile value */
             c->in_tail = 0;
-            if (!CL_NULL_P(cl_cdr(cl_cdr(form))))
-                compile_expr(c, val_form);
-            else
-                cl_emit(c, OP_NIL);
-            c->in_tail = saved_tail;
-
-            /* Emit cross-closure block return (NLX longjmp) */
             tag_idx = cl_add_constant(c, tag);
-            cl_emit(c, OP_BLOCK_RETURN);
-            cl_emit_u16(c, (uint16_t)tag_idx);
-            return;
+            tf = cl_tail_push(c);
+            tf->kind = CL_TAIL_OUTER_RETURN_FROM;
+            tf->saved_tail = saved_tail;
+            tf->tag_idx = tag_idx;
+            return has_value ? val_form : CL_NIL;
         }
     }
 
     cl_error(CL_ERR_GENERAL, "RETURN-FROM: no block named %s",
              CL_NULL_P(tag) ? "NIL" : cl_symbol_name(tag));
+    return CL_NIL;
 }
 
-void compile_return(CL_Compiler *c, CL_Obj form)
+CL_Obj compile_return_from(CL_Compiler *c, CL_Obj form)
+{
+    CL_Obj tag = cl_car(cl_cdr(form));
+    CL_Obj rest_after_tag = cl_cdr(cl_cdr(form));
+    int has_value = !CL_NULL_P(rest_after_tag);
+    CL_Obj val_form = has_value ? cl_car(rest_after_tag) : CL_NIL;
+    return return_from_prelude(c, tag, val_form, has_value);
+}
+
+CL_Obj compile_return(CL_Compiler *c, CL_Obj form)
 {
     /* (return [value]) => return-from NIL */
-    CL_Obj val_form = cl_car(cl_cdr(form));
-    int saved_tail = c->in_tail;
-    int i, tag_idx;
+    CL_Obj rest = cl_cdr(form);
+    int has_value = !CL_NULL_P(rest);
+    CL_Obj val_form = has_value ? cl_car(rest) : CL_NIL;
+    return return_from_prelude(c, CL_NIL, val_form, has_value);
+}
 
-    for (i = c->block_count - 1; i >= 0; i--) {
-        if (CL_NULL_P(c->blocks[i].tag)) {
-            CL_BlockInfo *bi = &c->blocks[i];
-
-            c->in_tail = 0;
-            if (!CL_NULL_P(cl_cdr(form)))
-                compile_expr(c, val_form);
-            else
-                cl_emit(c, OP_NIL);
-            c->in_tail = saved_tail;
-
-            if (bi->uses_nlx) {
-                /* NLX-based block: emit OP_BLOCK_RETURN */
-                tag_idx = cl_add_constant(c, CL_NIL);
-                cl_emit(c, OP_BLOCK_RETURN);
-                cl_emit_u16(c, (uint16_t)tag_idx);
-            } else {
-                /* Local-jump block: unwind dynamic bindings before jumping */
-                {
-                    int unwind_count = c->special_depth - bi->dyn_depth;
-                    if (unwind_count > 0) {
-                        cl_emit(c, OP_DYNUNBIND);
-                        cl_emit(c, (uint8_t)unwind_count);
-                    }
-                }
-                cl_emit(c, OP_STORE);
-                cl_emit(c, (uint8_t)bi->result_slot);
-                cl_emit(c, OP_POP);
-                if (bi->n_patches < CL_MAX_BLOCK_PATCHES)
-                    bi->exit_patches[bi->n_patches++] = cl_emit_jump(c, OP_JMP);
-            }
-            return;
-        }
+/* Emit deferred postlude for a block / return-from tail frame.  Called
+ * from compile_expr's drain loop in LIFO order. */
+void emit_block_or_return_postlude(CL_Compiler *c, CL_TailFrame *tf)
+{
+    switch ((CL_TailKind)tf->kind) {
+    case CL_TAIL_BLOCK_NLX: {
+        int jmp_pos;
+        cl_emit(c, OP_BLOCK_POP);
+        jmp_pos = cl_emit_jump(c, OP_JMP);
+        /* Landing: longjmp arrives here with result on stack */
+        cl_patch_jump(c, tf->block_push_pos);
+        /* End: both paths converge with result on TOS */
+        cl_patch_jump(c, jmp_pos);
+        c->in_tail = tf->saved_tail;
+        c->block_count = tf->saved_block_count;
+        break;
     }
-
-    /* Check outer blocks for NIL-tagged block */
-    for (i = 0; i < c->outer_block_count; i++) {
-        if (CL_NULL_P(c->outer_blocks[i])) {
-            c->in_tail = 0;
-            if (!CL_NULL_P(cl_cdr(form)))
-                compile_expr(c, val_form);
-            else
-                cl_emit(c, OP_NIL);
-            c->in_tail = saved_tail;
-
-            tag_idx = cl_add_constant(c, CL_NIL);
-            cl_emit(c, OP_BLOCK_RETURN);
-            cl_emit_u16(c, (uint16_t)tag_idx);
-            return;
-        }
+    case CL_TAIL_BLOCK_LOCAL: {
+        int i;
+        CL_BlockInfo *bi = &c->blocks[tf->saved_block_count];  /* this block's slot */
+        cl_emit(c, OP_STORE);
+        cl_emit(c, (uint8_t)tf->result_slot);
+        cl_emit(c, OP_POP);
+        for (i = 0; i < bi->n_patches; i++)
+            cl_patch_jump(c, bi->exit_patches[i]);
+        cl_emit(c, OP_LOAD);
+        cl_emit(c, (uint8_t)tf->result_slot);
+        cl_env_clear_boxed(c->env, tf->saved_local_count);
+        c->env->local_count = tf->saved_local_count;
+        c->block_count = tf->saved_block_count;
+        break;
     }
-
-    cl_error(CL_ERR_GENERAL, "RETURN: no block named NIL");
+    case CL_TAIL_RETURN_FROM_LOCAL: {
+        CL_BlockInfo *bi = &c->blocks[tf->bi_index];
+        c->in_tail = tf->saved_tail;
+        if (tf->unwind_count > 0) {
+            cl_emit(c, OP_DYNUNBIND);
+            cl_emit(c, (uint8_t)tf->unwind_count);
+        }
+        cl_emit(c, OP_STORE);
+        cl_emit(c, (uint8_t)bi->result_slot);
+        cl_emit(c, OP_POP);
+        if (bi->n_patches < CL_MAX_BLOCK_PATCHES)
+            bi->exit_patches[bi->n_patches++] = cl_emit_jump(c, OP_JMP);
+        break;
+    }
+    case CL_TAIL_RETURN_FROM_NLX:
+    case CL_TAIL_OUTER_RETURN_FROM:
+        c->in_tail = tf->saved_tail;
+        cl_emit(c, OP_BLOCK_RETURN);
+        cl_emit_u16(c, (uint16_t)tf->tag_idx);
+        break;
+    default:
+        break;  /* not a block/return frame */
+    }
 }
 
 /* --- Tagbody / Go --- */
@@ -656,6 +666,15 @@ void compile_tagbody(CL_Compiler *c, CL_Obj form)
     CL_Obj cursor;
     int i;
     int needs_nlx = tree_has_closure_forms(body);
+
+    /* Hard cap: writing past tagbodies[] would clobber adjacent fields
+     * (silent corruption that surfaces later as wild memory access).
+     * Raise a clean compile error instead. */
+    if (c->tagbody_count >= CL_MAX_TAGBODIES) {
+        cl_error(CL_ERR_OVERFLOW,
+                 "TAGBODY nesting depth exceeded (%d): "
+                 "consider raising CL_MAX_TAGBODIES", CL_MAX_TAGBODIES);
+    }
 
     c->in_tail = 0;
 
@@ -973,15 +992,20 @@ void compile_unwind_protect(CL_Compiler *c, CL_Obj form)
 
 /* --- Flet / Labels --- */
 
-void compile_flet(CL_Compiler *c, CL_Obj form)
+CL_Obj compile_flet(CL_Compiler *c, CL_Obj form)
 {
-    /* (flet ((name (params) body...) ...) body...) */
+    /* (flet ((name (params) body...) ...) body...)
+     *
+     * Trampoline-aware: prelude compiles each local function and pushes
+     * a tail frame that restores local + local-fun counts in the
+     * postlude.  Body's tail form returns to the driver. */
     CL_Obj bindings = cl_car(cl_cdr(form));
     CL_Obj body = cl_cdr(cl_cdr(form));
     CL_CompEnv *env = c->env;
     int saved_local_count = env->local_count;
     int saved_fun_count = env->local_fun_count;
     int saved_tail = c->in_tail;
+    CL_TailFrame *tf;
 
     /* Phase 1: compile each function in outer scope, store in anonymous slots */
     {
@@ -1028,18 +1052,17 @@ void compile_flet(CL_Compiler *c, CL_Obj form)
         CL_GC_UNPROTECT(1);
     }
 
-    /* Phase 2: compile body */
     c->in_tail = saved_tail;
-    compile_body(c, body);
 
-    cl_env_clear_boxed(env, saved_local_count);
-
-    /* Restore */
-    env->local_count = saved_local_count;
-    env->local_fun_count = saved_fun_count;
+    tf = cl_tail_push(c);
+    tf->kind = CL_TAIL_FLET;
+    tf->saved_local_count = saved_local_count;
+    tf->saved_block_count = saved_fun_count;  /* reused: saved_local_fun_count */
+    tf->saved_tail = saved_tail;
+    return compile_body_tail(c, body);
 }
 
-void compile_labels(CL_Compiler *c, CL_Obj form)
+CL_Obj compile_labels(CL_Compiler *c, CL_Obj form)
 {
     /* (labels ((name (params) body...) ...) body...)
      *
@@ -1047,7 +1070,8 @@ void compile_labels(CL_Compiler *c, CL_Obj form)
      * We pre-allocate local slots for all function names first, then compile
      * each function body (which can now resolve cross-references via the
      * local function namespace).
-     */
+     *
+     * Trampoline-aware: same shape as compile_flet, postlude restores env. */
     CL_Obj bindings = cl_car(cl_cdr(form));
     CL_Obj body = cl_cdr(cl_cdr(form));
     CL_CompEnv *env = c->env;
@@ -1136,14 +1160,16 @@ void compile_labels(CL_Compiler *c, CL_Obj form)
         CL_GC_UNPROTECT(1);
     }
 
-    /* Phase 3: compile body */
+    /* Phase 3: compile body via trampoline */
     c->in_tail = saved_tail;
-    compile_body(c, body);
-
-    /* Restore — clear boxed flags so reused slots aren't treated as boxed */
-    cl_env_clear_boxed(env, saved_local_count);
-    env->local_count = saved_local_count;
-    env->local_fun_count = saved_fun_count;
+    {
+        CL_TailFrame *tf = cl_tail_push(c);
+        tf->kind = CL_TAIL_LABELS;
+        tf->saved_local_count = saved_local_count;
+        tf->saved_block_count = saved_fun_count;  /* reused: saved_local_fun_count */
+        tf->saved_tail = saved_tail;
+        return compile_body_tail(c, body);
+    }
 }
 
 /* --- Loop forms --- */
@@ -1876,13 +1902,17 @@ void compile_do_star(CL_Compiler *c, CL_Obj form)
 
 /* --- handler-bind --- */
 
-void compile_handler_bind(CL_Compiler *c, CL_Obj form)
+CL_Obj compile_handler_bind(CL_Compiler *c, CL_Obj form)
 {
-    /* (handler-bind ((type handler-expr) ...) body...) */
+    /* (handler-bind ((type handler-expr) ...) body...)
+     *
+     * Trampoline-aware: prelude pushes each handler, body's tail form
+     * returns to the driver, postlude emits OP_HANDLER_POP <count>. */
     CL_Obj clauses = cl_car(cl_cdr(form));
     CL_Obj body = cl_cdr(cl_cdr(form));
     int count = 0;
     CL_Obj cl;
+    CL_TailFrame *tf;
 
     /* For each (type handler) clause: compile handler, push onto handler stack */
     CL_GC_PROTECT(clauses);
@@ -1900,12 +1930,10 @@ void compile_handler_bind(CL_Compiler *c, CL_Obj form)
     }
     CL_GC_UNPROTECT(1);
 
-    /* Compile body as progn */
-    compile_progn(c, body);
-
-    /* Normal exit: pop all handler bindings */
-    cl_emit(c, OP_HANDLER_POP);
-    cl_emit(c, (uint8_t)count);
+    tf = cl_tail_push(c);
+    tf->kind = CL_TAIL_HANDLER_BIND;
+    tf->saved_macro_count = count;  /* reused: handler count for HANDLER_POP */
+    return compile_body_tail(c, body);
 }
 
 /* --- restart-case --- */
@@ -2004,13 +2032,14 @@ void compile_restart_case(CL_Compiler *c, CL_Obj form)
 
 /* --- Macrolet --- */
 
-void compile_macrolet(CL_Compiler *c, CL_Obj form)
+CL_Obj compile_macrolet(CL_Compiler *c, CL_Obj form)
 {
     /* (macrolet ((name (params) body...) ...) body...) */
     CL_Obj bindings = cl_car(cl_cdr(form));
     CL_Obj body = cl_cdr(cl_cdr(form));
     CL_CompEnv *env = c->env;
     int saved_macro_count = env->local_macro_count;
+    CL_TailFrame *tf;
 
     /* Compile each macro expander at compile time */
     {
@@ -2168,68 +2197,62 @@ void compile_macrolet(CL_Compiler *c, CL_Obj form)
         CL_GC_UNPROTECT(1);
     }
 
-    /* Compile body with local macros active */
-    compile_body(c, body);
-
-    /* Restore */
-    env->local_macro_count = saved_macro_count;
+    /* Trampoline body — postlude restores local_macro_count. */
+    tf = cl_tail_push(c);
+    tf->kind = CL_TAIL_MACROLET;
+    tf->saved_macro_count = saved_macro_count;
+    return compile_body_tail(c, body);
 }
 
 /* --- Symbol-macrolet --- */
 
-void compile_symbol_macrolet(CL_Compiler *c, CL_Obj form)
+CL_Obj compile_symbol_macrolet(CL_Compiler *c, CL_Obj form)
 {
-    /* (symbol-macrolet ((sym expansion) ...) body...) */
+    /* (symbol-macrolet ((sym expansion) ...) body...) — register each
+     * symbol macro, push a tail frame to restore the count after the
+     * body chain drains, and return the body's tail form. */
     CL_Obj bindings = cl_car(cl_cdr(form));
     CL_Obj body = cl_cdr(cl_cdr(form));
     CL_CompEnv *env = c->env;
     int saved_symbol_macro_count = env->symbol_macro_count;
+    CL_TailFrame *tf;
 
-    /* Register each symbol macro */
     {
         CL_Obj b = bindings;
         while (!CL_NULL_P(b)) {
             CL_Obj binding = cl_car(b);
             CL_Obj sym = cl_car(binding);
             CL_Obj expansion = cl_car(cl_cdr(binding));
-
             cl_env_add_symbol_macro(env, sym, expansion);
-
             b = cl_cdr(b);
         }
     }
 
-    /* Compile body with symbol macros active */
-    compile_body(c, body);
-
-    /* Restore */
-    env->symbol_macro_count = saved_symbol_macro_count;
+    tf = cl_tail_push(c);
+    tf->kind = CL_TAIL_SYMBOL_MACROLET;
+    tf->saved_macro_count = saved_symbol_macro_count;
+    return compile_body_tail(c, body);
 }
 
 /* --- PROGV --- */
 
-void compile_progv(CL_Compiler *c, CL_Obj form)
+CL_Obj compile_progv(CL_Compiler *c, CL_Obj form)
 {
-    /* (progv symbols-form values-form body...) */
+    /* (progv symbols-form values-form body...) — emit BIND prelude,
+     * trampoline the body, postlude emits UNBIND. */
     CL_Obj symbols_form = cl_car(cl_cdr(form));
     CL_Obj values_form  = cl_car(cl_cdr(cl_cdr(form)));
     CL_Obj body = cl_cdr(cl_cdr(cl_cdr(form)));
     int saved_tail = c->in_tail;
+    CL_TailFrame *tf;
 
     c->in_tail = 0;
-
-    /* Evaluate symbols list and values list */
     compile_expr(c, symbols_form);
     compile_expr(c, values_form);
-
-    /* OP_PROGV_BIND: pop values, pop symbols, push dyn_mark, bind */
     cl_emit(c, OP_PROGV_BIND);
 
-    /* Compile body — dyn_mark sits below on stack */
-    compile_body(c, body);
-
-    /* OP_PROGV_UNBIND: pop result, pop dyn_mark, restore, push result */
-    cl_emit(c, OP_PROGV_UNBIND);
-
-    c->in_tail = saved_tail;
+    tf = cl_tail_push(c);
+    tf->kind = CL_TAIL_PROGV;
+    tf->saved_tail = saved_tail;
+    return compile_body_tail(c, body);
 }

@@ -719,9 +719,15 @@ void compile_typecase(CL_Compiler *c, CL_Obj form, int error_if_no_match)
 
 /* --- Multiple Values --- */
 
-void compile_multiple_value_bind(CL_Compiler *c, CL_Obj form)
+CL_Obj compile_multiple_value_bind(CL_Compiler *c, CL_Obj form)
 {
-    /* (multiple-value-bind (vars...) values-form body...) */
+    /* (multiple-value-bind (vars...) values-form body...)
+     *
+     * Trampoline-aware: prelude binds the locals and resets MV state,
+     * body's tail form returns to the driver loop, postlude restores
+     * env->local_count + in_tail.  Without this, deeply nested MVB
+     * (common in optimized macro output) grows the C stack one frame
+     * per level. */
     CL_Obj vars_list = cl_car(cl_cdr(form));
     CL_Obj values_form = cl_car(cl_cdr(cl_cdr(form)));
     CL_Obj body = cl_cdr(cl_cdr(cl_cdr(form)));
@@ -730,6 +736,7 @@ void compile_multiple_value_bind(CL_Compiler *c, CL_Obj form)
     int saved_tail = c->in_tail;
     CL_Obj vl;
     int var_index;
+    CL_TailFrame *tf;
 
     /* Compile values form — primary on stack, MV buffer set */
     c->in_tail = 0;
@@ -769,14 +776,13 @@ void compile_multiple_value_bind(CL_Compiler *c, CL_Obj form)
     /* Reset MV state so stale values don't leak through the body */
     cl_emit(c, OP_MV_RESET);
 
-    /* Compile body */
     c->in_tail = saved_tail;
-    compile_body(c, body);
 
-    cl_env_clear_boxed(env, saved_local_count);
-
-    /* Restore scope */
-    env->local_count = saved_local_count;
+    tf = cl_tail_push(c);
+    tf->kind = CL_TAIL_MULTIPLE_VALUE_BIND;
+    tf->saved_local_count = saved_local_count;
+    tf->saved_tail = saved_tail;
+    return compile_body_tail(c, body);
 }
 
 void compile_multiple_value_list(CL_Compiler *c, CL_Obj form)
@@ -931,13 +937,21 @@ void compile_multiple_value_call(CL_Compiler *c, CL_Obj form)
 
 /* --- Eval-when / Defsetf --- */
 
-void compile_eval_when(CL_Compiler *c, CL_Obj form)
+CL_Obj compile_eval_when(CL_Compiler *c, CL_Obj form)
 {
     /* (eval-when (situations...) body...)
      * In single-pass compile-and-eval, always execute body.
      * At top level with multiple forms: if any is defmacro/deftype,
-     * compile and eval each individually so macros are available for later forms. */
+     * compile and eval each individually so macros are available for
+     * later forms.
+     *
+     * Trampoline-aware: the body's tail form returns to the driver loop
+     * via a CL_TAIL_EVAL_WHEN frame (no postlude needed — pure body
+     * wrapper).  The two-pass branch (top-level with definitions) still
+     * recurses into compile_progn for the second pass; that path runs
+     * at toplevel so it doesn't compound deep nesting. */
     CL_Obj body = cl_cdr(cl_cdr(form));
+    CL_TailFrame *tf;
 
     if (c->env->parent == NULL &&
         !CL_NULL_P(body) && !CL_NULL_P(cl_cdr(body))) {
@@ -967,15 +981,15 @@ void compile_eval_when(CL_Compiler *c, CL_Obj form)
                 }
                 CL_GC_UNPROTECT(1);
             }
-            /* Second pass: compile body as progn so bytecodes are
-               preserved for FASL serialization (compile-file).
-               Macros are now available so this compiles correctly.
-               Definitions may eval twice — harmless for defs. */
-            compile_progn(c, body);
-            return;
+            /* Second pass falls through to the trampoline body below so
+             * bytecodes are preserved for FASL serialization (compile-file).
+             * Macros are now available; definitions may eval twice — harmless. */
         }
     }
-    compile_progn(c, body);
+
+    tf = cl_tail_push(c);
+    tf->kind = CL_TAIL_EVAL_WHEN;
+    return compile_progn_tail(c, body);
 }
 
 void compile_load_time_value(CL_Compiler *c, CL_Obj form)
@@ -1654,11 +1668,15 @@ void compile_declaim(CL_Compiler *c, CL_Obj form)
 
 /* --- Locally --- */
 
-void compile_locally(CL_Compiler *c, CL_Obj form)
+CL_Obj compile_locally(CL_Compiler *c, CL_Obj form)
 {
-    /* (locally (declare ...) body...) */
+    /* (locally (declare ...) body...) — pure body wrapper, no postlude.
+     * Push a CL_TAIL_LOCALLY placeholder so the trampoline shape stays
+     * consistent (compile_expr's drain treats it as a no-op). */
     CL_Obj body = cl_cdr(form);
-    compile_body(c, body);
+    CL_TailFrame *tf = cl_tail_push(c);
+    tf->kind = CL_TAIL_LOCALLY;
+    return compile_body_tail(c, body);
 }
 
 /* --- The --- */
