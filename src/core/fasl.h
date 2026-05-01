@@ -26,7 +26,7 @@
 #include "../platform/platform.h"
 
 #define CL_FASL_MAGIC    0x434C4641  /* "CLFA" */
-#define CL_FASL_VERSION  4
+#define CL_FASL_VERSION  5
 
 /* Serialized constant type tags */
 #define FASL_TAG_NIL         0x00
@@ -62,6 +62,13 @@
                                      CLOS class metaobjects (STANDARD-CLASS/BUILT-IN-CLASS
                                      structs) are cyclic by design — preserves identity
                                      and avoids re-creating broken stand-ins. */
+#define FASL_TAG_LOCK       0x1D  /* u8 flags (bit 0 = recursive), name(obj):
+                                     fresh-at-load-time mutex.  Identity is not
+                                     preserved across host processes (the platform
+                                     mutex is per-process state), but multiple
+                                     references within one FASL share via OBJ_DEF/REF
+                                     so a struct slot and its callers all see the
+                                     same fresh lock after load. */
 
 /* Error codes for FASL operations */
 #define FASL_OK              0
