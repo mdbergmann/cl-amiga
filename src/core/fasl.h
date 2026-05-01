@@ -152,6 +152,22 @@ CL_Obj cl_fasl_deserialize_bytecode(CL_FaslReader *r);
 /* Read and validate a FASL file header; returns n_units or sets r->error */
 uint32_t cl_fasl_read_header(CL_FaslReader *r);
 
+#ifdef DEBUG_FASL
+/* --- Per-unit serialization histogram (debug builds only) ---
+ *
+ * Diagnostic instrumentation for investigating FASL bloat.  Bytes written
+ * during cl_fasl_serialize_bytecode are attributed to a per-type bucket;
+ * dedup hits (OBJ_REF inter-unit, CONST_REF intra-bytecode) are counted
+ * separately so bytes-saved-by-dedup is visible.
+ *
+ * Usage: call cl_fasl_hist_begin() before cl_fasl_serialize_bytecode() and
+ * cl_fasl_hist_dump(label) after if the unit overflowed (or unconditionally
+ * for blanket profiling).  cl_fasl_hist_end() turns it off. */
+void cl_fasl_hist_begin(void);
+void cl_fasl_hist_end(void);
+void cl_fasl_hist_dump(const char *label, uint32_t bytes_written);
+#endif
+
 /* --- High-level API --- */
 
 /* Load a FASL file from memory buffer, executing each unit.

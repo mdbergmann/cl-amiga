@@ -127,6 +127,15 @@ void cl_fasl_write_header(CL_FaslWriter *w, uint32_t n_units)
 #define PHASE_CLOSURE_NEXT_UPVAL  0xF5  /* push one upvalue per step */
 #define PHASE_DONE          0xFF  /* sentinel: return 1, frame is popped */
 
+#ifdef DEBUG_FASL
+/* Forward decls for histogram state — definitions live next to the drive
+ * loop further down.  Declared up here so the OBJ_REF / CONST_REF emission
+ * sites in fasl_ser_step can bump the dedup-hit counters. */
+static int      g_fasl_hist_enabled;
+static uint32_t g_fasl_dedup_obj_ref;
+static uint32_t g_fasl_dedup_const_ref;
+#endif
+
 typedef struct {
     CL_Obj   obj;
     uint32_t index;  /* child cursor for arrays (constants, slots, vector elts) */
@@ -259,12 +268,31 @@ static int fasl_ser_step(CL_FaslWriter *w, FaslSerStack *s)
             return 1;
         }
 
-        /* Shared-object dedup for closures & bytecodes (deep/cyclic CLOS chains).
+        /* Shared-object dedup for closures, bytecodes, structs, and symbols.
          * If found, emit OBJ_REF and we're done.  If new, register and emit
-         * OBJ_DEF, then fall through to the type-specific case. */
+         * OBJ_DEF, then fall through to the type-specific case.
+         *
+         * STRUCT is included because cyclic CLOS metaobject graphs (generic
+         * function ↔ method ↔ method-function-closure ↔ gf, slot definitions
+         * cross-referencing their class, etc.) hit the writer through
+         * compile-time constants and would otherwise walk indefinitely until
+         * the buffer fills.
+         *
+         * SYMBOL is included because the same package-qualified symbol name
+         * tends to recur dozens-to-thousands of times across a unit's
+         * constant graph (slot names, class names, GF names, lambda-list
+         * keywords).  Without dedup each reference re-emits the package
+         * name + symbol name (~29 B avg); with dedup the second reference
+         * costs 3 B.  Gensyms still hit FASL_TAG_GENSYM_DEF/REF in the
+         * SYMBOL body case below — wrapping them in OBJ_DEF adds 3 B on
+         * first emission but they are negligible by count.
+         *
+         * Reader's OBJ_DEF/REF handler is type-agnostic — no reader-side
+         * change needed. */
         {
             uint8_t htype = CL_HDR_TYPE(CL_OBJ_TO_PTR(obj));
-            if (htype == TYPE_CLOSURE || htype == TYPE_BYTECODE) {
+            if (htype == TYPE_CLOSURE || htype == TYPE_BYTECODE ||
+                htype == TYPE_STRUCT  || htype == TYPE_SYMBOL) {
                 if (!w->shared_objs) {
                     w->shared_objs = (CL_Obj *)platform_alloc(
                         FASL_MAX_SHARED * sizeof(CL_Obj));
@@ -275,6 +303,9 @@ static int fasl_ser_step(CL_FaslWriter *w, FaslSerStack *s)
                         if (w->shared_objs[si] == obj) {
                             cl_fasl_write_u8(w, FASL_TAG_OBJ_REF);
                             cl_fasl_write_u16(w, si);
+#ifdef DEBUG_FASL
+                            if (g_fasl_hist_enabled) g_fasl_dedup_obj_ref++;
+#endif
                             return 1;
                         }
                     }
@@ -663,6 +694,9 @@ static int fasl_ser_step(CL_FaslWriter *w, FaslSerStack *s)
                             cl_fasl_write_u8(w, FASL_TAG_CONST_REF);
                             cl_fasl_write_u16(w, j);
                             found = 1;
+#ifdef DEBUG_FASL
+                            if (g_fasl_hist_enabled) g_fasl_dedup_const_ref++;
+#endif
                             break;
                         }
                     }
@@ -734,12 +768,148 @@ static int fasl_ser_step(CL_FaslWriter *w, FaslSerStack *s)
     }
 }
 
+#ifdef DEBUG_FASL
+/* --- Histogram bucket layout ---
+ *
+ * Indexed by FASL_HIST_*.  Bytes attributed via position-delta around each
+ * fasl_ser_step call.  Dedup hits are bumped at the OBJ_REF / CONST_REF
+ * emission sites so we can compute the bytes-saved component too. */
+#define FASL_HIST_IMMEDIATE   0   /* NIL/T/UNBOUND/FIXNUM/CHARACTER */
+#define FASL_HIST_SYMBOL      1
+#define FASL_HIST_GENSYM      2
+#define FASL_HIST_STRING      3
+#define FASL_HIST_CONS        4
+#define FASL_HIST_VECTOR      5
+#define FASL_HIST_BIT_VECTOR  6
+#define FASL_HIST_BYTECODE    7
+#define FASL_HIST_CLOSURE     8
+#define FASL_HIST_FUNCTION    9
+#define FASL_HIST_STRUCT      10
+#define FASL_HIST_FLOAT       11
+#define FASL_HIST_BIGNUM      12
+#define FASL_HIST_RATIO       13
+#define FASL_HIST_COMPLEX     14
+#define FASL_HIST_PATHNAME    15
+#define FASL_HIST_CLASS_REF   16
+#define FASL_HIST_OTHER       17
+#define FASL_HIST_COUNT       18
+
+static const char *cl_fasl_hist_names[FASL_HIST_COUNT] = {
+    "IMMEDIATE", "SYMBOL", "GENSYM", "STRING", "CONS", "VECTOR", "BIT_VECTOR",
+    "BYTECODE", "CLOSURE", "FUNCTION", "STRUCT", "FLOAT", "BIGNUM", "RATIO",
+    "COMPLEX", "PATHNAME", "CLASS_REF", "OTHER"
+};
+
+static uint64_t g_fasl_hist_bytes[FASL_HIST_COUNT];
+static uint32_t g_fasl_hist_count[FASL_HIST_COUNT];
+/* g_fasl_dedup_obj_ref / g_fasl_dedup_const_ref / g_fasl_hist_enabled
+ * are forward-declared near the top of this file so the dedup-hit emission
+ * sites in fasl_ser_step can reference them. */
+
+static int cl_fasl_classify(CL_Obj obj)
+{
+    if (CL_NULL_P(obj) || obj == CL_T || obj == CL_UNBOUND ||
+        CL_FIXNUM_P(obj) || CL_CHAR_P(obj) || !CL_HEAP_P(obj))
+        return FASL_HIST_IMMEDIATE;
+    switch (CL_HDR_TYPE(CL_OBJ_TO_PTR(obj))) {
+    case TYPE_SYMBOL: {
+        CL_Symbol *sy = (CL_Symbol *)CL_OBJ_TO_PTR(obj);
+        return CL_NULL_P(sy->package) ? FASL_HIST_GENSYM : FASL_HIST_SYMBOL;
+    }
+    case TYPE_STRING:        return FASL_HIST_STRING;
+    case TYPE_CONS:          return FASL_HIST_CONS;
+    case TYPE_VECTOR:        return FASL_HIST_VECTOR;
+    case TYPE_BIT_VECTOR:    return FASL_HIST_BIT_VECTOR;
+    case TYPE_BYTECODE:      return FASL_HIST_BYTECODE;
+    case TYPE_CLOSURE:       return FASL_HIST_CLOSURE;
+    case TYPE_FUNCTION:      return FASL_HIST_FUNCTION;
+    case TYPE_STRUCT:        return FASL_HIST_STRUCT;
+    case TYPE_SINGLE_FLOAT:
+    case TYPE_DOUBLE_FLOAT:  return FASL_HIST_FLOAT;
+    case TYPE_BIGNUM:        return FASL_HIST_BIGNUM;
+    case TYPE_RATIO:         return FASL_HIST_RATIO;
+    case TYPE_COMPLEX:       return FASL_HIST_COMPLEX;
+    case TYPE_PATHNAME:      return FASL_HIST_PATHNAME;
+    default:                 return FASL_HIST_OTHER;
+    }
+}
+
+void cl_fasl_hist_begin(void)
+{
+    int i;
+    for (i = 0; i < FASL_HIST_COUNT; i++) {
+        g_fasl_hist_bytes[i] = 0;
+        g_fasl_hist_count[i] = 0;
+    }
+    g_fasl_dedup_obj_ref = 0;
+    g_fasl_dedup_const_ref = 0;
+    g_fasl_hist_enabled = 1;
+}
+
+void cl_fasl_hist_end(void)
+{
+    g_fasl_hist_enabled = 0;
+}
+
+void cl_fasl_hist_dump(const char *label, uint32_t bytes_written)
+{
+    int order[FASL_HIST_COUNT];
+    int i, j;
+    uint64_t total_bytes = 0;
+    uint32_t total_count = 0;
+
+    for (i = 0; i < FASL_HIST_COUNT; i++) order[i] = i;
+    /* Insertion sort by bytes desc — small N, fine. */
+    for (i = 1; i < FASL_HIST_COUNT; i++) {
+        int k = order[i];
+        for (j = i; j > 0 && g_fasl_hist_bytes[order[j - 1]] < g_fasl_hist_bytes[k]; j--)
+            order[j] = order[j - 1];
+        order[j] = k;
+    }
+    for (i = 0; i < FASL_HIST_COUNT; i++) {
+        total_bytes += g_fasl_hist_bytes[i];
+        total_count += g_fasl_hist_count[i];
+    }
+    fprintf(stderr, "[FASL hist] %s — bytes_written=%u total_attributed=%llu objs=%u\n",
+            label, bytes_written,
+            (unsigned long long)total_bytes, total_count);
+    for (i = 0; i < FASL_HIST_COUNT; i++) {
+        int b = order[i];
+        if (g_fasl_hist_bytes[b] == 0) continue;
+        fprintf(stderr, "  %-12s bytes=%10llu  count=%9u  avg=%5llu\n",
+                cl_fasl_hist_names[b],
+                (unsigned long long)g_fasl_hist_bytes[b],
+                g_fasl_hist_count[b],
+                g_fasl_hist_count[b]
+                  ? (unsigned long long)(g_fasl_hist_bytes[b] / g_fasl_hist_count[b])
+                  : 0ULL);
+    }
+    fprintf(stderr, "  dedup hits: OBJ_REF=%u  CONST_REF=%u\n",
+            g_fasl_dedup_obj_ref, g_fasl_dedup_const_ref);
+    fflush(stderr);
+}
+#endif
+
 static void fasl_serialize_drive(CL_FaslWriter *w, FaslSerStack *s)
 {
     while (s->depth > 0 && !w->error) {
+#ifdef DEBUG_FASL
+        CL_Obj   cur_obj = s->frames[s->depth - 1].obj;
+        uint32_t pre_pos = w->pos;
+        int      done    = fasl_ser_step(w, s);
+        if (g_fasl_hist_enabled) {
+            int bucket = cl_fasl_classify(cur_obj);
+            uint32_t delta = w->pos - pre_pos;
+            g_fasl_hist_bytes[bucket] += delta;
+            /* Count once per leaf or per composite-frame completion (PHASE_DONE) */
+            if (done) g_fasl_hist_count[bucket]++;
+        }
+        if (done) s->depth--;
+#else
         if (fasl_ser_step(w, s)) {
             s->depth--;
         }
+#endif
     }
 }
 
