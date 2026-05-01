@@ -1212,18 +1212,22 @@ static CL_Obj bi_compile_file(CL_Obj *args, int n)
             cl_fasl_writer_init(uw, unit_buf, unit_capacity);
             memcpy(uw->gensym_objs, w->gensym_objs, w->gensym_count * sizeof(CL_Obj));
             uw->gensym_count = w->gensym_count;
+#ifdef DEBUG_FASL
+            cl_fasl_hist_begin();
+#endif
             cl_fasl_serialize_bytecode(uw, bc);
+#ifdef DEBUG_FASL
+            cl_fasl_hist_end();
+#endif
 
             /* If unit_buf was too small, grow and retry.
              * Cap retries: 17 doublings from 32KB reaches 4GB (uint32 overflow).
-             * Also stop if capacity would exceed 64MB.  A handful of
-             * CLOS-heavy files (log4cl/configurator, sento mbox/actor-cell,
-             * etc.) blow this on cold cache because their compiled top-level
-             * forms reference tens of thousands of structurally-similar
-             * closures whose dedup quickly saturates FASL_MAX_SHARED.
-             * Caching is skipped for those files; they're recompiled from
-             * source each session.  Long-term fix: compiler should emit
-             * fewer redundant closures, or dedup should switch to a hash. */
+             * Also stop if capacity would exceed 64MB.  Most overflow-prone
+             * inputs are CLOS-heavy units whose compile-time constants pull
+             * in cyclic metaobject graphs (generic-function ↔ method ↔
+             * method-function-closure); STRUCT is in the shared_objs dedup
+             * (see fasl.c) so cycles get cut, but a deep linear graph could
+             * still in principle exhaust the buffer. */
             while (uw->error == FASL_ERR_OVERFLOW && unit_capacity < 64 * 1024 * 1024) {
                 platform_free(unit_buf);
                 unit_capacity *= 2;
@@ -1233,7 +1237,13 @@ static CL_Obj bi_compile_file(CL_Obj *args, int n)
                 cl_fasl_writer_init(uw, unit_buf, unit_capacity);
                 memcpy(uw->gensym_objs, w->gensym_objs, w->gensym_count * sizeof(CL_Obj));
                 uw->gensym_count = w->gensym_count;
+#ifdef DEBUG_FASL
+                cl_fasl_hist_begin();
+#endif
                 cl_fasl_serialize_bytecode(uw, bc);
+#ifdef DEBUG_FASL
+                cl_fasl_hist_end();
+#endif
             }
 
             /* Object graph too deep or buffer exceeds cap — emit a no-op
@@ -1253,6 +1263,16 @@ static CL_Obj bi_compile_file(CL_Obj *args, int n)
                          bname ? bname->data : "<anon>",
                          uw->error == FASL_ERR_TOO_DEEP ? "graph too deep" : "buffer overflow >64MB");
                 platform_write_string(msg);
+#ifdef DEBUG_FASL
+                {
+                    char hist_label[1280];
+                    snprintf(hist_label, sizeof(hist_label),
+                             "%s unit %d/%d name=%s",
+                             in_path, bci + 1, bc_collect_count,
+                             bname ? bname->data : "<anon>");
+                    cl_fasl_hist_dump(hist_label, uw->pos);
+                }
+#endif
                 /* Don't write an incomplete FASL — missing definitions would
                  * cause errors when the FASL is loaded in a fresh session.
                  * The file will be recompiled from source next time. */
