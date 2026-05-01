@@ -960,6 +960,30 @@ void cl_fasl_reader_init(CL_FaslReader *r, const uint8_t *data, uint32_t size)
     r->gensym_count = 0;
     r->shared_count = 0;
     r->shared_objs = NULL;  /* lazily allocated when OBJ_DEF tag is encountered */
+    r->pending_obj_def_id = 0xFFFFFFFFu;  /* none pending */
+}
+
+/* OBJ_DEF / cycle-handling helpers — see notes in FASL_TAG_OBJ_DEF case. */
+#define CL_FASL_NO_PENDING 0xFFFFFFFFu
+
+static void cl_fasl_set_pending_obj_def(CL_FaslReader *r, uint16_t id)
+{
+    r->pending_obj_def_id = id;
+}
+
+/* Called by allocate-then-fill body deserializers (struct/closure/bytecode)
+ * right after they allocate the shell.  Registers the shell at the pending
+ * id (if any) so cyclic OBJ_REFs inside the body resolve to the shell.
+ * Idempotent and safe to call when no id is pending. */
+static void cl_fasl_consume_pending_obj_def(CL_FaslReader *r, CL_Obj shell)
+{
+    if (r->pending_obj_def_id == CL_FASL_NO_PENDING) return;
+    if (r->shared_objs && r->pending_obj_def_id < FASL_MAX_SHARED) {
+        uint16_t id = (uint16_t)r->pending_obj_def_id;
+        r->shared_objs[id] = shell;
+        if (id >= r->shared_count) r->shared_count = id + 1;
+    }
+    r->pending_obj_def_id = CL_FASL_NO_PENDING;
 }
 
 uint8_t cl_fasl_read_u8(CL_FaslReader *r)
@@ -1122,13 +1146,30 @@ CL_Obj cl_fasl_deserialize_obj(CL_FaslReader *r)
             if (r->shared_objs)
                 memset(r->shared_objs, 0, FASL_MAX_SHARED * sizeof(CL_Obj));
         }
-        /* Recursively deserialize the actual object that follows */
+        /* Stash the id so allocate-then-fill body deserializers (struct,
+         * closure, bytecode) can register their freshly-allocated shell
+         * at this id BEFORE recursing into children.  This is required
+         * for cyclic graphs (e.g. CLOS gf ↔ method ↔ method-fn-closure)
+         * — the writer correctly emits OBJ_REF for self-references during
+         * the body walk, but if the reader registers only AFTER the
+         * recursive deserialize returns, those mid-body OBJ_REFs resolve
+         * to NIL — corrupting slots/upvalues with NIL where a back-
+         * reference belongs.  Symptom: runtime "%STRUCT-REF: not a
+         * structure" when the corrupted slot is later accessed.
+         *
+         * If the body deserializer doesn't consume the pending id
+         * (because its type doesn't form cycles via shared_objs —
+         * string, vector, cons, symbol, package, etc.), the fallback
+         * branch below registers here. */
+        cl_fasl_set_pending_obj_def(r, id);
         result = cl_fasl_deserialize_obj(r);
-        /* Register it in the shared table */
-        if (r->shared_objs && id < FASL_MAX_SHARED) {
-            r->shared_objs[id] = result;
-            if (id >= r->shared_count)
-                r->shared_count = id + 1;
+        if (r->pending_obj_def_id != CL_FASL_NO_PENDING) {
+            /* Body didn't consume — register now (atomic types). */
+            if (r->shared_objs && id < FASL_MAX_SHARED) {
+                r->shared_objs[id] = result;
+                if (id >= r->shared_count) r->shared_count = id + 1;
+            }
+            r->pending_obj_def_id = CL_FASL_NO_PENDING;
         }
         return result;
     }
@@ -1354,14 +1395,23 @@ CL_Obj cl_fasl_deserialize_obj(CL_FaslReader *r)
     }
 
     case FASL_TAG_STRUCT: {
-        CL_Obj type_desc = cl_fasl_deserialize_obj(r);
-        uint32_t n_slots = cl_fasl_read_u32(r);
-        uint32_t i;
+        CL_Obj type_desc;
+        uint32_t pending_id_save = r->pending_obj_def_id;
+        uint32_t n_slots, i;
         CL_Obj st_obj;
+        /* type_desc is read first; clear pending so it doesn't apply to
+         * the type_desc symbol/struct.  We restore it before consuming. */
+        r->pending_obj_def_id = CL_FASL_NO_PENDING;
+        type_desc = cl_fasl_deserialize_obj(r);
+        n_slots = cl_fasl_read_u32(r);
         if (r->error) return CL_NIL;
         CL_GC_PROTECT(type_desc);
         st_obj = cl_make_struct(type_desc, n_slots);
         CL_GC_PROTECT(st_obj);
+        /* Register shell at the OBJ_DEF id (if any) before reading slots
+         * so cyclic OBJ_REFs in slots resolve to this shell. */
+        r->pending_obj_def_id = pending_id_save;
+        cl_fasl_consume_pending_obj_def(r, st_obj);
         {
             CL_Struct *st = (CL_Struct *)CL_OBJ_TO_PTR(st_obj);
             for (i = 0; i < n_slots; i++) {
@@ -1376,12 +1426,18 @@ CL_Obj cl_fasl_deserialize_obj(CL_FaslReader *r)
     }
 
     case FASL_TAG_CLOSURE: {
-        CL_Obj bc_val = cl_fasl_deserialize_obj(r);
-        uint16_t n_upvals = cl_fasl_read_u16(r);
+        CL_Obj bc_val;
+        uint16_t n_upvals;
+        uint32_t pending_id_save = r->pending_obj_def_id;
         CL_Closure *cl;
         CL_Obj result;
         uint16_t i;
-        if (r->error) { return CL_NIL; }
+        /* Clear pending while reading the bytecode child; restore before
+         * consuming so the OBJ_DEF id applies to this closure shell. */
+        r->pending_obj_def_id = CL_FASL_NO_PENDING;
+        bc_val = cl_fasl_deserialize_obj(r);
+        n_upvals = cl_fasl_read_u16(r);
+        if (r->error) return CL_NIL;
         CL_GC_PROTECT(bc_val);
         cl = (CL_Closure *)cl_alloc(TYPE_CLOSURE,
             sizeof(CL_Closure) + n_upvals * sizeof(CL_Obj));
@@ -1389,6 +1445,9 @@ CL_Obj cl_fasl_deserialize_obj(CL_FaslReader *r)
         cl->bytecode = bc_val;
         result = CL_PTR_TO_OBJ(cl);
         CL_GC_PROTECT(result);
+        /* Register shell at the OBJ_DEF id before reading upvalues. */
+        r->pending_obj_def_id = pending_id_save;
+        cl_fasl_consume_pending_obj_def(r, result);
         for (i = 0; i < n_upvals; i++) {
             CL_Obj uv = cl_fasl_deserialize_obj(r);
             cl = (CL_Closure *)CL_OBJ_TO_PTR(result); /* refresh */
@@ -1443,6 +1502,10 @@ CL_Obj cl_fasl_deserialize_bytecode(CL_FaslReader *r)
     if (!bc) return CL_NIL;
     bc_obj = CL_PTR_TO_OBJ(bc);
     CL_GC_PROTECT(bc_obj);
+
+    /* Register shell at OBJ_DEF id (if any) before reading constants —
+     * a closure inside our constant pool may OBJ_REF this bytecode. */
+    cl_fasl_consume_pending_obj_def(r, bc_obj);
 
     /* Zero out all fields */
     bc->code = NULL;
