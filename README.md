@@ -1,4 +1,4 @@
-# CL-Amiga
+# CL-Amiga (Clamiga)
 
 [![CI](https://github.com/mdbergmann/cl-amiga/actions/workflows/ci.yml/badge.svg)](https://github.com/mdbergmann/cl-amiga/actions/workflows/ci.yml)
 
