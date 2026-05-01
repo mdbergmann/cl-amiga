@@ -4753,6 +4753,7 @@ This is designed to abstract away the implementation specific quit forms."
       (finish-outputs))
     #+(or abcl xcl) (ext:quit :status code)
     #+allegro (excl:exit code :quiet t)
+    #+cl-amiga (cl-user::quit code)
     #+(or clasp ecl) (si:quit code)
     #+clisp (ext:quit code)
     #+clozure (ccl:quit code)
@@ -4768,7 +4769,7 @@ This is designed to abstract away the implementation specific quit forms."
                (cond
                  (exit `(,exit :code code :abort (not finish-output)))
                  (quit `(,quit :unix-status code :recklessly-p (not finish-output)))))
-    #-(or abcl allegro clasp clisp clozure cmucl ecl gcl genera lispworks mcl mkcl sbcl scl xcl)
+    #-(or abcl allegro clasp clisp clozure cmucl ecl gcl genera lispworks mcl mkcl sbcl scl xcl cl-amiga)
     (not-implemented-error 'quit "(called with exit code ~S)" code))
 
   (defun die (code format &rest arguments)
