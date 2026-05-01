@@ -73,8 +73,8 @@ clamiga --heap 24M
 ```
 ./clamiga --heap 24M
 CL-USER> (require "asdf")
-CL-USER> (load "lib/quicklisp-compat.lisp")
 CL-USER> (load "quicklisp/setup.lisp")
+CL-USER> (load "lib/quicklisp-compat.lisp")
 CL-USER> (ql:quickload "alexandria")
 CL-USER> (ql:quickload "fiveam")
 CL-USER> (ql:quickload "fset")
