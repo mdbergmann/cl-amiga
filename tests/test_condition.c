@@ -452,6 +452,46 @@ TEST(lisp_handler_case_type_dispatch)
         "42");
 }
 
+TEST(lisp_handler_case_t_catches_any_condition)
+{
+    /* T is the universal supertype — handler-case `(t (c) ...)` must catch
+     * any condition (CLHS 4.4: T is supertype of everything).  Frameworks
+     * (sento, log4cl, fiveam) rely on this as a catch-all clause. */
+    ASSERT_STR_EQ(eval_print(
+        "(handler-case (error \"boom\")"
+        "  (t (c) :caught))"),
+        ":CAUGHT");
+}
+
+TEST(lisp_handler_bind_t_catches_any_condition)
+{
+    /* handler-bind with T must invoke the handler for any condition. */
+    ASSERT_STR_EQ(eval_print(
+        "(let ((seen nil))"
+        "  (block done"
+        "    (handler-bind ((t (lambda (c)"
+        "                       (declare (ignore c))"
+        "                       (setf seen :saw)"
+        "                       (return-from done :ok))))"
+        "      (error \"boom\")))"
+        "  seen)"),
+        ":SAW");
+}
+
+TEST(lisp_handler_case_t_catches_secondary_error_from_invoke_restart)
+{
+    /* Regression: when handler-bind invokes #'abort and no ABORT restart
+     * exists, INVOKE-RESTART signals a secondary error.  The outer
+     * handler-case `(t (c) ...)` must catch it (or it would propagate to
+     * the debugger, as observed in sento BT-BOX-RESURRECTS-THREAD test). */
+    ASSERT_STR_EQ(eval_print(
+        "(handler-case"
+        "    (handler-bind ((serious-condition #'abort))"
+        "      (error \"die!\"))"
+        "  (t (c) (declare (ignore c)) :caught))"),
+        ":CAUGHT");
+}
+
 TEST(lisp_ignore_errors)
 {
     /* ignore-errors catches error, returns nil */
@@ -804,6 +844,9 @@ int main(void)
     RUN(lisp_handler_case_catches_error);
     RUN(lisp_handler_case_no_error);
     RUN(lisp_handler_case_type_dispatch);
+    RUN(lisp_handler_case_t_catches_any_condition);
+    RUN(lisp_handler_bind_t_catches_any_condition);
+    RUN(lisp_handler_case_t_catches_secondary_error_from_invoke_restart);
     RUN(lisp_ignore_errors);
     RUN(lisp_ignore_errors_no_error);
 
