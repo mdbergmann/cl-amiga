@@ -362,18 +362,26 @@ static CL_Obj bi_all_threads(CL_Obj *args, int n)
 
     CL_GC_PROTECT(result);
     for (i = CL_MAX_THREADS - 1; i >= 0; i--) {
-        if (!cl_thread_table[i]) continue;
+        CL_Thread *t = cl_thread_table[i];
+        if (!t) continue;
 
         if (i == 0) {
             /* Main thread */
             result = cl_cons(main_thread_obj, result);
         } else {
+            /* Skip finished (status=2) / aborted (status=3) workers.
+             * The slot+wrapper survive until the wrapper is GC'd so
+             * accessors like THREAD-NAME still work on a held handle,
+             * but ALL-THREADS must report only live threads
+             * (bordeaux-threads / SBCL / CCL contract). */
+            if (t->status >= 2) continue;
+
             /* Reuse the canonical wrapper that was created at make-thread
              * time (stashed in CL_Thread->thread_obj).  Allocating a
              * fresh wrapper would create an alias with the same
              * thread_id; when one wrapper later dies, gc_finalize_dead
              * would race over which one "owns" the slot. */
-            wrapper = cl_thread_table[i]->thread_obj;
+            wrapper = t->thread_obj;
             if (CL_NULL_P(wrapper)) continue;
             result = cl_cons(wrapper, result);
         }

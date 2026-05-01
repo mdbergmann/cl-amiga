@@ -661,6 +661,29 @@ TEST(all_threads_returns_canonical_wrapper)
     ASSERT_STR_EQ(r, "T");
 }
 
+/* MP:ALL-THREADS must report only currently-running threads (per the
+ * bordeaux-threads / SBCL / CCL contract), even if a finished worker's
+ * wrapper is still held by user code (and therefore its slot in
+ * cl_thread_table is still allocated, since gc_finalize_dead only
+ * reclaims it once the wrapper is unreachable).
+ *
+ * Repro: spawn a no-op thread, wait until thread-alive-p flips to NIL,
+ * then assert the wrapper is no longer in (mp:all-threads).  We avoid
+ * (mp:join-thread) because join eagerly frees the slot and would mask
+ * the bug — the production scenario is sento's actor-system shutdown
+ * where workers exit naturally and wrappers linger in REPL history. */
+TEST(all_threads_excludes_finished_workers)
+{
+    const char *r = eval_print(
+        "(let ((th (mp:make-thread (lambda () :done))))"
+        "  (loop while (mp:thread-alive-p th)"
+        "        do (mp:thread-yield))"
+        "  (let ((found (find th (mp:all-threads))))"
+        "    (mp:join-thread th)"
+        "    (if found :leaked :ok)))");
+    ASSERT_STR_EQ(r, ":OK");
+}
+
 /* Two threads racing to allocate locks past the table limit must NOT
  * deadlock.  Used to: thread A grabbed gc_mutex inside cl_gc_stop_the_world
  * and waited for B to reach a safepoint; B was blocked on gc_mutex inside
@@ -766,6 +789,7 @@ int main(void)
     RUN(thread_slot_reuse_after_join_no_double_free);
     RUN(thread_zombie_reaper_under_pinned_wrappers);
     RUN(all_threads_returns_canonical_wrapper);
+    RUN(all_threads_excludes_finished_workers);
     RUN(make_lock_concurrent_no_deadlock);
 
     teardown();
