@@ -19,6 +19,17 @@
 #include <string.h>
 #include <stdlib.h>
 
+/* Per-unit FASL serialization buffer cap.  When a top-level form's
+ * serialized bytecode exceeds this, the unit (and the whole file's
+ * FASL) is dropped from the cache and the file is recompiled from
+ * source on the next session.  Default is generous (64 MB) — the
+ * pathological case is a cyclic constant graph rather than honestly
+ * large output.  Override at build time with
+ * -DCL_FASL_UNIT_CAP_BYTES=<bytes> to stress-test the dedup. */
+#ifndef CL_FASL_UNIT_CAP_BYTES
+#define CL_FASL_UNIT_CAP_BYTES (64u * 1024u * 1024u)
+#endif
+
 /* Forward declarations for helpers used in bi_load before definition */
 static int make_fasl_cache_path(const char *input, char *output, uint32_t outsize);
 static void path_directory(const char *path, char *dir, uint32_t dirsz);
@@ -1228,7 +1239,7 @@ static CL_Obj bi_compile_file(CL_Obj *args, int n)
              * method-function-closure); STRUCT is in the shared_objs dedup
              * (see fasl.c) so cycles get cut, but a deep linear graph could
              * still in principle exhaust the buffer. */
-            while (uw->error == FASL_ERR_OVERFLOW && unit_capacity < 64 * 1024 * 1024) {
+            while (uw->error == FASL_ERR_OVERFLOW && unit_capacity < CL_FASL_UNIT_CAP_BYTES) {
                 platform_free(unit_buf);
                 unit_capacity *= 2;
                 unit_buf = (uint8_t *)platform_alloc(unit_capacity);
@@ -1251,7 +1262,7 @@ static CL_Obj bi_compile_file(CL_Obj *args, int n)
              * compile-file eval already executed this form's side effects;
              * the placeholder just prevents load-time errors. */
             if (uw->error == FASL_ERR_TOO_DEEP ||
-                (uw->error == FASL_ERR_OVERFLOW && unit_capacity >= 64 * 1024 * 1024)) {
+                (uw->error == FASL_ERR_OVERFLOW && unit_capacity >= CL_FASL_UNIT_CAP_BYTES)) {
                 CL_Bytecode *bcobj = (CL_Bytecode *)CL_OBJ_TO_PTR(bc);
                 CL_String *bname = CL_NULL_P(bcobj->name) ? NULL :
                     (CL_String *)CL_OBJ_TO_PTR(((CL_Symbol *)CL_OBJ_TO_PTR(bcobj->name))->name);
@@ -1261,7 +1272,9 @@ static CL_Obj bi_compile_file(CL_Obj *args, int n)
                          "(unit %d/%d, name=%s, reason=%s) — skipping FASL cache for this file\n",
                          in_path, bci + 1, bc_collect_count,
                          bname ? bname->data : "<anon>",
-                         uw->error == FASL_ERR_TOO_DEEP ? "graph too deep" : "buffer overflow >64MB");
+                         uw->error == FASL_ERR_TOO_DEEP
+                           ? "graph too deep"
+                           : "buffer overflow > unit cap");
                 platform_write_string(msg);
 #ifdef DEBUG_FASL
                 {
