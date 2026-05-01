@@ -111,6 +111,12 @@ typedef struct {
     /* Shared object dedup table */
     CL_Obj  *shared_objs;      /* heap-allocated, FASL_MAX_SHARED entries */
     uint16_t shared_count;
+    /* OBJ_DEF id awaiting registration.  Set by FASL_TAG_OBJ_DEF before
+     * recursing into the body; consumed by struct/closure/bytecode body
+     * deserializers right after they allocate their shell so cyclic
+     * OBJ_REFs inside the body resolve to the partially-constructed
+     * object.  0xFFFFFFFF = none pending. */
+    uint32_t pending_obj_def_id;
 } CL_FaslReader;
 
 /* --- Writer API --- */
