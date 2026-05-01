@@ -34,6 +34,23 @@ static CL_Obj KW_NAME_THR = 0;  /* :NAME keyword for make-thread */
 
 static CL_Obj main_thread_obj = CL_NIL;
 
+/* Cached `(lambda (&rest _) nil)` used as the thread-top ABORT
+ * restart handler.  bi_invoke_restart calls the handler before
+ * throwing to the catch tag, so we need a callable that swallows
+ * any args and returns NIL. */
+static CL_Obj thread_abort_handler = CL_NIL;
+
+static CL_Obj get_thread_abort_handler(void)
+{
+    if (CL_NULL_P(thread_abort_handler)) {
+        extern CL_Obj cl_eval_string(const char *str);
+        thread_abort_handler = cl_eval_string(
+            "(lambda (&rest args) (declare (ignore args)) nil)");
+        cl_gc_register_root(&thread_abort_handler);
+    }
+    return thread_abort_handler;
+}
+
 /* Accessor for GC root marking (called from mem.c) */
 CL_Obj cl_main_thread_lisp_obj(void)
 {
@@ -89,21 +106,83 @@ static void *thread_entry(void *arg)
     }
 
     if (err == 0) {
-        CL_Obj result;
+        CL_Obj result = CL_NIL;
+        CL_Obj abort_handler;
+        CL_Obj abort_tag;
+        int my_nlx_idx = -1;
+        int my_restart_idx = -1;
+        int aborted = 0;
+
 #ifdef DEBUG_THREAD
         fprintf(stderr, "[THR] tid=%u CT=%p func=0x%08x type=%d starting\n",
                 t->id, (void *)t, func,
                 CL_HEAP_P(func) ? (int)CL_HDR_TYPE(CL_OBJ_TO_PTR(func)) : -1);
         fflush(stderr);
 #endif
-        result = cl_vm_apply(func, NULL, 0);
-        t->result = result;
-        t->status = 2; /* finished */
+
+        /* Establish a top-level ABORT restart for the thread.
+         * `(abort)` anywhere in the thread body unwinds here and
+         * the thread exits cleanly — matching SBCL/CCL semantics
+         * (with-simple-restart abort at the top of every thread).
+         * Without this, `(abort)` in a worker raises
+         * "Restart ABORT not found" which is not what frameworks
+         * (bordeaux-threads, sento) expect. */
+        abort_handler = get_thread_abort_handler();
+        abort_tag = cl_cons(SYM_ABORT, CL_NIL);
+
+        if (t->nlx_top < t->nlx_max) {
+            CL_NLXFrame *frame = &t->nlx_stack[t->nlx_top];
+            frame->type = CL_NLX_CATCH;
+            frame->tag = abort_tag;
+            frame->vm_sp = t->vm.sp;
+            frame->vm_fp = t->vm.fp;
+            frame->result = CL_NIL;
+            frame->dyn_mark = t->dyn_top;
+            frame->handler_mark = t->handler_top;
+            frame->restart_mark = t->restart_top;
+            frame->gc_root_mark = t->gc_root_count;
+            frame->mv_count = 1;
+            my_nlx_idx = t->nlx_top;
+            t->nlx_top++;
+
+            if (t->restart_top < CL_MAX_RESTART_BINDINGS) {
+                t->restart_stack[t->restart_top].name = SYM_ABORT;
+                t->restart_stack[t->restart_top].handler = abort_handler;
+                t->restart_stack[t->restart_top].tag = abort_tag;
+                my_restart_idx = t->restart_top;
+                t->restart_top++;
+            }
+
+            if (setjmp(frame->buf) != 0)
+                aborted = 1;
+        }
+
+        if (!aborted) {
+            result = cl_vm_apply(func, NULL, 0);
+            t->result = result;
+        } else {
+            /* (abort) was invoked — thread exits with NIL result */
+            t->result = CL_NIL;
+        }
+        t->status = 2; /* finished (cleanly or via abort) */
+
 #ifdef DEBUG_THREAD
-        fprintf(stderr, "[THR] tid=%u CT=%p finished result=0x%08x\n",
-                t->id, (void *)t, result);
+        fprintf(stderr, "[THR] tid=%u CT=%p finished result=0x%08x aborted=%d\n",
+                t->id, (void *)t, t->result, aborted);
         fflush(stderr);
 #endif
+
+        /* Pop NLX/restart frames on normal completion.
+         * Aborted path: cl_throw_to_tag truncated t->nlx_top to my_nlx_idx
+         * already; replicate the OP_CATCH restore for handler/restart/dyn. */
+        if (!aborted) {
+            if (my_nlx_idx >= 0) t->nlx_top = my_nlx_idx;
+            if (my_restart_idx >= 0) t->restart_top = my_restart_idx;
+        } else {
+            t->restart_top = t->nlx_stack[my_nlx_idx].restart_mark;
+            t->handler_top = t->nlx_stack[my_nlx_idx].handler_mark;
+            cl_dynbind_restore_to(t->nlx_stack[my_nlx_idx].dyn_mark);
+        }
     } else {
         /* Thread aborted due to error */
         t->status = 3; /* aborted */

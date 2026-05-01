@@ -684,6 +684,38 @@ TEST(all_threads_excludes_finished_workers)
     ASSERT_STR_EQ(r, ":OK");
 }
 
+/* (abort) inside a worker thread must unwind cleanly to a top-level
+ * ABORT restart established by thread_entry — matching SBCL/CCL's
+ * with-simple-restart abort wrapper around every thread.  Without it,
+ * frameworks (sento, log4cl) that deliberately invoke ABORT from a
+ * handler-bind to kill a misbehaving worker would crash with
+ * "Restart ABORT not found" instead of the worker dying cleanly. */
+TEST(thread_top_level_abort_restart_kills_worker_cleanly)
+{
+    const char *r = eval_print(
+        "(let ((th (mp:make-thread"
+        "            (lambda ()"
+        "              (handler-bind ((serious-condition #'abort))"
+        "                (error \"die!\"))"
+        "              :should-not-reach))))"
+        "  (loop while (mp:thread-alive-p th) do (mp:thread-yield))"
+        "  (mp:join-thread th))");
+    /* After (abort) unwinds to thread top, the thread exits with NIL
+     * result (not :SHOULD-NOT-REACH).  status=2 (finished cleanly). */
+    ASSERT_STR_EQ(r, "NIL");
+}
+
+TEST(thread_direct_abort_call_unwinds_cleanly)
+{
+    /* Direct (abort) — no enclosing handler — also unwinds via the
+     * thread-top restart, not the "no restart found" error path. */
+    const char *r = eval_print(
+        "(let ((th (mp:make-thread"
+        "            (lambda () (abort) :unreachable))))"
+        "  (mp:join-thread th))");
+    ASSERT_STR_EQ(r, "NIL");
+}
+
 /* Two threads racing to allocate locks past the table limit must NOT
  * deadlock.  Used to: thread A grabbed gc_mutex inside cl_gc_stop_the_world
  * and waited for B to reach a safepoint; B was blocked on gc_mutex inside
@@ -791,6 +823,8 @@ int main(void)
     RUN(all_threads_returns_canonical_wrapper);
     RUN(all_threads_excludes_finished_workers);
     RUN(make_lock_concurrent_no_deadlock);
+    RUN(thread_top_level_abort_restart_kills_worker_cleanly);
+    RUN(thread_direct_abort_call_unwinds_cleanly);
 
     teardown();
 

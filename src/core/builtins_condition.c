@@ -262,6 +262,11 @@ int cl_condition_type_matches(CL_Obj cond_type, CL_Obj handler_type)
 {
     CL_Obj parents;
 
+    /* T is the universal supertype — every condition is (typep cond T).
+     * Frameworks rely on `(handler-case ... (t (c) ...))` as a catch-all. */
+    if (handler_type == SYM_T)
+        return 1;
+
     /* Identity check */
     if (cond_type == handler_type)
         return 1;
