@@ -417,15 +417,25 @@ static CL_Obj bi_thread_yield(CL_Obj *args, int n)
  * ================================================================ */
 
 /* (mp:make-lock &optional name) -> lock */
-static CL_Obj bi_make_lock(CL_Obj *args, int n)
+/* Allocate a fresh CL_Lock with a freshly-initialized platform mutex.
+ * recursive != 0 selects PTHREAD_MUTEX_RECURSIVE on POSIX; on AmigaOS
+ * SignalSemaphore is recursive in either case.  Used by MP:MAKE-LOCK,
+ * MP:MAKE-RECURSIVE-LOCK, and the FASL reader (so a lock embedded in a
+ * struct/closure constant comes back as a usable, fresh-at-load-time
+ * lock instead of NIL).  Errors out via cl_error() — the err_prefix
+ * parameter customizes the message so callers see e.g. "MP:MAKE-LOCK: ..."
+ * vs. "FASL: ...". */
+CL_Obj cl_lock_alloc_obj(int recursive, CL_Obj name, const char *err_prefix)
 {
-    CL_Obj name = (n > 0) ? args[0] : CL_NIL;
     void *mutex_handle = NULL;
     int lock_id;
     CL_Lock *lk;
+    int rc = recursive
+        ? platform_mutex_init_recursive(&mutex_handle)
+        : platform_mutex_init(&mutex_handle);
 
-    if (platform_mutex_init(&mutex_handle) != 0)
-        cl_error(CL_ERR_GENERAL, "MP:MAKE-LOCK: failed to create mutex");
+    if (rc != 0)
+        cl_error(CL_ERR_GENERAL, "%s: failed to create mutex", err_prefix);
 
     lock_id = cl_lock_table_alloc(mutex_handle);
     if (lock_id < 0) {
@@ -437,8 +447,8 @@ static CL_Obj bi_make_lock(CL_Obj *args, int n)
     }
     if (lock_id < 0) {
         platform_mutex_destroy(mutex_handle);
-        cl_error(CL_ERR_GENERAL, "MP:MAKE-LOCK: lock table full (max %d)",
-                 CL_MAX_LOCKS);
+        cl_error(CL_ERR_GENERAL, "%s: lock table full (max %d)",
+                 err_prefix, CL_MAX_LOCKS);
     }
 
     CL_GC_PROTECT(name);
@@ -447,12 +457,20 @@ static CL_Obj bi_make_lock(CL_Obj *args, int n)
     if (!lk) {
         cl_lock_table_free(lock_id);
         platform_mutex_destroy(mutex_handle);
-        cl_error(CL_ERR_STORAGE, "MP:MAKE-LOCK: cannot allocate lock object");
+        cl_error(CL_ERR_STORAGE, "%s: cannot allocate lock object",
+                 err_prefix);
     }
 
     lk->lock_id = (uint32_t)lock_id;
     lk->name = name;
+    lk->flags = recursive ? CL_LOCK_FLAG_RECURSIVE : 0;
     return CL_PTR_TO_OBJ(lk);
+}
+
+static CL_Obj bi_make_lock(CL_Obj *args, int n)
+{
+    CL_Obj name = (n > 0) ? args[0] : CL_NIL;
+    return cl_lock_alloc_obj(0, name, "MP:MAKE-LOCK");
 }
 
 /* (mp:make-recursive-lock &optional name) -> lock
@@ -463,40 +481,7 @@ static CL_Obj bi_make_lock(CL_Obj *args, int n)
 static CL_Obj bi_make_recursive_lock(CL_Obj *args, int n)
 {
     CL_Obj name = (n > 0) ? args[0] : CL_NIL;
-    void *mutex_handle = NULL;
-    int lock_id;
-    CL_Lock *lk;
-
-    if (platform_mutex_init_recursive(&mutex_handle) != 0)
-        cl_error(CL_ERR_GENERAL,
-                 "MP:MAKE-RECURSIVE-LOCK: failed to create recursive mutex");
-
-    lock_id = cl_lock_table_alloc(mutex_handle);
-    if (lock_id < 0) {
-        /* See bi_make_lock for rationale on the GC retry. */
-        cl_gc();
-        lock_id = cl_lock_table_alloc(mutex_handle);
-    }
-    if (lock_id < 0) {
-        platform_mutex_destroy(mutex_handle);
-        cl_error(CL_ERR_GENERAL,
-                 "MP:MAKE-RECURSIVE-LOCK: lock table full (max %d)",
-                 CL_MAX_LOCKS);
-    }
-
-    CL_GC_PROTECT(name);
-    lk = (CL_Lock *)cl_alloc(TYPE_LOCK, sizeof(CL_Lock));
-    CL_GC_UNPROTECT(1);
-    if (!lk) {
-        cl_lock_table_free(lock_id);
-        platform_mutex_destroy(mutex_handle);
-        cl_error(CL_ERR_STORAGE,
-                 "MP:MAKE-RECURSIVE-LOCK: cannot allocate lock object");
-    }
-
-    lk->lock_id = (uint32_t)lock_id;
-    lk->name = name;
-    return CL_PTR_TO_OBJ(lk);
+    return cl_lock_alloc_obj(1, name, "MP:MAKE-RECURSIVE-LOCK");
 }
 
 /* (mp:acquire-lock lock &optional wait) -> bool */

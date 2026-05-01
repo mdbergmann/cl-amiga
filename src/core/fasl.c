@@ -6,6 +6,7 @@
 #include "float.h"
 #include "vm.h"
 #include "compiler.h"
+#include "thread.h"
 #include "../platform/platform.h"
 #include <string.h>
 #include <time.h>
@@ -268,9 +269,10 @@ static int fasl_ser_step(CL_FaslWriter *w, FaslSerStack *s)
             return 1;
         }
 
-        /* Shared-object dedup for closures, bytecodes, structs, and symbols.
-         * If found, emit OBJ_REF and we're done.  If new, register and emit
-         * OBJ_DEF, then fall through to the type-specific case.
+        /* Shared-object dedup for closures, bytecodes, structs, symbols,
+         * and locks.  If found, emit OBJ_REF and we're done.  If new,
+         * register and emit OBJ_DEF, then fall through to the type-specific
+         * case.
          *
          * STRUCT is included because cyclic CLOS metaobject graphs (generic
          * function ↔ method ↔ method-function-closure ↔ gf, slot definitions
@@ -287,12 +289,21 @@ static int fasl_ser_step(CL_FaslWriter *w, FaslSerStack *s)
          * SYMBOL body case below — wrapping them in OBJ_DEF adds 3 B on
          * first emission but they are negligible by count.
          *
+         * LOCK is included so that multiple references to the same
+         * compile-time lock (e.g. a struct slot reachable from several
+         * places in the constant graph) all resolve to the same
+         * fresh-at-load-time lock object.  Without dedup, two slots that
+         * shared a lock at compile time would each get an independent
+         * fresh lock at load time and synchronization would be split
+         * across them.
+         *
          * Reader's OBJ_DEF/REF handler is type-agnostic — no reader-side
          * change needed. */
         {
             uint8_t htype = CL_HDR_TYPE(CL_OBJ_TO_PTR(obj));
             if (htype == TYPE_CLOSURE || htype == TYPE_BYTECODE ||
-                htype == TYPE_STRUCT  || htype == TYPE_SYMBOL) {
+                htype == TYPE_STRUCT  || htype == TYPE_SYMBOL  ||
+                htype == TYPE_LOCK) {
                 if (!w->shared_objs) {
                     w->shared_objs = (CL_Obj *)platform_alloc(
                         FASL_MAX_SHARED * sizeof(CL_Obj));
@@ -576,6 +587,25 @@ static int fasl_ser_step(CL_FaslWriter *w, FaslSerStack *s)
             cl_fasl_write_u8(w, FASL_TAG_STRUCT);
             s->frames[idx].phase = PHASE_STRUCT_AFTER_TYPEDESC;
             if (!fasl_ser_stack_push(w, s, st->type_desc, PHASE_START)) return 1;
+            return 0;
+        }
+
+        case TYPE_LOCK: {
+            /* Wire format: tag | flags(u8) | name(obj).
+             * The platform mutex itself can't be serialized — it's
+             * per-process state.  Instead we record just enough metadata
+             * to reconstruct an equivalent fresh lock at load time.
+             * Sharing within a single FASL is preserved by OBJ_DEF/OBJ_REF
+             * (TYPE_LOCK is in the shared_objs dedup set), so multiple
+             * references to the *same* compile-time lock all resolve to
+             * the *same* fresh-at-load lock object. */
+            CL_Lock *lk = (CL_Lock *)CL_OBJ_TO_PTR(obj);
+            uint8_t flags = (lk->flags & CL_LOCK_FLAG_RECURSIVE) ? 0x01 : 0x00;
+            CL_Obj name = lk->name;
+            cl_fasl_write_u8(w, FASL_TAG_LOCK);
+            cl_fasl_write_u8(w, flags);
+            s->frames[idx].phase = PHASE_DONE;
+            if (!fasl_ser_stack_push(w, s, name, PHASE_START)) return 1;
             return 0;
         }
 
@@ -1464,6 +1494,22 @@ CL_Obj cl_fasl_deserialize_obj(CL_FaslReader *r)
         cl_fasl_read_bytes(r, pkg_buf, name_len);
         pkg_buf[name_len] = '\0';
         return cl_find_package(pkg_buf, name_len);
+    }
+
+    case FASL_TAG_LOCK: {
+        /* Counterpart to FASL_TAG_LOCK in the writer.  We can't restore
+         * the original platform mutex (per-process state) — instead we
+         * allocate a fresh, equivalent lock with the same name and
+         * recursive-ness.  Sharing within this FASL is preserved by the
+         * surrounding OBJ_DEF/OBJ_REF wrapper. */
+        uint8_t flags = cl_fasl_read_u8(r);
+        CL_Obj name = cl_fasl_deserialize_obj(r);
+        CL_Obj lock_obj;
+        if (r->error) return CL_NIL;
+        CL_GC_PROTECT(name);
+        lock_obj = cl_lock_alloc_obj((flags & 0x01) ? 1 : 0, name, "FASL");
+        CL_GC_UNPROTECT(1);
+        return lock_obj;
     }
 
     case FASL_TAG_FUNCTION: {

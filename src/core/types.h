@@ -484,10 +484,14 @@ typedef struct {
 
 /* --- Lock (mutex wrapper) --- */
 
+#define CL_LOCK_FLAG_RECURSIVE 0x01u
+
 typedef struct {
     CL_Header hdr;
     uint32_t lock_id;     /* Side table index -> void* (platform mutex) */
     CL_Obj name;          /* CL string or NIL */
+    uint32_t flags;       /* CL_LOCK_FLAG_* — recorded so FASL can recreate
+                           * the right kind of mutex at load time */
 } CL_Lock;
 
 #define CL_LOCK_P(obj) (CL_HEAP_P(obj) && CL_HDR_TYPE(CL_OBJ_TO_PTR(obj)) == TYPE_LOCK)

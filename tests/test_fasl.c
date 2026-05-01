@@ -13,6 +13,7 @@
 #include "core/fasl.h"
 #include "core/float.h"
 #include "core/opcodes.h"
+#include "core/thread.h"
 #include "platform/platform.h"
 #include <string.h>
 #include <math.h>
@@ -1234,6 +1235,113 @@ TEST(deserialize_bad_tag)
     ASSERT_EQ_INT(r.error, FASL_ERR_BAD_TAG);
 }
 
+/* TYPE_LOCK round-trip: a lock embedded in a constant (e.g. a struct slot
+ * captured at compile time, like log4cl's appender %LOCK initform) used
+ * to deserialize as NIL because TYPE_LOCK had no FASL serialization.
+ * Verify that round-tripping a lock now produces a fresh, usable lock
+ * with the same name and recursive-flag — and a freshly allocated
+ * platform mutex (different lock_id). */
+TEST(serialize_lock_nonrecursive)
+{
+    uint8_t buf[256];
+    CL_FaslWriter w;
+    CL_FaslReader r;
+    CL_Obj name, lk_obj, result;
+    CL_Lock *lk_in, *lk_out;
+    CL_String *out_name;
+
+    name = cl_make_string("test-lock", 9);
+    CL_GC_PROTECT(name);
+    lk_obj = cl_lock_alloc_obj(0, name, "TEST");
+    CL_GC_PROTECT(lk_obj);
+
+    cl_fasl_writer_init(&w, buf, sizeof(buf));
+    cl_fasl_serialize_obj(&w, lk_obj);
+    ASSERT_EQ_INT(w.error, FASL_OK);
+
+    cl_fasl_reader_init(&r, buf, w.pos);
+    result = cl_fasl_deserialize_obj(&r);
+    ASSERT_EQ_INT(r.error, FASL_OK);
+    ASSERT(CL_LOCK_P(result));
+
+    lk_in  = (CL_Lock *)CL_OBJ_TO_PTR(lk_obj);
+    lk_out = (CL_Lock *)CL_OBJ_TO_PTR(result);
+    ASSERT_EQ_INT(lk_out->flags & CL_LOCK_FLAG_RECURSIVE, 0);
+    ASSERT(lk_in->lock_id != lk_out->lock_id);  /* fresh platform mutex */
+    ASSERT(CL_STRING_P(lk_out->name));
+    out_name = (CL_String *)CL_OBJ_TO_PTR(lk_out->name);
+    ASSERT_STR_EQ(out_name->data, "test-lock");
+
+    CL_GC_UNPROTECT(2);
+}
+
+TEST(serialize_lock_recursive_preserves_flag)
+{
+    uint8_t buf[256];
+    CL_FaslWriter w;
+    CL_FaslReader r;
+    CL_Obj name, lk_obj, result;
+    CL_Lock *lk_out;
+
+    name = cl_make_string("rec", 3);
+    CL_GC_PROTECT(name);
+    lk_obj = cl_lock_alloc_obj(1, name, "TEST");
+    CL_GC_PROTECT(lk_obj);
+
+    cl_fasl_writer_init(&w, buf, sizeof(buf));
+    cl_fasl_serialize_obj(&w, lk_obj);
+    ASSERT_EQ_INT(w.error, FASL_OK);
+
+    cl_fasl_reader_init(&r, buf, w.pos);
+    result = cl_fasl_deserialize_obj(&r);
+    ASSERT_EQ_INT(r.error, FASL_OK);
+    ASSERT(CL_LOCK_P(result));
+
+    lk_out = (CL_Lock *)CL_OBJ_TO_PTR(result);
+    ASSERT(lk_out->flags & CL_LOCK_FLAG_RECURSIVE);
+
+    CL_GC_UNPROTECT(2);
+}
+
+/* When the same lock is referenced twice within a unit, dedup via
+ * OBJ_DEF/OBJ_REF must collapse them to a single fresh-at-load lock —
+ * otherwise two struct slots that shared a lock at compile time would
+ * each get an independent lock at load time and synchronization would
+ * be split across them. */
+TEST(serialize_lock_sharing_preserved)
+{
+    uint8_t buf[512];
+    CL_FaslWriter w;
+    CL_FaslReader r;
+    CL_Obj name, lk_obj, list, result;
+    CL_Obj first, second;
+
+    name = cl_make_string("shared", 6);
+    CL_GC_PROTECT(name);
+    lk_obj = cl_lock_alloc_obj(0, name, "TEST");
+    CL_GC_PROTECT(lk_obj);
+    /* (lk lk) — same object twice */
+    list = cl_cons(lk_obj, CL_NIL);
+    CL_GC_PROTECT(list);
+    list = cl_cons(lk_obj, list);
+
+    cl_fasl_writer_init(&w, buf, sizeof(buf));
+    cl_fasl_serialize_obj(&w, list);
+    ASSERT_EQ_INT(w.error, FASL_OK);
+
+    cl_fasl_reader_init(&r, buf, w.pos);
+    result = cl_fasl_deserialize_obj(&r);
+    ASSERT_EQ_INT(r.error, FASL_OK);
+
+    first  = cl_car(result);
+    second = cl_car(cl_cdr(result));
+    ASSERT(CL_LOCK_P(first));
+    ASSERT(CL_LOCK_P(second));
+    ASSERT(first == second);  /* identity preserved via OBJ_DEF/OBJ_REF */
+
+    CL_GC_UNPROTECT(3);
+}
+
 /* ================================================================
  * Bytecode serialization — manually constructed bytecodes
  * ================================================================ */
@@ -2137,6 +2245,9 @@ int main(void)
     RUN(serialize_heterogeneous_list);
     RUN(serialize_multiple_objects_sequential);
     RUN(deserialize_bad_tag);
+    RUN(serialize_lock_nonrecursive);
+    RUN(serialize_lock_recursive_preserves_flag);
+    RUN(serialize_lock_sharing_preserved);
 
     /* Bytecode serialization (manually constructed) */
     RUN(serialize_bytecode_simple);

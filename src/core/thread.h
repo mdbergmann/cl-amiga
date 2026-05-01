@@ -280,6 +280,12 @@ void cl_thread_table_free(int id);
 int cl_lock_table_alloc(void *handle);
 void cl_lock_table_free(int id);
 
+/* Allocate a fresh CL_Lock heap object backed by a freshly-initialized
+ * platform mutex.  recursive != 0 selects a recursive mutex.  Errors out
+ * via cl_error() on failure; err_prefix tags the message for the caller
+ * (e.g. "MP:MAKE-LOCK", "FASL"). */
+CL_Obj cl_lock_alloc_obj(int recursive, CL_Obj name, const char *err_prefix);
+
 /* Allocate a side table slot for a condvar, returns id or -1 */
 int cl_condvar_table_alloc(void *handle);
 void cl_condvar_table_free(int id);
