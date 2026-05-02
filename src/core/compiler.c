@@ -1201,6 +1201,45 @@ top:
         return;
     }
 
+    /* (macrolet ((name lambda-list . body) ...) . body)
+     * The macro definitions are templates compiled at the macrolet site
+     * (see compile_macrolet) — they are NOT regular code in this scope.
+     * Walking them as code mistakes the binding car (the macro name) for
+     * a function call, e.g. (plet-if (params) `template) gets seen as a
+     * 2-arg call to a globally-defined plet-if and the scanner expands it
+     * with bogus args.  Cascading expansions can hit a macro that errors
+     * (signaling lparallel's %plet-if expecting 4 args, getting 2), which
+     * longjmps through scan_body_for_boxing's CL_CATCH and — empirically —
+     * smashes bi_compile_file's stack canary on return.  Skip the bindings
+     * entirely and only scan the macrolet body. */
+    if (head == SYM_MACROLET) {
+        CL_Obj body;
+        if (!CL_CONS_P(rest)) return;
+        body = cl_cdr(rest); /* skip the bindings list */
+        while (CL_CONS_P(body)) {
+            scan_body_for_boxing(cl_car(body), vars, n_vars,
+                                 mutated, captured, closure_depth);
+            body = cl_cdr(body);
+        }
+        return;
+    }
+
+    /* (symbol-macrolet ((sym expansion) ...) . body)
+     * Same reasoning as MACROLET — the bindings are (sym expansion) pairs,
+     * not forms to evaluate.  Walking them generically would treat sym as
+     * a function call head if it has any arguments. */
+    if (head == SYM_SYMBOL_MACROLET) {
+        CL_Obj body;
+        if (!CL_CONS_P(rest)) return;
+        body = cl_cdr(rest);
+        while (CL_CONS_P(body)) {
+            scan_body_for_boxing(cl_car(body), vars, n_vars,
+                                 mutated, captured, closure_depth);
+            body = cl_cdr(body);
+        }
+        return;
+    }
+
     /* (flet/labels ((name params . body) ...) . body) */
     if (head == SYM_FLET || head == SYM_LABELS) {
         CL_Obj defs, body;

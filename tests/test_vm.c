@@ -1329,6 +1329,45 @@ TEST(eval_labels_shadows_global_macro)
         1042);
 }
 
+TEST(scanner_skips_macrolet_bindings)
+{
+    /* Regression: scan_body_for_boxing used to walk MACROLET bindings as
+     * regular code — when a binding had the form (NAME (params) body),
+     * NAME would be looked up as a global macro and the binding's params
+     * + body would be passed in as the macro's args.  In lparallel/psort
+     * this hit a global macro chain whose deep expansion eventually called
+     * `lparallel.defpun::%plet-if` with bogus arity, signaling an error
+     * that longjmp'd out of scan_body_for_boxing's CL_CATCH and (combined
+     * with stack frame layout) smashed bi_compile_file's stack canary.
+     *
+     * The fix: scan_body_for_boxing now skips MACROLET bindings entirely
+     * (only the body is scanned). */
+    eval_print("(defmacro scan-trap-macro (x) "
+               "  (error \"scan-trap-macro must NOT be expanded by scanner: got ~s\" x))");
+    /* Inner macrolet redefines scan-trap-macro locally with same arity
+     * as the global macro.  Scanner walking the binding as a call would
+     * trigger the global macro's error.  After the fix, no expansion
+     * happens at scan time and the form compiles cleanly. */
+    ASSERT_EQ_INT(eval_int(
+        "(let ((result 0))"
+        "  (macrolet ((scan-trap-macro (n) `(setq result (* ,n 2))))"
+        "    (scan-trap-macro 21))"
+        "  result)"),
+        42);
+    /* Same for SYMBOL-MACROLET — bindings are (sym expansion) pairs and
+     * walking them as code would treat a complex expansion form as a
+     * function call. */
+    eval_print("(defmacro symac-trap (x) "
+               "  (error \"symac-trap must NOT be expanded by scanner: got ~s\" x))");
+    ASSERT_EQ_INT(eval_int(
+        "(let ((result 0))"
+        "  (symbol-macrolet ((symac-trap (incf result 33)))"
+        "    symac-trap"
+        "    symac-trap)"
+        "  result)"),
+        66);
+}
+
 /* CLHS 6.1.3.1: accumulation clauses may include OF-TYPE after INTO.
  * split-sequence and serapeum use this.  We ignore the type spec but
  * must consume it so the clause parses. */
@@ -8484,6 +8523,7 @@ int main(void)
     RUN(eval_compiler_trampoline_block_return_from_nontail);
     RUN(eval_compiler_deeply_nested_blocks);
     RUN(eval_labels_shadows_global_macro);
+    RUN(scanner_skips_macrolet_bindings);
     RUN(eval_loop_of_type_after_into);
     RUN(eval_loop_for_and_parallel);
     RUN(eval_quasiquote_nested_list);
