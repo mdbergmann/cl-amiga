@@ -382,7 +382,14 @@ static CL_Obj bi_write_string(CL_Obj *args, int n)
     if (start < end) {
         /* Fast path for base strings */
         if (cl_string_is_base(args[0])) {
-            cl_stream_write_string(stream, cl_string_base_data(args[0]) + start, end - start);
+            /* m68k workaround: at -O2, m68k-amigaos-gcc miscompiles
+             * `cl_string_base_data(arg) + start` so the first byte of
+             * every base-string write is dropped.  Routing the pointer
+             * through a `volatile` local forces it to materialize through
+             * memory and prevents the bad fold.  Affects buffered string
+             * and file output alike. */
+            const char *volatile data_ptr = cl_string_base_data(args[0]);
+            cl_stream_write_string(stream, data_ptr + start, end - start);
         } else {
             uint32_t j;
             for (j = start; j < end; j++)

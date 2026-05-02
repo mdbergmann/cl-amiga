@@ -4,8 +4,13 @@
 
 TOOLCHAIN = $(CURDIR)/tools/m68k-amigaos-gcc/prefix
 CC        = $(TOOLCHAIN)/bin/m68k-amigaos-gcc
-CFLAGS    = -noixemul -mcpu=68020 -msoft-float -std=c99 -Wall -O2 -flto -fno-tree-switch-conversion -DPLATFORM_AMIGA
-LDFLAGS   = -noixemul -mcpu=68020 -msoft-float -flto -fno-tree-switch-conversion --param lto-partitions=1
+# NOTE: m68k-amigaos-gcc -O2 miscompiles flexible-array pointer access
+# (`obj->data` passed as a function argument silently drops the first byte).
+# We work around it with `volatile` locals at the affected call sites
+# (search for "m68k workaround").  -flto and -O1 each have their own
+# regressions on this toolchain — neither is a clean substitute.
+CFLAGS    = -noixemul -mcpu=68020 -msoft-float -std=c99 -Wall -O2 -fno-tree-switch-conversion -DPLATFORM_AMIGA
+LDFLAGS   = -noixemul -mcpu=68020 -msoft-float -fno-tree-switch-conversion
 
 SRCDIR   = src
 BUILDDIR = build/cross

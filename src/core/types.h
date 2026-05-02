@@ -405,6 +405,7 @@ typedef struct {
     int32_t  unread_char;    /* -1 if none, else pushed-back char */
     CL_Obj   element_type;   /* Symbol (CHARACTER) */
     uint32_t charpos;        /* Column position: 0 = at BOL, 0xFFFFFFFF = unknown */
+    uint32_t line;           /* 1-based line number of next char to read */
 } CL_Stream;
 
 #define CL_STREAM_P(obj) (CL_HEAP_P(obj) && CL_HDR_TYPE(CL_OBJ_TO_PTR(obj)) == TYPE_STREAM)
