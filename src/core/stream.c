@@ -124,6 +124,7 @@ CL_Obj cl_make_stream(uint32_t direction, uint32_t stream_type)
     st->unread_char = -1;
     st->element_type = CL_NIL;  /* Will be set to CHARACTER symbol later */
     st->charpos = 0;
+    st->line = 1;
     return CL_PTR_TO_OBJ(st);
 }
 

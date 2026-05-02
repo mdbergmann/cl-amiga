@@ -1329,19 +1329,25 @@ CL_Obj cl_read_from_stream(CL_Obj stream)
     /* Save/restore reader state so nested reads (e.g. read-from-string
      * called from inside a dispatch-macro function that is itself running
      * during a parent read) don't leak state back to the parent reader.
-     * The innermost EOF is preserved in rd_last_eof for cl_reader_eof(). */
+     * The innermost EOF is preserved in rd_last_eof for cl_reader_eof().
+     *
+     * Line numbers persist *per stream*: the stream's `line` field stores
+     * the cumulative line position so repeated top-level reads on the same
+     * stream (e.g. LOAD) report real source lines, not always-1. */
     CL_Obj saved_stream      = reader_stream;
     int    saved_eof         = eof_seen;
     int    saved_line        = reader_line;
     CL_Obj saved_uninterned  = rd_uninterned;
+    CL_Stream *st = (CL_Stream *)CL_OBJ_TO_PTR(stream);
     CL_Obj result;
 
     reader_stream = stream;
     eof_seen = 0;
-    reader_line = 1;
+    reader_line = st->line ? (int)st->line : 1;
     rd_uninterned = CL_NIL;
     do { result = read_expr(); } while (result == CL_READER_SKIP && !eof_seen);
 
+    st->line = (uint32_t)reader_line;
     CT->rd_last_eof = eof_seen;
     reader_stream = saved_stream;
     reader_line   = saved_line;

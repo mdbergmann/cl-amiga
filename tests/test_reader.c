@@ -5,6 +5,7 @@
 #include "core/package.h"
 #include "core/symbol.h"
 #include "core/reader.h"
+#include "core/stream.h"
 #include "core/printer.h"
 #include "core/compiler.h"
 #include "core/vm.h"
@@ -533,6 +534,25 @@ TEST(nested_read_preserves_outer_stream)
     }
 }
 
+/* Regression: cl_read_from_stream must not reset the line counter to 1 on
+ * every call; the stream's `line` field should persist so loaders see real
+ * source-line numbers across top-level forms. */
+TEST(stream_line_persists_across_reads)
+{
+    const char *src = "1\n2\n3\n";
+    CL_Obj stream = cl_make_cbuf_input_stream(src, (uint32_t)strlen(src));
+    CL_Stream *st;
+
+    (void)cl_read_from_stream(stream);  /* reads "1" */
+    (void)cl_read_from_stream(stream);  /* reads "2", consumes \n after "1" */
+    st = (CL_Stream *)CL_OBJ_TO_PTR(stream);
+    ASSERT(st->line >= 2);
+
+    (void)cl_read_from_stream(stream);  /* reads "3" */
+    st = (CL_Stream *)CL_OBJ_TO_PTR(stream);
+    ASSERT(st->line >= 3);
+}
+
 TEST(read_2d_array_lowercase)
 {
     /* #2a also works (lowercase) */
@@ -617,6 +637,9 @@ int main(void)
 
     /* Regression: nested reader invocation must not clobber outer stream */
     RUN(nested_read_preserves_outer_stream);
+
+    /* Regression: per-stream line counter persists across reads */
+    RUN(stream_line_persists_across_reads);
 
     teardown();
     REPORT();

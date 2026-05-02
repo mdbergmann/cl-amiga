@@ -533,7 +533,8 @@
 ; --- Fill pointer operations (Step 6) ---
 (check "fill-pointer 0" 0 (fill-pointer (make-array 10 :fill-pointer 0)))
 (check "fill-pointer 5" 5 (fill-pointer (make-array 10 :fill-pointer 5)))
-(check "fill-pointer t" 0 (fill-pointer (make-array 10 :fill-pointer t)))
+; CLHS make-array: :fill-pointer t means fill-pointer = the dimension
+(check "fill-pointer t" 10 (fill-pointer (make-array 10 :fill-pointer t)))
 (check "has-fill-pointer t" t (array-has-fill-pointer-p (make-array 5 :fill-pointer 0)))
 (check "has-fill-pointer nil" nil (array-has-fill-pointer-p (make-array 5)))
 (check "setf fill-pointer" 7 (let ((v (make-array 10 :fill-pointer 0))) (setf (fill-pointer v) 7) (fill-pointer v)))
@@ -688,7 +689,8 @@
 (check "lower-case-p A" nil (lower-case-p #\A))
 (check "alpha-char-p A" t (alpha-char-p #\A))
 (check "alpha-char-p 1" nil (alpha-char-p #\1))
-(check "digit-char-p 5" t (digit-char-p #\5))
+; CLHS digit-char-p: returns the integer weight, not boolean T
+(check "digit-char-p 5" 5 (digit-char-p #\5))
 (check "digit-char-p A" nil (digit-char-p #\A))
 
 ; --- Phase 5 Tier 1: Symbol functions ---
@@ -973,7 +975,8 @@
 ; every/some/notany/notevery with strings
 (check "every string t" t (every #'alpha-char-p "hello"))
 (check "every string nil" nil (every #'alpha-char-p "hello1"))
-(check "some string t" t (some #'digit-char-p "abc1"))
+; CLHS some: returns the first non-NIL predicate result, not boolean T
+(check "some string t" 1 (some #'digit-char-p "abc1"))
 (check "some string nil" nil (some #'digit-char-p "abcd"))
 (check "notany string t" t (notany #'digit-char-p "abcd"))
 (check "notany string nil" nil (notany #'digit-char-p "abc1"))
@@ -1310,7 +1313,10 @@
 ; #:sym uninterned
 (check "uninterned symbolp" t (symbolp '#:TEMP))
 (check "uninterned no pkg" t (null (symbol-package '#:TEMP)))
-(check "uninterned unique" nil (eq '#:X '#:X))
+; Within a single READ, multiple #:foo with the same name share identity
+; (needed for compile-file output: e.g. SBCL emits LETs that bind #:gensymN
+; and reference it in the body, all parsed as one top-level form).
+(check "uninterned shared in one read" t (eq '#:X '#:X))
 
 ; Printer: uninterned
 (check "print uninterned" "#:HELLO" (prin1-to-string '#:HELLO))
@@ -1883,7 +1889,8 @@
 (check "file-write-date" t (numberp (file-write-date "lib/boot.lisp")))
 
 ; probe-file on existing file
-(check "probe-file-exists" #P"lib/boot.lisp" (probe-file "lib/boot.lisp"))
+; CLHS probe-file: returns the truename (absolute path), or NIL if not found
+(check "probe-file-exists" t (not (null (probe-file "lib/boot.lisp"))))
 
 ; probe-file on nonexistent file
 (check "probe-file-nil" nil (probe-file "nonexistent_xyz_123.txt"))
