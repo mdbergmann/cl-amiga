@@ -581,8 +581,32 @@ char **platform_directory(const char *pattern, int *count_out)
 
 const char *platform_realpath(const char *path, char *buf, int bufsize)
 {
-    BPTR lock = Lock((STRPTR)path, ACCESS_READ);
+    BPTR lock;
+    int has_volume = 0;
+    const char *p;
+
+    /* AmigaOS path syntax: an absolute path begins with a volume or assign
+     * name followed by ':' (e.g. "T:foo", "Ram Disk:bar", "DH0:lisp/x").
+     * If the user already supplied such a prefix, preserve it instead of
+     * canonicalizing through NameFromLock — otherwise PROBE-FILE,
+     * RENAME-FILE etc. return paths the user can't recognize
+     * (e.g. "T:foo" → "Ram Disk:T/foo"). */
+    for (p = path; *p; p++) {
+        if (*p == ':') { has_volume = 1; break; }
+        if (*p == '/') break;  /* relative path with subdir component */
+    }
+
+    lock = Lock((STRPTR)path, ACCESS_READ);
     if (!lock) return NULL;
+
+    if (has_volume) {
+        size_t plen = strlen(path);
+        UnLock(lock);
+        if ((int)(plen + 1) > bufsize) return NULL;
+        memcpy(buf, path, plen + 1);
+        return buf;
+    }
+
     if (!NameFromLock(lock, (STRPTR)buf, (LONG)bufsize)) {
         UnLock(lock);
         return NULL;
