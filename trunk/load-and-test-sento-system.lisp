@@ -23,12 +23,11 @@
 
 (load "lib/quicklisp-compat.lisp")
 
-(format t "~%--- Quickload :sento and test dependencies ---~%")
-(ql:quickload :sento)
-(ql:quickload :fiveam)
-(ql:quickload :serapeum)
-(ql:quickload :lparallel)
-(ql:quickload :cl-mock)
-
+;; No (ql:quickload ...) here: that would compile sento + its deps and
+;; populate the FASL cache before the test, defeating the "cold cache"
+;; mode advertised in the usage comment.  asdf:test-system pulls every
+;; dep in via the system definitions, so the cache state at start is
+;; exactly what the caller arranged (cold after `rm -rf`, warm
+;; otherwise).
 (format t "~%--- Running (asdf:test-system :sento) ---~%")
 (asdf:test-system :sento)
