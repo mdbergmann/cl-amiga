@@ -1342,6 +1342,132 @@ TEST(serialize_lock_sharing_preserved)
     CL_GC_UNPROTECT(3);
 }
 
+/* When the same cons head is referenced twice within a unit (typical
+ * of compile-time sharing — a parameter list quoted from multiple
+ * macroexpansions, a class precedence list reachable from several
+ * slots, a trivia pattern template), the writer's OBJ_DEF/OBJ_REF
+ * dedup must collapse them so the two references resolve to the same
+ * cons cell after load.  Without head-cons dedup, both references
+ * would re-walk the entire list and the deserialised result would
+ * have two structurally-equal but non-eq lists.  Also a tight check
+ * that the hash-based dedup table works correctly for cons cells. */
+TEST(serialize_cons_head_sharing_preserved)
+{
+    uint8_t buf[1024];
+    CL_FaslWriter w;
+    CL_FaslReader r;
+    CL_Obj inner, outer, result;
+    CL_Obj first_ref, second_ref, third_ref;
+
+    /* Build (a b c) once, then a wrapper list that references it three
+     * times: ((a b c) (a b c) (a b c)). */
+    inner = cl_cons(CL_MAKE_FIXNUM(3), CL_NIL);
+    CL_GC_PROTECT(inner);
+    inner = cl_cons(CL_MAKE_FIXNUM(2), inner);
+    inner = cl_cons(CL_MAKE_FIXNUM(1), inner);
+
+    outer = cl_cons(inner, CL_NIL);
+    CL_GC_PROTECT(outer);
+    outer = cl_cons(inner, outer);
+    outer = cl_cons(inner, outer);
+
+    cl_fasl_writer_init(&w, buf, sizeof(buf));
+    cl_fasl_serialize_obj(&w, outer);
+    ASSERT_EQ_INT(w.error, FASL_OK);
+
+    cl_fasl_reader_init(&r, buf, w.pos);
+    result = cl_fasl_deserialize_obj(&r);
+    ASSERT_EQ_INT(r.error, FASL_OK);
+
+    first_ref  = cl_car(result);
+    second_ref = cl_car(cl_cdr(result));
+    third_ref  = cl_car(cl_cdr(cl_cdr(result)));
+    ASSERT(CL_CONS_P(first_ref));
+    ASSERT(CL_CONS_P(second_ref));
+    ASSERT(CL_CONS_P(third_ref));
+    /* All three should be the SAME cons cell after dedup. */
+    ASSERT(first_ref == second_ref);
+    ASSERT(first_ref == third_ref);
+    /* And the elements of the shared list survived correctly. */
+    ASSERT_EQ_INT(CL_FIXNUM_VAL(cl_car(first_ref)), 1);
+    ASSERT_EQ_INT(CL_FIXNUM_VAL(cl_car(cl_cdr(first_ref))), 2);
+    ASSERT_EQ_INT(CL_FIXNUM_VAL(cl_car(cl_cdr(cl_cdr(first_ref)))), 3);
+
+    CL_GC_UNPROTECT(2);
+}
+
+/* Many distinct shared cons cells in one unit — exercises the writer-
+ * side hash table beyond the initial capacity (which starts at 64
+ * slots and grows by doubling).  Without the hash table, this lookup
+ * would be O(N²) over thousands of conses, and far too slow for the
+ * large compile-time literal graphs that hit this path in practice
+ * (e.g. cl-unicode/hash-tables.lisp's huge alists).  Also smoke-tests
+ * that resize handles many entries without losing any. */
+TEST(serialize_many_shared_cons_cells)
+{
+    const uint32_t n_unique = 500;
+    uint32_t buf_size = n_unique * 64 + 8192;  /* plenty of headroom */
+    uint8_t *buf = (uint8_t *)platform_alloc(buf_size);
+    CL_FaslWriter w;
+    CL_FaslReader r;
+    CL_Obj outer, result, p;
+    CL_Obj *uniques;
+    uint32_t i;
+
+    ASSERT(buf != NULL);
+
+    uniques = (CL_Obj *)platform_alloc(n_unique * sizeof(CL_Obj));
+    ASSERT(uniques != NULL);
+
+    /* Build n_unique distinct cons cells (each with a unique fixnum
+     * car) and stitch them into a list referenced TWICE so each cons
+     * head reaches the dedup path on its second appearance. */
+    outer = CL_NIL;
+    CL_GC_PROTECT(outer);
+    for (i = 0; i < n_unique; i++) {
+        uniques[i] = cl_cons(CL_MAKE_FIXNUM((int)i), CL_NIL);
+        CL_GC_PROTECT(uniques[i]);
+        outer = cl_cons(uniques[i], outer);
+    }
+    /* Reference each unique cons a second time, in reverse order. */
+    for (i = 0; i < n_unique; i++) {
+        outer = cl_cons(uniques[i], outer);
+    }
+
+    cl_fasl_writer_init(&w, buf, buf_size);
+    cl_fasl_serialize_obj(&w, outer);
+    ASSERT_EQ_INT(w.error, FASL_OK);
+
+    cl_fasl_reader_init(&r, buf, w.pos);
+    result = cl_fasl_deserialize_obj(&r);
+    ASSERT_EQ_INT(r.error, FASL_OK);
+
+    /* Walk the result and verify each "first reference" matches the
+     * "second reference" by EQ identity. */
+    p = result;
+    {
+        CL_Obj first_n[500];
+        for (i = 0; i < n_unique; i++) {
+            ASSERT(CL_CONS_P(p));
+            first_n[i] = cl_car(p);
+            ASSERT(CL_CONS_P(first_n[i]));
+            p = cl_cdr(p);
+        }
+        /* Second batch was prepended in the same order, so it appears
+         * in the deserialised list in the same order as the first batch. */
+        for (i = 0; i < n_unique; i++) {
+            ASSERT(CL_CONS_P(p));
+            ASSERT(cl_car(p) == first_n[i]);
+            p = cl_cdr(p);
+        }
+        ASSERT(CL_NULL_P(p));
+    }
+
+    CL_GC_UNPROTECT(1 + n_unique);
+    platform_free(uniques);
+    platform_free(buf);
+}
+
 /* ================================================================
  * Bytecode serialization — manually constructed bytecodes
  * ================================================================ */
@@ -2248,6 +2374,8 @@ int main(void)
     RUN(serialize_lock_nonrecursive);
     RUN(serialize_lock_recursive_preserves_flag);
     RUN(serialize_lock_sharing_preserved);
+    RUN(serialize_cons_head_sharing_preserved);
+    RUN(serialize_many_shared_cons_cells);
 
     /* Bytecode serialization (manually constructed) */
     RUN(serialize_bytecode_simple);
