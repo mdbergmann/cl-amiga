@@ -510,7 +510,12 @@ static CL_Obj bi_load(CL_Obj *args, int n)
         char auto_cache_path[1024];
         uint8_t *fasl_buf = NULL;
         uint8_t *unit_buf = NULL;
-        uint32_t fasl_capacity = 64 * 1024;
+        /* Start big enough to hold the largest auto-cached FASL (lib/clos.lisp
+         * is ~145 KB) without ever growing.  AmigaOS AllocVec of 512 KB
+         * succeeds at startup but later doublings (256→512→1024) can fail
+         * due to system pool fragmentation, which silently disables caching
+         * for that load. */
+        uint32_t fasl_capacity = 512 * 1024;
         uint32_t unit_capacity = 32 * 1024;
         uint32_t n_units = 0;
         CL_FaslWriter fw;
@@ -593,7 +598,11 @@ static CL_Obj bi_load(CL_Obj *args, int n)
                         platform_free(unit_buf);
                         unit_capacity *= 2;
                         unit_buf = (uint8_t *)platform_alloc(unit_capacity);
-                        if (!unit_buf) { do_cache = 0; break; }
+                        if (!unit_buf) {
+                            platform_write_string("; Warning: FASL unit buffer alloc failed — skipping cache for this file\n");
+                            do_cache = 0;
+                            break;
+                        }
                         cl_fasl_writer_init(&uw, unit_buf, unit_capacity);
                         memcpy(uw.gensym_objs, fw.gensym_objs, fw.gensym_count * sizeof(CL_Obj));
                         uw.gensym_count = fw.gensym_count;
@@ -614,7 +623,11 @@ static CL_Obj bi_load(CL_Obj *args, int n)
                             uint8_t *new_buf;
                             fasl_capacity *= 2;
                             new_buf = (uint8_t *)platform_alloc(fasl_capacity);
-                            if (!new_buf) { do_cache = 0; break; }
+                            if (!new_buf) {
+                                platform_write_string("; Warning: FASL buffer grow failed — skipping cache for this file\n");
+                                do_cache = 0;
+                                break;
+                            }
                             memcpy(new_buf, fasl_buf, fw.pos);
                             platform_free(fasl_buf);
                             fasl_buf = new_buf;
