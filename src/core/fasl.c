@@ -163,22 +163,43 @@ static int fasl_ser_stack_push(CL_FaslWriter *w, FaslSerStack *s,
                  * deliberately huge (2M frames ~= 24MB) — anything that
                  * trips it is almost certainly an undetected cycle in the
                  * constant graph, not legitimate depth.  Histogram + top
-                 * frames usually identify the cyclic type. */
+                 * frames usually identify the cyclic type.
+                 *
+                 * fflush after every fprintf — when stderr is redirected
+                 * to a file (block-buffered) and the process crashes
+                 * shortly after, unflushed buffer is lost.  This
+                 * diagnostic exists *because* something is wrong, so
+                 * paying for the flushes is fine. */
                 uint32_t i;
                 uint32_t type_counts[64] = {0};
+                int top_t = CL_HEAP_P(obj) ? CL_HDR_TYPE(CL_OBJ_TO_PTR(obj)) : -1;
+                int parent_t = -1;
+                CL_Obj parent_obj = CL_NIL;
+                if (s->depth > 0) {
+                    parent_obj = s->frames[s->depth - 1].obj;
+                    if (CL_HEAP_P(parent_obj))
+                        parent_t = CL_HDR_TYPE(CL_OBJ_TO_PTR(parent_obj));
+                }
                 fprintf(stderr,
-                  "[FASL] hit FASL_SER_STACK_MAX_CAP=%u while pushing obj=0x%08x phase=%u\n",
-                  FASL_SER_STACK_MAX_CAP, (unsigned)obj, phase);
+                  "[FASL] hit FASL_SER_STACK_MAX_CAP=%u depth=%u\n"
+                  "[FASL]   pushing  obj=0x%08x phase=%u type=%d\n"
+                  "[FASL]   top-of-stack obj=0x%08x type=%d\n",
+                  FASL_SER_STACK_MAX_CAP, s->depth,
+                  (unsigned)obj, phase, top_t,
+                  (unsigned)parent_obj, parent_t);
+                fflush(stderr);
                 if (CL_HEAP_P(obj) && CL_HDR_TYPE(CL_OBJ_TO_PTR(obj)) == TYPE_STRUCT) {
                     CL_Struct *st = (CL_Struct *)CL_OBJ_TO_PTR(obj);
                     fprintf(stderr, "[FASL] pushed obj is STRUCT type_desc=0x%08x n_slots=%u\n",
                             (unsigned)st->type_desc, (unsigned)st->n_slots);
+                    fflush(stderr);
                     if (CL_HEAP_P(st->type_desc) &&
                         CL_HDR_TYPE(CL_OBJ_TO_PTR(st->type_desc)) == TYPE_SYMBOL) {
                         CL_Symbol *sym = (CL_Symbol *)CL_OBJ_TO_PTR(st->type_desc);
                         CL_String *nm = (CL_String *)CL_OBJ_TO_PTR(sym->name);
                         fprintf(stderr, "[FASL] type_desc symbol name=%.*s\n",
                                 (int)nm->length, nm->data);
+                        fflush(stderr);
                     }
                 }
                 for (i = 0; i < s->depth; i++) {
@@ -195,6 +216,7 @@ static int fasl_ser_stack_push(CL_FaslWriter *w, FaslSerStack *s,
                     if (type_counts[i] > 0)
                         fprintf(stderr, "  type %u: %u frames\n", i, type_counts[i]);
                 }
+                fflush(stderr);
                 fprintf(stderr, "[FASL] top 20 frames:\n");
                 for (i = (s->depth >= 20 ? s->depth - 20 : 0); i < s->depth; i++) {
                     CL_Obj fobj = s->frames[i].obj;
