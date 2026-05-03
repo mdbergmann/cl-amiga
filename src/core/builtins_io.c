@@ -261,6 +261,113 @@ static CL_Obj bi_format(CL_Obj *args, int n)
     }
 }
 
+/* --- Shared FASL emit helper ---------------------------------------------
+ *
+ * Serializes one bytecode into a per-unit buffer and appends it (length
+ * prefix + bytes) to a file-level CL_FaslWriter.  Used by both bi_load's
+ * source-load auto-cache and bi_compile_file's deferred-serialize loop —
+ * before this helper existed, both call sites had near-identical (but
+ * subtly drifting) copies of the overflow/retry/grow logic.  The CLOS
+ * FASL truncation bug fixed in commit f52cb57 surfaced because the two
+ * fragmented compile paths were both vulnerable; sharing the writer
+ * means future similar fixes only need to land in one place.
+ *
+ * Manages:
+ *   - per-unit serialize-with-retry: doubles unit_buf on FASL_ERR_OVERFLOW
+ *     up to unit_cap_max (UINT32_MAX = unlimited), freeing shared_objs
+ *     between retries so they don't leak;
+ *   - file-level append: grows fasl_buf on demand, then writes
+ *     u32(unit_pos) + unit bytes via fw.
+ *
+ * On failure returns -1 with no partial state written to fw; *err_out
+ * (if non-NULL) receives the underlying FASL error so the caller can
+ * emit a context-rich warning ("graph too deep" vs "exceeded unit cap"
+ * etc.).  On success returns 0; uw's gensym table is synced back into
+ * fw so subsequent units share the dedup state.  *unit_buf_p,
+ * *unit_cap_p, *fasl_buf_p, *fasl_cap_p are updated if grow happened. */
+static int cf_emit_fasl_unit(CL_FaslWriter *fw,
+                             uint8_t **fasl_buf_p, uint32_t *fasl_cap_p,
+                             uint8_t **unit_buf_p, uint32_t *unit_cap_p,
+                             uint32_t unit_cap_max,
+                             CL_Obj bytecode,
+                             int *err_out)
+{
+    CL_FaslWriter uw;
+    uw.shared_objs = NULL;
+
+    cl_fasl_reset_serialize_count();
+    cl_fasl_writer_init(&uw, *unit_buf_p, *unit_cap_p);
+    memcpy(uw.gensym_objs, fw->gensym_objs, fw->gensym_count * sizeof(CL_Obj));
+    uw.gensym_count = fw->gensym_count;
+#ifdef DEBUG_FASL
+    cl_fasl_hist_begin();
+#endif
+    cl_fasl_serialize_bytecode(&uw, bytecode);
+#ifdef DEBUG_FASL
+    cl_fasl_hist_end();
+#endif
+
+    while (uw.error == FASL_ERR_OVERFLOW && *unit_cap_p < unit_cap_max) {
+        uint32_t new_cap = *unit_cap_p * 2;
+        uint8_t *new_buf;
+        if (new_cap > unit_cap_max) new_cap = unit_cap_max;
+        platform_free(*unit_buf_p);
+        *unit_buf_p = NULL;
+        new_buf = (uint8_t *)platform_alloc(new_cap);
+        if (!new_buf) {
+            if (uw.shared_objs) platform_free(uw.shared_objs);
+            if (err_out) *err_out = FASL_ERR_OVERFLOW;
+            return -1;
+        }
+        *unit_buf_p = new_buf;
+        *unit_cap_p = new_cap;
+        if (uw.shared_objs) { platform_free(uw.shared_objs); uw.shared_objs = NULL; }
+        cl_fasl_writer_init(&uw, *unit_buf_p, *unit_cap_p);
+        memcpy(uw.gensym_objs, fw->gensym_objs, fw->gensym_count * sizeof(CL_Obj));
+        uw.gensym_count = fw->gensym_count;
+#ifdef DEBUG_FASL
+        cl_fasl_hist_begin();
+#endif
+        cl_fasl_serialize_bytecode(&uw, bytecode);
+#ifdef DEBUG_FASL
+        cl_fasl_hist_end();
+#endif
+    }
+
+    if (uw.error != FASL_OK) {
+        if (err_out) *err_out = uw.error;
+        if (uw.shared_objs) platform_free(uw.shared_objs);
+        return -1;
+    }
+
+    /* Sync gensym table back so subsequent units see deduped IDs. */
+    memcpy(fw->gensym_objs, uw.gensym_objs, uw.gensym_count * sizeof(CL_Obj));
+    fw->gensym_count = uw.gensym_count;
+
+    while (fw->pos + 4 + uw.pos > *fasl_cap_p) {
+        uint32_t new_cap = *fasl_cap_p * 2;
+        uint8_t *new_buf = (uint8_t *)platform_alloc(new_cap);
+        if (!new_buf) {
+            if (err_out) *err_out = FASL_ERR_OVERFLOW;
+            if (uw.shared_objs) platform_free(uw.shared_objs);
+            return -1;
+        }
+        memcpy(new_buf, *fasl_buf_p, fw->pos);
+        platform_free(*fasl_buf_p);
+        *fasl_buf_p = new_buf;
+        *fasl_cap_p = new_cap;
+        fw->data = *fasl_buf_p;
+        fw->capacity = *fasl_cap_p;
+    }
+
+    cl_fasl_write_u32(fw, uw.pos);
+    cl_fasl_write_bytes(fw, *unit_buf_p, uw.pos);
+
+    if (uw.shared_objs) platform_free(uw.shared_objs);
+    if (err_out) *err_out = FASL_OK;
+    return 0;
+}
+
 /* --- Load --- */
 
 static CL_Obj bi_load(CL_Obj *args, int n)
@@ -586,59 +693,20 @@ static CL_Obj bi_load(CL_Obj *args, int n)
                 /* Safe point: run pending compaction between top-level forms */
                 cl_gc_compact_if_pending();
 
-                /* Serialize bytecode to FASL cache buffer */
+                /* Append this form's bytecode to the FASL cache.  Any
+                 * unit that fails to serialize (alloc fail, too-deep
+                 * graph, etc.) invalidates the whole cache: writing a
+                 * partial FASL would silently drop top-level forms (and
+                 * their DEFUN side effects), making the cached load
+                 * behave differently from the source load. */
                 if (do_cache) {
-                    CL_FaslWriter uw;
-                    cl_fasl_writer_init(&uw, unit_buf, unit_capacity);
-                    /* Share gensym dedup table across units */
-                    memcpy(uw.gensym_objs, fw.gensym_objs, fw.gensym_count * sizeof(CL_Obj));
-                    uw.gensym_count = fw.gensym_count;
-                    cl_fasl_serialize_bytecode(&uw, bytecode);
-                    while (uw.error == FASL_ERR_OVERFLOW) {
-                        platform_free(unit_buf);
-                        unit_capacity *= 2;
-                        unit_buf = (uint8_t *)platform_alloc(unit_capacity);
-                        if (!unit_buf) {
-                            platform_write_string("; Warning: FASL unit buffer alloc failed — skipping cache for this file\n");
-                            do_cache = 0;
-                            break;
-                        }
-                        cl_fasl_writer_init(&uw, unit_buf, unit_capacity);
-                        memcpy(uw.gensym_objs, fw.gensym_objs, fw.gensym_count * sizeof(CL_Obj));
-                        uw.gensym_count = fw.gensym_count;
-                        cl_fasl_serialize_bytecode(&uw, bytecode);
-                    }
-                    /* Any unit that fails to serialize (too deep, alloc fail
-                     * after retry, etc.) invalidates the whole cache.  Writing
-                     * a partial FASL would silently drop top-level forms (and
-                     * their DEFUN side effects), making the cached load behave
-                     * differently from the source load. */
-                    if (do_cache && uw.error != FASL_OK) {
+                    if (cf_emit_fasl_unit(&fw, &fasl_buf, &fasl_capacity,
+                                          &unit_buf, &unit_capacity,
+                                          UINT32_MAX, bytecode, NULL) == 0) {
+                        n_units++;
+                    } else {
+                        platform_write_string("; Warning: FASL serialization failed — skipping cache for this file\n");
                         do_cache = 0;
-                    }
-                    if (do_cache) {
-                        memcpy(fw.gensym_objs, uw.gensym_objs, uw.gensym_count * sizeof(CL_Obj));
-                        fw.gensym_count = uw.gensym_count;
-                        while (fw.pos + 4 + uw.pos > fasl_capacity) {
-                            uint8_t *new_buf;
-                            fasl_capacity *= 2;
-                            new_buf = (uint8_t *)platform_alloc(fasl_capacity);
-                            if (!new_buf) {
-                                platform_write_string("; Warning: FASL buffer grow failed — skipping cache for this file\n");
-                                do_cache = 0;
-                                break;
-                            }
-                            memcpy(new_buf, fasl_buf, fw.pos);
-                            platform_free(fasl_buf);
-                            fasl_buf = new_buf;
-                            fw.data = fasl_buf;
-                            fw.capacity = fasl_capacity;
-                        }
-                        if (do_cache) {
-                            cl_fasl_write_u32(&fw, uw.pos);
-                            cl_fasl_write_bytes(&fw, unit_buf, uw.pos);
-                            n_units++;
-                        }
                     }
                 }
                 CL_GC_UNPROTECT(1); /* bytecode */
@@ -980,15 +1048,18 @@ static CL_Obj bi_compile_file(CL_Obj *args, int n)
     int cf_form_count = 0;
 #endif
 
-    /* Dynamic serialization buffers. */
+    /* Dynamic serialization buffers.  The file-level CL_FaslWriter `w`
+     * is heap-allocated to keep this function's stack small (the writer
+     * is ~4 KB due to gensym_objs[1024]).  Per-unit serialization is
+     * delegated to cf_emit_fasl_unit which uses a stack-local writer. */
     uint8_t *fasl_buf = NULL;
     uint32_t fasl_capacity = 64 * 1024;  /* Start with 64KB */
     CL_FaslWriter *w = NULL;
 
-    /* Temp buffer for each unit */
+    /* Per-unit scratch buffer — passed to cf_emit_fasl_unit which may
+     * grow it via realloc-style swap. */
     uint8_t *unit_buf = NULL;
     uint32_t unit_capacity = 32 * 1024;  /* 32KB per unit */
-    CL_FaslWriter *uw = NULL;
 
     /* Collected bytecodes for deferred FASL serialization */
     CL_Obj *bc_collected = NULL;
@@ -1112,13 +1183,11 @@ static CL_Obj bi_compile_file(CL_Obj *args, int n)
     fasl_buf = (uint8_t *)platform_alloc(fasl_capacity);
     unit_buf = (uint8_t *)platform_alloc(unit_capacity);
     w = (CL_FaslWriter *)platform_alloc(sizeof(CL_FaslWriter));
-    uw = (CL_FaslWriter *)platform_alloc(sizeof(CL_FaslWriter));
     bc_collected = (CL_Obj *)platform_alloc(bc_collect_capacity * sizeof(CL_Obj));
-    if (!fasl_buf || !unit_buf || !w || !uw || !bc_collected) {
+    if (!fasl_buf || !unit_buf || !w || !bc_collected) {
         if (fasl_buf) platform_free(fasl_buf);
         if (unit_buf) platform_free(unit_buf);
         if (w) platform_free(w);
-        if (uw) platform_free(uw);
         if (bc_collected) platform_free(bc_collected);
         platform_free(src_buf);
         cl_error(CL_ERR_GENERAL, "COMPILE-FILE: out of memory");
@@ -1217,6 +1286,7 @@ static CL_Obj bi_compile_file(CL_Obj *args, int n)
 
         for (bci = 0; bci < bc_collect_count && !fasl_incomplete; bci++) {
             CL_Obj bc = bc_collected[bci];
+            int unit_err = FASL_OK;
 
 #ifdef DEBUG_COMPILER
             {
@@ -1230,118 +1300,32 @@ static CL_Obj bi_compile_file(CL_Obj *args, int n)
             }
 #endif
 
-            /* Serialize this unit — free shared_objs from previous iteration */
-            cl_fasl_reset_serialize_count();
-            if (uw->shared_objs) { platform_free(uw->shared_objs); uw->shared_objs = NULL; }
-            cl_fasl_writer_init(uw, unit_buf, unit_capacity);
-            memcpy(uw->gensym_objs, w->gensym_objs, w->gensym_count * sizeof(CL_Obj));
-            uw->gensym_count = w->gensym_count;
-#ifdef DEBUG_FASL
-            cl_fasl_hist_begin();
-#endif
-            cl_fasl_serialize_bytecode(uw, bc);
-#ifdef DEBUG_FASL
-            cl_fasl_hist_end();
-#endif
-
-            /* If unit_buf was too small, grow and retry.
-             * Cap retries: 17 doublings from 32KB reaches 4GB (uint32 overflow).
-             * Also stop if capacity would exceed 64MB.  Most overflow-prone
-             * inputs are CLOS-heavy units whose compile-time constants pull
-             * in cyclic metaobject graphs (generic-function ↔ method ↔
-             * method-function-closure); STRUCT is in the shared_objs dedup
-             * (see fasl.c) so cycles get cut, but a deep linear graph could
-             * still in principle exhaust the buffer. */
-            while (uw->error == FASL_ERR_OVERFLOW && unit_capacity < CL_FASL_UNIT_CAP_BYTES) {
-                platform_free(unit_buf);
-                unit_capacity *= 2;
-                unit_buf = (uint8_t *)platform_alloc(unit_capacity);
-                if (!unit_buf) break;
-                if (uw->shared_objs) { platform_free(uw->shared_objs); uw->shared_objs = NULL; }
-                cl_fasl_writer_init(uw, unit_buf, unit_capacity);
-                memcpy(uw->gensym_objs, w->gensym_objs, w->gensym_count * sizeof(CL_Obj));
-                uw->gensym_count = w->gensym_count;
-#ifdef DEBUG_FASL
-                cl_fasl_hist_begin();
-#endif
-                cl_fasl_serialize_bytecode(uw, bc);
-#ifdef DEBUG_FASL
-                cl_fasl_hist_end();
-#endif
-            }
-
-            /* Object graph too deep or buffer exceeds cap — emit a no-op
-             * placeholder so the FASL has the correct unit count.  The
-             * compile-file eval already executed this form's side effects;
-             * the placeholder just prevents load-time errors. */
-            if (uw->error == FASL_ERR_TOO_DEEP ||
-                (uw->error == FASL_ERR_OVERFLOW && unit_capacity >= CL_FASL_UNIT_CAP_BYTES)) {
-                CL_Bytecode *bcobj = (CL_Bytecode *)CL_OBJ_TO_PTR(bc);
-                CL_String *bname = CL_NULL_P(bcobj->name) ? NULL :
-                    (CL_String *)CL_OBJ_TO_PTR(((CL_Symbol *)CL_OBJ_TO_PTR(bcobj->name))->name);
-                char msg[1024];
-                snprintf(msg, sizeof(msg),
-                         "; Warning: FASL unit too large in %s "
-                         "(unit %d/%d, name=%s, reason=%s) — skipping FASL cache for this file\n",
-                         in_path, bci + 1, bc_collect_count,
-                         bname ? bname->data : "<anon>",
-                         uw->error == FASL_ERR_TOO_DEEP
-                           ? "graph too deep"
-                           : "buffer overflow > unit cap");
-                platform_write_string(msg);
-#ifdef DEBUG_FASL
-                {
-                    char hist_label[1280];
-                    snprintf(hist_label, sizeof(hist_label),
-                             "%s unit %d/%d name=%s",
-                             in_path, bci + 1, bc_collect_count,
-                             bname ? bname->data : "<anon>");
-                    cl_fasl_hist_dump(hist_label, uw->pos);
-                }
-#endif
-                /* Don't write an incomplete FASL — missing definitions would
-                 * cause errors when the FASL is loaded in a fresh session.
-                 * The file will be recompiled from source next time. */
-                fasl_incomplete = 1;
-                break;
-            }
-
-            if (unit_buf && uw->error == FASL_OK) {
-                /* Update file-level gensym table */
-                memcpy(w->gensym_objs, uw->gensym_objs, uw->gensym_count * sizeof(CL_Obj));
-                w->gensym_count = uw->gensym_count;
-                /* Grow fasl_buf if needed */
-                while (w->pos + 4 + uw->pos > fasl_capacity) {
-                    uint8_t *new_buf;
-                    fasl_capacity *= 2;
-                    new_buf = (uint8_t *)platform_alloc(fasl_capacity);
-                    if (!new_buf) break;
-                    memcpy(new_buf, fasl_buf, w->pos);
-                    platform_free(fasl_buf);
-                    fasl_buf = new_buf;
-                    w->data = fasl_buf;
-                    w->capacity = fasl_capacity;
-                }
-
-                cl_fasl_write_u32(w, uw->pos);
-                cl_fasl_write_bytes(w, unit_buf, uw->pos);
+            /* compile-file caps unit_capacity at CL_FASL_UNIT_CAP_BYTES;
+             * source-load via bi_load passes UINT32_MAX (uncapped).
+             * Either way, a unit failure invalidates the whole cache —
+             * a partial FASL would silently drop top-level DEFUN side
+             * effects and load-time behavior would diverge from source. */
+            if (cf_emit_fasl_unit(w, &fasl_buf, &fasl_capacity,
+                                  &unit_buf, &unit_capacity,
+                                  CL_FASL_UNIT_CAP_BYTES, bc,
+                                  &unit_err) == 0) {
                 n_units++;
             } else {
-                /* Any non-OK error other than the too-deep / overflow cases
-                 * handled above — out of memory, unknown tag, etc. — must
-                 * invalidate the whole FASL, not silently drop the unit.
-                 * Otherwise the loaded FASL would be missing top-level
-                 * DEFUN side effects and behave differently from source. */
                 CL_Bytecode *bcobj = (CL_Bytecode *)CL_OBJ_TO_PTR(bc);
                 CL_String *bname = CL_NULL_P(bcobj->name) ? NULL :
                     (CL_String *)CL_OBJ_TO_PTR(((CL_Symbol *)CL_OBJ_TO_PTR(bcobj->name))->name);
+                const char *reason = (unit_err == FASL_ERR_TOO_DEEP)
+                                       ? "graph too deep"
+                                   : (unit_err == FASL_ERR_OVERFLOW)
+                                       ? "buffer overflow > unit cap"
+                                       : "serialize failed";
                 char msg[1024];
                 snprintf(msg, sizeof(msg),
-                         "; Warning: FASL unit failed to serialize in %s "
-                         "(unit %d/%d, name=%s, error=%d) — skipping FASL cache for this file\n",
+                         "; Warning: FASL unit failed in %s "
+                         "(unit %d/%d, name=%s, reason=%s, error=%d) — skipping FASL cache for this file\n",
                          in_path, bci + 1, bc_collect_count,
                          bname ? bname->data : "<anon>",
-                         uw->error);
+                         reason, unit_err);
                 platform_write_string(msg);
                 fasl_incomplete = 1;
                 break;
@@ -1382,7 +1366,6 @@ static CL_Obj bi_compile_file(CL_Obj *args, int n)
                 platform_free(fasl_buf);
                 platform_free(unit_buf);
                 platform_free(w);
-                platform_free(uw);
                 if (bc_collected) platform_free(bc_collected);
                 cl_error(CL_ERR_GENERAL, "COMPILE-FILE: cannot create output file: %s", out_path);
                 return CL_NIL;
@@ -1395,9 +1378,7 @@ static CL_Obj bi_compile_file(CL_Obj *args, int n)
     platform_free(fasl_buf);
     platform_free(unit_buf);
     if (w && w->shared_objs) platform_free(w->shared_objs);
-    if (uw && uw->shared_objs) platform_free(uw->shared_objs);
     platform_free(w);
-    platform_free(uw);
     if (bc_collected) platform_free(bc_collected);
     /* Restore *compile-file-pathname* and *compile-file-truename* */
     cl_set_symbol_value(SYM_STAR_COMPILE_FILE_PATHNAME, saved_cfp);
