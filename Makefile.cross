@@ -80,6 +80,8 @@ amiga: $(BUILDDIR)/clamiga
 $(BUILDDIR)/clamiga: $(ALL_OBJS)
 	@mkdir -p $(dir $@)
 	$(CC) $(LDFLAGS) -o $@ $^ -lm
+	@mkdir -p build/amiga
+	cp $(BUILDDIR)/clamiga build/amiga/clamiga
 
 $(BUILDDIR)/%.o: $(SRCDIR)/%.c
 	@mkdir -p $(dir $@)
@@ -92,8 +94,6 @@ $(BUILDDIR)/%.o: $(SRCDIR)/%.s
 # Cross-compile, place binary, launch FS-UAE for testing
 # The boot script tries vbcc build (fails without vbcc), then runs the pre-placed binary
 test-amiga: $(BUILDDIR)/clamiga
-	@mkdir -p build/amiga
-	cp $(BUILDDIR)/clamiga build/amiga/clamiga
 	@echo "=== Launching FS-UAE — close emulator when tests finish ==="
 	verify/realamiga/FS-UAE.app/Contents/MacOS/fs-uae verify/realamiga/verify.fs-uae
 	@$(MAKE) --no-print-directory -f Makefile.cross verify-amiga
