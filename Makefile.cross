@@ -73,9 +73,24 @@ ALL_SRCS = $(MAIN_SRC) $(PLATFORM_SRC) $(CORE_SRC)
 ALL_OBJS = $(patsubst $(SRCDIR)/%.c,$(BUILDDIR)/%.o,$(ALL_SRCS)) \
            $(patsubst $(SRCDIR)/%.s,$(BUILDDIR)/%.o,$(PLATFORM_ASM))
 
-.PHONY: amiga test-amiga clean
+.PHONY: amiga test-amiga clean check-toolchain
 
-amiga: $(BUILDDIR)/clamiga
+amiga: check-toolchain $(BUILDDIR)/clamiga
+
+check-toolchain:
+	@if [ ! -x "$(CC)" ]; then \
+		echo ""; \
+		echo "  m68k-amigaos-gcc not found at:"; \
+		echo "    $(CC)"; \
+		echo ""; \
+		echo "  Install it with:"; \
+		echo "    ./tools/setup-toolchain.sh"; \
+		echo ""; \
+		echo "  (downloads a prebuilt toolchain on macOS arm64,"; \
+		echo "   builds from source elsewhere — pass --build to force)"; \
+		echo ""; \
+		exit 1; \
+	fi
 
 $(BUILDDIR)/clamiga: $(ALL_OBJS)
 	@mkdir -p $(dir $@)
