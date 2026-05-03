@@ -114,12 +114,71 @@ test: $(TEST_BINS) host
 		echo "FAIL"; \
 		failed=1; \
 	fi; \
-	if [ $$failed -eq 0 ]; then echo "=== All tests passed ==="; \
-	else echo "=== Some tests failed ==="; exit 1; fi
+	if [ $$failed -ne 0 ]; then echo "=== Some tests failed ==="; exit 1; fi; \
+	echo "--- host-cold-test ---"; \
+	if $(MAKE) --no-print-directory host-cold-test; then \
+		echo "PASS"; \
+	else \
+		echo "FAIL"; \
+		exit 1; \
+	fi; \
+	echo "=== All tests passed ==="
 
 $(BUILDDIR)/tests/%: $(TEST_SRCDIR)/%.c $(LIB_OBJS)
 	@mkdir -p $(dir $@)
 	$(CC_HOST) $(CFLAGS_HOST) -I$(SRCDIR) -I$(TEST_SRCDIR) -o $@ $< $(LIB_OBJS) -lm
+
+# Cold-load smoke test: runs the sento test suite end-to-end from an
+# empty FASL cache.  Exercises the source-load + auto-cache path that
+# carries lib/clos.lisp + lib/asdf.lisp + sento's full dependency tree
+# through the compiler and FASL writer in one shot.  Catches regressions
+# the C tests don't see — e.g. broken `make install-shims` symlinks
+# falling back to upstream trivial-garbage and rejecting cl-amiga
+# (caught a stale-symlink regression that hid for ~2 weeks).
+#
+# Auto-skipped when prerequisites aren't met (no quicklisp install, no
+# trunk script, no installed shims) so the target is safe to keep in
+# `make test` for contributors without a quicklisp setup.
+HOST_COLD_TEST_SCRIPT = trunk/load-and-test-sento-system.lisp
+HOST_COLD_TEST_LOG    = $(BUILDDIR)/cold-test.log
+host-cold-test: host
+	@set -e; \
+	if [ ! -f "$(HOME)/quicklisp/setup.lisp" ]; then \
+	  echo "=== host-cold-test: ~/quicklisp not installed — skipped ==="; \
+	  exit 0; \
+	fi; \
+	if [ ! -f "$(HOST_COLD_TEST_SCRIPT)" ]; then \
+	  echo "=== host-cold-test: $(HOST_COLD_TEST_SCRIPT) missing — skipped ==="; \
+	  exit 0; \
+	fi; \
+	if [ ! -L "$(QL_LOCAL_PROJECTS)/trivial-garbage" ]; then \
+	  echo "=== host-cold-test: shims not installed (run 'make install-shims') — skipped ==="; \
+	  exit 0; \
+	fi; \
+	echo "=== host-cold-test: clearing FASL cache and running $(HOST_COLD_TEST_SCRIPT) ==="; \
+	rm -rf $(HOME)/.cache/common-lisp/cl-amiga-*; \
+	mkdir -p $(dir $(HOST_COLD_TEST_LOG)); \
+	$(BUILDDIR)/clamiga --heap 192M --load $(HOST_COLD_TEST_SCRIPT) \
+	  > $(HOST_COLD_TEST_LOG) 2>&1; rc=$$?; \
+	if grep -q "FATAL Signal" $(HOST_COLD_TEST_LOG); then \
+	  echo "=== FAIL: clamiga crashed during cold load (see $(HOST_COLD_TEST_LOG)) ==="; \
+	  grep -B2 -A1 "FATAL Signal" $(HOST_COLD_TEST_LOG) | head -20; \
+	  exit 1; \
+	fi; \
+	if ! grep -qE "Did [0-9]+ checks" $(HOST_COLD_TEST_LOG); then \
+	  echo "=== FAIL: sento test suite never reported its result line ==="; \
+	  tail -30 $(HOST_COLD_TEST_LOG); \
+	  exit 1; \
+	fi; \
+	if [ $$rc -ne 0 ]; then \
+	  echo "=== FAIL: clamiga exited rc=$$rc ==="; \
+	  tail -30 $(HOST_COLD_TEST_LOG); \
+	  exit 1; \
+	fi; \
+	checks=$$(grep -oE "Did [0-9]+ checks" $(HOST_COLD_TEST_LOG) | head -1); \
+	pass=$$(grep -oE "Pass: [0-9]+" $(HOST_COLD_TEST_LOG) | head -1); \
+	fail=$$(grep -oE "Fail: [0-9]+" $(HOST_COLD_TEST_LOG) | head -1); \
+	echo "=== host-cold-test: PASS ($$checks; $$pass; $$fail) ==="
 
 # Run host build + tests inside an Ubuntu container (matches GitHub Actions
 # `ubuntu-latest`).  Requires a working `docker` CLI (Docker Desktop, OrbStack,
@@ -169,19 +228,42 @@ fasl: $(BUILDDIR)/clamiga
 
 QL_LOCAL_PROJECTS ?= $(HOME)/quicklisp/local-projects
 
-# Install CL-Amiga's shim systems (closer-mop, trivial-cltl2) into
-# quicklisp's local-projects tree via symlink.  Needed on dev hosts
-# where quicklisp is installed — these shims are NOT required on
-# Amiga when quicklisp isn't in use.  Long-term goal: merge the
-# #+clamiga branches upstream so stock closer-mop / trivial-cltl2
-# work out of the box, at which point this target becomes obsolete.
+# Install CL-Amiga's shim systems (closer-mop, trivial-cltl2,
+# trivial-garbage) into quicklisp's local-projects tree via symlink.
+# Needed on dev hosts where quicklisp is installed — these shims are
+# NOT required on Amiga when quicklisp isn't in use.  Long-term goal:
+# merge the #+clamiga branches upstream so stock packages work out of
+# the box, at which point this target becomes obsolete.
+#
+# Symlink handling rules:
+#   - Broken symlink (dangling target):     re-create pointing at $$src
+#   - Correct symlink (already points at $$src): leave alone
+#   - Symlink to somewhere else / real dir:      warn and skip
+#   - Missing:                                    create
+#
+# The "broken symlink" case used to be handled wrong: an existence check
+# (`[ -e "$$dst" ]`) returns false for a dangling symlink, but a
+# `[ -L "$$dst" ]` (or just an unguarded `ln -s`) ran into the existing
+# symlink anyway.  This silently left broken links pointing to old paths
+# after the project was moved, causing quicklisp to fall back to upstream
+# packages and reject cl-amiga as an "unsupported Lisp".
 install-shims:
 	@mkdir -p $(QL_LOCAL_PROJECTS)
 	@for shim in closer-mop trivial-cltl2 trivial-garbage; do \
 	  src="$(CURDIR)/contrib/shims/$$shim"; \
 	  dst="$(QL_LOCAL_PROJECTS)/$$shim"; \
-	  if [ -L "$$dst" ] || [ -e "$$dst" ]; then \
-	    echo "=> $$dst already exists — leaving alone"; \
+	  if [ -L "$$dst" ]; then \
+	    target=$$(readlink "$$dst"); \
+	    if [ "$$target" = "$$src" ]; then \
+	      echo "=> $$dst already correct"; \
+	    elif [ -e "$$dst" ]; then \
+	      echo "=> WARNING: $$dst is a symlink to $$target (not $$src) — leaving alone"; \
+	    else \
+	      rm "$$dst" && ln -s "$$src" "$$dst" && \
+	        echo "=> repaired broken symlink $$dst -> $$src (was -> $$target)"; \
+	    fi; \
+	  elif [ -e "$$dst" ]; then \
+	    echo "=> WARNING: $$dst exists as a regular file/dir — leaving alone"; \
 	  else \
 	    ln -s "$$src" "$$dst" && echo "=> linked $$dst -> $$src"; \
 	  fi; \
