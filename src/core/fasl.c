@@ -32,7 +32,25 @@ void cl_fasl_writer_init(CL_FaslWriter *w, uint8_t *buf, uint32_t capacity)
     w->error = FASL_OK;
     w->gensym_count = 0;
     w->shared_count = 0;
-    w->shared_objs = NULL;  /* lazily allocated on first use */
+    w->pad_ = 0;
+    w->shared_objs = NULL;       /* lazily allocated on first use */
+    w->shared_hash = NULL;       /* lazily allocated alongside shared_objs */
+    w->shared_hash_cap = 0;
+}
+
+void cl_fasl_writer_release(CL_FaslWriter *w)
+{
+    if (!w) return;
+    if (w->shared_objs) {
+        platform_free(w->shared_objs);
+        w->shared_objs = NULL;
+    }
+    if (w->shared_hash) {
+        platform_free(w->shared_hash);
+        w->shared_hash = NULL;
+    }
+    w->shared_hash_cap = 0;
+    w->shared_count = 0;
 }
 
 void cl_fasl_write_u8(CL_FaslWriter *w, uint8_t val)
@@ -74,6 +92,127 @@ void cl_fasl_write_header(CL_FaslWriter *w, uint32_t n_units)
     cl_fasl_write_u16(w, CL_FASL_VERSION);
     cl_fasl_write_u16(w, 0);  /* flags */
     cl_fasl_write_u32(w, n_units);
+}
+
+/* --- Shared-object dedup hash table (writer side) ---
+ *
+ * Earlier the dedup set was a plain array scanned linearly on every
+ * lookup — O(N) per query, O(N²) total over a serialize.  That was fine
+ * when only a few hundred objects (closures + bytecodes + structs +
+ * symbols + locks) reached the table.  Adding cons cells brings the
+ * realistic working set into the tens of thousands, so we route lookups
+ * through a hash table mapping CL_Obj -> id+1 (0 = empty slot).  Open
+ * addressing with linear probing keeps the implementation small and
+ * cache-friendly; load factor capped at 50%.
+ *
+ * Sizing: starts at 64 slots (128 B), grows by doubling, capped at
+ * 131072 slots (256 KB) — twice FASL_MAX_SHARED so the hash never
+ * reaches saturation while shared_count still has room.
+ *
+ * Failure handling: if any allocation along the way fails, the helper
+ * returns -1.  The caller then silently skips dedup for this object —
+ * the wire output is still correct (objects appear inline rather than
+ * as OBJ_REF), only fatter.  This matches the prior behaviour where
+ * a failed shared_objs alloc disabled dedup. */
+#define FASL_SHARED_HASH_INIT_CAP 64u
+#define FASL_SHARED_HASH_MAX_CAP  131072u
+
+static uint32_t fasl_obj_hash(CL_Obj obj)
+{
+    /* Knuth's golden-ratio multiplier — distributes clustered arena
+     * offsets evenly across the table. */
+    return (uint32_t)obj * 2654435769u;
+}
+
+/* Resize shared_hash to new_cap (a power of two), rehashing existing
+ * entries from shared_objs[0..shared_count).  Returns 1 on success, 0
+ * on allocation failure (in which case the existing table is kept). */
+static int fasl_shared_hash_resize(CL_FaslWriter *w, uint32_t new_cap)
+{
+    uint16_t *new_table;
+    uint32_t mask;
+    uint16_t i;
+
+    new_table = (uint16_t *)platform_alloc(new_cap * sizeof(uint16_t));
+    if (!new_table) return 0;
+    memset(new_table, 0, new_cap * sizeof(uint16_t));
+    mask = new_cap - 1;
+    for (i = 0; i < w->shared_count; i++) {
+        CL_Obj eo = w->shared_objs[i];
+        uint32_t slot = fasl_obj_hash(eo) & mask;
+        while (new_table[slot] != 0)
+            slot = (slot + 1) & mask;
+        new_table[slot] = (uint16_t)(i + 1);
+    }
+    if (w->shared_hash) platform_free(w->shared_hash);
+    w->shared_hash = new_table;
+    w->shared_hash_cap = new_cap;
+    return 1;
+}
+
+/* Find or insert obj in the dedup table.
+ *
+ * Returns:
+ *   1  hit  — obj was already present; *out_id receives its id
+ *   0  miss — obj newly inserted at id *out_id (caller emits OBJ_DEF)
+ *  -1  unable to dedup (allocation failed or table full); caller should
+ *      emit the body inline without wrapping it in OBJ_DEF. */
+static int fasl_shared_get_or_insert(CL_FaslWriter *w, CL_Obj obj,
+                                     uint16_t *out_id)
+{
+    uint32_t mask, slot;
+    uint16_t entry;
+
+    if (!w->shared_objs) {
+        w->shared_objs = (CL_Obj *)platform_alloc(
+            FASL_MAX_SHARED * sizeof(CL_Obj));
+        if (!w->shared_objs) return -1;
+    }
+    if (!w->shared_hash) {
+        w->shared_hash_cap = FASL_SHARED_HASH_INIT_CAP;
+        w->shared_hash = (uint16_t *)platform_alloc(
+            w->shared_hash_cap * sizeof(uint16_t));
+        if (!w->shared_hash) {
+            w->shared_hash_cap = 0;
+            return -1;
+        }
+        memset(w->shared_hash, 0, w->shared_hash_cap * sizeof(uint16_t));
+    }
+
+    /* Grow eagerly: the new entry would push us past 50% load.  If grow
+     * fails we keep using the old table — linear probing still terminates
+     * because the table never reaches FASL_MAX_SHARED entries (the table
+     * is always >= 2*shared_count by construction, except when we're at
+     * the cap; at that point we refuse new entries below). */
+    if ((uint32_t)(w->shared_count + 1) > w->shared_hash_cap / 2 &&
+        w->shared_hash_cap < FASL_SHARED_HASH_MAX_CAP) {
+        uint32_t new_cap = w->shared_hash_cap * 2;
+        if (new_cap > FASL_SHARED_HASH_MAX_CAP)
+            new_cap = FASL_SHARED_HASH_MAX_CAP;
+        (void)fasl_shared_hash_resize(w, new_cap);
+        /* If resize fails, fall through and use the smaller table. */
+    }
+
+    mask = w->shared_hash_cap - 1;
+    slot = fasl_obj_hash(obj) & mask;
+    while ((entry = w->shared_hash[slot]) != 0) {
+        if (w->shared_objs[entry - 1] == obj) {
+            *out_id = (uint16_t)(entry - 1);
+            return 1;  /* hit */
+        }
+        slot = (slot + 1) & mask;
+    }
+
+    if (w->shared_count >= FASL_MAX_SHARED) {
+        /* Table is full — the wire format limits ids to u16.  Skip dedup
+         * for this object; it will be emitted inline. */
+        return -1;
+    }
+    w->shared_objs[w->shared_count] = obj;
+    w->shared_hash[slot] = (uint16_t)(w->shared_count + 1);
+    *out_id = w->shared_count;
+    w->shared_count++;
+    return 0;
 }
 
 /* --- Serialize a CL_Obj constant (iterative) ---
@@ -292,9 +431,9 @@ static int fasl_ser_step(CL_FaslWriter *w, FaslSerStack *s)
         }
 
         /* Shared-object dedup for closures, bytecodes, structs, symbols,
-         * and locks.  If found, emit OBJ_REF and we're done.  If new,
-         * register and emit OBJ_DEF, then fall through to the type-specific
-         * case.
+         * locks, and conses.  If found, emit OBJ_REF and we're done.  If
+         * new, register and emit OBJ_DEF, then fall through to the
+         * type-specific case.
          *
          * STRUCT is included because cyclic CLOS metaobject graphs (generic
          * function ↔ method ↔ method-function-closure ↔ gf, slot definitions
@@ -319,36 +458,42 @@ static int fasl_ser_step(CL_FaslWriter *w, FaslSerStack *s)
          * fresh lock at load time and synchronization would be split
          * across them.
          *
+         * CONS is included for two reasons.  First, structurally-shared
+         * sub-lists (parameter lists, lambda lists, declaration forms,
+         * pattern templates from `match`/`ematch`, class precedence lists,
+         * etc.) recur many times across a unit's constants — without
+         * dedup each reference re-walks the whole list.  Second, with
+         * sufficiently nested structural sharing the per-walk amplification
+         * pushes the worklist past FASL_SER_STACK_MAX_CAP (FASL_ERR_TOO_DEEP)
+         * even though no real cycle exists; serapeum/internal-definitions.lisp
+         * hits this through its trivia-based macroexpansion.  Only the head
+         * cons of any list reaches this site (cdr cells are walked inline
+         * by PHASE_CONS_NEXT_CAR), so dedup applies per list head — enough
+         * to break the amplification and small enough not to bloat every
+         * cdr cell with an OBJ_DEF wrapper.
+         *
          * Reader's OBJ_DEF/REF handler is type-agnostic — no reader-side
          * change needed. */
         {
             uint8_t htype = CL_HDR_TYPE(CL_OBJ_TO_PTR(obj));
             if (htype == TYPE_CLOSURE || htype == TYPE_BYTECODE ||
                 htype == TYPE_STRUCT  || htype == TYPE_SYMBOL  ||
-                htype == TYPE_LOCK) {
-                if (!w->shared_objs) {
-                    w->shared_objs = (CL_Obj *)platform_alloc(
-                        FASL_MAX_SHARED * sizeof(CL_Obj));
-                }
-                if (w->shared_objs) {
-                    uint16_t si;
-                    for (si = 0; si < w->shared_count; si++) {
-                        if (w->shared_objs[si] == obj) {
-                            cl_fasl_write_u8(w, FASL_TAG_OBJ_REF);
-                            cl_fasl_write_u16(w, si);
+                htype == TYPE_LOCK    || htype == TYPE_CONS) {
+                uint16_t id;
+                int rc = fasl_shared_get_or_insert(w, obj, &id);
+                if (rc == 1) {
+                    cl_fasl_write_u8(w, FASL_TAG_OBJ_REF);
+                    cl_fasl_write_u16(w, id);
 #ifdef DEBUG_FASL
-                            if (g_fasl_hist_enabled) g_fasl_dedup_obj_ref++;
+                    if (g_fasl_hist_enabled) g_fasl_dedup_obj_ref++;
 #endif
-                            return 1;
-                        }
-                    }
-                    if (w->shared_count < FASL_MAX_SHARED) {
-                        w->shared_objs[w->shared_count] = obj;
-                        cl_fasl_write_u8(w, FASL_TAG_OBJ_DEF);
-                        cl_fasl_write_u16(w, w->shared_count);
-                        w->shared_count++;
-                    }
+                    return 1;
+                } else if (rc == 0) {
+                    cl_fasl_write_u8(w, FASL_TAG_OBJ_DEF);
+                    cl_fasl_write_u16(w, id);
                 }
+                /* rc < 0: dedup unavailable (alloc failed or table full).
+                 * Body still emitted correctly inline — just no sharing. */
             }
         }
 
@@ -1291,23 +1436,44 @@ CL_Obj cl_fasl_deserialize_obj(CL_FaslReader *r)
     case FASL_TAG_CONS: {
         /* Iterative list building to avoid O(N) GC root stack depth.
          * Consecutive CONS tags are common (proper lists), so we build
-         * the list with only 3 GC roots instead of one per element. */
+         * the list with only 3 GC roots instead of one per element.
+         *
+         * The writer wraps shared cons heads in OBJ_DEF: when we get
+         * here under a pending OBJ_DEF id, we must register the head
+         * cell at that id BEFORE recursing into the car — otherwise the
+         * car's own deserialize (which can hit OBJ_DEF for any of its
+         * children) will overwrite the pending id, and the outer cons
+         * head never gets recorded.  Save/clear the pending id around
+         * the head allocation, then consume it on the head cell. */
+        uint32_t pending_id_save = r->pending_obj_def_id;
         CL_Obj result = CL_NIL, tail = CL_NIL, car_val = CL_NIL;
         int first = 1;
         CL_GC_PROTECT(result);
         CL_GC_PROTECT(tail);
         CL_GC_PROTECT(car_val);
 
+        /* Allocate the head shell first and register it at the pending
+         * id (if any).  Subsequent cdr cells in this spine are NOT
+         * dedup'd by the writer so they don't need shells registered. */
+        r->pending_obj_def_id = CL_FASL_NO_PENDING;
+        result = cl_cons(CL_NIL, CL_NIL);
+        tail = result;
+        r->pending_obj_def_id = pending_id_save;
+        cl_fasl_consume_pending_obj_def(r, result);
+
         do {
             if (!first)
                 r->pos++;  /* consume peeked FASL_TAG_CONS */
-            first = 0;
 
             car_val = cl_fasl_deserialize_obj(r);
 
-            if (CL_NULL_P(result)) {
-                result = cl_cons(car_val, CL_NIL);
-                tail = result;
+            if (first) {
+                /* Re-fetch — cl_cons in cl_fasl_deserialize_obj may have
+                 * triggered a GC compaction that moved pointers (the
+                 * GC_PROTECT slots track relocations, but raw pointers
+                 * dereferenced here would not). */
+                ((CL_Cons *)CL_OBJ_TO_PTR(result))->car = car_val;
+                first = 0;
             } else {
                 CL_Obj new_cell = cl_cons(car_val, CL_NIL);
                 ((CL_Cons *)CL_OBJ_TO_PTR(tail))->cdr = new_cell;

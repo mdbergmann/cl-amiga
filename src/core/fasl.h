@@ -100,9 +100,17 @@ typedef struct {
     /* Uninterned symbol dedup table */
     CL_Obj   gensym_objs[FASL_MAX_GENSYMS];  /* original CL_Obj values */
     uint16_t gensym_count;
-    /* Shared object dedup table (cycle/sharing detection for closures, bytecodes, etc.) */
+    /* Shared object dedup table (cycle/sharing detection for closures, bytecodes,
+     * structs, symbols, locks, and conses).  shared_objs is indexed by id and
+     * holds the original CL_Obj.  shared_hash maps obj -> id+1 (0 = empty slot)
+     * via open-addressing linear probing — keeps writer-side dedup O(1) per
+     * lookup even when shared_count grows into the tens of thousands (cons
+     * dedup makes that realistic).  Both tables lazily allocated. */
     CL_Obj  *shared_objs;      /* heap-allocated, FASL_MAX_SHARED entries */
     uint16_t shared_count;
+    uint16_t pad_;             /* explicit pad: keep 32-bit struct layout stable */
+    uint16_t *shared_hash;     /* hash slots; size shared_hash_cap (power of two) */
+    uint32_t shared_hash_cap;  /* 0 until allocated; always a power of two when set */
 } CL_FaslWriter;
 
 /* --- Deserialization buffer --- */
@@ -129,6 +137,11 @@ typedef struct {
 /* --- Writer API --- */
 
 void cl_fasl_writer_init(CL_FaslWriter *w, uint8_t *buf, uint32_t capacity);
+
+/* Free heap-allocated dedup tables (shared_objs, shared_hash).  Safe to call
+ * multiple times and on a freshly-initialized writer.  Does NOT free the
+ * caller-supplied output buffer (`w->data`). */
+void cl_fasl_writer_release(CL_FaslWriter *w);
 
 /* Write primitives (big-endian) */
 void cl_fasl_write_u8(CL_FaslWriter *w, uint8_t val);

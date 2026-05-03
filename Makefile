@@ -158,7 +158,7 @@ host-cold-test: host
 	echo "=== host-cold-test: clearing FASL cache and running $(HOST_COLD_TEST_SCRIPT) ==="; \
 	rm -rf $(HOME)/.cache/common-lisp/cl-amiga-*; \
 	mkdir -p $(dir $(HOST_COLD_TEST_LOG)); \
-	$(BUILDDIR)/clamiga --heap 192M --load $(HOST_COLD_TEST_SCRIPT) \
+	$(BUILDDIR)/clamiga --heap 384M --load $(HOST_COLD_TEST_SCRIPT) \
 	  > $(HOST_COLD_TEST_LOG) 2>&1; rc=$$?; \
 	if grep -q "FATAL Signal" $(HOST_COLD_TEST_LOG); then \
 	  echo "=== FAIL: clamiga crashed during cold load (see $(HOST_COLD_TEST_LOG)) ==="; \

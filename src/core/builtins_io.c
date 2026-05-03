@@ -293,7 +293,6 @@ static int cf_emit_fasl_unit(CL_FaslWriter *fw,
                              int *err_out)
 {
     CL_FaslWriter uw;
-    uw.shared_objs = NULL;
 
     cl_fasl_reset_serialize_count();
     cl_fasl_writer_init(&uw, *unit_buf_p, *unit_cap_p);
@@ -315,13 +314,13 @@ static int cf_emit_fasl_unit(CL_FaslWriter *fw,
         *unit_buf_p = NULL;
         new_buf = (uint8_t *)platform_alloc(new_cap);
         if (!new_buf) {
-            if (uw.shared_objs) platform_free(uw.shared_objs);
+            cl_fasl_writer_release(&uw);
             if (err_out) *err_out = FASL_ERR_OVERFLOW;
             return -1;
         }
         *unit_buf_p = new_buf;
         *unit_cap_p = new_cap;
-        if (uw.shared_objs) { platform_free(uw.shared_objs); uw.shared_objs = NULL; }
+        cl_fasl_writer_release(&uw);
         cl_fasl_writer_init(&uw, *unit_buf_p, *unit_cap_p);
         memcpy(uw.gensym_objs, fw->gensym_objs, fw->gensym_count * sizeof(CL_Obj));
         uw.gensym_count = fw->gensym_count;
@@ -336,7 +335,7 @@ static int cf_emit_fasl_unit(CL_FaslWriter *fw,
 
     if (uw.error != FASL_OK) {
         if (err_out) *err_out = uw.error;
-        if (uw.shared_objs) platform_free(uw.shared_objs);
+        cl_fasl_writer_release(&uw);
         return -1;
     }
 
@@ -349,7 +348,7 @@ static int cf_emit_fasl_unit(CL_FaslWriter *fw,
         uint8_t *new_buf = (uint8_t *)platform_alloc(new_cap);
         if (!new_buf) {
             if (err_out) *err_out = FASL_ERR_OVERFLOW;
-            if (uw.shared_objs) platform_free(uw.shared_objs);
+            cl_fasl_writer_release(&uw);
             return -1;
         }
         memcpy(new_buf, *fasl_buf_p, fw->pos);
@@ -363,7 +362,7 @@ static int cf_emit_fasl_unit(CL_FaslWriter *fw,
     cl_fasl_write_u32(fw, uw.pos);
     cl_fasl_write_bytes(fw, *unit_buf_p, uw.pos);
 
-    if (uw.shared_objs) platform_free(uw.shared_objs);
+    cl_fasl_writer_release(&uw);
     if (err_out) *err_out = FASL_OK;
     return 0;
 }
@@ -1377,7 +1376,7 @@ static CL_Obj bi_compile_file(CL_Obj *args, int n)
 
     platform_free(fasl_buf);
     platform_free(unit_buf);
-    if (w && w->shared_objs) platform_free(w->shared_objs);
+    if (w) cl_fasl_writer_release(w);
     platform_free(w);
     if (bc_collected) platform_free(bc_collected);
     /* Restore *compile-file-pathname* and *compile-file-truename* */
