@@ -26,13 +26,28 @@ make clean         # Remove build artifacts
 
 ### Cross-compile for AmigaOS
 
+First, install the `m68k-amigaos-gcc` cross toolchain:
+
+```
+./tools/setup-toolchain.sh          # auto-pick: download on macOS arm64, build elsewhere
+./tools/setup-toolchain.sh --build   # force build-from-source on any host
+./tools/setup-toolchain.sh --help    # all options
+```
+
+The toolchain itself is tracked as a git submodule
+(`tools/m68k-amigaos-gcc` → [AmigaPorts/m68k-amigaos-gcc](https://github.com/AmigaPorts/m68k-amigaos-gcc),
+pinned). On macOS arm64 the script downloads a prebuilt `prefix/` tarball
+from the cl-amiga release; on every other host it runs `git submodule
+update --init` and invokes the upstream `make all` (host build deps —
+`gmp`, `mpfr`, `mpc`, `wget`, etc. — see `tools/m68k-amigaos-gcc/README.md`).
+
+Then build CL-Amiga:
+
 ```
 make -f Makefile.cross amiga        # Cross-compile with m68k-amigaos-gcc
 make -f Makefile.cross test-amiga   # Build, deploy to FS-UAE, run Amiga tests
 make -f Makefile.cross clean        # Remove cross-build artifacts
 ```
-
-Requires the `m68k-amigaos-gcc` toolchain in `tools/m68k-amigaos-gcc/prefix`.
 
 ### Build inside AmigaOS (vbcc)
 
