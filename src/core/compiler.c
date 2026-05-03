@@ -14,6 +14,12 @@ CL_Obj type_table = CL_NIL;
 
 void *cl_tables_rwlock = NULL;
 
+/* Forward declarations for the CL_Compiler pool helpers — defined near
+ * cl_compile.  Declared here so compile_lambda (above the definitions)
+ * can use them. */
+static CL_Compiler *cl_compiler_pool_acquire(void);
+static void cl_compiler_pool_release(CL_Compiler *c);
+
 /* Per-thread-tracked rwlock helpers (see compiler.h).
  * cl_tables_rdlock is a macro at every call site that tags the call
  * with __FILE__ ":" __LINE__ and forwards to cl_tables_rdlock_at. */
@@ -521,9 +527,15 @@ void compile_lambda(CL_Compiler *c, CL_Obj form)
      * to avoid stack overflow on AmigaOS 65KB stack */
 
 
-    /* Heap-allocate inner compiler (too large for AmigaOS stack) */
-    inner = (CL_Compiler *)platform_alloc(sizeof(CL_Compiler));
-    if (!inner) return;
+    /* Heap-allocate inner compiler (too large for AmigaOS stack).
+     * Routed through cl_compiler_pool_acquire so the 155KB block is
+     * recycled across calls and never returned to AmigaOS — see the
+     * pool comment in cl_compile. */
+    inner = cl_compiler_pool_acquire();
+    if (!inner) {
+        platform_write_string("[compile_lambda] pool_acquire FAILED\n");
+        return;
+    }
     memset(inner, 0, sizeof(*inner));
 
     /* Register inner compiler for GC root marking.
@@ -823,7 +835,13 @@ void compile_lambda(CL_Compiler *c, CL_Obj form)
 
     /* Build bytecode object */
     bc = (CL_Bytecode *)cl_alloc(TYPE_BYTECODE, sizeof(CL_Bytecode));
-    if (!bc) { inner->protect = 0; cl_active_compiler = inner->parent; cl_env_destroy(env); if (inner->tail_stack) platform_free(inner->tail_stack); platform_free(inner); return; }
+    if (!bc) {
+        inner->protect = 0;
+        cl_active_compiler = inner->parent;
+        cl_env_destroy(env);
+        cl_compiler_pool_release(inner);
+        return;
+    }
 
     bc->code = (uint8_t *)platform_alloc(inner->code_pos);
     if (bc->code) memcpy(bc->code, inner->code, inner->code_pos);
@@ -897,8 +915,7 @@ void compile_lambda(CL_Compiler *c, CL_Obj form)
     cl_active_compiler = inner->parent;
 
     cl_env_destroy(env);
-    if (inner->tail_stack) platform_free(inner->tail_stack);
-    platform_free(inner);
+    cl_compiler_pool_release(inner);
 }
 
 /* --- Boxing analysis (pre-scan for mutable closure bindings) --- */
@@ -3474,15 +3491,76 @@ void cl_register_setf_function(CL_Obj accessor, CL_Obj setf_fn_sym)
 
 /* --- Public API --- */
 
+/* CL_Compiler is ~155KB — too large for the AmigaOS stack and too costly
+ * to alloc/free per call.  AllocVec/FreeVec of 155KB blocks fragments the
+ * AmigaOS system pool: after roughly 44 cycles loading lib/clos.lisp the
+ * next AllocVec(155KB) returns NULL even though plenty of free RAM exists.
+ * To avoid that we keep a process-wide free-list — popped on entry, pushed
+ * on exit — so a successfully allocated CL_Compiler is never returned to
+ * AmigaOS.  Nested compiles (parent chain) are handled correctly: each
+ * call still gets a distinct struct.  The chain is short (<= depth of
+ * compile-time macro expansion) so memory growth is bounded. */
+static CL_Compiler *cl_compiler_pool_head = NULL;
+static void *cl_compiler_pool_lock = NULL;
+
+static CL_Compiler *cl_compiler_pool_acquire(void)
+{
+    CL_Compiler *c = NULL;
+    if (cl_compiler_pool_lock) platform_mutex_lock(cl_compiler_pool_lock);
+    if (cl_compiler_pool_head) {
+        c = cl_compiler_pool_head;
+        cl_compiler_pool_head = (CL_Compiler *)c->parent; /* free-list link */
+    }
+    if (cl_compiler_pool_lock) platform_mutex_unlock(cl_compiler_pool_lock);
+    if (!c) {
+        c = (CL_Compiler *)platform_alloc(sizeof(CL_Compiler));
+    }
+    return c;
+}
+
+static void cl_compiler_pool_release(CL_Compiler *c)
+{
+    if (!c) return;
+    /* Drop owned external buffers — only the 155KB struct itself is pooled. */
+    if (c->tail_stack) { platform_free(c->tail_stack); c->tail_stack = NULL; }
+    if (cl_compiler_pool_lock) platform_mutex_lock(cl_compiler_pool_lock);
+    c->parent = cl_compiler_pool_head; /* reuse parent slot as free-list link */
+    cl_compiler_pool_head = c;
+    if (cl_compiler_pool_lock) platform_mutex_unlock(cl_compiler_pool_lock);
+}
+
+void cl_compiler_pool_init(void)
+{
+    int i;
+    if (!cl_compiler_pool_lock)
+        platform_mutex_init(&cl_compiler_pool_lock);
+    /* Pre-warm: AmigaOS AllocVec of 155 KB succeeds reliably at startup
+     * (system pool unfragmented) but starts to fail after a workload like
+     * source-loading lib/clos.lisp churns memory.  Reserve enough blocks
+     * up front to cover the worst-case nested-compile chain depth we have
+     * seen (1 outer cl_compile + several compile_lambda for inner lambdas
+     * in CLOS-heavy methods).  8 is comfortably above the high-water mark
+     * observed and only costs ~1.2 MB on a 64 MB Amiga. */
+    for (i = 0; i < 8; i++) {
+        CL_Compiler *c = (CL_Compiler *)platform_alloc(sizeof(CL_Compiler));
+        if (!c) break;
+        c->tail_stack = NULL;
+        c->parent = cl_compiler_pool_head;
+        cl_compiler_pool_head = c;
+    }
+}
+
 CL_Obj cl_compile(CL_Obj expr)
 {
     CL_Compiler *comp;
     CL_CompEnv *env;
     CL_Bytecode *bc;
 
-    /* Heap-allocate compiler state (~155KB — too large for AmigaOS stack) */
-    comp = (CL_Compiler *)platform_alloc(sizeof(CL_Compiler));
-    if (!comp) return CL_NIL;
+    comp = cl_compiler_pool_acquire();
+    if (!comp) {
+        platform_write_string("[compile] platform_alloc(CL_Compiler) FAILED\n");
+        return CL_NIL;
+    }
     memset(comp, 0, sizeof(*comp));
     env = cl_env_create(NULL);
     comp->env = env;
@@ -3497,7 +3575,12 @@ CL_Obj cl_compile(CL_Obj expr)
     cl_emit(comp, OP_HALT);
 
     bc = (CL_Bytecode *)cl_alloc(TYPE_BYTECODE, sizeof(CL_Bytecode));
-    if (!bc) { cl_env_destroy(env); if (comp->tail_stack) platform_free(comp->tail_stack); platform_free(comp); return CL_NIL; }
+    if (!bc) {
+        platform_write_string("[compile] cl_alloc(TYPE_BYTECODE) FAILED\n");
+        cl_env_destroy(env);
+        cl_compiler_pool_release(comp);
+        return CL_NIL;
+    }
 
     bc->code = (uint8_t *)platform_alloc(comp->code_pos);
     if (bc->code) memcpy(bc->code, comp->code, comp->code_pos);
@@ -3550,8 +3633,7 @@ CL_Obj cl_compile(CL_Obj expr)
 
     cl_env_destroy(env);
 
-    if (comp->tail_stack) platform_free(comp->tail_stack);
-    platform_free(comp);
+    cl_compiler_pool_release(comp);
 
     return CL_PTR_TO_OBJ(bc);
 }
@@ -3679,6 +3761,8 @@ void cl_compiler_init(void)
     if (!cl_tables_rwlock)
         platform_rwlock_init(&cl_tables_rwlock);
 
+    cl_compiler_pool_init();
+
     SETF_SYM_CAR             = cl_intern_in("CAR", 3, cl_package_cl);
     SETF_SYM_CDR             = cl_intern_in("CDR", 3, cl_package_cl);
     SETF_SYM_FIRST           = cl_intern_in("FIRST", 5, cl_package_cl);
@@ -3763,7 +3847,6 @@ void cl_compiler_restore_to(void *saved)
         }
         cl_active_compiler = c->parent;
         if (c->env) cl_env_destroy(c->env);
-        if (c->tail_stack) platform_free(c->tail_stack);
-        platform_free(c);
+        cl_compiler_pool_release(c);
     }
 }
