@@ -284,6 +284,28 @@ TEST(eval_make_array_bit_fill_pointer)
     ASSERT_STR_EQ(eval_print("(let ((bv (make-array 8 :element-type 'bit :fill-pointer 3 :initial-element 1))) (length bv))"), "3");
 }
 
+TEST(eval_make_array_bit_displaced)
+{
+    /* Regression: previously (make-array N :element-type 'bit
+     * :displaced-to <bv> :displaced-index-offset K) errored with
+     * "displacement to bit-vectors not yet supported", which aborted
+     * universe.lsp during the ANSI test bootstrap.  Current
+     * implementation copies the requested window (no live view of the
+     * source — see comment in builtins_array.c).  Source #*0111000110:
+     * bits at offsets 3..7 are 1,0,0,0,1 → result #*10001. */
+    ASSERT_STR_EQ(eval_print(
+        "(make-array 5 :element-type 'bit :displaced-to #*0111000110 :displaced-index-offset 3)"),
+        "#*10001");
+    /* Zero offset, exact-fit window. */
+    ASSERT_STR_EQ(eval_print(
+        "(make-array 4 :element-type 'bit :displaced-to #*1100 :displaced-index-offset 0)"),
+        "#*1100");
+    /* Out-of-bounds window must error (CL_ERR_ARGS = 4), not silently truncate. */
+    ASSERT_STR_EQ(eval_print(
+        "(make-array 5 :element-type 'bit :displaced-to #*010 :displaced-index-offset 0)"),
+        "ERROR:4");
+}
+
 /* ========================================================
  * Step 6: Sequence protocol
  * ======================================================== */
@@ -625,6 +647,7 @@ int main(void)
     RUN(eval_make_array_bit_initial_element);
     RUN(eval_make_array_bit_initial_contents);
     RUN(eval_make_array_bit_fill_pointer);
+    RUN(eval_make_array_bit_displaced);
 
     /* Step 6: Sequence protocol */
     RUN(eval_length_bv);
