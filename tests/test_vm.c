@@ -3528,9 +3528,9 @@ TEST(eval_subst)
 {
     ASSERT_STR_EQ(eval_print("(subst 'x 'b '(a b (c b)))"), "(A X (C X))");
     ASSERT_STR_EQ(eval_print("(subst 99 1 '(1 (2 1) 3))"), "(99 (2 99) 3)");
-    /* subst should match list patterns (using equal by default) */
+    /* CLHS: subst defaults to EQL — match list patterns with :test #'equal. */
     ASSERT_STR_EQ(eval_print(
-        "(subst 'REPLACED '(TARGET) '(a (b (TARGET) c) d))"),
+        "(subst 'REPLACED '(TARGET) '(a (b (TARGET) c) d) :test #'equal)"),
         "(A (B REPLACED C) D)");
 }
 
@@ -5314,12 +5314,25 @@ TEST(eval_tree_equal)
     ASSERT_STR_EQ(eval_print("(tree-equal '(1 2) '(1 3))"), "NIL");
     ASSERT_STR_EQ(eval_print("(tree-equal nil nil)"), "T");
     ASSERT_STR_EQ(eval_print("(tree-equal '(\"a\" \"b\") '(\"a\" \"b\") :test #'equal)"), "T");
+    /* CLHS: structure must match — atom vs cons is NIL regardless of test. */
+    ASSERT_STR_EQ(eval_print(
+        "(tree-equal (list 1) 2 :test (constantly t))"), "NIL");
+    /* :test is applied only to leaves, never to conses. */
+    ASSERT_STR_EQ(eval_print(
+        "(tree-equal '(10 20 . 30) '(11 22 . 34) :test #'<)"), "T");
+    /* Duplicated keyword: leftmost wins. */
+    ASSERT_STR_EQ(eval_print(
+        "(tree-equal '(a . b) '(b . a) :test (complement #'eql) :test #'eql)"), "T");
 }
 
 TEST(eval_list_length)
 {
     ASSERT_STR_EQ(eval_print("(list-length '(1 2 3))"), "3");
     ASSERT_STR_EQ(eval_print("(list-length nil)"), "0");
+    /* Tortoise-and-hare must terminate on circular lists. */
+    ASSERT_STR_EQ(eval_print(
+        "(let ((x (list 1 2 3))) (setf (cdr (last x)) x) (list-length x))"),
+        "NIL");
 }
 
 TEST(eval_tailp)
@@ -6055,6 +6068,18 @@ TEST(eval_format_page)
     /* ~|: page separator (form feed character) */
     ASSERT_EQ_INT(eval_int("(length (format nil \"a~|b\"))"), 3);
     ASSERT_EQ_INT(eval_int("(char-code (char (format nil \"a~|b\") 1))"), 12);
+}
+
+TEST(eval_format_justify)
+{
+    /* ~<...~> body is emitted (no padding without column tracking). */
+    ASSERT_STR_EQ(eval_print("(format nil \"~<x~>\")"), "\"x\"");
+    /* ~<overflow~:;body~> drops the overflow indicator. */
+    ASSERT_STR_EQ(eval_print(
+        "(format nil \"~@[~<~%~:; ~A~>~]\" 42)"), "\" 42\"");
+    /* ~<...~:> (logical block) emits the body; ~_ becomes a no-op. */
+    ASSERT_STR_EQ(eval_print(
+        "(format nil \"~<~{~A~^,~_~}~:>\" '(1 2 3))"), "\"1,2,3\"");
 }
 
 TEST(eval_format_mixed)
@@ -9137,6 +9162,7 @@ int main(void)
     RUN(eval_format_write);
     RUN(eval_format_freshline);
     RUN(eval_format_page);
+    RUN(eval_format_justify);
     RUN(eval_format_mixed);
 
     /* Advanced format: padding, commas, sign */

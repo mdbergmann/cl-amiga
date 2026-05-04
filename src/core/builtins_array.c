@@ -753,6 +753,8 @@ static CL_Obj bi_array_dimensions(CL_Obj *args, int n)
         CL_BitVector *bv = (CL_BitVector *)CL_OBJ_TO_PTR(args[0]);
         return cl_cons(CL_MAKE_FIXNUM(bv->length), CL_NIL);
     }
+    if (CL_ANY_STRING_P(args[0]))
+        return cl_cons(CL_MAKE_FIXNUM((int32_t)cl_string_length(args[0])), CL_NIL);
     if (!CL_VECTOR_P(args[0]))
         cl_error(CL_ERR_TYPE, "ARRAY-DIMENSIONS: not an array");
     vec = (CL_Vector *)CL_OBJ_TO_PTR(args[0]);
@@ -780,6 +782,7 @@ static CL_Obj bi_array_rank(CL_Obj *args, int n)
     CL_Vector *vec;
     CL_UNUSED(n);
     if (CL_BIT_VECTOR_P(args[0])) return CL_MAKE_FIXNUM(1);
+    if (CL_ANY_STRING_P(args[0])) return CL_MAKE_FIXNUM(1);
     if (!CL_VECTOR_P(args[0]))
         cl_error(CL_ERR_TYPE, "ARRAY-RANK: not an array");
     vec = (CL_Vector *)CL_OBJ_TO_PTR(args[0]);
@@ -801,6 +804,11 @@ static CL_Obj bi_array_dimension(CL_Obj *args, int n)
         if (!CL_FIXNUM_P(args[1]) || CL_FIXNUM_VAL(args[1]) != 0)
             cl_error(CL_ERR_ARGS, "ARRAY-DIMENSION: axis must be 0 for bit vector");
         return CL_MAKE_FIXNUM(bv->length);
+    }
+    if (CL_ANY_STRING_P(args[0])) {
+        if (!CL_FIXNUM_P(args[1]) || CL_FIXNUM_VAL(args[1]) != 0)
+            cl_error(CL_ERR_ARGS, "ARRAY-DIMENSION: axis must be 0 for string");
+        return CL_MAKE_FIXNUM((int32_t)cl_string_length(args[0]));
     }
     if (!CL_VECTOR_P(args[0]))
         cl_error(CL_ERR_TYPE, "ARRAY-DIMENSION: not an array");
@@ -829,6 +837,8 @@ static CL_Obj bi_array_total_size(CL_Obj *args, int n)
         CL_BitVector *bv = (CL_BitVector *)CL_OBJ_TO_PTR(args[0]);
         return CL_MAKE_FIXNUM(bv->length);
     }
+    if (CL_ANY_STRING_P(args[0]))
+        return CL_MAKE_FIXNUM((int32_t)cl_string_length(args[0]));
     if (!CL_VECTOR_P(args[0]))
         cl_error(CL_ERR_TYPE, "ARRAY-TOTAL-SIZE: not an array");
     vec = (CL_Vector *)CL_OBJ_TO_PTR(args[0]);
@@ -879,6 +889,18 @@ static CL_Obj bi_array_row_major_index(CL_Obj *args, int n)
             cl_error(CL_ERR_TYPE, "ARRAY-ROW-MAJOR-INDEX: subscript must be a fixnum");
         idx = CL_FIXNUM_VAL(args[1]);
         if (idx < 0 || (uint32_t)idx >= ((CL_BitVector *)CL_OBJ_TO_PTR(args[0]))->length)
+            cl_error(CL_ERR_ARGS, "ARRAY-ROW-MAJOR-INDEX: subscript out of range");
+        return args[1];
+    }
+
+    if (CL_ANY_STRING_P(args[0])) {
+        int32_t idx;
+        if (nindices != 1)
+            cl_error(CL_ERR_ARGS, "ARRAY-ROW-MAJOR-INDEX: expected 1 subscript for string");
+        if (!CL_FIXNUM_P(args[1]))
+            cl_error(CL_ERR_TYPE, "ARRAY-ROW-MAJOR-INDEX: subscript must be a fixnum");
+        idx = CL_FIXNUM_VAL(args[1]);
+        if (idx < 0 || (uint32_t)idx >= cl_string_length(args[0]))
             cl_error(CL_ERR_ARGS, "ARRAY-ROW-MAJOR-INDEX: subscript out of range");
         return args[1];
     }
@@ -1056,6 +1078,7 @@ static CL_Obj bi_array_has_fill_pointer_p(CL_Obj *args, int n)
         CL_BitVector *bv = (CL_BitVector *)CL_OBJ_TO_PTR(args[0]);
         return (bv->fill_pointer != CL_NO_FILL_POINTER) ? SYM_T : CL_NIL;
     }
+    if (CL_ANY_STRING_P(args[0])) return CL_NIL;
     {
     CL_Vector *vec;
     if (!CL_VECTOR_P(args[0]))

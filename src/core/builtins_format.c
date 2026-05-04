@@ -231,7 +231,8 @@ static void fmt_parse_directive(FmtCtx *ctx, FmtDirective *d)
 static const char *fmt_find_close(const char *p, char open, char close,
                                   const char **seps, int *n_seps, int max_seps)
 {
-    int depth = 1;
+    int depth = 1;        /* depth of (open, close) pair */
+    int inner_depth = 0;  /* depth of OTHER bracketing directives (~( ~[ ~{ ~<) */
     *n_seps = 0;
 
     while (*p && depth > 0) {
@@ -253,12 +254,22 @@ static const char *fmt_find_close(const char *p, char open, char close,
                 if (dc == open) {
                     depth++;
                 } else if (dc == close) {
-                    depth--;
-                    if (depth == 0) {
-                        p++;
-                        return p;
+                    if (inner_depth > 0 && (dc == ')' || dc == ']' ||
+                                            dc == '}' || dc == '>')) {
+                        /* Closes an inner directive, not the outer pair. */
+                        inner_depth--;
+                    } else {
+                        depth--;
+                        if (depth == 0) {
+                            p++;
+                            return p;
+                        }
                     }
-                } else if (dc == ';' && depth == 1) {
+                } else if (dc == '(' || dc == '[' || dc == '{' || dc == '<') {
+                    inner_depth++;
+                } else if (dc == ')' || dc == ']' || dc == '}' || dc == '>') {
+                    if (inner_depth > 0) inner_depth--;
+                } else if (dc == ';' && depth == 1 && inner_depth == 0) {
                     /* Record separator — `start` points to the '~' before ';' */
                     if (*n_seps < max_seps) {
                         seps[*n_seps] = start;
@@ -1171,6 +1182,93 @@ static void fmt_recursive(FmtCtx *ctx, FmtDirective *d)
 }
 
 /* ================================================================
+ * ~<...~> / ~<...~:>  — Justification / Logical Block
+ *
+ * Simplified: we don't track output column, so no padding is applied.
+ * Behavior:
+ *   ~<seg1~;seg2~;...~;segN~>  → emit each segment in order.
+ *   ~<seg1~:;seg2~;...~;segN~> → seg1 is the overflow indicator (skipped);
+ *                                emit seg2..segN.
+ *   ~<...~:>                   → logical block (pretty-printer); we just
+ *                                emit the body. Pretty-print directives
+ *                                ~_, ~:_, ~@_, ~:@_, ~I, ~/PPRINT-NEWLINE/
+ *                                inside are handled as no-ops or spaces.
+ * ================================================================ */
+
+static void fmt_justify(FmtCtx *ctx, FmtDirective *d)
+{
+    const char *body_start = ctx->pos;
+    const char *seps[FMT_MAX_SEPS];
+    int n_seps = 0;
+    const char *body_end;
+    int first_seg_is_overflow = 0;
+    int i;
+    int start_seg = 0;
+    FmtCtx sub;
+    char *body_copy;
+    int body_len;
+    CL_UNUSED(d);
+
+    body_end = fmt_find_close(body_start, '<', '>', seps, &n_seps, FMT_MAX_SEPS);
+    if (!body_end) {
+        cl_error(CL_ERR_GENERAL, "FORMAT: unmatched ~<");
+        return;
+    }
+
+    /* Check first separator (if any) for ':' modifier — that means the
+     * preceding section is the overflow indicator. */
+    if (n_seps > 0) {
+        const char *sp = seps[0] + 1; /* past '~' */
+        /* skip prefix params */
+        while (*sp && ((*sp >= '0' && *sp <= '9') || *sp == ',' || *sp == '\'' ||
+                       *sp == '+' || *sp == '-' || *sp == 'V' || *sp == 'v' ||
+                       *sp == '#')) {
+            if (*sp == '\'') { sp++; if (*sp) sp++; }
+            else sp++;
+        }
+        if (*sp == ':') first_seg_is_overflow = 1;
+    }
+
+    /* Build a body_copy excluding the overflow segment if present. */
+    if (first_seg_is_overflow) {
+        /* Start after the first separator. seps[0] points to '~' before
+         * the separator directive char. We need to skip past the directive
+         * char. The directive char comes after any params, ':' or '@'. */
+        const char *skip = seps[0] + 1;
+        while (*skip && ((*skip >= '0' && *skip <= '9') || *skip == ',' || *skip == '\'' ||
+                         *skip == '+' || *skip == '-' || *skip == 'V' || *skip == 'v' ||
+                         *skip == '#')) {
+            if (*skip == '\'') { skip++; if (*skip) skip++; }
+            else skip++;
+        }
+        while (*skip == ':' || *skip == '@') skip++;
+        if (*skip) skip++; /* past ';' */
+        body_start = skip;
+        start_seg = 1;
+        (void)start_seg;
+    }
+    (void)i;
+
+    /* Body extends from body_start to (body_end - 2) — body_end points
+     * past the close '>', so '~>' starts two chars before. */
+    body_len = (int)(body_end - 2 - body_start);
+    if (body_len < 0) body_len = 0;
+    body_copy = (char *)platform_alloc((uint32_t)body_len + 1);
+    memcpy(body_copy, body_start, (uint32_t)body_len);
+    body_copy[body_len] = '\0';
+
+    sub = *ctx;
+    sub.fmt = body_copy;
+    sub.pos = body_copy;
+    fmt_run(&sub);
+    platform_free(body_copy);
+
+    /* Update parent state */
+    ctx->ai = sub.ai;
+    ctx->pos = body_end;
+}
+
+/* ================================================================
  * Dispatch table
  * ================================================================ */
 
@@ -1346,6 +1444,16 @@ static void fmt_dispatch(FmtCtx *ctx, FmtDirective *d)
         break;
     case '?':
         fmt_recursive(ctx, d);
+        break;
+    case '<':
+        fmt_justify(ctx, d);
+        break;
+    case '_':
+        /* Pretty-printer conditional newline (~_ ~:_ ~@_ ~:@_). We don't
+         * track columns, so emit nothing — printable layout still ok. */
+        break;
+    case 'I':
+        /* Pretty-printer indent (~I ~:I) — no-op without pretty printer. */
         break;
     case '\n':
         /* ~<newline> — ignore newline and any following whitespace */

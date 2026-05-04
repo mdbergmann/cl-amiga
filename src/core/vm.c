@@ -1568,7 +1568,12 @@ static CL_Obj cl_vm_run(int base_fp, int base_nlx)
                                 }
                             }
                         }
-                        for (ki = 0; ki + 1 < n_extra; ki += 2) {
+                        /* Iterate right-to-left so the leftmost duplicate
+                         * keyword wins (CLHS 3.4.1.4.1). */
+                        {
+                            int last_ki = n_extra - 2;
+                            if (last_ki & 1) last_ki--;
+                            for (ki = last_ki; ki >= 0; ki -= 2) {
                             CL_Obj key = vm_extra_args[ki];
                             CL_Obj val = vm_extra_args[ki + 1];
                             int j, found = 0;
@@ -1585,6 +1590,7 @@ static CL_Obj cl_vm_run(int base_fp, int base_nlx)
                             if (!found && key != KW_ALLOW_OTHER_KEYS && !allow)
                                 cl_error(CL_ERR_ARGS, "Unknown keyword argument: %s",
                                          cl_symbol_name(key));
+                            }
                         }
                     }
 
@@ -1702,7 +1708,11 @@ static CL_Obj cl_vm_run(int base_fp, int base_nlx)
                                 }
                             }
                         }
-                        for (ki = 0; ki + 1 < n_extra; ki += 2) {
+                        /* Right-to-left so leftmost duplicate keyword wins. */
+                        {
+                            int last_ki = n_extra - 2;
+                            if (last_ki & 1) last_ki--;
+                            for (ki = last_ki; ki >= 0; ki -= 2) {
                             CL_Obj key = vm_extra_args[ki];
                             CL_Obj val = vm_extra_args[ki + 1];
                             int j, found = 0;
@@ -1720,6 +1730,7 @@ static CL_Obj cl_vm_run(int base_fp, int base_nlx)
                             if (!found && key != KW_ALLOW_OTHER_KEYS && !allow)
                                 cl_error(CL_ERR_ARGS, "Unknown keyword argument: %s",
                                          cl_symbol_name(key));
+                            }
                         }
                     }
 
@@ -2615,7 +2626,11 @@ static CL_Obj cl_vm_run(int base_fp, int base_nlx)
                                 }
                             }
                         }
-                        for (ki = 0; ki + 1 < n_extra; ki += 2) {
+                        /* Right-to-left so leftmost duplicate keyword wins. */
+                        {
+                            int last_ki = n_extra - 2;
+                            if (last_ki & 1) last_ki--;
+                            for (ki = last_ki; ki >= 0; ki -= 2) {
                             CL_Obj key = vm_extra_args[ki];
                             CL_Obj val = vm_extra_args[ki + 1];
                             int j, found = 0;
@@ -2630,6 +2645,7 @@ static CL_Obj cl_vm_run(int base_fp, int base_nlx)
                             if (!found && key != KW_ALLOW_OTHER_KEYS && !allow)
                                 cl_error(CL_ERR_ARGS, "APPLY: unknown keyword argument: %s",
                                          cl_symbol_name(key));
+                            }
                         }
                     }
 
