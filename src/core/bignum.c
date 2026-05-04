@@ -1782,6 +1782,24 @@ void cl_bignum_init(void)
     s->value = CL_MAKE_FIXNUM(CL_FIXNUM_MIN);
     s->flags |= CL_SYM_CONSTANT;
 
+    /* CALL-ARGUMENTS-LIMIT — must be ≤ the size of vm_flat_args_buf used
+     * by OP_APPLY's static flatten buffer (see thread.h).  Any user APPLY
+     * exceeding this signals an args error. */
+    sym = cl_intern_in("CALL-ARGUMENTS-LIMIT", 20, cl_package_cl);
+    s = (CL_Symbol *)CL_OBJ_TO_PTR(sym);
+    s->value = CL_MAKE_FIXNUM(64);
+    s->flags |= CL_SYM_CONSTANT;
+    /* LAMBDA-PARAMETERS-LIMIT — same upper bound for our compiler. */
+    sym = cl_intern_in("LAMBDA-PARAMETERS-LIMIT", 23, cl_package_cl);
+    s = (CL_Symbol *)CL_OBJ_TO_PTR(sym);
+    s->value = CL_MAKE_FIXNUM(64);
+    s->flags |= CL_SYM_CONSTANT;
+    /* MULTIPLE-VALUES-LIMIT — fixed by VM mv buffer (see vm.c). */
+    sym = cl_intern_in("MULTIPLE-VALUES-LIMIT", 21, cl_package_cl);
+    s = (CL_Symbol *)CL_OBJ_TO_PTR(sym);
+    s->value = CL_MAKE_FIXNUM(64);
+    s->flags |= CL_SYM_CONSTANT;
+
     /* BOOLE operation constants (CL spec values 0-15) */
     def_const("BOOLE-CLR",   9,  0, &SYM_BOOLE_CLR);
     def_const("BOOLE-SET",   9,  1, &SYM_BOOLE_SET);

@@ -91,6 +91,17 @@ static int typep_symbol(CL_Obj obj, CL_Obj type_sym)
     if (strcmp(tname, "FIXNUM") == 0)  return CL_FIXNUM_P(obj);
     if (strcmp(tname, "BIGNUM") == 0)  return CL_BIGNUM_P(obj);
     if (strcmp(tname, "INTEGER") == 0) return CL_INTEGER_P(obj);
+    /* Bare unsigned-byte / signed-byte / bit / mod — no compound size given */
+    if (strcmp(tname, "UNSIGNED-BYTE") == 0) {
+        if (CL_FIXNUM_P(obj)) return CL_FIXNUM_VAL(obj) >= 0;
+        if (CL_BIGNUM_P(obj))
+            return ((CL_Bignum *)CL_OBJ_TO_PTR(obj))->sign == 0;
+        return 0;
+    }
+    if (strcmp(tname, "SIGNED-BYTE") == 0) return CL_INTEGER_P(obj);
+    if (strcmp(tname, "BIT") == 0)
+        return CL_FIXNUM_P(obj)
+               && (CL_FIXNUM_VAL(obj) == 0 || CL_FIXNUM_VAL(obj) == 1);
     if (strcmp(tname, "RATIO") == 0)  return CL_RATIO_P(obj);
     if (strcmp(tname, "RATIONAL") == 0) return CL_RATIONAL_P(obj);
     if (strcmp(tname, "SINGLE-FLOAT") == 0 || strcmp(tname, "SHORT-FLOAT") == 0)

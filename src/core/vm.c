@@ -1558,6 +1558,10 @@ static CL_Obj cl_vm_run(int base_fp, int base_nlx)
                     if (has_key) {
                         int allow = (callee_bc->flags & 2) != 0;
                         int ki;
+                        /* CLHS 3.4.1.4: signals program-error on odd kwarg count */
+                        if (n_extra & 1)
+                            cl_error(CL_ERR_ARGS,
+                                     "odd number of keyword arguments");
                         /* Check for :allow-other-keys t in caller args */
                         if (!allow) {
                             for (ki = 0; ki + 1 < n_extra; ki += 2) {
@@ -1698,6 +1702,10 @@ static CL_Obj cl_vm_run(int base_fp, int base_nlx)
                     if (has_key) {
                         int allow = (callee_bc->flags & 2) != 0;
                         int ki;
+                        /* CLHS 3.4.1.4: signals program-error on odd kwarg count */
+                        if (n_extra & 1)
+                            cl_error(CL_ERR_ARGS,
+                                     "odd number of keyword arguments");
                         /* Check for :allow-other-keys t in caller args */
                         if (!allow) {
                             for (ki = 0; ki + 1 < n_extra; ki += 2) {
@@ -2618,6 +2626,10 @@ static CL_Obj cl_vm_run(int base_fp, int base_nlx)
                     if (has_key) {
                         int allow = (callee_bc->flags & 2) != 0;
                         int ki;
+                        /* CLHS 3.4.1.4: signals program-error on odd kwarg count */
+                        if (n_extra & 1)
+                            cl_error(CL_ERR_ARGS,
+                                     "odd number of keyword arguments");
                         if (!allow) {
                             for (ki = 0; ki + 1 < n_extra; ki += 2) {
                                 if (vm_extra_args[ki] == KW_ALLOW_OTHER_KEYS &&

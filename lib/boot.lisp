@@ -36,7 +36,10 @@
 
 ;; Utility functions
 (defun identity (x) x)
-(defun endp (x) (null x))
+(defun endp (x)
+  (cond ((null x) t)
+        ((consp x) nil)
+        (t (error 'type-error :datum x :expected-type 'list))))
 
 ;; prog1 / prog2
 (defmacro prog1 (first &rest body) (let ((g (gensym))) `(let ((,g ,first)) ,@body ,g)))
@@ -67,19 +70,97 @@
          (eq (car form) 'quote))
         (t t)))                      ; numbers, chars, strings, etc.
 
-;; setf modify macros
-(defmacro push (item place) `(setf ,place (cons ,item ,place)))
-(defmacro pop (place) (let ((g (gensym))) `(let ((,g (car ,place))) (setf ,place (cdr ,place)) ,g)))
+;; setf modify macros — evaluate all subforms left-to-right exactly once
+;; per CLHS 5.1.1.1.1.  For non-symbol places we bind each subform of the
+;; place to a temp, then reuse those temps in both the SETF target and
+;; the value form so that the place's subforms are seen only once.
+;; Operators where (setf (op subforms) val) mutates one of the subforms in
+;; place rather than rewriting outward to (setf <subform> ...).  For these,
+;; we can safely bind the subforms to gensyms once and reuse them in both
+;; the SETF target and the value form.  Operators NOT in this set (getf,
+;; ldb, mask-field, etc.) propagate the assignment to their first argument
+;; via SETF expansion, so subform-binding would lose the update — we must
+;; let SETF see the original PLACE.
+(defparameter %place-direct-mutators
+  '(car cdr first second third fourth fifth sixth seventh eighth ninth tenth
+    rest nth caar cadr cdar cddr caaar caadr cadar caddr cdaar cdadr cddar
+    cdddr caaaar caaadr caadar caaddr cadaar cadadr caddar cadddr cdaaar
+    cdaadr cdadar cdaddr cddaar cddadr cdddar cddddr aref svref elt char
+    schar bit sbit gethash get slot-value row-major-aref symbol-value
+    symbol-function fdefinition))
+
+(defun %place-direct-mutator-p (op)
+  (and (symbolp op) (member op %place-direct-mutators :test #'eq)))
+
+(defmacro push (item place)
+  (cond
+    ((symbolp place)
+     (let ((g (gensym "ITEM")))
+       `(let ((,g ,item)) (setq ,place (cons ,g ,place)))))
+    ((and (consp place) (%place-direct-mutator-p (car place)))
+     (let* ((op (car place))
+            (subs (cdr place))
+            (item-t (gensym "ITEM"))
+            (sub-ts (mapcar (lambda (x) (declare (ignore x)) (gensym "T"))
+                            subs)))
+       `(let* ((,item-t ,item)
+               ,@(mapcar #'list sub-ts subs))
+          (setf (,op ,@sub-ts) (cons ,item-t (,op ,@sub-ts))))))
+    (t `(setf ,place (cons ,item ,place)))))
+
+(defmacro pop (place)
+  (cond
+    ((symbolp place)
+     (let ((g (gensym)))
+       `(let ((,g (car ,place)))
+          (setq ,place (cdr ,place))
+          ,g)))
+    ((and (consp place) (%place-direct-mutator-p (car place)))
+     (let* ((op (car place))
+            (subs (cdr place))
+            (sub-ts (mapcar (lambda (x) (declare (ignore x)) (gensym "T"))
+                            subs))
+            (g (gensym "OLD")))
+       `(let* (,@(mapcar #'list sub-ts subs))
+          (let ((,g (car (,op ,@sub-ts))))
+            (setf (,op ,@sub-ts) (cdr (,op ,@sub-ts)))
+            ,g))))
+    (t (let ((g (gensym)))
+         `(let ((,g (car ,place)))
+            (setf ,place (cdr ,place))
+            ,g)))))
+
 (defmacro incf (place &optional (delta 1)) `(setf ,place (+ ,place ,delta)))
 (defmacro decf (place &optional (delta 1)) `(setf ,place (- ,place ,delta)))
+
 (defmacro remf (place indicator)
   ;; CLHS 5.1.2: remf modifies the place.  %remf returns the new list as
   ;; primary value and T/NIL as second; we setf the place and return the
-  ;; second value as a generalized boolean.
-  (let ((new (gensym)) (found (gensym)))
-    `(multiple-value-bind (,new ,found) (clamiga::%remf ,place ,indicator)
-       (setf ,place ,new)
-       ,found)))
+  ;; second value as a generalized boolean.  Per CLHS 5.1.1.1.1, place
+  ;; subforms must be evaluated once before INDICATOR.
+  (cond
+    ((symbolp place)
+     (let ((new (gensym)) (found (gensym)) (ind (gensym)))
+       `(let ((,ind ,indicator))
+          (multiple-value-bind (,new ,found) (clamiga::%remf ,place ,ind)
+            (setq ,place ,new)
+            ,found))))
+    ((and (consp place) (%place-direct-mutator-p (car place)))
+     (let* ((op (car place))
+            (subs (cdr place))
+            (sub-ts (mapcar (lambda (x) (declare (ignore x)) (gensym "T"))
+                            subs))
+            (ind (gensym "IND")) (new (gensym)) (found (gensym)))
+       `(let* (,@(mapcar #'list sub-ts subs)
+               (,ind ,indicator))
+          (multiple-value-bind (,new ,found)
+              (clamiga::%remf (,op ,@sub-ts) ,ind)
+            (setf (,op ,@sub-ts) ,new)
+            ,found))))
+    (t (let ((new (gensym)) (found (gensym)))
+         `(multiple-value-bind (,new ,found) (clamiga::%remf ,place ,indicator)
+            (setf ,place ,new)
+            ,found)))))
 (defsetf elt %setf-elt)
 (defsetf readtable-case %setf-readtable-case)
 
@@ -202,12 +283,12 @@
 ;; element before testing (item itself is NOT keyed, per spec).
 (defun member (item list &key (test nil test-p)
                               (test-not nil test-not-p)
-                              (key nil key-p))
+                              (key nil))
   (when (and test-p test-not-p)
     (error ":TEST and :TEST-NOT are mutually exclusive"))
   (do ((l list (cdr l)))
       ((null l) nil)
-    (let* ((elem (if key-p (funcall key (car l)) (car l)))
+    (let* ((elem (if key (funcall key (car l)) (car l)))
            (match (cond (test-not-p (not (funcall test-not item elem)))
                         (test-p (funcall test item elem))
                         (t (eql item elem)))))
@@ -216,18 +297,18 @@
 
 ;; CLHS 14.2 MEMBER-IF / MEMBER-IF-NOT — return the tail whose car
 ;; satisfies (or fails) PREDICATE.  :KEY is applied to the element, not
-;; to the predicate's result.
-(defun member-if (predicate list &key (key nil key-p))
+;; to the predicate's result.  :KEY = NIL means use #'identity.
+(defun member-if (predicate list &key (key nil))
   (do ((l list (cdr l)))
       ((null l) nil)
-    (let ((elem (if key-p (funcall key (car l)) (car l))))
+    (let ((elem (if key (funcall key (car l)) (car l))))
       (when (funcall predicate elem)
         (return-from member-if l)))))
 
-(defun member-if-not (predicate list &key (key nil key-p))
+(defun member-if-not (predicate list &key (key nil))
   (do ((l list (cdr l)))
       ((null l) nil)
-    (let ((elem (if key-p (funcall key (car l)) (car l))))
+    (let ((elem (if key (funcall key (car l)) (car l))))
       (unless (funcall predicate elem)
         (return-from member-if-not l)))))
 
@@ -246,17 +327,43 @@
     (cons item list)))
 
 ;; pushnew — push via ADJOIN so :test/:test-not/:key are honored.
+;; Per CLHS 5.1.1.1.1, evaluate item, then place subforms, then keys
+;; (each subform exactly once).
 (defmacro pushnew (item place &rest keys)
-  (let ((g (gensym)))
-    `(let ((,g ,item))
-       (setf ,place (adjoin ,g ,place ,@keys)))))
+  (cond
+    ((symbolp place)
+     (let ((g (gensym "ITEM")))
+       `(let ((,g ,item)) (setq ,place (adjoin ,g ,place ,@keys)))))
+    ((and (consp place) (%place-direct-mutator-p (car place)))
+     (let* ((op (car place))
+            (subs (cdr place))
+            (item-t (gensym "ITEM"))
+            (sub-ts (mapcar (lambda (x) (declare (ignore x)) (gensym "T"))
+                            subs)))
+       `(let* ((,item-t ,item)
+               ,@(mapcar #'list sub-ts subs))
+          (setf (,op ,@sub-ts)
+                (adjoin ,item-t (,op ,@sub-ts) ,@keys)))))
+    (t (let ((g (gensym)))
+         `(let ((,g ,item))
+            (setf ,place (adjoin ,g ,place ,@keys)))))))
 
-;; Set operations — support :test, :test-not, :key per CL spec
-;; Helper: check if keyed-item is in list under test+key
-(defun %set-member (keyed-item list test key)
+;; Set operations — support :test, :test-not, :key per CL spec.
+;; Per CLHS 17.2.1, the :test function is invoked with a list1 element
+;; first and a list2 element second.  Caller specifies which side
+;; ITEM came from via REVERSE-ARGS: NIL means ITEM is from list1 (the
+;; default — used by intersection / set-difference's outer loop, and
+;; the first set-exclusive-or loop) and the test is called as
+;; (test item list-elem); T means ITEM is from list2 (used by union's
+;; loop and the second set-exclusive-or loop) and the test is invoked
+;; as (test list-elem item) so list1 is still the first argument.
+(defun %set-member (keyed-item list test key reverse-args)
   (dolist (y list nil)
-    (when (funcall test keyed-item (if key (funcall key y) y))
-      (return t))))
+    (let ((y-key (if key (funcall key y) y)))
+      (when (if reverse-args
+                (funcall test y-key keyed-item)
+                (funcall test keyed-item y-key))
+        (return t)))))
 
 (defun intersection (list1 list2 &key (test nil test-p) (test-not nil test-not-p) (key nil))
   (when (and test-p test-not-p)
@@ -266,7 +373,7 @@
                            (test-p test)
                            (t #'eql))))
     (dolist (x list1 (nreverse result))
-      (when (%set-member (if key (funcall key x) x) list2 actual-test key)
+      (when (%set-member (if key (funcall key x) x) list2 actual-test key nil)
         (push x result)))))
 
 (defun union (list1 list2 &key (test nil test-p) (test-not nil test-not-p) (key nil))
@@ -277,7 +384,7 @@
                            (test-p test)
                            (t #'eql))))
     (dolist (x list2 (nreverse result))
-      (unless (%set-member (if key (funcall key x) x) list1 actual-test key)
+      (unless (%set-member (if key (funcall key x) x) list1 actual-test key t)
         (push x result)))))
 
 (defun set-difference (list1 list2 &key (test nil test-p) (test-not nil test-not-p) (key nil))
@@ -288,7 +395,7 @@
                            (test-p test)
                            (t #'eql))))
     (dolist (x list1 (nreverse result))
-      (unless (%set-member (if key (funcall key x) x) list2 actual-test key)
+      (unless (%set-member (if key (funcall key x) x) list2 actual-test key nil)
         (push x result)))))
 
 ;; ASSOC / RASSOC — override the C builtins to add :test-not and :key.
@@ -300,10 +407,12 @@
                     (test-p test)
                     (t #'eql))))
     (dolist (pair alist nil)
-      (when (consp pair)
-        (let ((k (car pair)))
-          (when (funcall pred item (if key (funcall key k) k))
-            (return-from assoc pair)))))))
+      (cond ((null pair))
+            ((consp pair)
+             (let ((k (car pair)))
+               (when (funcall pred item (if key (funcall key k) k))
+                 (return-from assoc pair))))
+            (t (error 'type-error :datum pair :expected-type 'list))))))
 
 (defun rassoc (item alist &key (test nil test-p) (test-not nil test-not-p)
                               (key nil))
@@ -313,10 +422,12 @@
                     (test-p test)
                     (t #'eql))))
     (dolist (pair alist nil)
-      (when (consp pair)
-        (let ((v (cdr pair)))
-          (when (funcall pred item (if key (funcall key v) v))
-            (return-from rassoc pair)))))))
+      (cond ((null pair))
+            ((consp pair)
+             (let ((v (cdr pair)))
+               (when (funcall pred item (if key (funcall key v) v))
+                 (return-from rassoc pair))))
+            (t (error 'type-error :datum pair :expected-type 'list))))))
 
 ;; SUBLIS / SUBST / NSUBST — override C builtins for full :test/:test-not/:key.
 (defun sublis (alist tree &key (test nil test-p) (test-not nil test-not-p)
@@ -330,7 +441,7 @@
                (let ((tk (if key (funcall key tree) tree)))
                  (dolist (pair alist)
                    (when (consp pair)
-                     (when (funcall pred (car pair) tk)
+                     (when (funcall pred tk (car pair))
                        (return-from walk (cdr pair))))))
                (if (consp tree)
                    (let ((car-r (walk (car tree)))
@@ -363,10 +474,7 @@
 (defun nsubst (new old tree &rest keys)
   (apply #'subst new old tree keys))
 
-;; NBUTLAST / COPY-ALIST / MAKE-LIST :initial-element
-(defun nbutlast (list &optional (n 1))
-  (butlast list n))
-
+;; COPY-ALIST / MAKE-LIST :initial-element
 (defun copy-alist (alist)
   "Return a copy of ALIST in which each pair is itself copied."
   (let ((result nil))
@@ -407,10 +515,10 @@
                            (t #'eql)))
         (result nil))
     (dolist (x list1)
-      (unless (%set-member (if key (funcall key x) x) list2 actual-test key)
+      (unless (%set-member (if key (funcall key x) x) list2 actual-test key nil)
         (push x result)))
     (dolist (y list2)
-      (unless (%set-member (if key (funcall key y) y) list1 actual-test key)
+      (unless (%set-member (if key (funcall key y) y) list1 actual-test key t)
         (push y result)))
     (nreverse result)))
 
@@ -436,7 +544,7 @@
                            (test-p test)
                            (t #'eql))))
     (dolist (x list1 t)
-      (unless (%set-member (if key (funcall key x) x) list2 actual-test key)
+      (unless (%set-member (if key (funcall key x) x) list2 actual-test key nil)
         (return-from subsetp nil)))))
 
 ;; documentation — CL standard documentation function
@@ -1235,11 +1343,21 @@ car and cdr, OR both are atoms and the test is satisfied."
     (when (eql object l) (return t))))
 
 (defun ldiff (list object)
-  "Return a copy of LIST up to but not including the tail OBJECT."
-  (let ((result nil))
-    (do ((l list (cdr l)))
-        ((or (atom l) (eql l object)) (nreverse result))
-      (push (car l) result))))
+  "Return a copy of LIST up to but not including the tail OBJECT.
+If OBJECT is not EQL to any tail of LIST, a copy of LIST is returned —
+including any dotted-list terminator (so the result is also dotted)."
+  (unless (listp list)
+    (error 'type-error :datum list :expected-type 'list))
+  (do ((l list (cdr l))
+       (result nil))
+      (nil)
+    (cond ((atom l)
+           (return (if (eql l object)
+                       (nreverse result)
+                       (nreconc result l))))
+          ((eql l object)
+           (return (nreverse result)))
+          (t (push (car l) result)))))
 
 (defun revappend (list tail)
   "Non-destructively reverse LIST and append TAIL."
@@ -1260,30 +1378,42 @@ car and cdr, OR both are atoms and the test is satisfied."
 (defun assoc-if (predicate alist &key key)
   "Return first pair in ALIST where PREDICATE is true of the key."
   (dolist (pair alist nil)
-    (when (consp pair)
-      (when (funcall predicate (if key (funcall key (car pair)) (car pair)))
-        (return pair)))))
+    (cond ((null pair))
+          ((consp pair)
+           (when (funcall predicate
+                          (if key (funcall key (car pair)) (car pair)))
+             (return pair)))
+          (t (error 'type-error :datum pair :expected-type 'list)))))
 
 (defun assoc-if-not (predicate alist &key key)
   "Return first pair in ALIST where PREDICATE is false of the key."
   (dolist (pair alist nil)
-    (when (consp pair)
-      (unless (funcall predicate (if key (funcall key (car pair)) (car pair)))
-        (return pair)))))
+    (cond ((null pair))
+          ((consp pair)
+           (unless (funcall predicate
+                            (if key (funcall key (car pair)) (car pair)))
+             (return pair)))
+          (t (error 'type-error :datum pair :expected-type 'list)))))
 
 (defun rassoc-if (predicate alist &key key)
   "Return first pair in ALIST where PREDICATE is true of the value."
   (dolist (pair alist nil)
-    (when (consp pair)
-      (when (funcall predicate (if key (funcall key (cdr pair)) (cdr pair)))
-        (return pair)))))
+    (cond ((null pair))
+          ((consp pair)
+           (when (funcall predicate
+                          (if key (funcall key (cdr pair)) (cdr pair)))
+             (return pair)))
+          (t (error 'type-error :datum pair :expected-type 'list)))))
 
 (defun rassoc-if-not (predicate alist &key key)
   "Return first pair in ALIST where PREDICATE is false of the value."
   (dolist (pair alist nil)
-    (when (consp pair)
-      (unless (funcall predicate (if key (funcall key (cdr pair)) (cdr pair)))
-        (return pair)))))
+    (cond ((null pair))
+          ((consp pair)
+           (unless (funcall predicate
+                            (if key (funcall key (cdr pair)) (cdr pair)))
+             (return pair)))
+          (t (error 'type-error :datum pair :expected-type 'list)))))
 
 ;; --- make-sequence ---
 (defun make-sequence (type size &key (initial-element nil ie-p))

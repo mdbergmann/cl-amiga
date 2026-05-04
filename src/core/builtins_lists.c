@@ -23,6 +23,29 @@ static void defun(const char *name, CL_CFunc func, int min, int max)
 
 /* --- List utility helpers --- */
 
+/* Extract a non-negative integer count argument (BUTLAST/NBUTLAST/LAST style).
+ * - Fixnum non-negative: return its value, clamped to INT32_MAX.
+ * - Positive bignum: return INT32_MAX (caller treats as "more than length").
+ * - Negative bignum / negative fixnum: signal TYPE-ERROR.
+ * - Non-integer: signal TYPE-ERROR. */
+static int32_t extract_count_or_clamp(CL_Obj n_arg, const char *fn_name)
+{
+    if (CL_FIXNUM_P(n_arg)) {
+        int32_t v = CL_FIXNUM_VAL(n_arg);
+        if (v < 0)
+            cl_signal_type_error(n_arg, "UNSIGNED-BYTE", fn_name);
+        return v;
+    }
+    if (CL_BIGNUM_P(n_arg)) {
+        CL_Bignum *bn = (CL_Bignum *)CL_OBJ_TO_PTR(n_arg);
+        if (bn->sign)
+            cl_signal_type_error(n_arg, "UNSIGNED-BYTE", fn_name);
+        return 0x7FFFFFFF;
+    }
+    cl_signal_type_error(n_arg, "UNSIGNED-BYTE", fn_name);
+    return 0; /* unreachable */
+}
+
 /* Call a 2-arg test function (default eql) */
 static CL_Obj call_test(CL_Obj test_fn, CL_Obj a, CL_Obj b)
 {
@@ -75,14 +98,12 @@ static CL_Obj extract_test_arg(CL_Obj *args, int n, int start)
 
 static CL_Obj bi_nthcdr(CL_Obj *args, int n)
 {
-    int32_t idx;
-    CL_Obj list;
+    int32_t idx = extract_count_or_clamp(args[0], "NTHCDR");
+    CL_Obj list = args[1];
     CL_UNUSED(n);
-    if (!CL_FIXNUM_P(args[0]))
-        cl_error(CL_ERR_TYPE, "NTHCDR: index must be a number");
-    idx = CL_FIXNUM_VAL(args[0]);
-    list = args[1];
     while (idx > 0 && !CL_NULL_P(list)) {
+        if (!CL_CONS_P(list))
+            cl_signal_type_error(list, "LIST", "NTHCDR");
         list = cl_cdr(list);
         idx--;
     }
@@ -96,12 +117,11 @@ static CL_Obj bi_last(CL_Obj *args, int n)
     int32_t len = 0;
     CL_Obj p;
 
-    if (n >= 2) {
-        if (!CL_FIXNUM_P(args[1]))
-            cl_error(CL_ERR_TYPE, "LAST: n must be a number");
-        count = CL_FIXNUM_VAL(args[1]);
-    }
+    if (n >= 2)
+        count = extract_count_or_clamp(args[1], "LAST");
     if (CL_NULL_P(list)) return CL_NIL;
+    if (!CL_CONS_P(list))
+        cl_signal_type_error(list, "LIST", "LAST");
 
     /* Count length */
     for (p = list; CL_CONS_P(p); p = cl_cdr(p))
@@ -109,8 +129,7 @@ static CL_Obj bi_last(CL_Obj *args, int n)
 
     /* Skip (len - count) conses */
     {
-        int32_t skip = len - count;
-        if (skip < 0) skip = 0;
+        int32_t skip = (count >= len) ? 0 : len - count;
         while (skip > 0) {
             list = cl_cdr(list);
             skip--;
@@ -627,12 +646,11 @@ static CL_Obj bi_butlast(CL_Obj *args, int n)
     int32_t len = 0;
     CL_Obj p, result = CL_NIL, tail = CL_NIL;
 
-    if (n >= 2) {
-        if (!CL_FIXNUM_P(args[1]))
-            cl_error(CL_ERR_TYPE, "BUTLAST: n must be a number");
-        count = CL_FIXNUM_VAL(args[1]);
-    }
+    if (n >= 2)
+        count = extract_count_or_clamp(args[1], "BUTLAST");
     if (CL_NULL_P(list)) return CL_NIL;
+    if (!CL_CONS_P(list))
+        cl_signal_type_error(list, "LIST", "BUTLAST");
 
     for (p = list; CL_CONS_P(p); p = cl_cdr(p))
         len++;
@@ -660,6 +678,38 @@ static CL_Obj bi_butlast(CL_Obj *args, int n)
         CL_GC_UNPROTECT(2);
     }
     return result;
+}
+
+/* Destructive butlast: mutate the input list so that the last `count` conses
+ * are removed, and return the (possibly empty) prefix.  Per CLHS, returns
+ * the original list (eq) when at least one cons is kept; nil otherwise. */
+static CL_Obj bi_nbutlast(CL_Obj *args, int n)
+{
+    CL_Obj list = args[0];
+    int32_t count = 1;
+    int32_t len = 0;
+    int32_t keep;
+    CL_Obj p;
+    int32_t i;
+
+    if (n >= 2)
+        count = extract_count_or_clamp(args[1], "NBUTLAST");
+    if (CL_NULL_P(list)) return CL_NIL;
+    if (!CL_CONS_P(list))
+        cl_signal_type_error(list, "LIST", "NBUTLAST");
+
+    for (p = list; CL_CONS_P(p); p = cl_cdr(p))
+        len++;
+
+    keep = (count >= len) ? 0 : len - count;
+    if (keep <= 0) return CL_NIL;
+
+    /* Walk to the (keep-1)-th cons and set its cdr to nil. */
+    p = list;
+    for (i = 0; i < keep - 1; i++)
+        p = cl_cdr(p);
+    ((CL_Cons *)CL_OBJ_TO_PTR(p))->cdr = CL_NIL;
+    return list;
 }
 
 static CL_Obj bi_copy_tree(CL_Obj *args, int n)
@@ -806,7 +856,7 @@ mapcan_done:
 
 static CL_Obj bi_maplist(CL_Obj *args, int n)
 {
-    CL_Obj func = args[0];
+    CL_Obj func = cl_coerce_funcdesig(args[0], "MAPLIST");
     int nlists = n - 1;
     CL_Obj lists[16];
     CL_Obj call_args[16];
@@ -957,30 +1007,46 @@ static CL_Obj bi_make_list(CL_Obj *args, int n)
     int i;
     CL_Obj kw_init;
 
-    if (!CL_FIXNUM_P(args[0]))
-        cl_error(CL_ERR_TYPE, "MAKE-LIST: size must be a fixnum");
+    if (!CL_FIXNUM_P(args[0]) || CL_FIXNUM_VAL(args[0]) < 0)
+        cl_signal_type_error(args[0], "UNSIGNED-BYTE", "MAKE-LIST");
     count = CL_FIXNUM_VAL(args[0]);
-    if (count < 0)
-        cl_error(CL_ERR_ARGS, "MAKE-LIST: size must be non-negative");
 
-    /* Parse :initial-element keyword. CLHS 3.4.1.4.1: leftmost wins. */
-    kw_init = cl_intern_in("INITIAL-ELEMENT", 15, cl_package_keyword);
+    /* Detect odd count first (e.g. trailing :initial-element with no value). */
+    if (n > 1 && ((n - 1) & 1))
+        cl_error(CL_ERR_ARGS, "MAKE-LIST: odd number of keyword arguments");
+
+    /* Parse keyword args: scan for :allow-other-keys first (leftmost wins) */
     {
-        int found = 0;
+        int allow_other = 0;
+        int aok_found = 0;
         for (i = 1; i < n - 1; i += 2) {
-            if (args[i] == kw_init) {
-                if (!found) {
-                    init_elem = args[i + 1];
-                    found = 1;
-                }
-            } else {
-                cl_error(CL_ERR_ARGS, "MAKE-LIST: unknown keyword %s",
-                         CL_SYMBOL_P(args[i]) ? cl_symbol_name(args[i]) : "?");
+            if (args[i] == KW_ALLOW_OTHER_KEYS && !aok_found) {
+                allow_other = !CL_NULL_P(args[i + 1]);
+                aok_found = 1;
             }
         }
-        /* Detect odd count (e.g. trailing :initial-element with no value). */
-        if (n > 1 && ((n - 1) & 1))
-            cl_error(CL_ERR_ARGS, "MAKE-LIST: odd number of keyword arguments");
+
+        /* Now scan for :initial-element (leftmost wins) and validate
+         * unknown keywords if allow-other-keys is not set. */
+        kw_init = cl_intern_in("INITIAL-ELEMENT", 15, cl_package_keyword);
+        {
+            int found = 0;
+            for (i = 1; i < n - 1; i += 2) {
+                if (args[i] == kw_init) {
+                    if (!found) {
+                        init_elem = args[i + 1];
+                        found = 1;
+                    }
+                } else if (args[i] == KW_ALLOW_OTHER_KEYS) {
+                    /* already consumed */
+                } else if (!allow_other) {
+                    cl_error(CL_ERR_ARGS,
+                             "MAKE-LIST: unknown keyword %s",
+                             CL_SYMBOL_P(args[i]) ? cl_symbol_name(args[i])
+                                                  : "?");
+                }
+            }
+        }
     }
 
     CL_GC_PROTECT(result);
@@ -1055,6 +1121,7 @@ void cl_builtins_lists_init(void)
 
     /* Copy/construction */
     defun("BUTLAST", bi_butlast, 1, 2);
+    defun("NBUTLAST", bi_nbutlast, 1, 2);
     defun("COPY-TREE", bi_copy_tree, 1, 1);
 
     /* Phase 8 Step 1 */

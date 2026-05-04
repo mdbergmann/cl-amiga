@@ -53,6 +53,14 @@
                               (common-lisp:symbol-value
                                'common-lisp-user::*aux-dir*)))
 
+;; random-aux.lsp defines RANDOM-CASE / random list builders used by
+;; cons-aux's RANDOM-SET-EXCLUSIVE-OR-TEST and friends.  Not loaded by
+;; ansi-aux itself, so we load it here.
+(common-lisp-user::compile-and-load
+ (common-lisp:merge-pathnames "random-aux.lsp"
+                              (common-lisp:symbol-value
+                               'common-lisp-user::*aux-dir*)))
+
 ;; --- Load cons chapter (paths relative to ansi-test root) ---
 (common-lisp:format common-lisp:t "~%--- Loading cons chapter ---~%")
 (common-lisp:load

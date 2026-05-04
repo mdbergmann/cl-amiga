@@ -537,6 +537,14 @@ static CL_Obj bi_mapcar(CL_Obj *args, int n)
         /* Call function */
         if (CL_FUNCTION_P(func)) {
             CL_Function *f = (CL_Function *)CL_OBJ_TO_PTR(func);
+            if (nlists < f->min_args)
+                cl_error(CL_ERR_ARGS,
+                         "MAPCAR: too few arguments to function (got %d, min %d)",
+                         nlists, f->min_args);
+            if (f->max_args >= 0 && nlists > f->max_args)
+                cl_error(CL_ERR_ARGS,
+                         "MAPCAR: too many arguments to function (got %d, max %d)",
+                         nlists, f->max_args);
             val = f->func(call_args, nlists);
         } else if (CL_BYTECODE_P(func) || CL_CLOSURE_P(func)) {
             val = cl_vm_apply(func, call_args, nlists);

@@ -2517,55 +2517,144 @@ static void compile_setf_place(CL_Compiler *c, CL_Obj place, CL_Obj val_form)
             cl_emit(c, OP_CALL);
             cl_emit(c, 3);
         } else if (head == SETF_SYM_GETF) {
-            /* (setf (getf PLACE IND) VAL).
+            /* (setf (getf PLACE IND [DEFAULT]) VAL).
              *
-             * CLHS §5.1.2.4: if IND is missing from the plist, a new
-             * (IND VAL) pair must be PREPENDED to PLACE — which means
-             * PLACE itself must be reassigned, not just the plist
-             * mutated.  We rewrite to
-             *   (let ((#:v VAL)) (setf PLACE (%setf-getf PLACE IND #:v)) #:v)
-             * and recompile, letting the existing SETF machinery handle
-             * whatever kind of place PLACE is (lexical, special, nested
-             * setf-expander, …).  VAL is evaluated once; IND and PLACE
-             * are evaluated twice — tolerable for symbol places, which
-             * is the only case that reaches here in practice. */
-            CL_Obj place_arg = cl_car(cl_cdr(place));          /* PLACE */
-            CL_Obj ind_arg   = cl_car(cl_cdr(cl_cdr(place)));  /* IND   */
+             * CLHS §5.1.2.4: if IND is missing from PLACE's plist, a new
+             * (IND VAL) pair must be PREPENDED to PLACE — so PLACE itself
+             * must be reassigned, not just mutated.  CLHS §5.1.1.1.1
+             * additionally requires every subform of PLACE — that is, the
+             * PLACE form, IND, and DEFAULT — to be evaluated once,
+             * left-to-right, before VAL.  Per CLHS, DEFAULT may be
+             * evaluated when used in a setf context even though its value
+             * is ignored; the ansi-test suite (setf-getf.5) relies on this.
+             *
+             * We rewrite to
+             *   (let* (T-subforms-of-PLACE...
+             *          (#:i IND)
+             *          (#:d DEFAULT)   ; only if DEFAULT supplied
+             *          (#:v VAL))
+             *     (setf PLACE-using-T-temps
+             *           (%setf-getf PLACE-using-T-temps #:i #:v))
+             *     #:v)
+             * and recompile, letting nested SETF machinery handle whatever
+             * kind of inner place we end up with.
+             *
+             * For a symbol PLACE there are no subform temps; for a CONS
+             * place (e.g. (CAR X)) we bind each argument of the place to a
+             * gensym and reuse them in both the SETF target and the helper
+             * call so the place is read only once. */
+            CL_Obj place_arg  = cl_car(cl_cdr(place));          /* PLACE */
+            CL_Obj ind_arg    = cl_car(cl_cdr(cl_cdr(place)));  /* IND   */
+            CL_Obj rest3      = cl_cdr(cl_cdr(cl_cdr(place)));  /* (DEFAULT) or () */
+            int has_default   = !CL_NULL_P(rest3);
+            CL_Obj default_arg = has_default ? cl_car(rest3) : CL_NIL;
+            CL_Obj gensym_i  = cl_gensym_with_name("I");
+            CL_Obj gensym_d  = has_default ? cl_gensym_with_name("D") : CL_NIL;
             CL_Obj gensym_v  = cl_gensym_with_name("V");
+            CL_Obj inner_place;            /* PLACE form rewritten with temps */
+            CL_Obj sub_bindings = CL_NIL;  /* temps from PLACE's subforms (if cons) */
             CL_Obj helper_call, setf_place_form, let_bindings, let_form;
 
             CL_GC_PROTECT(place_arg);
             CL_GC_PROTECT(ind_arg);
+            CL_GC_PROTECT(default_arg);
+            CL_GC_PROTECT(gensym_i);
+            CL_GC_PROTECT(gensym_d);
             CL_GC_PROTECT(gensym_v);
+            CL_GC_PROTECT(sub_bindings);
 
-            /* (%setf-getf PLACE IND #:v) */
+            /* If PLACE is a CONS, decompose its subforms into temp bindings
+             * and rebuild PLACE using those temps so it reads only once. */
+            if (CL_CONS_P(place_arg)) {
+                CL_Obj op = cl_car(place_arg);
+                CL_Obj rest = cl_cdr(place_arg);
+                CL_Obj temps_head = CL_NIL, temps_tail = CL_NIL;
+                CL_Obj bind_head = CL_NIL, bind_tail = CL_NIL;
+                CL_GC_PROTECT(temps_head);
+                CL_GC_PROTECT(temps_tail);
+                CL_GC_PROTECT(bind_head);
+                CL_GC_PROTECT(bind_tail);
+                while (!CL_NULL_P(rest)) {
+                    CL_Obj sub = cl_car(rest);
+                    CL_Obj gs = cl_gensym_with_name("T");
+                    CL_Obj cell, binding;
+                    /* binding: (gs sub) */
+                    binding = cl_cons(sub, CL_NIL);
+                    binding = cl_cons(gs, binding);
+                    cell = cl_cons(binding, CL_NIL);
+                    if (CL_NULL_P(bind_head)) bind_head = cell;
+                    else ((CL_Cons *)CL_OBJ_TO_PTR(bind_tail))->cdr = cell;
+                    bind_tail = cell;
+                    /* temps list */
+                    cell = cl_cons(gs, CL_NIL);
+                    if (CL_NULL_P(temps_head)) temps_head = cell;
+                    else ((CL_Cons *)CL_OBJ_TO_PTR(temps_tail))->cdr = cell;
+                    temps_tail = cell;
+                    rest = cl_cdr(rest);
+                }
+                inner_place = cl_cons(op, temps_head);
+                sub_bindings = bind_head;
+                CL_GC_UNPROTECT(4);
+            } else {
+                inner_place = place_arg;
+            }
+            CL_GC_PROTECT(inner_place);
+
+            /* (%setf-getf inner_place #:i #:v) */
             helper_call = cl_cons(gensym_v, CL_NIL);
             CL_GC_PROTECT(helper_call);
-            helper_call = cl_cons(ind_arg, helper_call);
-            helper_call = cl_cons(place_arg, helper_call);
+            helper_call = cl_cons(gensym_i, helper_call);
+            helper_call = cl_cons(inner_place, helper_call);
             helper_call = cl_cons(SETF_HELPER_GETF, helper_call);
 
-            /* (setf PLACE helper_call) */
+            /* (setf inner_place helper_call) */
             setf_place_form = cl_cons(helper_call, CL_NIL);
             CL_GC_PROTECT(setf_place_form);
-            setf_place_form = cl_cons(place_arg, setf_place_form);
+            setf_place_form = cl_cons(inner_place, setf_place_form);
             setf_place_form = cl_cons(SYM_SETF, setf_place_form);
 
-            /* ((#:v VAL)) */
-            let_bindings = cl_cons(val_form, CL_NIL);
+            /* Build let* bindings:
+             *   sub_bindings ++ ((#:i IND) [(#:d DEFAULT)] (#:v VAL))
+             */
+            {
+                CL_Obj b_v, b_i, b_d, head_b, tail_b;
+                b_v = cl_cons(val_form, CL_NIL);
+                b_v = cl_cons(gensym_v, b_v);
+                b_v = cl_cons(b_v, CL_NIL);
+                head_b = b_v; tail_b = b_v;
+                if (has_default) {
+                    b_d = cl_cons(default_arg, CL_NIL);
+                    b_d = cl_cons(gensym_d, b_d);
+                    b_d = cl_cons(b_d, head_b);
+                    head_b = b_d;
+                }
+                b_i = cl_cons(ind_arg, CL_NIL);
+                b_i = cl_cons(gensym_i, b_i);
+                b_i = cl_cons(b_i, head_b);
+                head_b = b_i;
+                /* prepend sub_bindings */
+                if (!CL_NULL_P(sub_bindings)) {
+                    /* find tail of sub_bindings, link to head_b */
+                    CL_Obj walk = sub_bindings, prev = CL_NIL;
+                    while (!CL_NULL_P(walk)) { prev = walk; walk = cl_cdr(walk); }
+                    ((CL_Cons *)CL_OBJ_TO_PTR(prev))->cdr = head_b;
+                    let_bindings = sub_bindings;
+                } else {
+                    let_bindings = head_b;
+                }
+                CL_UNUSED(tail_b);
+            }
             CL_GC_PROTECT(let_bindings);
-            let_bindings = cl_cons(gensym_v, let_bindings);
-            let_bindings = cl_cons(let_bindings, CL_NIL);
 
-            /* (let ((#:v VAL)) (setf PLACE ...) #:v) */
+            /* (let* let_bindings (setf ...) #:v) */
             let_form = cl_cons(gensym_v, CL_NIL);
             CL_GC_PROTECT(let_form);
             let_form = cl_cons(setf_place_form, let_form);
             let_form = cl_cons(let_bindings, let_form);
-            let_form = cl_cons(SYM_LET, let_form);
+            let_form = cl_cons(SYM_LETSTAR, let_form);
 
             compile_expr(c, let_form);
-            CL_GC_UNPROTECT(7);
+            CL_GC_UNPROTECT(11);
         } else {
             /* Check defsetf table */
             CL_Obj updater = CL_NIL;
