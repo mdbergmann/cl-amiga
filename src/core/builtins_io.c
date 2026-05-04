@@ -396,15 +396,31 @@ static CL_Obj bi_load(CL_Obj *args, int n)
             cl_current_package = pkg_val;
     }
 
-    if (CL_PATHNAME_P(args[0])) {
-        /* Convert pathname to namestring */
-        char ns_buf[1024];
+    /* Per CL spec: merge filespec with *default-pathname-defaults* so that
+       relative paths resolve against the caller's bound default, not just cwd.
+       Both string and pathname inputs are coerced through MERGE-PATHNAMES. */
+    {
+        extern CL_Obj cl_parse_namestring(const char *str, uint32_t len);
         extern const char *cl_coerce_to_namestring(CL_Obj arg, char *buf, uint32_t bufsz);
-        cl_coerce_to_namestring(args[0], ns_buf, sizeof(ns_buf));
+        extern CL_Obj bi_merge_pathnames(CL_Obj *args, int n);
+        CL_Obj path_pn;
+        CL_Obj merge_args[1];
+        char ns_buf[1024];
+
+        if (CL_PATHNAME_P(args[0])) {
+            path_pn = args[0];
+        } else if (CL_STRING_P(args[0])) {
+            CL_String *s = (CL_String *)CL_OBJ_TO_PTR(args[0]);
+            path_pn = cl_parse_namestring(s->data, s->length);
+        } else {
+            cl_error(CL_ERR_TYPE, "LOAD: argument must be a string or pathname");
+            path_pn = CL_NIL;  /* unreachable */
+        }
+        merge_args[0] = path_pn;
+        path_pn = bi_merge_pathnames(merge_args, 1);
+        cl_coerce_to_namestring(path_pn, ns_buf, sizeof(ns_buf));
         args[0] = cl_make_string(ns_buf, (uint32_t)strlen(ns_buf));
     }
-    if (!CL_STRING_P(args[0]))
-        cl_error(CL_ERR_TYPE, "LOAD: argument must be a string or pathname");
     /* Expand leading ~ to home directory */
     {
         CL_String *tmp_s = (CL_String *)CL_OBJ_TO_PTR(args[0]);
@@ -972,10 +988,42 @@ static void make_fasl_path(const char *input, char *output, uint32_t outsize)
  * the existing convention — they have no side effects worth running and need
  * no FASL serialization.
  */
+/* Append `bytecode` into the collected-bytecodes vector, growing if needed.
+ * The vector is a Lisp object (not a host alloc) so its slots are GC roots
+ * via *bc_vec_p — bytecodes accumulated here survive any GC triggered by
+ * later top-level forms in the same compile-file run.  Without this, a
+ * top-level form whose bytecode is not anchored by a defun (e.g. a bare
+ * (format t ...)) gets swept once arena pressure rises, and the FASL
+ * serializer then dereferences a stale CL_Obj — observed as a SIGSEGV in
+ * cl_fasl_serialize_bytecode under heavy quicklisp loads. */
+static void cf_bc_vec_append(CL_Obj *bc_vec_p, int *bc_count_p, CL_Obj bytecode)
+{
+    CL_Vector *vec = (CL_Vector *)CL_OBJ_TO_PTR(*bc_vec_p);
+    if ((uint32_t)*bc_count_p >= vec->length) {
+        CL_Obj new_vec_obj;
+        CL_Vector *new_vec;
+        uint32_t i;
+        uint32_t new_len = vec->length ? vec->length * 2 : 4096;
+        /* GC-protect bytecode across the allocation — it is not yet rooted
+         * via the vector. */
+        CL_GC_PROTECT(bytecode);
+        new_vec_obj = cl_make_vector(new_len);
+        CL_GC_UNPROTECT(1);
+        if (CL_NULL_P(new_vec_obj)) return;  /* OOM: drop this bytecode */
+        /* Re-fetch old vec — cl_make_vector may have triggered GC compaction. */
+        vec = (CL_Vector *)CL_OBJ_TO_PTR(*bc_vec_p);
+        new_vec = (CL_Vector *)CL_OBJ_TO_PTR(new_vec_obj);
+        for (i = 0; i < (uint32_t)*bc_count_p; i++)
+            new_vec->data[i] = vec->data[i];
+        *bc_vec_p = new_vec_obj;
+        vec = new_vec;
+    }
+    vec->data[(*bc_count_p)++] = bytecode;
+}
+
 static void cf_process_toplevel_form(CL_Obj expr,
-                                     CL_Obj **bc_collected_p,
-                                     int *bc_count_p,
-                                     uint32_t *bc_cap_p)
+                                     CL_Obj *bc_vec_p,
+                                     int *bc_count_p)
 {
     CL_Obj bytecode;
 
@@ -984,7 +1032,7 @@ static void cf_process_toplevel_form(CL_Obj expr,
         CL_GC_PROTECT(subs);
         while (!CL_NULL_P(subs)) {
             CL_Obj sub = cl_car(subs);
-            cf_process_toplevel_form(sub, bc_collected_p, bc_count_p, bc_cap_p);
+            cf_process_toplevel_form(sub, bc_vec_p, bc_count_p);
             subs = cl_cdr(subs);
         }
         CL_GC_UNPROTECT(1);
@@ -1002,22 +1050,8 @@ static void cf_process_toplevel_form(CL_Obj expr,
     CL_GC_PROTECT(bytecode);
     cl_vm_eval(bytecode);
     cl_gc_compact_if_pending();
+    cf_bc_vec_append(bc_vec_p, bc_count_p, bytecode);
     CL_GC_UNPROTECT(1);
-
-    if (*bc_count_p >= (int)*bc_cap_p) {
-        CL_Obj *nb;
-        uint32_t newcap = *bc_cap_p * 2;
-        nb = (CL_Obj *)platform_alloc(newcap * sizeof(CL_Obj));
-        if (nb) {
-            memcpy(nb, *bc_collected_p, *bc_count_p * sizeof(CL_Obj));
-            platform_free(*bc_collected_p);
-            *bc_collected_p = nb;
-            *bc_cap_p = newcap;
-        }
-    }
-    if (*bc_count_p < (int)*bc_cap_p) {
-        (*bc_collected_p)[(*bc_count_p)++] = bytecode;
-    }
 }
 
 /* --- compile-file ---
@@ -1060,10 +1094,12 @@ static CL_Obj bi_compile_file(CL_Obj *args, int n)
     uint8_t *unit_buf = NULL;
     uint32_t unit_capacity = 32 * 1024;  /* 32KB per unit */
 
-    /* Collected bytecodes for deferred FASL serialization */
-    CL_Obj *bc_collected = NULL;
+    /* Collected bytecodes for deferred FASL serialization.  Stored in a
+     * Lisp vector (not a host array) so the bytecodes are GC roots —
+     * required because top-level forms accumulate across many GCs and
+     * un-anchored bytecodes (no defun target) would otherwise be swept. */
+    CL_Obj bc_vec = CL_NIL;
     int bc_collect_count = 0;
-    uint32_t bc_collect_capacity = 4096;
 
     uint32_t n_units = 0;
     int fasl_incomplete = 0;  /* set if any unit fails to serialize */
@@ -1078,26 +1114,39 @@ static CL_Obj bi_compile_file(CL_Obj *args, int n)
             cl_current_package = pkg_val2;
     }
 
-    /* Resolve input path */
-    if (CL_PATHNAME_P(args[0])) {
-        cl_coerce_to_namestring(args[0], in_path, sizeof(in_path));
-    } else if (CL_STRING_P(args[0])) {
-        CL_String *s = (CL_String *)CL_OBJ_TO_PTR(args[0]);
-        const char *expanded = platform_expand_home(s->data, in_path, (int)sizeof(in_path));
+    /* Resolve input path: parse, merge with *default-pathname-defaults*
+       per CL spec, then expand ~. */
+    {
+        extern CL_Obj bi_merge_pathnames(CL_Obj *args, int n);
+        CL_Obj path_pn;
+        CL_Obj merge_args[1];
+        char ns_buf[1024];
+        const char *expanded;
+
+        if (CL_PATHNAME_P(args[0])) {
+            path_pn = args[0];
+        } else if (CL_STRING_P(args[0])) {
+            CL_String *s = (CL_String *)CL_OBJ_TO_PTR(args[0]);
+            path_pn = cl_parse_namestring(s->data, s->length);
+        } else {
+            cl_error(CL_ERR_TYPE, "COMPILE-FILE: argument must be a string or pathname");
+            return CL_NIL;
+        }
+        merge_args[0] = path_pn;
+        path_pn = bi_merge_pathnames(merge_args, 1);
+        cl_coerce_to_namestring(path_pn, ns_buf, sizeof(ns_buf));
+
+        expanded = platform_expand_home(ns_buf, in_path, (int)sizeof(in_path));
         if (expanded != in_path) {
-            /* No expansion — copy raw string */
-            if (s->length < sizeof(in_path)) {
-                memcpy(in_path, s->data, s->length);
-                in_path[s->length] = '\0';
-            } else {
+            /* No ~ expansion — copy merged namestring as-is */
+            size_t nslen = strlen(ns_buf);
+            if (nslen >= sizeof(in_path)) {
                 cl_error(CL_ERR_GENERAL, "COMPILE-FILE: path too long");
                 return CL_NIL;
             }
+            memcpy(in_path, ns_buf, nslen);
+            in_path[nslen] = '\0';
         }
-        /* else: expanded path is already in in_path */
-    } else {
-        cl_error(CL_ERR_TYPE, "COMPILE-FILE: argument must be a string or pathname");
-        return CL_NIL;
     }
 
     /* Default output: cache path, fallback to next-to-source */
@@ -1182,16 +1231,24 @@ static CL_Obj bi_compile_file(CL_Obj *args, int n)
     fasl_buf = (uint8_t *)platform_alloc(fasl_capacity);
     unit_buf = (uint8_t *)platform_alloc(unit_capacity);
     w = (CL_FaslWriter *)platform_alloc(sizeof(CL_FaslWriter));
-    bc_collected = (CL_Obj *)platform_alloc(bc_collect_capacity * sizeof(CL_Obj));
-    if (!fasl_buf || !unit_buf || !w || !bc_collected) {
+    if (!fasl_buf || !unit_buf || !w) {
         if (fasl_buf) platform_free(fasl_buf);
         if (unit_buf) platform_free(unit_buf);
         if (w) platform_free(w);
-        if (bc_collected) platform_free(bc_collected);
         platform_free(src_buf);
         cl_error(CL_ERR_GENERAL, "COMPILE-FILE: out of memory");
         return CL_NIL;
     }
+    bc_vec = cl_make_vector(4096);
+    if (CL_NULL_P(bc_vec)) {
+        platform_free(fasl_buf);
+        platform_free(unit_buf);
+        platform_free(w);
+        platform_free(src_buf);
+        cl_error(CL_ERR_GENERAL, "COMPILE-FILE: out of memory (bytecode vector)");
+        return CL_NIL;
+    }
+    CL_GC_PROTECT(bc_vec);
 
     /* Write header placeholder (n_units=0, patched later) */
     cl_fasl_writer_init(w, fasl_buf, fasl_capacity);
@@ -1241,8 +1298,7 @@ static CL_Obj bi_compile_file(CL_Obj *args, int n)
             fflush(stderr);
 #endif
             CL_GC_PROTECT(expr);
-            cf_process_toplevel_form(expr, &bc_collected, &bc_collect_count,
-                                     &bc_collect_capacity);
+            cf_process_toplevel_form(expr, &bc_vec, &bc_collect_count);
             CL_GC_UNPROTECT(1);
             CL_UNCATCH();
         } else {
@@ -1254,10 +1310,9 @@ static CL_Obj bi_compile_file(CL_Obj *args, int n)
             CL_UNCATCH();
             /* Propagate exit request — don't swallow (quit) */
             if (err == CL_ERR_EXIT) {
-                CL_GC_UNPROTECT(1); /* stream */
+                CL_GC_UNPROTECT(2); /* stream, bc_vec */
                 cl_stream_close(stream);
                 platform_free(src_buf);
-                if (bc_collected) platform_free(bc_collected);
                 cl_error(CL_ERR_EXIT, "");
             }
             cl_error_print();
@@ -1275,16 +1330,10 @@ static CL_Obj bi_compile_file(CL_Obj *args, int n)
     /* --- Deferred FASL serialization --- */
     {
         int bci;
-
-        /* GC-protect all collected bytecodes during serialization.
-         * They are heap objects that could have been swept/compacted
-         * during earlier evaluations if not protected. */
-        for (bci = 0; bci < bc_collect_count; bci++) {
-            CL_GC_PROTECT(bc_collected[bci]);
-        }
+        CL_Vector *bc_vec_ptr = (CL_Vector *)CL_OBJ_TO_PTR(bc_vec);
 
         for (bci = 0; bci < bc_collect_count && !fasl_incomplete; bci++) {
-            CL_Obj bc = bc_collected[bci];
+            CL_Obj bc = bc_vec_ptr->data[bci];
             int unit_err = FASL_OK;
 
 #ifdef DEBUG_COMPILER
@@ -1331,10 +1380,6 @@ static CL_Obj bi_compile_file(CL_Obj *args, int n)
             }
         }
 
-        /* Unprotect all collected bytecodes (in reverse order) */
-        if (bc_collect_count > 0) {
-            CL_GC_UNPROTECT(bc_collect_count);
-        }
     }
 
 #ifdef DEBUG_COMPILER
@@ -1364,8 +1409,9 @@ static CL_Obj bi_compile_file(CL_Obj *args, int n)
             if (fh == PLATFORM_FILE_INVALID) {
                 platform_free(fasl_buf);
                 platform_free(unit_buf);
+                if (w) cl_fasl_writer_release(w);
                 platform_free(w);
-                if (bc_collected) platform_free(bc_collected);
+                CL_GC_UNPROTECT(1); /* bc_vec */
                 cl_error(CL_ERR_GENERAL, "COMPILE-FILE: cannot create output file: %s", out_path);
                 return CL_NIL;
             }
@@ -1378,7 +1424,7 @@ static CL_Obj bi_compile_file(CL_Obj *args, int n)
     platform_free(unit_buf);
     if (w) cl_fasl_writer_release(w);
     platform_free(w);
-    if (bc_collected) platform_free(bc_collected);
+    CL_GC_UNPROTECT(1); /* bc_vec */
     /* Restore *compile-file-pathname* and *compile-file-truename* */
     cl_set_symbol_value(SYM_STAR_COMPILE_FILE_PATHNAME, saved_cfp);
     cl_set_symbol_value(SYM_STAR_COMPILE_FILE_TRUENAME, saved_cft);
@@ -1424,24 +1470,38 @@ static CL_Obj bi_compile_file_pathname(CL_Obj *args, int n)
     extern const char *cl_coerce_to_namestring(CL_Obj arg, char *buf, uint32_t bufsz);
     extern CL_Obj cl_parse_namestring(const char *str, uint32_t len);
 
-    /* Resolve input path */
-    if (CL_PATHNAME_P(args[0])) {
-        cl_coerce_to_namestring(args[0], in_path, sizeof(in_path));
-    } else if (CL_STRING_P(args[0])) {
-        CL_String *s = (CL_String *)CL_OBJ_TO_PTR(args[0]);
-        const char *expanded = platform_expand_home(s->data, in_path, (int)sizeof(in_path));
+    /* Resolve input path: parse, merge with *default-pathname-defaults*,
+       then expand ~. */
+    {
+        extern CL_Obj bi_merge_pathnames(CL_Obj *margs, int mn);
+        CL_Obj path_pn;
+        CL_Obj merge_args[1];
+        char ns_buf[1024];
+        const char *expanded;
+
+        if (CL_PATHNAME_P(args[0])) {
+            path_pn = args[0];
+        } else if (CL_STRING_P(args[0])) {
+            CL_String *s = (CL_String *)CL_OBJ_TO_PTR(args[0]);
+            path_pn = cl_parse_namestring(s->data, s->length);
+        } else {
+            cl_error(CL_ERR_TYPE, "COMPILE-FILE-PATHNAME: argument must be a string or pathname");
+            return CL_NIL;
+        }
+        merge_args[0] = path_pn;
+        path_pn = bi_merge_pathnames(merge_args, 1);
+        cl_coerce_to_namestring(path_pn, ns_buf, sizeof(ns_buf));
+
+        expanded = platform_expand_home(ns_buf, in_path, (int)sizeof(in_path));
         if (expanded != in_path) {
-            if (s->length < sizeof(in_path)) {
-                memcpy(in_path, s->data, s->length);
-                in_path[s->length] = '\0';
-            } else {
+            size_t nslen = strlen(ns_buf);
+            if (nslen >= sizeof(in_path)) {
                 cl_error(CL_ERR_GENERAL, "COMPILE-FILE-PATHNAME: path too long");
                 return CL_NIL;
             }
+            memcpy(in_path, ns_buf, nslen);
+            in_path[nslen] = '\0';
         }
-    } else {
-        cl_error(CL_ERR_TYPE, "COMPILE-FILE-PATHNAME: argument must be a string or pathname");
-        return CL_NIL;
     }
 
     /* Default: cache path, fallback to next-to-source */

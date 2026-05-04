@@ -187,6 +187,30 @@ static CL_Obj bi_find_package(CL_Obj *args, int nargs)
     return cl_find_package(name, len);
 }
 
+/* (clamiga::%set-current-package designator) — runtime in-package fallback.
+ * Used by compile_in_package when the named package can't be resolved at
+ * compile time (e.g. when a top-level let-body bundles `(load <file>)` and
+ * `(in-package :PKG)` so that PKG is created by the load only at run time). */
+static CL_Obj bi_pct_set_current_package(CL_Obj *args, int nargs)
+{
+    const char *name;
+    uint32_t len;
+    CL_Obj pkg;
+    (void)nargs;
+
+    if (CL_PACKAGE_P(args[0])) {
+        pkg = args[0];
+    } else {
+        get_name_str(args[0], &name, &len);
+        pkg = cl_find_package(name, len);
+        if (CL_NULL_P(pkg))
+            cl_error(CL_ERR_GENERAL, "Package %.*s not found", (int)len, name);
+    }
+    cl_set_symbol_value(SYM_STAR_PACKAGE, pkg);
+    cl_current_package = pkg;
+    return pkg;
+}
+
 /* (delete-package package) */
 static CL_Obj bi_delete_package(CL_Obj *args, int nargs)
 {
@@ -790,6 +814,7 @@ void cl_builtins_package_init(void)
     defun("LIST-ALL-PACKAGES", bi_list_all_packages, 0, 0);
     cl_register_builtin("%PACKAGE-SYMBOLS", bi_package_symbols, 1, 1, cl_package_clamiga);
     cl_register_builtin("%PACKAGE-EXTERNAL-SYMBOLS", bi_package_external_symbols, 1, 1, cl_package_clamiga);
+    cl_register_builtin("%SET-CURRENT-PACKAGE", bi_pct_set_current_package, 1, 1, cl_package_clamiga);
     defun("PACKAGE-LOCAL-NICKNAMES", bi_package_local_nicknames, 1, 1);
     defun("ADD-PACKAGE-LOCAL-NICKNAME", bi_add_package_local_nickname, 2, 3);
     defun("REMOVE-PACKAGE-LOCAL-NICKNAME", bi_remove_package_local_nickname, 1, 2);
