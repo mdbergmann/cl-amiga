@@ -8,9 +8,7 @@
 #include "builtins.h"
 #include "symbol.h"
 #include "package.h"
-#ifdef DEBUG_CONDITION
 #include <stdio.h>
-#endif
 #include "mem.h"
 #include "error.h"
 #include "vm.h"
@@ -698,6 +696,60 @@ static CL_Obj bi_set_condition_slot_value(CL_Obj *args, int n)
 }
 
 /* --- Signaling --- */
+
+/* Build and signal a TYPE-ERROR with :datum and :expected-type slots
+ * populated, then unwind through the standard error path.
+ *
+ * cl_error / cl_create_condition_from_error build a condition with only
+ * :format-control set, so handler-case clauses calling type-error-datum
+ * or type-error-expected-type get NIL.  The ANSI conformance tests
+ * (signals-type-error, check-type-error) compare datum against the
+ * original argument and fail when datum is NIL.  Use this helper from
+ * call sites that already know both values (car, cdr, rplaca/rplacd,
+ * etc.) so the slots survive into Lisp-land. */
+void cl_signal_type_error(CL_Obj datum, const char *expected_type_name,
+                          const char *fn_name)
+{
+    CL_Obj expected_type;
+    CL_Obj report = CL_NIL;
+    CL_Obj slots = CL_NIL;
+    CL_Obj cond;
+    char msgbuf[128];
+
+    CL_GC_PROTECT(datum);
+    expected_type = cl_intern_in(expected_type_name,
+                                 (uint32_t)strlen(expected_type_name),
+                                 cl_package_cl);
+    CL_GC_PROTECT(expected_type);
+
+    snprintf(msgbuf, sizeof(msgbuf),
+             "%s: argument is not of type %s", fn_name, expected_type_name);
+    report = cl_make_string(msgbuf, (uint32_t)strlen(msgbuf));
+    CL_GC_PROTECT(report);
+
+    /* slots = ((:datum . datum)
+     *          (:expected-type . expected_type)
+     *          (:format-control . report))
+     * Built tail-first so each cl_cons sees its predecessor protected via
+     * the head of `slots`. */
+    {
+        CL_Obj pair;
+        pair = cl_cons(KW_FORMAT_CONTROL, report);
+        slots = cl_cons(pair, CL_NIL);
+        CL_GC_PROTECT(slots);
+        pair = cl_cons(KW_EXPECTED_TYPE, expected_type);
+        slots = cl_cons(pair, slots);
+        pair = cl_cons(KW_DATUM, datum);
+        slots = cl_cons(pair, slots);
+    }
+
+    cond = cl_make_condition(SYM_TYPE_ERROR, slots, report);
+
+    CL_GC_UNPROTECT(4); /* datum, expected_type, report, slots */
+
+    cl_signal_condition(cond);
+    cl_error_from_condition(cond);
+}
 
 /* Create a condition object from a C error code and message string */
 CL_Obj cl_create_condition_from_error(int code, const char *msg)

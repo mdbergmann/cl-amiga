@@ -16,15 +16,18 @@ CL_Obj cl_car(CL_Obj obj)
     if (!CL_HEAP_P(obj)) {
         if (obj == CL_UNBOUND)
             cl_error(CL_ERR_TYPE, "CAR: value is unbound (did you reference an uninitialized variable?)");
-        if (CL_FIXNUM_P(obj))
-            cl_error(CL_ERR_TYPE, "CAR: %d is not a list", CL_FIXNUM_VAL(obj));
-        if (CL_CHAR_P(obj))
-            cl_error(CL_ERR_TYPE, "CAR: #\\%c is not a list", (char)CL_CHAR_VAL(obj));
-        cl_error(CL_ERR_TYPE, "CAR: invalid object 0x%08x is not a list", (unsigned)obj);
+        cl_signal_type_error(obj, "LIST", "CAR");
     }
     if (obj >= cl_heap.arena_size)
         cl_storage_error("CAR: corrupted pointer 0x%08x (arena size 0x%08x)",
                          (unsigned)obj, (unsigned)cl_heap.arena_size);
+    /* Heap object must actually be a cons.  Without this check (heap)
+     * symbols, strings, vectors, conditions etc. were silently treated
+     * as conses — (car 'a) would dereference the symbol struct as if
+     * it were a cons and return whatever happened to live at offset 0.
+     * CLHS requires car/cdr to signal type-error on non-list args. */
+    if (CL_HDR_TYPE(CL_OBJ_TO_PTR(obj)) != TYPE_CONS)
+        cl_signal_type_error(obj, "LIST", "CAR");
     return ((CL_Cons *)CL_OBJ_TO_PTR(obj))->car;
 }
 
@@ -34,15 +37,13 @@ CL_Obj cl_cdr(CL_Obj obj)
     if (!CL_HEAP_P(obj)) {
         if (obj == CL_UNBOUND)
             cl_error(CL_ERR_TYPE, "CDR: value is unbound (did you reference an uninitialized variable?)");
-        if (CL_FIXNUM_P(obj))
-            cl_error(CL_ERR_TYPE, "CDR: %d is not a list", CL_FIXNUM_VAL(obj));
-        if (CL_CHAR_P(obj))
-            cl_error(CL_ERR_TYPE, "CDR: #\\%c is not a list", (char)CL_CHAR_VAL(obj));
-        cl_error(CL_ERR_TYPE, "CDR: invalid object 0x%08x is not a list", (unsigned)obj);
+        cl_signal_type_error(obj, "LIST", "CDR");
     }
     if (obj >= cl_heap.arena_size)
         cl_storage_error("CDR: corrupted pointer 0x%08x (arena size 0x%08x)",
                          (unsigned)obj, (unsigned)cl_heap.arena_size);
+    if (CL_HDR_TYPE(CL_OBJ_TO_PTR(obj)) != TYPE_CONS)
+        cl_signal_type_error(obj, "LIST", "CDR");
     {
         CL_Obj result = ((CL_Cons *)CL_OBJ_TO_PTR(obj))->cdr;
 #ifdef DEBUG_GC
