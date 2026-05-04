@@ -25,7 +25,7 @@ static CL_Obj bi_rplaca(CL_Obj *args, int n)
     CL_Cons *cell;
     CL_UNUSED(n);
     if (!CL_CONS_P(args[0]))
-        cl_error(CL_ERR_TYPE, "RPLACA: not a cons");
+        cl_signal_type_error(args[0], "CONS", "RPLACA");
     cell = (CL_Cons *)CL_OBJ_TO_PTR(args[0]);
     cell->car = args[1];
     return args[0];  /* CL spec: returns the cons */
@@ -36,7 +36,7 @@ static CL_Obj bi_rplacd(CL_Obj *args, int n)
     CL_Cons *cell;
     CL_UNUSED(n);
     if (!CL_CONS_P(args[0]))
-        cl_error(CL_ERR_TYPE, "RPLACD: not a cons");
+        cl_signal_type_error(args[0], "CONS", "RPLACD");
     cell = (CL_Cons *)CL_OBJ_TO_PTR(args[0]);
     cell->cdr = args[1];
     return args[0];  /* CL spec: returns the cons */

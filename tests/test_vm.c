@@ -2384,6 +2384,56 @@ TEST(eval_rplaca_rplacd)
     ASSERT_STR_EQ(eval_print("(let ((x (cons 1 2))) (rplacd x 20))"), "(1 . 20)");
 }
 
+TEST(eval_car_cdr_type_error)
+{
+    /* Regression: car/cdr previously dereferenced any heap object as a
+     * cons.  (car 'a) returned the symbol's first slot, (cdr 'a) the
+     * second — silently corrupting any code that defended itself with
+     * (handler-case ... (type-error ...)).  Now they signal a proper
+     * TYPE-ERROR with :datum and :expected-type slots populated. */
+    ASSERT_STR_EQ(eval_print(
+        "(handler-case (car 'foo) (type-error (c) "
+        "  (list (type-error-datum c) (type-error-expected-type c))))"),
+        "(FOO LIST)");
+    ASSERT_STR_EQ(eval_print(
+        "(handler-case (cdr 5) (type-error (c) "
+        "  (list (type-error-datum c) (type-error-expected-type c))))"),
+        "(5 LIST)");
+    ASSERT_STR_EQ(eval_print(
+        "(handler-case (car #\\a) (type-error (c) "
+        "  (list (type-error-datum c) (type-error-expected-type c))))"),
+        "(#\\a LIST)");
+    ASSERT_STR_EQ(eval_print(
+        "(handler-case (car \"abc\") (type-error (c) "
+        "  (list (type-error-datum c) (type-error-expected-type c))))"),
+        "(\"abc\" LIST)");
+    /* (car nil) is NIL, not an error. */
+    ASSERT_STR_EQ(eval_print("(car nil)"), "NIL");
+    ASSERT_STR_EQ(eval_print("(cdr nil)"), "NIL");
+}
+
+TEST(eval_rplaca_rplacd_type_error)
+{
+    /* Regression: rplaca/rplacd previously errored with a generic
+     * SIMPLE-ERROR-style condition that didn't expose :datum /
+     * :expected-type, so handler-case clauses checking those slots got
+     * NIL.  Now they signal TYPE-ERROR with expected-type CONS (per
+     * CLHS — note: nil is a list but NOT a cons, so (rplaca nil ...)
+     * must error). */
+    ASSERT_STR_EQ(eval_print(
+        "(handler-case (rplaca 'foo 1) (type-error (c) "
+        "  (list (type-error-datum c) (type-error-expected-type c))))"),
+        "(FOO CONS)");
+    ASSERT_STR_EQ(eval_print(
+        "(handler-case (rplacd nil 1) (type-error (c) "
+        "  (list (type-error-datum c) (type-error-expected-type c))))"),
+        "(NIL CONS)");
+    ASSERT_STR_EQ(eval_print(
+        "(handler-case (rplaca #\\a 1) (type-error (c) "
+        "  (list (type-error-datum c) (type-error-expected-type c))))"),
+        "(#\\a CONS)");
+}
+
 TEST(eval_aref_make_array_vectorp)
 {
     ASSERT_STR_EQ(eval_print("(vectorp (make-array 3))"), "T");
@@ -8656,6 +8706,8 @@ int main(void)
     RUN(eval_setf_variable);
     RUN(eval_setf_multiple);
     RUN(eval_rplaca_rplacd);
+    RUN(eval_car_cdr_type_error);
+    RUN(eval_rplaca_rplacd_type_error);
     RUN(eval_aref_make_array_vectorp);
     RUN(eval_setf_svref);
     RUN(eval_aref_string);

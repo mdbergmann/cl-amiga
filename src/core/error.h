@@ -80,6 +80,14 @@ void cl_error(int code, const char *fmt, ...);
  * debugger can dispatch PRINT-OBJECT for a meaningful report. */
 void cl_error_from_condition(CL_Obj condition);
 
+/* Signal a TYPE-ERROR with :datum and :expected-type slots populated,
+ * then unwind. Use this whenever the call site knows both the bad
+ * value and its expected type — it lets handler-case (type-error)
+ * accessors return meaningful values per the HyperSpec. expected_type_name
+ * is interned in COMMON-LISP. */
+void cl_signal_type_error(CL_Obj datum, const char *expected_type_name,
+                          const char *fn_name);
+
 /* Print the current error message */
 void cl_error_print(void);
 
