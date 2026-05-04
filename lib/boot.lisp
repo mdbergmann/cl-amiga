@@ -231,18 +231,25 @@
       (unless (funcall predicate elem)
         (return-from member-if-not l)))))
 
-;; pushnew — push only if not already a member
-(defmacro pushnew (item place &key test)
+;; ADJOIN — override C version with full :test/:test-not/:key support.
+(defun adjoin (item list &key (test nil test-p) (test-not nil test-not-p)
+                              (key nil))
+  (when (and test-p test-not-p)
+    (error "ADJOIN: cannot supply both :TEST and :TEST-NOT"))
+  (let ((pred (cond (test-not-p (complement test-not))
+                    (test-p test)
+                    (t #'eql)))
+        (item-key (if key (funcall key item) item)))
+    (dolist (x list)
+      (when (funcall pred item-key (if key (funcall key x) x))
+        (return-from adjoin list)))
+    (cons item list)))
+
+;; pushnew — push via ADJOIN so :test/:test-not/:key are honored.
+(defmacro pushnew (item place &rest keys)
   (let ((g (gensym)))
-    (if test
-        `(let ((,g ,item))
-           (unless (member ,g ,place :test ,test)
-             (setf ,place (cons ,g ,place)))
-           ,place)
-        `(let ((,g ,item))
-           (unless (member ,g ,place)
-             (setf ,place (cons ,g ,place)))
-           ,place))))
+    `(let ((,g ,item))
+       (setf ,place (adjoin ,g ,place ,@keys)))))
 
 ;; Set operations — support :test, :test-not, :key per CL spec
 ;; Helper: check if keyed-item is in list under test+key
@@ -283,6 +290,144 @@
     (dolist (x list1 (nreverse result))
       (unless (%set-member (if key (funcall key x) x) list2 actual-test key)
         (push x result)))))
+
+;; ASSOC / RASSOC — override the C builtins to add :test-not and :key.
+(defun assoc (item alist &key (test nil test-p) (test-not nil test-not-p)
+                              (key nil))
+  (when (and test-p test-not-p)
+    (error "ASSOC: cannot supply both :TEST and :TEST-NOT"))
+  (let ((pred (cond (test-not-p (complement test-not))
+                    (test-p test)
+                    (t #'eql))))
+    (dolist (pair alist nil)
+      (when (consp pair)
+        (let ((k (car pair)))
+          (when (funcall pred item (if key (funcall key k) k))
+            (return-from assoc pair)))))))
+
+(defun rassoc (item alist &key (test nil test-p) (test-not nil test-not-p)
+                              (key nil))
+  (when (and test-p test-not-p)
+    (error "RASSOC: cannot supply both :TEST and :TEST-NOT"))
+  (let ((pred (cond (test-not-p (complement test-not))
+                    (test-p test)
+                    (t #'eql))))
+    (dolist (pair alist nil)
+      (when (consp pair)
+        (let ((v (cdr pair)))
+          (when (funcall pred item (if key (funcall key v) v))
+            (return-from rassoc pair)))))))
+
+;; SUBLIS / SUBST / NSUBST — override C builtins for full :test/:test-not/:key.
+(defun sublis (alist tree &key (test nil test-p) (test-not nil test-not-p)
+                               (key nil))
+  (when (and test-p test-not-p)
+    (error "SUBLIS: cannot supply both :TEST and :TEST-NOT"))
+  (let ((pred (cond (test-not-p (complement test-not))
+                    (test-p test)
+                    (t #'eql))))
+    (labels ((walk (tree)
+               (let ((tk (if key (funcall key tree) tree)))
+                 (dolist (pair alist)
+                   (when (consp pair)
+                     (when (funcall pred (car pair) tk)
+                       (return-from walk (cdr pair))))))
+               (if (consp tree)
+                   (let ((car-r (walk (car tree)))
+                         (cdr-r (walk (cdr tree))))
+                     (if (and (eq car-r (car tree)) (eq cdr-r (cdr tree)))
+                         tree
+                         (cons car-r cdr-r)))
+                   tree)))
+      (walk tree))))
+
+(defun subst (new old tree &key (test nil test-p) (test-not nil test-not-p)
+                                (key nil))
+  (when (and test-p test-not-p)
+    (error "SUBST: cannot supply both :TEST and :TEST-NOT"))
+  (let ((pred (cond (test-not-p (complement test-not))
+                    (test-p test)
+                    (t #'eql))))
+    (labels ((walk (tree)
+               (cond
+                 ((funcall pred old (if key (funcall key tree) tree)) new)
+                 ((consp tree)
+                  (let ((car-r (walk (car tree)))
+                        (cdr-r (walk (cdr tree))))
+                    (if (and (eq car-r (car tree)) (eq cdr-r (cdr tree)))
+                        tree
+                        (cons car-r cdr-r))))
+                 (t tree))))
+      (walk tree))))
+
+(defun nsubst (new old tree &rest keys)
+  (apply #'subst new old tree keys))
+
+;; NBUTLAST / COPY-ALIST / MAKE-LIST :initial-element
+(defun nbutlast (list &optional (n 1))
+  (butlast list n))
+
+(defun copy-alist (alist)
+  "Return a copy of ALIST in which each pair is itself copied."
+  (let ((result nil))
+    (dolist (pair alist (nreverse result))
+      (push (if (consp pair) (cons (car pair) (cdr pair)) pair) result))))
+
+(defun subst-if (new test tree &key (key nil))
+  "Substitute NEW for every subtree of TREE for which TEST returns true."
+  (cond
+    ((funcall test (if key (funcall key tree) tree)) new)
+    ((consp tree)
+     (let ((car-r (subst-if new test (car tree) :key key))
+           (cdr-r (subst-if new test (cdr tree) :key key)))
+       (if (and (eq car-r (car tree)) (eq cdr-r (cdr tree)))
+           tree
+           (cons car-r cdr-r))))
+    (t tree)))
+
+(defun subst-if-not (new test tree &key (key nil))
+  "Substitute NEW for every subtree of TREE for which TEST returns false."
+  (subst-if new (complement test) tree :key key))
+
+(defun nsubst-if (new test tree &key (key nil))
+  (subst-if new test tree :key key))
+
+(defun nsubst-if-not (new test tree &key (key nil))
+  (subst-if-not new test tree :key key))
+
+(defun nsublis (alist tree &rest keys)
+  (apply #'sublis alist tree keys))
+
+(defun set-exclusive-or (list1 list2 &key (test nil test-p) (test-not nil test-not-p) (key nil))
+  "Return a list of elements appearing in exactly one of LIST1, LIST2."
+  (when (and test-p test-not-p)
+    (error "Cannot supply both :TEST and :TEST-NOT"))
+  (let ((actual-test (cond (test-not-p (complement test-not))
+                           (test-p test)
+                           (t #'eql)))
+        (result nil))
+    (dolist (x list1)
+      (unless (%set-member (if key (funcall key x) x) list2 actual-test key)
+        (push x result)))
+    (dolist (y list2)
+      (unless (%set-member (if key (funcall key y) y) list1 actual-test key)
+        (push y result)))
+    (nreverse result)))
+
+;; CLHS: the N-prefixed variants may destructively modify their list
+;; arguments but are not required to. We delegate to the non-destructive
+;; versions — correctness wins, optimization can come later.
+(defun nunion (list1 list2 &rest keys)
+  (apply #'union list1 list2 keys))
+
+(defun nintersection (list1 list2 &rest keys)
+  (apply #'intersection list1 list2 keys))
+
+(defun nset-difference (list1 list2 &rest keys)
+  (apply #'set-difference list1 list2 keys))
+
+(defun nset-exclusive-or (list1 list2 &rest keys)
+  (apply #'set-exclusive-or list1 list2 keys))
 
 (defun subsetp (list1 list2 &key (test nil test-p) (test-not nil test-not-p) (key nil))
   (when (and test-p test-not-p)
@@ -1052,26 +1197,36 @@ when the param has no explicit default.  CL spec 3.4.6 requires this."
 
 ;; --- Phase 8 Step 1: Missing list operations ---
 
-(defun tree-equal (a b &key (test #'eql))
-  "Compare two trees recursively using TEST."
-  (cond
-    ((funcall test a b) t)
-    ((and (consp a) (consp b))
-     (and (tree-equal (car a) (car b) :test test)
-          (tree-equal (cdr a) (cdr b) :test test)))
-    (t nil)))
+(defun tree-equal (a b &key (test #'eql test-supplied-p)
+                              (test-not nil test-not-supplied-p))
+  "Compare two trees recursively using TEST (or TEST-NOT).
+Per CLHS, x and y are tree-equal iff: both are conses with tree-equal
+car and cdr, OR both are atoms and the test is satisfied."
+  (when (and test-supplied-p test-not-supplied-p)
+    (error "TREE-EQUAL: cannot supply both :TEST and :TEST-NOT"))
+  (let ((pred (if test-not-supplied-p
+                  (lambda (x y) (not (funcall test-not x y)))
+                  test)))
+    (labels ((walk (a b)
+               (cond
+                 ((and (consp a) (consp b))
+                  (and (walk (car a) (car b))
+                       (walk (cdr a) (cdr b))))
+                 ((or (consp a) (consp b)) nil)
+                 (t (and (funcall pred a b) t)))))
+      (walk a b))))
 
 (defun list-length (list)
   "Return the length of LIST, or NIL if circular (tortoise-and-hare)."
   (do ((n 0 (+ n 2))
-       (slow list (cddr slow))
+       (slow list (cdr slow))
        (fast list))
       (nil)
     (when (null fast) (return n))
     (setq fast (cdr fast))
     (when (null fast) (return (+ n 1)))
-    (when (eq slow fast) (return nil))
-    (setq fast (cdr fast))))
+    (setq fast (cdr fast))
+    (when (eq slow fast) (return nil))))
 
 (defun tailp (object list)
   "Return true if OBJECT is EQL to LIST or any CDR of LIST."

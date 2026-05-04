@@ -716,6 +716,12 @@ static CL_Obj call_func(CL_Obj func, CL_Obj *call_args, int nargs)
 {
     if (CL_FUNCTION_P(func)) {
         CL_Function *f = (CL_Function *)CL_OBJ_TO_PTR(func);
+        if (nargs < f->min_args)
+            cl_error(CL_ERR_ARGS, "too few arguments (got %d, min %d)",
+                     nargs, f->min_args);
+        if (f->max_args >= 0 && nargs > f->max_args)
+            cl_error(CL_ERR_ARGS, "too many arguments (got %d, max %d)",
+                     nargs, f->max_args);
         return f->func(call_args, nargs);
     }
     if (CL_BYTECODE_P(func) || CL_CLOSURE_P(func))
@@ -957,11 +963,24 @@ static CL_Obj bi_make_list(CL_Obj *args, int n)
     if (count < 0)
         cl_error(CL_ERR_ARGS, "MAKE-LIST: size must be non-negative");
 
-    /* Parse :initial-element keyword */
+    /* Parse :initial-element keyword. CLHS 3.4.1.4.1: leftmost wins. */
     kw_init = cl_intern_in("INITIAL-ELEMENT", 15, cl_package_keyword);
-    for (i = 1; i < n - 1; i += 2) {
-        if (args[i] == kw_init)
-            init_elem = args[i + 1];
+    {
+        int found = 0;
+        for (i = 1; i < n - 1; i += 2) {
+            if (args[i] == kw_init) {
+                if (!found) {
+                    init_elem = args[i + 1];
+                    found = 1;
+                }
+            } else {
+                cl_error(CL_ERR_ARGS, "MAKE-LIST: unknown keyword %s",
+                         CL_SYMBOL_P(args[i]) ? cl_symbol_name(args[i]) : "?");
+            }
+        }
+        /* Detect odd count (e.g. trailing :initial-element with no value). */
+        if (n > 1 && ((n - 1) & 1))
+            cl_error(CL_ERR_ARGS, "MAKE-LIST: odd number of keyword arguments");
     }
 
     CL_GC_PROTECT(result);

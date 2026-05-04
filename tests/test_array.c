@@ -299,6 +299,21 @@ TEST(array_row_major_index)
     ASSERT_EQ_INT(eval_int("(array-row-major-index (make-array '(3 4)) 2 3)"), 11);
 }
 
+/* ANSI-test cons/sublis.3 regression: equalp-with-case in rt.lsp calls
+ * ARRAY-RANK on a leaf if (typep x 'array) is true. Strings ARE arrays in
+ * CL, so ARRAY-RANK / ARRAY-DIMENSIONS / ARRAY-DIMENSION / ARRAY-TOTAL-SIZE
+ * / ARRAY-ROW-MAJOR-INDEX must accept strings. */
+TEST(array_ops_on_string)
+{
+    ASSERT_EQ_INT(eval_int("(array-rank \"foo\")"), 1);
+    ASSERT_STR_EQ(eval_print("(array-dimensions \"foo\")"), "(3)");
+    ASSERT_EQ_INT(eval_int("(array-dimension \"foo\" 0)"), 3);
+    ASSERT_EQ_INT(eval_int("(array-total-size \"hello\")"), 5);
+    ASSERT_EQ_INT(eval_int("(array-row-major-index \"abc\" 1)"), 1);
+    ASSERT_STR_EQ(eval_print("(array-has-fill-pointer-p \"abc\")"), "NIL");
+    ASSERT_STR_EQ(eval_print("(adjustable-array-p \"abc\")"), "NIL");
+}
+
 /* ============================================================ */
 /* row-major-aref / (setf row-major-aref)                       */
 /* ============================================================ */
@@ -858,6 +873,7 @@ int main(void)
     RUN(array_dimension);
     RUN(array_total_size);
     RUN(array_row_major_index);
+    RUN(array_ops_on_string);
     RUN(row_major_aref);
     RUN(setf_row_major_aref);
 
