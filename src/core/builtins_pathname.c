@@ -466,7 +466,7 @@ static CL_Obj bi_make_pathname(CL_Obj *args, int n)
 }
 
 /* (merge-pathnames pathname &optional defaults default-version) */
-static CL_Obj bi_merge_pathnames(CL_Obj *args, int n)
+CL_Obj bi_merge_pathnames(CL_Obj *args, int n)
 {
     CL_Obj pn_obj = coerce_to_pathname(args[0]);
     CL_Obj def_obj;

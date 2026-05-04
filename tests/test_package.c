@@ -632,6 +632,34 @@ TEST(eval_in_package_symbol_name)
     eval_print("(in-package \"COMMON-LISP-USER\")");
 }
 
+TEST(eval_in_package_runtime_resolution)
+{
+    /* Regression: a let-body that bundles (make-package ...) and
+       (in-package ...) must defer the package lookup to run time —
+       otherwise the entire body is compiled before any form executes,
+       and IN-PACKAGE errors because the package doesn't exist yet at
+       compile time.  Driven by the ANSI test suite's gclload1.lsp. */
+    eval_print("(in-package \"COMMON-LISP-USER\")");
+    eval_print("(let ()"
+               "  (make-package \"IP-RT-TEST\" :use '(\"COMMON-LISP\"))"
+               "  (in-package \"IP-RT-TEST\"))");
+    ASSERT_STR_EQ(eval_print("(package-name *package*)"), "\"IP-RT-TEST\"");
+    eval_print("(in-package \"COMMON-LISP-USER\")");
+}
+
+TEST(eval_in_package_runtime_unknown_errors)
+{
+    /* If the package still doesn't exist when in-package executes, the
+       runtime fallback must signal an error (matching the eager compile-time
+       error that used to fire for known cases). */
+    eval_print("(in-package \"COMMON-LISP-USER\")");
+    ASSERT_STR_EQ(eval_print(
+        "(handler-case (let () (in-package \"NO-SUCH-PKG-XYZ\"))"
+        "  (error (c) :ok))"),
+        ":OK");
+    eval_print("(in-package \"COMMON-LISP-USER\")");
+}
+
 TEST(eval_load_preserves_package)
 {
     /* Regression: load must bind *package* so in-package in loaded file
@@ -1021,6 +1049,8 @@ int main(void)
     RUN(eval_in_package_basic);
     RUN(eval_in_package_returns_package);
     RUN(eval_in_package_symbol_name);
+    RUN(eval_in_package_runtime_resolution);
+    RUN(eval_in_package_runtime_unknown_errors);
     RUN(eval_load_preserves_package);
 
     /* defpackage tests */

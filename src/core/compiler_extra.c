@@ -1904,18 +1904,35 @@ void compile_in_package(CL_Compiler *c, CL_Obj form)
     }
 
     pkg = cl_find_package(name_str, name_len);
-    if (CL_NULL_P(pkg)) {
-        cl_error(CL_ERR_GENERAL, "Package %.*s not found", (int)name_len, name_str);
+    if (!CL_NULL_P(pkg)) {
+        /* Fast path: package known at compile time.  Set cl_current_package
+         * so subsequent forms in the same compilation unit (e.g. inside a
+         * compile-file pass) intern symbols in the new package, then emit
+         * a constant store into *PACKAGE*. */
+        cl_current_package = pkg;
+        cl_emit_const(c, pkg);
+        idx = cl_add_constant(c, SYM_STAR_PACKAGE);
+        cl_emit(c, OP_GSTORE);
+        cl_emit_u16(c, (uint16_t)idx);
         return;
     }
 
-    /* Set at compile time so subsequent symbols are interned correctly */
-    cl_current_package = pkg;
-
-    /* Emit runtime code to set *PACKAGE* */
-    cl_emit_const(c, pkg);      /* Push package object */
-    idx = cl_add_constant(c, SYM_STAR_PACKAGE);
-    cl_emit(c, OP_GSTORE);
-    cl_emit_u16(c, (uint16_t)idx);
-    /* OP_GSTORE leaves value on stack — that's fine as the result */
+    /* Fallback: package not known at compile time.  This happens when a
+     * top-level form bundles `(load <file>)` and `(in-package :PKG)` so that
+     * PKG is created by the load only at run time.  Emit a runtime call to
+     * clamiga::%set-current-package so the lookup-and-error happens at the
+     * point this form is actually executed. */
+    {
+        CL_Obj name_str_obj = cl_make_string(name_str, name_len);
+        CL_Obj setter_sym = cl_intern_in("%SET-CURRENT-PACKAGE", 20,
+                                         cl_package_clamiga);
+        int setter_idx = cl_add_constant(c, setter_sym);
+        int name_idx = cl_add_constant(c, name_str_obj);
+        cl_emit(c, OP_FLOAD);
+        cl_emit_u16(c, (uint16_t)setter_idx);
+        cl_emit(c, OP_CONST);
+        cl_emit_u16(c, (uint16_t)name_idx);
+        cl_emit(c, OP_CALL);
+        cl_emit(c, 1);
+    }
 }

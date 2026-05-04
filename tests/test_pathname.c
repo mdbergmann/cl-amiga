@@ -523,6 +523,19 @@ TEST(tilde_open_read_works)
     ASSERT_STR_EQ(result, "\"tilde-ok\"");
 }
 
+/* --- LOAD merges with *default-pathname-defaults* (HyperSpec) --- */
+
+TEST(load_merges_with_default_pathname_defaults)
+{
+    /* Bare relative path passed to LOAD must resolve against
+       *default-pathname-defaults*, not just the current working directory. */
+    const char *result = eval_print(
+        "(let ((*default-pathname-defaults* (truename \"tests/\")))"
+        "  (load \"test_load.lisp\")"
+        "  *load-test-var*)");
+    ASSERT_STR_EQ(result, "42");
+}
+
 /* --- Wildcard pathname tests --- */
 
 TEST(wild_namestring_name_type)
@@ -696,6 +709,7 @@ int main(void)
     RUN(tilde_user_not_expanded);
     RUN(tilde_probe_file_works);
     RUN(tilde_open_read_works);
+    RUN(load_merges_with_default_pathname_defaults);
     RUN(wild_namestring_name_type);
     RUN(wild_namestring_name_only);
     RUN(wild_namestring_merged);

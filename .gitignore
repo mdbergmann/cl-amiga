@@ -1,4 +1,5 @@
 build/
+third_party/
 *.o
 *.d
 verify/*
