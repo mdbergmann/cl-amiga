@@ -3500,6 +3500,18 @@ TEST(eval_nconc)
     ASSERT_STR_EQ(eval_print("(nconc (list 1 2) (list 3 4))"), "(1 2 3 4)");
     ASSERT_STR_EQ(eval_print("(nconc nil (list 1 2))"), "(1 2)");
     ASSERT_STR_EQ(eval_print("(nconc (list 1) nil (list 2 3))"), "(1 2 3)");
+
+    /* Regression: (nconc s s) is the canonical idiom for building a
+     * circular list — must terminate and the last cons's cdr must point
+     * back at the head.  A previous bug walked the list to find its tail
+     * AFTER splicing, which on the same-list case spun forever. */
+    ASSERT_EQ_INT(eval_int(
+        "(let ((s (copy-list '(a b c d)))) (nconc s s) "
+        "  (if (eq s (cdr (cdr (cdr (cdr s))))) 1 0))"), 1);
+    /* Aliasing through a leading nil arg too. */
+    ASSERT_EQ_INT(eval_int(
+        "(let ((s (copy-list '(x y)))) (nconc nil s s) "
+        "  (if (eq s (cdr (cdr s))) 1 0))"), 1);
 }
 
 TEST(eval_nreverse)
@@ -3568,6 +3580,22 @@ TEST(eval_copy_tree)
     ASSERT_STR_EQ(eval_print("(copy-tree 42)"), "42");
     /* Deep copy: modifying original doesn't affect copy */
     ASSERT_STR_EQ(eval_print("(let ((x '(1 (2 3)))) (let ((y (copy-tree x))) (equal x y)))"), "T");
+    /* Improper list — dotted tail must be preserved verbatim. */
+    ASSERT_STR_EQ(eval_print("(copy-tree '(1 2 . 3))"), "(1 2 . 3)");
+    /* Regression: a long flat list previously recursed down the cdr
+     * spine, pushing 2 GC roots per level and overflowing the 1024-slot
+     * root stack at >500 elements (this aborted ANSI-test copy-tree.2,
+     * which copies the ~1000-element *universe* list).  The iterative
+     * spine-walk implementation handles arbitrary lengths. */
+    ASSERT_STR_EQ(eval_print(
+        "(let ((n 2000)) (eql n (length (copy-tree (loop for i below n collect i)))))"),
+        "T");
+    /* And verify per-element identity for a long list with cons cars. */
+    ASSERT_STR_EQ(eval_print(
+        "(let* ((x (loop for i below 1500 collect (cons i (1+ i)))) "
+        "       (y (copy-tree x))) "
+        "  (and (equal x y) (not (eq x y)) (not (eq (first x) (first y)))))"),
+        "T");
 }
 
 TEST(eval_mapc)

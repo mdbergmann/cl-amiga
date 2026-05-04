@@ -213,9 +213,35 @@ static CL_Obj bi_make_array(CL_Obj *args, int n)
                     return result;
                 }
             }
-            /* Displaced to a bit vector */
+            /* Displaced to a bit vector.  Like the string path above, this
+             * does NOT install a true displaced view (the bit-vector heap
+             * type has no displacement field) — it copies the requested
+             * window into a fresh bit-vector.  Mutations of the target
+             * therefore won't propagate; full displacement semantics are a
+             * TODO for the array-chapter conformance work. */
             if (CL_BIT_VECTOR_P(displaced_to)) {
-                cl_error(CL_ERR_GENERAL, "MAKE-ARRAY: displacement to bit-vectors not yet supported");
+                CL_BitVector *src = (CL_BitVector *)CL_OBJ_TO_PTR(displaced_to);
+                uint32_t src_total = src->length;
+                CL_Obj bv_obj;
+                CL_BitVector *dst;
+                uint32_t j;
+
+                if (displaced_offset + length > src_total)
+                    cl_error(CL_ERR_ARGS, "MAKE-ARRAY: displaced bounds exceed target bit-vector");
+
+                CL_GC_PROTECT(displaced_to);
+                bv_obj = cl_make_bit_vector(length);
+                CL_GC_UNPROTECT(1);
+                /* Re-fetch src after potential GC. */
+                src = (CL_BitVector *)CL_OBJ_TO_PTR(displaced_to);
+                dst = (CL_BitVector *)CL_OBJ_TO_PTR(bv_obj);
+                dst->flags = flags;
+                dst->fill_pointer = fill_ptr;
+                for (j = 0; j < length; j++) {
+                    if (cl_bv_get_bit(src, displaced_offset + j))
+                        dst->data[j / 32] |= (1u << (j % 32));
+                }
+                return bv_obj;
             }
             cl_error(CL_ERR_TYPE, "MAKE-ARRAY: :displaced-to target must be an array");
         }

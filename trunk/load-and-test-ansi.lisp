@@ -1,50 +1,68 @@
 ;; load-and-test-ansi.lisp
 ;;
-;; Cautious bootstrap of the ANSI Common Lisp test suite (Paul Dietz / ansi-test).
-;; Loads only the rt framework + minimal aux + the CONS chapter so we get a
-;; clean baseline before attempting the full ~21k-test run.
+;; Bootstrap of the ANSI Common Lisp test suite (Paul Dietz / ansi-test).
+;; Loads the rt framework + aux + universe + the CONS chapter.
 ;;
 ;; Usage (host):
-;;   ./build/host/clamiga --heap 64M --load trunk/load-and-test-ansi.lisp
+;;   ./build/host/clamiga --heap 96M --load trunk/load-and-test-ansi.lisp
 ;;
-;; The bootstrap is split into separate top-level forms (rather than wrapped
-;; in a single LET) because (in-package :cl-test) needs to execute *between*
-;; LOAD calls — when the whole sequence is bundled in one form, in-package's
-;; package lookup happens at compile time, before the LOAD calls have run.
-;;
-;; We deliberately skip universe.lsp.  It defines *universe* / *mini-universe*
-;; (huge condition + structure + array galleries) and triggers a very long
-;; load on cl-amiga; cons tests don't depend on those.
+;; Notes
+;; - Each load is its own top-level form: (in-package :cl-test) needs to
+;;   execute *between* loads, not be batched with them under one let body.
+;; - Paths are passed absolute to the ansi-test loaders so compile-and-load's
+;;   internal merge against *load-pathname* (= this script under trunk/) doesn't
+;;   mis-resolve into ansi-test/trunk/foo.lsp.
 
 (defparameter *ansi-test-dir* (truename "third_party/ansi-test/"))
 (defparameter *aux-dir* (truename "third_party/ansi-test/auxiliary/"))
 (setq *default-pathname-defaults* *ansi-test-dir*)
 
-(format t "~%=== ANSI test bootstrap (cautious: rt + aux + cons, skip universe) ===~%")
+(format t "~%=== ANSI test bootstrap (rt + aux + universe + cons) ===~%")
 (format t "ansi-test dir: ~A~%" *ansi-test-dir*)
 
-(load "compile-and-load.lsp")
-(load "rt-package.lsp")
-(compile-and-load "rt.lsp")
-(load "cl-test-package.lsp")
+;; --- Bootstrap (still in CL-USER) ---
+(load (merge-pathnames "compile-and-load.lsp" *ansi-test-dir*))
+(load (merge-pathnames "rt-package.lsp" *ansi-test-dir*))
+(compile-and-load (merge-pathnames "rt.lsp" *ansi-test-dir*))
+(load (merge-pathnames "cl-test-package.lsp" *ansi-test-dir*))
+
+;; ansi-aux-macros.lsp and ansi-aux.lsp have no (in-package :cl-test) at
+;; their top — they assume the caller is already in :cl-test (gclload1.lsp
+;; switches before loading them).  Compiling them in CL-USER causes the
+;; clamiga compiler to runaway (observed: 17 GB host memory, 100% CPU,
+;; indefinite hang).  Switch package first.
 (in-package :cl-test)
-(compile-and-load* "ansi-aux-macros.lsp")
-(compile-and-load* "ansi-aux.lsp")
 
-(format t "~%--- Loading cons chapter ---~%")
-(load "cons/load.lsp")
+(common-lisp-user::compile-and-load
+ (common-lisp:merge-pathnames "ansi-aux-macros.lsp"
+                              (common-lisp:symbol-value
+                               'common-lisp-user::*aux-dir*)))
 
+;; universe.lsp must come BEFORE ansi-aux.lsp (per gclload1.lsp ordering) —
+;; ansi-aux.lsp consumes *universe* / *mini-universe* / *condition-types* etc.
+;; Loads in <1s once nconc-on-self-aliasing, copy-tree GC root recursion, and
+;; bit-vector :displaced-to are working in clamiga.
+(common-lisp:format common-lisp:t "~%--- Loading universe.lsp ---~%")
+(common-lisp:load
+ (common-lisp:merge-pathnames "universe.lsp"
+                              (common-lisp:symbol-value
+                               'common-lisp-user::*ansi-test-dir*)))
+
+(common-lisp-user::compile-and-load
+ (common-lisp:merge-pathnames "ansi-aux.lsp"
+                              (common-lisp:symbol-value
+                               'common-lisp-user::*aux-dir*)))
+
+;; --- Load cons chapter (paths relative to ansi-test root) ---
+(common-lisp:format common-lisp:t "~%--- Loading cons chapter ---~%")
+(common-lisp:load
+ (common-lisp:merge-pathnames "cons/load.lsp"
+                              (common-lisp:symbol-value
+                               'common-lisp-user::*ansi-test-dir*)))
+
+;; --- Run the tests via rt:do-tests (inherited into :cl-test) ---
 (format t "~%--- Running CONS tests via rt:do-tests ---~%")
-(let ((rt-pkg (find-package :regression-test)))
-  (cond
-    ((not rt-pkg)
-     (format t "!! :REGRESSION-TEST package missing — bootstrap failed.~%"))
-    (t
-     (handler-case (funcall (find-symbol "DO-TESTS" rt-pkg))
-       (error (e) (format t "!! do-tests crashed: ~A~%" e)))
-     (let ((passed-sym (find-symbol "*PASSED-TESTS*" rt-pkg))
-           (failed-sym (find-symbol "*FAILED-TESTS*" rt-pkg)))
-       (when (and passed-sym failed-sym)
-         (format t "~%=== Summary ===~%")
-         (format t "passed: ~A~%" (length (symbol-value passed-sym)))
-         (format t "failed: ~A~%" (length (symbol-value failed-sym))))))))
+(do-tests)
+(format t "~%=== Summary ===~%")
+(format t "passed: ~A~%" (length regression-test::*passed-tests*))
+(format t "failed: ~A~%" (length regression-test::*failed-tests*))

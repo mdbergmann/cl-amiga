@@ -447,18 +447,25 @@ static CL_Obj bi_nconc(CL_Obj *args, int n)
 
     for (i = 0; i < n; i++) {
         CL_Obj list = args[i];
+        CL_Obj this_tail;
         if (CL_NULL_P(list)) continue;
+
+        /* Find this list's tail BEFORE splicing.  Walking after the splice
+         * would loop forever on the (nconc x x) idiom: the splice itself
+         * makes the previous tail point back into x, so walking x again
+         * traverses an already-circular list.  Each input list is required
+         * by HyperSpec to be a proper list (or nil) prior to nconc, so this
+         * pre-splice walk is guaranteed to terminate. */
+        this_tail = list;
+        while (CL_CONS_P(this_tail) && CL_CONS_P(cl_cdr(this_tail)))
+            this_tail = cl_cdr(this_tail);
 
         if (CL_NULL_P(result)) {
             result = list;
         } else {
             ((CL_Cons *)CL_OBJ_TO_PTR(tail))->cdr = list;
         }
-
-        /* Walk to end of this list */
-        while (CL_CONS_P(list) && CL_CONS_P(cl_cdr(list)))
-            list = cl_cdr(list);
-        tail = list;
+        tail = this_tail;
     }
     return result;
 }
@@ -658,26 +665,48 @@ static CL_Obj bi_butlast(CL_Obj *args, int n)
 static CL_Obj bi_copy_tree(CL_Obj *args, int n)
 {
     CL_Obj tree = args[0];
-    CL_Obj car_r, cdr_r;
+    CL_Obj head = CL_NIL;
+    CL_Obj tail = CL_NIL;
     CL_UNUSED(n);
 
     if (!CL_CONS_P(tree))
         return tree;
 
+    /* Walk down the cdr spine iteratively, recursing only for the car.
+     * A naive recurse-on-both-axes implementation pushes 2 GC roots per
+     * level on the cdr chain — copy-tree on a 500+ element flat list
+     * (e.g. ansi-test's *universe*) overflows the 1024-slot root stack
+     * and aborts the VM.  CONS_P is checked at the top of the loop so a
+     * dotted-tail (improper list) is preserved. */
     CL_GC_PROTECT(tree);
-    {
-        CL_Obj sub[1];
-        sub[0] = cl_car(tree);
-        car_r = bi_copy_tree(sub, 1);
+    CL_GC_PROTECT(head);
+    CL_GC_PROTECT(tail);
+    while (CL_CONS_P(tree)) {
+        CL_Obj car_r;
+        CL_Obj new_cons;
+        {
+            CL_Obj sub[1];
+            sub[0] = cl_car(tree);
+            car_r = bi_copy_tree(sub, 1);
+        }
+        CL_GC_PROTECT(car_r);
+        new_cons = cl_cons(car_r, CL_NIL);
+        CL_GC_UNPROTECT(1);
+        if (CL_NULL_P(head)) {
+            head = new_cons;
+        } else {
+            ((CL_Cons *)CL_OBJ_TO_PTR(tail))->cdr = new_cons;
+        }
+        tail = new_cons;
+        tree = cl_cdr(tree);
     }
-    CL_GC_PROTECT(car_r);
-    {
-        CL_Obj sub[1];
-        sub[0] = cl_cdr(tree);
-        cdr_r = bi_copy_tree(sub, 1);
-    }
-    CL_GC_UNPROTECT(2);
-    return cl_cons(car_r, cdr_r);
+    /* Preserve a non-nil terminator (e.g. dotted pair); for proper
+     * lists this is CL_NIL and the loop already stored CL_NIL in
+     * tail->cdr via the new_cons constructor. */
+    if (!CL_NULL_P(tree))
+        ((CL_Cons *)CL_OBJ_TO_PTR(tail))->cdr = tree;
+    CL_GC_UNPROTECT(3);
+    return head;
 }
 
 /* --- Mapping variants --- */
