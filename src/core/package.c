@@ -51,7 +51,23 @@ static int str_eq(CL_Obj str_obj, const char *name, uint32_t len)
     return s->length == len && memcmp(s->data, name, len) == 0;
 }
 
-/* Search a single package's own symbol table (no use-list) */
+/* See package.h for rationale. */
+CL_Obj cl_normalize_nil_symbol(CL_Obj sym)
+{
+    if (sym == SYM_NIL && SYM_NIL != CL_NIL) return CL_NIL;
+    return sym;
+}
+
+#define normalize_nil(sym) cl_normalize_nil_symbol(sym)
+
+/* Search a single package's own symbol table (no use-list).
+ * Returns CL_UNBOUND when not found — distinct from CL_NIL because the
+ * symbol NIL itself is interned in COMMON-LISP, so a CL_NIL return would
+ * be ambiguous between "found NIL" and "missing".
+ *
+ * Internal callers receive the raw heap symbol (so identity comparisons
+ * against the exported_symbols / shadowing_symbols lists keep working);
+ * the public boundary normalizes SYM_NIL to CL_NIL. */
 static CL_Obj find_own_symbol(const char *name, uint32_t len, CL_Obj package)
 {
     CL_Package *pkg = (CL_Package *)CL_OBJ_TO_PTR(package);
@@ -69,7 +85,7 @@ static CL_Obj find_own_symbol(const char *name, uint32_t len, CL_Obj package)
         }
         list = cl_cdr(list);
     }
-    return CL_NIL;
+    return CL_UNBOUND;
 }
 
 /* ---- nolock helpers for internal use under existing lock ---- */
@@ -89,12 +105,15 @@ static int exported_p_nolock(CL_Obj sym, CL_Obj package)
     return 0;
 }
 
+/* Returns CL_UNBOUND when the name is not exported from package
+ * (or not present at all).  See find_own_symbol comment about NIL.
+ * Internal use only — does not normalize SYM_NIL. */
 static CL_Obj find_external_nolock(const char *name, uint32_t len, CL_Obj package)
 {
     CL_Obj sym = find_own_symbol(name, len, package);
-    if (!CL_NULL_P(sym) && exported_p_nolock(sym, package))
+    if (sym != CL_UNBOUND && exported_p_nolock(sym, package))
         return sym;
-    return CL_NIL;
+    return CL_UNBOUND;
 }
 
 int cl_symbol_external_p(CL_Obj sym, CL_Obj package)
@@ -107,21 +126,22 @@ int cl_symbol_external_p(CL_Obj sym, CL_Obj package)
     return r;
 }
 
+/* Returns CL_UNBOUND when name is not present in package or its use-list. */
 CL_Obj cl_package_find_symbol_nolock(const char *name, uint32_t len, CL_Obj package)
 {
     CL_Obj sym;
     sym = find_own_symbol(name, len, package);
-    if (!CL_NULL_P(sym)) return sym;
+    if (sym != CL_UNBOUND) return sym;
     {
         CL_Package *pkg = (CL_Package *)CL_OBJ_TO_PTR(package);
         CL_Obj uses = pkg->use_list;
         while (!CL_NULL_P(uses)) {
             CL_Obj found = find_external_nolock(name, len, cl_car(uses));
-            if (!CL_NULL_P(found)) return found;
+            if (found != CL_UNBOUND) return found;
             uses = cl_cdr(uses);
         }
     }
-    return CL_NIL;
+    return CL_UNBOUND;
 }
 
 static void import_symbol_nolock(CL_Obj sym, CL_Obj package)
@@ -135,7 +155,7 @@ static void import_symbol_nolock(CL_Obj sym, CL_Obj package)
     sname = (CL_String *)CL_OBJ_TO_PTR(s->name);
 
     existing = find_own_symbol(sname->data, sname->length, package);
-    if (!CL_NULL_P(existing)) {
+    if (existing != CL_UNBOUND) {
         if (existing == sym) return;
         cl_error(CL_ERR_GENERAL, "IMPORT conflict: symbol already present in package");
         return;
@@ -208,13 +228,18 @@ void cl_package_add_symbol(CL_Obj package, CL_Obj symbol)
     pkg->sym_count++;
 }
 
+/* Public API: returns CL_NIL when not found (preserved historical contract
+ * for C callers that use CL_NULL_P-as-not-found).  Callers that need to
+ * distinguish "found NIL" from "missing" should use
+ * cl_find_symbol_with_status. */
 CL_Obj cl_package_find_external(const char *name, uint32_t len, CL_Obj package)
 {
     CL_Obj result;
     if (cl_package_rwlock) platform_rwlock_rdlock(cl_package_rwlock);
     result = find_external_nolock(name, len, package);
     if (cl_package_rwlock) platform_rwlock_unlock(cl_package_rwlock);
-    return result;
+    if (result == CL_UNBOUND) return CL_NIL;
+    return normalize_nil(result);
 }
 
 CL_Obj cl_package_find_symbol(const char *name, uint32_t len, CL_Obj package)
@@ -223,7 +248,8 @@ CL_Obj cl_package_find_symbol(const char *name, uint32_t len, CL_Obj package)
     if (cl_package_rwlock) platform_rwlock_rdlock(cl_package_rwlock);
     result = cl_package_find_symbol_nolock(name, len, package);
     if (cl_package_rwlock) platform_rwlock_unlock(cl_package_rwlock);
-    return result;
+    if (result == CL_UNBOUND) return CL_NIL;
+    return normalize_nil(result);
 }
 
 CL_Obj cl_find_symbol_with_status(const char *name, uint32_t len,
@@ -235,14 +261,14 @@ CL_Obj cl_find_symbol_with_status(const char *name, uint32_t len,
 
     /* Search own symbol table first */
     sym = find_own_symbol(name, len, package);
-    if (!CL_NULL_P(sym)) {
+    if (sym != CL_UNBOUND) {
         if (exported_p_nolock(sym, package)) {
             *status = 2; /* :EXTERNAL */
         } else {
             *status = 1; /* :INTERNAL */
         }
         if (cl_package_rwlock) platform_rwlock_unlock(cl_package_rwlock);
-        return sym;
+        return normalize_nil(sym);
     }
 
     /* Search use-list — only exported symbols */
@@ -251,10 +277,10 @@ CL_Obj cl_find_symbol_with_status(const char *name, uint32_t len,
         CL_Obj uses = pkg->use_list;
         while (!CL_NULL_P(uses)) {
             CL_Obj found = find_external_nolock(name, len, cl_car(uses));
-            if (!CL_NULL_P(found)) {
+            if (found != CL_UNBOUND) {
                 *status = 3; /* :INHERITED */
                 if (cl_package_rwlock) platform_rwlock_unlock(cl_package_rwlock);
-                return found;
+                return normalize_nil(found);
             }
             uses = cl_cdr(uses);
         }
@@ -345,7 +371,7 @@ void cl_export_symbol(CL_Obj sym, CL_Obj package)
     /* If symbol is not present in package's own table, import it first.
        Per CL spec: "If the symbol is accessible via use-package,
        it is first imported into package, after which it is exported." */
-    if (CL_NULL_P(find_own_symbol(sname->data, sname->length, package))) {
+    if (find_own_symbol(sname->data, sname->length, package) == CL_UNBOUND) {
         import_symbol_nolock(sym, package);
     }
 
@@ -412,7 +438,7 @@ void cl_shadow_symbol(const char *name, uint32_t len, CL_Obj package)
     if (cl_package_rwlock) platform_rwlock_wrlock(cl_package_rwlock);
     existing = find_own_symbol(name, len, package);
 
-    if (!CL_NULL_P(existing)) {
+    if (existing != CL_UNBOUND) {
         /* Symbol already directly present — nothing to do */
         if (cl_package_rwlock) platform_rwlock_unlock(cl_package_rwlock);
         return;

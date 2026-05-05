@@ -58,10 +58,14 @@ static CL_Obj bi_symbol_value(CL_Obj *args, int n)
 static CL_Obj bi_symbol_function(CL_Obj *args, int n)
 {
     CL_Symbol *s;
+    CL_Obj sym = args[0];
     CL_UNUSED(n);
-    if (!CL_SYMBOL_OR_NIL_P(args[0]))
-        cl_signal_type_error(args[0], "SYMBOL", "SYMBOL-FUNCTION");
-    s = (CL_Symbol *)CL_OBJ_TO_PTR(args[0]);
+    if (!CL_SYMBOL_OR_NIL_P(sym))
+        cl_signal_type_error(sym, "SYMBOL", "SYMBOL-FUNCTION");
+    /* CL_NIL is the constant tag (0) — its function/value/plist live on
+     * the heap-allocated SYM_NIL storage shadow. */
+    if (CL_NULL_P(sym)) sym = SYM_NIL;
+    s = (CL_Symbol *)CL_OBJ_TO_PTR(sym);
     if (s->function == CL_UNBOUND)
         cl_signal_undefined_function(args[0]);
     return s->function;
@@ -180,7 +184,10 @@ static CL_Obj bi_fboundp(CL_Obj *args, int n)
     }
     if (!CL_SYMBOL_OR_NIL_P(args[0]))
         cl_signal_type_error(args[0], "SYMBOL", "FBOUNDP");
-    s = (CL_Symbol *)CL_OBJ_TO_PTR(args[0]);
+    {
+        CL_Obj sym = CL_NULL_P(args[0]) ? SYM_NIL : args[0];
+        s = (CL_Symbol *)CL_OBJ_TO_PTR(sym);
+    }
     /* CLHS: fboundp is true for functions, macros, AND special operators. */
     if (s->function != CL_UNBOUND && !CL_NULL_P(s->function))
         return SYM_T;

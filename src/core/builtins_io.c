@@ -3044,10 +3044,13 @@ void cl_builtins_io_init(void)
     defun("GET-INTERNAL-REAL-TIME", bi_get_internal_real_time, 0, 0);
     defun("GET-INTERNAL-RUN-TIME", bi_get_internal_run_time, 0, 0);
     {
-        /* INTERNAL-TIME-UNITS-PER-SECOND — milliseconds */
+        /* INTERNAL-TIME-UNITS-PER-SECOND — milliseconds.  Per CLHS this is
+         * a constant, so set CL_SYM_CONSTANT for boundp/constantp/setf to
+         * behave correctly. */
         CL_Obj sym = cl_intern_in("INTERNAL-TIME-UNITS-PER-SECOND", 30, cl_package_cl);
         CL_Symbol *s = (CL_Symbol *)CL_OBJ_TO_PTR(sym);
         s->value = CL_MAKE_FIXNUM(1000);
+        s->flags |= CL_SYM_CONSTANT;
     }
 
     /* Sleep */

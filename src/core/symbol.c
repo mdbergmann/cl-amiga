@@ -265,8 +265,8 @@ CL_Obj cl_intern_in(const char *name, uint32_t len, CL_Obj package)
     if (cl_package_rwlock) platform_rwlock_rdlock(cl_package_rwlock);
     existing = cl_package_find_symbol_nolock(name, len, package);
     if (cl_package_rwlock) platform_rwlock_unlock(cl_package_rwlock);
-    if (!CL_NULL_P(existing))
-        return existing;
+    if (existing != CL_UNBOUND)
+        return cl_normalize_nil_symbol(existing);
 
     /* Slow path: create symbol outside lock.
      * Protect package — allocations below may trigger GC/compaction. */
@@ -282,12 +282,22 @@ CL_Obj cl_intern_in(const char *name, uint32_t len, CL_Obj package)
     /* Write-lock with re-check */
     if (cl_package_rwlock) platform_rwlock_wrlock(cl_package_rwlock);
     existing = cl_package_find_symbol_nolock(name, len, package);
-    if (!CL_NULL_P(existing)) {
+    if (existing != CL_UNBOUND) {
         if (cl_package_rwlock) platform_rwlock_unlock(cl_package_rwlock);
-        return existing;
+        return cl_normalize_nil_symbol(existing);
     }
     cl_package_add_symbol(package, sym);
     if (cl_package_rwlock) platform_rwlock_unlock(cl_package_rwlock);
+    /* Newly-interned KEYWORD-package symbols are self-evaluating constants
+     * and automatically external (CLHS 11.1.2.3.1).  Done here so any path
+     * that creates a fresh keyword (cl_intern_keyword, bi_intern, the
+     * reader's :foo syntax) sets these uniformly. */
+    if (package == cl_package_keyword) {
+        s = (CL_Symbol *)CL_OBJ_TO_PTR(sym);
+        s->value = sym;
+        s->flags |= CL_SYM_CONSTANT;
+        cl_export_symbol(sym, cl_package_keyword);
+    }
     return sym;
 }
 
@@ -303,12 +313,9 @@ CL_Obj cl_find_symbol(const char *name, uint32_t len, CL_Obj package)
 
 CL_Obj cl_intern_keyword(const char *name, uint32_t len)
 {
-    CL_Obj sym = cl_intern_in(name, len, cl_package_keyword);
-    /* Keywords are self-evaluating constants */
-    CL_Symbol *s = (CL_Symbol *)CL_OBJ_TO_PTR(sym);
-    s->value = sym;
-    s->flags |= CL_SYM_CONSTANT;
-    return sym;
+    /* cl_intern_in handles the KEYWORD-specific bookkeeping
+     * (self-evaluating constant flag + export). */
+    return cl_intern_in(name, len, cl_package_keyword);
 }
 
 CL_Obj cl_make_uninterned_symbol(CL_Obj name_str)

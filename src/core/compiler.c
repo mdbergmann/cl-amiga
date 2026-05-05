@@ -2508,12 +2508,25 @@ static void compile_setf_place(CL_Compiler *c, CL_Obj place, CL_Obj val_form)
             cl_emit(c, OP_CALL);
             cl_emit(c, 3);
         } else if (head == SETF_SYM_GET) {
-            /* (setf (get sym indicator) val) → (%setf-get sym indicator val) */
+            /* (setf (get sym indicator [default]) val) → (%setf-get sym indicator val).
+             * Per CLHS §5.1.1.1.1, every subform of the place — including
+             * DEFAULT — must be evaluated once, left-to-right, before VAL,
+             * even though %setf-get itself doesn't use DEFAULT.  Emit code
+             * for DEFAULT into the value stack, then OP_POP it. */
             int idx = cl_add_constant(c, SETF_HELPER_GET);
+            CL_Obj sym_form  = cl_car(cl_cdr(place));
+            CL_Obj ind_form  = cl_car(cl_cdr(cl_cdr(place)));
+            CL_Obj rest_after_ind = cl_cdr(cl_cdr(cl_cdr(place)));
+            int has_default = !CL_NULL_P(rest_after_ind);
             cl_emit(c, OP_FLOAD);
             cl_emit_u16(c, (uint16_t)idx);
-            compile_expr(c, cl_car(cl_cdr(place)));       /* symbol */
-            compile_expr(c, cl_car(cl_cdr(cl_cdr(place)))); /* indicator */
+            compile_expr(c, sym_form);                     /* symbol */
+            compile_expr(c, ind_form);                     /* indicator */
+            if (has_default) {
+                /* Evaluate DEFAULT for side effects, then discard. */
+                compile_expr(c, cl_car(rest_after_ind));
+                cl_emit(c, OP_POP);
+            }
             compile_expr(c, val_form);                     /* value */
             cl_emit(c, OP_CALL);
             cl_emit(c, 3);
