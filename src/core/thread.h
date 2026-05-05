@@ -12,10 +12,10 @@
 #include "vm.h"
 #include "error.h"
 #include "mem.h"
+#include "../platform/platform_thread.h"  /* platform_tls_get (inline on POSIX) */
 
 /* Forward declarations */
 struct CL_Compiler_s;
-void *platform_tls_get(void);  /* from platform_thread.h */
 
 /* Constants for thread-local array sizes */
 #define CL_PP_INDENT_MAX     32
