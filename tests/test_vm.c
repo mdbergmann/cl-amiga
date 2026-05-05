@@ -1670,6 +1670,37 @@ TEST(eval_gentemp)
         "  (and (not (eq s2 taken))"
         "       (not (eq s2 s1))))"),
         "T");
+
+    /* CLHS: GENTEMP does NOT touch *GENSYM-COUNTER* */
+    ASSERT_STR_EQ(eval_print(
+        "(let ((*gensym-counter* 42)) (gentemp \"GTNC-\") *gensym-counter*)"),
+        "42");
+
+    /* Character package designator (CLHS string-designator) — covers
+     * ansi-test gentemp.5 (gentemp "Y" #\Z). */
+    eval_print("(unless (find-package \"C\") (make-package \"C\" :use nil))");
+    ASSERT_STR_EQ(eval_print(
+        "(eq (symbol-package (gentemp \"X\" #\\C)) (find-package \"C\"))"),
+        "T");
+
+    /* Bad prefix → TYPE-ERROR (covers gentemp.error.1) */
+    ASSERT_STR_EQ(eval_print(
+        "(handler-case (gentemp 'foo) (type-error () :te))"),
+        ":TE");
+    ASSERT_STR_EQ(eval_print(
+        "(handler-case (gentemp 5) (type-error () :te))"),
+        ":TE");
+    ASSERT_STR_EQ(eval_print(
+        "(handler-case (gentemp nil) (type-error () :te))"),
+        ":TE");
+
+    /* Bad package designator → TYPE-ERROR (covers gentemp.error.2) */
+    ASSERT_STR_EQ(eval_print(
+        "(handler-case (gentemp \"X\" 5) (type-error () :te))"),
+        ":TE");
+    ASSERT_STR_EQ(eval_print(
+        "(handler-case (gentemp \"X\" '(a b)) (type-error () :te))"),
+        ":TE");
 }
 
 /* --- Load --- */
