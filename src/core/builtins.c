@@ -1070,13 +1070,11 @@ void cl_builtins_init(void)
         fn = cl_make_function(bi_quit, sym, 0, 1);
         s = (CL_Symbol *)CL_OBJ_TO_PTR(sym);
         s->function = fn;
-        s->value = fn;
 
         sym = cl_intern_in("EXIT", 4, cl_package_cl_user);
         fn = cl_make_function(bi_quit, sym, 0, 1);
         s = (CL_Symbol *)CL_OBJ_TO_PTR(sym);
         s->function = fn;
-        s->value = fn;
     }
 
     /* Register cached symbols for GC compaction forwarding */

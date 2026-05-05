@@ -18,7 +18,6 @@ static void defun(const char *name, CL_CFunc func, int min, int max)
     CL_Obj fn = cl_make_function(func, sym, min, max);
     CL_Symbol *s = (CL_Symbol *)CL_OBJ_TO_PTR(sym);
     s->function = fn;
-    s->value = fn;
 }
 
 static void check_number(CL_Obj obj, const char *op)

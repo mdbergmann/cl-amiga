@@ -1283,13 +1283,17 @@ CL_Obj cl_fasl_deserialize_obj(CL_FaslReader *r)
         }
 
         if (pkg_len == 0xFFFF) {
-            /* Keyword */
+            /* Keyword.  Use cl_intern_keyword (not cl_intern_in) so the
+             * symbol's value is set to itself and the constant flag is set
+             * — otherwise (boundp :foo) returns NIL after loading the
+             * FASL, even though plain reader interns set both fields.
+             * Caught by ANSI BOUNDP.3 / SYMBOL-NAME.3 once those tests
+             * loaded their fixtures from a FASL. */
             sym_len = cl_fasl_read_u16(r);
             if (r->error || sym_len >= sizeof(sym_buf)) return CL_NIL;
             cl_fasl_read_bytes(r, sym_buf, sym_len);
             sym_buf[sym_len] = '\0';
-            pkg_obj = cl_find_package("KEYWORD", 7);
-            return cl_intern_in(sym_buf, sym_len, pkg_obj);
+            return cl_intern_keyword(sym_buf, sym_len);
         }
 
         /* Named package */
