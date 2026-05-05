@@ -1976,14 +1976,22 @@ static CL_Obj bi_gentemp(CL_Obj *args, int n)
     CL_Obj package;
     char buf[64];
     int plen;
+    char char_pkg_name[2]; /* for character package designator */
 
-    if (n > 0 && CL_STRING_P(args[0])) {
-        CL_String *s = (CL_String *)CL_OBJ_TO_PTR(args[0]);
-        prefix = s->data;
+    if (n > 0) {
+        /* CLHS: prefix must be a STRING; anything else (including NIL)
+         * is a TYPE-ERROR.  The ansi-test gentemp.error.1 walks
+         * *mini-universe* and expects every non-string value to error. */
+        if (!CL_STRING_P(args[0]))
+            cl_signal_type_error(args[0], "STRING", "GENTEMP");
+        {
+            CL_String *s = (CL_String *)CL_OBJ_TO_PTR(args[0]);
+            prefix = s->data;
+        }
     }
 
     if (n > 1 && !CL_NULL_P(args[1])) {
-        /* Accept a package object, a string, or a symbol designator */
+        /* Package designator: package, string, symbol, or character. */
         CL_Obj arg = args[1];
         if (CL_HEAP_P(arg) && CL_HDR_TYPE(CL_OBJ_TO_PTR(arg)) == TYPE_PACKAGE) {
             package = arg;
@@ -1997,9 +2005,17 @@ static CL_Obj bi_gentemp(CL_Obj *args, int n)
             package = cl_find_package(name, (uint32_t)strlen(name));
             if (CL_NULL_P(package))
                 cl_error(CL_ERR_GENERAL, "GENTEMP: package not found: %s", name);
+        } else if (CL_CHAR_P(arg)) {
+            /* Character is a string-designator (CLHS glossary): treat as
+             * a one-character package name. */
+            char_pkg_name[0] = (char)CL_CHAR_VAL(arg);
+            char_pkg_name[1] = '\0';
+            package = cl_find_package(char_pkg_name, 1);
+            if (CL_NULL_P(package))
+                cl_error(CL_ERR_GENERAL, "GENTEMP: package not found: %c",
+                         char_pkg_name[0]);
         } else {
-            cl_error(CL_ERR_TYPE, "GENTEMP: bad package designator");
-            return CL_NIL;
+            cl_signal_type_error(arg, "PACKAGE", "GENTEMP");
         }
     } else {
         package = cl_current_package;
