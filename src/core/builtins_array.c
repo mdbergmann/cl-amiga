@@ -124,7 +124,13 @@ static CL_Obj bi_make_array(CL_Obj *args, int n)
                 flags |= CL_VEC_FLAG_ADJUSTABLE;
         } else if (args[i] == KW_ELEMENT_TYPE) {
             element_type = args[i + 1];
-            if (CL_SYMBOL_P(element_type)) {
+            /* (array nil (n)) is a STRING subtype (CLHS 15.1.2.2) — only
+             * zero-length is well-defined since no value is storable, but
+             * the result must satisfy STRINGP.  Folding it into the
+             * character branch produces an empty TYPE_STRING. */
+            if (CL_NULL_P(element_type))
+                element_type_char = 1;
+            else if (CL_SYMBOL_P(element_type)) {
                 const char *ename = cl_symbol_name(element_type);
                 if (strcmp(ename, "BIT") == 0)
                     element_type_bit = 1;
@@ -167,10 +173,15 @@ static CL_Obj bi_make_array(CL_Obj *args, int n)
                 uint32_t slen = cl_string_length(displaced_to);
                 if (displaced_offset + length > slen)
                     cl_error(CL_ERR_ARGS, "MAKE-ARRAY: displaced bounds exceed target string length");
-                /* Create new string with copied characters */
+                /* Create new string with copied characters.  cl_make_string
+                 * may GC-compact, so protect displaced_to until we've copied
+                 * each character. */
                 {
-                    CL_Obj str = cl_make_string(NULL, length);
+                    CL_Obj str;
                     uint32_t j;
+                    CL_GC_PROTECT(displaced_to);
+                    str = cl_make_string(NULL, length);
+                    CL_GC_UNPROTECT(1);
                     for (j = 0; j < length; j++)
                         cl_string_set_char_at(str, j,
                             cl_string_char_at(displaced_to, displaced_offset + j));
@@ -407,19 +418,56 @@ static CL_Obj bi_make_array(CL_Obj *args, int n)
             /* 1D character array from list dimension: create string */
             char init_char = ' ';
             CL_Obj str;
+            uint32_t j;
+            /* :fill-pointer requires a CL_Vector backing (TYPE_STRING has
+             * no fill-pointer field).  Build a string-vector instead so
+             * (length name) and friends honor the active length. */
+            if (fill_ptr != CL_NO_FILL_POINTER) {
+                CL_Obj vec;
+                CL_Vector *vv;
+                CL_Obj *elts;
+                CL_Obj fill = has_initial_element ? initial_element
+                                                  : CL_MAKE_CHAR(' ');
+                vec = cl_make_array(dims[0], 0, NULL,
+                                    flags | CL_VEC_FLAG_STRING, fill_ptr);
+                vv = (CL_Vector *)CL_OBJ_TO_PTR(vec);
+                elts = cl_vector_data(vv);
+                for (j = 0; j < dims[0]; j++) elts[j] = fill;
+                if (has_initial_contents) {
+                    uint32_t ic_len = seq_length(initial_contents);
+                    if (ic_len > dims[0]) ic_len = dims[0];
+                    for (j = 0; j < ic_len; j++) {
+                        CL_Obj elem = seq_elt(initial_contents, j);
+                        if (CL_CHAR_P(elem)) elts[j] = elem;
+                    }
+                }
+                return vec;
+            }
+            /* :displaced-to to a string: copy active substring (mirrors the
+             * fixnum-dim path above; without this, dims-as-list callers
+             * silently lose the displacement). */
+            if (has_displaced_to && CL_ANY_STRING_P(displaced_to)) {
+                uint32_t slen = cl_string_length(displaced_to);
+                if (displaced_offset + dims[0] > slen)
+                    cl_error(CL_ERR_ARGS,
+                             "MAKE-ARRAY: displaced bounds exceed target string length");
+                CL_GC_PROTECT(displaced_to);
+                str = cl_make_string(NULL, dims[0]);
+                CL_GC_UNPROTECT(1);
+                for (j = 0; j < dims[0]; j++)
+                    cl_string_set_char_at(str, j,
+                        cl_string_char_at(displaced_to, displaced_offset + j));
+                return str;
+            }
             if (has_initial_element) {
                 if (!CL_CHAR_P(initial_element))
                     cl_error(CL_ERR_TYPE, "MAKE-ARRAY: :initial-element for character array must be a character");
                 init_char = (char)CL_CHAR_VAL(initial_element);
             }
             str = cl_make_string(NULL, dims[0]);
-            {
-                uint32_t j;
-                for (j = 0; j < dims[0]; j++)
-                    cl_string_set_char_at(str, j, init_char);
-            }
+            for (j = 0; j < dims[0]; j++)
+                cl_string_set_char_at(str, j, init_char);
             if (has_initial_contents) {
-                uint32_t j;
                 uint32_t ic_len = seq_length(initial_contents);
                 if (ic_len > dims[0]) ic_len = dims[0];
                 for (j = 0; j < ic_len; j++) {

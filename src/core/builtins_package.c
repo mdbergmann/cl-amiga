@@ -554,7 +554,7 @@ static CL_Obj bi_package_symbols(CL_Obj *args, int nargs)
     for (i = 0; i < tbl->length; i++) {
         CL_Obj bucket = tbl->data[i];
         while (!CL_NULL_P(bucket)) {
-            result = cl_cons(cl_car(bucket), result);
+            result = cl_cons(cl_normalize_nil_symbol(cl_car(bucket)), result);
             bucket = cl_cdr(bucket);
         }
     }
@@ -575,7 +575,7 @@ static CL_Obj bi_package_external_symbols(CL_Obj *args, int nargs)
     CL_GC_PROTECT(result);
     list = ((CL_Package *)CL_OBJ_TO_PTR(pkg_obj))->exported_symbols;
     while (!CL_NULL_P(list)) {
-        result = cl_cons(cl_car(list), result);
+        result = cl_cons(cl_normalize_nil_symbol(cl_car(list)), result);
         /* cl_cons may have GC-compacted; re-walk by stepping cdr from
          * a fresh pkg pointer — but since the list is itself rooted
          * via pkg_obj (GC_PROTECT keeps the package alive), the list's
@@ -692,7 +692,7 @@ static void shadowing_import_one(CL_Obj sym, CL_Obj package)
 
     if (existing == sym) {
         /* Already present — just ensure on shadowing list */
-    } else if (!CL_NULL_P(existing)) {
+    } else if (existing != CL_UNBOUND) {
         /* Different symbol with same name — remove old, import new */
         unintern_own_nolock(existing, package);
         /* Re-fetch pkg pointer (unintern doesn't allocate, but be safe) */
@@ -763,21 +763,40 @@ static CL_Obj bi_copy_symbol(CL_Obj *args, int nargs)
 {
     CL_Obj sym_obj = args[0];
     int copy_props = (nargs > 1 && !CL_NULL_P(args[1]));
-    CL_Symbol *orig;
     CL_Obj new_sym;
-    CL_Symbol *ns;
 
-    if (!CL_SYMBOL_P(sym_obj))
-        cl_error(CL_ERR_TYPE, "COPY-SYMBOL: argument must be a symbol");
+    if (!CL_SYMBOL_OR_NIL_P(sym_obj))
+        cl_signal_type_error(sym_obj, "SYMBOL", "COPY-SYMBOL");
 
-    orig = (CL_Symbol *)CL_OBJ_TO_PTR(sym_obj);
-    new_sym = cl_make_uninterned_symbol(orig->name);
-    ns = (CL_Symbol *)CL_OBJ_TO_PTR(new_sym);
+    if (CL_NULL_P(sym_obj)) {
+        /* (copy-symbol nil) — fresh uninterned symbol named "NIL".
+         * With copy-props=T, CLHS says the new symbol's value, function,
+         * and plist cells inherit from the original.  NIL is bound to
+         * itself, so the new symbol's value cell becomes NIL too (so
+         * boundp succeeds on the copy).  NIL has no function binding;
+         * its plist comes from SYM_NIL's storage shadow. */
+        new_sym = cl_make_uninterned_symbol(cl_make_string("NIL", 3));
+        if (copy_props) {
+            CL_Symbol *ns = (CL_Symbol *)CL_OBJ_TO_PTR(new_sym);
+            CL_Symbol *src = (CL_Symbol *)CL_OBJ_TO_PTR(SYM_NIL);
+            ns->value = CL_NIL;
+            ns->plist = src->plist;
+        }
+        return new_sym;
+    }
 
-    if (copy_props) {
-        ns->value = orig->value;
-        ns->function = orig->function;
-        ns->plist = orig->plist;
+    {
+        CL_Symbol *orig = (CL_Symbol *)CL_OBJ_TO_PTR(sym_obj);
+        CL_Symbol *ns;
+        new_sym = cl_make_uninterned_symbol(orig->name);
+        if (copy_props) {
+            /* Re-fetch orig after potential GC compaction in cl_make */
+            orig = (CL_Symbol *)CL_OBJ_TO_PTR(sym_obj);
+            ns = (CL_Symbol *)CL_OBJ_TO_PTR(new_sym);
+            ns->value = orig->value;
+            ns->function = orig->function;
+            ns->plist = orig->plist;
+        }
     }
     return new_sym;
 }

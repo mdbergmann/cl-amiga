@@ -281,10 +281,34 @@ static CL_Obj bi_symbol_package(CL_Obj *args, int n)
 
 static CL_Obj bi_make_symbol(CL_Obj *args, int n)
 {
+    CL_Obj name = args[0];
     CL_UNUSED(n);
-    if (!CL_ANY_STRING_P(args[0]))
-        cl_signal_type_error(args[0], "STRING", "MAKE-SYMBOL");
-    return cl_make_symbol(args[0]);
+    if (CL_ANY_STRING_P(name)) {
+        return cl_make_symbol(name);
+    }
+    /* Adjustable / fill-pointer / displaced character vectors: copy the
+     * active portion (length = fill-pointer when present) into a fresh
+     * simple TYPE_STRING.  Per CLHS 11.1.3, MAKE-SYMBOL accepts any
+     * STRING — including non-simple vectors of CHARACTER. */
+    if (CL_STRING_VECTOR_P(name)) {
+        CL_Vector *v = (CL_Vector *)CL_OBJ_TO_PTR(name);
+        uint32_t active = cl_vector_active_length(v);
+        CL_Obj str;
+        uint32_t i;
+        CL_Obj *data;
+        CL_GC_PROTECT(name);
+        str = cl_make_string(NULL, active);
+        CL_GC_UNPROTECT(1);
+        v = (CL_Vector *)CL_OBJ_TO_PTR(name);
+        data = cl_vector_data(v);
+        for (i = 0; i < active; i++) {
+            CL_Obj ch = data[i];
+            cl_string_set_char_at(str, i, CL_CHAR_P(ch) ? CL_CHAR_VAL(ch) : 0);
+        }
+        return cl_make_symbol(str);
+    }
+    cl_signal_type_error(args[0], "STRING", "MAKE-SYMBOL");
+    return CL_NIL;
 }
 
 static CL_Obj bi_keywordp(CL_Obj *args, int n)

@@ -946,14 +946,50 @@ static CL_Obj read_expr(void)
             char sym_buf[256];
             int sym_len = 0;
             int ch2;
+            int sym_has_escape = 0;
             CL_Obj name_str, new_sym, cell;
+            CL_Readtable *rt = cl_readtable_current();
             while (sym_len < 255) {
                 ch2 = read_char();
+                if (ch2 < 0) break;  /* EOF */
+                /* Multiple escape: |...| — read literally with no
+                 * case folding (CLHS 2.4.8.5 / 2.3.4).  An empty pair
+                 * |...| is a valid zero-length name segment. */
+                if (ch2 < CL_RT_CHARS &&
+                    rt->syntax[ch2] == CL_CHAR_MULTI_ESCAPE) {
+                    sym_has_escape = 1;
+                    for (;;) {
+                        ch2 = read_char();
+                        if (ch2 < 0) {
+                            cl_reader_error(CL_ERR_PARSE,
+                                "Unterminated | in symbol name");
+                            return CL_NIL;
+                        }
+                        if (ch2 < CL_RT_CHARS &&
+                            rt->syntax[ch2] == CL_CHAR_MULTI_ESCAPE)
+                            break;  /* closing | */
+                        if (ch2 < CL_RT_CHARS &&
+                            rt->syntax[ch2] == CL_CHAR_ESCAPE) {
+                            ch2 = read_char();
+                            if (ch2 < 0) break;
+                        }
+                        if (sym_len < 255) sym_buf[sym_len++] = (char)ch2;
+                    }
+                    continue;
+                }
+                /* Single escape: \ — next char literal, no case folding. */
+                if (ch2 < CL_RT_CHARS && rt->syntax[ch2] == CL_CHAR_ESCAPE) {
+                    sym_has_escape = 1;
+                    ch2 = read_char();
+                    if (ch2 < 0) break;
+                    if (sym_len < 255) sym_buf[sym_len++] = (char)ch2;
+                    continue;
+                }
                 if (is_delimiter(ch2)) { unread_char(ch2); break; }
                 sym_buf[sym_len++] = (char)toupper(ch2);
             }
             sym_buf[sym_len] = '\0';
-            if (sym_len == 0) {
+            if (sym_len == 0 && !sym_has_escape) {
                 if (read_suppress) return CL_NIL;
                 cl_reader_error(CL_ERR_PARSE, "Missing symbol name after #:");
             }

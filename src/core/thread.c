@@ -282,6 +282,9 @@ CL_Obj cl_symbol_value(CL_Obj sym)
     CL_Thread *t = (cl_thread_count <= 1)
                    ? cl_main_thread_ptr
                    : (CL_Thread *)platform_tls_get();
+    /* CL_NIL is the constant tag (0) — its value/function/plist live on
+     * the heap-allocated SYM_NIL storage shadow. */
+    if (CL_NULL_P(sym)) sym = SYM_NIL;
     if (t->tlv_entry_count > 0) {
         CL_Obj v = cl_tlv_get(t, sym);
         if (v != CL_TLV_ABSENT) return v;
@@ -294,6 +297,7 @@ void cl_set_symbol_value(CL_Obj sym, CL_Obj val)
     CL_Thread *t = (cl_thread_count <= 1)
                    ? cl_main_thread_ptr
                    : (CL_Thread *)platform_tls_get();
+    if (CL_NULL_P(sym)) sym = SYM_NIL;
     if (t->tlv_entry_count > 0) {
         CL_Obj v = cl_tlv_get(t, sym);
         if (v != CL_TLV_ABSENT) {
@@ -309,6 +313,7 @@ int cl_symbol_boundp(CL_Obj sym)
     CL_Thread *t = (cl_thread_count <= 1)
                    ? cl_main_thread_ptr
                    : (CL_Thread *)platform_tls_get();
+    if (CL_NULL_P(sym)) sym = SYM_NIL;
     if (t->tlv_entry_count > 0) {
         CL_Obj v = cl_tlv_get(t, sym);
         if (v != CL_TLV_ABSENT) return v != CL_UNBOUND;

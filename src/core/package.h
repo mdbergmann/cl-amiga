@@ -47,6 +47,12 @@ CL_Obj cl_package_find_external(const char *name, uint32_t len, CL_Obj package);
 CL_Obj cl_find_symbol_with_status(const char *name, uint32_t len,
                                    CL_Obj package, int *status);
 
+/* Map the heap-allocated SYM_NIL (storage shadow for the NIL constant)
+ * to the user-facing CL_NIL value.  Apply at any boundary that returns
+ * a possibly-NIL symbol to user code so EQ-based identity holds across
+ * (intern "NIL" :common-lisp), 'NIL, and the NIL constant. */
+CL_Obj cl_normalize_nil_symbol(CL_Obj sym);
+
 /* Find package by name or nickname */
 CL_Obj cl_find_package(const char *name, uint32_t len);
 
