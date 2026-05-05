@@ -10,9 +10,17 @@ CL-Amiga is a bytecode-compiled Common Lisp environment written in C (C89/C99). 
 
 ## Status
 
-CL-Amiga can load **ASDF**, install and run **Quicklisp**, and successfully quickload libraries including **Alexandria**, **fiveam** (57/57 self-tests passing), and **FSet** (17/17 tests passing).
+CL-Amiga can load **ASDF**, install and run **Quicklisp**, and successfully quickload libraries including **Alexandria**, **fiveam** (57/57 self-tests passing), **FSet** (17/17 tests passing), and **Sento** — the full `(asdf:test-system :sento)` suite runs end-to-end (511/513, two timing-flaky cases), pulling in **lparallel**, **serapeum**, **bordeaux-threads**, **log4cl** and friends along the way.
 
-Over 2077 Amiga tests and 690+ host tests cover the implementation, including threading, CLOS, conditions, full numeric tower, and AmigaOS GUI (Intuition/Graphics/GadTools).
+**ANSI conformance** — the Paul Dietz ANSI test suite is the working spec. Current scores against the upstream suites:
+
+- **CONS chapter** — 1882 / 1882 (100%)
+- **SYMBOLS chapter** — 3020 / 3020 (100%)
+- **NUMBERS chapter** — work in progress
+
+ANSI bootstraps live in `trunk/load-and-test-ansi*.lisp` and run on host and Amiga.
+
+Over 2240 host tests and ~2250 Amiga tests cover the implementation, including threading, CLOS, conditions, the full numeric tower, FFI, and AmigaOS GUI (Intuition/Graphics/GadTools).
 
 ## Building
 
@@ -93,6 +101,20 @@ CL-USER> (load "lib/quicklisp-compat.lisp")
 CL-USER> (ql:quickload "alexandria")
 CL-USER> (ql:quickload "fiveam")
 CL-USER> (ql:quickload "fset")
+CL-USER> (ql:quickload "sento")    ; pulls in lparallel + serapeum
+```
+
+### Integration test scripts
+
+Reusable Lisp loaders in `trunk/` that load and exercise third-party libraries on both host and Amiga:
+
+```
+./build/host/clamiga --heap 24M  --load trunk/load-and-test-5am.lisp            # Fiveam
+./build/host/clamiga --heap 24M  --load trunk/load-and-test-fset.lisp           # FSet
+./build/host/clamiga --heap 64M  --load trunk/load-and-test-str.lisp            # str
+./build/host/clamiga --heap 192M --load trunk/load-and-test-sento-system.lisp   # Sento (cold cache)
+./build/host/clamiga --heap 96M  --load trunk/load-and-test-ansi.lisp           # ANSI cons + symbols
+./build/host/clamiga --heap 96M  --load trunk/load-and-test-ansi-numbers.lisp   # ANSI numbers
 ```
 
 ## AmigaOS Native GUI
@@ -175,12 +197,12 @@ When the abstractions aren't enough, drop to raw library calls:
 - **Memory-efficient** — bump allocator with free-list fallback, mark-and-sweep GC; designed for 68020 @ 14 MHz with 8 MB RAM
 - **Platform abstraction** — all OS calls go through `platform.h` (POSIX and AmigaOS implementations)
 - **FFI** — generic foreign pointer type + peek/poke (all platforms); 68k assembly trampoline for AmigaOS register-based library calls
-- **Threading** (MP package) — kernel threads, per-thread dynamic bindings (TLV), locks, named condition variables, thread interruption/destruction, type predicates; stop-the-world GC with safepoints; POSIX pthreads and AmigaOS processes/SignalSemaphores
+- **Threading** (MP package) — kernel threads, per-thread dynamic bindings (TLV), locks, named condition variables, thread interruption/destruction, type predicates; stop-the-world GC with safepoints; POSIX pthreads (with `__thread`-backed TLS) and AmigaOS processes/SignalSemaphores
 - **TCP networking** — BSD sockets (POSIX) and bsdsocket.library (AmigaOS)
 
 ## Known Limitations and Future Work
 
-- **Alpha status** — the core language works well enough to run real CL libraries, but many corners of the ANSI CL spec remain unimplemented (broadcast/two-way streams, logical pathnames, `multiple-value-call`, some `defstruct` options, full CLOS MOP)
+- **Alpha status** — the core language works well enough to run real CL libraries, but corners of the ANSI CL spec remain unimplemented (broadcast / two-way / concatenated streams, logical pathnames, some `defstruct` options, full CLOS MOP)
 - **Amiga GUI bindings are incomplete** — the Intuition/Graphics/GadTools abstractions cover common use cases (windows, drawing, gadgets, menus) but not the full API surface; more libraries (ASL requesters, Layers, Commodities) are not yet wrapped
 - **Threading** — MP package covers core bordeaux-threads API (threads, locks, named condvars, interrupt/destroy-thread, type predicates); some gaps remain (semaphores, atomic integers, `with-timeout`)
 - **Buffered socket I/O** — network streams currently use byte-at-a-time recv/send, making Quicklisp downloads on Amiga very slow
@@ -215,7 +237,8 @@ lib/
     gadtools.lisp   GadTools gadgets, menus
 tests/
   test_*.c        Host test suites (C)
-  amiga/          Amiga test suite (Lisp, 2077 tests)
+  amiga/          Amiga test suite (Lisp, ~2250 tests)
+trunk/            Integration test scripts (ANSI, Sento, FSet, fiveam, str, ...)
 verify/
   realamiga/      FS-UAE configuration and AmigaOS disk image
 ```
