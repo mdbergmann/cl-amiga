@@ -751,6 +751,54 @@ void cl_signal_type_error(CL_Obj datum, const char *expected_type_name,
     cl_error_from_condition(cond);
 }
 
+/* Build and signal a CELL-ERROR subtype (unbound-variable or
+ * undefined-function) carrying the :name slot, then unwind.  The plain
+ * cl_error(CL_ERR_UNBOUND/UNDEFINED, ...) path leaves :name unset, so
+ * (cell-error-name c) returns NIL — the ANSI conformance tests assert
+ * (eq (cell-error-name c) sym) and fail without the slot. */
+static void signal_cell_error(CL_Obj type_sym, CL_Obj name,
+                              const char *report_prefix)
+{
+    CL_Obj report = CL_NIL;
+    CL_Obj slots = CL_NIL;
+    CL_Obj cond;
+    char msgbuf[160];
+    const char *sym_name = CL_NULL_P(name) ? "NIL"
+                          : (CL_SYMBOL_P(name) ? cl_symbol_name(name) : "?");
+
+    CL_GC_PROTECT(name);
+
+    snprintf(msgbuf, sizeof(msgbuf), "%s: %s", report_prefix, sym_name);
+    report = cl_make_string(msgbuf, (uint32_t)strlen(msgbuf));
+    CL_GC_PROTECT(report);
+
+    {
+        CL_Obj pair;
+        pair = cl_cons(KW_FORMAT_CONTROL, report);
+        slots = cl_cons(pair, CL_NIL);
+        CL_GC_PROTECT(slots);
+        pair = cl_cons(KW_NAME, name);
+        slots = cl_cons(pair, slots);
+    }
+
+    cond = cl_make_condition(type_sym, slots, report);
+
+    CL_GC_UNPROTECT(3); /* name, report, slots */
+
+    cl_signal_condition(cond);
+    cl_error_from_condition(cond);
+}
+
+void cl_signal_unbound_variable(CL_Obj name)
+{
+    signal_cell_error(SYM_UNBOUND_VARIABLE_COND, name, "unbound variable");
+}
+
+void cl_signal_undefined_function(CL_Obj name)
+{
+    signal_cell_error(SYM_UNDEFINED_FUNCTION_COND, name, "undefined function");
+}
+
 /* Create a condition object from a C error code and message string */
 CL_Obj cl_create_condition_from_error(int code, const char *msg)
 {

@@ -100,10 +100,12 @@ CL_Obj SETF_SYM_CHAR = CL_NIL;
 CL_Obj SETF_SYM_SCHAR = CL_NIL;
 CL_Obj SETF_SYM_SYMBOL_VALUE = CL_NIL;
 CL_Obj SETF_SYM_SYMBOL_FUNCTION = CL_NIL;
+CL_Obj SETF_SYM_SYMBOL_PLIST = CL_NIL;
 CL_Obj SETF_SYM_FDEFINITION = CL_NIL;
 CL_Obj SETF_HELPER_NTH = CL_NIL;
 CL_Obj SETF_HELPER_SV = CL_NIL;
 CL_Obj SETF_HELPER_SF = CL_NIL;
+CL_Obj SETF_HELPER_SP = CL_NIL;
 CL_Obj SETF_SYM_GETHASH = CL_NIL;
 CL_Obj SETF_HELPER_GETHASH = CL_NIL;
 CL_Obj SETF_HELPER_AREF = CL_NIL;
@@ -2448,6 +2450,14 @@ static void compile_setf_place(CL_Compiler *c, CL_Obj place, CL_Obj val_form)
             compile_expr(c, val_form);
             cl_emit(c, OP_CALL);
             cl_emit(c, 2);
+        } else if (head == SETF_SYM_SYMBOL_PLIST) {
+            int idx = cl_add_constant(c, SETF_HELPER_SP);
+            cl_emit(c, OP_FLOAD);
+            cl_emit_u16(c, (uint16_t)idx);
+            compile_expr(c, cl_car(cl_cdr(place)));
+            compile_expr(c, val_form);
+            cl_emit(c, OP_CALL);
+            cl_emit(c, 2);
         } else if (head == SETF_SYM_ROW_MAJOR_AREF) {
             /* (setf (row-major-aref arr idx) val) → (%setf-row-major-aref arr idx val) */
             int idx = cl_add_constant(c, SETF_HELPER_ROW_MAJOR_AREF);
@@ -3843,10 +3853,12 @@ void cl_compiler_init(void)
     SETF_SYM_SCHAR           = cl_intern_in("SCHAR", 5, cl_package_cl);
     SETF_SYM_SYMBOL_VALUE    = cl_intern_in("SYMBOL-VALUE", 12, cl_package_cl);
     SETF_SYM_SYMBOL_FUNCTION = cl_intern_in("SYMBOL-FUNCTION", 15, cl_package_cl);
+    SETF_SYM_SYMBOL_PLIST    = cl_intern_in("SYMBOL-PLIST", 12, cl_package_cl);
     SETF_SYM_FDEFINITION     = cl_intern_in("FDEFINITION", 11, cl_package_cl);
     SETF_HELPER_NTH          = cl_intern_in("%SETF-NTH", 9, cl_package_clamiga);
     SETF_HELPER_SV           = cl_intern_in("%SET-SYMBOL-VALUE", 17, cl_package_clamiga);
     SETF_HELPER_SF           = cl_intern_in("%SET-SYMBOL-FUNCTION", 20, cl_package_clamiga);
+    SETF_HELPER_SP           = cl_intern_in("%SET-SYMBOL-PLIST", 17, cl_package_clamiga);
     SETF_SYM_GETHASH         = cl_intern_in("GETHASH", 7, cl_package_cl);
     SETF_HELPER_GETHASH      = cl_intern_in("%SETF-GETHASH", 13, cl_package_clamiga);
     SETF_HELPER_AREF         = cl_intern_in("%SETF-AREF", 10, cl_package_clamiga);
@@ -3875,10 +3887,12 @@ void cl_compiler_init(void)
     cl_gc_register_root(&SETF_SYM_SCHAR);
     cl_gc_register_root(&SETF_SYM_SYMBOL_VALUE);
     cl_gc_register_root(&SETF_SYM_SYMBOL_FUNCTION);
+    cl_gc_register_root(&SETF_SYM_SYMBOL_PLIST);
     cl_gc_register_root(&SETF_SYM_FDEFINITION);
     cl_gc_register_root(&SETF_HELPER_NTH);
     cl_gc_register_root(&SETF_HELPER_SV);
     cl_gc_register_root(&SETF_HELPER_SF);
+    cl_gc_register_root(&SETF_HELPER_SP);
     cl_gc_register_root(&SETF_SYM_GETHASH);
     cl_gc_register_root(&SETF_HELPER_GETHASH);
     cl_gc_register_root(&SETF_HELPER_AREF);

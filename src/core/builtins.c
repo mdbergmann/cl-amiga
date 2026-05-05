@@ -25,7 +25,10 @@ void cl_register_builtin(const char *name, CL_CFunc func,
     CL_Obj fn = cl_make_function(func, sym, min, max);
     CL_Symbol *s = (CL_Symbol *)CL_OBJ_TO_PTR(sym);
     s->function = fn;
-    s->value = fn;
+    /* Do NOT set s->value here.  Per CLHS, function and value cells are
+     * disjoint: (boundp 'car) must return NIL even though CAR is fbound.
+     * Setting value = fn silently broke BOUNDP / SYMBOL-VALUE for every
+     * builtin name. */
 }
 
 /* Helper to register a builtin in CL */
@@ -743,20 +746,35 @@ static CL_Obj bi_untrace_all(CL_Obj *args, int n)
 static CL_Obj bi_symbol_plist(CL_Obj *args, int n)
 {
     CL_UNUSED(n);
-    if (!CL_SYMBOL_P(args[0]))
-        cl_error(CL_ERR_TYPE, "SYMBOL-PLIST: not a symbol");
+    if (!CL_SYMBOL_OR_NIL_P(args[0]))
+        cl_signal_type_error(args[0], "SYMBOL", "SYMBOL-PLIST");
+    if (CL_NULL_P(args[0])) return CL_NIL;
     return ((CL_Symbol *)CL_OBJ_TO_PTR(args[0]))->plist;
+}
+
+static CL_Obj bi_set_symbol_plist(CL_Obj *args, int n)
+{
+    CL_Symbol *s;
+    CL_UNUSED(n);
+    if (!CL_SYMBOL_OR_NIL_P(args[0]))
+        cl_signal_type_error(args[0], "SYMBOL", "%SET-SYMBOL-PLIST");
+    if (CL_NULL_P(args[0]))
+        cl_error(CL_ERR_GENERAL, "Cannot set symbol-plist of NIL");
+    s = (CL_Symbol *)CL_OBJ_TO_PTR(args[0]);
+    s->plist = args[1];
+    return args[1];
 }
 
 static CL_Obj bi_get(CL_Obj *args, int n)
 {
     CL_Symbol *s;
     CL_Obj plist, indicator, def;
-    if (!CL_SYMBOL_P(args[0]))
-        cl_error(CL_ERR_TYPE, "GET: not a symbol");
-    s = (CL_Symbol *)CL_OBJ_TO_PTR(args[0]);
+    if (!CL_SYMBOL_OR_NIL_P(args[0]))
+        cl_signal_type_error(args[0], "SYMBOL", "GET");
     indicator = args[1];
     def = (n > 2) ? args[2] : CL_NIL;
+    if (CL_NULL_P(args[0])) return def;
+    s = (CL_Symbol *)CL_OBJ_TO_PTR(args[0]);
     plist = s->plist;
     while (!CL_NULL_P(plist) && !CL_NULL_P(cl_cdr(plist))) {
         if (cl_car(plist) == indicator)
@@ -772,8 +790,10 @@ static CL_Obj bi_setf_get(CL_Obj *args, int n)
     CL_Symbol *s;
     CL_Obj plist, indicator, value;
     CL_UNUSED(n);
-    if (!CL_SYMBOL_P(args[0]))
-        cl_error(CL_ERR_TYPE, "GET: not a symbol");
+    if (!CL_SYMBOL_OR_NIL_P(args[0]))
+        cl_signal_type_error(args[0], "SYMBOL", "GET");
+    if (CL_NULL_P(args[0]))
+        cl_error(CL_ERR_GENERAL, "Cannot setf get on NIL");
     s = (CL_Symbol *)CL_OBJ_TO_PTR(args[0]);
     indicator = args[1];
     value = args[2];
@@ -805,8 +825,9 @@ static CL_Obj bi_remprop(CL_Obj *args, int n)
     CL_Symbol *s;
     CL_Obj indicator, plist, prev_val;
     CL_UNUSED(n);
-    if (!CL_SYMBOL_P(args[0]))
-        cl_error(CL_ERR_TYPE, "REMPROP: not a symbol");
+    if (!CL_SYMBOL_OR_NIL_P(args[0]))
+        cl_signal_type_error(args[0], "SYMBOL", "REMPROP");
+    if (CL_NULL_P(args[0])) return CL_NIL;
     s = (CL_Symbol *)CL_OBJ_TO_PTR(args[0]);
     indicator = args[1];
     plist = s->plist;
@@ -992,6 +1013,7 @@ void cl_builtins_init(void)
 
     /* Property lists */
     defun("SYMBOL-PLIST", bi_symbol_plist, 1, 1);
+    cl_register_builtin("%SET-SYMBOL-PLIST", bi_set_symbol_plist, 2, 2, cl_package_clamiga);
     defun("GET", bi_get, 2, 3);
     cl_register_builtin("%SETF-GET", bi_setf_get, 3, 3, cl_package_clamiga);
     defun("REMPROP", bi_remprop, 2, 2);

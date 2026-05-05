@@ -150,6 +150,13 @@ typedef struct {
 
 #define CL_SYMBOL_P(obj) (CL_HEAP_P(obj) && CL_HDR_TYPE(CL_OBJ_TO_PTR(obj)) == TYPE_SYMBOL)
 
+/* (typep x 'symbol) — NIL is a symbol per CLHS, but its tagged
+ * representation (0) means CL_SYMBOL_P alone misses it.  Use this in
+ * argument checks for any builtin that operates on symbols (BOUNDP,
+ * SYMBOL-VALUE, SYMBOL-FUNCTION, MAKUNBOUND, ...) so '(boundp nil) etc.
+ * conform to ANSI without each call site spelling out the OR. */
+#define CL_SYMBOL_OR_NIL_P(obj) (CL_NULL_P(obj) || CL_SYMBOL_P(obj))
+
 #define CL_UNBOUND  ((CL_Obj)0xFFFFFFF6)  /* Sentinel for unbound variables (low 2 bits=10, not a valid CL_Obj) */
 
 /* --- String --- */
