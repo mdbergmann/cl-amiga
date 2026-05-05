@@ -88,6 +88,16 @@ void cl_error_from_condition(CL_Obj condition);
 void cl_signal_type_error(CL_Obj datum, const char *expected_type_name,
                           const char *fn_name);
 
+/* Signal an UNBOUND-VARIABLE / UNDEFINED-FUNCTION (both subtype
+ * CELL-ERROR) with the :name slot populated to NAME, then unwind.
+ * cl_error(CL_ERR_UNBOUND/UNDEFINED, ...) builds the condition with
+ * only :format-control set, so (cell-error-name c) returns NIL — the
+ * ANSI tests (symbol-function.error.5, makunbound.2) assert
+ * (eq (cell-error-name c) sym), so use these helpers from the call
+ * sites that already hold the symbol. */
+void cl_signal_unbound_variable(CL_Obj name);
+void cl_signal_undefined_function(CL_Obj name);
+
 /* Print the current error message */
 void cl_error_print(void);
 

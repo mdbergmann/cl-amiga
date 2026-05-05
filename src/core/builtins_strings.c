@@ -263,7 +263,7 @@ static CL_Obj bi_symbol_name(CL_Obj *args, int n)
     if (CL_NULL_P(args[0]))
         return cl_make_string("NIL", 3);
     if (!CL_SYMBOL_P(args[0]))
-        cl_error(CL_ERR_TYPE, "SYMBOL-NAME: not a symbol");
+        cl_signal_type_error(args[0], "SYMBOL", "SYMBOL-NAME");
     s = (CL_Symbol *)CL_OBJ_TO_PTR(args[0]);
     return s->name;
 }
@@ -275,7 +275,7 @@ static CL_Obj bi_symbol_package(CL_Obj *args, int n)
     if (CL_NULL_P(args[0]))
         return cl_package_cl;
     if (!CL_SYMBOL_P(args[0]))
-        cl_error(CL_ERR_TYPE, "SYMBOL-PACKAGE: not a symbol");
+        cl_signal_type_error(args[0], "SYMBOL", "SYMBOL-PACKAGE");
     s = (CL_Symbol *)CL_OBJ_TO_PTR(args[0]);
     return s->package;
 }
@@ -284,7 +284,7 @@ static CL_Obj bi_make_symbol(CL_Obj *args, int n)
 {
     CL_UNUSED(n);
     if (!CL_ANY_STRING_P(args[0]))
-        cl_error(CL_ERR_TYPE, "MAKE-SYMBOL: not a string");
+        cl_signal_type_error(args[0], "STRING", "MAKE-SYMBOL");
     return cl_make_symbol(args[0]);
 }
 

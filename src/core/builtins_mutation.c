@@ -48,12 +48,11 @@ static CL_Obj bi_symbol_value(CL_Obj *args, int n)
 {
     CL_Obj val;
     CL_UNUSED(n);
-    if (!CL_SYMBOL_P(args[0]))
-        cl_error(CL_ERR_TYPE, "SYMBOL-VALUE: not a symbol");
+    if (!CL_SYMBOL_OR_NIL_P(args[0]))
+        cl_signal_type_error(args[0], "SYMBOL", "SYMBOL-VALUE");
     val = cl_symbol_value(args[0]);
     if (val == CL_UNBOUND)
-        cl_error(CL_ERR_UNBOUND, "SYMBOL-VALUE: unbound variable: %s",
-                 cl_symbol_name(args[0]));
+        cl_signal_unbound_variable(args[0]);
     return val;
 }
 
@@ -61,23 +60,11 @@ static CL_Obj bi_symbol_function(CL_Obj *args, int n)
 {
     CL_Symbol *s;
     CL_UNUSED(n);
-    if (!CL_SYMBOL_P(args[0]))
-        cl_error(CL_ERR_TYPE, "SYMBOL-FUNCTION: not a symbol");
+    if (!CL_SYMBOL_OR_NIL_P(args[0]))
+        cl_signal_type_error(args[0], "SYMBOL", "SYMBOL-FUNCTION");
     s = (CL_Symbol *)CL_OBJ_TO_PTR(args[0]);
-    if (s->function == CL_UNBOUND) {
-        /* Include the home package so users can distinguish a legitimate
-         * lookup miss from a symbol interned in the wrong package. */
-        if (!CL_NULL_P(s->package)) {
-            CL_Package *p = (CL_Package *)CL_OBJ_TO_PTR(s->package);
-            CL_String *ns = (CL_String *)CL_OBJ_TO_PTR(p->name);
-            cl_error(CL_ERR_UNDEFINED,
-                     "SYMBOL-FUNCTION: undefined function: %.*s::%s",
-                     (int)ns->length, ns->data,
-                     cl_symbol_name(args[0]));
-        }
-        cl_error(CL_ERR_UNDEFINED, "SYMBOL-FUNCTION: undefined function: #:%s",
-                 cl_symbol_name(args[0]));
-    }
+    if (s->function == CL_UNBOUND)
+        cl_signal_undefined_function(args[0]);
     return s->function;
 }
 
@@ -109,8 +96,8 @@ static CL_Obj bi_set_symbol_value(CL_Obj *args, int n)
 {
     CL_Symbol *s;
     CL_UNUSED(n);
-    if (!CL_SYMBOL_P(args[0]))
-        cl_error(CL_ERR_TYPE, "SET: not a symbol");
+    if (!CL_SYMBOL_OR_NIL_P(args[0]))
+        cl_signal_type_error(args[0], "SYMBOL", "SET");
     s = (CL_Symbol *)CL_OBJ_TO_PTR(args[0]);
     if (s->flags & CL_SYM_CONSTANT)
         cl_error(CL_ERR_GENERAL, "Cannot assign to constant variable: %s",
@@ -123,8 +110,8 @@ static CL_Obj bi_set_symbol_function(CL_Obj *args, int n)
 {
     CL_Symbol *s;
     CL_UNUSED(n);
-    if (!CL_SYMBOL_P(args[0]))
-        cl_error(CL_ERR_TYPE, "%SET-SYMBOL-FUNCTION: not a symbol");
+    if (!CL_SYMBOL_OR_NIL_P(args[0]))
+        cl_signal_type_error(args[0], "SYMBOL", "%SET-SYMBOL-FUNCTION");
     s = (CL_Symbol *)CL_OBJ_TO_PTR(args[0]);
     s->function = args[1];
     return args[1];
@@ -135,8 +122,8 @@ static CL_Obj bi_set_symbol_function(CL_Obj *args, int n)
 static CL_Obj bi_boundp(CL_Obj *args, int n)
 {
     CL_UNUSED(n);
-    if (!CL_SYMBOL_P(args[0]))
-        cl_error(CL_ERR_TYPE, "BOUNDP: not a symbol");
+    if (!CL_SYMBOL_OR_NIL_P(args[0]))
+        cl_signal_type_error(args[0], "SYMBOL", "BOUNDP");
     return cl_symbol_boundp(args[0]) ? SYM_T : CL_NIL;
 }
 
@@ -192,8 +179,8 @@ static CL_Obj bi_fboundp(CL_Obj *args, int n)
         return (s->function != CL_UNBOUND && !CL_NULL_P(s->function))
             ? SYM_T : CL_NIL;
     }
-    if (!CL_SYMBOL_P(args[0]))
-        cl_error(CL_ERR_TYPE, "FBOUNDP: argument must be a function name");
+    if (!CL_SYMBOL_OR_NIL_P(args[0]))
+        cl_signal_type_error(args[0], "SYMBOL", "FBOUNDP");
     s = (CL_Symbol *)CL_OBJ_TO_PTR(args[0]);
     /* CLHS: fboundp is true for functions, macros, AND special operators. */
     if (s->function != CL_UNBOUND && !CL_NULL_P(s->function))
@@ -218,8 +205,8 @@ static CL_Obj bi_fmakunbound(CL_Obj *args, int n)
         }
         return args[0];
     }
-    if (!CL_SYMBOL_P(args[0]))
-        cl_error(CL_ERR_TYPE, "FMAKUNBOUND: argument must be a function name");
+    if (!CL_SYMBOL_OR_NIL_P(args[0]))
+        cl_signal_type_error(args[0], "SYMBOL", "FMAKUNBOUND");
     s = (CL_Symbol *)CL_OBJ_TO_PTR(args[0]);
     s->function = CL_UNBOUND;
     return args[0];
@@ -228,8 +215,8 @@ static CL_Obj bi_fmakunbound(CL_Obj *args, int n)
 static CL_Obj bi_makunbound(CL_Obj *args, int n)
 {
     CL_UNUSED(n);
-    if (!CL_SYMBOL_P(args[0]))
-        cl_error(CL_ERR_TYPE, "MAKUNBOUND: argument must be a symbol");
+    if (!CL_SYMBOL_OR_NIL_P(args[0]))
+        cl_signal_type_error(args[0], "SYMBOL", "MAKUNBOUND");
     cl_set_symbol_value(args[0], CL_UNBOUND);
     return args[0];
 }
@@ -242,11 +229,15 @@ CL_Obj bi_special_operator_p(CL_Obj *args, int n)
 {
     CL_Obj sym;
     CL_UNUSED(n);
-    if (!CL_SYMBOL_P(args[0]))
-        cl_error(CL_ERR_TYPE, "SPECIAL-OPERATOR-P: argument must be a symbol");
+    if (!CL_SYMBOL_OR_NIL_P(args[0]))
+        cl_signal_type_error(args[0], "SYMBOL", "SPECIAL-OPERATOR-P");
     sym = args[0];
+    /* The 25 ANSI special operators (CLHS 3.1.2.1.2.1).  LAMBDA is NOT
+     * one of them — it expands via a macro to FUNCTION (3.1.2.1.2.4) —
+     * so it must not be reported here.  Any addition to this set must
+     * be matched by the dispatch in compile_expr(). */
     if (sym == SYM_QUOTE || sym == SYM_IF || sym == SYM_PROGN
-        || sym == SYM_LAMBDA || sym == SYM_LET || sym == SYM_LETSTAR
+        || sym == SYM_LET || sym == SYM_LETSTAR
         || sym == SYM_SETQ || sym == SYM_FUNCTION
         || sym == SYM_BLOCK || sym == SYM_RETURN_FROM
         || sym == SYM_FLET || sym == SYM_LABELS
