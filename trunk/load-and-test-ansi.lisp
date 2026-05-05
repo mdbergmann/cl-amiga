@@ -68,9 +68,20 @@
                               (common-lisp:symbol-value
                                'common-lisp-user::*ansi-test-dir*)))
 
+;; --- Load symbols chapter ---
+(common-lisp:format common-lisp:t "~%--- Loading symbols chapter ---~%")
+(common-lisp:load
+ (common-lisp:merge-pathnames "symbols/load.lsp"
+                              (common-lisp:symbol-value
+                               'common-lisp-user::*ansi-test-dir*)))
+
 ;; --- Run the tests via rt:do-tests (inherited into :cl-test) ---
-(format t "~%--- Running CONS tests via rt:do-tests ---~%")
+(format t "~%--- Running tests via rt:do-tests ---~%")
 (do-tests)
 (format t "~%=== Summary ===~%")
 (format t "passed: ~A~%" (length regression-test::*passed-tests*))
 (format t "failed: ~A~%" (length regression-test::*failed-tests*))
+(when regression-test::*failed-tests*
+  (format t "~%--- Failed tests ---~%")
+  (dolist (n regression-test::*failed-tests*)
+    (format t "  ~A~%" n)))
