@@ -61,6 +61,18 @@
                               (common-lisp:symbol-value
                                'common-lisp-user::*aux-dir*)))
 
+;; cl-symbol-names.lsp defines *cl-symbol-names*, *cl-variable-symbols*,
+;; *cl-constant-symbols*, *cl-non-variable-constant-symbols* etc.  Several
+;; symbol-chapter tests (BOUNDP.5, CL-CONSTANT-SYMBOLS.1, KEYWORD-BEHAVIOR,
+;; SYMBOL-NAME.3 via the test fixtures, etc.) loop over these and fail with
+;; UNBOUND-VARIABLE without it.  Loaded directly (not compile-and-load) per
+;; gclload1.lsp's pattern.
+(common-lisp:format common-lisp:t "~%--- Loading cl-symbol-names.lsp ---~%")
+(common-lisp:load
+ (common-lisp:merge-pathnames "cl-symbol-names.lsp"
+                              (common-lisp:symbol-value
+                               'common-lisp-user::*ansi-test-dir*)))
+
 ;; --- Load cons chapter (paths relative to ansi-test root) ---
 (common-lisp:format common-lisp:t "~%--- Loading cons chapter ---~%")
 (common-lisp:load

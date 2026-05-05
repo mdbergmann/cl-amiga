@@ -43,7 +43,6 @@ static void defun(const char *name, CL_CFunc func, int min, int max)
     CL_Obj fn = cl_make_function(func, sym, min, max);
     CL_Symbol *s = (CL_Symbol *)CL_OBJ_TO_PTR(sym);
     s->function = fn;
-    s->value = fn;
 }
 
 /* Helper to register an extension builtin in the EXT package (exported) */
@@ -53,7 +52,6 @@ static void extfun(const char *name, CL_CFunc func, int min, int max)
     CL_Obj fn = cl_make_function(func, sym, min, max);
     CL_Symbol *s = (CL_Symbol *)CL_OBJ_TO_PTR(sym);
     s->function = fn;
-    s->value = fn;
     cl_export_symbol(sym, cl_package_ext);
 }
 

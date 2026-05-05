@@ -443,8 +443,11 @@ static CL_Obj read_atom_with_prefix(const char *prefix, int prefix_len)
         return CL_NIL;
     }
 
-    /* Escaped tokens (|...|, \x) are always symbols — skip numeric parsing */
-    if (has_escape) goto intern_symbol;
+    /* Escaped tokens (|...|, \x) are always symbols — skip numeric parsing
+     * but still honor the keyword (':foo) and pkg:sym prefixes, otherwise
+     * forms like ':|abcdefg|' get interned as a CL-USER symbol named
+     * ":abcdefg" instead of a keyword |abcdefg|. */
+    if (has_escape) goto check_keyword;
 
     /* Check for number: optional sign followed by digits */
     i = 0;
@@ -552,6 +555,7 @@ static CL_Obj read_atom_with_prefix(const char *prefix, int prefix_len)
         }
     }
 
+check_keyword:
     /* Check for keyword */
     if (buf[0] == ':') {
         return cl_intern_keyword(buf + 1, (uint32_t)(len - 1));
