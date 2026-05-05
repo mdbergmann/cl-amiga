@@ -4,6 +4,7 @@
 #include "mem.h"
 #include "error.h"
 #include "printer.h"
+#include "bignum.h"
 #include "compiler.h"
 #include "reader.h"
 #include "stream.h"
@@ -1865,12 +1866,16 @@ static CL_Obj bi_values_list(CL_Obj *args, int n)
 
 /* --- Gensym --- */
 
-static volatile uint32_t gensym_counter = 0;
+/* Compiler-internal counter — distinct from CL-visible *GENSYM-COUNTER*.
+ * Code generation (setf expansion, destructuring, lambda rewriting)
+ * makes many gensyms per compile; threading those through *GENSYM-COUNTER*
+ * would surprise user code that binds it (e.g. (let ((*gensym-counter* 1))
+ * (compile-file ...) *gensym-counter*) would no longer be 1). */
+static volatile uint32_t internal_gensym_counter = 0;
 
 /* C-callable GENSYM with a C-string prefix.  Used by compiler code
  * that needs fresh symbols when rewriting a form (e.g. SETF expansion
- * for GETF) — keeping the gensym counter in sync with the Lisp
- * GENSYM function and preserving uninterned status. */
+ * for GETF).  Uses a private counter, NOT *GENSYM-COUNTER*. */
 CL_Obj cl_gensym_with_name(const char *prefix)
 {
     char buf[64];
@@ -1879,7 +1884,7 @@ CL_Obj cl_gensym_with_name(const char *prefix)
     uint32_t cnt;
 
     if (prefix == NULL) prefix = "G";
-    cnt = platform_atomic_inc(&gensym_counter) - 1;
+    cnt = platform_atomic_inc(&internal_gensym_counter) - 1;
     len = snprintf(buf, sizeof(buf), "%s%lu", prefix, (unsigned long)cnt);
     name_str = cl_make_string(buf, (uint32_t)len);
     CL_GC_PROTECT(name_str);
@@ -1888,15 +1893,75 @@ CL_Obj cl_gensym_with_name(const char *prefix)
     return sym;
 }
 
+/* CLHS: GENSYM &optional x => new-symbol
+ *   x ::= a string (prefix) or a non-negative integer (suffix override).
+ *   With a string (or no arg), names are <prefix><*GENSYM-COUNTER*> and
+ *   the counter is incremented after the symbol is allocated.
+ *   With an integer, names are G<integer> and *GENSYM-COUNTER* is NOT
+ *   touched.  *GENSYM-COUNTER* must be a non-negative integer; otherwise
+ *   GENSYM signals TYPE-ERROR.  An x of any other type is a TYPE-ERROR. */
 static CL_Obj bi_gensym(CL_Obj *args, int n)
 {
-    const char *prefix = "G";
+    /* Buffer big enough for a 50-digit *GENSYM-COUNTER* (ansi gensym.10/.11)
+     * plus a generous prefix.  Bignum suffix > 200 digits is exotic enough
+     * to truncate safely. */
+    char buf[256];
+    CL_Obj name_str, sym;
+    int prefix_len = 0;
+    int suffix_len;
+    int use_counter; /* 1 = read & bump *GENSYM-COUNTER*; 0 = integer arg */
+    CL_Obj suffix_int = CL_NIL;
 
-    if (n > 0 && CL_STRING_P(args[0])) {
-        CL_String *s = (CL_String *)CL_OBJ_TO_PTR(args[0]);
-        prefix = s->data;
+    if (n == 0) {
+        buf[0] = 'G';
+        prefix_len = 1;
+        use_counter = 1;
+    } else {
+        CL_Obj arg = args[0];
+        if (CL_STRING_P(arg)) {
+            CL_String *s = (CL_String *)CL_OBJ_TO_PTR(arg);
+            uint32_t slen = s->length;
+            if (slen > sizeof(buf) - 64) slen = sizeof(buf) - 64;
+            memcpy(buf, s->data, slen);
+            prefix_len = (int)slen;
+            use_counter = 1;
+        } else if (CL_INTEGER_P(arg)) {
+            buf[0] = 'G';
+            prefix_len = 1;
+            use_counter = 0;
+            suffix_int = arg;
+        } else {
+            cl_signal_type_error(arg, "STRING", "GENSYM");
+            return CL_NIL; /* unreachable */
+        }
     }
-    return cl_gensym_with_name(prefix);
+
+    if (use_counter) {
+        suffix_int = cl_symbol_value(SYM_STAR_GENSYM_COUNTER);
+        if (!CL_INTEGER_P(suffix_int))
+            cl_signal_type_error(suffix_int, "INTEGER", "GENSYM");
+        if (cl_arith_minusp(suffix_int))
+            cl_signal_type_error(suffix_int, "UNSIGNED-BYTE", "GENSYM");
+    }
+
+    suffix_len = cl_princ_to_string(suffix_int, buf + prefix_len,
+                                    (int)sizeof(buf) - prefix_len);
+    if (suffix_len < 0) suffix_len = 0;
+
+    name_str = cl_make_string(buf, (uint32_t)(prefix_len + suffix_len));
+    CL_GC_PROTECT(name_str);
+    sym = cl_make_symbol(name_str);
+    CL_GC_UNPROTECT(1);
+
+    /* Increment *GENSYM-COUNTER* AFTER allocating the symbol (CLHS:
+     * "the counter is incremented after the symbol has been created"). */
+    if (use_counter) {
+        CL_Obj cur = cl_symbol_value(SYM_STAR_GENSYM_COUNTER);
+        CL_Obj next = cl_arith_add(cur, CL_MAKE_FIXNUM(1));
+        cl_set_symbol_value(SYM_STAR_GENSYM_COUNTER, next);
+    }
+
+    return sym;
 }
 
 /* GENTEMP &optional prefix package => new-symbol

@@ -79,6 +79,7 @@ CL_Obj SYM_STAR_PACKAGE = CL_NIL;
 CL_Obj SYM_STAR_LOAD_PATHNAME = CL_NIL;
 CL_Obj SYM_STAR_LOAD_TRUENAME = CL_NIL;
 CL_Obj SYM_STAR_LOAD_VERBOSE = CL_NIL;
+CL_Obj SYM_STAR_GENSYM_COUNTER = CL_NIL;
 CL_Obj SYM_STAR_COMPILE_FILE_PATHNAME = CL_NIL;
 CL_Obj SYM_STAR_COMPILE_FILE_TRUENAME = CL_NIL;
 CL_Obj SYM_STAR_COMPILE_VERBOSE = CL_NIL;
@@ -445,6 +446,14 @@ void cl_symbol_init(void)
         s->flags |= CL_SYM_SPECIAL; s->value = CL_NIL;
         s = (CL_Symbol *)CL_OBJ_TO_PTR(SYM_STAR_COMPILE_FILE_TRUENAME);
         s->flags |= CL_SYM_SPECIAL; s->value = CL_NIL;
+    }
+    /* CLHS: *GENSYM-COUNTER* — initial value is implementation-dependent
+     * but must be a non-negative integer.  ANSI tests rely on this being
+     * a CL-visible special variable that GENSYM reads and increments. */
+    SYM_STAR_GENSYM_COUNTER  = cl_intern_in("*GENSYM-COUNTER*", 16, cl_package_cl);
+    {
+        CL_Symbol *s = (CL_Symbol *)CL_OBJ_TO_PTR(SYM_STAR_GENSYM_COUNTER);
+        s->flags |= CL_SYM_SPECIAL; s->value = CL_MAKE_FIXNUM(1);
     }
     /* *macroexpand-hook* — set to NIL here, boot.lisp sets to #'funcall */
     /* *compile-print*, *compile-verbose* — standard CL variables */
