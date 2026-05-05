@@ -1582,6 +1582,62 @@ TEST(eval_gensym)
     ASSERT(g1 != g2);
 }
 
+/* CLHS *GENSYM-COUNTER* / GENSYM conformance — covers ANSI tests
+ * gensym.{3,4,9,10,11,12}, gensym-counter.1, gensym.error.{1,8,10,11,12}. */
+TEST(eval_gensym_counter)
+{
+    /* *GENSYM-COUNTER* exists and is a non-negative integer */
+    ASSERT_STR_EQ(eval_print(
+        "(and (integerp *gensym-counter*) (>= *gensym-counter* 0) t)"),
+        "T");
+
+    /* Counter is used as suffix and bumped after symbol creation */
+    ASSERT_STR_EQ(eval_print(
+        "(let ((*gensym-counter* 1)) (symbol-name (gensym)))"),
+        "\"G1\"");
+    ASSERT_STR_EQ(eval_print(
+        "(let ((*gensym-counter* 1327)) (symbol-name (gensym \"FOO\")))"),
+        "\"FOO1327\"");
+    ASSERT_STR_EQ(eval_print(
+        "(let ((*gensym-counter* 12345)) (gensym) *gensym-counter*)"),
+        "12346");
+
+    /* Bignum counter is supported and incremented correctly */
+    ASSERT_STR_EQ(eval_print(
+        "(let ((*gensym-counter* 1234567890123456789012345678901234567890))"
+        "  (symbol-name (gensym)))"),
+        "\"G1234567890123456789012345678901234567890\"");
+    ASSERT_STR_EQ(eval_print(
+        "(let ((*gensym-counter* 12345678901234567890123456789012345678901234567890))"
+        "  (gensym) *gensym-counter*)"),
+        "12345678901234567890123456789012345678901234567891");
+
+    /* Integer arg overrides counter and does NOT increment it */
+    ASSERT_STR_EQ(eval_print(
+        "(let ((*gensym-counter* 10)) (symbol-name (gensym 123)))"),
+        "\"G123\"");
+    ASSERT_STR_EQ(eval_print(
+        "(let ((*gensym-counter* 10)) (gensym 123) *gensym-counter*)"),
+        "10");
+
+    /* Bad prefix type → TYPE-ERROR */
+    ASSERT_STR_EQ(eval_print(
+        "(handler-case (gensym t) (type-error () :te))"),
+        ":TE");
+
+    /* Negative counter → TYPE-ERROR */
+    ASSERT_STR_EQ(eval_print(
+        "(handler-case (let ((*gensym-counter* -1)) (gensym)) "
+        "  (type-error () :te))"),
+        ":TE");
+
+    /* Non-integer counter → TYPE-ERROR */
+    ASSERT_STR_EQ(eval_print(
+        "(handler-case (let ((*gensym-counter* 'defun)) (gensym)) "
+        "  (type-error () :te))"),
+        ":TE");
+}
+
 TEST(eval_gentemp)
 {
     /* gentemp returns a symbol */
@@ -8679,6 +8735,7 @@ int main(void)
     RUN(eval_setf_values_two);
     RUN(eval_define_setf_expander);
     RUN(eval_gensym);
+    RUN(eval_gensym_counter);
     RUN(eval_gentemp);
     RUN(eval_load);
     RUN(eval_boot_functions);
