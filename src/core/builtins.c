@@ -863,6 +863,87 @@ static CL_Obj bi_quit(CL_Obj *args, int n)
     return CL_NIL; /* unreachable */
 }
 
+/* Names that ANSI requires to be exported from COMMON-LISP (11.1.2.1) but
+ * which currently lack a backing implementation.  Interning them here is
+ * enough to satisfy FIND-SYMBOL / cl-symbols presence tests; calling any
+ * such symbol as a function still signals "function not bound" because
+ * its function cell is left CL_UNBOUND.  When a real implementation is
+ * added later it should remove the corresponding entry from this list. */
+static const char *const cl_reserved_symbol_names[] = {
+    "*BREAK-ON-SIGNALS*",
+    "//", "///",
+    "APROPOS", "APROPOS-LIST",
+    "ARRAY-IN-BOUNDS-P",
+    "BROADCAST-STREAM", "BROADCAST-STREAM-STREAMS",
+    "CHAR-INT", "CIS",
+    "CLEAR-INPUT",
+    "COMPILED-FUNCTION-P",
+    "COMPILER-MACRO",
+    "COMPUTE-APPLICABLE-METHODS",
+    "CONCATENATED-STREAM", "CONCATENATED-STREAM-STREAMS",
+    "COPY-STRUCTURE",
+    "DECLARATION",
+    "DELETE-IF-NOT",
+    "DESCRIBE-OBJECT",
+    "DO-ALL-SYMBOLS",
+    "DRIBBLE", "ED",
+    "ECHO-STREAM", "ECHO-STREAM-INPUT-STREAM", "ECHO-STREAM-OUTPUT-STREAM",
+    "EXTENDED-CHAR",
+    "FILE-AUTHOR", "FILE-STREAM", "FILE-STRING-LENGTH",
+    "FIND-ALL-SYMBOLS",
+    "FLOAT-PRECISION",
+    "FLOATING-POINT-INEXACT", "FLOATING-POINT-INVALID-OPERATION",
+    "FLOATING-POINT-OVERFLOW", "FLOATING-POINT-UNDERFLOW",
+    "FORMATTER", "FUNCTION-KEYWORDS", "FUNCTION-LAMBDA-EXPRESSION",
+    "GENERIC-FUNCTION",
+    "HOST-NAMESTRING",
+    "INVALID-METHOD-ERROR", "INVOKE-RESTART-INTERACTIVELY",
+    "KEYWORD",
+    "LISTEN", "LOAD-LOGICAL-PATHNAME-TRANSLATIONS",
+    "LOGICAL-PATHNAME", "LOGICAL-PATHNAME-TRANSLATIONS",
+    "LONG-SITE-NAME",
+    "MAKE-BROADCAST-STREAM", "MAKE-CONCATENATED-STREAM",
+    "MAKE-ECHO-STREAM",
+    "MAKE-INSTANCES-OBSOLETE", "MAKE-LOAD-FORM",
+    "MAKE-LOAD-FORM-SAVING-SLOTS",
+    "MAKE-METHOD", "MAKE-TWO-WAY-STREAM",
+    "MERGE",
+    "METHOD", "METHOD-COMBINATION", "METHOD-COMBINATION-ERROR",
+    "NO-APPLICABLE-METHOD", "NO-NEXT-METHOD",
+    "PACKAGEP", "PHASE",
+    "PPRINT-TAB", "PPRINT-TABULAR",
+    "PRINT-NOT-READABLE-OBJECT",
+    "READ-CHAR-NO-HANG",
+    "RESTART", "RESTART-NAME",
+    "SHORT-SITE-NAME",
+    "SIGNED-BYTE", "SIGNUM",
+    "SLOT-MISSING",
+    "STANDARD", "STEP",
+    "STREAM-ELEMENT-TYPE", "STREAM-EXTERNAL-FORMAT",
+    "STRING-STREAM",
+    "STRUCTURE", "STRUCTURE-CLASS",
+    "SYNONYM-STREAM",
+    "TRANSLATE-LOGICAL-PATHNAME",
+    "TWO-WAY-STREAM", "TWO-WAY-STREAM-INPUT-STREAM",
+    "TWO-WAY-STREAM-OUTPUT-STREAM",
+    "UNBOUND-SLOT-INSTANCE", "UNSIGNED-BYTE",
+    "UPDATE-INSTANCE-FOR-DIFFERENT-CLASS",
+    "UPDATE-INSTANCE-FOR-REDEFINED-CLASS",
+    "UPGRADED-ARRAY-ELEMENT-TYPE", "UPGRADED-COMPLEX-PART-TYPE",
+    "VARIABLE",
+    "WITH-CONDITION-RESTARTS", "WITH-PACKAGE-ITERATOR",
+    "Y-OR-N-P", "YES-OR-NO-P",
+    NULL
+};
+
+static void cl_intern_standard_cl_symbols(void)
+{
+    const char *const *p;
+    for (p = cl_reserved_symbol_names; *p != NULL; p++) {
+        (void)cl_intern_in(*p, (uint32_t)strlen(*p), cl_package_cl);
+    }
+}
+
 void cl_builtins_init(void)
 {
     /* List ops */
@@ -920,6 +1001,14 @@ void cl_builtins_init(void)
     cl_register_builtin("%UNTRACE-FUNCTION", bi_untrace_function, 1, 1, cl_package_clamiga);
     cl_register_builtin("%TRACED-FUNCTIONS", bi_traced_functions, 0, 0, cl_package_clamiga);
     cl_register_builtin("%UNTRACE-ALL", bi_untrace_all, 0, 0, cl_package_clamiga);
+
+    /* Reserved standard CL symbols — required to be present and external in
+     * COMMON-LISP per ANSI 11.1.2.1.  Many do not have full implementations
+     * yet; interning them here ensures the symbols exist so user code can
+     * see them via FIND-SYMBOL and so the cl-symbols ANSI test passes.
+     * Sub-module init functions above already intern the ones backed by a
+     * builtin; this list covers the remainder. */
+    cl_intern_standard_cl_symbols();
 
     /* Sub-module builtins */
     cl_builtins_arith_init();

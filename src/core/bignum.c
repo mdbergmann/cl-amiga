@@ -1956,5 +1956,58 @@ void cl_bignum_init(void)
         fs = (CL_Symbol *)CL_OBJ_TO_PTR(fsym);
         fs->value = cl_make_double_float(1.1102230246251566e-16);
         fs->flags |= CL_SYM_CONSTANT;
+
+        /* LEAST-{POSITIVE,NEGATIVE}-NORMALIZED-* — CLHS distinguishes
+         * normalized from denormalized least floats.  We use C99 IEEE-754
+         * doubles/floats with no subnormal-disabling, so the smallest
+         * representable value happens to equal the smallest normalized
+         * value (FLT_MIN / DBL_MIN); both pairs of constants therefore
+         * share their values here.  If we ever expose subnormals these
+         * should be re-derived. */
+        fsym = cl_intern_in("LEAST-POSITIVE-NORMALIZED-SINGLE-FLOAT", 38, cl_package_cl);
+        fs = (CL_Symbol *)CL_OBJ_TO_PTR(fsym);
+        fs->value = cl_make_single_float(1.17549435e-38f);
+        fs->flags |= CL_SYM_CONSTANT;
+
+        fsym = cl_intern_in("LEAST-NEGATIVE-NORMALIZED-SINGLE-FLOAT", 38, cl_package_cl);
+        fs = (CL_Symbol *)CL_OBJ_TO_PTR(fsym);
+        fs->value = cl_make_single_float(-1.17549435e-38f);
+        fs->flags |= CL_SYM_CONSTANT;
+
+        fsym = cl_intern_in("LEAST-POSITIVE-NORMALIZED-DOUBLE-FLOAT", 38, cl_package_cl);
+        fs = (CL_Symbol *)CL_OBJ_TO_PTR(fsym);
+        fs->value = cl_make_double_float(2.2250738585072014e-308);
+        fs->flags |= CL_SYM_CONSTANT;
+
+        fsym = cl_intern_in("LEAST-NEGATIVE-NORMALIZED-DOUBLE-FLOAT", 38, cl_package_cl);
+        fs = (CL_Symbol *)CL_OBJ_TO_PTR(fsym);
+        fs->value = cl_make_double_float(-2.2250738585072014e-308);
+        fs->flags |= CL_SYM_CONSTANT;
+
+        fsym = cl_intern_in("LEAST-POSITIVE-NORMALIZED-SHORT-FLOAT", 37, cl_package_cl);
+        fs = (CL_Symbol *)CL_OBJ_TO_PTR(fsym);
+        fs->value = cl_make_single_float(1.17549435e-38f);
+        fs->flags |= CL_SYM_CONSTANT;
+
+        fsym = cl_intern_in("LEAST-NEGATIVE-NORMALIZED-SHORT-FLOAT", 37, cl_package_cl);
+        fs = (CL_Symbol *)CL_OBJ_TO_PTR(fsym);
+        fs->value = cl_make_single_float(-1.17549435e-38f);
+        fs->flags |= CL_SYM_CONSTANT;
+
+        fsym = cl_intern_in("LEAST-POSITIVE-NORMALIZED-LONG-FLOAT", 36, cl_package_cl);
+        fs = (CL_Symbol *)CL_OBJ_TO_PTR(fsym);
+        fs->value = cl_make_double_float(2.2250738585072014e-308);
+        fs->flags |= CL_SYM_CONSTANT;
+
+        fsym = cl_intern_in("LEAST-NEGATIVE-NORMALIZED-LONG-FLOAT", 36, cl_package_cl);
+        fs = (CL_Symbol *)CL_OBJ_TO_PTR(fsym);
+        fs->value = cl_make_double_float(-2.2250738585072014e-308);
+        fs->flags |= CL_SYM_CONSTANT;
+
+        /* PI — IEEE-754 closest double to π. */
+        fsym = cl_intern_in("PI", 2, cl_package_cl);
+        fs = (CL_Symbol *)CL_OBJ_TO_PTR(fsym);
+        fs->value = cl_make_double_float(3.14159265358979323846);
+        fs->flags |= CL_SYM_CONSTANT;
     }
 }

@@ -815,6 +815,11 @@ void cl_builtins_package_init(void)
     cl_register_builtin("%PACKAGE-SYMBOLS", bi_package_symbols, 1, 1, cl_package_clamiga);
     cl_register_builtin("%PACKAGE-EXTERNAL-SYMBOLS", bi_package_external_symbols, 1, 1, cl_package_clamiga);
     cl_register_builtin("%SET-CURRENT-PACKAGE", bi_pct_set_current_package, 1, 1, cl_package_clamiga);
+    /* Package-local nicknames (CDR-10).  Not in ANSI CL but widely used
+     * by user code that only :uses COMMON-LISP, so we keep them in CL.
+     * (Moving to CLAMIGA breaks user packages that don't :use CLAMIGA,
+     * because :use only inherits external symbols — not inherited ones,
+     * so the chain CL → CLAMIGA does not propagate.) */
     defun("PACKAGE-LOCAL-NICKNAMES", bi_package_local_nicknames, 1, 1);
     defun("ADD-PACKAGE-LOCAL-NICKNAME", bi_add_package_local_nickname, 2, 3);
     defun("REMOVE-PACKAGE-LOCAL-NICKNAME", bi_remove_package_local_nickname, 1, 2);

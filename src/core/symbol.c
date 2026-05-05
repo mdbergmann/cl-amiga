@@ -373,9 +373,12 @@ void cl_symbol_init(void)
     SYM_FUNCTION      = cl_intern_in("FUNCTION", 8, cl_package_cl);
     SYM_BLOCK         = cl_intern_in("BLOCK", 5, cl_package_cl);
     SYM_RETURN_FROM   = cl_intern_in("RETURN-FROM", 11, cl_package_cl);
-    SYM_QUASIQUOTE    = cl_intern_in("QUASIQUOTE", 10, cl_package_cl);
-    SYM_UNQUOTE       = cl_intern_in("UNQUOTE", 7, cl_package_cl);
-    SYM_UNQUOTE_SPLICING = cl_intern_in("UNQUOTE-SPLICING", 16, cl_package_cl);
+    /* Backquote-related markers — interned in CLAMIGA so the reader's
+     * synthetic forms don't pollute COMMON-LISP exports.  CL :use CLAMIGA
+     * so unqualified references continue to resolve. */
+    SYM_QUASIQUOTE    = cl_intern_in("QUASIQUOTE", 10, cl_package_clamiga);
+    SYM_UNQUOTE       = cl_intern_in("UNQUOTE", 7, cl_package_clamiga);
+    SYM_UNQUOTE_SPLICING = cl_intern_in("UNQUOTE-SPLICING", 16, cl_package_clamiga);
     SYM_AMP_REST      = cl_intern_in("&REST", 5, cl_package_cl);
     SYM_AMP_OPTIONAL  = cl_intern_in("&OPTIONAL", 9, cl_package_cl);
     SYM_AMP_BODY      = cl_intern_in("&BODY", 5, cl_package_cl);
@@ -413,7 +416,9 @@ void cl_symbol_init(void)
     SYM_DEFVAR               = cl_intern_in("DEFVAR", 6, cl_package_cl);
     SYM_DEFPARAMETER         = cl_intern_in("DEFPARAMETER", 12, cl_package_cl);
     SYM_DEFCONSTANT          = cl_intern_in("DEFCONSTANT", 11, cl_package_cl);
-    SYM_NAMED_LAMBDA         = cl_intern_in("NAMED-LAMBDA", 12, cl_package_cl);
+    /* NAMED-LAMBDA is a compiler internal, not part of ANSI CL —
+     * keep it in CLAMIGA. */
+    SYM_NAMED_LAMBDA         = cl_intern_in("NAMED-LAMBDA", 12, cl_package_clamiga);
     SYM_SETF                 = cl_intern_in("SETF", 4, cl_package_cl);
     SYM_EVAL_WHEN            = cl_intern_in("EVAL-WHEN", 9, cl_package_cl);
     SYM_LOAD_TIME_VALUE      = cl_intern_in("LOAD-TIME-VALUE", 15, cl_package_cl);
@@ -649,8 +654,9 @@ void cl_symbol_init(void)
         s->flags |= CL_SYM_SPECIAL; s->value = CL_NIL;
     }
 
-    /* *PRINT-OBJECT-HOOK* — called for struct printing, returns string or NIL */
-    SYM_PRINT_OBJECT_HOOK = cl_intern_in("*PRINT-OBJECT-HOOK*", 19, cl_package_cl);
+    /* *PRINT-OBJECT-HOOK* — called for struct printing, returns string or NIL.
+     * Implementation-specific, intern in CLAMIGA. */
+    SYM_PRINT_OBJECT_HOOK = cl_intern_in("*PRINT-OBJECT-HOOK*", 19, cl_package_clamiga);
     {
         CL_Symbol *s = (CL_Symbol *)CL_OBJ_TO_PTR(SYM_PRINT_OBJECT_HOOK);
         s->flags |= CL_SYM_SPECIAL; s->value = CL_NIL;

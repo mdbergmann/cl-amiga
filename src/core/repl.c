@@ -666,6 +666,17 @@ void cl_repl_init_no_userinit(int no_userinit)
     cl_eval_string("(defmacro when (test &rest body) (list 'if test (cons 'progn body)))");
     cl_eval_string("(defmacro unless (test &rest body) (list 'if test nil (cons 'progn body)))");
 
+    /* Pre-intern boot.lisp / clos.lisp internal helper names in CLAMIGA so
+       that when boot/clos load (with *package* = CL) the reader resolves
+       %FOO to the inherited CLAMIGA symbol rather than interning a fresh
+       CL::%FOO.  CLAMIGA's exports are inherited by CL and CL-USER (see
+       cl_package_init), so unqualified %FOO references work everywhere
+       without source-level qualification.  The point of this is to keep
+       these helpers OUT of CL's external-symbol set — boot/clos define
+       ~140 such helpers and their leakage breaks the ANSI
+       NO-EXTRA-SYMBOLS-EXPORTED-FROM-COMMON-LISP test. */
+    cl_intern_clos_internals_in_clamiga();
+
     /* Export all CL symbols defined so far (from symbol_init + builtins_init).
        This must happen BEFORE loading boot.lisp, which runs in the CL package
        and may intern stray symbols (e.g. local variable names in macro bodies)

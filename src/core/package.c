@@ -17,6 +17,7 @@ CL_Obj cl_package_cl_user = CL_NIL;
 CL_Obj cl_package_keyword = CL_NIL;
 CL_Obj cl_package_ext = CL_NIL;
 CL_Obj cl_package_clamiga = CL_NIL;
+CL_Obj cl_package_mop = CL_NIL;
 CL_Obj cl_package_mp = CL_NIL;
 CL_Obj cl_package_ffi = CL_NIL;
 CL_Obj cl_package_amiga = CL_NIL;
@@ -608,6 +609,7 @@ void cl_package_export_all_cl_symbols(void)
     export_all_present_symbols(cl_package_cl);
     export_all_present_symbols(cl_package_keyword);
     export_all_present_symbols(cl_package_clamiga);
+    export_all_present_symbols(cl_package_mop);
 }
 
 /* Helper: check if a CL symbol has a real definition (function, value,
@@ -670,8 +672,17 @@ void cl_package_export_defined_cl_symbols(void)
             if (CL_NULL_P(list)) break;
             sym = cl_car(list);
             s = (CL_Symbol *)CL_OBJ_TO_PTR(sym);
-            should_export = (s->flags & CL_SYM_EXPORTED)
-                            || symbol_has_binding(sym);
+            /* Don't use the global CL_SYM_EXPORTED flag as a heuristic
+             * here.  The flag is set whenever ANY package exports the
+             * symbol, so a defpackage in user code that does
+             * (:export #:body) would flip the flag on the same BODY
+             * symbol that boot.lisp accidentally interned in CL —
+             * which would then propagate through this discovery pass
+             * and re-add BODY to COMMON-LISP's exported set, breaking
+             * the ANSI NO-EXTRA-SYMBOLS test.  Restrict to actual
+             * Lisp-level bindings: function, value, macro, type,
+             * struct, or CLOS class. */
+            should_export = symbol_has_binding(sym);
             if (should_export) {
                 if (!(s->flags & CL_SYM_EXPORTED))
                     s->flags |= CL_SYM_EXPORTED;
@@ -690,9 +701,236 @@ void cl_package_export_defined_cl_symbols(void)
     }
     CL_GC_UNPROTECT(1);
 
-    /* Keywords and CLAMIGA are always fully exported */
+    /* Keywords, CLAMIGA, and MOP are always fully exported */
     export_all_present_symbols(cl_package_keyword);
     export_all_present_symbols(cl_package_clamiga);
+    export_all_present_symbols(cl_package_mop);
+}
+
+/* Internal helpers defined later by boot.lisp and clos.lisp.  Pre-interning
+ * these in CLAMIGA before those files load means the reader resolves bare
+ * %FOO via CLAMIGA's exports (CL and CL-USER both :use CLAMIGA), so the
+ * defun creates the function on the CLAMIGA symbol rather than interning
+ * a fresh CL::%FOO.  Keeping them out of CL is what makes the ANSI
+ * NO-EXTRA-SYMBOLS-EXPORTED-FROM-COMMON-LISP test pass.
+ *
+ * Names that ARE registered with cl_package_clamiga from C (in builtins.c,
+ * builtins_io.c, compiler.c etc.) are intentionally omitted — those slots
+ * are already filled. */
+static const char *const clos_internal_names[] = {
+    "%ADD-METHOD-TO-GF", "%ASSIGN-SLOT-LOCATIONS",
+    "%BOA-PATCH-DEFAULTS",
+    "%BUILD-EFFECTIVE-METHOD", "%BUILD-LONG-EFFECTIVE-METHOD",
+    "%BUILD-SHORT-EFFECTIVE-METHOD", "%BUILD-SLOT-INDEX-TABLE",
+    "%C3-MERGE", "%CALL-METHOD-IMPL", "%CALL-WITH-METHOD-COMBINATION",
+    "%CLASS-OF", "%CLONE-METHOD-COMBINATION",
+    "%COMPUTE-APPLICABLE-METHODS",
+    "%COMPUTE-BUILTIN-CPL", "%COMPUTE-CLASS-PRECEDENCE-LIST",
+    "%COMPUTE-DEFAULT-INITARGS-DEFAULT",
+    "%COMPUTE-EFFECTIVE-SLOT-DEFINITION-DEFAULT",
+    "%COMPUTE-EFFECTIVE-SLOTS",
+    "%COMPUTE-EQL-VALUE-SETS", "%COMPUTE-GF-CACHEABLE-P",
+    "%COMPUTE-SLOTS-DEFAULT",
+    "%COPY-STRUCT",
+    "%DEFINE-LONG-METHOD-COMBINATION",
+    "%DEFINE-SHORT-METHOD-COMBINATION",
+    "%DEFSTRUCT-PARSE-SLOT",
+    "%DIRECT-TO-EFFECTIVE", "%DISPATCH-BUILD-EMF",
+    "%EFFECTIVE-SLOT-DEF-P",
+    "%ENSURE-CLASS", "%ENSURE-DIRS-HELPER",
+    "%EXPAND-EXTENDED-LOOP", "%EXPAND-SIMPLE-LOOP",
+    "%FILTER-METHODS-BY-SPEC",
+    "%FINALIZE-INHERITANCE-BODY",
+    "%FIND-INHERITED-CLASS-SLOT-CELL",
+    "%FIND-INITARG-VALUE", "%FIND-SLOT-DEF",
+    "%FIND-STRUCT-SLOT-INDEX",
+    "%FOLD-PARENT-INTO-EFFECTIVE",
+    "%GET-DEFSETF-SETTER",
+    "%GF-DISPATCH", "%GF-DISPATCH-CACHED",
+    "%GF-DISPATCH-EQL", "%GF-OR-NAME",
+    "%HASH-TABLE-PAIRS",
+    "%INITARG-TO-SLOT-INDEX",
+    "%INSTALL-METHOD-IN-GF",
+    "%INVALIDATE-ALL-GF-CACHES",
+    "%LOOP-ACCUM-BODY", "%LOOP-ACCUM-KEYWORD-P",
+    "%LOOP-DESTRUCTURE-ASSIGNS", "%LOOP-DESTRUCTURE-BINDINGS",
+    "%LOOP-DESTRUCTURE-VARS",
+    "%LOOP-KEYWORD-P", "%LOOP-KEYWORD-SYM-P",
+    "%LOOP-PARSE-COND-SUBCLAUSE", "%LOOP-PARSE-FOR",
+    "%MAKE-AROUND-CHAIN",
+    "%MAKE-BOOTSTRAP-CLASS",
+    "%MAKE-DIRECT-SLOT-DEF", "%MAKE-EFFECTIVE-SLOT-DEF",
+    "%MAKE-METHOD-CHAIN", "%MAKE-RECURSIVE-LOCK",
+    "%MAKE-STRUCT",
+    "%MATCH-QUALIFIER-PATTERN",
+    "%METHOD-APPLICABLE-P", "%METHOD-COMBINATION-KEY",
+    "%METHOD-MORE-SPECIFIC-P",
+    "%NOTIFY-DEPENDENTS",
+    "%PACKAGE-EXTERNAL-SYMBOLS", "%PACKAGE-SYMBOLS",
+    "%PARSE-SLOT-SPEC", "%PARSE-SPECIALIZED-LAMBDA-LIST",
+    "%PLACE-DIRECT-MUTATOR-P", "%PLACE-DIRECT-MUTATORS",
+    "%REGISTER-CONDITION-CLASS", "%REGISTER-CONDITION-TYPE",
+    "%REGISTER-SETF-EXPANDER", "%REGISTER-SETF-FUNCTION",
+    "%REGISTER-STANDARD-COMBINATION",
+    "%REGISTER-STRUCT-TYPE",
+    "%REMF",
+    "%RESOLVE-METHOD-COMBINATION", "%RESOLVE-SPECIALIZERS",
+    "%SET-CLASS-CPL",
+    "%SET-CLASS-DEFAULT-INITARGS",
+    "%SET-CLASS-DIRECT-DEFAULT-INITARGS",
+    "%SET-CLASS-DIRECT-METHODS",
+    "%SET-CLASS-DIRECT-SLOTS",
+    "%SET-CLASS-DIRECT-SUBCLASSES",
+    "%SET-CLASS-EFFECTIVE-SLOTS",
+    "%SET-CLASS-FINALIZED-P",
+    "%SET-CLASS-SLOT-INDEX-TABLE",
+    "%SET-CLOS-CLASS-TABLE",
+    "%SET-CONDITION-DEFAULT-INITARGS",
+    "%SET-CONDITION-SLOT-VALUE",
+    "%SET-DOCUMENTATION", "%SET-FIND-CLASS",
+    "%SET-GF-CACHEABLE-P", "%SET-GF-DISCRIMINATING-FUNCTION",
+    "%SET-GF-DISPATCH-CACHE", "%SET-GF-EQL-VALUE-SETS",
+    "%SET-GF-METHOD-COMBINATION", "%SET-GF-METHODS",
+    "%SET-MEMBER",
+    "%SET-METHOD-GENERIC-FUNCTION",
+    "%SET-SLOT-DEFINITION-DOCUMENTATION",
+    "%SET-SLOT-DEFINITION-INITARGS",
+    "%SET-SLOT-DEFINITION-INITFORM",
+    "%SET-SLOT-DEFINITION-INITFUNCTION",
+    "%SET-SLOT-DEFINITION-LOCATION",
+    "%SET-SLOT-DEFINITION-TYPE",
+    "%SET-SLOT-VALUE",
+    "%SET-STANDARD-INSTANCE-ACCESS",
+    "%SETF-ELT", "%SETF-READTABLE-CASE",
+    "%SHORT-COMBINE",
+    "%SLOT-ACCESS-PROTOCOL-GF-P",
+    "%SLOT-SPEC->DIRECT-DEF-FORM",
+    "%SLOT-SPEC-ALL-OPTIONS", "%SLOT-SPEC-HAS-OPTION-P",
+    "%SLOT-SPEC-NAME", "%SLOT-SPEC-OPTION",
+    "%STRUCT-CHANGE-CLASS",
+    "%STRUCT-REF", "%STRUCT-SET",
+    "%STRUCT-SLOT-NAMES", "%STRUCT-SLOT-SPECS",
+    "%STRUCT-TYPE-NAME",
+    "%SUBCLASSP", "%SUBST-IT",
+    "%SYMBOL-CONSTANT-P",
+    "%UNINSTALL-METHOD-FROM-GF",
+    /* CL-Amiga internal CLOS state and helpers (non-MOP).  These are
+     * implementation details that boot.lisp / clos.lisp introduce while
+     * loading in the CL package; pre-interning them here keeps them in
+     * CLAMIGA so they don't pollute COMMON-LISP's external symbols. */
+    "*CALL-NEXT-METHOD-ARGS*", "*CALL-NEXT-METHOD-FUNCTION*",
+    "*CLASS-TABLE*", "*CURRENT-METHOD-ARGS*",
+    "*DOCUMENTATION-TABLE*", "*EQL-SPECIALIZER-TABLE*",
+    "*GENERIC-FUNCTION-TABLE*", "*METAOBJECT-DEPENDENTS*",
+    "*METHOD-COMBINATIONS*", "*NEXT-METHOD-P-FUNCTION*",
+    /* *PRINT-OBJECT-HOOK* is interned directly in CLAMIGA by symbol.c. */
+    "*SLOT-ACCESS-PROTOCOL-EXTENDED-P*",
+    "*SLOT-UNBOUND-MARKER*",
+    /* BODY and TEST are too generic to safely pre-intern in CLAMIGA —
+     * doing so would alias user-code symbols of the same name through
+     * the CL :use CLAMIGA inheritance chain.  They leak from
+     * boot.lisp / clos.lisp macro expansions and need a source-level
+     * fix (e.g. wrapping the offending macros with GENSYM).
+     * CONDITIONP / CONDITION-TYPE-NAME / CONDITION-SLOT-VALUE are
+     * registered as CLAMIGA builtins by builtins_condition.c. */
+    "GF-CACHEABLE-P", "GF-DISCRIMINATING-FUNCTION",
+    "GF-DISPATCH-CACHE", "GF-EQL-VALUE-SETS",
+    "GF-LAMBDA-LIST", "GF-METHOD-COMBINATION",
+    "GF-METHODS", "GF-NAME",
+    "METHOD-COMBINATION-NAME", "METHOD-COMBINATION-OPTIONS",
+    "METHOD-COMBINATION-TYPE",
+    /* NAMED-LAMBDA, QUASIQUOTE, UNQUOTE, UNQUOTE-SPLICING are interned
+     * directly in CLAMIGA by symbol.c (cl_symbol_init) — listed there
+     * to avoid duplication. */
+    /* STRUCTUREP, ADD/REMOVE-PACKAGE-LOCAL-NICKNAME, PACKAGE-LOCAL-NICKNAMES
+     * are registered as CLAMIGA builtins by builtins_struct.c /
+     * builtins_package.c. */
+    NULL
+};
+
+/* CLOS Metaobject Protocol API names (AMOP / closer-mop).  These are
+ * defined by clos.lisp while it loads in the CL package; pre-interning
+ * them in MOP and having CL :use MOP makes the reader resolve bare
+ * MOP-symbol references to the inherited MOP symbol so defun/defmethod
+ * bind on the MOP symbol. */
+static const char *const mop_api_names[] = {
+    "ACCESSOR-METHOD-SLOT-DEFINITION",
+    "ADD-DEPENDENT", "ADD-DIRECT-METHOD", "ADD-DIRECT-SUBCLASS",
+    "CLASS-DEFAULT-INITARGS",
+    "CLASS-DIRECT-DEFAULT-INITARGS",
+    "CLASS-DIRECT-METHODS", "CLASS-DIRECT-SLOTS",
+    "CLASS-DIRECT-SUBCLASSES", "CLASS-DIRECT-SUPERCLASSES",
+    "CLASS-EFFECTIVE-SLOTS",
+    "CLASS-FINALIZED-P", "CLASS-PRECEDENCE-LIST",
+    "CLASS-PROTOTYPE",
+    "CLASS-SLOT-INDEX-TABLE",
+    "CLASS-SLOTS", "CLASSP",
+    "COMPUTE-APPLICABLE-METHODS-USING-CLASSES",
+    "COMPUTE-CLASS-PRECEDENCE-LIST",
+    "COMPUTE-DEFAULT-INITARGS",
+    "COMPUTE-DISCRIMINATING-FUNCTION",
+    "COMPUTE-EFFECTIVE-METHOD",
+    "COMPUTE-EFFECTIVE-SLOT-DEFINITION",
+    "COMPUTE-SLOTS",
+    "DIRECT-SLOT-DEFINITION", "DIRECT-SLOT-DEFINITION-CLASS",
+    "EFFECTIVE-SLOT-DEFINITION", "EFFECTIVE-SLOT-DEFINITION-CLASS",
+    "ENSURE-CLASS", "ENSURE-CLASS-USING-CLASS",
+    "ENSURE-GENERIC-FUNCTION-USING-CLASS", "ENSURE-METHOD",
+    "EQL-SPECIALIZER", "EQL-SPECIALIZER-OBJECT", "EQL-SPECIALIZER-P",
+    "EXTRACT-LAMBDA-LIST", "EXTRACT-SPECIALIZER-NAMES",
+    "FINALIZE-INHERITANCE",
+    "FIND-METHOD-COMBINATION",
+    "FORWARD-REFERENCED-CLASS",
+    "FUNCALLABLE-STANDARD-CLASS",
+    "FUNCALLABLE-STANDARD-INSTANCE-ACCESS",
+    "FUNCALLABLE-STANDARD-OBJECT",
+    "GENERIC-FUNCTION-ARGUMENT-PRECEDENCE-ORDER",
+    "GENERIC-FUNCTION-DECLARATIONS", "GENERIC-FUNCTION-LAMBDA-LIST",
+    "GENERIC-FUNCTION-METHOD-CLASS",
+    "GENERIC-FUNCTION-METHOD-COMBINATION",
+    "GENERIC-FUNCTION-METHODS", "GENERIC-FUNCTION-NAME",
+    "INTERN-EQL-SPECIALIZER",
+    "MAKE-METHOD-LAMBDA", "MAP-DEPENDENTS",
+    "METAOBJECT",
+    "METHOD-FUNCTION", "METHOD-GENERIC-FUNCTION",
+    "METHOD-LAMBDA-LIST", "METHOD-SPECIALIZERS",
+    "READER-METHOD-CLASS",
+    "REMOVE-DEPENDENT", "REMOVE-DIRECT-METHOD",
+    "REMOVE-DIRECT-SUBCLASS",
+    "SET-FUNCALLABLE-INSTANCE-FUNCTION",
+    "SLOT-BOUNDP-USING-CLASS",
+    "SLOT-DEFINITION",
+    "SLOT-DEFINITION-ALLOCATION", "SLOT-DEFINITION-DOCUMENTATION",
+    "SLOT-DEFINITION-INITARGS", "SLOT-DEFINITION-INITFORM",
+    "SLOT-DEFINITION-INITFUNCTION", "SLOT-DEFINITION-LOCATION",
+    "SLOT-DEFINITION-NAME", "SLOT-DEFINITION-READERS",
+    "SLOT-DEFINITION-TYPE", "SLOT-DEFINITION-WRITERS",
+    "SLOT-MAKUNBOUND-USING-CLASS",
+    "SLOT-VALUE-USING-CLASS",
+    "SPECIALIZER",
+    "SPECIALIZER-DIRECT-GENERIC-FUNCTIONS",
+    "SPECIALIZER-DIRECT-METHODS",
+    "STANDARD-ACCESSOR-METHOD",
+    "STANDARD-DIRECT-SLOT-DEFINITION",
+    "STANDARD-EFFECTIVE-SLOT-DEFINITION",
+    "STANDARD-INSTANCE-ACCESS",
+    "STANDARD-METHOD-COMBINATION",
+    "STANDARD-READER-METHOD", "STANDARD-SLOT-DEFINITION",
+    "STANDARD-WRITER-METHOD",
+    "UPDATE-DEPENDENT", "VALIDATE-SUPERCLASS",
+    "WRITER-METHOD-CLASS",
+    NULL
+};
+
+void cl_intern_clos_internals_in_clamiga(void)
+{
+    const char *const *p;
+    for (p = clos_internal_names; *p != NULL; p++) {
+        (void)cl_intern_in(*p, (uint32_t)strlen(*p), cl_package_clamiga);
+    }
+    for (p = mop_api_names; *p != NULL; p++) {
+        (void)cl_intern_in(*p, (uint32_t)strlen(*p), cl_package_mop);
+    }
 }
 
 void cl_package_init(void)
@@ -716,6 +954,9 @@ void cl_package_init(void)
     cl_package_clamiga = cl_make_package("CLAMIGA");
     CL_GC_PROTECT(cl_package_clamiga);
 
+    cl_package_mop = cl_make_package("MOP");
+    CL_GC_PROTECT(cl_package_mop);
+
     cl_package_mp = cl_make_package("MP");
     CL_GC_PROTECT(cl_package_mp);
 
@@ -733,6 +974,7 @@ void cl_package_init(void)
     cl_register_package(cl_package_cl_user);
     cl_register_package(cl_package_ext);
     cl_register_package(cl_package_clamiga);
+    cl_register_package(cl_package_mop);
     cl_register_package(cl_package_mp);
     cl_register_package(cl_package_ffi);
 #ifdef PLATFORM_AMIGA
@@ -751,10 +993,11 @@ void cl_package_init(void)
         user_pkg->nicknames = cl_cons(nick, CL_NIL);
     }
 
-    /* CL-USER uses CL, EXT, CLAMIGA, MP, FFI, AMIGA */
+    /* CL-USER uses CL, EXT, CLAMIGA, MOP, MP, FFI, AMIGA */
     cl_use_package(cl_package_cl, cl_package_cl_user);
     cl_use_package(cl_package_ext, cl_package_cl_user);
     cl_use_package(cl_package_clamiga, cl_package_cl_user);
+    cl_use_package(cl_package_mop, cl_package_cl_user);
     cl_use_package(cl_package_mp, cl_package_cl_user);
     cl_use_package(cl_package_ffi, cl_package_cl_user);
 #ifdef PLATFORM_AMIGA
@@ -777,9 +1020,15 @@ void cl_package_init(void)
 #endif
 
     /* CLAMIGA uses CL; CL uses CLAMIGA so boot.lisp/clos.lisp can
-       access internal builtins without package qualification */
+       access internal builtins without package qualification.  Same
+       trick for MOP — clos.lisp defines MOP API symbols expecting them
+       to live in MOP, but the file itself loads in CL; CL :use MOP
+       makes the reader resolve unqualified MOP names to the inherited
+       MOP symbol so defun/defmethod bind on the MOP symbol. */
     cl_use_package(cl_package_cl, cl_package_clamiga);
     cl_use_package(cl_package_clamiga, cl_package_cl);
+    cl_use_package(cl_package_mop, cl_package_cl);
+    cl_use_package(cl_package_cl, cl_package_mop);
 
     cl_current_package = cl_package_cl_user;
 
@@ -815,6 +1064,7 @@ void cl_package_init(void)
     cl_gc_register_root(&cl_package_keyword);
     cl_gc_register_root(&cl_package_ext);
     cl_gc_register_root(&cl_package_clamiga);
+    cl_gc_register_root(&cl_package_mop);
     cl_gc_register_root(&cl_package_mp);
     cl_gc_register_root(&cl_package_ffi);
 #ifdef PLATFORM_AMIGA

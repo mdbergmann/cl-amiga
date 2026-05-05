@@ -1025,7 +1025,7 @@ Specialize via defmethod to provide lazy initialization."
         (dolist (accessor accessors)
           (let ((setter-name (intern (concatenate 'string
                                       "%SETF-" (symbol-name accessor))
-                                    (or (symbol-package accessor) *package*))))
+                                    (find-package :clamiga))))
             (push `(defun ,accessor (obj)
                      (slot-value obj ',slot-name))
                   accessor-defs)
@@ -1641,7 +1641,7 @@ already-existing GF the installed combination is preserved."
             ((and (consp name) (eq (car name) 'setf) (consp (cdr name)))
              (let* ((accessor (cadr name))
                     (hidden-name (concatenate 'string "%SETF-" (symbol-name accessor)))
-                    (hidden-sym (intern hidden-name (or (symbol-package accessor) "COMMON-LISP"))))
+                    (hidden-sym (intern hidden-name (find-package :clamiga))))
                (setf (symbol-function hidden-sym) existing))))
           ;; Update method combination if explicitly supplied (or if we
           ;; can now resolve STANDARD — important for GFs created before
@@ -1674,7 +1674,7 @@ already-existing GF the installed combination is preserved."
             ((and (consp name) (eq (car name) 'setf) (consp (cdr name)))
              (let* ((accessor (cadr name))
                     (hidden-name (concatenate 'string "%SETF-" (symbol-name accessor)))
-                    (hidden-sym (intern hidden-name (or (symbol-package accessor) "COMMON-LISP"))))
+                    (hidden-sym (intern hidden-name (find-package :clamiga))))
                (setf (symbol-function hidden-sym) gf)
                (%register-setf-function accessor hidden-sym))))
           gf))))

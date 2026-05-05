@@ -558,6 +558,10 @@ void cl_builtins_struct_init(void)
     cl_register_builtin("%STRUCT-SET", bi_struct_set, 3, 3, cl_package_clamiga);
     cl_register_builtin("%COPY-STRUCT", bi_copy_struct, 1, 1, cl_package_clamiga);
     cl_register_builtin("%STRUCT-TYPE-NAME", bi_struct_type_name, 1, 1, cl_package_clamiga);
+    /* STRUCTUREP — implementation predicate.  Kept in CL for the same
+     * reason as ADD/REMOVE-PACKAGE-LOCAL-NICKNAME: user packages that
+     * only :use COMMON-LISP would not see it through a CL → CLAMIGA
+     * inheritance chain. */
     defun("STRUCTUREP", bi_structurep, 1, 1);
     cl_register_builtin("%STRUCT-SLOT-NAMES", bi_struct_slot_names, 1, 1, cl_package_clamiga);
     cl_register_builtin("%STRUCT-SLOT-SPECS", bi_struct_slot_specs, 1, 1, cl_package_clamiga);

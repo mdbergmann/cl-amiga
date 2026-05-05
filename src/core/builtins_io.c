@@ -3020,7 +3020,7 @@ void cl_builtins_io_init(void)
     defun("MACROEXPAND-1", bi_macroexpand_1, 1, 2);
     defun("MACROEXPAND", bi_macroexpand, 1, 2);
     defun("MACRO-FUNCTION", bi_macro_function, 1, 2);
-    cl_register_builtin("%SETF-MACRO-FUNCTION", bi_set_macro_function, 2, 2, cl_package_cl);
+    cl_register_builtin("%SETF-MACRO-FUNCTION", bi_set_macro_function, 2, 2, cl_package_clamiga);
     cl_register_builtin("%MACROEXPAND-ENV", bi_macroexpand_env, 0, 0, cl_package_clamiga);
     cl_register_builtin("%CALL-MACRO-EXPANDER", bi_call_macro_expander, 3, 3, cl_package_clamiga);
 

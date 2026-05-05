@@ -1157,6 +1157,9 @@ void cl_builtins_condition_init(void)
 
     /* Register builtins */
     defun("MAKE-CONDITION", bi_make_condition, 1, -1);
+    /* Implementation-specific predicates / accessors — kept in CL so
+     * user packages that only :use COMMON-LISP can see them.  See the
+     * note on PACKAGE-LOCAL-NICKNAMES in builtins_package.c. */
     defun("CONDITIONP", bi_conditionp, 1, 1);
     defun("CONDITION-TYPE-NAME", bi_condition_type_name, 1, 1);
     defun("SIMPLE-CONDITION-FORMAT-CONTROL", bi_simple_condition_format_control, 1, 1);
