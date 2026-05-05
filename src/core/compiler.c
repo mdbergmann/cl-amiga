@@ -2123,25 +2123,16 @@ static void compile_setf_place(CL_Compiler *c, CL_Obj place, CL_Obj val_form)
             {
                 CL_Obj local_exp = cl_env_lookup_local_macro(c->env, head);
                 if (!CL_NULL_P(local_exp)) {
-                    /* Local macro: apply expander to args */
-                    CL_Obj arg_array[255];
-                    int nargs = 0;
-                    CL_Obj args_list = cl_cdr(place);
+                    /* Local macrolet expander is a 2-arg (form env) wrapper
+                     * (see compile_macrolet); see also bi_call_macro_expander. */
+                    CL_Obj call_args[2];
                     CL_Obj lex_env = cl_build_lex_env(c->env);
-                    CL_Obj saved_lex_env;
-                    /* First argument is the whole form (for &whole support) */
-                    arg_array[nargs++] = place;
-                    while (!CL_NULL_P(args_list) && nargs < 255) {
-                        arg_array[nargs++] = cl_car(args_list);
-                        args_list = cl_cdr(args_list);
-                    }
+                    call_args[0] = place;
+                    call_args[1] = lex_env;
                     CL_GC_PROTECT(lex_env);
-                    saved_lex_env = cl_current_lex_env;
-                    cl_current_lex_env = lex_env;
                     {
                         CL_Obj expanded;
-                        expanded = cl_vm_apply(local_exp, arg_array, nargs);
-                        cl_current_lex_env = saved_lex_env;
+                        expanded = cl_vm_apply(local_exp, call_args, 2);
                         CL_GC_UNPROTECT(1);
                         compile_setf_place(c, expanded, val_form);
                         c->in_tail = saved_tail;
@@ -3101,33 +3092,25 @@ static int compile_expr_step(CL_Compiler *c, CL_Obj *expr_p)
         if (CL_SYMBOL_P(head)) {
             CL_Obj local_expander = cl_env_lookup_local_macro(c->env, head);
             if (!CL_NULL_P(local_expander)) {
-                /* Expand using local macro expander */
+                /* Local macrolet expander stored by compile_macrolet is a
+                 * 2-arg (form environment) wrapper — same shape as global
+                 * macros installed by compile_defmacro. */
                 CL_Obj expanded;
-                CL_Obj arg_array[255];
-                int nargs = 0;
-                CL_Obj args_list = cl_cdr(expr);
+                CL_Obj call_args[2];
                 CL_Obj lex_env = cl_build_lex_env(c->env);
-                CL_Obj saved_lex_env;
-                /* First argument is the whole form (for &whole support) */
-                arg_array[nargs++] = expr;
-                while (!CL_NULL_P(args_list) && nargs < 255) {
-                    arg_array[nargs++] = cl_car(args_list);
-                    args_list = cl_cdr(args_list);
-                }
+                call_args[0] = expr;
+                call_args[1] = lex_env;
                 CL_GC_PROTECT(local_expander);
                 CL_GC_PROTECT(lex_env);
-                saved_lex_env = cl_current_lex_env;
-                cl_current_lex_env = lex_env;
                 {
                     int _fp0 = cl_vm.fp, _sp0 = cl_vm.sp;
-                    expanded = cl_vm_apply(local_expander, arg_array, nargs);
+                    expanded = cl_vm_apply(local_expander, call_args, 2);
                     if (cl_vm.fp != _fp0 || cl_vm.sp != _sp0) {
                         fprintf(stderr, "[MXLEAK-LOCAL] local macrolet vm_apply leaked fp:%d→%d sp:%d→%d\n",
                                 _fp0, cl_vm.fp, _sp0, cl_vm.sp);
                         fflush(stderr);
                     }
                 }
-                cl_current_lex_env = saved_lex_env;
                 CL_GC_UNPROTECT(2);
                 /* Trampoline into the expansion — outer compile_expr
                  * driver keeps `expr` GC-protected via &expr. */
@@ -3453,30 +3436,22 @@ CL_Obj cl_macroexpand_1_env(CL_Obj form, CL_Obj lex_env)
     CL_Obj head = cl_car(form);
     CL_Obj expander = cl_get_macro(head);
     CL_Obj expanded;
-    CL_Obj arg_array[255];
-    int nargs = 0;
-    CL_Obj args_list;
-    CL_Obj saved_env;
+    CL_Obj call_args[2];
 
     if (CL_NULL_P(expander)) return form;
 
-    /* First argument is the whole form (for &whole support) */
-    arg_array[nargs++] = form;
-
-    args_list = cl_cdr(form);
-    while (!CL_NULL_P(args_list) && nargs < 255) {
-        arg_array[nargs++] = cl_car(args_list);
-        args_list = cl_cdr(args_list);
-    }
+    /* Expander is a 2-arg (form environment) wrapper produced by
+     * compile_defmacro (or a user-supplied function via SETF MACRO-FUNCTION).
+     * The wrapper itself sets cl_current_lex_env for any &environment
+     * binding inside the inner expander body. */
+    call_args[0] = form;
+    call_args[1] = lex_env;
 
     CL_GC_PROTECT(form);
     CL_GC_PROTECT(expander);
     CL_GC_PROTECT(lex_env);
 
-    saved_env = cl_current_lex_env;
-    cl_current_lex_env = lex_env;
-    expanded = cl_vm_apply(expander, arg_array, nargs);
-    cl_current_lex_env = saved_env;
+    expanded = cl_vm_apply(expander, call_args, 2);
 
     CL_GC_UNPROTECT(3);
 

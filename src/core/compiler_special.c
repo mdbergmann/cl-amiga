@@ -2184,11 +2184,50 @@ CL_Obj compile_macrolet(CL_Compiler *c, CL_Obj form)
             lambda_form = cl_cons(SYM_LAMBDA, cl_cons(lambda_list, mbody));
             CL_GC_PROTECT(lambda_form);
 
-            /* Compile and evaluate at compile time to get closure */
-            bytecode = cl_compile(lambda_form);
-            CL_GC_PROTECT(bytecode);
-            closure = cl_vm_eval(bytecode);
-            CL_GC_UNPROTECT(4); /* bytecode, lambda_form, mbody, lambda_list */
+            /* Wrap in 2-arg (form environment) trampoline — matches
+             * compile_defmacro so local-macrolet expanders have the
+             * same shape and can be invoked uniformly. */
+            {
+                CL_Obj inner_gs = defmacro_gensym();
+                CL_Obj form_gs, env_gs, cme_sym;
+                CL_Obj inner_call, outer_ll, outer_lambda;
+                CL_Obj let_binding, let_bindings, wrap_form;
+                CL_GC_PROTECT(inner_gs);
+                form_gs = defmacro_gensym();
+                CL_GC_PROTECT(form_gs);
+                env_gs = defmacro_gensym();
+                CL_GC_PROTECT(env_gs);
+                cme_sym = cl_intern_in("%CALL-MACRO-EXPANDER", 20,
+                                       cl_package_clamiga);
+                inner_call = cl_cons(env_gs, CL_NIL);
+                inner_call = cl_cons(form_gs, inner_call);
+                inner_call = cl_cons(inner_gs, inner_call);
+                inner_call = cl_cons(cme_sym, inner_call);
+                CL_GC_PROTECT(inner_call);
+                outer_ll = cl_cons(env_gs, CL_NIL);
+                outer_ll = cl_cons(form_gs, outer_ll);
+                CL_GC_PROTECT(outer_ll);
+                outer_lambda = cl_cons(inner_call, CL_NIL);
+                outer_lambda = cl_cons(outer_ll, outer_lambda);
+                outer_lambda = cl_cons(SYM_LAMBDA, outer_lambda);
+                CL_GC_PROTECT(outer_lambda);
+                let_binding = cl_cons(lambda_form, CL_NIL);
+                let_binding = cl_cons(inner_gs, let_binding);
+                CL_GC_PROTECT(let_binding);
+                let_bindings = cl_cons(let_binding, CL_NIL);
+                CL_GC_PROTECT(let_bindings);
+                wrap_form = cl_cons(outer_lambda, CL_NIL);
+                wrap_form = cl_cons(let_bindings, wrap_form);
+                wrap_form = cl_cons(SYM_LET, wrap_form);
+                CL_GC_PROTECT(wrap_form);
+
+                /* Compile and evaluate at compile time to get closure */
+                bytecode = cl_compile(wrap_form);
+                CL_GC_PROTECT(bytecode);
+                closure = cl_vm_eval(bytecode);
+                CL_GC_UNPROTECT(10); /* bytecode + 9 wrapper temps */
+            }
+            CL_GC_UNPROTECT(3); /* lambda_form, mbody, lambda_list */
 
             cl_env_add_local_macro(env, mname, closure);
 

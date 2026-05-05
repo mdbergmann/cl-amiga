@@ -7581,6 +7581,37 @@ TEST(eval_defmacro_optional_not_destructured)
     ASSERT_STR_EQ(eval_print("(dm-test3 1 2)"), "(1 2)");
 }
 
+/* CLHS: (macro-function name) returns "a function of two arguments,
+ * a form and an environment".  Calling it with the wrong arity must
+ * signal PROGRAM-ERROR.  ANSI tests PUSH.ERROR.1 / PUSHNEW.ERROR.4 /
+ * REMF.ERROR.1 exercise exactly this — they funcall the result of
+ * macro-function with 0, 1, and 3 args. */
+TEST(eval_macro_function_arity)
+{
+    eval_print("(defmacro mf-arity-test (a b) `(list ,a ,b))");
+    /* Correct 2-arg call expands the form */
+    ASSERT_STR_EQ(eval_print(
+        "(funcall (macro-function 'mf-arity-test) '(mf-arity-test 1 2) nil)"),
+        "(LIST 1 2)");
+    /* 0 args → PROGRAM-ERROR */
+    ASSERT_STR_EQ(eval_print(
+        "(handler-case (funcall (macro-function 'mf-arity-test)) "
+        "  (program-error () :pe))"),
+        ":PE");
+    /* 1 arg → PROGRAM-ERROR */
+    ASSERT_STR_EQ(eval_print(
+        "(handler-case (funcall (macro-function 'mf-arity-test) "
+        "                       '(mf-arity-test 1 2)) "
+        "  (program-error () :pe))"),
+        ":PE");
+    /* 3 args → PROGRAM-ERROR */
+    ASSERT_STR_EQ(eval_print(
+        "(handler-case (funcall (macro-function 'mf-arity-test) "
+        "                       '(mf-arity-test 1 2) nil nil) "
+        "  (program-error () :pe))"),
+        ":PE");
+}
+
 /* --- define-modify-macro tests --- */
 
 TEST(eval_define_modify_macro)
@@ -9305,6 +9336,7 @@ int main(void)
     RUN(eval_defmacro_destructuring_required);
     RUN(eval_defmacro_destructuring_body);
     RUN(eval_defmacro_optional_not_destructured);
+    RUN(eval_macro_function_arity);
 
     /* define-modify-macro */
     RUN(eval_define_modify_macro);

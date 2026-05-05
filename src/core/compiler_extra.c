@@ -1483,11 +1483,61 @@ void compile_defmacro(CL_Compiler *c, CL_Obj form)
     }
     CL_GC_PROTECT(lambda_form);
 
-    compile_expr(c, lambda_form);
+    /* Wrap the inner expander so (macro-function 'foo) returns a
+     * function with the CLHS-mandated 2-arg (form environment) shape.
+     * Build:
+     *   (let ((#:inner <lambda_form>))
+     *     (lambda (#:form #:env)
+     *       (clamiga::%call-macro-expander #:inner #:form #:env)))
+     * The wrapper's 2-required-arg signature makes 0/1/3+ arg calls
+     * to (macro-function ...) signal PROGRAM-ERROR (via CL_ERR_ARGS),
+     * matching CLHS for PUSH.ERROR.1 / PUSHNEW.ERROR.4 / REMF.ERROR.1. */
+    {
+        CL_Obj inner_gs = defmacro_gensym();
+        CL_Obj form_gs, env_gs, cme_sym;
+        CL_Obj inner_call, outer_ll, outer_lambda;
+        CL_Obj let_binding, let_bindings, wrap_form;
+        CL_GC_PROTECT(inner_gs);
+        form_gs = defmacro_gensym();
+        CL_GC_PROTECT(form_gs);
+        env_gs = defmacro_gensym();
+        CL_GC_PROTECT(env_gs);
+        cme_sym = cl_intern_in("%CALL-MACRO-EXPANDER", 20, cl_package_clamiga);
+        /* (clamiga::%call-macro-expander #:inner #:form #:env) */
+        inner_call = cl_cons(env_gs, CL_NIL);
+        inner_call = cl_cons(form_gs, inner_call);
+        inner_call = cl_cons(inner_gs, inner_call);
+        inner_call = cl_cons(cme_sym, inner_call);
+        CL_GC_PROTECT(inner_call);
+        /* (lambda (#:form #:env) <inner_call>) */
+        outer_ll = cl_cons(env_gs, CL_NIL);
+        outer_ll = cl_cons(form_gs, outer_ll);
+        CL_GC_PROTECT(outer_ll);
+        outer_lambda = cl_cons(inner_call, CL_NIL);
+        outer_lambda = cl_cons(outer_ll, outer_lambda);
+        outer_lambda = cl_cons(SYM_LAMBDA, outer_lambda);
+        CL_GC_PROTECT(outer_lambda);
+        /* (let ((#:inner <lambda_form>)) <outer_lambda>) */
+        let_binding = cl_cons(lambda_form, CL_NIL);
+        let_binding = cl_cons(inner_gs, let_binding);
+        CL_GC_PROTECT(let_binding);
+        let_bindings = cl_cons(let_binding, CL_NIL);
+        CL_GC_PROTECT(let_bindings);
+        wrap_form = cl_cons(outer_lambda, CL_NIL);
+        wrap_form = cl_cons(let_bindings, wrap_form);
+        wrap_form = cl_cons(SYM_LET, wrap_form);
+        CL_GC_PROTECT(wrap_form);
+
+        compile_expr(c, wrap_form);
+
+        CL_GC_UNPROTECT(9); /* wrap_form, let_bindings, let_binding,
+                               outer_lambda, outer_ll, inner_call,
+                               env_gs, form_gs, inner_gs */
+    }
 
     CL_GC_UNPROTECT(4); /* lambda_form, body, lambda_list, name */
 
-    /* OP_DEFMACRO pops the closure, registers macro, pushes name */
+    /* OP_DEFMACRO pops the wrapper closure, registers macro, pushes name */
     idx = cl_add_constant(c, name);
     cl_emit(c, OP_DEFMACRO);
     cl_emit_u16(c, (uint16_t)idx);

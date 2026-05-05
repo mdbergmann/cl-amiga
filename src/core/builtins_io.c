@@ -1728,6 +1728,53 @@ static CL_Obj bi_macroexpand_env(CL_Obj *args, int n)
     return cl_current_lex_env;
 }
 
+/* CLAMIGA::%CALL-MACRO-EXPANDER inner-fn whole-form env
+ *
+ * Internal trampoline produced by compile_defmacro / compile_macrolet.
+ * Wraps an N-arg destructuring expander in the CLHS-mandated 2-arg
+ * (form environment) shape so that (macro-function 'foo) returns a
+ * function callable as (funcall (macro-function 'foo) form env).
+ * Calls with any other arity must signal PROGRAM-ERROR — the wrapper
+ * itself is a 2-required-arg function, so cl_vm_apply will signal
+ * CL_ERR_ARGS (mapped to PROGRAM-ERROR) for 0/1/3+ arg calls.
+ *
+ * Threads env through cl_current_lex_env so that the inner expander's
+ * &environment binding (compiled as (CLAMIGA::%MACROEXPAND-ENV)) sees
+ * the right env.  Unpacks (cdr whole-form) into positional args for
+ * the inner expander, with whole-form prepended (for &whole). */
+static CL_Obj bi_call_macro_expander(CL_Obj *args, int n)
+{
+    CL_Obj inner = args[0];
+    CL_Obj form  = args[1];
+    CL_Obj env   = args[2];
+    CL_Obj saved_env;
+    CL_Obj arg_array[255];
+    int nargs = 0;
+    CL_Obj rest;
+    CL_Obj result;
+
+    CL_UNUSED(n);
+
+    arg_array[nargs++] = form;
+    rest = CL_CONS_P(form) ? cl_cdr(form) : CL_NIL;
+    while (!CL_NULL_P(rest) && nargs < 255) {
+        arg_array[nargs++] = cl_car(rest);
+        rest = cl_cdr(rest);
+    }
+
+    CL_GC_PROTECT(inner);
+    CL_GC_PROTECT(form);
+    CL_GC_PROTECT(env);
+
+    saved_env = cl_current_lex_env;
+    cl_current_lex_env = env;
+    result = cl_vm_apply(inner, arg_array, nargs);
+    cl_current_lex_env = saved_env;
+
+    CL_GC_UNPROTECT(3);
+    return result;
+}
+
 /* --- macro-function / (setf macro-function) --- */
 
 static CL_Obj bi_macro_function(CL_Obj *args, int n)
@@ -2894,6 +2941,7 @@ void cl_builtins_io_init(void)
     defun("MACRO-FUNCTION", bi_macro_function, 1, 2);
     cl_register_builtin("%SETF-MACRO-FUNCTION", bi_set_macro_function, 2, 2, cl_package_cl);
     cl_register_builtin("%MACROEXPAND-ENV", bi_macroexpand_env, 0, 0, cl_package_clamiga);
+    cl_register_builtin("%CALL-MACRO-EXPANDER", bi_call_macro_expander, 3, 3, cl_package_clamiga);
 
     /* Throw (ERROR is now in builtins_condition.c) */
     defun("THROW", bi_throw, 1, 2);
