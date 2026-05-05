@@ -1,13 +1,12 @@
 ;;;; closer-mop-packages.lisp — package definitions for the CL-Amiga
 ;;;; closer-mop shim.
 ;;;;
-;;;; On CL-Amiga (#+clamiga), every MOP symbol that canonical
-;;;; closer-mop imports from an implementation's internal MOP package
-;;;; already lives in COMMON-LISP — see the "Portable MOP shims"
-;;;; section at the bottom of lib/clos.lisp for the full list.  The
-;;;; defpackage below therefore uses :COMMON-LISP and re-exports those
-;;;; names under :CLOSER-MOP (nickname :C2MOP), matching the package
-;;;; layout that serapeum / trivia / lisp-namespace expect.
+;;;; On CL-Amiga (#+clamiga), MOP symbols live in the dedicated MOP
+;;;; package (introduced when ANSI symbols were segregated from
+;;;; impl-internal helpers).  The defpackage below therefore uses both
+;;;; :COMMON-LISP and :MOP and re-exports those names under
+;;;; :CLOSER-MOP (nickname :C2MOP), matching the package layout that
+;;;; serapeum / trivia / lisp-namespace expect.
 ;;;;
 ;;;; For any non-clamiga host reaching this file, we leave the
 ;;;; canonical closer-mop package definition in place — callers that
@@ -18,7 +17,7 @@
 
 #+clamiga
 (defpackage #:closer-mop
-  (:use #:common-lisp)
+  (:use #:common-lisp #:mop)
   (:nicknames #:c2mop)
   (:export
    ;; --- Metaobject classes ---
@@ -166,11 +165,11 @@
 ;;; like CL-MOCK do exactly that, so if c2cl is missing a CL symbol the
 ;;; downstream :use leaves core forms such as DEFMACRO unresolved.
 ;;;
-;;; Since our :CLOSER-MOP package already uses :COMMON-LISP, its
-;;; external symbols *are* the CL symbols — no package-level conflict
-;;; when we (:use :common-lisp :closer-mop).  We then re-export every
-;;; external of both packages at load time so downstream :use picks
-;;; them up.
+;;; Since our :CLOSER-MOP package already uses :COMMON-LISP and :MOP,
+;;; its external symbols are the union of CL + MOP — no package-level
+;;; conflict when we (:use :common-lisp :closer-mop).  We then
+;;; re-export every external of both packages at load time so
+;;; downstream :use picks them up.
 #+clamiga
 (defpackage #:closer-common-lisp
   (:nicknames #:c2cl)

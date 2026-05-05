@@ -267,6 +267,69 @@ static CL_Obj bi_atan(CL_Obj *args, int n)
     return make_result(atan(val), is_double);
 }
 
+/* Hyperbolic functions (CLHS 12.1.4 / 12.1.5).  Each accepts any real and
+ * returns a float; double-float in → double-float out, otherwise single. */
+static CL_Obj bi_sinh(CL_Obj *args, int n)
+{
+    double val;
+    CL_UNUSED(n);
+    check_number(args[0], "SINH");
+    val = cl_to_double(args[0]);
+    return make_result(sinh(val), CL_DOUBLE_FLOAT_P(args[0]));
+}
+
+static CL_Obj bi_cosh(CL_Obj *args, int n)
+{
+    double val;
+    CL_UNUSED(n);
+    check_number(args[0], "COSH");
+    val = cl_to_double(args[0]);
+    return make_result(cosh(val), CL_DOUBLE_FLOAT_P(args[0]));
+}
+
+static CL_Obj bi_tanh(CL_Obj *args, int n)
+{
+    double val;
+    CL_UNUSED(n);
+    check_number(args[0], "TANH");
+    val = cl_to_double(args[0]);
+    return make_result(tanh(val), CL_DOUBLE_FLOAT_P(args[0]));
+}
+
+/* (asinh x) — defined for all reals. */
+static CL_Obj bi_asinh(CL_Obj *args, int n)
+{
+    double val;
+    CL_UNUSED(n);
+    check_number(args[0], "ASINH");
+    val = cl_to_double(args[0]);
+    return make_result(asinh(val), CL_DOUBLE_FLOAT_P(args[0]));
+}
+
+/* (acosh x) — domain x >= 1 for real result. */
+static CL_Obj bi_acosh(CL_Obj *args, int n)
+{
+    double val;
+    CL_UNUSED(n);
+    check_number(args[0], "ACOSH");
+    val = cl_to_double(args[0]);
+    if (val < 1.0)
+        cl_error(CL_ERR_TYPE, "ACOSH: argument must be >= 1");
+    return make_result(acosh(val), CL_DOUBLE_FLOAT_P(args[0]));
+}
+
+/* (atanh x) — domain (-1, 1) for finite real result. */
+static CL_Obj bi_atanh(CL_Obj *args, int n)
+{
+    double val;
+    CL_UNUSED(n);
+    check_number(args[0], "ATANH");
+    val = cl_to_double(args[0]);
+    if (val <= -1.0 || val >= 1.0)
+        cl_error(CL_ERR_TYPE, "ATANH: argument must be in (-1, 1)");
+    return make_result(atanh(val), CL_DOUBLE_FLOAT_P(args[0]));
+}
+
 void cl_float_math_init(void)
 {
     defun("SQRT", bi_sqrt, 1, 1);
@@ -281,4 +344,11 @@ void cl_float_math_init(void)
     defun("ASIN", bi_asin, 1, 1);
     defun("ACOS", bi_acos, 1, 1);
     defun("ATAN", bi_atan, 1, 2);
+    /* Hyperbolic */
+    defun("SINH",  bi_sinh,  1, 1);
+    defun("COSH",  bi_cosh,  1, 1);
+    defun("TANH",  bi_tanh,  1, 1);
+    defun("ASINH", bi_asinh, 1, 1);
+    defun("ACOSH", bi_acosh, 1, 1);
+    defun("ATANH", bi_atanh, 1, 1);
 }

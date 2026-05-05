@@ -713,7 +713,7 @@
                        (when accessor
                          (let ((setter-name (intern (concatenate 'string
                                                      "%SETF-" (symbol-name accessor))
-                                                   (or (symbol-package accessor) *package*))))
+                                                   (find-package :clamiga))))
                            (list `(defun ,setter-name (val c)
                                     (%set-condition-slot-value c ',slot-name val))))))))
                  slot-specs)

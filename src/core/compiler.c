@@ -2733,17 +2733,22 @@ static void compile_setf_place(CL_Compiler *c, CL_Obj place, CL_Obj val_form)
                 }
                 if (CL_NULL_P(setf_fn)) {
                     /* Optimistic late binding: intern %SETF-<name> in the
-                     * same package as the accessor symbol, so it matches
-                     * the setter created by defclass :accessor */
+                     * CLAMIGA package.  Putting these auto-generated
+                     * shadow names in CLAMIGA (instead of the accessor's
+                     * home package, as we used to) keeps them out of CL's
+                     * external symbol set and out of arbitrary user
+                     * packages — matching how (defun (setf foo) ...) and
+                     * (defmethod (setf foo) ...) need a stable lookup
+                     * location across packages.  A previously-registered
+                     * setf-fn binding in setf_fn_table still wins; this
+                     * fallback only fires for unregistered names. */
                     CL_Symbol *sym = (CL_Symbol *)CL_OBJ_TO_PTR(head);
                     CL_String *sname = (CL_String *)CL_OBJ_TO_PTR(sym->name);
-                    CL_Obj pkg = sym->package;
                     char buf[256];
                     int len = snprintf(buf, sizeof(buf), "%%SETF-%.*s",
                                        (int)sname->length, sname->data);
                     if (len >= (int)sizeof(buf)) len = (int)sizeof(buf) - 1;
-                    if (CL_NULL_P(pkg)) pkg = cl_package_cl;
-                    setf_fn = cl_intern_in(buf, (uint32_t)len, pkg);
+                    setf_fn = cl_intern_in(buf, (uint32_t)len, cl_package_clamiga);
                 }
                 {
                     /* Late-bound setf: (setf (foo a b) val) → (%setf-foo val a b)
@@ -2937,7 +2942,7 @@ void compile_body(CL_Compiler *c, CL_Obj forms)
 }
 
 /* Look up a global symbol-macro expansion stored on the symbol's plist
-   under the CL::%SYMBOL-MACRO-EXPANSION indicator (set by the
+   under the CLAMIGA::%SYMBOL-MACRO-EXPANSION indicator (set by the
    DEFINE-SYMBOL-MACRO macro in boot.lisp).  Returns CL_NIL when none. */
 CL_Obj cl_lookup_global_symbol_macro(CL_Obj sym)
 {
@@ -2955,7 +2960,7 @@ int cl_lookup_global_symbol_macro_p(CL_Obj sym, CL_Obj *out)
 
     if (!CL_SYMBOL_P(sym)) return 0;
     if (indicator == 0)
-        indicator = cl_intern_in("%SYMBOL-MACRO-EXPANSION", 23, cl_package_cl);
+        indicator = cl_intern_in("%SYMBOL-MACRO-EXPANSION", 23, cl_package_clamiga);
 
     s = (CL_Symbol *)CL_OBJ_TO_PTR(sym);
     plist = s->plist;
