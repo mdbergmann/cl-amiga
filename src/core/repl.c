@@ -663,9 +663,6 @@ void cl_repl_init_no_userinit(int no_userinit)
         pkg_sym->value = cl_package_cl;
     }
 
-    cl_eval_string("(defmacro when (test &rest body) (list 'if test (cons 'progn body)))");
-    cl_eval_string("(defmacro unless (test &rest body) (list 'if test nil (cons 'progn body)))");
-
     /* Pre-intern boot.lisp / clos.lisp internal helper names in CLAMIGA so
        that when boot/clos load (with *package* = CL) the reader resolves
        %FOO to the inherited CLAMIGA symbol rather than interning a fresh
@@ -678,10 +675,18 @@ void cl_repl_init_no_userinit(int no_userinit)
     cl_intern_clos_internals_in_clamiga();
 
     /* Export all CL symbols defined so far (from symbol_init + builtins_init).
-       This must happen BEFORE loading boot.lisp, which runs in the CL package
-       and may intern stray symbols (e.g. local variable names in macro bodies)
-       that should NOT be exported. */
+       This must happen BEFORE any eval_string or boot.lisp loading that runs
+       in the CL package — those passes intern stray symbols (e.g. macro
+       parameter names like BODY/TEST) that should NOT be exported. */
     cl_package_export_all_cl_symbols();
+
+    /* Define WHEN / UNLESS as macros so boot.lisp can use them.  These run
+       AFTER cl_package_export_all_cl_symbols on purpose: the parameter
+       symbols TEST and BODY interned by the reader stay private to CL and
+       are filtered out by the later cl_package_export_defined_cl_symbols
+       (no binding → not exported). */
+    cl_eval_string("(defmacro when (test &rest body) (list 'if test (cons 'progn body)))");
+    cl_eval_string("(defmacro unless (test &rest body) (list 'if test nil (cons 'progn body)))");
 
     /* Suppress *load-verbose* during internal boot/clos loading */
     {
