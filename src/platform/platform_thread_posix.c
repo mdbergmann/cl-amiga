@@ -253,21 +253,20 @@ int platform_atomic_cas(volatile uint32_t *ptr, uint32_t expected,
 
 /* ================================================================
  * TLS (Thread-Local Storage for cl_current_thread)
+ *
+ * Backed by `__thread` so the hot read path inlines to a single
+ * TLS-register load.  The header exposes `cl_tls_thread_ptr` and
+ * makes `platform_tls_get` a static inline that returns it.
  * ================================================================ */
 
-static pthread_key_t tls_key;
+__thread void *cl_tls_thread_ptr;
 
 void platform_tls_init(void)
 {
-    pthread_key_create(&tls_key, NULL);
+    /* Nothing to do — `__thread` storage is set up by the runtime. */
 }
 
 void platform_tls_set(void *value)
 {
-    pthread_setspecific(tls_key, value);
-}
-
-void *platform_tls_get(void)
-{
-    return pthread_getspecific(tls_key);
+    cl_tls_thread_ptr = value;
 }

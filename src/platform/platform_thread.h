@@ -51,9 +51,26 @@ uint32_t platform_atomic_dec(volatile uint32_t *ptr);
 int      platform_atomic_cas(volatile uint32_t *ptr, uint32_t expected,
                              uint32_t desired);  /* 1 = swapped, 0 = failed */
 
-/* ---- TLS (for cl_current_thread) ---- */
+/* ---- TLS (for cl_current_thread) ----
+ *
+ * On POSIX, the per-thread CL_Thread* is held in a `__thread` variable so
+ * the hot `cl_get_current_thread()` path is a single TLS load (e.g. an
+ * `mrs tpidr_el0`-based access on ARM64) instead of a `pthread_getspecific`
+ * libcall.  Profiling sento showed `pthread_getspecific` dominating the real
+ * CPU work in multi-threaded mode (every `call_builtin`, `cl_gc_push_root`,
+ * `cl_gc_pop_roots`, `cl_dynbind_restore_to`, `cl_alloc`, ... pays it).
+ *
+ * On Amiga, `tc_UserData` already serves this role with zero overhead, so
+ * there `platform_tls_get` stays a tiny function call.
+ */
 void  platform_tls_init(void);
 void  platform_tls_set(void *value);
+
+#ifdef PLATFORM_POSIX
+extern __thread void *cl_tls_thread_ptr;
+static inline void *platform_tls_get(void) { return cl_tls_thread_ptr; }
+#else
 void *platform_tls_get(void);
+#endif
 
 #endif /* CL_PLATFORM_THREAD_H */
