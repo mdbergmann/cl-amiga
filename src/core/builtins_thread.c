@@ -584,16 +584,23 @@ static CL_Obj bi_acquire_lock(CL_Obj *args, int n)
     if (!mutex)
         cl_error(CL_ERR_GENERAL, "MP:ACQUIRE-LOCK: lock has been destroyed");
 
-    if (wait_p) {
-        /* Blocking acquire — bracket with safe region so a concurrent
-         * stop-the-world GC does not deadlock waiting on this thread. */
-        cl_gc_enter_safe_region();
-        platform_mutex_lock(mutex);
-        cl_gc_leave_safe_region();
-        return CL_T;
-    } else {
+    if (!wait_p)
         return (platform_mutex_trylock(mutex) == 0) ? CL_T : CL_NIL;
-    }
+
+    /* Uncontended fast path: try without blocking.  If we get the lock
+     * we never parked, so no STW initiator could have been waiting on
+     * us — the safe-region bracket is unnecessary.  Skipping it saves
+     * two gc_mutex acquisitions and a condvar broadcast per acquire,
+     * which is the dominant cost under low contention. */
+    if (platform_mutex_trylock(mutex) == 0)
+        return CL_T;
+
+    /* Contended: would block — bracket with safe region so a concurrent
+     * stop-the-world GC does not deadlock waiting on this thread. */
+    cl_gc_enter_safe_region();
+    platform_mutex_lock(mutex);
+    cl_gc_leave_safe_region();
+    return CL_T;
 }
 
 /* (mp:release-lock lock) -> nil */
