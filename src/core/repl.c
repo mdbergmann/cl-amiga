@@ -10,6 +10,7 @@
 #include "package.h"
 #include "stream.h"
 #include "color.h"
+#include "fasl.h"
 #include "../platform/platform.h"
 #include <string.h>
 #include <stdio.h>
@@ -713,11 +714,37 @@ void cl_repl_init_no_userinit(int no_userinit)
             const char *src_path  = fasl_src_pairs[bi][1];
             int fasl_fresh = 0;
 
-            /* Try FASL if it exists and is not stale */
+            /* Try FASL if it exists and is not stale.  Pre-validate the
+               header so a fasl from a previous CL_FASL_VERSION is dropped
+               cleanly rather than longjmping out of cl_fasl_load with the
+               VM stack/frame pointers half-unwound (see below). */
             if (platform_file_exists(fasl_path)) {
                 uint32_t fasl_mt = platform_file_mtime(fasl_path);
                 uint32_t src_mt  = platform_file_mtime(src_path);
+                int header_ok = 0;
                 if (fasl_mt > 0 && fasl_mt >= src_mt) {
+                    unsigned long hsize = 0;
+                    char *hbuf = platform_file_read(fasl_path, &hsize);
+                    if (hbuf) {
+                        if (hsize >= 6) {
+                            uint32_t magic = ((uint32_t)(uint8_t)hbuf[0] << 24) |
+                                             ((uint32_t)(uint8_t)hbuf[1] << 16) |
+                                             ((uint32_t)(uint8_t)hbuf[2] << 8) |
+                                             ((uint32_t)(uint8_t)hbuf[3]);
+                            uint32_t fver  = ((uint32_t)(uint8_t)hbuf[4] << 8) |
+                                             ((uint32_t)(uint8_t)hbuf[5]);
+                            if (magic == CL_FASL_MAGIC && fver == CL_FASL_VERSION)
+                                header_ok = 1;
+                        }
+                        platform_free(hbuf);
+                    }
+                    if (!header_ok) {
+                        /* Stale or unrecognised — drop it and fall through
+                           to source so the next startup writes a fresh one. */
+                        platform_file_delete(fasl_path);
+                    }
+                }
+                if (header_ok) {
                     int err; CL_CATCH(err);
                     if (err == CL_ERR_NONE) {
                         char cmd[256];
@@ -725,6 +752,13 @@ void cl_repl_init_no_userinit(int no_userinit)
                         cl_eval_string(cmd);
                         boot_loaded = 1;
                         fasl_fresh = 1;
+                    } else {
+                        /* cl_error_unwind clears nlx/dynbind/handlers/GC roots
+                           but leaves cl_vm.sp / cl_vm.fp pointing into the
+                           aborted eval — reset before the next cl_eval_string
+                           so it starts on a clean VM stack. */
+                        cl_vm.sp = 0;
+                        cl_vm.fp = 0;
                     }
                     CL_UNCATCH();
                 }
@@ -738,6 +772,9 @@ void cl_repl_init_no_userinit(int no_userinit)
                     snprintf(cmd, sizeof(cmd), "(load \"%s\")", src_path);
                     cl_eval_string(cmd);
                     boot_loaded = 1;
+                } else {
+                    cl_vm.sp = 0;
+                    cl_vm.fp = 0;
                 }
                 CL_UNCATCH();
             }
@@ -751,6 +788,9 @@ void cl_repl_init_no_userinit(int no_userinit)
                         "(compile-file \"%s\" :output-file \"%s\")",
                         src_path, fasl_path);
                     cl_eval_string(cmd);
+                } else {
+                    cl_vm.sp = 0;
+                    cl_vm.fp = 0;
                 }
                 CL_UNCATCH();
             }
