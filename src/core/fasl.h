@@ -26,7 +26,7 @@
 #include "../platform/platform.h"
 
 #define CL_FASL_MAGIC    0x434C4641  /* "CLFA" */
-#define CL_FASL_VERSION  6
+#define CL_FASL_VERSION  7
 
 /* Serialized constant type tags */
 #define FASL_TAG_NIL         0x00

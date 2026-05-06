@@ -2868,6 +2868,81 @@ static void compile_function(CL_Compiler *c, CL_Obj form)
 
 /* --- Call --- */
 
+/* Map a CL: builtin call site to a single-opcode inline form, when the
+ * VM has an opcode that matches the function's semantics for this arity.
+ * Returns the opcode if (name, nargs) is inlinable, or 0 otherwise.
+ *
+ * Per CLHS 11.1.2.1.2 conformant programs cannot redefine standard
+ * COMMON-LISP symbols, so the inliner can ignore the function cell at
+ * runtime — the opcode handler in vm.c is the authoritative meaning.
+ *
+ * Only the binary 2-arg case is inlined for arithmetic / comparison
+ * (`+ - * = < > <= >=`).  CL allows variadic forms, but `(+ a b c)` =
+ * `(+ (+ a b) c)` only for associative ops on exact reals — for floats
+ * and bignums there are subtle ordering differences with bi_add's
+ * single-pass loop, so the safe choice is to defer to bi_add for n != 2.
+ * Likewise `(- a)` and `(- a b c)` need different bytecode shapes; only
+ * the 2-arg case maps to OP_SUB cleanly.
+ *
+ * NULL and NOT both map to OP_NOT — semantically `cl:null` ≡ `cl:not`
+ * (both return T iff arg is NIL, NIL otherwise). */
+static uint8_t inline_builtin_opcode(CL_Obj func, int nargs)
+{
+    CL_Symbol *s;
+    CL_String *name;
+
+    if (!CL_SYMBOL_P(func)) return 0;
+    s = (CL_Symbol *)CL_OBJ_TO_PTR(func);
+    if (s->package != cl_package_cl) return 0;
+    name = (CL_String *)CL_OBJ_TO_PTR(s->name);
+
+    switch (name->length) {
+    case 1:
+        if (nargs == 2) {
+            switch (name->data[0]) {
+            case '+': return OP_ADD;
+            case '-': return OP_SUB;
+            case '*': return OP_MUL;
+            case '=': return OP_NUMEQ;
+            case '<': return OP_LT;
+            case '>': return OP_GT;
+            }
+        }
+        break;
+    case 2:
+        if (nargs == 2) {
+            if (name->data[0] == '<' && name->data[1] == '=') return OP_LE;
+            if (name->data[0] == '>' && name->data[1] == '=') return OP_GE;
+            if (name->data[0] == 'E' && name->data[1] == 'Q') return OP_EQ;
+        }
+        break;
+    case 3:
+        if (nargs == 1) {
+            if (memcmp(name->data, "CAR", 3) == 0) return OP_CAR;
+            if (memcmp(name->data, "CDR", 3) == 0) return OP_CDR;
+            if (memcmp(name->data, "NOT", 3) == 0) return OP_NOT;
+        }
+        break;
+    case 4:
+        if (nargs == 1 && memcmp(name->data, "NULL", 4) == 0) return OP_NOT;
+        if (nargs == 2 && memcmp(name->data, "CONS", 4) == 0) return OP_CONS;
+        break;
+    }
+    return 0;
+}
+
+/* Count proper-list length without allocating.  Caller must have
+ * already validated that args is a proper list (or NIL). */
+static int proper_list_length(CL_Obj list)
+{
+    int n = 0;
+    while (!CL_NULL_P(list)) {
+        list = cl_cdr(list);
+        n++;
+    }
+    return n;
+}
+
 static void compile_call(CL_Compiler *c, CL_Obj form)
 {
     CL_Obj func = cl_car(form);
@@ -2885,6 +2960,30 @@ static void compile_call(CL_Compiler *c, CL_Obj form)
 
     /* GC-protect args: compile_expr for each arg may trigger macro expansion + GC */
     CL_GC_PROTECT(args);
+
+    /* Builtin inlining: if `func` is a CL: symbol that matches a
+     * VM opcode for this arity AND isn't shadowed by a local
+     * function or upvalue, emit the opcode directly.  Saves the
+     * FLOAD + CALL (~3 bytes + dispatch through call_builtin) per
+     * call site, and removes one symbol from the constants pool. */
+    if (CL_SYMBOL_P(func) &&
+        cl_env_lookup_local_fun(c->env, func) < 0 &&
+        (!c->env || cl_env_resolve_fun_upvalue(c->env, func) < 0))
+    {
+        int candidate_nargs = proper_list_length(args);
+        uint8_t opcode = inline_builtin_opcode(func, candidate_nargs);
+        if (opcode != 0) {
+            CL_Obj rest = args;
+            while (!CL_NULL_P(rest)) {
+                compile_expr(c, cl_car(rest));
+                rest = cl_cdr(rest);
+            }
+            cl_emit(c, opcode);
+            CL_GC_UNPROTECT(1);
+            c->in_tail = saved_tail;
+            return;
+        }
+    }
 
     if (CL_SYMBOL_P(func)) {
         int fun_slot = cl_env_lookup_local_fun(c->env, func);
