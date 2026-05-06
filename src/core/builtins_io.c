@@ -1819,7 +1819,7 @@ static CL_Obj bi_throw(CL_Obj *args, int n)
                     cl_pending_tag = tag;
                     cl_pending_value = value;
                     cl_nlx_top = j;
-                    longjmp(cl_nlx_stack[j].buf, 1);
+                    CL_LONGJMP(cl_nlx_stack[j].buf, 1);
                 }
             }
             /* No interposing UWPROT — go directly to catch */
@@ -1829,7 +1829,7 @@ static CL_Obj bi_throw(CL_Obj *args, int n)
             { int mi; for (mi = 0; mi < cl_mv_count && mi < CL_MAX_MV; mi++)
                 cl_nlx_stack[i].mv_values[mi] = cl_mv_values[mi]; }
             cl_nlx_top = i;
-            longjmp(cl_nlx_stack[i].buf, 1);
+            CL_LONGJMP(cl_nlx_stack[i].buf, 1);
         }
     }
 

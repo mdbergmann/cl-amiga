@@ -10,6 +10,26 @@
  * and continue rather than crashing.
  */
 
+/* Fast non-signal-mask-saving setjmp/longjmp on POSIX.  Plain
+ * setjmp on Darwin/Linux calls sigprocmask + (on Darwin) __sigaltstack
+ * on every entry/exit — ~1.2k samples in a 30s sento bench profile
+ * came from those calls alone, since handler-case sets up an error
+ * frame per actor message.  _setjmp/_longjmp skip the mask plumbing,
+ * which is safe here because the runtime never depends on signal-mask
+ * preservation across longjmp (no signal-blocking critical sections
+ * straddle CL_CATCH).  All setjmp/longjmp pairs in the runtime go
+ * through these macros so they stay matched.
+ *
+ * AmigaOS keeps plain setjmp — m68k toolchain libc may not expose
+ * _setjmp, and Amiga setjmp is already mask-free. */
+#if defined(PLATFORM_POSIX)
+#  define CL_SETJMP(buf)        _setjmp(buf)
+#  define CL_LONGJMP(buf, val)  _longjmp((buf), (val))
+#else
+#  define CL_SETJMP(buf)        setjmp(buf)
+#  define CL_LONGJMP(buf, val)  longjmp((buf), (val))
+#endif
+
 #define CL_ERR_NONE       0
 #define CL_ERR_GENERAL    1
 #define CL_ERR_TYPE       2
@@ -58,7 +78,7 @@ int cl_error_frame_push(void);
     int _cl_cf_ = cl_error_frame_push(); \
     if (_cl_cf_ < 0) { \
         (err_var) = CL_ERR_OVERFLOW; \
-    } else if (setjmp(cl_error_frames[_cl_cf_].buf) != 0) { \
+    } else if (CL_SETJMP(cl_error_frames[_cl_cf_].buf) != 0) { \
         (err_var) = cl_error_code; \
     } else { \
         (err_var) = CL_ERR_NONE; \

@@ -2167,7 +2167,7 @@ static CL_Obj cl_vm_run(int base_fp, int base_nlx)
             nlx->compiler_mark = cl_compiler_mark();
             nlx->mv_count = 1;
 
-            if (setjmp(nlx->buf) == 0) {
+            if (CL_SETJMP(nlx->buf) == 0) {
                 /* Normal path: block body executes */
                 cl_nlx_top++;
             } else {
@@ -2240,7 +2240,7 @@ static CL_Obj cl_vm_run(int base_fp, int base_nlx)
                             cl_pending_tag = block_tag;
                             cl_pending_value = value;
                             cl_nlx_top = j;
-                            longjmp(cl_nlx_stack[j].buf, 1);
+                            CL_LONGJMP(cl_nlx_stack[j].buf, 1);
                         }
                     }
                     /* No interposing UWPROT — longjmp directly to block */
@@ -2250,7 +2250,7 @@ static CL_Obj cl_vm_run(int base_fp, int base_nlx)
                     { int mi; for (mi = 0; mi < cl_mv_count && mi < CL_MAX_MV; mi++)
                         cl_nlx_stack[i].mv_values[mi] = cl_mv_values[mi]; }
                     cl_nlx_top = i;
-                    longjmp(cl_nlx_stack[i].buf, 1);
+                    CL_LONGJMP(cl_nlx_stack[i].buf, 1);
                 }
             }
             cl_error(CL_ERR_GENERAL, "RETURN-FROM: no block named %s",
@@ -2286,7 +2286,7 @@ static CL_Obj cl_vm_run(int base_fp, int base_nlx)
             nlx->gc_root_mark = gc_root_count;
             nlx->compiler_mark = cl_compiler_mark();
 
-            if (setjmp(nlx->buf) == 0) {
+            if (CL_SETJMP(nlx->buf) == 0) {
                 /* Normal path: tagbody body executes */
                 cl_nlx_top++;
             } else {
@@ -2355,13 +2355,13 @@ static CL_Obj cl_vm_run(int base_fp, int base_nlx)
                             cl_pending_tag = tagbody_id;
                             cl_pending_value = tag_index;
                             cl_nlx_top = j;
-                            longjmp(cl_nlx_stack[j].buf, 1);
+                            CL_LONGJMP(cl_nlx_stack[j].buf, 1);
                         }
                     }
                     /* No interposing UWPROT — longjmp directly to tagbody */
                     cl_nlx_stack[i].result = tag_index;
                     cl_nlx_top = i;
-                    longjmp(cl_nlx_stack[i].buf, 1);
+                    CL_LONGJMP(cl_nlx_stack[i].buf, 1);
                 }
             }
             cl_error(CL_ERR_GENERAL, "GO: tagbody frame not found");
@@ -2727,7 +2727,7 @@ static CL_Obj cl_vm_run(int base_fp, int base_nlx)
             nlx->compiler_mark = cl_compiler_mark();
             nlx->mv_count = 1;
 
-            if (setjmp(nlx->buf) == 0) {
+            if (CL_SETJMP(nlx->buf) == 0) {
                 /* Normal path: body executes */
                 cl_nlx_top++;
             } else {
@@ -2806,7 +2806,7 @@ static CL_Obj cl_vm_run(int base_fp, int base_nlx)
             nlx->gc_root_mark = gc_root_count;
             nlx->compiler_mark = cl_compiler_mark();
 
-            if (setjmp(nlx->buf) == 0) {
+            if (CL_SETJMP(nlx->buf) == 0) {
                 /* Normal path: protected form executes */
                 cl_nlx_top++;
 
@@ -2930,14 +2930,14 @@ static CL_Obj cl_vm_run(int base_fp, int base_nlx)
                                 !nlx_frame_is_stale(&cl_nlx_stack[j])) {
                                 /* Jump to interposing UWPROT first */
                                 cl_nlx_top = j;
-                                longjmp(cl_nlx_stack[j].buf, 1);
+                                CL_LONGJMP(cl_nlx_stack[j].buf, 1);
                             }
                         }
                         /* No interposing UWPROT, go directly to target */
                         cl_pending_throw = 0;
                         cl_nlx_stack[i].result = pval;
                         cl_nlx_top = i;
-                        longjmp(cl_nlx_stack[i].buf, 1);
+                        CL_LONGJMP(cl_nlx_stack[i].buf, 1);
                     }
                 }
                 /* No catch found — signal error */
@@ -2950,7 +2950,7 @@ static CL_Obj cl_vm_run(int base_fp, int base_nlx)
                     if (cl_nlx_stack[i].type == CL_NLX_UWPROT &&
                         !nlx_frame_is_stale(&cl_nlx_stack[i])) {
                         cl_nlx_top = i;
-                        longjmp(cl_nlx_stack[i].buf, 1);
+                        CL_LONGJMP(cl_nlx_stack[i].buf, 1);
                     }
                 }
                 /* No more UWPROT — propagate to error handler.
@@ -2970,7 +2970,7 @@ static CL_Obj cl_vm_run(int base_fp, int base_nlx)
                     cl_error_msg[sizeof(cl_error_msg) - 1] = '\0';
                     if (cl_error_frame_top > 0) {
                         /* Don't decrement here — CL_UNCATCH at the catch site pops */
-                        longjmp(cl_error_frames[cl_error_frame_top - 1].buf, err_code);
+                        CL_LONGJMP(cl_error_frames[cl_error_frame_top - 1].buf, err_code);
                     }
                     platform_write_string("FATAL ERROR: ");
                     platform_write_string(cl_error_msg);

@@ -48,7 +48,7 @@ static void cl_error_unwind(int code)
                         sizeof(cl_pending_error_msg) - 1);
                 cl_pending_error_msg[sizeof(cl_pending_error_msg) - 1] = '\0';
                 cl_nlx_top = i;
-                longjmp(cl_nlx_stack[i].buf, 1);
+                CL_LONGJMP(cl_nlx_stack[i].buf, 1);
             }
         }
     }
@@ -58,7 +58,7 @@ static void cl_error_unwind(int code)
         /* Nested error frame — jump to it without destroying global state.
          * The caller is responsible for restoring VM/binding state.
          * Don't decrement here — CL_UNCATCH at the catch site pops. */
-        longjmp(cl_error_frames[cl_error_frame_top - 1].buf, code);
+        CL_LONGJMP(cl_error_frames[cl_error_frame_top - 1].buf, code);
     }
 
     /* Outermost error frame (REPL) — full cleanup.
@@ -74,7 +74,7 @@ static void cl_error_unwind(int code)
     cl_gc_reset_roots();
 
     if (cl_error_frame_top > 0) {
-        longjmp(cl_error_frames[cl_error_frame_top - 1].buf, code);
+        CL_LONGJMP(cl_error_frames[cl_error_frame_top - 1].buf, code);
     }
 
     /* No error frame — fatal */
@@ -106,7 +106,7 @@ void cl_error(int code, const char *fmt, ...)
         cl_gc_reset_roots();
         if (cl_error_frame_top > 0) {
             /* Don't decrement here — CL_UNCATCH at the catch site pops */
-            longjmp(cl_error_frames[cl_error_frame_top - 1].buf, code);
+            CL_LONGJMP(cl_error_frames[cl_error_frame_top - 1].buf, code);
         }
         exit(cl_exit_code);
     }
