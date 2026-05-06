@@ -8,7 +8,9 @@ passed=0
 failed=0
 total=0
 TMPDIR="${TMPDIR:-/tmp}"
-CACHE_DIR="$HOME/.cache/common-lisp/cl-amiga-0.1"
+# Cache path includes CL_FASL_VERSION ("-faslN" suffix) — wildcard so the
+# test cleans every version's cache, not just the current one.
+CACHE_GLOB="$HOME/.cache/common-lisp/cl-amiga-0.1*"
 
 check() {
     desc="$1"
@@ -49,7 +51,7 @@ run_quiet() {
 }
 
 # Clean FASL cache to start fresh
-rm -rf "$CACHE_DIR"
+rm -rf $CACHE_GLOB
 
 # --- Test 1: Basic defun survives FASL round-trip ---
 
@@ -202,6 +204,40 @@ result=$(echo '(setf *load-verbose* t) (load "'"$TMPDIR"'/fasl_test_cache.lisp")
     | "$CLAMIGA" --batch 2>&1)
 check_contains "fasl_loaded_from_cache" ".fasl" "$result"
 check_contains "fasl_cached_result_correct" "CACHED" "$result"
+
+# --- Test 9: Stale FASL (wrong version) is replaced by source recompile ---
+# Regression: bumping CL_FASL_VERSION used to leave stale FASLs in the cache
+# directory. The loader now (a) keys the cache directory on the FASL version
+# AND (b) pre-validates the version field, so a stale FASL transparently
+# falls back to recompiling from source.
+
+cat > "$TMPDIR/fasl_test_stale.lisp" << 'LISP'
+(defun stale-test-fn () :recompiled-ok)
+LISP
+
+# Session 1: load to create a fresh FASL cache.
+run_quiet '(load "'"$TMPDIR"'/fasl_test_stale.lisp")' > /dev/null
+
+# Locate the cached FASL and corrupt its version bytes (offset 4-5, big-endian
+# u16). Setting them to 0xFFFF guarantees mismatch with any real version.
+stale_fasl=$(find $CACHE_GLOB -name 'fasl_test_stale.fasl' 2>/dev/null | head -1)
+if [ -z "$stale_fasl" ] || [ ! -f "$stale_fasl" ]; then
+    echo "  FAIL  fasl_stale_version_recovery (could not find cached FASL)"
+    failed=$((failed + 1))
+    total=$((total + 1))
+else
+    printf '\xff\xff' | dd of="$stale_fasl" bs=1 seek=4 count=2 conv=notrunc 2>/dev/null
+
+    # Make the FASL newer than the source so the loader prefers it. Without
+    # the fix, this would error out with "FASL: unsupported version".
+    touch "$stale_fasl"
+
+    # Session 2: should silently recompile and return the right value.
+    result=$(run_quiet '(load "'"$TMPDIR"'/fasl_test_stale.lisp") (stale-test-fn)')
+    check "fasl_stale_version_recovery" "NIL
+T
+:RECOMPILED-OK" "$result"
+fi
 
 # --- Cleanup ---
 

@@ -451,13 +451,24 @@ static CL_Obj bi_load(CL_Obj *args, int n)
                 /* Load cached FASL instead of source */
                 buf = platform_file_read(cache_path, &size);
                 if (buf) {
-                    /* Verify it's actually a FASL */
-                    if (size >= 4) {
+                    /* Verify it's actually a FASL with a compatible version.
+                       Pre-validating the header avoids the cl_error/longjmp
+                       path through cl_fasl_load when a cached FASL is stale
+                       (e.g. left over from a different CL_FASL_VERSION). */
+                    if (size >= 6) {
                         uint32_t magic = ((uint32_t)(uint8_t)buf[0] << 24) |
                                          ((uint32_t)(uint8_t)buf[1] << 16) |
                                          ((uint32_t)(uint8_t)buf[2] << 8) |
                                          ((uint32_t)(uint8_t)buf[3]);
-                        if (magic == CL_FASL_MAGIC) {
+                        uint32_t fver  = ((uint32_t)(uint8_t)buf[4] << 8) |
+                                         ((uint32_t)(uint8_t)buf[5]);
+                        if (magic == CL_FASL_MAGIC && fver != CL_FASL_VERSION) {
+                            /* Stale FASL — drop the cache entry and fall
+                               through to compile from source. */
+                            platform_free(buf);
+                            buf = NULL;
+                            platform_file_delete(cache_path);
+                        } else if (magic == CL_FASL_MAGIC) {
                             /* Try loading from FASL; fall back to source on error */
                             int fasl_err;
                             /* Bind load-pathname and load-truename */
@@ -891,9 +902,11 @@ static int make_fasl_cache_path(const char *input, char *output, uint32_t outsiz
         }
     }
 
-    /* Build cache root */
+    /* Build cache root — include FASL format version so bumping
+       CL_FASL_VERSION automatically invalidates stale caches. */
 #ifdef PLATFORM_AMIGA
-    snprintf(root, sizeof(root), "S:cl-amiga/faslcache/%s/", CL_VERSION_STRING);
+    snprintf(root, sizeof(root), "S:cl-amiga/faslcache/%s-fasl%d/",
+             CL_VERSION_STRING, CL_FASL_VERSION);
     /* Transform "DH0:path" -> "DH0/path" by replacing ':' with '/' */
     {
         char *colon = strchr(resolved, ':');
@@ -904,8 +917,8 @@ static int make_fasl_cache_path(const char *input, char *output, uint32_t outsiz
     {
         const char *home = platform_getenv("HOME", root, sizeof(root));
         if (!home) return 0;
-        snprintf(root, sizeof(root), "%s/.cache/common-lisp/cl-amiga-%s/",
-                 home, CL_VERSION_STRING);
+        snprintf(root, sizeof(root), "%s/.cache/common-lisp/cl-amiga-%s-fasl%d/",
+                 home, CL_VERSION_STRING, CL_FASL_VERSION);
     }
     /* Strip leading '/' */
     src = resolved;
