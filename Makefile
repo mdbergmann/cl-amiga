@@ -114,6 +114,13 @@ test: $(TEST_BINS) host
 		echo "FAIL"; \
 		failed=1; \
 	fi; \
+	echo "--- test_boot_fasl_recovery ---"; \
+	if sh $(TEST_SRCDIR)/test_boot_fasl_recovery.sh $(BUILDDIR)/clamiga; then \
+		echo "PASS"; \
+	else \
+		echo "FAIL"; \
+		failed=1; \
+	fi; \
 	if [ $$failed -ne 0 ]; then echo "=== Some tests failed ==="; exit 1; fi; \
 	echo "--- host-cold-test ---"; \
 	if $(MAKE) --no-print-directory host-cold-test; then \
