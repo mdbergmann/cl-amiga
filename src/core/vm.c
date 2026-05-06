@@ -1237,8 +1237,18 @@ static CL_Obj cl_vm_run(int base_fp, int base_nlx)
             VM_BREAK;
         }
 
+        /* Arithmetic opcodes type-check at the VM boundary.  cl_arith_*
+         * dispatchers below assume both operands are numbers — they have
+         * a fixnum fast path that uses CL_FIXNUM_P (reliable) but the
+         * bignum/float/ratio paths trust the operand shape and would
+         * dereference a non-number as a heap object.  These opcodes are
+         * now emitted by user-code calls (compile_call inliner), so the
+         * old "trusted by special-form expander" contract no longer
+         * holds. */
         VM_CASE(OP_ADD): {
             CL_Obj b = cl_vm_pop(), a = cl_vm_pop();
+            if (!CL_NUMBER_P(a)) cl_signal_type_error(a, "NUMBER", "+");
+            if (!CL_NUMBER_P(b)) cl_signal_type_error(b, "NUMBER", "+");
             cl_vm_push(cl_arith_add(a, b));
             cl_mv_count = 1;
             VM_BREAK;
@@ -1246,6 +1256,8 @@ static CL_Obj cl_vm_run(int base_fp, int base_nlx)
 
         VM_CASE(OP_SUB): {
             CL_Obj b = cl_vm_pop(), a = cl_vm_pop();
+            if (!CL_NUMBER_P(a)) cl_signal_type_error(a, "NUMBER", "-");
+            if (!CL_NUMBER_P(b)) cl_signal_type_error(b, "NUMBER", "-");
             cl_vm_push(cl_arith_sub(a, b));
             cl_mv_count = 1;
             VM_BREAK;
@@ -1253,6 +1265,8 @@ static CL_Obj cl_vm_run(int base_fp, int base_nlx)
 
         VM_CASE(OP_MUL): {
             CL_Obj b = cl_vm_pop(), a = cl_vm_pop();
+            if (!CL_NUMBER_P(a)) cl_signal_type_error(a, "NUMBER", "*");
+            if (!CL_NUMBER_P(b)) cl_signal_type_error(b, "NUMBER", "*");
             cl_vm_push(cl_arith_mul(a, b));
             cl_mv_count = 1;
             VM_BREAK;
@@ -1260,6 +1274,8 @@ static CL_Obj cl_vm_run(int base_fp, int base_nlx)
 
         VM_CASE(OP_DIV): {
             CL_Obj b = cl_vm_pop(), a = cl_vm_pop();
+            if (!CL_NUMBER_P(a)) cl_signal_type_error(a, "NUMBER", "/");
+            if (!CL_NUMBER_P(b)) cl_signal_type_error(b, "NUMBER", "/");
             if (CL_FLOATP(a) || CL_FLOATP(b))
                 cl_vm_push(cl_float_div(a, b));
             else
@@ -1275,41 +1291,73 @@ static CL_Obj cl_vm_run(int base_fp, int base_nlx)
             VM_BREAK;
         }
 
+        /* Comparison opcodes: fixnum fast path (single int compare, no
+         * function call) with cl_arith_compare fallback for bignums /
+         * floats / ratios.  Slow path validates types since
+         * cl_arith_compare assumes its operands are numbers — the
+         * inliner now emits these for user calls so the old "expander
+         * has already type-checked" contract no longer holds. */
         VM_CASE(OP_NUMEQ): {
             CL_Obj b = cl_vm_pop(), a = cl_vm_pop();
-            cl_vm_push(cl_arith_compare(a, b) == 0 ? SYM_T : CL_NIL);
+            if (CL_FIXNUM_P(a) && CL_FIXNUM_P(b)) {
+                cl_vm_push(a == b ? SYM_T : CL_NIL);
+            } else {
+                if (!CL_NUMBER_P(a)) cl_signal_type_error(a, "NUMBER", "=");
+                if (!CL_NUMBER_P(b)) cl_signal_type_error(b, "NUMBER", "=");
+                cl_vm_push(cl_arith_compare(a, b) == 0 ? SYM_T : CL_NIL);
+            }
             cl_mv_count = 1;
             VM_BREAK;
         }
 
         VM_CASE(OP_LT): {
             CL_Obj b = cl_vm_pop(), a = cl_vm_pop();
-            cl_vm_push(cl_arith_compare(a, b) < 0 ? SYM_T : CL_NIL);
+            if (CL_FIXNUM_P(a) && CL_FIXNUM_P(b)) {
+                cl_vm_push(CL_FIXNUM_VAL(a) < CL_FIXNUM_VAL(b) ? SYM_T : CL_NIL);
+            } else {
+                if (!CL_NUMBER_P(a)) cl_signal_type_error(a, "NUMBER", "<");
+                if (!CL_NUMBER_P(b)) cl_signal_type_error(b, "NUMBER", "<");
+                cl_vm_push(cl_arith_compare(a, b) < 0 ? SYM_T : CL_NIL);
+            }
             cl_mv_count = 1;
             VM_BREAK;
         }
 
         VM_CASE(OP_GT): {
             CL_Obj b = cl_vm_pop(), a = cl_vm_pop();
-            cl_vm_push(cl_arith_compare(a, b) > 0 ? SYM_T : CL_NIL);
+            if (CL_FIXNUM_P(a) && CL_FIXNUM_P(b)) {
+                cl_vm_push(CL_FIXNUM_VAL(a) > CL_FIXNUM_VAL(b) ? SYM_T : CL_NIL);
+            } else {
+                if (!CL_NUMBER_P(a)) cl_signal_type_error(a, "NUMBER", ">");
+                if (!CL_NUMBER_P(b)) cl_signal_type_error(b, "NUMBER", ">");
+                cl_vm_push(cl_arith_compare(a, b) > 0 ? SYM_T : CL_NIL);
+            }
             cl_mv_count = 1;
             VM_BREAK;
         }
 
         VM_CASE(OP_LE): {
             CL_Obj b = cl_vm_pop(), a = cl_vm_pop();
-            if (!CL_FIXNUM_P(a) || !CL_FIXNUM_P(b))
-                cl_error(CL_ERR_TYPE, "<=: not a number");
-            cl_vm_push(CL_FIXNUM_VAL(a) <= CL_FIXNUM_VAL(b) ? SYM_T : CL_NIL);
+            if (CL_FIXNUM_P(a) && CL_FIXNUM_P(b)) {
+                cl_vm_push(CL_FIXNUM_VAL(a) <= CL_FIXNUM_VAL(b) ? SYM_T : CL_NIL);
+            } else {
+                if (!CL_NUMBER_P(a)) cl_signal_type_error(a, "NUMBER", "<=");
+                if (!CL_NUMBER_P(b)) cl_signal_type_error(b, "NUMBER", "<=");
+                cl_vm_push(cl_arith_compare(a, b) <= 0 ? SYM_T : CL_NIL);
+            }
             cl_mv_count = 1;
             VM_BREAK;
         }
 
         VM_CASE(OP_GE): {
             CL_Obj b = cl_vm_pop(), a = cl_vm_pop();
-            if (!CL_FIXNUM_P(a) || !CL_FIXNUM_P(b))
-                cl_error(CL_ERR_TYPE, ">=: not a number");
-            cl_vm_push(CL_FIXNUM_VAL(a) >= CL_FIXNUM_VAL(b) ? SYM_T : CL_NIL);
+            if (CL_FIXNUM_P(a) && CL_FIXNUM_P(b)) {
+                cl_vm_push(CL_FIXNUM_VAL(a) >= CL_FIXNUM_VAL(b) ? SYM_T : CL_NIL);
+            } else {
+                if (!CL_NUMBER_P(a)) cl_signal_type_error(a, "NUMBER", ">=");
+                if (!CL_NUMBER_P(b)) cl_signal_type_error(b, "NUMBER", ">=");
+                cl_vm_push(cl_arith_compare(a, b) >= 0 ? SYM_T : CL_NIL);
+            }
             cl_mv_count = 1;
             VM_BREAK;
         }
