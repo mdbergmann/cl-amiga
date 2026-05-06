@@ -1257,7 +1257,9 @@
 (check "find-package nil" nil (find-package "NONEXISTENT"))
 (check "package-name CL" "COMMON-LISP" (package-name (find-package "CL")))
 (check "package-nicknames CL" "CL" (car (package-nicknames (find-package "CL"))))
-(check "package-use-list CL-USER" 6 (length (package-use-list (find-package "CL-USER"))))
+(check "package-use-list CL-USER"
+       #+amigaos 7 #-amigaos 6
+       (length (package-use-list (find-package "CL-USER"))))
 (check "list-all-packages" t (>= (length (list-all-packages)) 3))
 (check "make-package" t (not (null (or (find-package "TEST-PKG-1") (make-package "TEST-PKG-1")))))
 (check "find-package after make" t (not (null (find-package "TEST-PKG-1"))))
