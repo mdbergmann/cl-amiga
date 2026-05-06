@@ -86,6 +86,23 @@ TEST(mul_large)
     ASSERT_STR_EQ(eval_print("(* 1000000000 1000000000)"), "1000000000000000000");
 }
 
+TEST(mul_fixnum_cross_overflow)
+{
+    /* Regression: the fixnum fast-path computed the product in 32 bits and
+       added the cross term without checking that the high half could grow
+       past 0xFFFF. (* 28639 151017) silently wrapped to 30008567 instead of
+       producing the correct 4324975863. Cover several near-2^32 products
+       that exercise the same partial-product addition path. */
+    ASSERT_STR_EQ(eval_print("(* 28639 151017)"), "4324975863");
+    ASSERT_STR_EQ(eval_print("(* 151017 28639)"), "4324975863");
+    /* a_hi=0, b_hi present, low product mid-range, cross fits in 16 bits */
+    ASSERT_STR_EQ(eval_print("(* 65535 65538)"), "4295032830");
+    ASSERT_STR_EQ(eval_print("(* 65538 65535)"), "4295032830");
+    /* Negative variants: same overflow path, signed result */
+    ASSERT_STR_EQ(eval_print("(* -28639 151017)"), "-4324975863");
+    ASSERT_STR_EQ(eval_print("(* 28639 -151017)"), "-4324975863");
+}
+
 /* ================================================================
  * Bignum → fixnum demotion
  * ================================================================ */
@@ -769,6 +786,7 @@ int main(void)
     RUN(sub_overflow);
     RUN(mul_overflow);
     RUN(mul_large);
+    RUN(mul_fixnum_cross_overflow);
 
     /* Bignum → fixnum demotion */
     RUN(demotion_add);

@@ -706,22 +706,34 @@ CL_Obj cl_arith_mul(CL_Obj a, CL_Obj b)
         ua = va < 0 ? (uint32_t)(-va) : (uint32_t)va;
         ub = vb < 0 ? (uint32_t)(-vb) : (uint32_t)vb;
 
-        /* Check for 32-bit overflow: if either > 0xFFFF and the other > 1,
-         * the product might not fit in 32 bits. Use 16x16 decomposition. */
+        /* 32x32 -> 64 with overflow detection using 16x16 partials.
+         * Product = a_lo*b_lo + (a_hi*b_lo + a_lo*b_hi) << 16
+         *         + a_hi*b_hi << 32. Need it to fit in uint32; bail to
+         * the bignum path otherwise. */
         {
             uint32_t a_hi = ua >> 16, a_lo = ua & 0xFFFF;
             uint32_t b_hi = ub >> 16, b_lo = ub & 0xFFFF;
+            uint32_t cross;
 
-            /* If both have high parts, guaranteed > 32 bits */
+            /* Both have high parts: product is at least 2^32. */
             if (a_hi && b_hi) goto bignum_mul;
 
-            prod_lo = a_lo * b_lo;
-            if (a_hi) prod_lo += (a_hi * b_lo) << 16;
-            else if (b_hi) prod_lo += (a_lo * b_hi) << 16;
+            /* Exactly one of a_hi / b_hi is non-zero, so the cross term is
+             * a single 16x16 multiply. */
+            cross = a_hi ? a_hi * b_lo : a_lo * b_hi;
 
-            /* Check for overflow in those additions or if cross terms overflow */
-            if (a_hi && a_hi * b_lo > 0xFFFF) goto bignum_mul;
-            if (b_hi && a_lo * b_hi > 0xFFFF) goto bignum_mul;
+            /* Cross term must fit in 16 bits or the shift loses bits. */
+            if (cross > 0xFFFF) goto bignum_mul;
+
+            prod_lo = a_lo * b_lo;
+
+            /* Adding (cross << 16) to prod_lo overflows 32 bits when the
+             * high half of the sum (prod_lo high half + cross) exceeds
+             * 0xFFFF. Without this check, the addition silently wraps
+             * mod 2^32 — e.g. (* 28639 151017) returned 30008567 instead
+             * of 4324975863. */
+            if ((prod_lo >> 16) + cross > 0xFFFF) goto bignum_mul;
+            prod_lo += cross << 16;
 
             /* Check fixnum range */
             if (!neg && prod_lo <= (uint32_t)CL_FIXNUM_MAX)
@@ -1037,6 +1049,29 @@ int cl_arith_compare(CL_Obj a, CL_Obj b)
             if (a_sign) cmp = -cmp;  /* Negative: reverse order */
             return cmp;
         }
+    }
+}
+
+int cl_numeric_equal(CL_Obj a, CL_Obj b)
+{
+    int ac = CL_COMPLEX_P(a);
+    int bc = CL_COMPLEX_P(b);
+    if (!ac && !bc)
+        return cl_arith_compare(a, b) == 0;
+    if (ac && bc) {
+        CL_Complex *ca = (CL_Complex *)CL_OBJ_TO_PTR(a);
+        CL_Complex *cb = (CL_Complex *)CL_OBJ_TO_PTR(b);
+        return cl_arith_compare(ca->realpart, cb->realpart) == 0 &&
+               cl_arith_compare(ca->imagpart, cb->imagpart) == 0;
+    }
+    if (ac) {
+        CL_Complex *ca = (CL_Complex *)CL_OBJ_TO_PTR(a);
+        return cl_arith_zerop(ca->imagpart) &&
+               cl_arith_compare(ca->realpart, b) == 0;
+    } else {
+        CL_Complex *cb = (CL_Complex *)CL_OBJ_TO_PTR(b);
+        return cl_arith_zerop(cb->imagpart) &&
+               cl_arith_compare(a, cb->realpart) == 0;
     }
 }
 
