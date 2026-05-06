@@ -182,7 +182,7 @@ static void jump_to_top_level(void)
         /* Reset to bottom-most frame (the REPL's error frame) */
         cl_error_frame_top = 1;
         cl_error_frames[0].active = 0;
-        longjmp(cl_error_frames[0].buf, code);
+        CL_LONGJMP(cl_error_frames[0].buf, code);
     }
 
     /* No error frame — fatal (should not happen in interactive REPL) */

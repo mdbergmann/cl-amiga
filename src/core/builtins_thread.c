@@ -100,7 +100,7 @@ static void *thread_entry(void *arg)
      *    suppressed by CL_THREAD_NO_MACROS, so expand them inline. */
     if (t->error_frame_top < CL_MAX_ERROR_FRAMES) {
         t->error_frames[t->error_frame_top].active = 1;
-        err = setjmp(t->error_frames[t->error_frame_top++].buf);
+        err = CL_SETJMP(t->error_frames[t->error_frame_top++].buf);
     } else {
         err = CL_ERR_OVERFLOW;
     }
@@ -153,7 +153,7 @@ static void *thread_entry(void *arg)
                 t->restart_top++;
             }
 
-            if (setjmp(frame->buf) != 0)
+            if (CL_SETJMP(frame->buf) != 0)
                 aborted = 1;
         }
 
