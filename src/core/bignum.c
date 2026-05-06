@@ -1391,6 +1391,31 @@ CL_Obj cl_arith_ash(CL_Obj n, CL_Obj count)
 
     if (shift == 0) return n;
 
+    /* Fixnum fast path: avoids the limb-buffer + cl_make_bignum +
+     * cl_bignum_normalize round-trip when both input and result fit
+     * in a fixnum.  The bignum path always allocates a CL_Bignum
+     * first and only converts back to fixnum afterwards, which shows
+     * up heavily on profiles of code that does small-integer bit
+     * twiddling (sento queue indexing, hash mixing). */
+    if (CL_FIXNUM_P(n)) {
+        int32_t v = CL_FIXNUM_VAL(n);
+        if (v == 0) return CL_MAKE_FIXNUM(0);
+        if (shift < 0) {
+            /* Right shift: floor-toward-neg-inf.  C signed >> is
+             * arithmetic on every target we build for (gcc on
+             * x86_64/arm64/m68k). */
+            int s = -shift;
+            if (s >= 31) return v < 0 ? CL_MAKE_FIXNUM(-1) : CL_MAKE_FIXNUM(0);
+            return CL_MAKE_FIXNUM(v >> s);
+        }
+        if (shift < 31) {
+            int64_t r = (int64_t)v << shift;
+            if (r >= CL_FIXNUM_MIN && r <= CL_FIXNUM_MAX)
+                return CL_MAKE_FIXNUM((int32_t)r);
+        }
+        /* Overflows fixnum — fall through to bignum path. */
+    }
+
     if (shift > 0) {
         /* Left shift */
         uint16_t tn[2];
@@ -1560,6 +1585,14 @@ CL_Obj cl_arith_logand(CL_Obj a, CL_Obj b)
     uint32_t a_len, b_len, max_len, i;
     uint16_t result[128];
 
+    /* Fixnum fast path.  Bits 30 and 31 of any int32 in fixnum range
+     * are equal (sign extension), so AND/OR/XOR of two such values
+     * has bits 30 and 31 equal in the result — i.e. always fits in
+     * fixnum.  Skip the to_twos_complement → from_twos_complement →
+     * cl_make_bignum round-trip. */
+    if (CL_FIXNUM_P(a) && CL_FIXNUM_P(b))
+        return CL_MAKE_FIXNUM(CL_FIXNUM_VAL(a) & CL_FIXNUM_VAL(b));
+
     check_integer(a, "LOGAND");
     check_integer(b, "LOGAND");
 
@@ -1589,6 +1622,9 @@ CL_Obj cl_arith_logior(CL_Obj a, CL_Obj b)
     uint32_t a_len, b_len, max_len, i;
     uint16_t result[128];
 
+    if (CL_FIXNUM_P(a) && CL_FIXNUM_P(b))
+        return CL_MAKE_FIXNUM(CL_FIXNUM_VAL(a) | CL_FIXNUM_VAL(b));
+
     check_integer(a, "LOGIOR");
     check_integer(b, "LOGIOR");
 
@@ -1616,6 +1652,9 @@ CL_Obj cl_arith_logxor(CL_Obj a, CL_Obj b)
     int a_neg, b_neg;
     uint32_t a_len, b_len, max_len, i;
     uint16_t result[128];
+
+    if (CL_FIXNUM_P(a) && CL_FIXNUM_P(b))
+        return CL_MAKE_FIXNUM(CL_FIXNUM_VAL(a) ^ CL_FIXNUM_VAL(b));
 
     check_integer(a, "LOGXOR");
     check_integer(b, "LOGXOR");
