@@ -1304,19 +1304,20 @@ static CL_Obj cl_vm_run(int base_fp, int base_nlx)
             } else {
                 if (!CL_NUMBER_P(a)) cl_signal_type_error(a, "NUMBER", "=");
                 if (!CL_NUMBER_P(b)) cl_signal_type_error(b, "NUMBER", "=");
-                cl_vm_push(cl_arith_compare(a, b) == 0 ? SYM_T : CL_NIL);
+                cl_vm_push(cl_numeric_equal(a, b) ? SYM_T : CL_NIL);
             }
             cl_mv_count = 1;
             VM_BREAK;
         }
 
+        /* Ordered comparators reject complex per CLHS 12.1.4.1. */
         VM_CASE(OP_LT): {
             CL_Obj b = cl_vm_pop(), a = cl_vm_pop();
             if (CL_FIXNUM_P(a) && CL_FIXNUM_P(b)) {
                 cl_vm_push(CL_FIXNUM_VAL(a) < CL_FIXNUM_VAL(b) ? SYM_T : CL_NIL);
             } else {
-                if (!CL_NUMBER_P(a)) cl_signal_type_error(a, "NUMBER", "<");
-                if (!CL_NUMBER_P(b)) cl_signal_type_error(b, "NUMBER", "<");
+                if (!CL_REALP(a)) cl_signal_type_error(a, "REAL", "<");
+                if (!CL_REALP(b)) cl_signal_type_error(b, "REAL", "<");
                 cl_vm_push(cl_arith_compare(a, b) < 0 ? SYM_T : CL_NIL);
             }
             cl_mv_count = 1;
@@ -1328,8 +1329,8 @@ static CL_Obj cl_vm_run(int base_fp, int base_nlx)
             if (CL_FIXNUM_P(a) && CL_FIXNUM_P(b)) {
                 cl_vm_push(CL_FIXNUM_VAL(a) > CL_FIXNUM_VAL(b) ? SYM_T : CL_NIL);
             } else {
-                if (!CL_NUMBER_P(a)) cl_signal_type_error(a, "NUMBER", ">");
-                if (!CL_NUMBER_P(b)) cl_signal_type_error(b, "NUMBER", ">");
+                if (!CL_REALP(a)) cl_signal_type_error(a, "REAL", ">");
+                if (!CL_REALP(b)) cl_signal_type_error(b, "REAL", ">");
                 cl_vm_push(cl_arith_compare(a, b) > 0 ? SYM_T : CL_NIL);
             }
             cl_mv_count = 1;
@@ -1341,8 +1342,8 @@ static CL_Obj cl_vm_run(int base_fp, int base_nlx)
             if (CL_FIXNUM_P(a) && CL_FIXNUM_P(b)) {
                 cl_vm_push(CL_FIXNUM_VAL(a) <= CL_FIXNUM_VAL(b) ? SYM_T : CL_NIL);
             } else {
-                if (!CL_NUMBER_P(a)) cl_signal_type_error(a, "NUMBER", "<=");
-                if (!CL_NUMBER_P(b)) cl_signal_type_error(b, "NUMBER", "<=");
+                if (!CL_REALP(a)) cl_signal_type_error(a, "REAL", "<=");
+                if (!CL_REALP(b)) cl_signal_type_error(b, "REAL", "<=");
                 cl_vm_push(cl_arith_compare(a, b) <= 0 ? SYM_T : CL_NIL);
             }
             cl_mv_count = 1;
@@ -1354,8 +1355,8 @@ static CL_Obj cl_vm_run(int base_fp, int base_nlx)
             if (CL_FIXNUM_P(a) && CL_FIXNUM_P(b)) {
                 cl_vm_push(CL_FIXNUM_VAL(a) >= CL_FIXNUM_VAL(b) ? SYM_T : CL_NIL);
             } else {
-                if (!CL_NUMBER_P(a)) cl_signal_type_error(a, "NUMBER", ">=");
-                if (!CL_NUMBER_P(b)) cl_signal_type_error(b, "NUMBER", ">=");
+                if (!CL_REALP(a)) cl_signal_type_error(a, "REAL", ">=");
+                if (!CL_REALP(b)) cl_signal_type_error(b, "REAL", ">=");
                 cl_vm_push(cl_arith_compare(a, b) >= 0 ? SYM_T : CL_NIL);
             }
             cl_mv_count = 1;

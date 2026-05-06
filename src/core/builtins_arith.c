@@ -32,19 +32,28 @@ static void check_integer(CL_Obj obj, const char *op)
         cl_error(CL_ERR_TYPE, "%s: not an integer", op);
 }
 
+static void check_real(CL_Obj obj, const char *op)
+{
+    if (!CL_REALP(obj))
+        cl_error(CL_ERR_TYPE, "%s: argument is not a real number", op);
+}
+
 /* --- Rounding helpers --- */
 
 /* Forward declaration (defined later in this file for integer-decode-float) */
 static CL_Obj double_int_to_obj(double val);
 
-/* Convert a whole-number double (positive or negative) to fixnum or bignum */
+/* Convert a whole-number double (positive or negative) to fixnum or bignum.
+   For magnitudes beyond ~2^48 the old multi-limb chunking lost high bits
+   (FLOOR / TRUNCATE of MOST-POSITIVE-SINGLE-FLOAT returned int32 garbage),
+   so fall back to the exact IEEE-bit-pattern rational which is bignum-safe
+   across the entire double-float range. The caller guarantees val is whole,
+   so the result is an integer. */
 static CL_Obj double_to_integer(double val)
 {
     if (val >= (double)CL_FIXNUM_MIN && val <= (double)CL_FIXNUM_MAX)
         return CL_MAKE_FIXNUM((int32_t)val);
-    if (val >= 0.0)
-        return double_int_to_obj(val);
-    return cl_arith_negate(double_int_to_obj(-val));
+    return cl_float_to_exact_rational(cl_make_double_float(val));
 }
 
 /* Round-to-nearest-even (banker's rounding) */
@@ -427,7 +436,7 @@ static CL_Obj bi_numeq(CL_Obj *args, int n)
     check_number(args[0], "=");
     for (i = 1; i < n; i++) {
         check_number(args[i], "=");
-        if (cl_arith_compare(args[0], args[i]) != 0)
+        if (!cl_numeric_equal(args[0], args[i]))
             return CL_NIL;
     }
     return SYM_T;
@@ -440,19 +449,21 @@ static CL_Obj bi_numneq(CL_Obj *args, int n)
         check_number(args[i], "/=");
         for (j = i + 1; j < n; j++) {
             check_number(args[j], "/=");
-            if (cl_arith_compare(args[i], args[j]) == 0)
+            if (cl_numeric_equal(args[i], args[j]))
                 return CL_NIL;
         }
     }
     return SYM_T;
 }
 
+/* The ordered comparators (<, <=, >, >=) require real arguments per
+   CLHS 12.1.4.1 — complex is not in the domain. */
 static CL_Obj bi_lt(CL_Obj *args, int n)
 {
     int i;
     for (i = 0; i < n - 1; i++) {
-        check_number(args[i], "<");
-        check_number(args[i+1], "<");
+        check_real(args[i], "<");
+        check_real(args[i+1], "<");
         if (cl_arith_compare(args[i], args[i+1]) >= 0)
             return CL_NIL;
     }
@@ -463,8 +474,8 @@ static CL_Obj bi_gt(CL_Obj *args, int n)
 {
     int i;
     for (i = 0; i < n - 1; i++) {
-        check_number(args[i], ">");
-        check_number(args[i+1], ">");
+        check_real(args[i], ">");
+        check_real(args[i+1], ">");
         if (cl_arith_compare(args[i], args[i+1]) <= 0)
             return CL_NIL;
     }
@@ -475,8 +486,8 @@ static CL_Obj bi_le(CL_Obj *args, int n)
 {
     int i;
     for (i = 0; i < n - 1; i++) {
-        check_number(args[i], "<=");
-        check_number(args[i+1], "<=");
+        check_real(args[i], "<=");
+        check_real(args[i+1], "<=");
         if (cl_arith_compare(args[i], args[i+1]) > 0)
             return CL_NIL;
     }
@@ -487,8 +498,8 @@ static CL_Obj bi_ge(CL_Obj *args, int n)
 {
     int i;
     for (i = 0; i < n - 1; i++) {
-        check_number(args[i], ">=");
-        check_number(args[i+1], ">=");
+        check_real(args[i], ">=");
+        check_real(args[i+1], ">=");
         if (cl_arith_compare(args[i], args[i+1]) < 0)
             return CL_NIL;
     }
@@ -983,90 +994,17 @@ static CL_Obj bi_denominator(CL_Obj *args, int n)
     return cl_denominator(args[0]);
 }
 
-/* (rational x) — convert real to rational */
+/* (rational x) — exact rational equal in value to x.
+   Per HyperSpec 12.2: when x is a float, the result is an exact
+   rational representing the float's IEEE bit pattern (NOT a "simple"
+   continued-fraction approximation — that's RATIONALIZE's job). */
 static CL_Obj bi_rational(CL_Obj *args, int n)
 {
     CL_UNUSED(n);
     if (CL_RATIONAL_P(args[0]))
         return args[0];
-    if (CL_FLOATP(args[0])) {
-        /* Convert float to exact rational via continued fraction */
-        double val = cl_to_double(args[0]);
-        double sign = 1.0;
-        double intpart, frac;
-        CL_Obj result, p0, p1, q0, q1;
-        int i;
-
-        if (val == 0.0) return CL_MAKE_FIXNUM(0);
-        if (val < 0.0) { sign = -1.0; val = -val; }
-
-        /* Continued fraction algorithm */
-        intpart = (double)(int64_t)val;
-        frac = val - intpart;
-
-        p0 = CL_MAKE_FIXNUM(0); p1 = CL_MAKE_FIXNUM(1);
-        q0 = CL_MAKE_FIXNUM(1); q1 = CL_MAKE_FIXNUM(0);
-
-        /* First step with integer part */
-        {
-            CL_Obj a = CL_MAKE_FIXNUM((int32_t)intpart);
-            CL_Obj new_p, new_q;
-            CL_GC_PROTECT(p0); CL_GC_PROTECT(p1);
-            CL_GC_PROTECT(q0); CL_GC_PROTECT(q1);
-            CL_GC_PROTECT(a);
-            new_p = cl_arith_add(cl_arith_mul(a, p1), p0);
-            CL_GC_UNPROTECT(5);
-
-            CL_GC_PROTECT(p0); CL_GC_PROTECT(p1);
-            CL_GC_PROTECT(q0); CL_GC_PROTECT(q1);
-            CL_GC_PROTECT(a); CL_GC_PROTECT(new_p);
-            new_q = cl_arith_add(cl_arith_mul(a, q1), q0);
-            CL_GC_UNPROTECT(6);
-
-            p0 = p1; p1 = new_p;
-            q0 = q1; q1 = new_q;
-        }
-
-        for (i = 0; i < 50 && frac > 1e-15; i++) {
-            double inv = 1.0 / frac;
-            double ai = (double)(int64_t)inv;
-            CL_Obj a, new_p, new_q;
-
-            frac = inv - ai;
-            if (ai > 1e9) break; /* Coefficient too large */
-
-            a = CL_MAKE_FIXNUM((int32_t)ai);
-            CL_GC_PROTECT(p0); CL_GC_PROTECT(p1);
-            CL_GC_PROTECT(q0); CL_GC_PROTECT(q1);
-            CL_GC_PROTECT(a);
-            new_p = cl_arith_add(cl_arith_mul(a, p1), p0);
-            CL_GC_UNPROTECT(5);
-
-            CL_GC_PROTECT(p0); CL_GC_PROTECT(p1);
-            CL_GC_PROTECT(q0); CL_GC_PROTECT(q1);
-            CL_GC_PROTECT(a); CL_GC_PROTECT(new_p);
-            new_q = cl_arith_add(cl_arith_mul(a, q1), q0);
-            CL_GC_UNPROTECT(6);
-
-            p0 = p1; p1 = new_p;
-            q0 = q1; q1 = new_q;
-
-            /* Check if we've converged */
-            {
-                double approx = cl_to_double(p1) / cl_to_double(q1);
-                if (approx == val) break;
-            }
-        }
-
-        if (sign < 0.0) {
-            CL_GC_PROTECT(p1); CL_GC_PROTECT(q1);
-            p1 = cl_arith_negate(p1);
-            CL_GC_UNPROTECT(2);
-        }
-
-        result = cl_make_ratio_normalized(p1, q1);
-        return result;
-    }
+    if (CL_FLOATP(args[0]))
+        return cl_float_to_exact_rational(args[0]);
     cl_error(CL_ERR_TYPE, "RATIONAL: not a real number: %s", cl_type_name(args[0]));
     return CL_NIL;
 }

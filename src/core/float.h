@@ -60,4 +60,8 @@ int    cl_float_zerop(CL_Obj a);
 int    cl_float_plusp(CL_Obj a);
 int    cl_float_minusp(CL_Obj a);
 
+/* Exact IEEE-bit-pattern rational of a finite float (integer or ratio).
+   Errors for NaN/Infinity. */
+CL_Obj cl_float_to_exact_rational(CL_Obj f);
+
 #endif /* CL_FLOAT_H */

@@ -29,6 +29,10 @@ int    cl_arith_zerop(CL_Obj a);
 int    cl_arith_plusp(CL_Obj a);
 int    cl_arith_minusp(CL_Obj a);
 
+/* Numerical equality including complex (CLHS 12.1.4.1):
+   complex equals real iff imagpart=0 and realparts =. */
+int    cl_numeric_equal(CL_Obj a, CL_Obj b);
+
 /* Value equality for eql */
 int cl_bignum_equal(CL_Obj a, CL_Obj b);
 

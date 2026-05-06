@@ -743,6 +743,80 @@ TEST(atan_integer_arg)
     ASSERT_STR_EQ(eval_print("(atan 1)"), eval_print("(atan 1.0)"));
 }
 
+/* Regression: cl_float_compare used to coerce both operands to double, which
+   loses precision for large bignums and ratios that don't round-trip. The
+   exact-rational comparison path covers these. */
+TEST(compare_bignum_vs_float_exact)
+{
+    /* (expt 2 100) is exactly representable as double, so = holds. */
+    ASSERT_STR_EQ(eval_print("(= (expt 2 100) (float (expt 2 100)))"), "T");
+    /* (expt 2 100) +/- 1 are NOT representable -> strict ordering. */
+    ASSERT_STR_EQ(eval_print("(< (float (expt 2 100)) (1+ (expt 2 100)))"), "T");
+    ASSERT_STR_EQ(eval_print("(< (1- (expt 2 100)) (float (expt 2 100)))"), "T");
+    ASSERT_STR_EQ(eval_print("(= (1+ (expt 2 100)) (float (expt 2 100)))"), "NIL");
+    ASSERT_STR_EQ(eval_print("(= (1- (expt 2 100)) (float (expt 2 100)))"), "NIL");
+}
+
+TEST(compare_ratio_vs_float_exact)
+{
+    /* 1/2 = 0.5 exactly */
+    ASSERT_STR_EQ(eval_print("(= 1/2 0.5)"), "T");
+    /* 1/3 cannot be represented exactly in any binary float */
+    ASSERT_STR_EQ(eval_print("(= 1/3 0.3333333333333333d0)"), "NIL");
+    /* 0.1 in double != 1/10 (the double rounds slightly higher) */
+    ASSERT_STR_EQ(eval_print("(= 1/10 0.1d0)"), "NIL");
+    ASSERT_STR_EQ(eval_print("(< 1/10 0.1d0)"), "T");
+}
+
+/* Regression: cl_float_compare used d > 1e308 as an infinity check, falsely
+   classifying most-positive-double-float (~1.79e308) as infinity and
+   returning the wrong sign. Switched to isinf(). */
+TEST(compare_most_positive_double_float)
+{
+    ASSERT_STR_EQ(eval_print("(= most-positive-double-float (rational most-positive-double-float))"), "T");
+    ASSERT_STR_EQ(eval_print("(< most-positive-double-float (1+ (rational most-positive-double-float)))"), "T");
+    ASSERT_STR_EQ(eval_print("(> most-positive-double-float (1- (rational most-positive-double-float)))"), "T");
+}
+
+/* Regression: complex-with-zero-imag is = to its real part (CLHS 12.1.4.1).
+   Ordered comparators reject complex with TYPE-ERROR. */
+TEST(numeq_complex_real)
+{
+    ASSERT_STR_EQ(eval_print("(= 1 #C(1.0 0.0))"), "T");
+    ASSERT_STR_EQ(eval_print("(= #C(1.0 0.0) 1)"), "T");
+    ASSERT_STR_EQ(eval_print("(= 1 #C(1.0 1.0))"), "NIL");
+    ASSERT_STR_EQ(eval_print("(/= 1 #C(1.0 0.0))"), "NIL");
+    ASSERT_STR_EQ(eval_print("(= #C(1 2) #C(1.0 2.0))"), "T");
+    ASSERT_STR_EQ(eval_print("(= 1 1.0 #C(1 0))"), "T");
+}
+
+TEST(ordered_compare_rejects_complex)
+{
+    /* < / <= / > / >= must signal a TYPE-ERROR for complex inputs. */
+    ASSERT_STR_EQ(eval_print("(handler-case (progn (< 1 #C(2 0)) :ok)"
+                             "  (type-error () :type-error))"),
+                  ":TYPE-ERROR");
+    ASSERT_STR_EQ(eval_print("(handler-case (progn (>= #C(2 0) 1) :ok)"
+                             "  (type-error () :type-error))"),
+                  ":TYPE-ERROR");
+}
+
+/* Regression: FLOOR / CEILING / TRUNCATE / ROUND on huge floats (beyond 2^48)
+   silently overflowed because double_to_integer's chunked path lost high
+   bits. Now routes through the exact bit-pattern rational. */
+TEST(rounding_huge_float)
+{
+    /* most-positive-single-float as exact integer (its IEEE bit pattern). */
+    ASSERT_STR_EQ(eval_print("(truncate 3.4028235e+38)"),
+                  "340282346638528859811704183484516925440");
+    ASSERT_STR_EQ(eval_print("(floor most-positive-double-float)"),
+                  eval_print("(rational most-positive-double-float)"));
+    ASSERT_STR_EQ(eval_print("(ceiling 1.79769d300)"),
+                  eval_print("(rational 1.79769d300)"));
+    /* truncate negative huge */
+    ASSERT_STR_EQ(eval_print("(truncate -1d20)"), "-100000000000000000000");
+}
+
 /* ================================================================ */
 
 int main(void)
@@ -867,6 +941,14 @@ int main(void)
     RUN(atan_two_args);
     RUN(atan_double);
     RUN(atan_integer_arg);
+
+    /* Exact cross-type comparison */
+    RUN(compare_bignum_vs_float_exact);
+    RUN(compare_ratio_vs_float_exact);
+    RUN(compare_most_positive_double_float);
+    RUN(numeq_complex_real);
+    RUN(ordered_compare_rejects_complex);
+    RUN(rounding_huge_float);
 
     teardown();
     REPORT();

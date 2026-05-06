@@ -16,7 +16,7 @@ CL-Amiga can load **ASDF**, install and run **Quicklisp**, and successfully quic
 
 - **CONS chapter** — 1882 / 1882 (100%)
 - **SYMBOLS chapter** — 3020 / 3020 (100%)
-- **NUMBERS chapter** — work in progress
+- **NUMBERS chapter** — `number-comparison.lsp` 145 / 145 (100%); rest of chapter in progress
 
 ANSI bootstraps live in `trunk/load-and-test-ansi*.lisp` and run on host and Amiga.
 
