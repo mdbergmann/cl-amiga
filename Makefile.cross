@@ -110,11 +110,14 @@ $(BUILDDIR)/%.o: $(SRCDIR)/%.s
 	@mkdir -p $(dir $@)
 	$(CC) -mcpu=68020 -c -o $@ $<
 
-# Cross-compile, place binary, launch FS-UAE for testing
-# The boot script tries vbcc build (fails without vbcc), then runs the pre-placed binary
+# Cross-compile, place binary, launch FS-UAE for testing.
+# Uses the lower-end baseline (A1200/68020/16 MB, cycle-accurate, no JIT)
+# so test runs reflect the project's documented target — not a 64 MB JIT
+# host. The high-end JIT config (verify.fs-uae) is still available for
+# ad-hoc speed runs: `fs-uae verify/realamiga/verify.fs-uae`.
 test-amiga: $(BUILDDIR)/clamiga
-	@echo "=== Launching FS-UAE — close emulator when tests finish ==="
-	verify/realamiga/FS-UAE.app/Contents/MacOS/fs-uae verify/realamiga/verify.fs-uae
+	@echo "=== Launching FS-UAE (lower-end baseline) — close emulator when tests finish ==="
+	verify/realamiga/FS-UAE.app/Contents/MacOS/fs-uae verify/realamiga/verify-lowend.fs-uae
 	@$(MAKE) --no-print-directory -f Makefile.cross verify-amiga
 
 verify-amiga:

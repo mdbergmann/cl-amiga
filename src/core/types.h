@@ -147,6 +147,7 @@ typedef struct {
 #define CL_SYM_TRACED   0x04
 #define CL_SYM_EXPORTED 0x08
 #define CL_SYM_CONSTANT 0x10
+#define CL_SYM_LISTED   0x20  /* transient: bulk-export pass dedup marker */
 
 #define CL_SYMBOL_P(obj) (CL_HEAP_P(obj) && CL_HDR_TYPE(CL_OBJ_TO_PTR(obj)) == TYPE_SYMBOL)
 

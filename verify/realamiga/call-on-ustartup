@@ -1,4 +1,14 @@
-; Run Amiga test suite (includes FFI/Intuition/Graphics/GadTools tests)
+; Lower-end baseline: stack 65000, --heap 8M — matches CLAUDE.md target.
+; Single clamiga run (sequential allocations fragment Fast RAM on the
+; lower-end target).  date timestamps before/after give total runtime;
+; subtract the known ~38 s boot-to-REPL on this config to estimate
+; test-suite time.
 cd CLAmiga:
-stack 128000
-build/amiga/clamiga --heap 48M --non-interactive --load tests/amiga/run-tests.lisp >build/amiga/test-results.log
+echo "=== avail before clamiga ===" >build/amiga/test-results.log
+avail >>build/amiga/test-results.log
+stack 65000
+echo "=== run start ===" >>build/amiga/test-results.log
+date >>build/amiga/test-results.log
+build/amiga/clamiga --heap 8M --non-interactive --load tests/amiga/run-tests.lisp >>build/amiga/test-results.log
+echo "=== run end ===" >>build/amiga/test-results.log
+date >>build/amiga/test-results.log
