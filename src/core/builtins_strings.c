@@ -6,6 +6,7 @@
 #include "printer.h"
 #include "vm.h"
 #include "string_utils.h"
+#include "bignum.h"
 #include "../platform/platform.h"
 #include <stdio.h>
 #include <string.h>
@@ -1058,12 +1059,21 @@ static CL_Obj bi_string_coerce(CL_Obj *args, int n)
     return CL_NIL;
 }
 
+/* CLHS whitespace[1] for PARSE-INTEGER: space, tab, newline (LF), return,
+ * page (FF), and (where defined) linefeed.  Anything else (including
+ * digits and signs) is not whitespace. */
+static int parse_integer_is_ws(int c)
+{
+    return c == ' ' || c == '\t' || c == '\n' || c == '\r' || c == '\f' ||
+           c == '\v';
+}
+
 static CL_Obj bi_parse_integer(CL_Obj *args, int n)
 {
     int32_t start = 0, end, radix = 10;
-    int32_t result = 0, sign = 1;
     int32_t i;
-    int found = 0;
+    int sign = 1, found = 0, junk_allowed = 0;
+    CL_Obj radix_obj, result;
 
     if (!CL_ANY_STRING_P(args[0]))
         cl_error(CL_ERR_TYPE, "PARSE-INTEGER: not a string");
@@ -1072,27 +1082,41 @@ static CL_Obj bi_parse_integer(CL_Obj *args, int n)
     {
         int k;
         for (k = 1; k + 1 < n; k += 2) {
-            if (CL_SYMBOL_P(args[k])) {
-                const char *kn = cl_symbol_name(args[k]);
-                if (strcmp(kn, "START") == 0 && CL_FIXNUM_P(args[k+1]))
-                    start = CL_FIXNUM_VAL(args[k+1]);
-                else if (strcmp(kn, "END") == 0 && CL_FIXNUM_P(args[k+1]))
-                    end = CL_FIXNUM_VAL(args[k+1]);
-                else if (strcmp(kn, "RADIX") == 0 && CL_FIXNUM_P(args[k+1]))
-                    radix = CL_FIXNUM_VAL(args[k+1]);
-            }
+            const char *kn;
+            if (!CL_SYMBOL_P(args[k]))
+                cl_error(CL_ERR_ARGS,
+                         "PARSE-INTEGER: keyword arg not a symbol");
+            kn = cl_symbol_name(args[k]);
+            if (strcmp(kn, "START") == 0 && CL_FIXNUM_P(args[k+1]))
+                start = CL_FIXNUM_VAL(args[k+1]);
+            else if (strcmp(kn, "END") == 0 && CL_FIXNUM_P(args[k+1]))
+                end = CL_FIXNUM_VAL(args[k+1]);
+            else if (strcmp(kn, "RADIX") == 0 && CL_FIXNUM_P(args[k+1]))
+                radix = CL_FIXNUM_VAL(args[k+1]);
+            else if (strcmp(kn, "JUNK-ALLOWED") == 0)
+                junk_allowed = !CL_NULL_P(args[k+1]);
+            else
+                cl_error(CL_ERR_ARGS,
+                         "PARSE-INTEGER: unknown keyword %s", kn);
         }
     }
 
-    while (start < end && (cl_string_char_at(args[0], start) == ' ' ||
-                           cl_string_char_at(args[0], start) == '\t'))
+    /* Skip leading whitespace */
+    while (start < end && parse_integer_is_ws(cl_string_char_at(args[0], start)))
         start++;
 
-    if (start < end && (cl_string_char_at(args[0], start) == '+' ||
-                        cl_string_char_at(args[0], start) == '-')) {
-        if (cl_string_char_at(args[0], start) == '-') sign = -1;
-        start++;
+    /* Optional sign */
+    if (start < end) {
+        int c = cl_string_char_at(args[0], start);
+        if (c == '+' || c == '-') {
+            if (c == '-') sign = -1;
+            start++;
+        }
     }
+
+    radix_obj = CL_MAKE_FIXNUM(radix);
+    result = CL_MAKE_FIXNUM(0);
+    CL_GC_PROTECT(result);
 
     for (i = start; i < end; i++) {
         int digit;
@@ -1102,17 +1126,46 @@ static CL_Obj bi_parse_integer(CL_Obj *args, int n)
         else if (c >= 'a' && c <= 'z') digit = c - 'a' + 10;
         else break;
         if (digit >= radix) break;
-        result = result * radix + digit;
+        /* Bignum-safe accumulation: result = result*radix + digit. */
+        result = cl_arith_mul(result, radix_obj);
+        result = cl_arith_add(result, CL_MAKE_FIXNUM(digit));
         found = 1;
     }
 
-    if (!found)
-        cl_error(CL_ERR_GENERAL, "PARSE-INTEGER: no digits found");
+    /* No digits → either return NIL (junk-allowed) or signal PARSE-ERROR. */
+    if (!found) {
+        CL_GC_UNPROTECT(1);
+        if (junk_allowed) {
+            cl_mv_values[0] = CL_NIL;
+            cl_mv_values[1] = CL_MAKE_FIXNUM(i);
+            cl_mv_count = 2;
+            return CL_NIL;
+        }
+        cl_error(CL_ERR_PARSE, "PARSE-INTEGER: no digits found");
+    }
 
-    cl_mv_values[0] = CL_MAKE_FIXNUM(sign * result);
+    /* If trailing chars remain that are not whitespace, signal PARSE-ERROR
+     * unless :JUNK-ALLOWED is true. */
+    if (!junk_allowed) {
+        int32_t j = i;
+        while (j < end && parse_integer_is_ws(cl_string_char_at(args[0], j)))
+            j++;
+        if (j < end) {
+            CL_GC_UNPROTECT(1);
+            cl_error(CL_ERR_PARSE,
+                     "PARSE-INTEGER: junk after digits");
+        }
+        i = j;  /* second value is past trailing whitespace */
+    }
+
+    if (sign == -1)
+        result = cl_arith_negate(result);
+    CL_GC_UNPROTECT(1);
+
+    cl_mv_values[0] = result;
     cl_mv_values[1] = CL_MAKE_FIXNUM(i);
     cl_mv_count = 2;
-    return CL_MAKE_FIXNUM(sign * result);
+    return result;
 }
 
 /* Keywords for write-to-string (same as write) */
