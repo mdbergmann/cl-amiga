@@ -458,9 +458,13 @@ TEST(sqrt_non_perfect)
 
 TEST(sqrt_integer_arg)
 {
-    /* Integer args produce single-float result */
-    ASSERT_STR_EQ(eval_print("(sqrt 4)"), "2.0");
-    ASSERT_STR_EQ(eval_print("(sqrt 0)"), "0.0");
+    /* Integer perfect-square args stay exact integer (CLHS allows this);
+     * non-square integer falls back to single-float. */
+    ASSERT_STR_EQ(eval_print("(sqrt 4)"), "2");
+    ASSERT_STR_EQ(eval_print("(sqrt 0)"), "0");
+    ASSERT_STR_EQ(eval_print("(sqrt 9)"), "3");
+    /* Non-square: float result */
+    ASSERT_STR_EQ(eval_print("(< (abs (- (sqrt 2) 1.41421)) 0.001)"), "T");
 }
 
 TEST(sqrt_double)
@@ -469,10 +473,21 @@ TEST(sqrt_double)
     ASSERT_STR_EQ(eval_print("(sqrt 0.0d0)"), "0.0d0");
 }
 
-TEST(sqrt_error_negative)
+TEST(sqrt_negative_returns_complex)
 {
-    ASSERT_STR_EQ(eval_print("(sqrt -1.0)"), "ERROR:2");
-    ASSERT_STR_EQ(eval_print("(sqrt -4)"), "ERROR:2");
+    /* Per CLHS: sqrt of a negative real returns a pure-imaginary complex
+     * (was previously a TYPE-ERROR — wrong per spec). */
+    ASSERT_STR_EQ(eval_print("(sqrt -1.0)"), "#C(0.0 1.0)");
+    ASSERT_STR_EQ(eval_print("(sqrt -4)"), "#C(0.0 2.0)");
+    ASSERT_STR_EQ(eval_print("(sqrt -1.0d0)"), "#C(0.0d0 1.0d0)");
+}
+
+TEST(sqrt_complex)
+{
+    /* sqrt(3+4i) = 2+i since (2+i)² = 3+4i */
+    ASSERT_STR_EQ(eval_print("(sqrt #C(3 4))"), "#C(2.0 1.0)");
+    /* sqrt(-i)·sqrt(-i) ≈ -i */
+    ASSERT_STR_EQ(eval_print("(sqrt #C(0 -2))"), "#C(1.0 -1.0)");
 }
 
 /* --- exp --- */
@@ -896,8 +911,9 @@ int main(void)
     RUN(sqrt_perfect_square);
     RUN(sqrt_non_perfect);
     RUN(sqrt_integer_arg);
+    RUN(sqrt_complex);
     RUN(sqrt_double);
-    RUN(sqrt_error_negative);
+    RUN(sqrt_negative_returns_complex);
     RUN(exp_zero);
     RUN(exp_one);
     RUN(exp_negative);
