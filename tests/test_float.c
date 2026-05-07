@@ -547,16 +547,28 @@ TEST(log_double)
     ASSERT_STR_EQ(eval_print("(log 1.0d0)"), "0.0d0");
 }
 
-TEST(log_error_nonpositive)
+TEST(log_zero_is_divzero)
 {
-    ASSERT_STR_EQ(eval_print("(log 0)"), "ERROR:2");
-    ASSERT_STR_EQ(eval_print("(log -1.0)"), "ERROR:2");
+    /* (log 0) is undefined → DIVISION-BY-ZERO (CL_ERR_DIVZERO=7). */
+    ASSERT_STR_EQ(eval_print("(log 0)"), "ERROR:7");
+}
+
+TEST(log_negative_returns_complex)
+{
+    /* CLHS 12.1.5.3: (log negative) → complex; was non-conformant ERROR. */
+    ASSERT_STR_EQ(eval_print("(log -1)"), "#C(0.0 3.14159)");
+    ASSERT_STR_EQ(eval_print("(log -1.0d0)"), "#C(0.0d0 3.14159265358979d0)");
+}
+
+TEST(log_complex)
+{
+    /* (log i) = i*pi/2 */
+    ASSERT_STR_EQ(eval_print("(log #C(0 1))"), "#C(0.0 1.5708)");
 }
 
 TEST(log_error_bad_base)
 {
     ASSERT_STR_EQ(eval_print("(log 10.0 1.0)"), "ERROR:7");  /* base=1 → divzero */
-    ASSERT_STR_EQ(eval_print("(log 10.0 0)"), "ERROR:2");    /* base≤0 → type */
 }
 
 /* --- expt (float-aware) --- */
@@ -693,10 +705,11 @@ TEST(asin_double)
     ASSERT_STR_EQ(eval_print("(asin 0.0d0)"), "0.0d0");
 }
 
-TEST(asin_error_domain)
+TEST(asin_outside_domain_returns_complex)
 {
-    ASSERT_STR_EQ(eval_print("(asin 2.0)"), "ERROR:2");
-    ASSERT_STR_EQ(eval_print("(asin -2.0)"), "ERROR:2");
+    /* CLHS 12.1.5.3: ASIN of |x|>1 returns complex (used to be ERROR). */
+    ASSERT_STR_EQ(eval_print("(asin 2.0)"), "#C(1.5708 -1.31696)");
+    ASSERT_STR_EQ(eval_print("(asin -2.0)"), "#C(-1.5708 1.31696)");
 }
 
 /* --- acos --- */
@@ -722,10 +735,11 @@ TEST(acos_double)
     ASSERT_STR_EQ(eval_print("(acos 1.0d0)"), "0.0d0");
 }
 
-TEST(acos_error_domain)
+TEST(acos_outside_domain_returns_complex)
 {
-    ASSERT_STR_EQ(eval_print("(acos 2.0)"), "ERROR:2");
-    ASSERT_STR_EQ(eval_print("(acos -2.0)"), "ERROR:2");
+    /* CLHS 12.1.5.3: ACOS of |x|>1 returns complex. */
+    ASSERT_STR_EQ(eval_print("(acos 2.0)"), "#C(0.0 1.31696)");
+    ASSERT_STR_EQ(eval_print("(acos -2.0)"), "#C(3.14159 -1.31696)");
 }
 
 /* --- atan --- */
@@ -923,7 +937,9 @@ int main(void)
     RUN(log_integer_arg);
     RUN(log_with_base);
     RUN(log_double);
-    RUN(log_error_nonpositive);
+    RUN(log_zero_is_divzero);
+    RUN(log_negative_returns_complex);
+    RUN(log_complex);
     RUN(log_error_bad_base);
     RUN(expt_integer_positive);
     RUN(expt_integer_negative_exp);
@@ -946,12 +962,12 @@ int main(void)
     RUN(asin_zero);
     RUN(asin_one);
     RUN(asin_double);
-    RUN(asin_error_domain);
+    RUN(asin_outside_domain_returns_complex);
     RUN(acos_one);
     RUN(acos_zero);
     RUN(acos_integer_arg);
     RUN(acos_double);
-    RUN(acos_error_domain);
+    RUN(acos_outside_domain_returns_complex);
     RUN(atan_zero);
     RUN(atan_one);
     RUN(atan_two_args);

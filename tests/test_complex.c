@@ -325,6 +325,43 @@ TEST(complex_float_contagion)
     ASSERT_STR_EQ(eval_print("(* #C(1 2) 1.0d0)"), "#C(1.0d0 2.0d0)");
 }
 
+TEST(complex_exp_log)
+{
+    /* exp(0+0i) = 1+0i */
+    ASSERT_STR_EQ(eval_print("(exp #C(0 0))"), "#C(1.0 0.0)");
+    /* log(i) = 0 + (pi/2)i */
+    ASSERT_STR_EQ(eval_print("(log #C(0 1))"), "#C(0.0 1.5708)");
+    /* log of negative real promotes to complex (CLHS 12.1.5.3) */
+    ASSERT_STR_EQ(eval_print("(log -1)"), "#C(0.0 3.14159)");
+    /* log(1, base) = 0 — round-trip */
+    ASSERT_STR_EQ(eval_print("(< (abs (- (log 100.0 10.0) 2.0)) 0.001)"), "T");
+}
+
+TEST(complex_trig)
+{
+    /* sin(i) = i*sinh(1) ≈ i*1.1752 — purely imaginary, real=0. */
+    ASSERT_STR_EQ(eval_print("(sin #C(0 1))"), "#C(0.0 1.1752)");
+    /* cos(i) = cosh(1) ≈ 1.5431 — purely real but result is complex
+       because the input was complex. */
+    ASSERT_STR_EQ(eval_print("(cos #C(0 1))"), "#C(1.54308 -0.0)");
+    /* asin / acos / atanh of out-of-range real → complex. */
+    ASSERT_STR_EQ(eval_print("(asin 2.0)"), "#C(1.5708 -1.31696)");
+    ASSERT_STR_EQ(eval_print("(acos 2.0)"), "#C(0.0 1.31696)");
+    ASSERT_STR_EQ(eval_print("(atanh 2.0)"), "#C(0.549306 -1.5708)");
+    /* acosh of x<1 → complex. */
+    ASSERT_STR_EQ(eval_print("(acosh 0.0)"), "#C(0.0 1.5708)");
+}
+
+TEST(complex_cis)
+{
+    /* cis(0) = 1 + 0i */
+    ASSERT_STR_EQ(eval_print("(cis 0)"), "#C(1.0 0.0)");
+    /* cis(pi) = -1 + 0i (within rounding) */
+    ASSERT_STR_EQ(eval_print("(< (abs (+ 1.0 (realpart (cis 3.141592653589793d0)))) 1e-10)"), "T");
+    /* |cis x| = 1 — sanity */
+    ASSERT_STR_EQ(eval_print("(< (abs (- (abs (cis 0.5)) 1.0)) 1e-6)"), "T");
+}
+
 /* --- Main --- */
 
 int main(void)
@@ -369,6 +406,9 @@ int main(void)
     RUN(complex_arith_zerop);
     RUN(complex_abs);
     RUN(complex_float_contagion);
+    RUN(complex_exp_log);
+    RUN(complex_trig);
+    RUN(complex_cis);
 
     REPORT();
     teardown();
