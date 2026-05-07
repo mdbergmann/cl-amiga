@@ -14,6 +14,20 @@ void cl_builtins_init(void);
 void cl_register_builtin(const char *name, CL_CFunc func,
                           int min, int max, CL_Obj package);
 
+/* Static descriptor used by table-driven init.
+ * min/max are int16 to keep the entry compact (max == -1 means &rest). */
+typedef struct {
+    const char *name;
+    CL_CFunc    func;
+    int16_t     min;
+    int16_t     max;
+} CL_BuiltinDesc;
+
+/* Register an entire table of builtins into the given package.
+ * Replaces hundreds of per-call defun() sequences with a single loop. */
+void cl_register_builtins(const CL_BuiltinDesc *table, uint32_t count,
+                          CL_Obj package);
+
 /* Coerce a function designator (function or symbol) to a callable function.
    If obj is already a function/closure/bytecode, returns it unchanged.
    If obj is a symbol, returns its function binding.

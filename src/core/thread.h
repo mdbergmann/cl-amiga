@@ -257,13 +257,22 @@ extern CL_Thread *cl_thread_table[CL_MAX_THREADS];
  * needing >6000 simultaneously-live locks.  16384 fits in 128KB on 64-bit
  * (64KB on 32-bit Amiga) and absorbs that working set with headroom.  GC
  * still reclaims dead slots; this is the upper bound when the entire working
- * set is reachable. */
-#define CL_MAX_LOCKS 16384
+ * set is reachable.
+ *
+ * On AmigaOS (8MB target) the high-concurrency sento workloads aren't
+ * realistic — shrink to 256 to free ~63KB of BSS per table.  Programs
+ * that exceed it get a clean error rather than silent corruption. */
+#ifdef PLATFORM_AMIGA
+#define CL_MAX_LOCKS    256
+#define CL_MAX_CONDVARS 256
+#else
+#define CL_MAX_LOCKS    16384
+#define CL_MAX_CONDVARS 16384
+#endif
 extern void *cl_lock_table[CL_MAX_LOCKS];
 
 /* Condvar side table: maps condvar_id -> void* (platform condvar).
  * Sized to mirror CL_MAX_LOCKS so condvar-paired lock workloads scale. */
-#define CL_MAX_CONDVARS 16384
 extern void *cl_condvar_table[CL_MAX_CONDVARS];
 
 /* Allocate and initialize a new CL_Thread for a worker */

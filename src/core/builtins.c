@@ -31,6 +31,20 @@ void cl_register_builtin(const char *name, CL_CFunc func,
      * builtin name. */
 }
 
+/* Table-driven mass registration: collapses hundreds of per-call code
+ * sequences in *_init() into a single tight loop, shrinking the binary
+ * substantially on m68k where each defun() call site costs ~30 bytes. */
+void cl_register_builtins(const CL_BuiltinDesc *table, uint32_t count,
+                          CL_Obj package)
+{
+    uint32_t i;
+    for (i = 0; i < count; i++) {
+        cl_register_builtin(table[i].name, table[i].func,
+                            (int)table[i].min, (int)table[i].max,
+                            package);
+    }
+}
+
 /* Helper to register a builtin in CL */
 static void defun(const char *name, CL_CFunc func, int min, int max)
 {
