@@ -133,12 +133,25 @@
 ;; CLtS 5.1.3 demands DELTA be evaluated before PLACE is read, so that
 ;; e.g. (incf x (setf x 1)) returns 2 and leaves x = 2 (not 1) — the
 ;; setf-of-x is the delta, then the modified x is what we add to.
-(defmacro incf (place &optional (delta 1))
-  (let ((d (gensym "D")))
-    `(let ((,d ,delta)) (setf ,place (+ ,place ,d)))))
-(defmacro decf (place &optional (delta 1))
-  (let ((d (gensym "D")))
-    `(let ((,d ,delta)) (setf ,place (- ,place ,d)))))
+(defmacro incf (place &optional (delta 1) &environment env)
+  (multiple-value-bind (temps vals stores set-form access-form)
+      (get-setf-expansion place env)
+    (let ((d (gensym "DELTA")) (store (car stores)))
+      `(let* (,@(mapcar #'list temps vals)
+              (,d ,delta)
+              (,store (+ ,access-form ,d)))
+         ,set-form
+         ,store))))
+
+(defmacro decf (place &optional (delta 1) &environment env)
+  (multiple-value-bind (temps vals stores set-form access-form)
+      (get-setf-expansion place env)
+    (let ((d (gensym "DELTA")) (store (car stores)))
+      `(let* (,@(mapcar #'list temps vals)
+              (,d ,delta)
+              (,store (- ,access-form ,d)))
+         ,set-form
+         ,store))))
 
 (defmacro remf (place indicator)
   ;; CLHS 5.1.2: remf modifies the place.  %remf returns the new list as
@@ -224,37 +237,65 @@
      (setf (get ',symbol '%symbol-macro-expansion) ',expansion)
      ',symbol))
 
-;; Setf expanders — define-setf-expander registers an expander function.
-;; The expander takes (place-form value-form) and returns a single form
-;; that the compiler compiles instead of the original setf.
-;; This is a simplified but functional implementation.
+;; Setf expanders — define-setf-expander registers a 5-values expander
+;; per CLHS 5.1.4.  The expander takes the place's argument forms and
+;; returns (temps vals stores store-form access-form).  Two parallel
+;; tables: %setf-expansion-fns is the 5-values registry consulted by
+;; get-setf-expansion; the C-side setf_expander_table holds a single-form
+;; wrapper consulted by the compiler.  define-setf-expander populates both
+;; so place-subform-once semantics propagate through nested setf forms.
+(defparameter clamiga::*setf-expansion-fns* nil)
 
-;; Minimal get-setf-expansion for symbols (variables).
-;; Returns 5 values: temps, vals, stores, store-form, access-form.
+(defun clamiga::%register-setf-expansion (name fn)
+  (let ((existing (assoc name clamiga::*setf-expansion-fns*)))
+    (if existing
+        (rplacd existing fn)
+        (setq clamiga::*setf-expansion-fns*
+              (cons (cons name fn) clamiga::*setf-expansion-fns*))))
+  name)
+
+(defun clamiga::%get-setf-expansion-fn (name)
+  (cdr (assoc name clamiga::*setf-expansion-fns*)))
+
+;; CLHS 5.1.2 GET-SETF-EXPANSION — returns 5 values bracketing a place
+;; so that subforms are evaluated exactly once.  CLHS 5.1.2.7: when the
+;; place is a macro call, the place is macroexpanded first.  Order of
+;; preference after expansion: (1) explicit define-setf-expander
+;; registry, (2) defsetf setter, (3) compiler-handled fallback.
 (defun get-setf-expansion (place &optional env)
-  (declare (ignore env))
-  (if (symbolp place)
-      (let ((store (gensym "NEW")))
-        (values nil nil (list store) (list 'setq place store) place))
-    ;; For function call places, return a basic expansion
-    (let ((temps (mapcar (lambda (x) (declare (ignore x)) (gensym "T"))
-                         (cdr place)))
-          (store (gensym "NEW"))
-          (setter (%get-defsetf-setter (car place))))
-      (if setter
-          ;; defsetf registered: use the setter function directly
-          ;; Convention: (setter place-args... new-value)
-          (values temps (cdr place) (list store)
-                  (append (list* setter temps) (list store))
-                  (cons (car place) temps))
-        ;; Fall back to (setf name) function
-        (values temps (cdr place) (list store)
-                (list* 'funcall (list 'function (list 'setf (car place)))
-                       store temps)
-                (cons (car place) temps))))))
+  (let ((place (macroexpand place env)))
+    (cond
+      ((symbolp place)
+       (let ((store (gensym "NEW")))
+         (values nil nil (list store) (list 'setq place store) place)))
+      ((and (consp place) (symbolp (car place)))
+       (let ((expander (clamiga::%get-setf-expansion-fn (car place))))
+         (cond
+           (expander
+            (apply expander (cdr place)))
+           (t
+            (let ((temps (mapcar (lambda (x) (declare (ignore x)) (gensym "T"))
+                                 (cdr place)))
+                  (store (gensym "NEW"))
+                  (setter (%get-defsetf-setter (car place))))
+              (cond
+                (setter
+                 ;; defsetf: setter receives place args... new-value
+                 (values temps (cdr place) (list store)
+                         (append (list* setter temps) (list store))
+                         (cons (car place) temps)))
+                (t
+                 ;; Default: emit (setf (head temps...) store) and let the
+                 ;; compiler dispatch — covers AREF, GETHASH, CAR, etc.
+                 (values temps (cdr place) (list store)
+                         (list 'setf (cons (car place) temps) store)
+                         (cons (car place) temps)))))))))
+      (t (error "GET-SETF-EXPANSION: cannot expand ~S" place)))))
 
 (defmacro define-setf-expander (access-fn lambda-list &body body)
-  ;; Strip &environment from lambda-list, pass nil for it
+  ;; Strip &environment from lambda-list, bind it to nil.  The body
+  ;; must return 5 values (CLHS 5.1.4); we register it for both
+  ;; get-setf-expansion (5-values) and the compiler (single form wrapper).
   (let ((env-pos (position-if (lambda (x) (and (symbolp x)
                                                 (string= (symbol-name x) "&ENVIRONMENT")))
                               lambda-list))
@@ -264,43 +305,55 @@
       (setq env-var (nth (1+ env-pos) lambda-list))
       (setq clean-ll (append (subseq lambda-list 0 env-pos)
                              (subseq lambda-list (+ env-pos 2)))))
-    `(clamiga::%register-setf-expander
-      ',access-fn
-      (lambda (place-form value-form)
-        (multiple-value-bind (temps vals stores store-form access-form)
-            (let (,@(when env-var (list (list env-var nil))))
-              (apply (lambda ,clean-ll ,@body) (cdr place-form)))
-          (declare (ignore access-form))
-          ;; Build: (let ((t1 v1) ... (store value-form)) store-form)
-          (let ((bindings (append (mapcar #'list temps vals)
-                                  (list (list (car stores) value-form)))))
-            (list 'let bindings store-form)))))))
+    `(progn
+       (clamiga::%register-setf-expansion
+        ',access-fn
+        (lambda ,clean-ll
+          ,@(if env-var
+                `((let ((,env-var nil))
+                    (declare (ignorable ,env-var))
+                    ,@body))
+                body)))
+       (clamiga::%register-setf-expander
+        ',access-fn
+        (lambda (place-form value-form)
+          (multiple-value-bind (temps vals stores store-form access-form)
+              (apply (clamiga::%get-setf-expansion-fn ',access-fn)
+                     (cdr place-form))
+            (declare (ignore access-form))
+            (let ((bindings (append (mapcar #'list temps vals)
+                                    (list (list (car stores) value-form)))))
+              (list 'let* bindings store-form)))))
+       ',access-fn)))
 
-;; (setf (ldb bytespec place) new-byte) → (setf place (dpb new-byte bytespec place))
-;; Per CLHS, the SETF form must return new-byte, not the modified place;
-;; bind value-form to a temp and return it.
-(clamiga::%register-setf-expander 'ldb
-  (lambda (place-form value-form)
-    (let ((bytespec-var (gensym "BS"))
-          (val-var (gensym "V"))
-          (bytespec (cadr place-form))
-          (int-place (caddr place-form)))
-      `(let* ((,bytespec-var ,bytespec)
-              (,val-var ,value-form))
-         (setf ,int-place (dpb ,val-var ,bytespec-var ,int-place))
-         ,val-var))))
+;; (setf (ldb bytespec int-place) new-byte) — CLHS 5.1.4 expander.
+;; Composes with int-place's own setf expansion so subforms (e.g. of
+;; (aref ...) under the LDB) are evaluated exactly once.
+(define-setf-expander ldb (bytespec int-place &environment env)
+  (multiple-value-bind (temps vals stores set-form access-form)
+      (get-setf-expansion int-place env)
+    (let ((bs (gensym "BS")) (val (gensym "VAL")) (store (car stores)))
+      (values
+       (cons bs temps)
+       (cons bytespec vals)
+       (list val)
+       `(let ((,store (dpb ,val ,bs ,access-form)))
+          ,set-form
+          ,val)
+       `(ldb ,bs ,access-form)))))
 
-;; (setf (mask-field bytespec place) new) → (setf place (deposit-field new bytespec place))
-(clamiga::%register-setf-expander 'mask-field
-  (lambda (place-form value-form)
-    (let ((bytespec-var (gensym "BS"))
-          (val-var (gensym "V"))
-          (bytespec (cadr place-form))
-          (int-place (caddr place-form)))
-      `(let* ((,bytespec-var ,bytespec)
-              (,val-var ,value-form))
-         (setf ,int-place (deposit-field ,val-var ,bytespec-var ,int-place))
-         ,val-var))))
+(define-setf-expander mask-field (bytespec int-place &environment env)
+  (multiple-value-bind (temps vals stores set-form access-form)
+      (get-setf-expansion int-place env)
+    (let ((bs (gensym "BS")) (val (gensym "VAL")) (store (car stores)))
+      (values
+       (cons bs temps)
+       (cons bytespec vals)
+       (list val)
+       `(let ((,store (deposit-field ,val ,bs ,access-form)))
+          ,set-form
+          ,val)
+       `(mask-field ,bs ,access-form)))))
 
 ;; List searching — CLHS MEMBER accepts :test, :test-not, and :key.
 ;; :test defaults to EQL; :key, if supplied, is applied to each list

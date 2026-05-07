@@ -1638,15 +1638,20 @@ static CL_Obj bi_eval(CL_Obj *args, int n)
     return cl_vm_eval(bytecode);
 }
 
-/* Look up a symbol in an ENV alist (as built by cl_build_lex_env).
- * Returns 1 iff sym has a binding; writes the expansion to *out. */
+/* Look up a symbol-macro binding in an ENV alist (as built by
+ * cl_build_lex_env).  Returns 1 iff sym has a binding; writes the
+ * expansion to *out.  Skips local-macro entries (whose car is the
+ * SYM_LEX_LOCAL_MACRO sentinel). */
 static int lex_env_lookup_symbol_macro(CL_Obj env, CL_Obj sym, CL_Obj *out)
 {
     while (CL_CONS_P(env)) {
         CL_Obj pair = cl_car(env);
-        if (CL_CONS_P(pair) && cl_car(pair) == sym) {
-            *out = cl_cdr(pair);
-            return 1;
+        if (CL_CONS_P(pair)) {
+            CL_Obj k = cl_car(pair);
+            if (k != SYM_LEX_LOCAL_MACRO && k == sym) {
+                *out = cl_cdr(pair);
+                return 1;
+            }
         }
         env = cl_cdr(env);
     }

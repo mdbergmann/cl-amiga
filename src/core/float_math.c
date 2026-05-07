@@ -316,6 +316,31 @@ static CL_Obj bi_expt_float(CL_Obj *args, int n)
         return cl_arith_expt(args[0], args[1]);
     }
 
+    /* (expt 0 y) — CLHS 12.1.5.3.  When the base is zero (rational,
+     * float, or canonical complex zero) and the exponent's real part
+     * is strictly positive, the result is the contagion-canonical zero
+     * — the same value (* base exponent) would produce.  This catches
+     * complex exponents that the integer/ratio/float paths below would
+     * pass to cl_to_double() and signal "Not a number: COMPLEX". */
+    if (cl_arith_zerop(args[0])) {
+        CL_Obj exp_re = CL_COMPLEX_P(args[1])
+                        ? ((CL_Complex *)CL_OBJ_TO_PTR(args[1]))->realpart
+                        : args[1];
+        if (!cl_arith_zerop(exp_re) && !cl_arith_minusp(exp_re))
+            return cl_arith_mul(args[0], args[1]);
+        if (cl_arith_minusp(exp_re))
+            cl_error(CL_ERR_DIVZERO,
+                     "EXPT: 0 raised to a non-positive real-part power");
+        /* exp_re is zero and exponent is non-zero (purely imaginary):
+         * mathematically undefined; fall through to diagnostic error. */
+        if (!cl_arith_zerop(args[1]))
+            cl_error(CL_ERR_GENERAL,
+                     "EXPT: 0 raised to a purely imaginary power");
+        /* (expt 0 0) = 1 with appropriate float contagion: 1 + 0*base. */
+        return cl_arith_add(CL_MAKE_FIXNUM(1),
+                            cl_arith_mul(args[0], CL_MAKE_FIXNUM(0)));
+    }
+
     /* Complex base with integer exponent: repeated squaring via
      * cl_arith_mul.  Each cl_arith_mul applies the canonical-complex
      * rules so e.g. (expt #C(0 2) 2) → -4 (rational, integer-zero imag),

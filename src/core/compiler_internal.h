@@ -207,6 +207,7 @@ extern CL_Obj SETF_SYM_FILL_POINTER, SETF_HELPER_FILL_POINTER;
 extern CL_Obj SETF_SYM_BIT, SETF_HELPER_BIT;
 extern CL_Obj SETF_SYM_SBIT, SETF_HELPER_SBIT;
 extern CL_Obj SETF_SYM_GET, SETF_HELPER_GET;
+extern CL_Obj SYM_LEX_LOCAL_MACRO;
 
 /* --- Emit helpers (defined in compiler.c) --- */
 
