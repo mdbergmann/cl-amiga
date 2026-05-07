@@ -971,14 +971,45 @@ static CL_Obj bi_rationalp(CL_Obj *args, int n)
 static CL_Obj bi_complex(CL_Obj *args, int n)
 {
     CL_Obj real = args[0], imag;
+    int real_is_float, imag_is_float, want_double;
+
     if (!CL_REALP(real))
         cl_error(CL_ERR_TYPE, "COMPLEX: not a real number: %s", cl_type_name(real));
     imag = (n >= 2) ? args[1] : CL_MAKE_FIXNUM(0);
     if (!CL_REALP(imag))
         cl_error(CL_ERR_TYPE, "COMPLEX: not a real number: %s", cl_type_name(imag));
-    /* If imagpart is zero, return just the real part (CL spec) */
-    if (CL_FIXNUM_P(imag) && CL_FIXNUM_VAL(imag) == 0)
-        return real;
+
+    real_is_float = CL_FLOATP(real);
+    imag_is_float = CL_FLOATP(imag);
+
+    /* CLHS COMPLEX:
+     *   - both rational, imag = integer 0 → return real (canonical)
+     *   - both rational, imag != 0       → (complex rational) — keep as is
+     *   - either is a float              → both coerced to common float
+     *     type via the rule of float contagion (12.1.5.3.1).
+     * (complex 5.0) → #C(5.0 0.0); (complex 5) → 5; (complex 5.0 0) →
+     * #C(5.0 0.0). */
+    if (!real_is_float && !imag_is_float) {
+        if (CL_FIXNUM_P(imag) && CL_FIXNUM_VAL(imag) == 0)
+            return real;
+        return cl_make_complex(real, imag);
+    }
+
+    want_double = CL_DOUBLE_FLOAT_P(real) || CL_DOUBLE_FLOAT_P(imag);
+    CL_GC_PROTECT(real);
+    CL_GC_PROTECT(imag);
+    if (want_double) {
+        if (!CL_DOUBLE_FLOAT_P(real))
+            real = cl_make_double_float(cl_to_double(real));
+        if (!CL_DOUBLE_FLOAT_P(imag))
+            imag = cl_make_double_float(cl_to_double(imag));
+    } else {
+        if (!CL_SINGLE_FLOAT_P(real))
+            real = cl_make_single_float((float)cl_to_double(real));
+        if (!CL_SINGLE_FLOAT_P(imag))
+            imag = cl_make_single_float((float)cl_to_double(imag));
+    }
+    CL_GC_UNPROTECT(2);
     return cl_make_complex(real, imag);
 }
 

@@ -165,6 +165,57 @@ static CL_Obj bi_expt_float(CL_Obj *args, int n)
         return cl_arith_expt(args[0], args[1]);
     }
 
+    /* Complex base with integer exponent: repeated squaring via
+     * cl_arith_mul.  Each cl_arith_mul applies the canonical-complex
+     * rules so e.g. (expt #C(0 2) 2) → -4 (rational, integer-zero imag),
+     * and (expt c 0) for float complex gives #C(1.0 0.0). */
+    if (CL_COMPLEX_P(args[0]) && CL_INTEGER_P(args[1])) {
+        CL_Obj base = args[0];
+        CL_Obj exp_obj = args[1];
+        int negate_exp = 0;
+        CL_Obj result;
+
+        CL_GC_PROTECT(base);
+        CL_GC_PROTECT(exp_obj);
+        if (cl_arith_minusp(exp_obj)) {
+            negate_exp = 1;
+            exp_obj = cl_arith_negate(exp_obj);
+        }
+        CL_GC_PROTECT(exp_obj);  /* re-protect after potential reassignment */
+
+        /* Build "one" of base's float kind so (expt c 0) follows
+         * float-contagion rules per CLHS 12.1.5.3. */
+        result = cl_arith_add(CL_MAKE_FIXNUM(1),
+                              cl_arith_mul(base, CL_MAKE_FIXNUM(0)));
+        CL_GC_PROTECT(result);
+
+        /* Square-and-multiply over fixnum-integer exponents.  Bignum
+         * exponents on a complex base are rare and would require a
+         * different loop; punt for now. */
+        if (CL_FIXNUM_P(exp_obj)) {
+            int32_t e = CL_FIXNUM_VAL(exp_obj);
+            CL_Obj b = base;
+            CL_GC_PROTECT(b);
+            while (e > 0) {
+                if (e & 1) result = cl_arith_mul(result, b);
+                e >>= 1;
+                if (e > 0) b = cl_arith_mul(b, b);
+            }
+            CL_GC_UNPROTECT(1);
+        } else {
+            CL_GC_UNPROTECT(4);
+            cl_error(CL_ERR_GENERAL,
+                     "EXPT: bignum exponent on complex base not supported");
+        }
+
+        if (negate_exp) {
+            CL_Obj one = CL_MAKE_FIXNUM(1);
+            result = cl_arith_div(one, result);
+        }
+        CL_GC_UNPROTECT(4);
+        return result;
+    }
+
     /* Ratio base with integer exponent: exact rational result */
     if (CL_RATIO_P(args[0]) && CL_INTEGER_P(args[1])) {
         CL_Obj num = cl_numerator(args[0]);

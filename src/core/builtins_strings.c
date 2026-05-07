@@ -1079,25 +1079,58 @@ static CL_Obj bi_parse_integer(CL_Obj *args, int n)
         cl_error(CL_ERR_TYPE, "PARSE-INTEGER: not a string");
     end = (int32_t)cl_string_length(args[0]);
 
+    /* Odd number of trailing args → :KEY without value → PROGRAM-ERROR. */
+    if ((n - 1) & 1)
+        cl_error(CL_ERR_ARGS,
+                 "PARSE-INTEGER: odd number of keyword arguments");
+
     {
         int k;
+        int seen_start = 0, seen_end = 0, seen_radix = 0, seen_junk = 0;
+        int allow_other = 0;
+        /* First pass: detect :ALLOW-OTHER-KEYS T so unknown keys don't
+         * error.  Per CLHS, the first occurrence wins for a given key. */
         for (k = 1; k + 1 < n; k += 2) {
             const char *kn;
             if (!CL_SYMBOL_P(args[k]))
                 cl_error(CL_ERR_ARGS,
                          "PARSE-INTEGER: keyword arg not a symbol");
             kn = cl_symbol_name(args[k]);
-            if (strcmp(kn, "START") == 0 && CL_FIXNUM_P(args[k+1]))
-                start = CL_FIXNUM_VAL(args[k+1]);
-            else if (strcmp(kn, "END") == 0 && CL_FIXNUM_P(args[k+1]))
-                end = CL_FIXNUM_VAL(args[k+1]);
-            else if (strcmp(kn, "RADIX") == 0 && CL_FIXNUM_P(args[k+1]))
-                radix = CL_FIXNUM_VAL(args[k+1]);
-            else if (strcmp(kn, "JUNK-ALLOWED") == 0)
-                junk_allowed = !CL_NULL_P(args[k+1]);
-            else
+            if (strcmp(kn, "ALLOW-OTHER-KEYS") == 0) {
+                if (!allow_other) allow_other = !CL_NULL_P(args[k+1]);
+            }
+        }
+        /* Second pass: extract recognized keyword values, first occurrence
+         * wins, reject unknown unless :ALLOW-OTHER-KEYS T. */
+        for (k = 1; k + 1 < n; k += 2) {
+            const char *kn = cl_symbol_name(args[k]);
+            if (strcmp(kn, "START") == 0) {
+                if (!seen_start) {
+                    if (CL_FIXNUM_P(args[k+1])) start = CL_FIXNUM_VAL(args[k+1]);
+                    seen_start = 1;
+                }
+            } else if (strcmp(kn, "END") == 0) {
+                if (!seen_end) {
+                    if (CL_FIXNUM_P(args[k+1])) end = CL_FIXNUM_VAL(args[k+1]);
+                    /* :END NIL means default (string length) — leave end. */
+                    seen_end = 1;
+                }
+            } else if (strcmp(kn, "RADIX") == 0) {
+                if (!seen_radix) {
+                    if (CL_FIXNUM_P(args[k+1])) radix = CL_FIXNUM_VAL(args[k+1]);
+                    seen_radix = 1;
+                }
+            } else if (strcmp(kn, "JUNK-ALLOWED") == 0) {
+                if (!seen_junk) {
+                    junk_allowed = !CL_NULL_P(args[k+1]);
+                    seen_junk = 1;
+                }
+            } else if (strcmp(kn, "ALLOW-OTHER-KEYS") == 0) {
+                /* already consumed in first pass */
+            } else if (!allow_other) {
                 cl_error(CL_ERR_ARGS,
                          "PARSE-INTEGER: unknown keyword %s", kn);
+            }
         }
     }
 
