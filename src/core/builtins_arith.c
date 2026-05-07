@@ -17,15 +17,6 @@
 #define M_PI 3.14159265358979323846
 #endif
 
-/* Helper to register a builtin */
-static void defun(const char *name, CL_CFunc func, int min, int max)
-{
-    CL_Obj sym = cl_intern_in(name, (uint32_t)strlen(name), cl_package_cl);
-    CL_Obj fn = cl_make_function(func, sym, min, max);
-    CL_Symbol *s = (CL_Symbol *)CL_OBJ_TO_PTR(sym);
-    s->function = fn;
-}
-
 static void check_number(CL_Obj obj, const char *op)
 {
     if (!CL_NUMBER_P(obj))
@@ -1317,100 +1308,111 @@ static CL_Obj bi_scale_float(CL_Obj *args, int n)
     return cl_make_single_float((float)result);
 }
 
-/* --- Registration --- */
+/* --- Registration ---
+ *
+ * Table-driven: hundreds of defun() call sites used to compile to
+ * ~30 bytes of m68k code each (push 4 args + call + restore SP).
+ * A descriptor entry is 12 bytes (name ptr + fn ptr + 2 * int16),
+ * walked once by cl_register_builtins(). ~half the size, no extra
+ * relocations beyond the function pointer the linker already needed. */
+static const CL_BuiltinDesc arith_builtins[] = {
+    /* Arithmetic */
+    {"+",                    bi_add,                   0, -1},
+    {"-",                    bi_sub,                   1, -1},
+    {"*",                    bi_mul,                   0, -1},
+    {"/",                    bi_div,                   1, -1},
+    {"FLOOR",                bi_floor,                 1,  2},
+    {"CEILING",              bi_ceiling,               1,  2},
+    {"TRUNCATE",             bi_truncate,              1,  2},
+    {"ROUND",                bi_round,                 1,  2},
+    {"FFLOOR",               bi_ffloor,                1,  2},
+    {"FCEILING",             bi_fceiling,              1,  2},
+    {"FTRUNCATE",            bi_ftruncate,             1,  2},
+    {"FROUND",               bi_fround,                1,  2},
+    {"REM",                  bi_rem,                   2,  2},
+    {"MOD",                  bi_mod,                   2,  2},
+    {"1+",                   bi_1plus,                 1,  1},
+    {"1-",                   bi_1minus,                1,  1},
+
+    /* Comparison */
+    {"=",                    bi_numeq,                 1, -1},
+    {"/=",                   bi_numneq,                1, -1},
+    {"<",                    bi_lt,                    1, -1},
+    {">",                    bi_gt,                    1, -1},
+    {"<=",                   bi_le,                    1, -1},
+    {">=",                   bi_ge,                    1, -1},
+
+    /* Numeric predicates */
+    {"ZEROP",                bi_zerop,                 1,  1},
+    {"PLUSP",                bi_plusp,                 1,  1},
+    {"MINUSP",               bi_minusp,                1,  1},
+    {"EVENP",                bi_evenp,                 1,  1},
+    {"ODDP",                 bi_oddp,                  1,  1},
+    {"ABS",                  bi_abs,                   1,  1},
+    {"SIGNUM",               bi_signum,                1,  1},
+    {"PHASE",                bi_phase,                 1,  1},
+    {"MAX",                  bi_max,                   1, -1},
+    {"MIN",                  bi_min,                   1, -1},
+    {"NUMBERP",              bi_numberp,               1,  1},
+    {"INTEGERP",             bi_integerp,              1,  1},
+    {"FLOATP",               bi_floatp,                1,  1},
+    {"REALP",                bi_realp,                 1,  1},
+    {"RATIONALP",            bi_rationalp,             1,  1},
+
+    /* Extended integer functions */
+    {"GCD",                  bi_gcd,                   0, -1},
+    {"LCM",                  bi_lcm,                   0, -1},
+    {"EXPT",                 bi_expt,                  2,  2},
+    {"ISQRT",                bi_isqrt,                 1,  1},
+    {"INTEGER-LENGTH",       bi_integer_length,        1,  1},
+    {"ASH",                  bi_ash,                   2,  2},
+    {"LOGAND",               bi_logand,                0, -1},
+    {"LOGIOR",               bi_logior,                0, -1},
+    {"LOGXOR",               bi_logxor,                0, -1},
+    {"LOGNOT",               bi_lognot,                1,  1},
+    {"LOGCOUNT",             bi_logcount,              1,  1},
+    {"LOGBITP",              bi_logbitp,               2,  2},
+    {"LOGTEST",              bi_logtest,               2,  2},
+
+    /* Byte operations */
+    {"BYTE",                 bi_byte,                  2,  2},
+    {"BYTE-SIZE",            bi_byte_size,             1,  1},
+    {"BYTE-POSITION",        bi_byte_position,         1,  1},
+    {"LDB",                  bi_ldb,                   2,  2},
+    {"DPB",                  bi_dpb,                   3,  3},
+    {"LDB-TEST",             bi_ldb_test,              2,  2},
+    {"MASK-FIELD",           bi_mask_field,            2,  2},
+    {"DEPOSIT-FIELD",        bi_deposit_field,         3,  3},
+    {"BOOLE",                bi_boole,                 3,  3},
+
+    /* Complex number functions */
+    {"COMPLEX",              bi_complex,               1,  2},
+    {"COMPLEXP",             bi_complexp,              1,  1},
+    {"REALPART",             bi_realpart,              1,  1},
+    {"IMAGPART",             bi_imagpart,              1,  1},
+    {"CONJUGATE",            bi_conjugate,             1,  1},
+
+    /* Ratio accessors */
+    {"NUMERATOR",            bi_numerator,             1,  1},
+    {"DENOMINATOR",          bi_denominator,           1,  1},
+    {"RATIONAL",             bi_rational,              1,  1},
+    {"RATIONALIZE",          bi_rationalize,           1,  1},
+
+    /* Float-specific functions */
+    {"FLOAT",                bi_float,                 1,  2},
+    {"FLOAT-DIGITS",         bi_float_digits,          1,  1},
+    {"FLOAT-RADIX",          bi_float_radix,           1,  1},
+    {"FLOAT-SIGN",           bi_float_sign,            1,  2},
+    {"DECODE-FLOAT",         bi_decode_float,          1,  1},
+    {"INTEGER-DECODE-FLOAT", bi_integer_decode_float,  1,  1},
+    {"SCALE-FLOAT",          bi_scale_float,           2,  2},
+};
 
 void cl_builtins_arith_init(void)
 {
-    /* Arithmetic */
-    defun("+", bi_add, 0, -1);
-    defun("-", bi_sub, 1, -1);
-    defun("*", bi_mul, 0, -1);
-    defun("/", bi_div, 1, -1);
-    defun("FLOOR", bi_floor, 1, 2);
-    defun("CEILING", bi_ceiling, 1, 2);
-    defun("TRUNCATE", bi_truncate, 1, 2);
-    defun("ROUND", bi_round, 1, 2);
-    defun("FFLOOR", bi_ffloor, 1, 2);
-    defun("FCEILING", bi_fceiling, 1, 2);
-    defun("FTRUNCATE", bi_ftruncate, 1, 2);
-    defun("FROUND", bi_fround, 1, 2);
-    defun("REM", bi_rem, 2, 2);
-    defun("MOD", bi_mod, 2, 2);
-    defun("1+", bi_1plus, 1, 1);
-    defun("1-", bi_1minus, 1, 1);
-
-    /* Comparison */
-    defun("=", bi_numeq, 1, -1);
-    defun("/=", bi_numneq, 1, -1);
-    defun("<", bi_lt, 1, -1);
-    defun(">", bi_gt, 1, -1);
-    defun("<=", bi_le, 1, -1);
-    defun(">=", bi_ge, 1, -1);
-
-    /* Numeric predicates */
-    defun("ZEROP", bi_zerop, 1, 1);
-    defun("PLUSP", bi_plusp, 1, 1);
-    defun("MINUSP", bi_minusp, 1, 1);
-    defun("EVENP", bi_evenp, 1, 1);
-    defun("ODDP", bi_oddp, 1, 1);
-    defun("ABS", bi_abs, 1, 1);
-    defun("SIGNUM", bi_signum, 1, 1);
-    defun("PHASE", bi_phase, 1, 1);
-    defun("MAX", bi_max, 1, -1);
-    defun("MIN", bi_min, 1, -1);
-    defun("NUMBERP", bi_numberp, 1, 1);
-    defun("INTEGERP", bi_integerp, 1, 1);
-    defun("FLOATP", bi_floatp, 1, 1);
-    defun("REALP", bi_realp, 1, 1);
-    defun("RATIONALP", bi_rationalp, 1, 1);
-
-    /* Extended integer functions */
-    defun("GCD", bi_gcd, 0, -1);
-    defun("LCM", bi_lcm, 0, -1);
-    defun("EXPT", bi_expt, 2, 2);
-    defun("ISQRT", bi_isqrt, 1, 1);
-    defun("INTEGER-LENGTH", bi_integer_length, 1, 1);
-    defun("ASH", bi_ash, 2, 2);
-    defun("LOGAND", bi_logand, 0, -1);
-    defun("LOGIOR", bi_logior, 0, -1);
-    defun("LOGXOR", bi_logxor, 0, -1);
-    defun("LOGNOT", bi_lognot, 1, 1);
-    defun("LOGCOUNT", bi_logcount, 1, 1);
-    defun("LOGBITP", bi_logbitp, 2, 2);
-    defun("LOGTEST", bi_logtest, 2, 2);
-
-    /* Byte operations */
-    defun("BYTE", bi_byte, 2, 2);
-    defun("BYTE-SIZE", bi_byte_size, 1, 1);
-    defun("BYTE-POSITION", bi_byte_position, 1, 1);
-    defun("LDB", bi_ldb, 2, 2);
-    defun("DPB", bi_dpb, 3, 3);
-    defun("LDB-TEST", bi_ldb_test, 2, 2);
-    defun("MASK-FIELD", bi_mask_field, 2, 2);
-    defun("DEPOSIT-FIELD", bi_deposit_field, 3, 3);
-    defun("BOOLE", bi_boole, 3, 3);
-
-    /* Complex number functions */
-    defun("COMPLEX", bi_complex, 1, 2);
-    defun("COMPLEXP", bi_complexp, 1, 1);
-    defun("REALPART", bi_realpart, 1, 1);
-    defun("IMAGPART", bi_imagpart, 1, 1);
-    defun("CONJUGATE", bi_conjugate, 1, 1);
-
-    /* Ratio accessors */
-    defun("NUMERATOR", bi_numerator, 1, 1);
-    defun("DENOMINATOR", bi_denominator, 1, 1);
-    defun("RATIONAL", bi_rational, 1, 1);
-    defun("RATIONALIZE", bi_rationalize, 1, 1);
-
-    /* Float-specific functions */
-    defun("FLOAT", bi_float, 1, 2);
-    defun("FLOAT-DIGITS", bi_float_digits, 1, 1);
-    defun("FLOAT-RADIX", bi_float_radix, 1, 1);
-    defun("FLOAT-SIGN", bi_float_sign, 1, 2);
-    defun("DECODE-FLOAT", bi_decode_float, 1, 1);
-    defun("INTEGER-DECODE-FLOAT", bi_integer_decode_float, 1, 1);
-    defun("SCALE-FLOAT", bi_scale_float, 2, 2);
+    cl_register_builtins(arith_builtins,
+                         sizeof(arith_builtins) / sizeof(arith_builtins[0]),
+                         cl_package_cl);
 
     /* Initialize bignum subsystem */
     cl_bignum_init();
