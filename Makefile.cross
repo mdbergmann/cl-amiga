@@ -9,7 +9,11 @@ CC        = $(TOOLCHAIN)/bin/m68k-amigaos-gcc
 # We work around it with `volatile` locals at the affected call sites
 # (search for "m68k workaround").  -flto and -O1 each have their own
 # regressions on this toolchain — neither is a clean substitute.
-CFLAGS    = -noixemul -mcpu=68020 -msoft-float -std=c99 -Wall -O2 -fno-tree-switch-conversion -DPLATFORM_AMIGA
+#
+# -Os passes the full tests/amiga/run-tests.lisp suite on real Amiga
+# and produces a ~175 KB smaller binary than -O2, so we use it.
+# The volatile workaround above still applies.
+CFLAGS    = -noixemul -mcpu=68020 -msoft-float -std=c99 -Wall -Os -fno-tree-switch-conversion -DPLATFORM_AMIGA
 LDFLAGS   = -noixemul -mcpu=68020 -msoft-float -fno-tree-switch-conversion
 
 SRCDIR   = src
