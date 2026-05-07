@@ -591,6 +591,28 @@ void cl_remove_package_local_nickname(const char *name, uint32_t len, CL_Obj fro
  * GC compaction during cl_cons can relocate the package, the symbol
  * table vector, and the chain conses, so we re-read the chain pointer
  * for each iteration and use a counted advance to make progress. */
+/* Mark every symbol in `list` with CL_SYM_LISTED (used as a transient
+ * O(1) "is this symbol already in pkg->exported_symbols" check during
+ * bulk-export passes — replaces an O(n) linear scan that made the
+ * surrounding loop O(n²)). */
+static void mark_exported_listed(CL_Obj list)
+{
+    while (!CL_NULL_P(list)) {
+        CL_Symbol *s = (CL_Symbol *)CL_OBJ_TO_PTR(cl_car(list));
+        s->flags |= CL_SYM_LISTED;
+        list = cl_cdr(list);
+    }
+}
+
+static void clear_exported_listed(CL_Obj list)
+{
+    while (!CL_NULL_P(list)) {
+        CL_Symbol *s = (CL_Symbol *)CL_OBJ_TO_PTR(cl_car(list));
+        s->flags &= ~CL_SYM_LISTED;
+        list = cl_cdr(list);
+    }
+}
+
 static void export_all_present_symbols(CL_Obj package)
 {
     uint32_t i, table_len;
@@ -599,6 +621,7 @@ static void export_all_present_symbols(CL_Obj package)
         CL_Package *pkg = (CL_Package *)CL_OBJ_TO_PTR(package);
         CL_Vector *tbl = (CL_Vector *)CL_OBJ_TO_PTR(pkg->symbols);
         table_len = tbl->length;
+        mark_exported_listed(pkg->exported_symbols);
     }
     for (i = 0; i < table_len; i++) {
         uint32_t consumed = 0;
@@ -615,7 +638,7 @@ static void export_all_present_symbols(CL_Obj package)
             s = (CL_Symbol *)CL_OBJ_TO_PTR(sym);
             if (!(s->flags & CL_SYM_EXPORTED))
                 s->flags |= CL_SYM_EXPORTED;
-            if (!exported_p_nolock(sym, package)) {
+            if (!(s->flags & CL_SYM_LISTED)) {
                 CL_Obj cell;
                 CL_GC_PROTECT(sym);
                 cell = cl_cons(sym, CL_NIL);
@@ -623,9 +646,15 @@ static void export_all_present_symbols(CL_Obj package)
                 pkg = (CL_Package *)CL_OBJ_TO_PTR(package);
                 ((CL_Cons *)CL_OBJ_TO_PTR(cell))->cdr = pkg->exported_symbols;
                 pkg->exported_symbols = cell;
+                s = (CL_Symbol *)CL_OBJ_TO_PTR(sym); /* re-resolve after cl_cons */
+                s->flags |= CL_SYM_LISTED;
             }
             consumed++;
         }
+    }
+    {
+        CL_Package *pkg = (CL_Package *)CL_OBJ_TO_PTR(package);
+        clear_exported_listed(pkg->exported_symbols);
     }
     CL_GC_UNPROTECT(1);
 }
@@ -683,6 +712,7 @@ void cl_package_export_defined_cl_symbols(void)
         CL_Package *pkg = (CL_Package *)CL_OBJ_TO_PTR(package);
         CL_Vector *tbl = (CL_Vector *)CL_OBJ_TO_PTR(pkg->symbols);
         table_len = tbl->length;
+        mark_exported_listed(pkg->exported_symbols);
     }
     for (i = 0; i < table_len; i++) {
         uint32_t consumed = 0;
@@ -712,7 +742,7 @@ void cl_package_export_defined_cl_symbols(void)
             if (should_export) {
                 if (!(s->flags & CL_SYM_EXPORTED))
                     s->flags |= CL_SYM_EXPORTED;
-                if (!exported_p_nolock(sym, package)) {
+                if (!(s->flags & CL_SYM_LISTED)) {
                     CL_Obj cell;
                     CL_GC_PROTECT(sym);
                     cell = cl_cons(sym, CL_NIL);
@@ -720,10 +750,16 @@ void cl_package_export_defined_cl_symbols(void)
                     pkg = (CL_Package *)CL_OBJ_TO_PTR(package);
                     ((CL_Cons *)CL_OBJ_TO_PTR(cell))->cdr = pkg->exported_symbols;
                     pkg->exported_symbols = cell;
+                    s = (CL_Symbol *)CL_OBJ_TO_PTR(sym); /* re-resolve after cl_cons */
+                    s->flags |= CL_SYM_LISTED;
                 }
             }
             consumed++;
         }
+    }
+    {
+        CL_Package *pkg = (CL_Package *)CL_OBJ_TO_PTR(package);
+        clear_exported_listed(pkg->exported_symbols);
     }
     CL_GC_UNPROTECT(1);
 

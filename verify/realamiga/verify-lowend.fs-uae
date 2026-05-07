@@ -1,0 +1,32 @@
+# Lower-end baseline for cl-amiga — matches CLAUDE.md target.
+# A1200 / 68020 14 MHz / 2 MB chip + 8 MB fast (trapdoor) + 16 MB Zorro III /
+# cycle-accurate / no JIT.  Stock A1200 has no Zorro slots; the Zorro III
+# block here represents accelerator-board RAM — FS-UAE auto-configs it.
+# 16 MB Zorro III gives a single contiguous block big enough for an 8 MB
+# heap allocation, avoiding the trapdoor/Zorro-III split-pool problem.
+#
+# Used by `make -f Makefile.cross test-amiga` so test runs reflect the
+# resource budget the project actually targets, not a 64 MB JIT host.
+
+[fs-uae]
+accuracy = 2
+jit_compiler = 0
+amiga_model = A1200
+bsdsocket_library = 1
+chip_memory = 2048
+cpu = 68020
+fast_memory = 8192
+zorro_iii_memory = 16384
+slow_memory = 0
+graphics_card = uaegfx
+graphics_memory = 2048
+hard_drive_0 = /Users/mbergmann/Development/MySources/amigasources/cl-amiga/verify/realamiga/aos3
+hard_drive_0_label = Workbench
+hard_drive_1 = /Users/mbergmann/Development/MySources/amigasources/cl-amiga
+hard_drive_1_label = CLAmiga
+joystick_port_1_mode = nothing
+keep_aspect = 1
+kickstart_file = /Users/mbergmann/Applications/Emu/Amiga/Kickstarts/amiga-os-310-a4000.rom
+video_sync = off
+window_height = 1024
+window_width = 1248

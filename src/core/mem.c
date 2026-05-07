@@ -89,8 +89,12 @@ void cl_mem_init(uint32_t heap_size)
 
     cl_heap.arena = (uint8_t *)platform_alloc(heap_size);
     if (!cl_heap.arena) {
-        platform_write_string("FATAL: Failed to allocate heap\n");
-        return;
+        char msg[96];
+        snprintf(msg, sizeof(msg),
+                 "FATAL: Failed to allocate %u-byte heap (try a smaller --heap)\n",
+                 (unsigned)heap_size);
+        platform_write_string(msg);
+        exit(1);
     }
     cl_arena_base = cl_heap.arena;
     cl_heap.arena_size = heap_size;
