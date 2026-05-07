@@ -1276,10 +1276,7 @@ static CL_Obj cl_vm_run(int base_fp, int base_nlx)
             CL_Obj b = cl_vm_pop(), a = cl_vm_pop();
             if (!CL_NUMBER_P(a)) cl_signal_type_error(a, "NUMBER", "/");
             if (!CL_NUMBER_P(b)) cl_signal_type_error(b, "NUMBER", "/");
-            if (CL_FLOATP(a) || CL_FLOATP(b))
-                cl_vm_push(cl_float_div(a, b));
-            else
-                cl_vm_push(cl_ratio_div(a, b));
+            cl_vm_push(cl_arith_div(a, b));
             cl_mv_count = 1;
             VM_BREAK;
         }

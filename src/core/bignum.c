@@ -16,6 +16,7 @@
 #include "../platform/platform.h"
 #include <string.h>
 #include <stdio.h>
+#include <math.h>
 
 /* ================================================================
  * Internal helpers on raw limb arrays
@@ -548,8 +549,76 @@ static void check_integer(CL_Obj obj, const char *op)
         cl_error(CL_ERR_TYPE, "%s: not an integer", op);
 }
 
+/* Coerce a real number to match the float kind of a "template" — used by
+ * complex canonicalization to apply the rule of float contagion (CLHS
+ * 12.1.5.3.1).  After complex arithmetic, if either component is a float,
+ * both must be the same float type. */
+static CL_Obj coerce_real_to_float(CL_Obj part, int want_double)
+{
+    if (want_double) {
+        if (CL_DOUBLE_FLOAT_P(part)) return part;
+        return cl_make_double_float(cl_to_double(part));
+    }
+    if (CL_SINGLE_FLOAT_P(part)) return part;
+    return cl_make_single_float((float)cl_to_double(part));
+}
+
+/* Build a canonical complex (or real) from two computed components.
+ * Applies float contagion + CLHS 12.1.5.3 canonicalization (complex with
+ * rational integer-zero imag becomes the real part). */
+static CL_Obj make_complex_canonical(CL_Obj re, CL_Obj im)
+{
+    int re_dbl = CL_DOUBLE_FLOAT_P(re), im_dbl = CL_DOUBLE_FLOAT_P(im);
+    int re_sgl = CL_SINGLE_FLOAT_P(re), im_sgl = CL_SINGLE_FLOAT_P(im);
+    int want_double = re_dbl || im_dbl;
+    int want_single = !want_double && (re_sgl || im_sgl);
+
+    if (want_double || want_single) {
+        CL_GC_PROTECT(re);
+        CL_GC_PROTECT(im);
+        re = coerce_real_to_float(re, want_double);
+        im = coerce_real_to_float(im, want_double);
+        CL_GC_UNPROTECT(2);
+    }
+
+    /* Per CLHS 12.1.5.3 — only canonicalize when imag is rational
+     * integer-zero.  A float zero imag part stays complex. */
+    if (CL_FIXNUM_P(im) && CL_FIXNUM_VAL(im) == 0)
+        return re;
+    return cl_make_complex(re, im);
+}
+
+/* Extract real/imag parts of x.  Reals look like x + 0i. */
+static void complex_parts(CL_Obj x, CL_Obj *re, CL_Obj *im)
+{
+    if (CL_COMPLEX_P(x)) {
+        CL_Complex *cx = (CL_Complex *)CL_OBJ_TO_PTR(x);
+        *re = cx->realpart;
+        *im = cx->imagpart;
+    } else {
+        *re = x;
+        *im = CL_MAKE_FIXNUM(0);
+    }
+}
+
 CL_Obj cl_arith_add(CL_Obj a, CL_Obj b)
 {
+    /* Complex path: compute components, recurse for each, canonicalize.
+     * Must come before float/ratio paths since those don't recognize
+     * complex operands. */
+    if (CL_COMPLEX_P(a) || CL_COMPLEX_P(b)) {
+        CL_Obj a_re, a_im, b_re, b_im, new_re, new_im;
+        complex_parts(a, &a_re, &a_im);
+        complex_parts(b, &b_re, &b_im);
+        CL_GC_PROTECT(a_re); CL_GC_PROTECT(a_im);
+        CL_GC_PROTECT(b_re); CL_GC_PROTECT(b_im);
+        new_re = cl_arith_add(a_re, b_re);
+        CL_GC_PROTECT(new_re);
+        new_im = cl_arith_add(a_im, b_im);
+        CL_GC_UNPROTECT(5);
+        return make_complex_canonical(new_re, new_im);
+    }
+
     /* Float path: either operand is float → float result */
     if (CL_FLOATP(a) || CL_FLOATP(b))
         return cl_float_add(a, b);
@@ -615,6 +684,20 @@ CL_Obj cl_arith_add(CL_Obj a, CL_Obj b)
 
 CL_Obj cl_arith_sub(CL_Obj a, CL_Obj b)
 {
+    /* Complex path */
+    if (CL_COMPLEX_P(a) || CL_COMPLEX_P(b)) {
+        CL_Obj a_re, a_im, b_re, b_im, new_re, new_im;
+        complex_parts(a, &a_re, &a_im);
+        complex_parts(b, &b_re, &b_im);
+        CL_GC_PROTECT(a_re); CL_GC_PROTECT(a_im);
+        CL_GC_PROTECT(b_re); CL_GC_PROTECT(b_im);
+        new_re = cl_arith_sub(a_re, b_re);
+        CL_GC_PROTECT(new_re);
+        new_im = cl_arith_sub(a_im, b_im);
+        CL_GC_UNPROTECT(5);
+        return make_complex_canonical(new_re, new_im);
+    }
+
     /* Float path */
     if (CL_FLOATP(a) || CL_FLOATP(b))
         return cl_float_sub(a, b);
@@ -680,6 +763,28 @@ CL_Obj cl_arith_sub(CL_Obj a, CL_Obj b)
 
 CL_Obj cl_arith_mul(CL_Obj a, CL_Obj b)
 {
+    /* Complex path: (a+bi)(c+di) = (ac - bd) + (ad + bc)i */
+    if (CL_COMPLEX_P(a) || CL_COMPLEX_P(b)) {
+        CL_Obj a_re, a_im, b_re, b_im;
+        CL_Obj ac = CL_NIL, bd = CL_NIL, ad = CL_NIL, bc = CL_NIL;
+        CL_Obj new_re = CL_NIL, new_im = CL_NIL;
+        complex_parts(a, &a_re, &a_im);
+        complex_parts(b, &b_re, &b_im);
+        CL_GC_PROTECT(a_re); CL_GC_PROTECT(a_im);
+        CL_GC_PROTECT(b_re); CL_GC_PROTECT(b_im);
+        CL_GC_PROTECT(ac); CL_GC_PROTECT(bd);
+        CL_GC_PROTECT(ad); CL_GC_PROTECT(bc);
+        CL_GC_PROTECT(new_re);
+        ac = cl_arith_mul(a_re, b_re);
+        bd = cl_arith_mul(a_im, b_im);
+        new_re = cl_arith_sub(ac, bd);
+        ad = cl_arith_mul(a_re, b_im);
+        bc = cl_arith_mul(a_im, b_re);
+        new_im = cl_arith_add(ad, bc);
+        CL_GC_UNPROTECT(9);
+        return make_complex_canonical(new_re, new_im);
+    }
+
     /* Float path */
     if (CL_FLOATP(a) || CL_FLOATP(b))
         return cl_float_mul(a, b);
@@ -827,6 +932,60 @@ bignum_mul:
     }
 }
 
+/* Unified division dispatcher.  Handles complex via the conjugate trick:
+ *   (a+bi)/(c+di) = ((ac+bd) + (bc-ad)i) / (c² + d²)
+ * Real-only paths route to cl_float_div / cl_ratio_div as before. */
+CL_Obj cl_arith_div(CL_Obj a, CL_Obj b)
+{
+    if (CL_COMPLEX_P(a) || CL_COMPLEX_P(b)) {
+        CL_Obj a_re, a_im, b_re, b_im;
+        CL_Obj c2 = CL_NIL, d2 = CL_NIL, denom = CL_NIL;
+        CL_Obj ac = CL_NIL, bd = CL_NIL, bc = CL_NIL, ad = CL_NIL;
+        CL_Obj re_num = CL_NIL, im_num = CL_NIL;
+        CL_Obj new_re = CL_NIL, new_im = CL_NIL;
+
+        complex_parts(a, &a_re, &a_im);
+        complex_parts(b, &b_re, &b_im);
+
+        if (cl_arith_zerop(b_re) && cl_arith_zerop(b_im))
+            cl_error(CL_ERR_DIVZERO, "Division by zero");
+
+        CL_GC_PROTECT(a_re); CL_GC_PROTECT(a_im);
+        CL_GC_PROTECT(b_re); CL_GC_PROTECT(b_im);
+        CL_GC_PROTECT(c2); CL_GC_PROTECT(d2); CL_GC_PROTECT(denom);
+        CL_GC_PROTECT(ac); CL_GC_PROTECT(bd);
+        CL_GC_PROTECT(bc); CL_GC_PROTECT(ad);
+        CL_GC_PROTECT(re_num); CL_GC_PROTECT(im_num);
+        CL_GC_PROTECT(new_re);
+
+        c2 = cl_arith_mul(b_re, b_re);
+        d2 = cl_arith_mul(b_im, b_im);
+        denom = cl_arith_add(c2, d2);
+        ac = cl_arith_mul(a_re, b_re);
+        bd = cl_arith_mul(a_im, b_im);
+        re_num = cl_arith_add(ac, bd);
+        bc = cl_arith_mul(a_im, b_re);
+        ad = cl_arith_mul(a_re, b_im);
+        im_num = cl_arith_sub(bc, ad);
+
+        if (CL_FLOATP(re_num) || CL_FLOATP(denom))
+            new_re = cl_float_div(re_num, denom);
+        else
+            new_re = cl_ratio_div(re_num, denom);
+        if (CL_FLOATP(im_num) || CL_FLOATP(denom))
+            new_im = cl_float_div(im_num, denom);
+        else
+            new_im = cl_ratio_div(im_num, denom);
+
+        CL_GC_UNPROTECT(14);
+        return make_complex_canonical(new_re, new_im);
+    }
+
+    if (CL_FLOATP(a) || CL_FLOATP(b))
+        return cl_float_div(a, b);
+    return cl_ratio_div(a, b);
+}
+
 CL_Obj cl_arith_truncate(CL_Obj a, CL_Obj b)
 {
     check_integer(b, "TRUNCATE");
@@ -954,6 +1113,18 @@ CL_Obj cl_arith_mod(CL_Obj a, CL_Obj b)
 
 CL_Obj cl_arith_negate(CL_Obj a)
 {
+    if (CL_COMPLEX_P(a)) {
+        CL_Complex *ca = (CL_Complex *)CL_OBJ_TO_PTR(a);
+        CL_Obj re = ca->realpart, im = ca->imagpart, nr, ni;
+        CL_GC_PROTECT(re);
+        CL_GC_PROTECT(im);
+        nr = cl_arith_negate(re);
+        CL_GC_PROTECT(nr);
+        ni = cl_arith_negate(im);
+        CL_GC_UNPROTECT(3);
+        return make_complex_canonical(nr, ni);
+    }
+
     if (CL_FLOATP(a))
         return cl_float_negate(a);
 
@@ -978,6 +1149,50 @@ CL_Obj cl_arith_negate(CL_Obj a)
 
 CL_Obj cl_arith_abs(CL_Obj a)
 {
+    /* Complex: |z| = sqrt(re² + im²).  Returns exact integer when both
+     * components are integers and the sum is a perfect square; otherwise
+     * a double-float (matches SBCL).  Crashed before this path was added
+     * because to_limbs() was called on a complex header. */
+    if (CL_COMPLEX_P(a)) {
+        CL_Complex *cx = (CL_Complex *)CL_OBJ_TO_PTR(a);
+        CL_Obj re = cx->realpart, im = cx->imagpart;
+
+        if (CL_FLOATP(re) || CL_FLOATP(im)) {
+            double r = cl_to_double(re), i = cl_to_double(im);
+            double m = sqrt(r * r + i * i);
+            int want_double = CL_DOUBLE_FLOAT_P(re) || CL_DOUBLE_FLOAT_P(im);
+            return want_double ? cl_make_double_float(m)
+                               : cl_make_single_float((float)m);
+        }
+
+        {
+            CL_Obj sq_re = CL_NIL, sq_im = CL_NIL, sum = CL_NIL;
+            CL_GC_PROTECT(re); CL_GC_PROTECT(im);
+            CL_GC_PROTECT(sq_re); CL_GC_PROTECT(sq_im); CL_GC_PROTECT(sum);
+            sq_re = cl_arith_mul(re, re);
+            sq_im = cl_arith_mul(im, im);
+            sum   = cl_arith_add(sq_re, sq_im);
+
+            if (CL_INTEGER_P(sum)) {
+                CL_Obj isq = cl_arith_isqrt(sum);
+                CL_Obj isq_sq;
+                CL_GC_PROTECT(isq);
+                isq_sq = cl_arith_mul(isq, isq);
+                if (cl_arith_compare(isq_sq, sum) == 0) {
+                    CL_GC_UNPROTECT(6);
+                    return isq;
+                }
+                CL_GC_UNPROTECT(1);
+            }
+
+            {
+                double m = sqrt(cl_to_double(sum));
+                CL_GC_UNPROTECT(5);
+                return cl_make_double_float(m);
+            }
+        }
+    }
+
     if (CL_FLOATP(a)) {
         double v = cl_to_double(a);
         if (v < 0.0) v = -v;
@@ -1077,6 +1292,10 @@ int cl_numeric_equal(CL_Obj a, CL_Obj b)
 
 int cl_arith_zerop(CL_Obj a)
 {
+    if (CL_COMPLEX_P(a)) {
+        CL_Complex *cx = (CL_Complex *)CL_OBJ_TO_PTR(a);
+        return cl_arith_zerop(cx->realpart) && cl_arith_zerop(cx->imagpart);
+    }
     if (CL_FLOATP(a)) return cl_float_zerop(a);
     if (CL_RATIO_P(a)) return cl_ratio_zerop(a);
     if (CL_FIXNUM_P(a)) return CL_FIXNUM_VAL(a) == 0;
