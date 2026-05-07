@@ -154,6 +154,36 @@ TEST(complex_constructor_zero_imag)
     ASSERT_STR_EQ(eval_print("(complex 5 0)"), "5");
 }
 
+TEST(complex_constructor_float_promotes_imag)
+{
+    /* CLHS COMPLEX: if either part is float, both must be the same float
+     * type.  Previously we returned 5.0 for (complex 5.0) by canonicalizing
+     * the integer-zero imag — wrong, because 5.0 is float and the imag
+     * must become float zero too. */
+    ASSERT_STR_EQ(eval_print("(complex 5.0)"), "#C(5.0 0.0)");
+    ASSERT_STR_EQ(eval_print("(complex 5.0 0)"), "#C(5.0 0.0)");
+    ASSERT_STR_EQ(eval_print("(complex 5 0.0)"), "#C(5.0 0.0)");
+    ASSERT_STR_EQ(eval_print("(complex 5.0d0 0)"), "#C(5.0d0 0.0d0)");
+    /* Pure rational still canonicalizes when imag is integer 0. */
+    ASSERT_STR_EQ(eval_print("(complex 5)"), "5");
+    ASSERT_STR_EQ(eval_print("(complex 5 0)"), "5");
+}
+
+TEST(complex_expt_integer_exp)
+{
+    /* (expt c 0) carries c's float kind; rational complex stays rational. */
+    ASSERT_STR_EQ(eval_print("(expt #C(1 1) 0)"), "1");
+    ASSERT_STR_EQ(eval_print("(expt #C(1.0 1.0) 0)"), "#C(1.0 0.0)");
+    /* (expt #C(0 2) 2) → -4 — imag integer-zeros, canonicalizes. */
+    ASSERT_STR_EQ(eval_print("(expt #C(0 2) 2)"), "-4");
+    /* (1+i)² = 0 + 2i */
+    ASSERT_STR_EQ(eval_print("(expt #C(1 1) 2)"), "#C(0 2)");
+    /* Rational complex stays exact: (1/2+1/3i)³ = -1/24 + 23/108 i */
+    ASSERT_STR_EQ(eval_print("(expt #C(1/2 1/3) 3)"), "#C(-1/24 23/108)");
+    /* Negative integer exponent: 1/(1+2i) = 1/5 - 2/5 i */
+    ASSERT_STR_EQ(eval_print("(expt #C(1 2) -1)"), "#C(1/5 -2/5)");
+}
+
 TEST(complex_constructor_one_arg)
 {
     ASSERT_STR_EQ(eval_print("(complex 7)"), "7");
@@ -317,6 +347,8 @@ int main(void)
     RUN(complex_imagpart_real);
     RUN(complex_constructor);
     RUN(complex_constructor_zero_imag);
+    RUN(complex_constructor_float_promotes_imag);
+    RUN(complex_expt_integer_exp);
     RUN(complex_constructor_one_arg);
     RUN(complex_type_of);
     RUN(complex_typep);
