@@ -41,18 +41,69 @@ static CL_Obj make_result(double val, int is_double)
     return cl_make_single_float((float)val);
 }
 
-/* (sqrt number) → float
- * Signals error for negative arguments (no complex numbers). */
+/* (sqrt number) → number
+ * Per CLHS: real >= 0 → real (float kind preserved; integer-perfect-
+ *   square stays exact integer);
+ *   real < 0 → complex (#C(0 sqrt(-x))) of matching float type;
+ *   complex → complex via:
+ *     sqrt(a+bi) = sqrt((|c|+a)/2) + sign(b)*i*sqrt((|c|-a)/2). */
 static CL_Obj bi_sqrt(CL_Obj *args, int n)
 {
-    double val, result;
+    CL_Obj x = args[0];
     CL_UNUSED(n);
-    check_number(args[0], "SQRT");
-    val = cl_to_double(args[0]);
-    if (val < 0.0)
-        cl_error(CL_ERR_TYPE, "SQRT: argument must be non-negative");
-    result = sqrt(val);
-    return make_result(result, CL_DOUBLE_FLOAT_P(args[0]));
+    check_number(x, "SQRT");
+
+    if (CL_COMPLEX_P(x)) {
+        CL_Complex *cx = (CL_Complex *)CL_OBJ_TO_PTR(x);
+        double a = cl_to_double(cx->realpart);
+        double b = cl_to_double(cx->imagpart);
+        double mag = sqrt(a * a + b * b);
+        double re = sqrt((mag + a) * 0.5);
+        double im = sqrt((mag - a) * 0.5);
+        int want_double = CL_DOUBLE_FLOAT_P(cx->realpart) ||
+                          CL_DOUBLE_FLOAT_P(cx->imagpart);
+        if (b < 0.0) im = -im;
+        if (want_double)
+            return cl_make_complex(cl_make_double_float(re),
+                                   cl_make_double_float(im));
+        return cl_make_complex(cl_make_single_float((float)re),
+                               cl_make_single_float((float)im));
+    }
+
+    /* Integer perfect-square fast path: (sqrt 4) → 2 (integer), (sqrt 9) → 3. */
+    if (CL_INTEGER_P(x) && !cl_arith_minusp(x)) {
+        CL_Obj isq, isq_sq;
+        CL_GC_PROTECT(x);
+        isq = cl_arith_isqrt(x);
+        CL_GC_PROTECT(isq);
+        isq_sq = cl_arith_mul(isq, isq);
+        if (cl_arith_compare(isq_sq, x) == 0) {
+            CL_GC_UNPROTECT(2);
+            return isq;
+        }
+        CL_GC_UNPROTECT(2);
+    }
+
+    {
+        double val = cl_to_double(x);
+        int is_dbl = CL_DOUBLE_FLOAT_P(x);
+        if (val < 0.0) {
+            /* Negative real: result is pure-imaginary complex. */
+            double im = sqrt(-val);
+            CL_Obj zero = is_dbl ? cl_make_double_float(0.0)
+                                 : cl_make_single_float(0.0f);
+            CL_Obj imag = is_dbl ? cl_make_double_float(im)
+                                 : cl_make_single_float((float)im);
+            CL_GC_PROTECT(zero);
+            CL_GC_PROTECT(imag);
+            {
+                CL_Obj r = cl_make_complex(zero, imag);
+                CL_GC_UNPROTECT(2);
+                return r;
+            }
+        }
+        return make_result(sqrt(val), is_dbl);
+    }
 }
 
 /* (exp number) → float

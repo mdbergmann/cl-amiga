@@ -539,6 +539,66 @@ static CL_Obj bi_abs(CL_Obj *args, int n)
     return cl_arith_abs(args[0]);
 }
 
+/* (signum n) — per CLHS:
+ *   (zerop n) → n
+ *   else     → (/ n (abs n))
+ * For real n this yields ±1 of the input's exact/float kind; for
+ * complex it yields the unit-magnitude direction. */
+static CL_Obj bi_signum(CL_Obj *args, int n)
+{
+    CL_Obj a, abs_a, result;
+    CL_UNUSED(n);
+    check_number(args[0], "SIGNUM");
+    if (cl_arith_zerop(args[0]))
+        return args[0];
+    a = args[0];
+    abs_a = cl_arith_abs(a);
+    CL_GC_PROTECT(abs_a);
+    result = cl_arith_div(a, abs_a);
+    CL_GC_UNPROTECT(1);
+    return result;
+}
+
+/* (phase n) — angle of a number in radians.
+ *   real >= 0 → 0 (or 0.0 if float)
+ *   real < 0  → pi (or -pi for -0.0)
+ *   complex   → atan2(imag, real), in float
+ * Float kind follows the input's larger float component; integer/ratio
+ * return 0/pi as single-float per CLHS. */
+static CL_Obj bi_phase(CL_Obj *args, int n)
+{
+    CL_Obj x = args[0];
+    CL_UNUSED(n);
+    check_number(x, "PHASE");
+
+    if (CL_COMPLEX_P(x)) {
+        CL_Complex *cx = (CL_Complex *)CL_OBJ_TO_PTR(x);
+        double r = cl_to_double(cx->realpart);
+        double i = cl_to_double(cx->imagpart);
+        double a = atan2(i, r);
+        if (CL_DOUBLE_FLOAT_P(cx->realpart) || CL_DOUBLE_FLOAT_P(cx->imagpart))
+            return cl_make_double_float(a);
+        return cl_make_single_float((float)a);
+    }
+    if (CL_FLOATP(x)) {
+        double v = cl_to_double(x);
+        /* Distinguish -0.0 → -pi from +0.0 → +0.0 via atan2 sign. */
+        double a = atan2(0.0, v);
+        /* For -0.0, atan2(0.0, -0.0) is +pi; CLHS wants -pi.
+         * Use atan2(copysign(0,v), v) to preserve sign. */
+        a = atan2(v == 0.0 ? (double)0.0 : (v < 0.0 ? -0.0 : 0.0), v);
+        if (CL_DOUBLE_FLOAT_P(x))
+            return cl_make_double_float(a);
+        return cl_make_single_float((float)a);
+    }
+    /* Integer / ratio */
+    if (cl_arith_minusp(x)) {
+        /* Single-float pi per CLHS spec for rational input */
+        return cl_make_single_float((float)M_PI);
+    }
+    return CL_MAKE_FIXNUM(0);
+}
+
 static CL_Obj bi_max(CL_Obj *args, int n)
 {
     CL_Obj result;
@@ -1234,6 +1294,8 @@ void cl_builtins_arith_init(void)
     defun("EVENP", bi_evenp, 1, 1);
     defun("ODDP", bi_oddp, 1, 1);
     defun("ABS", bi_abs, 1, 1);
+    defun("SIGNUM", bi_signum, 1, 1);
+    defun("PHASE", bi_phase, 1, 1);
     defun("MAX", bi_max, 1, -1);
     defun("MIN", bi_min, 1, -1);
     defun("NUMBERP", bi_numberp, 1, 1);
