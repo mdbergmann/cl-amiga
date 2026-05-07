@@ -1549,17 +1549,15 @@ CL_Obj cl_arith_isqrt(CL_Obj n)
 
     if (cl_arith_zerop(n)) return CL_MAKE_FIXNUM(0);
 
-    /* Newton's method: x_{n+1} = (x_n + n/x_n) / 2 */
-    /* Initial guess: for fixnums, use a reasonable start */
-    if (CL_FIXNUM_P(n)) {
-        int32_t val = CL_FIXNUM_VAL(n);
-        int32_t guess = 1;
-        while (guess * guess < val && guess < 46341) guess *= 2;
-        x = CL_MAKE_FIXNUM(guess);
-    } else {
-        /* For bignums, start with 2^(bit_length/2) */
+    /* Newton's method: x_{n+1} = (x_n + n/x_n) / 2.
+     * Starts from an UPPER bound (2^ceil(bl/2)) so the iteration
+     * converges monotonically downward — the break-when-not-decreasing
+     * test then terminates correctly.  Starting from a lower bound (eg
+     * 2^floor(bl/2)) bounces above the true sqrt on the first step
+     * and would terminate immediately with a wrong answer. */
+    {
         int bl = cl_arith_integer_length(n);
-        x = cl_arith_ash(CL_MAKE_FIXNUM(1), CL_MAKE_FIXNUM(bl / 2));
+        x = cl_arith_ash(CL_MAKE_FIXNUM(1), CL_MAKE_FIXNUM((bl + 1) / 2));
     }
 
     CL_GC_PROTECT(n);
@@ -1622,13 +1620,29 @@ int cl_arith_integer_length(CL_Obj n)
         CL_Bignum *bn = (CL_Bignum *)CL_OBJ_TO_PTR(n);
         limbs = bn->limbs;
         len = bn->length;
+        if (len == 0) return 0;
+
+        top = limbs[len - 1];
+        bits = (int)(len - 1) * 16;
+        while (top) { bits++; top >>= 1; }
+
+        /* Negative bignum n: integer-length(n) = integer-length(|n|-1).
+         * If |n| is exactly a power of two (single bit set across all
+         * limbs), |n|-1 is one bit shorter — subtract 1.  Otherwise the
+         * length is unchanged by the -1. */
+        if (bn->sign != 0) {
+            uint16_t t = limbs[len - 1];
+            int top_one_bit = (t & (t - 1)) == 0;  /* top limb is 2^k */
+            if (top_one_bit) {
+                uint32_t i;
+                int all_lower_zero = 1;
+                for (i = 0; i < len - 1; i++) {
+                    if (limbs[i] != 0) { all_lower_zero = 0; break; }
+                }
+                if (all_lower_zero) bits--;
+            }
+        }
     }
-
-    if (len == 0) return 0;
-
-    top = limbs[len - 1];
-    bits = (int)(len - 1) * 16;
-    while (top) { bits++; top >>= 1; }
 
     return bits;
 }
@@ -1638,8 +1652,17 @@ CL_Obj cl_arith_ash(CL_Obj n, CL_Obj count)
     int shift;
 
     check_integer(n, "ASH");
-    if (!CL_FIXNUM_P(count))
-        cl_error(CL_ERR_TYPE, "ASH: shift count too large");
+    if (!CL_FIXNUM_P(count)) {
+        /* Bignum shift count: positive shift would create a result far
+         * larger than any reasonable arena; negative shift floors to 0
+         * (non-negative n) or -1 (negative n). */
+        if (cl_arith_minusp(count)) {
+            if (cl_arith_zerop(n)) return n;
+            return cl_arith_minusp(n) ? CL_MAKE_FIXNUM(-1) : CL_MAKE_FIXNUM(0);
+        }
+        if (cl_arith_zerop(n)) return n;
+        cl_error(CL_ERR_TYPE, "ASH: shift count too large for left shift");
+    }
 
     shift = CL_FIXNUM_VAL(count);
 
@@ -2169,25 +2192,41 @@ void cl_bignum_init(void)
         fs->value = cl_make_double_float(-2.2250738585072014e-308);
         fs->flags |= CL_SYM_CONSTANT;
 
-        fsym = cl_intern_in("SINGLE-FLOAT-EPSILON", 20, cl_package_cl);
-        fs = (CL_Symbol *)CL_OBJ_TO_PTR(fsym);
-        fs->value = cl_make_single_float(1.1920929e-7f);
-        fs->flags |= CL_SYM_CONSTANT;
+        /* Epsilons defined by binary-search semantics per CLHS 12.1.4.4:
+         *   <kind>-FLOAT-EPSILON           = smallest e where (1+e) /= 1
+         *   <kind>-FLOAT-NEGATIVE-EPSILON  = smallest e where (1-e) /= 1
+         * With IEEE round-half-even, that's nextafter(2^-24, +inf) for
+         * single-float (since 1+2^-24 itself rounds back to 1.0 by ties-
+         * to-even), and nextafter(2^-25, +inf) for the negative one.
+         * Using nextafter() guarantees the constant matches whatever
+         * rounding behavior the underlying FP unit gives us. */
+        {
+            float fp = nextafterf(ldexpf(1.0f, -24), 2.0f);
+            float fn = nextafterf(ldexpf(1.0f, -25), 2.0f);
+            double dp = nextafter(ldexp(1.0, -53), 2.0);
+            double dn = nextafter(ldexp(1.0, -54), 2.0);
+            fsym = cl_intern_in("SINGLE-FLOAT-EPSILON", 20, cl_package_cl);
+            fs = (CL_Symbol *)CL_OBJ_TO_PTR(fsym);
+            fs->value = cl_make_single_float(fp);
+            fs->flags |= CL_SYM_CONSTANT;
 
-        fsym = cl_intern_in("DOUBLE-FLOAT-EPSILON", 20, cl_package_cl);
-        fs = (CL_Symbol *)CL_OBJ_TO_PTR(fsym);
-        fs->value = cl_make_double_float(2.2204460492503131e-16);
-        fs->flags |= CL_SYM_CONSTANT;
+            fsym = cl_intern_in("DOUBLE-FLOAT-EPSILON", 20, cl_package_cl);
+            fs = (CL_Symbol *)CL_OBJ_TO_PTR(fsym);
+            fs->value = cl_make_double_float(dp);
+            fs->flags |= CL_SYM_CONSTANT;
 
-        fsym = cl_intern_in("SHORT-FLOAT-EPSILON", 19, cl_package_cl);
-        fs = (CL_Symbol *)CL_OBJ_TO_PTR(fsym);
-        fs->value = cl_make_single_float(1.1920929e-7f);
-        fs->flags |= CL_SYM_CONSTANT;
+            fsym = cl_intern_in("SHORT-FLOAT-EPSILON", 19, cl_package_cl);
+            fs = (CL_Symbol *)CL_OBJ_TO_PTR(fsym);
+            fs->value = cl_make_single_float(fp);
+            fs->flags |= CL_SYM_CONSTANT;
 
-        fsym = cl_intern_in("LONG-FLOAT-EPSILON", 18, cl_package_cl);
-        fs = (CL_Symbol *)CL_OBJ_TO_PTR(fsym);
-        fs->value = cl_make_double_float(2.2204460492503131e-16);
-        fs->flags |= CL_SYM_CONSTANT;
+            fsym = cl_intern_in("LONG-FLOAT-EPSILON", 18, cl_package_cl);
+            fs = (CL_Symbol *)CL_OBJ_TO_PTR(fsym);
+            fs->value = cl_make_double_float(dp);
+            fs->flags |= CL_SYM_CONSTANT;
+
+            (void)fn; (void)dn; /* used below */
+        }
 
         /* short-float/long-float aliases for most-positive/negative */
         fsym = cl_intern_in("MOST-POSITIVE-SHORT-FLOAT", 25, cl_package_cl);
@@ -2230,25 +2269,30 @@ void cl_bignum_init(void)
         fs->value = cl_make_double_float(-2.2250738585072014e-308);
         fs->flags |= CL_SYM_CONSTANT;
 
-        fsym = cl_intern_in("SINGLE-FLOAT-NEGATIVE-EPSILON", 29, cl_package_cl);
-        fs = (CL_Symbol *)CL_OBJ_TO_PTR(fsym);
-        fs->value = cl_make_single_float(5.9604645e-8f);
-        fs->flags |= CL_SYM_CONSTANT;
+        {
+            float fn = nextafterf(ldexpf(1.0f, -25), 2.0f);
+            double dn = nextafter(ldexp(1.0, -54), 2.0);
 
-        fsym = cl_intern_in("DOUBLE-FLOAT-NEGATIVE-EPSILON", 29, cl_package_cl);
-        fs = (CL_Symbol *)CL_OBJ_TO_PTR(fsym);
-        fs->value = cl_make_double_float(1.1102230246251566e-16);
-        fs->flags |= CL_SYM_CONSTANT;
+            fsym = cl_intern_in("SINGLE-FLOAT-NEGATIVE-EPSILON", 29, cl_package_cl);
+            fs = (CL_Symbol *)CL_OBJ_TO_PTR(fsym);
+            fs->value = cl_make_single_float(fn);
+            fs->flags |= CL_SYM_CONSTANT;
 
-        fsym = cl_intern_in("SHORT-FLOAT-NEGATIVE-EPSILON", 28, cl_package_cl);
-        fs = (CL_Symbol *)CL_OBJ_TO_PTR(fsym);
-        fs->value = cl_make_single_float(5.9604645e-8f);
-        fs->flags |= CL_SYM_CONSTANT;
+            fsym = cl_intern_in("DOUBLE-FLOAT-NEGATIVE-EPSILON", 29, cl_package_cl);
+            fs = (CL_Symbol *)CL_OBJ_TO_PTR(fsym);
+            fs->value = cl_make_double_float(dn);
+            fs->flags |= CL_SYM_CONSTANT;
 
-        fsym = cl_intern_in("LONG-FLOAT-NEGATIVE-EPSILON", 27, cl_package_cl);
-        fs = (CL_Symbol *)CL_OBJ_TO_PTR(fsym);
-        fs->value = cl_make_double_float(1.1102230246251566e-16);
-        fs->flags |= CL_SYM_CONSTANT;
+            fsym = cl_intern_in("SHORT-FLOAT-NEGATIVE-EPSILON", 28, cl_package_cl);
+            fs = (CL_Symbol *)CL_OBJ_TO_PTR(fsym);
+            fs->value = cl_make_single_float(fn);
+            fs->flags |= CL_SYM_CONSTANT;
+
+            fsym = cl_intern_in("LONG-FLOAT-NEGATIVE-EPSILON", 27, cl_package_cl);
+            fs = (CL_Symbol *)CL_OBJ_TO_PTR(fsym);
+            fs->value = cl_make_double_float(dn);
+            fs->flags |= CL_SYM_CONSTANT;
+        }
 
         /* LEAST-{POSITIVE,NEGATIVE}-NORMALIZED-* — CLHS distinguishes
          * normalized from denormalized least floats.  We use C99 IEEE-754

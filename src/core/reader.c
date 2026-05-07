@@ -1102,8 +1102,33 @@ static CL_Obj read_expr(void)
                 CL_NULL_P(cl_cdr(cl_cdr(parts)))) {
                 CL_Obj real = cl_car(parts);
                 CL_Obj imag = cl_car(cl_cdr(parts));
+                int real_dbl, imag_dbl, want_double;
                 if (!CL_REALP(real) || !CL_REALP(imag))
                     cl_reader_error(CL_ERR_PARSE, "#C components must be real numbers");
+                /* Apply float contagion (CLHS 12.1.5.3): if either part is
+                 * float, both must be the same float kind. Otherwise, an
+                 * integer-zero imag part collapses to the real itself. */
+                real_dbl = CL_DOUBLE_FLOAT_P(real);
+                imag_dbl = CL_DOUBLE_FLOAT_P(imag);
+                if (CL_FLOATP(real) || CL_FLOATP(imag)) {
+                    want_double = real_dbl || imag_dbl;
+                    CL_GC_PROTECT(real); CL_GC_PROTECT(imag);
+                    if (want_double) {
+                        if (!CL_DOUBLE_FLOAT_P(real))
+                            real = cl_make_double_float(cl_to_double(real));
+                        if (!CL_DOUBLE_FLOAT_P(imag))
+                            imag = cl_make_double_float(cl_to_double(imag));
+                    } else {
+                        if (!CL_SINGLE_FLOAT_P(real))
+                            real = cl_make_single_float((float)cl_to_double(real));
+                        if (!CL_SINGLE_FLOAT_P(imag))
+                            imag = cl_make_single_float((float)cl_to_double(imag));
+                    }
+                    CL_GC_UNPROTECT(2);
+                } else if (CL_FIXNUM_P(imag) && CL_FIXNUM_VAL(imag) == 0) {
+                    /* (#C(x 0)) where both rational → return real */
+                    return real;
+                }
                 return cl_make_complex(real, imag);
             }
             cl_reader_error(CL_ERR_PARSE, "#C requires exactly two elements: (real imag)");

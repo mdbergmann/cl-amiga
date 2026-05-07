@@ -140,7 +140,20 @@ void cl_error_from_condition(CL_Obj condition)
         return;
     }
 
-    cl_error_code = CL_ERR_GENERAL;
+    /* Map condition type → numeric code so callers (incl. C-level tests
+     * via eval_print's "ERROR:N") see the same code as the legacy
+     * cl_error(CL_ERR_*, ...) path. */
+    {
+        CL_Obj t = ((CL_Condition *)CL_OBJ_TO_PTR(condition))->type_name;
+        if      (t == SYM_TYPE_ERROR)               cl_error_code = CL_ERR_TYPE;
+        else if (t == SYM_UNBOUND_VARIABLE_COND)    cl_error_code = CL_ERR_UNBOUND;
+        else if (t == SYM_UNDEFINED_FUNCTION_COND)  cl_error_code = CL_ERR_UNDEFINED;
+        else if (t == SYM_DIVISION_BY_ZERO)         cl_error_code = CL_ERR_DIVZERO;
+        else if (t == SYM_ARITHMETIC_ERROR)         cl_error_code = CL_ERR_OVERFLOW;
+        else if (t == SYM_PROGRAM_ERROR)            cl_error_code = CL_ERR_ARGS;
+        else if (t == SYM_FILE_ERROR)               cl_error_code = CL_ERR_FILE;
+        else                                        cl_error_code = CL_ERR_GENERAL;
+    }
 
     /* Try PRINT-OBJECT dispatch (e.g. ASDF conditions rely on it for their
      * report). Falls through to the condition's report_string and finally
@@ -177,7 +190,7 @@ void cl_error_from_condition(CL_Obj condition)
 
     cl_capture_backtrace();
     cl_invoke_debugger(condition);
-    cl_error_unwind(CL_ERR_GENERAL);
+    cl_error_unwind(cl_error_code);
 }
 
 void cl_error_print(void)

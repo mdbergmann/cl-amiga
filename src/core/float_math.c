@@ -29,7 +29,7 @@ static void defun(const char *name, CL_CFunc func, int min, int max)
 static void check_number(CL_Obj obj, const char *op)
 {
     if (!CL_NUMBER_P(obj))
-        cl_error(CL_ERR_TYPE, "%s: not a number", op);
+        cl_signal_type_error(obj, "NUMBER", op);
 }
 
 /* Return a float result with proper type contagion.
@@ -39,6 +39,47 @@ static CL_Obj make_result(double val, int is_double)
     if (is_double)
         return cl_make_double_float(val);
     return cl_make_single_float((float)val);
+}
+
+/* Signal FLOATING-POINT-OVERFLOW if `val` is +/-inf when stored at the
+ * target precision (single- or double-float).  Per CLHS, EXP/EXPT must
+ * raise this for inputs that produce a non-representable result. */
+static void check_fp_overflow(double val, int is_double, const char *fn_name,
+                              CL_Obj operand)
+{
+    int overflowed = is_double ? isinf(val) : isinf((double)(float)val);
+    if (overflowed) {
+        CL_Obj op_sym = cl_intern_in(fn_name, (uint32_t)strlen(fn_name),
+                                     cl_package_cl);
+        CL_Obj operands;
+        CL_GC_PROTECT(op_sym);
+        CL_GC_PROTECT(operand);
+        operands = cl_cons(operand, CL_NIL);
+        CL_GC_UNPROTECT(2);
+        cl_signal_arith_error(SYM_FLOATING_POINT_OVERFLOW, op_sym,
+                              operands, fn_name);
+    }
+}
+
+/* Same for floating-point underflow: result rounds to 0 in the target
+ * precision when the true value is non-zero. */
+static void check_fp_underflow(double val, double original_arg, int is_double,
+                               const char *fn_name, CL_Obj operand)
+{
+    int underflowed;
+    if (original_arg == 0.0) return;
+    underflowed = is_double ? (val == 0.0) : ((float)val == 0.0f);
+    if (underflowed) {
+        CL_Obj op_sym = cl_intern_in(fn_name, (uint32_t)strlen(fn_name),
+                                     cl_package_cl);
+        CL_Obj operands;
+        CL_GC_PROTECT(op_sym);
+        CL_GC_PROTECT(operand);
+        operands = cl_cons(operand, CL_NIL);
+        CL_GC_UNPROTECT(2);
+        cl_signal_arith_error(SYM_FLOATING_POINT_UNDERFLOW, op_sym,
+                              operands, fn_name);
+    }
 }
 
 /* ----------------------------------------------------------------
@@ -209,7 +250,11 @@ static CL_Obj bi_exp(CL_Obj *args, int n)
     }
     {
         double val = cl_to_double(args[0]);
-        return make_result(exp(val), CL_DOUBLE_FLOAT_P(args[0]));
+        int is_dbl = CL_DOUBLE_FLOAT_P(args[0]);
+        double r = exp(val);
+        check_fp_overflow(r, is_dbl, "EXP", args[0]);
+        check_fp_underflow(r, val, is_dbl, "EXP", args[0]);
+        return make_result(r, is_dbl);
     }
 }
 
@@ -379,13 +424,27 @@ static CL_Obj bi_expt_float(CL_Obj *args, int n)
             return make_result(0.0, is_double);
         }
 
-        /* Negative base with non-integer power → complex (unsupported) */
-        if (base < 0.0 && floor(power) != power)
-            cl_error(CL_ERR_TYPE,
-                "EXPT: negative base with non-integer exponent "
-                "requires complex numbers");
+        /* Negative base with non-integer power → complex principal
+         * value (CLHS 12.1.5.3): exp(power * log(base)) where log of a
+         * negative real is a complex with imag = pi. */
+        if (base < 0.0 && floor(power) != power) {
+            double log_re = log(-base);
+            double log_im = M_PI;
+            double scaled_re = power * log_re;
+            double scaled_im = power * log_im;
+            double exp_re = exp(scaled_re);
+            double r_re = exp_re * cos(scaled_im);
+            double r_im = exp_re * sin(scaled_im);
+            if (is_double)
+                return cl_make_complex(cl_make_double_float(r_re),
+                                       cl_make_double_float(r_im));
+            return cl_make_complex(cl_make_single_float((float)r_re),
+                                   cl_make_single_float((float)r_im));
+        }
 
         result = pow(base, power);
+        check_fp_overflow(result, is_double, "EXPT", args[0]);
+        check_fp_underflow(result, base, is_double, "EXPT", args[0]);
         return make_result(result, is_double);
     }
 }

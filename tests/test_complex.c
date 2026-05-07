@@ -327,8 +327,9 @@ TEST(complex_float_contagion)
 
 TEST(complex_exp_log)
 {
-    /* exp(0+0i) = 1+0i */
-    ASSERT_STR_EQ(eval_print("(exp #C(0 0))"), "#C(1.0 0.0)");
+    /* exp(0.0+0.0i) = 1.0+0.0i — use float zero so reader doesn't
+     * canonicalize #C(0 0) → 0 per CLHS 12.1.5.3. */
+    ASSERT_STR_EQ(eval_print("(exp #C(0.0 0.0))"), "#C(1.0 0.0)");
     /* log(i) = 0 + (pi/2)i */
     ASSERT_STR_EQ(eval_print("(log #C(0 1))"), "#C(0.0 1.5708)");
     /* log of negative real promotes to complex (CLHS 12.1.5.3) */

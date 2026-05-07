@@ -66,7 +66,7 @@ static CL_Obj bi_random(CL_Obj *args, int n)
         int32_t lim = CL_FIXNUM_VAL(limit);
         uint32_t r;
         if (lim <= 0)
-            cl_error(CL_ERR_ARGS, "RANDOM: limit must be positive");
+            cl_signal_type_error(limit, "(INTEGER 1 *)", "RANDOM");
         r = xorshift128_next(rs);
         return CL_MAKE_FIXNUM((int32_t)(r % (uint32_t)lim));
     }
@@ -78,7 +78,7 @@ static CL_Obj bi_random(CL_Obj *args, int n)
         uint32_t i;
         CL_Bignum *rbn;
         if (bn->sign != 0)
-            cl_error(CL_ERR_ARGS, "RANDOM: limit must be positive");
+            cl_signal_type_error(limit, "(INTEGER 1 *)", "RANDOM");
 
         /* Generate a random bignum with same number of limbs, then reduce mod limit */
         CL_GC_PROTECT(limit);
@@ -124,7 +124,7 @@ static CL_Obj bi_random(CL_Obj *args, int n)
         uint32_t r;
         float fval;
         if (lim <= 0.0f)
-            cl_error(CL_ERR_ARGS, "RANDOM: limit must be positive");
+            cl_signal_type_error(limit, "(SINGLE-FLOAT (0.0))", "RANDOM");
         r = xorshift128_next(rs);
         fval = ((float)(r >> 8)) / 16777216.0f * lim;  /* 24-bit mantissa */
         return cl_make_single_float(fval);
@@ -136,7 +136,7 @@ static CL_Obj bi_random(CL_Obj *args, int n)
         uint32_t r1, r2;
         double dval;
         if (lim <= 0.0)
-            cl_error(CL_ERR_ARGS, "RANDOM: limit must be positive");
+            cl_signal_type_error(limit, "(DOUBLE-FLOAT (0.0d0))", "RANDOM");
         r1 = xorshift128_next(rs);
         r2 = xorshift128_next(rs);
         /* Combine two 32-bit values for ~53-bit precision */
@@ -145,7 +145,7 @@ static CL_Obj bi_random(CL_Obj *args, int n)
         return cl_make_double_float(dval);
     }
 
-    cl_error(CL_ERR_TYPE, "RANDOM: limit must be a positive integer or float");
+    cl_signal_type_error(limit, "REAL", "RANDOM");
     return CL_NIL;
 }
 
@@ -189,7 +189,7 @@ static CL_Obj bi_make_random_state(CL_Obj *args, int n)
         return result;
     }
 
-    cl_error(CL_ERR_TYPE, "MAKE-RANDOM-STATE: argument must be T, NIL, or a random-state");
+    cl_signal_type_error(arg, "RANDOM-STATE", "MAKE-RANDOM-STATE");
     return CL_NIL;
 }
 

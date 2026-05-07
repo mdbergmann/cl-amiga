@@ -366,9 +366,9 @@ TEST(lisp_error_still_caught)
 
 TEST(lisp_error_with_symbol)
 {
-    /* (error 'type-error :datum 42) */
+    /* (error 'type-error :datum 42) — condition type maps to CL_ERR_TYPE */
     const char *result = eval_print("(error 'type-error :datum 42)");
-    ASSERT_STR_EQ(result, "ERROR:1");
+    ASSERT_STR_EQ(result, "ERROR:2");
 }
 
 /* --- handler-bind tests --- */

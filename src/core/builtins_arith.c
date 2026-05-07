@@ -23,19 +23,19 @@ static void defun(const char *name, CL_CFunc func, int min, int max)
 static void check_number(CL_Obj obj, const char *op)
 {
     if (!CL_NUMBER_P(obj))
-        cl_error(CL_ERR_TYPE, "%s: not a number", op);
+        cl_signal_type_error(obj, "NUMBER", op);
 }
 
 static void check_integer(CL_Obj obj, const char *op)
 {
     if (!CL_INTEGER_P(obj))
-        cl_error(CL_ERR_TYPE, "%s: not an integer", op);
+        cl_signal_type_error(obj, "INTEGER", op);
 }
 
 static void check_real(CL_Obj obj, const char *op)
 {
     if (!CL_REALP(obj))
-        cl_error(CL_ERR_TYPE, "%s: argument is not a real number", op);
+        cl_signal_type_error(obj, "REAL", op);
 }
 
 /* --- Rounding helpers --- */
@@ -106,12 +106,26 @@ static CL_Obj do_rounding(CL_Obj *args, int n, int mode,
             cl_mv_values[1] = r;
             return q;
         }
-        /* Ratio: (floor p/q) = (floor p q), remainder is ratio */
+        /* Ratio: (floor p/q) returns the integer quotient AND a ratio
+         * remainder (num - quotient).  Cannot delegate to the 2-arg
+         * (floor p q) form — that returns r = p - q*divisor (= an
+         * integer), but the 1-arg form requires r = num - quotient
+         * (= a ratio).  Compute via 2-arg, then patch r. */
         if (CL_RATIO_P(num)) {
             CL_Obj pair[2];
+            CL_Obj q;
             pair[0] = cl_numerator(num);
             pair[1] = cl_denominator(num);
-            return do_rounding(pair, 2, mode, name, float_quotient);
+            q = do_rounding(pair, 2, mode, name, float_quotient);
+            CL_GC_PROTECT(q);
+            cl_mv_values[1] = cl_arith_sub(num,
+                                           float_quotient
+                                           ? double_to_integer(cl_to_double(q))
+                                           : q);
+            CL_GC_UNPROTECT(1);
+            cl_mv_values[0] = q;
+            cl_mv_count = 2;
+            return q;
         }
         /* Float argument */
         {
@@ -218,6 +232,9 @@ static CL_Obj bi_add(CL_Obj *args, int n)
 {
     CL_Obj result = CL_MAKE_FIXNUM(0);
     int i;
+    /* (+) → 0; (+ x) → x identically (no float contagion against 0). */
+    if (n == 0) return result;
+    if (n == 1) { check_number(args[0], "+"); return args[0]; }
     CL_GC_PROTECT(result);
     for (i = 0; i < n; i++) {
         check_number(args[i], "+");
@@ -248,6 +265,9 @@ static CL_Obj bi_mul(CL_Obj *args, int n)
 {
     CL_Obj result = CL_MAKE_FIXNUM(1);
     int i;
+    /* (*) → 1; (* x) → x identically (no float contagion against 1). */
+    if (n == 0) return result;
+    if (n == 1) { check_number(args[0], "*"); return args[0]; }
     CL_GC_PROTECT(result);
     for (i = 0; i < n; i++) {
         check_number(args[i], "*");
@@ -560,11 +580,14 @@ static CL_Obj bi_signum(CL_Obj *args, int n)
 }
 
 /* (phase n) — angle of a number in radians.
- *   real >= 0 → 0 (or 0.0 if float)
- *   real < 0  → pi (or -pi for -0.0)
- *   complex   → atan2(imag, real), in float
- * Float kind follows the input's larger float component; integer/ratio
- * return 0/pi as single-float per CLHS. */
+ * Per CLHS, the result is always a float (never an integer/ratio):
+ *   complex   → atan2(imag, real); float kind follows the larger float
+ *               component
+ *   non-negative real → +0.0 of the same float kind (single-float for
+ *               rationals)
+ *   negative real → π of the same float kind (likewise single-float for
+ *               rationals)
+ * (phase 0) → 0.0, (phase 1) → 0.0, (phase 1.0d0) → 0.0d0. */
 static CL_Obj bi_phase(CL_Obj *args, int n)
 {
     CL_Obj x = args[0];
@@ -580,23 +603,13 @@ static CL_Obj bi_phase(CL_Obj *args, int n)
             return cl_make_double_float(a);
         return cl_make_single_float((float)a);
     }
-    if (CL_FLOATP(x)) {
-        double v = cl_to_double(x);
-        /* Distinguish -0.0 → -pi from +0.0 → +0.0 via atan2 sign. */
-        double a = atan2(0.0, v);
-        /* For -0.0, atan2(0.0, -0.0) is +pi; CLHS wants -pi.
-         * Use atan2(copysign(0,v), v) to preserve sign. */
-        a = atan2(v == 0.0 ? (double)0.0 : (v < 0.0 ? -0.0 : 0.0), v);
-        if (CL_DOUBLE_FLOAT_P(x))
-            return cl_make_double_float(a);
+    {
+        int is_double = CL_DOUBLE_FLOAT_P(x);
+        int neg = cl_arith_minusp(x);
+        double a = neg ? M_PI : 0.0;
+        if (is_double) return cl_make_double_float(a);
         return cl_make_single_float((float)a);
     }
-    /* Integer / ratio */
-    if (cl_arith_minusp(x)) {
-        /* Single-float pi per CLHS spec for rational input */
-        return cl_make_single_float((float)M_PI);
-    }
-    return CL_MAKE_FIXNUM(0);
 }
 
 static CL_Obj bi_max(CL_Obj *args, int n)
@@ -759,11 +772,15 @@ static CL_Obj bi_logbitp(CL_Obj *args, int n)
     CL_UNUSED(n);
     check_integer(args[0], "LOGBITP");
     check_integer(args[1], "LOGBITP");
+    /* Index must be unsigned-byte; reject negatives */
+    if (cl_arith_minusp(args[0]))
+        cl_signal_type_error(args[0], "UNSIGNED-BYTE", "LOGBITP");
+    /* Bignum index → outside any reasonable bit width.  For non-negative
+     * integers no bit at that position is set (NIL); for negative
+     * integers all infinitely-extending sign bits are set (T). */
     if (!CL_FIXNUM_P(args[0]))
-        cl_error(CL_ERR_TYPE, "LOGBITP: index too large");
+        return cl_arith_minusp(args[1]) ? SYM_T : CL_NIL;
     index = CL_FIXNUM_VAL(args[0]);
-    if (index < 0)
-        cl_error(CL_ERR_TYPE, "LOGBITP: index must be non-negative");
     return cl_arith_logbitp(index, args[1]) ? SYM_T : CL_NIL;
 }
 
@@ -974,10 +991,10 @@ static CL_Obj bi_complex(CL_Obj *args, int n)
     int real_is_float, imag_is_float, want_double;
 
     if (!CL_REALP(real))
-        cl_error(CL_ERR_TYPE, "COMPLEX: not a real number: %s", cl_type_name(real));
+        cl_signal_type_error(real, "REAL", "COMPLEX");
     imag = (n >= 2) ? args[1] : CL_MAKE_FIXNUM(0);
     if (!CL_REALP(imag))
-        cl_error(CL_ERR_TYPE, "COMPLEX: not a real number: %s", cl_type_name(imag));
+        cl_signal_type_error(imag, "REAL", "COMPLEX");
 
     real_is_float = CL_FLOATP(real);
     imag_is_float = CL_FLOATP(imag);
@@ -1026,7 +1043,7 @@ static CL_Obj bi_realpart(CL_Obj *args, int n)
         return ((CL_Complex *)CL_OBJ_TO_PTR(args[0]))->realpart;
     if (CL_REALP(args[0]))
         return args[0];
-    cl_error(CL_ERR_TYPE, "REALPART: not a number: %s", cl_type_name(args[0]));
+    cl_signal_type_error(args[0], "NUMBER", "REALPART");
     return CL_NIL;
 }
 
@@ -1035,9 +1052,15 @@ static CL_Obj bi_imagpart(CL_Obj *args, int n)
     CL_UNUSED(n);
     if (CL_COMPLEX_P(args[0]))
         return ((CL_Complex *)CL_OBJ_TO_PTR(args[0]))->imagpart;
-    if (CL_REALP(args[0]))
+    if (CL_REALP(args[0])) {
+        /* (imagpart x) where x is real returns a zero of the same float
+         * kind as x (per CLHS 12.2 — IMAGPART of a rational is 0,
+         * imagpart of a float is a float zero of matching precision). */
+        if (CL_DOUBLE_FLOAT_P(args[0])) return cl_make_double_float(0.0);
+        if (CL_SINGLE_FLOAT_P(args[0])) return cl_make_single_float(0.0f);
         return CL_MAKE_FIXNUM(0);
-    cl_error(CL_ERR_TYPE, "IMAGPART: not a number: %s", cl_type_name(args[0]));
+    }
+    cl_signal_type_error(args[0], "NUMBER", "IMAGPART");
     return CL_NIL;
 }
 
@@ -1085,7 +1108,7 @@ static CL_Obj bi_rational(CL_Obj *args, int n)
         return args[0];
     if (CL_FLOATP(args[0]))
         return cl_float_to_exact_rational(args[0]);
-    cl_error(CL_ERR_TYPE, "RATIONAL: not a real number: %s", cl_type_name(args[0]));
+    cl_signal_type_error(args[0], "REAL", "RATIONAL");
     return CL_NIL;
 }
 
