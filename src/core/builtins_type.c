@@ -563,6 +563,25 @@ static int typep_check(CL_Obj obj, CL_Obj type_spec)
             return 1;
         }
 
+        /* (complex [part-type]) — complex with parts of part-type.
+         * Wildcard * matches anything. Per CLHS, the part-type is matched
+         * against the upgraded element type, so we accept a part if it's
+         * typep part-type. */
+        if (CL_SYMBOL_P(head) &&
+            strcmp(cl_symbol_name(head), "COMPLEX") == 0) {
+            CL_Complex *cx;
+            CL_Obj part_type;
+            if (!CL_COMPLEX_P(obj)) return 0;
+            if (CL_NULL_P(args)) return 1;
+            part_type = cl_car(args);
+            if (CL_SYMBOL_P(part_type) &&
+                strcmp(cl_symbol_name(part_type), "*") == 0)
+                return 1;
+            cx = (CL_Complex *)CL_OBJ_TO_PTR(obj);
+            return typep_check(cx->realpart, part_type) &&
+                   typep_check(cx->imagpart, part_type);
+        }
+
         /* (cons [car-type [cdr-type]]) — cons cell type */
         if (CL_SYMBOL_P(head) &&
             strcmp(cl_symbol_name(head), "CONS") == 0) {
@@ -673,6 +692,27 @@ static CL_Obj bi_typep(CL_Obj *args, int n)
     return typep_check(args[0], args[1]) ? SYM_T : CL_NIL;
 }
 
+/* (upgraded-complex-part-type type &optional env) — the implementation's
+ * upgraded element type for a complex of `type` parts.
+ *
+ * cl-amiga doesn't specialize complex storage; CL_Complex holds two
+ * untagged CL_Obj slots that can hold any real number.  Per CLHS the
+ * returned upgraded type just has to:
+ *   - be a supertype of the requested type, and
+ *   - be a subtype of REAL.
+ *
+ * We therefore return REAL for any real-subtype request.  This keeps
+ * (subtypep type (upgraded-complex-part-type type)) → T,
+ * which is what the ANSI tests in numbers/upgraded-complex-part-type.lsp
+ * verify. */
+static CL_Obj bi_upgraded_complex_part_type(CL_Obj *args, int n)
+{
+    CL_UNUSED(n);
+    /* Ignore optional environment arg (args[1]); cl-amiga has no
+     * environment-specific upgrades. */
+    return TYPE_SYM_REAL;
+}
+
 static CL_Obj bi_coerce(CL_Obj *args, int n)
 {
     CL_Obj obj = args[0];
@@ -692,6 +732,42 @@ static CL_Obj bi_coerce(CL_Obj *args, int n)
                 strcmp(hname, "VECTOR") == 0 || strcmp(hname, "SIMPLE-VECTOR") == 0) {
                 /* Coerce to vector (we don't specialize element types) */
                 result_type = cl_intern_in("VECTOR", 6, cl_package_cl);
+            } else if (strcmp(hname, "COMPLEX") == 0) {
+                /* (coerce x (complex part-type)) — build a complex whose
+                 * realpart and imagpart are coerced to part-type. */
+                CL_Obj rest = cl_cdr(result_type);
+                CL_Obj part_type = CL_CONS_P(rest) ? cl_car(rest)
+                                                   : cl_intern_in("REAL", 4,
+                                                                  cl_package_cl);
+                CL_Obj re_obj, im_obj;
+                CL_Obj coerce_args[2];
+                if (CL_COMPLEX_P(obj)) {
+                    CL_Complex *cx = (CL_Complex *)CL_OBJ_TO_PTR(obj);
+                    re_obj = cx->realpart;
+                    im_obj = cx->imagpart;
+                } else if (CL_REALP(obj)) {
+                    re_obj = obj;
+                    im_obj = CL_MAKE_FIXNUM(0);
+                } else {
+                    cl_signal_type_error(obj, "NUMBER", "COERCE");
+                    return CL_NIL;
+                }
+                CL_GC_PROTECT(part_type);
+                CL_GC_PROTECT(re_obj);
+                CL_GC_PROTECT(im_obj);
+                coerce_args[0] = re_obj; coerce_args[1] = part_type;
+                re_obj = bi_coerce(coerce_args, 2);
+                CL_GC_PROTECT(re_obj);
+                coerce_args[0] = im_obj; coerce_args[1] = part_type;
+                im_obj = bi_coerce(coerce_args, 2);
+                CL_GC_UNPROTECT(4);
+                CL_GC_PROTECT(re_obj);
+                CL_GC_PROTECT(im_obj);
+                {
+                    CL_Obj r = cl_make_complex(re_obj, im_obj);
+                    CL_GC_UNPROTECT(2);
+                    return r;
+                }
             } else {
                 /* For other compound types, try the base type name */
                 result_type = head;
@@ -975,6 +1051,7 @@ enum TypeId {
     TID_RATIO,
     TID_RATIONAL,
     TID_REAL,
+    TID_COMPLEX,
     TID_NUMBER,
     TID_CHARACTER,
     TID_KEYWORD,
@@ -1040,6 +1117,7 @@ static int type_name_to_id(const char *name)
     if (strcmp(name, "RATIONAL") == 0) return TID_RATIONAL;
     if (strcmp(name, "REAL") == 0) return TID_REAL;
     if (strcmp(name, "NUMBER") == 0) return TID_NUMBER;
+    if (strcmp(name, "COMPLEX") == 0) return TID_COMPLEX;
     if (strcmp(name, "CHARACTER") == 0) return TID_CHARACTER;
 #ifdef CL_WIDE_STRINGS
     if (strcmp(name, "BASE-CHAR") == 0) return TID_BASE_CHAR;
@@ -1220,6 +1298,9 @@ static int subtype_check(int id1, int id2)
     if (id1 == TID_DOUBLE_FLOAT && (id2 == TID_FLOAT || id2 == TID_REAL ||
                                      id2 == TID_NUMBER)) return 1;
     if (id1 == TID_FLOAT && (id2 == TID_REAL || id2 == TID_NUMBER)) return 1;
+
+    /* Complex hierarchy: complex < number */
+    if (id1 == TID_COMPLEX && id2 == TID_NUMBER) return 1;
 
     /* List hierarchy: null < list, cons < list, list < sequence */
     if (id1 == TID_NULL && (id2 == TID_LIST || id2 == TID_SYMBOL || id2 == TID_SEQUENCE)) return 1;
@@ -1434,6 +1515,16 @@ static int_range_t parse_integer_spec(CL_Obj type)
             r.lo = 0; r.hi = 1;
             return r;
         }
+        /* Atomic UNSIGNED-BYTE = (integer 0 *), SIGNED-BYTE = INTEGER. */
+        if (strcmp(n, "UNSIGNED-BYTE") == 0) {
+            r.integer_typed = 1; r.known = 1;
+            r.lo = 0;
+            return r;
+        }
+        if (strcmp(n, "SIGNED-BYTE") == 0) {
+            r.integer_typed = 1; r.known = 1;
+            return r;
+        }
         return r;  /* not integer-typed */
     }
 
@@ -1572,6 +1663,21 @@ int cl_subtypep_integer_ranges(CL_Obj t1, CL_Obj t2)
         return 0;
     }
 
+    /* T1 is integer-typed, T2 is a non-integer numeric supertype
+     * (REAL, RATIONAL, NUMBER, ...).  Every integer is a real/rational/
+     * number, so the subtype relation holds.  Without this rule
+     * (subtypep 'BIT 'REAL) → NIL,NIL which breaks the
+     * UPGRADED-COMPLEX-PART-TYPE conformance tests. */
+    if (r1.integer_typed && !r2.integer_typed
+        && is_non_integer_numeric_supertype(t2)) {
+        const char *n2 = cl_symbol_name(t2);
+        /* RATIONAL, REAL, NUMBER are all integer supertypes; FLOAT and
+         * the specific float kinds are not.  Same for COMPLEX/RATIO. */
+        if (strcmp(n2, "RATIONAL") == 0 || strcmp(n2, "REAL") == 0 ||
+            strcmp(n2, "NUMBER") == 0)
+            return 1;
+    }
+
     /* If only one side is integer-typed, fall through to other rules
      * (the caller's atomic-INTEGER coalescing handles t1 integer ⊆ rational
      * etc., and t2 integer with non-integer t1 returns uncertain). */
@@ -1637,9 +1743,9 @@ static CL_Obj bi_subtypep(CL_Obj *args, int n)
         return SYM_T;
     }
     /* Symmetric: NIL is the empty type, so only NIL is a subtype of NIL.
-     * `(subtypep X NIL)` for any non-NIL spec is certainly false.  This
-     * complements the SYM_T fast-path above and short-circuits serapeum's
-     * `(assert (not (subtypep type-spec nil)))` cleanly. */
+     * Most non-NIL specs return (NIL T), but a compound (AND ... (NOT
+     * ...)) may itself be empty — that's the path UPGRADED-COMPLEX-PART-
+     * TYPE relies on, so let those fall through to the AND handler. */
     if (CL_NULL_P(type2)) {
         if (CL_NULL_P(type1)) {
             cl_mv_count = 2;
@@ -1647,10 +1753,12 @@ static CL_Obj bi_subtypep(CL_Obj *args, int n)
             cl_mv_values[1] = SYM_T;
             return SYM_T;
         }
-        cl_mv_count = 2;
-        cl_mv_values[0] = CL_NIL;
-        cl_mv_values[1] = SYM_T;
-        return CL_NIL;
+        if (!(CL_CONS_P(type1) && cl_car(type1) == TYPE_SYM_AND)) {
+            cl_mv_count = 2;
+            cl_mv_values[0] = CL_NIL;
+            cl_mv_values[1] = SYM_T;
+            return CL_NIL;
+        }
     }
 
     /* Compound combinator rules: (OR ...), (AND ...), (MEMBER ...).
@@ -1717,10 +1825,47 @@ static CL_Obj bi_subtypep(CL_Obj *args, int n)
             return CL_NIL;
         }
 
-        /* (and A B ...) ⊆ T2 — true if any Ai ⊆ T2 (intersection narrows). */
+        /* (and A B ...) ⊆ T2 — true if any Ai ⊆ T2 (intersection narrows).
+         * Special case: if the AND contains both Xi and (NOT Yj) where
+         * Xi ⊆ Yj, the intersection is empty — i.e. ⊆ NIL, hence ⊆
+         * anything.  This is what makes
+         *   (subtypep '(and integer (not real)) nil)
+         * return T,T (the ANSI UPGRADED-COMPLEX-PART-TYPE tests rely on
+         * this rule). */
         if (head1 == TYPE_SYM_AND) {
             CL_Obj rest = cl_cdr(type1);
             int saw_unknown = 0;
+            /* Empty-intersection check: scan for (NOT Yj), then check each
+             * non-NOT Xi ⊆ Yj. */
+            {
+                CL_Obj r1 = cl_cdr(type1);
+                while (!CL_NULL_P(r1)) {
+                    CL_Obj cl1 = cl_car(r1);
+                    if (CL_CONS_P(cl1) && cl_car(cl1) == TYPE_SYM_NOT &&
+                        CL_CONS_P(cl_cdr(cl1))) {
+                        CL_Obj y = cl_car(cl_cdr(cl1));
+                        CL_Obj r2 = cl_cdr(type1);
+                        while (!CL_NULL_P(r2)) {
+                            CL_Obj cl2 = cl_car(r2);
+                            if (cl2 != cl1 &&
+                                !(CL_CONS_P(cl2) && cl_car(cl2) == TYPE_SYM_NOT)) {
+                                CL_Obj sub_args[2]; CL_Obj prim;
+                                sub_args[0] = cl2; sub_args[1] = y;
+                                prim = bi_subtypep(sub_args, 2);
+                                if (cl_mv_values[1] == SYM_T && prim == SYM_T) {
+                                    /* (and ... Xi ... (not Yj)) is empty */
+                                    cl_mv_count = 2;
+                                    cl_mv_values[0] = SYM_T;
+                                    cl_mv_values[1] = SYM_T;
+                                    return SYM_T;
+                                }
+                            }
+                            r2 = cl_cdr(r2);
+                        }
+                    }
+                    r1 = cl_cdr(r1);
+                }
+            }
             while (!CL_NULL_P(rest)) {
                 CL_Obj sub_args[2]; CL_Obj prim;
                 sub_args[0] = cl_car(rest); sub_args[1] = type2;
@@ -1791,6 +1936,22 @@ static CL_Obj bi_subtypep(CL_Obj *args, int n)
     if (CL_STRUCT_P(type2)) {
         CL_Struct *st = (CL_Struct *)CL_OBJ_TO_PTR(type2);
         type2 = st->slots[0]; /* class name */
+    }
+
+    /* (complex part-type) — since cl-amiga doesn't specialize complex
+     * storage, UPGRADED-COMPLEX-PART-TYPE always returns REAL.  Two
+     * (complex X) specs are therefore mutually subtype, and any
+     * (complex X) is equivalent to bare COMPLEX.  Collapse to atomic
+     * COMPLEX so the rest of the chain handles them uniformly. */
+    if (CL_CONS_P(type1)) {
+        CL_Obj head = cl_car(type1);
+        if (CL_SYMBOL_P(head) && strcmp(cl_symbol_name(head), "COMPLEX") == 0)
+            type1 = cl_intern_in("COMPLEX", 7, cl_package_cl);
+    }
+    if (CL_CONS_P(type2)) {
+        CL_Obj head = cl_car(type2);
+        if (CL_SYMBOL_P(head) && strcmp(cl_symbol_name(head), "COMPLEX") == 0)
+            type2 = cl_intern_in("COMPLEX", 7, cl_package_cl);
     }
 
     /* Compound integer-range specifiers: do range arithmetic before
@@ -1936,6 +2097,7 @@ void cl_builtins_type_init(void)
     /* CLHS: typep and subtypep take an optional ENV argument.  We
      * don't carry environment objects — accept and ignore it. */
     defun("TYPEP", bi_typep, 2, 3);
+    defun("UPGRADED-COMPLEX-PART-TYPE", bi_upgraded_complex_part_type, 1, 2);
     defun("COERCE", bi_coerce, 2, 2);
     defun("SUBTYPEP", bi_subtypep, 2, 3);
 

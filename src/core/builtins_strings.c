@@ -1075,8 +1075,27 @@ static CL_Obj bi_parse_integer(CL_Obj *args, int n)
     int sign = 1, found = 0, junk_allowed = 0;
     CL_Obj radix_obj, result;
 
-    if (!CL_ANY_STRING_P(args[0]))
-        cl_error(CL_ERR_TYPE, "PARSE-INTEGER: not a string");
+    /* Accept simple/wide strings AND character vectors (incl. those
+     * with fill-pointer or :adjustable T).  Convert string vectors to
+     * a base-string view so the rest of the parser can use the simple
+     * cl_string_char_at API. */
+    if (CL_STRING_VECTOR_P(args[0])) {
+        CL_Vector *v = (CL_Vector *)CL_OBJ_TO_PTR(args[0]);
+        uint32_t alen = cl_vector_active_length(v);
+        CL_Obj copy;
+        char *buf = (char *)platform_alloc(alen + 1);
+        uint32_t k;
+        for (k = 0; k < alen; k++) {
+            CL_Obj ch = cl_vector_data(v)[k];
+            buf[k] = (char)CL_CHAR_VAL(ch);
+        }
+        buf[alen] = '\0';
+        copy = cl_make_string(buf, alen);
+        platform_free(buf);
+        args[0] = copy;
+    } else if (!CL_ANY_STRING_P(args[0])) {
+        cl_signal_type_error(args[0], "STRING", "PARSE-INTEGER");
+    }
     end = (int32_t)cl_string_length(args[0]);
 
     /* Odd number of trailing args → :KEY without value → PROGRAM-ERROR. */

@@ -621,8 +621,15 @@ TEST(expt_error_cases)
 {
     /* 0^negative → error */
     ASSERT_STR_EQ(eval_print("(expt 0 -1)"), "ERROR:7");
-    /* negative base + non-integer exponent → error */
-    ASSERT_STR_EQ(eval_print("(expt -2.0 0.5)"), "ERROR:2");
+    /* Negative base with non-integer exponent returns the complex
+     * principal value per CLHS 12.1.5.3.  Real part is essentially 0
+     * (atan2 of (-2,0) = pi → cos(pi/2) = 0 modulo round-off). */
+    ASSERT_STR_EQ(eval_print(
+        "(let ((c (expt -2.0 0.5)))"
+        "  (and (complexp c)"
+        "       (< (abs (realpart c)) 1.0e-6)"
+        "       (< (abs (- (imagpart c) (sqrt 2.0))) 1.0e-6)))"),
+        "T");
 }
 
 /* ================================================================
@@ -821,11 +828,13 @@ TEST(numeq_complex_real)
 
 TEST(ordered_compare_rejects_complex)
 {
-    /* < / <= / > / >= must signal a TYPE-ERROR for complex inputs. */
-    ASSERT_STR_EQ(eval_print("(handler-case (progn (< 1 #C(2 0)) :ok)"
+    /* < / <= / > / >= must signal a TYPE-ERROR for complex inputs.
+     * Use a non-zero imag to keep the value as a complex (#C(x 0) with
+     * rational components canonicalizes to x per CLHS 12.1.5.3). */
+    ASSERT_STR_EQ(eval_print("(handler-case (progn (< 1 #C(2 1)) :ok)"
                              "  (type-error () :type-error))"),
                   ":TYPE-ERROR");
-    ASSERT_STR_EQ(eval_print("(handler-case (progn (>= #C(2 0) 1) :ok)"
+    ASSERT_STR_EQ(eval_print("(handler-case (progn (>= #C(2 1) 1) :ok)"
                              "  (type-error () :type-error))"),
                   ":TYPE-ERROR");
 }

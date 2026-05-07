@@ -130,8 +130,15 @@
             (setf ,place (cdr ,place))
             ,g)))))
 
-(defmacro incf (place &optional (delta 1)) `(setf ,place (+ ,place ,delta)))
-(defmacro decf (place &optional (delta 1)) `(setf ,place (- ,place ,delta)))
+;; CLtS 5.1.3 demands DELTA be evaluated before PLACE is read, so that
+;; e.g. (incf x (setf x 1)) returns 2 and leaves x = 2 (not 1) — the
+;; setf-of-x is the delta, then the modified x is what we add to.
+(defmacro incf (place &optional (delta 1))
+  (let ((d (gensym "D")))
+    `(let ((,d ,delta)) (setf ,place (+ ,place ,d)))))
+(defmacro decf (place &optional (delta 1))
+  (let ((d (gensym "D")))
+    `(let ((,d ,delta)) (setf ,place (- ,place ,d)))))
 
 (defmacro remf (place indicator)
   ;; CLHS 5.1.2: remf modifies the place.  %remf returns the new list as
@@ -270,13 +277,30 @@
             (list 'let bindings store-form)))))))
 
 ;; (setf (ldb bytespec place) new-byte) → (setf place (dpb new-byte bytespec place))
+;; Per CLHS, the SETF form must return new-byte, not the modified place;
+;; bind value-form to a temp and return it.
 (clamiga::%register-setf-expander 'ldb
   (lambda (place-form value-form)
     (let ((bytespec-var (gensym "BS"))
+          (val-var (gensym "V"))
           (bytespec (cadr place-form))
           (int-place (caddr place-form)))
-      `(let ((,bytespec-var ,bytespec))
-         (setf ,int-place (dpb ,value-form ,bytespec-var ,int-place))))))
+      `(let* ((,bytespec-var ,bytespec)
+              (,val-var ,value-form))
+         (setf ,int-place (dpb ,val-var ,bytespec-var ,int-place))
+         ,val-var))))
+
+;; (setf (mask-field bytespec place) new) → (setf place (deposit-field new bytespec place))
+(clamiga::%register-setf-expander 'mask-field
+  (lambda (place-form value-form)
+    (let ((bytespec-var (gensym "BS"))
+          (val-var (gensym "V"))
+          (bytespec (cadr place-form))
+          (int-place (caddr place-form)))
+      `(let* ((,bytespec-var ,bytespec)
+              (,val-var ,value-form))
+         (setf ,int-place (deposit-field ,val-var ,bytespec-var ,int-place))
+         ,val-var))))
 
 ;; List searching — CLHS MEMBER accepts :test, :test-not, and :key.
 ;; :test defaults to EQL; :key, if supplied, is applied to each list
@@ -1093,6 +1117,8 @@ when the param has no explicit default.  CL spec 3.4.6 requires this."
 (defun lognand  (integer-1 integer-2) (lognot (logand integer-1 integer-2)))
 (defun lognor   (integer-1 integer-2) (lognot (logior integer-1 integer-2)))
 (defun logeqv   (&rest integers)
+  (dolist (x integers)
+    (unless (integerp x) (error 'type-error :datum x :expected-type 'integer)))
   (if (null integers) -1
     (reduce (lambda (a b) (lognot (logxor a b))) integers)))
 

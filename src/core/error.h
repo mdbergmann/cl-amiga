@@ -108,6 +108,14 @@ void cl_error_from_condition(CL_Obj condition);
 void cl_signal_type_error(CL_Obj datum, const char *expected_type_name,
                           const char *fn_name);
 
+/* Signal an ARITHMETIC-ERROR subtype (FLOATING-POINT-OVERFLOW etc.)
+ * with :operation and :operands slots populated, then unwind.  Pass
+ * the type name as one of SYM_FLOATING_POINT_OVERFLOW / _UNDERFLOW /
+ * SYM_DIVISION_BY_ZERO etc., the operation as a symbol, operands as a
+ * Lisp list (or CL_NIL). */
+void cl_signal_arith_error(CL_Obj type_sym, CL_Obj operation,
+                           CL_Obj operands, const char *fn_name);
+
 /* Signal an UNBOUND-VARIABLE / UNDEFINED-FUNCTION (both subtype
  * CELL-ERROR) with the :name slot populated to NAME, then unwind.
  * cl_error(CL_ERR_UNBOUND/UNDEFINED, ...) builds the condition with

@@ -13,6 +13,7 @@
 #include "error.h"
 #include "vm.h"
 #include "compiler.h"
+#include "reader.h"
 #include "printer.h"
 #include "color.h"
 #include "stream.h"
@@ -139,6 +140,30 @@ static void build_hierarchy(void)
     /* division-by-zero -> arithmetic-error */
     condition_hierarchy = cl_cons(
         cl_cons(SYM_DIVISION_BY_ZERO,
+                cl_cons(SYM_ARITHMETIC_ERROR, CL_NIL)),
+        condition_hierarchy);
+
+    /* floating-point-overflow -> arithmetic-error */
+    condition_hierarchy = cl_cons(
+        cl_cons(SYM_FLOATING_POINT_OVERFLOW,
+                cl_cons(SYM_ARITHMETIC_ERROR, CL_NIL)),
+        condition_hierarchy);
+
+    /* floating-point-underflow -> arithmetic-error */
+    condition_hierarchy = cl_cons(
+        cl_cons(SYM_FLOATING_POINT_UNDERFLOW,
+                cl_cons(SYM_ARITHMETIC_ERROR, CL_NIL)),
+        condition_hierarchy);
+
+    /* floating-point-inexact -> arithmetic-error */
+    condition_hierarchy = cl_cons(
+        cl_cons(SYM_FLOATING_POINT_INEXACT,
+                cl_cons(SYM_ARITHMETIC_ERROR, CL_NIL)),
+        condition_hierarchy);
+
+    /* floating-point-invalid-operation -> arithmetic-error */
+    condition_hierarchy = cl_cons(
+        cl_cons(SYM_FLOATING_POINT_INVALID,
                 cl_cons(SYM_ARITHMETIC_ERROR, CL_NIL)),
         condition_hierarchy);
 
@@ -716,9 +741,21 @@ void cl_signal_type_error(CL_Obj datum, const char *expected_type_name,
     char msgbuf[128];
 
     CL_GC_PROTECT(datum);
-    expected_type = cl_intern_in(expected_type_name,
-                                 (uint32_t)strlen(expected_type_name),
-                                 cl_package_cl);
+    /* Compound type specs like "(INTEGER 1 *)" must be read as Lisp
+     * expressions, not interned as symbols, so that (typep datum
+     * expected-type) in handler code works correctly. */
+    if (expected_type_name[0] == '(') {
+        CL_ReadStream rs;
+        rs.buf = expected_type_name;
+        rs.pos = 0;
+        rs.len = (int)strlen(expected_type_name);
+        rs.line = 1;
+        expected_type = cl_read_from_string(&rs);
+    } else {
+        expected_type = cl_intern_in(expected_type_name,
+                                     (uint32_t)strlen(expected_type_name),
+                                     cl_package_cl);
+    }
     CL_GC_PROTECT(expected_type);
 
     snprintf(msgbuf, sizeof(msgbuf),
@@ -745,6 +782,46 @@ void cl_signal_type_error(CL_Obj datum, const char *expected_type_name,
     cond = cl_make_condition(SYM_TYPE_ERROR, slots, report);
 
     CL_GC_UNPROTECT(4); /* datum, expected_type, report, slots */
+
+    cl_signal_condition(cond);
+    cl_error_from_condition(cond);
+}
+
+/* Signal an ARITHMETIC-ERROR subtype (floating-point-overflow/-underflow,
+ * division-by-zero, ...) with :operation and :operands slots populated,
+ * then unwind. operands is a Lisp list of the arguments (or CL_NIL when
+ * none are meaningful — e.g. (exp x) returning +inf carries (x) as
+ * the operand list). */
+void cl_signal_arith_error(CL_Obj type_sym, CL_Obj operation, CL_Obj operands,
+                           const char *fn_name)
+{
+    CL_Obj report = CL_NIL;
+    CL_Obj slots = CL_NIL;
+    CL_Obj cond;
+    char msgbuf[128];
+
+    CL_GC_PROTECT(type_sym);
+    CL_GC_PROTECT(operation);
+    CL_GC_PROTECT(operands);
+
+    snprintf(msgbuf, sizeof(msgbuf), "%s: arithmetic error", fn_name);
+    report = cl_make_string(msgbuf, (uint32_t)strlen(msgbuf));
+    CL_GC_PROTECT(report);
+
+    {
+        CL_Obj pair;
+        pair = cl_cons(KW_FORMAT_CONTROL, report);
+        slots = cl_cons(pair, CL_NIL);
+        CL_GC_PROTECT(slots);
+        pair = cl_cons(KW_OPERANDS, operands);
+        slots = cl_cons(pair, slots);
+        pair = cl_cons(KW_OPERATION, operation);
+        slots = cl_cons(pair, slots);
+    }
+
+    cond = cl_make_condition(type_sym, slots, report);
+
+    CL_GC_UNPROTECT(5); /* type_sym, operation, operands, report, slots */
 
     cl_signal_condition(cond);
     cl_error_from_condition(cond);
