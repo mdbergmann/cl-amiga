@@ -260,27 +260,16 @@ static CL_Obj bi_mul(CL_Obj *args, int n)
 static CL_Obj bi_div(CL_Obj *args, int n)
 {
     CL_Obj result;
-    int i, has_float = 0;
+    int i;
     check_number(args[0], "/");
-    /* Check if any argument is a float */
-    for (i = 0; i < n; i++) {
+    for (i = 0; i < n; i++)
         check_number(args[i], "/");
-        if (CL_FLOATP(args[i])) has_float = 1;
-    }
-    if (n == 1) {
-        if (has_float)
-            return cl_float_div(cl_make_single_float(1.0f), args[0]);
-        /* CL spec: (/ x) = 1/x as ratio */
-        return cl_ratio_div(CL_MAKE_FIXNUM(1), args[0]);
-    }
+    if (n == 1)
+        return cl_arith_div(CL_MAKE_FIXNUM(1), args[0]);
     result = args[0];
     CL_GC_PROTECT(result);
-    for (i = 1; i < n; i++) {
-        if (has_float)
-            result = cl_float_div(result, args[i]);
-        else
-            result = cl_ratio_div(result, args[i]);
-    }
+    for (i = 1; i < n; i++)
+        result = cl_arith_div(result, args[i]);
     CL_GC_UNPROTECT(1);
     return result;
 }

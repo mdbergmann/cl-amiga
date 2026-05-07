@@ -20,6 +20,7 @@ CL_Obj cl_bignum_from_uint32(uint32_t val);
 CL_Obj cl_arith_add(CL_Obj a, CL_Obj b);
 CL_Obj cl_arith_sub(CL_Obj a, CL_Obj b);
 CL_Obj cl_arith_mul(CL_Obj a, CL_Obj b);
+CL_Obj cl_arith_div(CL_Obj a, CL_Obj b);
 CL_Obj cl_arith_truncate(CL_Obj a, CL_Obj b);
 CL_Obj cl_arith_mod(CL_Obj a, CL_Obj b);
 CL_Obj cl_arith_negate(CL_Obj a);
