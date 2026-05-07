@@ -14,6 +14,7 @@
    "OPEN-WINDOW" "CLOSE-WINDOW" "WITH-WINDOW"
    "WINDOW-RASTPORT" "WINDOW-WIDTH" "WINDOW-HEIGHT"
    "WINDOW-LEFT" "WINDOW-TOP" "WINDOW-TITLE"
+   "WINDOW-USER-PORT"
    ;; Screen
    "OPEN-SCREEN" "CLOSE-SCREEN" "WITH-SCREEN"
    ;; IDCMP
@@ -137,7 +138,7 @@
   (width       :u16  8)
   (height      :u16 10)
   (rport       :pointer 50)    ; Window->RPort
-  (user-port   :pointer 86)    ; Window->UserPort (MsgPort for IDCMP)
+  (uport       :pointer 86)    ; Window->UserPort (MsgPort for IDCMP)
   (title       :pointer 32))
 
 ;;; struct IntuiMessage (partial)
@@ -258,7 +259,7 @@ Uses exec.library WaitPort."
 
 (defun window-user-port (window)
   "Get the UserPort (IDCMP message port) from a Window."
-  (ffi:make-foreign-pointer (window-user-port window)))
+  (ffi:make-foreign-pointer (window-uport window)))
 
 (defmacro event-loop (window &body clauses)
   "Process IDCMP messages for WINDOW until a clause returns :quit.
