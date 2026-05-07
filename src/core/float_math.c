@@ -17,6 +17,11 @@
 #include <string.h>
 #include <math.h>
 
+/* m68k-amigaos-gcc's <math.h> lacks M_PI (POSIX extension). */
+#ifndef M_PI
+#define M_PI 3.14159265358979323846
+#endif
+
 /* Helper to register a builtin */
 static void defun(const char *name, CL_CFunc func, int min, int max)
 {
