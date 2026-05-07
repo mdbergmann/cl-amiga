@@ -1445,12 +1445,19 @@ cleanup:
 
 CL_Obj cl_arith_gcd(CL_Obj a, CL_Obj b)
 {
-    /* Euclidean algorithm */
+    /* Euclidean algorithm.  GC-protect a and b across allocating calls
+     * (cl_arith_abs and bignum_from_limbs both allocate).  Without this,
+     * a and b would be swept by GC and their offsets become stale,
+     * causing to_limbs() in the next iteration to read freed memory.
+     * Manifested as random SIGSEGVs in heavy ratio arithmetic on large
+     * bignums (e.g. ANSI floor.8 / floor.9 / / .10). */
+    CL_GC_PROTECT(a);
+    CL_GC_PROTECT(b);
     a = cl_arith_abs(a);
     b = cl_arith_abs(b);
 
-    if (cl_arith_zerop(a)) return b;
-    if (cl_arith_zerop(b)) return a;
+    if (cl_arith_zerop(a)) { CL_GC_UNPROTECT(2); return b; }
+    if (cl_arith_zerop(b)) { CL_GC_UNPROTECT(2); return a; }
 
     /* Use: gcd(a,b) = gcd(b, a mod b) with truncate-rem */
     while (!cl_arith_zerop(b)) {
@@ -1493,6 +1500,7 @@ CL_Obj cl_arith_gcd(CL_Obj a, CL_Obj b)
         a = b;
         b = temp;
     }
+    CL_GC_UNPROTECT(2);
     return a;
 }
 

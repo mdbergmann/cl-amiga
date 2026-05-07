@@ -122,6 +122,14 @@ CL_Obj SETF_HELPER_GET = CL_NIL;
 CL_Obj SETF_SYM_GETF = CL_NIL;
 CL_Obj SETF_HELPER_GETF = CL_NIL;
 
+/* Sentinel symbol used inside the lex-env alist built by
+ * cl_build_lex_env to mark MACROLET-bound expanders.  An entry of the
+ * form (SYM_LEX_LOCAL_MACRO . (name . expander-fn)) carries a local
+ * macro; an ordinary (name . expansion-form) entry carries a symbol
+ * macro.  Lookup walkers check the car against this sentinel to
+ * disambiguate. */
+CL_Obj SYM_LEX_LOCAL_MACRO = CL_NIL;
+
 /* Global optimization settings */
 CL_OptimizeSettings cl_optimize_settings = {1, 1, 1, 1};
 
@@ -3558,13 +3566,47 @@ CL_Obj cl_macroexpand_1(CL_Obj form)
     return cl_macroexpand_1_env(form, CL_NIL);
 }
 
+/* Walk a lex-env alist (built by cl_build_lex_env) for a MACROLET entry
+ * whose name matches sym.  Returns the expander or CL_NIL. */
+static CL_Obj lex_env_local_macro(CL_Obj lex_env, CL_Obj sym)
+{
+    while (CL_CONS_P(lex_env)) {
+        CL_Obj pair = cl_car(lex_env);
+        if (CL_CONS_P(pair) && cl_car(pair) == SYM_LEX_LOCAL_MACRO) {
+            CL_Obj inner = cl_cdr(pair);
+            if (CL_CONS_P(inner) && cl_car(inner) == sym)
+                return cl_cdr(inner);
+        }
+        lex_env = cl_cdr(lex_env);
+    }
+    return CL_NIL;
+}
+
 CL_Obj cl_macroexpand_1_env(CL_Obj form, CL_Obj lex_env)
 {
     CL_Obj head = cl_car(form);
-    CL_Obj expander = cl_get_macro(head);
+    CL_Obj expander;
     CL_Obj expanded;
     CL_Obj call_args[2];
 
+    /* Local (macrolet) bindings shadow global macros — check the
+     * captured lex-env first so &environment-aware expanders that
+     * MACROEXPAND a sub-form see macrolet-bound macros (CLHS 5.1.4). */
+    if (CL_SYMBOL_P(head) && CL_CONS_P(lex_env)) {
+        expander = lex_env_local_macro(lex_env, head);
+        if (!CL_NULL_P(expander)) {
+            call_args[0] = form;
+            call_args[1] = lex_env;
+            CL_GC_PROTECT(form);
+            CL_GC_PROTECT(expander);
+            CL_GC_PROTECT(lex_env);
+            expanded = cl_vm_apply(expander, call_args, 2);
+            CL_GC_UNPROTECT(3);
+            return expanded;
+        }
+    }
+
+    expander = cl_get_macro(head);
     if (CL_NULL_P(expander)) return form;
 
     /* Expander is a 2-arg (form environment) wrapper produced by
@@ -3986,6 +4028,7 @@ void cl_compiler_init(void)
     SETF_HELPER_GET          = cl_intern_in("%SETF-GET", 9, cl_package_clamiga);
     SETF_SYM_GETF            = cl_intern_in("GETF", 4, cl_package_cl);
     SETF_HELPER_GETF         = cl_intern_in("%SETF-GETF", 10, cl_package_clamiga);
+    SYM_LEX_LOCAL_MACRO      = cl_intern_in("%LEX-LOCAL-MACRO", 16, cl_package_clamiga);
 
     /* Register cached symbols for GC compaction forwarding */
     cl_gc_register_root(&SETF_SYM_CAR);
@@ -4020,6 +4063,7 @@ void cl_compiler_init(void)
     cl_gc_register_root(&SETF_HELPER_GET);
     cl_gc_register_root(&SETF_SYM_GETF);
     cl_gc_register_root(&SETF_HELPER_GETF);
+    cl_gc_register_root(&SYM_LEX_LOCAL_MACRO);
 }
 
 /* --- Compiler chain save/restore for NLX --- */

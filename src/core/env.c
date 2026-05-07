@@ -1,5 +1,6 @@
 #include "env.h"
 #include "mem.h"
+#include "compiler.h"
 #include "../platform/platform.h"
 #include <string.h>
 
@@ -229,9 +230,35 @@ CL_Obj cl_build_lex_env(CL_CompEnv *env)
     CL_Obj result = CL_NIL;
     int i;
 
-    if (!env || env->symbol_macro_count == 0) return CL_NIL;
+    if (!env || (env->symbol_macro_count == 0 && env->local_macro_count == 0))
+        return CL_NIL;
 
     CL_GC_PROTECT(result);
+
+    /* Local macros (macrolet) — emit each as
+     *   (SYM_LEX_LOCAL_MACRO . (name . expander-fn))
+     * so &environment-aware expanders that call MACROEXPAND can find
+     * macrolet-bound macros.  Innermost first so duplicate names shadow
+     * outer bindings during ASSOC walk. */
+    for (i = env->local_macro_count - 1; i >= 0; i--) {
+        CL_Obj name = env->local_macros[i].name;
+        CL_Obj expander = env->local_macros[i].expander;
+        CL_Obj inner, pair;
+        CL_GC_PROTECT(name);
+        CL_GC_PROTECT(expander);
+        inner = cl_cons(name, expander);
+        CL_GC_PROTECT(inner);
+        pair = cl_cons(SYM_LEX_LOCAL_MACRO, inner);
+        CL_GC_PROTECT(pair);
+        result = cl_cons(pair, result);
+        CL_GC_UNPROTECT(4);
+    }
+
+    if (env->symbol_macro_count == 0) {
+        CL_GC_UNPROTECT(1);
+        return result;
+    }
+
     /* Walk from highest index (innermost / most recently added) to lowest.
      * Innermost bindings end up at the head of the alist, so a plain
      * ASSOC walk respects shadowing automatically. */

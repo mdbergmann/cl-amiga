@@ -39,6 +39,13 @@ CL_Obj cl_macroexpand_1(CL_Obj form);
  * macroexpansion is safe. */
 CL_Obj cl_macroexpand_1_env(CL_Obj form, CL_Obj lex_env);
 
+/* Sentinel symbol marking a local-macro entry inside a lex-env alist.
+ * cl_build_lex_env emits both symbol-macros (as `(name . expansion)`)
+ * and macrolet bindings (as `(SYM_LEX_LOCAL_MACRO . (name . expander))`)
+ * so that &environment-aware macro expanders can macroexpand calls to
+ * macrolet-bound macros. */
+extern CL_Obj SYM_LEX_LOCAL_MACRO;
+
 /* Look up a global symbol-macro expansion (from DEFINE-SYMBOL-MACRO).
    Returns CL_NIL when the symbol has no global symbol-macro binding —
    but also when the binding expands to NIL.  To distinguish, use
