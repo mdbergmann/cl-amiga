@@ -3,6 +3,22 @@
 ;;;; slot-value, class-of, with-slots, standard method combination.
 ;;;; Loaded on demand via (require "clos").
 
+;;; ---- Boot-phase profiling ----
+;;; Info messages so future regressions in CLOS load time show up
+;;; immediately.  Same shape as the C-level "; [boot] ..." markers in
+;;; cl_repl_init_no_userinit; suppressed in --batch / --script (where
+;;; piped tests match output exactly).
+;;; Goes through the C builtin %BOOT-TRACE-CLOS rather than (format t)
+;;; so unit-test setups that skip cl_stream_init still work.
+(defparameter *%clos-load-start* (get-internal-real-time))
+(defparameter *%clos-prev*       *%clos-load-start*)
+(defun %clos-trace (phase)
+  (let ((now (get-internal-real-time)))
+    (%boot-trace-clos (- now *%clos-load-start*)
+                      (- now *%clos-prev*)
+                      phase)
+    (setq *%clos-prev* now)))
+
 ;;; ====================================================================
 ;;; Step 2: Bootstrap Core Classes
 ;;; ====================================================================
@@ -507,6 +523,7 @@ directly instead of attempting a symbol lookup."
     (or (gethash type-name *class-table*)
         (find-class 't))))
 
+(%clos-trace "Bootstrap + slot/EQL/CPL helpers")
 ;;; ====================================================================
 ;;; Phase 1: Slot Access Infrastructure
 ;;; ====================================================================
@@ -706,6 +723,7 @@ Specialize via defmethod to provide lazy initialization."
                 (mapcar #'class-precedence-list supers)
                 (list supers)))))))
 
+(%clos-trace "Phase 1 (slot access) + Phase 2 (C3 linearization)")
 ;;; ====================================================================
 ;;; Phase 3: defclass
 ;;; ====================================================================
@@ -1050,6 +1068,7 @@ Specialize via defmethod to provide lazy initialization."
        ,@accessor-defs
        (find-class ',name))))
 
+(%clos-trace "Phase 3 (defclass)")
 ;;; ====================================================================
 ;;; Phase 4: make-instance + Initialization
 ;;; ====================================================================
@@ -1145,6 +1164,7 @@ Specialize via defmethod to provide lazy initialization."
       (apply #'initialize-instance instance initargs)
       instance)))
 
+(%clos-trace "Phase 4 (make-instance + initialization)")
 ;;; ====================================================================
 ;;; Phase 5: defgeneric + defmethod + Dispatch
 ;;; ====================================================================
@@ -1204,7 +1224,21 @@ Specialize via defmethod to provide lazy initialization."
 (defun %set-gf-method-combination (gf val) (%struct-set gf 4 val))
 (defun gf-dispatch-cache (gf) (%struct-ref gf 5))
 (defun %set-gf-dispatch-cache (gf val) (%struct-set gf 5 val))
-(defun gf-cacheable-p (gf) (%struct-ref gf 6))
+(defun gf-cacheable-p (gf)
+  ;; Lazy: %install-method-in-gf marks the slot :DIRTY so bulk method
+  ;; installation during boot doesn't re-derive the dispatch mode on every
+  ;; add.  Resolve on first read — accessor must return the user-visible
+  ;; mode (integer / :EQL / NIL), not the internal :DIRTY sentinel.
+  (let ((mode (%struct-ref gf 6)))
+    (if (eq mode :dirty)
+        (let ((computed (%compute-gf-cacheable-p gf)))
+          (%struct-set gf 6 computed)
+          (%struct-set gf 7
+                       (if (eq computed :eql)
+                           (%compute-eql-value-sets gf)
+                           nil))
+          computed)
+        mode)))
 (defun %set-gf-cacheable-p (gf val) (%struct-set gf 6 val))
 (defun gf-eql-value-sets (gf) (%struct-ref gf 7))
 (defun %set-gf-eql-value-sets (gf val) (%struct-set gf 7 val))
@@ -1600,6 +1634,8 @@ When called with no arguments, passes the original method arguments."
 
 (defun %gf-dispatch (gf args)
   "Dispatch a generic function call."
+  ;; gf-cacheable-p resolves the :DIRTY sentinel transparently, so we
+  ;; always see a final mode here.
   (let ((mode (gf-cacheable-p gf)))
     (cond
       ((integerp mode)
@@ -1868,11 +1904,12 @@ already-existing GF the installed combination is preserved."
                  (gf-methods gf)))
     (%set-gf-methods gf (cons method (gf-methods gf)))
     (%set-gf-dispatch-cache gf nil)
-    (let ((mode (%compute-gf-cacheable-p gf)))
-      (%set-gf-cacheable-p gf mode)
-      (if (eq mode :eql)
-          (%set-gf-eql-value-sets gf (%compute-eql-value-sets gf))
-          (%set-gf-eql-value-sets gf nil)))
+    ;; Defer cacheable-p / eql-value-sets recompute to first dispatch.
+    ;; During CLOS bootstrap we add ~50 methods with no calls in between,
+    ;; so eager recompute on each install was wasted work — now a single
+    ;; lazy recompute happens on the first call that needs the mode.
+    (%set-gf-cacheable-p gf :dirty)
+    (%set-gf-eql-value-sets gf nil)
     (when (and (%slot-access-protocol-gf-p gf-name)
                (> (length (gf-methods gf)) 1))
       (setq *slot-access-protocol-extended-p* t))
@@ -1887,11 +1924,10 @@ already-existing GF the installed combination is preserved."
   (%set-gf-methods gf
     (remove method (gf-methods gf) :test #'eq))
   (%set-gf-dispatch-cache gf nil)
-  (let ((mode (%compute-gf-cacheable-p gf)))
-    (%set-gf-cacheable-p gf mode)
-    (if (eq mode :eql)
-        (%set-gf-eql-value-sets gf (%compute-eql-value-sets gf))
-        (%set-gf-eql-value-sets gf nil)))
+  ;; Lazy: see %install-method-in-gf.  Mark dirty; %gf-dispatch recomputes
+  ;; cacheable-p / eql-value-sets on first call that needs them.
+  (%set-gf-cacheable-p gf :dirty)
+  (%set-gf-eql-value-sets gf nil)
   ;; Clear the back-link so the method object no longer claims membership.
   (%set-method-generic-function method nil)
   (%notify-dependents gf 'remove-method method)
@@ -1907,6 +1943,7 @@ already-existing GF the installed combination is preserved."
                    gf specializers qualifiers fn lambda-list)))
     (%install-method-in-gf gf method)))
 
+(%clos-trace "Phase 5 (defgeneric + defmethod + dispatch)")
 ;;; ====================================================================
 ;;; Phase 6: with-slots
 ;;; ====================================================================
@@ -1984,6 +2021,7 @@ already-existing GF the installed combination is preserved."
     (declare (ignore initargs))
     (funcall %ai-fn class)))
 
+(%clos-trace "Phase 6 (with-slots) + Phase 7 (convert to GFs)")
 ;;; ====================================================================
 ;;; Slot-access protocol (MOP)
 ;;; ====================================================================
@@ -2219,6 +2257,7 @@ already-existing GF the installed combination is preserved."
        ,@accessor-defs
        (find-class ',name))))
 
+(%clos-trace "Slot-access + class finalization MOP protocols")
 ;;; ====================================================================
 ;;; Phase 8: change-class + reinitialize-instance
 ;;; ====================================================================
@@ -2502,6 +2541,7 @@ since user-defined method classes are out of scope."
     (add-method gf method)
     method))
 
+(%clos-trace "Phase 8 + 9 (change-class, print-object) + funcallable + method MOP")
 ;;; ====================================================================
 ;;; Method combination protocol (MOP)
 ;;; ====================================================================
@@ -2903,6 +2943,7 @@ class to react."
   (declare (ignore metaobject dependent initargs))
   nil)
 
+(%clos-trace "Method combination protocol")
 ;;; ====================================================================
 ;;; Portable MOP shims (closer-mop compatibility layer)
 ;;; ====================================================================
@@ -3161,5 +3202,6 @@ protocol hook a user metaclass would override to substitute a subclass."
 (defmethod (setf documentation) (new-value x doc-type)
   (setf (gethash (cons x doc-type) *documentation-table*) new-value))
 
+(%clos-trace "Portable MOP shims")
 ;;; --- Provide module ---
 (provide "clos")

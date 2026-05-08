@@ -8,11 +8,13 @@
 #include "compiler.h"
 #include "reader.h"
 #include "stream.h"
+#include "repl.h"
 #include "vm.h"
 #include "opcodes.h"
 #include "float.h"
 #include "fasl.h"
 #include "thread.h"
+#include "string_utils.h"
 #include "../platform/platform.h"
 #include "../platform/platform_thread.h"
 
@@ -2337,6 +2339,42 @@ static CL_Obj bi_get_internal_time(CL_Obj *args, int n)
     return CL_MAKE_FIXNUM((int32_t)(platform_time_ms() & 0x7FFFFFFF));
 }
 
+/* (%BOOT-QUIET-P) -> T iff main.c set --batch / --script flag.  Used by
+ * lib/clos.lisp's %clos-trace so the "; [clos] ..." progress lines stay
+ * out of piped batch output. */
+static CL_Obj bi_boot_quiet_p(CL_Obj *args, int n)
+{
+    CL_UNUSED(args); CL_UNUSED(n);
+    return cl_quiet_boot ? SYM_T : CL_NIL;
+}
+
+/* (%BOOT-TRACE-CLOS elapsed-ms delta-ms phase-string)
+ * Print "; [clos] <elapsed> ms (+<delta>): <phase>" via platform_write_string.
+ * Same path as the C-side BOOT_TIME() macro, so it doesn't depend on Lisp
+ * stream init — important for unit tests whose setup skips cl_stream_init.
+ * No-op when --batch or --script is in effect. */
+static CL_Obj bi_boot_trace_clos(CL_Obj *args, int n)
+{
+    if (n != 3 || cl_quiet_boot) return CL_NIL;
+    if (!CL_FIXNUM_P(args[0]) || !CL_FIXNUM_P(args[1])) return CL_NIL;
+    if (!CL_STRING_P(args[2])) return CL_NIL;
+    {
+        int32_t elapsed = (int32_t)CL_FIXNUM_VAL(args[0]);
+        int32_t delta   = (int32_t)CL_FIXNUM_VAL(args[1]);
+        uint32_t plen   = cl_string_length(args[2]);
+        const char *pdata = cl_string_base_data(args[2]);
+        char phase_buf[80];
+        char out[160];
+        if (plen >= sizeof(phase_buf)) plen = sizeof(phase_buf) - 1;
+        memcpy(phase_buf, pdata, plen);
+        phase_buf[plen] = '\0';
+        snprintf(out, sizeof(out), "; [clos] %5d ms (+%5d): %s\n",
+                 (int)elapsed, (int)delta, phase_buf);
+        platform_write_string(out);
+    }
+    return CL_NIL;
+}
+
 static CL_Obj bi_get_bytes_consed(CL_Obj *args, int n)
 {
     CL_UNUSED(args); CL_UNUSED(n);
@@ -3056,6 +3094,8 @@ void cl_builtins_io_init(void)
 
     /* Timing (internal helpers for TIME special form) */
     cl_register_builtin("%GET-INTERNAL-TIME", bi_get_internal_time, 0, 0, cl_package_clamiga);
+    cl_register_builtin("%BOOT-QUIET-P",      bi_boot_quiet_p,      0, 0, cl_package_clamiga);
+    cl_register_builtin("%BOOT-TRACE-CLOS",   bi_boot_trace_clos,   3, 3, cl_package_clamiga);
     cl_register_builtin("%GET-BYTES-CONSED", bi_get_bytes_consed, 0, 0, cl_package_clamiga);
     cl_register_builtin("%GET-GC-COUNT", bi_get_gc_count, 0, 0, cl_package_clamiga);
     cl_register_builtin("%TIME-REPORT", bi_time_report, 3, 3, cl_package_clamiga);
