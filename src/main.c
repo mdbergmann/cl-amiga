@@ -395,6 +395,11 @@ int main(int argc, char *argv[])
     if (!color_set)
         cl_repl_color = !(batch || script || non_interactive);
 
+    /* In --batch the caller pipes stdin and matches stdout exactly, so the
+     * "; [boot] ..." progress lines would break tests.  Stay quiet then. */
+    if (batch || script)
+        cl_quiet_boot = 1;
+
     platform_init();
     cl_thread_init();  /* Must be first — sets up CT for all other init */
 

@@ -653,17 +653,21 @@ static void init_history_symbol(CL_Obj sym)
     s->value = CL_NIL;
 }
 
-/* Boot-phase progress + timing.  Always on — useful info during the
- * 30+ s lower-end Amiga boot, and trivial overhead on a fast host. */
+/* Boot-phase progress + timing.  Useful info during the 30+ s lower-end
+ * Amiga boot, trivial overhead on a fast host.  Suppressed in --batch
+ * (cl_quiet_boot=1) so piped tests match output exactly. */
+int cl_quiet_boot = 0;
 static void boot_timing_log(const char *phase, uint32_t t_start, uint32_t *t_prev)
 {
     uint32_t now = platform_time_ms();
-    char buf[96];
-    snprintf(buf, sizeof(buf), "; [boot] %5u ms (+%5u): %s\n",
-             (unsigned)(now - t_start),
-             (unsigned)(now - *t_prev),
-             phase);
-    platform_write_string(buf);
+    if (!cl_quiet_boot) {
+        char buf[96];
+        snprintf(buf, sizeof(buf), "; [boot] %5u ms (+%5u): %s\n",
+                 (unsigned)(now - t_start),
+                 (unsigned)(now - *t_prev),
+                 phase);
+        platform_write_string(buf);
+    }
     *t_prev = now;
 }
 #define BOOT_TIME(phase) boot_timing_log((phase), t_start, &t_prev)
