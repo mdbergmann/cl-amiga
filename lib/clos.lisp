@@ -702,7 +702,7 @@ Specialize via defmethod to provide lazy initialization."
               (setq candidate head)
               (return))))
         (unless candidate
-          (error "Inconsistent class precedence list — C3 linearization failed"))
+          (error "Inconsistent class precedence list -- C3 linearization failed"))
         ;; Remove candidate from all lists
         (push candidate result)
         (setq lists
@@ -2109,7 +2109,7 @@ already-existing GF the installed combination is preserved."
 
 (defgeneric validate-superclass (class superclass))
 (defmethod validate-superclass ((class t) (super t))
-  "Accept all metaclass pairs — single-metaclass world."
+  "Accept all metaclass pairs -- single-metaclass world."
   t)
 
 (defgeneric compute-class-precedence-list (class))

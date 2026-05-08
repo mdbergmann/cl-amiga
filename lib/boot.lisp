@@ -2373,7 +2373,7 @@ including any dotted-list terminator (so the result is also dotted)."
          ,result-form))))
 
 (defmacro loop (&rest forms)
-  "CL LOOP macro — supports simple and extended forms."
+  "CL LOOP macro -- supports simple and extended forms."
   (if (or (null forms)
           (%loop-keyword-sym-p (car forms)))
       ;; Extended loop (starts with keyword or is empty)

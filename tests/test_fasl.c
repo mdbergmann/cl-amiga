@@ -570,6 +570,49 @@ TEST(serialize_long_string)
     ASSERT(memcmp(s->data, long_str, 512) == 0);
 }
 
+#ifdef CL_WIDE_STRINGS
+/* Host (wide-char) builds emit FASLs that the m68k Amiga binary (built
+ * without CL_WIDE_STRINGS) must be able to read.  An ASCII-only wide string
+ * must therefore serialize as the byte-form FASL_TAG_STRING, not the
+ * wide-only FASL_TAG_WIDE_STRING.  Non-ASCII wide strings keep WIDE_STRING. */
+TEST(serialize_wide_string_ascii_downgrades)
+{
+    uint8_t buf[128];
+    CL_FaslWriter w;
+    CL_FaslReader r;
+    uint32_t chars[5] = { 'h', 'e', 'l', 'l', 'o' };
+    CL_Obj ws, result;
+
+    ws = cl_make_wide_string(chars, 5);
+    cl_fasl_writer_init(&w, buf, sizeof(buf));
+    cl_fasl_serialize_obj(&w, ws);
+
+    /* First byte after the (optional) shared-object framing must be the
+     * STRING tag — this is what makes the FASL portable. */
+    ASSERT_EQ_INT(buf[0], FASL_TAG_STRING);
+
+    /* And a byte-only reader (the Amiga case) must be able to round-trip. */
+    cl_fasl_reader_init(&r, buf, w.pos);
+    result = cl_fasl_deserialize_obj(&r);
+    ASSERT(CL_STRING_P(result) || CL_WIDE_STRING_P(result));
+}
+
+TEST(serialize_wide_string_nonascii_stays_wide)
+{
+    uint8_t buf[128];
+    CL_FaslWriter w;
+    uint32_t chars[3] = { 'a', 0x00E9 /* é */, 'b' };
+    CL_Obj ws;
+
+    ws = cl_make_wide_string(chars, 3);
+    cl_fasl_writer_init(&w, buf, sizeof(buf));
+    cl_fasl_serialize_obj(&w, ws);
+
+    /* Non-ASCII codepoint forces WIDE_STRING. */
+    ASSERT_EQ_INT(buf[0], FASL_TAG_WIDE_STRING);
+}
+#endif
+
 TEST(serialize_symbol_cl)
 {
     uint8_t buf[128];
@@ -2342,6 +2385,10 @@ int main(void)
     RUN(serialize_string_empty);
     RUN(serialize_string);
     RUN(serialize_long_string);
+#ifdef CL_WIDE_STRINGS
+    RUN(serialize_wide_string_ascii_downgrades);
+    RUN(serialize_wide_string_nonascii_stays_wide);
+#endif
     RUN(serialize_symbol_cl);
     RUN(serialize_symbol_keyword);
     RUN(serialize_symbol_user);
