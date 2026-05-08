@@ -552,10 +552,27 @@ static int fasl_ser_step(CL_FaslWriter *w, FaslSerStack *s)
         case TYPE_WIDE_STRING: {
             CL_WideString *ws = (CL_WideString *)CL_OBJ_TO_PTR(obj);
             uint32_t i;
-            cl_fasl_write_u8(w, FASL_TAG_WIDE_STRING);
-            cl_fasl_write_u32(w, ws->length);
-            for (i = 0; i < ws->length; i++)
-                cl_fasl_write_u32(w, ws->data[i]);
+            int all_ascii = 1;
+            for (i = 0; i < ws->length; i++) {
+                if (ws->data[i] > 0x7F) { all_ascii = 0; break; }
+            }
+            if (all_ascii) {
+                /* Downgrade to TAG_STRING so byte-only builds (e.g. the m68k
+                 * Amiga binary, which is compiled without CL_WIDE_STRINGS to
+                 * save RAM) can read FASLs that this wide-char host produces.
+                 * Non-ASCII wide strings still need TAG_WIDE_STRING and remain
+                 * unreadable by byte-only builds — but those are uncommon in
+                 * source code. */
+                cl_fasl_write_u8(w, FASL_TAG_STRING);
+                cl_fasl_write_u32(w, ws->length);
+                for (i = 0; i < ws->length; i++)
+                    cl_fasl_write_u8(w, (uint8_t)ws->data[i]);
+            } else {
+                cl_fasl_write_u8(w, FASL_TAG_WIDE_STRING);
+                cl_fasl_write_u32(w, ws->length);
+                for (i = 0; i < ws->length; i++)
+                    cl_fasl_write_u32(w, ws->data[i]);
+            }
             return 1;
         }
 #endif
@@ -1890,6 +1907,20 @@ CL_Obj cl_fasl_deserialize_bytecode(CL_FaslReader *r)
  * High-level FASL load
  * ================================================================ */
 
+/* Map FASL_ERR_* code to a short name for diagnostics. */
+static const char *fasl_err_name(int err)
+{
+    switch (err) {
+    case FASL_ERR_OVERFLOW:    return "OVERFLOW";
+    case FASL_ERR_TRUNCATED:   return "TRUNCATED";
+    case FASL_ERR_BAD_MAGIC:   return "BAD_MAGIC";
+    case FASL_ERR_BAD_VERSION: return "BAD_VERSION";
+    case FASL_ERR_BAD_TAG:     return "BAD_TAG";
+    case FASL_ERR_TOO_DEEP:    return "TOO_DEEP";
+    default:                   return "UNKNOWN";
+    }
+}
+
 CL_Obj cl_fasl_load(const uint8_t *data, uint32_t size)
 {
     CL_FaslReader r;
@@ -1914,16 +1945,24 @@ CL_Obj cl_fasl_load(const uint8_t *data, uint32_t size)
 
     for (i = 0; i < n_units; i++) {
         CL_Obj bc_obj;
+        uint32_t unit_start = r.pos;
         cl_fasl_read_u32(&r); /* skip unit length */
 
         if (r.error) {
-            cl_error(CL_ERR_GENERAL, "FASL: truncated unit header");
+            cl_error(CL_ERR_GENERAL,
+                     "FASL: truncated unit header at unit %u/%u (pos %u, size %u)",
+                     (unsigned)i, (unsigned)n_units,
+                     (unsigned)r.pos, (unsigned)r.size);
             return CL_NIL;
         }
 
         bc_obj = cl_fasl_deserialize_bytecode(&r);
         if (r.error) {
-            cl_error(CL_ERR_GENERAL, "FASL: error deserializing unit");
+            cl_error(CL_ERR_GENERAL,
+                     "FASL: deserialize failed: unit %u/%u %s at pos %u (unit_start %u, size %u)",
+                     (unsigned)i, (unsigned)n_units,
+                     fasl_err_name(r.error),
+                     (unsigned)r.pos, (unsigned)unit_start, (unsigned)r.size);
             return CL_NIL;
         }
 
