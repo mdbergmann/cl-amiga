@@ -123,6 +123,19 @@ enum CL_Opcode {
      * normal use. */
     OP_AMIGA_CALL   = 0xA9,
 
+    /* Inline %struct-ref / %struct-set fast-path: pop the struct (and value
+     * for SET), bounds-check against n_slots, read/write slots[idx] with
+     * idx baked into the operand stream as a u8 (0..255 covers any
+     * realistic defstruct).  Replaces ~10 VM ops + a builtin dispatch
+     * + 7 sanity branches on every line-sx / (setf line-sx) call.
+     *
+     * Compiler emits these when it sees (clamiga::%struct-ref obj <fixnum>)
+     * or (clamiga::%struct-set obj <fixnum> val) with the index fitting in
+     * a u8.  The full builtins remain for callers that compute the index
+     * dynamically. */
+    OP_STRUCT_REF   = 0xAA, /* u8 idx: pop obj → push obj->slots[idx] */
+    OP_STRUCT_SET   = 0xAB, /* u8 idx: pop val, pop obj → obj->slots[idx]=val, push val */
+
     OP_HALT      = 0xFF   /* Stop VM */
 };
 

@@ -33,6 +33,13 @@ static void defun(const char *name, CL_CFunc func, int min, int max)
  * alist of (name n-slots parent (slot-names...)) */
 CL_Obj struct_table = CL_NIL;
 
+/* Sentinel symbols matched by compile_call to emit OP_STRUCT_REF /
+ * OP_STRUCT_SET — interned in cl_package_clamiga during init.  Same
+ * pattern as cl_amiga_ffi_call_sym: external (.h) so the compiler can
+ * reference them without depending on this file's internals. */
+CL_Obj cl_struct_ref_sym = CL_NIL;
+CL_Obj cl_struct_set_sym = CL_NIL;
+
 /* --- Registry lookup helpers --- */
 
 /* Find registry entry for a struct type name.
@@ -568,4 +575,13 @@ void cl_builtins_struct_init(void)
     cl_register_builtin("%CLASS-OF", bi_class_of, 1, 1, cl_package_clamiga);
     cl_register_builtin("%SET-CLOS-CLASS-TABLE", bi_set_clos_class_table, 1, 1, cl_package_clamiga);
     cl_register_builtin("%STRUCT-CHANGE-CLASS", bi_struct_change_class, 3, 3, cl_package_clamiga);
+
+    /* Cache the symbols compile_call matches against to emit dedicated
+     * struct-access bytecodes.  The %STRUCT-REF / %STRUCT-SET builtins
+     * stay registered above as the runtime fallback for callers with a
+     * dynamically-computed slot index. */
+    cl_struct_ref_sym = cl_intern_in("%STRUCT-REF", 11, cl_package_clamiga);
+    cl_struct_set_sym = cl_intern_in("%STRUCT-SET", 11, cl_package_clamiga);
+    cl_gc_register_root(&cl_struct_ref_sym);
+    cl_gc_register_root(&cl_struct_set_sym);
 }

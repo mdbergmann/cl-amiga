@@ -3031,6 +3031,44 @@ static void compile_call(CL_Compiler *c, CL_Obj form)
         return;
     }
 
+    /* Inline (clamiga::%struct-ref obj <fixnum 0..255>) and
+     * (clamiga::%struct-set obj <fixnum 0..255> val) as dedicated
+     * opcodes when the index is a small literal — bypasses the wrapper
+     * accessor function call AND the bi_struct_ref/set builtin frame.
+     * Compound accessors like (line-sx l) defstruct expands to
+     * (%struct-ref l 0); after the wrapper inlines, this hook fires.
+     * Falls through to the regular call when idx isn't a u8 literal —
+     * the builtin remains for dynamic-index callers. */
+    if (CL_SYMBOL_P(func) &&
+        cl_struct_ref_sym != CL_NIL &&
+        cl_env_lookup_local_fun(c->env, func) < 0 &&
+        (!c->env || cl_env_resolve_fun_upvalue(c->env, func) < 0))
+    {
+        int is_ref = (func == cl_struct_ref_sym);
+        int is_set = (func == cl_struct_set_sym);
+        if (is_ref || is_set) {
+            int expected = is_ref ? 2 : 3;
+            if (proper_list_length(args) == expected) {
+                CL_Obj obj_form = cl_car(args);
+                CL_Obj idx_form = cl_car(cl_cdr(args));
+                CL_Obj val_form = is_set ? cl_car(cl_cdr(cl_cdr(args))) : CL_NIL;
+                if (CL_FIXNUM_P(idx_form)) {
+                    int32_t idx = CL_FIXNUM_VAL(idx_form);
+                    if (idx >= 0 && idx <= 255) {
+                        compile_expr(c, obj_form);
+                        if (is_set)
+                            compile_expr(c, val_form);
+                        cl_emit(c, is_ref ? OP_STRUCT_REF : OP_STRUCT_SET);
+                        cl_emit(c, (uint8_t)idx);
+                        CL_GC_UNPROTECT(1);
+                        c->in_tail = saved_tail;
+                        return;
+                    }
+                }
+            }
+        }
+    }
+
     /* Builtin inlining: if `func` is a CL: symbol that matches a
      * VM opcode for this arity AND isn't shadowed by a local
      * function or upvalue, emit the opcode directly.  Saves the
