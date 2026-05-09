@@ -15,6 +15,9 @@
    "WINDOW-RASTPORT" "WINDOW-WIDTH" "WINDOW-HEIGHT"
    "WINDOW-LEFT" "WINDOW-TOP" "WINDOW-TITLE"
    "WINDOW-USER-PORT"
+   "WINDOW-BORDER-LEFT" "WINDOW-BORDER-TOP"
+   "WINDOW-BORDER-RIGHT" "WINDOW-BORDER-BOTTOM"
+   "WINDOW-GZZ-WIDTH" "WINDOW-GZZ-HEIGHT"
    ;; Screen
    "OPEN-SCREEN" "CLOSE-SCREEN" "WITH-SCREEN"
    ;; IDCMP
@@ -131,15 +134,22 @@
 ;;; struct Window layout (from intuition/intuition.h):
 ;;;   0: NextWindow*    4: LeftEdge(W)  6: TopEdge(W)
 ;;;   8: Width(W)      10: Height(W)   32: Title*
-;;;  50: RPort*         86: UserPort*
+;;;  50: RPort*         54: BorderLeft/Top/Right/Bottom (4 BYTEs)
+;;;  86: UserPort*    112: GZZWidth(W) 114: GZZHeight(W)
 (ffi:defcstruct window
-  (left-edge   :u16  4)
-  (top-edge    :u16  6)
-  (width       :u16  8)
-  (height      :u16 10)
-  (rport       :pointer 50)    ; Window->RPort
-  (uport       :pointer 86)    ; Window->UserPort (MsgPort for IDCMP)
-  (title       :pointer 32))
+  (left-edge     :u16  4)
+  (top-edge      :u16  6)
+  (width         :u16  8)
+  (height        :u16 10)
+  (rport         :pointer 50)    ; Window->RPort
+  (border-left   :u8  54)        ; pixels reserved at left edge
+  (border-top    :u8  55)        ; pixels reserved at top edge (incl. title bar)
+  (border-right  :u8  56)
+  (border-bottom :u8  57)
+  (uport         :pointer 86)    ; Window->UserPort (MsgPort for IDCMP)
+  (gzz-width     :u16 112)       ; inner width  (only valid with GIMMEZEROZERO)
+  (gzz-height    :u16 114)       ; inner height (only valid with GIMMEZEROZERO)
+  (title         :pointer 32))
 
 ;;; struct IntuiMessage (partial)
 (ffi:defcstruct intui-message
