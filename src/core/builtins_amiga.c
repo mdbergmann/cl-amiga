@@ -12,9 +12,17 @@
 #include "error.h"
 #include "symbol.h"
 #include "package.h"
+#include "compiler.h"
 #include "../platform/platform.h"
 #include <string.h>
 #include <stdio.h>
+
+/* Symbol AMIGA::%FFI-CALL — sentinel that the compiler matches to emit
+ * OP_AMIGA_CALL.  Initialized to CL_NIL on non-Amiga builds (where the
+ * AMIGA package doesn't exist), to the actual symbol on Amiga.  Declared
+ * in compiler.h so compile_call can reference it without a hard dep on
+ * Amiga-only headers. */
+CL_Obj cl_amiga_ffi_call_sym = CL_NIL;
 
 #ifdef PLATFORM_AMIGA
 
@@ -246,6 +254,54 @@ static CL_Obj bi_amiga_call_library_fast(CL_Obj *args, int nargs)
     }
 }
 
+/* OP_AMIGA_CALL dispatch helper — called from vm.c when the dedicated
+ * bytecode op fires.  Decodes regspec into the trampoline registers,
+ * invokes the library, and returns the boxed result (or CL_NIL if
+ * void_p is set).  The caller has already validated base_addr.
+ *
+ * regspec layout: low 28 bits = 7 nibbles (one register index per arg),
+ * bit 28 = void-p (skip result boxing).  Kept inside the 30-bit fixnum
+ * range so defcfun can emit it as a literal fixnum. */
+CL_Obj cl_amiga_ffi_call_dispatch(uint32_t base_addr, int16_t offset,
+                                  uint32_t regspec, int n_args,
+                                  CL_Obj *arg_base)
+{
+    uint32_t regs[14];
+    uint16_t reg_mask = 0;
+    int i;
+    uint32_t result;
+    int void_p = (int)((regspec >> 28) & 1);
+
+    if (n_args < 0 || n_args > 7)
+        cl_error(CL_ERR_ARGS,
+                 "OP_AMIGA_CALL: too many register args (max 7), got %d",
+                 n_args);
+
+    memset(regs, 0, sizeof(regs));
+    for (i = 0; i < n_args; i++) {
+        int reg_idx = (int)((regspec >> (i * 4)) & 0xF);
+        if (reg_idx > 13)
+            cl_error(CL_ERR_ARGS,
+                     "OP_AMIGA_CALL: invalid register index in regspec");
+        regs[reg_idx] = ffi_arg_to_u32(arg_base[i]);
+        reg_mask |= (uint16_t)(1 << reg_idx);
+    }
+
+    result = platform_amiga_call(base_addr, offset, regs, reg_mask);
+
+    if (void_p)
+        return CL_NIL;
+    if (result <= (uint32_t)CL_FIXNUM_MAX)
+        return CL_MAKE_FIXNUM((int32_t)result);
+    else {
+        CL_Obj bn = cl_make_bignum(2, 0);
+        CL_Bignum *b = (CL_Bignum *)CL_OBJ_TO_PTR(bn);
+        b->limbs[0] = (uint16_t)(result & 0xFFFF);
+        b->limbs[1] = (uint16_t)(result >> 16);
+        return bn;
+    }
+}
+
 /* (amiga:alloc-chip size) → foreign-pointer */
 static CL_Obj bi_amiga_alloc_chip(CL_Obj *args, int nargs)
 {
@@ -276,6 +332,19 @@ static CL_Obj bi_amiga_free_chip(CL_Obj *args, int nargs)
     fp->address = 0;
     fp->flags &= (uint8_t)~(CL_FPTR_FLAG_OWNED | CL_FPTR_FLAG_CHIP);
     return CL_T;
+}
+
+#else /* !PLATFORM_AMIGA — host stub so vm.c links cleanly */
+
+CL_Obj cl_amiga_ffi_call_dispatch(uint32_t base_addr, int16_t offset,
+                                  uint32_t regspec, int n_args,
+                                  CL_Obj *arg_base)
+{
+    (void)base_addr; (void)offset; (void)regspec;
+    (void)n_args; (void)arg_base;
+    cl_error(CL_ERR_GENERAL,
+             "OP_AMIGA_CALL emitted on non-Amiga build — defcfun expansion bug");
+    return CL_NIL;
 }
 
 #endif /* PLATFORM_AMIGA */
@@ -314,7 +383,15 @@ void cl_builtins_amiga_init(void)
     amiga_defun("ALLOC-CHIP",        bi_amiga_alloc_chip,         1,  1);
     amiga_defun("FREE-CHIP",         bi_amiga_free_chip,          1,  1);
 
+    /* Intern AMIGA::%FFI-CALL — compile_call matches against this exact
+     * symbol object to emit OP_AMIGA_CALL.  Exported so defcfun (which
+     * lives in AMIGA.FFI) can emit it as `amiga:%ffi-call` without
+     * package gymnastics; user code shouldn't write it directly. */
+    cl_amiga_ffi_call_sym = cl_intern_in("%FFI-CALL", 9, cl_package_amiga);
+    cl_export_symbol(cl_amiga_ffi_call_sym, cl_package_amiga);
+
     /* Register cached symbols for GC compaction forwarding */
+    cl_gc_register_root(&cl_amiga_ffi_call_sym);
     cl_gc_register_root(&kw_d0);
     cl_gc_register_root(&kw_d1);
     cl_gc_register_root(&kw_d2);

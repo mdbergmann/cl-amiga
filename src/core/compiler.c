@@ -2969,6 +2969,68 @@ static void compile_call(CL_Compiler *c, CL_Obj form)
     /* GC-protect args: compile_expr for each arg may trigger macro expansion + GC */
     CL_GC_PROTECT(args);
 
+    /* AmigaOS FFI fast-path: (amiga:%ffi-call base-sym offset regspec args...)
+     * Form invariant (defcfun is the only emitter): arg 0 is a symbol literal
+     * naming the library-base var, arg 1 is the LVO offset (fixnum), arg 2 is
+     * the packed regspec (fixnum, bit 31 = void-p).  The rest are regular
+     * expressions, evaluated and pushed in order, then OP_AMIGA_CALL pops
+     * them and trampolines.  Skips the OP_FLOAD + OP_CALL dispatch and the
+     * call_builtin marshalling for every library call. */
+    if (CL_SYMBOL_P(func) && cl_amiga_ffi_call_sym != CL_NIL &&
+        func == cl_amiga_ffi_call_sym &&
+        cl_env_lookup_local_fun(c->env, func) < 0 &&
+        (!c->env || cl_env_resolve_fun_upvalue(c->env, func) < 0))
+    {
+        CL_Obj base_sym, offset_obj, regspec_obj, rest;
+        int n_value_args, sym_idx;
+        int16_t lvo_offset;
+        uint32_t regspec_val;
+
+        if (proper_list_length(args) < 3)
+            cl_error(CL_ERR_GENERAL,
+                     "AMIGA:%%FFI-CALL: needs at least base, offset, regspec");
+        base_sym    = cl_car(args);
+        offset_obj  = cl_car(cl_cdr(args));
+        regspec_obj = cl_car(cl_cdr(cl_cdr(args)));
+        rest        = cl_cdr(cl_cdr(cl_cdr(args)));
+
+        if (!CL_SYMBOL_P(base_sym))
+            cl_error(CL_ERR_TYPE,
+                     "AMIGA:%%FFI-CALL: base must be a symbol literal");
+        if (!CL_FIXNUM_P(offset_obj))
+            cl_error(CL_ERR_TYPE,
+                     "AMIGA:%%FFI-CALL: offset must be a fixnum literal");
+        if (!CL_FIXNUM_P(regspec_obj))
+            cl_error(CL_ERR_TYPE,
+                     "AMIGA:%%FFI-CALL: regspec must be a fixnum literal");
+
+        lvo_offset = (int16_t)CL_FIXNUM_VAL(offset_obj);
+        regspec_val = (uint32_t)CL_FIXNUM_VAL(regspec_obj);
+        n_value_args = proper_list_length(rest);
+        if (n_value_args < 0 || n_value_args > 7)
+            cl_error(CL_ERR_ARGS,
+                     "AMIGA:%%FFI-CALL: too many register args (max 7), got %d",
+                     n_value_args);
+
+        sym_idx = cl_add_constant(c, base_sym);
+
+        /* Push value args in order */
+        while (!CL_NULL_P(rest)) {
+            compile_expr(c, cl_car(rest));
+            rest = cl_cdr(rest);
+        }
+
+        cl_emit(c, OP_AMIGA_CALL);
+        cl_emit_u16(c, (uint16_t)sym_idx);
+        cl_emit_i16(c, lvo_offset);
+        cl_emit_i32(c, (int32_t)regspec_val);
+        cl_emit(c, (uint8_t)n_value_args);
+
+        CL_GC_UNPROTECT(1);
+        c->in_tail = saved_tail;
+        return;
+    }
+
     /* Builtin inlining: if `func` is a CL: symbol that matches a
      * VM opcode for this arity AND isn't shadowed by a local
      * function or upvalue, emit the opcode directly.  Saves the

@@ -821,6 +821,7 @@ static CL_Obj cl_vm_run(int base_fp, int base_nlx)
         [OP_DEFSETF]      = &&vm_op_OP_DEFSETF,
         [OP_DEFVAR]       = &&vm_op_OP_DEFVAR,
         [OP_MV_RESET]     = &&vm_op_OP_MV_RESET,
+        [OP_AMIGA_CALL]   = &&vm_op_OP_AMIGA_CALL,
         [OP_HALT]         = &&vm_op_OP_HALT,
     };
 
@@ -3108,6 +3109,40 @@ static CL_Obj cl_vm_run(int base_fp, int base_nlx)
         VM_CASE(OP_MV_RESET):
             cl_mv_count = 1;
             VM_BREAK;
+
+        VM_CASE(OP_AMIGA_CALL): {
+            uint16_t sym_idx = read_u16(code, &ip);
+            int16_t  off     = read_i16(code, &ip);
+            uint32_t regspec = (uint32_t)read_i32(code, &ip);
+            uint8_t  n_args  = code[ip++];
+            CL_Obj base_sym, base_val, result;
+            CL_ForeignPtr *bfp;
+
+            CL_SAFEPOINT();
+            if (!constants)
+                cl_error(CL_ERR_GENERAL,
+                         "OP_AMIGA_CALL with NULL constants ptr");
+            base_sym = constants[sym_idx];
+            base_val = cl_symbol_value(base_sym);
+            if (base_val == CL_UNBOUND)
+                cl_error(CL_ERR_UNBOUND,
+                         "OP_AMIGA_CALL: unbound library base %s",
+                         cl_symbol_name(base_sym));
+            if (!CL_FOREIGN_POINTER_P(base_val))
+                cl_error(CL_ERR_TYPE,
+                         "OP_AMIGA_CALL: %s is not a foreign pointer",
+                         cl_symbol_name(base_sym));
+            bfp = (CL_ForeignPtr *)CL_OBJ_TO_PTR(base_val);
+
+            /* Args sit at [sp-n_args .. sp-1]; pop after dispatch. */
+            result = cl_amiga_ffi_call_dispatch(
+                bfp->address, off, regspec, (int)n_args,
+                &cl_vm.stack[cl_vm.sp - n_args]);
+            cl_vm.sp -= n_args;
+            cl_vm_push(result);
+            cl_mv_count = 1;
+            VM_BREAK;
+        }
 
         VM_CASE(OP_RPLACA): {
             CL_Obj new_car = cl_vm_pop();

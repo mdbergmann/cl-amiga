@@ -106,6 +106,23 @@ enum CL_Opcode {
     OP_DEFVAR       = 0xA7, /* u16 sym_idx: pop value; if sym unbound, store value; mark special */
     OP_MV_RESET     = 0xA8, /* Reset multiple-value count to 1 (no operands) */
 
+    /* AmigaOS FFI fast-path: u16 base-sym-idx, i16 offset, u32 regspec, u8 nargs.
+     * Pops `nargs` values off the stack, loads them into the registers named by
+     * the low 28 bits of regspec (one nibble per arg, low-to-high; index 0..13
+     * matches D0..D7,A0..A5 — same encoding as CALL-LIBRARY-FAST).  Bit 28 of
+     * regspec is the void-p flag: when set, the trampoline result is discarded
+     * and NIL is pushed instead of a fixnum/bignum.  (Bit 28 is chosen over
+     * bit 31 so the regspec fits inside a 30-bit fixnum literal.)
+     *
+     * The base symbol is looked up once via cl_symbol_value() and must hold a
+     * foreign-pointer to the open library base.  Emitted by the compiler when
+     * it sees (amiga:%ffi-call base-sym offset regspec args...).
+     *
+     * On non-AmigaOS builds the dispatch signals an error — the opcode is only
+     * emitted when defcfun expands on Amiga, so this path is unreachable in
+     * normal use. */
+    OP_AMIGA_CALL   = 0xA9,
+
     OP_HALT      = 0xFF   /* Stop VM */
 };
 

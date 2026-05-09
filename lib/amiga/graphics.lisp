@@ -68,11 +68,13 @@
 ;;; Drawing functions
 ;;; ================================================================
 
+;; All graphics.library drawing primitives below have void return semantics —
+;; :VOID T tells defcfun to skip the d0 result boxing in OP_AMIGA_CALL.
 (amiga.ffi:defcfun move-to *gfx-base* -240
-  (:a1 rastport :d0 x :d1 y))
+  (:a1 rastport :d0 x :d1 y) :void t)
 
 (amiga.ffi:defcfun draw-to *gfx-base* -246
-  (:a1 rastport :d0 x :d1 y))
+  (:a1 rastport :d0 x :d1 y) :void t)
 
 (defun draw-line (rastport x1 y1 x2 y2)
   "Draw a line from (x1,y1) to (x2,y2)."
@@ -80,19 +82,19 @@
   (draw-to rastport x2 y2))
 
 (amiga.ffi:defcfun set-a-pen *gfx-base* -342
-  (:a1 rastport :d0 pen))
+  (:a1 rastport :d0 pen) :void t)
 
 (amiga.ffi:defcfun set-b-pen *gfx-base* -348
-  (:a1 rastport :d0 pen))
+  (:a1 rastport :d0 pen) :void t)
 
 (amiga.ffi:defcfun set-drmd *gfx-base* -354
-  (:a1 rastport :d0 mode))
+  (:a1 rastport :d0 mode) :void t)
 
 (amiga.ffi:defcfun rect-fill *gfx-base* -306
-  (:a1 rastport :d0 x-min :d1 y-min :d2 x-max :d3 y-max))
+  (:a1 rastport :d0 x-min :d1 y-min :d2 x-max :d3 y-max) :void t)
 
 (amiga.ffi:defcfun draw-ellipse *gfx-base* -180
-  (:a1 rastport :d0 cx :d1 cy :d2 rx :d3 ry))
+  (:a1 rastport :d0 cx :d1 cy :d2 rx :d3 ry) :void t)
 
 ;;; ================================================================
 ;;; Text functions
