@@ -95,16 +95,25 @@ copied to foreign memory and freed."
 ;;; (amiga.ffi:defcfun move-to *gfx-base* -240
 ;;;   (:a1 rastport :d0 x :d1 y))
 ;;;
-;;; Expands to a call through CALL-LIBRARY-FAST with the register layout
-;;; pre-encoded as a fixnum at macro-expansion time, eliminating the
-;;; per-call list allocation:
+;;; Expands to a call through AMIGA::%FFI-CALL — a special form the
+;;; compiler recognizes and emits as the dedicated OP_AMIGA_CALL bytecode
+;;; op.  No wrapper-function frame, no list allocation, no plist walk:
+;;; the value args go straight onto the VM stack and the trampoline
+;;; pulls them into m68k registers.
 ;;;
 ;;; (defun move-to (rastport x y)
-;;;   (amiga:call-library-fast *gfx-base* -240 #x019 rastport x y))
+;;;   (amiga:%ffi-call *gfx-base* -240 #x019 rastport x y))
 ;;;
-;;; The regspec fixnum packs one nibble per argument: :a1=9 (low nibble),
-;;; :d0=0, :d1=1 -> #x109. Up to 7 register args (28 bits) are supported,
-;;; matching the CALL-LIBRARY-FAST builtin's contract.
+;;; Regspec layout (fixnum, bits 0..28 used — fits in a 30-bit fixnum):
+;;;   bits  0..27: 7 nibbles, one register index per value arg
+;;;   bit   28   : void-p — when set, OP_AMIGA_CALL discards the d0
+;;;                result and pushes NIL.  Use :VOID T for library calls
+;;;                whose return value the caller never inspects (most of
+;;;                graphics.library, intuition rendering, etc.).
+;;;
+;;; If the AMIGA::%FFI-CALL special form ever runs interpreted (no
+;;; compiler hook), CALL-LIBRARY-FAST is the matching runtime fallback —
+;;; both honor the same regspec encoding.
 
 (defun %defcfun-reg-index (kw)
   "Return the register index (0..13) for an :Dn or :An keyword, or signal."
@@ -115,9 +124,13 @@ copied to foreign memory and freed."
     (:a4 12) (:a5 13)
     (otherwise (error "DEFCFUN: unknown register keyword: ~S" kw))))
 
-(defmacro defcfun (name library-base offset (&rest reg-spec))
+(defconstant +defcfun-void-bit+ #x10000000)  ; bit 28 — void-p flag
+
+(defmacro defcfun (name library-base offset (&rest reg-spec) &key void)
   "Define a Lisp function that calls an AmigaOS library function.
-REG-SPEC is a plist of (:register param-name ...) pairs."
+REG-SPEC is a plist of (:register param-name ...) pairs.
+When :VOID T, the return value is discarded (no fixnum/bignum boxing of
+the trampoline's d0 result; the wrapper returns NIL)."
   (let* ((pairs (loop for (reg param) on reg-spec by #'cddr
                       collect (list reg param)))
          (params (mapcar #'second pairs))
@@ -129,8 +142,10 @@ REG-SPEC is a plist of (:register param-name ...) pairs."
       (incf shift 4))
     (when (> (length params) 7)
       (error "DEFCFUN: too many register args (max 7): ~S" reg-spec))
+    (when void
+      (setf regspec (logior regspec +defcfun-void-bit+)))
     `(defun ,name ,params
-       (amiga:call-library-fast ,library-base ,offset ,regspec ,@params))))
+       (amiga:%ffi-call ,library-base ,offset ,regspec ,@params))))
 
 ;;; ================================================================
 ;;; Provide module

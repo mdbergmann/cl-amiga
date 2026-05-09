@@ -46,6 +46,19 @@ CL_Obj cl_macroexpand_1_env(CL_Obj form, CL_Obj lex_env);
  * macrolet-bound macros. */
 extern CL_Obj SYM_LEX_LOCAL_MACRO;
 
+/* AMIGA::%FFI-CALL — sentinel symbol matched by compile_call to emit
+ * OP_AMIGA_CALL.  Initialized by cl_builtins_amiga_init: the actual
+ * symbol on PLATFORM_AMIGA, CL_NIL on host (fast-path inactive). */
+extern CL_Obj cl_amiga_ffi_call_sym;
+
+/* OP_AMIGA_CALL VM dispatch helper — defined in builtins_amiga.c.
+ * Invokes the Amiga library trampoline and boxes the result (or returns
+ * CL_NIL when bit 31 of regspec is set, the void-call elision flag).
+ * On non-Amiga builds the body signals an error. */
+CL_Obj cl_amiga_ffi_call_dispatch(uint32_t base_addr, int16_t offset,
+                                  uint32_t regspec, int n_args,
+                                  CL_Obj *arg_base);
+
 /* Look up a global symbol-macro expansion (from DEFINE-SYMBOL-MACRO).
    Returns CL_NIL when the symbol has no global symbol-macro binding —
    but also when the binding expands to NIL.  To distinguish, use

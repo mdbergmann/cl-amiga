@@ -109,15 +109,20 @@
            (ih (window-gzz-height win))
            (lines (init-lines iw ih))
            (frames 0)
+           (fps 0.0)
            (t0 (get-internal-real-time)))
       (loop until (close-requested-p win) do
         (draw-frame rp lines iw ih)
+        ;; Repaint the FPS overlay every frame — draw-frame's rect-fill
+        ;; wipes the inner window each iteration, so a once-per-second
+        ;; paint would only flash for ~4 ms out of every second.
+        (draw-fps rp fps iw)
         (incf frames)
         (let ((elapsed (/ (- (get-internal-real-time) t0)
                           internal-time-units-per-second)))
           (when (>= elapsed 1)
-            (draw-fps rp (float (/ frames elapsed)) iw)
-            (setf frames 0
+            (setf fps (float (/ frames elapsed))
+                  frames 0
                   t0 (get-internal-real-time))))))))
 
 (run)
