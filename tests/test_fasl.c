@@ -2291,6 +2291,47 @@ TEST(load_auto_finds_cached_fasl)
     delete_cached_fasl("/tmp/cf-test10.lisp");
 }
 
+TEST(load_fasl_input_bypasses_user_cache)
+{
+    /* When LOAD is called with a .fasl path, it must open *that* file —
+     * never get redirected to a sibling in the per-user FASL cache.
+     *
+     * Setup: create two FASLs that share the same cache key but live at
+     * different paths, then arrange the cache file to be newer than the
+     * direct .fasl.  Pre-fix bi_load would honour the (newer) cache; the
+     * fix bypasses the cache lookup for .fasl inputs and loads what was
+     * named.  This guards lib/clos.fasl and any hand-compiled .fasl
+     * against silent shadowing by stale cache entries. */
+    write_test_file("/tmp/cf-prio-direct.lisp",
+        "(defvar *cf-cache-prio* :direct-version)\n");
+    eval_obj("(compile-file \"/tmp/cf-prio-direct.lisp\" "
+             ":output-file \"/tmp/cf-prio.fasl\")");
+    ASSERT(platform_file_exists("/tmp/cf-prio.fasl"));
+
+    /* Sleep so the next compile produces a strictly newer mtime
+     * (filesystem mtimes typically have 1-second resolution). */
+    platform_sleep_ms(1100);
+
+    /* Compile a different source whose cache path collides with the
+     * cache path of /tmp/cf-prio.fasl.  make_fasl_cache_path strips the
+     * trailing extension, so /tmp/cf-prio.lisp and /tmp/cf-prio.fasl
+     * both map to ~/.cache/.../tmp/cf-prio.fasl — exactly the
+     * shadow-via-cache scenario we're guarding against. */
+    write_test_file("/tmp/cf-prio.lisp",
+        "(defvar *cf-cache-prio* :cached-version)\n");
+    eval_obj("(compile-file \"/tmp/cf-prio.lisp\")");
+
+    /* The cache version is now newer than /tmp/cf-prio.fasl.  Loading
+     * /tmp/cf-prio.fasl must still produce :DIRECT-VERSION. */
+    eval_obj("(load \"/tmp/cf-prio.fasl\")");
+    ASSERT_STR_EQ(eval_print("*cf-cache-prio*"), ":DIRECT-VERSION");
+
+    platform_file_delete("/tmp/cf-prio-direct.lisp");
+    platform_file_delete("/tmp/cf-prio.lisp");
+    platform_file_delete("/tmp/cf-prio.fasl");
+    delete_cached_fasl("/tmp/cf-prio.lisp");
+}
+
 TEST(load_stale_fasl_falls_back_to_source)
 {
     /* If source is newer than FASL, load should use source */
@@ -2482,6 +2523,7 @@ int main(void)
 
     /* FASL cache behavior tests */
     RUN(load_auto_finds_cached_fasl);
+    RUN(load_fasl_input_bypasses_user_cache);
     RUN(load_stale_fasl_falls_back_to_source);
     RUN(cache_paths_differ_for_different_dirs);
 

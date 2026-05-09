@@ -437,12 +437,21 @@ static CL_Obj bi_load(CL_Obj *args, int n)
 
     path_str = (CL_String *)CL_OBJ_TO_PTR(args[0]);
 
-    /* Check for cached FASL before reading source (skip .asd — they share
-       base names with .lisp source files and must not be FASL-substituted) */
+    /* Check for cached FASL before reading source.  Skipped when:
+       - .asd (shares base names with .lisp source files; must not be
+         FASL-substituted via the cache).
+       - .fasl input (the caller is already pointing at a precompiled
+         artifact — typically a shipped lib/*.fasl or a hand-compiled
+         output.  The cache exists to short-circuit a .lisp->fasl
+         recompile; for .fasl inputs there is no recompile to skip,
+         and an older stale cache here would silently shadow the file
+         the caller asked for). */
     {
         char cache_path[1024];
         size_t plen2 = strlen(path_str->data);
-        int skip_cache = (plen2 >= 4 && strcmp(path_str->data + plen2 - 4, ".asd") == 0);
+        int skip_cache =
+            (plen2 >= 4 && strcmp(path_str->data + plen2 - 4, ".asd") == 0) ||
+            (plen2 >= 5 && strcmp(path_str->data + plen2 - 5, ".fasl") == 0);
         if (!skip_cache &&
             make_fasl_cache_path(path_str->data, cache_path, sizeof(cache_path)) &&
             platform_file_exists(cache_path))
