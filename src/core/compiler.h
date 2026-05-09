@@ -26,6 +26,14 @@ int cl_macro_p(CL_Obj name);
 /* Get macro expander for a symbol */
 CL_Obj cl_get_macro(CL_Obj name);
 
+/* Compiler-macro registry (CLHS 3.2.2.1).  Returns CL_NIL when no
+ * compiler macro is associated with NAME.  Expander is invoked at
+ * compile time as `(expander form env)` — if it returns the original
+ * form (eq), the compiler treats it as a decline and uses the regular
+ * function call path. */
+void cl_register_compiler_macro(CL_Obj name, CL_Obj expander);
+CL_Obj cl_get_compiler_macro(CL_Obj name);
+
 void cl_compiler_init(void);
 
 /* Expand one level of macro (returns form unchanged if not a macro call) */

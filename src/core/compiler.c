@@ -11,6 +11,7 @@ CL_Obj setf_table = CL_NIL;
 CL_Obj setf_fn_table = CL_NIL;  /* (setf name) functions: ((accessor . setf-fn-sym) ...) val-first calling */
 CL_Obj setf_expander_table = CL_NIL;  /* define-setf-expander: ((name . expander-fn) ...) */
 CL_Obj type_table = CL_NIL;
+CL_Obj compiler_macro_table = CL_NIL;  /* define-compiler-macro: ((name . expander-fn) ...) */
 
 void *cl_tables_rwlock = NULL;
 
@@ -2969,6 +2970,40 @@ static void compile_call(CL_Compiler *c, CL_Obj form)
     /* GC-protect args: compile_expr for each arg may trigger macro expansion + GC */
     CL_GC_PROTECT(args);
 
+    /* Compiler-macro expansion (CLHS 3.2.2.1).  Run before any opcode
+     * inlining or call-emission so an expansion that opens up further
+     * compile-time optimizations (e.g. defstruct's accessor macros
+     * expanding to %struct-ref + literal index) can hit the dedicated
+     * OP_STRUCT_REF / OP_AMIGA_CALL hooks below.  Only applies when the
+     * symbol isn't shadowed by a local function or upvalue, matching
+     * regular function-name resolution rules. */
+    if (CL_SYMBOL_P(func) &&
+        cl_env_lookup_local_fun(c->env, func) < 0 &&
+        (!c->env || cl_env_resolve_fun_upvalue(c->env, func) < 0))
+    {
+        CL_Obj cmf = cl_get_compiler_macro(func);
+        if (!CL_NULL_P(cmf)) {
+            CL_Obj call_args[2];
+            CL_Obj expanded;
+            /* Compaction GC may run inside cl_vm_apply (the expander is
+             * arbitrary user code).  Protect both the expander closure and
+             * the form pointer we eq-compare against the result. */
+            CL_GC_PROTECT(cmf);
+            CL_GC_PROTECT(form);
+            call_args[0] = form;
+            call_args[1] = CL_NIL;  /* &environment — empty for now */
+            expanded = cl_vm_apply(cmf, call_args, 2);
+            CL_GC_UNPROTECT(2);
+            /* CLHS: returning the original form (eq) means "decline" */
+            if (expanded != form) {
+                CL_GC_UNPROTECT(1);  /* args */
+                c->in_tail = saved_tail;
+                compile_expr(c, expanded);
+                return;
+            }
+        }
+    }
+
     /* AmigaOS FFI fast-path: (amiga:%ffi-call base-sym offset regspec args...)
      * Form invariant (defcfun is the only emitter): arg 0 is a symbol literal
      * naming the library-base var, arg 1 is the LVO offset (fixnum), arg 2 is
@@ -3779,6 +3814,45 @@ CL_Obj cl_get_macro(CL_Obj name)
     return CL_NIL;
 }
 
+/* --- Compiler-macro table --- */
+
+/* Compiler macros (CLHS 3.2.2.1): a per-name expander invoked by
+ * compile_call before regular function dispatch.  The expander runs at
+ * compile time on the call form; if it returns the *same* form (eq), the
+ * compiler treats it as "decline" and proceeds with the normal call.
+ * Otherwise the returned form replaces the call (re-compiled in place).
+ *
+ * Storage mirrors macro_table — prepend-only alist, snapshot-and-walk
+ * lookup, GC-marked from mem.c.  defstruct uses these to inline
+ * accessor wrappers like (line-sx l) → (clamiga::%struct-ref l 0)
+ * which then trips the OP_STRUCT_REF compiler hook. */
+void cl_register_compiler_macro(CL_Obj name, CL_Obj expander)
+{
+    CL_Obj pair;
+    CL_GC_PROTECT(name);
+    CL_GC_PROTECT(expander);
+    pair = cl_cons(name, expander);
+    cl_tables_wrlock();
+    compiler_macro_table = cl_cons(pair, compiler_macro_table);
+    cl_tables_rwunlock();
+    CL_GC_UNPROTECT(2);
+}
+
+CL_Obj cl_get_compiler_macro(CL_Obj name)
+{
+    CL_Obj list;
+    cl_tables_rdlock();
+    list = compiler_macro_table;
+    cl_tables_rwunlock();
+    while (!CL_NULL_P(list)) {
+        CL_Obj pair = cl_car(list);
+        if (cl_car(pair) == name)
+            return cl_cdr(pair);
+        list = cl_cdr(list);
+    }
+    return CL_NIL;
+}
+
 /* --- Type table (for deftype) --- */
 
 void cl_register_type(CL_Obj name, CL_Obj expander)
@@ -4090,6 +4164,7 @@ void cl_compiler_init(void)
     macro_table = CL_NIL;
     setf_table = CL_NIL;
     type_table = CL_NIL;
+    compiler_macro_table = CL_NIL;
 
     if (!cl_tables_rwlock)
         platform_rwlock_init(&cl_tables_rwlock);

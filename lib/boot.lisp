@@ -220,14 +220,35 @@
                   `(list* ',function ,place-var ,@plain-args)
                   `(list ',function ,place-var ,@plain-args))))))
 
-;; Compiler macros (no-op — CL-Amiga doesn't optimize via compiler macros)
-(defmacro define-compiler-macro (name lambda-list &body body)
-  (declare (ignore lambda-list body))
-  `',name)
+;; Compiler macros (CLHS 3.2.2.1).  The expander runs at compile time
+;; on the call form; returning the original form (eq) means "decline"
+;; and the compiler proceeds with the regular call path.  See
+;; cl_get_compiler_macro / compile_call in compiler.c.
+;;
+;; Lambda list supports &whole (must be first) for the decline pattern.
+;; &environment is silently stripped — the compiler always passes NIL.
+(defun %dcm-split-whole (ll)
+  "Return (cons WHOLE-VAR CLEANED-LL).  WHOLE-VAR is NIL when no &whole."
+  (if (and (consp ll) (eq (car ll) '&whole))
+      (cons (cadr ll) (cddr ll))
+      (cons nil ll)))
 
-(defun compiler-macro-function (name &optional env)
-  (declare (ignore name env))
-  nil)
+(defmacro define-compiler-macro (name lambda-list &body body)
+  (let* ((form-var (gensym "FORM"))
+         (env-var  (gensym "ENV"))
+         (split    (%dcm-split-whole lambda-list))
+         (whole    (car split))
+         (clean    (cdr split))
+         (inner    `(destructuring-bind ,clean (cdr ,form-var) ,@body)))
+    `(progn
+       (clamiga::%setf-compiler-macro-function
+        (lambda (,form-var ,env-var)
+          (declare (ignore ,env-var))
+          ,(if whole
+               `(let ((,whole ,form-var)) ,inner)
+               inner))
+        ',name)
+       ',name)))
 
 ;; define-symbol-macro — stores expansion on the symbol's plist under
 ;; %SYMBOL-MACRO-EXPANSION; the compiler consults this when compiling a
@@ -1134,13 +1155,23 @@ when the param has no explicit default.  CL spec 3.4.6 requires this."
           (when copy-name
             (push `(defun ,copy-name (obj) (%copy-struct obj))
                   forms))
-          ;; Accessors and setf writers
+          ;; Accessors and setf writers.  We emit both a defun (so #'line-sx
+          ;; works for funcall/mapcar) AND a compiler macro that inlines
+          ;; the call into (clamiga::%struct-ref obj <idx>) — which the
+          ;; compiler then lowers to OP_STRUCT_REF, skipping the wrapper
+          ;; frame entirely on direct calls.  Same for the setter.
           (let ((idx 0))
             (dolist (sname slot-names)
               (let* ((acc-name (intern (concatenate 'string prefix (symbol-name sname))))
                      (setter-name (intern (concatenate 'string "%SET-" (symbol-name acc-name)))))
-                (push `(defun ,acc-name (obj) (%struct-ref obj ,idx)) forms)
-                (push `(defun ,setter-name (obj val) (%struct-set obj ,idx val)) forms)
+                (push `(defun ,acc-name (obj) (clamiga::%struct-ref obj ,idx)) forms)
+                (push `(define-compiler-macro ,acc-name (obj)
+                         (list 'clamiga::%struct-ref obj ,idx))
+                      forms)
+                (push `(defun ,setter-name (obj val) (clamiga::%struct-set obj ,idx val)) forms)
+                (push `(define-compiler-macro ,setter-name (obj val)
+                         (list 'clamiga::%struct-set obj ,idx val))
+                      forms)
                 (push `(defsetf ,acc-name ,setter-name) forms))
               (setq idx (+ idx 1))))
           ;; Register struct as CLOS class if CLOS is loaded
