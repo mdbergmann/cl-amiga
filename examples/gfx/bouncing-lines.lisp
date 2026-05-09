@@ -38,24 +38,31 @@
                   :dx2 (nz-delta) :dy2 (nz-delta)
                   :color (1+ i))))
 
-(defun clamp (v lo hi) (max lo (min hi v)))
-
-(defun bounce-delta (v d limit)
-  (if (or (<= v 0) (>= v limit)) (- d) d))
-
 (defun step-line (ln w h)
-  (setf (line-start-x ln) (+ (line-start-x ln) (line-dx1 ln))
-        (line-start-y ln) (+ (line-start-y ln) (line-dy1 ln))
-        (line-end-x   ln) (+ (line-end-x   ln) (line-dx2 ln))
-        (line-end-y   ln) (+ (line-end-y   ln) (line-dy2 ln)))
-  (setf (line-dx1 ln) (bounce-delta (line-start-x ln) (line-dx1 ln) w)
-        (line-dy1 ln) (bounce-delta (line-start-y ln) (line-dy1 ln) h)
-        (line-dx2 ln) (bounce-delta (line-end-x   ln) (line-dx2 ln) w)
-        (line-dy2 ln) (bounce-delta (line-end-y   ln) (line-dy2 ln) h))
-  (setf (line-start-x ln) (clamp (line-start-x ln) 0 w)
-        (line-start-y ln) (clamp (line-start-y ln) 0 h)
-        (line-end-x   ln) (clamp (line-end-x   ln) 0 w)
-        (line-end-y   ln) (clamp (line-end-y   ln) 0 h)))
+  (let ((sx (+ (line-start-x ln) (line-dx1 ln)))
+        (sy (+ (line-start-y ln) (line-dy1 ln)))
+        (ex (+ (line-end-x   ln) (line-dx2 ln)))
+        (ey (+ (line-end-y   ln) (line-dy2 ln)))
+        (dx1 (line-dx1 ln))
+        (dy1 (line-dy1 ln))
+        (dx2 (line-dx2 ln))
+        (dy2 (line-dy2 ln)))
+    (when (or (<= sx 0) (>= sx w)) (setf dx1 (- dx1)))
+    (when (or (<= sy 0) (>= sy h)) (setf dy1 (- dy1)))
+    (when (or (<= ex 0) (>= ex w)) (setf dx2 (- dx2)))
+    (when (or (<= ey 0) (>= ey h)) (setf dy2 (- dy2)))
+    (when (< sx 0) (setf sx 0)) (when (> sx w) (setf sx w))
+    (when (< sy 0) (setf sy 0)) (when (> sy h) (setf sy h))
+    (when (< ex 0) (setf ex 0)) (when (> ex w) (setf ex w))
+    (when (< ey 0) (setf ey 0)) (when (> ey h) (setf ey h))
+    (setf (line-start-x ln) sx
+          (line-start-y ln) sy
+          (line-end-x   ln) ex
+          (line-end-y   ln) ey
+          (line-dx1 ln) dx1
+          (line-dy1 ln) dy1
+          (line-dx2 ln) dx2
+          (line-dy2 ln) dy2)))
 
 (defun draw-frame (rp lines w h)
   (set-a-pen rp 0)
@@ -102,17 +109,15 @@
            (ih (window-gzz-height win))
            (lines (init-lines iw ih))
            (frames 0)
-           (fps 0.0)
            (t0 (get-internal-real-time)))
       (loop until (close-requested-p win) do
         (draw-frame rp lines iw ih)
-        (draw-fps rp fps iw)
         (incf frames)
         (let ((elapsed (/ (- (get-internal-real-time) t0)
                           internal-time-units-per-second)))
           (when (>= elapsed 1)
-            (setf fps (float (/ frames elapsed))
-                  frames 0
+            (draw-fps rp (float (/ frames elapsed)) iw)
+            (setf frames 0
                   t0 (get-internal-real-time))))))))
 
 (run)

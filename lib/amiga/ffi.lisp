@@ -95,22 +95,42 @@ copied to foreign memory and freed."
 ;;; (amiga.ffi:defcfun move-to *gfx-base* -240
 ;;;   (:a1 rastport :d0 x :d1 y))
 ;;;
-;;; Expands to:
+;;; Expands to a call through CALL-LIBRARY-FAST with the register layout
+;;; pre-encoded as a fixnum at macro-expansion time, eliminating the
+;;; per-call list allocation:
+;;;
 ;;; (defun move-to (rastport x y)
-;;;   (amiga:call-library *gfx-base* -240
-;;;     (list :a1 rastport :d0 x :d1 y)))
+;;;   (amiga:call-library-fast *gfx-base* -240 #x019 rastport x y))
+;;;
+;;; The regspec fixnum packs one nibble per argument: :a1=9 (low nibble),
+;;; :d0=0, :d1=1 -> #x109. Up to 7 register args (28 bits) are supported,
+;;; matching the CALL-LIBRARY-FAST builtin's contract.
+
+(defun %defcfun-reg-index (kw)
+  "Return the register index (0..13) for an :Dn or :An keyword, or signal."
+  (case kw
+    (:d0 0)  (:d1 1)  (:d2 2)  (:d3 3)
+    (:d4 4)  (:d5 5)  (:d6 6)  (:d7 7)
+    (:a0 8)  (:a1 9)  (:a2 10) (:a3 11)
+    (:a4 12) (:a5 13)
+    (otherwise (error "DEFCFUN: unknown register keyword: ~S" kw))))
 
 (defmacro defcfun (name library-base offset (&rest reg-spec))
   "Define a Lisp function that calls an AmigaOS library function.
 REG-SPEC is a plist of (:register param-name ...) pairs."
-  (let ((params (loop for (reg param) on reg-spec by #'cddr
-                      collect param))
-        (call-list (loop for (reg param) on reg-spec by #'cddr
-                         collect reg
-                         collect param)))
+  (let* ((pairs (loop for (reg param) on reg-spec by #'cddr
+                      collect (list reg param)))
+         (params (mapcar #'second pairs))
+         (regspec 0)
+         (shift 0))
+    (dolist (pair pairs)
+      (setf regspec (logior regspec
+                            (ash (%defcfun-reg-index (first pair)) shift)))
+      (incf shift 4))
+    (when (> (length params) 7)
+      (error "DEFCFUN: too many register args (max 7): ~S" reg-spec))
     `(defun ,name ,params
-       (amiga:call-library ,library-base ,offset
-                           (list ,@call-list)))))
+       (amiga:call-library-fast ,library-base ,offset ,regspec ,@params))))
 
 ;;; ================================================================
 ;;; Provide module
