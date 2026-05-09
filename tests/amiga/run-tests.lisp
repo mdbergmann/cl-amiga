@@ -4261,6 +4261,33 @@
       (prog1 (not (ffi:null-pointer-p p))
         (amiga:free-chip p))))
 
+  ;; CALL-LIBRARY-FAST: dos.library IoErr() -> LVO -132, no register args.
+  ;; Returns a fixnum (the last I/O error code, typically 0). The point of
+  ;; this test is to exercise the zero-arg path and confirm fixnum return.
+  (check "amiga-call-library-fast-zero-args" t
+    (let ((lib (amiga:open-library "dos.library" 36)))
+      (prog1 (integerp (amiga:call-library-fast lib -132 0))
+        (amiga:close-library lib))))
+
+  ;; CALL-LIBRARY-FAST and CALL-LIBRARY must agree for the same call.
+  (check "amiga-call-library-fast-matches-slow" t
+    (let ((lib (amiga:open-library "dos.library" 36)))
+      (prog1
+        (= (amiga:call-library-fast lib -132 0)
+           (amiga:call-library lib -132 nil))
+        (amiga:close-library lib))))
+
+  ;; DEFCFUN regspec encoding: (:a1 :d0 :d1) -> 9 | (0<<4) | (1<<8) = #x109.
+  ;; macroexpand-1 should produce a CALL-LIBRARY-FAST form with that fixnum.
+  (check "amiga-defcfun-regspec-encoding" t
+    (let* ((form '(amiga.ffi:defcfun foo *base* -42
+                                     (:a1 r :d0 x :d1 y)))
+           (expanded (macroexpand-1 form))
+           ;; Look for the encoded fixnum #x109 anywhere in the body.
+           (printed (format nil "~S" expanded)))
+      (and (search "CALL-LIBRARY-FAST" printed :test #'char-equal)
+           (search "265" printed))))  ; #x109 = 265
+
   ; --- Intuition/Graphics/GadTools tests ---
   ; These are in a separate file because the reader needs the packages
   ; to exist before it can read amiga.intuition:* qualified symbols.

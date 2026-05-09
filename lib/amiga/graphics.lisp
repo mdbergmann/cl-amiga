@@ -88,19 +88,11 @@
 (amiga.ffi:defcfun set-drmd *gfx-base* -354
   (:a1 rastport :d0 mode))
 
-(defun rect-fill (rastport x-min y-min x-max y-max)
-  "Fill a rectangle."
-  (amiga:call-library *gfx-base* +lvo-rect-fill+
-                      (list :a1 rastport
-                            :d0 x-min :d1 y-min
-                            :d2 x-max :d3 y-max)))
+(amiga.ffi:defcfun rect-fill *gfx-base* -306
+  (:a1 rastport :d0 x-min :d1 y-min :d2 x-max :d3 y-max))
 
-(defun draw-ellipse (rastport cx cy rx ry)
-  "Draw an ellipse centered at (cx,cy) with radii (rx,ry)."
-  (amiga:call-library *gfx-base* +lvo-draw-ellipse+
-                      (list :a1 rastport
-                            :d0 cx :d1 cy
-                            :d2 rx :d3 ry)))
+(amiga.ffi:defcfun draw-ellipse *gfx-base* -180
+  (:a1 rastport :d0 cx :d1 cy :d2 rx :d3 ry))
 
 ;;; ================================================================
 ;;; Text functions

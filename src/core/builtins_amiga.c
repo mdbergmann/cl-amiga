@@ -180,6 +180,72 @@ static CL_Obj bi_amiga_call_library(CL_Obj *args, int nargs)
     }
 }
 
+/* (amiga:call-library-fast base offset regspec &rest values) → integer
+ *
+ * Fast path: register layout is encoded in REGSPEC as a fixnum of nibbles
+ * (low to high), one per value argument:
+ *   bits  0-3  -> register index for value 0
+ *   bits  4-7  -> register index for value 1
+ *   ...
+ *   bits 24-27 -> register index for value 6
+ * Indices match decode_register_keyword (D0..D7=0..7, A0..A5=8..13).
+ *
+ * This avoids the per-call list allocation and keyword walk that
+ * CALL-LIBRARY does, at the cost of capping at 7 register args
+ * (sufficient for all standard Amiga library calls). */
+static CL_Obj bi_amiga_call_library_fast(CL_Obj *args, int nargs)
+{
+    CL_ForeignPtr *fp;
+    int16_t offset;
+    uint32_t regspec;
+    uint32_t regs[14];
+    uint16_t reg_mask = 0;
+    int n_regs, i;
+    uint32_t result;
+
+    if (!CL_FOREIGN_POINTER_P(args[0]))
+        cl_error(CL_ERR_TYPE,
+                 "AMIGA:CALL-LIBRARY-FAST: base must be a foreign pointer");
+    fp = (CL_ForeignPtr *)CL_OBJ_TO_PTR(args[0]);
+
+    if (!CL_FIXNUM_P(args[1]))
+        cl_error(CL_ERR_TYPE,
+                 "AMIGA:CALL-LIBRARY-FAST: offset must be a fixnum");
+    offset = (int16_t)CL_FIXNUM_VAL(args[1]);
+
+    if (!CL_FIXNUM_P(args[2]))
+        cl_error(CL_ERR_TYPE,
+                 "AMIGA:CALL-LIBRARY-FAST: regspec must be a fixnum");
+    regspec = (uint32_t)CL_FIXNUM_VAL(args[2]);
+
+    n_regs = nargs - 3;
+    if (n_regs < 0 || n_regs > 7)
+        cl_error(CL_ERR_ARGS,
+                 "AMIGA:CALL-LIBRARY-FAST: too many register args (max 7)");
+
+    memset(regs, 0, sizeof(regs));
+    for (i = 0; i < n_regs; i++) {
+        int reg_idx = (int)((regspec >> (i * 4)) & 0xF);
+        if (reg_idx > 13)
+            cl_error(CL_ERR_ARGS,
+                     "AMIGA:CALL-LIBRARY-FAST: invalid register index in regspec");
+        regs[reg_idx] = ffi_arg_to_u32(args[3 + i]);
+        reg_mask |= (uint16_t)(1 << reg_idx);
+    }
+
+    result = platform_amiga_call(fp->address, offset, regs, reg_mask);
+
+    if (result <= (uint32_t)CL_FIXNUM_MAX)
+        return CL_MAKE_FIXNUM((int32_t)result);
+    else {
+        CL_Obj bn = cl_make_bignum(2, 0);
+        CL_Bignum *b = (CL_Bignum *)CL_OBJ_TO_PTR(bn);
+        b->limbs[0] = (uint16_t)(result & 0xFFFF);
+        b->limbs[1] = (uint16_t)(result >> 16);
+        return bn;
+    }
+}
+
 /* (amiga:alloc-chip size) → foreign-pointer */
 static CL_Obj bi_amiga_alloc_chip(CL_Obj *args, int nargs)
 {
@@ -241,11 +307,12 @@ void cl_builtins_amiga_init(void)
     kw_a5 = cl_intern_in("A5", 2, cl_package_keyword);
 
     /* Register builtins in AMIGA package */
-    amiga_defun("OPEN-LIBRARY",   bi_amiga_open_library,    1, 2);
-    amiga_defun("CLOSE-LIBRARY",  bi_amiga_close_library,   1, 1);
-    amiga_defun("CALL-LIBRARY",   bi_amiga_call_library,    3, 3);
-    amiga_defun("ALLOC-CHIP",     bi_amiga_alloc_chip,      1, 1);
-    amiga_defun("FREE-CHIP",      bi_amiga_free_chip,       1, 1);
+    amiga_defun("OPEN-LIBRARY",      bi_amiga_open_library,       1,  2);
+    amiga_defun("CLOSE-LIBRARY",     bi_amiga_close_library,      1,  1);
+    amiga_defun("CALL-LIBRARY",      bi_amiga_call_library,       3,  3);
+    amiga_defun("CALL-LIBRARY-FAST", bi_amiga_call_library_fast,  3, -1);
+    amiga_defun("ALLOC-CHIP",        bi_amiga_alloc_chip,         1,  1);
+    amiga_defun("FREE-CHIP",         bi_amiga_free_chip,          1,  1);
 
     /* Register cached symbols for GC compaction forwarding */
     cl_gc_register_root(&kw_d0);
