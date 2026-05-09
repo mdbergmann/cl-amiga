@@ -13,7 +13,7 @@
 #include <stdlib.h>
 
 /* External roots needed for GC marking */
-extern CL_Obj macro_table, setf_table, setf_fn_table, setf_expander_table, type_table;
+extern CL_Obj macro_table, setf_table, setf_fn_table, setf_expander_table, type_table, compiler_macro_table;
 extern CL_Obj cl_clos_class_table;
 extern CL_Obj struct_table;  /* builtins_struct.c: struct type registry */
 extern CL_Obj condition_hierarchy;     /* builtins_condition.c */
@@ -1054,6 +1054,7 @@ static void gc_mark(void)
     gc_mark_obj(setf_fn_table);
     gc_mark_obj(setf_expander_table);
     gc_mark_obj(type_table);
+    gc_mark_obj(compiler_macro_table);
     gc_mark_obj(cl_clos_class_table);
     gc_mark_obj(struct_table);
     gc_mark_obj(condition_hierarchy);
@@ -1595,6 +1596,7 @@ static void gc_update_shared_roots(void)
     gc_update_slot(&setf_fn_table);
     gc_update_slot(&setf_expander_table);
     gc_update_slot(&type_table);
+    gc_update_slot(&compiler_macro_table);
     gc_update_slot(&cl_clos_class_table);
     gc_update_slot(&struct_table);
     gc_update_slot(&condition_hierarchy);

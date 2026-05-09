@@ -1824,6 +1824,26 @@ static CL_Obj bi_set_macro_function(CL_Obj *args, int n)
     return args[0];
 }
 
+/* --- compiler-macro-function / (setf compiler-macro-function) --- */
+
+static CL_Obj bi_compiler_macro_function(CL_Obj *args, int n)
+{
+    CL_UNUSED(n);
+    if (!CL_SYMBOL_P(args[0]))
+        cl_error(CL_ERR_TYPE, "COMPILER-MACRO-FUNCTION: not a symbol");
+    return cl_get_compiler_macro(args[0]);
+}
+
+static CL_Obj bi_set_compiler_macro_function(CL_Obj *args, int n)
+{
+    /* (setf (compiler-macro-function name) function) — args: new-value, name */
+    CL_UNUSED(n);
+    if (!CL_SYMBOL_P(args[1]))
+        cl_error(CL_ERR_TYPE, "(SETF COMPILER-MACRO-FUNCTION): not a symbol");
+    cl_register_compiler_macro(args[1], args[0]);
+    return args[0];
+}
+
 /* --- Throw --- */
 
 static CL_Obj bi_throw(CL_Obj *args, int n)
@@ -3084,6 +3104,9 @@ void cl_builtins_io_init(void)
     defun("MACROEXPAND", bi_macroexpand, 1, 2);
     defun("MACRO-FUNCTION", bi_macro_function, 1, 2);
     cl_register_builtin("%SETF-MACRO-FUNCTION", bi_set_macro_function, 2, 2, cl_package_clamiga);
+    defun("COMPILER-MACRO-FUNCTION", bi_compiler_macro_function, 1, 2);
+    cl_register_builtin("%SETF-COMPILER-MACRO-FUNCTION",
+                        bi_set_compiler_macro_function, 2, 2, cl_package_clamiga);
     cl_register_builtin("%MACROEXPAND-ENV", bi_macroexpand_env, 0, 0, cl_package_clamiga);
     cl_register_builtin("%CALL-MACRO-EXPANDER", bi_call_macro_expander, 3, 3, cl_package_clamiga);
 
