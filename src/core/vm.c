@@ -822,6 +822,8 @@ static CL_Obj cl_vm_run(int base_fp, int base_nlx)
         [OP_DEFVAR]       = &&vm_op_OP_DEFVAR,
         [OP_MV_RESET]     = &&vm_op_OP_MV_RESET,
         [OP_AMIGA_CALL]   = &&vm_op_OP_AMIGA_CALL,
+        [OP_STRUCT_REF]   = &&vm_op_OP_STRUCT_REF,
+        [OP_STRUCT_SET]   = &&vm_op_OP_STRUCT_SET,
         [OP_HALT]         = &&vm_op_OP_HALT,
     };
 
@@ -3109,6 +3111,40 @@ static CL_Obj cl_vm_run(int base_fp, int base_nlx)
         VM_CASE(OP_MV_RESET):
             cl_mv_count = 1;
             VM_BREAK;
+
+        VM_CASE(OP_STRUCT_REF): {
+            uint8_t idx = code[ip++];
+            CL_Obj obj = cl_vm_pop();
+            CL_Struct *st;
+            if (!CL_STRUCT_P(obj))
+                cl_signal_type_error(obj, "STRUCTURE", "%STRUCT-REF");
+            st = (CL_Struct *)CL_OBJ_TO_PTR(obj);
+            if ((uint32_t)idx >= st->n_slots)
+                cl_error(CL_ERR_ARGS,
+                         "%%STRUCT-REF: index %u out of range (n_slots=%u)",
+                         (unsigned)idx, (unsigned)st->n_slots);
+            cl_vm_push(st->slots[idx]);
+            cl_mv_count = 1;
+            VM_BREAK;
+        }
+
+        VM_CASE(OP_STRUCT_SET): {
+            uint8_t idx = code[ip++];
+            CL_Obj val = cl_vm_pop();
+            CL_Obj obj = cl_vm_pop();
+            CL_Struct *st;
+            if (!CL_STRUCT_P(obj))
+                cl_signal_type_error(obj, "STRUCTURE", "%STRUCT-SET");
+            st = (CL_Struct *)CL_OBJ_TO_PTR(obj);
+            if ((uint32_t)idx >= st->n_slots)
+                cl_error(CL_ERR_ARGS,
+                         "%%STRUCT-SET: index %u out of range (n_slots=%u)",
+                         (unsigned)idx, (unsigned)st->n_slots);
+            st->slots[idx] = val;
+            cl_vm_push(val);
+            cl_mv_count = 1;
+            VM_BREAK;
+        }
 
         VM_CASE(OP_AMIGA_CALL): {
             uint16_t sym_idx = read_u16(code, &ip);

@@ -59,6 +59,12 @@ CL_Obj cl_amiga_ffi_call_dispatch(uint32_t base_addr, int16_t offset,
                                   uint32_t regspec, int n_args,
                                   CL_Obj *arg_base);
 
+/* CLAMIGA::%STRUCT-REF and CLAMIGA::%STRUCT-SET — sentinel symbols
+ * matched by compile_call to emit OP_STRUCT_REF / OP_STRUCT_SET.
+ * Initialized by cl_builtins_struct_init. */
+extern CL_Obj cl_struct_ref_sym;
+extern CL_Obj cl_struct_set_sym;
+
 /* Look up a global symbol-macro expansion (from DEFINE-SYMBOL-MACRO).
    Returns CL_NIL when the symbol has no global symbol-macro binding —
    but also when the binding expands to NIL.  To distinguish, use
