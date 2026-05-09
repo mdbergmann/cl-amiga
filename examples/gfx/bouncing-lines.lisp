@@ -16,7 +16,6 @@
 (in-package "BOUNCING-LINES")
 
 (defconstant +num-lines+ 5)
-(defconstant +frame-delay+ 0.02)
 
 (defstruct line
   start-x start-y end-x end-y
@@ -79,27 +78,41 @@
              (reply-msg msg))
     closed))
 
+(defun draw-fps (rp fps iw)
+  "Render an FPS string in the upper-right corner of the inner window."
+  (let ((label (format nil "FPS: ~,1F" fps)))
+    (set-a-pen rp 0)
+    (rect-fill rp (- iw 80) 0 iw 10)
+    (set-a-pen rp 1)
+    (move-to rp (- iw 78) 8)
+    (gfx-text rp label)))
+
 (defun run (&key (width 600) (height 400))
+  ;; GIMMEZEROZERO gives us a RastPort whose (0,0) is the inner content
+  ;; area — drawing never touches the title bar or window borders.
   (with-window (win :title "Bouncing Color Lines"
                     :left 50 :top 50
                     :width width :height height
-                    :idcmp +idcmp-closewindow+)
+                    :idcmp +idcmp-closewindow+
+                    :flags (logior +wflg-closegadget+ +wflg-dragbar+
+                                   +wflg-depthgadget+ +wflg-sizegadget+
+                                   +wflg-activate+ +wflg-gimmezerozero+))
     (let* ((rp (window-rastport win))
-           ;; Stay clear of the window borders / size gadget.
-           (iw (max 1 (- (window-width win)  20)))
-           (ih (max 1 (- (window-height win) 30)))
+           (iw (window-gzz-width win))
+           (ih (window-gzz-height win))
            (lines (init-lines iw ih))
            (frames 0)
+           (fps 0.0)
            (t0 (get-internal-real-time)))
       (loop until (close-requested-p win) do
         (draw-frame rp lines iw ih)
+        (draw-fps rp fps iw)
         (incf frames)
         (let ((elapsed (/ (- (get-internal-real-time) t0)
                           internal-time-units-per-second)))
           (when (>= elapsed 1)
-            (format t "~&FPS: ~,1F~%" (/ frames elapsed))
-            (setf frames 0
-                  t0 (get-internal-real-time))))
-        (sleep +frame-delay+)))))
+            (setf fps (float (/ frames elapsed))
+                  frames 0
+                  t0 (get-internal-real-time))))))))
 
 (run)
