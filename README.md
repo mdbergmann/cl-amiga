@@ -117,6 +117,32 @@ Reusable Lisp loaders in `trunk/` that load and exercise third-party libraries o
 ./build/host/clamiga --heap 96M  --load trunk/load-and-test-ansi-numbers.lisp   # ANSI numbers
 ```
 
+### Loading source and FASL files
+
+CL-Amiga ships a bytecode VM, so `compile-file` writes a `.fasl` and `load` can take either a `.lisp` source or a precompiled `.fasl`.
+
+| Call                       | Behaviour                                                                                                                                                                                  |
+|----------------------------|--------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
+| `(load "x.lisp")`          | Looks up a cached FASL in the per-user cache (see below) and loads it if its mtime ≥ the source. Otherwise loads the source and **auto-writes** a fresh FASL to the cache for next time.   |
+| `(load "x.fasl")`          | Loads that exact file. The per-user cache is **not** consulted — `.fasl` inputs are already-compiled artifacts.                                                                            |
+| `(require "name")`         | Searches `lib/name.fasl` and `lib/name.lisp` (and `PROGDIR:lib/...` on Amiga) and picks the FASL when its mtime ≥ source. Used internally for `clos`, `asdf`, etc.                         |
+| `(compile-file "x.lisp")`  | Writes to the cache path (= what `compile-file-pathname` returns). `:output-file "x.fasl"` overrides.                                                                                      |
+
+**Per-user cache locations** (keyed by `clamiga` version + FASL format version, so a version bump invalidates everything automatically):
+
+- POSIX: `~/.cache/common-lisp/cl-amiga-<version>-fasl<n>/<source-path>.fasl`
+- AmigaOS: `S:cl-amiga/faslcache/<version>-fasl<n>/<source-path>.fasl`
+
+Pre-built `lib/boot.fasl` and `lib/clos.fasl` ship with the binary; on the lower-end 020 baseline this cuts cold boot from ~92 s to ~9 s. To regenerate them after editing `lib/*.lisp`:
+
+```
+./build/host/clamiga --non-interactive \
+    --eval '(compile-file "lib/boot.lisp" :output-file "lib/boot.fasl")' \
+    --eval '(compile-file "lib/clos.lisp" :output-file "lib/clos.fasl")'
+```
+
+Note: string literals in `lib/*.lisp` must stay ASCII-only — the Amiga build is compiled without `CL_WIDE_STRINGS` to save RAM and cannot read host FASLs that contain `FASL_TAG_WIDE_STRING`. The writer auto-downgrades all-ASCII wide strings to byte strings; non-ASCII chars in source string literals will fail Amiga boot with a `BAD_TAG` deserialize error. Comments are unaffected.
+
 ## AmigaOS Native GUI
 
 CL-Amiga provides Lisp bindings for Intuition, Graphics, and GadTools — loaded on demand via `require` with zero binary size impact. A generic FFI layer (`FFI` package) provides foreign memory access on all platforms; the `AMIGA` package adds register-based library call dispatch via a 68k assembly trampoline.
@@ -204,14 +230,18 @@ When the abstractions aren't enough, drop to raw library calls:
 
 - **Alpha status** — the core language works well enough to run real CL libraries, but corners of the ANSI CL spec remain unimplemented (broadcast / two-way / concatenated streams, logical pathnames, some `defstruct` options, full CLOS MOP)
 - **Amiga GUI bindings are incomplete** — the Intuition/Graphics/GadTools abstractions cover common use cases (windows, drawing, gadgets, menus) but not the full API surface; more libraries (ASL requesters, Layers, Commodities) are not yet wrapped
-- **Threading** — MP package covers core bordeaux-threads API (threads, locks, named condvars, interrupt/destroy-thread, type predicates); some gaps remain (semaphores, atomic integers, `with-timeout`)
-- **Buffered socket I/O** — network streams currently use byte-at-a-time recv/send, making Quicklisp downloads on Amiga very slow
+- **Threading** — `MP` package covers the core bordeaux-threads surface (threads with `interrupt`/`destroy`, mutex + recursive locks, named condition variables with timeout, `with-lock-held` / `with-recursive-lock-held`, type predicates); not yet covered: semaphores, atomic integers, `with-timeout`, `:timeout` on `acquire-lock`, the `bordeaux-threads` quicklisp shim itself (clients must call `MP:` directly for now)
 - **ANSI CL gaps** — while major subsystems work (CLOS, conditions, packages, the full numeric tower, arrays, pathnames, streams, loop, format), some corners of the spec remain unimplemented
 
 ## TODO
 
 - **CAS (compare-and-swap)** — atomic CAS primitive for lock-free data structures; on Amiga can possibly stay with lock-based implementation
-- **Full bordeaux-threads support** — remaining API gaps (semaphores, atomic integers, `with-timeout`)
+- **Full bordeaux-threads support** — remaining API gaps:
+  - semaphores (`make-semaphore`, `signal-semaphore`, `wait-on-semaphore`, `semaphorep`)
+  - atomic integers (`make-atomic-integer`, `atomic-integer-{value,compare-and-swap,incf,decf}`) and the place macros (`atomic-cas`/`atomic-incf`/`atomic-decf`)
+  - `with-timeout`, and `:timeout` keyword on `acquire-lock` / `acquire-recursive-lock`
+  - extra predicates: `native-lock-p`, `native-recursive-lock-p`, `recursive-lock-p`
+  - an `impl-cl-amiga.lisp` shim in the upstream `bordeaux-threads` quicklisp package so it actually loads (currently clients import `MP:` directly)
 - **Native MorphOS version** — PowerPC native build targeting MorphOS
 - **Bignum performance** — optional GMP backend for faster arbitrary-precision arithmetic
 
