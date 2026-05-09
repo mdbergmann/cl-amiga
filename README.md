@@ -10,7 +10,7 @@ CL-Amiga is a bytecode-compiled Common Lisp environment written in C (C89/C99). 
 
 ## Status
 
-CL-Amiga can load **ASDF**, install and run **Quicklisp**, and successfully quickload libraries including **Alexandria**, **fiveam** (57/57 self-tests passing), **FSet** (17/17 tests passing), and **Sento** — the full `(asdf:test-system :sento)` suite runs end-to-end (511/513, two timing-flaky cases), pulling in **lparallel**, **serapeum**, **bordeaux-threads**, **log4cl** and friends along the way.
+CL-Amiga can load **ASDF**, install and run **Quicklisp**, and successfully quickload libraries including **Alexandria**, **fiveam**, **FSet**, and **Sento** — their `asdf:test-system` suites pass end-to-end. Sento pulls in **lparallel**, **serapeum**, **bordeaux-threads**, **log4cl** and friends along the way.
 
 **ANSI conformance** — the Paul Dietz ANSI test suite is the working spec. Current scores against the upstream suites:
 
@@ -228,20 +228,16 @@ When the abstractions aren't enough, drop to raw library calls:
 
 ## Known Limitations and Future Work
 
-- **Alpha status** — the core language works well enough to run real CL libraries, but corners of the ANSI CL spec remain unimplemented (broadcast / two-way / concatenated streams, logical pathnames, some `defstruct` options, full CLOS MOP)
+- **Alpha status** — the core language works well enough to run real CL libraries, but corners of the ANSI CL spec remain unimplemented (logical pathnames, some `defstruct` options, full CLOS MOP)
 - **Amiga GUI bindings are incomplete** — the Intuition/Graphics/GadTools abstractions cover common use cases (windows, drawing, gadgets, menus) but not the full API surface; more libraries (ASL requesters, Layers, Commodities) are not yet wrapped
-- **Threading** — `MP` package covers the core bordeaux-threads surface (threads with `interrupt`/`destroy`, mutex + recursive locks, named condition variables with timeout, `with-lock-held` / `with-recursive-lock-held`, type predicates); not yet covered: semaphores, atomic integers, `with-timeout`, `:timeout` on `acquire-lock`, the `bordeaux-threads` quicklisp shim itself (clients must call `MP:` directly for now)
+- **Composite streams** — `make-broadcast-stream`, `make-two-way-stream`, `make-concatenated-stream` are not implemented yet
+- **Threading** — `MP` package covers the core bordeaux-threads surface (threads with `interrupt`/`destroy`, mutex + recursive locks, named condition variables with timeout, `with-lock-held` / `with-recursive-lock-held`, type predicates). `(ql:quickload :bordeaux-threads)` and Quicklisp itself currently rely on local patches we ship (in `~/quicklisp/local-projects` plus `lib/quicklisp-compat.lisp`) that map the BT v2 surface onto `MP` and adapt Quicklisp's network/HTTP layer to clamiga; the plan is to upstream these once the remaining API gaps close. Not yet covered: semaphores, atomic integers, `with-timeout`, `:timeout` on `acquire-lock`
 - **ANSI CL gaps** — while major subsystems work (CLOS, conditions, packages, the full numeric tower, arrays, pathnames, streams, loop, format), some corners of the spec remain unimplemented
 
 ## TODO
 
 - **CAS (compare-and-swap)** — atomic CAS primitive for lock-free data structures; on Amiga can possibly stay with lock-based implementation
-- **Full bordeaux-threads support** — remaining API gaps:
-  - semaphores (`make-semaphore`, `signal-semaphore`, `wait-on-semaphore`, `semaphorep`)
-  - atomic integers (`make-atomic-integer`, `atomic-integer-{value,compare-and-swap,incf,decf}`) and the place macros (`atomic-cas`/`atomic-incf`/`atomic-decf`)
-  - `with-timeout`, and `:timeout` keyword on `acquire-lock` / `acquire-recursive-lock`
-  - extra predicates: `native-lock-p`, `native-recursive-lock-p`, `recursive-lock-p`
-  - an `impl-cl-amiga.lisp` shim in the upstream `bordeaux-threads` quicklisp package so it actually loads (currently clients import `MP:` directly)
+- **Upstream `bordeaux-threads` and Quicklisp patches** — close the remaining `MP`/BT v2 API gaps (semaphores, atomic integers + place macros, `with-timeout`, `:timeout` on `acquire-lock`, `native-lock-p` / `native-recursive-lock-p` / `recursive-lock-p`) so the local-projects shim becomes an `impl-cl-amiga.lisp` mergeable upstream; same for the Quicklisp network/HTTP adaptations currently in `lib/quicklisp-compat.lisp`
 - **Native MorphOS version** — PowerPC native build targeting MorphOS
 - **Bignum performance** — optional GMP backend for faster arbitrary-precision arithmetic
 
