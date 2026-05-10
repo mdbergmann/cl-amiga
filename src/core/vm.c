@@ -1240,16 +1240,24 @@ static CL_Obj cl_vm_run(int base_fp, int base_nlx)
             VM_BREAK;
         }
 
-        /* Arithmetic opcodes type-check at the VM boundary.  cl_arith_*
-         * dispatchers below assume both operands are numbers — they have
-         * a fixnum fast path that uses CL_FIXNUM_P (reliable) but the
-         * bignum/float/ratio paths trust the operand shape and would
-         * dereference a non-number as a heap object.  These opcodes are
-         * now emitted by user-code calls (compile_call inliner), so the
-         * old "trusted by special-form expander" contract no longer
-         * holds. */
+        /* Arithmetic opcodes: fixnum fast path inline (no function call,
+         * no extra type-check) with cl_arith_* fallback for bignum /
+         * float / ratio / complex.  Slow path validates operands since
+         * cl_arith_* dereferences non-number heap pointers — these
+         * opcodes are emitted by the call-site inliner so the old
+         * "trusted by special-form expander" contract no longer holds.
+         *
+         * Same pattern as OP_LT/OP_GT/etc. above. */
         VM_CASE(OP_ADD): {
             CL_Obj b = cl_vm_pop(), a = cl_vm_pop();
+            if (CL_FIXNUM_P(a) && CL_FIXNUM_P(b)) {
+                int32_t sum = CL_FIXNUM_VAL(a) + CL_FIXNUM_VAL(b);
+                if (sum >= CL_FIXNUM_MIN && sum <= CL_FIXNUM_MAX) {
+                    cl_vm_push(CL_MAKE_FIXNUM(sum));
+                    cl_mv_count = 1;
+                    VM_BREAK;
+                }
+            }
             if (!CL_NUMBER_P(a)) cl_signal_type_error(a, "NUMBER", "+");
             if (!CL_NUMBER_P(b)) cl_signal_type_error(b, "NUMBER", "+");
             cl_vm_push(cl_arith_add(a, b));
@@ -1259,6 +1267,14 @@ static CL_Obj cl_vm_run(int base_fp, int base_nlx)
 
         VM_CASE(OP_SUB): {
             CL_Obj b = cl_vm_pop(), a = cl_vm_pop();
+            if (CL_FIXNUM_P(a) && CL_FIXNUM_P(b)) {
+                int32_t diff = CL_FIXNUM_VAL(a) - CL_FIXNUM_VAL(b);
+                if (diff >= CL_FIXNUM_MIN && diff <= CL_FIXNUM_MAX) {
+                    cl_vm_push(CL_MAKE_FIXNUM(diff));
+                    cl_mv_count = 1;
+                    VM_BREAK;
+                }
+            }
             if (!CL_NUMBER_P(a)) cl_signal_type_error(a, "NUMBER", "-");
             if (!CL_NUMBER_P(b)) cl_signal_type_error(b, "NUMBER", "-");
             cl_vm_push(cl_arith_sub(a, b));
@@ -1266,8 +1282,23 @@ static CL_Obj cl_vm_run(int base_fp, int base_nlx)
             VM_BREAK;
         }
 
+        /* MUL fast path: only when both magnitudes fit in 15 bits, so
+         * the 32-bit product is guaranteed to fit in a 31-bit fixnum
+         * with no overflow check. Wider operands fall through to
+         * cl_arith_mul, which has its own thorough overflow handling. */
         VM_CASE(OP_MUL): {
             CL_Obj b = cl_vm_pop(), a = cl_vm_pop();
+            if (CL_FIXNUM_P(a) && CL_FIXNUM_P(b)) {
+                int32_t va = CL_FIXNUM_VAL(a);
+                int32_t vb = CL_FIXNUM_VAL(b);
+                int32_t aa = va < 0 ? -va : va;
+                int32_t ab = vb < 0 ? -vb : vb;
+                if ((aa | ab) < 0x8000) {
+                    cl_vm_push(CL_MAKE_FIXNUM(va * vb));
+                    cl_mv_count = 1;
+                    VM_BREAK;
+                }
+            }
             if (!CL_NUMBER_P(a)) cl_signal_type_error(a, "NUMBER", "*");
             if (!CL_NUMBER_P(b)) cl_signal_type_error(b, "NUMBER", "*");
             cl_vm_push(cl_arith_mul(a, b));
@@ -1275,8 +1306,22 @@ static CL_Obj cl_vm_run(int base_fp, int base_nlx)
             VM_BREAK;
         }
 
+        /* DIV fast path: both fixnums, exact division (no remainder),
+         * b non-zero, and not the FIXNUM_MIN/-1 overflow case.  Inexact
+         * results would need a ratio object, which isn't worth inlining
+         * — fall through to cl_arith_div. */
         VM_CASE(OP_DIV): {
             CL_Obj b = cl_vm_pop(), a = cl_vm_pop();
+            if (CL_FIXNUM_P(a) && CL_FIXNUM_P(b)) {
+                int32_t va = CL_FIXNUM_VAL(a);
+                int32_t vb = CL_FIXNUM_VAL(b);
+                if (vb != 0 && (va % vb) == 0 &&
+                    !(va == CL_FIXNUM_MIN && vb == -1)) {
+                    cl_vm_push(CL_MAKE_FIXNUM(va / vb));
+                    cl_mv_count = 1;
+                    VM_BREAK;
+                }
+            }
             if (!CL_NUMBER_P(a)) cl_signal_type_error(a, "NUMBER", "/");
             if (!CL_NUMBER_P(b)) cl_signal_type_error(b, "NUMBER", "/");
             cl_vm_push(cl_arith_div(a, b));
