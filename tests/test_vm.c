@@ -1527,16 +1527,18 @@ TEST(eval_file_error_pathname_accessor)
         "\"/tmp/x\"");
 }
 
-/* --- define-compiler-macro (no-op) --- */
+/* --- define-compiler-macro --- */
 
 TEST(eval_define_compiler_macro)
 {
-    /* define-compiler-macro should not error, returns the name */
+    /* define-compiler-macro returns the name (CLHS 3.2.2.1). */
     ASSERT_STR_EQ(eval_print(
         "(define-compiler-macro my-fn (&whole form x) (declare (ignore form x)) nil)"),
         "MY-FN");
-    /* compiler-macro-function returns NIL */
-    ASSERT_STR_EQ(eval_print("(compiler-macro-function 'my-fn)"), "NIL");
+    /* compiler-macro-function now returns the registered function. */
+    ASSERT_STR_EQ(eval_print("(functionp (compiler-macro-function 'my-fn))"), "T");
+    /* Returns NIL for a symbol that has no compiler macro. */
+    ASSERT_STR_EQ(eval_print("(compiler-macro-function 'no-such-fn)"), "NIL");
 }
 
 /* --- setf values --- */
