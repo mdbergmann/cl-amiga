@@ -2984,7 +2984,8 @@ static void compile_call(CL_Compiler *c, CL_Obj form)
         CL_Obj cmf = cl_get_compiler_macro(func);
         if (!CL_NULL_P(cmf)) {
             CL_Obj call_args[2];
-            CL_Obj expanded;
+            CL_Obj expanded = form;
+            int expander_ok = 0;
             /* Compaction GC may run inside cl_vm_apply (the expander is
              * arbitrary user code).  Protect both the expander closure and
              * the form pointer we eq-compare against the result. */
@@ -2992,10 +2993,49 @@ static void compile_call(CL_Compiler *c, CL_Obj form)
             CL_GC_PROTECT(form);
             call_args[0] = form;
             call_args[1] = CL_NIL;  /* &environment — empty for now */
-            expanded = cl_vm_apply(cmf, call_args, 2);
+
+            /* Wrap the expander in CL_CATCH: an erroring compiler-macro
+             * (e.g. an accessor expander whose struct-type isn't loaded
+             * yet) must not longjmp through compile_call's caller chain,
+             * which would smash the CL_CATCH frames in bi_compile_file.
+             * On error, restore VM state and treat as "decline" — fall
+             * through to normal call emission.  Mirrors the pattern in
+             * scan_body_for_boxing at compiler.c:1115. */
+            {
+                int saved_sp = cl_vm.sp;
+                int saved_fp = cl_vm.fp;
+                int saved_dyn = cl_dyn_top;
+                int saved_nlx = cl_nlx_top;
+                int saved_handler = cl_handler_top;
+                int saved_restart = cl_restart_top;
+                int saved_debugger = cl_debugger_enabled;
+                int saved_gc_roots = gc_root_count;
+                int err;
+                cl_debugger_enabled = 0;
+                CL_CATCH(err);
+                if (err == 0) {
+                    expanded = cl_vm_apply(cmf, call_args, 2);
+                    CL_UNCATCH();
+                    cl_debugger_enabled = saved_debugger;
+                    cl_handler_top = saved_handler;
+                    cl_restart_top = saved_restart;
+                    expander_ok = 1;
+                } else {
+                    CL_UNCATCH();
+                    cl_vm.sp = saved_sp;
+                    cl_vm.fp = saved_fp;
+                    cl_dynbind_restore_to(saved_dyn);
+                    cl_nlx_top = saved_nlx;
+                    cl_handler_top = saved_handler;
+                    cl_restart_top = saved_restart;
+                    cl_debugger_enabled = saved_debugger;
+                    gc_root_count = saved_gc_roots;
+                    expanded = form;  /* decline on error */
+                }
+            }
             CL_GC_UNPROTECT(2);
             /* CLHS: returning the original form (eq) means "decline" */
-            if (expanded != form) {
+            if (expander_ok && expanded != form) {
                 CL_GC_UNPROTECT(1);  /* args */
                 c->in_tail = saved_tail;
                 compile_expr(c, expanded);
