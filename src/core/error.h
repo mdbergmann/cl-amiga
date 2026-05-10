@@ -92,29 +92,41 @@ int cl_error_frame_push(void);
         cl_error_frames[cl_error_frame_top].active = 0; \
     } } while(0)
 
+/* Functions below all unwind via longjmp (or exit when no CL_CATCH is
+ * active) and never return.  Marking them noreturn lets GCC drop the
+ * post-call canary checks GCC otherwise inserts after non-noreturn
+ * calls — which were firing on caller stack frames after deep
+ * longjmps (e.g. through scan_body_for_boxing's CL_CATCH during
+ * macro expansion) and aborting bi_compile_file mid-file. */
+#if defined(__GNUC__) || defined(__clang__)
+#  define CL_NORETURN __attribute__((noreturn))
+#else
+#  define CL_NORETURN
+#endif
+
 /* Signal an error — jumps to nearest CL_CATCH */
-void cl_error(int code, const char *fmt, ...);
+CL_NORETURN void cl_error(int code, const char *fmt, ...);
 
 /* Unwind with an existing condition object. Caller must have already
  * signaled via cl_signal_condition. Preserves the condition so the
  * debugger can dispatch PRINT-OBJECT for a meaningful report. */
-void cl_error_from_condition(CL_Obj condition);
+CL_NORETURN void cl_error_from_condition(CL_Obj condition);
 
 /* Signal a TYPE-ERROR with :datum and :expected-type slots populated,
  * then unwind. Use this whenever the call site knows both the bad
  * value and its expected type — it lets handler-case (type-error)
  * accessors return meaningful values per the HyperSpec. expected_type_name
  * is interned in COMMON-LISP. */
-void cl_signal_type_error(CL_Obj datum, const char *expected_type_name,
-                          const char *fn_name);
+CL_NORETURN void cl_signal_type_error(CL_Obj datum, const char *expected_type_name,
+                                      const char *fn_name);
 
 /* Signal an ARITHMETIC-ERROR subtype (FLOATING-POINT-OVERFLOW etc.)
  * with :operation and :operands slots populated, then unwind.  Pass
  * the type name as one of SYM_FLOATING_POINT_OVERFLOW / _UNDERFLOW /
  * SYM_DIVISION_BY_ZERO etc., the operation as a symbol, operands as a
  * Lisp list (or CL_NIL). */
-void cl_signal_arith_error(CL_Obj type_sym, CL_Obj operation,
-                           CL_Obj operands, const char *fn_name);
+CL_NORETURN void cl_signal_arith_error(CL_Obj type_sym, CL_Obj operation,
+                                       CL_Obj operands, const char *fn_name);
 
 /* Signal an UNBOUND-VARIABLE / UNDEFINED-FUNCTION (both subtype
  * CELL-ERROR) with the :name slot populated to NAME, then unwind.
@@ -123,8 +135,8 @@ void cl_signal_arith_error(CL_Obj type_sym, CL_Obj operation,
  * ANSI tests (symbol-function.error.5, makunbound.2) assert
  * (eq (cell-error-name c) sym), so use these helpers from the call
  * sites that already hold the symbol. */
-void cl_signal_unbound_variable(CL_Obj name);
-void cl_signal_undefined_function(CL_Obj name);
+CL_NORETURN void cl_signal_unbound_variable(CL_Obj name);
+CL_NORETURN void cl_signal_undefined_function(CL_Obj name);
 
 /* Print the current error message */
 void cl_error_print(void);
