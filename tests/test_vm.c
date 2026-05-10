@@ -4688,6 +4688,23 @@ TEST(eval_the_values_type_spec)
     ASSERT_EQ_INT(eval_int("(the (values fixnum string) 42)"), 42);
 }
 
+TEST(eval_the_as_place)
+{
+    /* CLHS 5.1.2.4: (the type place) is a place — the inner form is the
+     * place, the type spec wraps the access form.  Without correct
+     * handling in get-setf-expansion, INCF/DECF/PUSH on (the type x)
+     * would evaluate the type specifier as a variable and signal
+     * "Unbound variable: <TYPE>".  Regression test for cl-ppcre cold
+     * load (convert.lisp uses `(incf (the fixnum reg-num))`). */
+    ASSERT_EQ_INT(eval_int("(let ((x 1)) (incf (the fixnum x)) x)"), 2);
+    ASSERT_EQ_INT(eval_int("(let ((x 5)) (decf (the fixnum x) 2) x)"), 3);
+    ASSERT_EQ_INT(eval_int("(let ((x 10)) (setf (the fixnum x) 99) x)"), 99);
+    /* Nested place: (the type (slot accessor)) — type wraps a non-symbol place */
+    ASSERT_STR_EQ(eval_print(
+        "(let ((c (cons 1 2))) (incf (the fixnum (car c))) c)"),
+        "(2 . 2)");
+}
+
 /* ===== Phase 5 — Trace/Untrace ===== */
 
 TEST(eval_trace_basic)
@@ -9069,6 +9086,7 @@ int main(void)
     RUN(eval_the_safety_zero);
     RUN(eval_the_nested);
     RUN(eval_the_values_type_spec);
+    RUN(eval_the_as_place);
 
     /* Phase 5 — Trace/Untrace */
     RUN(eval_trace_basic);
