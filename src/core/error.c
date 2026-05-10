@@ -30,7 +30,7 @@ void cl_error_init(void)
 
 /* Unwind after the debugger returned — shared between cl_error and
  * cl_error_from_condition. Assumes cl_error_code/cl_error_msg are set. */
-static void cl_error_unwind(int code)
+CL_NORETURN static void cl_error_unwind(int code)
 {
     /* Check for interposing unwind-protect frames in NLX stack.
      * Skip stale frames whose VM frame was reused by a tail call —
@@ -137,7 +137,6 @@ void cl_error_from_condition(CL_Obj condition)
 
     if (!CL_CONDITION_P(condition)) {
         cl_error(CL_ERR_GENERAL, "cl_error_from_condition: not a condition");
-        return;
     }
 
     /* Map condition type → numeric code so callers (incl. C-level tests
