@@ -289,6 +289,15 @@
       ((symbolp place)
        (let ((store (gensym "NEW")))
          (values nil nil (list store) (list 'setq place store) place)))
+      ;; CLHS 5.1.2.4: (the type place) as a place — the place is the
+      ;; inner form; the type spec wraps the access form.  Without this
+      ;; the default branch would treat TYPE as a value subform and try
+      ;; to evaluate it (e.g. unbound-variable on FIXNUM).
+      ((and (consp place) (eq (car place) 'the))
+       (multiple-value-bind (temps vals stores set-form access-form)
+           (get-setf-expansion (third place) env)
+         (values temps vals stores set-form
+                 (list 'the (second place) access-form))))
       ((and (consp place) (symbolp (car place)))
        (let ((expander (clamiga::%get-setf-expansion-fn (car place))))
          (cond
