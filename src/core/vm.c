@@ -63,6 +63,139 @@ static void dbg_check_watch_impl(const char *where) {
 #define DBG_CHECK_WATCH(w) ((void)0)
 #endif
 
+/* Opcode-frequency profiler — build with -DPROFILE_OPCODES.
+ * Counters and reset/dump are always defined (no-op when disabled)
+ * so the (clamiga::%op-counts-*) builtins are present unconditionally
+ * and Lisp profiling scripts stay portable. */
+#ifdef PROFILE_OPCODES
+static uint32_t cl_op_counts_arr[256];
+
+static const char *cl_opcode_name(uint8_t op)
+{
+    switch (op) {
+    case OP_CONST: return "CONST";
+    case OP_LOAD: return "LOAD";
+    case OP_STORE: return "STORE";
+    case OP_GLOAD: return "GLOAD";
+    case OP_GSTORE: return "GSTORE";
+    case OP_UPVAL: return "UPVAL";
+    case OP_POP: return "POP";
+    case OP_DUP: return "DUP";
+    case OP_CONS: return "CONS";
+    case OP_CAR: return "CAR";
+    case OP_CDR: return "CDR";
+    case OP_ADD: return "ADD";
+    case OP_SUB: return "SUB";
+    case OP_MUL: return "MUL";
+    case OP_DIV: return "DIV";
+    case OP_EQ: return "EQ";
+    case OP_LT: return "LT";
+    case OP_GT: return "GT";
+    case OP_LE: return "LE";
+    case OP_GE: return "GE";
+    case OP_NUMEQ: return "NUMEQ";
+    case OP_NOT: return "NOT";
+    case OP_JMP: return "JMP";
+    case OP_JNIL: return "JNIL";
+    case OP_JTRUE: return "JTRUE";
+    case OP_CALL: return "CALL";
+    case OP_TAILCALL: return "TAILCALL";
+    case OP_RET: return "RET";
+    case OP_CLOSURE: return "CLOSURE";
+    case OP_APPLY: return "APPLY";
+    case OP_LIST: return "LIST";
+    case OP_NIL: return "NIL";
+    case OP_T: return "T";
+    case OP_FLOAD: return "FLOAD";
+    case OP_DEFMACRO: return "DEFMACRO";
+    case OP_ARGC: return "ARGC";
+    case OP_CATCH: return "CATCH";
+    case OP_UNCATCH: return "UNCATCH";
+    case OP_UWPROT: return "UWPROT";
+    case OP_UWPOP: return "UWPOP";
+    case OP_UWRETHROW: return "UWRETHROW";
+    case OP_MV_LOAD: return "MV_LOAD";
+    case OP_MV_TO_LIST: return "MV_TO_LIST";
+    case OP_NTH_VALUE: return "NTH_VALUE";
+    case OP_DYNBIND: return "DYNBIND";
+    case OP_DYNUNBIND: return "DYNUNBIND";
+    case OP_RPLACA: return "RPLACA";
+    case OP_RPLACD: return "RPLACD";
+    case OP_ASET: return "ASET";
+    case OP_DEFTYPE: return "DEFTYPE";
+    case OP_HANDLER_PUSH: return "HANDLER_PUSH";
+    case OP_HANDLER_POP: return "HANDLER_POP";
+    case OP_RESTART_PUSH: return "RESTART_PUSH";
+    case OP_RESTART_POP: return "RESTART_POP";
+    case OP_ASSERT_TYPE: return "ASSERT_TYPE";
+    case OP_BLOCK_PUSH: return "BLOCK_PUSH";
+    case OP_BLOCK_POP: return "BLOCK_POP";
+    case OP_BLOCK_RETURN: return "BLOCK_RETURN";
+    case OP_FSTORE: return "FSTORE";
+    case OP_MAKE_CELL: return "MAKE_CELL";
+    case OP_CELL_REF: return "CELL_REF";
+    case OP_CELL_SET_LOCAL: return "CELL_SET_LOCAL";
+    case OP_CELL_SET_UPVAL: return "CELL_SET_UPVAL";
+    case OP_TAGBODY_PUSH: return "TAGBODY_PUSH";
+    case OP_TAGBODY_POP: return "TAGBODY_POP";
+    case OP_TAGBODY_GO: return "TAGBODY_GO";
+    case OP_PROGV_BIND: return "PROGV_BIND";
+    case OP_PROGV_UNBIND: return "PROGV_UNBIND";
+    case OP_DEFSETF: return "DEFSETF";
+    case OP_DEFVAR: return "DEFVAR";
+    case OP_MV_RESET: return "MV_RESET";
+    case OP_AMIGA_CALL: return "AMIGA_CALL";
+    case OP_STRUCT_REF: return "STRUCT_REF";
+    case OP_STRUCT_SET: return "STRUCT_SET";
+    case OP_HALT: return "HALT";
+    default: return "?";
+    }
+}
+#endif /* PROFILE_OPCODES */
+
+void cl_op_counts_reset(void)
+{
+#ifdef PROFILE_OPCODES
+    uint32_t i;
+    for (i = 0; i < 256; i++) cl_op_counts_arr[i] = 0;
+#endif
+}
+
+void cl_op_counts_dump(FILE *out)
+{
+#ifdef PROFILE_OPCODES
+    uint32_t i, j;
+    uint32_t total = 0;
+    /* indices sorted by count, desc */
+    uint8_t idx[256];
+    for (i = 0; i < 256; i++) { idx[i] = (uint8_t)i; total += cl_op_counts_arr[i]; }
+    /* simple insertion sort by count desc — only ~80 non-zero entries */
+    for (i = 1; i < 256; i++) {
+        uint8_t k = idx[i];
+        uint32_t kv = cl_op_counts_arr[k];
+        j = i;
+        while (j > 0 && cl_op_counts_arr[idx[j-1]] < kv) {
+            idx[j] = idx[j-1]; j--;
+        }
+        idx[j] = k;
+    }
+    fprintf(out, "=== opcode counts (total=%lu) ===\n", (unsigned long)total);
+    fprintf(out, "  %-18s %12s %8s\n", "op", "count", "pct");
+    for (i = 0; i < 256; i++) {
+        uint32_t c = cl_op_counts_arr[idx[i]];
+        if (c == 0) break;
+        fprintf(out, "  0x%02x %-13s %12lu %7.2f%%\n",
+                idx[i], cl_opcode_name(idx[i]),
+                (unsigned long)c,
+                total ? (100.0 * (double)c / (double)total) : 0.0);
+    }
+    fflush(out);
+#else
+    fprintf(out, "PROFILE_OPCODES not compiled in\n");
+    fflush(out);
+#endif
+}
+
 /* All per-thread state (VM, NLX, dyn/handler/restart stacks, MV,
  * trace, backtrace, pending throw) now lives in CL_Thread.
  * Compatibility macros in thread.h redirect the old names. */
@@ -839,6 +972,12 @@ static CL_Obj cl_vm_run(int base_fp, int base_nlx)
         }
     }
 
+#ifdef PROFILE_OPCODES
+#define CL_OPCOUNT_TICK(op) (cl_op_counts_arr[(uint8_t)(op)]++)
+#else
+#define CL_OPCOUNT_TICK(op) ((void)0)
+#endif
+
 #define VM_DISPATCH() do { \
         extern int gc_compact_pending; \
         if (gc_compact_pending) { \
@@ -846,6 +985,7 @@ static CL_Obj cl_vm_run(int base_fp, int base_nlx)
             cl_gc_compact_if_pending(); \
         } \
         op = code[ip++]; \
+        CL_OPCOUNT_TICK(op); \
         if (__builtin_expect(!dispatch_table[op], 0)) { \
             fprintf(stderr, "[VM] NULL dispatch for op=0x%02x ip=%u fp=%d\n", op, ip-1, cl_vm.fp); \
             cl_capture_backtrace(); fprintf(stderr, "%s", cl_backtrace_buf); fflush(stderr); abort(); \
@@ -858,6 +998,7 @@ static CL_Obj cl_vm_run(int base_fp, int base_nlx)
 
     /* Initial dispatch (skip compaction check on first op) */
     op = code[ip++];
+    CL_OPCOUNT_TICK(op);
     if (__builtin_expect(!dispatch_table[op], 0)) {
         fprintf(stderr, "[VM] NULL initial dispatch for op=0x%02x ip=%u fp=%d\n", op, ip-1, cl_vm.fp);
         cl_capture_backtrace(); fprintf(stderr, "%s", cl_backtrace_buf); fflush(stderr); abort();
@@ -913,6 +1054,7 @@ static CL_Obj cl_vm_run(int base_fp, int base_nlx)
         }
 
         op = code[ip++];
+        CL_OPCOUNT_TICK(op);
 
         /* Trap opcode 0 explicitly */
         if (__builtin_expect(op == 0x00, 0)) {

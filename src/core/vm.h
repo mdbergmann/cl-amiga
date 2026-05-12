@@ -3,6 +3,7 @@
 
 #include "types.h"
 #include <setjmp.h>
+#include <stdio.h>
 
 /*
  * Stack-based bytecode interpreter.
@@ -140,6 +141,11 @@ CL_Obj cl_vm_pop(void);
 
 /* C stack overflow detection */
 void cl_check_c_stack(const char *context);
+
+/* Opcode-frequency profiler. Counters only increment when built with
+ * -DPROFILE_OPCODES; dump still works (prints "not compiled in" message). */
+void cl_op_counts_reset(void);
+void cl_op_counts_dump(FILE *out);
 
 #include "thread.h"
 

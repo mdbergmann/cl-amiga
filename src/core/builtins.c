@@ -755,6 +755,22 @@ static CL_Obj bi_untrace_all(CL_Obj *args, int n)
     return CL_NIL;
 }
 
+/* --- Opcode profiler (PROFILE_OPCODES build flag) --- */
+
+static CL_Obj bi_op_counts_reset(CL_Obj *args, int n)
+{
+    CL_UNUSED(args); CL_UNUSED(n);
+    cl_op_counts_reset();
+    return CL_NIL;
+}
+
+static CL_Obj bi_op_counts_dump(CL_Obj *args, int n)
+{
+    CL_UNUSED(args); CL_UNUSED(n);
+    cl_op_counts_dump(stdout);
+    return CL_NIL;
+}
+
 /* --- Property lists --- */
 
 static CL_Obj bi_symbol_plist(CL_Obj *args, int n)
@@ -1037,6 +1053,10 @@ void cl_builtins_init(void)
     cl_register_builtin("%UNTRACE-FUNCTION", bi_untrace_function, 1, 1, cl_package_clamiga);
     cl_register_builtin("%TRACED-FUNCTIONS", bi_traced_functions, 0, 0, cl_package_clamiga);
     cl_register_builtin("%UNTRACE-ALL", bi_untrace_all, 0, 0, cl_package_clamiga);
+
+    /* Opcode profiler (no-op unless built with -DPROFILE_OPCODES) */
+    cl_register_builtin("%OP-COUNTS-RESET", bi_op_counts_reset, 0, 0, cl_package_clamiga);
+    cl_register_builtin("%OP-COUNTS-DUMP", bi_op_counts_dump, 0, 0, cl_package_clamiga);
 
     /* Reserved standard CL symbols — required to be present and external in
      * COMMON-LISP per ANSI 11.1.2.1.  Many do not have full implementations
