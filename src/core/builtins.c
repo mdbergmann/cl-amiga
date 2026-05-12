@@ -12,6 +12,7 @@
 #include "string_utils.h"
 #include "../platform/platform.h"
 #include "../platform/platform_thread.h"
+#include "../jit/jit.h"
 #include <string.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -771,6 +772,59 @@ static CL_Obj bi_op_counts_dump(CL_Obj *args, int n)
     return CL_NIL;
 }
 
+/* --- JIT introspection (diagnostic helpers; m68k-only payload) --- */
+
+/* Resolve a function-like CL_Obj to its underlying CL_Bytecode.
+ * Closures are unwrapped; bare bytecode objects pass through.  Anything
+ * else signals a type error.  Returns NULL only when the closure's
+ * bytecode slot is unexpectedly non-bytecode (defensive). */
+static CL_Bytecode *jit_bytecode_of(CL_Obj obj, const char *fn_name)
+{
+    if (CL_CLOSURE_P(obj)) {
+        CL_Closure *cl = (CL_Closure *)CL_OBJ_TO_PTR(obj);
+        if (!CL_BYTECODE_P(cl->bytecode)) return NULL;
+        return (CL_Bytecode *)CL_OBJ_TO_PTR(cl->bytecode);
+    }
+    if (CL_BYTECODE_P(obj))
+        return (CL_Bytecode *)CL_OBJ_TO_PTR(obj);
+    cl_signal_type_error(obj, "COMPILED-FUNCTION", fn_name);
+    return NULL;
+}
+
+static CL_Obj bi_jit_dump_bytes(CL_Obj *args, int n)
+{
+    CL_Bytecode *bc;
+    CL_Obj result;
+    uint32_t i;
+
+    CL_UNUSED(n);
+    bc = jit_bytecode_of(args[0], "%JIT-DUMP-BYTES");
+    if (bc == NULL) return CL_NIL;
+    if (bc->native_code == NULL || bc->native_len == 0) return CL_NIL;
+
+    /* Build the byte list back-to-front so each cl_cons prepends — no
+     * tail pointer needed.  GC-protect the in-progress head; the
+     * bc->native_code buffer is platform_alloc'd (outside the arena)
+     * so it's stable across collections. */
+    result = CL_NIL;
+    CL_GC_PROTECT(result);
+    for (i = bc->native_len; i > 0; i--) {
+        result = cl_cons(CL_MAKE_FIXNUM((int32_t)bc->native_code[i - 1]),
+                         result);
+    }
+    CL_GC_UNPROTECT(1);
+    return result;
+}
+
+static CL_Obj bi_jit_compile_stub(CL_Obj *args, int n)
+{
+    CL_Bytecode *bc;
+    CL_UNUSED(n);
+    bc = jit_bytecode_of(args[0], "%JIT-COMPILE-STUB");
+    if (bc == NULL) return CL_NIL;
+    return cl_jit_emit_stub(bc) ? CL_T : CL_NIL;
+}
+
 /* --- Property lists --- */
 
 static CL_Obj bi_symbol_plist(CL_Obj *args, int n)
@@ -1057,6 +1111,12 @@ void cl_builtins_init(void)
     /* Opcode profiler (no-op unless built with -DPROFILE_OPCODES) */
     cl_register_builtin("%OP-COUNTS-RESET", bi_op_counts_reset, 0, 0, cl_package_clamiga);
     cl_register_builtin("%OP-COUNTS-DUMP", bi_op_counts_dump, 0, 0, cl_package_clamiga);
+
+    /* JIT introspection — payload only on m68k builds; on host both
+     * return NIL.  Useful for verifying the encoder pipeline before
+     * any function actually executes through native code. */
+    cl_register_builtin("%JIT-DUMP-BYTES",   bi_jit_dump_bytes,   1, 1, cl_package_clamiga);
+    cl_register_builtin("%JIT-COMPILE-STUB", bi_jit_compile_stub, 1, 1, cl_package_clamiga);
 
     /* Reserved standard CL symbols — required to be present and external in
      * COMMON-LISP per ANSI 11.1.2.1.  Many do not have full implementations

@@ -35,12 +35,20 @@ CL_Obj cl_jit_invoke(CL_Bytecode *bc, int nargs);
 /* Runtime introspection: is the JIT compiled in and active? */
 int    cl_jit_enabled(void);
 
+/* Diagnostic helper: emit a fixed NOP+RTS stub into bc->native_code.
+ * Used by the `%JIT-COMPILE-STUB` builtin to exercise the encoder →
+ * CodeBuf → CL_Bytecode pipeline before there's any actual codegen
+ * (or any caller that enters native_code).  Returns 1 on success,
+ * 0 if allocation failed.  Existing native_code is replaced. */
+int    cl_jit_emit_stub(CL_Bytecode *bc);
+
 #else  /* !JIT_M68K — host / non-m68k targets get no-op stubs */
 
 static inline void   cl_jit_init(void)                       { }
 static inline void   cl_jit_compile(CL_Bytecode *bc)         { (void)bc; }
 static inline CL_Obj cl_jit_invoke(CL_Bytecode *bc, int n)   { (void)bc; (void)n; return CL_NIL; }
 static inline int    cl_jit_enabled(void)                    { return 0; }
+static inline int    cl_jit_emit_stub(CL_Bytecode *bc)       { (void)bc; return 0; }
 
 #endif /* JIT_M68K */
 
