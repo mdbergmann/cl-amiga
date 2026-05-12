@@ -13,6 +13,7 @@
 #include "core/debugger.h"
 #include "core/repl.h"
 #include "core/color.h"
+#include "jit/jit.h"
 #include <string.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -414,6 +415,7 @@ int main(int argc, char *argv[])
     cl_reader_init();
     cl_printer_init();
     cl_compiler_init();
+    cl_jit_init();
     cl_vm_init(stack_entries, frame_count);
     cl_stream_init();
     cl_builtins_init();

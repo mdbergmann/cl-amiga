@@ -233,6 +233,12 @@ typedef struct {
     uint16_t line_map_count; /* Number of entries */
     uint16_t source_line;    /* Line where function was defined */
     const char *source_file; /* Filename (NULL for REPL) */
+    /* Native code from the m68k template JIT.  NULL on host builds,
+     * on cross builds where the JIT chose not to compile this
+     * function, and before the JIT has been invoked.  See
+     * specs/native-backend.md. */
+    uint8_t *native_code;
+    uint32_t native_len;
 } CL_Bytecode;
 
 #define CL_BYTECODE_P(obj) (CL_HEAP_P(obj) && CL_HDR_TYPE(CL_OBJ_TO_PTR(obj)) == TYPE_BYTECODE)
