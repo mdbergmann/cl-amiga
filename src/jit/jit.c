@@ -12,6 +12,8 @@
 #ifdef JIT_M68K
 
 #include "jit/jit.h"
+#include "jit/codebuf.h"
+#include "jit/asm_m68k.h"
 #include "jit/codegen_m68k.h"
 #include "jit/runtime.h"
 #include "platform/platform.h"
@@ -57,5 +59,30 @@ CL_Obj cl_jit_invoke(CL_Bytecode *bc, int nargs)
 }
 
 int cl_jit_enabled(void) { return jit_active; }
+
+int cl_jit_emit_stub(CL_Bytecode *bc)
+{
+    CodeBuf cb;
+    uint8_t *code;
+    uint32_t len;
+
+    if (bc == NULL) return 0;
+
+    cb_init(&cb, 8);
+    m68k_emit_nop(&cb);
+    m68k_emit_rts(&cb);
+    code = cb_finish(&cb, &len);
+    if (code == NULL) return 0;
+
+    /* Replace any prior native code attached to this bytecode. */
+    if (bc->native_code) platform_free(bc->native_code);
+    bc->native_code = code;
+    bc->native_len  = len;
+
+    /* NOTE: when execution gets wired up, an Amiga CacheClearU() call
+     * must happen here — the 040 I-cache may hold stale lines from a
+     * prior code-buffer reuse, leading to a Guru if executed. */
+    return 1;
+}
 
 #endif /* JIT_M68K */

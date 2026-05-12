@@ -4247,6 +4247,16 @@
 ; --- FFI (Amiga-specific) ---
 #+amigaos
 (progn
+  ; --- JIT byte-pipeline (run first so it isn't blocked by later
+  ; unrelated failures in this block).  No execution yet — these only
+  ; verify the m68k encoders land the right bytes where the future
+  ; native-call path will look for them. ---
+  (defun jit-stub-test-fn () nil)
+  (check "jit-dump-before-stub" nil (clamiga::%jit-dump-bytes #'jit-stub-test-fn))
+  (check "jit-compile-stub-succeeds" t (clamiga::%jit-compile-stub #'jit-stub-test-fn))
+  ; NOP = 0x4E71, RTS = 0x4E75 → bytes 78 113 78 117
+  (check "jit-dump-after-stub" '(78 113 78 117) (clamiga::%jit-dump-bytes #'jit-stub-test-fn))
+
   (check "amiga-package-exists" "AMIGA" (package-name (find-package "AMIGA")))
   (check "amiga-open-close-library" t
     (let ((lib (amiga:open-library "dos.library" 36)))
