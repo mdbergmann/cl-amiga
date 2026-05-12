@@ -58,9 +58,12 @@ CORE_SRC     = $(SRCDIR)/core/types.c \
                $(SRCDIR)/core/color.c \
                $(SRCDIR)/core/thread.c \
                $(SRCDIR)/core/string_utils.c
+# Portable JIT pieces (no m68k codegen — those live only in Makefile.cross).
+# Compiled into the host build so unit tests can exercise them.
+JIT_SRC      = $(SRCDIR)/jit/codebuf.c
 MAIN_SRC     = $(SRCDIR)/main.c
 
-HOST_SRCS = $(MAIN_SRC) $(PLATFORM_SRC) $(CORE_SRC)
+HOST_SRCS = $(MAIN_SRC) $(PLATFORM_SRC) $(CORE_SRC) $(JIT_SRC)
 HOST_OBJS = $(patsubst $(SRCDIR)/%.c,$(BUILDDIR)/%.o,$(HOST_SRCS))
 
 # Test sources
@@ -69,7 +72,7 @@ TEST_SRCS   = $(wildcard $(TEST_SRCDIR)/test_*.c)
 TEST_BINS   = $(patsubst $(TEST_SRCDIR)/%.c,$(BUILDDIR)/tests/%,$(TEST_SRCS))
 
 # Core sources without main (for linking with tests)
-LIB_SRCS = $(PLATFORM_SRC) $(CORE_SRC)
+LIB_SRCS = $(PLATFORM_SRC) $(CORE_SRC) $(JIT_SRC)
 LIB_OBJS = $(patsubst $(SRCDIR)/%.c,$(BUILDDIR)/%.o,$(LIB_SRCS))
 
 .PHONY: host test linux-test clean verify-amiga

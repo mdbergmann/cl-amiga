@@ -71,7 +71,8 @@ CORE_SRC     = $(SRCDIR)/core/types.c \
                $(SRCDIR)/core/color.c \
                $(SRCDIR)/core/thread.c \
                $(SRCDIR)/core/string_utils.c
-JIT_SRC      = $(SRCDIR)/jit/jit.c \
+JIT_SRC      = $(SRCDIR)/jit/codebuf.c \
+               $(SRCDIR)/jit/jit.c \
                $(SRCDIR)/jit/codegen_m68k.c \
                $(SRCDIR)/jit/asm_m68k.c \
                $(SRCDIR)/jit/runtime.c
