@@ -1,6 +1,7 @@
 #include "compiler_internal.h"
 #include "thread.h"
 #include "../platform/platform_thread.h"
+#include "../jit/jit.h"
 #include <stdio.h>
 
 /* --- Shared globals --- */
@@ -911,6 +912,10 @@ void compile_lambda(CL_Compiler *c, CL_Obj form)
     }
     bc->source_line = (uint16_t)c->current_line;
     bc->source_file = cl_current_source_file;
+
+    bc->native_code = NULL;
+    bc->native_len  = 0;
+    cl_jit_compile(bc);  /* no-op on host / when JIT_M68K undefined */
 
     const_idx = cl_add_constant(c, CL_PTR_TO_OBJ(bc));
     cl_emit(c, OP_CLOSURE);
@@ -4074,6 +4079,10 @@ CL_Obj cl_compile(CL_Obj expr)
     }
     bc->source_line = (uint16_t)comp->current_line;
     bc->source_file = cl_current_source_file;
+
+    bc->native_code = NULL;
+    bc->native_len  = 0;
+    cl_jit_compile(bc);  /* no-op on host / when JIT_M68K undefined */
 
     /* Unregister compiler from GC root chain */
     cl_active_compiler = comp->parent;

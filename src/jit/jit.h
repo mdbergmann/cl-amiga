@@ -1,0 +1,47 @@
+/* jit.h — public API of the m68k native-code backend.
+ *
+ * This is the integration surface used by the rest of the runtime. Two
+ * functions are called from the bytecode compiler / boot, and the rest
+ * is implementation detail.
+ *
+ * On non-m68k builds (no JIT_M68K) every entry point becomes an inline
+ * no-op so call sites stay identical and Lisp code is unaware of the
+ * JIT's presence.
+ *
+ * See specs/native-backend.md for the full design.
+ */
+
+#ifndef CL_JIT_H
+#define CL_JIT_H
+
+#include "core/types.h"
+
+#ifdef JIT_M68K
+
+/* One-time init at boot, after cl_compiler_init. */
+void   cl_jit_init(void);
+
+/* Optionally translate this bytecode to native m68k. May leave
+ * bc->native_code == NULL if the function is ineligible or the JIT is
+ * disabled — callers must always be ready to fall back to the bytecode
+ * interpreter. */
+void   cl_jit_compile(CL_Bytecode *bc);
+
+/* Enter native code with the same calling convention the bytecode VM
+ * uses (args already pushed on cl_vm.stack). Caller checks
+ * bc->native_code != NULL first. Not wired into vm.c in the skeleton. */
+CL_Obj cl_jit_invoke(CL_Bytecode *bc, int nargs);
+
+/* Runtime introspection: is the JIT compiled in and active? */
+int    cl_jit_enabled(void);
+
+#else  /* !JIT_M68K — host / non-m68k targets get no-op stubs */
+
+static inline void   cl_jit_init(void)                       { }
+static inline void   cl_jit_compile(CL_Bytecode *bc)         { (void)bc; }
+static inline CL_Obj cl_jit_invoke(CL_Bytecode *bc, int n)   { (void)bc; (void)n; return CL_NIL; }
+static inline int    cl_jit_enabled(void)                    { return 0; }
+
+#endif /* JIT_M68K */
+
+#endif /* CL_JIT_H */

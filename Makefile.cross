@@ -13,7 +13,7 @@ CC        = $(TOOLCHAIN)/bin/m68k-amigaos-gcc
 # -Os passes the full tests/amiga/run-tests.lisp suite on real Amiga
 # and produces a ~175 KB smaller binary than -O2, so we use it.
 # The volatile workaround above still applies.
-CFLAGS    = -noixemul -mcpu=68020 -msoft-float -std=c99 -Wall -Os -fno-tree-switch-conversion -DPLATFORM_AMIGA $(DEBUG_FLAGS)
+CFLAGS    = -noixemul -mcpu=68020 -msoft-float -std=c99 -Wall -Os -fno-tree-switch-conversion -DPLATFORM_AMIGA -DJIT_M68K $(DEBUG_FLAGS)
 LDFLAGS   = -noixemul -mcpu=68020 -msoft-float -fno-tree-switch-conversion
 
 SRCDIR   = src
@@ -71,9 +71,13 @@ CORE_SRC     = $(SRCDIR)/core/types.c \
                $(SRCDIR)/core/color.c \
                $(SRCDIR)/core/thread.c \
                $(SRCDIR)/core/string_utils.c
+JIT_SRC      = $(SRCDIR)/jit/jit.c \
+               $(SRCDIR)/jit/codegen_m68k.c \
+               $(SRCDIR)/jit/asm_m68k.c \
+               $(SRCDIR)/jit/runtime.c
 MAIN_SRC     = $(SRCDIR)/main.c
 
-ALL_SRCS = $(MAIN_SRC) $(PLATFORM_SRC) $(CORE_SRC)
+ALL_SRCS = $(MAIN_SRC) $(PLATFORM_SRC) $(CORE_SRC) $(JIT_SRC)
 ALL_OBJS = $(patsubst $(SRCDIR)/%.c,$(BUILDDIR)/%.o,$(ALL_SRCS)) \
            $(patsubst $(SRCDIR)/%.s,$(BUILDDIR)/%.o,$(PLATFORM_ASM))
 
