@@ -233,22 +233,37 @@
       (cons (cadr ll) (cddr ll))
       (cons nil ll)))
 
+;; CLHS 3.4.11: the body is enclosed in an implicit block named NAME,
+;; same rule as defun (CLHS 3.4.10).  Libraries (e.g. serapeum's fnil)
+;; rely on (return-from <name> <form>) to short-circuit expansion.
+;;
+;; (setf <name>) function-names are accepted but registration is skipped
+;; — compile_call only consults compiler-macros by symbol, and compile_setf
+;; never does, so a compiler macro on (setf foo) could never fire.  This
+;; lets libraries that try to install one (e.g. serapeum's (setf href))
+;; load without erroring; the regular (setf <name>) function still works.
+;; Block name for setf function-names is the symbol per CLHS 5.3.2.
 (defmacro define-compiler-macro (name lambda-list &body body)
-  (let* ((form-var (gensym "FORM"))
+  (let* ((setf-p   (and (consp name) (eq (car name) 'setf)))
+         (block-name (if setf-p (cadr name) name))
+         (form-var (gensym "FORM"))
          (env-var  (gensym "ENV"))
          (split    (%dcm-split-whole lambda-list))
          (whole    (car split))
          (clean    (cdr split))
-         (inner    `(destructuring-bind ,clean (cdr ,form-var) ,@body)))
-    `(progn
-       (clamiga::%setf-compiler-macro-function
-        (lambda (,form-var ,env-var)
-          (declare (ignore ,env-var))
-          ,(if whole
-               `(let ((,whole ,form-var)) ,inner)
-               inner))
-        ',name)
-       ',name)))
+         (inner    `(destructuring-bind ,clean (cdr ,form-var)
+                      (block ,block-name ,@body))))
+    (if setf-p
+        `',name
+        `(progn
+           (clamiga::%setf-compiler-macro-function
+            (lambda (,form-var ,env-var)
+              (declare (ignore ,env-var))
+              ,(if whole
+                   `(let ((,whole ,form-var)) ,inner)
+                   inner))
+            ',name)
+           ',name))))
 
 ;; define-symbol-macro — stores expansion on the symbol's plist under
 ;; %SYMBOL-MACRO-EXPANSION; the compiler consults this when compiling a
