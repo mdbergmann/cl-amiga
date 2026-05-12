@@ -504,21 +504,82 @@ functions: graphics inner loop, REPL printer, test harness driver).
 That's the regime where the JIT becomes a net win even on the low-end
 target.
 
-## Decision
+## Status (2026-05-12)
 
-Not started. The bytecode VM is correct and well-tuned for an
-interpreter — the opcode trace above shows fixnum arith / struct
-access / FFI are already inlined opcodes, so there are no remaining
-"cheap" wins inside the bytecode design.
+Approach (1) — the template JIT — is in flight. The first
+contributions land the build / API / data-structure scaffolding and
+the first two leaf pieces (CodeBuf + zero-operand encoders), wired up
+to a Lisp-callable smoke test. **No native code executes yet** — every
+function still runs through the bytecode VM, and `bc->native_code`
+stays NULL except when explicitly poked by the diagnostic
+`%JIT-COMPILE-STUB` builtin.
 
-A native backend is the next real performance lever, and approach (1)
-— the template JIT — is the recommended starting point: ~65% of
-dispatched ops are stack housekeeping that disappears for free once
-locals stay in registers between ops. Defer until library / condition
-system work is settled; the projected ~2× FPS on graphics workloads
-won't change the project's day-to-day usability before then.
+### Landed
 
-When work does begin, the 8 MB / 68020 baseline forces an opt-in,
-hot-function-only design (see "Mitigations" above) — JIT'ing
-everything would blow the runtime memory budget. The high-end JIT
-config has no such constraint.
+| Commit    | Adds                                                       |
+|-----------|------------------------------------------------------------|
+| `b09ad70` | `src/jit/{jit,codegen_m68k,asm_m68k,runtime}.{c,h}` skeleton; `cl_jit_init` boot hook; `cl_jit_compile` call sites in `compiler.c`; `CL_Bytecode.native_code`/`native_len` fields; `Makefile.cross` gets `-DJIT_M68K`; host gets inline-stub `cl_jit_*` so call sites are identical everywhere |
+| `8acf12d` | `make -f Makefile.cross test-amiga` now defaults to the high-end `verify.fs-uae` (A4000/68040/JIT) for faster verification; `test-amiga-lowend` is the explicit 68020 baseline target |
+| `e19b496` | `src/jit/codebuf.{c,h}` — growable byte buffer with sticky-OOM, big-endian `emit_u16/u32`, ownership-transfer `cb_finish`. Portable (compiles into both builds). `tests/test_codebuf.c`: 11 host unit tests, all green |
+| `c37a83b` | `m68k_emit_nop` (0x4E71) and `m68k_emit_rts` (0x4E75) in `src/jit/asm_m68k.c`. Kept under `JIT_M68K`; verification path is FS-UAE end-to-end |
+| `59359b2` | `cl_jit_emit_stub()` in `jit.c`: emits NOP+RTS into `bc->native_code` via CodeBuf + the asm encoders. Exposed as `clamiga::%JIT-DUMP-BYTES` and `clamiga::%JIT-COMPILE-STUB` builtins. Three checks added at the top of the Amiga test suite's `#+amigaos` block to verify the byte pipeline end-to-end |
+
+### Verified
+
+- Host build (`make host`) and host test suite (`make test`) green —
+  the JIT skeleton is invisible to host execution (every JIT call is
+  an inline no-op).
+- Cross build (`make -f Makefile.cross amiga`) green, no new
+  warnings, +~50 bytes vs. pre-JIT binary (matches the "fixed cost"
+  projection in §"Binary growth").
+- Boot on FS-UAE prints `; [jit] m68k template backend: skeleton (no
+  codegen yet)` confirming `cl_jit_init` runs.
+
+### Blocked
+
+- **Amiga end-to-end verification of the byte pipeline** — the new
+  `(check "jit-…")` cases live inside the `#+amigaos (progn …)` block
+  in `tests/amiga/run-tests.lisp`. That whole block currently fails at
+  *READ time* on an unrelated qualified-symbol/package issue
+  (`amiga.ffi:defcfun` → `Package AMIGA.FFI not found`), which
+  cancels the entire progn before any inner `check` runs. The byte
+  pipeline is therefore correct-by-construction (the C side is
+  exercised by the host build of the builtins, just not the m68k
+  emission) but unobserved on real m68k. Resolution is gated on the
+  separate FFI-package READ failure — see the open project memory
+  note.
+
+### Up next (in roughly this order)
+
+1. **Unblock Amiga verification**: fix the AMIGA.FFI READ failure
+   so the byte-pipeline checks actually run on the cross binary.
+2. **Round-trip a trivial function through native code** — the
+   spec's stage 1 milestone. Needs:
+   - a real `cl_jit_compile()` body that emits at least *some* shape
+     (start with: only emit when the bytecode is a single `OP_HALT` /
+     trivial-return, leave everything else NULL);
+   - an entry trampoline (small inline ASM) that sets up A5 = arena
+     base, JSRs into `bc->native_code`, picks D0 back up as `CL_Obj`;
+   - the `vm.c` OP_CALL dispatch branch on `native_code != NULL`;
+   - AmigaOS `CacheClearU()` after each emission (currently a TODO
+     comment in `cl_jit_emit_stub`).
+3. **Operand-bearing encoders** (`move.l Dm,Dn`, `moveq #imm8,Dn`)
+   to support the staging-1 opcode set (`CONST`, `LOAD`, `STORE`,
+   `POP`, `RET`, `ADD`, `LT`, `JNIL`, `JMP`, `HALT`).
+4. **Stack cache (D5/D6/D7)** — the design choice highlighted in
+   §"Calling convention for emitted code" that moves projected FPS
+   from ~720 to ~970. First three slots of the VM stack live in
+   registers between adjacent emitter outputs.
+
+### Design notes still standing
+
+- The bytecode VM is correct and well-tuned for an interpreter — the
+  opcode trace shows fixnum arith / struct access / FFI are already
+  inlined opcodes, so there are no remaining "cheap" wins inside the
+  bytecode design. The next real lever is the native backend, exactly
+  as approach (1).
+- The 8 MB / 68020 baseline forces an opt-in, hot-function-only
+  design (see "Mitigations" above) — JIT'ing everything would blow
+  the runtime memory budget. The high-end JIT config has no such
+  constraint. None of this is encoded in code yet; the skeleton is
+  pre-policy.
