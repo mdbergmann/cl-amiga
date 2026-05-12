@@ -1162,9 +1162,11 @@ static void gc_finalize_dead(uint8_t *ptr)
         /* Wrapper for an MP thread becoming dead means the OS thread must
          * already be finished: while the worker is registered, gc_mark
          * marks t->thread_obj from gc_mark_thread_roots, so the wrapper
-         * is reachable.  thread_entry only calls cl_thread_unregister
-         * AFTER setting status to 2 (finished) or 3 (aborted).  So if
-         * the wrapper is sweeping here, status is guaranteed >= 2.
+         * is reachable.  thread_entry publishes the terminal status (2
+         * finished / 3 aborted) only AFTER it has called
+         * cl_thread_unregister(t) — so a wrapper that reaches sweep is
+         * guaranteed to have both `t` out of cl_thread_list and
+         * status >= 2.
          *
          * Three guards:
          *  - status >= 2: defense-in-depth; never free a still-running
@@ -1550,6 +1552,15 @@ static void gc_update_thread_roots(CL_Thread *t)
     gc_update_slot(&t->interrupt_func);
     gc_update_slot(&t->current_lex_env);
     gc_update_slot(&t->thread_obj);
+
+    /* Reader state — must mirror gc_mark_thread_roots.  These were marked
+     * but not updated, leaving stale CL_Obj values pointing to old arena
+     * offsets after compaction; the next gc_mark would then dereference
+     * the stale offset, read garbage as a heap header, and run off the
+     * end of the arena while iterating "n_slots"/"n_constants" — manifesting
+     * as a SIGSEGV in gc_mark on sento workloads that compact under load. */
+    gc_update_slot(&t->rd_stream);
+    gc_update_slot(&t->rd_uninterned);
 
     /* Printer in-progress object stack — heap pointers can be relocated
      * by compaction during a Lisp print-object hook (which can allocate). */

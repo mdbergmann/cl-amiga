@@ -97,13 +97,25 @@ static void *thread_entry(void *arg)
 
     /* 5. Call user function inside error handler.
      *    CL_CATCH/CL_UNCATCH macros use compatibility names that are
-     *    suppressed by CL_THREAD_NO_MACROS, so expand them inline. */
+     *    suppressed by CL_THREAD_NO_MACROS, so expand them inline.
+     *
+     *    Mirror cl_error_frame_push(): snapshot gc_root_count into
+     *    saved_gc_roots so cl_error_unwind can drop CL_GC_PROTECT entries
+     *    that belong to C frames it is unwinding out of.  Without this,
+     *    a worker's stale gc_roots[] survives the longjmp back here and
+     *    a subsequent gc_mark_thread_roots walks dangling stack pointers
+     *    — manifesting as gc_mark SEGV under sento workloads. */
     if (t->error_frame_top < CL_MAX_ERROR_FRAMES) {
         t->error_frames[t->error_frame_top].active = 1;
+        t->error_frames[t->error_frame_top].saved_gc_roots = t->gc_root_count;
         err = CL_SETJMP(t->error_frames[t->error_frame_top++].buf);
     } else {
         err = CL_ERR_OVERFLOW;
     }
+
+    /* Status to publish at the very end — see ordering note at end of
+     * function.  2 = finished cleanly (or via ABORT), 3 = errored. */
+    int final_status = 3;
 
     if (err == 0) {
         CL_Obj result = CL_NIL;
@@ -164,7 +176,7 @@ static void *thread_entry(void *arg)
             /* (abort) was invoked — thread exits with NIL result */
             t->result = CL_NIL;
         }
-        t->status = 2; /* finished (cleanly or via abort) */
+        final_status = 2; /* finished (cleanly or via abort) — published below */
 
 #ifdef DEBUG_THREAD
         fprintf(stderr, "[THR] tid=%u CT=%p finished result=0x%08x aborted=%d\n",
@@ -184,8 +196,7 @@ static void *thread_entry(void *arg)
             cl_dynbind_restore_to(t->nlx_stack[my_nlx_idx].dyn_mark);
         }
     } else {
-        /* Thread aborted due to error */
-        t->status = 3; /* aborted */
+        /* Thread errored — final_status stays at 3 (aborted by error) */
     }
 
     /* CL_UNCATCH inline */
@@ -197,8 +208,27 @@ static void *thread_entry(void *arg)
     /* 6. Clear gc_roots — we're done using func */
     t->gc_root_count = 0;
 
-    /* 7. Unregister from thread list */
+    /* 7. Unregister from thread list BEFORE publishing the terminal status.
+     *
+     *   Both bi_make_thread's zombie reaper and gc_finalize_dead(TYPE_THREAD)
+     *   treat `status >= 2` as the signal that `t` is safe to free.  If we
+     *   set status first, there is a window where this worker is still
+     *   linked in `cl_thread_list` AND status >= 2 — the reaper would free
+     *   `t` (along with `t->vm.stack`, `t->vm.frames`, `t->nlx_stack`),
+     *   leaving a dangling pointer in `cl_thread_list`.  The next
+     *   stop-the-world `gc_mark` walks that list and SEGVs in
+     *   `gc_mark_thread_roots` while reading freed memory.
+     *
+     *   By unregistering FIRST, status >= 2 implies "no longer in
+     *   cl_thread_list", and gc_mark cannot reach a freed worker via the
+     *   list walk.
+     */
     cl_thread_unregister(t);
+
+    /* 8. Publish terminal status LAST.  After this write, observers
+     *    (mp:thread-alive-p, the reaper, gc_finalize_dead) may free `t` at
+     *    any moment.  The OS thread must not touch `t` from here on. */
+    t->status = final_status;
 
     return NULL;
 }

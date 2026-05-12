@@ -18,6 +18,11 @@ int cl_error_frame_push(void)
 {
     if (cl_error_frame_top >= CL_MAX_ERROR_FRAMES) return -1;
     cl_error_frames[cl_error_frame_top].active = 1;
+    /* Snapshot gc_root_count so cl_error_unwind can drop any CL_GC_PROTECT
+     * entries pushed by C stack frames we will unwind out of.  Must be
+     * sequenced BEFORE setjmp so the value is well-defined on the longjmp
+     * return path. */
+    cl_error_frames[cl_error_frame_top].saved_gc_roots = gc_root_count;
     return cl_error_frame_top++;
 }
 
@@ -57,7 +62,12 @@ CL_NORETURN static void cl_error_unwind(int code)
     if (cl_error_frame_top > 1) {
         /* Nested error frame — jump to it without destroying global state.
          * The caller is responsible for restoring VM/binding state.
-         * Don't decrement here — CL_UNCATCH at the catch site pops. */
+         * Don't decrement here — CL_UNCATCH at the catch site pops.
+         *
+         * Restore gc_root_count to the value captured at CL_CATCH push
+         * time: any entries pushed since then live in C stack frames we
+         * are unwinding out of and would dangle in gc_roots[]. */
+        gc_root_count = cl_error_frames[cl_error_frame_top - 1].saved_gc_roots;
         CL_LONGJMP(cl_error_frames[cl_error_frame_top - 1].buf, code);
     }
 
@@ -105,7 +115,13 @@ void cl_error(int code, const char *fmt, ...)
         cl_restart_top = 0;
         cl_gc_reset_roots();
         if (cl_error_frame_top > 0) {
-            /* Don't decrement here — CL_UNCATCH at the catch site pops */
+            /* Don't decrement here — CL_UNCATCH at the catch site pops.
+             * For nested frames, restore gc_root_count to the catch-site
+             * snapshot so any roots pushed in unwound C frames are dropped
+             * (cl_gc_reset_roots above zeroed it; that suffices, but the
+             * explicit restore is symmetric with the cl_error_unwind path
+             * and keeps any permanent roots installed by the outer frame). */
+            gc_root_count = cl_error_frames[cl_error_frame_top - 1].saved_gc_roots;
             CL_LONGJMP(cl_error_frames[cl_error_frame_top - 1].buf, code);
         }
         exit(cl_exit_code);
