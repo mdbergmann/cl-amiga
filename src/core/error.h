@@ -49,6 +49,14 @@
 typedef struct {
     jmp_buf buf;
     int active;
+    /* gc_root_count at the time this frame was pushed.  cl_error_unwind
+     * restores `gc_root_count` to this value before longjmping back to
+     * the catch site, dropping any CL_GC_PROTECT entries that belonged to
+     * C stack frames we are unwinding out of.  Without this restore, the
+     * unwound frames' stack-local CL_Obj slots remain in gc_roots[] and
+     * subsequent gc_mark walks dereference stale stack memory — see
+     * "sento gc_mark SEGV" memory file for the discovery path. */
+    int saved_gc_roots;
 } CL_ErrorFrame;
 
 /* Push an error frame.  Returns the frame index, or -1 on overflow.
