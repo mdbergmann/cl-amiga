@@ -81,7 +81,7 @@ ALL_SRCS = $(MAIN_SRC) $(PLATFORM_SRC) $(CORE_SRC) $(JIT_SRC)
 ALL_OBJS = $(patsubst $(SRCDIR)/%.c,$(BUILDDIR)/%.o,$(ALL_SRCS)) \
            $(patsubst $(SRCDIR)/%.s,$(BUILDDIR)/%.o,$(PLATFORM_ASM))
 
-.PHONY: amiga test-amiga clean check-toolchain
+.PHONY: amiga test-amiga test-amiga-lowend clean check-toolchain
 
 amiga: check-toolchain $(BUILDDIR)/clamiga
 
@@ -115,12 +115,16 @@ $(BUILDDIR)/%.o: $(SRCDIR)/%.s
 	$(CC) -mcpu=68020 -c -o $@ $<
 
 # Cross-compile, place binary, launch FS-UAE for testing.
-# Uses the lower-end baseline (A1200/68020/16 MB, cycle-accurate, no JIT)
-# so test runs reflect the project's documented target — not a 64 MB JIT
-# host. The high-end JIT config (verify.fs-uae) is still available for
-# ad-hoc speed runs: `fs-uae verify/realamiga/verify.fs-uae`.
+# Default: high-end JIT config (A4000/68040/Picasso96) — faster turnaround
+# for everyday verification.  Use `test-amiga-lowend` to run against the
+# documented 68020 baseline (A1200/68020/16 MB, cycle-accurate, no JIT).
 test-amiga: $(BUILDDIR)/clamiga
-	@echo "=== Launching FS-UAE (lower-end baseline) — close emulator when tests finish ==="
+	@echo "=== Launching FS-UAE (high-end JIT config) — close emulator when tests finish ==="
+	verify/realamiga/FS-UAE.app/Contents/MacOS/fs-uae verify/realamiga/verify.fs-uae
+	@$(MAKE) --no-print-directory -f Makefile.cross verify-amiga
+
+test-amiga-lowend: $(BUILDDIR)/clamiga
+	@echo "=== Launching FS-UAE (lower-end 68020 baseline) — close emulator when tests finish ==="
 	verify/realamiga/FS-UAE.app/Contents/MacOS/fs-uae verify/realamiga/verify-lowend.fs-uae
 	@$(MAKE) --no-print-directory -f Makefile.cross verify-amiga
 
