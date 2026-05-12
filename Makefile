@@ -58,8 +58,9 @@ CORE_SRC     = $(SRCDIR)/core/types.c \
                $(SRCDIR)/core/color.c \
                $(SRCDIR)/core/thread.c \
                $(SRCDIR)/core/string_utils.c
-# Portable JIT pieces (no m68k codegen — those live only in Makefile.cross).
-# Compiled into the host build so unit tests can exercise them.
+# Portable JIT pieces (no m68k codegen — those live only in
+# Makefile.cross).  Compiled into the host build so unit tests can
+# exercise code-buffer mechanics.
 JIT_SRC      = $(SRCDIR)/jit/codebuf.c
 MAIN_SRC     = $(SRCDIR)/main.c
 
