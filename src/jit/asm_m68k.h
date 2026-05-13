@@ -34,6 +34,11 @@ void m68k_emit_rts(CodeBuf *cb);
  * dn must be a data register (REG_D0..REG_D7).  See M68000 PRM §4-134. */
 void m68k_emit_moveq(CodeBuf *cb, int8_t imm, M68kReg dn);
 
+/* MOVE.L #imm32,Dn — load a 32-bit immediate into a data register.
+ * Emits 6 bytes: 2-byte opcode + 4-byte big-endian immediate.
+ * dn must be a data register (REG_D0..REG_D7).  See M68000 PRM §4-128. */
+void m68k_emit_move_l_imm32(CodeBuf *cb, uint32_t imm, M68kReg dn);
+
 #endif /* JIT_M68K */
 
 #endif /* CL_JIT_ASM_M68K_H */

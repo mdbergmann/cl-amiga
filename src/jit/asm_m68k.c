@@ -36,4 +36,14 @@ void m68k_emit_moveq(CodeBuf *cb, int8_t imm, M68kReg dn)
     cb_emit_u16(cb, enc);
 }
 
+/* MOVE.L #imm32,Dn: opcode 0010 nnn 000 111100 followed by a 4-byte
+ * big-endian immediate.  Source EA = 111/100 (immediate addressing
+ * mode), dest EA = 000/nnn (data register direct).  6 bytes total. */
+void m68k_emit_move_l_imm32(CodeBuf *cb, uint32_t imm, M68kReg dn)
+{
+    uint16_t enc = (uint16_t)(0x2000 | ((dn & 7) << 9) | 0x003C);
+    cb_emit_u16(cb, enc);
+    cb_emit_u32(cb, imm);
+}
+
 #endif /* JIT_M68K */

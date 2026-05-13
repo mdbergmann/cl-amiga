@@ -4234,33 +4234,12 @@
 #+amigaos (require "amiga/ffi")
 #+amigaos
 (progn
-  ; --- JIT byte-pipeline (run first so it isn't blocked by later
-  ; unrelated failures in this block).  No execution yet — these only
-  ; verify the m68k encoders land the right bytes where the future
-  ; native-call path will look for them. ---
-  ; Use a 1-arg identity so the JIT's trivial-nil matcher doesn't
-  ; auto-compile this function; we need a clean "no native_code yet"
-  ; baseline to verify %JIT-COMPILE-STUB attaches the stub bytes.
-  (defun jit-stub-test-fn (x) x)
-  (check "jit-dump-before-stub" nil (clamiga::%jit-dump-bytes #'jit-stub-test-fn))
-  (check "jit-compile-stub-succeeds" t (clamiga::%jit-compile-stub #'jit-stub-test-fn))
-  ; NOP = 0x4E71, RTS = 0x4E75 → bytes 78 113 78 117
-  (check "jit-dump-after-stub" '(78 113 78 117) (clamiga::%jit-dump-bytes #'jit-stub-test-fn))
-
-  ; --- JIT round-trip: trivial `() -> NIL` function actually runs as
-  ; native code.  Compiler emits moveq #0,d0 ; rts; OP_CALL dispatches
-  ; into it; counter bumps prove the native path was taken (since the
-  ; bytecode interpreter would return the same value). ---
-  (defun jit-roundtrip-nil () nil)
-  ; MOVEQ #0,d0 = 0x7000 → 0x70 0x00 = 112 0
-  ; RTS         = 0x4E75 → 0x4E 0x75 = 78 117
-  (check "jit-roundtrip-bytes" '(112 0 78 117)
-    (clamiga::%jit-dump-bytes #'jit-roundtrip-nil))
-  (check "jit-roundtrip-counter-bump" t
-    (let ((before (clamiga::%jit-invoke-count)))
-      (jit-roundtrip-nil)
-      (> (clamiga::%jit-invoke-count) before)))
-  (check "jit-roundtrip-returns-nil" nil (jit-roundtrip-nil))
+  ; --- m68k template JIT (encoders + native dispatch + behavior).
+  ; Lives in a sibling file so JIT coverage can grow without bloating
+  ; this file, and so it can be loaded in isolation while iterating. ---
+  (handler-case
+    (load "tests/amiga/test-jit.lisp")
+    (error (e) (format t "ERROR loading JIT tests: ~A~%" e)))
 
   (check "amiga-package-exists" "AMIGA" (package-name (find-package "AMIGA")))
   (check "amiga-open-close-library" t
