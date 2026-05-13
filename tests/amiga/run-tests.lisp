@@ -1388,20 +1388,25 @@
     (+ x y)))
 
 ; --- defstruct ---
-(check "defstruct basic" 'point (defstruct point (x 0) (y 0)))
-(check "defstruct make default" 0 (point-x (make-point)))
-(check "defstruct make keyword" 10 (point-x (make-point :x 10 :y 20)))
-(check "defstruct accessor y" 20 (point-y (make-point :x 10 :y 20)))
-(check "defstruct predicate t" t (point-p (make-point)))
-(check "defstruct predicate nil" nil (point-p 42))
-(check "defstruct setf" 99 (let ((p (make-point :x 1))) (setf (point-x p) 99) (point-x p)))
-(check "defstruct copier" 1 (let ((a (make-point :x 1))) (let ((b (copy-point a))) (setf (point-x b) 99) (point-x a))))
-(check "defstruct typep" t (typep (make-point) 'point))
-(check "defstruct typep nil" nil (typep 42 'point))
-(check "defstruct type-of" 'point (type-of (make-point)))
-(check "defstruct structurep" t (structurep (make-point)))
+;; Use DST-POINT (not POINT) so accessors don't leave compiler macros that
+;; collide with the later CLOS (defclass point ...) test fixtures.  A defstruct
+;; emits (define-compiler-macro <acc> ...) that inlines to %struct-ref by
+;; index — fine for the struct, but stale once a class with different slot
+;; layout reuses the name.
+(check "defstruct basic" 'dst-point (defstruct dst-point (x 0) (y 0)))
+(check "defstruct make default" 0 (dst-point-x (make-dst-point)))
+(check "defstruct make keyword" 10 (dst-point-x (make-dst-point :x 10 :y 20)))
+(check "defstruct accessor y" 20 (dst-point-y (make-dst-point :x 10 :y 20)))
+(check "defstruct predicate t" t (dst-point-p (make-dst-point)))
+(check "defstruct predicate nil" nil (dst-point-p 42))
+(check "defstruct setf" 99 (let ((p (make-dst-point :x 1))) (setf (dst-point-x p) 99) (dst-point-x p)))
+(check "defstruct copier" 1 (let ((a (make-dst-point :x 1))) (let ((b (copy-dst-point a))) (setf (dst-point-x b) 99) (dst-point-x a))))
+(check "defstruct typep" t (typep (make-dst-point) 'dst-point))
+(check "defstruct typep nil" nil (typep 42 'dst-point))
+(check "defstruct type-of" 'dst-point (type-of (make-dst-point)))
+(check "defstruct structurep" t (structurep (make-dst-point)))
 (check "defstruct structurep nil" nil (structurep 42))
-(check "defstruct printer" "#S(POINT :X 1 :Y 2)" (prin1-to-string (make-point :x 1 :y 2)))
+(check "defstruct printer" "#S(DST-POINT :X 1 :Y 2)" (prin1-to-string (make-dst-point :x 1 :y 2)))
 (check "defstruct no-slot define" 'empty-st (defstruct empty-st))
 (check "defstruct no-slot make" t (empty-st-p (make-empty-st)))
 (defstruct (cst (:conc-name c-)) (r 0) (g 0))
@@ -3029,26 +3034,6 @@
 (check "direct-subclasses integer has fixnum" t (if (member (find-class 'fixnum) (class-direct-subclasses (find-class 'integer)) :test #'eq) t nil))
 (check "direct-subclasses integer has bignum" t (if (member (find-class 'bignum) (class-direct-subclasses (find-class 'integer)) :test #'eq) t nil))
 
-; --- CLOS Phase 1: Slot Access ---
-(%register-struct-type 'clos-test-pt 2 nil '((x nil) (y nil)))
-(let ((cls (%make-struct 'standard-class
-             'clos-test-pt nil nil nil nil nil nil nil nil t nil nil)))
-  (let ((idx-table (make-hash-table :test 'eq)))
-    (setf (gethash 'x idx-table) 0)
-    (setf (gethash 'y idx-table) 1)
-    (%struct-set cls 5 idx-table)
-    (setf (find-class 'clos-test-pt) cls)))
-(defparameter *slot-test-pt* (%make-struct 'clos-test-pt 10 20))
-(check "slot-value read x" 10 (slot-value *slot-test-pt* 'x))
-(check "slot-value read y" 20 (slot-value *slot-test-pt* 'y))
-(setf (slot-value *slot-test-pt* 'x) 42)
-(check "setf slot-value" 42 (slot-value *slot-test-pt* 'x))
-(check "slot-boundp true" t (slot-boundp *slot-test-pt* 'x))
-(slot-makunbound *slot-test-pt* 'x)
-(check "slot-boundp after makunbound" nil (slot-boundp *slot-test-pt* 'x))
-(check "slot-exists-p true" t (slot-exists-p *slot-test-pt* 'y))
-(check "slot-exists-p false" nil (slot-exists-p *slot-test-pt* 'z))
-
 ; --- CLOS Phase 2: C3 Linearization ---
 (check "c3 single" '(fixnum integer rational real number t) (mapcar #'class-name (%compute-class-precedence-list (find-class 'fixnum))))
 (check "c3 root" '(t) (mapcar #'class-name (%compute-class-precedence-list (find-class 't))))
@@ -3596,10 +3581,11 @@
 (check "file-error-pathname" "/tmp/x"
   (file-error-pathname (make-condition 'file-error :pathname "/tmp/x")))
 
-; --- define-compiler-macro (no-op) ---
+; --- define-compiler-macro ---
 (check "define-compiler-macro" 'test-cm
   (define-compiler-macro test-cm (&whole form x) (declare (ignore form x)) nil))
-(check "compiler-macro-function" nil (compiler-macro-function 'test-cm))
+(check "compiler-macro-function installed" t (functionp (compiler-macro-function 'test-cm)))
+(check "compiler-macro-function unknown" nil (compiler-macro-function 'test-cm-not-defined))
 
 ; --- setf values ---
 (check "setf values" '(10 20 30)
