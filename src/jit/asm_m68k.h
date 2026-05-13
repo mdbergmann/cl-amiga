@@ -30,6 +30,10 @@ typedef enum {
 void m68k_emit_nop(CodeBuf *cb);
 void m68k_emit_rts(CodeBuf *cb);
 
+/* MOVEQ #imm8,Dn — sign-extend an 8-bit immediate into a data register.
+ * dn must be a data register (REG_D0..REG_D7).  See M68000 PRM §4-134. */
+void m68k_emit_moveq(CodeBuf *cb, int8_t imm, M68kReg dn);
+
 #endif /* JIT_M68K */
 
 #endif /* CL_JIT_ASM_M68K_H */

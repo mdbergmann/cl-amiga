@@ -42,6 +42,13 @@ int    cl_jit_enabled(void);
  * 0 if allocation failed.  Existing native_code is replaced. */
 int    cl_jit_emit_stub(CL_Bytecode *bc);
 
+/* Diagnostic counter: number of cl_jit_invoke entries since boot.
+ * Bumped on every native-code dispatch from OP_CALL.  Exposed to Lisp
+ * via the `%JIT-INVOKE-COUNT` builtin so end-to-end tests can prove
+ * that a call actually went through the native path rather than just
+ * being interpreted (which would happen to return the same value). */
+uint32_t cl_jit_invoke_count_get(void);
+
 #else  /* !JIT_M68K — host / non-m68k targets get no-op stubs */
 
 static inline void   cl_jit_init(void)                       { }
@@ -49,6 +56,7 @@ static inline void   cl_jit_compile(CL_Bytecode *bc)         { (void)bc; }
 static inline CL_Obj cl_jit_invoke(CL_Bytecode *bc, int n)   { (void)bc; (void)n; return CL_NIL; }
 static inline int    cl_jit_enabled(void)                    { return 0; }
 static inline int    cl_jit_emit_stub(CL_Bytecode *bc)       { (void)bc; return 0; }
+static inline uint32_t cl_jit_invoke_count_get(void)         { return 0; }
 
 #endif /* JIT_M68K */
 
