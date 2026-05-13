@@ -1,17 +1,17 @@
 /* jit.c — orchestration for the m68k template JIT.
  *
- * Stage 1 (spec §"Up next" item 2): the first real codegen path
- * recognizes the bytecode shape the compiler emits for `(defun f () nil)`
- * and replaces it with a 4-byte `moveq #0,d0; rts`.  Every other
- * function still leaves `bc->native_code == NULL` and runs through
- * the bytecode interpreter unchanged.
+ * Current codegen: a single "trivial leaf returning a literal" pattern
+ * — `(defun f () <literal>)` — emitted as `moveq` or `move.l #imm32`
+ * followed by `rts`.  Recognized literal forms are OP_NIL, OP_T, and
+ * OP_CONST (any constant pool entry); everything else still leaves
+ * `bc->native_code == NULL` and runs through the bytecode interpreter.
  *
- * Filling in the rest of the staging-1 opcode set lands additional
- * patterns + operand-bearing encoders here.  See
- * specs/native-backend.md §"Suggested staging".
+ * See specs/native-backend.md §"Suggested staging".
  */
 
 #ifdef JIT_M68K
+
+#include <string.h>
 
 #include "jit/jit.h"
 #include "jit/codebuf.h"
@@ -19,6 +19,7 @@
 #include "jit/codegen_m68k.h"
 #include "jit/runtime.h"
 #include "core/opcodes.h"
+#include "core/types.h"
 #include "platform/platform.h"
 
 extern int cl_quiet_boot;
@@ -40,47 +41,86 @@ void cl_jit_init(void)
 
     if (!cl_quiet_boot) {
         platform_write_string(
-            "; [jit] m68k template backend: trivial-nil pattern only\n");
+            "; [jit] m68k template backend: trivial-literal-leaf only\n");
     }
 }
 
-/* Match the canonical 7-byte body the compiler emits for a zero-arg
- * lambda whose only form is NIL:
+/* Match `(defun f () <literal>)` and extract the returned CL_Obj.
  *
- *   00: OP_NIL
- *   01: OP_STORE 0
- *   03: OP_POP
- *   04: OP_LOAD  0
- *   06: OP_RET
+ * The compiler emits a fixed 6-byte epilogue for any zero-arg lambda
+ * whose body is a single value-producing form:
  *
- * Local 0 is the implicit block return-value slot.  Behavior:
- * no side effects, returns NIL.  The same shape with OP_T or
- * OP_CONST in place of OP_NIL is a future extension — keep this
- * matcher strict so a near-match never silently lands wrong code.
+ *   <push-value>     1 byte  (OP_NIL / OP_T)
+ *                or  3 bytes (OP_CONST u16)
+ *   OP_STORE 0       2 bytes
+ *   OP_POP           1 byte
+ *   OP_LOAD  0       2 bytes
+ *   OP_RET           1 byte
+ *
+ * Local 0 is the implicit block return-value slot.  Body has no side
+ * effects beyond producing the value, which is what makes it safe to
+ * replace with a single immediate-load.
+ *
+ * Returns 1 and stores the literal value in *value_out on a match.
+ * Stays strict on every metadata field so a near-match (different
+ * arity, locals, &rest, etc.) never silently lands wrong code.
  */
-static int matches_trivial_nil(const CL_Bytecode *bc)
+static int matches_trivial_leaf(const CL_Bytecode *bc, CL_Obj *value_out)
 {
-    static const uint8_t pattern[7] = {
-        OP_NIL,
+    static const uint8_t epilogue[6] = {
         OP_STORE, 0x00,
         OP_POP,
         OP_LOAD,  0x00,
         OP_RET
     };
-    uint32_t i;
+    uint32_t prefix_len;
+    uint8_t op;
 
-    if (bc->code_len != 7) return 0;
     if (bc->arity != 0) return 0;
     if (bc->n_optional != 0) return 0;
-    if (bc->flags != 0) return 0;          /* no &key, no allow-other-keys */
+    if (bc->flags != 0) return 0;      /* no &key, no allow-other-keys */
     if (bc->n_keys != 0) return 0;
     if (bc->n_upvalues != 0) return 0;
-    /* n_locals == 1 is expected (the block return slot); anything else
-     * is a shape we don't recognize yet. */
     if (bc->n_locals != 1) return 0;
-    for (i = 0; i < 7; i++)
-        if (bc->code[i] != pattern[i]) return 0;
+    if (bc->code_len < 7) return 0;
+
+    op = bc->code[0];
+    if (op == OP_NIL || op == OP_T) {
+        prefix_len = 1;
+    } else if (op == OP_CONST) {
+        prefix_len = 3;
+    } else {
+        return 0;
+    }
+    if (bc->code_len != prefix_len + 6) return 0;
+    if (memcmp(bc->code + prefix_len, epilogue, 6) != 0) return 0;
+
+    if (op == OP_NIL) {
+        *value_out = CL_NIL;
+    } else if (op == OP_T) {
+        *value_out = CL_T;
+    } else {
+        /* OP_CONST <u16 index, big-endian> */
+        uint16_t idx = ((uint16_t)bc->code[1] << 8) | bc->code[2];
+        if (idx >= bc->n_constants || bc->constants == NULL) return 0;
+        *value_out = bc->constants[idx];
+    }
     return 1;
+}
+
+/* Pick the shortest m68k encoding that materializes `val` in D0.
+ * MOVEQ sign-extends an 8-bit immediate, so a CL_Obj whose 32-bit
+ * value lies in [-128, 127] (interpreted as int32) round-trips
+ * through it exactly.  Everything else needs the full 6-byte
+ * MOVE.L #imm32. */
+static void emit_load_imm_d0(CodeBuf *cb, CL_Obj val)
+{
+    int32_t sv = (int32_t)val;
+    if (sv >= -128 && sv <= 127) {
+        m68k_emit_moveq(cb, (int8_t)sv, REG_D0);
+    } else {
+        m68k_emit_move_l_imm32(cb, (uint32_t)val, REG_D0);
+    }
 }
 
 void cl_jit_compile(CL_Bytecode *bc)
@@ -88,19 +128,20 @@ void cl_jit_compile(CL_Bytecode *bc)
     CodeBuf cb;
     uint8_t *code;
     uint32_t len;
+    CL_Obj value;
 
     if (bc == NULL || !jit_active) return;
     bc->native_code = NULL;
     bc->native_len  = 0;
 
-    if (!matches_trivial_nil(bc)) return;
+    if (!matches_trivial_leaf(bc, &value)) return;
 
-    /* Emit: moveq #0,d0 ; rts.  CL_NIL == 0, which fits trivially in
-     * moveq's signed 8-bit immediate.  The m68k SysV ABI returns the
-     * function result in D0, so a bare moveq+rts is a complete leaf
-     * function callable from C. */
-    cb_init(&cb, 4);
-    m68k_emit_moveq(&cb, 0, REG_D0);
+    /* Emit: load <value> into D0 ; rts.  m68k SysV ABI returns the
+     * function result in D0, so the load + rts is a complete leaf
+     * function callable from C with no register save/restore (the
+     * load only touches D0, which is caller-saved). */
+    cb_init(&cb, 8);
+    emit_load_imm_d0(&cb, value);
     m68k_emit_rts(&cb);
     code = cb_finish(&cb, &len);
     if (code == NULL) return;

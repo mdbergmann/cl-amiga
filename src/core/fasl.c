@@ -8,6 +8,7 @@
 #include "compiler.h"
 #include "thread.h"
 #include "../platform/platform.h"
+#include "../jit/jit.h"
 #include <string.h>
 #include <time.h>
 #include <stdio.h>
@@ -1898,6 +1899,13 @@ CL_Obj cl_fasl_deserialize_bytecode(CL_FaslReader *r)
         bc = (CL_Bytecode *)CL_OBJ_TO_PTR(bc_obj);
         bc->name = name;
     }
+
+    /* Give the JIT a chance at FASL-loaded code too — the source-load
+     * compile path (compiler.c) already hooks cl_jit_compile, but
+     * functions read from a FASL bypass that and would otherwise
+     * always run as bytecode. */
+    bc = (CL_Bytecode *)CL_OBJ_TO_PTR(bc_obj);
+    cl_jit_compile(bc);
 
     CL_GC_UNPROTECT(1);
     return bc_obj;
