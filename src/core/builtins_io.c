@@ -661,7 +661,15 @@ static CL_Obj bi_load(CL_Obj *args, int n)
         uint32_t fasl_capacity = 512 * 1024;
         uint32_t unit_capacity = 32 * 1024;
         uint32_t n_units = 0;
-        CL_FaslWriter fw;
+        /* CL_FaslWriter is ~4 KB (gensym_objs[1024]).  Keeping it on the
+         * stack overflows the 64 KB AmigaOS stack when REQUIRE chains
+         * nest 4-5 bi_load frames deep (e.g. test-gui → intuition →
+         * amiga/ffi → ffi), silently corrupting adjacent stack memory
+         * and producing wild CL_Obj values that surface much later as
+         * "func_obj out of arena" or GC-ROOT-BUG aborts.  Heap-allocate
+         * to keep each bi_load frame small — same mitigation that
+         * bi_compile_file already uses. */
+        CL_FaslWriter *fw = NULL;
         int do_cache = 0;
 
         if (make_fasl_cache_path(path_str->data, auto_cache_path, sizeof(auto_cache_path))) {
@@ -674,15 +682,18 @@ static CL_Obj bi_load(CL_Obj *args, int n)
             if (!is_asd && !is_fasl) {
             fasl_buf = (uint8_t *)platform_alloc(fasl_capacity);
             unit_buf = (uint8_t *)platform_alloc(unit_capacity);
-            if (fasl_buf && unit_buf) {
+            fw       = (CL_FaslWriter *)platform_alloc(sizeof(CL_FaslWriter));
+            if (fasl_buf && unit_buf && fw) {
                 do_cache = 1;
-                cl_fasl_writer_init(&fw, fasl_buf, fasl_capacity);
-                cl_fasl_write_header(&fw, 0); /* patch n_units later */
+                cl_fasl_writer_init(fw, fasl_buf, fasl_capacity);
+                cl_fasl_write_header(fw, 0); /* patch n_units later */
             } else {
                 if (fasl_buf) platform_free(fasl_buf);
                 if (unit_buf) platform_free(unit_buf);
+                if (fw) platform_free(fw);
                 fasl_buf = NULL;
                 unit_buf = NULL;
+                fw = NULL;
             }
             } /* !is_asd */
         }
@@ -736,7 +747,7 @@ static CL_Obj bi_load(CL_Obj *args, int n)
                  * their DEFUN side effects), making the cached load
                  * behave differently from the source load. */
                 if (do_cache) {
-                    if (cf_emit_fasl_unit(&fw, &fasl_buf, &fasl_capacity,
+                    if (cf_emit_fasl_unit(fw, &fasl_buf, &fasl_capacity,
                                           &unit_buf, &unit_capacity,
                                           UINT32_MAX, bytecode, NULL) == 0) {
                         n_units++;
@@ -762,6 +773,7 @@ static CL_Obj bi_load(CL_Obj *args, int n)
                 platform_free(buf);
                 if (unit_buf) platform_free(unit_buf);
                 if (fasl_buf) platform_free(fasl_buf);
+                if (fw) platform_free(fw);
                 cl_set_symbol_value(SYM_STAR_LOAD_PATHNAME, saved_load_pathname);
                 cl_set_symbol_value(SYM_STAR_LOAD_TRUENAME, saved_load_truename);
                 cl_current_package = saved_package;
@@ -793,13 +805,17 @@ static CL_Obj bi_load(CL_Obj *args, int n)
         {
             PlatformFile fh = platform_file_open(auto_cache_path, PLATFORM_FILE_WRITE);
             if (fh != PLATFORM_FILE_INVALID) {
-                platform_file_write_buf(fh, (const char *)fasl_buf, fw.pos);
+                platform_file_write_buf(fh, (const char *)fasl_buf, fw->pos);
                 platform_file_close(fh);
             }
         }
     }
     if (fasl_buf) platform_free(fasl_buf);
     if (unit_buf) platform_free(unit_buf);
+    if (fw) {
+        cl_fasl_writer_release(fw);
+        platform_free(fw);
+    }
     } /* end auto-cache scope */
 
     /* Restore *load-pathname* and *load-truename* */

@@ -258,6 +258,20 @@ void cl_vm_push(CL_Obj val)
 {
     if (cl_vm.sp >= (int)cl_vm.stack_size)
         cl_error(CL_ERR_OVERFLOW, "VM stack overflow");
+#ifdef DEBUG_VM_PUSH_GUARD
+    /* Catch the bad write at its source: if a "heap-tagged" CL_Obj points
+     * past the arena, something just used a raw pointer where an arena
+     * offset belongs.  Backtrace + abort on first occurrence. */
+    if (CL_HEAP_P(val) && val >= cl_heap.arena_size) {
+        fprintf(stderr,
+                "[VM-PUSH-GUARD] cl_vm_push: val=0x%08x out of arena (size=0x%08x) sp=%d fp=%d\n",
+                (unsigned)val, (unsigned)cl_heap.arena_size, cl_vm.sp, cl_vm.fp);
+        cl_capture_backtrace();
+        fprintf(stderr, "%s", cl_backtrace_buf);
+        fflush(stderr);
+        abort();
+    }
+#endif
     cl_vm.stack[cl_vm.sp++] = val;
 #ifdef CL_DEBUG_UWP
     if (dbg_watch_idx >= 0 && (cl_vm.sp - 1) == dbg_watch_idx && val != dbg_watch_orig)
@@ -848,12 +862,30 @@ static CL_Obj cl_vm_run(int base_fp, int base_nlx)
     /* Inline push/pop: ~2 function calls + 4 CT lookups saved per opcode.
      * VM_PUSH evaluates (v) into a temp to prevent UB when (v) contains
      * a pop (double sp modification without sequence point). */
+#ifdef DEBUG_VM_PUSH_GUARD
+#define cl_vm_push(v) do { \
+        CL_Obj _pv = (v); \
+        if (thr->vm.sp >= (int)thr->vm.stack_size) \
+            cl_error(CL_ERR_OVERFLOW, "VM stack overflow"); \
+        if (CL_HEAP_P(_pv) && _pv >= cl_heap.arena_size) { \
+            fprintf(stderr, \
+                "[VM-PUSH-GUARD] dispatch: val=0x%08x out of arena (size=0x%08x) sp=%d fp=%d ip=%u\n", \
+                (unsigned)_pv, (unsigned)cl_heap.arena_size, thr->vm.sp, thr->vm.fp, ip); \
+            cl_capture_backtrace(); \
+            fprintf(stderr, "%s", cl_backtrace_buf); \
+            fflush(stderr); \
+            abort(); \
+        } \
+        thr->vm.stack[thr->vm.sp++] = _pv; \
+    } while(0)
+#else
 #define cl_vm_push(v) do { \
         CL_Obj _pv = (v); \
         if (thr->vm.sp >= (int)thr->vm.stack_size) \
             cl_error(CL_ERR_OVERFLOW, "VM stack overflow"); \
         thr->vm.stack[thr->vm.sp++] = _pv; \
     } while(0)
+#endif
 #define cl_vm_pop() (thr->vm.stack[--thr->vm.sp])
 
     /* Cache all hot-path thread accessors through local thr pointer.
