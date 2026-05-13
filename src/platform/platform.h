@@ -154,4 +154,10 @@ uint32_t platform_amiga_call(uint32_t lib_base, int16_t offset,
 uint32_t platform_amiga_alloc_chip(uint32_t size);
 void     platform_amiga_free_chip(uint32_t addr, uint32_t size);
 
+/* Flush I/D caches for a freshly written code buffer.
+ * Required on AmigaOS 68040/060 after emitting JIT code — calls
+ * CacheClearU() so the CPU doesn't execute stale instruction-cache
+ * lines.  No-op on 68020/030 and on POSIX. */
+void     platform_cache_clear(void *addr, uint32_t len);
+
 #endif /* CL_PLATFORM_H */

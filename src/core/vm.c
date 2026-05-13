@@ -12,6 +12,7 @@
 #include "string_utils.h"
 #include "../platform/platform.h"
 #include "../platform/platform_thread.h"
+#include "../jit/jit.h"
 #include <stdio.h>
 #include <string.h>
 #include <stdlib.h>
@@ -1752,6 +1753,24 @@ static CL_Obj cl_vm_run(int base_fp, int base_nlx)
                              "Too many arguments to %s (%s:%u): expected %s%d, got %d",
                              fn, src, src_line, n_opt ? "at most " : "",
                              max_args, nargs);
+                }
+
+                /* Native fast path (m68k JIT, opt-in via cl_jit_compile).
+                 * Only bytecodes the JIT recognized as safe-to-replace
+                 * carry native_code; today that's the trivial `()->NIL`
+                 * pattern, which expects zero args, allocates nothing,
+                 * and returns CL_NIL in D0.  Side-steps frame push and
+                 * goes straight to result-push, mirroring the builtin
+                 * dispatch above.  Skipped under TAILCALL (would
+                 * confuse the existing TAILCALL frame reuse) and when
+                 * the callee is being traced (so TRACE output stays
+                 * faithful). */
+                if (callee_bc->native_code &&
+                    !is_tail && !is_func_traced(func_obj)) {
+                    CL_Obj nresult = cl_jit_invoke(callee_bc, nargs);
+                    cl_vm.sp -= (nargs + 1);
+                    cl_vm_push(nresult);
+                    VM_BREAK;
                 }
 
                 /* GC-protect func_obj: it gets removed from the VM stack

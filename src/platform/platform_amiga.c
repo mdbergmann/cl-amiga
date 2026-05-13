@@ -943,3 +943,13 @@ void platform_amiga_free_chip(uint32_t addr, uint32_t size)
     if (addr == 0) return;
     FreeMem((void *)addr, size);
 }
+
+void platform_cache_clear(void *addr, uint32_t len)
+{
+    (void)addr; (void)len;
+    /* CacheClearU flushes the full I and D caches.  Per-range
+     * CacheClearE exists from V37 but takes more code and is no faster
+     * on the buffer sizes the JIT produces.  Safe no-op on 68020/030
+     * where the I-cache isn't write-back. */
+    CacheClearU();
+}

@@ -572,6 +572,13 @@ void platform_shutdown(void)
     /* Nothing needed on POSIX */
 }
 
+void platform_cache_clear(void *addr, uint32_t len)
+{
+    (void)addr; (void)len;
+    /* POSIX hosts running clamiga don't execute JIT-emitted m68k code;
+     * the JIT only compiles when -DJIT_M68K is on (cross build). */
+}
+
 /* =============================================================
  * Generic FFI: foreign memory (POSIX implementation)
  *

@@ -825,6 +825,15 @@ static CL_Obj bi_jit_compile_stub(CL_Obj *args, int n)
     return cl_jit_emit_stub(bc) ? CL_T : CL_NIL;
 }
 
+static CL_Obj bi_jit_invoke_count(CL_Obj *args, int n)
+{
+    CL_UNUSED(args); CL_UNUSED(n);
+    /* Bumped each time OP_CALL takes the native dispatch path.  Stays
+     * at 0 on host (no JIT compiled in), so tests written for Amiga
+     * verification gate themselves with this counter. */
+    return CL_MAKE_FIXNUM((int32_t)cl_jit_invoke_count_get());
+}
+
 /* --- Property lists --- */
 
 static CL_Obj bi_symbol_plist(CL_Obj *args, int n)
@@ -1115,8 +1124,9 @@ void cl_builtins_init(void)
     /* JIT introspection — payload only on m68k builds; on host both
      * return NIL.  Useful for verifying the encoder pipeline before
      * any function actually executes through native code. */
-    cl_register_builtin("%JIT-DUMP-BYTES",   bi_jit_dump_bytes,   1, 1, cl_package_clamiga);
-    cl_register_builtin("%JIT-COMPILE-STUB", bi_jit_compile_stub, 1, 1, cl_package_clamiga);
+    cl_register_builtin("%JIT-DUMP-BYTES",    bi_jit_dump_bytes,    1, 1, cl_package_clamiga);
+    cl_register_builtin("%JIT-COMPILE-STUB",  bi_jit_compile_stub,  1, 1, cl_package_clamiga);
+    cl_register_builtin("%JIT-INVOKE-COUNT",  bi_jit_invoke_count,  0, 0, cl_package_clamiga);
 
     /* Reserved standard CL symbols — required to be present and external in
      * COMMON-LISP per ANSI 11.1.2.1.  Many do not have full implementations
