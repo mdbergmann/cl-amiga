@@ -504,7 +504,7 @@ functions: graphics inner loop, REPL printer, test harness driver).
 That's the regime where the JIT becomes a net win even on the low-end
 target.
 
-## Status (2026-05-14, post struct slot access)
+## Status (2026-05-14, post MUL + CAR/CDR coverage)
 
 Approach (1) is in flight. Two codegen paths layered front-to-back —
 the JIT hook fires on both source-compile and FASL-load.
@@ -547,8 +547,9 @@ the operand stack and a LINK'd frame at A6 for locals.
 
 Supported opcodes: `OP_NIL`, `OP_T`, `OP_CONST`, `OP_LOAD`, `OP_STORE`,
 `OP_POP`, `OP_DUP`, `OP_JMP`, `OP_JNIL`, `OP_JTRUE`, `OP_ADD`,
-`OP_SUB`, `OP_LT`, `OP_GT`, `OP_LE`, `OP_GE`, `OP_NUMEQ`, `OP_EQ`,
-`OP_NOT`, `OP_STRUCT_REF`, `OP_STRUCT_SET`, `OP_RET` — subsumes
+`OP_SUB`, `OP_MUL`, `OP_LT`, `OP_GT`, `OP_LE`, `OP_GE`, `OP_NUMEQ`,
+`OP_EQ`, `OP_NOT`, `OP_CAR`, `OP_CDR`, `OP_STRUCT_REF`,
+`OP_STRUCT_SET`, `OP_RET` — subsumes
 everything the matchers cover plus arbitrary compositions including
 iterative fixnum loops
 (`(tagbody … (if (< i n) (progn (setq s (+ s i)) … (go top))))`)
@@ -583,6 +584,21 @@ require `REAL`. Register discipline is strict: only D0/D1/A0/A1
 (caller-saved on the m68k C ABI) are touched, so the gcc-emitted
 `cl_jit_invoke` wrapper around the JIT's native entry sees its
 callee-saved registers (D2–D7, A2–A6) preserved.
+
+`OP_MUL` and `OP_CAR` / `OP_CDR` are JSR-only templates as well —
+pop, push args in m68k C-ABI order, JSR helper, drop, push result.
+No inline fixnum fast path for `*` because the MULS.L encoding would
+roughly double `asm_m68k.c` for an op that's rare in tight inner
+loops; `cl_jit_runtime_mul` keeps the VM's fixnum fast path inside
+`cl_arith_mul`, so the only added cost vs. bytecode is one JSR per
+call.  `OP_CAR` / `OP_CDR` forward straight to `cl_car` / `cl_cdr`,
+which already implement the full CLHS contract (NIL → NIL, LIST
+type-error, unbound-variable diagnostic).  Both helpers are
+non-allocating, so they remain GC-safe even without precise m68k
+stack scanning.  `OP_DIV` is deliberately not in the walker yet:
+today's compiler never emits `OP_DIV` (`inline_builtin_opcode` covers
+`+ - * = < >` only), so a walker template would be unreachable —
+it'll land alongside the compiler change if `/` ever gets inlined.
 
 `OP_STRUCT_REF` / `OP_STRUCT_SET` are JSR-only templates — pop
 operands, push them in m68k C-ABI order (with the baked-in u8 index
@@ -657,22 +673,25 @@ optimization). Pure memory operands.
   the OP_CALL native branch never trips on host.
 - `make -f Makefile.cross amiga`: green, no new warnings.
 - `make -f Makefile.cross test-amiga` (high-end A4000/68040/JIT
-  FS-UAE config): **2432/2432** Amiga tests pass. JIT-specific
-  coverage in `tests/amiga/test-jit.lisp` (~158 checks): the existing
-  matcher / walker shape tests, `(+ a b)` / `(< a b)` coverage from
-  the previous commit, plus new behavioral coverage for `(- a b)`
-  (mirror of ADD including overflow into bignum and int↔float slow
-  path), the full ordered-comparison family `(>` / `<=` / `>=`,
-  same shape as `<` with each Bcc), `(= a b)` (NUMBER-typed,
-  including int↔float through `cl_numeric_equal`), pointer-identity
-  `(eq a b)` (no slow path — distinguishes shared vs distinct
-  conses, fixnum identity, symbol identity, NIL/T self-EQ),
-  `(not x)` (no slow path — exhaustive truthiness tests including
-  zero-is-truthy CL semantics), and defstruct accessor/setter
-  round-trips via OP_STRUCT_REF / OP_STRUCT_SET (3-slot `jit-point`
-  struct: per-slot reads across fixnum/nil/symbol/cons, setter
-  returns stored value, round-trip read-after-write, set leaves
-  other slots untouched, STRUCTURE type-error path).
+  FS-UAE config): **2456/2456** Amiga tests pass. JIT-specific
+  coverage in `tests/amiga/test-jit.lisp` (~180 checks): the
+  matcher / walker shape tests, full arithmetic family (`+`, `-`
+  with fixnum fast paths + overflow into bignum + int↔float slow
+  path; `*` JSR-only with mid-range / overflow-to-bignum /
+  int↔float / NUMBER type-error), full ordered-comparison family
+  (`<` / `>` / `<=` / `>=` with each Bcc plus int↔float slow path),
+  `(= a b)` (NUMBER-typed, including int↔float through
+  `cl_numeric_equal`), pointer-identity `(eq a b)` (no slow path —
+  distinguishes shared vs distinct conses, fixnum identity, symbol
+  identity, NIL/T self-EQ), `(not x)` (no slow path — exhaustive
+  truthiness tests including zero-is-truthy CL semantics), list
+  primitives `(car lst)` / `(cdr lst)` (JSR via
+  `cl_jit_runtime_car/_cdr` — list/single/pair/NIL/empty cases
+  plus LIST type-error), and defstruct accessor/setter round-trips
+  via OP_STRUCT_REF / OP_STRUCT_SET (3-slot `jit-point` struct:
+  per-slot reads across fixnum/nil/symbol/cons, setter returns
+  stored value, round-trip read-after-write, set leaves other
+  slots untouched, STRUCTURE type-error path).
 
 ### First headline benchmark (`trunk/bench-jit-loop.lisp`)
 

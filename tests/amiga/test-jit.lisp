@@ -522,6 +522,69 @@
   (handler-case (progn (walker-set-point-x 'not-a-struct 1) :no-error)
     (type-error () :caught)))
 
+; --- OP_MUL.  JSR-only template (no inline fixnum fast path): pop b,
+; pop a, push b, push a (C-ABI right-to-left), JSR cl_jit_runtime_mul,
+; drop, push result.  The helper preserves the VM's fixnum fast path
+; inside cl_arith_mul, so cost vs. bytecode is one extra JSR per call.
+; Coverage exercises in-range fixnum, fast-path-fitting cross-products,
+; bignum overflow, int↔float promotion, and the NUMBER type-error
+; path so behaviour matches the bytecode VM exactly.  OP_DIV is left
+; out for now — the compiler doesn't emit it (no `/` case in
+; inline_builtin_opcode), so adding a walker template would be dead
+; code.
+(defun walker-mul2 (a b) (* a b))
+(check "walker-mul2-counter-bump" t
+  (let ((before (clamiga::%jit-invoke-count)))
+    (walker-mul2 6 7)
+    (> (clamiga::%jit-invoke-count) before)))
+(check "walker-mul2-fix"          42  (walker-mul2 6 7))
+(check "walker-mul2-zero"         0   (walker-mul2 0 12345))
+(check "walker-mul2-zero-rhs"     0   (walker-mul2 12345 0))
+(check "walker-mul2-neg"         -42  (walker-mul2 -6 7))
+(check "walker-mul2-double-neg"   42  (walker-mul2 -6 -7))
+; Mid-range fixnum × fixnum that fits in fixnum: 1000 * 2000 = 2 000 000.
+(check "walker-mul2-mid-fix"      2000000  (walker-mul2 1000 2000))
+; Just past the VM's 15-bit fast-path guard: 65535 * 16384 = ~1.07e9 — still
+; CL_FIXNUM_MAX-fitting (< 1 073 741 823), so cl_arith_mul returns a fixnum.
+(check "walker-mul2-large-fix"    1073725440 (walker-mul2 65535 16384))
+; Overflow to bignum: 100000 * 100000 = 1e10 — well past CL_FIXNUM_MAX.
+(check "walker-mul2-overflow-bignum" 10000000000 (walker-mul2 100000 100000))
+; Cross-type: int * float → float.
+(check "walker-mul2-slow-int-float" 7.5 (walker-mul2 3 2.5))
+; Non-NUMBER → type-error.
+(check "walker-mul2-type-error" :caught
+  (handler-case (progn (walker-mul2 'foo 7) :no-error)
+    (type-error () :caught)))
+
+; --- OP_CAR / OP_CDR.  JSR-only one-arg templates routing through
+; cl_jit_runtime_car / _cdr, which forward to cl_car / cl_cdr.  Those
+; already implement the full spec: NIL→NIL, LIST type-error with the
+; same diagnostic the VM prints, and unbound-variable detection.
+; Non-allocating → GC-safe in all cases.
+(defun walker-car1 (lst) (car lst))
+(defun walker-cdr1 (lst) (cdr lst))
+(check "walker-car1-counter-bump" t
+  (let ((before (clamiga::%jit-invoke-count)))
+    (walker-car1 '(1 2 3))
+    (> (clamiga::%jit-invoke-count) before)))
+(check "walker-car1-list"    1   (walker-car1 '(1 2 3)))
+(check "walker-car1-single"  'x  (walker-car1 '(x)))
+(check "walker-car1-pair"    'a  (walker-car1 (cons 'a 'b)))
+(check "walker-car1-nil"     nil (walker-car1 nil))
+(check "walker-car1-empty"   nil (walker-car1 '()))
+(check "walker-car1-type-error" :caught
+  (handler-case (progn (walker-car1 42) :no-error)
+    (type-error () :caught)))
+
+(check "walker-cdr1-list"    '(2 3) (walker-cdr1 '(1 2 3)))
+(check "walker-cdr1-single"  nil    (walker-cdr1 '(x)))
+(check "walker-cdr1-pair"    'b     (walker-cdr1 (cons 'a 'b)))
+(check "walker-cdr1-nil"     nil    (walker-cdr1 nil))
+(check "walker-cdr1-empty"   nil    (walker-cdr1 '()))
+(check "walker-cdr1-type-error" :caught
+  (handler-case (progn (walker-cdr1 'foo) :no-error)
+    (type-error () :caught)))
+
 ; --- OP_EQ in conditional context: `(cond ((eq x 'a) 1) ((eq x 'b) 2))`.
 ; Pulls together OP_EQ + OP_DUP + OP_JNIL + branch resolution within a
 ; single function.
