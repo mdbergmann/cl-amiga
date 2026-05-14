@@ -1939,8 +1939,12 @@
 ; namestring is identity
 (check "namestring" "/foo/bar" (namestring "/foo/bar"))
 
-; truename is identity (for now)
-(check "truename" #P"/foo/bar" (truename "/foo/bar"))
+; truename: per CLHS, signals a file-error for non-existent paths.
+; (The earlier "identity-for-now" stub behavior is gone now that
+; truename actually walks the filesystem.)
+(check "truename file-error" t
+  (handler-case (progn (truename "/foo/bar") nil)
+    (file-error () t)))
 
 ; make-pathname constructs path (returns pathname, use namestring to get string)
 (check "make-pathname" "hello.txt" (namestring (make-pathname :name "hello" :type "txt")))
@@ -2235,8 +2239,17 @@
 
 ; remf
 (check "remf middle" '(:a 1 :c 3) (let ((p (list :a 1 :b 2 :c 3))) (remf p :b) p))
-(check "remf head mv" '((:b 2) t) (multiple-value-list (remf (list :a 1 :b 2) :a)))
-(check "remf missing mv" '((:a 1 :b 2) nil) (multiple-value-list (remf (list :a 1 :b 2) :z)))
+; Per CLHS, REMF returns a single boolean (found/not-found) and
+; *destructively modifies* the place — so the place must be SETF'able.
+; A fresh (list ...) literal isn't (there's no SETF expander for LIST,
+; and "modifying a list literal" has no useful meaning), so bind to a
+; variable first and inspect both the boolean and the post-call list.
+(check "remf head" '((:b 2) t)
+  (let ((p (list :a 1 :b 2)))
+    (let ((found (remf p :a))) (list p found))))
+(check "remf missing" '((:a 1 :b 2) nil)
+  (let ((p (list :a 1 :b 2)))
+    (let ((found (remf p :z))) (list p found))))
 
 ; --- Loop macro ---
 ; Simple loop
