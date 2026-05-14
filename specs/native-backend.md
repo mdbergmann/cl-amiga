@@ -623,3 +623,27 @@ OP_TAILCALL).
   cross-function tail calls.  (a) is the cleaner first cut.
 - *GC root finding for the operand stack.*  See §"GC interaction".
   Prerequisite for JIT'ing CONS-heavy / mixed-type code by default.
+- *MV_RESET and `mv_count` propagation.*  Investigated 2026-05-14
+  and reverted.  Bytecode VM resets `cl_mv_count = 1` as a side
+  effect of every value-producing opcode (OP_CONST, OP_NIL, OP_LOAD,
+  …).  The walker doesn't emit per-opcode resets, so a multi-value
+  producer's mv_count leaks through a JIT'd body's OP_RET to the
+  caller.  Two tried-and-reverted fixes:  (i) reset in
+  `cl_jit_invoke` after the native call — broke CLOS dispatch (CLOS
+  internals route MVs through JIT'd intermediates and need them
+  propagated);  (ii) reset in walker's OP_RET emitter — same CLOS
+  damage.  Adding a standalone `OP_MV_RESET` emitter that compiles
+  the bytecode opcode is safe in isolation but doesn't fix the
+  per-opcode-reset gap (the compiler emits OP_MV_RESET sparsely, only
+  between `or`/`and` arms; intra-body single-value sequences still
+  leak).  The only general fix is a real per-opcode reset (one
+  store per value-producing opcode), prohibitively expensive at the
+  current "JSR per write" cost.  An inlined direct write — `MOVE.L
+  #1, mv_count_offset(thread_ptr)` — would be cheap if we cached the
+  current-thread pointer in an A-register across the JIT'd
+  function's prologue (single-threaded fast path: `cl_main_thread_ptr`
+  load once at LINK time; multi-threaded: skip JIT or call
+  `platform_tls_get`).  Until that's in, JIT'd functions inherit
+  whatever mv_count their callers were last left with — fine for the
+  current test suite and bouncing-lines hot path (nothing reads
+  mv_count from JIT'd code), but a latent correctness gap.
