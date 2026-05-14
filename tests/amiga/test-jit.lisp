@@ -231,3 +231,82 @@
   (let ((before (clamiga::%jit-invoke-count)))
     (walker-cons-fallback 3 4)
     (= before (clamiga::%jit-invoke-count))))
+
+; --- Branches (OP_JMP / OP_JNIL / OP_JTRUE) ------------------------------
+;
+; `(if x 1 2)` compiles to LOAD 0 ; JNIL else ; CONST 1 ; JMP end ;
+; else: CONST 2 ; end: STORE/POP/LOAD/RET — i.e. exercises both
+; forward JNIL and forward JMP plus the patch-resolution loop.
+;
+; CONST indices and tagged-fixnum bytes depend on the constant pool's
+; layout, so byte-exact would be brittle.  Instead verify two stable
+; properties: (1) the function JITs (counter bumps), (2) both
+; branch arms produce the right return value across argument types
+; that exercise the truthiness path (NIL → else, anything else →
+; then).
+
+(defun walker-if-1-2 (x) (if x 1 2))
+(check "walker-if-1-2-counter-bump" t
+  (let ((before (clamiga::%jit-invoke-count)))
+    (walker-if-1-2 t)
+    (> (clamiga::%jit-invoke-count) before)))
+(check "walker-if-1-2-then-t"      1 (walker-if-1-2 t))
+(check "walker-if-1-2-then-fixnum" 1 (walker-if-1-2 42))
+(check "walker-if-1-2-then-symbol" 1 (walker-if-1-2 'anything))
+(check "walker-if-1-2-then-cons"   1 (walker-if-1-2 (cons 1 2)))
+(check "walker-if-1-2-else-nil"    2 (walker-if-1-2 nil))
+
+; `(if x x y)` — then-branch returns the test value (so JIT'd code
+; threads the same arg through both LOAD-and-test and the result),
+; else-branch returns y (a second parameter that lives at 12(a6)).
+(defun walker-if-x-y (x y) (if x x y))
+(check "walker-if-x-y-then-fixnum" 7   (walker-if-x-y 7 99))
+(check "walker-if-x-y-then-symbol" 'a  (walker-if-x-y 'a 'b))
+(check "walker-if-x-y-then-cons"   '(1 . 2) (walker-if-x-y '(1 . 2) nil))
+(check "walker-if-x-y-else-fixnum" 99  (walker-if-x-y nil 99))
+(check "walker-if-x-y-else-sym"    'b  (walker-if-x-y nil 'b))
+
+; `(when x v)` collapses to (if x v nil) — the NIL else-branch
+; exercises the OP_NIL walker case as the else-target rather than
+; OP_CONST.  Returns v on truthy x, NIL otherwise.
+(defun walker-when-v (x) (when x 'taken))
+(check "walker-when-v-truthy" 'taken (walker-when-v t))
+(check "walker-when-v-nil"    nil    (walker-when-v nil))
+
+; `(unless x v)` → (if x nil v).  Symmetric coverage to when.
+(defun walker-unless-v (x) (unless x 'skipped))
+(check "walker-unless-v-truthy" nil      (walker-unless-v t))
+(check "walker-unless-v-nil"    'skipped (walker-unless-v nil))
+
+; --- OP_DUP behavioral coverage via cond's empty-body clause ---------
+;
+; `(cond (x))` compiles to LOAD x ; DUP ; JNIL else ; JMP end ;
+; else: NIL ; end: ... — so the test value is returned itself when
+; truthy, NIL otherwise.  This is the only Lisp shape that emits
+; OP_DUP without also emitting OP_MV_RESET (which the walker still
+; rejects), so it doubles as the OP_DUP regression test.
+(defun walker-cond-empty-body (x) (cond (x)))
+(check "walker-cond-empty-body-counter-bump" t
+  (let ((before (clamiga::%jit-invoke-count)))
+    (walker-cond-empty-body t)
+    (> (clamiga::%jit-invoke-count) before)))
+(check "walker-cond-empty-body-truthy-t"      t      (walker-cond-empty-body t))
+(check "walker-cond-empty-body-truthy-fixnum" 7      (walker-cond-empty-body 7))
+(check "walker-cond-empty-body-truthy-sym"    'foo   (walker-cond-empty-body 'foo))
+(check "walker-cond-empty-body-falsey-nil"    nil    (walker-cond-empty-body nil))
+
+; Two-clause cond — exercises the cascade of JMPs plus a NIL fall-
+; through at the end.  `(cond ((eq x 'a) 1) ((eq x 'b) 2))` would
+; normally include OP_EQ which we don't handle yet; use (cond (x 1))
+; instead — JNIL else ; CONST 1 ; JMP end ; else: NIL ; end: ... ,
+; same building blocks as if-1-2 minus the second CONST.
+(defun walker-cond-only-true (x) (cond (x 1)))
+(check "walker-cond-only-true-truthy" 1   (walker-cond-only-true 'anything))
+(check "walker-cond-only-true-falsey" nil (walker-cond-only-true nil))
+
+; --- Negative: branch range overflow.  The walker bails when a
+; 16-bit branch displacement won't fit.  There's no realistic way to
+; provoke this from hand-written Lisp at this scale, so the test is
+; left implicit: any function the walker accepts has fit within
+; range, and the full Amiga test suite running 2321+ tests through
+; the JIT'd pipeline is the regression net.

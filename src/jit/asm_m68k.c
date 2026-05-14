@@ -7,6 +7,8 @@
 
 #ifdef JIT_M68K
 
+#include <stddef.h>      /* NULL */
+
 #include "jit/asm_m68k.h"
 
 /* NOP: opcode 0100 1110 0111 0001 (0x4E71).
@@ -134,6 +136,41 @@ void m68k_emit_addq_l_an(CodeBuf *cb, uint8_t imm, M68kReg an)
     uint16_t enc = (uint16_t)(0x5000 | ((uint16_t)data << 9) |
                               (2 << 6) | (1 << 3) | (an & 7));
     cb_emit_u16(cb, enc);
+}
+
+/* MOVE.L (An),-(Am): src EA = 010/an, dst EA = 100/am.  Bits:
+ * 0010 am 100 010 an.  2 bytes — no extension words.  m68k semantics
+ * read the source operand fully before applying the destination's
+ * predecrement, so `move.l (a7),-(a7)` duplicates TOS rather than
+ * overwriting it. */
+void m68k_emit_move_l_an_to_predec_am(CodeBuf *cb, M68kReg an, M68kReg am)
+{
+    uint16_t enc = (uint16_t)(0x2000 | ((am & 7) << 9) |
+                              (4 << 6) | (2 << 3) | (an & 7));
+    cb_emit_u16(cb, enc);
+}
+
+/* Bcc.W: opcode word 0110 cccc 0000 0000 then 16-bit signed
+ * displacement.  cccc selects the condition: 0 = BRA (unconditional),
+ * 6 = BNE (Z=0), 7 = BEQ (Z=1).  See M68000 PRM §4-25. */
+static void m68k_emit_bcc_w(CodeBuf *cb, uint8_t cond, int16_t disp)
+{
+    uint16_t enc = (uint16_t)(0x6000 | ((uint16_t)(cond & 0xF) << 8));
+    cb_emit_u16(cb, enc);
+    cb_emit_u16(cb, (uint16_t)disp);
+}
+
+void m68k_emit_bra_w(CodeBuf *cb, int16_t disp) { m68k_emit_bcc_w(cb, 0, disp); }
+void m68k_emit_beq_w(CodeBuf *cb, int16_t disp) { m68k_emit_bcc_w(cb, 7, disp); }
+void m68k_emit_bne_w(CodeBuf *cb, int16_t disp) { m68k_emit_bcc_w(cb, 6, disp); }
+
+void m68k_patch_disp16(uint8_t *code, uint32_t code_len,
+                       uint32_t patch_off, int16_t disp)
+{
+    if (code == NULL) return;
+    if (patch_off + 2 > code_len) return;
+    code[patch_off]     = (uint8_t)(((uint16_t)disp >> 8) & 0xFF);
+    code[patch_off + 1] = (uint8_t)( (uint16_t)disp       & 0xFF);
 }
 
 #endif /* JIT_M68K */
