@@ -103,3 +103,30 @@
 (check "jit-id-symbol"       'foo (jit-id 'foo))
 (check "jit-id-cons"         '(1 2 3) (jit-id '(1 2 3)))
 (check "jit-id-string"       "hello" (jit-id "hello"))
+
+; --- 2-arg pass-through: same template as 1-arg identity, just a
+; different stack displacement.  Returning the first arg emits the
+; same 6 bytes as 1-arg identity (move.l 4(a7),d0 ; rts); returning
+; the second arg shifts the displacement to 8(a7) → bytes
+; 0x20 0x2F 0x00 0x08 0x4E 0x75.  The behavioral test then proves
+; cl_jit_invoke's 2-arg dispatch loads both args off the VM stack and
+; passes them in the right order. ---
+(defun jit-2arg-fst (x y) x)
+(defun jit-2arg-snd (x y) y)
+(check "jit-2arg-fst-bytes" '(32 47 0 4 78 117)
+  (clamiga::%jit-dump-bytes #'jit-2arg-fst))
+(check "jit-2arg-snd-bytes" '(32 47 0 8 78 117)
+  (clamiga::%jit-dump-bytes #'jit-2arg-snd))
+(check "jit-2arg-counter-bump" t
+  (let ((before (clamiga::%jit-invoke-count)))
+    (jit-2arg-fst 1 2)
+    (jit-2arg-snd 3 4)
+    (= (+ before 2) (clamiga::%jit-invoke-count))))
+(check "jit-2arg-fst-fixnum" 11 (jit-2arg-fst 11 22))
+(check "jit-2arg-snd-fixnum" 22 (jit-2arg-snd 11 22))
+(check "jit-2arg-fst-mixed" 'a   (jit-2arg-fst 'a "b"))
+(check "jit-2arg-snd-mixed" "b"  (jit-2arg-snd 'a "b"))
+(check "jit-2arg-fst-distinguishes-args"
+       'left  (jit-2arg-fst 'left 'right))
+(check "jit-2arg-snd-distinguishes-args"
+       'right (jit-2arg-snd 'left 'right))
