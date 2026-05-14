@@ -16,10 +16,10 @@
 ; --- Byte-pipeline smoke: %JIT-COMPILE-STUB writes NOP+RTS into a
 ; function's native_code slot, %JIT-DUMP-BYTES reads it back. ---
 
-; Use a 1-arg identity so the JIT's trivial-leaf matcher doesn't
-; auto-compile this function; we need a clean "no native_code yet"
-; baseline to verify %JIT-COMPILE-STUB attaches the stub bytes.
-(defun jit-stub-test-fn (x) x)
+; Use a 2-arg function so neither the trivial-leaf nor the 1-arg
+; identity matcher auto-compiles it; we need a clean "no native_code
+; yet" baseline to verify %JIT-COMPILE-STUB attaches the stub bytes.
+(defun jit-stub-test-fn (x y) (cons x y))
 (check "jit-dump-before-stub" nil (clamiga::%jit-dump-bytes #'jit-stub-test-fn))
 (check "jit-compile-stub-succeeds" t (clamiga::%jit-compile-stub #'jit-stub-test-fn))
 ; NOP = 0x4E71, RTS = 0x4E75 → bytes 78 113 78 117
@@ -79,3 +79,27 @@
     (and (= 8 (length bs))
          (= 32 (nth 0 bs)) (= 60 (nth 1 bs))   ; 0x20 0x3C
          (= 78 (nth 6 bs)) (= 117 (nth 7 bs))))) ; 0x4E 0x75
+
+; --- 1-arg identity: (defun f (x) x) compiles to
+;   move.l 4(a7),d0    ; 0x20 0x2F 0x00 0x04
+;   rts                ; 0x4E 0x75
+; (6 bytes).  C ABI on m68k puts the first arg at 4(sp) after JSR;
+; cl_jit_invoke casts native_code to (CL_Obj (*)(CL_Obj)) and passes
+; the arg directly.  The returned CL_Obj is whatever bit pattern the
+; caller passed — fixnums, symbols, conses all round-trip without
+; reinterpretation. ---
+(defun jit-id (x) x)
+(check "jit-id-bytes" '(32 47 0 4 78 117)
+  (clamiga::%jit-dump-bytes #'jit-id))
+(check "jit-id-counter-bump" t
+  (let ((before (clamiga::%jit-invoke-count)))
+    (jit-id 42)
+    (> (clamiga::%jit-invoke-count) before)))
+(check "jit-id-fixnum-small" 7   (jit-id 7))
+(check "jit-id-fixnum-neg"   -3  (jit-id -3))
+(check "jit-id-fixnum-big"   1000 (jit-id 1000))
+(check "jit-id-nil"          nil (jit-id nil))
+(check "jit-id-t"            t   (jit-id t))
+(check "jit-id-symbol"       'foo (jit-id 'foo))
+(check "jit-id-cons"         '(1 2 3) (jit-id '(1 2 3)))
+(check "jit-id-string"       "hello" (jit-id "hello"))

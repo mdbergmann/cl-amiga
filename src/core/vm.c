@@ -1757,14 +1757,17 @@ static CL_Obj cl_vm_run(int base_fp, int base_nlx)
 
                 /* Native fast path (m68k JIT, opt-in via cl_jit_compile).
                  * Only bytecodes the JIT recognized as safe-to-replace
-                 * carry native_code; today that's the trivial `()->NIL`
-                 * pattern, which expects zero args, allocates nothing,
-                 * and returns CL_NIL in D0.  Side-steps frame push and
-                 * goes straight to result-push, mirroring the builtin
-                 * dispatch above.  Skipped under TAILCALL (would
-                 * confuse the existing TAILCALL frame reuse) and when
-                 * the callee is being traced (so TRACE output stays
-                 * faithful). */
+                 * carry native_code; today that's trivial-literal-leaf
+                 * (0-arg constant return) and 1-arg identity.  Both
+                 * allocate nothing and return their result in D0.
+                 * Side-steps frame push and goes straight to
+                 * result-push, mirroring the builtin dispatch above.
+                 * Skipped under TAILCALL (would confuse the existing
+                 * TAILCALL frame reuse) and when the callee is being
+                 * traced (so TRACE output stays faithful).  Arity
+                 * checks above have already enforced nargs == arity for
+                 * these shapes (matchers reject optional/&key/&rest),
+                 * so cl_jit_invoke can dispatch on nargs unconditionally. */
                 if (callee_bc->native_code &&
                     !is_tail && !is_func_traced(func_obj)) {
                     CL_Obj nresult = cl_jit_invoke(callee_bc, nargs);
