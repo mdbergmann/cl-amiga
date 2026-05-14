@@ -46,4 +46,16 @@ void m68k_emit_move_l_imm32(CodeBuf *cb, uint32_t imm, M68kReg dn)
     cb_emit_u32(cb, imm);
 }
 
+/* MOVE.L (d16,An),Dn: opcode 0010 nnn 000 101 aaa followed by a 2-byte
+ * big-endian signed displacement.  Source EA = 101/aaa (mode 5: address
+ * register indirect with 16-bit displacement), dest EA = 000/nnn (data
+ * register direct).  4 bytes total. */
+void m68k_emit_move_l_disp_an_to_dn(CodeBuf *cb, int16_t disp,
+                                    M68kReg an, M68kReg dn)
+{
+    uint16_t enc = (uint16_t)(0x2000 | ((dn & 7) << 9) | 0x0028 | (an & 7));
+    cb_emit_u16(cb, enc);
+    cb_emit_u16(cb, (uint16_t)disp);
+}
+
 #endif /* JIT_M68K */

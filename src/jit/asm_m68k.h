@@ -39,6 +39,16 @@ void m68k_emit_moveq(CodeBuf *cb, int8_t imm, M68kReg dn);
  * dn must be a data register (REG_D0..REG_D7).  See M68000 PRM §4-128. */
 void m68k_emit_move_l_imm32(CodeBuf *cb, uint32_t imm, M68kReg dn);
 
+/* MOVE.L (d16,An),Dn — load a longword from memory at address (An+d16)
+ * into Dn.  Source EA = 101/An (address register indirect with 16-bit
+ * displacement), dest EA = 000/Dn.  Emits 4 bytes: 2-byte opcode +
+ * 2-byte signed big-endian displacement.  Used to read C-ABI stack args
+ * off A7 (e.g. `move.l 4(a7),d0` for the first arg).  See M68000 PRM
+ * §4-128 (MOVE) and §2-2 (mode 5 addressing).  an must be A0..A7, dn
+ * must be D0..D7. */
+void m68k_emit_move_l_disp_an_to_dn(CodeBuf *cb, int16_t disp,
+                                    M68kReg an, M68kReg dn);
+
 #endif /* JIT_M68K */
 
 #endif /* CL_JIT_ASM_M68K_H */

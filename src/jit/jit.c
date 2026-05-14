@@ -1,10 +1,16 @@
 /* jit.c — orchestration for the m68k template JIT.
  *
- * Current codegen: a single "trivial leaf returning a literal" pattern
- * — `(defun f () <literal>)` — emitted as `moveq` or `move.l #imm32`
- * followed by `rts`.  Recognized literal forms are OP_NIL, OP_T, and
- * OP_CONST (any constant pool entry); everything else still leaves
- * `bc->native_code == NULL` and runs through the bytecode interpreter.
+ * Current codegen covers two function shapes:
+ *
+ *   1. `(defun f () <literal>)` — 0-arg, returns a constant.  Emitted
+ *      as `moveq` or `move.l #imm32` into D0 followed by `rts`.
+ *      Recognized literals: OP_NIL, OP_T, OP_CONST.
+ *
+ *   2. `(defun f (x) x)` — 1-arg identity.  Emitted as `move.l 4(sp),d0
+ *      ; rts`, reading the C-ABI arg slot directly.
+ *
+ * Everything else still leaves `bc->native_code == NULL` and runs
+ * through the bytecode interpreter.
  *
  * See specs/native-backend.md §"Suggested staging".
  */
@@ -19,6 +25,7 @@
 #include "jit/codegen_m68k.h"
 #include "jit/runtime.h"
 #include "core/opcodes.h"
+#include "core/thread.h"   /* cl_vm.stack[sp - nargs ... sp - 1] are the args */
 #include "core/types.h"
 #include "platform/platform.h"
 
@@ -41,7 +48,7 @@ void cl_jit_init(void)
 
     if (!cl_quiet_boot) {
         platform_write_string(
-            "; [jit] m68k template backend: trivial-literal-leaf only\n");
+            "; [jit] m68k template backend: trivial-literal-leaf + 1-arg identity\n");
     }
 }
 
@@ -108,6 +115,42 @@ static int matches_trivial_leaf(const CL_Bytecode *bc, CL_Obj *value_out)
     return 1;
 }
 
+/* Match `(defun f (x) x)` — 1-arg identity.
+ *
+ * Body `x` compiles to `OP_LOAD 0`; the implicit block-return postlude
+ * adds `OP_STORE 1 ; OP_POP ; OP_LOAD 1` (slot 1 is the block-return
+ * cell, since slot 0 holds the lone parameter), and the function
+ * trailer adds `OP_RET`.  Total 8 bytes:
+ *
+ *   OP_LOAD  0   2 bytes
+ *   OP_STORE 1   2 bytes
+ *   OP_POP       1 byte
+ *   OP_LOAD  1   2 bytes
+ *   OP_RET       1 byte
+ *
+ * No allocation, no side effects, so it's safe to collapse to a single
+ * "load arg, return" sequence.  Strict on metadata so optional/&key/
+ * &rest variants don't sneak through. */
+static int matches_identity_1arg(const CL_Bytecode *bc)
+{
+    static const uint8_t body[8] = {
+        OP_LOAD,  0x00,
+        OP_STORE, 0x01,
+        OP_POP,
+        OP_LOAD,  0x01,
+        OP_RET
+    };
+
+    if (bc->arity != 1) return 0;
+    if (bc->n_optional != 0) return 0;
+    if (bc->flags != 0) return 0;
+    if (bc->n_keys != 0) return 0;
+    if (bc->n_upvalues != 0) return 0;
+    if (bc->n_locals != 2) return 0;
+    if (bc->code_len != 8) return 0;
+    return memcmp(bc->code, body, 8) == 0;
+}
+
 /* Pick the shortest m68k encoding that materializes `val` in D0.
  * MOVEQ sign-extends an 8-bit immediate, so a CL_Obj whose 32-bit
  * value lies in [-128, 127] (interpreted as int32) round-trips
@@ -134,15 +177,26 @@ void cl_jit_compile(CL_Bytecode *bc)
     bc->native_code = NULL;
     bc->native_len  = 0;
 
-    if (!matches_trivial_leaf(bc, &value)) return;
-
-    /* Emit: load <value> into D0 ; rts.  m68k SysV ABI returns the
-     * function result in D0, so the load + rts is a complete leaf
-     * function callable from C with no register save/restore (the
-     * load only touches D0, which is caller-saved). */
     cb_init(&cb, 8);
-    emit_load_imm_d0(&cb, value);
-    m68k_emit_rts(&cb);
+
+    if (matches_trivial_leaf(bc, &value)) {
+        /* Emit: load <value> into D0 ; rts.  m68k SysV ABI returns the
+         * function result in D0, so the load + rts is a complete leaf
+         * function callable from C with no register save/restore (the
+         * load only touches D0, which is caller-saved). */
+        emit_load_imm_d0(&cb, value);
+        m68k_emit_rts(&cb);
+    } else if (matches_identity_1arg(bc)) {
+        /* Emit: move.l 4(sp),d0 ; rts.  The C ABI on m68k puts the
+         * first arg at 4(A7) after the JSR pushes the return address;
+         * cl_jit_invoke casts native_code to a 1-arg fn pointer and
+         * passes the arg through normal C calling convention. */
+        m68k_emit_move_l_disp_an_to_dn(&cb, 4, REG_A7, REG_D0);
+        m68k_emit_rts(&cb);
+    } else {
+        return;
+    }
+
     code = cb_finish(&cb, &len);
     if (code == NULL) return;
 
@@ -154,20 +208,43 @@ void cl_jit_compile(CL_Bytecode *bc)
     platform_cache_clear(code, len);
 }
 
-/* Enter native code.  Currently only the zero-arg trivial-nil pattern
- * is ever compiled, so we ignore `nargs` and call as a no-arg leaf.
- * When more shapes land, this dispatches by arity / signature.
+/* Enter native code.  Dispatches by `nargs` to the matching C function
+ * pointer cast — the JIT only compiles shapes whose arity is fixed and
+ * matches one of the cases here (matchers reject optional/&key/&rest),
+ * and OP_CALL has already verified nargs == bc->arity before reaching
+ * us, so the cast is sound.
+ *
+ * Args are read straight off `cl_vm.stack[sp - nargs ... sp - 1]` and
+ * passed via the normal m68k C calling convention; emitted code reads
+ * them from `4(sp)`, `8(sp)`, etc.  Caller is responsible for popping
+ * the args and function object after we return.
  *
  * m68k SysV ABI: D0 holds the return value on RTS; callee preserves
- * D2..D7 and A2..A6.  Our trivial fn clobbers only D0, so no register
- * save/restore is needed on either side. */
+ * D2..D7 and A2..A6.  The current templates clobber only D0, which is
+ * caller-saved, so no register save/restore is needed on either side.
+ *
+ * Unknown arities fall back to CL_NIL — that shouldn't happen because
+ * cl_jit_compile gatekeeps which shapes get native_code, but keep the
+ * defensive branch so a future matcher mismatch surfaces as a wrong
+ * value rather than a wild jump. */
 CL_Obj cl_jit_invoke(CL_Bytecode *bc, int nargs)
 {
-    typedef CL_Obj (*native_fn0_t)(void);
-    (void)nargs;
     if (bc == NULL || bc->native_code == NULL) return CL_NIL;
     jit_invoke_count++;
-    return ((native_fn0_t)bc->native_code)();
+
+    switch (nargs) {
+    case 0: {
+        typedef CL_Obj (*native_fn0_t)(void);
+        return ((native_fn0_t)bc->native_code)();
+    }
+    case 1: {
+        typedef CL_Obj (*native_fn1_t)(CL_Obj);
+        CL_Obj a0 = cl_vm.stack[cl_vm.sp - 1];
+        return ((native_fn1_t)bc->native_code)(a0);
+    }
+    default:
+        return CL_NIL;
+    }
 }
 
 int cl_jit_enabled(void) { return jit_active; }
