@@ -504,15 +504,15 @@ functions: graphics inner loop, REPL printer, test harness driver).
 That's the regime where the JIT becomes a net win even on the low-end
 target.
 
-## Status (2026-05-14, post FLOAD/CALL coverage)
+## Status (2026-05-14, post stack-cache + OP_TAILCALL)
 
-Approach (1) is in flight. Two codegen paths layered front-to-back —
-the JIT hook fires on both source-compile and FASL-load.
+Approach (1) shipping.  Two codegen paths, both fired on
+source-compile and FASL-load.  Per-opcode design details live in the
+matching commit messages — `git log --oneline -- src/jit/jit.c` is
+the journal.
 
-**Path 1: whole-function pattern matchers (tight)**
-
-Recognize a small fixed set of shapes, emit hand-written templates of
-optimal size.
+**Matchers (whole-function templates).**  Fixed shapes, hand-written
+4–8 byte bodies.
 
 | Shape                              | Native code                       | Size |
 |------------------------------------|-----------------------------------|------|
@@ -520,259 +520,106 @@ optimal size.
 | (literal too big for moveq)        | `move.l #imm32,d0 ; rts`          | 8 B  |
 | `(defun f (x1..xk) xj)`, k ≤ 6     | `move.l (4+4*j)(a7),d0 ; rts`     | 6 B  |
 
-Literal coverage: `OP_NIL`, `OP_T`, `OP_CONST` (any constant-pool
-entry, including heap pointers like `CL_T`). Arg passing follows the
-m68k SysV C ABI — `cl_jit_invoke` casts `bc->native_code` to a
-function-pointer type matching `nargs` and passes args through normal
-calling convention; native code reads them off `4(sp)`, `8(sp)`, etc.
-The pass-through matcher is capped by `CL_JIT_PASSTHROUGH_MAX_ARITY`
-(currently 6) — bumping it requires adding the matching
-`cl_jit_invoke` switch case in lockstep.
-
-**Path 2: per-opcode walker (fallback)**
-
-If no matcher fires, the walker tries: walks the bytecode once and
-emits one m68k template per opcode, using the m68k hardware stack as
-the operand stack and a LINK'd frame at A6 for locals.
+**Walker (per-opcode fallback).**  LINK frame at A6 for locals, m68k
+SP as the operand stack, 3-slot rotating register cache on top
+(D5/D6/D7 — callee-saved, stashed below the LINK frame).  Supported
+opcodes:
 
 ```
-                                <higher addresses>
-  8(a6) + 4*i  ┃ parameter i (i < arity)       [m68k C ABI]
-  4(a6)        ┃ return address
-  0(a6)        ┃ saved A6                       [pushed by LINK]
- -4(a6) - 4*j  ┃ extra local j                  [LINK frame]
-  (a7)         ┃ operand-stack TOS, grows ↓
-                                <lower addresses>
+OP_NIL OP_T OP_CONST OP_LOAD OP_STORE OP_POP OP_DUP
+OP_JMP OP_JNIL OP_JTRUE
+OP_ADD OP_SUB OP_MUL OP_LT OP_GT OP_LE OP_GE OP_NUMEQ OP_EQ OP_NOT
+OP_CAR OP_CDR
+OP_GLOAD OP_GSTORE OP_FLOAD OP_CALL OP_TAILCALL
+OP_STRUCT_REF OP_STRUCT_SET OP_DYNBIND OP_DYNUNBIND
+OP_RET
 ```
 
-Supported opcodes: `OP_NIL`, `OP_T`, `OP_CONST`, `OP_LOAD`, `OP_STORE`,
-`OP_POP`, `OP_DUP`, `OP_JMP`, `OP_JNIL`, `OP_JTRUE`, `OP_ADD`,
-`OP_SUB`, `OP_MUL`, `OP_LT`, `OP_GT`, `OP_LE`, `OP_GE`, `OP_NUMEQ`,
-`OP_EQ`, `OP_NOT`, `OP_CAR`, `OP_CDR`, `OP_FLOAD`, `OP_CALL`,
-`OP_STRUCT_REF`, `OP_STRUCT_SET`, `OP_RET` — subsumes
-everything the matchers cover plus arbitrary compositions including
-iterative fixnum loops
-(`(tagbody … (if (< i n) (progn (setq s (+ s i)) … (go top))))`)
-and defstruct accessor/setter shapes
-(`(defun get-x (p) (point-x p))` and `(setf (point-x p) v)`).
-Native code is bigger than the matchers' tight templates (22+ bytes
-for any function vs 4–8) but coverage is compositional: each new
-opcode adds one emitter case and a couple of encoders, then any
-function built from supported opcodes JITs for free. Unrecognized
-opcode → walker bails, native_code stays NULL, function runs
+Recurring shape: arith ops have an inline fixnum fast path (BTST tag
+check → ADD/SUB/CMP, BVS to slow path) with a JSR helper for
+non-fixnum / overflow; non-arith ops are JSR-only via a
+`cl_jit_runtime_*` helper.  JSR-using emitters flush the cache before
+the call (helpers read args off `(a7)` at fixed displacements); branch
+targets flush, so `cache_depth = 0` at every join point.  Unrecognized
+opcode → walker bails, `native_code` stays NULL, function runs
 interpreted.
 
-`OP_ADD` / `OP_SUB` use inline fixnum fast paths (BTST tag check on
-each operand, signed ADD/SUB, BVS overflow recovery that reconstructs
-the original `a` from the wrapped result and `b`) with a JSR to
-`cl_jit_runtime_add` / `cl_jit_runtime_sub` for non-fixnum operands
-or fixnum overflow. The tag-bit accounting differs by op: `OP_ADD`
-strips one surplus tag via SUBQ #1, `OP_SUB` re-adds the cancelled
-tag via ADDQ #1.
+**`OP_TAILCALL` is not native-level TCO.**  The emitter skips the
+push/pop round-trip and RTSes with D0 directly, but each tail call
+still routes JIT'd → `cl_jit_runtime_call` → `cl_vm_apply` →
+`cl_jit_invoke` → JIT'd, growing the m68k C stack ~1 KB per level.
+Deep self-recursion blows the 65 KB Amiga stack budget; the bytecode
+VM's frame reuse on `cl_vm.stack` doesn't have this limit.  Real TCO
+is in §"Open design choices" below.
 
-The comparison family `OP_LT` / `OP_GT` / `OP_LE` / `OP_GE` /
-`OP_NUMEQ` shares one template (`emit_compare`) parameterised by the
-m68k condition code (BLT/BGT/BLE/BGE/BEQ) and the matching slow-path
-helper. Pure-pointer `OP_EQ` and unary `OP_NOT` are inline-only —
-they fit in 14–20 bytes each with no JSR (EQ is a pointer compare;
-NOT relies on the popped MOVE.L setting Z to detect CL_NIL).
+**Pure-fixnum-only GC safety.**  Operand-stack values live on the m68k
+stack and aren't rooted yet, so a slow-path helper that allocates can
+silently corrupt them.  Today's workloads stay in the fixnum fast
+paths and are safe in practice; conservative m68k-stack scanning at
+safepoints is the spec'd fix.
 
-Slow paths mirror the bytecode VM's behaviour exactly, including
-type errors and bignum results. `OP_NUMEQ`'s helper accepts `NUMBER`
-(complex permitted per CLHS 12.1.4.1); the ordered comparators
-require `REAL`. Register discipline is strict: only D0/D1/A0/A1
-(caller-saved on the m68k C ABI) are touched, so the gcc-emitted
-`cl_jit_invoke` wrapper around the JIT's native entry sees its
-callee-saved registers (D2–D7, A2–A6) preserved.
-
-`OP_MUL` and `OP_CAR` / `OP_CDR` are JSR-only templates as well —
-pop, push args in m68k C-ABI order, JSR helper, drop, push result.
-No inline fixnum fast path for `*` because the MULS.L encoding would
-roughly double `asm_m68k.c` for an op that's rare in tight inner
-loops; `cl_jit_runtime_mul` keeps the VM's fixnum fast path inside
-`cl_arith_mul`, so the only added cost vs. bytecode is one JSR per
-call.  `OP_CAR` / `OP_CDR` forward straight to `cl_car` / `cl_cdr`,
-which already implement the full CLHS contract (NIL → NIL, LIST
-type-error, unbound-variable diagnostic).  Both helpers are
-non-allocating, so they remain GC-safe even without precise m68k
-stack scanning.  `OP_DIV` is deliberately not in the walker yet:
-today's compiler never emits `OP_DIV` (`inline_builtin_opcode` covers
-`+ - * = < >` only), so a walker template would be unreachable —
-it'll land alongside the compiler change if `/` ever gets inlined.
-
-`OP_FLOAD` / `OP_CALL` are the function-call pair.  `OP_FLOAD` bakes
-`constants[idx]` (a SYMBOL — the walker checks before emission) into
-the call site as a 32-bit literal, then `JSR cl_jit_runtime_fload` to
-read the symbol's function cell (with the VM's undefined-function
-diagnostic on miss).  `OP_CALL` is more involved: the m68k operand
-stack on entry holds `[..., func, arg0, ..., argN-1]` with `argN-1`
-at the lowest address, and the helper needs an `args[]` array in
-natural order for `cl_vm_apply`.  The walker emits, in 22 fixed
-bytes regardless of nargs,
-
-```
-move.l a7,a0          ; snapshot operand-top (-> argN-1)
-move.l #nargs,-(a7)   ; push 2nd C-ABI arg
-move.l a0,-(a7)       ; push 1st C-ABI arg (operand_top)
-jsr cl_jit_runtime_call
-addq.l #8,a7          ; drop helper args
-lea (4*(nargs+1))(a7),a7  ; drop func + N args from operand stack
-move.l d0,-(a7)       ; push result
-```
-
-The helper reverse-copies the args (`args[i] = operand_top[N-1-i]`)
-into a stack-local `CL_Obj[256]` buffer (sized for `OP_CALL`'s u8
-nargs limit) and dispatches through `cl_vm_apply` — so closures,
-builtins, and other JIT-compiled callees all route through the
-existing call path.  Errors signalled by the callee longjmp through
-the JIT'd frame harmlessly; the catch site restores SP/A6 from its
-setjmp buffer, so the JIT's transient stack state is just lost (which
-is the intended outcome).
-
-**OP_TAILCALL is deliberately left as a bail-out**: native code can't
-do frame reuse without modelling more of the caller's layout, so
-admitting OP_TAILCALL into the walker would make every tail-recursive
-loop grow the C stack one frame per iteration — an anti-feature.
-Leaving it interpreted preserves TCO.  Concretely, this means the
-common `(defun f (...) (g ...))` wrapper shape — where the body is
-a single function call in tail position — currently does not JIT.
-The walker still picks up any non-tail call site (calls feeding `+`,
-`<`, `if` test position, `let`-bound values, etc.).
-
-`OP_STRUCT_REF` / `OP_STRUCT_SET` are JSR-only templates — pop
-operands, push them in m68k C-ABI order (with the baked-in u8 index
-materialised as a `move.l #idx,-(a7)`), JSR to
-`cl_jit_runtime_struct_{ref,set}`, restore the stack, push the
-returned slot value as the new TOS. The helpers do the same
-STRUCTURE type-check and bounds-check the VM does, so error messages
-remain identical to the bytecode path. Both are non-allocating so
-no GC concern even without precise stack scanning. Full inlining of
-the heap-pointer check + slot load is left for a later commit
-(would need an arena-base load and a header-tag compare per access).
-
-**Pure-fixnum-only GC safety** — both slow-path helpers may allocate
-(bignum result on fixnum overflow), which may GC. Operand-stack
-values live on the m68k stack and aren't rooted yet, so a GC at that
-point would silently corrupt them. Workloads that stay in fixnum
-range (the benchmark below, all current Amiga tests) never reach the
-slow path and so are safe; mixed-type arithmetic is not safe under
-the JIT and would need conservative m68k-stack scanning to fix (see
-§"Open design choices").
-
-Branches use a single-pass label table: `bc_to_native[ip]` records the
-native offset at the start of every visited opcode, populated as the
-walker advances. Backward branches read the target's native offset
-directly; forward branches emit a `Bcc.W` with a placeholder 0 and a
-`(patch_off, target_bc_off)` patch record. On reaching `OP_RET` the
-walker resolves every patch by looking up its target in the map and
-writing a 16-bit big-endian displacement. If any displacement falls
-outside `int16_t` range the walker bails (32-bit `Bcc.L` exists on
-68020+ but isn't needed at the function sizes in scope today). `JNIL`
-and `JTRUE` mirror the VM by popping TOS into D0 before the branch —
-m68k `MOVE` sets the Z flag from the moved value, so `BEQ`/`BNE` then
-test "popped value == CL_NIL".
-
-No register cache yet (spec's `D5/D6/D7` operand-stack-cache
-optimization). Pure memory operands.
+**Branches** use a single-pass label table (`bc_to_native[ip]`):
+forward branches emit a `Bcc.W` with a placeholder displacement plus
+a patch record; `OP_RET` resolves them all in one pass.  Out-of-range
+displacement bails (32-bit `Bcc.L` exists on 68020+ but isn't needed
+at current function sizes).
 
 **Layout**
 
-- `src/jit/codebuf.{c,h}` — growable byte buffer, sticky-OOM,
-  big-endian emitters. Portable (host + cross). 11 host unit tests.
-- `src/jit/asm_m68k.{c,h}` — m68k encoders. Currently: `nop`, `rts`,
-  `moveq`, `move.l #imm32,Dn`, `move.l (d16,An),Dn` (matchers) plus
-  `link`, `unlk`, `clr.l -(An)`, `move.l #imm32,-(An)`,
-  `move.l (An),(d16,Am)`, `move.l (d16,An),-(Am)`,
-  `move.l (An)+,Dn`, `addq.l #imm,An`, `addq.l #imm,Dn`,
-  `subq.l #imm,Dn`, `move.l (An),-(Am)` (OP_DUP),
-  `move.l Dn,Dm`, `move.l Dn,-(An)`, `move.l An,Am`,
-  `move.l An,-(Am)` (push A-register value), `lea (d16,An),Am`,
-  `and.l Dn,Dm`, `btst #imm,Dn`, `add.l Dn,Dm`, `sub.l Dn,Dm`,
-  `cmp.l Dn,Dm`, `jsr (xxx).L`, and generic `bcc.w` (covering
-  `bra`/`beq`/`bne`/`bvs`/`blt`/`bge`/`bgt`/`ble`) + `patch_disp16`.
-  `JIT_M68K`-only.
-- `src/jit/jit.{c,h}` — `cl_jit_init` (boot), `cl_jit_compile`
-  (matchers + walker), `cl_jit_invoke` (arity-dispatched native
-  entry). `cl_jit_emit_stub` + `%JIT-DUMP-BYTES` /
-  `%JIT-COMPILE-STUB` / `%JIT-INVOKE-COUNT` builtins for Lisp-level
-  introspection.
-- `src/jit/{codegen_m68k,runtime}.{c,h}` — pre-allocated for the
-  register-cache stage but unused.
-- `CL_Bytecode.native_code` / `.native_len` fields; `Makefile.cross`
-  defines `-DJIT_M68K`; host gets inline `cl_jit_*` no-ops so call
-  sites are identical everywhere.
-- `vm.c` `OP_CALL` has a native fast-path branch
-  (`if (callee_bc->native_code && !is_tail && !traced)`) sitting just
-  after the arity check.
-- FASL deserializer (`fasl.c`) calls `cl_jit_compile` after building
-  each `CL_Bytecode`, so source-compile and cache-load produce
-  byte-identical native code.
+- `src/jit/codebuf.{c,h}` — growable byte buffer (portable, 11 host
+  unit tests).
+- `src/jit/asm_m68k.{c,h}` — m68k encoders (`JIT_M68K`-only).
+- `src/jit/jit.{c,h}` — matchers + walker + `cl_jit_invoke` dispatch
+  + `%JIT-*` introspection builtins.
+- `src/jit/runtime.{c,h}` — C helpers JIT'd code calls.
+- `vm.c` OP_CALL has a native fast-path when `bc->native_code &&
+  !is_tail && !traced`; `fasl.c` calls `cl_jit_compile` after each
+  bytecode deserialize.
 
 **Verification**
 
-- `make host` + `make test`: green. JIT entry points are inline no-ops;
-  the OP_CALL native branch never trips on host.
-- `make -f Makefile.cross amiga`: green, no new warnings.
-- `make -f Makefile.cross test-amiga` (high-end A4000/68040/JIT
-  FS-UAE config): **2479/2479** Amiga tests pass. JIT-specific
-  coverage in `tests/amiga/test-jit.lisp` (~200 checks): the
-  matcher / walker shape tests, full arithmetic family (`+`, `-`
-  with fixnum fast paths + overflow into bignum + int↔float slow
-  path; `*` JSR-only with mid-range / overflow-to-bignum /
-  int↔float / NUMBER type-error), full ordered-comparison family
-  (`<` / `>` / `<=` / `>=` with each Bcc plus int↔float slow path),
-  `(= a b)` (NUMBER-typed, including int↔float through
-  `cl_numeric_equal`), pointer-identity `(eq a b)` (no slow path —
-  distinguishes shared vs distinct conses, fixnum identity, symbol
-  identity, NIL/T self-EQ), `(not x)` (no slow path — exhaustive
-  truthiness tests including zero-is-truthy CL semantics), list
-  primitives `(car lst)` / `(cdr lst)` (JSR via
-  `cl_jit_runtime_car/_cdr` — list/single/pair/NIL/empty cases
-  plus LIST type-error), defstruct accessor/setter round-trips
-  via OP_STRUCT_REF / OP_STRUCT_SET (3-slot `jit-point` struct:
-  per-slot reads across fixnum/nil/symbol/cons, setter returns
-  stored value, round-trip read-after-write, set leaves other
-  slots untouched, STRUCTURE type-error path), and the OP_FLOAD /
-  OP_CALL pair (0/1/3-arg non-tail calls via `(let ((r ...)) r)`
-  wrappers, position-sensitive 3-arg arg-passing check, call to
-  CL_FUNCTION_P builtin `cons`, JIT→JIT chains, fib recursion
-  with per-frame counter-bump assertion, undefined-function
-  diagnostic that longjmps cleanly out of the JIT'd frame plus a
-  "recover after error" check that the next call still works).
+- `make host` + `make test`: green (JIT entry points are inline no-ops
+  on host).
+- `make -f Makefile.cross amiga`: green.
+- `make -f Makefile.cross test-amiga` (A4000/68040/JIT FS-UAE config):
+  **2525/2525** Amiga tests pass.  Per-opcode coverage lives in
+  `tests/amiga/test-jit.lisp` (~280 checks: every supported opcode has
+  a counter-bump assertion, value-correctness sweep, and where
+  applicable a type-error / unwind-recovery path).
+- `test-amiga-lowend` (68020 baseline, no JIT) still available;
+  numbers will fall closer to the conservative 1.5–2× template-JIT
+  estimate.
 
-### First headline benchmark (`trunk/bench-jit-loop.lisp`)
+### Headline benchmarks (`trunk/bench-jit-loop.lisp`)
 
-Iterative `sum 0..(N-1)` via `tagbody`+`go` with fixnum `+` and `<`.
-A/B variant defined back-to-back with `(clamiga::%jit-set-active …)`
-to flip the JIT off/on; identical body, only the dispatch path
-differs.  Run end-of-suite in the same FS-UAE config the test harness
-uses (A4000/68040/Picasso96/JIT, `verify.fs-uae`):
+A/B variants flipped via `(clamiga::%jit-set-active …)`; identical
+bodies, dispatch path differs.
 
-| N        | Bytecode  | JIT       | Speedup |
-|---------:|----------:|----------:|--------:|
-| 10 000   |   100 ms  |     0 ms  | (below timer granularity) |
-| 50 000   |   540 ms  |    80 ms  |  6.75×  |
-| 100 000  |  1500 ms  |   500 ms  |  3.00×  |
+| Bench         | Shape                              | N      | Bytecode | JIT     | Speedup |
+|---------------|------------------------------------|-------:|---------:|--------:|--------:|
+| sum-to        | tagbody+go fixnum loop             | 40 000 |   400 ms |   20 ms | 20.00×  |
+| arith-chain   | binary ops on cached operands      | 20 000 |   300 ms |   40 ms |  7.50×  |
+| call-loop     | OP_CALL inside a loop body         | 20 000 |   340 ms |  240 ms |  1.42×  |
+| struct-loop   | 2× OP_STRUCT_REF per iteration     | 20 000 |   260 ms |   20 ms | 13.00×  |
 
-The headline number is **3× faster than the bytecode interpreter on
-a self-contained fixnum loop**, comfortably in the projected
-template-JIT range (~1.5–2× was the conservative estimate; this
-exceeds it because the loop is pure arith with no FFI floor diluting
-the win).  The 6.75× row is partly timer-granularity noise — JIT runs
-at N=50k finish near the 10–80 ms wall-clock floor.  The N=100k row
-is the most trustworthy.  Lower-end 68020 numbers will fall closer to
-1.5–2×; this is the JIT-FS-UAE result.
-- `test-amiga-lowend` (68020 baseline) is still available but not run
-  every commit.
+`call-loop` is the limit case: every iteration flushes the cache for
+the JSR, so the walker is essentially bottlenecked on the same helper
+round-trip the bytecode interpreter has.  Real-TCO on self-recursion
+would lift this further (the loop is shaped to exercise OP_CALL, not
+OP_TAILCALL).
 
 **Open design choices not yet committed to code**
 
-- *Memory policy.* The 8 MB / 68020 baseline forces opt-in,
-  hot-function-only compilation (see §"Mitigations") — JIT'ing
-  everything would blow the budget. The high-end JIT config has no
-  such constraint. Today the JIT compiles every shape it recognizes
-  unconditionally because the two recognized shapes emit 4–8 bytes; the
-  policy question doesn't bind until larger templates land.
-- *Stack cache (D5/D6/D7).* The §"Calling convention for emitted code"
-  optimization that moves projected FPS from ~720 to ~970. Not in
-  scope until multi-opcode templates exist to benefit from it.
+- *Memory policy.*  JIT compiles every recognized shape
+  unconditionally today.  With the walker at ~30 opcodes and bodies
+  averaging 80–250 B of native code, a coarse
+  "compile-on-Nth-invocation" gate is the next likely lever — see
+  §"Mitigations".
+- *Real tail-call optimization.*  Two candidates: (a) compile-time
+  self-recursion detection that matches `OP_FLOAD <self> ;
+  OP_TAILCALL <n>` and emits "rewrite args back into A6 slots ; BRA
+  to entry-after-prologue", handling the dominant loop shape with
+  zero stack growth; (b) trampolining in `cl_jit_invoke` for
+  cross-function tail calls.  (a) is the cleaner first cut.
+- *GC root finding for the operand stack.*  See §"GC interaction".
+  Prerequisite for JIT'ing CONS-heavy / mixed-type code by default.
