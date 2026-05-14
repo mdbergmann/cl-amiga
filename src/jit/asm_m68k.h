@@ -178,6 +178,30 @@ void m68k_emit_cmp_l_dn_dm(CodeBuf *cb, M68kReg dn, M68kReg dm);
  * passed-args / D0-result convention is preserved. */
 void m68k_emit_jsr_abs_l(CodeBuf *cb, uint32_t addr);
 
+/* MOVE.L An,Am — copy a 32-bit address register to another address
+ * register.  2 bytes.  Both modes are address-register direct
+ * (mode 001).  Used by OP_CALL to snapshot A7 (operand-stack TOS)
+ * into a scratch A-register before the helper's args are pushed —
+ * the saved address points at the call's argN-1 and acts as the
+ * helper's operand_top parameter. */
+void m68k_emit_move_l_an_to_am(CodeBuf *cb, M68kReg an, M68kReg am);
+
+/* MOVE.L An,-(Am) — push the longword *value* of address register
+ * An onto -Am.  Distinct from m68k_emit_move_l_an_to_predec_am
+ * (which pushes the longword at the *address* in An).  Used by
+ * OP_CALL to push the saved operand_top pointer as a C-ABI argument
+ * — what we want is the pointer itself, not what it points at.
+ * 2 bytes. */
+void m68k_emit_move_l_an_predec_am(CodeBuf *cb, M68kReg an, M68kReg am);
+
+/* LEA (d16,An),Am — Am = An + sign-extended d16.  Address-only
+ * arithmetic; doesn't disturb the condition codes.  4 bytes: opcode
+ * word + 16-bit signed displacement.  Used by OP_CALL to drop the
+ * call's func + N arg slots off the operand stack in one
+ * instruction regardless of arity (LEA (4*(nargs+1))(a7),a7). */
+void m68k_emit_lea_disp_an_to_am(CodeBuf *cb, int16_t disp,
+                                 M68kReg an, M68kReg am);
+
 /* Overwrite a 16-bit big-endian field already written to `code` at byte
  * offset `patch_off`.  Used to fill in forward-branch displacements
  * once the target's native offset is known.  No-op if patch_off+2

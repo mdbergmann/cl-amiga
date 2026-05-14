@@ -22,6 +22,21 @@
  *     pass-through to cl_car / cl_cdr, which already handle NIL→NIL,
  *     LIST type-error, and the unbound-variable diagnostic.
  *     Non-allocating, so always GC-safe.
+ *   - cl_jit_runtime_fload — backing for OP_FLOAD.  Takes a SYMBOL
+ *     (the JIT bakes constants[idx] into the call site as a literal
+ *     CL_Obj), returns its function value or signals undefined-
+ *     function with the VM's diagnostic.  Non-allocating, so the JIT
+ *     side of the call is GC-safe.
+ *   - cl_jit_runtime_call — backing for OP_CALL.  Takes (operand_top,
+ *     nargs): the caller has placed [func, arg0..argN-1] on the m68k
+ *     operand stack with argN-1 at the lowest address; operand_top
+ *     points at argN-1.  The helper reverse-copies the args into a
+ *     stack-local CL_Obj[256] (matches OP_CALL's u8 nargs limit) and
+ *     dispatches via cl_vm_apply, so closures, builtins, and
+ *     JIT-compiled callees all route through the existing call path.
+ *     Returns the callee's primary value in D0; the m68k operand
+ *     stack is unchanged across the helper, the caller pops func+args
+ *     and pushes the result with a single LEA.
  *   - cl_jit_runtime_struct_ref / _set — backing for OP_STRUCT_REF /
  *     OP_STRUCT_SET.  Validate type + bounds, then read/write the slot
  *     at a baked-in u8 index.  Non-allocating, so always GC-safe.
@@ -57,6 +72,9 @@ CL_Obj cl_jit_runtime_mul  (CL_Obj a, CL_Obj b);
 
 CL_Obj cl_jit_runtime_car  (CL_Obj obj);
 CL_Obj cl_jit_runtime_cdr  (CL_Obj obj);
+
+CL_Obj cl_jit_runtime_fload(CL_Obj sym);
+CL_Obj cl_jit_runtime_call (CL_Obj *operand_top, uint32_t nargs);
 
 CL_Obj cl_jit_runtime_struct_ref(CL_Obj obj, uint32_t idx);
 CL_Obj cl_jit_runtime_struct_set(CL_Obj obj, uint32_t idx, CL_Obj val);

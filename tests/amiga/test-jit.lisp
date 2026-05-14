@@ -622,3 +622,118 @@
 (check "walker-sum-to-1"   0     (walker-sum-to 1))
 (check "walker-sum-to-10"  45    (walker-sum-to 10))
 (check "walker-sum-to-100" 4950  (walker-sum-to 100))
+
+; --- OP_FLOAD / OP_CALL.  General Lisp call sequencing:
+;
+;   FLOAD <sym>      ; push symbol's function value
+;   <push args>
+;   CALL <nargs>     ; pops func + N args, pushes result
+;
+; The walker emits OP_FLOAD as a JSR to cl_jit_runtime_fload with the
+; symbol literal baked in (CL_Obj from constants[idx] at compile
+; time), and OP_CALL as a JSR to cl_jit_runtime_call which copies the
+; m68k operand-stack args into a local CL_Obj[] and dispatches via
+; cl_vm_apply — so closures, builtins, and JIT'd callees all route
+; through the standard call path.
+;
+; OP_TAILCALL is *not* handled by the walker — it'd need frame-reuse
+; semantics the walker doesn't model, and bailing keeps tail-
+; recursive shapes interpreted (correct, just slower).  That means
+; every test below uses a let-binding wrapper `(let ((r expr)) r)`
+; to force the call out of tail position, otherwise the compiler
+; emits OP_TAILCALL and the body never JITs.
+;
+; Coverage: 0/1/3-arg calls, calls to builtins (CL_FUNCTION_P branch
+; in cl_vm_apply), JIT-to-JIT chains, recursive fixnum loops (fib),
+; undefined-function diagnostic, recovery after longjmp.
+
+; --- Trivial 0-arg call wrapped in a let so the call site is OP_CALL,
+; not OP_TAILCALL.  Callee returns a literal; CALL just bounces
+; through cl_vm_apply.
+(defun walker-call-target-0 () 17)
+(defun walker-call-0 () (let ((r (walker-call-target-0))) r))
+(check "walker-call-0-counter-bump" t
+  (let ((before (clamiga::%jit-invoke-count)))
+    (walker-call-0)
+    (> (clamiga::%jit-invoke-count) before)))
+(check "walker-call-0-returns" 17 (walker-call-0))
+
+; --- 1-arg call wrapped in let.  Identity callee; verifies arg-
+; passing order (the helper's reverse-copy of operand_top must
+; preserve arg(0)).
+(defun walker-call-target-id (x) x)
+(defun walker-call-id (x) (let ((r (walker-call-target-id x))) r))
+(check "walker-call-id-counter-bump" t
+  (let ((before (clamiga::%jit-invoke-count)))
+    (walker-call-id 1)
+    (> (clamiga::%jit-invoke-count) before)))
+(check "walker-call-id-fix"    42     (walker-call-id 42))
+(check "walker-call-id-sym"    'q     (walker-call-id 'q))
+(check "walker-call-id-nil"    nil    (walker-call-id nil))
+(check "walker-call-id-cons"   '(a b) (walker-call-id '(a b)))
+
+; --- 3-arg calls, each selecting a different slot.  A reversed-copy
+; or off-by-one bug in argument passing would immediately surface as
+; the wrong slot's value coming back.
+(defun walker-call-target-3-first (a b c) a)
+(defun walker-call-target-3-mid   (a b c) b)
+(defun walker-call-target-3-last  (a b c) c)
+(defun walker-call-3-first (a b c)
+  (let ((r (walker-call-target-3-first a b c))) r))
+(defun walker-call-3-mid   (a b c)
+  (let ((r (walker-call-target-3-mid   a b c))) r))
+(defun walker-call-3-last  (a b c)
+  (let ((r (walker-call-target-3-last  a b c))) r))
+(check "walker-call-3-first" 'one   (walker-call-3-first 'one 'two 'three))
+(check "walker-call-3-mid"   'two   (walker-call-3-mid   'one 'two 'three))
+(check "walker-call-3-last"  'three (walker-call-3-last  'one 'two 'three))
+(check "walker-call-3-mid-fix" 20   (walker-call-3-mid   10 20 30))
+
+; --- Call to a CL builtin (CONS).  cl_vm_apply takes the
+; CL_FUNCTION_P branch, dispatching directly to call_builtin
+; without a stub frame.  Same JIT call site, different runtime
+; tail.
+(defun walker-call-cons (a b) (let ((r (cons a b))) r))
+(check "walker-call-cons-fixnums"  '(1 . 2)   (walker-call-cons 1 2))
+(check "walker-call-cons-symbols"  '(a . b)   (walker-call-cons 'a 'b))
+
+; --- Chained JIT-to-JIT call: caller and callees all JIT'd.  The
+; outer caller's body is wrapped in let to keep all three call sites
+; OP_CALL; the inner two are already non-tail (their results feed
+; the outer call's argument list).
+(defun walker-call-add1 (x) (+ x 1))
+(defun walker-call-chained (n)
+  (let ((r (walker-call-add1 (walker-call-add1 (walker-call-add1 n)))))
+    r))
+(check "walker-call-chained-fix" 13 (walker-call-chained 10))
+(check "walker-call-chained-neg" -2 (walker-call-chained -5))
+
+; --- Recursion: fib(N).  In the else-branch the two recursive calls
+; feed `+`, so they're naturally non-tail and emit OP_CALL.  No let
+; wrapper needed — exercises OP_CALL twice per non-base case.
+(defun walker-call-fib (n)
+  (if (< n 2)
+      n
+      (+ (walker-call-fib (- n 1)) (walker-call-fib (- n 2)))))
+(check "walker-call-fib-counter-bump" t
+  (let ((before (clamiga::%jit-invoke-count)))
+    (walker-call-fib 5)
+    (> (clamiga::%jit-invoke-count) before)))
+(check "walker-call-fib-0"   0  (walker-call-fib 0))
+(check "walker-call-fib-1"   1  (walker-call-fib 1))
+(check "walker-call-fib-2"   1  (walker-call-fib 2))
+(check "walker-call-fib-7"  13  (walker-call-fib 7))
+(check "walker-call-fib-10" 55  (walker-call-fib 10))
+
+; --- Undefined function: FLOAD signals via cl_error → longjmp out
+; of the JIT'd frame.  handler-case catches; the JIT frame must
+; unwind cleanly without corrupting subsequent calls.
+(defun walker-call-undef ()
+  (let ((r (no-such-function-defined-here-please))) r))
+(check "walker-call-undef-signals" :caught
+  (handler-case (progn (walker-call-undef) :no-error)
+    (undefined-function () :caught)
+    (error            () :caught)))
+; Further calls still work after the longjmp unwind.
+(check "walker-call-recover-after-error" 42
+  (walker-call-id 42))
