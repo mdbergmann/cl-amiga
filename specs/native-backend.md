@@ -504,7 +504,7 @@ functions: graphics inner loop, REPL printer, test harness driver).
 That's the regime where the JIT becomes a net win even on the low-end
 target.
 
-## Status (2026-05-14, post MUL + CAR/CDR coverage)
+## Status (2026-05-14, post FLOAD/CALL coverage)
 
 Approach (1) is in flight. Two codegen paths layered front-to-back —
 the JIT hook fires on both source-compile and FASL-load.
@@ -548,8 +548,8 @@ the operand stack and a LINK'd frame at A6 for locals.
 Supported opcodes: `OP_NIL`, `OP_T`, `OP_CONST`, `OP_LOAD`, `OP_STORE`,
 `OP_POP`, `OP_DUP`, `OP_JMP`, `OP_JNIL`, `OP_JTRUE`, `OP_ADD`,
 `OP_SUB`, `OP_MUL`, `OP_LT`, `OP_GT`, `OP_LE`, `OP_GE`, `OP_NUMEQ`,
-`OP_EQ`, `OP_NOT`, `OP_CAR`, `OP_CDR`, `OP_STRUCT_REF`,
-`OP_STRUCT_SET`, `OP_RET` — subsumes
+`OP_EQ`, `OP_NOT`, `OP_CAR`, `OP_CDR`, `OP_FLOAD`, `OP_CALL`,
+`OP_STRUCT_REF`, `OP_STRUCT_SET`, `OP_RET` — subsumes
 everything the matchers cover plus arbitrary compositions including
 iterative fixnum loops
 (`(tagbody … (if (< i n) (progn (setq s (+ s i)) … (go top))))`)
@@ -600,6 +600,45 @@ today's compiler never emits `OP_DIV` (`inline_builtin_opcode` covers
 `+ - * = < >` only), so a walker template would be unreachable —
 it'll land alongside the compiler change if `/` ever gets inlined.
 
+`OP_FLOAD` / `OP_CALL` are the function-call pair.  `OP_FLOAD` bakes
+`constants[idx]` (a SYMBOL — the walker checks before emission) into
+the call site as a 32-bit literal, then `JSR cl_jit_runtime_fload` to
+read the symbol's function cell (with the VM's undefined-function
+diagnostic on miss).  `OP_CALL` is more involved: the m68k operand
+stack on entry holds `[..., func, arg0, ..., argN-1]` with `argN-1`
+at the lowest address, and the helper needs an `args[]` array in
+natural order for `cl_vm_apply`.  The walker emits, in 22 fixed
+bytes regardless of nargs,
+
+```
+move.l a7,a0          ; snapshot operand-top (-> argN-1)
+move.l #nargs,-(a7)   ; push 2nd C-ABI arg
+move.l a0,-(a7)       ; push 1st C-ABI arg (operand_top)
+jsr cl_jit_runtime_call
+addq.l #8,a7          ; drop helper args
+lea (4*(nargs+1))(a7),a7  ; drop func + N args from operand stack
+move.l d0,-(a7)       ; push result
+```
+
+The helper reverse-copies the args (`args[i] = operand_top[N-1-i]`)
+into a stack-local `CL_Obj[256]` buffer (sized for `OP_CALL`'s u8
+nargs limit) and dispatches through `cl_vm_apply` — so closures,
+builtins, and other JIT-compiled callees all route through the
+existing call path.  Errors signalled by the callee longjmp through
+the JIT'd frame harmlessly; the catch site restores SP/A6 from its
+setjmp buffer, so the JIT's transient stack state is just lost (which
+is the intended outcome).
+
+**OP_TAILCALL is deliberately left as a bail-out**: native code can't
+do frame reuse without modelling more of the caller's layout, so
+admitting OP_TAILCALL into the walker would make every tail-recursive
+loop grow the C stack one frame per iteration — an anti-feature.
+Leaving it interpreted preserves TCO.  Concretely, this means the
+common `(defun f (...) (g ...))` wrapper shape — where the body is
+a single function call in tail position — currently does not JIT.
+The walker still picks up any non-tail call site (calls feeding `+`,
+`<`, `if` test position, `let`-bound values, etc.).
+
 `OP_STRUCT_REF` / `OP_STRUCT_SET` are JSR-only templates — pop
 operands, push them in m68k C-ABI order (with the baked-in u8 index
 materialised as a `move.l #idx,-(a7)`), JSR to
@@ -646,10 +685,12 @@ optimization). Pure memory operands.
   `move.l (An),(d16,Am)`, `move.l (d16,An),-(Am)`,
   `move.l (An)+,Dn`, `addq.l #imm,An`, `addq.l #imm,Dn`,
   `subq.l #imm,Dn`, `move.l (An),-(Am)` (OP_DUP),
-  `move.l Dn,Dm`, `move.l Dn,-(An)`, `and.l Dn,Dm`,
-  `btst #imm,Dn`, `add.l Dn,Dm`, `sub.l Dn,Dm`, `cmp.l Dn,Dm`,
-  `jsr (xxx).L`, and generic `bcc.w` (covering `bra`/`beq`/`bne`/
-  `bvs`/`blt`/`bge`/`bgt`/`ble`) + `patch_disp16`.  `JIT_M68K`-only.
+  `move.l Dn,Dm`, `move.l Dn,-(An)`, `move.l An,Am`,
+  `move.l An,-(Am)` (push A-register value), `lea (d16,An),Am`,
+  `and.l Dn,Dm`, `btst #imm,Dn`, `add.l Dn,Dm`, `sub.l Dn,Dm`,
+  `cmp.l Dn,Dm`, `jsr (xxx).L`, and generic `bcc.w` (covering
+  `bra`/`beq`/`bne`/`bvs`/`blt`/`bge`/`bgt`/`ble`) + `patch_disp16`.
+  `JIT_M68K`-only.
 - `src/jit/jit.{c,h}` — `cl_jit_init` (boot), `cl_jit_compile`
   (matchers + walker), `cl_jit_invoke` (arity-dispatched native
   entry). `cl_jit_emit_stub` + `%JIT-DUMP-BYTES` /
@@ -673,8 +714,8 @@ optimization). Pure memory operands.
   the OP_CALL native branch never trips on host.
 - `make -f Makefile.cross amiga`: green, no new warnings.
 - `make -f Makefile.cross test-amiga` (high-end A4000/68040/JIT
-  FS-UAE config): **2456/2456** Amiga tests pass. JIT-specific
-  coverage in `tests/amiga/test-jit.lisp` (~180 checks): the
+  FS-UAE config): **2479/2479** Amiga tests pass. JIT-specific
+  coverage in `tests/amiga/test-jit.lisp` (~200 checks): the
   matcher / walker shape tests, full arithmetic family (`+`, `-`
   with fixnum fast paths + overflow into bignum + int↔float slow
   path; `*` JSR-only with mid-range / overflow-to-bignum /
@@ -687,11 +728,17 @@ optimization). Pure memory operands.
   truthiness tests including zero-is-truthy CL semantics), list
   primitives `(car lst)` / `(cdr lst)` (JSR via
   `cl_jit_runtime_car/_cdr` — list/single/pair/NIL/empty cases
-  plus LIST type-error), and defstruct accessor/setter round-trips
+  plus LIST type-error), defstruct accessor/setter round-trips
   via OP_STRUCT_REF / OP_STRUCT_SET (3-slot `jit-point` struct:
   per-slot reads across fixnum/nil/symbol/cons, setter returns
   stored value, round-trip read-after-write, set leaves other
-  slots untouched, STRUCTURE type-error path).
+  slots untouched, STRUCTURE type-error path), and the OP_FLOAD /
+  OP_CALL pair (0/1/3-arg non-tail calls via `(let ((r ...)) r)`
+  wrappers, position-sensitive 3-arg arg-passing check, call to
+  CL_FUNCTION_P builtin `cons`, JIT→JIT chains, fib recursion
+  with per-frame counter-bump assertion, undefined-function
+  diagnostic that longjmps cleanly out of the JIT'd frame plus a
+  "recover after error" check that the next call still works).
 
 ### First headline benchmark (`trunk/bench-jit-loop.lisp`)
 

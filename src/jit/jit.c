@@ -18,9 +18,10 @@
  *     Currently supported opcodes: OP_NIL, OP_T, OP_CONST, OP_LOAD,
  *     OP_STORE, OP_POP, OP_DUP, OP_JMP, OP_JNIL, OP_JTRUE, OP_ADD,
  *     OP_SUB, OP_MUL, OP_EQ, OP_LT, OP_GT, OP_LE, OP_GE, OP_NUMEQ,
- *     OP_NOT, OP_CAR, OP_CDR, OP_STRUCT_REF, OP_STRUCT_SET, OP_RET.
- *     Adding an opcode means adding one emitter case and one or two
- *     new asm encoders — the walker handles the composition.
+ *     OP_NOT, OP_CAR, OP_CDR, OP_FLOAD, OP_CALL, OP_STRUCT_REF,
+ *     OP_STRUCT_SET, OP_RET.  Adding an opcode means adding one
+ *     emitter case and one or two new asm encoders — the walker
+ *     handles the composition.
  *
  * See specs/native-backend.md §"Per-opcode emitter shape".
  */
@@ -544,6 +545,75 @@ static int walker_compile(const CL_Bytecode *bc, CodeBuf *cb)
             break;
         }
 
+        case OP_FLOAD: {
+            /* u16: bake constants[idx] (a SYMBOL) into the emitted
+             * code as a 32-bit literal, JSR cl_jit_runtime_fload,
+             * push its result.  Resolving the symbol object at JIT-
+             * compile time is sound: constants[] entries aren't
+             * re-bound after compilation, only the symbol's function
+             * cell is — and the helper dereferences that on every
+             * call.  Bails on non-symbol entries so the walker never
+             * emits a corrupt-call helper invocation. */
+            uint16_t idx;
+            CL_Obj sym;
+            uint32_t helper = (uint32_t)(uintptr_t)&cl_jit_runtime_fload;
+            if (ip + 1 >= bc->code_len) goto fail;
+            idx = ((uint16_t)bc->code[ip] << 8) | bc->code[ip + 1];
+            ip += 2;
+            if (idx >= bc->n_constants || bc->constants == NULL) goto fail;
+            sym = bc->constants[idx];
+            if (!CL_SYMBOL_P(sym)) goto fail;
+
+            m68k_emit_move_l_imm32_predec(cb, (uint32_t)sym, REG_A7);
+            m68k_emit_jsr_abs_l(cb, helper);
+            m68k_emit_addq_l_an(cb, 4, REG_A7);
+            m68k_emit_move_l_dn_predec_an(cb, REG_D0, REG_A7);
+            break;
+        }
+
+        case OP_CALL: {
+            /* u8 nargs.  Operand stack on entry: [..., func, arg0,
+             * ..., argN-1] with argN-1 at (a7).  We snapshot a7 into
+             * a0 (= operand_top — points at argN-1), then push the
+             * helper's two C-ABI args right-to-left (nargs second,
+             * the saved pointer first), JSR, drop the 2-word arg
+             * frame, then drop func + N args with a single LEA, and
+             * finally push the helper's D0 result as the new TOS.
+             *
+             * Arity-independent code size: 22 bytes regardless of
+             * nargs (move.l + 2×push + jsr + addq.l #8 + lea + push).
+             *
+             * GC: cl_vm_apply may allocate.  Operand-stack values
+             * below the call args and LINK-frame locals aren't
+             * rooted — same caveat as the other allocating helpers,
+             * see specs/native-backend.md.  Tail-call recognition
+             * (OP_TAILCALL) is deliberately not handled yet: it
+             * needs frame-reuse semantics the walker doesn't model,
+             * and bailing keeps tail-recursive shapes interpreted
+             * (correct, just slower). */
+            uint8_t nargs;
+            uint32_t helper = (uint32_t)(uintptr_t)&cl_jit_runtime_call;
+            int16_t drop_bytes;
+            if (ip >= bc->code_len) goto fail;
+            nargs = bc->code[ip++];
+
+            /* Bytecode that pushes more than 6 args is uncommon; we
+             * could lift this cap but the matcher arity ceiling of
+             * 6 doesn't dictate the call-site cap — OP_CALL passes
+             * args through the runtime helper, not native registers,
+             * so any u8 nargs is fine. */
+            drop_bytes = (int16_t)(4 * ((int32_t)nargs + 1));
+
+            m68k_emit_move_l_an_to_am(cb, REG_A7, REG_A0);          /* a0 = pre-push TOS */
+            m68k_emit_move_l_imm32_predec(cb, (uint32_t)nargs, REG_A7);
+            m68k_emit_move_l_an_predec_am(cb, REG_A0, REG_A7);       /* push a0 (pointer value) */
+            m68k_emit_jsr_abs_l(cb, helper);
+            m68k_emit_addq_l_an(cb, 8, REG_A7);                      /* drop helper args */
+            m68k_emit_lea_disp_an_to_am(cb, drop_bytes, REG_A7, REG_A7);
+            m68k_emit_move_l_dn_predec_an(cb, REG_D0, REG_A7);       /* push result */
+            break;
+        }
+
         case OP_CAR:
         case OP_CDR: {
             /* JSR-only template: pop obj, push obj, JSR helper, drop,
@@ -975,6 +1045,22 @@ static uint32_t disasm_one(const uint8_t *code, uint32_t len,
         snprintf(mnemonic, (size_t)msize, "%s.w %ld",
                  cc_names[cond], target);
         matched = 1;
+    } else if ((op & 0xF1C0) == 0x41C0) {           /* LEA (d16,An),Am */
+        /* LEA: 0100 am 111 mmm rrr.  The JIT only emits the
+         * (d16,An) source form (mode 5), so we decode mmm=101
+         * here; anything else falls through to .word $xxxx. */
+        int am_dst = (op >> 9) & 7;
+        int src_mode = (op >> 3) & 7;
+        int src_reg  = op & 7;
+        if (src_mode == 5) {
+            int16_t d;
+            if (pos + 2 > len) return 0;
+            d = (int16_t)(((uint16_t)code[pos] << 8) | code[pos + 1]);
+            pos += 2;
+            snprintf(mnemonic, (size_t)msize, "lea %d(a%d),a%d",
+                     (int)d, src_reg, am_dst);
+            matched = 1;
+        }
     } else if (op == 0x4EB9) {                      /* JSR (xxx).L */
         uint32_t addr;
         if (pos + 4 > len) return 0;

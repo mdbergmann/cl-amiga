@@ -272,4 +272,40 @@ void m68k_emit_jsr_abs_l(CodeBuf *cb, uint32_t addr)
     cb_emit_u32(cb, addr);
 }
 
+/* MOVE.L An,Am: dst mode = 001 (An), src mode = 001 (An).
+ * Word: 0010 am 001 001 an = 0x2040 | (am<<9) | 0x008 | an.  2 bytes.
+ * Equivalent to MOVEA.L An,Am (same encoding; m68k aliases the two
+ * for register-to-register address moves). */
+void m68k_emit_move_l_an_to_am(CodeBuf *cb, M68kReg an, M68kReg am)
+{
+    uint16_t enc = (uint16_t)(0x2000 | ((am & 7) << 9) |
+                              (1 << 6) | (1 << 3) | (an & 7));
+    cb_emit_u16(cb, enc);
+}
+
+/* MOVE.L An,-(Am): src mode = 001 (An direct, push the address-
+ * register *value*), dst mode = 100 (predec).
+ * Word: 0010 am 100 001 an.  2 bytes.  Note this is distinct from
+ * `move_l_an_to_predec_am` (src mode 010 = indirect) — that one
+ * pushes what An points at; this one pushes An itself. */
+void m68k_emit_move_l_an_predec_am(CodeBuf *cb, M68kReg an, M68kReg am)
+{
+    uint16_t enc = (uint16_t)(0x2000 | ((am & 7) << 9) |
+                              (4 << 6) | (1 << 3) | (an & 7));
+    cb_emit_u16(cb, enc);
+}
+
+/* LEA (d16,An),Am: opcode 0100 am 111 101 an + 16-bit signed disp.
+ * Bits 8-6 = 111 distinguishes LEA from a regular MOVE; source EA
+ * mode = 101 (address-register indirect with 16-bit displacement).
+ * 4 bytes.  See M68000 PRM §4-120. */
+void m68k_emit_lea_disp_an_to_am(CodeBuf *cb, int16_t disp,
+                                 M68kReg an, M68kReg am)
+{
+    uint16_t enc = (uint16_t)(0x4000 | ((am & 7) << 9) |
+                              (7 << 6) | (5 << 3) | (an & 7));
+    cb_emit_u16(cb, enc);
+    cb_emit_u16(cb, (uint16_t)disp);
+}
+
 #endif /* JIT_M68K */

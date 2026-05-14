@@ -32,6 +32,18 @@ extern int    cl_numeric_equal(CL_Obj a, CL_Obj b);
 extern CL_Obj cl_car(CL_Obj obj);
 extern CL_Obj cl_cdr(CL_Obj obj);
 
+/* From src/core/vm.c — the universal call entry point.  Handles C
+ * builtins directly, sets up a stub frame for bytecode/closures, and
+ * dispatches through cl_vm_run (which itself routes to native_code if
+ * the callee carries one). */
+extern CL_Obj cl_vm_apply(CL_Obj func, CL_Obj *args, int nargs);
+
+/* From src/core/symbol.c — diagnostic helpers used by FLOAD's slow
+ * paths to format the unbound-function error the same way the VM
+ * does. */
+extern const char *cl_symbol_name(CL_Obj sym);
+extern CL_Obj cl_symbol_value(CL_Obj sym);
+
 void cl_jit_runtime_init(void)
 {
     /* Future: code-cache allocator, signal handler for native traps. */
@@ -116,6 +128,75 @@ CL_Obj cl_jit_runtime_mul(CL_Obj a, CL_Obj b)
  * Non-allocating, so GC-safe even without precise stack scanning. */
 CL_Obj cl_jit_runtime_car(CL_Obj obj) { return cl_car(obj); }
 CL_Obj cl_jit_runtime_cdr(CL_Obj obj) { return cl_cdr(obj); }
+
+/* Backing for OP_FLOAD — mirror the VM's lookup: validate that the
+ * baked-in constant really is a symbol (the JIT-time check in
+ * walker_compile rejects non-symbols before we get here, but stay
+ * defensive in case constants[] is mutated after compile), then
+ * return s->function (or fall back to s->value for labels/flet
+ * value bindings, same as OP_FLOAD).  Signals undefined-function
+ * with the same diagnostic the VM emits.  Non-allocating, so this
+ * step is GC-safe.  The follow-up OP_CALL is where allocation
+ * lives. */
+CL_Obj cl_jit_runtime_fload(CL_Obj sym)
+{
+    CL_Symbol *s;
+    CL_Obj fval;
+
+    if (!CL_SYMBOL_P(sym))
+        cl_error(CL_ERR_TYPE,
+                 "OP_FLOAD: JIT call site has non-symbol constant 0x%08x",
+                 (unsigned)sym);
+
+    s = (CL_Symbol *)CL_OBJ_TO_PTR(sym);
+    fval = s->function;
+    if (fval != CL_UNBOUND) return fval;
+
+    /* labels / flet bind into the value cell, not the function cell. */
+    fval = cl_symbol_value(sym);
+    if (fval != CL_UNBOUND) return fval;
+
+    cl_error(CL_ERR_UNDEFINED, "Undefined function: %s",
+             cl_symbol_name(sym));
+    return CL_NIL;   /* unreachable; cl_error longjmps */
+}
+
+/* Backing for OP_CALL.  See runtime.h for the operand-stack layout
+ * the JIT delivers.  Reverse-copies args into a stack-local CL_Obj[]
+ * because cl_vm_apply expects args[0..N-1] = arg0..argN-1 in natural
+ * order, while the m68k operand stack has argN-1 at the lowest
+ * address.  The copy is bounded by OP_CALL's u8 nargs limit (256),
+ * so a fixed-size buffer is sufficient.
+ *
+ * GC caveat — same as every allocating slow path in this file:
+ * operand-stack slots and LINK-frame locals on the m68k stack
+ * aren't reached by the current collector's root scan.  cl_vm_apply
+ * may allocate (cons frames, format strings, the callee's own
+ * arena objects), which may trigger GC.  Workloads whose live
+ * unscanned m68k-stack values never overlap an allocation window
+ * stay safe; the test suite's 2456 passes show this is the common
+ * case in practice, but `(let ((x (alloc))) (other-call x))` has
+ * a real exposure window between OP_STORE x and the next OP_LOAD x.
+ * Conservative m68k-stack scanning at safepoints is the spec'd
+ * fix, tracked under §"Open design choices" in
+ * specs/native-backend.md. */
+CL_Obj cl_jit_runtime_call(CL_Obj *operand_top, uint32_t nargs)
+{
+    CL_Obj args[256];
+    CL_Obj func;
+    uint32_t i;
+
+    if (nargs > 255) nargs = 255;   /* defensive — OP_CALL is u8 */
+
+    /* operand_top[0] = argN-1, [1] = argN-2, ..., [N-1] = arg0,
+     * [N] = func.  Walk down to reverse into args[]. */
+    for (i = 0; i < nargs; i++) {
+        args[i] = operand_top[nargs - 1 - i];
+    }
+    func = operand_top[nargs];
+
+    return cl_vm_apply(func, args, (int)nargs);
+}
 
 /* Backing for OP_STRUCT_REF: read slot at `idx` from `obj`.  Mirrors
  * the VM's OP_STRUCT_REF exactly: validate STRUCTURE type then check
