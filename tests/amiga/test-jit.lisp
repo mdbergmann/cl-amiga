@@ -162,19 +162,34 @@
 ; arity=1, n_locals=2 → 1 extra local → LINK A6,#-4.
 ; Slot 1 is the block-return local at -4(a6).
 ;
-; Expected native (22 bytes):
+; With the 3-slot rotating stack cache, the cache_head index advances
+; D7 → D5 → D6 → D7 on each push.  This function starts with head=7;
+; the first push (OP_NIL) lands in D{next(7)} = D5.  Subsequent pop
+; back through D5 to D0 (no register shifts — the rotation reclaims
+; D5 implicitly).  The prologue saves D5/D6/D7 to A6-relative slots;
+; the epilogue restores via A6-relative loads.
+;
+; Expected native (38 bytes):
 ;   78 86 255 252   ; link a6,#-4
-;   66 167          ; clr.l -(a7)             — OP_NIL
-;   45 87 255 252   ; move.l (a7),-4(a6)      — OP_STORE 1
-;   88 143          ; addq.l #4,a7            — OP_POP
-;   47 46 255 252   ; move.l -4(a6),-(a7)     — OP_LOAD 1
-;   32 31           ; move.l (a7)+,d0        \
+;   47 7            ; move.l d7,-(a7)         — save D7
+;   47 6            ; move.l d6,-(a7)         — save D6
+;   47 5            ; move.l d5,-(a7)         — save D5
+;   122 0           ; moveq #0,d5             — OP_NIL → D5 (new TOS)
+;   45 69 255 252   ; move.l d5,-4(a6)        — OP_STORE 1 (peek)
+;                   ; (OP_POP: no bytes — cache head/depth rotate back)
+;   42 46 255 252   ; move.l -4(a6),d5        — OP_LOAD 1 → D5 (TOS again)
+;   32 5            ; move.l d5,d0           \
+;   46 46 255 248   ; move.l -8(a6),d7        — restore D7
+;   44 46 255 244   ; move.l -12(a6),d6       — restore D6
+;   42 46 255 240   ; move.l -16(a6),d5       — restore D5
 ;   78 94           ; unlk a6                 } — OP_RET
 ;   78 117          ; rts                    /
 (defun walker-nil-1arg (x) nil)
 (check "walker-nil-1arg-bytes"
-  '(78 86 255 252  66 167  45 87 255 252  88 143  47 46 255 252
-    32 31  78 94  78 117)
+  '(78 86 255 252  47 7  47 6  47 5  122 0  45 69 255 252
+    42 46 255 252  32 5
+    46 46 255 248  44 46 255 244  42 46 255 240
+    78 94  78 117)
   (clamiga::%jit-dump-bytes #'walker-nil-1arg))
 (check "walker-nil-1arg-counter-bump" t
   (let ((before (clamiga::%jit-invoke-count)))
@@ -184,21 +199,27 @@
 (check "walker-nil-1arg-ignores-arg"    nil (walker-nil-1arg 'anything))
 
 ; Constant return via OP_CONST: (defun walker-fix-1arg (x) 42).
-; Fixnum 42 tagged = (42<<1)|1 = 85 = 0x55, embedded as 32-bit
-; big-endian immediate in MOVE.L #imm32,-(a7) → bytes 47 60 0 0 0 85.
+; Fixnum 42 tagged = (42<<1)|1 = 85 = 0x55.  Cache pushes D5 (head
+; rotates 7→5), and 85 fits MOVEQ's 8-bit signed range, so the load
+; is a 2-byte `moveq #85,d5` (bytes 122 85) rather than the 6-byte
+; `move.l #imm32`.  Otherwise the shape mirrors walker-nil-1arg.
 (defun walker-fix-1arg (x) 42)
 (check "walker-fix-1arg-bytes"
-  '(78 86 255 252  47 60 0 0 0 85  45 87 255 252  88 143
-    47 46 255 252  32 31 78 94 78 117)
+  '(78 86 255 252  47 7  47 6  47 5  122 85  45 69 255 252
+    42 46 255 252  32 5
+    46 46 255 248  44 46 255 244  42 46 255 240
+    78 94  78 117)
   (clamiga::%jit-dump-bytes #'walker-fix-1arg))
 (check "walker-fix-1arg-returns" 42 (walker-fix-1arg 'ignored))
 
-; OP_T: shape is identical to OP_NIL+1 except OP_T is 6 bytes (MOVE.L
-; #CL_T,-(a7)) vs OP_NIL's 2 bytes (CLR.L -(a7)).  CL_T is a runtime
-; pointer so its 4-byte value varies across boots — verify size and
-; behavior, not the embedded immediate.
+; OP_T: shape is identical to OP_NIL except OP_T loads CL_T (a heap
+; pointer that doesn't fit in MOVEQ's 8-bit signed range) via the
+; 6-byte `move.l #imm32,d7` instead of MOVEQ's 2 bytes.  CL_T's
+; address varies across boots so the embedded immediate isn't stable
+; — verify total size (4 bytes longer than walker-nil-1arg's 38) and
+; behavior.
 (defun walker-t-1arg (x) t)
-(check "walker-t-1arg-size" 26
+(check "walker-t-1arg-size" 42
   (length (clamiga::%jit-dump-bytes #'walker-t-1arg)))
 (check "walker-t-1arg-returns-t" t (walker-t-1arg nil))
 

@@ -202,6 +202,22 @@ void m68k_emit_move_l_an_predec_am(CodeBuf *cb, M68kReg an, M68kReg am);
 void m68k_emit_lea_disp_an_to_am(CodeBuf *cb, int16_t disp,
                                  M68kReg an, M68kReg am);
 
+/* MOVE.L Dn,(d16,Am) — write a data register to memory at (Am+d16).
+ * Used by OP_STORE / cache spills when the value to write lives in a
+ * data register (e.g. the stack-cache TOS in D7).  4 bytes.  Source
+ * EA = 000/dn (data-register direct), dest EA = 101/am (address-
+ * register indirect with 16-bit displacement). */
+void m68k_emit_move_l_dn_to_disp_am(CodeBuf *cb, M68kReg dn,
+                                    int16_t disp, M68kReg am);
+
+/* TST.L Dn — set N/Z flags from Dn (compare Dn to 0).  2 bytes.
+ * Used by cache-aware branch templates (JNIL / JTRUE / NOT) to test
+ * a CL_Obj in a data register without first popping it to the m68k
+ * stack — the immediate predecessor of the test had to be a value-
+ * producing instruction either way, so this just lets the test read
+ * the register direct.  Opcode 0100 1010 1000 0nnn. */
+void m68k_emit_tst_l_dn(CodeBuf *cb, M68kReg dn);
+
 /* Overwrite a 16-bit big-endian field already written to `code` at byte
  * offset `patch_off`.  Used to fill in forward-branch displacements
  * once the target's native offset is known.  No-op if patch_off+2

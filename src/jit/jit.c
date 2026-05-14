@@ -192,6 +192,175 @@ static void emit_load_imm_d0(CodeBuf *cb, CL_Obj val)
     }
 }
 
+/* --- Three-slot rotating stack cache -------------------------------------
+ *
+ * The walker keeps the top 1–3 elements of the VM operand stack in the
+ * data registers D5/D6/D7, with anything below them on the m68k
+ * hardware stack via predec/postinc.  Rather than shift values
+ * between registers on every push/pop, the cache rotates: an emit-
+ * time variable `cache_head ∈ {5, 6, 7}` tells us which register
+ * currently holds TOS.  Successive pushes rotate head forward
+ * (5→6→7→5); successive pops rotate it backward (7→6→5→7).  This
+ * eliminates all register shuffling on push and pop — each is at
+ * most one MOVE.L (the actual value transfer), independent of cache
+ * depth.
+ *
+ * Layout invariant at any emit point with `depth >= 1`:
+ *   - D{head}              = TOS
+ *   - D{prev(head)}        = 2nd-from-top, valid when depth >= 2
+ *   - D{prev(prev(head))}  = 3rd-from-top, valid when depth == 3
+ *     (equivalently: D{next(head)} — three regs, two rotations back =
+ *     one forward)
+ *
+ * Helpers (JSR) need their args on the m68k stack with the topmost
+ * at (a7).  Ops that call helpers flush the cache first; the helper's
+ * D0 return value is then pushed back through cache_push_dn so
+ * subsequent ops continue in cache.
+ *
+ * Branches require the depth=0 invariant at every branch boundary: a
+ * pre-scan computes is_branch_target[ip], and the walker flushes the
+ * cache at every such IP before emitting that opcode's code.  Each
+ * branch instruction also flushes before testing/jumping so the
+ * target's depth=0 invariant always holds.
+ *
+ * D5/D6/D7 are callee-saved per the m68k SysV ABI; the walker's
+ * prologue pushes them below the LINK frame and OP_RET restores via
+ * A6-relative loads before UNLK.  See walker_compile.
+ */
+
+#define CL_JIT_CACHE_MAX 3
+
+/* Rotate a head index forward (5→6, 6→7, 7→5) — used by push.  Static
+ * inlining is fine for hot emitter helpers; the compiler will fold
+ * branches when constants are known. */
+static int cache_next(int head) { return (head == 7) ? 5 : head + 1; }
+static int cache_prev(int head) { return (head == 5) ? 7 : head - 1; }
+
+/* Spill the entire cache to the m68k stack.  After: depth=0.  Pushes
+ * from the bottom of the cache (oldest) to the top so the spilled TOS
+ * ends up at (a7), matching the operand-stack layout uncached code
+ * expects.  Resets head to 7 (the default starting position; depth=0
+ * means head is unused, but staying canonical keeps emitted code
+ * deterministic for any given input). */
+static void cache_flush(CodeBuf *cb, int *head, int *depth)
+{
+    if (*depth >= 3) {
+        m68k_emit_move_l_dn_predec_an(cb, (M68kReg)cache_next(*head), REG_A7);
+    }
+    if (*depth >= 2) {
+        m68k_emit_move_l_dn_predec_an(cb, (M68kReg)cache_prev(*head), REG_A7);
+    }
+    if (*depth >= 1) {
+        m68k_emit_move_l_dn_predec_an(cb, (M68kReg)*head, REG_A7);
+    }
+    *depth = 0;
+    *head = 7;
+}
+
+/* Make room at the top of the cache for one new value.  Rotates head
+ * forward; if the cache was already full, spills the register that's
+ * about to be overwritten (= the bottom-of-cache, sitting at
+ * cache_next(head) before the rotation).  After this returns, the
+ * register at D{*head} is free for the caller to load.
+ *
+ * Depth grows by 1 unless we were at MAX, in which case it stays at
+ * MAX (the spilled item lives on the m68k stack instead). */
+static void cache_make_room_for_push(CodeBuf *cb, int *head, int *depth)
+{
+    int new_head = cache_next(*head);
+    if (*depth == CL_JIT_CACHE_MAX) {
+        /* About to overwrite D{new_head}, which holds the bottom-of-
+         * cache value.  Spill it to the stack first. */
+        m68k_emit_move_l_dn_predec_an(cb, (M68kReg)new_head, REG_A7);
+    } else {
+        (*depth)++;
+    }
+    *head = new_head;
+}
+
+/* Push a 32-bit immediate value onto the cache. */
+static void cache_push_imm(CodeBuf *cb, int *head, int *depth, uint32_t imm)
+{
+    cache_make_room_for_push(cb, head, depth);
+    if ((int32_t)imm >= -128 && (int32_t)imm <= 127) {
+        m68k_emit_moveq(cb, (int8_t)imm, (M68kReg)*head);
+    } else {
+        m68k_emit_move_l_imm32(cb, imm, (M68kReg)*head);
+    }
+}
+
+/* Push the longword at (disp,An) into the cache as the new TOS. */
+static void cache_push_disp_an(CodeBuf *cb, int *head, int *depth,
+                               int16_t disp, M68kReg an)
+{
+    cache_make_room_for_push(cb, head, depth);
+    m68k_emit_move_l_disp_an_to_dn(cb, disp, an, (M68kReg)*head);
+}
+
+/* Push the value in Dn into the cache as the new TOS.  Dn may be one
+ * of the cache regs only if it happens to coincide with the new
+ * head — the rotation may have just freed it (or it may have held a
+ * stale value being overwritten), but emitting a self-move is
+ * harmless.  In practice the walker only pushes from D0 (helper
+ * return value / arith result). */
+static void cache_push_dn(CodeBuf *cb, int *head, int *depth, M68kReg dn)
+{
+    cache_make_room_for_push(cb, head, depth);
+    if (dn != (M68kReg)*head) {
+        m68k_emit_move_l_dn_to_dm(cb, dn, (M68kReg)*head);
+    }
+}
+
+/* Pop the cache's TOS into Dn.  Cached (depth>=1): one MOVE.L (or
+ * zero if Dn == current TOS reg) plus a head rotation backward and a
+ * depth decrement — no register shuffling.  Uncached (depth=0):
+ * falls back to `move.l (a7)+,Dn`.
+ *
+ * Dn must not collide with one of the cache regs *unless* it
+ * coincides with the current TOS reg (in which case the move is
+ * skipped and the rotation reclaims it as the next-to-pop slot).
+ * In practice callers use D0/D1/D2. */
+static void cache_pop_to_dn(CodeBuf *cb, int *head, int *depth, M68kReg dn)
+{
+    if (*depth == 0) {
+        m68k_emit_move_l_postinc_an_to_dn(cb, REG_A7, dn);
+        return;
+    }
+    if (dn != (M68kReg)*head) {
+        m68k_emit_move_l_dn_to_dm(cb, (M68kReg)*head, dn);
+    }
+    *head = cache_prev(*head);
+    (*depth)--;
+}
+
+/* Pop the cache's TOS and discard the value.  Same rotation logic as
+ * cache_pop_to_dn but no destination — used by OP_POP. */
+static void cache_drop(CodeBuf *cb, int *head, int *depth)
+{
+    if (*depth == 0) {
+        m68k_emit_addq_l_an(cb, 4, REG_A7);
+        return;
+    }
+    *head = cache_prev(*head);
+    (*depth)--;
+}
+
+/* Duplicate the cache's TOS (push another copy).  Cached: rotate
+ * forward, then copy the old TOS register into the new TOS register.
+ * Uncached: the existing `move.l (a7),-(a7)` memory dup. */
+static void cache_dup(CodeBuf *cb, int *head, int *depth)
+{
+    if (*depth == 0) {
+        m68k_emit_move_l_an_to_predec_am(cb, REG_A7, REG_A7);
+        return;
+    }
+    {
+        M68kReg old_tos = (M68kReg)*head;
+        cache_make_room_for_push(cb, head, depth);
+        m68k_emit_move_l_dn_to_dm(cb, old_tos, (M68kReg)*head);
+    }
+}
+
 /* --- Per-opcode walker ---------------------------------------------------
  *
  * The walker emits a complete native function for any bytecode built
@@ -199,14 +368,19 @@ static void emit_load_imm_d0(CodeBuf *cb, CL_Obj val)
  * frame pointer (set up via LINK) and the m68k hardware stack (A7) as
  * the operand stack.
  *
- * Stack frame, after `link a6,#-N`:
+ * Stack frame, after `link a6,#-N` and the cache-reg save:
  *
- *   8(a6) + 4*i  parameter i (i in [0, arity)) — placed there by the
- *                m68k C ABI before the JSR
- *   4(a6)        return address (pushed by JSR)
- *   0(a6)        saved A6 (pushed by LINK)
- *  -4(a6) - 4*j  "extra" local j (j = slot - arity, j in [0, n_extra))
- *   (a7)         operand-stack TOS, grows downward as opcodes push
+ *   8(a6) + 4*i      parameter i (i in [0, arity)) — placed there by
+ *                    the m68k C ABI before the JSR
+ *   4(a6)            return address (pushed by JSR)
+ *   0(a6)            saved A6 (pushed by LINK)
+ *  -4(a6) - 4*j      "extra" local j (j = slot - arity, j in [0, n_extra))
+ *  -N-4(a6)          saved D7 (pushed first after LINK)
+ *  -N-8(a6)          saved D6
+ *  -N-12(a6)         saved D5
+ *   (a7)             operand-stack TOS (uncached portion), grows downward
+ *   D7 / D6 / D5     top 1–3 elements when cache_depth > 0 (see §"Three-
+ *                    slot stack cache" earlier in this file)
  *
  * For bytecode slot s, slot_disp() picks the right displacement.
  *
@@ -258,29 +432,28 @@ static int32_t read_i32_be(const uint8_t *p)
  * function.  Doubling on overflow keeps amortised cost O(1). */
 #define WALKER_PATCH_INITIAL_CAP 8
 
-/* Emit a 2-operand arithmetic template (OP_ADD / OP_SUB) — pops b/a
- * into D1/D0, runs the inline fixnum fast path, falls through to a JSR
- * helper for non-fixnums or fixnum overflow.  `is_sub == 0` produces
- * an ADD; `is_sub == 1` produces a SUB.
+/* Emit a 2-operand arithmetic template (OP_ADD / OP_SUB).  Takes its
+ * operands already in D0=a, D1=b; leaves the result in D0.  Doesn't
+ * touch the operand stack — the caller's cache primitives handle
+ * sourcing the operands and pushing the result back.  `is_sub == 0`
+ * produces an ADD; `is_sub == 1` produces a SUB.
  *
- * Tag accounting: both operands carry bit-0 tag = 1.  For ADD the raw
- * tagged sum carries bit-0 = 0 with one surplus tag, so SUBQ #1
- * restores `... | 1`.  For SUB the raw tagged difference cancels both
- * tags, so ADDQ #1 sets bit-0 back.
+ * Tag accounting: both operands carry bit-0 tag = 1.  For ADD the
+ * raw tagged sum carries bit-0 = 0 with one surplus tag, so SUBQ #1
+ * restores `... | 1`.  For SUB the raw tagged difference cancels
+ * both tags, so ADDQ #1 sets bit-0 back.
  *
  * Overflow recovery (BVS taken): D0 holds the 32-bit-wrapped result.
  * For ADD, original a = wrapped - b, so SUB d1,d0; for SUB, original
  * a = wrapped + b, so ADD d1,d0.  Either way D0 ends up with a, D1
  * still holds b, and we fall into the common slow-path JSR.
  *
- * Caller-saved discipline: D0/D1/A0/A1 only — see OP_ADD's comment. */
-static void emit_arith(CodeBuf *cb, int is_sub, uint32_t helper)
+ * Caller-saved discipline: D0/D1/A0/A1 only — D5/D6/D7 are the cache
+ * regs and stay untouched. */
+static void emit_arith_compute(CodeBuf *cb, int is_sub, uint32_t helper)
 {
     int32_t beq_a_pc, beq_b_pc, bvs_pc, bra_pc;
     int32_t slow_off, done_off;
-
-    m68k_emit_move_l_postinc_an_to_dn(cb, REG_A7, REG_D1);
-    m68k_emit_move_l_postinc_an_to_dn(cb, REG_A7, REG_D0);
 
     m68k_emit_btst_imm_dn(cb, 0, REG_D0);
     beq_a_pc = (int32_t)cb_len(cb) + 2;
@@ -296,7 +469,6 @@ static void emit_arith(CodeBuf *cb, int is_sub, uint32_t helper)
 
     if (is_sub) m68k_emit_addq_l_dn(cb, 1, REG_D0);  /* tag was cancelled */
     else        m68k_emit_subq_l_dn(cb, 1, REG_D0);  /* strip surplus tag */
-    m68k_emit_move_l_dn_predec_an(cb, REG_D0, REG_A7);
     bra_pc = (int32_t)cb_len(cb) + 2;
     m68k_emit_bra_w(cb, 0);
 
@@ -315,7 +487,6 @@ static void emit_arith(CodeBuf *cb, int is_sub, uint32_t helper)
     m68k_emit_move_l_dn_predec_an(cb, REG_D0, REG_A7);
     m68k_emit_jsr_abs_l(cb, helper);
     m68k_emit_addq_l_an(cb, 8, REG_A7);
-    m68k_emit_move_l_dn_predec_an(cb, REG_D0, REG_A7);
     done_off = (int32_t)cb_len(cb);
 
     m68k_patch_disp16(cb_data(cb), cb_len(cb), (uint32_t)beq_a_pc,
@@ -327,17 +498,15 @@ static void emit_arith(CodeBuf *cb, int is_sub, uint32_t helper)
 }
 
 /* Emit a 2-operand comparison template (OP_LT / OP_GT / OP_LE /
- * OP_GE / OP_NUMEQ) — pops b/a, fixnum fast path, slow-path JSR for
- * non-fixnums.  Always pushes CL_T or CL_NIL.  `cond_code` is the
- * m68k Bcc condition that branches to push_t (e.g. 13=BLT, 14=BGT,
- * 12=BGE, 15=BLE, 7=BEQ).  `helper` returns CL_T/CL_NIL directly. */
-static void emit_compare(CodeBuf *cb, uint8_t cond_code, uint32_t helper)
+ * OP_GE / OP_NUMEQ).  Takes its operands already in D0=a, D1=b;
+ * leaves CL_T or CL_NIL in D0.  Same boundary-free contract as
+ * emit_arith_compute.  `cond_code` is the m68k Bcc condition that
+ * branches to load_t (e.g. 13=BLT, 14=BGT, 12=BGE, 15=BLE, 7=BEQ).
+ * The slow-path helper itself returns CL_T/CL_NIL in D0. */
+static void emit_compare_compute(CodeBuf *cb, uint8_t cond_code, uint32_t helper)
 {
     int32_t beq_a_pc, beq_b_pc, taken_pc, bra1_pc, bra2_pc;
-    int32_t slow_off, done_off, push_t_off;
-
-    m68k_emit_move_l_postinc_an_to_dn(cb, REG_A7, REG_D1);
-    m68k_emit_move_l_postinc_an_to_dn(cb, REG_A7, REG_D0);
+    int32_t slow_off, done_off, load_t_off;
 
     m68k_emit_btst_imm_dn(cb, 0, REG_D0);
     beq_a_pc = (int32_t)cb_len(cb) + 2;
@@ -349,12 +518,14 @@ static void emit_compare(CodeBuf *cb, uint8_t cond_code, uint32_t helper)
     m68k_emit_cmp_l_dn_dm(cb, REG_D1, REG_D0);  /* flags = a - b */
     taken_pc = (int32_t)cb_len(cb) + 2;
     m68k_emit_bcc_w(cb, cond_code, 0);
-    m68k_emit_clr_l_predec(cb, REG_A7);          /* push NIL */
+    /* Not-taken: load CL_NIL (= 0) into D0. */
+    m68k_emit_moveq(cb, 0, REG_D0);
     bra1_pc = (int32_t)cb_len(cb) + 2;
     m68k_emit_bra_w(cb, 0);
 
-    push_t_off = (int32_t)cb_len(cb);
-    m68k_emit_move_l_imm32_predec(cb, (uint32_t)CL_T, REG_A7);
+    /* Taken: load CL_T into D0. */
+    load_t_off = (int32_t)cb_len(cb);
+    m68k_emit_move_l_imm32(cb, (uint32_t)CL_T, REG_D0);
     bra2_pc = (int32_t)cb_len(cb) + 2;
     m68k_emit_bra_w(cb, 0);
 
@@ -363,7 +534,6 @@ static void emit_compare(CodeBuf *cb, uint8_t cond_code, uint32_t helper)
     m68k_emit_move_l_dn_predec_an(cb, REG_D0, REG_A7);
     m68k_emit_jsr_abs_l(cb, helper);
     m68k_emit_addq_l_an(cb, 8, REG_A7);
-    m68k_emit_move_l_dn_predec_an(cb, REG_D0, REG_A7);
     done_off = (int32_t)cb_len(cb);
 
     m68k_patch_disp16(cb_data(cb), cb_len(cb), (uint32_t)beq_a_pc,
@@ -371,7 +541,7 @@ static void emit_compare(CodeBuf *cb, uint8_t cond_code, uint32_t helper)
     m68k_patch_disp16(cb_data(cb), cb_len(cb), (uint32_t)beq_b_pc,
                       (int16_t)(slow_off  - beq_b_pc));
     m68k_patch_disp16(cb_data(cb), cb_len(cb), (uint32_t)taken_pc,
-                      (int16_t)(push_t_off - taken_pc));
+                      (int16_t)(load_t_off - taken_pc));
     m68k_patch_disp16(cb_data(cb), cb_len(cb), (uint32_t)bra1_pc,
                       (int16_t)(done_off  - bra1_pc));
     m68k_patch_disp16(cb_data(cb), cb_len(cb), (uint32_t)bra2_pc,
@@ -400,6 +570,60 @@ static int patches_push(BranchPatch **patches, uint32_t *n, uint32_t *cap,
     return 1;
 }
 
+/* Walk the bytecode once to find every IP that is the target of a
+ * branch.  Sets `is_target[ip] = 1` for each such IP.  Used by
+ * walker_compile to know where to flush the cache so the cache state
+ * at every branch boundary is depth=0 — see the comment above the
+ * cache primitives.
+ *
+ * Also doubles as a structural validator: returns 0 if it sees an
+ * opcode the walker doesn't know how to handle or a malformed
+ * operand (e.g. a branch target outside the code).  In that case the
+ * caller bails before emitting anything. */
+static int prescan_branch_targets(const CL_Bytecode *bc, uint8_t *is_target)
+{
+    uint32_t ip = 0;
+    while (ip < bc->code_len) {
+        uint8_t op = bc->code[ip];
+        uint32_t step;
+        switch (op) {
+        case OP_NIL: case OP_T: case OP_POP: case OP_DUP: case OP_RET:
+        case OP_CAR: case OP_CDR: case OP_NOT: case OP_EQ:
+        case OP_ADD: case OP_SUB: case OP_MUL:
+        case OP_LT: case OP_GT: case OP_LE: case OP_GE: case OP_NUMEQ:
+            step = 1; break;
+        case OP_LOAD: case OP_STORE: case OP_CALL:
+        case OP_STRUCT_REF: case OP_STRUCT_SET: case OP_DYNUNBIND:
+            step = 2; break;
+        case OP_CONST: case OP_GLOAD: case OP_GSTORE:
+        case OP_FLOAD: case OP_DYNBIND:
+            step = 3; break;
+        case OP_JMP: case OP_JNIL: case OP_JTRUE: {
+            int32_t offset;
+            uint32_t target;
+            step = 5;
+            if (ip + 5 > bc->code_len) return 0;
+            offset = read_i32_be(bc->code + ip + 1);
+            if (offset < 0) {
+                uint32_t neg = (uint32_t)(-offset);
+                if (neg > ip + 5) return 0;
+                target = ip + 5 - neg;
+            } else {
+                target = ip + 5 + (uint32_t)offset;
+            }
+            if (target > bc->code_len) return 0;
+            is_target[target] = 1;
+            break;
+        }
+        default:
+            return 0;
+        }
+        if (ip + step > bc->code_len + 1) return 0;
+        ip += step;
+    }
+    return 1;
+}
+
 static int walker_compile(const CL_Bytecode *bc, CodeBuf *cb)
 {
     uint16_t arity;
@@ -408,10 +632,14 @@ static int walker_compile(const CL_Bytecode *bc, CodeBuf *cb)
     uint32_t ip;
     uint32_t i;
     int16_t frame_size;
+    int16_t saved_d7_disp, saved_d6_disp, saved_d5_disp;
     int32_t *bc_to_native = NULL;
+    uint8_t *is_target = NULL;
     BranchPatch *patches = NULL;
     uint32_t n_patches = 0;
     uint32_t cap_patches = 0;
+    int cache_head = 7;
+    int cache_depth = 0;
     int result = 0;
 
     /* Conservative gate: same metadata constraints as the matchers.
@@ -431,37 +659,62 @@ static int walker_compile(const CL_Bytecode *bc, CodeBuf *cb)
     if (n_locals < arity) return 0;
     n_extra = (uint32_t)(n_locals - arity);
     /* LINK takes a 16-bit signed disp; cap extra locals so 4*n_extra
-     * stays within range with headroom.  In practice n_locals never
-     * approaches this for hand-written Lisp. */
+     * plus the 12 bytes for saved D5/D6/D7 stays within range with
+     * headroom.  In practice n_locals never approaches this for
+     * hand-written Lisp. */
     if (n_extra > 1000) return 0;
     frame_size = (int16_t)(-4 * (int32_t)n_extra);
+    /* Saved cache registers sit below the frame at -frame_size-4/-8/-12
+     * (A6-relative).  D7 is pushed first after LINK so it occupies the
+     * slot closest to the frame (-4 below it); D5 is pushed last so it
+     * ends up furthest from A6.  The OP_RET epilogue restores from
+     * these positions independent of where SP happens to be. */
+    saved_d7_disp = (int16_t)(frame_size - 4);
+    saved_d6_disp = (int16_t)(frame_size - 8);
+    saved_d5_disp = (int16_t)(frame_size - 12);
 
     /* bc_to_native[i] = native offset where the opcode beginning at
-     * bytecode position i starts emitting, or -1 if that position is
-     * mid-operand / not yet reached.  Indexed up to code_len inclusive
-     * so a branch whose target equals code_len (one past the last
-     * byte) is detectable as out-of-range. */
+     * bytecode position i starts emitting (post-branch-target flush),
+     * or -1 if that position is mid-operand / not yet reached.
+     * is_target[i] = 1 if some branch lands at bytecode position i —
+     * the walker flushes the cache at every such IP so the depth=0
+     * invariant holds at branch boundaries. */
     bc_to_native = (int32_t *)platform_alloc(
         (unsigned long)((bc->code_len + 1) * sizeof(int32_t)));
     if (bc_to_native == NULL) return 0;
     for (i = 0; i <= bc->code_len; i++) bc_to_native[i] = -1;
 
-    /* Prologue: save A6, set A6 = new SP, allocate frame for extras. */
+    is_target = (uint8_t *)platform_alloc((unsigned long)(bc->code_len + 1));
+    if (is_target == NULL) { platform_free(bc_to_native); return 0; }
+    for (i = 0; i <= bc->code_len; i++) is_target[i] = 0;
+    if (!prescan_branch_targets(bc, is_target)) goto fail;
+
+    /* Prologue: LINK frame, then save callee-clobbered cache regs
+     * D5/D6/D7 below the frame.  Order matters: D7 first so it lives
+     * at -frame_size-4(a6), D6 at -frame_size-8, D5 at -frame_size-12. */
     m68k_emit_link_an_disp16(cb, REG_A6, frame_size);
+    m68k_emit_move_l_dn_predec_an(cb, REG_D7, REG_A7);
+    m68k_emit_move_l_dn_predec_an(cb, REG_D6, REG_A7);
+    m68k_emit_move_l_dn_predec_an(cb, REG_D5, REG_A7);
 
     ip = 0;
     while (ip < bc->code_len) {
         uint8_t op;
+        /* If this IP is a branch target, flush the cache so the
+         * "depth=0 at every branch boundary" invariant holds for both
+         * the falling-through path and the branch-arriving path. */
+        if (is_target[ip] && cache_depth > 0) {
+            cache_flush(cb, &cache_head, &cache_depth);
+        }
         bc_to_native[ip] = (int32_t)cb_len(cb);
         op = bc->code[ip++];
         switch (op) {
         case OP_NIL:
-            /* CL_NIL == 0 — clear longword at -(a7). */
-            m68k_emit_clr_l_predec(cb, REG_A7);
+            cache_push_imm(cb, &cache_head, &cache_depth, (uint32_t)CL_NIL);
             break;
 
         case OP_T:
-            m68k_emit_move_l_imm32_predec(cb, (uint32_t)CL_T, REG_A7);
+            cache_push_imm(cb, &cache_head, &cache_depth, (uint32_t)CL_T);
             break;
 
         case OP_CONST: {
@@ -472,7 +725,7 @@ static int walker_compile(const CL_Bytecode *bc, CodeBuf *cb)
             ip += 2;
             if (idx >= bc->n_constants || bc->constants == NULL) goto fail;
             val = bc->constants[idx];
-            m68k_emit_move_l_imm32_predec(cb, (uint32_t)val, REG_A7);
+            cache_push_imm(cb, &cache_head, &cache_depth, (uint32_t)val);
             break;
         }
 
@@ -483,79 +736,95 @@ static int walker_compile(const CL_Bytecode *bc, CodeBuf *cb)
             slot = bc->code[ip++];
             if (slot >= n_locals) goto fail;
             disp = slot_disp(slot, arity);
-            m68k_emit_move_l_disp_an_predec_am(cb, disp, REG_A6, REG_A7);
+            cache_push_disp_an(cb, &cache_head, &cache_depth, disp, REG_A6);
             break;
         }
 
         case OP_STORE: {
+            /* STORE peeks TOS (no pop) and writes to the local slot.
+             * When TOS is cached, this is a register→memory write;
+             * otherwise it's the existing memory→memory copy. */
             uint8_t slot;
             int16_t disp;
             if (ip >= bc->code_len) goto fail;
             slot = bc->code[ip++];
             if (slot >= n_locals) goto fail;
             disp = slot_disp(slot, arity);
-            /* STORE writes TOS without popping; the matching OP_POP
-             * (if any) pops separately. */
-            m68k_emit_move_l_an_to_disp_am(cb, REG_A7, disp, REG_A6);
+            if (cache_depth >= 1) {
+                m68k_emit_move_l_dn_to_disp_am(cb, (M68kReg)cache_head,
+                                               disp, REG_A6);
+            } else {
+                m68k_emit_move_l_an_to_disp_am(cb, REG_A7, disp, REG_A6);
+            }
             break;
         }
 
         case OP_POP:
-            m68k_emit_addq_l_an(cb, 4, REG_A7);
+            cache_drop(cb, &cache_head, &cache_depth);
             break;
 
         case OP_DUP:
-            /* Copy TOS onto the operand stack without disturbing the
-             * existing slot.  m68k semantics: src is read before dst's
-             * predecrement applies, so move.l (a7),-(a7) duplicates. */
-            m68k_emit_move_l_an_to_predec_am(cb, REG_A7, REG_A7);
+            cache_dup(cb, &cache_head, &cache_depth);
             break;
 
-        case OP_ADD:
-            emit_arith(cb, /*is_sub=*/0,
-                       (uint32_t)(uintptr_t)&cl_jit_runtime_add);
+        case OP_ADD: {
+            /* Operands: TOS = b, second = a.  Pop both, run the
+             * shared compute, push result. */
+            cache_pop_to_dn(cb, &cache_head, &cache_depth, REG_D1);
+            cache_pop_to_dn(cb, &cache_head, &cache_depth, REG_D0);
+            emit_arith_compute(cb, /*is_sub=*/0,
+                               (uint32_t)(uintptr_t)&cl_jit_runtime_add);
+            cache_push_dn(cb, &cache_head, &cache_depth, REG_D0);
             break;
+        }
 
-        case OP_SUB:
-            emit_arith(cb, /*is_sub=*/1,
-                       (uint32_t)(uintptr_t)&cl_jit_runtime_sub);
+        case OP_SUB: {
+            cache_pop_to_dn(cb, &cache_head, &cache_depth, REG_D1);
+            cache_pop_to_dn(cb, &cache_head, &cache_depth, REG_D0);
+            emit_arith_compute(cb, /*is_sub=*/1,
+                               (uint32_t)(uintptr_t)&cl_jit_runtime_sub);
+            cache_push_dn(cb, &cache_head, &cache_depth, REG_D0);
             break;
+        }
 
         case OP_MUL: {
-            /* JSR-only template: pop b, pop a, push b, push a (m68k C
-             * ABI right-to-left), JSR helper, drop args, push result.
-             * No inline fixnum fast path — `*` is rare in tight loops
-             * and the MULS.L encoding would roughly double asm_m68k.c
-             * for negligible payoff.  cl_jit_runtime_mul preserves the
-             * VM's inline fixnum fast path inside cl_arith_mul, so the
-             * only extra cost vs. bytecode is one JSR per call.
-             *
-             * OP_DIV is deliberately not handled here: today's compiler
-             * never emits OP_DIV (inline_builtin_opcode covers `+ - * =
-             * < >` but not `/`), so a walker case for it would be
-             * unreachable and untestable.  Will land alongside the
-             * compiler change if `/` ever gets inlined. */
+            /* JSR-only template — see runtime helper comment for why
+             * there's no inline MUL fast path.  Pop b/a, push them as
+             * C-ABI right-to-left args, JSR, drop args, push the D0
+             * result back through the cache.  OP_DIV is not handled
+             * because today's compiler never emits it. */
             uint32_t helper = (uint32_t)(uintptr_t)&cl_jit_runtime_mul;
-            m68k_emit_move_l_postinc_an_to_dn(cb, REG_A7, REG_D1);   /* pop b */
-            m68k_emit_move_l_postinc_an_to_dn(cb, REG_A7, REG_D0);   /* pop a */
-            m68k_emit_move_l_dn_predec_an(cb, REG_D1, REG_A7);       /* push b */
-            m68k_emit_move_l_dn_predec_an(cb, REG_D0, REG_A7);       /* push a */
+            cache_pop_to_dn(cb, &cache_head, &cache_depth, REG_D1);   /* b */
+            cache_pop_to_dn(cb, &cache_head, &cache_depth, REG_D0);   /* a */
+            m68k_emit_move_l_dn_predec_an(cb, REG_D1, REG_A7);
+            m68k_emit_move_l_dn_predec_an(cb, REG_D0, REG_A7);
             m68k_emit_jsr_abs_l(cb, helper);
-            m68k_emit_addq_l_an(cb, 8, REG_A7);                      /* drop args */
-            m68k_emit_move_l_dn_predec_an(cb, REG_D0, REG_A7);       /* push result */
+            m68k_emit_addq_l_an(cb, 8, REG_A7);
+            cache_push_dn(cb, &cache_head, &cache_depth, REG_D0);
             break;
         }
 
         case OP_GLOAD: {
-            /* u16: bake constants[idx] (a SYMBOL) into the emitted
-             * code as a 32-bit literal, JSR cl_jit_runtime_gload,
-             * push its result.  Same JIT-time soundness argument as
-             * OP_FLOAD: constants[] entries aren't re-bound after
-             * compilation, only the symbol's value cell is — and the
-             * helper resolves that on every call (thread-local
-             * binding first, then global cell).  Bails on non-symbol
-             * entries so the walker never emits a corrupt helper
-             * invocation. */
+            /* See historical comments above: bake constants[idx] (a
+             * SYMBOL) into the JSR site, helper resolves TLV / global
+             * cell on each call.  With the cache, the only changes
+             * vs. the pre-cache code are using cache_push_dn for the
+             * result (no need to push it to stack), and a full flush
+             * before the helper call because the helper expects the
+             * operand stack on memory.
+             *
+             * Helpers preserve D5/D6/D7 per SysV callee-save, so the
+             * cache content survives across the JSR — we only need to
+             * flush if subsequent code below the helper's args
+             * depends on the cached values being on the stack.  But
+             * since cl_jit_runtime_gload takes a single immediate
+             * arg (the symbol, baked in as a literal) and reads
+             * nothing from the operand stack, we don't actually need
+             * to spill the cache for *this* op.  Same applies to
+             * GSTORE/FLOAD/DYNBIND/DYNUNBIND below — they all take
+             * baked immediates as args, not operand-stack values
+             * other than the explicit TOS handling we already
+             * implement. */
             uint16_t idx;
             CL_Obj sym;
             uint32_t helper = (uint32_t)(uintptr_t)&cl_jit_runtime_gload;
@@ -569,21 +838,15 @@ static int walker_compile(const CL_Bytecode *bc, CodeBuf *cb)
             m68k_emit_move_l_imm32_predec(cb, (uint32_t)sym, REG_A7);
             m68k_emit_jsr_abs_l(cb, helper);
             m68k_emit_addq_l_an(cb, 4, REG_A7);
-            m68k_emit_move_l_dn_predec_an(cb, REG_D0, REG_A7);
+            cache_push_dn(cb, &cache_head, &cache_depth, REG_D0);
             break;
         }
 
         case OP_GSTORE: {
-            /* u16: bake constants[idx] (a SYMBOL) into the emitted
-             * code as a 32-bit literal, peek TOS as `val`, JSR
-             * cl_jit_runtime_gstore(sym, val), leave the original TOS
-             * untouched.  Mirrors the VM's OP_GSTORE which writes
-             * without popping — subsequent OP_POP (if any) does the
-             * pop separately.  Duplicating TOS via `move.l (a7),-(a7)`
-             * pushes val as the C-ABI's second arg (pushed first
-             * right-to-left), then we push the baked symbol as the
-             * first arg, JSR, and drop the 8-byte arg frame; the
-             * peek leaves the original val intact at the new TOS. */
+            /* Peek TOS as `val`, JSR cl_jit_runtime_gstore(sym, val),
+             * leave TOS untouched (VM's "store without pop"
+             * semantics).  Cache-aware peek picks D7 when TOS is
+             * cached, (a7) otherwise. */
             uint16_t idx;
             CL_Obj sym;
             uint32_t helper = (uint32_t)(uintptr_t)&cl_jit_runtime_gstore;
@@ -594,22 +857,21 @@ static int walker_compile(const CL_Bytecode *bc, CodeBuf *cb)
             sym = bc->constants[idx];
             if (!CL_SYMBOL_P(sym)) goto fail;
 
-            m68k_emit_move_l_an_to_predec_am(cb, REG_A7, REG_A7);     /* dup val */
-            m68k_emit_move_l_imm32_predec(cb, (uint32_t)sym, REG_A7); /* push sym */
+            /* Push val as the helper's 2nd C-ABI arg (right-to-left:
+             * pushed first), then sym as the 1st.  Drop both after. */
+            if (cache_depth >= 1) {
+                m68k_emit_move_l_dn_predec_an(cb, (M68kReg)cache_head, REG_A7);
+            } else {
+                m68k_emit_move_l_an_to_predec_am(cb, REG_A7, REG_A7);
+            }
+            m68k_emit_move_l_imm32_predec(cb, (uint32_t)sym, REG_A7);
             m68k_emit_jsr_abs_l(cb, helper);
-            m68k_emit_addq_l_an(cb, 8, REG_A7);                       /* drop 2 args */
+            m68k_emit_addq_l_an(cb, 8, REG_A7);
             break;
         }
 
         case OP_DYNBIND: {
-            /* u16: bake constants[idx] (a SYMBOL) into the emitted
-             * code as a 32-bit literal, then JSR cl_jit_runtime_dynbind
-             * with (sym, val) — val is already on TOS from the
-             * preceding value-producing form, so we just push sym
-             * above it (the C-ABI's right-to-left rule puts sym first
-             * = lowest address) and drop both with one ADDQ #8 after
-             * the helper returns.  Mirrors the VM's "pop value" by
-             * dropping val along with sym in the cleanup. */
+            /* Pop val into D1, push it + sym, JSR, drop both. */
             uint16_t idx;
             CL_Obj sym;
             uint32_t helper = (uint32_t)(uintptr_t)&cl_jit_runtime_dynbind;
@@ -620,17 +882,15 @@ static int walker_compile(const CL_Bytecode *bc, CodeBuf *cb)
             sym = bc->constants[idx];
             if (!CL_SYMBOL_P(sym)) goto fail;
 
+            cache_pop_to_dn(cb, &cache_head, &cache_depth, REG_D1);
+            m68k_emit_move_l_dn_predec_an(cb, REG_D1, REG_A7);
             m68k_emit_move_l_imm32_predec(cb, (uint32_t)sym, REG_A7);
             m68k_emit_jsr_abs_l(cb, helper);
-            m68k_emit_addq_l_an(cb, 8, REG_A7);                      /* drop sym + val */
+            m68k_emit_addq_l_an(cb, 8, REG_A7);
             break;
         }
 
         case OP_DYNUNBIND: {
-            /* u8: count of bindings to undo.  Push count as the
-             * helper's single arg, JSR, drop.  The helper wraps
-             * cl_dynbind_restore_to(cl_dyn_top - count) so the JIT
-             * doesn't have to do that arithmetic in m68k code. */
             uint8_t count;
             uint32_t helper = (uint32_t)(uintptr_t)&cl_jit_runtime_dynunbind;
             if (ip >= bc->code_len) goto fail;
@@ -643,14 +903,6 @@ static int walker_compile(const CL_Bytecode *bc, CodeBuf *cb)
         }
 
         case OP_FLOAD: {
-            /* u16: bake constants[idx] (a SYMBOL) into the emitted
-             * code as a 32-bit literal, JSR cl_jit_runtime_fload,
-             * push its result.  Resolving the symbol object at JIT-
-             * compile time is sound: constants[] entries aren't
-             * re-bound after compilation, only the symbol's function
-             * cell is — and the helper dereferences that on every
-             * call.  Bails on non-symbol entries so the walker never
-             * emits a corrupt-call helper invocation. */
             uint16_t idx;
             CL_Obj sym;
             uint32_t helper = (uint32_t)(uintptr_t)&cl_jit_runtime_fload;
@@ -664,219 +916,197 @@ static int walker_compile(const CL_Bytecode *bc, CodeBuf *cb)
             m68k_emit_move_l_imm32_predec(cb, (uint32_t)sym, REG_A7);
             m68k_emit_jsr_abs_l(cb, helper);
             m68k_emit_addq_l_an(cb, 4, REG_A7);
-            m68k_emit_move_l_dn_predec_an(cb, REG_D0, REG_A7);
+            cache_push_dn(cb, &cache_head, &cache_depth, REG_D0);
             break;
         }
 
         case OP_CALL: {
-            /* u8 nargs.  Operand stack on entry: [..., func, arg0,
-             * ..., argN-1] with argN-1 at (a7).  We snapshot a7 into
-             * a0 (= operand_top — points at argN-1), then push the
-             * helper's two C-ABI args right-to-left (nargs second,
-             * the saved pointer first), JSR, drop the 2-word arg
-             * frame, then drop func + N args with a single LEA, and
-             * finally push the helper's D0 result as the new TOS.
-             *
-             * Arity-independent code size: 22 bytes regardless of
-             * nargs (move.l + 2×push + jsr + addq.l #8 + lea + push).
-             *
-             * GC: cl_vm_apply may allocate.  Operand-stack values
-             * below the call args and LINK-frame locals aren't
-             * rooted — same caveat as the other allocating helpers,
-             * see specs/native-backend.md.  Tail-call recognition
-             * (OP_TAILCALL) is deliberately not handled yet: it
-             * needs frame-reuse semantics the walker doesn't model,
-             * and bailing keeps tail-recursive shapes interpreted
-             * (correct, just slower). */
+            /* u8 nargs.  The helper reads its args off the m68k
+             * stack, so we flush the cache fully first to make sure
+             * the operand top + args live in memory at known
+             * addresses.  After the flush, the existing CALL template
+             * works unchanged; the helper's D0 result then gets
+             * pushed back through the cache for downstream ops. */
             uint8_t nargs;
             uint32_t helper = (uint32_t)(uintptr_t)&cl_jit_runtime_call;
             int16_t drop_bytes;
             if (ip >= bc->code_len) goto fail;
             nargs = bc->code[ip++];
-
-            /* Bytecode that pushes more than 6 args is uncommon; we
-             * could lift this cap but the matcher arity ceiling of
-             * 6 doesn't dictate the call-site cap — OP_CALL passes
-             * args through the runtime helper, not native registers,
-             * so any u8 nargs is fine. */
             drop_bytes = (int16_t)(4 * ((int32_t)nargs + 1));
 
-            m68k_emit_move_l_an_to_am(cb, REG_A7, REG_A0);          /* a0 = pre-push TOS */
+            cache_flush(cb, &cache_head, &cache_depth);
+            m68k_emit_move_l_an_to_am(cb, REG_A7, REG_A0);
             m68k_emit_move_l_imm32_predec(cb, (uint32_t)nargs, REG_A7);
-            m68k_emit_move_l_an_predec_am(cb, REG_A0, REG_A7);       /* push a0 (pointer value) */
+            m68k_emit_move_l_an_predec_am(cb, REG_A0, REG_A7);
             m68k_emit_jsr_abs_l(cb, helper);
-            m68k_emit_addq_l_an(cb, 8, REG_A7);                      /* drop helper args */
+            m68k_emit_addq_l_an(cb, 8, REG_A7);
             m68k_emit_lea_disp_an_to_am(cb, drop_bytes, REG_A7, REG_A7);
-            m68k_emit_move_l_dn_predec_an(cb, REG_D0, REG_A7);       /* push result */
+            cache_push_dn(cb, &cache_head, &cache_depth, REG_D0);
             break;
         }
 
         case OP_CAR:
         case OP_CDR: {
-            /* JSR-only template: pop obj, push obj, JSR helper, drop,
-             * push result.  cl_car / cl_cdr already handle the full
-             * spec (NIL→NIL, LIST type-error, unbound-variable
-             * diagnostic), so the helper is a one-line forward.
-             * Non-allocating → GC-safe even without stack scanning. */
+            /* Pop obj into D0, push it as the helper arg, JSR, drop,
+             * push D0 result back to cache. */
             uint32_t helper = (op == OP_CAR)
                 ? (uint32_t)(uintptr_t)&cl_jit_runtime_car
                 : (uint32_t)(uintptr_t)&cl_jit_runtime_cdr;
-            m68k_emit_move_l_postinc_an_to_dn(cb, REG_A7, REG_D0);   /* pop obj */
-            m68k_emit_move_l_dn_predec_an(cb, REG_D0, REG_A7);       /* push obj */
+            cache_pop_to_dn(cb, &cache_head, &cache_depth, REG_D0);
+            m68k_emit_move_l_dn_predec_an(cb, REG_D0, REG_A7);
             m68k_emit_jsr_abs_l(cb, helper);
-            m68k_emit_addq_l_an(cb, 4, REG_A7);                      /* drop arg */
-            m68k_emit_move_l_dn_predec_an(cb, REG_D0, REG_A7);       /* push result */
+            m68k_emit_addq_l_an(cb, 4, REG_A7);
+            cache_push_dn(cb, &cache_head, &cache_depth, REG_D0);
             break;
         }
 
         case OP_LT:
-            emit_compare(cb, /*BLT*/13,
-                         (uint32_t)(uintptr_t)&cl_jit_runtime_lt);
+            cache_pop_to_dn(cb, &cache_head, &cache_depth, REG_D1);
+            cache_pop_to_dn(cb, &cache_head, &cache_depth, REG_D0);
+            emit_compare_compute(cb, /*BLT*/13,
+                                 (uint32_t)(uintptr_t)&cl_jit_runtime_lt);
+            cache_push_dn(cb, &cache_head, &cache_depth, REG_D0);
             break;
 
         case OP_GT:
-            emit_compare(cb, /*BGT*/14,
-                         (uint32_t)(uintptr_t)&cl_jit_runtime_gt);
+            cache_pop_to_dn(cb, &cache_head, &cache_depth, REG_D1);
+            cache_pop_to_dn(cb, &cache_head, &cache_depth, REG_D0);
+            emit_compare_compute(cb, /*BGT*/14,
+                                 (uint32_t)(uintptr_t)&cl_jit_runtime_gt);
+            cache_push_dn(cb, &cache_head, &cache_depth, REG_D0);
             break;
 
         case OP_LE:
-            emit_compare(cb, /*BLE*/15,
-                         (uint32_t)(uintptr_t)&cl_jit_runtime_le);
+            cache_pop_to_dn(cb, &cache_head, &cache_depth, REG_D1);
+            cache_pop_to_dn(cb, &cache_head, &cache_depth, REG_D0);
+            emit_compare_compute(cb, /*BLE*/15,
+                                 (uint32_t)(uintptr_t)&cl_jit_runtime_le);
+            cache_push_dn(cb, &cache_head, &cache_depth, REG_D0);
             break;
 
         case OP_GE:
-            emit_compare(cb, /*BGE*/12,
-                         (uint32_t)(uintptr_t)&cl_jit_runtime_ge);
+            cache_pop_to_dn(cb, &cache_head, &cache_depth, REG_D1);
+            cache_pop_to_dn(cb, &cache_head, &cache_depth, REG_D0);
+            emit_compare_compute(cb, /*BGE*/12,
+                                 (uint32_t)(uintptr_t)&cl_jit_runtime_ge);
+            cache_push_dn(cb, &cache_head, &cache_depth, REG_D0);
             break;
 
         case OP_NUMEQ:
-            emit_compare(cb, /*BEQ*/7,
-                         (uint32_t)(uintptr_t)&cl_jit_runtime_numeq);
+            cache_pop_to_dn(cb, &cache_head, &cache_depth, REG_D1);
+            cache_pop_to_dn(cb, &cache_head, &cache_depth, REG_D0);
+            emit_compare_compute(cb, /*BEQ*/7,
+                                 (uint32_t)(uintptr_t)&cl_jit_runtime_numeq);
+            cache_push_dn(cb, &cache_head, &cache_depth, REG_D0);
             break;
 
         case OP_EQ: {
-            /* Pop b, a; push CL_T iff a == b (pointer compare), else
-             * CL_NIL.  No slow path — CL_EQ is pure object identity.
-             * Mirrors VM's OP_EQ semantics. */
+            /* Pure pointer compare — no helper.  Pop b/a, CMP, set
+             * D0 to CL_T or CL_NIL based on Z, push D0 back. */
             int32_t beq_pc, bra_pc;
-            int32_t push_t_off, done_off;
+            int32_t load_t_off, done_off;
 
-            m68k_emit_move_l_postinc_an_to_dn(cb, REG_A7, REG_D1);
-            m68k_emit_move_l_postinc_an_to_dn(cb, REG_A7, REG_D0);
+            cache_pop_to_dn(cb, &cache_head, &cache_depth, REG_D1);
+            cache_pop_to_dn(cb, &cache_head, &cache_depth, REG_D0);
             m68k_emit_cmp_l_dn_dm(cb, REG_D1, REG_D0);
             beq_pc = (int32_t)cb_len(cb) + 2;
             m68k_emit_beq_w(cb, 0);
-            m68k_emit_clr_l_predec(cb, REG_A7);          /* push NIL */
+            m68k_emit_moveq(cb, 0, REG_D0);              /* CL_NIL */
             bra_pc = (int32_t)cb_len(cb) + 2;
             m68k_emit_bra_w(cb, 0);
 
-            push_t_off = (int32_t)cb_len(cb);
-            m68k_emit_move_l_imm32_predec(cb, (uint32_t)CL_T, REG_A7);
+            load_t_off = (int32_t)cb_len(cb);
+            m68k_emit_move_l_imm32(cb, (uint32_t)CL_T, REG_D0);
             done_off = (int32_t)cb_len(cb);
 
             m68k_patch_disp16(cb_data(cb), cb_len(cb), (uint32_t)beq_pc,
-                              (int16_t)(push_t_off - beq_pc));
+                              (int16_t)(load_t_off - beq_pc));
             m68k_patch_disp16(cb_data(cb), cb_len(cb), (uint32_t)bra_pc,
                               (int16_t)(done_off - bra_pc));
+            cache_push_dn(cb, &cache_head, &cache_depth, REG_D0);
             break;
         }
 
         case OP_NOT: {
-            /* Pop value; push CL_T iff CL_NULL_P (value == 0), else
-             * CL_NIL.  MOVE.L (a7)+,d0 sets Z based on the popped
-             * value — no separate TST needed.  No slow path. */
+            /* Pop value, test, push CL_T iff zero (NIL) else CL_NIL.
+             * cache_pop_to_dn into D0 sets D0; an explicit TST.L
+             * captures the Z flag (since cache_pop may not have used
+             * a flag-setting move). */
             int32_t beq_pc, bra_pc;
-            int32_t push_t_off, done_off;
+            int32_t load_t_off, done_off;
 
-            m68k_emit_move_l_postinc_an_to_dn(cb, REG_A7, REG_D0);
+            cache_pop_to_dn(cb, &cache_head, &cache_depth, REG_D0);
+            m68k_emit_tst_l_dn(cb, REG_D0);
             beq_pc = (int32_t)cb_len(cb) + 2;
             m68k_emit_beq_w(cb, 0);
-            m68k_emit_clr_l_predec(cb, REG_A7);          /* push NIL */
+            m68k_emit_moveq(cb, 0, REG_D0);              /* CL_NIL */
             bra_pc = (int32_t)cb_len(cb) + 2;
             m68k_emit_bra_w(cb, 0);
 
-            push_t_off = (int32_t)cb_len(cb);
-            m68k_emit_move_l_imm32_predec(cb, (uint32_t)CL_T, REG_A7);
+            load_t_off = (int32_t)cb_len(cb);
+            m68k_emit_move_l_imm32(cb, (uint32_t)CL_T, REG_D0);
             done_off = (int32_t)cb_len(cb);
 
             m68k_patch_disp16(cb_data(cb), cb_len(cb), (uint32_t)beq_pc,
-                              (int16_t)(push_t_off - beq_pc));
+                              (int16_t)(load_t_off - beq_pc));
             m68k_patch_disp16(cb_data(cb), cb_len(cb), (uint32_t)bra_pc,
                               (int16_t)(done_off - bra_pc));
+            cache_push_dn(cb, &cache_head, &cache_depth, REG_D0);
             break;
         }
 
         case OP_STRUCT_REF: {
-            /* Backing: cl_jit_runtime_struct_ref(obj, idx).  Pops
-             * obj, pushes idx (as longword) + obj in m68k C-ABI order
-             * (last arg pushed first), JSRs the helper, restores the
-             * stack, and pushes the returned slot value as the new
-             * TOS.  Helper validates type + bounds and matches the
-             * VM's error messages.  Non-allocating → GC-safe even
-             * without precise stack scanning. */
             uint8_t idx;
             uint32_t helper = (uint32_t)(uintptr_t)&cl_jit_runtime_struct_ref;
             if (ip >= bc->code_len) goto fail;
             idx = bc->code[ip++];
 
-            m68k_emit_move_l_postinc_an_to_dn(cb, REG_A7, REG_D0);   /* pop obj */
-            m68k_emit_move_l_imm32_predec(cb, (uint32_t)idx, REG_A7); /* push idx */
-            m68k_emit_move_l_dn_predec_an(cb, REG_D0, REG_A7);        /* push obj */
+            cache_pop_to_dn(cb, &cache_head, &cache_depth, REG_D0);
+            m68k_emit_move_l_imm32_predec(cb, (uint32_t)idx, REG_A7);
+            m68k_emit_move_l_dn_predec_an(cb, REG_D0, REG_A7);
             m68k_emit_jsr_abs_l(cb, helper);
-            m68k_emit_addq_l_an(cb, 8, REG_A7);                       /* drop 2 args */
-            m68k_emit_move_l_dn_predec_an(cb, REG_D0, REG_A7);        /* push result */
+            m68k_emit_addq_l_an(cb, 8, REG_A7);
+            cache_push_dn(cb, &cache_head, &cache_depth, REG_D0);
             break;
         }
 
         case OP_STRUCT_SET: {
-            /* Backing: cl_jit_runtime_struct_set(obj, idx, val).  The
-             * VM pops val then obj; we mirror that into D1 (val) and
-             * D0 (obj), then push val/idx/obj for the C call.  Helper
-             * returns val so it lands in D0 ready to push as the new
-             * TOS.  3 args × 4 bytes = 12-byte cleanup — split as two
-             * ADDQ.L because ADDQ tops out at #8. */
             uint8_t idx;
             uint32_t helper = (uint32_t)(uintptr_t)&cl_jit_runtime_struct_set;
             if (ip >= bc->code_len) goto fail;
             idx = bc->code[ip++];
 
-            m68k_emit_move_l_postinc_an_to_dn(cb, REG_A7, REG_D1);   /* pop val */
-            m68k_emit_move_l_postinc_an_to_dn(cb, REG_A7, REG_D0);   /* pop obj */
-
-            m68k_emit_move_l_dn_predec_an(cb, REG_D1, REG_A7);        /* push val */
-            m68k_emit_move_l_imm32_predec(cb, (uint32_t)idx, REG_A7); /* push idx */
-            m68k_emit_move_l_dn_predec_an(cb, REG_D0, REG_A7);        /* push obj */
+            cache_pop_to_dn(cb, &cache_head, &cache_depth, REG_D1);   /* val */
+            cache_pop_to_dn(cb, &cache_head, &cache_depth, REG_D0);   /* obj */
+            m68k_emit_move_l_dn_predec_an(cb, REG_D1, REG_A7);
+            m68k_emit_move_l_imm32_predec(cb, (uint32_t)idx, REG_A7);
+            m68k_emit_move_l_dn_predec_an(cb, REG_D0, REG_A7);
             m68k_emit_jsr_abs_l(cb, helper);
-            m68k_emit_addq_l_an(cb, 8, REG_A7);                       /* drop 2 of 3 */
-            m68k_emit_addq_l_an(cb, 4, REG_A7);                       /* drop the 3rd */
-            m68k_emit_move_l_dn_predec_an(cb, REG_D0, REG_A7);        /* push result */
+            m68k_emit_addq_l_an(cb, 8, REG_A7);
+            m68k_emit_addq_l_an(cb, 4, REG_A7);
+            cache_push_dn(cb, &cache_head, &cache_depth, REG_D0);
             break;
         }
 
         case OP_JMP:
         case OP_JNIL:
         case OP_JTRUE: {
-            /* All three branches share a 4-byte i32 displacement
-             * relative to the bytecode position *after* the operand
-             * (matching read_i32 / cl_emit_jump semantics).
-             *
-             * For JNIL/JTRUE, the VM pops the test value before
-             * branching.  We mirror that by popping TOS into D0 via
-             * postinc; m68k MOVE sets Z based on the source value, so
-             * BEQ/BNE then test "is the popped value CL_NIL (= 0)".
-             * For JMP no pop is needed. */
+            /* All branches flush the cache before testing/jumping so
+             * the target (which the per-IP flush above also reaches
+             * with depth=0) sees a consistent state.  For JNIL/JTRUE
+             * we pop the TOS into D0 — when the cache had it, that's
+             * a register move + decrement (no spill needed); MOVE.L
+             * sets Z based on the source value, so BEQ/BNE branches
+             * on whether the popped value was CL_NIL (0). */
             int32_t offset;
             uint32_t target_bc_off;
             uint32_t patch_off;
             if (ip + 4 > bc->code_len) goto fail;
             offset = read_i32_be(bc->code + ip);
             ip += 4;
-            /* Target is reached *after* the operand bytes are consumed —
-             * matches VM's `ip += offset` where ip already passed the
-             * 4-byte read. */
             if (offset < 0) {
                 uint32_t neg = (uint32_t)(-offset);
-                if (neg > ip) goto fail;       /* underflow */
+                if (neg > ip) goto fail;
                 target_bc_off = ip - neg;
             } else {
                 target_bc_off = ip + (uint32_t)offset;
@@ -884,16 +1114,25 @@ static int walker_compile(const CL_Bytecode *bc, CodeBuf *cb)
             if (target_bc_off > bc->code_len) goto fail;
 
             if (op == OP_JNIL || op == OP_JTRUE) {
-                m68k_emit_move_l_postinc_an_to_dn(cb, REG_A7, REG_D0);
+                cache_pop_to_dn(cb, &cache_head, &cache_depth, REG_D0);
+            }
+            /* Flush whatever's left so we cross the branch with
+             * depth=0 — matches the target's expected state.  This
+             * happens AFTER the pop so the flush's MOVE.L D{5..7},-(A7)
+             * predec pushes (which also set N/Z) don't pollute the
+             * flag state we need for the branch test below. */
+            cache_flush(cb, &cache_head, &cache_depth);
+            if (op == OP_JNIL || op == OP_JTRUE) {
+                /* Re-establish Z based on D0 — cache_pop_to_dn's
+                 * internal register shifts (at depth >= 2) and the
+                 * subsequent flush both clobber flags between the
+                 * pop's initial move and the branch. */
+                m68k_emit_tst_l_dn(cb, REG_D0);
             }
 
             patch_off = cb_len(cb) + 2;  /* disp field of Bcc.W */
 
             if (target_bc_off <= ip - 5) {
-                /* Backward (or self) branch — target already emitted.
-                 * `ip - 5` is the position of *this* branch opcode, so
-                 * any target ≤ that is in the past.  bc_to_native
-                 * lookup is authoritative. */
                 int32_t target_native = bc_to_native[target_bc_off];
                 int32_t disp32;
                 if (target_native < 0) goto fail;
@@ -905,8 +1144,6 @@ static int walker_compile(const CL_Bytecode *bc, CodeBuf *cb)
                 case OP_JTRUE: m68k_emit_bne_w(cb, (int16_t)disp32); break;
                 }
             } else {
-                /* Forward branch — record the patch site and emit a
-                 * placeholder. */
                 if (!patches_push(&patches, &n_patches, &cap_patches,
                                   patch_off, target_bc_off)) goto fail;
                 switch (op) {
@@ -919,19 +1156,18 @@ static int walker_compile(const CL_Bytecode *bc, CodeBuf *cb)
         }
 
         case OP_RET:
-            /* Pop result into D0, restore A6, return.  Bytecode is
-             * required to end with OP_RET (cl_compile_defun emits it as
-             * the function's last byte), so we resolve forward
-             * branches and exit here. */
+            /* Pop result into D0 (cache-aware), restore the callee-
+             * saved cache regs from their A6-relative slots (the
+             * positions are independent of where SP currently is),
+             * then UNLK / RTS. */
             bc_to_native[ip] = (int32_t)cb_len(cb);  /* fall-through target */
-            m68k_emit_move_l_postinc_an_to_dn(cb, REG_A7, REG_D0);
+            cache_pop_to_dn(cb, &cache_head, &cache_depth, REG_D0);
+            m68k_emit_move_l_disp_an_to_dn(cb, saved_d7_disp, REG_A6, REG_D7);
+            m68k_emit_move_l_disp_an_to_dn(cb, saved_d6_disp, REG_A6, REG_D6);
+            m68k_emit_move_l_disp_an_to_dn(cb, saved_d5_disp, REG_A6, REG_D5);
             m68k_emit_unlk_an(cb, REG_A6);
             m68k_emit_rts(cb);
 
-            /* Resolve every forward branch's displacement against the
-             * map.  Any branch whose target wasn't reached during the
-             * walk (target_bc_off without a bc_to_native entry) is a
-             * bug — bail rather than emit a garbage displacement. */
             for (i = 0; i < n_patches; i++) {
                 BranchPatch *p = &patches[i];
                 int32_t target_native;
@@ -948,8 +1184,6 @@ static int walker_compile(const CL_Bytecode *bc, CodeBuf *cb)
             goto cleanup;
 
         default:
-            /* Unsupported opcode → bail.  cb's buffer is discarded by
-             * the caller. */
             goto fail;
         }
     }
@@ -959,6 +1193,7 @@ fail:
     result = 0;
 cleanup:
     if (bc_to_native) platform_free(bc_to_native);
+    if (is_target)    platform_free(is_target);
     if (patches)      platform_free(patches);
     return result;
 }
