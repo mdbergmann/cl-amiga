@@ -58,4 +58,82 @@ void m68k_emit_move_l_disp_an_to_dn(CodeBuf *cb, int16_t disp,
     cb_emit_u16(cb, (uint16_t)disp);
 }
 
+/* LINK An,#disp16: opcode 0100 1110 0101 0nnn = 0x4E50 | n, followed
+ * by 16-bit signed displacement.  Pushes An onto the stack, copies SP
+ * to An, then adds disp to SP (negative for frame allocation). */
+void m68k_emit_link_an_disp16(CodeBuf *cb, M68kReg an, int16_t disp)
+{
+    uint16_t enc = (uint16_t)(0x4E50 | (an & 7));
+    cb_emit_u16(cb, enc);
+    cb_emit_u16(cb, (uint16_t)disp);
+}
+
+/* UNLK An: opcode 0100 1110 0101 1nnn = 0x4E58 | n.  Reverses LINK. */
+void m68k_emit_unlk_an(CodeBuf *cb, M68kReg an)
+{
+    uint16_t enc = (uint16_t)(0x4E58 | (an & 7));
+    cb_emit_u16(cb, enc);
+}
+
+/* CLR.L -(An): opcode 0100 0010 10 100 nnn = 0x42A0 | n.  Pre-decrements
+ * An by 4, then writes 0 to (An). */
+void m68k_emit_clr_l_predec(CodeBuf *cb, M68kReg an)
+{
+    cb_emit_u16(cb, (uint16_t)(0x42A0 | (an & 7)));
+}
+
+/* MOVE.L #imm32,-(An): src EA = 111/100 (immediate), dst EA = 100/nnn
+ * (-(An)).  Bits: 0010 nnn 100 111 100 + 32-bit immediate. */
+void m68k_emit_move_l_imm32_predec(CodeBuf *cb, uint32_t imm, M68kReg an)
+{
+    uint16_t enc = (uint16_t)(0x2000 | ((an & 7) << 9) |
+                              (4 << 6) | (7 << 3) | 4);
+    cb_emit_u16(cb, enc);
+    cb_emit_u32(cb, imm);
+}
+
+/* MOVE.L (An),(d16,Am): src EA = 010/an ((An)), dst EA = 101/am
+ * ((d16,Am)).  Bits: 0010 am 101 010 an + 16-bit displacement.  Note
+ * dst-reg occupies bits 11-9, src-reg occupies bits 2-0, dst-mode is
+ * in bits 8-6, src-mode in bits 5-3. */
+void m68k_emit_move_l_an_to_disp_am(CodeBuf *cb, M68kReg an,
+                                    int16_t disp, M68kReg am)
+{
+    uint16_t enc = (uint16_t)(0x2000 | ((am & 7) << 9) |
+                              (5 << 6) | (2 << 3) | (an & 7));
+    cb_emit_u16(cb, enc);
+    cb_emit_u16(cb, (uint16_t)disp);
+}
+
+/* MOVE.L (d16,An),-(Am): src EA = 101/an ((d16,An)), dst EA = 100/am
+ * (-(Am)).  4 bytes: opcode + 16-bit displacement. */
+void m68k_emit_move_l_disp_an_predec_am(CodeBuf *cb, int16_t disp,
+                                        M68kReg an, M68kReg am)
+{
+    uint16_t enc = (uint16_t)(0x2000 | ((am & 7) << 9) |
+                              (4 << 6) | (5 << 3) | (an & 7));
+    cb_emit_u16(cb, enc);
+    cb_emit_u16(cb, (uint16_t)disp);
+}
+
+/* MOVE.L (An)+,Dn: src EA = 011/an ((An)+), dst EA = 000/dn (Dn).
+ * Bits: 0010 dn 000 011 an.  2 bytes. */
+void m68k_emit_move_l_postinc_an_to_dn(CodeBuf *cb, M68kReg an, M68kReg dn)
+{
+    uint16_t enc = (uint16_t)(0x2000 | ((dn & 7) << 9) |
+                              (0 << 6) | (3 << 3) | (an & 7));
+    cb_emit_u16(cb, enc);
+}
+
+/* ADDQ.L #imm,An: opcode 0101 ddd 0 10 001 nnn where ddd is the 3-bit
+ * data field (1..7 encoded as 1..7, 8 encoded as 0), size=10 (long),
+ * EA mode=001 (An direct).  2 bytes. */
+void m68k_emit_addq_l_an(CodeBuf *cb, uint8_t imm, M68kReg an)
+{
+    uint8_t data = (imm == 8) ? 0 : (uint8_t)(imm & 7);
+    uint16_t enc = (uint16_t)(0x5000 | ((uint16_t)data << 9) |
+                              (2 << 6) | (1 << 3) | (an & 7));
+    cb_emit_u16(cb, enc);
+}
+
 #endif /* JIT_M68K */

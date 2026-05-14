@@ -1,20 +1,26 @@
 /* jit.c — orchestration for the m68k template JIT.
  *
- * Current codegen covers two function-shape families:
+ * Two codegen paths layered front-to-back:
  *
- *   1. `(defun f () <literal>)` — 0-arg, returns a constant.  Emitted
- *      as `moveq` or `move.l #imm32` into D0 followed by `rts`.
- *      Recognized literals: OP_NIL, OP_T, OP_CONST.
+ *   - Whole-function pattern matchers.  Recognize a small set of
+ *     known-tight shapes and emit hand-written templates of optimal
+ *     size (4–8 bytes for the body).  Today: 0-arg constant return
+ *     (OP_NIL/OP_T/OP_CONST → moveq or move.l#imm32 + rts) and 1..k-arg
+ *     parameter pass-through (move.l offset(sp),d0 + rts).
  *
- *   2. `(defun f (x1..xk) xj)` — k-arg parameter pass-through, k up to
- *      CL_JIT_PASSTHROUGH_MAX_ARITY.  Emitted as
- *      `move.l (4+4*j)(sp),d0 ; rts`, reading the C-ABI arg slot
- *      directly.  Subsumes the 1-arg identity case.
+ *   - Per-opcode walker.  Falls through when no matcher fires.  Walks
+ *     the bytecode once and emits one m68k template per opcode using
+ *     the m68k hardware stack as the operand stack and a LINK'd frame
+ *     at A6 for locals.  Bails (leaves native_code NULL) the first
+ *     time it sees an opcode it doesn't yet handle; the function then
+ *     runs through the bytecode interpreter exactly as before.
  *
- * Everything else still leaves `bc->native_code == NULL` and runs
- * through the bytecode interpreter.
+ *     Currently supported opcodes: OP_NIL, OP_T, OP_CONST, OP_LOAD,
+ *     OP_STORE, OP_POP, OP_RET.  Adding an opcode means adding one
+ *     emitter case and one or two new asm encoders — the walker
+ *     handles the composition.
  *
- * See specs/native-backend.md §"Suggested staging".
+ * See specs/native-backend.md §"Per-opcode emitter shape".
  */
 
 #ifdef JIT_M68K
@@ -50,7 +56,7 @@ void cl_jit_init(void)
 
     if (!cl_quiet_boot) {
         platform_write_string(
-            "; [jit] m68k template backend: trivial-literal-leaf + 1..6-arg pass-through\n");
+            "; [jit] m68k template backend: matchers (0-arg literal, 1..6-arg pass-through) + per-opcode walker\n");
     }
 }
 
@@ -182,6 +188,140 @@ static void emit_load_imm_d0(CodeBuf *cb, CL_Obj val)
     }
 }
 
+/* --- Per-opcode walker ---------------------------------------------------
+ *
+ * The walker emits a complete native function for any bytecode built
+ * from the small but growing set of opcodes below.  It uses A6 as a
+ * frame pointer (set up via LINK) and the m68k hardware stack (A7) as
+ * the operand stack.
+ *
+ * Stack frame, after `link a6,#-N`:
+ *
+ *   8(a6) + 4*i  parameter i (i in [0, arity)) — placed there by the
+ *                m68k C ABI before the JSR
+ *   4(a6)        return address (pushed by JSR)
+ *   0(a6)        saved A6 (pushed by LINK)
+ *  -4(a6) - 4*j  "extra" local j (j = slot - arity, j in [0, n_extra))
+ *   (a7)         operand-stack TOS, grows downward as opcodes push
+ *
+ * For bytecode slot s, slot_disp() picks the right displacement.
+ *
+ * On any unsupported opcode the walker returns 0 and the caller drops
+ * the partially-built buffer — the function then runs interpreted.
+ */
+
+static int16_t slot_disp(uint8_t slot, uint16_t arity)
+{
+    if (slot < arity) {
+        return (int16_t)(8 + 4 * (int)slot);
+    }
+    return (int16_t)(-4 * ((int)slot - (int)arity + 1));
+}
+
+static int walker_compile(const CL_Bytecode *bc, CodeBuf *cb)
+{
+    uint16_t arity;
+    uint16_t n_locals;
+    uint32_t n_extra;
+    uint32_t ip;
+    int16_t frame_size;
+
+    /* Conservative gate: same metadata constraints as the matchers.
+     * &optional/&key/&rest/&aux/upvalues all need work that hasn't
+     * landed yet.  Arity bounded by the dispatch-switch cap so a
+     * walker-emitted function can actually be invoked. */
+    if (bc->arity & 0x8000)  return 0;
+    if (bc->n_optional != 0) return 0;
+    if (bc->flags != 0)      return 0;
+    if (bc->n_keys != 0)     return 0;
+    if (bc->n_upvalues != 0) return 0;
+
+    arity = (uint16_t)(bc->arity & 0x7FFF);
+    if (arity > CL_JIT_PASSTHROUGH_MAX_ARITY) return 0;
+
+    n_locals = bc->n_locals;
+    if (n_locals < arity) return 0;
+    n_extra = (uint32_t)(n_locals - arity);
+    /* LINK takes a 16-bit signed disp; cap extra locals so 4*n_extra
+     * stays within range with headroom.  In practice n_locals never
+     * approaches this for hand-written Lisp. */
+    if (n_extra > 1000) return 0;
+    frame_size = (int16_t)(-4 * (int32_t)n_extra);
+
+    /* Prologue: save A6, set A6 = new SP, allocate frame for extras. */
+    m68k_emit_link_an_disp16(cb, REG_A6, frame_size);
+
+    ip = 0;
+    while (ip < bc->code_len) {
+        uint8_t op = bc->code[ip++];
+        switch (op) {
+        case OP_NIL:
+            /* CL_NIL == 0 — clear longword at -(a7). */
+            m68k_emit_clr_l_predec(cb, REG_A7);
+            break;
+
+        case OP_T:
+            m68k_emit_move_l_imm32_predec(cb, (uint32_t)CL_T, REG_A7);
+            break;
+
+        case OP_CONST: {
+            uint16_t idx;
+            CL_Obj val;
+            if (ip + 1 >= bc->code_len) return 0;
+            idx = ((uint16_t)bc->code[ip] << 8) | bc->code[ip + 1];
+            ip += 2;
+            if (idx >= bc->n_constants || bc->constants == NULL) return 0;
+            val = bc->constants[idx];
+            m68k_emit_move_l_imm32_predec(cb, (uint32_t)val, REG_A7);
+            break;
+        }
+
+        case OP_LOAD: {
+            uint8_t slot;
+            int16_t disp;
+            if (ip >= bc->code_len) return 0;
+            slot = bc->code[ip++];
+            if (slot >= n_locals) return 0;
+            disp = slot_disp(slot, arity);
+            m68k_emit_move_l_disp_an_predec_am(cb, disp, REG_A6, REG_A7);
+            break;
+        }
+
+        case OP_STORE: {
+            uint8_t slot;
+            int16_t disp;
+            if (ip >= bc->code_len) return 0;
+            slot = bc->code[ip++];
+            if (slot >= n_locals) return 0;
+            disp = slot_disp(slot, arity);
+            /* STORE writes TOS without popping; the matching OP_POP
+             * (if any) pops separately. */
+            m68k_emit_move_l_an_to_disp_am(cb, REG_A7, disp, REG_A6);
+            break;
+        }
+
+        case OP_POP:
+            m68k_emit_addq_l_an(cb, 4, REG_A7);
+            break;
+
+        case OP_RET:
+            /* Pop result into D0, restore A6, return.  Bytecode is
+             * required to end with OP_RET, so this is the only exit. */
+            m68k_emit_move_l_postinc_an_to_dn(cb, REG_A7, REG_D0);
+            m68k_emit_unlk_an(cb, REG_A6);
+            m68k_emit_rts(cb);
+            return 1;
+
+        default:
+            /* Unsupported opcode → bail.  cb's buffer is discarded by
+             * the caller. */
+            return 0;
+        }
+    }
+    /* Falling off the end without OP_RET = malformed bytecode. */
+    return 0;
+}
+
 void cl_jit_compile(CL_Bytecode *bc)
 {
     CodeBuf cb;
@@ -213,7 +353,16 @@ void cl_jit_compile(CL_Bytecode *bc)
         int16_t disp = (int16_t)(4 + 4 * (int)slot);
         m68k_emit_move_l_disp_an_to_dn(&cb, disp, REG_A7, REG_D0);
         m68k_emit_rts(&cb);
+    } else if (walker_compile(bc, &cb)) {
+        /* Walker handled it — full per-opcode template emission with
+         * LINK frame + m68k-stack operand stack.  Larger code than the
+         * matchers' tight templates, but covers any shape built from
+         * the supported opcodes. */
     } else {
+        /* Walker bailed (unsupported opcode, oversized frame, etc.) —
+         * discard whatever it emitted into cb and fall back to the
+         * bytecode interpreter for this function. */
+        cb_free(&cb);
         return;
     }
 

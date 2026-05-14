@@ -149,3 +149,85 @@
   (clamiga::%jit-dump-bytes #'jit-6arg-6))
 (check "jit-6arg-1-returns" 'first  (jit-6arg-1 'first 2 3 4 5 'last))
 (check "jit-6arg-6-returns" 'last   (jit-6arg-6 'first 2 3 4 5 'last))
+
+; --- Per-opcode walker.  Fires only for shapes the whole-function
+; matchers reject.  Uses LINK/UNLK to set up an A6 frame and the m68k
+; hardware stack as the operand stack — much larger native code per
+; function (≥22 bytes vs the 4–8 bytes the matchers produce) but
+; covers arbitrary compositions of the supported opcodes (OP_NIL,
+; OP_T, OP_CONST, OP_LOAD, OP_STORE, OP_POP, OP_RET).
+;
+; (defun walker-nil-1arg (x) nil) bytecode:
+;   NIL ; STORE 1 ; POP ; LOAD 1 ; RET   (7 bytes)
+; arity=1, n_locals=2 → 1 extra local → LINK A6,#-4.
+; Slot 1 is the block-return local at -4(a6).
+;
+; Expected native (22 bytes):
+;   78 86 255 252   ; link a6,#-4
+;   66 167          ; clr.l -(a7)             — OP_NIL
+;   45 87 255 252   ; move.l (a7),-4(a6)      — OP_STORE 1
+;   88 143          ; addq.l #4,a7            — OP_POP
+;   47 46 255 252   ; move.l -4(a6),-(a7)     — OP_LOAD 1
+;   32 31           ; move.l (a7)+,d0        \
+;   78 94           ; unlk a6                 } — OP_RET
+;   78 117          ; rts                    /
+(defun walker-nil-1arg (x) nil)
+(check "walker-nil-1arg-bytes"
+  '(78 86 255 252  66 167  45 87 255 252  88 143  47 46 255 252
+    32 31  78 94  78 117)
+  (clamiga::%jit-dump-bytes #'walker-nil-1arg))
+(check "walker-nil-1arg-counter-bump" t
+  (let ((before (clamiga::%jit-invoke-count)))
+    (walker-nil-1arg 99)
+    (> (clamiga::%jit-invoke-count) before)))
+(check "walker-nil-1arg-returns-nil"    nil (walker-nil-1arg 99))
+(check "walker-nil-1arg-ignores-arg"    nil (walker-nil-1arg 'anything))
+
+; Constant return via OP_CONST: (defun walker-fix-1arg (x) 42).
+; Fixnum 42 tagged = (42<<1)|1 = 85 = 0x55, embedded as 32-bit
+; big-endian immediate in MOVE.L #imm32,-(a7) → bytes 47 60 0 0 0 85.
+(defun walker-fix-1arg (x) 42)
+(check "walker-fix-1arg-bytes"
+  '(78 86 255 252  47 60 0 0 0 85  45 87 255 252  88 143
+    47 46 255 252  32 31 78 94 78 117)
+  (clamiga::%jit-dump-bytes #'walker-fix-1arg))
+(check "walker-fix-1arg-returns" 42 (walker-fix-1arg 'ignored))
+
+; OP_T: shape is identical to OP_NIL+1 except OP_T is 6 bytes (MOVE.L
+; #CL_T,-(a7)) vs OP_NIL's 2 bytes (CLR.L -(a7)).  CL_T is a runtime
+; pointer so its 4-byte value varies across boots — verify size and
+; behavior, not the embedded immediate.
+(defun walker-t-1arg (x) t)
+(check "walker-t-1arg-size" 26
+  (length (clamiga::%jit-dump-bytes #'walker-t-1arg)))
+(check "walker-t-1arg-returns-t" t (walker-t-1arg nil))
+
+; Real local-slot use: LET binds an extra slot above the block-return.
+; (defun walker-let-id (x) (let ((y x)) y))
+;   arity=1, n_locals=3 (x=slot 0, block-return=slot 1, y=slot 2)
+;   bytecode: LOAD 0 ; STORE 2 ; POP ; LOAD 2 ; STORE 1 ; POP ; LOAD 1 ; RET
+; Exercises the parameter-slot path (slot 0 at 8(a6)) AND extra-local
+; path (slots 1 & 2 below a6) within the same function.  Byte-exact
+; would be brittle; behavior is what matters.
+(defun walker-let-id (x) (let ((y x)) y))
+(check "walker-let-id-fixnum" 7        (walker-let-id 7))
+(check "walker-let-id-symbol" 'banana  (walker-let-id 'banana))
+(check "walker-let-id-cons"   '(1 . 2) (walker-let-id (cons 1 2)))
+(check "walker-let-id-counter-bump" t
+  (let ((before (clamiga::%jit-invoke-count)))
+    (walker-let-id 1)
+    (> (clamiga::%jit-invoke-count) before)))
+
+; Negative: a function whose body contains an opcode the walker
+; doesn't handle (OP_CONS) must leave native_code NULL and run via
+; the interpreter.  walker-cons-fallback duplicates jit-stub-test-fn's
+; rejection shape with a distinct name so the test reads cleanly.
+(defun walker-cons-fallback (x y) (cons x y))
+(check "walker-cons-fallback-no-native"
+  nil (clamiga::%jit-dump-bytes #'walker-cons-fallback))
+(check "walker-cons-fallback-still-works"
+  '(1 . 2) (walker-cons-fallback 1 2))
+(check "walker-cons-fallback-no-counter-bump" t
+  (let ((before (clamiga::%jit-invoke-count)))
+    (walker-cons-fallback 3 4)
+    (= before (clamiga::%jit-invoke-count))))
