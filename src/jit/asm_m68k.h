@@ -96,6 +96,37 @@ void m68k_emit_move_l_postinc_an_to_dn(CodeBuf *cb, M68kReg an, M68kReg dn);
  * 2 bytes.  Encoded with imm=8 stored as data field 0. */
 void m68k_emit_addq_l_an(CodeBuf *cb, uint8_t imm, M68kReg an);
 
+/* MOVE.L (An),-(Am) — push the longword at (An) onto -Am.  Used by
+ * OP_DUP as `move.l (a7),-(a7)` to duplicate the operand-stack TOS.
+ * 2 bytes: src EA = 010/an, dst EA = 100/am.  No extension words.
+ *
+ * Note: the m68k hardware enforces that `MOVE.L (A7),-(A7)` reads the
+ * source *before* the predecrement updates A7, so the old TOS gets
+ * copied to the new TOS — exactly the OP_DUP semantics. */
+void m68k_emit_move_l_an_to_predec_am(CodeBuf *cb, M68kReg an, M68kReg am);
+
+/* Bcc.W — m68k branches with 16-bit signed displacement.
+ *
+ * Encoding: opcode word 0110 cccc 0000 0000, then a 16-bit signed
+ * displacement word.  Displacement is relative to PC = (instr_start + 2),
+ * i.e. the byte right after the opcode word — which is also where the
+ * displacement word itself lives.  Range: -32768..+32767.
+ *
+ * For forward branches the caller emits with disp=0 and patches the
+ * displacement later (see m68k_patch_disp16); for backward branches the
+ * target is already known and the caller computes disp inline. */
+void m68k_emit_bra_w(CodeBuf *cb, int16_t disp);   /* unconditional */
+void m68k_emit_beq_w(CodeBuf *cb, int16_t disp);   /* branch if Z=1   */
+void m68k_emit_bne_w(CodeBuf *cb, int16_t disp);   /* branch if Z=0   */
+
+/* Overwrite a 16-bit big-endian field already written to `code` at byte
+ * offset `patch_off`.  Used to fill in forward-branch displacements
+ * once the target's native offset is known.  No-op if patch_off+2
+ * exceeds code_len — keeps the patch loop simple, the caller has
+ * already bailed if a branch's range overflowed. */
+void m68k_patch_disp16(uint8_t *code, uint32_t code_len,
+                       uint32_t patch_off, int16_t disp);
+
 #endif /* JIT_M68K */
 
 #endif /* CL_JIT_ASM_M68K_H */

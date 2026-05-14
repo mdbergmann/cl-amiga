@@ -206,9 +206,29 @@ static void emit_load_imm_d0(CodeBuf *cb, CL_Obj val)
  *
  * For bytecode slot s, slot_disp() picks the right displacement.
  *
+ * Branches are resolved in a single pass with a small forward-patch
+ * list.  `bc_to_native[ip]` records the native-code offset at which the
+ * opcode beginning at bytecode IP `ip` starts emitting.  Backward
+ * branches read directly from this map; forward branches emit a Bcc.W
+ * with placeholder 0 and remember (patch_off, target_bc_off) for later
+ * fix-up.  Once the walker reaches OP_RET we resolve every pending
+ * patch.  If a 16-bit displacement won't fit we bail out — the function
+ * runs interpreted instead.  (32-bit Bcc.L exists on 68020+ but isn't
+ * needed at the function sizes the walker handles today.)
+ *
  * On any unsupported opcode the walker returns 0 and the caller drops
  * the partially-built buffer — the function then runs interpreted.
  */
+
+/* Forward branch waiting for its target's native offset.  The branch
+ * opcode word lives at (patch_off - 2); the 16-bit displacement field
+ * the patcher overwrites lives at patch_off.  The displacement is
+ * computed relative to patch_off itself, since m68k Bcc.W references
+ * PC = (instruction_start + 2) = patch_off. */
+typedef struct {
+    uint32_t patch_off;      /* native byte offset of the disp word */
+    uint32_t target_bc_off;  /* bytecode offset of the branch target */
+} BranchPatch;
 
 static int16_t slot_disp(uint8_t slot, uint16_t arity)
 {
@@ -218,13 +238,57 @@ static int16_t slot_disp(uint8_t slot, uint16_t arity)
     return (int16_t)(-4 * ((int)slot - (int)arity + 1));
 }
 
+/* Decode a 4-byte big-endian signed integer from the bytecode stream.
+ * Matches the encoding cl_emit_i32 produces for branch operands. */
+static int32_t read_i32_be(const uint8_t *p)
+{
+    return (int32_t)(((uint32_t)p[0] << 24) |
+                     ((uint32_t)p[1] << 16) |
+                     ((uint32_t)p[2] <<  8) |
+                      (uint32_t)p[3]);
+}
+
+/* Patch list grows on demand starting from this size.  A pessimistic
+ * upper bound is code_len / 5 (every byte a branch instruction), but
+ * realistic Lisp rarely needs more than a dozen forward branches per
+ * function.  Doubling on overflow keeps amortised cost O(1). */
+#define WALKER_PATCH_INITIAL_CAP 8
+
+static int patches_push(BranchPatch **patches, uint32_t *n, uint32_t *cap,
+                        uint32_t patch_off, uint32_t target_bc_off)
+{
+    if (*n == *cap) {
+        uint32_t new_cap = (*cap == 0) ? WALKER_PATCH_INITIAL_CAP : (*cap * 2);
+        BranchPatch *grown = (BranchPatch *)platform_alloc(
+            (unsigned long)(new_cap * sizeof(BranchPatch)));
+        if (grown == NULL) return 0;
+        if (*patches != NULL) {
+            uint32_t i;
+            for (i = 0; i < *n; i++) grown[i] = (*patches)[i];
+            platform_free(*patches);
+        }
+        *patches = grown;
+        *cap = new_cap;
+    }
+    (*patches)[*n].patch_off     = patch_off;
+    (*patches)[*n].target_bc_off = target_bc_off;
+    (*n)++;
+    return 1;
+}
+
 static int walker_compile(const CL_Bytecode *bc, CodeBuf *cb)
 {
     uint16_t arity;
     uint16_t n_locals;
     uint32_t n_extra;
     uint32_t ip;
+    uint32_t i;
     int16_t frame_size;
+    int32_t *bc_to_native = NULL;
+    BranchPatch *patches = NULL;
+    uint32_t n_patches = 0;
+    uint32_t cap_patches = 0;
+    int result = 0;
 
     /* Conservative gate: same metadata constraints as the matchers.
      * &optional/&key/&rest/&aux/upvalues all need work that hasn't
@@ -248,12 +312,24 @@ static int walker_compile(const CL_Bytecode *bc, CodeBuf *cb)
     if (n_extra > 1000) return 0;
     frame_size = (int16_t)(-4 * (int32_t)n_extra);
 
+    /* bc_to_native[i] = native offset where the opcode beginning at
+     * bytecode position i starts emitting, or -1 if that position is
+     * mid-operand / not yet reached.  Indexed up to code_len inclusive
+     * so a branch whose target equals code_len (one past the last
+     * byte) is detectable as out-of-range. */
+    bc_to_native = (int32_t *)platform_alloc(
+        (unsigned long)((bc->code_len + 1) * sizeof(int32_t)));
+    if (bc_to_native == NULL) return 0;
+    for (i = 0; i <= bc->code_len; i++) bc_to_native[i] = -1;
+
     /* Prologue: save A6, set A6 = new SP, allocate frame for extras. */
     m68k_emit_link_an_disp16(cb, REG_A6, frame_size);
 
     ip = 0;
     while (ip < bc->code_len) {
-        uint8_t op = bc->code[ip++];
+        uint8_t op;
+        bc_to_native[ip] = (int32_t)cb_len(cb);
+        op = bc->code[ip++];
         switch (op) {
         case OP_NIL:
             /* CL_NIL == 0 — clear longword at -(a7). */
@@ -267,10 +343,10 @@ static int walker_compile(const CL_Bytecode *bc, CodeBuf *cb)
         case OP_CONST: {
             uint16_t idx;
             CL_Obj val;
-            if (ip + 1 >= bc->code_len) return 0;
+            if (ip + 1 >= bc->code_len) goto fail;
             idx = ((uint16_t)bc->code[ip] << 8) | bc->code[ip + 1];
             ip += 2;
-            if (idx >= bc->n_constants || bc->constants == NULL) return 0;
+            if (idx >= bc->n_constants || bc->constants == NULL) goto fail;
             val = bc->constants[idx];
             m68k_emit_move_l_imm32_predec(cb, (uint32_t)val, REG_A7);
             break;
@@ -279,9 +355,9 @@ static int walker_compile(const CL_Bytecode *bc, CodeBuf *cb)
         case OP_LOAD: {
             uint8_t slot;
             int16_t disp;
-            if (ip >= bc->code_len) return 0;
+            if (ip >= bc->code_len) goto fail;
             slot = bc->code[ip++];
-            if (slot >= n_locals) return 0;
+            if (slot >= n_locals) goto fail;
             disp = slot_disp(slot, arity);
             m68k_emit_move_l_disp_an_predec_am(cb, disp, REG_A6, REG_A7);
             break;
@@ -290,9 +366,9 @@ static int walker_compile(const CL_Bytecode *bc, CodeBuf *cb)
         case OP_STORE: {
             uint8_t slot;
             int16_t disp;
-            if (ip >= bc->code_len) return 0;
+            if (ip >= bc->code_len) goto fail;
             slot = bc->code[ip++];
-            if (slot >= n_locals) return 0;
+            if (slot >= n_locals) goto fail;
             disp = slot_disp(slot, arity);
             /* STORE writes TOS without popping; the matching OP_POP
              * (if any) pops separately. */
@@ -304,22 +380,121 @@ static int walker_compile(const CL_Bytecode *bc, CodeBuf *cb)
             m68k_emit_addq_l_an(cb, 4, REG_A7);
             break;
 
+        case OP_DUP:
+            /* Copy TOS onto the operand stack without disturbing the
+             * existing slot.  m68k semantics: src is read before dst's
+             * predecrement applies, so move.l (a7),-(a7) duplicates. */
+            m68k_emit_move_l_an_to_predec_am(cb, REG_A7, REG_A7);
+            break;
+
+        case OP_JMP:
+        case OP_JNIL:
+        case OP_JTRUE: {
+            /* All three branches share a 4-byte i32 displacement
+             * relative to the bytecode position *after* the operand
+             * (matching read_i32 / cl_emit_jump semantics).
+             *
+             * For JNIL/JTRUE, the VM pops the test value before
+             * branching.  We mirror that by popping TOS into D0 via
+             * postinc; m68k MOVE sets Z based on the source value, so
+             * BEQ/BNE then test "is the popped value CL_NIL (= 0)".
+             * For JMP no pop is needed. */
+            int32_t offset;
+            uint32_t target_bc_off;
+            uint32_t patch_off;
+            if (ip + 4 > bc->code_len) goto fail;
+            offset = read_i32_be(bc->code + ip);
+            ip += 4;
+            /* Target is reached *after* the operand bytes are consumed —
+             * matches VM's `ip += offset` where ip already passed the
+             * 4-byte read. */
+            if (offset < 0) {
+                uint32_t neg = (uint32_t)(-offset);
+                if (neg > ip) goto fail;       /* underflow */
+                target_bc_off = ip - neg;
+            } else {
+                target_bc_off = ip + (uint32_t)offset;
+            }
+            if (target_bc_off > bc->code_len) goto fail;
+
+            if (op == OP_JNIL || op == OP_JTRUE) {
+                m68k_emit_move_l_postinc_an_to_dn(cb, REG_A7, REG_D0);
+            }
+
+            patch_off = cb_len(cb) + 2;  /* disp field of Bcc.W */
+
+            if (target_bc_off <= ip - 5) {
+                /* Backward (or self) branch — target already emitted.
+                 * `ip - 5` is the position of *this* branch opcode, so
+                 * any target ≤ that is in the past.  bc_to_native
+                 * lookup is authoritative. */
+                int32_t target_native = bc_to_native[target_bc_off];
+                int32_t disp32;
+                if (target_native < 0) goto fail;
+                disp32 = target_native - (int32_t)patch_off;
+                if (disp32 < -32768 || disp32 > 32767) goto fail;
+                switch (op) {
+                case OP_JMP:   m68k_emit_bra_w(cb, (int16_t)disp32); break;
+                case OP_JNIL:  m68k_emit_beq_w(cb, (int16_t)disp32); break;
+                case OP_JTRUE: m68k_emit_bne_w(cb, (int16_t)disp32); break;
+                }
+            } else {
+                /* Forward branch — record the patch site and emit a
+                 * placeholder. */
+                if (!patches_push(&patches, &n_patches, &cap_patches,
+                                  patch_off, target_bc_off)) goto fail;
+                switch (op) {
+                case OP_JMP:   m68k_emit_bra_w(cb, 0); break;
+                case OP_JNIL:  m68k_emit_beq_w(cb, 0); break;
+                case OP_JTRUE: m68k_emit_bne_w(cb, 0); break;
+                }
+            }
+            break;
+        }
+
         case OP_RET:
             /* Pop result into D0, restore A6, return.  Bytecode is
-             * required to end with OP_RET, so this is the only exit. */
+             * required to end with OP_RET (cl_compile_defun emits it as
+             * the function's last byte), so we resolve forward
+             * branches and exit here. */
+            bc_to_native[ip] = (int32_t)cb_len(cb);  /* fall-through target */
             m68k_emit_move_l_postinc_an_to_dn(cb, REG_A7, REG_D0);
             m68k_emit_unlk_an(cb, REG_A6);
             m68k_emit_rts(cb);
-            return 1;
+
+            /* Resolve every forward branch's displacement against the
+             * map.  Any branch whose target wasn't reached during the
+             * walk (target_bc_off without a bc_to_native entry) is a
+             * bug — bail rather than emit a garbage displacement. */
+            for (i = 0; i < n_patches; i++) {
+                BranchPatch *p = &patches[i];
+                int32_t target_native;
+                int32_t disp32;
+                if (p->target_bc_off > bc->code_len) goto fail;
+                target_native = bc_to_native[p->target_bc_off];
+                if (target_native < 0) goto fail;
+                disp32 = target_native - (int32_t)p->patch_off;
+                if (disp32 < -32768 || disp32 > 32767) goto fail;
+                m68k_patch_disp16(cb_data(cb), cb_len(cb),
+                                  p->patch_off, (int16_t)disp32);
+            }
+            result = 1;
+            goto cleanup;
 
         default:
             /* Unsupported opcode → bail.  cb's buffer is discarded by
              * the caller. */
-            return 0;
+            goto fail;
         }
     }
     /* Falling off the end without OP_RET = malformed bytecode. */
-    return 0;
+
+fail:
+    result = 0;
+cleanup:
+    if (bc_to_native) platform_free(bc_to_native);
+    if (patches)      platform_free(patches);
+    return result;
 }
 
 void cl_jit_compile(CL_Bytecode *bc)
@@ -480,6 +655,26 @@ static uint32_t disasm_one(const uint8_t *code, uint32_t len,
         int an = op & 7;
         if (data == 0) data = 8;
         snprintf(mnemonic, (size_t)msize, "addq.l #%d,a%d", data, an);
+        matched = 1;
+    } else if ((op & 0xFF00) == 0x6000              /* BRA.W */
+            || (op & 0xFF00) == 0x6600              /* BNE.W */
+            || (op & 0xFF00) == 0x6700) {           /* BEQ.W */
+        /* Bcc with 8-bit disp field == 0 means a 16-bit displacement
+         * word follows, relative to PC = (instr_start + 2).  The
+         * walker only emits these word-displacement forms. */
+        int16_t d;
+        const char *mnem;
+        long target;
+        if (pos + 2 > len) return 0;
+        d = (int16_t)(((uint16_t)code[pos] << 8) | code[pos + 1]);
+        pos += 2;
+        target = (long)offset + 2L + (long)d;
+        switch (op & 0xFF00) {
+        case 0x6000: mnem = "bra.w"; break;
+        case 0x6600: mnem = "bne.w"; break;
+        default:     mnem = "beq.w"; break;
+        }
+        snprintf(mnemonic, (size_t)msize, "%s %ld", mnem, target);
         matched = 1;
     } else if ((op & 0xF000) == 0x2000) {           /* MOVE.L src,dst */
         int dst_reg = (op >> 9) & 7;

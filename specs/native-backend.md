@@ -546,13 +546,28 @@ the operand stack and a LINK'd frame at A6 for locals.
 ```
 
 Supported opcodes: `OP_NIL`, `OP_T`, `OP_CONST`, `OP_LOAD`, `OP_STORE`,
-`OP_POP`, `OP_RET` — subsumes everything the matchers cover plus
-arbitrary compositions (e.g. `(defun f (x) (let ((y x)) y))`). Native
-code is bigger than the matchers' tight templates (22+ bytes for any
-function vs 4–8) but coverage is compositional: each new opcode adds
-one emitter case and a couple of encoders, then any function built
-from supported opcodes JITs for free. Unrecognized opcode → walker
-bails, native_code stays NULL, function runs interpreted.
+`OP_POP`, `OP_DUP`, `OP_JMP`, `OP_JNIL`, `OP_JTRUE`, `OP_RET` —
+subsumes everything the matchers cover plus arbitrary compositions
+(e.g. `(defun f (x) (let ((y x)) y))`, `(if x 1 2)`, `(when x v)`,
+`(cond (x))`). Native code is bigger than the matchers' tight
+templates (22+ bytes for any function vs 4–8) but coverage is
+compositional: each new opcode adds one emitter case and a couple of
+encoders, then any function built from supported opcodes JITs for
+free. Unrecognized opcode → walker bails, native_code stays NULL,
+function runs interpreted.
+
+Branches use a single-pass label table: `bc_to_native[ip]` records the
+native offset at the start of every visited opcode, populated as the
+walker advances. Backward branches read the target's native offset
+directly; forward branches emit a `Bcc.W` with a placeholder 0 and a
+`(patch_off, target_bc_off)` patch record. On reaching `OP_RET` the
+walker resolves every patch by looking up its target in the map and
+writing a 16-bit big-endian displacement. If any displacement falls
+outside `int16_t` range the walker bails (32-bit `Bcc.L` exists on
+68020+ but isn't needed at the function sizes in scope today). `JNIL`
+and `JTRUE` mirror the VM by popping TOS into D0 before the branch —
+m68k `MOVE` sets the Z flag from the moved value, so `BEQ`/`BNE` then
+test "popped value == CL_NIL".
 
 No register cache yet (spec's `D5/D6/D7` operand-stack-cache
 optimization). Pure memory operands.
@@ -565,7 +580,9 @@ optimization). Pure memory operands.
   `moveq`, `move.l #imm32,Dn`, `move.l (d16,An),Dn` (matchers) plus
   `link`, `unlk`, `clr.l -(An)`, `move.l #imm32,-(An)`,
   `move.l (An),(d16,Am)`, `move.l (d16,An),-(Am)`,
-  `move.l (An)+,Dn`, `addq.l #imm,An` (walker). `JIT_M68K`-only.
+  `move.l (An)+,Dn`, `addq.l #imm,An`, `move.l (An),-(Am)` (OP_DUP),
+  and `bra.w`/`beq.w`/`bne.w` + `patch_disp16` for branches.
+  `JIT_M68K`-only.
 - `src/jit/jit.{c,h}` — `cl_jit_init` (boot), `cl_jit_compile`
   (matchers + walker), `cl_jit_invoke` (arity-dispatched native
   entry). `cl_jit_emit_stub` + `%JIT-DUMP-BYTES` /
@@ -589,14 +606,15 @@ optimization). Pure memory operands.
   the OP_CALL native branch never trips on host.
 - `make -f Makefile.cross amiga`: green, no new warnings.
 - `make -f Makefile.cross test-amiga` (high-end A4000/68040/JIT
-  FS-UAE config): **2321/2321** Amiga tests pass. JIT-specific
-  coverage in `tests/amiga/test-jit.lisp` (~51 checks): matcher byte
-  pipeline + pass-through arg-order verification (existing), plus
-  walker byte-exact emit for `(x) nil` and `(x) 42`, walker behavioral
-  round-trip for `(let ((y x)) y)` across fixnum / symbol / cons, and
-  a negative test that confirms a function whose body uses an
-  unsupported opcode (`OP_CONS`) leaves `native_code` NULL and runs
-  via the interpreter.
+  FS-UAE config): **2346/2346** Amiga tests pass. JIT-specific
+  coverage in `tests/amiga/test-jit.lisp` (~73 checks): matcher byte
+  pipeline + pass-through arg-order verification (existing), walker
+  byte-exact emit for `(x) nil` / `(x) 42`, walker behavioral round-
+  trip for `(let ((y x)) y)`, a negative test for an unsupported
+  opcode (`OP_CONS`) leaving `native_code` NULL — plus new behavioral
+  coverage for `(if x 1 2)`, `(if x x y)`, `(when x v)`, `(unless x v)`,
+  and `(cond (x))` exercising forward `OP_JNIL`/`OP_JMP`, OP_DUP, and
+  the patch-resolution loop.
 - `test-amiga-lowend` (68020 baseline) is still available but not run
   every commit.
 
