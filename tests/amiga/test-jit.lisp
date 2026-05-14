@@ -737,3 +737,85 @@
 ; Further calls still work after the longjmp unwind.
 (check "walker-call-recover-after-error" 42
   (walker-call-id 42))
+
+; --- OP_GLOAD / OP_GSTORE.  Global/special-variable load and store:
+;
+;   GLOAD  <sym>   ; push symbol's dynamic value (TLV first, else cell)
+;   GSTORE <sym>   ; write TOS to symbol's dynamic value (peek, no pop)
+;
+; The walker bakes constants[idx] (a SYMBOL) into the emitted code as a
+; 32-bit literal — same JIT-time soundness argument as OP_FLOAD: the
+; constants[] slot doesn't get re-bound after compilation, only the
+; symbol's value cell, which the helper dereferences on every call.
+;
+; OP_GLOAD template: push sym, JSR cl_jit_runtime_gload, drop arg,
+; push helper's D0 result.  OP_GSTORE template: duplicate TOS as the
+; C-ABI's val arg (pushed first right-to-left), push sym as the first
+; arg, JSR cl_jit_runtime_gstore, drop the 8-byte arg frame.  The TOS
+; survives untouched — matching the VM's "store without pop" semantics.
+;
+; cl_jit_runtime_gstore mirrors the VM's *PACKAGE* sync (calls
+; cl_sync_current_package_from_dynamic when the symbol is *PACKAGE*),
+; so SETQ *PACKAGE* through JIT'd code is indistinguishable from the
+; bytecode path.
+
+(defvar *walker-glo* 100)
+
+; Reader: function body is a bare special reference, which the
+; compiler emits as OP_GLOAD <*walker-glo*>.
+(defun walker-gload () *walker-glo*)
+(check "walker-gload-counter-bump" t
+  (let ((before (clamiga::%jit-invoke-count)))
+    (walker-gload)
+    (> (clamiga::%jit-invoke-count) before)))
+(check "walker-gload-fix" 100 (walker-gload))
+
+; Writer: SETQ on a special emits OP_GSTORE.  Returns the stored value
+; (setq's value is the new value), so the JIT'd return must equal the
+; argument.
+(defun walker-gstore (v) (setq *walker-glo* v))
+(check "walker-gstore-counter-bump" t
+  (let ((before (clamiga::%jit-invoke-count)))
+    (walker-gstore 100)
+    (> (clamiga::%jit-invoke-count) before)))
+(check "walker-gstore-returns-val" 7 (walker-gstore 7))
+
+; Round-trip: store via walker-gstore, read back via walker-gload.
+; Both functions exercise the JIT'd template; if either helper had the
+; wrong argument order or the GSTORE emitter popped the TOS by mistake,
+; the value coming back would be wrong or the stack would underflow.
+(check "walker-glo-roundtrip-fix" 999
+  (progn (walker-gstore 999) (walker-gload)))
+(check "walker-glo-roundtrip-sym" 'tag
+  (progn (walker-gstore 'tag) (walker-gload)))
+(check "walker-glo-roundtrip-cons" '(a b c)
+  (progn (walker-gstore '(a b c)) (walker-gload)))
+(check "walker-glo-roundtrip-nil" nil
+  (progn (walker-gstore nil) (walker-gload)))
+
+; Restore so later tests aren't affected by the leftover state.
+(setq *walker-glo* 100)
+
+; --- Unbound-variable: GLOAD on a special with no value signals
+; UNBOUND-VARIABLE via cl_error → longjmp out of the JIT'd frame.
+; makunbound clears the value cell; the next read must signal, and
+; subsequent JIT'd calls must still work after the unwind.
+(defvar *walker-glo-unbound* :placeholder)
+(makunbound '*walker-glo-unbound*)
+(defun walker-gload-unbound () *walker-glo-unbound*)
+(check "walker-gload-unbound-signals" :caught
+  (handler-case (progn (walker-gload-unbound) :no-error)
+    (unbound-variable () :caught)
+    (error            () :caught)))
+; Further calls still work after the longjmp unwind.
+(check "walker-gload-recover-after-error" 100
+  (walker-gload))
+
+; --- Dynamic binding (LET on a special) participates correctly: the
+; JIT'd GLOAD goes through cl_symbol_value which checks TLV first, so
+; rebinding *walker-glo* in an outer LET must be visible inside the
+; JIT'd reader.
+(check "walker-gload-tlv-rebind" 55
+  (let ((*walker-glo* 55)) (walker-gload)))
+; And after the LET unwinds, the outer global value is restored.
+(check "walker-gload-tlv-restore" 100 (walker-gload))

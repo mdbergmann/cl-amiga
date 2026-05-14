@@ -22,6 +22,15 @@
  *     pass-through to cl_car / cl_cdr, which already handle NIL→NIL,
  *     LIST type-error, and the unbound-variable diagnostic.
  *     Non-allocating, so always GC-safe.
+ *   - cl_jit_runtime_gload — backing for OP_GLOAD.  Takes a SYMBOL,
+ *     returns its dynamic value via cl_symbol_value (per-thread TLV
+ *     binding then global cell).  Signals UNBOUND-VARIABLE with the
+ *     VM's diagnostic on miss.  Non-allocating, so always GC-safe.
+ *   - cl_jit_runtime_gstore — backing for OP_GSTORE.  Stores into the
+ *     symbol's dynamic value via cl_set_symbol_value and syncs
+ *     cl_package_current when the symbol is *PACKAGE*.  Returns the
+ *     stored value so the emitter can leave it as TOS without a
+ *     separate peek.  Non-allocating, so always GC-safe.
  *   - cl_jit_runtime_fload — backing for OP_FLOAD.  Takes a SYMBOL
  *     (the JIT bakes constants[idx] into the call site as a literal
  *     CL_Obj), returns its function value or signals undefined-
@@ -72,6 +81,9 @@ CL_Obj cl_jit_runtime_mul  (CL_Obj a, CL_Obj b);
 
 CL_Obj cl_jit_runtime_car  (CL_Obj obj);
 CL_Obj cl_jit_runtime_cdr  (CL_Obj obj);
+
+CL_Obj cl_jit_runtime_gload (CL_Obj sym);
+CL_Obj cl_jit_runtime_gstore(CL_Obj sym, CL_Obj val);
 
 CL_Obj cl_jit_runtime_fload(CL_Obj sym);
 CL_Obj cl_jit_runtime_call (CL_Obj *operand_top, uint32_t nargs);

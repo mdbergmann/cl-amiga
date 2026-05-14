@@ -18,8 +18,8 @@
  *     Currently supported opcodes: OP_NIL, OP_T, OP_CONST, OP_LOAD,
  *     OP_STORE, OP_POP, OP_DUP, OP_JMP, OP_JNIL, OP_JTRUE, OP_ADD,
  *     OP_SUB, OP_MUL, OP_EQ, OP_LT, OP_GT, OP_LE, OP_GE, OP_NUMEQ,
- *     OP_NOT, OP_CAR, OP_CDR, OP_FLOAD, OP_CALL, OP_STRUCT_REF,
- *     OP_STRUCT_SET, OP_RET.  Adding an opcode means adding one
+ *     OP_NOT, OP_CAR, OP_CDR, OP_GLOAD, OP_GSTORE, OP_FLOAD, OP_CALL,
+ *     OP_STRUCT_REF, OP_STRUCT_SET, OP_RET.  Adding an opcode means adding one
  *     emitter case and one or two new asm encoders — the walker
  *     handles the composition.
  *
@@ -542,6 +542,61 @@ static int walker_compile(const CL_Bytecode *bc, CodeBuf *cb)
             m68k_emit_jsr_abs_l(cb, helper);
             m68k_emit_addq_l_an(cb, 8, REG_A7);                      /* drop args */
             m68k_emit_move_l_dn_predec_an(cb, REG_D0, REG_A7);       /* push result */
+            break;
+        }
+
+        case OP_GLOAD: {
+            /* u16: bake constants[idx] (a SYMBOL) into the emitted
+             * code as a 32-bit literal, JSR cl_jit_runtime_gload,
+             * push its result.  Same JIT-time soundness argument as
+             * OP_FLOAD: constants[] entries aren't re-bound after
+             * compilation, only the symbol's value cell is — and the
+             * helper resolves that on every call (thread-local
+             * binding first, then global cell).  Bails on non-symbol
+             * entries so the walker never emits a corrupt helper
+             * invocation. */
+            uint16_t idx;
+            CL_Obj sym;
+            uint32_t helper = (uint32_t)(uintptr_t)&cl_jit_runtime_gload;
+            if (ip + 1 >= bc->code_len) goto fail;
+            idx = ((uint16_t)bc->code[ip] << 8) | bc->code[ip + 1];
+            ip += 2;
+            if (idx >= bc->n_constants || bc->constants == NULL) goto fail;
+            sym = bc->constants[idx];
+            if (!CL_SYMBOL_P(sym)) goto fail;
+
+            m68k_emit_move_l_imm32_predec(cb, (uint32_t)sym, REG_A7);
+            m68k_emit_jsr_abs_l(cb, helper);
+            m68k_emit_addq_l_an(cb, 4, REG_A7);
+            m68k_emit_move_l_dn_predec_an(cb, REG_D0, REG_A7);
+            break;
+        }
+
+        case OP_GSTORE: {
+            /* u16: bake constants[idx] (a SYMBOL) into the emitted
+             * code as a 32-bit literal, peek TOS as `val`, JSR
+             * cl_jit_runtime_gstore(sym, val), leave the original TOS
+             * untouched.  Mirrors the VM's OP_GSTORE which writes
+             * without popping — subsequent OP_POP (if any) does the
+             * pop separately.  Duplicating TOS via `move.l (a7),-(a7)`
+             * pushes val as the C-ABI's second arg (pushed first
+             * right-to-left), then we push the baked symbol as the
+             * first arg, JSR, and drop the 8-byte arg frame; the
+             * peek leaves the original val intact at the new TOS. */
+            uint16_t idx;
+            CL_Obj sym;
+            uint32_t helper = (uint32_t)(uintptr_t)&cl_jit_runtime_gstore;
+            if (ip + 1 >= bc->code_len) goto fail;
+            idx = ((uint16_t)bc->code[ip] << 8) | bc->code[ip + 1];
+            ip += 2;
+            if (idx >= bc->n_constants || bc->constants == NULL) goto fail;
+            sym = bc->constants[idx];
+            if (!CL_SYMBOL_P(sym)) goto fail;
+
+            m68k_emit_move_l_an_to_predec_am(cb, REG_A7, REG_A7);     /* dup val */
+            m68k_emit_move_l_imm32_predec(cb, (uint32_t)sym, REG_A7); /* push sym */
+            m68k_emit_jsr_abs_l(cb, helper);
+            m68k_emit_addq_l_an(cb, 8, REG_A7);                       /* drop 2 args */
             break;
         }
 
