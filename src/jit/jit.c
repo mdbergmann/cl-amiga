@@ -16,9 +16,10 @@
  *     runs through the bytecode interpreter exactly as before.
  *
  *     Currently supported opcodes: OP_NIL, OP_T, OP_CONST, OP_LOAD,
- *     OP_STORE, OP_POP, OP_RET.  Adding an opcode means adding one
- *     emitter case and one or two new asm encoders — the walker
- *     handles the composition.
+ *     OP_STORE, OP_POP, OP_DUP, OP_JMP, OP_JNIL, OP_JTRUE, OP_ADD,
+ *     OP_SUB, OP_EQ, OP_LT, OP_GT, OP_LE, OP_GE, OP_NUMEQ, OP_NOT,
+ *     OP_RET.  Adding an opcode means adding one emitter case and one
+ *     or two new asm encoders — the walker handles the composition.
  *
  * See specs/native-backend.md §"Per-opcode emitter shape".
  */
@@ -254,6 +255,126 @@ static int32_t read_i32_be(const uint8_t *p)
  * function.  Doubling on overflow keeps amortised cost O(1). */
 #define WALKER_PATCH_INITIAL_CAP 8
 
+/* Emit a 2-operand arithmetic template (OP_ADD / OP_SUB) — pops b/a
+ * into D1/D0, runs the inline fixnum fast path, falls through to a JSR
+ * helper for non-fixnums or fixnum overflow.  `is_sub == 0` produces
+ * an ADD; `is_sub == 1` produces a SUB.
+ *
+ * Tag accounting: both operands carry bit-0 tag = 1.  For ADD the raw
+ * tagged sum carries bit-0 = 0 with one surplus tag, so SUBQ #1
+ * restores `... | 1`.  For SUB the raw tagged difference cancels both
+ * tags, so ADDQ #1 sets bit-0 back.
+ *
+ * Overflow recovery (BVS taken): D0 holds the 32-bit-wrapped result.
+ * For ADD, original a = wrapped - b, so SUB d1,d0; for SUB, original
+ * a = wrapped + b, so ADD d1,d0.  Either way D0 ends up with a, D1
+ * still holds b, and we fall into the common slow-path JSR.
+ *
+ * Caller-saved discipline: D0/D1/A0/A1 only — see OP_ADD's comment. */
+static void emit_arith(CodeBuf *cb, int is_sub, uint32_t helper)
+{
+    int32_t beq_a_pc, beq_b_pc, bvs_pc, bra_pc;
+    int32_t slow_off, done_off;
+
+    m68k_emit_move_l_postinc_an_to_dn(cb, REG_A7, REG_D1);
+    m68k_emit_move_l_postinc_an_to_dn(cb, REG_A7, REG_D0);
+
+    m68k_emit_btst_imm_dn(cb, 0, REG_D0);
+    beq_a_pc = (int32_t)cb_len(cb) + 2;
+    m68k_emit_beq_w(cb, 0);
+    m68k_emit_btst_imm_dn(cb, 0, REG_D1);
+    beq_b_pc = (int32_t)cb_len(cb) + 2;
+    m68k_emit_beq_w(cb, 0);
+
+    if (is_sub) m68k_emit_sub_l_dn_to_dm(cb, REG_D1, REG_D0);
+    else        m68k_emit_add_l_dn_to_dm(cb, REG_D1, REG_D0);
+    bvs_pc = (int32_t)cb_len(cb) + 2;
+    m68k_emit_bvs_w(cb, 0);
+
+    if (is_sub) m68k_emit_addq_l_dn(cb, 1, REG_D0);  /* tag was cancelled */
+    else        m68k_emit_subq_l_dn(cb, 1, REG_D0);  /* strip surplus tag */
+    m68k_emit_move_l_dn_predec_an(cb, REG_D0, REG_A7);
+    bra_pc = (int32_t)cb_len(cb) + 2;
+    m68k_emit_bra_w(cb, 0);
+
+    /* Overflow-recovery shim: reconstruct original a in D0. */
+    {
+        int32_t overflow_off = (int32_t)cb_len(cb);
+        if (is_sub) m68k_emit_add_l_dn_to_dm(cb, REG_D1, REG_D0);
+        else        m68k_emit_sub_l_dn_to_dm(cb, REG_D1, REG_D0);
+        m68k_patch_disp16(cb_data(cb), cb_len(cb),
+                          (uint32_t)bvs_pc,
+                          (int16_t)(overflow_off - bvs_pc));
+    }
+
+    slow_off = (int32_t)cb_len(cb);
+    m68k_emit_move_l_dn_predec_an(cb, REG_D1, REG_A7);
+    m68k_emit_move_l_dn_predec_an(cb, REG_D0, REG_A7);
+    m68k_emit_jsr_abs_l(cb, helper);
+    m68k_emit_addq_l_an(cb, 8, REG_A7);
+    m68k_emit_move_l_dn_predec_an(cb, REG_D0, REG_A7);
+    done_off = (int32_t)cb_len(cb);
+
+    m68k_patch_disp16(cb_data(cb), cb_len(cb), (uint32_t)beq_a_pc,
+                      (int16_t)(slow_off - beq_a_pc));
+    m68k_patch_disp16(cb_data(cb), cb_len(cb), (uint32_t)beq_b_pc,
+                      (int16_t)(slow_off - beq_b_pc));
+    m68k_patch_disp16(cb_data(cb), cb_len(cb), (uint32_t)bra_pc,
+                      (int16_t)(done_off - bra_pc));
+}
+
+/* Emit a 2-operand comparison template (OP_LT / OP_GT / OP_LE /
+ * OP_GE / OP_NUMEQ) — pops b/a, fixnum fast path, slow-path JSR for
+ * non-fixnums.  Always pushes CL_T or CL_NIL.  `cond_code` is the
+ * m68k Bcc condition that branches to push_t (e.g. 13=BLT, 14=BGT,
+ * 12=BGE, 15=BLE, 7=BEQ).  `helper` returns CL_T/CL_NIL directly. */
+static void emit_compare(CodeBuf *cb, uint8_t cond_code, uint32_t helper)
+{
+    int32_t beq_a_pc, beq_b_pc, taken_pc, bra1_pc, bra2_pc;
+    int32_t slow_off, done_off, push_t_off;
+
+    m68k_emit_move_l_postinc_an_to_dn(cb, REG_A7, REG_D1);
+    m68k_emit_move_l_postinc_an_to_dn(cb, REG_A7, REG_D0);
+
+    m68k_emit_btst_imm_dn(cb, 0, REG_D0);
+    beq_a_pc = (int32_t)cb_len(cb) + 2;
+    m68k_emit_beq_w(cb, 0);
+    m68k_emit_btst_imm_dn(cb, 0, REG_D1);
+    beq_b_pc = (int32_t)cb_len(cb) + 2;
+    m68k_emit_beq_w(cb, 0);
+
+    m68k_emit_cmp_l_dn_dm(cb, REG_D1, REG_D0);  /* flags = a - b */
+    taken_pc = (int32_t)cb_len(cb) + 2;
+    m68k_emit_bcc_w(cb, cond_code, 0);
+    m68k_emit_clr_l_predec(cb, REG_A7);          /* push NIL */
+    bra1_pc = (int32_t)cb_len(cb) + 2;
+    m68k_emit_bra_w(cb, 0);
+
+    push_t_off = (int32_t)cb_len(cb);
+    m68k_emit_move_l_imm32_predec(cb, (uint32_t)CL_T, REG_A7);
+    bra2_pc = (int32_t)cb_len(cb) + 2;
+    m68k_emit_bra_w(cb, 0);
+
+    slow_off = (int32_t)cb_len(cb);
+    m68k_emit_move_l_dn_predec_an(cb, REG_D1, REG_A7);
+    m68k_emit_move_l_dn_predec_an(cb, REG_D0, REG_A7);
+    m68k_emit_jsr_abs_l(cb, helper);
+    m68k_emit_addq_l_an(cb, 8, REG_A7);
+    m68k_emit_move_l_dn_predec_an(cb, REG_D0, REG_A7);
+    done_off = (int32_t)cb_len(cb);
+
+    m68k_patch_disp16(cb_data(cb), cb_len(cb), (uint32_t)beq_a_pc,
+                      (int16_t)(slow_off  - beq_a_pc));
+    m68k_patch_disp16(cb_data(cb), cb_len(cb), (uint32_t)beq_b_pc,
+                      (int16_t)(slow_off  - beq_b_pc));
+    m68k_patch_disp16(cb_data(cb), cb_len(cb), (uint32_t)taken_pc,
+                      (int16_t)(push_t_off - taken_pc));
+    m68k_patch_disp16(cb_data(cb), cb_len(cb), (uint32_t)bra1_pc,
+                      (int16_t)(done_off  - bra1_pc));
+    m68k_patch_disp16(cb_data(cb), cb_len(cb), (uint32_t)bra2_pc,
+                      (int16_t)(done_off  - bra2_pc));
+}
+
 static int patches_push(BranchPatch **patches, uint32_t *n, uint32_t *cap,
                         uint32_t patch_off, uint32_t target_bc_off)
 {
@@ -387,141 +508,90 @@ static int walker_compile(const CL_Bytecode *bc, CodeBuf *cb)
             m68k_emit_move_l_an_to_predec_am(cb, REG_A7, REG_A7);
             break;
 
-        case OP_ADD: {
-            /* Inline fixnum fast path with slow-path JSR.  Mirrors the
-             * VM's OP_ADD: pop b, a; if both fixnums and the sum stays
-             * in fixnum range emit
-             *
-             *   d0 = (a + b) - 1     (one tag bit stripped)
-             *
-             * which preserves the bit-0 fixnum tag.  Otherwise call
-             * cl_jit_runtime_add(a, b) which validates types and falls
-             * through to cl_arith_add (bignum / float / ratio).
-             *
-             * Register discipline: only D0, D1, A0, A1 (caller-saved
-             * under the m68k C ABI) are touched — D2..D7 / A2..A6 are
-             * preserved by the C compiler around the call into native
-             * code, so clobbering them silently breaks the gcc-emitted
-             * cl_jit_invoke wrapper around us.  Pair of BTSTs (one per
-             * operand) replaces an AND-into-scratch tag check that
-             * would have needed D2. */
-            int32_t beq_a_pc, beq_b_pc, bvs_pc, bra_pc;
-            int32_t slow_off, done_off;
-            uint32_t add_helper = (uint32_t)(uintptr_t)&cl_jit_runtime_add;
-
-            /* Pop b into d1, a into d0. */
-            m68k_emit_move_l_postinc_an_to_dn(cb, REG_A7, REG_D1);
-            m68k_emit_move_l_postinc_an_to_dn(cb, REG_A7, REG_D0);
-
-            /* Tag check: BTST each operand's bit 0 independently. */
-            m68k_emit_btst_imm_dn(cb, 0, REG_D0);
-            beq_a_pc = (int32_t)cb_len(cb) + 2;
-            m68k_emit_beq_w(cb, 0);
-            m68k_emit_btst_imm_dn(cb, 0, REG_D1);
-            beq_b_pc = (int32_t)cb_len(cb) + 2;
-            m68k_emit_beq_w(cb, 0);
-
-            /* Fast path. */
-            m68k_emit_add_l_dn_to_dm(cb, REG_D1, REG_D0); /* d0 = a + b */
-            bvs_pc = (int32_t)cb_len(cb) + 2;
-            m68k_emit_bvs_w(cb, 0);                       /* overflow → recover+slow */
-            m68k_emit_subq_l_dn(cb, 1, REG_D0);           /* strip surplus tag */
-            m68k_emit_move_l_dn_predec_an(cb, REG_D0, REG_A7);
-            bra_pc = (int32_t)cb_len(cb) + 2;
-            m68k_emit_bra_w(cb, 0);
-
-            /* Overflow-recovery shim.  After the ADD overflows, d0
-             * holds the 32-bit-wrapped sum, not the original a; the
-             * BTST bails however land in slow_off with d0=a intact.
-             * Subtracting d1 (=b) from d0 modulo 2^32 reconstructs a,
-             * then we fall through into the common slow path. */
-            {
-                int32_t overflow_off = (int32_t)cb_len(cb);
-                m68k_emit_sub_l_dn_to_dm(cb, REG_D1, REG_D0);
-                m68k_patch_disp16(cb_data(cb), cb_len(cb),
-                                  (uint32_t)bvs_pc,
-                                  (int16_t)(overflow_off - bvs_pc));
-            }
-
-            /* Slow path: re-push args in C-ABI order (a first → at
-             * 4(a7) after JSR; b second → at 8(a7)) and call helper. */
-            slow_off = (int32_t)cb_len(cb);
-            m68k_emit_move_l_dn_predec_an(cb, REG_D1, REG_A7);
-            m68k_emit_move_l_dn_predec_an(cb, REG_D0, REG_A7);
-            m68k_emit_jsr_abs_l(cb, add_helper);
-            m68k_emit_addq_l_an(cb, 8, REG_A7);
-            m68k_emit_move_l_dn_predec_an(cb, REG_D0, REG_A7);
-            done_off = (int32_t)cb_len(cb);
-
-            m68k_patch_disp16(cb_data(cb), cb_len(cb),
-                              (uint32_t)beq_a_pc, (int16_t)(slow_off - beq_a_pc));
-            m68k_patch_disp16(cb_data(cb), cb_len(cb),
-                              (uint32_t)beq_b_pc, (int16_t)(slow_off - beq_b_pc));
-            m68k_patch_disp16(cb_data(cb), cb_len(cb),
-                              (uint32_t)bra_pc,   (int16_t)(done_off - bra_pc));
+        case OP_ADD:
+            emit_arith(cb, /*is_sub=*/0,
+                       (uint32_t)(uintptr_t)&cl_jit_runtime_add);
             break;
-        }
 
-        case OP_LT: {
-            /* Inline fixnum compare with slow-path JSR.  Pop b, a;
-             * if both fixnums emit
-             *
-             *   cmp.l   d1, d0       ; flags = d0 - d1 = a - b
-             *   blt.w   push_t
-             *   clr.l   -(a7)        ; push CL_NIL
-             *   bra.w   done
-             *  push_t:
-             *   move.l  #CL_T, -(a7)
-             *   bra.w   done
-             *
-             * Otherwise call cl_jit_runtime_lt(a, b) which returns
-             * CL_T or CL_NIL directly.  Same caller-saved register
-             * discipline as OP_ADD (D0/D1 only). */
-            uint32_t lt_helper = (uint32_t)(uintptr_t)&cl_jit_runtime_lt;
-            int32_t beq_a_pc, beq_b_pc, blt_pc, bra1_pc, bra2_pc;
-            int32_t slow_off, done_off, push_t_off;
+        case OP_SUB:
+            emit_arith(cb, /*is_sub=*/1,
+                       (uint32_t)(uintptr_t)&cl_jit_runtime_sub);
+            break;
+
+        case OP_LT:
+            emit_compare(cb, /*BLT*/13,
+                         (uint32_t)(uintptr_t)&cl_jit_runtime_lt);
+            break;
+
+        case OP_GT:
+            emit_compare(cb, /*BGT*/14,
+                         (uint32_t)(uintptr_t)&cl_jit_runtime_gt);
+            break;
+
+        case OP_LE:
+            emit_compare(cb, /*BLE*/15,
+                         (uint32_t)(uintptr_t)&cl_jit_runtime_le);
+            break;
+
+        case OP_GE:
+            emit_compare(cb, /*BGE*/12,
+                         (uint32_t)(uintptr_t)&cl_jit_runtime_ge);
+            break;
+
+        case OP_NUMEQ:
+            emit_compare(cb, /*BEQ*/7,
+                         (uint32_t)(uintptr_t)&cl_jit_runtime_numeq);
+            break;
+
+        case OP_EQ: {
+            /* Pop b, a; push CL_T iff a == b (pointer compare), else
+             * CL_NIL.  No slow path — CL_EQ is pure object identity.
+             * Mirrors VM's OP_EQ semantics. */
+            int32_t beq_pc, bra_pc;
+            int32_t push_t_off, done_off;
 
             m68k_emit_move_l_postinc_an_to_dn(cb, REG_A7, REG_D1);
             m68k_emit_move_l_postinc_an_to_dn(cb, REG_A7, REG_D0);
-
-            m68k_emit_btst_imm_dn(cb, 0, REG_D0);
-            beq_a_pc = (int32_t)cb_len(cb) + 2;
-            m68k_emit_beq_w(cb, 0);
-            m68k_emit_btst_imm_dn(cb, 0, REG_D1);
-            beq_b_pc = (int32_t)cb_len(cb) + 2;
-            m68k_emit_beq_w(cb, 0);
-
-            /* Fast path: flags from d0 - d1 = a - b. */
             m68k_emit_cmp_l_dn_dm(cb, REG_D1, REG_D0);
-            blt_pc = (int32_t)cb_len(cb) + 2;
-            m68k_emit_blt_w(cb, 0);
-            m68k_emit_clr_l_predec(cb, REG_A7);                 /* push NIL */
-            bra1_pc = (int32_t)cb_len(cb) + 2;
+            beq_pc = (int32_t)cb_len(cb) + 2;
+            m68k_emit_beq_w(cb, 0);
+            m68k_emit_clr_l_predec(cb, REG_A7);          /* push NIL */
+            bra_pc = (int32_t)cb_len(cb) + 2;
             m68k_emit_bra_w(cb, 0);
 
             push_t_off = (int32_t)cb_len(cb);
             m68k_emit_move_l_imm32_predec(cb, (uint32_t)CL_T, REG_A7);
-            bra2_pc = (int32_t)cb_len(cb) + 2;
-            m68k_emit_bra_w(cb, 0);
-
-            slow_off = (int32_t)cb_len(cb);
-            m68k_emit_move_l_dn_predec_an(cb, REG_D1, REG_A7);
-            m68k_emit_move_l_dn_predec_an(cb, REG_D0, REG_A7);
-            m68k_emit_jsr_abs_l(cb, lt_helper);
-            m68k_emit_addq_l_an(cb, 8, REG_A7);
-            m68k_emit_move_l_dn_predec_an(cb, REG_D0, REG_A7);
             done_off = (int32_t)cb_len(cb);
 
-            m68k_patch_disp16(cb_data(cb), cb_len(cb),
-                              (uint32_t)beq_a_pc, (int16_t)(slow_off  - beq_a_pc));
-            m68k_patch_disp16(cb_data(cb), cb_len(cb),
-                              (uint32_t)beq_b_pc, (int16_t)(slow_off  - beq_b_pc));
-            m68k_patch_disp16(cb_data(cb), cb_len(cb),
-                              (uint32_t)blt_pc,   (int16_t)(push_t_off - blt_pc));
-            m68k_patch_disp16(cb_data(cb), cb_len(cb),
-                              (uint32_t)bra1_pc,  (int16_t)(done_off  - bra1_pc));
-            m68k_patch_disp16(cb_data(cb), cb_len(cb),
-                              (uint32_t)bra2_pc,  (int16_t)(done_off  - bra2_pc));
+            m68k_patch_disp16(cb_data(cb), cb_len(cb), (uint32_t)beq_pc,
+                              (int16_t)(push_t_off - beq_pc));
+            m68k_patch_disp16(cb_data(cb), cb_len(cb), (uint32_t)bra_pc,
+                              (int16_t)(done_off - bra_pc));
+            break;
+        }
+
+        case OP_NOT: {
+            /* Pop value; push CL_T iff CL_NULL_P (value == 0), else
+             * CL_NIL.  MOVE.L (a7)+,d0 sets Z based on the popped
+             * value — no separate TST needed.  No slow path. */
+            int32_t beq_pc, bra_pc;
+            int32_t push_t_off, done_off;
+
+            m68k_emit_move_l_postinc_an_to_dn(cb, REG_A7, REG_D0);
+            beq_pc = (int32_t)cb_len(cb) + 2;
+            m68k_emit_beq_w(cb, 0);
+            m68k_emit_clr_l_predec(cb, REG_A7);          /* push NIL */
+            bra_pc = (int32_t)cb_len(cb) + 2;
+            m68k_emit_bra_w(cb, 0);
+
+            push_t_off = (int32_t)cb_len(cb);
+            m68k_emit_move_l_imm32_predec(cb, (uint32_t)CL_T, REG_A7);
+            done_off = (int32_t)cb_len(cb);
+
+            m68k_patch_disp16(cb_data(cb), cb_len(cb), (uint32_t)beq_pc,
+                              (int16_t)(push_t_off - beq_pc));
+            m68k_patch_disp16(cb_data(cb), cb_len(cb), (uint32_t)bra_pc,
+                              (int16_t)(done_off - bra_pc));
             break;
         }
 
