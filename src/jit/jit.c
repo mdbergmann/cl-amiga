@@ -377,6 +377,164 @@ void cl_jit_compile(CL_Bytecode *bc)
     platform_cache_clear(code, len);
 }
 
+/* --- Disassembler -----------------------------------------------------
+ *
+ * Decodes the m68k instructions the JIT can emit and prints one line of
+ * assembly per instruction to platform_write_string.  Not a general
+ * m68k disassembler — only the ~13 instruction forms the matchers and
+ * walker use.  Anything else falls through to ".word $xxxx" so the user
+ * still sees the raw word.
+ *
+ * Exposed to Lisp as `clamiga::%JIT-DISASSEMBLE`; the `jitexpand` macro
+ * in lib/boot.lisp wraps the common case.
+ */
+
+/* Decode one effective-address mode/reg pair, advancing *pos past any
+ * extension words.  size_l selects between 32-bit (immediate .L) and
+ * 16-bit immediates — only matters for mode=7/reg=4.  Returns 0 on
+ * success, -1 if the EA is one the JIT never emits (so we don't have to
+ * cover the full m68k EA space here). */
+static int disasm_ea(int mode, int reg, const uint8_t *code, uint32_t len,
+                     uint32_t *pos, int size_l, char *buf, int bufsize)
+{
+    switch (mode) {
+    case 0: snprintf(buf, (size_t)bufsize, "d%d", reg); return 0;
+    case 1: snprintf(buf, (size_t)bufsize, "a%d", reg); return 0;
+    case 2: snprintf(buf, (size_t)bufsize, "(a%d)", reg); return 0;
+    case 3: snprintf(buf, (size_t)bufsize, "(a%d)+", reg); return 0;
+    case 4: snprintf(buf, (size_t)bufsize, "-(a%d)", reg); return 0;
+    case 5: {
+        int16_t d;
+        if (*pos + 2 > len) return -1;
+        d = (int16_t)(((uint16_t)code[*pos] << 8) | code[*pos + 1]);
+        *pos += 2;
+        snprintf(buf, (size_t)bufsize, "%d(a%d)", (int)d, reg);
+        return 0;
+    }
+    case 7:
+        if (reg == 4) {
+            uint32_t v;
+            if (size_l) {
+                if (*pos + 4 > len) return -1;
+                v = ((uint32_t)code[*pos]     << 24)
+                  | ((uint32_t)code[*pos + 1] << 16)
+                  | ((uint32_t)code[*pos + 2] << 8)
+                  |  (uint32_t)code[*pos + 3];
+                *pos += 4;
+            } else {
+                if (*pos + 2 > len) return -1;
+                v = ((uint32_t)code[*pos] << 8) | code[*pos + 1];
+                *pos += 2;
+            }
+            snprintf(buf, (size_t)bufsize, "#$%08lx", (unsigned long)v);
+            return 0;
+        }
+        return -1;
+    default:
+        return -1;
+    }
+}
+
+/* Decode one instruction at code+offset.  Returns its length in bytes
+ * (>=2), or 0 if the buffer ran out before the operand words could be
+ * read.  On unknown opcodes returns 2 with mnemonic ".word $xxxx" so
+ * the caller still advances. */
+static uint32_t disasm_one(const uint8_t *code, uint32_t len,
+                           uint32_t offset, char *mnemonic, int msize)
+{
+    uint16_t op;
+    uint32_t pos;
+    int matched = 0;
+
+    if (offset + 2 > len) return 0;
+    op = (uint16_t)(((uint16_t)code[offset] << 8) | code[offset + 1]);
+    pos = offset + 2;
+
+    if (op == 0x4E71) {
+        snprintf(mnemonic, (size_t)msize, "nop"); matched = 1;
+    } else if (op == 0x4E75) {
+        snprintf(mnemonic, (size_t)msize, "rts"); matched = 1;
+    } else if ((op & 0xFFF8) == 0x4E50) {           /* LINK An,#d16 */
+        int an = op & 7;
+        int16_t d;
+        if (pos + 2 > len) return 0;
+        d = (int16_t)(((uint16_t)code[pos] << 8) | code[pos + 1]);
+        pos += 2;
+        snprintf(mnemonic, (size_t)msize, "link a%d,#%d", an, (int)d);
+        matched = 1;
+    } else if ((op & 0xFFF8) == 0x4E58) {           /* UNLK An */
+        int an = op & 7;
+        snprintf(mnemonic, (size_t)msize, "unlk a%d", an);
+        matched = 1;
+    } else if ((op & 0xFFF8) == 0x42A0) {           /* CLR.L -(An) */
+        int an = op & 7;
+        snprintf(mnemonic, (size_t)msize, "clr.l -(a%d)", an);
+        matched = 1;
+    } else if ((op & 0xF100) == 0x7000) {           /* MOVEQ #imm,Dn */
+        int dn = (op >> 9) & 7;
+        int8_t imm = (int8_t)(op & 0xFF);
+        snprintf(mnemonic, (size_t)msize, "moveq #%d,d%d", (int)imm, dn);
+        matched = 1;
+    } else if ((op & 0xF1F8) == 0x5088) {           /* ADDQ.L #data,An */
+        int data = (op >> 9) & 7;
+        int an = op & 7;
+        if (data == 0) data = 8;
+        snprintf(mnemonic, (size_t)msize, "addq.l #%d,a%d", data, an);
+        matched = 1;
+    } else if ((op & 0xF000) == 0x2000) {           /* MOVE.L src,dst */
+        int dst_reg = (op >> 9) & 7;
+        int dst_mode = (op >> 6) & 7;
+        int src_mode = (op >> 3) & 7;
+        int src_reg = op & 7;
+        char src[40], dst[40];
+        if (disasm_ea(src_mode, src_reg, code, len, &pos, 1,
+                      src, sizeof src) < 0 ||
+            disasm_ea(dst_mode, dst_reg, code, len, &pos, 1,
+                      dst, sizeof dst) < 0) {
+            snprintf(mnemonic, (size_t)msize, ".word $%04x", op);
+            pos = offset + 2;  /* roll back; we'll only consume the opcode */
+        } else {
+            snprintf(mnemonic, (size_t)msize, "move.l %s,%s", src, dst);
+        }
+        matched = 1;
+    }
+
+    if (!matched) {
+        snprintf(mnemonic, (size_t)msize, ".word $%04x", op);
+    }
+    return pos - offset;
+}
+
+void cl_jit_disassemble(const uint8_t *code, uint32_t len)
+{
+    uint32_t off = 0;
+    char mnem[80];
+    char line[160];
+    while (off < len) {
+        uint32_t n = disasm_one(code, len, off, mnem, sizeof mnem);
+        char hex[40];
+        char *hp = hex;
+        uint32_t i;
+        if (n == 0) {
+            snprintf(line, sizeof line, "  %04lu: <decode short> end\n",
+                     (unsigned long)off);
+            platform_write_string(line);
+            return;
+        }
+        for (i = 0; i < n && (hp - hex) + 4 < (int)sizeof hex; i++) {
+            int written = snprintf(hp, sizeof hex - (size_t)(hp - hex),
+                                   "%s%02X", i == 0 ? "" : " ",
+                                   code[off + i]);
+            if (written < 0) break;
+            hp += written;
+        }
+        snprintf(line, sizeof line, "  %04lu: %-18s %s\n",
+                 (unsigned long)off, hex, mnem);
+        platform_write_string(line);
+        off += n;
+    }
+}
+
 /* Enter native code.  Dispatches by `nargs` to the matching C function
  * pointer cast — the JIT only compiles shapes whose arity is fixed and
  * matches one of the cases here (matchers reject optional/&key/&rest),

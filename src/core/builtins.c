@@ -834,6 +834,26 @@ static CL_Obj bi_jit_invoke_count(CL_Obj *args, int n)
     return CL_MAKE_FIXNUM((int32_t)cl_jit_invoke_count_get());
 }
 
+/* (%JIT-DISASSEMBLE fn) — prints one line of m68k assembly per
+ * instruction in fn's native_code, to *standard-output*.  Returns NIL.
+ * Prints a friendly placeholder when the function has no native code
+ * (either because the JIT didn't compile it or because we're on host
+ * where JIT_M68K is undefined). */
+static CL_Obj bi_jit_disassemble(CL_Obj *args, int n)
+{
+    CL_Bytecode *bc;
+    CL_UNUSED(n);
+    bc = jit_bytecode_of(args[0], "%JIT-DISASSEMBLE");
+    if (bc == NULL) return CL_NIL;
+    if (bc->native_code == NULL || bc->native_len == 0) {
+        platform_write_string(
+            "  (no native code — function runs through the bytecode interpreter)\n");
+        return CL_NIL;
+    }
+    cl_jit_disassemble(bc->native_code, bc->native_len);
+    return CL_NIL;
+}
+
 /* --- Property lists --- */
 
 static CL_Obj bi_symbol_plist(CL_Obj *args, int n)
@@ -1127,6 +1147,7 @@ void cl_builtins_init(void)
     cl_register_builtin("%JIT-DUMP-BYTES",    bi_jit_dump_bytes,    1, 1, cl_package_clamiga);
     cl_register_builtin("%JIT-COMPILE-STUB",  bi_jit_compile_stub,  1, 1, cl_package_clamiga);
     cl_register_builtin("%JIT-INVOKE-COUNT",  bi_jit_invoke_count,  0, 0, cl_package_clamiga);
+    cl_register_builtin("%JIT-DISASSEMBLE",   bi_jit_disassemble,   1, 1, cl_package_clamiga);
 
     /* Reserved standard CL symbols — required to be present and external in
      * COMMON-LISP per ANSI 11.1.2.1.  Many do not have full implementations
