@@ -4,6 +4,12 @@
 ;;; Must be a separate file because the reader needs AMIGA.INTUITION,
 ;;; AMIGA.GFX, and AMIGA.GADTOOLS packages to exist before it can
 ;;; read the qualified symbols.
+;;;
+;;; NOTE: depends on the CHECK macro defined in run-tests.lisp.  The
+;;; FASL system only invalidates this file's cache when *this* file's
+;;; mtime changes, not when CHECK's definition changes — so if CHECK's
+;;; expansion changes, touch this file too or you'll get "Undefined
+;;; function: CHECK" at FASL load.
 
 ; --- Intuition tests ---
 (require "amiga/intuition")

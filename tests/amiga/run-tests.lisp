@@ -4,7 +4,26 @@
 ; --- Test infrastructure ---
 (setq *pass-count* 0)
 (setq *fail-count* 0)
-(defun check (name expected actual) (if (equal expected actual) (progn (setq *pass-count* (+ *pass-count* 1)) (format t "PASS: ~A~%" name)) (progn (setq *fail-count* (+ *fail-count* 1)) (format t "FAIL: ~A - expected ~S got ~S~%" name expected actual))))
+; CHECK is a macro so we can catch errors signaled while evaluating
+; the ACTUAL expression — a function would never see those because the
+; error short-circuits the argument evaluation before the call.  An
+; uncaught error is reported as FAIL with the condition text.
+(defmacro check (name expected actual)
+  (let ((e (gensym "EXPECTED"))
+        (a (gensym "ACTUAL"))
+        (c (gensym "COND")))
+    `(handler-case
+         (let ((,e ,expected)
+               (,a ,actual))
+           (if (equal ,e ,a)
+               (progn (setq *pass-count* (+ *pass-count* 1))
+                      (format t "PASS: ~A~%" ,name))
+               (progn (setq *fail-count* (+ *fail-count* 1))
+                      (format t "FAIL: ~A - expected ~S got ~S~%"
+                              ,name ,e ,a))))
+       (error (,c)
+         (setq *fail-count* (+ *fail-count* 1))
+         (format t "FAIL: ~A - signaled error: ~A~%" ,name ,c)))))
 
 (format t "~%=== CL-Amiga Test Suite ===~%~%")
 
