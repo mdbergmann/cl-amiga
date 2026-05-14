@@ -18,8 +18,9 @@
  *     Currently supported opcodes: OP_NIL, OP_T, OP_CONST, OP_LOAD,
  *     OP_STORE, OP_POP, OP_DUP, OP_JMP, OP_JNIL, OP_JTRUE, OP_ADD,
  *     OP_SUB, OP_EQ, OP_LT, OP_GT, OP_LE, OP_GE, OP_NUMEQ, OP_NOT,
- *     OP_RET.  Adding an opcode means adding one emitter case and one
- *     or two new asm encoders — the walker handles the composition.
+ *     OP_STRUCT_REF, OP_STRUCT_SET, OP_RET.  Adding an opcode means
+ *     adding one emitter case and one or two new asm encoders — the
+ *     walker handles the composition.
  *
  * See specs/native-backend.md §"Per-opcode emitter shape".
  */
@@ -592,6 +593,53 @@ static int walker_compile(const CL_Bytecode *bc, CodeBuf *cb)
                               (int16_t)(push_t_off - beq_pc));
             m68k_patch_disp16(cb_data(cb), cb_len(cb), (uint32_t)bra_pc,
                               (int16_t)(done_off - bra_pc));
+            break;
+        }
+
+        case OP_STRUCT_REF: {
+            /* Backing: cl_jit_runtime_struct_ref(obj, idx).  Pops
+             * obj, pushes idx (as longword) + obj in m68k C-ABI order
+             * (last arg pushed first), JSRs the helper, restores the
+             * stack, and pushes the returned slot value as the new
+             * TOS.  Helper validates type + bounds and matches the
+             * VM's error messages.  Non-allocating → GC-safe even
+             * without precise stack scanning. */
+            uint8_t idx;
+            uint32_t helper = (uint32_t)(uintptr_t)&cl_jit_runtime_struct_ref;
+            if (ip >= bc->code_len) goto fail;
+            idx = bc->code[ip++];
+
+            m68k_emit_move_l_postinc_an_to_dn(cb, REG_A7, REG_D0);   /* pop obj */
+            m68k_emit_move_l_imm32_predec(cb, (uint32_t)idx, REG_A7); /* push idx */
+            m68k_emit_move_l_dn_predec_an(cb, REG_D0, REG_A7);        /* push obj */
+            m68k_emit_jsr_abs_l(cb, helper);
+            m68k_emit_addq_l_an(cb, 8, REG_A7);                       /* drop 2 args */
+            m68k_emit_move_l_dn_predec_an(cb, REG_D0, REG_A7);        /* push result */
+            break;
+        }
+
+        case OP_STRUCT_SET: {
+            /* Backing: cl_jit_runtime_struct_set(obj, idx, val).  The
+             * VM pops val then obj; we mirror that into D1 (val) and
+             * D0 (obj), then push val/idx/obj for the C call.  Helper
+             * returns val so it lands in D0 ready to push as the new
+             * TOS.  3 args × 4 bytes = 12-byte cleanup — split as two
+             * ADDQ.L because ADDQ tops out at #8. */
+            uint8_t idx;
+            uint32_t helper = (uint32_t)(uintptr_t)&cl_jit_runtime_struct_set;
+            if (ip >= bc->code_len) goto fail;
+            idx = bc->code[ip++];
+
+            m68k_emit_move_l_postinc_an_to_dn(cb, REG_A7, REG_D1);   /* pop val */
+            m68k_emit_move_l_postinc_an_to_dn(cb, REG_A7, REG_D0);   /* pop obj */
+
+            m68k_emit_move_l_dn_predec_an(cb, REG_D1, REG_A7);        /* push val */
+            m68k_emit_move_l_imm32_predec(cb, (uint32_t)idx, REG_A7); /* push idx */
+            m68k_emit_move_l_dn_predec_an(cb, REG_D0, REG_A7);        /* push obj */
+            m68k_emit_jsr_abs_l(cb, helper);
+            m68k_emit_addq_l_an(cb, 8, REG_A7);                       /* drop 2 of 3 */
+            m68k_emit_addq_l_an(cb, 4, REG_A7);                       /* drop the 3rd */
+            m68k_emit_move_l_dn_predec_an(cb, REG_D0, REG_A7);        /* push result */
             break;
         }
 

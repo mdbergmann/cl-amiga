@@ -504,7 +504,7 @@ functions: graphics inner loop, REPL printer, test harness driver).
 That's the regime where the JIT becomes a net win even on the low-end
 target.
 
-## Status (2026-05-14, post arithmetic/comparison family)
+## Status (2026-05-14, post struct slot access)
 
 Approach (1) is in flight. Two codegen paths layered front-to-back —
 the JIT hook fires on both source-compile and FASL-load.
@@ -548,9 +548,12 @@ the operand stack and a LINK'd frame at A6 for locals.
 Supported opcodes: `OP_NIL`, `OP_T`, `OP_CONST`, `OP_LOAD`, `OP_STORE`,
 `OP_POP`, `OP_DUP`, `OP_JMP`, `OP_JNIL`, `OP_JTRUE`, `OP_ADD`,
 `OP_SUB`, `OP_LT`, `OP_GT`, `OP_LE`, `OP_GE`, `OP_NUMEQ`, `OP_EQ`,
-`OP_NOT`, `OP_RET` — subsumes everything the matchers cover plus
-arbitrary compositions including iterative fixnum loops
-(`(tagbody … (if (< i n) (progn (setq s (+ s i)) … (go top))))`).
+`OP_NOT`, `OP_STRUCT_REF`, `OP_STRUCT_SET`, `OP_RET` — subsumes
+everything the matchers cover plus arbitrary compositions including
+iterative fixnum loops
+(`(tagbody … (if (< i n) (progn (setq s (+ s i)) … (go top))))`)
+and defstruct accessor/setter shapes
+(`(defun get-x (p) (point-x p))` and `(setf (point-x p) v)`).
 Native code is bigger than the matchers' tight templates (22+ bytes
 for any function vs 4–8) but coverage is compositional: each new
 opcode adds one emitter case and a couple of encoders, then any
@@ -580,6 +583,17 @@ require `REAL`. Register discipline is strict: only D0/D1/A0/A1
 (caller-saved on the m68k C ABI) are touched, so the gcc-emitted
 `cl_jit_invoke` wrapper around the JIT's native entry sees its
 callee-saved registers (D2–D7, A2–A6) preserved.
+
+`OP_STRUCT_REF` / `OP_STRUCT_SET` are JSR-only templates — pop
+operands, push them in m68k C-ABI order (with the baked-in u8 index
+materialised as a `move.l #idx,-(a7)`), JSR to
+`cl_jit_runtime_struct_{ref,set}`, restore the stack, push the
+returned slot value as the new TOS. The helpers do the same
+STRUCTURE type-check and bounds-check the VM does, so error messages
+remain identical to the bytecode path. Both are non-allocating so
+no GC concern even without precise stack scanning. Full inlining of
+the heap-pointer check + slot load is left for a later commit
+(would need an arena-base load and a header-tag compare per access).
 
 **Pure-fixnum-only GC safety** — both slow-path helpers may allocate
 (bignum result on fixnum overflow), which may GC. Operand-stack
@@ -643,8 +657,8 @@ optimization). Pure memory operands.
   the OP_CALL native branch never trips on host.
 - `make -f Makefile.cross amiga`: green, no new warnings.
 - `make -f Makefile.cross test-amiga` (high-end A4000/68040/JIT
-  FS-UAE config): **2417/2417** Amiga tests pass. JIT-specific
-  coverage in `tests/amiga/test-jit.lisp` (~143 checks): the existing
+  FS-UAE config): **2432/2432** Amiga tests pass. JIT-specific
+  coverage in `tests/amiga/test-jit.lisp` (~158 checks): the existing
   matcher / walker shape tests, `(+ a b)` / `(< a b)` coverage from
   the previous commit, plus new behavioral coverage for `(- a b)`
   (mirror of ADD including overflow into bignum and int↔float slow
@@ -652,9 +666,13 @@ optimization). Pure memory operands.
   same shape as `<` with each Bcc), `(= a b)` (NUMBER-typed,
   including int↔float through `cl_numeric_equal`), pointer-identity
   `(eq a b)` (no slow path — distinguishes shared vs distinct
-  conses, fixnum identity, symbol identity, NIL/T self-EQ), and
+  conses, fixnum identity, symbol identity, NIL/T self-EQ),
   `(not x)` (no slow path — exhaustive truthiness tests including
-  zero-is-truthy CL semantics).
+  zero-is-truthy CL semantics), and defstruct accessor/setter
+  round-trips via OP_STRUCT_REF / OP_STRUCT_SET (3-slot `jit-point`
+  struct: per-slot reads across fixnum/nil/symbol/cons, setter
+  returns stored value, round-trip read-after-write, set leaves
+  other slots untouched, STRUCTURE type-error path).
 
 ### First headline benchmark (`trunk/bench-jit-loop.lisp`)
 

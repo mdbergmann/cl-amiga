@@ -12,6 +12,9 @@
  *     CL_T or CL_NIL.
  *   - cl_jit_runtime_gt / _le / _ge  — slow-path Lisp `>` / `<=` / `>=`.
  *   - cl_jit_runtime_numeq — slow-path Lisp `=`.
+ *   - cl_jit_runtime_struct_ref / _set — backing for OP_STRUCT_REF /
+ *     OP_STRUCT_SET.  Validate type + bounds, then read/write the slot
+ *     at a baked-in u8 index.  Non-allocating, so always GC-safe.
  *
  * GC caveat: both helpers may allocate (bignum result on fixnum
  * overflow), which may trigger GC.  Operand-stack values live on the
@@ -39,6 +42,9 @@ CL_Obj cl_jit_runtime_gt   (CL_Obj a, CL_Obj b);
 CL_Obj cl_jit_runtime_le   (CL_Obj a, CL_Obj b);
 CL_Obj cl_jit_runtime_ge   (CL_Obj a, CL_Obj b);
 CL_Obj cl_jit_runtime_numeq(CL_Obj a, CL_Obj b);
+
+CL_Obj cl_jit_runtime_struct_ref(CL_Obj obj, uint32_t idx);
+CL_Obj cl_jit_runtime_struct_set(CL_Obj obj, uint32_t idx, CL_Obj val);
 
 #endif /* JIT_M68K */
 

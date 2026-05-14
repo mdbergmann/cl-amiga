@@ -93,4 +93,39 @@ CL_Obj cl_jit_runtime_numeq(CL_Obj a, CL_Obj b)
     return cl_numeric_equal(a, b) ? CL_T : CL_NIL;
 }
 
+/* Backing for OP_STRUCT_REF: read slot at `idx` from `obj`.  Mirrors
+ * the VM's OP_STRUCT_REF exactly: validate STRUCTURE type then check
+ * the index is in range, both signaling with the same messages.
+ * Non-allocating — always GC-safe. */
+CL_Obj cl_jit_runtime_struct_ref(CL_Obj obj, uint32_t idx)
+{
+    CL_Struct *st;
+    if (!CL_STRUCT_P(obj))
+        cl_signal_type_error(obj, "STRUCTURE", "%STRUCT-REF");
+    st = (CL_Struct *)CL_OBJ_TO_PTR(obj);
+    if (idx >= st->n_slots)
+        cl_error(CL_ERR_ARGS,
+                 "%%STRUCT-REF: index %u out of range (n_slots=%u)",
+                 (unsigned)idx, (unsigned)st->n_slots);
+    return st->slots[idx];
+}
+
+/* Backing for OP_STRUCT_SET.  Same shape as the VM: type-check,
+ * bounds-check, write, and return the stored value (matching CL's
+ * `setf` semantics where the assignment expression's value is the
+ * new value).  Non-allocating — always GC-safe. */
+CL_Obj cl_jit_runtime_struct_set(CL_Obj obj, uint32_t idx, CL_Obj val)
+{
+    CL_Struct *st;
+    if (!CL_STRUCT_P(obj))
+        cl_signal_type_error(obj, "STRUCTURE", "%STRUCT-SET");
+    st = (CL_Struct *)CL_OBJ_TO_PTR(obj);
+    if (idx >= st->n_slots)
+        cl_error(CL_ERR_ARGS,
+                 "%%STRUCT-SET: index %u out of range (n_slots=%u)",
+                 (unsigned)idx, (unsigned)st->n_slots);
+    st->slots[idx] = val;
+    return val;
+}
+
 #endif /* JIT_M68K */
