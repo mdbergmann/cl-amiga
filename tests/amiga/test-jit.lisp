@@ -819,3 +819,83 @@
   (let ((*walker-glo* 55)) (walker-gload)))
 ; And after the LET unwinds, the outer global value is restored.
 (check "walker-gload-tlv-restore" 100 (walker-gload))
+
+; --- OP_DYNBIND / OP_DYNUNBIND.  `(let ((*special* val)) body)` on a
+; defvar'd symbol compiles to a value-producer + OP_DYNBIND + body +
+; OP_DYNUNBIND <count>.
+;
+; OP_DYNBIND template: the value is already on the operand stack (TOS),
+; so we push the symbol literal above it and JSR
+; cl_jit_runtime_dynbind(sym, val); the cleanup ADDQ #8 drops both —
+; matching the VM's "pop value" semantic.  OP_DYNUNBIND template: push
+; the u8 count, JSR cl_jit_runtime_dynunbind, drop arg.  Both helpers
+; are non-allocating (dyn_stack + TLV table are preallocated).
+;
+; cl_jit_runtime_dynbind mirrors the VM's *PACKAGE* sync.  An error
+; raised through the helper (dyn-stack overflow) longjmps out of the
+; JIT'd frame the same way OP_FLOAD's unbound-function path does;
+; cl_dynbind_restore_to runs on the error path via the existing
+; runtime, so the binding stack stays consistent regardless of how
+; control leaves the JIT'd frame.
+
+; Reuse *walker-glo* (defvar'd above to 100).
+;
+; Basic: bind *walker-glo* to 999 around a body that reads it.  Inside
+; the body the JIT'd OP_GLOAD must see 999; after the LET unwinds, the
+; outer cell must still read 100.
+(defun walker-dyn-let-read ()
+  (let ((*walker-glo* 999)) *walker-glo*))
+(check "walker-dyn-let-read-counter-bump" t
+  (let ((before (clamiga::%jit-invoke-count)))
+    (walker-dyn-let-read)
+    (> (clamiga::%jit-invoke-count) before)))
+(check "walker-dyn-let-read-inner"  999 (walker-dyn-let-read))
+(check "walker-dyn-let-read-outer-restored" 100 *walker-glo*)
+
+; Bind then mutate inside the body — SETQ on the special hits the
+; freshly-rebound TLV, not the outer cell.  After unwind, the outer
+; cell must still be 100 (the post-mutation value lived in the TLV
+; that the OP_DYNUNBIND restored away).
+(defun walker-dyn-let-setq ()
+  (let ((*walker-glo* 999))
+    (setq *walker-glo* 1234)
+    *walker-glo*))
+(check "walker-dyn-let-setq-inner" 1234 (walker-dyn-let-setq))
+(check "walker-dyn-let-setq-outer-restored" 100 *walker-glo*)
+
+; Two specials bound in one LET → OP_DYNUNBIND with count 2.  Also
+; covers the LET semantic that all RHS forms evaluate in the outer
+; scope before any binding takes effect.
+(defvar *walker-glo2* 200)
+(defun walker-dyn-let-two ()
+  (let ((*walker-glo*  111)
+        (*walker-glo2* 222))
+    (+ *walker-glo* *walker-glo2*)))
+(check "walker-dyn-let-two-counter-bump" t
+  (let ((before (clamiga::%jit-invoke-count)))
+    (walker-dyn-let-two)
+    (> (clamiga::%jit-invoke-count) before)))
+(check "walker-dyn-let-two-inner"        333 (walker-dyn-let-two))
+(check "walker-dyn-let-two-outer1-rest"  100 *walker-glo*)
+(check "walker-dyn-let-two-outer2-rest"  200 *walker-glo2*)
+
+; Nested LETs on the same special — inner shadows outer; after inner
+; unwinds, outer's binding (still itself a dyn-binding) is visible.
+; After outer unwinds, the global value is back.
+(defun walker-dyn-let-nested ()
+  (let ((*walker-glo* 11))
+    (let ((*walker-glo* 22))
+      (let ((*walker-glo* 33))
+        *walker-glo*))))
+(check "walker-dyn-let-nested-inner"  33  (walker-dyn-let-nested))
+(check "walker-dyn-let-nested-outer-restored" 100 *walker-glo*)
+
+; Sequenced: read after inner unwinds, while outer is still bound.
+; Verifies OP_DYNUNBIND 1 restores exactly the previous TLV (not
+; collapsing both LET layers).
+(defun walker-dyn-let-restore-mid ()
+  (let ((*walker-glo* 10))
+    (let ((*walker-glo* 20)) *walker-glo*)
+    *walker-glo*))
+(check "walker-dyn-let-restore-mid" 10 (walker-dyn-let-restore-mid))
+(check "walker-dyn-let-restore-mid-outer" 100 *walker-glo*)

@@ -19,7 +19,8 @@
  *     OP_STORE, OP_POP, OP_DUP, OP_JMP, OP_JNIL, OP_JTRUE, OP_ADD,
  *     OP_SUB, OP_MUL, OP_EQ, OP_LT, OP_GT, OP_LE, OP_GE, OP_NUMEQ,
  *     OP_NOT, OP_CAR, OP_CDR, OP_GLOAD, OP_GSTORE, OP_FLOAD, OP_CALL,
- *     OP_STRUCT_REF, OP_STRUCT_SET, OP_RET.  Adding an opcode means adding one
+ *     OP_STRUCT_REF, OP_STRUCT_SET, OP_DYNBIND, OP_DYNUNBIND, OP_RET.
+ *     Adding an opcode means adding one
  *     emitter case and one or two new asm encoders — the walker
  *     handles the composition.
  *
@@ -597,6 +598,47 @@ static int walker_compile(const CL_Bytecode *bc, CodeBuf *cb)
             m68k_emit_move_l_imm32_predec(cb, (uint32_t)sym, REG_A7); /* push sym */
             m68k_emit_jsr_abs_l(cb, helper);
             m68k_emit_addq_l_an(cb, 8, REG_A7);                       /* drop 2 args */
+            break;
+        }
+
+        case OP_DYNBIND: {
+            /* u16: bake constants[idx] (a SYMBOL) into the emitted
+             * code as a 32-bit literal, then JSR cl_jit_runtime_dynbind
+             * with (sym, val) — val is already on TOS from the
+             * preceding value-producing form, so we just push sym
+             * above it (the C-ABI's right-to-left rule puts sym first
+             * = lowest address) and drop both with one ADDQ #8 after
+             * the helper returns.  Mirrors the VM's "pop value" by
+             * dropping val along with sym in the cleanup. */
+            uint16_t idx;
+            CL_Obj sym;
+            uint32_t helper = (uint32_t)(uintptr_t)&cl_jit_runtime_dynbind;
+            if (ip + 1 >= bc->code_len) goto fail;
+            idx = ((uint16_t)bc->code[ip] << 8) | bc->code[ip + 1];
+            ip += 2;
+            if (idx >= bc->n_constants || bc->constants == NULL) goto fail;
+            sym = bc->constants[idx];
+            if (!CL_SYMBOL_P(sym)) goto fail;
+
+            m68k_emit_move_l_imm32_predec(cb, (uint32_t)sym, REG_A7);
+            m68k_emit_jsr_abs_l(cb, helper);
+            m68k_emit_addq_l_an(cb, 8, REG_A7);                      /* drop sym + val */
+            break;
+        }
+
+        case OP_DYNUNBIND: {
+            /* u8: count of bindings to undo.  Push count as the
+             * helper's single arg, JSR, drop.  The helper wraps
+             * cl_dynbind_restore_to(cl_dyn_top - count) so the JIT
+             * doesn't have to do that arithmetic in m68k code. */
+            uint8_t count;
+            uint32_t helper = (uint32_t)(uintptr_t)&cl_jit_runtime_dynunbind;
+            if (ip >= bc->code_len) goto fail;
+            count = bc->code[ip++];
+
+            m68k_emit_move_l_imm32_predec(cb, (uint32_t)count, REG_A7);
+            m68k_emit_jsr_abs_l(cb, helper);
+            m68k_emit_addq_l_an(cb, 4, REG_A7);
             break;
         }
 

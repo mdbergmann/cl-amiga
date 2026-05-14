@@ -22,6 +22,7 @@
 #include "core/symbol.h"     /* SYM_STAR_PACKAGE */
 #include "core/package.h"    /* cl_sync_current_package_from_dynamic */
 #include "core/thread.h"     /* cl_symbol_value / cl_set_symbol_value */
+#include "core/vm.h"         /* cl_dynbind_restore_to, CL_MAX_DYN_BINDINGS */
 
 /* Forward decls for the existing C-runtime arithmetic — same helpers
  * the bytecode VM falls through to from its OP_ADD / OP_LT slow paths.
@@ -191,6 +192,38 @@ CL_Obj cl_jit_runtime_gstore(CL_Obj sym, CL_Obj val)
     if (sym == SYM_STAR_PACKAGE)
         cl_sync_current_package_from_dynamic();
     return val;
+}
+
+/* Backing for OP_DYNBIND: save current TLV of `sym` in the dyn-bind
+ * stack, then install `new_val` as the new TLV.  Mirrors the VM's
+ * OP_DYNBIND exactly: overflow check against CL_MAX_DYN_BINDINGS,
+ * record (symbol, old_value) — old_value is CL_TLV_ABSENT if there
+ * was no prior binding — install new TLV via cl_tlv_set, and sync
+ * cl_package_current when the symbol is *PACKAGE*.  Non-allocating
+ * (dyn_stack and tlv_table are preallocated), so always GC-safe.
+ * The matching OP_DYNUNBIND undoes one entry per binding pushed. */
+void cl_jit_runtime_dynbind(CL_Obj sym, CL_Obj new_val)
+{
+    CL_Thread *thr = CT;
+    CL_Obj old_tlv = cl_tlv_get(thr, sym);
+    if (cl_dyn_top >= CL_MAX_DYN_BINDINGS)
+        cl_error(CL_ERR_OVERFLOW, "Dynamic binding stack overflow");
+    cl_dyn_stack[cl_dyn_top].symbol = sym;
+    cl_dyn_stack[cl_dyn_top].old_value = old_tlv;
+    cl_dyn_top++;
+    cl_tlv_set(thr, sym, new_val);
+    if (sym == SYM_STAR_PACKAGE)
+        cl_sync_current_package_from_dynamic();
+}
+
+/* Backing for OP_DYNUNBIND: restore the last `count` entries from the
+ * dyn-bind stack.  Wrapper around cl_dynbind_restore_to so the JIT
+ * doesn't have to compute (cl_dyn_top - count) in m68k code.  The
+ * restore helper itself handles per-symbol TLV write-back and the
+ * *PACKAGE* sync when a *PACKAGE* binding unwinds.  Non-allocating. */
+void cl_jit_runtime_dynunbind(uint32_t count)
+{
+    cl_dynbind_restore_to(cl_dyn_top - (int)count);
 }
 
 /* Backing for OP_CALL.  See runtime.h for the operand-stack layout
