@@ -308,4 +308,25 @@ void m68k_emit_lea_disp_an_to_am(CodeBuf *cb, int16_t disp,
     cb_emit_u16(cb, (uint16_t)disp);
 }
 
+/* MOVE.L Dn,(d16,Am): opcode 0010 am 101 000 dn + 16-bit signed disp.
+ * Source EA = 000/dn (data-register direct), dest EA = 101/am.  4
+ * bytes total.  Cache spills use this to dump a register to a
+ * frame-relative slot; OP_STORE uses it when TOS is in cache. */
+void m68k_emit_move_l_dn_to_disp_am(CodeBuf *cb, M68kReg dn,
+                                    int16_t disp, M68kReg am)
+{
+    uint16_t enc = (uint16_t)(0x2000 | ((am & 7) << 9) |
+                              (5 << 6) | (dn & 7));
+    cb_emit_u16(cb, enc);
+    cb_emit_u16(cb, (uint16_t)disp);
+}
+
+/* TST.L Dn: opcode 0100 1010 1000 0nnn = 0x4A80 | dn.  Sets N/Z from
+ * Dn (compares against 0), leaves Dn untouched.  2 bytes.  See M68000
+ * PRM §4-196. */
+void m68k_emit_tst_l_dn(CodeBuf *cb, M68kReg dn)
+{
+    cb_emit_u16(cb, (uint16_t)(0x4A80 | (dn & 7)));
+}
+
 #endif /* JIT_M68K */
