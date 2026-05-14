@@ -513,19 +513,21 @@ functions JIT exactly like fresh ones.
 
 **Compiled shapes**
 
-| Shape                         | Native code                       | Size |
-|-------------------------------|-----------------------------------|------|
-| `(defun f () <literal>)`      | `moveq #imm,d0 ; rts`             | 4 B  |
-| (literal too big for moveq)   | `move.l #imm32,d0 ; rts`          | 8 B  |
-| `(defun f (x) x)`             | `move.l 4(a7),d0 ; rts`           | 6 B  |
+| Shape                              | Native code                       | Size |
+|------------------------------------|-----------------------------------|------|
+| `(defun f () <literal>)`           | `moveq #imm,d0 ; rts`             | 4 B  |
+| (literal too big for moveq)        | `move.l #imm32,d0 ; rts`          | 8 B  |
+| `(defun f (x1..xk) xj)`, k ≤ 2     | `move.l (4+4*j)(a7),d0 ; rts`     | 6 B  |
 
 Literal coverage: `OP_NIL`, `OP_T`, `OP_CONST` (any constant-pool entry,
 including heap pointers like `CL_T`). `moveq` is chosen when the tagged
-value fits signed 8-bit, `move.l #imm32` otherwise. Arg passing for the
-1-arg case follows the m68k SysV C ABI — `cl_jit_invoke` casts
-`bc->native_code` to a function-pointer type matching `nargs` and
-passes args through normal calling convention; native code reads them
-off `4(sp)`, `8(sp)`, etc. No trampoline, no stack cache yet.
+value fits signed 8-bit, `move.l #imm32` otherwise. Arg passing follows
+the m68k SysV C ABI — `cl_jit_invoke` casts `bc->native_code` to a
+function-pointer type matching `nargs` and passes args through normal
+calling convention; native code reads them off `4(sp)`, `8(sp)`, etc.
+No trampoline, no stack cache yet. The pass-through matcher is capped
+by `CL_JIT_PASSTHROUGH_MAX_ARITY` (currently 2) — bumping it requires
+adding the matching `cl_jit_invoke` switch case in lockstep.
 
 **Layout**
 
@@ -556,12 +558,13 @@ off `4(sp)`, `8(sp)`, etc. No trampoline, no stack cache yet.
   the OP_CALL native branch never trips on host.
 - `make -f Makefile.cross amiga`: green, no new warnings.
 - `make -f Makefile.cross test-amiga` (high-end A4000/68040/JIT
-  FS-UAE config): **2291/2291** Amiga tests pass. JIT-specific
-  coverage in `tests/amiga/test-jit.lisp` (~21 checks): stub byte
+  FS-UAE config): **2300/2300** Amiga tests pass. JIT-specific
+  coverage in `tests/amiga/test-jit.lisp` (~30 checks): stub byte
   pipeline, byte-exact emit verification for every compiled shape,
   `%JIT-INVOKE-COUNT` proves the native path is taken on dispatch,
   behavioral round-trip for fixnum / nil / t / symbol / cons / string
-  through 1-arg identity.
+  through 1-arg identity, plus 2-arg pass-through returning either
+  parameter with arg-order verification.
 - `test-amiga-lowend` (68020 baseline) is still available but not run
   every commit.
 

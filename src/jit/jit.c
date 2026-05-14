@@ -1,13 +1,15 @@
 /* jit.c — orchestration for the m68k template JIT.
  *
- * Current codegen covers two function shapes:
+ * Current codegen covers two function-shape families:
  *
  *   1. `(defun f () <literal>)` — 0-arg, returns a constant.  Emitted
  *      as `moveq` or `move.l #imm32` into D0 followed by `rts`.
  *      Recognized literals: OP_NIL, OP_T, OP_CONST.
  *
- *   2. `(defun f (x) x)` — 1-arg identity.  Emitted as `move.l 4(sp),d0
- *      ; rts`, reading the C-ABI arg slot directly.
+ *   2. `(defun f (x1..xk) xj)` — k-arg parameter pass-through, k up to
+ *      CL_JIT_PASSTHROUGH_MAX_ARITY.  Emitted as
+ *      `move.l (4+4*j)(sp),d0 ; rts`, reading the C-ABI arg slot
+ *      directly.  Subsumes the 1-arg identity case.
  *
  * Everything else still leaves `bc->native_code == NULL` and runs
  * through the bytecode interpreter.
@@ -48,7 +50,7 @@ void cl_jit_init(void)
 
     if (!cl_quiet_boot) {
         platform_write_string(
-            "; [jit] m68k template backend: trivial-literal-leaf + 1-arg identity\n");
+            "; [jit] m68k template backend: trivial-literal-leaf + 1/2-arg pass-through\n");
     }
 }
 
@@ -115,40 +117,54 @@ static int matches_trivial_leaf(const CL_Bytecode *bc, CL_Obj *value_out)
     return 1;
 }
 
-/* Match `(defun f (x) x)` — 1-arg identity.
+/* Match `(defun f (x1..xk) xj)` — k-arg parameter pass-through.
  *
- * Body `x` compiles to `OP_LOAD 0`; the implicit block-return postlude
- * adds `OP_STORE 1 ; OP_POP ; OP_LOAD 1` (slot 1 is the block-return
- * cell, since slot 0 holds the lone parameter), and the function
- * trailer adds `OP_RET`.  Total 8 bytes:
+ * Body `xj` compiles to `OP_LOAD <j>`; the implicit block-return
+ * postlude adds `OP_STORE <k> ; OP_POP ; OP_LOAD <k>` (slot k is the
+ * block-return cell since slots 0..k-1 hold the k parameters), and the
+ * function trailer adds `OP_RET`.  Total 8 bytes regardless of k:
  *
- *   OP_LOAD  0   2 bytes
- *   OP_STORE 1   2 bytes
+ *   OP_LOAD  j   2 bytes   (0 <= j < k)
+ *   OP_STORE k   2 bytes
  *   OP_POP       1 byte
- *   OP_LOAD  1   2 bytes
+ *   OP_LOAD  k   2 bytes
  *   OP_RET       1 byte
  *
- * No allocation, no side effects, so it's safe to collapse to a single
- * "load arg, return" sequence.  Strict on metadata so optional/&key/
- * &rest variants don't sneak through. */
-static int matches_identity_1arg(const CL_Bytecode *bc)
-{
-    static const uint8_t body[8] = {
-        OP_LOAD,  0x00,
-        OP_STORE, 0x01,
-        OP_POP,
-        OP_LOAD,  0x01,
-        OP_RET
-    };
+ * No allocation, no side effects — safe to collapse to a single "load
+ * arg, return" sequence.  Strict on metadata so optional/&key/&rest
+ * variants don't sneak through.
+ *
+ * Capped at the arity that `cl_jit_invoke` knows how to dispatch
+ * (`CL_JIT_PASSTHROUGH_MAX_ARITY` — bump in lockstep with the switch).
+ *
+ * Returns 1 and stores the source slot j in *slot_out on match. */
+#define CL_JIT_PASSTHROUGH_MAX_ARITY 2
 
-    if (bc->arity != 1) return 0;
+static int matches_passthrough(const CL_Bytecode *bc, uint8_t *slot_out)
+{
+    uint8_t arity, slot;
+
+    if (bc->arity < 1 || bc->arity > CL_JIT_PASSTHROUGH_MAX_ARITY) return 0;
     if (bc->n_optional != 0) return 0;
     if (bc->flags != 0) return 0;
     if (bc->n_keys != 0) return 0;
     if (bc->n_upvalues != 0) return 0;
-    if (bc->n_locals != 2) return 0;
+    arity = (uint8_t)bc->arity;
+    if (bc->n_locals != (uint16_t)(arity + 1)) return 0;
     if (bc->code_len != 8) return 0;
-    return memcmp(bc->code, body, 8) == 0;
+
+    if (bc->code[0] != OP_LOAD)  return 0;
+    slot = bc->code[1];
+    if (slot >= arity) return 0;
+    if (bc->code[2] != OP_STORE) return 0;
+    if (bc->code[3] != arity)    return 0;
+    if (bc->code[4] != OP_POP)   return 0;
+    if (bc->code[5] != OP_LOAD)  return 0;
+    if (bc->code[6] != arity)    return 0;
+    if (bc->code[7] != OP_RET)   return 0;
+
+    *slot_out = slot;
+    return 1;
 }
 
 /* Pick the shortest m68k encoding that materializes `val` in D0.
@@ -172,6 +188,7 @@ void cl_jit_compile(CL_Bytecode *bc)
     uint8_t *code;
     uint32_t len;
     CL_Obj value;
+    uint8_t slot;
 
     if (bc == NULL || !jit_active) return;
     bc->native_code = NULL;
@@ -186,12 +203,15 @@ void cl_jit_compile(CL_Bytecode *bc)
          * load only touches D0, which is caller-saved). */
         emit_load_imm_d0(&cb, value);
         m68k_emit_rts(&cb);
-    } else if (matches_identity_1arg(bc)) {
-        /* Emit: move.l 4(sp),d0 ; rts.  The C ABI on m68k puts the
-         * first arg at 4(A7) after the JSR pushes the return address;
-         * cl_jit_invoke casts native_code to a 1-arg fn pointer and
-         * passes the arg through normal C calling convention. */
-        m68k_emit_move_l_disp_an_to_dn(&cb, 4, REG_A7, REG_D0);
+    } else if (matches_passthrough(bc, &slot)) {
+        /* Emit: move.l (4 + 4*slot)(sp),d0 ; rts.  The C ABI on m68k
+         * lays args out starting at 4(A7) after JSR pushes the return
+         * address, each 32-bit slot bumping by 4.  cl_jit_invoke casts
+         * native_code to the matching arity's C function-pointer type
+         * and passes args through normal calling convention, so reading
+         * slot j is just a fixed displacement load. */
+        int16_t disp = (int16_t)(4 + 4 * (int)slot);
+        m68k_emit_move_l_disp_an_to_dn(&cb, disp, REG_A7, REG_D0);
         m68k_emit_rts(&cb);
     } else {
         return;
@@ -241,6 +261,12 @@ CL_Obj cl_jit_invoke(CL_Bytecode *bc, int nargs)
         typedef CL_Obj (*native_fn1_t)(CL_Obj);
         CL_Obj a0 = cl_vm.stack[cl_vm.sp - 1];
         return ((native_fn1_t)bc->native_code)(a0);
+    }
+    case 2: {
+        typedef CL_Obj (*native_fn2_t)(CL_Obj, CL_Obj);
+        CL_Obj a0 = cl_vm.stack[cl_vm.sp - 2];
+        CL_Obj a1 = cl_vm.stack[cl_vm.sp - 1];
+        return ((native_fn2_t)bc->native_code)(a0, a1);
     }
     default:
         return CL_NIL;
