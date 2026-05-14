@@ -49,6 +49,12 @@ int    cl_jit_emit_stub(CL_Bytecode *bc);
  * being interpreted (which would happen to return the same value). */
 uint32_t cl_jit_invoke_count_get(void);
 
+/* Pretty-print the m68k bytes in `code` (length `len`) as one line of
+ * assembly per instruction to platform_write_string.  Only decodes the
+ * forms the JIT can emit; anything else falls through to ".word $xxxx".
+ * Exposed to Lisp as `clamiga::%JIT-DISASSEMBLE`. */
+void cl_jit_disassemble(const uint8_t *code, uint32_t len);
+
 #else  /* !JIT_M68K — host / non-m68k targets get no-op stubs */
 
 static inline void   cl_jit_init(void)                       { }
@@ -57,6 +63,7 @@ static inline CL_Obj cl_jit_invoke(CL_Bytecode *bc, int n)   { (void)bc; (void)n
 static inline int    cl_jit_enabled(void)                    { return 0; }
 static inline int    cl_jit_emit_stub(CL_Bytecode *bc)       { (void)bc; return 0; }
 static inline uint32_t cl_jit_invoke_count_get(void)         { return 0; }
+static inline void   cl_jit_disassemble(const uint8_t *c, uint32_t n) { (void)c; (void)n; }
 
 #endif /* JIT_M68K */
 

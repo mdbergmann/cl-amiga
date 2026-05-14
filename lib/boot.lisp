@@ -2529,3 +2529,53 @@ including any dotted-list terminator (so the result is also dotted)."
           read-memory-barrier write-memory-barrier))
 
 (in-package :cl-user)
+
+;; JITEXPAND — show the m68k assembly the JIT emitted for a form.
+;;
+;; Three accepted shapes:
+;;
+;;   (jitexpand (defun foo (x) x))     ; defines foo, then disassembles
+;;   (jitexpand (lambda (x) x))        ; disassembles the lambda
+;;   (jitexpand (+ x 1))               ; wraps in (lambda () ...) and
+;;                                       disassembles — useful for
+;;                                       inspecting an expression in
+;;                                       isolation
+;;
+;; A leading QUOTE is unwrapped so all three also work as:
+;;   (jitexpand '(defun foo ...))
+;;   (jitexpand '(lambda ...))
+;;   (jitexpand '(+ x 1))
+;;
+;; On host (no JIT_M68K) or for functions/forms the JIT didn't compile,
+;; prints "(no native code ...)" and returns NIL.
+;;
+;; Note: this macro deliberately avoids CADR / SECOND / etc. — at the
+;; time boot.lisp compiles, defining a top-level macro that references
+;; CADR somehow poisons the CADR function binding for later code (a
+;; compiler-macro interaction worth chasing separately).  CAR/CDR
+;; combinations are safe.
+(defmacro jitexpand (form)
+  (let ((f form))
+    (if (and (consp f) (eq (car f) 'quote) (consp (cdr f)))
+        (setq f (car (cdr f))))
+    (cond
+      ;; (defun NAME ...) — install the function and disassemble by name.
+      ((and (consp f) (eq (car f) 'defun)
+            (consp (cdr f)) (symbolp (car (cdr f))))
+       (let ((name (car (cdr f))))
+         `(progn
+            ,f
+            (format t "; JIT disassembly of ~A:~%" ',name)
+            (clamiga::%jit-disassemble (symbol-function ',name)))))
+      ;; (lambda ...) — disassemble the lambda directly.
+      ((and (consp f) (eq (car f) 'lambda))
+       `(progn
+          (format t "; JIT disassembly of ~S:~%" ',f)
+          (clamiga::%jit-disassemble ,f)))
+      ;; Any other expression — wrap as a thunk and disassemble.  The
+      ;; thunk is never invoked, so free variables in F don't have to
+      ;; be bound for the inspection to work.
+      (t
+       `(progn
+          (format t "; JIT disassembly of (lambda () ~S):~%" ',f)
+          (clamiga::%jit-disassemble (lambda () ,f)))))))
