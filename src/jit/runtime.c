@@ -19,6 +19,9 @@
 #include "core/types.h"
 #include "core/float.h"      /* CL_NUMBER_P, CL_REALP */
 #include "core/error.h"
+#include "core/symbol.h"     /* SYM_STAR_PACKAGE */
+#include "core/package.h"    /* cl_sync_current_package_from_dynamic */
+#include "core/thread.h"     /* cl_symbol_value / cl_set_symbol_value */
 
 /* Forward decls for the existing C-runtime arithmetic — same helpers
  * the bytecode VM falls through to from its OP_ADD / OP_LT slow paths.
@@ -159,6 +162,35 @@ CL_Obj cl_jit_runtime_fload(CL_Obj sym)
     cl_error(CL_ERR_UNDEFINED, "Undefined function: %s",
              cl_symbol_name(sym));
     return CL_NIL;   /* unreachable; cl_error longjmps */
+}
+
+/* Backing for OP_GLOAD: look up the symbol's dynamic value (thread-
+ * local binding first, then the global value cell) and return it.
+ * Mirrors the VM's OP_GLOAD: signals UNBOUND-VARIABLE with the same
+ * diagnostic when the symbol has no value, otherwise returns the
+ * value untouched.  Non-allocating, so always GC-safe. */
+CL_Obj cl_jit_runtime_gload(CL_Obj sym)
+{
+    CL_Obj val = cl_symbol_value(sym);
+    if (val == CL_UNBOUND)
+        cl_error(CL_ERR_UNBOUND, "Unbound variable: %s",
+                 cl_symbol_name(sym));
+    return val;
+}
+
+/* Backing for OP_GSTORE: store `val` into the symbol's dynamic value
+ * (thread-local binding if any, else the global value cell).  Returns
+ * `val` so the JIT emitter can leave it as TOS without a separate
+ * peek (matches the VM's "store does not pop" semantics for the
+ * peek-then-helper path).  Mirrors OP_GSTORE's *PACKAGE* sync so
+ * `(setq *package* ...)` updates cl_package_current the same way the
+ * bytecode VM does.  Non-allocating, so always GC-safe. */
+CL_Obj cl_jit_runtime_gstore(CL_Obj sym, CL_Obj val)
+{
+    cl_set_symbol_value(sym, val);
+    if (sym == SYM_STAR_PACKAGE)
+        cl_sync_current_package_from_dynamic();
+    return val;
 }
 
 /* Backing for OP_CALL.  See runtime.h for the operand-stack layout
