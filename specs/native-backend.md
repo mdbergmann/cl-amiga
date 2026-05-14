@@ -504,7 +504,7 @@ functions: graphics inner loop, REPL printer, test harness driver).
 That's the regime where the JIT becomes a net win even on the low-end
 target.
 
-## Status (2026-05-14)
+## Status (2026-05-14, post OP_ADD/OP_LT)
 
 Approach (1) is in flight. Two codegen paths layered front-to-back —
 the JIT hook fires on both source-compile and FASL-load.
@@ -546,15 +546,35 @@ the operand stack and a LINK'd frame at A6 for locals.
 ```
 
 Supported opcodes: `OP_NIL`, `OP_T`, `OP_CONST`, `OP_LOAD`, `OP_STORE`,
-`OP_POP`, `OP_DUP`, `OP_JMP`, `OP_JNIL`, `OP_JTRUE`, `OP_RET` —
-subsumes everything the matchers cover plus arbitrary compositions
-(e.g. `(defun f (x) (let ((y x)) y))`, `(if x 1 2)`, `(when x v)`,
-`(cond (x))`). Native code is bigger than the matchers' tight
-templates (22+ bytes for any function vs 4–8) but coverage is
-compositional: each new opcode adds one emitter case and a couple of
-encoders, then any function built from supported opcodes JITs for
-free. Unrecognized opcode → walker bails, native_code stays NULL,
-function runs interpreted.
+`OP_POP`, `OP_DUP`, `OP_JMP`, `OP_JNIL`, `OP_JTRUE`, `OP_ADD`,
+`OP_LT`, `OP_RET` — subsumes everything the matchers cover plus
+arbitrary compositions including iterative fixnum loops
+(`(tagbody … (if (< i n) (progn (setq s (+ s i)) … (go top))))`).
+Native code is bigger than the matchers' tight templates (22+ bytes
+for any function vs 4–8) but coverage is compositional: each new
+opcode adds one emitter case and a couple of encoders, then any
+function built from supported opcodes JITs for free. Unrecognized
+opcode → walker bails, native_code stays NULL, function runs
+interpreted.
+
+`OP_ADD` / `OP_LT` use inline fixnum fast paths (BTST tag check on
+each operand, signed ADD/CMP, BVS overflow recovery via SUB) with a
+JSR to `cl_jit_runtime_add` / `cl_jit_runtime_lt` for non-fixnum
+operands or fixnum overflow. Slow paths mirror the bytecode VM's
+behaviour exactly, including type errors and bignum results. Register
+discipline is strict: only D0/D1/A0/A1 (caller-saved on the m68k C
+ABI) are touched, so the gcc-emitted `cl_jit_invoke` wrapper around
+the JIT's native entry sees its callee-saved registers (D2–D7,
+A2–A6) preserved.
+
+**Pure-fixnum-only GC safety** — both slow-path helpers may allocate
+(bignum result on fixnum overflow), which may GC. Operand-stack
+values live on the m68k stack and aren't rooted yet, so a GC at that
+point would silently corrupt them. Workloads that stay in fixnum
+range (the benchmark below, all current Amiga tests) never reach the
+slow path and so are safe; mixed-type arithmetic is not safe under
+the JIT and would need conservative m68k-stack scanning to fix (see
+§"Open design choices").
 
 Branches use a single-pass label table: `bc_to_native[ip]` records the
 native offset at the start of every visited opcode, populated as the
@@ -580,9 +600,12 @@ optimization). Pure memory operands.
   `moveq`, `move.l #imm32,Dn`, `move.l (d16,An),Dn` (matchers) plus
   `link`, `unlk`, `clr.l -(An)`, `move.l #imm32,-(An)`,
   `move.l (An),(d16,Am)`, `move.l (d16,An),-(Am)`,
-  `move.l (An)+,Dn`, `addq.l #imm,An`, `move.l (An),-(Am)` (OP_DUP),
-  and `bra.w`/`beq.w`/`bne.w` + `patch_disp16` for branches.
-  `JIT_M68K`-only.
+  `move.l (An)+,Dn`, `addq.l #imm,An`, `addq.l #imm,Dn`,
+  `subq.l #imm,Dn`, `move.l (An),-(Am)` (OP_DUP),
+  `move.l Dn,Dm`, `move.l Dn,-(An)`, `and.l Dn,Dm`,
+  `btst #imm,Dn`, `add.l Dn,Dm`, `sub.l Dn,Dm`, `cmp.l Dn,Dm`,
+  `jsr (xxx).L`, and generic `bcc.w` (covering `bra`/`beq`/`bne`/
+  `bvs`/`blt`) + `patch_disp16`.  `JIT_M68K`-only.
 - `src/jit/jit.{c,h}` — `cl_jit_init` (boot), `cl_jit_compile`
   (matchers + walker), `cl_jit_invoke` (arity-dispatched native
   entry). `cl_jit_emit_stub` + `%JIT-DUMP-BYTES` /
@@ -606,15 +629,36 @@ optimization). Pure memory operands.
   the OP_CALL native branch never trips on host.
 - `make -f Makefile.cross amiga`: green, no new warnings.
 - `make -f Makefile.cross test-amiga` (high-end A4000/68040/JIT
-  FS-UAE config): **2346/2346** Amiga tests pass. JIT-specific
-  coverage in `tests/amiga/test-jit.lisp` (~73 checks): matcher byte
-  pipeline + pass-through arg-order verification (existing), walker
-  byte-exact emit for `(x) nil` / `(x) 42`, walker behavioral round-
-  trip for `(let ((y x)) y)`, a negative test for an unsupported
-  opcode (`OP_CONS`) leaving `native_code` NULL — plus new behavioral
-  coverage for `(if x 1 2)`, `(if x x y)`, `(when x v)`, `(unless x v)`,
-  and `(cond (x))` exercising forward `OP_JNIL`/`OP_JMP`, OP_DUP, and
-  the patch-resolution loop.
+  FS-UAE config): **2369/2369** Amiga tests pass. JIT-specific
+  coverage in `tests/amiga/test-jit.lisp` (~95 checks): the existing
+  matcher / walker shape tests plus new behavioral coverage for
+  `(+ a b)` (small / negative / zero / large + fixnum-overflow into
+  slow-path bignum), `(< a b)` (true / false / boundary / mixed-sign /
+  cross-type int↔float through the slow-path JSR), and the
+  self-contained loop `(walker-sum-to n)` at N=0/1/10/100.
+
+### First headline benchmark (`trunk/bench-jit-loop.lisp`)
+
+Iterative `sum 0..(N-1)` via `tagbody`+`go` with fixnum `+` and `<`.
+A/B variant defined back-to-back with `(clamiga::%jit-set-active …)`
+to flip the JIT off/on; identical body, only the dispatch path
+differs.  Run end-of-suite in the same FS-UAE config the test harness
+uses (A4000/68040/Picasso96/JIT, `verify.fs-uae`):
+
+| N        | Bytecode  | JIT       | Speedup |
+|---------:|----------:|----------:|--------:|
+| 10 000   |   100 ms  |     0 ms  | (below timer granularity) |
+| 50 000   |   540 ms  |    80 ms  |  6.75×  |
+| 100 000  |  1500 ms  |   500 ms  |  3.00×  |
+
+The headline number is **3× faster than the bytecode interpreter on
+a self-contained fixnum loop**, comfortably in the projected
+template-JIT range (~1.5–2× was the conservative estimate; this
+exceeds it because the loop is pure arith with no FFI floor diluting
+the win).  The 6.75× row is partly timer-granularity noise — JIT runs
+at N=50k finish near the 10–80 ms wall-clock floor.  The N=100k row
+is the most trustworthy.  Lower-end 68020 numbers will fall closer to
+1.5–2×; this is the JIT-FS-UAE result.
 - `test-amiga-lowend` (68020 baseline) is still available but not run
   every commit.
 

@@ -151,18 +151,20 @@ void m68k_emit_move_l_an_to_predec_am(CodeBuf *cb, M68kReg an, M68kReg am)
 }
 
 /* Bcc.W: opcode word 0110 cccc 0000 0000 then 16-bit signed
- * displacement.  cccc selects the condition: 0 = BRA (unconditional),
- * 6 = BNE (Z=0), 7 = BEQ (Z=1).  See M68000 PRM §4-25. */
-static void m68k_emit_bcc_w(CodeBuf *cb, uint8_t cond, int16_t disp)
+ * displacement.  cccc selects the condition: 0 = BRA, 6 = BNE,
+ * 7 = BEQ, 9 = BVS, 12 = BGE, 13 = BLT.  See M68000 PRM §4-25. */
+void m68k_emit_bcc_w(CodeBuf *cb, uint8_t cond, int16_t disp)
 {
     uint16_t enc = (uint16_t)(0x6000 | ((uint16_t)(cond & 0xF) << 8));
     cb_emit_u16(cb, enc);
     cb_emit_u16(cb, (uint16_t)disp);
 }
 
-void m68k_emit_bra_w(CodeBuf *cb, int16_t disp) { m68k_emit_bcc_w(cb, 0, disp); }
-void m68k_emit_beq_w(CodeBuf *cb, int16_t disp) { m68k_emit_bcc_w(cb, 7, disp); }
-void m68k_emit_bne_w(CodeBuf *cb, int16_t disp) { m68k_emit_bcc_w(cb, 6, disp); }
+void m68k_emit_bra_w(CodeBuf *cb, int16_t disp) { m68k_emit_bcc_w(cb,  0, disp); }
+void m68k_emit_beq_w(CodeBuf *cb, int16_t disp) { m68k_emit_bcc_w(cb,  7, disp); }
+void m68k_emit_bne_w(CodeBuf *cb, int16_t disp) { m68k_emit_bcc_w(cb,  6, disp); }
+void m68k_emit_bvs_w(CodeBuf *cb, int16_t disp) { m68k_emit_bcc_w(cb,  9, disp); }
+void m68k_emit_blt_w(CodeBuf *cb, int16_t disp) { m68k_emit_bcc_w(cb, 13, disp); }
 
 void m68k_patch_disp16(uint8_t *code, uint32_t code_len,
                        uint32_t patch_off, int16_t disp)
@@ -171,6 +173,99 @@ void m68k_patch_disp16(uint8_t *code, uint32_t code_len,
     if (patch_off + 2 > code_len) return;
     code[patch_off]     = (uint8_t)(((uint16_t)disp >> 8) & 0xFF);
     code[patch_off + 1] = (uint8_t)( (uint16_t)disp       & 0xFF);
+}
+
+/* MOVE.L Dn,Dm: src EA = 000/dn, dst EA = 000/dm.
+ * Word: 0010 dm 000 000 dn = 0x2000 | (dm<<9) | dn.  2 bytes. */
+void m68k_emit_move_l_dn_to_dm(CodeBuf *cb, M68kReg dn, M68kReg dm)
+{
+    uint16_t enc = (uint16_t)(0x2000 | ((dm & 7) << 9) | (dn & 7));
+    cb_emit_u16(cb, enc);
+}
+
+/* MOVE.L Dn,-(An): src EA = 000/dn, dst EA = 100/an.
+ * Word: 0010 an 100 000 dn = 0x2100 | (an<<9) | dn.  2 bytes. */
+void m68k_emit_move_l_dn_predec_an(CodeBuf *cb, M68kReg dn, M68kReg an)
+{
+    uint16_t enc = (uint16_t)(0x2000 | ((an & 7) << 9) |
+                              (4 << 6) | (dn & 7));
+    cb_emit_u16(cb, enc);
+}
+
+/* AND.L Dn,Dm: <ea> AND Dn → Dn form, with EA = source data register.
+ * Bits: 1100 dm 010 000 dn = 0xC080 | (dm<<9) | dn.  2 bytes. */
+void m68k_emit_and_l_dn_to_dm(CodeBuf *cb, M68kReg dn, M68kReg dm)
+{
+    uint16_t enc = (uint16_t)(0xC000 | ((dm & 7) << 9) |
+                              (2 << 6) | (dn & 7));
+    cb_emit_u16(cb, enc);
+}
+
+/* BTST #imm,Dn: 0000 100 000 000 dn first word, then 16-bit word with
+ * the bit number in the low byte (imm is masked mod 32 by the CPU
+ * for Dn destinations).  4 bytes. */
+void m68k_emit_btst_imm_dn(CodeBuf *cb, uint8_t imm, M68kReg dn)
+{
+    cb_emit_u16(cb, (uint16_t)(0x0800 | (dn & 7)));
+    cb_emit_u16(cb, (uint16_t)(imm & 0x1F));
+}
+
+/* ADD.L Dn,Dm: <ea> ADD Dn → Dn form, EA = source data register.
+ * Bits: 1101 dm 010 000 dn = 0xD080 | (dm<<9) | dn.  2 bytes. */
+void m68k_emit_add_l_dn_to_dm(CodeBuf *cb, M68kReg dn, M68kReg dm)
+{
+    uint16_t enc = (uint16_t)(0xD000 | ((dm & 7) << 9) |
+                              (2 << 6) | (dn & 7));
+    cb_emit_u16(cb, enc);
+}
+
+/* SUB.L Dn,Dm: <ea> SUB Dn → Dn form.  Bits: 1001 dm 010 000 dn =
+ * 0x9080 | (dm<<9) | dn.  2 bytes. */
+void m68k_emit_sub_l_dn_to_dm(CodeBuf *cb, M68kReg dn, M68kReg dm)
+{
+    uint16_t enc = (uint16_t)(0x9000 | ((dm & 7) << 9) |
+                              (2 << 6) | (dn & 7));
+    cb_emit_u16(cb, enc);
+}
+
+/* SUBQ.L #imm,Dn: opcode 0101 ddd 1 10 000 nnn where ddd is the 3-bit
+ * data field (1..7 encoded as 1..7, 8 encoded as 0), bit 8 = 1 marks
+ * SUBQ (vs ADDQ), size=10 (long), mode=000 (Dn).  2 bytes. */
+void m68k_emit_subq_l_dn(CodeBuf *cb, uint8_t imm, M68kReg dn)
+{
+    uint8_t data = (imm == 8) ? 0 : (uint8_t)(imm & 7);
+    uint16_t enc = (uint16_t)(0x5100 | ((uint16_t)data << 9) |
+                              (2 << 6) | (dn & 7));
+    cb_emit_u16(cb, enc);
+}
+
+/* ADDQ.L #imm,Dn: bit 8 = 0 (ADDQ).  2 bytes. */
+void m68k_emit_addq_l_dn(CodeBuf *cb, uint8_t imm, M68kReg dn)
+{
+    uint8_t data = (imm == 8) ? 0 : (uint8_t)(imm & 7);
+    uint16_t enc = (uint16_t)(0x5000 | ((uint16_t)data << 9) |
+                              (2 << 6) | (dn & 7));
+    cb_emit_u16(cb, enc);
+}
+
+/* CMP.L Dn,Dm: CMP <ea>,Dn form with EA = source data register.  The
+ * `Dn` field of the instruction is the *destination* (the register
+ * whose value is subtracted from), the EA reg field is the source.
+ * Flags reflect (Dn_field - EA_field) = Dm - Dn.
+ * Bits: 1011 dm 010 000 dn = 0xB080 | (dm<<9) | dn.  2 bytes. */
+void m68k_emit_cmp_l_dn_dm(CodeBuf *cb, M68kReg dn, M68kReg dm)
+{
+    uint16_t enc = (uint16_t)(0xB000 | ((dm & 7) << 9) |
+                              (2 << 6) | (dn & 7));
+    cb_emit_u16(cb, enc);
+}
+
+/* JSR (xxx).L: opcode 0x4EB9, then 32-bit big-endian absolute address.
+ * 6 bytes.  See M68000 PRM §4-119. */
+void m68k_emit_jsr_abs_l(CodeBuf *cb, uint32_t addr)
+{
+    cb_emit_u16(cb, 0x4EB9);
+    cb_emit_u32(cb, addr);
 }
 
 #endif /* JIT_M68K */

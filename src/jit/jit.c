@@ -387,6 +387,144 @@ static int walker_compile(const CL_Bytecode *bc, CodeBuf *cb)
             m68k_emit_move_l_an_to_predec_am(cb, REG_A7, REG_A7);
             break;
 
+        case OP_ADD: {
+            /* Inline fixnum fast path with slow-path JSR.  Mirrors the
+             * VM's OP_ADD: pop b, a; if both fixnums and the sum stays
+             * in fixnum range emit
+             *
+             *   d0 = (a + b) - 1     (one tag bit stripped)
+             *
+             * which preserves the bit-0 fixnum tag.  Otherwise call
+             * cl_jit_runtime_add(a, b) which validates types and falls
+             * through to cl_arith_add (bignum / float / ratio).
+             *
+             * Register discipline: only D0, D1, A0, A1 (caller-saved
+             * under the m68k C ABI) are touched — D2..D7 / A2..A6 are
+             * preserved by the C compiler around the call into native
+             * code, so clobbering them silently breaks the gcc-emitted
+             * cl_jit_invoke wrapper around us.  Pair of BTSTs (one per
+             * operand) replaces an AND-into-scratch tag check that
+             * would have needed D2. */
+            int32_t beq_a_pc, beq_b_pc, bvs_pc, bra_pc;
+            int32_t slow_off, done_off;
+            uint32_t add_helper = (uint32_t)(uintptr_t)&cl_jit_runtime_add;
+
+            /* Pop b into d1, a into d0. */
+            m68k_emit_move_l_postinc_an_to_dn(cb, REG_A7, REG_D1);
+            m68k_emit_move_l_postinc_an_to_dn(cb, REG_A7, REG_D0);
+
+            /* Tag check: BTST each operand's bit 0 independently. */
+            m68k_emit_btst_imm_dn(cb, 0, REG_D0);
+            beq_a_pc = (int32_t)cb_len(cb) + 2;
+            m68k_emit_beq_w(cb, 0);
+            m68k_emit_btst_imm_dn(cb, 0, REG_D1);
+            beq_b_pc = (int32_t)cb_len(cb) + 2;
+            m68k_emit_beq_w(cb, 0);
+
+            /* Fast path. */
+            m68k_emit_add_l_dn_to_dm(cb, REG_D1, REG_D0); /* d0 = a + b */
+            bvs_pc = (int32_t)cb_len(cb) + 2;
+            m68k_emit_bvs_w(cb, 0);                       /* overflow → recover+slow */
+            m68k_emit_subq_l_dn(cb, 1, REG_D0);           /* strip surplus tag */
+            m68k_emit_move_l_dn_predec_an(cb, REG_D0, REG_A7);
+            bra_pc = (int32_t)cb_len(cb) + 2;
+            m68k_emit_bra_w(cb, 0);
+
+            /* Overflow-recovery shim.  After the ADD overflows, d0
+             * holds the 32-bit-wrapped sum, not the original a; the
+             * BTST bails however land in slow_off with d0=a intact.
+             * Subtracting d1 (=b) from d0 modulo 2^32 reconstructs a,
+             * then we fall through into the common slow path. */
+            {
+                int32_t overflow_off = (int32_t)cb_len(cb);
+                m68k_emit_sub_l_dn_to_dm(cb, REG_D1, REG_D0);
+                m68k_patch_disp16(cb_data(cb), cb_len(cb),
+                                  (uint32_t)bvs_pc,
+                                  (int16_t)(overflow_off - bvs_pc));
+            }
+
+            /* Slow path: re-push args in C-ABI order (a first → at
+             * 4(a7) after JSR; b second → at 8(a7)) and call helper. */
+            slow_off = (int32_t)cb_len(cb);
+            m68k_emit_move_l_dn_predec_an(cb, REG_D1, REG_A7);
+            m68k_emit_move_l_dn_predec_an(cb, REG_D0, REG_A7);
+            m68k_emit_jsr_abs_l(cb, add_helper);
+            m68k_emit_addq_l_an(cb, 8, REG_A7);
+            m68k_emit_move_l_dn_predec_an(cb, REG_D0, REG_A7);
+            done_off = (int32_t)cb_len(cb);
+
+            m68k_patch_disp16(cb_data(cb), cb_len(cb),
+                              (uint32_t)beq_a_pc, (int16_t)(slow_off - beq_a_pc));
+            m68k_patch_disp16(cb_data(cb), cb_len(cb),
+                              (uint32_t)beq_b_pc, (int16_t)(slow_off - beq_b_pc));
+            m68k_patch_disp16(cb_data(cb), cb_len(cb),
+                              (uint32_t)bra_pc,   (int16_t)(done_off - bra_pc));
+            break;
+        }
+
+        case OP_LT: {
+            /* Inline fixnum compare with slow-path JSR.  Pop b, a;
+             * if both fixnums emit
+             *
+             *   cmp.l   d1, d0       ; flags = d0 - d1 = a - b
+             *   blt.w   push_t
+             *   clr.l   -(a7)        ; push CL_NIL
+             *   bra.w   done
+             *  push_t:
+             *   move.l  #CL_T, -(a7)
+             *   bra.w   done
+             *
+             * Otherwise call cl_jit_runtime_lt(a, b) which returns
+             * CL_T or CL_NIL directly.  Same caller-saved register
+             * discipline as OP_ADD (D0/D1 only). */
+            uint32_t lt_helper = (uint32_t)(uintptr_t)&cl_jit_runtime_lt;
+            int32_t beq_a_pc, beq_b_pc, blt_pc, bra1_pc, bra2_pc;
+            int32_t slow_off, done_off, push_t_off;
+
+            m68k_emit_move_l_postinc_an_to_dn(cb, REG_A7, REG_D1);
+            m68k_emit_move_l_postinc_an_to_dn(cb, REG_A7, REG_D0);
+
+            m68k_emit_btst_imm_dn(cb, 0, REG_D0);
+            beq_a_pc = (int32_t)cb_len(cb) + 2;
+            m68k_emit_beq_w(cb, 0);
+            m68k_emit_btst_imm_dn(cb, 0, REG_D1);
+            beq_b_pc = (int32_t)cb_len(cb) + 2;
+            m68k_emit_beq_w(cb, 0);
+
+            /* Fast path: flags from d0 - d1 = a - b. */
+            m68k_emit_cmp_l_dn_dm(cb, REG_D1, REG_D0);
+            blt_pc = (int32_t)cb_len(cb) + 2;
+            m68k_emit_blt_w(cb, 0);
+            m68k_emit_clr_l_predec(cb, REG_A7);                 /* push NIL */
+            bra1_pc = (int32_t)cb_len(cb) + 2;
+            m68k_emit_bra_w(cb, 0);
+
+            push_t_off = (int32_t)cb_len(cb);
+            m68k_emit_move_l_imm32_predec(cb, (uint32_t)CL_T, REG_A7);
+            bra2_pc = (int32_t)cb_len(cb) + 2;
+            m68k_emit_bra_w(cb, 0);
+
+            slow_off = (int32_t)cb_len(cb);
+            m68k_emit_move_l_dn_predec_an(cb, REG_D1, REG_A7);
+            m68k_emit_move_l_dn_predec_an(cb, REG_D0, REG_A7);
+            m68k_emit_jsr_abs_l(cb, lt_helper);
+            m68k_emit_addq_l_an(cb, 8, REG_A7);
+            m68k_emit_move_l_dn_predec_an(cb, REG_D0, REG_A7);
+            done_off = (int32_t)cb_len(cb);
+
+            m68k_patch_disp16(cb_data(cb), cb_len(cb),
+                              (uint32_t)beq_a_pc, (int16_t)(slow_off  - beq_a_pc));
+            m68k_patch_disp16(cb_data(cb), cb_len(cb),
+                              (uint32_t)beq_b_pc, (int16_t)(slow_off  - beq_b_pc));
+            m68k_patch_disp16(cb_data(cb), cb_len(cb),
+                              (uint32_t)blt_pc,   (int16_t)(push_t_off - blt_pc));
+            m68k_patch_disp16(cb_data(cb), cb_len(cb),
+                              (uint32_t)bra1_pc,  (int16_t)(done_off  - bra1_pc));
+            m68k_patch_disp16(cb_data(cb), cb_len(cb),
+                              (uint32_t)bra2_pc,  (int16_t)(done_off  - bra2_pc));
+            break;
+        }
+
         case OP_JMP:
         case OP_JNIL:
         case OP_JTRUE: {
@@ -656,25 +794,92 @@ static uint32_t disasm_one(const uint8_t *code, uint32_t len,
         if (data == 0) data = 8;
         snprintf(mnemonic, (size_t)msize, "addq.l #%d,a%d", data, an);
         matched = 1;
-    } else if ((op & 0xFF00) == 0x6000              /* BRA.W */
-            || (op & 0xFF00) == 0x6600              /* BNE.W */
-            || (op & 0xFF00) == 0x6700) {           /* BEQ.W */
+    } else if ((op & 0xF0FF) == 0x6000) {           /* Bcc.W (disp=0 in opcode) */
         /* Bcc with 8-bit disp field == 0 means a 16-bit displacement
-         * word follows, relative to PC = (instr_start + 2).  The
-         * walker only emits these word-displacement forms. */
+         * word follows, relative to PC = (instr_start + 2).  Condition
+         * is in bits 11-8: 0=BRA, 6=BNE, 7=BEQ, 9=BVS, 13=BLT.  Other
+         * conditions decode as bXX.w with the numeric condition for
+         * readability. */
+        static const char *cc_names[16] = {
+            "bra", "bsr", "bhi", "bls", "bcc", "bcs", "bne", "beq",
+            "bvc", "bvs", "bpl", "bmi", "bge", "blt", "bgt", "ble"
+        };
         int16_t d;
-        const char *mnem;
+        int cond = (op >> 8) & 0xF;
         long target;
         if (pos + 2 > len) return 0;
         d = (int16_t)(((uint16_t)code[pos] << 8) | code[pos + 1]);
         pos += 2;
         target = (long)offset + 2L + (long)d;
-        switch (op & 0xFF00) {
-        case 0x6000: mnem = "bra.w"; break;
-        case 0x6600: mnem = "bne.w"; break;
-        default:     mnem = "beq.w"; break;
+        snprintf(mnemonic, (size_t)msize, "%s.w %ld",
+                 cc_names[cond], target);
+        matched = 1;
+    } else if (op == 0x4EB9) {                      /* JSR (xxx).L */
+        uint32_t addr;
+        if (pos + 4 > len) return 0;
+        addr = ((uint32_t)code[pos]     << 24)
+             | ((uint32_t)code[pos + 1] << 16)
+             | ((uint32_t)code[pos + 2] <<  8)
+             |  (uint32_t)code[pos + 3];
+        pos += 4;
+        snprintf(mnemonic, (size_t)msize, "jsr $%08lx", (unsigned long)addr);
+        matched = 1;
+    } else if ((op & 0xFFC0) == 0x0800) {           /* BTST #imm,<ea> (static) */
+        /* Two-word form: 0000 1000 00 mmm rrr + 16-bit imm word.  We
+         * only emit BTST #imm,Dn (mode 000). */
+        int mode = (op >> 3) & 7;
+        int reg  = op & 7;
+        uint16_t imm_word;
+        if (pos + 2 > len) return 0;
+        imm_word = (uint16_t)(((uint16_t)code[pos] << 8) | code[pos + 1]);
+        pos += 2;
+        if (mode == 0) {
+            snprintf(mnemonic, (size_t)msize, "btst #%u,d%d",
+                     (unsigned)(imm_word & 0x1F), reg);
+        } else {
+            snprintf(mnemonic, (size_t)msize, "btst #%u,<ea>",
+                     (unsigned)(imm_word & 0x1F));
         }
-        snprintf(mnemonic, (size_t)msize, "%s %ld", mnem, target);
+        matched = 1;
+    } else if ((op & 0xF000) == 0xC000
+            && ((op >> 6) & 7) == 2
+            && ((op >> 3) & 7) == 0) {              /* AND.L Dn,Dm */
+        int dm = (op >> 9) & 7;
+        int dn = op & 7;
+        snprintf(mnemonic, (size_t)msize, "and.l d%d,d%d", dn, dm);
+        matched = 1;
+    } else if ((op & 0xF000) == 0xD000
+            && ((op >> 6) & 7) == 2
+            && ((op >> 3) & 7) == 0) {              /* ADD.L Dn,Dm */
+        int dm = (op >> 9) & 7;
+        int dn = op & 7;
+        snprintf(mnemonic, (size_t)msize, "add.l d%d,d%d", dn, dm);
+        matched = 1;
+    } else if ((op & 0xF000) == 0x9000
+            && ((op >> 6) & 7) == 2
+            && ((op >> 3) & 7) == 0) {              /* SUB.L Dn,Dm */
+        int dm = (op >> 9) & 7;
+        int dn = op & 7;
+        snprintf(mnemonic, (size_t)msize, "sub.l d%d,d%d", dn, dm);
+        matched = 1;
+    } else if ((op & 0xF000) == 0xB000
+            && ((op >> 6) & 7) == 2
+            && ((op >> 3) & 7) == 0) {              /* CMP.L Dn,Dm */
+        int dm = (op >> 9) & 7;
+        int dn = op & 7;
+        snprintf(mnemonic, (size_t)msize, "cmp.l d%d,d%d", dn, dm);
+        matched = 1;
+    } else if ((op & 0xF1C0) == 0x5080) {           /* ADDQ.L #imm,Dn */
+        int data = (op >> 9) & 7;
+        int dn = op & 7;
+        if (data == 0) data = 8;
+        snprintf(mnemonic, (size_t)msize, "addq.l #%d,d%d", data, dn);
+        matched = 1;
+    } else if ((op & 0xF1C0) == 0x5180) {           /* SUBQ.L #imm,Dn */
+        int data = (op >> 9) & 7;
+        int dn = op & 7;
+        if (data == 0) data = 8;
+        snprintf(mnemonic, (size_t)msize, "subq.l #%d,d%d", data, dn);
         matched = 1;
     } else if ((op & 0xF000) == 0x2000) {           /* MOVE.L src,dst */
         int dst_reg = (op >> 9) & 7;
@@ -810,6 +1015,8 @@ CL_Obj cl_jit_invoke(CL_Bytecode *bc, int nargs)
 }
 
 int cl_jit_enabled(void) { return jit_active; }
+
+void cl_jit_set_active(int active) { jit_active = active ? 1 : 0; }
 
 int cl_jit_emit_stub(CL_Bytecode *bc)
 {
