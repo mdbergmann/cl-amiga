@@ -657,12 +657,10 @@
 ; cl_vm_apply — so closures, builtins, and JIT'd callees all route
 ; through the standard call path.
 ;
-; OP_TAILCALL is *not* handled by the walker — it'd need frame-reuse
-; semantics the walker doesn't model, and bailing keeps tail-
-; recursive shapes interpreted (correct, just slower).  That means
-; every test below uses a let-binding wrapper `(let ((r expr)) r)`
-; to force the call out of tail position, otherwise the compiler
-; emits OP_TAILCALL and the body never JITs.
+; OP_TAILCALL has its own walker case (covered in the section below);
+; the tests in *this* section use a let-binding wrapper `(let ((r
+; expr)) r)` to force the call out of tail position so the OP_CALL
+; emitter is exercised specifically.
 ;
 ; Coverage: 0/1/3-arg calls, calls to builtins (CL_FUNCTION_P branch
 ; in cl_vm_apply), JIT-to-JIT chains, recursive fixnum loops (fib),
@@ -758,6 +756,107 @@
 ; Further calls still work after the longjmp unwind.
 (check "walker-call-recover-after-error" 42
   (walker-call-id 42))
+
+; --- OP_TAILCALL.  Same call sequence as OP_CALL (cache_flush, marshal
+; args, JSR cl_jit_runtime_call, drop the arg frame), but instead of
+; pushing the helper's D0 result onto the operand stack the emitter
+; restores D5/D6/D7 from their A6 slots, UNLKs the frame, and RTSes
+; directly with D0 still holding the callee's result.  The OP_RET that
+; the compiler always emits after OP_TAILCALL becomes dead unreachable
+; native code on the falling-through path (still emitted by the walker
+; in case other branches land there, just never reached here).
+;
+; Note: this is not native-level TCO — each tail call still grows the
+; m68k call stack by one C frame because cl_jit_runtime_call → cl_vm_apply
+; recurses into cl_jit_invoke for JIT'd callees.  Deep self-recursion
+; can therefore still blow the m68k stack; the win here is correctness
+; (functions ending in tail calls now JIT instead of bailing) plus the
+; saved push/pop round-trip.
+
+; Tail call to a plain user function.  Bare `(walker-tail-target x)` in
+; tail position emits OP_TAILCALL; arg-passing order check (single
+; arg).
+(defun walker-tail-target (x) x)
+(defun walker-tail-id (x) (walker-tail-target x))
+(check "walker-tail-id-counter-bump" t
+  (let ((before (clamiga::%jit-invoke-count)))
+    (walker-tail-id 1)
+    (> (clamiga::%jit-invoke-count) before)))
+(check "walker-tail-id-fix"  42    (walker-tail-id 42))
+(check "walker-tail-id-sym"  'q    (walker-tail-id 'q))
+(check "walker-tail-id-nil"  nil   (walker-tail-id nil))
+(check "walker-tail-id-cons" '(a b) (walker-tail-id '(a b)))
+
+; 3-arg tail call selecting different slots — same arg-passing
+; coverage as the OP_CALL version above, just from tail position.
+(defun walker-tail-3-first (a b c)
+  (walker-call-target-3-first a b c))
+(defun walker-tail-3-mid (a b c)
+  (walker-call-target-3-mid a b c))
+(defun walker-tail-3-last (a b c)
+  (walker-call-target-3-last a b c))
+(check "walker-tail-3-first" 'one   (walker-tail-3-first 'one 'two 'three))
+(check "walker-tail-3-mid"   'two   (walker-tail-3-mid   'one 'two 'three))
+(check "walker-tail-3-last"  'three (walker-tail-3-last  'one 'two 'three))
+
+; Tail call to a CL builtin — tail position picks the same OP_TAILCALL
+; opcode regardless of callee kind; cl_vm_apply routes to call_builtin.
+(defun walker-tail-cons (a b) (cons a b))
+(check "walker-tail-cons-fixnums" '(1 . 2) (walker-tail-cons 1 2))
+(check "walker-tail-cons-symbols" '(a . b) (walker-tail-cons 'a 'b))
+
+; Tail call inside an IF branch — the most common shape in practice.
+; The IF emits a conditional JNIL/JTRUE branch over the two arms; the
+; tail-position arms each emit OP_TAILCALL.  Cache invariant: every
+; branch target lands with cache_depth=0, and the OP_TAILCALL emitter
+; flushes before its JSR, so the post-flush state on either arm
+; matches the canonical empty cache.
+(defun walker-tail-if (flag x y)
+  (if flag (walker-tail-target x) (walker-tail-target y)))
+(check "walker-tail-if-true"  'a (walker-tail-if t   'a 'b))
+(check "walker-tail-if-false" 'b (walker-tail-if nil 'a 'b))
+(check "walker-tail-if-fix-t" 10 (walker-tail-if t   10 20))
+(check "walker-tail-if-fix-f" 20 (walker-tail-if nil 10 20))
+
+; Self-recursion accumulator — every recursive call is in tail
+; position, so the loop runs entirely through OP_TAILCALL.  Σ 1..N =
+; N*(N+1)/2.
+;
+; Why N stays modest: this walker has no native-level TCO.  Every
+; tail call goes JIT'd → cl_jit_runtime_call → cl_vm_apply →
+; cl_jit_invoke → JIT'd, growing the m68k C stack by one full set of
+; frames.  cl_jit_runtime_call's own CL_Obj args[256] buffer alone
+; burns ~1 KB per level, so against the 65 KB AmigaOS default stack
+; (`stack 65000` in user-startup) we keep N well under ~30 to leave
+; headroom.  The bytecode VM has real frame reuse on cl_vm.stack and
+; could go deeper; this restriction is JIT-specific.
+(defun walker-tail-sum (n acc)
+  (if (zerop n)
+      acc
+      (walker-tail-sum (- n 1) (+ acc n))))
+(check "walker-tail-sum-counter-bump" t
+  (let ((before (clamiga::%jit-invoke-count)))
+    (walker-tail-sum 5 0)
+    (> (clamiga::%jit-invoke-count) before)))
+(check "walker-tail-sum-0"  0   (walker-tail-sum 0  0))
+(check "walker-tail-sum-1"  1   (walker-tail-sum 1  0))
+(check "walker-tail-sum-10" 55  (walker-tail-sum 10 0))
+(check "walker-tail-sum-20" 210 (walker-tail-sum 20 0))
+
+; Tail call to undefined function: OP_FLOAD signals via cl_error →
+; longjmp out of the JIT'd frame.  handler-case catches; subsequent
+; JIT'd calls must still work after the unwind (the LINK frame and
+; saved D5/D6/D7 don't get restored on the longjmp path, but the
+; m68k C-ABI doesn't require it across the unwind because the
+; caller's setjmp restored its own context).
+(defun walker-tail-undef ()
+  (no-such-tailcall-target-please))
+(check "walker-tail-undef-signals" :caught
+  (handler-case (progn (walker-tail-undef) :no-error)
+    (undefined-function () :caught)
+    (error              () :caught)))
+(check "walker-tail-recover-after-error" 42
+  (walker-tail-id 42))
 
 ; --- OP_GLOAD / OP_GSTORE.  Global/special-variable load and store:
 ;

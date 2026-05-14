@@ -19,7 +19,8 @@
  *     OP_STORE, OP_POP, OP_DUP, OP_JMP, OP_JNIL, OP_JTRUE, OP_ADD,
  *     OP_SUB, OP_MUL, OP_EQ, OP_LT, OP_GT, OP_LE, OP_GE, OP_NUMEQ,
  *     OP_NOT, OP_CAR, OP_CDR, OP_GLOAD, OP_GSTORE, OP_FLOAD, OP_CALL,
- *     OP_STRUCT_REF, OP_STRUCT_SET, OP_DYNBIND, OP_DYNUNBIND, OP_RET.
+ *     OP_TAILCALL, OP_STRUCT_REF, OP_STRUCT_SET, OP_DYNBIND,
+ *     OP_DYNUNBIND, OP_RET.
  *     Adding an opcode means adding one
  *     emitter case and one or two new asm encoders — the walker
  *     handles the composition.
@@ -592,7 +593,7 @@ static int prescan_branch_targets(const CL_Bytecode *bc, uint8_t *is_target)
         case OP_ADD: case OP_SUB: case OP_MUL:
         case OP_LT: case OP_GT: case OP_LE: case OP_GE: case OP_NUMEQ:
             step = 1; break;
-        case OP_LOAD: case OP_STORE: case OP_CALL:
+        case OP_LOAD: case OP_STORE: case OP_CALL: case OP_TAILCALL:
         case OP_STRUCT_REF: case OP_STRUCT_SET: case OP_DYNUNBIND:
             step = 2; break;
         case OP_CONST: case OP_GLOAD: case OP_GSTORE:
@@ -942,6 +943,49 @@ static int walker_compile(const CL_Bytecode *bc, CodeBuf *cb)
             m68k_emit_addq_l_an(cb, 8, REG_A7);
             m68k_emit_lea_disp_an_to_am(cb, drop_bytes, REG_A7, REG_A7);
             cache_push_dn(cb, &cache_head, &cache_depth, REG_D0);
+            break;
+        }
+
+        case OP_TAILCALL: {
+            /* u8 nargs.  Same call sequence as OP_CALL — JIT'd code
+             * runs as a plain native C function (no cl_vm.fp Lisp
+             * frame to reuse), so "frame reuse" here means: skip the
+             * round-trip of pushing the helper's D0 result onto the
+             * operand stack only to have OP_RET pop it back, and
+             * instead tear down our own LINK frame and RTS directly
+             * with D0 holding the callee's return value.  The compiler
+             * always emits OP_RET immediately after OP_TAILCALL; that
+             * OP_RET will still emit its own restore + unlk + rts
+             * sequence below, but as dead native code unreachable from
+             * the falling-through path.  Native-level TCO (no m68k-
+             * stack growth on self-recursion) would need a trampoline
+             * in cl_jit_invoke or compile-time self-recursion
+             * detection — not done here. */
+            uint8_t nargs;
+            uint32_t helper = (uint32_t)(uintptr_t)&cl_jit_runtime_call;
+            int16_t drop_bytes;
+            if (ip >= bc->code_len) goto fail;
+            nargs = bc->code[ip++];
+            drop_bytes = (int16_t)(4 * ((int32_t)nargs + 1));
+
+            cache_flush(cb, &cache_head, &cache_depth);
+            m68k_emit_move_l_an_to_am(cb, REG_A7, REG_A0);
+            m68k_emit_move_l_imm32_predec(cb, (uint32_t)nargs, REG_A7);
+            m68k_emit_move_l_an_predec_am(cb, REG_A0, REG_A7);
+            m68k_emit_jsr_abs_l(cb, helper);
+            m68k_emit_addq_l_an(cb, 8, REG_A7);
+            m68k_emit_lea_disp_an_to_am(cb, drop_bytes, REG_A7, REG_A7);
+
+            /* Result already in D0; restore callee-saved cache regs
+             * from their A6-relative slots and return to our caller.
+             * Cache is depth=0 from the flush above, matching the
+             * canonical state at branch boundaries — safe for any
+             * later branch target that lands past us. */
+            m68k_emit_move_l_disp_an_to_dn(cb, saved_d7_disp, REG_A6, REG_D7);
+            m68k_emit_move_l_disp_an_to_dn(cb, saved_d6_disp, REG_A6, REG_D6);
+            m68k_emit_move_l_disp_an_to_dn(cb, saved_d5_disp, REG_A6, REG_D5);
+            m68k_emit_unlk_an(cb, REG_A6);
+            m68k_emit_rts(cb);
             break;
         }
 
