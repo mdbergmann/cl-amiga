@@ -26,8 +26,11 @@
  * (and error messages) consistent across the two execution modes. */
 extern CL_Obj cl_arith_add(CL_Obj a, CL_Obj b);
 extern CL_Obj cl_arith_sub(CL_Obj a, CL_Obj b);
+extern CL_Obj cl_arith_mul(CL_Obj a, CL_Obj b);
 extern int    cl_arith_compare(CL_Obj a, CL_Obj b);
 extern int    cl_numeric_equal(CL_Obj a, CL_Obj b);
+extern CL_Obj cl_car(CL_Obj obj);
+extern CL_Obj cl_cdr(CL_Obj obj);
 
 void cl_jit_runtime_init(void)
 {
@@ -92,6 +95,27 @@ CL_Obj cl_jit_runtime_numeq(CL_Obj a, CL_Obj b)
     if (!CL_NUMBER_P(b)) cl_signal_type_error(b, "NUMBER", "=");
     return cl_numeric_equal(a, b) ? CL_T : CL_NIL;
 }
+
+/* Slow-path `*` (2 args).  No fixnum inline fast path on the JIT side
+ * — `*` is rare in tight inner loops, and the MULS.L encoding would
+ * roughly double the size of asm_m68k.c for marginal benefit.  All MUL
+ * traffic from JIT'd code lands here; the helper itself preserves the
+ * VM's inline fixnum fast path inside cl_arith_mul, so fixnum-only
+ * MULs are still about as fast as bytecode (just one extra JSR per
+ * call instead of inline). */
+CL_Obj cl_jit_runtime_mul(CL_Obj a, CL_Obj b)
+{
+    if (!CL_NUMBER_P(a)) cl_signal_type_error(a, "NUMBER", "*");
+    if (!CL_NUMBER_P(b)) cl_signal_type_error(b, "NUMBER", "*");
+    return cl_arith_mul(a, b);
+}
+
+/* Backing for OP_CAR / OP_CDR — pure pass-through to cl_car / cl_cdr,
+ * which already handle NIL→NIL, LIST type-errors with the same
+ * diagnostic the bytecode VM prints, and the unbound-variable case.
+ * Non-allocating, so GC-safe even without precise stack scanning. */
+CL_Obj cl_jit_runtime_car(CL_Obj obj) { return cl_car(obj); }
+CL_Obj cl_jit_runtime_cdr(CL_Obj obj) { return cl_cdr(obj); }
 
 /* Backing for OP_STRUCT_REF: read slot at `idx` from `obj`.  Mirrors
  * the VM's OP_STRUCT_REF exactly: validate STRUCTURE type then check

@@ -17,10 +17,10 @@
  *
  *     Currently supported opcodes: OP_NIL, OP_T, OP_CONST, OP_LOAD,
  *     OP_STORE, OP_POP, OP_DUP, OP_JMP, OP_JNIL, OP_JTRUE, OP_ADD,
- *     OP_SUB, OP_EQ, OP_LT, OP_GT, OP_LE, OP_GE, OP_NUMEQ, OP_NOT,
- *     OP_STRUCT_REF, OP_STRUCT_SET, OP_RET.  Adding an opcode means
- *     adding one emitter case and one or two new asm encoders — the
- *     walker handles the composition.
+ *     OP_SUB, OP_MUL, OP_EQ, OP_LT, OP_GT, OP_LE, OP_GE, OP_NUMEQ,
+ *     OP_NOT, OP_CAR, OP_CDR, OP_STRUCT_REF, OP_STRUCT_SET, OP_RET.
+ *     Adding an opcode means adding one emitter case and one or two
+ *     new asm encoders — the walker handles the composition.
  *
  * See specs/native-backend.md §"Per-opcode emitter shape".
  */
@@ -518,6 +518,49 @@ static int walker_compile(const CL_Bytecode *bc, CodeBuf *cb)
             emit_arith(cb, /*is_sub=*/1,
                        (uint32_t)(uintptr_t)&cl_jit_runtime_sub);
             break;
+
+        case OP_MUL: {
+            /* JSR-only template: pop b, pop a, push b, push a (m68k C
+             * ABI right-to-left), JSR helper, drop args, push result.
+             * No inline fixnum fast path — `*` is rare in tight loops
+             * and the MULS.L encoding would roughly double asm_m68k.c
+             * for negligible payoff.  cl_jit_runtime_mul preserves the
+             * VM's inline fixnum fast path inside cl_arith_mul, so the
+             * only extra cost vs. bytecode is one JSR per call.
+             *
+             * OP_DIV is deliberately not handled here: today's compiler
+             * never emits OP_DIV (inline_builtin_opcode covers `+ - * =
+             * < >` but not `/`), so a walker case for it would be
+             * unreachable and untestable.  Will land alongside the
+             * compiler change if `/` ever gets inlined. */
+            uint32_t helper = (uint32_t)(uintptr_t)&cl_jit_runtime_mul;
+            m68k_emit_move_l_postinc_an_to_dn(cb, REG_A7, REG_D1);   /* pop b */
+            m68k_emit_move_l_postinc_an_to_dn(cb, REG_A7, REG_D0);   /* pop a */
+            m68k_emit_move_l_dn_predec_an(cb, REG_D1, REG_A7);       /* push b */
+            m68k_emit_move_l_dn_predec_an(cb, REG_D0, REG_A7);       /* push a */
+            m68k_emit_jsr_abs_l(cb, helper);
+            m68k_emit_addq_l_an(cb, 8, REG_A7);                      /* drop args */
+            m68k_emit_move_l_dn_predec_an(cb, REG_D0, REG_A7);       /* push result */
+            break;
+        }
+
+        case OP_CAR:
+        case OP_CDR: {
+            /* JSR-only template: pop obj, push obj, JSR helper, drop,
+             * push result.  cl_car / cl_cdr already handle the full
+             * spec (NIL→NIL, LIST type-error, unbound-variable
+             * diagnostic), so the helper is a one-line forward.
+             * Non-allocating → GC-safe even without stack scanning. */
+            uint32_t helper = (op == OP_CAR)
+                ? (uint32_t)(uintptr_t)&cl_jit_runtime_car
+                : (uint32_t)(uintptr_t)&cl_jit_runtime_cdr;
+            m68k_emit_move_l_postinc_an_to_dn(cb, REG_A7, REG_D0);   /* pop obj */
+            m68k_emit_move_l_dn_predec_an(cb, REG_D0, REG_A7);       /* push obj */
+            m68k_emit_jsr_abs_l(cb, helper);
+            m68k_emit_addq_l_an(cb, 4, REG_A7);                      /* drop arg */
+            m68k_emit_move_l_dn_predec_an(cb, REG_D0, REG_A7);       /* push result */
+            break;
+        }
 
         case OP_LT:
             emit_compare(cb, /*BLT*/13,
