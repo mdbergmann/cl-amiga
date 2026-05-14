@@ -445,6 +445,83 @@
 (check "walker-not-cons"       nil (walker-not '(1 2 3)))
 (check "walker-not-empty-list" t   (walker-not '()))  ; () is NIL
 
+; --- OP_STRUCT_REF / OP_STRUCT_SET.  Defstruct accessors compile to
+; `(%struct-ref obj <idx>)` and `(%struct-set obj <idx> val)`, which
+; emit the OP_STRUCT_REF/OP_STRUCT_SET opcodes.  The walker's template
+; is JSR-based: pop, push args, JSR cl_jit_runtime_struct_{ref,set},
+; clean up the stack, push the helper's return value.  Helper mirrors
+; the VM (same STRUCTURE type-check + bounds-check + error messages),
+; and is non-allocating so no GC concerns even without precise stack
+; scanning.
+
+(defstruct jit-point x y z)
+
+; Accessor reader — get-x emits LOAD 0 ; STRUCT_REF 0 ; postlude.
+(defun walker-point-x (p) (jit-point-x p))
+(defun walker-point-y (p) (jit-point-y p))
+(defun walker-point-z (p) (jit-point-z p))
+
+(check "walker-point-x-counter-bump" t
+  (let ((before (clamiga::%jit-invoke-count))
+        (p (make-jit-point :x 10 :y 20 :z 30)))
+    (walker-point-x p)
+    (> (clamiga::%jit-invoke-count) before)))
+
+(check "walker-point-x-fixnum" 10
+  (walker-point-x (make-jit-point :x 10 :y 20 :z 30)))
+(check "walker-point-y-fixnum" 20
+  (walker-point-y (make-jit-point :x 10 :y 20 :z 30)))
+(check "walker-point-z-fixnum" 30
+  (walker-point-z (make-jit-point :x 10 :y 20 :z 30)))
+(check "walker-point-x-nil"    nil
+  (walker-point-x (make-jit-point :x nil :y 20 :z 30)))
+(check "walker-point-x-symbol" 'hello
+  (walker-point-x (make-jit-point :x 'hello :y 20 :z 30)))
+(check "walker-point-x-cons"   '(1 2 3)
+  (walker-point-x (make-jit-point :x '(1 2 3) :y 20 :z 30)))
+
+; Type error on non-struct: the helper signals STRUCTURE type-error.
+; handler-case lets us assert the signal happens without aborting tests.
+(check "walker-point-x-type-error" :caught
+  (handler-case (progn (walker-point-x 42) :no-error)
+    (type-error () :caught)))
+(check "walker-point-x-type-error-nil" :caught
+  (handler-case (progn (walker-point-x nil) :no-error)
+    (type-error () :caught)))
+
+; --- Setter: setf-of-accessor emits OP_STRUCT_SET.
+(defun walker-set-point-x (p v) (setf (jit-point-x p) v))
+(defun walker-set-point-z (p v) (setf (jit-point-z p) v))
+
+(check "walker-set-point-x-counter-bump" t
+  (let ((before (clamiga::%jit-invoke-count))
+        (p (make-jit-point :x 0 :y 0 :z 0)))
+    (walker-set-point-x p 99)
+    (> (clamiga::%jit-invoke-count) before)))
+
+; The setter returns the stored value (CL `setf` semantics).
+(check "walker-set-point-x-returns-val" 99
+  (walker-set-point-x (make-jit-point :x 0 :y 0 :z 0) 99))
+
+; Round-trip: store via walker-set, read via walker-point.
+(check "walker-struct-roundtrip-x" 99
+  (let ((p (make-jit-point :x 0 :y 0 :z 0)))
+    (walker-set-point-x p 99)
+    (walker-point-x p)))
+(check "walker-struct-roundtrip-z" 'tag
+  (let ((p (make-jit-point :x 0 :y 0 :z 0)))
+    (walker-set-point-z p 'tag)
+    (walker-point-z p)))
+; Setting one slot doesn't disturb the others.
+(check "walker-struct-set-leaves-others" '(99 20 30)
+  (let ((p (make-jit-point :x 10 :y 20 :z 30)))
+    (walker-set-point-x p 99)
+    (list (jit-point-x p) (jit-point-y p) (jit-point-z p))))
+
+(check "walker-set-point-x-type-error" :caught
+  (handler-case (progn (walker-set-point-x 'not-a-struct 1) :no-error)
+    (type-error () :caught)))
+
 ; --- OP_EQ in conditional context: `(cond ((eq x 'a) 1) ((eq x 'b) 2))`.
 ; Pulls together OP_EQ + OP_DUP + OP_JNIL + branch resolution within a
 ; single function.
