@@ -506,71 +506,73 @@ target.
 
 ## Status (2026-05-14)
 
-Approach (1) — the template JIT — is in flight. The matcher covers
-the full `(defun f () <literal>)` family: OP_NIL, OP_T, and OP_CONST
-constant-pool entries all auto-compile to a single immediate-load + rts,
-choosing `moveq` when the tagged value fits signed 8-bit and
-`move.l #imm32,Dn` otherwise. The hook runs on both source-compile
-and FASL-load paths, so cached functions JIT exactly like fresh ones.
-Every other function shape still leaves `bc->native_code == NULL` and
-runs through the bytecode interpreter.
+Approach (1) is in flight. Two function shapes auto-compile today; every
+other shape leaves `bc->native_code == NULL` and runs interpreted. The
+JIT hook fires on both source-compile and FASL-load paths, so cached
+functions JIT exactly like fresh ones.
 
-### Landed
+**Compiled shapes**
 
-| Commit    | Adds                                                       |
-|-----------|------------------------------------------------------------|
-| `b09ad70` | `src/jit/{jit,codegen_m68k,asm_m68k,runtime}.{c,h}` skeleton; `cl_jit_init` boot hook; `cl_jit_compile` call sites in `compiler.c`; `CL_Bytecode.native_code`/`native_len` fields; `Makefile.cross` gets `-DJIT_M68K`; host gets inline-stub `cl_jit_*` so call sites are identical everywhere |
-| `8acf12d` | `make -f Makefile.cross test-amiga` now defaults to the high-end `verify.fs-uae` (A4000/68040/JIT) for faster verification; `test-amiga-lowend` is the explicit 68020 baseline target |
-| `e19b496` | `src/jit/codebuf.{c,h}` — growable byte buffer with sticky-OOM, big-endian `emit_u16/u32`, ownership-transfer `cb_finish`. Portable (compiles into both builds). `tests/test_codebuf.c`: 11 host unit tests, all green |
-| `c37a83b` | `m68k_emit_nop` (0x4E71) and `m68k_emit_rts` (0x4E75) in `src/jit/asm_m68k.c`. Kept under `JIT_M68K`; verification path is FS-UAE end-to-end |
-| `59359b2` | `cl_jit_emit_stub()` in `jit.c`: emits NOP+RTS into `bc->native_code` via CodeBuf + the asm encoders. Exposed as `clamiga::%JIT-DUMP-BYTES` and `clamiga::%JIT-COMPILE-STUB` builtins. Three checks added at the top of the Amiga test suite's `#+amigaos` block to verify the byte pipeline end-to-end |
-| `20d7fab` | First real codegen + dispatch round-trip. `cl_jit_compile` recognizes the canonical 7-byte body for `(defun f () nil)` (arity 0, n_locals 1, `OP_NIL ; OP_STORE 0 ; OP_POP ; OP_LOAD 0 ; OP_RET`) and emits `moveq #0,d0 ; rts`. `cl_jit_invoke` casts `bc->native_code` to a no-arg function pointer and calls it; the m68k SysV ABI puts `CL_NIL` (= 0) in D0 on return. `vm.c` OP_CALL gains a `if (callee_bc->native_code && !is_tail && !traced)` branch that pops args, invokes native, pushes the result — mirroring the builtin dispatch path one branch above. `m68k_emit_moveq` lands in `asm_m68k.c`; `platform_cache_clear` lands in platform.h with `CacheClearU()` on Amiga and a no-op on POSIX. New `%JIT-INVOKE-COUNT` builtin proves the native path was taken (a bytecode interpretation would return the same value). Three `jit-roundtrip-*` checks in `tests/amiga/run-tests.lisp` exercise the full pipeline; all 2273 Amiga tests pass on the high-end FS-UAE config |
-| (this commit) | Matcher generalizes to **OP_T and OP_CONST** (any constant-pool entry). New `m68k_emit_move_l_imm32` encoder handles values that don't fit `moveq`'s signed 8-bit immediate (CL_T, larger fixnums, heap pointers). `fasl.c` now calls `cl_jit_compile` after deserializing each `CL_Bytecode` — without this, FASL-cached functions never got native code on subsequent loads, only on the first source-compile. JIT tests move into their own `tests/amiga/test-jit.lisp` so coverage can grow without bloating the core test file; loaded from `run-tests.lisp` the same way `test-gui.lisp` is. 11 JIT checks covering: stub byte-pipeline (3), NIL round-trip (3), positive/negative fixnum via moveq (4), larger fixnum via move.l (2), T via move.l shape (2). 2281/2281 Amiga tests pass on the high-end FS-UAE config |
+| Shape                         | Native code                       | Size |
+|-------------------------------|-----------------------------------|------|
+| `(defun f () <literal>)`      | `moveq #imm,d0 ; rts`             | 4 B  |
+| (literal too big for moveq)   | `move.l #imm32,d0 ; rts`          | 8 B  |
+| `(defun f (x) x)`             | `move.l 4(a7),d0 ; rts`           | 6 B  |
 
-### Verified
+Literal coverage: `OP_NIL`, `OP_T`, `OP_CONST` (any constant-pool entry,
+including heap pointers like `CL_T`). `moveq` is chosen when the tagged
+value fits signed 8-bit, `move.l #imm32` otherwise. Arg passing for the
+1-arg case follows the m68k SysV C ABI — `cl_jit_invoke` casts
+`bc->native_code` to a function-pointer type matching `nargs` and
+passes args through normal calling convention; native code reads them
+off `4(sp)`, `8(sp)`, etc. No trampoline, no stack cache yet.
 
-- Host build (`make host`) and host test suite (`make test`) green —
-  the JIT entry points are no-ops on host (`cl_jit_compile` is an
-  inline stub; `bc->native_code` always NULL; the new OP_CALL branch
-  never trips).
-- Cross build (`make -f Makefile.cross amiga`) green, no new
-  warnings.
-- FS-UAE (high-end A4000/68040/JIT config): all **2281** Amiga tests
-  pass on consecutive runs (first run hits the source-compile JIT
-  hook, subsequent runs hit the FASL-load JIT hook — both produce
-  identical native code, verified by byte-level checks). Covered
-  shapes: `(defun f () nil)` → 4-byte moveq+rts; small/negative
-  fixnum body → 4-byte moveq+rts via sign-extension; larger fixnum →
-  8-byte move.l+rts; `(defun f () t)` → 8-byte move.l+rts with the
-  embedded immediate being the runtime CL_T symbol pointer.
-- Boot on FS-UAE prints `; [jit] m68k template backend:
-  trivial-literal-leaf only` confirming `cl_jit_init` runs.
+**Layout**
 
-### Up next (in roughly this order)
+- `src/jit/codebuf.{c,h}` — growable byte buffer, sticky-OOM,
+  big-endian emitters, ownership-transfer `cb_finish`. Portable
+  (host + cross). 11 host unit tests in `tests/test_codebuf.c`.
+- `src/jit/asm_m68k.{c,h}` — m68k encoders. Currently: `nop`, `rts`,
+  `moveq`, `move.l #imm32,Dn`, `move.l (d16,An),Dn`. `JIT_M68K`-only.
+- `src/jit/jit.{c,h}` — `cl_jit_init` (boot), `cl_jit_compile` (matcher
+  + emit), `cl_jit_invoke` (arity-dispatched native entry).
+  `cl_jit_emit_stub` + `%JIT-DUMP-BYTES` / `%JIT-COMPILE-STUB` /
+  `%JIT-INVOKE-COUNT` builtins for Lisp-level introspection.
+- `src/jit/{codegen_m68k,runtime}.{c,h}` — pre-allocated for staging-2
+  but unused.
+- `CL_Bytecode.native_code` / `.native_len` fields; `Makefile.cross`
+  defines `-DJIT_M68K`; host gets inline `cl_jit_*` no-ops so call
+  sites are identical everywhere.
+- `vm.c` `OP_CALL` has a native fast-path branch
+  (`if (callee_bc->native_code && !is_tail && !traced)`) sitting just
+  after the arity check.
+- FASL deserializer (`fasl.c`) calls `cl_jit_compile` after building
+  each `CL_Bytecode`, so source-compile and cache-load produce
+  byte-identical native code.
 
-1. **One-arg pass-through (`(defun f (x) x)`).** Argument lives at
-   `cl_vm.stack[sp-1]` at native entry. Either the trampoline loads
-   it into D2 before calling, or `cl_jit_invoke` passes args as C
-   function-pointer args and the generated code reads them via the
-   normal m68k C calling convention. First real arg-passing design
-   decision. Forces `move.l Dm,Dn` and `move.l (An),Dn` encoders.
-2. **Remaining staging-1 opcodes** (`LOAD`, `STORE`, `POP`, `ADD`,
-   `LT`, `JNIL`, `JMP`, `HALT`). Each lands with a Lisp-level test
-   exercising a function shape that requires it.
-3. **Stack cache (D5/D6/D7)** — the design choice highlighted in
-   §"Calling convention for emitted code" that moves projected FPS
-   from ~720 to ~970. First three slots of the VM stack live in
-   registers between adjacent emitter outputs.
+**Verification**
 
-### Design notes still standing
+- `make host` + `make test`: green. JIT entry points are inline no-ops;
+  the OP_CALL native branch never trips on host.
+- `make -f Makefile.cross amiga`: green, no new warnings.
+- `make -f Makefile.cross test-amiga` (high-end A4000/68040/JIT
+  FS-UAE config): **2291/2291** Amiga tests pass. JIT-specific
+  coverage in `tests/amiga/test-jit.lisp` (~21 checks): stub byte
+  pipeline, byte-exact emit verification for every compiled shape,
+  `%JIT-INVOKE-COUNT` proves the native path is taken on dispatch,
+  behavioral round-trip for fixnum / nil / t / symbol / cons / string
+  through 1-arg identity.
+- `test-amiga-lowend` (68020 baseline) is still available but not run
+  every commit.
 
-- The bytecode VM is correct and well-tuned for an interpreter — the
-  opcode trace shows fixnum arith / struct access / FFI are already
-  inlined opcodes, so there are no remaining "cheap" wins inside the
-  bytecode design. The next real lever is the native backend, exactly
-  as approach (1).
-- The 8 MB / 68020 baseline forces an opt-in, hot-function-only
-  design (see "Mitigations" above) — JIT'ing everything would blow
-  the runtime memory budget. The high-end JIT config has no such
-  constraint. None of this is encoded in code yet; the skeleton is
-  pre-policy.
+**Open design choices not yet committed to code**
+
+- *Memory policy.* The 8 MB / 68020 baseline forces opt-in,
+  hot-function-only compilation (see §"Mitigations") — JIT'ing
+  everything would blow the budget. The high-end JIT config has no
+  such constraint. Today the JIT compiles every shape it recognizes
+  unconditionally because the two recognized shapes emit 4–8 bytes; the
+  policy question doesn't bind until larger templates land.
+- *Stack cache (D5/D6/D7).* The §"Calling convention for emitted code"
+  optimization that moves projected FPS from ~720 to ~970. Not in
+  scope until multi-opcode templates exist to benefit from it.
