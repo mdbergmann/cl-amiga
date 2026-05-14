@@ -310,3 +310,80 @@
 ; left implicit: any function the walker accepts has fit within
 ; range, and the full Amiga test suite running 2321+ tests through
 ; the JIT'd pipeline is the regression net.
+
+; --- Arithmetic & comparison (OP_ADD, OP_LT) -----------------------------
+;
+; `(defun add2 (a b) (+ a b))` compiles to LOAD a; LOAD b; ADD ; postlude.
+; The ADD template inlines a fixnum fast path (tag-check via AND+BTST,
+; signed add with BVS overflow detect, surplus-tag strip via SUBQ#1)
+; with a JSR slow path to cl_jit_runtime_add for non-fixnum / overflow.
+; Behavioral tests pin down both the fast path and the round-trip
+; through the slow-path JSR.
+
+(defun walker-add2 (a b) (+ a b))
+(check "walker-add2-counter-bump" t
+  (let ((before (clamiga::%jit-invoke-count)))
+    (walker-add2 1 2)
+    (> (clamiga::%jit-invoke-count) before)))
+(check "walker-add2-small"     5    (walker-add2 2 3))
+(check "walker-add2-negative" -1    (walker-add2 -3 2))
+(check "walker-add2-zero"      0    (walker-add2 0 0))
+(check "walker-add2-pos-pos"   1000 (walker-add2 700 300))
+
+; Fixnum overflow: 2^30 - 1 + 2 = 2^30 + 1, still fixnum range.
+; But 2^30 - 1 + 2^30 = 2^31 - 1, beyond CL_FIXNUM_MAX (2^30 - 1).
+; The BVS path triggers and the slow-path helper produces a bignum.
+; This crosses the JIT/runtime boundary — the result still matches
+; what the bytecode VM would produce.
+(check "walker-add2-overflow-up"   2147483647 (walker-add2 1073741823 1073741824))
+(check "walker-add2-overflow-down" -2147483648 (walker-add2 -1073741824 -1073741824))
+
+; `(defun lt2 (a b) (< a b))` — same template shape for OP_LT.
+; Fast path: cmp.l + BLT → push CL_T else push CL_NIL.
+(defun walker-lt2 (a b) (< a b))
+(check "walker-lt2-counter-bump" t
+  (let ((before (clamiga::%jit-invoke-count)))
+    (walker-lt2 1 2)
+    (> (clamiga::%jit-invoke-count) before)))
+(check "walker-lt2-yes"            t   (walker-lt2 1 2))
+(check "walker-lt2-no-greater"     nil (walker-lt2 2 1))
+(check "walker-lt2-no-equal"       nil (walker-lt2 5 5))
+(check "walker-lt2-negatives-yes"  t   (walker-lt2 -10 -3))
+(check "walker-lt2-negatives-no"   nil (walker-lt2 -3 -10))
+(check "walker-lt2-mixed-sign-yes" t   (walker-lt2 -1 1))
+(check "walker-lt2-zero-yes"       t   (walker-lt2 0 1))
+(check "walker-lt2-zero-no"        nil (walker-lt2 1 0))
+
+; Slow-path validation: integer compared against a float — the fast
+; path's AND+BTST sees bit 0 = 0 for floats (heap pointer), bails, JSR
+; cl_jit_runtime_lt routes through cl_arith_compare which handles the
+; cross-type compare correctly.
+(check "walker-lt2-slow-int-float-yes" t   (walker-lt2 1 1.5))
+(check "walker-lt2-slow-int-float-no"  nil (walker-lt2 2 1.5))
+
+; --- Self-contained loop: sum 0..(N-1) via tagbody+go --------------------
+;
+; This is the JIT's first "real" benchmark shape — every opcode in the
+; loop body now JITs (LOAD/STORE/POP/CONST + JNIL/JMP from the prior
+; commit + ADD/LT from this one).  The loop runs end-to-end in native
+; code with zero re-entry into the bytecode interpreter until OP_RET.
+;
+; sum-to(N) = N*(N-1)/2.  For N=10: 45.  For N=100: 4950.
+(defun walker-sum-to (n)
+  (let ((s 0) (i 0))
+    (tagbody
+       loop-top
+       (if (< i n)
+           (progn
+             (setq s (+ s i))
+             (setq i (+ i 1))
+             (go loop-top))))
+    s))
+(check "walker-sum-to-counter-bump" t
+  (let ((before (clamiga::%jit-invoke-count)))
+    (walker-sum-to 10)
+    (> (clamiga::%jit-invoke-count) before)))
+(check "walker-sum-to-0"   0     (walker-sum-to 0))
+(check "walker-sum-to-1"   0     (walker-sum-to 1))
+(check "walker-sum-to-10"  45    (walker-sum-to 10))
+(check "walker-sum-to-100" 4950  (walker-sum-to 100))

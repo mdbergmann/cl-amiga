@@ -35,6 +35,14 @@ CL_Obj cl_jit_invoke(CL_Bytecode *bc, int nargs);
 /* Runtime introspection: is the JIT compiled in and active? */
 int    cl_jit_enabled(void);
 
+/* Toggle whether cl_jit_compile attempts native codegen.  When inactive,
+ * cl_jit_compile is a no-op so newly created CL_Bytecodes stay
+ * native_code=NULL and run through the interpreter.  Already-compiled
+ * functions keep their native code; flip before defining the function
+ * to get a bytecode-only version.  Used by `--no-jit` and the
+ * `%JIT-SET-ACTIVE` builtin to A/B benchmark JIT vs. bytecode. */
+void   cl_jit_set_active(int active);
+
 /* Diagnostic helper: emit a fixed NOP+RTS stub into bc->native_code.
  * Used by the `%JIT-COMPILE-STUB` builtin to exercise the encoder →
  * CodeBuf → CL_Bytecode pipeline before there's any actual codegen
@@ -61,6 +69,7 @@ static inline void   cl_jit_init(void)                       { }
 static inline void   cl_jit_compile(CL_Bytecode *bc)         { (void)bc; }
 static inline CL_Obj cl_jit_invoke(CL_Bytecode *bc, int n)   { (void)bc; (void)n; return CL_NIL; }
 static inline int    cl_jit_enabled(void)                    { return 0; }
+static inline void   cl_jit_set_active(int a)                 { (void)a; }
 static inline int    cl_jit_emit_stub(CL_Bytecode *bc)       { (void)bc; return 0; }
 static inline uint32_t cl_jit_invoke_count_get(void)         { return 0; }
 static inline void   cl_jit_disassemble(const uint8_t *c, uint32_t n) { (void)c; (void)n; }

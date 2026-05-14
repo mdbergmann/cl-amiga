@@ -114,10 +114,66 @@ void m68k_emit_move_l_an_to_predec_am(CodeBuf *cb, M68kReg an, M68kReg am);
  *
  * For forward branches the caller emits with disp=0 and patches the
  * displacement later (see m68k_patch_disp16); for backward branches the
- * target is already known and the caller computes disp inline. */
+ * target is already known and the caller computes disp inline.
+ *
+ * Condition codes (passed to the generic m68k_emit_bcc_w): 0=BRA,
+ * 6=BNE, 7=BEQ, 9=BVS, 12=BGE, 13=BLT.  Named wrappers below for the
+ * ones the walker currently emits. */
+void m68k_emit_bcc_w(CodeBuf *cb, uint8_t cond, int16_t disp);
 void m68k_emit_bra_w(CodeBuf *cb, int16_t disp);   /* unconditional */
 void m68k_emit_beq_w(CodeBuf *cb, int16_t disp);   /* branch if Z=1   */
 void m68k_emit_bne_w(CodeBuf *cb, int16_t disp);   /* branch if Z=0   */
+void m68k_emit_bvs_w(CodeBuf *cb, int16_t disp);   /* branch if V=1   */
+void m68k_emit_blt_w(CodeBuf *cb, int16_t disp);   /* branch if signed < */
+
+/* MOVE.L Dn,Dm — copy a data register to another data register.
+ * 2 bytes.  Both modes are register direct (mode 000). */
+void m68k_emit_move_l_dn_to_dm(CodeBuf *cb, M68kReg dn, M68kReg dm);
+
+/* MOVE.L Dn,-(An) — push a data-register longword onto -An.  2 bytes. */
+void m68k_emit_move_l_dn_predec_an(CodeBuf *cb, M68kReg dn, M68kReg an);
+
+/* AND.L Dn,Dm — Dm = Dm AND Dn.  2 bytes.  Used for tag-pair check:
+ * a fixnum's tag bit (bit 0) is 1, so AND'ing two tagged objects
+ * yields bit 0 = 1 iff both are fixnums. */
+void m68k_emit_and_l_dn_to_dm(CodeBuf *cb, M68kReg dn, M68kReg dm);
+
+/* BTST #imm,Dn — set Z = ~bit imm of Dn.  imm is masked mod 32.
+ * 4 bytes (opcode word + immediate word).  Used to test tag bit 0
+ * after the AND. */
+void m68k_emit_btst_imm_dn(CodeBuf *cb, uint8_t imm, M68kReg dn);
+
+/* ADD.L Dn,Dm — Dm = Dm + Dn.  Sets N/Z/V/C flags.  2 bytes.  The V
+ * flag captures signed overflow — the JIT uses BVS to detect fixnum
+ * range overflow. */
+void m68k_emit_add_l_dn_to_dm(CodeBuf *cb, M68kReg dn, M68kReg dm);
+
+/* SUB.L Dn,Dm — Dm = Dm - Dn.  Sets N/Z/V/C.  2 bytes.  Used by the
+ * OP_ADD overflow recovery: after a fixnum+fixnum overflow, d0 holds
+ * the wrapped sum and d1 holds b; subtracting d1 from d0 (modulo 2^32)
+ * reconstructs the original a so the slow-path JSR sees the right
+ * arguments. */
+void m68k_emit_sub_l_dn_to_dm(CodeBuf *cb, M68kReg dn, M68kReg dm);
+
+/* SUBQ.L #imm,Dn — small immediate subtract from Dn.  imm in 1..8;
+ * 8 encodes as data=0.  2 bytes.  Used by the OP_ADD fast path to
+ * strip the surplus tag bit after fixnum + fixnum. */
+void m68k_emit_subq_l_dn(CodeBuf *cb, uint8_t imm, M68kReg dn);
+
+/* ADDQ.L #imm,Dn — symmetric to SUBQ.L.  2 bytes. */
+void m68k_emit_addq_l_dn(CodeBuf *cb, uint8_t imm, M68kReg dn);
+
+/* CMP.L Dn,Dm — sets flags from Dm - Dn (no result stored).  2 bytes.
+ * BLT/BGE etc. then branch on signed compare result.  Following the
+ * m68k convention, the *first* operand is the subtrahend: CMP.L Dn,Dm
+ * tests "Dm vs Dn" — flags reflect Dm - Dn. */
+void m68k_emit_cmp_l_dn_dm(CodeBuf *cb, M68kReg dn, M68kReg dm);
+
+/* JSR (xxx).L — call absolute long address.  6 bytes: 2-byte opcode
+ * (0x4EB9) + 4-byte big-endian address.  Used to invoke runtime
+ * helpers from JIT-emitted code; the m68k C ABI's standard stack-
+ * passed-args / D0-result convention is preserved. */
+void m68k_emit_jsr_abs_l(CodeBuf *cb, uint32_t addr);
 
 /* Overwrite a 16-bit big-endian field already written to `code` at byte
  * offset `patch_off`.  Used to fill in forward-branch displacements

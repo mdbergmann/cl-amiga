@@ -4363,3 +4363,12 @@
 (format t "Failed: ~A~%" *fail-count*)
 (format t "Total:  ~A~%" (+ *pass-count* *fail-count*))
 (if (= *fail-count* 0) (format t "~%ALL TESTS PASSED~%") (format t "~%SOME TESTS FAILED~%"))
+
+; --- JIT benchmark (Amiga only; host has no native codegen) ---
+; Runs after the test summary so its timings land in the same log the
+; harness consumes.  Kept in trunk/ so the benchmark can iterate on
+; its own cadence without touching the test file.
+#+amigaos
+(handler-case
+  (load "trunk/bench-jit-loop.lisp")
+  (error (e) (format t "ERROR running JIT bench: ~A~%" e)))

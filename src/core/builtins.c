@@ -834,6 +834,25 @@ static CL_Obj bi_jit_invoke_count(CL_Obj *args, int n)
     return CL_MAKE_FIXNUM((int32_t)cl_jit_invoke_count_get());
 }
 
+/* (%JIT-SET-ACTIVE BOOL) — toggle whether new CL_Bytecodes will be
+ * JIT-compiled at creation time.  Returns the new state as T/NIL.  Use
+ * around `defun` to bind a function in either mode for A/B benchmarks:
+ *
+ *   (clamiga::%jit-set-active nil) (defun slow-foo ...)
+ *   (clamiga::%jit-set-active t)   (defun fast-foo ...)
+ *   (time (slow-foo ...)) (time (fast-foo ...))
+ *
+ * Does not invalidate already-compiled functions — toggle before
+ * defining each variant. */
+static CL_Obj bi_jit_set_active(CL_Obj *args, int n)
+{
+    int active;
+    CL_UNUSED(n);
+    active = !CL_NULL_P(args[0]);
+    cl_jit_set_active(active);
+    return active ? CL_T : CL_NIL;
+}
+
 /* (%JIT-DISASSEMBLE fn) — prints one line of m68k assembly per
  * instruction in fn's native_code, to *standard-output*.  Returns NIL.
  * Prints a friendly placeholder when the function has no native code
@@ -1148,6 +1167,7 @@ void cl_builtins_init(void)
     cl_register_builtin("%JIT-COMPILE-STUB",  bi_jit_compile_stub,  1, 1, cl_package_clamiga);
     cl_register_builtin("%JIT-INVOKE-COUNT",  bi_jit_invoke_count,  0, 0, cl_package_clamiga);
     cl_register_builtin("%JIT-DISASSEMBLE",   bi_jit_disassemble,   1, 1, cl_package_clamiga);
+    cl_register_builtin("%JIT-SET-ACTIVE",    bi_jit_set_active,    1, 1, cl_package_clamiga);
 
     /* Reserved standard CL symbols — required to be present and external in
      * COMMON-LISP per ANSI 11.1.2.1.  Many do not have full implementations
