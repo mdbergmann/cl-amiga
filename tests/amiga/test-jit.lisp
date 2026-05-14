@@ -296,10 +296,10 @@
 (check "walker-cond-empty-body-falsey-nil"    nil    (walker-cond-empty-body nil))
 
 ; Two-clause cond — exercises the cascade of JMPs plus a NIL fall-
-; through at the end.  `(cond ((eq x 'a) 1) ((eq x 'b) 2))` would
-; normally include OP_EQ which we don't handle yet; use (cond (x 1))
-; instead — JNIL else ; CONST 1 ; JMP end ; else: NIL ; end: ... ,
-; same building blocks as if-1-2 minus the second CONST.
+; through at the end.  Use (cond (x 1)) — JNIL else ; CONST 1 ; JMP
+; end ; else: NIL ; end: ... , same building blocks as if-1-2 minus
+; the second CONST.  (cond ((eq x 'a) 1) ((eq x 'b) 2)) shapes are
+; covered separately by the OP_EQ tests below.
 (defun walker-cond-only-true (x) (cond (x 1)))
 (check "walker-cond-only-true-truthy" 1   (walker-cond-only-true 'anything))
 (check "walker-cond-only-true-falsey" nil (walker-cond-only-true nil))
@@ -360,6 +360,101 @@
 ; cross-type compare correctly.
 (check "walker-lt2-slow-int-float-yes" t   (walker-lt2 1 1.5))
 (check "walker-lt2-slow-int-float-no"  nil (walker-lt2 2 1.5))
+
+; --- OP_SUB.  Mirror of OP_ADD: same fast-path template with SUB.L
+; and ADDQ #1 (vs ADD.L / SUBQ #1) and a different slow-path helper.
+; Overflow recovery reconstructs original a via ADD d1,d0.
+(defun walker-sub2 (a b) (- a b))
+(check "walker-sub2-counter-bump" t
+  (let ((before (clamiga::%jit-invoke-count)))
+    (walker-sub2 5 3)
+    (> (clamiga::%jit-invoke-count) before)))
+(check "walker-sub2-small"        2    (walker-sub2 5 3))
+(check "walker-sub2-zero"         0    (walker-sub2 7 7))
+(check "walker-sub2-negative"    -5    (walker-sub2 3 8))
+(check "walker-sub2-double-neg"   5    (walker-sub2 -3 -8))
+; Fixnum overflow: CL_FIXNUM_MIN - 1 = bignum.
+(check "walker-sub2-overflow-min" -1073741825 (walker-sub2 -1073741824 1))
+(check "walker-sub2-overflow-max" 2147483647  (walker-sub2 1073741823 -1073741824))
+; Slow path through int↔float.
+(check "walker-sub2-slow-int-float" 0.5 (walker-sub2 2 1.5))
+
+; --- OP_GT, OP_LE, OP_GE.  Same template as OP_LT, different Bcc.
+(defun walker-gt2 (a b) (> a b))
+(check "walker-gt2-yes"        t   (walker-gt2 2 1))
+(check "walker-gt2-no-less"    nil (walker-gt2 1 2))
+(check "walker-gt2-no-equal"   nil (walker-gt2 5 5))
+(check "walker-gt2-negatives"  t   (walker-gt2 -3 -10))
+(check "walker-gt2-slow-float" t   (walker-gt2 2 1.5))
+
+(defun walker-le2 (a b) (<= a b))
+(check "walker-le2-less"        t   (walker-le2 1 2))
+(check "walker-le2-equal"       t   (walker-le2 5 5))
+(check "walker-le2-greater"     nil (walker-le2 3 1))
+(check "walker-le2-negatives"   t   (walker-le2 -10 -3))
+(check "walker-le2-slow-float"  t   (walker-le2 1 1.5))
+
+(defun walker-ge2 (a b) (>= a b))
+(check "walker-ge2-greater"     t   (walker-ge2 3 1))
+(check "walker-ge2-equal"       t   (walker-ge2 5 5))
+(check "walker-ge2-less"        nil (walker-ge2 1 2))
+(check "walker-ge2-negatives"   t   (walker-ge2 -3 -10))
+(check "walker-ge2-slow-float"  nil (walker-ge2 1 1.5))
+
+; --- OP_NUMEQ.  Fixnum fast path with BEQ; slow path validates as
+; NUMBER (not REAL — `=` accepts complex per CLHS 12.1.4.1) and
+; falls through to cl_numeric_equal for cross-type compares.
+(defun walker-numeq2 (a b) (= a b))
+(check "walker-numeq2-yes-fix"     t   (walker-numeq2 7 7))
+(check "walker-numeq2-no-fix"      nil (walker-numeq2 7 8))
+(check "walker-numeq2-yes-neg"     t   (walker-numeq2 -3 -3))
+(check "walker-numeq2-slow-int-float-yes" t (walker-numeq2 2 2.0))
+(check "walker-numeq2-slow-int-float-no"  nil (walker-numeq2 2 2.5))
+
+; --- OP_EQ.  Pure pointer compare, no slow path.  Lisp `eq` returns
+; T iff the two arguments are the same object — true for fixnums
+; (immediate, identical tagged value) and identical symbols, false
+; for distinct conses / strings / floats even with equal contents.
+(defun walker-eq2 (a b) (eq a b))
+(check "walker-eq2-counter-bump" t
+  (let ((before (clamiga::%jit-invoke-count)))
+    (walker-eq2 'a 'a)
+    (> (clamiga::%jit-invoke-count) before)))
+(check "walker-eq2-same-symbol"     t   (walker-eq2 'foo 'foo))
+(check "walker-eq2-different-syms"  nil (walker-eq2 'foo 'bar))
+(check "walker-eq2-same-fixnum"     t   (walker-eq2 42 42))
+(check "walker-eq2-different-fix"   nil (walker-eq2 42 43))
+(check "walker-eq2-nil-self"        t   (walker-eq2 nil nil))
+(check "walker-eq2-t-self"          t   (walker-eq2 t t))
+(check "walker-eq2-distinct-conses" nil (walker-eq2 (cons 1 2) (cons 1 2)))
+(check "walker-eq2-shared-cons"     t   (let ((c (cons 1 2))) (walker-eq2 c c)))
+
+; --- OP_NOT.  Pop value; push CL_T iff NIL, else CL_NIL.  Same shape
+; as OP_EQ minus the second pop and CMP — relies on MOVE.L setting Z
+; from the popped value.
+(defun walker-not (x) (not x))
+(check "walker-not-counter-bump" t
+  (let ((before (clamiga::%jit-invoke-count)))
+    (walker-not t)
+    (> (clamiga::%jit-invoke-count) before)))
+(check "walker-not-nil"        t   (walker-not nil))
+(check "walker-not-t"          nil (walker-not t))
+(check "walker-not-fixnum"     nil (walker-not 42))
+(check "walker-not-zero"       nil (walker-not 0))    ; 0 is truthy in CL
+(check "walker-not-symbol"     nil (walker-not 'foo))
+(check "walker-not-cons"       nil (walker-not '(1 2 3)))
+(check "walker-not-empty-list" t   (walker-not '()))  ; () is NIL
+
+; --- OP_EQ in conditional context: `(cond ((eq x 'a) 1) ((eq x 'b) 2))`.
+; Pulls together OP_EQ + OP_DUP + OP_JNIL + branch resolution within a
+; single function.
+(defun walker-cond-eq (x)
+  (cond ((eq x 'a) 1)
+        ((eq x 'b) 2)
+        (t 99)))
+(check "walker-cond-eq-a"        1  (walker-cond-eq 'a))
+(check "walker-cond-eq-b"        2  (walker-cond-eq 'b))
+(check "walker-cond-eq-fallback" 99 (walker-cond-eq 'c))
 
 ; --- Self-contained loop: sum 0..(N-1) via tagbody+go --------------------
 ;

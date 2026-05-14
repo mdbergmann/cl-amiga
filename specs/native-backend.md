@@ -504,7 +504,7 @@ functions: graphics inner loop, REPL printer, test harness driver).
 That's the regime where the JIT becomes a net win even on the low-end
 target.
 
-## Status (2026-05-14, post OP_ADD/OP_LT)
+## Status (2026-05-14, post arithmetic/comparison family)
 
 Approach (1) is in flight. Two codegen paths layered front-to-back —
 the JIT hook fires on both source-compile and FASL-load.
@@ -547,7 +547,8 @@ the operand stack and a LINK'd frame at A6 for locals.
 
 Supported opcodes: `OP_NIL`, `OP_T`, `OP_CONST`, `OP_LOAD`, `OP_STORE`,
 `OP_POP`, `OP_DUP`, `OP_JMP`, `OP_JNIL`, `OP_JTRUE`, `OP_ADD`,
-`OP_LT`, `OP_RET` — subsumes everything the matchers cover plus
+`OP_SUB`, `OP_LT`, `OP_GT`, `OP_LE`, `OP_GE`, `OP_NUMEQ`, `OP_EQ`,
+`OP_NOT`, `OP_RET` — subsumes everything the matchers cover plus
 arbitrary compositions including iterative fixnum loops
 (`(tagbody … (if (< i n) (progn (setq s (+ s i)) … (go top))))`).
 Native code is bigger than the matchers' tight templates (22+ bytes
@@ -557,15 +558,28 @@ function built from supported opcodes JITs for free. Unrecognized
 opcode → walker bails, native_code stays NULL, function runs
 interpreted.
 
-`OP_ADD` / `OP_LT` use inline fixnum fast paths (BTST tag check on
-each operand, signed ADD/CMP, BVS overflow recovery via SUB) with a
-JSR to `cl_jit_runtime_add` / `cl_jit_runtime_lt` for non-fixnum
-operands or fixnum overflow. Slow paths mirror the bytecode VM's
-behaviour exactly, including type errors and bignum results. Register
-discipline is strict: only D0/D1/A0/A1 (caller-saved on the m68k C
-ABI) are touched, so the gcc-emitted `cl_jit_invoke` wrapper around
-the JIT's native entry sees its callee-saved registers (D2–D7,
-A2–A6) preserved.
+`OP_ADD` / `OP_SUB` use inline fixnum fast paths (BTST tag check on
+each operand, signed ADD/SUB, BVS overflow recovery that reconstructs
+the original `a` from the wrapped result and `b`) with a JSR to
+`cl_jit_runtime_add` / `cl_jit_runtime_sub` for non-fixnum operands
+or fixnum overflow. The tag-bit accounting differs by op: `OP_ADD`
+strips one surplus tag via SUBQ #1, `OP_SUB` re-adds the cancelled
+tag via ADDQ #1.
+
+The comparison family `OP_LT` / `OP_GT` / `OP_LE` / `OP_GE` /
+`OP_NUMEQ` shares one template (`emit_compare`) parameterised by the
+m68k condition code (BLT/BGT/BLE/BGE/BEQ) and the matching slow-path
+helper. Pure-pointer `OP_EQ` and unary `OP_NOT` are inline-only —
+they fit in 14–20 bytes each with no JSR (EQ is a pointer compare;
+NOT relies on the popped MOVE.L setting Z to detect CL_NIL).
+
+Slow paths mirror the bytecode VM's behaviour exactly, including
+type errors and bignum results. `OP_NUMEQ`'s helper accepts `NUMBER`
+(complex permitted per CLHS 12.1.4.1); the ordered comparators
+require `REAL`. Register discipline is strict: only D0/D1/A0/A1
+(caller-saved on the m68k C ABI) are touched, so the gcc-emitted
+`cl_jit_invoke` wrapper around the JIT's native entry sees its
+callee-saved registers (D2–D7, A2–A6) preserved.
 
 **Pure-fixnum-only GC safety** — both slow-path helpers may allocate
 (bignum result on fixnum overflow), which may GC. Operand-stack
@@ -605,7 +619,7 @@ optimization). Pure memory operands.
   `move.l Dn,Dm`, `move.l Dn,-(An)`, `and.l Dn,Dm`,
   `btst #imm,Dn`, `add.l Dn,Dm`, `sub.l Dn,Dm`, `cmp.l Dn,Dm`,
   `jsr (xxx).L`, and generic `bcc.w` (covering `bra`/`beq`/`bne`/
-  `bvs`/`blt`) + `patch_disp16`.  `JIT_M68K`-only.
+  `bvs`/`blt`/`bge`/`bgt`/`ble`) + `patch_disp16`.  `JIT_M68K`-only.
 - `src/jit/jit.{c,h}` — `cl_jit_init` (boot), `cl_jit_compile`
   (matchers + walker), `cl_jit_invoke` (arity-dispatched native
   entry). `cl_jit_emit_stub` + `%JIT-DUMP-BYTES` /
@@ -629,13 +643,18 @@ optimization). Pure memory operands.
   the OP_CALL native branch never trips on host.
 - `make -f Makefile.cross amiga`: green, no new warnings.
 - `make -f Makefile.cross test-amiga` (high-end A4000/68040/JIT
-  FS-UAE config): **2369/2369** Amiga tests pass. JIT-specific
-  coverage in `tests/amiga/test-jit.lisp` (~95 checks): the existing
-  matcher / walker shape tests plus new behavioral coverage for
-  `(+ a b)` (small / negative / zero / large + fixnum-overflow into
-  slow-path bignum), `(< a b)` (true / false / boundary / mixed-sign /
-  cross-type int↔float through the slow-path JSR), and the
-  self-contained loop `(walker-sum-to n)` at N=0/1/10/100.
+  FS-UAE config): **2417/2417** Amiga tests pass. JIT-specific
+  coverage in `tests/amiga/test-jit.lisp` (~143 checks): the existing
+  matcher / walker shape tests, `(+ a b)` / `(< a b)` coverage from
+  the previous commit, plus new behavioral coverage for `(- a b)`
+  (mirror of ADD including overflow into bignum and int↔float slow
+  path), the full ordered-comparison family `(>` / `<=` / `>=`,
+  same shape as `<` with each Bcc), `(= a b)` (NUMBER-typed,
+  including int↔float through `cl_numeric_equal`), pointer-identity
+  `(eq a b)` (no slow path — distinguishes shared vs distinct
+  conses, fixnum identity, symbol identity, NIL/T self-EQ), and
+  `(not x)` (no slow path — exhaustive truthiness tests including
+  zero-is-truthy CL semantics).
 
 ### First headline benchmark (`trunk/bench-jit-loop.lisp`)
 

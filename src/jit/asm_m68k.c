@@ -152,7 +152,8 @@ void m68k_emit_move_l_an_to_predec_am(CodeBuf *cb, M68kReg an, M68kReg am)
 
 /* Bcc.W: opcode word 0110 cccc 0000 0000 then 16-bit signed
  * displacement.  cccc selects the condition: 0 = BRA, 6 = BNE,
- * 7 = BEQ, 9 = BVS, 12 = BGE, 13 = BLT.  See M68000 PRM §4-25. */
+ * 7 = BEQ, 9 = BVS, 12 = BGE, 13 = BLT, 14 = BGT, 15 = BLE.
+ * See M68000 PRM §4-25. */
 void m68k_emit_bcc_w(CodeBuf *cb, uint8_t cond, int16_t disp)
 {
     uint16_t enc = (uint16_t)(0x6000 | ((uint16_t)(cond & 0xF) << 8));
@@ -165,6 +166,9 @@ void m68k_emit_beq_w(CodeBuf *cb, int16_t disp) { m68k_emit_bcc_w(cb,  7, disp);
 void m68k_emit_bne_w(CodeBuf *cb, int16_t disp) { m68k_emit_bcc_w(cb,  6, disp); }
 void m68k_emit_bvs_w(CodeBuf *cb, int16_t disp) { m68k_emit_bcc_w(cb,  9, disp); }
 void m68k_emit_blt_w(CodeBuf *cb, int16_t disp) { m68k_emit_bcc_w(cb, 13, disp); }
+void m68k_emit_bge_w(CodeBuf *cb, int16_t disp) { m68k_emit_bcc_w(cb, 12, disp); }
+void m68k_emit_bgt_w(CodeBuf *cb, int16_t disp) { m68k_emit_bcc_w(cb, 14, disp); }
+void m68k_emit_ble_w(CodeBuf *cb, int16_t disp) { m68k_emit_bcc_w(cb, 15, disp); }
 
 void m68k_patch_disp16(uint8_t *code, uint32_t code_len,
                        uint32_t patch_off, int16_t disp)

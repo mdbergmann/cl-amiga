@@ -7,8 +7,11 @@
  * Currently exposed:
  *   - cl_jit_runtime_add  — slow-path Lisp `+` (2 args).  Used by
  *     OP_ADD's fixnum-fast-path bailout for non-fixnums or overflow.
+ *   - cl_jit_runtime_sub  — slow-path Lisp `-` (2 args).
  *   - cl_jit_runtime_lt   — slow-path Lisp `<` (2 args), returns
  *     CL_T or CL_NIL.
+ *   - cl_jit_runtime_gt / _le / _ge  — slow-path Lisp `>` / `<=` / `>=`.
+ *   - cl_jit_runtime_numeq — slow-path Lisp `=`.
  *
  * GC caveat: both helpers may allocate (bignum result on fixnum
  * overflow), which may trigger GC.  Operand-stack values live on the
@@ -29,8 +32,13 @@
 
 void   cl_jit_runtime_init(void);
 
-CL_Obj cl_jit_runtime_add(CL_Obj a, CL_Obj b);
-CL_Obj cl_jit_runtime_lt (CL_Obj a, CL_Obj b);
+CL_Obj cl_jit_runtime_add  (CL_Obj a, CL_Obj b);
+CL_Obj cl_jit_runtime_sub  (CL_Obj a, CL_Obj b);
+CL_Obj cl_jit_runtime_lt   (CL_Obj a, CL_Obj b);
+CL_Obj cl_jit_runtime_gt   (CL_Obj a, CL_Obj b);
+CL_Obj cl_jit_runtime_le   (CL_Obj a, CL_Obj b);
+CL_Obj cl_jit_runtime_ge   (CL_Obj a, CL_Obj b);
+CL_Obj cl_jit_runtime_numeq(CL_Obj a, CL_Obj b);
 
 #endif /* JIT_M68K */
 

@@ -117,14 +117,17 @@ void m68k_emit_move_l_an_to_predec_am(CodeBuf *cb, M68kReg an, M68kReg am);
  * target is already known and the caller computes disp inline.
  *
  * Condition codes (passed to the generic m68k_emit_bcc_w): 0=BRA,
- * 6=BNE, 7=BEQ, 9=BVS, 12=BGE, 13=BLT.  Named wrappers below for the
- * ones the walker currently emits. */
+ * 6=BNE, 7=BEQ, 9=BVS, 12=BGE, 13=BLT, 14=BGT, 15=BLE.  Named
+ * wrappers below for the ones the walker currently emits. */
 void m68k_emit_bcc_w(CodeBuf *cb, uint8_t cond, int16_t disp);
 void m68k_emit_bra_w(CodeBuf *cb, int16_t disp);   /* unconditional */
 void m68k_emit_beq_w(CodeBuf *cb, int16_t disp);   /* branch if Z=1   */
 void m68k_emit_bne_w(CodeBuf *cb, int16_t disp);   /* branch if Z=0   */
 void m68k_emit_bvs_w(CodeBuf *cb, int16_t disp);   /* branch if V=1   */
 void m68k_emit_blt_w(CodeBuf *cb, int16_t disp);   /* branch if signed < */
+void m68k_emit_bge_w(CodeBuf *cb, int16_t disp);   /* branch if signed >= */
+void m68k_emit_bgt_w(CodeBuf *cb, int16_t disp);   /* branch if signed > */
+void m68k_emit_ble_w(CodeBuf *cb, int16_t disp);   /* branch if signed <= */
 
 /* MOVE.L Dn,Dm — copy a data register to another data register.
  * 2 bytes.  Both modes are register direct (mode 000). */
