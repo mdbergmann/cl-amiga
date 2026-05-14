@@ -31,6 +31,13 @@
  *     cl_package_current when the symbol is *PACKAGE*.  Returns the
  *     stored value so the emitter can leave it as TOS without a
  *     separate peek.  Non-allocating, so always GC-safe.
+ *   - cl_jit_runtime_dynbind — backing for OP_DYNBIND.  Saves the
+ *     symbol's current TLV in the dyn-bind stack and installs a new
+ *     one (with cl_set_package sync when sym is *PACKAGE*).  Errors
+ *     out on dyn-stack overflow.  Non-allocating, so always GC-safe.
+ *   - cl_jit_runtime_dynunbind — backing for OP_DYNUNBIND.  Restores
+ *     the last `count` entries via cl_dynbind_restore_to.
+ *     Non-allocating, so always GC-safe.
  *   - cl_jit_runtime_fload — backing for OP_FLOAD.  Takes a SYMBOL
  *     (the JIT bakes constants[idx] into the call site as a literal
  *     CL_Obj), returns its function value or signals undefined-
@@ -84,6 +91,9 @@ CL_Obj cl_jit_runtime_cdr  (CL_Obj obj);
 
 CL_Obj cl_jit_runtime_gload (CL_Obj sym);
 CL_Obj cl_jit_runtime_gstore(CL_Obj sym, CL_Obj val);
+
+void   cl_jit_runtime_dynbind  (CL_Obj sym, CL_Obj new_val);
+void   cl_jit_runtime_dynunbind(uint32_t count);
 
 CL_Obj cl_jit_runtime_fload(CL_Obj sym);
 CL_Obj cl_jit_runtime_call (CL_Obj *operand_top, uint32_t nargs);
