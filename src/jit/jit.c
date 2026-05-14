@@ -50,7 +50,7 @@ void cl_jit_init(void)
 
     if (!cl_quiet_boot) {
         platform_write_string(
-            "; [jit] m68k template backend: trivial-literal-leaf + 1/2-arg pass-through\n");
+            "; [jit] m68k template backend: trivial-literal-leaf + 1..6-arg pass-through\n");
     }
 }
 
@@ -138,7 +138,7 @@ static int matches_trivial_leaf(const CL_Bytecode *bc, CL_Obj *value_out)
  * (`CL_JIT_PASSTHROUGH_MAX_ARITY` — bump in lockstep with the switch).
  *
  * Returns 1 and stores the source slot j in *slot_out on match. */
-#define CL_JIT_PASSTHROUGH_MAX_ARITY 2
+#define CL_JIT_PASSTHROUGH_MAX_ARITY 6
 
 static int matches_passthrough(const CL_Bytecode *bc, uint8_t *slot_out)
 {
@@ -267,6 +267,40 @@ CL_Obj cl_jit_invoke(CL_Bytecode *bc, int nargs)
         CL_Obj a0 = cl_vm.stack[cl_vm.sp - 2];
         CL_Obj a1 = cl_vm.stack[cl_vm.sp - 1];
         return ((native_fn2_t)bc->native_code)(a0, a1);
+    }
+    case 3: {
+        typedef CL_Obj (*native_fn3_t)(CL_Obj, CL_Obj, CL_Obj);
+        CL_Obj a0 = cl_vm.stack[cl_vm.sp - 3];
+        CL_Obj a1 = cl_vm.stack[cl_vm.sp - 2];
+        CL_Obj a2 = cl_vm.stack[cl_vm.sp - 1];
+        return ((native_fn3_t)bc->native_code)(a0, a1, a2);
+    }
+    case 4: {
+        typedef CL_Obj (*native_fn4_t)(CL_Obj, CL_Obj, CL_Obj, CL_Obj);
+        CL_Obj a0 = cl_vm.stack[cl_vm.sp - 4];
+        CL_Obj a1 = cl_vm.stack[cl_vm.sp - 3];
+        CL_Obj a2 = cl_vm.stack[cl_vm.sp - 2];
+        CL_Obj a3 = cl_vm.stack[cl_vm.sp - 1];
+        return ((native_fn4_t)bc->native_code)(a0, a1, a2, a3);
+    }
+    case 5: {
+        typedef CL_Obj (*native_fn5_t)(CL_Obj, CL_Obj, CL_Obj, CL_Obj, CL_Obj);
+        CL_Obj a0 = cl_vm.stack[cl_vm.sp - 5];
+        CL_Obj a1 = cl_vm.stack[cl_vm.sp - 4];
+        CL_Obj a2 = cl_vm.stack[cl_vm.sp - 3];
+        CL_Obj a3 = cl_vm.stack[cl_vm.sp - 2];
+        CL_Obj a4 = cl_vm.stack[cl_vm.sp - 1];
+        return ((native_fn5_t)bc->native_code)(a0, a1, a2, a3, a4);
+    }
+    case 6: {
+        typedef CL_Obj (*native_fn6_t)(CL_Obj, CL_Obj, CL_Obj, CL_Obj, CL_Obj, CL_Obj);
+        CL_Obj a0 = cl_vm.stack[cl_vm.sp - 6];
+        CL_Obj a1 = cl_vm.stack[cl_vm.sp - 5];
+        CL_Obj a2 = cl_vm.stack[cl_vm.sp - 4];
+        CL_Obj a3 = cl_vm.stack[cl_vm.sp - 3];
+        CL_Obj a4 = cl_vm.stack[cl_vm.sp - 2];
+        CL_Obj a5 = cl_vm.stack[cl_vm.sp - 1];
+        return ((native_fn6_t)bc->native_code)(a0, a1, a2, a3, a4, a5);
     }
     default:
         return CL_NIL;

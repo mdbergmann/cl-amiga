@@ -130,3 +130,22 @@
        'left  (jit-2arg-fst 'left 'right))
 (check "jit-2arg-snd-distinguishes-args"
        'right (jit-2arg-snd 'left 'right))
+
+; --- Higher arities: same matcher / template, different switch case
+; in cl_jit_invoke.  Cover arity 3 (middle slot) and arity 6 (the cap,
+; CL_JIT_PASSTHROUGH_MAX_ARITY).  Each emits move.l (4+4*j)(a7),d0 ;
+; rts where j is the source slot.  The 6-arg case proves all six
+; switch arms load args in the correct order. ---
+(defun jit-3arg-mid (x y z) y)
+(check "jit-3arg-mid-bytes" '(32 47 0 8 78 117)
+  (clamiga::%jit-dump-bytes #'jit-3arg-mid))
+(check "jit-3arg-mid-returns" 'b (jit-3arg-mid 'a 'b 'c))
+
+(defun jit-6arg-1 (a b c d e f) a)
+(defun jit-6arg-6 (a b c d e f) f)
+(check "jit-6arg-1-bytes" '(32 47 0 4 78 117)
+  (clamiga::%jit-dump-bytes #'jit-6arg-1))
+(check "jit-6arg-6-bytes" '(32 47 0 24 78 117)
+  (clamiga::%jit-dump-bytes #'jit-6arg-6))
+(check "jit-6arg-1-returns" 'first  (jit-6arg-1 'first 2 3 4 5 'last))
+(check "jit-6arg-6-returns" 'last   (jit-6arg-6 'first 2 3 4 5 'last))
