@@ -506,12 +506,13 @@ target.
 
 ## Status (2026-05-14)
 
-Approach (1) is in flight. Two function shapes auto-compile today; every
-other shape leaves `bc->native_code == NULL` and runs interpreted. The
-JIT hook fires on both source-compile and FASL-load paths, so cached
-functions JIT exactly like fresh ones.
+Approach (1) is in flight. Two codegen paths layered front-to-back —
+the JIT hook fires on both source-compile and FASL-load.
 
-**Compiled shapes**
+**Path 1: whole-function pattern matchers (tight)**
+
+Recognize a small fixed set of shapes, emit hand-written templates of
+optimal size.
 
 | Shape                              | Native code                       | Size |
 |------------------------------------|-----------------------------------|------|
@@ -519,29 +520,59 @@ functions JIT exactly like fresh ones.
 | (literal too big for moveq)        | `move.l #imm32,d0 ; rts`          | 8 B  |
 | `(defun f (x1..xk) xj)`, k ≤ 6     | `move.l (4+4*j)(a7),d0 ; rts`     | 6 B  |
 
-Literal coverage: `OP_NIL`, `OP_T`, `OP_CONST` (any constant-pool entry,
-including heap pointers like `CL_T`). `moveq` is chosen when the tagged
-value fits signed 8-bit, `move.l #imm32` otherwise. Arg passing follows
-the m68k SysV C ABI — `cl_jit_invoke` casts `bc->native_code` to a
+Literal coverage: `OP_NIL`, `OP_T`, `OP_CONST` (any constant-pool
+entry, including heap pointers like `CL_T`). Arg passing follows the
+m68k SysV C ABI — `cl_jit_invoke` casts `bc->native_code` to a
 function-pointer type matching `nargs` and passes args through normal
 calling convention; native code reads them off `4(sp)`, `8(sp)`, etc.
-No trampoline, no stack cache yet. The pass-through matcher is capped
-by `CL_JIT_PASSTHROUGH_MAX_ARITY` (currently 6) — bumping it requires
-adding the matching `cl_jit_invoke` switch case in lockstep.
+The pass-through matcher is capped by `CL_JIT_PASSTHROUGH_MAX_ARITY`
+(currently 6) — bumping it requires adding the matching
+`cl_jit_invoke` switch case in lockstep.
+
+**Path 2: per-opcode walker (fallback)**
+
+If no matcher fires, the walker tries: walks the bytecode once and
+emits one m68k template per opcode, using the m68k hardware stack as
+the operand stack and a LINK'd frame at A6 for locals.
+
+```
+                                <higher addresses>
+  8(a6) + 4*i  ┃ parameter i (i < arity)       [m68k C ABI]
+  4(a6)        ┃ return address
+  0(a6)        ┃ saved A6                       [pushed by LINK]
+ -4(a6) - 4*j  ┃ extra local j                  [LINK frame]
+  (a7)         ┃ operand-stack TOS, grows ↓
+                                <lower addresses>
+```
+
+Supported opcodes: `OP_NIL`, `OP_T`, `OP_CONST`, `OP_LOAD`, `OP_STORE`,
+`OP_POP`, `OP_RET` — subsumes everything the matchers cover plus
+arbitrary compositions (e.g. `(defun f (x) (let ((y x)) y))`). Native
+code is bigger than the matchers' tight templates (22+ bytes for any
+function vs 4–8) but coverage is compositional: each new opcode adds
+one emitter case and a couple of encoders, then any function built
+from supported opcodes JITs for free. Unrecognized opcode → walker
+bails, native_code stays NULL, function runs interpreted.
+
+No register cache yet (spec's `D5/D6/D7` operand-stack-cache
+optimization). Pure memory operands.
 
 **Layout**
 
 - `src/jit/codebuf.{c,h}` — growable byte buffer, sticky-OOM,
-  big-endian emitters, ownership-transfer `cb_finish`. Portable
-  (host + cross). 11 host unit tests in `tests/test_codebuf.c`.
+  big-endian emitters. Portable (host + cross). 11 host unit tests.
 - `src/jit/asm_m68k.{c,h}` — m68k encoders. Currently: `nop`, `rts`,
-  `moveq`, `move.l #imm32,Dn`, `move.l (d16,An),Dn`. `JIT_M68K`-only.
-- `src/jit/jit.{c,h}` — `cl_jit_init` (boot), `cl_jit_compile` (matcher
-  + emit), `cl_jit_invoke` (arity-dispatched native entry).
-  `cl_jit_emit_stub` + `%JIT-DUMP-BYTES` / `%JIT-COMPILE-STUB` /
-  `%JIT-INVOKE-COUNT` builtins for Lisp-level introspection.
-- `src/jit/{codegen_m68k,runtime}.{c,h}` — pre-allocated for staging-2
-  but unused.
+  `moveq`, `move.l #imm32,Dn`, `move.l (d16,An),Dn` (matchers) plus
+  `link`, `unlk`, `clr.l -(An)`, `move.l #imm32,-(An)`,
+  `move.l (An),(d16,Am)`, `move.l (d16,An),-(Am)`,
+  `move.l (An)+,Dn`, `addq.l #imm,An` (walker). `JIT_M68K`-only.
+- `src/jit/jit.{c,h}` — `cl_jit_init` (boot), `cl_jit_compile`
+  (matchers + walker), `cl_jit_invoke` (arity-dispatched native
+  entry). `cl_jit_emit_stub` + `%JIT-DUMP-BYTES` /
+  `%JIT-COMPILE-STUB` / `%JIT-INVOKE-COUNT` builtins for Lisp-level
+  introspection.
+- `src/jit/{codegen_m68k,runtime}.{c,h}` — pre-allocated for the
+  register-cache stage but unused.
 - `CL_Bytecode.native_code` / `.native_len` fields; `Makefile.cross`
   defines `-DJIT_M68K`; host gets inline `cl_jit_*` no-ops so call
   sites are identical everywhere.
@@ -558,14 +589,14 @@ adding the matching `cl_jit_invoke` switch case in lockstep.
   the OP_CALL native branch never trips on host.
 - `make -f Makefile.cross amiga`: green, no new warnings.
 - `make -f Makefile.cross test-amiga` (high-end A4000/68040/JIT
-  FS-UAE config): **2306/2306** Amiga tests pass. JIT-specific
-  coverage in `tests/amiga/test-jit.lisp` (~36 checks): stub byte
-  pipeline, byte-exact emit verification for every compiled shape,
-  `%JIT-INVOKE-COUNT` proves the native path is taken on dispatch,
-  behavioral round-trip for fixnum / nil / t / symbol / cons / string
-  through 1-arg identity, plus 2-/3-/6-arg pass-through returning
-  various parameter slots with arg-order verification (6-arg covers
-  the upper end of the cap).
+  FS-UAE config): **2321/2321** Amiga tests pass. JIT-specific
+  coverage in `tests/amiga/test-jit.lisp` (~51 checks): matcher byte
+  pipeline + pass-through arg-order verification (existing), plus
+  walker byte-exact emit for `(x) nil` and `(x) 42`, walker behavioral
+  round-trip for `(let ((y x)) y)` across fixnum / symbol / cons, and
+  a negative test that confirms a function whose body uses an
+  unsupported opcode (`OP_CONS`) leaves `native_code` NULL and runs
+  via the interpreter.
 - `test-amiga-lowend` (68020 baseline) is still available but not run
   every commit.
 
