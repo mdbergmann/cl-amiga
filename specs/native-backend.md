@@ -369,11 +369,47 @@ stack, then calls into the runtime. The collector walks the m68k
 stack from current SP up to the saved `sys_stack_base`, and for each
 4-byte aligned word checks `CL_HEAP_P(word) && in_arena(word)` — if
 so, mark it. False positives retain garbage but never corrupt
-anything.
+anything *under a non-moving collector*.
 
-This is enough to start; precise stack maps can come later if
-retention turns out to be a real problem (typically isn't for this
-kind of workload).
+**Caveat — this codebase has a moving compactor.** `cl_gc_compact()`
+(`mem.c`) is a sliding compactor that runs as a fallback when normal
+mark-and-sweep doesn't free enough space (`gc_compact_pending`).
+Compaction *moves* live objects and rewrites every `CL_Obj` reference
+to its new offset. Conservative scanning is unsafe under a moving
+collector: if an m68k-stack word happens to be a coincidental integer
+whose bit pattern matches a valid arena offset, the compactor would
+"forward" that integer to the new offset, silently corrupting it.
+
+Three options for handling this, in increasing implementation cost:
+
+- **A. Suppress compaction while a JIT frame is on the C stack.**
+  Increment a thread-local `jit_depth` counter on `cl_jit_invoke`
+  entry, decrement on return. While `jit_depth > 0`, `cl_gc` skips
+  the compact phase; allocator falls back to OOM if non-moving sweep
+  can't free enough. Cheapest (~20 LOC). Correctness-safe. Cost is
+  occasional avoidable OOM under fragmentation pressure while inside
+  JIT'd code. JIT'd frames are short-lived in practice (graphics
+  inner loops, REPL printer), so the window is small.
+
+- **B. Pin conservatively-marked objects.** Add a pinned bit in the
+  object header; conservative scan sets it; the compactor leaves
+  pinned objects in place and slides unpinned ones around them.
+  Lets compaction still happen, but partially defeats it and
+  complicates the slide algorithm.
+
+- **C. Precise stack maps.** Codegen emits per-safepoint metadata
+  listing exactly which frame slots and which spilled registers hold
+  `CL_Obj`. No false positives, compaction stays fully effective.
+  Most code, fully correct, what the rest of this section ultimately
+  gestures at.
+
+**Chosen direction: A first, C eventually.** A unblocks mixed-type
+JIT compilation with bounded risk. C is the long-term answer once
+the JIT compiles allocating opcodes broadly enough that suppressed
+compaction starts costing real memory.
+
+Precise stack maps can come later if retention turns out to be a real
+problem (typically isn't for this kind of workload).
 
 ### Build wiring
 
@@ -623,6 +659,31 @@ OP_TAILCALL).
   cross-function tail calls.  (a) is the cleaner first cut.
 - *GC root finding for the operand stack.*  See §"GC interaction".
   Prerequisite for JIT'ing CONS-heavy / mixed-type code by default.
+  **Direction chosen (2026-05-15): Option A — conservative m68k
+  stack scan, with compaction suppressed while `jit_depth > 0`.**
+  Plan:
+    1. `cl_jit_invoke` captures entry SP into `t->jit_stack_top` and
+       bumps `t->jit_depth`; restores both on return. Nested JIT
+       calls only matter for the outermost `jit_stack_top`.
+    2. `gc_mark_thread_roots` adds a native-stack scan when
+       `t->jit_depth > 0`: 4-byte-aligned words from current SP up
+       to `t->jit_stack_top`; for each, if `CL_HEAP_P(w) && w <
+       cl_heap.arena_size` call `gc_mark_obj(w)` (already handles
+       in-bounds + already-marked).
+    3. `cl_gc` honors a no-compact inhibit when any thread has
+       `jit_depth > 0`. Allocator falls back to existing OOM path.
+    4. Portable SP capture via `__builtin_frame_address(0)` / a
+       small `cl_capture_sp()` helper. On host (no `JIT_M68K`) the
+       fields exist for layout symmetry but stay zero — scan is a
+       no-op there.
+    5. Tests: host unit test for the scanner (place a known
+       `CL_Obj` on the C stack, scan a buffer, confirm marked); on
+       Amiga, an FS-UAE test once an allocating opcode is JIT'd
+       (today the walker bails on those, so this test waits on the
+       first allocating-opcode lift).
+  Once landed, the "fixnum fast path only" gate can be lifted on at
+  least one allocating opcode (likely `OP_CONS` or generic-arith
+  bignum fallback) to exercise the safety net.
 - *MV_RESET and `mv_count` propagation.*  Investigated 2026-05-14
   and reverted.  Bytecode VM resets `cl_mv_count = 1` as a side
   effect of every value-producing opcode (OP_CONST, OP_NIL, OP_LOAD,

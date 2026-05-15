@@ -14,6 +14,21 @@
 /* All error state now lives in CL_Thread.
  * Compatibility macros in thread.h redirect the old names. */
 
+/* Restore the current thread's jit_depth to new_depth, keeping the
+ * global cl_jit_active_threads counter consistent.  Used on every
+ * cl_error unwind path so longjmp out of JIT'd code drops both the
+ * per-thread depth and the global "any-thread-active" gate.
+ * See specs/native-backend.md §"GC interaction" option A. */
+static void cl_jit_restore_depth(int new_depth)
+{
+    extern volatile int cl_jit_active_threads;
+    int cur = CT->jit_depth;
+    if (cur > 0 && new_depth == 0) cl_jit_active_threads--;
+    else if (cur == 0 && new_depth > 0) cl_jit_active_threads++;
+    CT->jit_depth = new_depth;
+    if (new_depth == 0) CT->jit_stack_top = NULL;
+}
+
 int cl_error_frame_push(void)
 {
     if (cl_error_frame_top >= CL_MAX_ERROR_FRAMES) return -1;
@@ -23,6 +38,7 @@ int cl_error_frame_push(void)
      * sequenced BEFORE setjmp so the value is well-defined on the longjmp
      * return path. */
     cl_error_frames[cl_error_frame_top].saved_gc_roots = gc_root_count;
+    cl_error_frames[cl_error_frame_top].saved_jit_depth = CT->jit_depth;
     return cl_error_frame_top++;
 }
 
@@ -68,6 +84,7 @@ CL_NORETURN static void cl_error_unwind(int code)
          * time: any entries pushed since then live in C stack frames we
          * are unwinding out of and would dangle in gc_roots[]. */
         gc_root_count = cl_error_frames[cl_error_frame_top - 1].saved_gc_roots;
+        cl_jit_restore_depth(cl_error_frames[cl_error_frame_top - 1].saved_jit_depth);
         CL_LONGJMP(cl_error_frames[cl_error_frame_top - 1].buf, code);
     }
 
@@ -82,6 +99,7 @@ CL_NORETURN static void cl_error_unwind(int code)
     cl_handler_top = 0;
     cl_restart_top = 0;
     cl_gc_reset_roots();
+    cl_jit_restore_depth(0);
 
     if (cl_error_frame_top > 0) {
         CL_LONGJMP(cl_error_frames[cl_error_frame_top - 1].buf, code);
@@ -114,6 +132,7 @@ void cl_error(int code, const char *fmt, ...)
         cl_handler_top = 0;
         cl_restart_top = 0;
         cl_gc_reset_roots();
+        cl_jit_restore_depth(0);
         if (cl_error_frame_top > 0) {
             /* Don't decrement here — CL_UNCATCH at the catch site pops.
              * For nested frames, restore gc_root_count to the catch-site
@@ -122,6 +141,7 @@ void cl_error(int code, const char *fmt, ...)
              * explicit restore is symmetric with the cl_error_unwind path
              * and keeps any permanent roots installed by the outer frame). */
             gc_root_count = cl_error_frames[cl_error_frame_top - 1].saved_gc_roots;
+            cl_jit_restore_depth(cl_error_frames[cl_error_frame_top - 1].saved_jit_depth);
             CL_LONGJMP(cl_error_frames[cl_error_frame_top - 1].buf, code);
         }
         exit(cl_exit_code);

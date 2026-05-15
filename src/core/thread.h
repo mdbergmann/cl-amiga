@@ -151,6 +151,18 @@ typedef struct CL_Thread_s {
     char   backtrace_buf[CL_BACKTRACE_BUF_SIZE];
     char  *c_stack_base;
 
+    /* ---- JIT native-stack GC scan window ----
+     * jit_depth: number of nested cl_jit_invoke frames currently on the
+     *   C stack for this thread.  0 = thread is not inside JIT'd code.
+     * jit_stack_top: captured SP of the OUTERMOST cl_jit_invoke frame
+     *   (higher address on a stack-grows-down architecture).  The GC
+     *   conservatively scans [current SP .. jit_stack_top) for words
+     *   that look like heap offsets.  Only meaningful when jit_depth>0.
+     *
+     * See specs/native-backend.md §"GC interaction" — option A. */
+    int    jit_depth;
+    void  *jit_stack_top;
+
     /* ---- VM extras ---- */
     CL_Obj vm_extra_args_buf[256];
     int    vm_extra_count;
@@ -313,6 +325,16 @@ void cl_thread_unregister(CL_Thread *t);
 /* True when more than one thread is registered — used to skip locking
  * in the common single-threaded case for zero overhead on 68020. */
 #define CL_MT() (cl_thread_count > 1)
+
+/* Capture the frame address of the calling function.
+ * On every stack-grows-down ABI we target (m68k SysV, host x86-64),
+ * the actual SP at the time of the call is at a lower address than
+ * this value, so it serves as a valid upper bound for the JIT
+ * native-stack scan window.  Implemented as a macro so the captured
+ * address is in the CALLER's frame, not a helper's.
+ *
+ * __builtin_frame_address(0) is supported by gcc on m68k and host. */
+#define CL_CAPTURE_SP() ((void *)__builtin_frame_address(0))
 
 /* Safepoint check — insert at function calls and backward jumps.
  * The volatile reads are cheap; the slow paths handle GC and interrupts.

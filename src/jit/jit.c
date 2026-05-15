@@ -1579,31 +1579,60 @@ void cl_jit_disassemble(const uint8_t *code, uint32_t len)
  * value rather than a wild jump. */
 CL_Obj cl_jit_invoke(CL_Bytecode *bc, int nargs)
 {
+    CL_Obj result = CL_NIL;
+    CL_Thread *t;
+    int   prev_depth;
+    void *prev_top;
+
     if (bc == NULL || bc->native_code == NULL) return CL_NIL;
     jit_invoke_count++;
+
+    /* Mark this thread as inside JIT'd code so the GC knows to scan
+     * the m68k stack conservatively and to skip moving compaction.
+     * jit_stack_top is captured only on the OUTERMOST entry — that
+     * frame's address bounds the scan window for all nested JIT
+     * calls.  See specs/native-backend.md §"GC interaction".
+     *
+     * On longjmp out of JIT'd code (cl_error → cl_error_unwind), the
+     * unwind path restores jit_depth from the CL_ErrorFrame snapshot
+     * via cl_jit_restore_depth, which also keeps the global counter
+     * in sync — so we do not need to wrap this in setjmp/CL_CATCH. */
+    t = cl_get_current_thread();
+    prev_depth = t->jit_depth;
+    prev_top   = t->jit_stack_top;
+    if (prev_depth == 0) {
+        extern volatile int cl_jit_active_threads;
+        t->jit_stack_top = CL_CAPTURE_SP();
+        cl_jit_active_threads++;
+    }
+    t->jit_depth = prev_depth + 1;
 
     switch (nargs) {
     case 0: {
         typedef CL_Obj (*native_fn0_t)(void);
-        return ((native_fn0_t)bc->native_code)();
+        result = ((native_fn0_t)bc->native_code)();
+        break;
     }
     case 1: {
         typedef CL_Obj (*native_fn1_t)(CL_Obj);
         CL_Obj a0 = cl_vm.stack[cl_vm.sp - 1];
-        return ((native_fn1_t)bc->native_code)(a0);
+        result = ((native_fn1_t)bc->native_code)(a0);
+        break;
     }
     case 2: {
         typedef CL_Obj (*native_fn2_t)(CL_Obj, CL_Obj);
         CL_Obj a0 = cl_vm.stack[cl_vm.sp - 2];
         CL_Obj a1 = cl_vm.stack[cl_vm.sp - 1];
-        return ((native_fn2_t)bc->native_code)(a0, a1);
+        result = ((native_fn2_t)bc->native_code)(a0, a1);
+        break;
     }
     case 3: {
         typedef CL_Obj (*native_fn3_t)(CL_Obj, CL_Obj, CL_Obj);
         CL_Obj a0 = cl_vm.stack[cl_vm.sp - 3];
         CL_Obj a1 = cl_vm.stack[cl_vm.sp - 2];
         CL_Obj a2 = cl_vm.stack[cl_vm.sp - 1];
-        return ((native_fn3_t)bc->native_code)(a0, a1, a2);
+        result = ((native_fn3_t)bc->native_code)(a0, a1, a2);
+        break;
     }
     case 4: {
         typedef CL_Obj (*native_fn4_t)(CL_Obj, CL_Obj, CL_Obj, CL_Obj);
@@ -1611,7 +1640,8 @@ CL_Obj cl_jit_invoke(CL_Bytecode *bc, int nargs)
         CL_Obj a1 = cl_vm.stack[cl_vm.sp - 3];
         CL_Obj a2 = cl_vm.stack[cl_vm.sp - 2];
         CL_Obj a3 = cl_vm.stack[cl_vm.sp - 1];
-        return ((native_fn4_t)bc->native_code)(a0, a1, a2, a3);
+        result = ((native_fn4_t)bc->native_code)(a0, a1, a2, a3);
+        break;
     }
     case 5: {
         typedef CL_Obj (*native_fn5_t)(CL_Obj, CL_Obj, CL_Obj, CL_Obj, CL_Obj);
@@ -1620,7 +1650,8 @@ CL_Obj cl_jit_invoke(CL_Bytecode *bc, int nargs)
         CL_Obj a2 = cl_vm.stack[cl_vm.sp - 3];
         CL_Obj a3 = cl_vm.stack[cl_vm.sp - 2];
         CL_Obj a4 = cl_vm.stack[cl_vm.sp - 1];
-        return ((native_fn5_t)bc->native_code)(a0, a1, a2, a3, a4);
+        result = ((native_fn5_t)bc->native_code)(a0, a1, a2, a3, a4);
+        break;
     }
     case 6: {
         typedef CL_Obj (*native_fn6_t)(CL_Obj, CL_Obj, CL_Obj, CL_Obj, CL_Obj, CL_Obj);
@@ -1630,11 +1661,21 @@ CL_Obj cl_jit_invoke(CL_Bytecode *bc, int nargs)
         CL_Obj a3 = cl_vm.stack[cl_vm.sp - 3];
         CL_Obj a4 = cl_vm.stack[cl_vm.sp - 2];
         CL_Obj a5 = cl_vm.stack[cl_vm.sp - 1];
-        return ((native_fn6_t)bc->native_code)(a0, a1, a2, a3, a4, a5);
+        result = ((native_fn6_t)bc->native_code)(a0, a1, a2, a3, a4, a5);
+        break;
     }
     default:
-        return CL_NIL;
+        result = CL_NIL;
+        break;
     }
+
+    t->jit_depth     = prev_depth;
+    t->jit_stack_top = prev_top;
+    if (prev_depth == 0) {
+        extern volatile int cl_jit_active_threads;
+        cl_jit_active_threads--;
+    }
+    return result;
 }
 
 int cl_jit_enabled(void) { return jit_active; }
