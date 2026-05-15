@@ -18,9 +18,19 @@
  *     Currently supported opcodes: OP_NIL, OP_T, OP_CONST, OP_LOAD,
  *     OP_STORE, OP_POP, OP_DUP, OP_JMP, OP_JNIL, OP_JTRUE, OP_ADD,
  *     OP_SUB, OP_MUL, OP_EQ, OP_LT, OP_GT, OP_LE, OP_GE, OP_NUMEQ,
- *     OP_NOT, OP_CAR, OP_CDR, OP_GLOAD, OP_GSTORE, OP_FLOAD, OP_CALL,
- *     OP_TAILCALL, OP_STRUCT_REF, OP_STRUCT_SET, OP_DYNBIND,
+ *     OP_NOT, OP_CAR, OP_CDR, OP_CONS, OP_GLOAD, OP_GSTORE, OP_FLOAD,
+ *     OP_CALL, OP_TAILCALL, OP_STRUCT_REF, OP_STRUCT_SET, OP_DYNBIND,
  *     OP_DYNUNBIND, OP_RET.
+ *     OP_CONS is the first allocating opcode handled directly.
+ *     **Convention for any helper-calling emitter**: after popping
+ *     operands into D0/D1 scratch regs, call `cache_flush` before the
+ *     JSR.  This spills any remaining D5/D6/D7 cache values to the
+ *     m68k stack so the conservative scan
+ *     (mem.c::gc_scan_jit_native_stack) reaches them if the helper
+ *     allocates and triggers GC — registers are not scanned, and
+ *     helpers may allocate even on supposedly-non-allocating paths via
+ *     cl_signal_type_error / cl_error condition objects.  All
+ *     helper-calling cases below follow this rule.
  *     Adding an opcode means adding one
  *     emitter case and one or two new asm encoders — the walker
  *     handles the composition.
@@ -589,7 +599,7 @@ static int prescan_branch_targets(const CL_Bytecode *bc, uint8_t *is_target)
         uint32_t step;
         switch (op) {
         case OP_NIL: case OP_T: case OP_POP: case OP_DUP: case OP_RET:
-        case OP_CAR: case OP_CDR: case OP_NOT: case OP_EQ:
+        case OP_CAR: case OP_CDR: case OP_CONS: case OP_NOT: case OP_EQ:
         case OP_ADD: case OP_SUB: case OP_MUL:
         case OP_LT: case OP_GT: case OP_LE: case OP_GE: case OP_NUMEQ:
             step = 1; break;
@@ -770,9 +780,15 @@ static int walker_compile(const CL_Bytecode *bc, CodeBuf *cb)
 
         case OP_ADD: {
             /* Operands: TOS = b, second = a.  Pop both, run the
-             * shared compute, push result. */
+             * shared compute, push result.  Flush after pops so any
+             * residual cached values (heap pointers, possibly) land
+             * on the m68k stack — the slow-path JSR can allocate
+             * (bignum overflow, type-error condition) and the
+             * conservative GC scan only reaches the stack, not the
+             * cache regs D5/D6/D7. */
             cache_pop_to_dn(cb, &cache_head, &cache_depth, REG_D1);
             cache_pop_to_dn(cb, &cache_head, &cache_depth, REG_D0);
+            cache_flush(cb, &cache_head, &cache_depth);
             emit_arith_compute(cb, /*is_sub=*/0,
                                (uint32_t)(uintptr_t)&cl_jit_runtime_add);
             cache_push_dn(cb, &cache_head, &cache_depth, REG_D0);
@@ -782,6 +798,7 @@ static int walker_compile(const CL_Bytecode *bc, CodeBuf *cb)
         case OP_SUB: {
             cache_pop_to_dn(cb, &cache_head, &cache_depth, REG_D1);
             cache_pop_to_dn(cb, &cache_head, &cache_depth, REG_D0);
+            cache_flush(cb, &cache_head, &cache_depth);
             emit_arith_compute(cb, /*is_sub=*/1,
                                (uint32_t)(uintptr_t)&cl_jit_runtime_sub);
             cache_push_dn(cb, &cache_head, &cache_depth, REG_D0);
@@ -793,10 +810,12 @@ static int walker_compile(const CL_Bytecode *bc, CodeBuf *cb)
              * there's no inline MUL fast path.  Pop b/a, push them as
              * C-ABI right-to-left args, JSR, drop args, push the D0
              * result back through the cache.  OP_DIV is not handled
-             * because today's compiler never emits it. */
+             * because today's compiler never emits it.  Flush after
+             * pops: cl_arith_mul can allocate (bignum). */
             uint32_t helper = (uint32_t)(uintptr_t)&cl_jit_runtime_mul;
             cache_pop_to_dn(cb, &cache_head, &cache_depth, REG_D1);   /* b */
             cache_pop_to_dn(cb, &cache_head, &cache_depth, REG_D0);   /* a */
+            cache_flush(cb, &cache_head, &cache_depth);
             m68k_emit_move_l_dn_predec_an(cb, REG_D1, REG_A7);
             m68k_emit_move_l_dn_predec_an(cb, REG_D0, REG_A7);
             m68k_emit_jsr_abs_l(cb, helper);
@@ -836,6 +855,7 @@ static int walker_compile(const CL_Bytecode *bc, CodeBuf *cb)
             sym = bc->constants[idx];
             if (!CL_SYMBOL_P(sym)) goto fail;
 
+            cache_flush(cb, &cache_head, &cache_depth);
             m68k_emit_move_l_imm32_predec(cb, (uint32_t)sym, REG_A7);
             m68k_emit_jsr_abs_l(cb, helper);
             m68k_emit_addq_l_an(cb, 4, REG_A7);
@@ -858,13 +878,11 @@ static int walker_compile(const CL_Bytecode *bc, CodeBuf *cb)
             sym = bc->constants[idx];
             if (!CL_SYMBOL_P(sym)) goto fail;
 
-            /* Push val as the helper's 2nd C-ABI arg (right-to-left:
-             * pushed first), then sym as the 1st.  Drop both after. */
-            if (cache_depth >= 1) {
-                m68k_emit_move_l_dn_predec_an(cb, (M68kReg)cache_head, REG_A7);
-            } else {
-                m68k_emit_move_l_an_to_predec_am(cb, REG_A7, REG_A7);
-            }
+            /* Flush before peek so TOS lives at (a7) — the helper may
+             * allocate (package sync of *PACKAGE* path, errors); the
+             * conservative scan reaches stack but not cache regs. */
+            cache_flush(cb, &cache_head, &cache_depth);
+            m68k_emit_move_l_an_to_predec_am(cb, REG_A7, REG_A7);
             m68k_emit_move_l_imm32_predec(cb, (uint32_t)sym, REG_A7);
             m68k_emit_jsr_abs_l(cb, helper);
             m68k_emit_addq_l_an(cb, 8, REG_A7);
@@ -884,6 +902,7 @@ static int walker_compile(const CL_Bytecode *bc, CodeBuf *cb)
             if (!CL_SYMBOL_P(sym)) goto fail;
 
             cache_pop_to_dn(cb, &cache_head, &cache_depth, REG_D1);
+            cache_flush(cb, &cache_head, &cache_depth);
             m68k_emit_move_l_dn_predec_an(cb, REG_D1, REG_A7);
             m68k_emit_move_l_imm32_predec(cb, (uint32_t)sym, REG_A7);
             m68k_emit_jsr_abs_l(cb, helper);
@@ -897,6 +916,7 @@ static int walker_compile(const CL_Bytecode *bc, CodeBuf *cb)
             if (ip >= bc->code_len) goto fail;
             count = bc->code[ip++];
 
+            cache_flush(cb, &cache_head, &cache_depth);
             m68k_emit_move_l_imm32_predec(cb, (uint32_t)count, REG_A7);
             m68k_emit_jsr_abs_l(cb, helper);
             m68k_emit_addq_l_an(cb, 4, REG_A7);
@@ -914,6 +934,7 @@ static int walker_compile(const CL_Bytecode *bc, CodeBuf *cb)
             sym = bc->constants[idx];
             if (!CL_SYMBOL_P(sym)) goto fail;
 
+            cache_flush(cb, &cache_head, &cache_depth);
             m68k_emit_move_l_imm32_predec(cb, (uint32_t)sym, REG_A7);
             m68k_emit_jsr_abs_l(cb, helper);
             m68k_emit_addq_l_an(cb, 4, REG_A7);
@@ -992,11 +1013,16 @@ static int walker_compile(const CL_Bytecode *bc, CodeBuf *cb)
         case OP_CAR:
         case OP_CDR: {
             /* Pop obj into D0, push it as the helper arg, JSR, drop,
-             * push D0 result back to cache. */
+             * push D0 result back to cache.  cl_car / cl_cdr are
+             * non-allocating on the happy path, but type-error throws
+             * via cl_signal_type_error allocate a condition object —
+             * flush before JSR so any cached heap pointers are on the
+             * m68k stack and reachable to the conservative scan. */
             uint32_t helper = (op == OP_CAR)
                 ? (uint32_t)(uintptr_t)&cl_jit_runtime_car
                 : (uint32_t)(uintptr_t)&cl_jit_runtime_cdr;
             cache_pop_to_dn(cb, &cache_head, &cache_depth, REG_D0);
+            cache_flush(cb, &cache_head, &cache_depth);
             m68k_emit_move_l_dn_predec_an(cb, REG_D0, REG_A7);
             m68k_emit_jsr_abs_l(cb, helper);
             m68k_emit_addq_l_an(cb, 4, REG_A7);
@@ -1004,9 +1030,46 @@ static int walker_compile(const CL_Bytecode *bc, CodeBuf *cb)
             break;
         }
 
+        case OP_CONS: {
+            /* The first allocating opcode the walker handles directly.
+             * Bytecode shape: pop cdr (TOS), pop car, push cl_cons(car,
+             * cdr).  Helper takes args in C order — car at (a7), cdr at
+             * 4(a7) — so after popping cdr→D1 and car→D0 we predec
+             * cdr first, then car, leaving car at the lowest stack
+             * address as the JSR's first argument.
+             *
+             * GC: cl_cons allocates and may GC.  The conservative scan
+             * (mem.c::gc_scan_jit_native_stack) reaches values on the
+             * m68k stack between current SP and the JIT-entry SP, but
+             * not values held in cache regs D5/D6/D7.  We therefore
+             * flush the cache before the JSR so any residual cached
+             * heap pointers land on the m68k stack and are seen by the
+             * scan with offset validation.  After the helper returns,
+             * the result (a fresh CL_Cons) goes back into the cache via
+             * cache_push_dn; D5/D6/D7 are callee-saved across the JSR
+             * by the m68k C ABI so the previously-cached values (now
+             * also living on the stack from the flush) remain valid
+             * uncached operand-stack entries beneath the new TOS. */
+            uint32_t helper = (uint32_t)(uintptr_t)&cl_jit_runtime_cons;
+            cache_pop_to_dn(cb, &cache_head, &cache_depth, REG_D1);  /* cdr */
+            cache_pop_to_dn(cb, &cache_head, &cache_depth, REG_D0);  /* car */
+            cache_flush(cb, &cache_head, &cache_depth);
+            m68k_emit_move_l_dn_predec_an(cb, REG_D1, REG_A7);       /* push cdr */
+            m68k_emit_move_l_dn_predec_an(cb, REG_D0, REG_A7);       /* push car */
+            m68k_emit_jsr_abs_l(cb, helper);
+            m68k_emit_addq_l_an(cb, 8, REG_A7);
+            cache_push_dn(cb, &cache_head, &cache_depth, REG_D0);
+            break;
+        }
+
+        /* Compare ops: slow path JSR allocates on type-error (and
+         * bignum/ratio cross-type compare can intern); flush after
+         * pops so cached heap pointers spill to the m68k stack
+         * before the helper may GC. */
         case OP_LT:
             cache_pop_to_dn(cb, &cache_head, &cache_depth, REG_D1);
             cache_pop_to_dn(cb, &cache_head, &cache_depth, REG_D0);
+            cache_flush(cb, &cache_head, &cache_depth);
             emit_compare_compute(cb, /*BLT*/13,
                                  (uint32_t)(uintptr_t)&cl_jit_runtime_lt);
             cache_push_dn(cb, &cache_head, &cache_depth, REG_D0);
@@ -1015,6 +1078,7 @@ static int walker_compile(const CL_Bytecode *bc, CodeBuf *cb)
         case OP_GT:
             cache_pop_to_dn(cb, &cache_head, &cache_depth, REG_D1);
             cache_pop_to_dn(cb, &cache_head, &cache_depth, REG_D0);
+            cache_flush(cb, &cache_head, &cache_depth);
             emit_compare_compute(cb, /*BGT*/14,
                                  (uint32_t)(uintptr_t)&cl_jit_runtime_gt);
             cache_push_dn(cb, &cache_head, &cache_depth, REG_D0);
@@ -1023,6 +1087,7 @@ static int walker_compile(const CL_Bytecode *bc, CodeBuf *cb)
         case OP_LE:
             cache_pop_to_dn(cb, &cache_head, &cache_depth, REG_D1);
             cache_pop_to_dn(cb, &cache_head, &cache_depth, REG_D0);
+            cache_flush(cb, &cache_head, &cache_depth);
             emit_compare_compute(cb, /*BLE*/15,
                                  (uint32_t)(uintptr_t)&cl_jit_runtime_le);
             cache_push_dn(cb, &cache_head, &cache_depth, REG_D0);
@@ -1031,6 +1096,7 @@ static int walker_compile(const CL_Bytecode *bc, CodeBuf *cb)
         case OP_GE:
             cache_pop_to_dn(cb, &cache_head, &cache_depth, REG_D1);
             cache_pop_to_dn(cb, &cache_head, &cache_depth, REG_D0);
+            cache_flush(cb, &cache_head, &cache_depth);
             emit_compare_compute(cb, /*BGE*/12,
                                  (uint32_t)(uintptr_t)&cl_jit_runtime_ge);
             cache_push_dn(cb, &cache_head, &cache_depth, REG_D0);
@@ -1039,6 +1105,7 @@ static int walker_compile(const CL_Bytecode *bc, CodeBuf *cb)
         case OP_NUMEQ:
             cache_pop_to_dn(cb, &cache_head, &cache_depth, REG_D1);
             cache_pop_to_dn(cb, &cache_head, &cache_depth, REG_D0);
+            cache_flush(cb, &cache_head, &cache_depth);
             emit_compare_compute(cb, /*BEQ*/7,
                                  (uint32_t)(uintptr_t)&cl_jit_runtime_numeq);
             cache_push_dn(cb, &cache_head, &cache_depth, REG_D0);
@@ -1106,6 +1173,7 @@ static int walker_compile(const CL_Bytecode *bc, CodeBuf *cb)
             idx = bc->code[ip++];
 
             cache_pop_to_dn(cb, &cache_head, &cache_depth, REG_D0);
+            cache_flush(cb, &cache_head, &cache_depth);
             m68k_emit_move_l_imm32_predec(cb, (uint32_t)idx, REG_A7);
             m68k_emit_move_l_dn_predec_an(cb, REG_D0, REG_A7);
             m68k_emit_jsr_abs_l(cb, helper);
@@ -1122,6 +1190,7 @@ static int walker_compile(const CL_Bytecode *bc, CodeBuf *cb)
 
             cache_pop_to_dn(cb, &cache_head, &cache_depth, REG_D1);   /* val */
             cache_pop_to_dn(cb, &cache_head, &cache_depth, REG_D0);   /* obj */
+            cache_flush(cb, &cache_head, &cache_depth);
             m68k_emit_move_l_dn_predec_an(cb, REG_D1, REG_A7);
             m68k_emit_move_l_imm32_predec(cb, (uint32_t)idx, REG_A7);
             m68k_emit_move_l_dn_predec_an(cb, REG_D0, REG_A7);

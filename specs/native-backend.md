@@ -598,7 +598,7 @@ opcodes:
 OP_NIL OP_T OP_CONST OP_LOAD OP_STORE OP_POP OP_DUP
 OP_JMP OP_JNIL OP_JTRUE
 OP_ADD OP_SUB OP_MUL OP_LT OP_GT OP_LE OP_GE OP_NUMEQ OP_EQ OP_NOT
-OP_CAR OP_CDR
+OP_CAR OP_CDR OP_CONS
 OP_GLOAD OP_GSTORE OP_FLOAD OP_CALL OP_TAILCALL
 OP_STRUCT_REF OP_STRUCT_SET OP_DYNBIND OP_DYNUNBIND
 OP_RET
@@ -621,11 +621,21 @@ Deep self-recursion blows the 65 KB Amiga stack budget; the bytecode
 VM's frame reuse on `cl_vm.stack` doesn't have this limit.  Real TCO
 is in §"Open design choices" below.
 
-**Pure-fixnum-only GC safety.**  Operand-stack values live on the m68k
-stack and aren't rooted yet, so a slow-path helper that allocates can
-silently corrupt them.  Today's workloads stay in the fixnum fast
-paths and are safe in practice; conservative m68k-stack scanning at
-safepoints is the spec'd fix.
+**GC safety across JIT helper calls.**  Operand-stack values that
+live on the m68k stack are reached by the conservative scan with
+header-offset validation (`mem.c::gc_scan_jit_native_stack`, landed
+2026-05-15).  Values held in the three-slot cache regs D5/D6/D7 are
+*not* scanned (registers, not memory).  Rule (2026-05-15): every
+helper-calling emitter flushes the cache before its JSR.  In
+practice helpers can almost always allocate — even "non-allocating"
+helpers throw via `cl_signal_type_error` / `cl_error` on bad inputs,
+which allocates a condition object — so universal flushing is the
+safest and simplest invariant.  Cost: ~1–6 extra bytes of native
+code per slow path (the predec spills for whatever cache regs held
+values at compile time).  `OP_CALL` / `OP_TAILCALL` / `OP_CONS` plus
+the arith, compare, `OP_CAR`/`OP_CDR`, `OP_FLOAD`, `OP_GLOAD` /
+`OP_GSTORE`, `OP_DYNBIND` / `OP_DYNUNBIND`, and `OP_STRUCT_REF` /
+`OP_STRUCT_SET` paths all conform.
 
 **Branches** use a single-pass label table (`bc_to_native[ip]`):
 forward branches emit a `Bcc.W` with a placeholder displacement plus
@@ -714,9 +724,18 @@ OP_TAILCALL).
        Amiga, an FS-UAE test once an allocating opcode is JIT'd
        (today the walker bails on those, so this test waits on the
        first allocating-opcode lift).
-  Once landed, the "fixnum fast path only" gate can be lifted on at
-  least one allocating opcode (likely `OP_CONS` or generic-arith
-  bignum fallback) to exercise the safety net.
+  **OP_CONS lift (2026-05-15)**: first allocating opcode handled
+  directly by the walker.  Emitter pops `cdr`/`car` from the cache,
+  flushes the remaining cache so residual heap pointers land on the
+  m68k stack within the scan window, then JSRs
+  `cl_jit_runtime_cons` (a thin wrapper around `cl_cons`).  The
+  conservative scan + offset validation is what makes this safe;
+  without those, a GC inside `cl_cons` could either miss live
+  operand-stack references or phantom-mark coincidental integers.
+  Generic-arith bignum fallback (OP_ADD slow path on overflow) and
+  every other helper-calling emitter were brought under the same
+  rule in the same change — see §"GC safety across JIT helper
+  calls" above.
 - *MV_RESET and `mv_count` propagation.*  Investigated 2026-05-14
   and reverted.  Bytecode VM resets `cl_mv_count = 1` as a side
   effect of every value-producing opcode (OP_CONST, OP_NIL, OP_LOAD,

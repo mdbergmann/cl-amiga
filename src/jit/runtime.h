@@ -56,15 +56,21 @@
  *   - cl_jit_runtime_struct_ref / _set — backing for OP_STRUCT_REF /
  *     OP_STRUCT_SET.  Validate type + bounds, then read/write the slot
  *     at a baked-in u8 index.  Non-allocating, so always GC-safe.
+ *   - cl_jit_runtime_cons — backing for OP_CONS.  Pass-through to
+ *     cl_cons.  Allocates; the conservative m68k-stack scan
+ *     (mem.c::gc_scan_jit_native_stack) keeps cached operand-stack
+ *     values reachable across the allocation, so this is the first
+ *     allocating opcode the walker handles directly.
  *
- * GC caveat: both helpers may allocate (bignum result on fixnum
- * overflow), which may trigger GC.  Operand-stack values live on the
- * m68k stack and are not yet rooted — calls from JIT'd code into
- * allocating helpers are unsafe for general Lisp programs.  The JIT
- * is currently only safe for pure-fixnum workloads where the slow
- * path never fires.  Conservative m68k-stack scanning is the spec'd
- * fix; tracked under §"Open design choices" in
- * specs/native-backend.md.
+ * GC interaction: helpers in this file may allocate, which may GC.
+ * Operand-stack values held on the m68k stack between cache flushes
+ * are reached by the conservative scan added in 432572c — each
+ * candidate offset is validated against a real arena header before
+ * `gc_mark_obj` is called, so phantom marks at non-object bytes are
+ * impossible.  The collector's sliding compactor remains free to run
+ * because real heap offsets the scan finds are rewritten by the
+ * compactor's existing reference-rewrite pass; coincidental integers
+ * are never marked, so the compactor never touches them.
  */
 
 #ifndef CL_JIT_RUNTIME_H
@@ -100,6 +106,8 @@ CL_Obj cl_jit_runtime_call (CL_Obj *operand_top, uint32_t nargs);
 
 CL_Obj cl_jit_runtime_struct_ref(CL_Obj obj, uint32_t idx);
 CL_Obj cl_jit_runtime_struct_set(CL_Obj obj, uint32_t idx, CL_Obj val);
+
+CL_Obj cl_jit_runtime_cons(CL_Obj car, CL_Obj cdr);
 
 #endif /* JIT_M68K */
 
