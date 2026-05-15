@@ -16,12 +16,15 @@
 ; --- Byte-pipeline smoke: %JIT-COMPILE-STUB writes NOP+RTS into a
 ; function's native_code slot, %JIT-DUMP-BYTES reads it back. ---
 
-; Use a 2-arg function whose body contains an opcode the walker still
-; bails on (OP_MV_RESET, emitted between AND's arms) so neither the
-; trivial-leaf nor the 1-arg identity matcher fires AND the walker
-; can't auto-compile it.  Gives a clean "no native_code yet" baseline
-; to verify %JIT-COMPILE-STUB attaches the stub bytes.
-(defun jit-stub-test-fn (x y) (and x y))
+; Use a function whose lambda-list pins one of the walker's metadata
+; gates (`bc->n_optional != 0`) so neither the trivial-leaf matchers
+; nor the per-opcode walker auto-compile it.  Gives a clean "no
+; native_code yet" baseline to verify %JIT-COMPILE-STUB attaches the
+; stub bytes.  (Previously this used `(and x y)`, which relied on
+; OP_MV_RESET making the walker bail — landing OP_MV_RESET in the
+; walker took that out from under the test; &optional is a stable
+; bail point because supporting it is a much larger metadata change.)
+(defun jit-stub-test-fn (x &optional y) (or x y))
 (check "jit-dump-before-stub" nil (clamiga::%jit-dump-bytes #'jit-stub-test-fn))
 (check "jit-compile-stub-succeeds" t (clamiga::%jit-compile-stub #'jit-stub-test-fn))
 ; NOP = 0x4E71, RTS = 0x4E75 → bytes 78 113 78 117
@@ -241,19 +244,49 @@
     (walker-let-id 1)
     (> (clamiga::%jit-invoke-count) before)))
 
-; Negative: a function whose body still contains an opcode the walker
-; doesn't handle (OP_MV_RESET, via AND) must leave native_code NULL
-; and run via the interpreter.  Duplicates jit-stub-test-fn's
-; rejection shape with a distinct name so the test reads cleanly.
-(defun walker-mv-reset-fallback (x y) (and x y))
-(check "walker-mv-reset-fallback-no-native"
-  nil (clamiga::%jit-dump-bytes #'walker-mv-reset-fallback))
-(check "walker-mv-reset-fallback-still-works"
-  'b (walker-mv-reset-fallback 'a 'b))
-(check "walker-mv-reset-fallback-no-counter-bump" t
+; OP_MV_RESET (emitted between AND/OR arms) now compiles via a JSR to
+; cl_jit_runtime_mv_reset, which sets cl_mv_count = 1 on the current
+; thread.  Previously the walker bailed on the op and `(and x y)` ran
+; through the interpreter — landing this is what makes step-line in
+; bouncing-lines (which uses `(when (or A B) …)` four times) JIT in
+; the first place.  Verify the function compiles AND that AND's
+; short-circuit/value semantics still match the interpreter.
+(defun walker-mv-reset-and (x y) (and x y))
+(check "walker-mv-reset-and-has-native" t
+  (let ((bytes (clamiga::%jit-dump-bytes #'walker-mv-reset-and)))
+    (and (consp bytes) (> (length bytes) 0))))
+(check "walker-mv-reset-and-counter-bump" t
   (let ((before (clamiga::%jit-invoke-count)))
-    (walker-mv-reset-fallback 3 4)
-    (= before (clamiga::%jit-invoke-count))))
+    (walker-mv-reset-and 'a 'b)
+    (> (clamiga::%jit-invoke-count) before)))
+(check "walker-mv-reset-and-truthy"      'b  (walker-mv-reset-and 'a 'b))
+(check "walker-mv-reset-and-short-nil"   nil (walker-mv-reset-and nil 'b))
+(check "walker-mv-reset-and-second-nil"  nil (walker-mv-reset-and 'a nil))
+(check "walker-mv-reset-and-both-nil"    nil (walker-mv-reset-and nil nil))
+
+; OR variant — same emission path (OP_MV_RESET sits between OR's arms
+; in compiler_extra.c:102), but the surrounding control flow uses
+; OP_JTRUE instead of OP_JNIL.
+(defun walker-mv-reset-or (x y) (or x y))
+(check "walker-mv-reset-or-has-native" t
+  (let ((bytes (clamiga::%jit-dump-bytes #'walker-mv-reset-or)))
+    (and (consp bytes) (> (length bytes) 0))))
+(check "walker-mv-reset-or-first"   'a  (walker-mv-reset-or 'a 'b))
+(check "walker-mv-reset-or-second"  'b  (walker-mv-reset-or nil 'b))
+(check "walker-mv-reset-or-both-nil" nil (walker-mv-reset-or nil nil))
+
+; After an OP_MV_RESET fires, calling (values-list ...) immediately
+; should see mv_count = 1 — the walker's JSR-helper handling matches
+; the bytecode VM's `cl_mv_count = 1` exactly.  This is the case the
+; jit-mv-count-no-per-opcode-reset memory flagged as the failure mode
+; if the walker had simply ignored OP_MV_RESET — stale mv state from
+; a prior (values ...) leaking into a later consumer.
+(defun walker-mv-reset-after-and (x)
+  ;; The `(and t x)` arm emits OP_MV_RESET, then `(values 1)` is
+  ;; the function's tail.  `nth-value 0` reads value 0 and depends
+  ;; on cl_mv_count being a stable 1 by the time of consumption.
+  (and t x))
+(check "walker-mv-reset-tail-value" 7 (walker-mv-reset-after-and 7))
 
 ; --- Branches (OP_JMP / OP_JNIL / OP_JTRUE) ------------------------------
 ;

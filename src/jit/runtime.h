@@ -118,6 +118,11 @@ CL_Obj cl_jit_runtime_cons(CL_Obj car, CL_Obj cdr);
  * fallback without dereferencing closures inline in m68k. */
 int cl_jit_runtime_is_self_tco(CL_Obj func, CL_Obj self_bc);
 
+/* Backing for OP_MV_RESET — sets cl_mv_count = 1 on the current
+ * thread.  Non-allocating, doesn't touch the operand stack: a plain
+ * JSR with no cache flush needed. */
+void cl_jit_runtime_mv_reset(void);
+
 #endif /* JIT_M68K */
 
 #endif /* CL_JIT_RUNTIME_H */
