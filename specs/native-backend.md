@@ -613,13 +613,22 @@ targets flush, so `cache_depth = 0` at every join point.  Unrecognized
 opcode → walker bails, `native_code` stays NULL, function runs
 interpreted.
 
-**`OP_TAILCALL` is not native-level TCO.**  The emitter skips the
-push/pop round-trip and RTSes with D0 directly, but each tail call
-still routes JIT'd → `cl_jit_runtime_call` → `cl_vm_apply` →
-`cl_jit_invoke` → JIT'd, growing the m68k C stack ~1 KB per level.
-Deep self-recursion blows the 65 KB Amiga stack budget; the bytecode
-VM's frame reuse on `cl_vm.stack` doesn't have this limit.  Real TCO
-is in §"Open design choices" below.
+**`OP_TAILCALL` self-recursive native TCO (landed 2026-05-15).**
+When `nargs == arity` and `bc->name` is a symbol, the emitter prefixes
+the standard helper sequence with a runtime guard: compare the func
+on the operand stack against this bytecode's CL_Obj; on match, copy
+the N args into the A6 frame slots, drop the operand stack, and
+`bra.w` back to entry-after-prologue (the same LINK frame is
+reused — zero m68k-stack growth on tail-recursive loops).  On
+mismatch (the symbol resolves elsewhere because of redefinition, or
+compaction moved the bytecode), fall through to the existing
+`cl_jit_runtime_call → cl_vm_apply` path, semantics preserved.
+Cross-function tail calls (foo→bar tail) still use the helper path,
+so they grow the m68k C stack at ~1 KB/level — option (b) from
+§"Open design choices" (trampolining in `cl_jit_invoke`) is the
+follow-up there.  The compiler-emitted OP_RET after OP_TAILCALL is
+dead code on the self-TCO branch, still emitted by the walker as
+unreachable trailing bytes.
 
 **GC safety across JIT helper calls.**  Operand-stack values that
 live on the m68k stack are reached by the conservative scan with
@@ -694,12 +703,18 @@ OP_TAILCALL).
   averaging 80–250 B of native code, a coarse
   "compile-on-Nth-invocation" gate is the next likely lever — see
   §"Mitigations".
-- *Real tail-call optimization.*  Two candidates: (a) compile-time
-  self-recursion detection that matches `OP_FLOAD <self> ;
-  OP_TAILCALL <n>` and emits "rewrite args back into A6 slots ; BRA
-  to entry-after-prologue", handling the dominant loop shape with
-  zero stack growth; (b) trampolining in `cl_jit_invoke` for
-  cross-function tail calls.  (a) is the cleaner first cut.
+- *Real tail-call optimization.*  (a) *Self-recursion landed
+  2026-05-15* — see §"`OP_TAILCALL` self-recursive native TCO"
+  above.  The guard form differs slightly from this section's
+  original sketch: rather than pattern-matching `OP_FLOAD <self>;
+  OP_TAILCALL` at compile time (hard because arbitrary arg
+  evaluation sits between them), the emitter unconditionally
+  compares the runtime func value against `bc`'s CL_Obj at every
+  arity-matching tail-call site.  Cost: ~14 extra bytes per such
+  site (load + cmp + bne + copy/lea/bra inside the taken arm).  In
+  return: redefinition correctness is automatic.  (b)
+  Cross-function tail-call trampolining in `cl_jit_invoke` remains
+  open and is the next lever for non-self deep tail chains.
 - *GC root finding for the operand stack.*  See §"GC interaction".
   Prerequisite for JIT'ing CONS-heavy / mixed-type code by default.
   **Direction chosen (2026-05-15): Option A — conservative m68k

@@ -968,28 +968,122 @@ static int walker_compile(const CL_Bytecode *bc, CodeBuf *cb)
         }
 
         case OP_TAILCALL: {
-            /* u8 nargs.  Same call sequence as OP_CALL — JIT'd code
-             * runs as a plain native C function (no cl_vm.fp Lisp
-             * frame to reuse), so "frame reuse" here means: skip the
-             * round-trip of pushing the helper's D0 result onto the
-             * operand stack only to have OP_RET pop it back, and
-             * instead tear down our own LINK frame and RTS directly
-             * with D0 holding the callee's return value.  The compiler
-             * always emits OP_RET immediately after OP_TAILCALL; that
-             * OP_RET will still emit its own restore + unlk + rts
-             * sequence below, but as dead native code unreachable from
-             * the falling-through path.  Native-level TCO (no m68k-
-             * stack growth on self-recursion) would need a trampoline
-             * in cl_jit_invoke or compile-time self-recursion
-             * detection — not done here. */
+            /* u8 nargs.  Two code paths:
+             *
+             *   1. Self-recursive TCO.  When `nargs == arity` and
+             *      `bc->name` is a SYMBOL (so the call could plausibly
+             *      have come from `OP_FLOAD <name>; ...; OP_TAILCALL n`),
+             *      emit a runtime guard that compares the func value
+             *      sitting at 4*N(a7) against this bytecode's CL_Obj.
+             *      If equal — the symbol still resolves to *this*
+             *      function — copy the N args from the operand stack
+             *      into the A6 frame slots, drop the operand stack,
+             *      and `bra.w` back to entry_after_prologue
+             *      (bc_to_native[0], set before any opcode emits).
+             *      Zero m68k-stack growth: the same LINK frame is
+             *      reused for the next iteration.
+             *
+             *   2. Fallback / non-self.  If the guard misses, or the
+             *      shape doesn't qualify (arity mismatch, anonymous
+             *      lambda), fall through to the generic helper path:
+             *      JSR cl_jit_runtime_call, drop args, restore cache
+             *      regs, UNLK + RTS.  This is identical to OP_CALL's
+             *      sequence except we RTS with D0 directly instead of
+             *      pushing the result onto our own operand stack only
+             *      for the compiler-mandated trailing OP_RET to pop
+             *      it again.  The OP_RET below still emits its own
+             *      restore + unlk + rts as dead code, harmless.
+             *
+             * Redefinition correctness: if `(setf (symbol-function
+             * 'foo) #'bar)` runs after foo has been JIT-compiled,
+             * subsequent `(foo …)` calls go through OP_FLOAD which
+             * returns bar.  Our guard then compares bar != self_bc,
+             * misses, and we route through cl_jit_runtime_call as the
+             * VM would — semantics preserved.  Compaction moving the
+             * bytecode also lands on the fallback (immediate stale ≠
+             * new CL_Obj), which is correct.
+             *
+             * Out-of-range backward branch: if bc_to_native[0] is
+             * further than 32 KB back from this OP_TAILCALL, the
+             * Bcc.W displacement won't fit and we bail the whole
+             * walker compile (the function runs interpreted).  Loop
+             * bodies fit well under that limit in practice. */
             uint8_t nargs;
             uint32_t helper = (uint32_t)(uintptr_t)&cl_jit_runtime_call;
             int16_t drop_bytes;
+            int self_tco;
+            int32_t guard_branch_pc = 0;
             if (ip >= bc->code_len) goto fail;
             nargs = bc->code[ip++];
             drop_bytes = (int16_t)(4 * ((int32_t)nargs + 1));
 
             cache_flush(cb, &cache_head, &cache_depth);
+
+            self_tco = (nargs == arity) && CL_SYMBOL_P(bc->name);
+
+            if (self_tco) {
+                uint32_t self_obj = (uint32_t)CL_PTR_TO_OBJ(bc);
+                uint32_t guard = (uint32_t)(uintptr_t)&cl_jit_runtime_is_self_tco;
+                int32_t entry_off, bra_disp;
+                uint32_t i;
+
+                /* Guard: call cl_jit_runtime_is_self_tco(func, self_bc).
+                 * Helper dereferences closures (the dominant defun
+                 * shape — compile_lambda emits OP_CLOSURE on every
+                 * defun, so sym->function is always a CL_Closure
+                 * wrapping the bytecode, never the bytecode CL_Obj
+                 * itself).  Inline cmp on raw CL_Obj would always
+                 * miss.  Helper returns 1/0 in D0.
+                 *
+                 * Push self_bc first (2nd C-ABI arg), then func.
+                 * After the second predec, func's original slot is
+                 * at 4*(N+2)(a7) — we read it via the
+                 * disp-an-predec-am encoder which uses A7 for both
+                 * source and dest (source EA evaluated before the
+                 * predec, so the read picks up the pre-predec slot
+                 * just fine). */
+                m68k_emit_move_l_imm32_predec(cb, self_obj, REG_A7);
+                m68k_emit_move_l_disp_an_predec_am(cb,
+                    (int16_t)(4 * ((int32_t)nargs + 1)), REG_A7, REG_A7);
+                m68k_emit_jsr_abs_l(cb, guard);
+                m68k_emit_addq_l_an(cb, 8, REG_A7);
+                m68k_emit_tst_l_dn(cb, REG_D0);
+                guard_branch_pc = (int32_t)cb_len(cb) + 2;
+                m68k_emit_beq_w(cb, 0);   /* D0==0 → not self → fallback */
+
+                /* Copy args into frame slots.  src[i] = 4*i(a7) holds
+                 * argN-1-i; dst slot for parameter (N-1-i) is at
+                 * slot_disp(N-1-i, arity) = 8+4*(N-1-i) from A6. */
+                for (i = 0; i < nargs; i++) {
+                    int16_t src_disp = (int16_t)(4 * (int32_t)i);
+                    int16_t dst_disp = slot_disp((uint8_t)(nargs - 1 - i), arity);
+                    m68k_emit_move_l_disp_an_to_dn(cb, src_disp, REG_A7, REG_D0);
+                    m68k_emit_move_l_dn_to_disp_am(cb, REG_D0, dst_disp, REG_A6);
+                }
+
+                /* Reset A7 to the operand-stack base — right below the
+                 * three saved cache regs.  Can't just `lea 4*(N+1)(a7)`
+                 * because the operand stack may hold spilled cache
+                 * values below this OP_TAILCALL's args (whatever the
+                 * function pushed before reaching us, then flushed
+                 * above).  Going through A6 ignores all of that and
+                 * lands at the canonical empty-operand-stack address
+                 * the bra target expects. */
+                m68k_emit_lea_disp_an_to_am(cb,
+                    (int16_t)(frame_size - 12), REG_A6, REG_A7);
+
+                entry_off = bc_to_native[0];
+                bra_disp = entry_off - ((int32_t)cb_len(cb) + 2);
+                if (bra_disp < -32768 || bra_disp > 32767) goto fail;
+                m68k_emit_bra_w(cb, (int16_t)bra_disp);
+
+                /* Patch the guard's BEQ to land at the fallback (right here). */
+                m68k_patch_disp16(cb_data(cb), cb_len(cb),
+                                  (uint32_t)guard_branch_pc,
+                                  (int16_t)((int32_t)cb_len(cb) - guard_branch_pc));
+            }
+
+            /* Fallback / non-self path. */
             m68k_emit_move_l_an_to_am(cb, REG_A7, REG_A0);
             m68k_emit_move_l_imm32_predec(cb, (uint32_t)nargs, REG_A7);
             m68k_emit_move_l_an_predec_am(cb, REG_A0, REG_A7);

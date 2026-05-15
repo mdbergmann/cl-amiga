@@ -109,6 +109,15 @@ CL_Obj cl_jit_runtime_struct_set(CL_Obj obj, uint32_t idx, CL_Obj val);
 
 CL_Obj cl_jit_runtime_cons(CL_Obj car, CL_Obj cdr);
 
+/* Self-TCO predicate.  Returns 1 if `func` is the function value
+ * that, when called, would dispatch back into `self_bc` (i.e., it
+ * either is `self_bc` directly, or is a closure wrapping `self_bc`).
+ * 0 otherwise — including for non-heap values, builtins, and other
+ * bytecodes.  Called once per arity-matching OP_TAILCALL site; lets
+ * the walker decide between the native-TCO bra and the helper-call
+ * fallback without dereferencing closures inline in m68k. */
+int cl_jit_runtime_is_self_tco(CL_Obj func, CL_Obj self_bc);
+
 #endif /* JIT_M68K */
 
 #endif /* CL_JIT_RUNTIME_H */
