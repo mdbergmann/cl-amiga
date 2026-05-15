@@ -25,6 +25,7 @@
 #include "core/package.h"    /* cl_sync_current_package_from_dynamic */
 #include "core/thread.h"     /* cl_symbol_value / cl_set_symbol_value */
 #include "core/vm.h"         /* cl_dynbind_restore_to, CL_MAX_DYN_BINDINGS */
+#include "core/mem.h"        /* cl_heap.arena_size */
 
 /* Forward decls for the existing C-runtime arithmetic — same helpers
  * the bytecode VM falls through to from its OP_ADD / OP_LT slow paths.
@@ -309,6 +310,37 @@ CL_Obj cl_jit_runtime_struct_set(CL_Obj obj, uint32_t idx, CL_Obj val)
 CL_Obj cl_jit_runtime_cons(CL_Obj car, CL_Obj cdr)
 {
     return cl_cons(car, cdr);
+}
+
+/* OP_TAILCALL self-TCO guard.  Called from the walker-emitted
+ * arity-matching tail-call site to decide whether the runtime func
+ * value would dispatch back into this same bytecode — in which case
+ * the emitter's bra-back-to-entry path is safe.  Three cases that
+ * count as "self":
+ *   - func IS self_bc directly (rare in practice: defun always
+ *     wraps via OP_CLOSURE, but local function bindings may store
+ *     bare bytecodes);
+ *   - func is a CL_Closure whose `bytecode` field is self_bc — the
+ *     dominant case for top-level defuns;
+ *   - anything else (builtin, foreign, non-heap, different bytecode,
+ *     redefined symbol pointing elsewhere): 0 → walker falls back to
+ *     cl_jit_runtime_call, semantics match the bytecode VM.
+ *
+ * Non-allocating; safe under any GC state.  Returns plain int so
+ * the m68k caller can `tst.l d0; beq fallback` after the JSR. */
+int cl_jit_runtime_is_self_tco(CL_Obj func, CL_Obj self_bc)
+{
+    if (func == self_bc) return 1;
+    if (!CL_HEAP_P(func)) return 0;
+    if (func >= cl_heap.arena_size) return 0;
+    {
+        void *p = CL_OBJ_TO_PTR(func);
+        if (CL_HDR_TYPE(p) == TYPE_CLOSURE) {
+            CL_Closure *c = (CL_Closure *)p;
+            return (c->bytecode == self_bc) ? 1 : 0;
+        }
+    }
+    return 0;
 }
 
 #endif /* JIT_M68K */

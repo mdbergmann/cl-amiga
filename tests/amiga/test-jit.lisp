@@ -815,21 +815,25 @@
 (check "walker-call-recover-after-error" 42
   (walker-call-id 42))
 
-; --- OP_TAILCALL.  Same call sequence as OP_CALL (cache_flush, marshal
-; args, JSR cl_jit_runtime_call, drop the arg frame), but instead of
-; pushing the helper's D0 result onto the operand stack the emitter
-; restores D5/D6/D7 from their A6 slots, UNLKs the frame, and RTSes
-; directly with D0 still holding the callee's result.  The OP_RET that
-; the compiler always emits after OP_TAILCALL becomes dead unreachable
-; native code on the falling-through path (still emitted by the walker
-; in case other branches land there, just never reached here).
+; --- OP_TAILCALL.  Two paths in the emitter (since 2026-05-15):
 ;
-; Note: this is not native-level TCO — each tail call still grows the
-; m68k call stack by one C frame because cl_jit_runtime_call → cl_vm_apply
-; recurses into cl_jit_invoke for JIT'd callees.  Deep self-recursion
-; can therefore still blow the m68k stack; the win here is correctness
-; (functions ending in tail calls now JIT instead of bailing) plus the
-; saved push/pop round-trip.
+;   1. Self-recursive TCO.  When nargs == arity and bc->name is a
+;      SYMBOL, the emitter prefixes the helper sequence with a
+;      runtime guard: compare the func value sitting at 4*N(a7)
+;      against this bytecode's CL_Obj.  On match, copy the N args
+;      from the operand stack into the A6 frame slots, drop the
+;      operand stack, and bra.w back to entry-after-prologue —
+;      same LINK frame is reused, zero m68k-stack growth.
+;
+;   2. Fallback / non-self / redefined.  Guard misses → continue
+;      with the helper-based sequence (cache_flush already done at
+;      the top, marshal args, JSR cl_jit_runtime_call, drop frame,
+;      restore D5/D6/D7, UNLK, RTS).  This is the path cross-function
+;      tail calls and post-redefinition self-calls take.
+;
+; The OP_RET the compiler always emits after OP_TAILCALL becomes
+; dead unreachable native code on either branch (still emitted by
+; the walker in case other branches land there, just never reached).
 
 ; Tail call to a plain user function.  Bare `(walker-tail-target x)` in
 ; tail position emits OP_TAILCALL; arg-passing order check (single
@@ -877,17 +881,14 @@
 (check "walker-tail-if-fix-f" 20 (walker-tail-if nil 10 20))
 
 ; Self-recursion accumulator — every recursive call is in tail
-; position, so the loop runs entirely through OP_TAILCALL.  Σ 1..N =
-; N*(N+1)/2.
-;
-; Why N stays modest: this walker has no native-level TCO.  Every
-; tail call goes JIT'd → cl_jit_runtime_call → cl_vm_apply →
-; cl_jit_invoke → JIT'd, growing the m68k C stack by one full set of
-; frames.  cl_jit_runtime_call's own CL_Obj args[256] buffer alone
-; burns ~1 KB per level, so against the 65 KB AmigaOS default stack
-; (`stack 65000` in user-startup) we keep N well under ~30 to leave
-; headroom.  The bytecode VM has real frame reuse on cl_vm.stack and
-; could go deeper; this restriction is JIT-specific.
+; position, so the loop runs entirely through OP_TAILCALL with the
+; **native self-TCO path** (landed 2026-05-15): runtime guard at the
+; tail-call site compares the func value against this bytecode's
+; CL_Obj; on match, args are copied to A6 frame slots and execution
+; bra.w's back to entry-after-prologue.  Same LINK frame is reused —
+; zero m68k-stack growth.  N can now go deep without blowing the 65
+; KB Amiga stack (the bytecode VM's frame reuse on cl_vm.stack is
+; matched).  Σ 1..N = N*(N+1)/2.
 (defun walker-tail-sum (n acc)
   (if (zerop n)
       acc
@@ -896,10 +897,51 @@
   (let ((before (clamiga::%jit-invoke-count)))
     (walker-tail-sum 5 0)
     (> (clamiga::%jit-invoke-count) before)))
-(check "walker-tail-sum-0"  0   (walker-tail-sum 0  0))
-(check "walker-tail-sum-1"  1   (walker-tail-sum 1  0))
-(check "walker-tail-sum-10" 55  (walker-tail-sum 10 0))
-(check "walker-tail-sum-20" 210 (walker-tail-sum 20 0))
+(check "walker-tail-sum-0"   0     (walker-tail-sum 0   0))
+(check "walker-tail-sum-1"   1     (walker-tail-sum 1   0))
+(check "walker-tail-sum-10"  55    (walker-tail-sum 10  0))
+(check "walker-tail-sum-20"  210   (walker-tail-sum 20  0))
+; Deep self-recursion: without native TCO this would blow the 65 KB
+; Amiga stack at N≈50.  N=1000 (sum 500500) proves the LINK frame is
+; really being reused; N=5000 (sum 12502500) — well past 5 MB of
+; "would-have-grown" stack — proves it's not just lucky inlining.
+(check "walker-tail-sum-1000" 500500    (walker-tail-sum 1000 0))
+(check "walker-tail-sum-5000" 12502500  (walker-tail-sum 5000 0))
+
+; Self-TCO doesn't fire when the tail-call target isn't `self`.  Two
+; cooperating functions exercise the fallback path: `walker-tail-ping`
+; ends with a call to `walker-tail-pong` (not self), so its OP_TAILCALL
+; emits the guard, the runtime cmp fails (func != ping_bc), and
+; control falls through to the helper.  Same for pong.  Each round-
+; trip costs one C frame, so we keep the depth modest.  Result chains
+; through both layers — proves the guard's mismatch arm works.
+(defun walker-tail-pong (x) x)
+(defun walker-tail-ping (x) (walker-tail-pong x))
+(check "walker-tail-ping-cross"   42 (walker-tail-ping 42))
+(check "walker-tail-ping-sym"   'foo (walker-tail-ping 'foo))
+
+; Self-TCO with redefinition.  `defun` of the same name replaces the
+; symbol's function cell with a fresh CL_Bytecode.  The original JIT'd
+; code's baked-in self-CL_Obj points at the OLD bytecode; the guard
+; cmp at runtime sees that the new func != old bc, falls back to the
+; helper, which dispatches to the new definition.  Semantics match
+; the bytecode VM exactly (`(setf (symbol-function 'foo) #'bar)`-style
+; redefinition is honored).
+;
+; Walk it: define `walker-redef-tco` as a self-recursive countdown
+; that JITs through self-TCO; verify it works; redefine it to a
+; non-recursive form; verify the new body runs.
+(defun walker-redef-tco (n)
+  (if (zerop n) :hit-bottom (walker-redef-tco (- n 1))))
+(check "walker-redef-tco-self"   :hit-bottom (walker-redef-tco 50))
+(defun walker-redef-tco (n) (list :replaced n))
+(check "walker-redef-tco-after"  '(:replaced 7) (walker-redef-tco 7))
+; And one more time the other direction — redefining back to a
+; self-recursive shape proves the symbol cell really is what's being
+; consulted at each call.
+(defun walker-redef-tco (n)
+  (if (zerop n) :back-again (walker-redef-tco (- n 1))))
+(check "walker-redef-tco-self-2" :back-again (walker-redef-tco 30))
 
 ; Tail call to undefined function: OP_FLOAD signals via cl_error →
 ; longjmp out of the JIT'd frame.  handler-case catches; subsequent
