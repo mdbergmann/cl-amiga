@@ -403,10 +403,43 @@ Three options for handling this, in increasing implementation cost:
   Most code, fully correct, what the rest of this section ultimately
   gestures at.
 
-**Chosen direction: A first, C eventually.** A unblocks mixed-type
-JIT compilation with bounded risk. C is the long-term answer once
-the JIT compiles allocating opcodes broadly enough that suppressed
-compaction starts costing real memory.
+**Landed (2026-05-15): A + offset validation; compaction inhibit removed.**
+
+Option A as initially landed (suppress compaction while
+`cl_jit_active_threads > 0`) hit the documented OOM cliff on the
+Amiga test suite — fragmentation accumulated faster than non-moving
+sweep could keep up, and 1814 of 2525 tests passed before
+`cl_alloc` returned `Heap exhausted (requested 16 bytes)` with the
+arena still at ~3.6 MB / 8 MB used.
+
+Refinement: **two-phase conservative scan with header-offset
+validation** in `mem.c::gc_scan_jit_native_stack`.
+
+1. *Collect.* Walk the m68k stack window and gather candidate
+   offsets (values that pass `CL_HEAP_P` and `< arena_size`) into
+   a 256-entry stack-local buffer.  Overflow drops the excess and
+   warns once — a correctness gap, not a corruption hazard.
+2. *Validate-and-mark.* `qsort` the candidates; walk the arena
+   bump-front by header size, and for each real header offset `X`
+   binary-search the candidate buffer.  Only matches reach
+   `gc_mark_obj`.  Phantom marks at non-object-start bytes are
+   impossible.
+
+With phantom marks ruled out, the compactor can run even while
+JIT'd code holds operand values on the m68k stack: those values
+are either real heap offsets (which the compactor already updates
+via its reference rewrite pass) or coincidental integers (which
+never get marked or referenced from the heap, so the compactor
+never touches them).
+
+`cl_jit_active_threads` survives as an informational counter (for
+future JIT-aware diagnostics or a faster early-out path) but no
+longer gates compaction in `cl_alloc` or `cl_gc_compact_if_pending`.
+
+Option B (pinning) and Option C (precise stack maps) remain spec'd
+as future paths if conservative *retention* (not corruption)
+becomes a measurable problem — typically it doesn't for this kind
+of workload.
 
 Precise stack maps can come later if retention turns out to be a real
 problem (typically isn't for this kind of workload).

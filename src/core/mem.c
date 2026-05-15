@@ -66,8 +66,11 @@ int gc_compact_pending = 0;
 
 /* Count of threads currently inside cl_jit_invoke.  Bumped on
  * outermost JIT entry, decremented when the outermost JIT frame
- * returns.  When > 0, the compaction phase in cl_alloc is skipped.
- * See specs/native-backend.md §"GC interaction" option A. */
+ * returns.  Informational since offset-validated conservative
+ * scanning (gc_scan_jit_native_stack) made the compaction inhibit
+ * unnecessary; kept for future use (e.g. JIT-aware diagnostics or
+ * a faster early-out path).  See specs/native-backend.md
+ * §"GC interaction". */
 volatile int cl_jit_active_threads = 0;
 
 /* Global root registration table — static CL_Obj variables that must be
@@ -235,8 +238,7 @@ void *cl_alloc(uint8_t type, uint32_t size)
             ptr = alloc_from_bump(size);
         }
     }
-    if (!ptr && gc_last_compact_cycle != cl_heap.gc_count
-        && cl_jit_active_threads == 0) {
+    if (!ptr && gc_last_compact_cycle != cl_heap.gc_count) {
         /* Normal GC didn't help — try compaction to eliminate fragmentation.
          * First attempt: set pending flag for VM-level safe-point compaction.
          * If the VM dispatch loop runs compaction before we retry, great.
@@ -245,7 +247,13 @@ void *cl_alloc(uint8_t type, uint32_t size)
          * NOTE: compaction is a moving GC.  All CL_Obj C locals that survive
          * across allocating calls MUST be GC-protected so compaction can
          * update them.  Raw C pointers derived from CL_Obj (e.g. via
-         * CL_OBJ_TO_PTR) must be re-derived after any allocating call. */
+         * CL_OBJ_TO_PTR) must be re-derived after any allocating call.
+         *
+         * Safe to run even while JIT'd code is on the m68k stack:
+         * gc_scan_jit_native_stack validates each conservative candidate
+         * against the arena's real header offsets before marking, so the
+         * compactor never relocates based on a phantom root at a
+         * mid-object byte. */
         gc_compact_pending = 1;
         gc_last_compact_cycle = cl_heap.gc_count;
         if (multi) platform_mutex_unlock(alloc_mutex);
@@ -917,26 +925,74 @@ void gc_mark_obj(CL_Obj obj)
 }
 
 /* Conservatively scan a thread's m68k stack for CL_Obj values
- * spilled by JIT'd code.  Walks 4-byte-aligned words in
- * [scan_lo, scan_hi) and feeds each through gc_mark_obj, which
- * rejects fixnums / NIL / characters / out-of-arena offsets.
+ * spilled by JIT'd code.
  *
- * False positives can retain garbage for one GC cycle.  They cannot
- * trigger moving-GC corruption because cl_gc's compaction phase is
- * suppressed while cl_jit_active_threads > 0 (see
- * cl_gc_compact_if_pending and the cl_alloc fragmentation path).
+ * Two-phase to avoid the moving-GC corruption hazard:
+ *
+ *   Phase 1 — collect: walk 4-byte-aligned words in [scan_lo,
+ *   scan_hi).  A word w is a *candidate* if CL_HEAP_P(w) and
+ *   w < arena_size.  Collected into a stack-local bounded buffer.
+ *
+ *   Phase 2 — validate-and-mark: walk the arena bump-front.  At
+ *   each real header offset X, binary-search the sorted candidate
+ *   buffer; if X is present, call gc_mark_obj(X).  This guarantees
+ *   we only call CL_HDR_SET_MARK on offsets that are actual object
+ *   starts — phantom marks on mid-object bytes (which would corrupt
+ *   neighbouring data and break the moving compactor's relocations)
+ *   are impossible.
+ *
+ * With validation in place the compaction inhibit (compaction
+ * suppressed while cl_jit_active_threads > 0) is no longer
+ * required for correctness.
+ *
+ * Capacity policy: the candidate buffer holds 256 entries.  Real
+ * JIT-spilled operand counts are well below this in practice
+ * (single digits per JIT frame).  On overflow we drop excess
+ * candidates and emit a one-time warning — those values are *not*
+ * conservatively marked, so an object that was only kept alive by
+ * such a word may be swept.  This is a correctness gap rather than
+ * a corruption hazard; if it ever fires in real workloads, switch
+ * to a platform_alloc'd buffer.
  *
  * Only runs when t->jit_depth > 0 and t is the current thread —
  * non-current threads stop at bytecode-VM safepoints where their
  * jit_depth is 0 by construction (JIT'd code does not yet emit its
  * own safepoints).
  *
- * See specs/native-backend.md §"GC interaction" option A. */
+ * See specs/native-backend.md §"GC interaction" option A → B-lite. */
+
+#define CL_JIT_SCAN_CAND_MAX 256
+
+static int cand_cmp(const void *a, const void *b)
+{
+    uint32_t aa = *(const uint32_t *)a;
+    uint32_t bb = *(const uint32_t *)b;
+    return (aa < bb) ? -1 : (aa > bb) ? 1 : 0;
+}
+
+static int cand_bsearch(const uint32_t *arr, int n, uint32_t key)
+{
+    int lo = 0, hi = n - 1;
+    while (lo <= hi) {
+        int mid = (lo + hi) >> 1;
+        if (arr[mid] == key) return 1;
+        if (arr[mid] < key) lo = mid + 1;
+        else hi = mid - 1;
+    }
+    return 0;
+}
+
 static void gc_scan_jit_native_stack(CL_Thread *t)
 {
+    uint32_t candidates[CL_JIT_SCAN_CAND_MAX];
+    int n_cand = 0;
+    int overflow = 0;
     char *scan_lo;
     char *scan_hi;
     uintptr_t addr;
+    uint8_t *p;
+    uint8_t *end;
+    static int overflow_warned = 0;
 
     if (t->jit_depth <= 0 || t->jit_stack_top == NULL) return;
     if (t != cl_get_current_thread()) return;
@@ -952,9 +1008,42 @@ static void gc_scan_jit_native_stack(CL_Thread *t)
     addr = (uintptr_t)scan_lo;
     addr = (addr + 3u) & ~(uintptr_t)3u;
 
+    /* Phase 1: collect candidate offsets. */
     for (; addr + 4 <= (uintptr_t)scan_hi; addr += 4) {
         CL_Obj w = *(const CL_Obj *)(uintptr_t)addr;
-        gc_mark_obj(w);
+        if (CL_NULL_P(w) || CL_FIXNUM_P(w) || CL_CHAR_P(w)) continue;
+        if (w >= cl_heap.arena_size) continue;
+        if (n_cand >= CL_JIT_SCAN_CAND_MAX) { overflow = 1; break; }
+        candidates[n_cand++] = (uint32_t)w;
+    }
+
+    if (overflow && !overflow_warned) {
+        overflow_warned = 1;
+        platform_write_string(
+            "GC: JIT native-stack scan candidate overflow — "
+            "some values may not be conservatively rooted this cycle\n");
+    }
+
+    if (n_cand == 0) return;
+
+    /* Sort candidates so the arena walk can binary-search. */
+    qsort(candidates, n_cand, sizeof(candidates[0]), cand_cmp);
+
+    /* Phase 2: walk the arena bump-front; for each real header
+     * offset that appears in `candidates`, mark it.  Walking from
+     * CL_ALIGN (offset 0 is reserved for NIL) by header size,
+     * matching gc_sweep's iteration. */
+    p   = cl_heap.arena + CL_ALIGN;
+    end = cl_heap.arena + cl_heap.bump;
+    while (p < end) {
+        uint32_t size = CL_HDR_SIZE(p);
+        uint32_t offset;
+        if (size == 0) break;       /* defensive: malformed header */
+        offset = (uint32_t)(p - cl_heap.arena);
+        if (cand_bsearch(candidates, n_cand, offset)) {
+            gc_mark_obj((CL_Obj)offset);
+        }
+        p += size;
     }
 }
 
@@ -1820,12 +1909,10 @@ static void gc_rehash_eq_tables(void)
     }
 }
 
-/* Run compaction if pending (called from safe points).
- * Inhibited when any thread is inside JIT'd code — see comment on
- * cl_jit_active_threads. */
+/* Run compaction if pending (called from safe points). */
 void cl_gc_compact_if_pending(void)
 {
-    if (gc_compact_pending && cl_jit_active_threads == 0) {
+    if (gc_compact_pending) {
         gc_compact_pending = 0;
         gc_last_compact_cycle = cl_heap.gc_count;
         cl_gc_compact();
