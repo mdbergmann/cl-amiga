@@ -343,4 +343,18 @@ int cl_jit_runtime_is_self_tco(CL_Obj func, CL_Obj self_bc)
     return 0;
 }
 
+/* Backing for OP_MV_RESET.  Bytecode VM does `cl_mv_count = 1` (= a
+ * single store into the current thread's CL_Thread.mv_count field).
+ * The walker doesn't have CT cached in an A-register and the broader
+ * "reset on every value-producing opcode" approach previously broke
+ * CLOS (see specs/native-backend.md + the jit-mv-count memory), so
+ * we route only the *explicit* OP_MV_RESET — the one the compiler
+ * emits between (and …)/(or …) arms — through this helper.  Matches
+ * bytecode-VM semantics exactly without re-opening the broader
+ * question.  Non-allocating; cache regs stay valid across the JSR. */
+void cl_jit_runtime_mv_reset(void)
+{
+    cl_mv_count = 1;
+}
+
 #endif /* JIT_M68K */

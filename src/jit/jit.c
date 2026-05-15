@@ -20,7 +20,7 @@
  *     OP_SUB, OP_MUL, OP_EQ, OP_LT, OP_GT, OP_LE, OP_GE, OP_NUMEQ,
  *     OP_NOT, OP_CAR, OP_CDR, OP_CONS, OP_GLOAD, OP_GSTORE, OP_FLOAD,
  *     OP_CALL, OP_TAILCALL, OP_STRUCT_REF, OP_STRUCT_SET, OP_DYNBIND,
- *     OP_DYNUNBIND, OP_RET.
+ *     OP_DYNUNBIND, OP_MV_RESET, OP_RET.
  *     OP_CONS is the first allocating opcode handled directly.
  *     **Convention for any helper-calling emitter**: after popping
  *     operands into D0/D1 scratch regs, call `cache_flush` before the
@@ -602,6 +602,7 @@ static int prescan_branch_targets(const CL_Bytecode *bc, uint8_t *is_target)
         case OP_CAR: case OP_CDR: case OP_CONS: case OP_NOT: case OP_EQ:
         case OP_ADD: case OP_SUB: case OP_MUL:
         case OP_LT: case OP_GT: case OP_LE: case OP_GE: case OP_NUMEQ:
+        case OP_MV_RESET:
             step = 1; break;
         case OP_LOAD: case OP_STORE: case OP_CALL: case OP_TAILCALL:
         case OP_STRUCT_REF: case OP_STRUCT_SET: case OP_DYNUNBIND:
@@ -920,6 +921,28 @@ static int walker_compile(const CL_Bytecode *bc, CodeBuf *cb)
             m68k_emit_move_l_imm32_predec(cb, (uint32_t)count, REG_A7);
             m68k_emit_jsr_abs_l(cb, helper);
             m68k_emit_addq_l_an(cb, 4, REG_A7);
+            break;
+        }
+
+        case OP_MV_RESET: {
+            /* Explicit OP_MV_RESET — emitted by the compiler between
+             * (and …) / (or …) arms so a falsy result doesn't carry
+             * stale multiple-values into the next test.  Helper just
+             * writes `cl_mv_count = 1` to the current thread, no
+             * allocation, doesn't read/write the operand stack.
+             *
+             * No cache_flush: the helper can't trigger GC and only
+             * the m68k caller-saved D0/D1 are at risk across the
+             * JSR — both already understood as scratch by the
+             * walker.  D5/D6/D7 (cache regs) are callee-saved per
+             * the m68k C ABI, so they survive the call untouched.
+             *
+             * This is the narrow fix to the open jit-mv-count
+             * memory item — only handles the explicit op, NOT the
+             * broader "reset on every value-producing opcode" that
+             * previously broke CLOS. */
+            uint32_t helper = (uint32_t)(uintptr_t)&cl_jit_runtime_mv_reset;
+            m68k_emit_jsr_abs_l(cb, helper);
             break;
         }
 
