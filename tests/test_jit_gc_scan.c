@@ -153,23 +153,32 @@ TEST(scan_skipped_when_depth_zero)
     teardown();
 }
 
-/* --- cl_jit_active_threads gates cl_gc_compact_if_pending: with the
- * counter non-zero, a pending compaction is left pending. --- */
+/* --- Compaction now runs even when JIT is active, because
+ * gc_scan_jit_native_stack validates each candidate offset against
+ * real header offsets before marking — phantom marks are
+ * impossible.  Confirm the inhibit was lifted by leaving the
+ * counter non-zero and observing that a pending compact still
+ * runs. --- */
 
-TEST(compaction_inhibited_when_jit_active)
+TEST(compaction_runs_even_when_jit_active)
 {
     setup();
+
+    /* Allocate something to compact (otherwise compaction is a
+     * no-op and gc_compact_pending stays set, falsely failing). */
+    {
+        int i;
+        for (i = 0; i < 8; i++)
+            cl_cons(CL_MAKE_FIXNUM(i), CL_NIL);
+    }
 
     gc_compact_pending = 1;
     cl_jit_active_threads = 1;
 
     cl_gc_compact_if_pending();
-    ASSERT_EQ_INT(gc_compact_pending, 1);   /* still pending */
+    ASSERT_EQ_INT(gc_compact_pending, 0);   /* ran despite jit_active */
 
     cl_jit_active_threads = 0;
-    cl_gc_compact_if_pending();
-    ASSERT_EQ_INT(gc_compact_pending, 0);   /* ran */
-
     teardown();
 }
 
@@ -206,7 +215,7 @@ int main(void)
     test_init();
     RUN(scan_keeps_obj_alive);
     RUN(scan_skipped_when_depth_zero);
-    RUN(compaction_inhibited_when_jit_active);
+    RUN(compaction_runs_even_when_jit_active);
     RUN(unwind_resets_jit_active_count);
     REPORT();
 }
