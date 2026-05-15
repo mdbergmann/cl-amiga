@@ -64,6 +64,12 @@ static uint32_t gc_last_compact_cycle = 0xFFFFFFFF;
  * Non-static: accessed by VM dispatch loop for safe-point checks. */
 int gc_compact_pending = 0;
 
+/* Count of threads currently inside cl_jit_invoke.  Bumped on
+ * outermost JIT entry, decremented when the outermost JIT frame
+ * returns.  When > 0, the compaction phase in cl_alloc is skipped.
+ * See specs/native-backend.md §"GC interaction" option A. */
+volatile int cl_jit_active_threads = 0;
+
 /* Global root registration table — static CL_Obj variables that must be
  * marked during GC and updated (forwarded) during compaction.
  * Used for cached interned keyword symbols, type symbols, etc. */
@@ -229,7 +235,8 @@ void *cl_alloc(uint8_t type, uint32_t size)
             ptr = alloc_from_bump(size);
         }
     }
-    if (!ptr && gc_last_compact_cycle != cl_heap.gc_count) {
+    if (!ptr && gc_last_compact_cycle != cl_heap.gc_count
+        && cl_jit_active_threads == 0) {
         /* Normal GC didn't help — try compaction to eliminate fragmentation.
          * First attempt: set pending flag for VM-level safe-point compaction.
          * If the VM dispatch loop runs compaction before we retry, great.
@@ -909,6 +916,48 @@ void gc_mark_obj(CL_Obj obj)
     gc_mark_children(ptr, CL_HDR_TYPE(ptr));
 }
 
+/* Conservatively scan a thread's m68k stack for CL_Obj values
+ * spilled by JIT'd code.  Walks 4-byte-aligned words in
+ * [scan_lo, scan_hi) and feeds each through gc_mark_obj, which
+ * rejects fixnums / NIL / characters / out-of-arena offsets.
+ *
+ * False positives can retain garbage for one GC cycle.  They cannot
+ * trigger moving-GC corruption because cl_gc's compaction phase is
+ * suppressed while cl_jit_active_threads > 0 (see
+ * cl_gc_compact_if_pending and the cl_alloc fragmentation path).
+ *
+ * Only runs when t->jit_depth > 0 and t is the current thread —
+ * non-current threads stop at bytecode-VM safepoints where their
+ * jit_depth is 0 by construction (JIT'd code does not yet emit its
+ * own safepoints).
+ *
+ * See specs/native-backend.md §"GC interaction" option A. */
+static void gc_scan_jit_native_stack(CL_Thread *t)
+{
+    char *scan_lo;
+    char *scan_hi;
+    uintptr_t addr;
+
+    if (t->jit_depth <= 0 || t->jit_stack_top == NULL) return;
+    if (t != cl_get_current_thread()) return;
+
+    /* Lower bound: a local in this frame — strictly below any JIT'd
+     * frame on the C call chain leading here, so [scan_lo, scan_hi)
+     * covers every JIT-spilled word. */
+    scan_lo = (char *)&scan_lo;
+    scan_hi = (char *)t->jit_stack_top;
+    if (scan_hi <= scan_lo) return;
+
+    /* Round up to 4-byte alignment (CL_Obj is 32 bits). */
+    addr = (uintptr_t)scan_lo;
+    addr = (addr + 3u) & ~(uintptr_t)3u;
+
+    for (; addr + 4 <= (uintptr_t)scan_hi; addr += 4) {
+        CL_Obj w = *(const CL_Obj *)(uintptr_t)addr;
+        gc_mark_obj(w);
+    }
+}
+
 /* Mark all per-thread roots for a single thread.
  * Called during STW GC — no locking needed, thread is stopped.
  *
@@ -956,6 +1005,10 @@ static void gc_mark_thread_roots(CL_Thread *t)
             gc_mark_obj(t->vm.stack[i]);
         }
     }
+
+    /* JIT native stack — conservative scan when this thread is
+     * currently inside JIT'd code.  No-op otherwise. */
+    gc_scan_jit_native_stack(t);
 
     /* Bytecode objects referenced by active VM frames */
     for (i = 0; i < t->vm.fp; i++) {
@@ -1767,10 +1820,12 @@ static void gc_rehash_eq_tables(void)
     }
 }
 
-/* Run compaction if pending (called from safe points). */
+/* Run compaction if pending (called from safe points).
+ * Inhibited when any thread is inside JIT'd code — see comment on
+ * cl_jit_active_threads. */
 void cl_gc_compact_if_pending(void)
 {
-    if (gc_compact_pending) {
+    if (gc_compact_pending && cl_jit_active_threads == 0) {
         gc_compact_pending = 0;
         gc_last_compact_cycle = cl_heap.gc_count;
         cl_gc_compact();

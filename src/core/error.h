@@ -57,6 +57,10 @@ typedef struct {
      * subsequent gc_mark walks dereference stale stack memory — see
      * "sento gc_mark SEGV" memory file for the discovery path. */
     int saved_gc_roots;
+    /* jit_depth at the time this frame was pushed.  cl_error_unwind
+     * restores `jit_depth` to this value before longjmping back to the
+     * catch site.  See specs/native-backend.md §"GC interaction". */
+    int saved_jit_depth;
 } CL_ErrorFrame;
 
 /* Push an error frame.  Returns the frame index, or -1 on overflow.

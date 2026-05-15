@@ -109,11 +109,19 @@ $(BUILDDIR)/clamiga: $(ALL_OBJS)
 
 $(BUILDDIR)/%.o: $(SRCDIR)/%.c
 	@mkdir -p $(dir $@)
-	$(CC) $(CFLAGS) -I$(SRCDIR) -c -o $@ $<
+	$(CC) $(CFLAGS) -I$(SRCDIR) -MMD -MP -c -o $@ $<
 
 $(BUILDDIR)/%.o: $(SRCDIR)/%.s
 	@mkdir -p $(dir $@)
 	$(CC) -mcpu=68020 -c -o $@ $<
+
+# Auto-generated header dependency files (-MMD -MP).  Without this,
+# changing a header (e.g. CL_Thread or CL_ErrorFrame layout in
+# error.h / thread.h) leaves dependent .o files stale and produces
+# silently mismatched ABIs — a regression mode that previously cost
+# real debug time on this codebase.  Mirrors what the host Makefile
+# does via the same mechanism.
+-include $(ALL_OBJS:.o=.d)
 
 # Cross-compile, place binary, launch FS-UAE for testing.
 # Default: high-end JIT config (A4000/68040/Picasso96) — faster turnaround
