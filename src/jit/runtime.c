@@ -8,9 +8,11 @@
  * operand, or fixnum overflow detected via BVS).
  *
  * GC: see runtime.h.  These helpers may allocate, which may GC.  The
- * operand stack lives on m68k SP and isn't rooted — pure-fixnum
- * workloads (where the slow path is never hit) are the only currently
- * safe use.
+ * conservative m68k-stack scan with offset validation in
+ * mem.c::gc_scan_jit_native_stack roots cached operand-stack values
+ * across JSR boundaries, so allocating helpers (cl_jit_runtime_add
+ * bignum overflow, cl_jit_runtime_cons, cl_jit_runtime_call into a
+ * Lisp callee that allocates, …) are safe for general workloads.
  */
 
 #ifdef JIT_M68K
@@ -35,6 +37,7 @@ extern int    cl_arith_compare(CL_Obj a, CL_Obj b);
 extern int    cl_numeric_equal(CL_Obj a, CL_Obj b);
 extern CL_Obj cl_car(CL_Obj obj);
 extern CL_Obj cl_cdr(CL_Obj obj);
+extern CL_Obj cl_cons(CL_Obj car, CL_Obj cdr);
 
 /* From src/core/vm.c — the universal call entry point.  Handles C
  * builtins directly, sets up a stub frame for bytecode/closures, and
@@ -296,6 +299,16 @@ CL_Obj cl_jit_runtime_struct_set(CL_Obj obj, uint32_t idx, CL_Obj val)
                  (unsigned)idx, (unsigned)st->n_slots);
     st->slots[idx] = val;
     return val;
+}
+
+/* Backing for OP_CONS: thin pass-through to cl_cons.  The bytecode
+ * VM's OP_CONS is exactly two pops + cl_cons + push, so reproducing
+ * that here keeps semantics identical.  Allocates one CL_Cons; the
+ * conservative scan reaches the JIT'd caller's cached operand-stack
+ * values across this call (see file banner). */
+CL_Obj cl_jit_runtime_cons(CL_Obj car, CL_Obj cdr)
+{
+    return cl_cons(car, cdr);
 }
 
 #endif /* JIT_M68K */

@@ -16,10 +16,12 @@
 ; --- Byte-pipeline smoke: %JIT-COMPILE-STUB writes NOP+RTS into a
 ; function's native_code slot, %JIT-DUMP-BYTES reads it back. ---
 
-; Use a 2-arg function so neither the trivial-leaf nor the 1-arg
-; identity matcher auto-compiles it; we need a clean "no native_code
-; yet" baseline to verify %JIT-COMPILE-STUB attaches the stub bytes.
-(defun jit-stub-test-fn (x y) (cons x y))
+; Use a 2-arg function whose body contains an opcode the walker still
+; bails on (OP_MV_RESET, emitted between AND's arms) so neither the
+; trivial-leaf nor the 1-arg identity matcher fires AND the walker
+; can't auto-compile it.  Gives a clean "no native_code yet" baseline
+; to verify %JIT-COMPILE-STUB attaches the stub bytes.
+(defun jit-stub-test-fn (x y) (and x y))
 (check "jit-dump-before-stub" nil (clamiga::%jit-dump-bytes #'jit-stub-test-fn))
 (check "jit-compile-stub-succeeds" t (clamiga::%jit-compile-stub #'jit-stub-test-fn))
 ; NOP = 0x4E71, RTS = 0x4E75 → bytes 78 113 78 117
@@ -239,18 +241,18 @@
     (walker-let-id 1)
     (> (clamiga::%jit-invoke-count) before)))
 
-; Negative: a function whose body contains an opcode the walker
-; doesn't handle (OP_CONS) must leave native_code NULL and run via
-; the interpreter.  walker-cons-fallback duplicates jit-stub-test-fn's
+; Negative: a function whose body still contains an opcode the walker
+; doesn't handle (OP_MV_RESET, via AND) must leave native_code NULL
+; and run via the interpreter.  Duplicates jit-stub-test-fn's
 ; rejection shape with a distinct name so the test reads cleanly.
-(defun walker-cons-fallback (x y) (cons x y))
-(check "walker-cons-fallback-no-native"
-  nil (clamiga::%jit-dump-bytes #'walker-cons-fallback))
-(check "walker-cons-fallback-still-works"
-  '(1 . 2) (walker-cons-fallback 1 2))
-(check "walker-cons-fallback-no-counter-bump" t
+(defun walker-mv-reset-fallback (x y) (and x y))
+(check "walker-mv-reset-fallback-no-native"
+  nil (clamiga::%jit-dump-bytes #'walker-mv-reset-fallback))
+(check "walker-mv-reset-fallback-still-works"
+  'b (walker-mv-reset-fallback 'a 'b))
+(check "walker-mv-reset-fallback-no-counter-bump" t
   (let ((before (clamiga::%jit-invoke-count)))
-    (walker-cons-fallback 3 4)
+    (walker-mv-reset-fallback 3 4)
     (= before (clamiga::%jit-invoke-count))))
 
 ; --- Branches (OP_JMP / OP_JNIL / OP_JTRUE) ------------------------------
@@ -606,6 +608,60 @@
   (handler-case (progn (walker-cdr1 'foo) :no-error)
     (type-error () :caught)))
 
+; --- OP_CONS: first allocating opcode the walker handles directly.
+;
+; Compiler inlines (cons a b) (2 args) to OP_CONS rather than the
+; FLOAD+CALL path, so a body of `(cons x y)` is a direct test of the
+; OP_CONS emitter — pop cdr/car, cache_flush, JSR cl_jit_runtime_cons,
+; push result back.  GC during cl_cons is reached by the conservative
+; m68k-stack scan; the cache flush is what keeps any residual cached
+; heap pointers visible to the scan.
+(defun walker-cons1 (x y) (cons x y))
+(check "walker-cons1-counter-bump" t
+  (let ((before (clamiga::%jit-invoke-count)))
+    (walker-cons1 1 2)
+    (> (clamiga::%jit-invoke-count) before)))
+(check "walker-cons1-fixnums"  '(1 . 2)         (walker-cons1 1 2))
+(check "walker-cons1-symbols"  '(a . b)         (walker-cons1 'a 'b))
+(check "walker-cons1-mixed"    '(1 . a)         (walker-cons1 1 'a))
+(check "walker-cons1-nil-cdr"  '(x)             (walker-cons1 'x nil))
+(check "walker-cons1-cons-car" '((1 . 2) . 3)   (walker-cons1 (cons 1 2) 3))
+(check "walker-cons1-list-cdr" '(0 1 2 3)       (walker-cons1 0 '(1 2 3)))
+
+; GC stress: build a long list inside the JIT'd body so allocations
+; accumulate and the collector is virtually guaranteed to run with
+; live operand-stack references on the m68k stack (the partially-
+; built list head sits in a local that the conservative scan must
+; reach across each cl_cons call).  Returns the list length so the
+; check is robust against in-place GC-induced rewrites — if the scan
+; missed a root, the list would be truncated or corrupted.
+(defun walker-cons-stress (n)
+  (let ((lst nil)
+        (i 0))
+    (tagbody
+       loop-top
+       (if (< i n)
+           (progn
+             (setq lst (cons i lst))
+             (setq i (+ i 1))
+             (go loop-top))))
+    lst))
+(check "walker-cons-stress-counter-bump" t
+  (let ((before (clamiga::%jit-invoke-count)))
+    (walker-cons-stress 10)
+    (> (clamiga::%jit-invoke-count) before)))
+(check "walker-cons-stress-10-length" 10
+  (length (walker-cons-stress 10)))
+(check "walker-cons-stress-10-head"   9
+  (car (walker-cons-stress 10)))
+(check "walker-cons-stress-10-last"   0
+  (car (last (walker-cons-stress 10))))
+; 500 conses (~6 KB) is enough to trip a young-arena GC on the small-
+; heap test config; primary goal is to prove the scan keeps the
+; growing list rooted across collections, not benchmark speed.
+(check "walker-cons-stress-500-length" 500
+  (length (walker-cons-stress 500)))
+
 ; --- OP_EQ in conditional context: `(cond ((eq x 'a) 1) ((eq x 'b) 2))`.
 ; Pulls together OP_EQ + OP_DUP + OP_JNIL + branch resolution within a
 ; single function.
@@ -708,13 +764,15 @@
 (check "walker-call-3-last"  'three (walker-call-3-last  'one 'two 'three))
 (check "walker-call-3-mid-fix" 20   (walker-call-3-mid   10 20 30))
 
-; --- Call to a CL builtin (CONS).  cl_vm_apply takes the
+; --- Call to a CL builtin (LIST).  cl_vm_apply takes the
 ; CL_FUNCTION_P branch, dispatching directly to call_builtin
 ; without a stub frame.  Same JIT call site, different runtime
-; tail.
-(defun walker-call-cons (a b) (let ((r (cons a b))) r))
-(check "walker-call-cons-fixnums"  '(1 . 2)   (walker-call-cons 1 2))
-(check "walker-call-cons-symbols"  '(a . b)   (walker-call-cons 'a 'b))
+; tail.  LIST is used here because CONS now inlines to OP_CONS
+; rather than FLOAD+CALL — the call-path coverage moved to a
+; builtin the compiler doesn't intrinsify.
+(defun walker-call-list2 (a b) (let ((r (list a b))) r))
+(check "walker-call-list2-fixnums" '(1 2)     (walker-call-list2 1 2))
+(check "walker-call-list2-symbols" '(a b)     (walker-call-list2 'a 'b))
 
 ; --- Chained JIT-to-JIT call: caller and callees all JIT'd.  The
 ; outer caller's body is wrapped in let to keep all three call sites
