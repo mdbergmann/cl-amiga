@@ -2859,6 +2859,46 @@ TEST(eval_block_with_unwind_protect)
     ASSERT_STR_EQ(eval_print("*uwp-log*"), ":CLEANED");
 }
 
+/* Regression: (block X (unwind-protect (return-from X ...) cleanup))
+ * in pure bytecode (no closure forms in body) used to compile the
+ * return-from as a plain OP_JMP that bypassed OP_UWPOP and the cleanup
+ * forms — silent CLHS violation.  Fix: tree_needs_nlx_block now
+ * promotes such a block to the NLX path so the unwind walks UWPROT. */
+TEST(eval_block_uwp_local_return_from_runs_cleanup)
+{
+    eval_print("(defvar *uwp-local-rf* 0)");
+    eval_print("(setq *uwp-local-rf* 0)");
+    ASSERT_STR_EQ(eval_print(
+        "(block x"
+        "  (unwind-protect (return-from x 1)"
+        "    (incf *uwp-local-rf*)))"), "1");
+    ASSERT_STR_EQ(eval_print("*uwp-local-rf*"), "1");
+}
+
+/* Same regression, anonymous block + (return-from nil ...). */
+TEST(eval_block_nil_uwp_return_from_runs_cleanup)
+{
+    eval_print("(defvar *uwp-nil-rf* 0)");
+    eval_print("(setq *uwp-nil-rf* 0)");
+    ASSERT_STR_EQ(eval_print(
+        "(block nil"
+        "  (unwind-protect (return-from nil 7)"
+        "    (incf *uwp-nil-rf*)))"), "7");
+    ASSERT_STR_EQ(eval_print("*uwp-nil-rf*"), "1");
+}
+
+/* Same regression, anonymous block + bare (return ...). */
+TEST(eval_block_nil_uwp_bare_return_runs_cleanup)
+{
+    eval_print("(defvar *uwp-nil-r* 0)");
+    eval_print("(setq *uwp-nil-r* 0)");
+    ASSERT_STR_EQ(eval_print(
+        "(block nil"
+        "  (unwind-protect (return 9)"
+        "    (incf *uwp-nil-r*)))"), "9");
+    ASSERT_STR_EQ(eval_print("*uwp-nil-r*"), "1");
+}
+
 /* Regression: tail call inside defun leaks NLX BLOCK frame, causing
  * OP_UWPOP to pop the leaked BLOCK instead of the UWP.  This corrupts
  * unwind-protect cleanup when a cross-closure return-from unwinds
@@ -8905,6 +8945,9 @@ int main(void)
     RUN(eval_return_from_lambda);
     RUN(eval_return_from_nested_labels);
     RUN(eval_block_with_unwind_protect);
+    RUN(eval_block_uwp_local_return_from_runs_cleanup);
+    RUN(eval_block_nil_uwp_return_from_runs_cleanup);
+    RUN(eval_block_nil_uwp_bare_return_runs_cleanup);
     RUN(eval_uwp_nlx_leak_tailcall);
     RUN(eval_block_nlx_precision);
     RUN(eval_dolist_var_shadowing);
