@@ -24,8 +24,11 @@
 #include "core/symbol.h"     /* SYM_STAR_PACKAGE */
 #include "core/package.h"    /* cl_sync_current_package_from_dynamic */
 #include "core/thread.h"     /* cl_symbol_value / cl_set_symbol_value */
-#include "core/vm.h"         /* cl_dynbind_restore_to, CL_MAX_DYN_BINDINGS */
+#include "core/vm.h"         /* cl_dynbind_restore_to, CL_MAX_DYN_BINDINGS, CL_NLXFrame */
 #include "core/mem.h"        /* cl_heap.arena_size */
+#include "core/compiler.h"   /* cl_compiler_mark / cl_compiler_restore_to */
+#include <setjmp.h>
+#include <string.h>          /* memcpy for mv_values preservation */
 
 /* Forward decls for the existing C-runtime arithmetic — same helpers
  * the bytecode VM falls through to from its OP_ADD / OP_LT slow paths.
@@ -52,9 +55,19 @@ extern CL_Obj cl_vm_apply(CL_Obj func, CL_Obj *args, int nargs);
 extern const char *cl_symbol_name(CL_Obj sym);
 extern CL_Obj cl_symbol_value(CL_Obj sym);
 
+/* Address of libc `setjmp`, baked into the JSR.abs.l emitted for
+ * OP_BLOCK_PUSH.  The setjmp call must originate from the JIT'd
+ * function's own stack frame (so a later longjmp restores SP to the
+ * correct point) — that means a JSR direct to setjmp, *not* a JSR
+ * into a wrapper helper that calls setjmp and returns: such a wrapper
+ * would let its frame disappear before longjmp could rewind to it,
+ * which is undefined behaviour per C99 §7.13.1.1.  Captured at
+ * init-time rather than recomputed on every emit. */
+uint32_t cl_jit_setjmp_addr;
+
 void cl_jit_runtime_init(void)
 {
-    /* Future: code-cache allocator, signal handler for native traps. */
+    cl_jit_setjmp_addr = (uint32_t)(uintptr_t)&setjmp;
 }
 
 /* Slow-path `+` (2 args).  Matches the VM's OP_ADD slow path: type-
@@ -355,6 +368,158 @@ int cl_jit_runtime_is_self_tco(CL_Obj func, CL_Obj self_bc)
 void cl_jit_runtime_mv_reset(void)
 {
     cl_mv_count = 1;
+}
+
+/* --- OP_BLOCK_PUSH / OP_BLOCK_POP / OP_BLOCK_RETURN ----------------------
+ *
+ * Block / return-from NLX is implemented by emitting `setjmp` *inline*
+ * from the JIT'd function's own frame.  The four helpers below split
+ * the work the bytecode VM does in one switch-arm so the JIT can
+ * sandwich its own JSR setjmp in the middle:
+ *
+ *   1. `block_alloc`  — fill in cl_nlx_stack[cl_nlx_top]'s metadata
+ *      (tag, marks, vm_sp/vm_fp snapshot, mv_count baseline) and return
+ *      a pointer to its `buf` field.  Does NOT bump cl_nlx_top: the
+ *      slot is "reserved but not yet live", so an unrelated cl_error
+ *      between alloc and setjmp can't unwind through a half-initialised
+ *      frame.
+ *   2. The JIT then emits `JSR setjmp` with that buf pointer.  setjmp
+ *      saves the JIT frame's SP/PC/callee-saved regs into the buf.
+ *   3. `block_commit` — bump cl_nlx_top once setjmp returns 0 (normal
+ *      path).  A single MOVE-style increment; the helper is here so
+ *      the per-thread `cl_nlx_top` macro stays the single point of
+ *      truth for the indirection through CT.
+ *   4. `block_pop`  — search-backward decrement of cl_nlx_top mirroring
+ *      VM's OP_BLOCK_POP (handles the case where intervening
+ *      TAGBODY/UWPROT frames leaked past a tail-call boundary).
+ *   5. `block_post_longjmp` — after setjmp returns non-zero, restore
+ *      marks (dyn / handler / restart / gc-root / compiler), restore
+ *      mv_count and mv_values, and return the block's stored result
+ *      so the JIT can push it on the operand stack.
+ *   6. `block_return` — find the matching block frame on the NLX stack,
+ *      stash result + mv_state in it, and longjmp.  If an UWPROT frame
+ *      is interposed, divert the longjmp to that frame's buf and stash
+ *      the pending throw in cl_pending_* (same protocol the VM uses,
+ *      so UWPROT cleanup runs and then the rethrow chains back to the
+ *      matching block).  CL_NORETURN — never returns to the caller.
+ *
+ * GC: helpers don't allocate Lisp objects.  cl_error on a malformed
+ * RETURN-FROM (no matching block) and the overflow check in
+ * block_alloc do allocate condition objects but those paths divert
+ * via the existing CL_CATCH chain — same shape as cl_jit_runtime_call's
+ * error paths.  The conservative scan reaches operand-stack values the
+ * JIT spilled before its JSR; cache_flush at the BLOCK_PUSH branch
+ * boundary keeps that invariant. */
+
+/* Mirror of vm.c's static nlx_frame_is_stale: an NLX frame whose
+ * target VM frame has been reused (typically by a tail call that
+ * landed past it) is "stale" — its longjmp target no longer
+ * corresponds to an active stack frame, so the UWPROT-interposition
+ * loop must skip it.  Pure JIT'd code never reuses vm_fp during its
+ * execution, so this only matters when JIT'd code calls bytecode that
+ * tail-calls within the same vm_fp slot. */
+static int jit_nlx_frame_is_stale(CL_NLXFrame *nlx)
+{
+    CL_Frame *target;
+    if (nlx->vm_fp <= 0) return 0;
+    target = &cl_vm.frames[nlx->vm_fp - 1];
+    return target->code != nlx->code;
+}
+
+void *cl_jit_runtime_block_alloc(CL_Obj tag)
+{
+    CL_NLXFrame *nlx;
+    if (cl_nlx_top >= CL_MAX_NLX_FRAMES)
+        cl_error(CL_ERR_OVERFLOW, "NLX stack overflow");
+    nlx = &cl_nlx_stack[cl_nlx_top];
+    nlx->type           = CL_NLX_BLOCK;
+    nlx->vm_sp          = cl_vm.sp;
+    nlx->vm_fp          = cl_vm.fp;
+    nlx->tag            = tag;
+    nlx->result         = CL_NIL;
+    nlx->catch_ip       = 0;
+    nlx->offset         = 0;
+    nlx->code           = NULL;
+    nlx->constants      = NULL;
+    nlx->bytecode       = CL_NIL;
+    nlx->base_fp        = 0;
+    nlx->dyn_mark       = cl_dyn_top;
+    nlx->handler_mark   = cl_handler_top;
+    nlx->restart_mark   = cl_restart_top;
+    nlx->gc_root_mark   = gc_root_count;
+    nlx->compiler_mark  = cl_compiler_mark();
+    nlx->mv_count       = 1;
+    return &nlx->buf;
+}
+
+void cl_jit_runtime_block_commit(void)
+{
+    cl_nlx_top++;
+}
+
+void cl_jit_runtime_block_pop(void)
+{
+    /* Same search-backward semantics as VM's OP_BLOCK_POP: a tail call
+     * inside the block body may have leaked an intervening frame, so a
+     * blind --top would unwind to the wrong slot. */
+    int bi;
+    for (bi = cl_nlx_top - 1; bi >= 0; bi--) {
+        if (cl_nlx_stack[bi].type == CL_NLX_BLOCK) {
+            cl_nlx_top = bi;
+            return;
+        }
+    }
+    if (cl_nlx_top > 0) cl_nlx_top--;
+}
+
+CL_Obj cl_jit_runtime_block_post_longjmp(void)
+{
+    CL_NLXFrame *nlx = &cl_nlx_stack[cl_nlx_top];
+    CL_Obj result;
+    int mi;
+
+    cl_dynbind_restore_to(nlx->dyn_mark);
+    cl_handler_top  = nlx->handler_mark;
+    cl_restart_top  = nlx->restart_mark;
+    gc_root_count   = nlx->gc_root_mark;
+    cl_compiler_restore_to(nlx->compiler_mark);
+    cl_mv_count = nlx->mv_count;
+    for (mi = 0; mi < cl_mv_count && mi < CL_MAX_MV; mi++)
+        cl_mv_values[mi] = nlx->mv_values[mi];
+    result = nlx->result;
+    return result;
+}
+
+void cl_jit_runtime_block_return(CL_Obj tag, CL_Obj value)
+{
+    int i, j, mi;
+    for (i = cl_nlx_top - 1; i >= 0; i--) {
+        if (cl_nlx_stack[i].type == CL_NLX_BLOCK &&
+            cl_nlx_stack[i].tag == tag) {
+            /* Check for an interposing UWPROT frame.  If present, the
+             * spec requires its cleanup to run first; we longjmp to
+             * the UWPROT and leave a pending-throw record that the
+             * UWPROT epilogue uses to rethrow once cleanup is done. */
+            for (j = cl_nlx_top - 1; j > i; j--) {
+                if (cl_nlx_stack[j].type == CL_NLX_UWPROT &&
+                    !jit_nlx_frame_is_stale(&cl_nlx_stack[j])) {
+                    cl_pending_throw = 1;
+                    cl_pending_tag = tag;
+                    cl_pending_value = value;
+                    cl_nlx_top = j;
+                    CL_LONGJMP(cl_nlx_stack[j].buf, 1);
+                }
+            }
+            cl_nlx_stack[i].result   = value;
+            cl_nlx_stack[i].mv_count = cl_mv_count;
+            for (mi = 0; mi < cl_mv_count && mi < CL_MAX_MV; mi++)
+                cl_nlx_stack[i].mv_values[mi] = cl_mv_values[mi];
+            cl_nlx_top = i;
+            CL_LONGJMP(cl_nlx_stack[i].buf, 1);
+        }
+    }
+    cl_error(CL_ERR_GENERAL, "RETURN-FROM: no block named %s",
+             CL_NULL_P(tag) ? "NIL" : cl_symbol_name(tag));
 }
 
 #endif /* JIT_M68K */
