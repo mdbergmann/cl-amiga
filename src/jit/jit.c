@@ -20,8 +20,9 @@
  *     OP_SUB, OP_MUL, OP_EQ, OP_LT, OP_GT, OP_LE, OP_GE, OP_NUMEQ,
  *     OP_NOT, OP_CAR, OP_CDR, OP_CONS, OP_GLOAD, OP_GSTORE, OP_FLOAD,
  *     OP_CALL, OP_TAILCALL, OP_STRUCT_REF, OP_STRUCT_SET, OP_DYNBIND,
- *     OP_DYNUNBIND, OP_MV_RESET, OP_BLOCK_PUSH, OP_BLOCK_POP,
- *     OP_BLOCK_RETURN, OP_RET.
+ *     OP_DYNUNBIND, OP_MV_RESET, OP_MV_TO_LIST, OP_BLOCK_PUSH,
+ *     OP_BLOCK_POP, OP_BLOCK_RETURN, OP_UWPROT, OP_UWPOP,
+ *     OP_UWRETHROW, OP_RET.
  *     OP_CONS is the first allocating opcode handled directly.
  *     **Convention for any helper-calling emitter**: after popping
  *     operands into D0/D1 scratch regs, call `cache_flush` before the
@@ -647,6 +648,7 @@ static int prescan_branch_targets(const CL_Bytecode *bc, uint8_t *is_target)
         case OP_ADD: case OP_SUB: case OP_MUL:
         case OP_LT: case OP_GT: case OP_LE: case OP_GE: case OP_NUMEQ:
         case OP_MV_RESET: case OP_BLOCK_POP:
+        case OP_UWPOP: case OP_UWRETHROW: case OP_MV_TO_LIST:
             step = 1; break;
         case OP_LOAD: case OP_STORE: case OP_CALL: case OP_TAILCALL:
         case OP_STRUCT_REF: case OP_STRUCT_SET: case OP_DYNUNBIND:
@@ -688,6 +690,28 @@ static int prescan_branch_targets(const CL_Bytecode *bc, uint8_t *is_target)
                 landing_ip = ip + 7 - neg;
             } else {
                 landing_ip = ip + 7 + (uint32_t)offset;
+            }
+            if (landing_ip > bc->code_len) return 0;
+            is_target[landing_ip] = 1;
+            break;
+        }
+        case OP_UWPROT: {
+            /* 1 + i32 offset = 5 bytes.  The landing IP (catch_ip +
+             * offset, with catch_ip = ip+5 mirroring VM semantics) is
+             * where the longjmp arm jumps to (= cleanup_start, both
+             * normal and longjmp paths merge there in compile_unwind_
+             * protect's emit). */
+            int32_t offset;
+            uint32_t landing_ip;
+            step = 5;
+            if (ip + 5 > bc->code_len) return 0;
+            offset = read_i32_be(bc->code + ip + 1);
+            if (offset < 0) {
+                uint32_t neg = (uint32_t)(-offset);
+                if (neg > ip + 5) return 0;
+                landing_ip = ip + 5 - neg;
+            } else {
+                landing_ip = ip + 5 + (uint32_t)offset;
             }
             if (landing_ip > bc->code_len) return 0;
             is_target[landing_ip] = 1;
@@ -1133,6 +1157,120 @@ static int walker_compile(const CL_Bytecode *bc, CodeBuf *cb)
              * with the addq; if we ever fall through (we don't), it'd
              * be a logic bug worth detecting via the leftover args
              * rather than silently masking. */
+            break;
+        }
+
+        case OP_UWPROT: {
+            /* i32 offset.  Same inline-setjmp shape as OP_BLOCK_PUSH
+             * (see that comment for the full rationale).  Differences:
+             *
+             *   - No tag operand (UWPROT frames are unkeyed; the
+             *     UWPROT alloc helper takes no args).
+             *   - Both the normal-exit and longjmp-arrival paths
+             *     converge at the same bytecode IP (= cleanup_start,
+             *     which the compiler patches identically for the
+             *     UWPROT offset and the immediately-following JMP).
+             *     The longjmp path BRA's there; the normal path runs
+             *     the protected form which ends with an OP_JMP to the
+             *     same landing.  Both paths arrive with cache depth 0
+             *     and no value on the operand stack — the protected
+             *     form's MVs were captured into a local slot via
+             *     OP_MV_TO_LIST in the compiled epilogue.
+             *   - uwprot_post_longjmp returns void (no value to push)
+             *     because the cleanup runs purely for side effects;
+             *     it just restores the marks the alloc captured. */
+            int32_t bc_offset;
+            uint32_t landing_bc_ip;
+            int32_t beq_pc, bra_pc;
+            int32_t normal_path_off;
+            uint32_t alloc_helper        = (uint32_t)(uintptr_t)&cl_jit_runtime_uwprot_alloc;
+            uint32_t commit_helper       = (uint32_t)(uintptr_t)&cl_jit_runtime_uwprot_commit;
+            uint32_t post_longjmp_helper = (uint32_t)(uintptr_t)&cl_jit_runtime_uwprot_post_longjmp;
+
+            if (ip + 4 > bc->code_len) goto fail;
+            bc_offset = read_i32_be(bc->code + ip);
+            ip += 4;
+
+            /* landing_bc_ip = ip + offset (catch_ip == ip after the i32). */
+            if (bc_offset < 0) {
+                uint32_t neg = (uint32_t)(-bc_offset);
+                if (neg > ip) goto fail;
+                landing_bc_ip = ip - neg;
+            } else {
+                landing_bc_ip = ip + (uint32_t)bc_offset;
+            }
+            if (landing_bc_ip > bc->code_len) goto fail;
+
+            cache_flush(cb, &cache_head, &cache_depth);
+
+            /* alloc: no arg.  D0 = &nlx->buf. */
+            m68k_emit_jsr_abs_l(cb, alloc_helper);
+
+            /* setjmp(D0 = &buf). */
+            m68k_emit_move_l_dn_predec_an(cb, REG_D0, REG_A7);
+            m68k_emit_jsr_abs_l(cb, cl_jit_setjmp_addr);
+            m68k_emit_addq_l_an(cb, 4, REG_A7);
+
+            m68k_emit_tst_l_dn(cb, REG_D0);
+            beq_pc = (int32_t)cb_len(cb) + 2;
+            m68k_emit_beq_w(cb, 0);   /* → normal_path */
+
+            /* Longjmp path: restore marks, branch to landing. */
+            m68k_emit_jsr_abs_l(cb, post_longjmp_helper);
+            bra_pc = (int32_t)cb_len(cb) + 2;
+            if (landing_bc_ip < ip && bc_to_native[landing_bc_ip] >= 0) {
+                int32_t disp = bc_to_native[landing_bc_ip] - bra_pc;
+                if (disp < -32768 || disp > 32767) goto fail;
+                m68k_emit_bra_w(cb, (int16_t)disp);
+            } else {
+                if (!patches_push(&patches, &n_patches, &cap_patches,
+                                  (uint32_t)bra_pc, landing_bc_ip)) goto fail;
+                m68k_emit_bra_w(cb, 0);
+            }
+
+            /* normal_path: patch BEQ, then commit. */
+            normal_path_off = (int32_t)cb_len(cb);
+            m68k_patch_disp16(cb_data(cb), cb_len(cb),
+                              (uint32_t)beq_pc,
+                              (int16_t)(normal_path_off - beq_pc));
+            m68k_emit_jsr_abs_l(cb, commit_helper);
+            break;
+        }
+
+        case OP_UWPOP: {
+            /* Normal-exit pop: search-backward decrement of cl_nlx_top
+             * and clear cl_pending_throw.  Non-allocating, cache
+             * survives across the JSR (D5/D6/D7 callee-saved). */
+            uint32_t helper = (uint32_t)(uintptr_t)&cl_jit_runtime_uwprot_pop;
+            m68k_emit_jsr_abs_l(cb, helper);
+            break;
+        }
+
+        case OP_UWRETHROW: {
+            /* If cl_pending_throw is set, helper longjmps and never
+             * returns; if not, helper is a nop and returns to us.  The
+             * longjmp path may eventually allocate condition objects
+             * via cl_error, so flush the cache so the conservative
+             * scan can reach any spilled cache values across the
+             * unwinding chain. */
+            uint32_t helper = (uint32_t)(uintptr_t)&cl_jit_runtime_uwprot_rethrow;
+            cache_flush(cb, &cache_head, &cache_depth);
+            m68k_emit_jsr_abs_l(cb, helper);
+            break;
+        }
+
+        case OP_MV_TO_LIST: {
+            /* Pops primary into D0, calls helper which allocates the
+             * list from cl_mv_values, pushes result back through cache.
+             * Allocating, so flush before the JSR so the conservative
+             * scan can reach any cached operand-stack values. */
+            uint32_t helper = (uint32_t)(uintptr_t)&cl_jit_runtime_mv_to_list;
+            cache_pop_to_dn(cb, &cache_head, &cache_depth, REG_D0);
+            cache_flush(cb, &cache_head, &cache_depth);
+            m68k_emit_move_l_dn_predec_an(cb, REG_D0, REG_A7);
+            m68k_emit_jsr_abs_l(cb, helper);
+            m68k_emit_addq_l_an(cb, 4, REG_A7);
+            cache_push_dn(cb, &cache_head, &cache_depth, REG_D0);
             break;
         }
 

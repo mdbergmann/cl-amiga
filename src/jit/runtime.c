@@ -522,4 +522,201 @@ void cl_jit_runtime_block_return(CL_Obj tag, CL_Obj value)
              CL_NULL_P(tag) ? "NIL" : cl_symbol_name(tag));
 }
 
+/* --- OP_UWPROT / OP_UWPOP / OP_UWRETHROW --------------------------------
+ *
+ * Same JIT-inline-setjmp protocol as BLOCK_PUSH.  Five helpers split the
+ * work the VM does in one switch arm:
+ *
+ *   1. `uwprot_alloc` — reserve cl_nlx_stack[cl_nlx_top] without
+ *      committing it.  Captures vm_sp/vm_fp and the dyn/handler/restart/
+ *      gc-root/compiler marks so the longjmp epilogue can rewind them.
+ *      code/constants/bytecode/catch_ip/offset are zero-filled: VM's
+ *      OP_UWPROT longjmp arm consumes those, but our longjmp lands in
+ *      JIT'd code (via the JSR setjmp the walker emits), so they stay
+ *      dead for JIT-owned frames.
+ *   2. JIT then emits `JSR setjmp` so the captured frame is the JIT'd
+ *      function's own stack frame.
+ *   3. `uwprot_commit` — bump cl_nlx_top (mirror of block_commit).
+ *   4. `uwprot_pop` — normal-exit pop: search-backward to the matching
+ *      UWPROT frame (tail-call leakage compatibility, same as VM's
+ *      OP_UWPOP), then clear cl_pending_throw.
+ *   5. `uwprot_post_longjmp` — restore the marks captured at alloc.
+ *      Unlike block_post_longjmp this does NOT touch cl_mv_count or
+ *      cl_mv_values: the protected form's MVs are explicitly captured
+ *      by OP_MV_TO_LIST inserted by compile_unwind_protect, and the
+ *      throw site may already have set up MV state we must not clobber.
+ *   6. `uwprot_rethrow` — implementation of OP_UWRETHROW.  Three
+ *      branches based on cl_pending_throw:
+ *        0: no pending throw — nop.
+ *        1: pending THROW/RETURN-FROM — find matching catch/block/
+ *           tagbody.  If an interposing UWPROT is still on the stack,
+ *           longjmp to it instead (its cleanup runs first); else
+ *           longjmp directly to the target.  No matching target →
+ *           cl_error.
+ *        2: pending error (cl_error caught by us) — find next
+ *           interposing UWPROT and longjmp; if none, restore
+ *           cl_error_code/cl_error_msg from the pending slots and
+ *           longjmp to the outermost cl_error_frames entry (matches
+ *           vm.c's OP_UWRETHROW pending==2 branch, minus the
+ *           cl_vm.fp/sp restore that the JIT doesn't track).
+ *      Cases 1 and 2 do not return; case 0 returns to the JIT caller. */
+void *cl_jit_runtime_uwprot_alloc(void)
+{
+    CL_NLXFrame *nlx;
+    CL_Frame    *cur;
+    if (cl_nlx_top >= CL_MAX_NLX_FRAMES)
+        cl_error(CL_ERR_OVERFLOW, "NLX stack overflow");
+    nlx = &cl_nlx_stack[cl_nlx_top];
+    /* Snapshot the current VM frame's code/constants/bytecode so the
+     * staleness check (target->code == nlx->code) used by every site
+     * that scans for interposing UWPROT frames — cl_error_unwind,
+     * block_return, uwprot_rethrow — treats this frame as live.  The
+     * VM's OP_UWPROT does the same; without it, JIT-owned UWPROT
+     * frames appear stale, throws bypass cleanup, and the
+     * walker-uwp-throw test fails (cleanup count stays 0). */
+    cur = (cl_vm.fp > 0) ? &cl_vm.frames[cl_vm.fp - 1] : NULL;
+    nlx->type           = CL_NLX_UWPROT;
+    nlx->vm_sp          = cl_vm.sp;
+    nlx->vm_fp          = cl_vm.fp;
+    nlx->tag            = CL_NIL;
+    nlx->result         = CL_NIL;
+    nlx->catch_ip       = 0;
+    nlx->offset         = 0;
+    nlx->code           = cur ? cur->code      : NULL;
+    nlx->constants      = cur ? cur->constants : NULL;
+    nlx->bytecode       = cur ? cur->bytecode  : CL_NIL;
+    nlx->base_fp        = 0;
+    nlx->dyn_mark       = cl_dyn_top;
+    nlx->handler_mark   = cl_handler_top;
+    nlx->restart_mark   = cl_restart_top;
+    nlx->gc_root_mark   = gc_root_count;
+    nlx->compiler_mark  = cl_compiler_mark();
+    nlx->mv_count       = 1;
+    return &nlx->buf;
+}
+
+void cl_jit_runtime_uwprot_commit(void)
+{
+    cl_nlx_top++;
+}
+
+void cl_jit_runtime_uwprot_pop(void)
+{
+    int ui;
+    for (ui = cl_nlx_top - 1; ui >= 0; ui--) {
+        if (cl_nlx_stack[ui].type == CL_NLX_UWPROT) {
+            cl_nlx_top = ui;
+            goto done;
+        }
+    }
+    if (cl_nlx_top > 0) cl_nlx_top--;
+done:
+    cl_pending_throw = 0;
+}
+
+void cl_jit_runtime_uwprot_post_longjmp(void)
+{
+    /* cl_nlx_top has been set to this frame's index by whatever throw
+     * site triggered the longjmp (cl_error, block_return, throw, …).
+     * Read the frame's saved marks and restore. */
+    CL_NLXFrame *nlx = &cl_nlx_stack[cl_nlx_top];
+    cl_dynbind_restore_to(nlx->dyn_mark);
+    cl_handler_top  = nlx->handler_mark;
+    cl_restart_top  = nlx->restart_mark;
+    gc_root_count   = nlx->gc_root_mark;
+    cl_compiler_restore_to(nlx->compiler_mark);
+    /* Intentionally don't touch cl_mv_count / cl_mv_values: the
+     * protected-form's MVs are captured via OP_MV_TO_LIST in the
+     * compiled cleanup epilogue, and the throw site may have arranged
+     * its own MV state that the cleanup forms must observe. */
+}
+
+void cl_jit_runtime_uwprot_rethrow(void)
+{
+    int p = cl_pending_throw;
+    if (p == 0) return;
+
+    if (p == 1) {
+        CL_Obj ptag = cl_pending_tag;
+        CL_Obj pval = cl_pending_value;
+        int i, j;
+        for (i = cl_nlx_top - 1; i >= 0; i--) {
+            if ((cl_nlx_stack[i].type == CL_NLX_CATCH ||
+                 cl_nlx_stack[i].type == CL_NLX_BLOCK ||
+                 cl_nlx_stack[i].type == CL_NLX_TAGBODY) &&
+                cl_nlx_stack[i].tag == ptag) {
+                for (j = cl_nlx_top - 1; j > i; j--) {
+                    if (cl_nlx_stack[j].type == CL_NLX_UWPROT &&
+                        !jit_nlx_frame_is_stale(&cl_nlx_stack[j])) {
+                        cl_nlx_top = j;
+                        CL_LONGJMP(cl_nlx_stack[j].buf, 1);
+                    }
+                }
+                cl_pending_throw = 0;
+                cl_nlx_stack[i].result = pval;
+                cl_nlx_top = i;
+                CL_LONGJMP(cl_nlx_stack[i].buf, 1);
+            }
+        }
+        cl_pending_throw = 0;
+        cl_error(CL_ERR_GENERAL, "No catch for tag during re-throw");
+    } else {
+        /* p == 2: pending error.  Search for next UWPROT, else replay
+         * the original error through cl_error_frames.  This skips the
+         * cl_vm.fp/sp reset the VM's OP_UWRETHROW does — the JIT
+         * doesn't keep per-helper base_fp, and the outermost
+         * cl_error_frames longjmp target restores VM state itself. */
+        int i;
+        for (i = cl_nlx_top - 1; i >= 0; i--) {
+            if (cl_nlx_stack[i].type == CL_NLX_UWPROT &&
+                !jit_nlx_frame_is_stale(&cl_nlx_stack[i])) {
+                cl_nlx_top = i;
+                CL_LONGJMP(cl_nlx_stack[i].buf, 1);
+            }
+        }
+        {
+            int err_code = cl_pending_error_code;
+            cl_pending_throw = 0;
+            cl_nlx_top = 0;
+            cl_dynbind_restore_to(0);
+            cl_handler_top = 0;
+            cl_restart_top = 0;
+            cl_error_code = err_code;
+            strncpy(cl_error_msg, cl_pending_error_msg,
+                    sizeof(cl_error_msg) - 1);
+            cl_error_msg[sizeof(cl_error_msg) - 1] = '\0';
+            if (cl_error_frame_top > 0) {
+                CL_LONGJMP(cl_error_frames[cl_error_frame_top - 1].buf,
+                           err_code);
+            }
+            /* No error frame — fatal, same as vm.c. */
+            cl_error(err_code, "%s", cl_error_msg);  /* exits via the no-frame path */
+        }
+    }
+}
+
+/* Backing for OP_MV_TO_LIST.  Mirrors vm.c exactly (including the
+ * cl_mv_count == 0 with non-NIL primary quirk that preserves the
+ * primary as a single-element list through the unwind-protect MV
+ * round-trip).  Allocates one or more conses; the conservative scan
+ * roots the JIT'd caller's cached operand-stack values across the
+ * call.  Resets cl_mv_count to 1 like the VM op so subsequent ops see
+ * single-value semantics. */
+CL_Obj cl_jit_runtime_mv_to_list(CL_Obj primary)
+{
+    CL_Obj list = CL_NIL;
+    if (cl_mv_count == 0) {
+        if (!CL_NULL_P(primary))
+            list = cl_cons(primary, CL_NIL);
+    } else if (cl_mv_count == 1) {
+        list = cl_cons(primary, CL_NIL);
+    } else {
+        int i;
+        for (i = cl_mv_count - 1; i >= 0; i--)
+            list = cl_cons(cl_mv_values[i], list);
+    }
+    cl_mv_count = 1;
+    return list;
+}
+
 #endif /* JIT_M68K */
