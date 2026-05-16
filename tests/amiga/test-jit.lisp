@@ -1152,3 +1152,98 @@
     *walker-glo*))
 (check "walker-dyn-let-restore-mid" 10 (walker-dyn-let-restore-mid))
 (check "walker-dyn-let-restore-mid-outer" 100 *walker-glo*)
+
+; --- OP_BLOCK_PUSH / OP_BLOCK_POP / OP_BLOCK_RETURN -----------------------
+;
+; The compiler only emits these when needs_nlx is true — i.e. when a
+; (return-from <tag> ...) actually crosses a closure boundary
+; (tree_needs_nlx_block in compiler_special.c).  These tests construct
+; that shape via mapcar / mapc closures, then assert (a) the function
+; that owns the block JITs (counter bump) and (b) the return-from
+; semantics match what the bytecode VM would produce.
+;
+; The walker emits an inline JSR setjmp at OP_BLOCK_PUSH so the
+; captured frame belongs to the JIT'd function itself.  When
+; OP_BLOCK_RETURN's helper longjmps, control returns to the
+; instruction after the JSR with D0 != 0; the NLX shim then JSRs
+; cl_jit_runtime_block_post_longjmp (restores marks + mv_values),
+; pushes the result onto the operand stack, and branches to the
+; landing IP.
+
+; Simple early-exit: scan a list, return-from on first match.  The
+; lambda closes over TARGET so the return-from crosses a closure
+; boundary, forcing NLX emission.  No counter-bump assertion: a lambda
+; with captured upvalues forces the outer function to emit OP_CLOSURE,
+; which is not in the walker's switch — so the function itself runs
+; through the bytecode interpreter even though the bytecode contains
+; OP_BLOCK_PUSH.  The behaviour-correctness tests below still exercise
+; the path because the *bytecode VM* hits BLOCK_PUSH / BLOCK_RETURN
+; with the same semantics.
+(defun walker-block-find-first (list target)
+  (block found
+    (mapc (lambda (x) (when (eql x target) (return-from found x))) list)
+    nil))
+(check "walker-block-find-first-hit"  3   (walker-block-find-first '(1 3 5) 3))
+(check "walker-block-find-first-miss" nil (walker-block-find-first '(1 2 3) 9))
+(check "walker-block-find-first-first" 1  (walker-block-find-first '(1 2 3) 1))
+
+; No return-from is taken: normal exit through OP_BLOCK_POP, the
+; landing receives the implicit body result.  Exercises the
+; "setjmp returns 0 → commit → run body → BLOCK_POP" path without
+; ever firing longjmp.
+(defun walker-block-no-return (list)
+  (block tag
+    (mapc (lambda (x) (declare (ignore x)) nil) list)
+    :normal-exit))
+(check "walker-block-no-return-counter-bump" t
+  (let ((before (clamiga::%jit-invoke-count)))
+    (walker-block-no-return '(1 2 3))
+    (> (clamiga::%jit-invoke-count) before)))
+(check "walker-block-no-return" :normal-exit (walker-block-no-return '(1 2 3)))
+(check "walker-block-no-return-empty" :normal-exit (walker-block-no-return nil))
+
+; Return-from with a non-fixnum value — exercises the result-push
+; through the NLX shim's `move.l d0,-(a7)` (no fixnum tag assumed by
+; the JIT, so cons cells and symbols round-trip the same way).
+(defun walker-block-return-cons ()
+  (block b
+    (mapc (lambda (x) (return-from b (cons x x))) '(:a))
+    :unreached))
+(check "walker-block-return-cons" '(:a . :a) (walker-block-return-cons))
+
+(defun walker-block-return-sym ()
+  (block b
+    (mapc (lambda (x) (return-from b x)) '(:tag))
+    :unreached))
+(check "walker-block-return-sym" :tag (walker-block-return-sym))
+
+; OP_DYNUNBIND interaction: dyn-bindings established between
+; BLOCK_PUSH and the return-from must be unwound when the longjmp
+; fires.  cl_jit_runtime_block_post_longjmp restores cl_dyn_top to
+; the mark saved by block_alloc; verify by reading the special after
+; the function returns.
+(defvar *walker-block-dyn* :outer)
+(defun walker-block-dyn-unwind ()
+  (block b
+    (let ((*walker-block-dyn* :inner))
+      (mapc (lambda (x) (declare (ignore x))
+                         (return-from b *walker-block-dyn*))
+            '(t)))
+    :unreached))
+(check "walker-block-dyn-unwind-inner" :inner (walker-block-dyn-unwind))
+(check "walker-block-dyn-unwind-restored" :outer *walker-block-dyn*)
+
+; Loop with explicit RETURN.  The CL `loop` macro emits OP_BLOCK_PUSH
+; (anonymous block NIL) and the inner closure that walks the
+; collection triggers needs_nlx.  This is the shape `loop ... thereis`
+; / `loop ... when ... return` use under the hood.
+(defun walker-block-loop-return (list)
+  (loop for x in list
+        when (and (numberp x) (oddp x))
+          do (return x)))
+(check "walker-block-loop-return-counter-bump" t
+  (let ((before (clamiga::%jit-invoke-count)))
+    (walker-block-loop-return '(2 4 5 6))
+    (> (clamiga::%jit-invoke-count) before)))
+(check "walker-block-loop-return-hit" 5  (walker-block-loop-return '(2 4 5 6)))
+(check "walker-block-loop-return-all-even" nil (walker-block-loop-return '(2 4 6)))

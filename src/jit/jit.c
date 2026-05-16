@@ -20,7 +20,8 @@
  *     OP_SUB, OP_MUL, OP_EQ, OP_LT, OP_GT, OP_LE, OP_GE, OP_NUMEQ,
  *     OP_NOT, OP_CAR, OP_CDR, OP_CONS, OP_GLOAD, OP_GSTORE, OP_FLOAD,
  *     OP_CALL, OP_TAILCALL, OP_STRUCT_REF, OP_STRUCT_SET, OP_DYNBIND,
- *     OP_DYNUNBIND, OP_MV_RESET, OP_RET.
+ *     OP_DYNUNBIND, OP_MV_RESET, OP_BLOCK_PUSH, OP_BLOCK_POP,
+ *     OP_BLOCK_RETURN, OP_RET.
  *     OP_CONS is the first allocating opcode handled directly.
  *     **Convention for any helper-calling emitter**: after popping
  *     operands into D0/D1 scratch regs, call `cache_flush` before the
@@ -247,6 +248,41 @@ static void emit_load_imm_d0(CodeBuf *cb, CL_Obj val)
 static int cache_next(int head) { return (head == 7) ? 5 : head + 1; }
 static int cache_prev(int head) { return (head == 5) ? 7 : head - 1; }
 
+/* Emit the cache→stack spill for a given (head, depth) without
+ * mutating any compile-time bookkeeping.  Order: bottom-of-cache first,
+ * TOS last, so the spilled TOS ends up at (a7) — matching the
+ * operand-stack layout uncached code expects. */
+static void emit_cache_spill(CodeBuf *cb, int head, int depth)
+{
+    if (depth >= 3) {
+        m68k_emit_move_l_dn_predec_an(cb, (M68kReg)cache_next(head), REG_A7);
+    }
+    if (depth >= 2) {
+        m68k_emit_move_l_dn_predec_an(cb, (M68kReg)cache_prev(head), REG_A7);
+    }
+    if (depth >= 1) {
+        m68k_emit_move_l_dn_predec_an(cb, (M68kReg)head, REG_A7);
+    }
+}
+
+/* Inverse of emit_cache_spill: reload the same regs from the m68k stack
+ * via postinc, restoring the cache to (head, depth) as it was before the
+ * spill.  Used by slow-path shims of inline-fast-path opcodes to round-
+ * trip cached heap pointers through the conservatively-scanned stack
+ * across a helper JSR that may GC. */
+static void emit_cache_reload(CodeBuf *cb, int head, int depth)
+{
+    if (depth >= 1) {
+        m68k_emit_move_l_postinc_an_to_dn(cb, REG_A7, (M68kReg)head);
+    }
+    if (depth >= 2) {
+        m68k_emit_move_l_postinc_an_to_dn(cb, REG_A7, (M68kReg)cache_prev(head));
+    }
+    if (depth >= 3) {
+        m68k_emit_move_l_postinc_an_to_dn(cb, REG_A7, (M68kReg)cache_next(head));
+    }
+}
+
 /* Spill the entire cache to the m68k stack.  After: depth=0.  Pushes
  * from the bottom of the cache (oldest) to the top so the spilled TOS
  * ends up at (a7), matching the operand-stack layout uncached code
@@ -255,15 +291,7 @@ static int cache_prev(int head) { return (head == 5) ? 7 : head - 1; }
  * deterministic for any given input). */
 static void cache_flush(CodeBuf *cb, int *head, int *depth)
 {
-    if (*depth >= 3) {
-        m68k_emit_move_l_dn_predec_an(cb, (M68kReg)cache_next(*head), REG_A7);
-    }
-    if (*depth >= 2) {
-        m68k_emit_move_l_dn_predec_an(cb, (M68kReg)cache_prev(*head), REG_A7);
-    }
-    if (*depth >= 1) {
-        m68k_emit_move_l_dn_predec_an(cb, (M68kReg)*head, REG_A7);
-    }
+    emit_cache_spill(cb, *head, *depth);
     *depth = 0;
     *head = 7;
 }
@@ -461,7 +489,8 @@ static int32_t read_i32_be(const uint8_t *p)
  *
  * Caller-saved discipline: D0/D1/A0/A1 only — D5/D6/D7 are the cache
  * regs and stay untouched. */
-static void emit_arith_compute(CodeBuf *cb, int is_sub, uint32_t helper)
+static void emit_arith_compute(CodeBuf *cb, int is_sub, uint32_t helper,
+                               int cache_head, int cache_depth)
 {
     int32_t beq_a_pc, beq_b_pc, bvs_pc, bra_pc;
     int32_t slow_off, done_off;
@@ -493,11 +522,21 @@ static void emit_arith_compute(CodeBuf *cb, int is_sub, uint32_t helper)
                           (int16_t)(overflow_off - bvs_pc));
     }
 
+    /* Slow-path shim.  Cache spill lives here, not in the caller's
+     * pre-amble, so the fixnum fast path skips it entirely.  The reload
+     * after the JSR is required for GC correctness: cached heap pointers
+     * in D5/D6/D7 are invisible to the conservative scan, so they round-
+     * trip through the m68k stack where the scan reaches them — and where
+     * the compactor will update them in place if the helper triggers GC.
+     * D5/D6/D7 are callee-saved per the m68k SysV ABI so the helper does
+     * not perturb the spilled slots between push and reload. */
     slow_off = (int32_t)cb_len(cb);
+    emit_cache_spill(cb, cache_head, cache_depth);
     m68k_emit_move_l_dn_predec_an(cb, REG_D1, REG_A7);
     m68k_emit_move_l_dn_predec_an(cb, REG_D0, REG_A7);
     m68k_emit_jsr_abs_l(cb, helper);
     m68k_emit_addq_l_an(cb, 8, REG_A7);
+    emit_cache_reload(cb, cache_head, cache_depth);
     done_off = (int32_t)cb_len(cb);
 
     m68k_patch_disp16(cb_data(cb), cb_len(cb), (uint32_t)beq_a_pc,
@@ -514,7 +553,8 @@ static void emit_arith_compute(CodeBuf *cb, int is_sub, uint32_t helper)
  * emit_arith_compute.  `cond_code` is the m68k Bcc condition that
  * branches to load_t (e.g. 13=BLT, 14=BGT, 12=BGE, 15=BLE, 7=BEQ).
  * The slow-path helper itself returns CL_T/CL_NIL in D0. */
-static void emit_compare_compute(CodeBuf *cb, uint8_t cond_code, uint32_t helper)
+static void emit_compare_compute(CodeBuf *cb, uint8_t cond_code, uint32_t helper,
+                                 int cache_head, int cache_depth)
 {
     int32_t beq_a_pc, beq_b_pc, taken_pc, bra1_pc, bra2_pc;
     int32_t slow_off, done_off, load_t_off;
@@ -540,11 +580,15 @@ static void emit_compare_compute(CodeBuf *cb, uint8_t cond_code, uint32_t helper
     bra2_pc = (int32_t)cb_len(cb) + 2;
     m68k_emit_bra_w(cb, 0);
 
+    /* Slow-path shim: same spill/reload contract as emit_arith_compute
+     * (see comment there). */
     slow_off = (int32_t)cb_len(cb);
+    emit_cache_spill(cb, cache_head, cache_depth);
     m68k_emit_move_l_dn_predec_an(cb, REG_D1, REG_A7);
     m68k_emit_move_l_dn_predec_an(cb, REG_D0, REG_A7);
     m68k_emit_jsr_abs_l(cb, helper);
     m68k_emit_addq_l_an(cb, 8, REG_A7);
+    emit_cache_reload(cb, cache_head, cache_depth);
     done_off = (int32_t)cb_len(cb);
 
     m68k_patch_disp16(cb_data(cb), cb_len(cb), (uint32_t)beq_a_pc,
@@ -602,13 +646,13 @@ static int prescan_branch_targets(const CL_Bytecode *bc, uint8_t *is_target)
         case OP_CAR: case OP_CDR: case OP_CONS: case OP_NOT: case OP_EQ:
         case OP_ADD: case OP_SUB: case OP_MUL:
         case OP_LT: case OP_GT: case OP_LE: case OP_GE: case OP_NUMEQ:
-        case OP_MV_RESET:
+        case OP_MV_RESET: case OP_BLOCK_POP:
             step = 1; break;
         case OP_LOAD: case OP_STORE: case OP_CALL: case OP_TAILCALL:
         case OP_STRUCT_REF: case OP_STRUCT_SET: case OP_DYNUNBIND:
             step = 2; break;
         case OP_CONST: case OP_GLOAD: case OP_GSTORE:
-        case OP_FLOAD: case OP_DYNBIND:
+        case OP_FLOAD: case OP_DYNBIND: case OP_BLOCK_RETURN:
             step = 3; break;
         case OP_JMP: case OP_JNIL: case OP_JTRUE: {
             int32_t offset;
@@ -625,6 +669,28 @@ static int prescan_branch_targets(const CL_Bytecode *bc, uint8_t *is_target)
             }
             if (target > bc->code_len) return 0;
             is_target[target] = 1;
+            break;
+        }
+        case OP_BLOCK_PUSH: {
+            /* 1 + u16 tag_idx + i32 offset = 7 bytes.  The landing IP
+             * (catch_ip + offset) is the post-BLOCK_POP continuation;
+             * the NLX shim emitted at BLOCK_PUSH branches there on a
+             * non-zero setjmp return, so it's a real branch target. */
+            int32_t offset;
+            uint32_t landing_ip;
+            step = 7;
+            if (ip + 7 > bc->code_len) return 0;
+            offset = read_i32_be(bc->code + ip + 3);
+            /* catch_ip in the VM = ip after reading u16 + i32 = ip + 7. */
+            if (offset < 0) {
+                uint32_t neg = (uint32_t)(-offset);
+                if (neg > ip + 7) return 0;
+                landing_ip = ip + 7 - neg;
+            } else {
+                landing_ip = ip + 7 + (uint32_t)offset;
+            }
+            if (landing_ip > bc->code_len) return 0;
+            is_target[landing_ip] = 1;
             break;
         }
         default:
@@ -780,18 +846,17 @@ static int walker_compile(const CL_Bytecode *bc, CodeBuf *cb)
             break;
 
         case OP_ADD: {
-            /* Operands: TOS = b, second = a.  Pop both, run the
-             * shared compute, push result.  Flush after pops so any
-             * residual cached values (heap pointers, possibly) land
-             * on the m68k stack — the slow-path JSR can allocate
-             * (bignum overflow, type-error condition) and the
-             * conservative GC scan only reaches the stack, not the
-             * cache regs D5/D6/D7. */
+            /* Operands: TOS = b, second = a.  Pop both, run the shared
+             * compute, push result.  No pre-flush: the fixnum fast path
+             * doesn't allocate, so spilling D5/D6/D7 up front is wasted
+             * work on the hot path.  emit_arith_compute spills/reloads
+             * around the slow-path JSR only, where the conservative
+             * scan needs the cache values on the stack. */
             cache_pop_to_dn(cb, &cache_head, &cache_depth, REG_D1);
             cache_pop_to_dn(cb, &cache_head, &cache_depth, REG_D0);
-            cache_flush(cb, &cache_head, &cache_depth);
             emit_arith_compute(cb, /*is_sub=*/0,
-                               (uint32_t)(uintptr_t)&cl_jit_runtime_add);
+                               (uint32_t)(uintptr_t)&cl_jit_runtime_add,
+                               cache_head, cache_depth);
             cache_push_dn(cb, &cache_head, &cache_depth, REG_D0);
             break;
         }
@@ -799,9 +864,9 @@ static int walker_compile(const CL_Bytecode *bc, CodeBuf *cb)
         case OP_SUB: {
             cache_pop_to_dn(cb, &cache_head, &cache_depth, REG_D1);
             cache_pop_to_dn(cb, &cache_head, &cache_depth, REG_D0);
-            cache_flush(cb, &cache_head, &cache_depth);
             emit_arith_compute(cb, /*is_sub=*/1,
-                               (uint32_t)(uintptr_t)&cl_jit_runtime_sub);
+                               (uint32_t)(uintptr_t)&cl_jit_runtime_sub,
+                               cache_head, cache_depth);
             cache_push_dn(cb, &cache_head, &cache_depth, REG_D0);
             break;
         }
@@ -921,6 +986,153 @@ static int walker_compile(const CL_Bytecode *bc, CodeBuf *cb)
             m68k_emit_move_l_imm32_predec(cb, (uint32_t)count, REG_A7);
             m68k_emit_jsr_abs_l(cb, helper);
             m68k_emit_addq_l_an(cb, 4, REG_A7);
+            break;
+        }
+
+        case OP_BLOCK_PUSH: {
+            /* u16 tag_idx, i32 offset.  Implementation: emit a JSR to
+             * libc setjmp *inline* — setjmp's saved frame is the JIT'd
+             * function itself, so a later longjmp (issued by
+             * OP_BLOCK_RETURN's helper) rewinds back into our native
+             * code at the post-JSR instruction with D0 != 0.
+             *
+             * Sequence:
+             *   cache_flush             (BLOCK_PUSH itself isn't a
+             *                            branch target but the JSR
+             *                            needs depth=0 anyway)
+             *   PEA tag                 -- alloc helper arg
+             *   JSR block_alloc         -- D0 = &nlx->buf
+             *   ADDQ #4,A7
+             *   MOVE.L D0,-(A7)         -- setjmp arg
+             *   JSR setjmp              -- D0 = 0 / non-zero
+             *   ADDQ #4,A7
+             *   TST.L D0
+             *   BEQ.W normal_path
+             *   JSR block_post_longjmp  -- D0 = nlx->result
+             *   MOVE.L D0,-(A7)         -- push result onto operand stack
+             *   BRA.W after_landing     -- forward to landing PC
+             *   normal_path:
+             *   JSR block_commit        -- cl_nlx_top++
+             *   (fall through into body)
+             *
+             * The landing PC is recorded in is_target[] by the
+             * prescan, so the walker will cache_flush at that IP when
+             * it gets there — both paths arrive with depth=0 and the
+             * block result sitting at (a7). */
+            uint16_t tag_idx;
+            CL_Obj tag;
+            int32_t bc_offset;
+            uint32_t landing_bc_ip;
+            int32_t beq_pc, bra_pc;
+            int32_t normal_path_off;
+            uint32_t alloc_helper      = (uint32_t)(uintptr_t)&cl_jit_runtime_block_alloc;
+            uint32_t commit_helper     = (uint32_t)(uintptr_t)&cl_jit_runtime_block_commit;
+            uint32_t post_longjmp_helper = (uint32_t)(uintptr_t)&cl_jit_runtime_block_post_longjmp;
+
+            if (ip + 6 > bc->code_len) goto fail;
+            tag_idx = ((uint16_t)bc->code[ip] << 8) | bc->code[ip + 1];
+            ip += 2;
+            bc_offset = read_i32_be(bc->code + ip);
+            ip += 4;
+            if (tag_idx >= bc->n_constants || bc->constants == NULL) goto fail;
+            tag = bc->constants[tag_idx];
+
+            /* landing_bc_ip mirrors VM: catch_ip = ip (now == start
+             * of body), so landing = ip + bc_offset. */
+            if (bc_offset < 0) {
+                uint32_t neg = (uint32_t)(-bc_offset);
+                if (neg > ip) goto fail;
+                landing_bc_ip = ip - neg;
+            } else {
+                landing_bc_ip = ip + (uint32_t)bc_offset;
+            }
+            if (landing_bc_ip > bc->code_len) goto fail;
+
+            cache_flush(cb, &cache_head, &cache_depth);
+
+            /* alloc: PEA tag (via imm32 predec), JSR alloc, drop arg. */
+            m68k_emit_move_l_imm32_predec(cb, (uint32_t)tag, REG_A7);
+            m68k_emit_jsr_abs_l(cb, alloc_helper);
+            m68k_emit_addq_l_an(cb, 4, REG_A7);
+
+            /* setjmp(D0=&buf): push D0, JSR setjmp, drop arg. */
+            m68k_emit_move_l_dn_predec_an(cb, REG_D0, REG_A7);
+            m68k_emit_jsr_abs_l(cb, cl_jit_setjmp_addr);
+            m68k_emit_addq_l_an(cb, 4, REG_A7);
+
+            /* TST.L D0 — sets Z if zero (= normal setjmp return). */
+            m68k_emit_tst_l_dn(cb, REG_D0);
+            beq_pc = (int32_t)cb_len(cb) + 2;
+            m68k_emit_beq_w(cb, 0);   /* → normal_path, patched below */
+
+            /* NLX path inline: post_longjmp → push result → bra landing. */
+            m68k_emit_jsr_abs_l(cb, post_longjmp_helper);
+            m68k_emit_move_l_dn_predec_an(cb, REG_D0, REG_A7);
+            bra_pc = (int32_t)cb_len(cb) + 2;
+
+            /* Forward BRA.W to landing.  If landing's native offset is
+             * already known (backward target — unusual but possible
+             * for self-referential block macros), patch immediately;
+             * else queue as a forward patch. */
+            if (landing_bc_ip < ip && bc_to_native[landing_bc_ip] >= 0) {
+                int32_t disp = bc_to_native[landing_bc_ip] - bra_pc;
+                if (disp < -32768 || disp > 32767) goto fail;
+                m68k_emit_bra_w(cb, (int16_t)disp);
+            } else {
+                if (!patches_push(&patches, &n_patches, &cap_patches,
+                                  (uint32_t)bra_pc, landing_bc_ip)) goto fail;
+                m68k_emit_bra_w(cb, 0);
+            }
+
+            /* normal_path: patch the BEQ to land here, then commit. */
+            normal_path_off = (int32_t)cb_len(cb);
+            m68k_patch_disp16(cb_data(cb), cb_len(cb),
+                              (uint32_t)beq_pc,
+                              (int16_t)(normal_path_off - beq_pc));
+            m68k_emit_jsr_abs_l(cb, commit_helper);
+            /* Cache depth stays 0; body executes from here. */
+            break;
+        }
+
+        case OP_BLOCK_POP: {
+            /* Helper does the search-backward decrement of cl_nlx_top.
+             * Operand stack is untouched — the body left its value
+             * there, and the next op (typically right after the
+             * landing IP, which we already mark as a branch target)
+             * picks it up. */
+            uint32_t pop_helper = (uint32_t)(uintptr_t)&cl_jit_runtime_block_pop;
+            /* Helper is non-allocating but reads CT pointer.  Cache
+             * survives across the JSR (D5/D6/D7 callee-saved per
+             * m68k SysV), so no flush needed. */
+            m68k_emit_jsr_abs_l(cb, pop_helper);
+            break;
+        }
+
+        case OP_BLOCK_RETURN: {
+            /* u16 tag_idx.  Helper never returns (longjmps back to
+             * the matching BLOCK_PUSH's setjmp site).  The walker
+             * keeps emitting subsequent ops past this point; that
+             * code is dead at runtime but harmless. */
+            uint16_t tag_idx;
+            CL_Obj tag;
+            uint32_t helper = (uint32_t)(uintptr_t)&cl_jit_runtime_block_return;
+            if (ip + 1 >= bc->code_len) goto fail;
+            tag_idx = ((uint16_t)bc->code[ip] << 8) | bc->code[ip + 1];
+            ip += 2;
+            if (tag_idx >= bc->n_constants || bc->constants == NULL) goto fail;
+            tag = bc->constants[tag_idx];
+
+            cache_pop_to_dn(cb, &cache_head, &cache_depth, REG_D1);   /* value */
+            cache_flush(cb, &cache_head, &cache_depth);
+
+            /* push value, then tag (so tag at (a7), value at 4(a7)). */
+            m68k_emit_move_l_dn_predec_an(cb, REG_D1, REG_A7);
+            m68k_emit_move_l_imm32_predec(cb, (uint32_t)tag, REG_A7);
+            m68k_emit_jsr_abs_l(cb, helper);
+            /* Unreachable past here — helper longjmps.  Don't bother
+             * with the addq; if we ever fall through (we don't), it'd
+             * be a logic bug worth detecting via the leftover args
+             * rather than silently masking. */
             break;
         }
 
@@ -1179,52 +1391,54 @@ static int walker_compile(const CL_Bytecode *bc, CodeBuf *cb)
             break;
         }
 
-        /* Compare ops: slow path JSR allocates on type-error (and
-         * bignum/ratio cross-type compare can intern); flush after
-         * pops so cached heap pointers spill to the m68k stack
-         * before the helper may GC. */
+        /* Compare ops: fixnum fast path inlines BTST + CMP + Bcc and
+         * doesn't allocate, so no pre-flush.  The slow-path JSR can
+         * allocate (type-error condition object, cross-type
+         * bignum/ratio intern) — emit_compare_compute spills/reloads
+         * inside its slow-path shim so cached heap pointers survive
+         * GC via the conservatively-scanned stack. */
         case OP_LT:
             cache_pop_to_dn(cb, &cache_head, &cache_depth, REG_D1);
             cache_pop_to_dn(cb, &cache_head, &cache_depth, REG_D0);
-            cache_flush(cb, &cache_head, &cache_depth);
             emit_compare_compute(cb, /*BLT*/13,
-                                 (uint32_t)(uintptr_t)&cl_jit_runtime_lt);
+                                 (uint32_t)(uintptr_t)&cl_jit_runtime_lt,
+                                 cache_head, cache_depth);
             cache_push_dn(cb, &cache_head, &cache_depth, REG_D0);
             break;
 
         case OP_GT:
             cache_pop_to_dn(cb, &cache_head, &cache_depth, REG_D1);
             cache_pop_to_dn(cb, &cache_head, &cache_depth, REG_D0);
-            cache_flush(cb, &cache_head, &cache_depth);
             emit_compare_compute(cb, /*BGT*/14,
-                                 (uint32_t)(uintptr_t)&cl_jit_runtime_gt);
+                                 (uint32_t)(uintptr_t)&cl_jit_runtime_gt,
+                                 cache_head, cache_depth);
             cache_push_dn(cb, &cache_head, &cache_depth, REG_D0);
             break;
 
         case OP_LE:
             cache_pop_to_dn(cb, &cache_head, &cache_depth, REG_D1);
             cache_pop_to_dn(cb, &cache_head, &cache_depth, REG_D0);
-            cache_flush(cb, &cache_head, &cache_depth);
             emit_compare_compute(cb, /*BLE*/15,
-                                 (uint32_t)(uintptr_t)&cl_jit_runtime_le);
+                                 (uint32_t)(uintptr_t)&cl_jit_runtime_le,
+                                 cache_head, cache_depth);
             cache_push_dn(cb, &cache_head, &cache_depth, REG_D0);
             break;
 
         case OP_GE:
             cache_pop_to_dn(cb, &cache_head, &cache_depth, REG_D1);
             cache_pop_to_dn(cb, &cache_head, &cache_depth, REG_D0);
-            cache_flush(cb, &cache_head, &cache_depth);
             emit_compare_compute(cb, /*BGE*/12,
-                                 (uint32_t)(uintptr_t)&cl_jit_runtime_ge);
+                                 (uint32_t)(uintptr_t)&cl_jit_runtime_ge,
+                                 cache_head, cache_depth);
             cache_push_dn(cb, &cache_head, &cache_depth, REG_D0);
             break;
 
         case OP_NUMEQ:
             cache_pop_to_dn(cb, &cache_head, &cache_depth, REG_D1);
             cache_pop_to_dn(cb, &cache_head, &cache_depth, REG_D0);
-            cache_flush(cb, &cache_head, &cache_depth);
             emit_compare_compute(cb, /*BEQ*/7,
-                                 (uint32_t)(uintptr_t)&cl_jit_runtime_numeq);
+                                 (uint32_t)(uintptr_t)&cl_jit_runtime_numeq,
+                                 cache_head, cache_depth);
             cache_push_dn(cb, &cache_head, &cache_depth, REG_D0);
             break;
 

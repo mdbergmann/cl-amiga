@@ -123,6 +123,23 @@ int cl_jit_runtime_is_self_tco(CL_Obj func, CL_Obj self_bc);
  * JSR with no cache flush needed. */
 void cl_jit_runtime_mv_reset(void);
 
+/* OP_BLOCK_PUSH / OP_BLOCK_POP / OP_BLOCK_RETURN.  The walker emits
+ * `JSR setjmp` inline between alloc and commit so the captured frame
+ * belongs to the JIT'd function itself (necessary for longjmp to
+ * rewind back here).  See runtime.c for the full protocol. */
+void  *cl_jit_runtime_block_alloc(CL_Obj tag);
+void   cl_jit_runtime_block_commit(void);
+void   cl_jit_runtime_block_pop(void);
+CL_Obj cl_jit_runtime_block_post_longjmp(void);
+#if defined(__GNUC__) || defined(__clang__)
+__attribute__((noreturn))
+#endif
+void   cl_jit_runtime_block_return(CL_Obj tag, CL_Obj value);
+
+/* Address of libc setjmp, captured at init time and baked into the
+ * BLOCK_PUSH emit as a JSR.abs.l immediate. */
+extern uint32_t cl_jit_setjmp_addr;
+
 #endif /* JIT_M68K */
 
 #endif /* CL_JIT_RUNTIME_H */

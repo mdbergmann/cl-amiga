@@ -1451,6 +1451,106 @@ static void gc_compute_forwarding(void)
     }
 }
 
+/* Conservative forwarding-update pass for a thread's JIT m68k stack.
+ * Mirrors gc_scan_jit_native_stack from the mark phase: same two-phase
+ * candidate collection, same offset validation against real header
+ * positions, same scan-window bounds.  Difference is the second phase
+ * writes the forwarding offset back to the stack slot instead of
+ * calling gc_mark_obj.
+ *
+ * Without this pass, conservatively marked JIT-spilled offsets survive
+ * the sweep (so the object lives) but the spill slots still hold the
+ * pre-slide offset — every subsequent read from those slots dereferences
+ * a moved object's old position.  Cache reg copies in D5/D6/D7 stay
+ * stale unconditionally (registers aren't memory), so JIT'd code MUST
+ * reload from these stack slots after any allocating helper.
+ *
+ * Runs in Pass 3 of cl_gc_compact, after gc_compute_forwarding has
+ * populated gc_fwd_table and before gc_slide moves the objects.
+ *
+ * Capacity / overflow policy matches the marker: if more than
+ * CL_JIT_SCAN_CAND_MAX candidates appear in the scan window, the excess
+ * are silently dropped.  This is consistent — a value the marker
+ * couldn't see is one whose object may not be alive after compaction
+ * anyway, so leaving its slot stale is no worse than the marker's gap. */
+typedef struct {
+    uint32_t  value;
+    CL_Obj   *addr;
+} JitFwdCandidate;
+
+static int jit_fwd_cand_cmp(const void *a, const void *b)
+{
+    uint32_t aa = ((const JitFwdCandidate *)a)->value;
+    uint32_t bb = ((const JitFwdCandidate *)b)->value;
+    return (aa < bb) ? -1 : (aa > bb) ? 1 : 0;
+}
+
+static void gc_forward_jit_native_stack(CL_Thread *t)
+{
+    JitFwdCandidate candidates[CL_JIT_SCAN_CAND_MAX];
+    int n_cand = 0;
+    char *scan_lo;
+    char *scan_hi;
+    uintptr_t addr;
+    uint8_t *p;
+    uint8_t *end;
+    int ci;
+
+    if (t->jit_depth <= 0 || t->jit_stack_top == NULL) return;
+    if (t != cl_get_current_thread()) return;
+
+    scan_lo = (char *)&scan_lo;
+    scan_hi = (char *)t->jit_stack_top;
+    if (scan_hi <= scan_lo) return;
+
+    addr = (uintptr_t)scan_lo;
+    addr = (addr + 3u) & ~(uintptr_t)3u;
+
+    /* Phase 1: collect (slot-address, value) pairs.  Same filter as the
+     * marker, plus we keep the address so we can write back. */
+    for (; addr + 4 <= (uintptr_t)scan_hi; addr += 4) {
+        CL_Obj w = *(const CL_Obj *)(uintptr_t)addr;
+        if (CL_NULL_P(w) || CL_FIXNUM_P(w) || CL_CHAR_P(w)) continue;
+        if (w >= cl_heap.arena_size) continue;
+        if (n_cand >= CL_JIT_SCAN_CAND_MAX) break;
+        candidates[n_cand].value = (uint32_t)w;
+        candidates[n_cand].addr  = (CL_Obj *)(uintptr_t)addr;
+        n_cand++;
+    }
+
+    if (n_cand == 0) return;
+
+    qsort(candidates, n_cand, sizeof(JitFwdCandidate), jit_fwd_cand_cmp);
+
+    /* Phase 2: merge-walk the pre-slide arena and the sorted candidates.
+     * For each real header offset, advance past phantom mid-object
+     * candidates (value < offset), then forward every candidate whose
+     * value matches the header offset exactly. */
+    p   = cl_heap.arena + CL_ALIGN;
+    end = cl_heap.arena + cl_heap.bump;
+    ci  = 0;
+    while (p < end && ci < n_cand) {
+        uint32_t size = CL_HDR_SIZE(p);
+        uint32_t offset;
+        if (size == 0) break;
+        offset = (uint32_t)(p - cl_heap.arena);
+
+        while (ci < n_cand && candidates[ci].value < offset) ci++;
+
+        while (ci < n_cand && candidates[ci].value == offset) {
+            uint32_t idx = offset / CL_ALIGN;
+            if (idx < gc_fwd_table_entries) {
+                uint32_t fwd = gc_fwd_table[idx];
+                if (fwd != 0)
+                    *candidates[ci].addr = (CL_Obj)fwd;
+            }
+            ci++;
+        }
+
+        p += size;
+    }
+}
+
 /* Translate a CL_Obj through the forwarding table.
  * Returns obj unchanged if it's not a movable heap pointer. */
 static CL_Obj gc_forward(CL_Obj obj)
@@ -1734,6 +1834,10 @@ static void gc_update_thread_roots(CL_Thread *t)
             }
         }
     }
+
+    /* JIT native stack — conservative forward update mirrors the
+     * mark-phase scan in gc_mark_thread_roots. */
+    gc_forward_jit_native_stack(t);
 }
 #define gc_root_count (CT->gc_root_count)
 
