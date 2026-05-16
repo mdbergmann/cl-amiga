@@ -136,6 +136,32 @@ __attribute__((noreturn))
 #endif
 void   cl_jit_runtime_block_return(CL_Obj tag, CL_Obj value);
 
+/* OP_UWPROT / OP_UWPOP / OP_UWRETHROW.  Same JSR-setjmp-inline shape
+ * as BLOCK_PUSH; alloc reserves the NLX slot without committing it,
+ * the walker emits JSR setjmp, then commit bumps cl_nlx_top.  On the
+ * longjmp arrival the post_longjmp helper restores all the marks the
+ * VM's OP_UWPROT longjmp arm would restore.
+ *
+ *   uwprot_alloc       — fill cl_nlx_stack[cl_nlx_top] (type=UWPROT,
+ *                         marks, vm_sp/vm_fp); return &nlx->buf.
+ *   uwprot_commit      — cl_nlx_top++.
+ *   uwprot_post_longjmp — restore marks/mv_count/mv_values from frame.
+ *   uwprot_pop          — normal-exit pop (search-backward for UWPROT
+ *                         frame, clear cl_pending_throw).
+ *   uwprot_rethrow      — cl_pending_throw==1 → find catch/block and
+ *                         longjmp; ==2 → cl_error with saved state;
+ *                         ==0 → nop.  May not return. */
+void  *cl_jit_runtime_uwprot_alloc(void);
+void   cl_jit_runtime_uwprot_commit(void);
+void   cl_jit_runtime_uwprot_pop(void);
+void   cl_jit_runtime_uwprot_post_longjmp(void);
+void   cl_jit_runtime_uwprot_rethrow(void);
+
+/* OP_MV_TO_LIST helper: build a list from cl_mv_values, returning it.
+ * Matches the VM's quirk where cl_mv_count==0 with non-NIL primary is
+ * treated as a single-value list. */
+CL_Obj cl_jit_runtime_mv_to_list(CL_Obj primary);
+
 /* Address of libc setjmp, captured at init time and baked into the
  * BLOCK_PUSH emit as a JSR.abs.l immediate. */
 extern uint32_t cl_jit_setjmp_addr;

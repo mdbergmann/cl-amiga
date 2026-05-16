@@ -1247,3 +1247,103 @@
     (> (clamiga::%jit-invoke-count) before)))
 (check "walker-block-loop-return-hit" 5  (walker-block-loop-return '(2 4 5 6)))
 (check "walker-block-loop-return-all-even" nil (walker-block-loop-return '(2 4 6)))
+
+; ---- Walker: OP_UWPROT / OP_UWPOP / OP_UWRETHROW + OP_MV_TO_LIST ----
+;
+; unwind-protect compiles to:
+;   OP_UWPROT <i32 offset>
+;     <protected body>
+;     OP_MV_TO_LIST
+;     OP_STORE list_slot
+;     OP_POP
+;     OP_UWPOP
+;     OP_JMP cleanup_start
+;   <cleanup_landing/cleanup_start>:
+;     <cleanup forms, each OP_POP'd>
+;     OP_UWRETHROW
+;     OP_FLOAD VALUES-LIST ; OP_LOAD list_slot ; OP_CALL 1
+;
+; The walker now emits inline JSR setjmp at OP_UWPROT (mirroring
+; OP_BLOCK_PUSH), JSRs to runtime helpers for OP_UWPOP/OP_UWRETHROW,
+; and routes OP_MV_TO_LIST through cl_jit_runtime_mv_to_list.
+
+; Normal-exit: protected form returns a value, cleanup runs once,
+; result is the protected value.
+(defvar *walker-uwp-cleanup-count* 0)
+(defun walker-uwp-normal ()
+  (setq *walker-uwp-cleanup-count* 0)
+  (unwind-protect
+    (+ 1 2)
+    (incf *walker-uwp-cleanup-count*)))
+(check "walker-uwp-normal-counter-bump" t
+  (let ((before (clamiga::%jit-invoke-count)))
+    (walker-uwp-normal)
+    (> (clamiga::%jit-invoke-count) before)))
+(check "walker-uwp-normal-result" 3 (walker-uwp-normal))
+(check "walker-uwp-normal-cleanup-ran-once" 1
+  (progn (walker-uwp-normal) *walker-uwp-cleanup-count*))
+
+; Error through UWPROT.  The handler-case lives in the outer driver
+; so its closure forms don't block JIT of the UWP-bearing inner; the
+; inner contains the unwind-protect alone and is JIT-compilable.  The
+; counter-bump assertion verifies the inner actually ran as native
+; code, so the asserted cleanup behavior is exercising the JIT path
+; (not falling back to the bytecode VM's OP_UWPROT).
+(defvar *walker-uwp-cleanup-err* 0)
+(defun walker-uwp-error-inner ()
+  (unwind-protect
+    (error "boom from JIT'd uwp")
+    (incf *walker-uwp-cleanup-err*)))
+(defun walker-uwp-error ()
+  (setq *walker-uwp-cleanup-err* 0)
+  (handler-case (walker-uwp-error-inner)
+    (error (c) (declare (ignore c)) :caught)))
+(check "walker-uwp-error-counter-bump" t
+  (let ((before (clamiga::%jit-invoke-count)))
+    (walker-uwp-error)
+    (> (clamiga::%jit-invoke-count) before)))
+(check "walker-uwp-error-result" :caught (walker-uwp-error))
+(check "walker-uwp-error-cleanup-ran" 1
+  (progn (walker-uwp-error) *walker-uwp-cleanup-err*))
+
+; Two JIT'd UWPROT frames stacked on the NLX stack.  Error unwinds
+; through both: inner cleanup runs first (via cl_jit_runtime_uwprot_
+; post_longjmp / OP_UWRETHROW pending==2 walking to outer), then
+; outer cleanup, then the unhandled error reaches the driver's
+; handler-case.
+(defvar *walker-uwp-order* nil)
+(defun walker-uwp-nested-inner ()
+  (unwind-protect
+    (unwind-protect
+      (error "force unwind")
+      (push :inner *walker-uwp-order*))
+    (push :outer *walker-uwp-order*)))
+(defun walker-uwp-nested ()
+  (setq *walker-uwp-order* nil)
+  (handler-case (walker-uwp-nested-inner)
+    (error (c) (declare (ignore c)) :caught)))
+(check "walker-uwp-nested-counter-bump" t
+  (let ((before (clamiga::%jit-invoke-count)))
+    (walker-uwp-nested)
+    (> (clamiga::%jit-invoke-count) before)))
+(check "walker-uwp-nested-result" :caught (walker-uwp-nested))
+(check "walker-uwp-nested-order" '(:outer :inner)
+  (progn (walker-uwp-nested) *walker-uwp-order*))
+
+; Multiple-value round-trip on the normal-exit path.  Protected form
+; returns three values via (values …); OP_MV_TO_LIST in JIT'd code
+; captures them into the unwind-protect's stash slot, cleanup runs
+; (here a nop), then VALUES-LIST republishes them at exit.  Inner
+; function is JIT-compilable; outer wraps it in multiple-value-list
+; for the test harness.
+(defun walker-uwp-mv-inner ()
+  (unwind-protect
+    (values 1 2 3)
+    nil))
+(defun walker-uwp-mv ()
+  (multiple-value-list (walker-uwp-mv-inner)))
+(check "walker-uwp-mv-counter-bump" t
+  (let ((before (clamiga::%jit-invoke-count)))
+    (walker-uwp-mv)
+    (> (clamiga::%jit-invoke-count) before)))
+(check "walker-uwp-mv-result" '(1 2 3) (walker-uwp-mv))
