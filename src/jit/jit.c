@@ -448,12 +448,27 @@ typedef struct {
     uint32_t target_bc_off;  /* bytecode offset of the branch target */
 } BranchPatch;
 
-static int16_t slot_disp(uint8_t slot, uint16_t arity)
+/* A6-relative displacement of bytecode slot `slot`.
+ *
+ * Non-keyworded (is_kw == 0): the first `slot_anchor` slots (= the
+ * required-arg count) live in the C-ABI positional-arg slots above
+ * A6; remaining slots are in the LINK frame below A6.  Slot
+ * slot_anchor sits at -4(a6), slot_anchor+1 at -8(a6), and so on.
+ *
+ * Keyworded (is_kw == 1): every slot lives below A6 in the LINK
+ * frame, laid out FORWARD so the helper's plain C array indexing
+ * `frame[i]` matches slot i.  The walker passes the helper a pointer
+ * to the lowest slot (`-(4*n_locals)(a6)`), so slot 0 → that address
+ * and slot n_locals-1 → -4(a6).  `slot_anchor` here is `n_locals`. */
+static int16_t slot_disp(uint8_t slot, uint16_t slot_anchor, int is_kw)
 {
-    if (slot < arity) {
+    if (is_kw) {
+        return (int16_t)(-4 * ((int32_t)slot_anchor - (int32_t)slot));
+    }
+    if (slot < slot_anchor) {
         return (int16_t)(8 + 4 * (int)slot);
     }
-    return (int16_t)(-4 * ((int)slot - (int)arity + 1));
+    return (int16_t)(-4 * ((int)slot - (int)slot_anchor + 1));
 }
 
 /* Decode a 4-byte big-endian signed integer from the bytecode stream.
@@ -743,29 +758,60 @@ static int walker_compile(const CL_Bytecode *bc, CodeBuf *cb)
     int cache_head = 7;
     int cache_depth = 0;
     int result = 0;
+    int is_kw;
+    uint16_t slot_anchor;
 
-    /* Conservative gate: same metadata constraints as the matchers.
-     * &optional/&key/&rest/&aux/upvalues all need work that hasn't
-     * landed yet.  Arity bounded by the dispatch-switch cap so a
-     * walker-emitted function can actually be invoked. */
-    if (bc->arity & 0x8000)  return 0;
-    if (bc->n_optional != 0) return 0;
-    if (bc->flags != 0)      return 0;
-    if (bc->n_keys != 0)     return 0;
-    if (bc->n_upvalues != 0) return 0;
+    /* Conservative gate.  The walker handles two ABIs:
+     *
+     *   Non-keyworded: fixed required-arg count, no &rest/&optional/
+     *   &key.  C-ABI calling convention; required args live above A6
+     *   in the C-pushed arg slots, body locals below A6 in the LINK
+     *   frame.
+     *
+     *   Keyworded (&key only, today): the cl_jit_invoke entry passes
+     *   `(bc, nargs, args)` rather than positional args, and a JSR'd
+     *   kw-prologue (cl_jit_runtime_kw_prologue) populates every
+     *   slot in the LINK frame before the body runs.  &rest /
+     *   &optional / &aux / upvalues all need additional work and are
+     *   still rejected.  Arity (required-arg count) is still bounded
+     *   by the dispatch cap so callers without &key going through
+     *   the existing positional path stay tight. */
+    is_kw = (bc->flags & 1) != 0;
+    if (bc->arity & 0x8000)  return 0;          /* &rest not yet supported */
+    if (bc->n_optional != 0) return 0;          /* &optional needs OP_ARGC */
+    if (bc->n_upvalues != 0) return 0;          /* closures need OP_UPVAL */
+    if (!is_kw) {
+        /* Pre-existing fixed-arity gate. */
+        if (bc->flags != 0)  return 0;
+        if (bc->n_keys != 0) return 0;
+    } else {
+        /* &key allows flags bit 1 (allow-other-keys); n_keys may be
+         * 0 when the user wrote `(&key &allow-other-keys)` with no
+         * actual keyword params. */
+        if (bc->flags & ~3u) return 0;
+    }
 
     arity = (uint16_t)(bc->arity & 0x7FFF);
-    if (arity > CL_JIT_PASSTHROUGH_MAX_ARITY) return 0;
+    /* The positional ABI is dispatched by a switch on arity in
+     * cl_jit_invoke (cases 0..CL_JIT_PASSTHROUGH_MAX_ARITY).  The
+     * kw-ABI is dispatched as three fixed C args (bc, nargs, args),
+     * so it isn't constrained by that switch — arity bounded only
+     * by frame-size headroom below. */
+    if (!is_kw && arity > CL_JIT_PASSTHROUGH_MAX_ARITY) return 0;
 
     n_locals = bc->n_locals;
     if (n_locals < arity) return 0;
     n_extra = (uint32_t)(n_locals - arity);
-    /* LINK takes a 16-bit signed disp; cap extra locals so 4*n_extra
-     * plus the 12 bytes for saved D5/D6/D7 stays within range with
-     * headroom.  In practice n_locals never approaches this for
-     * hand-written Lisp. */
+    /* LINK takes a 16-bit signed disp; cap so 4*frame_slots plus the
+     * 12 bytes for saved D5/D6/D7 stays within range with headroom.
+     * For non-kw frame_slots == n_extra; for kw it's n_locals because
+     * required args are also in the frame. */
     if (n_extra > 1000) return 0;
-    frame_size = (int16_t)(-4 * (int32_t)n_extra);
+    if (is_kw && n_locals > 1000) return 0;
+    frame_size = is_kw
+                 ? (int16_t)(-4 * (int32_t)n_locals)
+                 : (int16_t)(-4 * (int32_t)n_extra);
+    slot_anchor = is_kw ? n_locals : arity;
     /* Saved cache registers sit below the frame at -frame_size-4/-8/-12
      * (A6-relative).  D7 is pushed first after LINK so it occupies the
      * slot closest to the frame (-4 below it); D5 is pushed last so it
@@ -798,6 +844,40 @@ static int walker_compile(const CL_Bytecode *bc, CodeBuf *cb)
     m68k_emit_move_l_dn_predec_an(cb, REG_D7, REG_A7);
     m68k_emit_move_l_dn_predec_an(cb, REG_D6, REG_A7);
     m68k_emit_move_l_dn_predec_an(cb, REG_D5, REG_A7);
+
+    /* &key prologue.  Native ABI for keyworded shapes:
+     *
+     *   8(a6)  = CL_Bytecode *bc   (pushed by cl_jit_invoke)
+     *   12(a6) = uint32_t   nargs
+     *   16(a6) = CL_Obj    *args   (= &cl_vm.stack[sp - nargs])
+     *
+     * Build the helper's four C-ABI arguments on (a7) — pushed
+     * right-to-left so `bc` sits at 4(a7) when the helper enters:
+     *
+     *   PEA-style push of &frame[0]      (frame_size(a6) = lowest slot)
+     *   push args  from 16(a6)
+     *   push nargs from 12(a6)
+     *   push bc    from  8(a6)
+     *   JSR cl_jit_runtime_kw_prologue
+     *   LEA 16(a7),a7                    drop the four C args
+     *
+     * The helper NIL-initialises every slot and matches keywords into
+     * `bc->key_slots[]` / `bc->key_suppliedp_slots[]`, signalling on
+     * odd kwarg count / unknown keyword.  It's non-allocating (gate
+     * rejects &rest), so the raw `bc` pointer stays valid for the
+     * whole call. */
+    if (is_kw) {
+        uint32_t helper = (uint32_t)(uintptr_t)&cl_jit_runtime_kw_prologue;
+        /* &frame[0] = -4*n_locals(a6) = frame_size(a6).  LEA into A0
+         * (caller-saved per m68k SysV) then push A0 as the 4th C arg. */
+        m68k_emit_lea_disp_an_to_am(cb, frame_size, REG_A6, REG_A0);
+        m68k_emit_move_l_an_predec_am(cb, REG_A0, REG_A7);   /* push frame */
+        m68k_emit_move_l_disp_an_predec_am(cb, 16, REG_A6, REG_A7);  /* push args */
+        m68k_emit_move_l_disp_an_predec_am(cb, 12, REG_A6, REG_A7);  /* push nargs */
+        m68k_emit_move_l_disp_an_predec_am(cb,  8, REG_A6, REG_A7);  /* push bc */
+        m68k_emit_jsr_abs_l(cb, helper);
+        m68k_emit_lea_disp_an_to_am(cb, 16, REG_A7, REG_A7); /* drop 4 args */
+    }
 
     ip = 0;
     while (ip < bc->code_len) {
@@ -837,7 +917,7 @@ static int walker_compile(const CL_Bytecode *bc, CodeBuf *cb)
             if (ip >= bc->code_len) goto fail;
             slot = bc->code[ip++];
             if (slot >= n_locals) goto fail;
-            disp = slot_disp(slot, arity);
+            disp = slot_disp(slot, slot_anchor, is_kw);
             cache_push_disp_an(cb, &cache_head, &cache_depth, disp, REG_A6);
             break;
         }
@@ -851,7 +931,7 @@ static int walker_compile(const CL_Bytecode *bc, CodeBuf *cb)
             if (ip >= bc->code_len) goto fail;
             slot = bc->code[ip++];
             if (slot >= n_locals) goto fail;
-            disp = slot_disp(slot, arity);
+            disp = slot_disp(slot, slot_anchor, is_kw);
             if (cache_depth >= 1) {
                 m68k_emit_move_l_dn_to_disp_am(cb, (M68kReg)cache_head,
                                                disp, REG_A6);
@@ -1392,7 +1472,14 @@ static int walker_compile(const CL_Bytecode *bc, CodeBuf *cb)
 
             cache_flush(cb, &cache_head, &cache_depth);
 
-            self_tco = (nargs == arity) && CL_SYMBOL_P(bc->name);
+            /* Self-recursive TCO is disabled for keyworded shapes:
+             * the kw-prologue ABI passes (bc, nargs, args) rather
+             * than positional C-ABI args, so the args don't sit at
+             * 8+4*i(a6) and the copy-into-frame trick below would
+             * read garbage.  Recursive &key calls fall back to the
+             * cl_jit_runtime_call path (still tail-position correct,
+             * just at the cost of one extra m68k frame per call). */
+            self_tco = !is_kw && (nargs == arity) && CL_SYMBOL_P(bc->name);
 
             if (self_tco) {
                 uint32_t self_obj = (uint32_t)CL_PTR_TO_OBJ(bc);
@@ -1429,7 +1516,11 @@ static int walker_compile(const CL_Bytecode *bc, CodeBuf *cb)
                  * slot_disp(N-1-i, arity) = 8+4*(N-1-i) from A6. */
                 for (i = 0; i < nargs; i++) {
                     int16_t src_disp = (int16_t)(4 * (int32_t)i);
-                    int16_t dst_disp = slot_disp((uint8_t)(nargs - 1 - i), arity);
+                    /* Self-TCO is gated to non-kw shapes above, so
+                     * slot_anchor == arity here and the legacy
+                     * positional layout applies. */
+                    int16_t dst_disp = slot_disp((uint8_t)(nargs - 1 - i),
+                                                 slot_anchor, is_kw);
                     m68k_emit_move_l_disp_an_to_dn(cb, src_disp, REG_A7, REG_D0);
                     m68k_emit_move_l_dn_to_disp_am(cb, REG_D0, dst_disp, REG_A6);
                 }
@@ -2096,34 +2187,48 @@ void cl_jit_disassemble(const uint8_t *code, uint32_t len)
     }
 }
 
-/* Enter native code.  Dispatches by `nargs` to the matching C function
- * pointer cast — the JIT only compiles shapes whose arity is fixed and
- * matches one of the cases here (matchers reject optional/&key/&rest),
- * and OP_CALL has already verified nargs == bc->arity before reaching
- * us, so the cast is sound.
+/* Enter native code.  Two dispatch shapes:
  *
- * Args are read straight off `cl_vm.stack[sp - nargs ... sp - 1]` and
- * passed via the normal m68k C calling convention; emitted code reads
- * them from `4(sp)`, `8(sp)`, etc.  Caller is responsible for popping
- * the args and function object after we return.
+ *   Positional ABI (the common case).  cl_jit_compile only emits
+ *   native_code for bytecodes whose arity is fixed (matchers and the
+ *   walker's non-kw gate both refuse &optional/&key/&rest), and
+ *   OP_CALL has already verified nargs == bc->arity, so the
+ *   per-arity cast is sound.  Args are read straight off
+ *   `cl_vm.stack[sp - nargs ... sp - 1]` and passed via the normal
+ *   m68k C calling convention; emitted code reads them from
+ *   `4(sp)`, `8(sp)`, etc.
+ *
+ *   Kw ABI (when bc->flags & 1).  The walker emits a kw-prologue
+ *   that JSRs cl_jit_runtime_kw_prologue to populate the LINK
+ *   frame, so the native function takes only three C args:
+ *   `(CL_Bytecode *bc, int32_t nargs, CL_Obj *args)`.  `args`
+ *   points into cl_vm.stack so the helper can walk the raw
+ *   user-supplied arg vector.
+ *
+ * Either way the caller is responsible for popping the args and
+ * function object after we return.
  *
  * m68k SysV ABI: D0 holds the return value on RTS; callee preserves
- * D2..D7 and A2..A6.  The current templates clobber only D0, which is
- * caller-saved, so no register save/restore is needed on either side.
+ * D2..D7 and A2..A6.  The current templates clobber only D0/D1/A0/A1
+ * (caller-saved), so no register save/restore is needed on either
+ * side.
  *
- * Unknown arities fall back to CL_NIL — that shouldn't happen because
- * cl_jit_compile gatekeeps which shapes get native_code, but keep the
- * defensive branch so a future matcher mismatch surfaces as a wrong
- * value rather than a wild jump. */
+ * Unknown arities in the positional switch fall back to CL_NIL —
+ * that shouldn't happen because cl_jit_compile gatekeeps which
+ * shapes get native_code, but keep the defensive branch so a future
+ * matcher mismatch surfaces as a wrong value rather than a wild
+ * jump. */
 CL_Obj cl_jit_invoke(CL_Bytecode *bc, int nargs)
 {
     CL_Obj result = CL_NIL;
     CL_Thread *t;
     int   prev_depth;
     void *prev_top;
+    int   is_kw;
 
     if (bc == NULL || bc->native_code == NULL) return CL_NIL;
     jit_invoke_count++;
+    is_kw = (bc->flags & 1) != 0;
 
     /* Mark this thread as inside JIT'd code so the GC knows to scan
      * the m68k stack conservatively and to skip moving compaction.
@@ -2144,6 +2249,16 @@ CL_Obj cl_jit_invoke(CL_Bytecode *bc, int nargs)
         cl_jit_active_threads++;
     }
     t->jit_depth = prev_depth + 1;
+
+    if (is_kw) {
+        /* Kw ABI: native(bc, nargs, args).  args may be NULL when the
+         * caller passed zero arguments — the helper checks nargs ==
+         * 0 before any deref. */
+        typedef CL_Obj (*native_fn_kw_t)(CL_Bytecode *, int32_t, CL_Obj *);
+        CL_Obj *args = (nargs > 0) ? &cl_vm.stack[cl_vm.sp - nargs] : NULL;
+        result = ((native_fn_kw_t)bc->native_code)(bc, (int32_t)nargs, args);
+        goto done;
+    }
 
     switch (nargs) {
     case 0: {
@@ -2207,6 +2322,7 @@ CL_Obj cl_jit_invoke(CL_Bytecode *bc, int nargs)
         break;
     }
 
+done:
     t->jit_depth     = prev_depth;
     t->jit_stack_top = prev_top;
     if (prev_depth == 0) {

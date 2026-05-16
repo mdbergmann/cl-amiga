@@ -162,6 +162,31 @@ void   cl_jit_runtime_uwprot_rethrow(void);
  * treated as a single-value list. */
 CL_Obj cl_jit_runtime_mv_to_list(CL_Obj primary);
 
+/* Kw prologue for JIT'd functions whose lambda-list carries &key.
+ * Mirrors the matching code in vm.c::OP_CALL normal path:
+ * NIL-initializes the frame's slot area, copies positional args into
+ * the matching slots, then performs keyword matching right-to-left so
+ * the leftmost duplicate keyword wins (CLHS 3.4.1.4.1).  Signals
+ * CL_ERR_ARGS on odd argument count or unknown keyword unless
+ * :allow-other-keys is enabled.
+ *
+ *   bc     - the callee's bytecode (read-only metadata).
+ *   nargs  - actual number of caller-supplied arguments.
+ *   args   - pointer to the raw arg vector (`&cl_vm.stack[sp-nargs]`).
+ *   frame  - pointer to the JIT frame's locals area; the walker LEAs
+ *            `-(4*n_locals)(a6)` into this pointer so frame[i]
+ *            corresponds to JIT slot i (forward layout — frame[0] is
+ *            the lowest-addressed slot).
+ *
+ * Non-allocating, so passing `bc` as a raw pointer is safe — there is
+ * no GC opportunity that would relocate the bytecode header.  May
+ * call cl_error which longjmps out of the JIT frame; the unwind path
+ * keeps GC depth tracking consistent via the CL_ErrorFrame snapshot,
+ * so no manual cleanup is required.  See the walker gate for the
+ * shape restrictions (&key only, no &rest / &optional / upvalues). */
+void cl_jit_runtime_kw_prologue(CL_Bytecode *bc, uint32_t nargs,
+                                CL_Obj *args, CL_Obj *frame);
+
 /* Address of libc setjmp, captured at init time and baked into the
  * BLOCK_PUSH emit as a JSR.abs.l immediate. */
 extern uint32_t cl_jit_setjmp_addr;

@@ -1347,3 +1347,84 @@
     (walker-uwp-mv)
     (> (clamiga::%jit-invoke-count) before)))
 (check "walker-uwp-mv-result" '(1 2 3) (walker-uwp-mv))
+
+; --- &key support: native kw-prologue ----------------------------------
+;
+; The walker emits a kw-ABI prologue (LINK + save D5/D6/D7 + JSR
+; cl_jit_runtime_kw_prologue) for bytecodes whose lambda-list carries
+; &key.  cl_jit_invoke dispatches through the 3-arg signature
+; (bc, nargs, args) and the helper NIL-initialises every slot then
+; populates key_slots[]/key_suppliedp_slots[] via the same matcher
+; logic as vm.c's OP_CALL.  Each test below proves a different facet:
+; default-when-missing, value-when-supplied, suppliedp tracking,
+; right-to-left "leftmost duplicate wins", unknown-key signal,
+; :allow-other-keys, odd-kwarg signal.
+
+; Two-key function; defaults exercise the OP_LOAD-of-suppliedp /
+; OP_JTRUE-skip pattern the compiler emits for key defaults.
+(defun walker-key-2 (&key (a 10) (b 20))
+  (+ a b))
+(check "walker-key-2-counter-bump" t
+  (let ((before (clamiga::%jit-invoke-count)))
+    (walker-key-2)
+    (> (clamiga::%jit-invoke-count) before)))
+(check "walker-key-2-defaults"      30 (walker-key-2))
+(check "walker-key-2-supplied-a"    23 (walker-key-2 :a 3))
+(check "walker-key-2-supplied-b"    15 (walker-key-2 :b 5))
+(check "walker-key-2-both-supplied"  9 (walker-key-2 :a 4 :b 5))
+(check "walker-key-2-both-reversed"  9 (walker-key-2 :b 5 :a 4))
+
+; Suppliedp tracking — user-declared supplied-p var.  When the key is
+; not passed, the suppliedp slot stays NIL (kw_prologue's NIL-init);
+; when passed, the helper writes CL_T into the slot.
+(defun walker-key-suppliedp (&key (x 0 xp))
+  (if xp (cons :given x) (cons :missing x)))
+(check "walker-key-suppliedp-missing" '(:missing . 0) (walker-key-suppliedp))
+(check "walker-key-suppliedp-given-zero" '(:given . 0) (walker-key-suppliedp :x 0))
+(check "walker-key-suppliedp-given-nil" '(:given) (walker-key-suppliedp :x nil))
+(check "walker-key-suppliedp-given-value" '(:given . 42) (walker-key-suppliedp :x 42))
+
+; Leftmost duplicate keyword wins per CLHS 3.4.1.4.1.  The helper
+; walks the pairs right-to-left so each overwrite is shadowed by the
+; next (= leftmost) occurrence — the final slot value is the
+; leftmost one.
+(defun walker-key-dup (&key v) v)
+(check "walker-key-dup-leftmost" 1 (walker-key-dup :v 1 :v 2 :v 3))
+
+; Unknown keyword without :allow-other-keys → CL_ERR_ARGS via
+; cl_error.  longjmp out of the JIT frame; handler-case catches it.
+(defun walker-key-strict (&key a) a)
+(check "walker-key-strict-known" 7 (walker-key-strict :a 7))
+(check "walker-key-strict-unknown" :caught
+  (handler-case (progn (walker-key-strict :b 1) :no-error)
+    (error () :caught)))
+
+; :allow-other-keys baked into the lambda list → flags bit 1 set →
+; helper skips the unknown-keyword check.
+(defun walker-key-allow (&key a &allow-other-keys) a)
+(check "walker-key-allow-known"   9 (walker-key-allow :a 9))
+(check "walker-key-allow-unknown" 9 (walker-key-allow :a 9 :extra 'whatever))
+
+; :allow-other-keys T passed by the caller turns on the per-call
+; bypass even when the callee didn't declare &allow-other-keys.
+(defun walker-key-caller-bypass (&key a) a)
+(check "walker-key-caller-bypass" 5
+  (walker-key-caller-bypass :a 5 :extra 99 :allow-other-keys t))
+
+; Odd number of keyword arguments → CL_ERR_ARGS.  The kw_prologue's
+; n_extra & 1 check is reached only after positional filling, so this
+; specifically exercises the post-positional path.  (apply ensures
+; the malformed call survives any compile-time argument analysis.)
+(defun walker-key-odd (&key a) a)
+(check "walker-key-odd-signals" :caught
+  (handler-case (progn (apply #'walker-key-odd '(:a)) :no-error)
+    (error () :caught)))
+
+; Required arg + &key combination: positional copies into slot 0,
+; key slots live above it.  Verifies the helper handles
+; `arity = 1, n_keys = 2` correctly.
+(defun walker-key-req+2 (x &key (a 10) (b 20))
+  (list x a b))
+(check "walker-key-req+2-defaults"    '(1 10 20) (walker-key-req+2 1))
+(check "walker-key-req+2-supplied"    '(1  3  4) (walker-key-req+2 1 :a 3 :b 4))
+(check "walker-key-req+2-reversed"    '(1  3  4) (walker-key-req+2 1 :b 4 :a 3))

@@ -719,4 +719,90 @@ CL_Obj cl_jit_runtime_mv_to_list(CL_Obj primary)
     return list;
 }
 
+/* See runtime.h for the contract.  Implementation tracks vm.c's
+ * normal-call kw matcher (the "Normal call: push new frame" branch
+ * in OP_CALL) closely so behaviour stays in lock-step.
+ *
+ * Non-allocating by design: the only allocation in the VM's matcher
+ * is cl_cons for the &rest list, and the walker gate refuses to
+ * JIT-compile bytecodes with &rest precisely so the helper can take
+ * bc as a raw CL_Bytecode pointer.  If &rest support is added later,
+ * the parameter must change to a CL_Obj (so the m68k-stack scan can
+ * forward it across compaction) and bc must be re-derived after each
+ * cl_cons; see the equivalent dance in vm.c around line 1830. */
+void cl_jit_runtime_kw_prologue(CL_Bytecode *bc, uint32_t nargs,
+                                CL_Obj *args, CL_Obj *frame)
+{
+    uint32_t i;
+    uint32_t arity        = (uint32_t)(bc->arity & 0x7FFFu);
+    uint32_t n_opt        = bc->n_optional;
+    int      has_key      = (bc->flags & 1) != 0;
+    int      allow        = (bc->flags & 2) != 0;
+    uint32_t n_locals     = bc->n_locals;
+    uint32_t n_positional = arity + n_opt;
+    uint32_t n_extra;
+
+    /* Defensive clamp — OP_CALL already enforces u8 nargs but match
+     * cl_vm_apply's behaviour rather than trusting the caller. */
+    if (nargs > 255) nargs = 255;
+
+    /* NIL-initialize every frame slot.  Mirrors the VM's
+     * `while (sp < bp + n_locals) push(NIL)` so any slot the body
+     * reads before writing observes NIL, and so the suppliedp slots
+     * default to NIL for keys whose argument is omitted. */
+    for (i = 0; i < n_locals; i++) frame[i] = CL_NIL;
+
+    /* Required + optional positional args copy across directly. */
+    {
+        uint32_t copy_n = (nargs < n_positional) ? nargs : n_positional;
+        for (i = 0; i < copy_n; i++) frame[i] = args[i];
+    }
+
+    n_extra = (nargs > n_positional) ? (nargs - n_positional) : 0;
+
+    if (!has_key) return;
+
+    /* Odd-arg-count check per CLHS 3.4.1.4. */
+    if (n_extra & 1u)
+        cl_error(CL_ERR_ARGS, "odd number of keyword arguments");
+
+    /* Scan for an explicit `:allow-other-keys t` from the caller. */
+    if (!allow) {
+        uint32_t k;
+        for (k = 0; k + 1 < n_extra; k += 2) {
+            if (args[n_positional + k] == KW_ALLOW_OTHER_KEYS &&
+                !CL_NULL_P(args[n_positional + k + 1])) {
+                allow = 1;
+                break;
+            }
+        }
+    }
+
+    /* Match pairs right-to-left so the leftmost duplicate keyword
+     * wins (CLHS 3.4.1.4.1). */
+    if (n_extra >= 2) {
+        int32_t last_ki = (int32_t)n_extra - 2;
+        int32_t ki;
+        if (last_ki & 1) last_ki--;
+        for (ki = last_ki; ki >= 0; ki -= 2) {
+            CL_Obj key = args[n_positional + ki];
+            CL_Obj val = args[n_positional + ki + 1];
+            int j;
+            int found = 0;
+            for (j = 0; j < bc->n_keys; j++) {
+                if (key == bc->key_syms[j]) {
+                    frame[bc->key_slots[j]] = val;
+                    if (bc->key_suppliedp_slots)
+                        frame[bc->key_suppliedp_slots[j]] = CL_T;
+                    found = 1;
+                    break;
+                }
+            }
+            if (!found && key != KW_ALLOW_OTHER_KEYS && !allow)
+                cl_error(CL_ERR_ARGS, "Unknown keyword argument: %s",
+                         cl_symbol_name(key));
+        }
+    }
+}
+
 #endif /* JIT_M68K */
