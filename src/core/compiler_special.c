@@ -382,15 +382,20 @@ static int tree_has_closure_forms(CL_Obj tree)
     return 0;
 }
 
-/* Check if (return-from <tag> ...) appears anywhere in tree. */
+/* Check if (return-from <tag> ...) appears anywhere in tree.
+ * When tag is NIL (anonymous block), bare (return ...) also matches,
+ * since (return …) is (return-from nil …). */
 static int tree_contains_return_from(CL_Obj tree, CL_Obj tag)
 {
+    int anonymous = CL_NULL_P(tag);
     while (CL_CONS_P(tree)) {
         CL_Obj head = cl_car(tree);
         if (CL_CONS_P(head)) {
             CL_Obj op = cl_car(head);
             if (op == SYM_RETURN_FROM && CL_CONS_P(cl_cdr(head))
                 && cl_car(cl_cdr(head)) == tag)
+                return 1;
+            if (anonymous && op == SYM_RETURN)
                 return 1;
             if (tree_contains_return_from(head, tag))
                 return 1;
@@ -407,8 +412,12 @@ static int tree_contains_return_from(CL_Obj tree, CL_Obj tag)
 static int tree_needs_nlx_block(CL_Obj body, CL_Obj tag)
 {
     CL_Obj tree;
-    if (CL_NULL_P(tag))
-        return tree_has_closure_forms(body);
+
+    /* Anonymous block: coarse fallback retained — any closure form
+     * promotes to NLX, covering user macros that may expand to
+     * (return ...) which we cannot see pre-expansion. */
+    if (CL_NULL_P(tag) && tree_has_closure_forms(body))
+        return 1;
 
     tree = body;
     while (CL_CONS_P(tree)) {
@@ -417,6 +426,15 @@ static int tree_needs_nlx_block(CL_Obj body, CL_Obj tag)
             CL_Obj op = cl_car(head);
             if (op == SYM_LAMBDA || op == SYM_LABELS || op == SYM_FLET
                 || op == SYM_RESTART_CASE) {
+                if (tree_contains_return_from(head, tag))
+                    return 1;
+            }
+            /* (unwind-protect ...) containing a return-from to our tag
+             * must force NLX: otherwise compile_return_from emits an
+             * OP_JMP that bypasses the unwind-protect's OP_UWPOP and
+             * cleanup forms (CLHS violation — cleanups must run on
+             * any non-local exit). */
+            if (op == SYM_UNWIND_PROTECT) {
                 if (tree_contains_return_from(head, tag))
                     return 1;
             }
