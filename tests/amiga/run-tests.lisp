@@ -4304,8 +4304,9 @@
         (amiga:close-library lib))))
 
   ;; DEFCFUN regspec encoding: (:a1 :d0 :d1) -> 9 | (0<<4) | (1<<8) = #x109.
-  ;; macroexpand-1 should produce (defun NAME PARAMS
-  ;;   (amiga:%ffi-call BASE OFFSET REGSPEC . PARAMS)) — the compiler
+  ;; macroexpand-1 produces (progn (defun NAME PARAMS
+  ;;   (amiga:%ffi-call BASE OFFSET REGSPEC . PARAMS))
+  ;;   (define-compiler-macro NAME ...) 'NAME) — the compiler
   ;; matches the %FFI-CALL head exactly to emit OP_AMIGA_CALL.  We walk
   ;; the expansion structurally rather than string-searching the printed
   ;; form, so the test is robust to printer formatting.
@@ -4313,7 +4314,8 @@
     (let* ((expanded (macroexpand-1
                        '(amiga.ffi:defcfun foo *base* -42
                                            (:a1 r :d0 x :d1 y))))
-           (call-form (fourth expanded)))       ; the %FFI-CALL form
+           (defun-form (second expanded))       ; (defun NAME PARAMS BODY)
+           (call-form (fourth defun-form)))     ; the %FFI-CALL form
       (and (eq (first call-form) 'amiga:%ffi-call)
            (fourth call-form))))                ; regspec literal
 
@@ -4322,7 +4324,8 @@
   (check "amiga-defcfun-void-regspec-encoding" #x10000000
     (let* ((expanded (macroexpand-1
                        '(amiga.ffi:defcfun foo *base* -42 (:d0 x) :void t)))
-           (call-form (fourth expanded)))
+           (defun-form (second expanded))
+           (call-form (fourth defun-form)))
       (and (eq (first call-form) 'amiga:%ffi-call)
            (fourth call-form))))
 
@@ -4331,8 +4334,9 @@
   (check "amiga-defcfun-empty-regspec" '(0 nil nil)
     (let* ((expanded (macroexpand-1
                        '(amiga.ffi:defcfun foo *base* -132 ())))
-           (params (third expanded))            ; defun lambda list
-           (call-form (fourth expanded)))
+           (defun-form (second expanded))
+           (params (third defun-form))          ; defun lambda list
+           (call-form (fourth defun-form)))
       (list (fourth call-form)                  ; regspec
             params                              ; () == NIL
             (nthcdr 4 call-form))))             ; trailing args (none)
