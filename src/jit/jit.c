@@ -664,9 +664,11 @@ static int prescan_branch_targets(const CL_Bytecode *bc, uint8_t *is_target)
         case OP_LT: case OP_GT: case OP_LE: case OP_GE: case OP_NUMEQ:
         case OP_MV_RESET: case OP_BLOCK_POP:
         case OP_UWPOP: case OP_UWRETHROW: case OP_MV_TO_LIST:
+        case OP_MAKE_CELL: case OP_CELL_REF:
             step = 1; break;
         case OP_LOAD: case OP_STORE: case OP_CALL: case OP_TAILCALL:
         case OP_STRUCT_REF: case OP_STRUCT_SET: case OP_DYNUNBIND:
+        case OP_CELL_SET_LOCAL:
             step = 2; break;
         case OP_CONST: case OP_GLOAD: case OP_GSTORE:
         case OP_FLOAD: case OP_DYNBIND: case OP_BLOCK_RETURN:
@@ -737,6 +739,40 @@ static int prescan_branch_targets(const CL_Bytecode *bc, uint8_t *is_target)
              * = 10 bytes.  Straight-line opcode, no branch targets. */
             step = 10;
             break;
+        case OP_CLOSURE: {
+            /* 1 + u16 const_idx + 2 bytes per captured upvalue.  We must
+             * look up the template bytecode in the constants pool to know
+             * n_upvalues; if anything looks wrong (out-of-range index,
+             * non-bytecode constant, capture descriptor referencing a
+             * parent-closure upvalue while this function has none, slot
+             * out of frame range), bail the whole walker. */
+            uint16_t idx;
+            CL_Obj tmpl_obj;
+            CL_Bytecode *tmpl;
+            uint32_t n_upvals_local;
+            uint32_t i;
+            if (ip + 3 > bc->code_len) return 0;
+            idx = ((uint16_t)bc->code[ip + 1] << 8) | bc->code[ip + 2];
+            if (idx >= bc->n_constants || bc->constants == NULL) return 0;
+            tmpl_obj = bc->constants[idx];
+            if (!CL_BYTECODE_P(tmpl_obj)) return 0;
+            tmpl = (CL_Bytecode *)CL_OBJ_TO_PTR(tmpl_obj);
+            n_upvals_local = tmpl->n_upvalues;
+            step = 3 + 2 * n_upvals_local;
+            if (ip + step > bc->code_len) return 0;
+            /* Validate capture descriptors up front.  Phase-A walker
+             * doesn't support is_local=0 (parent-closure upvalue) — that
+             * needs the enclosing function to expose its upvalues, which
+             * the n_upvalues==0 gate already prevents.  Belt-and-braces
+             * so a future gate change doesn't silently miscompile. */
+            for (i = 0; i < n_upvals_local; i++) {
+                uint8_t is_local = bc->code[ip + 3 + 2*i];
+                uint8_t cap_idx  = bc->code[ip + 3 + 2*i + 1];
+                if (!is_local) return 0;
+                if (cap_idx >= bc->n_locals) return 0;
+            }
+            break;
+        }
         default:
             return 0;
         }
@@ -813,6 +849,7 @@ static int walker_compile(const CL_Bytecode *bc, CodeBuf *cb)
      * required args are also in the frame. */
     if (n_extra > 1000) return 0;
     if (is_kw && n_locals > 1000) return 0;
+
     frame_size = is_kw
                  ? (int16_t)(-4 * (int32_t)n_locals)
                  : (int16_t)(-4 * (int32_t)n_extra);
@@ -1762,6 +1799,144 @@ static int walker_compile(const CL_Bytecode *bc, CodeBuf *cb)
             m68k_emit_jsr_abs_l(cb, helper);
             m68k_emit_addq_l_an(cb, 8, REG_A7);
             m68k_emit_addq_l_an(cb, 4, REG_A7);
+            cache_push_dn(cb, &cache_head, &cache_depth, REG_D0);
+            break;
+        }
+
+        case OP_MAKE_CELL: {
+            /* Pop value, alloc a CL_Cell wrapping it, push the cell.
+             * cl_make_cell allocates → flush cache so cached operand-
+             * stack values land on the m68k stack for the conservative
+             * GC scan.  Helper is one C arg: pushed via predec; addq.l
+             * 4 drops it after the JSR returns. */
+            uint32_t helper = (uint32_t)(uintptr_t)&cl_jit_runtime_make_cell;
+            cache_pop_to_dn(cb, &cache_head, &cache_depth, REG_D0);
+            cache_flush(cb, &cache_head, &cache_depth);
+            m68k_emit_move_l_dn_predec_an(cb, REG_D0, REG_A7);
+            m68k_emit_jsr_abs_l(cb, helper);
+            m68k_emit_addq_l_an(cb, 4, REG_A7);
+            cache_push_dn(cb, &cache_head, &cache_depth, REG_D0);
+            break;
+        }
+
+        case OP_CELL_REF: {
+            /* Pop cell, push cell->value.  Helper is non-allocating
+             * (plain deref), but it dereferences an arena-relative
+             * CL_Obj — needs CL_OBJ_TO_PTR which uses cl_heap.arena_base.
+             * Routing through the helper keeps the addressing in C
+             * where the base is in scope and matches the VM exactly. */
+            uint32_t helper = (uint32_t)(uintptr_t)&cl_jit_runtime_cell_ref;
+            cache_pop_to_dn(cb, &cache_head, &cache_depth, REG_D0);
+            m68k_emit_move_l_dn_predec_an(cb, REG_D0, REG_A7);
+            m68k_emit_jsr_abs_l(cb, helper);
+            m68k_emit_addq_l_an(cb, 4, REG_A7);
+            cache_push_dn(cb, &cache_head, &cache_depth, REG_D0);
+            break;
+        }
+
+        case OP_CELL_SET_LOCAL: {
+            /* u8 slot.  cell_obj = frame[slot], val = TOS (peek — TOS is
+             * NOT popped).  Helper does cell->value = val and returns
+             * val.  Non-allocating, so no need to flush the cache; we
+             * route val through D1 (or load from (a7) if cache empty)
+             * and route cell_obj from the frame slot through D0.  After
+             * the JSR, TOS is unchanged.  Mirrors VM's OP_CELL_SET_LOCAL. */
+            uint8_t slot;
+            int16_t disp;
+            uint32_t helper = (uint32_t)(uintptr_t)&cl_jit_runtime_cell_set;
+            if (ip >= bc->code_len) goto fail;
+            slot = bc->code[ip++];
+            if (slot >= n_locals) goto fail;
+            disp = slot_disp(slot, slot_anchor, is_kw);
+
+            /* Read TOS without popping into D1. */
+            if (cache_depth >= 1) {
+                m68k_emit_move_l_dn_to_dm(cb, (M68kReg)cache_head, REG_D1);
+            } else {
+                m68k_emit_move_l_disp_an_to_dn(cb, 0, REG_A7, REG_D1);
+            }
+            /* Read cell_obj from frame[slot] into D0. */
+            m68k_emit_move_l_disp_an_to_dn(cb, disp, REG_A6, REG_D0);
+
+            /* Push C args right-to-left: val (D1), then cell_obj (D0). */
+            m68k_emit_move_l_dn_predec_an(cb, REG_D1, REG_A7);
+            m68k_emit_move_l_dn_predec_an(cb, REG_D0, REG_A7);
+            m68k_emit_jsr_abs_l(cb, helper);
+            m68k_emit_addq_l_an(cb, 8, REG_A7);
+            /* Result in D0 is the stored value, but we already left TOS
+             * intact (peek semantics) — discard D0. */
+            break;
+        }
+
+        case OP_CLOSURE: {
+            /* u16 const_idx + n_upvals * (u8 is_local, u8 cap_idx).
+             * Prescan has already validated: idx in range, constant is a
+             * BYTECODE, every capture is_local=1 with cap_idx < n_locals.
+             * Walker reads the descriptor stream, emits per-capture
+             * loads onto the m68k stack to build values[], snapshots A7
+             * as &values[0], then JSRs the helper.
+             *
+             * Stack growth order: predec pushes from values[n-1] down to
+             * values[0], so the final A7 = &values[0].  Then we push the
+             * 3 C args (right-to-left: values, n_upvals, tmpl_obj),
+             * leaving tmpl_obj at (a7) on JSR entry.  Drop 12 bytes of
+             * C args, then n_upvals*4 bytes of values, then push D0
+             * result onto the operand cache.
+             *
+             * GC: cl_alloc may compact only when no JIT frame is active —
+             * we're inside one, so mark-and-sweep keeps tmpl_obj and the
+             * values[] entries reachable via the m68k stack (values[]
+             * lives on it; tmpl_obj as a fresh imm32 push and again as
+             * the JSR's 1st C arg both occupy stack slots for the scan).
+             * The helper's return value (a fresh CL_Closure) drops into
+             * D0 (callee-saved D5/D6/D7 are intact across the JSR), then
+             * cache_push_dn promotes it back to the operand stack. */
+            uint16_t idx;
+            CL_Obj tmpl_obj;
+            CL_Bytecode *tmpl;
+            uint32_t n_upvals_local;
+            uint32_t i;
+            uint32_t helper = (uint32_t)(uintptr_t)&cl_jit_runtime_make_closure;
+            if (ip + 1 >= bc->code_len) goto fail;
+            idx = ((uint16_t)bc->code[ip] << 8) | bc->code[ip + 1];
+            ip += 2;
+            if (idx >= bc->n_constants || bc->constants == NULL) goto fail;
+            tmpl_obj = bc->constants[idx];
+            if (!CL_BYTECODE_P(tmpl_obj)) goto fail;
+            tmpl = (CL_Bytecode *)CL_OBJ_TO_PTR(tmpl_obj);
+            n_upvals_local = tmpl->n_upvalues;
+            if (ip + 2 * n_upvals_local > bc->code_len) goto fail;
+
+            cache_flush(cb, &cache_head, &cache_depth);
+
+            /* Push captures in reverse so A7 ends pointing at values[0]. */
+            for (i = n_upvals_local; i > 0; i--) {
+                uint8_t is_local = bc->code[ip + 2*(i-1)];
+                uint8_t cap_idx  = bc->code[ip + 2*(i-1) + 1];
+                int16_t cap_disp;
+                if (!is_local) goto fail;
+                if (cap_idx >= n_locals) goto fail;
+                cap_disp = slot_disp(cap_idx, slot_anchor, is_kw);
+                m68k_emit_move_l_disp_an_to_dn(cb, cap_disp, REG_A6, REG_D0);
+                m68k_emit_move_l_dn_predec_an(cb, REG_D0, REG_A7);
+            }
+            ip += 2 * n_upvals_local;
+
+            /* Snapshot &values[0] into A0, then push 3 C args R→L. */
+            m68k_emit_move_l_an_to_am(cb, REG_A7, REG_A0);
+            m68k_emit_move_l_an_predec_am(cb, REG_A0, REG_A7);            /* values */
+            m68k_emit_move_l_imm32_predec(cb, n_upvals_local, REG_A7);    /* n_upvals */
+            m68k_emit_move_l_imm32_predec(cb, (uint32_t)tmpl_obj, REG_A7);/* tmpl_obj */
+            m68k_emit_jsr_abs_l(cb, helper);
+            /* Drop 3 C args + n_upvals*4 bytes of values via one LEA.
+             * Can't use addq.l for the 12-byte drop alone — addq.l only
+             * encodes immediates 1..8 (12 silently truncates to 4 in the
+             * encoder).  Folding into the same LEA also saves an
+             * instruction. */
+            {
+                int16_t drop = (int16_t)(12 + 4 * (int32_t)n_upvals_local);
+                m68k_emit_lea_disp_an_to_am(cb, drop, REG_A7, REG_A7);
+            }
             cache_push_dn(cb, &cache_head, &cache_depth, REG_D0);
             break;
         }
