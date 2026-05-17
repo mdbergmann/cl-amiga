@@ -601,6 +601,10 @@ OP_ADD OP_SUB OP_MUL OP_LT OP_GT OP_LE OP_GE OP_NUMEQ OP_EQ OP_NOT
 OP_CAR OP_CDR OP_CONS
 OP_GLOAD OP_GSTORE OP_FLOAD OP_CALL OP_TAILCALL
 OP_STRUCT_REF OP_STRUCT_SET OP_DYNBIND OP_DYNUNBIND
+OP_MV_RESET OP_MV_TO_LIST
+OP_BLOCK_PUSH OP_BLOCK_POP OP_BLOCK_RETURN
+OP_UWPROT OP_UWPOP OP_UWRETHROW
+OP_AMIGA_CALL
 OP_RET
 ```
 
@@ -775,3 +779,119 @@ OP_TAILCALL).
   whatever mv_count their callers were last left with — fine for the
   current test suite and bouncing-lines hot path (nothing reads
   mv_count from JIT'd code), but a latent correctness gap.
+
+## Status (2026-05-17, post OP_AMIGA_CALL walker + defcfun inlining)
+
+Two changes targeted the FFI hot path identified in the
+empirical-baseline section.  Both landed in the same session; bench
+numbers below verify on the high-end FS-UAE config running
+`examples/gfx/bouncing-lines.lisp`.
+
+**`OP_AMIGA_CALL` in the walker (commit 25336f5).**  Was the last
+defcfun-emitted opcode that bailed the walker, forcing every FFI
+wrapper (`move-to`, `draw-to`, `rect-fill`, `set-a-pen`, …) to run
+through the bytecode interpreter — and every JIT'd caller of such a
+wrapper to bounce native→bytecode→native per FFI hop.  Walker now
+emits cache_flush + 5-arg JSR to
+`cl_jit_runtime_amiga_call(base_sym, offset, regspec, n_args,
+operand_top)`; helper resolves the library-base symbol (matching
+`vm.c`'s `OP_AMIGA_CALL` errors), reverse-copies n_args from the m68k
+operand stack into a stack-local `CL_Obj[8]`, and delegates to
+`cl_amiga_ffi_call_dispatch`.  Prescan accounts the 10-byte encoding
+(u16 sym_idx, i16 offset, i32 regspec, u8 n_args); the base symbol is
+baked into the call site as a CL_Obj literal from `constants[idx]`.
+
+**`defcfun` compiler-macro (commit 7091844).**  After the walker fix,
+every direct `(move-to rp x y)` call site was still paying for
+`OP_FLOAD <move-to>` + `OP_CALL 3` → `cl_jit_runtime_call` →
+`cl_vm_apply` → wrapper entry/exit (LINK frame, save+restore of
+D5–D7) around the single `OP_AMIGA_CALL` *inside* the wrapper.  The
+wrapper adds zero semantic value at direct call sites.  `defcfun` now
+expands a `define-compiler-macro` alongside the `defun`, rewriting
+direct call sites to `(amiga:%ffi-call <library-base> <offset>
+<regspec> <args…>)` — the same form the compiler's FFI fast-path
+already lowers to `OP_AMIGA_CALL`.  The compiler-macro returns the
+`&whole` form on argument-count mismatch (CLHS 3.2.2.1.3) so wrong-
+arity calls still get the wrapper's normal error.  Indirect callers
+(`funcall`/`#'`) still hit the named wrapper.
+
+**FASL-cache caveat for the compiler-macro path.**  The wrappers'
+compiler-macros are registered at `defcfun`-expand time, so a FASL
+built with the *old* `defcfun` macro will not carry them.  The FASL
+infrastructure only mtime-checks the consuming file (e.g.
+`graphics.lisp` → `graphics.fasl`), not transitive macro sources
+(`ffi.lisp`).  When the `defcfun` macro changes, the consuming FASLs
+under `verify/realamiga/aos3/S/cl-amiga/faslcache/.../lib/amiga/*.fasl`
+(`graphics.fasl`, `intuition.fasl`, `gadtools.fasl`) must be deleted
+by hand.  Symptom of missing this: bench delta is ~0 because the
+wrappers still go through `cl_vm_apply` even though the new defcfun
+macro registers compiler-macros at the symbol level.
+
+### Bouncing-lines bench progression (high-end FS-UAE)
+
+| Build state                                        |    FPS | Δ vs. prev |
+|----------------------------------------------------|-------:|-----------:|
+| post fast-path cache_flush skip (prev status, 5/16)| 467–470|          — |
+| + walker `OP_AMIGA_CALL`                           |   ~525 |    +55–58  |
+| + `defcfun` compiler-macro inlining                |   ~615 |       +90  |
+
+Net **+148 FPS** (+32%) over the prior status snapshot.  The remaining
+gap to ACE BASIC's ~1900 FPS (cited in the empirical-baseline section)
+is **not** mostly graphics-library cost: ACE and CL-Amiga share the
+same ROM calls.  The 3× headroom is the structural cost of being a
+dynamic, GC'd, tagged-value language vs a static one — value
+unboxing per arg, closure/bytecode/builtin dispatch per call, symbol
+lookup at `OP_FLOAD`, GC safepoints.  It is not closable to ACE
+levels by JIT codegen alone, and likely not closable past the
+register-alloc-JIT projection in §"Projected ceilings" without a
+structurally different design.
+
+### Investigated and shelved: collapsing the FFI helper chain
+
+Per-call FFI overhead today, on top of the ROM library call itself,
+for a 3-arg `(move-to rp x y)`-shape call:
+
+| Stage                                              | ~cycles |
+|----------------------------------------------------|--------:|
+| `cl_jit_runtime_amiga_call` frame entry/exit       |    ~30  |
+| `cl_symbol_value(base_sym)` + unbound + FOREIGN_POINTER_P + `bfp->address` | ~25 |
+| reverse-copy 3 args into `CL_Obj[8]`               |    ~30  |
+| call to `cl_amiga_ffi_call_dispatch` (JSR + 5 args)|    ~10  |
+| `memset(regs, 0, 56)`                              |    ~30  |
+| regspec-decode loop + `ffi_arg_to_u32` × 3         |    ~50  |
+| `platform_amiga_call` trampoline (movem save/load) |    ~50  |
+| result handling (void_p → CL_NIL, or fixnum box)   |     ~5  |
+
+Two options for compressing this were measured and shelved:
+
+- **(3) Collapse to one helper.**  Replace `cl_jit_runtime_amiga_call`
+  with a tiny `cl_jit_runtime_amiga_resolve_base(sym)` returning the
+  resolved library address; emit the reverse-copy inline in m68k;
+  JSR `cl_amiga_ffi_call_dispatch` directly.  Saves the outer helper
+  frame (~30 cycles) and inlines the copy (~15 cycles cheaper than
+  the C loop) ≈ **~30 cycles/call**.  At ~20 FFI calls/frame × 615 FPS
+  ≈ 370k cycles/sec saved ≈ **~+1–2 FPS**.  Refactor cost not worth
+  the gain.
+- **(2+3) Inline regspec decode + register marshalling.**  Walker
+  knows regspec and n_args at compile time → can lay each arg
+  directly into its `regs[reg_idx]` slot, zero-fill unused slots
+  (the trampoline `movem.l (a5),d0-d7/a0-a4` loads all 13
+  unconditionally), inline a fixnum-fast-path for `ffi_arg_to_u32`
+  with a helper bailout for bignum/foreign-pointer args, and JSR
+  `platform_amiga_call` directly.  Saves helper frame, memset, and
+  regspec-decode loop ≈ **~90 cycles/call** in the typical
+  fixnum-args case.  At ~20 FFI calls/frame ≈ ~+15–20 FPS to
+  ~630–635.  ~100–150 lines of walker emit; needs the m68k FFI
+  register layout encoded into the JIT, and result-boxing emitted
+  for non-void wrappers.  Real complexity for modest gain;
+  diminishing-returns territory.
+
+**Conclusion.**  Neither option pursued.  The next codegen lever
+likely worth the work is a walker fast-path for `OP_FLOAD <sym>; …;
+OP_CALL n` when the resolved callee carries `native_code`: emit a
+direct JSR into the callee's native entry (guarded against
+redefinition the way `OP_TAILCALL` self-TCO is — runtime compare of
+the symbol's current function value against the captured callee),
+bypassing the `cl_vm_apply` dispatch trip.  That benefits **every**
+direct JIT'd-to-JIT'd call site in the codebase, not just FFI ones.
+Not investigated this session.
