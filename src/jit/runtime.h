@@ -187,6 +187,17 @@ CL_Obj cl_jit_runtime_mv_to_list(CL_Obj primary);
 void cl_jit_runtime_kw_prologue(CL_Bytecode *bc, uint32_t nargs,
                                 CL_Obj *args, CL_Obj *frame);
 
+/* Backing for OP_AMIGA_CALL — resolves the library-base symbol to a
+ * foreign-pointer address (errors like the VM's OP_AMIGA_CALL on
+ * unbound/wrong-type), reverse-copies n_args from the JIT's m68k
+ * operand stack into a stack-local buffer, then calls
+ * cl_amiga_ffi_call_dispatch.  Allocates only if the dispatch result
+ * exceeds CL_FIXNUM_MAX (bignum box) and is therefore reached by the
+ * conservative scan via the caller's flushed operand-stack values. */
+CL_Obj cl_jit_runtime_amiga_call(CL_Obj base_sym, int32_t offset,
+                                 uint32_t regspec, uint32_t n_args,
+                                 CL_Obj *operand_top);
+
 /* Address of libc setjmp, captured at init time and baked into the
  * BLOCK_PUSH emit as a JSR.abs.l immediate. */
 extern uint32_t cl_jit_setjmp_addr;

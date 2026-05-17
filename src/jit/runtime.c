@@ -26,7 +26,8 @@
 #include "core/thread.h"     /* cl_symbol_value / cl_set_symbol_value */
 #include "core/vm.h"         /* cl_dynbind_restore_to, CL_MAX_DYN_BINDINGS, CL_NLXFrame */
 #include "core/mem.h"        /* cl_heap.arena_size */
-#include "core/compiler.h"   /* cl_compiler_mark / cl_compiler_restore_to */
+#include "core/compiler.h"   /* cl_compiler_mark / cl_compiler_restore_to,
+                              * cl_amiga_ffi_call_dispatch */
 #include <setjmp.h>
 #include <string.h>          /* memcpy for mv_values preservation */
 
@@ -803,6 +804,63 @@ void cl_jit_runtime_kw_prologue(CL_Bytecode *bc, uint32_t nargs,
                          cl_symbol_name(key));
         }
     }
+}
+
+/* Backing for OP_AMIGA_CALL — mirrors the VM's dispatch in vm.c::
+ * OP_AMIGA_CALL one-for-one so behaviour and error messages stay
+ * identical between the bytecode and JIT paths.
+ *
+ *   base_sym   — the library-base symbol (baked into the JIT'd call
+ *                site as a CL_Obj literal from the bytecode's
+ *                constants[] table).
+ *   offset     — LVO offset from the library base (i16 widened to i32
+ *                by the caller; passed as int32_t for a clean 4-byte
+ *                push slot).
+ *   regspec    — packed register spec, bit 28 = void-p.
+ *   n_args     — number of register args (0..7, validated by dispatch).
+ *   operand_top — points at the most-recently-pushed arg on the m68k
+ *                 operand stack.  Args lie at operand_top[0..n_args-1]
+ *                 with operand_top[0] = argN-1 (the last pushed) and
+ *                 operand_top[n_args-1] = arg0 (the first pushed).
+ *
+ * Reverse-copy into a stack-local CL_Obj[8] buffer so the dispatch
+ * helper sees args in the same order the bytecode VM would
+ * (`&cl_vm.stack[cl_vm.sp - n_args]` is bottom-to-top: buf[0] = arg0,
+ * buf[n_args-1] = argN-1).  The conservative m68k-stack scan still
+ * reaches the original args at operand_top, so even if dispatch
+ * allocates (cl_make_bignum when the result exceeds CL_FIXNUM_MAX) the
+ * caller's operand-stack values stay rooted across the call. */
+CL_Obj cl_jit_runtime_amiga_call(CL_Obj base_sym, int32_t offset,
+                                 uint32_t regspec, uint32_t n_args,
+                                 CL_Obj *operand_top)
+{
+    CL_Obj args_buf[8];
+    CL_Obj base_val;
+    CL_ForeignPtr *bfp;
+    uint32_t i;
+
+    base_val = cl_symbol_value(base_sym);
+    if (base_val == CL_UNBOUND)
+        cl_error(CL_ERR_UNBOUND,
+                 "OP_AMIGA_CALL: unbound library base %s",
+                 cl_symbol_name(base_sym));
+    if (!CL_FOREIGN_POINTER_P(base_val))
+        cl_error(CL_ERR_TYPE,
+                 "OP_AMIGA_CALL: %s is not a foreign pointer",
+                 cl_symbol_name(base_sym));
+    bfp = (CL_ForeignPtr *)CL_OBJ_TO_PTR(base_val);
+
+    /* dispatch caps at 7; the buffer is sized to 8 anyway. */
+    if (n_args > 7)
+        cl_error(CL_ERR_ARGS,
+                 "OP_AMIGA_CALL: too many register args (max 7), got %u",
+                 (unsigned)n_args);
+
+    for (i = 0; i < n_args; i++)
+        args_buf[i] = operand_top[n_args - 1 - i];
+
+    return cl_amiga_ffi_call_dispatch(bfp->address, (int16_t)offset,
+                                      regspec, (int)n_args, args_buf);
 }
 
 #endif /* JIT_M68K */

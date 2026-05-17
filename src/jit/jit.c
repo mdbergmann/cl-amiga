@@ -22,7 +22,7 @@
  *     OP_CALL, OP_TAILCALL, OP_STRUCT_REF, OP_STRUCT_SET, OP_DYNBIND,
  *     OP_DYNUNBIND, OP_MV_RESET, OP_MV_TO_LIST, OP_BLOCK_PUSH,
  *     OP_BLOCK_POP, OP_BLOCK_RETURN, OP_UWPROT, OP_UWPOP,
- *     OP_UWRETHROW, OP_RET.
+ *     OP_UWRETHROW, OP_AMIGA_CALL, OP_RET.
  *     OP_CONS is the first allocating opcode handled directly.
  *     **Convention for any helper-calling emitter**: after popping
  *     operands into D0/D1 scratch regs, call `cache_flush` before the
@@ -732,6 +732,11 @@ static int prescan_branch_targets(const CL_Bytecode *bc, uint8_t *is_target)
             is_target[landing_ip] = 1;
             break;
         }
+        case OP_AMIGA_CALL:
+            /* 1 + u16 sym_idx + i16 offset + i32 regspec + u8 n_args
+             * = 10 bytes.  Straight-line opcode, no branch targets. */
+            step = 10;
+            break;
         default:
             return 0;
         }
@@ -1757,6 +1762,77 @@ static int walker_compile(const CL_Bytecode *bc, CodeBuf *cb)
             m68k_emit_jsr_abs_l(cb, helper);
             m68k_emit_addq_l_an(cb, 8, REG_A7);
             m68k_emit_addq_l_an(cb, 4, REG_A7);
+            cache_push_dn(cb, &cache_head, &cache_depth, REG_D0);
+            break;
+        }
+
+        case OP_AMIGA_CALL: {
+            /* OP_AMIGA_CALL layout: u16 sym_idx, i16 offset,
+             * i32 regspec, u8 n_args (10 bytes total incl. opcode).
+             *
+             * Args are on the m68k operand stack at [A7..A7+4*(n-1)],
+             * with argN-1 at A7 (the most recent push) — same layout
+             * OP_CALL expects.  After flushing the cache to memory we
+             * grab the operand-top into A0, then push the 5 C-ABI args
+             * right-to-left: operand_top, n_args, regspec, offset
+             * (sign-extended from i16), base_sym (CL_Obj literal baked
+             * from constants[idx]).  JSR helper, drop the 5 C args,
+             * drop the n_args operand slots, push D0 result.
+             *
+             * GC: any cached operand values are spilled by
+             * cache_flush, so the conservative scan reaches them
+             * across the helper if it allocates (bignum box for
+             * over-fixnum return values, or cl_error condition
+             * objects on unbound/wrong-type/arity errors).
+             *
+             * Without this walker case every defcfun-generated
+             * wrapper (move-to, draw-to, rect-fill, ...) compiled
+             * around a single OP_AMIGA_CALL bails the walker and runs
+             * via the bytecode interpreter, forcing a native↔bytecode
+             * bounce per FFI call from JIT'd hot loops. */
+            uint16_t sym_idx;
+            int16_t  offset;
+            int32_t  offset_se;
+            uint32_t regspec;
+            uint8_t  n_args;
+            int16_t  drop_bytes;
+            CL_Obj   base_sym;
+            uint32_t helper = (uint32_t)(uintptr_t)&cl_jit_runtime_amiga_call;
+
+            if (ip + 9 > bc->code_len) goto fail;
+            sym_idx = ((uint16_t)bc->code[ip] << 8) | bc->code[ip + 1];
+            offset  = (int16_t)(((uint16_t)bc->code[ip + 2] << 8) |
+                                bc->code[ip + 3]);
+            regspec = read_i32_be(bc->code + ip + 4);
+            n_args  = bc->code[ip + 8];
+            ip += 9;
+
+            if (sym_idx >= bc->n_constants || bc->constants == NULL)
+                goto fail;
+            base_sym = bc->constants[sym_idx];
+            if (!CL_SYMBOL_P(base_sym)) goto fail;
+            if (n_args > 7) goto fail;
+
+            offset_se = (int32_t)offset;
+            drop_bytes = (int16_t)(4 * (int32_t)n_args);
+
+            cache_flush(cb, &cache_head, &cache_depth);
+            /* A0 = current SP = &arg[n_args-1] before any C-arg pushes. */
+            m68k_emit_move_l_an_to_am(cb, REG_A7, REG_A0);
+            /* Push C args right-to-left so they end up in argN..arg0
+             * order at 4..20(A7) after JSR (which itself pushes the
+             * return address at 0(A7)). */
+            m68k_emit_move_l_an_predec_am(cb, REG_A0, REG_A7);   /* operand_top */
+            m68k_emit_move_l_imm32_predec(cb, (uint32_t)n_args, REG_A7);
+            m68k_emit_move_l_imm32_predec(cb, regspec, REG_A7);
+            m68k_emit_move_l_imm32_predec(cb, (uint32_t)offset_se, REG_A7);
+            m68k_emit_move_l_imm32_predec(cb, (uint32_t)base_sym, REG_A7);
+            m68k_emit_jsr_abs_l(cb, helper);
+            /* Drop the 5 C args (20 bytes), then the n_args operand
+             * slots that the dispatch consumed. */
+            m68k_emit_lea_disp_an_to_am(cb, 20, REG_A7, REG_A7);
+            if (drop_bytes > 0)
+                m68k_emit_lea_disp_an_to_am(cb, drop_bytes, REG_A7, REG_A7);
             cache_push_dn(cb, &cache_head, &cache_depth, REG_D0);
             break;
         }
