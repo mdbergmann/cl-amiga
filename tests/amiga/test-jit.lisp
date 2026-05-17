@@ -1460,3 +1460,131 @@
 (check "walker-key-req+2-defaults"    '(1 10 20) (walker-key-req+2 1))
 (check "walker-key-req+2-supplied"    '(1  3  4) (walker-key-req+2 1 :a 3 :b 4))
 (check "walker-key-req+2-reversed"    '(1  3  4) (walker-key-req+2 1 :b 4 :a 3))
+
+; --- OP_FSTORE.  Compiler emits this for `(defun ...)` to install the
+; closure in the symbol's function cell — a nested defun therefore
+; lands an OP_FSTORE inside the enclosing JIT'd function's body.
+; Walker pattern is identical to OP_GSTORE: cache-flush so TOS lives
+; at (a7), push it, push the baked symbol literal, JSR helper, drop.
+(defun walker-fstore-installer ()
+  (defun walker-fstore-installed-fn (x) (* x x))
+  'installed)
+(check "walker-fstore-counter-bump" t
+  (let ((before (clamiga::%jit-invoke-count)))
+    (walker-fstore-installer)
+    (> (clamiga::%jit-invoke-count) before)))
+(check "walker-fstore-returns-tag"    'installed (walker-fstore-installer))
+; The nested defun must have actually installed the function — call it.
+(check "walker-fstore-installs-fn"    25
+  (progn (walker-fstore-installer) (walker-fstore-installed-fn 5)))
+; And re-running the installer should re-install (idempotent in observable
+; behaviour — the body still returns 'installed and the inner still works).
+(check "walker-fstore-reinstall"      49
+  (progn (walker-fstore-installer) (walker-fstore-installed-fn 7)))
+
+; --- OP_LIST.  Compiler emits this only from `(trace ...)` / `(untrace
+; ...)` — both forms call %{TRACE,UNTRACE}-FUNCTION on each name and
+; then collect the per-call return values into a list.  %UNTRACE-FUNCTION
+; is the cleaner test substrate: it returns the symbol unchanged whether
+; or not the symbol was previously traced, so the OP_LIST result is
+; exactly the literal symbol list with no side effects on tests that
+; care about the trace state.
+(defun walker-op-list-3 ()
+  (untrace walker-untrace-tag-a walker-untrace-tag-b walker-untrace-tag-c))
+(check "walker-op-list-3-counter-bump" t
+  (let ((before (clamiga::%jit-invoke-count)))
+    (walker-op-list-3)
+    (> (clamiga::%jit-invoke-count) before)))
+(check "walker-op-list-3-result"
+  '(walker-untrace-tag-a walker-untrace-tag-b walker-untrace-tag-c)
+  (walker-op-list-3))
+
+; n=1 — exercises the no-LEA-drop edge of the walker emit.
+(defun walker-op-list-1 () (untrace walker-untrace-tag-a))
+(check "walker-op-list-1-result" '(walker-untrace-tag-a)
+  (walker-op-list-1))
+
+; Larger n triggers a 28-byte LEA drop and stresses the conservative-
+; scan path across multiple cl_cons allocations: 7 elements means 7
+; cons cells, building bottom-up from operand_top[0] = tag-g.
+(defun walker-op-list-7 ()
+  (untrace walker-untrace-tag-a walker-untrace-tag-b walker-untrace-tag-c
+           walker-untrace-tag-d walker-untrace-tag-e walker-untrace-tag-f
+           walker-untrace-tag-g))
+(check "walker-op-list-7-result"
+  '(walker-untrace-tag-a walker-untrace-tag-b walker-untrace-tag-c
+    walker-untrace-tag-d walker-untrace-tag-e walker-untrace-tag-f
+    walker-untrace-tag-g)
+  (walker-op-list-7))
+
+; --- OP_RPLACA.  Compiler inlines `(rplaca cons new-car)` ... actually
+; `rplaca` isn't in the inline_builtin_opcode table; OP_RPLACA is what
+; (setf (car ...) ...) and (setf (first ...) ...) lower to.  Tested via
+; the setf form so the test stays neutral to potential inline expansion
+; changes.
+(defun walker-rplaca-1 (c v) (setf (car c) v))
+(check "walker-rplaca-counter-bump" t
+  (let ((before (clamiga::%jit-invoke-count))
+        (c (cons 1 2)))
+    (walker-rplaca-1 c 99)
+    (> (clamiga::%jit-invoke-count) before)))
+; rplaca returns the new car (CLHS setf semantics).
+(check "walker-rplaca-returns-val" 99
+  (walker-rplaca-1 (cons 1 2) 99))
+; Mutation reaches the cons cell.
+(check "walker-rplaca-mutates" '(99 . 2)
+  (let ((c (cons 1 2))) (walker-rplaca-1 c 99) c))
+; Non-cons → type-error.
+(check "walker-rplaca-type-error" :caught
+  (handler-case (progn (walker-rplaca-1 42 'x) :no-error)
+    (type-error () :caught)))
+(check "walker-rplaca-type-error-nil" :caught
+  (handler-case (progn (walker-rplaca-1 nil 'x) :no-error)
+    (type-error () :caught)))
+
+; --- OP_ASET.  Emitted by `(setf (aref v idx) val)` on the 1D fast
+; path; dispatches across general-vector, simple-string, and bit-vector
+; in a single helper.
+(defun walker-aset-1 (v idx val) (setf (aref v idx) val))
+(check "walker-aset-counter-bump" t
+  (let ((before (clamiga::%jit-invoke-count))
+        (v (make-array 3 :initial-element 0)))
+    (walker-aset-1 v 0 99)
+    (> (clamiga::%jit-invoke-count) before)))
+; General vector — value type unconstrained.
+(check "walker-aset-vector-returns-val" 99
+  (walker-aset-1 (make-array 3 :initial-element 0) 1 99))
+(check "walker-aset-vector-mutates" #(0 99 0)
+  (let ((v (make-array 3 :initial-element 0)))
+    (walker-aset-1 v 1 99) v))
+(check "walker-aset-vector-symbol" 'tag
+  (let ((v (make-array 3 :initial-element 0)))
+    (walker-aset-1 v 2 'tag)
+    (aref v 2)))
+; Simple string — value must be a CHARACTER.
+(check "walker-aset-string-mutates" "axc"
+  (let ((s (copy-seq "abc")))
+    (walker-aset-1 s 1 #\x) s))
+(check "walker-aset-string-wrong-type" :caught
+  (handler-case (progn (walker-aset-1 (copy-seq "abc") 0 42) :no-error)
+    (type-error () :caught)))
+; Bit-vector — value must be 0 or 1.
+(check "walker-aset-bv-mutates" #*101
+  (let ((bv (make-array 3 :element-type 'bit :initial-element 0)))
+    (walker-aset-1 bv 0 1)
+    (walker-aset-1 bv 2 1)
+    bv))
+(check "walker-aset-bv-out-of-range-value" :caught
+  (handler-case
+      (progn
+        (walker-aset-1 (make-array 3 :element-type 'bit :initial-element 0) 0 2)
+        :no-error)
+    (type-error () :caught)))
+; Bounds + base-type errors.
+(check "walker-aset-out-of-range" :caught
+  (handler-case
+      (progn (walker-aset-1 (make-array 3 :initial-element 0) 99 'x) :no-error)
+    (error () :caught)))
+(check "walker-aset-not-a-vector" :caught
+  (handler-case (progn (walker-aset-1 42 0 'x) :no-error)
+    (type-error () :caught)))

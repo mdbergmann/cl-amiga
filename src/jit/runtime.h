@@ -98,6 +98,11 @@ CL_Obj cl_jit_runtime_cdr  (CL_Obj obj);
 CL_Obj cl_jit_runtime_gload (CL_Obj sym);
 CL_Obj cl_jit_runtime_gstore(CL_Obj sym, CL_Obj val);
 
+/* Backing for OP_FSTORE: write `val` into sym->function (the function
+ * cell, not the value cell — that's OP_GSTORE).  Returns `val` so the
+ * walker can leave it as TOS without a separate peek.  Non-allocating. */
+CL_Obj cl_jit_runtime_fstore(CL_Obj sym, CL_Obj val);
+
 void   cl_jit_runtime_dynbind  (CL_Obj sym, CL_Obj new_val);
 void   cl_jit_runtime_dynunbind(uint32_t count);
 
@@ -108,6 +113,25 @@ CL_Obj cl_jit_runtime_struct_ref(CL_Obj obj, uint32_t idx);
 CL_Obj cl_jit_runtime_struct_set(CL_Obj obj, uint32_t idx, CL_Obj val);
 
 CL_Obj cl_jit_runtime_cons(CL_Obj car, CL_Obj cdr);
+
+/* OP_LIST backing.  Builds a list of `n` elements from the JIT'd
+ * caller's flushed operand stack — operand_top[0] is TOS (last in
+ * list), operand_top[n-1] is bottom (head).  Each cl_cons may
+ * allocate; the conservative scan + JIT-stack forwarding pass keep
+ * the operand_top slots valid across collections, and the helper
+ * CL_GC_PROTECTs the partially-built list. */
+CL_Obj cl_jit_runtime_list(uint32_t n, CL_Obj *operand_top);
+
+/* OP_RPLACA backing.  Type-checks `cons_obj` (signal like the VM),
+ * writes new_car, returns new_car as the new TOS.  Non-allocating. */
+CL_Obj cl_jit_runtime_rplaca(CL_Obj cons_obj, CL_Obj new_car);
+
+/* OP_ASET backing.  Same dispatch as the VM's OP_ASET: bit-vector,
+ * simple-string, and general-vector are valid destinations with
+ * destination-dependent value type checks.  Returns `val` so the
+ * walker can push it as the new TOS.  Non-allocating; may longjmp
+ * out via cl_error on type / bounds violations. */
+CL_Obj cl_jit_runtime_aset(CL_Obj vec_obj, CL_Obj idx_obj, CL_Obj val);
 
 /* OP_MAKE_CELL / OP_CELL_REF / OP_CELL_SET_LOCAL backings.  Mirror the
  * VM cases exactly: make_cell allocates a fresh CL_Cell wrapping `val`,

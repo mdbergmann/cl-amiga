@@ -677,14 +677,17 @@ static int prescan_branch_targets(const CL_Bytecode *bc, uint8_t *is_target)
         case OP_MV_RESET: case OP_BLOCK_POP:
         case OP_UWPOP: case OP_UWRETHROW: case OP_MV_TO_LIST:
         case OP_MAKE_CELL: case OP_CELL_REF:
+        case OP_RPLACA: case OP_ASET:
             step = 1; break;
         case OP_LOAD: case OP_STORE: case OP_CALL: case OP_TAILCALL:
         case OP_STRUCT_REF: case OP_STRUCT_SET: case OP_DYNUNBIND:
         case OP_CELL_SET_LOCAL:
         case OP_UPVAL: case OP_CELL_SET_UPVAL:
+        case OP_LIST:
             step = 2; break;
         case OP_CONST: case OP_GLOAD: case OP_GSTORE:
         case OP_FLOAD: case OP_DYNBIND: case OP_BLOCK_RETURN:
+        case OP_FSTORE:
             step = 3; break;
         case OP_JMP: case OP_JNIL: case OP_JTRUE: {
             int32_t offset;
@@ -1114,6 +1117,31 @@ static int walker_compile(const CL_Bytecode *bc, CodeBuf *cb)
             /* Flush before peek so TOS lives at (a7) — the helper may
              * allocate (package sync of *PACKAGE* path, errors); the
              * conservative scan reaches stack but not cache regs. */
+            cache_flush(cb, &cache_head, &cache_depth);
+            m68k_emit_move_l_an_to_predec_am(cb, REG_A7, REG_A7);
+            m68k_emit_move_l_imm32_predec(cb, (uint32_t)sym, REG_A7);
+            m68k_emit_jsr_abs_l(cb, helper);
+            m68k_emit_addq_l_an(cb, 8, REG_A7);
+            break;
+        }
+
+        case OP_FSTORE: {
+            /* Same peek-and-store shape as OP_GSTORE, but writes
+             * sym->function rather than the dynamic value cell.
+             * Compiler emits OP_FSTORE for `(defun ...)` so any
+             * top-level body containing a `defun` (or a `flet` /
+             * `labels`-style emission that resolves to FSTORE) now
+             * widens to the walker. */
+            uint16_t idx;
+            CL_Obj sym;
+            uint32_t helper = (uint32_t)(uintptr_t)&cl_jit_runtime_fstore;
+            if (ip + 1 >= bc->code_len) goto fail;
+            idx = ((uint16_t)bc->code[ip] << 8) | bc->code[ip + 1];
+            ip += 2;
+            if (idx >= bc->n_constants || bc->constants == NULL) goto fail;
+            sym = bc->constants[idx];
+            if (!CL_SYMBOL_P(sym)) goto fail;
+
             cache_flush(cb, &cache_head, &cache_depth);
             m68k_emit_move_l_an_to_predec_am(cb, REG_A7, REG_A7);
             m68k_emit_move_l_imm32_predec(cb, (uint32_t)sym, REG_A7);
@@ -1647,6 +1675,90 @@ static int walker_compile(const CL_Bytecode *bc, CodeBuf *cb)
             m68k_emit_move_l_dn_predec_an(cb, REG_D0, REG_A7);
             m68k_emit_jsr_abs_l(cb, helper);
             m68k_emit_addq_l_an(cb, 4, REG_A7);
+            cache_push_dn(cb, &cache_head, &cache_depth, REG_D0);
+            break;
+        }
+
+        case OP_LIST: {
+            /* u8 n.  Pop `n` values, cons them into a list (top-of-
+             * stack ends up at the tail), push the list.
+             *
+             * Same dispatch shape as OP_AMIGA_CALL: flush the cache so
+             * the n operand-stack values land on the m68k stack, capture
+             * A7 in A0 (= operand_top), then push the two C args
+             * right-to-left.  The helper iterates operand_top[0..n-1]
+             * with operand_top[0] = TOS = last cons-into-list.  After
+             * the JSR we drop the 2 C args (8 bytes) and the n operand
+             * slots (4*n bytes).  GC: helper allocates n cons cells
+             * and CL_GC_PROTECTs the partial list; the JIT-stack
+             * forwarding pass rewrites operand_top slots in place. */
+            uint8_t  n;
+            int16_t  drop_operand;
+            uint32_t helper = (uint32_t)(uintptr_t)&cl_jit_runtime_list;
+            if (ip >= bc->code_len) goto fail;
+            n = bc->code[ip++];
+
+            cache_flush(cb, &cache_head, &cache_depth);
+            /* A0 = current SP = &operand_top[0] before any C-arg pushes. */
+            m68k_emit_move_l_an_to_am(cb, REG_A7, REG_A0);
+            /* Push operand_top, then n (right-to-left, so n lands at
+             * 4(a7) after JSR pushes the return address). */
+            m68k_emit_move_l_an_predec_am(cb, REG_A0, REG_A7);    /* operand_top */
+            m68k_emit_move_l_imm32_predec(cb, (uint32_t)n, REG_A7);
+            m68k_emit_jsr_abs_l(cb, helper);
+            m68k_emit_addq_l_an(cb, 8, REG_A7);                   /* drop 2 C args */
+            drop_operand = (int16_t)(4 * (int32_t)n);
+            if (drop_operand > 0)
+                m68k_emit_lea_disp_an_to_am(cb, drop_operand, REG_A7, REG_A7);
+            cache_push_dn(cb, &cache_head, &cache_depth, REG_D0);
+            break;
+        }
+
+        case OP_RPLACA: {
+            /* Pop new_car (TOS), pop cons_obj, helper does the type-
+             * check + write and returns new_car as the new TOS.
+             *
+             * Mirrors OP_STRUCT_SET's two-arg shape.  Flush before the
+             * JSR because cl_error on type mismatch unwinds through
+             * the JIT frame and the conservative scan only sees stack
+             * (not cache regs).  cl_error itself is non-allocating in
+             * the steady-state, but the unwind machinery may touch
+             * the heap when building condition objects, so the same
+             * "flush before helper that may signal" discipline as
+             * OP_STRUCT_SET applies. */
+            uint32_t helper = (uint32_t)(uintptr_t)&cl_jit_runtime_rplaca;
+            cache_pop_to_dn(cb, &cache_head, &cache_depth, REG_D1);  /* new_car */
+            cache_pop_to_dn(cb, &cache_head, &cache_depth, REG_D0);  /* cons_obj */
+            cache_flush(cb, &cache_head, &cache_depth);
+            m68k_emit_move_l_dn_predec_an(cb, REG_D1, REG_A7);       /* push new_car */
+            m68k_emit_move_l_dn_predec_an(cb, REG_D0, REG_A7);       /* push cons_obj */
+            m68k_emit_jsr_abs_l(cb, helper);
+            m68k_emit_addq_l_an(cb, 8, REG_A7);
+            cache_push_dn(cb, &cache_head, &cache_depth, REG_D0);
+            break;
+        }
+
+        case OP_ASET: {
+            /* Three-arg helper: helper(vec_obj, idx_obj, val).  After
+             * the cache flush the three operand-stack values sit at
+             * (a7) = val (TOS), 4(a7) = idx, 8(a7) = vec.  Capture A7
+             * in A0, then push from disp(a0) right-to-left so the C
+             * args end up at 4..12(a7) after JSR.
+             *
+             * Using disp-from-A0 (rather than popping into 3 data regs
+             * and re-pushing) avoids spending an extra scratch reg —
+             * the cache only uses D5/D6/D7, so D0/D1 alone suffice for
+             * the cache_pop_to_dn cases above, and here we don't need
+             * any data reg for the values at all. */
+            uint32_t helper = (uint32_t)(uintptr_t)&cl_jit_runtime_aset;
+            cache_flush(cb, &cache_head, &cache_depth);
+            m68k_emit_move_l_an_to_am(cb, REG_A7, REG_A0);            /* A0 = operand_top */
+            m68k_emit_move_l_disp_an_predec_am(cb, 0, REG_A0, REG_A7); /* push val */
+            m68k_emit_move_l_disp_an_predec_am(cb, 4, REG_A0, REG_A7); /* push idx */
+            m68k_emit_move_l_disp_an_predec_am(cb, 8, REG_A0, REG_A7); /* push vec */
+            m68k_emit_jsr_abs_l(cb, helper);
+            /* Drop 12 C args + 12 operand slots = 24 bytes. */
+            m68k_emit_lea_disp_an_to_am(cb, 24, REG_A7, REG_A7);
             cache_push_dn(cb, &cache_head, &cache_depth, REG_D0);
             break;
         }
