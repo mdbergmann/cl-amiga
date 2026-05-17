@@ -109,6 +109,25 @@ CL_Obj cl_jit_runtime_struct_set(CL_Obj obj, uint32_t idx, CL_Obj val);
 
 CL_Obj cl_jit_runtime_cons(CL_Obj car, CL_Obj cdr);
 
+/* OP_MAKE_CELL / OP_CELL_REF / OP_CELL_SET_LOCAL backings.  Mirror the
+ * VM cases exactly: make_cell allocates a fresh CL_Cell wrapping `val`,
+ * cell_ref dereferences cell->value, cell_set writes cell->value and
+ * returns it.  Phase-A walker support — OP_CELL_SET_UPVAL still bytecoded
+ * because the JIT entry doesn't currently receive the closure. */
+CL_Obj cl_jit_runtime_make_cell(CL_Obj val);
+CL_Obj cl_jit_runtime_cell_ref (CL_Obj cell_obj);
+CL_Obj cl_jit_runtime_cell_set (CL_Obj cell_obj, CL_Obj val);
+
+/* OP_CLOSURE backing.  Allocates CL_Closure(tmpl, upvalues[n_upvals])
+ * and copies values[0..n_upvals-1] into the upvalues array.  The walker
+ * builds the `values` array on the m68k stack by emitting per-capture
+ * loads from the parent frame (capture descriptors with is_local=1).
+ * Phase-A walker rejects any descriptor with is_local=0 — that would
+ * mean capturing from the parent's upvalues, which is impossible while
+ * the gate still requires the enclosing function's n_upvalues == 0. */
+CL_Obj cl_jit_runtime_make_closure(CL_Obj tmpl_obj, uint32_t n_upvals,
+                                   CL_Obj *values);
+
 /* Self-TCO predicate.  Returns 1 if `func` is the function value
  * that, when called, would dispatch back into `self_bc` (i.e., it
  * either is `self_bc` directly, or is a closure wrapping `self_bc`).

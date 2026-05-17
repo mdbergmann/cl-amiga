@@ -326,6 +326,63 @@ CL_Obj cl_jit_runtime_cons(CL_Obj car, CL_Obj cdr)
     return cl_cons(car, cdr);
 }
 
+/* Backings for OP_MAKE_CELL / OP_CELL_REF / OP_CELL_SET_LOCAL.  Match
+ * the VM dispatch byte-for-byte.  cl_make_cell already CL_GC_PROTECTs
+ * `val` across its allocation, so the JIT side only has to flush the
+ * cache before the JSR (so any cached operand-stack values land where
+ * the conservative scan can see them). */
+CL_Obj cl_jit_runtime_make_cell(CL_Obj val)
+{
+    return cl_make_cell(val);
+}
+
+CL_Obj cl_jit_runtime_cell_ref(CL_Obj cell_obj)
+{
+    CL_Cell *cell = (CL_Cell *)CL_OBJ_TO_PTR(cell_obj);
+    return cell->value;
+}
+
+CL_Obj cl_jit_runtime_cell_set(CL_Obj cell_obj, CL_Obj val)
+{
+    CL_Cell *cell = (CL_Cell *)CL_OBJ_TO_PTR(cell_obj);
+    cell->value = val;
+    return val;
+}
+
+/* OP_CLOSURE backing.  Allocates a CL_Closure sized to hold n_upvals
+ * upvalue slots, populates bytecode + upvalues, returns the tagged obj.
+ * Walker has already filtered out captures with is_local=0 (would
+ * require parent-closure upvalues, impossible under the current n_upvalues==0
+ * gate) and computed values[] from the parent's frame slots.
+ *
+ * GC: cl_alloc may compact.  Both `tmpl` (a CL_Bytecode pointer) and the
+ * incoming values are reachable via the caller's flushed operand-stack
+ * frame on the m68k stack — the caller stages values right above A7 so
+ * the conservative scan finds them, and we receive `tmpl` as a raw C
+ * pointer baked from the constants pool.  The tmpl pointer itself is
+ * stable across GC because cl_alloc relocates the data but the
+ * walker's call site re-derives `tmpl` from `constants[idx]` per call,
+ * so even after compaction the next dispatch picks up the new address.
+ * Inside this helper we don't dereference `tmpl` until after the
+ * allocation has consumed any pre-existing slack — but we DO need
+ * tmpl_bc->n_upvalues for the size, which we read BEFORE allocation.
+ * That's the same access pattern the VM uses (see OP_CLOSURE in vm.c). */
+CL_Obj cl_jit_runtime_make_closure(CL_Obj tmpl_obj, uint32_t n_upvals,
+                                   CL_Obj *values)
+{
+    CL_Closure *cl;
+    uint32_t i;
+
+    cl = (CL_Closure *)cl_alloc(TYPE_CLOSURE,
+        sizeof(CL_Closure) + n_upvals * sizeof(CL_Obj));
+    if (!cl) return CL_NIL;
+    cl->bytecode = tmpl_obj;
+    for (i = 0; i < n_upvals; i++) {
+        cl->upvalues[i] = values[i];
+    }
+    return CL_PTR_TO_OBJ(cl);
+}
+
 /* OP_TAILCALL self-TCO guard.  Called from the walker-emitted
  * arity-matching tail-call site to decide whether the runtime func
  * value would dispatch back into this same bytecode — in which case
@@ -479,6 +536,21 @@ CL_Obj cl_jit_runtime_block_post_longjmp(void)
     CL_Obj result;
     int mi;
 
+    /* Restore cl_vm.sp / cl_vm.fp to the state captured at BLOCK_PUSH.
+     * The longjmp may have fired from arbitrarily deep VM execution
+     * (e.g. an inner lambda invoked via cl_jit_runtime_call →
+     * cl_vm_apply that did a return-from across the closure boundary).
+     * cl_vm_apply's normal-exit restore is skipped on longjmp, so SP/FP
+     * are left at the inner lambda's last position.  Subsequent OP_CALL
+     * dispatches from JIT'd code or the cl_jit_invoke caller's cleanup
+     * (sp -= nargs+1; push result) then operate on a stale stack and
+     * silently overwrite live operands a few frames up — the symptom we
+     * hit is that a literal pushed by the caller before the JIT'd call
+     * is no longer where the post-call code expects it.  The VM's
+     * matching path does the same restore (see vm.c OP_BLOCK_RETURN). */
+    cl_vm.sp = nlx->vm_sp;
+    cl_vm.fp = nlx->vm_fp;
+
     cl_dynbind_restore_to(nlx->dyn_mark);
     cl_handler_top  = nlx->handler_mark;
     cl_restart_top  = nlx->restart_mark;
@@ -621,6 +693,14 @@ void cl_jit_runtime_uwprot_post_longjmp(void)
      * site triggered the longjmp (cl_error, block_return, throw, …).
      * Read the frame's saved marks and restore. */
     CL_NLXFrame *nlx = &cl_nlx_stack[cl_nlx_top];
+    /* Same SP/FP restore rationale as cl_jit_runtime_block_post_longjmp:
+     * a longjmp from deep inside cl_vm_run (via cl_jit_runtime_call)
+     * bypasses cl_vm_apply's saved_sp/base_fp restore.  The cleanup
+     * forms run next in JIT'd code; they will themselves invoke OP_CALL
+     * → cl_jit_runtime_call which needs cl_vm.sp at the UWPROT-time
+     * baseline so its own cl_vm_apply book-keeping doesn't drift. */
+    cl_vm.sp = nlx->vm_sp;
+    cl_vm.fp = nlx->vm_fp;
     cl_dynbind_restore_to(nlx->dyn_mark);
     cl_handler_top  = nlx->handler_mark;
     cl_restart_top  = nlx->restart_mark;
