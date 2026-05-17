@@ -1770,7 +1770,14 @@ static CL_Obj cl_vm_run(int base_fp, int base_nlx)
                  * so cl_jit_invoke can dispatch on nargs unconditionally. */
                 if (callee_bc->native_code &&
                     !is_tail && !is_func_traced(func_obj)) {
-                    CL_Obj nresult = cl_jit_invoke(callee_bc, nargs);
+                    /* Pass the function-object CL_Obj (closure or raw
+                     * bytecode) alongside its unwrapped bytecode so JIT'd
+                     * code reaches the closure's upvalues[] via OP_UPVAL
+                     * / OP_CELL_SET_UPVAL.  Mirrors the VM's
+                     * frame->bytecode channel — kept as a separate C arg
+                     * because the dispatch needs the resolved bytecode
+                     * pointer immediately. */
+                    CL_Obj nresult = cl_jit_invoke(func_obj, callee_bc, nargs);
                     cl_vm.sp -= (nargs + 1);
                     cl_vm_push(nresult);
                     VM_BREAK;

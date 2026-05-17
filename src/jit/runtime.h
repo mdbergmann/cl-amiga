@@ -112,8 +112,7 @@ CL_Obj cl_jit_runtime_cons(CL_Obj car, CL_Obj cdr);
 /* OP_MAKE_CELL / OP_CELL_REF / OP_CELL_SET_LOCAL backings.  Mirror the
  * VM cases exactly: make_cell allocates a fresh CL_Cell wrapping `val`,
  * cell_ref dereferences cell->value, cell_set writes cell->value and
- * returns it.  Phase-A walker support — OP_CELL_SET_UPVAL still bytecoded
- * because the JIT entry doesn't currently receive the closure. */
+ * returns it. */
 CL_Obj cl_jit_runtime_make_cell(CL_Obj val);
 CL_Obj cl_jit_runtime_cell_ref (CL_Obj cell_obj);
 CL_Obj cl_jit_runtime_cell_set (CL_Obj cell_obj, CL_Obj val);
@@ -121,12 +120,23 @@ CL_Obj cl_jit_runtime_cell_set (CL_Obj cell_obj, CL_Obj val);
 /* OP_CLOSURE backing.  Allocates CL_Closure(tmpl, upvalues[n_upvals])
  * and copies values[0..n_upvals-1] into the upvalues array.  The walker
  * builds the `values` array on the m68k stack by emitting per-capture
- * loads from the parent frame (capture descriptors with is_local=1).
- * Phase-A walker rejects any descriptor with is_local=0 — that would
- * mean capturing from the parent's upvalues, which is impossible while
- * the gate still requires the enclosing function's n_upvalues == 0. */
+ * loads from the parent frame (capture descriptors with is_local=1) or
+ * — when the enclosing function is itself a closure (n_upvalues > 0) —
+ * from the parent's upvalues via OP_UPVAL-style helper reads. */
 CL_Obj cl_jit_runtime_make_closure(CL_Obj tmpl_obj, uint32_t n_upvals,
                                    CL_Obj *values);
+
+/* OP_UPVAL / OP_CELL_SET_UPVAL backings.  Both take `func_obj` (the
+ * function object the JIT'd frame was entered with — closure or raw
+ * bytecode, sourced from 8(a6)).  upval_ref returns CL_NIL for the
+ * non-closure case so a plain bytecode JIT-invoked outside any closure
+ * dispatch doesn't trap on a missing closure (matches VM semantics —
+ * see core/vm.c OP_UPVAL).  cell_set_upval mirrors the VM's
+ * type-check (cl_error if the slot isn't a CL_Cell) and is peek-only:
+ * the walker leaves TOS in place. */
+CL_Obj cl_jit_runtime_upval_ref(CL_Obj func_obj, uint32_t index);
+CL_Obj cl_jit_runtime_cell_set_upval(CL_Obj func_obj, uint32_t index,
+                                     CL_Obj val);
 
 /* Self-TCO predicate.  Returns 1 if `func` is the function value
  * that, when called, would dispatch back into `self_bc` (i.e., it

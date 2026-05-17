@@ -410,8 +410,12 @@ static void cache_dup(CodeBuf *cb, int *head, int *depth)
  *
  * Stack frame, after `link a6,#-N` and the cache-reg save:
  *
- *   8(a6) + 4*i      parameter i (i in [0, arity)) — placed there by
- *                    the m68k C ABI before the JSR
+ *   8(a6)            func_obj (closure or raw bytecode CL_Obj) —
+ *                    pushed as the first C-ABI arg by cl_jit_invoke
+ *                    so OP_UPVAL / OP_CELL_SET_UPVAL can dereference
+ *                    cl->upvalues[index]
+ *  12(a6) + 4*i      parameter i (i in [0, arity)) — placed there by
+ *                    the m68k C ABI before the JSR (i = 0 at 12(a6))
  *   4(a6)            return address (pushed by JSR)
  *   0(a6)            saved A6 (pushed by LINK)
  *  -4(a6) - 4*j      "extra" local j (j = slot - arity, j in [0, n_extra))
@@ -452,8 +456,16 @@ typedef struct {
  *
  * Non-keyworded (is_kw == 0): the first `slot_anchor` slots (= the
  * required-arg count) live in the C-ABI positional-arg slots above
- * A6; remaining slots are in the LINK frame below A6.  Slot
- * slot_anchor sits at -4(a6), slot_anchor+1 at -8(a6), and so on.
+ * A6; remaining slots are in the LINK frame below A6.  After LINK
+ * a6,#-N the call frame above A6 is:
+ *
+ *   8(a6)         = first  C arg = `func_obj`   (closure or bytecode)
+ *   12(a6)        = second C arg = user arg 0
+ *   16(a6)        = third  C arg = user arg 1
+ *   …
+ *
+ * so user slot s sits at 12 + 4*s.  Slot slot_anchor (first non-arg
+ * local) sits at -4(a6), slot_anchor+1 at -8(a6), and so on.
  *
  * Keyworded (is_kw == 1): every slot lives below A6 in the LINK
  * frame, laid out FORWARD so the helper's plain C array indexing
@@ -466,7 +478,7 @@ static int16_t slot_disp(uint8_t slot, uint16_t slot_anchor, int is_kw)
         return (int16_t)(-4 * ((int32_t)slot_anchor - (int32_t)slot));
     }
     if (slot < slot_anchor) {
-        return (int16_t)(8 + 4 * (int)slot);
+        return (int16_t)(12 + 4 * (int)slot);
     }
     return (int16_t)(-4 * ((int)slot - (int)slot_anchor + 1));
 }
@@ -669,6 +681,7 @@ static int prescan_branch_targets(const CL_Bytecode *bc, uint8_t *is_target)
         case OP_LOAD: case OP_STORE: case OP_CALL: case OP_TAILCALL:
         case OP_STRUCT_REF: case OP_STRUCT_SET: case OP_DYNUNBIND:
         case OP_CELL_SET_LOCAL:
+        case OP_UPVAL: case OP_CELL_SET_UPVAL:
             step = 2; break;
         case OP_CONST: case OP_GLOAD: case OP_GSTORE:
         case OP_FLOAD: case OP_DYNBIND: case OP_BLOCK_RETURN:
@@ -743,9 +756,12 @@ static int prescan_branch_targets(const CL_Bytecode *bc, uint8_t *is_target)
             /* 1 + u16 const_idx + 2 bytes per captured upvalue.  We must
              * look up the template bytecode in the constants pool to know
              * n_upvalues; if anything looks wrong (out-of-range index,
-             * non-bytecode constant, capture descriptor referencing a
-             * parent-closure upvalue while this function has none, slot
-             * out of frame range), bail the whole walker. */
+             * non-bytecode constant, slot out of frame range), bail the
+             * whole walker.  is_local descriptors are validated against
+             * the local frame; is_local=0 (= capture from the parent
+             * closure's upvalues) bounds-checks against bc->n_upvalues
+             * — the JIT entry receives that closure as func_obj at
+             * 8(a6) so the walker can emit a helper-routed load. */
             uint16_t idx;
             CL_Obj tmpl_obj;
             CL_Bytecode *tmpl;
@@ -760,16 +776,14 @@ static int prescan_branch_targets(const CL_Bytecode *bc, uint8_t *is_target)
             n_upvals_local = tmpl->n_upvalues;
             step = 3 + 2 * n_upvals_local;
             if (ip + step > bc->code_len) return 0;
-            /* Validate capture descriptors up front.  Phase-A walker
-             * doesn't support is_local=0 (parent-closure upvalue) — that
-             * needs the enclosing function to expose its upvalues, which
-             * the n_upvalues==0 gate already prevents.  Belt-and-braces
-             * so a future gate change doesn't silently miscompile. */
             for (i = 0; i < n_upvals_local; i++) {
                 uint8_t is_local = bc->code[ip + 3 + 2*i];
                 uint8_t cap_idx  = bc->code[ip + 3 + 2*i + 1];
-                if (!is_local) return 0;
-                if (cap_idx >= bc->n_locals) return 0;
+                if (is_local) {
+                    if (cap_idx >= bc->n_locals) return 0;
+                } else {
+                    if (cap_idx >= bc->n_upvalues) return 0;
+                }
             }
             break;
         }
@@ -820,7 +834,11 @@ static int walker_compile(const CL_Bytecode *bc, CodeBuf *cb)
     is_kw = (bc->flags & 1) != 0;
     if (bc->arity & 0x8000)  return 0;          /* &rest not yet supported */
     if (bc->n_optional != 0) return 0;          /* &optional needs OP_ARGC */
-    if (bc->n_upvalues != 0) return 0;          /* closures need OP_UPVAL */
+    /* n_upvalues > 0 (= inner closures that READ their captures via
+     * OP_UPVAL / mutate them via OP_CELL_SET_UPVAL) is now walker-
+     * supported via the func_obj first-C-arg ABI: both opcodes route
+     * through a helper that reads cl->upvalues[index] off func_obj
+     * (at 8(a6)).  See OP_UPVAL / OP_CELL_SET_UPVAL cases below. */
     if (!is_kw) {
         /* Pre-existing fixed-arity gate. */
         if (bc->flags != 0)  return 0;
@@ -887,19 +905,22 @@ static int walker_compile(const CL_Bytecode *bc, CodeBuf *cb)
     m68k_emit_move_l_dn_predec_an(cb, REG_D6, REG_A7);
     m68k_emit_move_l_dn_predec_an(cb, REG_D5, REG_A7);
 
-    /* &key prologue.  Native ABI for keyworded shapes:
+    /* &key prologue.  Native ABI for keyworded shapes (each slot
+     * shifted +4 relative to phase-A because `func_obj` now sits at
+     * 8(a6) for OP_UPVAL / OP_CELL_SET_UPVAL to dereference):
      *
-     *   8(a6)  = CL_Bytecode *bc   (pushed by cl_jit_invoke)
-     *   12(a6) = uint32_t   nargs
-     *   16(a6) = CL_Obj    *args   (= &cl_vm.stack[sp - nargs])
+     *    8(a6) = CL_Obj       func_obj   (pushed by cl_jit_invoke)
+     *   12(a6) = CL_Bytecode *bc
+     *   16(a6) = uint32_t     nargs
+     *   20(a6) = CL_Obj      *args       (= &cl_vm.stack[sp - nargs])
      *
      * Build the helper's four C-ABI arguments on (a7) — pushed
      * right-to-left so `bc` sits at 4(a7) when the helper enters:
      *
      *   PEA-style push of &frame[0]      (frame_size(a6) = lowest slot)
-     *   push args  from 16(a6)
-     *   push nargs from 12(a6)
-     *   push bc    from  8(a6)
+     *   push args  from 20(a6)
+     *   push nargs from 16(a6)
+     *   push bc    from 12(a6)
      *   JSR cl_jit_runtime_kw_prologue
      *   LEA 16(a7),a7                    drop the four C args
      *
@@ -914,9 +935,9 @@ static int walker_compile(const CL_Bytecode *bc, CodeBuf *cb)
          * (caller-saved per m68k SysV) then push A0 as the 4th C arg. */
         m68k_emit_lea_disp_an_to_am(cb, frame_size, REG_A6, REG_A0);
         m68k_emit_move_l_an_predec_am(cb, REG_A0, REG_A7);   /* push frame */
-        m68k_emit_move_l_disp_an_predec_am(cb, 16, REG_A6, REG_A7);  /* push args */
-        m68k_emit_move_l_disp_an_predec_am(cb, 12, REG_A6, REG_A7);  /* push nargs */
-        m68k_emit_move_l_disp_an_predec_am(cb,  8, REG_A6, REG_A7);  /* push bc */
+        m68k_emit_move_l_disp_an_predec_am(cb, 20, REG_A6, REG_A7);  /* push args */
+        m68k_emit_move_l_disp_an_predec_am(cb, 16, REG_A6, REG_A7);  /* push nargs */
+        m68k_emit_move_l_disp_an_predec_am(cb, 12, REG_A6, REG_A7);  /* push bc */
         m68k_emit_jsr_abs_l(cb, helper);
         m68k_emit_lea_disp_an_to_am(cb, 16, REG_A7, REG_A7); /* drop 4 args */
     }
@@ -1868,6 +1889,59 @@ static int walker_compile(const CL_Bytecode *bc, CodeBuf *cb)
             break;
         }
 
+        case OP_UPVAL: {
+            /* u8 index.  Push cl->upvalues[index] for whatever closure
+             * the JIT frame was entered with.  func_obj lives at
+             * 8(a6) as the first C arg.  Helper handles the non-closure
+             * fall-through (returns CL_NIL — matches VM).  Non-
+             * allocating, so we don't need cache_flush. */
+            uint8_t index;
+            uint32_t helper = (uint32_t)(uintptr_t)&cl_jit_runtime_upval_ref;
+            if (ip >= bc->code_len) goto fail;
+            index = bc->code[ip++];
+            /* Push C args R→L: index (imm32), func_obj (from 8(a6)). */
+            m68k_emit_move_l_imm32_predec(cb, (uint32_t)index, REG_A7);
+            m68k_emit_move_l_disp_an_predec_am(cb, 8, REG_A6, REG_A7);
+            m68k_emit_jsr_abs_l(cb, helper);
+            m68k_emit_addq_l_an(cb, 8, REG_A7);
+            cache_push_dn(cb, &cache_head, &cache_depth, REG_D0);
+            break;
+        }
+
+        case OP_CELL_SET_UPVAL: {
+            /* u8 index.  cell_obj = func_obj->upvalues[index], val = TOS
+             * (peek — TOS is NOT popped).  Helper does cell->value = val.
+             * Helper may cl_error on type-mismatch (non-cell upvalue),
+             * but no allocation happens in the success path; cache stays
+             * intact so OP_CELL_SET_UPVAL plays nicely as an inline
+             * SETF for a closed-over local.  Mirrors OP_CELL_SET_LOCAL's
+             * shape but sources cell_obj from a closure dereference
+             * instead of a frame slot. */
+            uint8_t index;
+            uint32_t helper = (uint32_t)(uintptr_t)&cl_jit_runtime_cell_set_upval;
+            if (ip >= bc->code_len) goto fail;
+            index = bc->code[ip++];
+
+            /* Read TOS without popping into D1. */
+            if (cache_depth >= 1) {
+                m68k_emit_move_l_dn_to_dm(cb, (M68kReg)cache_head, REG_D1);
+            } else {
+                m68k_emit_move_l_disp_an_to_dn(cb, 0, REG_A7, REG_D1);
+            }
+
+            /* Push C args R→L: val (D1), index (imm32), func_obj (from 8(a6)). */
+            m68k_emit_move_l_dn_predec_an(cb, REG_D1, REG_A7);
+            m68k_emit_move_l_imm32_predec(cb, (uint32_t)index, REG_A7);
+            m68k_emit_move_l_disp_an_predec_am(cb, 8, REG_A6, REG_A7);
+            m68k_emit_jsr_abs_l(cb, helper);
+            /* Drop 3 C args (12 bytes).  addq.l only encodes 1..8, so
+             * use LEA — same trap as the OP_CLOSURE epilogue. */
+            m68k_emit_lea_disp_an_to_am(cb, 12, REG_A7, REG_A7);
+            /* D0 result is the stored value; peek semantics leaves TOS
+             * intact, so discard. */
+            break;
+        }
+
         case OP_CLOSURE: {
             /* u16 const_idx + n_upvals * (u8 is_local, u8 cap_idx).
              * Prescan has already validated: idx in range, constant is a
@@ -1909,16 +1983,36 @@ static int walker_compile(const CL_Bytecode *bc, CodeBuf *cb)
 
             cache_flush(cb, &cache_head, &cache_depth);
 
-            /* Push captures in reverse so A7 ends pointing at values[0]. */
+            /* Push captures in reverse so A7 ends pointing at values[0].
+             * Two descriptor forms:
+             *   is_local=1 — load from this frame's local slot via
+             *                slot_disp (positional C arg or LINK-frame
+             *                local, depending on slot vs slot_anchor).
+             *   is_local=0 — load from this function's own closure's
+             *                upvalue at cap_idx, by calling
+             *                cl_jit_runtime_upval_ref(func_obj=8(a6),
+             *                cap_idx).  Helper is non-allocating; D0
+             *                receives the upvalue, then we predec onto
+             *                the values[] stack like the local case. */
             for (i = n_upvals_local; i > 0; i--) {
                 uint8_t is_local = bc->code[ip + 2*(i-1)];
                 uint8_t cap_idx  = bc->code[ip + 2*(i-1) + 1];
-                int16_t cap_disp;
-                if (!is_local) goto fail;
-                if (cap_idx >= n_locals) goto fail;
-                cap_disp = slot_disp(cap_idx, slot_anchor, is_kw);
-                m68k_emit_move_l_disp_an_to_dn(cb, cap_disp, REG_A6, REG_D0);
-                m68k_emit_move_l_dn_predec_an(cb, REG_D0, REG_A7);
+                if (is_local) {
+                    int16_t cap_disp;
+                    if (cap_idx >= n_locals) goto fail;
+                    cap_disp = slot_disp(cap_idx, slot_anchor, is_kw);
+                    m68k_emit_move_l_disp_an_to_dn(cb, cap_disp, REG_A6, REG_D0);
+                    m68k_emit_move_l_dn_predec_an(cb, REG_D0, REG_A7);
+                } else {
+                    uint32_t up_helper =
+                        (uint32_t)(uintptr_t)&cl_jit_runtime_upval_ref;
+                    if (cap_idx >= bc->n_upvalues) goto fail;
+                    m68k_emit_move_l_imm32_predec(cb, (uint32_t)cap_idx, REG_A7);
+                    m68k_emit_move_l_disp_an_predec_am(cb, 8, REG_A6, REG_A7);
+                    m68k_emit_jsr_abs_l(cb, up_helper);
+                    m68k_emit_addq_l_an(cb, 8, REG_A7);
+                    m68k_emit_move_l_dn_predec_an(cb, REG_D0, REG_A7);
+                }
             }
             ip += 2 * n_upvals_local;
 
@@ -2144,13 +2238,14 @@ void cl_jit_compile(CL_Bytecode *bc)
         emit_load_imm_d0(&cb, value);
         m68k_emit_rts(&cb);
     } else if (matches_passthrough(bc, &slot)) {
-        /* Emit: move.l (4 + 4*slot)(sp),d0 ; rts.  The C ABI on m68k
+        /* Emit: move.l (8 + 4*slot)(sp),d0 ; rts.  The C ABI on m68k
          * lays args out starting at 4(A7) after JSR pushes the return
          * address, each 32-bit slot bumping by 4.  cl_jit_invoke casts
          * native_code to the matching arity's C function-pointer type
-         * and passes args through normal calling convention, so reading
-         * slot j is just a fixed displacement load. */
-        int16_t disp = (int16_t)(4 + 4 * (int)slot);
+         * and passes args through normal calling convention with
+         * `func` prepended, so user-arg j sits at C-ABI slot (j+1)
+         * = (4 + 4*(j+1))(sp) = (8 + 4*j)(sp). */
+        int16_t disp = (int16_t)(8 + 4 * (int)slot);
         m68k_emit_move_l_disp_an_to_dn(&cb, disp, REG_A7, REG_D0);
         m68k_emit_rts(&cb);
     } else if (walker_compile(bc, &cb)) {
@@ -2438,7 +2533,10 @@ void cl_jit_disassemble(const uint8_t *code, uint32_t len)
     }
 }
 
-/* Enter native code.  Two dispatch shapes:
+/* Enter native code.  Two dispatch shapes — both now pass the
+ * function-object CL_Obj as the first C argument so OP_UPVAL and
+ * OP_CELL_SET_UPVAL can read the active closure's upvalues[] from
+ * inside JIT'd code (mirrors the VM's `frame->bytecode` channel).
  *
  *   Positional ABI (the common case).  cl_jit_compile only emits
  *   native_code for bytecodes whose arity is fixed (matchers and the
@@ -2446,15 +2544,23 @@ void cl_jit_disassemble(const uint8_t *code, uint32_t len)
  *   OP_CALL has already verified nargs == bc->arity, so the
  *   per-arity cast is sound.  Args are read straight off
  *   `cl_vm.stack[sp - nargs ... sp - 1]` and passed via the normal
- *   m68k C calling convention; emitted code reads them from
- *   `4(sp)`, `8(sp)`, etc.
+ *   m68k C calling convention with `func` prepended, so emitted
+ *   code reads them from `8(sp)`, `12(sp)`, … (walker via the
+ *   matching A6-relative offsets after LINK).
  *
  *   Kw ABI (when bc->flags & 1).  The walker emits a kw-prologue
  *   that JSRs cl_jit_runtime_kw_prologue to populate the LINK
- *   frame, so the native function takes only three C args:
- *   `(CL_Bytecode *bc, int32_t nargs, CL_Obj *args)`.  `args`
- *   points into cl_vm.stack so the helper can walk the raw
+ *   frame, so the native function takes four C args:
+ *   `(CL_Obj func, CL_Bytecode *bc, int32_t nargs, CL_Obj *args)`.
+ *   `args` points into cl_vm.stack so the helper can walk the raw
  *   user-supplied arg vector.
+ *
+ * `func` is the original CL_Obj on the stack — a CL_Closure when
+ * the callee was reached via a closure (the common case for any
+ * defun-with-captures or any function bound through OP_CLOSURE),
+ * or a raw CL_Bytecode pointer otherwise.  The OP_UPVAL helper
+ * tolerates both: closure → return upvalues[index]; bytecode →
+ * CL_NIL (matching the VM's else-branch).
  *
  * Either way the caller is responsible for popping the args and
  * function object after we return.
@@ -2469,7 +2575,7 @@ void cl_jit_disassemble(const uint8_t *code, uint32_t len)
  * shapes get native_code, but keep the defensive branch so a future
  * matcher mismatch surfaces as a wrong value rather than a wild
  * jump. */
-CL_Obj cl_jit_invoke(CL_Bytecode *bc, int nargs)
+CL_Obj cl_jit_invoke(CL_Obj func_obj, CL_Bytecode *bc, int nargs)
 {
     CL_Obj result = CL_NIL;
     CL_Thread *t;
@@ -2502,70 +2608,70 @@ CL_Obj cl_jit_invoke(CL_Bytecode *bc, int nargs)
     t->jit_depth = prev_depth + 1;
 
     if (is_kw) {
-        /* Kw ABI: native(bc, nargs, args).  args may be NULL when the
-         * caller passed zero arguments — the helper checks nargs ==
-         * 0 before any deref. */
-        typedef CL_Obj (*native_fn_kw_t)(CL_Bytecode *, int32_t, CL_Obj *);
+        /* Kw ABI: native(func, bc, nargs, args).  args may be NULL when
+         * the caller passed zero arguments — the helper checks
+         * nargs == 0 before any deref. */
+        typedef CL_Obj (*native_fn_kw_t)(CL_Obj, CL_Bytecode *, int32_t, CL_Obj *);
         CL_Obj *args = (nargs > 0) ? &cl_vm.stack[cl_vm.sp - nargs] : NULL;
-        result = ((native_fn_kw_t)bc->native_code)(bc, (int32_t)nargs, args);
+        result = ((native_fn_kw_t)bc->native_code)(func_obj, bc, (int32_t)nargs, args);
         goto done;
     }
 
     switch (nargs) {
     case 0: {
-        typedef CL_Obj (*native_fn0_t)(void);
-        result = ((native_fn0_t)bc->native_code)();
+        typedef CL_Obj (*native_fn0_t)(CL_Obj);
+        result = ((native_fn0_t)bc->native_code)(func_obj);
         break;
     }
     case 1: {
-        typedef CL_Obj (*native_fn1_t)(CL_Obj);
+        typedef CL_Obj (*native_fn1_t)(CL_Obj, CL_Obj);
         CL_Obj a0 = cl_vm.stack[cl_vm.sp - 1];
-        result = ((native_fn1_t)bc->native_code)(a0);
+        result = ((native_fn1_t)bc->native_code)(func_obj, a0);
         break;
     }
     case 2: {
-        typedef CL_Obj (*native_fn2_t)(CL_Obj, CL_Obj);
+        typedef CL_Obj (*native_fn2_t)(CL_Obj, CL_Obj, CL_Obj);
         CL_Obj a0 = cl_vm.stack[cl_vm.sp - 2];
         CL_Obj a1 = cl_vm.stack[cl_vm.sp - 1];
-        result = ((native_fn2_t)bc->native_code)(a0, a1);
+        result = ((native_fn2_t)bc->native_code)(func_obj, a0, a1);
         break;
     }
     case 3: {
-        typedef CL_Obj (*native_fn3_t)(CL_Obj, CL_Obj, CL_Obj);
+        typedef CL_Obj (*native_fn3_t)(CL_Obj, CL_Obj, CL_Obj, CL_Obj);
         CL_Obj a0 = cl_vm.stack[cl_vm.sp - 3];
         CL_Obj a1 = cl_vm.stack[cl_vm.sp - 2];
         CL_Obj a2 = cl_vm.stack[cl_vm.sp - 1];
-        result = ((native_fn3_t)bc->native_code)(a0, a1, a2);
+        result = ((native_fn3_t)bc->native_code)(func_obj, a0, a1, a2);
         break;
     }
     case 4: {
-        typedef CL_Obj (*native_fn4_t)(CL_Obj, CL_Obj, CL_Obj, CL_Obj);
+        typedef CL_Obj (*native_fn4_t)(CL_Obj, CL_Obj, CL_Obj, CL_Obj, CL_Obj);
         CL_Obj a0 = cl_vm.stack[cl_vm.sp - 4];
         CL_Obj a1 = cl_vm.stack[cl_vm.sp - 3];
         CL_Obj a2 = cl_vm.stack[cl_vm.sp - 2];
         CL_Obj a3 = cl_vm.stack[cl_vm.sp - 1];
-        result = ((native_fn4_t)bc->native_code)(a0, a1, a2, a3);
+        result = ((native_fn4_t)bc->native_code)(func_obj, a0, a1, a2, a3);
         break;
     }
     case 5: {
-        typedef CL_Obj (*native_fn5_t)(CL_Obj, CL_Obj, CL_Obj, CL_Obj, CL_Obj);
+        typedef CL_Obj (*native_fn5_t)(CL_Obj, CL_Obj, CL_Obj, CL_Obj, CL_Obj, CL_Obj);
         CL_Obj a0 = cl_vm.stack[cl_vm.sp - 5];
         CL_Obj a1 = cl_vm.stack[cl_vm.sp - 4];
         CL_Obj a2 = cl_vm.stack[cl_vm.sp - 3];
         CL_Obj a3 = cl_vm.stack[cl_vm.sp - 2];
         CL_Obj a4 = cl_vm.stack[cl_vm.sp - 1];
-        result = ((native_fn5_t)bc->native_code)(a0, a1, a2, a3, a4);
+        result = ((native_fn5_t)bc->native_code)(func_obj, a0, a1, a2, a3, a4);
         break;
     }
     case 6: {
-        typedef CL_Obj (*native_fn6_t)(CL_Obj, CL_Obj, CL_Obj, CL_Obj, CL_Obj, CL_Obj);
+        typedef CL_Obj (*native_fn6_t)(CL_Obj, CL_Obj, CL_Obj, CL_Obj, CL_Obj, CL_Obj, CL_Obj);
         CL_Obj a0 = cl_vm.stack[cl_vm.sp - 6];
         CL_Obj a1 = cl_vm.stack[cl_vm.sp - 5];
         CL_Obj a2 = cl_vm.stack[cl_vm.sp - 4];
         CL_Obj a3 = cl_vm.stack[cl_vm.sp - 3];
         CL_Obj a4 = cl_vm.stack[cl_vm.sp - 2];
         CL_Obj a5 = cl_vm.stack[cl_vm.sp - 1];
-        result = ((native_fn6_t)bc->native_code)(a0, a1, a2, a3, a4, a5);
+        result = ((native_fn6_t)bc->native_code)(func_obj, a0, a1, a2, a3, a4, a5);
         break;
     }
     default:

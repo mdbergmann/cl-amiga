@@ -28,9 +28,13 @@ void   cl_jit_init(void);
 void   cl_jit_compile(CL_Bytecode *bc);
 
 /* Enter native code with the same calling convention the bytecode VM
- * uses (args already pushed on cl_vm.stack). Caller checks
- * bc->native_code != NULL first. Not wired into vm.c in the skeleton. */
-CL_Obj cl_jit_invoke(CL_Bytecode *bc, int nargs);
+ * uses (args already pushed on cl_vm.stack).  `func_obj` is the
+ * function value the caller dispatched against — a CL_Closure when
+ * reached via a defun/lambda binding, or a raw CL_Bytecode CL_Obj
+ * otherwise; the JIT'd body reads it at 8(a6) for OP_UPVAL /
+ * OP_CELL_SET_UPVAL.  Caller checks bc->native_code != NULL first.
+ * Not wired into vm.c in the skeleton. */
+CL_Obj cl_jit_invoke(CL_Obj func_obj, CL_Bytecode *bc, int nargs);
 
 /* Runtime introspection: is the JIT compiled in and active? */
 int    cl_jit_enabled(void);
@@ -67,7 +71,7 @@ void cl_jit_disassemble(const uint8_t *code, uint32_t len);
 
 static inline void   cl_jit_init(void)                       { }
 static inline void   cl_jit_compile(CL_Bytecode *bc)         { (void)bc; }
-static inline CL_Obj cl_jit_invoke(CL_Bytecode *bc, int n)   { (void)bc; (void)n; return CL_NIL; }
+static inline CL_Obj cl_jit_invoke(CL_Obj f, CL_Bytecode *bc, int n) { (void)f; (void)bc; (void)n; return CL_NIL; }
 static inline int    cl_jit_enabled(void)                    { return 0; }
 static inline void   cl_jit_set_active(int a)                 { (void)a; }
 static inline int    cl_jit_emit_stub(CL_Bytecode *bc)       { (void)bc; return 0; }
