@@ -86,15 +86,16 @@
          (= 78 (nth 6 bs)) (= 117 (nth 7 bs))))) ; 0x4E 0x75
 
 ; --- 1-arg identity: (defun f (x) x) compiles to
-;   move.l 4(a7),d0    ; 0x20 0x2F 0x00 0x04
+;   move.l 8(a7),d0    ; 0x20 0x2F 0x00 0x08
 ;   rts                ; 0x4E 0x75
 ; (6 bytes).  C ABI on m68k puts the first arg at 4(sp) after JSR;
-; cl_jit_invoke casts native_code to (CL_Obj (*)(CL_Obj)) and passes
-; the arg directly.  The returned CL_Obj is whatever bit pattern the
-; caller passed — fixnums, symbols, conses all round-trip without
-; reinterpretation. ---
+; cl_jit_invoke prepends `func_obj` as the first C arg (so OP_UPVAL
+; can reach the active closure's upvalues) which shifts the user's
+; first arg to 8(sp).  The returned CL_Obj is whatever bit pattern
+; the caller passed — fixnums, symbols, conses all round-trip
+; without reinterpretation. ---
 (defun jit-id (x) x)
-(check "jit-id-bytes" '(32 47 0 4 78 117)
+(check "jit-id-bytes" '(32 47 0 8 78 117)
   (clamiga::%jit-dump-bytes #'jit-id))
 (check "jit-id-counter-bump" t
   (let ((before (clamiga::%jit-invoke-count)))
@@ -110,17 +111,16 @@
 (check "jit-id-string"       "hello" (jit-id "hello"))
 
 ; --- 2-arg pass-through: same template as 1-arg identity, just a
-; different stack displacement.  Returning the first arg emits the
-; same 6 bytes as 1-arg identity (move.l 4(a7),d0 ; rts); returning
-; the second arg shifts the displacement to 8(a7) → bytes
-; 0x20 0x2F 0x00 0x08 0x4E 0x75.  The behavioral test then proves
-; cl_jit_invoke's 2-arg dispatch loads both args off the VM stack and
-; passes them in the right order. ---
+; different stack displacement.  With the func-obj-first ABI, user
+; arg j sits at (8 + 4*j)(a7): first arg at 8(a7), second arg at
+; 12(a7).  The behavioral test then proves cl_jit_invoke's 2-arg
+; dispatch loads both args off the VM stack and passes them in the
+; right order. ---
 (defun jit-2arg-fst (x y) x)
 (defun jit-2arg-snd (x y) y)
-(check "jit-2arg-fst-bytes" '(32 47 0 4 78 117)
+(check "jit-2arg-fst-bytes" '(32 47 0 8 78 117)
   (clamiga::%jit-dump-bytes #'jit-2arg-fst))
-(check "jit-2arg-snd-bytes" '(32 47 0 8 78 117)
+(check "jit-2arg-snd-bytes" '(32 47 0 12 78 117)
   (clamiga::%jit-dump-bytes #'jit-2arg-snd))
 (check "jit-2arg-counter-bump" t
   (let ((before (clamiga::%jit-invoke-count)))
@@ -138,19 +138,20 @@
 
 ; --- Higher arities: same matcher / template, different switch case
 ; in cl_jit_invoke.  Cover arity 3 (middle slot) and arity 6 (the cap,
-; CL_JIT_PASSTHROUGH_MAX_ARITY).  Each emits move.l (4+4*j)(a7),d0 ;
-; rts where j is the source slot.  The 6-arg case proves all six
-; switch arms load args in the correct order. ---
+; CL_JIT_PASSTHROUGH_MAX_ARITY).  Each emits move.l (8+4*j)(a7),d0 ;
+; rts where j is the source slot (user-arg index), since the
+; func-obj-first ABI offsets every user arg by +4.  The 6-arg case
+; proves all six switch arms load args in the correct order. ---
 (defun jit-3arg-mid (x y z) y)
-(check "jit-3arg-mid-bytes" '(32 47 0 8 78 117)
+(check "jit-3arg-mid-bytes" '(32 47 0 12 78 117)
   (clamiga::%jit-dump-bytes #'jit-3arg-mid))
 (check "jit-3arg-mid-returns" 'b (jit-3arg-mid 'a 'b 'c))
 
 (defun jit-6arg-1 (a b c d e f) a)
 (defun jit-6arg-6 (a b c d e f) f)
-(check "jit-6arg-1-bytes" '(32 47 0 4 78 117)
+(check "jit-6arg-1-bytes" '(32 47 0 8 78 117)
   (clamiga::%jit-dump-bytes #'jit-6arg-1))
-(check "jit-6arg-6-bytes" '(32 47 0 24 78 117)
+(check "jit-6arg-6-bytes" '(32 47 0 28 78 117)
   (clamiga::%jit-dump-bytes #'jit-6arg-6))
 (check "jit-6arg-1-returns" 'first  (jit-6arg-1 'first 2 3 4 5 'last))
 (check "jit-6arg-6-returns" 'last   (jit-6arg-6 'first 2 3 4 5 'last))
@@ -1247,6 +1248,37 @@
     (> (clamiga::%jit-invoke-count) before)))
 (check "walker-block-loop-return-hit" 5  (walker-block-loop-return '(2 4 5 6)))
 (check "walker-block-loop-return-all-even" nil (walker-block-loop-return '(2 4 6)))
+
+; ---- Walker: OP_UPVAL / OP_CELL_SET_UPVAL (closure read + mutation) ----
+;
+; `sum` is captured AND mutated by the inner lambda, so the boxing
+; analysis emits OP_MAKE_CELL for it in the outer and OP_UPVAL +
+; OP_CELL_REF (read) / OP_UPVAL + OP_CELL_SET_UPVAL (write) in the
+; inner.  With the n_upvalues>0 gate lifted in phase B, the inner
+; lambda itself JITs and reaches `sum`'s cell via the func_obj-first
+; ABI.  Behaviour test verifies the final accumulated value matches
+; the bytecode VM's; the explicit invoke-count bump on both the
+; outer (which contains OP_CLOSURE) and the inner (which contains
+; OP_UPVAL / OP_CELL_SET_UPVAL) is implicit — mapc invokes the
+; inner once per list element.
+(defun walker-closure-mutate (list)
+  (let ((sum 0))
+    (mapc (lambda (x) (setq sum (+ sum x))) list)
+    sum))
+(check "walker-closure-mutate-empty" 0   (walker-closure-mutate '()))
+(check "walker-closure-mutate-one"   7   (walker-closure-mutate '(7)))
+(check "walker-closure-mutate-sum"   15  (walker-closure-mutate '(1 2 3 4 5)))
+(check "walker-closure-mutate-negs"  0   (walker-closure-mutate '(-3 -2 -1 1 2 3)))
+
+; Same shape but the captured slot is a non-integer accumulator
+; (the cell holds a list).  Exercises OP_CELL_REF/OP_CELL_SET_UPVAL
+; round-tripping a heap-allocated value through the cell — proves
+; we're not accidentally treating the cell payload as a fixnum.
+(defun walker-closure-collect (list)
+  (let ((acc nil))
+    (mapc (lambda (x) (setq acc (cons x acc))) list)
+    acc))
+(check "walker-closure-collect" '(3 2 1) (walker-closure-collect '(1 2 3)))
 
 ; ---- Walker: OP_UWPROT / OP_UWPOP / OP_UWRETHROW + OP_MV_TO_LIST ----
 ;

@@ -383,6 +383,44 @@ CL_Obj cl_jit_runtime_make_closure(CL_Obj tmpl_obj, uint32_t n_upvals,
     return CL_PTR_TO_OBJ(cl);
 }
 
+/* OP_UPVAL backing.  Reads func_obj's closure slot `index` if it's
+ * a closure; CL_NIL otherwise (same fallback the VM uses — see
+ * core/vm.c OP_UPVAL).  Non-allocating, so the JIT side doesn't
+ * cache_flush before the JSR.  Index is u8 in the bytecode and
+ * promoted to uint32_t at the C boundary. */
+CL_Obj cl_jit_runtime_upval_ref(CL_Obj func_obj, uint32_t index)
+{
+    CL_Closure *cl;
+    if (!CL_CLOSURE_P(func_obj)) return CL_NIL;
+    cl = (CL_Closure *)CL_OBJ_TO_PTR(func_obj);
+    return cl->upvalues[index];
+}
+
+/* OP_CELL_SET_UPVAL backing.  Reads the cell at func_obj's upvalue
+ * slot `index` and writes `val` into it.  Returns `val` (matches
+ * setf-style semantics, though the walker discards the result —
+ * OP_CELL_SET_UPVAL is peek-only on the operand stack).  Non-
+ * closure func_obj is a no-op, mirroring the VM's else-fall-through
+ * for the "shouldn't happen" path. */
+CL_Obj cl_jit_runtime_cell_set_upval(CL_Obj func_obj, uint32_t index,
+                                     CL_Obj val)
+{
+    CL_Closure *cl;
+    CL_Obj cell_obj;
+    CL_Cell *cell;
+    if (!CL_CLOSURE_P(func_obj)) return val;
+    cl = (CL_Closure *)CL_OBJ_TO_PTR(func_obj);
+    cell_obj = cl->upvalues[index];
+    if (!CL_CELL_P(cell_obj)) {
+        cl_error(CL_ERR_TYPE,
+                 "OP_CELL_SET_UPVAL: upvalue[%u] is not a cell "
+                 "(internal compiler error)", (unsigned)index);
+    }
+    cell = (CL_Cell *)CL_OBJ_TO_PTR(cell_obj);
+    cell->value = val;
+    return val;
+}
+
 /* OP_TAILCALL self-TCO guard.  Called from the walker-emitted
  * arity-matching tail-call site to decide whether the runtime func
  * value would dispatch back into this same bytecode — in which case
