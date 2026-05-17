@@ -130,10 +130,17 @@ copied to foreign memory and freed."
   "Define a Lisp function that calls an AmigaOS library function.
 REG-SPEC is a plist of (:register param-name ...) pairs.
 When :VOID T, the return value is discarded (no fixnum/bignum boxing of
-the trampoline's d0 result; the wrapper returns NIL)."
+the trampoline's d0 result; the wrapper returns NIL).
+
+In addition to the named function, registers a compiler macro on NAME
+so direct call sites — `(move-to rp x y)` etc. — compile down to a
+bare AMIGA:%FFI-CALL (= OP_AMIGA_CALL) in the caller, skipping the
+wrapper's LINK frame and the cl_vm_apply dispatch trip.  Indirect
+callers (funcall / sharp-quote) still hit the real wrapper function."
   (let* ((pairs (loop for (reg param) on reg-spec by #'cddr
                       collect (list reg param)))
          (params (mapcar #'second pairs))
+         (n-params (length params))
          (regspec 0)
          (shift 0))
     (dolist (pair pairs)
@@ -144,8 +151,18 @@ the trampoline's d0 result; the wrapper returns NIL)."
       (error "DEFCFUN: too many register args (max 7): ~S" reg-spec))
     (when void
       (setf regspec (logior regspec +defcfun-void-bit+)))
-    `(defun ,name ,params
-       (amiga:%ffi-call ,library-base ,offset ,regspec ,@params))))
+    `(progn
+       (defun ,name ,params
+         (amiga:%ffi-call ,library-base ,offset ,regspec ,@params))
+       ;; Decline expansion on argument-count mismatch so the caller
+       ;; gets the wrapper's normal arity error instead of a confusing
+       ;; mid-compile diagnostic.  CLHS 3.2.2.1.3: returning the &whole
+       ;; form means "no expansion".
+       (define-compiler-macro ,name (&whole form &rest args)
+         (if (= (length args) ,n-params)
+             (list* 'amiga:%ffi-call ',library-base ,offset ,regspec args)
+             form))
+       ',name)))
 
 ;;; ================================================================
 ;;; Provide module
