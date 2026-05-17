@@ -28,6 +28,7 @@
 #include "core/mem.h"        /* cl_heap.arena_size */
 #include "core/compiler.h"   /* cl_compiler_mark / cl_compiler_restore_to,
                               * cl_amiga_ffi_call_dispatch */
+#include "core/string_utils.h" /* cl_string_length, cl_string_set_char_at */
 #include <setjmp.h>
 #include <string.h>          /* memcpy for mv_values preservation */
 
@@ -212,6 +213,19 @@ CL_Obj cl_jit_runtime_gstore(CL_Obj sym, CL_Obj val)
     return val;
 }
 
+/* Backing for OP_FSTORE: write `val` into the symbol's function cell.
+ * Mirrors the VM's OP_FSTORE byte-for-byte — peek semantics on the
+ * caller side, plain field write here.  Non-allocating, so always
+ * GC-safe; the JIT side reuses the OP_GSTORE peek pattern (flush
+ * cache so TOS lives at (a7), push it as the C arg, leave it in
+ * place after the JSR drops only the C args). */
+CL_Obj cl_jit_runtime_fstore(CL_Obj sym, CL_Obj val)
+{
+    CL_Symbol *s = (CL_Symbol *)CL_OBJ_TO_PTR(sym);
+    s->function = val;
+    return val;
+}
+
 /* Backing for OP_DYNBIND: save current TLV of `sym` in the dyn-bind
  * stack, then install `new_val` as the new TLV.  Mirrors the VM's
  * OP_DYNBIND exactly: overflow check against CL_MAX_DYN_BINDINGS,
@@ -324,6 +338,91 @@ CL_Obj cl_jit_runtime_struct_set(CL_Obj obj, uint32_t idx, CL_Obj val)
 CL_Obj cl_jit_runtime_cons(CL_Obj car, CL_Obj cdr)
 {
     return cl_cons(car, cdr);
+}
+
+/* Backing for OP_LIST: build a freshly-consed list from `n` operand-
+ * stack values.  `operand_top[0]` is the TOS (last pushed), so it lands
+ * at the tail of the list; `operand_top[n-1]` is the bottom (first
+ * pushed), so it lands at the head.  Mirrors the VM's OP_LIST loop
+ * (pop n times, cons each onto the accumulator).
+ *
+ * GC: each cl_cons may allocate and compact.  Two safety nets:
+ *
+ *   (a) `list` is a C local — CL_GC_PROTECT keeps it tracked across
+ *       allocations so the partially-built list head isn't swept.
+ *   (b) `operand_top` points at the JIT'd caller's flushed operand
+ *       stack on the m68k stack.  The conservative scan reaches it
+ *       (offset-validated) and the compactor's forwarding pass
+ *       (gc_forward_jit_native_stack) rewrites those slots in place
+ *       — so `operand_top[i]` stays valid across cl_cons even when a
+ *       collection moves the referenced object. */
+CL_Obj cl_jit_runtime_list(uint32_t n, CL_Obj *operand_top)
+{
+    CL_Obj list = CL_NIL;
+    uint32_t i;
+    CL_GC_PROTECT(list);
+    for (i = 0; i < n; i++) {
+        list = cl_cons(operand_top[i], list);
+    }
+    CL_GC_UNPROTECT(1);
+    return list;
+}
+
+/* Backing for OP_RPLACA.  Type-check `cons_obj` (signal like the VM),
+ * write `new_car`, return `new_car` so the JIT emitter pushes it as
+ * the new TOS.  Non-allocating, so always GC-safe. */
+CL_Obj cl_jit_runtime_rplaca(CL_Obj cons_obj, CL_Obj new_car)
+{
+    CL_Cons *cell;
+    if (!CL_CONS_P(cons_obj))
+        cl_error(CL_ERR_TYPE, "RPLACA: not a cons");
+    cell = (CL_Cons *)CL_OBJ_TO_PTR(cons_obj);
+    cell->car = new_car;
+    return new_car;
+}
+
+/* Backing for OP_ASET.  Mirrors the VM's OP_ASET dispatch byte-for-
+ * byte: bit-vector, simple-string, and general-vector are all valid
+ * destinations; the value type-check is destination-dependent
+ * (FIXNUM 0/1 for bit-vector, CHARACTER for string, any object for
+ * vector).  Returns `val` (CLHS 4.7 setf semantics — the assigned
+ * value is the result of the form).  Non-allocating; cl_error
+ * longjmps on type/bounds violations the same way the VM does. */
+CL_Obj cl_jit_runtime_aset(CL_Obj vec_obj, CL_Obj idx_obj, CL_Obj val)
+{
+    int32_t idx;
+    if (!CL_FIXNUM_P(idx_obj))
+        cl_error(CL_ERR_TYPE, "ASET: index must be a number");
+    idx = CL_FIXNUM_VAL(idx_obj);
+    if (CL_BIT_VECTOR_P(vec_obj)) {
+        CL_BitVector *bv = (CL_BitVector *)CL_OBJ_TO_PTR(vec_obj);
+        int32_t v;
+        if (idx < 0 || (uint32_t)idx >= cl_bv_active_length(bv))
+            cl_error(CL_ERR_ARGS, "ASET: index %d out of range", (int)idx);
+        if (!CL_FIXNUM_P(val))
+            cl_error(CL_ERR_TYPE, "ASET: value must be 0 or 1 for bit vector");
+        v = CL_FIXNUM_VAL(val);
+        if (v != 0 && v != 1)
+            cl_error(CL_ERR_TYPE, "ASET: value must be 0 or 1 for bit vector");
+        cl_bv_set_bit(bv, (uint32_t)idx, v);
+    } else if (CL_ANY_STRING_P(vec_obj)) {
+        uint32_t slen = cl_string_length(vec_obj);
+        if (idx < 0 || (uint32_t)idx >= slen)
+            cl_error(CL_ERR_ARGS, "ASET: index %d out of range (0-%lu)",
+                     (int)idx, (unsigned long)(slen - 1));
+        if (!CL_CHAR_P(val))
+            cl_error(CL_ERR_TYPE, "ASET: value must be a character for string");
+        cl_string_set_char_at(vec_obj, (uint32_t)idx, CL_CHAR_VAL(val));
+    } else if (CL_VECTOR_P(vec_obj)) {
+        CL_Vector *vec = (CL_Vector *)CL_OBJ_TO_PTR(vec_obj);
+        if (idx < 0 || (uint32_t)idx >= vec->length)
+            cl_error(CL_ERR_ARGS, "ASET: index %d out of range (0-%lu)",
+                     (int)idx, (unsigned long)(vec->length - 1));
+        cl_vector_data(vec)[idx] = val;
+    } else {
+        cl_error(CL_ERR_TYPE, "ASET: not a vector");
+    }
+    return val;
 }
 
 /* Backings for OP_MAKE_CELL / OP_CELL_REF / OP_CELL_SET_LOCAL.  Match
