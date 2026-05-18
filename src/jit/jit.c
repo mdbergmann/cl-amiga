@@ -679,6 +679,7 @@ static int prescan_branch_targets(const CL_Bytecode *bc, uint8_t *is_target)
         case OP_MAKE_CELL: case OP_CELL_REF:
         case OP_RPLACA: case OP_RPLACD: case OP_ASET:
         case OP_ARGC: case OP_NTH_VALUE:
+        case OP_TAGBODY_POP:
             step = 1; break;
         case OP_LOAD: case OP_STORE: case OP_CALL: case OP_TAILCALL:
         case OP_STRUCT_REF: case OP_STRUCT_SET: case OP_DYNUNBIND:
@@ -693,6 +694,7 @@ static int prescan_branch_targets(const CL_Bytecode *bc, uint8_t *is_target)
         case OP_FSTORE:
         case OP_ASSERT_TYPE:
         case OP_HANDLER_PUSH: case OP_RESTART_PUSH:
+        case OP_TAGBODY_GO:
             step = 3; break;
         case OP_JMP: case OP_JNIL: case OP_JTRUE: {
             int32_t offset;
@@ -722,6 +724,30 @@ static int prescan_branch_targets(const CL_Bytecode *bc, uint8_t *is_target)
             if (ip + 7 > bc->code_len) return 0;
             offset = read_i32_be(bc->code + ip + 3);
             /* catch_ip in the VM = ip after reading u16 + i32 = ip + 7. */
+            if (offset < 0) {
+                uint32_t neg = (uint32_t)(-offset);
+                if (neg > ip + 7) return 0;
+                landing_ip = ip + 7 - neg;
+            } else {
+                landing_ip = ip + 7 + (uint32_t)offset;
+            }
+            if (landing_ip > bc->code_len) return 0;
+            is_target[landing_ip] = 1;
+            break;
+        }
+        case OP_TAGBODY_PUSH: {
+            /* 1 + u16 id_idx + i32 offset = 7 bytes.  The landing IP
+             * (catch_ip + offset, with catch_ip = ip+7 mirroring VM
+             * semantics) is the dispatch shim emitted by
+             * compile_tagbody right after the PUSH — the longjmp arm
+             * BRA.W's there with tag_index on TOS so JTRUE per-tag
+             * shims can route to the matching body.  Same shape as
+             * OP_BLOCK_PUSH's prescan arm. */
+            int32_t offset;
+            uint32_t landing_ip;
+            step = 7;
+            if (ip + 7 > bc->code_len) return 0;
+            offset = read_i32_be(bc->code + ip + 3);
             if (offset < 0) {
                 uint32_t neg = (uint32_t)(-offset);
                 if (neg > ip + 7) return 0;
@@ -1333,6 +1359,125 @@ static int walker_compile(const CL_Bytecode *bc, CodeBuf *cb)
              * with the addq; if we ever fall through (we don't), it'd
              * be a logic bug worth detecting via the leftover args
              * rather than silently masking. */
+            break;
+        }
+
+        case OP_TAGBODY_PUSH: {
+            /* u16 id_idx, i32 offset.  Same inline-setjmp shape as
+             * OP_BLOCK_PUSH (see that comment for the full sequence
+             * and rationale).  Two differences:
+             *
+             *   - The longjmp arm runs the tagbody_post_longjmp helper
+             *     which returns the tag_index in D0; we push D0 onto
+             *     the operand stack so the dispatch shim emitted right
+             *     after PUSH (OP_DUP/OP_CONST/OP_EQ/OP_JTRUE per tag)
+             *     can route to the right body.
+             *   - The post_longjmp helper itself re-arms the frame
+             *     (cl_nlx_top++), so GO into this tagbody can fire
+             *     repeatedly until OP_TAGBODY_POP eventually unwinds. */
+            uint16_t id_idx;
+            CL_Obj tagbody_id;
+            int32_t bc_offset;
+            uint32_t landing_bc_ip;
+            int32_t beq_pc, bra_pc;
+            int32_t normal_path_off;
+            uint32_t alloc_helper        = (uint32_t)(uintptr_t)&cl_jit_runtime_tagbody_alloc;
+            uint32_t commit_helper       = (uint32_t)(uintptr_t)&cl_jit_runtime_tagbody_commit;
+            uint32_t post_longjmp_helper = (uint32_t)(uintptr_t)&cl_jit_runtime_tagbody_post_longjmp;
+
+            if (ip + 6 > bc->code_len) goto fail;
+            id_idx = ((uint16_t)bc->code[ip] << 8) | bc->code[ip + 1];
+            ip += 2;
+            bc_offset = read_i32_be(bc->code + ip);
+            ip += 4;
+            if (id_idx >= bc->n_constants || bc->constants == NULL) goto fail;
+            tagbody_id = bc->constants[id_idx];
+
+            /* landing_bc_ip mirrors VM: catch_ip == ip after consuming
+             * the 6-byte operand, so landing = ip + bc_offset. */
+            if (bc_offset < 0) {
+                uint32_t neg = (uint32_t)(-bc_offset);
+                if (neg > ip) goto fail;
+                landing_bc_ip = ip - neg;
+            } else {
+                landing_bc_ip = ip + (uint32_t)bc_offset;
+            }
+            if (landing_bc_ip > bc->code_len) goto fail;
+
+            cache_flush(cb, &cache_head, &cache_depth);
+
+            /* alloc(tagbody_id) → D0 = &nlx->buf. */
+            m68k_emit_move_l_imm32_predec(cb, (uint32_t)tagbody_id, REG_A7);
+            m68k_emit_jsr_abs_l(cb, alloc_helper);
+            m68k_emit_addq_l_an(cb, 4, REG_A7);
+
+            /* setjmp(D0 = &buf). */
+            m68k_emit_move_l_dn_predec_an(cb, REG_D0, REG_A7);
+            m68k_emit_jsr_abs_l(cb, cl_jit_setjmp_addr);
+            m68k_emit_addq_l_an(cb, 4, REG_A7);
+
+            m68k_emit_tst_l_dn(cb, REG_D0);
+            beq_pc = (int32_t)cb_len(cb) + 2;
+            m68k_emit_beq_w(cb, 0);   /* → normal_path, patched below */
+
+            /* NLX path: post_longjmp returns tag_index in D0; push it
+             * onto the operand stack then BRA to the dispatch shim. */
+            m68k_emit_jsr_abs_l(cb, post_longjmp_helper);
+            m68k_emit_move_l_dn_predec_an(cb, REG_D0, REG_A7);
+            bra_pc = (int32_t)cb_len(cb) + 2;
+            if (landing_bc_ip < ip && bc_to_native[landing_bc_ip] >= 0) {
+                int32_t disp = bc_to_native[landing_bc_ip] - bra_pc;
+                if (disp < -32768 || disp > 32767) goto fail;
+                m68k_emit_bra_w(cb, (int16_t)disp);
+            } else {
+                if (!patches_push(&patches, &n_patches, &cap_patches,
+                                  (uint32_t)bra_pc, landing_bc_ip)) goto fail;
+                m68k_emit_bra_w(cb, 0);
+            }
+
+            /* normal_path: patch BEQ, then commit. */
+            normal_path_off = (int32_t)cb_len(cb);
+            m68k_patch_disp16(cb_data(cb), cb_len(cb),
+                              (uint32_t)beq_pc,
+                              (int16_t)(normal_path_off - beq_pc));
+            m68k_emit_jsr_abs_l(cb, commit_helper);
+            /* Cache depth stays 0; tagbody body executes from here. */
+            break;
+        }
+
+        case OP_TAGBODY_POP: {
+            /* Search-backward decrement of cl_nlx_top.  Operand stack
+             * is untouched.  Non-allocating, cache survives the JSR. */
+            uint32_t helper = (uint32_t)(uintptr_t)&cl_jit_runtime_tagbody_pop;
+            m68k_emit_jsr_abs_l(cb, helper);
+            break;
+        }
+
+        case OP_TAGBODY_GO: {
+            /* u16 id_idx (tagbody identifier baked into the JSR).
+             * Operand stack: TOS = tag_index (popped).  Helper never
+             * returns (longjmps to the matching tagbody's setjmp
+             * site).  Code emitted past this point is dead at runtime
+             * but harmless — matches OP_BLOCK_RETURN's pattern. */
+            uint16_t id_idx;
+            CL_Obj tagbody_id;
+            uint32_t helper = (uint32_t)(uintptr_t)&cl_jit_runtime_tagbody_go;
+            if (ip + 1 >= bc->code_len) goto fail;
+            id_idx = ((uint16_t)bc->code[ip] << 8) | bc->code[ip + 1];
+            ip += 2;
+            if (id_idx >= bc->n_constants || bc->constants == NULL) goto fail;
+            tagbody_id = bc->constants[id_idx];
+
+            cache_pop_to_dn(cb, &cache_head, &cache_depth, REG_D1);    /* tag_index */
+            cache_flush(cb, &cache_head, &cache_depth);
+
+            /* Helper signature: (tagbody_id, tag_index).  C-ABI order:
+             * id at (a7), tag_index at 4(a7).  Push tag_index first
+             * (high address), then id (low address). */
+            m68k_emit_move_l_dn_predec_an(cb, REG_D1, REG_A7);
+            m68k_emit_move_l_imm32_predec(cb, (uint32_t)tagbody_id, REG_A7);
+            m68k_emit_jsr_abs_l(cb, helper);
+            /* Unreachable past here — helper longjmps. */
             break;
         }
 

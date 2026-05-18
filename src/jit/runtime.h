@@ -291,6 +291,21 @@ void cl_jit_runtime_handler_pop(uint32_t count);
 void cl_jit_runtime_restart_push(CL_Obj name_sym, CL_Obj handler, CL_Obj tag);
 void cl_jit_runtime_restart_pop(uint32_t count);
 
+/* OP_TAGBODY_PUSH / OP_TAGBODY_POP / OP_TAGBODY_GO.  Same JIT-inline-
+ * setjmp protocol as BLOCK_PUSH with two twists:
+ *   - the longjmp arrival re-arms the frame (cl_nlx_top++) so the
+ *     tagbody stays usable for repeated GO until OP_TAGBODY_POP;
+ *   - the longjmp arrival returns the tag-index fixnum that the
+ *     dispatch shim emitted right after PUSH consumes via JTRUE. */
+void  *cl_jit_runtime_tagbody_alloc(CL_Obj tagbody_id);
+void   cl_jit_runtime_tagbody_commit(void);
+void   cl_jit_runtime_tagbody_pop(void);
+CL_Obj cl_jit_runtime_tagbody_post_longjmp(void);
+#if defined(__GNUC__) || defined(__clang__)
+__attribute__((noreturn))
+#endif
+void   cl_jit_runtime_tagbody_go(CL_Obj tagbody_id, CL_Obj tag_index);
+
 /* Address of libc setjmp, captured at init time and baked into the
  * BLOCK_PUSH emit as a JSR.abs.l immediate. */
 extern uint32_t cl_jit_setjmp_addr;

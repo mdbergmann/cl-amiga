@@ -1197,4 +1197,131 @@ void cl_jit_runtime_restart_pop(uint32_t count)
     if (cl_restart_top < 0) cl_restart_top = 0;
 }
 
+/* --- OP_TAGBODY_PUSH / OP_TAGBODY_POP / OP_TAGBODY_GO ----------------------
+ *
+ * Mirrors OP_BLOCK_PUSH's JIT-inline-setjmp protocol with two twists:
+ *
+ *   1. The longjmp arrival path *re-arms* the NLX frame (bumps
+ *      cl_nlx_top after restoring marks) so the same tagbody stays
+ *      live for repeated GO from inner closures.  See vm.c OP_TAGBODY_
+ *      PUSH's `else` arm — cl_nlx_top++ runs both in the setjmp==0
+ *      path and the setjmp!=0 path.
+ *
+ *   2. The longjmp arrival path returns the *tag index* (a small
+ *      fixnum picked by the compiler at TAGBODY_PUSH time) so the
+ *      dispatch shim the compiler emits right after PUSH can route
+ *      to the right tag body via JTRUE.  The walker emits a
+ *      MOVE.L D0,-(A7) right after the post_longjmp helper to land
+ *      that index on the operand stack.
+ *
+ * GO can cross into a tagbody set up by VM code (the parent
+ * function's body executed by the interpreter) or by JIT code (the
+ * parent was itself walker-compiled).  Both are reachable because
+ * the longjmp restores the captured setjmp/stack frame regardless
+ * of who emitted it.  Helpers below are byte-for-byte mirrors of
+ * vm.c::OP_TAGBODY_* so the behavior matches across VM/JIT mixes. */
+
+void *cl_jit_runtime_tagbody_alloc(CL_Obj tagbody_id)
+{
+    CL_NLXFrame *nlx;
+    if (cl_nlx_top >= CL_MAX_NLX_FRAMES)
+        cl_error(CL_ERR_OVERFLOW, "NLX stack overflow");
+    nlx = &cl_nlx_stack[cl_nlx_top];
+    nlx->type           = CL_NLX_TAGBODY;
+    nlx->vm_sp          = cl_vm.sp;
+    nlx->vm_fp          = cl_vm.fp;
+    nlx->tag            = tagbody_id;
+    nlx->result         = CL_NIL;
+    /* JIT lands its longjmp in native code via the JSR setjmp the
+     * walker emits; the VM's catch_ip/offset/code/constants/bytecode
+     * channel is unused for JIT-owned frames. */
+    nlx->catch_ip       = 0;
+    nlx->offset         = 0;
+    nlx->code           = NULL;
+    nlx->constants      = NULL;
+    nlx->bytecode       = CL_NIL;
+    nlx->base_fp        = 0;
+    nlx->dyn_mark       = cl_dyn_top;
+    nlx->handler_mark   = cl_handler_top;
+    nlx->restart_mark   = cl_restart_top;
+    nlx->gc_root_mark   = gc_root_count;
+    nlx->compiler_mark  = cl_compiler_mark();
+    nlx->mv_count       = 1;
+    return &nlx->buf;
+}
+
+void cl_jit_runtime_tagbody_commit(void)
+{
+    cl_nlx_top++;
+}
+
+void cl_jit_runtime_tagbody_pop(void)
+{
+    /* Search-backward decrement (matches VM OP_TAGBODY_POP): a tail
+     * call inside the body may have leaked an intervening frame. */
+    int bi;
+    for (bi = cl_nlx_top - 1; bi >= 0; bi--) {
+        if (cl_nlx_stack[bi].type == CL_NLX_TAGBODY) {
+            cl_nlx_top = bi;
+            return;
+        }
+    }
+    if (cl_nlx_top > 0) cl_nlx_top--;
+}
+
+CL_Obj cl_jit_runtime_tagbody_post_longjmp(void)
+{
+    /* cl_nlx_top was set to this frame's index by GO before the
+     * longjmp; read the saved marks and restore.  Same SP/FP restore
+     * rationale as block_post_longjmp (longjmp may have come from
+     * deep inside cl_vm_run via cl_jit_runtime_call). */
+    CL_NLXFrame *nlx = &cl_nlx_stack[cl_nlx_top];
+    CL_Obj tag_index;
+
+    cl_vm.sp = nlx->vm_sp;
+    cl_vm.fp = nlx->vm_fp;
+
+    cl_dynbind_restore_to(nlx->dyn_mark);
+    cl_handler_top = nlx->handler_mark;
+    cl_restart_top = nlx->restart_mark;
+    gc_root_count  = nlx->gc_root_mark;
+    cl_compiler_restore_to(nlx->compiler_mark);
+    cl_mv_count    = 1;
+
+    tag_index = nlx->result;
+    /* Re-arm: a tagbody stays usable for repeated GO until the
+     * matching OP_TAGBODY_POP runs.  Bumping cl_nlx_top here mirrors
+     * vm.c OP_TAGBODY_PUSH's setjmp!=0 arm. */
+    cl_nlx_top++;
+    return tag_index;
+}
+
+void cl_jit_runtime_tagbody_go(CL_Obj tagbody_id, CL_Obj tag_index)
+{
+    int i, j;
+    for (i = cl_nlx_top - 1; i >= 0; i--) {
+        if (cl_nlx_stack[i].type == CL_NLX_TAGBODY &&
+            cl_nlx_stack[i].tag == tagbody_id) {
+            /* UWPROT interposition: if a non-stale UWPROT frame
+             * sits between top and the target, divert there and
+             * record the pending throw so cleanup runs before the
+             * actual transfer. */
+            for (j = cl_nlx_top - 1; j > i; j--) {
+                if (cl_nlx_stack[j].type == CL_NLX_UWPROT &&
+                    !jit_nlx_frame_is_stale(&cl_nlx_stack[j])) {
+                    cl_pending_throw = 1;
+                    cl_pending_tag = tagbody_id;
+                    cl_pending_value = tag_index;
+                    cl_nlx_top = j;
+                    CL_LONGJMP(cl_nlx_stack[j].buf, 1);
+                }
+            }
+            cl_nlx_stack[i].result = tag_index;
+            cl_nlx_top = i;
+            CL_LONGJMP(cl_nlx_stack[i].buf, 1);
+        }
+    }
+    cl_error(CL_ERR_GENERAL, "GO: tagbody frame not found");
+}
+
 #endif /* JIT_M68K */
