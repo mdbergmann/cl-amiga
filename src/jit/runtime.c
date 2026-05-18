@@ -803,6 +803,105 @@ void cl_jit_runtime_block_return(CL_Obj tag, CL_Obj value)
              CL_NULL_P(tag) ? "NIL" : cl_symbol_name(tag));
 }
 
+/* --- OP_CATCH / OP_UNCATCH ----------------------------------------------
+ *
+ * Mirrors OP_BLOCK_PUSH's JIT-inline-setjmp protocol (alloc → JSR
+ * setjmp → branch on D0; commit on the zero arm, post_longjmp + push
+ * result + BRA-to-landing on the non-zero arm).  Two surface
+ * differences from BLOCK:
+ *
+ *   - The tag is a runtime value (popped from the operand stack), not
+ *     a const-pool index.  catch_alloc therefore takes the tag as its
+ *     sole argument, same shape as block_alloc.
+ *
+ *   - The pop helper looks for CL_NLX_CATCH (not CL_NLX_BLOCK), with
+ *     the same search-backward leakage tolerance as block_pop.
+ *
+ * The longjmp arrival site is byte-identical to block_post_longjmp:
+ * restore SP/FP and the dyn/handler/restart/gc/compiler marks plus
+ * mv_count/mv_values from the NLX frame.  catch frames live on the
+ * same NLX stack as block/tagbody/uwprot, so a throw from any
+ * intervening JIT'd or VM'd code finds and longjmps to the matching
+ * buf.  No special THROW opcode is needed — `throw` is a regular CL
+ * builtin (bi_throw in builtins_io.c) that calls longjmp on the
+ * matching buf, and the longjmp returns into whichever side captured
+ * the setjmp. */
+
+void *cl_jit_runtime_catch_alloc(CL_Obj tag)
+{
+    CL_NLXFrame *nlx;
+    if (cl_nlx_top >= CL_MAX_NLX_FRAMES)
+        cl_error(CL_ERR_OVERFLOW, "NLX stack overflow");
+    nlx = &cl_nlx_stack[cl_nlx_top];
+    nlx->type           = CL_NLX_CATCH;
+    nlx->vm_sp          = cl_vm.sp;
+    nlx->vm_fp          = cl_vm.fp;
+    nlx->tag            = tag;
+    nlx->result         = CL_NIL;
+    /* VM-channel fields unused for JIT-owned frames — our JSR setjmp
+     * captured the frame, so longjmp returns into native code. */
+    nlx->catch_ip       = 0;
+    nlx->offset         = 0;
+    nlx->code           = NULL;
+    nlx->constants      = NULL;
+    nlx->bytecode       = CL_NIL;
+    nlx->base_fp        = 0;
+    nlx->dyn_mark       = cl_dyn_top;
+    nlx->handler_mark   = cl_handler_top;
+    nlx->restart_mark   = cl_restart_top;
+    nlx->gc_root_mark   = gc_root_count;
+    nlx->compiler_mark  = cl_compiler_mark();
+    nlx->mv_count       = 1;
+    return &nlx->buf;
+}
+
+void cl_jit_runtime_catch_commit(void)
+{
+    cl_nlx_top++;
+}
+
+void cl_jit_runtime_catch_pop(void)
+{
+    /* Same search-backward semantics as VM's OP_UNCATCH: a tail call
+     * inside the catch body may have leaked an intervening BLOCK /
+     * TAGBODY / UWPROT frame, so a blind --top would unwind the wrong
+     * slot. */
+    int ci;
+    for (ci = cl_nlx_top - 1; ci >= 0; ci--) {
+        if (cl_nlx_stack[ci].type == CL_NLX_CATCH) {
+            cl_nlx_top = ci;
+            return;
+        }
+    }
+    if (cl_nlx_top > 0) cl_nlx_top--;
+}
+
+CL_Obj cl_jit_runtime_catch_post_longjmp(void)
+{
+    /* Same SP/FP + marks + MV restore as block_post_longjmp.  See that
+     * helper's commentary for why SP/FP must be rewound here too: a
+     * throw from arbitrarily-deep VM execution skips cl_vm_apply's
+     * normal-exit restore, leaving SP/FP at the inner callee's last
+     * position. */
+    CL_NLXFrame *nlx = &cl_nlx_stack[cl_nlx_top];
+    CL_Obj result;
+    int mi;
+
+    cl_vm.sp = nlx->vm_sp;
+    cl_vm.fp = nlx->vm_fp;
+
+    cl_dynbind_restore_to(nlx->dyn_mark);
+    cl_handler_top  = nlx->handler_mark;
+    cl_restart_top  = nlx->restart_mark;
+    gc_root_count   = nlx->gc_root_mark;
+    cl_compiler_restore_to(nlx->compiler_mark);
+    cl_mv_count = nlx->mv_count;
+    for (mi = 0; mi < cl_mv_count && mi < CL_MAX_MV; mi++)
+        cl_mv_values[mi] = nlx->mv_values[mi];
+    result = nlx->result;
+    return result;
+}
+
 /* --- OP_UWPROT / OP_UWPOP / OP_UWRETHROW --------------------------------
  *
  * Same JIT-inline-setjmp protocol as BLOCK_PUSH.  Five helpers split the

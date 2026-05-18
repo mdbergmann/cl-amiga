@@ -219,6 +219,28 @@ __attribute__((noreturn))
 #endif
 void   cl_jit_runtime_block_return(CL_Obj tag, CL_Obj value);
 
+/* OP_CATCH / OP_UNCATCH.  Same JIT-inline-setjmp protocol as
+ * BLOCK_PUSH; the only differences are
+ *   - the tag comes from the operand stack (not constants), so the
+ *     walker passes it through D0 / (a7);
+ *   - the matching pop is OP_UNCATCH (search-backward for CL_NLX_CATCH).
+ *
+ * The longjmp arrival path is byte-identical to block_post_longjmp:
+ * restore dyn/handler/restart/gc/compiler marks and mv_count/mv_values
+ * from the NLX frame, then return the throw result so the walker can
+ * push it onto the operand stack and BRA to the landing IP.  We keep a
+ * dedicated catch_post_longjmp anyway so future divergence (e.g.
+ * preserving condition state) doesn't have to refactor a shared site.
+ *
+ * Cross-implementation interop is automatic: bi_throw (the THROW
+ * builtin) longjmps via the buf field of whichever CATCH frame matched
+ * — VM-owned or JIT-owned — so throws from either side reach catches
+ * on either side.  Same property block_return relies on. */
+void  *cl_jit_runtime_catch_alloc(CL_Obj tag);
+void   cl_jit_runtime_catch_commit(void);
+void   cl_jit_runtime_catch_pop(void);
+CL_Obj cl_jit_runtime_catch_post_longjmp(void);
+
 /* OP_UWPROT / OP_UWPOP / OP_UWRETHROW.  Same JSR-setjmp-inline shape
  * as BLOCK_PUSH; alloc reserves the NLX slot without committing it,
  * the walker emits JSR setjmp, then commit bumps cl_nlx_top.  On the
