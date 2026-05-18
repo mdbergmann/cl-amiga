@@ -2842,6 +2842,10 @@ static uint32_t disasm_one(const uint8_t *code, uint32_t len,
                      (int)d, src_reg, am_dst);
             matched = 1;
         }
+    } else if ((op & 0xFFF8) == 0x4A80) {           /* TST.L Dn */
+        int dn = op & 7;
+        snprintf(mnemonic, (size_t)msize, "tst.l d%d", dn);
+        matched = 1;
     } else if (op == 0x4EB9) {                      /* JSR (xxx).L */
         uint32_t addr;
         if (pos + 4 > len) return 0;
