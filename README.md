@@ -216,6 +216,12 @@ When the abstractions aren't enough, drop to raw library calls:
 | `(require "amiga/graphics")` | `AMIGA.GFX` | Drawing: lines, rectangles, text, pen control |
 | `(require "amiga/gadtools")` | `AMIGA.GADTOOLS` | Gadgets, menus, bevel boxes, VisualInfo |
 
+## JIT (m68k)
+
+On the AmigaOS build (68020+), CL-Amiga translates bytecode functions to native m68k machine code at definition time. The VM dispatcher jumps straight into the native body instead of interpreting bytecode — covering arithmetic, branches, calls (including tail calls and FFI / `amiga-call`), multiple-value flow, non-local exits (`block`/`return-from`, `unwind-protect`, `tagbody`/`go`, handlers), and `&key` parameters. Opcodes the translator doesn't handle yet fall back to the interpreter transparently.
+
+The JIT is on by default. Pass `--no-jit` to keep functions bytecode-only (useful for A/B benchmarks or isolating a bug). At runtime, `(clamiga::%jit-set-active nil|t)` toggles the flag around individual `defun`s. On host builds the JIT is compiled out entirely.
+
 ## Architecture
 
 - **Single-pass compiler** from S-expressions to bytecode, executed by a stack-based VM
