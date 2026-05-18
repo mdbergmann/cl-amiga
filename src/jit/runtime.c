@@ -1151,4 +1151,50 @@ CL_Obj cl_jit_runtime_amiga_call(CL_Obj base_sym, int32_t offset,
                                       regspec, (int)n_args, args_buf);
 }
 
+/* --- OP_HANDLER_PUSH / OP_HANDLER_POP / OP_RESTART_PUSH / OP_RESTART_POP ---
+ *
+ * Pure push/pop on the per-thread handler / restart binding stacks.
+ * Unlike OP_BLOCK_PUSH / OP_UWPROT these don't capture a setjmp frame
+ * — they just register a binding that cl_signal_condition (handler)
+ * or find-restart (restart) will walk later.  No JIT-side longjmp
+ * choreography needed; the helpers are byte-for-byte mirrors of the
+ * VM cases in core/vm.c.
+ *
+ * Allocation: the overflow guard calls cl_error which allocates a
+ * condition.  The walker cache-flushes before the JSR (same as
+ * OP_DYNBIND) so cached operand-stack values stay rooted on the
+ * conservatively-scanned m68k stack across the (rare) error path. */
+
+void cl_jit_runtime_handler_push(CL_Obj type_sym, CL_Obj handler)
+{
+    if (cl_handler_top >= CL_MAX_HANDLER_BINDINGS)
+        cl_error(CL_ERR_OVERFLOW, "Handler stack overflow");
+    cl_handler_stack[cl_handler_top].type_name = type_sym;
+    cl_handler_stack[cl_handler_top].handler = handler;
+    cl_handler_stack[cl_handler_top].handler_mark = cl_handler_top;
+    cl_handler_top++;
+}
+
+void cl_jit_runtime_handler_pop(uint32_t count)
+{
+    cl_handler_top -= (int)count;
+    if (cl_handler_top < 0) cl_handler_top = 0;
+}
+
+void cl_jit_runtime_restart_push(CL_Obj name_sym, CL_Obj handler, CL_Obj tag)
+{
+    if (cl_restart_top >= CL_MAX_RESTART_BINDINGS)
+        cl_error(CL_ERR_OVERFLOW, "Restart stack overflow");
+    cl_restart_stack[cl_restart_top].name = name_sym;
+    cl_restart_stack[cl_restart_top].handler = handler;
+    cl_restart_stack[cl_restart_top].tag = tag;
+    cl_restart_top++;
+}
+
+void cl_jit_runtime_restart_pop(uint32_t count)
+{
+    cl_restart_top -= (int)count;
+    if (cl_restart_top < 0) cl_restart_top = 0;
+}
+
 #endif /* JIT_M68K */

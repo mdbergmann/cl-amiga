@@ -686,11 +686,13 @@ static int prescan_branch_targets(const CL_Bytecode *bc, uint8_t *is_target)
         case OP_UPVAL: case OP_CELL_SET_UPVAL:
         case OP_LIST:
         case OP_MV_LOAD:
+        case OP_HANDLER_POP: case OP_RESTART_POP:
             step = 2; break;
         case OP_CONST: case OP_GLOAD: case OP_GSTORE:
         case OP_FLOAD: case OP_DYNBIND: case OP_BLOCK_RETURN:
         case OP_FSTORE:
         case OP_ASSERT_TYPE:
+        case OP_HANDLER_PUSH: case OP_RESTART_PUSH:
             step = 3; break;
         case OP_JMP: case OP_JNIL: case OP_JTRUE: {
             int32_t offset;
@@ -1825,6 +1827,87 @@ static int walker_compile(const CL_Bytecode *bc, CodeBuf *cb)
             m68k_emit_move_l_disp_an_predec_am(cb, 4, REG_A7, REG_A7); /* dup val */
             m68k_emit_jsr_abs_l(cb, helper);
             m68k_emit_addq_l_an(cb, 8, REG_A7);
+            break;
+        }
+
+        case OP_HANDLER_PUSH: {
+            /* u16 const idx → type-symbol literal baked into the JSR
+             * call site.  Operand stack: TOS = handler closure (popped).
+             * Helper signature is (type_sym, handler) — C-ABI args,
+             * type_sym at (a7), handler at 4(a7) after JSR.  Helper is
+             * non-allocating on the normal path but calls cl_error on
+             * stack overflow (allocates a condition), so cache_flush
+             * before the JSR keeps any cached operand-stack values
+             * reachable through the conservative m68k-stack scan. */
+            uint16_t idx;
+            CL_Obj type_sym;
+            uint32_t helper = (uint32_t)(uintptr_t)&cl_jit_runtime_handler_push;
+            if (ip + 1 >= bc->code_len) goto fail;
+            idx = ((uint16_t)bc->code[ip] << 8) | bc->code[ip + 1];
+            ip += 2;
+            if (idx >= bc->n_constants || bc->constants == NULL) goto fail;
+            type_sym = bc->constants[idx];
+
+            cache_pop_to_dn(cb, &cache_head, &cache_depth, REG_D1);    /* handler */
+            cache_flush(cb, &cache_head, &cache_depth);
+            m68k_emit_move_l_dn_predec_an(cb, REG_D1, REG_A7);          /* push handler */
+            m68k_emit_move_l_imm32_predec(cb, (uint32_t)type_sym, REG_A7); /* push type_sym */
+            m68k_emit_jsr_abs_l(cb, helper);
+            m68k_emit_addq_l_an(cb, 8, REG_A7);
+            break;
+        }
+
+        case OP_HANDLER_POP: {
+            /* u8 count.  Single-arg JSR; helper just decrements
+             * cl_handler_top.  Non-allocating, so no cache_flush —
+             * mirrors OP_ARGC's reasoning (helper only touches caller-
+             * saved D0/D1; cache regs D5/D6/D7 are callee-saved). */
+            uint8_t count;
+            uint32_t helper = (uint32_t)(uintptr_t)&cl_jit_runtime_handler_pop;
+            if (ip >= bc->code_len) goto fail;
+            count = bc->code[ip++];
+            m68k_emit_move_l_imm32_predec(cb, (uint32_t)count, REG_A7);
+            m68k_emit_jsr_abs_l(cb, helper);
+            m68k_emit_addq_l_an(cb, 4, REG_A7);
+            break;
+        }
+
+        case OP_RESTART_PUSH: {
+            /* u16 const idx → name-symbol literal baked in.  Operand
+             * stack on entry: TOS = tag, second = handler closure.  VM
+             * pops tag then handler, so we mirror that here.  Helper
+             * signature is (name_sym, handler, tag) — C-ABI order:
+             * name at (a7), handler at 4(a7), tag at 8(a7) after JSR.
+             * Helper may cl_error on overflow → cache_flush. */
+            uint16_t idx;
+            CL_Obj name_sym;
+            uint32_t helper = (uint32_t)(uintptr_t)&cl_jit_runtime_restart_push;
+            if (ip + 1 >= bc->code_len) goto fail;
+            idx = ((uint16_t)bc->code[ip] << 8) | bc->code[ip + 1];
+            ip += 2;
+            if (idx >= bc->n_constants || bc->constants == NULL) goto fail;
+            name_sym = bc->constants[idx];
+
+            cache_pop_to_dn(cb, &cache_head, &cache_depth, REG_D1);    /* tag */
+            cache_pop_to_dn(cb, &cache_head, &cache_depth, REG_D0);    /* handler */
+            cache_flush(cb, &cache_head, &cache_depth);
+            m68k_emit_move_l_dn_predec_an(cb, REG_D1, REG_A7);          /* push tag */
+            m68k_emit_move_l_dn_predec_an(cb, REG_D0, REG_A7);          /* push handler */
+            m68k_emit_move_l_imm32_predec(cb, (uint32_t)name_sym, REG_A7); /* push name */
+            m68k_emit_jsr_abs_l(cb, helper);
+            m68k_emit_addq_l_an(cb, 12, REG_A7);
+            break;
+        }
+
+        case OP_RESTART_POP: {
+            /* u8 count.  Same shape as OP_HANDLER_POP. */
+            uint8_t count;
+            uint32_t helper = (uint32_t)(uintptr_t)&cl_jit_runtime_restart_pop;
+            if (ip >= bc->code_len) goto fail;
+            count = bc->code[ip++];
+            m68k_emit_move_l_imm32_predec(cb, (uint32_t)count, REG_A7);
+            m68k_emit_jsr_abs_l(cb, helper);
+            m68k_emit_addq_l_an(cb, 4, REG_A7);
             break;
         }
 

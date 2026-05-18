@@ -281,6 +281,16 @@ CL_Obj cl_jit_runtime_amiga_call(CL_Obj base_sym, int32_t offset,
                                  uint32_t regspec, uint32_t n_args,
                                  CL_Obj *operand_top);
 
+/* OP_HANDLER_PUSH / OP_HANDLER_POP / OP_RESTART_PUSH / OP_RESTART_POP.
+ * Pure push/pop on the per-thread handler/restart binding stacks; no
+ * setjmp involved (handlers run as ordinary calls dispatched by
+ * cl_signal_condition).  Overflow goes through cl_error so the walker
+ * cache-flushes before the JSR, same as OP_DYNBIND. */
+void cl_jit_runtime_handler_push(CL_Obj type_sym, CL_Obj handler);
+void cl_jit_runtime_handler_pop(uint32_t count);
+void cl_jit_runtime_restart_push(CL_Obj name_sym, CL_Obj handler, CL_Obj tag);
+void cl_jit_runtime_restart_pop(uint32_t count);
+
 /* Address of libc setjmp, captured at init time and baked into the
  * BLOCK_PUSH emit as a JSR.abs.l immediate. */
 extern uint32_t cl_jit_setjmp_addr;
