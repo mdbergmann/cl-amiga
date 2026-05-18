@@ -163,6 +163,14 @@ typedef struct CL_Thread_s {
     int    jit_depth;
     void  *jit_stack_top;
 
+    /* nargs the innermost JIT-entry was invoked with.  Backs OP_ARGC
+     * inside JIT'd code (which has no `frame` pointer the way the VM
+     * does).  cl_jit_invoke save/restores this around every native
+     * call so nested entries return to their caller's value.  Unset
+     * (any prior value) when jit_depth == 0 — callers must only read
+     * it from inside a JIT'd frame. */
+    int32_t jit_current_nargs;
+
     /* ---- VM extras ---- */
     CL_Obj vm_extra_args_buf[256];
     int    vm_extra_count;

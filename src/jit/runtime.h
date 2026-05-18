@@ -126,6 +126,36 @@ CL_Obj cl_jit_runtime_list(uint32_t n, CL_Obj *operand_top);
  * writes new_car, returns new_car as the new TOS.  Non-allocating. */
 CL_Obj cl_jit_runtime_rplaca(CL_Obj cons_obj, CL_Obj new_car);
 
+/* OP_RPLACD backing.  Mirror of cl_jit_runtime_rplaca for the cdr
+ * slot.  Resets cl_mv_count = 1 like the VM op. */
+CL_Obj cl_jit_runtime_rplacd(CL_Obj cons_obj, CL_Obj new_cdr);
+
+/* OP_ARGC backing.  Returns CL_MAKE_FIXNUM of the nargs the innermost
+ * JIT-entry was invoked with (sourced from
+ * CL_Thread.jit_current_nargs, set by cl_jit_invoke).  Resets
+ * cl_mv_count = 1. */
+CL_Obj cl_jit_runtime_argc(void);
+
+/* OP_MV_LOAD backing.  Returns cl_mv_values[index] if index <
+ * cl_mv_count, NIL otherwise.  Matches vm.c::OP_MV_LOAD: does NOT
+ * reset cl_mv_count (so consecutive MV_LOAD reads see the same
+ * value buffer). */
+CL_Obj cl_jit_runtime_mv_load(uint32_t index);
+
+/* OP_NTH_VALUE backing.  Pops primary + idx_obj (caller passes both
+ * by value in C-ABI order = idx then primary in m68k push order).
+ * idx must be a fixnum (cl_error on type mismatch).  idx == 0
+ * returns primary; idx > 0 reads cl_mv_values[idx] with NIL fallback
+ * when idx >= cl_mv_count.  Resets cl_mv_count = 1. */
+CL_Obj cl_jit_runtime_nth_value(CL_Obj idx_obj, CL_Obj primary);
+
+/* OP_ASSERT_TYPE backing.  Peek-only: caller passes the value and
+ * the type-spec CL_Obj; helper does cl_typep, allocates a
+ * type-error condition + signals on mismatch, returns normally on
+ * pass.  Cache flush before the JSR is mandatory — the condition
+ * allocation may GC. */
+void cl_jit_runtime_assert_type(CL_Obj val, CL_Obj type_spec);
+
 /* OP_ASET backing.  Same dispatch as the VM's OP_ASET: bit-vector,
  * simple-string, and general-vector are valid destinations with
  * destination-dependent value type checks.  Returns `val` so the
