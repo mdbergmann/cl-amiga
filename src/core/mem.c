@@ -121,11 +121,34 @@ void cl_mem_init(uint32_t heap_size)
     platform_mutex_init(&alloc_mutex);
 }
 
+/* Persistent JIT-stack scan/forward candidate buffers — defined here
+ * so cl_mem_shutdown can free them; helpers and full doc live with
+ * gc_scan_jit_native_stack / gc_forward_jit_native_stack below. */
+typedef struct {
+    uint32_t  value;
+    CL_Obj   *addr;
+} JitFwdCandidate;
+
+static uint32_t        *jit_scan_cand_buf = NULL;
+static int              jit_scan_cand_cap = 0;
+static JitFwdCandidate *jit_fwd_cand_buf  = NULL;
+static int              jit_fwd_cand_cap  = 0;
+
 void cl_mem_shutdown(void)
 {
     if (cl_heap.arena) {
         platform_free(cl_heap.arena);
         cl_heap.arena = NULL;
+    }
+    if (jit_scan_cand_buf) {
+        platform_free(jit_scan_cand_buf);
+        jit_scan_cand_buf = NULL;
+        jit_scan_cand_cap = 0;
+    }
+    if (jit_fwd_cand_buf) {
+        platform_free(jit_fwd_cand_buf);
+        jit_fwd_cand_buf = NULL;
+        jit_fwd_cand_cap = 0;
     }
     if (alloc_mutex) {
         platform_mutex_destroy(alloc_mutex);
@@ -945,14 +968,12 @@ void gc_mark_obj(CL_Obj obj)
  * suppressed while cl_jit_active_threads > 0) is no longer
  * required for correctness.
  *
- * Capacity policy: the candidate buffer holds 256 entries.  Real
- * JIT-spilled operand counts are well below this in practice
- * (single digits per JIT frame).  On overflow we drop excess
- * candidates and emit a one-time warning — those values are *not*
- * conservatively marked, so an object that was only kept alive by
- * such a word may be swept.  This is a correctness gap rather than
- * a corruption hazard; if it ever fires in real workloads, switch
- * to a platform_alloc'd buffer.
+ * Capacity policy: the candidate buffer is a persistent, grow-on-demand
+ * allocation held in mem.c static storage.  Pre-sized once per call to
+ * the scan window's word count (an exact upper bound on the number of
+ * candidates), so overflow is impossible by construction.  Across GC
+ * cycles the buffer is reused; it only grows when a larger scan window
+ * is encountered, so steady state is zero allocations per GC.
  *
  * Only runs when t->jit_depth > 0 and t is the current thread —
  * non-current threads stop at bytecode-VM safepoints where their
@@ -961,7 +982,20 @@ void gc_mark_obj(CL_Obj obj)
  *
  * See specs/native-backend.md §"GC interaction" option A → B-lite. */
 
-#define CL_JIT_SCAN_CAND_MAX 256
+static int jit_scan_cand_reserve(int need)
+{
+    int new_cap;
+    uint32_t *buf;
+    if (jit_scan_cand_cap >= need) return 1;
+    new_cap = jit_scan_cand_cap ? jit_scan_cand_cap : 256;
+    while (new_cap < need) new_cap *= 2;
+    buf = (uint32_t *)platform_alloc((unsigned long)new_cap * sizeof(uint32_t));
+    if (!buf) return 0;
+    if (jit_scan_cand_buf) platform_free(jit_scan_cand_buf);
+    jit_scan_cand_buf = buf;
+    jit_scan_cand_cap = new_cap;
+    return 1;
+}
 
 static int cand_cmp(const void *a, const void *b)
 {
@@ -984,15 +1018,15 @@ static int cand_bsearch(const uint32_t *arr, int n, uint32_t key)
 
 static void gc_scan_jit_native_stack(CL_Thread *t)
 {
-    uint32_t candidates[CL_JIT_SCAN_CAND_MAX];
+    uint32_t *candidates;
     int n_cand = 0;
-    int overflow = 0;
+    int upper;
     char *scan_lo;
     char *scan_hi;
     uintptr_t addr;
     uint8_t *p;
     uint8_t *end;
-    static int overflow_warned = 0;
+    static int oom_warned = 0;
 
     if (t->jit_depth <= 0 || t->jit_stack_top == NULL) return;
     if (t != cl_get_current_thread()) return;
@@ -1007,21 +1041,27 @@ static void gc_scan_jit_native_stack(CL_Thread *t)
     /* Round up to 4-byte alignment (CL_Obj is 32 bits). */
     addr = (uintptr_t)scan_lo;
     addr = (addr + 3u) & ~(uintptr_t)3u;
+    if (addr + 4 > (uintptr_t)scan_hi) return;
+
+    /* Exact upper bound: one slot per 4-byte aligned word in the window. */
+    upper = (int)(((uintptr_t)scan_hi - addr) / 4);
+    if (!jit_scan_cand_reserve(upper)) {
+        if (!oom_warned) {
+            oom_warned = 1;
+            platform_write_string(
+                "GC: JIT native-stack scan buffer allocation failed — "
+                "some values may not be conservatively rooted this cycle\n");
+        }
+        return;
+    }
+    candidates = jit_scan_cand_buf;
 
     /* Phase 1: collect candidate offsets. */
     for (; addr + 4 <= (uintptr_t)scan_hi; addr += 4) {
         CL_Obj w = *(const CL_Obj *)(uintptr_t)addr;
         if (CL_NULL_P(w) || CL_FIXNUM_P(w) || CL_CHAR_P(w)) continue;
         if (w >= cl_heap.arena_size) continue;
-        if (n_cand >= CL_JIT_SCAN_CAND_MAX) { overflow = 1; break; }
         candidates[n_cand++] = (uint32_t)w;
-    }
-
-    if (overflow && !overflow_warned) {
-        overflow_warned = 1;
-        platform_write_string(
-            "GC: JIT native-stack scan candidate overflow — "
-            "some values may not be conservatively rooted this cycle\n");
     }
 
     if (n_cand == 0) return;
@@ -1468,15 +1508,25 @@ static void gc_compute_forwarding(void)
  * Runs in Pass 3 of cl_gc_compact, after gc_compute_forwarding has
  * populated gc_fwd_table and before gc_slide moves the objects.
  *
- * Capacity / overflow policy matches the marker: if more than
- * CL_JIT_SCAN_CAND_MAX candidates appear in the scan window, the excess
- * are silently dropped.  This is consistent — a value the marker
- * couldn't see is one whose object may not be alive after compaction
- * anyway, so leaving its slot stale is no worse than the marker's gap. */
-typedef struct {
-    uint32_t  value;
-    CL_Obj   *addr;
-} JitFwdCandidate;
+ * Capacity policy matches the marker: a persistent, grow-on-demand
+ * buffer in mem.c static storage, pre-sized once per call to the scan
+ * window's word count.  Overflow is impossible by construction; steady
+ * state is zero allocations per GC. */
+static int jit_fwd_cand_reserve(int need)
+{
+    int new_cap;
+    JitFwdCandidate *buf;
+    if (jit_fwd_cand_cap >= need) return 1;
+    new_cap = jit_fwd_cand_cap ? jit_fwd_cand_cap : 256;
+    while (new_cap < need) new_cap *= 2;
+    buf = (JitFwdCandidate *)platform_alloc(
+        (unsigned long)new_cap * sizeof(JitFwdCandidate));
+    if (!buf) return 0;
+    if (jit_fwd_cand_buf) platform_free(jit_fwd_cand_buf);
+    jit_fwd_cand_buf = buf;
+    jit_fwd_cand_cap = new_cap;
+    return 1;
+}
 
 static int jit_fwd_cand_cmp(const void *a, const void *b)
 {
@@ -1487,14 +1537,16 @@ static int jit_fwd_cand_cmp(const void *a, const void *b)
 
 static void gc_forward_jit_native_stack(CL_Thread *t)
 {
-    JitFwdCandidate candidates[CL_JIT_SCAN_CAND_MAX];
+    JitFwdCandidate *candidates;
     int n_cand = 0;
+    int upper;
     char *scan_lo;
     char *scan_hi;
     uintptr_t addr;
     uint8_t *p;
     uint8_t *end;
     int ci;
+    static int oom_warned = 0;
 
     if (t->jit_depth <= 0 || t->jit_stack_top == NULL) return;
     if (t != cl_get_current_thread()) return;
@@ -1505,6 +1557,19 @@ static void gc_forward_jit_native_stack(CL_Thread *t)
 
     addr = (uintptr_t)scan_lo;
     addr = (addr + 3u) & ~(uintptr_t)3u;
+    if (addr + 4 > (uintptr_t)scan_hi) return;
+
+    upper = (int)(((uintptr_t)scan_hi - addr) / 4);
+    if (!jit_fwd_cand_reserve(upper)) {
+        if (!oom_warned) {
+            oom_warned = 1;
+            platform_write_string(
+                "GC: JIT native-stack forward buffer allocation failed — "
+                "some slots may not be updated this cycle\n");
+        }
+        return;
+    }
+    candidates = jit_fwd_cand_buf;
 
     /* Phase 1: collect (slot-address, value) pairs.  Same filter as the
      * marker, plus we keep the address so we can write back. */
@@ -1512,7 +1577,6 @@ static void gc_forward_jit_native_stack(CL_Thread *t)
         CL_Obj w = *(const CL_Obj *)(uintptr_t)addr;
         if (CL_NULL_P(w) || CL_FIXNUM_P(w) || CL_CHAR_P(w)) continue;
         if (w >= cl_heap.arena_size) continue;
-        if (n_cand >= CL_JIT_SCAN_CAND_MAX) break;
         candidates[n_cand].value = (uint32_t)w;
         candidates[n_cand].addr  = (CL_Obj *)(uintptr_t)addr;
         n_cand++;
