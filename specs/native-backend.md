@@ -895,3 +895,147 @@ the symbol's current function value against the captured callee),
 bypassing the `cl_vm_apply` dispatch trip.  That benefits **every**
 direct JIT'd-to-JIT'd call site in the codebase, not just FFI ones.
 Not investigated this session.
+
+## Status (2026-05-18, post closure + mutation walker pass)
+
+Three independent walker landings extend coverage from "top-level
+defuns with no captured variables" to "inner closures-within-closures
+that mutate their captures, plus the common list-building / mutation
+opcodes."  No bench delta on bouncing-lines (closure-heavy paths
+weren't the hot loop), but the *fraction of loaded code that
+JIT-compiles* shifts substantially — closures pervade CLOS, the
+condition system, and most macroexpansion-heavy library code, and
+those previously bailed the walker entirely.
+
+**Walker opcodes added since 2026-05-17:**
+
+```
+OP_CLOSURE OP_MAKE_CELL OP_CELL_REF OP_CELL_SET_LOCAL    (0ed45f9, phase A)
+OP_UPVAL OP_CELL_SET_UPVAL                               (7f7bb1a, phase B)
+OP_FSTORE OP_LIST OP_RPLACA OP_ASET                      (33d956f)
+```
+
+**Phase A — outer-function closure construction (commit 0ed45f9).**
+Drops the `OP_CLOSURE`-rejection in the walker.  Emitter loads each
+capture descriptor onto the m68k stack, snapshots `&values[0]` into
+A0, and JSRs `cl_jit_runtime_make_closure(tmpl, n_upvals, values)`.
+Operand drop is via `LEA` (not `addq.l`, which silently truncates
+immediates > 8).  `OP_MAKE_CELL` / `OP_CELL_REF` / `OP_CELL_SET_LOCAL`
+each get one helper; `OP_CELL_SET_LOCAL` is peek-only (TOS unchanged,
+mirroring the VM).  Outer-function gate stays: walker still requires
+`bc->n_upvalues == 0`, so this phase only covers top-level defuns
+that *contain* inner lambdas, not closures whose own body captures.
+Prescan validates the entire `OP_CLOSURE` descriptor stream up front
+so a malformed sequence bails the whole compile cleanly rather than
+miscompiling mid-emit.
+
+*Bug uncovered and fixed in the same change.*
+`cl_jit_runtime_block_post_longjmp` and `cl_jit_runtime_uwprot_post_longjmp`
+captured `cl_vm.sp` / `cl_vm.fp` at setup but never restored them
+after a longjmp.  Latent because the pre-phase-A walker rejected any
+function containing `OP_CLOSURE`, so a `(block tag (mapc (lambda (x)
+(return-from tag x)) list))` ran entirely in the bytecode VM where
+`OP_BLOCK_RETURN`'s longjmp arm already restores sp/fp.  With the
+walker now accepting `OP_CLOSURE`, the longjmp lands back in JIT'd
+code via the helper, which left `cl_vm.sp` pointing into the inner
+lambda's deepest VM frame.  The next VM action (`cl_jit_invoke`'s
+caller doing `sp -= nargs+1; push result`) then overwrote whatever
+the caller had pushed before invoking the JIT'd function.  Symptom in
+failing tests: a literal pushed as the CHECK macro's expected value
+got clobbered with the closure object the JIT'd function had just
+allocated.  Fix mirrors `vm.c`'s `OP_BLOCK_RETURN` longjmp arm.
+
+**Phase B — inner closures that capture (commit 7f7bb1a).**  Drops
+the `bc->n_upvalues != 0` walker gate.  Adds `OP_UPVAL` and
+`OP_CELL_SET_UPVAL` emitters routing through
+`cl_jit_runtime_upval_ref(func, index)` and
+`cl_jit_runtime_cell_set_upval(func, idx, v)`.  Both helpers
+non-allocating; upval_ref falls back to CL_NIL on
+closure-or-raw-bytecode mismatch matching the VM's `OP_UPVAL`
+semantics, cell_set_upval errors on non-cell upvalue (the VM's
+"shouldn't happen" diagnostic).
+
+*ABI shift required.*  `cl_jit_invoke` now passes the function-object
+CL_Obj (the closure or raw bytecode) as the first C argument, so JIT'd
+code can read it from `8(a6)` when an `OP_UPVAL` /
+`OP_CELL_SET_UPVAL` needs the closure's `upvalues[]` array.  User
+args shift to `12(a6)` onward for the non-kw path, and
+`12/16/20(a6)` for the kw-prologue's `(bc, nargs, args)` tuple.
+`slot_disp()`, the passthrough matcher's load displacement, and the
+kw-prologue emit all bumped by the same +4 in lockstep.  The
+trivial-leaf matcher reads no args, so it stays as-is.  Existing
+matcher byte-count tests adjusted for the shift (slot j now at
+`(8+4*j)(a7)` instead of `(4+4*j)(a7)`).  `OP_CLOSURE` also drops
+its `is_local == 0` reject: captures from the parent's upvalues now
+route through `cl_jit_runtime_upval_ref`, so nested-closures-within-
+closures compile.
+
+**Mutation / list-building (commit 33d956f).**  Four independent
+opcodes with no ABI changes.
+
+- `OP_FSTORE` — peek-and-store into `sym->function`, same shape as
+  `OP_GSTORE`; `cl_jit_runtime_fstore` non-allocating.
+- `OP_LIST` — build a list from N operand-stack values.  Helper
+  iterates `operand_top[0..n-1]` (TOS = last in list),
+  `CL_GC_PROTECT`s the partial list across the n `cl_cons`
+  allocations.  The JIT-stack forwarding pass rewrites
+  `operand_top` slots in place so reads stay valid across
+  collections.
+- `OP_RPLACA` — pop new_car + cons, type-check, write, push
+  new_car.  Mirrors `OP_STRUCT_SET`'s two-arg shape.
+- `OP_ASET` — pop val/idx/vec; dispatch across vector / string /
+  bit-vector with the same value type-checks the VM uses.
+  Three-arg helper called via `disp(a0)` push to avoid spending a
+  third scratch register.
+
+Prescan accepts the new opcodes with the correct step sizes
+(`FSTORE=3`, `LIST=2`, `RPLACA=1`, `ASET=1`).  23 new behavioral
+tests in `tests/amiga/test-jit.lisp`: nested defun via `OP_FSTORE`,
+list-building via `(untrace)` for n=1/3/7, setf-of-car via
+`OP_RPLACA` (returns, mutates, type-error), setf-of-aref via
+`OP_ASET` on vector / string / bit-vector (returns, mutates, bounds,
+value-type errors).
+
+**Verification (2026-05-18 high-end FS-UAE config).**
+`test-amiga`: 2624/2624 pass — 99 new tests since 2026-05-17 across
+the three landings (5 closure-mutate + 71 closure / cell shape
+sweeps, plus 23 mutation).  Host `make test`: green.  The three
+pre-existing `amiga-defcfun-regspec-*` failures noted in the
+2026-05-17 closure-phase verifications were fixed in commit e7f21b4
+(progn-wrapped defcfun expansion → tests descend `(second expanded)`
+to reach the inner defun).
+
+### Updated walker opcode list (cumulative)
+
+```
+OP_NIL OP_T OP_CONST OP_LOAD OP_STORE OP_POP OP_DUP
+OP_JMP OP_JNIL OP_JTRUE
+OP_ADD OP_SUB OP_MUL OP_LT OP_GT OP_LE OP_GE OP_NUMEQ OP_EQ OP_NOT
+OP_CAR OP_CDR OP_CONS OP_LIST OP_RPLACA OP_ASET
+OP_GLOAD OP_GSTORE OP_FLOAD OP_FSTORE OP_CALL OP_TAILCALL
+OP_STRUCT_REF OP_STRUCT_SET OP_DYNBIND OP_DYNUNBIND
+OP_MV_RESET OP_MV_TO_LIST
+OP_BLOCK_PUSH OP_BLOCK_POP OP_BLOCK_RETURN
+OP_UWPROT OP_UWPOP OP_UWRETHROW
+OP_CLOSURE OP_MAKE_CELL OP_CELL_REF OP_CELL_SET_LOCAL
+OP_UPVAL OP_CELL_SET_UPVAL
+OP_AMIGA_CALL
+OP_RET
+```
+
+Outer-function gate is now "bytecode validates prescan" — `n_upvalues
+!= 0` no longer disqualifies.  The remaining bail-causers are the
+opcodes the walker hasn't grown emitters for (most of `OP_TAGBODY_*`,
+`OP_CATCH` / `OP_THROW`, `OP_PROGV`, `OP_HANDLER_*`, and the
+specialized-vector accessors), plus the &rest / &optional prologue
+shapes and self-TCO for kw entries — all called out as deferred in
+prior status sections.
+
+**Open levers, unchanged from 2026-05-17:**
+
+- Memory policy / hot-function gate.
+- Cross-function TCO trampolining in `cl_jit_invoke`.
+- Direct JSR `OP_FLOAD <sym>; …; OP_CALL n` fast-path when the
+  resolved callee carries `native_code` (the "JIT-to-JIT direct
+  call" lever flagged at the end of the FFI section).
+- Per-opcode `mv_count` reset via cached thread pointer.
