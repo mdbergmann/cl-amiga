@@ -1380,6 +1380,108 @@
     (> (clamiga::%jit-invoke-count) before)))
 (check "walker-uwp-mv-result" '(1 2 3) (walker-uwp-mv))
 
+; --- OP_CATCH / OP_UNCATCH -----------------------------------------------
+;
+; Same JIT-inline-setjmp protocol as OP_BLOCK_PUSH; differences are the
+; tag is a runtime value (popped from the operand stack) and the
+; matching pop is OP_UNCATCH (search-backward for CL_NLX_CATCH).  Catch
+; frames live on the same NLX stack as block / tagbody / uwprot, so
+; throws from either VM or JIT code reach catches on either side via
+; the buf field captured at setjmp.
+;
+; No counter-bump on the catch-owning function: the throw site lives in
+; an inner closure (so the throw crosses a closure boundary, like
+; return-from), and the outer body that contains OP_CATCH also contains
+; the OP_CLOSURE for the lambda — closure with captures is walker-
+; supported now, but counter-bumps for these tests are not the
+; objective.  The behavioural correctness covers the JIT path: the
+; outer function's OP_CATCH / OP_UNCATCH sequence is the substrate the
+; throw lands in, and any incorrect emit would corrupt the operand
+; stack or the NLX top.
+
+; Normal exit: body returns without throwing.  Exercises the
+; setjmp==0 → commit → body → OP_UNCATCH path.
+(defun walker-catch-normal ()
+  (catch 'tag
+    (+ 1 2)))
+(check "walker-catch-normal" 3 (walker-catch-normal))
+
+; Throw from a closure captured inside the catch body.  The closure
+; closes over the catch tag implicitly (it's a literal), and the
+; throw call site is inside the lambda — same shape as the
+; walker-block-find-first test, applied to catch/throw.
+(defun walker-catch-throw (list target)
+  (catch 'found
+    (mapc (lambda (x) (when (eql x target) (throw 'found x))) list)
+    nil))
+(check "walker-catch-throw-hit"   3   (walker-catch-throw '(1 3 5) 3))
+(check "walker-catch-throw-miss"  nil (walker-catch-throw '(1 2 3) 9))
+(check "walker-catch-throw-first" 1   (walker-catch-throw '(1 2 3) 1))
+
+; Non-fixnum throw value — exercises the result-push through the
+; NLX shim's `move.l d0,-(a7)` for a heap-allocated cons cell.
+(defun walker-catch-throw-cons ()
+  (catch 'tag
+    (mapc (lambda (x) (throw 'tag (cons x x))) '(:a))
+    :unreached))
+(check "walker-catch-throw-cons" '(:a . :a) (walker-catch-throw-cons))
+
+; OP_DYNUNBIND interaction: dyn-bindings established between OP_CATCH
+; and the throw must be unwound when the longjmp fires.  Mirrors the
+; walker-block-dyn-unwind shape.
+(defvar *walker-catch-dyn* :outer)
+(defun walker-catch-dyn-unwind ()
+  (catch 'tag
+    (let ((*walker-catch-dyn* :inner))
+      (mapc (lambda (x) (declare (ignore x))
+                         (throw 'tag *walker-catch-dyn*))
+            '(t)))
+    :unreached))
+(check "walker-catch-dyn-unwind-inner" :inner (walker-catch-dyn-unwind))
+(check "walker-catch-dyn-unwind-restored" :outer *walker-catch-dyn*)
+
+; Runtime tag value (not a literal symbol): the tag is computed and
+; the same value is passed to throw.  Exercises the cache_pop_to_dn
+; → JSR catch_alloc path with a non-baked-in tag value.
+(defun walker-catch-runtime-tag (tag)
+  (catch tag
+    (mapc (lambda (x) (throw tag x)) '(42))
+    :unreached))
+(check "walker-catch-runtime-tag-int"  42  (walker-catch-runtime-tag 99))
+(check "walker-catch-runtime-tag-sym"  42  (walker-catch-runtime-tag 'foo))
+
+; Nested catches: outer tag should not match an inner throw to the
+; outer tag from inside the inner catch body — the inner catch frame
+; doesn't intercept tags it doesn't own.  Same NLX search-backward
+; semantics as block_return.
+(defun walker-catch-nested ()
+  (catch 'outer
+    (catch 'inner
+      (mapc (lambda (x) (declare (ignore x))
+                         (throw 'outer :from-inner))
+            '(t))
+      :inner-fall-through)
+    :outer-fall-through))
+(check "walker-catch-nested-outer" :from-inner (walker-catch-nested))
+
+; Unwind-protect interposition: a throw across a UWPROT frame must
+; run cleanup first.  The JIT'd catch frame here is the throw target;
+; the UWPROT in between is owned by the inner closure.  Cleanup ran
+; if the counter incremented.
+(defvar *walker-catch-cleanup* 0)
+(defun walker-catch-uwp ()
+  (setq *walker-catch-cleanup* 0)
+  (catch 'tag
+    (mapc (lambda (x) (declare (ignore x))
+                       (unwind-protect
+                         (throw 'tag :thrown)
+                         (incf *walker-catch-cleanup*)))
+          '(t))
+    :unreached))
+(check "walker-catch-uwp-result"  :thrown (walker-catch-uwp))
+(check "walker-catch-uwp-cleanup" 1
+  (progn (walker-catch-uwp) *walker-catch-cleanup*))
+
 ; --- &key support: native kw-prologue ----------------------------------
 ;
 ; The walker emits a kw-ABI prologue (LINK + save D5/D6/D7 + JSR

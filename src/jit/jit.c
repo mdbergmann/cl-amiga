@@ -21,8 +21,8 @@
  *     OP_NOT, OP_CAR, OP_CDR, OP_CONS, OP_GLOAD, OP_GSTORE, OP_FLOAD,
  *     OP_CALL, OP_TAILCALL, OP_STRUCT_REF, OP_STRUCT_SET, OP_DYNBIND,
  *     OP_DYNUNBIND, OP_MV_RESET, OP_MV_TO_LIST, OP_BLOCK_PUSH,
- *     OP_BLOCK_POP, OP_BLOCK_RETURN, OP_UWPROT, OP_UWPOP,
- *     OP_UWRETHROW, OP_AMIGA_CALL, OP_RET.
+ *     OP_BLOCK_POP, OP_BLOCK_RETURN, OP_CATCH, OP_UNCATCH,
+ *     OP_UWPROT, OP_UWPOP, OP_UWRETHROW, OP_AMIGA_CALL, OP_RET.
  *     OP_CONS is the first allocating opcode handled directly.
  *     **Convention for any helper-calling emitter**: after popping
  *     operands into D0/D1 scratch regs, call `cache_flush` before the
@@ -680,6 +680,7 @@ static int prescan_branch_targets(const CL_Bytecode *bc, uint8_t *is_target)
         case OP_RPLACA: case OP_RPLACD: case OP_ASET:
         case OP_ARGC: case OP_NTH_VALUE:
         case OP_TAGBODY_POP:
+        case OP_UNCATCH:
             step = 1; break;
         case OP_LOAD: case OP_STORE: case OP_CALL: case OP_TAILCALL:
         case OP_STRUCT_REF: case OP_STRUCT_SET: case OP_DYNUNBIND:
@@ -754,6 +755,28 @@ static int prescan_branch_targets(const CL_Bytecode *bc, uint8_t *is_target)
                 landing_ip = ip + 7 - neg;
             } else {
                 landing_ip = ip + 7 + (uint32_t)offset;
+            }
+            if (landing_ip > bc->code_len) return 0;
+            is_target[landing_ip] = 1;
+            break;
+        }
+        case OP_CATCH: {
+            /* 1 + i32 offset = 5 bytes.  The landing IP (catch_ip +
+             * offset, with catch_ip = ip+5 mirroring VM semantics) is
+             * the post-throw continuation where the NLX shim pushes
+             * the thrown result and branches; mark it as a real
+             * branch target so the cache flushes on arrival. */
+            int32_t offset;
+            uint32_t landing_ip;
+            step = 5;
+            if (ip + 5 > bc->code_len) return 0;
+            offset = read_i32_be(bc->code + ip + 1);
+            if (offset < 0) {
+                uint32_t neg = (uint32_t)(-offset);
+                if (neg > ip + 5) return 0;
+                landing_ip = ip + 5 - neg;
+            } else {
+                landing_ip = ip + 5 + (uint32_t)offset;
             }
             if (landing_ip > bc->code_len) return 0;
             is_target[landing_ip] = 1;
@@ -1359,6 +1382,92 @@ static int walker_compile(const CL_Bytecode *bc, CodeBuf *cb)
              * with the addq; if we ever fall through (we don't), it'd
              * be a logic bug worth detecting via the leftover args
              * rather than silently masking. */
+            break;
+        }
+
+        case OP_CATCH: {
+            /* i32 offset; tag popped from operand stack.  Same
+             * JIT-inline-setjmp shape as OP_BLOCK_PUSH — see that
+             * comment for the full sequence.  Differences:
+             *   - tag is a runtime value (cache_pop_to_dn before the
+             *     JSR), not a const-pool lookup;
+             *   - the matching pop is OP_UNCATCH, not OP_BLOCK_POP. */
+            int32_t bc_offset;
+            uint32_t landing_bc_ip;
+            int32_t beq_pc, bra_pc;
+            int32_t normal_path_off;
+            uint32_t alloc_helper        = (uint32_t)(uintptr_t)&cl_jit_runtime_catch_alloc;
+            uint32_t commit_helper       = (uint32_t)(uintptr_t)&cl_jit_runtime_catch_commit;
+            uint32_t post_longjmp_helper = (uint32_t)(uintptr_t)&cl_jit_runtime_catch_post_longjmp;
+
+            if (ip + 4 > bc->code_len) goto fail;
+            bc_offset = read_i32_be(bc->code + ip);
+            ip += 4;
+
+            /* landing_bc_ip mirrors VM: catch_ip = ip (now == start
+             * of body), so landing = ip + bc_offset. */
+            if (bc_offset < 0) {
+                uint32_t neg = (uint32_t)(-bc_offset);
+                if (neg > ip) goto fail;
+                landing_bc_ip = ip - neg;
+            } else {
+                landing_bc_ip = ip + (uint32_t)bc_offset;
+            }
+            if (landing_bc_ip > bc->code_len) goto fail;
+
+            /* Tag (TOS) goes through D0 → (a7) as the alloc helper's
+             * sole arg.  Flush after the pop so all other cached
+             * values land on the m68k stack and the conservative scan
+             * keeps them rooted across the alloc (cl_error on NLX
+             * overflow allocates a condition). */
+            cache_pop_to_dn(cb, &cache_head, &cache_depth, REG_D0);
+            cache_flush(cb, &cache_head, &cache_depth);
+            m68k_emit_move_l_dn_predec_an(cb, REG_D0, REG_A7);
+            m68k_emit_jsr_abs_l(cb, alloc_helper);
+            m68k_emit_addq_l_an(cb, 4, REG_A7);
+
+            /* setjmp(D0=&buf): push D0, JSR setjmp, drop arg. */
+            m68k_emit_move_l_dn_predec_an(cb, REG_D0, REG_A7);
+            m68k_emit_jsr_abs_l(cb, cl_jit_setjmp_addr);
+            m68k_emit_addq_l_an(cb, 4, REG_A7);
+
+            /* TST.L D0 — sets Z if zero (= normal setjmp return). */
+            m68k_emit_tst_l_dn(cb, REG_D0);
+            beq_pc = (int32_t)cb_len(cb) + 2;
+            m68k_emit_beq_w(cb, 0);   /* → normal_path, patched below */
+
+            /* NLX path inline: post_longjmp → push result → bra landing. */
+            m68k_emit_jsr_abs_l(cb, post_longjmp_helper);
+            m68k_emit_move_l_dn_predec_an(cb, REG_D0, REG_A7);
+            bra_pc = (int32_t)cb_len(cb) + 2;
+
+            if (landing_bc_ip < ip && bc_to_native[landing_bc_ip] >= 0) {
+                int32_t disp = bc_to_native[landing_bc_ip] - bra_pc;
+                if (disp < -32768 || disp > 32767) goto fail;
+                m68k_emit_bra_w(cb, (int16_t)disp);
+            } else {
+                if (!patches_push(&patches, &n_patches, &cap_patches,
+                                  (uint32_t)bra_pc, landing_bc_ip)) goto fail;
+                m68k_emit_bra_w(cb, 0);
+            }
+
+            /* normal_path: patch the BEQ to land here, then commit. */
+            normal_path_off = (int32_t)cb_len(cb);
+            m68k_patch_disp16(cb_data(cb), cb_len(cb),
+                              (uint32_t)beq_pc,
+                              (int16_t)(normal_path_off - beq_pc));
+            m68k_emit_jsr_abs_l(cb, commit_helper);
+            /* Cache depth stays 0; body executes from here. */
+            break;
+        }
+
+        case OP_UNCATCH: {
+            /* Mirror of OP_BLOCK_POP: helper does the search-backward
+             * decrement of cl_nlx_top for the matching CATCH frame.
+             * Non-allocating; D5/D6/D7 cache regs are callee-saved
+             * across the JSR per m68k SysV, so no flush needed. */
+            uint32_t pop_helper = (uint32_t)(uintptr_t)&cl_jit_runtime_catch_pop;
+            m68k_emit_jsr_abs_l(cb, pop_helper);
             break;
         }
 
