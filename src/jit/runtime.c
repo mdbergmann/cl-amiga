@@ -21,7 +21,8 @@
 #include "core/types.h"
 #include "core/float.h"      /* CL_NUMBER_P, CL_REALP */
 #include "core/error.h"
-#include "core/symbol.h"     /* SYM_STAR_PACKAGE */
+#include "core/symbol.h"     /* SYM_STAR_PACKAGE, SYM_TYPE_ERROR, KW_DATUM, KW_EXPECTED_TYPE */
+#include "core/printer.h"    /* cl_prin1_to_string (OP_ASSERT_TYPE diagnostic) */
 #include "core/package.h"    /* cl_sync_current_package_from_dynamic */
 #include "core/thread.h"     /* cl_symbol_value / cl_set_symbol_value */
 #include "core/vm.h"         /* cl_dynbind_restore_to, CL_MAX_DYN_BINDINGS, CL_NLXFrame */
@@ -378,7 +379,77 @@ CL_Obj cl_jit_runtime_rplaca(CL_Obj cons_obj, CL_Obj new_car)
         cl_error(CL_ERR_TYPE, "RPLACA: not a cons");
     cell = (CL_Cons *)CL_OBJ_TO_PTR(cons_obj);
     cell->car = new_car;
+    cl_mv_count = 1;
     return new_car;
+}
+
+/* Mirror of cl_jit_runtime_rplaca for the cdr slot.  See vm.c::OP_RPLACD. */
+CL_Obj cl_jit_runtime_rplacd(CL_Obj cons_obj, CL_Obj new_cdr)
+{
+    CL_Cons *cell;
+    if (!CL_CONS_P(cons_obj))
+        cl_error(CL_ERR_TYPE, "RPLACD: not a cons");
+    cell = (CL_Cons *)CL_OBJ_TO_PTR(cons_obj);
+    cell->cdr = new_cdr;
+    cl_mv_count = 1;
+    return new_cdr;
+}
+
+/* OP_ARGC.  cl_jit_invoke stashed the nargs of the innermost native
+ * entry into CT->jit_current_nargs before calling into the m68k code;
+ * we read it back here.  Bypasses the VM's `frame->nargs` channel
+ * since JIT'd code has no CL_Frame at all. */
+CL_Obj cl_jit_runtime_argc(void)
+{
+    cl_mv_count = 1;
+    return CL_MAKE_FIXNUM(CT->jit_current_nargs);
+}
+
+/* OP_MV_LOAD.  No mv_count reset (matches vm.c). */
+CL_Obj cl_jit_runtime_mv_load(uint32_t index)
+{
+    return (int)index < cl_mv_count ? cl_mv_values[index] : CL_NIL;
+}
+
+/* OP_NTH_VALUE.  Argument order: idx_obj passed first (at 4(a7)
+ * after JSR), primary second (at 8(a7)).  The walker emits the C-ABI
+ * pushes in that order — see emit_op_nth_value. */
+CL_Obj cl_jit_runtime_nth_value(CL_Obj idx_obj, CL_Obj primary)
+{
+    int idx;
+    CL_Obj result;
+    if (!CL_FIXNUM_P(idx_obj))
+        cl_error(CL_ERR_TYPE, "NTH-VALUE: index must be a number");
+    idx = CL_FIXNUM_VAL(idx_obj);
+    if (idx == 0)
+        result = primary;
+    else
+        result = (idx > 0 && idx < cl_mv_count) ? cl_mv_values[idx] : CL_NIL;
+    cl_mv_count = 1;
+    return result;
+}
+
+/* OP_ASSERT_TYPE.  Mirrors vm.c byte-for-byte: build a TYPE-ERROR
+ * condition with :datum and :expected-type, signal it, and if the
+ * handler returns (or no handler is bound) fall through to a
+ * formatted cl_error so the user sees the offending value and the
+ * expected type.  Allocating — caller must cache-flush before JSR. */
+void cl_jit_runtime_assert_type(CL_Obj val, CL_Obj type_spec)
+{
+    CL_Obj slots = CL_NIL;
+    CL_Obj cond;
+    char buf[128];
+    char tbuf[64];
+    if (cl_typep(val, type_spec)) return;
+    CL_GC_PROTECT(slots);
+    slots = cl_cons(cl_cons(KW_EXPECTED_TYPE, type_spec), slots);
+    slots = cl_cons(cl_cons(KW_DATUM, val), slots);
+    CL_GC_UNPROTECT(1);
+    cond = cl_make_condition(SYM_TYPE_ERROR, slots, CL_NIL);
+    cl_signal_condition(cond);
+    cl_prin1_to_string(val, buf, sizeof(buf));
+    cl_prin1_to_string(type_spec, tbuf, sizeof(tbuf));
+    cl_error(CL_ERR_TYPE, "THE: value %s is not of type %s", buf, tbuf);
 }
 
 /* Backing for OP_ASET.  Mirrors the VM's OP_ASET dispatch byte-for-

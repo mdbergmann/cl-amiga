@@ -1588,3 +1588,78 @@
 (check "walker-aset-not-a-vector" :caught
   (handler-case (progn (walker-aset-1 42 0 'x) :no-error)
     (type-error () :caught)))
+
+; --- OP_RPLACD.  Mirror of RPLACA via (setf (cdr ...) ...).
+(defun walker-rplacd-1 (c v) (setf (cdr c) v))
+(check "walker-rplacd-counter-bump" t
+  (let ((before (clamiga::%jit-invoke-count))
+        (c (cons 1 2)))
+    (walker-rplacd-1 c 99)
+    (> (clamiga::%jit-invoke-count) before)))
+(check "walker-rplacd-returns-val" 99
+  (walker-rplacd-1 (cons 1 2) 99))
+(check "walker-rplacd-mutates" '(1 . 99)
+  (let ((c (cons 1 2))) (walker-rplacd-1 c 99) c))
+(check "walker-rplacd-type-error" :caught
+  (handler-case (progn (walker-rplacd-1 42 'x) :no-error)
+    (type-error () :caught)))
+
+; --- OP_ARGC.  Compiler emits OP_ARGC only inside the &optional
+; prologue today; the walker's n_optional != 0 gate keeps such
+; functions interpreted, so we have no walker-reachable path for the
+; opcode here.  Helper + prescan + emitter are in place so that
+; lifting the gate (separate follow-up commit) immediately picks
+; them up.
+
+; --- OP_MV_LOAD / OP_NTH_VALUE.  Both come from multiple-value-bind
+; / nth-value.  multiple-value-bind expands to OP_MV_LOAD for vars
+; 1+; nth-value uses OP_NTH_VALUE.
+(defun walker-mv-load-1 (a b)
+  (multiple-value-bind (x y) (values a b)
+    (+ x y)))
+(check "walker-mv-load-counter-bump" t
+  (let ((before (clamiga::%jit-invoke-count)))
+    (walker-mv-load-1 10 20)
+    (> (clamiga::%jit-invoke-count) before)))
+(check "walker-mv-load-primary" 30 (walker-mv-load-1 10 20))
+(defun walker-mv-load-2 (a b c)
+  (multiple-value-bind (x y z) (values a b c)
+    (list x y z)))
+(check "walker-mv-load-three" '(1 2 3) (walker-mv-load-2 1 2 3))
+; missing values default to NIL.
+(defun walker-mv-load-missing (a)
+  (multiple-value-bind (x y) (values a)
+    (list x y)))
+(check "walker-mv-load-missing-is-nil" '(7 nil) (walker-mv-load-missing 7))
+
+(defun walker-nth-value-1 (n) (nth-value n (values 'a 'b 'c)))
+(check "walker-nth-value-counter-bump" t
+  (let ((before (clamiga::%jit-invoke-count)))
+    (walker-nth-value-1 0)
+    (> (clamiga::%jit-invoke-count) before)))
+(check "walker-nth-value-0" 'a (walker-nth-value-1 0))
+(check "walker-nth-value-1" 'b (walker-nth-value-1 1))
+(check "walker-nth-value-2" 'c (walker-nth-value-1 2))
+(check "walker-nth-value-out-of-range" nil (walker-nth-value-1 99))
+(check "walker-nth-value-type-error" :caught
+  (handler-case (progn (walker-nth-value-1 'not-a-number) :no-error)
+    (type-error () :caught)))
+
+; --- OP_ASSERT_TYPE.  Emitted by `the` and by `check-type` (which
+; expands to a typep + restart-case loop; the inner type check uses
+; OP_ASSERT_TYPE indirectly).  The cleanest emitter is `(the TYPE
+; FORM)` which lowers to OP_ASSERT_TYPE on the result of FORM.
+(defun walker-assert-type-fixnum (x) (the fixnum x))
+(check "walker-assert-type-counter-bump" t
+  (let ((before (clamiga::%jit-invoke-count)))
+    (walker-assert-type-fixnum 42)
+    (> (clamiga::%jit-invoke-count) before)))
+(check "walker-assert-type-pass" 42 (walker-assert-type-fixnum 42))
+(check "walker-assert-type-fail" :caught
+  (handler-case (progn (walker-assert-type-fixnum "not a fixnum") :no-error)
+    (type-error () :caught)))
+(defun walker-assert-type-symbol (x) (the symbol x))
+(check "walker-assert-type-symbol-pass" 'foo (walker-assert-type-symbol 'foo))
+(check "walker-assert-type-symbol-fail" :caught
+  (handler-case (progn (walker-assert-type-symbol 42) :no-error)
+    (type-error () :caught)))

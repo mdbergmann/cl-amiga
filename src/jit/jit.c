@@ -677,17 +677,20 @@ static int prescan_branch_targets(const CL_Bytecode *bc, uint8_t *is_target)
         case OP_MV_RESET: case OP_BLOCK_POP:
         case OP_UWPOP: case OP_UWRETHROW: case OP_MV_TO_LIST:
         case OP_MAKE_CELL: case OP_CELL_REF:
-        case OP_RPLACA: case OP_ASET:
+        case OP_RPLACA: case OP_RPLACD: case OP_ASET:
+        case OP_ARGC: case OP_NTH_VALUE:
             step = 1; break;
         case OP_LOAD: case OP_STORE: case OP_CALL: case OP_TAILCALL:
         case OP_STRUCT_REF: case OP_STRUCT_SET: case OP_DYNUNBIND:
         case OP_CELL_SET_LOCAL:
         case OP_UPVAL: case OP_CELL_SET_UPVAL:
         case OP_LIST:
+        case OP_MV_LOAD:
             step = 2; break;
         case OP_CONST: case OP_GLOAD: case OP_GSTORE:
         case OP_FLOAD: case OP_DYNBIND: case OP_BLOCK_RETURN:
         case OP_FSTORE:
+        case OP_ASSERT_TYPE:
             step = 3; break;
         case OP_JMP: case OP_JNIL: case OP_JTRUE: {
             int32_t offset;
@@ -1738,6 +1741,93 @@ static int walker_compile(const CL_Bytecode *bc, CodeBuf *cb)
             break;
         }
 
+        case OP_RPLACD: {
+            /* Mirror of OP_RPLACA for the cdr slot.  Same cache-flush
+             * + JSR shape, different helper. */
+            uint32_t helper = (uint32_t)(uintptr_t)&cl_jit_runtime_rplacd;
+            cache_pop_to_dn(cb, &cache_head, &cache_depth, REG_D1);  /* new_cdr */
+            cache_pop_to_dn(cb, &cache_head, &cache_depth, REG_D0);  /* cons_obj */
+            cache_flush(cb, &cache_head, &cache_depth);
+            m68k_emit_move_l_dn_predec_an(cb, REG_D1, REG_A7);
+            m68k_emit_move_l_dn_predec_an(cb, REG_D0, REG_A7);
+            m68k_emit_jsr_abs_l(cb, helper);
+            m68k_emit_addq_l_an(cb, 8, REG_A7);
+            cache_push_dn(cb, &cache_head, &cache_depth, REG_D0);
+            break;
+        }
+
+        case OP_ARGC: {
+            /* Zero-arg helper returns CL_MAKE_FIXNUM(nargs) from
+             * CT->jit_current_nargs (set by cl_jit_invoke).  No
+             * cache_flush — helper is non-allocating, only touches
+             * caller-saved D0/D1; D5/D6/D7 cache regs are callee-saved
+             * across the JSR per m68k SysV. */
+            uint32_t helper = (uint32_t)(uintptr_t)&cl_jit_runtime_argc;
+            m68k_emit_jsr_abs_l(cb, helper);
+            cache_push_dn(cb, &cache_head, &cache_depth, REG_D0);
+            break;
+        }
+
+        case OP_MV_LOAD: {
+            /* u8 index.  Single-arg JSR.  Helper is non-allocating
+             * (reads cl_mv_values[idx]) so no cache_flush. */
+            uint8_t index;
+            uint32_t helper = (uint32_t)(uintptr_t)&cl_jit_runtime_mv_load;
+            if (ip >= bc->code_len) goto fail;
+            index = bc->code[ip++];
+            m68k_emit_move_l_imm32_predec(cb, (uint32_t)index, REG_A7);
+            m68k_emit_jsr_abs_l(cb, helper);
+            m68k_emit_addq_l_an(cb, 4, REG_A7);
+            cache_push_dn(cb, &cache_head, &cache_depth, REG_D0);
+            break;
+        }
+
+        case OP_NTH_VALUE: {
+            /* Stack layout: TOS = primary, second = idx.  Helper
+             * signature is (idx_obj, primary), so push primary first
+             * (high address) then idx_obj (low address = first C arg).
+             * Helper may cl_error on non-fixnum index, which can
+             * allocate a condition object — cache_flush before JSR. */
+            uint32_t helper = (uint32_t)(uintptr_t)&cl_jit_runtime_nth_value;
+            cache_pop_to_dn(cb, &cache_head, &cache_depth, REG_D1);  /* primary */
+            cache_pop_to_dn(cb, &cache_head, &cache_depth, REG_D0);  /* idx_obj */
+            cache_flush(cb, &cache_head, &cache_depth);
+            m68k_emit_move_l_dn_predec_an(cb, REG_D1, REG_A7);       /* push primary */
+            m68k_emit_move_l_dn_predec_an(cb, REG_D0, REG_A7);       /* push idx_obj */
+            m68k_emit_jsr_abs_l(cb, helper);
+            m68k_emit_addq_l_an(cb, 8, REG_A7);
+            cache_push_dn(cb, &cache_head, &cache_depth, REG_D0);
+            break;
+        }
+
+        case OP_ASSERT_TYPE: {
+            /* u16 const idx for the type-spec.  Peek-only: TOS stays
+             * the value being checked.  Helper takes (val, type_spec);
+             * val sits at the (cached) operand-stack TOS, so flush
+             * first then push from (a7) and the baked-in type_spec
+             * literal.  Helper allocates the condition object on
+             * mismatch — cache_flush mandatory. */
+            uint16_t idx;
+            CL_Obj type_spec;
+            uint32_t helper = (uint32_t)(uintptr_t)&cl_jit_runtime_assert_type;
+            if (ip + 1 >= bc->code_len) goto fail;
+            idx = ((uint16_t)bc->code[ip] << 8) | bc->code[ip + 1];
+            ip += 2;
+            if (idx >= bc->n_constants || bc->constants == NULL) goto fail;
+            type_spec = bc->constants[idx];
+
+            cache_flush(cb, &cache_head, &cache_depth);
+            /* After flush: (a7) = val (operand TOS).  Push type_spec
+             * first so it lands at 8(a7) post-JSR, then dup val from
+             * 4(a7) to (a7) so it lands at 4(a7) post-JSR.  Helper sig
+             * is (val, type_spec). */
+            m68k_emit_move_l_imm32_predec(cb, (uint32_t)type_spec, REG_A7);
+            m68k_emit_move_l_disp_an_predec_am(cb, 4, REG_A7, REG_A7); /* dup val */
+            m68k_emit_jsr_abs_l(cb, helper);
+            m68k_emit_addq_l_an(cb, 8, REG_A7);
+            break;
+        }
+
         case OP_ASET: {
             /* Three-arg helper: helper(vec_obj, idx_obj, val).  After
              * the cache flush the three operand-stack values sit at
@@ -2691,8 +2781,9 @@ CL_Obj cl_jit_invoke(CL_Obj func_obj, CL_Bytecode *bc, int nargs)
 {
     CL_Obj result = CL_NIL;
     CL_Thread *t;
-    int   prev_depth;
-    void *prev_top;
+    int     prev_depth;
+    void   *prev_top;
+    int32_t prev_nargs;
     int   is_kw;
 
     if (bc == NULL || bc->native_code == NULL) return CL_NIL;
@@ -2712,12 +2803,14 @@ CL_Obj cl_jit_invoke(CL_Obj func_obj, CL_Bytecode *bc, int nargs)
     t = cl_get_current_thread();
     prev_depth = t->jit_depth;
     prev_top   = t->jit_stack_top;
+    prev_nargs = t->jit_current_nargs;
     if (prev_depth == 0) {
         extern volatile int cl_jit_active_threads;
         t->jit_stack_top = CL_CAPTURE_SP();
         cl_jit_active_threads++;
     }
     t->jit_depth = prev_depth + 1;
+    t->jit_current_nargs = (int32_t)nargs;
 
     if (is_kw) {
         /* Kw ABI: native(func, bc, nargs, args).  args may be NULL when
@@ -2792,8 +2885,9 @@ CL_Obj cl_jit_invoke(CL_Obj func_obj, CL_Bytecode *bc, int nargs)
     }
 
 done:
-    t->jit_depth     = prev_depth;
-    t->jit_stack_top = prev_top;
+    t->jit_depth         = prev_depth;
+    t->jit_stack_top     = prev_top;
+    t->jit_current_nargs = prev_nargs;
     if (prev_depth == 0) {
         extern volatile int cl_jit_active_threads;
         cl_jit_active_threads--;
