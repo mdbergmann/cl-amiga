@@ -92,6 +92,14 @@ CL_Obj cl_jit_runtime_numeq(CL_Obj a, CL_Obj b);
 
 CL_Obj cl_jit_runtime_mul  (CL_Obj a, CL_Obj b);
 
+/* Slow-path `/` (2 args).  NUMBER type-check both operands, then defer
+ * to `cl_arith_div` which handles the cross-type math (fixnum exact /
+ * inexact-to-ratio / float).  Same shape as `_mul`: no inline fixnum
+ * fast path on the JIT side — `/` is rare in tight inner loops and
+ * `cl_arith_div`'s own fixnum dispatch already costs only a few
+ * instructions per call. */
+CL_Obj cl_jit_runtime_div  (CL_Obj a, CL_Obj b);
+
 CL_Obj cl_jit_runtime_car  (CL_Obj obj);
 CL_Obj cl_jit_runtime_cdr  (CL_Obj obj);
 
@@ -106,8 +114,39 @@ CL_Obj cl_jit_runtime_fstore(CL_Obj sym, CL_Obj val);
 void   cl_jit_runtime_dynbind  (CL_Obj sym, CL_Obj new_val);
 void   cl_jit_runtime_dynunbind(uint32_t count);
 
+/* OP_PROGV_BIND backing.  Pops `symbols_list` and `values_list` from
+ * the operand stack (caller-side via cache_pop_to_dn), snapshots the
+ * current cl_dyn_top, then walks both lists in lockstep:
+ *   - each car of symbols_list must be a SYMBOL (else cl_signal_type_error);
+ *   - paired value is car of values_list, or CL_UNBOUND if values_list
+ *     runs out (CLHS PROGV: "If too few values are supplied … the
+ *     remaining symbols are bound and then made to have no value");
+ *   - dyn-stack overflow → cl_error.
+ * Returns the saved dyn_top as a CL_MAKE_FIXNUM so the walker can push
+ * it as the mark for the matching OP_PROGV_UNBIND.  Non-allocating on
+ * the success path, but error signaling may allocate a condition — the
+ * walker cache_flushes before the JSR. */
+CL_Obj cl_jit_runtime_progv_bind(CL_Obj symbols_list, CL_Obj values_list);
+
+/* OP_PROGV_UNBIND backing.  Restore dyn-bindings down to `mark_obj`
+ * (CL_FIXNUM-encoded, untag in helper) and return `result` so the
+ * walker can leave the body result as the new TOS.  Non-allocating on
+ * the normal path; cl_set_package sync inside cl_dynbind_restore_to
+ * may signal, so the walker cache_flushes before the JSR — same
+ * discipline as OP_DYNUNBIND. */
+CL_Obj cl_jit_runtime_progv_unbind(CL_Obj mark_obj, CL_Obj result);
+
 CL_Obj cl_jit_runtime_fload(CL_Obj sym);
 CL_Obj cl_jit_runtime_call (CL_Obj *operand_top, uint32_t nargs);
+
+/* OP_APPLY backing.  Mirrors the VM's OP_APPLY semantics: walks the
+ * arglist into a stack-local CL_Obj[64] (max 64 args, matching the VM),
+ * resolves `func` if it's a SYMBOL, then delegates to `cl_vm_apply`
+ * which handles builtins, closures, and JIT-compiled callees uniformly.
+ * Allocates (cl_vm_apply may cons frames, invoke user code), so the
+ * walker cache_flushes before the JSR — the conservative m68k-stack
+ * scan keeps cached operand-stack residuals reachable across the call. */
+CL_Obj cl_jit_runtime_apply(CL_Obj func, CL_Obj arglist);
 
 CL_Obj cl_jit_runtime_struct_ref(CL_Obj obj, uint32_t idx);
 CL_Obj cl_jit_runtime_struct_set(CL_Obj obj, uint32_t idx, CL_Obj val);

@@ -17,10 +17,11 @@
  *
  *     Currently supported opcodes: OP_NIL, OP_T, OP_CONST, OP_LOAD,
  *     OP_STORE, OP_POP, OP_DUP, OP_JMP, OP_JNIL, OP_JTRUE, OP_ADD,
- *     OP_SUB, OP_MUL, OP_EQ, OP_LT, OP_GT, OP_LE, OP_GE, OP_NUMEQ,
- *     OP_NOT, OP_CAR, OP_CDR, OP_CONS, OP_GLOAD, OP_GSTORE, OP_FLOAD,
- *     OP_CALL, OP_TAILCALL, OP_STRUCT_REF, OP_STRUCT_SET, OP_DYNBIND,
- *     OP_DYNUNBIND, OP_MV_RESET, OP_MV_TO_LIST, OP_BLOCK_PUSH,
+ *     OP_SUB, OP_MUL, OP_DIV, OP_EQ, OP_LT, OP_GT, OP_LE, OP_GE,
+ *     OP_NUMEQ, OP_NOT, OP_CAR, OP_CDR, OP_CONS, OP_GLOAD, OP_GSTORE,
+ *     OP_FLOAD, OP_CALL, OP_TAILCALL, OP_APPLY, OP_STRUCT_REF,
+ *     OP_STRUCT_SET, OP_DYNBIND, OP_DYNUNBIND, OP_PROGV_BIND,
+ *     OP_PROGV_UNBIND, OP_MV_RESET, OP_MV_TO_LIST, OP_BLOCK_PUSH,
  *     OP_BLOCK_POP, OP_BLOCK_RETURN, OP_CATCH, OP_UNCATCH,
  *     OP_UWPROT, OP_UWPOP, OP_UWRETHROW, OP_AMIGA_CALL, OP_RET.
  *     OP_CONS is the first allocating opcode handled directly.
@@ -672,7 +673,7 @@ static int prescan_branch_targets(const CL_Bytecode *bc, uint8_t *is_target)
         switch (op) {
         case OP_NIL: case OP_T: case OP_POP: case OP_DUP: case OP_RET:
         case OP_CAR: case OP_CDR: case OP_CONS: case OP_NOT: case OP_EQ:
-        case OP_ADD: case OP_SUB: case OP_MUL:
+        case OP_ADD: case OP_SUB: case OP_MUL: case OP_DIV:
         case OP_LT: case OP_GT: case OP_LE: case OP_GE: case OP_NUMEQ:
         case OP_MV_RESET: case OP_BLOCK_POP:
         case OP_UWPOP: case OP_UWRETHROW: case OP_MV_TO_LIST:
@@ -681,6 +682,8 @@ static int prescan_branch_targets(const CL_Bytecode *bc, uint8_t *is_target)
         case OP_ARGC: case OP_NTH_VALUE:
         case OP_TAGBODY_POP:
         case OP_UNCATCH:
+        case OP_APPLY:
+        case OP_PROGV_BIND: case OP_PROGV_UNBIND:
             step = 1; break;
         case OP_LOAD: case OP_STORE: case OP_CALL: case OP_TAILCALL:
         case OP_STRUCT_REF: case OP_STRUCT_SET: case OP_DYNUNBIND:
@@ -1099,10 +1102,30 @@ static int walker_compile(const CL_Bytecode *bc, CodeBuf *cb)
             /* JSR-only template — see runtime helper comment for why
              * there's no inline MUL fast path.  Pop b/a, push them as
              * C-ABI right-to-left args, JSR, drop args, push the D0
-             * result back through the cache.  OP_DIV is not handled
-             * because today's compiler never emits it.  Flush after
-             * pops: cl_arith_mul can allocate (bignum). */
+             * result back through the cache.  Flush after pops:
+             * cl_arith_mul can allocate (bignum). */
             uint32_t helper = (uint32_t)(uintptr_t)&cl_jit_runtime_mul;
+            cache_pop_to_dn(cb, &cache_head, &cache_depth, REG_D1);   /* b */
+            cache_pop_to_dn(cb, &cache_head, &cache_depth, REG_D0);   /* a */
+            cache_flush(cb, &cache_head, &cache_depth);
+            m68k_emit_move_l_dn_predec_an(cb, REG_D1, REG_A7);
+            m68k_emit_move_l_dn_predec_an(cb, REG_D0, REG_A7);
+            m68k_emit_jsr_abs_l(cb, helper);
+            m68k_emit_addq_l_an(cb, 8, REG_A7);
+            cache_push_dn(cb, &cache_head, &cache_depth, REG_D0);
+            break;
+        }
+
+        case OP_DIV: {
+            /* Same shape as OP_MUL — no inline fixnum fast path, all
+             * traffic goes through cl_jit_runtime_div which type-checks
+             * NUMBER and delegates to cl_arith_div.  Today's compiler
+             * doesn't emit OP_DIV from `/` (it routes through the
+             * regular OP_CALL path), so this template is reached only
+             * by handwritten OP_DIV emitters / future inliner work —
+             * having it in place keeps the walker complete and avoids a
+             * latent bail when an inliner does start using it. */
+            uint32_t helper = (uint32_t)(uintptr_t)&cl_jit_runtime_div;
             cache_pop_to_dn(cb, &cache_head, &cache_depth, REG_D1);   /* b */
             cache_pop_to_dn(cb, &cache_head, &cache_depth, REG_D0);   /* a */
             cache_flush(cb, &cache_head, &cache_depth);
@@ -1235,6 +1258,49 @@ static int walker_compile(const CL_Bytecode *bc, CodeBuf *cb)
             m68k_emit_move_l_imm32_predec(cb, (uint32_t)count, REG_A7);
             m68k_emit_jsr_abs_l(cb, helper);
             m68k_emit_addq_l_an(cb, 4, REG_A7);
+            break;
+        }
+
+        case OP_PROGV_BIND: {
+            /* Operand stack on entry: TOS = values_list, second =
+             * symbols_list.  Pop both, flush, JSR helper, push the
+             * returned mark fixnum.  Helper installs the dyn-bindings
+             * and returns the saved cl_dyn_top as CL_MAKE_FIXNUM so
+             * the matching OP_PROGV_UNBIND can restore exactly the
+             * same prefix.  Helper signals on non-symbol / overflow
+             * (allocates condition objects) → cache_flush mandatory. */
+            uint32_t helper = (uint32_t)(uintptr_t)&cl_jit_runtime_progv_bind;
+            cache_pop_to_dn(cb, &cache_head, &cache_depth, REG_D1);  /* values_list */
+            cache_pop_to_dn(cb, &cache_head, &cache_depth, REG_D0);  /* symbols_list */
+            cache_flush(cb, &cache_head, &cache_depth);
+            /* Push C args R→L: values_list, symbols_list. */
+            m68k_emit_move_l_dn_predec_an(cb, REG_D1, REG_A7);
+            m68k_emit_move_l_dn_predec_an(cb, REG_D0, REG_A7);
+            m68k_emit_jsr_abs_l(cb, helper);
+            m68k_emit_addq_l_an(cb, 8, REG_A7);
+            cache_push_dn(cb, &cache_head, &cache_depth, REG_D0);
+            break;
+        }
+
+        case OP_PROGV_UNBIND: {
+            /* Operand stack on entry: TOS = body result, second =
+             * mark fixnum from the matching OP_PROGV_BIND.  Pop both,
+             * flush, JSR helper(mark, result), push result back.
+             * Helper restores dyn-bindings and returns the result
+             * verbatim so peek semantics are preserved.  The restore
+             * itself is non-allocating but may invoke cl_set_package
+             * for a *PACKAGE* rebinding which can allocate via error
+             * paths → cache_flush before the JSR. */
+            uint32_t helper = (uint32_t)(uintptr_t)&cl_jit_runtime_progv_unbind;
+            cache_pop_to_dn(cb, &cache_head, &cache_depth, REG_D1);  /* result */
+            cache_pop_to_dn(cb, &cache_head, &cache_depth, REG_D0);  /* mark */
+            cache_flush(cb, &cache_head, &cache_depth);
+            /* Push C args R→L: result, mark. */
+            m68k_emit_move_l_dn_predec_an(cb, REG_D1, REG_A7);
+            m68k_emit_move_l_dn_predec_an(cb, REG_D0, REG_A7);
+            m68k_emit_jsr_abs_l(cb, helper);
+            m68k_emit_addq_l_an(cb, 8, REG_A7);
+            cache_push_dn(cb, &cache_head, &cache_depth, REG_D0);
             break;
         }
 
@@ -1915,6 +1981,32 @@ static int walker_compile(const CL_Bytecode *bc, CodeBuf *cb)
             m68k_emit_move_l_disp_an_to_dn(cb, saved_d5_disp, REG_A6, REG_D5);
             m68k_emit_unlk_an(cb, REG_A6);
             m68k_emit_rts(cb);
+            break;
+        }
+
+        case OP_APPLY: {
+            /* Operand stack on entry: TOS = arglist, second = func.
+             * Pop both, flush, JSR cl_jit_runtime_apply(func, arglist),
+             * push D0 result.  Helper allocates (calls cl_vm_apply
+             * which may invoke user code), so cache_flush is mandatory
+             * — any residual cached heap pointers must live on the
+             * m68k stack for the conservative scan.
+             *
+             * The compiler emits OP_APPLY for `(apply fn …args… list)`
+             * after compiling each arg + N-1 OP_CONS instructions to
+             * build the full arglist.  Result becomes the new TOS so
+             * downstream ops see the apply value directly. */
+            uint32_t helper = (uint32_t)(uintptr_t)&cl_jit_runtime_apply;
+            cache_pop_to_dn(cb, &cache_head, &cache_depth, REG_D1);  /* arglist */
+            cache_pop_to_dn(cb, &cache_head, &cache_depth, REG_D0);  /* func */
+            cache_flush(cb, &cache_head, &cache_depth);
+            /* Push C args right-to-left: arglist, then func.  After
+             * JSR: func at 4(a7), arglist at 8(a7). */
+            m68k_emit_move_l_dn_predec_an(cb, REG_D1, REG_A7);
+            m68k_emit_move_l_dn_predec_an(cb, REG_D0, REG_A7);
+            m68k_emit_jsr_abs_l(cb, helper);
+            m68k_emit_addq_l_an(cb, 8, REG_A7);
+            cache_push_dn(cb, &cache_head, &cache_depth, REG_D0);
             break;
         }
 

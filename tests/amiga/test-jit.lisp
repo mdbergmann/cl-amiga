@@ -1765,3 +1765,84 @@
 (check "walker-assert-type-symbol-fail" :caught
   (handler-case (progn (walker-assert-type-symbol 42) :no-error)
     (type-error () :caught)))
+
+; --- OP_APPLY.  Compiler emits OP_APPLY for `(apply fn ... list)`.  The
+; walker pops arglist + func, JSRs cl_jit_runtime_apply (which flattens
+; the arglist and routes through cl_vm_apply).
+(defun walker-apply-1 (fn args) (apply fn args))
+(check "walker-apply-counter-bump" t
+  (let ((before (clamiga::%jit-invoke-count)))
+    (walker-apply-1 #'+ '(1 2 3))
+    (> (clamiga::%jit-invoke-count) before)))
+; Simple builtin via apply.
+(check "walker-apply-builtin" 6 (walker-apply-1 #'+ '(1 2 3)))
+; Empty arglist.
+(check "walker-apply-empty" 0 (walker-apply-1 #'+ nil))
+; User-defined function via apply.
+(defun walker-apply-helper (a b c) (list c b a))
+(check "walker-apply-user-fn" '(3 2 1)
+  (walker-apply-1 #'walker-apply-helper '(1 2 3)))
+; (apply fn arg1 ... arglist) — leading args plus a trailing list.
+(defun walker-apply-leading (a fn args) (apply fn a args))
+(check "walker-apply-leading-args" 10
+  (walker-apply-leading 1 #'+ '(2 3 4)))
+; Symbol as function — resolves through symbol-function.
+(check "walker-apply-symbol-fn" 6
+  (walker-apply-1 '+ '(1 2 3)))
+
+; --- OP_PROGV_BIND / OP_PROGV_UNBIND.  `progv` lowers to PROGV_BIND
+; (consume two lists, dyn-bind in lockstep, push fixnum mark) then
+; PROGV_UNBIND on body exit.  Walker round-trips both through helpers
+; that mirror the VM exactly.
+
+(defvar walker-progv-not-special 0)  ; ensure symbol exists for symbol-value lookup
+
+(defun walker-progv-1 (syms vals)
+  (progv syms vals
+    (symbol-value (car syms))))
+
+(check "walker-progv-counter-bump" t
+  (let ((before (clamiga::%jit-invoke-count)))
+    (walker-progv-1 '(walker-progv-not-special) '(42))
+    (> (clamiga::%jit-invoke-count) before)))
+
+; Single binding visible inside body.
+(check "walker-progv-single" 42
+  (walker-progv-1 '(walker-progv-not-special) '(42)))
+
+; Bindings unwind: outer value restored after progv exit.
+(setf walker-progv-not-special 7)
+(check "walker-progv-restored-after-exit" 7
+  (progn (walker-progv-1 '(walker-progv-not-special) '(99))
+         walker-progv-not-special))
+
+; Multiple bindings + access via SYMBOL-VALUE inside.
+(defvar walker-progv-a 0)
+(defvar walker-progv-b 0)
+(defun walker-progv-multi ()
+  (progv '(walker-progv-a walker-progv-b) '(10 20)
+    (+ (symbol-value 'walker-progv-a)
+       (symbol-value 'walker-progv-b))))
+(check "walker-progv-multi-sum" 30 (walker-progv-multi))
+
+; Fewer values than symbols → trailing symbols are bound to no-value.
+; Reading the unbound symbol inside the progv signals UNBOUND-VARIABLE
+; per CLHS PROGV semantics.
+(defun walker-progv-short-vals ()
+  (progv '(walker-progv-a walker-progv-b) '(5)
+    (handler-case (symbol-value 'walker-progv-b)
+      (error () :unbound))))
+(check "walker-progv-short-values" :unbound (walker-progv-short-vals))
+
+; Non-symbol in symbols list → type-error from the helper.
+(defun walker-progv-bad-syms ()
+  (progv '(42) '(1) :body))
+(check "walker-progv-type-error" :caught
+  (handler-case (progn (walker-progv-bad-syms) :no-error)
+    (error () :caught)))
+
+; --- OP_DIV.  Today's compiler routes `/` through OP_FLOAD+OP_CALL, not
+; OP_DIV, so this opcode isn't reached by user code via the standard
+; `/` path — but the walker's prescan and emitter are in place so any
+; future inliner that emits OP_DIV picks them up immediately.  No direct
+; test reaches the emitter through Lisp source today.
