@@ -77,4 +77,21 @@
   (declare (ignore streams))
   (make-string-output-stream))
 
+(in-package #:ql-impl-util)
+
+;; ql-impl-util:directory-entries has no :implementation t fallback, so
+;; ql:quickload's local-projects scan fails with "No applicable primary
+;; method" on CL-Amiga. Override with the ccl/sbcl-style implementation.
+;; CL-Amiga's DIRECTORY uses GLOB_MARK, which appends "/" to subdirs —
+;; that's exactly what quicklisp's DIRECTORYP fallback recognizes.
+(defun directory-entries (directory)
+  (when (directoryp directory)
+    (directory (merge-pathnames *wild-entry* directory))))
+
 (in-package "COMMON-LISP-USER")
+
+;; Marker so callers can tell whether the shim is already active.
+;; Reloading this file in the same image re-wraps gray-streams etc.
+;; and can corrupt CLOS dispatch — callers should check this feature
+;; before a second LOAD.
+(pushnew :quicklisp-compat *features*)

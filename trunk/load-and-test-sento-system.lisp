@@ -18,10 +18,19 @@
 (setq *load-verbose* nil)
 (require "asdf")
 
-#+amigaos (load "S:quicklisp/setup.lisp")
-#-amigaos (load (merge-pathnames "quicklisp/setup.lisp" (user-homedir-pathname)))
+(defvar *ql-setup*
+  #+amigaos #P"S:quicklisp/setup.lisp"
+  #-amigaos (merge-pathnames "quicklisp/setup.lisp" (user-homedir-pathname)))
 
-(load "lib/quicklisp-compat.lisp")
+(unless (probe-file *ql-setup*)
+  (load "lib/quicklisp-install.lisp")
+  (funcall (find-symbol "INSTALL" "CL-AMIGA-QL")))
+
+(unless (member :quicklisp *features*)
+  (load *ql-setup*))
+
+(unless (member :quicklisp-compat *features*)
+  (load "lib/quicklisp-compat.lisp"))
 
 ;; No (ql:quickload ...) here: that would compile sento + its deps and
 ;; populate the FASL cache before the test, defeating the "cold cache"

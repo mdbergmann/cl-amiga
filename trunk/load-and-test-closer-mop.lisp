@@ -5,10 +5,19 @@
 (require "clos")
 
 ;; Host: ~/quicklisp/setup.lisp, Amiga: S:quicklisp/setup.lisp
-#+amigaos (load "S:quicklisp/setup.lisp")
-#-amigaos (load (merge-pathnames "quicklisp/setup.lisp" (user-homedir-pathname)))
+(defvar *ql-setup*
+  #+amigaos #P"S:quicklisp/setup.lisp"
+  #-amigaos (merge-pathnames "quicklisp/setup.lisp" (user-homedir-pathname)))
 
-(load "lib/quicklisp-compat.lisp")
+(unless (probe-file *ql-setup*)
+  (load "lib/quicklisp-install.lisp")
+  (funcall (find-symbol "INSTALL" "CL-AMIGA-QL")))
+
+(unless (member :quicklisp *features*)
+  (load *ql-setup*))
+
+(unless (member :quicklisp-compat *features*)
+  (load "lib/quicklisp-compat.lisp"))
 
 (format t "~%--- Loading closer-mop (CL-Amiga shim) ---~%")
 (asdf:load-system :closer-mop)
