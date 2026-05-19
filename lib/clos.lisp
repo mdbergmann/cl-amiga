@@ -1171,21 +1171,40 @@ Specialize via defmethod to provide lazy initialization."
 
 ;;; --- Generic function and method struct types ---
 
-;;; standard-generic-function: 8 slots
+;;; standard-generic-function: 9 slots
 ;;;   0: name, 1: lambda-list, 2: methods, 3: discriminating-function,
 ;;;   4: method-combination, 5: dispatch-cache, 6: cacheable-p,
-;;;   7: eql-value-sets
-(%register-struct-type 'standard-generic-function 8 nil
+;;;   7: eql-value-sets, 8: inline-cache
+;;;
+;;; INLINE-CACHE is a small (NIL or class+EMF tuple) cell consulted by
+;;; arity-specialized discriminators before they fall back to the hash-
+;;; table cache.  Layouts by arity:
+;;;   1-arg: (class . emf)
+;;;   2-arg: (class1 class2 . emf)
+;;;   3-arg: ((class1 class2 class3) . emf)
+;;; %INSTALL-METHOD-IN-GF / %UNINSTALL-METHOD-FROM-GF /
+;;; %INVALIDATE-ALL-GF-CACHES all clear this slot alongside the hash
+;;; cache, so stale EMFs cannot linger past a method-set change.
+(%register-struct-type 'standard-generic-function 9 nil
   '((name nil) (lambda-list nil) (methods nil)
     (discriminating-function nil) (method-combination nil)
-    (dispatch-cache nil) (cacheable-p nil) (eql-value-sets nil)))
+    (dispatch-cache nil) (cacheable-p nil) (eql-value-sets nil)
+    (inline-cache nil)))
 
-;;; standard-method: 5 slots
+;;; standard-method: 6 slots
 ;;;   0: generic-function, 1: specializers, 2: qualifiers, 3: function,
-;;;   4: lambda-list
-(%register-struct-type 'standard-method 5 nil
+;;;   4: lambda-list, 5: simple-primary-p
+;;;
+;;; SIMPLE-PRIMARY-P is set by DEFMETHOD when the source body uses
+;;; neither CALL-NEXT-METHOD nor NEXT-METHOD-P (and the method has no
+;;; qualifiers).  Detection is conservative — it is a symbol-name scan,
+;;; so any reference (even in a quoted form) marks the method as
+;;; non-simple.  The dispatch fast path relies on this flag to skip the
+;;; method-chain wrapper that establishes the three CNM dynamic
+;;; bindings on every call.
+(%register-struct-type 'standard-method 6 nil
   '((generic-function nil) (specializers nil) (qualifiers nil)
-    (function nil) (lambda-list nil)))
+    (function nil) (lambda-list nil) (simple-primary-p nil)))
 
 ;;; Funcallable metaclass hierarchy (AMOP §5.5).
 ;;;
@@ -1242,6 +1261,8 @@ Specialize via defmethod to provide lazy initialization."
 (defun %set-gf-cacheable-p (gf val) (%struct-set gf 6 val))
 (defun gf-eql-value-sets (gf) (%struct-ref gf 7))
 (defun %set-gf-eql-value-sets (gf val) (%struct-set gf 7 val))
+(defun gf-inline-cache (gf) (%struct-ref gf 8))
+(defun %set-gf-inline-cache (gf val) (%struct-set gf 8 val))
 
 (defun method-generic-function (m) (%struct-ref m 0))
 (defun %set-method-generic-function (m gf) (%struct-set m 0 gf))
@@ -1249,6 +1270,8 @@ Specialize via defmethod to provide lazy initialization."
 (defun method-qualifiers (m) (%struct-ref m 2))
 (defun method-function (m) (%struct-ref m 3))
 (defun method-lambda-list (m) (%struct-ref m 4))
+(defun method-simple-primary-p (m) (%struct-ref m 5))
+(defun %set-method-simple-primary-p (m val) (%struct-set m 5 val))
 
 ;;; --- GF table ---
 (defvar *generic-function-table* (make-hash-table :test 'equal))
@@ -1401,6 +1424,14 @@ When called with no arguments, passes the original method arguments."
     (setq around (nreverse around))
     (unless primary
       (error "No applicable primary method"))
+    ;; Fast path: a single primary method whose body does not use
+    ;; CALL-NEXT-METHOD/NEXT-METHOD-P, and no :before/:after/:around.
+    ;; The EMF is just the method-function itself — no wrapper closure,
+    ;; no three-binding *CALL-NEXT-METHOD-FUNCTION* dance per call.
+    (when (and (null before) (null after) (null around)
+               (null (cdr primary))
+               (method-simple-primary-p (car primary)))
+      (return-from %build-effective-method (method-function (car primary))))
     ;; Build the effective method
     (let* ((primary-chain (%make-method-chain primary))
            (call-primary
@@ -1446,19 +1477,28 @@ When called with no arguments, passes the original method arguments."
 
 (defun %make-method-chain (methods)
   "Build a call-next-method chain from primary methods."
-  (if (null methods)
-      (lambda (&rest call-args)
-        (declare (ignore call-args))
-        (error "No next method"))
-      (let* ((m (car methods))
-             (rest-chain (%make-method-chain (cdr methods)))
-             (has-next (not (null (cdr methods)))))
-        (lambda (&rest call-args)
-          (let* ((actual-args (if call-args call-args *current-method-args*))
-                 (*call-next-method-function* rest-chain)
-                 (*call-next-method-args* actual-args)
-                 (*next-method-p-function* (lambda () has-next)))
-            (apply (method-function m) actual-args))))))
+  (cond
+    ((null methods)
+     (lambda (&rest call-args)
+       (declare (ignore call-args))
+       (error "No next method")))
+    ;; Leaf optimization: the last method in a chain has no "next method"
+    ;; binding to provide, and if its body never references CALL-NEXT-METHOD
+    ;; / NEXT-METHOD-P we can return its function unwrapped — saving three
+    ;; dynamic-binding push/pops on the deepest call of every CNM chain.
+    ((and (null (cdr methods))
+          (method-simple-primary-p (car methods)))
+     (method-function (car methods)))
+    (t
+     (let* ((m (car methods))
+            (rest-chain (%make-method-chain (cdr methods)))
+            (has-next (not (null (cdr methods)))))
+       (lambda (&rest call-args)
+         (let* ((actual-args (if call-args call-args *current-method-args*))
+                (*call-next-method-function* rest-chain)
+                (*call-next-method-args* actual-args)
+                (*next-method-p-function* (lambda () has-next)))
+           (apply (method-function m) actual-args)))))))
 
 (defun %make-around-chain (around-methods inner)
   "Build an :around chain that wraps INNER."
@@ -1499,7 +1539,8 @@ When called with no arguments, passes the original method arguments."
   "Clear dispatch caches of all generic functions."
   (maphash (lambda (name gf)
              (declare (ignore name))
-             (%set-gf-dispatch-cache gf nil))
+             (%set-gf-dispatch-cache gf nil)
+             (%set-gf-inline-cache gf nil))
            *generic-function-table*))
 
 (defun %compute-eql-value-sets (gf)
@@ -1650,6 +1691,163 @@ When called with no arguments, passes the original method arguments."
          (let ((*current-method-args* args))
            (apply (%dispatch-build-emf gf methods) args)))))))
 
+;;; --- Inline-cached, arity-specialized discriminators ---
+;;;
+;;; The default discriminating function captures the GF in its closure
+;;; and consults an inline cache (a small cons cell in GF slot 8) before
+;;; falling back to %GF-DISPATCH.  On a cache hit the dispatcher invokes
+;;; the cached EMF directly (no &rest cons, no APPLY).  The arity
+;;; templates below specialize to 1/2/3 required arguments — the common
+;;; cases for accessors and small GFs; anything else uses a variadic
+;;; fallback that matches the pre-IC behaviour.
+
+(defun %gf-lambda-list-required-count (lambda-list)
+  "Return the count of required (positional, non-lambda-list-keyword)
+   parameters in LAMBDA-LIST, or NIL if any non-required keyword is
+   present.  Used to pick a fixed-arity discriminator template."
+  (let ((n 0))
+    (dolist (p lambda-list n)
+      (when (member p '(&optional &rest &key &body &aux &allow-other-keys
+                        &whole &environment)
+                    :test #'eq)
+        (return-from %gf-lambda-list-required-count nil))
+      (setq n (1+ n)))))
+
+;;; An EMF is "direct" when it is the raw METHOD-FUNCTION of a single
+;;; simple-primary method (no qualifiers, no CALL-NEXT-METHOD).  Direct
+;;; EMFs do not consult *CURRENT-METHOD-ARGS*, so the IC fast path can
+;;; call them without binding it — which is what makes the fast path
+;;; allocation-free.  Non-direct EMFs (chain wrappers, around chains,
+;;; custom combinations) stay in the hash cache and reach the slow path
+;;; on every call, which establishes the binding before invoking them.
+;;; The IC is populated only at fresh-EMF computation time, when we have
+;;; the methods in scope; cache-hit paths intentionally leave the IC
+;;; alone — for monomorphic call sites it was set on the first miss and
+;;; stays valid until method changes nil it.
+(defun %emf-direct-p (emf methods)
+  (and (null (cdr methods))
+       (let ((m (car methods)))
+         (and (method-simple-primary-p m)
+              (eq emf (method-function m))))))
+
+;;; Slow paths for the IC discriminators.  These mirror %GF-DISPATCH but
+;;; populate the inline cache on a class-mode hit so subsequent calls
+;;; bypass the hash-table cache entirely.  EQL / fallback modes return
+;;; through %GF-DISPATCH without populating the IC — the next call
+;;; misses the IC again and re-enters here, which is fine for the rare
+;;; EQL-dispatched paths.
+
+(defun %gf-1-no-method-error (gf a)
+  (error "No applicable method for ~S with args of types ~S"
+         (gf-name gf) (list (type-of a))))
+
+(defun %gf-dispatch-1-slow (gf a)
+  (let ((mode (gf-cacheable-p gf))
+        (args (list a)))
+    (cond
+      ((integerp mode)
+       (let ((cache (gf-dispatch-cache gf))
+             (class (class-of a))
+             (*current-method-args* args))
+         (unless cache
+           (setq cache (make-hash-table :test 'eq))
+           (%set-gf-dispatch-cache gf cache))
+         (multiple-value-bind (emf found) (gethash class cache)
+           (cond
+             ((and found emf) (funcall emf a))
+             (found (%gf-1-no-method-error gf a))
+             (t
+              (let ((methods (%compute-applicable-methods gf args)))
+                (cond
+                  (methods
+                   (let ((new-emf (%dispatch-build-emf gf methods)))
+                     (setf (gethash class cache) new-emf)
+                     (when (%emf-direct-p new-emf methods)
+                       (%set-gf-inline-cache gf (cons class new-emf)))
+                     (funcall new-emf a)))
+                  (t
+                   (setf (gethash class cache) nil)
+                   (%gf-1-no-method-error gf a)))))))))
+      (t (%gf-dispatch gf args)))))
+
+(defun %gf-2-no-method-error (gf a b)
+  (error "No applicable method for ~S with args of types ~S"
+         (gf-name gf) (list (type-of a) (type-of b))))
+
+(defun %gf-2-resolve (gf a b args table key c1 c2)
+  "Look up EMF for the 2-arg call in TABLE keyed by KEY; compute on
+   miss.  *CURRENT-METHOD-ARGS* is bound to ARGS by the caller so any
+   chain-wrapper / CALL-METHOD form in the resulting EMF can read it."
+  (multiple-value-bind (emf found) (gethash key table)
+    (cond
+      ((and found emf) (funcall emf a b))
+      (found (%gf-2-no-method-error gf a b))
+      (t
+       (let ((methods (%compute-applicable-methods gf args)))
+         (cond
+           (methods
+            (let ((new-emf (%dispatch-build-emf gf methods)))
+              (setf (gethash key table) new-emf)
+              (when (%emf-direct-p new-emf methods)
+                (%set-gf-inline-cache gf (cons c1 (cons c2 new-emf))))
+              (funcall new-emf a b)))
+           (t
+            (setf (gethash key table) nil)
+            (%gf-2-no-method-error gf a b))))))))
+
+(defun %gf-dispatch-2-slow (gf a b)
+  (let ((mode (gf-cacheable-p gf))
+        (args (list a b)))
+    (cond
+      ((integerp mode)
+       (let ((cache (gf-dispatch-cache gf))
+             (c1 (class-of a))
+             (c2 (class-of b))
+             (*current-method-args* args))
+         (unless cache
+           (setq cache (make-hash-table :test 'eq))
+           (%set-gf-dispatch-cache gf cache))
+         (cond
+           ((>= mode 2)
+            ;; Two specialized positions: navigate nested hash, matching
+            ;; %GF-DISPATCH-CACHED's layout so the IC and hash cache
+            ;; agree on key shape.
+            (let ((inner (gethash c1 cache)))
+              (unless inner
+                (setq inner (make-hash-table :test 'eq))
+                (setf (gethash c1 cache) inner))
+              (%gf-2-resolve gf a b args inner c2 c1 c2)))
+           (t
+            ;; Single specialized position: cache keyed on c1 only.
+            (%gf-2-resolve gf a b args cache c1 c1 c2)))))
+      (t (%gf-dispatch gf args)))))
+
+
+(defun %build-discriminating-function (gf lambda-list)
+  "Return the discriminating function for GF — an arity-specialized
+   closure when the GF takes 1, 2, or 3 required arguments and no
+   non-required parameters, otherwise the variadic fallback."
+  (let ((nreq (%gf-lambda-list-required-count lambda-list)))
+    (case nreq
+      ((1)
+       (named-lambda %gf-dispatch-1 (a)
+         (let ((ic (gf-inline-cache gf)))
+           (if (and ic (eq (car ic) (class-of a)))
+               (funcall (cdr ic) a)
+               (%gf-dispatch-1-slow gf a)))))
+      ((2)
+       (named-lambda %gf-dispatch-2 (a b)
+         (let ((ic (gf-inline-cache gf)))
+           (if (and ic
+                    (eq (car ic) (class-of a))
+                    (let ((rest (cdr ic)))
+                      (and (consp rest) (eq (car rest) (class-of b)))))
+               (funcall (cddr ic) a b)
+               (%gf-dispatch-2-slow gf a b)))))
+      (otherwise
+       (named-lambda %gf-dispatch-entry (&rest args)
+         (%gf-dispatch gf args))))))
+
 ;;; --- ensure-generic-function ---
 
 (defun ensure-generic-function (name &key lambda-list
@@ -1688,6 +1886,7 @@ already-existing GF the installed combination is preserved."
               (unless (eq new-combo (gf-method-combination existing))
                 (%set-gf-method-combination existing new-combo)
                 (%set-gf-dispatch-cache existing nil)
+                (%set-gf-inline-cache existing nil)
                 (%notify-dependents existing 'reinitialize-instance
                                     :method-combination new-combo))))
           (when (null (gf-method-combination existing))
@@ -1697,10 +1896,8 @@ already-existing GF the installed combination is preserved."
         (let* ((combo (%resolve-method-combination
                         method-combination-name method-combination-options))
                (gf (%make-struct 'standard-generic-function
-                     name lambda-list nil nil combo nil nil nil))
-               (dispatch-fn
-                 (named-lambda %gf-dispatch-entry (&rest args)
-                   (%gf-dispatch gf args))))
+                     name lambda-list nil nil combo nil nil nil nil))
+               (dispatch-fn (%build-discriminating-function gf lambda-list)))
           (%set-gf-discriminating-function gf dispatch-fn)
           (setf (gethash name *generic-function-table*) gf)
           (cond
@@ -1840,6 +2037,25 @@ already-existing GF the installed combination is preserved."
 
 ;;; --- defmethod macro ---
 
+;;; Conservative detector for "simple primary" methods: methods that
+;;; have no qualifiers and whose body source contains no reference to
+;;; CALL-NEXT-METHOD or NEXT-METHOD-P (any symbol whose name matches,
+;;; package-blind).  When true, dispatch can skip the method-chain
+;;; wrapper and call the method-function directly — saving three
+;;; dynamic-binding push/pops per call.  Pessimistic for macros that
+;;; expand to CNM after install, but those are rare.
+(defun %tree-contains-symbol-named-p (tree name)
+  (cond
+    ((null tree) nil)
+    ((symbolp tree) (string= (symbol-name tree) name))
+    ((atom tree) nil)
+    (t (or (%tree-contains-symbol-named-p (car tree) name)
+           (%tree-contains-symbol-named-p (cdr tree) name)))))
+
+(defun %body-simple-primary-p (body)
+  (not (or (%tree-contains-symbol-named-p body "CALL-NEXT-METHOD")
+           (%tree-contains-symbol-named-p body "NEXT-METHOD-P"))))
+
 (defmacro defmethod (name &rest args)
   "Define a method on generic function NAME."
   ;; CLHS: method qualifiers are non-list atoms (symbols or numbers)
@@ -1870,11 +2086,13 @@ already-existing GF the installed combination is preserved."
       (let ((effective-ll (if (and (member '&key unspec-ll)
                                    (not (member '&allow-other-keys unspec-ll)))
                               (append unspec-ll '(&allow-other-keys))
-                              unspec-ll)))
+                              unspec-ll))
+            (simple-p (and (null qualifiers) (%body-simple-primary-p body))))
         `(%add-method-to-gf
            ',name ',qualifiers ',spec-names
            (lambda ,effective-ll (block ,block-name ,@body))
-           ',unspec-ll)))))
+           ',unspec-ll
+           ,simple-p)))))
 
 (defun %slot-access-protocol-gf-p (gf-name)
   "True when GF-NAME names one of the four slot-access protocol GFs."
@@ -1904,6 +2122,7 @@ already-existing GF the installed combination is preserved."
                  (gf-methods gf)))
     (%set-gf-methods gf (cons method (gf-methods gf)))
     (%set-gf-dispatch-cache gf nil)
+    (%set-gf-inline-cache gf nil)
     ;; Defer cacheable-p / eql-value-sets recompute to first dispatch.
     ;; During CLOS bootstrap we add ~50 methods with no calls in between,
     ;; so eager recompute on each install was wasted work — now a single
@@ -1924,6 +2143,7 @@ already-existing GF the installed combination is preserved."
   (%set-gf-methods gf
     (remove method (gf-methods gf) :test #'eq))
   (%set-gf-dispatch-cache gf nil)
+  (%set-gf-inline-cache gf nil)
   ;; Lazy: see %install-method-in-gf.  Mark dirty; %gf-dispatch recomputes
   ;; cacheable-p / eql-value-sets on first call that needs them.
   (%set-gf-cacheable-p gf :dirty)
@@ -1933,14 +2153,19 @@ already-existing GF the installed combination is preserved."
   (%notify-dependents gf 'remove-method method)
   gf)
 
-(defun %add-method-to-gf (gf-name qualifiers specializer-names fn lambda-list)
+(defun %add-method-to-gf (gf-name qualifiers specializer-names fn lambda-list
+                          &optional simple-primary-p)
   "Bridge used by DEFMETHOD expansion — construct the method struct and
    install it via the primitive install helper (bypasses the ADD-METHOD
-   GF dispatch that is itself built on this path during bootstrap)."
+   GF dispatch that is itself built on this path during bootstrap).
+   SIMPLE-PRIMARY-P is set by the DEFMETHOD macro when the method body
+   uses neither CALL-NEXT-METHOD nor NEXT-METHOD-P; the dispatch fast
+   paths use it to skip the method-chain wrapper."
   (let* ((gf (ensure-generic-function gf-name))
          (specializers (%resolve-specializers specializer-names))
          (method (%make-struct 'standard-method
-                   gf specializers qualifiers fn lambda-list)))
+                   gf specializers qualifiers fn lambda-list
+                   simple-primary-p)))
     (%install-method-in-gf gf method)))
 
 (%clos-trace "Phase 5 (defgeneric + defmethod + dispatch)")
@@ -2536,8 +2761,10 @@ since user-defined method classes are out of scope."
                 (eval lambda-expression))
                (t (error "ENSURE-METHOD: cannot coerce ~S to a method function"
                          lambda-expression))))
+         ;; ENSURE-METHOD is the AMOP entry point — we have no source body
+         ;; to walk for CALL-NEXT-METHOD detection, so assume non-simple.
          (method (%make-struct 'standard-method
-                   gf resolved-specs qualifiers fn ll)))
+                   gf resolved-specs qualifiers fn ll nil)))
     (add-method gf method)
     method))
 
