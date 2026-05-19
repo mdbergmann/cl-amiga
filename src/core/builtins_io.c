@@ -2926,6 +2926,32 @@ static CL_Obj bi_require(CL_Obj *args, int n)
             }
 #endif
 
+            /* Pre-validate FASL header — if magic or version mismatches the
+               current runtime, treat the FASL as absent so we recompile from
+               source (mirrors the boot.fasl recovery in repl.c).  Without
+               this, bumping CL_FASL_VERSION strands lib/*.fasl until a manual
+               `make fasl`. */
+            if (have_fasl) {
+                unsigned long hsize = 0;
+                char *hbuf = platform_file_read(fasl_path, &hsize);
+                int header_ok = 0;
+                if (hbuf) {
+                    if (hsize >= 6) {
+                        uint32_t magic = ((uint32_t)(uint8_t)hbuf[0] << 24) |
+                                         ((uint32_t)(uint8_t)hbuf[1] << 16) |
+                                         ((uint32_t)(uint8_t)hbuf[2] << 8) |
+                                         ((uint32_t)(uint8_t)hbuf[3]);
+                        uint32_t fver  = ((uint32_t)(uint8_t)hbuf[4] << 8) |
+                                         ((uint32_t)(uint8_t)hbuf[5]);
+                        if (magic == CL_FASL_MAGIC && fver == CL_FASL_VERSION)
+                            header_ok = 1;
+                    }
+                    platform_free(hbuf);
+                }
+                if (!header_ok)
+                    have_fasl = 0;
+            }
+
             if (have_fasl && have_lisp) {
                 /* Both exist: prefer FASL only if at least as new as source */
                 uint32_t fasl_mt = platform_file_mtime(fasl_path);
