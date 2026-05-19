@@ -14179,13 +14179,18 @@ using (SYS:UPDATE-ALLEGRO)."))
 ;;; during define-op compilation), toplevel-asdf-session returns NIL.
 ;;; ASDF then calls session accessors on NIL — without these methods,
 ;;; CLOS dispatch fails because it tries to read struct slots from NIL.
+;;;
+;;; We deliberately leave *asdf-session* unbound at top level. Pinning
+;;; it to a permanent instance defeats ASDF's per-operation cache
+;;; invalidation: every find-system/load-system would reuse the same
+;;; global, and stale lookups (e.g. NIL results from
+;;; COMPUTE-LOAD-STRATEGY for systems not yet on disk) would never get
+;;; cleared, causing later LOAD-SYSTEM to fail with "Component X not
+;;; found". The NIL-accessor methods below cover the edge cases where
+;;; ASDF momentarily reads a session accessor outside a with-asdf-session.
 
 #+cl-amiga
 (in-package #:asdf/session)
-
-#+cl-amiga
-(unless *asdf-session*
-  (setf *asdf-session* (make-instance *asdf-session-class*)))
 
 #+cl-amiga
 (let ((empty-ht (make-hash-table :test 'equal)))
