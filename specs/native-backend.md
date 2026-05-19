@@ -1095,6 +1095,12 @@ All five landings follow the established shapes:
   (not the inline-op path the way `+`, `-`, `*` are), so the
   emitter waits on a future inliner change to engage.  Helper is in
   place to avoid a latent walker bail if that change ever lands.
+  No inline fixnum fast path (same as OP_MUL): m68k DIVS.L is ~88
+  cycles on 68020, so the JSR overhead is in the noise, and the
+  result is a ratio whenever the division isn't exact — bailing to
+  the helper is the common case anyway.  Inlining would buy
+  ~5 cycles for ~70 lines of walker emit + a remainder-check + a
+  FIXNUM_MIN/-1 overflow guard + a new asm encoder.  Not worth it.
 
 - *OP_APPLY*: helper flattens the arglist into a stack-local
   CL_Obj[64] (matching the VM's cap), resolves a SYMBOL callee
