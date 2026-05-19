@@ -1039,3 +1039,155 @@ prior status sections.
   resolved callee carries `native_code` (the "JIT-to-JIT direct
   call" lever flagged at the end of the FFI section).
 - Per-opcode `mv_count` reset via cached thread pointer.
+
+## Status (2026-05-19, post NLX / handler / mutation completeness pass)
+
+Five back-to-back walker landings (2026-05-18 → 2026-05-19) close
+every common-form bail flagged in the prior status sections.  The
+walker now spans the full "ordinary defun" surface: arithmetic, list
+mutation, closures, conditions, restarts, tagbody/catch/block/uwprot
+NLX, dynamic binding (including progv), and apply.  No
+bouncing-lines bench delta — these opcodes are absent from the
+inner draw loop — but the fraction of loaded user / library code
+that JIT-compiles is now near-total for non-`&rest`/`&optional`
+shapes.
+
+**Walker opcodes added since 2026-05-18:**
+
+```
+OP_RPLACD OP_ARGC OP_MV_LOAD OP_NTH_VALUE OP_ASSERT_TYPE   (0a8a8fc)
+OP_HANDLER_PUSH OP_HANDLER_POP
+  OP_RESTART_PUSH OP_RESTART_POP                           (fced077)
+OP_TAGBODY_PUSH OP_TAGBODY_POP OP_TAGBODY_GO               (7130bf0)
+OP_CATCH OP_UNCATCH                                        (2341edf)
+OP_DIV OP_APPLY OP_PROGV_BIND OP_PROGV_UNBIND              (9ad741c)
+```
+
+All five landings follow the established shapes:
+
+- *Linear opcodes* (RPLACD, ARGC, MV_LOAD, NTH_VALUE, ASSERT_TYPE,
+  DIV, APPLY, PROGV_BIND, PROGV_UNBIND, HANDLER_POP, RESTART_POP):
+  cache-aware pop + JSR through a one-purpose `cl_jit_runtime_*`
+  helper that mirrors the matching `vm.c::OP_*` case byte-for-byte.
+  Cache flush before every JSR (the "helpers may allocate even on
+  the success path via cl_signal_type_error / cl_error condition
+  objects" invariant established with the closure landing).
+
+- *NLX setjmp shapes* (CATCH, TAGBODY_PUSH): same JIT-inline-JSR-
+  setjmp protocol as BLOCK_PUSH / UWPROT.  TAGBODY_PUSH adds a
+  re-arm step (cl_nlx_top++) on the longjmp arm so the same frame
+  stays usable across repeated GO until the matching TAGBODY_POP.
+  TAGBODY_GO emits the dispatch shim emitted by compile_tagbody —
+  the longjmp helper returns the tag-index fixnum, JTRUE per-tag
+  branches route to the matching body, and the closing OP_JMP wraps
+  the dispatcher back to the GO.  Prescan marks the dispatcher
+  landing IP as a branch target so the cache flushes at arrival.
+
+- *Handler / restart push* (HANDLER_PUSH, RESTART_PUSH): plain
+  push/pop on the per-thread handler/restart stacks — no setjmp
+  needed (handlers run as ordinary calls dispatched by
+  `cl_signal_condition`).  Same OP_DYNBIND-style emitter shape:
+  pop runtime values, cache-flush, push C args with a baked-in
+  symbol literal, JSR, drop.
+
+- *OP_DIV*: present for completeness but not reachable from Lisp
+  source today.  The compiler routes `/` through OP_FLOAD+OP_CALL
+  (not the inline-op path the way `+`, `-`, `*` are), so the
+  emitter waits on a future inliner change to engage.  Helper is in
+  place to avoid a latent walker bail if that change ever lands.
+
+- *OP_APPLY*: helper flattens the arglist into a stack-local
+  CL_Obj[64] (matching the VM's cap), resolves a SYMBOL callee
+  through `s->function`, then delegates to `cl_vm_apply`.  The
+  VM's OP_APPLY inlines dispatch to avoid C-stack growth on deep
+  `(apply f (apply g (apply h …)))` chains; the JIT accepts the
+  extra cl_vm_apply round-trip since apply chains are not on a
+  measured hot path.
+
+- *OP_PROGV_BIND / OP_PROGV_UNBIND*: PROGV_BIND walks the symbols
+  + values lists in lockstep, NIL-paired symbols bind to
+  CL_UNBOUND (per CLHS), returns the saved `cl_dyn_top` as a
+  CL_MAKE_FIXNUM mark on the operand stack.  PROGV_UNBIND untags
+  the mark, calls `cl_dynbind_restore_to`, returns the body
+  result so the walker's cache_push leaves it as the new TOS.
+
+### Updated walker opcode list (cumulative)
+
+```
+OP_NIL OP_T OP_CONST OP_LOAD OP_STORE OP_POP OP_DUP
+OP_JMP OP_JNIL OP_JTRUE
+OP_ADD OP_SUB OP_MUL OP_DIV
+OP_LT OP_GT OP_LE OP_GE OP_NUMEQ OP_EQ OP_NOT
+OP_CAR OP_CDR OP_CONS OP_LIST OP_RPLACA OP_RPLACD OP_ASET
+OP_GLOAD OP_GSTORE OP_FLOAD OP_FSTORE
+OP_CALL OP_TAILCALL OP_APPLY
+OP_STRUCT_REF OP_STRUCT_SET
+OP_DYNBIND OP_DYNUNBIND OP_PROGV_BIND OP_PROGV_UNBIND
+OP_MV_RESET OP_MV_LOAD OP_MV_TO_LIST OP_NTH_VALUE
+OP_ARGC OP_ASSERT_TYPE
+OP_BLOCK_PUSH OP_BLOCK_POP OP_BLOCK_RETURN
+OP_CATCH OP_UNCATCH
+OP_TAGBODY_PUSH OP_TAGBODY_POP OP_TAGBODY_GO
+OP_UWPROT OP_UWPOP OP_UWRETHROW
+OP_HANDLER_PUSH OP_HANDLER_POP
+OP_RESTART_PUSH OP_RESTART_POP
+OP_CLOSURE OP_MAKE_CELL OP_CELL_REF OP_CELL_SET_LOCAL
+OP_UPVAL OP_CELL_SET_UPVAL
+OP_AMIGA_CALL
+OP_RET
+```
+
+**Remaining walker bail-causers** (opcodes that still disqualify a
+function from native compile):
+
+```
+OP_DEFMACRO OP_DEFTYPE OP_DEFSETF OP_DEFVAR
+```
+
+All four are top-level definers — rare in hot code, low leverage.
+The walker is otherwise complete for ordinary defun bodies.
+
+Plus the non-opcode gates still in place:
+
+- `&rest` / `&optional` argument shapes (kw landed 2026-05-16;
+  rest/optional still bail).
+- Self-TCO for keyworded entries (the cross-function trampoline
+  lever covers this; positional self-TCO landed 2026-05-15).
+
+### GC native-stack scan cap removal (commit 84d62d3)
+
+Tangential but worth recording: the 256-entry stack-local candidate
+buffer in `mem.c::gc_scan_jit_native_stack` was sized for typical
+operand-stack depths but capped retention at deep CLOS / serapeum
+workloads.  Now grows on demand via `platform_alloc`, so the
+conservative scan never silently drops candidates.  Doesn't affect
+walker coverage but removes a quiet "may retain extra garbage"
+disclaimer from the GC interaction story.
+
+### Verification (2026-05-19, high-end FS-UAE config)
+
+- `make host` + `make test`: green.
+- `make -f Makefile.cross test-amiga`: **2667 / 2667** pass.
+  Net +43 tests across the five landings:
+  - +28 across the RPLACD / ARGC / MV_LOAD / NTH_VALUE / ASSERT_TYPE
+    landing
+  - + handler/restart/tagbody/catch coverage in
+    `tests/amiga/test-jit.lisp`
+  - +12 from this commit's apply (6: builtin / user-fn / symbol-fn /
+    leading-args / empty arglist / counter bump) and progv (6:
+    single / multi / restore-on-exit / short-values / non-symbol
+    type-error / counter bump) sweeps.
+- No bench delta on `bouncing-lines` (~615 FPS) — the new opcodes
+  aren't on the inner draw loop.  General-purpose JIT speed-up
+  remains the 20× / 13× / 7× pattern from `trunk/bench.lisp`
+  (commit 15befb6).
+
+**Open levers, unchanged from 2026-05-18:**
+
+- Memory policy / hot-function gate.
+- Cross-function TCO trampolining in `cl_jit_invoke` (also unblocks
+  self-TCO for keyworded entries).
+- Direct JSR `OP_FLOAD <sym>; …; OP_CALL n` fast-path when the
+  resolved callee carries `native_code`.
+- Per-opcode `mv_count` reset via cached thread pointer.
+- `&rest` / `&optional` prologue shapes for the walker.
