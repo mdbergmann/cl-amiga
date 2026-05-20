@@ -12,15 +12,12 @@ CL-Amiga is a bytecode-compiled Common Lisp environment written in C (C89/C99). 
 
 CL-Amiga can load **ASDF**, install and run **Quicklisp**, and successfully quickload libraries including **Alexandria**, **fiveam**, **FSet**, and **Sento** — their `asdf:test-system` suites pass end-to-end. Sento pulls in **lparallel**, **serapeum**, **bordeaux-threads**, **log4cl** and friends along the way.
 
-**ANSI conformance** — the Paul Dietz ANSI test suite is the working spec. Current scores against the upstream suites:
+**ANSI conformance** — the Paul Dietz ANSI test suite (`third_party/ansi-test/`) is the working spec. Two bootstraps in `trunk/` run it on host and Amiga, writing tallies to `build/load-and-test-logs/`:
 
-- **CONS chapter** — 1882 / 1882 (100%)
-- **SYMBOLS chapter** — 3020 / 3020 (100%)
-- **NUMBERS chapter** — 1444 / 1444 (100%)
+- **CONS + SYMBOLS** (`load-and-test-ansi.lisp`) — **3019 / 3027** passing. The 8 remaining failures are `INCF-GETF.2` plus 7 package-hygiene checks (`NO-EXTRA-SYMBOLS-EXPORTED-FROM-COMMON-LISP`, `CL-{FUNCTION,MACRO,VARIABLE}-SYMBOLS`, `CL-TYPES-THAT-ARE-CLASSES`) that flag a handful of internal builtins still interned in the `COMMON-LISP` package — a deferred cleanup, not a behavioural gap.
+- **NUMBERS** (`load-and-test-ansi-numbers.lisp`) — **1444 / 1444 (100%)**.
 
-ANSI bootstraps live in `trunk/load-and-test-ansi*.lisp` and run on host and Amiga.
-
-Over 2240 host tests and ~2250 Amiga tests cover the implementation, including threading, CLOS, conditions, the full numeric tower, FFI, and AmigaOS GUI (Intuition/Graphics/GadTools).
+Over 2240 host tests and ~2525 Amiga tests cover the implementation, including threading, CLOS, conditions, the full numeric tower, FFI, the m68k JIT, and AmigaOS GUI (Intuition/Graphics/GadTools).
 
 ## Building
 
@@ -91,18 +88,44 @@ stack 400000
 clamiga --heap 24M
 ```
 
-### Loading Quicklisp
+### Quicklisp
 
+Quicklisp runs on CL-Amiga, but the stock client doesn't recognise this implementation and pulls in libraries that assume features we don't have yet. So the project ships a small compat layer plus three library shims, and keeps the bootstrap entirely on its own side. The goal is to upstream all of it once the remaining API gaps close.
+
+**Installing Quicklisp on a fresh system** (where `~/quicklisp/` — Amiga: `S:quicklisp/` — does not exist yet). Do this once:
+
+```lisp
+(require "asdf")
+(load "lib/quicklisp-install.lisp")
+(cl-amiga-ql:install)                 ; downloads + installs the QL client, patches networking
 ```
-./clamiga --heap 24M
-CL-USER> (require "asdf")
-CL-USER> (load "quicklisp/setup.lisp")
-CL-USER> (load "lib/quicklisp-compat.lisp")
-CL-USER> (ql:quickload "alexandria")
-CL-USER> (ql:quickload "fiveam")
-CL-USER> (ql:quickload "fset")
-CL-USER> (ql:quickload "sento")    ; pulls in lparallel + serapeum
+
+`cl-amiga-ql:install` runs the standard `quicklisp-quickstart:install`, catches the network error it raises (CL-Amiga isn't a registered `ql-impl` yet), loads the compat shim so networking works, and retries the dist install. The shims also need to be on disk: run `make install-shims` once from the repo root to symlink them into `~/quicklisp/local-projects`.
+
+**Using Quicklisp** in any later session, once it is installed:
+
+```lisp
+(load #P"~/quicklisp/setup.lisp")
+(load "lib/quicklisp-compat.lisp")
+(ql:quickload "alexandria")
 ```
+
+**What we patch** (the local changes shipped with the project):
+
+- `lib/quicklisp-compat.lisp` — routes Quicklisp's networking through `ext:open-tcp-stream` and plain CL stream ops (working around generic-function dispatch limits in the stock `ql-network` interface), supplies a minimal `make-broadcast-stream` for its HTTP layer, adapts `directory-entries` to CL-Amiga's `directory`, and maps the bordeaux-threads v2 surface onto the `MP` package.
+- `contrib/shims/` (installed by `make install-shims`) — `closer-mop` (re-exports CL-Amiga's AMOP subset under CLOSER-MOP names), `trivial-cltl2` (the CLtL2 functions serapeum/trivia call), and `trivial-garbage` (weak hash-tables). Downstream libraries `:use` these by name; the shims let them resolve via Quicklisp's local-projects searcher.
+- `lib/asdf.lisp` — `#+cl-amiga` adaptations: real binary FASL compile/load for cross-session persistence, AmigaOS path/device handling, and `*asdf-session*` NULL-safety.
+
+**Confirmed working** via `quickload` + `asdf:test-system` (`trunk/run-load-and-test-all.sh`; results land in `build/load-and-test-logs/`):
+
+| Library | Heap  | Result                            |
+|---------|-------|-----------------------------------|
+| fiveam  | 24M   | 114 / 114                         |
+| FSet    | 24M   | 16 / 17 (1 pre-existing failure)  |
+| str     | 64M   | 400 / 400                         |
+| Sento   | 192M¹ | 533 / 535 (2 timing-flaky)        |
+
+¹ Cold cache, compiling the full dependency tree (~96–128M warm). Sento pulls in **alexandria, serapeum, lparallel, log4cl, bordeaux-threads** and friends, which load and run along the way. On Amiga use `stack 800000`.
 
 ### Integration test scripts
 
@@ -218,9 +241,24 @@ When the abstractions aren't enough, drop to raw library calls:
 
 ## JIT (m68k)
 
-On the AmigaOS build (68020+), CL-Amiga translates bytecode functions to native m68k machine code at definition time. The VM dispatcher jumps straight into the native body instead of interpreting bytecode — covering arithmetic, branches, calls (including tail calls and FFI / `amiga-call`), multiple-value flow, non-local exits (`block`/`return-from`, `unwind-protect`, `tagbody`/`go`, handlers), and `&key` parameters. Opcodes the translator doesn't handle yet fall back to the interpreter transparently.
+On the AmigaOS build (68020+), CL-Amiga translates bytecode functions to native m68k machine code at definition time. The VM dispatcher jumps straight into the native body instead of interpreting bytecode. The translator (a single-pass bytecode walker) covers a broad core of the instruction set: integer arithmetic and comparisons (with fixnum fast paths), branches, `cons`/`car`/`cdr`/`rplaca`/`rplacd`/list building, struct slot access, function calls and self-recursive tail calls, closures, multiple-value flow, non-local exits (`block`/`return-from`, `catch`/`throw`, `unwind-protect`, `tagbody`/`go`, handlers/restarts), dynamic binding, `&key` parameters, and AmigaOS FFI (`amiga-call`). Opcodes it doesn't handle yet — and functions with `&optional`/`&rest` lambda lists or frames too large for a 16-bit displacement — fall back to the interpreter transparently.
 
-The JIT is on by default. Pass `--no-jit` to keep functions bytecode-only (useful for A/B benchmarks or isolating a bug). At runtime, `(clamiga::%jit-set-active nil|t)` toggles the flag around individual `defun`s. On host builds the JIT is compiled out entirely.
+The JIT is on by default. Pass `--no-jit` to keep functions bytecode-only (useful for A/B benchmarks or isolating a bug); at runtime `(clamiga::%jit-set-active nil|t)` toggles the flag around individual `defun`s. On host builds the JIT is compiled out entirely — its entry points become inline no-ops.
+
+### Performance
+
+Measured on the high-end FS-UAE config (A4000 / 68040 / Picasso96). The A/B microbenchmarks in `trunk/bench-jit-loop.lisp` run identical function bodies with the JIT toggled via `%jit-set-active`, so only the dispatch path differs:
+
+| Benchmark     | Shape                          | Bytecode |   JIT  | Speedup |
+|---------------|--------------------------------|---------:|-------:|--------:|
+| `sum-to`      | `tagbody`/`go` fixnum loop     |   400 ms |  20 ms |  20.0×  |
+| `struct-loop` | 2× struct-slot read per iter   |   260 ms |  20 ms |  13.0×  |
+| `arith-chain` | chained binary ops             |   300 ms |  40 ms |   7.5×  |
+| `call-loop`   | `OP_CALL` inside the loop body |   340 ms | 240 ms |  1.42×  |
+
+Compute-bound code sees the largest wins; call-heavy code is bounded by the same per-call helper round-trip the interpreter pays. On the real-world `examples/gfx/bouncing-lines.lisp` demo (FFI-dominated — five lines drawn through `graphics.library` each frame), the JIT now reaches **~615 FPS** versus **~500 FPS** on the bytecode VM. That lead only materialised once native `amiga-call` dispatch and `defcfun` compiler-macro inlining landed (467 → 525 → 615 FPS as those merged), since the frame time is mostly FFI calls rather than arithmetic. The remaining gap to compiled ACE BASIC (~1900 FPS through the same ROM graphics calls) is the structural cost of a dynamic, GC'd, tagged-value language — per-argument unboxing, dispatch and symbol lookup per call, GC safepoints — not codegen.
+
+The Amiga test suite passes **2525 / 2525** on the JIT config; per-opcode JIT coverage (counter-bump, value-correctness, and unwind-recovery assertions) lives in `tests/amiga/test-jit.lisp`.
 
 ## Architecture
 
@@ -237,7 +275,7 @@ The JIT is on by default. Pass `--no-jit` to keep functions bytecode-only (usefu
 - **Alpha status** — the core language works well enough to run real CL libraries, but corners of the ANSI CL spec remain unimplemented (logical pathnames, some `defstruct` options, full CLOS MOP)
 - **Amiga GUI bindings are incomplete** — the Intuition/Graphics/GadTools abstractions cover common use cases (windows, drawing, gadgets, menus) but not the full API surface; more libraries (ASL requesters, Layers, Commodities) are not yet wrapped
 - **Composite streams** — `make-broadcast-stream`, `make-two-way-stream`, `make-concatenated-stream` are not implemented yet
-- **Threading** — `MP` package covers the core bordeaux-threads surface (threads with `interrupt`/`destroy`, mutex + recursive locks, named condition variables with timeout, `with-lock-held` / `with-recursive-lock-held`, type predicates). `(ql:quickload :bordeaux-threads)` and Quicklisp itself currently rely on local patches we ship (in `~/quicklisp/local-projects` plus `lib/quicklisp-compat.lisp`) that map the BT v2 surface onto `MP` and adapt Quicklisp's network/HTTP layer to clamiga; the plan is to upstream these once the remaining API gaps close. Not yet covered: semaphores, atomic integers, `with-timeout`, `:timeout` on `acquire-lock`
+- **Threading** — `MP` package covers the core bordeaux-threads surface (threads with `interrupt`/`destroy`, mutex + recursive locks, named condition variables with timeout, `with-lock-held` / `with-recursive-lock-held`, type predicates). `(ql:quickload :bordeaux-threads)` and Quicklisp itself currently rely on local patches we ship — `lib/quicklisp-compat.lisp` (maps the BT v2 surface onto `MP`, adapts Quicklisp's network/HTTP layer) plus the shims in `contrib/shims/` symlinked into `~/quicklisp/local-projects` by `make install-shims`; the plan is to upstream these once the remaining API gaps close. Not yet covered: semaphores, atomic integers, `with-timeout`, `:timeout` on `acquire-lock`
 - **ANSI CL gaps** — while major subsystems work (CLOS, conditions, packages, the full numeric tower, arrays, pathnames, streams, loop, format), some corners of the spec remain unimplemented
 
 ## TODO
@@ -269,7 +307,7 @@ lib/
     gadtools.lisp   GadTools gadgets, menus
 tests/
   test_*.c        Host test suites (C)
-  amiga/          Amiga test suite (Lisp, ~2250 tests)
+  amiga/          Amiga test suite (Lisp, ~2525 tests)
 trunk/            Integration test scripts (ANSI, Sento, FSet, fiveam, str, ...)
 verify/
   realamiga/      FS-UAE configuration and AmigaOS disk image
