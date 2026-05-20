@@ -4,6 +4,16 @@
 ;; Standard CL variables (set early, before any macro expansion)
 (setq *macroexpand-hook* #'funcall)
 
+;; CLHS REPL/condition variables that the C bootstrap interns without a
+;; value: / // /// hold the value-lists of the three most recent forms,
+;; *break-on-signals* gates whether a signalled condition enters the
+;; debugger.  (+ ++ +++ - * ** *** are initialised by the C REPL bootstrap;
+;; these four are not.)  Give them their standard initial value NIL and
+;; make them special so they are BOUNDP and dynamically bindable
+;; (ANSI cl-variable-symbols.1).
+(proclaim '(special / // /// *break-on-signals*))
+(setq / nil // nil /// nil *break-on-signals* nil)
+
 ;; Composite CAR/CDR accessors (all 28 from CL spec)
 (defun cadr (x) (car (cdr x)))
 (defun caar (x) (car (car x)))
@@ -299,6 +309,18 @@
 ;; preference after expansion: (1) explicit define-setf-expander
 ;; registry, (2) defsetf setter, (3) compiler-handled fallback.
 (defun get-setf-expansion (place &optional env)
+  ;; CLHS 5.1.2.9: an operator's own setf expander takes precedence over
+  ;; macroexpansion, even when the operator is ALSO a macro (e.g. FSet's
+  ;; @, which is both a macro and a define-setf-expander).  Consult the
+  ;; expander registry BEFORE MACROEXPAND — otherwise the place is expanded
+  ;; as an ordinary read form and the expander is lost, yielding a bogus
+  ;; generic expansion ((setf (progn #:t) ...)).  This mirrors the
+  ;; precedence compile_setf_place already applies on the compiler side.
+  (let ((head-expander
+          (and (consp place) (symbolp (car place))
+               (clamiga::%get-setf-expansion-fn (car place)))))
+    (when head-expander
+      (return-from get-setf-expansion (apply head-expander (cdr place)))))
   (let ((place (macroexpand place env)))
     (cond
       ((symbolp place)
@@ -399,6 +421,32 @@
           ,set-form
           ,val)
        `(mask-field ,bs ,access-form)))))
+
+;; (setf (getf place indicator [default]) new) — CLHS 5.1.2.4 expander.
+;; Composes with PLACE's own setf-expansion so adding a property (which
+;; conses a fresh (indicator value) pair onto the front, changing the
+;; list head) reassigns PLACE itself rather than a temp.  Without this,
+;; GET-SETF-EXPANSION fell through to the generic branch that binds PLACE
+;; to a temp, so INCF/DECF/PUSH on an absent key silently dropped the new
+;; pair (ANSI INCF-GETF.2).  DEFAULT, when supplied, is evaluated once and
+;; read by the access form; its value is ignored on store, per the spec.
+;; %SETF-GETF mutates in place when the key is present and returns the
+;; (possibly new) list head otherwise.
+(define-setf-expander getf (place indicator &optional default &environment env)
+  (multiple-value-bind (temps vals stores set-form access-form)
+      (get-setf-expansion place env)
+    (let ((itemp (gensym "IND"))
+          (dtemp (gensym "DEFAULT"))
+          (store (gensym "VAL"))
+          (ptemp (car stores)))
+      (values
+       (append temps (list itemp dtemp))
+       (append vals (list indicator default))
+       (list store)
+       `(let ((,ptemp (clamiga::%setf-getf ,access-form ,itemp ,store)))
+          ,set-form
+          ,store)
+       `(getf ,access-form ,itemp ,dtemp)))))
 
 ;; List searching — CLHS MEMBER accepts :test, :test-not, and :key.
 ;; :test defaults to EQL; :key, if supplied, is applied to each list
