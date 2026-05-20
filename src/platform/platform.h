@@ -70,6 +70,16 @@ int            platform_socket_write(PlatformSocket sh, int byte); /* Write one 
 int            platform_socket_write_buf(PlatformSocket sh, const char *buf, uint32_t len); /* Write buffer */
 int            platform_socket_flush(PlatformSocket sh);      /* Flush output, 0=ok */
 
+/* Server-side: bind to `port` and start listening.
+ * loopback != 0 binds 127.0.0.1 only; otherwise INADDR_ANY (all interfaces).
+ * If port == 0 the OS assigns an ephemeral port; the chosen port is written
+ * to *actual_port when actual_port != NULL.
+ * Returns a listener handle or PLATFORM_SOCKET_INVALID. */
+PlatformSocket platform_socket_listen(int port, int loopback, int *actual_port);
+/* Block until a client connects to `listener`, returning a fresh connection
+ * handle (a normal read/write socket) or PLATFORM_SOCKET_INVALID on error. */
+PlatformSocket platform_socket_accept(PlatformSocket listener);
+
 /* Timing */
 uint32_t platform_time_ms(void);   /* Monotonic milliseconds (for elapsed time) */
 void     platform_sleep_ms(uint32_t milliseconds);

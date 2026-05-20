@@ -1,4 +1,5 @@
 #include "platform.h"
+#include "platform_thread.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -397,6 +398,24 @@ static int socket_table[PLATFORM_SOCKET_TABLE_SIZE];
 static IOBuf *socket_buf[PLATFORM_SOCKET_TABLE_SIZE];
 static int socket_table_init = 0;
 
+/* Serialises slot claim (connect/listen/accept) and slot free (close) so a
+ * threaded server — e.g. an accept loop on one thread while another connects
+ * — can never race two claims onto the same table index.  Only the table
+ * mutation is guarded; the blocking syscalls (connect/accept/flush/close) and
+ * the per-byte read/write paths (each on its own caller-owned slot) run
+ * unlocked.  Initialised on first use, which is single-threaded. */
+static void *socket_table_mutex = NULL;
+
+static void socket_table_lock(void)
+{
+    if (socket_table_mutex) platform_mutex_lock(socket_table_mutex);
+}
+
+static void socket_table_unlock(void)
+{
+    if (socket_table_mutex) platform_mutex_unlock(socket_table_mutex);
+}
+
 static void socket_table_ensure_init(void)
 {
     if (!socket_table_init) {
@@ -405,6 +424,7 @@ static void socket_table_ensure_init(void)
             socket_table[i] = -1;
             socket_buf[i] = NULL;
         }
+        platform_mutex_init(&socket_table_mutex);
         socket_table_init = 1;
     }
 }
@@ -434,13 +454,16 @@ PlatformSocket platform_socket_connect(const char *host, int port)
     }
 
     /* Find free slot (slot 0 reserved as INVALID) */
+    socket_table_lock();
     for (i = 1; i < PLATFORM_SOCKET_TABLE_SIZE; i++) {
         if (socket_table[i] == -1) {
             socket_table[i] = fd;
             socket_buf[i] = iobuf_alloc();
+            socket_table_unlock();
             return (PlatformSocket)i;
         }
     }
+    socket_table_unlock();
 
     close(fd);
     return PLATFORM_SOCKET_INVALID;
@@ -468,11 +491,19 @@ static int socket_flush_wbuf(PlatformSocket sh)
 void platform_socket_close(PlatformSocket sh)
 {
     if (sh > 0 && sh < PLATFORM_SOCKET_TABLE_SIZE && socket_table[sh] >= 0) {
+        int fd;
+        IOBuf *buf;
         socket_flush_wbuf(sh);
-        close(socket_table[sh]);
+        /* Detach the slot under the lock, then do the blocking close() and
+         * free() outside it. */
+        socket_table_lock();
+        fd = socket_table[sh];
+        buf = socket_buf[sh];
         socket_table[sh] = -1;
-        iobuf_free(socket_buf[sh]);
         socket_buf[sh] = NULL;
+        socket_table_unlock();
+        if (fd >= 0) close(fd);
+        iobuf_free(buf);
     }
 }
 
@@ -560,6 +591,85 @@ int platform_socket_write_buf(PlatformSocket sh, const char *buf, uint32_t len)
 int platform_socket_flush(PlatformSocket sh)
 {
     return socket_flush_wbuf(sh);
+}
+
+PlatformSocket platform_socket_listen(int port, int loopback, int *actual_port)
+{
+    struct sockaddr_in addr;
+    int fd, i, on = 1;
+
+    socket_table_ensure_init();
+
+    fd = socket(AF_INET, SOCK_STREAM, 0);
+    if (fd < 0) return PLATFORM_SOCKET_INVALID;
+
+    /* Allow immediate rebind after the server restarts (TIME_WAIT). */
+    setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, &on, sizeof(on));
+
+    memset(&addr, 0, sizeof(addr));
+    addr.sin_family = AF_INET;
+    addr.sin_port = htons((uint16_t)port);
+    addr.sin_addr.s_addr = htonl(loopback ? INADDR_LOOPBACK : INADDR_ANY);
+
+    if (bind(fd, (struct sockaddr *)&addr, sizeof(addr)) < 0) {
+        close(fd);
+        return PLATFORM_SOCKET_INVALID;
+    }
+    if (listen(fd, 4) < 0) {
+        close(fd);
+        return PLATFORM_SOCKET_INVALID;
+    }
+    if (actual_port) {
+        socklen_t alen = sizeof(addr);
+        if (getsockname(fd, (struct sockaddr *)&addr, &alen) == 0)
+            *actual_port = ntohs(addr.sin_port);
+        else
+            *actual_port = port;
+    }
+
+    /* Listener occupies a slot but needs no IOBuf — it is never read/written. */
+    socket_table_lock();
+    for (i = 1; i < PLATFORM_SOCKET_TABLE_SIZE; i++) {
+        if (socket_table[i] == -1) {
+            socket_table[i] = fd;
+            socket_buf[i] = NULL;
+            socket_table_unlock();
+            return (PlatformSocket)i;
+        }
+    }
+    socket_table_unlock();
+
+    close(fd);
+    return PLATFORM_SOCKET_INVALID;
+}
+
+PlatformSocket platform_socket_accept(PlatformSocket listener)
+{
+    struct sockaddr_in caddr;
+    socklen_t clen = sizeof(caddr);
+    int fd, i;
+
+    if (listener == 0 || listener >= PLATFORM_SOCKET_TABLE_SIZE ||
+        socket_table[listener] < 0)
+        return PLATFORM_SOCKET_INVALID;
+
+    /* accept() blocks — must run outside the table lock. */
+    fd = accept(socket_table[listener], (struct sockaddr *)&caddr, &clen);
+    if (fd < 0) return PLATFORM_SOCKET_INVALID;
+
+    socket_table_lock();
+    for (i = 1; i < PLATFORM_SOCKET_TABLE_SIZE; i++) {
+        if (socket_table[i] == -1) {
+            socket_table[i] = fd;
+            socket_buf[i] = iobuf_alloc();
+            socket_table_unlock();
+            return (PlatformSocket)i;
+        }
+    }
+    socket_table_unlock();
+
+    close(fd);
+    return PLATFORM_SOCKET_INVALID;
 }
 
 void platform_init(void)
