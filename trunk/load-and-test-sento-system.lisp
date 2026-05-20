@@ -18,25 +18,13 @@
 (setq *load-verbose* nil)
 (require "asdf")
 
-(defvar *ql-setup*
-  #+amigaos #P"S:quicklisp/setup.lisp"
-  #-amigaos (merge-pathnames "quicklisp/setup.lisp" (user-homedir-pathname)))
+;; All quicklisp handling lives in this helper; this script only uses
+;; asdf. ENSURE-QL-LIB fetches sento's source into the local repo only if
+;; it is not there yet (download only, no load) — so the FASL cache state
+;; at start is exactly what the caller arranged: asdf:test-system below
+;; still compiles sento + its deps from scratch on a cold cache.
+(load "trunk/load-libs-ql.lisp")
+(ensure-ql-lib :sento)
 
-(unless (probe-file *ql-setup*)
-  (load "lib/quicklisp-install.lisp")
-  (funcall (find-symbol "INSTALL" "CL-AMIGA-QL")))
-
-(unless (member :quicklisp *features*)
-  (load *ql-setup*))
-
-(unless (member :quicklisp-compat *features*)
-  (load "lib/quicklisp-compat.lisp"))
-
-;; No (ql:quickload ...) here: that would compile sento + its deps and
-;; populate the FASL cache before the test, defeating the "cold cache"
-;; mode advertised in the usage comment.  asdf:test-system pulls every
-;; dep in via the system definitions, so the cache state at start is
-;; exactly what the caller arranged (cold after `rm -rf`, warm
-;; otherwise).
 (format t "~%--- Running (asdf:test-system :sento) ---~%")
 (asdf:test-system :sento)

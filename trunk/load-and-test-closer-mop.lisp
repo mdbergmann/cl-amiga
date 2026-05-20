@@ -4,20 +4,12 @@
 (require "asdf")
 (require "clos")
 
-;; Host: ~/quicklisp/setup.lisp, Amiga: S:quicklisp/setup.lisp
-(defvar *ql-setup*
-  #+amigaos #P"S:quicklisp/setup.lisp"
-  #-amigaos (merge-pathnames "quicklisp/setup.lisp" (user-homedir-pathname)))
-
-(unless (probe-file *ql-setup*)
-  (load "lib/quicklisp-install.lisp")
-  (funcall (find-symbol "INSTALL" "CL-AMIGA-QL")))
-
-(unless (member :quicklisp *features*)
-  (load *ql-setup*))
-
-(unless (member :quicklisp-compat *features*)
-  (load "lib/quicklisp-compat.lisp"))
+;; Make the quicklisp-managed dependencies resolvable through ASDF.
+;; All quicklisp handling lives in this helper; this script only uses
+;; asdf:load-system. closer-mop itself is the CL-Amiga shim under
+;; contrib/shims/, picked up via quicklisp's local-projects searcher
+;; (install it once with `make install-shims`).
+(load "trunk/load-libs-ql.lisp")
 
 (format t "~%--- Loading closer-mop (CL-Amiga shim) ---~%")
 (asdf:load-system :closer-mop)
