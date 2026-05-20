@@ -781,11 +781,12 @@ void cl_package_export_defined_cl_symbols(void)
  * are already filled. */
 static const char *const clos_internal_names[] = {
     "%ADD-METHOD-TO-GF", "%ASSIGN-SLOT-LOCATIONS",
-    "%BOA-PATCH-DEFAULTS",
+    "%BOA-PATCH-DEFAULTS", "%BODY-SIMPLE-PRIMARY-P",
+    "%BUILD-DISCRIMINATING-FUNCTION",
     "%BUILD-EFFECTIVE-METHOD", "%BUILD-LONG-EFFECTIVE-METHOD",
     "%BUILD-SHORT-EFFECTIVE-METHOD", "%BUILD-SLOT-INDEX-TABLE",
     "%C3-MERGE", "%CALL-METHOD-IMPL", "%CALL-WITH-METHOD-COMBINATION",
-    "%CLASS-OF", "%CLONE-METHOD-COMBINATION",
+    "%CLASS-OF", "%CLONE-METHOD-COMBINATION", "%CLOS-TRACE",
     "%COMPUTE-APPLICABLE-METHODS",
     "%COMPUTE-BUILTIN-CPL", "%COMPUTE-CLASS-PRECEDENCE-LIST",
     "%COMPUTE-DEFAULT-INITARGS-DEFAULT",
@@ -794,11 +795,12 @@ static const char *const clos_internal_names[] = {
     "%COMPUTE-EQL-VALUE-SETS", "%COMPUTE-GF-CACHEABLE-P",
     "%COMPUTE-SLOTS-DEFAULT",
     "%COPY-STRUCT",
+    "%DCM-SPLIT-WHOLE",
     "%DEFINE-LONG-METHOD-COMBINATION",
     "%DEFINE-SHORT-METHOD-COMBINATION",
     "%DEFSTRUCT-PARSE-SLOT",
     "%DIRECT-TO-EFFECTIVE", "%DISPATCH-BUILD-EMF",
-    "%EFFECTIVE-SLOT-DEF-P",
+    "%EFFECTIVE-SLOT-DEF-P", "%EMF-DIRECT-P",
     "%ENSURE-CLASS", "%ENSURE-DIRS-HELPER",
     "%EXPAND-EXTENDED-LOOP", "%EXPAND-SIMPLE-LOOP",
     "%FILTER-METHODS-BY-SPEC",
@@ -808,8 +810,11 @@ static const char *const clos_internal_names[] = {
     "%FIND-STRUCT-SLOT-INDEX",
     "%FOLD-PARENT-INTO-EFFECTIVE",
     "%GET-DEFSETF-SETTER",
-    "%GF-DISPATCH", "%GF-DISPATCH-CACHED",
-    "%GF-DISPATCH-EQL", "%GF-OR-NAME",
+    "%GF-1-NO-METHOD-ERROR", "%GF-2-NO-METHOD-ERROR", "%GF-2-RESOLVE",
+    "%GF-DISPATCH", "%GF-DISPATCH-1", "%GF-DISPATCH-1-SLOW",
+    "%GF-DISPATCH-2", "%GF-DISPATCH-2-SLOW", "%GF-DISPATCH-CACHED",
+    "%GF-DISPATCH-ENTRY", "%GF-DISPATCH-EQL",
+    "%GF-LAMBDA-LIST-REQUIRED-COUNT", "%GF-OR-NAME",
     "%HASH-TABLE-PAIRS",
     "%INITARG-TO-SLOT-INDEX",
     "%INSTALL-METHOD-IN-GF",
@@ -853,9 +858,10 @@ static const char *const clos_internal_names[] = {
     "%SET-DOCUMENTATION", "%SET-FIND-CLASS",
     "%SET-GF-CACHEABLE-P", "%SET-GF-DISCRIMINATING-FUNCTION",
     "%SET-GF-DISPATCH-CACHE", "%SET-GF-EQL-VALUE-SETS",
+    "%SET-GF-INLINE-CACHE",
     "%SET-GF-METHOD-COMBINATION", "%SET-GF-METHODS",
     "%SET-MEMBER",
-    "%SET-METHOD-GENERIC-FUNCTION",
+    "%SET-METHOD-GENERIC-FUNCTION", "%SET-METHOD-SIMPLE-PRIMARY-P",
     "%SET-SLOT-DEFINITION-DOCUMENTATION",
     "%SET-SLOT-DEFINITION-INITARGS",
     "%SET-SLOT-DEFINITION-INITFORM",
@@ -876,11 +882,13 @@ static const char *const clos_internal_names[] = {
     "%STRUCT-TYPE-NAME",
     "%SUBCLASSP", "%SUBST-IT",
     "%SYMBOL-CONSTANT-P",
+    "%TREE-CONTAINS-SYMBOL-NAMED-P",
     "%UNINSTALL-METHOD-FROM-GF",
     /* CL-Amiga internal CLOS state and helpers (non-MOP).  These are
      * implementation details that boot.lisp / clos.lisp introduce while
      * loading in the CL package; pre-interning them here keeps them in
      * CLAMIGA so they don't pollute COMMON-LISP's external symbols. */
+    "*%CLOS-LOAD-START*", "*%CLOS-PREV*",
     "*CALL-NEXT-METHOD-ARGS*", "*CALL-NEXT-METHOD-FUNCTION*",
     "*CLASS-TABLE*", "*CURRENT-METHOD-ARGS*",
     "*DOCUMENTATION-TABLE*", "*EQL-SPECIALIZER-TABLE*",
@@ -898,10 +906,11 @@ static const char *const clos_internal_names[] = {
      * registered as CLAMIGA builtins by builtins_condition.c. */
     "GF-CACHEABLE-P", "GF-DISCRIMINATING-FUNCTION",
     "GF-DISPATCH-CACHE", "GF-EQL-VALUE-SETS",
+    "GF-INLINE-CACHE",
     "GF-LAMBDA-LIST", "GF-METHOD-COMBINATION",
     "GF-METHODS", "GF-NAME",
     "METHOD-COMBINATION-NAME", "METHOD-COMBINATION-OPTIONS",
-    "METHOD-COMBINATION-TYPE",
+    "METHOD-COMBINATION-TYPE", "METHOD-SIMPLE-PRIMARY-P",
     /* NAMED-LAMBDA, QUASIQUOTE, UNQUOTE, UNQUOTE-SPLICING are interned
      * directly in CLAMIGA by symbol.c (cl_symbol_init) — listed there
      * to avoid duplication. */
