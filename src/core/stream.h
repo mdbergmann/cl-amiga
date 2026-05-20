@@ -103,6 +103,16 @@ CL_Obj cl_get_output_stream_string(CL_Obj stream);
  * Returns CL_NIL on connection failure. */
 CL_Obj cl_make_socket_stream(const char *host, int port);
 
+/* Create a listening (server) socket stream bound to `port`.
+ * loopback != 0 binds 127.0.0.1 only; otherwise all interfaces.
+ * When actual_port != NULL the OS-assigned port (relevant if port==0) is
+ * written there.  Returns CL_NIL on failure. */
+CL_Obj cl_make_listen_stream(int port, int loopback, int *actual_port);
+
+/* Accept one connection on a listening socket stream (blocks).
+ * Returns a bidirectional socket stream, or CL_NIL on error. */
+CL_Obj cl_socket_stream_accept(CL_Obj listener);
+
 /* Create a synonym stream that delegates to the value of symbol. */
 CL_Obj cl_make_synonym_stream(CL_Obj symbol);
 

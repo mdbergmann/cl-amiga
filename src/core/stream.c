@@ -837,6 +837,56 @@ CL_Obj cl_make_socket_stream(const char *host, int port)
     return s;
 }
 
+CL_Obj cl_make_listen_stream(int port, int loopback, int *actual_port)
+{
+    PlatformSocket sh = platform_socket_listen(port, loopback, actual_port);
+    CL_Obj s;
+    CL_Stream *st;
+    if (sh == PLATFORM_SOCKET_INVALID)
+        return CL_NIL;
+    /* A listener is only ever accept()ed on, never read/written; flag it
+     * INPUT so an accidental write-char is rejected as a direction error. */
+    s = cl_make_stream(CL_STREAM_INPUT, CL_STREAM_SOCKET);
+    if (CL_NULL_P(s)) {
+        platform_socket_close(sh);
+        return CL_NIL;
+    }
+    st = (CL_Stream *)CL_OBJ_TO_PTR(s);
+    st->handle_id = (uint32_t)sh;
+    return s;
+}
+
+CL_Obj cl_socket_stream_accept(CL_Obj listener)
+{
+    CL_Stream *lst;
+    PlatformSocket conn;
+    CL_Obj s;
+    CL_Stream *st;
+
+    if (!CL_STREAM_P(listener))
+        return CL_NIL;
+    lst = (CL_Stream *)CL_OBJ_TO_PTR(listener);
+    if (lst->stream_type != CL_STREAM_SOCKET ||
+        !(lst->flags & CL_STREAM_FLAG_OPEN))
+        return CL_NIL;
+
+    /* Block until a client connects.  conn is a plain integer handle, so the
+     * subsequent allocation cannot lose it; `listener` is GC-rooted by the
+     * caller's argument slot. */
+    conn = platform_socket_accept((PlatformSocket)lst->handle_id);
+    if (conn == PLATFORM_SOCKET_INVALID)
+        return CL_NIL;
+
+    s = cl_make_stream(CL_STREAM_IO, CL_STREAM_SOCKET);
+    if (CL_NULL_P(s)) {
+        platform_socket_close(conn);
+        return CL_NIL;
+    }
+    st = (CL_Stream *)CL_OBJ_TO_PTR(s);
+    st->handle_id = (uint32_t)conn;
+    return s;
+}
+
 CL_Obj cl_make_synonym_stream(CL_Obj symbol)
 {
     CL_Obj s = cl_make_stream(CL_STREAM_IO, CL_STREAM_SYNONYM);

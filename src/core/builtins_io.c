@@ -3109,6 +3109,48 @@ static CL_Obj bi_open_tcp_stream(CL_Obj *args, int n)
     return stream;
 }
 
+/* (ext:socket-listen port &optional loopback) => listening socket stream
+ * Binds a TCP server socket to `port` and starts listening.  When `loopback`
+ * is non-NIL it binds 127.0.0.1 only; otherwise it accepts on all interfaces.
+ * A port of 0 lets the OS pick an ephemeral port.  Use ext:socket-accept to
+ * wait for and accept client connections.  Close it with CLOSE. */
+static CL_Obj bi_socket_listen(CL_Obj *args, int n)
+{
+    CL_Obj port_obj = args[0];
+    int port, loopback;
+    CL_Obj stream;
+    if (!CL_FIXNUM_P(port_obj))
+        cl_error(CL_ERR_TYPE, "EXT:SOCKET-LISTEN: port must be an integer");
+    port = CL_FIXNUM_VAL(port_obj);
+    if (port < 0 || port > 65535)
+        cl_error(CL_ERR_GENERAL, "EXT:SOCKET-LISTEN: port must be 0-65535");
+    loopback = (n >= 2 && !CL_NULL_P(args[1])) ? 1 : 0;
+    stream = cl_make_listen_stream(port, loopback, NULL);
+    if (CL_NULL_P(stream))
+        cl_error(CL_ERR_GENERAL,
+                 "EXT:SOCKET-LISTEN: failed to bind/listen on port %d", port);
+    return stream;
+}
+
+/* (ext:socket-accept listener) => connection stream
+ * Blocks until a client connects to the listening socket stream `listener`,
+ * then returns a bidirectional binary socket stream for that connection. */
+static CL_Obj bi_socket_accept(CL_Obj *args, int n)
+{
+    CL_Obj listener = args[0];
+    CL_Obj stream;
+    CL_UNUSED(n);
+    if (!CL_STREAM_P(listener))
+        cl_error(CL_ERR_TYPE,
+                 "EXT:SOCKET-ACCEPT: argument must be a listening socket stream");
+    stream = cl_socket_stream_accept(listener);
+    if (CL_NULL_P(stream))
+        cl_error(CL_ERR_GENERAL,
+                 "EXT:SOCKET-ACCEPT: accept failed (argument is not an open "
+                 "listening socket stream)");
+    return stream;
+}
+
 /* --- Registration --- */
 
 void cl_builtins_io_init(void)
@@ -3211,6 +3253,8 @@ void cl_builtins_io_init(void)
     extfun("GETCWD", bi_getcwd, 0, 0);
     extfun("SYSTEM-COMMAND", bi_system_command, 1, 1);
     extfun("OPEN-TCP-STREAM", bi_open_tcp_stream, 2, 2);
+    extfun("SOCKET-LISTEN", bi_socket_listen, 1, 2);
+    extfun("SOCKET-ACCEPT", bi_socket_accept, 1, 1);
 
     /* Pretty-printing keywords */
     KW_LINEAR    = cl_intern_keyword("LINEAR", 6);

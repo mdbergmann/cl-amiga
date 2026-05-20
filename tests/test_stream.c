@@ -17,6 +17,7 @@
 #include "core/repl.h"
 #include "core/bignum.h"
 #include "platform/platform.h"
+#include "platform/platform_thread.h"
 #include <string.h>
 #include <stdio.h>
 #include <unistd.h>
@@ -1655,6 +1656,206 @@ TEST(eval_open_tcp_stream_write_byte)
     { int status; waitpid(pid, &status, 0); }
 }
 
+/* --- Server-side TCP socket tests (listen/accept) --- */
+
+/* Single-threaded loopback round trip exercising the raw platform layer.
+ * connect() into the listen backlog completes before accept() on loopback,
+ * so no second thread is needed. */
+TEST(platform_socket_listen_accept)
+{
+    int port = 0;
+    PlatformSocket lst, cli, conn;
+
+    lst = platform_socket_listen(0, 1, &port);  /* ephemeral, loopback */
+    ASSERT(lst != PLATFORM_SOCKET_INVALID);
+    ASSERT(port > 0);
+
+    cli = platform_socket_connect("127.0.0.1", port);
+    ASSERT(cli != PLATFORM_SOCKET_INVALID);
+
+    conn = platform_socket_accept(lst);
+    ASSERT(conn != PLATFORM_SOCKET_INVALID);
+
+    /* client -> server */
+    ASSERT_EQ_INT(platform_socket_write(cli, 'X'), 0);
+    ASSERT_EQ_INT(platform_socket_flush(cli), 0);
+    ASSERT_EQ_INT(platform_socket_read(conn), 'X');
+
+    /* server -> client */
+    ASSERT_EQ_INT(platform_socket_write(conn, 'Y'), 0);
+    ASSERT_EQ_INT(platform_socket_flush(conn), 0);
+    ASSERT_EQ_INT(platform_socket_read(cli), 'Y');
+
+    platform_socket_close(cli);
+    platform_socket_close(conn);
+    platform_socket_close(lst);
+}
+
+/* Listen on a port that is already bound -> failure (INVALID). */
+TEST(platform_socket_listen_busy_port)
+{
+    int port = 0;
+    PlatformSocket a, b;
+
+    a = platform_socket_listen(0, 1, &port);
+    ASSERT(a != PLATFORM_SOCKET_INVALID);
+    ASSERT(port > 0);
+
+    /* Second bind to the same loopback port must fail (SO_REUSEADDR still
+     * disallows two simultaneous listeners on the same address). */
+    b = platform_socket_listen(port, 1, NULL);
+    ASSERT(b == PLATFORM_SOCKET_INVALID);
+
+    platform_socket_close(a);
+}
+
+/* The cl_make_listen_stream / cl_socket_stream_accept wrappers. */
+TEST(socket_stream_listen_accept)
+{
+    int port = 0;
+    PlatformSocket probe;
+    CL_Obj listener, client, conn;
+
+    /* Grab a free port via a throwaway listener, then reuse it. */
+    probe = platform_socket_listen(0, 1, &port);
+    ASSERT(probe != PLATFORM_SOCKET_INVALID);
+    ASSERT(port > 0);
+    platform_socket_close(probe);
+
+    listener = cl_make_listen_stream(port, 1, NULL);
+    ASSERT(!CL_NULL_P(listener));
+    ASSERT(CL_STREAM_P(listener));
+    {
+        CL_Stream *st = (CL_Stream *)CL_OBJ_TO_PTR(listener);
+        ASSERT_EQ_INT((int)st->stream_type, CL_STREAM_SOCKET);
+        ASSERT(st->flags & CL_STREAM_FLAG_OPEN);
+    }
+
+    client = cl_make_socket_stream("127.0.0.1", port);
+    ASSERT(!CL_NULL_P(client));
+
+    conn = cl_socket_stream_accept(listener);
+    ASSERT(!CL_NULL_P(conn));
+    ASSERT(CL_STREAM_P(conn));
+    {
+        CL_Stream *st = (CL_Stream *)CL_OBJ_TO_PTR(conn);
+        ASSERT_EQ_INT((int)st->stream_type, CL_STREAM_SOCKET);
+        ASSERT_EQ_INT((int)st->direction, CL_STREAM_IO);
+    }
+
+    /* client -> server: write then close to flush, read echoes + EOF */
+    cl_stream_write_char(client, 'Q');
+    cl_stream_close(client);  /* flushes pending byte, then closes */
+    ASSERT_EQ_INT(cl_stream_read_char(conn), 'Q');
+    ASSERT_EQ_INT(cl_stream_read_char(conn), -1);  /* EOF after client close */
+
+    cl_stream_close(conn);
+    cl_stream_close(listener);
+}
+
+/* accept() on something that is not a listening socket returns NIL. */
+TEST(socket_stream_accept_non_listener)
+{
+    CL_Obj sstream = cl_make_string_output_stream();
+    ASSERT(!CL_NULL_P(sstream));
+    ASSERT(CL_NULL_P(cl_socket_stream_accept(sstream)));
+    /* NIL (not a stream) is also rejected. */
+    ASSERT(CL_NULL_P(cl_socket_stream_accept(CL_NIL)));
+}
+
+/* End-to-end through the Lisp builtins, single-threaded. */
+TEST(eval_socket_listen_accept_roundtrip)
+{
+    int port = 0;
+    PlatformSocket probe;
+    char expr[512];
+    CL_Obj result;
+
+    probe = platform_socket_listen(0, 1, &port);
+    ASSERT(probe != PLATFORM_SOCKET_INVALID);
+    ASSERT(port > 0);
+    platform_socket_close(probe);
+
+    snprintf(expr, sizeof(expr),
+        "(let* ((l (ext:socket-listen %d t))"
+        "       (c (ext:open-tcp-stream \"127.0.0.1\" %d))"
+        "       (s (ext:socket-accept l)))"
+        "  (write-char #\\Z c)"
+        "  (force-output c)"
+        "  (prog1 (char-code (read-char s))"
+        "    (close c) (close s) (close l)))",
+        port, port);
+    result = cl_eval_string(expr);
+    ASSERT(CL_FIXNUM_P(result));
+    ASSERT_EQ_INT(CL_FIXNUM_VAL(result), 90);  /* #\Z */
+}
+
+/* socket-listen rejects an out-of-range port via a signalled error. */
+TEST(eval_socket_listen_bad_port)
+{
+    CL_Obj result = cl_eval_string(
+        "(handler-case (ext:socket-listen 70000)"
+        "  (error (c) (declare (ignore c)) :bad-port))");
+    ASSERT(result == cl_intern_keyword("BAD-PORT", 8));
+}
+
+/* socket-accept on a non-listener signals an error (no blocking). */
+TEST(eval_socket_accept_type_error)
+{
+    CL_Obj result = cl_eval_string(
+        "(handler-case (ext:socket-accept (make-string-output-stream))"
+        "  (error (c) (declare (ignore c)) :not-a-socket))");
+    ASSERT(result == cl_intern_keyword("NOT-A-SOCKET", 12));
+}
+
+/* Concurrent slot-claim: accept() runs on a worker thread while the main
+ * thread connect()s.  Exercises the socket-table mutex — without it the two
+ * claims could land on the same slot. */
+struct sock_accept_arg { PlatformSocket listener; PlatformSocket result; };
+
+static void *sock_accept_worker(void *p)
+{
+    struct sock_accept_arg *a = (struct sock_accept_arg *)p;
+    a->result = platform_socket_accept(a->listener);
+    return NULL;
+}
+
+TEST(socket_concurrent_accept_connect)
+{
+    int port = 0, iter;
+    PlatformSocket listener;
+
+    listener = platform_socket_listen(0, 1, &port);
+    ASSERT(listener != PLATFORM_SOCKET_INVALID);
+    ASSERT(port > 0);
+
+    for (iter = 0; iter < 64; iter++) {
+        void *th = NULL;
+        struct sock_accept_arg a;
+        PlatformSocket cli;
+        int expect = 'A' + (iter & 15);
+
+        a.listener = listener;
+        a.result = PLATFORM_SOCKET_INVALID;
+        ASSERT_EQ_INT(platform_thread_create(&th, sock_accept_worker, &a, 0), 0);
+
+        cli = platform_socket_connect("127.0.0.1", port);
+        ASSERT(cli != PLATFORM_SOCKET_INVALID);
+
+        platform_thread_join(th, NULL);
+        ASSERT(a.result != PLATFORM_SOCKET_INVALID);
+        ASSERT(a.result != cli);  /* claims must never collide on one slot */
+
+        ASSERT_EQ_INT(platform_socket_write(cli, expect), 0);
+        ASSERT_EQ_INT(platform_socket_flush(cli), 0);
+        ASSERT_EQ_INT(platform_socket_read(a.result), expect);
+
+        platform_socket_close(cli);
+        platform_socket_close(a.result);
+    }
+    platform_socket_close(listener);
+}
+
 /* --- UTF-8 Stream I/O tests --- */
 
 #ifdef CL_WIDE_STRINGS
@@ -2104,6 +2305,14 @@ int main(void)
     RUN(eval_open_tcp_stream_connect_failure);
     RUN(eval_open_tcp_stream_read_byte);
     RUN(eval_open_tcp_stream_write_byte);
+    RUN(platform_socket_listen_accept);
+    RUN(platform_socket_listen_busy_port);
+    RUN(socket_stream_listen_accept);
+    RUN(socket_stream_accept_non_listener);
+    RUN(eval_socket_listen_accept_roundtrip);
+    RUN(eval_socket_listen_bad_port);
+    RUN(eval_socket_accept_type_error);
+    RUN(socket_concurrent_accept_connect);
 
 #ifdef CL_WIDE_STRINGS
     /* UTF-8 codec tests */
