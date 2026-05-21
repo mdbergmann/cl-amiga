@@ -12,3 +12,6 @@ date >>build/amiga/test-results.log
 build/amiga/clamiga --heap 8M --non-interactive --load tests/amiga/run-tests.lisp >>build/amiga/test-results.log
 echo "=== run end ===" >>build/amiga/test-results.log
 date >>build/amiga/test-results.log
+; Quit FS-UAE so `make test-amiga` returns without manual intervention.
+; The host-side watchdog (run-fs-uae.sh) is the fallback if this no-ops.
+C:UAEquit
