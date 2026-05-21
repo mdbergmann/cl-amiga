@@ -2,6 +2,7 @@ build/
 third_party/
 *.o
 *.d
+.reviews/
 verify/*
 !verify/realamiga/
 verify/realamiga/*
