@@ -605,6 +605,10 @@ void cl_capture_backtrace(void)
     int depth = 0;
 
     cl_backtrace_buf[0] = '\0';
+    /* Snapshot the frame depth so a debugger-hook (SLDB) can introspect the
+     * error-time backtrace via cl_vm_backtrace_list / cl_vm_frame_locals even
+     * after the hook has pushed its own frames on top. */
+    cl_debug_base_fp = cl_vm.fp;
     if (cl_vm.fp <= 0) return;
 
     /* Check for repeating patterns (likely infinite recursion).
@@ -677,6 +681,118 @@ void cl_capture_backtrace(void)
                  CL_BACKTRACE_BUF_SIZE - pos,
                  "  ... %d more frames\n", cl_vm.fp - max_show);
     }
+}
+
+/* --- Structured backtrace introspection (Sly/SLYNK SLDB backend) --- */
+
+/* Resolve the number of frames to expose.  Inside the debugger this is the
+ * depth captured at error time (cl_debug_base_fp); the live fp is higher
+ * because the hook pushed its own frames.  Outside an error (stale or unset
+ * snapshot) we fall back to the live frame pointer so an ad-hoc
+ * (ext:backtrace) still reports the current stack. */
+static int bt_resolve_base(void)
+{
+    int base = cl_debug_base_fp;
+    if (base <= 0 || base > cl_vm.fp)
+        base = cl_vm.fp;
+    return base;
+}
+
+/* Build an uninterned placeholder symbol named ARG<idx> or LOCAL<idx>. */
+static CL_Obj bt_slot_placeholder(int idx, int is_arg)
+{
+    char buf[24];
+    int len = snprintf(buf, sizeof(buf), is_arg ? "ARG%d" : "LOCAL%d", idx);
+    CL_Obj str = cl_make_string(buf, (uint32_t)len);
+    CL_Obj sym;
+    CL_GC_PROTECT(str);
+    sym = cl_make_uninterned_symbol(str);
+    CL_GC_UNPROTECT(1);
+    return sym;
+}
+
+CL_Obj cl_vm_backtrace_list(int max_frames)
+{
+    int base = bt_resolve_base();
+    int count = base;
+    int k;
+    CL_Obj result = CL_NIL, entry = CL_NIL, name = CL_NIL, file_str = CL_NIL;
+
+    if (max_frames > 0 && count > max_frames)
+        count = max_frames;
+    if (count <= 0)
+        return CL_NIL;
+
+    /* result/entry/name/file_str all hold heap refs across cl_cons /
+     * cl_make_string allocations below — protect all four. */
+    CL_GC_PROTECT(result);
+    CL_GC_PROTECT(entry);
+    CL_GC_PROTECT(name);
+    CL_GC_PROTECT(file_str);
+
+    /* Walk outermost→innermost and prepend, so the final list is
+     * innermost-first (index 0 = innermost). */
+    for (k = count - 1; k >= 0; k--) {
+        CL_Frame *f = &cl_vm.frames[base - 1 - k];
+        CL_Bytecode *bc;
+        int line;
+        const char *file;
+        CL_Obj line_obj;
+
+        /* Read everything off the frame before allocating. */
+        name = get_func_name(f->bytecode);
+        bc = get_frame_bytecode(f);
+        line = bc ? lookup_source_line(bc, f->ip) : 0;
+        file = (bc && bc->source_file) ? bc->source_file : NULL;
+        line_obj = (line > 0) ? CL_MAKE_FIXNUM(line) : CL_NIL;
+        file_str = file ? cl_make_string(file, (uint32_t)strlen(file)) : CL_NIL;
+
+        /* entry = (index name file line) */
+        entry = cl_cons(line_obj, CL_NIL);
+        entry = cl_cons(file_str, entry);
+        entry = cl_cons(name, entry);
+        entry = cl_cons(CL_MAKE_FIXNUM(k), entry);
+        result = cl_cons(entry, result);
+    }
+
+    CL_GC_UNPROTECT(4);
+    return result;
+}
+
+CL_Obj cl_vm_frame_locals(int index)
+{
+    int base = bt_resolve_base();
+    CL_Frame *f;
+    int bp, n_locals, nargs, i;
+    CL_Obj result = CL_NIL, pair = CL_NIL, nm = CL_NIL, val = CL_NIL;
+
+    if (index < 0 || index >= base)
+        return cl_intern_in("NOT-AVAILABLE", 13, cl_package_keyword);
+
+    f = &cl_vm.frames[base - 1 - index];
+    bp = (int)f->bp;
+    n_locals = f->n_locals;
+    nargs = f->nargs;
+
+    CL_GC_PROTECT(result);
+    CL_GC_PROTECT(pair);
+    CL_GC_PROTECT(nm);
+    CL_GC_PROTECT(val);
+
+    /* Prepend slots in reverse so the list reads slot 0 first.  The slot's
+     * value is read AFTER bt_slot_placeholder (which allocates) so it stays
+     * consistent with any GC the allocation triggered; the VM value stack is
+     * GC-rooted, so the slot itself is always a valid object (NIL-filled at
+     * frame entry — never garbage). */
+    for (i = n_locals - 1; i >= 0; i--) {
+        nm = bt_slot_placeholder(i, i < nargs);
+        val = cl_vm.stack[bp + i];
+        pair = cl_cons(nm, val);
+        result = cl_cons(pair, result);
+    }
+
+    CL_GC_UNPROTECT(4);
+    return result;
 }
 
 /* Check if an NLX frame is stale (its target frame was reused by a different function).

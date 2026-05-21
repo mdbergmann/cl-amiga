@@ -1162,6 +1162,29 @@ static CL_Obj bi_function_source_location(CL_Obj *args, int n)
     return result;
 }
 
+/* --- Backtrace introspection (EXT:BACKTRACE / EXT:FRAME-LOCALS) -----------
+ *
+ * Native primitives behind the Sly/SLYNK SLDB (debugger) backend.  Within a
+ * *debugger-hook* these report the error-time frame window; outside an error
+ * they report the live call stack.  The Lisp layer formats the results into
+ * the SLYNK debugger protocol; restarts are already covered by the existing
+ * COMPUTE-RESTARTS / FIND-RESTART / INVOKE-RESTART builtins. */
+static CL_Obj bi_backtrace(CL_Obj *args, int n)
+{
+    int max = 0;  /* 0 = all frames */
+    if (n >= 1 && CL_FIXNUM_P(args[0]))
+        max = CL_FIXNUM_VAL(args[0]);
+    return cl_vm_backtrace_list(max);
+}
+
+static CL_Obj bi_frame_locals(CL_Obj *args, int n)
+{
+    (void)n;
+    if (!CL_FIXNUM_P(args[0]))
+        return cl_intern_in("NOT-AVAILABLE", 13, cl_package_keyword);
+    return cl_vm_frame_locals(CL_FIXNUM_VAL(args[0]));
+}
+
 static CL_Obj bi_quit(CL_Obj *args, int n)
 {
     int code = 0;
@@ -1319,6 +1342,14 @@ void cl_builtins_init(void)
     cl_register_builtin("FUNCTION-SOURCE-LOCATION", bi_function_source_location,
                         1, 1, cl_package_ext);
     cl_export_symbol(cl_intern_in("FUNCTION-SOURCE-LOCATION", 24, cl_package_ext),
+                     cl_package_ext);
+
+    /* Backtrace introspection (Sly/SLYNK SLDB) — exported from EXT */
+    cl_register_builtin("BACKTRACE", bi_backtrace, 0, 1, cl_package_ext);
+    cl_export_symbol(cl_intern_in("BACKTRACE", 9, cl_package_ext),
+                     cl_package_ext);
+    cl_register_builtin("FRAME-LOCALS", bi_frame_locals, 1, 1, cl_package_ext);
+    cl_export_symbol(cl_intern_in("FRAME-LOCALS", 12, cl_package_ext),
                      cl_package_ext);
 
     /* Opcode profiler (no-op unless built with -DPROFILE_OPCODES) */

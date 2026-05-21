@@ -4161,6 +4161,32 @@
 (check "function-source-location non-function not-available"
   :not-available (ext:function-source-location 42))
 
+; --- EXT:BACKTRACE / EXT:FRAME-LOCALS (Sly SLDB backend) ---
+; Each call is non-tail (wrapped in a LET initform) so the VM's tail-call
+; optimization does not collapse the intermediate frames.  Backtrace entries
+; are (INDEX NAME FILE LINE), innermost first; frame-locals returns
+; (PLACEHOLDER-NAME . VALUE) pairs.
+(defun bt-c (z) (declare (ignore z)) (ext:backtrace))
+(defun bt-b (y) (let ((r (bt-c (* y 2)))) r))
+(defun bt-a (x) (let ((r (bt-b (+ x 1)))) r))
+(defparameter *amiga-bt* (bt-a 5))
+(check "backtrace is a list" t (consp *amiga-bt*))
+(check "backtrace innermost index is 0" 0 (first (first *amiga-bt*)))
+(check "backtrace innermost frame name" "BT-C"
+  (symbol-name (second (first *amiga-bt*))))
+(check "backtrace caller frame name" "BT-B"
+  (symbol-name (second (second *amiga-bt*))))
+
+(defun bt-locals (a b) (let ((c 77)) (ext:frame-locals 0)))
+(defparameter *amiga-locals* (bt-locals 3 4))
+(check "frame-locals is a list" t (consp *amiga-locals*))
+(check "frame-locals exposes argument value" t
+  (and (member 3 (mapcar #'cdr *amiga-locals*)) t))
+(check "frame-locals exposes let-bound value" t
+  (and (member 77 (mapcar #'cdr *amiga-locals*)) t))
+(check "frame-locals out-of-range index" :not-available
+  (ext:frame-locals 9999))
+
 ; --- documentation is a generic function ---
 ; Storage via (setf documentation) + retrieval; adding a specialized
 ; method for a user-defined doc-type must NOT break the (t t) fallback.

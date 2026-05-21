@@ -116,6 +116,23 @@ CL_Obj cl_create_condition_from_error(int code, const char *msg);
 /* Capture current VM call stack into cl_backtrace_buf */
 void cl_capture_backtrace(void);
 
+/* --- Structured backtrace introspection (Sly/SLYNK SLDB backend) ---
+ *
+ * These walk the error-time frame window (cl_debug_base_fp, snapshotted by
+ * cl_capture_backtrace; falls back to the live frame pointer outside an
+ * error).  Frame index 0 is the innermost frame. */
+
+/* Backtrace as a list of (INDEX NAME FILE LINE) entries, innermost first.
+ * NAME is the function-name symbol (NIL if anonymous); FILE a namestring
+ * string (NIL if unknown); LINE a 1-based fixnum (NIL if unknown).
+ * MAX_FRAMES <= 0 means "all". */
+CL_Obj cl_vm_backtrace_list(int max_frames);
+
+/* Locals of frame INDEX as a list of (NAME . VALUE), with placeholder names
+ * (#:ARGn for argument slots, #:LOCALn for the rest).  Returns :NOT-AVAILABLE
+ * for an out-of-range index. */
+CL_Obj cl_vm_frame_locals(int index);
+
 /* Initialize VM (0 = use default for either parameter) */
 void cl_vm_init(uint32_t stack_size, int frame_size);
 

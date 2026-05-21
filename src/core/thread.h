@@ -150,6 +150,9 @@ typedef struct CL_Thread_s {
     int    trace_count;
     char   backtrace_buf[CL_BACKTRACE_BUF_SIZE];
     char  *c_stack_base;
+    int    debug_base_fp;   /* VM frame depth snapshot at error time, so the
+                             * debugger-hook (SLDB) sees the error-time
+                             * backtrace rather than its own pushed frames. */
 
     /* ---- JIT native-stack GC scan window ----
      * jit_depth: number of nested cl_jit_invoke frames currently on the
@@ -436,6 +439,7 @@ int    cl_symbol_boundp(CL_Obj sym);
 #define cl_trace_count      (CT->trace_count)
 #define cl_backtrace_buf    (CT->backtrace_buf)
 #define cl_c_stack_base     (CT->c_stack_base)
+#define cl_debug_base_fp    (CT->debug_base_fp)
 
 /* Compiler chain */
 #define cl_active_compiler  (CT->active_compiler)
