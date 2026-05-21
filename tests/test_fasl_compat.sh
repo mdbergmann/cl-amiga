@@ -239,6 +239,24 @@ T
 :RECOMPILED-OK" "$result"
 fi
 
+# --- Test 10: source lambda-list survives FASL (EXT:FUNCTION-ARGLIST) ---
+# Regression for FASL v9: CL_Bytecode.source_lambda_list must round-trip so
+# editor tooling (Sly arglist) sees the written lambda-list — including
+# &optional default forms — after loading from a FASL.
+
+cat > "$TMPDIR/fasl_test_arglist.lisp" << 'LISP'
+(defun fasl-arglist-fn (a b &optional (c 7) &key kw) (list a b c kw))
+LISP
+
+# Session 1: load source (creates FASL cache)
+run_quiet '(load "'"$TMPDIR"'/fasl_test_arglist.lisp")' > /dev/null
+
+# Session 2: load from FASL, read the captured lambda-list back
+result=$(run_quiet '(load "'"$TMPDIR"'/fasl_test_arglist.lisp") (ext:function-arglist (function fasl-arglist-fn))')
+check "fasl_arglist_cross_session" "NIL
+T
+(A B &OPTIONAL (C 7) &KEY KW)" "$result"
+
 # --- Cleanup ---
 
 rm -f "$TMPDIR"/fasl_test_*.lisp

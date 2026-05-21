@@ -4126,6 +4126,25 @@
 (check "special-operator-p car" nil (special-operator-p 'car))
 (check "special-operator-p undefined" nil (special-operator-p 'no-such-sym))
 
+; --- EXT:FUNCTION-ARGLIST (Sly arglist introspection) ---
+; Path B: source-compiled functions return their exact written lambda-list
+; (captured on the bytecode, survives FASL).  Path A: C builtins get a
+; reconstructed lambda-list with #:ARGn placeholders.
+(defun al-amiga (a b &optional (c 3) &rest more &key kw) (list a b c more kw))
+(check "function-arglist defun source"
+  '(a b &optional (c 3) &rest more &key kw)
+  (ext:function-arglist #'al-amiga))
+(check "function-arglist lambda"
+  '(x y) (ext:function-arglist (lambda (x y) (+ x y))))
+(check "function-arglist empty lambda-list"
+  nil (ext:function-arglist (lambda () 1)))
+(check "function-arglist builtin arity"
+  1 (length (ext:function-arglist #'car)))
+(check "function-arglist builtin variadic"
+  '&rest (car (ext:function-arglist #'list)))
+(check "function-arglist not-available"
+  :not-available (ext:function-arglist 42))
+
 ; --- documentation is a generic function ---
 ; Storage via (setf documentation) + retrieval; adding a specialized
 ; method for a user-defined doc-type must NOT break the (t t) fallback.

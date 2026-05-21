@@ -877,6 +877,10 @@ void compile_lambda(CL_Compiler *c, CL_Obj form)
     bc->n_upvalues = env->upvalue_count;
     bc->name = pending_lambda_name;
     pending_lambda_name = CL_NIL;
+    /* Retain the original lambda-list for arglist introspection.  `params`
+     * is a sub-form of `form`, which the caller keeps live throughout
+     * compilation (body is read from it after many allocations below). */
+    bc->source_lambda_list = params;
     bc->n_optional = (uint8_t)inner->ll.n_optional;
     bc->flags = ((inner->ll.n_keys > 0 || inner->ll.allow_other_keys) ? 1 : 0)
               | (inner->ll.allow_other_keys ? 2 : 0);
@@ -4062,6 +4066,7 @@ CL_Obj cl_compile(CL_Obj expr)
     bc->key_syms = NULL;
     bc->key_slots = NULL;
     bc->key_suppliedp_slots = NULL;
+    bc->source_lambda_list = CL_NIL;  /* top-level form: no user lambda-list */
 
     /* Transfer source line map */
     if (comp->line_entry_count > 0) {

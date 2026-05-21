@@ -239,6 +239,11 @@ typedef struct {
      * specs/native-backend.md. */
     uint8_t *native_code;
     uint32_t native_len;
+    /* Original source lambda-list (the params form as written, including
+     * &optional/&key default forms).  CL_NIL when not captured (top-level
+     * forms, builtins).  Retained for arglist / Sly introspection; see
+     * EXT:FUNCTION-ARGLIST.  GC-traced and FASL-serialized (format v9+). */
+    CL_Obj source_lambda_list;
 } CL_Bytecode;
 
 #define CL_BYTECODE_P(obj) (CL_HEAP_P(obj) && CL_HDR_TYPE(CL_OBJ_TO_PTR(obj)) == TYPE_BYTECODE)

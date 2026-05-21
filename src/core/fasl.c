@@ -259,7 +259,8 @@ static int fasl_shared_get_or_insert(CL_FaslWriter *w, CL_Obj obj,
 #define PHASE_BC_CONSTANTS   2  /* constants iteration */
 #define PHASE_BC_METADATA    3  /* metadata bytes */
 #define PHASE_BC_KEY_SYMS    4  /* key_syms iteration */
-#define PHASE_BC_POSTLUDE    5  /* key_slots, source info, line map; push name */
+#define PHASE_BC_POSTLUDE    5  /* key_slots, source info, line map; push lambda-list */
+#define PHASE_BC_LAMBDA_LIST 6  /* source_lambda_list pushed; then push name */
 #define PHASE_CLOSURE_AFTER_BC    0xF0  /* write n_upvalues, transition to NEXT_UPVAL */
 #define PHASE_STRUCT_AFTER_TYPEDESC 0xF1 /* write n_slots, transition to NEXT_SLOT */
 #define PHASE_CONS_NEXT_CAR       0xF2  /* iterating CDR chain inline */
@@ -969,6 +970,14 @@ static int fasl_ser_step(CL_FaslWriter *w, FaslSerStack *s)
                 cl_fasl_write_u16(w, bc->line_map[i].pc);
                 cl_fasl_write_u16(w, bc->line_map[i].line);
             }
+            /* v9: serialize the source lambda-list, then the name.  Order
+             * matters — the reader deserializes lambda-list before name. */
+            s->frames[idx].phase = PHASE_BC_LAMBDA_LIST;
+            if (!fasl_ser_stack_push(w, s, bc->source_lambda_list, PHASE_START))
+                return 1;
+            return 0;
+
+        case PHASE_BC_LAMBDA_LIST:
             s->frames[idx].phase = PHASE_DONE;
             if (!fasl_ser_stack_push(w, s, bc->name, PHASE_START)) return 1;
             return 0;
@@ -1782,6 +1791,7 @@ CL_Obj cl_fasl_deserialize_bytecode(CL_FaslReader *r)
     bc->line_map_count = 0;
     bc->source_line = 0;
     bc->source_file = NULL;
+    bc->source_lambda_list = CL_NIL;
 
     /* Code */
     code_len = cl_fasl_read_u32(r);
@@ -1891,6 +1901,13 @@ CL_Obj cl_fasl_deserialize_bytecode(CL_FaslReader *r)
                 }
             }
         }
+    }
+
+    /* Source lambda-list (v9) — written before the name by the serializer. */
+    {
+        CL_Obj sll = cl_fasl_deserialize_obj(r);
+        bc = (CL_Bytecode *)CL_OBJ_TO_PTR(bc_obj);
+        bc->source_lambda_list = sll;
     }
 
     /* Name */

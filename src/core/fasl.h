@@ -26,7 +26,7 @@
 #include "../platform/platform.h"
 
 #define CL_FASL_MAGIC    0x434C4641  /* "CLFA" */
-#define CL_FASL_VERSION  8
+#define CL_FASL_VERSION  9   /* v9: bytecode carries source_lambda_list */
 
 /* Serialized constant type tags */
 #define FASL_TAG_NIL         0x00

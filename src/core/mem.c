@@ -803,6 +803,7 @@ static void gc_mark_children(void *ptr, uint8_t type)
         CL_Bytecode *bc = (CL_Bytecode *)ptr;
         uint16_t i;
         gc_mark_push(bc->name);
+        gc_mark_push(bc->source_lambda_list);
         for (i = 0; i < bc->n_constants; i++)
             gc_mark_push(bc->constants[i]);
         /* Mark keyword symbols if present */
@@ -1677,6 +1678,7 @@ static void gc_update_children(void *ptr, uint8_t type)
         CL_Bytecode *bc = (CL_Bytecode *)ptr;
         uint16_t i;
         gc_update_slot(&bc->name);
+        gc_update_slot(&bc->source_lambda_list);
         for (i = 0; i < bc->n_constants; i++)
             gc_update_slot(&bc->constants[i]);
         if (bc->key_syms) {
@@ -2279,6 +2281,7 @@ static void gc_verify_marked(void)
                 CL_Bytecode *bc = (CL_Bytecode *)ptr;
                 uint16_t i;
                 gc_verify_check_ref(parent_off, "name", bc->name);
+                gc_verify_check_ref(parent_off, "lambda-list", bc->source_lambda_list);
                 for (i = 0; i < bc->n_constants; i++)
                     gc_verify_check_ref(parent_off, "const", bc->constants[i]);
                 break;
@@ -2464,6 +2467,7 @@ static void gc_verify_after_sweep(void)
             case TYPE_BYTECODE: {
                 CL_Bytecode *bc = (CL_Bytecode *)ptr;
                 CHECK_FIELD(bc->name, "name");
+                CHECK_FIELD(bc->source_lambda_list, "lambda-list");
                 break;
             }
             case TYPE_VECTOR: {

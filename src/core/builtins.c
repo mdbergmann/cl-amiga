@@ -1006,6 +1006,110 @@ void cl_builtins_thread_init(void);
 void cl_builtins_ffi_init(void);
 void cl_builtins_amiga_init(void);
 
+/* --- Function arglist introspection (EXT:FUNCTION-ARGLIST) ----------------
+ *
+ * Returns the lambda-list of FN, for editor tooling (Sly/SLYNK arglist).
+ * For functions compiled from source the exact written lambda-list is
+ * returned verbatim — it is captured on CL_Bytecode.source_lambda_list at
+ * compile time and survives FASL round-trips (format v9).  When no captured
+ * list is available (C builtins, or bytecode predating the capture) a
+ * lambda-list is reconstructed from the arity descriptor with placeholder
+ * argument names (#:ARG0, #:ARG1, ...).  Generic functions are handled by
+ * the Lisp layer via GF-LAMBDA-LIST; for those (and any non-function) this
+ * primitive returns :NOT-AVAILABLE. */
+
+static CL_Obj arg_placeholder(int idx)
+{
+    char buf[16];
+    int len = snprintf(buf, sizeof(buf), "ARG%d", idx);
+    CL_Obj str = cl_make_string(buf, (uint32_t)len);
+    CL_Obj sym;
+    CL_GC_PROTECT(str);
+    sym = cl_make_uninterned_symbol(str);
+    CL_GC_UNPROTECT(1);
+    return sym;
+}
+
+/* Build a lambda-list from decomposed arity info.  Conses are prepended onto
+ * `result` walking the sections in reverse, so the final order is
+ *   req... [&optional opt...] [&rest rest] [&key kw...].
+ * key_syms (the platform-allocated keyword array) may be NULL when n_keys==0;
+ * it lives outside the GC arena, so its address is stable across the
+ * allocations below and its slots are updated in place by the compactor. */
+static CL_Obj build_arglist(int n_required, int n_optional, int has_rest,
+                            int n_keys, CL_Obj *key_syms)
+{
+    CL_Obj result = CL_NIL;
+    CL_Obj tmp = CL_NIL;
+    int i;
+    CL_GC_PROTECT(result);
+    CL_GC_PROTECT(tmp);
+
+    if (n_keys > 0) {
+        for (i = n_keys - 1; i >= 0; i--)
+            result = cl_cons(key_syms[i], result);
+        result = cl_cons(cl_intern_in("&KEY", 4, cl_package_cl), result);
+    }
+    if (has_rest) {
+        tmp = arg_placeholder(n_required + n_optional);
+        result = cl_cons(tmp, result);
+        result = cl_cons(cl_intern_in("&REST", 5, cl_package_cl), result);
+    }
+    if (n_optional > 0) {
+        for (i = n_optional - 1; i >= 0; i--) {
+            tmp = arg_placeholder(n_required + i);
+            result = cl_cons(tmp, result);
+        }
+        result = cl_cons(cl_intern_in("&OPTIONAL", 9, cl_package_cl), result);
+    }
+    for (i = n_required - 1; i >= 0; i--) {
+        tmp = arg_placeholder(i);
+        result = cl_cons(tmp, result);
+    }
+
+    CL_GC_UNPROTECT(2);
+    return result;
+}
+
+static CL_Obj bi_function_arglist(CL_Obj *args, int n)
+{
+    CL_Obj fn = args[0];
+    CL_Bytecode *bc = NULL;
+    (void)n;
+
+    if (CL_HEAP_P(fn)) {
+        void *p = CL_OBJ_TO_PTR(fn);
+        uint8_t t = CL_HDR_TYPE(p);
+        if (t == TYPE_CLOSURE) {
+            CL_Closure *clo = (CL_Closure *)p;
+            if (CL_HEAP_P(clo->bytecode) &&
+                CL_HDR_TYPE(CL_OBJ_TO_PTR(clo->bytecode)) == TYPE_BYTECODE)
+                bc = (CL_Bytecode *)CL_OBJ_TO_PTR(clo->bytecode);
+        } else if (t == TYPE_BYTECODE) {
+            bc = (CL_Bytecode *)p;
+        } else if (t == TYPE_FUNCTION) {
+            /* C builtin: reconstruct from min/max args. */
+            CL_Function *f = (CL_Function *)p;
+            int has_rest = (f->max_args < 0);
+            int n_opt = has_rest ? 0 : (f->max_args - f->min_args);
+            return build_arglist(f->min_args, n_opt, has_rest, 0, NULL);
+        }
+    }
+
+    if (bc) {
+        /* Path B: exact lambda-list captured at compile time. */
+        if (!CL_NULL_P(bc->source_lambda_list))
+            return bc->source_lambda_list;
+        /* Path A: reconstruct from the arity descriptor. */
+        return build_arglist((int)(bc->arity & 0x7FFF),
+                             (int)bc->n_optional,
+                             (bc->arity & 0x8000) ? 1 : 0,
+                             (int)bc->n_keys, bc->key_syms);
+    }
+
+    return cl_intern_in("NOT-AVAILABLE", 13, cl_package_keyword);
+}
+
 static CL_Obj bi_quit(CL_Obj *args, int n)
 {
     int code = 0;
@@ -1155,6 +1259,11 @@ void cl_builtins_init(void)
     cl_register_builtin("%UNTRACE-FUNCTION", bi_untrace_function, 1, 1, cl_package_clamiga);
     cl_register_builtin("%TRACED-FUNCTIONS", bi_traced_functions, 0, 0, cl_package_clamiga);
     cl_register_builtin("%UNTRACE-ALL", bi_untrace_all, 0, 0, cl_package_clamiga);
+
+    /* Function arglist introspection (Sly/SLYNK) — exported from EXT */
+    cl_register_builtin("FUNCTION-ARGLIST", bi_function_arglist, 1, 1, cl_package_ext);
+    cl_export_symbol(cl_intern_in("FUNCTION-ARGLIST", 16, cl_package_ext),
+                     cl_package_ext);
 
     /* Opcode profiler (no-op unless built with -DPROFILE_OPCODES) */
     cl_register_builtin("%OP-COUNTS-RESET", bi_op_counts_reset, 0, 0, cl_package_clamiga);
