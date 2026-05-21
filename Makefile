@@ -76,7 +76,7 @@ TEST_BINS   = $(patsubst $(TEST_SRCDIR)/%.c,$(BUILDDIR)/tests/%,$(TEST_SRCS))
 LIB_SRCS = $(PLATFORM_SRC) $(CORE_SRC) $(JIT_SRC)
 LIB_OBJS = $(patsubst $(SRCDIR)/%.c,$(BUILDDIR)/%.o,$(LIB_SRCS))
 
-.PHONY: host test linux-test clean verify-amiga
+.PHONY: host test linux-test clean verify-amiga install-hooks
 
 host: $(BUILDDIR)/clamiga
 
@@ -279,6 +279,15 @@ install-shims:
 	    ln -s "$$src" "$$dst" && echo "=> linked $$dst -> $$src"; \
 	  fi; \
 	done
+
+# Activate the auto-review git hook for this clone. Sets a RELATIVE core.hooksPath
+# (githooks) so it survives the repo being moved and works the same in every clone.
+# Run once after cloning. See scripts/review/README.md.
+install-hooks:
+	@git config core.hooksPath githooks
+	@chmod +x githooks/* 2>/dev/null || true
+	@echo "=> auto-review hook activated (core.hooksPath=githooks)"
+	@echo "   bypass one commit with 'git commit --no-verify'; disable with CLAUDE_AUTO_REVIEW=0"
 
 clean:
 	rm -rf build

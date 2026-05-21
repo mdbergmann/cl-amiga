@@ -1,0 +1,10 @@
+#!/bin/sh
+# Auto-review gate (tracked hook). Activated per-clone via `make install-hooks`,
+# which sets `core.hooksPath=githooks` (a relative path, so it survives repo moves
+# and is identical for every clone). Delegates to the tracked logic script.
+#
+# Disable one commit: `git commit --no-verify`.  Disable always: CLAUDE_AUTO_REVIEW=0.
+ROOT="$(git rev-parse --show-toplevel)" || exit 0
+SCRIPT="$ROOT/scripts/review/pre-commit.sh"
+[ -x "$SCRIPT" ] || exit 0
+exec "$SCRIPT"
