@@ -4145,6 +4145,22 @@
 (check "function-arglist not-available"
   :not-available (ext:function-arglist 42))
 
+; --- EXT:FUNCTION-SOURCE-LOCATION (Sly find-definitions / M-.) ---
+; This suite is loaded from a file, so functions defined here carry a
+; source location: (FILE LINE), FILE a namestring string, LINE a fixnum.
+; REPL/builtins/non-functions return :not-available.
+(defun sl-amiga (x) x)
+(check "function-source-location is a list"
+  t (consp (ext:function-source-location #'sl-amiga)))
+(check "function-source-location file is a string"
+  t (stringp (first (ext:function-source-location #'sl-amiga))))
+(check "function-source-location line is an integer"
+  t (integerp (second (ext:function-source-location #'sl-amiga))))
+(check "function-source-location builtin not-available"
+  :not-available (ext:function-source-location #'car))
+(check "function-source-location non-function not-available"
+  :not-available (ext:function-source-location 42))
+
 ; --- documentation is a generic function ---
 ; Storage via (setf documentation) + retrieval; adding a specialized
 ; method for a user-defined doc-type must NOT break the (t t) fallback.

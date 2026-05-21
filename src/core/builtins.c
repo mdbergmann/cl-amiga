@@ -1110,6 +1110,58 @@ static CL_Obj bi_function_arglist(CL_Obj *args, int n)
     return cl_intern_in("NOT-AVAILABLE", 13, cl_package_keyword);
 }
 
+/* --- Function source location (EXT:FUNCTION-SOURCE-LOCATION) --------------
+ *
+ * Returns the source location of FN as the list (FILE LINE), where FILE is a
+ * string namestring and LINE is a 1-based fixnum — the data captured on
+ * CL_Bytecode.source_file / .source_line at compile time (and preserved
+ * through FASL).  This is the native primitive behind the Sly/SLYNK
+ * find-definitions (M-.) backend; the Lisp layer wraps it into the SLYNK
+ * (:location (:file ...) (:line ...)) shape.
+ *
+ * Returns :NOT-AVAILABLE when FN is not a code object, or has no recorded
+ * file (e.g. functions defined at the REPL, where source_file is NULL). */
+static CL_Obj bi_function_source_location(CL_Obj *args, int n)
+{
+    CL_Obj fn = args[0];
+    CL_Bytecode *bc = NULL;
+    const char *file;
+    int line;
+    CL_Obj file_str, result;
+    (void)n;
+
+    if (CL_HEAP_P(fn)) {
+        void *p = CL_OBJ_TO_PTR(fn);
+        uint8_t t = CL_HDR_TYPE(p);
+        if (t == TYPE_CLOSURE) {
+            CL_Closure *clo = (CL_Closure *)p;
+            if (CL_HEAP_P(clo->bytecode) &&
+                CL_HDR_TYPE(CL_OBJ_TO_PTR(clo->bytecode)) == TYPE_BYTECODE)
+                bc = (CL_Bytecode *)CL_OBJ_TO_PTR(clo->bytecode);
+        } else if (t == TYPE_BYTECODE) {
+            bc = (CL_Bytecode *)p;
+        }
+    }
+
+    if (!bc || bc->source_file == NULL)
+        return cl_intern_in("NOT-AVAILABLE", 13, cl_package_keyword);
+
+    /* Read both fields before allocating.  source_file points into the
+     * interned source-file pool (platform_alloc, outside the GC arena), so
+     * its address is stable; bc itself is kept live by args[0] but must not
+     * be re-dereferenced after an allocation. */
+    file = bc->source_file;
+    line = (int)bc->source_line;
+
+    file_str = cl_make_string(file, (uint32_t)strlen(file));
+    CL_GC_PROTECT(file_str);
+    result = cl_cons(CL_MAKE_FIXNUM(line), CL_NIL);
+    CL_GC_PROTECT(result);
+    result = cl_cons(file_str, result);
+    CL_GC_UNPROTECT(2);
+    return result;
+}
+
 static CL_Obj bi_quit(CL_Obj *args, int n)
 {
     int code = 0;
@@ -1263,6 +1315,10 @@ void cl_builtins_init(void)
     /* Function arglist introspection (Sly/SLYNK) — exported from EXT */
     cl_register_builtin("FUNCTION-ARGLIST", bi_function_arglist, 1, 1, cl_package_ext);
     cl_export_symbol(cl_intern_in("FUNCTION-ARGLIST", 16, cl_package_ext),
+                     cl_package_ext);
+    cl_register_builtin("FUNCTION-SOURCE-LOCATION", bi_function_source_location,
+                        1, 1, cl_package_ext);
+    cl_export_symbol(cl_intern_in("FUNCTION-SOURCE-LOCATION", 24, cl_package_ext),
                      cl_package_ext);
 
     /* Opcode profiler (no-op unless built with -DPROFILE_OPCODES) */
