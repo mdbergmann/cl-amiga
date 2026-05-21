@@ -70,15 +70,34 @@ run_tests_or_abort() {
   if ! command -v make >/dev/null 2>&1; then
     echo "[auto-review] 'make' not on PATH — cannot run the mandatory tests. COMMIT BLOCKED." >&2
     echo "[auto-review] Install 'make', set CLAUDE_RUN_TESTS=0, or 'git commit --no-verify'." >&2
+    [ -n "$LOG" ] && printf '### Tests — BLOCKED (make not on PATH)\n\n' >> "$LOG"
     return 1
   fi
   TESTLOG=".reviews/last-test.log"
   echo "[auto-review] running 'make $TEST_TARGET' (set CLAUDE_RUN_TESTS=0 to skip)..." >&2
+  TEST_START_TS="$(date '+%Y-%m-%d %H:%M:%S')"
+  TEST_START_EPOCH="$(date '+%s')"
   if maybe_timeout "$TEST_TIMEOUT" make --no-print-directory "$TEST_TARGET" > "$TESTLOG" 2>&1; then
-    echo "[auto-review] tests passed ($TEST_TARGET)." >&2
+    TEST_RC=0
+  else
+    TEST_RC=1
+  fi
+  TEST_END_TS="$(date '+%Y-%m-%d %H:%M:%S')"
+  TEST_DURATION=$(( $(date '+%s') - TEST_START_EPOCH ))
+  if [ -n "$LOG" ]; then
+    {
+      printf '### Tests (`make %s`) — %s\n\n' "$TEST_TARGET" \
+        "$([ $TEST_RC -eq 0 ] && echo PASSED || echo FAILED)"
+      printf -- '- Started: %s\n' "$TEST_START_TS"
+      printf -- '- Ended:   %s\n' "$TEST_END_TS"
+      printf -- '- Duration: %ss\n\n' "$TEST_DURATION"
+    } >> "$LOG"
+  fi
+  if [ $TEST_RC -eq 0 ]; then
+    echo "[auto-review] tests passed ($TEST_TARGET) in ${TEST_DURATION}s." >&2
     return 0
   fi
-  echo "[auto-review] TESTS FAILED ($TEST_TARGET) — commit aborted. Full output: $TESTLOG" >&2
+  echo "[auto-review] TESTS FAILED ($TEST_TARGET) after ${TEST_DURATION}s — commit aborted. Full output: $TESTLOG" >&2
   echo "[auto-review] ----- last 30 lines -----" >&2
   tail -n 30 "$TESTLOG" >&2
   echo "[auto-review] -------------------------" >&2
