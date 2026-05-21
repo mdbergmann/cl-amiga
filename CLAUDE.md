@@ -24,7 +24,7 @@ make -f Makefile.cross clean        # Remove cross-build artifacts
 - Uses `m68k-amigaos-gcc` toolchain from `tools/m68k-amigaos-gcc/prefix`
 - **Preferred method** for building the Amiga binary — faster than compiling inside the emulator with vbcc
 - `test-amiga` places the binary in `build/amiga/`, boots FS-UAE, runs the Amiga test suite, and verifies results
-- FS-UAE must be closed manually after tests finish; results are checked automatically
+- Runs fully unattended: FS-UAE auto-quits (`C:UAEquit`) when the suite finishes, and a host-side watchdog (`verify/realamiga/run-fs-uae.sh`) kills it if clamiga hangs; results are checked automatically
 
 ## Architecture
 

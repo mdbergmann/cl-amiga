@@ -127,14 +127,19 @@ $(BUILDDIR)/%.o: $(SRCDIR)/%.s
 # Default: high-end JIT config (A4000/68040/Picasso96) — faster turnaround
 # for everyday verification.  Use `test-amiga-lowend` to run against the
 # documented 68020 baseline (A1200/68020/16 MB, cycle-accurate, no JIT).
+#
+# run-fs-uae.sh supervises the emulator so the run is fully unattended:
+# `C:UAEquit` (appended to call-on-ustartup) quits FS-UAE when the suite
+# finishes, and the script's watchdog kills it if clamiga hangs.  No manual
+# window-closing required.
 test-amiga: $(BUILDDIR)/clamiga
-	@echo "=== Launching FS-UAE (high-end JIT config) — close emulator when tests finish ==="
-	verify/realamiga/FS-UAE.app/Contents/MacOS/fs-uae verify/realamiga/verify.fs-uae
+	@echo "=== Launching FS-UAE (high-end JIT config) — auto-quits when tests finish ==="
+	verify/realamiga/run-fs-uae.sh verify/realamiga/verify.fs-uae
 	@$(MAKE) --no-print-directory -f Makefile.cross verify-amiga
 
 test-amiga-lowend: $(BUILDDIR)/clamiga
-	@echo "=== Launching FS-UAE (lower-end 68020 baseline) — close emulator when tests finish ==="
-	verify/realamiga/FS-UAE.app/Contents/MacOS/fs-uae verify/realamiga/verify-lowend.fs-uae
+	@echo "=== Launching FS-UAE (lower-end 68020 baseline) — auto-quits when tests finish ==="
+	verify/realamiga/run-fs-uae.sh verify/realamiga/verify-lowend.fs-uae
 	@$(MAKE) --no-print-directory -f Makefile.cross verify-amiga
 
 verify-amiga:
