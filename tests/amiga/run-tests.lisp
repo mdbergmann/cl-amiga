@@ -1714,6 +1714,39 @@
 (check "read-from-string integer" 42 (read-from-string "42"))
 (check "read-from-string eof-value" :eof (read-from-string "" nil :eof))
 
+; --- TCP sockets (server side: socket-listen / socket-accept / socket-local-port) ---
+; FS-UAE provides a TCP stack (bsdsocket.library on Amiga), so these run for
+; real.  Single-threaded loopback pattern, same as the host tests: a loopback
+; connect lands in the accept backlog, so socket-accept returns without
+; blocking.  Each test closes its sockets to avoid exhausting the 16-slot table.
+(check "socket-listen ephemeral returns stream" t
+  (let ((l (ext:socket-listen 0 t)))
+    (unwind-protect (streamp l) (close l))))
+(check "socket-local-port ephemeral positive" t
+  (let ((l (ext:socket-listen 0 t)))
+    (unwind-protect
+         (let ((p (ext:socket-local-port l)))
+           (and (integerp p) (> p 0)))
+      (close l))))
+(check "socket-local-port on non-listener errors" :not-a-listener
+  (handler-case (ext:socket-local-port (make-string-output-stream))
+    (error (c) (declare (ignore c)) :not-a-listener)))
+; Full round-trip driven entirely by the OS-assigned port from socket-local-port
+; (the exact shape a Sly/SLYNK server uses to advertise its port).
+(check "socket round-trip via local-port" 90  ; #\Z
+  (let ((l (ext:socket-listen 0 t)))
+    (unwind-protect
+         (let* ((p (ext:socket-local-port l))
+                (c (ext:open-tcp-stream "127.0.0.1" p))
+                (s (ext:socket-accept l)))
+           (unwind-protect
+                (progn
+                  (write-char #\Z c)
+                  (force-output c)
+                  (char-code (read-char s)))
+             (close c) (close s)))
+      (close l))))
+
 ; --- Printer + stream integration (Step 7) ---
 
 ; prin1/princ/print with optional stream arg

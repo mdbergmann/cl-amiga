@@ -839,11 +839,14 @@ CL_Obj cl_make_socket_stream(const char *host, int port)
 
 CL_Obj cl_make_listen_stream(int port, int loopback, int *actual_port)
 {
-    PlatformSocket sh = platform_socket_listen(port, loopback, actual_port);
+    int bound_port = 0;
+    PlatformSocket sh = platform_socket_listen(port, loopback, &bound_port);
     CL_Obj s;
     CL_Stream *st;
     if (sh == PLATFORM_SOCKET_INVALID)
         return CL_NIL;
+    if (actual_port)
+        *actual_port = bound_port;
     /* A listener is only ever accept()ed on, never read/written; flag it
      * INPUT so an accidental write-char is rejected as a direction error. */
     s = cl_make_stream(CL_STREAM_INPUT, CL_STREAM_SOCKET);
@@ -853,7 +856,26 @@ CL_Obj cl_make_listen_stream(int port, int loopback, int *actual_port)
     }
     st = (CL_Stream *)CL_OBJ_TO_PTR(s);
     st->handle_id = (uint32_t)sh;
+    /* `position` is unused for socket streams (no read/write cursor); reuse it
+     * to record the bound local port so cl_listen_stream_local_port can return
+     * it — essential when port==0 lets the OS pick an ephemeral port. */
+    st->position = (uint32_t)bound_port;
     return s;
+}
+
+int cl_listen_stream_local_port(CL_Obj stream)
+{
+    CL_Stream *st;
+    if (!CL_STREAM_P(stream))
+        return -1;
+    st = (CL_Stream *)CL_OBJ_TO_PTR(stream);
+    /* Listeners are created with direction == CL_STREAM_INPUT exactly;
+     * connected sockets are CL_STREAM_IO, so this rejects them. */
+    if (st->stream_type != CL_STREAM_SOCKET ||
+        st->direction != CL_STREAM_INPUT ||
+        !(st->flags & CL_STREAM_FLAG_OPEN))
+        return -1;
+    return (int)st->position;
 }
 
 CL_Obj cl_socket_stream_accept(CL_Obj listener)

@@ -1808,6 +1808,79 @@ TEST(eval_socket_accept_type_error)
     ASSERT(result == cl_intern_keyword("NOT-A-SOCKET", 12));
 }
 
+/* cl_listen_stream_local_port reports the bound port, including the
+ * OS-assigned port when socket-listen is given 0. */
+TEST(socket_stream_local_port)
+{
+    CL_Obj listener, conn, client;
+    int eph;
+
+    /* Ephemeral (port 0) listener: the getter discovers the assigned port. */
+    listener = cl_make_listen_stream(0, 1, NULL);
+    ASSERT(!CL_NULL_P(listener));
+    eph = cl_listen_stream_local_port(listener);
+    ASSERT(eph > 0);
+
+    /* A connected socket (from accept) is not a listener -> -1. */
+    client = cl_make_socket_stream("127.0.0.1", eph);
+    ASSERT(!CL_NULL_P(client));
+    conn = cl_socket_stream_accept(listener);
+    ASSERT(!CL_NULL_P(conn));
+    ASSERT_EQ_INT(cl_listen_stream_local_port(conn), -1);
+    ASSERT_EQ_INT(cl_listen_stream_local_port(client), -1);
+
+    /* Non-stream / closed listener -> -1. */
+    ASSERT_EQ_INT(cl_listen_stream_local_port(CL_NIL), -1);
+    cl_stream_close(listener);
+    ASSERT_EQ_INT(cl_listen_stream_local_port(listener), -1);
+
+    cl_stream_close(client);
+    cl_stream_close(conn);
+}
+
+/* When socket-listen is given an explicit port, local-port returns it. */
+TEST(socket_stream_local_port_explicit)
+{
+    int port = 0;
+    PlatformSocket probe;
+    CL_Obj listener;
+
+    probe = platform_socket_listen(0, 1, &port);
+    ASSERT(probe != PLATFORM_SOCKET_INVALID);
+    ASSERT(port > 0);
+    platform_socket_close(probe);
+
+    listener = cl_make_listen_stream(port, 1, NULL);
+    ASSERT(!CL_NULL_P(listener));
+    ASSERT_EQ_INT(cl_listen_stream_local_port(listener), port);
+    cl_stream_close(listener);
+}
+
+/* End-to-end through the Lisp builtin: ext:socket-local-port returns the
+ * ephemeral port, and a client can connect to it. */
+TEST(eval_socket_local_port)
+{
+    CL_Obj result = cl_eval_string(
+        "(let ((l (ext:socket-listen 0 t)))"
+        "  (prog1"
+        "    (let* ((p (ext:socket-local-port l))"
+        "           (c (ext:open-tcp-stream \"127.0.0.1\" p))"
+        "           (s (ext:socket-accept l)))"
+        "      (prog1 (and (integerp p) (> p 0))"
+        "        (close c) (close s)))"
+        "    (close l)))");
+    ASSERT(result == CL_T);
+}
+
+/* ext:socket-local-port on a non-listener signals an error. */
+TEST(eval_socket_local_port_type_error)
+{
+    CL_Obj result = cl_eval_string(
+        "(handler-case (ext:socket-local-port (make-string-output-stream))"
+        "  (error (c) (declare (ignore c)) :not-a-listener))");
+    ASSERT(result == cl_intern_keyword("NOT-A-LISTENER", 14));
+}
+
 /* Concurrent slot-claim: accept() runs on a worker thread while the main
  * thread connect()s.  Exercises the socket-table mutex — without it the two
  * claims could land on the same slot. */
@@ -2312,6 +2385,10 @@ int main(void)
     RUN(eval_socket_listen_accept_roundtrip);
     RUN(eval_socket_listen_bad_port);
     RUN(eval_socket_accept_type_error);
+    RUN(socket_stream_local_port);
+    RUN(socket_stream_local_port_explicit);
+    RUN(eval_socket_local_port);
+    RUN(eval_socket_local_port_type_error);
     RUN(socket_concurrent_accept_connect);
 
 #ifdef CL_WIDE_STRINGS

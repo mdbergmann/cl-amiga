@@ -113,6 +113,11 @@ CL_Obj cl_make_listen_stream(int port, int loopback, int *actual_port);
  * Returns a bidirectional socket stream, or CL_NIL on error. */
 CL_Obj cl_socket_stream_accept(CL_Obj listener);
 
+/* Bound local port of an open listening socket stream, or -1 if `stream` is
+ * not one.  Lets callers discover the port when socket-listen was given 0
+ * (OS-assigned ephemeral port). */
+int cl_listen_stream_local_port(CL_Obj stream);
+
 /* Create a synonym stream that delegates to the value of symbol. */
 CL_Obj cl_make_synonym_stream(CL_Obj symbol);
 

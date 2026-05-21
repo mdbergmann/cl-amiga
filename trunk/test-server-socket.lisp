@@ -40,9 +40,34 @@
 
 (format t "~%=== Server-socket integration test (port ~A) ===~%~%" *port*)
 
+;; Ephemeral port: socket-listen 0 lets the OS pick the port, and
+;; socket-local-port is the only way to discover it (what Sly needs to tell
+;; Emacs which port to connect to).
+(handler-case
+    (let ((listener (ext:socket-listen 0 t)))
+      (unwind-protect
+           (let ((p (ext:socket-local-port listener)))
+             (check "ephemeral socket-local-port is a positive integer" t
+                    (and (integerp p) (> p 0)))
+             ;; round-trip to prove the reported port is the one we listen on
+             (let ((client (ext:open-tcp-stream "127.0.0.1" p)))
+               (unwind-protect
+                    (let ((conn (ext:socket-accept listener)))
+                      (unwind-protect
+                           (check "ephemeral port accepts a connection" t
+                                  (streamp conn))
+                        (close conn)))
+                 (close client))))
+        (close listener)))
+  (error (e)
+    (incf *fail-count*)
+    (format t "FAIL: ephemeral-port setup - ~A~%" e)))
+
 (handler-case
     (let ((listener (ext:socket-listen *port* t)))   ; T => bind 127.0.0.1 only
       (check "socket-listen returns a stream" t (streamp listener))
+      (check "socket-local-port matches requested port" *port*
+             (ext:socket-local-port listener))
       (unwind-protect
            (let ((client (ext:open-tcp-stream "127.0.0.1" *port*)))
              (unwind-protect

@@ -3151,6 +3151,23 @@ static CL_Obj bi_socket_accept(CL_Obj *args, int n)
     return stream;
 }
 
+/* (ext:socket-local-port listener) => port integer
+ * Returns the local TCP port a listening socket stream is bound to.  This is
+ * the only way to learn the port after (ext:socket-listen 0), which lets the
+ * OS assign an ephemeral port.  Signals an error if the argument is not an
+ * open listening socket stream. */
+static CL_Obj bi_socket_local_port(CL_Obj *args, int n)
+{
+    int port;
+    CL_UNUSED(n);
+    port = cl_listen_stream_local_port(args[0]);
+    if (port < 0)
+        cl_error(CL_ERR_TYPE,
+                 "EXT:SOCKET-LOCAL-PORT: argument must be an open listening "
+                 "socket stream");
+    return CL_MAKE_FIXNUM(port);
+}
+
 /* --- Registration --- */
 
 void cl_builtins_io_init(void)
@@ -3255,6 +3272,7 @@ void cl_builtins_io_init(void)
     extfun("OPEN-TCP-STREAM", bi_open_tcp_stream, 2, 2);
     extfun("SOCKET-LISTEN", bi_socket_listen, 1, 2);
     extfun("SOCKET-ACCEPT", bi_socket_accept, 1, 1);
+    extfun("SOCKET-LOCAL-PORT", bi_socket_local_port, 1, 1);
 
     /* Pretty-printing keywords */
     KW_LINEAR    = cl_intern_keyword("LINEAR", 6);
