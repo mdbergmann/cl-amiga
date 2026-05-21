@@ -8,9 +8,13 @@
 # proceeds WITH the fixes included.
 #
 # Design principles:
-#   * Fail-OPEN on tooling errors (missing/erroring/timed-out claude) so a broken
-#     reviewer never blocks commits. Fail-CLOSED only on a real review verdict
-#     when auto-fix is disabled.
+#   * Review + tests are MANDATORY. Fail-CLOSED: a reviewer error, timeout, or
+#     missing tool BLOCKS the commit — it is never silently skipped. The only
+#     bypass is an explicit `git commit --no-verify`.
+#   * The staged diff is written to a file and the reviewer is told to READ it
+#     (with Read+Bash tools), NOT piped on stdin. Headless `claude -p` stalls
+#     when a large diff arrives on stdin and it must answer in a single shot;
+#     reading the diff as a file lets the agent work through it reliably.
 #   * Never sweep in changes the user didn't stage (partial-staging guard).
 #
 # Override behaviour via env vars (see scripts/review/README.md):
@@ -18,19 +22,20 @@
 #   CLAUDE_AUTO_FIX=0      review + block on issues, but don't auto-fix
 #   CLAUDE_REVIEW_MODEL    default: sonnet
 #   CLAUDE_FIX_MODEL       default: sonnet
-#   CLAUDE_REVIEW_BUDGET   default: 0.50  (USD, --max-budget-usd)
-#   CLAUDE_FIX_BUDGET      default: 1.00
-#   CLAUDE_REVIEW_TIMEOUT  default: 180   (seconds, if `timeout`/`gtimeout` exists)
+#   CLAUDE_REVIEW_TIMEOUT  default: 600   (seconds, if `timeout`/`gtimeout` exists;
+#                          the agentic Read+grep review can take several minutes)
+#
+# Note: --max-budget-usd is intentionally NOT passed. It only caps pay-per-token
+# API-call spend (and only with --print); it does nothing for a subscription
+# (claude.ai) login, which is metered by plan rate limits, not dollars.
 
 ENABLED="${CLAUDE_AUTO_REVIEW:-1}"
 [ "$ENABLED" = "0" ] && exit 0
 
 REVIEW_MODEL="${CLAUDE_REVIEW_MODEL:-sonnet}"
 FIX_MODEL="${CLAUDE_FIX_MODEL:-sonnet}"
-REVIEW_BUDGET="${CLAUDE_REVIEW_BUDGET:-0.50}"
-FIX_BUDGET="${CLAUDE_FIX_BUDGET:-1.00}"
 AUTO_FIX="${CLAUDE_AUTO_FIX:-1}"
-REVIEW_TIMEOUT="${CLAUDE_REVIEW_TIMEOUT:-180}"
+REVIEW_TIMEOUT="${CLAUDE_REVIEW_TIMEOUT:-600}"
 RUN_TESTS="${CLAUDE_RUN_TESTS:-1}"          # stage 2: run the fast test tier
 TEST_TARGET="${CLAUDE_TEST_TARGET:-test-fast}"  # set to 'test' to include sento
 TEST_TIMEOUT="${CLAUDE_TEST_TIMEOUT:-600}"
@@ -47,8 +52,9 @@ fi
 
 CLAUDE_BIN="$(command -v claude || true)"
 if [ -z "$CLAUDE_BIN" ]; then
-  echo "[auto-review] 'claude' not on PATH — skipping review (commit allowed)." >&2
-  exit 0
+  echo "[auto-review] 'claude' not on PATH — cannot run the mandatory review. COMMIT BLOCKED." >&2
+  echo "[auto-review] Install 'claude', or bypass deliberately with 'git commit --no-verify'." >&2
+  exit 1
 fi
 
 TIMEOUT_BIN="$(command -v timeout || command -v gtimeout || true)"
@@ -62,8 +68,9 @@ maybe_timeout() { # maybe_timeout <secs> <cmd...>
 run_tests_or_abort() {
   [ "$RUN_TESTS" = "1" ] || return 0
   if ! command -v make >/dev/null 2>&1; then
-    echo "[auto-review] 'make' not on PATH — skipping tests (commit allowed)." >&2
-    return 0
+    echo "[auto-review] 'make' not on PATH — cannot run the mandatory tests. COMMIT BLOCKED." >&2
+    echo "[auto-review] Install 'make', set CLAUDE_RUN_TESTS=0, or 'git commit --no-verify'." >&2
+    return 1
   fi
   TESTLOG=".reviews/last-test.log"
   echo "[auto-review] running 'make $TEST_TARGET' (set CLAUDE_RUN_TESTS=0 to skip)..." >&2
@@ -82,17 +89,23 @@ run_tests_or_abort() {
 STAGED_FILES="$(git diff --cached --name-only --diff-filter=ACMR)"
 [ -z "$STAGED_FILES" ] && exit 0
 
-DIFF="$(git diff --cached --no-color)"
-[ -z "$DIFF" ] && exit 0
-
-LOG=".reviews/log.md"
 mkdir -p .reviews
-[ -f "$LOG" ] || printf '# Auto-review log\n\n' > "$LOG"
+# Prune review logs older than 30 days so .reviews doesn't grow unbounded.
+find .reviews -maxdepth 1 -name 'log-*.md' -type f -mtime +30 -delete 2>/dev/null
+
+# Write the staged diff to a file the reviewer will READ (not pipe on stdin).
+DIFF_FILE="$ROOT/.reviews/staged.diff"
+git diff --cached --no-color > "$DIFF_FILE"
+[ -s "$DIFF_FILE" ] || exit 0
 
 TS="$(date '+%Y-%m-%d %H:%M:%S')"
 PARENT="$(git rev-parse --short HEAD 2>/dev/null || echo root)"
 
-REVIEW_PROMPT='You are reviewing the STAGED git diff (provided on stdin) for a commit about to be made to CL-Amiga, a Common Lisp environment for AmigaOS written in C89/C99.
+# One fresh, timestamped log file per review (not an append-only history).
+LOG=".reviews/log-$(date '+%Y%m%d-%H%M%S').md"
+printf '# Auto-review log — %s (parent %s)\n\n' "$TS" "$PARENT" > "$LOG"
+
+REVIEW_PROMPT='You are reviewing a git diff for a commit about to be made to CL-Amiga, a Common Lisp environment for AmigaOS written in C89/C99. The staged diff to review is in the file '"$DIFF_FILE"' — read that file first.
 
 Enforce these project rules (from CLAUDE.md):
 - GC safety: any CL_Obj held across an allocating call (cl_alloc/cl_cons/cl_make_*/cl_vm_apply etc.) must be CL_GC_PROTECT-ed; watch for list-building loops.
@@ -106,22 +119,26 @@ Output format, STRICTLY:
 - If ISSUES, follow with a markdown list, one item per finding:
   "- [HIGH|MED|LOW] path:line - problem - suggested fix"
 - Report ONLY substantive problems (bugs, GC-safety, memory/32-bit, C89/C99, HyperSpec deviations, missing/incorrect tests, security). No style nits, no speculation.
-- You may Read surrounding files for context. Do NOT edit anything.'
+- Read the diff file and any surrounding source files you need for context (Read tool); you may grep the tree via Bash to verify claims. Do NOT edit anything.'
 
-REVIEW_OUT="$(printf '%s' "$DIFF" | maybe_timeout "$REVIEW_TIMEOUT" "$CLAUDE_BIN" -p "$REVIEW_PROMPT" \
+# No stdin: the diff is read from $DIFF_FILE. Redirect </dev/null so headless
+# claude doesn't wait on (or block reading) an empty stdin. Read+Bash only, so
+# the agent can read the diff/sources and grep, but cannot edit or run amok.
+REVIEW_OUT="$(maybe_timeout "$REVIEW_TIMEOUT" "$CLAUDE_BIN" -p "$REVIEW_PROMPT" \
   --model "$REVIEW_MODEL" \
-  --max-budget-usd "$REVIEW_BUDGET" \
-  --allowedTools "Read,Grep,Glob,Bash(git show:*),Bash(git log:*),Bash(git diff:*)" \
-  --output-format text 2>/dev/null)"
+  --tools "Read,Bash" \
+  --permission-mode bypassPermissions \
+  --output-format text </dev/null 2>/dev/null)"
 RC=$?
 
 if [ $RC -ne 0 ] || [ -z "$REVIEW_OUT" ]; then
-  echo "[auto-review] reviewer error/timeout (rc=$RC) — commit allowed (fail-open)." >&2
+  echo "[auto-review] reviewer error/timeout (rc=$RC) — COMMIT BLOCKED. The mandatory review did not complete." >&2
+  echo "[auto-review] Retry, raise CLAUDE_REVIEW_TIMEOUT (now ${REVIEW_TIMEOUT}s), or bypass with 'git commit --no-verify'." >&2
   {
     printf '## %s — parent %s (staged)\n\n' "$TS" "$PARENT"
-    printf '_Reviewer error (rc=%s) — commit allowed without review._\n\n' "$RC"
+    printf '_Reviewer error/timeout (rc=%s) — COMMIT BLOCKED (review did not complete)._\n\n' "$RC"
   } >> "$LOG"
-  exit 0
+  exit 1
 fi
 
 STATUS_LINE="$(printf '%s\n' "$REVIEW_OUT" | head -n1)"
@@ -163,7 +180,7 @@ EOF
 
 echo "[auto-review] applying automatic fixes..." >&2
 
-FIX_PROMPT='Read .reviews/log.md and address the findings in the LAST "## ... (staged)" entry in the file (the most recent section). For each finding not already marked RESOLVED or DISMISSED:
+FIX_PROMPT='Read '"$LOG"' and address the findings in its single review section. For each finding not already marked RESOLVED or DISMISSED:
 - Edit the code to fix it. ONLY modify files listed in that entry'\''s "Files:" line — do not touch any other file.
 - Make minimal, correct fixes. Follow CLAUDE.md: GC_PROTECT CL_Obj across allocations, keep heap structs 32-bit-clean, C89/C99 only, conform to the HyperSpec, and add/adjust tests when the finding calls for it (only within the listed files).
 - Then append under that finding in the log: "  - RESOLVED: <what you changed>". If a finding is a false positive, append "  - DISMISSED: <why>" and change no code for it.
@@ -171,7 +188,6 @@ FIX_PROMPT='Read .reviews/log.md and address the findings in the LAST "## ... (s
 
 maybe_timeout "$REVIEW_TIMEOUT" "$CLAUDE_BIN" -p "$FIX_PROMPT" \
   --model "$FIX_MODEL" \
-  --max-budget-usd "$FIX_BUDGET" \
   --permission-mode acceptEdits \
   --allowedTools "Read,Grep,Glob,Edit,Write" \
   --output-format text >/dev/null 2>&1
