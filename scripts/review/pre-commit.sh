@@ -31,6 +31,9 @@ REVIEW_BUDGET="${CLAUDE_REVIEW_BUDGET:-0.50}"
 FIX_BUDGET="${CLAUDE_FIX_BUDGET:-1.00}"
 AUTO_FIX="${CLAUDE_AUTO_FIX:-1}"
 REVIEW_TIMEOUT="${CLAUDE_REVIEW_TIMEOUT:-180}"
+RUN_TESTS="${CLAUDE_RUN_TESTS:-1}"          # stage 2: run the fast test tier
+TEST_TARGET="${CLAUDE_TEST_TARGET:-test-fast}"  # set to 'test' to include sento
+TEST_TIMEOUT="${CLAUDE_TEST_TIMEOUT:-600}"
 
 ROOT="$(git rev-parse --show-toplevel 2>/dev/null)" || exit 0
 cd "$ROOT" || exit 0
@@ -51,6 +54,28 @@ fi
 TIMEOUT_BIN="$(command -v timeout || command -v gtimeout || true)"
 maybe_timeout() { # maybe_timeout <secs> <cmd...>
   if [ -n "$TIMEOUT_BIN" ]; then "$TIMEOUT_BIN" "$@"; else shift; "$@"; fi
+}
+
+# Stage 2: build + run the fast test tier on the resulting tree. Fail-CLOSED on a
+# real test/compile failure (blocks the commit), but fail-OPEN if `make` is absent.
+# Returns non-zero only when tests actually fail.
+run_tests_or_abort() {
+  [ "$RUN_TESTS" = "1" ] || return 0
+  if ! command -v make >/dev/null 2>&1; then
+    echo "[auto-review] 'make' not on PATH — skipping tests (commit allowed)." >&2
+    return 0
+  fi
+  TESTLOG=".reviews/last-test.log"
+  echo "[auto-review] running 'make $TEST_TARGET' (set CLAUDE_RUN_TESTS=0 to skip)..." >&2
+  if maybe_timeout "$TEST_TIMEOUT" make --no-print-directory "$TEST_TARGET" > "$TESTLOG" 2>&1; then
+    echo "[auto-review] tests passed ($TEST_TARGET)." >&2
+    return 0
+  fi
+  echo "[auto-review] TESTS FAILED ($TEST_TARGET) — commit aborted. Full output: $TESTLOG" >&2
+  echo "[auto-review] ----- last 30 lines -----" >&2
+  tail -n 30 "$TESTLOG" >&2
+  echo "[auto-review] -------------------------" >&2
+  return 1
 }
 
 # Files staged for this commit (added/copied/modified/renamed).
@@ -109,7 +134,9 @@ STATUS_LINE="$(printf '%s\n' "$REVIEW_OUT" | head -n1)"
 
 case "$STATUS_LINE" in
   *CLEAN*)
-    echo "[auto-review] clean — commit proceeding." >&2
+    echo "[auto-review] review clean." >&2
+    run_tests_or_abort || exit 1
+    echo "[auto-review] commit proceeding." >&2
     exit 0
     ;;
 esac
@@ -167,5 +194,7 @@ echo "$STAGED_FILES" | while IFS= read -r f; do
   [ -n "$f" ] && git add -- "$f"
 done
 
-echo "[auto-review] fixes applied and re-staged — commit proceeding WITH fixes (see $LOG; 'git show HEAD' after)." >&2
+echo "[auto-review] fixes applied and re-staged." >&2
+run_tests_or_abort || exit 1
+echo "[auto-review] commit proceeding WITH fixes (see $LOG; 'git show HEAD' after)." >&2
 exit 0

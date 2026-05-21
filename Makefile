@@ -76,7 +76,7 @@ TEST_BINS   = $(patsubst $(TEST_SRCDIR)/%.c,$(BUILDDIR)/tests/%,$(TEST_SRCS))
 LIB_SRCS = $(PLATFORM_SRC) $(CORE_SRC) $(JIT_SRC)
 LIB_OBJS = $(patsubst $(SRCDIR)/%.c,$(BUILDDIR)/%.o,$(LIB_SRCS))
 
-.PHONY: host test linux-test clean verify-amiga install-hooks
+.PHONY: host test test-fast linux-test clean verify-amiga install-hooks
 
 host: $(BUILDDIR)/clamiga
 
@@ -92,8 +92,8 @@ $(BUILDDIR)/%.o: $(SRCDIR)/%.c
 -include $(HOST_OBJS:.o=.d)
 
 # Tests
-test: $(TEST_BINS) host
-	@echo "=== Running tests ==="
+test-fast: $(TEST_BINS) host
+	@echo "=== Running tests (fast tier: skips sento/host-cold-test) ==="
 	@failed=0; \
 	for t in $(TEST_BINS); do \
 		echo "--- $$(basename $$t) ---"; \
@@ -126,7 +126,10 @@ test: $(TEST_BINS) host
 		failed=1; \
 	fi; \
 	if [ $$failed -ne 0 ]; then echo "=== Some tests failed ==="; exit 1; fi; \
-	echo "--- host-cold-test ---"; \
+	echo "=== Fast tests passed ==="
+
+test: test-fast
+	@echo "--- host-cold-test ---"; \
 	if $(MAKE) --no-print-directory host-cold-test; then \
 		echo "PASS"; \
 	else \

@@ -29,6 +29,21 @@ make test          # Run all tests
 make clean         # Remove build artifacts
 ```
 
+### Pre-commit hook (auto-review + tests)
+
+Optional. A `pre-commit` hook reviews staged changes with a headless `claude`
+(auto-fixing issues and re-staging), then runs the fast test tier
+(`make test-fast` — no sento) and blocks the commit on failure. Activate once
+per clone:
+
+```
+make install-hooks
+```
+
+Bypass a single commit with `git commit --no-verify`. See
+[`scripts/review/README.md`](scripts/review/README.md) for the full flow,
+toggles, and safety guarantees.
+
 ### Cross-compile for AmigaOS
 
 First, install the `m68k-amigaos-gcc` cross toolchain:
