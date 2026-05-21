@@ -9,7 +9,8 @@ Problematic code never enters history.
 ```
 git commit
    └─ githooks/pre-commit  →  scripts/review/pre-commit.sh
-        1. review staged diff (read-only claude)  →  .reviews/log.md
+        1. staged diff written to .reviews/staged.diff; claude READS it
+           (Read+Bash, read-only)              →  .reviews/log-<timestamp>.md
              STATUS: CLEAN   →  (go to step 2)
              STATUS: ISSUES  →  fix agent edits the staged files,
                                 re-stages them  →  (go to step 2)
@@ -40,15 +41,22 @@ then delegates to `scripts/review/pre-commit.sh`.
 
 ## Safety
 
-- **Fail-open on tooling errors** — if `claude` (or `make`) is missing, errors,
-  or times out, the commit is *allowed*. Broken tooling never blocks your work.
+- **Review + tests are mandatory (fail-closed)** — if the review or tests don't
+  *complete* (missing `claude`/`make`, an error, or a timeout), the commit is
+  *blocked*, never silently allowed. The only bypass is `git commit --no-verify`.
 - **Fail-closed on real failures** — a genuine review verdict (with auto-fix
   off) or an actual test/compile failure blocks the commit. That's the point.
+- **Diff delivered as a file, not piped** — the staged diff is written to
+  `.reviews/staged.diff` and the reviewer is told to read it. Headless
+  `claude -p` stalls when a large diff is piped on stdin and it must answer in
+  one shot; reading it as a file (with Read+Bash) lets the agent work reliably,
+  at the cost of an agentic review that can run for minutes (hence the 600s
+  default timeout).
 - **Partial-staging guard** — if a staged file also has *unstaged* edits,
   auto-restaging would sweep those in, so the hook leaves the fixes unstaged and
   aborts instead; you re-stage deliberately.
 - **Fix agent only edits files in the commit** and records a `RESOLVED:` /
-  `DISMISSED:` note per finding in `.reviews/log.md`.
+  `DISMISSED:` note per finding in that review's log file.
 - Tests run on the working tree as-is (after any fixes), validating the final
   state. Fixes land in the commit you just made — run `git show HEAD` to see them.
 
@@ -67,16 +75,16 @@ then delegates to `scripts/review/pre-commit.sh`.
 |-----|---------|---------|
 | `CLAUDE_REVIEW_MODEL` | `sonnet` | model for the review pass |
 | `CLAUDE_FIX_MODEL`    | `sonnet` | model for the fix pass (try `opus` for harder fixes) |
-| `CLAUDE_REVIEW_BUDGET`| `0.50`   | USD cap (`--max-budget-usd`) for review |
-| `CLAUDE_FIX_BUDGET`   | `1.00`   | USD cap for the fix pass |
-| `CLAUDE_REVIEW_TIMEOUT`| `180`   | seconds per claude call (needs `timeout`/`gtimeout`) |
+| `CLAUDE_REVIEW_TIMEOUT`| `600`   | seconds per claude call (needs `timeout`/`gtimeout`); the agentic Read+grep review can take several minutes |
 | `CLAUDE_RUN_TESTS`    | `1`      | run the test stage (`0` to skip) |
 | `CLAUDE_TEST_TARGET`  | `test-fast` | make target for the test stage (`test` = incl. sento) |
 | `CLAUDE_TEST_TIMEOUT` | `600`    | seconds for the test stage |
 
 ## The log
 
-`.reviews/log.md` accumulates one section per commit (timestamp + parent SHA,
-the files, the findings, and resolution notes); `.reviews/last-test.log` holds
-the most recent test-stage output. Both are git-ignored via `.gitignore`
-(`.reviews/`). Track them in the repo instead if you want a shared history.
+Each review writes its own `.reviews/log-<YYYYMMDD-HHMMSS>.md` (timestamp +
+parent SHA, the files, the findings, and resolution notes) — no shared
+append-only file. Logs older than **30 days** are pruned automatically at the
+start of each run. `.reviews/last-test.log` holds the most recent test-stage
+output. All are git-ignored via `.gitignore` (`.reviews/`). Track them in the
+repo instead if you want a shared history.
