@@ -1197,3 +1197,65 @@ disclaimer from the GC interaction story.
   resolved callee carries `native_code`.
 - Per-opcode `mv_count` reset via cached thread pointer.
 - `&rest` / `&optional` prologue shapes for the walker.
+
+## Backtrace / frame introspection under JIT (opt-in shadow frames, 2026-05-22)
+
+`EXT:BACKTRACE` and `EXT:FRAME-LOCALS` (the Sly/SLDB backend) walk
+`cl_vm.frames`. JIT'd functions run native code via `cl_jit_invoke` and
+**do not push a `CL_Frame`** — so by default they are invisible to the
+backtrace, and the `cl_vm_apply` trampolines that drive JIT→JIT calls show
+up as anonymous frames. On the interpreter (host, `--no-jit`) ordinary
+calls push real frames, so backtraces are complete there.
+
+### Opt-in shadow frame
+
+`cl_jit_invoke` can push a lightweight shadow `CL_Frame` around the native
+call: `{bytecode = func_obj, bp = sp - nargs, n_locals = nargs}`, popped on
+return. That makes the function visible (name + source line) and exposes its
+**arguments** to `frame-locals` (the arg vector is still live on the
+GC-rooted `cl_vm.stack` at `sp - nargs`). Interior `let`-bound locals live on
+the m68k operand stack inside the native code and remain **not**
+introspectable — only arguments are recoverable for JIT'd frames.
+
+This costs a few percent on call-heavy code (~8.5% on a pure call-dispatch
+micro-bench; ~5% / ~30 FPS on `bouncing-lines`, whose graphics primitives go
+through `OP_AMIGA_CALL` and bypass `cl_jit_invoke`). Since the frame is only
+ever *read* by a backtrace (an error, the SLDB debugger, an explicit
+`ext:backtrace`), it is **off by default** and gated on a flag, so a normal
+run pays only one not-taken branch per call:
+
+```
+src/jit/jit.c:
+  static int jit_shadow_frames = 0;                 /* default off       */
+  void cl_jit_set_shadow_frames(int on);            /* toggle            */
+  int  cl_jit_shadow_frames_enabled(void);          /* read              */
+  ... in cl_jit_invoke:
+  if (jit_shadow_frames && cl_vm.fp < cl_vm.frame_size) { /* push shadow */ }
+```
+
+Lisp-visible switch (CLAMIGA package):
+
+- `(clamiga::%jit-set-frames t|nil)` — enable / disable, returns new state
+- `(clamiga::%jit-frames-p)` — current state
+- `(clamiga::%jit-active-p)` — whether the JIT itself is compiled in + active
+
+A debug session (Sly/SLDB connect, or a developer at the REPL) turns frames
+on while introspecting and off afterwards. The Amiga test suite enables them
+around its `EXT:BACKTRACE`/`EXT:FRAME-LOCALS` section and disables them again.
+
+On a non-local exit (`longjmp`) the shadow-frame pop is skipped, but the
+error/NLX unwind resets `cl_vm.fp` wholesale to a pre-call snapshot, so the
+frame cannot leak.
+
+### Two supporting fixes
+
+- **Stub-frame skipping** (`src/core/vm.c`): the backtrace readers
+  (`cl_vm_backtrace_list`, `cl_vm_frame_locals`, `cl_capture_backtrace`) skip
+  `cl_vm_apply` trampoline frames (`f->code == f->stub_code`) so the JIT call
+  path's trampolines don't pollute the listing. No-op on host.
+- **Stale `cl_debug_base_fp`** (`src/core/repl.c`): the error-time frame
+  snapshot is set on *every* error and was never cleared, so an ad-hoc
+  `ext:backtrace` deep in a long session could report a truncated frame
+  window. It is now cleared per top-level form in the load/REPL loop — still
+  valid within the form that errors (the debugger runs before the next form),
+  but no longer leaks across forms.

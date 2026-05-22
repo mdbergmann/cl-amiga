@@ -103,6 +103,16 @@ void cl_load_file(const char *path)
             int err;
             int saved_gc_roots = gc_root_count;
 
+            /* Clear any error-time frame snapshot left by a previous form's
+             * (handler-case'd) error.  cl_debug_base_fp is set on every error
+             * (cl_capture_backtrace) and is only meaningful while the debugger
+             * inspects that error; left stale it makes an ad-hoc EXT:BACKTRACE
+             * in a later form report a truncated frame window instead of the
+             * live stack.  Resetting per top-level form keeps the snapshot
+             * valid within the form that errors (debugger runs before the next
+             * form) while preventing cross-form leakage. */
+            cl_debug_base_fp = 0;
+
             expr = cl_read_from_stream(stream);
             if (cl_reader_eof()) break;
 

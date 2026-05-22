@@ -59,6 +59,17 @@ extern int cl_quiet_boot;
 
 static int jit_active = 0;
 
+/* Opt-in: when set, cl_jit_invoke pushes a shadow CL_Frame per call so
+ * EXT:BACKTRACE / EXT:FRAME-LOCALS and the error-time backtrace can see
+ * JIT'd functions.  Off by default — the push costs a few % on call-heavy
+ * code, and only matters when something actually reads a backtrace (an
+ * error, the SLDB debugger, an explicit (ext:backtrace)).  A debug session
+ * (Sly/SLDB) or a test that needs JIT frame introspection turns it on. */
+static int jit_shadow_frames = 0;
+
+void cl_jit_set_shadow_frames(int on) { jit_shadow_frames = on ? 1 : 0; }
+int  cl_jit_shadow_frames_enabled(void) { return jit_shadow_frames; }
+
 /* Bumped on every cl_jit_invoke entry.  Lets Lisp-side tests prove
  * the native dispatch path was actually taken (since a correctly
  * compiled native fn returns the same value the bytecode would). */
@@ -3218,6 +3229,7 @@ CL_Obj cl_jit_invoke(CL_Obj func_obj, CL_Bytecode *bc, int nargs)
     void   *prev_top;
     int32_t prev_nargs;
     int   is_kw;
+    int   pushed_frame = 0;
 
     if (bc == NULL || bc->native_code == NULL) return CL_NIL;
     jit_invoke_count++;
@@ -3244,6 +3256,29 @@ CL_Obj cl_jit_invoke(CL_Obj func_obj, CL_Bytecode *bc, int nargs)
     }
     t->jit_depth = prev_depth + 1;
     t->jit_current_nargs = (int32_t)nargs;
+
+    /* Push a shadow CL_Frame so EXT:BACKTRACE / EXT:FRAME-LOCALS and the
+     * error-time backtrace can see this JIT'd function: native code keeps
+     * its operand stack and interior locals on the m68k stack and never
+     * pushes a VM frame on its own.  bp points at the argument vector still
+     * live on cl_vm.stack (the VM stack is GC-rooted), so frame-locals can
+     * recover the arguments; interior let-bound locals stay on the m68k
+     * stack and remain invisible.  ip = 0 maps to the function's first
+     * source line.  On a non-local exit (longjmp) the error/NLX unwind
+     * resets cl_vm.fp wholesale to a pre-call snapshot, so skipping the pop
+     * at `done` cannot leak the frame. */
+    if (jit_shadow_frames && cl_vm.fp < cl_vm.frame_size) {
+        CL_Frame *sf = &cl_vm.frames[cl_vm.fp++];
+        sf->bytecode  = func_obj;
+        sf->code      = bc->code;
+        sf->constants = bc->constants;
+        sf->ip        = 0;
+        sf->bp        = (uint32_t)(cl_vm.sp - nargs);
+        sf->n_locals  = nargs;
+        sf->nargs     = (uint8_t)nargs;
+        sf->nlx_level = cl_nlx_top;
+        pushed_frame  = 1;
+    }
 
     if (is_kw) {
         /* Kw ABI: native(func, bc, nargs, args).  args may be NULL when
@@ -3318,6 +3353,7 @@ CL_Obj cl_jit_invoke(CL_Obj func_obj, CL_Bytecode *bc, int nargs)
     }
 
 done:
+    if (pushed_frame) cl_vm.fp--;
     t->jit_depth         = prev_depth;
     t->jit_stack_top     = prev_top;
     t->jit_current_nargs = prev_nargs;

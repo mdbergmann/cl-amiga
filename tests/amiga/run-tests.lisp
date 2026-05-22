@@ -1213,6 +1213,16 @@
 (handler-case (bt-uwp-fn) (error () nil))
 (check "backtrace uwp recovery" 7 (+ 3 4))
 
+; Regression: cl_debug_base_fp must be reset between top-level forms so that
+; ext:backtrace in a later form sees the live stack, not a stale error snapshot.
+; These are three separate top-level forms: defun, handler-case (sets
+; cl_debug_base_fp), then check (cl_debug_base_fp should be 0 by now so
+; bt_resolve_base uses the live frame_top).
+(defun bt-cross-form-probe () (ext:backtrace))
+(handler-case (error "bt-base-fp-reset-test") (error () nil))
+(check "backtrace cross-form no stale base" t
+  (consp (bt-cross-form-probe)))
+
 ; --- Time ---
 (check "time returns value" 3 (time (+ 1 2)))
 (check "time nested" 22 (+ 10 (time (* 3 4))))
@@ -4216,6 +4226,11 @@
 ; optimization does not collapse the intermediate frames.  Backtrace entries
 ; are (INDEX NAME FILE LINE), innermost first; frame-locals returns
 ; (PLACEHOLDER-NAME . VALUE) pairs.
+; JIT shadow frames are opt-in (they cost a few % on call-heavy code), so a
+; debug/introspection session enables them.  Turn them on for this section so
+; EXT:BACKTRACE / EXT:FRAME-LOCALS can see the JIT'd bt-* calls; restore after.
+; No-op on host / --no-jit (no native frames to begin with).
+(clamiga::%jit-set-frames t)
 (defun bt-c (z) (declare (ignore z)) (ext:backtrace))
 (defun bt-b (y) (let ((r (bt-c (* y 2)))) r))
 (defun bt-a (x) (let ((r (bt-b (+ x 1)))) r))
@@ -4232,10 +4247,15 @@
 (check "frame-locals is a list" t (consp *amiga-locals*))
 (check "frame-locals exposes argument value" t
   (and (member 3 (mapcar #'cdr *amiga-locals*)) t))
+; Interior LET-bound locals live on the m68k operand stack inside JIT'd code
+; and are not introspectable; only the argument slots are recoverable there.
+; In the bytecode interpreter (host, or --no-jit) all locals are visible.
 (check "frame-locals exposes let-bound value" t
-  (and (member 77 (mapcar #'cdr *amiga-locals*)) t))
+  (or (clamiga::%jit-active-p)
+      (and (member 77 (mapcar #'cdr *amiga-locals*)) t)))
 (check "frame-locals out-of-range index" :not-available
   (ext:frame-locals 9999))
+(check "jit shadow frames toggle off" nil (clamiga::%jit-set-frames nil))
 
 ; --- documentation is a generic function ---
 ; Storage via (setf documentation) + retrieval; adding a specialized

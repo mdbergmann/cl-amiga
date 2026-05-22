@@ -47,6 +47,15 @@ int    cl_jit_enabled(void);
  * `%JIT-SET-ACTIVE` builtin to A/B benchmark JIT vs. bytecode. */
 void   cl_jit_set_active(int active);
 
+/* Toggle the per-call shadow CL_Frame that makes JIT'd functions visible to
+ * EXT:BACKTRACE / EXT:FRAME-LOCALS and the error-time backtrace.  Off by
+ * default: the push costs a few percent on call-heavy code and is only
+ * useful while introspecting (an error, the SLDB debugger, an explicit
+ * ext:backtrace).  Turn on for a debug session (Sly/SLDB) or a test that
+ * needs JIT frame introspection.  Exposed via `%JIT-SET-FRAMES`. */
+void   cl_jit_set_shadow_frames(int on);
+int    cl_jit_shadow_frames_enabled(void);
+
 /* Diagnostic helper: emit a fixed NOP+RTS stub into bc->native_code.
  * Used by the `%JIT-COMPILE-STUB` builtin to exercise the encoder →
  * CodeBuf → CL_Bytecode pipeline before there's any actual codegen
@@ -74,6 +83,8 @@ static inline void   cl_jit_compile(CL_Bytecode *bc)         { (void)bc; }
 static inline CL_Obj cl_jit_invoke(CL_Obj f, CL_Bytecode *bc, int n) { (void)f; (void)bc; (void)n; return CL_NIL; }
 static inline int    cl_jit_enabled(void)                    { return 0; }
 static inline void   cl_jit_set_active(int a)                 { (void)a; }
+static inline void   cl_jit_set_shadow_frames(int on)        { (void)on; }
+static inline int    cl_jit_shadow_frames_enabled(void)      { return 0; }
 static inline int    cl_jit_emit_stub(CL_Bytecode *bc)       { (void)bc; return 0; }
 static inline uint32_t cl_jit_invoke_count_get(void)         { return 0; }
 static inline void   cl_jit_disassemble(const uint8_t *c, uint32_t n) { (void)c; (void)n; }

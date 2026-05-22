@@ -519,6 +519,18 @@ static CL_Bytecode *get_frame_bytecode(CL_Frame *f)
     return NULL;
 }
 
+/* A cl_vm_apply stub frame carries no user function — its code points at
+ * the frame's own embedded stub_code (the OP_CALL/OP_HALT trampoline set up
+ * in cl_vm_apply).  JIT'd calls route through cl_vm_apply, so these stubs
+ * sit between the JIT shadow frames and would otherwise pollute the
+ * backtrace with anonymous entries; the backtrace readers skip them.  On
+ * the bytecode-only host build there are no JIT shadow frames and ordinary
+ * calls push real frames, so nothing is skipped there. */
+static int frame_is_stub(CL_Frame *f)
+{
+    return f->code == f->stub_code;
+}
+
 /* Format a single backtrace frame into buf+pos, return new pos */
 static int bt_format_frame(int pos, int depth, CL_Obj name,
                            const char *file, int line)
@@ -666,13 +678,19 @@ void cl_capture_backtrace(void)
     }
 
     /* Normal backtrace (no detected cycle) */
-    for (i = cl_vm.fp - 1; i >= 0 && depth < max_show; i--, depth++) {
+    for (i = cl_vm.fp - 1; i >= 0 && depth < max_show; i--) {
         CL_Frame *f = &cl_vm.frames[i];
-        CL_Obj name = get_func_name(f->bytecode);
-        CL_Bytecode *bc = get_frame_bytecode(f);
-        int line = bc ? lookup_source_line(bc, f->ip) : 0;
-        const char *file = bc ? bc->source_file : NULL;
+        CL_Obj name;
+        CL_Bytecode *bc;
+        int line;
+        const char *file;
+        if (frame_is_stub(f)) continue;
+        name = get_func_name(f->bytecode);
+        bc = get_frame_bytecode(f);
+        line = bc ? lookup_source_line(bc, f->ip) : 0;
+        file = bc ? bc->source_file : NULL;
         pos = bt_format_frame(pos, depth, name, file, line);
+        depth++;
         if (pos >= CL_BACKTRACE_BUF_SIZE - 1) break;
     }
 
@@ -698,6 +716,32 @@ static int bt_resolve_base(void)
     return base;
 }
 
+/* Count the user-visible (non-stub) frames in [0, base). */
+static int bt_count_real(int base)
+{
+    int i, n = 0;
+    for (i = 0; i < base; i++)
+        if (!frame_is_stub(&cl_vm.frames[i]))
+            n++;
+    return n;
+}
+
+/* Map a logical backtrace index (0 = innermost non-stub frame) to a physical
+ * cl_vm.frames index, or -1 when out of range.  Lets the structured readers
+ * present a contiguous, stub-free frame numbering. */
+static int bt_physical_frame(int base, int logical)
+{
+    int i, seen = 0;
+    for (i = base - 1; i >= 0; i--) {
+        if (frame_is_stub(&cl_vm.frames[i]))
+            continue;
+        if (seen == logical)
+            return i;
+        seen++;
+    }
+    return -1;
+}
+
 /* Build an uninterned placeholder symbol named ARG<idx> or LOCAL<idx>. */
 static CL_Obj bt_slot_placeholder(int idx, int is_arg)
 {
@@ -714,8 +758,8 @@ static CL_Obj bt_slot_placeholder(int idx, int is_arg)
 CL_Obj cl_vm_backtrace_list(int max_frames)
 {
     int base = bt_resolve_base();
-    int count = base;
-    int k;
+    int count = bt_count_real(base);
+    int li;
     CL_Obj result = CL_NIL, entry = CL_NIL, name = CL_NIL, file_str = CL_NIL;
 
     if (max_frames > 0 && count > max_frames)
@@ -730,14 +774,21 @@ CL_Obj cl_vm_backtrace_list(int max_frames)
     CL_GC_PROTECT(name);
     CL_GC_PROTECT(file_str);
 
-    /* Walk outermost→innermost and prepend, so the final list is
-     * innermost-first (index 0 = innermost). */
-    for (k = count - 1; k >= 0; k--) {
-        CL_Frame *f = &cl_vm.frames[base - 1 - k];
+    /* Walk logical indices outermost→innermost and prepend, so the final
+     * list is innermost-first with index 0 = innermost non-stub frame.
+     * Stub frames (cl_vm_apply trampolines, interleaved with JIT shadow
+     * frames) are skipped via the logical→physical mapping. */
+    for (li = count - 1; li >= 0; li--) {
+        int phys;
+        CL_Frame *f;
         CL_Bytecode *bc;
         int line;
         const char *file;
         CL_Obj line_obj;
+
+        phys = bt_physical_frame(base, li);
+        if (phys < 0) continue;
+        f = &cl_vm.frames[phys];
 
         /* Read everything off the frame before allocating. */
         name = get_func_name(f->bytecode);
@@ -751,7 +802,7 @@ CL_Obj cl_vm_backtrace_list(int max_frames)
         entry = cl_cons(line_obj, CL_NIL);
         entry = cl_cons(file_str, entry);
         entry = cl_cons(name, entry);
-        entry = cl_cons(CL_MAKE_FIXNUM(k), entry);
+        entry = cl_cons(CL_MAKE_FIXNUM(li), entry);
         result = cl_cons(entry, result);
     }
 
@@ -762,14 +813,15 @@ CL_Obj cl_vm_backtrace_list(int max_frames)
 CL_Obj cl_vm_frame_locals(int index)
 {
     int base = bt_resolve_base();
+    int phys = bt_physical_frame(base, index);
     CL_Frame *f;
     int bp, n_locals, nargs, i;
     CL_Obj result = CL_NIL, pair = CL_NIL, nm = CL_NIL, val = CL_NIL;
 
-    if (index < 0 || index >= base)
+    if (index < 0 || phys < 0)
         return cl_intern_in("NOT-AVAILABLE", 13, cl_package_keyword);
 
-    f = &cl_vm.frames[base - 1 - index];
+    f = &cl_vm.frames[phys];
     bp = (int)f->bp;
     n_locals = f->n_locals;
     nargs = f->nargs;
