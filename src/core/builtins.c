@@ -853,6 +853,37 @@ static CL_Obj bi_jit_set_active(CL_Obj *args, int n)
     return active ? CL_T : CL_NIL;
 }
 
+/* (%JIT-ACTIVE-P) — T when the m68k JIT is compiled in and enabled (so new
+ * functions get native code), NIL otherwise (host build, or --no-jit).
+ * Tests use this to gate JIT-specific expectations, e.g. that interior
+ * LET-bound locals are not introspectable in JIT'd frames. */
+static CL_Obj bi_jit_active_p(CL_Obj *args, int n)
+{
+    CL_UNUSED(args); CL_UNUSED(n);
+    return cl_jit_enabled() ? CL_T : CL_NIL;
+}
+
+/* (%JIT-SET-FRAMES BOOL) — enable/disable the per-call shadow CL_Frame that
+ * makes JIT'd functions visible to EXT:BACKTRACE / EXT:FRAME-LOCALS.  Off by
+ * default (the push costs a few percent on call-heavy code); turn it on for
+ * a debug session (Sly/SLDB) or before introspecting a JIT'd call stack.
+ * Returns the new state as T/NIL. */
+static CL_Obj bi_jit_set_frames(CL_Obj *args, int n)
+{
+    int on;
+    CL_UNUSED(n);
+    on = !CL_NULL_P(args[0]);
+    cl_jit_set_shadow_frames(on);
+    return on ? CL_T : CL_NIL;
+}
+
+/* (%JIT-FRAMES-P) — T when JIT shadow frames are currently enabled. */
+static CL_Obj bi_jit_frames_p(CL_Obj *args, int n)
+{
+    CL_UNUSED(args); CL_UNUSED(n);
+    return cl_jit_shadow_frames_enabled() ? CL_T : CL_NIL;
+}
+
 /* (%JIT-DISASSEMBLE fn) — prints one line of m68k assembly per
  * instruction in fn's native_code, to *standard-output*.  Returns NIL.
  * Prints a friendly placeholder when the function has no native code
@@ -1364,6 +1395,9 @@ void cl_builtins_init(void)
     cl_register_builtin("%JIT-INVOKE-COUNT",  bi_jit_invoke_count,  0, 0, cl_package_clamiga);
     cl_register_builtin("%JIT-DISASSEMBLE",   bi_jit_disassemble,   1, 1, cl_package_clamiga);
     cl_register_builtin("%JIT-SET-ACTIVE",    bi_jit_set_active,    1, 1, cl_package_clamiga);
+    cl_register_builtin("%JIT-ACTIVE-P",      bi_jit_active_p,      0, 0, cl_package_clamiga);
+    cl_register_builtin("%JIT-SET-FRAMES",    bi_jit_set_frames,    1, 1, cl_package_clamiga);
+    cl_register_builtin("%JIT-FRAMES-P",      bi_jit_frames_p,      0, 0, cl_package_clamiga);
 
     /* Reserved standard CL symbols — required to be present and external in
      * COMMON-LISP per ANSI 11.1.2.1.  Many do not have full implementations
