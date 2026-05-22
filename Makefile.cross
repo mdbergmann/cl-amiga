@@ -13,6 +13,10 @@ CC        = $(TOOLCHAIN)/bin/m68k-amigaos-gcc
 # -Os passes the full tests/amiga/run-tests.lisp suite on real Amiga
 # and produces a ~175 KB smaller binary than -O2, so we use it.
 # The volatile workaround above still applies.
+# NOTE: -ffunction-sections + -Wl,--gc-sections was tried (2026-05-21) and is a
+# NET LOSS on the AmigaOS hunk format: the linker does remove dead sections, but
+# per-function alignment padding + per-section hunk-table overhead (hundreds of
+# tiny sections) outweighs it — binary grew +35 KB / +6 %. See specs/modularize.md.
 CFLAGS    = -noixemul -mcpu=68020 -msoft-float -std=c99 -Wall -Os -fno-tree-switch-conversion -DPLATFORM_AMIGA -DJIT_M68K $(DEBUG_FLAGS)
 LDFLAGS   = -noixemul -mcpu=68020 -msoft-float -fno-tree-switch-conversion
 
