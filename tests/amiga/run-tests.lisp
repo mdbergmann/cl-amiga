@@ -1774,6 +1774,59 @@
              (close c) (close s)))
       (close l))))
 
+; --- Concurrent socket I/O: a thread parked in a blocking socket read must
+; not block other I/O (regression for the SLY :spawn deadlock).  Stream I/O
+; locks are split per socket and per direction (src/core/stream.c), and the
+; blocking recv() runs inside a GC safe region (platform_amiga.c), so a parked
+; reader holds only that socket's read lock and counts as stopped during GC.
+; If either regresses the operation below hangs forever — the FS-UAE watchdog
+; then kills the run and the suite fails loudly.
+;
+; A reader thread parks in (read-char s) on the server side; the main thread
+; must still be able to write the reply on that SAME socket (opposite
+; direction) and have the client receive it.
+(check "socket read does not block reply on same socket" 65  ; #\A
+  (let ((l (ext:socket-listen 0 t)))
+    (unwind-protect
+         (let* ((p (ext:socket-local-port l))
+                (c (ext:open-tcp-stream "127.0.0.1" p))
+                (s (ext:socket-accept l)))
+           (unwind-protect
+                (let ((reader (mp:make-thread
+                                (lambda () (read-char s nil :eof))
+                                :name "sock-reader")))
+                  (sleep 0.5)                 ; let reader park in (read-char s)
+                  (write-char #\A s)          ; reply on the same socket
+                  (force-output s)
+                  (let ((got (char-code (read-char c))))
+                    (write-char #\Z c)        ; unblock the reader
+                    (force-output c)
+                    (mp:join-thread reader)
+                    got))
+             (close c) (close s)))
+      (close l))))
+
+; A full stop-the-world GC must return while a thread is parked in a socket
+; read — the user's literal "ext:gc deadlocks" symptom.
+(check "GC returns while a thread is parked in socket read" :ok
+  (let ((l (ext:socket-listen 0 t)))
+    (unwind-protect
+         (let* ((p (ext:socket-local-port l))
+                (c (ext:open-tcp-stream "127.0.0.1" p))
+                (s (ext:socket-accept l)))
+           (unwind-protect
+                (let ((reader (mp:make-thread
+                                (lambda () (read-char s nil :eof))
+                                :name "sock-reader")))
+                  (sleep 0.5)                 ; let reader park in (read-char s)
+                  (ext:gc)                    ; must not wait forever for reader
+                  (write-char #\Z c)          ; unblock the reader
+                  (force-output c)
+                  (mp:join-thread reader)
+                  :ok)
+             (close c) (close s)))
+      (close l))))
+
 ; --- Printer + stream integration (Step 7) ---
 
 ; prin1/princ/print with optional stream arg

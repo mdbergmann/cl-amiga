@@ -34,8 +34,33 @@ static int stream_initialized = 0;
 /* Mutex protecting outbuf_table and cbuf_table slot allocation/deallocation */
 static void *cl_stream_table_mutex = NULL;
 
-/* Mutex protecting console/file/socket I/O (prevents interleaved output) */
-static void *cl_stream_io_mutex = NULL;
+/* I/O serialisation locks.
+ *
+ * A single global lock is wrong here: it is held across the *blocking* read()/
+ * write() syscalls (a socket read can park indefinitely waiting for the peer),
+ * so one parked thread would wedge every other stream operation — including an
+ * unrelated thread writing to the console, or the reply being written back to
+ * the very socket that is being read.  That is the SLY :spawn deadlock.
+ *
+ * Locks are therefore split by stream and by direction, so a blocking syscall
+ * only ever holds a lock that no independent operation needs:
+ *   - console reads vs. writes are independent (a parked stdin read must not
+ *     block another thread's stdout output);
+ *   - each socket has its own read and write lock, keyed by socket handle, so
+ *     reading a socket never blocks writing it (full-duplex), and one client
+ *     connection never blocks another;
+ *   - files share one lock (regular-file I/O does not park indefinitely).
+ * The locks still serialise concurrent same-direction access, preserving
+ * UTF-8 decode atomicity and preventing interleaved console output. */
+static void *cl_console_read_mutex = NULL;
+static void *cl_console_write_mutex = NULL;
+static void *cl_file_io_mutex = NULL;
+
+/* Per-socket read/write locks, indexed by socket handle (1..N-1).  Slot count
+ * must cover the platform socket-handle range (both POSIX and Amiga use 16). */
+#define CL_STREAM_SOCKET_SLOTS 16
+static void *cl_sock_read_mutex[CL_STREAM_SOCKET_SLOTS];
+static void *cl_sock_write_mutex[CL_STREAM_SOCKET_SLOTS];
 
 /* --- C-buffer input stream side table --- */
 
@@ -53,8 +78,16 @@ void cl_stream_init(void)
 
     if (!cl_stream_table_mutex)
         platform_mutex_init(&cl_stream_table_mutex);
-    if (!cl_stream_io_mutex)
-        platform_mutex_init(&cl_stream_io_mutex);
+    if (!cl_console_read_mutex)
+        platform_mutex_init(&cl_console_read_mutex);
+    if (!cl_console_write_mutex)
+        platform_mutex_init(&cl_console_write_mutex);
+    if (!cl_file_io_mutex)
+        platform_mutex_init(&cl_file_io_mutex);
+    for (i = 1; i < CL_STREAM_SOCKET_SLOTS; i++) {
+        if (!cl_sock_read_mutex[i])  platform_mutex_init(&cl_sock_read_mutex[i]);
+        if (!cl_sock_write_mutex[i]) platform_mutex_init(&cl_sock_write_mutex[i]);
+    }
 
     for (i = 0; i < CL_STREAM_BUF_TABLE_SIZE; i++) {
         outbuf_table[i].data = NULL;
@@ -297,6 +330,28 @@ static CL_Obj resolve_synonym(CL_Obj stream)
 
 /* --- Stream I/O operations --- */
 
+/* Return the I/O serialisation lock for `st` in the given direction, or NULL
+ * when no lock is needed (single-threaded, an in-memory stream type, or an
+ * out-of-range socket handle).  `writing` selects the write lock; otherwise the
+ * read lock.  See the lock declarations above for why locks are split this way. */
+static void *stream_lock_for(CL_Stream *st, int writing)
+{
+    if (!CL_MT()) return NULL;
+    switch (st->stream_type) {
+    case CL_STREAM_CONSOLE:
+        return writing ? cl_console_write_mutex : cl_console_read_mutex;
+    case CL_STREAM_FILE:
+        return cl_file_io_mutex;
+    case CL_STREAM_SOCKET: {
+        uint32_t h = st->handle_id;
+        if (h == 0 || h >= CL_STREAM_SOCKET_SLOTS) return NULL;
+        return writing ? cl_sock_write_mutex[h] : cl_sock_read_mutex[h];
+    }
+    default:
+        return NULL;
+    }
+}
+
 /* Read a single raw byte from a byte-oriented stream.
  * Caller must hold the I/O mutex if needed.
  * Does NOT handle UTF-8 decoding — use cl_stream_read_char for that. */
@@ -371,7 +426,8 @@ static int stream_decode_utf8(CL_Stream *st, int first_byte)
 int cl_stream_read_char(CL_Obj stream)
 {
     CL_Stream *st;
-    int ch, need_lock;
+    int ch;
+    void *iolock;
 
     stream = resolve_synonym(stream);
     if (CL_NULL_P(stream)) return -1;
@@ -382,31 +438,29 @@ int cl_stream_read_char(CL_Obj stream)
     if (!(st->direction & CL_STREAM_INPUT))
         return -1;
 
-    need_lock = CL_MT() && (st->stream_type == CL_STREAM_CONSOLE ||
-                             st->stream_type == CL_STREAM_FILE ||
-                             st->stream_type == CL_STREAM_SOCKET);
-    if (need_lock) platform_mutex_lock(cl_stream_io_mutex);
+    iolock = stream_lock_for(st, 0);
+    if (iolock) platform_mutex_lock(iolock);
 
     /* Check for pushed-back character (already decoded code point) */
     if (st->unread_char != -1) {
         ch = st->unread_char;
         st->unread_char = -1;
-        if (need_lock) platform_mutex_unlock(cl_stream_io_mutex);
+        if (iolock) platform_mutex_unlock(iolock);
         return ch;
     }
 
     /* String streams return code points directly (no UTF-8 layer) */
     if (st->stream_type == CL_STREAM_STRING) {
         if (CL_NULL_P(st->string_buf)) {
-            if (need_lock) platform_mutex_unlock(cl_stream_io_mutex);
+            if (iolock) platform_mutex_unlock(iolock);
             return -1;
         }
         if (st->position >= st->out_buf_len) {
-            if (need_lock) platform_mutex_unlock(cl_stream_io_mutex);
+            if (iolock) platform_mutex_unlock(iolock);
             return -1;
         }
         ch = cl_string_char_at(st->string_buf, st->position++);
-        if (need_lock) platform_mutex_unlock(cl_stream_io_mutex);
+        if (iolock) platform_mutex_unlock(iolock);
         return ch;
     }
 
@@ -421,7 +475,7 @@ int cl_stream_read_char(CL_Obj stream)
 
     if (ch == -1)
         st->flags |= CL_STREAM_FLAG_EOF;
-    if (need_lock) platform_mutex_unlock(cl_stream_io_mutex);
+    if (iolock) platform_mutex_unlock(iolock);
     return ch;
 }
 
@@ -430,7 +484,8 @@ int cl_stream_read_char(CL_Obj stream)
 int cl_stream_read_byte(CL_Obj stream)
 {
     CL_Stream *st;
-    int ch, need_lock;
+    int ch;
+    void *iolock;
 
     stream = resolve_synonym(stream);
     if (CL_NULL_P(stream)) return -1;
@@ -441,31 +496,29 @@ int cl_stream_read_byte(CL_Obj stream)
     if (!(st->direction & CL_STREAM_INPUT))
         return -1;
 
-    need_lock = CL_MT() && (st->stream_type == CL_STREAM_CONSOLE ||
-                             st->stream_type == CL_STREAM_FILE ||
-                             st->stream_type == CL_STREAM_SOCKET);
-    if (need_lock) platform_mutex_lock(cl_stream_io_mutex);
+    iolock = stream_lock_for(st, 0);
+    if (iolock) platform_mutex_lock(iolock);
 
     /* Check for pushed-back byte */
     if (st->unread_char != -1) {
         ch = st->unread_char;
         st->unread_char = -1;
-        if (need_lock) platform_mutex_unlock(cl_stream_io_mutex);
+        if (iolock) platform_mutex_unlock(iolock);
         return ch;
     }
 
     /* String streams: return code point (for string-as-bytes) */
     if (st->stream_type == CL_STREAM_STRING) {
         if (CL_NULL_P(st->string_buf)) {
-            if (need_lock) platform_mutex_unlock(cl_stream_io_mutex);
+            if (iolock) platform_mutex_unlock(iolock);
             return -1;
         }
         if (st->position >= st->out_buf_len) {
-            if (need_lock) platform_mutex_unlock(cl_stream_io_mutex);
+            if (iolock) platform_mutex_unlock(iolock);
             return -1;
         }
         ch = cl_string_char_at(st->string_buf, st->position++);
-        if (need_lock) platform_mutex_unlock(cl_stream_io_mutex);
+        if (iolock) platform_mutex_unlock(iolock);
         return ch;
     }
 
@@ -474,14 +527,14 @@ int cl_stream_read_byte(CL_Obj stream)
 
     if (ch == -1)
         st->flags |= CL_STREAM_FLAG_EOF;
-    if (need_lock) platform_mutex_unlock(cl_stream_io_mutex);
+    if (iolock) platform_mutex_unlock(iolock);
     return ch;
 }
 
 void cl_stream_write_char(CL_Obj stream, int ch)
 {
     CL_Stream *st;
-    int need_lock;
+    void *iolock;
 
     stream = resolve_synonym(stream);
     if (CL_NULL_P(stream)) return;
@@ -492,10 +545,8 @@ void cl_stream_write_char(CL_Obj stream, int ch)
     if (!(st->direction & CL_STREAM_OUTPUT))
         return;
 
-    need_lock = CL_MT() && (st->stream_type == CL_STREAM_CONSOLE ||
-                             st->stream_type == CL_STREAM_FILE ||
-                             st->stream_type == CL_STREAM_SOCKET);
-    if (need_lock) platform_mutex_lock(cl_stream_io_mutex);
+    iolock = stream_lock_for(st, 1);
+    if (iolock) platform_mutex_lock(iolock);
 
     switch (st->stream_type) {
     case CL_STREAM_CONSOLE: {
@@ -556,7 +607,7 @@ void cl_stream_write_char(CL_Obj stream, int ch)
     else
         st->charpos++;
 
-    if (need_lock) platform_mutex_unlock(cl_stream_io_mutex);
+    if (iolock) platform_mutex_unlock(iolock);
 }
 
 /* Write one raw byte to stream — no UTF-8 encoding.
@@ -564,7 +615,7 @@ void cl_stream_write_char(CL_Obj stream, int ch)
 void cl_stream_write_byte(CL_Obj stream, int byte)
 {
     CL_Stream *st;
-    int need_lock;
+    void *iolock;
 
     stream = resolve_synonym(stream);
     if (CL_NULL_P(stream)) return;
@@ -575,10 +626,8 @@ void cl_stream_write_byte(CL_Obj stream, int byte)
     if (!(st->direction & CL_STREAM_OUTPUT))
         return;
 
-    need_lock = CL_MT() && (st->stream_type == CL_STREAM_CONSOLE ||
-                             st->stream_type == CL_STREAM_FILE ||
-                             st->stream_type == CL_STREAM_SOCKET);
-    if (need_lock) platform_mutex_lock(cl_stream_io_mutex);
+    iolock = stream_lock_for(st, 1);
+    if (iolock) platform_mutex_lock(iolock);
 
     switch (st->stream_type) {
     case CL_STREAM_CONSOLE: {
@@ -599,14 +648,14 @@ void cl_stream_write_byte(CL_Obj stream, int byte)
         break;
     }
 
-    if (need_lock) platform_mutex_unlock(cl_stream_io_mutex);
+    if (iolock) platform_mutex_unlock(iolock);
 }
 
 void cl_stream_write_string(CL_Obj stream, const char *str, uint32_t len)
 {
     CL_Stream *st;
     uint32_t i;
-    int need_lock;
+    void *iolock;
 
     stream = resolve_synonym(stream);
     if (CL_NULL_P(stream)) return;
@@ -617,10 +666,8 @@ void cl_stream_write_string(CL_Obj stream, const char *str, uint32_t len)
     if (!(st->direction & CL_STREAM_OUTPUT))
         return;
 
-    need_lock = CL_MT() && (st->stream_type == CL_STREAM_CONSOLE ||
-                             st->stream_type == CL_STREAM_FILE ||
-                             st->stream_type == CL_STREAM_SOCKET);
-    if (need_lock) platform_mutex_lock(cl_stream_io_mutex);
+    iolock = stream_lock_for(st, 1);
+    if (iolock) platform_mutex_lock(iolock);
 
     switch (st->stream_type) {
     case CL_STREAM_CONSOLE: {
@@ -662,7 +709,7 @@ void cl_stream_write_string(CL_Obj stream, const char *str, uint32_t len)
             st->charpos += len;
     }
 
-    if (need_lock) platform_mutex_unlock(cl_stream_io_mutex);
+    if (iolock) platform_mutex_unlock(iolock);
 }
 
 int cl_stream_peek_char(CL_Obj stream)
@@ -691,16 +738,20 @@ void cl_stream_unread_char(CL_Obj stream, int ch)
 void cl_stream_close(CL_Obj stream)
 {
     CL_Stream *st;
-    int need_lock;
+    void *iolock;
     stream = resolve_synonym(stream);
     if (CL_NULL_P(stream)) return;
     st = (CL_Stream *)CL_OBJ_TO_PTR(stream);
     if (!(st->flags & CL_STREAM_FLAG_OPEN))
         return;
 
-    need_lock = CL_MT() && (st->stream_type == CL_STREAM_FILE ||
-                             st->stream_type == CL_STREAM_SOCKET);
-    if (need_lock) platform_mutex_lock(cl_stream_io_mutex);
+    /* Closing flushes and tears down the write side; take the write lock.  A
+     * concurrent reader parked on this socket holds only the read lock, so
+     * close never waits on it — the read() returns once the fd is closed. */
+    iolock = (st->stream_type == CL_STREAM_FILE ||
+              st->stream_type == CL_STREAM_SOCKET)
+                 ? stream_lock_for(st, 1) : NULL;
+    if (iolock) platform_mutex_lock(iolock);
 
     st->flags &= ~CL_STREAM_FLAG_OPEN;
 
@@ -733,7 +784,7 @@ void cl_stream_close(CL_Obj stream)
         break;
     }
 
-    if (need_lock) platform_mutex_unlock(cl_stream_io_mutex);
+    if (iolock) platform_mutex_unlock(iolock);
 }
 
 CL_Obj cl_make_string_input_stream(CL_Obj string, uint32_t start, uint32_t end)
