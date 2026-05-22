@@ -4163,7 +4163,7 @@
       (mp:join-thread consumer))))
 
 ; --- Dynamic binding isolation ---
-(check "thread inherits dynamic bindings" "COMMON-LISP-USER"
+(check "thread sees global package value" "COMMON-LISP-USER"
   (mp:join-thread
     (mp:make-thread
       (lambda () (package-name *package*)))))
@@ -4176,6 +4176,15 @@
                      *thread-test-var*)))))
     (let ((child-result (mp:join-thread child)))
       (list *thread-test-var* child-result))))
+
+; Regression: thread spawned inside an active LET sees only the GLOBAL value,
+; never the parent's dynamic binding (fresh per-thread dynamic environment).
+(defvar *fresh-dyn-var* :global)
+(check "thread fresh dynamic env" :global
+  (let ((*fresh-dyn-var* :bound-in-parent))
+    (mp:join-thread
+      (mp:make-thread
+        (lambda () *fresh-dyn-var*)))))
 
 ; --- Error handling in threads ---
 (check "thread error sets aborted" :survived

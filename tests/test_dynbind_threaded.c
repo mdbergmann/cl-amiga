@@ -3,7 +3,7 @@
  *
  * Tests: TLV basic ops, nested dynamic bindings through TLV,
  * cl_symbol_value / cl_set_symbol_value / cl_symbol_boundp,
- * PROGV with TLV, GC with TLV entries, snapshot.
+ * PROGV with TLV, GC with TLV entries, fresh per-thread dynamic env.
  */
 
 #include "test.h"
@@ -293,23 +293,27 @@ TEST(dynbind_print_escape_override)
 }
 
 /* ================================================================
- * TLV snapshot
+ * Fresh per-thread dynamic environment
  * ================================================================ */
 
-TEST(tlv_snapshot)
+TEST(tlv_child_does_not_inherit_parent)
 {
-    CL_Thread src;
-    CL_Thread dst;
+    /* A new thread must start with a fresh dynamic environment: its TLV
+     * table is empty, so the parent's active dynamic bindings are invisible.
+     * (mp:make-thread no longer snapshots the parent's TLV — see
+     * bi_make_thread.) */
+    CL_Thread parent;
+    CL_Thread child;
     CL_Obj sym = cl_intern("*SNAP-TEST*", 12);
 
-    memset(&src, 0, sizeof(CL_Thread));
-    memset(&dst, 0, sizeof(CL_Thread));
+    memset(&parent, 0, sizeof(CL_Thread));
+    memset(&child, 0, sizeof(CL_Thread));
 
-    cl_tlv_set(&src, sym, CL_MAKE_FIXNUM(123));
-    ASSERT_EQ(cl_tlv_get(&dst, sym), CL_TLV_ABSENT);
+    cl_tlv_set(&parent, sym, CL_MAKE_FIXNUM(123));
 
-    cl_tlv_snapshot(&dst, &src);
-    ASSERT_EQ(cl_tlv_get(&dst, sym), CL_MAKE_FIXNUM(123));
+    /* A freshly-zeroed worker is what cl_thread_alloc_worker() hands out. */
+    ASSERT_EQ(child.tlv_entry_count, 0u);
+    ASSERT_EQ(cl_tlv_get(&child, sym), CL_TLV_ABSENT);
 }
 
 /* ================================================================
@@ -449,7 +453,7 @@ int main(void)
     RUN(dynbind_print_escape_override);
 
     /* Snapshot */
-    RUN(tlv_snapshot);
+    RUN(tlv_child_does_not_inherit_parent);
 
     /* GC */
     RUN(gc_with_tlv_entries);

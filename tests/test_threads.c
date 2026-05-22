@@ -250,9 +250,9 @@ TEST(condvar_notify_wait)
  * Dynamic binding isolation (TLV inheritance)
  * ================================================================ */
 
-TEST(thread_inherits_dynamic_bindings)
+TEST(thread_sees_global_package_value)
 {
-    /* Child thread should see parent's *package* */
+    /* Child thread sees global value of *package* (no TLV inheritance) */
     const char *r = eval_print(
         "(mp:join-thread"
         "  (mp:make-thread"
@@ -273,6 +273,23 @@ TEST(thread_let_binding_isolation)
         "    (let ((child-result (mp:join-thread child)))"
         "      (list *test-let-var* child-result))))");
     ASSERT_STR_EQ(r, "(:PARENT :CHILD)");
+}
+
+TEST(thread_fresh_dynamic_env)
+{
+    /* Regression: a thread spawned INSIDE an active LET binding of a special
+     * must NOT inherit that binding — it sees only the GLOBAL value.
+     * (Previously the parent's TLV table was snapshotted into the child,
+     * leaking the dynamic binding; SLYNK's with-connection relies on fresh
+     * per-thread specials, so the leak cascaded into a fatal debugger entry.) */
+    const char *r = eval_print(
+        "(progn"
+        "  (defvar *fresh-dyn-var* :global)"
+        "  (let ((*fresh-dyn-var* :bound-in-parent))"
+        "    (mp:join-thread"
+        "      (mp:make-thread"
+        "        (lambda () *fresh-dyn-var*)))))");
+    ASSERT_STR_EQ(r, ":GLOBAL");
 }
 
 /* ================================================================
@@ -794,8 +811,9 @@ int main(void)
     RUN(destroy_thread_interrupts_sleep);
 
     /* Dynamic bindings */
-    RUN(thread_inherits_dynamic_bindings);
+    RUN(thread_sees_global_package_value);
     RUN(thread_let_binding_isolation);
+    RUN(thread_fresh_dynamic_env);
 
     /* Error handling */
     RUN(thread_error_sets_aborted);

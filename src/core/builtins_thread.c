@@ -242,7 +242,6 @@ static CL_Obj bi_make_thread(CL_Obj *args, int n)
 {
     CL_Obj func = args[0];
     CL_Obj name = CL_NIL;
-    CL_Thread *parent;
     CL_Thread *child;
     int thread_id;
     CL_ThreadObj *tobj;
@@ -309,9 +308,14 @@ static CL_Obj bi_make_thread(CL_Obj *args, int n)
     child->id = (uint32_t)thread_id;
     child->name = name;
 
-    /* Snapshot parent's TLV table to child */
-    parent = (CL_Thread *)platform_tls_get();
-    cl_tlv_snapshot(child, parent);
+    /* A new thread starts with a FRESH dynamic environment: per CL /
+     * bordeaux-threads semantics it sees only the GLOBAL values of special
+     * variables, never the dynamic (LET/PROGV) bindings active in the parent
+     * at spawn time.  Global values live in the symbol's value slot; the
+     * worker's TLV table holds only that thread's own active bindings.  Since
+     * cl_thread_alloc_worker() zeroes the worker, its TLV table is already
+     * empty (tlv_entry_count == 0) and reads fall through to globals — so we
+     * deliberately do NOT copy the parent's TLV table here. */
 
     /* Stash func in child->result for the entry wrapper to retrieve */
     child->result = func;

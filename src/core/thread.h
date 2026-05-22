@@ -369,9 +369,6 @@ void cl_gc_leave_safe_region(void);
 
 /* ---- TLV functions ---- */
 
-/* Snapshot TLV table from src to dst (for thread inheritance) */
-void cl_tlv_snapshot(CL_Thread *dst, CL_Thread *src);
-
 /* TLV table operations */
 CL_Obj cl_tlv_get(CL_Thread *t, CL_Obj sym);
 void   cl_tlv_set(CL_Thread *t, CL_Obj sym, CL_Obj val);
