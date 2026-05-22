@@ -5,6 +5,16 @@
 #include <proto/dos.h>
 #include <string.h>
 
+/* GC stop-the-world cooperation (defined in core/thread.c).  Forward-declared
+ * here rather than #including core/thread.h so the platform layer stays free of
+ * core/VM type dependencies.  A thread parked in a blocking socket syscall
+ * cannot reach a GC safepoint; bracketing the syscall with these marks the
+ * thread as "stopped" for the duration so a concurrent stop-the-world GC does
+ * not deadlock waiting on it.  Both are no-ops on threads not registered with
+ * the MP subsystem (e.g. the main thread before any mp:make-thread). */
+extern void cl_gc_enter_safe_region(void);
+extern void cl_gc_leave_safe_region(void);
+
 void *platform_alloc(unsigned long size)
 {
     void *p = AllocVec(size, MEMF_CLEAR);
@@ -712,7 +722,10 @@ PlatformSocket platform_socket_connect(const char *host, int port)
     if (!bsdsocket_open())
         return PLATFORM_SOCKET_INVALID;
 
+    /* DNS resolution can block on the network — stay GC-cooperative. */
+    cl_gc_enter_safe_region();
     he = gethostbyname((STRPTR)host);
+    cl_gc_leave_safe_region();
     if (!he) return PLATFORM_SOCKET_INVALID;
 
     fd = socket(AF_INET, SOCK_STREAM, 0);
@@ -723,9 +736,15 @@ PlatformSocket platform_socket_connect(const char *host, int port)
     addr.sin_port = htons((unsigned short)port);
     memcpy(&addr.sin_addr, he->h_addr_list[0], (size_t)he->h_length);
 
-    if (connect(fd, (struct sockaddr *)&addr, sizeof(addr)) < 0) {
-        CloseSocket(fd);
-        return PLATFORM_SOCKET_INVALID;
+    {
+        LONG rc;
+        cl_gc_enter_safe_region();
+        rc = connect(fd, (struct sockaddr *)&addr, sizeof(addr));
+        cl_gc_leave_safe_region();
+        if (rc < 0) {
+            CloseSocket(fd);
+            return PLATFORM_SOCKET_INVALID;
+        }
     }
 
     /* Find free slot (slot 0 reserved as INVALID) */
@@ -753,11 +772,15 @@ static int socket_flush_wbuf(PlatformSocket sh)
     b = socket_buf[sh];
     if (!b || b->wlen == 0) return 0;
     fd = socket_table[sh];
+    /* send() can block when the peer's receive window is full — bracket the
+     * whole drain loop so a slow reader cannot stall a stop-the-world GC. */
+    cl_gc_enter_safe_region();
     while (total < (LONG)b->wlen) {
         LONG n = send(fd, (APTR)(b->wbuf + total), (LONG)(b->wlen - total), 0);
-        if (n <= 0) return -1;
+        if (n <= 0) { cl_gc_leave_safe_region(); return -1; }
         total += n;
     }
+    cl_gc_leave_safe_region();
     b->wlen = 0;
     return 0;
 }
@@ -790,9 +813,15 @@ int platform_socket_read(PlatformSocket sh)
     if (b) {
         if (b->rpos < b->rlen)
             return (unsigned char)b->rbuf[b->rpos++];
-        /* Refill read buffer */
+        /* Refill read buffer.  recv() blocks until data arrives, so bracket it
+         * as a GC safe region; capture the fd first since a concurrent close
+         * could clear the slot while we are parked. */
         {
-            LONG n = recv(socket_table[sh], (APTR)b->rbuf, PLATFORM_IOBUF_SIZE, 0);
+            LONG fd = socket_table[sh];
+            LONG n;
+            cl_gc_enter_safe_region();
+            n = recv(fd, (APTR)b->rbuf, PLATFORM_IOBUF_SIZE, 0);
+            cl_gc_leave_safe_region();
             if (n <= 0) return -1;
             b->rpos = 1;
             b->rlen = (int)n;
@@ -801,8 +830,12 @@ int platform_socket_read(PlatformSocket sh)
     }
     /* Fallback: no buffer */
     {
+        LONG fd = socket_table[sh];
         unsigned char byte;
-        LONG n = recv(socket_table[sh], &byte, 1, 0);
+        LONG n;
+        cl_gc_enter_safe_region();
+        n = recv(fd, &byte, 1, 0);
+        cl_gc_leave_safe_region();
         if (n <= 0) return -1;
         return (int)byte;
     }
@@ -822,8 +855,12 @@ int platform_socket_write(PlatformSocket sh, int byte)
     }
     /* Fallback: no buffer */
     {
+        LONG fd = socket_table[sh];
         unsigned char bb = (unsigned char)byte;
-        LONG n = send(socket_table[sh], &bb, 1, 0);
+        LONG n;
+        cl_gc_enter_safe_region();
+        n = send(fd, &bb, 1, 0);
+        cl_gc_leave_safe_region();
         return (n == 1) ? 0 : -1;
     }
 }
@@ -853,11 +890,13 @@ int platform_socket_write_buf(PlatformSocket sh, const char *buf, uint32_t len)
     {
         LONG total = 0;
         LONG fd = socket_table[sh];
+        cl_gc_enter_safe_region();
         while ((uint32_t)total < len) {
             LONG n = send(fd, (APTR)(buf + total), (LONG)(len - (uint32_t)total), 0);
-            if (n <= 0) return -1;
+            if (n <= 0) { cl_gc_leave_safe_region(); return -1; }
             total += n;
         }
+        cl_gc_leave_safe_region();
         return 0;
     }
 }
@@ -932,8 +971,15 @@ PlatformSocket platform_socket_accept(PlatformSocket listener)
         socket_table[listener] < 0)
         return PLATFORM_SOCKET_INVALID;
 
-    /* accept() blocks — must run outside the table lock. */
-    fd = accept(socket_table[listener], (struct sockaddr *)&caddr, &clen);
+    /* accept() blocks — must run outside the table lock, and as a GC safe
+     * region so a thread parked here waiting for a client does not stall a
+     * concurrent stop-the-world GC.  This is the SLY read-loop deadlock. */
+    {
+        LONG lfd = socket_table[listener];
+        cl_gc_enter_safe_region();
+        fd = accept(lfd, (struct sockaddr *)&caddr, &clen);
+        cl_gc_leave_safe_region();
+    }
     if (fd < 0) return PLATFORM_SOCKET_INVALID;
 
     socket_table_lock();

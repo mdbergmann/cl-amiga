@@ -16,6 +16,7 @@
 #include "platform/platform_thread.h"
 
 #include <string.h>
+#include <stdlib.h>   /* abort() — watchdog escalation on deadlock */
 
 /* Undef the gc_root_count macro so we can access the struct field directly
  * on CL_Thread instances that aren't the current thread. */
@@ -276,6 +277,112 @@ TEST(safepoint_no_gc)
 }
 
 /* ================================================================
+ * Regression: stop-the-world GC must not deadlock behind a thread
+ * parked in a blocking socket syscall.
+ *
+ * A thread blocked in accept()/read()/write() cannot reach a GC
+ * safepoint, so the platform socket layer brackets each blocking
+ * syscall with cl_gc_enter_safe_region()/cl_gc_leave_safe_region().
+ * Without that bracketing, a full GC from any other thread waits
+ * forever for the parked thread to stop (the SLY :spawn deadlock).
+ *
+ * The worker parks in accept(); the main thread then runs a full
+ * STW cl_gc().  A watchdog thread aborts with a diagnostic if the
+ * GC does not return within a few seconds, turning a regression
+ * into a loud test failure instead of an indefinite hang.
+ * ================================================================ */
+
+typedef struct {
+    CL_Thread       thread;
+    PlatformSocket  listener;
+    volatile int    parked;     /* set just before entering accept() */
+} AcceptCtx;
+
+static volatile int g_stw_gc_done = 0;
+
+static void *deadlock_watchdog(void *arg)
+{
+    int waited_ms = 0;
+    (void)arg;
+    while (!g_stw_gc_done && waited_ms < 5000) {
+        platform_sleep_ms(50);
+        waited_ms += 50;
+    }
+    if (!g_stw_gc_done) {
+        fprintf(stderr,
+            "\nFATAL: stop-the-world GC deadlocked behind a thread blocked in "
+            "socket accept().\n  The GC safe-region bracketing around blocking "
+            "socket syscalls has regressed\n  (see platform_socket_accept/read/"
+            "write in platform_posix.c / platform_amiga.c).\n");
+        abort();
+    }
+    return NULL;
+}
+
+static void *accept_blocker(void *arg)
+{
+    AcceptCtx *ctx = (AcceptCtx *)arg;
+    CL_Thread *t = &ctx->thread;
+    PlatformSocket conn;
+
+    platform_tls_set(t);
+    cl_thread_register(t);
+
+    ctx->parked = 1;
+    /* Blocks until the main thread connects.  With the fix this runs inside a
+     * GC safe region, so a concurrent STW GC counts this thread as stopped. */
+    conn = platform_socket_accept(ctx->listener);
+    if (conn != PLATFORM_SOCKET_INVALID)
+        platform_socket_close(conn);
+
+    cl_thread_unregister(t);
+    return NULL;
+}
+
+TEST(stw_gc_with_thread_blocked_in_accept)
+{
+    void *whandle, *wdog;
+    AcceptCtx ctx;
+    int port = 0;
+    PlatformSocket listener, client;
+
+    listener = platform_socket_listen(0, 1, &port);  /* port 0 = ephemeral, loopback */
+    ASSERT(listener != PLATFORM_SOCKET_INVALID);
+    ASSERT(port > 0);
+
+    memset(&ctx, 0, sizeof(ctx));
+    ctx.thread.id = 1;
+    ctx.thread.status = 1;
+    ctx.thread.mv_count = 1;
+    ctx.listener = listener;
+
+    g_stw_gc_done = 0;
+    platform_thread_create(&wdog, deadlock_watchdog, NULL, 0);
+    platform_thread_create(&whandle, accept_blocker, &ctx, 0);
+
+    /* Wait until the worker is about to block in accept(), then give it a beat
+     * to actually park inside the syscall. */
+    while (!ctx.parked)
+        platform_sleep_ms(5);
+    platform_sleep_ms(100);
+
+    /* The operation that used to hang forever. */
+    cl_gc();
+    g_stw_gc_done = 1;  /* tell the watchdog we survived */
+
+    /* Unblock the worker so it can finish, then join everything. */
+    client = platform_socket_connect("127.0.0.1", port);
+    platform_thread_join(whandle, NULL);
+    platform_thread_join(wdog, NULL);
+
+    if (client != PLATFORM_SOCKET_INVALID)
+        platform_socket_close(client);
+    platform_socket_close(listener);
+
+    ASSERT(1);  /* reaching here means GC returned — no deadlock */
+}
+
+/* ================================================================
  * main
  * ================================================================ */
 
@@ -297,6 +404,9 @@ int main(void)
     RUN(concurrent_alloc_2_threads);
     RUN(concurrent_alloc_4_threads);
     RUN(concurrent_alloc_with_gc);
+
+    /* Regression: STW GC vs. thread blocked in a socket syscall */
+    RUN(stw_gc_with_thread_blocked_in_accept);
 
     teardown();
 
