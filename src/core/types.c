@@ -114,6 +114,7 @@ const char *cl_type_name(CL_Obj obj)
         case TYPE_LOCK:     return "LOCK";
         case TYPE_CONDVAR:  return "CONDITION-VARIABLE";
         case TYPE_FOREIGN_POINTER: return "FOREIGN-POINTER";
+        case TYPE_RESTART:  return "RESTART";
 #ifdef CL_WIDE_STRINGS
         case TYPE_WIDE_STRING: return "STRING";
 #endif

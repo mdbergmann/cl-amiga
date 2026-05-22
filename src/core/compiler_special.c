@@ -2206,8 +2206,12 @@ CL_Obj compile_handler_bind(CL_Compiler *c, CL_Obj form)
 
 /* --- restart-case --- */
 
-/* Skip :report, :interactive, :test keyword options in restart clause */
-static CL_Obj skip_restart_options(CL_Obj forms)
+/* Parse the leading :report / :interactive / :test options of a restart
+ * clause (CLHS 9.1).  Stores each supplied option expression through the
+ * out-params (CL_UNBOUND = not supplied) and returns the remaining forms
+ * (the restart body). */
+static CL_Obj parse_restart_options(CL_Obj forms, CL_Obj *report,
+                                    CL_Obj *interactive, CL_Obj *test)
 {
     static CL_Obj KW_REPORT = CL_NIL;
     static CL_Obj KW_INTERACTIVE = CL_NIL;
@@ -2219,18 +2223,50 @@ static CL_Obj skip_restart_options(CL_Obj forms)
         KW_TEST = cl_intern_keyword("TEST", 4);
     }
 
+    *report = CL_UNBOUND;
+    *interactive = CL_UNBOUND;
+    *test = CL_UNBOUND;
+
     while (!CL_NULL_P(forms)) {
         CL_Obj head = cl_car(forms);
-        if (head == KW_REPORT || head == KW_INTERACTIVE || head == KW_TEST) {
-            /* Skip keyword + its value */
+        CL_Obj *slot;
+        if (head == KW_REPORT)           slot = report;
+        else if (head == KW_INTERACTIVE) slot = interactive;
+        else if (head == KW_TEST)        slot = test;
+        else break;
+        /* keyword + its value */
+        forms = cl_cdr(forms);
+        if (!CL_NULL_P(forms)) {
+            *slot = cl_car(forms);
             forms = cl_cdr(forms);
-            if (!CL_NULL_P(forms))
-                forms = cl_cdr(forms);
-        } else {
-            break;
         }
     }
     return forms;
+}
+
+/* Push a restart option onto the stack for OP_RESTART_PUSH.
+ *  - not supplied            -> NIL
+ *  - :report "string"        -> the literal string (a report string)
+ *  - any other expression    -> (function <expr>), i.e. a report/interactive/
+ *                               test function (CLHS accepts a symbol or
+ *                               lambda expression acceptable to FUNCTION). */
+static void compile_restart_option(CL_Compiler *c, CL_Obj expr, int allow_string)
+{
+    if (expr == CL_UNBOUND) {
+        cl_emit_const(c, CL_NIL);
+    } else if (allow_string && CL_ANY_STRING_P(expr)) {
+        cl_emit_const(c, expr);
+    } else {
+        CL_Obj inner, fn_form;
+        CL_GC_PROTECT(expr);
+        inner = cl_cons(expr, CL_NIL);
+        CL_GC_PROTECT(inner);
+        fn_form = cl_cons(SYM_FUNCTION, inner);
+        CL_GC_UNPROTECT(1); /* inner */
+        CL_GC_PROTECT(fn_form);
+        compile_expr(c, fn_form);
+        CL_GC_UNPROTECT(2); /* expr, fn_form */
+    }
 }
 
 void compile_restart_case(CL_Compiler *c, CL_Obj form)
@@ -2261,18 +2297,32 @@ void compile_restart_case(CL_Compiler *c, CL_Obj form)
         CL_Obj clause = cl_car(cl_iter);
         CL_Obj restart_name = cl_car(clause);
         CL_Obj params = cl_car(cl_cdr(clause));
-        CL_Obj clause_body = skip_restart_options(cl_cdr(cl_cdr(clause)));
+        CL_Obj report = CL_UNBOUND, interactive = CL_UNBOUND, test = CL_UNBOUND;
+        CL_Obj clause_body = parse_restart_options(cl_cdr(cl_cdr(clause)),
+                                                   &report, &interactive, &test);
         CL_Obj lambda_form;
         int name_idx;
 
+        /* Protect the option expressions across the allocating compile
+         * calls below — compaction is a moving GC. */
+        CL_GC_PROTECT(report);
+        CL_GC_PROTECT(interactive);
+        CL_GC_PROTECT(test);
+
         /* Build (lambda (params...) body...) and compile it */
         lambda_form = cl_cons(SYM_LAMBDA, cl_cons(params, clause_body));
-        compile_expr(c, lambda_form);  /* pushes closure on stack */
+        compile_expr(c, lambda_form);  /* pushes closure (handler) on stack */
 
-        /* Push catch tag */
+        /* Push the restart's :report / :interactive / :test operands, then
+         * the catch tag.  OP_RESTART_PUSH pops them in reverse. */
+        compile_restart_option(c, report, 1);       /* report may be a string */
+        compile_restart_option(c, interactive, 0);
+        compile_restart_option(c, test, 0);
         cl_emit_const(c, catch_tag);
+        CL_GC_UNPROTECT(3);
 
-        /* OP_RESTART_PUSH: pops tag, pops closure, pushes restart binding */
+        /* OP_RESTART_PUSH: pops tag/test/interactive/report/handler, builds
+         * the first-class restart object, pushes the restart binding */
         name_idx = cl_add_constant(c, restart_name);
         cl_emit(c, OP_RESTART_PUSH);
         cl_emit_u16(c, (uint16_t)name_idx);

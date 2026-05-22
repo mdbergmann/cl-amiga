@@ -580,6 +580,121 @@ TEST(lisp_compute_restarts)
         "2");
 }
 
+TEST(lisp_restart_is_first_class_object)
+{
+    /* find-restart returns a first-class restart object (not a name symbol):
+     * it is of type RESTART and is not a symbol. */
+    ASSERT_STR_EQ(eval_print(
+        "(restart-case (typep (find-restart 'foo) 'restart)"
+        "  (foo () nil))"),
+        "T");
+    ASSERT_STR_EQ(eval_print(
+        "(restart-case (symbolp (find-restart 'foo))"
+        "  (foo () nil))"),
+        "NIL");
+    ASSERT_STR_EQ(eval_print(
+        "(restart-case (type-of (find-restart 'foo))"
+        "  (foo () nil))"),
+        "RESTART");
+}
+
+TEST(lisp_restart_name)
+{
+    /* restart-name returns the restart's name symbol */
+    ASSERT_STR_EQ(eval_print(
+        "(restart-case (restart-name (find-restart 'my-restart))"
+        "  (my-restart () nil))"),
+        "MY-RESTART");
+    /* restart-name on a non-restart signals an error */
+    ASSERT_STR_EQ(eval_print(
+        "(handler-case (restart-name 42)"
+        "  (error () :errored))"),
+        ":ERRORED");
+}
+
+TEST(lisp_compute_restarts_returns_objects)
+{
+    /* compute-restarts returns restart objects, innermost first; their
+     * names are recoverable via restart-name */
+    ASSERT_STR_EQ(eval_print(
+        "(restart-case"
+        "    (restart-case"
+        "        (mapcar #'restart-name (compute-restarts))"
+        "      (inner () nil))"
+        "  (outer () nil))"),
+        "(INNER OUTER)");
+    /* every element is a RESTART object */
+    ASSERT_STR_EQ(eval_print(
+        "(restart-case (every (lambda (r) (typep r 'restart)) (compute-restarts))"
+        "  (a () nil) (b () nil))"),
+        "T");
+}
+
+TEST(lisp_invoke_restart_by_object)
+{
+    /* invoke-restart accepts a restart object (not just a name) and passes
+     * arguments through to the restart's handler */
+    ASSERT_STR_EQ(eval_print(
+        "(restart-case (invoke-restart (find-restart 'doit) 21)"
+        "  (doit (x) (* x 2)))"),
+        "42");
+}
+
+TEST(lisp_restart_report_string)
+{
+    /* PRINC of a restart prints its :report string; PRIN1 prints #<RESTART name> */
+    ASSERT_STR_EQ(eval_print(
+        "(restart-case (princ-to-string (find-restart 'foo))"
+        "  (foo () :report \"Do the foo thing\" nil))"),
+        "\"Do the foo thing\"");
+    ASSERT_STR_EQ(eval_print(
+        "(restart-case (prin1-to-string (find-restart 'foo))"
+        "  (foo () :report \"Do the foo thing\" nil))"),
+        "\"#<RESTART FOO>\"");
+}
+
+TEST(lisp_restart_report_function)
+{
+    /* A :report function is called with a stream to produce the report */
+    ASSERT_STR_EQ(eval_print(
+        "(restart-case"
+        "    (princ-to-string (find-restart 'foo))"
+        "  (foo () :report (lambda (s) (format s \"computed ~D\" (+ 1 2))) nil))"),
+        "\"computed 3\"");
+}
+
+TEST(lisp_restart_no_report_princ)
+{
+    /* With no :report, PRINC falls back to the #<RESTART name> form */
+    ASSERT_STR_EQ(eval_print(
+        "(restart-case (princ-to-string (find-restart 'bare))"
+        "  (bare () nil))"),
+        "\"#<RESTART BARE>\"");
+}
+
+TEST(lisp_restart_test_filters_find)
+{
+    /* :test controls applicability for find-restart / compute-restarts */
+    ASSERT_STR_EQ(eval_print(
+        "(restart-case (if (find-restart 'r) :found :not-found)"
+        "  (r () :test (lambda (c) (declare (ignore c)) nil) nil))"),
+        ":NOT-FOUND");
+    ASSERT_STR_EQ(eval_print(
+        "(restart-case (if (find-restart 'r) :found :not-found)"
+        "  (r () :test (lambda (c) (declare (ignore c)) t) nil))"),
+        ":FOUND");
+}
+
+TEST(lisp_invoke_restart_interactively)
+{
+    /* invoke-restart-interactively uses the :interactive function to build
+     * the argument list */
+    ASSERT_STR_EQ(eval_print(
+        "(restart-case (invoke-restart-interactively (find-restart 'add))"
+        "  (add (a b) :interactive (lambda () (list 3 4)) (+ a b)))"),
+        "7");
+}
+
 TEST(lisp_restart_case_with_handler)
 {
     /* handler-case + restart-case interaction:
@@ -858,6 +973,15 @@ int main(void)
     RUN(lisp_find_restart);
     RUN(lisp_find_restart_missing);
     RUN(lisp_compute_restarts);
+    RUN(lisp_restart_is_first_class_object);
+    RUN(lisp_restart_name);
+    RUN(lisp_compute_restarts_returns_objects);
+    RUN(lisp_invoke_restart_by_object);
+    RUN(lisp_restart_report_string);
+    RUN(lisp_restart_report_function);
+    RUN(lisp_restart_no_report_princ);
+    RUN(lisp_restart_test_filters_find);
+    RUN(lisp_invoke_restart_interactively);
     RUN(lisp_restart_case_with_handler);
     RUN(lisp_with_simple_restart);
     RUN(lisp_with_simple_restart_normal);

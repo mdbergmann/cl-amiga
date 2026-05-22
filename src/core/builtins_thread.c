@@ -158,9 +158,16 @@ static void *thread_entry(void *arg)
             t->nlx_top++;
 
             if (t->restart_top < CL_MAX_RESTART_BINDINGS) {
-                t->restart_stack[t->restart_top].name = SYM_ABORT;
-                t->restart_stack[t->restart_top].handler = abort_handler;
-                t->restart_stack[t->restart_top].tag = abort_tag;
+                CL_Obj abort_restart =
+                    cl_make_restart(SYM_ABORT, abort_handler, CL_NIL,
+                                    CL_NIL, CL_NIL, abort_tag);
+                {
+                    CL_Restart *rp = (CL_Restart *)CL_OBJ_TO_PTR(abort_restart);
+                    t->restart_stack[t->restart_top].name    = rp->name;
+                    t->restart_stack[t->restart_top].handler = rp->function;
+                    t->restart_stack[t->restart_top].tag     = rp->tag;
+                    t->restart_stack[t->restart_top].restart = abort_restart;
+                }
                 my_restart_idx = t->restart_top;
                 t->restart_top++;
             }

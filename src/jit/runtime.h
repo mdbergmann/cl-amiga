@@ -349,7 +349,8 @@ CL_Obj cl_jit_runtime_amiga_call(CL_Obj base_sym, int32_t offset,
  * cache-flushes before the JSR, same as OP_DYNBIND. */
 void cl_jit_runtime_handler_push(CL_Obj type_sym, CL_Obj handler);
 void cl_jit_runtime_handler_pop(uint32_t count);
-void cl_jit_runtime_restart_push(CL_Obj name_sym, CL_Obj handler, CL_Obj tag);
+void cl_jit_runtime_restart_push(CL_Obj name_sym, CL_Obj handler, CL_Obj report,
+                                 CL_Obj interactive, CL_Obj test, CL_Obj tag);
 void cl_jit_runtime_restart_pop(uint32_t count);
 
 /* OP_TAGBODY_PUSH / OP_TAGBODY_POP / OP_TAGBODY_GO.  Same JIT-inline-

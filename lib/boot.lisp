@@ -822,12 +822,20 @@
   `(handler-case (progn ,@body)
      (error (c) (values nil c))))
 
-;; with-simple-restart — establish a named restart that returns (values nil t)
+;; with-simple-restart — establish a named restart that returns (values nil t).
+;; Per CLHS the spec is (name format-control format-argument*); format-control
+;; is a format control evaluated at print time, so the restart's :report must
+;; be a function (a bare symbol/variable there would be read as a function
+;; name) that formats the control with its arguments.
 (defmacro with-simple-restart (restart-spec &rest body)
   (let ((name (car restart-spec))
-        (format-control (cadr restart-spec)))
+        (format-control (cadr restart-spec))
+        (format-args (cddr restart-spec))
+        (s (gensym "STREAM")))
     `(restart-case (progn ,@body)
-       (,name () :report ,format-control (values nil t)))))
+       (,name ()
+         :report (lambda (,s) (format ,s ,format-control ,@format-args))
+         (values nil t)))))
 
 ;; restart-bind — like restart-case but the body is *not* wrapped in a
 ;; non-local exit; if a restart handler is invoked it is called as a regular
@@ -838,10 +846,13 @@
   (declare (ignore bindings))
   `(progn ,@body))
 
-;; cerror — continuable error: establish CONTINUE restart around error
+;; cerror — continuable error: establish CONTINUE restart around error.
+;; The CONTINUE restart's report formats format-control with args at print
+;; time, so it must be a report function (a bare variable would be read as a
+;; function name by restart-case).
 (defun cerror (format-control datum &rest args)
   (restart-case (apply #'error datum args)
-    (continue () :report format-control nil)))
+    (continue () :report (lambda (s) (apply #'format s format-control args)) nil)))
 
 ;; %set-condition-default-initargs — stub (default initargs not yet used)
 (defun %set-condition-default-initargs (name initargs)

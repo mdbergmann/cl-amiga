@@ -98,6 +98,7 @@ typedef struct {
     CL_Obj name;        /* Restart name symbol (ABORT, CONTINUE, etc.) or NIL */
     CL_Obj handler;     /* Closure to invoke */
     CL_Obj tag;         /* Internal catch tag for transfer of control */
+    CL_Obj restart;     /* First-class restart object (TYPE_RESTART) */
 } CL_RestartBinding;
 
 #define CL_MAX_RESTART_BINDINGS 64

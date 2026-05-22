@@ -2557,15 +2557,32 @@ static CL_Obj cl_vm_run(int base_fp, int base_nlx)
         VM_CASE(OP_RESTART_PUSH): {
             uint16_t idx = read_u16(code, &ip);
             CL_Obj name_sym = constants[idx];
+            /* compile_restart_case pushes: handler, report, interactive,
+             * test, tag — pop in reverse. */
             CL_Obj tag = cl_vm_pop();
+            CL_Obj test = cl_vm_pop();
+            CL_Obj interactive = cl_vm_pop();
+            CL_Obj report = cl_vm_pop();
             CL_Obj handler = cl_vm_pop();
+            CL_Obj restart;
 
             if (cl_restart_top >= CL_MAX_RESTART_BINDINGS)
                 cl_error(CL_ERR_OVERFLOW, "Restart stack overflow");
 
-            cl_restart_stack[cl_restart_top].name = name_sym;
-            cl_restart_stack[cl_restart_top].handler = handler;
-            cl_restart_stack[cl_restart_top].tag = tag;
+            /* Build the first-class restart object.  cl_make_restart
+             * GC-protects its own parameter copies, but the caller's C
+             * locals (handler, tag, name_sym) are not registered and may
+             * be stale after compaction.  Read canonical values back from
+             * the newly allocated object. */
+            restart = cl_make_restart(name_sym, handler, report,
+                                      interactive, test, tag);
+            {
+                CL_Restart *rp = (CL_Restart *)CL_OBJ_TO_PTR(restart);
+                cl_restart_stack[cl_restart_top].name    = rp->name;
+                cl_restart_stack[cl_restart_top].handler = rp->function;
+                cl_restart_stack[cl_restart_top].tag     = rp->tag;
+                cl_restart_stack[cl_restart_top].restart = restart;
+            }
             cl_restart_top++;
             VM_BREAK;
         }

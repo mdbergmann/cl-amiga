@@ -2231,11 +2231,15 @@ static int walker_compile(const CL_Bytecode *bc, CodeBuf *cb)
 
         case OP_RESTART_PUSH: {
             /* u16 const idx → name-symbol literal baked in.  Operand
-             * stack on entry: TOS = tag, second = handler closure.  VM
-             * pops tag then handler, so we mirror that here.  Helper
-             * signature is (name_sym, handler, tag) — C-ABI order:
-             * name at (a7), handler at 4(a7), tag at 8(a7) after JSR.
-             * Helper may cl_error on overflow → cache_flush. */
+             * stack on entry (compiler pushes handler, report,
+             * interactive, test, tag), so after a full flush:
+             *   (a7)=tag 4=test 8=interactive 12=report 16=handler.
+             * Six-arg helper (name, handler, report, interactive, test,
+             * tag): capture A7 in A0 (à la OP_ASET) and push from
+             * disp(a0) so the C args land at (a7)..20(a7) after JSR.
+             * The helper builds the first-class restart object (allocates)
+             * and may cl_error on overflow — both reachable via the
+             * conservative m68k-stack scan after the flush. */
             uint16_t idx;
             CL_Obj name_sym;
             uint32_t helper = (uint32_t)(uintptr_t)&cl_jit_runtime_restart_push;
@@ -2245,14 +2249,17 @@ static int walker_compile(const CL_Bytecode *bc, CodeBuf *cb)
             if (idx >= bc->n_constants || bc->constants == NULL) goto fail;
             name_sym = bc->constants[idx];
 
-            cache_pop_to_dn(cb, &cache_head, &cache_depth, REG_D1);    /* tag */
-            cache_pop_to_dn(cb, &cache_head, &cache_depth, REG_D0);    /* handler */
             cache_flush(cb, &cache_head, &cache_depth);
-            m68k_emit_move_l_dn_predec_an(cb, REG_D1, REG_A7);          /* push tag */
-            m68k_emit_move_l_dn_predec_an(cb, REG_D0, REG_A7);          /* push handler */
+            m68k_emit_move_l_an_to_am(cb, REG_A7, REG_A0);            /* A0 = operand_top */
+            m68k_emit_move_l_disp_an_predec_am(cb, 0, REG_A0, REG_A7);  /* push tag */
+            m68k_emit_move_l_disp_an_predec_am(cb, 4, REG_A0, REG_A7);  /* push test */
+            m68k_emit_move_l_disp_an_predec_am(cb, 8, REG_A0, REG_A7);  /* push interactive */
+            m68k_emit_move_l_disp_an_predec_am(cb, 12, REG_A0, REG_A7); /* push report */
+            m68k_emit_move_l_disp_an_predec_am(cb, 16, REG_A0, REG_A7); /* push handler */
             m68k_emit_move_l_imm32_predec(cb, (uint32_t)name_sym, REG_A7); /* push name */
             m68k_emit_jsr_abs_l(cb, helper);
-            m68k_emit_addq_l_an(cb, 12, REG_A7);
+            /* Drop 24 C-arg bytes + 20 operand-slot bytes = 44 bytes. */
+            m68k_emit_lea_disp_an_to_am(cb, 44, REG_A7, REG_A7);
             break;
         }
 

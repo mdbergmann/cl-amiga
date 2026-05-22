@@ -1276,6 +1276,32 @@
 (check "with-simple-restart normal" 42 (with-simple-restart (abort "Abort") 42))
 (check "cerror continue" :after (handler-bind ((error (lambda (c) (invoke-restart 'continue)))) (cerror "Continue" "bad") :after))
 
+; --- first-class restart objects (CLHS 9.1) ---
+(check "find-restart returns restart object" t (restart-case (typep (find-restart 'foo) 'restart) (foo () nil)))
+(check "find-restart not a symbol" nil (restart-case (symbolp (find-restart 'foo)) (foo () nil)))
+(check "restart type-of" 'restart (restart-case (type-of (find-restart 'foo)) (foo () nil)))
+(check "restart-name" 'my-restart (restart-case (restart-name (find-restart 'my-restart)) (my-restart () nil)))
+(check "compute-restarts names innermost first" '(inner outer)
+       (restart-case (restart-case (mapcar #'restart-name (compute-restarts)) (inner () nil)) (outer () nil)))
+(check "compute-restarts all objects" t
+       (restart-case (every (lambda (r) (typep r 'restart)) (compute-restarts)) (a () nil) (b () nil)))
+(check "invoke-restart by object" 42 (restart-case (invoke-restart (find-restart 'doit) 21) (doit (x) (* x 2))))
+(check "restart princ report string" "Do the foo thing"
+       (restart-case (princ-to-string (find-restart 'foo)) (foo () :report "Do the foo thing" nil)))
+(check "restart prin1 escaped" "#<RESTART FOO>"
+       (restart-case (prin1-to-string (find-restart 'foo)) (foo () :report "Do the foo thing" nil)))
+(check "restart report function" "computed 3"
+       (restart-case (princ-to-string (find-restart 'foo))
+         (foo () :report (lambda (s) (format s "computed ~D" (+ 1 2))) nil)))
+(check "restart no report falls back" "#<RESTART BARE>"
+       (restart-case (princ-to-string (find-restart 'bare)) (bare () nil)))
+(check "restart :test hides" :not-found
+       (restart-case (if (find-restart 'r) :found :not-found)
+         (r () :test (lambda (c) (declare (ignore c)) nil) nil)))
+(check "invoke-restart-interactively" 7
+       (restart-case (invoke-restart-interactively (find-restart 'add))
+         (add (a b) :interactive (lambda () (list 3 4)) (+ a b))))
+
 ; --- define-condition ---
 (check "define-condition basic" 'my-error (define-condition my-error (error) ()))
 (check "define-condition conditionp" t (conditionp (make-condition 'my-error)))

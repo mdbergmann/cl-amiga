@@ -1069,9 +1069,16 @@ static CL_Obj bi_warn(CL_Obj *args, int n)
 
         /* Push muffle-warning restart */
         if (cl_restart_top < CL_MAX_RESTART_BINDINGS) {
-            cl_restart_stack[cl_restart_top].name = SYM_MUFFLE_WARNING;
-            cl_restart_stack[cl_restart_top].handler = get_muffle_handler();
-            cl_restart_stack[cl_restart_top].tag = tag;
+            CL_Obj mw_handler = get_muffle_handler();
+            CL_Obj mw_restart = cl_make_restart(SYM_MUFFLE_WARNING, mw_handler,
+                                                CL_NIL, CL_NIL, CL_NIL, tag);
+            {
+                CL_Restart *rp = (CL_Restart *)CL_OBJ_TO_PTR(mw_restart);
+                cl_restart_stack[cl_restart_top].name    = rp->name;
+                cl_restart_stack[cl_restart_top].handler = rp->function;
+                cl_restart_stack[cl_restart_top].tag     = rp->tag;
+                cl_restart_stack[cl_restart_top].restart = mw_restart;
+            }
             cl_restart_top++;
         }
 
@@ -1181,58 +1188,151 @@ void cl_throw_to_tag(CL_Obj tag, CL_Obj value)
     cl_error(CL_ERR_GENERAL, "INVOKE-RESTART: no catch for restart tag");
 }
 
-/* (invoke-restart restart-name &rest args) */
-static CL_Obj bi_invoke_restart(CL_Obj *args, int n)
+/* Locate the binding for a restart designator (a restart object — matched by
+ * identity — or a restart name symbol — innermost match wins).  Searches
+ * top-down respecting the floor.  Returns the binding index or -1. */
+static int find_restart_binding(CL_Obj designator)
 {
-    CL_Obj name = args[0];
     int i;
-
-    /* Search restart stack top-down (respecting floor) */
+    int by_object = CL_RESTART_P(designator);
     for (i = cl_restart_top - 1; i >= cl_restart_floor; i--) {
-        if (cl_restart_stack[i].name == name) {
-            /* Call the restart handler closure with remaining args */
-            CL_Obj result = cl_vm_apply(cl_restart_stack[i].handler,
-                                         args + 1, n - 1);
-            /* Throw result to the restart's catch tag */
-            cl_throw_to_tag(cl_restart_stack[i].tag, result);
-            return CL_NIL; /* unreachable */
+        if (by_object) {
+            if (cl_restart_stack[i].restart == designator)
+                return i;
+        } else if (cl_restart_stack[i].name == designator) {
+            return i;
         }
     }
-    cl_error(CL_ERR_GENERAL, "Restart %s not found",
-             CL_SYMBOL_P(name) ? cl_symbol_name(name) : "?");
-    return CL_NIL;
+    return -1;
 }
 
-/* (find-restart name &optional condition) — return restart name if found, NIL if not
-   CL spec says return a restart object; we return the restart's name symbol,
-   which invoke-restart also accepts as a designator. */
+/* Is the restart at binding i applicable to condition?  Consults the
+ * restart's :test function (called with the condition, possibly NIL). */
+static int restart_applicable(int i, CL_Obj condition)
+{
+    CL_Obj robj = cl_restart_stack[i].restart;
+    CL_Obj test, targs[1], r;
+    if (!CL_RESTART_P(robj))
+        return 1;
+    test = ((CL_Restart *)CL_OBJ_TO_PTR(robj))->test;
+    if (CL_NULL_P(test))
+        return 1;
+    targs[0] = condition;
+    r = cl_vm_apply(test, targs, 1);
+    return !CL_NULL_P(r);
+}
+
+/* Invoke the restart at binding i with call_args, transferring control to
+ * its catch tag.  Does not return. */
+static CL_Obj invoke_restart_at_binding(int i, CL_Obj *call_args, int n_call)
+{
+    CL_Obj result = cl_vm_apply(cl_restart_stack[i].handler, call_args, n_call);
+    /* restart_stack lives in the (GC-rooted) thread struct, so .tag is
+     * still valid even if cl_vm_apply compacted the heap. */
+    cl_throw_to_tag(cl_restart_stack[i].tag, result);
+    return CL_NIL; /* unreachable */
+}
+
+/* (invoke-restart restart-designator &rest args) */
+static CL_Obj bi_invoke_restart(CL_Obj *args, int n)
+{
+    int i = find_restart_binding(args[0]);
+    if (i < 0) {
+        char buf[64];
+        cl_prin1_to_string(args[0], buf, sizeof(buf));
+        cl_error(CL_ERR_GENERAL, "INVOKE-RESTART: restart %s not found", buf);
+    }
+    return invoke_restart_at_binding(i, args + 1, n - 1);
+}
+
+/* (invoke-restart-interactively restart-designator) — call the restart's
+ * :interactive function (if any) to obtain the argument list, then invoke. */
+static CL_Obj bi_invoke_restart_interactively(CL_Obj *args, int n)
+{
+    int i = find_restart_binding(args[0]);
+    CL_Obj interactive, arglist = CL_NIL;
+    CL_Obj call_args[16];
+    int n_call = 0;
+    CL_UNUSED(n);
+
+    if (i < 0) {
+        char buf[64];
+        cl_prin1_to_string(args[0], buf, sizeof(buf));
+        cl_error(CL_ERR_GENERAL,
+                 "INVOKE-RESTART-INTERACTIVELY: restart %s not found", buf);
+    }
+
+    interactive = ((CL_Restart *)CL_OBJ_TO_PTR(cl_restart_stack[i].restart))
+                      ->interactive;
+    if (!CL_NULL_P(interactive)) {
+        CL_Obj tmp;
+        arglist = cl_vm_apply(interactive, NULL, 0);
+        CL_GC_PROTECT(arglist);
+        for (tmp = arglist; !CL_NULL_P(tmp) && n_call < 16; tmp = cl_cdr(tmp))
+            call_args[n_call++] = cl_car(tmp);
+        CL_GC_UNPROTECT(1);
+        /* find_restart_binding again — heap may have compacted, but indices
+         * into the GC-rooted restart_stack remain valid; nothing was popped. */
+    }
+    return invoke_restart_at_binding(i, call_args, n_call);
+}
+
+/* (find-restart identifier &optional condition) — return the innermost
+ * applicable restart object matching identifier (a restart object or a
+ * restart name), or NIL. */
 static CL_Obj bi_find_restart(CL_Obj *args, int n)
 {
-    CL_Obj name = args[0];
+    CL_Obj condition = (n >= 2) ? args[1] : CL_NIL;
+    int by_object = CL_RESTART_P(args[0]);
+    CL_Obj found = CL_NIL;
     int i;
-    CL_UNUSED(n);
 
+    CL_GC_PROTECT(condition);
     for (i = cl_restart_top - 1; i >= cl_restart_floor; i--) {
-        if (cl_restart_stack[i].name == name)
-            return name;
-    }
-    return CL_NIL;
-}
-
-/* (compute-restarts &optional condition) — return list of restart name symbols */
-static CL_Obj bi_compute_restarts(CL_Obj *args, int n)
-{
-    CL_Obj result = CL_NIL;
-    int i;
-    CL_UNUSED(args);
-    CL_UNUSED(n);
-
-    CL_GC_PROTECT(result);
-    for (i = cl_restart_floor; i < cl_restart_top; i++) {
-        result = cl_cons(cl_restart_stack[i].name, result);
+        if (by_object) {
+            /* CLHS: condition filter applies even when identifier is a restart
+             * object, so consult restart_applicable. */
+            if (cl_restart_stack[i].restart == args[0] &&
+                restart_applicable(i, condition)) {
+                found = cl_restart_stack[i].restart;
+                break;
+            }
+        } else if (cl_restart_stack[i].name == args[0] &&
+                   restart_applicable(i, condition)) {
+            found = cl_restart_stack[i].restart;
+            break;
+        }
     }
     CL_GC_UNPROTECT(1);
+    return found;
+}
+
+/* (compute-restarts &optional condition) — return list of applicable restart
+ * objects, innermost first. */
+static CL_Obj bi_compute_restarts(CL_Obj *args, int n)
+{
+    CL_Obj condition = (n >= 1) ? args[0] : CL_NIL;
+    CL_Obj result = CL_NIL;
+    int i;
+
+    CL_GC_PROTECT(condition);
+    CL_GC_PROTECT(result);
+    /* Iterate floor..top so that consing produces innermost-first order. */
+    for (i = cl_restart_floor; i < cl_restart_top; i++) {
+        if (restart_applicable(i, condition))
+            result = cl_cons(cl_restart_stack[i].restart, result);
+    }
+    CL_GC_UNPROTECT(2);
     return result;
+}
+
+/* (restart-name restart) — return the restart's name symbol (or NIL). */
+static CL_Obj bi_restart_name(CL_Obj *args, int n)
+{
+    CL_UNUSED(n);
+    if (!CL_RESTART_P(args[0]))
+        cl_error(CL_ERR_TYPE, "RESTART-NAME: argument is not a restart");
+    return ((CL_Restart *)CL_OBJ_TO_PTR(args[0]))->name;
 }
 
 /* (abort &optional condition) */
@@ -1310,8 +1410,10 @@ void cl_builtins_condition_init(void)
 
     /* Restarts */
     defun("INVOKE-RESTART", bi_invoke_restart, 1, -1);
+    defun("INVOKE-RESTART-INTERACTIVELY", bi_invoke_restart_interactively, 1, 1);
     defun("FIND-RESTART", bi_find_restart, 1, 2);
     defun("COMPUTE-RESTARTS", bi_compute_restarts, 0, 1);
+    defun("RESTART-NAME", bi_restart_name, 1, 1);
     defun("ABORT", bi_abort, 0, 1);
     defun("CONTINUE", bi_continue_restart, 0, 1);
     defun("MUFFLE-WARNING", bi_muffle_warning, 0, 1);

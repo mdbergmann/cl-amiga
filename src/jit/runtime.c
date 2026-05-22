@@ -1385,13 +1385,20 @@ void cl_jit_runtime_handler_pop(uint32_t count)
     if (cl_handler_top < 0) cl_handler_top = 0;
 }
 
-void cl_jit_runtime_restart_push(CL_Obj name_sym, CL_Obj handler, CL_Obj tag)
+void cl_jit_runtime_restart_push(CL_Obj name_sym, CL_Obj handler, CL_Obj report,
+                                 CL_Obj interactive, CL_Obj test, CL_Obj tag)
 {
+    CL_Obj restart;
     if (cl_restart_top >= CL_MAX_RESTART_BINDINGS)
         cl_error(CL_ERR_OVERFLOW, "Restart stack overflow");
+    /* The five operands live on the JIT'd frame's m68k stack (the walker
+     * flushed the cache before the JSR), so they're reachable through the
+     * conservative native-stack scan; cl_make_restart also protects them. */
+    restart = cl_make_restart(name_sym, handler, report, interactive, test, tag);
     cl_restart_stack[cl_restart_top].name = name_sym;
     cl_restart_stack[cl_restart_top].handler = handler;
     cl_restart_stack[cl_restart_top].tag = tag;
+    cl_restart_stack[cl_restart_top].restart = restart;
     cl_restart_top++;
 }
 
