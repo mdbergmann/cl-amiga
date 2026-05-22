@@ -415,6 +415,23 @@
 (check "tagbody fixnum tags" 42 (let ((x 0)) (tagbody (go 2) 1 (setq x 99) 2 (setq x 42)) x))
 (check "tagbody go from if" 3 (let ((x 0)) (tagbody start (setq x (+ x 1)) (if (< x 3) (go start))) x))
 
+; --- Regression: GO / RETURN-FROM through a macro-hidden closure ---
+; A user macro that wraps its body in a closure (e.g. (tb-in-lambda ...) ->
+; (funcall (lambda () ...))) hides the lambda from the compiler's
+; NLX-detection scan.  The scan must macroexpand to see the closure and
+; promote the enclosing tagbody/block to the NLX path, else GO/RETURN-FROM
+; inside the closure can't reach its tag.  (Pervasive idiom in SLY.)
+(defmacro tb-in-lambda (&body body) `(funcall (lambda () ,@body)))
+(defmacro tb-just-progn (&body body) `(progn ,@body))
+(check "go through macro closure" 3
+  (let ((i 0)) (tagbody start (setq i (+ i 1)) (tb-in-lambda (if (< i 3) (go start)))) i))
+(check "return-from through macro closure" 42
+  (block blk (tb-in-lambda (return-from blk 42)) 99))
+(check "return through macro closure anon" 7
+  (block nil (tb-in-lambda (return 7)) 99))
+(check "macro non-closure keeps local go" 4
+  (let ((i 0)) (tagbody start (setq i (+ i 1)) (tb-just-progn (if (< i 4) (go start)))) i))
+
 ; --- Phase 4 Tier 2: catch/throw ---
 (check "catch basic" 42 (catch 'done (throw 'done 42)))
 (check "catch normal" 3 (catch 'done (+ 1 2)))

@@ -2045,6 +2045,62 @@ TEST(eval_tagbody_nlx_dispatch_stack_balance)
         "((:HDR A B) 1 2 3)");
 }
 
+TEST(eval_tagbody_go_through_macro_closure)
+{
+    /* Regression: a user macro that wraps its body in a closure
+       (e.g. `(in-lambda ...)` -> `(funcall (lambda () ...))`) hides the
+       lambda from the compiler's NLX-detection scan, which scans the
+       *unexpanded* source.  The enclosing tagbody was then wrongly
+       compiled with local jumps, so a `(go start)` inside the
+       macro-generated closure could not reach its tag ("GO: no tag named
+       START").  Fix: the NLX scanners macroexpand macro calls before
+       deciding.  This idiom is pervasive in SLY (with-connection, etc.). */
+    eval_print("(defmacro in-lambda (&body body) "
+               "  `(funcall (lambda () ,@body)))");
+    /* go across one macro-hidden closure */
+    ASSERT_EQ_INT(eval_int(
+        "(let ((i 0)) (tagbody start (incf i) "
+        "   (in-lambda (when (< i 3) (go start)))) i)"), 3);
+    /* go across two nested macro-hidden closures */
+    eval_print("(defmacro twice-wrapped (&body body) "
+               "  `(in-lambda (in-lambda ,@body)))");
+    ASSERT_EQ_INT(eval_int(
+        "(let ((i 0)) (tagbody start (incf i) "
+        "   (twice-wrapped (when (< i 5) (go start)))) i)"), 5);
+}
+
+TEST(eval_block_return_through_macro_closure)
+{
+    /* Same root cause as eval_tagbody_go_through_macro_closure, for
+       RETURN-FROM: a macro-hidden lambda must promote the enclosing block
+       to the NLX path so RETURN-FROM can unwind out of the closure. */
+    eval_print("(defmacro in-lambda (&body body) "
+               "  `(funcall (lambda () ,@body)))");
+    /* named block */
+    ASSERT_EQ_INT(eval_int(
+        "(block blk (in-lambda (return-from blk 42)) 99)"), 42);
+    /* anonymous block via bare (return ...) */
+    ASSERT_EQ_INT(eval_int(
+        "(block nil (in-lambda (return 7)) 99)"), 7);
+    /* SLY-style: macro named like with-connection wrapping the body */
+    eval_print("(defmacro with-conn (&body body) "
+               "  `(funcall (lambda () ,@body)))");
+    ASSERT_STR_EQ(eval_print(
+        "(block done (with-conn (when t (return-from done :ok))) :nope)"),
+        ":OK");
+}
+
+TEST(eval_macro_non_closure_keeps_local_go)
+{
+    /* A macro that does NOT introduce a closure must still leave the
+       tagbody on the fast local-jump path (the macro-aware scan expands
+       it, sees no closure form, and does not promote to NLX). */
+    eval_print("(defmacro just-progn (&body body) `(progn ,@body))");
+    ASSERT_EQ_INT(eval_int(
+        "(let ((i 0)) (tagbody start (incf i) "
+        "   (just-progn (when (< i 4) (go start)))) i)"), 4);
+}
+
 /* --- Phase 4 Tier 2: catch/throw --- */
 
 TEST(eval_catch_basic)
@@ -8863,6 +8919,9 @@ int main(void)
     RUN(eval_tagbody_go_from_if);
     RUN(eval_tagbody_local_named_lambda);
     RUN(eval_tagbody_nlx_dispatch_stack_balance);
+    RUN(eval_tagbody_go_through_macro_closure);
+    RUN(eval_block_return_through_macro_closure);
+    RUN(eval_macro_non_closure_keeps_local_go);
     RUN(eval_catch_basic);
     RUN(eval_catch_normal);
     RUN(eval_catch_throw_across_call);

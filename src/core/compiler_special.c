@@ -355,95 +355,345 @@ void compile_destructuring_bind(CL_Compiler *c, CL_Obj form)
 
 /* --- Block / Return --- */
 
-/* Check if an S-expression tree contains closure-creating forms
- * (lambda, labels, flet). Used to decide if a block/tagbody needs NLX
- * for cross-closure return-from/go support. */
+/* The NLX-detection scanners below decide whether a BLOCK/TAGBODY must be
+ * compiled with a non-local-exit frame (so a RETURN-FROM/GO from inside a
+ * nested closure can longjmp out) instead of a cheap local jump.  The
+ * decision is made by scanning the *source* body for closure forms and
+ * RETURN-FROM/GO references.
+ *
+ * Crucially, a user macro can hide a closure: `(in-lambda (go start))`
+ * expands to `(funcall (lambda () (go start)))`.  Scanning only the
+ * unexpanded source misses the lambda, the block/tagbody is wrongly
+ * compiled with local jumps, and the GO/RETURN-FROM inside the expanded
+ * closure can't reach its tag ("GO: no tag named ..."). This idiom — a
+ * macro wrapping its body in a closure — is pervasive (e.g. SLY's
+ * with-connection, without-sly-interrupts).  So the scanners macroexpand
+ * macro calls before recursing, mirroring scan_body_for_boxing(). */
+
+static int scan_nlx_macro_depth = 0;
+#define SCAN_NLX_MACRO_MAX_DEPTH 50
+
+/* Macroexpand FORM once for NLX-detection scanning, with full VM/compiler
+ * state save+restore so a side-effecting or failing expander cannot corrupt
+ * compiler state.  Returns the expansion, or FORM unchanged when its head is
+ * not a macro, expansion failed, or the macro-chain depth cap was hit.
+ * Mirrors the macro-expansion guard in scan_body_for_boxing(). */
+static CL_Obj scan_nlx_macroexpand_1(CL_Obj form)
+{
+    CL_Obj head, expanded;
+    int saved_sp, saved_fp, saved_dyn, saved_nlx, saved_handler,
+        saved_restart, saved_debugger, saved_gc_roots;
+
+    if (!CL_CONS_P(form)) return form;
+    head = cl_car(form);
+    if (!CL_SYMBOL_P(head) || !cl_macro_p(head)) return form;
+    if (scan_nlx_macro_depth >= SCAN_NLX_MACRO_MAX_DEPTH) return form;
+
+    saved_sp = cl_vm.sp;
+    saved_fp = cl_vm.fp;
+    saved_dyn = cl_dyn_top;
+    saved_nlx = cl_nlx_top;
+    saved_handler = cl_handler_top;
+    saved_restart = cl_restart_top;
+    saved_debugger = cl_debugger_enabled;
+    saved_gc_roots = gc_root_count;
+    cl_debugger_enabled = 0;  /* Suppress debugger during expansion */
+    expanded = form;
+
+    scan_nlx_macro_depth++;
+    {
+        int err; CL_CATCH(err);
+        if (err == 0) {
+            CL_Obj scan_env = CL_NIL;
+            if (cl_active_compiler)
+                scan_env = cl_build_lex_env(cl_active_compiler->env);
+            expanded = cl_macroexpand_1_env(form, scan_env);
+            CL_UNCATCH();
+        } else {
+            /* Expansion errored: restore state and treat form as opaque. */
+            CL_UNCATCH();
+            cl_vm.sp = saved_sp;
+            cl_vm.fp = saved_fp;
+            cl_dynbind_restore_to(saved_dyn);
+            cl_nlx_top = saved_nlx;
+            gc_root_count = saved_gc_roots;
+            expanded = form;
+        }
+    }
+    cl_debugger_enabled = saved_debugger;
+    cl_handler_top = saved_handler;
+    cl_restart_top = saved_restart;
+    scan_nlx_macro_depth--;
+    return expanded;
+}
+
+/* Recursion-depth cap for the NLX walker — guards against C-stack overflow
+ * from pathologically nested forms (mirrors scan_body_for_boxing). */
+static int scan_nlx_recurse_depth = 0;
+#define SCAN_NLX_MAX_RECURSE_DEPTH 500
+
+/* NLX walker modes:
+ *   NLX_ANY_CLOSURE — true if the body contains any closure form
+ *                     (lambda/flet/labels/restart-case).  Used for TAGBODY
+ *                     and the coarse anonymous-BLOCK check.
+ *   NLX_FIND_RF     — true if (return-from <tag> ...) (or bare (return) when
+ *                     anonymous) appears anywhere.  Used to test a closure's
+ *                     subtree.
+ *   NLX_BLOCK       — true if a closure or unwind-protect form contains a
+ *                     matching return-from (named block), or any closure /
+ *                     uwp-with-(return) exists (anonymous block). */
+enum { NLX_ANY_CLOSURE, NLX_FIND_RF, NLX_BLOCK };
+
+static int nlx_scan(CL_Obj form, int mode, CL_Obj tag, int anon);
+
+/* Walk a list of body forms — all in code (evaluated) position. */
+static int nlx_scan_body(CL_Obj body, int mode, CL_Obj tag, int anon)
+{
+    while (CL_CONS_P(body)) {
+        if (nlx_scan(cl_car(body), mode, tag, anon))
+            return 1;
+        body = cl_cdr(body);
+    }
+    return 0;
+}
+
+/* Walk a quasiquote template, descending only into unquoted (evaluated)
+ * subforms — the rest is data.  Mirrors scan_qq_for_boxing(). */
+static int nlx_scan_qq(CL_Obj tmpl, int mode, CL_Obj tag, int anon)
+{
+    if (CL_VECTOR_P(tmpl)) {
+        CL_Vector *v = (CL_Vector *)CL_OBJ_TO_PTR(tmpl);
+        uint32_t i, n = cl_vector_active_length(v);
+        CL_Obj *data = cl_vector_data(v);
+        for (i = 0; i < n; i++)
+            if (nlx_scan_qq(data[i], mode, tag, anon)) return 1;
+        return 0;
+    }
+    if (!CL_CONS_P(tmpl)) return 0;
+    if (cl_car(tmpl) == SYM_UNQUOTE || cl_car(tmpl) == SYM_UNQUOTE_SPLICING)
+        return nlx_scan(cl_car(cl_cdr(tmpl)), mode, tag, anon);
+    if (cl_car(tmpl) == SYM_QUASIQUOTE) return 0;  /* deeper nesting: data */
+    {
+        CL_Obj cur = tmpl;
+        while (CL_CONS_P(cur)) {
+            if (nlx_scan_qq(cl_car(cur), mode, tag, anon)) return 1;
+            cur = cl_cdr(cur);
+        }
+    }
+    return 0;
+}
+
+/* Single-form NLX walker.  Sees through user macros (a macro can hide a
+ * closure or a return-from), and — like scan_body_for_boxing — descends
+ * only into CODE positions, skipping binding names, lambda lists,
+ * destructuring patterns, case keys, declarations and quoted data so it
+ * never macroexpands a symbol that merely names a macro in a non-code slot
+ * (e.g. a destructuring-bind pattern produced by DEFMACRO). */
+static int nlx_scan(CL_Obj form, int mode, CL_Obj tag, int anon)
+{
+    CL_Obj head, rest;
+    int r = 0;
+
+    if (!CL_CONS_P(form)) return 0;
+    if (scan_nlx_recurse_depth >= SCAN_NLX_MAX_RECURSE_DEPTH) return 0;
+    head = cl_car(form);
+    rest = cl_cdr(form);
+
+    /* RETURN-FROM / RETURN detection. */
+    if (mode == NLX_FIND_RF) {
+        if (head == SYM_RETURN_FROM && CL_CONS_P(rest) && cl_car(rest) == tag)
+            return 1;
+        if (anon && head == SYM_RETURN)
+            return 1;
+    }
+
+    /* Closure-creating forms.  Must appear as (OP ...) — a bare symbol
+     * LAMBDA used as a variable does not create a closure. */
+    if (head == SYM_LAMBDA || head == SYM_LABELS || head == SYM_FLET
+        || head == SYM_RESTART_CASE) {
+        if (mode == NLX_ANY_CLOSURE)
+            return 1;
+        if (mode == NLX_BLOCK) {
+            /* Anonymous block promotes on any closure; a named block only
+             * when a matching return-from crosses this closure boundary. */
+            if (anon) return 1;
+            return nlx_scan(form, NLX_FIND_RF, tag, anon);
+        }
+        /* NLX_FIND_RF: fall through to the structural handlers below, which
+         * descend the closure body (skipping its lambda list). */
+    }
+
+    /* (unwind-protect ...) containing a return-from to our tag must force a
+     * named/anonymous BLOCK onto the NLX path: a local OP_JMP would bypass
+     * the unwind-protect's OP_UWPOP + cleanup forms (CLHS: cleanups must run
+     * on any non-local exit). */
+    if (mode == NLX_BLOCK && head == SYM_UNWIND_PROTECT)
+        return nlx_scan(form, NLX_FIND_RF, tag, anon);
+
+    scan_nlx_recurse_depth++;
+
+    /* (quote ...) / (declare ...) / (defmacro ...) — no evaluated code. */
+    if (head == SYM_QUOTE || head == SYM_DECLARE || head == SYM_DEFMACRO)
+        goto done;
+
+    /* (quasiquote tmpl) — scan only unquoted subforms. */
+    if (head == SYM_QUASIQUOTE) {
+        if (CL_CONS_P(rest)) r = nlx_scan_qq(cl_car(rest), mode, tag, anon);
+        goto done;
+    }
+
+    /* (setq/setf place value ...) — scan value forms (places aren't code
+     * that creates closures, and expanding a setf-place macro would be a
+     * spurious side effect). */
+    if (head == SYM_SETQ || head == SYM_SETF) {
+        CL_Obj p = rest;
+        while (CL_CONS_P(p) && CL_CONS_P(cl_cdr(p))) {
+            if (nlx_scan(cl_car(cl_cdr(p)), mode, tag, anon)) { r = 1; goto done; }
+            p = cl_cdr(cl_cdr(p));
+        }
+        goto done;
+    }
+
+    /* (lambda params body...) — skip params. */
+    if (head == SYM_LAMBDA) {
+        if (CL_CONS_P(rest)) r = nlx_scan_body(cl_cdr(rest), mode, tag, anon);
+        goto done;
+    }
+    /* (defun name params body...) — skip name + params. */
+    if (head == SYM_DEFUN) {
+        if (CL_CONS_P(rest) && CL_CONS_P(cl_cdr(rest)))
+            r = nlx_scan_body(cl_cdr(cl_cdr(rest)), mode, tag, anon);
+        goto done;
+    }
+    /* (flet/labels ((name params body...)...) body...) — skip names/params. */
+    if (head == SYM_FLET || head == SYM_LABELS) {
+        CL_Obj defs, body;
+        if (!CL_CONS_P(rest)) goto done;
+        defs = cl_car(rest);
+        body = cl_cdr(rest);
+        while (CL_CONS_P(defs)) {
+            CL_Obj def = cl_car(defs);
+            if (CL_CONS_P(def) && CL_CONS_P(cl_cdr(def)))
+                if (nlx_scan_body(cl_cdr(cl_cdr(def)), mode, tag, anon)) { r = 1; goto done; }
+            defs = cl_cdr(defs);
+        }
+        r = nlx_scan_body(body, mode, tag, anon);
+        goto done;
+    }
+    /* (let/let* ((var value)...) body...) — scan values + body, skip names. */
+    if (head == SYM_LET || head == SYM_LETSTAR) {
+        CL_Obj bindings, body;
+        if (!CL_CONS_P(rest)) goto done;
+        bindings = cl_car(rest);
+        body = cl_cdr(rest);
+        while (CL_CONS_P(bindings)) {
+            CL_Obj clause = cl_car(bindings);
+            if (CL_CONS_P(clause) && CL_CONS_P(cl_cdr(clause)))
+                if (nlx_scan(cl_car(cl_cdr(clause)), mode, tag, anon)) { r = 1; goto done; }
+            bindings = cl_cdr(bindings);
+        }
+        r = nlx_scan_body(body, mode, tag, anon);
+        goto done;
+    }
+    /* (destructuring-bind pattern value body...) — skip pattern. */
+    if (head == SYM_DESTRUCTURING_BIND) {
+        if (!CL_CONS_P(rest) || !CL_CONS_P(cl_cdr(rest))) goto done;
+        if (nlx_scan(cl_car(cl_cdr(rest)), mode, tag, anon)) { r = 1; goto done; }
+        r = nlx_scan_body(cl_cdr(cl_cdr(rest)), mode, tag, anon);
+        goto done;
+    }
+    /* (multiple-value-bind (vars...) value body...) — skip var list. */
+    if (head == SYM_MULTIPLE_VALUE_BIND) {
+        if (!CL_CONS_P(rest) || !CL_CONS_P(cl_cdr(rest))) goto done;
+        if (nlx_scan(cl_car(cl_cdr(rest)), mode, tag, anon)) { r = 1; goto done; }
+        r = nlx_scan_body(cl_cdr(cl_cdr(rest)), mode, tag, anon);
+        goto done;
+    }
+    /* (do/do* ((var init [step])...) (end result...) body...) — skip names. */
+    if (head == SYM_DO || head == SYM_DO_STAR) {
+        CL_Obj clauses, endc, body;
+        if (!CL_CONS_P(rest)) goto done;
+        clauses = cl_car(rest);
+        if (!CL_CONS_P(cl_cdr(rest))) goto done;
+        endc = cl_car(cl_cdr(rest));
+        body = cl_cdr(cl_cdr(rest));
+        while (CL_CONS_P(clauses)) {
+            CL_Obj clause = cl_car(clauses);
+            if (CL_CONS_P(clause) && CL_CONS_P(cl_cdr(clause))) {
+                if (nlx_scan(cl_car(cl_cdr(clause)), mode, tag, anon)) { r = 1; goto done; }
+                if (CL_CONS_P(cl_cdr(cl_cdr(clause))))
+                    if (nlx_scan(cl_car(cl_cdr(cl_cdr(clause))), mode, tag, anon)) { r = 1; goto done; }
+            }
+            clauses = cl_cdr(clauses);
+        }
+        if (CL_CONS_P(endc) && nlx_scan_body(endc, mode, tag, anon)) { r = 1; goto done; }
+        r = nlx_scan_body(body, mode, tag, anon);
+        goto done;
+    }
+    /* (case/typecase keyform (key body...)...) — skip keys. */
+    if (head == SYM_CASE || head == SYM_ECASE ||
+        head == SYM_TYPECASE || head == SYM_ETYPECASE) {
+        CL_Obj clauses;
+        if (!CL_CONS_P(rest)) goto done;
+        if (nlx_scan(cl_car(rest), mode, tag, anon)) { r = 1; goto done; }
+        clauses = cl_cdr(rest);
+        while (CL_CONS_P(clauses)) {
+            CL_Obj clause = cl_car(clauses);
+            if (CL_CONS_P(clause) && nlx_scan_body(cl_cdr(clause), mode, tag, anon)) { r = 1; goto done; }
+            clauses = cl_cdr(clauses);
+        }
+        goto done;
+    }
+    /* (macrolet/symbol-macrolet (bindings) body...) — skip bindings. */
+    if (head == SYM_MACROLET || head == SYM_SYMBOL_MACROLET) {
+        if (CL_CONS_P(rest)) r = nlx_scan_body(cl_cdr(rest), mode, tag, anon);
+        goto done;
+    }
+
+    /* Macro call: expand and scan the expansion.  THIS is what lets us see
+     * a closure or return-from hidden behind a user macro. */
+    if (CL_SYMBOL_P(head) && cl_macro_p(head)) {
+        CL_Obj expanded = scan_nlx_macroexpand_1(form);
+        if (expanded != form) {
+            CL_GC_PROTECT(expanded);
+            r = nlx_scan(expanded, mode, tag, anon);
+            CL_GC_UNPROTECT(1);
+            goto done;
+        }
+    }
+
+    /* General form (function call / other special form): every element is
+     * evaluated code.  (Includes ((lambda ...) args) immediate calls — the
+     * head cons is scanned too.) */
+    {
+        CL_Obj cur = form;
+        while (CL_CONS_P(cur)) {
+            if (nlx_scan(cl_car(cur), mode, tag, anon)) { r = 1; goto done; }
+            cur = cl_cdr(cur);
+        }
+    }
+
+done:
+    scan_nlx_recurse_depth--;
+    return r;
+}
+
+/* Check if BODY contains any closure-creating form (lambda/labels/flet/
+ * restart-case), including ones produced by macro expansion.  Used to decide
+ * if a TAGBODY needs NLX for cross-closure go support. */
 static int tree_has_closure_forms(CL_Obj tree)
 {
-    /* Closure-creating forms must appear as (OP ...) — with LAMBDA/FLET/etc.
-     * in operator position.  A bare symbol such as `LAMBDA` used as a
-     * variable reference (e.g. `(setq lambda X)`) does NOT create a
-     * closure, so we must only inspect cons cells and only check their
-     * head.  Earlier code also matched bare symbols, which spuriously
-     * fired on user variables happening to be named LAMBDA/FLET/etc.,
-     * wrongly promoting a block/tagbody to the NLX path. */
-    while (CL_CONS_P(tree)) {
-        CL_Obj head = cl_car(tree);
-        if (CL_CONS_P(head)) {
-            CL_Obj op = cl_car(head);
-            if (op == SYM_LAMBDA || op == SYM_LABELS || op == SYM_FLET
-                || op == SYM_RESTART_CASE)
-                return 1;
-            if (tree_has_closure_forms(head))
-                return 1;
-        }
-        tree = cl_cdr(tree);
-    }
-    return 0;
+    return nlx_scan_body(tree, NLX_ANY_CLOSURE, CL_NIL, 0);
 }
 
-/* Check if (return-from <tag> ...) appears anywhere in tree.
- * When tag is NIL (anonymous block), bare (return ...) also matches,
- * since (return …) is (return-from nil …). */
-static int tree_contains_return_from(CL_Obj tree, CL_Obj tag)
-{
-    int anonymous = CL_NULL_P(tag);
-    while (CL_CONS_P(tree)) {
-        CL_Obj head = cl_car(tree);
-        if (CL_CONS_P(head)) {
-            CL_Obj op = cl_car(head);
-            if (op == SYM_RETURN_FROM && CL_CONS_P(cl_cdr(head))
-                && cl_car(cl_cdr(head)) == tag)
-                return 1;
-            if (anonymous && op == SYM_RETURN)
-                return 1;
-            if (tree_contains_return_from(head, tag))
-                return 1;
-        }
-        tree = cl_cdr(tree);
-    }
-    return 0;
-}
-
-/* Precise check: does a closure form (lambda/labels/flet) in the tree
- * contain (return-from <tag> ...)?  Only returns true when the block
- * actually needs NLX — i.e. return-from crosses a closure boundary.
- * Falls back to tree_has_closure_forms for NIL tags (anonymous blocks). */
+/* Decide whether a BLOCK must use the NLX path.  A named block needs NLX
+ * only when a matching (return-from <tag> ...) crosses a closure boundary or
+ * sits inside an unwind-protect; an anonymous block (NIL tag) promotes on
+ * any closure too, since a macro-hidden (return ...) cannot be matched
+ * against a specific tag.  All recursion sees through macro expansions. */
 static int tree_needs_nlx_block(CL_Obj body, CL_Obj tag)
 {
-    CL_Obj tree;
-
-    /* Anonymous block: coarse fallback retained — any closure form
-     * promotes to NLX, covering user macros that may expand to
-     * (return ...) which we cannot see pre-expansion. */
-    if (CL_NULL_P(tag) && tree_has_closure_forms(body))
-        return 1;
-
-    tree = body;
-    while (CL_CONS_P(tree)) {
-        CL_Obj head = cl_car(tree);
-        if (CL_CONS_P(head)) {
-            CL_Obj op = cl_car(head);
-            if (op == SYM_LAMBDA || op == SYM_LABELS || op == SYM_FLET
-                || op == SYM_RESTART_CASE) {
-                if (tree_contains_return_from(head, tag))
-                    return 1;
-            }
-            /* (unwind-protect ...) containing a return-from to our tag
-             * must force NLX: otherwise compile_return_from emits an
-             * OP_JMP that bypasses the unwind-protect's OP_UWPOP and
-             * cleanup forms (CLHS violation — cleanups must run on
-             * any non-local exit). */
-            if (op == SYM_UNWIND_PROTECT) {
-                if (tree_contains_return_from(head, tag))
-                    return 1;
-            }
-            if (tree_needs_nlx_block(head, tag))
-                return 1;
-        }
-        tree = cl_cdr(tree);
-    }
-    return 0;
+    return nlx_scan_body(body, NLX_BLOCK, tag, CL_NULL_P(tag));
 }
 
 /* Strip leading declarations from body, then delegate to the
