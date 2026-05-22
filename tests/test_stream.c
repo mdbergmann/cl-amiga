@@ -16,8 +16,10 @@
 #include "core/vm.h"
 #include "core/repl.h"
 #include "core/bignum.h"
+#include "core/thread.h"
 #include "platform/platform.h"
 #include "platform/platform_thread.h"
+#include <stdlib.h>   /* abort() — watchdog escalation on deadlock */
 #include <string.h>
 #include <stdio.h>
 #include <unistd.h>
@@ -1929,6 +1931,235 @@ TEST(socket_concurrent_accept_connect)
     platform_socket_close(listener);
 }
 
+/* ================================================================
+ * Regression: a thread parked in a blocking socket READ must not
+ * block other, independent stream operations.
+ *
+ * The stream layer used to serialise all console/file/socket I/O
+ * through one global mutex held across the blocking read() syscall.
+ * A thread parked in (read-byte socket) therefore wedged every other
+ * stream operation — writing the reply back on the same socket, or
+ * any console output from another thread.  That is the SLY :spawn
+ * round-trip deadlock.  Locks are now split per stream and per
+ * direction (see stream.c), so a parked reader only ever holds that
+ * socket's read lock.
+ *
+ * A watchdog thread aborts with a diagnostic if the main thread's
+ * supposedly independent operation does not complete, turning a
+ * regression into a loud failure instead of an indefinite hang.
+ * ================================================================ */
+
+typedef struct {
+    CL_Thread     thread;
+    CL_Obj        stream;   /* socket stream the worker parks reading */
+    volatile int  parked;   /* set just before the blocking read */
+    volatile int  got;      /* byte read once the peer unblocks it */
+} ReadBlockerCtx;
+
+static void *socket_read_blocker(void *arg)
+{
+    ReadBlockerCtx *ctx = (ReadBlockerCtx *)arg;
+    CL_Thread *t = &ctx->thread;
+    platform_tls_set(t);
+    cl_thread_register(t);
+    ctx->parked = 1;
+    /* Blocks until the peer sends a byte.  With the fix this holds only this
+     * socket's read lock and runs inside a GC safe region. */
+    ctx->got = cl_stream_read_byte(ctx->stream);
+    cl_thread_unregister(t);
+    return NULL;
+}
+
+static volatile int g_read_test_done = 0;
+
+static void *read_test_watchdog(void *arg)
+{
+    int waited = 0;
+    while (!g_read_test_done && waited < 5000) {
+        platform_sleep_ms(50);
+        waited += 50;
+    }
+    if (!g_read_test_done) {
+        fprintf(stderr,
+            "\nFATAL: %s — a thread parked in cl_stream_read_byte() blocked an "
+            "independent\n  stream operation.  The per-stream/per-direction I/O "
+            "lock split in stream.c\n  (cl_stream_read_byte/write_*/stream_lock_for) "
+            "has regressed.\n", (const char *)arg);
+        abort();
+    }
+    return NULL;
+}
+
+/* Build a connected loopback pair of clamiga socket streams: *server is the
+ * accepted (server-side) connection, *client the connecting end.  connect()
+ * lands in the listen backlog on loopback, so accept() returns without a
+ * second thread. */
+static int make_loopback_stream_pair(CL_Obj *listener, CL_Obj *client,
+                                     CL_Obj *server)
+{
+    int port = 0;
+    PlatformSocket probe = platform_socket_listen(0, 1, &port);
+    if (probe == PLATFORM_SOCKET_INVALID || port <= 0) return 0;
+    platform_socket_close(probe);
+    *listener = cl_make_listen_stream(port, 1, NULL);
+    if (CL_NULL_P(*listener)) return 0;
+    *client = cl_make_socket_stream("127.0.0.1", port);
+    if (CL_NULL_P(*client)) return 0;
+    *server = cl_socket_stream_accept(*listener);
+    return !CL_NULL_P(*server);
+}
+
+/* Flush a socket stream's buffered output to the wire (the C-level equivalent
+ * of FINISH-OUTPUT) so the peer's blocking read can observe it. */
+static void flush_socket_stream(CL_Obj s)
+{
+    CL_Stream *st = (CL_Stream *)CL_OBJ_TO_PTR(s);
+    platform_socket_flush((PlatformSocket)st->handle_id);
+}
+
+/* The SLY fix: while a worker is parked reading the socket, the reply must be
+ * writable on the SAME socket (opposite direction). */
+TEST(socket_read_parked_allows_same_socket_reply)
+{
+    CL_Obj listener = CL_NIL, client = CL_NIL, server = CL_NIL;
+    ReadBlockerCtx ctx;
+    void *wth = NULL, *wdog = NULL;
+
+    CL_GC_PROTECT(listener);
+    CL_GC_PROTECT(client);
+    CL_GC_PROTECT(server);
+    ASSERT(make_loopback_stream_pair(&listener, &client, &server));
+    if (CL_NULL_P(server)) { CL_GC_UNPROTECT(3); return; }
+
+    memset(&ctx, 0, sizeof(ctx));
+    ctx.thread.id = 1;
+    ctx.thread.status = 1;
+    ctx.thread.mv_count = 1;
+    ctx.stream = server;
+    ctx.got = -2;
+
+    g_read_test_done = 0;
+    platform_thread_create(&wdog, read_test_watchdog,
+                           (void *)"same-socket reply write", 0);
+    platform_thread_create(&wth, socket_read_blocker, &ctx, 0);
+
+    while (!ctx.parked) platform_sleep_ms(5);
+    platform_sleep_ms(100);   /* give it a beat to park inside read() */
+
+    /* Used to deadlock: write the reply on the server stream while the worker
+     * is parked reading that same stream. */
+    cl_stream_write_byte(server, 'A');
+    flush_socket_stream(server);
+    ASSERT_EQ_INT(cl_stream_read_byte(client), 'A');
+
+    /* Unblock the worker so it can finish, then confirm it saw the byte. */
+    cl_stream_write_byte(client, 'Z');
+    flush_socket_stream(client);
+    platform_thread_join(wth, NULL);
+    ASSERT_EQ_INT(ctx.got, 'Z');
+
+    g_read_test_done = 1;
+    platform_thread_join(wdog, NULL);
+
+    cl_stream_close(client);
+    cl_stream_close(server);
+    cl_stream_close(listener);
+    CL_GC_UNPROTECT(3);
+}
+
+/* The reported symptom: console output from another thread must proceed while
+ * a worker is parked in a socket read (under the old shared lock it hung). */
+TEST(socket_read_parked_allows_console_write)
+{
+    CL_Obj listener = CL_NIL, client = CL_NIL, server = CL_NIL;
+    ReadBlockerCtx ctx;
+    void *wth = NULL, *wdog = NULL;
+
+    CL_GC_PROTECT(listener);
+    CL_GC_PROTECT(client);
+    CL_GC_PROTECT(server);
+    ASSERT(make_loopback_stream_pair(&listener, &client, &server));
+    if (CL_NULL_P(server)) { CL_GC_UNPROTECT(3); return; }
+
+    memset(&ctx, 0, sizeof(ctx));
+    ctx.thread.id = 1;
+    ctx.thread.status = 1;
+    ctx.thread.mv_count = 1;
+    ctx.stream = server;
+    ctx.got = -2;
+
+    g_read_test_done = 0;
+    platform_thread_create(&wdog, read_test_watchdog,
+                           (void *)"console write", 0);
+    platform_thread_create(&wth, socket_read_blocker, &ctx, 0);
+
+    while (!ctx.parked) platform_sleep_ms(5);
+    platform_sleep_ms(100);
+
+    /* A zero-length console write still acquires the console write lock — which
+     * under the old design was the very same mutex the parked socket read held,
+     * deadlocking here.  Zero length keeps the test output clean. */
+    cl_stream_write_string(cl_stdout_stream, "", 0);
+
+    cl_stream_write_byte(client, 'Z');
+    flush_socket_stream(client);
+    platform_thread_join(wth, NULL);
+    ASSERT_EQ_INT(ctx.got, 'Z');
+
+    g_read_test_done = 1;
+    platform_thread_join(wdog, NULL);
+
+    cl_stream_close(client);
+    cl_stream_close(server);
+    cl_stream_close(listener);
+    CL_GC_UNPROTECT(3);
+}
+
+/* The user's literal symptom: a full stop-the-world GC must return while a
+ * thread is parked in a socket read (the read runs inside a GC safe region). */
+TEST(stw_gc_with_thread_blocked_in_socket_read)
+{
+    CL_Obj listener = CL_NIL, client = CL_NIL, server = CL_NIL;
+    ReadBlockerCtx ctx;
+    void *wth = NULL, *wdog = NULL;
+
+    CL_GC_PROTECT(listener);
+    CL_GC_PROTECT(client);
+    CL_GC_PROTECT(server);
+    ASSERT(make_loopback_stream_pair(&listener, &client, &server));
+    if (CL_NULL_P(server)) { CL_GC_UNPROTECT(3); return; }
+
+    memset(&ctx, 0, sizeof(ctx));
+    ctx.thread.id = 1;
+    ctx.thread.status = 1;
+    ctx.thread.mv_count = 1;
+    ctx.stream = server;
+    ctx.got = -2;
+
+    g_read_test_done = 0;
+    platform_thread_create(&wdog, read_test_watchdog,
+                           (void *)"stop-the-world GC", 0);
+    platform_thread_create(&wth, socket_read_blocker, &ctx, 0);
+
+    while (!ctx.parked) platform_sleep_ms(5);
+    platform_sleep_ms(100);
+
+    cl_gc();   /* used to hang forever waiting for the parked reader to stop */
+
+    cl_stream_write_byte(client, 'Z');
+    flush_socket_stream(client);
+    platform_thread_join(wth, NULL);
+    ASSERT_EQ_INT(ctx.got, 'Z');
+
+    g_read_test_done = 1;
+    platform_thread_join(wdog, NULL);
+
+    cl_stream_close(client);
+    cl_stream_close(server);
+    cl_stream_close(listener);
+    CL_GC_UNPROTECT(3);
+}
+
 /* --- UTF-8 Stream I/O tests --- */
 
 #ifdef CL_WIDE_STRINGS
@@ -2390,6 +2621,9 @@ int main(void)
     RUN(eval_socket_local_port);
     RUN(eval_socket_local_port_type_error);
     RUN(socket_concurrent_accept_connect);
+    RUN(socket_read_parked_allows_same_socket_reply);
+    RUN(socket_read_parked_allows_console_write);
+    RUN(stw_gc_with_thread_blocked_in_socket_read);
 
 #ifdef CL_WIDE_STRINGS
     /* UTF-8 codec tests */
