@@ -6703,6 +6703,41 @@ TEST(eval_loop_for_from_below)
         "  sum)"), 6);
 }
 
+TEST(eval_loop_for_upto)
+{
+    /* for var upto end -- UPTO as first arithmetic keyword (defaults from 0) */
+    ASSERT_STR_EQ(eval_print(
+        "(loop for i upto 5 collect i)"), "(0 1 2 3 4 5)");
+}
+
+TEST(eval_loop_for_to)
+{
+    /* for var to end -- TO as first arithmetic keyword (defaults from 0) */
+    ASSERT_STR_EQ(eval_print(
+        "(loop for i to 3 collect i)"), "(0 1 2 3)");
+}
+
+TEST(eval_loop_for_upto_by)
+{
+    /* for var upto end by step -- first keyword UPTO with BY */
+    ASSERT_STR_EQ(eval_print(
+        "(loop for i upto 10 by 2 collect i)"), "(0 2 4 6 8 10)");
+}
+
+TEST(eval_loop_for_downto)
+{
+    /* for var downto end -- DOWNTO as first arithmetic keyword (defaults from 0) */
+    ASSERT_STR_EQ(eval_print(
+        "(loop for i downto -3 collect i)"), "(0 -1 -2 -3)");
+}
+
+TEST(eval_loop_for_downto_by)
+{
+    /* for var downto end by step -- DOWNTO as first keyword with BY */
+    ASSERT_STR_EQ(eval_print(
+        "(loop for i downto -6 by 2 collect i)"), "(0 -2 -4 -6)");
+}
+
 TEST(eval_loop_for_from_by)
 {
     /* for var from start to end by step */
@@ -9285,6 +9320,11 @@ int main(void)
     RUN(eval_loop_for_on);
     RUN(eval_loop_for_from_to);
     RUN(eval_loop_for_from_below);
+    RUN(eval_loop_for_upto);
+    RUN(eval_loop_for_to);
+    RUN(eval_loop_for_upto_by);
+    RUN(eval_loop_for_downto);
+    RUN(eval_loop_for_downto_by);
     RUN(eval_loop_for_from_by);
     RUN(eval_loop_for_downfrom);
     RUN(eval_loop_for_downfrom_above);

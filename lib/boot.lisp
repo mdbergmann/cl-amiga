@@ -2006,6 +2006,41 @@ including any dotted-list terminator (so the result is also dotted)."
                (list `(when (<= ,var ,end-gs) (go ,end-tag)))
                nil
                (list `(setq ,var (- ,var ,step-val)))))))
+    ;; FOR var TO/UPTO limit — shorthand for FROM 0 TO limit (inclusive)
+    ;; Extension: ANSI LOOP (HyperSpec 6.1.2.1.1.2) requires FROM/UPFROM/DOWNFROM as the
+    ;; mandatory start keyword; TO/UPTO/DOWNTO as the *first* keyword is an
+    ;; implementation-defined extension (also accepted by SBCL and CCL).
+    ((or (%loop-keyword-p sub-kw "TO")
+         (%loop-keyword-p sub-kw "UPTO"))
+     (let ((end-expr (car rest))
+           (end-gs (gensym "END")))
+       (setq rest (cdr rest))
+       (let ((step-val 1))
+         (when (and rest (%loop-keyword-p (car rest) "BY"))
+           (setq rest (cdr rest))
+           (setq step-val (car rest))
+           (setq rest (cdr rest)))
+         (list rest
+               (list (list var 0) (list end-gs end-expr))
+               (list `(when (> ,var ,end-gs) (go ,end-tag)))
+               nil
+               (list `(setq ,var (+ ,var ,step-val)))))))
+    ;; FOR var DOWNTO limit — shorthand for FROM 0 DOWNTO limit (inclusive, downward)
+    ;; Extension: same implementation-defined extension as TO/UPTO above.
+    ((%loop-keyword-p sub-kw "DOWNTO")
+     (let ((end-expr (car rest))
+           (end-gs (gensym "END")))
+       (setq rest (cdr rest))
+       (let ((step-val 1))
+         (when (and rest (%loop-keyword-p (car rest) "BY"))
+           (setq rest (cdr rest))
+           (setq step-val (car rest))
+           (setq rest (cdr rest)))
+         (list rest
+               (list (list var 0) (list end-gs end-expr))
+               (list `(when (< ,var ,end-gs) (go ,end-tag)))
+               nil
+               (list `(setq ,var (- ,var ,step-val)))))))
     ;; FOR var OF-TYPE type-spec <sub-clause> — skip type declaration, recurse
     ((%loop-keyword-p sub-kw "OF-TYPE")
      ;; rest = (type-spec real-sub-kw . rest-of-clause)
@@ -2026,6 +2061,9 @@ including any dotted-list terminator (so the result is also dotted)."
                     (%loop-keyword-p next "FROM")
                     (%loop-keyword-p next "UPFROM")
                     (%loop-keyword-p next "DOWNFROM")
+                    (%loop-keyword-p next "TO")
+                    (%loop-keyword-p next "UPTO")
+                    (%loop-keyword-p next "DOWNTO")
                     (%loop-keyword-p next "BELOW")
                     (%loop-keyword-p next "ABOVE")
                     (%loop-keyword-p next "BEING")
