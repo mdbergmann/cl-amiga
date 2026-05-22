@@ -72,6 +72,8 @@ CL_Obj cl_make_array(uint32_t total, uint8_t rank, uint32_t *dims,
                      uint8_t flags, uint32_t fill_ptr);
 CL_Obj cl_make_hashtable(uint32_t bucket_count, uint32_t test);
 CL_Obj cl_make_condition(CL_Obj type_name, CL_Obj slots, CL_Obj report_string);
+CL_Obj cl_make_restart(CL_Obj name, CL_Obj function, CL_Obj report,
+                       CL_Obj interactive, CL_Obj test, CL_Obj tag);
 CL_Obj cl_make_struct(CL_Obj type_name, uint32_t n_slots);
 CL_Obj cl_make_bignum(uint32_t n_limbs, uint32_t sign);
 CL_Obj cl_make_ratio(CL_Obj numerator, CL_Obj denominator);

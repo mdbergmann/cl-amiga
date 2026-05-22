@@ -1221,6 +1221,56 @@ static void print_obj(CL_Obj obj)
         break;
     }
 
+    case TYPE_RESTART: {
+        CL_Restart *r = (CL_Restart *)CL_OBJ_TO_PTR(obj);
+        /* PRINC / ~A (escape and readably both NIL): print the restart's
+         * report — its :report string, or the result of calling its report
+         * function on the stream (CLHS 9.1.4.2.2). */
+        if (!print_escape_p() && !print_readably_p() &&
+            !CL_NULL_P(r->report)) {
+            if (CL_STRING_P(r->report)) {
+                CL_String *rs = (CL_String *)CL_OBJ_TO_PTR(r->report);
+                out_str(rs->data);
+                break;
+            }
+            /* Report function: call it with a fresh string output stream,
+             * then splice the captured text. */
+            if (!pr_inprog_contains(obj) && pr_inprog_top < CL_PR_INPROG_MAX) {
+                CL_Obj sstream, text, rargs[1], report_fn;
+                report_fn = r->report;
+                CL_GC_PROTECT(report_fn);
+                sstream = cl_make_string_output_stream();
+                CL_GC_PROTECT(sstream);
+                rargs[0] = sstream;
+                pr_inprog[pr_inprog_top++] = obj;
+                current_depth++;
+                cl_vm_apply(report_fn, rargs, 1);
+                current_depth--;
+                pr_inprog_top--;
+                text = cl_get_output_stream_string(sstream);
+                {
+                    CL_Stream *tmp_st = (CL_Stream *)CL_OBJ_TO_PTR(sstream);
+                    cl_stream_free_outbuf(tmp_st->out_buf_handle);
+                    tmp_st->out_buf_handle = 0;
+                }
+                CL_GC_UNPROTECT(2);
+                if (CL_STRING_P(text)) {
+                    CL_String *ts = (CL_String *)CL_OBJ_TO_PTR(text);
+                    out_str(ts->data);
+                    break;
+                }
+            }
+        }
+        /* Escaped form (or no report): #<RESTART NAME>. */
+        out_str("#<RESTART");
+        if (!CL_NULL_P(r->name)) {
+            out_char(' ');
+            out_str(cl_symbol_name(r->name));
+        }
+        out_char('>');
+        break;
+    }
+
     case TYPE_PATHNAME: {
         CL_Pathname *pn = (CL_Pathname *)CL_OBJ_TO_PTR(obj);
         char ns_buf[1024];

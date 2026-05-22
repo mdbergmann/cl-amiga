@@ -525,6 +525,31 @@ CL_Obj cl_make_condition(CL_Obj type_name, CL_Obj slots, CL_Obj report_string)
     return CL_PTR_TO_OBJ(cond);
 }
 
+CL_Obj cl_make_restart(CL_Obj name, CL_Obj function, CL_Obj report,
+                       CL_Obj interactive, CL_Obj test, CL_Obj tag)
+{
+    CL_Restart *r;
+
+    CL_GC_PROTECT(name);
+    CL_GC_PROTECT(function);
+    CL_GC_PROTECT(report);
+    CL_GC_PROTECT(interactive);
+    CL_GC_PROTECT(test);
+    CL_GC_PROTECT(tag);
+
+    r = (CL_Restart *)cl_alloc(TYPE_RESTART, sizeof(CL_Restart));
+    CL_GC_UNPROTECT(6);
+
+    if (!r) return CL_NIL;
+    r->name = name;
+    r->function = function;
+    r->report = report;
+    r->interactive = interactive;
+    r->test = test;
+    r->tag = tag;
+    return CL_PTR_TO_OBJ(r);
+}
+
 CL_Obj cl_make_struct(CL_Obj type_name, uint32_t n_slots)
 {
     uint32_t alloc_size = sizeof(CL_Struct) + n_slots * sizeof(CL_Obj);
@@ -857,6 +882,16 @@ static void gc_mark_children(void *ptr, uint8_t type)
         gc_mark_push(cond->report_string);
         break;
     }
+    case TYPE_RESTART: {
+        CL_Restart *r = (CL_Restart *)ptr;
+        gc_mark_push(r->name);
+        gc_mark_push(r->function);
+        gc_mark_push(r->report);
+        gc_mark_push(r->interactive);
+        gc_mark_push(r->test);
+        gc_mark_push(r->tag);
+        break;
+    }
     case TYPE_STRUCT: {
         CL_Struct *st = (CL_Struct *)ptr;
         uint32_t i;
@@ -1127,6 +1162,7 @@ static void gc_mark_thread_roots(CL_Thread *t)
         gc_mark_obj(t->restart_stack[i].name);
         gc_mark_obj(t->restart_stack[i].handler);
         gc_mark_obj(t->restart_stack[i].tag);
+        gc_mark_obj(t->restart_stack[i].restart);
     }
 
     /* VM execution stack */
@@ -1729,6 +1765,16 @@ static void gc_update_children(void *ptr, uint8_t type)
         gc_update_slot(&cond->report_string);
         break;
     }
+    case TYPE_RESTART: {
+        CL_Restart *r = (CL_Restart *)ptr;
+        gc_update_slot(&r->name);
+        gc_update_slot(&r->function);
+        gc_update_slot(&r->report);
+        gc_update_slot(&r->interactive);
+        gc_update_slot(&r->test);
+        gc_update_slot(&r->tag);
+        break;
+    }
     case TYPE_STRUCT: {
         CL_Struct *st = (CL_Struct *)ptr;
         uint32_t i;
@@ -1836,6 +1882,7 @@ static void gc_update_thread_roots(CL_Thread *t)
         gc_update_slot(&t->restart_stack[i].name);
         gc_update_slot(&t->restart_stack[i].handler);
         gc_update_slot(&t->restart_stack[i].tag);
+        gc_update_slot(&t->restart_stack[i].restart);
     }
 
     /* VM execution stack */
@@ -2321,6 +2368,16 @@ static void gc_verify_marked(void)
                 gc_verify_check_ref(parent_off, "type_name", cond->type_name);
                 gc_verify_check_ref(parent_off, "slots", cond->slots);
                 gc_verify_check_ref(parent_off, "report", cond->report_string);
+                break;
+            }
+            case TYPE_RESTART: {
+                CL_Restart *r = (CL_Restart *)ptr;
+                gc_verify_check_ref(parent_off, "name", r->name);
+                gc_verify_check_ref(parent_off, "function", r->function);
+                gc_verify_check_ref(parent_off, "report", r->report);
+                gc_verify_check_ref(parent_off, "interactive", r->interactive);
+                gc_verify_check_ref(parent_off, "test", r->test);
+                gc_verify_check_ref(parent_off, "tag", r->tag);
                 break;
             }
             case TYPE_STREAM: {

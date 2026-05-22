@@ -101,7 +101,8 @@ enum CL_ObjType {
     TYPE_THREAD,
     TYPE_LOCK,
     TYPE_CONDVAR,
-    TYPE_FOREIGN_POINTER
+    TYPE_FOREIGN_POINTER,
+    TYPE_RESTART
 #ifdef CL_WIDE_STRINGS
     , TYPE_WIDE_STRING
 #endif
@@ -346,6 +347,20 @@ typedef struct {
 } CL_Condition;
 
 #define CL_CONDITION_P(obj) (CL_HEAP_P(obj) && CL_HDR_TYPE(CL_OBJ_TO_PTR(obj)) == TYPE_CONDITION)
+
+/* --- Restart (first-class restart object, CLHS 9.1) --- */
+
+typedef struct {
+    CL_Header hdr;
+    CL_Obj name;          /* Restart name symbol, or NIL for an anonymous restart */
+    CL_Obj function;      /* Closure invoked when the restart is taken */
+    CL_Obj report;        /* :report — report string, report function, or NIL */
+    CL_Obj interactive;   /* :interactive — function returning an arg list, or NIL */
+    CL_Obj test;          /* :test — applicability predicate, or NIL */
+    CL_Obj tag;           /* Internal catch tag for transfer of control */
+} CL_Restart;
+
+#define CL_RESTART_P(obj) (CL_HEAP_P(obj) && CL_HDR_TYPE(CL_OBJ_TO_PTR(obj)) == TYPE_RESTART)
 
 /* --- Structure --- */
 

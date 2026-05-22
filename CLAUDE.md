@@ -29,7 +29,7 @@ make -f Makefile.cross clean        # Remove cross-build artifacts
 ## Architecture
 
 - `CL_Obj` = `uint32_t` tagged value; heap pointers are **arena-relative byte offsets** (not raw pointers)
-- Single arena, bump allocator with free-list fallback, mark-and-sweep GC
+- Single arena, bump allocator with free-list fallback, mark-and-sweep GC with compaction (moving) when fragmented — see GC Safety below
 - Single-pass compiler: S-expressions → bytecode; stack-based VM
 - All OS calls go through `platform.h` (`platform_posix.c` / `platform_amiga.c`)
 - **Threading** (MP package): kernel threads with per-thread VM, TLV dynamic bindings, stop-the-world GC coordination, locks, condition variables
@@ -52,7 +52,7 @@ Any C code that holds `CL_Obj` values across allocating calls **must** GC-protec
 - **Allocating functions**: `cl_alloc`, `cl_cons`, `cl_make_string`, `cl_make_vector`, `cl_make_struct`, `cl_make_symbol`, and any function that calls these (including `cl_vm_apply`)
 - **The pattern to watch for**: iterative list building with `result`/`tail` local variables and `cl_cons()` in a loop — the partially-built list is invisible to GC unless protected
 - **Fix**: wrap with `CL_GC_PROTECT(var)` before the loop and `CL_GC_UNPROTECT(n)` after
-- **Why it matters**: this is a non-moving GC, but unprotected objects can be swept (freed) and their memory reused, silently corrupting whatever is allocated in their place
+- **Why it matters**: this is a **compacting (moving) GC** — when fragmentation forces compaction (which can be triggered inside any allocating call), live objects are relocated and arena-relative offsets are rewritten. A `CL_Obj` C local that isn't GC-protected will (a) be swept/freed if unreachable, or (b) hold a stale offset after objects move — either way silently corrupting memory. `CL_GC_PROTECT` registers the variable's address so the compactor forwards it.
 - **Note**: values on the VM stack (`cl_vm.stack`) and in `args[]` (builtin function arguments) are already GC-rooted — no need to protect those
 
 ## Debugging & Troubleshooting
