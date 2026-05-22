@@ -321,20 +321,6 @@ int cl_symbol_boundp(CL_Obj sym)
     return ((CL_Symbol *)CL_OBJ_TO_PTR(sym))->value != CL_UNBOUND;
 }
 
-/* TLV snapshot (for thread inheritance) */
-void cl_tlv_snapshot(CL_Thread *dst, CL_Thread *src)
-{
-    uint32_t i, count = 0;
-    memcpy(dst->tlv_table, src->tlv_table, sizeof(src->tlv_table));
-    /* Recompute entry count from the copied table */
-    for (i = 0; i < CL_TLV_TABLE_SIZE; i++) {
-        if (dst->tlv_table[i].symbol != CL_NIL &&
-            dst->tlv_table[i].symbol != CL_UNBOUND)
-            count++;
-    }
-    dst->tlv_entry_count = count;
-}
-
 /* ---- Side tables and worker thread allocation ---- */
 
 CL_Thread *cl_thread_table[CL_MAX_THREADS];
