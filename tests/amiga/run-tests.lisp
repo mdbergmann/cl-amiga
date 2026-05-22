@@ -4140,6 +4140,16 @@
                    (mp:make-thread (lambda () (* 4 10))))))
     (mapcar #'mp:join-thread threads)))
 
+; NOTE: the GC-safe-region fix for the "STW GC deadlocks behind a thread parked
+; in a blocking socket syscall" bug (the SLY :spawn read-loop deadlock) is
+; regression-tested at the C level in tests/test_gc_threaded.c
+; (stw_gc_with_thread_blocked_in_accept).  It deliberately is NOT tested here:
+; reproducing it needs one task blocked in socket-accept while another runs GC,
+; but AmigaOS bsdsocket.library is per-Task — a worker task cannot accept() on a
+; listener owned by the main task (the runtime keeps a single global SocketBase),
+; so such a test would itself hang.  See the "single-threaded loopback pattern"
+; note on the socket tests above.
+
 ; --- Named condition variables ---
 (check "make-condition-variable with name" t
   (not (null (mp:make-condition-variable "my-cv"))))
