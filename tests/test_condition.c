@@ -867,6 +867,58 @@ TEST(c_debugger_recursion_guard)
     ASSERT(1);  /* If we get here, recursion guard worked */
 }
 
+TEST(c_debugger_depth_limit_unwinds)
+{
+    /* Regression: a re-signalling *debugger-hook* / restart can recurse
+     * cl_invoke_debugger via cl_error_from_condition with no intervening
+     * error frame, which previously ran the C stack into a SIGSEGV.  When
+     * the depth counter is already at the limit, cl_invoke_debugger must
+     * abandon the nested debugger and unwind to top level (longjmp) instead
+     * of recursing — and reset the depth counter to 0. */
+    CL_Obj cond = cl_make_condition(SYM_SIMPLE_ERROR, CL_NIL, CL_NIL);
+    int err;
+    int saved_enabled = cl_debugger_enabled;
+
+    cl_debugger_enabled = 0;
+    cl_in_debugger = 0;
+    cl_debugger_depth = CL_DEBUGGER_MAX_DEPTH; /* simulate max nesting */
+
+    CL_CATCH(err);
+    if (err == CL_ERR_NONE) {
+        cl_invoke_debugger(cond);  /* must longjmp to top level, not return */
+        CL_UNCATCH();
+        ASSERT(0);                 /* unreachable if the guard fired */
+    } else {
+        CL_UNCATCH();
+    }
+
+    /* jump_to_top_level must have reset the nesting state. */
+    ASSERT_EQ_INT(cl_debugger_depth, 0);
+    ASSERT_EQ_INT(cl_in_debugger, 0);
+
+    cl_debugger_enabled = saved_enabled;
+    cl_vm.sp = 0;
+    cl_vm.fp = 0;
+}
+
+TEST(lisp_debugger_hook_secondary_error_recovers)
+{
+    /* A *debugger-hook* that itself signals a (secondary) error must unwind
+     * cleanly without leaving the debugger nesting state elevated.  Since the
+     * hook is bound to NIL while it runs, the secondary error does not re-call
+     * the hook; it just unwinds back through the first debugger level. */
+    const char *r = eval_print(
+        "(let ((*debugger-hook* (lambda (c hook)"
+        "                          (declare (ignore c hook))"
+        "                          (error \"secondary\"))))"
+        "  (error \"primary\"))");
+    /* Must come back as an error (not hang / not crash). */
+    ASSERT(strncmp(r, "ERROR:", 6) == 0);
+    /* And no leaked nesting — the debugger is usable again. */
+    ASSERT_EQ_INT(cl_debugger_depth, 0);
+    ASSERT_EQ_INT(cl_in_debugger, 0);
+}
+
 TEST(lisp_invoke_debugger_exists)
 {
     ASSERT_STR_EQ(eval_print("(functionp #'invoke-debugger)"), "T");
@@ -1002,6 +1054,8 @@ int main(void)
     /* Debugger tests */
     RUN(c_debugger_disabled_by_default);
     RUN(c_debugger_recursion_guard);
+    RUN(c_debugger_depth_limit_unwinds);
+    RUN(lisp_debugger_hook_secondary_error_recovers);
     RUN(lisp_invoke_debugger_exists);
     RUN(lisp_debugger_hook_initially_nil);
     RUN(lisp_debugger_hook_is_special);

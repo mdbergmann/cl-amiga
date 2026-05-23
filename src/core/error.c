@@ -39,6 +39,8 @@ int cl_error_frame_push(void)
      * return path. */
     cl_error_frames[cl_error_frame_top].saved_gc_roots = gc_root_count;
     cl_error_frames[cl_error_frame_top].saved_jit_depth = CT->jit_depth;
+    cl_error_frames[cl_error_frame_top].saved_debugger_depth = cl_debugger_depth;
+    cl_error_frames[cl_error_frame_top].saved_in_debugger = cl_in_debugger;
     return cl_error_frame_top++;
 }
 
@@ -85,6 +87,8 @@ CL_NORETURN static void cl_error_unwind(int code)
          * are unwinding out of and would dangle in gc_roots[]. */
         gc_root_count = cl_error_frames[cl_error_frame_top - 1].saved_gc_roots;
         cl_jit_restore_depth(cl_error_frames[cl_error_frame_top - 1].saved_jit_depth);
+        cl_debugger_depth = cl_error_frames[cl_error_frame_top - 1].saved_debugger_depth;
+        cl_in_debugger = cl_error_frames[cl_error_frame_top - 1].saved_in_debugger;
         CL_LONGJMP(cl_error_frames[cl_error_frame_top - 1].buf, code);
     }
 
@@ -100,6 +104,8 @@ CL_NORETURN static void cl_error_unwind(int code)
     cl_restart_top = 0;
     cl_gc_reset_roots();
     cl_jit_restore_depth(0);
+    cl_debugger_depth = 0;
+    cl_in_debugger = 0;
 
     if (cl_error_frame_top > 0) {
         CL_LONGJMP(cl_error_frames[cl_error_frame_top - 1].buf, code);
@@ -133,6 +139,8 @@ void cl_error(int code, const char *fmt, ...)
         cl_restart_top = 0;
         cl_gc_reset_roots();
         cl_jit_restore_depth(0);
+        cl_debugger_depth = 0;
+        cl_in_debugger = 0;
         if (cl_error_frame_top > 0) {
             /* Don't decrement here — CL_UNCATCH at the catch site pops.
              * For nested frames, restore gc_root_count to the catch-site

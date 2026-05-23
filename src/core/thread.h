@@ -203,6 +203,11 @@ typedef struct CL_Thread_s {
 
     /* ---- Debugger state ---- */
     int in_debugger;
+    /* Nesting depth of cl_invoke_debugger on this thread.  Bounded by
+     * CL_DEBUGGER_MAX_DEPTH to stop a re-signalling debugger-hook / restart
+     * from recursing the C stack into a SIGSEGV.  Snapshotted/restored by the
+     * error-frame machinery (CL_ErrorFrame.saved_debugger_depth). */
+    int debugger_depth;
 
     /* ---- Thread-Local Value (TLV) table ---- */
     CL_TLVEntry tlv_table[CL_TLV_TABLE_SIZE];
@@ -451,6 +456,7 @@ int    cl_symbol_boundp(CL_Obj sym);
 
 /* Debugger */
 #define cl_in_debugger      (CT->in_debugger)
+#define cl_debugger_depth   (CT->debugger_depth)
 
 /* VM debug (used under #ifdef DEBUG_VM, but always present in struct) */
 #define vm_eval_depth       (CT->vm_eval_depth_val)

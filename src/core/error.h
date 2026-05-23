@@ -61,6 +61,17 @@ typedef struct {
      * restores `jit_depth` to this value before longjmping back to the
      * catch site.  See specs/native-backend.md §"GC interaction". */
     int saved_jit_depth;
+    /* debugger_depth at the time this frame was pushed.  cl_error_unwind
+     * restores `debugger_depth` to this value on the unwind path so that
+     * the recursive-debugger guard (cl_invoke_debugger) cannot leak a
+     * permanently-elevated count when a restart / debugger-hook longjmps
+     * out past one or more debugger levels.  See debugger.c. */
+    int saved_debugger_depth;
+    /* in_debugger flag at the time this frame was pushed.  Restored on the
+     * unwind path so an error escaping the interactive debugger loop (e.g.
+     * a PRINT-OBJECT method that signals) cannot leave cl_in_debugger stuck
+     * at 1, which would silently suppress the debugger forever after. */
+    int saved_in_debugger;
 } CL_ErrorFrame;
 
 /* Push an error frame.  Returns the frame index, or -1 on overflow.
