@@ -23,6 +23,7 @@
 
 int cl_debugger_enabled = 0;
 /* cl_in_debugger is now in CL_Thread (macro from thread.h) */
+/* CL_DEBUGGER_MAX_DEPTH lives in debugger.h (shared with tests). */
 
 static CL_Obj SYM_DEBUGGER_HOOK;
 
@@ -50,17 +51,29 @@ static void display_condition(CL_Obj condition)
     char buf[256];
     CL_Obj report_str = CL_NIL;
 
-    /* Try PRINT-OBJECT dispatch via the hook set up by clos.lisp. */
+    /* Try PRINT-OBJECT dispatch via the hook set up by clos.lisp.
+     * Protect with CL_CATCH: if the user's PRINT-OBJECT method itself
+     * signals (we are already in the debugger printing the condition),
+     * a raw cl_error here would longjmp out of cl_invoke_debugger before
+     * it can reset cl_in_debugger / cl_debugger_depth, leaving the
+     * debugger wedged.  On failure just fall back to the report string. */
     if (!CL_NULL_P(SYM_PRINT_OBJECT_HOOK)) {
         CL_Obj hook_val = cl_symbol_value(SYM_PRINT_OBJECT_HOOK);
         if (!CL_NULL_P(hook_val)) {
             CL_Obj hook_args[1];
-            CL_Obj result;
+            int err;
             hook_args[0] = condition;
-            result = cl_vm_apply(hook_val, hook_args, 1);
-            if (!CL_NULL_P(result) && CL_HEAP_P(result) &&
-                CL_HDR_TYPE(CL_OBJ_TO_PTR(result)) == TYPE_STRING) {
-                report_str = result;
+            CL_CATCH(err);
+            if (err == CL_ERR_NONE) {
+                CL_Obj result = cl_vm_apply(hook_val, hook_args, 1);
+                if (!CL_NULL_P(result) && CL_HEAP_P(result) &&
+                    CL_HDR_TYPE(CL_OBJ_TO_PTR(result)) == TYPE_STRING) {
+                    report_str = result;
+                }
+                CL_UNCATCH();
+            } else {
+                CL_UNCATCH();
+                /* PRINT-OBJECT method signalled — use fallback below. */
             }
         }
     }
@@ -168,6 +181,7 @@ static CL_Obj bi_invoke_debugger(CL_Obj *args, int n)
 static void jump_to_top_level(void)
 {
     cl_in_debugger = 0;
+    cl_debugger_depth = 0;
     cl_nlx_top = 0;
     cl_pending_throw = 0;
     cl_dynbind_restore_to(0);
@@ -195,9 +209,30 @@ void cl_invoke_debugger(CL_Obj condition)
     int num_restarts;
     char line[1024];
 
-    /* Recursion guard */
+    /* Recursion guard: if the interactive C debugger loop is already active
+     * on this thread, don't re-enter it. */
     if (cl_in_debugger)
         return;
+
+    /* Depth guard.  The *debugger-hook* is invoked below while cl_in_debugger
+     * is still 0, so a hook (or a restart it drives) that re-signals recurses
+     * back into cl_invoke_debugger via cl_error_from_condition without the
+     * binary guard ever firing.  slynk legitimately nests a few levels for
+     * nested SLDB, but a runaway (e.g. an error raised while printing the
+     * condition) would recurse the C stack into a SIGSEGV.  Cap it: on
+     * overflow, abandon the nested debugger and unwind to top level with a
+     * clear diagnostic.  cl_debugger_depth is restored on every error-frame
+     * unwind (see error.c) so it cannot stay falsely elevated. */
+    if (cl_debugger_depth >= CL_DEBUGGER_MAX_DEPTH) {
+        cl_color_set(CL_COLOR_RED);
+        platform_write_string(
+            "\nDebugger recursion limit reached "
+            "(error while handling an error) — returning to top level.\n");
+        cl_color_reset();
+        jump_to_top_level(); /* longjmp — does not return */
+        return;              /* unreachable */
+    }
+    cl_debugger_depth++;
 
     /* Always check *debugger-hook* per CL spec, even if interactive
      * debugger is disabled (e.g., batch mode or tests) */
@@ -233,8 +268,10 @@ void cl_invoke_debugger(CL_Obj condition)
     }
 
     /* Interactive debugger loop only if enabled */
-    if (!cl_debugger_enabled)
+    if (!cl_debugger_enabled) {
+        cl_debugger_depth--;
         return;
+    }
 
     cl_in_debugger = 1;
 
@@ -339,6 +376,7 @@ void cl_invoke_debugger(CL_Obj condition)
     }
 
     cl_in_debugger = 0;
+    cl_debugger_depth--;
 }
 
 void cl_debugger_init(void)
