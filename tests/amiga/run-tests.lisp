@@ -3779,6 +3779,10 @@
   (define-compiler-macro test-cm (&whole form x) (declare (ignore form x)) nil))
 (check "compiler-macro-function installed" t (functionp (compiler-macro-function 'test-cm)))
 (check "compiler-macro-function unknown" nil (compiler-macro-function 'test-cm-not-defined))
+; NIL is a symbol with no macro binding -> returns NIL, like (macro-function t)
+(check "macro-function nil" nil (macro-function nil))
+(check "macro-function t" nil (macro-function t))
+(check "compiler-macro-function nil" nil (compiler-macro-function nil))
 
 ; --- setf values ---
 (check "setf values" '(10 20 30)

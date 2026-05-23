@@ -7849,6 +7849,23 @@ TEST(eval_macro_function_arity)
         ":PE");
 }
 
+/* CLHS: macro-function's argument is a symbol.  NIL is a symbol with no
+ * macro binding, so (macro-function nil) must return NIL — exactly like
+ * (macro-function t).  Regression: NIL is the tagged value 0 (not a heap
+ * symbol), so a bare CL_SYMBOL_P check rejected it with a TYPE-ERROR, the
+ * only one of all symbols to fail during a full do-all-symbols scan. */
+TEST(eval_macro_function_nil)
+{
+    ASSERT_STR_EQ(eval_print("(macro-function nil)"), "NIL");
+    ASSERT_STR_EQ(eval_print("(macro-function t)"), "NIL");
+    ASSERT_STR_EQ(eval_print("(compiler-macro-function nil)"), "NIL");
+    ASSERT_STR_EQ(eval_print("(compiler-macro-function t)"), "NIL");
+    /* A genuine non-symbol still signals an error. */
+    ASSERT_STR_EQ(eval_print(
+        "(handler-case (macro-function 42) (type-error () :te))"),
+        ":TE");
+}
+
 /* --- define-modify-macro tests --- */
 
 TEST(eval_define_modify_macro)
@@ -9587,6 +9604,7 @@ int main(void)
     RUN(eval_defmacro_destructuring_body);
     RUN(eval_defmacro_optional_not_destructured);
     RUN(eval_macro_function_arity);
+    RUN(eval_macro_function_nil);
 
     /* define-modify-macro */
     RUN(eval_define_modify_macro);

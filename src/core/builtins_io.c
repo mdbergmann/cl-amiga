@@ -1823,9 +1823,12 @@ static CL_Obj bi_call_macro_expander(CL_Obj *args, int n)
 
 static CL_Obj bi_macro_function(CL_Obj *args, int n)
 {
-    /* (macro-function symbol &optional env) */
+    /* (macro-function symbol &optional env)
+     * NIL is a symbol (with no macro binding), so it must be accepted and
+     * return NIL — exactly like (macro-function t). CL_SYMBOL_P alone is
+     * false for NIL because NIL is the tagged value 0, not a heap symbol. */
     CL_UNUSED(n);
-    if (!CL_SYMBOL_P(args[0]))
+    if (!CL_SYMBOL_OR_NIL_P(args[0]))
         cl_error(CL_ERR_TYPE, "MACRO-FUNCTION: not a symbol");
     return cl_get_macro(args[0]);
 }
@@ -1834,7 +1837,7 @@ static CL_Obj bi_set_macro_function(CL_Obj *args, int n)
 {
     /* (setf (macro-function symbol) function) — args: new-value, symbol */
     CL_UNUSED(n);
-    if (!CL_SYMBOL_P(args[1]))
+    if (!CL_SYMBOL_OR_NIL_P(args[1]))
         cl_error(CL_ERR_TYPE, "(SETF MACRO-FUNCTION): not a symbol");
     cl_register_macro(args[1], args[0]);
     return args[0];
@@ -1845,7 +1848,7 @@ static CL_Obj bi_set_macro_function(CL_Obj *args, int n)
 static CL_Obj bi_compiler_macro_function(CL_Obj *args, int n)
 {
     CL_UNUSED(n);
-    if (!CL_SYMBOL_P(args[0]))
+    if (!CL_SYMBOL_OR_NIL_P(args[0]))
         cl_error(CL_ERR_TYPE, "COMPILER-MACRO-FUNCTION: not a symbol");
     return cl_get_compiler_macro(args[0]);
 }
@@ -1854,7 +1857,7 @@ static CL_Obj bi_set_compiler_macro_function(CL_Obj *args, int n)
 {
     /* (setf (compiler-macro-function name) function) — args: new-value, name */
     CL_UNUSED(n);
-    if (!CL_SYMBOL_P(args[1]))
+    if (!CL_SYMBOL_OR_NIL_P(args[1]))
         cl_error(CL_ERR_TYPE, "(SETF COMPILER-MACRO-FUNCTION): not a symbol");
     cl_register_compiler_macro(args[1], args[0]);
     return args[0];
