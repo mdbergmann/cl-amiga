@@ -576,9 +576,15 @@ int main(int argc, char *argv[])
 shutdown:
     cl_stream_shutdown();
     cl_vm_shutdown();
+    /* platform_shutdown() must run BEFORE cl_thread_shutdown(): on AmigaOS it
+     * tears down the socket reactor via sock_call(), which wraps its WaitPort
+     * in cl_gc_enter/leave_safe_region().  Those need gc_mutex/gc_condvar,
+     * which cl_thread_shutdown() destroys (and NULLs).  Running it after would
+     * call ObtainSemaphore(NULL) and hang the process at exit once the reactor
+     * has been started (i.e. after any socket op). */
+    platform_shutdown();
     cl_thread_shutdown();
     cl_mem_shutdown();
-    platform_shutdown();
 
     return cl_exit_code;
 }

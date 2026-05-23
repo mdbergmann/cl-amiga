@@ -79,6 +79,10 @@ void cl_gc_enter_safe_region(void)
 {
     CL_Thread *self = (CL_Thread *)platform_tls_get();
     if (!self) return;
+    /* No GC coordination (e.g. torn down at shutdown) -> nothing to coordinate
+     * with, so a "safe region" is a no-op.  Guards against locking a destroyed
+     * gc_mutex (ObtainSemaphore(NULL) on Amiga) during exit teardown. */
+    if (!gc_mutex) return;
     platform_mutex_lock(gc_mutex);
     self->in_safe_region = 1;
     /* Wake any STW initiator counting safe-region threads as stopped */
@@ -90,6 +94,7 @@ void cl_gc_leave_safe_region(void)
 {
     CL_Thread *self = (CL_Thread *)platform_tls_get();
     if (!self) return;
+    if (!gc_mutex) return;  /* see cl_gc_enter_safe_region */
     platform_mutex_lock(gc_mutex);
     /* If a GC is currently running, park here until it completes — we
      * cannot return to the heap-touching caller while the world is
