@@ -1036,6 +1036,43 @@
          (let ((,var ,s))
            ,@body)))))
 
+;; do-all-symbols — iterate over the symbols of all registered packages.
+;; CLHS: spec is (var [result-form]) — no package argument.  A symbol that is
+;; present in more than one package is processed only once (we track visited
+;; symbols by identity); result-form is evaluated with var bound to NIL.
+(defmacro do-all-symbols (spec &body body)
+  ;; Use tagbody/go instead of dolist so the inner loops don't create their
+  ;; own implicit (block nil ...) that would intercept (return ...) from body.
+  (let ((var (car spec))
+        (result (cadr spec))
+        (pkgs (gensym)) (pkg (gensym))
+        (syms (gensym)) (s (gensym))
+        (seen (gensym))
+        (pkg-loop (gensym)) (sym-loop (gensym)) (done (gensym)))
+    `(block nil
+       (let ((,pkgs (list-all-packages))
+             (,pkg nil)
+             (,syms nil)
+             (,s nil)
+             (,seen (make-hash-table :test 'eq)))
+         (tagbody
+          ,pkg-loop
+          (when (null ,pkgs) (go ,done))
+          (setq ,pkg (car ,pkgs))
+          (setq ,pkgs (cdr ,pkgs))
+          (setq ,syms (%package-symbols ,pkg))
+          ,sym-loop
+          (when (null ,syms) (go ,pkg-loop))
+          (setq ,s (car ,syms))
+          (setq ,syms (cdr ,syms))
+          (unless (gethash ,s ,seen)
+            (setf (gethash ,s ,seen) t)
+            (let ((,var ,s))
+              ,@body))
+          (go ,sym-loop)
+          ,done))
+       (let ((,var nil)) ,result))))
+
 ;; defstruct — define a named structure type
 ;; Supports options: :conc-name, :constructor, :predicate, :copier, :include
 (defun %defstruct-parse-slot (spec)

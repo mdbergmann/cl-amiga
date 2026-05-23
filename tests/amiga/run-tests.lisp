@@ -2490,6 +2490,23 @@
 (check "loop being external-symbols" 1
   (length (loop for s being the external-symbols of "LOOP-EXT-AMI" collect s)))
 
+;; do-all-symbols — iterate symbols of all packages; CAR must be visited,
+;; result-form sees var=NIL, and a symbol present in two packages is seen once.
+(check "do-all-symbols finds car" t
+  (let ((found nil)) (do-all-symbols (s) (when (eq s 'car) (setq found t))) found))
+(check "do-all-symbols result-form" :rf
+  (do-all-symbols (s :rf)))
+(defpackage "DAS-A-AMI" (:use))
+(defpackage "DAS-B-AMI" (:use))
+(intern "SHARED" "DAS-A-AMI")
+(import (find-symbol "SHARED" "DAS-A-AMI") (find-package "DAS-B-AMI"))
+(check "do-all-symbols dedup" 1
+  (let ((n 0) (target (find-symbol "SHARED" "DAS-A-AMI")))
+    (do-all-symbols (s) (when (eq s target) (incf n))) n))
+;; Implicit block nil: (return value) must exit the entire do-all-symbols form.
+(check "do-all-symbols early return" :found
+  (do-all-symbols (s) (when (eq s 'car) (return :found))))
+
 ;; loop destructuring
 (check "loop destr in" '(3 7 11) (loop for (a b) in '((1 2) (3 4) (5 6)) collect (+ a b)))
 (check "loop destr dotted" '((x 1) (y 2) (z 3)) (loop for (a . b) in '((x . 1) (y . 2) (z . 3)) collect (list a b)))
