@@ -153,12 +153,20 @@ verify-amiga:
 	fi
 	@echo "=== Amiga Test Results ==="
 	@cat build/amiga/test-results.log
-	@if grep -q "ALL TESTS PASSED" build/amiga/test-results.log; then \
-		echo "=== Amiga verification PASSED ==="; \
-	else \
-		echo "=== Amiga verification FAILED ==="; \
+	@if ! grep -q "ALL TESTS PASSED" build/amiga/test-results.log; then \
+		echo "=== Amiga verification FAILED (tests) ==="; \
 		exit 1; \
 	fi
+	@# The driver (call-on-ustartup) writes "=== run end ===" only after
+	@# clamiga returns from main.  Its absence means clamiga hung at exit
+	@# (e.g. the socket-reactor shutdown deadlock) and FS-UAE was stall-killed
+	@# by the watchdog — the suite still "passed" but the binary never exited
+	@# cleanly.  Require the marker so that regression fails loudly + fast.
+	@if ! grep -q "=== run end ===" build/amiga/test-results.log; then \
+		echo "=== Amiga verification FAILED (clamiga did not exit cleanly — shutdown hang?) ==="; \
+		exit 1; \
+	fi
+	@echo "=== Amiga verification PASSED ==="
 
 clean:
 	rm -rf $(BUILDDIR)
