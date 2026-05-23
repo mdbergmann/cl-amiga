@@ -649,375 +649,619 @@ const char *platform_expand_home(const char *path, char *buf, int bufsize)
     return buf;
 }
 
-/* --- TCP Socket I/O via bsdsocket.library (AmiTCP/Roadshow/Miami) --- */
+/* --- TCP Socket I/O via bsdsocket.library — single-owner reactor model ---
+ *
+ * AmigaOS bsdsocket.library is task-specific: the library base AND every
+ * socket fd are owned by the task that created them, so a socket cannot be
+ * used from a different task.  clamiga threads are separate AmigaOS processes
+ * (CreateNewProc), so naive cross-thread socket I/O blocks forever.
+ *
+ * To give POSIX-like semantics (any thread may use any socket, including one
+ * thread reading while another writes the same socket), ALL bsdsocket calls
+ * are funnelled to a single dedicated "reactor" process that exclusively owns
+ * SocketBase, the socket table, and every fd.  Other threads never touch
+ * bsdsocket: their platform_socket_* calls marshal a request to the reactor
+ * over an Exec message port and block on the reply (inside a GC safe region).
+ * The reactor multiplexes all sockets with WaitSelect so one slow/blocked
+ * socket never stalls the others.  AmigaOS's single shared address space lets
+ * the reactor recv/send directly into the caller's IOBuf by pointer — no data
+ * copy between tasks.
+ */
 
 #include <proto/bsdsocket.h>
+#include <exec/ports.h>
+#include <exec/tasks.h>
+#include <dos/dostags.h>
 
 /* Roadshow's <netinet/in.h> defines INADDR_ANY but leaves INADDR_LOOPBACK to
  * <arpa/inet.h>, which we don't pull in.  Provide the standard value. */
 #ifndef INADDR_LOOPBACK
 #define INADDR_LOOPBACK ((uint32_t)0x7f000001UL)
 #endif
+/* The -noixemul SDK headers omit these — supply the BSD values bsdsocket uses. */
+#ifndef EWOULDBLOCK
+#define EWOULDBLOCK 35
+#endif
+#ifndef EINPROGRESS
+#define EINPROGRESS 36
+#endif
+#ifndef FIONBIO
+#define FIONBIO 0x8004667EUL   /* _IOW('f', 126, int) — set non-blocking */
+#endif
 
-struct Library *SocketBase = NULL;
+struct Library *SocketBase = NULL;   /* opened by, and only used from, the reactor */
+static LONG socket_errno = 0;
 
 #define PLATFORM_SOCKET_TABLE_SIZE 16
 
-static LONG socket_table[PLATFORM_SOCKET_TABLE_SIZE];
+/* Reactor-owned: fd per slot (-1 = free), IOBuf per slot (NULL for listeners).
+ * Slot 0 is reserved as the INVALID handle.  Only the reactor mutates fds; the
+ * IOBuf bytes are shared with the requesting thread, but never concurrently —
+ * the request/reply handshake serialises access. */
+static LONG   socket_table[PLATFORM_SOCKET_TABLE_SIZE];
 static IOBuf *socket_buf[PLATFORM_SOCKET_TABLE_SIZE];
-static int socket_table_init = 0;
 
-/* Serialises slot claim (connect/listen/accept) and slot free (close) so a
- * threaded server — e.g. an accept loop on one thread while another connects
- * — can never race two claims onto the same table index.  Only the table
- * mutation is guarded; the blocking calls (connect/accept/flush/close) and the
- * per-byte read/write paths (each on its own caller-owned slot) run unlocked.
- * Initialised on first use, which is single-threaded. */
-static void *socket_table_mutex = NULL;
+/* ---- Minimal fd_set (the toolchain headers don't provide one) ----
+ * Standard BSD layout: bit n in word n/32, which is what WaitSelect expects. */
+#define CL_FDSET_WORDS 8   /* up to 256 fds */
+typedef struct { uint32_t bits[CL_FDSET_WORDS]; } CL_fdset;
+#define CL_FD_ZERO(s)    memset((s), 0, sizeof(*(s)))
+#define CL_FD_SET(n,s)   ((s)->bits[(unsigned)(n) >> 5] |= (1UL << ((unsigned)(n) & 31)))
+#define CL_FD_ISSET(n,s) (((s)->bits[(unsigned)(n) >> 5] >> ((unsigned)(n) & 31)) & 1U)
 
-static void socket_table_lock(void)
+/* ---- Reactor request protocol ---- */
+enum {
+    REQ_CONNECT = 1, REQ_LISTEN, REQ_ACCEPT,
+    REQ_READFILL, REQ_WRITE, REQ_CLOSE, REQ_SHUTDOWN
+};
+
+typedef struct SockReq {
+    struct Message msg;          /* mn_ReplyPort = caller's stack reply port */
+    int            op;
+    PlatformSocket slot;         /* target slot (read/write/close; listener for accept) */
+    const char    *host;         /* connect */
+    int            port;         /* connect / listen */
+    int            loopback;     /* listen */
+    char          *buf;          /* readfill destination / write source */
+    uint32_t       len;          /* readfill capacity / write length */
+    volatile int            result;    /* readfill: bytes (0=EOF); else 0=ok/-1=err */
+    volatile PlatformSocket out_slot;  /* connect/listen/accept: new slot */
+    volatile int            out_port;  /* listen: bound port */
+} SockReq;
+
+/* ---- Reactor state (all touched only by the reactor task) ---- */
+static struct Process *reactor_proc = NULL;
+static struct MsgPort *reactor_port = NULL;   /* request port, owned by reactor */
+static struct Task    *reactor_boot_task = NULL;
+static BYTE            reactor_boot_sig = -1;
+static void           *reactor_init_mutex = NULL;
+
+/* Parked op per slot+direction (stream.c serialises per socket+direction, so
+ * at most one outstanding op each way).  pend_wpos tracks bytes already sent
+ * for a partially-completed write. */
+static SockReq *pend_read[PLATFORM_SOCKET_TABLE_SIZE];
+static SockReq *pend_write[PLATFORM_SOCKET_TABLE_SIZE];
+static uint32_t pend_wpos[PLATFORM_SOCKET_TABLE_SIZE];
+
+/* ===== Reactor-side helpers (run in the reactor task; may call bsdsocket) ===== */
+
+static void reactor_set_nonblock(LONG fd)
 {
-    if (socket_table_mutex) platform_mutex_lock(socket_table_mutex);
+    LONG one = 1;
+    IoctlSocket(fd, FIONBIO, (char *)&one);
 }
 
-static void socket_table_unlock(void)
+/* Claim a free slot for fd; allocate an IOBuf unless with_buf==0 (listeners). */
+static int reactor_alloc_slot(LONG fd, int with_buf)
 {
-    if (socket_table_mutex) platform_mutex_unlock(socket_table_mutex);
-}
-
-static void socket_table_ensure_init(void)
-{
-    if (!socket_table_init) {
-        int i;
-        for (i = 0; i < PLATFORM_SOCKET_TABLE_SIZE; i++) {
-            socket_table[i] = -1;
-            socket_buf[i] = NULL;
+    int i;
+    for (i = 1; i < PLATFORM_SOCKET_TABLE_SIZE; i++) {
+        if (socket_table[i] == -1) {
+            socket_buf[i] = with_buf ? iobuf_alloc() : NULL;
+            if (with_buf && !socket_buf[i]) return -1;
+            socket_table[i] = fd;
+            return i;
         }
-        platform_mutex_init(&socket_table_mutex);
-        socket_table_init = 1;
+    }
+    return -1;
+}
+
+static void reactor_free_slot(int slot)
+{
+    if (socket_buf[slot]) { iobuf_free(socket_buf[slot]); socket_buf[slot] = NULL; }
+    socket_table[slot] = -1;
+    pend_wpos[slot] = 0;
+}
+
+static void reactor_reply(SockReq *req) { ReplyMsg(&req->msg); }
+
+/* recv into the caller's read buffer; complete or park.  result>0 = bytes,
+ * 0 = EOF, -1 = error. */
+static void reactor_try_read(SockReq *req)
+{
+    int slot = (int)req->slot;
+    LONG fd = socket_table[slot];
+    LONG n;
+    if (fd < 0) { req->result = -1; reactor_reply(req); return; }
+    n = recv(fd, req->buf, (LONG)req->len, 0);
+    if (n > 0)                       { req->result = (int)n; reactor_reply(req); }
+    else if (n == 0)                 { req->result = 0;      reactor_reply(req); } /* EOF */
+    else if (Errno() == EWOULDBLOCK) { pend_read[slot] = req; }                    /* park */
+    else                             { req->result = -1;     reactor_reply(req); }
+}
+
+/* send from the caller's write buffer (continuing at pend_wpos); complete or park. */
+static void reactor_try_write(SockReq *req)
+{
+    int slot = (int)req->slot;
+    LONG fd = socket_table[slot];
+    LONG n;
+    uint32_t off;
+    if (fd < 0) { req->result = -1; pend_wpos[slot] = 0; reactor_reply(req); return; }
+    off = pend_wpos[slot];
+    n = send(fd, req->buf + off, (LONG)(req->len - off), 0);
+    if (n >= 0) {
+        off += (uint32_t)n;
+        pend_wpos[slot] = off;
+        if (off >= req->len) { pend_wpos[slot] = 0; req->result = 0; reactor_reply(req); }
+        else                 { pend_write[slot] = req; }   /* more to send — park */
+    } else if (Errno() == EWOULDBLOCK) {
+        pend_write[slot] = req;                            /* park */
+    } else {
+        pend_wpos[slot] = 0; req->result = -1; reactor_reply(req);
     }
 }
 
-static LONG socket_errno = 0;
-
-static int bsdsocket_open(void)
+static void reactor_try_accept(SockReq *req)
 {
-    if (SocketBase) return 1;
-    SocketBase = OpenLibrary("bsdsocket.library", 3);
-    if (!SocketBase) return 0;
-    /* Required by some TCP stacks (AmiTCP) for per-task errno */
-    SetErrnoPtr(&socket_errno, sizeof(socket_errno));
-    return 1;
+    int slot = (int)req->slot;            /* listener slot */
+    LONG lfd = socket_table[slot];
+    struct sockaddr_in caddr;
+    socklen_t clen = sizeof(caddr);
+    LONG fd;
+    if (lfd < 0) { req->result = -1; req->out_slot = PLATFORM_SOCKET_INVALID; reactor_reply(req); return; }
+    fd = accept(lfd, (struct sockaddr *)&caddr, &clen);
+    if (fd >= 0) {
+        int ns;
+        reactor_set_nonblock(fd);
+        ns = reactor_alloc_slot(fd, 1);
+        if (ns < 0) { CloseSocket(fd); req->result = -1; req->out_slot = PLATFORM_SOCKET_INVALID; }
+        else        { req->result = 0;  req->out_slot = (PlatformSocket)ns; }
+        reactor_reply(req);
+    } else if (Errno() == EWOULDBLOCK) {
+        pend_read[slot] = req;                              /* park on listener readable */
+    } else {
+        req->result = -1; req->out_slot = PLATFORM_SOCKET_INVALID; reactor_reply(req);
+    }
 }
 
-PlatformSocket platform_socket_connect(const char *host, int port)
+static void reactor_finish_connect(SockReq *req)
+{
+    int slot = (int)req->slot;
+    LONG err = 0;
+    socklen_t elen = sizeof(err);
+    getsockopt(socket_table[slot], SOL_SOCKET, SO_ERROR, (char *)&err, &elen);
+    if (err == 0) {
+        req->result = 0; req->out_slot = (PlatformSocket)slot;
+    } else {
+        CloseSocket(socket_table[slot]);
+        reactor_free_slot(slot);
+        req->result = -1; req->out_slot = PLATFORM_SOCKET_INVALID;
+    }
+    reactor_reply(req);
+}
+
+static void reactor_start_connect(SockReq *req)
 {
     struct hostent *he;
     struct sockaddr_in addr;
-    LONG fd;
-    int i;
+    LONG fd, rc;
+    int slot;
 
-    socket_table_ensure_init();
-
-    if (!bsdsocket_open())
-        return PLATFORM_SOCKET_INVALID;
-
-    /* DNS resolution can block on the network — stay GC-cooperative. */
-    cl_gc_enter_safe_region();
-    he = gethostbyname((STRPTR)host);
-    cl_gc_leave_safe_region();
-    if (!he) return PLATFORM_SOCKET_INVALID;
+    /* DNS: dotted-quad (e.g. loopback) resolves locally and does not block;
+     * a real hostname lookup can briefly stall the reactor — acceptable. */
+    he = gethostbyname((STRPTR)req->host);
+    if (!he) { req->result = -1; req->out_slot = PLATFORM_SOCKET_INVALID; reactor_reply(req); return; }
 
     fd = socket(AF_INET, SOCK_STREAM, 0);
-    if (fd < 0) return PLATFORM_SOCKET_INVALID;
+    if (fd < 0) { req->result = -1; req->out_slot = PLATFORM_SOCKET_INVALID; reactor_reply(req); return; }
+    reactor_set_nonblock(fd);
 
     memset(&addr, 0, sizeof(addr));
     addr.sin_family = AF_INET;
-    addr.sin_port = htons((unsigned short)port);
+    addr.sin_port = htons((unsigned short)req->port);
     memcpy(&addr.sin_addr, he->h_addr_list[0], (size_t)he->h_length);
 
-    {
-        LONG rc;
-        cl_gc_enter_safe_region();
-        rc = connect(fd, (struct sockaddr *)&addr, sizeof(addr));
-        cl_gc_leave_safe_region();
-        if (rc < 0) {
-            CloseSocket(fd);
-            return PLATFORM_SOCKET_INVALID;
-        }
+    rc = connect(fd, (struct sockaddr *)&addr, sizeof(addr));
+    if (rc == 0) {                                          /* connected immediately */
+        slot = reactor_alloc_slot(fd, 1);
+        if (slot < 0) { CloseSocket(fd); req->result = -1; req->out_slot = PLATFORM_SOCKET_INVALID; }
+        else          { req->result = 0;  req->out_slot = (PlatformSocket)slot; }
+        reactor_reply(req);
+    } else if (Errno() == EINPROGRESS || Errno() == EWOULDBLOCK) {
+        slot = reactor_alloc_slot(fd, 1);                   /* reserve slot, park */
+        if (slot < 0) { CloseSocket(fd); req->result = -1; req->out_slot = PLATFORM_SOCKET_INVALID; reactor_reply(req); return; }
+        req->slot = (PlatformSocket)slot;
+        pend_write[slot] = req;
+    } else {
+        CloseSocket(fd); req->result = -1; req->out_slot = PLATFORM_SOCKET_INVALID; reactor_reply(req);
     }
-
-    /* Find free slot (slot 0 reserved as INVALID) */
-    socket_table_lock();
-    for (i = 1; i < PLATFORM_SOCKET_TABLE_SIZE; i++) {
-        if (socket_table[i] == -1) {
-            socket_table[i] = fd;
-            socket_buf[i] = iobuf_alloc();
-            socket_table_unlock();
-            return (PlatformSocket)i;
-        }
-    }
-    socket_table_unlock();
-
-    CloseSocket(fd);
-    return PLATFORM_SOCKET_INVALID;
 }
 
-/* Flush socket write buffer to the wire */
-static int socket_flush_wbuf(PlatformSocket sh)
+static void reactor_do_listen(SockReq *req)
 {
-    IOBuf *b;
-    LONG fd, total = 0;
-    if (sh == 0 || sh >= PLATFORM_SOCKET_TABLE_SIZE) return -1;
-    b = socket_buf[sh];
-    if (!b || b->wlen == 0) return 0;
-    fd = socket_table[sh];
-    /* send() can block when the peer's receive window is full — bracket the
-     * whole drain loop so a slow reader cannot stall a stop-the-world GC. */
-    cl_gc_enter_safe_region();
-    while (total < (LONG)b->wlen) {
-        LONG n = send(fd, (APTR)(b->wbuf + total), (LONG)(b->wlen - total), 0);
-        if (n <= 0) { cl_gc_leave_safe_region(); return -1; }
-        total += n;
+    struct sockaddr_in addr;
+    LONG fd, on = 1;
+    int slot;
+
+    fd = socket(AF_INET, SOCK_STREAM, 0);
+    if (fd < 0) { req->result = -1; req->out_slot = PLATFORM_SOCKET_INVALID; reactor_reply(req); return; }
+    setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, (char *)&on, sizeof(on));
+    reactor_set_nonblock(fd);
+
+    memset(&addr, 0, sizeof(addr));
+    addr.sin_family = AF_INET;
+    addr.sin_port = htons((unsigned short)req->port);
+    addr.sin_addr.s_addr = htonl(req->loopback ? INADDR_LOOPBACK : INADDR_ANY);
+
+    if (bind(fd, (struct sockaddr *)&addr, sizeof(addr)) < 0 || listen(fd, 4) < 0) {
+        CloseSocket(fd); req->result = -1; req->out_slot = PLATFORM_SOCKET_INVALID; reactor_reply(req); return;
     }
+    {
+        socklen_t alen = sizeof(addr);
+        if (getsockname(fd, (struct sockaddr *)&addr, &alen) == 0)
+            req->out_port = ntohs(addr.sin_port);
+        else
+            req->out_port = req->port;
+    }
+    slot = reactor_alloc_slot(fd, 0);                       /* listener: no IOBuf */
+    if (slot < 0) { CloseSocket(fd); req->result = -1; req->out_slot = PLATFORM_SOCKET_INVALID; }
+    else          { req->result = 0;  req->out_slot = (PlatformSocket)slot; }
+    reactor_reply(req);
+}
+
+static void reactor_do_close(SockReq *req)
+{
+    int slot = (int)req->slot;
+    /* Cancel any op parked on this slot — the waiting thread gets -1 and must
+     * not touch the IOBuf afterwards (it is about to be freed). */
+    if (pend_read[slot])  { pend_read[slot]->result  = -1; reactor_reply(pend_read[slot]);  pend_read[slot]  = NULL; }
+    if (pend_write[slot]) { pend_write[slot]->result = -1; reactor_reply(pend_write[slot]); pend_write[slot] = NULL; }
+    if (socket_table[slot] >= 0) {
+        CloseSocket(socket_table[slot]);
+        reactor_free_slot(slot);
+    }
+    req->result = 0;
+    reactor_reply(req);
+}
+
+static void reactor_close_all(void)
+{
+    int i;
+    for (i = 1; i < PLATFORM_SOCKET_TABLE_SIZE; i++) {
+        if (pend_read[i])  { pend_read[i]->result  = -1; reactor_reply(pend_read[i]);  pend_read[i]  = NULL; }
+        if (pend_write[i]) { pend_write[i]->result = -1; reactor_reply(pend_write[i]); pend_write[i] = NULL; }
+        if (socket_table[i] >= 0) { CloseSocket(socket_table[i]); reactor_free_slot(i); }
+    }
+}
+
+static void reactor_handle(SockReq *req)
+{
+    switch (req->op) {
+    case REQ_CONNECT:  reactor_start_connect(req); break;
+    case REQ_LISTEN:   reactor_do_listen(req);     break;
+    case REQ_ACCEPT:   reactor_try_accept(req);    break;
+    case REQ_READFILL: reactor_try_read(req);      break;
+    case REQ_WRITE:    reactor_try_write(req);     break;
+    case REQ_CLOSE:    reactor_do_close(req);      break;
+    default:           req->result = -1; reactor_reply(req); break;
+    }
+}
+
+static void reactor_resume_read(int slot)
+{
+    SockReq *req = pend_read[slot];
+    pend_read[slot] = NULL;
+    if (req->op == REQ_ACCEPT) reactor_try_accept(req);
+    else                       reactor_try_read(req);
+}
+
+static void reactor_resume_write(int slot)
+{
+    SockReq *req = pend_write[slot];
+    pend_write[slot] = NULL;
+    if (req->op == REQ_CONNECT) reactor_finish_connect(req);
+    else                        reactor_try_write(req);
+}
+
+static void reactor_loop(void)
+{
+    ULONG portsig = 1UL << reactor_port->mp_SigBit;
+    int running = 1;
+
+    while (running) {
+        CL_fdset rset, wset;
+        int maxfd = -1, i;
+        ULONG sigs = portsig;
+
+        CL_FD_ZERO(&rset);
+        CL_FD_ZERO(&wset);
+        for (i = 1; i < PLATFORM_SOCKET_TABLE_SIZE; i++) {
+            LONG fd = socket_table[i];
+            if (fd < 0) continue;
+            if (pend_read[i])  { CL_FD_SET(fd, &rset); if (fd > maxfd) maxfd = fd; }
+            if (pend_write[i]) { CL_FD_SET(fd, &wset); if (fd > maxfd) maxfd = fd; }
+        }
+
+        if (maxfd < 0) {
+            /* No parked socket ops — just wait for the next request. */
+            Wait(portsig);
+        } else {
+            WaitSelect(maxfd + 1, &rset, &wset, NULL, NULL, &sigs);
+            for (i = 1; i < PLATFORM_SOCKET_TABLE_SIZE; i++) {
+                LONG fd = socket_table[i];
+                if (fd < 0) continue;
+                if (pend_read[i]  && CL_FD_ISSET(fd, &rset)) reactor_resume_read(i);
+                if (pend_write[i] && CL_FD_ISSET(fd, &wset)) reactor_resume_write(i);
+            }
+        }
+
+        /* Drain new requests (the port signal may or may not be set in sigs
+         * after WaitSelect; always poll the port to be safe). */
+        {
+            struct Message *m;
+            while ((m = GetMsg(reactor_port)) != NULL) {
+                SockReq *req = (SockReq *)m;
+                if (req->op == REQ_SHUTDOWN) {
+                    reactor_close_all();
+                    running = 0;
+                    reactor_reply(req);
+                } else {
+                    reactor_handle(req);
+                }
+            }
+        }
+    }
+}
+
+/* Reactor process entry: open SocketBase + request port (owned here), signal
+ * the booting thread, then run the loop until REQ_SHUTDOWN. */
+static void reactor_entry(void)
+{
+    struct MsgPort *port = CreateMsgPort();
+    int ok = 0;
+    int i;
+
+    for (i = 0; i < PLATFORM_SOCKET_TABLE_SIZE; i++) {
+        socket_table[i] = -1; socket_buf[i] = NULL;
+        pend_read[i] = NULL; pend_write[i] = NULL; pend_wpos[i] = 0;
+    }
+
+    if (port) {
+        SocketBase = OpenLibrary("bsdsocket.library", 3);
+        if (SocketBase) {
+            SetErrnoPtr(&socket_errno, sizeof(socket_errno));
+            reactor_port = port;   /* publish to clients */
+            ok = 1;
+        } else {
+            DeleteMsgPort(port);
+        }
+    }
+
+    Signal(reactor_boot_task, 1UL << reactor_boot_sig);  /* boot handshake done */
+    if (!ok) return;
+
+    reactor_loop();
+
+    CloseLibrary(SocketBase);
+    SocketBase = NULL;
+    DeleteMsgPort(reactor_port);
+    reactor_port = NULL;
+}
+
+/* Lazily spin up the reactor.  Guarded by a mutex so concurrent first-uses
+ * from different threads race safely.  Returns 1 if the reactor is ready. */
+static int reactor_ensure(void)
+{
+    if (reactor_port) return 1;
+    platform_mutex_lock(reactor_init_mutex);
+    if (!reactor_port) {
+        reactor_boot_task = FindTask(NULL);
+        reactor_boot_sig = AllocSignal(-1);
+        if (reactor_boot_sig >= 0) {
+            reactor_proc = CreateNewProcTags(
+                NP_Entry,     (ULONG)reactor_entry,
+                NP_StackSize, (ULONG)32768,
+                NP_Name,      (ULONG)"clamiga_sockets",
+                TAG_DONE);
+            if (reactor_proc)
+                Wait(1UL << reactor_boot_sig);   /* until reactor publishes the port */
+            FreeSignal(reactor_boot_sig);
+            reactor_boot_sig = -1;
+        }
+    }
+    platform_mutex_unlock(reactor_init_mutex);
+    return reactor_port != NULL;
+}
+
+/* ===== Client side (any thread): marshal a request and block on the reply ===== */
+
+static void sock_call(SockReq *req)
+{
+    struct MsgPort rp;
+    BYTE sig;
+
+    req->result = -1;
+    req->out_slot = PLATFORM_SOCKET_INVALID;
+    if (!reactor_ensure()) return;
+
+    sig = AllocSignal(-1);
+    if (sig < 0) return;
+
+    /* Stack-local reply port — valid for the whole call since we block until
+     * the reactor replies. */
+    rp.mp_Node.ln_Type = NT_MSGPORT;
+    rp.mp_Node.ln_Pri  = 0;
+    rp.mp_Node.ln_Name = NULL;
+    rp.mp_Flags        = PA_SIGNAL;
+    rp.mp_SigBit       = sig;
+    rp.mp_SigTask      = FindTask(NULL);
+    rp.mp_MsgList.lh_Head     = (struct Node *)&rp.mp_MsgList.lh_Tail;
+    rp.mp_MsgList.lh_Tail     = NULL;
+    rp.mp_MsgList.lh_TailPred = (struct Node *)&rp.mp_MsgList.lh_Head;
+
+    req->msg.mn_Node.ln_Type = NT_MESSAGE;
+    req->msg.mn_Length       = sizeof(*req);
+    req->msg.mn_ReplyPort    = &rp;
+
+    PutMsg(reactor_port, &req->msg);
+    cl_gc_enter_safe_region();
+    WaitPort(&rp);
     cl_gc_leave_safe_region();
+    GetMsg(&rp);
+    FreeSignal(sig);
+}
+
+/* Flush the slot's pending write buffer to the wire via the reactor. */
+static int sock_flush(PlatformSocket sh)
+{
+    IOBuf *b = socket_buf[sh];
+    SockReq req;
+    if (!b || b->wlen == 0) return 0;
+    memset(&req, 0, sizeof(req));
+    req.op = REQ_WRITE; req.slot = sh; req.buf = b->wbuf; req.len = (uint32_t)b->wlen;
+    sock_call(&req);
     b->wlen = 0;
-    return 0;
+    return req.result;
+}
+
+/* All public entry points run on arbitrary client threads.  They never call
+ * bsdsocket — they marshal a request to the reactor and block on the reply.
+ * Read/write buffering stays caller-side (in the slot's IOBuf), so only a
+ * buffer refill/flush costs a reactor round-trip, not every byte. */
+
+PlatformSocket platform_socket_connect(const char *host, int port)
+{
+    SockReq req;
+    /* Copy hostname onto the stack so sock_call's cl_gc_enter_safe_region()
+     * cannot invalidate the pointer if the GC compacts the arena. */
+    char host_buf[256];
+    strncpy(host_buf, host, sizeof(host_buf) - 1);
+    host_buf[sizeof(host_buf) - 1] = '\0';
+    memset(&req, 0, sizeof(req));
+    req.op = REQ_CONNECT; req.host = host_buf; req.port = port;
+    sock_call(&req);
+    return req.out_slot;
 }
 
 void platform_socket_close(PlatformSocket sh)
 {
-    if (sh > 0 && sh < PLATFORM_SOCKET_TABLE_SIZE && socket_table[sh] >= 0) {
-        LONG fd;
-        IOBuf *buf;
-        socket_flush_wbuf(sh);
-        /* Detach the slot under the lock, then do the blocking CloseSocket()
-         * and free() outside it. */
-        socket_table_lock();
-        fd = socket_table[sh];
-        buf = socket_buf[sh];
-        socket_table[sh] = -1;
-        socket_buf[sh] = NULL;
-        socket_table_unlock();
-        if (fd >= 0) CloseSocket(fd);
-        iobuf_free(buf);
-    }
+    SockReq req;
+    if (sh == 0 || sh >= PLATFORM_SOCKET_TABLE_SIZE) return;
+    sock_flush(sh);                       /* push any buffered output first */
+    memset(&req, 0, sizeof(req));
+    req.op = REQ_CLOSE; req.slot = sh;
+    sock_call(&req);
 }
 
 int platform_socket_read(PlatformSocket sh)
 {
     IOBuf *b;
-    if (sh == 0 || sh >= PLATFORM_SOCKET_TABLE_SIZE || socket_table[sh] < 0)
-        return -1;
+    if (sh == 0 || sh >= PLATFORM_SOCKET_TABLE_SIZE) return -1;
     b = socket_buf[sh];
-    if (b) {
-        if (b->rpos < b->rlen)
-            return (unsigned char)b->rbuf[b->rpos++];
-        /* Refill read buffer.  recv() blocks until data arrives, so bracket it
-         * as a GC safe region; capture the fd first since a concurrent close
-         * could clear the slot while we are parked. */
-        {
-            LONG fd = socket_table[sh];
-            LONG n;
-            cl_gc_enter_safe_region();
-            n = recv(fd, (APTR)b->rbuf, PLATFORM_IOBUF_SIZE, 0);
-            cl_gc_leave_safe_region();
-            if (n <= 0) return -1;
-            b->rpos = 1;
-            b->rlen = (int)n;
-            return (unsigned char)b->rbuf[0];
-        }
-    }
-    /* Fallback: no buffer */
+    if (!b) return -1;
+    if (b->rpos < b->rlen)
+        return (unsigned char)b->rbuf[b->rpos++];
+    /* Refill: the reactor recv()s directly into rbuf (shared address space). */
     {
-        LONG fd = socket_table[sh];
-        unsigned char byte;
-        LONG n;
-        cl_gc_enter_safe_region();
-        n = recv(fd, &byte, 1, 0);
-        cl_gc_leave_safe_region();
-        if (n <= 0) return -1;
-        return (int)byte;
+        SockReq req;
+        memset(&req, 0, sizeof(req));
+        req.op = REQ_READFILL; req.slot = sh;
+        req.buf = b->rbuf; req.len = PLATFORM_IOBUF_SIZE;
+        sock_call(&req);
+        if (req.result <= 0) return -1;   /* EOF or error */
+        b->rpos = 1;
+        b->rlen = req.result;
+        return (unsigned char)b->rbuf[0];
     }
 }
 
 int platform_socket_write(PlatformSocket sh, int byte)
 {
     IOBuf *b;
-    if (sh == 0 || sh >= PLATFORM_SOCKET_TABLE_SIZE || socket_table[sh] < 0)
-        return -1;
+    if (sh == 0 || sh >= PLATFORM_SOCKET_TABLE_SIZE) return -1;
     b = socket_buf[sh];
-    if (b) {
-        b->wbuf[b->wlen++] = (char)byte;
-        if (b->wlen >= PLATFORM_IOBUF_SIZE)
-            return socket_flush_wbuf(sh);
-        return 0;
-    }
-    /* Fallback: no buffer */
-    {
-        LONG fd = socket_table[sh];
-        unsigned char bb = (unsigned char)byte;
-        LONG n;
-        cl_gc_enter_safe_region();
-        n = send(fd, &bb, 1, 0);
-        cl_gc_leave_safe_region();
-        return (n == 1) ? 0 : -1;
-    }
+    if (!b) return -1;
+    b->wbuf[b->wlen++] = (char)byte;
+    if (b->wlen >= PLATFORM_IOBUF_SIZE)
+        return sock_flush(sh);
+    return 0;
 }
 
 int platform_socket_write_buf(PlatformSocket sh, const char *buf, uint32_t len)
 {
     IOBuf *b;
-    if (sh == 0 || sh >= PLATFORM_SOCKET_TABLE_SIZE || socket_table[sh] < 0)
-        return -1;
+    uint32_t pos = 0;
+    if (sh == 0 || sh >= PLATFORM_SOCKET_TABLE_SIZE) return -1;
     b = socket_buf[sh];
-    if (b) {
-        uint32_t pos = 0;
-        while (pos < len) {
-            int avail = PLATFORM_IOBUF_SIZE - b->wlen;
-            int chunk = (int)(len - pos);
-            if (chunk > avail) chunk = avail;
-            memcpy(b->wbuf + b->wlen, buf + pos, (size_t)chunk);
-            b->wlen += chunk;
-            pos += (uint32_t)chunk;
-            if (b->wlen >= PLATFORM_IOBUF_SIZE) {
-                if (socket_flush_wbuf(sh) != 0) return -1;
-            }
+    if (!b) return -1;
+    while (pos < len) {
+        int avail = PLATFORM_IOBUF_SIZE - b->wlen;
+        int chunk = (int)(len - pos);
+        if (chunk > avail) chunk = avail;
+        memcpy(b->wbuf + b->wlen, buf + pos, (size_t)chunk);
+        b->wlen += chunk;
+        pos += (uint32_t)chunk;
+        if (b->wlen >= PLATFORM_IOBUF_SIZE) {
+            if (sock_flush(sh) != 0) return -1;
         }
-        return 0;
     }
-    /* Fallback: direct send */
-    {
-        LONG total = 0;
-        LONG fd = socket_table[sh];
-        cl_gc_enter_safe_region();
-        while ((uint32_t)total < len) {
-            LONG n = send(fd, (APTR)(buf + total), (LONG)(len - (uint32_t)total), 0);
-            if (n <= 0) { cl_gc_leave_safe_region(); return -1; }
-            total += n;
-        }
-        cl_gc_leave_safe_region();
-        return 0;
-    }
+    return 0;
 }
 
 int platform_socket_flush(PlatformSocket sh)
 {
-    return socket_flush_wbuf(sh);
+    if (sh == 0 || sh >= PLATFORM_SOCKET_TABLE_SIZE) return -1;
+    return sock_flush(sh);
 }
 
 PlatformSocket platform_socket_listen(int port, int loopback, int *actual_port)
 {
-    struct sockaddr_in addr;
-    LONG fd, on = 1;
-    int i;
-
-    socket_table_ensure_init();
-
-    if (!bsdsocket_open())
-        return PLATFORM_SOCKET_INVALID;
-
-    fd = socket(AF_INET, SOCK_STREAM, 0);
-    if (fd < 0) return PLATFORM_SOCKET_INVALID;
-
-    /* Allow immediate rebind after the server restarts (TIME_WAIT). */
-    setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, (APTR)&on, sizeof(on));
-
-    memset(&addr, 0, sizeof(addr));
-    addr.sin_family = AF_INET;
-    addr.sin_port = htons((unsigned short)port);
-    addr.sin_addr.s_addr = htonl(loopback ? INADDR_LOOPBACK : INADDR_ANY);
-
-    if (bind(fd, (struct sockaddr *)&addr, sizeof(addr)) < 0) {
-        CloseSocket(fd);
-        return PLATFORM_SOCKET_INVALID;
-    }
-    if (listen(fd, 4) < 0) {
-        CloseSocket(fd);
-        return PLATFORM_SOCKET_INVALID;
-    }
-    if (actual_port) {
-        socklen_t alen = sizeof(addr);
-        if (getsockname(fd, (struct sockaddr *)&addr, &alen) == 0)
-            *actual_port = ntohs(addr.sin_port);
-        else
-            *actual_port = port;
-    }
-
-    /* Listener occupies a slot but needs no IOBuf — it is never read/written. */
-    socket_table_lock();
-    for (i = 1; i < PLATFORM_SOCKET_TABLE_SIZE; i++) {
-        if (socket_table[i] == -1) {
-            socket_table[i] = fd;
-            socket_buf[i] = NULL;
-            socket_table_unlock();
-            return (PlatformSocket)i;
-        }
-    }
-    socket_table_unlock();
-
-    CloseSocket(fd);
-    return PLATFORM_SOCKET_INVALID;
+    SockReq req;
+    memset(&req, 0, sizeof(req));
+    req.op = REQ_LISTEN; req.port = port; req.loopback = loopback;
+    sock_call(&req);
+    if (req.out_slot != PLATFORM_SOCKET_INVALID && actual_port)
+        *actual_port = req.out_port;
+    return req.out_slot;
 }
 
 PlatformSocket platform_socket_accept(PlatformSocket listener)
 {
-    struct sockaddr_in caddr;
-    socklen_t clen = sizeof(caddr);
-    LONG fd;
-    int i;
-
-    if (listener == 0 || listener >= PLATFORM_SOCKET_TABLE_SIZE ||
-        socket_table[listener] < 0)
+    SockReq req;
+    if (listener == 0 || listener >= PLATFORM_SOCKET_TABLE_SIZE)
         return PLATFORM_SOCKET_INVALID;
-
-    /* accept() blocks — must run outside the table lock, and as a GC safe
-     * region so a thread parked here waiting for a client does not stall a
-     * concurrent stop-the-world GC.  This is the SLY read-loop deadlock. */
-    {
-        LONG lfd = socket_table[listener];
-        cl_gc_enter_safe_region();
-        fd = accept(lfd, (struct sockaddr *)&caddr, &clen);
-        cl_gc_leave_safe_region();
-    }
-    if (fd < 0) return PLATFORM_SOCKET_INVALID;
-
-    socket_table_lock();
-    for (i = 1; i < PLATFORM_SOCKET_TABLE_SIZE; i++) {
-        if (socket_table[i] == -1) {
-            socket_table[i] = fd;
-            socket_buf[i] = iobuf_alloc();
-            socket_table_unlock();
-            return (PlatformSocket)i;
-        }
-    }
-    socket_table_unlock();
-
-    CloseSocket(fd);
-    return PLATFORM_SOCKET_INVALID;
+    memset(&req, 0, sizeof(req));
+    req.op = REQ_ACCEPT; req.slot = listener;
+    sock_call(&req);
+    return req.out_slot;
 }
 
 void platform_init(void)
 {
     /* Nothing needed — dos.library is auto-opened by startup */
+    platform_mutex_init(&reactor_init_mutex);
 }
 
 void platform_shutdown(void)
 {
-    if (SocketBase) {
-        /* Close any remaining open sockets */
-        int i;
-        for (i = 1; i < PLATFORM_SOCKET_TABLE_SIZE; i++) {
-            if (socket_table[i] >= 0) {
-                socket_flush_wbuf((PlatformSocket)i);
-                CloseSocket(socket_table[i]);
-                socket_table[i] = -1;
-                iobuf_free(socket_buf[i]);
-                socket_buf[i] = NULL;
-            }
-        }
-        CloseLibrary(SocketBase);
-        SocketBase = NULL;
+    /* Tell the reactor to close every socket, drop SocketBase, and exit.  The
+     * reactor replies before tearing down, so this returns once it is done. */
+    if (reactor_port) {
+        SockReq req;
+        memset(&req, 0, sizeof(req));
+        req.op = REQ_SHUTDOWN;
+        sock_call(&req);
     }
 }
 
