@@ -1,0 +1,37 @@
+# .pipeline.yml — AI pipeline config for cl-amiga (a Common Lisp VM in C89/C99).
+#
+# Used by the ai-pipeline orchestrator (~/Development/MySources/ai-pipeline).
+# Run manually:
+#   <ai-pipeline>/bin/pipeline review|fix|test|all <this repo>
+
+# C toolchain image (gcc + make), built FROM the base agent image so it still
+# carries Claude Code + the entrypoint. See ai-pipeline/docker/c/Dockerfile.
+image: ai-pipeline-agent-c:latest
+
+# TEST stage command, run inside the container at /workspace.
+#
+# The test stage mounts the workspace READ-ONLY, but a C build writes object
+# files and binaries. cl-amiga's Makefile derives every output path from
+# BUILDDIR (the clamiga binary AND $(BUILDDIR)/tests/*), so we redirect it to
+# /tmp/build — the exec-capable scratch tmpfs run-stage.sh provides — leaving
+# the repo untouched. `test-fast` is the quick tier (skips the quicklisp/sento
+# host-cold-test, which isn't available in the container anyway).
+test_cmd: make BUILDDIR=/tmp/build/host test-fast
+
+# Model the review/fix stages drive (sonnet | opus | haiku, or a full id).
+model: sonnet
+
+# Bound how many times `pipeline all` may loop fix->test before giving up.
+max_fix_retries: 2
+
+# Project rules appended to the review/fix prompts (GC-safety, 32-bit-clean
+# structs, C89/C99, HyperSpec, mandatory regression tests). Without this the
+# generic prompt knows nothing about cl-amiga's invariants.
+review_prompt_file: scripts/review/guidance.md
+fix_prompt_file: scripts/review/guidance.md
+
+# -- notes ----------------------------------------------------------------
+# * The test stage runs with --network none, so no gems/quicklisp fetch — the
+#   fast tier is a pure offline gcc build + unit tests.
+# * The cross-compile / Amiga / FS-UAE tests cannot run here (no m68k toolchain
+#   or emulator in the container); those stay on the host (make -f Makefile.cross).
