@@ -22,8 +22,9 @@
 #   CLAUDE_AUTO_FIX=0      review + block on issues, but don't auto-fix
 #   CLAUDE_REVIEW_MODEL    default: sonnet
 #   CLAUDE_FIX_MODEL       default: sonnet
-#   CLAUDE_REVIEW_TIMEOUT  default: 600   (seconds, if `timeout`/`gtimeout` exists;
-#                          the agentic Read+grep review can take several minutes)
+#   CLAUDE_REVIEW_TIMEOUT  default: 1800  (seconds, if `timeout`/`gtimeout` exists;
+#                          the agentic Read+grep review and the fix agent can each
+#                          take many minutes)
 #
 # Note: --max-budget-usd is intentionally NOT passed. It only caps pay-per-token
 # API-call spend (and only with --print); it does nothing for a subscription
@@ -35,7 +36,7 @@ ENABLED="${CLAUDE_AUTO_REVIEW:-1}"
 REVIEW_MODEL="${CLAUDE_REVIEW_MODEL:-sonnet}"
 FIX_MODEL="${CLAUDE_FIX_MODEL:-sonnet}"
 AUTO_FIX="${CLAUDE_AUTO_FIX:-1}"
-REVIEW_TIMEOUT="${CLAUDE_REVIEW_TIMEOUT:-600}"
+REVIEW_TIMEOUT="${CLAUDE_REVIEW_TIMEOUT:-1800}"
 RUN_TESTS="${CLAUDE_RUN_TESTS:-1}"          # stage 2: run the fast test tier
 TEST_TARGET="${CLAUDE_TEST_TARGET:-test-fast}"  # set to 'test' to include sento
 TEST_TIMEOUT="${CLAUDE_TEST_TIMEOUT:-600}"
