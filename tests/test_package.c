@@ -794,6 +794,50 @@ TEST(eval_do_symbols_keyword)
         "T");
 }
 
+TEST(eval_do_all_symbols_finds_car)
+{
+    /* CAR is present in COMMON-LISP, so do-all-symbols must visit it */
+    ASSERT_STR_EQ(eval_print(
+        "(let ((found nil)) (do-all-symbols (s) (when (eq s 'car) (setq found t))) found)"),
+        "T");
+}
+
+TEST(eval_do_all_symbols_result_form)
+{
+    /* result-form is evaluated with var bound to NIL (CLHS) */
+    ASSERT_STR_EQ(eval_print(
+        "(do-all-symbols (s s) :no-error)"),
+        "NIL");
+    ASSERT_STR_EQ(eval_print(
+        "(do-all-symbols (s :the-result))"),
+        ":THE-RESULT");
+}
+
+TEST(eval_do_all_symbols_dedup)
+{
+    /* A symbol present in more than one package is processed only once. */
+    eval_print("(make-package \"DAS-A\")");
+    eval_print("(make-package \"DAS-B\")");
+    eval_print("(intern \"SHARED\" (find-package \"DAS-A\"))");
+    /* import the same symbol object into DAS-B so it is present in both */
+    eval_print("(import (find-symbol \"SHARED\" (find-package \"DAS-A\")) "
+               "(find-package \"DAS-B\"))");
+    ASSERT_STR_EQ(eval_print(
+        "(let ((n 0) (target (find-symbol \"SHARED\" (find-package \"DAS-A\")))) "
+        "  (do-all-symbols (s) (when (eq s target) (incf n))) n)"),
+        "1");
+}
+
+/* Regression: CLHS requires an implicit block named nil around the entire
+ * do-all-symbols form.  A (return value) in the body must exit the whole
+ * form, not just the inner dolist over one package's symbols. */
+TEST(eval_do_all_symbols_early_return)
+{
+    ASSERT_STR_EQ(eval_print(
+        "(do-all-symbols (s) (when (eq s 'car) (return :found)))"),
+        ":FOUND");
+}
+
 /* ---- CDR-10: Package-local nicknames ---- */
 
 TEST(c_local_nicknames_basic)
@@ -1070,6 +1114,10 @@ int main(void)
     RUN(eval_do_external_symbols);
     RUN(eval_do_external_symbols_finds_car);
     RUN(eval_do_symbols_keyword);
+    RUN(eval_do_all_symbols_finds_car);
+    RUN(eval_do_all_symbols_result_form);
+    RUN(eval_do_all_symbols_dedup);
+    RUN(eval_do_all_symbols_early_return);
 
     /* CDR-10: Package-local nicknames */
     RUN(c_local_nicknames_basic);
