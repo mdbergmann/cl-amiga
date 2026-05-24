@@ -22,6 +22,12 @@ test_cmd: make BUILDDIR=/tmp/build/host test-fast
 model: sonnet
 implement_model: opus
 
+# max turn defaults, override if needed
+# review_max_turns: 30
+# fix_max_turns: 30
+# implement_max_turns: 40
+# analyze_max_turns: 50
+
 # Bound how many times `pipeline all` may loop fix->test before giving up.
 max_fix_retries: 2
 

@@ -186,6 +186,10 @@ static int typep_symbol(CL_Obj obj, CL_Obj type_sym)
         if (CL_STRUCT_P(obj)) {
             extern int cl_clos_type_matches(CL_Obj obj_type, CL_Obj test_type);
             CL_Struct *st;
+            /* Guard the lazy init with the write lock so only one thread
+             * performs the lookup; subsequent threads will find the cached
+             * value and skip the block entirely. */
+            cl_tables_wrlock();
             if (CL_NULL_P(TYPE_SYM_GRAY_FUNDAMENTAL_STREAM)) {
                 CL_Obj gray_pkg = cl_find_package("GRAY", 4);
                 if (!CL_NULL_P(gray_pkg)) {
@@ -195,6 +199,7 @@ static int typep_symbol(CL_Obj obj, CL_Obj type_sym)
                         TYPE_SYM_GRAY_FUNDAMENTAL_STREAM = sym;
                 }
             }
+            cl_tables_rwunlock();
             if (!CL_NULL_P(TYPE_SYM_GRAY_FUNDAMENTAL_STREAM)) {
                 st = (CL_Struct *)CL_OBJ_TO_PTR(obj);
                 return cl_clos_type_matches(st->type_desc,

@@ -274,7 +274,13 @@
       (orig-open-stream-p (symbol-function 'open-stream-p))
       (orig-stream-element-type (if (fboundp 'stream-element-type)
                                     (symbol-function 'stream-element-type)
-                                    nil)))
+                                    nil))
+      (orig-princ   (symbol-function 'princ))
+      (orig-prin1   (symbol-function 'prin1))
+      (orig-print   (symbol-function 'print))
+      (orig-write   (symbol-function 'write))
+      (orig-format  (symbol-function 'format))
+      (orig-pprint  (symbol-function 'pprint)))
 
   (defun %gray-stream-p (x)
     "Return T if X is a Gray stream (CLOS instance of fundamental-stream)."
@@ -483,6 +489,82 @@
       (if (%gray-stream-p s)
           (gray:stream-clear-output s)
           (funcall orig-clear-output s))))
+
+  ;; Helper: return plist with KEY (and its value) removed
+  (defun %plist-drop-key (plist key)
+    (let ((result nil))
+      (do ((rest plist (cddr rest)))
+          ((null rest) (nreverse result))
+        (unless (eq (car rest) key)
+          (push (car rest) result)
+          (push (cadr rest) result)))))
+
+  ;; PRINC
+  (defun princ (object &optional stream)
+    (let ((s (%resolve-output-stream stream)))
+      (if (%gray-stream-p s)
+          (let ((tmp (make-string-output-stream)))
+            (funcall orig-princ object tmp)
+            (write-string (get-output-stream-string tmp) s)
+            object)
+          (funcall orig-princ object s))))
+
+  ;; PRIN1
+  (defun prin1 (object &optional stream)
+    (let ((s (%resolve-output-stream stream)))
+      (if (%gray-stream-p s)
+          (let ((tmp (make-string-output-stream)))
+            (funcall orig-prin1 object tmp)
+            (write-string (get-output-stream-string tmp) s)
+            object)
+          (funcall orig-prin1 object s))))
+
+  ;; PRINT
+  (defun print (object &optional stream)
+    (let ((s (%resolve-output-stream stream)))
+      (if (%gray-stream-p s)
+          (let ((tmp (make-string-output-stream)))
+            (funcall orig-print object tmp)
+            (write-string (get-output-stream-string tmp) s)
+            object)
+          (funcall orig-print object s))))
+
+  ;; WRITE — intercept :stream keyword, forward all other keys to orig-write
+  (defun write (object &rest args)
+    (let* ((raw-stream (getf args :stream *standard-output*))
+           (s (%resolve-output-stream raw-stream)))
+      (if (%gray-stream-p s)
+          (let ((tmp (make-string-output-stream))
+                (other-args (%plist-drop-key args :stream)))
+            (apply orig-write object :stream tmp other-args)
+            (write-string (get-output-stream-string tmp) s)
+            object)
+          (apply orig-write object args))))
+
+  ;; FORMAT — NIL destination always fast-paths to orig-format (returns string).
+  ;; T means *standard-output* (per HyperSpec), not *terminal-io*.
+  (defun format (destination control-string &rest format-args)
+    (cond
+      ((null destination)
+       (apply orig-format nil control-string format-args))
+      (t
+       (let ((s (if (eq destination t) *standard-output* destination)))
+         (if (%gray-stream-p s)
+             (let ((tmp (make-string-output-stream)))
+               (apply orig-format tmp control-string format-args)
+               (write-string (get-output-stream-string tmp) s)
+               nil)
+             (apply orig-format destination control-string format-args))))))
+
+  ;; PPRINT
+  (defun pprint (object &optional stream)
+    (let ((s (%resolve-output-stream stream)))
+      (if (%gray-stream-p s)
+          (let ((tmp (make-string-output-stream)))
+            (funcall orig-pprint object tmp)
+            (write-string (get-output-stream-string tmp) s)
+            nil)
+          (funcall orig-pprint object s))))
 
 ) ;; end let
 

@@ -1,7 +1,7 @@
 ---
 id: 0001-gray-streams-fix-on-clamiga-for-slynk
 type: bug
-status: failed
+status: ready
 title: gray streams fix on clamiga (for slynk)
 ---
 
