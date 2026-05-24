@@ -4643,7 +4643,7 @@
       (check "gray input typep stream"    t   (typep gi 'stream))
       (check "gray input not output-stream-p" nil (output-stream-p gi)))
     ; --- item-2: printer functions route to Gray streams ---
-    (defclass test-gs-cap (gray:fundamental-output-stream)
+    (defclass test-gs-cap (gray:fundamental-character-output-stream)
       ((buf :initform nil)))
     (defmethod gray:stream-write-char ((s test-gs-cap) c)
       (setf (slot-value s 'buf) (cons c (slot-value s 'buf))))
@@ -4657,6 +4657,10 @@
       (check "gray write"       "\"hi\""  (progn (write "hi" :stream g) (gs-flush g)))
       (check "gray format"      "42"      (progn (format g "~A" 42) (gs-flush g)))
       (check "gray format nil"  "99"      (format nil "~A" 99))
+      (check "gray print"
+             (concatenate 'string (string #\Newline) "42 ")
+             (progn (print 42 g) (gs-flush g)))
+      (check "gray pprint"      t         (progn (pprint '(a b c) g) (> (length (gs-flush g)) 0)))
       (handler-case (error "test-error-msg")
         (error (e)
           (princ e g)
