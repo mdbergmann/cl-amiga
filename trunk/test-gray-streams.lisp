@@ -47,6 +47,7 @@
   ;; These two were already passing before the fix.
   (check "streamp on gray instance"         t (streamp g))
   (check "output-stream-p on gray instance" t (output-stream-p g))
+  (check "input-stream-p on gray output instance" nil (input-stream-p g))
 
   ;; This is the regression: was returning NIL before the fix.
   (check "typep gray-stream 'stream"        t (typep g 'stream))
@@ -77,6 +78,7 @@
 (let ((gi (make-instance 'test-gray-in-stream)))
   (check "streamp on gray input instance"           t   (streamp gi))
   (check "typep gray-input-stream 'stream"          t   (typep gi 'stream))
+  (check "input-stream-p on gray input instance"    t   (input-stream-p gi))
   (check "output-stream-p on gray input instance"   nil (output-stream-p gi)))
 
 (format t "~%--- Printer functions route to Gray streams (item-2) ---~%")
@@ -141,4 +143,4 @@
 (if (= *fail-count* 0)
     (format t "ALL TESTS PASSED~%")
     (progn (format t "SOME TESTS FAILED~%")
-           (ext:quit 1)))
+           (quit 1)))
