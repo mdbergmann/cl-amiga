@@ -1,0 +1,13 @@
+{
+  "summary": "A canonical runner (trunk/run-load-and-test-all.sh) already auto-discovers and runs every trunk/load-and-test-*.lisp with per-script heap/timeout and a result table, but only counts failed scripts — not aggregate test-level passes/failures. The work is to add a thin 'make test-extra' wrapper plus pass/fail aggregation (and a fixture-based regression test).",
+  "affected_areas": [
+    "Build system (Makefile: new test-extra target, test-fast shell-test list)",
+    "Integration test runner (trunk/run-load-and-test-all.sh: numeric aggregation + grand-total + tally-only mode + exit-status change)",
+    "Host test suite (tests/test_test_extra.sh)"
+  ],
+  "risks": [
+    "Strengthening the runner's exit-status contract (now non-zero on aggregate test failures, not just unclean script exits) could surprise existing callers; mitigate by updating the script's header documentation — the new behavior is a superset aligned with the request.",
+    "Heterogeneous log formats: closer-mop has no numeric tally (counts as script-level OK only, 0/0 to numeric totals); a future format clamiga doesn't recognize still runs (auto-pickup) but contributes 0/0 and is flagged '??' until a parse pattern is added.",
+    "The test-extra target itself requires quicklisp/shims/ansi-test to actually pass and is intentionally NOT wired into 'make test'; only the lightweight fixture-based aggregation test runs in the standard suite, so CI coverage validates the counting logic, not the heavyweight library runs."
+  ]
+}

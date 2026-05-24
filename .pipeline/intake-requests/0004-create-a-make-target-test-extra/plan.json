@@ -1,0 +1,19 @@
+{
+  "request_id": "0004-create-a-make-target-test-extra",
+  "summary": "Add a 'make test-extra' target that runs every trunk/load-and-test-*.lisp script, auto-discovering new ones, and reports aggregate pass/fail counts at the end.",
+  "items": [
+    {
+      "id": "item-1",
+      "title": "Add 'test-extra' make target + aggregate pass/fail counting in the load-and-test runner",
+      "description": "Deliver a 'make test-extra' target that runs ALL trunk/load-and-test-*.lisp scripts, auto-picks up new ones, and prints an aggregate pass/fail tally. Reuse the existing canonical runner instead of duplicating discovery/heap/timeout logic.\n\n1) Extend trunk/run-load-and-test-all.sh:\n   - Add a numeric extractor (e.g. a `counts_for <logfile>` function echoing \"<pass> <fail> <recognized>\") that parses each known log format already understood by the existing summarize():\n       * fiveam-style (5am/str/sento): lines 'Pass: N (..)' and 'Fail: N (..)' -> N pass / N fail (take the LAST occurrence, as summarize() does).\n       * rt-style (ansi/ansi-numbers): lines '^passed: N' / '^failed: N'.\n       * fset: line '=== FSet Results: N passed, N failed, ... ==='.\n       * closer-mop smoke test ('shim OK'): no per-test numbers -> contributes 0/0 to the numeric tally but still counts as a script-level OK.\n       * unrecognized format: contribute 0/0 and keep the existing '?? no recognized summary' flag in the table.\n   - Accumulate total_pass and total_fail across all scripts (in addition to the existing fail_count of scripts that didn't exit cleanly).\n   - After the per-script table, print a machine-readable grand-total block (also appended to SUMMARY.txt), e.g.:\n         === GRAND TOTAL ===\n         scripts: <ok>/<total> ok\n         tests:   <total_pass> passed, <total_fail> failed\n   - Set the script's exit status to non-zero if ANY script failed/timed out OR total_fail > 0. Update the header-comment that documents the exit status accordingly (it currently says 'number of scripts that did not finish cleanly').\n   - Add a tally-only path so the aggregation can be unit-tested WITHOUT running clamiga/quicklisp: support a flag/env (e.g. `--tally-dir <DIR>` or TALLY_DIR=<DIR>) that skips running scripts and instead tallies + prints the grand total from pre-existing .log files in <DIR>. Keep this minimal.\n\n2) Add a 'test-extra' target to the Makefile:\n   - Add it to the .PHONY list.\n   - Depend on 'host' (the runner errors if build/host/clamiga is missing).\n   - Invoke `sh trunk/run-load-and-test-all.sh`, inheriting its exit code. Optionally map a `COLD=1` make variable to the script's `--cold` flag.\n   - Do NOT wire test-extra into 'make test'/'test-fast' (it needs quicklisp/shims/ansi-test and is heavyweight).\n\n3) Add a host regression test tests/test_test_extra.sh following the tests/test_batch.sh pattern (sh, ok/FAIL checks, '<n> passed, <n> failed, <n> total' summary, exit 1 on failure):\n   - Create a temp dir of fixture .log files, one per format (fiveam, rt, fset, closer-mop, unrecognized) with known pass/fail numbers.\n   - Invoke the runner's tally-only path against the fixture dir and assert the printed grand-total pass/fail equals the known fixture sums.\n   - Assert exit code is non-zero when a fixture contains failures and zero when all pass.\n   - Wire this test into the test-fast target's shell-test list (alongside test_batch/test_fasl_compat/etc.) so 'make test' covers it. It runs no clamiga and needs no quicklisp, so it is fast and deterministic.\n\nNote: an Amiga test is N/A here — test-extra is a host-only build/integration target driving host integration scripts; the host fixture test covers the aggregation logic.",
+      "files_in_scope": [
+        "Makefile",
+        "trunk/run-load-and-test-all.sh",
+        "tests/test_test_extra.sh"
+      ],
+      "est_scope_tokens": 14000,
+      "depends_on": [],
+      "status": "pending"
+    }
+  ]
+}
