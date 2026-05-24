@@ -3,7 +3,7 @@ third_party/
 *.o
 *.d
 .reviews/
-.pipeline-state/
+.pipeline/state/
 .claude/settings.local.json
 .claude/scheduled_tasks.lock
 verify/*
