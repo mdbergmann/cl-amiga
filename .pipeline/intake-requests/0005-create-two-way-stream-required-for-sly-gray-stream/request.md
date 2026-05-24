@@ -1,7 +1,7 @@
 ---
 id: 0005-create-two-way-stream-required-for-sly-gray-stream
 type: feature
-status: implementing
+status: done
 title: create two-way-stream (required for Sly - gray streams)
 ---
 
