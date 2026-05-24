@@ -1,0 +1,16 @@
+{
+  "summary": "Two related Gray-stream gaps. (1) input-stream-p/output-stream-p signal a type error instead of returning NIL for the wrong direction of a Gray stream — a Lisp-only bug in the gray-streams.lisp generic-function (t) fallback, which calls the C builtin that errors on non-native streams. (2) make-two-way-stream rejects Gray streams because bi_make_two_way_stream uses a native CL_STREAM_P tag test; additionally a native two-way stream wrapping Gray children cannot delegate I/O. Fix: relax the C arg check to accept Gray streams (CPL check, mirroring the existing typep STREAM pattern), keep the native two-way stream (so typep/accessors stay native), make raw C resolve_stream Gray-safe (no corruption), and unwrap native two-way streams to their child in gray-streams.lisp's %resolve-*-stream helpers so the existing Gray dispatch path handles read/write. Both bugs reproduced on a fresh Linux host build.",
+  "affected_areas": [
+    "lib/gray-streams.lisp — input-stream-p/output-stream-p (t) fallbacks; %resolve-input-stream/%resolve-output-stream two-way unwrap",
+    "src/core/builtins_stream.c — bi_make_two_way_stream arg validation; new Gray-class CPL helpers; GC roots in cl_builtins_stream_init",
+    "src/core/stream.c — resolve_stream child guards (CL_HEAP_P -> CL_STREAM_P) for Gray-safety",
+    "tests/test_stream.c, trunk/test-gray-streams.lisp, tests/amiga/run-tests.lisp — regression tests"
+  ],
+  "risks": [
+    "Method-specificity assumption: the input-stream-p/output-stream-p fix relies on a Gray stream reaching the (t) method only when it does not match the more-specific fundamental-input/output-stream method; verified consistent with the existing GF definitions.",
+    "Raw C I/O on a native two-way stream wrapping a Gray child degrades to EOF/no-op (Part B guard) rather than delegating; the functional path is the wrapped Lisp printers/readers (Part C). If any SLY-critical output reached the Gray stream only via a non-wrapped C path it would be silently dropped — but the wrapped high-level printers (format/write/princ/write-string) cover the mrepl path the 0001 printer fix already established.",
+    "CPL check in C duplicates input-stream-p/output-stream-p semantics and won't honor library-defined input-stream-p methods on non-Gray classes; acceptable for the Gray/SLY use case and consistent with the existing typep STREAM implementation.",
+    "gray-streams.lisp is loaded on demand and cached as a FASL; a stale ~/.cache/common-lisp fasl could mask edits — verification notes to clear it if needed. Not part of the core boot image, so no boot.lisp/FASL regeneration required.",
+    "trunk/test-gray-streams.lisp currently calls (ext:quit 1) on failure which itself errors (QUIT not exported from EXT), masking CI failure signalling; fixed to (quit 1) as part of item-1."
+  ]
+}

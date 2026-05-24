@@ -1,7 +1,7 @@
 ---
 id: 0006-unblock-gray-stream-for-two-way-stream
 type: bug
-status: ready
+status: implementing
 title: unblock gray-stream for two-way-stream
 ---
 
