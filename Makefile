@@ -76,7 +76,7 @@ TEST_BINS   = $(patsubst $(TEST_SRCDIR)/%.c,$(BUILDDIR)/tests/%,$(TEST_SRCS))
 LIB_SRCS = $(PLATFORM_SRC) $(CORE_SRC) $(JIT_SRC)
 LIB_OBJS = $(patsubst $(SRCDIR)/%.c,$(BUILDDIR)/%.o,$(LIB_SRCS))
 
-.PHONY: host test test-fast linux-test clean verify-amiga install-hooks
+.PHONY: host test test-fast test-extra linux-test clean verify-amiga install-hooks
 
 host: $(BUILDDIR)/clamiga
 
@@ -127,6 +127,13 @@ test-fast: $(TEST_BINS) host
 	fi; \
 	echo "--- test_load_exit ---"; \
 	if sh $(TEST_SRCDIR)/test_load_exit.sh $(BUILDDIR)/clamiga; then \
+		echo "PASS"; \
+	else \
+		echo "FAIL"; \
+		failed=1; \
+	fi; \
+	echo "--- test_test_extra ---"; \
+	if sh $(TEST_SRCDIR)/test_test_extra.sh; then \
 		echo "PASS"; \
 	else \
 		echo "FAIL"; \
@@ -217,6 +224,13 @@ host-cold-test: host
 	pass=$$(grep -oE "Pass: [0-9]+" $(HOST_COLD_TEST_LOG) | head -1); \
 	fail=$$(grep -oE "Fail: [0-9]+" $(HOST_COLD_TEST_LOG) | head -1); \
 	echo "=== host-cold-test: PASS ($$checks; $$pass; $$fail) ==="
+
+# Run all trunk/load-and-test-*.lisp integration scripts and print an
+# aggregate pass/fail tally.  Requires quicklisp and installed shims.
+# NOT wired into 'make test' — heavyweight, needs quicklisp/ansi-tests.
+# Set COLD=1 to clear the FASL cache before each script (cold-boot mode).
+test-extra: host
+	sh trunk/run-load-and-test-all.sh $(if $(filter 1,$(COLD)),--cold)
 
 # Run host build + tests inside an Ubuntu container (matches GitHub Actions
 # `ubuntu-latest`).  Requires a working `docker` CLI (Docker Desktop, OrbStack,
