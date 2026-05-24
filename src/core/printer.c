@@ -1296,6 +1296,13 @@ static void print_obj(CL_Obj obj)
 
     case TYPE_STREAM: {
         CL_Stream *st = (CL_Stream *)CL_OBJ_TO_PTR(obj);
+        if (st->stream_type == CL_STREAM_TWO_WAY) {
+            out_str("#<TWO-WAY-STREAM");
+            if (!(st->flags & CL_STREAM_FLAG_OPEN))
+                out_str(" (closed)");
+            out_char('>');
+            break;
+        }
         out_str("#<");
         switch (st->stream_type) {
         case CL_STREAM_CONSOLE: out_str("CONSOLE-"); break;

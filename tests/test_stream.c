@@ -2486,6 +2486,124 @@ TEST(unread_char_utf8)
 
 #endif /* CL_WIDE_STRINGS */
 
+/* --- Two-way stream tests --- */
+
+TEST(make_two_way_stream_returns_stream)
+{
+    CL_Obj result = cl_eval_string(
+        "(let ((in (make-string-input-stream \"hello\"))"
+        "      (out (make-string-output-stream)))"
+        "  (streamp (make-two-way-stream in out)))");
+    ASSERT(result == CL_T);
+}
+
+TEST(two_way_stream_direction_predicates)
+{
+    CL_Obj result = cl_eval_string(
+        "(let* ((in (make-string-input-stream \"hello\"))"
+        "       (out (make-string-output-stream))"
+        "       (tw (make-two-way-stream in out)))"
+        "  (list (input-stream-p tw) (output-stream-p tw)))");
+    char buf[64];
+    cl_prin1_to_string(result, buf, sizeof(buf));
+    ASSERT_STR_EQ(buf, "(T T)");
+}
+
+TEST(two_way_stream_accessors)
+{
+    CL_Obj result = cl_eval_string(
+        "(let* ((in (make-string-input-stream \"hello\"))"
+        "       (out (make-string-output-stream))"
+        "       (tw (make-two-way-stream in out)))"
+        "  (list (eq (two-way-stream-input-stream tw) in)"
+        "        (eq (two-way-stream-output-stream tw) out)))");
+    char buf[64];
+    cl_prin1_to_string(result, buf, sizeof(buf));
+    ASSERT_STR_EQ(buf, "(T T)");
+}
+
+TEST(two_way_stream_read_from_input)
+{
+    CL_Obj result = cl_eval_string(
+        "(let* ((in (make-string-input-stream \"ABC\"))"
+        "       (out (make-string-output-stream))"
+        "       (tw (make-two-way-stream in out)))"
+        "  (list (read-char tw) (read-char tw)))");
+    char buf[64];
+    cl_prin1_to_string(result, buf, sizeof(buf));
+    ASSERT_STR_EQ(buf, "(#\\A #\\B)");
+}
+
+TEST(two_way_stream_write_to_output)
+{
+    CL_Obj result = cl_eval_string(
+        "(let* ((in (make-string-input-stream \"\"))"
+        "       (out (make-string-output-stream))"
+        "       (tw (make-two-way-stream in out)))"
+        "  (write-string \"hi\" tw)"
+        "  (get-output-stream-string out))");
+    CL_String *s;
+    ASSERT(CL_ANY_STRING_P(result));
+    s = (CL_String *)CL_OBJ_TO_PTR(result);
+    ASSERT_STR_EQ(s->data, "hi");
+}
+
+TEST(two_way_stream_read_write_roundtrip)
+{
+    CL_Obj result = cl_eval_string(
+        "(let* ((in (make-string-input-stream \"hello\"))"
+        "       (out (make-string-output-stream))"
+        "       (tw (make-two-way-stream in out)))"
+        "  (let ((line (read-line tw)))"
+        "    (write-string line tw)"
+        "    (get-output-stream-string out)))");
+    CL_String *s;
+    ASSERT(CL_ANY_STRING_P(result));
+    s = (CL_String *)CL_OBJ_TO_PTR(result);
+    ASSERT_STR_EQ(s->data, "hello");
+}
+
+TEST(two_way_stream_typep)
+{
+    CL_Obj result = cl_eval_string(
+        "(let* ((tw (make-two-way-stream (make-string-input-stream \"\")"
+        "                                (make-string-output-stream))))"
+        "  (list (typep tw 'two-way-stream)"
+        "        (typep tw 'stream)"
+        "        (typep tw 'synonym-stream)))");
+    char buf[64];
+    cl_prin1_to_string(result, buf, sizeof(buf));
+    ASSERT_STR_EQ(buf, "(T T NIL)");
+}
+
+TEST(two_way_stream_printer)
+{
+    CL_Obj result = cl_eval_string(
+        "(let* ((tw (make-two-way-stream (make-string-input-stream \"\")"
+        "                                (make-string-output-stream))))"
+        "  (with-output-to-string (s) (prin1 tw s)))");
+    CL_String *s;
+    ASSERT(CL_ANY_STRING_P(result));
+    s = (CL_String *)CL_OBJ_TO_PTR(result);
+    ASSERT(strncmp(s->data, "#<TWO-WAY-STREAM", 16) == 0);
+}
+
+TEST(two_way_stream_accessor_type_error)
+{
+    CL_Obj result;
+    result = cl_eval_string(
+        "(handler-case"
+        "  (two-way-stream-input-stream (make-string-output-stream))"
+        "  (error (c) (declare (ignore c)) :type-error))");
+    ASSERT(result == cl_intern_keyword("TYPE-ERROR", 10));
+
+    result = cl_eval_string(
+        "(handler-case"
+        "  (two-way-stream-output-stream (make-string-input-stream \"\"))"
+        "  (error (c) (declare (ignore c)) :type-error))");
+    ASSERT(result == cl_intern_keyword("TYPE-ERROR", 10));
+}
+
 int main(void)
 {
     test_init();
@@ -2540,6 +2658,17 @@ int main(void)
     RUN(file_stream_write_read);
     RUN(charpos_tracking);
     RUN(read_line_string_stream);
+
+    /* Two-way streams */
+    RUN(make_two_way_stream_returns_stream);
+    RUN(two_way_stream_direction_predicates);
+    RUN(two_way_stream_accessors);
+    RUN(two_way_stream_read_from_input);
+    RUN(two_way_stream_write_to_output);
+    RUN(two_way_stream_read_write_roundtrip);
+    RUN(two_way_stream_typep);
+    RUN(two_way_stream_printer);
+    RUN(two_way_stream_accessor_type_error);
 
     /* Reader + stream integration (Step 6) */
     RUN(read_from_stream_simple_list);

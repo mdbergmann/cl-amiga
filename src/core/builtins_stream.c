@@ -541,6 +541,50 @@ static CL_Obj bi_synonym_stream_symbol(CL_Obj *args, int n)
     return st->string_buf;
 }
 
+/* (make-two-way-stream input-stream output-stream) */
+static CL_Obj bi_make_two_way_stream(CL_Obj *args, int n)
+{
+    CL_Stream *in_st, *out_st;
+    CL_UNUSED(n);
+    if (!CL_STREAM_P(args[0]))
+        cl_error(CL_ERR_TYPE, "MAKE-TWO-WAY-STREAM: first argument is not a stream");
+    if (!CL_STREAM_P(args[1]))
+        cl_error(CL_ERR_TYPE, "MAKE-TWO-WAY-STREAM: second argument is not a stream");
+    in_st  = (CL_Stream *)CL_OBJ_TO_PTR(args[0]);
+    out_st = (CL_Stream *)CL_OBJ_TO_PTR(args[1]);
+    if (!(in_st->direction & CL_STREAM_INPUT))
+        cl_error(CL_ERR_TYPE, "MAKE-TWO-WAY-STREAM: first argument is not an input stream");
+    if (!(out_st->direction & CL_STREAM_OUTPUT))
+        cl_error(CL_ERR_TYPE, "MAKE-TWO-WAY-STREAM: second argument is not an output stream");
+    return cl_make_two_way_stream(args[0], args[1]);
+}
+
+/* (two-way-stream-input-stream stream) */
+static CL_Obj bi_two_way_stream_input_stream(CL_Obj *args, int n)
+{
+    CL_Stream *st;
+    CL_UNUSED(n);
+    if (!CL_STREAM_P(args[0]))
+        cl_error(CL_ERR_TYPE, "TWO-WAY-STREAM-INPUT-STREAM: argument is not a stream");
+    st = (CL_Stream *)CL_OBJ_TO_PTR(args[0]);
+    if (st->stream_type != CL_STREAM_TWO_WAY)
+        cl_error(CL_ERR_TYPE, "TWO-WAY-STREAM-INPUT-STREAM: not a two-way stream");
+    return st->string_buf;
+}
+
+/* (two-way-stream-output-stream stream) */
+static CL_Obj bi_two_way_stream_output_stream(CL_Obj *args, int n)
+{
+    CL_Stream *st;
+    CL_UNUSED(n);
+    if (!CL_STREAM_P(args[0]))
+        cl_error(CL_ERR_TYPE, "TWO-WAY-STREAM-OUTPUT-STREAM: argument is not a stream");
+    st = (CL_Stream *)CL_OBJ_TO_PTR(args[0]);
+    if (st->stream_type != CL_STREAM_TWO_WAY)
+        cl_error(CL_ERR_TYPE, "TWO-WAY-STREAM-OUTPUT-STREAM: not a two-way stream");
+    return st->element_type;
+}
+
 /* (get-output-stream-string stream) */
 static CL_Obj bi_get_output_stream_string(CL_Obj *args, int n)
 {
@@ -1353,6 +1397,9 @@ void cl_builtins_stream_init(void)
     defun("GET-OUTPUT-STREAM-STRING", bi_get_output_stream_string, 1, 1);
     defun("MAKE-SYNONYM-STREAM", bi_make_synonym_stream, 1, 1);
     defun("SYNONYM-STREAM-SYMBOL", bi_synonym_stream_symbol, 1, 1);
+    defun("MAKE-TWO-WAY-STREAM", bi_make_two_way_stream, 2, 2);
+    defun("TWO-WAY-STREAM-INPUT-STREAM", bi_two_way_stream_input_stream, 1, 1);
+    defun("TWO-WAY-STREAM-OUTPUT-STREAM", bi_two_way_stream_output_stream, 1, 1);
 
     /* Step 8: File streams */
     defun("OPEN", bi_open, 1, -1);

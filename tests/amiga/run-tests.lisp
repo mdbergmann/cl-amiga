@@ -1767,6 +1767,48 @@
 (check "read-from-string integer" 42 (read-from-string "42"))
 (check "read-from-string eof-value" :eof (read-from-string "" nil :eof))
 
+; --- Two-way streams ---
+(check "make-two-way-stream returns stream" t
+  (streamp (make-two-way-stream (make-string-input-stream "") (make-string-output-stream))))
+(check "two-way-stream input-stream-p" t
+  (input-stream-p (make-two-way-stream (make-string-input-stream "") (make-string-output-stream))))
+(check "two-way-stream output-stream-p" t
+  (output-stream-p (make-two-way-stream (make-string-input-stream "") (make-string-output-stream))))
+(check "two-way-stream-input-stream identity" t
+  (let* ((in (make-string-input-stream ""))
+         (tw (make-two-way-stream in (make-string-output-stream))))
+    (eq (two-way-stream-input-stream tw) in)))
+(check "two-way-stream-output-stream identity" t
+  (let* ((out (make-string-output-stream))
+         (tw (make-two-way-stream (make-string-input-stream "") out)))
+    (eq (two-way-stream-output-stream tw) out)))
+(check "two-way-stream read from input" #\H
+  (let ((tw (make-two-way-stream (make-string-input-stream "Hello") (make-string-output-stream))))
+    (read-char tw)))
+(check "two-way-stream write to output" "Hi"
+  (let* ((out (make-string-output-stream))
+         (tw (make-two-way-stream (make-string-input-stream "") out)))
+    (write-string "Hi" tw)
+    (get-output-stream-string out)))
+(check "two-way-stream read-write roundtrip" "pong"
+  (let* ((out (make-string-output-stream))
+         (tw (make-two-way-stream (make-string-input-stream "ping") out)))
+    (read-char tw)
+    (write-string "pong" tw)
+    (get-output-stream-string out)))
+(check "two-way-stream typep two-way-stream" t
+  (typep (make-two-way-stream (make-string-input-stream "") (make-string-output-stream)) 'two-way-stream))
+(check "two-way-stream typep stream" t
+  (typep (make-two-way-stream (make-string-input-stream "") (make-string-output-stream)) 'stream))
+(check "two-way-stream typep synonym-stream nil" nil
+  (typep (make-two-way-stream (make-string-input-stream "") (make-string-output-stream)) 'synonym-stream))
+(check "two-way-stream-input-stream type error" :type-error
+  (handler-case (two-way-stream-input-stream (make-string-output-stream))
+    (error (c) (declare (ignore c)) :type-error)))
+(check "two-way-stream-output-stream type error" :type-error
+  (handler-case (two-way-stream-output-stream (make-string-input-stream ""))
+    (error (c) (declare (ignore c)) :type-error)))
+
 ; --- TCP sockets (server side: socket-listen / socket-accept / socket-local-port) ---
 ; FS-UAE provides a TCP stack (bsdsocket.library on Amiga), so these run for
 ; real.  Single-threaded loopback pattern, same as the host tests: a loopback
