@@ -733,6 +733,31 @@ TEST(thread_direct_abort_call_unwinds_cleanly)
     ASSERT_STR_EQ(r, "NIL");
 }
 
+/* The thread-top ABORT restart now carries a :report ("Return to top
+ * level"), so PRINC / ~A of it yields that description rather than the
+ * escaped #<RESTART ABORT> fallback.  slynk derives its (:abort ...)
+ * reason from this restart's report, so the report is the root-cause
+ * fix for throw-to-toplevel reporting "NIL".  (eval_print prin1s the
+ * returned string, hence the surrounding quotes.) */
+TEST(thread_top_abort_restart_princ_shows_report)
+{
+    const char *r = eval_print(
+        "(mp:join-thread (mp:make-thread"
+        "  (lambda () (princ-to-string (find-restart 'abort)))))");
+    ASSERT_STR_EQ(r, "\"Return to top level\"");
+}
+
+/* PRIN1 / ~S must be unchanged: the printer's escaped fallback form is
+ * still used for the readable representation, so report-less restarts
+ * (tests/test_condition.c lisp_restart_no_report_princ) are unaffected. */
+TEST(thread_top_abort_restart_prin1_unchanged)
+{
+    const char *r = eval_print(
+        "(mp:join-thread (mp:make-thread"
+        "  (lambda () (prin1-to-string (find-restart 'abort)))))");
+    ASSERT_STR_EQ(r, "\"#<RESTART ABORT>\"");
+}
+
 /* Two threads racing to allocate locks past the table limit must NOT
  * deadlock.  Used to: thread A grabbed gc_mutex inside cl_gc_stop_the_world
  * and waited for B to reach a safepoint; B was blocked on gc_mutex inside
@@ -843,6 +868,8 @@ int main(void)
     RUN(make_lock_concurrent_no_deadlock);
     RUN(thread_top_level_abort_restart_kills_worker_cleanly);
     RUN(thread_direct_abort_call_unwinds_cleanly);
+    RUN(thread_top_abort_restart_princ_shows_report);
+    RUN(thread_top_abort_restart_prin1_unchanged);
 
     teardown();
 

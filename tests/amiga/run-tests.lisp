@@ -4464,6 +4464,17 @@
               (lambda () (length (make-list 200))))))
     (+ (mp:join-thread t1) (mp:join-thread t2))))
 
+; --- Thread top-level ABORT restart ---
+; Every worker thread has a top-level ABORT restart whose :report is
+; "Return to top level" (matching SBCL/CCL).  PRINC / ~A yields the
+; report string; PRIN1 / ~S yields the escaped #<RESTART ABORT> form.
+(check "thread top abort restart princ shows report" "Return to top level"
+  (mp:join-thread (mp:make-thread
+    (lambda () (princ-to-string (find-restart 'abort))))))
+(check "thread top abort restart prin1 unchanged" "#<RESTART ABORT>"
+  (mp:join-thread (mp:make-thread
+    (lambda () (prin1-to-string (find-restart 'abort))))))
+
 ; --- FFI (generic) ---
 (require "ffi")
 
