@@ -20,6 +20,7 @@ test_cmd: make BUILDDIR=/tmp/build/host test-fast
 
 # Model the review/fix stages drive (sonnet | opus | haiku, or a full id).
 model: sonnet
+implement_model: opus
 
 # Bound how many times `pipeline all` may loop fix->test before giving up.
 max_fix_retries: 2

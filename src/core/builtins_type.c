@@ -51,6 +51,8 @@ static CL_Obj TYPE_SYM_BIGNUM = CL_NIL;
 static CL_Obj TYPE_SYM_RATIO = CL_NIL;
 static CL_Obj TYPE_SYM_NUMBER = CL_NIL;
 static CL_Obj TYPE_SYM_STAR = CL_NIL; /* * for wildcard bounds in range types */
+/* Lazy-cached symbol for Gray stream type check (set on first use) */
+static CL_Obj TYPE_SYM_GRAY_FUNDAMENTAL_STREAM = CL_NIL;
 /* Compound vector/array type specifier head symbols */
 static CL_Obj TYPE_SYM_SIMPLE_VECTOR = CL_NIL;
 static CL_Obj TYPE_SYM_VECTOR = CL_NIL;
@@ -176,7 +178,31 @@ static int typep_symbol(CL_Obj obj, CL_Obj type_sym)
     if (strcmp(tname, "HASH-TABLE") == 0)     return CL_HASHTABLE_P(obj);
     if (strcmp(tname, "PACKAGE") == 0)        return CL_PACKAGE_P(obj);
     if (strcmp(tname, "RESTART") == 0)        return CL_RESTART_P(obj);
-    if (strcmp(tname, "STREAM") == 0)        return CL_STREAM_P(obj);
+    if (strcmp(tname, "STREAM") == 0) {
+        if (CL_STREAM_P(obj)) return 1;
+        /* Gray streams are CLOS instances (CL_STRUCT_P); check CPL for
+         * GRAY::FUNDAMENTAL-STREAM.  The symbol is looked up lazily so
+         * that a core build without gray-streams.lisp returns 0 cleanly. */
+        if (CL_STRUCT_P(obj)) {
+            extern int cl_clos_type_matches(CL_Obj obj_type, CL_Obj test_type);
+            CL_Struct *st;
+            if (CL_NULL_P(TYPE_SYM_GRAY_FUNDAMENTAL_STREAM)) {
+                CL_Obj gray_pkg = cl_find_package("GRAY", 4);
+                if (!CL_NULL_P(gray_pkg)) {
+                    CL_Obj sym = cl_package_find_symbol(
+                        "FUNDAMENTAL-STREAM", 18, gray_pkg);
+                    if (!CL_NULL_P(sym) && CL_SYMBOL_P(sym))
+                        TYPE_SYM_GRAY_FUNDAMENTAL_STREAM = sym;
+                }
+            }
+            if (!CL_NULL_P(TYPE_SYM_GRAY_FUNDAMENTAL_STREAM)) {
+                st = (CL_Struct *)CL_OBJ_TO_PTR(obj);
+                return cl_clos_type_matches(st->type_desc,
+                                            TYPE_SYM_GRAY_FUNDAMENTAL_STREAM);
+            }
+        }
+        return 0;
+    }
     if (strcmp(tname, "SYNONYM-STREAM") == 0) {
         if (!CL_STREAM_P(obj)) return 0;
         return ((CL_Stream *)CL_OBJ_TO_PTR(obj))->stream_type == CL_STREAM_SYNONYM;
@@ -2132,4 +2158,5 @@ void cl_builtins_type_init(void)
     cl_gc_register_root(&TYPE_SYM_SIMPLE_BASE_STRING);
     cl_gc_register_root(&TYPE_SYM_BIT_VECTOR);
     cl_gc_register_root(&TYPE_SYM_SIMPLE_BIT_VECTOR);
+    cl_gc_register_root(&TYPE_SYM_GRAY_FUNDAMENTAL_STREAM);
 }

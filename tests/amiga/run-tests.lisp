@@ -4616,6 +4616,25 @@
     (load "tests/amiga/test-gui.lisp")
     (error (e) (format t "ERROR loading GUI tests: ~A~%" e))))
 
+; --- Gray streams: (typep gray-stream 'stream) regression ---
+; Load gray-streams.lisp and verify that a CLOS-based Gray stream instance
+; is recognised as a STREAM by TYPEP (fix for the root cause of the Slynk
+; SLDB bug where %%condition-message leaked output to the terminal).
+(handler-case
+  (progn
+    (load "lib/gray-streams.lisp")
+    (defclass test-gs-out (gray:fundamental-output-stream) ())
+    (defmethod gray:stream-write-char ((s test-gs-out) c) (declare (ignore s c)) nil)
+    (let ((g (make-instance 'test-gs-out)))
+      (check "gray streamp"           t   (streamp g))
+      (check "gray output-stream-p"   t   (output-stream-p g))
+      (check "gray typep stream"      t   (typep g 'stream))
+      (check "gray typep not fixnum"  nil (typep 42 'stream))
+      (check "native typep stream"    t   (typep (make-string-output-stream) 'stream))))
+  (error (e)
+    (setq *fail-count* (+ *fail-count* 1))
+    (format t "FAIL: gray-stream typep regression - ~A~%" e)))
+
 ; --- Summary ---
 (format t "~%=== Results ===~%")
 (format t "Passed: ~A~%" *pass-count*)
