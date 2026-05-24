@@ -39,6 +39,10 @@ static void defun(const char *name, CL_CFunc func, int min, int max)
 
 static CL_Obj KW_START = CL_NIL;
 static CL_Obj KW_END = CL_NIL;
+
+/* Lazy-cached Gray stream class symbols for two-way stream acceptance */
+static CL_Obj GRAY_FUND_INPUT_SYM  = CL_NIL;
+static CL_Obj GRAY_FUND_OUTPUT_SYM = CL_NIL;
 static CL_Obj KW_ABORT_KW = CL_NIL;
 static CL_Obj KW_DIRECTION = CL_NIL;
 static CL_Obj KW_INPUT = CL_NIL;
@@ -541,20 +545,65 @@ static CL_Obj bi_synonym_stream_symbol(CL_Obj *args, int n)
     return st->string_buf;
 }
 
+/* Gray stream helpers for make-two-way-stream */
+extern int cl_clos_type_matches(CL_Obj obj_type, CL_Obj test_type);
+
+static void gray_fund_syms_init(void)
+{
+    /* Guard the lazy init with the write lock so only one thread performs the
+     * lookup; subsequent threads find cached values and skip the block.
+     * cl_find_package / cl_package_find_symbol use cl_package_rwlock, which is
+     * a separate lock from cl_tables_wrlock — no re-entrancy / deadlock risk. */
+    cl_tables_wrlock();
+    if (CL_NULL_P(GRAY_FUND_INPUT_SYM) || CL_NULL_P(GRAY_FUND_OUTPUT_SYM)) {
+        CL_Obj gray_pkg = cl_find_package("GRAY", 4);
+        if (!CL_NULL_P(gray_pkg)) {
+            if (CL_NULL_P(GRAY_FUND_INPUT_SYM)) {
+                CL_Obj sym = cl_package_find_symbol("FUNDAMENTAL-INPUT-STREAM", 24, gray_pkg);
+                if (!CL_NULL_P(sym) && CL_SYMBOL_P(sym))
+                    GRAY_FUND_INPUT_SYM = sym;
+            }
+            if (CL_NULL_P(GRAY_FUND_OUTPUT_SYM)) {
+                CL_Obj sym = cl_package_find_symbol("FUNDAMENTAL-OUTPUT-STREAM", 25, gray_pkg);
+                if (!CL_NULL_P(sym) && CL_SYMBOL_P(sym))
+                    GRAY_FUND_OUTPUT_SYM = sym;
+            }
+        }
+    }
+    cl_tables_rwunlock();
+}
+
+static int obj_is_gray_subclass(CL_Obj obj, CL_Obj class_sym)
+{
+    CL_Struct *st;
+    if (!CL_STRUCT_P(obj) || CL_NULL_P(class_sym)) return 0;
+    st = (CL_Struct *)CL_OBJ_TO_PTR(obj);
+    return cl_clos_type_matches(st->type_desc, class_sym);
+}
+
+static int is_input_stream_designator(CL_Obj o)
+{
+    if (CL_STREAM_P(o) && (((CL_Stream *)CL_OBJ_TO_PTR(o))->direction & CL_STREAM_INPUT))
+        return 1;
+    gray_fund_syms_init();
+    return obj_is_gray_subclass(o, GRAY_FUND_INPUT_SYM);
+}
+
+static int is_output_stream_designator(CL_Obj o)
+{
+    if (CL_STREAM_P(o) && (((CL_Stream *)CL_OBJ_TO_PTR(o))->direction & CL_STREAM_OUTPUT))
+        return 1;
+    gray_fund_syms_init();
+    return obj_is_gray_subclass(o, GRAY_FUND_OUTPUT_SYM);
+}
+
 /* (make-two-way-stream input-stream output-stream) */
 static CL_Obj bi_make_two_way_stream(CL_Obj *args, int n)
 {
-    CL_Stream *in_st, *out_st;
     CL_UNUSED(n);
-    if (!CL_STREAM_P(args[0]))
-        cl_error(CL_ERR_TYPE, "MAKE-TWO-WAY-STREAM: first argument is not a stream");
-    if (!CL_STREAM_P(args[1]))
-        cl_error(CL_ERR_TYPE, "MAKE-TWO-WAY-STREAM: second argument is not a stream");
-    in_st  = (CL_Stream *)CL_OBJ_TO_PTR(args[0]);
-    out_st = (CL_Stream *)CL_OBJ_TO_PTR(args[1]);
-    if (!(in_st->direction & CL_STREAM_INPUT))
+    if (!is_input_stream_designator(args[0]))
         cl_error(CL_ERR_TYPE, "MAKE-TWO-WAY-STREAM: first argument is not an input stream");
-    if (!(out_st->direction & CL_STREAM_OUTPUT))
+    if (!is_output_stream_designator(args[1]))
         cl_error(CL_ERR_TYPE, "MAKE-TWO-WAY-STREAM: second argument is not an output stream");
     return cl_make_two_way_stream(args[0], args[1]);
 }
@@ -1431,6 +1480,8 @@ void cl_builtins_stream_init(void)
     cl_register_builtin("%SETF-READTABLE-CASE", bi_setf_readtable_case, 2, 2, cl_package_clamiga);
 
     /* Register cached symbols for GC compaction forwarding */
+    cl_gc_register_root(&GRAY_FUND_INPUT_SYM);
+    cl_gc_register_root(&GRAY_FUND_OUTPUT_SYM);
     cl_gc_register_root(&KW_START);
     cl_gc_register_root(&KW_END);
     cl_gc_register_root(&KW_ABORT_KW);

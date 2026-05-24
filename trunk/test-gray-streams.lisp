@@ -139,6 +139,51 @@
       (let ((s (gray-cap-flush g)))
         (check "princ condition to gray-stream (non-empty)" t (> (length s) 0))))))
 
+(format t "~%--- Gray two-way stream tests (item-2) ---~%")
+
+;; Minimal Gray input stream that pops chars from a queue.
+(defclass test-gray-q-stream (gray:fundamental-character-input-stream)
+  ((chars :initarg :chars :initform nil)))
+
+(defmethod gray:stream-read-char ((s test-gray-q-stream))
+  (let ((q (slot-value s 'chars)))
+    (if q
+        (progn (setf (slot-value s 'chars) (cdr q)) (car q))
+        :eof)))
+
+;; Both-Gray two-way stream tests.
+(let* ((gin  (make-instance 'test-gray-q-stream :chars (list #\A #\B #\C)))
+       (gcap (make-instance 'test-gray-cap-stream))
+       (tw   (make-two-way-stream gin gcap)))
+  (check "gray tw: streamp"                  t   (streamp tw))
+  (check "gray tw: typep two-way-stream"     t   (typep tw 'two-way-stream))
+  (check "gray tw: typep stream"             t   (typep tw 'stream))
+  (check "gray tw: input-stream-p"           t   (input-stream-p tw))
+  (check "gray tw: output-stream-p"          t   (output-stream-p tw))
+  (check "gray tw: input accessor"           t   (eq (two-way-stream-input-stream tw)  gin))
+  (check "gray tw: output accessor"          t   (eq (two-way-stream-output-stream tw) gcap))
+  (check "gray tw: read-char A"              #\A (read-char tw))
+  (check "gray tw: read-char B"              #\B (read-char tw))
+  (write-char #\X tw)
+  (write-string "hi" tw)
+  (check "gray tw: write accumulates"        "Xhi" (gray-cap-flush gcap)))
+
+;; Mixed: native input + Gray output.
+(let* ((nin  (make-string-input-stream "hello"))
+       (gcap (make-instance 'test-gray-cap-stream))
+       (tw   (make-two-way-stream nin gcap)))
+  (check "mixed tw native-in gray-out: read-char"   #\h  (read-char tw))
+  (write-char #\Z tw)
+  (check "mixed tw native-in gray-out: write-char"  "Z"  (gray-cap-flush gcap)))
+
+;; Mixed: Gray input + native output.
+(let* ((gin  (make-instance 'test-gray-q-stream :chars (list #\W)))
+       (nout (make-string-output-stream))
+       (tw   (make-two-way-stream gin nout)))
+  (check "mixed tw gray-in native-out: read-char"   #\W  (read-char tw))
+  (write-char #\Q tw)
+  (check "mixed tw gray-in native-out: write-char"  "Q"  (get-output-stream-string nout)))
+
 (format t "~%Passed: ~A  Failed: ~A~%" *pass-count* *fail-count*)
 (if (= *fail-count* 0)
     (format t "ALL TESTS PASSED~%")

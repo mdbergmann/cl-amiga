@@ -2604,6 +2604,31 @@ TEST(two_way_stream_accessor_type_error)
     ASSERT(result == cl_intern_keyword("TYPE-ERROR", 10));
 }
 
+TEST(make_two_way_stream_rejects_non_stream)
+{
+    CL_Obj result;
+    /* Non-stream first argument */
+    result = cl_eval_string(
+        "(handler-case"
+        "  (make-two-way-stream 42 (make-string-output-stream))"
+        "  (error (c) (declare (ignore c)) :type-error))");
+    ASSERT(result == cl_intern_keyword("TYPE-ERROR", 10));
+
+    /* Wrong-direction native first argument (output stream where input expected) */
+    result = cl_eval_string(
+        "(handler-case"
+        "  (make-two-way-stream (make-string-output-stream) (make-string-output-stream))"
+        "  (error (c) (declare (ignore c)) :type-error))");
+    ASSERT(result == cl_intern_keyword("TYPE-ERROR", 10));
+
+    /* Wrong-direction native second argument (input stream where output expected) */
+    result = cl_eval_string(
+        "(handler-case"
+        "  (make-two-way-stream (make-string-input-stream \"\") (make-string-input-stream \"\"))"
+        "  (error (c) (declare (ignore c)) :type-error))");
+    ASSERT(result == cl_intern_keyword("TYPE-ERROR", 10));
+}
+
 int main(void)
 {
     test_init();
@@ -2669,6 +2694,7 @@ int main(void)
     RUN(two_way_stream_typep);
     RUN(two_way_stream_printer);
     RUN(two_way_stream_accessor_type_error);
+    RUN(make_two_way_stream_rejects_non_stream);
 
     /* Reader + stream integration (Step 6) */
     RUN(read_from_stream_simple_list);
