@@ -125,6 +125,13 @@ test-fast: $(TEST_BINS) host
 		echo "FAIL"; \
 		failed=1; \
 	fi; \
+	echo "--- test_load_exit ---"; \
+	if sh $(TEST_SRCDIR)/test_load_exit.sh $(BUILDDIR)/clamiga; then \
+		echo "PASS"; \
+	else \
+		echo "FAIL"; \
+		failed=1; \
+	fi; \
 	if [ $$failed -ne 0 ]; then echo "=== Some tests failed ==="; exit 1; fi; \
 	echo "=== Fast tests passed ==="
 
@@ -153,8 +160,12 @@ $(BUILDDIR)/tests/%: $(TEST_SRCDIR)/%.c $(LIB_OBJS)
 # Auto-skipped when prerequisites aren't met (no quicklisp install, no
 # trunk script, no installed shims) so the target is safe to keep in
 # `make test` for contributors without a quicklisp setup.
-HOST_COLD_TEST_SCRIPT = trunk/load-and-test-sento-system.lisp
-HOST_COLD_TEST_LOG    = $(BUILDDIR)/cold-test.log
+HOST_COLD_TEST_SCRIPT  = trunk/load-and-test-sento-system.lisp
+HOST_COLD_TEST_LOG     = $(BUILDDIR)/cold-test.log
+# Wall-clock watchdog (seconds). Matches the cold-sento headroom in
+# trunk/run-load-and-test-all.sh so a genuine in-suite hang fails loudly
+# instead of blocking `make test` forever.
+HOST_COLD_TEST_TIMEOUT = 1800
 host-cold-test: host
 	@set -e; \
 	if [ ! -f "$(HOME)/quicklisp/setup.lisp" ]; then \
@@ -172,8 +183,21 @@ host-cold-test: host
 	echo "=== host-cold-test: clearing FASL cache and running $(HOST_COLD_TEST_SCRIPT) ==="; \
 	rm -rf $(HOME)/.cache/common-lisp/cl-amiga-*; \
 	mkdir -p $(dir $(HOST_COLD_TEST_LOG)); \
-	$(BUILDDIR)/clamiga --heap 384M --load $(HOST_COLD_TEST_SCRIPT) \
-	  > $(HOST_COLD_TEST_LOG) 2>&1; rc=$$?; \
+	tmo=$$(command -v timeout 2>/dev/null || command -v gtimeout 2>/dev/null || true); \
+	if [ -n "$$tmo" ]; then \
+	  runner="$$tmo $(HOST_COLD_TEST_TIMEOUT)"; \
+	else \
+	  runner=""; \
+	  echo "=== host-cold-test: no timeout/gtimeout on PATH — running without watchdog ==="; \
+	fi; \
+	rc=0; \
+	$$runner $(BUILDDIR)/clamiga --heap 384M --non-interactive --load $(HOST_COLD_TEST_SCRIPT) \
+	  </dev/null > $(HOST_COLD_TEST_LOG) 2>&1 || rc=$$?; \
+	if [ $$rc -eq 124 ]; then \
+	  echo "=== FAIL: host-cold-test timed out after $(HOST_COLD_TEST_TIMEOUT)s (see $(HOST_COLD_TEST_LOG)) ==="; \
+	  tail -30 $(HOST_COLD_TEST_LOG); \
+	  exit 1; \
+	fi; \
 	if grep -q "FATAL Signal" $(HOST_COLD_TEST_LOG); then \
 	  echo "=== FAIL: clamiga crashed during cold load (see $(HOST_COLD_TEST_LOG)) ==="; \
 	  grep -B2 -A1 "FATAL Signal" $(HOST_COLD_TEST_LOG) | head -20; \
