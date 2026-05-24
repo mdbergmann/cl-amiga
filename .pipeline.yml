@@ -38,6 +38,11 @@ max_fix_retries: 2
 # fix: reuse the same rules by pointing fix_prompt_file at that file.
 fix_prompt_file: .pipeline/prompts/review-guideline.md
 
+
+extra_allowed_tools: "Bash(./build/host/clamiga:*)"
+analyze_extra_tools: "Bash(make:*)"
+implement_extra_tools: "Bash(make:*)"
+
 # -- notes ----------------------------------------------------------------
 # * The test stage runs with --network none, so no gems/quicklisp fetch — the
 #   fast tier is a pure offline gcc build + unit tests.
