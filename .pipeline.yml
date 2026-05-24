@@ -20,7 +20,8 @@ test_cmd: make BUILDDIR=/tmp/build/host test-fast
 
 # Model the review/fix stages drive (sonnet | opus | haiku, or a full id).
 model: sonnet
-implement_model: opus
+analyze_model: opus
+implement_model: sonnet
 
 # max turn defaults, override if needed
 # review_max_turns: 30
