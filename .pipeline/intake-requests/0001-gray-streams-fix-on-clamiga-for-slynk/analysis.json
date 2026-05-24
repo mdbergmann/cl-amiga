@@ -1,0 +1,16 @@
+{
+  "summary": "Two independent root causes. (1) typep: src/core/builtins_type.c:179 resolves the STREAM type specifier as CL_STREAM_P(obj), which is false for Gray streams (CLOS instances / CL_STRUCT_P) and short-circuits before the CLOS class-table fallback. Fix in C by also matching CLOS instances whose CPL includes GRAY::FUNDAMENTAL-STREAM via cl_clos_type_matches. (2) The high-level printers princ/prin1/print/write/format/pprint are C builtins in src/core/builtins_io.c whose gatekeepers reject Gray streams (resolve_output_stream_io errors; bi_format silently redirects to *standard-output*); unlike write-char/write-string/terpri they are NOT redefined in lib/gray-streams.lisp. Fix in Lisp by redefining them in gray-streams.lisp to capture the original output into a native string-output-stream and forward via the already-redefined write-string (-> gray:stream-write-string), mirroring how the *print-object-hook* in lib/clos.lisp captures with with-output-to-string. No C printer/stream surgery and no IO-gatekeeper changes are needed because the Lisp wrappers shadow the symbols.",
+  "affected_areas": [
+    "Type system: src/core/builtins_type.c (typep STREAM specifier)",
+    "CLOS hierarchy matching from C: src/core/builtins_struct.c (cl_clos_type_matches), package lookup (cl_find_package)",
+    "Gray Streams integration layer: lib/gray-streams.lisp (printer function redefinitions)",
+    "Test suites: tests/amiga/run-tests.lisp (Amiga) plus a host-runnable Lisp test script (trunk/*.lisp convention)"
+  ],
+  "risks": [
+    "The typep helper must degrade gracefully when the GRAY package/class is absent (core build without gray-streams loaded) — return NIL, never crash; cache the looked-up symbol and register it as a GC root.",
+    "Redefining format/print/princ/write in Lisp adds a wrapper to very hot paths; the %gray-stream-p guard must short-circuit cheaply for the common non-Gray destinations (nil, t, native streams) so (format t/nil ...) is not slowed materially.",
+    "Capturing format/write output through a native string stream loses live column/fresh-line context relative to the Gray stream, so ~& and ~T are computed against the captured segment — acceptable for the SLDB/condition-message use case but worth noting.",
+    "Gray streams are a Lisp-library feature (defclass/defmethod on gray:fundamental-stream) and cannot be exercised by the pure-C tests/test_*.c harness (its setup() does not load lib/clos.lisp or lib/gray-streams.lisp); regression tests must run on the full clamiga binary on host (clamiga --load) and on Amiga (tests/amiga/run-tests.lisp). make test does not run trunk scripts generically, so host wiring of the new Lisp test is at implementer discretion.",
+    "FORMAT destination semantics (nil=>string, t=>*standard-output*, stream=>stream) differ from the other resolvers and must be handled explicitly, including the case where *standard-output* is itself bound to a Gray stream (as slynk's mrepl will do)."
+  ]
+}

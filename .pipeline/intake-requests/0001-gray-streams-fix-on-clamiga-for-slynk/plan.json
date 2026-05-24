@@ -1,0 +1,35 @@
+{
+  "request_id": "0001-gray-streams-fix-on-clamiga-for-slynk",
+  "summary": "Make (typep gray-stream 'stream) return T (C) and route princ/prin1/print/write/format/pprint to Gray output streams (Lisp), the same way write-string already does.",
+  "items": [
+    {
+      "id": "item-1",
+      "title": "typep: recognize Gray streams as STREAM",
+      "description": "Fix `(typep gray-stream 'stream)` to return T. In src/core/builtins_type.c, typep_symbol's STREAM case (currently `if (strcmp(tname,\"STREAM\")==0) return CL_STREAM_P(obj);`, ~line 179) returns NIL for Gray streams because they are CLOS instances (CL_STRUCT_P), not native CL_STREAM_P streams, and this check short-circuits before the CLOS class-table fallback at the bottom of typep_symbol. Change it to ALSO return 1 when obj is a CLOS instance whose class precedence list includes GRAY::FUNDAMENTAL-STREAM. Reuse `cl_clos_type_matches(st->type_desc, fundamental_stream_sym)` (defined in src/core/builtins_struct.c:185 — the same mechanism the existing CLOS fallback at lines ~252-262 already uses with st->type_desc). Look up the class-name symbol lazily and cache it: `cl_find_package(\"GRAY\",4)` (declared in src/core/package.h), then find FUNDAMENTAL-STREAM in that package; store it in a static CL_Obj and register it as a GC root the way the other cached TYPE_SYM_* symbols are. If the GRAY package or the class is absent (a core build where lib/gray-streams.lisp has not been loaded), return 0 so there is no behavior change. Do NOT touch the FILE-STREAM / STRING-STREAM / SYNONYM-STREAM cases (those are native-only). Add a regression test that runs on the full clamiga binary (Gray streams are a Lisp-library feature defined in lib/gray-streams.lisp and depend on lib/clos.lisp, so they cannot be constructed in the pure-C tests/test_*.c unit harness whose setup() does not load the lib): load lib/gray-streams.lisp, define a subclass of gray:fundamental-output-stream, make an instance g, and assert (typep g 'stream) => T together with the already-passing (streamp g) => T and (output-stream-p g) => T. Provide it as a Lisp test runnable on host via `./build/host/clamiga --heap 24M --load <script>` (mirroring the trunk/*.lisp convention that runs on both host and Amiga with #+amigaos/#-amigaos guards) and add the same checks to the Amiga suite tests/amiga/run-tests.lisp.",
+      "files_in_scope": [
+        "src/core/builtins_type.c",
+        "src/core/builtins_struct.c",
+        "src/core/package.h",
+        "lib/gray-streams.lisp",
+        "tests/amiga/run-tests.lisp",
+        "trunk/test-gray-streams.lisp"
+      ],
+      "est_scope_tokens": 30000,
+      "depends_on": [],
+      "status": "pending"
+    },
+    {
+      "id": "item-2",
+      "title": "Route princ/prin1/print/write/format/pprint to Gray streams",
+      "description": "Make the high-level printers dispatch to Gray output streams the same way write-string already does. In lib/gray-streams.lisp, inside the existing `(in-package \"COMMON-LISP\")` let-block that captures the original C builtins as orig-* (where streamp/write-char/write-string/etc. are redefined), add redefinitions of princ, prin1, print, write, format, and pprint. For each: resolve the destination output stream; when it is a Gray stream (use the existing %gray-stream-p helper), capture the ORIGINAL function's full output into a fresh native (make-string-output-stream) and then forward it to the Gray stream via the already-redefined CL write-string (which dispatches to gray:stream-write-string — so no new C is required). Concretely, bind a temp native stream, call the captured orig fn directed at it (orig-princ/orig-prin1/orig-print with that stream; orig-write with :stream bound to it preserving all other keyword args; orig-pprint with it), then `(write-string (get-output-stream-string tmp) gray-stream)`. Preserve normal return values: princ/prin1/print/write return the object; format returns NIL when its destination is non-nil; pprint returns NIL. Handle FORMAT's destination semantics distinctly from the %resolve-output-stream helper used by the others: destination NIL must keep returning a string via orig-format (no Gray involvement); destination T means *standard-output* (which itself may be a Gray stream and must then route); a stream destination is used directly. Non-Gray destinations must fall through to the captured orig functions unchanged, and keep the %gray-stream-p test cheap so hot paths like (format t ...) and (format nil ...) are unaffected. Capturing through a native string stream deliberately reuses the C printer (so *print-* variables, *print-object-hook*, and all format directives keep working); the only known limitation is that column / fresh-line state (~& and ~T) is relative to the captured segment rather than the Gray stream, which is acceptable for the condition-message / SLDB path this fixes. Extend the gray-stream regression test from item-1 to assert that princ, prin1, print, write, and format on a capturing Gray output stream now deliver their text into the stream's own buffer (no TYPE-ERROR, no leak to the terminal), explicitly covering the `(princ some-condition gray-stream)` case that previously surfaced as #<SIMPLE-ERROR> in SLDB.",
+      "files_in_scope": [
+        "lib/gray-streams.lisp",
+        "tests/amiga/run-tests.lisp",
+        "trunk/test-gray-streams.lisp"
+      ],
+      "est_scope_tokens": 22000,
+      "depends_on": ["item-1"],
+      "status": "pending"
+    }
+  ]
+}
