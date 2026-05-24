@@ -1,7 +1,7 @@
 ---
 id: 0002-fix-restart-printing-and-behavior
 type: bug
-status: implementing
+status: done
 title: fix restart printing and behavior
 ---
 
