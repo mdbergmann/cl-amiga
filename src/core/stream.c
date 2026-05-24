@@ -313,7 +313,7 @@ void cl_stream_outbuf_reset(uint32_t handle)
     }
 }
 
-/* --- Synonym stream resolution --- */
+/* --- Synonym / two-way stream resolution --- */
 
 static CL_Obj resolve_synonym(CL_Obj stream)
 {
@@ -326,6 +326,30 @@ static CL_Obj resolve_synonym(CL_Obj stream)
         st = (CL_Stream *)CL_OBJ_TO_PTR(stream);
     }
     return stream;
+}
+
+/* Resolve synonym and two-way stream wrappers to a concrete stream.
+ * `writing` selects the output child of a two-way stream (else input child). */
+static CL_Obj resolve_stream(CL_Obj stream, int writing)
+{
+    CL_Stream *st;
+    if (CL_NULL_P(stream) || !CL_STREAM_P(stream)) return CL_NIL;
+    st = (CL_Stream *)CL_OBJ_TO_PTR(stream);
+    for (;;) {
+        if (st->stream_type == CL_STREAM_SYNONYM) {
+            stream = cl_symbol_value(st->string_buf);
+            if (CL_NULL_P(stream) || !CL_HEAP_P(stream))
+                return CL_NIL;
+            st = (CL_Stream *)CL_OBJ_TO_PTR(stream);
+        } else if (st->stream_type == CL_STREAM_TWO_WAY) {
+            stream = writing ? st->element_type : st->string_buf;
+            if (CL_NULL_P(stream) || !CL_HEAP_P(stream))
+                return CL_NIL;
+            st = (CL_Stream *)CL_OBJ_TO_PTR(stream);
+        } else {
+            return stream;
+        }
+    }
 }
 
 /* --- Stream I/O operations --- */
@@ -429,7 +453,7 @@ int cl_stream_read_char(CL_Obj stream)
     int ch;
     void *iolock;
 
-    stream = resolve_synonym(stream);
+    stream = resolve_stream(stream, 0);
     if (CL_NULL_P(stream)) return -1;
     st = (CL_Stream *)CL_OBJ_TO_PTR(stream);
 
@@ -487,7 +511,7 @@ int cl_stream_read_byte(CL_Obj stream)
     int ch;
     void *iolock;
 
-    stream = resolve_synonym(stream);
+    stream = resolve_stream(stream, 0);
     if (CL_NULL_P(stream)) return -1;
     st = (CL_Stream *)CL_OBJ_TO_PTR(stream);
 
@@ -536,7 +560,7 @@ void cl_stream_write_char(CL_Obj stream, int ch)
     CL_Stream *st;
     void *iolock;
 
-    stream = resolve_synonym(stream);
+    stream = resolve_stream(stream, 1);
     if (CL_NULL_P(stream)) return;
     st = (CL_Stream *)CL_OBJ_TO_PTR(stream);
 
@@ -617,7 +641,7 @@ void cl_stream_write_byte(CL_Obj stream, int byte)
     CL_Stream *st;
     void *iolock;
 
-    stream = resolve_synonym(stream);
+    stream = resolve_stream(stream, 1);
     if (CL_NULL_P(stream)) return;
     st = (CL_Stream *)CL_OBJ_TO_PTR(stream);
 
@@ -657,7 +681,7 @@ void cl_stream_write_string(CL_Obj stream, const char *str, uint32_t len)
     uint32_t i;
     void *iolock;
 
-    stream = resolve_synonym(stream);
+    stream = resolve_stream(stream, 1);
     if (CL_NULL_P(stream)) return;
     st = (CL_Stream *)CL_OBJ_TO_PTR(stream);
 
@@ -714,7 +738,7 @@ void cl_stream_write_string(CL_Obj stream, const char *str, uint32_t len)
 
 int cl_stream_peek_char(CL_Obj stream)
 {
-    stream = resolve_synonym(stream);
+    stream = resolve_stream(stream, 0);
     if (CL_NULL_P(stream)) return -1;
     {
         int ch = cl_stream_read_char(stream);
@@ -729,7 +753,7 @@ int cl_stream_peek_char(CL_Obj stream)
 void cl_stream_unread_char(CL_Obj stream, int ch)
 {
     CL_Stream *st;
-    stream = resolve_synonym(stream);
+    stream = resolve_stream(stream, 0);
     if (CL_NULL_P(stream)) return;
     st = (CL_Stream *)CL_OBJ_TO_PTR(stream);
     st->unread_char = ch;
@@ -967,5 +991,16 @@ CL_Obj cl_make_synonym_stream(CL_Obj symbol)
     if (CL_NULL_P(s)) return CL_NIL;
     st = (CL_Stream *)CL_OBJ_TO_PTR(s);
     st->string_buf = symbol;  /* Store the symbol */
+    return s;
+}
+
+CL_Obj cl_make_two_way_stream(CL_Obj input_stream, CL_Obj output_stream)
+{
+    CL_Obj s = cl_make_stream(CL_STREAM_IO, CL_STREAM_TWO_WAY);
+    CL_Stream *st;
+    if (CL_NULL_P(s)) return CL_NIL;
+    st = (CL_Stream *)CL_OBJ_TO_PTR(s);
+    st->string_buf = input_stream;   /* input child */
+    st->element_type = output_stream; /* output child */
     return s;
 }

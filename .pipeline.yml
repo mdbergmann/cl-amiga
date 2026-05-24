@@ -26,7 +26,7 @@ implement_model: sonnet
 # max turn defaults, override if needed
 # review_max_turns: 30
 # fix_max_turns: 30
-# implement_max_turns: 40
+implement_max_turns: 50
 # analyze_max_turns: 50
 
 # Bound how many times `pipeline all` may loop fix->test before giving up.
@@ -41,7 +41,7 @@ fix_prompt_file: .pipeline/prompts/review-guideline.md
 
 
 extra_allowed_tools: "Bash(./build/host/clamiga:*)"
-analyze_extra_tools: "Bash(make:*),Bash(ls:*),Bash(sed:*),Bash(cat:*),Bash(mkdir:*),Bash(cd:*),Bash(awk:*),Bash(find:*),Bash(cp:*), Bash(mv:*),Bash(wc:*),Bash(./build/host/clamiga:*)"
+analyze_extra_tools: "Bash(make:*),Bash(ls:*),Bash(sed:*),Bash(cat:*),Bash(mkdir:*),Bash(cd:*),Bash(awk:*),Bash(find:*),Bash(cp:*), Bash(mv:*),Bash(wc:*),Bash(tail:*),Bash(./build/host/clamiga:*)"
 implement_extra_tools: "Bash(make:*),Bash(./build/host/clamiga:*)"
 fix_extra_tools: "Bash(make:*),Bash(./build/host/clamiga:*)"
 
