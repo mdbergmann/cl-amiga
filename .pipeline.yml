@@ -27,8 +27,9 @@ max_fix_retries: 2
 # Project rules appended to the review/fix prompts (GC-safety, 32-bit-clean
 # structs, C89/C99, HyperSpec, mandatory regression tests). Without this the
 # generic prompt knows nothing about cl-amiga's invariants.
-review_prompt_file: scripts/review/guidance.md
-fix_prompt_file: scripts/review/guidance.md
+# review: auto-discovered at .pipeline/prompts/review-guideline.md (no key needed).
+# fix: reuse the same rules by pointing fix_prompt_file at that file.
+fix_prompt_file: .pipeline/prompts/review-guideline.md
 
 # -- notes ----------------------------------------------------------------
 # * The test stage runs with --network none, so no gems/quicklisp fetch — the
