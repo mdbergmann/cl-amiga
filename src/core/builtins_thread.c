@@ -51,6 +51,21 @@ static CL_Obj get_thread_abort_handler(void)
     return thread_abort_handler;
 }
 
+/* Cached :report string for the thread-top ABORT restart.  Shared
+ * read-only by every worker thread's restart — safe because strings
+ * are immutable here and the printer only reads it.  Wording matches
+ * clamiga's interactive debugger (src/core/debugger.c). */
+static CL_Obj thread_abort_report = CL_NIL;
+
+static CL_Obj get_thread_abort_report(void)
+{
+    if (CL_NULL_P(thread_abort_report)) {
+        thread_abort_report = cl_make_string("Return to top level", 19);
+        cl_gc_register_root(&thread_abort_report);
+    }
+    return thread_abort_report;
+}
+
 /* Accessor for GC root marking (called from mem.c) */
 CL_Obj cl_main_thread_lisp_obj(void)
 {
@@ -120,6 +135,7 @@ static void *thread_entry(void *arg)
     if (err == 0) {
         CL_Obj result = CL_NIL;
         CL_Obj abort_handler;
+        CL_Obj abort_report;
         CL_Obj abort_tag;
         int my_nlx_idx = -1;
         int my_restart_idx = -1;
@@ -139,6 +155,12 @@ static void *thread_entry(void *arg)
          * Without this, `(abort)` in a worker raises
          * "Restart ABORT not found" which is not what frameworks
          * (bordeaux-threads, sento) expect. */
+        /* Pre-compute report before abort_tag is allocated: on first thread
+         * creation get_thread_abort_report() calls cl_make_string (allocating),
+         * which can trigger compaction.  If called as an argument expression
+         * inside cl_make_restart() after abort_tag is assigned, C's
+         * unspecified evaluation order may read abort_tag after relocation. */
+        abort_report  = get_thread_abort_report();
         abort_handler = get_thread_abort_handler();
         abort_tag = cl_cons(SYM_ABORT, CL_NIL);
 
@@ -159,7 +181,8 @@ static void *thread_entry(void *arg)
 
             if (t->restart_top < CL_MAX_RESTART_BINDINGS) {
                 CL_Obj abort_restart =
-                    cl_make_restart(SYM_ABORT, abort_handler, CL_NIL,
+                    cl_make_restart(SYM_ABORT, abort_handler,
+                                    abort_report,
                                     CL_NIL, CL_NIL, abort_tag);
                 {
                     CL_Restart *rp = (CL_Restart *)CL_OBJ_TO_PTR(abort_restart);
