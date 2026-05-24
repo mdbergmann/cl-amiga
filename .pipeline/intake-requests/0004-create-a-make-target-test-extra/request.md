@@ -1,7 +1,7 @@
 ---
 id: 0004-create-a-make-target-test-extra
 type: feature
-status: ready
+status: implementing
 title: create a make target 'test-extra'
 ---
 
