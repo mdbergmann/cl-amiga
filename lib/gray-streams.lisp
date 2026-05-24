@@ -307,14 +307,14 @@
   (defmethod input-stream-p ((stream gray:fundamental-input-stream))
     t)
   (defmethod input-stream-p ((stream t))
-    (funcall orig-input-stream-p stream))
+    (if (%gray-stream-p stream) nil (funcall orig-input-stream-p stream)))
 
   ;; OUTPUT-STREAM-P — GF so libraries can add methods
   (defgeneric output-stream-p (stream))
   (defmethod output-stream-p ((stream gray:fundamental-output-stream))
     t)
   (defmethod output-stream-p ((stream t))
-    (funcall orig-output-stream-p stream))
+    (if (%gray-stream-p stream) nil (funcall orig-output-stream-p stream)))
 
   ;; CLOSE — define as GF so libraries can add methods (e.g. flexi-streams)
   ;; while built-in streams keep working via the default (T) method.

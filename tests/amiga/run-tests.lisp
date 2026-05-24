@@ -4681,6 +4681,7 @@
     (let ((g (make-instance 'test-gs-out)))
       (check "gray streamp"           t   (streamp g))
       (check "gray output-stream-p"   t   (output-stream-p g))
+      (check "gray output not input-stream-p" nil (input-stream-p g))
       (check "gray typep stream"      t   (typep g 'stream))
       (check "gray typep not fixnum"  nil (typep 42 'stream))
       (check "native typep stream"    t   (typep (make-string-output-stream) 'stream))
@@ -4694,6 +4695,7 @@
     (let ((gi (make-instance 'test-gs-in)))
       (check "gray input streamp"         t   (streamp gi))
       (check "gray input typep stream"    t   (typep gi 'stream))
+      (check "gray input input-stream-p"  t   (input-stream-p gi))
       (check "gray input not output-stream-p" nil (output-stream-p gi)))
     ; --- item-2: printer functions route to Gray streams ---
     (defclass test-gs-cap (gray:fundamental-character-output-stream)
