@@ -82,7 +82,7 @@
 (format t "~%--- Printer functions route to Gray streams (item-2) ---~%")
 
 ;; A capturing Gray output stream that stores chars for later inspection.
-(defclass test-gray-cap-stream (gray:fundamental-output-stream)
+(defclass test-gray-cap-stream (gray:fundamental-character-output-stream)
   ((buf :initform nil)))
 
 (defmethod gray:stream-write-char ((s test-gray-cap-stream) c)

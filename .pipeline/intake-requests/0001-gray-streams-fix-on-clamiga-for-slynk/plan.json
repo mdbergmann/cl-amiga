@@ -28,8 +28,10 @@
         "trunk/test-gray-streams.lisp"
       ],
       "est_scope_tokens": 22000,
-      "depends_on": ["item-1"],
-      "status": "pending"
+      "depends_on": [
+        "item-1"
+      ],
+      "status": "done"
     }
   ]
 }
