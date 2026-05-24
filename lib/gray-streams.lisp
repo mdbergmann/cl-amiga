@@ -288,14 +288,16 @@
          (typep x 'gray:fundamental-stream)))
 
   (defun %resolve-input-stream (stream)
-    (cond ((null stream) *standard-input*)
-          ((eq stream t) *terminal-io*)
-          (t stream)))
+    (let ((s (cond ((null stream) *standard-input*)
+                   ((eq stream t) *terminal-io*)
+                   (t stream))))
+      (if (typep s 'two-way-stream) (two-way-stream-input-stream s) s)))
 
   (defun %resolve-output-stream (stream)
-    (cond ((null stream) *standard-output*)
-          ((eq stream t) *terminal-io*)
-          (t stream)))
+    (let ((s (cond ((null stream) *standard-output*)
+                   ((eq stream t) *terminal-io*)
+                   (t stream))))
+      (if (typep s 'two-way-stream) (two-way-stream-output-stream s) s)))
 
   ;; STREAMP — also true for gray streams
   (defun streamp (x)

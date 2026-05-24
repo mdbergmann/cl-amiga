@@ -338,12 +338,12 @@ static CL_Obj resolve_stream(CL_Obj stream, int writing)
     for (;;) {
         if (st->stream_type == CL_STREAM_SYNONYM) {
             stream = cl_symbol_value(st->string_buf);
-            if (CL_NULL_P(stream) || !CL_HEAP_P(stream))
+            if (CL_NULL_P(stream) || !CL_STREAM_P(stream))
                 return CL_NIL;
             st = (CL_Stream *)CL_OBJ_TO_PTR(stream);
         } else if (st->stream_type == CL_STREAM_TWO_WAY) {
             stream = writing ? st->element_type : st->string_buf;
-            if (CL_NULL_P(stream) || !CL_HEAP_P(stream))
+            if (CL_NULL_P(stream) || !CL_STREAM_P(stream))
                 return CL_NIL;
             st = (CL_Stream *)CL_OBJ_TO_PTR(stream);
         } else {
