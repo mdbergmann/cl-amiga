@@ -1,0 +1,17 @@
+{
+  "summary": "MAKE-TWO-WAY-STREAM and its accessors are unbound (the symbols are interned/exported in builtins.c but no functions attached). Implement them as C builtins following the synonym-stream precedent: a new CL_STREAM_TWO_WAY type reusing the CL_Stream struct's two GC-tracked CL_Obj fields (string_buf=input child, element_type=output child), plus a direction-aware resolver so reads route to the input child and writes to the output child. The repro uses C string streams, so a C-level implementation is sufficient.",
+  "affected_areas": [
+    "Stream core (src/core/stream.c, stream.h): new constructor + direction-aware delegation in read/write/peek/unread paths",
+    "Stream builtins (src/core/builtins_stream.c): make-two-way-stream + two-way-stream-input/output-stream + registration",
+    "Type system (src/core/builtins_type.c): typep 'two-way-stream",
+    "Printer (src/core/printer.c): #<TWO-WAY-STREAM> rendering",
+    "Tests (tests/test_stream.c host, tests/amiga/run-tests.lisp)"
+  ],
+  "risks": [
+    "GC safety: the two child streams are held in string_buf/element_type, which gc_mark, gc_update_slot and gc_verify already traverse for TYPE_STREAM — so no mem.c changes are needed; verify this holds rather than adding new struct fields.",
+    "CLOSE semantics: closing a two-way stream must NOT close its constituents — keep cl_stream_close on resolve_synonym (not the new two-way-following resolver) so it only clears the wrapper's OPEN flag.",
+    "Gray-stream children: if a two-way stream's input/output is a CLOS gray stream (not CL_STREAM_P), C-level I/O delegation returns EOF and gray-streams.lisp's wrappers won't intercept (the wrapper is a C stream). Out of scope for this repro (which uses string streams), but note it as a limitation if SLY later passes gray streams.",
+    "unread-char double-guard in bi_unread_char checks the wrapper's unread_char slot rather than the child's; harmless (the actual unread is delegated correctly), but it won't detect a double-unread on a two-way stream.",
+    "gc_finalize_dead: a two-way stream has direction IO but out_buf_handle==0, so the existing output-buffer free check is a no-op and won't wrongly free anything; confirm no constituent stream is freed."
+  ]
+}
