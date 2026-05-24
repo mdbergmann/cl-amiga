@@ -1,7 +1,7 @@
 ---
 id: 0003-fix-potenial-hang-in-running-sento-tests
 type: bug
-status: ready
+status: implementing
 title: fix potenial hang in running sento-tests
 ---
 

@@ -1,0 +1,15 @@
+{
+  "summary": "make test hangs in host-cold-test because clamiga is launched in interactive mode (no --non-interactive/--script and no stdin redirect); after the sento suite loads, main.c calls cl_repl() which blocks forever in platform_read_line() on a terminal stdin. run-load-and-test-all.sh avoids this with </dev/null but the Makefile target does not, and the host path has no timeout watchdog. Fix: run the cold-test non-interactively, add a portable timeout watchdog, and add a regression test pinning the no-hang guarantee.",
+  "affected_areas": [
+    "Makefile host-cold-test recipe (clamiga invocation, lines ~158-195)",
+    "Makefile test-fast recipe (wiring the new shell test, lines ~95-129)",
+    "tests/ (new dependency-free shell regression test)",
+    "clamiga REPL/CLI behavior (src/main.c, src/core/repl.c) - understood, not modified"
+  ],
+  "risks": [
+    "timeout/gtimeout is not present on a stock macOS host; the watchdog must be conditional so its absence never breaks `make test` (the mandatory pre-commit gate).",
+    "The hang is a usage-level (Makefile) defect, so a clamiga-level unit test cannot reproduce the Makefile recipe directly; the regression test instead pins the underlying clamiga guarantees (--non-interactive never enters the REPL; --load exits on stdin EOF), which is the closest dependency-free proxy.",
+    "A genuine secondary hang (sento dispatcher deadlock or a network fetch in ensure-ql-lib) could still occur; the timeout watchdog mitigates it by converting any future hang into a loud failure rather than an indefinite block.",
+    "Changing --load to --non-interactive slightly alters mode (no banner/REPL); verified behavior-compatible for the load action per main.c, and the post-run log greps (Did N checks / FATAL Signal) remain valid."
+  ]
+}
