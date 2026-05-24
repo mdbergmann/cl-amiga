@@ -41,7 +41,7 @@ fix_prompt_file: .pipeline/prompts/review-guideline.md
 
 
 extra_allowed_tools: "Bash(./build/host/clamiga:*)"
-#analyze_extra_tools: "Bash(./build/host/clamiga:*)"
+analyze_extra_tools: "Bash(make:*),Bash(ls:*),Bash(sed:*),Bash(cat:*),Bash(mkdir:*),Bash(cd:*),Bash(awk:*),Bash(find:*),Bash(cp:*), Bash(mv:*),Bash(wc:*),Bash(./build/host/clamiga:*)"
 implement_extra_tools: "Bash(make:*),Bash(./build/host/clamiga:*)"
 fix_extra_tools: "Bash(make:*),Bash(./build/host/clamiga:*)"
 
