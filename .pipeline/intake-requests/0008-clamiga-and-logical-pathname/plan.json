@@ -6,16 +6,25 @@
       "id": "item-1",
       "title": "Add LOGICAL-PATHNAME bootstrap class (subclass of PATHNAME)",
       "description": "In lib/clos.lisp, immediately after the existing PATHNAME bootstrap class (currently `(%make-bootstrap-class 'pathname (list (find-class 't)))` around line 272-273), add `(%make-bootstrap-class 'logical-pathname (list (find-class 'pathname)))`. This mirrors the standard CL hierarchy (LOGICAL-PATHNAME is a subtype of PATHNAME) and must come AFTER pathname so the superclass CPL already exists. The symbol LOGICAL-PATHNAME is already interned in the CL package (src/core/builtins.c reserved-symbol list), so no symbol-interning change is needed; this only registers a class metaobject in the class table via the existing %make-bootstrap-class path (which calls (setf (find-class name) class) and computes the CPL). This makes `(find-class 'logical-pathname)` succeed, which is what `%resolve-specializers` (lib/clos.lisp:1997, called from %add-method-to-gf) needs so that `(defmethod foo ((x logical-pathname)) ...)` no longer errors at load — the exact failure blocking slynk-fancy-inspector. Do NOT change builtins_type.c:233: `(typep obj 'logical-pathname)` must keep returning NIL because clamiga produces no logical pathnames (a physical pathname is not a logical pathname), and that line short-circuits before any CLOS path. Add a host regression test in tests/test_clos.c asserting: (1) `(class-name (find-class 'logical-pathname))` => \"LOGICAL-PATHNAME\"; (2) the direct superclass is PATHNAME via `(class-name (car (class-direct-superclasses (find-class 'logical-pathname))))` => \"PATHNAME\"; (3) the actual bug reproduction — defining a generic function and a method specialized on logical-pathname loads without error, e.g. `(progn (defgeneric lp-test (x)) (defmethod lp-test ((x logical-pathname)) :lp) :ok)` => \":OK\". Follow the existing TEST(...) / eval_print / ASSERT_STR_EQ patterns already in tests/test_clos.c (e.g. find_class_integer near line 151), and register the new tests in the file's test runner the same way the surrounding tests are registered. Add a mirroring Amiga test to tests/amiga/run-tests.lisp using the existing `(check \"name\" expected form)` style (near the pathname tests around line 2140), covering find-class success, the PATHNAME superclass, and a defmethod-on-logical-pathname-loads check. Run `make test` and ensure it passes.",
-      "files_in_scope": ["lib/clos.lisp", "tests/test_clos.c", "tests/amiga/run-tests.lisp"],
+      "files_in_scope": [
+        "lib/clos.lisp",
+        "tests/test_clos.c",
+        "tests/amiga/run-tests.lisp"
+      ],
       "est_scope_tokens": 28000,
       "depends_on": [],
-      "status": "pending"
+      "status": "done"
     },
     {
       "id": "item-2",
       "title": "Define TRANSLATE-LOGICAL-PATHNAME and LOGICAL-PATHNAME-TRANSLATIONS as CL functions",
       "description": "Provide CL-package function bindings for the two currently-unbound symbols (lower priority; their bodies won't run since clamiga produces no logical pathnames, but they are standard CL functions worth having). Define them in lib/boot.lisp in the pathname section (after the comment block around lines 1680-1684, before ensure-directories-exist). Sensible stub semantics: (a) `(defun translate-logical-pathname (pathspec &rest keys) (declare (ignore keys)) (pathname pathspec))` — per HyperSpec it translates a logical pathname to a physical one; since clamiga has only physical pathnames, coercing via the existing PATHNAME builtin and returning it is correct (an already-physical pathname translates to itself). (b) `(defun logical-pathname-translations (host) (declare (ignore host)) nil)` — clamiga defines no logical hosts, so there are no translations; return NIL rather than erroring so introspection code (e.g. slynk) stays safe. Then, per the instruction comment at src/core/builtins.c:1228-1234 (\"When a real implementation is added later it should remove the corresponding entry from this list\"), remove the now-backed entries from the cl_reserved_symbol_names array: delete \"LOGICAL-PATHNAME-TRANSLATIONS\" (line 1266, keep \"LOGICAL-PATHNAME\" on that line — it stays a class/type name with no function) and \"TRANSLATE-LOGICAL-PATHNAME\" (line 1289). Do NOT touch \"LOGICAL-PATHNAME\" or \"LOAD-LOGICAL-PATHNAME-TRANSLATIONS\" (out of scope). Verify ASDF still loads: asdf.lisp defines its own translate-logical-pathname in the uiop package (line 1048) and the symbols at line 979 are uiop-package symbols, so a CL-package binding is independent — but confirm by running tests/test_asdf.c. Add host tests (tests/test_pathname.c) asserting: `(fboundp 'translate-logical-pathname)` => T; `(pathnamep (translate-logical-pathname #P\"foo.lisp\"))` => T (and that it round-trips the namestring); `(logical-pathname-translations \"SYS\")` => NIL. Follow the existing test/registration patterns in tests/test_pathname.c. Add mirroring `(check ...)` cases to tests/amiga/run-tests.lisp near the pathname tests (around line 2140). Run `make test` and ensure it passes.",
-      "files_in_scope": ["lib/boot.lisp", "src/core/builtins.c", "tests/test_pathname.c", "tests/amiga/run-tests.lisp"],
+      "files_in_scope": [
+        "lib/boot.lisp",
+        "src/core/builtins.c",
+        "tests/test_pathname.c",
+        "tests/amiga/run-tests.lisp"
+      ],
       "est_scope_tokens": 30000,
       "depends_on": [],
       "status": "pending"

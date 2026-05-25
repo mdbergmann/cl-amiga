@@ -271,6 +271,8 @@ directly instead of attempting a symbol lookup."
   (list (find-class 't)))
 (%make-bootstrap-class 'pathname
   (list (find-class 't)))
+(%make-bootstrap-class 'logical-pathname
+  (list (find-class 'pathname)))
 (%make-bootstrap-class 'random-state
   (list (find-class 't)))
 (%make-bootstrap-class 'readtable

@@ -227,6 +227,27 @@ TEST(direct_supers_t)
         "(class-direct-superclasses (find-class 't))"), "NIL");
 }
 
+/* logical-pathname class exists and has PATHNAME as direct superclass */
+TEST(logical_pathname_class_exists)
+{
+    ASSERT_STR_EQ(eval_print(
+        "(class-name (find-class 'logical-pathname))"), "LOGICAL-PATHNAME");
+}
+
+TEST(logical_pathname_superclass_is_pathname)
+{
+    ASSERT_STR_EQ(eval_print(
+        "(class-name (car (class-direct-superclasses (find-class 'logical-pathname))))"),
+        "PATHNAME");
+}
+
+TEST(logical_pathname_defmethod_loads)
+{
+    ASSERT_STR_EQ(eval_print(
+        "(progn (defgeneric lp-test (x)) (defmethod lp-test ((x logical-pathname)) :lp) :ok)"),
+        ":OK");
+}
+
 /* class-precedence-list */
 TEST(cpl_fixnum)
 {
@@ -3698,6 +3719,9 @@ int main(void)
     RUN(class_of_eq_find_class);
     RUN(direct_supers_integer);
     RUN(direct_supers_t);
+    RUN(logical_pathname_class_exists);
+    RUN(logical_pathname_superclass_is_pathname);
+    RUN(logical_pathname_defmethod_loads);
     RUN(cpl_fixnum);
     RUN(cpl_cons);
     RUN(cpl_null);
