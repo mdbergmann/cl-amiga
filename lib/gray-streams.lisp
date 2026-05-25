@@ -550,7 +550,10 @@
       ((null destination)
        (apply orig-format nil control-string format-args))
       (t
-       (let ((s (if (eq destination t) *standard-output* destination)))
+       (let* ((dest0 (if (eq destination t) *standard-output* destination))
+              (s (if (typep dest0 'two-way-stream)
+                     (two-way-stream-output-stream dest0)
+                     dest0)))
          (if (%gray-stream-p s)
              (let ((tmp (make-string-output-stream)))
                (apply orig-format tmp control-string format-args)
