@@ -1,7 +1,7 @@
 ---
 id: 0010-reader-nil
 type: feature
-status: implementing
+status: done
 title: reader NIL
 ---
 
