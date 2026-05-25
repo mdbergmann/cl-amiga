@@ -1,7 +1,7 @@
 ---
 id: 0008-clamiga-and-logical-pathname
 type: bug
-status: implementing
+status: done
 title: clamiga and logical pathname
 ---
 
