@@ -1,0 +1,17 @@
+{
+  "summary": "The bug is that LOGICAL-PATHNAME is interned as a symbol/type name but has no CLOS class, so find-class fails and any defmethod specialized on logical-pathname errors at load (blocking slynk-fancy-inspector). Fix: add a LOGICAL-PATHNAME bootstrap class as a subclass of the existing PATHNAME class in lib/clos.lisp. Lower-priority: bind the standard CL functions translate-logical-pathname and logical-pathname-translations (currently unbound reserved symbols).",
+  "affected_areas": [
+    "lib/clos.lisp (bootstrap class table — PATHNAME hierarchy)",
+    "lib/boot.lisp (pathname function section)",
+    "src/core/builtins.c (cl_reserved_symbol_names list)",
+    "tests/test_clos.c, tests/test_pathname.c (host tests)",
+    "tests/amiga/run-tests.lisp (Amiga tests)"
+  ],
+  "risks": [
+    "typep behavior must stay unchanged: builtins_type.c:233 returns 0 for LOGICAL-PATHNAME and must remain so (clamiga has no logical pathnames; a physical pathname must not test true as logical-pathname). The added class does not affect this because line 233 short-circuits before any CLOS dispatch.",
+    "Class ordering: logical-pathname must be defined AFTER pathname in clos.lisp so the superclass CPL exists when %compute-builtin-cpl runs.",
+    "ASDF compatibility: asdf.lisp defines its own translate-logical-pathname in the uiop package; binding CL:translate-logical-pathname is independent symbol identity, but tests/test_asdf.c and the trunk asdf load should be run to confirm no shadowing/collision regression.",
+    "Removing entries from cl_reserved_symbol_names is required by that file's own comment once the functions are backed, but must remove only TRANSLATE-LOGICAL-PATHNAME and LOGICAL-PATHNAME-TRANSLATIONS (keep LOGICAL-PATHNAME and LOAD-LOGICAL-PATHNAME-TRANSLATIONS).",
+    "Both host and Amiga tests are mandatory per CLAUDE.md; make test must pass before completion."
+  ]
+}
