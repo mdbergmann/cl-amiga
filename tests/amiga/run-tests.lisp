@@ -4741,7 +4741,9 @@
       (check "gray tw read-char B"         #\B (read-char tw))
       (write-char #\X tw)
       (write-string "hi" tw)
-      (check "gray tw write accumulates"   "Xhi" (gs-flush gcap)))
+      (check "gray tw write accumulates"   "Xhi" (gs-flush gcap))
+      (format tw "f~D" 9)
+      (check "gray tw format delegates"   "f9"  (gs-flush gcap)))
     ; Mixed: native input + Gray output
     (let* ((nin  (make-string-input-stream "hello"))
            (gcap2 (make-instance 'test-gs-cap))

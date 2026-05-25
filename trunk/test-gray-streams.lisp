@@ -166,7 +166,9 @@
   (check "gray tw: read-char B"              #\B (read-char tw))
   (write-char #\X tw)
   (write-string "hi" tw)
-  (check "gray tw: write accumulates"        "Xhi" (gray-cap-flush gcap)))
+  (check "gray tw: write accumulates"        "Xhi" (gray-cap-flush gcap))
+  (format tw "f~D" 9)
+  (check "gray tw: format delegates"         "f9"  (gray-cap-flush gcap)))
 
 ;; Mixed: native input + Gray output.
 (let* ((nin  (make-string-input-stream "hello"))
