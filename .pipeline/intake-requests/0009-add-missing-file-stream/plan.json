@@ -1,0 +1,19 @@
+{
+  "request_id": "0009-add-missing-file-stream",
+  "summary": "Add FILE-STREAM bootstrap class (subclass of STREAM) so (find-class 'file-stream) succeeds and defmethod specialized on file-stream loads.",
+  "items": [
+    {
+      "id": "item-1",
+      "title": "Add FILE-STREAM bootstrap class (subclass of STREAM)",
+      "description": "In lib/clos.lisp, immediately after the existing STREAM bootstrap class (`(%make-bootstrap-class 'stream (list (find-class 't)))` at lines 270-271), add `(%make-bootstrap-class 'file-stream (list (find-class 'stream)))`. This mirrors the standard CL hierarchy (FILE-STREAM is a subtype of STREAM) and must come AFTER stream so the superclass CPL already exists. This is the exact same pattern as the LOGICAL-PATHNAME class added at lines 274-275 (commit b95a7ae). The symbol FILE-STREAM is already interned in the CL package (it is in the cl_reserved_symbol_names array at src/core/builtins.c:1255), so NO symbol-interning change is needed and it must STAY in that reserved list (FILE-STREAM is a type/class name only — CL has no FILE-STREAM function — exactly like LOGICAL-PATHNAME stayed). This change only registers a class metaobject via the existing %make-bootstrap-class path (which calls (setf (find-class name) class) and computes the CPL), making `(find-class 'file-stream)` succeed, which is what %resolve-specializers needs so that `(defmethod foo ((x file-stream)) ...)` no longer errors at load. CRITICAL: do NOT change the existing typep handler at src/core/builtins_type.c:215-219 — it already correctly returns T for CL_STREAM_FILE / CL_STREAM_CONSOLE streams and short-circuits before any CLOS path; it is already correct and unlike LOGICAL-PATHNAME (builtins_type.c:233 returns 0) it must keep its real behavior. Add host regression tests in tests/test_clos.c, placed right after the logical_pathname_* tests (lines 230-249), following the same TEST(...) / eval_print / ASSERT_STR_EQ style: (1) `(class-name (find-class 'file-stream))` => \"FILE-STREAM\"; (2) `(class-name (car (class-direct-superclasses (find-class 'file-stream))))` => \"STREAM\"; (3) the actual bug reproduction `(progn (defgeneric fs-test (x)) (defmethod fs-test ((x file-stream)) :fs) :ok)` => \":OK\". Register the three new tests in the main() runner with RUN(...) immediately after the RUN(logical_pathname_*) lines (around line 3722). Add mirroring Amiga tests to tests/amiga/run-tests.lisp using the existing `(check \"name\" expected form)` style, placed right after the LOGICAL-PATHNAME class block (after line 2238), covering: find-class success (=> \"FILE-STREAM\"), STREAM superclass (=> \"STREAM\"), and a defmethod-on-file-stream-loads check (use a distinct gf name e.g. fs-test-amiga, => :ok). Run `make test` (host) and ensure it passes.",
+      "files_in_scope": [
+        "lib/clos.lisp",
+        "tests/test_clos.c",
+        "tests/amiga/run-tests.lisp"
+      ],
+      "est_scope_tokens": 26000,
+      "depends_on": [],
+      "status": "pending"
+    }
+  ]
+}

@@ -1,0 +1,13 @@
+{
+  "summary": "FILE-STREAM is missing only as a CLOS class metaobject. Adding one bootstrap-class line in lib/clos.lisp (subclass of STREAM), mirroring the just-added LOGICAL-PATHNAME class, makes (find-class 'file-stream) succeed and lets defmethod specialize on file-stream. The symbol is already interned and typep already handles it correctly.",
+  "affected_areas": [
+    "lib/clos.lisp (bootstrap class table)",
+    "tests/test_clos.c (host regression tests)",
+    "tests/amiga/run-tests.lisp (Amiga regression tests)"
+  ],
+  "risks": [
+    "Ordering: file-stream must be registered AFTER stream so (find-class 'stream) already exists when its CPL is computed — placing it on the line directly below the stream entry satisfies this.",
+    "Do NOT modify the existing typep handler at builtins_type.c:215-219; it already correctly classifies file/console streams and must keep its behavior (unlike logical-pathname's typep which returns NIL).",
+    "FILE-STREAM must remain in the cl_reserved_symbol_names list (builtins.c:1255) — it is a type-only name with no associated function, so no symbol or builtins.c changes are needed."
+  ]
+}

@@ -1,7 +1,7 @@
 ---
 id: 0009-add-missing-file-stream
 type: bug
-status: ready
+status: implementing
 title: add missing file-stream
 ---
 
