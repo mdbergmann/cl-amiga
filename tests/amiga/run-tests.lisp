@@ -2223,6 +2223,16 @@
 ; *default-pathname-defaults* is a pathname
 (check "default-pn-defaults" t (pathnamep *default-pathname-defaults*))
 
+; --- LOGICAL-PATHNAME class ---
+(check "logical-pathname-class-exists" "LOGICAL-PATHNAME"
+  (class-name (find-class 'logical-pathname)))
+(check "logical-pathname-superclass" "PATHNAME"
+  (class-name (car (class-direct-superclasses (find-class 'logical-pathname)))))
+(check "logical-pathname-defmethod-loads" :ok
+  (progn (defgeneric lp-test-amiga (x))
+         (defmethod lp-test-amiga ((x logical-pathname)) :lp)
+         :ok))
+
 ; decode-universal-time returns 9 values
 (check "decode-ut-count" 9 (length (multiple-value-list (decode-universal-time (get-universal-time)))))
 
