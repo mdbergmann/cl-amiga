@@ -1,0 +1,19 @@
+{
+  "request_id": "0010-reader-nil",
+  "summary": "Fix reader so cl:nil (single-colon external lookup) resolves to NIL instead of erroring, by disambiguating 'found NIL' from 'not found' via find-symbol status.",
+  "items": [
+    {
+      "id": "item-1",
+      "title": "Reader: resolve cl:nil via status-aware external lookup + regression tests",
+      "description": "In src/core/reader.c, the single-colon package-qualified branch (currently around lines 604-611) calls cl_package_find_external() and treats a CL_NIL return as 'not exported', then errors. This is wrong for the symbol NIL: cl_package_find_external() returns CL_NIL for BOTH 'symbol not found' AND 'found the symbol NIL' (NIL is interned and external in COMMON-LISP). Replace that lookup with cl_find_symbol_with_status(sym_name, sym_len, package, &status) and accept the symbol only when status == 2 (:EXTERNAL); otherwise emit the existing 'Symbol %s not exported from %s' error (preserving the read_suppress early-return). Do NOT accept status 3 (:INHERITED) — CLHS requires package:symbol to denote a symbol EXTERNAL in that package itself, matching current single-colon semantics. Note cl_find_symbol_with_status already normalizes the home NIL symbol to CL_NIL and is declared in package.h (already included by reader.c at line 4), so reading cl:nil will correctly yield NIL just as cl:t yields T. Leave the double-colon (cl::nil) branch (cl_intern_in) unchanged. Add a host regression test in tests/test_package.c next to eval_read_cl_qualified (~line 533): a TEST that asserts eval_print(\"(eq 'CL:NIL nil)\") == \"T\" and eval_print(\"(null 'cl:nil)\") == \"T\", and that a genuinely non-exported symbol still errors, e.g. eval_print of a CL-internal-only symbol like \"CL:THIS-SYMBOL-DOES-NOT-EXIST\" starts with \"ERROR:\". Register the new TEST with RUN(...) in the run list near lines 1080-1082. Also add an Amiga regression test in tests/amiga/run-tests.lisp next to the existing 'cl:sym' check (~line 1382), e.g. (check \"cl:nil\" t (eq 'CL:NIL nil)). Run `make test` to confirm host suite stays green.",
+      "files_in_scope": [
+        "src/core/reader.c",
+        "tests/test_package.c",
+        "tests/amiga/run-tests.lisp"
+      ],
+      "est_scope_tokens": 22000,
+      "depends_on": [],
+      "status": "pending"
+    }
+  ]
+}

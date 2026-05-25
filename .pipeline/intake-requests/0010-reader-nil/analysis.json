@@ -1,0 +1,13 @@
+{
+  "summary": "Narrow reader bug: cl:nil errors because the single-colon external lookup uses cl_package_find_external(), whose CL_NIL return is ambiguous between 'symbol NIL found' and 'not found'. Fix by using the existing status-aware cl_find_symbol_with_status() and accepting only :EXTERNAL (status 2).",
+  "affected_areas": [
+    "src/core/reader.c (package-qualified symbol parsing, single-colon branch)",
+    "tests/test_package.c (host regression test)",
+    "tests/amiga/run-tests.lisp (Amiga regression test)"
+  ],
+  "risks": [
+    "Must accept only status 2 (:EXTERNAL), not 3 (:INHERITED), to preserve CLHS single-colon semantics (symbol must be external in the named package itself, not merely inherited via use-list).",
+    "The error path and read_suppress early-return must be preserved so genuinely non-exported symbols still raise 'Symbol X not exported from Y' and #+(or) suppression still returns NIL.",
+    "Same CL_NIL-ambiguity could in principle affect other callers of cl_package_find_external, but those are out of scope for this request; only the reader single-colon path is the reported defect."
+  ]
+}
