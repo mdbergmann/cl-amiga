@@ -173,7 +173,20 @@ static void load_user_init(void)
 #else
     static char user_init_path[512];
     static const char *paths[2];
-    const char *home = getenv("HOME");
+    const char *home;
+    /* Escape hatch for hermetic environments (the test suite, CI): when
+       CLAMIGA_NO_USERINIT is set to a non-empty value, never read the
+       developer's ~/.clamigarc.  C unit tests call cl_repl_init() directly and
+       cannot pass the --no-userinit CLI flag, so they rely on this env var
+       instead.  An empty value counts as unset so a child can override an
+       inherited export via `CLAMIGA_NO_USERINIT= ...`. */
+    {
+        const char *e = getenv("CLAMIGA_NO_USERINIT");
+        if (e != NULL && e[0] != '\0') {
+            return;
+        }
+    }
+    home = getenv("HOME");
     if (home) {
         snprintf(user_init_path, sizeof(user_init_path),
                  "%s/.clamigarc", home);

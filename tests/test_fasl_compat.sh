@@ -47,7 +47,7 @@ check_contains() {
 # Helper: run clamiga in batch mode with *load-verbose* suppressed
 # Usage: run_quiet '(lisp expression)'
 run_quiet() {
-    echo "(setf *load-verbose* nil) $1" | "$CLAMIGA" --batch 2>&1
+    echo "(setf *load-verbose* nil) $1" | "$CLAMIGA" --no-userinit --batch 2>&1
 }
 
 # Clean FASL cache to start fresh
@@ -201,7 +201,7 @@ run_quiet '(load "'"$TMPDIR"'/fasl_test_cache.lisp")' > /dev/null
 
 # Session 2: load with *load-verbose* to verify FASL path is used
 result=$(echo '(setf *load-verbose* t) (load "'"$TMPDIR"'/fasl_test_cache.lisp") (cache-test-fn)' \
-    | "$CLAMIGA" --batch 2>&1)
+    | "$CLAMIGA" --no-userinit --batch 2>&1)
 check_contains "fasl_loaded_from_cache" ".fasl" "$result"
 check_contains "fasl_cached_result_correct" "CACHED" "$result"
 

@@ -9,7 +9,7 @@ avail >>build/amiga/test-results.log
 stack 65000
 echo "=== run start ===" >>build/amiga/test-results.log
 date >>build/amiga/test-results.log
-build/amiga/clamiga --heap 8M --non-interactive --load tests/amiga/run-tests.lisp >>build/amiga/test-results.log
+build/amiga/clamiga --no-userinit --heap 8M --non-interactive --load tests/amiga/run-tests.lisp >>build/amiga/test-results.log
 echo "=== run end ===" >>build/amiga/test-results.log
 date >>build/amiga/test-results.log
 ; Quit FS-UAE so `make test-amiga` returns without manual intervention.

@@ -173,7 +173,7 @@ for f in trunk/load-and-test-*.lisp; do
   echo ">>> $name  (heap ${heap}M, timeout ${tmo}s, cold=$COLD)" >&2
   # stdin from /dev/null so the post-load REPL sees EOF and exits instead
   # of blocking; everything (incl. stderr) captured to the per-script log.
-  timeout "$tmo" "$CLAMIGA" --heap "${heap}M" --load "$f" </dev/null >"$log" 2>&1
+  timeout "$tmo" "$CLAMIGA" --no-userinit --heap "${heap}M" --load "$f" </dev/null >"$log" 2>&1
   ec=$?
 
   result=$(summarize "$log")

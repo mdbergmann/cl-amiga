@@ -94,7 +94,8 @@ $(BUILDDIR)/%.o: $(SRCDIR)/%.c
 # Tests
 test-fast: $(TEST_BINS) host
 	@echo "=== Running tests (fast tier: skips sento/host-cold-test) ==="
-	@failed=0; \
+	@export CLAMIGA_NO_USERINIT=1; \
+	failed=0; \
 	for t in $(TEST_BINS); do \
 		echo "--- $$(basename $$t) ---"; \
 		if $$t; then \
@@ -132,6 +133,13 @@ test-fast: $(TEST_BINS) host
 		echo "FAIL"; \
 		failed=1; \
 	fi; \
+	echo "--- test_userinit ---"; \
+	if sh $(TEST_SRCDIR)/test_userinit.sh $(BUILDDIR)/clamiga; then \
+		echo "PASS"; \
+	else \
+		echo "FAIL"; \
+		failed=1; \
+	fi; \
 	echo "--- test_test_extra ---"; \
 	if sh $(TEST_SRCDIR)/test_test_extra.sh; then \
 		echo "PASS"; \
@@ -143,7 +151,8 @@ test-fast: $(TEST_BINS) host
 	echo "=== Fast tests passed ==="
 
 test: test-fast
-	@echo "--- host-cold-test ---"; \
+	@export CLAMIGA_NO_USERINIT=1; \
+	echo "--- host-cold-test ---"; \
 	if $(MAKE) --no-print-directory host-cold-test; then \
 		echo "PASS"; \
 	else \
@@ -198,7 +207,7 @@ host-cold-test: host
 	  echo "=== host-cold-test: no timeout/gtimeout on PATH — running without watchdog ==="; \
 	fi; \
 	rc=0; \
-	$$runner $(BUILDDIR)/clamiga --heap 384M --non-interactive --load $(HOST_COLD_TEST_SCRIPT) \
+	$$runner $(BUILDDIR)/clamiga --no-userinit --heap 384M --non-interactive --load $(HOST_COLD_TEST_SCRIPT) \
 	  </dev/null > $(HOST_COLD_TEST_LOG) 2>&1 || rc=$$?; \
 	if [ $$rc -eq 124 ]; then \
 	  echo "=== FAIL: host-cold-test timed out after $(HOST_COLD_TEST_TIMEOUT)s (see $(HOST_COLD_TEST_LOG)) ==="; \
@@ -230,6 +239,7 @@ host-cold-test: host
 # NOT wired into 'make test' — heavyweight, needs quicklisp/ansi-tests.
 # Set COLD=1 to clear the FASL cache before each script (cold-boot mode).
 test-extra: host
+	@export CLAMIGA_NO_USERINIT=1; \
 	sh trunk/run-load-and-test-all.sh $(if $(filter 1,$(COLD)),--cold)
 
 # Run host build + tests inside an Ubuntu container (matches GitHub Actions
@@ -270,11 +280,11 @@ verify-amiga:
 # Pre-compile boot files to FASL for faster startup
 fasl: $(BUILDDIR)/clamiga
 	@echo "=== Compiling boot.lisp → lib/boot.fasl ==="
-	$(BUILDDIR)/clamiga --heap 24M \
+	$(BUILDDIR)/clamiga --no-userinit --heap 24M \
 		--eval '(compile-file "lib/boot.lisp" :output-file "lib/boot.fasl")' \
 		--eval '(quit)'
 	@echo "=== Compiling clos.lisp → lib/clos.fasl ==="
-	$(BUILDDIR)/clamiga --heap 24M \
+	$(BUILDDIR)/clamiga --no-userinit --heap 24M \
 		--eval '(compile-file "lib/clos.lisp" :output-file "lib/clos.fasl")' \
 		--eval '(quit)'
 
