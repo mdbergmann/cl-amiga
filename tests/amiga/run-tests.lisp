@@ -1380,6 +1380,8 @@
 
 ; CL:CAR = CAR
 (check "cl:sym" t (eq 'CL:CAR 'CAR))
+; CL:NIL must resolve to NIL (not error as "not exported")
+(check "cl:nil" t (eq 'CL:NIL nil))
 
 ; KEYWORD:TEST = :TEST
 (check "keyword:sym" t (eq 'KEYWORD:TEST :TEST))

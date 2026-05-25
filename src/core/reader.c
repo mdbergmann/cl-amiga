@@ -601,9 +601,13 @@ check_keyword:
                 /* pkg::sym — intern as internal symbol */
                 return cl_intern_in(sym_name, (uint32_t)sym_len, package);
             } else {
-                /* pkg:sym — look up external symbol only */
-                CL_Obj sym = cl_package_find_external(sym_name, (uint32_t)sym_len, package);
-                if (CL_NULL_P(sym)) {
+                /* pkg:sym — look up external symbol only.
+                 * Use cl_find_symbol_with_status so that CL:NIL (whose
+                 * symbol value IS CL_NIL) is distinguished from "not found"
+                 * (which also returns CL_NIL). */
+                int status = 0;
+                CL_Obj sym = cl_find_symbol_with_status(sym_name, (uint32_t)sym_len, package, &status);
+                if (status != 2) {
                     if (read_suppress) return CL_NIL;
                     cl_reader_error(CL_ERR_PARSE, "Symbol %s not exported from %s",
                              sym_name, pkg_name);

@@ -536,6 +536,19 @@ TEST(eval_read_cl_qualified)
     ASSERT_STR_EQ(eval_print("(eq 'CL:CAR 'CAR)"), "T");
 }
 
+TEST(eval_read_cl_nil)
+{
+    /* CL:NIL must resolve to NIL — cl_find_symbol_with_status distinguishes
+     * "found NIL" (status==2) from "not found" (status==0, also returns CL_NIL) */
+    ASSERT_STR_EQ(eval_print("(eq 'CL:NIL nil)"), "T");
+    ASSERT_STR_EQ(eval_print("(null 'cl:nil)"), "T");
+    /* A symbol not present in CL must still error */
+    {
+        const char *result = eval_print("CL:NOT-EXPORTED-REGRESSION-SYM");
+        ASSERT(strncmp(result, "ERROR:", 6) == 0);
+    }
+}
+
 TEST(eval_read_keyword_qualified)
 {
     /* KEYWORD:TEST should be same as :TEST */
@@ -1079,6 +1092,7 @@ int main(void)
     RUN(eval_read_pkg_internal_creates);
     RUN(eval_read_pkg_not_found);
     RUN(eval_read_cl_qualified);
+    RUN(eval_read_cl_nil);
     RUN(eval_read_keyword_qualified);
     RUN(eval_read_uninterned);
     RUN(eval_read_uninterned_unique);
