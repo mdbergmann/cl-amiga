@@ -46,7 +46,7 @@ total=$((total + 1))
 # crash", so a hung clamiga must not hang the test suite.
 out=$(cd "$WORK" && \
       ( echo '(format t "~&BOOT-OK ~a~%" (+ 1 2)) (quit)' \
-        | "$CLAMIGA_ABS" --batch 2>&1 ) &
+        | "$CLAMIGA_ABS" --no-userinit --batch 2>&1 ) &
       pid=$!
       ( sleep 30 && kill -9 $pid 2>/dev/null ) &
       killer=$!
