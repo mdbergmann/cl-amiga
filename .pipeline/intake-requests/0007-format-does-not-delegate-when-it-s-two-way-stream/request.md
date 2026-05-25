@@ -1,7 +1,7 @@
 ---
 id: 0007-format-does-not-delegate-when-it-s-two-way-stream
 type: bug
-status: ready
+status: implementing
 title: format does not delegate when it's two-way-stream
 ---
 

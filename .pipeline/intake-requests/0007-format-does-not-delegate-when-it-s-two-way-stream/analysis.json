@@ -1,0 +1,13 @@
+{
+  "summary": "CL:FORMAT, as redefined in lib/gray-streams.lisp, fails to unwrap a two-way stream to its output substream before testing for a Gray stream. So FORMAT to a two-way stream wrapping a Gray output stream (e.g. *terminal-io*/*debug-io*/*query-io*) hits the C orig-format path, whose resolve_stream lands on a CLOS Gray substream that CL_STREAM_P rejects, and nothing is written. The one-line-region fix: unwrap two-way streams after the T->*standard-output* mapping, mirroring the %resolve-output-stream helper that all other output functions already use. Reproduced and fix validated on host.",
+  "affected_areas": [
+    "lib/gray-streams.lisp (CL:FORMAT redefinition / Gray dispatch shim)",
+    "Gray two-way stream output path used by SLY debugger/REPL prompts",
+    "Regression tests: trunk/test-gray-streams.lisp and tests/amiga/run-tests.lisp"
+  ],
+  "risks": [
+    "Must preserve FORMAT's special destination semantics: NIL returns a string, T means *standard-output* (NOT *terminal-io*) — so FORMAT cannot simply reuse %resolve-output-stream; the two-way unwrap must be inlined.",
+    "Native (non-Gray) two-way streams must keep working: the non-Gray else branch must pass the ORIGINAL destination to orig-format so the C-level resolve_stream still unwraps to the native output substream (verified).",
+    "Fix lives in Lisp (lib/gray-streams.lisp); make test does not run trunk/test-gray-streams.lisp directly, so the host regression test is exercised via --load rather than the C harness — acceptable and consistent with the existing Gray two-way tests."
+  ]
+}
