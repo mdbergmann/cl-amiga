@@ -629,6 +629,33 @@ TEST(wild_directory_lists_dirs)
     ASSERT_STR_EQ(result, "(T T)");
 }
 
+/* --- translate-logical-pathname and logical-pathname-translations --- */
+
+TEST(translate_logical_pathname_fboundp)
+{
+    ASSERT_STR_EQ(eval_print("(fboundp 'translate-logical-pathname)"), "T");
+}
+
+TEST(translate_logical_pathname_returns_pathname)
+{
+    ASSERT_STR_EQ(eval_print("(pathnamep (translate-logical-pathname #P\"foo.lisp\"))"), "T");
+}
+
+TEST(translate_logical_pathname_roundtrip)
+{
+    ASSERT_STR_EQ(eval_print("(namestring (translate-logical-pathname #P\"foo.lisp\"))"), "\"foo.lisp\"");
+}
+
+TEST(logical_pathname_translations_fboundp)
+{
+    ASSERT_STR_EQ(eval_print("(fboundp 'logical-pathname-translations)"), "T");
+}
+
+TEST(logical_pathname_translations_nil)
+{
+    ASSERT_STR_EQ(eval_print("(logical-pathname-translations \"SYS\")"), "NIL");
+}
+
 /* --- Run all tests --- */
 
 int main(void)
@@ -724,6 +751,11 @@ int main(void)
     RUN(wild_pathname_p_field_dir);
     RUN(wild_namestring_roundtrip);
     RUN(wild_directory_lists_dirs);
+    RUN(translate_logical_pathname_fboundp);
+    RUN(translate_logical_pathname_returns_pathname);
+    RUN(translate_logical_pathname_roundtrip);
+    RUN(logical_pathname_translations_fboundp);
+    RUN(logical_pathname_translations_nil);
 
     teardown();
     REPORT();
