@@ -248,6 +248,27 @@ TEST(logical_pathname_defmethod_loads)
         ":OK");
 }
 
+/* file-stream class exists and has STREAM as direct superclass */
+TEST(file_stream_class_exists)
+{
+    ASSERT_STR_EQ(eval_print(
+        "(class-name (find-class 'file-stream))"), "FILE-STREAM");
+}
+
+TEST(file_stream_superclass_is_stream)
+{
+    ASSERT_STR_EQ(eval_print(
+        "(class-name (car (class-direct-superclasses (find-class 'file-stream))))"),
+        "STREAM");
+}
+
+TEST(file_stream_defmethod_loads)
+{
+    ASSERT_STR_EQ(eval_print(
+        "(progn (defgeneric fs-test (x)) (defmethod fs-test ((x file-stream)) :fs) :ok)"),
+        ":OK");
+}
+
 /* class-precedence-list */
 TEST(cpl_fixnum)
 {
@@ -3722,6 +3743,9 @@ int main(void)
     RUN(logical_pathname_class_exists);
     RUN(logical_pathname_superclass_is_pathname);
     RUN(logical_pathname_defmethod_loads);
+    RUN(file_stream_class_exists);
+    RUN(file_stream_superclass_is_stream);
+    RUN(file_stream_defmethod_loads);
     RUN(cpl_fixnum);
     RUN(cpl_cons);
     RUN(cpl_null);

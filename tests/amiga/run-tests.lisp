@@ -2237,6 +2237,16 @@
 (check "translate-logical-pathname-roundtrip" "foo.lisp" (namestring (translate-logical-pathname #P"foo.lisp")))
 (check "logical-pathname-translations-nil" nil (logical-pathname-translations "SYS"))
 
+; --- FILE-STREAM class ---
+(check "file-stream-class-exists" "FILE-STREAM"
+  (class-name (find-class 'file-stream)))
+(check "file-stream-superclass" "STREAM"
+  (class-name (car (class-direct-superclasses (find-class 'file-stream)))))
+(check "file-stream-defmethod-loads" :ok
+  (progn (defgeneric fs-test-amiga (x))
+         (defmethod fs-test-amiga ((x file-stream)) :fs)
+         :ok))
+
 ; decode-universal-time returns 9 values
 (check "decode-ut-count" 9 (length (multiple-value-list (decode-universal-time (get-universal-time)))))
 

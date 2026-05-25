@@ -269,6 +269,8 @@ directly instead of attempting a symbol lookup."
   (list (find-class 't)))
 (%make-bootstrap-class 'stream
   (list (find-class 't)))
+(%make-bootstrap-class 'file-stream
+  (list (find-class 'stream)))
 (%make-bootstrap-class 'pathname
   (list (find-class 't)))
 (%make-bootstrap-class 'logical-pathname
