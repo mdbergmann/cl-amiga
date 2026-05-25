@@ -19,6 +19,7 @@
 #include "bignum.h"
 #include "readtable.h"
 #include "string_utils.h"
+#include "compiler.h"  /* cl_tables_wrlock / cl_tables_rwunlock */
 #include "../platform/platform.h"
 #include "../platform/platform_thread.h"
 #include "thread.h"
