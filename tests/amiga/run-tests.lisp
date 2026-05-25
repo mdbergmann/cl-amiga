@@ -2232,6 +2232,10 @@
   (progn (defgeneric lp-test-amiga (x))
          (defmethod lp-test-amiga ((x logical-pathname)) :lp)
          :ok))
+(check "translate-logical-pathname-fboundp" t (fboundp 'translate-logical-pathname))
+(check "translate-logical-pathname-returns-pathname" t (pathnamep (translate-logical-pathname #P"foo.lisp")))
+(check "translate-logical-pathname-roundtrip" "foo.lisp" (namestring (translate-logical-pathname #P"foo.lisp")))
+(check "logical-pathname-translations-nil" nil (logical-pathname-translations "SYS"))
 
 ; decode-universal-time returns 9 values
 (check "decode-ut-count" 9 (length (multiple-value-list (decode-universal-time (get-universal-time)))))

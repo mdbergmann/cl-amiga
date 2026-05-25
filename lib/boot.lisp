@@ -1683,6 +1683,14 @@ including any dotted-list terminator (so the result is also dotted)."
 ;; file-namestring, directory-namestring, enough-namestring) are C builtins.
 ;; truename is now a C builtin (resolves symlinks via platform_realpath).
 
+(defun translate-logical-pathname (pathspec &rest keys)
+  (declare (ignore keys))
+  (pathname pathspec))
+
+(defun logical-pathname-translations (host)
+  (declare (ignore host))
+  nil)
+
 (defun %ensure-dirs-helper (dir pos len created)
   "Helper for ensure-directories-exist. Walks dir string creating directories."
   (if (>= pos len)
