@@ -233,6 +233,7 @@ extern CL_Obj SYM_PRINT_PRETTY;      /* *PRINT-PRETTY* */
 extern CL_Obj SYM_PRINT_RIGHT_MARGIN; /* *PRINT-RIGHT-MARGIN* */
 extern CL_Obj SYM_PRINT_PPRINT_DISPATCH; /* *PRINT-PPRINT-DISPATCH* */
 extern CL_Obj SYM_PRINT_OBJECT_HOOK;    /* *PRINT-OBJECT-HOOK* */
+extern CL_Obj SYM_READ_DEFAULT_FLOAT_FORMAT; /* *READ-DEFAULT-FLOAT-FORMAT* */
 
 /* Print-case keyword symbols */
 extern CL_Obj KW_UPCASE;             /* :UPCASE */
