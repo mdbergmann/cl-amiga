@@ -1,0 +1,19 @@
+{
+  "request_id": "0011-typep-does-not-recognize-generic-function",
+  "summary": "Make typep recognize GENERIC-FUNCTION (and STANDARD-GENERIC-FUNCTION) via cl_funcallable_instance_p, mirroring the FUNCTION case.",
+  "items": [
+    {
+      "id": "item-1",
+      "title": "typep recognizes GENERIC-FUNCTION via funcallable-instance check + regression tests",
+      "description": "In src/core/builtins_type.c, inside typep_symbol (the strcmp chain that begins around line 77), add explicit cases for the type specifiers \"GENERIC-FUNCTION\" and \"STANDARD-GENERIC-FUNCTION\" that return cl_funcallable_instance_p(obj). Place them immediately after the existing FUNCTION case at lines 173-177 (`if (strcmp(tname, \"FUNCTION\") == 0) return ... || cl_funcallable_instance_p(obj);`). This prevents these specifiers from falling through to the `cl_error(CL_ERR_TYPE, \"TYPEP: unknown type specifier %s\")` at line 298. cl_funcallable_instance_p is already declared in vm.h (included at the top of the file) and already used at line 175, so no new include or forward declaration is needed; it returns 1 only for STANDARD-GENERIC-FUNCTION structs and 0 for any non-funcallable object, so negative cases (e.g. a string, fixnum, or ordinary builtin function) correctly return NIL rather than erroring. Rationale: per CLHS every standard-generic-function is a generic-function, and in this implementation a generic function is exactly a funcallable instance. STANDARD-GENERIC-FUNCTION already resolves correctly today through the CLOS class-table fallback (test_clos.c:2462 passes), but the request explicitly asks to treat both via cl_funcallable_instance_p; the behavior is equivalent for generic-function objects. Add a regression test to the host suite: in tests/test_clos.c extend the existing TEST funcallable_gf_is_funcallable_standard_object (around lines 2456-2466) with assertions `(typep #'fsc-foo 'generic-function)` => \"T\", plus negative cases such as `(typep 42 'generic-function)` => \"NIL\" and `(typep #'car 'generic-function)` => \"NIL\" (an ordinary builtin is not a funcallable instance). Add a matching Amiga test in tests/amiga/run-tests.lisp next to the existing gf typep checks (lines 3612-3614): `(check \"gf typep generic-function\" t (typep #'fsc-amiga-foo 'generic-function))` and a negative `(check \"non-gf typep generic-function\" nil (typep 42 'generic-function))`. Do NOT remove GENERIC-FUNCTION from the cl_reserved_symbol_names list in src/core/builtins.c (line 1261): no class is being added, the symbol must stay interned for FIND-SYMBOL/presence tests, and typep recognition is independent of that list. Build with `make host` and run `make test` to confirm the host suite stays green.",
+      "files_in_scope": [
+        "src/core/builtins_type.c",
+        "tests/test_clos.c",
+        "tests/amiga/run-tests.lisp"
+      ],
+      "est_scope_tokens": 32000,
+      "depends_on": [],
+      "status": "pending"
+    }
+  ]
+}
