@@ -3611,6 +3611,8 @@
 (defmethod fsc-amiga-foo ((x integer)) (* x 2))
 (check "gf typep funcallable-standard-object" t (typep #'fsc-amiga-foo 'funcallable-standard-object))
 (check "gf typep standard-generic-function" t (typep #'fsc-amiga-foo 'standard-generic-function))
+(check "gf typep generic-function" t (typep #'fsc-amiga-foo 'generic-function))
+(check "non-gf typep generic-function" nil (typep 42 'generic-function))
 (check "gf typep function" t (typep #'fsc-amiga-foo 'function))
 (check "gf functionp" t (functionp #'fsc-amiga-foo))
 (check "gf class-of" t (eq (class-of #'fsc-amiga-foo) (find-class 'standard-generic-function)))

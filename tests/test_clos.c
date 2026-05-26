@@ -2460,9 +2460,13 @@ TEST(funcallable_gf_is_funcallable_standard_object)
     eval_print("(defmethod fsc-foo ((x integer)) (* x 2))");
     ASSERT_STR_EQ(eval_print("(typep #'fsc-foo 'funcallable-standard-object)"), "T");
     ASSERT_STR_EQ(eval_print("(typep #'fsc-foo 'standard-generic-function)"), "T");
+    ASSERT_STR_EQ(eval_print("(typep #'fsc-foo 'generic-function)"), "T");
     /* And it's typep 'function via the CPL chain. */
     ASSERT_STR_EQ(eval_print("(typep #'fsc-foo 'function)"), "T");
     ASSERT_STR_EQ(eval_print("(functionp #'fsc-foo)"), "T");
+    /* Negative cases: non-generic-functions must not satisfy generic-function. */
+    ASSERT_STR_EQ(eval_print("(typep 42 'generic-function)"), "NIL");
+    ASSERT_STR_EQ(eval_print("(typep #'car 'generic-function)"), "NIL");
 }
 
 TEST(funcallable_class_of_gf)
