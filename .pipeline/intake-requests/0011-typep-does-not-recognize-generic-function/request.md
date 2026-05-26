@@ -1,7 +1,7 @@
 ---
 id: 0011-typep-does-not-recognize-generic-function
 type: bug
-status: implementing
+status: done
 title: typep does not recognize generic-function
 ---
 
