@@ -49,6 +49,10 @@ implement_extra_tools: "Bash(make:*),Bash(ls:*),Bash(sed:*),Bash(cat:*),Bash(mkd
 
 fix_extra_tools: "Bash(make:*),Bash(ls:*),Bash(sed:*),Bash(cat:*),Bash(mkdir:*),Bash(cd:*),Bash(awk:*),Bash(find:*),Bash(cp:*), Bash(mv:*),Bash(wc:*),Bash(tail:*),Bash(./build/host/clamiga:*)"
 
+egress_allowlist: "https://www.lispworks.com/documentation/HyperSpec/"
+
+squash_on_complete: true
+
 # -- notes ----------------------------------------------------------------
 # * The test stage runs with --network none, so no gems/quicklisp fetch — the
 #   fast tier is a pure offline gcc build + unit tests.
