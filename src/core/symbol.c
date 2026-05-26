@@ -198,6 +198,7 @@ CL_Obj SYM_PRINT_PRETTY = CL_NIL;
 CL_Obj SYM_PRINT_RIGHT_MARGIN = CL_NIL;
 CL_Obj SYM_PRINT_PPRINT_DISPATCH = CL_NIL;
 CL_Obj SYM_PRINT_OBJECT_HOOK = CL_NIL;
+CL_Obj SYM_READ_DEFAULT_FLOAT_FORMAT = CL_NIL;
 CL_Obj KW_UPCASE = CL_NIL;
 CL_Obj KW_DOWNCASE = CL_NIL;
 CL_Obj KW_CAPITALIZE = CL_NIL;
@@ -723,8 +724,9 @@ void cl_symbol_init(void)
 
     /* *READ-DEFAULT-FLOAT-FORMAT* — CL spec, default SINGLE-FLOAT */
     {
-        CL_Obj sym = cl_intern_in("*READ-DEFAULT-FLOAT-FORMAT*", 27, cl_package_cl);
-        CL_Symbol *s = (CL_Symbol *)CL_OBJ_TO_PTR(sym);
+        CL_Symbol *s;
+        SYM_READ_DEFAULT_FLOAT_FORMAT = cl_intern_in("*READ-DEFAULT-FLOAT-FORMAT*", 27, cl_package_cl);
+        s = (CL_Symbol *)CL_OBJ_TO_PTR(SYM_READ_DEFAULT_FLOAT_FORMAT);
         s->flags |= CL_SYM_SPECIAL;
         s->value = cl_intern("SINGLE-FLOAT", 12);
     }

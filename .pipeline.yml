@@ -45,9 +45,9 @@ extra_allowed_tools: "Bash(./build/host/clamiga:*)"
 # note! analyze has 'allowEdits' basically allowing it to use any Bash tools.
 #analyze_extra_tools: "Bash(make:*),Bash(ls:*),Bash(sed:*),Bash(cat:*),Bash(mkdir:*),Bash(cd:*),Bash(awk:*),Bash(find:*),Bash(cp:*), Bash(mv:*),Bash(wc:*),Bash(tail:*),Bash(./build/host/clamiga:*)"
 
-implement_extra_tools: "Bash(make:*),Bash(ls:*),Bash(sed:*),Bash(cat:*),Bash(mkdir:*),Bash(cd:*),Bash(awk:*),Bash(find:*),Bash(cp:*), Bash(mv:*),Bash(wc:*),Bash(tail:*),Bash(./build/host/clamiga:*)"
+implement_extra_tools: "Bash(make:*),Bash(sed:*),Bash(mkdir:*),Bash(awk:*),Bash(cp:*),Bash(mv:*),Bash(tail:*),Bash(./build/host/clamiga:*)"
 
-fix_extra_tools: "Bash(make:*),Bash(ls:*),Bash(sed:*),Bash(cat:*),Bash(mkdir:*),Bash(cd:*),Bash(awk:*),Bash(find:*),Bash(cp:*), Bash(mv:*),Bash(wc:*),Bash(tail:*),Bash(./build/host/clamiga:*)"
+fix_extra_tools: "Bash(make:*),Bash(sed:*),Bash(mkdir:*),Bash(awk:*),Bash(cp:*),Bash(mv:*),Bash(tail:*),Bash(./build/host/clamiga:*)"
 
 egress_allowlist: "https://www.lispworks.com/documentation/HyperSpec/"
 

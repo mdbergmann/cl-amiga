@@ -1,0 +1,16 @@
+{
+  "summary": "src/core/printer.c prints floats without consulting *read-default-float-format*: print_double_float always appends a d0 marker and print_single_float never emits one. Per CLHS 22.1.3.1.3 the marker must be emitted only when the float's format differs from the current default. The symbol *READ-DEFAULT-FLOAT-FORMAT* is already interned (symbol.c:724-730, default SINGLE-FLOAT) but has no C-side global handle, so the fix exposes one (SYM_READ_DEFAULT_FLOAT_FORMAT) following the existing SYM_PRINT_* pattern and adds a default_float_is_double() helper the two printers use to decide marker emission (and the scientific-notation marker letter e/d/f).",
+  "affected_areas": [
+    "Float printing (src/core/printer.c: print_single_float, print_double_float)",
+    "Symbol globals (src/core/symbol.c / symbol.h: new SYM_READ_DEFAULT_FLOAT_FORMAT, assigned at existing *READ-DEFAULT-FLOAT-FORMAT* init)",
+    "Host tests (tests/test_float.c)",
+    "Amiga tests (tests/amiga/run-tests.lisp)"
+  ],
+  "risks": [
+    "Reading dynamic state in the printer: default_float_is_double() must guard the before-init case (SYM_READ_DEFAULT_FLOAT_FORMAT == CL_NIL) like the existing print_*_p() readers, since float printing can occur before cl_symbol_init() completes.",
+    "Round-trip vs. reader: the reader (reader.c ~341-371) currently treats an 'E'/no-marker token as single-float and does NOT itself consult *read-default-float-format*, so a double printed markerless under a double default will currently re-read as a single. This is a separate, pre-existing latent reader defect and is explicitly out of scope for this request (which targets only the printer per the stated rule); flag but do not fix here.",
+    "Marker-letter correctness in scientific notation: %.15g/%g emit lowercase 'e'; ensure the replacement uses the correct letter (e when format matches default, else d for doubles / f for singles) and that the single-float path now handles the scientific case it previously ignored.",
+    "Default-state behavior must remain unchanged: with *read-default-float-format* = single-float (the default), singles stay markerless and doubles keep their d0 marker; only the double-default cases change. Tests must cover both default states to prevent regressions.",
+    "GC validity of the new global: confirmed the new SYM_ global survives the moving/compacting GC via the package-registry root chain exactly like existing SYM_PRINT_* globals (no extra cl_gc_register_root needed)."
+  ]
+}

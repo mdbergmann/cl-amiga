@@ -855,6 +855,64 @@ TEST(rounding_huge_float)
     ASSERT_STR_EQ(eval_print("(truncate -1d20)"), "-100000000000000000000");
 }
 
+/* ================================================================
+ * Regression: float printer honors *read-default-float-format*
+ * ================================================================ */
+
+TEST(print_double_default_single_has_marker)
+{
+    /* Default *read-default-float-format* = single-float: double gets d0 */
+    ASSERT_STR_EQ(eval_print("(prin1-to-string 1.5d0)"),
+                  "\"1.5d0\"");
+}
+
+TEST(print_double_default_double_no_marker)
+{
+    /* Bug fix: with default double-float, double prints without marker */
+    ASSERT_STR_EQ(eval_print("(let ((*read-default-float-format* 'double-float))"
+                             " (prin1-to-string 1.5d0))"),
+                  "\"1.5\"");
+}
+
+TEST(print_double_whole_default_double)
+{
+    /* Whole-number double under double default: "5.0" not "5.0d0" */
+    ASSERT_STR_EQ(eval_print("(let ((*read-default-float-format* 'double-float))"
+                             " (prin1-to-string 5.0d0))"),
+                  "\"5.0\"");
+}
+
+TEST(print_single_default_single_no_marker)
+{
+    /* Default state: single-float prints without marker */
+    ASSERT_STR_EQ(eval_print("(prin1-to-string 1.5)"), "\"1.5\"");
+}
+
+TEST(print_single_default_double_gets_f0)
+{
+    /* With default double-float, single prints with f0 marker */
+    ASSERT_STR_EQ(eval_print("(let ((*read-default-float-format* 'double-float))"
+                             " (prin1-to-string 1.5))"),
+                  "\"1.5f0\"");
+}
+
+TEST(print_single_whole_default_double)
+{
+    /* Whole-number single under double default: "5.0f0" */
+    ASSERT_STR_EQ(eval_print("(let ((*read-default-float-format* 'double-float))"
+                             " (prin1-to-string 5.0))"),
+                  "\"5.0f0\"");
+}
+
+TEST(print_single_sci_default_double)
+{
+    /* Scientific-notation path: 1e-5 < 1e-4 so %g uses exponential form.
+     * The 'e' exponent char must be replaced with 'f' when default is double. */
+    ASSERT_STR_EQ(eval_print("(let ((*read-default-float-format* 'double-float))"
+                             " (prin1-to-string 1.0e-5))"),
+                  "\"1f-05\"");
+}
+
 /* ================================================================ */
 
 int main(void)
@@ -990,6 +1048,15 @@ int main(void)
     RUN(numeq_complex_real);
     RUN(ordered_compare_rejects_complex);
     RUN(rounding_huge_float);
+
+    /* Regression: float printer honors *read-default-float-format* */
+    RUN(print_double_default_single_has_marker);
+    RUN(print_double_default_double_no_marker);
+    RUN(print_double_whole_default_double);
+    RUN(print_single_default_single_no_marker);
+    RUN(print_single_default_double_gets_f0);
+    RUN(print_single_whole_default_double);
+    RUN(print_single_sci_default_double);
 
     teardown();
     REPORT();

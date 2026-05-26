@@ -1940,6 +1940,15 @@
 (check "princ-to-string fixnum" "42" (princ-to-string 42))
 (check "write-to-string" "(1 2 3)" (write-to-string '(1 2 3)))
 
+; --- Float printer *read-default-float-format* (regression) ---
+(check "print double default-single" "1.5d0" (prin1-to-string 1.5d0))
+(check "print double default-double markerless" "1.5" (let ((*read-default-float-format* 'double-float)) (prin1-to-string 1.5d0)))
+(check "print double 5.0d0 default-double" "5.0" (let ((*read-default-float-format* 'double-float)) (prin1-to-string 5.0d0)))
+(check "print single default-single markerless" "1.5" (prin1-to-string 1.5))
+(check "print single default-double f0" "1.5f0" (let ((*read-default-float-format* 'double-float)) (prin1-to-string 1.5)))
+(check "print single 5.0 default-double" "5.0f0" (let ((*read-default-float-format* 'double-float)) (prin1-to-string 5.0)))
+(check "print single sci-notation default-double" "1f-05" (let ((*read-default-float-format* 'double-float)) (prin1-to-string 1.0e-5)))
+
 ; --- File streams / open / with-open-file (Step 8) ---
 ; Use /tmp/ on POSIX, T: on Amiga — both are writable temp directories
 ; Detect by trying /tmp/ first (fails on Amiga), fall back to T:

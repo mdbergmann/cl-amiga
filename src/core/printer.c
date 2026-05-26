@@ -513,12 +513,34 @@ static int needs_decimal(const char *buf)
     return 1;
 }
 
+/* Returns 1 when *read-default-float-format* designates a double (or long) float. */
+static int default_float_is_double(void)
+{
+    CL_Obj val;
+    const char *name;
+    if (CL_NULL_P(SYM_READ_DEFAULT_FLOAT_FORMAT)) return 0; /* before init */
+    val = cl_symbol_value(SYM_READ_DEFAULT_FLOAT_FORMAT);
+    if (!CL_HEAP_P(val)) return 0;
+    if (CL_HDR_TYPE(CL_OBJ_TO_PTR(val)) != TYPE_SYMBOL) return 0;
+    name = cl_symbol_name(val);
+    return (strcmp(name, "DOUBLE-FLOAT") == 0 || strcmp(name, "LONG-FLOAT") == 0);
+}
+
 static void print_single_float(float value)
 {
     char buf[32];
+    char *e;
+    int emit_marker = default_float_is_double();
     sprintf(buf, "%g", (double)value);
-    if (needs_decimal(buf))
-        strcat(buf, ".0");
+    e = strchr(buf, 'e');
+    if (!e) e = strchr(buf, 'E');
+    if (e) {
+        *e = emit_marker ? 'f' : 'e';
+    } else if (needs_decimal(buf)) {
+        strcat(buf, emit_marker ? ".0f0" : ".0");
+    } else if (emit_marker) {
+        strcat(buf, "f0");
+    }
     out_str(buf);
 }
 
@@ -526,15 +548,15 @@ static void print_double_float(double value)
 {
     char buf[48];
     char *e;
+    int omit_marker = default_float_is_double();
     sprintf(buf, "%.15g", value);
-    /* Replace 'e' with 'd' for double-float exponent marker */
     e = strchr(buf, 'e');
     if (!e) e = strchr(buf, 'E');
     if (e) {
-        *e = 'd';
+        *e = omit_marker ? 'e' : 'd';
     } else if (needs_decimal(buf)) {
-        strcat(buf, ".0d0");
-    } else {
+        strcat(buf, omit_marker ? ".0" : ".0d0");
+    } else if (!omit_marker) {
         strcat(buf, "d0");
     }
     out_str(buf);

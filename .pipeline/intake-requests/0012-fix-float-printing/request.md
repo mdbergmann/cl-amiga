@@ -1,7 +1,7 @@
 ---
 id: 0012-fix-float-printing
 type: bug
-status: ready
+status: done
 title: fix float printing
 ---
 
