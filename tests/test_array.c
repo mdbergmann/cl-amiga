@@ -467,6 +467,80 @@ TEST(vector_push_extend_zero_capacity)
         "  (aref v 0))"), 42);
 }
 
+TEST(vector_push_extend_nonadjustable_basic)
+{
+    /* Non-adjustable fill-pointer vector can be extended (CLHS: only fill-pointer required) */
+    ASSERT_EQ_INT(eval_int(
+        "(let ((v (make-array 2 :fill-pointer 0)))"
+        "  (vector-push-extend 10 v)"
+        "  (vector-push-extend 20 v)"
+        "  (vector-push-extend 30 v))"), 2);
+    ASSERT_EQ_INT(eval_int(
+        "(let ((v (make-array 2 :fill-pointer 0)))"
+        "  (vector-push-extend 10 v)"
+        "  (vector-push-extend 20 v)"
+        "  (vector-push-extend 30 v)"
+        "  (fill-pointer v))"), 3);
+}
+
+TEST(vector_push_extend_nonadjustable_data)
+{
+    /* Data is accessible after extending a non-adjustable fill-pointer vector */
+    ASSERT_EQ_INT(eval_int(
+        "(let ((v (make-array 2 :fill-pointer 0)))"
+        "  (vector-push-extend 10 v)"
+        "  (vector-push-extend 20 v)"
+        "  (vector-push-extend 30 v)"
+        "  (+ (aref v 0) (aref v 1) (aref v 2)))"), 60);
+}
+
+TEST(vector_push_extend_nonadjustable_many)
+{
+    /* Multiple extensions from length-1 non-adjustable fill-pointer vector */
+    ASSERT_EQ_INT(eval_int(
+        "(let ((v (make-array 1 :fill-pointer 0)))"
+        "  (dotimes (i 20) (vector-push-extend i v))"
+        "  (fill-pointer v))"), 20);
+    /* Zero-length start */
+    ASSERT_EQ_INT(eval_int(
+        "(let ((v (make-array 0 :fill-pointer 0)))"
+        "  (vector-push-extend 42 v)"
+        "  (aref v 0))"), 42);
+}
+
+TEST(vector_push_extend_nonadjustable_identity)
+{
+    /* Object identity is preserved after extension */
+    ASSERT_STR_EQ(eval_print(
+        "(let ((v (make-array 1 :fill-pointer 0)))"
+        "  (let ((v2 v))"
+        "    (vector-push-extend 42 v)"
+        "    (vector-push-extend 99 v)"
+        "    (eq v v2)))"), "T");
+}
+
+TEST(vector_push_extend_nonadjustable_still_nonadjustable)
+{
+    /* adjustable-array-p must still return NIL after extension */
+    ASSERT_STR_EQ(eval_print(
+        "(let ((v (make-array 2 :fill-pointer 0)))"
+        "  (vector-push-extend 10 v)"
+        "  (vector-push-extend 20 v)"
+        "  (vector-push-extend 30 v)"
+        "  (adjustable-array-p v))"), "NIL");
+}
+
+TEST(vector_push_extend_nonadjustable_character)
+{
+    /* Character (string) fill-pointer vector without :adjustable t */
+    ASSERT_STR_EQ(eval_print(
+        "(let ((s (make-array 2 :element-type 'character :fill-pointer 0)))"
+        "  (vector-push-extend #\\x s)"
+        "  (vector-push-extend #\\y s)"
+        "  (vector-push-extend #\\z s)"
+        "  s)"), "\"xyz\"");
+}
+
 /* ============================================================ */
 /* adjust-array                                                 */
 /* ============================================================ */
@@ -886,6 +960,12 @@ int main(void)
     RUN(vector_push_extend_multiple);
     RUN(vector_push_extend_identity);
     RUN(vector_push_extend_zero_capacity);
+    RUN(vector_push_extend_nonadjustable_basic);
+    RUN(vector_push_extend_nonadjustable_data);
+    RUN(vector_push_extend_nonadjustable_many);
+    RUN(vector_push_extend_nonadjustable_identity);
+    RUN(vector_push_extend_nonadjustable_still_nonadjustable);
+    RUN(vector_push_extend_nonadjustable_character);
 
     /* Adjust */
     RUN(adjust_array_grow);

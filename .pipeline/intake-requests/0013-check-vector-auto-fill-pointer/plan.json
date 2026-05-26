@@ -1,0 +1,20 @@
+{
+  "request_id": "0013-check-vector-auto-fill-pointer",
+  "summary": "VECTOR-PUSH-EXTEND must work on any vector with a fill pointer (not only :adjustable ones), per the HyperSpec.",
+  "items": [
+    {
+      "id": "item-1",
+      "title": "Allow VECTOR-PUSH-EXTEND on fill-pointer-only vectors",
+      "description": "Per CLHS, vector-push-extend requires only that its vector argument HAS A FILL POINTER; it extends the vector when full regardless of whether the array was created with :adjustable t. CL-Amiga currently rejects non-adjustable vectors, which breaks the Emacs arglist/autodoc path (library code builds a fill-pointer vector without :adjustable t and calls vector-push-extend). Reproduced: `(let ((v (make-array 2 :fill-pointer 0))) (vector-push-extend 10 v) (vector-push-extend 20 v) (vector-push-extend 30 v))` => ERROR: VECTOR-PUSH-EXTEND: vector is not adjustable.\n\nFIX (two source edits):\n\n1. src/core/builtins_array.c, bi_vector_push_extend (~lines 1167-1230): DELETE the check at lines 1180-1181 that signals \"VECTOR-PUSH-EXTEND: vector is not adjustable\" when `!(vec->flags & CL_VEC_FLAG_ADJUSTABLE)`. KEEP the preceding fill-pointer check (lines 1178-1179). Leave the existing extend path (lines 1191-1229) unchanged: it already allocates a fresh backing array, copies the old elements, then patches the ORIGINAL vector header in place via displacement (vec->data[0]=backing, vec->data[1]=offset, OR-in CL_VEC_FLAG_DISPLACED), preserving object identity. Do NOT OR in CL_VEC_FLAG_ADJUSTABLE on the original vector — adjustable-array-p must keep returning NIL for a vector created with only :fill-pointer.\n\n2. src/core/mem.c, cl_make_array (~line 449): the in-place extend above writes vec->data[0] and vec->data[1], so the vector header must have >=2 data slots. Today only CL_VEC_FLAG_ADJUSTABLE vectors are guaranteed that. Broaden the bump to cover any fill-pointer vector: change `if ((flags & CL_VEC_FLAG_ADJUSTABLE) && n_data < 2) n_data = 2;` to `if ((flags & (CL_VEC_FLAG_ADJUSTABLE | CL_VEC_FLAG_FILL_POINTER)) && n_data < 2) n_data = 2;`. Without this, extending a length-0 or length-1 non-adjustable fill-pointer vector writes out of bounds (heap corruption). Simple vectors (flags==0, no fill pointer) are unaffected and still allocate exactly `length` slots. This also covers character (CL_VEC_FLAG_STRING) fill-pointer vectors, which pass through cl_make_array.\n\nREGRESSION TESTS:\n\n3. tests/test_array.c — add new TEST() cases beside the existing vector_push_extend_* tests (~lines 412-468), exercising a vector created WITHOUT :adjustable t but WITH :fill-pointer: (a) `(make-array 2 :fill-pointer 0)` pushed 3x returns index 2 and fill-pointer 3; (b) data integrity via aref after extension; (c) many extensions from `(make-array 1 :fill-pointer 0)` and `(make-array 0 :fill-pointer 0)`; (d) identity preserved with eq; (e) adjustable-array-p still returns NIL after extension; (f) character case: `(let ((s (make-array 2 :element-type 'character :fill-pointer 0))) (vector-push-extend #\\x s) (vector-push-extend #\\y s) (vector-push-extend #\\z s) s)` yields \"xyz\". Register every new TEST() in main() via RUN(...).\n\n4. tests/amiga/run-tests.lisp — add the parallel (check ...) lines next to the existing `vpush-ext *` checks (~lines 588-593): non-adjustable fill-pointer extend (fp, data, identity, adjustable-array-p nil, zero-length, character).\n\nVERIFY: run `make test`; all suites that execute must stay green. NOTE: in this sandbox `test_vm` fails to launch with \"Permission denied\" (an environment/exec-policy artifact for that one binary — test_array with identical file permissions runs fine); it is unrelated to this change. Confirm test_array still reports 0 failed.",
+      "files_in_scope": [
+        "src/core/builtins_array.c",
+        "src/core/mem.c",
+        "tests/test_array.c",
+        "tests/amiga/run-tests.lisp"
+      ],
+      "est_scope_tokens": 45000,
+      "depends_on": [],
+      "status": "done"
+    }
+  ]
+}
