@@ -49,7 +49,7 @@ implement_extra_tools: "Bash(make:*),Bash(sed:*),Bash(mkdir:*),Bash(awk:*),Bash(
 
 fix_extra_tools: "Bash(make:*),Bash(sed:*),Bash(mkdir:*),Bash(awk:*),Bash(cp:*),Bash(mv:*),Bash(tail:*),Bash(./build/host/clamiga:*),Bash(./build/host/tests/*),Bash(build/host/tests/*)"
 
-egress_allowlist: "https://www.lispworks.com/documentation/HyperSpec/"
+egress_allowlist: "https://www.lispworks.com/documentation/HyperSpec/*, https://beta.quicklisp.org/*"
 
 squash_on_complete: true
 
