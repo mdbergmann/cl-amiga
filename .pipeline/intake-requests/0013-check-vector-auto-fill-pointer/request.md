@@ -1,7 +1,7 @@
 ---
 id: 0013-check-vector-auto-fill-pointer
 type: bug
-status: ready
+status: done
 title: check vector auto-fill pointer
 ---
 

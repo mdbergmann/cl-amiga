@@ -1,0 +1,15 @@
+{
+  "summary": "VECTOR-PUSH-EXTEND wrongly required CL_VEC_FLAG_ADJUSTABLE; per the HyperSpec it must work on any vector with a fill pointer, extending it when full. The over-strict check broke the Emacs arglist/autodoc path, which builds a fill-pointer vector without :adjustable t. Fix removes the check and guarantees fill-pointer vectors reserve >=2 header slots so the existing in-place displacement-based extend is memory-safe for length-0/1 vectors.",
+  "affected_areas": [
+    "src/core/builtins_array.c (bi_vector_push_extend)",
+    "src/core/mem.c (cl_make_array slot allocation)",
+    "tests/test_array.c",
+    "tests/amiga/run-tests.lisp"
+  ],
+  "risks": [
+    "Memory safety: extending a non-adjustable fill-pointer vector reuses data[0]/data[1] for displacement; without the mem.c >=2-slot bump, a length-0 or length-1 vector would overflow its allocation. The plan ties both edits together and tests the zero/one-length cases explicitly.",
+    "Conformance: a vector created with only :fill-pointer must still report adjustable-array-p => NIL after being grown by vector-push-extend; the fix deliberately does not set the ADJUSTABLE flag on the original vector. A regression test pins this.",
+    "Character (CL_VEC_FLAG_STRING) fill-pointer vectors share the cl_make_array path; the slot bump covers them and the string-result case is tested. The fresh backing array is allocated without the STRING flag, but element semantics follow the original vector's flags, matching existing adjustable-string behavior (no regression).",
+    "Sandbox-only: the test_vm binary cannot be exec'd here (Permission denied), so `make test` returns non-zero in this environment even though every suite that runs passes. Implementers must judge greenness from per-suite '0 failed' lines, not the make exit code, in this sandbox."
+  ]
+}

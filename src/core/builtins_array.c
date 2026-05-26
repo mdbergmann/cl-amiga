@@ -1177,9 +1177,6 @@ static CL_Obj bi_vector_push_extend(CL_Obj *args, int n)
     vec = (CL_Vector *)CL_OBJ_TO_PTR(args[1]);
     if (vec->fill_pointer == CL_NO_FILL_POINTER)
         cl_error(CL_ERR_TYPE, "VECTOR-PUSH-EXTEND: vector has no fill pointer");
-    if (!(vec->flags & CL_VEC_FLAG_ADJUSTABLE))
-        cl_error(CL_ERR_TYPE, "VECTOR-PUSH-EXTEND: vector is not adjustable");
-
     fp = vec->fill_pointer;
     if (fp < vec->length) {
         /* Room available — same as vector-push */

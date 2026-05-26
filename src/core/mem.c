@@ -446,7 +446,7 @@ CL_Obj cl_make_array(uint32_t total, uint8_t rank, uint32_t *dims,
     CL_Vector *v;
     /* Adjustable vectors need at least 2 data slots for displacement:
        data[0] = backing vector, data[1] = displaced-index-offset */
-    if ((flags & CL_VEC_FLAG_ADJUSTABLE) && n_data < 2)
+    if ((flags & (CL_VEC_FLAG_ADJUSTABLE | CL_VEC_FLAG_FILL_POINTER)) && n_data < 2)
         n_data = 2;
     alloc_size = sizeof(CL_Vector) + n_data * sizeof(CL_Obj);
     v = (CL_Vector *)cl_alloc(TYPE_VECTOR, alloc_size);
