@@ -1,0 +1,13 @@
+{
+  "summary": "typep errors on the GENERIC-FUNCTION type specifier because GENERIC-FUNCTION is only a reserved interned symbol (builtins.c:1261), not a CLOS class, so typep_symbol falls through to cl_error at builtins_type.c:298. Fix mirrors the FUNCTION case (builtins_type.c:173-177) by returning cl_funcallable_instance_p(obj) for GENERIC-FUNCTION and STANDARD-GENERIC-FUNCTION.",
+  "affected_areas": [
+    "src/core/builtins_type.c typep_symbol type-specifier dispatch",
+    "host CLOS tests (tests/test_clos.c)",
+    "Amiga test suite (tests/amiga/run-tests.lisp)"
+  ],
+  "risks": [
+    "STANDARD-GENERIC-FUNCTION already resolves via the CLOS class-table fallback (test_clos.c:2462 passes); adding an explicit cl_funcallable_instance_p case short-circuits that path. Behavior is equivalent for generic-function objects because user GF metaclasses/subclasses are out of scope in this implementation, but the explicit case is exact-match on type_desc == STANDARD-GENERIC-FUNCTION.",
+    "Must not remove GENERIC-FUNCTION from cl_reserved_symbol_names (builtins.c:1261): the symbol must remain interned for FIND-SYMBOL/cl-symbols presence; only typep recognition changes.",
+    "Ensure negative cases (non-funcallable objects) return NIL rather than erroring — cl_funcallable_instance_p already returns 0 for non-structs and non-GF structs, so this holds."
+  ]
+}
