@@ -173,6 +173,10 @@ static int typep_symbol(CL_Obj obj, CL_Obj type_sym)
     if (strcmp(tname, "FUNCTION") == 0)
         return CL_FUNCTION_P(obj) || CL_CLOSURE_P(obj) || CL_BYTECODE_P(obj)
             || cl_funcallable_instance_p(obj);
+    if (strcmp(tname, "GENERIC-FUNCTION") == 0)
+        return cl_funcallable_instance_p(obj);
+    if (strcmp(tname, "STANDARD-GENERIC-FUNCTION") == 0)
+        return cl_funcallable_instance_p(obj);
     if (strcmp(tname, "COMPILED-FUNCTION") == 0)
         return CL_CLOSURE_P(obj) || CL_BYTECODE_P(obj);
     if (strcmp(tname, "HASH-TABLE") == 0)     return CL_HASHTABLE_P(obj);
