@@ -31,9 +31,23 @@
   (make-pathname :name nil :type nil
                  :defaults (or *load-truename* *load-pathname*)))
 
+(defun maybe-use-http-proxy ()
+  "Route quicklisp's fetches through an HTTP proxy when one is set in the
+environment (HTTP_PROXY / http_proxy). Quicklisp opens a DIRECT TCP socket and
+ignores the proxy env vars on its own, so in a network-isolated sandbox (e.g. the
+ai-pipeline egress proxy, the only route out) the install would otherwise hang on
+a routeless connection. No-op when unset, so the normal Amiga path is unchanged.
+Must run AFTER quicklisp.lisp is loaded — that's what defines the QL-HTTP package."
+  (let ((proxy (or (ext:getenv "HTTP_PROXY") (ext:getenv "http_proxy")))
+        (proxy-var (find-symbol "*PROXY-URL*" "QL-HTTP")))
+    (when (and proxy proxy-var (plusp (length proxy)))
+      (set proxy-var proxy)
+      (format t "~&;; cl-amiga-ql: routing fetches through HTTP proxy ~A~%" proxy))))
+
 (defun install ()
   "Install quicklisp under ~/quicklisp/ on a fresh CL-Amiga system."
   (load (merge-pathnames "quicklisp.lisp" *here*))
+  (maybe-use-http-proxy)
   (let ((qq-install (find-symbol "INSTALL" "QUICKLISP-QUICKSTART"))
         (compat (merge-pathnames "quicklisp-compat.lisp" *here*)))
     (handler-case
