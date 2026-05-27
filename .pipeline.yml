@@ -49,7 +49,10 @@ implement_extra_tools: "Bash(make:*),Bash(sed:*),Bash(mkdir:*),Bash(awk:*),Bash(
 
 fix_extra_tools: "Bash(make:*),Bash(sed:*),Bash(mkdir:*),Bash(awk:*),Bash(cp:*),Bash(mv:*),Bash(tail:*),Bash(./build/host/clamiga:*),Bash(./build/host/tests/*),Bash(build/host/tests/*)"
 
-egress_allowlist: "https://www.lispworks.com/documentation/HyperSpec/*, https://beta.quicklisp.org/*"
+# Egress entries are bare HOSTNAMES (matched against the host AND its subdomains
+# by the per-run proxy), NOT URLs — a scheme/path here never matches the host
+# and is silently denied. `quicklisp.org` covers beta./src./www.quicklisp.org.
+egress_allowlist: "lispworks.com, quicklisp.org"
 
 squash_on_complete: true
 
