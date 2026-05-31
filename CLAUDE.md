@@ -45,6 +45,15 @@ make -f Makefile.cross clean        # Remove cross-build artifacts
 - Use `uint32_t`/`int32_t` explicitly, not `int` or `long` for sized data
 - C89/C99 compatible — no C11+ features
 
+### FASL Versioning (Critical)
+
+Whenever you change FASL serialization — or make any change that results in a different on-disk FASL byte layout — you **must** bump `CL_FASL_VERSION` in `src/core/fasl.h`.
+
+- This covers: adding/removing/reordering FASL tags, changing how any object type is serialized, adding new bytecode opcodes or changing operand encoding, changing the bytecode/closure/struct wire format, or anything else that alters the bytes written by the FASL writer.
+- Increment the version number and update the trailing comment to describe what changed (see the existing `v10:` comment as the format to follow).
+- **Why it matters**: the version is checked on load; bumping it forces stale `.fasl` files to be rejected/recompiled instead of being misread as the new format, which would silently corrupt the VM. Forgetting to bump it is a memory-corruption bug, not a cosmetic one.
+- After bumping, run `make fasl` to regenerate the bundled FASLs and run the full test suite (host + Amiga) to confirm load/recompile works.
+
 ### GC Safety (Critical)
 
 Any C code that holds `CL_Obj` values across allocating calls **must** GC-protect them:
