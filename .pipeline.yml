@@ -25,12 +25,12 @@ implement_model: sonnet
 
 # max turn defaults, override if needed
 # review_max_turns: 30
-# fix_max_turns: 30
-implement_max_turns: 50
-# analyze_max_turns: 50
+fix_max_turns: 100
+implement_max_turns: 100
+analyze_max_turns: 100
 
 # Bound how many times `pipeline all` may loop fix->test before giving up.
-max_fix_retries: 2
+max_fix_retries: 20
 
 # Project rules appended to the review/fix prompts (GC-safety, 32-bit-clean
 # structs, C89/C99, HyperSpec, mandatory regression tests). Without this the
