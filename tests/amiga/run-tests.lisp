@@ -4717,9 +4717,20 @@
 ; Load gray-streams.lisp and verify that a CLOS-based Gray stream instance
 ; is recognised as a STREAM by TYPEP (fix for the root cause of the Slynk
 ; SLDB bug where %%condition-message leaked output to the terminal).
+;
+; gray-streams.lisp MUST be loaded in its own top-level form, BEFORE the
+; test body below.  The reader reads each top-level form in full before
+; evaluating it, so the GRAY package has to already exist when the reader
+; reaches the gray:-qualified symbols (gray:fundamental-output-stream, ...).
+; Putting the (load ...) and the gray:-symbols in one combined form fails
+; at READ time with "Package GRAY not found".  (Same read-time-package
+; pitfall already handled for amiga/ffi and the GUI tests above.)
+(handler-case
+  (load "lib/gray-streams.lisp")
+  (error (e) (format t "ERROR loading gray-streams: ~A~%" e)))
+
 (handler-case
   (progn
-    (load "lib/gray-streams.lisp")
     (defclass test-gs-out (gray:fundamental-output-stream) ())
     (defmethod gray:stream-write-char ((s test-gs-out) c) (declare (ignore s c)) nil)
     (let ((g (make-instance 'test-gs-out)))
