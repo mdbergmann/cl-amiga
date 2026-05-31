@@ -1004,3 +1004,40 @@ CL_Obj cl_make_two_way_stream(CL_Obj input_stream, CL_Obj output_stream)
     st->element_type = output_stream; /* output child */
     return s;
 }
+
+/* --- Stream-aware write helpers --- */
+
+void cl_write_cstring_to_stream_sym(CL_Obj sym, const char *s)
+{
+    CL_Obj val;
+    if (CL_NULL_P(sym)) {
+        platform_write_string(s);
+        return;
+    }
+    val = cl_symbol_value(sym);
+    if (CL_STREAM_P(val)) {
+        cl_stream_write_string(val, s, (uint32_t)strlen(s));
+        return;
+    }
+    platform_write_string(s);
+}
+
+void cl_write_cstring_to_stdout(const char *s)
+{
+    cl_write_cstring_to_stream_sym(SYM_STANDARD_OUTPUT, s);
+}
+
+void cl_write_cstring_to_error(const char *s)
+{
+    cl_write_cstring_to_stream_sym(SYM_ERROR_OUTPUT, s);
+}
+
+void cl_write_cstring_to_debug_io(const char *s)
+{
+    cl_write_cstring_to_stream_sym(SYM_DEBUG_IO, s);
+}
+
+void cl_write_cstring_to_trace(const char *s)
+{
+    cl_write_cstring_to_stream_sym(SYM_TRACE_OUTPUT, s);
+}

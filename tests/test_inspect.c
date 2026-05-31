@@ -9,6 +9,7 @@
 #include "core/compiler.h"
 #include "core/vm.h"
 #include "core/builtins.h"
+#include "core/stream.h"
 #include "core/repl.h"
 #include "platform/platform.h"
 #include <string.h>
@@ -16,6 +17,7 @@
 /* Component access functions from builtins_inspect.c */
 extern int cl_inspect_component_count(CL_Obj obj);
 extern CL_Obj cl_inspect_get_component(CL_Obj obj, int idx, const char **label);
+/* Non-interactive display helper — declared in builtins.h */
 
 static void setup(void)
 {
@@ -30,11 +32,13 @@ static void setup(void)
     cl_compiler_init();
     cl_vm_init(0, 0);
     cl_builtins_init();
+    cl_stream_init();
     cl_repl_init();
 }
 
 static void teardown(void)
 {
+    cl_stream_shutdown();
     cl_mem_shutdown();
     platform_shutdown();
 }
@@ -43,6 +47,24 @@ static void teardown(void)
 static CL_Obj eval(const char *expr)
 {
     return cl_eval_string(expr);
+}
+
+/* Helper: evaluate expression and return its prin1 representation */
+static const char *eval_str(const char *expr)
+{
+    static char buf[4096];
+    int err;
+    CL_CATCH(err);
+    if (err == CL_ERR_NONE) {
+        CL_Obj result = cl_eval_string(expr);
+        cl_prin1_to_string(result, buf, sizeof(buf));
+        CL_UNCATCH();
+        return buf;
+    } else {
+        CL_UNCATCH();
+        snprintf(buf, sizeof(buf), "ERROR:%d", err);
+        return buf;
+    }
 }
 
 /* --- Component count tests --- */
@@ -239,6 +261,25 @@ TEST(inspect_is_bound)
     ASSERT(strcmp(r, "T") == 0);
 }
 
+TEST(inspect_show_obj_to_standard_output)
+{
+    /* cl_inspect_show_obj must route through *standard-output* so that
+     * SLY/SLIME and (with-output-to-string) can capture inspect output.
+     * We bind *standard-output* to a string stream, call the non-interactive
+     * display helper, then verify the output was captured there. */
+    eval("(setq *standard-output* (make-string-output-stream))");
+    cl_inspect_show_obj(eval("'(1 2 3)"));
+    const char *out = eval_str(
+        "(prog1 (get-output-stream-string *standard-output*)"
+        "       (setq *standard-output* (make-synonym-stream '*terminal-io*)))");
+
+    /* Output must contain the inspector header — if write_str still used
+     * platform_write_string the string stream would capture nothing. */
+    ASSERT(strstr(out, "Inspecting") != NULL);
+    /* The list type name must appear */
+    ASSERT(strstr(out, "CONS") != NULL);
+}
+
 int main(void)
 {
     test_init();
@@ -270,6 +311,7 @@ int main(void)
     RUN(inspect_struct_slots);
     RUN(inspect_out_of_range);
     RUN(inspect_is_bound);
+    RUN(inspect_show_obj_to_standard_output);
 
     teardown();
     REPORT();

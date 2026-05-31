@@ -189,6 +189,22 @@ TEST(describe_returns_nil)
     ASSERT(strstr(result, "NIL") != NULL);
 }
 
+/* --- Room --- */
+
+TEST(room_no_error)
+{
+    const char *result = eval_str("(progn (room) t)");
+    ASSERT(strstr(result, "T") != NULL);
+}
+
+TEST(room_writes_to_standard_output)
+{
+    const char *out = eval_str(
+        "(with-output-to-string (*standard-output*) (room))");
+    ASSERT(strstr(out, "Heap:") != NULL);
+    ASSERT(strstr(out, "GC:") != NULL);
+}
+
 int main(void)
 {
     test_init();
@@ -210,6 +226,8 @@ int main(void)
     RUN(describe_stream);
     RUN(describe_struct);
     RUN(describe_returns_nil);
+    RUN(room_no_error);
+    RUN(room_writes_to_standard_output);
 
     teardown();
     REPORT();
