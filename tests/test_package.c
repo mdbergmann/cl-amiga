@@ -939,7 +939,9 @@ TEST(eval_remove_local_nickname)
     eval_print("(add-package-local-nickname \"K2\" (find-package \"KEYWORD\") (find-package \"LN-EVAL2\"))");
     eval_print("(in-package \"LN-EVAL2\")");
     ASSERT_STR_EQ(eval_print("(find-package \"K2\")"), "#<PACKAGE KEYWORD>");
-    eval_print("(remove-package-local-nickname \"K2\")");
+    /* REMOVE-PACKAGE-LOCAL-NICKNAME is in CLAMIGA, not CL; use qualified name
+     * since LN-EVAL2 only :uses COMMON-LISP */
+    eval_print("(clamiga:remove-package-local-nickname \"K2\")");
     ASSERT_STR_EQ(eval_print("(find-package \"K2\")"), "NIL");
     eval_print("(in-package \"COMMON-LISP-USER\")");
 }

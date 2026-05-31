@@ -917,6 +917,85 @@ static CL_Obj bi_array_element_type(CL_Obj *args, int n)
 }
 
 /* ======================================================= */
+/* ARRAY-IN-BOUNDS-P                                       */
+/* ======================================================= */
+
+/* (array-in-bounds-p array &rest subscripts) → boolean
+ * Returns T if all subscripts are valid indices for array, NIL otherwise. */
+static CL_Obj bi_array_in_bounds_p(CL_Obj *args, int n)
+{
+    int nidx = n - 1;
+    int i;
+
+    if (CL_BIT_VECTOR_P(args[0])) {
+        CL_BitVector *bv = (CL_BitVector *)CL_OBJ_TO_PTR(args[0]);
+        if (nidx != 1) return CL_NIL;
+        if (!CL_FIXNUM_P(args[1])) return CL_NIL;
+        {
+            int32_t idx = CL_FIXNUM_VAL(args[1]);
+            return (idx >= 0 && (uint32_t)idx < bv->length) ? CL_T : CL_NIL;
+        }
+    }
+    if (CL_ANY_STRING_P(args[0])) {
+        uint32_t len = cl_string_length(args[0]);
+        if (nidx != 1) return CL_NIL;
+        if (!CL_FIXNUM_P(args[1])) return CL_NIL;
+        {
+            int32_t idx = CL_FIXNUM_VAL(args[1]);
+            return (idx >= 0 && (uint32_t)idx < len) ? CL_T : CL_NIL;
+        }
+    }
+    if (!CL_VECTOR_P(args[0]))
+        cl_error(CL_ERR_TYPE, "ARRAY-IN-BOUNDS-P: not an array");
+    {
+        CL_Vector *vec = (CL_Vector *)CL_OBJ_TO_PTR(args[0]);
+        uint32_t rank = (vec->rank > 1) ? vec->rank : 1;
+        if ((uint32_t)nidx != rank) return CL_NIL;
+        for (i = 0; i < nidx; i++) {
+            int32_t idx, dim;
+            if (!CL_FIXNUM_P(args[i + 1])) return CL_NIL;
+            idx = CL_FIXNUM_VAL(args[i + 1]);
+            if (idx < 0) return CL_NIL;
+            vec = (CL_Vector *)CL_OBJ_TO_PTR(args[0]); /* re-fetch */
+            dim = (vec->rank > 1) ? CL_FIXNUM_VAL(vec->data[i]) : (int32_t)vec->length;
+            if (idx >= dim) return CL_NIL;
+        }
+    }
+    return CL_T;
+}
+
+/* ======================================================= */
+/* UPGRADED-ARRAY-ELEMENT-TYPE                             */
+/* ======================================================= */
+
+/* (upgraded-array-element-type typespec &optional environment) → typespec
+ * clamiga arrays are all general (element type T), except strings (CHARACTER)
+ * and bit-vectors (BIT).  Returns T for all other types. */
+static CL_Obj bi_upgraded_array_element_type(CL_Obj *args, int n)
+{
+    CL_Obj typespec = args[0];
+    (void)n;
+
+    /* Check for CHARACTER subtypes */
+    if (CL_SYMBOL_P(typespec) || CL_NULL_P(typespec)) {
+        const char *tname = "";
+        if (CL_SYMBOL_P(typespec)) {
+            CL_Symbol *s = (CL_Symbol *)CL_OBJ_TO_PTR(typespec);
+            CL_String *sn = (CL_String *)CL_OBJ_TO_PTR(s->name);
+            tname = sn->data;
+        }
+        if (strcmp(tname, "CHARACTER") == 0 ||
+            strcmp(tname, "BASE-CHAR") == 0 ||
+            strcmp(tname, "EXTENDED-CHAR") == 0 ||
+            strcmp(tname, "STANDARD-CHAR") == 0)
+            return cl_intern("CHARACTER", 9);
+        if (strcmp(tname, "BIT") == 0)
+            return cl_intern("BIT", 3);
+    }
+    return SYM_T;
+}
+
+/* ======================================================= */
 /* ARRAY-ROW-MAJOR-INDEX                                   */
 /* ======================================================= */
 
@@ -1381,6 +1460,8 @@ void cl_builtins_array_init(void)
     defun("ARRAY-DIMENSION", bi_array_dimension, 2, 2);
     defun("ARRAY-TOTAL-SIZE", bi_array_total_size, 1, 1);
     defun("ARRAY-ELEMENT-TYPE", bi_array_element_type, 1, 1);
+    defun("ARRAY-IN-BOUNDS-P", bi_array_in_bounds_p, 1, -1);
+    defun("UPGRADED-ARRAY-ELEMENT-TYPE", bi_upgraded_array_element_type, 1, 2);
     defun("ARRAY-ROW-MAJOR-INDEX", bi_array_row_major_index, 2, -1);
     defun("ROW-MAJOR-AREF", bi_row_major_aref, 2, 2);
     cl_register_builtin("%SETF-ROW-MAJOR-AREF", bi_setf_row_major_aref, 3, 3, cl_package_clamiga);

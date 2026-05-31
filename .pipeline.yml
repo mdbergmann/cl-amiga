@@ -24,10 +24,10 @@ analyze_model: opus
 implement_model: sonnet
 
 # max turn defaults, override if needed
-# review_max_turns: 30
+review_max_turns: 100
 fix_max_turns: 100
-implement_max_turns: 100
-analyze_max_turns: 100
+implement_max_turns: 200
+analyze_max_turns: 200
 
 # Bound how many times `pipeline all` may loop fix->test before giving up.
 max_fix_retries: 20

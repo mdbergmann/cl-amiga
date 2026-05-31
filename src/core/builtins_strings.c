@@ -186,6 +186,48 @@ static CL_Obj bi_code_char(CL_Obj *args, int n)
     return CL_MAKE_CHAR(CL_FIXNUM_VAL(args[0]));
 }
 
+/* (char-int character) => integer  — implementation-specific integer rep.
+ * In clamiga this is identical to char-code (Unicode code point). */
+static CL_Obj bi_char_int(CL_Obj *args, int n)
+{
+    CL_UNUSED(n);
+    if (!CL_CHAR_P(args[0]))
+        cl_error(CL_ERR_TYPE, "CHAR-INT: not a character");
+    return CL_MAKE_FIXNUM(CL_CHAR_VAL(args[0]));
+}
+
+/* (character object) => character
+ * Coerce a character designator to a character.
+ * Designators: a character (returned as-is), a string of length 1,
+ * or a symbol whose name has length 1. */
+static CL_Obj bi_character(CL_Obj *args, int n)
+{
+    CL_Obj obj = args[0];
+    CL_UNUSED(n);
+
+    if (CL_CHAR_P(obj))
+        return obj;
+
+    if (CL_ANY_STRING_P(obj)) {
+        if (cl_string_length(obj) != 1)
+            cl_error(CL_ERR_TYPE, "CHARACTER: string designator must have length 1");
+        return CL_MAKE_CHAR(cl_string_char_at(obj, 0));
+    }
+
+    if (CL_SYMBOL_P(obj) || CL_NULL_P(obj)) {
+        CL_Symbol *sym = CL_NULL_P(obj)
+            ? (CL_Symbol *)CL_OBJ_TO_PTR(SYM_NIL)
+            : (CL_Symbol *)CL_OBJ_TO_PTR(obj);
+        CL_String *s = (CL_String *)CL_OBJ_TO_PTR(sym->name);
+        if (s->length != 1)
+            cl_error(CL_ERR_TYPE, "CHARACTER: symbol name must have length 1");
+        return CL_MAKE_CHAR((unsigned char)s->data[0]);
+    }
+
+    cl_error(CL_ERR_TYPE, "CHARACTER: not a character designator");
+    return CL_NIL;
+}
+
 static CL_Obj bi_char_upcase(CL_Obj *args, int n)
 {
     int c;
@@ -1694,6 +1736,8 @@ void cl_builtins_strings_init(void)
     defun("CHAR>=", bi_char_ge, 1, -1);
     defun("CHAR-CODE", bi_char_code, 1, 1);
     defun("CODE-CHAR", bi_code_char, 1, 1);
+    defun("CHAR-INT", bi_char_int, 1, 1);
+    defun("CHARACTER", bi_character, 1, 1);
     defun("CHAR-UPCASE", bi_char_upcase, 1, 1);
     defun("CHAR-DOWNCASE", bi_char_downcase, 1, 1);
     defun("UPPER-CASE-P", bi_upper_case_p, 1, 1);

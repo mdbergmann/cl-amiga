@@ -211,10 +211,26 @@ directly instead of attempting a symbol lookup."
 ;; Standard base classes
 (%make-bootstrap-class 'standard-object
   (list (find-class 't)))
-(%make-bootstrap-class 'standard-class
+;; CLASS must precede STANDARD-CLASS so STANDARD-CLASS's CPL includes CLASS
+(%make-bootstrap-class 'class
   (list (find-class 'standard-object)))
+(%make-bootstrap-class 'standard-class
+  (list (find-class 'class)))
+(%make-bootstrap-class 'built-in-class
+  (list (find-class 'class)))
+(%make-bootstrap-class 'structure-class
+  (list (find-class 'class)))
 (%make-bootstrap-class 'structure-object
   (list (find-class 't)))
+;; MOP classes that are STANDARD-OBJECT subclasses
+(%make-bootstrap-class 'method
+  (list (find-class 'standard-object)))
+(%make-bootstrap-class 'standard-method
+  (list (find-class 'method)))
+(%make-bootstrap-class 'method-combination
+  (list (find-class 'standard-object)))
+(%make-bootstrap-class 'restart
+  (list (find-class 'standard-object)))
 
 ;; Numeric tower
 (%make-bootstrap-class 'number
@@ -263,6 +279,10 @@ directly instead of attempting a symbol lookup."
   (list (find-class 't)))
 (%make-bootstrap-class 'compiled-function
   (list (find-class 'function)))
+(%make-bootstrap-class 'generic-function
+  (list (find-class 'function)))
+(%make-bootstrap-class 'standard-generic-function
+  (list (find-class 'generic-function)))
 (%make-bootstrap-class 'hash-table
   (list (find-class 't)))
 (%make-bootstrap-class 'package
@@ -270,6 +290,18 @@ directly instead of attempting a symbol lookup."
 (%make-bootstrap-class 'stream
   (list (find-class 't)))
 (%make-bootstrap-class 'file-stream
+  (list (find-class 'stream)))
+(%make-bootstrap-class 'broadcast-stream
+  (list (find-class 'stream)))
+(%make-bootstrap-class 'concatenated-stream
+  (list (find-class 'stream)))
+(%make-bootstrap-class 'echo-stream
+  (list (find-class 'stream)))
+(%make-bootstrap-class 'string-stream
+  (list (find-class 'stream)))
+(%make-bootstrap-class 'synonym-stream
+  (list (find-class 'stream)))
+(%make-bootstrap-class 'two-way-stream
   (list (find-class 'stream)))
 (%make-bootstrap-class 'pathname
   (list (find-class 't)))
@@ -281,8 +313,6 @@ directly instead of attempting a symbol lookup."
   (list (find-class 't)))
 (%make-bootstrap-class 'complex
   (list (find-class 'number)))
-(%make-bootstrap-class 'class
-  (list (find-class 'standard-object)))
 (%make-bootstrap-class 'condition
   (list (find-class 't)))
 
@@ -300,6 +330,14 @@ directly instead of attempting a symbol lookup."
 (%make-bootstrap-class 'arithmetic-error
   (list (find-class 'error)))
 (%make-bootstrap-class 'division-by-zero
+  (list (find-class 'arithmetic-error)))
+(%make-bootstrap-class 'floating-point-inexact
+  (list (find-class 'arithmetic-error)))
+(%make-bootstrap-class 'floating-point-invalid-operation
+  (list (find-class 'arithmetic-error)))
+(%make-bootstrap-class 'floating-point-overflow
+  (list (find-class 'arithmetic-error)))
+(%make-bootstrap-class 'floating-point-underflow
   (list (find-class 'arithmetic-error)))
 (%make-bootstrap-class 'control-error
   (list (find-class 'error)))
@@ -335,6 +373,8 @@ directly instead of attempting a symbol lookup."
   (list (find-class 'parse-error) (find-class 'stream-error)))
 (%make-bootstrap-class 'print-not-readable
   (list (find-class 'error)))
+(%make-bootstrap-class 'simple-type-error
+  (list (find-class 'type-error) (find-class 'simple-condition)))
 
 ;;; ====================================================================
 ;;; Slot Definition Metaobjects (MOP)

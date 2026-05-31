@@ -758,6 +758,54 @@ static CL_Obj bi_package_shadowing_symbols(CL_Obj *args, int nargs)
     return p->shadowing_symbols;
 }
 
+/* (packagep object) => boolean */
+static CL_Obj bi_packagep(CL_Obj *args, int nargs)
+{
+    (void)nargs;
+    return CL_PACKAGE_P(args[0]) ? CL_T : CL_NIL;
+}
+
+/* (find-all-symbols name) => list
+ * Searches every registered package for symbols with the given name. */
+static CL_Obj bi_find_all_symbols(CL_Obj *args, int nargs)
+{
+    const char *name;
+    uint32_t len;
+    CL_Obj result = CL_NIL;
+    CL_Obj reg;
+    CL_Obj nsym;
+    (void)nargs;
+
+    get_name_str(args[0], &name, &len);
+
+    CL_GC_PROTECT(result);
+    reg = cl_package_registry;
+    CL_GC_PROTECT(reg);
+    while (!CL_NULL_P(reg)) {
+        CL_Obj entry = cl_car(reg);
+        CL_Obj pkg = cl_cdr(entry);
+        CL_Obj sym = cl_package_find_symbol(name, len, pkg);
+        if (!CL_NULL_P(sym)) {
+            /* Check for duplicate (symbol may be accessible in multiple packages) */
+            CL_Obj scan = result;
+            int found = 0;
+            while (!CL_NULL_P(scan)) {
+                if (cl_car(scan) == sym) { found = 1; break; }
+                scan = cl_cdr(scan);
+            }
+            if (!found) {
+                nsym = cl_normalize_nil_symbol(sym);
+                CL_GC_PROTECT(nsym);
+                result = cl_cons(nsym, result);
+                CL_GC_UNPROTECT(1);
+            }
+        }
+        reg = cl_cdr(reg);
+    }
+    CL_GC_UNPROTECT(2); /* result, reg */
+    return result;
+}
+
 /* (copy-symbol symbol &optional copy-properties) */
 static CL_Obj bi_copy_symbol(CL_Obj *args, int nargs)
 {
@@ -833,18 +881,19 @@ void cl_builtins_package_init(void)
     cl_register_builtin("%PACKAGE-SYMBOLS", bi_package_symbols, 1, 1, cl_package_clamiga);
     cl_register_builtin("%PACKAGE-EXTERNAL-SYMBOLS", bi_package_external_symbols, 1, 1, cl_package_clamiga);
     cl_register_builtin("%SET-CURRENT-PACKAGE", bi_pct_set_current_package, 1, 1, cl_package_clamiga);
-    /* Package-local nicknames (CDR-10).  Not in ANSI CL but widely used
-     * by user code that only :uses COMMON-LISP, so we keep them in CL.
-     * (Moving to CLAMIGA breaks user packages that don't :use CLAMIGA,
-     * because :use only inherits external symbols — not inherited ones,
-     * so the chain CL → CLAMIGA does not propagate.) */
-    defun("PACKAGE-LOCAL-NICKNAMES", bi_package_local_nicknames, 1, 1);
-    defun("ADD-PACKAGE-LOCAL-NICKNAME", bi_add_package_local_nickname, 2, 3);
-    defun("REMOVE-PACKAGE-LOCAL-NICKNAME", bi_remove_package_local_nickname, 1, 2);
+    /* Package-local nicknames (CDR-10) live in CLAMIGA.
+     * CL :uses CLAMIGA so internal code (boot.lisp, clos.lisp, tests)
+     * sees them as bare symbols.  User packages that only (:use :common-lisp)
+     * must add (:use :clamiga) or qualify with the CLAMIGA: prefix. */
+    cl_register_builtin("PACKAGE-LOCAL-NICKNAMES", bi_package_local_nicknames, 1, 1, cl_package_clamiga);
+    cl_register_builtin("ADD-PACKAGE-LOCAL-NICKNAME", bi_add_package_local_nickname, 2, 3, cl_package_clamiga);
+    cl_register_builtin("REMOVE-PACKAGE-LOCAL-NICKNAME", bi_remove_package_local_nickname, 1, 2, cl_package_clamiga);
     defun("PACKAGE-USED-BY-LIST", bi_package_used_by_list, 1, 1);
     defun("SHADOWING-IMPORT", bi_shadowing_import, 1, 2);
     defun("PACKAGE-SHADOWING-SYMBOLS", bi_package_shadowing_symbols, 1, 1);
     defun("COPY-SYMBOL", bi_copy_symbol, 1, 2);
+    defun("PACKAGEP", bi_packagep, 1, 1);
+    defun("FIND-ALL-SYMBOLS", bi_find_all_symbols, 1, 1);
 
     /* Register cached symbols for GC compaction forwarding */
     cl_gc_register_root(&KW_INTERNAL);

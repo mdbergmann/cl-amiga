@@ -1,0 +1,18 @@
+{
+  "summary": "6 ANSI tests fail with distinct root causes: (1) 7 implementation-specific symbols (CONDITIONP, STRUCTUREP, PACKAGE-LOCAL-NICKNAMES, etc.) leak into CL externals; (2) 75 type-class symbols look 'missing' to (typep C 'class) because STANDARD-CLASS's CPL omits CLASS — once the metaclass hierarchy is fixed, ~17 actually-missing built-in classes remain to add; (3) 36 inlined special forms (AND, OR, COND, DEFUN, LAMBDA, SETF, ...) compile directly via compile_expr fast-paths and have no macro-function or FBOUNDP binding; (4) 45 ANSI-required functions (PACKAGEP, CHAR-INT, MAKE-BROADCAST-STREAM, ...) are not defined. Plan splits work into 7 small items: extras-cleanup, class-hierarchy fix, missing-classes add, compiler safety guard, macro-stub registration, and two batches of function definitions. Each item is independently testable against the probe at workspace/probe.lisp.",
+  "affected_areas": [
+    "CL/CLAMIGA package boundary (builtins_condition.c, builtins_struct.c, builtins_package.c)",
+    "CLOS bootstrap class hierarchy (lib/clos.lisp)",
+    "Compiler macroexpansion path (src/core/compiler.c compile_expr)",
+    "Macro/function registration tables (compiler.c macro_table, per-domain builtins_*.c)",
+    "Stream, pathname, and method-combination stub layer"
+  ],
+  "risks": [
+    "Moving 7 symbols from CL to CLAMIGA is a user-visible breaking change for any code that does (defpackage ... (:use :common-lisp)) and references these names bare — internal lib/*.lisp + tests/amiga/run-tests.lisp run in COMMON-LISP-USER which already :uses CLAMIGA, so they remain green; external user packages will need to add :use :clamiga or a CLAMIGA: prefix.",
+    "Changing STANDARD-CLASS's superclasses changes the CPL of every class in the system — must verify CLOS phases 1-9, defclass/defgeneric/defmethod, and downstream libraries (closer-mop, fset, fiveam) still bootstrap. Reordering the CLASS bootstrap before STANDARD-CLASS introduces a chicken-and-egg risk because the bootstrap uses (%make-struct 'standard-class ...) — the struct type registration at line 41 must remain before any %make-bootstrap-class call.",
+    "compile_expr's identity-check guard (item-4) is in the hot compile loop; the extra comparison is cheap but mis-applied skip would let user macros that intentionally return identical forms loop on the first pass — must keep the existing trampoline semantics for the non-stub case.",
+    "Stub macros registered for SETF, DEFUN, DEFMACRO, LAMBDA bypass spec-conformant MACROEXPAND-1 (which would return a meaningful expansion). For the 6 failing tests this is sufficient because they only probe MACRO-FUNCTION + FBOUNDP, but downstream tests that actually call (macroexpand-1 '(and a b)) would still see (form NIL) — flag this in the change-request follow-up rather than implement real expanders now.",
+    "45 new stub functions widen the CL-package symbol table; cl_package_export_defined_cl_symbols filters on symbol_has_binding so these will become external in CL — confirm that doesn't introduce NEW NO-EXTRA-SYMBOLS-EXPORTED-FROM-COMMON-LISP failures (all 45 are in *cl-symbol-names* so they should be accepted).",
+    "The Amiga test suite (tests/amiga/run-tests.lisp) uses STRUCTUREP / CONDITIONP / package-local-nickname helpers by bare name — they currently resolve through CL but after item-1 will resolve through CLAMIGA via the CL :use CLAMIGA chain. Verify on a host clamiga before cross-building."
+  ]
+}

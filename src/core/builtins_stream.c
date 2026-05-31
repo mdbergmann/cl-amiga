@@ -1394,6 +1394,171 @@ static CL_Obj bi_set_syntax_from_char(CL_Obj *args, int n)
     return CL_T;
 }
 
+/* ======================================================= */
+/* Stream attribute functions                              */
+/* ======================================================= */
+
+/* Pre-interned :DEFAULT keyword for stream-external-format */
+static CL_Obj KW_STREAM_DEFAULT = CL_NIL;
+
+/* (dribble &optional pathname) => NIL
+ * No-op: clamiga has no dribble facility. */
+static CL_Obj bi_dribble(CL_Obj *args, int n)
+{
+    CL_UNUSED(args); CL_UNUSED(n);
+    return CL_NIL;
+}
+
+/* (short-site-name) => NIL */
+static CL_Obj bi_short_site_name(CL_Obj *args, int n)
+{
+    CL_UNUSED(args); CL_UNUSED(n);
+    return CL_NIL;
+}
+
+/* (long-site-name) => NIL */
+static CL_Obj bi_long_site_name(CL_Obj *args, int n)
+{
+    CL_UNUSED(args); CL_UNUSED(n);
+    return CL_NIL;
+}
+
+/* (stream-element-type stream) => type-specifier
+ * Socket streams are binary (UNSIGNED-BYTE 8); all others are CHARACTER. */
+static CL_Obj bi_stream_element_type(CL_Obj *args, int n)
+{
+    CL_Stream *st;
+    CL_UNUSED(n);
+    if (!CL_STREAM_P(args[0]))
+        cl_error(CL_ERR_TYPE, "STREAM-ELEMENT-TYPE: not a stream");
+    st = (CL_Stream *)CL_OBJ_TO_PTR(args[0]);
+    if (st->stream_type == CL_STREAM_SOCKET) {
+        /* Return (UNSIGNED-BYTE 8) — split cons calls to prevent the inner
+         * result from living only in a register when the outer cons runs. */
+        CL_Obj ub = cl_intern_in("UNSIGNED-BYTE", 13, cl_package_cl);
+        CL_Obj inner;
+        CL_GC_PROTECT(ub);
+        inner = cl_cons(CL_MAKE_FIXNUM(8), CL_NIL);
+        CL_GC_PROTECT(inner);
+        {
+            CL_Obj r = cl_cons(ub, inner);
+            CL_GC_UNPROTECT(2);
+            return r;
+        }
+    }
+    return cl_intern_in("CHARACTER", 9, cl_package_cl);
+}
+
+/* (stream-external-format stream) => format
+ * clamiga uses UTF-8 for all character streams; return :DEFAULT. */
+static CL_Obj bi_stream_external_format(CL_Obj *args, int n)
+{
+    CL_UNUSED(n);
+    if (!CL_STREAM_P(args[0]))
+        cl_error(CL_ERR_TYPE, "STREAM-EXTERNAL-FORMAT: not a stream");
+    return KW_STREAM_DEFAULT;
+}
+
+/* (listen &optional input-stream) => boolean
+ * Returns T if a character is immediately available from the stream. */
+static CL_Obj bi_listen(CL_Obj *args, int n)
+{
+    CL_Obj stream = resolve_input_stream(args, n, 0);
+    CL_Stream *st = (CL_Stream *)CL_OBJ_TO_PTR(stream);
+    if (st->unread_char != -1) return CL_T;
+    if (st->flags & CL_STREAM_FLAG_EOF) return CL_NIL;
+    if (st->stream_type == CL_STREAM_STRING || st->stream_type == CL_STREAM_CBUF)
+        return (st->position < st->out_buf_len) ? CL_T : CL_NIL;
+    return CL_NIL;  /* conservative: unknown availability */
+}
+
+/* (clear-input &optional input-stream) => nil */
+static CL_Obj bi_clear_input(CL_Obj *args, int n)
+{
+    CL_UNUSED(args); CL_UNUSED(n);
+    return CL_NIL;
+}
+
+/* (read-char-no-hang &optional stream eof-error-p eof-value recursive-p) => char or nil
+ * Returns a character if one is available, NIL if not without blocking,
+ * or signals/returns eof-value at end of file. */
+static CL_Obj bi_read_char_no_hang(CL_Obj *args, int n)
+{
+    CL_Obj stream = resolve_input_stream(args, n, 0);
+    int eof_error_p = (n < 2 || !CL_NULL_P(args[1]));
+    CL_Obj eof_value = (n >= 3) ? args[2] : CL_NIL;
+    CL_Stream *st = (CL_Stream *)CL_OBJ_TO_PTR(stream);
+    int available;
+
+    /* Check if a character is immediately available */
+    available = (st->unread_char != -1) ||
+                (!(st->flags & CL_STREAM_FLAG_EOF) &&
+                 (st->stream_type == CL_STREAM_STRING || st->stream_type == CL_STREAM_CBUF) &&
+                 st->position < st->out_buf_len);
+
+    if (!available) {
+        /* Check for EOF */
+        if (st->flags & CL_STREAM_FLAG_EOF) {
+            if (eof_error_p)
+                cl_error(CL_ERR_GENERAL, "READ-CHAR-NO-HANG: end of file");
+            return eof_value;
+        }
+        return CL_NIL;
+    }
+
+    {
+        int ch = cl_stream_read_char(stream);
+        if (ch == -1) {
+            if (eof_error_p)
+                cl_error(CL_ERR_GENERAL, "READ-CHAR-NO-HANG: end of file");
+            return eof_value;
+        }
+        return CL_MAKE_CHAR(ch);
+    }
+}
+
+/* (host-namestring pathname) => nil
+ * clamiga has no networking pathname host component. */
+static CL_Obj bi_host_namestring(CL_Obj *args, int n)
+{
+    CL_UNUSED(args); CL_UNUSED(n);
+    return CL_NIL;
+}
+
+/* (file-author pathname) => nil
+ * clamiga does not track file authorship. */
+static CL_Obj bi_file_author(CL_Obj *args, int n)
+{
+    CL_UNUSED(args); CL_UNUSED(n);
+    return CL_NIL;
+}
+
+/* (file-string-length stream object) => length or nil
+ * Returns the number of octets that would be used to encode object on stream.
+ * clamiga uses UTF-8; approximate for strings, exact for characters. */
+static CL_Obj bi_file_string_length(CL_Obj *args, int n)
+{
+    CL_UNUSED(n);
+    if (!CL_STREAM_P(args[0]))
+        cl_error(CL_ERR_TYPE, "FILE-STRING-LENGTH: first argument is not a stream");
+    if (CL_CHAR_P(args[1])) {
+        int ch = CL_CHAR_VAL(args[1]);
+        int32_t len = (ch < 0x80) ? 1 : (ch < 0x800) ? 2 : (ch < 0x10000) ? 3 : 4;
+        return CL_MAKE_FIXNUM(len);
+    }
+    if (CL_ANY_STRING_P(args[1])) {
+        /* Sum UTF-8 byte lengths for each character */
+        uint32_t i, slen = cl_string_length(args[1]);
+        int32_t total = 0;
+        for (i = 0; i < slen; i++) {
+            int ch = cl_string_char_at(args[1], i);
+            total += (ch < 0x80) ? 1 : (ch < 0x800) ? 2 : (ch < 0x10000) ? 3 : 4;
+        }
+        return CL_MAKE_FIXNUM(total);
+    }
+    return CL_NIL;
+}
+
 /* --- Registration --- */
 
 void cl_builtins_stream_init(void)
@@ -1417,6 +1582,7 @@ void cl_builtins_stream_init(void)
     KW_RENAME  = cl_intern_keyword("RENAME", 6);
     KW_RENAME_AND_DELETE = cl_intern_keyword("RENAME-AND-DELETE", 17);
     KW_OVERWRITE = cl_intern_keyword("OVERWRITE", 9);
+    KW_STREAM_DEFAULT = cl_intern_keyword("DEFAULT", 7);
 
     /* Step 1 */
     defun("STREAMP", bi_streamp, 1, 1);
@@ -1468,6 +1634,19 @@ void cl_builtins_stream_init(void)
     defun("FILE-NAMESTRING", bi_file_namestring, 1, 1);
     defun("DIRECTORY-NAMESTRING", bi_directory_namestring, 1, 1);
 
+    /* Stream attribute functions */
+    defun("STREAM-ELEMENT-TYPE", bi_stream_element_type, 1, 1);
+    defun("STREAM-EXTERNAL-FORMAT", bi_stream_external_format, 1, 1);
+    defun("LISTEN", bi_listen, 0, 1);
+    defun("CLEAR-INPUT", bi_clear_input, 0, 1);
+    defun("READ-CHAR-NO-HANG", bi_read_char_no_hang, 0, 4);
+    defun("HOST-NAMESTRING", bi_host_namestring, 1, 1);
+    defun("FILE-AUTHOR", bi_file_author, 1, 1);
+    defun("FILE-STRING-LENGTH", bi_file_string_length, 2, 2);
+    defun("DRIBBLE", bi_dribble, 0, 1);
+    defun("SHORT-SITE-NAME", bi_short_site_name, 0, 0);
+    defun("LONG-SITE-NAME", bi_long_site_name, 0, 0);
+
     /* Step 12: Readtable */
     defun("READTABLEP", bi_readtablep, 1, 1);
     defun("GET-MACRO-CHARACTER", bi_get_macro_character, 1, 2);
@@ -1501,4 +1680,5 @@ void cl_builtins_stream_init(void)
     cl_gc_register_root(&KW_RENAME);
     cl_gc_register_root(&KW_RENAME_AND_DELETE);
     cl_gc_register_root(&KW_OVERWRITE);
+    cl_gc_register_root(&KW_STREAM_DEFAULT);
 }
