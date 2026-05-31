@@ -84,7 +84,7 @@ Any C code that holds `CL_Obj` values across allocating calls **must** GC-protec
 
 ## Amiga Stack Requirements
 
-- **64K** (AmigaOS default) — sufficient for core runtime and full test suite (2042 tests)
+- **64K** (AmigaOS default) — sufficient for the core runtime and most of the test suite, but **~12K short** for the GUI test path: `(require "amiga/gadtools")` nests `bi_load` frames and source-compiles gadtools.lisp (deeply-nested macros → deep `cl_compile` recursion), overflowing 64K and silently corrupting memory. Bisected threshold: 65000 fails, 77000 passes — the test runner uses **77000**.
 - **128K** — sufficient for Quicklisp/FSet/fiveam (deep CLOS dispatch chains)
 
 The `stack` CLI command sets the stack before launching clamiga.
