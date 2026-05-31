@@ -541,6 +541,37 @@ TEST(vector_push_extend_nonadjustable_character)
         "  s)"), "\"xyz\"");
 }
 
+TEST(vector_push_extend_nonadjustable_character_equal)
+{
+    /* Regression: EQUAL between a literal string (TYPE_STRING) and a
+       character vector (TYPE_VECTOR + STRING flag, here grown by
+       vector-push-extend) must compare element-wise, not return NIL. */
+    ASSERT_STR_EQ(eval_print(
+        "(equal \"xyz\""
+        "  (let ((s (make-array 2 :element-type 'character :fill-pointer 0)))"
+        "    (vector-push-extend #\\x s)"
+        "    (vector-push-extend #\\y s)"
+        "    (vector-push-extend #\\z s)"
+        "    s))"), "T");
+}
+
+TEST(equal_string_vs_char_vector)
+{
+    /* Both directions, plus a true negative. */
+    ASSERT_STR_EQ(eval_print(
+        "(equal (make-array 3 :element-type 'character"
+        "                     :initial-contents '(#\\a #\\b #\\c))"
+        "       \"abc\")"), "T");
+    ASSERT_STR_EQ(eval_print(
+        "(equal \"abc\""
+        "       (make-array 3 :element-type 'character"
+        "                     :initial-contents '(#\\a #\\b #\\c)))"), "T");
+    ASSERT_STR_EQ(eval_print(
+        "(equal \"abc\""
+        "       (make-array 3 :element-type 'character"
+        "                     :initial-contents '(#\\a #\\b #\\d)))"), "NIL");
+}
+
 /* ============================================================ */
 /* adjust-array                                                 */
 /* ============================================================ */
@@ -966,6 +997,8 @@ int main(void)
     RUN(vector_push_extend_nonadjustable_identity);
     RUN(vector_push_extend_nonadjustable_still_nonadjustable);
     RUN(vector_push_extend_nonadjustable_character);
+    RUN(vector_push_extend_nonadjustable_character_equal);
+    RUN(equal_string_vs_char_vector);
 
     /* Adjust */
     RUN(adjust_array_grow);
