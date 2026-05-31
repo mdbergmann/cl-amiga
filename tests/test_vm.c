@@ -4868,6 +4868,34 @@ TEST(eval_trace_multiple)
     eval_print("(untrace)");
 }
 
+/* --- Trace stream redirection --- */
+
+TEST(eval_trace_stream_redirect)
+{
+    /* TRACE output must go to *trace-output*, not platform stdout */
+    const char *out;
+    eval_print("(defun tr-sredir (x) (* x x))");
+    eval_print("(trace tr-sredir)");
+    /* Redirect *trace-output* to a string stream and capture trace output */
+    out = eval_print(
+        "(let ((s (make-string-output-stream)))"
+        "  (let ((*trace-output* s))"
+        "    (tr-sredir 5)"
+        "    (get-output-stream-string s)))");
+    ASSERT(strstr(out, "TR-SREDIR") != NULL);
+    ASSERT(strstr(out, "(") != NULL);
+    ASSERT(strstr(out, "returned") != NULL);
+    /* After untrace, no further trace output should be captured */
+    eval_print("(untrace tr-sredir)");
+    out = eval_print(
+        "(let ((s (make-string-output-stream)))"
+        "  (let ((*trace-output* s))"
+        "    (tr-sredir 5)"
+        "    (get-output-stream-string s)))");
+    ASSERT(strstr(out, "TR-SREDIR") == NULL);
+    ASSERT(strstr(out, "returned") == NULL);
+}
+
 /* --- Backtrace --- */
 
 TEST(eval_backtrace_named)
@@ -5010,6 +5038,17 @@ TEST(eval_time_stats)
         "(let ((before (%get-bytes-consed)))"
         "  (cons 1 2)"
         "  (> (%get-bytes-consed) before))"), "T");
+}
+
+TEST(eval_time_trace_redirect)
+{
+    /* HyperSpec: TIME writes its output to *trace-output* */
+    const char *out = eval_print(
+        "(with-output-to-string (*trace-output*)"
+        "  (time 42))");
+    ASSERT(strstr(out, "ms") != NULL);
+    ASSERT(strstr(out, "consed") != NULL);
+    ASSERT(strstr(out, "GC cycles") != NULL);
 }
 
 TEST(eval_get_internal_real_time)
@@ -9250,6 +9289,7 @@ int main(void)
     RUN(eval_untrace_all);
     RUN(eval_trace_builtin);
     RUN(eval_trace_multiple);
+    RUN(eval_trace_stream_redirect);
 
     /* Phase 5 — Backtrace */
     RUN(eval_backtrace_named);
@@ -9261,6 +9301,7 @@ int main(void)
     RUN(eval_time_nested);
     RUN(eval_time_defun);
     RUN(eval_time_stats);
+    RUN(eval_time_trace_redirect);
     RUN(eval_get_internal_real_time);
     RUN(eval_get_internal_run_time);
     RUN(eval_srcloc_load_backtrace);

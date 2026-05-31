@@ -5,6 +5,7 @@
 #include "debugger.h"
 #include "printer.h"
 #include "color.h"
+#include "stream.h"
 #include "../platform/platform.h"
 #include <stdio.h>
 #include <stdarg.h>
@@ -239,12 +240,12 @@ void cl_error_from_condition(CL_Obj condition)
 void cl_error_print(void)
 {
     cl_color_set(CL_COLOR_RED);
-    platform_write_string("ERROR: ");
-    platform_write_string(cl_error_msg);
+    cl_write_cstring_to_error("ERROR: ");
+    cl_write_cstring_to_error(cl_error_msg);
     cl_color_reset();
-    platform_write_string("\n");
+    cl_write_cstring_to_error("\n");
     if (cl_backtrace_buf[0] != '\0') {
-        platform_write_string("Backtrace:\n");
-        platform_write_string(cl_backtrace_buf);
+        cl_write_cstring_to_error("Backtrace:\n");
+        cl_write_cstring_to_error(cl_backtrace_buf);
     }
 }

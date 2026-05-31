@@ -10,6 +10,7 @@
 #include "compiler.h"
 #include "printer.h"
 #include "string_utils.h"
+#include "stream.h"
 #include "../platform/platform.h"
 #include "../platform/platform_thread.h"
 #include "../jit/jit.h"
@@ -462,16 +463,16 @@ static void trace_print_entry(CL_Obj name_sym, CL_Obj *args, int nargs)
     char buf[128];
     int i;
     for (i = 0; i < cl_trace_depth; i++)
-        platform_write_string("  ");
+        cl_write_cstring_to_trace("  ");
     snprintf(buf, sizeof(buf), "%d: (", cl_trace_depth);
-    platform_write_string(buf);
-    platform_write_string(cl_symbol_name(name_sym));
+    cl_write_cstring_to_trace(buf);
+    cl_write_cstring_to_trace(cl_symbol_name(name_sym));
     for (i = 0; i < nargs; i++) {
-        platform_write_string(" ");
+        cl_write_cstring_to_trace(" ");
         cl_prin1_to_string(args[i], buf, sizeof(buf));
-        platform_write_string(buf);
+        cl_write_cstring_to_trace(buf);
     }
-    platform_write_string(")\n");
+    cl_write_cstring_to_trace(")\n");
 }
 
 static void trace_print_exit(CL_Obj name_sym, CL_Obj result)
@@ -479,14 +480,14 @@ static void trace_print_exit(CL_Obj name_sym, CL_Obj result)
     char buf[128];
     int i;
     for (i = 0; i < cl_trace_depth; i++)
-        platform_write_string("  ");
+        cl_write_cstring_to_trace("  ");
     snprintf(buf, sizeof(buf), "%d: ", cl_trace_depth);
-    platform_write_string(buf);
-    platform_write_string(cl_symbol_name(name_sym));
-    platform_write_string(" returned ");
+    cl_write_cstring_to_trace(buf);
+    cl_write_cstring_to_trace(cl_symbol_name(name_sym));
+    cl_write_cstring_to_trace(" returned ");
     cl_prin1_to_string(result, buf, sizeof(buf));
-    platform_write_string(buf);
-    platform_write_string("\n");
+    cl_write_cstring_to_trace(buf);
+    cl_write_cstring_to_trace("\n");
 }
 
 /* --- Backtrace capture --- */

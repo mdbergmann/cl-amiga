@@ -38,4 +38,8 @@ CL_Obj cl_coerce_funcdesig(CL_Obj obj, const char *context);
  * defaults to "G". Shares the counter with CL GENSYM. */
 CL_Obj cl_gensym_with_name(const char *prefix);
 
+/* Non-interactive inspect display: write object and its components to
+ * *standard-output*. Used by (inspect …) and exposed for testing. */
+void cl_inspect_show_obj(CL_Obj obj);
+
 #endif /* CL_BUILTINS_H */

@@ -36,11 +36,11 @@ static void repl_prompt(void)
     if (CL_HEAP_P(cl_current_package)) {
         CL_Package *pkg = (CL_Package *)CL_OBJ_TO_PTR(cl_current_package);
         CL_String *name = (CL_String *)CL_OBJ_TO_PTR(pkg->name);
-        platform_write_string(name->data);
+        cl_write_cstring_to_stdout(name->data);
     } else {
-        platform_write_string("CL-AMIGA");
+        cl_write_cstring_to_stdout("CL-AMIGA");
     }
-    platform_write_string("> ");
+    cl_write_cstring_to_stdout("> ");
     cl_color_reset();
 }
 
@@ -50,8 +50,8 @@ static void repl_continuation_prompt(void)
     int i, len = pkg_name_len();
     cl_color_set(CL_COLOR_DIM_CYAN);
     for (i = 0; i < len; i++)
-        platform_write_string(" ");
-    platform_write_string("> ");
+        cl_write_cstring_to_stdout(" ");
+    cl_write_cstring_to_stdout("> ");
     cl_color_reset();
 }
 
@@ -544,7 +544,7 @@ void cl_repl(void)
                         cl_color_set(CL_COLOR_DIM_GREEN);
                         cl_prin1(result);
                         cl_color_reset();
-                        platform_write_string("\n");
+                        cl_write_cstring_to_stdout("\n");
                     }
                 }
                 CL_UNCATCH();
@@ -566,7 +566,7 @@ void cl_repl(void)
         repl_prompt();
     }
 
-    platform_write_string("\nBye.\n");
+    cl_write_cstring_to_stdout("\nBye.\n");
 }
 
 void cl_repl_batch(void)
@@ -646,7 +646,7 @@ void cl_repl_batch(void)
                     if (!CL_NULL_P(bytecode)) {
                         result = cl_vm_eval(bytecode);
                         cl_prin1(result);
-                        platform_write_string("\n");
+                        cl_write_cstring_to_stdout("\n");
                     }
                     CL_UNCATCH();
                 } else if (err == CL_ERR_EXIT) {
@@ -689,7 +689,7 @@ static void boot_timing_log(const char *phase, uint32_t t_start, uint32_t *t_pre
                  (unsigned)(now - t_start),
                  (unsigned)(now - *t_prev),
                  phase);
-        platform_write_string(buf);
+        cl_write_cstring_to_stdout(buf);
     }
     *t_prev = now;
 }

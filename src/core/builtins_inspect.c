@@ -59,7 +59,7 @@ static void defun(const char *name, CL_CFunc func, int min, int max)
 
 static void write_str(const char *str)
 {
-    platform_write_string(str);
+    cl_write_cstring_to_stdout(str);
 }
 
 static void write_obj_buf(CL_Obj obj)
@@ -294,6 +294,21 @@ CL_Obj cl_inspect_get_component(CL_Obj obj, int idx, const char **label)
 }
 
 /* --- Display current object with components --- */
+
+static void inspect_show(InspectState *state);
+
+/* Non-interactive entry point: show object and its components, writing to
+ * *standard-output*.  Exposed for testing without blocking on stdin. */
+void cl_inspect_show_obj(CL_Obj obj)
+{
+    InspectState state;
+    state.depth = 0;
+    state.stack[0].object = obj;
+    state.stack[0].label = "root";
+    CL_GC_PROTECT(state.stack[0].object);
+    inspect_show(&state);
+    CL_GC_UNPROTECT(1);
+}
 
 static void inspect_show(InspectState *state)
 {

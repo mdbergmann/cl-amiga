@@ -51,6 +51,7 @@
 #include "jit/codegen_m68k.h"
 #include "jit/runtime.h"
 #include "core/opcodes.h"
+#include "core/stream.h"
 #include "core/thread.h"   /* cl_vm.stack[sp - nargs ... sp - 1] are the args */
 #include "core/types.h"
 #include "platform/platform.h"
@@ -84,7 +85,7 @@ void cl_jit_init(void)
     jit_active = 1;
 
     if (!cl_quiet_boot) {
-        platform_write_string(
+        cl_write_cstring_to_stdout(
             "; [jit] m68k template backend: matchers (0-arg literal, 1..6-arg pass-through) + per-opcode walker\n");
     }
 }
@@ -3169,7 +3170,7 @@ void cl_jit_disassemble(const uint8_t *code, uint32_t len)
         if (n == 0) {
             snprintf(line, sizeof line, "  %04lu: <decode short> end\n",
                      (unsigned long)off);
-            platform_write_string(line);
+            cl_write_cstring_to_stdout(line);
             return;
         }
         for (i = 0; i < n && (hp - hex) + 4 < (int)sizeof hex; i++) {
@@ -3181,7 +3182,7 @@ void cl_jit_disassemble(const uint8_t *code, uint32_t len)
         }
         snprintf(line, sizeof line, "  %04lu: %-18s %s\n",
                  (unsigned long)off, hex, mnem);
-        platform_write_string(line);
+        cl_write_cstring_to_stdout(line);
         off += n;
     }
 }

@@ -16,6 +16,7 @@
 #include "printer.h"
 #include "repl.h"
 #include "color.h"
+#include "stream.h"
 #include "../platform/platform.h"
 #include <stdio.h>
 #include <string.h>
@@ -79,30 +80,30 @@ static void display_condition(CL_Obj condition)
     }
 
     cl_color_set(CL_COLOR_BOLD_RED);
-    platform_write_string("\nDebugger entered: ");
+    cl_write_cstring_to_debug_io("\nDebugger entered: ");
     cl_prin1_to_string(cond->type_name, buf, sizeof(buf));
-    platform_write_string(buf);
+    cl_write_cstring_to_debug_io(buf);
 
     if (!CL_NULL_P(report_str)) {
         CL_String *s = (CL_String *)CL_OBJ_TO_PTR(report_str);
-        platform_write_string(": ");
-        platform_write_string(s->data);
+        cl_write_cstring_to_debug_io(": ");
+        cl_write_cstring_to_debug_io(s->data);
     } else if (!CL_NULL_P(cond->report_string)) {
         CL_String *s = (CL_String *)CL_OBJ_TO_PTR(cond->report_string);
-        platform_write_string(": ");
-        platform_write_string(s->data);
+        cl_write_cstring_to_debug_io(": ");
+        cl_write_cstring_to_debug_io(s->data);
     }
     cl_color_reset();
-    platform_write_string("\n");
+    cl_write_cstring_to_debug_io("\n");
 }
 
 /* Display backtrace */
 static void display_backtrace(void)
 {
     if (cl_backtrace_buf[0] != '\0') {
-        platform_write_string("\nBacktrace:\n");
-        platform_write_string(cl_backtrace_buf);
-        platform_write_string("\n");
+        cl_write_cstring_to_debug_io("\nBacktrace:\n");
+        cl_write_cstring_to_debug_io(cl_backtrace_buf);
+        cl_write_cstring_to_debug_io("\n");
     }
 }
 
@@ -112,22 +113,22 @@ static int display_restarts(void)
     int i, idx = 0;
     char numbuf[16];
 
-    platform_write_string("Available restarts:\n");
+    cl_write_cstring_to_debug_io("Available restarts:\n");
 
     for (i = cl_restart_top - 1; i >= 0; i--) {
         char namebuf[128];
         snprintf(numbuf, sizeof(numbuf), "  %d: ", idx);
-        platform_write_string(numbuf);
+        cl_write_cstring_to_debug_io(numbuf);
         cl_prin1_to_string(cl_restart_stack[i].name, namebuf, sizeof(namebuf));
-        platform_write_string(namebuf);
-        platform_write_string("\n");
+        cl_write_cstring_to_debug_io(namebuf);
+        cl_write_cstring_to_debug_io("\n");
         idx++;
     }
 
     /* Always add "Return to top level" as last option */
     snprintf(numbuf, sizeof(numbuf), "  %d: ", idx);
-    platform_write_string(numbuf);
-    platform_write_string("Return to top level\n");
+    cl_write_cstring_to_debug_io(numbuf);
+    cl_write_cstring_to_debug_io("Return to top level\n");
 
     return idx + 1;
 }
@@ -135,12 +136,12 @@ static int display_restarts(void)
 /* Display help */
 static void display_help(void)
 {
-    platform_write_string("Debugger commands:\n");
-    platform_write_string("  <number>  — invoke restart by number\n");
-    platform_write_string("  :bt       — show backtrace\n");
-    platform_write_string("  :q        — return to top level\n");
-    platform_write_string("  :help     — show this help\n");
-    platform_write_string("  <expr>    — evaluate a Lisp expression\n");
+    cl_write_cstring_to_debug_io("Debugger commands:\n");
+    cl_write_cstring_to_debug_io("  <number>  — invoke restart by number\n");
+    cl_write_cstring_to_debug_io("  :bt       — show backtrace\n");
+    cl_write_cstring_to_debug_io("  :q        — return to top level\n");
+    cl_write_cstring_to_debug_io("  :help     — show this help\n");
+    cl_write_cstring_to_debug_io("  <expr>    — evaluate a Lisp expression\n");
 }
 
 /* Invoke restart at index (0 = topmost restart, counting down) */
@@ -149,7 +150,7 @@ static void invoke_restart_at(int idx)
     int stack_idx = cl_restart_top - 1 - idx;
 
     if (stack_idx < 0 || stack_idx >= cl_restart_top) {
-        platform_write_string("Invalid restart index\n");
+        cl_write_cstring_to_debug_io("Invalid restart index\n");
         return;
     }
 
@@ -200,7 +201,7 @@ static void jump_to_top_level(void)
     }
 
     /* No error frame — fatal (should not happen in interactive REPL) */
-    platform_write_string("No error frame — cannot return to top level\n");
+    cl_write_cstring_to_debug_io("No error frame — cannot return to top level\n");
 }
 
 /* Core debugger loop */
@@ -225,7 +226,7 @@ void cl_invoke_debugger(CL_Obj condition)
      * unwind (see error.c) so it cannot stay falsely elevated. */
     if (cl_debugger_depth >= CL_DEBUGGER_MAX_DEPTH) {
         cl_color_set(CL_COLOR_RED);
-        platform_write_string(
+        cl_write_cstring_to_debug_io(
             "\nDebugger recursion limit reached "
             "(error while handling an error) — returning to top level.\n");
         cl_color_reset();
@@ -282,14 +283,14 @@ void cl_invoke_debugger(CL_Obj condition)
 
     /* Mini-REPL loop */
     cl_color_set(CL_COLOR_DIM_MAGENTA);
-    platform_write_string("\nDebug> ");
+    cl_write_cstring_to_debug_io("\nDebug> ");
     cl_color_reset();
 
     while (platform_read_line(line, sizeof(line))) {
         /* Skip empty lines */
         if (line[0] == '\0') {
             cl_color_set(CL_COLOR_DIM_MAGENTA);
-            platform_write_string("Debug> ");
+            cl_write_cstring_to_debug_io("Debug> ");
             cl_color_reset();
             continue;
         }
@@ -298,7 +299,7 @@ void cl_invoke_debugger(CL_Obj condition)
         if (strcmp(line, ":bt") == 0) {
             display_backtrace();
             cl_color_set(CL_COLOR_DIM_MAGENTA);
-            platform_write_string("Debug> ");
+            cl_write_cstring_to_debug_io("Debug> ");
             cl_color_reset();
             continue;
         }
@@ -310,7 +311,7 @@ void cl_invoke_debugger(CL_Obj condition)
         if (strcmp(line, ":help") == 0) {
             display_help();
             cl_color_set(CL_COLOR_DIM_MAGENTA);
-            platform_write_string("Debug> ");
+            cl_write_cstring_to_debug_io("Debug> ");
             cl_color_reset();
             continue;
         }
@@ -332,10 +333,10 @@ void cl_invoke_debugger(CL_Obj condition)
                     /* If we somehow get here, re-enter debugger */
                     cl_in_debugger = 1;
                 } else {
-                    platform_write_string("Invalid restart number\n");
+                    cl_write_cstring_to_debug_io("Invalid restart number\n");
                 }
                 cl_color_set(CL_COLOR_DIM_MAGENTA);
-                platform_write_string("Debug> ");
+                cl_write_cstring_to_debug_io("Debug> ");
                 cl_color_reset();
                 continue;
             }
@@ -354,16 +355,16 @@ void cl_invoke_debugger(CL_Obj condition)
                 CL_Obj result = cl_eval_string(line);
                 char buf[512];
                 cl_prin1_to_string(result, buf, sizeof(buf));
-                platform_write_string(buf);
-                platform_write_string("\n");
+                cl_write_cstring_to_debug_io(buf);
+                cl_write_cstring_to_debug_io("\n");
                 CL_UNCATCH();
             } else {
                 CL_UNCATCH();
                 cl_color_set(CL_COLOR_RED);
-                platform_write_string("Error during eval: ");
-                platform_write_string(cl_error_msg);
+                cl_write_cstring_to_debug_io("Error during eval: ");
+                cl_write_cstring_to_debug_io(cl_error_msg);
                 cl_color_reset();
-                platform_write_string("\n");
+                cl_write_cstring_to_debug_io("\n");
                 /* Reset VM state after error */
                 cl_vm.sp = 0;
                 cl_vm.fp = 0;
@@ -371,7 +372,7 @@ void cl_invoke_debugger(CL_Obj condition)
         }
 
         cl_color_set(CL_COLOR_DIM_MAGENTA);
-        platform_write_string("Debug> ");
+        cl_write_cstring_to_debug_io("Debug> ");
         cl_color_reset();
     }
 

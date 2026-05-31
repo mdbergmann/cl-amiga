@@ -1154,6 +1154,23 @@
 (check "disassemble closure" nil (disassemble (lambda (x) (+ x 1))))
 (check "disassemble builtin" nil (disassemble 'cons))
 
+; --- Disassemble stream redirection ---
+(check "disassemble builtin to *standard-output*"
+       t
+       (let ((out (with-output-to-string (*standard-output*)
+                    (disassemble 'car))))
+         (and (search "Built-in function:" out) (search "CAR" out) t)))
+
+(defun disasm-stream-redir-fn (x) (+ x 1))
+(check "disassemble defun to *standard-output*"
+       t
+       (let ((out (with-output-to-string (*standard-output*)
+                    (disassemble 'disasm-stream-redir-fn))))
+         (and (search "Disassembly of" out)
+              (search "DISASM-STREAM-REDIR-FN" out)
+              (or (search "OP_" out) (search "RET" out))
+              t)))
+
 ; --- Declarations: declare, declaim, proclaim, locally ---
 (declaim (special *dcl-x*))
 (setq *dcl-x* 10)
@@ -1207,6 +1224,20 @@
 (check "trace multiple" 16 (tr-p2 (tr-q2 3)))
 (untrace)
 
+; --- Trace stream redirection ---
+(defun tr-stream-fn (x) (* x x))
+(trace tr-stream-fn)
+(let* ((s (make-string-output-stream))
+       (captured (progn (let ((*trace-output* s)) (tr-stream-fn 5))
+                        (get-output-stream-string s))))
+  (check "trace stream has fn name" t (not (null (search "TR-STREAM-FN" captured))))
+  (check "trace stream has returned" t (not (null (search "returned" captured)))))
+(untrace tr-stream-fn)
+(let* ((s (make-string-output-stream))
+       (captured (progn (let ((*trace-output* s)) (tr-stream-fn 5))
+                        (get-output-stream-string s))))
+  (check "trace stream silent after untrace" "" captured))
+
 ; --- Backtrace (error recovery) ---
 ; Test that errors in nested calls don't break subsequent evaluation
 (defun bt-err-inner () (error "test error"))
@@ -1237,6 +1268,11 @@
 (check "time defun" 25 (time (time-sq 5)))
 (check "get-internal-real-time" t (integerp (get-internal-real-time)))
 
+; --- Time stream redirection ---
+(check "time captured by *trace-output*" t
+  (let ((s (with-output-to-string (*trace-output*) (time (+ 1 2)))))
+    (and (search "ms" s) (search "consed" s) t)))
+
 ; --- Source location tracking ---
 ; Reader line tracking is implicitly tested by batch mode itself
 ; The fact that errors show proper backtraces validates source locations
@@ -1251,6 +1287,8 @@
 (check "signal symbol returns nil" nil (signal 'simple-condition))
 (check "warn returns nil" nil (warn "test warning"))
 (check "warn symbol returns nil" nil (warn 'simple-warning))
+; --- Warning stream redirection ---
+(check "warn captured by *error-output*" t (let ((s (with-output-to-string (*error-output*) (warn "hi")))) (and (search "WARNING" s) (search "hi" s) t)))
 ; error test: error is caught, next expression returns 42
 (handler-case (error "test error for batch") (error () nil))
 (check "error recovery" 42 42)
@@ -4816,6 +4854,35 @@
   (error (e)
     (setq *fail-count* (+ *fail-count* 1))
     (format t "FAIL: gray-stream regression - ~A~%" e)))
+
+; --- Room ---
+(handler-case
+  (let ((s (with-output-to-string (*standard-output*) (room))))
+    (check "room captured by *standard-output*" t
+           (and (search "Heap:" s) (search "GC:" s) t)))
+  (error (e)
+    (setq *fail-count* (+ *fail-count* 1))
+    (format t "FAIL: room test - ~A~%" e)))
+
+; --- Load verbose stream redirection ---
+; *load-verbose* output must go to *standard-output* so SLY can capture it.
+(handler-case
+  (let* ((tmp (concatenate 'string *test-tmp* "_clt_load_verbose.lisp")))
+    (with-open-file (s tmp :direction :output :if-exists :supersede)
+      (write-string "(defvar *load-verbose-amiga-test* t)" s))
+    (let ((out (with-output-to-string (*standard-output*)
+                 (let ((*load-verbose* t))
+                   (load tmp)))))
+      (check "load verbose to *standard-output*" t
+             (and (search "; Loading" out) t)))
+    (let ((out2 (with-output-to-string (*standard-output*)
+                  (let ((*load-verbose* nil))
+                    (load tmp)))))
+      (check "load verbose nil suppresses" t
+             (null (search "; Loading" out2)))))
+  (error (e)
+    (setq *fail-count* (+ *fail-count* 1))
+    (format t "FAIL: load verbose test - ~A~%" e)))
 
 ; --- Summary ---
 (format t "~%=== Results ===~%")

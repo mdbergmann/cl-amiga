@@ -1,0 +1,142 @@
+{
+  "request_id": "0015-room-and-other-bypass-lisp-stream",
+  "summary": "Route C-level user output (ROOM, DISASSEMBLE, ;Loading/;Compiling, INSPECT, debugger, WARNING/ERROR, TRACE, TIME, boot trace, REPL prompt/echo) through *standard-output*/*error-output*/*debug-io*/*trace-output* so SLY-style stream redirection captures it, instead of bypassing via platform_write_string straight to fd 1.",
+  "items": [
+    {
+      "id": "item-1",
+      "title": "Add stream-aware write helpers with platform fallback",
+      "description": "Add a small helper module (in src/core/stream.h / src/core/stream.c) that writes a C string to the Lisp stream currently bound to a given dynamic symbol value, falling back to platform_write_string when the symbol is unbound, NIL, or not yet initialized. Required API: `void cl_write_cstring_to_stream_sym(CL_Obj sym, const char *s);` plus thin convenience wrappers `cl_write_cstring_to_stdout(const char *s)`, `cl_write_cstring_to_error(const char *s)`, `cl_write_cstring_to_debug_io(const char *s)`, `cl_write_cstring_to_trace(const char *s)` — resolving SYM_STANDARD_OUTPUT, SYM_ERROR_OUTPUT, SYM_DEBUG_IO, SYM_TRACE_OUTPUT respectively. Implementation: read the symbol value with cl_symbol_value(); if the value is a stream object (CL_HEAP_P && header type TYPE_STREAM) call cl_stream_write_string(stream, s, strlen(s)); otherwise call platform_write_string(s). This fallback preserves behavior for (a) the very early boot before cl_stream_init (no callers actually hit this today, but the comment on bi_boot_trace_clos in builtins_io.c:2400 says the path must survive unit tests that skip cl_stream_init), and (b) the FATAL ERROR paths in vm.c/mem.c/error.c which intentionally keep platform_write_string. No test of its own — exercised by all later items.",
+      "files_in_scope": [
+        "src/core/stream.h",
+        "src/core/stream.c"
+      ],
+      "est_scope_tokens": 18000,
+      "depends_on": [],
+      "status": "done"
+    },
+    {
+      "id": "item-2",
+      "title": "Fix ROOM to write to *standard-output*",
+      "description": "In src/core/builtins_describe.c, replace every platform_write_string(...) call inside bi_room (lines ~588-614) with cl_write_cstring_to_stdout(...). Per HyperSpec, (room) prints to *standard-output*. Add a host test in tests/test_describe.c (new ROOM section): `(with-output-to-string (*standard-output*) (room))` returns a non-empty string containing \"Heap:\" and \"GC:\". Also assert that without rebinding, calling (room) does not error. Add an Amiga test in tests/amiga/run-tests.lisp under a new `; --- Room ---` section: `(check \"room captured by *standard-output*\" t (let ((s (with-output-to-string (*standard-output*) (room)))) (and (search \"Heap:\" s) (search \"GC:\" s) t)))`. This is the exact regression case from the bug report.",
+      "files_in_scope": [
+        "src/core/builtins_describe.c",
+        "tests/test_describe.c",
+        "tests/amiga/run-tests.lisp"
+      ],
+      "est_scope_tokens": 16000,
+      "depends_on": [
+        "item-1"
+      ],
+      "status": "done"
+    },
+    {
+      "id": "item-3",
+      "title": "Fix DISASSEMBLE and %JIT-DISASSEMBLE to write to *standard-output*",
+      "description": "In src/core/builtins_io.c, in disasm_bytecode (lines ~2183-2337) and bi_disassemble (the FUNCTION branch around line 2367-2371), replace every platform_write_string(...) with cl_write_cstring_to_stdout(...). In src/core/builtins.c, bi_jit_disassemble (lines ~959-972) — change its 'no native code' platform_write_string call to cl_write_cstring_to_stdout. cl_jit_disassemble itself (in src/jit/jit.c, line ~3170 and ~3184) is called from %JIT-DISASSEMBLE; also retarget its two platform_write_string sites to cl_write_cstring_to_stdout so SLY-redirected sessions see the m68k disassembly. Add a host test (new tests/test_disassemble_stream.c, or a section in test_vm.c): `(with-output-to-string (*standard-output*) (disassemble 'car))` returns a string containing \"Built-in function:\" and \"CAR\"; the same with a user-defined `(defun foo (x) (+ x 1))` returns a string containing \"Disassembly of\" and \"FOO\" and \"OP_\" or \"RET\" or some opcode mnemonic. Add an Amiga test under `; --- Disassemble stream redirection ---` exercising the same redirection. Update the existing 'disassemble defun' check (run-tests.lisp:1153-1155) verbiage if needed but keep the existing nil-result behavior.",
+      "files_in_scope": [
+        "src/core/builtins_io.c",
+        "src/core/builtins.c",
+        "src/jit/jit.c",
+        "tests/test_disassemble_stream.c",
+        "tests/amiga/run-tests.lisp"
+      ],
+      "est_scope_tokens": 35000,
+      "depends_on": [
+        "item-1"
+      ],
+      "status": "done"
+    },
+    {
+      "id": "item-4",
+      "title": "Fix LOAD/COMPILE-FILE verbose lines and FASL warnings to write to *standard-output*",
+      "description": "In src/core/builtins_io.c replace the platform_write_string sites that emit the user-visible '; Loading <path>' (lines ~513-515 and ~611-613), '; Compiling <path>' (lines ~1226-1228), '; Warning: FASL serialization failed' (line ~755), and the longer '; Warning: FASL unit failed in ...' diagnostic (line ~1416) with cl_write_cstring_to_stdout. Per HyperSpec, *load-verbose* output goes to *standard-output*; the FASL warnings are user-facing progress notes and should also stream to *standard-output* so SLY captures them. Add a host test (new tests/test_load_verbose.c or addition to test_compile.c) that binds *load-verbose* to T inside (with-output-to-string (*standard-output*) (load \"some-tiny.lisp\")) and asserts the captured string contains \"; Loading\". Add an Amiga test under `; --- Load verbose stream redirection ---` doing the same — write a tiny temp file using FORMAT/with-open-file or load the existing tests/amiga/run-tests.lisp's known available file. Do NOT bump CL_FASL_VERSION (no FASL wire-format change).",
+      "files_in_scope": [
+        "src/core/builtins_io.c",
+        "tests/test_load_verbose.c",
+        "tests/amiga/run-tests.lisp"
+      ],
+      "est_scope_tokens": 28000,
+      "depends_on": [
+        "item-1"
+      ],
+      "status": "done"
+    },
+    {
+      "id": "item-5",
+      "title": "Fix INSPECT to write to *standard-output*",
+      "description": "In src/core/builtins_inspect.c, change the local write_str helper (line ~60-63) from `platform_write_string(str)` to `cl_write_cstring_to_stdout(str)`. INSPECT is interactive per HyperSpec but its behavior is implementation-defined; routing through *standard-output* lets SLY capture the prompts and per-component output, which is consistent with what the user expects from a Lisp inspector. Verify no other platform_write_string sites exist in the file (grep showed only the one). Add a host test in tests/test_inspect.c: `(with-output-to-string (*standard-output*) (with-input-from-string (*standard-input* \"q~%\") (inspect '(1 2 3))))` — actually since (inspect) loops on input, simpler to just call cl_inspect_component_count or the underlying helper if exposed; otherwise verify by calling a non-interactive describe-via-inspector path. Pragmatic test: bind *standard-output*, call the new helper through a fake invocation, assert output captured. Add an Amiga test only if a non-interactive entry point is feasible; otherwise document that inspect's interactive loop is host-only-tested.",
+      "files_in_scope": [
+        "src/core/builtins_inspect.c",
+        "tests/test_inspect.c",
+        "tests/amiga/run-tests.lisp"
+      ],
+      "est_scope_tokens": 18000,
+      "depends_on": [
+        "item-1"
+      ],
+      "status": "done"
+    },
+    {
+      "id": "item-6",
+      "title": "Fix debugger to write to *debug-io*",
+      "description": "In src/core/debugger.c, replace every platform_write_string(...) call (~37 sites — display_condition, display_backtrace, display_restarts, display_help, invoke_restart_at, jump_to_top_level error path, the depth-limit message, the Debug> prompts, the eval-result echo, and the eval-error message) with cl_write_cstring_to_debug_io(...). Per HyperSpec, the debugger interacts on *debug-io*. The helper's fallback to platform_write_string preserves behavior for batch/non-interactive contexts where *debug-io* may not be wired. cl_color_set/cl_color_reset can stay as-is (they emit ANSI to fd 1 directly today; out of scope for this bug — leave them alone unless trivial). Add a host test in tests/test_debugger.c that binds *debug-io* to a string-output stream, triggers a debugger entry path (e.g. via cl_invoke_debugger on a synthetic condition with cl_debugger_enabled=1 and stubbed platform_read_line returning ':q'), and asserts the captured output contains 'Debugger entered:'. Add an Amiga note — the interactive debugger isn't exercised from the Lisp test suite, so an Amiga test is only feasible if the existing test harness can drive the debugger non-interactively; if not, document the host-only test.",
+      "files_in_scope": [
+        "src/core/debugger.c",
+        "tests/test_debugger.c"
+      ],
+      "est_scope_tokens": 26000,
+      "depends_on": [
+        "item-1"
+      ],
+      "status": "done"
+    },
+    {
+      "id": "item-7",
+      "title": "Fix error and warning printing to write to *error-output*",
+      "description": "In src/core/error.c, change cl_error_print (lines ~240-249) to use cl_write_cstring_to_error instead of platform_write_string for the 'ERROR: ', message, '\\n', 'Backtrace:\\n', backtrace blocks. Leave the FATAL ERROR path (lines ~114-120) alone — that's the unrecoverable fallback and must keep going straight to fd 1. In src/core/builtins_condition.c (lines ~1097-1109), change the WARNING printer to use cl_write_cstring_to_error. Per HyperSpec, ERROR and WARNING print to *error-output*. Add a host test in tests/test_condition.c: `(with-output-to-string (*error-output*) (warn \"test warning\"))` returns a string containing 'WARNING:' and 'test warning'. Also test that handler-case'd error reporting via (cl_error_print equivalent) goes to *error-output*. Add an Amiga test under `; --- Warning stream redirection ---`: `(check \"warn captured by *error-output*\" t (let ((s (with-output-to-string (*error-output*) (warn \"hi\")))) (and (search \"WARNING\" s) (search \"hi\" s) t)))`.",
+      "files_in_scope": [
+        "src/core/error.c",
+        "src/core/builtins_condition.c",
+        "tests/test_condition.c",
+        "tests/amiga/run-tests.lisp"
+      ],
+      "est_scope_tokens": 22000,
+      "depends_on": [
+        "item-1"
+      ],
+      "status": "done"
+    },
+    {
+      "id": "item-8",
+      "title": "Fix TRACE output to write to *trace-output*",
+      "description": "In src/core/vm.c, change trace_print_enter (lines ~462-475) and trace_print_exit (lines ~477-490) — every platform_write_string(...) call — to cl_write_cstring_to_trace(...). Per HyperSpec, trace output goes to *trace-output*. Leave the DEBUG_VM unbalanced-stack panic block (lines ~291-297) and the FATAL ERROR block (lines ~3457-3459) alone (debug + emergency paths). Add a host test in tests/test_vm.c (new TRACE section): define a simple function, (trace fn), call it inside (with-output-to-string (*trace-output*) (fn ...)), assert the captured output contains the function name and '(' / 'returned'. Also assert (untrace fn) and verify no further output. Add an Amiga test under `; --- Trace stream redirection ---` doing the same with a simple defun.",
+      "files_in_scope": [
+        "src/core/vm.c",
+        "tests/test_vm.c",
+        "tests/amiga/run-tests.lisp"
+      ],
+      "est_scope_tokens": 22000,
+      "depends_on": [
+        "item-1"
+      ],
+      "status": "done"
+    },
+    {
+      "id": "item-9",
+      "title": "Fix TIME, boot tracing, and REPL prompt/echo to use stream helpers",
+      "description": "Five sites, all writing user-visible non-error output: (1) In src/core/builtins_io.c bi_time_report (line ~2480) — route the timing line through cl_write_cstring_to_trace (HyperSpec: TIME writes to *trace-output*). (2) bi_boot_trace_clos (line ~2421) — use cl_write_cstring_to_stdout (its existing comment says it must survive cl_stream_init being skipped; the helper's fallback to platform_write_string preserves that). (3) In src/core/repl.c, boot_timing_log (line ~692) — cl_write_cstring_to_stdout (same fallback rationale). (4) In src/core/repl.c, repl_prompt (lines ~39, 41, 43), repl_continuation_prompt (lines ~53-54), the value-echo newlines at lines 547 and 649, and 'Bye.' at line 569 — cl_write_cstring_to_stdout, so SLY-redirected sessions see the prompt and bye line. (5) In src/jit/jit.c around line 87 — '; [jit] m68k template backend' boot message — cl_write_cstring_to_stdout. Add host tests: timing — `(with-output-to-string (*trace-output*) (time 42))` returns a string containing 'ms' and 'consed' and 'GC cycles'. Add Amiga test under `; --- Time stream redirection ---`: `(check \"time captured by *trace-output*\" t (let ((s (with-output-to-string (*trace-output*) (time (+ 1 2))))) (and (search \"ms\" s) (search \"consed\" s) t)))`. REPL prompt redirection is REPL-loop-only; no automated test required.",
+      "files_in_scope": [
+        "src/core/builtins_io.c",
+        "src/core/repl.c",
+        "src/jit/jit.c",
+        "tests/test_vm.c",
+        "tests/amiga/run-tests.lisp"
+      ],
+      "est_scope_tokens": 32000,
+      "depends_on": [
+        "item-1"
+      ],
+      "status": "done"
+    }
+  ]
+}

@@ -510,9 +510,9 @@ static CL_Obj bi_load(CL_Obj *args, int n)
                             {
                                 CL_Symbol *lv_sym = (CL_Symbol *)CL_OBJ_TO_PTR(SYM_STAR_LOAD_VERBOSE);
                                 if (!CL_NULL_P(cl_symbol_value(SYM_STAR_LOAD_VERBOSE))) {
-                                    platform_write_string("; Loading ");
-                                    platform_write_string(cache_path);
-                                    platform_write_string("\n");
+                                    cl_write_cstring_to_stdout("; Loading ");
+                                    cl_write_cstring_to_stdout(cache_path);
+                                    cl_write_cstring_to_stdout("\n");
                                 }
                             }
 
@@ -608,9 +608,9 @@ static CL_Obj bi_load(CL_Obj *args, int n)
     {
         CL_Symbol *lv_sym = (CL_Symbol *)CL_OBJ_TO_PTR(SYM_STAR_LOAD_VERBOSE);
         if (!CL_NULL_P(cl_symbol_value(SYM_STAR_LOAD_VERBOSE))) {
-            platform_write_string("; Loading ");
-            platform_write_string(path_str->data);
-            platform_write_string("\n");
+            cl_write_cstring_to_stdout("; Loading ");
+            cl_write_cstring_to_stdout(path_str->data);
+            cl_write_cstring_to_stdout("\n");
         }
     }
 
@@ -752,7 +752,7 @@ static CL_Obj bi_load(CL_Obj *args, int n)
                                           UINT32_MAX, bytecode, NULL) == 0) {
                         n_units++;
                     } else {
-                        platform_write_string("; Warning: FASL serialization failed — skipping cache for this file\n");
+                        cl_write_cstring_to_stdout("; Warning: FASL serialization failed — skipping cache for this file\n");
                         do_cache = 0;
                     }
                 }
@@ -1223,9 +1223,9 @@ static CL_Obj bi_compile_file(CL_Obj *args, int n)
     }
 
     if (verbose) {
-        platform_write_string("; Compiling ");
-        platform_write_string(in_path);
-        platform_write_string("\n");
+        cl_write_cstring_to_stdout("; Compiling ");
+        cl_write_cstring_to_stdout(in_path);
+        cl_write_cstring_to_stdout("\n");
     }
 
     /* Bind *compile-file-pathname* and *compile-file-truename* */
@@ -1413,7 +1413,7 @@ static CL_Obj bi_compile_file(CL_Obj *args, int n)
                          in_path, bci + 1, bc_collect_count,
                          bname ? bname->data : "<anon>",
                          reason, unit_err);
-                platform_write_string(msg);
+                cl_write_cstring_to_stdout(msg);
                 fasl_incomplete = 1;
                 break;
             }
@@ -2189,14 +2189,14 @@ static void disasm_bytecode(CL_Bytecode *bc)
     char annot[128];
 
     /* Header */
-    platform_write_string("Disassembly of ");
+    cl_write_cstring_to_stdout("Disassembly of ");
     if (!CL_NULL_P(bc->name)) {
         cl_prin1_to_string(bc->name, annot, sizeof(annot));
-        platform_write_string(annot);
+        cl_write_cstring_to_stdout(annot);
     } else {
-        platform_write_string("#<anonymous>");
+        cl_write_cstring_to_stdout("#<anonymous>");
     }
-    platform_write_string(":\n");
+    cl_write_cstring_to_stdout(":\n");
 
     /* Metadata */
     {
@@ -2206,13 +2206,13 @@ static void disasm_bytecode(CL_Bytecode *bc)
                 req, (int)bc->n_optional, (int)bc->n_keys,
                 has_rest ? ", &rest" : "",
                 (bc->flags & 2) ? ", &allow-other-keys" : "");
-        platform_write_string(line);
+        cl_write_cstring_to_stdout(line);
         snprintf(line, sizeof(line), "  %lu locals, %lu upvalues\n",
                 (unsigned long)bc->n_locals, (unsigned long)bc->n_upvalues);
-        platform_write_string(line);
+        cl_write_cstring_to_stdout(line);
         snprintf(line, sizeof(line), "  %lu bytes, %lu constants\n\n",
                 (unsigned long)len, (unsigned long)bc->n_constants);
-        platform_write_string(line);
+        cl_write_cstring_to_stdout(line);
     }
 
     /* Instructions */
@@ -2224,7 +2224,7 @@ static void disasm_bytecode(CL_Bytecode *bc)
         if (!info.name) {
             snprintf(line, sizeof(line), "  %04lu: ???          0x%02X\n",
                     (unsigned long)start_ip, (unsigned int)op);
-            platform_write_string(line);
+            cl_write_cstring_to_stdout(line);
             continue;
         }
 
@@ -2232,14 +2232,14 @@ static void disasm_bytecode(CL_Bytecode *bc)
         case OP_ARG_NONE:
             snprintf(line, sizeof(line), "  %04lu: %s\n",
                     (unsigned long)start_ip, info.name);
-            platform_write_string(line);
+            cl_write_cstring_to_stdout(line);
             break;
 
         case OP_ARG_U8: {
             uint8_t val = code[ip++];
             snprintf(line, sizeof(line), "  %04lu: %-12s %u\n",
                     (unsigned long)start_ip, info.name, (unsigned int)val);
-            platform_write_string(line);
+            cl_write_cstring_to_stdout(line);
             break;
         }
 
@@ -2262,7 +2262,7 @@ static void disasm_bytecode(CL_Bytecode *bc)
                 snprintf(line, sizeof(line), "  %04lu: %-12s %u\n",
                         (unsigned long)start_ip, info.name, (unsigned int)val);
             }
-            platform_write_string(line);
+            cl_write_cstring_to_stdout(line);
 
             /* OP_BLOCK_PUSH: also has i32 offset after u16 const_idx */
             if (op == OP_BLOCK_PUSH) {
@@ -2274,7 +2274,7 @@ static void disasm_bytecode(CL_Bytecode *bc)
                 snprintf(line, sizeof(line),
                         "          offset %+d -> %04lu\n",
                         (int)boff, (unsigned long)((int32_t)ip + boff));
-                platform_write_string(line);
+                cl_write_cstring_to_stdout(line);
             }
 
             /* OP_CLOSURE: read and print capture descriptors */
@@ -2290,7 +2290,7 @@ static void disasm_bytecode(CL_Bytecode *bc)
                                 "          capture %d: %s slot %u\n",
                                 ci, is_local ? "local" : "upval",
                                 (unsigned int)cap_idx);
-                        platform_write_string(line);
+                        cl_write_cstring_to_stdout(line);
                     }
                 }
             }
@@ -2303,7 +2303,7 @@ static void disasm_bytecode(CL_Bytecode *bc)
             snprintf(line, sizeof(line), "  %04lu: %-12s %+d    ; -> %04lu\n",
                     (unsigned long)start_ip, info.name, (int)val,
                     (unsigned long)((int32_t)ip + (int32_t)val));
-            platform_write_string(line);
+            cl_write_cstring_to_stdout(line);
             break;
         }
 
@@ -2316,7 +2316,7 @@ static void disasm_bytecode(CL_Bytecode *bc)
             snprintf(line, sizeof(line), "  %04lu: %-12s %+d    ; -> %04lu\n",
                     (unsigned long)start_ip, info.name, (int)val,
                     (unsigned long)((int32_t)ip + val));
-            platform_write_string(line);
+            cl_write_cstring_to_stdout(line);
             break;
         }
         }
@@ -2325,15 +2325,15 @@ static void disasm_bytecode(CL_Bytecode *bc)
     /* Constants pool */
     if (bc->n_constants > 0) {
         uint16_t ci;
-        platform_write_string("\nConstants:\n");
+        cl_write_cstring_to_stdout("\nConstants:\n");
         for (ci = 0; ci < bc->n_constants; ci++) {
             cl_prin1_to_string(bc->constants[ci], annot, sizeof(annot));
             snprintf(line, sizeof(line), "  %u: %s\n",
                     (unsigned int)ci, annot);
-            platform_write_string(line);
+            cl_write_cstring_to_stdout(line);
         }
     }
-    platform_write_string("\n");
+    cl_write_cstring_to_stdout("\n");
 }
 
 static CL_Obj bi_disassemble(CL_Obj *args, int n)
@@ -2365,10 +2365,10 @@ static CL_Obj bi_disassemble(CL_Obj *args, int n)
     } else if (CL_FUNCTION_P(arg)) {
         CL_Function *fn = (CL_Function *)CL_OBJ_TO_PTR(arg);
         char nbuf[128];
-        platform_write_string("Built-in function: ");
+        cl_write_cstring_to_stdout("Built-in function: ");
         cl_prin1_to_string(fn->name, nbuf, sizeof(nbuf));
-        platform_write_string(nbuf);
-        platform_write_string("\n  (no bytecode to disassemble)\n");
+        cl_write_cstring_to_stdout(nbuf);
+        cl_write_cstring_to_stdout("\n  (no bytecode to disassemble)\n");
         return CL_NIL;
     }
 
@@ -2397,9 +2397,10 @@ static CL_Obj bi_boot_quiet_p(CL_Obj *args, int n)
 }
 
 /* (%BOOT-TRACE-CLOS elapsed-ms delta-ms phase-string)
- * Print "; [clos] <elapsed> ms (+<delta>): <phase>" via platform_write_string.
- * Same path as the C-side BOOT_TIME() macro, so it doesn't depend on Lisp
- * stream init — important for unit tests whose setup skips cl_stream_init.
+ * Print "; [clos] <elapsed> ms (+<delta>): <phase>" via cl_write_cstring_to_stdout.
+ * Same path as the C-side BOOT_TIME() macro; the helper falls back to
+ * platform_write_string when *standard-output* isn't a stream yet, so this
+ * is safe even when cl_stream_init has been skipped (e.g. some unit tests).
  * No-op when --batch or --script is in effect. */
 static CL_Obj bi_boot_trace_clos(CL_Obj *args, int n)
 {
@@ -2418,7 +2419,7 @@ static CL_Obj bi_boot_trace_clos(CL_Obj *args, int n)
         phase_buf[plen] = '\0';
         snprintf(out, sizeof(out), "; [clos] %5d ms (+%5d): %s\n",
                  (int)elapsed, (int)delta, phase_buf);
-        platform_write_string(out);
+        cl_write_cstring_to_stdout(out);
     }
     return CL_NIL;
 }
@@ -2477,7 +2478,7 @@ static CL_Obj bi_time_report(CL_Obj *args, int n)
              (unsigned long)gc_cycles,
              (unsigned long)cl_heap.total_allocated,
              (unsigned long)cl_heap.arena_size);
-    platform_write_string(buf);
+    cl_write_cstring_to_trace(buf);
     return CL_NIL;
 }
 

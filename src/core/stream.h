@@ -124,4 +124,19 @@ CL_Obj cl_make_synonym_stream(CL_Obj symbol);
 /* Create a two-way stream: reads from input_stream, writes to output_stream. */
 CL_Obj cl_make_two_way_stream(CL_Obj input_stream, CL_Obj output_stream);
 
+/* --- Stream-aware write helpers ---
+ *
+ * Write a C string to the stream currently bound to `sym`.  If the symbol
+ * value is a stream object (TYPE_STREAM heap object), cl_stream_write_string
+ * is used; otherwise falls back to platform_write_string so these are safe
+ * before cl_stream_init and in fatal-error paths.
+ */
+void cl_write_cstring_to_stream_sym(CL_Obj sym, const char *s);
+
+/* Convenience wrappers targeting the standard CL stream variables. */
+void cl_write_cstring_to_stdout(const char *s);
+void cl_write_cstring_to_error(const char *s);
+void cl_write_cstring_to_debug_io(const char *s);
+void cl_write_cstring_to_trace(const char *s);
+
 #endif /* CL_STREAM_H */

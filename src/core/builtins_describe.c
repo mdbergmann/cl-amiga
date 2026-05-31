@@ -595,19 +595,19 @@ static CL_Obj bi_room(CL_Obj *args, int n)
 
     (void)args; (void)n;
 
-    platform_write_string("Heap:\n");
+    cl_write_cstring_to_stdout("Heap:\n");
     sprintf(buf, "  %lu / %lu bytes used (%lu%%)\n",
             (unsigned long)used, (unsigned long)total, (unsigned long)pct);
-    platform_write_string(buf);
+    cl_write_cstring_to_stdout(buf);
     sprintf(buf, "  %lu bytes free\n", (unsigned long)free_bytes);
-    platform_write_string(buf);
+    cl_write_cstring_to_stdout(buf);
     sprintf(buf, "  %lu bytes consed (total ever allocated)\n",
             (unsigned long)cl_heap.total_consed);
-    platform_write_string(buf);
+    cl_write_cstring_to_stdout(buf);
     sprintf(buf, "GC:\n  %lu collections\n  %lu compactions\n",
             (unsigned long)cl_heap.gc_count,
             (unsigned long)cl_heap.compact_count);
-    platform_write_string(buf);
+    cl_write_cstring_to_stdout(buf);
 
     cl_mv_count = 0;
     return CL_NIL;

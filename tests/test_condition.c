@@ -208,6 +208,28 @@ TEST(c_create_condition_from_error)
     ASSERT_EQ(c->type_name, SYM_SIMPLE_ERROR);
 }
 
+TEST(c_error_print_goes_to_error_output)
+{
+    const char *out;
+
+    /* Redirect *error-output* to a fresh string output stream */
+    eval_print("(defparameter *test-saved-eo* *error-output*)");
+    eval_print("(setf *error-output* (make-string-output-stream))");
+
+    /* Set error state directly and call cl_error_print() from C */
+    snprintf(cl_error_msg, sizeof(cl_error_msg), "frobnicate failed");
+    cl_backtrace_buf[0] = '\0';
+    cl_error_print();
+
+    /* Retrieve captured output and verify it went to *error-output* */
+    out = eval_print("(get-output-stream-string *error-output*)");
+    ASSERT(strstr(out, "ERROR:") != NULL);
+    ASSERT(strstr(out, "frobnicate failed") != NULL);
+
+    /* Restore *error-output* */
+    eval_print("(setf *error-output* *test-saved-eo*)");
+}
+
 TEST(c_handler_stack_nlx)
 {
     /* Push a handler, set up NLX frame, verify handler_top restored after NLX */
@@ -354,6 +376,24 @@ TEST(lisp_warn_returns_nil)
 TEST(lisp_warn_with_symbol)
 {
     ASSERT_STR_EQ(eval_print("(warn 'simple-warning)"), "NIL");
+}
+
+TEST(lisp_warn_goes_to_error_output)
+{
+    /* Per HyperSpec, WARN writes to *error-output*. Capture it with
+       with-output-to-string and verify the output appears there. */
+    const char *result = eval_print(
+        "(with-output-to-string (*error-output*) (warn \"test warning\"))");
+    ASSERT(strstr(result, "WARNING:") != NULL);
+    ASSERT(strstr(result, "test warning") != NULL);
+}
+
+TEST(lisp_warn_symbol_goes_to_error_output)
+{
+    /* warn with a condition type also writes to *error-output* */
+    const char *result = eval_print(
+        "(with-output-to-string (*error-output*) (warn 'simple-warning))");
+    ASSERT(strstr(result, "WARNING:") != NULL);
 }
 
 TEST(lisp_error_still_caught)
@@ -978,6 +1018,7 @@ int main(void)
     RUN(c_signal_no_handlers);
     RUN(c_error_creates_condition);
     RUN(c_create_condition_from_error);
+    RUN(c_error_print_goes_to_error_output);
     RUN(c_handler_stack_nlx);
 
     /* Lisp-level tests */
@@ -997,6 +1038,8 @@ int main(void)
     RUN(lisp_signal_with_symbol);
     RUN(lisp_warn_returns_nil);
     RUN(lisp_warn_with_symbol);
+    RUN(lisp_warn_goes_to_error_output);
+    RUN(lisp_warn_symbol_goes_to_error_output);
     RUN(lisp_error_still_caught);
     RUN(lisp_error_with_symbol);
 

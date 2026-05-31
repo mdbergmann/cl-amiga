@@ -1,0 +1,28 @@
+{
+  "summary": "Several C-level builtins (ROOM, DISASSEMBLE, %JIT-DISASSEMBLE, ; Loading/; Compiling progress lines, FASL warnings, INSPECT, the debugger, ERROR/WARNING printers, TRACE, TIME, boot trace, REPL prompt/value-echo) write directly through platform_write_string() to fd 1, bypassing the Lisp stream bound to *standard-output* / *error-output* / *debug-io* / *trace-output*. This breaks SLY (and any embedding that rebinds the standard streams) because their output goes to the host console instead of the redirected channel. Fix: introduce small stream-aware helpers (cl_write_cstring_to_stdout/error/debug_io/trace) that resolve the dynamic symbol value, write via cl_stream_write_string when it's a stream object, and fall back to platform_write_string otherwise — preserving behavior for the boot phase before cl_stream_init runs and for FATAL ERROR / GC / DEBUG_VM emergency paths that intentionally bypass. Replace platform_write_string in each user-facing emitter site, leaving emergency/diagnostic paths untouched. Tests use the existing (with-output-to-string (*standard-output*) ...) pattern already used by test_describe.c, plus matching Amiga checks in tests/amiga/run-tests.lisp.",
+  "affected_areas": [
+    "src/core/stream.{h,c} — new helpers",
+    "src/core/builtins_describe.c — ROOM",
+    "src/core/builtins_io.c — DISASSEMBLE, ; Loading / ; Compiling, FASL warnings, TIME, boot-trace-clos",
+    "src/core/builtins.c — %JIT-DISASSEMBLE no-native-code message",
+    "src/jit/jit.c — JIT m68k disasm, boot trace",
+    "src/core/builtins_inspect.c — INSPECT",
+    "src/core/debugger.c — debugger prompts, condition display, backtrace, restarts, eval",
+    "src/core/error.c — cl_error_print (leave FATAL fallback)",
+    "src/core/builtins_condition.c — WARNING printer",
+    "src/core/vm.c — TRACE enter/exit (leave FATAL + DEBUG_VM)",
+    "src/core/repl.c — REPL prompt, value-echo newline, Bye, boot_timing_log",
+    "tests/test_describe.c, tests/test_inspect.c, tests/test_condition.c, tests/test_vm.c — new redirection tests",
+    "tests/test_disassemble_stream.c, tests/test_load_verbose.c, tests/test_debugger.c — new test files (auto-picked up by wildcard TEST_SRCS)",
+    "tests/amiga/run-tests.lisp — matching Lisp-level redirection checks"
+  ],
+  "risks": [
+    "Helper must tolerate SYM_STANDARD_OUTPUT being unbound / NIL during early boot (before cl_stream_init) and in unit tests whose setup skips cl_stream_init — must fall back to platform_write_string. The bi_boot_trace_clos comment at builtins_io.c:2400 calls this out explicitly.",
+    "Color escapes around debugger/error messages (cl_color_set / cl_color_reset) still go straight to fd 1 — if SLY captures only the text, ANSI codes will appear interleaved on the host but the captured Lisp-stream content will be clean. Leaving color out of scope is correct for this bug; routing color through the stream is a separate change.",
+    "FATAL ERROR (error.c:115, vm.c:3457, mem.c:226) and GC debug output (mem.c) must KEEP using platform_write_string — these run when the stream/VM may already be corrupted; routing them through the Lisp stream could trigger cascading failure. Plan items explicitly leave these untouched.",
+    "The debugger's interactive read loop calls platform_read_line for input; redirecting output to *debug-io* without redirecting input is fine for SLY (which provides input on its own channel), but in a pure with-output-to-string test the debugger will block on stdin — tests must stub input or call non-interactive code paths.",
+    "INSPECT is interactive and harder to unit-test end-to-end on Amiga; plan flags host-only test as acceptable.",
+    "No FASL wire-format changes — CL_FASL_VERSION does not need to bump.",
+    "Some sites currently bypass the stream intentionally as 'always reach the user' paths (REPL prompt, debugger). Routing them through *standard-output* / *debug-io* changes observable behavior in non-SLY hosted scenarios only insofar as the stream is rebound; default console binding makes the output identical (cl_stdout_stream's CONSOLE backend writes via platform_write_string). Net effect on a plain terminal user: no visible change."
+  ]
+}

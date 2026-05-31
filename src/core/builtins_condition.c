@@ -1096,17 +1096,17 @@ static CL_Obj bi_warn(CL_Obj *args, int n)
             CL_Condition *c = (CL_Condition *)CL_OBJ_TO_PTR(cond);
             CL_Obj report = format_condition_report(c);
             cl_color_set(CL_COLOR_YELLOW);
-            platform_write_string("WARNING: ");
+            cl_write_cstring_to_error("WARNING: ");
             if (!CL_NULL_P(report) && CL_STRING_P(report)) {
                 CL_String *s = (CL_String *)CL_OBJ_TO_PTR(report);
-                platform_write_string(s->data);
+                cl_write_cstring_to_error(s->data);
             } else {
                 char buf[128];
                 cl_prin1_to_string(c->type_name, buf, sizeof(buf));
-                platform_write_string(buf);
+                cl_write_cstring_to_error(buf);
             }
             cl_color_reset();
-            platform_write_string("\n");
+            cl_write_cstring_to_error("\n");
         }
     }
 

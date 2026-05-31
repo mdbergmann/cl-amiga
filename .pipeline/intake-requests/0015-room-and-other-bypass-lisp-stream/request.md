@@ -1,7 +1,7 @@
 ---
 id: 0015-room-and-other-bypass-lisp-stream
 type: bug
-status: ready
+status: done
 title: ROOM and other bypass lisp stream
 ---
 
