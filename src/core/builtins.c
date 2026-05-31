@@ -389,6 +389,33 @@ static CL_Obj bi_eql(CL_Obj *args, int n)
     return (args[0] == args[1]) ? SYM_T : CL_NIL;
 }
 
+/* String-ish accessors: treat both TYPE_STRING (and wide strings) and
+   character vectors (TYPE_VECTOR with CL_VEC_FLAG_STRING, e.g. the result of
+   (make-array n :element-type 'character ...) or vector-push-extend on one)
+   uniformly so that EQUAL compares them element-wise regardless of which
+   representation each operand happens to use. */
+static int cl_stringish_p(CL_Obj o)
+{
+    return CL_ANY_STRING_P(o) || CL_STRING_VECTOR_P(o);
+}
+
+static uint32_t cl_stringish_length(CL_Obj o)
+{
+    if (CL_ANY_STRING_P(o))
+        return cl_string_length(o);
+    return cl_vector_active_length((CL_Vector *)CL_OBJ_TO_PTR(o));
+}
+
+static int cl_stringish_char_at(CL_Obj o, uint32_t i)
+{
+    if (CL_ANY_STRING_P(o))
+        return cl_string_char_at(o, i);
+    {
+        CL_Obj c = cl_vector_data((CL_Vector *)CL_OBJ_TO_PTR(o))[i];
+        return CL_CHAR_P(c) ? CL_CHAR_VAL(c) : -1;
+    }
+}
+
 static CL_Obj bi_equal(CL_Obj *args, int n)
 {
     CL_Obj a = args[0], b = args[1];
@@ -421,24 +448,22 @@ static CL_Obj bi_equal(CL_Obj *args, int n)
     if (CL_STRING_P(a) && CL_STRING_P(b)) {
         CL_String *sa = (CL_String *)CL_OBJ_TO_PTR(a);
         CL_String *sb = (CL_String *)CL_OBJ_TO_PTR(b);
-        if (sa->length == sb->length &&
-            memcmp(sa->data, sb->data, sa->length) == 0)
-            return SYM_T;
+        return (sa->length == sb->length &&
+                memcmp(sa->data, sb->data, sa->length) == 0) ? SYM_T : CL_NIL;
     }
-#ifdef CL_WIDE_STRINGS
-    /* Mixed or wide-wide string comparison */
-    if (CL_ANY_STRING_P(a) && CL_ANY_STRING_P(b) &&
-        !(CL_STRING_P(a) && CL_STRING_P(b))) {
-        uint32_t la = cl_string_length(a), lb = cl_string_length(b);
+    /* Any other mix of string representations (base/wide strings and
+       character vectors) — compare element-wise. Must precede the generic
+       vector path below so a character vector is compared as a string. */
+    if (cl_stringish_p(a) && cl_stringish_p(b)) {
+        uint32_t la = cl_stringish_length(a), lb = cl_stringish_length(b);
         uint32_t i;
         if (la != lb) return CL_NIL;
         for (i = 0; i < la; i++) {
-            if (cl_string_char_at(a, i) != cl_string_char_at(b, i))
+            if (cl_stringish_char_at(a, i) != cl_stringish_char_at(b, i))
                 return CL_NIL;
         }
         return SYM_T;
     }
-#endif
     if (CL_VECTOR_P(a) && CL_VECTOR_P(b)) {
         CL_Vector *va = (CL_Vector *)CL_OBJ_TO_PTR(a);
         CL_Vector *vb = (CL_Vector *)CL_OBJ_TO_PTR(b);

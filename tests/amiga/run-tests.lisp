@@ -2242,9 +2242,9 @@
 (check "default-pn-defaults" t (pathnamep *default-pathname-defaults*))
 
 ; --- LOGICAL-PATHNAME class ---
-(check "logical-pathname-class-exists" "LOGICAL-PATHNAME"
+(check "logical-pathname-class-exists" 'logical-pathname
   (class-name (find-class 'logical-pathname)))
-(check "logical-pathname-superclass" "PATHNAME"
+(check "logical-pathname-superclass" 'pathname
   (class-name (car (class-direct-superclasses (find-class 'logical-pathname)))))
 (check "logical-pathname-defmethod-loads" :ok
   (progn (defgeneric lp-test-amiga (x))
@@ -2256,9 +2256,9 @@
 (check "logical-pathname-translations-nil" nil (logical-pathname-translations "SYS"))
 
 ; --- FILE-STREAM class ---
-(check "file-stream-class-exists" "FILE-STREAM"
+(check "file-stream-class-exists" 'file-stream
   (class-name (find-class 'file-stream)))
-(check "file-stream-superclass" "STREAM"
+(check "file-stream-superclass" 'stream
   (class-name (car (class-direct-superclasses (find-class 'file-stream)))))
 (check "file-stream-defmethod-loads" :ok
   (progn (defgeneric fs-test-amiga (x))
