@@ -1,7 +1,7 @@
 ---
 id: 0014-fix-ansi-test-failures
 type: bug
-status: ready
+status: done
 title: fix ansi test failures
 ---
 

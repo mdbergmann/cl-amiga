@@ -3469,9 +3469,13 @@ static int compile_expr_step(CL_Compiler *c, CL_Obj *expr_p)
                         _mname, _fp0, cl_vm.fp, _sp0, cl_vm.sp);
                 fflush(stderr);
             }
-            /* Trampoline into the expansion — outer driver protects expr. */
-            *expr_p = expanded;
-            return 1;
+            if (expanded != expr) {
+                /* Trampoline into the expansion — outer driver protects expr. */
+                *expr_p = expanded;
+                return 1;
+            }
+            /* Macro returned the form unchanged (stub) — fall through to
+             * special-form dispatch so the form is compiled as-is. */
         }
 
         if (head == SYM_QUOTE)       { compile_quote(c, expr); return 0; }
@@ -4213,6 +4217,72 @@ void cl_compiler_gc_update_thread(CL_Thread *t, void (*update)(CL_Obj *))
     }
 }
 
+/* Stub expander for inlined special forms: takes (form env), returns form.
+ * Registered so MACRO-FUNCTION and FBOUNDP return non-NIL for AND, OR, etc.
+ * The identity check in compile_expr (expanded == form) falls through to the
+ * compiler's fast path, so compilation is unaffected. */
+static CL_Obj bi_inlined_macro_stub(CL_Obj *args, int nargs)
+{
+    (void)nargs;
+    return args[0];
+}
+
+static void register_inlined_macro_stubs(void)
+{
+    CL_Obj stub_fn = CL_NIL;
+    CL_Obj sym = CL_NIL;
+
+    CL_GC_PROTECT(stub_fn);
+    CL_GC_PROTECT(sym);
+
+    stub_fn = cl_make_function(bi_inlined_macro_stub, CL_NIL, 2, 2);
+
+    cl_register_macro(SYM_AND,                stub_fn);
+    cl_register_macro(SYM_OR,                 stub_fn);
+    cl_register_macro(SYM_COND,               stub_fn);
+    cl_register_macro(SYM_CASE,               stub_fn);
+    cl_register_macro(SYM_ECASE,              stub_fn);
+    cl_register_macro(SYM_TYPECASE,           stub_fn);
+    cl_register_macro(SYM_ETYPECASE,          stub_fn);
+    cl_register_macro(SYM_DEFUN,              stub_fn);
+    cl_register_macro(SYM_DEFMACRO,           stub_fn);
+    cl_register_macro(SYM_LAMBDA,             stub_fn);
+    cl_register_macro(SYM_DEFVAR,             stub_fn);
+    cl_register_macro(SYM_DEFPARAMETER,       stub_fn);
+    cl_register_macro(SYM_DEFCONSTANT,        stub_fn);
+    cl_register_macro(SYM_DECLAIM,            stub_fn);
+    cl_register_macro(SYM_DO,                 stub_fn);
+    cl_register_macro(SYM_DO_STAR,            stub_fn);
+    cl_register_macro(SYM_DOLIST,             stub_fn);
+    cl_register_macro(SYM_DOTIMES,            stub_fn);
+    cl_register_macro(SYM_DESTRUCTURING_BIND, stub_fn);
+    cl_register_macro(SYM_MULTIPLE_VALUE_BIND, stub_fn);
+    cl_register_macro(SYM_MULTIPLE_VALUE_LIST, stub_fn);
+    cl_register_macro(SYM_NTH_VALUE,          stub_fn);
+    cl_register_macro(SYM_RETURN,             stub_fn);
+    cl_register_macro(SYM_SETF,               stub_fn);
+    cl_register_macro(SYM_DEFSETF,            stub_fn);
+    cl_register_macro(SYM_DEFTYPE,            stub_fn);
+    cl_register_macro(SYM_HANDLER_BIND,       stub_fn);
+    cl_register_macro(SYM_RESTART_CASE,       stub_fn);
+    cl_register_macro(SYM_TRACE,              stub_fn);
+    cl_register_macro(SYM_UNTRACE,            stub_fn);
+    cl_register_macro(SYM_TIME,               stub_fn);
+    cl_register_macro(SYM_IN_PACKAGE,         stub_fn);
+
+    /* Symbols without a SYM_* constant */
+    sym = cl_intern_in("WITH-CONDITION-RESTARTS", 23, cl_package_cl);
+    cl_register_macro(sym, stub_fn);
+    sym = cl_intern_in("STEP", 4, cl_package_cl);
+    cl_register_macro(sym, stub_fn);
+    sym = cl_intern_in("FORMATTER", 9, cl_package_cl);
+    cl_register_macro(sym, stub_fn);
+    sym = cl_intern_in("WITH-PACKAGE-ITERATOR", 21, cl_package_cl);
+    cl_register_macro(sym, stub_fn);
+
+    CL_GC_UNPROTECT(2);
+}
+
 void cl_compiler_init(void)
 {
     macro_table = CL_NIL;
@@ -4293,6 +4363,8 @@ void cl_compiler_init(void)
     cl_gc_register_root(&SETF_SYM_GETF);
     cl_gc_register_root(&SETF_HELPER_GETF);
     cl_gc_register_root(&SYM_LEX_LOCAL_MACRO);
+
+    register_inlined_macro_stubs();
 }
 
 /* --- Compiler chain save/restore for NLX --- */

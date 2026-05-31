@@ -652,6 +652,163 @@ static CL_Obj list_merge_sort(CL_Obj list, CL_Obj pred, CL_Obj key_fn)
     return result;
 }
 
+/* ======================================================= */
+/* MERGE                                                   */
+/* ======================================================= */
+
+/* Helper: collect sequence elements into platform_alloc'd array. */
+static void seq_to_array(CL_Obj seq, CL_Obj **out, int32_t *out_len)
+{
+    int32_t len, i;
+    CL_Obj *arr;
+    CL_Obj cur;
+
+    if (CL_NULL_P(seq)) { *out = NULL; *out_len = 0; return; }
+
+    if (CL_CONS_P(seq)) {
+        len = 0;
+        cur = seq;
+        while (!CL_NULL_P(cur)) { len++; cur = cl_cdr(cur); }
+        arr = (CL_Obj *)platform_alloc((uint32_t)(len * (int32_t)sizeof(CL_Obj)));
+        cur = seq;
+        for (i = 0; i < len; i++) { arr[i] = cl_car(cur); cur = cl_cdr(cur); }
+    } else if (CL_VECTOR_P(seq)) {
+        CL_Vector *v = (CL_Vector *)CL_OBJ_TO_PTR(seq);
+        len = (int32_t)cl_vector_active_length(v);
+        arr = (CL_Obj *)platform_alloc((uint32_t)(len * (int32_t)sizeof(CL_Obj)));
+        for (i = 0; i < len; i++) arr[i] = cl_vector_data(v)[i];
+    } else if (CL_ANY_STRING_P(seq)) {
+        len = (int32_t)cl_string_length(seq);
+        arr = (CL_Obj *)platform_alloc((uint32_t)(len * (int32_t)sizeof(CL_Obj)));
+        for (i = 0; i < len; i++)
+            arr[i] = CL_MAKE_CHAR(cl_string_char_at(seq, (uint32_t)i));
+    } else {
+        *out = NULL; *out_len = 0;
+        cl_error(CL_ERR_TYPE, "MERGE: not a sequence");
+        return;
+    }
+    *out = arr;
+    *out_len = len;
+}
+
+/* (merge result-type sequence1 sequence2 predicate &key key)
+ * Merge two sorted sequences into one sorted sequence of result-type. */
+static CL_Obj bi_merge(CL_Obj *args, int n)
+{
+    CL_Obj result_type = args[0];
+    CL_Obj seq1 = args[1];
+    CL_Obj seq2 = args[2];
+    CL_Obj pred = cl_coerce_funcdesig(args[3], "MERGE");
+    CL_Obj key_fn = CL_NIL;
+    int i, rt;
+
+    for (i = 4; i + 1 < n; i += 2) {
+        if (args[i] == KW_KEY)
+            key_fn = CL_NULL_P(args[i + 1]) ? CL_NIL : cl_coerce_funcdesig(args[i + 1], ":KEY");
+    }
+
+    rt = -1;
+    if (CL_NULL_P(result_type) || map_result_type_match(result_type, "NULL", 4))
+        rt = 0;
+    else if (map_result_type_match(result_type, "LIST", 4) ||
+             map_result_type_match(result_type, "CONS", 4))
+        rt = 1;
+    else if (map_result_type_match(result_type, "VECTOR", 6) ||
+             map_result_type_match(result_type, "SIMPLE-VECTOR", 13))
+        rt = 2;
+    if (rt < 0)
+        cl_error(CL_ERR_ARGS, "MERGE: unsupported result-type");
+
+    if (rt == 0) return CL_NIL;
+
+    /* Fast path: list merge when both inputs are lists */
+    if (rt == 1 && (CL_NULL_P(seq1) || CL_CONS_P(seq1)) &&
+                   (CL_NULL_P(seq2) || CL_CONS_P(seq2))) {
+        CL_GC_PROTECT(seq1);
+        CL_GC_PROTECT(seq2);
+        CL_GC_PROTECT(pred);
+        CL_GC_PROTECT(key_fn);
+        {
+            CL_Obj r = list_merge(seq1, seq2, pred, key_fn);
+            CL_GC_UNPROTECT(4);
+            return r;
+        }
+    }
+
+    /* General path: collect into arrays, merge, build result */
+    {
+        CL_Obj *a1 = NULL, *a2 = NULL, *out = NULL;
+        int32_t n1 = 0, n2 = 0, ntotal, ia, ib, io;
+        CL_Obj result = CL_NIL, tail = CL_NIL;
+
+        seq_to_array(seq1, &a1, &n1);
+        seq_to_array(seq2, &a2, &n2);
+        ntotal = n1 + n2;
+        if (ntotal > 0)
+            out = (CL_Obj *)platform_alloc((uint32_t)(ntotal * (int32_t)sizeof(CL_Obj)));
+
+        /* Protect pred/key_fn across CL user function calls in the merge loop */
+        CL_GC_PROTECT(pred);
+        CL_GC_PROTECT(key_fn);
+
+        /* Merge a1 and a2 into out[] using stable merge.
+         * Read each element into a GC-protected local before calling user
+         * functions — apply_key/call_test can trigger compaction, which would
+         * leave the raw a1[]/a2[] pointers holding stale arena offsets. */
+        ia = 0; ib = 0; io = 0;
+        while (ia < n1 && ib < n2) {
+            CL_Obj ea = a1[ia], eb = a2[ib], ka, kb;
+            CL_GC_PROTECT(ea);
+            CL_GC_PROTECT(eb);
+            ka = apply_key(key_fn, ea);
+            CL_GC_PROTECT(ka);
+            kb = apply_key(key_fn, eb);
+            /* Take from b only if pred(kb, ka) is true */
+            if (!CL_NULL_P(call_test(pred, kb, ka)))
+                { out[io++] = eb; ib++; }
+            else
+                { out[io++] = ea; ia++; }
+            CL_GC_UNPROTECT(3); /* ea, eb, ka */
+        }
+        while (ia < n1) out[io++] = a1[ia++];
+        while (ib < n2) out[io++] = a2[ib++];
+
+        CL_GC_UNPROTECT(2); /* pred, key_fn */
+
+        if (a1) platform_free(a1);
+        if (a2) platform_free(a2);
+
+        if (rt == 1) {
+            /* Build list result, reading each out[] element into a protected
+             * local so cl_cons compaction cannot make later out[i] reads stale */
+            CL_Obj elem = CL_NIL;
+            CL_GC_PROTECT(result);
+            CL_GC_PROTECT(tail);
+            CL_GC_PROTECT(elem);
+            for (i = 0; i < ntotal; i++) {
+                CL_Obj cell;
+                elem = out[i];
+                cell = cl_cons(elem, CL_NIL);
+                if (CL_NULL_P(result)) result = cell;
+                else ((CL_Cons *)CL_OBJ_TO_PTR(tail))->cdr = cell;
+                tail = cell;
+            }
+            CL_GC_UNPROTECT(3);
+        } else {
+            /* Build vector result */
+            result = cl_make_vector((uint32_t)ntotal);
+            {
+                CL_Vector *v = (CL_Vector *)CL_OBJ_TO_PTR(result);
+                for (i = 0; i < ntotal; i++)
+                    cl_vector_data(v)[i] = out[i];
+            }
+        }
+
+        if (out) platform_free(out);
+        return result;
+    }
+}
+
 /* Insertion sort for vectors — in-place, stable */
 static void vector_insertion_sort(CL_Obj *data, int32_t len, CL_Obj pred, CL_Obj key_fn)
 {
@@ -742,6 +899,9 @@ void cl_builtins_sequence2_init(void)
     /* Comparison/search */
     defun("MISMATCH", bi_mismatch, 2, -1);
     defun("SEARCH", bi_search, 2, -1);
+
+    /* Merge */
+    defun("MERGE", bi_merge, 4, -1);
 
     /* Sorting */
     defun("SORT", bi_sort, 2, -1);

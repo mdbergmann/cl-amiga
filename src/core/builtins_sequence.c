@@ -2133,6 +2133,9 @@ void cl_builtins_sequence_init(void)
     defun("REMOVE-IF-NOT", bi_remove_if_not, 2, -1);
     defun("REMOVE-DUPLICATES", bi_remove_duplicates, 1, -1);
     defun("DELETE-DUPLICATES", bi_remove_duplicates, 1, -1);
+    /* DELETE-IF-NOT: spec allows but doesn't require in-place modification;
+     * sharing the non-destructive implementation is conforming. */
+    defun("DELETE-IF-NOT", bi_remove_if_not, 2, -1);
 
     /* Substitute family */
     defun("SUBSTITUTE", bi_substitute, 3, -1);

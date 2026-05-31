@@ -1151,6 +1151,18 @@ static CL_Obj bi_float_digits(CL_Obj *args, int n)
     return CL_MAKE_FIXNUM(24);
 }
 
+/* (float-precision float) → fixnum
+ * Returns the number of significant radix (base-2) digits in the float.
+ * For normalized IEEE 754 floats this equals float-digits. */
+static CL_Obj bi_float_precision(CL_Obj *args, int n)
+{
+    CL_UNUSED(n);
+    check_float(args[0], "FLOAT-PRECISION");
+    if (CL_DOUBLE_FLOAT_P(args[0]))
+        return CL_MAKE_FIXNUM(53);
+    return CL_MAKE_FIXNUM(24);
+}
+
 /* (float-radix float) → fixnum (always 2) */
 static CL_Obj bi_float_radix(CL_Obj *args, int n)
 {
@@ -1401,6 +1413,7 @@ static const CL_BuiltinDesc arith_builtins[] = {
     /* Float-specific functions */
     {"FLOAT",                bi_float,                 1,  2},
     {"FLOAT-DIGITS",         bi_float_digits,          1,  1},
+    {"FLOAT-PRECISION",      bi_float_precision,       1,  1},
     {"FLOAT-RADIX",          bi_float_radix,           1,  1},
     {"FLOAT-SIGN",           bi_float_sign,            1,  2},
     {"DECODE-FLOAT",         bi_decode_float,          1,  1},

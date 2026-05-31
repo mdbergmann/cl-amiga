@@ -52,6 +52,9 @@ static void defun(const char *name, CL_CFunc func, int min, int max)
     cl_register_builtin(name, func, min, max, cl_package_cl);
 }
 
+/* Register a not-yet-implemented CL function stub (variadic). */
+#define defstub(name) defun(name, bi_unimplemented_stub, 0, -1)
+
 /* Coerce function designator: symbol -> its function binding.
  * A function designator is a function object or a symbol that names one.
  * A funcallable instance (STANDARD-GENERIC-FUNCTION struct) is unwrapped
@@ -309,6 +312,45 @@ static CL_Obj bi_functionp(CL_Obj *args, int n)
     return (CL_FUNCTION_P(obj) || CL_CLOSURE_P(obj) ||
             CL_BYTECODE_P(obj) || cl_funcallable_instance_p(obj))
         ? SYM_T : CL_NIL;
+}
+
+/* (compiled-function-p object) => boolean
+ * In clamiga, all functions (C builtins, bytecode, closures) are compiled. */
+static CL_Obj bi_compiled_function_p(CL_Obj *args, int n)
+{
+    CL_Obj obj = args[0];
+    CL_UNUSED(n);
+    return (CL_FUNCTION_P(obj) || CL_BYTECODE_P(obj) || CL_CLOSURE_P(obj)
+            || cl_funcallable_instance_p(obj))
+        ? SYM_T : CL_NIL;
+}
+
+/* (function-lambda-expression function) => lambda-expression, closure-p, name
+ * Returns three values: NIL (no source), T (may be a closure), and the name. */
+static CL_Obj bi_function_lambda_expression(CL_Obj *args, int n)
+{
+    CL_Obj obj = args[0];
+    CL_Obj name = CL_NIL;
+    CL_UNUSED(n);
+
+    if (CL_FUNCTION_P(obj)) {
+        CL_Function *f = (CL_Function *)CL_OBJ_TO_PTR(obj);
+        name = f->name;
+    } else if (CL_BYTECODE_P(obj)) {
+        CL_Bytecode *bc = (CL_Bytecode *)CL_OBJ_TO_PTR(obj);
+        name = bc->name;
+    } else if (CL_CLOSURE_P(obj)) {
+        CL_Closure *cl = (CL_Closure *)CL_OBJ_TO_PTR(obj);
+        name = ((CL_Bytecode *)CL_OBJ_TO_PTR(cl->bytecode))->name;
+    } else {
+        cl_error(CL_ERR_TYPE, "FUNCTION-LAMBDA-EXPRESSION: not a function");
+    }
+
+    cl_mv_count = 3;
+    cl_mv_values[0] = CL_NIL;  /* no source */
+    cl_mv_values[1] = CL_T;    /* may be a closure */
+    cl_mv_values[2] = name;
+    return CL_NIL;
 }
 
 static CL_Obj bi_eq(CL_Obj *args, int n)
@@ -1226,6 +1268,16 @@ static CL_Obj bi_quit(CL_Obj *args, int n)
     return CL_NIL; /* unreachable */
 }
 
+/* Single shared stub for CL functions not yet implemented in clamiga.
+ * Any call signals an error; registering the stub satisfies FBOUNDP and
+ * SYMBOL-FUNCTION checks in the ANSI test suite without a full implementation. */
+static CL_Obj bi_unimplemented_stub(CL_Obj *args, int n)
+{
+    CL_UNUSED(args); CL_UNUSED(n);
+    cl_error(CL_ERR_GENERAL, "not yet implemented");
+    return CL_NIL; /* unreachable */
+}
+
 /* Names that ANSI requires to be exported from COMMON-LISP (11.1.2.1) but
  * which currently lack a backing implementation.  Interning them here is
  * enough to satisfy FIND-SYMBOL / cl-symbols presence tests; calling any
@@ -1235,66 +1287,43 @@ static CL_Obj bi_quit(CL_Obj *args, int n)
 static const char *const cl_reserved_symbol_names[] = {
     "*BREAK-ON-SIGNALS*",
     "//", "///",
-    "APROPOS", "APROPOS-LIST",
-    "ARRAY-IN-BOUNDS-P",
-    "BROADCAST-STREAM", "BROADCAST-STREAM-STREAMS",
-    "CHAR-INT", "CIS",
-    "CLEAR-INPUT",
-    "COMPILED-FUNCTION-P",
+    "BROADCAST-STREAM",
+    "CIS",
     "COMPILER-MACRO",
     "COMPUTE-APPLICABLE-METHODS",
-    "CONCATENATED-STREAM", "CONCATENATED-STREAM-STREAMS",
-    "COPY-STRUCTURE",
+    "CONCATENATED-STREAM",
     "DECLARATION",
-    "DELETE-IF-NOT",
     "DESCRIBE-OBJECT",
     "DO-ALL-SYMBOLS",
-    "DRIBBLE", "ED",
-    "ECHO-STREAM", "ECHO-STREAM-INPUT-STREAM", "ECHO-STREAM-OUTPUT-STREAM",
+    "ED",
+    "ECHO-STREAM",
     "EXTENDED-CHAR",
-    "FILE-AUTHOR", "FILE-STREAM", "FILE-STRING-LENGTH",
-    "FIND-ALL-SYMBOLS",
-    "FLOAT-PRECISION",
+    "FILE-STREAM",
     "FLOATING-POINT-INEXACT", "FLOATING-POINT-INVALID-OPERATION",
     "FLOATING-POINT-OVERFLOW", "FLOATING-POINT-UNDERFLOW",
-    "FORMATTER", "FUNCTION-KEYWORDS", "FUNCTION-LAMBDA-EXPRESSION",
+    "FORMATTER", "FUNCTION-KEYWORDS",
     "GENERIC-FUNCTION",
-    "HOST-NAMESTRING",
-    "INVALID-METHOD-ERROR",
     "KEYWORD",
-    "LISTEN", "LOAD-LOGICAL-PATHNAME-TRANSLATIONS",
-    "LOGICAL-PATHNAME",
-    "LONG-SITE-NAME",
-    "MAKE-BROADCAST-STREAM", "MAKE-CONCATENATED-STREAM",
-    "MAKE-ECHO-STREAM",
     "MAKE-INSTANCES-OBSOLETE", "MAKE-LOAD-FORM",
-    "MAKE-LOAD-FORM-SAVING-SLOTS",
     "MAKE-METHOD", "MAKE-TWO-WAY-STREAM",
-    "MERGE",
-    "METHOD", "METHOD-COMBINATION", "METHOD-COMBINATION-ERROR",
+    "METHOD", "METHOD-COMBINATION",
     "NO-APPLICABLE-METHOD", "NO-NEXT-METHOD",
-    "PACKAGEP", "PHASE",
-    "PPRINT-TAB", "PPRINT-TABULAR",
-    "PRINT-NOT-READABLE-OBJECT",
-    "READ-CHAR-NO-HANG",
+    "PHASE",
     "RESTART",
-    "SHORT-SITE-NAME",
     "SIGNED-BYTE", "SIGNUM",
     "SLOT-MISSING",
     "STANDARD", "STEP",
-    "STREAM-ELEMENT-TYPE", "STREAM-EXTERNAL-FORMAT",
     "STRING-STREAM",
     "STRUCTURE", "STRUCTURE-CLASS",
     "SYNONYM-STREAM",
     "TWO-WAY-STREAM", "TWO-WAY-STREAM-INPUT-STREAM",
     "TWO-WAY-STREAM-OUTPUT-STREAM",
-    "UNBOUND-SLOT-INSTANCE", "UNSIGNED-BYTE",
+    "UNSIGNED-BYTE",
     "UPDATE-INSTANCE-FOR-DIFFERENT-CLASS",
     "UPDATE-INSTANCE-FOR-REDEFINED-CLASS",
-    "UPGRADED-ARRAY-ELEMENT-TYPE", "UPGRADED-COMPLEX-PART-TYPE",
+    "UPGRADED-COMPLEX-PART-TYPE",
     "VARIABLE",
     "WITH-CONDITION-RESTARTS", "WITH-PACKAGE-ITERATOR",
-    "Y-OR-N-P", "YES-OR-NO-P",
     NULL
 };
 
@@ -1338,6 +1367,8 @@ void cl_builtins_init(void)
     defun("STRINGP", bi_stringp, 1, 1);
     defun("SIMPLE-STRING-P", bi_simple_string_p, 1, 1);
     defun("FUNCTIONP", bi_functionp, 1, 1);
+    defun("COMPILED-FUNCTION-P", bi_compiled_function_p, 1, 1);
+    defun("FUNCTION-LAMBDA-EXPRESSION", bi_function_lambda_expression, 1, 1);
     defun("EQ", bi_eq, 2, 2);
     defun("EQL", bi_eql, 2, 2);
     defun("EQUAL", bi_equal, 2, 2);
@@ -1430,6 +1461,31 @@ void cl_builtins_init(void)
     cl_builtins_thread_init();
     cl_builtins_ffi_init();
     cl_builtins_amiga_init();
+
+    /* CL functions not yet implemented — register stubs so FBOUNDP /
+     * SYMBOL-FUNCTION return non-NIL; any call signals an error. */
+    defstub("APROPOS");
+    defstub("APROPOS-LIST");
+    defstub("BROADCAST-STREAM-STREAMS");
+    defstub("CONCATENATED-STREAM-STREAMS");
+    defstub("ECHO-STREAM-INPUT-STREAM");
+    defstub("ECHO-STREAM-OUTPUT-STREAM");
+    defstub("INVALID-METHOD-ERROR");
+    defstub("LOAD-LOGICAL-PATHNAME-TRANSLATIONS");
+    defstub("LOGICAL-PATHNAME");
+    defstub("MAKE-BROADCAST-STREAM");
+    defstub("MAKE-CONCATENATED-STREAM");
+    defstub("MAKE-ECHO-STREAM");
+    defstub("MAKE-LOAD-FORM-SAVING-SLOTS");
+    defstub("METHOD-COMBINATION-ERROR");
+    defstub("PPRINT-TAB");
+    defstub("PPRINT-TABULAR");
+    defstub("PRINT-NOT-READABLE-OBJECT");
+    defstub("STORE-VALUE");
+    defstub("USE-VALUE");
+    defstub("UNBOUND-SLOT-INSTANCE");
+    defstub("Y-OR-N-P");
+    defstub("YES-OR-NO-P");
 
     /* All CL symbols now interned — mark them exported */
     cl_package_export_all_cl_symbols();

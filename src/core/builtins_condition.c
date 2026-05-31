@@ -1382,11 +1382,12 @@ void cl_builtins_condition_init(void)
 
     /* Register builtins */
     defun("MAKE-CONDITION", bi_make_condition, 1, -1);
-    /* Implementation-specific predicates / accessors — kept in CL so
-     * user packages that only :use COMMON-LISP can see them.  See the
-     * note on PACKAGE-LOCAL-NICKNAMES in builtins_package.c. */
-    defun("CONDITIONP", bi_conditionp, 1, 1);
-    defun("CONDITION-TYPE-NAME", bi_condition_type_name, 1, 1);
+    /* Implementation-specific predicates / accessors live in CLAMIGA.
+     * CL :uses CLAMIGA, so boot.lisp / clos.lisp / test code can see
+     * them as bare symbols.  User packages that only (:use :common-lisp)
+     * must add (:use :clamiga) or qualify with the CLAMIGA: prefix. */
+    cl_register_builtin("CONDITIONP", bi_conditionp, 1, 1, cl_package_clamiga);
+    cl_register_builtin("CONDITION-TYPE-NAME", bi_condition_type_name, 1, 1, cl_package_clamiga);
     defun("SIMPLE-CONDITION-FORMAT-CONTROL", bi_simple_condition_format_control, 1, 1);
     defun("SIMPLE-CONDITION-FORMAT-ARGUMENTS", bi_simple_condition_format_arguments, 1, 1);
     defun("TYPE-ERROR-DATUM", bi_type_error_datum, 1, 1);
@@ -1400,7 +1401,7 @@ void cl_builtins_condition_init(void)
 
     /* User-defined condition types */
     cl_register_builtin("%REGISTER-CONDITION-TYPE", bi_register_condition_type, 3, 3, cl_package_clamiga);
-    defun("CONDITION-SLOT-VALUE", bi_condition_slot_value, 2, 2);
+    cl_register_builtin("CONDITION-SLOT-VALUE", bi_condition_slot_value, 2, 2, cl_package_clamiga);
     cl_register_builtin("%SET-CONDITION-SLOT-VALUE", bi_set_condition_slot_value, 3, 3, cl_package_clamiga);
 
     /* Signaling */
