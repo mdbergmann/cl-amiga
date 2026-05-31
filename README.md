@@ -12,10 +12,9 @@ CL-Amiga is a bytecode-compiled Common Lisp environment written in C (C89/C99). 
 
 CL-Amiga can load **ASDF**, install and run **Quicklisp**, and successfully quickload libraries including **Alexandria**, **fiveam**, **FSet**, and **Sento** — their `asdf:test-system` suites pass end-to-end. Sento pulls in **lparallel**, **serapeum**, **bordeaux-threads**, **log4cl** and friends along the way.
 
-**ANSI conformance** — the Paul Dietz ANSI test suite (`third_party/ansi-test/`) is the working spec. Two bootstraps in `trunk/` run it on host and Amiga, writing tallies to `build/load-and-test-logs/`:
+**ANSI conformance** — the Paul Dietz ANSI test suite (`third_party/ansi-test/`) is the working spec. A bootstrap in `trunk/` runs it on host and Amiga, writing tallies to `build/load-and-test-logs/`:
 
-- **CONS + SYMBOLS** (`load-and-test-ansi.lisp`) — **3019 / 3027** passing. The 8 remaining failures are `INCF-GETF.2` plus 7 package-hygiene checks (`NO-EXTRA-SYMBOLS-EXPORTED-FROM-COMMON-LISP`, `CL-{FUNCTION,MACRO,VARIABLE}-SYMBOLS`, `CL-TYPES-THAT-ARE-CLASSES`) that flag a handful of internal builtins still interned in the `COMMON-LISP` package — a deferred cleanup, not a behavioural gap.
-- **NUMBERS** (`load-and-test-ansi-numbers.lisp`) — **1444 / 1444 (100%)**.
+- **CONS + SYMBOLS + NUMBERS** (`load-and-test-ansi.lisp`) — **4471 / 4471 (100%)** passing (3027 cons + symbols, 1444 numbers).
 
 Over 2240 host tests and ~2525 Amiga tests cover the implementation, including threading, CLOS, conditions, the full numeric tower, FFI, the m68k JIT, and AmigaOS GUI (Intuition/Graphics/GadTools).
 
@@ -151,8 +150,7 @@ Reusable Lisp loaders in `trunk/` that load and exercise third-party libraries o
 ./build/host/clamiga --heap 24M  --load trunk/load-and-test-fset.lisp           # FSet
 ./build/host/clamiga --heap 64M  --load trunk/load-and-test-str.lisp            # str
 ./build/host/clamiga --heap 192M --load trunk/load-and-test-sento-system.lisp   # Sento (cold cache)
-./build/host/clamiga --heap 96M  --load trunk/load-and-test-ansi.lisp           # ANSI cons + symbols
-./build/host/clamiga --heap 96M  --load trunk/load-and-test-ansi-numbers.lisp   # ANSI numbers
+./build/host/clamiga --heap 96M  --load trunk/load-and-test-ansi.lisp           # ANSI cons + symbols + numbers
 ```
 
 ### Loading source and FASL files
