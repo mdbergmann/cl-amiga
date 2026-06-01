@@ -220,8 +220,13 @@ int cl_ratio_compare(CL_Obj a, CL_Obj b)
     CL_GC_PROTECT(bn); CL_GC_PROTECT(bd);
 
     lhs = cl_arith_mul(an, bd);
+    /* lhs must be protected across the second multiply: cl_arith_mul allocates
+       and can trigger compacting GC, which would relocate the lhs bignum and
+       leave this local holding a stale arena offset — making the comparison
+       below read garbage. (Intermittent under allocation pressure.) */
+    CL_GC_PROTECT(lhs);
     rhs = cl_arith_mul(bn, ad);
-    CL_GC_UNPROTECT(4);
+    CL_GC_UNPROTECT(5);
 
     return cl_arith_compare(lhs, rhs);
 }

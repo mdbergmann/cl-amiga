@@ -55,6 +55,7 @@ fix_extra_tools: "Bash(make:*),Bash(sed:*),Bash(mkdir:*),Bash(awk:*),Bash(cp:*),
 egress_allowlist: "lispworks.com, quicklisp.org"
 
 squash_on_complete: true
+build_cache: true
 
 # -- notes ----------------------------------------------------------------
 # * The test stage runs with --network none, so no gems/quicklisp fetch — the

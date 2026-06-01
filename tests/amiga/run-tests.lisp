@@ -3011,6 +3011,37 @@
 (check "ratio < int" t (< 1/3 1))
 (check "ratio > int" t (> 3/2 1))
 
+; Regression: rational/float comparison must stay correct across a moving GC.
+; cl_ratio_compare held the first cross-multiply result, and cl_float_compare
+; held a rational operand, in CL_Obj locals left unprotected across an
+; allocating call; a compaction fired mid-compare relocated them and the
+; comparison returned the wrong sign.  Mirrors ansi-test
+; RATIONAL.LONG-FLOAT.RANDOM.COMPARE.1.  For x = p/q > 1, fr = (floor r) and
+; cr = (ceiling r), the relations fr/x < r < cr*x must hold at every magnitude.
+; The retained filler array keeps the heap pressured so the big-bignum
+; cross-multiplies trigger compaction.  (aref filler 0) is 1, so the returned
+; value is exactly the failure count; expected 0.
+(check "rational/float compare gc-safe" 0
+  (let ((fails 0)
+        (filler (make-array 50000 :initial-element 1)))
+    (do ((bound 1.0d0 (* bound 16)))
+        ((> bound 1.0d120))
+      (dotimes (k 12)
+        (let* ((r (+ 1.0d0 (* bound (/ (coerce (1+ k) 'double-float) 13.0d0))))
+               (fr (floor r))
+               (cr (ceiling r))
+               (p (+ 1000003 (* k 7)))
+               (q (+ 7 k))
+               (x (/ p q))
+               (fr/x (/ fr x))
+               (cr*x (* cr x)))
+          (unless (and (<= fr/x r cr*x)
+                       (< fr/x r cr*x)
+                       (> cr*x r fr/x)
+                       (>= cr*x r fr/x))
+            (setq fails (+ fails 1))))))
+    (+ fails (aref filler 0) -1)))
+
 ; Predicates on ratios
 (check "zerop ratio" nil (zerop 1/2))
 (check "plusp ratio" t (plusp 1/2))

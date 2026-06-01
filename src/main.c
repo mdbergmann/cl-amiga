@@ -427,6 +427,16 @@ int main(int argc, char *argv[])
     cl_debugger_init();
     cl_repl_init_no_userinit(no_userinit);
 
+#ifdef DEBUG_GC_STRESS
+    /* Enable per-allocation forced compaction only after boot, so the FASL/
+     * boot load runs at normal speed but --load/--eval and the REPL exercise
+     * every allocation under a moving GC. */
+    if (getenv("CLAMIGA_GC_STRESS")) {
+        extern int cl_gc_stress_ready;
+        cl_gc_stress_ready = 1;
+    }
+#endif
+
     if (script) {
         /* Script/batch: execute --load/--eval actions before mode entry */
         for (i = 0; i < action_count; i++) {
