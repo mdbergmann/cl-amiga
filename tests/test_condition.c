@@ -889,6 +889,52 @@ TEST(lisp_restart_stack_nlx)
     }
 }
 
+/* --- UNWIND-PROTECT + restart-case ordering tests --- */
+
+TEST(lisp_restart_case_runs_uwp_cleanup_before_handler)
+{
+    /* CLHS INVOKE-RESTART: non-local transfer completes (running every
+     * UNWIND-PROTECT cleanup) BEFORE the restart handler is called.
+     * Correct order: BEFORE → CLEANUP → HANDLER. */
+    eval_print("(defvar *restart-uwp-log* nil)");
+    ASSERT_STR_EQ(eval_print(
+        "(let ((*restart-uwp-log* nil))"
+        "  (restart-case"
+        "    (unwind-protect"
+        "      (progn (push 'before *restart-uwp-log*) (invoke-restart 'abort))"
+        "      (push 'cleanup *restart-uwp-log*))"
+        "    (abort () (push 'handler *restart-uwp-log*) :done))"
+        "  (reverse *restart-uwp-log*))"),
+        "(BEFORE CLEANUP HANDLER)");
+}
+
+TEST(lisp_restart_case_nested_uwp_cleanup_order)
+{
+    /* Two interposing unwind-protects: cleanups run innermost-first,
+     * both before the handler. */
+    ASSERT_STR_EQ(eval_print(
+        "(let ((*restart-uwp-log* nil))"
+        "  (restart-case"
+        "    (unwind-protect"
+        "      (unwind-protect"
+        "        (progn (push 'before *restart-uwp-log*) (invoke-restart 'abort))"
+        "        (push 'inner-cleanup *restart-uwp-log*))"
+        "      (push 'outer-cleanup *restart-uwp-log*))"
+        "    (abort () (push 'handler *restart-uwp-log*) :done))"
+        "  (reverse *restart-uwp-log*))"),
+        "(BEFORE INNER-CLEANUP OUTER-CLEANUP HANDLER)");
+}
+
+TEST(lisp_restart_case_handler_return_is_restart_case_value)
+{
+    /* The handler's return value is the value of the restart-case form. */
+    ASSERT_STR_EQ(eval_print(
+        "(restart-case"
+        "  (unwind-protect (invoke-restart 'abort) nil)"
+        "  (abort () :handler-result))"),
+        ":HANDLER-RESULT");
+}
+
 /* --- Debugger tests --- */
 
 TEST(c_debugger_disabled_by_default)
@@ -1082,6 +1128,9 @@ int main(void)
     RUN(lisp_with_simple_restart_normal);
     RUN(lisp_cerror_continue);
     RUN(lisp_restart_stack_nlx);
+    RUN(lisp_restart_case_runs_uwp_cleanup_before_handler);
+    RUN(lisp_restart_case_nested_uwp_cleanup_order);
+    RUN(lisp_restart_case_handler_return_is_restart_case_value);
 
     /* define-condition / check-type / assert tests */
     RUN(lisp_define_condition_basic);

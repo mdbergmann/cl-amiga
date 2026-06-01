@@ -26,7 +26,7 @@
 #include "../platform/platform.h"
 
 #define CL_FASL_MAGIC    0x434C4641  /* "CLFA" */
-#define CL_FASL_VERSION  10  /* v10: OP_RESTART_PUSH carries report/interactive/test operands */
+#define CL_FASL_VERSION  11  /* v11: restart-case landing applies handler post-unwind (cons-dispatch sequence) */
 
 /* Serialized constant type tags */
 #define FASL_TAG_NIL         0x00

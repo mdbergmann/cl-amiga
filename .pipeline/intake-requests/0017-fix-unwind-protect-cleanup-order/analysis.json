@@ -1,0 +1,16 @@
+{
+  "summary": "Confirmed via build+repro on host: clamiga prints `(before HANDLER CLEANUP)`. Root cause is src/core/builtins_condition.c:invoke_restart_at_binding calling cl_vm_apply(handler) BEFORE cl_throw_to_tag — so interposing UNWIND-PROTECT cleanups run after the handler. Fix defers handler invocation to the restart-case catch landing by throwing a `(handler . args)` cons; compile_restart_case emits a small DUP/CDR/STORE/POP/CAR/LOAD/APPLY tail to dispatch after the unwind. Single, well-scoped item; requires FASL version bump because compile_restart_case emits a new bytecode tail.",
+  "affected_areas": [
+    "VM restart invocation (src/core/builtins_condition.c)",
+    "restart-case bytecode emission (src/core/compiler_special.c)",
+    "FASL version (src/core/fasl.h)",
+    "Host condition tests (tests/test_condition.c)",
+    "Amiga regression suite (tests/amiga/run-tests.lisp)"
+  ],
+  "risks": [
+    "FASL version must be bumped or cached restart-case FASLs will execute the new dispatch with the old throw value and crash/mis-apply.",
+    "The thrown cons (and args sublist) must remain GC-rooted across cleanup execution — relies on nlx->result and cl_pending_value being GC-marked, which they are (mem.c lines 1170, 1209). Args-list must be CL_GC_PROTECT'd in invoke_restart_at_binding during the cl_cons loop.",
+    "Dynamic env at handler call: catch-landing restores dyn_mark/handler_mark/restart_mark (vm.c lines 3229–3257). This matches CLHS semantics (handler runs in dynamic env of restart-case establishment) but is a behavior change for any user code that relied on the buggy in-the-handler-frame dynamic env.",
+    "Pre-existing restart tests assume the handler's return value flows to restart-case; that invariant is preserved (OP_APPLY result is what restart-case yields), but should be explicitly checked across `lisp_restart_case_basic`, `lisp_restart_case_multiple_clauses`, `lisp_break_with_continue`, etc."
+  ]
+}
