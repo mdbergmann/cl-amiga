@@ -59,6 +59,14 @@ static uint32_t gc_fwd_table_entries = 0;
  * when the heap is genuinely full (no fragmentation to reclaim). */
 static uint32_t gc_last_compact_cycle = 0xFFFFFFFF;
 
+#ifdef DEBUG_GC_STRESS
+/* GC-stress debugging: when ready, force a compaction before every single-
+ * threaded allocation (see cl_alloc).  Enabled at runtime after boot so the
+ * FASL/boot load isn't slowed to a crawl. */
+int cl_gc_stress_ready = 0;
+static int cl_gc_stress_active = 0;
+#endif
+
 /* Pending compaction flag — set when cl_alloc detects fragmentation,
  * cleared when compaction runs at a safe point.
  * Non-static: accessed by VM dispatch loop for safe-point checks. */
@@ -237,6 +245,18 @@ void *cl_alloc(uint8_t type, uint32_t size)
     /* GC safepoint before allocation — if another thread initiated GC,
      * we must stop here before touching the heap */
     if (multi) CL_SAFEPOINT();
+
+#ifdef DEBUG_GC_STRESS
+    /* Force a compacting (moving) GC before every allocation so that any
+     * CL_Obj C local held unprotected across an allocating call is reliably
+     * corrupted (relocated out from under the stale local).  Single-thread
+     * only; gated behind a build flag — compiles to nothing normally. */
+    if (!multi && cl_gc_stress_ready && !cl_gc_stress_active) {
+        cl_gc_stress_active = 1;
+        cl_gc_compact();
+        cl_gc_stress_active = 0;
+    }
+#endif
 
     size = align_up(size);
     if (size < CL_MIN_ALLOC_SIZE)

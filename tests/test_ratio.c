@@ -674,6 +674,54 @@ TEST(eval_ratio_bignum_mixed)
     ASSERT_STR_EQ(eval_print("(* 1/3 999999999999)"), "333333333333");
 }
 
+/* Regression: cl_ratio_compare left `lhs` (the first cross-multiply result)
+   unprotected across the second cl_arith_mul.  Because the multiply allocates
+   and can trigger compacting GC, the freshly-built lhs bignum could be
+   relocated while this local still held its stale arena offset, so the
+   subsequent comparison read garbage and returned the wrong sign — an
+   intermittent, allocation-pressure-dependent wrong answer.
+
+   This mirrors ansi-test RATIONAL.LONG-FLOAT.RANDOM.COMPARE.1, which flushed
+   the bug out roughly one run in three.  With x = p/q > 1, fr = (floor r) and
+   cr = (ceiling r), the relations  fr/x < r < cr*x  must hold for every
+   iteration; pre-fix, GC firing inside the second multiply made some of these
+   large-magnitude comparisons spuriously fail.
+
+   The loop walks `bound` up by *4 across the whole long-float range and, at
+   each magnitude, builds large ratios fr/x and cr*x and checks the relations.
+   The escalating magnitudes force big-bignum allocation, and the retained
+   ~2 MB filler array keeps the 4 MB test heap full enough that those
+   allocations trigger compaction right where the comparators cross-multiply.
+   Without the filler the bump allocator never runs out and the moving GC never
+   fires, so the bug stays dormant (this minimal harness skips boot.lisp, which
+   in the full runtime is what fills the heap).  With it the result is
+   deterministic: pre-fix returns a non-zero failure count (observed: 4),
+   post-fix returns 0. */
+TEST(eval_ratio_compare_gc_safe_under_pressure)
+{
+    ASSERT_STR_EQ(eval_print(
+        "(let ((fails 0)"
+        "      (*filler* (make-array 500000 :initial-element 1)))"
+        "  (declare (ignorable *filler*))"
+        "  (loop for bound = 1.0d0 then (* bound 4)"
+        "        while (<= bound (/ most-positive-long-float 4))"
+        "        do (dotimes (k 40)"
+        "             (let* ((r (+ 1.0d0 (* bound (/ (coerce (1+ k) 'double-float) 41.0d0))))"
+        "                    (fr (floor r))"
+        "                    (cr (ceiling r))"
+        "                    (p (+ 1000003 (* k 7)))"
+        "                    (q (+ 7 k))"
+        "                    (x (/ p q))"        /* p > q, so x > 1 */
+        "                    (fr/x (/ fr x))"
+        "                    (cr*x (* cr x)))"
+        "               (unless (and (<= fr/x r cr*x)"
+        "                            (< fr/x r cr*x)"
+        "                            (> cr*x r fr/x)"
+        "                            (>= cr*x r fr/x))"
+        "                 (incf fails)))))"
+        "  fails)"), "0");
+}
+
 int main(void)
 {
     test_init();
@@ -776,6 +824,7 @@ int main(void)
     RUN(eval_div_reciprocal);
     RUN(eval_div_chained);
     RUN(eval_ratio_bignum_mixed);
+    RUN(eval_ratio_compare_gc_safe_under_pressure);
 
     teardown();
     REPORT();

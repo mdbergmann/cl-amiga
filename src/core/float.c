@@ -265,8 +265,14 @@ int cl_float_compare(CL_Obj a, CL_Obj b)
         }
         if (dsign == 0) return 0;  /* both zero */
 
+        /* double_to_exact_rational allocates (large bignums/ratios) and can
+           trigger compacting GC. robj must be protected BEFORE that call —
+           the moving GC forwards the rooted VM-stack slot, but this local
+           copy would otherwise be left holding a stale arena offset and the
+           comparison below would read relocated/garbage memory. */
+        CL_GC_PROTECT(robj);
         exact = double_to_exact_rational(d);
-        CL_GC_PROTECT(exact); CL_GC_PROTECT(robj);
+        CL_GC_PROTECT(exact);
         r = cl_arith_compare(exact, robj);
         CL_GC_UNPROTECT(2);
         return swap ? -r : r;

@@ -6,6 +6,7 @@
 #include "symbol.h"
 #include "mem.h"
 #include "error.h"
+#include "package.h"
 #include "vm.h"
 #include "string_utils.h"
 #include "../platform/platform.h"
@@ -1007,6 +1008,24 @@ CL_Obj cl_make_two_way_stream(CL_Obj input_stream, CL_Obj output_stream)
 
 /* --- Stream-aware write helpers --- */
 
+/* Resolve CL:WRITE-STRING's current function, or CL_NIL if unavailable.
+ * gray-streams.lisp shadows WRITE-STRING in the COMMON-LISP package so that,
+ * given a Gray stream, it dispatches to GRAY:STREAM-WRITE-STRING.  Looked up
+ * fresh each call: the symbol lives in the package (a GC root), but its
+ * function object may move under a compacting GC, so we must not cache it. */
+static CL_Obj lisp_write_string_fn(void)
+{
+    CL_Obj pkg = cl_find_package("COMMON-LISP", 11);
+    CL_Obj sym;
+    CL_Symbol *s;
+    if (CL_NULL_P(pkg)) return CL_NIL;
+    sym = cl_package_find_symbol("WRITE-STRING", 12, pkg);
+    if (CL_NULL_P(sym)) return CL_NIL;
+    s = (CL_Symbol *)CL_OBJ_TO_PTR(sym);
+    if (s->function == CL_UNBOUND) return CL_NIL;
+    return s->function;
+}
+
 void cl_write_cstring_to_stream_sym(CL_Obj sym, const char *s)
 {
     CL_Obj val;
@@ -1018,6 +1037,31 @@ void cl_write_cstring_to_stream_sym(CL_Obj sym, const char *s)
     if (CL_STREAM_P(val)) {
         cl_stream_write_string(val, s, (uint32_t)strlen(s));
         return;
+    }
+    /* Non-native stream value (e.g. a Gray-streams CLOS instance, such as the
+     * output stream SLY binds to *STANDARD-OUTPUT*).  The native stream path
+     * cannot reach it; route through the Lisp WRITE-STRING wrapper so the
+     * stream's STREAM-WRITE-STRING method runs.
+     *
+     * Guard against CL_UNBOUND: a C-level diagnostic/boot write may run before
+     * cl_stream_init has bound the standard stream variables (e.g. the boot
+     * timing log fired from cl_repl_init, or any minimal embedding that skips
+     * stream init).  An unbound special is neither a stream nor NULL, so
+     * without this check it would be handed to WRITE-STRING as a bogus stream
+     * and raise "argument is not a stream" — fatal at that early stage.  Fall
+     * through to platform_write_string instead. */
+    if (!CL_NULL_P(val) && val != CL_UNBOUND) {
+        CL_Obj fn = lisp_write_string_fn();
+        if (!CL_NULL_P(fn)) {
+            CL_Obj args[2];
+            CL_GC_PROTECT(val);
+            CL_GC_PROTECT(fn);
+            args[0] = cl_make_string(s, (uint32_t)strlen(s));
+            args[1] = val;
+            cl_vm_apply(fn, args, 2);
+            CL_GC_UNPROTECT(2);
+            return;
+        }
     }
     platform_write_string(s);
 }
