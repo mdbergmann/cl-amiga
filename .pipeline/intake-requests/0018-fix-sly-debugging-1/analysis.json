@@ -1,0 +1,16 @@
+{
+  "summary": "Verified the bug on the host (./build/host/clamiga: handler-ran = NIL with nested-uwp cleanup, T with plain cleanup). Root cause is in src/core/vm.c OP_UWPOP at line 3405: `cl_pending_throw = 0;` runs unconditionally when a UWP body completes normally. When a nested unwind-protect runs INSIDE the cleanup of an in-progress non-local transfer (cl_pending_throw==1 set by cl_throw_to_tag, cl_pending_throw==2 set by cl_error_unwind), the nested UWP's OP_UWPOP wipes the outer transfer's global pending state. The outer UWP's OP_UWRETHROW then sees pending_throw==0 and silently no-ops, dropping the transfer. Fix: every unwind-protect frame must privately save/clear cl_pending_* at arming, restore at OP_UWRETHROW if its own body did not throw. Implementation uses a per-thread saved-pending stack (heap-allocated, ~620 bytes/entry, sized to NLX depth) with a saved_pending_mark int added to CL_NLXFrame so longjmp landings on every NLX type (catch/block/tagbody/uwprot) restore the stack depth correctly. No FASL/bytecode format change — runtime-only fix.",
+  "affected_areas": [
+    "src/core/vm.c — OP_UWPROT setup+longjmp, OP_UWPOP, OP_UWRETHROW, plus saved_pending_mark capture/restore at OP_CATCH/OP_BLOCK_PUSH/OP_TAGBODY_PUSH",
+    "src/core/vm.h — CL_NLXFrame.saved_pending_mark",
+    "src/core/thread.h / thread.c — CL_SavedPending struct, per-thread saved_pending_stack allocation/free, access macros",
+    "src/core/error.c — reset saved_pending_top at error-boundary unwinds (alongside existing cl_nlx_top = 0)",
+    "tests/test_condition.c + tests/amiga/run-tests.lisp — regression tests for the 18-line repro and edge cases (nested UWP completing normally vs. throwing, error-path equivalent)"
+  ],
+  "risks": [
+    "Sizing of the saved-pending stack: at ~620 bytes/entry, can't be inlined into the existing static CL_Thread / CL_NLXFrame structs without large per-thread bloat (2048 NLX frames × 620 ≈ 1.3 MB). Plan uses heap allocation with a separate bound (main 256, workers 64) — sufficient for any realistic UWP cleanup nesting but adds a malloc to thread init.",
+    "Multi-thread paths: cl_pending_* are per-thread; saved-pending stack must be per-thread too (handled). Threading-related cleanup paths in builtins_thread.c that reset thread NLX state must also reset saved_pending_top (covered by item-1 step 6).",
+    "OP_UWRETHROW pop must be unconditional and exactly match OP_UWPROT pushes — if any code path pushes without popping (or vice versa) the stack desyncs. Mitigated by capturing saved_pending_mark on every NLX frame and restoring on every longjmp landing, so non-local exits always rewind to a consistent depth.",
+    "Behavior when cleanup itself initiates a new non-local transfer (the original outer transfer is abandoned per CLHS): the saved entry is left on the stack momentarily, but the target landing's saved_pending_mark restore will trim it. Important to verify with a test where the cleanup throws."
+  ]
+}

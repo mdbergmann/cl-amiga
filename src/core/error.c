@@ -99,6 +99,7 @@ CL_NORETURN static void cl_error_unwind(int code)
      * Restore all dynamic bindings before leaving the VM.
      * Reset GC root stack — longjmp invalidates stack-local roots. */
     cl_nlx_top = 0;
+    cl_saved_pending_top = 0;
     cl_pending_throw = 0;
     cl_dynbind_restore_to(0);
     cl_handler_top = 0;
@@ -134,6 +135,7 @@ void cl_error(int code, const char *fmt, ...)
     /* Exit request: skip debugger/conditions, just unwind */
     if (code == CL_ERR_EXIT) {
         cl_nlx_top = 0;
+        cl_saved_pending_top = 0;
         cl_pending_throw = 0;
         cl_dynbind_restore_to(0);
         cl_handler_top = 0;

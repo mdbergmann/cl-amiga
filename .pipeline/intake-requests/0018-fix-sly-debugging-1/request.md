@@ -1,7 +1,7 @@
 ---
 id: 0018-fix-sly-debugging-1
 type: bug
-status: ready
+status: done
 title: fix sly debugging 1
 ---
 

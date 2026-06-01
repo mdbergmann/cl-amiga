@@ -222,6 +222,7 @@ void cl_storage_error(const char *fmt, ...)
     cl_vm.sp = 0;
     cl_vm.fp = 0;
     cl_nlx_top = 0;
+    cl_saved_pending_top = 0;
     cl_pending_throw = 0;
     cl_dynbind_restore_to(0);
     cl_handler_top = 0;

@@ -184,6 +184,7 @@ static void jump_to_top_level(void)
     cl_in_debugger = 0;
     cl_debugger_depth = 0;
     cl_nlx_top = 0;
+    cl_saved_pending_top = 0;
     cl_pending_throw = 0;
     cl_dynbind_restore_to(0);
     cl_handler_top = 0;

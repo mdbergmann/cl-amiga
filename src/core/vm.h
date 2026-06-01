@@ -81,6 +81,7 @@ typedef struct {
     void *compiler_mark;   /* active compiler chain head at frame creation */
     int mv_count;          /* multiple value count to preserve across NLX */
     CL_Obj mv_values[CL_MAX_MV]; /* multiple values to preserve across NLX */
+    int saved_pending_mark; /* saved_pending_top depth at frame creation */
 } CL_NLXFrame;
 
 /* --- Condition handler binding stack --- */
