@@ -918,7 +918,14 @@ static CL_Obj call_builtin(CL_Function *func, CL_Obj *args, int nargs)
                         ? cl_symbol_name(func->name) : "?";
     last_builtin_fptr = (void *)func->func;
     last_builtin_obj = CL_PTR_TO_OBJ(func);
-    cl_get_current_thread()->mv_count = 1;
+    /* Save pre-reset mv state so NLX builtins (THROW) can see the
+     * multiple values of their last argument after call_builtin's reset. */
+    { CL_Thread *t = cl_get_current_thread();
+      int mi;
+      t->pre_call_mv_count = t->mv_count;
+      for (mi = 0; mi < t->mv_count && mi < CL_MAX_MV; mi++)
+          t->pre_call_mv_values[mi] = t->mv_values[mi];
+      t->mv_count = 1; }
     result = func->func(args, nargs);
     cl_get_current_thread()->mv_values[0] = result;
     return result;
@@ -2722,6 +2729,9 @@ static CL_Obj cl_vm_run(int base_fp, int base_nlx)
                             cl_pending_throw = 1;
                             cl_pending_tag = block_tag;
                             cl_pending_value = value;
+                            cl_pending_mv_count = cl_mv_count;
+                            { int mi; for (mi = 0; mi < cl_mv_count && mi < CL_MAX_MV; mi++)
+                                cl_pending_mv_values[mi] = cl_mv_values[mi]; }
                             cl_nlx_top = j;
                             CL_LONGJMP(cl_nlx_stack[j].buf, 1);
                         }
@@ -2837,6 +2847,9 @@ static CL_Obj cl_vm_run(int base_fp, int base_nlx)
                             cl_pending_throw = 1;
                             cl_pending_tag = tagbody_id;
                             cl_pending_value = tag_index;
+                            cl_pending_mv_count = cl_mv_count;
+                            { int mi; for (mi = 0; mi < cl_mv_count && mi < CL_MAX_MV; mi++)
+                                cl_pending_mv_values[mi] = cl_mv_values[mi]; }
                             cl_nlx_top = j;
                             CL_LONGJMP(cl_nlx_stack[j].buf, 1);
                         }
@@ -3419,6 +3432,9 @@ static CL_Obj cl_vm_run(int base_fp, int base_nlx)
                         /* No interposing UWPROT, go directly to target */
                         cl_pending_throw = 0;
                         cl_nlx_stack[i].result = pval;
+                        cl_nlx_stack[i].mv_count = cl_pending_mv_count;
+                        { int mi; for (mi = 0; mi < cl_pending_mv_count && mi < CL_MAX_MV; mi++)
+                            cl_nlx_stack[i].mv_values[mi] = cl_pending_mv_values[mi]; }
                         cl_nlx_top = i;
                         CL_LONGJMP(cl_nlx_stack[i].buf, 1);
                     }

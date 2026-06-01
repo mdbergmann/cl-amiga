@@ -66,6 +66,8 @@ typedef struct CL_Thread_s {
     CL_Obj pending_value;
     int    pending_error_code;
     char   pending_error_msg[512];
+    int    pending_mv_count;
+    CL_Obj pending_mv_values[CL_MAX_MV];
 
     /* ---- Error frames ---- */
     CL_ErrorFrame error_frames[CL_MAX_ERROR_FRAMES];
@@ -77,6 +79,10 @@ typedef struct CL_Thread_s {
     /* ---- Multiple values ---- */
     CL_Obj mv_values[CL_MAX_MV];
     int    mv_count;
+    /* mv state captured by call_builtin before its per-call reset; lets
+     * NLX builtins (THROW) see the multiple values of their last argument. */
+    int    pre_call_mv_count;
+    CL_Obj pre_call_mv_values[CL_MAX_MV];
 
     /* ---- Lisp-visible thread object (CL_ThreadObj wrapping this thread) ----
      * Set at thread creation, returned by (mp:current-thread). Must remain
@@ -421,6 +427,8 @@ int    cl_symbol_boundp(CL_Obj sym);
 #define cl_pending_value      (CT->pending_value)
 #define cl_pending_error_code (CT->pending_error_code)
 #define cl_pending_error_msg  (CT->pending_error_msg)
+#define cl_pending_mv_count   (CT->pending_mv_count)
+#define cl_pending_mv_values  (CT->pending_mv_values)
 
 /* Error frames */
 #define cl_error_frames     (CT->error_frames)
@@ -430,8 +438,10 @@ int    cl_symbol_boundp(CL_Obj sym);
 #define cl_exit_code        (CT->exit_code)
 
 /* Multiple values */
-#define cl_mv_values        (CT->mv_values)
-#define cl_mv_count         (CT->mv_count)
+#define cl_mv_values           (CT->mv_values)
+#define cl_mv_count            (CT->mv_count)
+#define cl_pre_call_mv_count   (CT->pre_call_mv_count)
+#define cl_pre_call_mv_values  (CT->pre_call_mv_values)
 
 /* GC roots */
 #define gc_root_count       (CT->gc_root_count)
