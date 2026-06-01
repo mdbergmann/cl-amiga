@@ -3327,6 +3327,7 @@ static CL_Obj cl_vm_run(int base_fp, int base_nlx)
                     strncpy(sp->pending_error_msg, cl_pending_error_msg,
                             sizeof(sp->pending_error_msg) - 1);
                     sp->pending_error_msg[sizeof(sp->pending_error_msg) - 1] = '\0';
+                    sp->entered_via_longjmp = 0; /* set to 1 in longjmp branch if triggered */
                 }
                 cl_pending_throw    = 0;
                 cl_pending_tag      = CL_NIL;
@@ -3379,6 +3380,7 @@ static CL_Obj cl_vm_run(int base_fp, int base_nlx)
                     strncpy(sp->pending_error_msg, cl_pending_error_msg,
                             sizeof(sp->pending_error_msg) - 1);
                     sp->pending_error_msg[sizeof(sp->pending_error_msg) - 1] = '\0';
+                    sp->entered_via_longjmp = 1; /* our longjmp fired — UWRETHROW must rethrow */
                 }
                 cl_vm.sp = nlx->vm_sp;
                 cl_vm.fp = nlx->vm_fp;
@@ -3461,7 +3463,25 @@ static CL_Obj cl_vm_run(int base_fp, int base_nlx)
 
         VM_CASE(OP_UWRETHROW): {
             /* After cleanup forms: pop our saved pending snapshot (pushed at
-             * OP_UWPROT arming) and re-initiate pending throw/error if any. */
+             * OP_UWPROT arming) and re-initiate pending throw/error if any.
+             *
+             * A UWRETHROW re-initiates a pending NLX in two situations:
+             *   1. A new NLX was initiated during the cleanup body itself
+             *      (cl_pending_throw != 0 at entry — rethrow_active).
+             *   2. Our own UWPROT's longjmp was triggered (entered_via_longjmp=1
+             *      in the saved entry) AND after restoring the saved state the
+             *      pending NLX is still live. This handles the case where a nested
+             *      CATCH inside the cleanup consumed an intermediate throw, clearing
+             *      cl_pending_throw, even though the outer NLX (the one that armed
+             *      our UWPROT via longjmp) still needs to be re-initiated.
+             *
+             * If neither condition holds — our UWPROT entered normally and no new
+             * NLX fired during cleanup — leave the restored pending state parked in
+             * the globals. The enclosing UWP's UWRETHROW (or the next NLX search
+             * point) will see it. Re-initiating it here would skip cleanup code in
+             * the enclosing UWP that runs after our call site. */
+            int rethrow_active = (cl_pending_throw != 0);
+            int should_rethrow = 0;
             {
                 CL_SavedPending saved;
                 if (cl_saved_pending_top > 0) {
@@ -3474,6 +3494,7 @@ static CL_Obj cl_vm_run(int base_fp, int base_nlx)
                     saved.pending_mv_count = 0;
                     saved.pending_error_code = 0;
                     saved.pending_error_msg[0] = '\0';
+                    saved.entered_via_longjmp = 0;
                 }
                 if (cl_pending_throw == 0) {
                     /* Cleanup body completed without a new NLX — restore the
@@ -3492,8 +3513,10 @@ static CL_Obj cl_vm_run(int base_fp, int base_nlx)
                 /* If cl_pending_throw != 0 a new NLX was initiated during the
                  * cleanup; fall through to the rethrow logic below using the
                  * new (current) pending state, discarding `saved`. */
+                should_rethrow = rethrow_active ||
+                                 (saved.entered_via_longjmp && cl_pending_throw != 0);
             }
-            if (cl_pending_throw == 1) {
+            if (should_rethrow && cl_pending_throw == 1) {
                 /* Re-throw: find matching catch or block */
                 CL_Obj ptag = cl_pending_tag;
                 CL_Obj pval = cl_pending_value;
@@ -3527,7 +3550,7 @@ static CL_Obj cl_vm_run(int base_fp, int base_nlx)
                 /* No catch found — signal error */
                 cl_pending_throw = 0;
                 cl_error(CL_ERR_GENERAL, "No catch for tag during re-throw");
-            } else if (cl_pending_throw == 2) {
+            } else if (should_rethrow && cl_pending_throw == 2) {
                 /* Re-throw error: find interposing UWPROT or error frame (skip stale) */
                 int i;
                 for (i = cl_nlx_top - 1; i >= 0; i--) {
@@ -3563,7 +3586,7 @@ static CL_Obj cl_vm_run(int base_fp, int base_nlx)
                     exit(1);
                 }
             }
-            /* cl_pending_throw == 0: nop */
+            /* !should_rethrow: nop — pending state parked for enclosing UWP */
             VM_BREAK;
         }
 
