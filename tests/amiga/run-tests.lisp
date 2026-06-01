@@ -1366,6 +1366,32 @@
        (restart-case (invoke-restart-interactively (find-restart 'add))
          (add (a b) :interactive (lambda () (list 3 4)) (+ a b))))
 
+; --- unwind-protect + restart-case ordering (CLHS INVOKE-RESTART) ---
+(defvar *restart-uwp-log* nil)
+(check "uwp cleanup before handler"
+       '(before cleanup handler)
+       (let ((*restart-uwp-log* nil))
+         (restart-case
+           (unwind-protect
+             (progn (push 'before *restart-uwp-log*) (invoke-restart 'abort))
+             (push 'cleanup *restart-uwp-log*))
+           (abort () (push 'handler *restart-uwp-log*) :done))
+         (reverse *restart-uwp-log*)))
+(check "nested uwp cleanup order"
+       '(before inner-cleanup outer-cleanup handler)
+       (let ((*restart-uwp-log* nil))
+         (restart-case
+           (unwind-protect
+             (unwind-protect
+               (progn (push 'before *restart-uwp-log*) (invoke-restart 'abort))
+               (push 'inner-cleanup *restart-uwp-log*))
+             (push 'outer-cleanup *restart-uwp-log*))
+           (abort () (push 'handler *restart-uwp-log*) :done))
+         (reverse *restart-uwp-log*)))
+(check "handler return is restart-case value"
+       :handler-result
+       (restart-case (unwind-protect (invoke-restart 'abort) nil) (abort () :handler-result)))
+
 ; --- define-condition ---
 (check "define-condition basic" 'my-error (define-condition my-error (error) ()))
 (check "define-condition conditionp" t (conditionp (make-condition 'my-error)))

@@ -2274,13 +2274,25 @@ void compile_restart_case(CL_Compiler *c, CL_Obj form)
     /* (restart-case form (name (params...) [:report str] body...)...) */
     CL_Obj main_form = cl_car(cl_cdr(form));
     CL_Obj clauses = cl_cdr(cl_cdr(form));
+    CL_CompEnv *env = c->env;
+    int saved_local_count = env->local_count;
     int saved_tail = c->in_tail;
     int count = 0;
     int catch_pos, jmp_pos;
+    int dispatch_slot;
     CL_Obj cl_iter;
     CL_Obj catch_tag;
 
     c->in_tail = 0;
+
+    /* Reserve a local slot for the dispatch cons at the catch landing.
+     * Must be allocated before main_form compiles (same pattern as
+     * compile_unwind_protect) so nested forms don't reuse this index. */
+    dispatch_slot = env->local_count;
+    env->locals[dispatch_slot] = CL_NIL;
+    env->local_count++;
+    if (env->local_count > env->max_locals)
+        env->max_locals = env->local_count;
 
     /* Generate unique catch tag (a fresh cons cell) */
     catch_tag = cl_cons(CL_NIL, CL_NIL);
@@ -2339,12 +2351,25 @@ void compile_restart_case(CL_Compiler *c, CL_Obj form)
     cl_emit(c, OP_UNCATCH);
     jmp_pos = cl_emit_jump(c, OP_JMP);
 
-    /* [landing]: invoke-restart threw result here */
+    /* [landing]: invoke-restart threw (handler . args-list) cons here.
+     * Unwind-protect cleanups have already run; now apply the handler in
+     * the dynamic environment captured at restart establishment (CLHS). */
     cl_patch_jump(c, catch_pos);
+    cl_emit(c, OP_DUP);
+    cl_emit(c, OP_CDR);                         /* TOS = args-list, below = cons */
+    cl_emit(c, OP_STORE);
+    cl_emit(c, (uint8_t)dispatch_slot);         /* save args-list (peeks, no pop) */
+    cl_emit(c, OP_POP);                         /* discard args-list copy */
+    cl_emit(c, OP_CAR);                         /* TOS = handler */
+    cl_emit(c, OP_LOAD);
+    cl_emit(c, (uint8_t)dispatch_slot);         /* push args-list */
+    cl_emit(c, OP_APPLY);                       /* result on stack */
 
-    /* [past_landing]: both paths converge */
+    /* [past_landing]: both paths converge with one value on stack */
     cl_patch_jump(c, jmp_pos);
 
+    cl_env_clear_boxed(env, saved_local_count);
+    env->local_count = saved_local_count;
     c->in_tail = saved_tail;
 }
 

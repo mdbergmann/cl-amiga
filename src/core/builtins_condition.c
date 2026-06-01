@@ -1226,13 +1226,30 @@ static int restart_applicable(int i, CL_Obj condition)
 }
 
 /* Invoke the restart at binding i with call_args, transferring control to
- * its catch tag.  Does not return. */
+ * its catch tag.  Does not return.
+ *
+ * Per CLHS INVOKE-RESTART, the non-local transfer completes (running every
+ * interposing UNWIND-PROTECT cleanup) BEFORE the handler is called.  We
+ * achieve this by throwing a dispatch cons (handler . args-list) to the catch
+ * tag; the catch landing in compile_restart_case applies the handler after the
+ * unwind has already run. */
 static CL_Obj invoke_restart_at_binding(int i, CL_Obj *call_args, int n_call)
 {
-    CL_Obj result = cl_vm_apply(cl_restart_stack[i].handler, call_args, n_call);
-    /* restart_stack lives in the (GC-rooted) thread struct, so .tag is
-     * still valid even if cl_vm_apply compacted the heap. */
-    cl_throw_to_tag(cl_restart_stack[i].tag, result);
+    CL_Obj args_list = CL_NIL;
+    CL_Obj dispatch_cons;
+    int j;
+
+    /* Build argument list; protect args_list across each allocating cl_cons. */
+    CL_GC_PROTECT(args_list);
+    for (j = n_call - 1; j >= 0; j--)
+        args_list = cl_cons(call_args[j], args_list);
+
+    /* Re-read handler after potential GC compaction (fields are GC-rooted in
+     * the thread struct).  Build dispatch cons (handler . args-list). */
+    dispatch_cons = cl_cons(cl_restart_stack[i].handler, args_list);
+    CL_GC_UNPROTECT(1);
+
+    cl_throw_to_tag(cl_restart_stack[i].tag, dispatch_cons);
     return CL_NIL; /* unreachable */
 }
 
