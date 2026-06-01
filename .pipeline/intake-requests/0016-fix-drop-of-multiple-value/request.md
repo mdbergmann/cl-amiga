@@ -1,7 +1,7 @@
 ---
 id: 0016-fix-drop-of-multiple-value
 type: bug
-status: ready
+status: done
 title: fix drop of multiple-value
 ---
 

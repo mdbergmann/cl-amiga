@@ -1,0 +1,16 @@
+{
+  "summary": "VM bug: secondary multiple values are dropped when a non-local exit (return-from / throw / go / invoke-restart) unwinds through an interposing unwind-protect. The four throw-into-UWPROT call sites stash only the primary value into cl_pending_value, and OP_UWRETHROW re-throws without restoring mv state to the destination NLX frame, so OP_BLOCK_PUSH / OP_CATCH propagate stale mv_count = 1. Fix by extending the pending-throw state with pending_mv_count / pending_mv_values, snapshotting them at each throw site, and applying them to the target NLX frame in OP_UWRETHROW.",
+  "affected_areas": [
+    "VM non-local exit machinery (BLOCK_RETURN, TAGBODY_GO, UWRETHROW)",
+    "THROW builtin and restart invocation (cl_throw_to_tag, bi_throw)",
+    "Per-thread state struct (CL_Thread pending_* fields)"
+  ],
+  "risks": [
+    "Adding 21 CL_Obj-sized fields (1 int + CL_MAX_MV=20 obj) per thread enlarges CL_Thread by ~84 bytes — negligible vs existing per-thread state but worth noting on the 8 MB / 14 MHz target.",
+    "Must NOT clear pending_mv_* on the interposing-UWPROT longjmp branch of OP_UWRETHROW — they must persist across nested cleanups just like pending_tag / pending_value.",
+    "TAGBODY restoration explicitly forces cl_mv_count = 1; do not regress GO semantics. Defensive write of pending_mv_* in OP_TAGBODY_GO is harmless because OP_TAGBODY_PUSH ignores nlx->mv_count / nlx->mv_values.",
+    "pending_mv_values entries are GC roots while a throw is in flight — verify GC traces them (or that throws complete without intervening allocation). Per-thread arrays in CL_Thread are typically scanned wholesale, so this should be covered; flag it in implementation for explicit confirmation.",
+    "Error path (cl_pending_throw == 2) does NOT carry multiple values per CLHS; do not extend mv preservation to that branch.",
+    "No FASL or bytecode format change — no version bump required."
+  ]
+}

@@ -447,6 +447,25 @@
 (check "uwp throw value" 42 (catch 'done (unwind-protect (throw 'done 42) (+ 1 2))))
 (check "uwp nested" '(outer inner) (let ((log nil)) (catch 'done (unwind-protect (unwind-protect (throw 'done 1) (setq log (cons 'inner log))) (setq log (cons 'outer log)))) log))
 
+; --- Phase 4 Tier 2: NLX multiple-values through unwind-protect ---
+; (a) return-from carrying secondary values through one unwind-protect
+(defun uwp-mv-cwlh (fn) (unwind-protect (funcall fn) nil))
+(defun uwp-mv-recv () (block done (uwp-mv-cwlh (lambda () (return-from done (values nil t))))))
+(check "uwp nlx mv basic" '(nil t) (multiple-value-list (uwp-mv-recv)))
+; (c) nested unwind-protects: both cleanups run, values survive
+(defvar *uwp-nlx-log* nil)
+(setq *uwp-nlx-log* nil)
+(check "uwp nlx mv nested" '(1 2 3)
+  (multiple-value-list
+    (block b
+      (unwind-protect
+        (unwind-protect (return-from b (values 1 2 3))
+          (setq *uwp-nlx-log* (cons 'inner *uwp-nlx-log*)))
+        (setq *uwp-nlx-log* (cons 'outer *uwp-nlx-log*))))))
+(check "uwp nlx mv nested log" '(outer inner) *uwp-nlx-log*)
+; (d) throw carrying multiple values through unwind-protect (bi_throw path)
+(check "uwp nlx mv throw" '(10 20)
+  (multiple-value-list (catch 'k (unwind-protect (throw 'k (values 10 20)) nil))))
 ; --- Phase 4 Tier 2: Multiple Values ---
 (check "values none" nil (values))
 (check "values one" 1 (values 1))

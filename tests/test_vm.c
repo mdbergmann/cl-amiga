@@ -2452,6 +2452,67 @@ TEST(eval_unwind_protect_multiple_values)
     ASSERT_EQ_INT(eval_int("*uwp-cleanup*"), 1);
 }
 
+/* Regression: secondary values must survive a non-local exit through
+ * an unwind-protect (the pending_mv_* snapshot / restore path). */
+TEST(eval_uwprot_nlx_multiple_values)
+{
+    /* (a) Exact repro: return-from through one unwind-protect. */
+    eval_print("(defun cwlh-mv (fn) (unwind-protect (funcall fn) nil))");
+    eval_print("(defun recv-mv () (block done (cwlh-mv (lambda () (return-from done (values nil t))))))");
+    ASSERT_STR_EQ(eval_print("(multiple-value-list (recv-mv))"), "(NIL T)");
+
+    /* (b) More than 2 secondaries. */
+    ASSERT_STR_EQ(eval_print(
+        "(multiple-value-list"
+        "  (block b (unwind-protect (return-from b (values 1 2 3 4)) nil)))"),
+        "(1 2 3 4)");
+
+    /* (c) Nested unwind-protects: both cleanups run in order, all values flow. */
+    eval_print("(defvar *uwp-nlx-log* nil)");
+    eval_print("(setq *uwp-nlx-log* nil)");
+    ASSERT_STR_EQ(eval_print(
+        "(multiple-value-list"
+        "  (block b"
+        "    (unwind-protect"
+        "      (unwind-protect"
+        "        (return-from b (values 1 2 3))"
+        "        (setq *uwp-nlx-log* (cons 'inner *uwp-nlx-log*)))"
+        "      (setq *uwp-nlx-log* (cons 'outer *uwp-nlx-log*)))))"),
+        "(1 2 3)");
+    ASSERT_STR_EQ(eval_print("*uwp-nlx-log*"), "(OUTER INNER)");
+
+    /* (d) THROW carrying multiple values through unwind-protect (bi_throw path). */
+    ASSERT_STR_EQ(eval_print(
+        "(multiple-value-list"
+        "  (catch 'k (unwind-protect (throw 'k (values 10 20)) nil)))"),
+        "(10 20)");
+
+    /* (e) Cleanup form's own (values ...) must not bleed into result. */
+    ASSERT_STR_EQ(eval_print(
+        "(multiple-value-list"
+        "  (block b (unwind-protect (return-from b (values 'a 'b)) (values 99 98 97))))"),
+        "(A B)");
+
+    /* (f) Zero-value (values) through unwind-protect. */
+    ASSERT_STR_EQ(eval_print(
+        "(multiple-value-list"
+        "  (block b (unwind-protect (return-from b (values)) nil)))"),
+        "NIL");
+
+    /* (g) Restart-driven NLX through unwind-protect (cl_throw_to_tag path). */
+    ASSERT_STR_EQ(eval_print(
+        "(multiple-value-list"
+        "  (handler-bind ((simple-error"
+        "                  (lambda (e)"
+        "                    (declare (ignore e))"
+        "                    (invoke-restart 'mv-restart))))"
+        "    (unwind-protect"
+        "      (restart-case (error \"test\")"
+        "        (mv-restart () (values 'x 'y)))"
+        "      nil)))"),
+        "(X Y)");
+}
+
 TEST(eval_special_error_restore)
 {
     /* Bindings restored on error */
@@ -9050,6 +9111,7 @@ int main(void)
     RUN(eval_special_setq);
     RUN(eval_special_unwind_protect);
     RUN(eval_unwind_protect_multiple_values);
+    RUN(eval_uwprot_nlx_multiple_values);
     RUN(eval_special_error_restore);
     RUN(eval_special_mixed_let);
     RUN(eval_special_lambda_param_dynbind);

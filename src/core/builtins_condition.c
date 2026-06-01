@@ -1172,6 +1172,9 @@ void cl_throw_to_tag(CL_Obj tag, CL_Obj value)
                     cl_pending_throw = 1;
                     cl_pending_tag = tag;
                     cl_pending_value = value;
+                    cl_pending_mv_count = cl_mv_count;
+                    { int mi; for (mi = 0; mi < cl_mv_count && mi < CL_MAX_MV; mi++)
+                        cl_pending_mv_values[mi] = cl_mv_values[mi]; }
                     cl_nlx_top = j;
                     longjmp(cl_nlx_stack[j].buf, 1);
                 }

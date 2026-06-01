@@ -1882,20 +1882,27 @@ static CL_Obj bi_throw(CL_Obj *args, int n)
                     /* Skip stale NLX frames (frame was reused by tail call) */
                     CL_Frame *tf = &cl_vm.frames[cl_nlx_stack[j].vm_fp - 1];
                     if (tf->code != cl_nlx_stack[j].code) continue;
-                    /* Set pending throw, longjmp to UWPROT */
+                    /* Set pending throw, longjmp to UWPROT.
+                     * Use cl_pre_call_mv_count: call_builtin resets
+                     * cl_mv_count=1 before invoking bi_throw, so cl_mv_count
+                     * is always 1 here; the correct mv state from the value
+                     * argument is preserved in cl_pre_call_mv_*. */
                     cl_pending_throw = 1;
                     cl_pending_tag = tag;
                     cl_pending_value = value;
+                    cl_pending_mv_count = cl_pre_call_mv_count;
+                    { int mi; for (mi = 0; mi < cl_pre_call_mv_count && mi < CL_MAX_MV; mi++)
+                        cl_pending_mv_values[mi] = cl_pre_call_mv_values[mi]; }
                     cl_nlx_top = j;
                     CL_LONGJMP(cl_nlx_stack[j].buf, 1);
                 }
             }
-            /* No interposing UWPROT — go directly to catch */
+            /* No interposing UWPROT — go directly to catch.
+             * Same reasoning: use cl_pre_call_mv_count, not cl_mv_count. */
             cl_nlx_stack[i].result = value;
-            /* Preserve multiple values across NLX */
-            cl_nlx_stack[i].mv_count = cl_mv_count;
-            { int mi; for (mi = 0; mi < cl_mv_count && mi < CL_MAX_MV; mi++)
-                cl_nlx_stack[i].mv_values[mi] = cl_mv_values[mi]; }
+            cl_nlx_stack[i].mv_count = cl_pre_call_mv_count;
+            { int mi; for (mi = 0; mi < cl_pre_call_mv_count && mi < CL_MAX_MV; mi++)
+                cl_nlx_stack[i].mv_values[mi] = cl_pre_call_mv_values[mi]; }
             cl_nlx_top = i;
             CL_LONGJMP(cl_nlx_stack[i].buf, 1);
         }
