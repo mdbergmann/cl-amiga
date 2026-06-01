@@ -236,6 +236,7 @@ void cl_vm_init(uint32_t stack_size, int frame_size)
     cl_vm.sp = 0;
     cl_vm.fp = 0;
     cl_nlx_top = 0;
+    cl_saved_pending_top = 0;
     cl_dyn_top = 0;
     cl_handler_top = 0;
     cl_restart_top = 0;
@@ -2656,6 +2657,7 @@ static CL_Obj cl_vm_run(int base_fp, int base_nlx)
             nlx->gc_root_mark = gc_root_count;
             nlx->compiler_mark = cl_compiler_mark();
             nlx->mv_count = 1;
+            nlx->saved_pending_mark = cl_saved_pending_top;
 
             if (CL_SETJMP(nlx->buf) == 0) {
                 /* Normal path: block body executes */
@@ -2668,6 +2670,7 @@ static CL_Obj cl_vm_run(int base_fp, int base_nlx)
                 cl_restart_top = nlx->restart_mark;
                 gc_root_count = nlx->gc_root_mark;
                 cl_compiler_restore_to(nlx->compiler_mark);
+                cl_saved_pending_top = nlx->saved_pending_mark;
                 {
                     CL_Obj block_result = nlx->result;
                     cl_vm.sp = nlx->vm_sp;
@@ -2778,6 +2781,7 @@ static CL_Obj cl_vm_run(int base_fp, int base_nlx)
             nlx->restart_mark = cl_restart_top;
             nlx->gc_root_mark = gc_root_count;
             nlx->compiler_mark = cl_compiler_mark();
+            nlx->saved_pending_mark = cl_saved_pending_top;
 
             if (CL_SETJMP(nlx->buf) == 0) {
                 /* Normal path: tagbody body executes */
@@ -2790,6 +2794,7 @@ static CL_Obj cl_vm_run(int base_fp, int base_nlx)
                 cl_restart_top = nlx->restart_mark;
                 gc_root_count = nlx->gc_root_mark;
                 cl_compiler_restore_to(nlx->compiler_mark);
+                cl_saved_pending_top = nlx->saved_pending_mark;
                 {
                     CL_Obj tag_index = nlx->result;
                     cl_vm.sp = nlx->vm_sp;
@@ -3222,6 +3227,7 @@ static CL_Obj cl_vm_run(int base_fp, int base_nlx)
             nlx->gc_root_mark = gc_root_count;
             nlx->compiler_mark = cl_compiler_mark();
             nlx->mv_count = 1;
+            nlx->saved_pending_mark = cl_saved_pending_top;
 
             if (CL_SETJMP(nlx->buf) == 0) {
                 /* Normal path: body executes */
@@ -3236,6 +3242,7 @@ static CL_Obj cl_vm_run(int base_fp, int base_nlx)
                 cl_restart_top = nlx->restart_mark;
                 gc_root_count = nlx->gc_root_mark;
                 cl_compiler_restore_to(nlx->compiler_mark);
+                cl_saved_pending_top = nlx->saved_pending_mark;
                 {
                     CL_Obj throw_result = nlx->result;
                     cl_vm.sp = nlx->vm_sp;
@@ -3303,7 +3310,31 @@ static CL_Obj cl_vm_run(int base_fp, int base_nlx)
             nlx->compiler_mark = cl_compiler_mark();
 
             if (CL_SETJMP(nlx->buf) == 0) {
-                /* Normal path: protected form executes */
+                /* Normal path: save and clear pending throw state so that a
+                 * nested unwind-protect inside the cleanup cannot clobber
+                 * the outer non-local transfer. */
+                if (cl_saved_pending_top >= cl_saved_pending_max)
+                    cl_error(CL_ERR_OVERFLOW, "saved-pending stack overflow");
+                {
+                    CL_SavedPending *sp = &cl_saved_pending_stack[cl_saved_pending_top++];
+                    sp->pending_throw    = cl_pending_throw;
+                    sp->pending_tag      = cl_pending_tag;
+                    sp->pending_value    = cl_pending_value;
+                    sp->pending_mv_count = cl_pending_mv_count;
+                    { int _mi; for (_mi = 0; _mi < cl_pending_mv_count && _mi < CL_MAX_MV; _mi++)
+                        sp->pending_mv_values[_mi] = cl_pending_mv_values[_mi]; }
+                    sp->pending_error_code = cl_pending_error_code;
+                    strncpy(sp->pending_error_msg, cl_pending_error_msg,
+                            sizeof(sp->pending_error_msg) - 1);
+                    sp->pending_error_msg[sizeof(sp->pending_error_msg) - 1] = '\0';
+                }
+                cl_pending_throw    = 0;
+                cl_pending_tag      = CL_NIL;
+                cl_pending_value    = CL_NIL;
+                cl_pending_mv_count = 0;
+                cl_pending_error_code = 0;
+                cl_pending_error_msg[0] = '\0';
+                nlx->saved_pending_mark = cl_saved_pending_top;
                 cl_nlx_top++;
 
 
@@ -3328,6 +3359,27 @@ static CL_Obj cl_vm_run(int base_fp, int base_nlx)
                 cl_restart_top = nlx->restart_mark;
                 gc_root_count = nlx->gc_root_mark;
                 cl_compiler_restore_to(nlx->compiler_mark);
+                cl_saved_pending_top = nlx->saved_pending_mark;
+                /* The saved slot was pushed at arming time (before the throw).
+                 * Update it now with the actual pending state that triggered
+                 * this cleanup, so UWRETHROW can re-initiate it if the cleanup
+                 * body completes without a new NLX of its own. */
+                if (cl_saved_pending_top > 0) {
+                    CL_SavedPending *sp =
+                        &cl_saved_pending_stack[cl_saved_pending_top - 1];
+                    sp->pending_throw    = cl_pending_throw;
+                    sp->pending_tag      = cl_pending_tag;
+                    sp->pending_value    = cl_pending_value;
+                    sp->pending_mv_count = cl_pending_mv_count;
+                    { int _mi; for (_mi = 0;
+                                    _mi < cl_pending_mv_count && _mi < CL_MAX_MV;
+                                    _mi++)
+                        sp->pending_mv_values[_mi] = cl_pending_mv_values[_mi]; }
+                    sp->pending_error_code = cl_pending_error_code;
+                    strncpy(sp->pending_error_msg, cl_pending_error_msg,
+                            sizeof(sp->pending_error_msg) - 1);
+                    sp->pending_error_msg[sizeof(sp->pending_error_msg) - 1] = '\0';
+                }
                 cl_vm.sp = nlx->vm_sp;
                 cl_vm.fp = nlx->vm_fp;
                 frame = &cl_vm.frames[cl_vm.fp - 1];
@@ -3388,9 +3440,11 @@ static CL_Obj cl_vm_run(int base_fp, int base_nlx)
         }
 
         VM_CASE(OP_UWPOP): {
-            /* Normal exit from protected form — pop NLX frame, clear pending.
+            /* Normal exit from protected form — pop NLX frame.
              * Must find the matching UWPROT frame, as tail calls in called
-             * functions may have leaked BLOCK/CATCH frames above it. */
+             * functions may have leaked BLOCK/CATCH frames above it.
+             * NOTE: we do NOT clear cl_pending_throw here; OP_UWPROT's
+             * arming already cleared it, and OP_UWRETHROW restores it. */
             {
                 int uwi;
                 for (uwi = cl_nlx_top - 1; uwi >= 0; uwi--) {
@@ -3402,12 +3456,43 @@ static CL_Obj cl_vm_run(int base_fp, int base_nlx)
                 if (uwi < 0 && cl_nlx_top > 0)
                     cl_nlx_top--;  /* fallback: pop whatever is on top */
             }
-            cl_pending_throw = 0;
             VM_BREAK;
         }
 
         VM_CASE(OP_UWRETHROW): {
-            /* After cleanup forms: re-initiate pending throw/error if any */
+            /* After cleanup forms: pop our saved pending snapshot (pushed at
+             * OP_UWPROT arming) and re-initiate pending throw/error if any. */
+            {
+                CL_SavedPending saved;
+                if (cl_saved_pending_top > 0) {
+                    saved = cl_saved_pending_stack[--cl_saved_pending_top];
+                } else {
+                    /* Should not happen; initialize to zero for safety. */
+                    saved.pending_throw = 0;
+                    saved.pending_tag = CL_NIL;
+                    saved.pending_value = CL_NIL;
+                    saved.pending_mv_count = 0;
+                    saved.pending_error_code = 0;
+                    saved.pending_error_msg[0] = '\0';
+                }
+                if (cl_pending_throw == 0) {
+                    /* Cleanup body completed without a new NLX — restore the
+                     * pending state that was active before UWPROT armed. */
+                    cl_pending_throw      = saved.pending_throw;
+                    cl_pending_tag        = saved.pending_tag;
+                    cl_pending_value      = saved.pending_value;
+                    cl_pending_mv_count   = saved.pending_mv_count;
+                    { int _mi; for (_mi = 0; _mi < saved.pending_mv_count && _mi < CL_MAX_MV; _mi++)
+                        cl_pending_mv_values[_mi] = saved.pending_mv_values[_mi]; }
+                    cl_pending_error_code = saved.pending_error_code;
+                    strncpy(cl_pending_error_msg, saved.pending_error_msg,
+                            sizeof(cl_pending_error_msg) - 1);
+                    cl_pending_error_msg[sizeof(cl_pending_error_msg) - 1] = '\0';
+                }
+                /* If cl_pending_throw != 0 a new NLX was initiated during the
+                 * cleanup; fall through to the rethrow logic below using the
+                 * new (current) pending state, discarding `saved`. */
+            }
             if (cl_pending_throw == 1) {
                 /* Re-throw: find matching catch or block */
                 CL_Obj ptag = cl_pending_tag;
@@ -3459,6 +3544,7 @@ static CL_Obj cl_vm_run(int base_fp, int base_nlx)
                     int err_code = cl_pending_error_code;
                     cl_pending_throw = 0;
                     cl_nlx_top = 0;
+                    cl_saved_pending_top = 0;
                     cl_dynbind_restore_to(0);
                     cl_handler_top = 0;
                     cl_restart_top = 0;

@@ -4960,6 +4960,19 @@
     (setq *fail-count* (+ *fail-count* 1))
     (format t "FAIL: load verbose test - ~A~%" e)))
 
+; --- Nested UWP in cleanup regression (pending-throw truncation bug) ---
+; If the abort handler fires, restart-case returns :HANDLER-RAN.
+; If the pending transfer is lost (bug), the UWP returns NIL.
+(check "nested-uwp-in-cleanup does not truncate transfer"
+  :handler-ran
+  (flet ((nested-uwp (thunk)
+           (unwind-protect (funcall thunk) nil)))
+    (restart-case
+      (unwind-protect
+        (invoke-restart 'abort)
+        (nested-uwp (lambda () nil)))
+      (abort () :handler-ran))))
+
 ; --- Summary ---
 (format t "~%=== Results ===~%")
 (format t "Passed: ~A~%" *pass-count*)

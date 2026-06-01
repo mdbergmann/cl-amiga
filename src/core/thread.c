@@ -432,6 +432,18 @@ CL_Thread *cl_thread_alloc_worker(void)
     }
     t->nlx_max = CL_WORKER_NLX_FRAMES;
 
+    /* Allocate saved pending-throw stack */
+    t->saved_pending_stack = (CL_SavedPending *)platform_alloc(
+        CL_WORKER_SAVED_PENDING * sizeof(CL_SavedPending));
+    if (!t->saved_pending_stack) {
+        platform_free(t->nlx_stack);
+        platform_free(t->vm.frames);
+        platform_free(t->vm.stack);
+        platform_free(t);
+        return NULL;
+    }
+    t->saved_pending_max = CL_WORKER_SAVED_PENDING;
+
     /* Default: single-value mode */
     t->mv_count = 1;
     t->status = 0; /* created */
@@ -442,6 +454,7 @@ CL_Thread *cl_thread_alloc_worker(void)
 void cl_thread_free_worker(CL_Thread *t)
 {
     if (!t) return;
+    if (t->saved_pending_stack) platform_free(t->saved_pending_stack);
     if (t->nlx_stack)  platform_free(t->nlx_stack);
     if (t->vm.frames)  platform_free(t->vm.frames);
     if (t->vm.stack)   platform_free(t->vm.stack);
@@ -474,6 +487,12 @@ void cl_thread_init(void)
     cl_main_thread.nlx_max = CL_MAX_NLX_FRAMES;
     cl_main_thread.nlx_top = 0;
 
+    /* Allocate saved pending-throw stack */
+    cl_main_thread.saved_pending_stack = (CL_SavedPending *)platform_alloc(
+        CL_MAX_SAVED_PENDING * sizeof(CL_SavedPending));
+    cl_main_thread.saved_pending_max = CL_MAX_SAVED_PENDING;
+    cl_main_thread.saved_pending_top = 0;
+
     /* Default: single-value mode */
     cl_main_thread.mv_count = 1;
 
@@ -496,6 +515,10 @@ void cl_thread_shutdown(void)
     /* Unregister main thread */
     cl_thread_unregister(&cl_main_thread);
 
+    if (cl_main_thread.saved_pending_stack) {
+        platform_free(cl_main_thread.saved_pending_stack);
+        cl_main_thread.saved_pending_stack = NULL;
+    }
     if (cl_main_thread.nlx_stack) {
         platform_free(cl_main_thread.nlx_stack);
         cl_main_thread.nlx_stack = NULL;

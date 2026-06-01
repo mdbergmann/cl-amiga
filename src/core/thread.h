@@ -22,6 +22,9 @@ struct CL_Compiler_s;
 #define CL_CIRCLE_HT_SIZE    256
 #define CL_VM_TRACE_SIZE     64
 
+/* Saved pending-throw stack depth (pushed once per active UWP arming) */
+#define CL_MAX_SAVED_PENDING 256
+
 /* ---- Thread-Local Value (TLV) table ---- */
 #define CL_TLV_TABLE_SIZE  256
 #define CL_TLV_ABSENT      ((CL_Obj)0xFFFFFFFE)  /* "no TLV entry" sentinel */
@@ -30,6 +33,19 @@ typedef struct {
     CL_Obj symbol;  /* CL_NIL = empty slot, CL_UNBOUND = tombstone */
     CL_Obj value;
 } CL_TLVEntry;
+
+/* Snapshot of all pending-throw fields, saved/restored around UWP cleanups
+ * so a nested unwind-protect inside a cleanup cannot clobber the outer
+ * non-local transfer. */
+typedef struct {
+    int    pending_throw;
+    CL_Obj pending_tag;
+    CL_Obj pending_value;
+    int    pending_mv_count;
+    CL_Obj pending_mv_values[CL_MAX_MV];
+    int    pending_error_code;
+    char   pending_error_msg[512];
+} CL_SavedPending;
 
 typedef struct CL_Thread_s {
     /* ---- Thread metadata ---- */
@@ -49,6 +65,13 @@ typedef struct CL_Thread_s {
     CL_NLXFrame      *nlx_stack;
     int               nlx_max;
     int               nlx_top;
+
+    /* ---- Saved pending-throw stack (heap-allocated) ----
+     * Pushed once per active OP_UWPROT arming so nested UWPs inside a
+     * cleanup cannot clobber the outer non-local transfer state. */
+    CL_SavedPending  *saved_pending_stack;
+    int               saved_pending_top;
+    int               saved_pending_max;
 
     /* ---- Handler stack ---- */
     CL_HandlerBinding handler_stack[CL_MAX_HANDLER_BINDINGS];
@@ -279,6 +302,7 @@ void cl_thread_shutdown(void);
 #define CL_WORKER_VM_STACK_SIZE  4096   /* 4K entries = 16KB */
 #define CL_WORKER_VM_FRAME_SIZE  256    /* 256 frames = ~15KB */
 #define CL_WORKER_NLX_FRAMES     256    /* 256 NLX frames = ~50KB */
+#define CL_WORKER_SAVED_PENDING   64    /* 64 saved-pending entries = ~39KB */
 
 /* Thread side table: maps thread_id -> CL_Thread* */
 #define CL_MAX_THREADS 256
@@ -410,6 +434,11 @@ int    cl_symbol_boundp(CL_Obj sym);
 /* NLX stack */
 #define cl_nlx_stack        (CT->nlx_stack)
 #define cl_nlx_top          (CT->nlx_top)
+
+/* Saved pending-throw stack */
+#define cl_saved_pending_stack  (CT->saved_pending_stack)
+#define cl_saved_pending_top    (CT->saved_pending_top)
+#define cl_saved_pending_max    (CT->saved_pending_max)
 
 /* Handler stack */
 #define cl_handler_stack    (CT->handler_stack)

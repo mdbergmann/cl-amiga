@@ -935,6 +935,67 @@ TEST(lisp_restart_case_handler_return_is_restart_case_value)
         ":HANDLER-RESULT");
 }
 
+/* --- Nested UWP in cleanup regression tests (bug: nested UWP cleared pending-throw) --- */
+
+TEST(lisp_nested_uwp_in_cleanup_does_not_truncate_transfer)
+{
+    /* The exact repro from the bug report: a nested unwind-protect inside the
+     * cleanup must not truncate the outer invoke-restart transfer.
+     * If the abort handler fires, restart-case returns :HANDLER-RAN.
+     * If the pending transfer is lost, the UWP returns NIL (list-slot never
+     * set in the NLX path) and restart-case returns NIL. */
+    ASSERT_STR_EQ(eval_print(
+        "(flet ((nested-uwp (thunk)"
+        "         (unwind-protect (funcall thunk) nil)))"
+        "  (restart-case"
+        "    (unwind-protect"
+        "      (invoke-restart 'abort)"
+        "      (nested-uwp (lambda () nil)))"
+        "    (abort () :handler-ran)))"),
+        ":HANDLER-RAN");
+}
+
+TEST(lisp_two_deep_nested_uwp_in_cleanup)
+{
+    /* Two levels of nested UWP in cleanup: all cleanups run, handler fires.
+     * restart-case returns :HANDLER-RAN if the handler fires correctly. */
+    ASSERT_STR_EQ(eval_print(
+        "(restart-case"
+        "  (unwind-protect"
+        "    (invoke-restart 'abort)"
+        "    (unwind-protect nil"
+        "      (unwind-protect nil nil)))"
+        "  (abort () :handler-ran))"),
+        ":HANDLER-RAN");
+}
+
+TEST(lisp_nested_uwp_cleanup_catches_inner_throw)
+{
+    /* Cleanup does its own catch/throw; outer handler must still fire.
+     * restart-case returns :HANDLER-RAN if the handler fires correctly. */
+    ASSERT_STR_EQ(eval_print(
+        "(restart-case"
+        "  (unwind-protect"
+        "    (invoke-restart 'abort)"
+        "    (catch 'inner"
+        "      (unwind-protect (throw 'inner :x) nil)))"
+        "  (abort () :handler-ran))"),
+        ":HANDLER-RAN");
+}
+
+TEST(lisp_error_in_body_nested_uwp_in_cleanup_propagates)
+{
+    /* Error path: error in body + nested UWP in cleanup completing normally
+     * must still propagate the error. */
+    ASSERT_STR_EQ(eval_print(
+        "(handler-case"
+        "  (unwind-protect"
+        "    (error \"test-error\")"
+        "    (unwind-protect nil nil))"
+        "  (error () :caught))"),
+        ":CAUGHT");
+}
+
 /* --- Debugger tests --- */
 
 TEST(c_debugger_disabled_by_default)
@@ -1131,6 +1192,10 @@ int main(void)
     RUN(lisp_restart_case_runs_uwp_cleanup_before_handler);
     RUN(lisp_restart_case_nested_uwp_cleanup_order);
     RUN(lisp_restart_case_handler_return_is_restart_case_value);
+    RUN(lisp_nested_uwp_in_cleanup_does_not_truncate_transfer);
+    RUN(lisp_two_deep_nested_uwp_in_cleanup);
+    RUN(lisp_nested_uwp_cleanup_catches_inner_throw);
+    RUN(lisp_error_in_body_nested_uwp_in_cleanup_propagates);
 
     /* define-condition / check-type / assert tests */
     RUN(lisp_define_condition_basic);
