@@ -19,10 +19,10 @@ git commit
              fail  →  commit aborted; output saved to .reviews/last-test.log
 ```
 
-`make test-fast` is the fast tier carved out of `make test`; the slow
+`make test` runs the fast tier (same as `make test-fast`); the slow
 `host-cold-test` (sento's quicklisp suite) is intentionally excluded so commits
-aren't delayed by minutes. Run the full `make test` (incl. sento) yourself, in
-CI, or set `CLAUDE_TEST_TARGET=test`.
+aren't delayed by minutes. Run the full `make test-plus` (incl. sento) yourself,
+in CI, or set `CLAUDE_TEST_TARGET=test-plus`.
 
 ## Install (per clone)
 

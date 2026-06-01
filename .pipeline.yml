@@ -16,7 +16,7 @@ image: ai-pipeline-agent-c:latest
 # /tmp/build — the exec-capable scratch tmpfs run-stage.sh provides — leaving
 # the repo untouched. `test-fast` is the quick tier (skips the quicklisp/sento
 # host-cold-test, which isn't available in the container anyway).
-test_cmd: make BUILDDIR=/tmp/build/host test-fast
+test_cmd: make BUILDDIR=/tmp/build/host test
 
 # Model the review/fix stages drive (sonnet | opus | haiku, or a full id).
 model: sonnet

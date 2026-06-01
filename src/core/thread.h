@@ -45,6 +45,7 @@ typedef struct {
     CL_Obj pending_mv_values[CL_MAX_MV];
     int    pending_error_code;
     char   pending_error_msg[512];
+    int    entered_via_longjmp; /* 1 if our UWPROT longjmp was triggered */
 } CL_SavedPending;
 
 typedef struct CL_Thread_s {

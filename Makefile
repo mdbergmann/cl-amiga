@@ -76,7 +76,7 @@ TEST_BINS   = $(patsubst $(TEST_SRCDIR)/%.c,$(BUILDDIR)/tests/%,$(TEST_SRCS))
 LIB_SRCS = $(PLATFORM_SRC) $(CORE_SRC) $(JIT_SRC)
 LIB_OBJS = $(patsubst $(SRCDIR)/%.c,$(BUILDDIR)/%.o,$(LIB_SRCS))
 
-.PHONY: host test test-fast test-extra linux-test clean verify-amiga install-hooks
+.PHONY: host test test-fast test-plus test-extra linux-test clean verify-amiga install-hooks
 
 host: $(BUILDDIR)/clamiga
 
@@ -150,7 +150,12 @@ test-fast: $(TEST_BINS) host
 	if [ $$failed -ne 0 ]; then echo "=== Some tests failed ==="; exit 1; fi; \
 	echo "=== Fast tests passed ==="
 
+# `make test` runs the fast tier only (the everyday gate).
 test: test-fast
+
+# `make test-plus` adds the host-cold-test (sento cold-load smoke test) on top
+# of the fast tier.
+test-plus: test-fast
 	@export CLAMIGA_NO_USERINIT=1; \
 	echo "--- host-cold-test ---"; \
 	if $(MAKE) --no-print-directory host-cold-test; then \

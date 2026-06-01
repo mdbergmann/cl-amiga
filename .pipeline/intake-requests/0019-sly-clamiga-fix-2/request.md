@@ -1,7 +1,7 @@
 ---
 id: 0019-sly-clamiga-fix-2
 type: bug
-status: ready
+status: done
 title: sly-clamiga fix-2
 ---
 

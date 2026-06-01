@@ -996,6 +996,66 @@ TEST(lisp_error_in_body_nested_uwp_in_cleanup_propagates)
         ":CAUGHT");
 }
 
+TEST(lisp_nested_uwp_in_cleanup_runs_code_after_nested_uwp)
+{
+    /* Code after a nested UWP in an outer cleanup body must run — the inner
+     * UWRETHROW must not re-initiate the outer pending NLX prematurely. */
+    ASSERT_STR_EQ(eval_print(
+        "(let ((log nil))"
+        "  (flet ((nested-uwp (thunk)"
+        "           (unwind-protect (funcall thunk) nil))"
+        "         (mk (x) (push x log) x))"
+        "    (restart-case"
+        "      (unwind-protect (invoke-restart 'abort)"
+        "        (progn (mk :cleanup-start)"
+        "               (nested-uwp (lambda () (mk :inside-nested-uwp)))"
+        "               (mk :cleanup-after-nested)))"
+        "      (abort () (mk :handler)))"
+        "    (reverse log)))"),
+        "(:CLEANUP-START :INSIDE-NESTED-UWP :CLEANUP-AFTER-NESTED :HANDLER)");
+}
+
+TEST(lisp_two_deep_nested_uwp_in_cleanup_runs_code_after_both)
+{
+    /* Two levels of nested UWP inside the outer cleanup — every marker
+     * must fire in order and the handler must run last. */
+    ASSERT_STR_EQ(eval_print(
+        "(let ((log nil))"
+        "  (flet ((nested-uwp (thunk)"
+        "           (unwind-protect (funcall thunk) nil))"
+        "         (mk (x) (push x log) x))"
+        "    (restart-case"
+        "      (unwind-protect (invoke-restart 'abort)"
+        "        (progn (mk :cleanup-start)"
+        "               (nested-uwp (lambda ()"
+        "                 (mk :inside-1st)"
+        "                 (nested-uwp (lambda () (mk :inside-2nd)))"
+        "                 (mk :after-2nd)))"
+        "               (mk :after-1st)))"
+        "      (abort () (mk :handler)))"
+        "    (reverse log)))"),
+        "(:CLEANUP-START :INSIDE-1ST :INSIDE-2ND :AFTER-2ND :AFTER-1ST :HANDLER)");
+}
+
+TEST(lisp_nested_uwp_in_cleanup_runs_code_after_for_error_propagation)
+{
+    /* Error path (pending_throw==2): code after the nested UWP in cleanup
+     * must still execute, and the error must propagate to handler-case. */
+    ASSERT_STR_EQ(eval_print(
+        "(let ((log nil))"
+        "  (flet ((nested-uwp (thunk)"
+        "           (unwind-protect (funcall thunk) nil))"
+        "         (mk (x) (push x log) x))"
+        "    (handler-case"
+        "      (unwind-protect (error \"test-error\")"
+        "        (progn (mk :cleanup-start)"
+        "               (nested-uwp (lambda () (mk :inside-nested-uwp)))"
+        "               (mk :cleanup-after-nested)))"
+        "      (error () (mk :caught)))"
+        "    (reverse log)))"),
+        "(:CLEANUP-START :INSIDE-NESTED-UWP :CLEANUP-AFTER-NESTED :CAUGHT)");
+}
+
 /* --- Debugger tests --- */
 
 TEST(c_debugger_disabled_by_default)
@@ -1196,6 +1256,9 @@ int main(void)
     RUN(lisp_two_deep_nested_uwp_in_cleanup);
     RUN(lisp_nested_uwp_cleanup_catches_inner_throw);
     RUN(lisp_error_in_body_nested_uwp_in_cleanup_propagates);
+    RUN(lisp_nested_uwp_in_cleanup_runs_code_after_nested_uwp);
+    RUN(lisp_two_deep_nested_uwp_in_cleanup_runs_code_after_both);
+    RUN(lisp_nested_uwp_in_cleanup_runs_code_after_for_error_propagation);
 
     /* define-condition / check-type / assert tests */
     RUN(lisp_define_condition_basic);

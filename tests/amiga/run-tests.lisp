@@ -4973,6 +4973,34 @@
         (nested-uwp (lambda () nil)))
       (abort () :handler-ran))))
 
+(check "nested-uwp-in-cleanup runs code after nested-uwp"
+  '(:cleanup-start :inside-nested-uwp :cleanup-after-nested :handler)
+  (let ((log nil))
+    (flet ((nested-uwp (thunk)
+             (unwind-protect (funcall thunk) nil))
+           (mk (x) (push x log) x))
+      (restart-case
+        (unwind-protect (invoke-restart 'abort)
+          (progn (mk :cleanup-start)
+                 (nested-uwp (lambda () (mk :inside-nested-uwp)))
+                 (mk :cleanup-after-nested)))
+        (abort () (mk :handler)))
+      (reverse log))))
+
+(check "nested-uwp-in-cleanup runs code after for error-propagation"
+  '(:cleanup-start :inside-nested-uwp :cleanup-after-nested :caught)
+  (let ((log nil))
+    (flet ((nested-uwp (thunk)
+             (unwind-protect (funcall thunk) nil))
+           (mk (x) (push x log) x))
+      (handler-case
+        (unwind-protect (error "test-error")
+          (progn (mk :cleanup-start)
+                 (nested-uwp (lambda () (mk :inside-nested-uwp)))
+                 (mk :cleanup-after-nested)))
+        (error () (mk :caught)))
+      (reverse log))))
+
 ; --- Summary ---
 (format t "~%=== Results ===~%")
 (format t "Passed: ~A~%" *pass-count*)

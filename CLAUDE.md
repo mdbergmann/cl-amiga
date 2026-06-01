@@ -11,7 +11,9 @@ Common Lisp environment for AmigaOS 3+ with bytecode VM, written in C (C89/C99).
 
 ```
 make host          # Build for host (gcc)
-make test          # Run all tests (mandatory — must pass before committing)
+make test          # Fast test tier: C unit tests + shell tests (mandatory — must pass before committing)
+make test-plus     # Fast tier + host-cold-test (sento cold-load smoke test)
+make test-extra    # Heavyweight trunk integration scripts (quicklisp/ansi-tests)
 make clean         # Remove build artifacts
 ```
 

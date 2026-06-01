@@ -24,7 +24,9 @@ Over 2240 host tests and ~2525 Amiga tests cover the implementation, including t
 
 ```
 make host          # Build for host (gcc)
-make test          # Run all tests
+make test          # Fast test tier (C unit + shell tests)
+make test-plus     # Fast tier + host-cold-test (sento cold-load smoke test)
+make test-extra    # Heavyweight trunk integration scripts
 make clean         # Remove build artifacts
 ```
 

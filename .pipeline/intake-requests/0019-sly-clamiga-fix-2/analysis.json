@@ -1,0 +1,14 @@
+{
+  "summary": "Premature rethrow at OP_UWRETHROW: when an inner unwind-protect runs inside an outer cleanup that has an in-progress non-local transfer, the inner UWRETHROW restores the saved pending throw and immediately re-initiates it — longjmping to the catcher and skipping the rest of the enclosing cleanup body. Fix is to defer the rethrow when the pending state was just restored from cl_saved_pending_stack (not actively in flight at UWRETHROW entry), so the enclosing UWP's UWRETHROW picks it up after the enclosing cleanup body completes.",
+  "affected_areas": [
+    "src/core/vm.c — OP_UWRETHROW handler (~line 3462) and surrounding rethrow logic for cl_pending_throw == 1 (throw/return) and == 2 (error)",
+    "tests/test_condition.c — host regression tests covering 'cleanup code AFTER a nested UWP must run' for both throw-driven (invoke-restart) and error-driven outer transfers, plus a 2-deep nested variant",
+    "tests/amiga/run-tests.lisp — mirror regression checks for the Amiga test suite"
+  ],
+  "risks": [
+    "Leaving cl_pending_throw=1 'parked' in the globals between the inner UWRETHROW and the outer UWRETHROW relies on no intermediate opcode consulting cl_pending_throw — grep confirms only OP_UWRETHROW reads cl_pending_throw in src/core/vm.c (lines 3478/3496/3530) and cl_throw_to_tag/cl_error overwrite it cleanly when a fresh NLX starts, so this is safe today but is an invariant future changes must preserve.",
+    "The OUTER UWPROT's NLX slot in cl_nlx_stack is overwritten by the inner UWPROT's arming (both write at cl_nlx_top = K), so when the outer UWRETHROW does its catch-search the outer UWPROT frame is no longer recoverable. This is the pre-existing assumption (outer UWPROT is 'consumed' once its longjmp branch runs); the fix doesn't disturb it, but the outer UWRETHROW must continue to look for catch/block frames at indices < K, not == K — which it already does via the loop bound cl_nlx_top - 1.",
+    "Test coverage must explicitly assert the EXECUTION of code after the nested UWP (the existing lisp_nested_uwp_in_cleanup_does_not_truncate_transfer test at tests/test_condition.c:940 only checks that the handler runs — it would still pass under the buggy behavior). New tests must capture an ordered log of markers and assert :CLEANUP-AFTER-NESTED appears before :HANDLER.",
+    "FASL versioning: no bump required — change is VM runtime only, no bytecode/operand/opcode changes."
+  ]
+}
