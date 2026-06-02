@@ -1353,7 +1353,25 @@ void platform_amiga_close_library(uint32_t lib_base)
 }
 
 /* platform_amiga_call() is implemented in ffi_dispatch_m68k.s
- * (68k assembly trampoline for register-based library calls) */
+ * (68k assembly trampoline for register-based library calls).
+ *
+ * On MorphOS (PPC) there is no m68k register-based trampoline: MorphOS
+ * shared libraries are PPC-native and use a completely different ABI, so
+ * the d0-d7/a0-a5 register convention does not apply.  We provide a stub
+ * here purely so the binary links; the AMIGA package's register-based
+ * library-call FFI (defcfun / %ffi-call -> OP_AMIGA_CALL) is NOT yet
+ * supported on MorphOS and needs a real PPC dispatch.  Until then the
+ * stub behaves like the POSIX one (returns 0).  Everything else in the
+ * runtime — the bytecode VM, reader, compiler, GC, threading, generic
+ * FFI memory access — works normally. */
+#ifdef PLATFORM_MORPHOS
+uint32_t platform_amiga_call(uint32_t lib_base, int16_t offset,
+                             uint32_t *regs, uint16_t reg_mask)
+{
+    (void)lib_base; (void)offset; (void)regs; (void)reg_mask;
+    return 0;  /* TODO: PPC-native MorphOS library-call dispatch */
+}
+#endif
 
 uint32_t platform_amiga_alloc_chip(uint32_t size)
 {

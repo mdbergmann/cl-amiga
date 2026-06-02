@@ -1,0 +1,125 @@
+# CL-Amiga Makefile for MorphOS (PPC) — native build
+#
+# Builds clamiga *under* MorphOS *for* MorphOS using the MorphOS SDK GCC.
+# Run from a MorphOS shell (or a MorphOS GCC environment):
+#
+#     make -f Makefile.mos              # build build/morphos/clamiga
+#     make -f Makefile.mos clean
+#
+# Notes / design:
+#   * Bytecode VM only.  The native-code JIT is m68k-only (codegen_m68k.c,
+#     asm_m68k.c, ffi_dispatch_m68k.s, gated by -DJIT_M68K); PPC cannot run
+#     m68k machine code, so we build the portable VM exactly like the host
+#     build (only jit/codebuf.c is compiled, JIT_M68K is NOT defined).
+#   * Platform layer is the AmigaOS one (platform_amiga.c +
+#     platform_thread_amiga.c) compiled with -DPLATFORM_AMIGA, because
+#     MorphOS provides the AmigaOS API (proto/exec, proto/dos,
+#     SignalSemaphore, CreateNewProc, FindTask tc_UserData, ...).
+#   * -DPLATFORM_MORPHOS is an extra marker on top of -DPLATFORM_AMIGA so
+#     MorphOS-specific divergences can be #ifdef'd.  Today it only selects
+#     the C stub for platform_amiga_call() (the m68k FFI trampoline has no
+#     PPC equivalent yet — see platform_amiga.c).
+#   * PPC is big-endian and 32-bit like m68k, so the FASL wire format and
+#     all 32-bit heap-struct assumptions hold unchanged — Amiga FASLs and
+#     MorphOS FASLs are byte-compatible.
+#   * CL_WIDE_STRINGS is intentionally NOT defined (matches the Amiga
+#     builds, not the host build) so string/FASL layout matches the Amiga
+#     target.
+
+# MorphOS SDK GCC.  Override on the command line if your toolchain uses a
+# different name, e.g.  make -f Makefile.mos CC=ppc-morphos-gcc
+CC      ?= gcc
+
+# PPC has none of the m68k -O2 miscompiles documented in Makefile.cross,
+# so -O2 is safe here.
+CFLAGS  ?= -std=c99 -Wall -O2 -DPLATFORM_AMIGA -DPLATFORM_MORPHOS $(DEBUG_FLAGS)
+LDFLAGS ?=
+LDLIBS  ?= -lm
+
+SRCDIR   = src
+BUILDDIR = build/morphos
+
+# --- Source files -----------------------------------------------------------
+# Mirrors the modern source list in Makefile.cross, minus the m68k JIT
+# codegen/asm and the m68k FFI trampoline.
+
+PLATFORM_SRC = $(SRCDIR)/platform/platform_amiga.c \
+               $(SRCDIR)/platform/platform_thread_amiga.c
+
+CORE_SRC     = $(SRCDIR)/core/types.c \
+               $(SRCDIR)/core/mem.c \
+               $(SRCDIR)/core/error.c \
+               $(SRCDIR)/core/symbol.c \
+               $(SRCDIR)/core/package.c \
+               $(SRCDIR)/core/reader.c \
+               $(SRCDIR)/core/readtable.c \
+               $(SRCDIR)/core/printer.c \
+               $(SRCDIR)/core/env.c \
+               $(SRCDIR)/core/compiler.c \
+               $(SRCDIR)/core/compiler_special.c \
+               $(SRCDIR)/core/compiler_extra.c \
+               $(SRCDIR)/core/vm.c \
+               $(SRCDIR)/core/builtins.c \
+               $(SRCDIR)/core/builtins_arith.c \
+               $(SRCDIR)/core/builtins_io.c \
+               $(SRCDIR)/core/builtins_format.c \
+               $(SRCDIR)/core/builtins_mutation.c \
+               $(SRCDIR)/core/builtins_strings.c \
+               $(SRCDIR)/core/builtins_lists.c \
+               $(SRCDIR)/core/builtins_hashtable.c \
+               $(SRCDIR)/core/builtins_sequence.c \
+               $(SRCDIR)/core/builtins_sequence2.c \
+               $(SRCDIR)/core/builtins_type.c \
+               $(SRCDIR)/core/builtins_condition.c \
+               $(SRCDIR)/core/builtins_package.c \
+               $(SRCDIR)/core/builtins_struct.c \
+               $(SRCDIR)/core/builtins_array.c \
+               $(SRCDIR)/core/builtins_stream.c \
+               $(SRCDIR)/core/builtins_random.c \
+               $(SRCDIR)/core/builtins_bitvector.c \
+               $(SRCDIR)/core/builtins_pathname.c \
+               $(SRCDIR)/core/builtins_describe.c \
+               $(SRCDIR)/core/builtins_inspect.c \
+               $(SRCDIR)/core/builtins_thread.c \
+               $(SRCDIR)/core/builtins_ffi.c \
+               $(SRCDIR)/core/builtins_amiga.c \
+               $(SRCDIR)/core/stream.c \
+               $(SRCDIR)/core/bignum.c \
+               $(SRCDIR)/core/ratio.c \
+               $(SRCDIR)/core/float.c \
+               $(SRCDIR)/core/float_math.c \
+               $(SRCDIR)/core/debugger.c \
+               $(SRCDIR)/core/repl.c \
+               $(SRCDIR)/core/fasl.c \
+               $(SRCDIR)/core/color.c \
+               $(SRCDIR)/core/thread.c \
+               $(SRCDIR)/core/string_utils.c
+
+# Portable JIT pieces only (code-buffer mechanics).  The m68k codegen
+# (jit.c, codegen_m68k.c, asm_m68k.c, runtime.c) is deliberately excluded.
+JIT_SRC      = $(SRCDIR)/jit/codebuf.c
+
+MAIN_SRC     = $(SRCDIR)/main.c
+
+ALL_SRCS = $(MAIN_SRC) $(PLATFORM_SRC) $(CORE_SRC) $(JIT_SRC)
+ALL_OBJS = $(patsubst $(SRCDIR)/%.c,$(BUILDDIR)/%.o,$(ALL_SRCS))
+
+.PHONY: morphos clean
+
+morphos: $(BUILDDIR)/clamiga
+
+$(BUILDDIR)/clamiga: $(ALL_OBJS)
+	@mkdir -p $(dir $@)
+	$(CC) $(LDFLAGS) -o $@ $^ $(LDLIBS)
+
+$(BUILDDIR)/%.o: $(SRCDIR)/%.c
+	@mkdir -p $(dir $@)
+	$(CC) $(CFLAGS) -I$(SRCDIR) -MMD -MP -c -o $@ $<
+
+# Auto-generated header dependency files (-MMD -MP): keep objects in sync
+# with header (struct ABI) changes — same mechanism as the host/cross
+# Makefiles.
+-include $(ALL_OBJS:.o=.d)
+
+clean:
+	rm -rf $(BUILDDIR)
