@@ -1380,6 +1380,53 @@
     (> (clamiga::%jit-invoke-count) before)))
 (check "walker-uwp-mv-result" '(1 2 3) (walker-uwp-mv))
 
+; Multiple values surviving a RETURN-FROM that unwinds THROUGH a JIT'd
+; unwind-protect.  Regression for the JIT NLX-MV drop: block_return's
+; interposing-UWPROT branch only saved the primary value into the
+; pending record (not cl_pending_mv_*), and uwprot_rethrow never
+; restored the mv set into the target block frame — so the frame kept
+; its mv_count=1 baseline and the secondary value was lost.  Expected
+; (NIL T); the bug produced (NIL).  The unwind-protect lives in its own
+; JIT-compilable function so the throw really crosses a native UWPROT.
+(defun walker-uwp-mv-nlx-cleanup (fn)
+  (unwind-protect (funcall fn) nil))
+(defun walker-uwp-mv-nlx ()
+  (block done
+    (walker-uwp-mv-nlx-cleanup (lambda () (return-from done (values nil t))))))
+(check "walker-uwp-mv-nlx-counter-bump" t
+  (let ((before (clamiga::%jit-invoke-count)))
+    (walker-uwp-mv-nlx)
+    (> (clamiga::%jit-invoke-count) before)))
+(check "walker-uwp-mv-nlx-result" '(nil t)
+  (multiple-value-list (walker-uwp-mv-nlx)))
+
+; Same shape but with three values and a non-trivial cleanup form, to
+; confirm the cleanup running between the throw and the rethrow does
+; not disturb the carried multiple-value set.
+(defvar *walker-uwp-mv-nlx3-ran* 0)
+(defun walker-uwp-mv-nlx3-cleanup (fn)
+  (unwind-protect (funcall fn) (incf *walker-uwp-mv-nlx3-ran*)))
+(defun walker-uwp-mv-nlx3 ()
+  (setq *walker-uwp-mv-nlx3-ran* 0)
+  (block done
+    (walker-uwp-mv-nlx3-cleanup
+      (lambda () (return-from done (values 10 20 30))))))
+(check "walker-uwp-mv-nlx3-result" '(10 20 30)
+  (multiple-value-list (walker-uwp-mv-nlx3)))
+(check "walker-uwp-mv-nlx3-cleanup-ran" 1
+  (progn (walker-uwp-mv-nlx3) *walker-uwp-mv-nlx3-ran*))
+
+; THROW (rather than RETURN-FROM) carrying multiple values through a
+; JIT'd unwind-protect — exercises the CATCH target arm of the same
+; uwprot_rethrow mv-restore fix.
+(defun walker-uwp-mv-throw-cleanup (fn)
+  (unwind-protect (funcall fn) nil))
+(defun walker-uwp-mv-throw ()
+  (catch 'tag
+    (walker-uwp-mv-throw-cleanup (lambda () (throw 'tag (values :a :b))))))
+(check "walker-uwp-mv-throw-result" '(:a :b)
+  (multiple-value-list (walker-uwp-mv-throw)))
+
 ; --- OP_CATCH / OP_UNCATCH -----------------------------------------------
 ;
 ; Same JIT-inline-setjmp protocol as OP_BLOCK_PUSH; differences are the

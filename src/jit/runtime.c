@@ -885,13 +885,21 @@ void cl_jit_runtime_block_return(CL_Obj tag, CL_Obj value)
             /* Check for an interposing UWPROT frame.  If present, the
              * spec requires its cleanup to run first; we longjmp to
              * the UWPROT and leave a pending-throw record that the
-             * UWPROT epilogue uses to rethrow once cleanup is done. */
+             * UWPROT epilogue uses to rethrow once cleanup is done.
+             * The full multiple-value set must travel with the pending
+             * record (mirrors vm.c OP_BLOCK_RETURN) — saving only the
+             * primary silently drops secondary values across the
+             * unwind-protect, e.g. (block b (uwp (return-from b
+             * (values nil t)))) would return only NIL. */
             for (j = cl_nlx_top - 1; j > i; j--) {
                 if (cl_nlx_stack[j].type == CL_NLX_UWPROT &&
                     !jit_nlx_frame_is_stale(&cl_nlx_stack[j])) {
                     cl_pending_throw = 1;
                     cl_pending_tag = tag;
                     cl_pending_value = value;
+                    cl_pending_mv_count = cl_mv_count;
+                    for (mi = 0; mi < cl_mv_count && mi < CL_MAX_MV; mi++)
+                        cl_pending_mv_values[mi] = cl_mv_values[mi];
                     cl_nlx_top = j;
                     CL_LONGJMP(cl_nlx_stack[j].buf, 1);
                 }
@@ -1132,7 +1140,7 @@ void cl_jit_runtime_uwprot_rethrow(void)
     if (p == 1) {
         CL_Obj ptag = cl_pending_tag;
         CL_Obj pval = cl_pending_value;
-        int i, j;
+        int i, j, mi;
         for (i = cl_nlx_top - 1; i >= 0; i--) {
             if ((cl_nlx_stack[i].type == CL_NLX_CATCH ||
                  cl_nlx_stack[i].type == CL_NLX_BLOCK ||
@@ -1147,6 +1155,14 @@ void cl_jit_runtime_uwprot_rethrow(void)
                 }
                 cl_pending_throw = 0;
                 cl_nlx_stack[i].result = pval;
+                /* Carry the full multiple-value set saved at the throw
+                 * site into the target frame so block_post_longjmp /
+                 * catch_post_longjmp restore all of them (mirrors vm.c
+                 * OP_UWRETHROW); without this the frame keeps its
+                 * mv_count=1 baseline and secondary values are lost. */
+                cl_nlx_stack[i].mv_count = cl_pending_mv_count;
+                for (mi = 0; mi < cl_pending_mv_count && mi < CL_MAX_MV; mi++)
+                    cl_nlx_stack[i].mv_values[mi] = cl_pending_mv_values[mi];
                 cl_nlx_top = i;
                 CL_LONGJMP(cl_nlx_stack[i].buf, 1);
             }
@@ -1509,20 +1525,26 @@ CL_Obj cl_jit_runtime_tagbody_post_longjmp(void)
 
 void cl_jit_runtime_tagbody_go(CL_Obj tagbody_id, CL_Obj tag_index)
 {
-    int i, j;
+    int i, j, mi;
     for (i = cl_nlx_top - 1; i >= 0; i--) {
         if (cl_nlx_stack[i].type == CL_NLX_TAGBODY &&
             cl_nlx_stack[i].tag == tagbody_id) {
             /* UWPROT interposition: if a non-stale UWPROT frame
              * sits between top and the target, divert there and
              * record the pending throw so cleanup runs before the
-             * actual transfer. */
+             * actual transfer.  GO carries no user values, but the
+             * pending-mv snapshot must still be set (mirrors vm.c
+             * OP_GO) so the rethrow consumer doesn't propagate a
+             * stale mv_count from an earlier RETURN-FROM. */
             for (j = cl_nlx_top - 1; j > i; j--) {
                 if (cl_nlx_stack[j].type == CL_NLX_UWPROT &&
                     !jit_nlx_frame_is_stale(&cl_nlx_stack[j])) {
                     cl_pending_throw = 1;
                     cl_pending_tag = tagbody_id;
                     cl_pending_value = tag_index;
+                    cl_pending_mv_count = cl_mv_count;
+                    for (mi = 0; mi < cl_mv_count && mi < CL_MAX_MV; mi++)
+                        cl_pending_mv_values[mi] = cl_mv_values[mi];
                     cl_nlx_top = j;
                     CL_LONGJMP(cl_nlx_stack[j].buf, 1);
                 }
