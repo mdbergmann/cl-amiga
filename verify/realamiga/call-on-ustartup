@@ -1,11 +1,14 @@
-; Lower-end baseline: stack 77000, --heap 8M.
+; Baseline: stack 128000, --heap 8M.
 ; The 64K (65000) AmigaOS default is ~12K short for the GUI test path:
 ; run-tests -> (load test-gui) -> (require "amiga/gadtools") nests bi_load
 ; frames and then SOURCE-COMPILES gadtools.lisp (deeply-nested with-menus/
 ; with-gadgets macros => deep cl_compile recursion), overflowing 64K and
 ; silently corrupting memory ("Not a function: heap object type 0" +
-; unbound *PASS-COUNT*/*FAIL-COUNT*).  Bisected threshold: 65000 FAIL,
-; 77000 PASS.  See memory note amiga_gadtools_load_residual.
+; unbound *PASS-COUNT*/*FAIL-COUNT*).  Bisected threshold was 65000 FAIL /
+; 77000 PASS, but 77000 sits right at the edge and intermittently overflows
+; the GUI compile path (same *PASS-COUNT*/*FAIL-COUNT* corruption), so use
+; 128000 for headroom (also covers the deep CLOS chains).  See memory note
+; amiga_gadtools_load_residual.
 ; Single clamiga run (sequential allocations fragment Fast RAM on the
 ; lower-end target).  date timestamps before/after give total runtime;
 ; subtract the known ~38 s boot-to-REPL on this config to estimate
@@ -13,7 +16,7 @@
 cd CLAmiga:
 echo "=== avail before clamiga ===" >build/amiga/test-results.log
 avail >>build/amiga/test-results.log
-stack 77000
+stack 128000
 echo "=== run start ===" >>build/amiga/test-results.log
 date >>build/amiga/test-results.log
 build/amiga/clamiga --no-userinit --heap 8M --non-interactive --load tests/amiga/run-tests.lisp >>build/amiga/test-results.log

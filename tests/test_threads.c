@@ -144,6 +144,27 @@ TEST(all_threads_includes_main)
     ASSERT_STR_EQ(r, "T");
 }
 
+/* Regression: the main/initial thread must carry a default name ("main
+ * thread"), matching bordeaux-threads / SBCL / CCL, so ALL-THREADS prints
+ * #<THREAD "main thread"> rather than the old #<THREAD NIL>.  See
+ * cl_builtins_thread_init in src/core/builtins_thread.c. */
+TEST(main_thread_has_default_name)
+{
+    const char *r = eval_print("(mp:thread-name (mp:current-thread))");
+    ASSERT_STR_EQ(r, "\"main thread\"");
+}
+
+/* The named main thread must still be EQ to the wrapper ALL-THREADS reports,
+ * and that name must be visible through the ALL-THREADS handle too. */
+TEST(main_thread_name_via_all_threads)
+{
+    const char *r;
+    r = eval_print("(eq (mp:current-thread) (first (mp:all-threads)))");
+    ASSERT_STR_EQ(r, "T");
+    r = eval_print("(mp:thread-name (first (mp:all-threads)))");
+    ASSERT_STR_EQ(r, "\"main thread\"");
+}
+
 /* ================================================================
  * Thread yield
  * ================================================================ */
@@ -631,6 +652,33 @@ TEST(thread_slot_reuse_after_join_no_double_free)
     ASSERT_STR_EQ(r, "99");
 }
 
+/* Regression: a worker's function object must stay GC-protected for the
+ * entire duration of cl_vm_apply.  thread_entry used to null t->result right
+ * after grabbing func into a C local, which dropped the ONLY GC root the
+ * parent installed (gc_roots[0] = &t->result, see bi_make_thread).  A
+ * stop-the-world mark-and-sweep during the worker's abort-restart setup or
+ * its apply would then sweep the (otherwise unreferenced) closure; the
+ * worker would apply freed memory, error out, and join-thread would return
+ * NIL instead of the real result.
+ *
+ * The worker body allocates nothing — 42 is a fixnum constant — so a non-42
+ * result can ONLY mean the closure object itself was collected mid-apply.
+ * Hammering (gc) on the parent each iteration deterministically lands a
+ * sweep inside the vulnerable window: before the fix this counted ~4 bad
+ * out of 1500 (reproducible every run); after the fix it is exactly 0. */
+TEST(worker_function_gc_protected_across_apply)
+{
+    const char *r = eval_print(
+        "(let ((bad 0))"
+        "  (dotimes (i 1500)"
+        "    (let ((th (mp:make-thread (lambda () 42))))"
+        "      (gc) (gc)"
+        "      (unless (eql (mp:join-thread th) 42)"
+        "        (setq bad (1+ bad)))))"
+        "  bad)");
+    ASSERT_STR_EQ(r, "0");
+}
+
 /* Zombie reaper: when GC can't reclaim slots because user code still
  * holds wrappers (e.g. bordeaux-threads' .known-threads. registry, which
  * is non-weak in cl-amiga), bi_make_thread falls back to scanning the
@@ -796,6 +844,8 @@ int main(void)
     /* Current thread */
     RUN(current_thread_returns_thread);
     RUN(all_threads_includes_main);
+    RUN(main_thread_has_default_name);
+    RUN(main_thread_name_via_all_threads);
 
     /* Yield */
     RUN(thread_yield_no_crash);
@@ -862,6 +912,7 @@ int main(void)
     RUN(condvar_table_slot_reclaimed_by_gc);
     RUN(thread_table_slot_reclaimed_by_gc);
     RUN(thread_slot_reuse_after_join_no_double_free);
+    RUN(worker_function_gc_protected_across_apply);
     RUN(thread_zombie_reaper_under_pinned_wrappers);
     RUN(all_threads_returns_canonical_wrapper);
     RUN(all_threads_excludes_finished_workers);
