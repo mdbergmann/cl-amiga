@@ -38,7 +38,7 @@ FIX_MODEL="${CLAUDE_FIX_MODEL:-sonnet}"
 AUTO_FIX="${CLAUDE_AUTO_FIX:-1}"
 REVIEW_TIMEOUT="${CLAUDE_REVIEW_TIMEOUT:-2700}"
 RUN_TESTS="${CLAUDE_RUN_TESTS:-1}"          # stage 2: run the fast test tier
-TEST_TARGET="${CLAUDE_TEST_TARGET:-test-fast}"  # set to 'test-plus' to include sento
+TEST_TARGET="${CLAUDE_TEST_TARGET:-test}"  # set to 'test-plus' to include sento
 TEST_TIMEOUT="${CLAUDE_TEST_TIMEOUT:-600}"
 
 ROOT="$(git rev-parse --show-toplevel 2>/dev/null)" || exit 0
