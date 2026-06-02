@@ -104,9 +104,19 @@ static void *thread_entry(void *arg)
     /* 3. Mark as running */
     t->status = 1;
 
-    /* 4. Retrieve stashed function (stored in result field by parent) */
+    /* 4. Retrieve stashed function (stored in result field by parent).
+     *
+     *    DO NOT clear t->result here.  The parent registered
+     *    gc_roots[0] = &t->result (see bi_make_thread), so t->result is the
+     *    ONLY GC root keeping `func` (a freshly-allocated closure object)
+     *    alive while we apply it below.  Nulling it would leave `func`
+     *    reachable only through this unrooted C local — a concurrent
+     *    stop-the-world mark-and-sweep (e.g. another thread calling (gc))
+     *    would then sweep the closure mid-apply, and cl_vm_apply would run
+     *    on freed memory, erroring out so t->result stays NIL and
+     *    join-thread returns NIL instead of the real result.  We overwrite
+     *    t->result with the computed result only AFTER cl_vm_apply returns. */
     func = t->result;
-    t->result = CL_NIL;
 
     /* GC-protect func via gc_roots (already set up by parent) */
 
@@ -226,7 +236,12 @@ static void *thread_entry(void *arg)
             cl_dynbind_restore_to(t->nlx_stack[my_nlx_idx].dyn_mark);
         }
     } else {
-        /* Thread errored — final_status stays at 3 (aborted by error) */
+        /* Thread errored — final_status stays at 3 (aborted by error).
+         * Clear the stashed function out of t->result so JOIN-THREAD on an
+         * errored worker returns NIL (its prior behaviour) rather than the
+         * leftover closure object we deliberately kept there for GC during
+         * the apply above. */
+        t->result = CL_NIL;
     }
 
     /* CL_UNCATCH inline */
@@ -985,17 +1000,34 @@ static void mp_defun(const char *name, CL_CFunc func, int min, int max)
 void cl_builtins_thread_init(void)
 {
     CL_ThreadObj *tobj;
+    CL_Obj main_name;
 
     /* Pre-intern keywords */
     KW_NAME_THR = cl_intern_keyword("NAME", 4);
 
-    /* Create main thread's Lisp-visible thread object */
+    /* Create main thread's Lisp-visible thread object.  Give it a default
+     * name ("main thread") to match bordeaux-threads / SBCL / CCL, which
+     * name the initial thread rather than leaving it NIL — so ALL-THREADS
+     * prints #<THREAD main thread> instead of #<THREAD NIL>.
+     *
+     * Build the name string first and GC-protect it: cl_alloc(TYPE_THREAD)
+     * below can trigger compaction, which would relocate an unprotected
+     * string. */
+    main_name = cl_make_string("main thread", 11);
+    CL_GC_PROTECT(main_name);
     tobj = (CL_ThreadObj *)cl_alloc(TYPE_THREAD, sizeof(CL_ThreadObj));
     if (tobj) {
         tobj->thread_id = 0;
-        tobj->name = CL_NIL;
+        tobj->name = main_name;
         main_thread_obj = CL_PTR_TO_OBJ(tobj);
     }
+    CL_GC_UNPROTECT(1);
+
+    /* Keep the C-level main-thread record's name in sync, so the
+     * bi_current_thread fallback path (which copies self->name) and any
+     * THREAD-NAME on a freshly-built wrapper agree with main_thread_obj. */
+    if (cl_main_thread_ptr)
+        cl_main_thread_ptr->name = main_name;
 
     /* Register MP builtins */
     mp_defun("MAKE-THREAD",             bi_make_thread,             1, -1);

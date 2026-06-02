@@ -4346,6 +4346,30 @@
 (check "all-threads includes main" t
   (>= (length (mp:all-threads)) 1))
 
+; Regression: the main thread carries a default name ("main thread") to
+; match bordeaux-threads / SBCL / CCL instead of printing #<THREAD NIL>.
+(check "main thread has default name" "main thread"
+  (mp:thread-name (mp:current-thread)))
+
+(check "main thread name via all-threads" "main thread"
+  (mp:thread-name (first (mp:all-threads))))
+
+; Regression: a worker's function object must stay GC-protected for the whole
+; duration of its application.  thread_entry used to null t->result (the
+; parent's only GC root for the closure) right after grabbing func, so a
+; concurrent (gc) could sweep the closure mid-apply, the worker would error,
+; and join-thread would return NIL instead of the real result.  The worker
+; body allocates nothing (42 is a fixnum), so a non-42 result means the
+; closure itself was collected.
+(check "worker function GC-protected across apply" 0
+  (let ((bad 0))
+    (dotimes (i 150)
+      (let ((th (mp:make-thread (lambda () 42))))
+        (gc) (gc)
+        (unless (eql (mp:join-thread th) 42)
+          (setq bad (1+ bad)))))
+    bad))
+
 ; --- Thread yield ---
 (check "thread-yield no crash" nil
   (mp:thread-yield))
