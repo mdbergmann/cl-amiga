@@ -17,6 +17,8 @@
 
 #include <string.h>
 #include <stdlib.h>   /* abort() — watchdog escalation on deadlock */
+#include <stdio.h>    /* fgets/stdin redirection for the read_line regression */
+#include <unistd.h>   /* pipe/dup/dup2 — redirect stdin in the read_line test */
 
 /* Undef the gc_root_count macro so we can access the struct field directly
  * on CL_Thread instances that aren't the current thread. */
@@ -383,6 +385,118 @@ TEST(stw_gc_with_thread_blocked_in_accept)
 }
 
 /* ================================================================
+ * Regression: stop-the-world GC must not deadlock behind a thread
+ * parked in the blocking stdin read (platform_read_line).
+ *
+ * This is the SLY :spawn REPL hang.  The main thread parks in
+ * cl_repl()'s fgets (under a `tail -f /dev/null | clamiga` launcher it
+ * never gets a line), while a spawned worker printing a backtrace into
+ * SLDB allocates and fires the first stop-the-world GC.  Unless
+ * platform_read_line brackets its fgets with the GC safe region, the
+ * main thread is neither stopped nor in a safe region, so STW waits
+ * forever for a safepoint it can never reach.
+ *
+ * The worker parks in platform_read_line() reading an empty pipe wired
+ * onto stdin; the main thread then runs a full STW cl_gc().  A watchdog
+ * aborts with a diagnostic if the GC does not return within a few
+ * seconds, turning a regression into a loud failure instead of a hang.
+ * ================================================================ */
+
+typedef struct {
+    CL_Thread    thread;
+    volatile int parked;
+} ReadLineCtx;
+
+static volatile int g_readline_gc_done = 0;
+
+static void *readline_deadlock_watchdog(void *arg)
+{
+    int waited_ms = 0;
+    (void)arg;
+    while (!g_readline_gc_done && waited_ms < 5000) {
+        platform_sleep_ms(50);
+        waited_ms += 50;
+    }
+    if (!g_readline_gc_done) {
+        fprintf(stderr,
+            "\nFATAL: stop-the-world GC deadlocked behind a thread blocked in "
+            "platform_read_line()\n  (the blocking stdin fgets/FGets).  The GC "
+            "safe-region bracketing has regressed\n  (see platform_read_line in "
+            "platform_posix.c / platform_amiga.c).  This is the SLY :spawn REPL "
+            "hang.\n");
+        abort();
+    }
+    return NULL;
+}
+
+static void *readline_blocker(void *arg)
+{
+    ReadLineCtx *ctx = (ReadLineCtx *)arg;
+    CL_Thread *t = &ctx->thread;
+    char buf[64];
+
+    platform_tls_set(t);
+    cl_thread_register(t);
+
+    ctx->parked = 1;
+    /* Blocks reading stdin (redirected to an empty pipe).  With the fix this
+     * runs inside a GC safe region, so a concurrent STW GC counts this thread
+     * as stopped. */
+    platform_read_line(buf, sizeof(buf));
+
+    cl_thread_unregister(t);
+    return NULL;
+}
+
+TEST(stw_gc_with_thread_blocked_in_read_line)
+{
+    void *whandle, *wdog;
+    ReadLineCtx ctx;
+    int pipefd[2];
+    int saved_stdin;
+
+    /* Redirect stdin to the read end of an empty pipe so the worker's
+     * platform_read_line() blocks until we choose to unblock it. */
+    ASSERT_EQ_INT(pipe(pipefd), 0);
+    saved_stdin = dup(STDIN_FILENO);
+    ASSERT(saved_stdin >= 0);
+    ASSERT(dup2(pipefd[0], STDIN_FILENO) >= 0);
+    clearerr(stdin);
+
+    memset(&ctx, 0, sizeof(ctx));
+    ctx.thread.id = 1;
+    ctx.thread.status = 1;
+    ctx.thread.mv_count = 1;
+
+    g_readline_gc_done = 0;
+    platform_thread_create(&wdog, readline_deadlock_watchdog, NULL, 0);
+    platform_thread_create(&whandle, readline_blocker, &ctx, 0);
+
+    /* Wait until the worker is about to block, then give it a beat to actually
+     * park inside fgets. */
+    while (!ctx.parked)
+        platform_sleep_ms(5);
+    platform_sleep_ms(100);
+
+    /* The operation that used to hang forever. */
+    cl_gc();
+    g_readline_gc_done = 1;  /* tell the watchdog we survived */
+
+    /* Unblock the worker: closing the write end makes fgets return EOF. */
+    close(pipefd[1]);
+    platform_thread_join(whandle, NULL);
+    platform_thread_join(wdog, NULL);
+
+    /* Restore the real stdin. */
+    dup2(saved_stdin, STDIN_FILENO);
+    close(saved_stdin);
+    close(pipefd[0]);
+    clearerr(stdin);
+
+    ASSERT(1);  /* reaching here means GC returned — no deadlock */
+}
+
+/* ================================================================
  * main
  * ================================================================ */
 
@@ -407,6 +521,9 @@ int main(void)
 
     /* Regression: STW GC vs. thread blocked in a socket syscall */
     RUN(stw_gc_with_thread_blocked_in_accept);
+
+    /* Regression: STW GC vs. thread blocked in stdin read_line (SLY :spawn hang) */
+    RUN(stw_gc_with_thread_blocked_in_read_line);
 
     teardown();
 

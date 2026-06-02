@@ -39,9 +39,17 @@ void platform_write_string(const char *str)
 int platform_read_line(char *buf, int bufsize)
 {
     BPTR in = Input();
+    char *r;
     if (!in)
         return 0;
-    if (!FGets(in, buf, bufsize))
+    /* Blocking stdin read — bracket with a GC safe region exactly like the
+     * socket syscalls.  cl_repl() parks here in FGets; without the bracket a
+     * stop-the-world GC from a :spawn worker waits forever for this thread to
+     * reach a safepoint it can never reach (the SLY REPL hang). */
+    cl_gc_enter_safe_region();
+    r = FGets(in, buf, bufsize);
+    cl_gc_leave_safe_region();
+    if (!r)
         return 0;
     /* Strip trailing newline */
     {
@@ -55,9 +63,15 @@ int platform_read_line(char *buf, int bufsize)
 int platform_getchar(void)
 {
     BPTR in = Input();
+    int c;
     if (!in)
         return -1;
-    return FGetC(in);
+    /* Same blocking-stdin rationale as platform_read_line: the CONSOLE stream's
+     * read-char parks here, so bracket it as a GC safe region. */
+    cl_gc_enter_safe_region();
+    c = FGetC(in);
+    cl_gc_leave_safe_region();
+    return c;
 }
 
 void platform_ungetchar(int ch)

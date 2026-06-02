@@ -47,7 +47,17 @@ void platform_write_string(const char *str)
 
 int platform_read_line(char *buf, int bufsize)
 {
-    if (!fgets(buf, bufsize, stdin))
+    char *r;
+    /* Blocking stdin read — bracket with a GC safe region exactly like the
+     * socket syscalls below.  cl_repl() (and the SLDB/inspect prompts) park
+     * here in fgets, often the main thread under a `tail -f /dev/null | clamiga`
+     * launcher.  Without the bracket, a stop-the-world GC fired by any other
+     * thread (e.g. a :spawn worker printing a backtrace into SLDB) waits
+     * forever for this thread to reach a safepoint it can never reach. */
+    cl_gc_enter_safe_region();
+    r = fgets(buf, bufsize, stdin);
+    cl_gc_leave_safe_region();
+    if (!r)
         return 0;
     /* Strip trailing newline */
     {
@@ -60,7 +70,13 @@ int platform_read_line(char *buf, int bufsize)
 
 int platform_getchar(void)
 {
-    return getchar();
+    int c;
+    /* Same blocking-stdin rationale as platform_read_line: the CONSOLE stream's
+     * read-char parks here, so bracket it as a GC safe region. */
+    cl_gc_enter_safe_region();
+    c = getchar();
+    cl_gc_leave_safe_region();
+    return c;
 }
 
 void platform_ungetchar(int ch)
