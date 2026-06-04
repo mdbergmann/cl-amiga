@@ -605,8 +605,21 @@ shutdown:
     cl_thread_shutdown();
     SHUTDOWN_TRACE("thread done");
     cl_mem_shutdown();
-    SHUTDOWN_TRACE("mem done — returning from main");
+    SHUTDOWN_TRACE("mem done");
 #undef SHUTDOWN_TRACE
+
+#ifdef PLATFORM_AMIGA
+    /* MorphOS / AmigaOS (-noixemul): every clamiga-owned resource is already
+     * released above, but *returning* from main runs the C runtime's post-main
+     * teardown (atexit handlers + fclose of the buffered stdio streams bound to
+     * the console).  On MorphOS that teardown hangs — the process is left frozen
+     * in the Task list and the Shell never regains control.  Since our own
+     * cleanup is complete and the OS reclaims the rest on process exit, flush any
+     * pending C stdio and terminate via _exit(), which hands the return code back
+     * to DOS without running the hanging teardown. */
+    fflush(NULL);
+    _exit(cl_exit_code);
+#endif
 
     return cl_exit_code;
 }
