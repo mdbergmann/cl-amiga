@@ -13,7 +13,7 @@
 #include "compiler.h"
 #include "../platform/platform.h"
 #include <string.h>
-#include <ctype.h>
+#include "ascii_ctype.h"
 #include <stdlib.h>
 #include <stdarg.h>
 #include <stdio.h>
@@ -112,7 +112,7 @@ static void skip_whitespace(void)
             if (ch < 0) { eof_seen = 1; return; }
             continue;
         }
-        if (!isspace(ch)) {
+        if (!cl_ascii_isspace(ch)) {
             unread_char(ch);
             return;
         }
@@ -235,7 +235,7 @@ static CL_Obj read_radix_number(int radix)
     while (len < 255) {
         ch = read_char();
         if (is_delimiter(ch)) { unread_char(ch); break; }
-        buf[len++] = (char)toupper(ch);
+        buf[len++] = (char)cl_ascii_toupper(ch);
     }
     buf[len] = '\0';
 
@@ -334,7 +334,7 @@ static CL_Obj try_parse_float(const char *buf, int len)
     if (len > 0 && (buf[0] == '+' || buf[0] == '-')) i = 1;
 
     for (; i < len; i++) {
-        if (isdigit((unsigned char)buf[i])) {
+        if (cl_ascii_isdigit((unsigned char)buf[i])) {
             has_digit = 1;
         } else if (buf[i] == '.' && !has_dot && !has_exp) {
             has_dot = 1;
@@ -393,7 +393,7 @@ static CL_Obj read_atom_with_prefix(const char *prefix, int prefix_len)
         int p;
         if (prefix_len > 255) prefix_len = 255;
         for (p = 0; p < prefix_len; p++)
-            buf[len++] = (char)toupper((unsigned char)prefix[p]);
+            buf[len++] = (char)cl_ascii_toupper((unsigned char)prefix[p]);
     }
 
     while (len < 255) {
@@ -434,7 +434,7 @@ static CL_Obj read_atom_with_prefix(const char *prefix, int prefix_len)
             unread_char(ch);
             break;
         }
-        buf[len++] = (char)toupper(ch);
+        buf[len++] = (char)cl_ascii_toupper(ch);
     }
     buf[len] = '\0';
 
@@ -467,7 +467,7 @@ static CL_Obj read_atom_with_prefix(const char *prefix, int prefix_len)
     i = 0;
     if (buf[0] == '+' || buf[0] == '-') i = 1;
     for (; i < len; i++) {
-        if (isdigit((unsigned char)buf[i])) {
+        if (cl_ascii_isdigit((unsigned char)buf[i])) {
             has_digit = 1;
         } else {
             is_number = 0;
@@ -518,7 +518,7 @@ static CL_Obj read_atom_with_prefix(const char *prefix, int prefix_len)
             if (buf[ri] == '/') {
                 if (slash_pos >= 0) { valid_ratio = 0; break; }
                 slash_pos = ri;
-            } else if (!isdigit((unsigned char)buf[ri])) {
+            } else if (!cl_ascii_isdigit((unsigned char)buf[ri])) {
                 valid_ratio = 0;
                 break;
             }
@@ -882,7 +882,7 @@ static CL_Obj read_expr(void)
                 return CL_NIL;
             }
             /* Check for named characters */
-            if (isalpha(ch)) {
+            if (cl_ascii_isalpha(ch)) {
                 char name[32];
                 int nlen = 0;
                 name[nlen++] = (char)ch;
@@ -1004,7 +1004,7 @@ static CL_Obj read_expr(void)
                     continue;
                 }
                 if (is_delimiter(ch2)) { unread_char(ch2); break; }
-                sym_buf[sym_len++] = (char)toupper(ch2);
+                sym_buf[sym_len++] = (char)cl_ascii_toupper(ch2);
             }
             sym_buf[sym_len] = '\0';
             if (sym_len == 0 && !sym_has_escape) {
