@@ -4,6 +4,7 @@
 #include <proto/exec.h>
 #include <proto/dos.h>
 #include <string.h>
+#include <stdlib.h>   /* malloc/realloc (platform_directory) */
 
 /* GC stop-the-world cooperation (defined in core/thread.c).  Forward-declared
  * here rather than #including core/thread.h so the platform layer stays free of
@@ -684,12 +685,25 @@ const char *platform_expand_home(const char *path, char *buf, int bufsize)
 
 #if PLATFORM_MORPHOS
 #include <proto/socket.h>
+/* MorphOS's proto/socket.h brings in sockaddr_in but not struct hostent;
+ * gethostbyname() needs <netdb.h> for the full definition. */
+#include <netdb.h>
 #else
 #include <proto/bsdsocket.h>
 #endif
 #include <exec/ports.h>
 #include <exec/tasks.h>
 #include <dos/dostags.h>
+
+/* Address-length type for accept/getsockname/getsockopt.  The MorphOS
+ * socket.library API takes LONG* (and does not declare socklen_t), whereas
+ * Roadshow/bsdsocket on classic AmigaOS provides socklen_t.  Use a portable
+ * alias so the same call sites compile cleanly on both. */
+#if PLATFORM_MORPHOS
+typedef LONG cl_socklen_t;
+#else
+typedef socklen_t cl_socklen_t;
+#endif
 
 /* Roadshow's <netinet/in.h> defines INADDR_ANY but leaves INADDR_LOOPBACK to
  * <arpa/inet.h>, which we don't pull in.  Provide the standard value. */
@@ -835,7 +849,7 @@ static void reactor_try_accept(SockReq *req)
     int slot = (int)req->slot;            /* listener slot */
     LONG lfd = socket_table[slot];
     struct sockaddr_in caddr;
-    socklen_t clen = sizeof(caddr);
+    cl_socklen_t clen = sizeof(caddr);
     LONG fd;
     if (lfd < 0) { req->result = -1; req->out_slot = PLATFORM_SOCKET_INVALID; reactor_reply(req); return; }
     fd = accept(lfd, (struct sockaddr *)&caddr, &clen);
@@ -857,7 +871,7 @@ static void reactor_finish_connect(SockReq *req)
 {
     int slot = (int)req->slot;
     LONG err = 0;
-    socklen_t elen = sizeof(err);
+    cl_socklen_t elen = sizeof(err);
     getsockopt(socket_table[slot], SOL_SOCKET, SO_ERROR, (char *)&err, &elen);
     if (err == 0) {
         req->result = 0; req->out_slot = (PlatformSocket)slot;
@@ -926,7 +940,7 @@ static void reactor_do_listen(SockReq *req)
         CloseSocket(fd); req->result = -1; req->out_slot = PLATFORM_SOCKET_INVALID; reactor_reply(req); return;
     }
     {
-        socklen_t alen = sizeof(addr);
+        cl_socklen_t alen = sizeof(addr);
         if (getsockname(fd, (struct sockaddr *)&addr, &alen) == 0)
             req->out_port = ntohs(addr.sin_port);
         else
