@@ -200,8 +200,11 @@ void cl_thread_handle_interrupt(CL_Thread *t)
         t->destroy_requested = 0;
         t->interrupt_pending = 0;
         t->interrupt_func = CL_NIL;
-        cl_error(CL_ERR_GENERAL, "Thread destroyed");
-        return;  /* not reached — cl_error longjmps */
+        /* Quiet abort: runs handler-case / unwind-protect cleanups but does
+         * not enter the debugger, so a destroyed worker unwinds silently
+         * instead of dropping into SLDB / fgets(stdin). */
+        cl_abort_current_thread("Thread destroyed");
+        return;  /* not reached — longjmps */
     }
 
     /* interrupt-thread: call the pending function */

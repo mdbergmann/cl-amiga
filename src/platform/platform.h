@@ -36,6 +36,13 @@ int   platform_read_line(char *buf, int bufsize);
 int   platform_getchar(void);
 void  platform_ungetchar(int ch);
 void  platform_drain_input(void);  /* Drain residual data from stdin (AmigaOS CLI leak) */
+/* Non-zero iff stdin is an interactive terminal (a real console/tty).
+ * Used to gate the interactive C debugger: it may only block in
+ * platform_read_line when there is a human at a terminal to answer.  Returns
+ * 0 when stdin is a pipe, file or /dev/null (e.g. a `tail -f /dev/null | clamiga`
+ * launcher, or a SLY worker), so the debugger falls back to non-interactive
+ * reporting instead of deadlocking on a read no one will ever satisfy. */
+int   platform_stdin_is_interactive(void);
 
 /* File I/O (bulk read) */
 char *platform_file_read(const char *path, unsigned long *size_out);

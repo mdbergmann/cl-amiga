@@ -172,6 +172,33 @@ void cl_error(int code, const char *fmt, ...)
     cl_error_unwind(code);
 }
 
+/* Abort the current thread quietly.
+ *
+ * Used by destroy-thread: the "Thread destroyed" unwind is a controlled,
+ * internal abort requested by another thread (mp:destroy-thread), not a
+ * user-facing error that warrants the debugger.  We still signal the condition
+ * so any handler-case / unwind-protect in the thread body runs (matching
+ * cl_error's behaviour and CCL/SBCL thread-abort semantics), but we deliberately
+ * skip cl_invoke_debugger so a killed SLY worker unwinds silently instead of
+ * emitting a "Debugger entered" banner on every disconnect. */
+CL_NORETURN void cl_abort_current_thread(const char *msg)
+{
+    cl_error_code = CL_ERR_GENERAL;
+    strncpy(cl_error_msg, msg, sizeof(cl_error_msg) - 1);
+    cl_error_msg[sizeof(cl_error_msg) - 1] = '\0';
+
+    /* Capture backtrace while VM frames are still intact, then signal so
+     * handler-case / unwind-protect cleanups run — but never enter the
+     * debugger. */
+    cl_capture_backtrace();
+    {
+        CL_Obj cond = cl_create_condition_from_error(CL_ERR_GENERAL, cl_error_msg);
+        cl_signal_condition(cond);
+    }
+
+    cl_error_unwind(CL_ERR_GENERAL);  /* no debugger — does not return */
+}
+
 /* Unwind with an existing condition object (e.g. one built by the Lisp
  * ERROR builtin). Caller is responsible for having already run
  * cl_signal_condition — we skip re-signaling to avoid running handlers twice.

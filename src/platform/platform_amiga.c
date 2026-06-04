@@ -94,6 +94,15 @@ void platform_drain_input(void)
     }
 }
 
+int platform_stdin_is_interactive(void)
+{
+    /* IsInteractive() returns TRUE only for a real console/CON: handle, FALSE
+     * for files, pipes and NIL: — exactly the gate the debugger needs. */
+    BPTR in = Input();
+    if (!in) return 0;
+    return IsInteractive(in) ? 1 : 0;
+}
+
 char *platform_file_read(const char *path, unsigned long *size_out)
 {
     BPTR fh;
