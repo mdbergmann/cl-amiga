@@ -10,7 +10,7 @@
 #include "../platform/platform.h"
 #include <stdio.h>
 #include <string.h>
-#include <ctype.h>
+#include "ascii_ctype.h"
 
 /* ================================================================
  * Dynamic printer variable readers
@@ -507,7 +507,7 @@ static int needs_decimal(const char *buf)
     const char *p = buf;
     if (*p == '-' || *p == '+') p++;
     while (*p) {
-        if (!isdigit((unsigned char)*p)) return 0;
+        if (!cl_ascii_isdigit((unsigned char)*p)) return 0;
         p++;
     }
     return 1;
