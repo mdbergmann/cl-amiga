@@ -439,6 +439,20 @@ static CL_Obj read_atom_with_prefix(const char *prefix, int prefix_len)
     buf[len] = '\0';
 
     if (len == 0 && !has_escape) {
+#ifdef DEBUG_READER
+        {
+            char dbg[160];
+            int pk = read_char();   /* peek the char that stopped us */
+            snprintf(dbg, sizeof(dbg),
+                "[READER] read_token len=0: peek=%d (%c) is_delim=%d eof=%d "
+                "RT_CHARS=%d syn[peek]=%d\n",
+                pk, (pk >= 32 && pk < 127) ? pk : '?',
+                is_delimiter(pk), eof_seen, CL_RT_CHARS,
+                (pk >= 0 && pk < CL_RT_CHARS) ? rt->syntax[pk] : -1);
+            platform_write_string(dbg);
+            if (pk >= 0) unread_char(pk);
+        }
+#endif
         cl_reader_error(CL_ERR_PARSE, "Unexpected end of input");
         return CL_NIL;
     }
@@ -1439,6 +1453,31 @@ CL_Obj cl_read_from_string(CL_ReadStream *stream)
     CL_GC_PROTECT(str);
     s = cl_make_string_input_stream(str, (uint32_t)stream->pos, (uint32_t)stream->len);
     CL_GC_UNPROTECT(1);
+
+#ifdef DEBUG_READER
+    {
+        char dbg[160];
+        snprintf(dbg, sizeof(dbg),
+            "[READER] from_string: len=%d pos=%d str=%s s=%s buf=\"%.40s\"\n",
+            stream->len, stream->pos,
+            CL_NULL_P(str) ? "NIL!" : "ok",
+            CL_NULL_P(s) ? "NIL!" : "ok",
+            stream->buf ? stream->buf : "(null)");
+        platform_write_string(dbg);
+        if (!CL_NULL_P(s)) {
+            CL_Stream *dst = (CL_Stream *)CL_OBJ_TO_PTR(s);
+            snprintf(dbg, sizeof(dbg),
+                "[READER]   stream: type=%u dir=%u pos=%u out_buf_len=%u "
+                "string_buf=%s slen=%u flags=%u\n",
+                dst->stream_type, dst->direction, dst->position,
+                dst->out_buf_len,
+                CL_NULL_P(dst->string_buf) ? "NIL!" : "ok",
+                CL_NULL_P(dst->string_buf) ? 0u : cl_string_length(dst->string_buf),
+                dst->flags);
+            platform_write_string(dbg);
+        }
+    }
+#endif
 
     reader_stream = s;
     reader_line = stream->line ? stream->line : 1;
