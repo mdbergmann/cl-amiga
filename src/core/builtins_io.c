@@ -1865,12 +1865,19 @@ static CL_Obj bi_set_compiler_macro_function(CL_Obj *args, int n)
 
 /* --- Throw --- */
 
+#ifdef DEBUG_NLX
+extern void cl_nlx_debug_dump(const char *where, unsigned tag);
+#endif
+
 static CL_Obj bi_throw(CL_Obj *args, int n)
 {
     CL_Obj tag = args[0];
     CL_Obj value = (n > 1) ? args[1] : CL_NIL;
     int i;
 
+#ifdef DEBUG_NLX
+    cl_nlx_debug_dump("THROW enter", (unsigned)tag);
+#endif
     /* Scan NLX stack for matching catch */
     for (i = cl_nlx_top - 1; i >= 0; i--) {
         if (cl_nlx_stack[i].type == CL_NLX_CATCH &&
@@ -1908,6 +1915,9 @@ static CL_Obj bi_throw(CL_Obj *args, int n)
         }
     }
 
+#ifdef DEBUG_NLX
+    cl_nlx_debug_dump("THROW no-catch", (unsigned)tag);
+#endif
     cl_error(CL_ERR_GENERAL, "No catch for tag");
     return CL_NIL;
 }
