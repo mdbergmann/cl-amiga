@@ -323,7 +323,11 @@
   (defgeneric close (stream &key abort))
   (defmethod close ((stream gray:fundamental-stream) &key abort)
     (declare (ignore abort))
-    (setf (slot-value stream 'open-p) nil)
+    ;; The OPEN-P slot lives in the GRAY package (see DEFCLASS
+    ;; FUNDAMENTAL-STREAM); these methods are defined in COMMON-LISP, so an
+    ;; unqualified 'OPEN-P would read as CL:OPEN-P and SLOT-VALUE would fail
+    ;; with "no slot named COMMON-LISP::OPEN-P".  Qualify it.
+    (setf (slot-value stream 'gray::open-p) nil)
     t)
   (defmethod close ((stream t) &key abort)
     (declare (ignore abort))
@@ -332,7 +336,7 @@
   ;; OPEN-STREAM-P — GF so libraries can add methods
   (defgeneric open-stream-p (stream))
   (defmethod open-stream-p ((stream gray:fundamental-stream))
-    (slot-value stream 'open-p))
+    (slot-value stream 'gray::open-p))
   (defmethod open-stream-p ((stream t))
     (funcall orig-open-stream-p stream))
 
