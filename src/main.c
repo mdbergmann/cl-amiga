@@ -584,8 +584,16 @@ int main(int argc, char *argv[])
     }
 
 shutdown:
+#ifdef DEBUG_SHUTDOWN
+#define SHUTDOWN_TRACE(s) platform_write_string("[shutdown] " s "\n")
+#else
+#define SHUTDOWN_TRACE(s) ((void)0)
+#endif
+    SHUTDOWN_TRACE("enter shutdown");
     cl_stream_shutdown();
+    SHUTDOWN_TRACE("stream done");
     cl_vm_shutdown();
+    SHUTDOWN_TRACE("vm done");
     /* platform_shutdown() must run BEFORE cl_thread_shutdown(): on AmigaOS it
      * tears down the socket reactor via sock_call(), which wraps its WaitPort
      * in cl_gc_enter/leave_safe_region().  Those need gc_mutex/gc_condvar,
@@ -593,8 +601,12 @@ shutdown:
      * call ObtainSemaphore(NULL) and hang the process at exit once the reactor
      * has been started (i.e. after any socket op). */
     platform_shutdown();
+    SHUTDOWN_TRACE("platform done");
     cl_thread_shutdown();
+    SHUTDOWN_TRACE("thread done");
     cl_mem_shutdown();
+    SHUTDOWN_TRACE("mem done — returning from main");
+#undef SHUTDOWN_TRACE
 
     return cl_exit_code;
 }
