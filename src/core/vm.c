@@ -314,6 +314,27 @@ static CL_Obj call_builtin(CL_Function *func, CL_Obj *args, int nargs);
 static CL_Obj cl_vm_run(int base_fp, int base_nlx);
 void vm_trace_dump(void);
 
+#ifdef DEBUG_NLX
+/* Dump the current NLX (non-local-exit) frame stack to stderr.  Built only
+ * with -DDEBUG_NLX; used to diagnose platform-specific setjmp/longjmp
+ * divergence (e.g. MorphOS 68k emulation vs. real 68k).  Non-static so
+ * builtins_io.c (bi_throw) can call it at the "No catch for tag" site. */
+void cl_nlx_debug_dump(const char *where, unsigned tag)
+{
+    int k;
+    static const char *tn[4] = { "CATCH", "UWPROT", "BLOCK", "TAGBODY" };
+    fprintf(stderr, "[NLX] %s tag=0x%08x top=%d\n", where, tag, cl_nlx_top);
+    for (k = cl_nlx_top; k >= 0 && k < CL_MAX_NLX_FRAMES; k--) {
+        int t = cl_nlx_stack[k].type;
+        fprintf(stderr, "        [%d] type=%s tag=0x%08x vm_sp=%d vm_fp=%d\n",
+                k, (t >= 0 && t < 4) ? tn[t] : "?",
+                (unsigned)cl_nlx_stack[k].tag,
+                cl_nlx_stack[k].vm_sp, cl_nlx_stack[k].vm_fp);
+    }
+    fflush(stderr);
+}
+#endif
+
 /* Funcallable instance support: a standard-generic-function struct is a
  * callable object whose "discriminating function" lives at slot 3.  The
  * VM + funcall/apply treat it as transparent — they unwrap to slot 3 and
@@ -2659,7 +2680,16 @@ static CL_Obj cl_vm_run(int base_fp, int base_nlx)
             nlx->mv_count = 1;
             nlx->saved_pending_mark = cl_saved_pending_top;
 
+            {
+#ifdef DEBUG_NLX
+            int _sj_ret = CL_SETJMP(nlx->buf);
+            fprintf(stderr, "[NLX] BLOCK_PUSH setjmp ret=%d top=%d tag=0x%08x sp=%d fp=%d\n",
+                    _sj_ret, cl_nlx_top, (unsigned)block_tag, cl_vm.sp, cl_vm.fp);
+            fflush(stderr);
+            if (_sj_ret == 0) {
+#else
             if (CL_SETJMP(nlx->buf) == 0) {
+#endif
                 /* Normal path: block body executes */
                 cl_nlx_top++;
             } else {
@@ -2695,7 +2725,13 @@ static CL_Obj cl_vm_run(int base_fp, int base_nlx)
                     { int mi; for (mi = 0; mi < cl_mv_count && mi < CL_MAX_MV; mi++)
                         cl_mv_values[mi] = nlx->mv_values[mi]; }
                     cl_vm_push(block_result);
+#ifdef DEBUG_NLX
+                    fprintf(stderr, "[NLX] BLOCK_PUSH resume: sp=%d fp=%d top=%d\n",
+                            cl_vm.sp, cl_vm.fp, cl_nlx_top);
+                    fflush(stderr);
+#endif
                 }
+            }
             }
             VM_BREAK;
         }
@@ -2725,10 +2761,17 @@ static CL_Obj cl_vm_run(int base_fp, int base_nlx)
             CL_Obj value = cl_vm_pop();
             int i;
 
+#ifdef DEBUG_NLX
+            cl_nlx_debug_dump("BLOCK_RETURN scan", (unsigned)block_tag);
+#endif
             for (i = cl_nlx_top - 1; i >= 0; i--) {
                 if (cl_nlx_stack[i].type == CL_NLX_BLOCK &&
                     cl_nlx_stack[i].tag == block_tag) {
                     int j;
+#ifdef DEBUG_NLX
+                    fprintf(stderr, "[NLX] BLOCK_RETURN match at frame %d, longjmp\n", i);
+                    fflush(stderr);
+#endif
                     /* Check for interposing UWPROT frames (skip stale ones) */
                     for (j = cl_nlx_top - 1; j > i; j--) {
                         if (cl_nlx_stack[j].type == CL_NLX_UWPROT &&
@@ -2787,7 +2830,16 @@ static CL_Obj cl_vm_run(int base_fp, int base_nlx)
             nlx->compiler_mark = cl_compiler_mark();
             nlx->saved_pending_mark = cl_saved_pending_top;
 
+            {
+#ifdef DEBUG_NLX
+            int _sj_ret = CL_SETJMP(nlx->buf);
+            fprintf(stderr, "[NLX] TAGBODY_PUSH setjmp ret=%d top=%d id=0x%08x sp=%d fp=%d\n",
+                    _sj_ret, cl_nlx_top, (unsigned)tagbody_id, cl_vm.sp, cl_vm.fp);
+            fflush(stderr);
+            if (_sj_ret == 0) {
+#else
             if (CL_SETJMP(nlx->buf) == 0) {
+#endif
                 /* Normal path: tagbody body executes */
                 cl_nlx_top++;
             } else {
@@ -2825,7 +2877,13 @@ static CL_Obj cl_vm_run(int base_fp, int base_nlx)
                     /* Re-arm: keep NLX frame active for repeated GO */
                     cl_nlx_top++;
                     cl_vm_push(tag_index);
+#ifdef DEBUG_NLX
+                    fprintf(stderr, "[NLX] TAGBODY_PUSH resume: tag_index=%d sp=%d fp=%d top=%d\n",
+                            (int)CL_FIXNUM_VAL(tag_index), cl_vm.sp, cl_vm.fp, cl_nlx_top);
+                    fflush(stderr);
+#endif
                 }
+            }
             }
             VM_BREAK;
         }
@@ -2854,10 +2912,17 @@ static CL_Obj cl_vm_run(int base_fp, int base_nlx)
             CL_Obj tag_index = cl_vm_pop();
             int i;
 
+#ifdef DEBUG_NLX
+            cl_nlx_debug_dump("TAGBODY_GO scan", (unsigned)tagbody_id);
+#endif
             for (i = cl_nlx_top - 1; i >= 0; i--) {
                 if (cl_nlx_stack[i].type == CL_NLX_TAGBODY &&
                     cl_nlx_stack[i].tag == tagbody_id) {
                     int j;
+#ifdef DEBUG_NLX
+                    fprintf(stderr, "[NLX] TAGBODY_GO match at frame %d, longjmp\n", i);
+                    fflush(stderr);
+#endif
                     /* Check for interposing UWPROT frames (skip stale ones) */
                     for (j = cl_nlx_top - 1; j > i; j--) {
                         if (cl_nlx_stack[j].type == CL_NLX_UWPROT &&
@@ -2878,6 +2943,11 @@ static CL_Obj cl_vm_run(int base_fp, int base_nlx)
                     CL_LONGJMP(cl_nlx_stack[i].buf, 1);
                 }
             }
+#ifdef DEBUG_NLX
+            fprintf(stderr, "[NLX] TAGBODY_GO: NO MATCHING FRAME for id=0x%08x\n",
+                    (unsigned)tagbody_id);
+            fflush(stderr);
+#endif
             cl_error(CL_ERR_GENERAL, "GO: tagbody frame not found");
             VM_BREAK;
         }
