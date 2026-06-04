@@ -46,7 +46,8 @@ static void defun(const char *name, CL_CFunc func, int min, int max)
  * has a PRINT-OBJECT method (e.g. ASDF conditions), falling back to the
  * condition's :format-control/:format-arguments report string, and
  * finally to just the type name. */
-static void display_condition(CL_Obj condition)
+static void display_condition(CL_Obj condition, void (*emit)(const char *),
+                              int use_color)
 {
     CL_Condition *cond = (CL_Condition *)CL_OBJ_TO_PTR(condition);
     char buf[256];
@@ -79,31 +80,31 @@ static void display_condition(CL_Obj condition)
         }
     }
 
-    cl_color_set(CL_COLOR_BOLD_RED);
-    cl_write_cstring_to_debug_io("\nDebugger entered: ");
+    if (use_color) cl_color_set(CL_COLOR_BOLD_RED);
+    emit("\nDebugger entered: ");
     cl_prin1_to_string(cond->type_name, buf, sizeof(buf));
-    cl_write_cstring_to_debug_io(buf);
+    emit(buf);
 
     if (!CL_NULL_P(report_str)) {
         CL_String *s = (CL_String *)CL_OBJ_TO_PTR(report_str);
-        cl_write_cstring_to_debug_io(": ");
-        cl_write_cstring_to_debug_io(s->data);
+        emit(": ");
+        emit(s->data);
     } else if (!CL_NULL_P(cond->report_string)) {
         CL_String *s = (CL_String *)CL_OBJ_TO_PTR(cond->report_string);
-        cl_write_cstring_to_debug_io(": ");
-        cl_write_cstring_to_debug_io(s->data);
+        emit(": ");
+        emit(s->data);
     }
-    cl_color_reset();
-    cl_write_cstring_to_debug_io("\n");
+    if (use_color) cl_color_reset();
+    emit("\n");
 }
 
 /* Display backtrace */
-static void display_backtrace(void)
+static void display_backtrace(void (*emit)(const char *))
 {
     if (cl_backtrace_buf[0] != '\0') {
-        cl_write_cstring_to_debug_io("\nBacktrace:\n");
-        cl_write_cstring_to_debug_io(cl_backtrace_buf);
-        cl_write_cstring_to_debug_io("\n");
+        emit("\nBacktrace:\n");
+        emit(cl_backtrace_buf);
+        emit("\n");
     }
 }
 
@@ -269,16 +270,40 @@ void cl_invoke_debugger(CL_Obj condition)
         }
     }
 
-    /* Interactive debugger loop only if enabled */
+    /* Interactive debugger loop only if enabled (suppressed in batch mode /
+     * tests / during macroexpansion).  When disabled, return silently: the
+     * caller (REPL error frame, test harness) is responsible for reporting. */
     if (!cl_debugger_enabled) {
+        cl_debugger_depth--;
+        return;
+    }
+
+    /* The interactive mini-REPL below blocks in platform_read_line() (fgets on
+     * stdin).  That is only safe when there is a human at an interactive
+     * terminal to answer it:
+     *
+     *   - CT == cl_main_thread_ptr — this is the REPL thread, the only thread
+     *     that owns stdin; a SLY :spawn worker reaching here must never read,
+     *   - platform_stdin_is_interactive() — stdin is a real tty, not a pipe or
+     *     /dev/null (a `tail -f /dev/null | clamiga` launcher fails this).
+     *
+     * Otherwise (a background worker, or a non-interactive launcher) a read
+     * would block forever on input no one will send — while holding a GC safe
+     * region open — or spin on immediate EOF.  Fall back to ECL's --nodebug
+     * behaviour: report the condition and backtrace to *error-output* and
+     * return, letting cl_error_unwind abort this thread (or the REPL frame)
+     * cleanly. */
+    if (CT != cl_main_thread_ptr || !platform_stdin_is_interactive()) {
+        display_condition(condition, cl_write_cstring_to_error, 0);
+        display_backtrace(cl_write_cstring_to_error);
         cl_debugger_depth--;
         return;
     }
 
     cl_in_debugger = 1;
 
-    display_condition(condition);
-    display_backtrace();
+    display_condition(condition, cl_write_cstring_to_debug_io, 1);
+    display_backtrace(cl_write_cstring_to_debug_io);
     num_restarts = display_restarts();
     display_help();
 
@@ -298,7 +323,7 @@ void cl_invoke_debugger(CL_Obj condition)
 
         /* Check for commands */
         if (strcmp(line, ":bt") == 0) {
-            display_backtrace();
+            display_backtrace(cl_write_cstring_to_debug_io);
             cl_color_set(CL_COLOR_DIM_MAGENTA);
             cl_write_cstring_to_debug_io("Debug> ");
             cl_color_reset();

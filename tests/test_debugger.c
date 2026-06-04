@@ -75,28 +75,35 @@ static const char *eval_str(const char *expr)
 }
 
 /*
- * Test: cl_invoke_debugger routes its output through *debug-io*.
+ * Test: with the debugger enabled but stdin NOT an interactive terminal,
+ * cl_invoke_debugger must NOT block reading stdin.  Instead it takes the
+ * non-interactive fallback: it reports the condition through *error-output*
+ * (a Lisp stream SLY can capture — never raw fd 1) and returns so the error
+ * unwinds.  *debug-io* (the interactive channel) must stay untouched, proving
+ * the interactive mini-REPL loop was skipped rather than entered.
  *
- * We bind *debug-io* to a string-output-stream, then call cl_invoke_debugger
- * with cl_debugger_enabled=1.  stdin is redirected to /dev/null so
- * platform_read_line returns EOF immediately, causing the mini-REPL loop to
- * exit without blocking.  The captured output must contain "Debugger entered:".
+ * stdin is redirected to /dev/null (a non-tty) to model a SLY launcher /
+ * background worker; platform_stdin_is_interactive() returns 0 for it.
  */
-TEST(debugger_output_to_debug_io)
+TEST(debugger_noninteractive_reports_to_error_output)
 {
     CL_Obj cond = CL_NIL;
     int saved_fd;
-    const char *out;
+    const char *err_out;
+    const char *dbg_out;
 
-    /* Bind *debug-io* to a fresh string-output-stream */
+    /* Bind both channels to fresh string-output-streams so we can tell which
+     * one (if any) the debugger wrote to. */
+    eval("(setq *error-output* (make-string-output-stream))");
     eval("(setq *debug-io* (make-string-output-stream))");
 
     /* GC-protect the condition across potential allocating calls */
     CL_GC_PROTECT(cond);
     cond = cl_make_condition(SYM_SIMPLE_ERROR, CL_NIL, CL_NIL);
 
-    /* Redirect stdin to /dev/null so platform_read_line returns 0 (EOF)
-     * immediately, letting the interactive mini-REPL loop exit cleanly. */
+    /* Redirect stdin to /dev/null: a non-interactive (non-tty) handle, so the
+     * fallback fires.  (Were the gate broken, platform_read_line would return
+     * EOF here rather than hang — keeping the test itself non-blocking.) */
     saved_fd = dup(fileno(stdin));
     freopen("/dev/null", "r", stdin);
 
@@ -119,11 +126,17 @@ TEST(debugger_output_to_debug_io)
 
     CL_GC_UNPROTECT(1);
 
-    /* Verify the condition header was written to *debug-io*, not to fd 1 */
-    out = eval_str(
+    /* The condition header went to *error-output*... */
+    err_out = eval_str(
+        "(prog1 (get-output-stream-string *error-output*)"
+        "       (setq *error-output* (make-synonym-stream '*terminal-io*)))");
+    ASSERT(strstr(err_out, "Debugger entered:") != NULL);
+
+    /* ...and *debug-io* stayed empty (interactive loop was never entered). */
+    dbg_out = eval_str(
         "(prog1 (get-output-stream-string *debug-io*)"
         "       (setq *debug-io* (make-synonym-stream '*terminal-io*)))");
-    ASSERT(strstr(out, "Debugger entered:") != NULL);
+    ASSERT(strstr(dbg_out, "Debugger entered:") == NULL);
 }
 
 /*
@@ -167,7 +180,7 @@ int main(void)
     test_init();
     setup();
 
-    RUN(debugger_output_to_debug_io);
+    RUN(debugger_noninteractive_reports_to_error_output);
     RUN(debugger_disabled_produces_no_output);
 
     teardown();

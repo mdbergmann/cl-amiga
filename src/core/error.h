@@ -135,6 +135,11 @@ CL_NORETURN void cl_error(int code, const char *fmt, ...);
  * debugger can dispatch PRINT-OBJECT for a meaningful report. */
 CL_NORETURN void cl_error_from_condition(CL_Obj condition);
 
+/* Abort the current thread quietly: signal the condition so handler-case /
+ * unwind-protect run, but skip the interactive debugger entirely.  Used for
+ * controlled internal aborts such as destroy-thread's "Thread destroyed". */
+CL_NORETURN void cl_abort_current_thread(const char *msg);
+
 /* Signal a TYPE-ERROR with :datum and :expected-type slots populated,
  * then unwind. Use this whenever the call site knows both the bad
  * value and its expected type — it lets handler-case (type-error)

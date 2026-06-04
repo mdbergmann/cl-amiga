@@ -911,9 +911,9 @@ static CL_Obj bi_destroy_thread(CL_Obj *args, int n)
 
     self = (CL_Thread *)platform_tls_get();
 
-    /* Self-destruction: error immediately */
+    /* Self-destruction: abort immediately (quietly, like the interrupt path) */
     if (tobj->thread_id == self->id)
-        cl_error(CL_ERR_GENERAL, "Thread destroyed");
+        cl_abort_current_thread("Thread destroyed");
 
     target = cl_thread_table[tobj->thread_id];
     if (!target)

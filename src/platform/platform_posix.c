@@ -89,6 +89,11 @@ void platform_drain_input(void)
     /* No-op on POSIX — stdin doesn't have residual CLI data */
 }
 
+int platform_stdin_is_interactive(void)
+{
+    return isatty(fileno(stdin)) ? 1 : 0;
+}
+
 char *platform_file_read(const char *path, unsigned long *size_out)
 {
     FILE *f;
