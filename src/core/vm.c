@@ -2664,6 +2664,10 @@ static CL_Obj cl_vm_run(int base_fp, int base_nlx)
                 cl_nlx_top++;
             } else {
                 /* longjmp from return-from: restore state */
+                /* Reload cached thread pointer — see OP_TAGBODY_PUSH note:
+                 * `thr` is not reliably live across a longjmp re-entry under
+                 * MorphOS 68k emulation; rebuild from the canonical source. */
+                thr = cl_get_current_thread();
                 nlx = &cl_nlx_stack[cl_nlx_top];
                 cl_dynbind_restore_to(nlx->dyn_mark);
                 cl_handler_top = nlx->handler_mark;
@@ -2788,6 +2792,15 @@ static CL_Obj cl_vm_run(int base_fp, int base_nlx)
                 cl_nlx_top++;
             } else {
                 /* longjmp from cross-closure GO: restore state */
+                /* Reload the cached thread pointer.  `thr` is an automatic
+                 * cached once at cl_vm_run entry and dereferenced by every
+                 * push/pop/mv macro; it is not reliably live across a longjmp
+                 * re-entry.  On real 68k the callee-saved register that holds
+                 * it survives, but under MorphOS's 68k emulation the restore
+                 * differs, leaving `thr` indeterminate and corrupting the VM
+                 * stack the moment the dispatch loop resumes.  Rebuild it from
+                 * the canonical source like the other loop locals below. */
+                thr = cl_get_current_thread();
                 nlx = &cl_nlx_stack[cl_nlx_top];
                 cl_dynbind_restore_to(nlx->dyn_mark);
                 cl_handler_top = nlx->handler_mark;
@@ -3236,6 +3249,9 @@ static CL_Obj cl_vm_run(int base_fp, int base_nlx)
                 /* longjmp from throw: restore state from NLX frame.
                  * Recompute nlx from global — the local pointer may be
                  * indeterminate after longjmp (C99 7.13.2.1). */
+                /* Same hazard applies to the cached thread pointer (see
+                 * OP_TAGBODY_PUSH): reload it before any cl_vm/mv access. */
+                thr = cl_get_current_thread();
                 nlx = &cl_nlx_stack[cl_nlx_top];
                 cl_dynbind_restore_to(nlx->dyn_mark);
                 cl_handler_top = nlx->handler_mark;
@@ -3354,6 +3370,8 @@ static CL_Obj cl_vm_run(int base_fp, int base_nlx)
             } else {
                 /* longjmp from throw/error through UWP: restore state, jump to cleanup.
                  * Recompute nlx — local pointer may be indeterminate after longjmp. */
+                /* Reload cached thread pointer too (see OP_TAGBODY_PUSH). */
+                thr = cl_get_current_thread();
                 nlx = &cl_nlx_stack[cl_nlx_top];
                 cl_dynbind_restore_to(nlx->dyn_mark);
                 cl_handler_top = nlx->handler_mark;
