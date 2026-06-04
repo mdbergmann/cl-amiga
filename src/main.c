@@ -606,7 +606,6 @@ shutdown:
     SHUTDOWN_TRACE("thread done");
     cl_mem_shutdown();
     SHUTDOWN_TRACE("mem done");
-#undef SHUTDOWN_TRACE
 
 #ifdef PLATFORM_AMIGA
     /* MorphOS / AmigaOS (-noixemul): every clamiga-owned resource is already
@@ -617,9 +616,13 @@ shutdown:
      * cleanup is complete and the OS reclaims the rest on process exit, flush any
      * pending C stdio and terminate via _exit(), which hands the return code back
      * to DOS without running the hanging teardown. */
+    SHUTDOWN_TRACE("calling fflush(NULL)");
     fflush(NULL);
+    SHUTDOWN_TRACE("fflush done — calling _exit");
     _exit(cl_exit_code);
+    SHUTDOWN_TRACE("_exit returned (should never happen)");
 #endif
+#undef SHUTDOWN_TRACE
 
     return cl_exit_code;
 }
