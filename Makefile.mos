@@ -28,11 +28,11 @@
 
 # MorphOS SDK GCC.  Override on the command line if your toolchain uses a
 # different name, e.g.  make -f Makefile.mos CC=ppc-morphos-gcc
-CC      ?= gcc
+CC      = gcc
 
 # PPC has none of the m68k -O2 miscompiles documented in Makefile.cross,
 # so -O2 is safe here.
-CFLAGS  ?= -std=c99 -Wall -O2 -DPLATFORM_AMIGA -DPLATFORM_MORPHOS $(DEBUG_FLAGS)
+CFLAGS  ?= -std=c99 -noixemul -Wall -O2 -DPLATFORM_AMIGA -DPLATFORM_MORPHOS $(DEBUG_FLAGS)
 LDFLAGS ?=
 LDLIBS  ?= -lm
 

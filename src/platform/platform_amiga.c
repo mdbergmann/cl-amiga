@@ -682,7 +682,11 @@ const char *platform_expand_home(const char *path, char *buf, int bufsize)
  * copy between tasks.
  */
 
+#if PLATFORM_MORPHOS
+#include <proto/socket.h>
+#else
 #include <proto/bsdsocket.h>
+#endif
 #include <exec/ports.h>
 #include <exec/tasks.h>
 #include <dos/dostags.h>
