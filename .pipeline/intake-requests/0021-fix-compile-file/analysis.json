@@ -1,0 +1,16 @@
+{
+  "summary": "Two independent CLHS conformance bugs in src/core/builtins_io.c: LOAD ignores all keyword args (notably :if-does-not-exist nil → must return NIL); COMPILE-FILE evaluates every top-level form's bytecode at compile time, so any side-effect-bearing form (e.g. defvar with a make-package initform) runs twice when the resulting FASL is loaded in the same image. Both have small, surgical fixes in localized regions of one file plus regression tests.",
+  "affected_areas": [
+    "src/core/builtins_io.c — bi_load (LOAD keyword parsing + :if-does-not-exist handling)",
+    "src/core/builtins_io.c — cf_process_toplevel_form (CLHS 3.2.3.1 top-level processing rules)",
+    "tests/test_fasl_compat.sh (and possibly tests/test_load_keywords.sh) — host regression tests",
+    "tests/amiga/run-tests.lisp — Amiga regression test for the compile-file bug"
+  ],
+  "risks": [
+    "Removing compile-time eval of arbitrary top-level forms is a behavior change. Any clamiga-side Lisp code that implicitly relied on a side-effecting top-level form running during compile-file would silently change. Mitigation: macros that genuinely need compile-time effect (defpackage, defclass, defstruct, etc.) already expand to (eval-when (:compile-toplevel :load-toplevel :execute) …), so they continue to work via the EVAL-WHEN branch of the new dispatch. The defining-form whitelist (DEFMACRO, DEFTYPE, DEFCONSTANT, DEFSETF, IN-PACKAGE) handles the C-level special forms whose compile-time effect is produced by running OP_DEFMACRO/OP_DEFTYPE/etc.",
+    "Compile-time interaction between forms (e.g. a top-level (defun foo) followed by a top-level (foo) call earlier in the file) will no longer have the (foo) call observe the just-defun'd function during compile-file. CLHS 3.2.3.1 explicitly allows the compiler to make this choice; SBCL, CCL, and Clozure all do the same. Mitigation: trunk/load-and-test-*.lisp suite + Quicklisp smoke tests should surface any real-world reliance on the old behavior. The existing test_fasl_compat.sh ASDF tests already cover the common cases.",
+    "GC root anchoring: cf_process_toplevel_form's GC_PROTECT regime is delicate. The new dispatch still protects `bytecode` across the eval (if any) and the cf_bc_vec_append call. But if test failures surface arena-relative offset bugs, look at GC roots first.",
+    "LOAD's :if-does-not-exist short-circuit must happen BEFORE the FASL-cache lookup (src/core/builtins_io.c:449), otherwise a stale FASL could mask a missing source file. Cheapest correct fix is a platform_file_exists check at the top after kwarg parsing.",
+    "Neither change touches FASL byte layout; CL_FASL_VERSION must NOT be bumped. The set of forms that emit bytecode at compile time stays the same — only the in-process effect changes (no double-eval)."
+  ]
+}

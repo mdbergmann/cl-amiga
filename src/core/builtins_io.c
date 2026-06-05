@@ -89,6 +89,17 @@ static CL_Obj KW_WR_PRETTY;
 static CL_Obj KW_WR_RIGHT_MARGIN;
 static CL_Obj KW_WR_PPRINT_DISPATCH;
 
+/* --- EVAL-WHEN situation keywords (CLHS 3.2.3.1, Table 3-9) --- */
+/* Modern keyword forms: :compile-toplevel, :load-toplevel, :execute */
+static CL_Obj KW_EW_CT;         /* :compile-toplevel */
+static CL_Obj KW_EW_LT;         /* :load-toplevel */
+static CL_Obj KW_EW_EX;         /* :execute */
+/* Legacy CL-package synonyms: CL:COMPILE, CL:LOAD, CL:EVAL (same symbols as
+ * the functions — valid per CLHS as eval-when situation names) */
+static CL_Obj SYM_EW_COMPILE;   /* CL:COMPILE */
+static CL_Obj SYM_EW_LOAD;      /* CL:LOAD */
+static CL_Obj SYM_EW_EVAL_SYM;  /* CL:EVAL (distinct from SYM_EVAL_WHEN) */
+
 /* --- I/O --- */
 
 /*
@@ -386,8 +397,20 @@ static CL_Obj bi_load(CL_Obj *args, int n)
     CL_Obj load_pathname_obj, load_truename_obj;
     CL_Symbol *lp_sym, *lt_sym;
     CL_Obj saved_load_pathname, saved_load_truename;
+    int verbose_explicit = 0, verbose = 0;
+    CL_Obj if_dne = CL_UNBOUND;
+    int i;
 
-    CL_UNUSED(n);
+    /* Parse keyword args: :verbose, :print, :if-does-not-exist, :external-format */
+    for (i = 1; i + 1 < n; i += 2) {
+        if (args[i] == cl_intern_keyword("VERBOSE", 7)) {
+            verbose_explicit = 1;
+            verbose = !CL_NULL_P(args[i + 1]);
+        } else if (args[i] == cl_intern_keyword("IF-DOES-NOT-EXIST", 17)) {
+            if_dne = args[i + 1];
+        }
+        /* :print, :external-format, and unknown kwargs: allow-other-keys behavior */
+    }
 
     /* Sync cl_current_package from *package* special variable,
        so Lisp-level let-bindings of *package* are respected by the reader */
@@ -436,6 +459,14 @@ static CL_Obj bi_load(CL_Obj *args, int n)
     }
 
     path_str = (CL_String *)CL_OBJ_TO_PTR(args[0]);
+
+    /* :if-does-not-exist NIL → return NIL without erroring.
+       Check before the FASL cache block so we never substitute a stale cached
+       FASL for a source file the caller explicitly said is OK to be missing. */
+    if (if_dne == CL_NIL && !platform_file_exists(path_str->data)) {
+        cl_current_package = saved_package;
+        return CL_NIL;
+    }
 
     /* Check for cached FASL before reading source.  Skipped when:
        - .asd (shares base names with .lisp source files; must not be
@@ -508,8 +539,9 @@ static CL_Obj bi_load(CL_Obj *args, int n)
                             cl_set_symbol_value(SYM_STAR_LOAD_TRUENAME, load_truename_obj);
 
                             {
-                                CL_Symbol *lv_sym = (CL_Symbol *)CL_OBJ_TO_PTR(SYM_STAR_LOAD_VERBOSE);
-                                if (!CL_NULL_P(cl_symbol_value(SYM_STAR_LOAD_VERBOSE))) {
+                                int do_verbose = verbose_explicit ? verbose
+                                    : !CL_NULL_P(cl_symbol_value(SYM_STAR_LOAD_VERBOSE));
+                                if (do_verbose) {
                                     cl_write_cstring_to_stdout("; Loading ");
                                     cl_write_cstring_to_stdout(cache_path);
                                     cl_write_cstring_to_stdout("\n");
@@ -575,8 +607,19 @@ static CL_Obj bi_load(CL_Obj *args, int n)
     }
 
     buf = platform_file_read(path_str->data, &size);
-    if (!buf)
-        cl_error(CL_ERR_GENERAL, "LOAD: cannot open file");
+    if (!buf) {
+        if (!platform_file_exists(path_str->data)) {
+            /* File disappeared between the earlier existence check and now (TOCTOU),
+               or was never there.  Honour :if-does-not-exist nil. */
+            if (if_dne == CL_NIL) {
+                cl_current_package = saved_package;
+                return CL_NIL;
+            }
+            cl_error(CL_ERR_GENERAL, "LOAD: file does not exist: %s", path_str->data);
+        } else {
+            cl_error(CL_ERR_GENERAL, "LOAD: cannot read file: %s", path_str->data);
+        }
+    }
 
     /* Bind *load-pathname* and *load-truename* per CL spec */
     {
@@ -604,10 +647,11 @@ static CL_Obj bi_load(CL_Obj *args, int n)
     cl_set_symbol_value(SYM_STAR_LOAD_PATHNAME, load_pathname_obj);
     cl_set_symbol_value(SYM_STAR_LOAD_TRUENAME, load_truename_obj);
 
-    /* Print loading message if *load-verbose* is true */
+    /* Print loading message respecting :verbose kwarg then *load-verbose* */
     {
-        CL_Symbol *lv_sym = (CL_Symbol *)CL_OBJ_TO_PTR(SYM_STAR_LOAD_VERBOSE);
-        if (!CL_NULL_P(cl_symbol_value(SYM_STAR_LOAD_VERBOSE))) {
+        int do_verbose = verbose_explicit ? verbose
+            : !CL_NULL_P(cl_symbol_value(SYM_STAR_LOAD_VERBOSE));
+        if (do_verbose) {
             cl_write_cstring_to_stdout("; Loading ");
             cl_write_cstring_to_stdout(path_str->data);
             cl_write_cstring_to_stdout("\n");
@@ -1017,16 +1061,151 @@ static void make_fasl_path(const char *input, char *output, uint32_t outsize)
     output[base_len + 5] = '\0';
 }
 
-/* Process a single top-level form for compile-file.
- * Per CLHS 3.2.3.1: when the form is (progn ...), each subform is processed
- * as a top-level form recursively (so a (defmacro X) at the head of a progn
- * is evaluated before the compiler tries to expand a sibling (X ...) form).
- * Otherwise compile + eval + append bytecode for deferred FASL serialization.
+/* Returns 1 if this top-level form (after macroexpansion) must be evaluated
+ * at compile time so that later forms in the same file compile correctly.
+ * CLHS 3.2.3.1.2: only a small set of defining forms require this.
+ * Notably absent: DEFVAR, DEFPARAMETER (proclaim-special is done inside
+ * cl_compile itself), DEFUN (compiler records name/arglist; body must not
+ * run at compile time), and user-level macros like DEFPACKAGE/DEFCLASS
+ * (those expand to eval-when wrappers, handled via cf_process_toplevel_eval_when). */
+static int cf_form_needs_compile_time_eval(CL_Obj expr)
+{
+    CL_Obj head;
+    if (!CL_CONS_P(expr)) return 0;
+    head = cl_car(expr);
+    return head == SYM_DEFMACRO
+        || head == SYM_DEFTYPE
+        || head == SYM_DEFCONSTANT
+        || head == SYM_DEFSETF
+        || head == SYM_IN_PACKAGE;
+}
+
+/* Forward declarations — helpers reference each other. */
+static void cf_bc_vec_append(CL_Obj *bc_vec_p, int *bc_count_p, CL_Obj bytecode);
+static void cf_process_toplevel_form(CL_Obj expr,
+                                     CL_Obj *bc_vec_p,
+                                     int *bc_count_p);
+
+/* Process a top-level (eval-when (situations...) body...) per CLHS Table 3-9.
+ * Called by cf_process_toplevel_form after the macroexpand-1 loop, when the
+ * (already macroexpanded) head is SYM_EVAL_WHEN.
  *
- * Top-level atoms (bare symbols / numbers / strings) are skipped, matching
- * the existing convention — they have no side effects worth running and need
- * no FASL serialization.
- */
+ * CLHS Table 3-9 (compile-file top-level context):
+ *   CT+LT → each body form is a fresh top-level form (compile+eval+collect)
+ *   CT    → compile+eval each body; do NOT emit to FASL
+ *   LT    → compile each body; emit to FASL; do NOT eval at compile time
+ *   EX    → "not at top-level" semantics: compile+eval; do NOT emit
+ *   none  → do nothing */
+static void cf_process_toplevel_eval_when(CL_Obj form,
+                                          CL_Obj *bc_vec_p,
+                                          int *bc_count_p)
+{
+    CL_Obj situations, body, sit, rest;
+    int has_ct = 0, has_lt = 0, has_ex = 0;
+
+    situations = cl_car(cl_cdr(form));
+    body       = cl_cdr(cl_cdr(form));
+
+    /* Parse situation list; accept both modern keywords and legacy CL names */
+    for (sit = situations; !CL_NULL_P(sit); sit = cl_cdr(sit)) {
+        CL_Obj s = cl_car(sit);
+        if      (s == KW_EW_CT || s == SYM_EW_COMPILE) has_ct = 1;
+        else if (s == KW_EW_LT || s == SYM_EW_LOAD)    has_lt = 1;
+        else if (s == KW_EW_EX || s == SYM_EW_EVAL_SYM) has_ex = 1;
+    }
+
+    if (has_ct && has_lt) {
+        /* CLHS Table 3-9 CT+LT: compile-time evaluation AND load-time emission.
+         * Each body form is compiled, evaluated at compile time, and collected
+         * for FASL.  This is necessary so that forms like DEFPACKAGE (which
+         * expand to (eval-when (:ct :lt :ex) (let ((pkg ...)) ...))) create the
+         * package at compile time, allowing subsequent (in-package ...) forms in
+         * the same compilation unit to use the fast compile_in_package path and
+         * switch cl_current_package. */
+        rest = body;
+        CL_GC_PROTECT(rest);
+        while (!CL_NULL_P(rest)) {
+            CL_Obj sub = cl_car(rest);
+            CL_Obj bc;
+            CL_GC_PROTECT(sub);
+            bc = cl_compile(sub);
+            CL_GC_UNPROTECT(1);
+            if (!CL_NULL_P(bc)) {
+                CL_GC_PROTECT(bc);
+                cl_vm_eval(bc);
+                cl_gc_compact_if_pending();
+                cf_bc_vec_append(bc_vec_p, bc_count_p, bc);
+                CL_GC_UNPROTECT(1);
+            }
+            rest = cl_cdr(rest);
+        }
+        CL_GC_UNPROTECT(1);
+    } else if (has_ct) {
+        /* CT only: compile+eval each body; no FASL emission. */
+        rest = body;
+        CL_GC_PROTECT(rest);
+        while (!CL_NULL_P(rest)) {
+            CL_Obj sub = cl_car(rest);
+            CL_Obj bc;
+            CL_GC_PROTECT(sub);
+            bc = cl_compile(sub);
+            CL_GC_UNPROTECT(1);
+            if (!CL_NULL_P(bc)) {
+                CL_GC_PROTECT(bc);
+                cl_vm_eval(bc);
+                cl_gc_compact_if_pending();
+                CL_GC_UNPROTECT(1);
+            }
+            rest = cl_cdr(rest);
+        }
+        CL_GC_UNPROTECT(1);
+    } else if (has_lt) {
+        /* LT only: compile+collect each body; no compile-time eval. */
+        rest = body;
+        CL_GC_PROTECT(rest);
+        while (!CL_NULL_P(rest)) {
+            CL_Obj sub = cl_car(rest);
+            CL_Obj bc;
+            CL_GC_PROTECT(sub);
+            bc = cl_compile(sub);
+            CL_GC_UNPROTECT(1);
+            if (!CL_NULL_P(bc)) {
+                CL_GC_PROTECT(bc);
+                cl_gc_compact_if_pending();
+                cf_bc_vec_append(bc_vec_p, bc_count_p, bc);
+                CL_GC_UNPROTECT(1);
+            }
+            rest = cl_cdr(rest);
+        }
+        CL_GC_UNPROTECT(1);
+    } else if (has_ex) {
+        /* EX only (not at top level in compile-file): compile+eval; no emit. */
+        rest = body;
+        CL_GC_PROTECT(rest);
+        while (!CL_NULL_P(rest)) {
+            CL_Obj sub = cl_car(rest);
+            CL_Obj bc;
+            CL_GC_PROTECT(sub);
+            bc = cl_compile(sub);
+            CL_GC_UNPROTECT(1);
+            if (!CL_NULL_P(bc)) {
+                CL_GC_PROTECT(bc);
+                cl_vm_eval(bc);
+                cl_gc_compact_if_pending();
+                CL_GC_UNPROTECT(1);
+            }
+            rest = cl_cdr(rest);
+        }
+        CL_GC_UNPROTECT(1);
+    }
+    /* else: no active situation — do nothing */
+}
+
+/* Process a single top-level form for compile-file.
+ * Implements CLHS 3.2.3.1: macroexpand-1 loop, then PROGN recursion,
+ * EVAL-WHEN dispatch (Table 3-9), or compile-only-eval-when-needed.
+ *
+ * Top-level atoms (bare symbols / numbers / strings) produce no effect. */
 /* Append `bytecode` into the collected-bytecodes vector, growing if needed.
  * The vector is a Lisp object (not a host alloc) so its slots are GC roots
  * via *bc_vec_p — bytecodes accumulated here survive any GC triggered by
@@ -1066,7 +1245,22 @@ static void cf_process_toplevel_form(CL_Obj expr,
 {
     CL_Obj bytecode;
 
-    if (CL_CONS_P(expr) && cl_car(expr) == SYM_PROGN) {
+    /* CLHS 3.2.3.1: top-level macroexpand-1 loop.  User-level macros such as
+     * DEFPACKAGE and DEFCLASS expand to (eval-when ...) wrappers that we then
+     * dispatch below.  Special operators (PROGN, EVAL-WHEN) are not macros and
+     * return unchanged on the first iteration. */
+    CL_GC_PROTECT(expr);
+    for (;;) {
+        CL_Obj exp;
+        if (!CL_CONS_P(expr)) { CL_GC_UNPROTECT(1); return; }
+        exp = cl_macroexpand_1_env(expr, CL_NIL);
+        if (exp == expr) break;
+        expr = exp;
+    }
+    CL_GC_UNPROTECT(1);
+
+    /* PROGN: each subform is a fresh top-level form (CLHS 3.2.3.1). */
+    if (cl_car(expr) == SYM_PROGN) {
         CL_Obj subs = cl_cdr(expr);
         CL_GC_PROTECT(subs);
         while (!CL_NULL_P(subs)) {
@@ -1078,8 +1272,18 @@ static void cf_process_toplevel_form(CL_Obj expr,
         return;
     }
 
-    if (!CL_CONS_P(expr)) return;
+    /* EVAL-WHEN: dispatch per CLHS Table 3-9. */
+    if (cl_car(expr) == SYM_EVAL_WHEN) {
+        cf_process_toplevel_eval_when(expr, bc_vec_p, bc_count_p);
+        return;
+    }
 
+    /* All other forms: compile to bytecode.
+     * Per CLHS 3.2.3.1.2, compile-time side effects of defining forms
+     * (proclaim-special for DEFVAR/DEFPARAMETER, macro installation for
+     * DEFMACRO, etc.) are produced inside cl_compile itself.  We only need
+     * to run the resulting bytecode at compile time for the small set of
+     * forms whose effect requires the VM to execute (cf_form_needs_compile_time_eval). */
     CL_GC_PROTECT(expr);
     bytecode = cl_compile(expr);
     CL_GC_UNPROTECT(1);
@@ -1087,7 +1291,8 @@ static void cf_process_toplevel_form(CL_Obj expr,
     if (CL_NULL_P(bytecode)) return;
 
     CL_GC_PROTECT(bytecode);
-    cl_vm_eval(bytecode);
+    if (cf_form_needs_compile_time_eval(expr))
+        cl_vm_eval(bytecode);
     cl_gc_compact_if_pending();
     cf_bc_vec_append(bc_vec_p, bc_count_p, bytecode);
     CL_GC_UNPROTECT(1);
@@ -3193,6 +3398,14 @@ static CL_Obj bi_socket_local_port(CL_Obj *args, int n)
 
 void cl_builtins_io_init(void)
 {
+    /* Intern EVAL-WHEN situation keywords (CLHS 3.2.3.1 / Table 3-9) */
+    KW_EW_CT       = cl_intern_keyword("COMPILE-TOPLEVEL", 16);
+    KW_EW_LT       = cl_intern_keyword("LOAD-TOPLEVEL", 13);
+    KW_EW_EX       = cl_intern_keyword("EXECUTE", 7);
+    SYM_EW_COMPILE = cl_intern_in("COMPILE", 7, cl_package_cl);
+    SYM_EW_LOAD    = cl_intern_in("LOAD", 4, cl_package_cl);
+    SYM_EW_EVAL_SYM = cl_intern_in("EVAL", 4, cl_package_cl);
+
     /* Intern keywords for WRITE */
     KW_WR_STREAM   = cl_intern_keyword("STREAM", 6);
     KW_WR_ESCAPE   = cl_intern_keyword("ESCAPE", 6);
@@ -3220,7 +3433,7 @@ void cl_builtins_io_init(void)
     /* Read / Load / Eval */
     defun("READ", bi_read, 0, -1);
     defun("READ-DELIMITED-LIST", bi_read_delimited_list, 1, 3);
-    defun("LOAD", bi_load, 1, -1);  /* accepts keyword args: :verbose, :print */
+    defun("LOAD", bi_load, 1, -1);  /* &key :verbose :print :if-does-not-exist :external-format */
     defun("EVAL", bi_eval, 1, 1);
     defun("MACROEXPAND-1", bi_macroexpand_1, 1, 2);
     defun("MACROEXPAND", bi_macroexpand, 1, 2);
@@ -3317,6 +3530,12 @@ void cl_builtins_io_init(void)
     defun("COPY-PPRINT-DISPATCH", bi_copy_pprint_dispatch, 0, 1);
 
     /* Register cached symbols for GC compaction forwarding */
+    cl_gc_register_root(&KW_EW_CT);
+    cl_gc_register_root(&KW_EW_LT);
+    cl_gc_register_root(&KW_EW_EX);
+    cl_gc_register_root(&SYM_EW_COMPILE);
+    cl_gc_register_root(&SYM_EW_LOAD);
+    cl_gc_register_root(&SYM_EW_EVAL_SYM);
     cl_gc_register_root(&KW_WR_STREAM);
     cl_gc_register_root(&KW_WR_ESCAPE);
     cl_gc_register_root(&KW_WR_READABLY);

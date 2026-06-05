@@ -1104,7 +1104,7 @@ Specialize via defmethod to provide lazy initialization."
                 accessor-defs))))
     (setq slot-def-forms (nreverse slot-def-forms))
     (setq accessor-defs (nreverse accessor-defs))
-    `(progn
+    `(eval-when (:compile-toplevel :load-toplevel :execute)
        (%ensure-class ',name
                       ',direct-superclasses
                       (list ,@slot-def-forms)
@@ -2518,7 +2518,7 @@ already-existing GF the installed combination is preserved."
                 accessor-defs))))
     (setq slot-def-forms (nreverse slot-def-forms))
     (setq accessor-defs (nreverse accessor-defs))
-    `(progn
+    `(eval-when (:compile-toplevel :load-toplevel :execute)
        (ensure-class ',name
          :direct-superclasses ',direct-superclasses
          :direct-slots (list ,@slot-def-forms)

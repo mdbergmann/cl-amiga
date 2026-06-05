@@ -2158,12 +2158,15 @@ TEST(compile_file_source_file_outlives_compile_file)
     write_test_file("/tmp/cf-test-srcfile-different-name-B.lisp",
         "(defun cf-srcfile-fn-B () 99)\n");
 
-    /* Compile A, then immediately compile B with a longer/different path.
-     * If A's CL_Bytecode->source_file pointed into bi_compile_file's
-     * stack-local in_path[], B's compile would overwrite that buffer
-     * with B's path string, and A's source_file would now read garbage
-     * (or B's path, depending on how the stack is reused). */
+    /* Compile A, then load it to install the function.  Then compile B with a
+     * longer/different path.  If A's CL_Bytecode->source_file pointed into
+     * bi_compile_file's stack-local in_path[], B's compile would overwrite
+     * that buffer, and A's source_file would now read garbage.
+     *
+     * Per CLHS 3.2.3.1, DEFUN is not eval'd at compile time, so we must load
+     * A's FASL before the function symbol is accessible for inspection. */
     eval_obj("(compile-file \"/tmp/cf-test-srcfile-A.lisp\")");
+    eval_obj("(load \"/tmp/cf-test-srcfile-A.lisp\")");
     eval_obj("(compile-file \"/tmp/cf-test-srcfile-different-name-B.lisp\")");
 
     /* Inspect A's bytecode source_file — it must still be A's path. */

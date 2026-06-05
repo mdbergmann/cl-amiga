@@ -133,6 +133,13 @@ test-fast: $(TEST_BINS) host
 		echo "FAIL"; \
 		failed=1; \
 	fi; \
+	echo "--- test_load_keywords ---"; \
+	if sh $(TEST_SRCDIR)/test_load_keywords.sh $(BUILDDIR)/clamiga; then \
+		echo "PASS"; \
+	else \
+		echo "FAIL"; \
+		failed=1; \
+	fi; \
 	echo "--- test_userinit ---"; \
 	if sh $(TEST_SRCDIR)/test_userinit.sh $(BUILDDIR)/clamiga; then \
 		echo "PASS"; \

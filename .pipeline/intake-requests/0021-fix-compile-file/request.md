@@ -1,7 +1,7 @@
 ---
 id: 0021-fix-compile-file
 type: bug
-status: ready
+status: done
 title: fix compile-file
 ---
 
