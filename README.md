@@ -181,6 +181,58 @@ Pre-built `lib/boot.fasl` and `lib/clos.fasl` ship with the binary; on the lower
 
 Note: string literals in `lib/*.lisp` must stay ASCII-only — the Amiga build is compiled without `CL_WIDE_STRINGS` to save RAM and cannot read host FASLs that contain `FASL_TAG_WIDE_STRING`. The writer auto-downgrades all-ASCII wide strings to byte strings; non-ASCII chars in source string literals will fail Amiga boot with a `BAD_TAG` deserialize error. Comments are unaffected.
 
+### Emacs (SLY) integration
+
+CL-Amiga speaks the SLYNK protocol, so you can drive it from Emacs with [SLY](https://github.com/joaotavora/sly) — REPL, completion, `M-.`, the inspector, and the SLDB debugger. This targets the **host** build (`build/host/clamiga`) and needs a SLY checkout whose `slynk/backend/` includes the CL-Amiga backend (`clamiga.lisp`).
+
+clamiga comes up through SLY's **standard loader**, exactly like every other implementation — there is no clamiga-specific Lisp startup file. The backend pulls in clamiga's Gray streams itself via `(require "gray-streams")`, and `slynk-loader` loads SLYNK from source on clamiga (it can't reuse SLY's compiled-FASL cache). Run clamiga from its source root (or set SLY's `:directory`) so `(require "gray-streams")` finds `lib/gray-streams.lisp`.
+
+> **Heap sizing:** the 4 MB default thrashes the GC once SLYNK and its contribs load. Use **`--heap 96M` as a practical minimum** — that also carries a real application's dependency graph (e.g. `(asdf:load-system :sento)`). Give more headroom (`512M`) if you can.
+
+#### Method A — auto-start with `M-x sly` (recommended)
+
+Add a `clamiga` entry to `sly-lisp-implementations`, using SLY's stock loader-based init and pointing `:directory` at the source root:
+
+```elisp
+(defvar my/clamiga-root "/path/to/cl-amiga")
+(defvar my/clamiga-bin  (expand-file-name "build/host/clamiga" my/clamiga-root))
+
+(with-eval-after-load 'sly
+  (add-to-list 'sly-lisp-implementations
+               `(clamiga (,my/clamiga-bin "--heap" "512M")
+                         :init sly-init-using-slynk-loader
+                         :directory ,my/clamiga-root)))
+```
+
+Then `M-x sly` and pick `clamiga` (or `C-u M-x sly` to choose). SLY loads `slynk-loader.lisp`, runs `slynk-loader:init`, and starts a server on an OS-assigned port it connects to automatically.
+
+#### Method B — external server + `M-x sly-connect`
+
+Start a server in a terminal, then connect to it (useful to keep the image alive across reconnects). A launcher ships with cl-amiga:
+
+```sh
+# From the cl-amiga repo root:
+SLY_SLYNK_DIR=/path/to/sly/slynk \
+  ./tools/sly/clamiga-slynk.sh                 # defaults: port 4005, heap 96M
+# CLAMIGA_PORT=4006 and a trailing `--heap 192M' etc. also work.
+```
+
+It runs clamiga from the source root (so Gray streams resolve), loads `slynk-loader`, starts a server on the chosen port, and holds stdin open with `tail -f /dev/null` (otherwise the REPL reads EOF and exits, taking the server thread with it). Then in Emacs:
+
+```
+M-x sly-connect RET 127.0.0.1 RET 4005 RET
+```
+
+The equivalent by hand, without the script:
+
+```sh
+cd /path/to/cl-amiga
+tail -f /dev/null | ./build/host/clamiga --heap 96M \
+    --eval '(load "/path/to/sly/slynk/slynk-loader.lisp")' \
+    --eval '(funcall (read-from-string "slynk-loader:init"))' \
+    --eval '(funcall (read-from-string "slynk:create-server") :port 4005 :dont-close t)'
+```
+
 ## AmigaOS Native GUI
 
 CL-Amiga provides Lisp bindings for Intuition, Graphics, and GadTools — loaded on demand via `require` with zero binary size impact. A generic FFI layer (`FFI` package) provides foreign memory access on all platforms; the `AMIGA` package adds register-based library call dispatch via a 68k assembly trampoline.
