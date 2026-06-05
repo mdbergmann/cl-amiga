@@ -4096,6 +4096,14 @@
 (load "T:fasl-test3.fasl")
 (check "FASL with macros" 21 (fasl-apply-triple 7))
 
+; Regression: compile-file must not run (make-package) twice.
+; compile-file + load in the same session must not signal "Package already exists".
+(with-open-file (s "T:fasl-pkgonce.lisp" :direction :output :if-exists :supersede)
+  (write-string "(defvar *p* (make-package :fasl-pkgonce-test))" s) (terpri s))
+(compile-file "T:fasl-pkgonce.lisp" :output-file "T:fasl-pkgonce.fasl")
+(load "T:fasl-pkgonce.fasl")
+(check "compile-file no double make-package" t (not (null (find-package :fasl-pkgonce-test))))
+
 ; --- Dispatch cache ---
 (defgeneric dcache-test (x))
 (defmethod dcache-test ((x point)) (point-x x))

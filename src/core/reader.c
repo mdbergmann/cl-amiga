@@ -1453,6 +1453,10 @@ CL_Obj cl_read_from_string(CL_ReadStream *stream)
     CL_GC_PROTECT(str);
     s = cl_make_string_input_stream(str, (uint32_t)stream->pos, (uint32_t)stream->len);
     CL_GC_UNPROTECT(1);
+    /* GC-protect s so compaction during read_expr() updates it.
+     * Without protection, s is stale after compaction and CL_OBJ_TO_PTR(s)
+     * returns a wrong pointer, corrupting stream->pos on sync-back. */
+    CL_GC_PROTECT(s);
 
 #ifdef DEBUG_READER
     {
@@ -1486,7 +1490,7 @@ CL_Obj cl_read_from_string(CL_ReadStream *stream)
 
     do { result = read_expr(); } while (result == CL_READER_SKIP && !eof_seen);
 
-    /* Sync position back */
+    /* Sync position back — s is GC-protected so it's valid after compaction */
     st = (CL_Stream *)CL_OBJ_TO_PTR(s);
     stream->pos = (int)st->position;
     stream->line = reader_line;
@@ -1496,6 +1500,7 @@ CL_Obj cl_read_from_string(CL_ReadStream *stream)
     reader_line   = saved_line;
     eof_seen      = saved_eof;
     rd_uninterned = saved_uninterned;
+    CL_GC_UNPROTECT(1); /* s */
     return result;
 }
 

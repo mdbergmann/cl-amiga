@@ -44,6 +44,22 @@ check_contains() {
     fi
 }
 
+check_not_contains() {
+    desc="$1"
+    pattern="$2"
+    actual="$3"
+    total=$((total + 1))
+    if echo "$actual" | grep -q "$pattern"; then
+        echo "  FAIL  $desc"
+        echo "    expected NOT to contain: $pattern"
+        echo "    got: $(echo "$actual" | head -5)"
+        failed=$((failed + 1))
+    else
+        echo "  ok  $desc"
+        passed=$((passed + 1))
+    fi
+}
+
 # Helper: run clamiga in batch mode with *load-verbose* suppressed
 # Usage: run_quiet '(lisp expression)'
 run_quiet() {
@@ -256,6 +272,83 @@ result=$(run_quiet '(load "'"$TMPDIR"'/fasl_test_arglist.lisp") (ext:function-ar
 check "fasl_arglist_cross_session" "NIL
 T
 (A B &OPTIONAL (C 7) &KEY KW)" "$result"
+
+# --- Tests for compile-file CLHS 3.2.3.1 top-level form handling ---
+# All tests use a single clamiga process: compile-file + load in one session.
+
+# Regression: compile-file must NOT evaluate DEFVAR initforms at compile time.
+# Bug: (make-package :foo) was called twice (once during compile-file, once on
+# load), causing "Package already exists" on the second call.
+
+cat > "$TMPDIR/cf_defvar_trace.lisp" << 'LISP'
+(defvar *cf-trace* nil)
+(defvar *cf-side* (progn (push :compiled *cf-trace*) :v))
+LISP
+
+rm -rf $CACHE_GLOB
+result=$(run_quiet '(compile-file "'"$TMPDIR"'/cf_defvar_trace.lisp" :output-file "'"$TMPDIR"'/cf_defvar_trace.fasl") (load "'"$TMPDIR"'/cf_defvar_trace.fasl") *cf-trace*')
+check_contains "compile_file_does_not_eval_defvar_initform" "(:COMPILED)" "$result"
+check_not_contains "compile_file_defvar_not_run_twice" "(:COMPILED :COMPILED)" "$result"
+rm -f "$TMPDIR/cf_defvar_trace.lisp" "$TMPDIR/cf_defvar_trace.fasl"
+
+# Exact repro of the original bug: compile-file + load must not error.
+cat > "$TMPDIR/cf_pkg_once.lisp" << 'LISP'
+(defvar *cf-pkg* (make-package :clamiga-bug-a-test-pkg))
+LISP
+
+rm -rf $CACHE_GLOB
+result=$(run_quiet '(compile-file "'"$TMPDIR"'/cf_pkg_once.lisp" :output-file "'"$TMPDIR"'/cf_pkg_once.fasl") (load "'"$TMPDIR"'/cf_pkg_once.fasl") (not (null (find-package :clamiga-bug-a-test-pkg)))')
+check_contains "compile_file_does_not_run_make_package_twice" "T" "$result"
+check_not_contains "compile_file_no_package_already_exists_error" "already exists" "$result"
+rm -f "$TMPDIR/cf_pkg_once.lisp" "$TMPDIR/cf_pkg_once.fasl"
+
+# eval-when (:compile-toplevel) body runs at compile time.
+cat > "$TMPDIR/cf_ew_ct.lisp" << 'LISP'
+(eval-when (:compile-toplevel) (format t "CF-EW-CT-RAN~%"))
+LISP
+
+rm -rf $CACHE_GLOB
+cf_out=$(echo "(setf *compile-verbose* nil) (compile-file \"$TMPDIR/cf_ew_ct.lisp\" :output-file \"$TMPDIR/cf_ew_ct.fasl\")" \
+    | "$CLAMIGA" --no-userinit --batch 2>&1)
+check_contains "compile_file_eval_when_compile_toplevel_runs" "CF-EW-CT-RAN" "$cf_out"
+rm -f "$TMPDIR/cf_ew_ct.lisp" "$TMPDIR/cf_ew_ct.fasl"
+
+# eval-when (:load-toplevel) body does NOT run at compile time, but DOES at load.
+cat > "$TMPDIR/cf_ew_lt.lisp" << 'LISP'
+(eval-when (:load-toplevel) (format t "CF-EW-LT-RAN~%"))
+LISP
+
+rm -rf $CACHE_GLOB
+cf_out=$(echo "(setf *compile-verbose* nil) (compile-file \"$TMPDIR/cf_ew_lt.lisp\" :output-file \"$TMPDIR/cf_ew_lt.fasl\")" \
+    | "$CLAMIGA" --no-userinit --batch 2>&1)
+check_not_contains "compile_file_eval_when_load_toplevel_silent_at_compile" "CF-EW-LT-RAN" "$cf_out"
+load_out=$(echo "(load \"$TMPDIR/cf_ew_lt.fasl\")" \
+    | "$CLAMIGA" --no-userinit --batch 2>&1)
+check_contains "compile_file_eval_when_load_toplevel_runs_at_load" "CF-EW-LT-RAN" "$load_out"
+rm -f "$TMPDIR/cf_ew_lt.lisp" "$TMPDIR/cf_ew_lt.fasl"
+
+# DEFMACRO defined in compile-file is available for subsequent forms.
+cat > "$TMPDIR/cf_defmacro.lisp" << 'LISP'
+(defmacro cf-mac (x) `(list :wrapped ,x))
+(defparameter *cf-mac-r* (cf-mac 7))
+LISP
+
+rm -rf $CACHE_GLOB
+result=$(run_quiet '(compile-file "'"$TMPDIR"'/cf_defmacro.lisp" :output-file "'"$TMPDIR"'/cf_defmacro.fasl") (load "'"$TMPDIR"'/cf_defmacro.fasl") *cf-mac-r*')
+check_contains "compile_file_defmacro_available_for_later_forms" "(:WRAPPED 7)" "$result"
+rm -f "$TMPDIR/cf_defmacro.lisp" "$TMPDIR/cf_defmacro.fasl"
+
+# Non-defining top-level forms must NOT run at compile time (only at load).
+cat > "$TMPDIR/cf_counter.lisp" << 'LISP'
+(defparameter *cf-counter* 0)
+(incf *cf-counter*)
+LISP
+
+rm -rf $CACHE_GLOB
+result=$(run_quiet '(compile-file "'"$TMPDIR"'/cf_counter.lisp" :output-file "'"$TMPDIR"'/cf_counter.fasl") (load "'"$TMPDIR"'/cf_counter.fasl") (format t "COUNTER=~a~%" *cf-counter*)')
+check_contains "compile_file_does_not_run_top_level_call_twice" "COUNTER=1" "$result"
+check_not_contains "compile_file_counter_not_2" "COUNTER=2" "$result"
+rm -f "$TMPDIR/cf_counter.lisp" "$TMPDIR/cf_counter.fasl"
 
 # --- Cleanup ---
 
