@@ -995,18 +995,173 @@ CL_Obj compile_eval_when(CL_Compiler *c, CL_Obj form)
 void compile_load_time_value(CL_Compiler *c, CL_Obj form)
 {
     /* (load-time-value form &optional read-only-p)
-     * In single-pass compile-and-eval, compile-time IS load-time.
-     * Evaluate the form now in the null lexical environment,
-     * then emit the result as a constant. */
+     *
+     * COMPILE-FILE (cl_compiling_to_file==1): defer evaluation to load time
+     * by synthesizing a memoized LET form.  The value-form is compiled into
+     * the function body so it only runs when the FASL is loaded and the
+     * function is first called — by which point any forward-referenced
+     * functions are defined.  A fresh (NIL . NIL) cell per LTV occurrence
+     * acts as the memo slot; its CAR is T once initialized, CDR holds the value.
+     *
+     * REPL/LOAD (cl_compiling_to_file==0): compile-time IS load-time.
+     * Evaluate now in the null lexical environment, emit result as a constant. */
     CL_Obj value_form = cl_car(cl_cdr(form));
     CL_Obj bytecode, result;
 
+    if (cl_compiling_to_file) {
+        /* CLHS 3.2.4.4: value-form is evaluated in a null lexical environment
+         * at load time (not compile time, not first-call time).
+         *
+         * Implementation:
+         *  1. Compile value-form via cl_compile() (null lexical env) → thunk.
+         *  2. Build an init bytecode: (progn (rplacd cell (funcall thunk))
+         *                                    (rplaca cell t))
+         *     Append this to cl_ltv_init_buf so cf_process_toplevel_form emits
+         *     it as a FASL unit BEFORE the containing defun — the FASL loader
+         *     runs it at load time, satisfying CLHS.
+         *  3. Inline a safety fallback in the function body:
+         *       (let ((G (quote cell)))
+         *         (if (car G) (cdr G)
+         *             (progn (rplacd G (funcall (quote thunk)))
+         *                    (rplaca G t) (cdr G))))
+         *     The IF guard handles the degenerate case where the init thunk
+         *     didn't run (e.g. function called before FASL loader completed).
+         *
+         * Both the init thunk and the fallback use (funcall thunk) so that
+         * value-form is always evaluated in the null lexical environment that
+         * cl_compile() provides, never in the enclosing function's env. */
+        CL_Obj cell, gensym, thunk, quoted_cell, quoted_thunk, funcall_thunk;
+        CL_Obj car_g, cdr_g1, cdr_g2;
+        CL_Obj rplacd_call, rplaca_call, progn_form;
+        CL_Obj if_form, let_binding, let_bindings, let_form;
+        CL_Obj tmp;
+
+        CL_GC_PROTECT(value_form);         /*  1 */
+
+        /* Build (lambda () value_form), compile in null lexical env, then
+         * evaluate ONCE to get a callable closure.  cl_compile uses null env
+         * (CLHS 3.2.4.4, Issue [1]).  Evaluating immediately yields a closure
+         * rather than a raw bytecode program, so (funcall (quote thunk)) in
+         * both the inline init code and the safety fallback works correctly. */
+        {
+            CL_Obj ltv_bc;
+            tmp = cl_cons(value_form, CL_NIL);    /* (value_form) */
+            tmp = cl_cons(CL_NIL, tmp);            /* (() value_form) */
+            tmp = cl_cons(SYM_LAMBDA, tmp);        /* (lambda () value_form) */
+            CL_GC_PROTECT(tmp);
+            ltv_bc = cl_compile(tmp);
+            CL_GC_UNPROTECT(1);
+            CL_GC_PROTECT(ltv_bc);
+            thunk = cl_vm_eval(ltv_bc);
+            CL_GC_UNPROTECT(1);
+        }
+        CL_GC_PROTECT(thunk);              /*  2 */
+
+        cell = cl_cons(CL_NIL, CL_NIL);
+        CL_GC_PROTECT(cell);               /*  3 */
+        gensym = cl_gensym_with_name("LTV");
+        CL_GC_PROTECT(gensym);             /*  4 */
+
+        /* (QUOTE <cell>) */
+        tmp = cl_cons(cell, CL_NIL);
+        quoted_cell = cl_cons(SYM_QUOTE, tmp);
+        CL_GC_PROTECT(quoted_cell);        /*  5 */
+
+        /* (QUOTE thunk) */
+        tmp = cl_cons(thunk, CL_NIL);
+        quoted_thunk = cl_cons(SYM_QUOTE, tmp);
+        CL_GC_PROTECT(quoted_thunk);       /*  6 */
+
+        /* (FUNCALL (QUOTE thunk)) — shared by init form and safety fallback */
+        tmp = cl_cons(quoted_thunk, CL_NIL);
+        funcall_thunk = cl_cons(SYM_FUNCALL, tmp);
+        CL_GC_PROTECT(funcall_thunk);      /*  7 */
+
+        /* Register (cell, thunk) for compile_defun to emit inline init code.
+         * compile_defun calls compile_expr(c, init_form) in the OUTER compiler
+         * so the cell constant is shared with the lambda body within one FASL
+         * unit — FASL deduplication then makes them the same object at load
+         * time (CLHS 3.2.4.4 load-time evaluation). */
+        if (cl_ltv_init_count < CL_LTV_INIT_MAX) {
+            CT->ltv_init_cells[cl_ltv_init_count]  = cell;
+            CT->ltv_init_thunks[cl_ltv_init_count] = thunk;
+            cl_ltv_init_count++;
+        }
+        /* Protection count: 7 (value_form thunk cell gensym quoted_cell
+         * quoted_thunk funcall_thunk) */
+
+        /* --- Build function body with safety fallback ---
+           (LET ((G (QUOTE cell)))
+             (IF (CAR G) (CDR G)
+                 (PROGN (RPLACD G (FUNCALL (QUOTE thunk)))
+                        (RPLACA G T) (CDR G)))) */
+
+        /* (CAR G) */
+        tmp = cl_cons(gensym, CL_NIL);
+        car_g = cl_cons(cl_intern_in("CAR", 3, cl_package_cl), tmp);
+        CL_GC_PROTECT(car_g);              /*  8 */
+
+        /* (CDR G) — then-branch */
+        tmp = cl_cons(gensym, CL_NIL);
+        cdr_g1 = cl_cons(cl_intern_in("CDR", 3, cl_package_cl), tmp);
+        CL_GC_PROTECT(cdr_g1);             /*  9 */
+
+        /* (CDR G) — fallback tail */
+        tmp = cl_cons(gensym, CL_NIL);
+        cdr_g2 = cl_cons(cl_intern_in("CDR", 3, cl_package_cl), tmp);
+        CL_GC_PROTECT(cdr_g2);             /* 10 */
+
+        /* (RPLACD G (FUNCALL (QUOTE thunk))) */
+        tmp = cl_cons(funcall_thunk, CL_NIL);
+        tmp = cl_cons(gensym, tmp);
+        rplacd_call = cl_cons(cl_intern_in("RPLACD", 6, cl_package_cl), tmp);
+        CL_GC_PROTECT(rplacd_call);        /* 11 */
+
+        /* (RPLACA G T) */
+        tmp = cl_cons(SYM_T, CL_NIL);
+        tmp = cl_cons(gensym, tmp);
+        rplaca_call = cl_cons(cl_intern_in("RPLACA", 6, cl_package_cl), tmp);
+        CL_GC_PROTECT(rplaca_call);        /* 12 */
+
+        /* (PROGN (RPLACD G ...) (RPLACA G T) (CDR G)) */
+        tmp = cl_cons(cdr_g2, CL_NIL);
+        tmp = cl_cons(rplaca_call, tmp);
+        tmp = cl_cons(rplacd_call, tmp);
+        progn_form = cl_cons(cl_intern_in("PROGN", 5, cl_package_cl), tmp);
+        CL_GC_PROTECT(progn_form);         /* 13 */
+
+        /* (IF (CAR G) (CDR G) (PROGN ...)) */
+        tmp = cl_cons(progn_form, CL_NIL);
+        tmp = cl_cons(cdr_g1, tmp);
+        tmp = cl_cons(car_g, tmp);
+        if_form = cl_cons(cl_intern_in("IF", 2, cl_package_cl), tmp);
+        CL_GC_PROTECT(if_form);            /* 14 */
+
+        /* LET binding: (G (QUOTE <cell>)) */
+        tmp = cl_cons(quoted_cell, CL_NIL);
+        let_binding = cl_cons(gensym, tmp);
+        CL_GC_PROTECT(let_binding);        /* 15 */
+
+        /* LET bindings list: ((G (QUOTE <cell>))) */
+        let_bindings = cl_cons(let_binding, CL_NIL);
+        CL_GC_PROTECT(let_bindings);       /* 16 */
+
+        /* (LET ((G (QUOTE <cell>))) (IF ...)) */
+        tmp = cl_cons(if_form, CL_NIL);
+        tmp = cl_cons(let_bindings, tmp);
+        let_form = cl_cons(cl_intern_in("LET", 3, cl_package_cl), tmp);
+        CL_GC_PROTECT(let_form);           /* 17 */
+
+        compile_expr(c, let_form);
+        CL_GC_UNPROTECT(17);
+        return;
+    }
+
+    /* REPL/LOAD path: keep existing eager behavior unchanged. */
     CL_GC_PROTECT(form);
 
-    /* Compile and evaluate the form */
     bytecode = cl_compile(value_form);
     if (CL_NULL_P(bytecode)) {
-        /* Form compiled to nothing (shouldn't happen, but be safe) */
         cl_emit(c, OP_NIL);
         CL_GC_UNPROTECT(1);
         return;
@@ -1016,7 +1171,6 @@ void compile_load_time_value(CL_Compiler *c, CL_Obj form)
     result = cl_vm_eval(bytecode);
     CL_GC_UNPROTECT(1); /* bytecode */
 
-    /* Emit the evaluated result as a constant */
     if (CL_NULL_P(result))
         cl_emit(c, OP_NIL);
     else if (result == SYM_T)
@@ -1170,6 +1324,66 @@ void compile_named_lambda(CL_Compiler *c, CL_Obj form)
 
 /* --- Defun / Defmacro --- */
 
+/* Emit inline load-time init code for a LOAD-TIME-VALUE memo cell.
+ * Called from compile_defun after the lambda is compiled, using the OUTER
+ * compiler c.  Produces:
+ *   (progn (rplacd (quote cell) (funcall (quote thunk)))
+ *          (rplaca (quote cell) t))
+ * followed by OP_POP to discard the init result.
+ *
+ * Because this compiles with the outer compiler c (not a fresh inner
+ * compiler), cell and thunk become constants of the defun's FASL unit.
+ * FASL deduplication then ensures the cell in the init code and the cell
+ * in the lambda body (another constant of the same unit) are the same
+ * deserialized object — satisfying CLHS load-time evaluation. */
+static void compile_defun_emit_ltv_init(CL_Compiler *c, CL_Obj cell, CL_Obj thunk)
+{
+    CL_Obj quoted_cell, quoted_thunk, funcall_thunk;
+    CL_Obj rplacd_init, rplaca_init, init_form;
+    CL_Obj tmp;
+
+    CL_GC_PROTECT(cell);                   /*  1 */
+    CL_GC_PROTECT(thunk);                  /*  2 */
+
+    /* (QUOTE cell) */
+    tmp = cl_cons(cell, CL_NIL);
+    quoted_cell = cl_cons(SYM_QUOTE, tmp);
+    CL_GC_PROTECT(quoted_cell);            /*  3 */
+
+    /* (QUOTE thunk) */
+    tmp = cl_cons(thunk, CL_NIL);
+    quoted_thunk = cl_cons(SYM_QUOTE, tmp);
+    CL_GC_PROTECT(quoted_thunk);           /*  4 */
+
+    /* (FUNCALL (QUOTE thunk)) */
+    tmp = cl_cons(quoted_thunk, CL_NIL);
+    funcall_thunk = cl_cons(SYM_FUNCALL, tmp);
+    CL_GC_PROTECT(funcall_thunk);          /*  5 */
+
+    /* (RPLACD (QUOTE cell) (FUNCALL (QUOTE thunk))) */
+    tmp = cl_cons(funcall_thunk, CL_NIL);
+    tmp = cl_cons(quoted_cell, tmp);
+    rplacd_init = cl_cons(cl_intern_in("RPLACD", 6, cl_package_cl), tmp);
+    CL_GC_PROTECT(rplacd_init);            /*  6 */
+
+    /* (RPLACA (QUOTE cell) T) */
+    tmp = cl_cons(SYM_T, CL_NIL);
+    tmp = cl_cons(quoted_cell, tmp);
+    rplaca_init = cl_cons(cl_intern_in("RPLACA", 6, cl_package_cl), tmp);
+    CL_GC_PROTECT(rplaca_init);            /*  7 */
+
+    /* (PROGN (RPLACD ...) (RPLACA ...)) */
+    tmp = cl_cons(rplaca_init, CL_NIL);
+    tmp = cl_cons(rplacd_init, tmp);
+    init_form = cl_cons(cl_intern_in("PROGN", 5, cl_package_cl), tmp);
+    CL_GC_PROTECT(init_form);              /*  8 */
+
+    compile_expr(c, init_form);
+    cl_emit(c, OP_POP);  /* discard (rplaca cell t) result */
+
+    CL_GC_UNPROTECT(8);
+}
+
 void compile_defun(CL_Compiler *c, CL_Obj form)
 {
     CL_Obj name = cl_car(cl_cdr(form));
@@ -1179,6 +1393,7 @@ void compile_defun(CL_Compiler *c, CL_Obj form)
     CL_Obj real_name = name;       /* symbol for block/return */
     CL_Obj store_sym = name;       /* symbol for OP_FSTORE */
     int is_setf_fn = 0;
+    int ltv_base, ltv_i;
 
     /* Handle (defun (setf name) ...) — setf function */
     if (CL_CONS_P(name) && cl_car(name) == SYM_SETF && CL_CONS_P(cl_cdr(name))) {
@@ -1219,10 +1434,23 @@ void compile_defun(CL_Compiler *c, CL_Obj form)
                                   cl_cons(block_body, CL_NIL)));
     CL_GC_PROTECT(lambda_form);
 
+    ltv_base = cl_ltv_init_count;
     pending_lambda_name = real_name;
     compile_expr(c, lambda_form);
 
     CL_GC_UNPROTECT(2);
+
+    /* Emit inline load-time init code for any LOAD-TIME-VALUE forms
+     * accumulated while compiling the lambda body.  Using the outer
+     * compiler c keeps cell/thunk in the same FASL unit as the lambda
+     * so FASL dedup makes them the same deserialized objects (CLHS 3.2.4.4). */
+    if (cl_compiling_to_file) {
+        for (ltv_i = ltv_base; ltv_i < cl_ltv_init_count; ltv_i++)
+            compile_defun_emit_ltv_init(c,
+                                        CT->ltv_init_cells[ltv_i],
+                                        CT->ltv_init_thunks[ltv_i]);
+        cl_ltv_init_count = ltv_base;
+    }
 
     /* Store as function binding */
     {

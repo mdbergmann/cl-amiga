@@ -2265,6 +2265,95 @@ TEST(compile_file_class_metaobject_in_constants)
     delete_cached_fasl("/tmp/cf-class-metaobj.lisp");
 }
 
+/* ================================================================
+ * load-time-value under COMPILE-FILE (regression: deflate.lisp)
+ * ================================================================ */
+
+TEST(compile_file_ltv_forward_function)
+{
+    /* LTV referencing a function defun'd earlier in the same file must not
+     * signal Undefined function during compile-file (the deflate.lisp regression).
+     * After loading the FASL the function must return the LTV's value. */
+    write_test_file("/tmp/cf-ltv-fwd.lisp",
+        "(defun cf-ltv-gen-table () (list 1 2 3))\n"
+        "(defun cf-ltv-get-table () (load-time-value (cf-ltv-gen-table)))\n");
+
+    {
+        CL_Obj result = eval_obj("(compile-file \"/tmp/cf-ltv-fwd.lisp\")");
+        ASSERT(CL_PATHNAME_P(result));
+    }
+    eval_obj("(load (compile-file-pathname \"/tmp/cf-ltv-fwd.lisp\"))");
+    ASSERT_STR_EQ(eval_print("(cf-ltv-get-table)"), "(1 2 3)");
+
+    platform_file_delete("/tmp/cf-ltv-fwd.lisp");
+    delete_cached_fasl("/tmp/cf-ltv-fwd.lisp");
+}
+
+TEST(compile_file_ltv_eq_stable)
+{
+    /* A load-time-value form must return the same (EQ) object on every call. */
+    write_test_file("/tmp/cf-ltv-eq.lisp",
+        "(defun cf-ltv-eq-fn () (load-time-value (cons 1 2)))\n");
+
+    {
+        CL_Obj result = eval_obj("(compile-file \"/tmp/cf-ltv-eq.lisp\")");
+        ASSERT(CL_PATHNAME_P(result));
+    }
+    eval_obj("(load (compile-file-pathname \"/tmp/cf-ltv-eq.lisp\"))");
+    ASSERT_STR_EQ(eval_print("(eq (cf-ltv-eq-fn) (cf-ltv-eq-fn))"), "T");
+
+    platform_file_delete("/tmp/cf-ltv-eq.lisp");
+    delete_cached_fasl("/tmp/cf-ltv-eq.lisp");
+}
+
+TEST(compile_file_ltv_distinct_forms)
+{
+    /* Two distinct LTV forms in the same file must produce independent objects
+     * (no eq-dedup cross-contamination from the constants table). */
+    write_test_file("/tmp/cf-ltv-dist.lisp",
+        "(defun cf-ltv-dist-f1 () (load-time-value (cons 'a 'b)))\n"
+        "(defun cf-ltv-dist-f2 () (load-time-value (cons 'a 'b)))\n");
+
+    {
+        CL_Obj result = eval_obj("(compile-file \"/tmp/cf-ltv-dist.lisp\")");
+        ASSERT(CL_PATHNAME_P(result));
+    }
+    eval_obj("(load (compile-file-pathname \"/tmp/cf-ltv-dist.lisp\"))");
+
+    ASSERT_STR_EQ(eval_print("(eq (cf-ltv-dist-f1) (cf-ltv-dist-f1))"), "T");
+    ASSERT_STR_EQ(eval_print("(eq (cf-ltv-dist-f2) (cf-ltv-dist-f2))"), "T");
+    ASSERT_STR_EQ(eval_print("(eq (cf-ltv-dist-f1) (cf-ltv-dist-f2))"), "NIL");
+
+    platform_file_delete("/tmp/cf-ltv-dist.lisp");
+    delete_cached_fasl("/tmp/cf-ltv-dist.lisp");
+}
+
+TEST(compile_file_ltv_runs_at_load_time)
+{
+    /* LTV must NOT be evaluated during compile-file (deferred); it evaluates
+     * exactly once on the first call after the FASL is loaded. */
+    eval_obj("(defvar *cf-ltv-counter* 0)");
+
+    write_test_file("/tmp/cf-ltv-time.lisp",
+        "(defun cf-ltv-timed ()"
+        "  (load-time-value (progn (incf *cf-ltv-counter*) (cons 'done t))))\n");
+
+    eval_obj("(compile-file \"/tmp/cf-ltv-time.lisp\")");
+    ASSERT_STR_EQ(eval_print("*cf-ltv-counter*"), "0"); /* not evaluated at compile time */
+
+    eval_obj("(load (compile-file-pathname \"/tmp/cf-ltv-time.lisp\"))");
+    ASSERT_STR_EQ(eval_print("*cf-ltv-counter*"), "1"); /* evaluated at load time (CLHS 3.2.4.4) */
+
+    eval_obj("(cf-ltv-timed)");
+    ASSERT_STR_EQ(eval_print("*cf-ltv-counter*"), "1"); /* memoized — no re-evaluation */
+
+    eval_obj("(cf-ltv-timed)");
+    ASSERT_STR_EQ(eval_print("*cf-ltv-counter*"), "1"); /* memoized — no re-evaluation */
+
+    platform_file_delete("/tmp/cf-ltv-time.lisp");
+    delete_cached_fasl("/tmp/cf-ltv-time.lisp");
+}
+
 TEST(load_auto_finds_cached_fasl)
 {
     /* load of source file should auto-discover cached FASL */
@@ -2523,6 +2612,12 @@ int main(void)
     RUN(compile_file_source_file_outlives_compile_file);
     RUN(compile_file_declare_with_macro_named_type);
     RUN(compile_file_class_metaobject_in_constants);
+
+    /* load-time-value under COMPILE-FILE */
+    RUN(compile_file_ltv_forward_function);
+    RUN(compile_file_ltv_eq_stable);
+    RUN(compile_file_ltv_distinct_forms);
+    RUN(compile_file_ltv_runs_at_load_time);
 
     /* FASL cache behavior tests */
     RUN(load_auto_finds_cached_fasl);

@@ -4104,6 +4104,31 @@
 (load "T:fasl-pkgonce.fasl")
 (check "compile-file no double make-package" t (not (null (find-package :fasl-pkgonce-test))))
 
+; --- LOAD-TIME-VALUE under COMPILE-FILE ---
+
+; Regression: LTV referencing a forward function must not signal Undefined function.
+(with-open-file (s "T:fasl-ltv1.lisp" :direction :output :if-exists :supersede)
+  (write-string "(defun ltv-gen-fn () (list 4 5 6))" s) (terpri s)
+  (write-string "(defun ltv-get-fn () (load-time-value (ltv-gen-fn)))" s) (terpri s))
+(compile-file "T:fasl-ltv1.lisp" :output-file "T:fasl-ltv1.fasl")
+(load "T:fasl-ltv1.fasl")
+(check "LTV forward function" '(4 5 6) (ltv-get-fn))
+
+; LTV must return the same (EQ) object on every call.
+(with-open-file (s "T:fasl-ltv2.lisp" :direction :output :if-exists :supersede)
+  (write-string "(defun ltv-eq-fn () (load-time-value (cons 1 2)))" s) (terpri s))
+(compile-file "T:fasl-ltv2.lisp" :output-file "T:fasl-ltv2.fasl")
+(load "T:fasl-ltv2.fasl")
+(check "LTV eq stable" t (eq (ltv-eq-fn) (ltv-eq-fn)))
+
+; Two distinct LTV forms must produce independent objects (no cross-contamination).
+(with-open-file (s "T:fasl-ltv3.lisp" :direction :output :if-exists :supersede)
+  (write-string "(defun ltv-d1 () (load-time-value (cons 'x 'y)))" s) (terpri s)
+  (write-string "(defun ltv-d2 () (load-time-value (cons 'x 'y)))" s) (terpri s))
+(compile-file "T:fasl-ltv3.lisp" :output-file "T:fasl-ltv3.fasl")
+(load "T:fasl-ltv3.fasl")
+(check "LTV distinct forms" nil (eq (ltv-d1) (ltv-d2)))
+
 ; --- Dispatch cache ---
 (defgeneric dcache-test (x))
 (defmethod dcache-test ((x point)) (point-x x))

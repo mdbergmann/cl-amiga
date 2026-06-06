@@ -38,6 +38,7 @@ static int make_fasl_cache_path(const char *input, char *output, uint32_t outsiz
 static void path_directory(const char *path, char *dir, uint32_t dirsz);
 static void mkdir_p(const char *path);
 
+
 /* Helper to register a builtin */
 static void defun(const char *name, CL_CFunc func, int min, int max)
 {
@@ -1127,9 +1128,11 @@ static void cf_process_toplevel_eval_when(CL_Obj form,
         while (!CL_NULL_P(rest)) {
             CL_Obj sub = cl_car(rest);
             CL_Obj bc;
+            cl_ltv_init_count = 0;
             CL_GC_PROTECT(sub);
             bc = cl_compile(sub);
             CL_GC_UNPROTECT(1);
+            cl_ltv_init_count = 0;
             if (!CL_NULL_P(bc)) {
                 CL_GC_PROTECT(bc);
                 cl_vm_eval(bc);
@@ -1147,9 +1150,11 @@ static void cf_process_toplevel_eval_when(CL_Obj form,
         while (!CL_NULL_P(rest)) {
             CL_Obj sub = cl_car(rest);
             CL_Obj bc;
+            cl_ltv_init_count = 0;
             CL_GC_PROTECT(sub);
             bc = cl_compile(sub);
             CL_GC_UNPROTECT(1);
+            cl_ltv_init_count = 0; /* discard — no FASL emission in CT-only */
             if (!CL_NULL_P(bc)) {
                 CL_GC_PROTECT(bc);
                 cl_vm_eval(bc);
@@ -1166,9 +1171,11 @@ static void cf_process_toplevel_eval_when(CL_Obj form,
         while (!CL_NULL_P(rest)) {
             CL_Obj sub = cl_car(rest);
             CL_Obj bc;
+            cl_ltv_init_count = 0;
             CL_GC_PROTECT(sub);
             bc = cl_compile(sub);
             CL_GC_UNPROTECT(1);
+            cl_ltv_init_count = 0;
             if (!CL_NULL_P(bc)) {
                 CL_GC_PROTECT(bc);
                 cl_gc_compact_if_pending();
@@ -1185,9 +1192,11 @@ static void cf_process_toplevel_eval_when(CL_Obj form,
         while (!CL_NULL_P(rest)) {
             CL_Obj sub = cl_car(rest);
             CL_Obj bc;
+            cl_ltv_init_count = 0;
             CL_GC_PROTECT(sub);
             bc = cl_compile(sub);
             CL_GC_UNPROTECT(1);
+            cl_ltv_init_count = 0; /* discard — no FASL emission in EX-only */
             if (!CL_NULL_P(bc)) {
                 CL_GC_PROTECT(bc);
                 cl_vm_eval(bc);
@@ -1284,11 +1293,13 @@ static void cf_process_toplevel_form(CL_Obj expr,
      * DEFMACRO, etc.) are produced inside cl_compile itself.  We only need
      * to run the resulting bytecode at compile time for the small set of
      * forms whose effect requires the VM to execute (cf_form_needs_compile_time_eval). */
+    cl_ltv_init_count = 0;
     CL_GC_PROTECT(expr);
     bytecode = cl_compile(expr);
     CL_GC_UNPROTECT(1);
 
-    if (CL_NULL_P(bytecode)) return;
+    if (CL_NULL_P(bytecode)) { cl_ltv_init_count = 0; return; }
+    cl_ltv_init_count = 0;
 
     CL_GC_PROTECT(bytecode);
     if (cf_form_needs_compile_time_eval(expr))
@@ -1321,6 +1332,7 @@ static CL_Obj bi_compile_file(CL_Obj *args, int n)
     CL_Obj output_pathname;
     int verbose = 0;
     int i;
+    int prev_compiling_to_file;
 #ifdef DEBUG_COMPILER
     int cf_form_count = 0;
 #endif
@@ -1503,6 +1515,10 @@ static CL_Obj bi_compile_file(CL_Obj *args, int n)
     stream = cl_make_cbuf_input_stream(src_buf, (uint32_t)src_size);
     CL_GC_PROTECT(stream);
 
+    /* Flag COMPILE-FILE active so load-time-value defers evaluation to load time */
+    prev_compiling_to_file = cl_compiling_to_file;
+    cl_compiling_to_file = 1;
+
     /* Read-compile-eval-serialize loop */
     for (;;) {
         int err;
@@ -1554,6 +1570,7 @@ static CL_Obj bi_compile_file(CL_Obj *args, int n)
             CL_UNCATCH();
             /* Propagate exit request — don't swallow (quit) */
             if (err == CL_ERR_EXIT) {
+                cl_compiling_to_file = prev_compiling_to_file;
                 CL_GC_UNPROTECT(2); /* stream, bc_vec */
                 cl_stream_close(stream);
                 platform_free(src_buf);
@@ -1651,6 +1668,7 @@ static CL_Obj bi_compile_file(CL_Obj *args, int n)
         {
             PlatformFile fh = platform_file_open(out_path, PLATFORM_FILE_WRITE);
             if (fh == PLATFORM_FILE_INVALID) {
+                cl_compiling_to_file = prev_compiling_to_file;
                 platform_free(fasl_buf);
                 platform_free(unit_buf);
                 if (w) cl_fasl_writer_release(w);
@@ -1669,6 +1687,7 @@ static CL_Obj bi_compile_file(CL_Obj *args, int n)
     if (w) cl_fasl_writer_release(w);
     platform_free(w);
     CL_GC_UNPROTECT(1); /* bc_vec */
+    cl_compiling_to_file = prev_compiling_to_file;
     /* Restore *compile-file-pathname* and *compile-file-truename* */
     cl_set_symbol_value(SYM_STAR_COMPILE_FILE_PATHNAME, saved_cfp);
     cl_set_symbol_value(SYM_STAR_COMPILE_FILE_TRUENAME, saved_cft);

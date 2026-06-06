@@ -1232,6 +1232,12 @@ static void gc_mark_thread_roots(CL_Thread *t)
         gc_mark_obj(t->pr_inprog[i]);
     }
 
+    /* Pending LOAD-TIME-VALUE (cell, thunk) pairs (compile-file only) */
+    for (i = 0; i < t->ltv_init_count; i++) {
+        gc_mark_obj(t->ltv_init_cells[i]);
+        gc_mark_obj(t->ltv_init_thunks[i]);
+    }
+
     /* Compiler constants (active compilers may hold CL_Obj values
      * in platform_alloc'd memory not reachable from the GC arena) */
     {
@@ -1942,6 +1948,12 @@ static void gc_update_thread_roots(CL_Thread *t)
      * by compaction during a Lisp print-object hook (which can allocate). */
     for (i = 0; i < t->pr_inprog_top; i++)
         gc_update_slot(&t->pr_inprog[i]);
+
+    /* Pending LOAD-TIME-VALUE (cell, thunk) pairs (compile-file only) */
+    for (i = 0; i < t->ltv_init_count; i++) {
+        gc_update_slot(&t->ltv_init_cells[i]);
+        gc_update_slot(&t->ltv_init_thunks[i]);
+    }
 
     /* Compiler constants (platform_alloc'd, hold CL_Obj refs) */
     {

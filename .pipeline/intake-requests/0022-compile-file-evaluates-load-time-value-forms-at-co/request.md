@@ -1,7 +1,7 @@
 ---
 id: 0022-compile-file-evaluates-load-time-value-forms-at-co
 type: bug
-status: ready
+status: done
 title: COMPILE-FILE evaluates LOAD-TIME-VALUE forms at compile time, violating CLHS
 ---
 

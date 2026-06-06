@@ -273,6 +273,21 @@ typedef struct CL_Thread_s {
     const char *rdlock_tables_sites[CL_RDLOCK_SITES_MAX];
     int         rdlock_tables_sites_top;
     int         rdlock_package_held;
+
+    /* ---- COMPILE-FILE per-thread state ---- */
+    /* Set to 1 while COMPILE-FILE is active (thread-local so concurrent
+     * compile-file calls on different threads don't race on this flag). */
+    int compiling_to_file;
+    /* Pending LOAD-TIME-VALUE (cell, thunk) pairs registered during lambda
+     * compilation.  compile_defun reads these after compile_lambda returns
+     * and emits inline init code into the TOP-LEVEL compiler so the init
+     * runs at FASL load time within the same FASL unit.  FASL deduplication
+     * then ensures the cell in the init code and in the function body are
+     * the same deserialized object (CLHS 3.2.4.4). */
+#define CL_LTV_INIT_MAX 32
+    CL_Obj ltv_init_cells[CL_LTV_INIT_MAX];
+    CL_Obj ltv_init_thunks[CL_LTV_INIT_MAX];
+    int    ltv_init_count;
 } CL_Thread;
 
 /* Current thread pointer — TLS-backed.
@@ -497,6 +512,10 @@ int    cl_symbol_boundp(CL_Obj sym);
 /* Debugger */
 #define cl_in_debugger      (CT->in_debugger)
 #define cl_debugger_depth   (CT->debugger_depth)
+
+/* COMPILE-FILE state */
+#define cl_compiling_to_file (CT->compiling_to_file)
+#define cl_ltv_init_count    (CT->ltv_init_count)
 
 /* VM debug (used under #ifdef DEBUG_VM, but always present in struct) */
 #define vm_eval_depth       (CT->vm_eval_depth_val)
