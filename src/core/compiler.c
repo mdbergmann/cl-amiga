@@ -4010,7 +4010,32 @@ void cl_compiler_pool_init(void)
     }
 }
 
-CL_Obj cl_compile(CL_Obj expr)
+/* Reconstruct a CompEnv's local-macro / symbol-macro bindings from a lex-env
+ * alist (as produced by cl_build_lex_env).  Recurses to the tail first so the
+ * innermost (head-of-alist) entries are added last and thus win in the
+ * highest-index-wins lookup used by cl_env_lookup_local_macro. */
+static void seed_env_from_lex_env(CL_CompEnv *env, CL_Obj lex_env)
+{
+    CL_Obj pair;
+    if (!CL_CONS_P(lex_env)) return;
+    seed_env_from_lex_env(env, cl_cdr(lex_env));
+    pair = cl_car(lex_env);
+    if (!CL_CONS_P(pair)) return;
+    if (cl_car(pair) == SYM_LEX_LOCAL_MACRO) {
+        CL_Obj inner = cl_cdr(pair);            /* (name . expander) */
+        if (CL_CONS_P(inner))
+            cl_env_add_local_macro(env, cl_car(inner), cl_cdr(inner));
+    } else {
+        /* symbol-macro entry: (name . expansion) */
+        cl_env_add_symbol_macro(env, cl_car(pair), cl_cdr(pair));
+    }
+}
+
+/* Core of cl_compile.  LEX_ENV (CL_NIL or an alist from cl_build_lex_env)
+ * pre-populates the null compilation environment with macrolet/symbol-macrolet
+ * bindings so a form lifted out of a top-level MACROLET still sees them
+ * (CLHS 3.2.3.1).  The caller must keep LEX_ENV GC-protected. */
+static CL_Obj cl_compile_env(CL_Obj expr, CL_Obj lex_env)
 {
     CL_Compiler *comp;
     CL_CompEnv *env;
@@ -4029,6 +4054,12 @@ CL_Obj cl_compile(CL_Obj expr)
     /* Register compiler for GC root marking */
     comp->parent = cl_active_compiler;
     cl_active_compiler = comp;
+
+    /* Seed local macros AFTER linking into the active-compiler chain so the
+     * installed expander closures are GC-rooted via comp->env during the
+     * compile below. */
+    if (CL_CONS_P(lex_env))
+        seed_env_from_lex_env(env, lex_env);
 
     compile_expr(comp, expr);
 
@@ -4101,6 +4132,81 @@ CL_Obj cl_compile(CL_Obj expr)
     cl_compiler_pool_release(comp);
 
     return CL_PTR_TO_OBJ(bc);
+}
+
+CL_Obj cl_compile(CL_Obj expr)
+{
+    return cl_compile_env(expr, CL_NIL);
+}
+
+/* Compile EXPR with the macrolet/symbol-macrolet bindings recorded in
+ * LEX_ENV (an alist from cl_build_lex_env) in scope.  Used by compile-file to
+ * compile body forms lifted out of a top-level MACROLET/SYMBOL-MACROLET. */
+CL_Obj cl_compile_lex(CL_Obj expr, CL_Obj lex_env)
+{
+    return cl_compile_env(expr, lex_env);
+}
+
+/* Build the lexical macro environment (alist, per cl_build_lex_env) for a
+ * top-level MACROLET whose bindings are BINDINGS, layered over INHERITED_LEX_ENV
+ * (CL_NIL at the outermost level).  Returns CL_NIL if there is nothing to add.
+ * The result must be GC-protected by the caller. */
+CL_Obj cl_macrolet_lex_env(CL_Obj bindings, CL_Obj inherited_lex_env)
+{
+    CL_Compiler *comp;
+    CL_CompEnv *env;
+    CL_Obj result;
+
+    comp = cl_compiler_pool_acquire();
+    if (!comp) return inherited_lex_env;
+    memset(comp, 0, sizeof(*comp));
+    env = cl_env_create(NULL);
+    comp->env = env;
+    comp->parent = cl_active_compiler;
+    cl_active_compiler = comp;
+
+    /* Layer inherited bindings first, then this macrolet's expanders on top. */
+    if (CL_CONS_P(inherited_lex_env))
+        seed_env_from_lex_env(env, inherited_lex_env);
+    cl_macrolet_install_expanders(env, bindings);
+
+    result = cl_build_lex_env(env);
+
+    cl_active_compiler = comp->parent;
+    cl_env_destroy(env);
+    cl_compiler_pool_release(comp);
+    return result;
+}
+
+/* Like cl_macrolet_lex_env, but for SYMBOL-MACROLET bindings ((sym expansion) ...). */
+CL_Obj cl_symbol_macrolet_lex_env(CL_Obj bindings, CL_Obj inherited_lex_env)
+{
+    CL_Compiler *comp;
+    CL_CompEnv *env;
+    CL_Obj result, b;
+
+    comp = cl_compiler_pool_acquire();
+    if (!comp) return inherited_lex_env;
+    memset(comp, 0, sizeof(*comp));
+    env = cl_env_create(NULL);
+    comp->env = env;
+    comp->parent = cl_active_compiler;
+    cl_active_compiler = comp;
+
+    if (CL_CONS_P(inherited_lex_env))
+        seed_env_from_lex_env(env, inherited_lex_env);
+    for (b = bindings; CL_CONS_P(b); b = cl_cdr(b)) {
+        CL_Obj binding = cl_car(b);
+        if (CL_CONS_P(binding))
+            cl_env_add_symbol_macro(env, cl_car(binding), cl_car(cl_cdr(binding)));
+    }
+
+    result = cl_build_lex_env(env);
+
+    cl_active_compiler = comp->parent;
+    cl_env_destroy(env);
+    cl_compiler_pool_release(comp);
+    return result;
 }
 
 CL_Obj cl_compile_defun(CL_Obj name, CL_Obj lambda_list, CL_Obj body)

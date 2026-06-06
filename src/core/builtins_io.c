@@ -1084,6 +1084,7 @@ static int cf_form_needs_compile_time_eval(CL_Obj expr)
 /* Forward declarations — helpers reference each other. */
 static void cf_bc_vec_append(CL_Obj *bc_vec_p, int *bc_count_p, CL_Obj bytecode);
 static void cf_process_toplevel_form(CL_Obj expr,
+                                     CL_Obj lex_env,
                                      CL_Obj *bc_vec_p,
                                      int *bc_count_p);
 
@@ -1098,6 +1099,7 @@ static void cf_process_toplevel_form(CL_Obj expr,
  *   EX    → "not at top-level" semantics: compile+eval; do NOT emit
  *   none  → do nothing */
 static void cf_process_toplevel_eval_when(CL_Obj form,
+                                          CL_Obj lex_env,
                                           CL_Obj *bc_vec_p,
                                           int *bc_count_p)
 {
@@ -1130,7 +1132,7 @@ static void cf_process_toplevel_eval_when(CL_Obj form,
             CL_Obj bc;
             cl_ltv_init_count = 0;
             CL_GC_PROTECT(sub);
-            bc = cl_compile(sub);
+            bc = CL_CONS_P(lex_env) ? cl_compile_lex(sub, lex_env) : cl_compile(sub);
             CL_GC_UNPROTECT(1);
             cl_ltv_init_count = 0;
             if (!CL_NULL_P(bc)) {
@@ -1152,7 +1154,7 @@ static void cf_process_toplevel_eval_when(CL_Obj form,
             CL_Obj bc;
             cl_ltv_init_count = 0;
             CL_GC_PROTECT(sub);
-            bc = cl_compile(sub);
+            bc = CL_CONS_P(lex_env) ? cl_compile_lex(sub, lex_env) : cl_compile(sub);
             CL_GC_UNPROTECT(1);
             cl_ltv_init_count = 0; /* discard — no FASL emission in CT-only */
             if (!CL_NULL_P(bc)) {
@@ -1173,7 +1175,7 @@ static void cf_process_toplevel_eval_when(CL_Obj form,
             CL_Obj bc;
             cl_ltv_init_count = 0;
             CL_GC_PROTECT(sub);
-            bc = cl_compile(sub);
+            bc = CL_CONS_P(lex_env) ? cl_compile_lex(sub, lex_env) : cl_compile(sub);
             CL_GC_UNPROTECT(1);
             cl_ltv_init_count = 0;
             if (!CL_NULL_P(bc)) {
@@ -1194,7 +1196,7 @@ static void cf_process_toplevel_eval_when(CL_Obj form,
             CL_Obj bc;
             cl_ltv_init_count = 0;
             CL_GC_PROTECT(sub);
-            bc = cl_compile(sub);
+            bc = CL_CONS_P(lex_env) ? cl_compile_lex(sub, lex_env) : cl_compile(sub);
             CL_GC_UNPROTECT(1);
             cl_ltv_init_count = 0; /* discard — no FASL emission in EX-only */
             if (!CL_NULL_P(bc)) {
@@ -1249,41 +1251,91 @@ static void cf_bc_vec_append(CL_Obj *bc_vec_p, int *bc_count_p, CL_Obj bytecode)
 }
 
 static void cf_process_toplevel_form(CL_Obj expr,
+                                     CL_Obj lex_env,
                                      CL_Obj *bc_vec_p,
                                      int *bc_count_p)
 {
     CL_Obj bytecode;
+    CL_Obj head;
+
+    /* LEX_ENV (CL_NIL or an alist from cl_build_lex_env) carries the local
+     * macros/symbol-macros of any enclosing top-level MACROLET/SYMBOL-MACROLET
+     * so the macroexpand below and any sub-compilation see them.  Protected for
+     * the whole call since allocations happen throughout. */
+    CL_GC_PROTECT(lex_env);     /* prot #1 — released at every return */
+    CL_GC_PROTECT(expr);        /* prot #2 */
 
     /* CLHS 3.2.3.1: top-level macroexpand-1 loop.  User-level macros such as
      * DEFPACKAGE and DEFCLASS expand to (eval-when ...) wrappers that we then
-     * dispatch below.  Special operators (PROGN, EVAL-WHEN) are not macros and
-     * return unchanged on the first iteration. */
-    CL_GC_PROTECT(expr);
+     * dispatch below.  Special operators (PROGN, EVAL-WHEN, MACROLET, ...) are
+     * not macros and return unchanged on the first iteration. */
     for (;;) {
         CL_Obj exp;
-        if (!CL_CONS_P(expr)) { CL_GC_UNPROTECT(1); return; }
-        exp = cl_macroexpand_1_env(expr, CL_NIL);
+        if (!CL_CONS_P(expr)) { CL_GC_UNPROTECT(2); return; }
+        exp = cl_macroexpand_1_env(expr, lex_env);
         if (exp == expr) break;
         expr = exp;
     }
-    CL_GC_UNPROTECT(1);
+
+    head = cl_car(expr);
 
     /* PROGN: each subform is a fresh top-level form (CLHS 3.2.3.1). */
-    if (cl_car(expr) == SYM_PROGN) {
+    if (head == SYM_PROGN) {
+        CL_Obj subs = cl_cdr(expr);
+        CL_GC_PROTECT(subs);
+        while (!CL_NULL_P(subs)) {
+            cf_process_toplevel_form(cl_car(subs), lex_env, bc_vec_p, bc_count_p);
+            subs = cl_cdr(subs);
+        }
+        CL_GC_UNPROTECT(1);     /* subs */
+        CL_GC_UNPROTECT(2);     /* expr, lex_env */
+        return;
+    }
+
+    /* LOCALLY: body forms (after any declarations) are fresh top-level forms
+     * in the same lexical environment (CLHS 3.2.3.1). */
+    if (head == SYM_LOCALLY) {
         CL_Obj subs = cl_cdr(expr);
         CL_GC_PROTECT(subs);
         while (!CL_NULL_P(subs)) {
             CL_Obj sub = cl_car(subs);
-            cf_process_toplevel_form(sub, bc_vec_p, bc_count_p);
+            if (!(CL_CONS_P(sub) && cl_car(sub) == SYM_DECLARE))
+                cf_process_toplevel_form(sub, lex_env, bc_vec_p, bc_count_p);
             subs = cl_cdr(subs);
         }
-        CL_GC_UNPROTECT(1);
+        CL_GC_UNPROTECT(1);     /* subs */
+        CL_GC_UNPROTECT(2);     /* expr, lex_env */
+        return;
+    }
+
+    /* MACROLET / SYMBOL-MACROLET: process the body as top-level forms with the
+     * local macros/symbol-macros in scope (CLHS 3.2.3.1).  Without this, a
+     * compile-time-effecting body form (e.g. DEFPACKAGE that expands to a local
+     * macro call) would only run at load time, so later same-file forms could
+     * not reference the package/macro it defines. */
+    if (head == SYM_MACROLET || head == SYM_SYMBOL_MACROLET) {
+        CL_Obj bindings = cl_car(cl_cdr(expr));
+        CL_Obj body = cl_cdr(cl_cdr(expr));
+        CL_Obj new_env;
+        if (head == SYM_MACROLET)
+            new_env = cl_macrolet_lex_env(bindings, lex_env);
+        else
+            new_env = cl_symbol_macrolet_lex_env(bindings, lex_env);
+        CL_GC_PROTECT(new_env);
+        CL_GC_PROTECT(body);
+        while (!CL_NULL_P(body)) {
+            cf_process_toplevel_form(cl_car(body), new_env, bc_vec_p, bc_count_p);
+            body = cl_cdr(body);
+        }
+        CL_GC_UNPROTECT(2);     /* body, new_env */
+        CL_GC_UNPROTECT(2);     /* expr, lex_env */
         return;
     }
 
     /* EVAL-WHEN: dispatch per CLHS Table 3-9. */
-    if (cl_car(expr) == SYM_EVAL_WHEN) {
-        cf_process_toplevel_eval_when(expr, bc_vec_p, bc_count_p);
+    if (head == SYM_EVAL_WHEN) {
+        cf_process_toplevel_eval_when(expr, lex_env, bc_vec_p, bc_count_p);
+        CL_GC_UNPROTECT(2);     /* expr, lex_env */
         return;
     }
 
@@ -1294,11 +1346,10 @@ static void cf_process_toplevel_form(CL_Obj expr,
      * to run the resulting bytecode at compile time for the small set of
      * forms whose effect requires the VM to execute (cf_form_needs_compile_time_eval). */
     cl_ltv_init_count = 0;
-    CL_GC_PROTECT(expr);
-    bytecode = cl_compile(expr);
-    CL_GC_UNPROTECT(1);
+    bytecode = CL_CONS_P(lex_env) ? cl_compile_lex(expr, lex_env)
+                                  : cl_compile(expr);
 
-    if (CL_NULL_P(bytecode)) { cl_ltv_init_count = 0; return; }
+    if (CL_NULL_P(bytecode)) { cl_ltv_init_count = 0; CL_GC_UNPROTECT(2); return; }
     cl_ltv_init_count = 0;
 
     CL_GC_PROTECT(bytecode);
@@ -1306,7 +1357,8 @@ static void cf_process_toplevel_form(CL_Obj expr,
         cl_vm_eval(bytecode);
     cl_gc_compact_if_pending();
     cf_bc_vec_append(bc_vec_p, bc_count_p, bytecode);
-    CL_GC_UNPROTECT(1);
+    CL_GC_UNPROTECT(1);         /* bytecode */
+    CL_GC_UNPROTECT(2);         /* expr, lex_env */
 }
 
 /* --- compile-file ---
@@ -1558,7 +1610,7 @@ static CL_Obj bi_compile_file(CL_Obj *args, int n)
             fflush(stderr);
 #endif
             CL_GC_PROTECT(expr);
-            cf_process_toplevel_form(expr, &bc_vec, &bc_collect_count);
+            cf_process_toplevel_form(expr, CL_NIL, &bc_vec, &bc_collect_count);
             CL_GC_UNPROTECT(1);
             CL_UNCATCH();
         } else {

@@ -2375,15 +2375,13 @@ void compile_restart_case(CL_Compiler *c, CL_Obj form)
 
 /* --- Macrolet --- */
 
-CL_Obj compile_macrolet(CL_Compiler *c, CL_Obj form)
+/* Build the macrolet local-macro expanders for BINDINGS (each
+ * (name lambda-list . body)) and install them into ENV via
+ * cl_env_add_local_macro.  Factored out of compile_macrolet so compile-file's
+ * top-level processor can reconstruct a macrolet's lexical macro environment
+ * and process its body forms as top-level forms (CLHS 3.2.3.1). */
+void cl_macrolet_install_expanders(CL_CompEnv *env, CL_Obj bindings)
 {
-    /* (macrolet ((name (params) body...) ...) body...) */
-    CL_Obj bindings = cl_car(cl_cdr(form));
-    CL_Obj body = cl_cdr(cl_cdr(form));
-    CL_CompEnv *env = c->env;
-    int saved_macro_count = env->local_macro_count;
-    CL_TailFrame *tf;
-
     /* Compile each macro expander at compile time */
     {
         CL_Obj b = bindings;
@@ -2578,6 +2576,18 @@ CL_Obj compile_macrolet(CL_Compiler *c, CL_Obj form)
         }
         CL_GC_UNPROTECT(1);
     }
+}
+
+CL_Obj compile_macrolet(CL_Compiler *c, CL_Obj form)
+{
+    /* (macrolet ((name (params) body...) ...) body...) */
+    CL_Obj bindings = cl_car(cl_cdr(form));
+    CL_Obj body = cl_cdr(cl_cdr(form));
+    CL_CompEnv *env = c->env;
+    int saved_macro_count = env->local_macro_count;
+    CL_TailFrame *tf;
+
+    cl_macrolet_install_expanders(env, bindings);
 
     /* Trampoline body — postlude restores local_macro_count. */
     tf = cl_tail_push(c);
