@@ -185,13 +185,13 @@ Note: string literals in `lib/*.lisp` must stay ASCII-only — the Amiga build i
 
 CL-Amiga speaks the SLYNK protocol, so you can drive it from Emacs with [SLY](https://github.com/joaotavora/sly) — REPL, completion, `M-.`, the inspector, and the SLDB debugger. This targets the **host** build (`build/host/clamiga`) and needs a SLY checkout whose `slynk/backend/` includes the CL-Amiga backend (`clamiga.lisp`).
 
-clamiga comes up through SLY's **standard loader**, exactly like every other implementation — there is no clamiga-specific Lisp startup file. The backend pulls in clamiga's Gray streams itself via `(require "gray-streams")`, and `slynk-loader` loads SLYNK from source on clamiga (it can't reuse SLY's compiled-FASL cache). Run clamiga from its source root (or set SLY's `:directory`) so `(require "gray-streams")` finds `lib/gray-streams.lisp`.
+clamiga comes up exactly like every other implementation — there is no clamiga-specific Lisp startup file or init form. The backend (`slynk/backend/clamiga.lisp`) pulls in clamiga's Gray streams itself via `(require "gray-streams")`, so just run clamiga from its source root (or set SLY's `:directory`) so that resolves `lib/gray-streams.lisp`.
 
 > **Heap sizing:** the 4 MB default thrashes the GC once SLYNK and its contribs load. Use **`--heap 96M` as a practical minimum** — that also carries a real application's dependency graph (e.g. `(asdf:load-system :sento)`). Give more headroom (`512M`) if you can.
 
 #### Method A — auto-start with `M-x sly` (recommended)
 
-Add a `clamiga` entry to `sly-lisp-implementations`, using SLY's stock loader-based init and pointing `:directory` at the source root:
+Add a `clamiga` entry to `sly-lisp-implementations`. No custom `:init` is needed — `:directory` points clamiga at the source root so the backend's `(require "gray-streams")` resolves:
 
 ```elisp
 (defvar my/clamiga-root "/path/to/cl-amiga")
@@ -200,11 +200,10 @@ Add a `clamiga` entry to `sly-lisp-implementations`, using SLY's stock loader-ba
 (with-eval-after-load 'sly
   (add-to-list 'sly-lisp-implementations
                `(clamiga (,my/clamiga-bin "--heap" "512M")
-                         :init sly-init-using-slynk-loader
                          :directory ,my/clamiga-root)))
 ```
 
-Then `M-x sly` and pick `clamiga` (or `C-u M-x sly` to choose). SLY loads `slynk-loader.lisp`, runs `slynk-loader:init`, and starts a server on an OS-assigned port it connects to automatically.
+Then `M-x sly` and pick `clamiga` (or `C-u M-x sly` to choose). SLY starts a server on an OS-assigned port (via ASDF + `slynk.asd`, which includes the CL-Amiga backend) and connects automatically.
 
 #### Method B — external server + `M-x sly-connect`
 
