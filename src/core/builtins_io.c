@@ -1106,6 +1106,11 @@ static void cf_process_toplevel_eval_when(CL_Obj form,
     CL_Obj situations, body, sit, rest;
     int has_ct = 0, has_lt = 0, has_ex = 0;
 
+    /* lex_env is consulted on every loop iteration below, across cl_compile_lex
+     * calls that can trigger moving GC; protect it so compaction forwards our
+     * copy (the caller's protected copy does not cover this stack frame). */
+    CL_GC_PROTECT(lex_env);
+
     situations = cl_car(cl_cdr(form));
     body       = cl_cdr(cl_cdr(form));
 
@@ -1210,6 +1215,8 @@ static void cf_process_toplevel_eval_when(CL_Obj form,
         CL_GC_UNPROTECT(1);
     }
     /* else: no active situation — do nothing */
+
+    CL_GC_UNPROTECT(1); /* lex_env */
 }
 
 /* Process a single top-level form for compile-file.
@@ -1315,13 +1322,18 @@ static void cf_process_toplevel_form(CL_Obj expr,
      * not reference the package/macro it defines. */
     if (head == SYM_MACROLET || head == SYM_SYMBOL_MACROLET) {
         CL_Obj bindings = cl_car(cl_cdr(expr));
-        CL_Obj body = cl_cdr(cl_cdr(expr));
+        CL_Obj body;
         CL_Obj new_env;
         if (head == SYM_MACROLET)
             new_env = cl_macrolet_lex_env(bindings, lex_env);
         else
             new_env = cl_symbol_macrolet_lex_env(bindings, lex_env);
         CL_GC_PROTECT(new_env);
+        /* cl_*_lex_env compiles the expanders, which can trigger GC compaction;
+         * `expr` is GC-protected and thus forwarded, but a bare `body` computed
+         * before the call would be left holding a stale offset.  Recompute it
+         * from the (forwarded) expr now. */
+        body = cl_cdr(cl_cdr(expr));
         CL_GC_PROTECT(body);
         while (!CL_NULL_P(body)) {
             cf_process_toplevel_form(cl_car(body), new_env, bc_vec_p, bc_count_p);
