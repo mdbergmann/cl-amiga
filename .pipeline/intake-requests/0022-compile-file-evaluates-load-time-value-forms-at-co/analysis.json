@@ -1,0 +1,18 @@
+{
+  "summary": "compile_load_time_value evaluates the wrapped form eagerly via cl_vm_eval during compilation. That is correct in the single-pass REPL/LOAD path but violates CLHS under COMPILE-FILE (3.2.3.1 / load-time-value spec), where defuns in the same file are NOT executed at compile time — so an LTV that calls a later-defined function in the same file (deflate.lisp: update-crc32-checksum referencing generate-crc32-table) raises 'Undefined function' and is dropped from the FASL, breaking subsequent loads. Fix: gate on a new cl_compiling_to_file flag set in bi_compile_file; under that flag emit a lazy memoized form ((let ((g '(nil . nil))) (if (car g) (cdr g) (progn (rplacd g <form>) (rplaca g t) (cdr g))))) so the value-form runs at load time with stable identity. The eager path is preserved when the flag is off, keeping existing test_vm.c LTV tests green. No FASL wire-format change.",
+  "affected_areas": [
+    "src/core/compiler_extra.c — compile_load_time_value branch",
+    "src/core/builtins_io.c — bi_compile_file save/set/restore the flag around the read-compile loop",
+    "src/core/compiler_internal.h — extern declaration",
+    "tests/test_fasl.c — 4 new compile-file LTV regression tests",
+    "tests/amiga/run-tests.lisp — 3 mirroring Amiga checks"
+  ],
+  "risks": [
+    "GC safety: the synthesized form contains many partially-built cons spines; every CL_Obj local across cl_cons calls must be CL_GC_PROTECT'd or the compactor will move the cells and leave the form pointing into stale arena offsets — silent corruption.",
+    "Per-occurrence memo cell: cl_add_constant dedups by eq, so each compile_load_time_value invocation MUST allocate a fresh (nil . nil); reusing a cached cell would conflate distinct LTV forms across functions in the same file.",
+    "Flag must be restored on every bi_compile_file exit path, including the CL_ERR_EXIT propagation at builtins_io.c:1556-1561 and the early OOM returns at 1483/1493 — a leaked flag would silently switch REPL semantics for the rest of the session.",
+    "Lazy-once vs strict load-time: if the LTV ends up inside a top-level form that runs at compile time (eval-when CT+LT), the memo cell will be mutated at compile time and that mutated state will be serialized into the FASL — so the value-form would not re-run at load. The request explicitly accepts this trade-off (it's observationally identical for pure forms); a per-FASL LTV table would be a larger CL_FASL_VERSION-bumping change.",
+    "Cell observability: the (nil . nil) memo cell becomes addressable via (load-time-value (let ((c (cons nil nil))) ...)) introspection in theory, but only via the synthesized let-binding which is gensymed — no user-visible binding to capture it.",
+    "The proposed scheme breaks the existing REPL-path invariant 'LTV form runs exactly once even across calls within the eval session' only under compile-file: at the first call of a defun loaded from FASL the form runs; subsequent calls return the cached value — matching CLHS."
+  ]
+}
