@@ -1229,7 +1229,14 @@ when the param has no explicit default.  CL spec 3.4.6 requires this."
                   (push `(defun ,setter-name (obj val) (setf (svref obj ,idx) val)) forms)
                   (push `(defsetf ,acc-name ,setter-name) forms))
                 (setq idx (+ idx 1))))
-            `(progn ,@(reverse forms) ',name))
+            ;; EVAL-WHEN (not PROGN): a top-level DEFSTRUCT must register its
+            ;; slots/accessors at COMPILE time so a later same-file DEFSTRUCT
+            ;; with (:INCLUDE this) can resolve inherited slots when COMPILE-FILE
+            ;; macroexpands it (CLHS 3.2.3.1).  With PROGN the registration only
+            ;; ran at load time, so compiled (:include ...) constructors dropped
+            ;; their inherited-slot keyword args.
+            `(eval-when (:compile-toplevel :load-toplevel :execute)
+               ,@(reverse forms) ',name))
         ;; --- Normal struct mode ---
         (progn
           ;; Register the struct type (store slot specs with defaults for :include)
@@ -1311,7 +1318,12 @@ when the param has no explicit default.  CL spec 3.4.6 requires this."
                      (defmethod print-object ((object ,name) stream)
                        (,print-object-opt object stream)))
                   forms))
-          `(progn ,@(reverse forms) ',name))))))
+          ;; EVAL-WHEN (not PROGN) — see the typed-struct branch above: the
+          ;; struct's %register-struct-type / accessors must take effect at
+          ;; COMPILE time so a later same-file (:include this) resolves its
+          ;; inherited slots during COMPILE-FILE macroexpansion (CLHS 3.2.3.1).
+          `(eval-when (:compile-toplevel :load-toplevel :execute)
+             ,@(reverse forms) ',name))))))
 
 ;; CL bitwise functions not in C builtins
 (defun logandc1 (integer-1 integer-2) (logand (lognot integer-1) integer-2))

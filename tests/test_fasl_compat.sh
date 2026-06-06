@@ -350,6 +350,24 @@ check_contains "compile_file_does_not_run_top_level_call_twice" "COUNTER=1" "$re
 check_not_contains "compile_file_counter_not_2" "COUNTER=2" "$result"
 rm -f "$TMPDIR/cf_counter.lisp" "$TMPDIR/cf_counter.fasl"
 
+# Regression: a COMPILE-FILE'd DEFSTRUCT with (:include ...) must keep its
+# inherited slots in the default keyword constructor.  Bug: defstruct expanded
+# to PROGN, so %register-struct-type ran only at load time; a later same-file
+# (:include base) couldn't resolve the parent's slots at compile time and the
+# compiled constructor dropped the inherited keyword args.  Both structs live in
+# ONE file so the child is macroexpanded against the compile-time-registered base.
+cat > "$TMPDIR/cf_include.lisp" << 'LISP'
+(defstruct (cf-base (:constructor %make-cf-base)) (cf-comm nil) cf-a)
+(defstruct (cf-sub (:include cf-base)) cf-b)
+(defun cf-mk () (cf-sub-cf-comm (make-cf-sub :cf-comm :spawn :cf-a 1 :cf-b 2)))
+LISP
+
+rm -rf $CACHE_GLOB
+result=$(run_quiet '(compile-file "'"$TMPDIR"'/cf_include.lisp" :output-file "'"$TMPDIR"'/cf_include.fasl") (load "'"$TMPDIR"'/cf_include.fasl") (format t "INC=~S~%" (cf-mk))')
+check_contains "compile_file_include_struct_keeps_inherited_ctor_keywords" "INC=:SPAWN" "$result"
+check_not_contains "compile_file_include_struct_no_unknown_keyword" "Unknown keyword" "$result"
+rm -f "$TMPDIR/cf_include.lisp" "$TMPDIR/cf_include.fasl"
+
 # --- Cleanup ---
 
 rm -f "$TMPDIR"/fasl_test_*.lisp
