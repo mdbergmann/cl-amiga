@@ -14,6 +14,17 @@
 /* Compile a top-level expression, returns a CL_Bytecode object */
 CL_Obj cl_compile(CL_Obj expr);
 
+/* Compile EXPR with the macrolet/symbol-macrolet bindings in LEX_ENV (an
+ * alist from cl_build_lex_env, or CL_NIL) in scope.  Used by compile-file
+ * when a form is lifted out of a top-level MACROLET (CLHS 3.2.3.1). */
+CL_Obj cl_compile_lex(CL_Obj expr, CL_Obj lex_env);
+
+/* Build the lexical macro environment (alist) contributed by a top-level
+ * MACROLET / SYMBOL-MACROLET, layered over INHERITED_LEX_ENV.  Result must be
+ * GC-protected by the caller. */
+CL_Obj cl_macrolet_lex_env(CL_Obj bindings, CL_Obj inherited_lex_env);
+CL_Obj cl_symbol_macrolet_lex_env(CL_Obj bindings, CL_Obj inherited_lex_env);
+
 /* Compile a defun/defmacro form */
 CL_Obj cl_compile_defun(CL_Obj name, CL_Obj lambda_list, CL_Obj body);
 

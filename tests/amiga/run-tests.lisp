@@ -4129,6 +4129,37 @@
 (load "T:fasl-ltv3.fasl")
 (check "LTV distinct forms" nil (eq (ltv-d1) (ltv-d2)))
 
+; --- Top-level MACROLET / SYMBOL-MACROLET / LOCALLY under COMPILE-FILE ---
+; (CLHS 3.2.3.1: their body forms are processed as top-level forms, so
+; compile-time side effects inside them — DEFPACKAGE, DEFMACRO — take effect
+; at compile time.  Regression for the log4cl package.lisp load failure.)
+
+; A top-level MACROLET whose body expands (via the local macro) to a DEFPACKAGE
+; must create the package at compile time so a later form can read its symbols.
+(with-open-file (s "T:fasl-mlpkg.lisp" :direction :output :if-exists :supersede)
+  (write-string "(macrolet ((def-it () '(defpackage :cf-ml-pkg (:use :cl) (:export #:marker)))) (def-it))" s) (terpri s)
+  (write-string "(defun cf-ml-fn () (symbol-name 'cf-ml-pkg:marker))" s) (terpri s))
+(compile-file "T:fasl-mlpkg.lisp" :output-file "T:fasl-mlpkg.fasl")
+(load "T:fasl-mlpkg.fasl")
+(check "macrolet defpackage at compile time" "MARKER" (cf-ml-fn))
+
+; A DEFMACRO inside a top-level MACROLET body must be installed at compile time
+; so a later same-file form expands it instead of compiling a function call.
+(with-open-file (s "T:fasl-mlmac.lisp" :direction :output :if-exists :supersede)
+  (write-string "(macrolet ((emit () '(defmacro cf-ml-mac (x) (list 'list :ml x)))) (emit))" s) (terpri s)
+  (write-string "(defparameter *cf-ml-mac* (cf-ml-mac 7))" s) (terpri s))
+(compile-file "T:fasl-mlmac.lisp" :output-file "T:fasl-mlmac.fasl")
+(load "T:fasl-mlmac.fasl")
+(check "macrolet defmacro available later" '(:ml 7) *cf-ml-mac*)
+
+; Same for a DEFMACRO inside a top-level LOCALLY.
+(with-open-file (s "T:fasl-locmac.lisp" :direction :output :if-exists :supersede)
+  (write-string "(locally (declare (optimize speed)) (defmacro cf-loc-mac (x) (list 'list :loc x)))" s) (terpri s)
+  (write-string "(defparameter *cf-loc* (cf-loc-mac 9))" s) (terpri s))
+(compile-file "T:fasl-locmac.lisp" :output-file "T:fasl-locmac.fasl")
+(load "T:fasl-locmac.fasl")
+(check "locally defmacro available later" '(:loc 9) *cf-loc*)
+
 ; --- Dispatch cache ---
 (defgeneric dcache-test (x))
 (defmethod dcache-test ((x point)) (point-x x))

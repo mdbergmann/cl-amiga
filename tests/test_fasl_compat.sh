@@ -368,6 +368,54 @@ check_contains "compile_file_include_struct_keeps_inherited_ctor_keywords" "INC=
 check_not_contains "compile_file_include_struct_no_unknown_keyword" "Unknown keyword" "$result"
 rm -f "$TMPDIR/cf_include.lisp" "$TMPDIR/cf_include.fasl"
 
+# Regression (log4cl): a top-level MACROLET whose body (a local-macro call)
+# expands to a DEFPACKAGE must create the package at compile time, so a later
+# same-file form can read symbols in that package (CLHS 3.2.3.1: macrolet body
+# forms are processed as top-level forms with the local macros in scope).
+# Before the fix, compile-file compiled the whole macrolet as one load-time
+# unit, so the package did not exist when the reader hit 'cf-ml-pkg:marker' →
+# "Package CF-ML-PKG not found" / "Unexpected ')'".
+cat > "$TMPDIR/cf_ml_pkg.lisp" << 'LISP'
+(macrolet ((def-it () '(defpackage :cf-ml-pkg (:use :cl) (:export #:marker))))
+  (def-it))
+(defun cf-ml-fn () (symbol-name 'cf-ml-pkg:marker))
+LISP
+
+rm -rf $CACHE_GLOB
+result=$(run_quiet '(compile-file "'"$TMPDIR"'/cf_ml_pkg.lisp" :output-file "'"$TMPDIR"'/cf_ml_pkg.fasl") (load "'"$TMPDIR"'/cf_ml_pkg.fasl") (format t "ML=~A~%" (cf-ml-fn))')
+check_contains "compile_file_toplevel_macrolet_defpackage_compile_time" "ML=MARKER" "$result"
+check_not_contains "compile_file_toplevel_macrolet_no_package_error" "not found" "$result"
+rm -f "$TMPDIR/cf_ml_pkg.lisp" "$TMPDIR/cf_ml_pkg.fasl"
+
+# Regression: a DEFMACRO that lives inside a top-level MACROLET body must be
+# installed at compile time so a later same-file form expands it (not compiled
+# as a function call → load-time "Undefined function").
+cat > "$TMPDIR/cf_ml_mac.lisp" << 'LISP'
+(macrolet ((emit () '(defmacro cf-ml-mac (x) `(list :ml ,x))))
+  (emit))
+(defparameter *cf-ml-mac* (cf-ml-mac 7))
+LISP
+
+rm -rf $CACHE_GLOB
+result=$(run_quiet '(compile-file "'"$TMPDIR"'/cf_ml_mac.lisp" :output-file "'"$TMPDIR"'/cf_ml_mac.fasl") (load "'"$TMPDIR"'/cf_ml_mac.fasl") *cf-ml-mac*')
+check_contains "compile_file_toplevel_macrolet_defmacro_available_later" "(:ML 7)" "$result"
+check_not_contains "compile_file_toplevel_macrolet_no_undefined_fn" "Undefined function" "$result"
+rm -f "$TMPDIR/cf_ml_mac.lisp" "$TMPDIR/cf_ml_mac.fasl"
+
+# Regression: a DEFMACRO inside a top-level LOCALLY must be installed at compile
+# time too (locally body forms are top-level forms, CLHS 3.2.3.1).
+cat > "$TMPDIR/cf_loc_mac.lisp" << 'LISP'
+(locally (declare (optimize speed))
+  (defmacro cf-loc-mac (x) `(list :loc ,x)))
+(defparameter *cf-loc* (cf-loc-mac 9))
+LISP
+
+rm -rf $CACHE_GLOB
+result=$(run_quiet '(compile-file "'"$TMPDIR"'/cf_loc_mac.lisp" :output-file "'"$TMPDIR"'/cf_loc_mac.fasl") (load "'"$TMPDIR"'/cf_loc_mac.fasl") *cf-loc*')
+check_contains "compile_file_toplevel_locally_defmacro_available_later" "(:LOC 9)" "$result"
+check_not_contains "compile_file_toplevel_locally_no_undefined_fn" "Undefined function" "$result"
+rm -f "$TMPDIR/cf_loc_mac.lisp" "$TMPDIR/cf_loc_mac.fasl"
+
 # --- Cleanup ---
 
 rm -f "$TMPDIR"/fasl_test_*.lisp

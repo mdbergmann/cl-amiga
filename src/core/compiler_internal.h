@@ -267,6 +267,9 @@ CL_Obj compile_handler_bind(CL_Compiler *c, CL_Obj form);
 void compile_restart_case(CL_Compiler *c, CL_Obj form);
 /* Trampoline-aware: return tail body form, push postlude frame.  */
 CL_Obj compile_macrolet(CL_Compiler *c, CL_Obj form);
+/* Install macrolet local-macro expanders into ENV (factored from
+ * compile_macrolet); used by compile-file top-level macrolet processing. */
+void cl_macrolet_install_expanders(CL_CompEnv *env, CL_Obj bindings);
 CL_Obj compile_symbol_macrolet(CL_Compiler *c, CL_Obj form);
 CL_Obj compile_progv(CL_Compiler *c, CL_Obj form);
 
