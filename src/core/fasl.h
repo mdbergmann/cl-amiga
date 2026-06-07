@@ -178,6 +178,20 @@ CL_Obj cl_fasl_deserialize_bytecode(CL_FaslReader *r);
 /* Read and validate a FASL file header; returns n_units or sets r->error */
 uint32_t cl_fasl_read_header(CL_FaslReader *r);
 
+/* --- Active-reader registry (GC rooting of dedup tables) ---
+ * A reader's gensym_objs[]/shared_objs[] hold CL_Obj references that forward
+ * GENSYM_REF/OBJ_REF resolve through; they must be treated as GC roots for the
+ * duration of a load so compaction forwards them.  See fasl.c for the full
+ * rationale ("Undefined function: PACKAGE" corruption under heap pressure). */
+void cl_fasl_reader_register(CL_FaslReader *r);
+void cl_fasl_reader_unregister(CL_FaslReader *r);
+void cl_fasl_gc_mark_readers(void);
+void cl_fasl_gc_update_readers(void (*update_fn)(CL_Obj *));
+/* Error-unwind snapshot/restore of the active-reader count (cl_error longjmps
+ * past cl_fasl_reader_unregister; the error frame restores the count). */
+int  cl_fasl_reader_save_count(void);
+void cl_fasl_reader_restore_count(int n);
+
 #ifdef DEBUG_FASL
 /* --- Per-unit serialization histogram (debug builds only) ---
  *

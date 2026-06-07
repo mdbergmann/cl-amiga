@@ -72,6 +72,12 @@ typedef struct {
      * a PRINT-OBJECT method that signals) cannot leave cl_in_debugger stuck
      * at 1, which would silently suppress the debugger forever after. */
     int saved_in_debugger;
+    /* Active FASL-reader count at the time this frame was pushed.  cl_error
+     * longjmps out of a FASL load without running cl_fasl_reader_unregister,
+     * so the unwind path restores this count to drop any readers whose stack-
+     * local CL_FaslReader was unwound — otherwise a later GC walks the active
+     * list and dereferences freed stack memory.  Mirrors saved_gc_roots. */
+    int saved_fasl_readers;
 } CL_ErrorFrame;
 
 /* Push an error frame.  Returns the frame index, or -1 on overflow.

@@ -2488,7 +2488,15 @@ static CL_Obj cl_vm_run(int base_fp, int base_nlx)
                 sizeof(CL_Closure) + n_upvals * sizeof(CL_Obj));
             if (cl) {
                 int i;
-                cl->bytecode = tmpl;
+                /* Re-fetch the template offset from constants[] AFTER cl_alloc:
+                 * a compacting GC during the allocation may have relocated the
+                 * bytecode object, leaving the cached `tmpl` local holding a
+                 * stale pre-move offset.  constants[] is GC-rooted (via
+                 * frame->bytecode) and its entry is forwarded in place, so
+                 * re-reading it yields the live offset.  Storing the stale
+                 * `tmpl` here was the cause of "Corrupted closure: bytecode
+                 * field is type 0" when a defun loaded under heap pressure. */
+                cl->bytecode = constants[idx];
                 /* Read capture descriptors and populate upvalues */
                 for (i = 0; i < n_upvals; i++) {
                     uint8_t is_local = code[ip++];

@@ -1335,6 +1335,14 @@ static void gc_mark(void)
             gc_mark_obj(*global_roots[gi]);
     }
 
+    /* Active FASL readers — their gensym_objs[]/shared_objs[] dedup tables
+     * hold CL_Obj references that forward GENSYM_REF/OBJ_REF resolve through
+     * but which may not yet be reachable from the graph under construction. */
+    {
+        extern void cl_fasl_gc_mark_readers(void);
+        cl_fasl_gc_mark_readers();
+    }
+
     /* Drain mark stack iteratively (children pushed by gc_mark_obj above).
      * Do NOT clear gc_mark_overflow here — it may have been set during
      * root marking above, and the re-scan loop below must handle it. */
@@ -2030,6 +2038,13 @@ static void gc_update_shared_roots(void)
         int gi;
         for (gi = 0; gi < n_global_roots; gi++)
             gc_update_slot(global_roots[gi]);
+    }
+
+    /* Active FASL readers — forward the relocated offsets in their dedup
+     * tables (mirrors cl_fasl_gc_mark_readers in the mark phase). */
+    {
+        extern void cl_fasl_gc_update_readers(void (*update_fn)(CL_Obj *));
+        cl_fasl_gc_update_readers(gc_update_slot);
     }
 }
 
