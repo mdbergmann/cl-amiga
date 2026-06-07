@@ -432,25 +432,41 @@ static CL_Obj bi_setf_gethash(CL_Obj *args, int n)
         }
     }
 
-    /* New entry: cons (key . value) and prepend to bucket */
+    /* New entry: cons (key . value) and prepend to bucket.
+     *
+     * Under a compacting GC the cl_cons() allocations below can trigger a
+     * stop-the-world compaction that *rehashes this very EQ table*: eq hashing
+     * is by object offset, which the compactor changes, so gc_rehash_eq_tables
+     * reorganizes every eq table's buckets after a move.  That invalidates the
+     * `bucket_idx` and `chain` head captured before the allocations — splicing
+     * the stale `chain` (whose cells the rehash moved into *other* buckets)
+     * onto a stale `bucket_idx` cross-links the chains, which later manifests
+     * as wild out-of-bounds offsets when gc_rehash_eq_table walks them.
+     *
+     * Fix: allocate the cells FIRST, then — with NO allocation in between —
+     * recompute the bucket index from the now-current key offset and splice
+     * onto the live bucket head. */
     {
         CL_Obj pair;
         CL_Obj new_chain;
+        CL_Obj *bkts;
 
         CL_GC_PROTECT(key);
         CL_GC_PROTECT(ht_obj);
         CL_GC_PROTECT(value);
-        CL_GC_PROTECT(chain);
 
         pair = cl_cons(key, value);
         CL_GC_PROTECT(pair);
+        new_chain = cl_cons(pair, CL_NIL);
+        CL_GC_UNPROTECT(4);
 
-        new_chain = cl_cons(pair, chain);
-        CL_GC_UNPROTECT(5);
-
-        /* Re-dereference ht_obj after potential GC */
+        /* No allocation past this point. */
         ht = (CL_Hashtable *)CL_OBJ_TO_PTR(ht_obj);
-        ht_get_buckets(ht)[bucket_idx] = new_chain;
+        key = ((CL_Cons *)CL_OBJ_TO_PTR(pair))->car;  /* current (forwarded) offset */
+        bucket_idx = hash_obj(key, ht->test) & (ht->bucket_count - 1);
+        bkts = ht_get_buckets(ht);
+        ((CL_Cons *)CL_OBJ_TO_PTR(new_chain))->cdr = bkts[bucket_idx];
+        bkts[bucket_idx] = new_chain;
         ht->count++;
     }
 

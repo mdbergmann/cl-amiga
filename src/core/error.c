@@ -6,6 +6,7 @@
 #include "printer.h"
 #include "color.h"
 #include "stream.h"
+#include "fasl.h"
 #include "../platform/platform.h"
 #include <stdio.h>
 #include <stdarg.h>
@@ -42,6 +43,7 @@ int cl_error_frame_push(void)
     cl_error_frames[cl_error_frame_top].saved_jit_depth = CT->jit_depth;
     cl_error_frames[cl_error_frame_top].saved_debugger_depth = cl_debugger_depth;
     cl_error_frames[cl_error_frame_top].saved_in_debugger = cl_in_debugger;
+    cl_error_frames[cl_error_frame_top].saved_fasl_readers = cl_fasl_reader_save_count();
     return cl_error_frame_top++;
 }
 
@@ -90,6 +92,7 @@ CL_NORETURN static void cl_error_unwind(int code)
         cl_jit_restore_depth(cl_error_frames[cl_error_frame_top - 1].saved_jit_depth);
         cl_debugger_depth = cl_error_frames[cl_error_frame_top - 1].saved_debugger_depth;
         cl_in_debugger = cl_error_frames[cl_error_frame_top - 1].saved_in_debugger;
+        cl_fasl_reader_restore_count(cl_error_frames[cl_error_frame_top - 1].saved_fasl_readers);
         CL_LONGJMP(cl_error_frames[cl_error_frame_top - 1].buf, code);
     }
 
@@ -110,6 +113,9 @@ CL_NORETURN static void cl_error_unwind(int code)
     cl_in_debugger = 0;
 
     if (cl_error_frame_top > 0) {
+        /* Drop any active FASL readers — their stack-local CL_FaslReaders are
+         * unwound away.  Restore to the outermost frame's snapshot (normally 0). */
+        cl_fasl_reader_restore_count(cl_error_frames[cl_error_frame_top - 1].saved_fasl_readers);
         CL_LONGJMP(cl_error_frames[cl_error_frame_top - 1].buf, code);
     }
 
@@ -153,6 +159,7 @@ void cl_error(int code, const char *fmt, ...)
              * and keeps any permanent roots installed by the outer frame). */
             gc_root_count = cl_error_frames[cl_error_frame_top - 1].saved_gc_roots;
             cl_jit_restore_depth(cl_error_frames[cl_error_frame_top - 1].saved_jit_depth);
+            cl_fasl_reader_restore_count(cl_error_frames[cl_error_frame_top - 1].saved_fasl_readers);
             CL_LONGJMP(cl_error_frames[cl_error_frame_top - 1].buf, code);
         }
         exit(cl_exit_code);

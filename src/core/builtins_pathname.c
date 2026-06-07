@@ -46,9 +46,22 @@ CL_Obj cl_parse_namestring(const char *str, uint32_t len)
     CL_Obj pn_name = CL_NIL;
     CL_Obj pn_type = CL_NIL;
     CL_Obj version = CL_NIL;
+    char path_copy[1024];
     char expand_buf[1024];
     const char *p;
     const char *end;
+
+    /* The incoming `str` may point into the GC arena (callers pass a
+     * CL_String's `data`).  This function allocates (cl_cons / cl_make_string)
+     * while scanning `str`, and a compacting GC can relocate the source
+     * string mid-parse — leaving str/p/end/filename dangling and producing
+     * a truncated pathname (e.g. "/tmp/gcb.lisp" parsed as "/").  Copy into
+     * a GC-stable stack buffer first so all scanning is over fixed memory. */
+    if (len >= sizeof(path_copy))
+        len = sizeof(path_copy) - 1;
+    memcpy(path_copy, str, len);
+    path_copy[len] = '\0';
+    str = path_copy;
 
     /* Expand leading ~ to home directory */
     if (len > 0 && str[0] == '~' && len < sizeof(expand_buf)) {

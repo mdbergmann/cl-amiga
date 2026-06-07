@@ -560,8 +560,18 @@ static CL_Obj bi_register_condition_type(CL_Obj *args, int n)
     if (!CL_SYMBOL_P(parent) && !CL_NULL_P(parent))
         cl_error(CL_ERR_TYPE, "%%REGISTER-CONDITION-TYPE: parent must be a symbol");
 
-    /* Add (name parent) to condition_hierarchy */
+    /* GC-protect ALL the CL_Obj locals across the cl_cons calls below.
+     * args[] entries are VM-rooted, but the cached `name`/`parent`/`slot_pairs`
+     * locals are not — the nested cl_cons() allocations can trigger a
+     * compacting GC that relocates the symbols, leaving the locals holding
+     * stale offsets.  Storing a stale `name` here produced cons cells with
+     * out-of-bounds car/cdr offsets (caught by the GC verifier) when a
+     * define-condition was loaded under heap pressure. */
+    CL_GC_PROTECT(name);
+    CL_GC_PROTECT(parent);
     CL_GC_PROTECT(slot_pairs);
+
+    /* Add (name parent) to condition_hierarchy */
     entry = cl_cons(name, cl_cons(parent, CL_NIL));
     CL_GC_PROTECT(entry);
     cl_tables_wrlock();
@@ -573,7 +583,7 @@ static CL_Obj bi_register_condition_type(CL_Obj *args, int n)
     cl_tables_wrlock();
     condition_slot_table = cl_cons(entry, condition_slot_table);
     cl_tables_rwunlock();
-    CL_GC_UNPROTECT(2);
+    CL_GC_UNPROTECT(4);
 
     return name;
 }

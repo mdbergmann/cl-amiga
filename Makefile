@@ -160,6 +160,19 @@ test-fast: $(TEST_BINS) host
 # `make test` runs the fast tier only (the everyday gate).
 test: test-fast
 
+# `make test-gc-stress` builds a dedicated DEBUG_GC_STRESS binary (forces a
+# compacting GC before every allocation) and runs the GC-stress regression
+# suite against it.  Kept out of the fast tier because it needs a separate,
+# slow build; run it after touching GC, the FASL reader/writer, the compiler,
+# or any C builtin that holds CL_Obj values across allocating calls.
+GC_STRESS_BUILDDIR = build/host-gcstress
+test-gc-stress:
+	@$(MAKE) --no-print-directory host \
+		BUILDDIR=$(GC_STRESS_BUILDDIR) \
+		DEBUG_FLAGS="-DDEBUG_GC_STRESS"
+	@echo "--- test_gc_stress_regression ---"
+	@sh $(TEST_SRCDIR)/test_gc_stress_regression.sh $(GC_STRESS_BUILDDIR)/clamiga
+
 # `make test-plus` adds the host-cold-test (sento cold-load smoke test) on top
 # of the fast tier.
 test-plus: test-fast

@@ -1452,9 +1452,17 @@ static CL_Obj bi_compile_file(CL_Obj *args, int n)
             cl_error(CL_ERR_TYPE, "COMPILE-FILE: argument must be a string or pathname");
             return CL_NIL;
         }
+        /* GC-protect path_pn across the allocating merge/coerce calls.
+         * merge_args[0] is a C-local array slot (not VM-rooted), so under
+         * compacting GC bi_merge_pathnames would otherwise read a stale,
+         * pre-compaction offset and corrupt the resolved namestring. */
         merge_args[0] = path_pn;
+        CL_GC_PROTECT(merge_args[0]);
         path_pn = bi_merge_pathnames(merge_args, 1);
+        CL_GC_UNPROTECT(1);
+        CL_GC_PROTECT(path_pn);
         cl_coerce_to_namestring(path_pn, ns_buf, sizeof(ns_buf));
+        CL_GC_UNPROTECT(1);
 
         expanded = platform_expand_home(ns_buf, in_path, (int)sizeof(in_path));
         if (expanded != in_path) {
