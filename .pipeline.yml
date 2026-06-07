@@ -25,9 +25,9 @@ implement_model: sonnet
 
 # max turn defaults, override if needed
 review_max_turns: 100
-fix_max_turns: 100
+fix_max_turns: 200
 implement_max_turns: 200
-analyze_max_turns: 200
+analyze_max_turns: 300
 
 # Bound how many times `pipeline all` may loop fix->test before giving up.
 max_fix_retries: 20
