@@ -3489,6 +3489,15 @@ static int compile_expr_step(CL_Compiler *c, CL_Obj *expr_p)
         if (head == SYM_PROGN) {
             CL_Obj forms = cl_cdr(expr);
             if (CL_NULL_P(forms)) { cl_emit(c, OP_NIL); return 0; }
+            /* GC-protect the body-list cursor across the recursive
+             * compile_expr below.  Compiling a subform macroexpands and
+             * allocates; under heap pressure that triggers a compacting GC
+             * which relocates the (arena-consed) PROGN body.  Without this
+             * protect `forms` keeps a stale offset and the subsequent
+             * cl_cdr(forms) walks into relocated/garbage memory — silently
+             * dropping later body forms (e.g. the DEFMETHOD emitted by a
+             * DEFINE-CONDITION expansion compiled under stress). */
+            CL_GC_PROTECT(forms);
             while (!CL_NULL_P(cl_cdr(forms))) {
                 int prev_tail = c->in_tail;
                 c->in_tail = 0;
@@ -3498,6 +3507,7 @@ static int compile_expr_step(CL_Compiler *c, CL_Obj *expr_p)
                 forms = cl_cdr(forms);
             }
             *expr_p = cl_car(forms);
+            CL_GC_UNPROTECT(1);
             return 1;
         }
         if (head == SYM_LAMBDA)      { compile_lambda(c, expr); return 0; }

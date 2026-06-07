@@ -571,9 +571,22 @@ static CL_Obj bi_register_condition_type(CL_Obj *args, int n)
     CL_GC_PROTECT(parent);
     CL_GC_PROTECT(slot_pairs);
 
-    /* Add (name parent) to condition_hierarchy */
-    entry = cl_cons(name, cl_cons(parent, CL_NIL));
+    /* Add (name parent) to condition_hierarchy.
+     *
+     * Build the (parent) tail in a SEPARATE, GC-protected step rather than
+     * as a single nested cl_cons(name, cl_cons(parent, CL_NIL)).  The nested
+     * form is GC-unsafe: C does not order the outer call's argument
+     * evaluation, so `name` is read into an unprotected temporary BEFORE the
+     * inner cl_cons() runs.  Under heap pressure that inner allocation can
+     * trigger a compacting GC that relocates the symbol; the outer call then
+     * conses with a stale (mid-object) `name` offset.  Observed as the
+     * symbol's own plist field being clobbered to 0x800000 (the GC mark bit)
+     * because the stale offset pointed 16 bytes into the live symbol and the
+     * mark phase set the mark bit there.  Splitting the cons so `name` is
+     * re-read from its protected local AFTER the inner allocation is safe. */
+    entry = cl_cons(parent, CL_NIL);   /* (parent) */
     CL_GC_PROTECT(entry);
+    entry = cl_cons(name, entry);      /* (name parent) — name re-read post-alloc */
     cl_tables_wrlock();
     condition_hierarchy = cl_cons(entry, condition_hierarchy);
     cl_tables_rwunlock();
