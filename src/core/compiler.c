@@ -550,6 +550,22 @@ void compile_lambda(CL_Compiler *c, CL_Obj form)
     }
     memset(inner, 0, sizeof(*inner));
 
+    /* GC-protect the form and its sub-structures.  `params` and `body` are
+     * arena-relative offsets into `form`; everything below (parse_lambda_list,
+     * compile_expr for &optional/&key/&aux defaults, determine_boxed_vars,
+     * scan_local_specials, cl_add_constant, the closure body compile) can
+     * trigger a compacting GC.  Without protection those compactions relocate
+     * the form and leave these C locals pointing at stale/freed memory, so the
+     * closure body gets compiled from garbage — a free variable's symbol read
+     * from a stale offset no longer matches the enclosing env entry and is
+     * mis-emitted as a global load ("Unbound variable: BOX<n>") or the wrong
+     * block tag ("RETURN-FROM: no block named NIL").  The caller protecting
+     * `form` is NOT sufficient: compile_lambda holds its own by-value copy of
+     * the offset, which the caller's root does not rewrite. */
+    CL_GC_PROTECT(form);
+    CL_GC_PROTECT(params);
+    CL_GC_PROTECT(body);
+
     /* Register inner compiler for GC root marking.
      * Protect from NLX-triggered cl_compiler_restore_to: this compiler
      * is referenced by C stack frames throughout compile_lambda. */
@@ -852,6 +868,7 @@ void compile_lambda(CL_Compiler *c, CL_Obj form)
         cl_active_compiler = inner->parent;
         cl_env_destroy(env);
         cl_compiler_pool_release(inner);
+        CL_GC_UNPROTECT(3);  /* form, params, body */
         return;
     }
 
@@ -936,6 +953,8 @@ void compile_lambda(CL_Compiler *c, CL_Obj form)
 
     cl_env_destroy(env);
     cl_compiler_pool_release(inner);
+
+    CL_GC_UNPROTECT(3);  /* form, params, body */
 }
 
 /* --- Boxing analysis (pre-scan for mutable closure bindings) --- */
@@ -4423,22 +4442,40 @@ void cl_compiler_gc_update_thread(CL_Thread *t, void (*update)(CL_Obj *))
                 update(&c->ll.aux_inits[j]);
             }
         }
+        /* Update ONLY this compiler's own env, NOT the env->parent chain.
+         *
+         * Each compiler owns exactly one env: cl_compile_env and compile_lambda
+         * each call cl_env_create once, and the LET family (LET, LET-star, FLET,
+         * LABELS) reuses the compiler's env (no cl_env_create).  compile_lambda
+         * builds its inner env with cl_env_create(c->env), so inner->env->parent
+         * == the parent compiler's env: the env->parent chain mirrors the
+         * compiler->parent chain exactly.  Walking the full parent chain for
+         * every compiler would visit each ancestor env once per descendant.
+         *
+         * Unlike the mark phase, gc_update_slot is NOT idempotent — it forwards
+         * an arena offset through the relocation map.  Forwarding an
+         * already-forwarded slot a second time corrupts it, leaving a stale
+         * offset in env->locals.  A closed-over variable then fails the
+         * eq-compare in cl_env_lookup and is mis-emitted as a global load,
+         * surfacing as "Unbound variable: BOX<n>" when handler-case is compiled
+         * under GC stress (the gensym box reachable only via the form).
+         *
+         * The c = c->parent loop below visits every ancestor compiler — hence
+         * every ancestor env — exactly once, so dropping the parent walk here
+         * still covers all live envs with no double-forwarding. */
         if (c->env) {
             CL_CompEnv *env = c->env;
-            while (env) {
-                for (i = 0; i < env->local_count; i++)
-                    update(&env->locals[i]);
-                for (i = 0; i < env->local_fun_count; i++)
-                    update(&env->local_funs[i].name);
-                for (i = 0; i < env->local_macro_count; i++) {
-                    update(&env->local_macros[i].name);
-                    update(&env->local_macros[i].expander);
-                }
-                for (i = 0; i < env->symbol_macro_count; i++) {
-                    update(&env->symbol_macros[i].name);
-                    update(&env->symbol_macros[i].expansion);
-                }
-                env = env->parent;
+            for (i = 0; i < env->local_count; i++)
+                update(&env->locals[i]);
+            for (i = 0; i < env->local_fun_count; i++)
+                update(&env->local_funs[i].name);
+            for (i = 0; i < env->local_macro_count; i++) {
+                update(&env->local_macros[i].name);
+                update(&env->local_macros[i].expander);
+            }
+            for (i = 0; i < env->symbol_macro_count; i++) {
+                update(&env->symbol_macros[i].name);
+                update(&env->symbol_macros[i].expansion);
             }
         }
         c = c->parent;

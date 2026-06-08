@@ -50,12 +50,22 @@ static void fmt_dispatch(FmtCtx *ctx, FmtDirective *d);
 static void fmt_run(FmtCtx *ctx);
 
 /*
- * Return a NUL-terminated UTF-8 byte buffer for a CL string.
- *   - Base strings (TYPE_STRING) are pure ASCII; return their inline data.
- *   - Wide strings (TYPE_WIDE_STRING) are transcoded into a fresh buffer;
- *     *out_alloc receives the heap pointer and the caller must platform_free it.
- * In both cases the returned pointer is safe to scan with byte-oriented code:
- * '~' (0x7E) only ever appears as a literal '~' in valid UTF-8.
+ * Return a NUL-terminated UTF-8 byte buffer for a CL string, copied into a
+ * fresh platform_alloc'd (non-arena) buffer.  *out_alloc receives the heap
+ * pointer and the caller MUST platform_free it.
+ *
+ * The copy is essential, not just convenient: FmtCtx.fmt/.pos are raw byte
+ * pointers walked across the whole directive run, and directives like ~A / ~S
+ * print arbitrary objects whose printer (or a user print-object method) can
+ * trigger a compacting GC.  If fmt pointed at the string's inline arena data,
+ * that compaction would relocate the string and leave fmt/pos dangling — the
+ * remainder of the control string would be read from freed/moved memory, so
+ * trailing directives are silently dropped ("[~a]" prints "[boom" instead of
+ * "[boom]" under GC stress).  Copying to non-arena memory pins the control
+ * string for the lifetime of the run.  (The bracket sub-directives ~{ ~( ~[ ~<
+ * already copy their bodies for the same reason.)
+ * The returned pointer is safe to scan with byte-oriented code: '~' (0x7E)
+ * only ever appears as a literal '~' in valid UTF-8.
  */
 static const char *fmt_str_as_utf8(CL_Obj str_obj, char **out_alloc)
 {
@@ -71,7 +81,16 @@ static const char *fmt_str_as_utf8(CL_Obj str_obj, char **out_alloc)
         return buf;
     }
 #endif
-    return ((CL_String *)CL_OBJ_TO_PTR(str_obj))->data;
+    {
+        CL_String *s = (CL_String *)CL_OBJ_TO_PTR(str_obj);
+        uint32_t len = s->length;
+        char *buf = (char *)platform_alloc(len + 1);
+        if (!buf) return "";
+        memcpy(buf, s->data, len);
+        buf[len] = '\0';
+        *out_alloc = buf;
+        return buf;
+    }
 }
 
 /* ================================================================
@@ -1476,6 +1495,19 @@ static void fmt_dispatch(FmtCtx *ctx, FmtDirective *d)
 
 static void fmt_run(FmtCtx *ctx)
 {
+    /* GC-protect the destination stream IN PLACE for the whole run.  A
+     * string-output-stream is an arena object, and directives like ~A/~S print
+     * arbitrary objects whose printer (or a user print-object method) can
+     * trigger a compacting GC mid-run.  ctx->stream is a bare CL_Obj offset in
+     * the caller's FmtCtx; without rooting &ctx->stream a compaction would
+     * relocate the stream and leave the offset stale, so every write after the
+     * first relocating directive would land in freed/moved memory and be lost
+     * ("[~a]" yields "[" instead of "[msg]" under GC stress).  Protecting here
+     * (rather than at the cl_format_to_stream entry) also covers every nested
+     * sub-context — ~{ ~( ~[ ~< ~? each run through fmt_run with their own
+     * copied stream field.  (stdout/stderr don't move, so only string streams
+     * were affected.) */
+    CL_GC_PROTECT(ctx->stream);
     while (*ctx->pos && !ctx->escape) {
         unsigned char b = (unsigned char)*ctx->pos;
         if (b == '~') {
@@ -1507,6 +1539,7 @@ static void fmt_run(FmtCtx *ctx)
 #endif
         }
     }
+    CL_GC_UNPROTECT(1);
 }
 
 /* ================================================================
