@@ -398,14 +398,18 @@ static CL_Obj bi_make_condition(CL_Obj *args, int n)
     CL_GC_PROTECT(report_string);
 
     for (i = 1; i + 1 < n; i += 2) {
-        CL_Obj key = args[i];
-        CL_Obj val = args[i + 1];
-        CL_Obj pair = cl_cons(key, val);
+        CL_Obj pair = cl_cons(args[i], args[i + 1]);
         slots = cl_cons(pair, slots);
 
-        /* Extract :format-control as report_string if it's a string */
-        if (key == KW_FORMAT_CONTROL && CL_STRING_P(val))
-            report_string = val;
+        /* Extract :format-control as report_string if it's a string.
+         * Read the key/value from the GC-rooted args[] AFTER the cl_cons calls
+         * above (which can trigger a compacting GC) — caching them in C locals
+         * before the cons'es would leave stale arena offsets, so the eq-compare
+         * against KW_FORMAT_CONTROL would miss under GC stress and the report
+         * string would be dropped (condition then prints as "#<CONDITION ...>"
+         * with no message). args[] is rooted, so its slots are forwarded. */
+        if (args[i] == KW_FORMAT_CONTROL && CL_STRING_P(args[i + 1]))
+            report_string = args[i + 1];
     }
 
     {

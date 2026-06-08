@@ -1211,6 +1211,17 @@ static void print_obj(CL_Obj obj)
                         result = cl_vm_apply(hook_val, hook_args, 1);
                         current_depth--;
                         pr_inprog_top--;
+                        /* cl_vm_apply may have triggered a compacting GC that
+                         * relocated the condition: `cond` is a raw arena pointer
+                         * captured before the call and is now stale, and `obj`'s
+                         * offset is stale too.  pr_inprog[] is GC-updated (see
+                         * gc_update_thread_roots), so recover the forwarded
+                         * offset from the slot we just popped and refresh both —
+                         * otherwise cond->report_string below reads freed/moved
+                         * memory and the message is lost ("#<CONDITION ...>"
+                         * instead of the report under GC stress). */
+                        obj = pr_inprog[pr_inprog_top];
+                        cond = (CL_Condition *)CL_OBJ_TO_PTR(obj);
                     }
                     if (!CL_NULL_P(result) && CL_HEAP_P(result) &&
                         CL_HDR_TYPE(CL_OBJ_TO_PTR(result)) == TYPE_STRING) {

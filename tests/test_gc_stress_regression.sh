@@ -217,10 +217,17 @@ check_absent   "no unbound-variable from stale binding name"  "Unbound variable"
 # after compaction type_sym held a stale arena offset, so a wrong symbol was
 # stored in the bytecode constants (corrupting the handler-push type check).
 # Fix: protect cl, re-read type_sym from cl_car(cl_car(cl)) after compile_expr.
+#
+# The handler runs (return-from done ...) to a block established LEXICALLY
+# around the handler-bind — the idiomatic non-local-exit pattern (the block
+# must be visible to the handler closure; a block inside the body is NOT, per
+# CLHS).  Printing the condition inside the handler with ~A also exercises the
+# condition-report + format-stream GC-stress fixes (see Cases 16-17).
 cat > "$WORK/hbind.lisp" <<'EOF'
 (let ((result
-       (handler-bind ((error (lambda (c) (return-from nil (format nil "caught:~a" c)))))
-         (block nil (error "hbind-test")))))
+       (block done
+         (handler-bind ((error (lambda (c) (return-from done (format nil "caught:~a" c)))))
+           (error "hbind-test")))))
   (format t "HBIND:~a~%" result))
 EOF
 out=$(run_stress "$WORK/hbind.lisp")
@@ -381,6 +388,77 @@ out=$(run_stress "$WORK/gethash-setf.lisp")
 check_contains "setf gethash second place arg survives compaction"     "GHASH:9 49 81" "$out"
 check_contains "setf bit second place arg survives compaction"         "BIT:1 1" "$out"
 check_absent   "no crash in setf gethash/bit multi-arg place"          "Unbound variable\|Undefined\|type 0" "$out"
+
+# --- Case 16: nested env double-update in the compaction walk ----------------
+# Bug: cl_compiler_gc_update_thread walked c->env AND its full env->parent
+# chain for every compiler in the active chain.  Because each compiler's env
+# parent mirrors the compiler->parent chain, every ancestor env was updated
+# once per descendant compiler.  gc_update_slot is NOT idempotent (it forwards
+# an arena offset), so a slot reached twice was double-forwarded, leaving a
+# stale offset in env->locals; a closed-over gensym (e.g. handler-case's BOX)
+# then failed the eq-compare in cl_env_lookup and was mis-emitted as a global
+# load -> "Unbound variable: BOX<n>".  Repro needs a closure capturing an
+# outer-LET gensym, built by a macro whose expansion allocates heavily (mapcar)
+# so compaction fires while the env has >1 ancestor compiler — exactly what
+# HANDLER-CASE's expansion does.  Fix: update only each compiler's own c->env.
+cat > "$WORK/box.lisp" <<'EOF'
+(defmacro gcs-box (form &rest clauses)
+  (let ((tag (gensym "TG")) (box (gensym "BOX")))
+    `(let ((,box (cons nil nil)))
+       (let ((r (catch ',tag
+                  (handler-bind
+                    ,(mapcar (lambda (cl)
+                               `(,(car cl) (lambda (c) (rplaca ,box c) (throw ',tag ',tag))))
+                             clauses)
+                    ,form))))
+         (if (eq r ',tag)
+             (typecase (car ,box)
+               ,@(mapcar (lambda (cl)
+                           `(,(car cl) (let ((,(car (cadr cl)) (car ,box))) ,@(cddr cl))))
+                         clauses))
+             r)))))
+(format t "BOX:~a~%" (gcs-box (error "boom") (error (c) (format nil "got:~a" c))))
+EOF
+out=$(run_stress "$WORK/box.lisp")
+check_contains "captured outer-let gensym resolves under compaction"   "BOX:got:boom" "$out"
+check_absent   "no unbound-variable from double-forwarded env local"   "Unbound variable" "$out"
+
+# --- Case 17: condition report string survives compaction in MAKE-CONDITION --
+# Bug: bi_make_condition cached `key`/`val` C locals, then called cl_cons
+# (which compacts) twice, then compared the STALE `key` against
+# KW_FORMAT_CONTROL — the eq miss dropped :format-control, so report_string
+# was never set and the condition printed as "#<CONDITION ...>" instead of its
+# message.  Fix: read args[i]/args[i+1] (GC-rooted) after the cl_cons calls.
+cat > "$WORK/cond-report.lisp" <<'EOF'
+(let ((c (make-condition 'simple-error :format-control "the-report-msg")))
+  (format t "REPORT:~a~%" c))
+EOF
+out=$(run_stress "$WORK/cond-report.lisp")
+check_contains "make-condition keeps :format-control report under stress" "REPORT:the-report-msg" "$out"
+check_absent   "condition does not lose its report string"                "REPORT:#<CONDITION" "$out"
+
+# --- Case 18: FORMAT control string + destination stream survive compaction --
+# Bug 1: FmtCtx.fmt/.pos were raw byte pointers into the control string's
+#   inline arena data; a ~A/~S that printed an object whose printer compacted
+#   relocated the string, dangling .pos and dropping trailing directives.
+#   Fix: copy the control string into a non-arena buffer in fmt_str_as_utf8.
+# Bug 2: FmtCtx.stream was a bare CL_Obj offset; printing an object that
+#   compacted relocated a string-output-stream, so writes after the first ~A
+#   were lost ("[~a]" -> "[").  Fix: CL_GC_PROTECT(ctx->stream) in fmt_run
+#   (covers nested ~{ ~( ~[ ~? sub-contexts too).
+# Printing a condition (heavy print-object-hook path) forces compaction.
+cat > "$WORK/fmt-stream.lisp" <<'EOF'
+(let ((c (make-condition 'simple-error :format-control "MID")))
+  (format t "FMT:[~a]~%" (format nil "<~a>" c)))
+(let ((cs (list (make-condition 'simple-error :format-control "x")
+                (make-condition 'simple-error :format-control "y"))))
+  (format t "FMTLIST:~{[~a]~}END~%" cs))
+EOF
+out=$(run_stress "$WORK/fmt-stream.lisp")
+# NB: '[' and ']' are regex metacharacters here — escape them so check_contains
+# (grep BRE) matches the literal brackets in the output.
+check_contains "format trailing directive survives object-print compaction" 'FMT:\[<MID>\]' "$out"
+check_contains "format string-stream survives nested ~{ object print"       'FMTLIST:\[x\]\[y\]END' "$out"
 
 echo ""
 echo "$passed passed, $failed failed, $total total"
