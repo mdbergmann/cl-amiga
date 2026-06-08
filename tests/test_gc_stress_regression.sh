@@ -172,6 +172,216 @@ out=$(run_stress "$WORK/ht.lisp")
 check_contains "eq-hashtable setf-gethash new key correct under stress" "HT:1900" "$out"
 check_absent   "no OOB offset in hash-table chains"                     "Undefined function\|type 0\|corrupted" "$out"
 
+# --- Case 7: handler-case compiled under GC stress ---------------------------
+# Bug: compile_lambda did not GC-protect inner->ll fields (CL_ParsedLambdaList)
+# or inner->param_vars[].  Any compacting GC triggered inside compile_expr
+# (for optional/key/aux defaults) or determine_boxed_vars left those CL_Obj
+# values stale.  When the env lookup failed (eq mismatch after relocation),
+# the parameter was compiled as a free/special variable, producing
+# "Unbound variable: BOX<n>" at runtime.
+# Fix: cl_compiler_gc_mark/update_thread now walks c->ll and c->param_vars.
+cat > "$WORK/hcase.lisp" <<'EOF'
+(let ((result (handler-case (error "x") (error (c) (format nil "~a" c)))))
+  (format t "HCASE:~a~%" result))
+EOF
+out=$(run_stress "$WORK/hcase.lisp")
+check_contains "handler-case compiles correctly under GC stress"  "HCASE:x" "$out"
+check_absent   "no unbound-variable from stale lambda-list sym"   "Unbound variable" "$out"
+
+# --- Case 8: LET*/LET binding-name symbol survives compaction ----------------
+# Bug: local_specials (the list built by scan_local_specials) was not
+# GC-protected during scan_body_for_boxing / compile_expr calls.  Compaction
+# relocated its cons cells so var_is_special walked freed/moved memory,
+# potentially misclassifying variables and emitting wrong OP_DYNBIND vs
+# OP_STORE bytecode.  Fix: CL_GC_PROTECT(local_specials) after scan.
+cat > "$WORK/let.lisp" <<'EOF'
+(let* ((x (make-list 100))
+       (y (length x)))
+  (format t "LET*:~a~%" y))
+(let ((a (make-list 50))
+      (b (make-list 50)))
+  (format t "LET:~a~%" (+ (length a) (length b))))
+(let* ((x (make-list 100)))
+  (declare (special x))
+  (format t "SPEC:~a~%" (length x)))
+EOF
+out=$(run_stress "$WORK/let.lisp")
+check_contains "let* binding-name symbol survives compaction" "LET*:100" "$out"
+check_contains "let binding-name symbol survives compaction"  "LET:100" "$out"
+check_contains "local special decl: local_specials cons survives compaction" "SPEC:100" "$out"
+check_absent   "no unbound-variable from stale binding name"  "Unbound variable" "$out"
+
+# --- Case 9: HANDLER-BIND compiled under GC stress ---------------------------
+# Bug: compile_handler_bind did not protect the clause-list cursor (cl) across
+# compile_expr, and extracted type_sym before compile_expr but used it after —
+# after compaction type_sym held a stale arena offset, so a wrong symbol was
+# stored in the bytecode constants (corrupting the handler-push type check).
+# Fix: protect cl, re-read type_sym from cl_car(cl_car(cl)) after compile_expr.
+cat > "$WORK/hbind.lisp" <<'EOF'
+(let ((result
+       (handler-bind ((error (lambda (c) (return-from nil (format nil "caught:~a" c)))))
+         (block nil (error "hbind-test")))))
+  (format t "HBIND:~a~%" result))
+EOF
+out=$(run_stress "$WORK/hbind.lisp")
+hbind_exit=$?
+check_contains "handler-bind type_sym survives compile_expr compaction" "HBIND:caught:hbind-test" "$out"
+check_absent   "no unbound-variable from stale handler type symbol"     "Unbound variable\|Undefined" "$out"
+total=$((total + 1))
+if [ "$hbind_exit" -eq 0 ]; then
+    echo "  ok  handler-bind exits clean"
+    passed=$((passed + 1))
+else
+    echo "  FAIL  handler-bind exited $hbind_exit (crash?)"
+    echo "$out" | tail -4 | sed 's/^/      /'
+    failed=$((failed + 1))
+fi
+
+# --- Case 10: RESTART-CASE compiled under GC stress --------------------------
+# Bug: compile_restart_case did not protect the clause-list cursor (cl_iter) or
+# catch_tag across compile_expr/cl_cons calls inside the loop; restart_name was
+# extracted before compile_expr but used after, going stale.
+# Fix: protect cl_iter and catch_tag, re-read restart_name after compile_expr.
+cat > "$WORK/rcase.lisp" <<'EOF'
+(let ((result
+       (restart-case (invoke-restart 'my-restart 99)
+         (my-restart (v) (format nil "restarted:~a" v)))))
+  (format t "RCASE:~a~%" result))
+EOF
+out=$(run_stress "$WORK/rcase.lisp")
+check_contains "restart-case restart_name survives compile_expr compaction" "RCASE:restarted:99" "$out"
+check_absent   "no undefined from stale restart-case catch_tag/name"        "Undefined\|Unbound" "$out"
+
+# --- Case 11: CASE/TYPECASE compiled under GC stress -------------------------
+# Bug: compile_case and compile_typecase did not protect keys/type_spec and body
+# locals across compile_progn; a moving GC during body compilation could leave
+# them stale if the code order were ever changed.
+# Fix: CL_GC_PROTECT(keys/type_spec) + CL_GC_PROTECT(body) per iteration.
+cat > "$WORK/case.lisp" <<'EOF'
+(let ((x 2))
+  (format t "CASE:~a~%"
+    (case x
+      (1 "one")
+      (2 "two")
+      (3 "three")
+      (otherwise "other"))))
+(let ((v "hello"))
+  (format t "TYPECASE:~a~%"
+    (typecase v
+      (string (format nil "str:~a" v))
+      (integer "int")
+      (otherwise "other"))))
+EOF
+out=$(run_stress "$WORK/case.lisp")
+check_contains "case compiles correctly under GC stress"     "CASE:two" "$out"
+check_contains "typecase compiles correctly under GC stress" "TYPECASE:str:hello" "$out"
+check_absent   "no unbound/undefined from stale case locals" "Unbound variable\|Undefined" "$out"
+
+# --- Case 12: Quasiquote builder compiled under GC stress --------------------
+# Bug: qq_expand's main list loop held `cursor` and `rest` as unprotected
+# C-locals across qq_expand_list (which allocates).  cursor=rest at end of
+# each iteration used the pre-allocation (stale) rest offset, so later
+# elements were walked from corrupted memory.  Helper functions qq_list /
+# qq_append / qq_quote nested cl_cons calls where outer args were read into
+# unspecified-order temporaries before inner cl_cons could compact the heap
+# and leave those temporaries stale.  compile_quasiquote itself did not
+# protect tmpl across qq_expand.
+# Fix: CL_GC_PROTECT(cursor) in the list loop, advance with cl_cdr(cursor)
+# after each iteration; protect args in qq_list/qq_append; split all nested
+# cl_cons into sequential statements; CL_GC_PROTECT(tmpl) in
+# compile_quasiquote.
+cat > "$WORK/qq.lisp" <<'EOF'
+(defmacro make-pair (a b) `(cons ,a ,b))
+(format t "QQ1:~a~%" (make-pair 1 2))
+
+(defmacro with-items (&rest items) `(list ,@items))
+(format t "QQ2:~a~%" (with-items 10 20 30))
+
+(defun build-list (x y z)
+  `(,x ,y ,z ,(+ x y z)))
+(format t "QQ3:~a~%" (build-list 1 2 3))
+
+(defmacro nested-qq (x)
+  `(let ((v ,x))
+     (list v (* v 2) (* v 3))))
+(format t "QQ4:~a~%" (nested-qq 5))
+
+(defmacro splice-test (&rest items)
+  `(list 0 ,@items 99))
+(format t "QQ5:~a~%" (splice-test 1 2 3))
+EOF
+out=$(run_stress "$WORK/qq.lisp")
+check_contains "quasiquote cons pair builds correctly under GC stress"    "QQ1:(1 . 2)"    "$out"
+check_contains "quasiquote splice list builds correctly under GC stress"  "QQ2:(10 20 30)" "$out"
+check_contains "quasiquote unquote list builds correctly under GC stress" "QQ3:(1 2 3 6)"  "$out"
+check_contains "nested quasiquote let form builds correctly under GC stress" "QQ4:(5 10 15)" "$out"
+check_contains "quasiquote unquote-splicing builds correctly under GC stress" "QQ5:(0 1 2 3 99)" "$out"
+check_absent   "no unbound/undefined from stale quasiquote cursor"        "Unbound variable\|Undefined" "$out"
+
+# --- Case 13: DO* with result forms under GC stress -------------------------
+# Bug: compile_do_star did not GC-protect result_forms.  After the body and
+# step compile_expr loops (which can compact), result_forms held a stale
+# arena-relative offset; compile_progn then walked freed/moved memory.
+# Fix: CL_GC_PROTECT(result_forms) alongside var_clauses/body/end_test;
+# CL_GC_UNPROTECT changed from 3 to 4.
+cat > "$WORK/dostar.lisp" <<'EOF'
+; DO* updates bindings sequentially: acc sees the already-updated i each step.
+; i: 0->1->2->3->4->5; acc: 0, 0+1=1, 1+2=3, 3+3=6, 6+4=10, 10+5=15. Result: 15*2=30.
+(let ((r (do* ((i 0 (1+ i))
+               (acc 0 (+ acc i)))
+              ((= i 5) (* acc 2)))))
+  (format t "DOSTAR1:~a~%" r))
+; x doubles each step: 1->2->4->8->16->32; exits when x>16. Result: 32.
+(let ((r2 (do* ((x 1 (* x 2)))
+               ((> x 16) x))))
+  (format t "DOSTAR2:~a~%" r2))
+EOF
+out=$(run_stress "$WORK/dostar.lisp")
+check_contains "do* result-form evaluates correctly under GC stress"   "DOSTAR1:30" "$out"
+check_contains "do* result-form exit value correct under GC stress"    "DOSTAR2:32" "$out"
+check_absent   "no crash/corruption in do* result_forms"               "Unbound variable\|Undefined\|type 0" "$out"
+
+# --- Case 14: SETF AREF 1D under GC stress -----------------------------------
+# Bug: in compile_setf_place's SETF_SYM_AREF 1D fast-path, `indices` was
+# captured before CL_GC_PROTECT(val_form); after compile_expr(array) could
+# compact, cl_car(indices) dereferenced a stale arena offset.
+# Fix: CL_GC_PROTECT(place) added; index re-derived as cl_car(cl_cdr(cl_cdr(place))).
+cat > "$WORK/aref-setf.lisp" <<'EOF'
+(let ((v (make-array 5 :initial-element 0)))
+  (dotimes (i 5)
+    (setf (aref v i) (* i 10)))
+  (format t "AREF:~a ~a ~a~%" (aref v 0) (aref v 2) (aref v 4)))
+(let ((s (make-string 4 :initial-element #\space)))
+  (setf (char s 0) #\H)
+  (setf (char s 1) #\i)
+  (format t "CHAR:~a~%" s))
+EOF
+out=$(run_stress "$WORK/aref-setf.lisp")
+check_contains "setf aref 1D index survives compile_expr compaction"   "AREF:0 20 40" "$out"
+check_contains "setf char index survives compile_expr compaction"      "CHAR:Hi  " "$out"
+check_absent   "no crash in setf aref/char 1D path"                    "Unbound variable\|Undefined\|type 0" "$out"
+
+# --- Case 15: SETF GETHASH / BIT multi-arg place under GC stress -------------
+# Bug: in SETF_SYM_GETHASH / SETF_SYM_BIT / SETF_SYM_SBIT /
+# SETF_SYM_ROW_MAJOR_AREF paths, place was read across two separate
+# compile_expr calls without GC protection; the second cl_cdr(cl_cdr(place))
+# dereference was a stale arena offset after the first compile_expr compacted.
+# Fix: CL_GC_PROTECT(place) alongside val_form; CL_GC_UNPROTECT count updated.
+cat > "$WORK/gethash-setf.lisp" <<'EOF'
+(let ((ht (make-hash-table)))
+  (dotimes (i 10)
+    (setf (gethash i ht) (* i i)))
+  (format t "GHASH:~a ~a ~a~%" (gethash 3 ht) (gethash 7 ht) (gethash 9 ht)))
+(let ((bv (make-array 8 :element-type 'bit :initial-element 0)))
+  (setf (bit bv 3) 1)
+  (setf (bit bv 7) 1)
+  (format t "BIT:~a ~a~%" (bit bv 3) (bit bv 7)))
+EOF
+out=$(run_stress "$WORK/gethash-setf.lisp")
+check_contains "setf gethash second place arg survives compaction"     "GHASH:9 49 81" "$out"
+check_contains "setf bit second place arg survives compaction"         "BIT:1 1" "$out"
+check_absent   "no crash in setf gethash/bit multi-arg place"          "Unbound variable\|Undefined\|type 0" "$out"
+
 echo ""
 echo "$passed passed, $failed failed, $total total"
 [ "$failed" -eq 0 ]

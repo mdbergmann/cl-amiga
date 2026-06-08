@@ -203,31 +203,67 @@ void compile_cond(CL_Compiler *c, CL_Obj form)
  * At depth 0: UNQUOTE evaluates, UNQUOTE-SPLICING splices.
  * At depth > 0: all QQ markers are reconstructed as data.
  * QUASIQUOTE increments depth, UNQUOTE/UNQUOTE-SPLICING decrement depth.
+ *
+ * GC safety: every helper that calls cl_intern_in (an allocating call)
+ * protects all CL_Obj locals it needs after the call.  Nested cl_cons
+ * patterns are split into statements so no outer CL_Obj arg is read into
+ * an unspecified-order temporary before an inner allocating call can run
+ * a compacting GC and relocate it.
  */
 
 static CL_Obj qq_expand(CL_Obj x, int depth);
 static CL_Obj qq_expand_list(CL_Obj x, int depth);
 
-/* Build (QUOTE x) */
+/* Build (QUOTE x) — protect both locals: cl_cons can trigger compaction,
+ * staling x (CAR) or tail (CDR of the outer cons) if unprotected. */
 static CL_Obj qq_quote(CL_Obj x)
 {
-    return cl_cons(SYM_QUOTE, cl_cons(x, CL_NIL));
+    CL_Obj tail = CL_NIL;
+    CL_GC_PROTECT(x);
+    CL_GC_PROTECT(tail);
+    tail = cl_cons(x, CL_NIL);
+    {
+        CL_Obj result = cl_cons(SYM_QUOTE, tail);
+        CL_GC_UNPROTECT(2);
+        return result;
+    }
 }
 
 /* Simplify (APPEND ...) forms */
 static CL_Obj qq_append(CL_Obj args)
 {
-    CL_Obj sym_append = cl_intern_in("APPEND", 6, cl_package_cl);
-    if (CL_NULL_P(args)) return CL_NIL;
-    if (CL_NULL_P(cl_cdr(args))) return cl_car(args);
-    return cl_cons(sym_append, args);
+    CL_Obj sym_append;
+    /* Protect args: cl_intern_in allocates and may compact the heap. */
+    CL_GC_PROTECT(args);
+    sym_append = cl_intern_in("APPEND", 6, cl_package_cl);
+    if (CL_NULL_P(args)) {
+        CL_GC_UNPROTECT(1);
+        return CL_NIL;
+    }
+    if (CL_NULL_P(cl_cdr(args))) {
+        CL_Obj val = cl_car(args);
+        CL_GC_UNPROTECT(1);
+        return val;
+    }
+    {
+        CL_Obj val = cl_cons(sym_append, args);
+        CL_GC_UNPROTECT(1);
+        return val;
+    }
 }
 
 /* Build (LIST a b c ...) */
 static CL_Obj qq_list(CL_Obj items)
 {
-    CL_Obj sym_list = cl_intern_in("LIST", 4, cl_package_cl);
-    return cl_cons(sym_list, items);
+    CL_Obj sym_list;
+    /* Protect items: cl_intern_in allocates and may compact the heap. */
+    CL_GC_PROTECT(items);
+    sym_list = cl_intern_in("LIST", 4, cl_package_cl);
+    {
+        CL_Obj val = cl_cons(sym_list, items);
+        CL_GC_UNPROTECT(1);
+        return val;
+    }
 }
 
 /* Expand quasiquote template at the given nesting depth.
@@ -248,19 +284,35 @@ static CL_Obj qq_expand(CL_Obj x, int depth)
         if (CL_VECTOR_P(x)) {
             CL_Vector *v = (CL_Vector *)CL_OBJ_TO_PTR(x);
             uint32_t i, n = cl_vector_active_length(v);
-            CL_Obj elems = CL_NIL, list_form;
-            CL_Obj *data = cl_vector_data(v);
+            CL_Obj elems = CL_NIL, list_form = CL_NIL;
+            CL_Obj sym_coerce = CL_NIL, tail = CL_NIL;
             CL_GC_PROTECT(elems);
+            CL_GC_PROTECT(list_form);
+            CL_GC_PROTECT(sym_coerce);
+            CL_GC_PROTECT(tail);
+            CL_GC_PROTECT(x);
             for (i = n; i > 0; i--)
-                elems = cl_cons(data[i - 1], elems);
+                elems = cl_cons(cl_vector_data((CL_Vector *)CL_OBJ_TO_PTR(x))[i - 1], elems);
             list_form = qq_expand(elems, depth);
-            CL_GC_UNPROTECT(1);
+            sym_coerce = cl_intern_in("COERCE", 6, cl_package_cl);
             {
-                CL_Obj sym_coerce = cl_intern_in("COERCE", 6, cl_package_cl);
-                CL_Obj sym_sv = cl_intern_in("SIMPLE-VECTOR", 13, cl_package_cl);
-                return cl_cons(sym_coerce,
-                               cl_cons(list_form,
-                                       cl_cons(qq_quote(sym_sv), CL_NIL)));
+                /* sym_sv and quoted_sv must both be protected: cl_intern_in
+                 * and qq_quote both allocate, and cl_cons(quoted_sv, ...) can
+                 * compact the heap, staling an unprotected C local. */
+                CL_Obj sym_sv = CL_NIL;
+                CL_Obj quoted_sv = CL_NIL;
+                CL_GC_PROTECT(sym_sv);
+                CL_GC_PROTECT(quoted_sv);
+                sym_sv = cl_intern_in("SIMPLE-VECTOR", 13, cl_package_cl);
+                quoted_sv = qq_quote(sym_sv);
+                tail = cl_cons(quoted_sv, CL_NIL);
+                CL_GC_UNPROTECT(2);
+            }
+            tail = cl_cons(list_form, tail);
+            {
+                CL_Obj val = cl_cons(sym_coerce, tail);
+                CL_GC_UNPROTECT(5);
+                return val;
             }
         }
         /* Self-evaluating: fixnum, char, string, etc. */
@@ -277,7 +329,13 @@ static CL_Obj qq_expand(CL_Obj x, int depth)
             /* depth > 0: reconstruct as (LIST 'UNQUOTE (qq-expand expr depth-1)) */
             {
                 CL_Obj inner = qq_expand(cl_car(cl_cdr(x)), depth - 1);
-                return qq_list(cl_cons(qq_quote(SYM_UNQUOTE), cl_cons(inner, CL_NIL)));
+                CL_Obj tail;
+                CL_GC_PROTECT(inner);
+                CL_GC_PROTECT(tail);
+                tail = cl_cons(inner, CL_NIL);
+                tail = cl_cons(qq_quote(SYM_UNQUOTE), tail);
+                CL_GC_UNPROTECT(2);
+                return qq_list(tail);
             }
         }
 
@@ -291,14 +349,26 @@ static CL_Obj qq_expand(CL_Obj x, int depth)
             /* depth > 0: reconstruct */
             {
                 CL_Obj inner = qq_expand(cl_car(cl_cdr(x)), depth - 1);
-                return qq_list(cl_cons(qq_quote(SYM_UNQUOTE_SPLICING), cl_cons(inner, CL_NIL)));
+                CL_Obj tail;
+                CL_GC_PROTECT(inner);
+                CL_GC_PROTECT(tail);
+                tail = cl_cons(inner, CL_NIL);
+                tail = cl_cons(qq_quote(SYM_UNQUOTE_SPLICING), tail);
+                CL_GC_UNPROTECT(2);
+                return qq_list(tail);
             }
         }
 
         /* (QUASIQUOTE expr) — nested backquote */
         if (head == SYM_QUASIQUOTE) {
             CL_Obj inner = qq_expand(cl_car(cl_cdr(x)), depth + 1);
-            return qq_list(cl_cons(qq_quote(SYM_QUASIQUOTE), cl_cons(inner, CL_NIL)));
+            CL_Obj tail;
+            CL_GC_PROTECT(inner);
+            CL_GC_PROTECT(tail);
+            tail = cl_cons(inner, CL_NIL);
+            tail = cl_cons(qq_quote(SYM_QUASIQUOTE), tail);
+            CL_GC_UNPROTECT(2);
+            return qq_list(tail);
         }
     }
 
@@ -308,28 +378,39 @@ static CL_Obj qq_expand(CL_Obj x, int depth)
         CL_Obj cursor = x;
 
         CL_GC_PROTECT(result);
+        /* Protect cursor so its value is updated if the GC compacts during
+         * qq_expand_list or cl_cons inside the loop body. */
+        CL_GC_PROTECT(cursor);
 
         while (CL_CONS_P(cursor)) {
             CL_Obj elem = cl_car(cursor);
-            CL_Obj rest = cl_cdr(cursor);
 
             /* Detect dotted unquote: (... UNQUOTE expr) where UNQUOTE is bare symbol
              * This comes from reader: `(a b . ,x) → (a b UNQUOTE x)
              * Add tail_expr as the last APPEND segment and break out —
-             * the normal APPEND path handles splices correctly. */
-            if (depth == 0 && elem == SYM_UNQUOTE &&
-                CL_CONS_P(rest) && CL_NULL_P(cl_cdr(rest))) {
-                CL_Obj tail_expr = cl_car(rest);
-                result = cl_cons(tail_expr, result);
-                cursor = CL_NIL;  /* tail already handled */
-                break;
+             * the normal APPEND path handles splices correctly.
+             * Re-derive rest from the protected cursor each iteration. */
+            {
+                CL_Obj rest = cl_cdr(cursor);
+                if (depth == 0 && elem == SYM_UNQUOTE &&
+                    CL_CONS_P(rest) && CL_NULL_P(cl_cdr(rest))) {
+                    CL_Obj tail_expr = cl_car(rest);
+                    result = cl_cons(tail_expr, result);
+                    cursor = CL_NIL;  /* tail already handled */
+                    break;
+                }
             }
 
             {
+                /* expanded is a fresh heap value; protect it so cl_cons
+                 * can compact without staling the unprotected C local. */
                 CL_Obj expanded = qq_expand_list(elem, depth);
+                CL_GC_PROTECT(expanded);
                 result = cl_cons(expanded, result);
+                CL_GC_UNPROTECT(1);
             }
-            cursor = rest;
+            /* Advance from the GC-updated cursor, not from a pre-saved rest. */
+            cursor = cl_cdr(cursor);
         }
 
         /* Handle dotted tail (non-unquote atom as CDR) — shouldn't normally happen
@@ -353,7 +434,7 @@ static CL_Obj qq_expand(CL_Obj x, int depth)
 
         {
             CL_Obj val = qq_append(result);
-            CL_GC_UNPROTECT(1);
+            CL_GC_UNPROTECT(2);  /* result, cursor */
             return val;
         }
     }
@@ -361,30 +442,65 @@ static CL_Obj qq_expand(CL_Obj x, int depth)
 
 /* Expand a single list element for use in APPEND.
  * Returns a form that evaluates to a LIST (for non-splicing elements)
- * or directly to a list value (for splicing elements). */
+ * or directly to a list value (for splicing elements).
+ *
+ * GC safety: x and sym_list are both protected across all allocating calls.
+ * Every return path unprotects exactly the number of roots pushed above it. */
 static CL_Obj qq_expand_list(CL_Obj x, int depth)
 {
-    CL_Obj sym_list = cl_intern_in("LIST", 4, cl_package_cl);
+    CL_Obj sym_list;
+    /* Protect x before the first allocating call (cl_intern_in). */
+    CL_GC_PROTECT(x);
+    sym_list = cl_intern_in("LIST", 4, cl_package_cl);
+    /* Protect sym_list across all subsequent allocating calls. */
+    CL_GC_PROTECT(sym_list);
+    /* From here on: protect depth = 2 (x, sym_list).
+     * Each return path must CL_GC_UNPROTECT by its own total depth. */
 
     /* Atom: (LIST 'x) */
     if (!CL_CONS_P(x)) {
-        if (CL_NULL_P(x))
-            return cl_cons(sym_list, cl_cons(CL_NIL, CL_NIL));
-        if (CL_SYMBOL_P(x))
-            return cl_cons(sym_list, cl_cons(qq_quote(x), CL_NIL));
-        return cl_cons(sym_list, cl_cons(x, CL_NIL));
+        if (CL_NULL_P(x)) {
+            CL_Obj tail = cl_cons(CL_NIL, CL_NIL);
+            CL_Obj val  = cl_cons(sym_list, tail);
+            CL_GC_UNPROTECT(2);
+            return val;
+        }
+        if (CL_SYMBOL_P(x)) {
+            CL_Obj tail = CL_NIL;
+            CL_GC_PROTECT(tail);            /* depth = 3 */
+            tail = cl_cons(qq_quote(x), CL_NIL);
+            {
+                CL_Obj val = cl_cons(sym_list, tail);
+                CL_GC_UNPROTECT(3);
+                return val;
+            }
+        }
+        /* Self-evaluating atom (fixnum, char, string, …) */
+        {
+            CL_Obj tail = cl_cons(x, CL_NIL);
+            CL_Obj val  = cl_cons(sym_list, tail);
+            CL_GC_UNPROTECT(2);
+            return val;
+        }
     }
 
     {
         CL_Obj head = cl_car(x);
 
         /* (UNQUOTE expr) at depth 0: (LIST expr) */
-        if (head == SYM_UNQUOTE && depth == 0)
-            return cl_cons(sym_list, cl_cons(cl_car(cl_cdr(x)), CL_NIL));
+        if (head == SYM_UNQUOTE && depth == 0) {
+            CL_Obj tail = cl_cons(cl_car(cl_cdr(x)), CL_NIL);
+            CL_Obj val  = cl_cons(sym_list, tail);
+            CL_GC_UNPROTECT(2);
+            return val;
+        }
 
         /* (UNQUOTE-SPLICING expr) at depth 0: expr (spliced into APPEND) */
-        if (head == SYM_UNQUOTE_SPLICING && depth == 0)
-            return cl_car(cl_cdr(x));
+        if (head == SYM_UNQUOTE_SPLICING && depth == 0) {
+            CL_Obj val = cl_car(cl_cdr(x));
+            CL_GC_UNPROTECT(2);
+            return val;
+        }
 
         /* (UNQUOTE inner) at depth > 0 */
         if (head == SYM_UNQUOTE && depth > 0) {
@@ -392,72 +508,125 @@ static CL_Obj qq_expand_list(CL_Obj x, int depth)
 
             /* Special case: (UNQUOTE (UNQUOTE-SPLICING expr)) at depth 1
              * This is ,,@expr — evaluate expr and wrap each element in UNQUOTE.
-             * Produces: (MAPCAR (LAMBDA (V) (LIST 'UNQUOTE V)) expr)
+             * Produces: (MAPCAR (LAMBDA (#:V) (LIST 'UNQUOTE #:V)) expr)
              * which is spliced into the APPEND call. */
             if (depth == 1 && CL_CONS_P(inner_form) &&
                 cl_car(inner_form) == SYM_UNQUOTE_SPLICING) {
-                /* Return expr directly — it gets spliced by APPEND.
-                 * But each element needs to be wrapped in (UNQUOTE v).
-                 * Build: (MAPCAR (LAMBDA (#:V) (LIST 'UNQUOTE #:V)) expr) */
-                CL_Obj expr = cl_car(cl_cdr(inner_form));
-                CL_Obj gv, name_str, lambda_form, mapcar_form;
-                CL_Obj sym_mapcar = cl_intern_in("MAPCAR", 6, cl_package_cl);
-                CL_Obj sym_lambda = cl_intern_in("LAMBDA", 6, cl_package_cl);
+                CL_Obj expr        = cl_car(cl_cdr(inner_form));
+                CL_Obj gv          = CL_NIL;
+                CL_Obj sym_mapcar  = CL_NIL;
+                CL_Obj sym_lambda  = CL_NIL;
+                CL_Obj lambda_form = CL_NIL;
+                CL_Obj tail        = CL_NIL;
+                CL_Obj name_str;
+                /* depth = 2 + 6 extra = 8 at return */
+                CL_GC_PROTECT(expr);
+                CL_GC_PROTECT(gv);
+                CL_GC_PROTECT(sym_mapcar);
+                CL_GC_PROTECT(sym_lambda);
+                CL_GC_PROTECT(lambda_form);
+                CL_GC_PROTECT(tail);
 
-                name_str = cl_make_string("%QQV", 4);
-                gv = cl_make_symbol(name_str);
+                sym_mapcar = cl_intern_in("MAPCAR", 6, cl_package_cl);
+                sym_lambda = cl_intern_in("LAMBDA", 6, cl_package_cl);
+                name_str   = cl_make_string("%QQV", 4);
+                gv         = cl_make_symbol(name_str);
 
-                /* (LAMBDA (#:V) (LIST 'UNQUOTE #:V)) */
-                lambda_form = cl_cons(sym_lambda,
-                    cl_cons(cl_cons(gv, CL_NIL),
-                        cl_cons(qq_list(cl_cons(qq_quote(SYM_UNQUOTE),
-                                                cl_cons(gv, CL_NIL))),
-                                CL_NIL)));
+                /* Build (LIST 'UNQUOTE #:V) step by step into tail */
+                tail = cl_cons(gv, CL_NIL);
+                tail = cl_cons(qq_quote(SYM_UNQUOTE), tail);
+                tail = qq_list(tail);           /* (LIST 'UNQUOTE #:V) */
 
-                /* (MAPCAR lambda expr) — result is spliced by APPEND */
-                mapcar_form = cl_cons(sym_mapcar,
-                    cl_cons(lambda_form, cl_cons(expr, CL_NIL)));
+                /* Build ((LIST 'UNQUOTE #:V)) — the LAMBDA body list */
+                tail = cl_cons(tail, CL_NIL);
 
-                return mapcar_form;
+                /* Build (LAMBDA (#:V) (LIST 'UNQUOTE #:V)) */
+                {
+                    CL_Obj params = cl_cons(gv, CL_NIL);  /* (#:V) */
+                    lambda_form   = cl_cons(params, tail); /* (#:V (LIST ...)) */
+                }
+                lambda_form = cl_cons(sym_lambda, lambda_form);
+
+                /* Build (MAPCAR lambda expr) */
+                tail = cl_cons(expr, CL_NIL);
+                tail = cl_cons(lambda_form, tail);
+                {
+                    CL_Obj val = cl_cons(sym_mapcar, tail);
+                    CL_GC_UNPROTECT(8);
+                    return val;
+                }
             }
 
             /* General case: reconstruct as (LIST (LIST 'UNQUOTE inner')) */
             {
                 CL_Obj inner = qq_expand(inner_form, depth - 1);
-                CL_Obj form = qq_list(cl_cons(qq_quote(SYM_UNQUOTE), cl_cons(inner, CL_NIL)));
-                return cl_cons(sym_list, cl_cons(form, CL_NIL));
+                CL_Obj tail = CL_NIL;
+                CL_GC_PROTECT(inner);           /* depth = 3 */
+                CL_GC_PROTECT(tail);            /* depth = 4 */
+                tail = cl_cons(inner, CL_NIL);
+                tail = cl_cons(qq_quote(SYM_UNQUOTE), tail);
+                tail = qq_list(tail);           /* (LIST 'UNQUOTE inner) */
+                tail = cl_cons(tail, CL_NIL);
+                {
+                    CL_Obj val = cl_cons(sym_list, tail);
+                    CL_GC_UNPROTECT(4);
+                    return val;
+                }
             }
         }
 
         /* (UNQUOTE-SPLICING inner) at depth > 0 */
         if (head == SYM_UNQUOTE_SPLICING && depth > 0) {
             CL_Obj inner_form = cl_car(cl_cdr(x));
-
             /* Special case: (UNQUOTE-SPLICING (UNQUOTE-SPLICING expr)) at depth 1
-             * This is ,@,@expr — splice the result of expr.
-             * Each element of expr is itself a list that gets spliced in.
-             * Build: (APPLY 'APPEND (MAPCAR (LAMBDA (V) (LIST 'UNQUOTE-SPLICING V)) expr))
-             * Actually, this is very rare. Just do the general case. */
-
+             * This is ,@,@expr — very rare; fall through to the general case. */
             {
                 CL_Obj inner = qq_expand(inner_form, depth - 1);
-                CL_Obj form = qq_list(cl_cons(qq_quote(SYM_UNQUOTE_SPLICING), cl_cons(inner, CL_NIL)));
-                return cl_cons(sym_list, cl_cons(form, CL_NIL));
+                CL_Obj tail = CL_NIL;
+                CL_GC_PROTECT(inner);           /* depth = 3 */
+                CL_GC_PROTECT(tail);            /* depth = 4 */
+                tail = cl_cons(inner, CL_NIL);
+                tail = cl_cons(qq_quote(SYM_UNQUOTE_SPLICING), tail);
+                tail = qq_list(tail);           /* (LIST 'UNQUOTE-SPLICING inner) */
+                tail = cl_cons(tail, CL_NIL);
+                {
+                    CL_Obj val = cl_cons(sym_list, tail);
+                    CL_GC_UNPROTECT(4);
+                    return val;
+                }
             }
         }
 
         /* (QUASIQUOTE expr): increase depth, wrap in LIST */
         if (head == SYM_QUASIQUOTE) {
             CL_Obj inner = qq_expand(cl_car(cl_cdr(x)), depth + 1);
-            CL_Obj form = qq_list(cl_cons(qq_quote(SYM_QUASIQUOTE), cl_cons(inner, CL_NIL)));
-            return cl_cons(sym_list, cl_cons(form, CL_NIL));
+            CL_Obj tail = CL_NIL;
+            CL_GC_PROTECT(inner);               /* depth = 3 */
+            CL_GC_PROTECT(tail);                /* depth = 4 */
+            tail = cl_cons(inner, CL_NIL);
+            tail = cl_cons(qq_quote(SYM_QUASIQUOTE), tail);
+            tail = qq_list(tail);               /* (LIST 'QUASIQUOTE inner) */
+            tail = cl_cons(tail, CL_NIL);
+            {
+                CL_Obj val = cl_cons(sym_list, tail);
+                CL_GC_UNPROTECT(4);
+                return val;
+            }
         }
     }
 
     /* Nested list: (LIST (qq-expand x depth)) */
     {
         CL_Obj expanded = qq_expand(x, depth);
-        return cl_cons(sym_list, cl_cons(expanded, CL_NIL));
+        CL_Obj tail = CL_NIL;
+        CL_GC_PROTECT(expanded);               /* depth = 3 */
+        CL_GC_PROTECT(tail);                   /* depth = 4 */
+        tail = cl_cons(expanded, CL_NIL);
+        {
+            CL_Obj val = cl_cons(sym_list, tail);
+            CL_GC_UNPROTECT(4);
+            return val;
+        }
     }
 }
 
@@ -466,7 +635,12 @@ static CL_Obj qq_expand_list(CL_Obj x, int depth)
 void compile_quasiquote(CL_Compiler *c, CL_Obj form)
 {
     CL_Obj tmpl = cl_car(cl_cdr(form));
-    CL_Obj expanded = qq_expand(tmpl, 0);
+    CL_Obj expanded;
+    /* Protect tmpl so the template tree stays reachable during the
+     * (potentially deep, allocating) recursive qq_expand traversal. */
+    CL_GC_PROTECT(tmpl);
+    expanded = qq_expand(tmpl, 0);
+    CL_GC_UNPROTECT(1);
     compile_expr(c, expanded);
 }
 
@@ -505,6 +679,11 @@ void compile_case(CL_Compiler *c, CL_Obj form, int error_if_no_match)
         CL_Obj clause = cl_car(clauses);
         CL_Obj keys = cl_car(clause);
         CL_Obj body = cl_cdr(clause);
+
+        /* Protect keys and body across compile_progn — compile_progn is an
+         * allocating call and a moving GC compaction invalidates bare locals. */
+        CL_GC_PROTECT(keys);
+        CL_GC_PROTECT(body);
 
         /* Check for default clause: T or OTHERWISE */
         if (keys == SYM_T || keys == SYM_OTHERWISE) {
@@ -569,6 +748,7 @@ void compile_case(CL_Compiler *c, CL_Obj form, int error_if_no_match)
             cl_patch_jump(c, next_clause_pos);
         }
 
+        CL_GC_UNPROTECT(2); /* body, keys */
         clauses = cl_cdr(clauses);
     }
     CL_GC_UNPROTECT(1);
@@ -645,6 +825,11 @@ void compile_typecase(CL_Compiler *c, CL_Obj form, int error_if_no_match)
         CL_Obj type_spec = cl_car(clause);
         CL_Obj body = cl_cdr(clause);
 
+        /* Protect type_spec and body across compile_progn — compile_progn is an
+         * allocating call and a moving GC compaction invalidates bare locals. */
+        CL_GC_PROTECT(type_spec);
+        CL_GC_PROTECT(body);
+
         if (type_spec == SYM_T || type_spec == SYM_OTHERWISE) {
             had_default = 1;
             c->in_tail = saved_tail;
@@ -681,6 +866,7 @@ void compile_typecase(CL_Compiler *c, CL_Obj form, int error_if_no_match)
             cl_patch_jump(c, jnil_pos);
         }
 
+        CL_GC_UNPROTECT(2); /* body, type_spec */
         clauses = cl_cdr(clauses);
     }
     CL_GC_UNPROTECT(1);
@@ -738,6 +924,10 @@ CL_Obj compile_multiple_value_bind(CL_Compiler *c, CL_Obj form)
     int var_index;
     CL_TailFrame *tf;
 
+    /* GC-protect vars_list and body — compile_expr can compact, making them stale */
+    CL_GC_PROTECT(vars_list);
+    CL_GC_PROTECT(body);
+
     /* Compile values form — primary on stack, MV buffer set */
     c->in_tail = 0;
     compile_expr(c, values_form);
@@ -748,7 +938,7 @@ CL_Obj compile_multiple_value_bind(CL_Compiler *c, CL_Obj form)
     var_index = 0;
     vl = vars_list;
     while (!CL_NULL_P(vl)) {
-        CL_Obj var = cl_car(vl);
+        CL_Obj var = cl_car(vl);  /* re-read each iter from protected cursor */
         int slot = cl_env_add_local(env, var);
         if (var_index == 0) {
             /* Primary value is on stack top */
@@ -765,6 +955,7 @@ CL_Obj compile_multiple_value_bind(CL_Compiler *c, CL_Obj form)
         var_index++;
         vl = cl_cdr(vl);
     }
+    CL_GC_UNPROTECT(2);  /* vars_list, body (cl_tail_push uses platform_alloc, not GC) */
 
     /* If no vars, still need to pop the primary */
     if (var_index == 0)
@@ -1395,6 +1586,8 @@ void compile_defun(CL_Compiler *c, CL_Obj form)
     int is_setf_fn = 0;
     int ltv_base, ltv_i;
 
+    CL_GC_PROTECT(name);    /* protect name across all allocating calls below */
+
     /* Handle (defun (setf name) ...) — setf function */
     if (CL_CONS_P(name) && cl_car(name) == SYM_SETF && CL_CONS_P(cl_cdr(name))) {
         CL_Obj accessor = cl_car(cl_cdr(name));
@@ -1424,6 +1617,12 @@ void compile_defun(CL_Compiler *c, CL_Obj form)
         }
     }
 
+    /* Protect real_name and store_sym after the setf block has set their
+     * final values; the setf branch's cl_intern_in/cl_cons calls above may
+     * have triggered compaction, making their pre-block values stale. */
+    CL_GC_PROTECT(real_name);
+    CL_GC_PROTECT(store_sym);
+
     /* CL spec: defun wraps body in (block name ...) */
     block_body = cl_cons(SYM_BLOCK, cl_cons(real_name, body));
     CL_GC_PROTECT(block_body);
@@ -1438,7 +1637,7 @@ void compile_defun(CL_Compiler *c, CL_Obj form)
     pending_lambda_name = real_name;
     compile_expr(c, lambda_form);
 
-    CL_GC_UNPROTECT(2);
+    CL_GC_UNPROTECT(5); /* lambda_form, block_body, store_sym, real_name, name */
 
     /* Emit inline load-time init code for any LOAD-TIME-VALUE forms
      * accumulated while compiling the lambda body.  Using the outer

@@ -1515,6 +1515,15 @@ void determine_boxed_vars(CL_Obj body, CL_Obj *vars, int n_vars,
     memset(captured, 0, (size_t)n_vars);
     memset(boxed_out, 0, (size_t)n_vars);
 
+    /* GC-protect vars[] so compaction inside scan_body_for_boxing (via
+     * macroexpansion / cl_vm_apply) does not leave stale pre-compaction
+     * offsets in the caller's array.  Without this the eq-compare in
+     * find_var_index misses and mutated/captured is under-recorded.
+     * CL_GC_PROTECT (not bare cl_gc_push_root) fills gc_root_files/lines
+     * under DEBUG_GC so gc_dump_roots_dbg shows accurate source locations. */
+    for (i = 0; i < n_vars; i++)
+        CL_GC_PROTECT(vars[i]);
+
     /* Scan all body forms */
     {
         CL_Obj cur = body;
@@ -1524,6 +1533,8 @@ void determine_boxed_vars(CL_Obj body, CL_Obj *vars, int n_vars,
             cur = cl_cdr(cur);
         }
     }
+
+    cl_gc_pop_roots(n_vars);
 
     for (i = 0; i < n_vars; i++) {
         boxed_out[i] = (mutated[i] && captured[i]) ? 1 : 0;
@@ -1563,6 +1574,7 @@ static CL_Obj compile_let(CL_Compiler *c, CL_Obj form, int sequential)
 
     /* Pre-scan body for (declare (special ...)) to find locally-special vars */
     CL_Obj local_specials = scan_local_specials(body);
+    CL_GC_PROTECT(local_specials); /* protect across scan_body_for_boxing / compile_expr */
 
     if (sequential) {
         /* Pre-scan all bindings + body for boxing analysis */
@@ -1583,6 +1595,14 @@ static CL_Obj compile_let(CL_Compiler *c, CL_Obj form, int sequential)
             CL_Obj b;
             memset(mutated, 0, (size_t)n_all);
             memset(captured, 0, (size_t)n_all);
+            /* GC-protect all_vars[] so compaction inside scan_body_for_boxing
+             * (via macroexpansion) does not leave stale offsets; the
+             * eq-compare in find_var_index would miss and boxing be
+             * under-recorded for let* bindings.
+             * CL_GC_PROTECT (not bare cl_gc_push_root) fills gc_root_files/lines
+             * under DEBUG_GC so gc_dump_roots_dbg shows accurate source locations. */
+            for (bi = 0; bi < n_all; bi++)
+                CL_GC_PROTECT(all_vars[bi]);
             /* Scan each binding's init-form against only the vars defined
                so far (not including the current binding).  This ensures
                (let* ((x 10) (x (1+ x)))) resolves the init-form reference
@@ -1607,6 +1627,7 @@ static CL_Obj compile_let(CL_Compiler *c, CL_Obj form, int sequential)
                     cur = cl_cdr(cur);
                 }
             }
+            cl_gc_pop_roots(n_all);
             for (bi = 0; bi < n_all; bi++)
                 needs_boxing[bi] = (mutated[bi] && captured[bi]) ? 1 : 0;
         }
@@ -1628,6 +1649,13 @@ static CL_Obj compile_let(CL_Compiler *c, CL_Obj form, int sequential)
 
                 c->in_tail = 0;
                 compile_expr(c, val);
+
+                /* Re-read var from the GC-protected bindings cursor: compile_expr
+                 * may trigger compaction, leaving the pre-captured var stale. */
+                {
+                    CL_Obj fresh_b = cl_car(bindings);
+                    var = CL_CONS_P(fresh_b) ? cl_car(fresh_b) : fresh_b;
+                }
 
                 if (var_is_special(var, local_specials)) {
                     int idx = cl_add_constant(c, var);
@@ -1672,10 +1700,19 @@ static CL_Obj compile_let(CL_Compiler *c, CL_Obj form, int sequential)
             b = cl_cdr(b);
         }
 
+        /* GC-protect vars[] and vals[] before compile_expr loop: each
+         * compile_expr call may trigger compaction, relocating symbols and
+         * init-form cons cells stored in both arrays. */
+        for (i = 0; i < n; i++)
+            CL_GC_PROTECT(vars[i]);
+        for (i = 0; i < n; i++)
+            CL_GC_PROTECT(vals[i]);
+
         for (i = 0; i < n; i++) {
             c->in_tail = 0;
             compile_expr(c, vals[i]);
         }
+        cl_gc_pop_roots(n);  /* vals[] — no longer needed after this point */
 
         {
             int lexical_slots[CL_MAX_BINDINGS];
@@ -1729,6 +1766,7 @@ static CL_Obj compile_let(CL_Compiler *c, CL_Obj form, int sequential)
                 }
             }
         }
+        cl_gc_pop_roots(n);  /* vars[] */
     }
 
     /* If we have dynamic bindings, disable tail calls in the body so that
@@ -1759,7 +1797,7 @@ static CL_Obj compile_let(CL_Compiler *c, CL_Obj form, int sequential)
             tail = cl_car(rest);
         }
 
-        CL_GC_UNPROTECT(2);  /* bindings, body */
+        CL_GC_UNPROTECT(3);  /* bindings, body, local_specials */
 
         tf = cl_tail_push(c);
         tf->kind = CL_TAIL_LET;
@@ -2258,6 +2296,9 @@ static void compile_setf_place(CL_Compiler *c, CL_Obj place, CL_Obj val_form)
         if (head == SYM_PROGN) {
             CL_Obj forms = cl_cdr(place);
             CL_Obj inner_place;
+            /* GC-protect cursor and val_form — compile_expr can compact, making them stale */
+            CL_GC_PROTECT(forms);
+            CL_GC_PROTECT(val_form);
             /* Walk to last form (the actual place), compile leading forms */
             while (CL_CONS_P(forms) && CL_CONS_P(cl_cdr(forms))) {
                 compile_expr(c, cl_car(forms));
@@ -2266,6 +2307,7 @@ static void compile_setf_place(CL_Compiler *c, CL_Obj place, CL_Obj val_form)
             }
             /* Last element is the place */
             inner_place = CL_CONS_P(forms) ? cl_car(forms) : CL_NIL;
+            CL_GC_UNPROTECT(2);  /* forms, val_form */
             compile_setf_place(c, inner_place, val_form);
             c->in_tail = saved_tail;
             return;
@@ -2366,6 +2408,11 @@ static void compile_setf_place(CL_Compiler *c, CL_Obj place, CL_Obj val_form)
             return;
         }
 
+        /* GC-protect val_form and place — place sub-expressions compiled first can
+         * compact, making both stale before subsequent accesses. */
+        CL_GC_PROTECT(val_form);
+        CL_GC_PROTECT(place);
+
         if (head == SETF_SYM_CAR || head == SETF_SYM_FIRST) {
             compile_expr(c, cl_car(cl_cdr(place)));
             compile_expr(c, val_form);
@@ -2383,7 +2430,8 @@ static void compile_setf_place(CL_Compiler *c, CL_Obj place, CL_Obj val_form)
             nth_place = cl_cons(SETF_SYM_NTH,
                           cl_cons(CL_MAKE_FIXNUM(nth_idx),
                             cl_cons(arg, CL_NIL)));
-            CL_GC_UNPROTECT(1);
+            CL_GC_UNPROTECT(1);  /* arg */
+            CL_GC_UNPROTECT(2);  /* place, val_form */
             compile_setf_place(c, nth_place, val_form);
             c->in_tail = saved_tail;
             return;
@@ -2408,7 +2456,8 @@ static void compile_setf_place(CL_Compiler *c, CL_Obj place, CL_Obj val_form)
             CL_GC_PROTECT(arg);
             iplace = cl_cons(isym, cl_cons(arg, CL_NIL));
             nplace = cl_cons(outer_sym, cl_cons(iplace, CL_NIL));
-            CL_GC_UNPROTECT(2);
+            CL_GC_UNPROTECT(2);  /* outer_sym, arg */
+            CL_GC_UNPROTECT(2);  /* place, val_form */
             compile_setf_place(c, nplace, val_form);
             c->in_tail = saved_tail;
             return;
@@ -2421,9 +2470,10 @@ static void compile_setf_place(CL_Compiler *c, CL_Obj place, CL_Obj val_form)
             while (!CL_NULL_P(tmp)) { nindices++; tmp = cl_cdr(tmp); }
 
             if (nindices <= 1 || head == SETF_SYM_SVREF) {
-                /* 1D fast path: use OP_ASET */
+                /* 1D fast path: use OP_ASET.  Re-derive index from GC-protected
+                 * place — compile_expr(array) can compact, making indices stale. */
                 compile_expr(c, cl_car(cl_cdr(place)));
-                compile_expr(c, cl_car(indices));
+                compile_expr(c, cl_car(cl_cdr(cl_cdr(place))));
                 compile_expr(c, val_form);
                 cl_emit(c, OP_ASET);
             } else {
@@ -2433,7 +2483,9 @@ static void compile_setf_place(CL_Compiler *c, CL_Obj place, CL_Obj val_form)
                 cl_emit_u16(c, (uint16_t)ci);
                 compile_expr(c, cl_car(cl_cdr(place)));  /* array */
                 compile_expr(c, val_form);               /* value */
-                tmp = indices;
+                /* Re-derive from GC-protected place — indices is stale after the
+                 * two compile_expr calls above may have compacted. */
+                tmp = cl_cdr(cl_cdr(place));
                 CL_GC_PROTECT(tmp);
                 while (!CL_NULL_P(tmp)) {
                     compile_expr(c, cl_car(tmp));
@@ -2536,6 +2588,9 @@ static void compile_setf_place(CL_Compiler *c, CL_Obj place, CL_Obj val_form)
             CL_Obj ind_form  = cl_car(cl_cdr(cl_cdr(place)));
             CL_Obj rest_after_ind = cl_cdr(cl_cdr(cl_cdr(place)));
             int has_default = !CL_NULL_P(rest_after_ind);
+            /* GC-protect ind_form and rest_after_ind — compile_expr(sym_form) can compact */
+            CL_GC_PROTECT(ind_form);
+            CL_GC_PROTECT(rest_after_ind);
             cl_emit(c, OP_FLOAD);
             cl_emit_u16(c, (uint16_t)idx);
             compile_expr(c, sym_form);                     /* symbol */
@@ -2545,6 +2600,7 @@ static void compile_setf_place(CL_Compiler *c, CL_Obj place, CL_Obj val_form)
                 compile_expr(c, cl_car(rest_after_ind));
                 cl_emit(c, OP_POP);
             }
+            CL_GC_UNPROTECT(2);                           /* ind_form, rest_after_ind */
             compile_expr(c, val_form);                     /* value */
             cl_emit(c, OP_CALL);
             cl_emit(c, 3);
@@ -2686,7 +2742,7 @@ static void compile_setf_place(CL_Compiler *c, CL_Obj place, CL_Obj val_form)
             let_form = cl_cons(SYM_LETSTAR, let_form);
 
             compile_expr(c, let_form);
-            CL_GC_UNPROTECT(11);
+            CL_GC_UNPROTECT(12); /* place_arg ind_arg default_arg gensym_i gensym_d gensym_v sub_bindings inner_place helper_call setf_place_form let_bindings let_form */
         } else {
             /* Check defsetf table */
             CL_Obj updater = CL_NIL;
@@ -2712,11 +2768,14 @@ static void compile_setf_place(CL_Compiler *c, CL_Obj place, CL_Obj val_form)
                 int idx = cl_add_constant(c, updater);
                 cl_emit(c, OP_FLOAD);
                 cl_emit_u16(c, (uint16_t)idx);
+                /* GC-protect args cursor — compile_expr can compact, making it stale */
+                CL_GC_PROTECT(args);
                 while (!CL_NULL_P(args)) {
                     compile_expr(c, cl_car(args));
                     nargs++;
                     args = cl_cdr(args);
                 }
+                CL_GC_UNPROTECT(1);                       /* args */
                 compile_expr(c, val_form);
                 nargs++;
                 cl_emit(c, OP_CALL);
@@ -2749,6 +2808,7 @@ static void compile_setf_place(CL_Compiler *c, CL_Obj place, CL_Obj val_form)
                         expansion = cl_vm_apply(expander_fn, call_args, 2);
                         CL_GC_UNPROTECT(2);
                         compile_expr(c, expansion);
+                        CL_GC_UNPROTECT(2);               /* outer place, val_form (from ~2418) */
                         return;
                     }
                 }
@@ -2799,6 +2859,8 @@ static void compile_setf_place(CL_Compiler *c, CL_Obj place, CL_Obj val_form)
                     int idx = cl_add_constant(c, setf_fn);
                     cl_emit(c, OP_FLOAD);
                     cl_emit_u16(c, (uint16_t)idx);
+                    /* GC-protect args cursor — compile_expr(val_form) can compact, making it stale */
+                    CL_GC_PROTECT(args);
                     compile_expr(c, val_form);  /* new-value FIRST */
                     nargs++;
                     while (!CL_NULL_P(args)) {
@@ -2806,11 +2868,13 @@ static void compile_setf_place(CL_Compiler *c, CL_Obj place, CL_Obj val_form)
                         nargs++;
                         args = cl_cdr(args);
                     }
+                    CL_GC_UNPROTECT(1);                   /* args */
                     cl_emit(c, OP_CALL);
                     cl_emit(c, (uint8_t)nargs);
                 }
             }
         }
+        CL_GC_UNPROTECT(2);                               /* place, val_form (protected ~line 2418) */
     } else {
         if (CL_CONS_P(place) && CL_SYMBOL_P(cl_car(place)))
             cl_error(CL_ERR_GENERAL, "SETF: invalid place (%s ...)",
@@ -4257,6 +4321,31 @@ void cl_compiler_gc_mark_thread(CL_Thread *t)
          * survive GC during the body's compilation. */
         for (i = 0; i < c->tail_count; i++)
             gc_mark_obj(c->tail_stack[i].cont_form);
+        /* Lambda list symbols — live from parse_lambda_list through compile_body;
+         * any allocating call (compile_expr for defaults, determine_boxed_vars)
+         * can trigger compaction that would leave these stale without marking. */
+        {
+            int j;
+            for (j = 0; j < c->ll.n_required; j++)
+                gc_mark_obj(c->ll.required[j]);
+            for (j = 0; j < c->ll.n_optional; j++) {
+                gc_mark_obj(c->ll.opt_names[j]);
+                gc_mark_obj(c->ll.opt_defaults[j]);
+                gc_mark_obj(c->ll.opt_suppliedp[j]);
+            }
+            if (c->ll.has_rest)
+                gc_mark_obj(c->ll.rest_name);
+            for (j = 0; j < c->ll.n_keys; j++) {
+                gc_mark_obj(c->ll.key_names[j]);
+                gc_mark_obj(c->ll.key_keywords[j]);
+                gc_mark_obj(c->ll.key_defaults[j]);
+                gc_mark_obj(c->ll.key_suppliedp[j]);
+            }
+            for (j = 0; j < c->ll.n_aux; j++) {
+                gc_mark_obj(c->ll.aux_names[j]);
+                gc_mark_obj(c->ll.aux_inits[j]);
+            }
+        }
         /* Mark compile-time environment (platform_alloc'd, holds CL_Obj refs) */
         if (c->env) {
             CL_CompEnv *env = c->env;
@@ -4311,6 +4400,29 @@ void cl_compiler_gc_update_thread(CL_Thread *t, void (*update)(CL_Obj *))
         /* Pending tail-frame continuation forms — see mark side. */
         for (i = 0; i < c->tail_count; i++)
             update(&c->tail_stack[i].cont_form);
+        /* Lambda list symbols — mirrors mark side. */
+        {
+            int j;
+            for (j = 0; j < c->ll.n_required; j++)
+                update(&c->ll.required[j]);
+            for (j = 0; j < c->ll.n_optional; j++) {
+                update(&c->ll.opt_names[j]);
+                update(&c->ll.opt_defaults[j]);
+                update(&c->ll.opt_suppliedp[j]);
+            }
+            if (c->ll.has_rest)
+                update(&c->ll.rest_name);
+            for (j = 0; j < c->ll.n_keys; j++) {
+                update(&c->ll.key_names[j]);
+                update(&c->ll.key_keywords[j]);
+                update(&c->ll.key_defaults[j]);
+                update(&c->ll.key_suppliedp[j]);
+            }
+            for (j = 0; j < c->ll.n_aux; j++) {
+                update(&c->ll.aux_names[j]);
+                update(&c->ll.aux_inits[j]);
+            }
+        }
         if (c->env) {
             CL_CompEnv *env = c->env;
             while (env) {

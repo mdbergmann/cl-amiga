@@ -1,0 +1,22 @@
+{
+  "summary": "Compiling handler-case-style code under CLAMIGA_GC_STRESS=1 fails with 'Unbound variable: BOX<n>' (gensym divergence) or 'Undefined function: <name>' (dropped form). Both are compaction-corruption bugs in compiler-side C code: stale CL_Obj C-locals held across allocating calls. The PROGN cursor (compiler.c) and the cl_cons(name, cl_cons(parent, NIL)) site in bi_register_condition_type are already fixed in ed6e2d4 — this task chases the same bug class to every remaining site (compile_lambda's ll/param_vars not GC-rooted at all; compile_let's binding-name var stale across compile_expr; scan_body_for_boxing's vars[] array stale across macroexpansion; handler-bind/typecase/case clause locals across compile_expr; quasiquote builder's many nested cl_cons; multiple-value-bind, destructure, do/dolist/dotimes, defun/defmacro). Also wires gc_verify_marked() into cl_gc_compact() (currently only fires in cl_gc()) so any future compaction-corruption is named at the precise GC where it happens.",
+  "affected_areas": [
+    "src/core/compiler.c (cl_compiler_gc_mark_thread / cl_compiler_gc_update_thread, compile_lambda, compile_let, scan_body_for_boxing, determine_boxed_vars)",
+    "src/core/compiler_internal.h (CL_Compiler — add n_param_vars)",
+    "src/core/compiler_special.c (compile_handler_bind, compile_destructure_pattern, compile_do/dolist/dotimes, flet/labels, restart-case)",
+    "src/core/compiler_extra.c (qq_expand / qq_expand_list / compile_quasiquote, compile_typecase / compile_case, compile_multiple_value_bind, compile_defun / compile_defmacro)",
+    "src/core/env.c (cl_build_lex_env — confirm protection, low risk)",
+    "src/core/mem.c (cl_gc_compact — gc_verify_marked under DEBUG_GC)",
+    "src/core/mem.h (optional debug-mode CL_GC_PROTECT macro switch with file/line tag)",
+    "tests/test_gc_stress_regression.sh (Cases 7-10)"
+  ],
+  "risks": [
+    "Extending cl_compiler_gc_mark_thread / cl_compiler_gc_update_thread to walk c->ll requires tracking which slots are live (use n_required/n_optional/n_keys/n_aux/has_rest already in CL_ParsedLambdaList) and zeroing the n counts on inner-compiler memset so a freshly-acquired compiler doesn't walk garbage; mis-tracking could mark/forward garbage and crash GC.",
+    "Adding n_param_vars to CL_Compiler is touch on a hot heap-allocated struct; must be zeroed by the memset in compile_lambda and released/reset by cl_compiler_pool_release.",
+    "Bulk CL_GC_PROTECT additions can push gc_root_count over CL_GC_ROOT_STACK_SIZE (1024) under deeply-nested compilation; if any new protect-set is large per frame, may need to grow the stack — should be quantified with a stress run before committing.",
+    "GC-protect on C-stack arrays (e.g. vars[CL_MAX_BINDINGS]) means pushing up to 64 roots per let; each push is O(1) but in macro-heavy code, this could noticeably grow root churn. Profile under stress.",
+    "Re-reading var from cursor in compile_let assumes the cursor is always non-NIL when we want it — guard with the existing CL_NULL_P check shape so a malformed binding list doesn't crash.",
+    "Quasiquote builder edits are the largest surface; introducing a bug in qq_expand affects every backquote in the runtime. Each change should be paired with a focused unit test or stress run.",
+    "Wiring gc_verify_marked() into cl_gc_compact() can be expensive (full arena walk on every compaction); guard with DEBUG_GC like the existing cl_gc call so production builds are unaffected."
+  ]
+}
