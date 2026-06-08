@@ -88,10 +88,17 @@ CL_Obj cl_make_cell(CL_Obj value);
 CL_Obj cl_make_foreign_pointer(uint32_t address, uint32_t size, uint8_t flags);
 
 /* GC root protection (temporary, C-stack variables) */
+#ifdef DEBUG_GC
+#define CL_GC_PROTECT(var) cl_gc_push_root_dbg(&(var), __FILE__, __LINE__)
+#else
 #define CL_GC_PROTECT(var) cl_gc_push_root(&(var))
+#endif
 #define CL_GC_UNPROTECT(n) cl_gc_pop_roots(n)
 
 void cl_gc_push_root(CL_Obj *root);
+#ifdef DEBUG_GC
+void cl_gc_push_root_dbg(CL_Obj *root, const char *file, int line);
+#endif
 void cl_gc_pop_roots(int n);
 void cl_gc_reset_roots(void);
 

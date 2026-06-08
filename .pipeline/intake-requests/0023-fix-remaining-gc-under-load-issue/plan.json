@@ -1,0 +1,127 @@
+{
+  "request_id": "0023-fix-remaining-gc-under-load-issue",
+  "summary": "Fix the remaining compiler-side GC-under-load bugs (gensym divergence + dropped form) by GC-rooting compiler lambda-list/param_vars, protecting binding-name C-locals and boxing-scanner vars[] across allocations, and patching clause-walk / quasiquote sites; wire gc_verify_marked into compaction and add regression cases.",
+  "items": [
+    {
+      "id": "item-1",
+      "title": "Wire gc_verify_marked() into cl_gc_compact() (DEBUG_GC)",
+      "description": "In src/core/mem.c, cl_gc_compact() currently only calls gc_mark() and then proceeds; the per-compaction parent->child mark validation runs only in cl_gc(). Under -DDEBUG_GC, invoke gc_verify_marked() inside cl_gc_compact() immediately after gc_mark() and before gc_fwd_alloc(), matching the cl_gc() call site (mem.c ~2639). Also tag/file:line on cl_gc_push_root (optional debug build: a cl_gc_push_root_dbg(&v, __FILE__, __LINE__) + CL_GC_PROTECT macro switch under DEBUG_GC, so future bugs can name the holding C-frame the way the PROGN cursor was traced). This produces 'marked @X.field -> unmarked @Y' diagnostics at the exact corrupting compaction — the recipe the request relies on for future bug isolation. No FASL or behavior change.",
+      "files_in_scope": [
+        "src/core/mem.c",
+        "src/core/mem.h"
+      ],
+      "est_scope_tokens": 4000,
+      "depends_on": [],
+      "status": "done"
+    },
+    {
+      "id": "item-2",
+      "title": "GC-mark/update compiler->ll fields and ->param_vars",
+      "description": "src/core/compiler.c's cl_compiler_gc_mark_thread (~4232) and cl_compiler_gc_update_thread (~4290) walk c->constants[], c->blocks[], c->tagbodies[], c->outer_blocks/tags, c->tail_stack[].cont_form, and env->locals/local_funs/local_macros/symbol_macros — but NOT c->ll (CL_ParsedLambdaList: required[0..n_required], opt_names/opt_defaults/opt_suppliedp[0..n_optional], rest_name when has_rest, key_names/key_keywords/key_defaults/key_suppliedp[0..n_keys], aux_names/aux_inits[0..n_aux]) nor c->param_vars[]. compile_lambda parses the lambda list into inner->ll, then calls compile_expr on optional/key/aux defaults (~lines 608-718) and determine_boxed_vars on inner->param_vars (~752); any compaction inside those allocating calls leaves inner->ll.<field>[i] and inner->param_vars[i] with stale offsets while the env->locals copy of the same symbol IS forwarded — so cl_env_lookup(env, sym_from_form) fails by eq and the body's references to that param compile as free/special and surface as 'Unbound variable: BOX<n>'. Fix: extend both mark and update functions to traverse every CL_Obj field of c->ll (using the n_required/n_optional/n_keys/n_aux/has_rest counts already in CL_ParsedLambdaList) and c->param_vars[0..n_param_vars). To enable the param_vars walk, add `int n_param_vars;` to CL_Compiler in compiler_internal.h, set it where param_vars is populated in compile_lambda (after the final n_params is known), and reset it on inner-compiler memset/acquire and after the determine_boxed_vars-driven boxing emission. Verify by re-running the request's minimal repro (handler-case under CLAMIGA_GC_STRESS=1) against a stress-built binary: 'Unbound variable: BOX<n>' must disappear.",
+      "files_in_scope": [
+        "src/core/compiler.c",
+        "src/core/compiler_internal.h"
+      ],
+      "est_scope_tokens": 8000,
+      "depends_on": [
+        "item-1"
+      ],
+      "status": "done"
+    },
+    {
+      "id": "item-3",
+      "title": "GC-protect determine_boxed_vars / scan_body_for_boxing vars[]",
+      "description": "src/core/compiler.c's determine_boxed_vars (~1506) and the manual scan loops inside compile_let (~1567-1612) and compile_lambda (~722-765) pass a C-stack CL_Obj array of binding symbols ('all_vars'/'lex_vars'/'inner->param_vars') into scan_body_for_boxing — which calls cl_macroexpand_1_env (and cl_vm_apply for setf expanders) inside its general fall-through (compiler.c ~1426-1479 and ~1138-1167). Those calls allocate and can trigger compaction; after compaction the binding symbols in the vars[] array hold stale pre-compaction offsets while the form's references to the same symbol — read via cl_car/cl_cdr on arena cons cells that DO get forwarded — hold the new offset, so find_var_index's `vars[i] == sym` eq compare misses and the scanner under-records mutated/captured. Worse, the same stale all_vars[] is then handed to var_idx-driven boxing decisions in compile_let. Fix: before the scan, register each element of the vars[] array as a GC root by calling cl_gc_push_root(&vars[i]) in a loop (size known: n_vars / n_all / n_lex / n_params) and pop them after the scan with cl_gc_pop_roots(n_vars). Apply to: (a) determine_boxed_vars body of work, (b) the per-binding incremental scan inside compile_let sequential branch (which does its own scan_body_for_boxing per binding), (c) compile_lambda's call site at ~752. Do NOT add registration inside scan_body_for_boxing itself — keep it at the call sites that own the array. This stops the captured/mutated tables from getting derived from stale offsets.",
+      "files_in_scope": [
+        "src/core/compiler.c"
+      ],
+      "est_scope_tokens": 9000,
+      "depends_on": [
+        "item-2"
+      ],
+      "status": "done"
+    },
+    {
+      "id": "item-4",
+      "title": "compile_let: re-read binding-name var from protected cursor after compile_expr",
+      "description": "src/core/compiler.c's compile_let (~1551) has two branches that lock in the binding-name BEFORE allocating, then use the stale C-local to populate env->locals. Sequential (let*) branch (~1614-1654): `var = cl_car(binding); val = cl_car(cl_cdr(binding));` then `compile_expr(c, val)` then `cl_env_add_local(env, var)` — compile_expr can compact, leaving var stale; env->locals gets the stale offset; later cl_env_lookup against the body's forwarded reference fails. Parallel (let) branch (~1656-1700): the C-stack vars[]/vals[] arrays are populated up front, then a loop of compile_expr(c, vals[i]) runs, then cl_env_add_local(env, vars[i]) is called for each — same staleness across the compile_expr loop. Fix in sequential branch: replace `var = cl_car(binding)` with a re-read pattern that uses the protected `bindings` cursor — keep a binding-list cursor that is GC-protected for the duration of the loop and pull var fresh right before cl_env_add_local (i.e. compute val first, compile_expr(val), then re-grab var = cl_car(cl_car(<cursor>)) right before env install). Fix in parallel branch: GC-register every element of the vars[] array (vars[0..n-1]) with cl_gc_push_root(&vars[i]) before the compile_expr loop and pop n roots after env install is done. Same care for the special-vs-lexical decision: var_is_special must see the forwarded var. Confirm var_is_special's local_specials list still resolves correctly (scan_local_specials already protects its result).",
+      "files_in_scope": [
+        "src/core/compiler.c"
+      ],
+      "est_scope_tokens": 9000,
+      "depends_on": [
+        "item-3"
+      ],
+      "status": "done"
+    },
+    {
+      "id": "item-5",
+      "title": "compile_handler_bind / compile_typecase / compile_case / restart-case clause walks",
+      "description": "Audit and patch clause-list compilation. compile_handler_bind (src/core/compiler_special.c ~2173-2205): clauses cursor IS protected, but inside the loop `type_sym = cl_car(clause)` is read BEFORE `compile_expr(c, handler_expr)`, and then `cl_add_constant(c, type_sym)` is called AFTER it — compile_expr can compact, type_sym goes stale, and a stale symbol is stored in the bytecode's constants. Fix: move the type_sym extraction to AFTER compile_expr (or protect it). The loop variable `cl` is also unprotected across compile_expr (the body of the for() uses cl twice across an allocating call): replace `for (cl = clauses; ...; cl = cl_cdr(cl))` with a CL_GC_PROTECT(cl) + explicit while loop, the same shape as the PROGN fix in ed6e2d4. compile_typecase (src/core/compiler_extra.c ~606-718) and compile_case (~475-604): clauses cursor is protected, but each iteration reads type_spec/body/keys BEFORE compile_progn(c, body) and uses cl_emit_const(c, type_spec)/keys after — protect or re-read those locals across the compile_progn call. compile_restart_case: similar audit; restart-name and restart-body locals across compile_expr/compile_progn. Goal: any CL_Obj that survives an allocating call must be either protected or re-read after it.",
+      "files_in_scope": [
+        "src/core/compiler_special.c",
+        "src/core/compiler_extra.c"
+      ],
+      "est_scope_tokens": 10000,
+      "depends_on": [
+        "item-4"
+      ],
+      "status": "done"
+    },
+    {
+      "id": "item-6",
+      "title": "Quasiquote builder GC audit (qq_expand / qq_expand_list)",
+      "description": "src/core/compiler_extra.c's qq_expand (~235) and qq_expand_list (~365) build the expansion via dozens of nested cl_cons. The list-iteration loop in qq_expand (~306-340) holds `cursor`/`elem`/`rest` as unprotected C-locals across recursive qq_expand_list calls, which allocate; after the recursive call returns, `cursor = rest` reads a stale offset. The reverse loop (~342-352) similarly walks an unprotected `result` after popping. Many helpers return `cl_cons(SYM_QUOTE, cl_cons(x, CL_NIL))` and `cl_cons(coerce, cl_cons(list_form, cl_cons(qq_quote(sv), CL_NIL)))` (~261-264, 280-281, 293-295, 300-302, etc.) — these nest cl_cons calls where the outer arg is a movable CL_Obj read into an unspecified-evaluation-order temporary; the inner cl_cons can compact between read and store and leave a stale outer arg. Fix: in qq_expand's main list loop, protect cursor (and the new `rest` per iteration) the way the PROGN fix protects `forms`. In qq_quote / qq_list / qq_append / the nested return-expressions of both qq_expand and qq_expand_list, split every `cl_cons(A, cl_cons(B, ...))` where A is the result of a producing call (qq_quote, qq_expand, cl_intern_in, defmacro_gensym, cl_car(cl_cdr(x))) into two statements: build the tail first into a CL_GC_PROTECT'd local, then cons A onto it — the rule from commit ed6e2d4. Same audit for the special-cased (UNQUOTE (UNQUOTE-SPLICING expr)) and (UNQUOTE-SPLICING (UNQUOTE-SPLICING expr)) builders (~397-421, 432-447). compile_quasiquote itself (~466) is the entry; protect tmpl across qq_expand.",
+      "files_in_scope": [
+        "src/core/compiler_extra.c"
+      ],
+      "est_scope_tokens": 8000,
+      "depends_on": [
+        "item-5"
+      ],
+      "status": "done"
+    },
+    {
+      "id": "item-7",
+      "title": "Audit remaining binding sites: multiple-value-bind, destructure, do/do*, dolist/dotimes, flet/labels, defun/defmacro",
+      "description": "Apply the mechanical audit rule from the request (grep for `x = cl_cdr(x)` loops calling allocating fns, and nested cl_cons with movable outer args) to: compile_multiple_value_bind (src/core/compiler_extra.c ~722) — vars_list and the per-var symbol are read across compile_expr(values_form) before cl_env_add_local; protect vars_list and re-read var each iter. compile_destructure_pattern + compile_destructuring_bind (src/core/compiler_special.c ~17, and compile_destructuring_bind nearby): pattern walker holds pattern/elem/rest across compile_expr — protect cursors and re-read elem in the loop. compile_do / compile_do_star / compile_dolist / compile_dotimes: their binding/init/step expressions cross compile_expr and must protect cursors and re-read var/step locals. compile_flet / compile_labels (src/core/compiler_special.c): name / params / body extracted across compile_lambda body — verify protection. compile_defmacro (src/core/compiler_extra.c ~1533) builds many nested cl_cons via destructuring-bind / let / lambda rewrites; audit the same nested-cl_cons rule and re-read pattern. compile_defun (~1387): name / lambda_list / body locals across compile_expr(lambda_form). compile_setf_place chain (compiler.c ~2050+): place locals across compile_expr(val_form). Every site found gets the same fix shape: GC-protect the cursor; re-read or protect the locals that span an allocating call. Each fix must include a focused comment matching the style of the existing PROGN-cursor comment (`/* GC-protect ... compile_expr can compact ... */`).",
+      "files_in_scope": [
+        "src/core/compiler.c",
+        "src/core/compiler_special.c",
+        "src/core/compiler_extra.c"
+      ],
+      "est_scope_tokens": 15000,
+      "depends_on": [
+        "item-6"
+      ],
+      "status": "done"
+    },
+    {
+      "id": "item-8",
+      "title": "scan_body_for_boxing internal cursor + lex_env construction audit",
+      "description": "src/core/compiler.c's scan_body_for_boxing (~1007) has many `x = cl_cdr(x)` body-walk loops (lambda body, defun body, flet/labels bodies, case-clause bodies, let bindings, do bindings, multiple-value-bind body, destructuring-bind body, etc. — see ~1183-1420) that each call scan_body_for_boxing recursively, and that recursion eventually allocates inside the macroexpansion or setf-expander invocation at ~1138-1163 and ~1426-1478. The body/cur/clause/cbody locals of those walks are NOT protected, so after a deep expansion compaction they reference relocated memory. Fix: at each x = cl_cdr(x) loop in scan_body_for_boxing whose body recurses, GC-protect the cursor across the recursive call (mirror the iter-style protection used in compile_expr_step's PROGN fix). scan_qq_for_boxing (~956) has the same shape and needs the cursor protected too. cl_build_lex_env (src/core/env.c ~228): walks env->local_macros/symbol_macros and conses pairs into result; the inner cl_cons(name, expander) — where `name` is read from env->local_macros[i].name and `expander` from .expander — already CL_GC_PROTECT both before the inner cl_cons (good), but check that the for(i = env->local_macro_count - 1; i >= 0; i--) loop's view of env->local_macros[i] doesn't go stale when the allocator forwards env entries during cl_cons (env is in platform_alloc so it doesn't move, and env->local_macros[i] gets forwarded by cl_compiler_gc_update_thread, so this is OK — confirm by inspection). Mostly: cement scan_body_for_boxing cursors as the largest residual class.",
+      "files_in_scope": [
+        "src/core/compiler.c",
+        "src/core/env.c"
+      ],
+      "est_scope_tokens": 9000,
+      "depends_on": [
+        "item-7"
+      ],
+      "status": "done"
+    },
+    {
+      "id": "item-9",
+      "title": "Regression tests — tests/test_gc_stress_regression.sh Cases 7-10",
+      "description": "Add four new cases to tests/test_gc_stress_regression.sh that exercise the COMPILE-under-stress path (currently every case clean-compiles a FASL with GC stress disabled, then loads under stress — these new cases must run the source loader under CLAMIGA_GC_STRESS=1 so the COMPILER itself sees a compaction at every allocation). Case 7 (gensym divergence — handler-case): `(format t \"R:~a~%\" (handler-case (error \"boom\") (error (c) (format nil \"caught: ~a\" c))))` — expect 'R:caught: boom', no 'Unbound variable: BOX'. Case 8 (dropped form — gensym-binding macro expansion + outer defun): `(defmacro with-g (&body b) (let ((g (gensym))) `(let ((,g (list 1 2 3))) ,@b))) (defun gcstress-f () (with-g 42)) (format t \"F:~a~%\" (gcstress-f))` — expect 'F:42', no 'Undefined function'. Case 9 (quasiquote builder — backquote-heavy macro): a deeply-nested backquote macro that interpolates several gensyms and splices into a let body, then call its expansion at top level under stress; expect the documented result. Case 10 (clause walk — typecase + handler-bind chain): a defun whose body uses (handler-bind ((error #'...) (warning #'...)) (typecase x (integer ...) (string ...) (t ...))) under stress; expect each clause to fire correctly. Each case must call run_stress on a source file that contains both the defs and the assertions (so the compiler runs under stress), assert the expected output via check_contains, and assert via check_absent that no 'Unbound variable' / 'Undefined function' / 'corrupted' appears. After all items, confirm `make test-gc-stress` reports 11+4=15/15.",
+      "files_in_scope": [
+        "tests/test_gc_stress_regression.sh"
+      ],
+      "est_scope_tokens": 5000,
+      "depends_on": [
+        "item-8"
+      ],
+      "status": "done"
+    }
+  ]
+}

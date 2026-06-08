@@ -117,6 +117,10 @@ typedef struct CL_Thread_s {
     /* ---- GC root stack (per-thread) ---- */
     CL_Obj *gc_roots[CL_GC_ROOT_STACK_SIZE];
     int     gc_root_count;
+#ifdef DEBUG_GC
+    const char *gc_root_files[CL_GC_ROOT_STACK_SIZE];
+    int         gc_root_lines[CL_GC_ROOT_STACK_SIZE];
+#endif
 
     /* ---- Reader state ---- */
     CL_Obj      rd_stream;

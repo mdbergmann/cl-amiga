@@ -49,6 +49,11 @@ void gc_mark_obj(CL_Obj obj);
 static void gc_mark_push(CL_Obj obj);
 static void *alloc_from_free_list(uint32_t *sizep);
 static void *alloc_from_bump(uint32_t size);
+#ifdef DEBUG_GC
+static void gc_verify_marked(void);
+static void gc_dump_roots_dbg(void);
+static int gc_verify_errors;  /* defined/reset inside gc_verify_marked */
+#endif
 
 /* Compaction forwarding table — maps old_offset/CL_ALIGN -> new_offset.
  * Allocated via platform_alloc during compaction, freed afterwards. */
@@ -758,6 +763,32 @@ void cl_gc_push_root(CL_Obj *root)
         abort();
     }
 }
+
+#ifdef DEBUG_GC
+void cl_gc_push_root_dbg(CL_Obj *root, const char *file, int line)
+{
+    if (gc_root_count > CL_GC_ROOT_STACK_SIZE || gc_root_count < 0) {
+        fprintf(stderr, "[GC-ROOT-BUG] push_root_dbg (%s:%d): gc_root_count=%d is CORRUPT (max=%d)\n",
+                file, line, gc_root_count, CL_GC_ROOT_STACK_SIZE);
+        cl_capture_backtrace();
+        fprintf(stderr, "%s", cl_backtrace_buf);
+        fflush(stderr);
+        abort();
+    }
+    if (gc_root_count < CL_GC_ROOT_STACK_SIZE) {
+        CT->gc_root_files[gc_root_count] = file;
+        CT->gc_root_lines[gc_root_count] = line;
+        gc_root_stack[gc_root_count++] = root;
+    } else {
+        fprintf(stderr, "FATAL: GC root stack overflow (%d/%d) at %s:%d — increase CL_GC_ROOT_STACK_SIZE\n",
+                gc_root_count, CL_GC_ROOT_STACK_SIZE, file, line);
+        cl_capture_backtrace();
+        fprintf(stderr, "%s", cl_backtrace_buf);
+        fflush(stderr);
+        abort();
+    }
+}
+#endif
 
 void cl_gc_pop_roots(int n)
 {
@@ -2199,6 +2230,15 @@ void cl_gc_compact(void)
     /* Pass 1: Mark (standard) */
     gc_mark();
 
+#ifdef DEBUG_GC
+    /* Verify parent→child mark invariant immediately after marking so that
+     * 'marked @X.field -> unmarked @Y' diagnostics fire at the exact
+     * compaction that would corrupt the heap (not on the next sweep-only GC). */
+    gc_verify_marked();
+    if (gc_verify_errors > 0)
+        gc_dump_roots_dbg();
+#endif
+
     /* Allocate forwarding table */
     if (!gc_fwd_alloc()) {
 #ifdef DEBUG_GC
@@ -2301,7 +2341,45 @@ void cl_gc_compact(void)
  * Must be called AFTER gc_mark() but BEFORE gc_sweep() (marks still set).
  * Reports any marked object that points to an unmarked heap object. */
 #ifdef DEBUG_GC
-static int gc_verify_errors;
+
+/* Dump the per-thread GC root stack with file:line tags (DEBUG_GC only).
+ * Call this after gc_verify_marked() finds errors to name the C frames that
+ * hold the suspicious roots — the same technique used to finger cl_cons's
+ * arg at mem.c:378 in the PROGN-cursor bug.
+ *
+ * Must #undef gc_root_count because thread.h defines it as (CT->gc_root_count),
+ * which collides with t->gc_root_count member access. */
+#undef gc_root_count
+static void gc_dump_roots_dbg(void)
+{
+    /* During STW GC all threads are stopped; cl_thread_list is stable — no lock needed. */
+    CL_Thread *t;
+    char buf[256];
+
+    for (t = cl_thread_list; t; t = t->next) {
+        int i;
+        snprintf(buf, sizeof(buf),
+                 "GC-ROOTS: thread %u — %d protected roots:\n",
+                 (unsigned)t->id, t->gc_root_count);
+        platform_write_string(buf);
+
+        for (i = 0; i < t->gc_root_count; i++) {
+            CL_Obj val = *t->gc_roots[i];
+            int is_heap = (!CL_NULL_P(val) && !CL_FIXNUM_P(val) && !CL_CHAR_P(val)
+                           && val != CL_UNBOUND && val < cl_heap.arena_size);
+            int marked  = (is_heap && CL_HDR_MARKED(CL_OBJ_TO_PTR(val)));
+
+            snprintf(buf, sizeof(buf),
+                     "  root[%d] val=0x%08x %s  @ %s:%d\n",
+                     i, (unsigned)val,
+                     is_heap ? (marked ? "(heap,marked)" : "(heap,UNMARKED)") : "(imm)",
+                     t->gc_root_files[i] ? t->gc_root_files[i] : "?",
+                     t->gc_root_lines[i]);
+            platform_write_string(buf);
+        }
+    }
+}
+#define gc_root_count (CT->gc_root_count)
 
 static void gc_verify_check_ref(CL_Obj parent_offset, const char *field,
                                 CL_Obj child)
@@ -2637,6 +2715,8 @@ void cl_gc(void)
     gc_mark();
 #ifdef DEBUG_GC
     gc_verify_marked();
+    if (gc_verify_errors > 0)
+        gc_dump_roots_dbg();
     /* After marking, find unmarked objects still referenced from VM stack.
      * Walk each VM stack slot: if it's a heap object that IS marked but is
      * a cons whose car or cdr points to an UNMARKED heap object, that child

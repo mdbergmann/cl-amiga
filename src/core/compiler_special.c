@@ -43,6 +43,8 @@ static void compile_destructure_pattern(CL_Compiler *c, int pos_slot,
         /* &optional — remaining elements are optional with defaults */
         if (elem == SYM_AMP_OPTIONAL) {
             CL_Obj rest = cl_cdr(pattern);
+            /* GC-protect cursor — compile_expr (default_val) can compact, making rest stale */
+            CL_GC_PROTECT(rest);
             while (!CL_NULL_P(rest)) {
                 CL_Obj opt = cl_car(rest);
                 CL_Obj var;
@@ -52,6 +54,7 @@ static void compile_destructure_pattern(CL_Compiler *c, int pos_slot,
                 if (elem == SYM_AMP_KEY) {
                     /* &key after &optional: break to outer loop to process keys */
                     pattern = rest;  /* rest starts at &key */
+                    CL_GC_UNPROTECT(1);
                     goto optional_done;
                 }
                 if (elem == SYM_AMP_REST || elem == SYM_AMP_BODY) {
@@ -63,6 +66,7 @@ static void compile_destructure_pattern(CL_Compiler *c, int pos_slot,
                     cl_emit(c, OP_STORE);
                     cl_emit(c, (uint8_t)slot);
                     cl_emit(c, OP_POP);
+                    CL_GC_UNPROTECT(1);
                     goto done;
                 }
 
@@ -128,6 +132,7 @@ static void compile_destructure_pattern(CL_Compiler *c, int pos_slot,
                 rest = cl_cdr(rest);
                 elem = CL_NULL_P(rest) ? CL_NIL : cl_car(rest);
             }
+            CL_GC_UNPROTECT(1);
             goto done;
         optional_done:
             /* Continue outer loop — pattern points to &key */
@@ -138,6 +143,8 @@ static void compile_destructure_pattern(CL_Compiler *c, int pos_slot,
         if (elem == SYM_AMP_KEY) {
             CL_Obj rest = cl_cdr(pattern);
             int scan_slot = alloc_temp_slot(env);
+            /* GC-protect cursor — compile_expr (default_val) can compact, making rest stale */
+            CL_GC_PROTECT(rest);
 
             while (!CL_NULL_P(rest)) {
                 CL_Obj spec = cl_car(rest);
@@ -270,6 +277,7 @@ static void compile_destructure_pattern(CL_Compiler *c, int pos_slot,
 
                 rest = cl_cdr(rest);
             }
+            CL_GC_UNPROTECT(1);
             goto done;
         }
 
@@ -332,6 +340,10 @@ void compile_destructuring_bind(CL_Compiler *c, CL_Obj form)
     int saved_tail = c->in_tail;
     int pos_slot;
 
+    /* GC-protect pattern and body — compile_expr can compact, making them stale */
+    CL_GC_PROTECT(pattern);
+    CL_GC_PROTECT(body);
+
     /* Compile expression, store in temp slot */
     c->in_tail = 0;
     compile_expr(c, expr);
@@ -347,6 +359,7 @@ void compile_destructuring_bind(CL_Compiler *c, CL_Obj form)
     c->in_tail = saved_tail;
     compile_body(c, body);
 
+    CL_GC_UNPROTECT(2);  /* pattern, body */
     cl_env_clear_boxed(env, saved_local_count);
 
     /* Restore scope */
@@ -1313,6 +1326,9 @@ CL_Obj compile_flet(CL_Compiler *c, CL_Obj form)
             cl_emit(c, OP_POP);
 
             /* Register in function namespace */
+            /* Re-read fname from protected cursor b: compile_expr above may
+             * have triggered compaction, staling the pre-compile snapshot. */
+            fname = cl_car(cl_car(b));
             cl_env_add_local_fun(env, fname, slot);
 
             b = cl_cdr(b);
@@ -1863,14 +1879,32 @@ void compile_do(CL_Compiler *c, CL_Obj form)
 
     c->in_tail = 0;
 
-    /* Parallel init: evaluate all init forms onto stack */
-    for (i = 0; i < n; i++) {
-        compile_expr(c, inits[i]);
+    /* GC-protect — compile_expr below can compact, making inits[]/vars[]/steps[]/
+     * end_test/result_forms/body stale.  var_clauses is re-walked by each cursor. */
+    CL_GC_PROTECT(var_clauses);
+    CL_GC_PROTECT(body);
+    CL_GC_PROTECT(end_test);
+    CL_GC_PROTECT(result_forms);
+
+    /* Parallel init: evaluate all init forms onto stack.
+     * Walk var_clauses with a protected cursor — compile_expr can compact inits[] stale. */
+    {
+        CL_Obj vc = var_clauses;
+        CL_GC_PROTECT(vc);
+        for (i = 0; i < n; i++) {
+            compile_expr(c, cl_car(cl_cdr(cl_car(vc))));
+            vc = cl_cdr(vc);
+        }
+        CL_GC_UNPROTECT(1);
     }
 
-    /* Register all vars as locals */
-    for (i = 0; i < n; i++) {
-        cl_env_add_local(env, vars[i]);
+    /* Register all vars as locals — re-walk var_clauses; compile_expr above made vars[] stale */
+    {
+        CL_Obj vc = var_clauses;
+        for (i = 0; i < n; i++) {
+            cl_env_add_local(env, cl_car(cl_car(vc)));
+            vc = cl_cdr(vc);
+        }
     }
 
     /* Store back-to-front */
@@ -1918,6 +1952,8 @@ void compile_do(CL_Compiler *c, CL_Obj form)
         CL_Obj b = body;
         CL_Obj clean = CL_NIL, tail = CL_NIL;
         CL_Obj tb_form;
+        /* GC-protect b and clean — cl_cons inside the loop can compact */
+        CL_GC_PROTECT(b);
         CL_GC_PROTECT(clean);
         CL_GC_PROTECT(tail);
         while (!CL_NULL_P(b)) {
@@ -1936,18 +1972,26 @@ void compile_do(CL_Compiler *c, CL_Obj form)
         CL_GC_PROTECT(tb_form);
         compile_expr(c, tb_form);
         cl_emit(c, OP_POP);  /* tagbody always leaves NIL */
-        CL_GC_UNPROTECT(3);
+        CL_GC_UNPROTECT(4);  /* tb_form, tail, clean, b */
     }
 
-    /* Parallel step: evaluate all step forms (or load current value) */
-    for (i = 0; i < n; i++) {
-        if (has_step[i]) {
-            compile_expr(c, steps[i]);
-        } else {
-            cl_emit(c, OP_LOAD);
-            cl_emit(c, (uint8_t)(saved_local_count + i));
-            if (do_boxed[i]) cl_emit(c, OP_CELL_REF);
+    /* Parallel step: evaluate all step forms (or load current value).
+     * Walk var_clauses with a protected cursor — compile_expr can compact steps[] stale. */
+    {
+        CL_Obj vc = var_clauses;
+        CL_GC_PROTECT(vc);
+        for (i = 0; i < n; i++) {
+            if (has_step[i]) {
+                CL_Obj clause = cl_car(vc);
+                compile_expr(c, cl_car(cl_cdr(cl_cdr(clause))));
+            } else {
+                cl_emit(c, OP_LOAD);
+                cl_emit(c, (uint8_t)(saved_local_count + i));
+                if (do_boxed[i]) cl_emit(c, OP_CELL_REF);
+            }
+            vc = cl_cdr(vc);
         }
+        CL_GC_UNPROTECT(1);
     }
 
     /* Store all back-to-front */
@@ -1977,6 +2021,8 @@ void compile_do(CL_Compiler *c, CL_Obj form)
     cl_emit(c, OP_STORE);
     cl_emit(c, (uint8_t)result_slot);
     cl_emit(c, OP_POP);
+
+    CL_GC_UNPROTECT(4);  /* var_clauses, body, end_test, result_forms */
 
     /* Patch all return-from NIL jumps to here */
     for (i = 0; i < bi->n_patches; i++)
@@ -2064,17 +2110,33 @@ void compile_do_star(CL_Compiler *c, CL_Obj form)
 
     c->in_tail = 0;
 
-    /* Sequential init: evaluate and store each var immediately */
-    for (i = 0; i < n; i++) {
-        compile_expr(c, inits[i]);
-        cl_env_add_local(env, vars[i]);
-        if (do_boxed[i]) {
-            cl_emit(c, OP_MAKE_CELL);
-            env->boxed[saved_local_count + i] = 1;
+    /* GC-protect — compile_expr below can compact, making inits[]/vars[]/steps[]/
+     * end_test/result_forms/body stale.  var_clauses is re-walked by each cursor. */
+    CL_GC_PROTECT(var_clauses);
+    CL_GC_PROTECT(body);
+    CL_GC_PROTECT(end_test);
+    CL_GC_PROTECT(result_forms);
+
+    /* Sequential init: evaluate and store each var immediately.
+     * Walk var_clauses with a protected cursor — compile_expr can compact inits[]/vars[] stale. */
+    {
+        CL_Obj vc = var_clauses;
+        CL_GC_PROTECT(vc);
+        for (i = 0; i < n; i++) {
+            CL_Obj clause = cl_car(vc);
+            compile_expr(c, cl_car(cl_cdr(clause)));
+            /* Re-read var from protected cursor after compile_expr may have compacted */
+            cl_env_add_local(env, cl_car(cl_car(vc)));
+            if (do_boxed[i]) {
+                cl_emit(c, OP_MAKE_CELL);
+                env->boxed[saved_local_count + i] = 1;
+            }
+            cl_emit(c, OP_STORE);
+            cl_emit(c, (uint8_t)(saved_local_count + i));
+            cl_emit(c, OP_POP);
+            vc = cl_cdr(vc);
         }
-        cl_emit(c, OP_STORE);
-        cl_emit(c, (uint8_t)(saved_local_count + i));
-        cl_emit(c, OP_POP);
+        CL_GC_UNPROTECT(1);
     }
 
     /* Allocate result slot for implicit block NIL */
@@ -2098,15 +2160,15 @@ void compile_do_star(CL_Compiler *c, CL_Obj form)
 
     /* Compile body as an implicit tagbody per CLHS 6.1.6.  (go tag) inside
      * a DO / DO* body must find tags defined there.  Strip leading
-     * (declare ...) forms the same way tagbody ignores them.
-     * `tail` is always reachable through `clean`'s cdr-chain, so only
-     * `clean` and the final tb_form need GC roots — keeps compiler
-     * root-stack pressure low (peak = 2 per nesting level). */
+     * (declare ...) forms the same way tagbody ignores them. */
     {
         CL_Obj b = body;
         CL_Obj clean = CL_NIL, tail = CL_NIL;
         CL_Obj tb_form;
+        /* GC-protect b, clean, and tail — cl_cons inside the loop can compact */
+        CL_GC_PROTECT(b);
         CL_GC_PROTECT(clean);
+        CL_GC_PROTECT(tail);
         while (!CL_NULL_P(b)) {
             CL_Obj bform = cl_car(b);
             if (!(CL_CONS_P(bform) && cl_car(bform) == SYM_DECLARE)) {
@@ -2123,21 +2185,29 @@ void compile_do_star(CL_Compiler *c, CL_Obj form)
         CL_GC_PROTECT(tb_form);
         compile_expr(c, tb_form);
         cl_emit(c, OP_POP);  /* tagbody always leaves NIL */
-        CL_GC_UNPROTECT(2);
+        CL_GC_UNPROTECT(4);  /* tb_form, tail, clean, b */
     }
 
-    /* Sequential step: evaluate and store each immediately */
-    for (i = 0; i < n; i++) {
-        if (has_step[i]) {
-            compile_expr(c, steps[i]);
-            if (do_boxed[i]) {
-                cl_emit(c, OP_CELL_SET_LOCAL);
-            } else {
-                cl_emit(c, OP_STORE);
+    /* Sequential step: evaluate and store each immediately.
+     * Walk var_clauses with a protected cursor — compile_expr can compact steps[] stale. */
+    {
+        CL_Obj vc = var_clauses;
+        CL_GC_PROTECT(vc);
+        for (i = 0; i < n; i++) {
+            if (has_step[i]) {
+                CL_Obj clause = cl_car(vc);
+                compile_expr(c, cl_car(cl_cdr(cl_cdr(clause))));
+                if (do_boxed[i]) {
+                    cl_emit(c, OP_CELL_SET_LOCAL);
+                } else {
+                    cl_emit(c, OP_STORE);
+                }
+                cl_emit(c, (uint8_t)(saved_local_count + i));
+                cl_emit(c, OP_POP);
             }
-            cl_emit(c, (uint8_t)(saved_local_count + i));
-            cl_emit(c, OP_POP);
+            vc = cl_cdr(vc);
         }
+        CL_GC_UNPROTECT(1);
     }
 
     cl_emit_loop_jump(c, OP_JMP, loop_start);
@@ -2155,6 +2225,8 @@ void compile_do_star(CL_Compiler *c, CL_Obj form)
     cl_emit(c, OP_STORE);
     cl_emit(c, (uint8_t)result_slot);
     cl_emit(c, OP_POP);
+
+    CL_GC_UNPROTECT(4);  /* var_clauses, body, end_test, result_forms */
 
     for (i = 0; i < bi->n_patches; i++)
         cl_patch_jump(c, bi->exit_patches[i]);
@@ -2182,21 +2254,26 @@ CL_Obj compile_handler_bind(CL_Compiler *c, CL_Obj form)
     CL_Obj cl;
     CL_TailFrame *tf;
 
-    /* For each (type handler) clause: compile handler, push onto handler stack */
-    CL_GC_PROTECT(clauses);
-    for (cl = clauses; !CL_NULL_P(cl); cl = cl_cdr(cl)) {
-        CL_Obj clause = cl_car(cl);
-        CL_Obj type_sym = cl_car(clause);
+    /* For each (type handler) clause: compile handler, push onto handler stack.
+     * Protect body (used after the loop) and the cursor cl — compile_expr can
+     * compact, making bare locals stale.  Re-read type_sym after compile_expr. */
+    CL_GC_PROTECT(body);
+    cl = clauses;
+    CL_GC_PROTECT(cl);
+    while (!CL_NULL_P(cl)) {
+        CL_Obj clause      = cl_car(cl);
         CL_Obj handler_expr = cl_car(cl_cdr(clause));
         int type_idx;
 
-        compile_expr(c, handler_expr);    /* Push handler closure on VM stack */
-        type_idx = cl_add_constant(c, type_sym);
+        compile_expr(c, handler_expr);   /* Push handler closure on VM stack */
+        /* Re-read type_sym after compile_expr — compaction may have moved it */
+        type_idx = cl_add_constant(c, cl_car(cl_car(cl)));
         cl_emit(c, OP_HANDLER_PUSH);
         cl_emit_u16(c, (uint16_t)type_idx);
         count++;
+        cl = cl_cdr(cl);
     }
-    CL_GC_UNPROTECT(1);
+    CL_GC_UNPROTECT(2); /* cl, body */
 
     tf = cl_tail_push(c);
     tf->kind = CL_TAIL_HANDLER_BIND;
@@ -2218,9 +2295,13 @@ static CL_Obj parse_restart_options(CL_Obj forms, CL_Obj *report,
     static CL_Obj KW_TEST = CL_NIL;
 
     if (CL_NULL_P(KW_REPORT)) {
+        /* cl_intern_keyword allocates on first call; protect `forms` so the
+         * caller's clause tree isn't stale when we walk it after returning. */
+        CL_GC_PROTECT(forms);
         KW_REPORT = cl_intern_keyword("REPORT", 6);
         KW_INTERACTIVE = cl_intern_keyword("INTERACTIVE", 11);
         KW_TEST = cl_intern_keyword("TEST", 4);
+        CL_GC_UNPROTECT(1);
     }
 
     *report = CL_UNBOUND;
@@ -2303,17 +2384,26 @@ void compile_restart_case(CL_Compiler *c, CL_Obj form)
     catch_pos = c->code_pos;
     cl_emit_i32(c, 0);  /* placeholder for landing offset */
 
-    /* Push restart bindings: for each clause, compile lambda + push tag + OP_RESTART_PUSH */
-    CL_GC_PROTECT(clauses);
-    for (cl_iter = clauses; !CL_NULL_P(cl_iter); cl_iter = cl_cdr(cl_iter)) {
+    /* Push restart bindings: for each clause, compile lambda + push tag + OP_RESTART_PUSH.
+     * Protect the cursor and catch_tag — compile_expr/cl_cons inside the loop can
+     * compact, making bare locals stale.  Re-read restart_name after allocating calls. */
+    cl_iter = clauses;
+    CL_GC_PROTECT(cl_iter);    /* loop cursor */
+    CL_GC_PROTECT(catch_tag);  /* used in every iteration after compile_expr */
+    CL_GC_PROTECT(main_form);  /* used after the loop; compaction inside loop stales it */
+    while (!CL_NULL_P(cl_iter)) {
         CL_Obj clause = cl_car(cl_iter);
-        CL_Obj restart_name = cl_car(clause);
         CL_Obj params = cl_car(cl_cdr(clause));
         CL_Obj report = CL_UNBOUND, interactive = CL_UNBOUND, test = CL_UNBOUND;
         CL_Obj clause_body = parse_restart_options(cl_cdr(cl_cdr(clause)),
                                                    &report, &interactive, &test);
         CL_Obj lambda_form;
         int name_idx;
+
+        /* Re-read params from the protected cl_iter: parse_restart_options
+         * may have triggered a compacting GC (keyword intern on first call),
+         * leaving the pre-call `params` value stale. */
+        params = cl_car(cl_cdr(cl_car(cl_iter)));
 
         /* Protect the option expressions across the allocating compile
          * calls below — compaction is a moving GC. */
@@ -2335,12 +2425,14 @@ void compile_restart_case(CL_Compiler *c, CL_Obj form)
 
         /* OP_RESTART_PUSH: pops tag/test/interactive/report/handler, builds
          * the first-class restart object, pushes the restart binding */
-        name_idx = cl_add_constant(c, restart_name);
+        /* Re-read restart_name after allocating calls — compaction may have moved it */
+        name_idx = cl_add_constant(c, cl_car(cl_car(cl_iter)));
         cl_emit(c, OP_RESTART_PUSH);
         cl_emit_u16(c, (uint16_t)name_idx);
         count++;
+        cl_iter = cl_cdr(cl_iter);
     }
-    CL_GC_UNPROTECT(1);
+    CL_GC_UNPROTECT(3); /* main_form, catch_tag, cl_iter */
 
     /* Compile the main form */
     compile_expr(c, main_form);

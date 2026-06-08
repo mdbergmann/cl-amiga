@@ -1,7 +1,7 @@
 ---
 id: 0023-fix-remaining-gc-under-load-issue
 type: bug
-status: ready
+status: done
 title: fix remaining gc under load issue
 ---
 
