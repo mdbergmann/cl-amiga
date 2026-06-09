@@ -464,18 +464,10 @@ static CL_Obj bi_equal(CL_Obj *args, int n)
         }
         return SYM_T;
     }
-    if (CL_VECTOR_P(a) && CL_VECTOR_P(b)) {
-        CL_Vector *va = (CL_Vector *)CL_OBJ_TO_PTR(a);
-        CL_Vector *vb = (CL_Vector *)CL_OBJ_TO_PTR(b);
-        uint32_t i;
-        if (va->length != vb->length) return CL_NIL;
-        for (i = 0; i < va->length; i++) {
-            CL_Obj pair[2];
-            pair[0] = va->data[i]; pair[1] = vb->data[i];
-            if (CL_NULL_P(bi_equal(pair, 2))) return CL_NIL;
-        }
-        return SYM_T;
-    }
+    /* EQUAL on arrays (CLHS): an array is equal to another object only if they
+       are EQ — EXCEPT strings (handled above) and bit vectors, which are
+       compared element-wise. General vectors and multidimensional arrays are
+       therefore NOT descended; eq was already checked at the top. */
     if (CL_BIT_VECTOR_P(a) && CL_BIT_VECTOR_P(b)) {
         CL_BitVector *ba = (CL_BitVector *)CL_OBJ_TO_PTR(a);
         CL_BitVector *bb = (CL_BitVector *)CL_OBJ_TO_PTR(b);
@@ -491,6 +483,12 @@ static CL_Obj bi_equal(CL_Obj *args, int n)
     }
     return CL_NIL;
 }
+
+/* Recursive EQUALP predicate, used as a callback for hash-table comparison
+   (cl_hashtable_equalp lives in builtins_hashtable.c where the bucket-walking
+   helpers are visible). EQUALP performs no allocation, so no GC protection is
+   needed across the callback. */
+static int cl_equalp_pred(CL_Obj a, CL_Obj b);
 
 /* EQUALP: case-insensitive, numeric =, recursive on arrays/structs */
 static CL_Obj bi_equalp(CL_Obj *args, int n)
@@ -530,15 +528,24 @@ static CL_Obj bi_equalp(CL_Obj *args, int n)
         }
         return SYM_T;
     }
-    /* Vectors/arrays: element-wise equalp */
+    /* Vectors/arrays (CLHS EQUALP): same rank, matching array-dimension values
+       (fill pointers are irrelevant — array-dimension ignores them), and all
+       corresponding elements (row-major-aref order) are equalp. Element type
+       and array specialization are ignored. */
     if (CL_VECTOR_P(a) && CL_VECTOR_P(b)) {
         CL_Vector *va = (CL_Vector *)CL_OBJ_TO_PTR(a);
         CL_Vector *vb = (CL_Vector *)CL_OBJ_TO_PTR(b);
+        CL_Obj *da, *db;
         uint32_t i;
-        if (va->length != vb->length) return CL_NIL;
+        if (va->rank != vb->rank) return CL_NIL;
+        for (i = 0; i < va->rank; i++)        /* compare dimensions (rank>1) */
+            if (va->data[i] != vb->data[i]) return CL_NIL;
+        if (va->length != vb->length) return CL_NIL;  /* array-dimension (ignores fill pointer) */
+        da = cl_vector_data(va);
+        db = cl_vector_data(vb);
         for (i = 0; i < va->length; i++) {
             CL_Obj pair[2];
-            pair[0] = va->data[i]; pair[1] = vb->data[i];
+            pair[0] = da[i]; pair[1] = db[i];
             if (CL_NULL_P(bi_equalp(pair, 2))) return CL_NIL;
         }
         return SYM_T;
@@ -567,10 +574,13 @@ static CL_Obj bi_equalp(CL_Obj *args, int n)
         }
         return SYM_T;
     }
-    /* Hash tables: same count, same test, all keys present with equalp values */
+    /* Hash tables (CLHS): same test, same number of entries, and every key in
+       one is present in the other (under the table's test) with an equalp
+       value. */
     if (CL_HASHTABLE_P(a) && CL_HASHTABLE_P(b)) {
-        /* Simplified: just check same object or use equal */
-        return bi_equal(args, n);
+        extern int cl_hashtable_equalp(CL_Obj a, CL_Obj b,
+                                       int (*val_eq)(CL_Obj, CL_Obj));
+        return cl_hashtable_equalp(a, b, cl_equalp_pred) ? SYM_T : CL_NIL;
     }
     /* Pathnames: same as equal */
     if (CL_PATHNAME_P(a) && CL_PATHNAME_P(b)) {
@@ -578,6 +588,14 @@ static CL_Obj bi_equalp(CL_Obj *args, int n)
         return cl_pathname_equal(a, b) ? SYM_T : CL_NIL;
     }
     return CL_NIL;
+}
+
+static int cl_equalp_pred(CL_Obj a, CL_Obj b)
+{
+    CL_Obj pair[2];
+    pair[0] = a;
+    pair[1] = b;
+    return !CL_NULL_P(bi_equalp(pair, 2));
 }
 
 static CL_Obj bi_not(CL_Obj *args, int n)

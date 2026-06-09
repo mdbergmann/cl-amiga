@@ -1703,9 +1703,10 @@
 ; General vector — value type unconstrained.
 (check "walker-aset-vector-returns-val" 99
   (walker-aset-1 (make-array 3 :initial-element 0) 1 99))
-(check "walker-aset-vector-mutates" #(0 99 0)
-  (let ((v (make-array 3 :initial-element 0)))
-    (walker-aset-1 v 1 99) v))
+(check "walker-aset-vector-mutates" t
+  (equalp #(0 99 0)
+          (let ((v (make-array 3 :initial-element 0)))
+            (walker-aset-1 v 1 99) v)))
 (check "walker-aset-vector-symbol" 'tag
   (let ((v (make-array 3 :initial-element 0)))
     (walker-aset-1 v 2 'tag)

@@ -7,6 +7,7 @@
 #include "color.h"
 #include "stream.h"
 #include "fasl.h"
+#include "compiler.h"
 #include "../platform/platform.h"
 #include <stdio.h>
 #include <stdarg.h>
@@ -44,6 +45,7 @@ int cl_error_frame_push(void)
     cl_error_frames[cl_error_frame_top].saved_debugger_depth = cl_debugger_depth;
     cl_error_frames[cl_error_frame_top].saved_in_debugger = cl_in_debugger;
     cl_error_frames[cl_error_frame_top].saved_fasl_readers = cl_fasl_reader_save_count();
+    cl_error_frames[cl_error_frame_top].saved_active_compiler = cl_compiler_mark();
     return cl_error_frame_top++;
 }
 
@@ -93,6 +95,7 @@ CL_NORETURN static void cl_error_unwind(int code)
         cl_debugger_depth = cl_error_frames[cl_error_frame_top - 1].saved_debugger_depth;
         cl_in_debugger = cl_error_frames[cl_error_frame_top - 1].saved_in_debugger;
         cl_fasl_reader_restore_count(cl_error_frames[cl_error_frame_top - 1].saved_fasl_readers);
+        cl_compiler_force_restore_to(cl_error_frames[cl_error_frame_top - 1].saved_active_compiler);
         CL_LONGJMP(cl_error_frames[cl_error_frame_top - 1].buf, code);
     }
 
@@ -116,6 +119,8 @@ CL_NORETURN static void cl_error_unwind(int code)
         /* Drop any active FASL readers — their stack-local CL_FaslReaders are
          * unwound away.  Restore to the outermost frame's snapshot (normally 0). */
         cl_fasl_reader_restore_count(cl_error_frames[cl_error_frame_top - 1].saved_fasl_readers);
+        /* Free any compilers stranded by the unwound compile (see field doc). */
+        cl_compiler_force_restore_to(cl_error_frames[cl_error_frame_top - 1].saved_active_compiler);
         CL_LONGJMP(cl_error_frames[cl_error_frame_top - 1].buf, code);
     }
 
@@ -160,6 +165,7 @@ void cl_error(int code, const char *fmt, ...)
             gc_root_count = cl_error_frames[cl_error_frame_top - 1].saved_gc_roots;
             cl_jit_restore_depth(cl_error_frames[cl_error_frame_top - 1].saved_jit_depth);
             cl_fasl_reader_restore_count(cl_error_frames[cl_error_frame_top - 1].saved_fasl_readers);
+            cl_compiler_force_restore_to(cl_error_frames[cl_error_frame_top - 1].saved_active_compiler);
             CL_LONGJMP(cl_error_frames[cl_error_frame_top - 1].buf, code);
         }
         exit(cl_exit_code);

@@ -397,6 +397,48 @@ static CL_Obj bi_gethash(CL_Obj *args, int n)
     return default_val;
 }
 
+/* EQUALP comparison of two hash tables (CLHS equalp semantics).
+   Two hash tables are equalp iff they have the same test, the same number of
+   entries, and for each key in A there is an entry in B (matched under the
+   table's test) whose value satisfies VAL_EQ. VAL_EQ supplies the recursive
+   equalp on values (see cl_equalp_pred in builtins.c). Equalp does no
+   allocation, so no GC protection is needed here. Called from bi_equalp. */
+int cl_hashtable_equalp(CL_Obj a_obj, CL_Obj b_obj,
+                        int (*val_eq)(CL_Obj, CL_Obj))
+{
+    CL_Hashtable *a = (CL_Hashtable *)CL_OBJ_TO_PTR(a_obj);
+    CL_Hashtable *b = (CL_Hashtable *)CL_OBJ_TO_PTR(b_obj);
+    uint32_t i;
+
+    if (a == b) return 1;
+    if (a->test != b->test) return 0;
+    if (a->count != b->count) return 0;
+
+    for (i = 0; i < a->bucket_count; i++) {
+        CL_Obj chain = ht_get_buckets(a)[i];
+        while (!CL_NULL_P(chain)) {
+            CL_Obj pair = cl_car(chain);
+            CL_Obj key  = cl_car(pair);
+            CL_Obj aval = cl_cdr(pair);
+            uint32_t bidx = hash_obj(key, b->test) & (b->bucket_count - 1);
+            CL_Obj bchain = ht_get_buckets(b)[bidx];
+            int found = 0;
+            while (!CL_NULL_P(bchain)) {
+                CL_Obj bpair = cl_car(bchain);
+                if (keys_equal(cl_car(bpair), key, b->test)) {
+                    if (!val_eq(aval, cl_cdr(bpair))) return 0;
+                    found = 1;
+                    break;
+                }
+                bchain = cl_cdr(bchain);
+            }
+            if (!found) return 0;
+            chain = cl_cdr(chain);
+        }
+    }
+    return 1;
+}
+
 static CL_Obj bi_setf_gethash(CL_Obj *args, int n)
 {
     /* (%SETF-GETHASH key hash-table value) — set and return value */
