@@ -566,6 +566,76 @@ TEST(read_2d_array_lowercase)
     }
 }
 
+/* --- #n= / #n# shared-and-circular-structure reader macros (CLHS 2.4.8.15-16) ---
+ * Regression: jzon's jzon.lisp uses (macrolet ((#1=#:|| () ...)) ... (#1# ...))
+ * which previously errored "Invalid radix prefix #1=", breaking the whole load. */
+
+TEST(read_label_value)
+{
+    /* #n=object evaluates to object */
+    CL_Obj obj = reads("#1=42");
+    ASSERT(CL_FIXNUM_P(obj));
+    ASSERT_EQ_INT(CL_FIXNUM_VAL(obj), 42);
+}
+
+TEST(read_label_shared)
+{
+    /* #1=#:foo ... #1# — both positions are the SAME (eq) object */
+    CL_Obj obj = reads("(#1=#:foo #1#)");
+    CL_Obj a, b;
+    ASSERT(CL_CONS_P(obj));
+    a = cl_car(obj);
+    b = cl_car(cl_cdr(obj));
+    ASSERT(CL_SYMBOL_P(a));
+    ASSERT(a == b);                       /* shared identity preserved */
+}
+
+TEST(read_label_shared_multidigit)
+{
+    /* Multi-digit labels parse correctly */
+    CL_Obj obj = reads("(#10=#:bar #10#)");
+    ASSERT(CL_CONS_P(obj));
+    ASSERT(cl_car(obj) == cl_car(cl_cdr(obj)));
+}
+
+TEST(read_label_circular_list)
+{
+    /* #1=(1 2 . #1#) — genuinely circular: the tail points back at the head */
+    CL_Obj obj = reads("#1=(1 2 . #1#)");
+    ASSERT(CL_CONS_P(obj));
+    ASSERT_EQ_INT(CL_FIXNUM_VAL(cl_car(obj)), 1);
+    ASSERT_EQ_INT(CL_FIXNUM_VAL(cl_car(cl_cdr(obj))), 2);
+    /* (cddr obj) is spliced back to obj itself, not a leftover placeholder */
+    ASSERT(cl_cdr(cl_cdr(obj)) == obj);
+}
+
+TEST(read_label_independent_per_read)
+{
+    /* Labels are scoped to one READ — reusing #1= in a second read is fine */
+    CL_Obj a = reads("#1=(7)");
+    CL_Obj b = reads("#1=(8)");
+    ASSERT(CL_CONS_P(a) && CL_CONS_P(b));
+    ASSERT_EQ_INT(CL_FIXNUM_VAL(cl_car(a)), 7);
+    ASSERT_EQ_INT(CL_FIXNUM_VAL(cl_car(b)), 8);
+}
+
+TEST(read_label_nil_dotpair)
+{
+    /* #1=(nil . nil) must not be misidentified as the forward-ref placeholder.
+     * Regression for the CL_READER_SKIP sentinel fix: the old code checked
+     * car==NIL && cdr==NIL, which matched a real (nil . nil) value and
+     * incorrectly triggered reader_patch_labels on a non-circular structure. */
+    CL_Obj obj = reads("(#1=(nil . nil) #1#)");
+    CL_Obj a, b;
+    ASSERT(CL_CONS_P(obj));
+    a = cl_car(obj);          /* the labeled (nil . nil) cons */
+    b = cl_car(cl_cdr(obj));  /* #1# — same cons, shared identity */
+    ASSERT(CL_CONS_P(a));
+    ASSERT(CL_NULL_P(cl_car(a)));
+    ASSERT(CL_NULL_P(cl_cdr(a)));
+    ASSERT(a == b);           /* shared, not patched incorrectly */
+}
+
 int main(void)
 {
     test_init();
@@ -634,6 +704,14 @@ int main(void)
     RUN(read_1d_array_reader);
     RUN(read_0d_array);
     RUN(read_2d_array_lowercase);
+
+    /* #n= / #n# shared-and-circular-structure labels */
+    RUN(read_label_value);
+    RUN(read_label_shared);
+    RUN(read_label_shared_multidigit);
+    RUN(read_label_circular_list);
+    RUN(read_label_independent_per_read);
+    RUN(read_label_nil_dotpair);
 
     /* Regression: nested reader invocation must not clobber outer stream */
     RUN(nested_read_preserves_outer_stream);

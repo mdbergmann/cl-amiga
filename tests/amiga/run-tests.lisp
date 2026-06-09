@@ -1484,6 +1484,26 @@
 ; and reference it in the body, all parsed as one top-level form).
 (check "uninterned shared in one read" t (eq '#:X '#:X))
 
+; #n= / #n# shared-and-circular-structure reader labels (CLHS 2.4.8.15-16).
+; Regression: jzon's jzon.lisp uses (macrolet ((#1=#:|| () ...)) ... (#1# ...))
+; which previously errored "Invalid radix prefix #1=", blocking the whole load.
+(check "label value" 42 (read-from-string "#1=42"))
+(check "label shared eq" t (let ((x (read-from-string "(#1=#:foo #1#)")))
+                             (eq (first x) (second x))))
+(check "label multidigit eq" t (let ((x (read-from-string "(#10=#:bar #10#)")))
+                                 (eq (first x) (second x))))
+(check "label circular car" 1 (car (read-from-string "#1=(1 2 . #1#)")))
+(check "label circular self" t (let ((c (read-from-string "#1=(1 2 . #1#)")))
+                                 (eq (cddr c) c)))
+(check "label scoped per read" 8 (progn (read-from-string "#1=(7)")
+                                        (car (read-from-string "#1=(8)"))))
+; Regression: (nil . nil) label value must not be mistaken for the placeholder
+(check "label nil dotpair shared" t
+  (let* ((x (read-from-string "(#1=(nil . nil) #1#)"))
+         (a (car x))
+         (b (cadr x)))
+    (and (null (car a)) (null (cdr a)) (eq a b))))
+
 ; Printer: uninterned
 (check "print uninterned" "#:HELLO" (prin1-to-string '#:HELLO))
 
