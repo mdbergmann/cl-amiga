@@ -136,6 +136,14 @@ typedef struct CL_Thread_s {
                                 * Per CLHS 2.4.8.5: within one READ, all
                                 * #:foo with the same name denote the
                                 * same uninterned symbol. */
+    CL_Obj      rd_labels;     /* Alist (label-fixnum . object) for the
+                                * #n= / #n# shared/circular-structure reader
+                                * macros (CLHS 2.4.8.15-16).  Scoped to one
+                                * top-level READ call. */
+    int         rd_label_backrefs; /* count of #n# that resolved to a still-
+                                * incomplete label (i.e. a circular forward
+                                * reference); when >0, #n= must fix up the
+                                * placeholder after reading its object. */
     const char *current_source_file;
     uint16_t    current_file_id;
 

@@ -1254,6 +1254,7 @@ static void gc_mark_thread_roots(CL_Thread *t)
      * symbol alist (so #:foo identity survives a GC during a long READ). */
     gc_mark_obj(t->rd_stream);
     gc_mark_obj(t->rd_uninterned);
+    gc_mark_obj(t->rd_labels);
 
     /* Printer in-progress object stack (re-entrancy detection in
      * print-object-hook).  Pinned across hook apply so a GC inside the
@@ -1982,6 +1983,7 @@ static void gc_update_thread_roots(CL_Thread *t)
      * as a SIGSEGV in gc_mark on sento workloads that compact under load. */
     gc_update_slot(&t->rd_stream);
     gc_update_slot(&t->rd_uninterned);
+    gc_update_slot(&t->rd_labels);
 
     /* Printer in-progress object stack — heap pointers can be relocated
      * by compaction during a Lisp print-object hook (which can allocate). */

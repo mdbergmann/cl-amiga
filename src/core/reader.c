@@ -41,6 +41,8 @@ static int cl_strcasecmp(const char *a, const char *b)
 #define read_suppress  (CT->rd_suppress)
 #define reader_line    (CT->rd_line)
 #define rd_uninterned  (CT->rd_uninterned)
+#define rd_labels      (CT->rd_labels)
+#define rd_label_backrefs (CT->rd_label_backrefs)
 /* cl_current_source_file and cl_current_file_id are macros from thread.h */
 
 /* Source location tracking (shared, not per-thread) */
@@ -307,6 +309,120 @@ static CL_Obj read_radix_number(int radix)
         if (neg) result = cl_arith_negate(result);
         CL_GC_UNPROTECT(1);
         return result;
+    }
+}
+
+/* --- #n= / #n# shared-and-circular-structure reader macros (CLHS 2.4.8.15-16) ---
+ *
+ * rd_labels is an alist (label-fixnum . object) scoped to one top-level READ.
+ * #n= registers a unique placeholder cons for label n, reads its object, then
+ * rebinds n to that object and (only when a circular forward reference actually
+ * occurred) patches the placeholder out of the structure.  #n# returns whatever
+ * is currently bound to n — the final object, or the placeholder for a still-in-
+ * progress (circular) definition. */
+
+/* Locate the alist cell for label n; returns the (n . obj) cons or CL_NIL. */
+static CL_Obj reader_label_cell(int n)
+{
+    CL_Obj p = rd_labels;
+    CL_Obj key = CL_MAKE_FIXNUM(n);
+    while (CL_CONS_P(p)) {
+        CL_Obj cell = cl_car(p);
+        if (CL_CONS_P(cell) && cl_car(cell) == key)
+            return cell;
+        p = cl_cdr(p);
+    }
+    return CL_NIL;
+}
+
+/* Replace every reference to `from` reachable through CONS slots of `root`
+ * with `to`.  Non-allocating (so no GC can move objects mid-walk); a bounded
+ * visited set makes it terminate on the cyclic structure it is fixing up.
+ * Used only for genuinely circular #n= definitions — the common shared-label
+ * case (e.g. jzon's #1=#:|| ... #1#) never reaches here. */
+static void reader_patch_labels(CL_Obj root, CL_Obj from, CL_Obj to)
+{
+    enum { MAXN = 256 };
+    CL_Obj stack[MAXN];
+    CL_Obj visited[MAXN];
+    int sp = 0, nv = 0, i;
+
+    if (!CL_CONS_P(root)) return;
+    stack[sp++] = root;
+    while (sp > 0) {
+        CL_Obj node = stack[--sp];
+        CL_Cons *c;
+        int seen = 0;
+        for (i = 0; i < nv; i++)
+            if (visited[i] == node) { seen = 1; break; }
+        if (seen) continue;
+        if (nv >= MAXN) return;        /* structure too large — degrade safely */
+        visited[nv++] = node;
+        c = (CL_Cons *)CL_OBJ_TO_PTR(node);
+        if (c->car == from) c->car = to;
+        else if (CL_CONS_P(c->car) && sp < MAXN) stack[sp++] = c->car;
+        if (c->cdr == from) c->cdr = to;
+        else if (CL_CONS_P(c->cdr) && sp < MAXN) stack[sp++] = c->cdr;
+    }
+}
+
+/* #n= — read and label an object. */
+static CL_Obj read_labeled_object(int n)
+{
+    CL_Obj placeholder, cell, obj;
+    int backrefs_before;
+
+    if (read_suppress) return read_expr();   /* in a #+/#- false branch */
+
+    if (!CL_NULL_P(reader_label_cell(n))) {
+        cl_reader_error(CL_ERR_PARSE, "Reader label #%d= already defined", n);
+        return CL_NIL;
+    }
+
+    /* Unique placeholder so any #n# inside the object can refer back to us.
+     * CL_READER_SKIP as car distinguishes it from a real (nil . nil) value. */
+    placeholder = cl_cons(CL_READER_SKIP, CL_NIL);
+    CL_GC_PROTECT(placeholder);
+    cell = cl_cons(CL_MAKE_FIXNUM(n), placeholder);
+    CL_GC_PROTECT(cell);
+    rd_labels = cl_cons(cell, rd_labels);
+
+    backrefs_before = rd_label_backrefs;
+    obj = read_expr();
+    CL_GC_PROTECT(obj);
+
+    /* Rebind label to the real object and, if the object referred back to the
+     * placeholder (circular), splice the object in for the placeholder. */
+    ((CL_Cons *)CL_OBJ_TO_PTR(cell))->cdr = obj;
+    if (rd_label_backrefs > backrefs_before && obj != placeholder)
+        reader_patch_labels(obj, placeholder, obj);
+
+    CL_GC_UNPROTECT(3);              /* obj, cell, placeholder */
+    return obj;
+}
+
+/* #n# — reference a previously labeled object. */
+static CL_Obj read_label_reference(int n)
+{
+    CL_Obj cell;
+    if (read_suppress) return CL_NIL;
+    cell = reader_label_cell(n);
+    if (CL_NULL_P(cell)) {
+        cl_reader_error(CL_ERR_PARSE, "Reference to undefined reader label #%d#", n);
+        return CL_NIL;
+    }
+    /* A reference to a not-yet-completed label (placeholder still in place)
+     * means a circular forward reference — flag it so #n= patches afterward.
+     * Detect the placeholder by its CL_READER_SKIP car (not content-equality
+     * against NIL/NIL, which would false-positive on a real (nil . nil) value). */
+    {
+        CL_Obj val = cl_cdr(cell);
+        if (CL_CONS_P(val)) {
+            CL_Cons *vc = (CL_Cons *)CL_OBJ_TO_PTR(val);
+            if (vc->car == CL_READER_SKIP)
+                rd_label_backrefs++;
+        }
+        return val;
     }
 }
 
@@ -1345,6 +1461,14 @@ static CL_Obj read_expr(void)
                     }
                     return arr;
                 }
+                if (ch == '=') {
+                    /* #n= — label the following object (CLHS 2.4.8.15) */
+                    return read_labeled_object(num_val);
+                }
+                if (ch == '#') {
+                    /* #n# — reference a labeled object (CLHS 2.4.8.16) */
+                    return read_label_reference(num_val);
+                }
                 if (ch >= '0' && ch <= '9') {
                     num_val = num_val * 10 + (ch - '0');
                 } else {
@@ -1421,6 +1545,8 @@ CL_Obj cl_read_from_stream(CL_Obj stream)
     int    saved_eof         = eof_seen;
     int    saved_line        = reader_line;
     CL_Obj saved_uninterned  = rd_uninterned;
+    CL_Obj saved_labels      = rd_labels;
+    int    saved_backrefs    = rd_label_backrefs;
     CL_Stream *st = (CL_Stream *)CL_OBJ_TO_PTR(stream);
     CL_Obj result;
 
@@ -1428,6 +1554,11 @@ CL_Obj cl_read_from_stream(CL_Obj stream)
     eof_seen = 0;
     reader_line = st->line ? (int)st->line : 1;
     rd_uninterned = CL_NIL;
+    rd_labels = CL_NIL;
+    rd_label_backrefs = 0;
+    /* Protect saved alists: read_expr() can compact the heap, staling C locals */
+    CL_GC_PROTECT(saved_labels);
+    CL_GC_PROTECT(saved_uninterned);
     do { result = read_expr(); } while (result == CL_READER_SKIP && !eof_seen);
 
     st->line = (uint32_t)reader_line;
@@ -1436,6 +1567,9 @@ CL_Obj cl_read_from_stream(CL_Obj stream)
     reader_line   = saved_line;
     eof_seen      = saved_eof;
     rd_uninterned = saved_uninterned;
+    rd_labels     = saved_labels;
+    rd_label_backrefs = saved_backrefs;
+    CL_GC_UNPROTECT(2); /* saved_labels, saved_uninterned */
     return result;
 }
 
@@ -1445,10 +1579,15 @@ CL_Obj cl_read_from_string(CL_ReadStream *stream)
     int    saved_eof         = eof_seen;
     int    saved_line        = reader_line;
     CL_Obj saved_uninterned  = rd_uninterned;
+    CL_Obj saved_labels      = rd_labels;
+    int    saved_backrefs    = rd_label_backrefs;
     CL_Obj str, s;
     CL_Stream *st;
     CL_Obj result;
 
+    /* Protect saved alists before any allocation — cl_make_string can compact */
+    CL_GC_PROTECT(saved_labels);
+    CL_GC_PROTECT(saved_uninterned);
     str = cl_make_string(stream->buf, (uint32_t)stream->len);
     CL_GC_PROTECT(str);
     s = cl_make_string_input_stream(str, (uint32_t)stream->pos, (uint32_t)stream->len);
@@ -1487,6 +1626,8 @@ CL_Obj cl_read_from_string(CL_ReadStream *stream)
     reader_line = stream->line ? stream->line : 1;
     eof_seen = 0;
     rd_uninterned = CL_NIL;
+    rd_labels = CL_NIL;
+    rd_label_backrefs = 0;
 
     do { result = read_expr(); } while (result == CL_READER_SKIP && !eof_seen);
 
@@ -1500,7 +1641,9 @@ CL_Obj cl_read_from_string(CL_ReadStream *stream)
     reader_line   = saved_line;
     eof_seen      = saved_eof;
     rd_uninterned = saved_uninterned;
-    CL_GC_UNPROTECT(1); /* s */
+    rd_labels     = saved_labels;
+    rd_label_backrefs = saved_backrefs;
+    CL_GC_UNPROTECT(3); /* s, saved_labels, saved_uninterned */
     return result;
 }
 
