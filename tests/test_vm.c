@@ -2881,6 +2881,56 @@ TEST(eval_equalp)
         "(stringp (make-array 3 :element-type 'character :initial-element #\\x))"), "T");
     ASSERT_STR_EQ(eval_print(
         "(stringp (make-array '(3) :element-type 'base-char :initial-element #\\x))"), "T");
+
+    /* Hash tables (CLHS): same test, same count, equalp values per key.
+       Regression: previously EQUALP fell back to identity for hash tables,
+       so two structurally-equal tables compared NIL — this broke alexandria
+       DEFINE-CONSTANT (used by babel) which re-evaluates constants under
+       EQUALP. */
+    ASSERT_STR_EQ(eval_print(
+        "(let ((a (make-hash-table)) (b (make-hash-table)))"
+        "  (dotimes (i 50) (setf (gethash i a) (* i i)) (setf (gethash i b) (* i i)))"
+        "  (equalp a b))"), "T");
+    /* Differing value for one key -> not equalp */
+    ASSERT_STR_EQ(eval_print(
+        "(let ((a (make-hash-table)) (b (make-hash-table)))"
+        "  (dotimes (i 50) (setf (gethash i a) (* i i)) (setf (gethash i b) (* i i)))"
+        "  (setf (gethash 5 b) 999)"
+        "  (equalp a b))"), "NIL");
+    /* Differing entry count -> not equalp */
+    ASSERT_STR_EQ(eval_print(
+        "(let ((a (make-hash-table)) (b (make-hash-table)))"
+        "  (dotimes (i 50) (setf (gethash i a) i) (setf (gethash i b) i))"
+        "  (setf (gethash 99 b) 1)"
+        "  (equalp a b))"), "NIL");
+    /* Differing test -> not equalp */
+    ASSERT_STR_EQ(eval_print(
+        "(equalp (make-hash-table :test 'eql) (make-hash-table :test 'equal))"), "NIL");
+    /* EQUAL-test tables with string keys and list values compared by content */
+    ASSERT_STR_EQ(eval_print(
+        "(let ((a (make-hash-table :test 'equal)) (b (make-hash-table :test 'equal)))"
+        "  (setf (gethash \"foo\" a) (list 1 2)) (setf (gethash \"foo\" b) (list 1 2))"
+        "  (equalp a b))"), "T");
+    /* Empty tables of the same test are equalp; a non-table is not */
+    ASSERT_STR_EQ(eval_print("(equalp (make-hash-table) (make-hash-table))"), "T");
+    ASSERT_STR_EQ(eval_print("(equalp (make-hash-table) 5)"), "NIL");
+
+    /* EQUALP compares array-dimension values (fill pointer is irrelevant):
+       (make-array 5 :fill-pointer 2) has dimension 5, not 2. */
+    ASSERT_STR_EQ(eval_print(
+        "(equalp (make-array 5 :fill-pointer 2 :initial-contents '(1 2 3 4 5))"
+        "        (make-array 2 :initial-contents '(1 2)))"), "NIL"); /* dim 5 != 2 */
+    /* Two size-5 arrays with different fill pointers but identical elements -> equalp */
+    ASSERT_STR_EQ(eval_print(
+        "(equalp (make-array 5 :fill-pointer 2 :initial-contents '(1 2 3 4 5))"
+        "        (make-array 5 :fill-pointer 3 :initial-contents '(1 2 3 4 5)))"), "T");
+    /* EQUALP on multidimensional arrays: same dims + equalp elements */
+    ASSERT_STR_EQ(eval_print("(equalp #2A((1 2) (3 4)) #2A((1 2) (3 4)))"), "T");
+    ASSERT_STR_EQ(eval_print("(equalp #2A((1 2) (3 4)) #2A((1 2) (3 5)))"), "NIL");
+    /* Same elements, different shape -> not equalp */
+    ASSERT_STR_EQ(eval_print("(equalp #2A((1 2) (3 4)) #(1 2 3 4))"), "NIL");
+    /* equalp descends vectors element-wise regardless of representation */
+    ASSERT_STR_EQ(eval_print("(equalp #(1 2 3) (vector 1 2 3))"), "T");
 }
 
 /* --- defun block (return-from inside do) --- */
@@ -3230,6 +3280,42 @@ TEST(eval_keywordp)
     ASSERT_STR_EQ(eval_print("(keywordp 42)"), "NIL");
 }
 
+/* Regression: compiler use-after-free of the per-form compiler env.
+ *
+ * cl_compile_env created its CL_Compiler/CL_CompEnv but did not set
+ * comp->protect (compile_lambda does).  When a subform macroexpansion performs
+ * a non-local exit, the VM unwind runs cl_compiler_restore_to, which would
+ * free the in-progress compiler — and cl_env_destroy its env — out from under
+ * the running compile.  The subsequent c->env dereference (e.g.
+ * cl_env_lookup_local_macro) was then a heap-use-after-free; it crashed
+ * compiling babel's INSTANTIATE-CONCRETE-MAPPINGS form (found via ASan).
+ *
+ * This exercises the path: a macro that performs a handler-case NLX during its
+ * own expansion, used inside compiled lambda-bearing forms, iterated to churn
+ * the compiler pool.  Deterministic detection of the freed-memory read is via
+ * ASan; here we assert the runtime stays healthy and keeps compiling. */
+TEST(eval_compile_env_nlx_macro_no_uaf)
+{
+    eval_print(
+        "(defmacro nlx-expand-mac (x)"
+        "  (handler-case (error \"nlx during expand\") (error () nil))"
+        "  (list '+ x 1))");
+    eval_print(
+        "(dotimes (i 40)"
+        "  (eval `(defun ,(intern (format nil \"NLX-USE-~D\" i)) (a)"
+        "           (let ((b a))"
+        "             (list (nlx-expand-mac b)"
+        "                   (lambda (y) (+ y b)))))))");
+    /* If the compiler env had been freed mid-compile, the chain would be
+       corrupt by now.  Verify a freshly compiled+run function is correct:
+       NLX-USE-7 returns (list (+ b 1) <closure>), and the closure adds b. */
+    ASSERT_STR_EQ(eval_print("(first (nlx-use-7 10))"), "11");
+    ASSERT_STR_EQ(eval_print("(funcall (second (nlx-use-7 10)) 5)"), "15");
+    ASSERT_STR_EQ(eval_print(
+        "(progn (defun nlx-after (p q) (let ((s (* p q))) (+ s s)))"
+        "       (nlx-after 6 7))"), "84");
+}
+
 /* --- Phase 5 Tier 1: Fixed builtins --- */
 
 TEST(eval_length_vector)
@@ -3239,11 +3325,16 @@ TEST(eval_length_vector)
 
 TEST(eval_equal_vector)
 {
+    /* CLHS: EQUAL on general (non-string, non-bit) vectors/arrays is identity,
+       NOT element-wise — two distinct vectors with equal contents are NOT
+       equal. (equalp does compare element-wise; see eval_equalp.) */
     eval_print("(defun make-vec-12 () (let ((v (make-array 2))) (setf (aref v 0) 1) (setf (aref v 1) 2) v))");
     ASSERT_STR_EQ(eval_print(
-        "(equal (make-vec-12) (make-vec-12))"), "T");
+        "(equal (make-vec-12) (make-vec-12))"), "NIL");
     ASSERT_STR_EQ(eval_print(
-        "(let ((v (make-array 2))) (setf (aref v 0) 1) (setf (aref v 1) 99) (equal (make-vec-12) v))"), "NIL");
+        "(let ((v (make-vec-12))) (equal v v))"), "T");  /* same object -> eq -> equal */
+    ASSERT_STR_EQ(eval_print(
+        "(equalp (make-vec-12) (make-vec-12))"), "T");    /* equalp descends */
 }
 
 TEST(eval_mapcar_multi_list)
@@ -5560,10 +5651,12 @@ TEST(eval_copy_seq)
 {
     ASSERT_STR_EQ(eval_print("(copy-seq '(1 2 3))"), "(1 2 3)");
     ASSERT_STR_EQ(eval_print("(copy-seq \"hello\")"), "\"hello\"");
+    /* copy-seq makes a fresh vector with the same elements; compare contents
+       with EQUALP (EQUAL on general vectors is identity per CLHS). */
     ASSERT_STR_EQ(eval_print(
         "(let ((a (vector 1 2 3))"
         "      (b (copy-seq (vector 1 2 3))))"
-        "  (equal a b))"), "T");
+        "  (equalp a b))"), "T");
     ASSERT_STR_EQ(eval_print("(copy-seq nil)"), "NIL");
 }
 
@@ -9177,6 +9270,7 @@ int main(void)
     RUN(eval_fdefinition);
     RUN(eval_make_symbol);
     RUN(eval_keywordp);
+    RUN(eval_compile_env_nlx_macro_no_uaf);
     RUN(eval_length_vector);
     RUN(eval_equal_vector);
     RUN(eval_mapcar_multi_list);

@@ -4148,6 +4148,19 @@ static CL_Obj cl_compile_env(CL_Obj expr, CL_Obj lex_env)
     comp->parent = cl_active_compiler;
     cl_active_compiler = comp;
 
+    /* Protect from NLX-triggered cl_compiler_restore_to while the compile_expr
+     * below is on the C stack.  A subform macroexpansion runs in the VM
+     * (cl_macroexpand_1_env → cl_vm_run); if it performs a non-local exit, the
+     * BLOCK/CATCH/UNWIND-PROTECT unwind calls cl_compiler_restore_to, which
+     * would otherwise free this compiler — and cl_env_destroy its env — out
+     * from under the in-progress compile.  The subsequent c->env dereference
+     * (e.g. cl_env_lookup_local_macro) would then be a heap-use-after-free.
+     * compile_lambda sets the same flag for the same reason; cl_compile_env
+     * previously omitted it, which crashed compiling large macro-generated
+     * forms (e.g. babel's INSTANTIATE-CONCRETE-MAPPINGS). Cleared before the
+     * normal teardown below. */
+    comp->protect = 1;
+
     /* Seed local macros AFTER linking into the active-compiler chain so the
      * installed expander closures are GC-rooted via comp->env during the
      * compile below. */
@@ -4161,6 +4174,8 @@ static CL_Obj cl_compile_env(CL_Obj expr, CL_Obj lex_env)
     bc = (CL_Bytecode *)cl_alloc(TYPE_BYTECODE, sizeof(CL_Bytecode));
     if (!bc) {
         platform_write_string("[compile] cl_alloc(TYPE_BYTECODE) FAILED\n");
+        comp->protect = 0;
+        cl_active_compiler = comp->parent;  /* unlink before freeing */
         cl_env_destroy(env);
         cl_compiler_pool_release(comp);
         return CL_NIL;
@@ -4218,6 +4233,7 @@ static CL_Obj cl_compile_env(CL_Obj expr, CL_Obj lex_env)
     cl_jit_compile(bc);  /* no-op on host / when JIT_M68K undefined */
 
     /* Unregister compiler from GC root chain */
+    comp->protect = 0;
     cl_active_compiler = comp->parent;
 
     cl_env_destroy(env);
@@ -4650,6 +4666,27 @@ void cl_compiler_restore_to(void *saved)
              * Don't free it — it will be freed when compilation completes. */
             return;
         }
+        cl_active_compiler = c->parent;
+        if (c->env) cl_env_destroy(c->env);
+        cl_compiler_pool_release(c);
+    }
+}
+
+/* Like cl_compiler_restore_to but frees compilers regardless of their `protect`
+ * flag.  Used on the error-frame (condition) unwind path: a cl_error longjmp
+ * abandons every C stack frame between the signal point and the catch, so any
+ * compilers created in that window — including ones marked protect=1 because a
+ * compile_lambda / cl_compile_env C frame was using them — are now unreachable.
+ * They MUST be freed (newest first, so a child env is released before the parent
+ * env it points at), otherwise the active-compiler chain is left dangling and a
+ * later compile walks a freed parent env (heap-use-after-free in e.g.
+ * cl_env_resolve_fun_upvalue).  Walking is bounded by the saved target, which
+ * predates every abandoned frame, so live compilers below it are untouched. */
+void cl_compiler_force_restore_to(void *saved)
+{
+    CL_Compiler *target = (CL_Compiler *)saved;
+    while (cl_active_compiler != target && cl_active_compiler != NULL) {
+        CL_Compiler *c = cl_active_compiler;
         cl_active_compiler = c->parent;
         if (c->env) cl_env_destroy(c->env);
         cl_compiler_pool_release(c);

@@ -150,6 +150,8 @@ void cl_compiler_gc_mark_thread(struct CL_Thread_s *t);
  * cl_compiler_restore_to() frees any compilers allocated since the mark. */
 void *cl_compiler_mark(void);
 void cl_compiler_restore_to(void *saved);
+/* Error-frame unwind variant: frees abandoned compilers even if protect=1. */
+void cl_compiler_force_restore_to(void *saved);
 
 /* Intern a source-file path into a process-lifetime pool and return
  * the stable pointer.  Use this anywhere a const char* is stored long-term

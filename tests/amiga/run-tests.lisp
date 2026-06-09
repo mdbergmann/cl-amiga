@@ -893,6 +893,64 @@
 (check "hash-table equal test string" 42 (gethash "hello" *ht-equal*))
 (check "gethash mv present" t (multiple-value-bind (v p) (gethash 'x *ht-map*) p))
 (check "gethash mv absent" nil (multiple-value-bind (v p) (gethash 'missing *ht-map*) p))
+; --- equalp on hash tables (CLHS): same test, count, equalp values per key ---
+; Regression: EQUALP used to fall back to identity for hash tables, breaking
+; alexandria DEFINE-CONSTANT (babel) which re-evaluates constants under EQUALP.
+(check "equalp ht same content" t
+       (let ((a (make-hash-table)) (b (make-hash-table)))
+         (dotimes (i 50) (setf (gethash i a) (* i i)) (setf (gethash i b) (* i i)))
+         (equalp a b)))
+(check "equalp ht diff value" nil
+       (let ((a (make-hash-table)) (b (make-hash-table)))
+         (dotimes (i 50) (setf (gethash i a) (* i i)) (setf (gethash i b) (* i i)))
+         (setf (gethash 5 b) 999)
+         (equalp a b)))
+(check "equalp ht diff count" nil
+       (let ((a (make-hash-table)) (b (make-hash-table)))
+         (dotimes (i 50) (setf (gethash i a) i) (setf (gethash i b) i))
+         (setf (gethash 99 b) 1)
+         (equalp a b)))
+(check "equalp ht diff test" nil
+       (equalp (make-hash-table :test 'eql) (make-hash-table :test 'equal)))
+(check "equalp ht equal-keys-and-values" t
+       (let ((a (make-hash-table :test 'equal)) (b (make-hash-table :test 'equal)))
+         (setf (gethash "foo" a) (list 1 2)) (setf (gethash "foo" b) (list 1 2))
+         (equalp a b)))
+(check "equalp ht empty" t (equalp (make-hash-table) (make-hash-table)))
+; --- equal vs equalp on vectors/arrays (CLHS) ---
+; EQUAL on general vectors is identity (NOT element-wise); EQUALP descends.
+(check "equal genvec identity" nil (equal (vector 1 2 3) (vector 1 2 3)))
+(check "equal genvec same obj" t (let ((v (vector 1 2 3))) (equal v v)))
+(check "equalp genvec content" t (equalp (vector 1 2 3) (vector 1 2 3)))
+(check "equalp genvec diff" nil (equalp (vector 1 2 3) (vector 1 2 4)))
+; EQUALP compares array-dimension values (fill pointer is irrelevant)
+(check "equalp fillptr" nil
+       (equalp (make-array 5 :fill-pointer 2 :initial-contents '(1 2 3 4 5))
+               (make-array 2 :initial-contents '(1 2)))) ; dim 5 != 2
+; two size-5 arrays with different fill pointers but same elements -> equalp
+(check "equalp fillptr same dim" t
+       (equalp (make-array 5 :fill-pointer 2 :initial-contents '(1 2 3 4 5))
+               (make-array 5 :fill-pointer 3 :initial-contents '(1 2 3 4 5))))
+; EQUALP on multidimensional arrays: same dims + equalp elements
+(check "equalp 2d array" t (equalp #2a((1 2) (3 4)) #2a((1 2) (3 4))))
+(check "equalp 2d array diff" nil (equalp #2a((1 2) (3 4)) #2a((1 2) (3 5))))
+(check "equalp 2d vs 1d shape" nil (equalp #2a((1 2) (3 4)) #(1 2 3 4)))
+; --- compiler use-after-free regression (cl_compile_env protect flag) ---
+; A macro performing a non-local exit during its own expansion, used inside
+; compiled lambda-bearing forms; pre-fix the NLX unwind freed the in-progress
+; compiler env (use-after-free in cl_env_lookup_local_macro). Verify the
+; runtime stays healthy and keeps compiling correctly.
+(defmacro nlx-expand-mac (x)
+  (handler-case (error "nlx during expand") (error () nil))
+  (list '+ x 1))
+(dotimes (i 40)
+  (eval `(defun ,(intern (format nil "NLX-USE-~D" i)) (a)
+           (let ((b a))
+             (list (nlx-expand-mac b) (lambda (y) (+ y b)))))))
+(check "compile-env nlx macro no-uaf 1" 11 (first (nlx-use-7 10)))
+(check "compile-env nlx macro no-uaf 2" 15 (funcall (second (nlx-use-7 10)) 5))
+(check "compile-env nlx macro still-healthy" 84
+       (progn (defun nlx-after (p q) (let ((s (* p q))) (+ s s))) (nlx-after 6 7)))
 
 ; --- Sequence functions ---
 (defun my-evenp (x) (= (mod x 2) 0))
@@ -1072,9 +1130,10 @@
 (check "map vec" '(11 21 31) (map 'list #'1+ #(10 20 30)))
 (check "map mixed" '(11 22 33) (map 'list #'+ '(1 2 3) #(10 20 30)))
 (check "map str result" "HELLO" (map 'string #'char-upcase "hello"))
-(check "map vec result" #(2 3 4) (map 'vector #'1+ '(1 2 3)))
+; EQUAL on general vectors is identity (CLHS); compare contents with EQUALP.
+(check "map vec result" t (equalp #(2 3 4) (map 'vector #'1+ '(1 2 3))))
 (check "map shortest" '(11 22) (map 'list #'+ '(1 2 3 4) #(10 20)))
-(check "map simple-vector" #(2 3 4) (map 'simple-vector #'1+ '(1 2 3)))
+(check "map simple-vector" t (equalp #(2 3 4) (map 'simple-vector #'1+ '(1 2 3))))
 (check "map simple-string" "HELLO" (map 'simple-string #'char-upcase "hello"))
 (check "map cons" '(2 3 4) (map 'cons #'1+ '(1 2 3)))
 
@@ -1115,10 +1174,10 @@
 (check "coerce sym->string" "FOO" (coerce 'foo 'string))
 (check "coerce char->string" "A" (coerce #\A 'string))
 (check "coerce string identity" "hello" (coerce "hello" 'string))
-(check "coerce list->vector" t (equal (coerce '(1 2 3) 'vector) (vector 1 2 3)))
+(check "coerce list->vector" t (equalp (coerce '(1 2 3) 'vector) (vector 1 2 3)))
 (check "coerce vector->list" '(1 2 3) (coerce (vector 1 2 3) 'list))
 (check "coerce nil->list" nil (coerce nil 'list))
-(check "coerce nil->vector" t (equal (coerce nil 'vector) (vector)))
+(check "coerce nil->vector" t (equalp (coerce nil 'vector) (vector)))
 
 ; --- Type system: compound typep ---
 (check "typep or match int" t (typep 42 '(or integer string)))
@@ -3366,7 +3425,7 @@
 ; coerce
 (check "coerce bv->list" '(1 0 1 1 0) (coerce #*10110 'list))
 (check "coerce list->bv" "#*10110" (format nil "~A" (coerce '(1 0 1 1 0) 'bit-vector)))
-(check "coerce bv->vector" #(1 0 1) (coerce #*101 'vector))
+(check "coerce bv->vector" t (equalp #(1 0 1) (coerce #*101 'vector)))
 
 ; Bitwise operations
 (check "bit-and" "#*1000" (format nil "~A" (bit-and #*1100 #*1010)))

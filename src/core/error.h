@@ -78,6 +78,15 @@ typedef struct {
      * local CL_FaslReader was unwound — otherwise a later GC walks the active
      * list and dereferences freed stack memory.  Mirrors saved_gc_roots. */
     int saved_fasl_readers;
+    /* Active-compiler chain snapshot (cl_compiler_mark) at push time.  A
+     * cl_error longjmp abandons the C frames of any compile in progress within
+     * this frame's dynamic extent; cl_error_unwind force-frees every compiler
+     * created since, so the chain and env parent pointers stay consistent for
+     * later compiles.  Without this, a macroexpansion error during COMPILE-FILE
+     * stranded the in-progress compiler and a subsequent form walked a freed
+     * parent env (use-after-free in cl_env_resolve_fun_upvalue) — crashed
+     * compiling babel's large macro-generated forms.  Mirrors saved_gc_roots. */
+    void *saved_active_compiler;
 } CL_ErrorFrame;
 
 /* Push an error frame.  Returns the frame index, or -1 on overflow.
