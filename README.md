@@ -340,7 +340,7 @@ The Amiga test suite passes **2525 / 2525** on the JIT config; per-opcode JIT co
 
 - **Alpha status** — the core language works well enough to run real CL libraries, but corners of the ANSI CL spec remain unimplemented (logical pathnames, some `defstruct` options, full CLOS MOP)
 - **Amiga GUI bindings are incomplete** — the Intuition/Graphics/GadTools abstractions cover common use cases (windows, drawing, gadgets, menus) but not the full API surface; more libraries (ASL requesters, Layers, Commodities) are not yet wrapped
-- **Composite streams** — `make-broadcast-stream`, `make-two-way-stream`, `make-concatenated-stream` are not implemented yet
+- **Composite streams** — `make-two-way-stream` is implemented (with `two-way-stream-input-stream` / `two-way-stream-output-stream`); `make-broadcast-stream` and `make-concatenated-stream` are not yet implemented (`make-broadcast-stream` has a minimal workaround in `lib/quicklisp-compat.lisp`)
 - **Threading** — `MP` package covers the core bordeaux-threads surface (threads with `interrupt`/`destroy`, mutex + recursive locks, named condition variables with timeout, `with-lock-held` / `with-recursive-lock-held`, type predicates). `(ql:quickload :bordeaux-threads)` and Quicklisp itself currently rely on local patches we ship — `lib/quicklisp-compat.lisp` (maps the BT v2 surface onto `MP`, adapts Quicklisp's network/HTTP layer) plus the shims in `contrib/shims/` symlinked into `~/quicklisp/local-projects` by `make install-shims`; the plan is to upstream these once the remaining API gaps close. Not yet covered: semaphores, atomic integers, `with-timeout`, `:timeout` on `acquire-lock`
 - **ANSI CL gaps** — while major subsystems work (CLOS, conditions, packages, the full numeric tower, arrays, pathnames, streams, loop, format), some corners of the spec remain unimplemented
 
@@ -355,26 +355,56 @@ The Amiga test suite passes **2525 / 2525** on the JIT config; per-opcode JIT co
 
 ```
 src/
-  core/           Compiler, VM, builtins, GC, types
+  core/           Compiler, VM, builtins, GC, types, reader, printer, conditions
+    builtins_*.c      Builtin functions, split by domain (arith, array, lists,
+                      stream, format, hashtable, thread, pathname, ...)
     builtins_ffi.c    FFI package (platform-independent)
     builtins_amiga.c  AMIGA package (AmigaOS only)
-  platform/       OS abstraction (platform_posix.c, platform_amiga.c)
-    ffi_dispatch_m68k.s  68k asm trampoline for library calls
+    vm.c / compiler.c S-expr → bytecode compiler and stack VM
+    mem.c             Arena allocator + mark-and-sweep / compacting GC
+    fasl.c            FASL (compiled-file) reader/writer
+  jit/            m68k JIT — bytecode→native translator (AmigaOS only)
+    codegen_m68k.c    Single-pass bytecode walker → m68k machine code
+    asm_m68k.c        m68k instruction encoder
+    codebuf.c         Executable code buffer management
+    runtime.c         JIT runtime helpers (calls, NLX, GC safepoints)
+  platform/       OS abstraction (platform.h)
+    platform_posix.c / platform_amiga.c          Files, I/O, time, sockets
+    platform_thread_posix.c / _amiga.c           Threads, locks, atomics, TLS
+    ffi_dispatch_m68k.s                          68k asm trampoline for library calls
   main.c          Entry point and REPL
+include/
+  clamiga.h       Public embedding header
 lib/
-  boot.lisp       Standard library bootstrap
-  clos.lisp       CLOS implementation
+  boot.lisp       Standard library bootstrap (+ prebuilt boot.fasl)
+  clos.lisp       CLOS implementation (+ prebuilt clos.fasl)
   ffi.lisp        FFI utilities (defcstruct, with-foreign-alloc)
+  gray-streams.lisp   Gray streams protocol
   asdf.lisp       ASDF (Another System Definition Facility, with CL-Amiga adaptations)
+  quicklisp*.lisp Quicklisp install + compatibility shims
   amiga/          AmigaOS Lisp libraries (loaded on demand)
     ffi.lisp        Tag lists, defcfun, with-library
     intuition.lisp  Windows, screens, IDCMP events
     graphics.lisp   Drawing, text rendering
     gadtools.lisp   GadTools gadgets, menus
+contrib/
+  shims/          closer-mop / trivial-cltl2 / trivial-garbage shims for Quicklisp
+examples/
+  gfx/            Graphics demos (bouncing-lines.lisp)
 tests/
   test_*.c        Host test suites (C)
   amiga/          Amiga test suite (Lisp, ~2525 tests)
 trunk/            Integration test scripts (ANSI, Sento, FSet, fiveam, str, ...)
+third_party/
+  ansi-test/      Paul Dietz ANSI CL conformance test suite
+specs/            Design notes (JIT, MOP, native backend, performance, ...)
+scripts/
+  review/         Pre-commit auto-review + test hook
+githooks/         Git hooks installed by `make install-hooks`
+tools/
+  setup-toolchain.sh   m68k-amigaos-gcc cross toolchain installer
+  m68k-amigaos-gcc/    Cross toolchain (git submodule)
+  sly/                 SLY/SLYNK launcher scripts
 verify/
   realamiga/      FS-UAE configuration and AmigaOS disk image
 ```
