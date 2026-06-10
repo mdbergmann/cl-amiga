@@ -82,6 +82,13 @@ Any C code that holds `CL_Obj` values across allocating calls **must** GC-protec
 - Amiga tests: `tests/amiga/run-tests.lisp` — Lisp-based test suite run on AmigaOS via FS-UAE
 - **Tests must be tight on production code** — test the exact behavior, not just the happy path; cover edge cases, boundary conditions, and error paths thoroughly
 - **Target 90% test coverage** — aim for at least 90% coverage across the codebase
+- **The gc-stress test suite is critical for the stability and resiliency of clamiga** (`make test-gc-stress`, forces compaction every alloc via `DEBUG_GC_STRESS`/`CLAMIGA_GC_STRESS=1` to make unprotected-`CL_Obj` GC bugs deterministic). When changing or adding any code, make sure there is coverage not only in the unit tests but **also in the gc-stress suite** — exercise new allocating paths under GC stress so compaction/relocation bugs surface in CI rather than in the field.
+
+## Documentation
+
+- **When adding or changing a feature, check `README.md` for outdated or missing content** and update it as part of the change — the README must not drift from what the code actually does.
+- For a new feature, add a short section describing how it works. Keep prose minimal: the best documentation is a comprehensive, runnable test file that demonstrates the feature end-to-end. Create such a test file if one doesn't already exist, then have the README point to it (e.g. "see `tests/test_ffi.c` / `tests/amiga/ffi-tests.lisp` for usage examples").
+- Prefer linking to authoritative, executable examples over long explanatory text — the test file is the source of truth and stays current because `make test` runs it.
 
 ## Usability
 

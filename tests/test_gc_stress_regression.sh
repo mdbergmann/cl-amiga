@@ -528,6 +528,75 @@ check_contains "direct special read at let tail after loop returns bound value" 
 check_contains "direct special read at let tail (in list) after loop correct"   "SPECLOOP2:(99 99)" "$out"
 check_absent   "let special tail read not mis-compiled to OP_NIL"               "SPECLOOP1:NIL" "$out"
 
+# --- Case: FFI typed peek/poke + foreign calls + callbacks under GC stress ---
+# The host FFI engine allocates on several paths that hold raw C pointers and
+# CL_Obj values across allocating calls:
+#   - typed peek boxes results (peek-u64 -> bignum, peek-double -> float,
+#     peek-pointer -> register + foreign-pointer);
+#   - call-foreign boxes its result and, for callbacks, the handler boxes each
+#     C argument into a CL_Obj (CL_GC_PROTECT'd) before re-entering the VM;
+#   - pointer+ / make-pointer register entries in the POSIX side table whose
+#     slots the TYPE_FOREIGN_POINTER GC finalizer reclaims.
+# A compaction forced inside any of these must not corrupt the in-flight
+# values.  This is host-only (dlopen/libffi); on a non-host build the symbols
+# resolve to NIL and the test is effectively skipped by the require guard.
+# Like the FASL cases above, the test code is compiled with a CLEAN run and
+# then LOADED + RUN under stress — this stresses the FFI *runtime* (the GC
+# finalizer and the allocating boxing paths) without subjecting the compiler
+# to compaction.  Every operation is a C builtin in the FFI package, so no
+# Lisp library load is needed.
+cat > "$WORK/ffi.lisp" <<'EOF'
+(defpackage :gcstress-ffi (:use :cl) (:export #:run))
+(in-package :gcstress-ffi)
+(defun run ()
+  ;; typed peek/poke whose reads allocate (bignum / float / foreign-pointer)
+  (let ((p (ffi:alloc-foreign 16)))
+    (ffi:poke-u64 p 4294967300) (ffi:poke-double p 6.25d0 8)
+    (format t "FFI-MEM:~a ~a~%" (ffi:peek-u64 p) (ffi:peek-double p 8))
+    (ffi:free-foreign p))
+  ;; foreign-pointer registration + finalizer churn: each pointer+ allocates a
+  ;; new foreign pointer (a compaction under stress); transient ones become
+  ;; garbage and must be reclaimed by the TYPE_FOREIGN_POINTER finalizer.
+  (let ((base (ffi:alloc-foreign 64)) (n 0))
+    (dotimes (i 200)
+      (when (ffi:foreign-pointer-p (ffi:pointer+ base (mod i 64)))
+        (setf n (+ n 1))))
+    (format t "FFI-PTRS:~a~%" n)
+    (ffi:free-foreign base))
+  ;; real foreign calls + a Lisp callback driven by qsort (the callback handler
+  ;; boxes pointer args and the comparator allocates fixnums every compaction)
+  (let ((abs* (ffi:symbol-pointer "abs"))
+        (pow* (ffi:symbol-pointer "pow"))
+        (qsort* (ffi:symbol-pointer "qsort")))
+    (when (and abs* pow* qsort*)
+      (format t "FFI-CALL:~a ~a~%"
+              (ffi:call-foreign abs* :int32 '(:int32) '(-99))
+              (ffi:call-foreign pow* :double '(:double :double) '(2.0d0 10.0d0)))
+      (let ((arr (ffi:alloc-foreign 20))
+            (cmp (ffi:make-callback :int32 '(:pointer :pointer)
+                   (lambda (a b) (make-list 4) (- (ffi:peek-i32 a) (ffi:peek-i32 b))))))
+        (loop for v in '(9 2 7 1 5) for i from 0 do (ffi:poke-i32 arr v (* i 4)))
+        (ffi:call-foreign qsort* :void '(:pointer :uint64 :uint64 :pointer)
+                          (list arr 5 4 cmp))
+        (format t "FFI-SORT:~a~%"
+                (loop for i below 5 collect (ffi:peek-i32 arr (* i 4))))
+        (ffi:free-foreign arr)))))
+EOF
+if compile_fasl "$WORK/ffi.lisp" "$WORK/ffi.fasl"; then
+    cat > "$WORK/ffi-load.lisp" <<EOF
+(load "$WORK/ffi.fasl")
+(gcstress-ffi:run)
+EOF
+    out=$(run_stress "$WORK/ffi-load.lisp")
+    check_contains "ffi typed peek/poke boxes results under stress"  "FFI-MEM:4294967300 6.25" "$out"
+    check_contains "ffi pointer+ registration/finalizer survives"    "FFI-PTRS:200" "$out"
+    check_contains "ffi foreign calls return correct values"         "FFI-CALL:99 1024.0" "$out"
+    check_contains "ffi callback comparator sorts under stress"      "FFI-SORT:(1 2 5 7 9)" "$out"
+    check_absent   "no corruption in FFI alloc/call/callback paths"  "Unbound variable\|type 0\|corrupted\|Undefined function" "$out"
+else
+    echo "  SKIP  FFI gc-stress: clean FASL compile failed"
+fi
+
 # NB: the post-compaction rehash of EQUAL/EQL/EQUALP hash tables and of the
 # per-thread TLV (dynamic-binding) table is NOT exercised here.  Those bugs
 # require a *moving* compaction that relocates a live object to a genuinely new

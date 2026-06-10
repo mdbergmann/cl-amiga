@@ -222,6 +222,140 @@ TEST(lisp_ffi_printer)
 }
 
 /* ================================================================
+ * Typed peek/poke: signed, 64-bit, float/double, pointer
+ * (platform-independent — exercised on host and Amiga)
+ * ================================================================ */
+
+TEST(lisp_ffi_peek_poke_signed)
+{
+    ASSERT_STR_EQ(eval_print(
+        "(let ((p (ffi:alloc-foreign 8))) (ffi:poke-i8 p -5) (prog1 (ffi:peek-i8 p) (ffi:free-foreign p)))"),
+        "-5");
+    ASSERT_STR_EQ(eval_print(
+        "(let ((p (ffi:alloc-foreign 8))) (ffi:poke-i16 p -1000) (prog1 (ffi:peek-i16 p) (ffi:free-foreign p)))"),
+        "-1000");
+    ASSERT_STR_EQ(eval_print(
+        "(let ((p (ffi:alloc-foreign 8))) (ffi:poke-i32 p -123456) (prog1 (ffi:peek-i32 p) (ffi:free-foreign p)))"),
+        "-123456");
+}
+
+TEST(lisp_ffi_peek_poke_64)
+{
+    ASSERT_STR_EQ(eval_print(
+        "(let ((p (ffi:alloc-foreign 8))) (ffi:poke-u64 p 4294967300) (prog1 (ffi:peek-u64 p) (ffi:free-foreign p)))"),
+        "4294967300");
+    ASSERT_STR_EQ(eval_print(
+        "(let ((p (ffi:alloc-foreign 8))) (ffi:poke-i64 p -5000000000) (prog1 (ffi:peek-i64 p) (ffi:free-foreign p)))"),
+        "-5000000000");
+}
+
+TEST(lisp_ffi_peek_poke_float)
+{
+    ASSERT_STR_EQ(eval_print(
+        "(let ((p (ffi:alloc-foreign 8))) (ffi:poke-single p 2.5) (prog1 (ffi:peek-single p) (ffi:free-foreign p)))"),
+        "2.5");
+    ASSERT_STR_EQ(eval_print(
+        "(let ((p (ffi:alloc-foreign 8))) (ffi:poke-double p 6.25d0) (prog1 (ffi:peek-double p) (ffi:free-foreign p)))"),
+        "6.25d0");
+}
+
+TEST(lisp_ffi_peek_poke_pointer)
+{
+    /* Store a pointer in memory and read it back; the read pointer must be
+     * pointer-eq to the original. */
+    ASSERT_STR_EQ(eval_print(
+        "(let ((p (ffi:alloc-foreign 8))) (ffi:poke-pointer p p) "
+        "(prog1 (ffi:pointer-eq p (ffi:peek-pointer p)) (ffi:free-foreign p)))"),
+        "T");
+}
+
+TEST(lisp_ffi_pointer_eq)
+{
+    /* Two pointers to the same real address compare equal even though they
+     * are distinct foreign-pointer objects (distinct side-table handles). */
+    ASSERT_STR_EQ(eval_print(
+        "(let* ((p (ffi:alloc-foreign 8)) (a (ffi:foreign-pointer-address p))) "
+        "(prog1 (ffi:pointer-eq p (ffi:make-foreign-pointer a)) (ffi:free-foreign p)))"),
+        "T");
+    ASSERT_STR_EQ(eval_print(
+        "(ffi:pointer-eq (ffi:make-foreign-pointer 16) (ffi:make-foreign-pointer 32))"),
+        "NIL");
+}
+
+#ifndef PLATFORM_AMIGA
+/* ================================================================
+ * Host-only: dlopen / dlsym / libffi foreign calls + callbacks
+ * ================================================================ */
+
+TEST(lisp_ffi_symbol_pointer_found)
+{
+    /* abs is in the default (libc/libSystem) namespace. */
+    ASSERT_STR_EQ(eval_print("(and (ffi:symbol-pointer \"abs\") t)"), "T");
+}
+
+TEST(lisp_ffi_symbol_pointer_missing)
+{
+    ASSERT_STR_EQ(eval_print("(ffi:symbol-pointer \"no_such_symbol_zzz\")"), "NIL");
+}
+
+TEST(lisp_ffi_call_int)
+{
+    ASSERT_STR_EQ(eval_print(
+        "(ffi:call-foreign (ffi:symbol-pointer \"abs\") :int32 '(:int32) '(-42))"),
+        "42");
+}
+
+TEST(lisp_ffi_call_pointer_arg)
+{
+    /* strlen of a foreign string. */
+    ASSERT_STR_EQ(eval_print(
+        "(let ((s (ffi:foreign-string \"hello\"))) "
+        "(prog1 (ffi:call-foreign (ffi:symbol-pointer \"strlen\") :uint64 '(:pointer) (list s)) "
+        "(ffi:free-foreign s)))"),
+        "5");
+}
+
+TEST(lisp_ffi_call_double)
+{
+    ASSERT_STR_EQ(eval_print(
+        "(ffi:call-foreign (ffi:symbol-pointer \"pow\") :double '(:double :double) '(2.0d0 10.0d0))"),
+        "1024.0d0");
+}
+
+TEST(lisp_ffi_callback_qsort)
+{
+    /* qsort an int array through a Lisp comparator callback. */
+    ASSERT_STR_EQ(eval_print(
+        "(let* ((arr (ffi:alloc-foreign 16)) "
+        "       (cmp (ffi:make-callback :int32 '(:pointer :pointer) "
+        "              (lambda (a b) (- (ffi:peek-i32 a) (ffi:peek-i32 b)))))) "
+        "  (ffi:poke-i32 arr 9 0) (ffi:poke-i32 arr 2 4) "
+        "  (ffi:poke-i32 arr 7 8) (ffi:poke-i32 arr 1 12) "
+        "  (ffi:call-foreign (ffi:symbol-pointer \"qsort\") :void "
+        "    '(:pointer :uint64 :uint64 :pointer) (list arr 4 4 cmp)) "
+        "  (prog1 (list (ffi:peek-i32 arr 0) (ffi:peek-i32 arr 4) "
+        "               (ffi:peek-i32 arr 8) (ffi:peek-i32 arr 12)) "
+        "    (ffi:free-foreign arr)))"),
+        "(1 2 7 9)");
+}
+
+TEST(lisp_ffi_free_callback)
+{
+    /* free-callback should reclaim the slot so it can be reused. */
+    ASSERT_STR_EQ(eval_print(
+        /* Create and immediately free CL_FFI_MAX_CALLBACKS+1 callbacks —
+         * without free-callback this would exhaust the 64-slot table. */
+        "(let ((n 0)) "
+        "  (dotimes (i 65) "
+        "    (let ((cb (ffi:make-callback :int32 '() (lambda () 42)))) "
+        "      (ffi:free-callback cb) "
+        "      (incf n))) "
+        "  n)"),
+        "65");
+}
+#endif
+
+/* ================================================================
  * AMIGA package tests (POSIX: package should not exist)
  * ================================================================ */
 
@@ -261,9 +395,25 @@ int main(void)
     RUN(lisp_ffi_pointer_plus);
     RUN(lisp_ffi_printer);
 
+    /* Typed peek/poke (signed, 64-bit, float/double, pointer) */
+    RUN(lisp_ffi_peek_poke_signed);
+    RUN(lisp_ffi_peek_poke_64);
+    RUN(lisp_ffi_peek_poke_float);
+    RUN(lisp_ffi_peek_poke_pointer);
+    RUN(lisp_ffi_pointer_eq);
+
     /* AMIGA package tests */
 #ifndef PLATFORM_AMIGA
     RUN(lisp_amiga_package_not_on_posix);
+
+    /* Host-only: dlopen / libffi calls + callbacks */
+    RUN(lisp_ffi_symbol_pointer_found);
+    RUN(lisp_ffi_symbol_pointer_missing);
+    RUN(lisp_ffi_call_int);
+    RUN(lisp_ffi_call_pointer_arg);
+    RUN(lisp_ffi_call_double);
+    RUN(lisp_ffi_callback_qsort);
+    RUN(lisp_ffi_free_callback);
 #endif
 
     REPORT();

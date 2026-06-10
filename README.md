@@ -295,11 +295,35 @@ When the abstractions aren't enough, drop to raw library calls:
   (amiga:close-library dos))
 ```
 
+### Host FFI: dlopen + libffi + CFFI
+
+On the POSIX dev host the `FFI` package additionally provides a real,
+general-purpose foreign-function engine — dynamic library loading
+(`ffi:load-library`/`ffi:symbol-pointer` via `dlopen`/`dlsym`), arbitrary C
+calls with full argument/return marshaling (`ffi:call-foreign`, libffi-backed,
+incl. variadics), Lisp-as-C callbacks (`ffi:make-callback`, libffi closures),
+and typed memory access (`ffi:peek-i8/i16/i32/u64/i64/single/double/pointer`
+and the matching `poke-*`).
+
+```lisp
+;; Resolve and call libc directly
+(ffi:call-foreign (ffi:symbol-pointer "pow") :double '(:double :double) '(2d0 10d0))
+;; => 1024.0d0
+```
+
+On top of this engine cl-amiga ships a **CFFI** backend (`cffi-clamiga.lisp`,
+in the CFFI source tree), so the standard CFFI API — `defcfun`,
+`foreign-funcall`, `mem-ref`, `defcallback`, `defcstruct`, foreign strings —
+works on the host. This is what lets CFFI-dependent Quicklisp systems load.
+Foreign calls/callbacks are host-only; on AmigaOS use the library-vector model
+(`AMIGA.FFI`) instead. See `tests/test_ffi.c` and
+`trunk/load-and-test-cffi.lisp` for runnable end-to-end examples.
+
 ### Available Amiga Modules
 
 | Module | Package | Description |
 |--------|---------|-------------|
-| `(require "ffi")` | `FFI` | Foreign pointers, peek/poke, defcstruct (all platforms) |
+| `(require "ffi")` | `FFI` | Foreign pointers, typed peek/poke, defcstruct (all platforms); dlopen/libffi calls + callbacks (host) |
 | `(require "amiga/ffi")` | `AMIGA.FFI` | Tag lists, defcfun, with-library (AmigaOS) |
 | `(require "amiga/intuition")` | `AMIGA.INTUITION` | Windows, screens, IDCMP events, public screens |
 | `(require "amiga/graphics")` | `AMIGA.GFX` | Drawing: lines, rectangles, text, pen control |
