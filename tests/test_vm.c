@@ -793,6 +793,32 @@ TEST(eval_do_star)
         "(do* ((i 10 (- i 1))) ((= i 0) 42))"), 42);
 }
 
+/* Regression: CLHS 6.1.1 allows a do/do* var-spec to be a bare symbol
+ * (var with no init/step, bound to NIL), not just a (var ...) list.
+ * compile_do/compile_do_star did cl_car() on the spec assuming a list,
+ * so a bare symbol raised "CAR: argument is not of type LIST" at compile
+ * time — this broke puri (drakma's URI dep), aborting chipi's load. */
+TEST(eval_do_bare_var)
+{
+    /* Bare var is bound to NIL and is settable in the body. */
+    ASSERT_STR_EQ(eval_print(
+        "(do* ((i 0 (1+ i)) untouched) ((= i 2) untouched))"), "NIL");
+    ASSERT_EQ_INT(eval_int(
+        "(do ((i 0 (1+ i)) x) ((= i 2) x) (setq x (* i 10)))"), 10);
+    /* do* sequential: bare var settable, mixes with (var), (var init step). */
+    ASSERT_STR_EQ(eval_print(
+        "(do* ((a) (b 5) (c 0 (1+ c))) ((= c 3) (list a b c))"
+        "  (setq a (cons c a)))"), "((2 1 0) 5 3)");
+    /* Bare var as the ONLY spec. */
+    ASSERT_EQ_INT(eval_int(
+        "(do* (x) ((eq x :done) 7) (setq x :done))"), 7);
+    /* Bare var + cond + (return ...) in body (the puri urn-nss-equal shape). */
+    ASSERT_STR_EQ(eval_print(
+        "(do* ((i 0 (1+ i)) c) ((= i 5) :ok)"
+        "  (setq c i)"
+        "  (cond ((= c 3) (return :hit))))"), ":HIT");
+}
+
 /* --- Quasiquote --- */
 
 TEST(eval_quasiquote_atom)
@@ -9075,6 +9101,7 @@ int main(void)
     RUN(eval_dotimes_implicit_tagbody);
     RUN(eval_do);
     RUN(eval_do_star);
+    RUN(eval_do_bare_var);
     RUN(eval_quasiquote_atom);
     RUN(eval_quasiquote_simple_list);
     RUN(eval_quasiquote_unquote);

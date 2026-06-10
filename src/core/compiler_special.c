@@ -1834,12 +1834,21 @@ void compile_do(CL_Compiler *c, CL_Obj form)
         CL_Obj vc = var_clauses;
         while (!CL_NULL_P(vc) && n < CL_MAX_BINDINGS) {
             CL_Obj clause = cl_car(vc);
-            vars[n] = cl_car(clause);
-            inits[n] = cl_car(cl_cdr(clause));
-            if (!CL_NULL_P(cl_cdr(cl_cdr(clause)))) {
-                steps[n] = cl_car(cl_cdr(cl_cdr(clause)));
-                has_step[n] = 1;
+            /* CLHS 6.1.1: a var-spec may be a bare symbol (var with no
+             * init/step, bound to NIL) or a list (var [init [step]]). */
+            if (CL_CONS_P(clause)) {
+                vars[n] = cl_car(clause);
+                inits[n] = cl_car(cl_cdr(clause));
+                if (!CL_NULL_P(cl_cdr(cl_cdr(clause)))) {
+                    steps[n] = cl_car(cl_cdr(cl_cdr(clause)));
+                    has_step[n] = 1;
+                } else {
+                    steps[n] = CL_NIL;
+                    has_step[n] = 0;
+                }
             } else {
+                vars[n] = clause;
+                inits[n] = CL_NIL;
                 steps[n] = CL_NIL;
                 has_step[n] = 0;
             }
@@ -1892,7 +1901,8 @@ void compile_do(CL_Compiler *c, CL_Obj form)
         CL_Obj vc = var_clauses;
         CL_GC_PROTECT(vc);
         for (i = 0; i < n; i++) {
-            compile_expr(c, cl_car(cl_cdr(cl_car(vc))));
+            CL_Obj clause = cl_car(vc);  /* bare symbol => init is NIL */
+            compile_expr(c, CL_CONS_P(clause) ? cl_car(cl_cdr(clause)) : CL_NIL);
             vc = cl_cdr(vc);
         }
         CL_GC_UNPROTECT(1);
@@ -1902,7 +1912,8 @@ void compile_do(CL_Compiler *c, CL_Obj form)
     {
         CL_Obj vc = var_clauses;
         for (i = 0; i < n; i++) {
-            cl_env_add_local(env, cl_car(cl_car(vc)));
+            CL_Obj clause = cl_car(vc);  /* bare symbol => the symbol is the var */
+            cl_env_add_local(env, CL_CONS_P(clause) ? cl_car(clause) : clause);
             vc = cl_cdr(vc);
         }
     }
@@ -2068,12 +2079,21 @@ void compile_do_star(CL_Compiler *c, CL_Obj form)
         CL_Obj vc = var_clauses;
         while (!CL_NULL_P(vc) && n < CL_MAX_BINDINGS) {
             CL_Obj clause = cl_car(vc);
-            vars[n] = cl_car(clause);
-            inits[n] = cl_car(cl_cdr(clause));
-            if (!CL_NULL_P(cl_cdr(cl_cdr(clause)))) {
-                steps[n] = cl_car(cl_cdr(cl_cdr(clause)));
-                has_step[n] = 1;
+            /* CLHS 6.1.1: a var-spec may be a bare symbol (var with no
+             * init/step, bound to NIL) or a list (var [init [step]]). */
+            if (CL_CONS_P(clause)) {
+                vars[n] = cl_car(clause);
+                inits[n] = cl_car(cl_cdr(clause));
+                if (!CL_NULL_P(cl_cdr(cl_cdr(clause)))) {
+                    steps[n] = cl_car(cl_cdr(cl_cdr(clause)));
+                    has_step[n] = 1;
+                } else {
+                    steps[n] = CL_NIL;
+                    has_step[n] = 0;
+                }
             } else {
+                vars[n] = clause;
+                inits[n] = CL_NIL;
                 steps[n] = CL_NIL;
                 has_step[n] = 0;
             }
@@ -2123,10 +2143,11 @@ void compile_do_star(CL_Compiler *c, CL_Obj form)
         CL_Obj vc = var_clauses;
         CL_GC_PROTECT(vc);
         for (i = 0; i < n; i++) {
-            CL_Obj clause = cl_car(vc);
-            compile_expr(c, cl_car(cl_cdr(clause)));
+            CL_Obj clause = cl_car(vc);  /* bare symbol => init NIL, sym is var */
+            compile_expr(c, CL_CONS_P(clause) ? cl_car(cl_cdr(clause)) : CL_NIL);
             /* Re-read var from protected cursor after compile_expr may have compacted */
-            cl_env_add_local(env, cl_car(cl_car(vc)));
+            clause = cl_car(vc);
+            cl_env_add_local(env, CL_CONS_P(clause) ? cl_car(clause) : clause);
             if (do_boxed[i]) {
                 cl_emit(c, OP_MAKE_CELL);
                 env->boxed[saved_local_count + i] = 1;
