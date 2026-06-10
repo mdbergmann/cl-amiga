@@ -528,6 +528,72 @@ check_contains "direct special read at let tail after loop returns bound value" 
 check_contains "direct special read at let tail (in list) after loop correct"   "SPECLOOP2:(99 99)" "$out"
 check_absent   "let special tail read not mis-compiled to OP_NIL"               "SPECLOOP1:NIL" "$out"
 
+# --- Case 22: DOTIMES/DOLIST/TAGBODY + conditionals + setf-expansion macros --
+# Several UNPROTECTED C-local cursors in the compiler corrupted code compiled
+# under a moving GC:
+#   (a) compile_tagbody's local-path loop walked `cursor` across compile_expr
+#       (allocating); a compaction relocated the body and the stale cursor
+#       re-read it, RE-EMITTING the body — a `(when ...)` inside a DOTIMES/DOLIST
+#       ran twice per iteration (counted to 2x).
+#   (b) compile_dotimes / compile_dolist held `binding`/`body`/`var`/
+#       `result_form` across compile_expr(count/list-form) and the tagbody
+#       compile; a compaction left them stale → cl_cdr(binding) faulted with
+#       "CDR: argument is not of type LIST" while compiling SETF/SETQ bodies.
+#   (c) determine_boxed_vars / scan_body_for_boxing / nlx_scan walked the body
+#       with an unprotected cursor across the VM macroexpansion of INCF/DECF
+#       (setf-expansion macros); with >=2 forms the stale cursor derailed.
+#   (d) compile_tagbody ran tree_has_closure_forms(body) — which macroexpands
+#       body macros in the VM — BEFORE protecting `body`.  The synthetic
+#       DOTIMES/DOLIST tagbody shares its body cons cells with the loop form;
+#       the unprotected `(incf n)` cell was swept and its slot reused by the
+#       expansion's own `(setq n NEW)` cons, so the LET* binding wrapper was
+#       dropped and the store gensym compiled as a global ("Unbound variable:
+#       NEW<n>").
+# Fixes: GC_PROTECT the cursors in compile_tagbody, compile_dotimes,
+# compile_dolist, determine_boxed_vars, scan_body_for_boxing and nlx_scan, and
+# protect `body` in compile_tagbody BEFORE the tree_has_closure_forms scan.
+# All run cleanly compiled then executed under stress (probe via a defun) — the
+# runtime is fine; only compile-under-compaction was affected.
+cat > "$WORK/loopmacro.lisp" <<'EOF'
+;; (a) when/unless inside a loop must run exactly once per iteration
+(format t "WHENCNT:~a~%"
+  (let ((n 0)) (dotimes (i 50) (when (= 1 1) (setf n (+ n 1)))) n))
+(format t "UNLESSCNT:~a~%"
+  (let ((n 0)) (dotimes (i 50) (unless (= 1 2) (setf n (+ n 1)))) n))
+(format t "DOLISTCNT:~a~%"
+  (let ((n 0)) (dolist (x (list 1 2 3 4 5)) (when t (setf n (+ n 1)))) n))
+;; (b) setf/setq body in a loop must compile cleanly (no CDR type-error)
+(format t "SETFLOOP:~a~%"
+  (let ((n 0)) (dotimes (i 50) (setf n (+ n 1))) n))
+;; dotimes as a NON-last form in a let body, trailing a local-var read
+(format t "DTNONLAST:~a~%"
+  (let ((n 0)) (dotimes (i 5) 1) n))
+;; (c)+(d) incf/decf (setf-expansion gensyms) in loop / sequence bodies
+(format t "INCFDT:~a~%"   (let ((n 0)) (dotimes (i 50) (incf n)) n))
+(format t "INCFWHEN:~a~%" (let ((n 0)) (dotimes (i 50) (when (evenp i) (incf n))) n))
+(format t "INCFDL:~a~%"   (let ((n 0)) (dolist (x (list 1 2 3)) (incf n)) n))
+(format t "INCFDO:~a~%"   (let ((n 0)) (do ((i 0 (1+ i))) ((= i 3) n) (incf n))))
+(format t "DECFDT:~a~%"   (let ((n 50)) (dotimes (i 5) (decf n)) n))
+(format t "INCF2:~a~%"    (let ((n 0)) (incf n) (incf n) n))
+(format t "INCFNEST:~a~%" (let ((n 0)) (dotimes (i 3) (dotimes (j 2) (incf n))) n))
+EOF
+out=$(run_stress "$WORK/loopmacro.lisp")
+check_contains "when inside dotimes runs once per iteration"     "WHENCNT:50" "$out"
+check_contains "unless inside dotimes runs once per iteration"   "UNLESSCNT:50" "$out"
+check_contains "when inside dolist runs once per iteration"      "DOLISTCNT:5" "$out"
+check_contains "setf body in dotimes compiles cleanly"           "SETFLOOP:50" "$out"
+check_contains "dotimes non-last form, trailing local read"      "DTNONLAST:0" "$out"
+check_contains "incf in dotimes (setf-expansion gensym)"         "INCFDT:50" "$out"
+check_contains "incf in when-in-dotimes"                         "INCFWHEN:25" "$out"
+check_contains "incf in dolist"                                  "INCFDL:3" "$out"
+check_contains "incf in do"                                      "INCFDO:3" "$out"
+check_contains "decf in dotimes"                                 "DECFDT:45" "$out"
+check_contains "two sequential incf in a let body"              "INCF2:2" "$out"
+check_contains "incf in nested dotimes"                          "INCFNEST:6" "$out"
+check_absent   "no when/loop body double-emit (count not doubled)" "WHENCNT:100\|DOLISTCNT:10" "$out"
+check_absent   "no CDR type-error compiling setf/loop body"      "CDR: argument is not of type" "$out"
+check_absent   "no dropped LET* binding from setf-expansion"     "Unbound variable: NEW\|Unbound variable: DELTA" "$out"
+
 # --- Case: FFI typed peek/poke + foreign calls + callbacks under GC stress ---
 # The host FFI engine allocates on several paths that hold raw C pointers and
 # CL_Obj values across allocating calls:

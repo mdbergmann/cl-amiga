@@ -1497,10 +1497,14 @@ top:
         scan_macro_depth--;
     }
 
-    /* General form: scan all sub-expressions (iterative list walk) */
+    /* General form: scan all sub-expressions (iterative list walk).
+     * GC SAFETY: `cur` is re-read after the recursive scan_body_for_boxing
+     * call (which can macroexpand and thus allocate/compact).  Protect it so
+     * the walk doesn't follow a stale offset after a compaction. */
     {
         CL_Obj cur = form;
         scan_recurse_depth++;
+        CL_GC_PROTECT(cur);
         while (CL_CONS_P(cur)) {
             CL_Obj elem = cl_car(cur);
             cur = cl_cdr(cur);
@@ -1508,11 +1512,13 @@ top:
                 /* Last element: tail-call via goto to save stack */
                 scan_recurse_depth--;
                 form = elem;
+                CL_GC_UNPROTECT(1);
                 goto top;
             }
             scan_body_for_boxing(elem, vars, n_vars,
                                  mutated, captured, closure_depth);
         }
+        CL_GC_UNPROTECT(1);
         scan_recurse_depth--;
     }
 }
@@ -1543,14 +1549,24 @@ void determine_boxed_vars(CL_Obj body, CL_Obj *vars, int n_vars,
     for (i = 0; i < n_vars; i++)
         CL_GC_PROTECT(vars[i]);
 
-    /* Scan all body forms */
+    /* Scan all body forms.
+     * GC SAFETY: `cur` walks `body` and is re-read (cl_cdr) after
+     * scan_body_for_boxing, which macroexpands macros (e.g. INCF) in the VM
+     * and therefore allocates/compacts.  Protect `body` and `cur` so the
+     * cursor is not left pointing at stale memory — otherwise, with two or
+     * more body forms, cl_cdr(stale cur) dereferences garbage and the scan
+     * derails (observed as a gensym binding mis-compiled to a global, i.e.
+     * "Unbound variable: NEW<n>"). */
     {
         CL_Obj cur = body;
+        CL_GC_PROTECT(body);
+        CL_GC_PROTECT(cur);
         while (CL_CONS_P(cur)) {
             scan_body_for_boxing(cl_car(cur), vars, n_vars,
                                  mutated, captured, 0);
             cur = cl_cdr(cur);
         }
+        CL_GC_UNPROTECT(2);
     }
 
     cl_gc_pop_roots(n_vars);

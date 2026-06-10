@@ -308,6 +308,27 @@
 (check "do body exec" 3 *do-body*)
 (check "do multi-result" 30 (do ((i 0 (+ i 1))) ((= i 1) 10 20 30)))
 (check "do nil result" nil (do ((i 0 (+ i 1))) ((= i 1))))
+
+; --- Loop body + conditionals + setf-expansion macros (compiler GC-safety) ---
+; These exercise compile paths that held unprotected C-local cursors across
+; allocating compile_expr / VM-macroexpand calls: a moving GC during
+; compilation re-emitted a (when ...) loop body (doubled count), faulted on a
+; stale binding cursor ("CDR not a LIST"), or dropped an INCF/DECF LET* binding
+; (store gensym compiled as a global → "Unbound variable: NEW<n>").  On Amiga
+; the moving GC fires under genuine heap pressure; here we also assert these
+; common forms simply compile and run correctly.
+(check "when in dotimes runs once"   50  (let ((n 0)) (dotimes (i 50) (when (= 1 1) (setf n (+ n 1)))) n))
+(check "unless in dotimes runs once" 50  (let ((n 0)) (dotimes (i 50) (unless (= 1 2) (setf n (+ n 1)))) n))
+(check "when in dolist runs once"    5   (let ((n 0)) (dolist (x '(1 2 3 4 5)) (when t (setf n (+ n 1)))) n))
+(check "setf body in dotimes"        50  (let ((n 0)) (dotimes (i 50) (setf n (+ n 1))) n))
+(check "dotimes non-last, trail var" 0   (let ((n 0)) (dotimes (i 5) 1) n))
+(check "incf in dotimes"             50  (let ((n 0)) (dotimes (i 50) (incf n)) n))
+(check "incf in when-in-dotimes"     25  (let ((n 0)) (dotimes (i 50) (when (evenp i) (incf n))) n))
+(check "incf in dolist"              3   (let ((n 0)) (dolist (x '(1 2 3)) (incf n)) n))
+(check "incf in do"                  3   (let ((n 0)) (do ((i 0 (1+ i))) ((= i 3) n) (incf n))))
+(check "decf in dotimes"             45  (let ((n 50)) (dotimes (i 5) (decf n)) n))
+(check "two sequential incf"         2   (let ((n 0)) (incf n) (incf n) n))
+(check "incf in nested dotimes"      6   (let ((n 0)) (dotimes (i 3) (dotimes (j 2) (incf n))) n))
 ;; CLHS 6.1.1: a var-spec may be a bare symbol (bound to NIL, no step).
 ;; Regression: the compiler used to CAR the spec assuming a list, so a
 ;; bare symbol broke compilation (puri/drakma -> chipi load failure).
