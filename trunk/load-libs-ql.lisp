@@ -37,6 +37,13 @@
 
 (require "asdf")
 
+;; cl-amiga has no CFFI backend, so the cl+ssl/cffi chain can never load
+;; here.  Tell HTTP libraries that pull it in transitively to fall back to
+;; plain HTTP: drakma honours :drakma-no-ssl and then skips cl+ssl, which
+;; is what lets drakma-based systems (e.g. chipi) compile on cl-amiga.
+;; Harmless to other scripts — it only affects drakma's own dependencies.
+(pushnew :drakma-no-ssl *features*)
+
 ;; Host: ~/quicklisp/setup.lisp, Amiga: S:quicklisp/setup.lisp
 (defvar *ql-setup*
   #+amigaos #P"S:quicklisp/setup.lisp"

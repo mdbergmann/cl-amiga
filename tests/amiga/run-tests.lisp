@@ -308,6 +308,14 @@
 (check "do body exec" 3 *do-body*)
 (check "do multi-result" 30 (do ((i 0 (+ i 1))) ((= i 1) 10 20 30)))
 (check "do nil result" nil (do ((i 0 (+ i 1))) ((= i 1))))
+;; CLHS 6.1.1: a var-spec may be a bare symbol (bound to NIL, no step).
+;; Regression: the compiler used to CAR the spec assuming a list, so a
+;; bare symbol broke compilation (puri/drakma -> chipi load failure).
+(check "do bare-var nil" nil (do* ((i 0 (1+ i)) untouched) ((= i 2) untouched)))
+(check "do bare-var set" 10 (do ((i 0 (1+ i)) x) ((= i 2) x) (setq x (* i 10))))
+(check "do* bare-var mix" '((2 1 0) 5 3)
+  (do* ((a) (b 5) (c 0 (1+ c))) ((= c 3) (list a b c)) (setq a (cons c a))))
+(check "do* bare-var only" 7 (do* (x) ((eq x :done) 7) (setq x :done)))
 
 ; --- Quasiquote ---
 (check "qq atom" 42 `42)
