@@ -1332,6 +1332,62 @@ void *platform_ffi_resolve(uint32_t handle)
     return (void *)handle;
 }
 
+uint32_t platform_ffi_register(void *ptr)
+{
+    /* Handles are raw addresses on Amiga — no side table. */
+    return (uint32_t)ptr;
+}
+
+void platform_ffi_release(uint32_t handle)
+{
+    /* Nothing to reclaim — handles are raw addresses. */
+    (void)handle;
+}
+
+/* Dynamic-library / generic-call FFI is not available on AmigaOS — the
+ * Amiga path uses the library-vector model (platform_amiga_call) instead. */
+uint32_t platform_ffi_dlopen(const char *name)
+{
+    (void)name;
+    return 0;
+}
+
+uint32_t platform_ffi_dlsym(uint32_t lib_handle, const char *name)
+{
+    (void)lib_handle; (void)name;
+    return 0;
+}
+
+void platform_ffi_dlclose(uint32_t lib_handle)
+{
+    (void)lib_handle;
+}
+
+int platform_ffi_call(void *fn, CLFFIType ret_type, CLFFIValue *ret_val,
+                      int nargs, int nfixed,
+                      const CLFFIType *arg_types, const CLFFIValue *arg_vals)
+{
+    (void)fn; (void)ret_type; (void)ret_val;
+    (void)nargs; (void)nfixed; (void)arg_types; (void)arg_vals;
+    return -1;  /* unsupported */
+}
+
+void *platform_ffi_make_closure(CLFFIType ret_type, int nargs,
+                                const CLFFIType *arg_types,
+                                platform_ffi_cb_handler handler,
+                                void *user_data, void **out_closure)
+{
+    (void)ret_type; (void)nargs; (void)arg_types;
+    (void)handler; (void)user_data;
+    if (out_closure) *out_closure = NULL;
+    return NULL;  /* unsupported */
+}
+
+void platform_ffi_free_closure(void *closure)
+{
+    (void)closure;
+}
+
 uint32_t platform_ffi_peek32(uint32_t handle, uint32_t offset)
 {
     return *(volatile uint32_t *)((uint8_t *)handle + offset);

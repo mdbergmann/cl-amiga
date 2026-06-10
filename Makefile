@@ -2,7 +2,18 @@
 # Targets: host (Linux), amiga-m68k, amiga-ppc
 
 CC_HOST     = gcc
-CFLAGS_HOST = -std=c99 -D_GNU_SOURCE -Wall -Wextra -Wpedantic -g -O3 -flto -DPLATFORM_POSIX -DCL_WIDE_STRINGS $(DEBUG_FLAGS)
+
+# libffi + dlopen: the host FFI engine (foreign-funcall / dlsym / callbacks).
+# pkg-config locates libffi on both macOS (SDK) and Linux; fall back to -lffi.
+UNAME_S    := $(shell uname -s)
+FFI_CFLAGS := $(shell pkg-config --cflags libffi 2>/dev/null)
+FFI_LIBS   := $(shell pkg-config --libs libffi 2>/dev/null || echo -lffi)
+ifneq ($(UNAME_S),Darwin)
+FFI_LIBS   += -ldl
+endif
+
+CFLAGS_HOST = -std=c99 -D_GNU_SOURCE -Wall -Wextra -Wpedantic -g -O3 -flto -DPLATFORM_POSIX -DCL_WIDE_STRINGS $(FFI_CFLAGS) $(DEBUG_FLAGS)
+HOST_LIBS   = -lm $(FFI_LIBS)
 
 SRCDIR   = src
 BUILDDIR = build/host
@@ -82,7 +93,7 @@ host: $(BUILDDIR)/clamiga
 
 $(BUILDDIR)/clamiga: $(HOST_OBJS)
 	@mkdir -p $(dir $@)
-	$(CC_HOST) $(CFLAGS_HOST) -o $@ $^ -lm
+	$(CC_HOST) $(CFLAGS_HOST) -o $@ $^ $(HOST_LIBS)
 
 $(BUILDDIR)/%.o: $(SRCDIR)/%.c
 	@mkdir -p $(dir $@)
@@ -188,7 +199,7 @@ test-plus: test-fast
 
 $(BUILDDIR)/tests/%: $(TEST_SRCDIR)/%.c $(LIB_OBJS)
 	@mkdir -p $(dir $@)
-	$(CC_HOST) $(CFLAGS_HOST) -I$(SRCDIR) -I$(TEST_SRCDIR) -o $@ $< $(LIB_OBJS) -lm
+	$(CC_HOST) $(CFLAGS_HOST) -I$(SRCDIR) -I$(TEST_SRCDIR) -o $@ $< $(LIB_OBJS) $(HOST_LIBS)
 
 # Cold-load smoke test: runs the sento test suite end-to-end from an
 # empty FASL cache.  Exercises the source-load + auto-cache path that

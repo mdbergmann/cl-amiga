@@ -1484,6 +1484,23 @@ static void gc_finalize_dead(uint8_t *ptr)
         }
         break;
     }
+    case TYPE_FOREIGN_POINTER: {
+        /* Reclaim the side-table slot for transient (unowned) foreign
+         * pointers — dlsym results, values returned from foreign calls, and
+         * results of pointer arithmetic (CFFI inc-pointer / make-pointer).
+         * Without this the POSIX side table leaks one slot per such pointer.
+         *
+         * OWNED allocations are deliberately left alone: per CFFI semantics
+         * FFI:ALLOC-FOREIGN memory lives until an explicit FFI:FREE-FOREIGN,
+         * and callers routinely keep only the integer address (via
+         * pointer-address / make-pointer) while the wrapper object dies — so
+         * freeing here would be a use-after-free.  Each register/alloc hands
+         * out a unique handle, so this finalize is 1:1 with the slot. */
+        CL_ForeignPtr *fp = (CL_ForeignPtr *)ptr;
+        if (fp->address != 0 && !(fp->flags & CL_FPTR_FLAG_OWNED))
+            platform_ffi_release(fp->address);
+        break;
+    }
     case TYPE_THREAD: {
         /* Wrapper for an MP thread becoming dead means the OS thread must
          * already be finished: while the worker is registered, gc_mark

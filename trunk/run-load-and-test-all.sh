@@ -47,6 +47,7 @@ heap_for() {
   case "$1" in
       *-5am.lisp|*-closer-mop.lisp)           echo 24 ;;
       *-str.lisp|*-fset.lisp)                 echo 64 ;;
+      *-cffi.lisp)                            echo 192 ;;
       *-ansi.lisp)                            echo 96 ;;
       *-sento.lisp|*-sento-system.lisp)       echo 192 ;;
     *)                                        echo 96 ;;

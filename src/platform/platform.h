@@ -139,6 +139,23 @@ void     platform_ffi_free(uint32_t handle, uint32_t size);
  * Returns NULL on invalid handle. */
 void    *platform_ffi_resolve(uint32_t handle);
 
+/* Register an externally-owned real pointer (dlsym result, value returned
+ * from a foreign call, computed via pointer arithmetic, etc.) so it can be
+ * referenced by a 32-bit handle.  The memory is NOT owned by us and must
+ * not be freed when the handle is released.
+ *   POSIX: inserts PTR into the side table, returns a fresh handle.
+ *          PTR == NULL returns handle 0 (the canonical null pointer).
+ *   Amiga: identity — returns (uint32_t)PTR (no table needed).
+ * Returns 0 on table-full / NULL ptr. */
+uint32_t platform_ffi_register(void *ptr);
+
+/* Release a handle obtained from platform_ffi_register WITHOUT freeing the
+ * underlying memory (it is owned elsewhere).  Used by the GC finalizer to
+ * reclaim side-table slots for transient foreign pointers.
+ *   POSIX: frees the side-table slot.
+ *   Amiga: no-op (handles are raw addresses; nothing to reclaim). */
+void     platform_ffi_release(uint32_t handle);
+
 /* Peek/poke at handle + byte offset.
  * The handle must come from platform_ffi_alloc or (on Amiga) a raw address. */
 uint32_t platform_ffi_peek32(uint32_t handle, uint32_t offset);
@@ -147,6 +164,81 @@ uint8_t  platform_ffi_peek8(uint32_t handle, uint32_t offset);
 void     platform_ffi_poke32(uint32_t handle, uint32_t offset, uint32_t val);
 void     platform_ffi_poke16(uint32_t handle, uint32_t offset, uint16_t val);
 void     platform_ffi_poke8(uint32_t handle, uint32_t offset, uint8_t val);
+
+/* =============================================================
+ * Generic FFI: dynamic libraries + foreign function calls (host)
+ *
+ * Implemented on POSIX via dlopen/dlsym + libffi.  On Amiga these are
+ * stubs that signal "unsupported" (the Amiga path uses the library-vector
+ * model — platform_amiga_call — instead).
+ * ============================================================= */
+
+/* dlopen NAME (NULL = the global/default symbol namespace).  Returns a
+ * handle usable with platform_ffi_dlsym / platform_ffi_dlclose, or 0 on
+ * failure.  The handle is a side-table entry (POSIX) like other pointers. */
+uint32_t platform_ffi_dlopen(const char *name);
+
+/* dlsym: look up symbol NAME.  LIB_HANDLE 0 searches the default namespace.
+ * Returns a side-table handle to the symbol's address, or 0 if not found. */
+uint32_t platform_ffi_dlsym(uint32_t lib_handle, const char *name);
+
+/* dlclose a handle from platform_ffi_dlopen. */
+void     platform_ffi_dlclose(uint32_t lib_handle);
+
+/* Primitive C types the generic call/marshaling layer understands. */
+typedef enum {
+    CL_FFI_VOID = 0,
+    CL_FFI_I8,  CL_FFI_U8,
+    CL_FFI_I16, CL_FFI_U16,
+    CL_FFI_I32, CL_FFI_U32,
+    CL_FFI_I64, CL_FFI_U64,
+    CL_FFI_FLOAT, CL_FFI_DOUBLE,
+    CL_FFI_POINTER
+} CLFFIType;
+
+/* A single argument/return slot, interpreted per its CLFFIType. */
+typedef union {
+    int8_t   i8;  uint8_t  u8;
+    int16_t  i16; uint16_t u16;
+    int32_t  i32; uint32_t u32;
+    int64_t  i64; uint64_t u64;
+    float    f;   double   d;
+    void    *p;
+} CLFFIValue;
+
+/* Upper bound on argument count for a single generic foreign call. */
+#define CL_FFI_MAX_ARGS 32
+
+/* Call the C function at FN with NARGS arguments (arg_types[i]/arg_vals[i]).
+ * NFIXED is the count of fixed args for a variadic call (NFIXED == NARGS for
+ * a non-variadic call).  The result is written to *ret_val, interpreted per
+ * RET_TYPE.  Returns 0 on success, nonzero if FFI calls are unsupported on
+ * this platform or the call could not be prepared. */
+int platform_ffi_call(void *fn, CLFFIType ret_type, CLFFIValue *ret_val,
+                      int nargs, int nfixed,
+                      const CLFFIType *arg_types, const CLFFIValue *arg_vals);
+
+/* Callback (Lisp-as-C-function) support.
+ *
+ * The handler is invoked when foreign code calls the trampoline: ARGS holds
+ * the decoded C arguments (one per arg type), and the handler writes the
+ * result into *RET (interpreted per the closure's return type).  USER_DATA
+ * is passed through verbatim. */
+typedef void (*platform_ffi_cb_handler)(void *user_data,
+                                        const CLFFIValue *args,
+                                        CLFFIValue *ret);
+
+/* Build an executable trampoline callable from C with the given signature.
+ * Returns the callable code address (wrap it as a foreign pointer), or NULL
+ * on failure / unsupported.  *OUT_CLOSURE receives an opaque handle to pass
+ * to platform_ffi_free_closure. */
+void *platform_ffi_make_closure(CLFFIType ret_type, int nargs,
+                                const CLFFIType *arg_types,
+                                platform_ffi_cb_handler handler,
+                                void *user_data, void **out_closure);
+
+/* Free a closure created by platform_ffi_make_closure. */
+void  platform_ffi_free_closure(void *closure);
 
 /* =============================================================
  * Amiga-specific FFI: shared library calls

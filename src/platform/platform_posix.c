@@ -14,6 +14,9 @@
 #include <errno.h>
 #include <glob.h>
 #include <limits.h>
+#include <dlfcn.h>
+#include <pthread.h>
+#include <ffi.h>
 
 /* GC stop-the-world cooperation (defined in core/thread.c).  Forward-declared
  * here rather than #including core/thread.h so the platform layer stays free of
@@ -763,47 +766,120 @@ void platform_cache_clear(void *addr, uint32_t len)
  * side table that maps handles (1-based indices) to real pointers.
  * ============================================================= */
 
-#define FFI_MEM_TABLE_SIZE 1024
+/*
+ * On 64-bit POSIX a real pointer doesn't fit in the 32-bit CL_ForeignPtr
+ * address field, so foreign pointers carry a 1-based handle into this side
+ * table.  The table holds both memory we allocated (OWNED — freed by
+ * platform_ffi_free) and externally-owned pointers we merely reference
+ * (registered via platform_ffi_register — released, never freed, by
+ * platform_ffi_release).
+ *
+ * The table grows on demand and recycles slots through a free-list so heavy
+ * pointer arithmetic (CFFI inc-pointer / mem-aref) doesn't exhaust it.  A
+ * mutex guards concurrent access from MP threads; the GC finalizer runs
+ * world-stopped so it could skip the lock, but taking it there is harmless.
+ */
+typedef struct {
+    void    *ptr;        /* real pointer; NULL when the slot is free */
+    uint32_t size;       /* allocation size for OWNED memory, else 0 */
+    uint32_t next_free;  /* free-list link (1-based), 0 = end; valid when free */
+} FFIMemEntry;
 
-static struct {
-    void    *ptr;
-    uint32_t size;
-} ffi_mem_table[FFI_MEM_TABLE_SIZE];
+static FFIMemEntry *ffi_mem_table   = NULL;
+static uint32_t     ffi_mem_cap     = 0;   /* allocated slot count */
+static uint32_t     ffi_mem_hi      = 0;   /* high-water: slots ever handed out */
+static uint32_t     ffi_mem_free    = 0;   /* free-list head (1-based), 0 = empty */
+static pthread_mutex_t ffi_mem_lock = PTHREAD_MUTEX_INITIALIZER;
+
+/* Insert PTR (size for owned, 0 for external) and return a fresh 1-based
+ * handle, or 0 on out-of-memory.  Caller holds ffi_mem_lock. */
+static uint32_t ffi_table_insert_locked(void *ptr, uint32_t size)
+{
+    uint32_t h;
+    if (ffi_mem_free != 0) {
+        h = ffi_mem_free;
+        ffi_mem_free = ffi_mem_table[h - 1].next_free;
+    } else {
+        if (ffi_mem_hi >= ffi_mem_cap) {
+            uint32_t newcap = ffi_mem_cap ? ffi_mem_cap * 2 : 1024;
+            FFIMemEntry *t = (FFIMemEntry *)realloc(ffi_mem_table,
+                                                    (size_t)newcap * sizeof(FFIMemEntry));
+            if (!t) return 0;
+            ffi_mem_table = t;
+            ffi_mem_cap = newcap;
+        }
+        h = ++ffi_mem_hi;  /* 1-based */
+    }
+    ffi_mem_table[h - 1].ptr = ptr;
+    ffi_mem_table[h - 1].size = size;
+    ffi_mem_table[h - 1].next_free = 0;
+    return h;
+}
+
+/* Return a slot to the free-list (does NOT free ptr).  Caller holds lock. */
+static void ffi_table_release_locked(uint32_t handle)
+{
+    if (handle == 0 || handle > ffi_mem_hi) return;
+    if (ffi_mem_table[handle - 1].ptr == NULL) return;  /* already free */
+    ffi_mem_table[handle - 1].ptr = NULL;
+    ffi_mem_table[handle - 1].size = 0;
+    ffi_mem_table[handle - 1].next_free = ffi_mem_free;
+    ffi_mem_free = handle;
+}
 
 uint32_t platform_ffi_alloc(uint32_t size)
 {
-    int i;
     void *p;
+    uint32_t h;
     if (size == 0) return 0;
     p = malloc((size_t)size);
     if (!p) return 0;
     memset(p, 0, (size_t)size);
-    for (i = 0; i < FFI_MEM_TABLE_SIZE; i++) {
-        if (!ffi_mem_table[i].ptr) {
-            ffi_mem_table[i].ptr = p;
-            ffi_mem_table[i].size = size;
-            return (uint32_t)(i + 1);  /* 1-based handle */
-        }
-    }
-    free(p);  /* Table full */
-    return 0;
+    pthread_mutex_lock(&ffi_mem_lock);
+    h = ffi_table_insert_locked(p, size);
+    pthread_mutex_unlock(&ffi_mem_lock);
+    if (h == 0) free(p);  /* table grow failed */
+    return h;
+}
+
+uint32_t platform_ffi_register(void *ptr)
+{
+    uint32_t h;
+    if (ptr == NULL) return 0;  /* canonical null pointer */
+    pthread_mutex_lock(&ffi_mem_lock);
+    h = ffi_table_insert_locked(ptr, 0);
+    pthread_mutex_unlock(&ffi_mem_lock);
+    return h;
 }
 
 void platform_ffi_free(uint32_t handle, uint32_t size)
 {
+    void *p = NULL;
     (void)size;
-    if (handle == 0 || handle > FFI_MEM_TABLE_SIZE) return;
-    if (ffi_mem_table[handle - 1].ptr) {
-        free(ffi_mem_table[handle - 1].ptr);
-        ffi_mem_table[handle - 1].ptr = NULL;
-        ffi_mem_table[handle - 1].size = 0;
-    }
+    if (handle == 0) return;
+    pthread_mutex_lock(&ffi_mem_lock);
+    if (handle <= ffi_mem_hi)
+        p = ffi_mem_table[handle - 1].ptr;
+    ffi_table_release_locked(handle);
+    pthread_mutex_unlock(&ffi_mem_lock);
+    if (p) free(p);
+}
+
+void platform_ffi_release(uint32_t handle)
+{
+    pthread_mutex_lock(&ffi_mem_lock);
+    ffi_table_release_locked(handle);
+    pthread_mutex_unlock(&ffi_mem_lock);
 }
 
 void *platform_ffi_resolve(uint32_t handle)
 {
-    if (handle == 0 || handle > FFI_MEM_TABLE_SIZE) return NULL;
-    return ffi_mem_table[handle - 1].ptr;
+    void *p;
+    if (handle == 0) return NULL;
+    pthread_mutex_lock(&ffi_mem_lock);
+    p = (handle <= ffi_mem_hi) ? ffi_mem_table[handle - 1].ptr : NULL;
+    pthread_mutex_unlock(&ffi_mem_lock);
+    return p;
 }
 
 uint32_t platform_ffi_peek32(uint32_t handle, uint32_t offset)
@@ -846,6 +922,217 @@ void platform_ffi_poke8(uint32_t handle, uint32_t offset, uint8_t val)
     void *base = platform_ffi_resolve(handle);
     if (!base) return;
     *(uint8_t *)((uint8_t *)base + offset) = val;
+}
+
+/* =============================================================
+ * Dynamic libraries + foreign function calls (POSIX: dlopen + libffi)
+ * ============================================================= */
+
+uint32_t platform_ffi_dlopen(const char *name)
+{
+    /* RTLD_GLOBAL so symbols become visible to subsequent default-namespace
+     * lookups (matches how CFFI expects use-foreign-library to behave). */
+    void *h = dlopen(name, RTLD_NOW | RTLD_GLOBAL);
+    if (!h) return 0;
+    return platform_ffi_register(h);
+}
+
+uint32_t platform_ffi_dlsym(uint32_t lib_handle, const char *name)
+{
+    void *sym;
+    void *lib = (lib_handle == 0) ? RTLD_DEFAULT : platform_ffi_resolve(lib_handle);
+    if (lib_handle != 0 && lib == NULL) return 0;
+    dlerror();  /* clear */
+    sym = dlsym(lib, name);
+    if (sym == NULL && dlerror() != NULL) return 0;
+    return platform_ffi_register(sym);
+}
+
+void platform_ffi_dlclose(uint32_t lib_handle)
+{
+    void *lib = platform_ffi_resolve(lib_handle);
+    if (lib) dlclose(lib);
+    platform_ffi_release(lib_handle);
+}
+
+/* Map a CLFFIType to the corresponding libffi ffi_type. */
+static ffi_type *ffi_type_for(CLFFIType t)
+{
+    switch (t) {
+    case CL_FFI_VOID:    return &ffi_type_void;
+    case CL_FFI_I8:      return &ffi_type_sint8;
+    case CL_FFI_U8:      return &ffi_type_uint8;
+    case CL_FFI_I16:     return &ffi_type_sint16;
+    case CL_FFI_U16:     return &ffi_type_uint16;
+    case CL_FFI_I32:     return &ffi_type_sint32;
+    case CL_FFI_U32:     return &ffi_type_uint32;
+    case CL_FFI_I64:     return &ffi_type_sint64;
+    case CL_FFI_U64:     return &ffi_type_uint64;
+    case CL_FFI_FLOAT:   return &ffi_type_float;
+    case CL_FFI_DOUBLE:  return &ffi_type_double;
+    case CL_FFI_POINTER: return &ffi_type_pointer;
+    }
+    return &ffi_type_void;
+}
+
+int platform_ffi_call(void *fn, CLFFIType ret_type, CLFFIValue *ret_val,
+                      int nargs, int nfixed,
+                      const CLFFIType *arg_types, const CLFFIValue *arg_vals)
+{
+    ffi_cif cif;
+    ffi_type *atypes[CL_FFI_MAX_ARGS];
+    void *avalues[CL_FFI_MAX_ARGS];
+    /* libffi widens any integral return narrower than ffi_arg to ffi_arg and
+     * writes that many bytes, so the return buffer must be at least that big. */
+    union { CLFFIValue v; ffi_arg pad; } rc;
+    ffi_status st;
+    int i;
+
+    if (!fn) return -1;
+    if (nargs < 0 || nargs > CL_FFI_MAX_ARGS) return -1;
+
+    for (i = 0; i < nargs; i++) {
+        atypes[i] = ffi_type_for(arg_types[i]);
+        /* arg_vals is const; libffi wants a non-const pointer to each value
+         * but never writes through it for arguments. */
+        avalues[i] = (void *)&arg_vals[i];
+    }
+
+    if (nfixed >= 0 && nfixed < nargs) {
+        st = ffi_prep_cif_var(&cif, FFI_DEFAULT_ABI, (unsigned)nfixed,
+                              (unsigned)nargs, ffi_type_for(ret_type), atypes);
+    } else {
+        st = ffi_prep_cif(&cif, FFI_DEFAULT_ABI, (unsigned)nargs,
+                          ffi_type_for(ret_type), atypes);
+    }
+    if (st != FFI_OK) return -1;
+
+    rc.pad = 0;
+    ffi_call(&cif, FFI_FN(fn), &rc, avalues);
+
+    if (ret_val) {
+        /* For small integer returns libffi stored an ffi_arg; narrow it. */
+        switch (ret_type) {
+        case CL_FFI_VOID:    break;
+        case CL_FFI_I8:      ret_val->i8  = (int8_t)(ffi_sarg)rc.pad; break;
+        case CL_FFI_U8:      ret_val->u8  = (uint8_t)(ffi_arg)rc.pad; break;
+        case CL_FFI_I16:     ret_val->i16 = (int16_t)(ffi_sarg)rc.pad; break;
+        case CL_FFI_U16:     ret_val->u16 = (uint16_t)(ffi_arg)rc.pad; break;
+        case CL_FFI_I32:     ret_val->i32 = (int32_t)(ffi_sarg)rc.pad; break;
+        case CL_FFI_U32:     ret_val->u32 = (uint32_t)(ffi_arg)rc.pad; break;
+        case CL_FFI_I64:     ret_val->i64 = rc.v.i64; break;
+        case CL_FFI_U64:     ret_val->u64 = rc.v.u64; break;
+        case CL_FFI_FLOAT:   ret_val->f   = rc.v.f; break;
+        case CL_FFI_DOUBLE:  ret_val->d   = rc.v.d; break;
+        case CL_FFI_POINTER: ret_val->p   = rc.v.p; break;
+        }
+    }
+    return 0;
+}
+
+/* --- Callbacks: Lisp functions exposed as C function pointers --- */
+
+typedef struct {
+    ffi_cif    cif;
+    ffi_type  *atypes[CL_FFI_MAX_ARGS];
+    CLFFIType  ret_type;
+    CLFFIType  arg_types[CL_FFI_MAX_ARGS];
+    int        nargs;
+    platform_ffi_cb_handler handler;
+    void      *user_data;
+    ffi_closure *closure;
+    void      *code;
+} PosixClosure;
+
+/* libffi entry point: decode raw C args, hand them to the generic handler,
+ * then write the handler's result back where libffi expects it. */
+static void posix_closure_tramp(ffi_cif *cif, void *ret, void **args, void *ud)
+{
+    PosixClosure *pc = (PosixClosure *)ud;
+    CLFFIValue cargs[CL_FFI_MAX_ARGS];
+    CLFFIValue cret;
+    int i;
+    (void)cif;
+
+    for (i = 0; i < pc->nargs; i++) {
+        switch (pc->arg_types[i]) {
+        case CL_FFI_I8:      cargs[i].i8  = *(int8_t  *)args[i]; break;
+        case CL_FFI_U8:      cargs[i].u8  = *(uint8_t *)args[i]; break;
+        case CL_FFI_I16:     cargs[i].i16 = *(int16_t *)args[i]; break;
+        case CL_FFI_U16:     cargs[i].u16 = *(uint16_t*)args[i]; break;
+        case CL_FFI_I32:     cargs[i].i32 = *(int32_t *)args[i]; break;
+        case CL_FFI_U32:     cargs[i].u32 = *(uint32_t*)args[i]; break;
+        case CL_FFI_I64:     cargs[i].i64 = *(int64_t *)args[i]; break;
+        case CL_FFI_U64:     cargs[i].u64 = *(uint64_t*)args[i]; break;
+        case CL_FFI_FLOAT:   cargs[i].f   = *(float   *)args[i]; break;
+        case CL_FFI_DOUBLE:  cargs[i].d   = *(double  *)args[i]; break;
+        case CL_FFI_POINTER: cargs[i].p   = *(void   **)args[i]; break;
+        case CL_FFI_VOID:    break;
+        }
+    }
+
+    memset(&cret, 0, sizeof(cret));
+    pc->handler(pc->user_data, cargs, &cret);
+
+    /* libffi widens integral returns to ffi_arg. */
+    switch (pc->ret_type) {
+    case CL_FFI_VOID:    break;
+    case CL_FFI_I8:      *(ffi_arg *)ret = (ffi_arg)(ffi_sarg)cret.i8;  break;
+    case CL_FFI_U8:      *(ffi_arg *)ret = (ffi_arg)cret.u8;            break;
+    case CL_FFI_I16:     *(ffi_arg *)ret = (ffi_arg)(ffi_sarg)cret.i16; break;
+    case CL_FFI_U16:     *(ffi_arg *)ret = (ffi_arg)cret.u16;           break;
+    case CL_FFI_I32:     *(ffi_arg *)ret = (ffi_arg)(ffi_sarg)cret.i32; break;
+    case CL_FFI_U32:     *(ffi_arg *)ret = (ffi_arg)cret.u32;           break;
+    case CL_FFI_I64:     *(int64_t  *)ret = cret.i64; break;
+    case CL_FFI_U64:     *(uint64_t *)ret = cret.u64; break;
+    case CL_FFI_FLOAT:   *(float    *)ret = cret.f;   break;
+    case CL_FFI_DOUBLE:  *(double   *)ret = cret.d;   break;
+    case CL_FFI_POINTER: *(void    **)ret = cret.p;   break;
+    }
+}
+
+void *platform_ffi_make_closure(CLFFIType ret_type, int nargs,
+                                const CLFFIType *arg_types,
+                                platform_ffi_cb_handler handler,
+                                void *user_data, void **out_closure)
+{
+    PosixClosure *pc;
+    int i;
+    if (nargs < 0 || nargs > CL_FFI_MAX_ARGS) return NULL;
+    pc = (PosixClosure *)calloc(1, sizeof(PosixClosure));
+    if (!pc) return NULL;
+    pc->ret_type = ret_type;
+    pc->nargs = nargs;
+    pc->handler = handler;
+    pc->user_data = user_data;
+    for (i = 0; i < nargs; i++) {
+        pc->arg_types[i] = arg_types[i];
+        pc->atypes[i] = ffi_type_for(arg_types[i]);
+    }
+    pc->closure = (ffi_closure *)ffi_closure_alloc(sizeof(ffi_closure), &pc->code);
+    if (!pc->closure) { free(pc); return NULL; }
+    if (ffi_prep_cif(&pc->cif, FFI_DEFAULT_ABI, (unsigned)nargs,
+                     ffi_type_for(ret_type), pc->atypes) != FFI_OK) {
+        ffi_closure_free(pc->closure);
+        free(pc);
+        return NULL;
+    }
+    if (ffi_prep_closure_loc(pc->closure, &pc->cif, posix_closure_tramp,
+                             pc, pc->code) != FFI_OK) {
+        ffi_closure_free(pc->closure);
+        free(pc);
+        return NULL;
+    }
+    if (out_closure) *out_closure = pc;
+    return pc->code;
+}
+
+void platform_ffi_free_closure(void *closure)
+{
+    PosixClosure *pc = (PosixClosure *)closure;
+    if (!pc) return;
+    if (pc->closure) ffi_closure_free(pc->closure);
+    free(pc);
 }
 
 /* =============================================================

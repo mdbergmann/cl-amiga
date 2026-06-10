@@ -4903,6 +4903,37 @@
       (setf (test-point-y p) 200)
       (list (test-point-x p) (test-point-y p)))))
 
+; --- FFI typed peek/poke (signed, 64-bit, float/double, pointer) ---
+(check "ffi-peek-poke-i8" -5
+  (let ((p (ffi:alloc-foreign 8))) (ffi:poke-i8 p -5)
+    (prog1 (ffi:peek-i8 p) (ffi:free-foreign p))))
+(check "ffi-peek-poke-i16" -1000
+  (let ((p (ffi:alloc-foreign 8))) (ffi:poke-i16 p -1000)
+    (prog1 (ffi:peek-i16 p) (ffi:free-foreign p))))
+(check "ffi-peek-poke-i32" -123456
+  (let ((p (ffi:alloc-foreign 8))) (ffi:poke-i32 p -123456)
+    (prog1 (ffi:peek-i32 p) (ffi:free-foreign p))))
+(check "ffi-peek-poke-u64" 4294967300
+  (let ((p (ffi:alloc-foreign 8))) (ffi:poke-u64 p 4294967300)
+    (prog1 (ffi:peek-u64 p) (ffi:free-foreign p))))
+(check "ffi-peek-poke-i64" -5000000000
+  (let ((p (ffi:alloc-foreign 8))) (ffi:poke-i64 p -5000000000)
+    (prog1 (ffi:peek-i64 p) (ffi:free-foreign p))))
+(check "ffi-peek-poke-single" 2.5
+  (let ((p (ffi:alloc-foreign 8))) (ffi:poke-single p 2.5)
+    (prog1 (ffi:peek-single p) (ffi:free-foreign p))))
+(check "ffi-peek-poke-double" 6.25d0
+  (let ((p (ffi:alloc-foreign 8))) (ffi:poke-double p 6.25d0)
+    (prog1 (ffi:peek-double p) (ffi:free-foreign p))))
+(check "ffi-peek-poke-pointer" t
+  (let ((p (ffi:alloc-foreign 8))) (ffi:poke-pointer p p)
+    (prog1 (ffi:pointer-eq p (ffi:peek-pointer p)) (ffi:free-foreign p))))
+(check "ffi-pointer-eq" t
+  (let* ((p (ffi:alloc-foreign 8)) (a (ffi:foreign-pointer-address p)))
+    (prog1 (ffi:pointer-eq p (ffi:make-foreign-pointer a)) (ffi:free-foreign p))))
+(check "ffi-pointer-eq-diff" nil
+  (ffi:pointer-eq (ffi:make-foreign-pointer 16) (ffi:make-foreign-pointer 32)))
+
 ; --- FFI (Amiga-specific) ---
 #+amigaos (require "amiga/ffi")
 #+amigaos
