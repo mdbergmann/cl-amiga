@@ -280,6 +280,41 @@ void cl_tlv_remove(CL_Thread *t, CL_Obj sym)
     }
 }
 
+/* Rebuild the TLV table after a compacting GC has relocated symbols.
+ * Entries are keyed by symbol arena-offset (sym >> 2); when the GC moves a
+ * symbol it updates the stored offset in place but the entry stays in its old
+ * probe slot, so cl_tlv_get would recompute a different slot and miss — the
+ * dynamic binding silently reverts to the symbol's global value. Re-insert
+ * every live entry by its new hash. Tombstones are dropped: a clean rebuild
+ * reconstructs all probe chains and needs no deleted-markers. */
+void cl_tlv_rehash(CL_Thread *t)
+{
+    CL_TLVEntry live[CL_TLV_TABLE_SIZE];
+    uint32_t n = 0, i;
+
+    if (!t || t->tlv_entry_count == 0)
+        return;
+
+    /* Snapshot live entries (skip empties and tombstones) */
+    for (i = 0; i < CL_TLV_TABLE_SIZE; i++) {
+        CL_Obj sym = t->tlv_table[i].symbol;
+        if (sym != CL_NIL && sym != CL_UNBOUND) {
+            live[n].symbol = sym;
+            live[n].value  = t->tlv_table[i].value;
+            n++;
+        }
+    }
+
+    /* Clear the table, then re-insert by the new (post-move) hashes */
+    for (i = 0; i < CL_TLV_TABLE_SIZE; i++) {
+        t->tlv_table[i].symbol = CL_NIL;
+        t->tlv_table[i].value  = CL_NIL;
+    }
+    t->tlv_entry_count = 0;
+    for (i = 0; i < n; i++)
+        cl_tlv_set(t, live[i].symbol, live[i].value);
+}
+
 /* High-level TLV-aware accessors.
  * Fast path: when tlv_entry_count == 0, no dynamic bindings are active
  * on this thread, so skip the TLV hash probe entirely.  This turns a

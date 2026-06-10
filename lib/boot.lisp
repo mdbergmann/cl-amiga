@@ -1768,6 +1768,24 @@ including any dotted-list terminator (so the result is also dotted)."
              (string= n "EXTERNAL-SYMBOL") (string= n "EXTERNAL-SYMBOLS")
              (string= n "AND") (string= n "ELSE") (string= n "END")))))
 
+(defun %loop-simple-type-spec-p (x)
+  "CLHS 6.1.1.7: a bare (no OF-TYPE) LOOP type-spec must be one of the
+simple type specifiers FIXNUM, FLOAT, T or NIL."
+  (and (symbolp x)
+       (let ((n (symbol-name x)))
+         (or (string= n "FIXNUM") (string= n "FLOAT")
+             (string= n "T") (string= n "NIL")))))
+
+(defun %loop-skip-type-spec (rest)
+  "Consume an optional LOOP type-spec at the head of REST and return the
+remaining list.  A type-spec is either OF-TYPE followed by a single
+d-type-spec form, or a bare simple-type-spec (FIXNUM/FLOAT/T/NIL).  The
+type is purely advisory here, so it is discarded once parsed."
+  (cond ((null rest) rest)
+        ((%loop-keyword-p (car rest) "OF-TYPE") (cddr rest))
+        ((%loop-simple-type-spec-p (car rest)) (cdr rest))
+        (t rest)))
+
 (defun %loop-accum-body (kn expr accum-var)
   "Generate the body form for accumulation kind KN."
   (cond
@@ -2320,8 +2338,11 @@ including any dotted-list terminator (so the result is also dotted)."
                  (let* ((raw-var (car rest))
                         (destructuring (consp raw-var))
                         (var (if destructuring (gensym "DVAR") raw-var))
-                        (sub-kw (cadr rest))
-                        (r (%loop-parse-for (cddr rest) var sub-kw end-tag)))
+                        ;; CLHS 6.1.2.1: an optional type-spec may follow
+                        ;; the variable, e.g. (loop for i fixnum from 0 ...).
+                        (after-var (%loop-skip-type-spec (cdr rest)))
+                        (sub-kw (car after-var))
+                        (r (%loop-parse-for (cdr after-var) var sub-kw end-tag)))
                    (setq rest (car r))
                    (dolist (b (cadr r)) (push b bindings))
                    (when destructuring
@@ -2387,9 +2408,10 @@ including any dotted-list terminator (so the result is also dotted)."
                         (destructuring-w (consp raw-wvar))
                         (wvar (if destructuring-w (gensym "WDVAR") raw-wvar)))
                    (setq rest (cdr rest))
-                   ;; Skip OF-TYPE type-spec if present
-                   (when (and rest (%loop-keyword-p (car rest) "OF-TYPE"))
-                     (setq rest (cddr rest)))
+                   ;; CLHS 6.1.2.4: skip an optional type-spec
+                   ;; (OF-TYPE ... or a bare FIXNUM/FLOAT/T/NIL) such as
+                   ;; (loop with noctets fixnum = 0 ...).
+                   (setq rest (%loop-skip-type-spec rest))
                    (if (and rest (symbolp (car rest))
                             (string= (symbol-name (car rest)) "="))
                        (progn

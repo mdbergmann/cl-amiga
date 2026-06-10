@@ -1802,6 +1802,14 @@ static CL_Obj compile_let(CL_Compiler *c, CL_Obj form, int sequential)
         CL_Obj tail;
         CL_TailFrame *tf;
 
+        /* GC-protect the body cursor: compile_expr below can trigger a
+         * compaction (it allocates), which relocates the body's cons cells.
+         * Without protecting &rest, the cursor advance (rest = cl_cdr(rest))
+         * would follow a stale offset and tail = cl_car(rest) would read
+         * garbage — e.g. a direct special-var read at the let tail compiling
+         * to OP_NIL instead of OP_GLOAD (returns NIL at runtime). */
+        CL_GC_PROTECT(rest);
+
         if (CL_NULL_P(rest)) {
             tail = CL_NIL;  /* empty body — caller emits OP_NIL */
         } else {
@@ -1816,7 +1824,7 @@ static CL_Obj compile_let(CL_Compiler *c, CL_Obj form, int sequential)
             tail = cl_car(rest);
         }
 
-        CL_GC_UNPROTECT(3);  /* bindings, body, local_specials */
+        CL_GC_UNPROTECT(4);  /* rest, bindings, body, local_specials */
 
         tf = cl_tail_push(c);
         tf->kind = CL_TAIL_LET;
@@ -2677,6 +2685,11 @@ static void compile_setf_place(CL_Compiler *c, CL_Obj place, CL_Obj val_form)
                 CL_Obj rest = cl_cdr(place_arg);
                 CL_Obj temps_head = CL_NIL, temps_tail = CL_NIL;
                 CL_Obj bind_head = CL_NIL, bind_tail = CL_NIL;
+                /* op and rest are cursors into place_arg; the cl_cons/gensym
+                 * calls below can compact and relocate those cells, so protect
+                 * them (same class as the compile_let body-cursor bug). */
+                CL_GC_PROTECT(op);
+                CL_GC_PROTECT(rest);
                 CL_GC_PROTECT(temps_head);
                 CL_GC_PROTECT(temps_tail);
                 CL_GC_PROTECT(bind_head);
@@ -2701,7 +2714,7 @@ static void compile_setf_place(CL_Compiler *c, CL_Obj place, CL_Obj val_form)
                 }
                 inner_place = cl_cons(op, temps_head);
                 sub_bindings = bind_head;
-                CL_GC_UNPROTECT(4);
+                CL_GC_UNPROTECT(6);  /* op, rest, temps_head/tail, bind_head/tail */
             } else {
                 inner_place = place_arg;
             }
@@ -3181,7 +3194,10 @@ static void compile_call(CL_Compiler *c, CL_Obj form)
 
         sym_idx = cl_add_constant(c, base_sym);
 
-        /* Push value args in order */
+        /* Push value args in order.  Protect the cursor: compile_expr can
+         * compact, relocating the arg list cells (same class as the
+         * compile_let body-cursor bug). */
+        CL_GC_PROTECT(rest);
         while (!CL_NULL_P(rest)) {
             compile_expr(c, cl_car(rest));
             rest = cl_cdr(rest);
@@ -3193,7 +3209,7 @@ static void compile_call(CL_Compiler *c, CL_Obj form)
         cl_emit_i32(c, (int32_t)regspec_val);
         cl_emit(c, (uint8_t)n_value_args);
 
-        CL_GC_UNPROTECT(1);
+        CL_GC_UNPROTECT(2);  /* rest, args */
         c->in_tail = saved_tail;
         return;
     }
@@ -3249,12 +3265,17 @@ static void compile_call(CL_Compiler *c, CL_Obj form)
         uint8_t opcode = inline_builtin_opcode(func, candidate_nargs);
         if (opcode != 0) {
             CL_Obj rest = args;
+            /* Protect the cursor: compile_expr can compact, relocating the
+             * arg list cells; without &rest registered, rest = cl_cdr(rest)
+             * would follow a stale offset (same class as the compile_let
+             * body-cursor bug). */
+            CL_GC_PROTECT(rest);
             while (!CL_NULL_P(rest)) {
                 compile_expr(c, cl_car(rest));
                 rest = cl_cdr(rest);
             }
             cl_emit(c, opcode);
-            CL_GC_UNPROTECT(1);
+            CL_GC_UNPROTECT(2);  /* rest, args */
             c->in_tail = saved_tail;
             return;
         }

@@ -344,8 +344,20 @@ int cl_funcallable_instance_p(CL_Obj obj)
 {
     static CL_Obj sym_sgf = CL_NIL;
     if (!CL_STRUCT_P(obj)) return 0;
-    if (sym_sgf == CL_NIL)
+    if (sym_sgf == CL_NIL) {
         sym_sgf = cl_intern("STANDARD-GENERIC-FUNCTION", 25);
+        /* sym_sgf caches an arena-resident symbol offset.  Symbols are
+         * relocated by the compacting GC, so without registering &sym_sgf
+         * as a global root the cached offset goes stale after the next
+         * compaction — and then every funcallable-instance check below
+         * silently fails (a live GF struct is no longer recognized, so the
+         * VM calls it as a plain struct → "Not a function: heap object
+         * type 10").  This was a heap-layout-dependent corruption exposed
+         * under GC stress by DEFCLASS redefinition (REMOVE over a class's
+         * long direct-subclasses list shifts the live set enough to move
+         * the symbol). */
+        cl_gc_register_root(&sym_sgf);
+    }
     return ((CL_Struct *)CL_OBJ_TO_PTR(obj))->type_desc == sym_sgf;
 }
 

@@ -265,13 +265,35 @@ CL_Obj cl_intern_in(const char *name, uint32_t len, CL_Obj package)
     CL_Obj existing;
     CL_Obj name_str, sym;
     CL_Symbol *s;
+    char namebuf[256];
+    char *heapname = NULL;
+
+    /* GC safety: callers may pass `name` pointing INTO the moving heap
+     * (e.g. a Lisp string's character data).  The allocations below
+     * (cl_make_string, cl_make_symbol) can compact and relocate that
+     * string, dangling `name` and interning a garbage symbol name.  Copy
+     * it into a GC-immune C buffer up-front and use that everywhere. */
+    if (len < sizeof(namebuf)) {
+        memcpy(namebuf, name, len);
+        name = namebuf;
+    } else {
+        heapname = (char *)platform_alloc(len);
+        if (heapname) {
+            memcpy(heapname, name, len);
+            name = heapname;
+        }
+        /* If allocation fails, fall back to the original pointer — no worse
+         * than before; OOM will surface elsewhere. */
+    }
 
     /* Fast path: read-lock check */
     if (cl_package_rwlock) platform_rwlock_rdlock(cl_package_rwlock);
     existing = cl_package_find_symbol_nolock(name, len, package);
     if (cl_package_rwlock) platform_rwlock_unlock(cl_package_rwlock);
-    if (existing != CL_UNBOUND)
+    if (existing != CL_UNBOUND) {
+        if (heapname) platform_free(heapname);
         return cl_normalize_nil_symbol(existing);
+    }
 
     /* Slow path: create symbol outside lock.
      * Protect package — allocations below may trigger GC/compaction. */
@@ -289,10 +311,12 @@ CL_Obj cl_intern_in(const char *name, uint32_t len, CL_Obj package)
     existing = cl_package_find_symbol_nolock(name, len, package);
     if (existing != CL_UNBOUND) {
         if (cl_package_rwlock) platform_rwlock_unlock(cl_package_rwlock);
+        if (heapname) platform_free(heapname);
         return cl_normalize_nil_symbol(existing);
     }
     cl_package_add_symbol(package, sym);
     if (cl_package_rwlock) platform_rwlock_unlock(cl_package_rwlock);
+    if (heapname) platform_free(heapname);
     /* Newly-interned KEYWORD-package symbols are self-evaluating constants
      * and automatically external (CLHS 11.1.2.3.1).  Done here so any path
      * that creates a fresh keyword (cl_intern_keyword, bi_intern, the

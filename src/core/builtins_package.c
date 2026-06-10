@@ -4,6 +4,7 @@
 #include "mem.h"
 #include "error.h"
 #include "vm.h"
+#include "string_utils.h"
 #include "../platform/platform.h"
 #include <string.h>
 
@@ -418,16 +419,37 @@ static CL_Obj bi_intern(CL_Obj *args, int nargs)
     int status;
     CL_Obj existing;
     CL_Obj sym;
+    char namebuf[256];
+    char *heapname = NULL;
 
-    if (!CL_STRING_P(args[0])) {
+    if (!CL_ANY_STRING_P(args[0])) {
         cl_error(CL_ERR_TYPE, "INTERN: name must be a string");
         return CL_NIL;
     }
 
+    /* Copy the name into a GC-immune C buffer BEFORE any allocating call.
+     * args[0]'s character data lives in the moving heap; cl_intern_in /
+     * cl_find_symbol_with_status allocate (and may compact), which would
+     * relocate args[0] and dangle a raw s->data pointer — interning a
+     * garbage name.  A wide string (e.g. from (make-array n :element-type
+     * 'character), as alexandria's SYMBOLICATE uses) is narrowed here too;
+     * clamiga's symbol table is byte-based and names are overwhelmingly
+     * ASCII/Latin-1, which round-trips exactly. */
     {
-        CL_String *s = (CL_String *)CL_OBJ_TO_PTR(args[0]);
-        name = s->data;
-        len = s->length;
+        uint32_t i;
+        len = cl_string_length(args[0]);
+        if (len < sizeof(namebuf)) {
+            name = namebuf;
+        } else {
+            heapname = (char *)platform_alloc(len + 1);
+            if (!heapname) {
+                cl_error(CL_ERR_STORAGE, "INTERN: out of memory for name");
+                return CL_NIL;
+            }
+            name = heapname;
+        }
+        for (i = 0; i < len; i++)
+            ((char *)name)[i] = (char)cl_string_char_at(args[0], i);
     }
 
     pkg = (nargs > 1) ? coerce_to_package(args[1]) : cl_current_package;
@@ -435,6 +457,7 @@ static CL_Obj bi_intern(CL_Obj *args, int nargs)
     /* Check if already present */
     existing = cl_find_symbol_with_status(name, len, pkg, &status);
     if (status != 0) {
+        if (heapname) platform_free(heapname);
         cl_mv_count = 2;
         cl_mv_values[0] = existing;
         cl_mv_values[1] = status_to_keyword(status);
@@ -443,6 +466,7 @@ static CL_Obj bi_intern(CL_Obj *args, int nargs)
 
     /* Create new symbol in package */
     sym = cl_intern_in(name, len, pkg);
+    if (heapname) platform_free(heapname);
     cl_mv_count = 2;
     cl_mv_values[0] = sym;
     cl_mv_values[1] = CL_NIL; /* NIL = newly created */

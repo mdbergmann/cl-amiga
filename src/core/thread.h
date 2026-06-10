@@ -436,6 +436,9 @@ void cl_gc_leave_safe_region(void);
 CL_Obj cl_tlv_get(CL_Thread *t, CL_Obj sym);
 void   cl_tlv_set(CL_Thread *t, CL_Obj sym, CL_Obj val);
 void   cl_tlv_remove(CL_Thread *t, CL_Obj sym);
+/* Rebuild the TLV table after a compacting GC relocated symbols (the table is
+ * keyed by symbol arena-offset, which changes when the object moves). */
+void   cl_tlv_rehash(CL_Thread *t);
 
 /* High-level TLV-aware accessors */
 CL_Obj cl_symbol_value(CL_Obj sym);

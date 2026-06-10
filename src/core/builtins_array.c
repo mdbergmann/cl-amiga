@@ -17,6 +17,31 @@ static void defun(const char *name, CL_CFunc func, int min, int max)
     s->function = fn;
 }
 
+/* Create a fresh simple character array (string) of LENGTH.  Under
+ * CL_WIDE_STRINGS this is a wide string so that characters > 255 stored
+ * later (e.g. via (setf (aref s i) (code-char #x4E16))) are not truncated
+ * to a single byte — the upgraded element type of CHARACTER must hold the
+ * full character range. */
+static CL_Obj make_char_array_string(uint32_t length)
+{
+#ifdef CL_WIDE_STRINGS
+    return cl_make_wide_string(NULL, length);
+#else
+    return cl_make_string(NULL, length);
+#endif
+}
+
+/* Create a fresh string of LENGTH whose storage width matches SRC, so a
+ * displaced/copy of a wide source preserves characters > 255. */
+static CL_Obj make_string_like(CL_Obj src, uint32_t length)
+{
+#ifdef CL_WIDE_STRINGS
+    if (CL_WIDE_STRING_P(src)) return cl_make_wide_string(NULL, length);
+#endif
+    (void)src;
+    return cl_make_string(NULL, length);
+}
+
 /* Helper: get element from any 1D sequence (list, string, vector) */
 static CL_Obj seq_elt(CL_Obj seq, uint32_t index)
 {
@@ -180,7 +205,7 @@ static CL_Obj bi_make_array(CL_Obj *args, int n)
                     CL_Obj str;
                     uint32_t j;
                     CL_GC_PROTECT(displaced_to);
-                    str = cl_make_string(NULL, length);
+                    str = make_string_like(displaced_to, length);
                     CL_GC_UNPROTECT(1);
                     for (j = 0; j < length; j++)
                         cl_string_set_char_at(str, j,
@@ -323,16 +348,16 @@ static CL_Obj bi_make_array(CL_Obj *args, int n)
                 }
                 return result;
             }
-            /* Simple string: use TYPE_STRING */
+            /* Simple string: wide under CL_WIDE_STRINGS so wide chars fit */
             {
-                char init_char = ' ';
+                int init_char = ' ';
                 CL_Obj str;
                 if (has_initial_element) {
                     if (!CL_CHAR_P(initial_element))
                         cl_error(CL_ERR_TYPE, "MAKE-ARRAY: :initial-element for character array must be a character");
-                    init_char = (char)CL_CHAR_VAL(initial_element);
+                    init_char = (int)CL_CHAR_VAL(initial_element);
                 }
-                str = cl_make_string(NULL, length);
+                str = make_char_array_string(length);
                 {
                     uint32_t j;
                     for (j = 0; j < length; j++)
@@ -416,7 +441,7 @@ static CL_Obj bi_make_array(CL_Obj *args, int n)
         }
         if (rank == 1 && element_type_char) {
             /* 1D character array from list dimension: create string */
-            char init_char = ' ';
+            int init_char = ' ';
             CL_Obj str;
             uint32_t j;
             /* :fill-pointer requires a CL_Vector backing (TYPE_STRING has
@@ -452,7 +477,7 @@ static CL_Obj bi_make_array(CL_Obj *args, int n)
                     cl_error(CL_ERR_ARGS,
                              "MAKE-ARRAY: displaced bounds exceed target string length");
                 CL_GC_PROTECT(displaced_to);
-                str = cl_make_string(NULL, dims[0]);
+                str = make_string_like(displaced_to, dims[0]);
                 CL_GC_UNPROTECT(1);
                 for (j = 0; j < dims[0]; j++)
                     cl_string_set_char_at(str, j,
@@ -462,9 +487,9 @@ static CL_Obj bi_make_array(CL_Obj *args, int n)
             if (has_initial_element) {
                 if (!CL_CHAR_P(initial_element))
                     cl_error(CL_ERR_TYPE, "MAKE-ARRAY: :initial-element for character array must be a character");
-                init_char = (char)CL_CHAR_VAL(initial_element);
+                init_char = (int)CL_CHAR_VAL(initial_element);
             }
-            str = cl_make_string(NULL, dims[0]);
+            str = make_char_array_string(dims[0]);
             for (j = 0; j < dims[0]; j++)
                 cl_string_set_char_at(str, j, init_char);
             if (has_initial_contents) {

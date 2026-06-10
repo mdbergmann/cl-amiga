@@ -71,6 +71,9 @@ CL_Obj cl_make_vector(uint32_t length);
 CL_Obj cl_make_array(uint32_t total, uint8_t rank, uint32_t *dims,
                      uint8_t flags, uint32_t fill_ptr);
 CL_Obj cl_make_hashtable(uint32_t bucket_count, uint32_t test);
+/* Compute a key's hash under a given test (CL_HT_TEST_*). Used by the
+ * post-compaction rehash in mem.c; must match the hashing used by gethash. */
+uint32_t cl_hashtable_hash_key(CL_Obj key, uint32_t test);
 CL_Obj cl_make_condition(CL_Obj type_name, CL_Obj slots, CL_Obj report_string);
 CL_Obj cl_make_restart(CL_Obj name, CL_Obj function, CL_Obj report,
                        CL_Obj interactive, CL_Obj test, CL_Obj tag);
