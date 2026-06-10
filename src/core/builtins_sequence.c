@@ -644,11 +644,23 @@ static CL_Obj remove_from_list(CL_Obj seq, int32_t start, int32_t end,
                                int mode) /* 0=test-item, 1=pred, 2=pred-not, 3=test-not-item */
 {
     CL_Obj result = CL_NIL, tail = CL_NIL;
-    CL_Obj cur;
+    CL_Obj cur = CL_NIL;
     int32_t i, removed = 0;
 
     CL_GC_PROTECT(result);
     CL_GC_PROTECT(tail);
+    /* The input cursor `cur` walks `seq` while the loop body conses the
+     * kept elements via cl_cons — an allocating call that, under a
+     * compacting GC, relocates the list out from under `cur`, leaving it a
+     * stale offset (the next cl_cdr(cur) then walks garbage).  Likewise
+     * `item`/`test_fn`/`key_fn` are heap objects held by value across those
+     * allocations (e.g. REMOVE'ing a class struct from a class's long
+     * direct-subclasses list during DEFCLASS redefinition).  Protect them
+     * all so the compactor forwards these locals. */
+    CL_GC_PROTECT(cur);
+    CL_GC_PROTECT(item);
+    CL_GC_PROTECT(test_fn);
+    CL_GC_PROTECT(key_fn);
 
     if (from_end && count >= 0) {
         /* Two-pass: count matches from end */
@@ -739,7 +751,7 @@ static CL_Obj remove_from_list(CL_Obj seq, int32_t start, int32_t end,
         }
     }
 
-    CL_GC_UNPROTECT(2);
+    CL_GC_UNPROTECT(6); /* key_fn, test_fn, item, cur, tail, result */
     return result;
 }
 

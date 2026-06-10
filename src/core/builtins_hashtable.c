@@ -10,7 +10,6 @@
 #include "string_utils.h"
 #include "../platform/platform.h"
 #include <string.h>
-#include <stdio.h>
 
 /* Helper to register a builtin */
 static void defun(const char *name, CL_CFunc func, int min, int max)
@@ -134,6 +133,14 @@ static uint32_t hash_obj(CL_Obj obj, uint32_t test)
 
     /* Fallback: identity hash */
     return hash_mix(obj);
+}
+
+/* Public wrapper so the GC (mem.c) can recompute a key's hash with the table's
+ * own test after a compaction has relocated objects (identity-based hashes go
+ * stale when arena offsets change). Must stay in sync with hash_obj. */
+uint32_t cl_hashtable_hash_key(CL_Obj key, uint32_t test)
+{
+    return hash_obj(key, test);
 }
 
 /* --- Key comparison --- */

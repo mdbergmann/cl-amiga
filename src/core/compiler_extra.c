@@ -1587,6 +1587,15 @@ void compile_defun(CL_Compiler *c, CL_Obj form)
     int ltv_base, ltv_i;
 
     CL_GC_PROTECT(name);    /* protect name across all allocating calls below */
+    /* lambda_list and body are sub-structures of `form`; they are read here
+     * but consed into lambda_form/block_body only AFTER the cl_cons calls
+     * below.  Those conses allocate and (under a compacting GC) relocate the
+     * arena-resident param/body lists out from under these unprotected C
+     * locals — leaving lambda_form with a stale offset for its params, so
+     * parse_lambda_list later miscounts (e.g. `(n)` read as 2 required).
+     * Protect them so the compactor forwards the locals. */
+    CL_GC_PROTECT(lambda_list);
+    CL_GC_PROTECT(body);
 
     /* Handle (defun (setf name) ...) — setf function */
     if (CL_CONS_P(name) && cl_car(name) == SYM_SETF && CL_CONS_P(cl_cdr(name))) {
@@ -1637,7 +1646,7 @@ void compile_defun(CL_Compiler *c, CL_Obj form)
     pending_lambda_name = real_name;
     compile_expr(c, lambda_form);
 
-    CL_GC_UNPROTECT(5); /* lambda_form, block_body, store_sym, real_name, name */
+    CL_GC_UNPROTECT(7); /* lambda_form, block_body, store_sym, real_name, body, lambda_list, name */
 
     /* Emit inline load-time init code for any LOAD-TIME-VALUE forms
      * accumulated while compiling the lambda body.  Using the outer

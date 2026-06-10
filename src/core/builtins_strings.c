@@ -1691,10 +1691,37 @@ static CL_Obj bi_char_not_lessp(CL_Obj *args, int n)
 static CL_Obj KW_INITIAL_ELEMENT;
 static CL_Obj KW_ELEMENT_TYPE;
 
+#ifdef CL_WIDE_STRINGS
+/* Decide whether MAKE-STRING with element-type ET should allocate a wide
+ * string so stores of code points > 255 are lossless.  CHARACTER and
+ * EXTENDED-CHAR (and deftypes expanding to them, e.g. babel's UNICODE-CHAR)
+ * need a wide string; BASE-CHAR / STANDARD-CHAR stay narrow.  DEPTH bounds
+ * deftype-expansion recursion. */
+static int make_string_want_wide(CL_Obj et, int depth)
+{
+    extern CL_Obj cl_get_type_expander(CL_Obj name);
+    if (depth <= 0) return 0;
+    if (CL_SYMBOL_P(et)) {
+        const char *nm = cl_symbol_name(et);
+        if (strcmp(nm, "CHARACTER") == 0 || strcmp(nm, "EXTENDED-CHAR") == 0)
+            return 1;
+        if (strcmp(nm, "BASE-CHAR") == 0 || strcmp(nm, "STANDARD-CHAR") == 0)
+            return 0;
+        {
+            CL_Obj ex = cl_get_type_expander(et);
+            if (!CL_NULL_P(ex))
+                return make_string_want_wide(cl_vm_apply(ex, NULL, 0), depth - 1);
+        }
+    }
+    return 0;
+}
+#endif
+
 static CL_Obj bi_make_string_fn(CL_Obj *args, int n)
 {
     uint32_t size;
-    char fill_char = ' ';  /* default fill */
+    int fill_char = ' ';  /* default fill (full code point) */
+    int want_wide = 0;
     int i;
     CL_Obj result;
 
@@ -1707,13 +1734,26 @@ static CL_Obj bi_make_string_fn(CL_Obj *args, int n)
         if (args[i] == KW_INITIAL_ELEMENT) {
             if (!CL_CHAR_P(args[i + 1]))
                 cl_error(CL_ERR_TYPE, "MAKE-STRING: :initial-element must be a character");
-            fill_char = (char)CL_CHAR_VAL(args[i + 1]);
+            fill_char = (int)CL_CHAR_VAL(args[i + 1]);
         } else if (args[i] == KW_ELEMENT_TYPE) {
-            /* Ignore :element-type — we only support base-char */
+#ifdef CL_WIDE_STRINGS
+            /* Honor an explicit general CHARACTER element-type by widening
+             * so wide chars stored later are not truncated.  A plain
+             * (make-string n) keeps the memory-efficient narrow default. */
+            if (make_string_want_wide(args[i + 1], 16))
+                want_wide = 1;
+#endif
         }
     }
 
+#ifdef CL_WIDE_STRINGS
+    /* A wide initial-element also forces a wide string. */
+    if (fill_char > 255) want_wide = 1;
+    result = want_wide ? cl_make_wide_string(NULL, size)
+                       : cl_make_string(NULL, size);
+#else
     result = cl_make_string(NULL, size);
+#endif
     {
         uint32_t j;
         for (j = 0; j < size; j++)

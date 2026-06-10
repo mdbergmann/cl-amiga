@@ -8,6 +8,9 @@
 #include "../platform/platform.h"
 #include <string.h>
 
+/* From compiler.c — expand a (def)type name/specifier; CL_NIL if none. */
+extern CL_Obj cl_get_type_expander(CL_Obj name);
+
 /* Helper to register a builtin */
 static void defun(const char *name, CL_CFunc func, int min, int max)
 {
@@ -292,11 +295,98 @@ static int map_result_type_match(CL_Obj result_type, const char *name, uint32_t 
     return 0;
 }
 
+/* True if TYPE denotes a character subtype (CHARACTER/BASE-CHAR/... or a
+ * deftype that expands to one).  Used to decide whether a (vector ...)
+ * result-type should yield a string. DEPTH bounds deftype recursion. */
+static int seq_elt_type_is_char(CL_Obj type, int depth)
+{
+    if (depth <= 0) return 0;
+    if (CL_SYMBOL_P(type)) {
+        const char *nm = cl_symbol_name(type);
+        if (strcmp(nm, "CHARACTER") == 0 || strcmp(nm, "BASE-CHAR") == 0 ||
+            strcmp(nm, "STANDARD-CHAR") == 0 || strcmp(nm, "EXTENDED-CHAR") == 0)
+            return 1;
+        if (strcmp(nm, "*") == 0) return 0;
+        {
+            CL_Obj ex = cl_get_type_expander(type);
+            if (!CL_NULL_P(ex))
+                return seq_elt_type_is_char(cl_vm_apply(ex, NULL, 0), depth - 1);
+        }
+    }
+    return 0;
+}
+
+/* Classify a MAP/MERGE result-type specifier into:
+ *   0 = nil/null, 1 = list, 2 = string, 3 = (general) vector, -1 = unknown.
+ * Expands deftypes and understands compound (vector ...) / (array ...) /
+ * (string ...) specifiers, choosing string when the element-type is a
+ * character subtype (so e.g. babel's (vector unicode-char *) maps to a
+ * string).  DEPTH bounds deftype-expansion recursion. */
+static int seq_result_type_class(CL_Obj rt, int depth)
+{
+    if (depth <= 0) return -1;
+    if (CL_NULL_P(rt)) return 0;
+    if (CL_SYMBOL_P(rt)) {
+        const char *nm = cl_symbol_name(rt);
+        if (strcmp(nm, "NULL") == 0) return 0;
+        if (strcmp(nm, "LIST") == 0 || strcmp(nm, "CONS") == 0) return 1;
+        if (strcmp(nm, "STRING") == 0 || strcmp(nm, "SIMPLE-STRING") == 0 ||
+            strcmp(nm, "BASE-STRING") == 0 || strcmp(nm, "SIMPLE-BASE-STRING") == 0)
+            return 2;
+        if (strcmp(nm, "VECTOR") == 0 || strcmp(nm, "SIMPLE-VECTOR") == 0 ||
+            strcmp(nm, "ARRAY") == 0 || strcmp(nm, "SIMPLE-ARRAY") == 0 ||
+            strcmp(nm, "BIT-VECTOR") == 0 || strcmp(nm, "SIMPLE-BIT-VECTOR") == 0)
+            return 3;
+        {
+            CL_Obj ex = cl_get_type_expander(rt);
+            if (!CL_NULL_P(ex))
+                return seq_result_type_class(cl_vm_apply(ex, NULL, 0), depth - 1);
+        }
+        return -1;
+    }
+    if (CL_CONS_P(rt)) {
+        CL_Obj head = cl_car(rt);
+        if (CL_SYMBOL_P(head)) {
+            const char *nm = cl_symbol_name(head);
+            if (strcmp(nm, "LIST") == 0 || strcmp(nm, "CONS") == 0) return 1;
+            if (strcmp(nm, "STRING") == 0 || strcmp(nm, "SIMPLE-STRING") == 0 ||
+                strcmp(nm, "BASE-STRING") == 0 ||
+                strcmp(nm, "SIMPLE-BASE-STRING") == 0)
+                return 2;
+            if (strcmp(nm, "VECTOR") == 0 || strcmp(nm, "SIMPLE-VECTOR") == 0 ||
+                strcmp(nm, "ARRAY") == 0 || strcmp(nm, "SIMPLE-ARRAY") == 0) {
+                CL_Obj eargs = cl_cdr(rt);
+                if (!CL_NULL_P(eargs) && seq_elt_type_is_char(cl_car(eargs), 8))
+                    return 2;
+                return 3;
+            }
+            if (strcmp(nm, "BIT-VECTOR") == 0 ||
+                strcmp(nm, "SIMPLE-BIT-VECTOR") == 0)
+                return 3;
+            {
+                CL_Obj ex = cl_get_type_expander(head);
+                if (!CL_NULL_P(ex)) {
+                    CL_Obj arg_array[16];
+                    int nargs = 0;
+                    CL_Obj r = cl_cdr(rt);
+                    while (!CL_NULL_P(r) && nargs < 16) {
+                        arg_array[nargs++] = cl_car(r);
+                        r = cl_cdr(r);
+                    }
+                    return seq_result_type_class(cl_vm_apply(ex, arg_array, nargs),
+                                                 depth - 1);
+                }
+            }
+        }
+    }
+    return -1;
+}
+
 static CL_Obj bi_map(CL_Obj *args, int n)
 {
     /* (map result-type function &rest sequences) */
     CL_Obj result_type = args[0];
-    CL_Obj func = cl_coerce_funcdesig(args[1], "MAP");
+    CL_Obj func;
     int nseqs = n - 2;
     CL_Obj seqs[16];
     CL_Obj orig_seqs[16];
@@ -307,36 +397,21 @@ static CL_Obj bi_map(CL_Obj *args, int n)
     int32_t idx = 0;
     int rt; /* 0=nil, 1=list, 2=string, 3=vector */
 
+    /* Classify the result-type FIRST: seq_result_type_class may expand a
+     * deftype via cl_vm_apply, which can allocate/compact.  Only args[]
+     * (GC-rooted) is live at this point, so no offsets are stale across it. */
+    rt = seq_result_type_class(result_type, 16);
+    if (rt < 0) {
+        cl_error(CL_ERR_ARGS, "MAP: unsupported result-type");
+        return CL_NIL;
+    }
+
+    func = cl_coerce_funcdesig(args[1], "MAP");
     if (nseqs > 16) nseqs = 16;
     for (i = 0; i < nseqs; i++) {
         seqs[i] = args[i + 2];
         orig_seqs[i] = seqs[i];
         lens[i] = every_seq_len(seqs[i]);
-    }
-
-    /* Determine result type */
-    rt = -1;
-    if (CL_NULL_P(result_type))
-        rt = 0;
-    else if (map_result_type_match(result_type, "NULL", 4))
-        rt = 0;
-    else if (map_result_type_match(result_type, "LIST", 4) ||
-             map_result_type_match(result_type, "CONS", 4))
-        rt = 1;
-    else if (map_result_type_match(result_type, "STRING", 6) ||
-             map_result_type_match(result_type, "SIMPLE-STRING", 13) ||
-             map_result_type_match(result_type, "BASE-STRING", 11) ||
-             map_result_type_match(result_type, "SIMPLE-BASE-STRING", 18))
-        rt = 2;
-    else if (map_result_type_match(result_type, "VECTOR", 6) ||
-             map_result_type_match(result_type, "SIMPLE-VECTOR", 13) ||
-             map_result_type_match(result_type, "ARRAY", 5) ||
-             map_result_type_match(result_type, "SIMPLE-ARRAY", 12))
-        rt = 3;
-
-    if (rt < 0) {
-        cl_error(CL_ERR_ARGS, "MAP: unsupported result-type");
-        return CL_NIL;
     }
 
     if (rt == 0) {
@@ -357,42 +432,22 @@ static CL_Obj bi_map(CL_Obj *args, int n)
         }
 
         if (rt == 2) {
-            result = cl_make_string("", 0);
-            /* Resize to min_len */
-            {
-                CL_String *s = (CL_String *)CL_OBJ_TO_PTR(result);
-                (void)s;
-                /* Build up by collecting results first */
-                result = CL_NIL;
-            }
-            /* Collect into a list, then build string */
+            /* STRING result: allocate the (possibly wide) string up front
+             * and fill it char-by-char.  This avoids any fixed buffer cap
+             * and preserves characters > 255 (cl_string_set_char_at handles
+             * the wide-string case). */
             CL_GC_PROTECT(func);
+            result = cl_make_string(NULL, (uint32_t)min_len);
             CL_GC_PROTECT(result);
-            CL_GC_PROTECT(tail);
             for (idx = 0; idx < min_len; idx++) {
-                CL_Obj val, cell;
+                CL_Obj val;
                 map_collect_args(seqs, lens, orig_seqs, call_args, nseqs, idx);
                 val = call_func(func, call_args, nseqs);
-                cell = cl_cons(val, CL_NIL);
-                if (CL_NULL_P(result)) result = cell;
-                else ((CL_Cons *)CL_OBJ_TO_PTR(tail))->cdr = cell;
-                tail = cell;
+                cl_string_set_char_at(result, (uint32_t)idx,
+                                      CL_CHAR_P(val) ? CL_CHAR_VAL(val) : 0);
             }
-            /* Build string from char list */
-            {
-                char buf[4096];
-                CL_Obj cur = result;
-                int32_t si = 0;
-                while (!CL_NULL_P(cur) && si < 4095) {
-                    CL_Obj ch = cl_car(cur);
-                    if (CL_CHAR_P(ch))
-                        buf[si++] = (char)CL_CHAR_VAL(ch);
-                    cur = cl_cdr(cur);
-                }
-                buf[si] = '\0';
-                CL_GC_UNPROTECT(3);
-                return cl_make_string(buf, (uint32_t)si);
-            }
+            CL_GC_UNPROTECT(2);
+            return result;
         } else {
             /* VECTOR */
             CL_GC_PROTECT(func);

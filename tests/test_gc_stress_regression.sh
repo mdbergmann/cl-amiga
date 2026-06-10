@@ -460,6 +460,82 @@ out=$(run_stress "$WORK/fmt-stream.lisp")
 check_contains "format trailing directive survives object-print compaction" 'FMT:\[<MID>\]' "$out"
 check_contains "format string-stream survives nested ~{ object print"       'FMTLIST:\[x\]\[y\]END' "$out"
 
+# --- Case 19: funcallable-instance check survives compaction (DEFCLASS redef) --
+# Bug: cl_funcallable_instance_p cached the STANDARD-GENERIC-FUNCTION symbol in a
+# static CL_Obj that was never registered as a GC root.  Symbols live in the
+# moving arena, so after a compaction relocated that symbol the cached offset
+# went stale; the type_desc == sym_sgf compare then failed for a live GF struct.
+# The VM stopped recognizing the GF as funcallable and called it as a plain
+# struct -> "Not a function: heap object type 10".  Manifestation was heap-layout
+# dependent; the reliable trigger is DEFCLASS *redefinition*, whose %ensure-class
+# path does (remove old-class (class-direct-subclasses standard-object)) — a
+# REMOVE over a long list that shifts the live set enough to move the symbol,
+# right before the next GF accessor call.  Fix: cl_gc_register_root(&sym_sgf).
+# Also covers the related REMOVE fix (remove_from_list now protects its cursor +
+# item/test/key locals across the cl_cons that builds the result).
+cat > "$WORK/clos-redef.lisp" <<'EOF'
+(defclass gcs-redef () ((id :initarg :id :accessor gcs-id)))
+(format t "REDEF1:~a~%" (gcs-id (make-instance 'gcs-redef :id 7)))
+(defclass gcs-redef () ((id :initarg :id :accessor gcs-id)
+                        (tag :initarg :tag :accessor gcs-tag)))
+(let ((o (make-instance 'gcs-redef :id 11 :tag 'hi)))
+  (format t "REDEF2:~a ~a~%" (gcs-id o) (gcs-tag o)))
+EOF
+out=$(run_stress "$WORK/clos-redef.lisp")
+check_contains "defclass first definition works under GC stress"        "REDEF1:7" "$out"
+check_contains "defclass redefinition works under GC stress"            "REDEF2:11 HI" "$out"
+check_absent   "no struct-as-function from stale funcallable-instance cache" "Not a function: heap object type" "$out"
+
+# --- Case 20: two top-level DEFUNs — compile_defun lambda_list survives -------
+# Bug: compile_defun read `lambda_list` (and `body`) from the defun form, then
+# built block_body/lambda_form via cl_cons BEFORE consing lambda_list in.  Under
+# a compacting GC those conses relocated the arena-resident param list out from
+# under the unprotected `lambda_list` C local, so lambda_form baked in a stale
+# offset; parse_lambda_list then read garbage params and miscounted the arity
+# (e.g. `(n)` seen as 2 required) -> "Too few arguments".  Fix: GC-protect
+# lambda_list and body at the top of compile_defun.
+cat > "$WORK/two-defun.lisp" <<'EOF'
+(defun gcs-f0 (n) (+ n 0))
+(defun gcs-f1 (n) (+ n 1))
+(format t "TWODEFUN:~a~%" (list (gcs-f0 10) (gcs-f1 10)))
+EOF
+out=$(run_stress "$WORK/two-defun.lisp")
+check_contains "two separate top-level defuns get correct arity under stress" "TWODEFUN:(10 11)" "$out"
+check_absent   "no arity miscount from stale defun lambda-list"               "Too few arguments\|Too many arguments" "$out"
+
+# --- Case 21: direct special-var read at a LET tail after an allocating loop --
+# Bug: compile_let walked the body form list with an UNPROTECTED C-local cursor
+# `rest`.  The non-tail body forms are compiled with compile_expr (which
+# allocates and can compact); the body's cons cells then relocate, but `rest`
+# kept its pre-compaction offset, so `rest = cl_cdr(rest)` followed a stale
+# offset and `tail = cl_car(rest)` read garbage.  When the tail form was a bare
+# special-var read (`*x*`), the garbage tail was NIL, so compile_symbol's
+# CL_NULL_P(sym) branch emitted OP_NIL instead of OP_GLOAD *x* — the let
+# returned NIL at runtime instead of the dynamic value.  Manifests only when the
+# body's cells are still moving (cold/first compile of the pattern).  Fix:
+# CL_GC_PROTECT(rest) across the body-compile loop in compile_let.  (Same class
+# of cursor bug also fixed in compile_call's inline-builtin / amiga-ffi arg
+# loops and the SETF place-decomposition loop.)
+cat > "$WORK/specloop.lisp" <<'EOF'
+(defvar *gcs-sv* nil)
+(format t "SPECLOOP1:~a~%"
+  (let ((*gcs-sv* 7)) (dotimes (i 40) (make-list 10)) *gcs-sv*))
+(format t "SPECLOOP2:~a~%"
+  (let ((*gcs-sv* 99)) (dotimes (i 40) (make-list 10)) (list *gcs-sv* *gcs-sv*)))
+EOF
+out=$(run_stress "$WORK/specloop.lisp")
+check_contains "direct special read at let tail after loop returns bound value" "SPECLOOP1:7" "$out"
+check_contains "direct special read at let tail (in list) after loop correct"   "SPECLOOP2:(99 99)" "$out"
+check_absent   "let special tail read not mis-compiled to OP_NIL"               "SPECLOOP1:NIL" "$out"
+
+# NB: the post-compaction rehash of EQUAL/EQL/EQUALP hash tables and of the
+# per-thread TLV (dynamic-binding) table is NOT exercised here.  Those bugs
+# require a *moving* compaction that relocates a live object to a genuinely new
+# arena offset; the GC-stress harness compacts to a canonical layout every
+# alloc, which keeps offsets stable enough that the stale-bucket never surfaces.
+# They are covered deterministically by tests/test_gc_rehash.c (forced
+# cl_gc_compact()) and end-to-end by the babel cold-load integration test.
+
 echo ""
 echo "$passed passed, $failed failed, $total total"
 [ "$failed" -eq 0 ]

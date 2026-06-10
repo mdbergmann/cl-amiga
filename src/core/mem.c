@@ -11,6 +11,9 @@
 #include <string.h>
 #include <stdio.h>
 #include <stdlib.h>
+#ifdef DEBUG_GC_STRESS_CBT
+#include <execinfo.h>
+#endif
 
 /* External roots needed for GC marking */
 extern CL_Obj macro_table, setf_table, setf_fn_table, setf_expander_table, type_table, compiler_macro_table;
@@ -259,7 +262,44 @@ void *cl_alloc(uint8_t type, uint32_t size)
      * only; gated behind a build flag — compiles to nothing normally. */
     if (!multi && cl_gc_stress_ready && !cl_gc_stress_active) {
         cl_gc_stress_active = 1;
-        cl_gc_compact();
+        {
+            /* Bisection controls (read once):
+             *   CLAMIGA_GC_STRESS_SKIP=N — only compact on alloc index > N
+             *     (suffix mode; binary-search the corrupting alloc).
+             *   CLAMIGA_GC_STRESS_AT=N   — compact ONLY at alloc index N and
+             *     dump a C backtrace there (pin the exact corrupting site). */
+            static long s_skip = -2, s_at = -2;
+            static long s_count = 0;
+            int do_compact;
+            if (s_skip == -2) {
+                const char *e1 = getenv("CLAMIGA_GC_STRESS_SKIP");
+                const char *e2 = getenv("CLAMIGA_GC_STRESS_AT");
+                s_skip = e1 ? atol(e1) : -1;
+                s_at   = e2 ? atol(e2) : -1;
+            }
+            s_count++;
+            if (s_at >= 0)        do_compact = (s_count == s_at);
+            else if (s_skip >= 0) do_compact = (s_count > s_skip);
+            else                  do_compact = 1;
+            if (do_compact) {
+                if (s_at >= 0) {
+                    extern void cl_capture_backtrace(void);
+                    fprintf(stderr, "[GCSTRESS-AT] compacting at alloc #%ld\n", s_count);
+                    cl_capture_backtrace();
+                    fprintf(stderr, "%s", cl_backtrace_buf);
+#ifdef DEBUG_GC_STRESS_CBT
+                    {
+                        void *cbt[32];
+                        int ncbt = backtrace(cbt, 32);
+                        fprintf(stderr, "[GCSTRESS-AT] C backtrace:\n");
+                        backtrace_symbols_fd(cbt, ncbt, 2);
+                    }
+#endif
+                    fflush(stderr);
+                }
+                cl_gc_compact();
+            }
+        }
         cl_gc_stress_active = 0;
     }
 #endif
@@ -2140,12 +2180,48 @@ static void gc_slide(void)
     cl_heap.total_allocated = new_bump - CL_ALIGN;
 }
 
-/* Rehash a single eq hash table after compaction (no allocation) */
-static void gc_rehash_eq_table(CL_Hashtable *ht)
+/* Is a key's hash address-sensitive — i.e. does it change when the compacting
+ * GC relocates objects? Mirrors hash_obj() in builtins_hashtable.c. If a table
+ * has any such key it MUST be rehashed after a compaction, or stale buckets
+ * make previously-inserted keys un-findable (gethash returns NIL). */
+static int gc_key_addr_sensitive(CL_Obj key, uint32_t test)
+{
+    uint8_t type;
+    if (!CL_HEAP_P(key))
+        return 0;                 /* fixnum / char / immediate: stable */
+    if (test == CL_HT_TEST_EQ)
+        return 1;                 /* every heap object hashed by identity */
+    type = CL_HDR_TYPE(CL_OBJ_TO_PTR(key));
+    switch (type) {
+    case TYPE_BIGNUM:
+    case TYPE_RATIO:
+    case TYPE_SINGLE_FLOAT:
+    case TYPE_DOUBLE_FLOAT:
+    case TYPE_COMPLEX:
+        return 0;                 /* value-based hash under eql/equal/equalp */
+    case TYPE_STRING:
+        /* eql hashes a string by identity; equal/equalp by contents */
+        return (test == CL_HT_TEST_EQL) ? 1 : 0;
+    case TYPE_CONS:
+        if (test == CL_HT_TEST_EQL)
+            return 1;             /* cons hashed by identity under eql */
+        /* equal/equalp: hash_obj() folds in only the car */
+        return gc_key_addr_sensitive(((CL_Cons *)CL_OBJ_TO_PTR(key))->car, test);
+    default:
+        return 1;                 /* symbol, struct, instance, array, … */
+    }
+}
+
+/* Rehash a single hash table after compaction (no allocation). Recomputes each
+ * key's bucket with the table's own test, since relocated objects now hash to
+ * different values. Skips tables whose every key is hash-stable. */
+static void gc_rehash_table(CL_Hashtable *ht)
 {
     CL_Obj *bkts;
     uint32_t bucket_count = ht->bucket_count;
+    uint32_t test = ht->test;
     uint32_t i;
+    int needs = 0;
     CL_Obj all_entries = CL_NIL;
 
     /* Get bucket array */
@@ -2155,6 +2231,21 @@ static void gc_rehash_eq_table(CL_Hashtable *ht)
     } else {
         bkts = ht->buckets;
     }
+
+    /* Do any keys have address-sensitive hashes? If not, the buckets are still
+     * valid after the move and we can leave the table untouched. */
+    for (i = 0; i < bucket_count && !needs; i++) {
+        CL_Obj chain = bkts[i];
+        while (!CL_NULL_P(chain)) {
+            CL_Cons *entry = (CL_Cons *)CL_OBJ_TO_PTR(chain);
+            CL_Obj pair = entry->car;
+            CL_Obj key = ((CL_Cons *)CL_OBJ_TO_PTR(pair))->car;
+            if (gc_key_addr_sensitive(key, test)) { needs = 1; break; }
+            chain = entry->cdr;
+        }
+    }
+    if (!needs)
+        return;
 
     /* Collect all entries into a single linked list, clear buckets */
     for (i = 0; i < bucket_count; i++) {
@@ -2169,28 +2260,24 @@ static void gc_rehash_eq_table(CL_Hashtable *ht)
         bkts[i] = CL_NIL;
     }
 
-    /* Redistribute using new identity hashes */
+    /* Redistribute using freshly computed hashes (post-move offsets) */
     while (!CL_NULL_P(all_entries)) {
         CL_Cons *entry = (CL_Cons *)CL_OBJ_TO_PTR(all_entries);
         CL_Obj next = entry->cdr;
         CL_Obj pair = entry->car;
         CL_Obj key = ((CL_Cons *)CL_OBJ_TO_PTR(pair))->car;
-        /* hash_mix for eq: identity hash on the CL_Obj value */
-        uint32_t h = key;
-        h ^= h >> 16;
-        h *= 0x45d9f3bU;
-        h ^= h >> 16;
-        {
-            uint32_t idx = h & (bucket_count - 1);
-            entry->cdr = bkts[idx];
-            bkts[idx] = all_entries;
-        }
+        uint32_t h = cl_hashtable_hash_key(key, test);
+        uint32_t idx = h & (bucket_count - 1);
+        entry->cdr = bkts[idx];
+        bkts[idx] = all_entries;
         all_entries = next;
     }
 }
 
-/* Rehash ALL eq hash tables in the arena after compaction */
-static void gc_rehash_eq_tables(void)
+/* Rehash ALL hash tables in the arena after compaction. Covers eq/eql/equal/
+ * equalp: any of them can hash a key by object identity (objects fall through
+ * to an identity hash), and identity changes when the GC moves the object. */
+static void gc_rehash_tables(void)
 {
     uint8_t *ptr = cl_heap.arena + CL_ALIGN;
     uint8_t *end = cl_heap.arena + cl_heap.bump;
@@ -2200,11 +2287,23 @@ static void gc_rehash_eq_tables(void)
         if (size == 0) break;
         if (CL_HDR_TYPE(ptr) == TYPE_HASHTABLE) {
             CL_Hashtable *ht = (CL_Hashtable *)ptr;
-            if (ht->test == CL_HT_TEST_EQ && ht->count > 0)
-                gc_rehash_eq_table(ht);
+            if (ht->count > 0)
+                gc_rehash_table(ht);
         }
         ptr += size;
     }
+}
+
+/* Rebuild every thread's TLV (dynamic-binding) table after a compaction.
+ * Like the user hash tables, the TLV table is keyed by symbol arena-offset and
+ * must be re-hashed once symbols have moved, or active dynamic bindings (e.g.
+ * a `let` of a special var) silently revert to their global value. */
+static void gc_rehash_tlv_tables(void)
+{
+    CL_Thread *t;
+    /* During STW GC all threads are stopped; cl_thread_list is stable. */
+    for (t = cl_thread_list; t; t = t->next)
+        cl_tlv_rehash(t);
 }
 
 /* Run compaction if pending (called from safe points). */
@@ -2265,8 +2364,11 @@ void cl_gc_compact(void)
     /* Clean up forwarding table */
     gc_fwd_free();
 
-    /* Rehash eq hash tables (object identity changed) */
-    gc_rehash_eq_tables();
+    /* Rehash hash tables whose keys hash by object identity (offsets changed) */
+    gc_rehash_tables();
+
+    /* Rehash per-thread TLV tables (keyed by symbol offset, which changed) */
+    gc_rehash_tlv_tables();
 
     cl_heap.gc_count++;
     cl_heap.compact_count++;
