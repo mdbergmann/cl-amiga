@@ -462,12 +462,19 @@ static int nlx_scan(CL_Obj form, int mode, CL_Obj tag, int anon);
 /* Walk a list of body forms — all in code (evaluated) position. */
 static int nlx_scan_body(CL_Obj body, int mode, CL_Obj tag, int anon)
 {
+    int r = 0;
+    /* GC SAFETY: nlx_scan macroexpands body macros (e.g. INCF) in the VM and
+     * thus allocates/compacts.  Protect the `body` cursor so its re-read
+     * (cl_cdr) doesn't follow a stale offset after a compaction relocates the
+     * list — an unprotected cursor here corrupted the source form being
+     * compiled ("Unbound variable: NEW<n>" from a dropped LET* binding). */
+    CL_GC_PROTECT(body);
     while (CL_CONS_P(body)) {
-        if (nlx_scan(cl_car(body), mode, tag, anon))
-            return 1;
+        if (nlx_scan(cl_car(body), mode, tag, anon)) { r = 1; break; }
         body = cl_cdr(body);
     }
-    return 0;
+    CL_GC_UNPROTECT(1);
+    return r;
 }
 
 /* Walk a quasiquote template, descending only into unquoted (evaluated)
@@ -664,26 +671,40 @@ static int nlx_scan(CL_Obj form, int mode, CL_Obj tag, int anon)
     }
 
     /* Macro call: expand and scan the expansion.  THIS is what lets us see
-     * a closure or return-from hidden behind a user macro. */
+     * a closure or return-from hidden behind a user macro.
+     * GC SAFETY: scan_nlx_macroexpand_1 runs the macro in the VM and so
+     * allocates/compacts.  Protect `form` across it — otherwise the caller's
+     * source list (e.g. a TAGBODY/DOTIMES body sharing this cons) is left
+     * with a stale reference that, after the freed slot is reused by the
+     * expansion's own conses, reads back a different form ("Unbound variable:
+     * NEW<n>" from a dropped INCF/DECF LET* binding). */
     if (CL_SYMBOL_P(head) && cl_macro_p(head)) {
-        CL_Obj expanded = scan_nlx_macroexpand_1(form);
+        CL_Obj expanded;
+        CL_GC_PROTECT(form);
+        expanded = scan_nlx_macroexpand_1(form);
         if (expanded != form) {
             CL_GC_PROTECT(expanded);
             r = nlx_scan(expanded, mode, tag, anon);
             CL_GC_UNPROTECT(1);
+            CL_GC_UNPROTECT(1);
             goto done;
         }
+        CL_GC_UNPROTECT(1);
     }
 
     /* General form (function call / other special form): every element is
      * evaluated code.  (Includes ((lambda ...) args) immediate calls — the
-     * head cons is scanned too.) */
+     * head cons is scanned too.)
+     * GC SAFETY: protect `cur` — nlx_scan recursion can macroexpand and
+     * compact, and the cursor is re-read (cl_cdr) afterward. */
     {
         CL_Obj cur = form;
+        CL_GC_PROTECT(cur);
         while (CL_CONS_P(cur)) {
-            if (nlx_scan(cl_car(cur), mode, tag, anon)) { r = 1; goto done; }
+            if (nlx_scan(cl_car(cur), mode, tag, anon)) { r = 1; CL_GC_UNPROTECT(1); goto done; }
             cur = cl_cdr(cur);
         }
+        CL_GC_UNPROTECT(1);
     }
 
 done:
@@ -946,18 +967,40 @@ void compile_tagbody(CL_Compiler *c, CL_Obj form)
     CL_TagbodyInfo *tb;
     CL_Obj cursor;
     int i;
-    int needs_nlx = tree_has_closure_forms(body);
+    int needs_nlx;
 
     /* Hard cap: writing past tagbodies[] would clobber adjacent fields
      * (silent corruption that surfaces later as wild memory access).
-     * Raise a clean compile error instead. */
+     * Raise a clean compile error instead.  Checked before the GC_PROTECTs
+     * below so the error-unwind path has no root to leak. */
     if (c->tagbody_count >= CL_MAX_TAGBODIES) {
         cl_error(CL_ERR_OVERFLOW,
                  "TAGBODY nesting depth exceeded (%d): "
                  "consider raising CL_MAX_TAGBODIES", CL_MAX_TAGBODIES);
     }
 
+    /* GC SAFETY: protect `body` BEFORE tree_has_closure_forms — that scan
+     * macroexpands body macros (e.g. INCF) in the VM, allocating/compacting.
+     * `body` is reachable via `form`, but `form` is a by-value copy of the
+     * caller's expr whose own protection can lapse during the scan; without an
+     * explicit root here the body's cons cells can be relocated and a stale
+     * reference left behind, corrupting the form to be compiled (observed as
+     * a dropped INCF/DECF LET* binding → "Unbound variable: NEW<n>"). */
+    CL_GC_PROTECT(body);
+    needs_nlx = tree_has_closure_forms(body);
+
     c->in_tail = 0;
+
+    /* GC SAFETY: `cursor`/`item` index into the tagbody source list and are
+     * re-read after each `compile_expr` (which allocates and can trigger
+     * compaction).  The tagbody-info struct fields (id, tag symbols) are
+     * GC-traced, but these raw iteration cursors are not — without protection
+     * a compaction leaves `cursor` holding a stale arena offset, so
+     * `cl_cdr(cursor)` re-reads the body and re-emits it (the body runs twice
+     * per loop iteration).  `body` is already protected above (before the
+     * tree_has_closure_forms scan); protect `cursor` here too. */
+    cursor = body;
+    CL_GC_PROTECT(cursor);
 
     /* Push tagbody info */
     tb = &c->tagbodies[c->tagbody_count++];
@@ -1092,6 +1135,8 @@ void compile_tagbody(CL_Compiler *c, CL_Obj form)
     /* Restore */
     c->tagbody_count = saved_tagbody_count;
     c->in_tail = saved_tail;
+
+    CL_GC_UNPROTECT(2);
 }
 
 void compile_go(CL_Compiler *c, CL_Obj form)
@@ -1476,6 +1521,16 @@ void compile_dolist(CL_Compiler *c, CL_Obj form)
     CL_BlockInfo *bi;
     int i;
 
+    /* GC SAFETY: see compile_dotimes — these locals index into the
+     * (protected) enclosing form but are not rewritten by the compactor, and
+     * are re-read after compile_expr(list_form) / the tagbody compile.  Protect
+     * them so a compaction can't leave them pointing at stale memory. */
+    CL_GC_PROTECT(form);
+    CL_GC_PROTECT(binding);
+    CL_GC_PROTECT(body);
+    CL_GC_PROTECT(var);
+    CL_GC_PROTECT(result_form);
+
     c->in_tail = 0;
 
     /* Allocate iter slot FIRST — list-form must be evaluated before
@@ -1498,10 +1553,14 @@ void compile_dolist(CL_Compiler *c, CL_Obj form)
     /* NOW allocate var slot — after list-form is compiled */
     var_slot = cl_env_add_local(env, var);
 
-    /* Check if loop var is captured in body (always mutated by loop) */
+    /* Check if loop var is captured in body (always mutated by loop).
+     * GC SAFETY: protect `cur` across scan_body_for_boxing — see
+     * compile_dotimes for the full rationale (macroexpansion compacts; an
+     * unprotected cursor derails into garbage). */
     {
         uint8_t captured = 0, mutated = 0;
         CL_Obj cur = body;
+        CL_GC_PROTECT(cur);
         while (CL_CONS_P(cur)) {
             scan_body_for_boxing(cl_car(cur), &var, 1, &mutated, &captured, 0);
             cur = cl_cdr(cur);
@@ -1509,6 +1568,7 @@ void compile_dolist(CL_Compiler *c, CL_Obj form)
         if (!CL_NULL_P(cl_cdr(cl_cdr(binding))))
             scan_body_for_boxing(result_form, &var, 1, &mutated, &captured, 0);
         var_boxed = captured;
+        CL_GC_UNPROTECT(1);
     }
 
     /* If boxed, initialize cell in var_slot */
@@ -1638,6 +1698,8 @@ void compile_dolist(CL_Compiler *c, CL_Obj form)
     /* Restore */
     c->block_count = saved_block_count;
     env->local_count = saved_local_count;
+
+    CL_GC_UNPROTECT(5);  /* form, binding, body, var, result_form */
 }
 
 void compile_dotimes(CL_Compiler *c, CL_Obj form)
@@ -1657,6 +1719,19 @@ void compile_dotimes(CL_Compiler *c, CL_Obj form)
     int var_boxed = 0;
     CL_BlockInfo *bi;
     int i;
+
+    /* GC SAFETY: form/binding/body/var/result_form are sub-cells of the
+     * (protected) enclosing form, but these C locals hold raw arena offsets
+     * that the compactor does NOT rewrite.  They are re-read after the
+     * allocating compile_expr(count_form) and the tagbody compile below;
+     * without protection a compaction relocates the dotimes form and leaves
+     * these locals pointing at stale (eventually overwritten) memory, so a
+     * later cl_cdr(binding) faults with "CDR: argument is not of type LIST". */
+    CL_GC_PROTECT(form);
+    CL_GC_PROTECT(binding);
+    CL_GC_PROTECT(body);
+    CL_GC_PROTECT(var);
+    CL_GC_PROTECT(result_form);
 
     c->in_tail = 0;
 
@@ -1679,10 +1754,16 @@ void compile_dotimes(CL_Compiler *c, CL_Obj form)
     /* NOW allocate var slot — after count-form is compiled */
     var_slot = cl_env_add_local(env, var);
 
-    /* Check if loop var is captured in body (always mutated by loop) */
+    /* Check if loop var is captured in body (always mutated by loop).
+     * GC SAFETY: `cur` is re-read after scan_body_for_boxing, which
+     * macroexpands body macros (e.g. INCF) in the VM and so allocates/
+     * compacts.  Protect the cursor — otherwise cl_cdr(stale cur) walks
+     * garbage and the captured/mutated scan derails (a body gensym then
+     * compiles to a global → "Unbound variable: NEW<n>"). */
     {
         uint8_t captured = 0, mutated = 0;
         CL_Obj cur = body;
+        CL_GC_PROTECT(cur);
         while (CL_CONS_P(cur)) {
             scan_body_for_boxing(cl_car(cur), &var, 1, &mutated, &captured, 0);
             cur = cl_cdr(cur);
@@ -1690,6 +1771,7 @@ void compile_dotimes(CL_Compiler *c, CL_Obj form)
         if (!CL_NULL_P(cl_cdr(cl_cdr(binding))))
             scan_body_for_boxing(result_form, &var, 1, &mutated, &captured, 0);
         var_boxed = captured;
+        CL_GC_UNPROTECT(1);
     }
 
     /* Allocate result slot for implicit block NIL */
@@ -1803,6 +1885,8 @@ void compile_dotimes(CL_Compiler *c, CL_Obj form)
     /* Restore */
     c->block_count = saved_block_count;
     env->local_count = saved_local_count;
+
+    CL_GC_UNPROTECT(5);  /* form, binding, body, var, result_form */
 }
 
 void compile_do(CL_Compiler *c, CL_Obj form)
