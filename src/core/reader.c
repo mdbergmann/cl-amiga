@@ -1556,11 +1556,19 @@ CL_Obj cl_read_from_stream(CL_Obj stream)
     rd_uninterned = CL_NIL;
     rd_labels = CL_NIL;
     rd_label_backrefs = 0;
-    /* Protect saved alists: read_expr() can compact the heap, staling C locals */
+    /* Protect saved alists AND the stream object itself: read_expr() can
+     * compact the heap, staling C locals. `st` is a raw pointer derived from
+     * `stream` before the read — after compaction the stream object moves, so
+     * we must GC-protect `stream` and re-derive `st` before writing back
+     * st->line. Without this, st->line = reader_line writes to the stream's
+     * stale (now-relocated) slot, corrupting whatever object — frequently a
+     * cons cell of the freshly-read list — now occupies that memory. */
+    CL_GC_PROTECT(stream);
     CL_GC_PROTECT(saved_labels);
     CL_GC_PROTECT(saved_uninterned);
     do { result = read_expr(); } while (result == CL_READER_SKIP && !eof_seen);
 
+    st = (CL_Stream *)CL_OBJ_TO_PTR(stream);
     st->line = (uint32_t)reader_line;
     CT->rd_last_eof = eof_seen;
     reader_stream = saved_stream;
@@ -1569,7 +1577,7 @@ CL_Obj cl_read_from_stream(CL_Obj stream)
     rd_uninterned = saved_uninterned;
     rd_labels     = saved_labels;
     rd_label_backrefs = saved_backrefs;
-    CL_GC_UNPROTECT(2); /* saved_labels, saved_uninterned */
+    CL_GC_UNPROTECT(3); /* stream, saved_labels, saved_uninterned */
     return result;
 }
 
