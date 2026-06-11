@@ -663,6 +663,30 @@ else
     echo "  SKIP  FFI gc-stress: clean FASL compile failed"
 fi
 
+# --- Case: READ-FROM-STRING / string-input-stream under GC stress -----------
+# Bug: cl_make_string_input_stream called cl_make_stream() (which allocates the
+# stream object and can compact) WITHOUT GC-protecting its `string` argument.
+# Compaction relocated the source string, leaving `string` a stale offset, so
+# st->string_buf pointed at moved/garbage memory.  Every subsequent char read
+# from the stream came from the wrong place, so READ-FROM-STRING dropped or
+# mangled list elements ("CDR: argument is not of type LIST" on >=3-elem lists,
+# or a short list).  Also fixed: cl_read_from_stream wrote st->line through a
+# raw CL_Stream* cached before read_expr() (which compacts), clobbering whatever
+# object had moved into the stream's old slot.
+cat > "$WORK/rfs.lisp" <<'EOF'
+(format t "RFS3:~a~%" (length (read-from-string "(a b c)")))
+(format t "RFS5:~a~%" (length (read-from-string "(a b c d e)")))
+(format t "RFS-ELT:~a~%" (read-from-string "(a b c)"))
+(format t "RFS-NEST:~a~%"
+        (length (read-from-string "((1 2) (3 4) (5 6))")))
+EOF
+out=$(run_stress "$WORK/rfs.lisp")
+check_contains "read-from-string 3-elem list length"            "RFS3:3" "$out"
+check_contains "read-from-string 5-elem list length"            "RFS5:5" "$out"
+check_contains "read-from-string list contents intact"          "RFS-ELT:(A B C)" "$out"
+check_contains "read-from-string nested list length"            "RFS-NEST:3" "$out"
+check_absent   "no CDR type-error from stale string-buf"        "not of type LIST" "$out"
+
 # NB: the post-compaction rehash of EQUAL/EQL/EQUALP hash tables and of the
 # per-thread TLV (dynamic-binding) table is NOT exercised here.  Those bugs
 # require a *moving* compaction that relocates a live object to a genuinely new

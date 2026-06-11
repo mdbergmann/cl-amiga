@@ -814,14 +814,23 @@ void cl_stream_close(CL_Obj stream)
 
 CL_Obj cl_make_string_input_stream(CL_Obj string, uint32_t start, uint32_t end)
 {
-    CL_Obj s = cl_make_stream(CL_STREAM_INPUT, CL_STREAM_STRING);
+    CL_Obj s;
     CL_Stream *st;
-    if (CL_NULL_P(s)) return CL_NIL;
+
+    /* GC-protect `string` across cl_make_stream: it allocates the stream
+     * object and may compact the heap, relocating the source string. Without
+     * protection, `string` holds a stale offset and st->string_buf would point
+     * at moved/garbage memory, corrupting every subsequent read from the
+     * stream (e.g. read-from-string dropping or mangling list elements). */
+    CL_GC_PROTECT(string);
+    s = cl_make_stream(CL_STREAM_INPUT, CL_STREAM_STRING);
+    if (CL_NULL_P(s)) { CL_GC_UNPROTECT(1); return CL_NIL; }
 
     st = (CL_Stream *)CL_OBJ_TO_PTR(s);
     st->string_buf = string;
     st->position = start;
     st->out_buf_len = end;  /* Reuse as end limit */
+    CL_GC_UNPROTECT(1);
     return s;
 }
 

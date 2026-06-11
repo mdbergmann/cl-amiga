@@ -1923,6 +1923,13 @@
 (check "read-line missing-newline-p" t (nth-value 1 (read-line (make-string-input-stream "Hello"))))
 (check "read-line has newline" nil (nth-value 1 (read-line (make-string-input-stream (concatenate 'string "Hello" (string #\Newline))))))
 (check "string-input-stream start end" #\W (read-char (make-string-input-stream "Hello World" 6)))
+; Regression: cl_make_string_input_stream must GC-protect its source string
+; across cl_make_stream's allocation, else st->string_buf goes stale under a
+; moving GC and read-from-string drops/mangles list elements (>=3-elem lists).
+(check "read-from-string 3-elem length" 3 (length (read-from-string "(a b c)")))
+(check "read-from-string 5-elem length" 5 (length (read-from-string "(a b c d e)")))
+(check "read-from-string contents intact" '(a b c) (read-from-string "(a b c)"))
+(check "read-from-string nested length" 3 (length (read-from-string "((1 2) (3 4) (5 6))")))
 
 ; peek-char
 (check "peek-char nil" #\A (peek-char nil (make-string-input-stream "ABC")))
