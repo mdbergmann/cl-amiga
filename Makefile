@@ -102,17 +102,35 @@ $(BUILDDIR)/%.o: $(SRCDIR)/%.c
 # Include auto-generated dependency files
 -include $(HOST_OBJS:.o=.d)
 
+# Per-test-binary wall-clock watchdog (seconds).  Belt-and-suspenders on top
+# of the in-process SIGALRM watchdog in tests/test.h: catches a hang that
+# happens outside a RUN() (e.g. in setup) so a deadlock fails the CI job in
+# minutes instead of blocking until GitHub's job timeout.  Used only when a
+# timeout/gtimeout binary is on PATH.
+TEST_BIN_TIMEOUT ?= 300
+
 # Tests
 test-fast: $(TEST_BINS) host
 	@echo "=== Running tests (fast tier: skips sento/host-cold-test) ==="
 	@export CLAMIGA_NO_USERINIT=1; \
 	failed=0; \
+	tmo=$$(command -v timeout 2>/dev/null || command -v gtimeout 2>/dev/null || true); \
 	for t in $(TEST_BINS); do \
 		echo "--- $$(basename $$t) ---"; \
-		if $$t; then \
+		rc=0; \
+		if [ -n "$$tmo" ]; then \
+			$$tmo $(TEST_BIN_TIMEOUT) $$t </dev/null || rc=$$?; \
+		else \
+			$$t </dev/null || rc=$$?; \
+		fi; \
+		if [ $$rc -eq 0 ]; then \
 			echo "PASS"; \
 		else \
-			echo "FAIL"; \
+			if [ $$rc -eq 124 ]; then \
+				echo "FAIL ($$(basename $$t) TIMED OUT after $(TEST_BIN_TIMEOUT)s — likely deadlock)"; \
+			else \
+				echo "FAIL"; \
+			fi; \
 			failed=1; \
 		fi; \
 	done; \
@@ -197,7 +215,7 @@ test-plus: test-fast
 	fi; \
 	echo "=== All tests passed ==="
 
-$(BUILDDIR)/tests/%: $(TEST_SRCDIR)/%.c $(LIB_OBJS)
+$(BUILDDIR)/tests/%: $(TEST_SRCDIR)/%.c $(TEST_SRCDIR)/test.h $(LIB_OBJS)
 	@mkdir -p $(dir $@)
 	$(CC_HOST) $(CFLAGS_HOST) -I$(SRCDIR) -I$(TEST_SRCDIR) -o $@ $< $(LIB_OBJS) $(HOST_LIBS)
 
