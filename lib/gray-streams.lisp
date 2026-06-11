@@ -44,7 +44,10 @@
    #:stream-clear-output
    #:stream-advance-to-column
    #:stream-read-byte
-   #:stream-write-byte))
+   #:stream-write-byte
+   ;; Bulk sequence I/O (trivial-gray-streams extension)
+   #:stream-read-sequence
+   #:stream-write-sequence))
 
 (in-package "GRAY")
 
@@ -245,6 +248,61 @@
   (:documentation "Write BYTE to STREAM."))
 
 ;;; ====================================================================
+;;; Generic functions — bulk sequence I/O
+;;; ====================================================================
+;;; These mirror the trivial-gray-streams extension GFs and use the same
+;;; lambda list — (stream sequence start end &key &allow-other-keys) — so
+;;; trivial-gray-streams' unknown-implementation fallback (which imports
+;;; STREAM-READ-SEQUENCE / STREAM-WRITE-SEQUENCE from the GRAY/"..." package)
+;;; finds them.  CL:READ-SEQUENCE and CL:WRITE-SEQUENCE dispatch here for
+;;; Gray streams (see the COMMON-LISP wrappers below).
+;;;
+;;; The default methods loop element-by-element, but call STREAM-READ-BYTE /
+;;; STREAM-READ-CHAR (etc.) DIRECTLY — bypassing CL:READ-BYTE/READ-CHAR's
+;;; per-element stream-resolution and %gray-stream-p type checks.  A library
+;;; can specialise these GFs on its own stream class to provide a genuine
+;;; bulk transfer (e.g. a decompressor that fills the whole buffer at once)
+;;; instead of paying per-element overhead.
+
+(defgeneric stream-read-sequence (stream sequence start end &key &allow-other-keys)
+  (:documentation
+   "Fill SEQUENCE from START to END with elements read from STREAM.
+Return the index of the first element not modified — END on a full read, or
+the position where end-of-file was reached."))
+
+(defmethod stream-read-sequence ((stream fundamental-input-stream)
+                                 sequence start end &key)
+  ;; Element kind follows the sequence's element type, matching CL:READ-SEQUENCE.
+  (let ((e (or end (length sequence)))
+        (i start)
+        (use-char (and (arrayp sequence)
+                       (subtypep (array-element-type sequence) 'character))))
+    (block nil
+      (loop
+        (when (>= i e) (return))
+        (let ((elem (if use-char
+                        (stream-read-char stream)
+                        (stream-read-byte stream))))
+          (when (eq elem :eof) (return))
+          (setf (elt sequence i) elem)
+          (setf i (1+ i)))))
+    i))
+
+(defgeneric stream-write-sequence (stream sequence start end &key &allow-other-keys)
+  (:documentation
+   "Write the elements of SEQUENCE from START to END to STREAM.  Return SEQUENCE."))
+
+(defmethod stream-write-sequence ((stream fundamental-output-stream)
+                                  sequence start end &key)
+  (let ((e (or end (length sequence))))
+    (do ((i start (1+ i)))
+        ((>= i e) sequence)
+      (let ((elt (elt sequence i)))
+        (if (characterp elt)
+            (stream-write-char stream elt)
+            (stream-write-byte stream elt))))))
+
+;;; ====================================================================
 ;;; Integration with CL I/O functions
 ;;; ====================================================================
 ;;; Make CL:READ-CHAR, CL:WRITE-CHAR, etc. dispatch to gray stream
@@ -257,6 +315,8 @@
       (orig-write-char (symbol-function 'write-char))
       (orig-read-byte (symbol-function 'read-byte))
       (orig-write-byte (symbol-function 'write-byte))
+      (orig-read-sequence (symbol-function 'read-sequence))
+      (orig-write-sequence (symbol-function 'write-sequence))
       (orig-peek-char (symbol-function 'peek-char))
       (orig-unread-char (symbol-function 'unread-char))
       (orig-read-line (symbol-function 'read-line))
@@ -385,6 +445,24 @@
       (if (%gray-stream-p s)
           (progn (gray:stream-write-byte s byte) byte)
           (funcall orig-write-byte byte s))))
+
+  ;; READ-SEQUENCE — dispatch to the bulk GF for Gray streams; native
+  ;; streams keep the boot.lisp implementation.  END is resolved to a
+  ;; concrete integer so specialised STREAM-READ-SEQUENCE methods (and
+  ;; trivial-gray-streams) always receive a non-NIL END, matching the tgs
+  ;; (stream sequence start end) convention.
+  (defun read-sequence (sequence stream &key (start 0) end)
+    (let ((s (%resolve-input-stream stream)))
+      (if (%gray-stream-p s)
+          (gray:stream-read-sequence s sequence start (or end (length sequence)))
+          (funcall orig-read-sequence sequence stream :start start :end end))))
+
+  ;; WRITE-SEQUENCE — dispatch to the bulk GF for Gray streams.
+  (defun write-sequence (sequence stream &key (start 0) end)
+    (let ((s (%resolve-output-stream stream)))
+      (if (%gray-stream-p s)
+          (gray:stream-write-sequence s sequence start (or end (length sequence)))
+          (funcall orig-write-sequence sequence stream :start start :end end))))
 
   ;; PEEK-CHAR
   (defun peek-char (&optional peek-type stream (eof-error-p t) eof-value recursive-p)

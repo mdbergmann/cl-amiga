@@ -171,7 +171,12 @@ fork) maps usocket onto `ext:open-tcp-stream` / `ext:socket-listen`. drakma's
 the **chipz** fork (`mdbergmann/chipz`) has a `#+cl-amiga` Gray-stream branch so
 `chipz:make-decompressing-stream` decodes through cl-amiga's Gray streams — the
 google.com gzip-decode tests pass (see `trunk/test-chipz-stream.lisp` for a
-focused, runnable gunzip example). The suite's remaining skipped tests need a
+focused, runnable gunzip example). cl-amiga's Gray streams expose
+`gray:stream-read-sequence` / `gray:stream-write-sequence` (the
+trivial-gray-streams `(stream sequence start end &key)` signature), so
+`read-sequence`/`write-sequence` on a Gray stream dispatch to a single bulk
+method instead of looping byte-by-byte: chipz decompresses straight into the
+caller's buffer (see `trunk/test-gray-sequence.lisp` for the dispatch tests). The suite's remaining skipped tests need a
 local hunchentoot **server** or the flaky httpbin.org service — both orthogonal
 to the client goal — and are skipped with documented reasons
 (`trunk/drakma-skip-tests.lisp`). It is **host-only**: it needs a TCP/IP stack
