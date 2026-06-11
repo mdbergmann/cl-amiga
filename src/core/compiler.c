@@ -2128,6 +2128,41 @@ static int is_composite_cadr(CL_Obj sym)
     return 1;
 }
 
+/* Resolve the setf-function for accessor ACCESSOR (the FOO in (setf FOO)).
+ * Returns the symbol that names the (setf FOO) function: either the binding
+ * registered via cl_register_setf_function (e.g. by (defun (setf foo) ...) /
+ * (defmethod (setf foo) ...)), or — failing that — an optimistically-interned
+ * %SETF-<name> symbol in the CLAMIGA package for late binding.  This is the
+ * single source of truth for the (setf place) calling convention; both
+ * setf-PLACE compilation and #'(setf foo) function references go through it
+ * so they agree on which symbol holds the setter. */
+static CL_Obj resolve_setf_fn_symbol(CL_Obj accessor)
+{
+    CL_Obj setf_fn = CL_NIL;
+    CL_Obj sfe;
+    cl_tables_rdlock();
+    sfe = setf_fn_table;
+    while (!CL_NULL_P(sfe)) {
+        CL_Obj pair = cl_car(sfe);
+        if (cl_car(pair) == accessor) {
+            setf_fn = cl_cdr(pair);
+            break;
+        }
+        sfe = cl_cdr(sfe);
+    }
+    cl_tables_rwunlock();
+    if (CL_NULL_P(setf_fn)) {
+        CL_Symbol *sym = (CL_Symbol *)CL_OBJ_TO_PTR(accessor);
+        CL_String *sname = (CL_String *)CL_OBJ_TO_PTR(sym->name);
+        char buf[256];
+        int len = snprintf(buf, sizeof(buf), "%%SETF-%.*s",
+                           (int)sname->length, sname->data);
+        if (len >= (int)sizeof(buf)) len = (int)sizeof(buf) - 1;
+        setf_fn = cl_intern_in(buf, (uint32_t)len, cl_package_clamiga);
+    }
+    return setf_fn;
+}
+
 static void compile_setf_place(CL_Compiler *c, CL_Obj place, CL_Obj val_form)
 {
     int saved_tail = c->in_tail;
@@ -2860,45 +2895,12 @@ static void compile_setf_place(CL_Compiler *c, CL_Obj place, CL_Obj val_form)
                         return;
                     }
                 }
-                /* Setf function (late-bound): construct %SETF-<name> symbol,
-                 * emit FLOAD — resolved at runtime like normal function calls.
-                 * Handles both (defun (setf name) ...) and
-                 * (defgeneric (setf name) ...) / (defmethod (setf name) ...).
-                 * Check setf_fn_table first; if not found, intern %SETF-<name>. */
-                CL_Obj setf_fn = CL_NIL;
-                {
-                    CL_Obj sfe;
-                    cl_tables_rdlock();
-                    sfe = setf_fn_table;
-                    while (!CL_NULL_P(sfe)) {
-                        CL_Obj pair = cl_car(sfe);
-                        if (cl_car(pair) == head) {
-                            setf_fn = cl_cdr(pair);
-                            break;
-                        }
-                        sfe = cl_cdr(sfe);
-                    }
-                    cl_tables_rwunlock();
-                }
-                if (CL_NULL_P(setf_fn)) {
-                    /* Optimistic late binding: intern %SETF-<name> in the
-                     * CLAMIGA package.  Putting these auto-generated
-                     * shadow names in CLAMIGA (instead of the accessor's
-                     * home package, as we used to) keeps them out of CL's
-                     * external symbol set and out of arbitrary user
-                     * packages — matching how (defun (setf foo) ...) and
-                     * (defmethod (setf foo) ...) need a stable lookup
-                     * location across packages.  A previously-registered
-                     * setf-fn binding in setf_fn_table still wins; this
-                     * fallback only fires for unregistered names. */
-                    CL_Symbol *sym = (CL_Symbol *)CL_OBJ_TO_PTR(head);
-                    CL_String *sname = (CL_String *)CL_OBJ_TO_PTR(sym->name);
-                    char buf[256];
-                    int len = snprintf(buf, sizeof(buf), "%%SETF-%.*s",
-                                       (int)sname->length, sname->data);
-                    if (len >= (int)sizeof(buf)) len = (int)sizeof(buf) - 1;
-                    setf_fn = cl_intern_in(buf, (uint32_t)len, cl_package_clamiga);
-                }
+                /* Setf function (late-bound): resolve the %SETF-<name> /
+                 * registered setter symbol and emit FLOAD — resolved at
+                 * runtime like normal function calls.  Handles both
+                 * (defun (setf name) ...) and (defgeneric (setf name) ...) /
+                 * (defmethod (setf name) ...).  See resolve_setf_fn_symbol. */
+                CL_Obj setf_fn = resolve_setf_fn_symbol(head);
                 {
                     /* Late-bound setf: (setf (foo a b) val) → (%setf-foo val a b)
                      * Value first — matches CL (setf name) function convention */
@@ -2989,10 +2991,25 @@ static void compile_function(CL_Compiler *c, CL_Obj form)
             cl_emit(c, OP_FLOAD);
             cl_emit_u16(c, (uint16_t)idx);
         }
-    } else {
-        int idx = cl_add_constant(c, name);
+    } else if (CL_CONS_P(name) && cl_car(name) == SYM_SETF
+               && CL_CONS_P(cl_cdr(name))
+               && CL_SYMBOL_P(cl_car(cl_cdr(name)))
+               && CL_NULL_P(cl_cdr(cl_cdr(name)))) {
+        /* #'(setf accessor) — a function name of the form (setf symbol).
+         * OP_FLOAD needs a SYMBOL, so resolve (setf accessor) to the symbol
+         * that names its setter (the same one setf-PLACE compilation uses),
+         * rather than FLOADing the raw (SETF ACCESSOR) cons (which is not a
+         * symbol and corrupts the constant-pool slot at load time). */
+        CL_Obj setf_fn = resolve_setf_fn_symbol(cl_car(cl_cdr(name)));
+        int idx = cl_add_constant(c, setf_fn);
         cl_emit(c, OP_FLOAD);
         cl_emit_u16(c, (uint16_t)idx);
+    } else {
+        cl_error(CL_ERR_GENERAL,
+                 "FUNCTION: %s is not a valid function name "
+                 "(expected a symbol, (setf symbol), or a lambda expression)",
+                 CL_CONS_P(name) && CL_SYMBOL_P(cl_car(name))
+                     ? cl_symbol_name(cl_car(name)) : "form");
     }
 }
 

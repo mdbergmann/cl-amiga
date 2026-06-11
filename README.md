@@ -166,12 +166,16 @@ verification** (the badssl.com `VERIFY.*` tests). cl+ssl works because cl-amiga
 now reports the host OS/arch as `*features*` (`:darwin`/`:linux` +
 `:arm64`/`:x86-64`), letting its `define-foreign-library` resolve the right
 OpenSSL; the usocket backend (`usocket/backend/clamiga.lisp`, in the usocket
-fork) maps usocket onto `ext:open-tcp-stream` / `ext:socket-listen`. The suite's
-remaining tests need a local hunchentoot **server**, chipz streaming
-decompression, or the flaky httpbin.org service — all orthogonal to the client
-goal — and are skipped with documented reasons (`trunk/drakma-skip-tests.lisp`).
-It is **host-only**: it needs a TCP/IP stack and network access, which the
-Amiga/FS-UAE test harness lacks.
+fork) maps usocket onto `ext:open-tcp-stream` / `ext:socket-listen`. drakma's
+`:decode-content t` (streaming gunzip/inflate of compressed replies) also works:
+the **chipz** fork (`mdbergmann/chipz`) has a `#+cl-amiga` Gray-stream branch so
+`chipz:make-decompressing-stream` decodes through cl-amiga's Gray streams — the
+google.com gzip-decode tests pass (see `trunk/test-chipz-stream.lisp` for a
+focused, runnable gunzip example). The suite's remaining skipped tests need a
+local hunchentoot **server** or the flaky httpbin.org service — both orthogonal
+to the client goal — and are skipped with documented reasons
+(`trunk/drakma-skip-tests.lisp`). It is **host-only**: it needs a TCP/IP stack
+and network access, which the Amiga/FS-UAE test harness lacks.
 
 ### Loading source and FASL files
 

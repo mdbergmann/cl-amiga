@@ -310,6 +310,42 @@ TEST(eval_function_ref)
     ASSERT_STR_EQ(eval_print("(mapcar #'1+ '(1 2 3))"), "(2 3 4)");
 }
 
+/* Regression: #'(setf name) — a (function (setf symbol)) reference must
+ * resolve to the symbol that names the setter (the same one setf-place
+ * compilation uses), not FLOAD the raw (SETF NAME) cons.  FLOADing the cons
+ * stored a non-symbol in the constant pool, which OP_FLOAD then rejected
+ * ("corrupted constant pool entry").  Exposed by chipz inflate.lisp's
+ * #'(setf filename) / #'(setf comment). */
+TEST(eval_function_ref_setf)
+{
+    ASSERT_STR_EQ(eval_print(
+        "(progn"
+        "  (defparameter *fref-cell* (list 0))"
+        "  (defun (setf fref-acc) (v x) (setf (car x) v) v)"
+        "  (funcall #'(setf fref-acc) 42 *fref-cell*)"
+        "  (car *fref-cell*))"), "42");
+}
+
+/* Regression: a LABELS with more than the old CL_MAX_LOCAL_FUNS (32) functions
+ * in scope, where a function bound past slot 32 is referenced via #' and
+ * called.  Overflow used to silently fail to bind the name, so #'fn resolved
+ * to an undefined global FLOAD at runtime.  Mirrors chipz inflate.lisp's
+ * 37-function state-machine LABELS (its 33rd fn, gzip-isize, was the casualty).
+ * Builds (labels ((fnx0 () 0) ... (fnx39 () 39)) (funcall #'fnx39)) => 39. */
+TEST(eval_labels_past_32_funs)
+{
+    ASSERT_STR_EQ(eval_print(
+        "(eval"
+        "  (let* ((n 40)"
+        "         (names (loop for i below n"
+        "                      collect (intern (format nil \"FNX~D\" i))))"
+        "         (defs (loop for s in names for i from 0"
+        "                     collect (list s '() i))))"
+        "    (list 'labels defs"
+        "          (list 'funcall (list 'function (car (last names)))))))"),
+        "39");
+}
+
 /* --- Error handling --- */
 
 TEST(eval_error_unbound)
@@ -9057,6 +9093,8 @@ int main(void)
     RUN(eval_defun_multiarg);
     RUN(eval_lambda);
     RUN(eval_function_ref);
+    RUN(eval_function_ref_setf);
+    RUN(eval_labels_past_32_funs);
     RUN(eval_error_unbound);
     RUN(eval_error_divzero);
     RUN(eval_error_type);

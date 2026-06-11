@@ -395,6 +395,24 @@
 (check "flet closure" 15 (let ((x 10)) (flet ((f (y) (+ x y))) (f 5))))
 (check "labels fact" 120 (labels ((fact (n) (if (<= n 1) 1 (* n (fact (- n 1)))))) (fact 5)))
 (check "labels mutual" t (labels ((even2 (n) (if (= n 0) t (odd2 (- n 1)))) (odd2 (n) (if (= n 0) nil (even2 (- n 1))))) (even2 4)))
+; Regression (chipz inflate.lisp): #'(setf name) must resolve to the setter
+; symbol, not FLOAD the raw (SETF NAME) cons (which corrupted the const pool).
+(defun (setf sl-acc) (v x) (setf (car x) v) v)
+(check "sharp-quote (setf name)" 42
+       (let ((cell (list 0))) (funcall #'(setf sl-acc) 42 cell) (car cell)))
+; Regression (chipz inflate.lisp 37-fn state machine): a LABELS with >32
+; functions must bind+resolve #' to a function past slot 32 (CL_MAX_LOCAL_FUNS
+; was 32, now 64).  fn35 is the 36th; #'fn35 must call it, not a global.
+(check "labels >32 fns, ref late one" 35
+       (labels ((fn0 () 0) (fn1 () 1) (fn2 () 2) (fn3 () 3) (fn4 () 4)
+                (fn5 () 5) (fn6 () 6) (fn7 () 7) (fn8 () 8) (fn9 () 9)
+                (fn10 () 10) (fn11 () 11) (fn12 () 12) (fn13 () 13) (fn14 () 14)
+                (fn15 () 15) (fn16 () 16) (fn17 () 17) (fn18 () 18) (fn19 () 19)
+                (fn20 () 20) (fn21 () 21) (fn22 () 22) (fn23 () 23) (fn24 () 24)
+                (fn25 () 25) (fn26 () 26) (fn27 () 27) (fn28 () 28) (fn29 () 29)
+                (fn30 () 30) (fn31 () 31) (fn32 () 32) (fn33 () 33) (fn34 () 34)
+                (fn35 () 35))
+         (funcall #'fn35)))
 
 ; --- Phase 4: &optional / &key ---
 (defun opt-test (a &optional b) (list a b))
