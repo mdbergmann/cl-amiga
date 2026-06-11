@@ -87,6 +87,33 @@ TEST(class_of_character)
     ASSERT_STR_EQ(eval_print("(%class-of #\\A)"), "CHARACTER");
 }
 
+/* Regression: strings created via MAKE-ARRAY (TYPE_WIDE_STRING under
+ * CL_WIDE_STRINGS) must report the STRING class, not T.  A wrong class
+ * here makes CLOS dispatch miss STRING-specialized methods even though
+ * STRINGP / TYPE-OF correctly say STRING — see fset Test-Misc-2 /
+ * Test-Compare-Lexicographically ("No applicable method for ITERATOR"). */
+TEST(class_of_make_array_character_string)
+{
+    ASSERT_STR_EQ(eval_print(
+        "(%class-of (make-array 3 :element-type 'character :initial-element #\\a))"),
+        "STRING");
+}
+
+TEST(class_of_make_array_base_char_string)
+{
+    ASSERT_STR_EQ(eval_print(
+        "(%class-of (make-array '(1) :element-type 'base-char :initial-element #\\a))"),
+        "STRING");
+}
+
+TEST(class_of_make_array_adjustable_string)
+{
+    ASSERT_STR_EQ(eval_print(
+        "(%class-of (make-array 2 :element-type 'character :adjustable t "
+        ":initial-element #\\a))"),
+        "STRING");
+}
+
 TEST(class_of_function)
 {
     ASSERT_STR_EQ(eval_print("(%class-of #'car)"), "FUNCTION");
@@ -195,6 +222,18 @@ TEST(class_of_42_is_fixnum_class)
 TEST(class_of_string_is_string_class)
 {
     ASSERT_STR_EQ(eval_print("(class-name (class-of \"hello\"))"), "STRING");
+}
+
+/* Regression: a STRING-specialized method must be applicable to a string
+ * produced by MAKE-ARRAY (wide string), not just to a literal string. */
+TEST(dispatch_string_method_on_make_array_string)
+{
+    eval_print("(defgeneric clos-strdisp (x))");
+    eval_print("(defmethod clos-strdisp ((x string)) :str)");
+    eval_print("(defmethod clos-strdisp ((x t)) :other)");
+    ASSERT_STR_EQ(eval_print(
+        "(clos-strdisp (make-array 3 :element-type 'character :initial-element #\\a))"),
+        ":STR");
 }
 
 TEST(class_of_nil_is_null_class)
@@ -3760,6 +3799,9 @@ int main(void)
     RUN(class_of_cons);
     RUN(class_of_string);
     RUN(class_of_character);
+    RUN(class_of_make_array_character_string);
+    RUN(class_of_make_array_base_char_string);
+    RUN(class_of_make_array_adjustable_string);
     RUN(class_of_function);
     RUN(class_of_lambda);
     RUN(class_of_vector);
@@ -3782,6 +3824,7 @@ int main(void)
     RUN(find_class_unknown_error);
     RUN(class_of_42_is_fixnum_class);
     RUN(class_of_string_is_string_class);
+    RUN(dispatch_string_method_on_make_array_string);
     RUN(class_of_nil_is_null_class);
     RUN(class_of_cons_is_cons_class);
     RUN(class_of_eq_find_class);

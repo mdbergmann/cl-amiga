@@ -17,16 +17,22 @@ static void defun(const char *name, CL_CFunc func, int min, int max)
     s->function = fn;
 }
 
-/* Create a fresh simple character array (string) of LENGTH.  Under
- * CL_WIDE_STRINGS this is a wide string so that characters > 255 stored
- * later (e.g. via (setf (aref s i) (code-char #x4E16))) are not truncated
- * to a single byte — the upgraded element type of CHARACTER must hold the
- * full character range. */
-static CL_Obj make_char_array_string(uint32_t length)
+/* Create a fresh simple character array (string) of LENGTH.  When
+ * WANT_WIDE is set (an explicit CHARACTER / EXTENDED-CHAR element-type, or
+ * content that needs the full character range) this is a TYPE_WIDE_STRING
+ * under CL_WIDE_STRINGS so chars > 255 stored later are not truncated.
+ * Otherwise it is a narrow TYPE_STRING — a BASE-STRING — matching
+ * MAKE-STRING's behaviour for a BASE-CHAR element-type.  Keeping the two
+ * builtins consistent is required so (TYPEP s 'BASE-STRING) agrees with
+ * how the string was requested (e.g. FSet's seq leaves rely on it). */
+static CL_Obj make_char_array_string(uint32_t length, int want_wide)
 {
 #ifdef CL_WIDE_STRINGS
-    return cl_make_wide_string(NULL, length);
+    if (want_wide)
+        return cl_make_wide_string(NULL, length);
+    return cl_make_string(NULL, length);
 #else
+    (void)want_wide;
     return cl_make_string(NULL, length);
 #endif
 }
@@ -80,6 +86,21 @@ static uint32_t seq_length(CL_Obj seq)
     }
 }
 
+/* Does any character in 1D sequence SEQ exceed the narrow (base-char)
+ * range?  Used to widen a character array whose declared element-type is
+ * narrow but whose initial contents would otherwise be truncated. */
+static int seq_has_wide_char(CL_Obj seq, uint32_t limit)
+{
+    uint32_t i, len = seq_length(seq);
+    if (len > limit) len = limit;
+    for (i = 0; i < len; i++) {
+        CL_Obj e = seq_elt(seq, i);
+        if (CL_CHAR_P(e) && (uint32_t)CL_CHAR_VAL(e) > 255u)
+            return 1;
+    }
+    return 0;
+}
+
 /* --- Pre-interned keyword symbols --- */
 
 static CL_Obj KW_INITIAL_ELEMENT = CL_NIL;
@@ -120,6 +141,13 @@ static CL_Obj bi_make_array(CL_Obj *args, int n)
     int has_displaced_to = 0;
     int element_type_bit = 0;
     int element_type_char = 0;
+    /* Distinguishes the upgraded character width: an explicit CHARACTER /
+     * EXTENDED-CHAR element-type yields a wide string (so chars > 255 are
+     * not truncated), while BASE-CHAR / STANDARD-CHAR (and the NIL empty
+     * case) yield a narrow base-string.  This mirrors MAKE-STRING; keeping
+     * them consistent matters because (TYPEP s 'BASE-STRING) is how callers
+     * like FSet track whether a string leaf holds only base characters. */
+    int element_type_wide_char = 0;
     uint32_t fill_ptr = CL_NO_FILL_POINTER;
     uint32_t displaced_offset = 0;
     int fill_pointer_is_t = 0;
@@ -160,7 +188,11 @@ static CL_Obj bi_make_array(CL_Obj *args, int n)
                 if (strcmp(ename, "BIT") == 0)
                     element_type_bit = 1;
                 else if (strcmp(ename, "CHARACTER") == 0 ||
-                         strcmp(ename, "BASE-CHAR") == 0 ||
+                         strcmp(ename, "EXTENDED-CHAR") == 0) {
+                    element_type_char = 1;
+                    element_type_wide_char = 1;
+                }
+                else if (strcmp(ename, "BASE-CHAR") == 0 ||
                          strcmp(ename, "STANDARD-CHAR") == 0)
                     element_type_char = 1;
             }
@@ -348,16 +380,23 @@ static CL_Obj bi_make_array(CL_Obj *args, int n)
                 }
                 return result;
             }
-            /* Simple string: wide under CL_WIDE_STRINGS so wide chars fit */
+            /* Simple string: narrow base-string unless the element-type is
+             * CHARACTER/EXTENDED-CHAR or the contents need wide storage. */
             {
                 int init_char = ' ';
+                int want_wide = element_type_wide_char;
                 CL_Obj str;
                 if (has_initial_element) {
                     if (!CL_CHAR_P(initial_element))
                         cl_error(CL_ERR_TYPE, "MAKE-ARRAY: :initial-element for character array must be a character");
                     init_char = (int)CL_CHAR_VAL(initial_element);
                 }
-                str = make_char_array_string(length);
+                if (init_char > 255) want_wide = 1;
+                if (!want_wide && has_initial_contents &&
+                    seq_has_wide_char(initial_contents, length))
+                    want_wide = 1;
+                CL_GC_PROTECT(initial_contents);
+                str = make_char_array_string(length, want_wide);
                 {
                     uint32_t j;
                     for (j = 0; j < length; j++)
@@ -373,6 +412,7 @@ static CL_Obj bi_make_array(CL_Obj *args, int n)
                             cl_string_set_char_at(str, j, CL_CHAR_VAL(elem));
                     }
                 }
+                CL_GC_UNPROTECT(1);
                 return str;
             }
         }
@@ -484,12 +524,20 @@ static CL_Obj bi_make_array(CL_Obj *args, int n)
                         cl_string_char_at(displaced_to, displaced_offset + j));
                 return str;
             }
+            {
+            int want_wide = element_type_wide_char;
             if (has_initial_element) {
                 if (!CL_CHAR_P(initial_element))
                     cl_error(CL_ERR_TYPE, "MAKE-ARRAY: :initial-element for character array must be a character");
                 init_char = (int)CL_CHAR_VAL(initial_element);
             }
-            str = make_char_array_string(dims[0]);
+            if (init_char > 255) want_wide = 1;
+            if (!want_wide && has_initial_contents &&
+                seq_has_wide_char(initial_contents, dims[0]))
+                want_wide = 1;
+            CL_GC_PROTECT(initial_contents);
+            str = make_char_array_string(dims[0], want_wide);
+            }
             for (j = 0; j < dims[0]; j++)
                 cl_string_set_char_at(str, j, init_char);
             if (has_initial_contents) {
@@ -501,6 +549,7 @@ static CL_Obj bi_make_array(CL_Obj *args, int n)
                         cl_string_set_char_at(str, j, CL_CHAR_VAL(elem));
                 }
             }
+            CL_GC_UNPROTECT(1);
             return str;
         }
         if (rank == 1) {
