@@ -2022,8 +2022,13 @@ already-existing GF the installed combination is preserved."
         (in-required t))
     (dolist (param spec-ll)
       (cond
-        ;; Lambda-list keyword — stop specializing
-        ((member param '(&rest &optional &key &body &allow-other-keys) :test #'eq)
+        ;; Lambda-list keyword — stop specializing.  &aux must be here too:
+        ;; an &aux binding like (var (accessor obj)) is NOT a specialized
+        ;; parameter, so its init-form must never be treated as a specializer
+        ;; name (otherwise FIND-CLASS is handed the init form, e.g. cl-routes'
+        ;; `(defmethod unify/impl ((tmpl wildcard-template) x bindings
+        ;;    &aux (var (template-data tmpl))) ...)`).
+        ((member param '(&rest &optional &key &body &allow-other-keys &aux) :test #'eq)
          (setq in-required nil)
          (push param unspec))
         ;; Specialized parameter: (var class-name) or (var (eql val))

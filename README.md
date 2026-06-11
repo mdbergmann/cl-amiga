@@ -153,7 +153,25 @@ Reusable Lisp loaders in `trunk/` that load and exercise third-party libraries o
 ./build/host/clamiga --heap 64M  --load trunk/load-and-test-str.lisp            # str
 ./build/host/clamiga --heap 192M --load trunk/load-and-test-sento-system.lisp   # Sento (cold cache)
 ./build/host/clamiga --heap 96M  --load trunk/load-and-test-ansi.lisp           # ANSI cons + symbols + numbers
+./build/host/clamiga --heap 256M --load trunk/load-and-test-cffi.lisp           # CFFI backend
+./build/host/clamiga --heap 256M --load trunk/load-and-test-drakma.lisp         # drakma HTTP/HTTPS (host only)
 ```
+
+`load-and-test-drakma.lisp` is the SSL-enabled HTTP path: it loads **drakma**
+with **cl+ssl** (against the host's OpenSSL) over the **usocket** cl-amiga
+backend and runs drakma's own fiveam suite. cl-amiga drives drakma as an
+HTTP/HTTPS **client**, and that is what the run exercises and passes: plain
+HTTP and HTTPS, GET and POST, streamed responses, and **cl+ssl certificate
+verification** (the badssl.com `VERIFY.*` tests). cl+ssl works because cl-amiga
+now reports the host OS/arch as `*features*` (`:darwin`/`:linux` +
+`:arm64`/`:x86-64`), letting its `define-foreign-library` resolve the right
+OpenSSL; the usocket backend (`usocket/backend/clamiga.lisp`, in the usocket
+fork) maps usocket onto `ext:open-tcp-stream` / `ext:socket-listen`. The suite's
+remaining tests need a local hunchentoot **server**, chipz streaming
+decompression, or the flaky httpbin.org service — all orthogonal to the client
+goal — and are skipped with documented reasons (`trunk/drakma-skip-tests.lisp`).
+It is **host-only**: it needs a TCP/IP stack and network access, which the
+Amiga/FS-UAE test harness lacks.
 
 ### Loading source and FASL files
 

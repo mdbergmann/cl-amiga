@@ -3576,6 +3576,24 @@ static int compile_expr_step(CL_Compiler *c, CL_Obj *expr_p)
                 goto do_call;
         }
 
+        /* Compiler-inlined control-flow forms that ALSO have a real Lisp
+         * macro definition (lib/boot.lisp gives COND/AND/OR/CASE/… genuine
+         * expansions so MACROEXPAND and code-walkers like iterate are
+         * conformant).  These must be dispatched to their native compilers
+         * HERE — before the generic macro-expansion check below — otherwise
+         * the compiler would trampoline into the Lisp expansion and lose the
+         * optimized special-form path (and any subtle semantic differences,
+         * e.g. an empty CASE clause body, would leak in).  See
+         * register_inlined_macro_stubs / the macroexpand-conformance note in
+         * boot.lisp. */
+        if (head == SYM_AND)         { compile_and(c, expr); return 0; }
+        if (head == SYM_OR)          { compile_or(c, expr); return 0; }
+        if (head == SYM_COND)        { compile_cond(c, expr); return 0; }
+        if (head == SYM_CASE)        { compile_case(c, expr, 0); return 0; }
+        if (head == SYM_ECASE)       { compile_case(c, expr, 1); return 0; }
+        if (head == SYM_TYPECASE)    { compile_typecase(c, expr, 0); return 0; }
+        if (head == SYM_ETYPECASE)   { compile_typecase(c, expr, 1); return 0; }
+
         if (CL_SYMBOL_P(head) && cl_macro_p(head)) {
             int _fp0 = cl_vm.fp, _sp0 = cl_vm.sp;
             CL_Obj expanded;
@@ -3652,13 +3670,9 @@ static int compile_expr_step(CL_Compiler *c, CL_Obj *expr_p)
         if (head == SYM_DEFPARAMETER) { compile_defparameter(c, expr); return 0; }
         if (head == SYM_DEFCONSTANT)  { compile_defconstant(c, expr); return 0; }
         if (head == SYM_DEFMACRO)    { compile_defmacro(c, expr); return 0; }
-        if (head == SYM_AND)         { compile_and(c, expr); return 0; }
-        if (head == SYM_OR)          { compile_or(c, expr); return 0; }
-        if (head == SYM_COND)        { compile_cond(c, expr); return 0; }
-        if (head == SYM_CASE)        { compile_case(c, expr, 0); return 0; }
-        if (head == SYM_ECASE)       { compile_case(c, expr, 1); return 0; }
-        if (head == SYM_TYPECASE)    { compile_typecase(c, expr, 0); return 0; }
-        if (head == SYM_ETYPECASE)   { compile_typecase(c, expr, 1); return 0; }
+        /* AND/OR/COND/CASE/ECASE/TYPECASE/ETYPECASE are dispatched earlier,
+         * ahead of the macro-expansion check (they have real Lisp macros for
+         * MACROEXPAND conformance but must compile via their native path). */
         if (head == SYM_QUASIQUOTE)  { compile_quasiquote(c, expr); return 0; }
         if (head == SYM_EVAL_WHEN) {
             CL_Obj tail = compile_eval_when(c, expr);

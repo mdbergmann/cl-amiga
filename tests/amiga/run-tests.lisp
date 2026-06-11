@@ -633,6 +633,10 @@
 (check "adjust-array fp" 2 (let ((v (make-array 5 :fill-pointer 2 :adjustable t))) (fill-pointer (adjust-array v 10))))
 (check "adjust-array identity" t (let ((v (make-array 3 :adjustable t))) (eq v (adjust-array v 10))))
 (check "adjust-array data" 104 (let ((v (make-array 3 :adjustable t :initial-element 5))) (adjust-array v 6 :initial-element 99) (+ (aref v 0) (aref v 4))))
+; Regression: re-adjusting an already-adjusted (internally displaced) buffer
+; must allocate a fresh non-displaced backing, else cl_vector_data follows a
+; null backing and crashes.  This is drakma/chunga's HTTP-response buffer growth.
+(check "adjust-array re-grow" 131 (let ((v (make-array 4 :element-type '(unsigned-byte 8) :adjustable t :fill-pointer 0))) (dotimes (i 3) (vector-push-extend i v)) (setq v (adjust-array v 8)) (dotimes (i 5) (vector-push-extend (+ 10 i) v)) (setq v (adjust-array v 20)) (dotimes (i 5) (vector-push-extend (+ 100 i) v)) (+ (length v) (aref v 0) (aref v 7) (aref v 12))))
 (check "vpush-ext basic" 2 (let ((v (make-array 2 :fill-pointer 0 :adjustable t))) (vector-push-extend 10 v) (vector-push-extend 20 v) (vector-push-extend 30 v)))
 (check "vpush-ext fp" 3 (let ((v (make-array 2 :fill-pointer 0 :adjustable t))) (vector-push-extend 10 v) (vector-push-extend 20 v) (vector-push-extend 30 v) (fill-pointer v)))
 (check "vpush-ext data" 60 (let ((v (make-array 2 :fill-pointer 0 :adjustable t))) (vector-push-extend 10 v) (vector-push-extend 20 v) (vector-push-extend 30 v) (+ (aref v 0) (aref v 1) (aref v 2))))
@@ -3609,6 +3613,18 @@
 (defgeneric nmp-test (x))
 (defmethod nmp-test ((x point)) (if (next-method-p) 'has-next 'no-next))
 (check "next-method-p" 'no-next (nmp-test (make-instance 'point :x 0 :y 0)))
+; Regression: &aux in a specialized method lambda list whose init-form calls
+; an accessor on a specialized arg must NOT be parsed as a specializer (it
+; was handed to FIND-CLASS -> "No class named (...)").  Broke cl-routes/drakma.
+(defgeneric aux-gf (a b))
+(defmethod aux-gf ((a point) b &aux (px (point-x a))) (list px b))
+(check "defmethod &aux specialized" '(7 9) (aux-gf (make-instance 'point :x 7 :y 0) 9))
+; Regression: COND/AND/OR/CASE are compiler-inlined but per CLHS are MACROS;
+; MACROEXPAND-1 must make progress so code-walkers (iterate) can descend.
+(check "cond macroexpands to if" 'if (car (macroexpand-1 '(cond (a 1) (t 2)))))
+(check "and macroexpands" '(if a (and b c)) (macroexpand-1 '(and a b c)))
+(check "case macroexpands to let" 'let (car (macroexpand-1 '(case x (1 'a) (t 'b)))))
+(check "macroexpand progresses" t (not (eq (macroexpand-1 '(or a b)) '(or a b))))
 
 ; --- CLOS Phase 6: with-slots ---
 (check "with-slots read" '(10 20) (let ((p (make-instance 'point :x 10 :y 20))) (with-slots (x y) p (list x y))))

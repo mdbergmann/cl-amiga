@@ -186,6 +186,11 @@ static void install_crash_handler(void)
     sigaction(SIGSEGV, &sa, NULL);
     sigaction(SIGBUS, &sa, NULL);
     sigaction(SIGABRT, &sa, NULL);
+    /* Ignore SIGPIPE: writing to a socket whose peer has closed the
+     * connection must fail the write with EPIPE, not kill the process.
+     * Network clients (e.g. drakma over usocket) routinely hit this when a
+     * server closes a keep-alive connection mid-exchange. */
+    signal(SIGPIPE, SIG_IGN);
 }
 #endif
 
