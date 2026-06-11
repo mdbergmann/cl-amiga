@@ -16,16 +16,18 @@
 ;;      (its blocking accept loop + self-connect shutdown-wake + per-connection
 ;;      handling) is a separate, not-yet-done effort.
 ;;
-;;   2. chipz streaming decompression — drakma's :decode-content t wraps the
-;;      reply in chipz:make-decompressing-stream, which chipz only implements
-;;      for a fixed set of Lisps (no cl-amiga branch yet), so it errors with
-;;      "make-decompressing-stream is not supported for this lisp
-;;      implementation".  Porting chipz's gray-stream decompressor to cl-amiga
-;;      is its own task; the raw (undecoded) HTTP transfer already works.
-;;
-;;   3. httpbin.org dependency — these assert on httpbin.org responses, but
+;;   2. httpbin.org dependency — these assert on httpbin.org responses, but
 ;;      httpbin rate-limits aggressively (returns 503) and sometimes stalls,
 ;;      which makes them flaky/hang in unattended runs regardless of cl-amiga.
+;;      gzip-content/deflate-content also exercise chipz streaming decode
+;;      (now supported, see below) but httpbin remains their real blocker.
+;;
+;; NOTE: chipz streaming decompression (drakma's :decode-content t, which wraps
+;; the reply in chipz:make-decompressing-stream) IS now supported on cl-amiga
+;; via the mdbergmann/chipz fork's #+cl-amiga gray-stream branch, so the
+;; google.com gzip-decode tests (get-google-gzip / get-google-gzip-no-close)
+;; run here and pass.  Only the httpbin-backed decode tests stay skipped, for
+;; the httpbin flakiness above — not for any chipz limitation.
 ;;
 ;; Remove the relevant SKIPs (and, for groups 2/3, the underlying support) to
 ;; re-enable a test.
@@ -41,11 +43,9 @@
   (skip-tests "cl-amiga: hunchentoot-over-usocket server not yet supported"
               post-x-www-form put-x-www-form
               post-multipart-form put-multipart-form)
-  ;; Group 2: chipz:make-decompressing-stream has no cl-amiga branch (these all
-  ;; pass :decode-content t, so drakma tries to stream-gunzip the reply).
-  (skip-tests "cl-amiga: chipz make-decompressing-stream (streaming gunzip/inflate) not supported"
-              get-google-gzip get-google-gzip-no-close
-              gzip-content deflate-content)
-  ;; Group 3: assert on httpbin.org, which rate-limits (503) and stalls.
+  ;; Group 2: assert on httpbin.org, which rate-limits (503) and stalls.
+  ;; gzip-content/deflate-content also stream-gunzip via chipz (now supported),
+  ;; but httpbin — not chipz — is what makes them flaky here.
   (skip-tests "cl-amiga: depends on httpbin.org which rate-limits (503) / stalls — flaky"
+              gzip-content deflate-content
               gzip-content-undecoded deflate-content-undecoded))

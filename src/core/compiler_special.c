@@ -1374,6 +1374,8 @@ CL_Obj compile_flet(CL_Compiler *c, CL_Obj form)
             /* Re-read fname from protected cursor b: compile_expr above may
              * have triggered compaction, staling the pre-compile snapshot. */
             fname = cl_car(cl_car(b));
+            /* -1 (overflow past CL_MAX_LOCAL_FUNS) left silent on purpose;
+             * see the matching note in compile_labels. */
             cl_env_add_local_fun(env, fname, slot);
 
             b = cl_cdr(b);
@@ -1430,7 +1432,13 @@ CL_Obj compile_labels(CL_Compiler *c, CL_Obj form)
             cl_emit(c, (uint8_t)slot);
             cl_emit(c, OP_POP);
 
-            /* Register in function namespace */
+            /* Register in function namespace.  A -1 return (more than
+             * CL_MAX_LOCAL_FUNS functions simultaneously in scope) is left
+             * silent on purpose: deeply-nested LABELS/FLET forms accumulate
+             * entries in this shared env, and the overflowing names are
+             * harmless unless actually referenced — a reference to an unbound
+             * one falls through to a global FLOAD and surfaces cleanly as
+             * "Undefined function" at runtime rather than corrupting state. */
             cl_env_add_local_fun(env, fname, slot);
 
             n++;

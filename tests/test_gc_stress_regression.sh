@@ -695,6 +695,44 @@ check_absent   "no CDR type-error from stale string-buf"        "not of type LIS
 # They are covered deterministically by tests/test_gc_rehash.c (forced
 # cl_gc_compact()) and end-to-end by the babel cold-load integration test.
 
+# --- Case: #'(setf name) ref + LABELS with >32 functions ------------------
+# Two compiler fixes exposed by chipz inflate.lisp's gunzip state machine:
+#  (a) #'(setf accessor) used to FLOAD the raw (SETF ACCESSOR) cons (a
+#      non-symbol) into the constant pool, which OP_FLOAD rejected.  Resolving
+#      it to the setter symbol allocates (interns %SETF-<name> / adds a
+#      constant) at compile time, so compile under stress to relocate it.
+#  (b) a LABELS with >32 local functions silently failed to bind the overflow
+#      ones (CL_MAX_LOCAL_FUNS was 32 -> now 64), so #'fn36 resolved to an
+#      undefined global.  Build/compile a 36-function LABELS and call a late
+#      one — all under GC stress so the constant pool and local-fun env get
+#      compacted while being built.
+cat > "$WORK/setf-labels.lisp" <<'EOF'
+(in-package :cl-user)
+(defparameter *slc* (list 0))
+(defun (setf slc-acc) (v x) (setf (car x) v) v)
+(defun slc-run ()
+  ;; #'(setf slc-acc) must resolve + funcall.
+  (funcall #'(setf slc-acc) 7 *slc*)
+  ;; A 36-function LABELS; reference the 36th (FN35) via #'.
+  (labels ((fn0 () 0)  (fn1 () 1)  (fn2 () 2)  (fn3 () 3)  (fn4 () 4)
+           (fn5 () 5)  (fn6 () 6)  (fn7 () 7)  (fn8 () 8)  (fn9 () 9)
+           (fn10 () 10) (fn11 () 11) (fn12 () 12) (fn13 () 13) (fn14 () 14)
+           (fn15 () 15) (fn16 () 16) (fn17 () 17) (fn18 () 18) (fn19 () 19)
+           (fn20 () 20) (fn21 () 21) (fn22 () 22) (fn23 () 23) (fn24 () 24)
+           (fn25 () 25) (fn26 () 26) (fn27 () 27) (fn28 () 28) (fn29 () 29)
+           (fn30 () 30) (fn31 () 31) (fn32 () 32) (fn33 () 33) (fn34 () 34)
+           (fn35 () 35))
+    (+ (car *slc*) (funcall #'fn35))))
+EOF
+cat > "$WORK/setf-labels-run.lisp" <<EOF
+(load "$WORK/setf-labels.lisp")
+(format t "SLC:~a~%" (slc-run))
+EOF
+out=$(run_stress "$WORK/setf-labels-run.lisp")
+check_contains "#'(setf name) + >32-fn LABELS under stress" "SLC:42" "$out"
+check_absent   "no corrupted constant pool from #'(setf)"   "corrupted constant pool" "$out"
+check_absent   "no undefined-global from LABELS overflow"   "Undefined function: FN35" "$out"
+
 echo ""
 echo "$passed passed, $failed failed, $total total"
 [ "$failed" -eq 0 ]

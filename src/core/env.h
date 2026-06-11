@@ -12,7 +12,8 @@
 #define CL_MAX_LOCALS 256
 #define CL_MAX_BINDINGS 64   /* Max bindings per let/do form (stack-allocated) */
 #define CL_MAX_UPVALUES 64
-#define CL_MAX_LOCAL_FUNS 32
+#define CL_MAX_LOCAL_FUNS 64  /* flet/labels fns per form; big state-machine
+                               * labels (e.g. chipz inflate = 37) exceed 32 */
 #define CL_MAX_LOCAL_MACROS 16
 #define CL_MAX_SYMBOL_MACROS 32
 
