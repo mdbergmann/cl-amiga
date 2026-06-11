@@ -469,6 +469,9 @@ static CL_Obj bi_class_of(CL_Obj *args, int n)
         case TYPE_SYMBOL:
             return cl_intern("SYMBOL", 6);
         case TYPE_STRING:
+#ifdef CL_WIDE_STRINGS
+        case TYPE_WIDE_STRING:
+#endif
             return cl_intern("STRING", 6);
         case TYPE_FUNCTION:
         case TYPE_CLOSURE:

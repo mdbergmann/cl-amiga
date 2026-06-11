@@ -668,6 +668,9 @@
 (check "vpush-ext noadj adj-p" nil (let ((v (make-array 2 :fill-pointer 0))) (vector-push-extend 10 v) (vector-push-extend 20 v) (vector-push-extend 30 v) (adjustable-array-p v)))
 (check "vpush-ext noadj zero" 42 (let ((v (make-array 0 :fill-pointer 0))) (vector-push-extend 42 v) (aref v 0)))
 (check "vpush-ext noadj char" "xyz" (let ((s (make-array 2 :element-type 'character :fill-pointer 0))) (vector-push-extend #\x s) (vector-push-extend #\y s) (vector-push-extend #\z s) s))
+; make-array :element-type 'base-char builds a BASE-STRING, matching make-string
+; (FSet seq leaves rely on this; on the Amiga all strings are narrow anyway).
+(check "make-array base-char base-string" t (typep (make-array 3 :element-type 'base-char :initial-element #\a) 'base-string))
 
 ; --- Array type predicates (Step 7) ---
 (check "arrayp vector" t (arrayp (vector 1 2 3)))
@@ -3529,6 +3532,12 @@
 (check "%class-of symbol" 'symbol (%class-of 'foo))
 (check "%class-of cons" 'cons (%class-of '(1 2)))
 (check "%class-of string" 'string (%class-of "hello"))
+; Regression: MAKE-ARRAY character strings must report the STRING class so
+; STRING-specialized CLOS methods dispatch (host wide-string class-of bug).
+(check "%class-of make-array char string" 'string
+       (%class-of (make-array 3 :element-type 'character :initial-element #\a)))
+(check "%class-of make-array base-char" 'string
+       (%class-of (make-array '(1) :element-type 'base-char :initial-element #\a)))
 (check "%class-of character" 'character (%class-of #\A))
 (check "%class-of function" 'function (%class-of #'car))
 (check "%class-of lambda" 'function (%class-of (lambda (x) x)))

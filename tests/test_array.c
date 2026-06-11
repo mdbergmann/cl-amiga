@@ -137,6 +137,53 @@ TEST(make_array_initial_contents_string)
         "(make-array 3 :element-type 'character :initial-contents '(#\\x #\\y #\\z))"), "\"xyz\"");
 }
 
+/* Element-type drives the string width like MAKE-STRING: BASE-CHAR /
+ * STANDARD-CHAR build a narrow BASE-STRING, CHARACTER builds a wide string.
+ * Keeping these consistent with MAKE-STRING is required so (TYPEP s
+ * 'BASE-STRING) reflects how the array was requested — FSet's seq leaves
+ * (built via MAKE-ARRAY :element-type 'base-char) depend on it. */
+TEST(make_array_base_char_is_base_string)
+{
+    ASSERT_STR_EQ(eval_print(
+        "(typep (make-array 3 :element-type 'base-char :initial-element #\\a) 'base-string)"),
+        "T");
+    ASSERT_STR_EQ(eval_print(
+        "(typep (make-array '(3) :element-type 'standard-char :initial-element #\\a) 'base-string)"),
+        "T");
+}
+
+TEST(make_array_character_is_wide_string)
+{
+    /* A general CHARACTER element-type is NOT a base-string, and must hold
+     * characters beyond the base range without truncation. */
+    ASSERT_STR_EQ(eval_print(
+        "(typep (make-array 2 :element-type 'character :initial-element #\\a) 'base-string)"),
+        "NIL");
+    ASSERT_STR_EQ(eval_print(
+        "(let ((s (make-array 1 :element-type 'character :initial-element #\\a)))"
+        "  (setf (char s 0) (code-char 1000)) (char-code (char s 0)))"),
+        "1000");
+}
+
+TEST(make_array_base_char_wide_content_widens)
+{
+    /* Defensive: narrow declared element-type but contents need wide
+     * storage — widen rather than silently truncate. */
+    ASSERT_STR_EQ(eval_print(
+        "(char-code (char (make-array 1 :element-type 'base-char "
+        ":initial-element (code-char 5000)) 0))"),
+        "5000");
+}
+
+/* class-of a MAKE-ARRAY string is STRING, so STRING-specialized CLOS
+ * methods (and any %class-of consumer) see it correctly. */
+TEST(make_array_string_class_of_is_string)
+{
+    ASSERT_STR_EQ(eval_print(
+        "(%class-of (make-array 3 :element-type 'character :initial-element #\\a))"),
+        "STRING");
+}
+
 TEST(make_array_adjustable)
 {
     ASSERT_STR_EQ(eval_print(
@@ -973,6 +1020,10 @@ int main(void)
     RUN(make_array_fill_pointer);
     RUN(make_array_fill_pointer_t_string);
     RUN(make_array_initial_contents_string);
+    RUN(make_array_base_char_is_base_string);
+    RUN(make_array_character_is_wide_string);
+    RUN(make_array_base_char_wide_content_widens);
+    RUN(make_array_string_class_of_is_string);
     RUN(make_array_adjustable);
     RUN(make_array_2d);
     RUN(make_array_3d);
