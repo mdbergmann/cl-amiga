@@ -10,18 +10,69 @@
 
 #include <stdio.h>
 #include <string.h>
+#include <stdlib.h>
+#include <signal.h>
+#include <unistd.h>
 
 static int test_pass = 0;
 static int test_fail = 0;
 static int test_current_failed = 0;
-static const char *test_current_name = "";
+static volatile const char *test_current_name = "";
+static volatile unsigned int test_current_name_len = 0;
+
+/* Per-test watchdog (seconds).  A test that blocks (e.g. a thread/GC
+ * deadlock that only manifests under a particular scheduler) would
+ * otherwise hang the whole CI job until GitHub's job timeout.  The
+ * SIGALRM handler names the offending test on stderr (unbuffered, so it
+ * survives a hung process) and aborts so the run fails loudly and fast.
+ * Override with TEST_WATCHDOG_SECS=0 to disable, or any value to retune. */
+#ifndef TEST_WATCHDOG_DEFAULT_SECS
+#define TEST_WATCHDOG_DEFAULT_SECS 120
+#endif
+
+static volatile unsigned int test_watchdog_secs = TEST_WATCHDOG_DEFAULT_SECS;
+
+static void test_watchdog_handler(int sig)
+{
+    /* async-signal-safe: write() + the literal test name only */
+    static const char msg[] = "\n*** TEST WATCHDOG: timed out (likely deadlock) in test: ";
+    (void)sig;
+    write(2, msg, sizeof(msg) - 1);
+    if (test_current_name)
+        write(2, (const char *)test_current_name, test_current_name_len);
+    write(2, "\n", 1);
+    /* abort() raises SIGABRT -> core/backtrace; not strictly async-signal
+     * -safe but acceptable for a fatal watchdog in a test harness. */
+    abort();
+}
+
+/* One-time harness setup: unbuffered stdout (so per-test progress survives a
+ * hang on CI, where stdout is a pipe) + the SIGALRM watchdog.  Called lazily
+ * from RUN so it applies even to test mains that don't call test_init(). */
+static void test_setup_once(void)
+{
+    static int done = 0;
+    const char *env;
+    if (done) return;
+    done = 1;
+    setvbuf(stdout, NULL, _IONBF, 0);
+    env = getenv("TEST_WATCHDOG_SECS");
+    if (env)
+        test_watchdog_secs = (unsigned int)strtoul(env, NULL, 10);
+    if (test_watchdog_secs)
+        signal(SIGALRM, test_watchdog_handler);
+}
 
 #define TEST(name) static void test_##name(void)
 
 #define RUN(name) do { \
+    test_setup_once(); \
     test_current_name = #name; \
+    test_current_name_len = (unsigned int)(sizeof(#name) - 1); \
     test_current_failed = 0; \
+    if (test_watchdog_secs) alarm(test_watchdog_secs); \
     test_##name(); \
+    if (test_watchdog_secs) alarm(0); \
     if (test_current_failed) { \
         printf("FAIL  %s\n", #name); \
         test_fail++; \
@@ -29,6 +80,7 @@ static const char *test_current_name = "";
         printf("  ok  %s\n", #name); \
         test_pass++; \
     } \
+    fflush(stdout); \
 } while(0)
 
 #define ASSERT(cond) do { \
@@ -70,14 +122,19 @@ static const char *test_current_name = "";
     return test_fail > 0 ? 1 : 0; \
 } while(0)
 
-/* Common init for all tests — call at start of main() */
+/* Common init for all tests — call at start of main() (optional: RUN also
+ * lazily performs this setup, so tests that omit it are still covered). */
 static void test_init(void)
 {
+    test_setup_once();
+
     /* Suppress unused warning when test.h is included */
     (void)test_pass;
     (void)test_fail;
     (void)test_current_failed;
     (void)test_current_name;
+    (void)test_current_name_len;
+    (void)test_watchdog_handler;
 }
 
 #endif /* TEST_H */
