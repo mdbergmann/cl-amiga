@@ -3705,6 +3705,49 @@ TEST(allocate_instance_gf_default_method)
     ASSERT_STR_EQ(eval_print("(slot-value (make-instance 'ai-gf-base :x 7) 'x)"), "7");
 }
 
+TEST(defmethod_aux_specialized_lambda_list)
+{
+    /* Regression: a specialized method lambda list may end in &aux bindings
+       whose init-forms call accessors on the specialized args, e.g.
+         (defmethod m ((x foo) y &aux (v (foo-s x))) ...)
+       %parse-specialized-lambda-list must STOP collecting specializers at
+       &aux (like &optional/&key) — otherwise the &aux binding (v (foo-s x))
+       is mistaken for a specialized parameter and (foo-s x) is handed to
+       FIND-CLASS ("No class named (FOO-S X)").  This broke loading cl-routes
+       (drakma's URL router), whose UNIFY/IMPL methods use exactly this shape. */
+    eval_print("(defclass aux-foo () ((s :initarg :s :accessor aux-foo-s)))");
+    eval_print("(defgeneric aux-g (a b))");
+    eval_print("(defmethod aux-g ((a aux-foo) b &aux (v (aux-foo-s a)))"
+               "  (list v b))");
+    ASSERT_STR_EQ(
+        eval_print("(aux-g (make-instance 'aux-foo :s 99) 7)"),
+        "(99 7)");
+}
+
+TEST(control_macros_macroexpand_conformantly)
+{
+    /* Regression: COND/AND/OR/CASE/TYPECASE are compiler-inlined special
+       forms, but per CLHS they are MACROS and MACROEXPAND-1 must return a
+       real expansion (not the form unchanged).  Code walkers (iterate) rely
+       on this to descend into clause bodies; the old identity stubs made
+       (macroexpand-1 '(cond ...)) a no-op, so walkers refused to enter and
+       e.g. iterate's COLLECT inside a COND reached run time undefined. */
+    ASSERT_STR_EQ(eval_print("(equal (macroexpand-1 '(and a b c))"
+                             "        '(if a (and b c)))"), "T");
+    /* or makes progress (expands away from the (or ...) head) */
+    ASSERT_STR_EQ(eval_print("(not (eq (car (macroexpand-1 '(or a b))) 'or))"), "T");
+    /* cond expands to an if, not to itself */
+    ASSERT_STR_EQ(eval_print("(eq (car (macroexpand-1 '(cond (a 1) (t 2)))) 'if)"),
+                  "T");
+    /* macro-function is non-NIL AND expansion makes progress (not eq form) */
+    ASSERT_STR_EQ(eval_print("(and (macro-function 'cond)"
+                             "     (not (eq (macroexpand-1 '(cond (a 1)))"
+                             "              '(cond (a 1)))))"), "T");
+    /* case expands into a cond keyed by eql/member */
+    ASSERT_STR_EQ(eval_print("(eq (car (macroexpand-1 '(case x (1 'a) (t 'b)))) 'let)"),
+                  "T");
+}
+
 int main(void)
 {
     test_init();
@@ -4058,6 +4101,8 @@ int main(void)
 
     RUN(documentation_generic_fallback_after_specialization);
     RUN(allocate_instance_gf_default_method);
+    RUN(defmethod_aux_specialized_lambda_list);
+    RUN(control_macros_macroexpand_conformantly);
 
     teardown();
     REPORT();

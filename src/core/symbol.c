@@ -788,6 +788,20 @@ void cl_symbol_init(void)
 #else
         features = cl_cons(KW_POSIX, features);
         features = cl_cons(KW_UNIX, features);
+        /* Host-OS feature so foreign-library loaders (CFFI / cl+ssl)
+         * pick the correct platform naming convention (.dylib vs .so)
+         * and probe the right install locations. */
+#if defined(__APPLE__)
+        features = cl_cons(cl_intern_keyword("DARWIN", 6), features);
+#elif defined(__linux__)
+        features = cl_cons(cl_intern_keyword("LINUX", 5), features);
+#endif
+        /* Host CPU architecture — cl+ssl keys homebrew detection on :ARM64 */
+#if defined(__aarch64__) || defined(__arm64__)
+        features = cl_cons(cl_intern_keyword("ARM64", 5), features);
+#elif defined(__x86_64__) || defined(_M_X64)
+        features = cl_cons(cl_intern_keyword("X86-64", 6), features);
+#endif
 #endif
         features = cl_cons(KW_COMMON_LISP, features);
         features = cl_cons(KW_CL_AMIGA, features);

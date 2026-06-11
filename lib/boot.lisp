@@ -55,6 +55,91 @@
 (defmacro prog1 (first &rest body) (let ((g (gensym))) `(let ((,g ,first)) ,@body ,g)))
 (defmacro prog2 (first second &rest body) (let ((g (gensym))) `(progn ,first (let ((,g ,second)) ,@body ,g))))
 
+;; ----------------------------------------------------------------------
+;; Real macro expansions for the control-flow operators that the compiler
+;; ALSO inlines as special forms (compile_cond / compile_and / compile_or /
+;; compile_case / compile_typecase).  The C bootstrap registers an *identity*
+;; macro stub for each so that MACRO-FUNCTION and FBOUNDP return non-NIL; but
+;; that stub makes (macroexpand-1 '(cond ...)) return the form UNCHANGED.
+;;
+;; Code walkers (e.g. iterate's clause walker) treat "macro-function is
+;; non-NIL but macroexpand makes no progress" as "a macro that won't expand"
+;; and refuse to descend into it — so iterate clauses such as COLLECT hidden
+;; inside a COND/CASE were never seen, and reached run time as undefined
+;; function calls.  Per the HyperSpec these operators ARE macros, so we give
+;; them genuine expansions here.  The compiler dispatches them by symbol
+;; BEFORE consulting the macro table (see compile_expr), so these definitions
+;; never change how the forms compile — they only make MACROEXPAND conformant.
+;; These defmacros shadow the C identity stubs (macro table is prepend-wins).
+(defmacro cond (&rest clauses)
+  (if (null clauses)
+      nil
+      (let* ((clause (car clauses))
+             (test (car clause))
+             (forms (cdr clause)))
+        (cond ((eq test t) `(progn ,@forms))
+              ((null forms)
+               (let ((g (gensym)))
+                 `(let ((,g ,test)) (if ,g ,g (cond ,@(cdr clauses))))))
+              (t `(if ,test (progn ,@forms) (cond ,@(cdr clauses))))))))
+
+(defmacro and (&rest forms)
+  (cond ((null forms) t)
+        ((null (cdr forms)) (car forms))
+        (t `(if ,(car forms) (and ,@(cdr forms))))))
+
+(defmacro or (&rest forms)
+  (cond ((null forms) nil)
+        ((null (cdr forms)) (car forms))
+        (t (let ((g (gensym)))
+             `(let ((,g ,(car forms))) (if ,g ,g (or ,@(cdr forms))))))))
+
+;; The clause bodies below are wrapped in (progn ...) so a matched clause
+;; with an EMPTY body yields NIL — (cond (test)) would otherwise return the
+;; test value, which is the wrong CASE/TYPECASE semantics (CLHS 5.3).
+(defmacro case (keyform &rest clauses)
+  (let ((g (gensym)))
+    `(let ((,g ,keyform))
+       (cond ,@(mapcar
+                (lambda (clause)
+                  (let ((keys (car clause)) (body (cdr clause)))
+                    (cond ((or (eq keys t) (eq keys 'otherwise)) `(t (progn ,@body)))
+                          ((listp keys) `((member ,g ',keys) (progn ,@body)))
+                          (t `((eql ,g ',keys) (progn ,@body))))))
+                clauses)))))
+
+(defmacro ecase (keyform &rest clauses)
+  ;; In ECASE the symbols T and OTHERWISE are NOT special — they are literal
+  ;; keys (CLHS 5.3) — so every clause is matched, then a fall-through error.
+  (let ((g (gensym)))
+    `(let ((,g ,keyform))
+       (cond ,@(mapcar
+                (lambda (clause)
+                  (let ((keys (car clause)) (body (cdr clause)))
+                    (if (listp keys) `((member ,g ',keys) (progn ,@body))
+                        `((eql ,g ',keys) (progn ,@body)))))
+                clauses)
+             (t (error 'type-error :datum ,g :expected-type 'symbol))))))
+
+(defmacro typecase (keyform &rest clauses)
+  (let ((g (gensym)))
+    `(let ((,g ,keyform))
+       (cond ,@(mapcar
+                (lambda (clause)
+                  (let ((type (car clause)) (body (cdr clause)))
+                    (if (or (eq type t) (eq type 'otherwise)) `(t (progn ,@body))
+                        `((typep ,g ',type) (progn ,@body)))))
+                clauses)))))
+
+(defmacro etypecase (keyform &rest clauses)
+  (let ((g (gensym)))
+    `(let ((,g ,keyform))
+       (cond ,@(mapcar
+                (lambda (clause)
+                  `((typep ,g ',(car clause)) (progn ,@(cdr clause))))
+                clauses)
+             (t (error 'type-error :datum ,g :expected-type t))))))
+
 ;; multiple-value-setq — assign multiple values to variables
 (defmacro multiple-value-setq (vars form)
   (let ((tmps (mapcar (lambda (v) (declare (ignore v)) (gensym)) vars)))

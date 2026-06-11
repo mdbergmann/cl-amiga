@@ -1410,12 +1410,20 @@ static CL_Obj bi_adjust_array(CL_Obj *args, int n)
     old_len = old_vec->length;
     copy_len = old_len < new_len ? old_len : new_len;
 
-    /* Allocate new backing array */
-    CL_GC_PROTECT(args[0]);
-    new_arr = cl_make_array(new_len, 0, NULL,
-                            old_vec->flags | CL_VEC_FLAG_ADJUSTABLE,
-                            new_fp);
-    CL_GC_UNPROTECT(1);
+    /* Allocate new backing array.  Mask out DISPLACED: the new array is a
+     * FRESH backing store, not a displacement.  Carrying DISPLACED over from
+     * an already-adjusted (hence displaced) input would make cl_make_array
+     * produce a vector flagged DISPLACED but with no backing pointer in
+     * data[0], so a later cl_vector_data() would follow garbage and crash.
+     * This is exactly what repeated ADJUST-ARRAY growth (e.g. drakma/chunga
+     * growing an (unsigned-byte 8) response buffer) triggers on the 2nd grow. */
+    {
+        uint8_t new_flags =
+            (old_vec->flags | CL_VEC_FLAG_ADJUSTABLE) & ~CL_VEC_FLAG_DISPLACED;
+        CL_GC_PROTECT(args[0]);
+        new_arr = cl_make_array(new_len, 0, NULL, new_flags, new_fp);
+        CL_GC_UNPROTECT(1);
+    }
 
     /* Re-fetch after potential GC */
     old_vec = (CL_Vector *)CL_OBJ_TO_PTR(args[0]);

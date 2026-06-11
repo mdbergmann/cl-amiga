@@ -618,6 +618,27 @@ TEST(adjust_array_identity)
         "  (+ (aref v 0) (aref v 4)))"), 104);  /* 5 + 99 */
 }
 
+TEST(adjust_array_repeated_regrow)
+{
+    /* Regression: ADJUST-ARRAY of an array that is ITSELF the result of a
+       previous adjust (hence internally DISPLACED to a backing store) must
+       allocate a fresh, NON-displaced backing.  Carrying the DISPLACED flag
+       into the new backing produced a vector flagged displaced but with no
+       backing pointer, so the next cl_vector_data() followed garbage and
+       crashed.  Repeated growth of an (unsigned-byte 8) fill-pointer buffer
+       is exactly what drakma/chunga does while reading an HTTP response. */
+    ASSERT_EQ_INT(eval_int(
+        "(let ((v (make-array 4 :element-type '(unsigned-byte 8)"
+        "                       :adjustable t :fill-pointer 0)))"
+        "  (dotimes (i 3) (vector-push-extend i v))"
+        "  (setq v (adjust-array v 8))"
+        "  (dotimes (i 5) (vector-push-extend (+ 10 i) v))"
+        "  (setq v (adjust-array v 20))"      /* 2nd adjust: input already displaced */
+        "  (dotimes (i 5) (vector-push-extend (+ 100 i) v))"
+        "  (+ (length v) (aref v 0) (aref v 7) (aref v 12)))"),
+        /* len 13 + v[0]=0 + v[7]=14 + v[12]=104 */ 131);
+}
+
 /* ============================================================ */
 /* Displaced arrays                                             */
 /* ============================================================ */
@@ -1005,6 +1026,7 @@ int main(void)
     RUN(adjust_array_shrink);
     RUN(adjust_array_preserves_fp);
     RUN(adjust_array_override_fp);
+    RUN(adjust_array_repeated_regrow);
     RUN(adjust_array_identity);
 
     /* Displaced arrays */
