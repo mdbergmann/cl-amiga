@@ -119,6 +119,29 @@ TEST(c_find_external)
     }
 }
 
+/* Internal %-prefixed helpers defined by boot.lisp / clos.lisp must NOT
+ * leak as external symbols of COMMON-LISP — they are pre-interned in
+ * CLAMIGA (clos_internal_names[] in package.c) so the reader resolves the
+ * bare name there.  A new helper that forgets this list fails the ANSI
+ * NO-EXTRA-SYMBOLS-EXPORTED-FROM-COMMON-LISP test; guard the regression
+ * here where it runs in the fast tier.  (%LOOP-SKIP-TYPE-SPEC and
+ * %LOOP-SIMPLE-TYPE-SPEC-P leaked once — see cl-symbols.lsp.) */
+TEST(c_internal_helpers_not_external_in_cl)
+{
+    static const char *const internal[] = {
+        "%LOOP-SKIP-TYPE-SPEC", "%LOOP-SIMPLE-TYPE-SPEC-P",
+        "%LOOP-PARSE-FOR", "%METHOD-APPLICABLE-P", NULL
+    };
+    const char *const *p;
+    for (p = internal; *p != NULL; p++) {
+        uint32_t len = (uint32_t)strlen(*p);
+        /* Not external in CL... */
+        ASSERT(CL_NULL_P(cl_package_find_external(*p, len, cl_package_cl)));
+        /* ...but present (external) in CLAMIGA. */
+        ASSERT(!CL_NULL_P(cl_package_find_external(*p, len, cl_package_clamiga)));
+    }
+}
+
 TEST(c_find_symbol_with_status)
 {
     int status;
@@ -1053,6 +1076,7 @@ int main(void)
     RUN(c_find_package_not_found);
     RUN(c_exported_flag);
     RUN(c_find_external);
+    RUN(c_internal_helpers_not_external_in_cl);
     RUN(c_find_symbol_with_status);
     RUN(c_cl_user_can_access_cl_symbols);
     RUN(c_register_package);
