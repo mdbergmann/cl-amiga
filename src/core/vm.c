@@ -386,10 +386,26 @@ CL_Obj cl_vm_apply(CL_Obj func, CL_Obj *args, int nargs)
      * standard call path sees the underlying discriminating function. */
     func = cl_unwrap_funcallable(func);
 
-    /* C builtins: call directly, no VM entry needed. */
+    /* C builtins: call directly, no VM entry needed.
+     *
+     * GC-root the caller's args by copying them onto the VM stack and
+     * passing that (rooted) slice to the builtin.  Builtins assume their
+     * args are GC-rooted — true on the OP_CALL path, where args already sit
+     * on the VM stack — but a caller of cl_vm_apply may hand us a C-array
+     * local (MAPCAR/REDUCE/SORT/APPLY collecting elements) that the GC does
+     * not know about.  A builtin that allocates while reading its own args
+     * (e.g. LIST consing) would then read a relocated arg stale.  Copying to
+     * the stack first makes every arg a forwarded root for the call. */
     if (CL_FUNCTION_P(func)) {
         CL_Function *f = (CL_Function *)CL_OBJ_TO_PTR(func);
-        return call_builtin(f, args, nargs);
+        int saved_sp = cl_vm.sp;
+        int base = cl_vm.sp;
+        CL_Obj result;
+        for (i = 0; i < nargs; i++)
+            cl_vm_push(args[i]);
+        result = call_builtin(f, &cl_vm.stack[base], nargs);
+        cl_vm.sp = saved_sp;
+        return result;
     }
 
     /* Bytecode / closure: push func+args on VM stack, set up a tiny

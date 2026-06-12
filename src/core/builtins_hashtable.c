@@ -589,10 +589,9 @@ static CL_Obj bi_maphash(CL_Obj *args, int n)
             call_args[0] = cl_car(pair);
             call_args[1] = cl_cdr(pair);
 
-            if (CL_FUNCTION_P(func)) {
-                CL_Function *f = (CL_Function *)CL_OBJ_TO_PTR(func);
-                f->func(call_args, 2);
-            } else if (CL_BYTECODE_P(func) || CL_CLOSURE_P(func)) {
+            if (CL_FUNCTION_P(func) || CL_BYTECODE_P(func) || CL_CLOSURE_P(func)) {
+                /* cl_vm_apply GC-roots call_args across the call (the function
+                 * may compact while reading its key/value args). */
                 cl_vm_apply(func, call_args, 2);
             } else {
                 cl_error(CL_ERR_TYPE, "MAPHASH: not a function");

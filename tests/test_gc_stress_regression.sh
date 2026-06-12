@@ -809,25 +809,68 @@ check_absent   "no unbound-variable from :report symbol under stress"     "Unbou
 # expansion + the (setf (place ...) v) compilation path under compaction so a
 # stale form/lambda-list offset in the long-form expansion would surface.
 #
-# NOTE: deliberately ONE (setf place ...) per run.  Compiling a *second*
-# define-setf-expander-based place (long-form defsetf, or shipped LDB/GETF)
-# under forced-every-alloc compaction trips a SEPARATE, pre-existing
-# compiler GC bug — the expander's gensym binding name is lost from the
-# compile env so the body's reference mis-emits as a global → "Unbound
-# variable: TMP<n>".  Reproduces with `(setf (ldb (byte 4 0) a) 5)` twice
-# under CLAMIGA_GC_STRESS=1 and is unrelated to the long-form defsetf fix.
-# Tracked in the [defsetf-expander-gcstress-unbound] memory note.
+# TWO places per run, deliberately.  Compiling a *second* define-setf-expander
+# place under forced-every-alloc compaction used to trip a GC bug — the
+# expander's gensym binding name was lost from the compile env so the body's
+# reference mis-emitted as a global → "Unbound variable: TMP<n>/BS<n>".  Root
+# cause: MAPCAR #'LIST in the C-side setf-expander wrapper called the builtin
+# with an unprotected C arg array; LIST consed (compacting) while reading its
+# args, splitting the shared `bs`/`val` gensym (one occurrence forwarded, one
+# stale).  Fixed by GC-rooting builtin args in cl_vm_apply.  See the
+# [defsetf-expander-gcstress-unbound] memory note.
 cat > "$WORK/defsetf-long.lisp" <<'EOF'
 (defvar *dsg* (make-hash-table :test 'equal))
 (defun dsg (k &optional (tag :d)) (gethash (cons k tag) *dsg*))
 (defsetf dsg (k &optional (tag :d)) (v)
   `(setf (gethash (cons ,k ,tag) *dsg*) ,v))
 (setf (dsg "a") 42)
-(format t "DSETFL:~a:~a~%" (dsg "a") (dsg "a" :d))
+(setf (dsg "b") 99)
+(format t "DSETFL:~a:~a:~a~%" (dsg "a") (dsg "b") (dsg "a" :d))
 EOF
 out=$(run_stress "$WORK/defsetf-long.lisp")
-check_contains "long-form defsetf place set/get correct under GC stress"  "DSETFL:42:42" "$out"
-check_absent   "no corrupted FLOAD/cons from stale defsetf expansion"     "not a symbol\|type 0\|corrupted\|Undefined" "$out"
+check_contains "long-form defsetf 2 places set/get correct under GC stress" "DSETFL:42:99:42" "$out"
+check_absent   "no corrupted FLOAD/cons from stale defsetf expansion"     "not a symbol\|type 0\|corrupted\|Undefined\|Unbound" "$out"
+
+# --- Case: shipped expander places (LDB/GETF/MASK-FIELD) twice under stress --
+# Same class as the long-form defsetf two-place case: the shipped
+# DEFINE-SETF-EXPANDERs for LDB/GETF/MASK-FIELD route through the same MAPCAR
+# #'LIST wrapper.  Two places each previously split a gensym → "Unbound
+# variable: BS<n>" / "CDR: corrupted pointer".
+cat > "$WORK/expander-places.lisp" <<'EOF'
+(let ((a 0) (b 0))
+  (setf (ldb (byte 4 0) a) 5)
+  (setf (ldb (byte 4 0) b) 7)
+  (format t "LDB2:~a:~a~%" a b))
+(let ((p1 (list :x 1)) (p2 (list :y 2)))
+  (incf (getf p1 :x) 10)
+  (incf (getf p2 :z 0) 20)
+  (format t "GETF2:~a:~a~%" (getf p1 :x) (getf p2 :z)))
+(let ((a 255) (b 255))
+  (setf (mask-field (byte 4 0) a) 3)
+  (setf (mask-field (byte 4 4) b) 0)
+  (format t "MASK2:~a:~a~%" a b))
+EOF
+out=$(run_stress "$WORK/expander-places.lisp")
+check_contains "ldb place x2 correct under GC stress"        "LDB2:5:7"    "$out"
+check_contains "getf place x2 correct under GC stress"       "GETF2:11:20" "$out"
+check_contains "mask-field place x2 correct under GC stress" "MASK2:243:15" "$out"
+check_absent   "no split-gensym Unbound/corruption from expander places" "Unbound\|corrupted\|not a symbol\|type 0" "$out"
+
+# --- Case: MAPCAR with an allocating builtin (#'LIST) under GC stress --------
+# Direct regression for the cl_vm_apply builtin-arg-rooting fix: MAPCAR #'LIST
+# over fresh gensyms must not split any element (LIST conses mid-read).
+cat > "$WORK/mapcar-list.lisp" <<'EOF'
+(let* ((xs (list 'a 'b 'c 'd))
+       (ys (list 1 2 3 4))
+       (zs (mapcar #'list xs ys)))
+  ;; Each pair's car must still be eq to the original symbol (not a split ghost)
+  (format t "MAPL:~a:~a~%"
+          (every (lambda (pair orig) (eq (car pair) orig)) zs xs)
+          zs))
+EOF
+out=$(run_stress "$WORK/mapcar-list.lisp")
+check_contains "mapcar #'list preserves element identity under GC stress" "MAPL:T:" "$out"
+check_absent   "no corruption from mapcar #'list under GC stress"         "corrupted\|not a symbol\|type 0\|Unbound" "$out"
 
 # --- Case: string fns on fill-pointer strings under GC stress ---------------
 # Regression for the CL_STRING_VECTOR_P string-fn fix: adjustable/fill-pointer
