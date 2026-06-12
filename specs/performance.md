@@ -71,21 +71,58 @@ Maximize throughput and minimize latency of the CL-Amiga bytecode VM and runtime
 
 ---
 
-### 1.3 Compiler Constant Folding
+### 1.3 `(declaim (optimize speed))` Support — Emit-Time Speed-Gated Optimization
 
-**Problem**: No compile-time evaluation — `(+ 1 2)` emits `CONST 1, CONST 2, ADD` (3 opcodes, 2 constant pool entries) instead of `CONST 3` (1 opcode, 1 entry).
+This is the realistic, low-risk home for `(declaim (optimize (speed 3)))` support. It groups
+constant folding, dead-branch elimination, and safety-gated check elision into a single
+"decisions made during the single emit pass" effort. The companion true peephole post-pass is
+1.8 below; **do 1.3 first** — it captures most of the win with near-zero corruption risk.
 
-**Design**:
-- After compiling arguments of arithmetic/logic calls, check if all arguments are compile-time constants
-- Supported operations for folding: `+`, `-`, `*`, `ash`, `logand`, `logior`, `logxor`, `not`, `1+`, `1-`
-- For constant conditional tests (`(if nil ...)`, `(if t ...)`), emit only the live branch (dead code elimination)
-- Implementation: in `compile_call()`, detect known pure functions with all-constant args, evaluate at compile time, emit single `CONST` with result
+**Architecture findings (current state, 2026-06-12)**
 
-**Scope**: Only fold fixnum arithmetic and boolean constants initially. Bignum/float/ratio folding can follow later.
+- `cl_optimize_settings` (`compiler.h:105`, struct `{speed, safety, debug, space}`, default `{1,1,1,1}`)
+  **already exists** and is parsed from `declaim`/`proclaim`/`declare`
+  (`compiler_extra.c:2049` `cl_process_declaration_specifier`, `:2167` `compile_declaim`;
+  `builtins.c:744` `bi_proclaim`). It is **read in exactly one place today** —
+  `compile_the()` at `compiler_extra.c:2219` gates `OP_ASSERT_TYPE` on `safety >= 1`.
+  Nothing consumes `speed` yet. The plumbing for "what speed are we at" is therefore already present.
+- The compiler is **single-pass, emit-as-you-go** into a flat `c->code[]` byte buffer
+  (`cl_emit`/`cl_emit_u16`/`cl_emit_i32`, `compiler.c:195+`). There is **no IR and no post-pass**.
+- **Builtin inlining already exists** (`inline_builtin_opcode`, `compiler.c:3018`): `+ - * < > <= >=
+  = eq car cdr cons null not` map directly to VM opcodes. But **constant folding does not**:
+  `(+ 1 2)` still emits `CONST 1; CONST 2; OP_ADD`.
+- `CL_Bytecode` (`types.h:216`) does **not** store the optimize settings that were active when it
+  was compiled — speed only affects the current global state during compilation.
 
-**Expected gain**: 10-15% smaller bytecode, fewer VM dispatch cycles.
+**Problem**: No compile-time evaluation — `(+ 1 2)` emits `CONST 1, CONST 2, ADD` (3 opcodes, 2
+constant pool entries) instead of `CONST 3` (1 opcode, 1 entry). No `speed` consumer exists.
 
-**Files**: `src/core/compiler.c`
+**Design** — all of these are emit-time decisions gated on `cl_optimize_settings`; because they
+never reorganize already-emitted bytecode, **no jump relocation is needed** (that is what keeps
+them safe — see the relative-jump constraint in 1.8):
+
+1. **Constant folding** of arithmetic/logic calls. In `compile_call()`, after recognizing a known
+   pure builtin, if all arguments are compile-time constants (literal fixnums or already-folded
+   results), evaluate at compile time and emit a single `OP_CONST`. Supported initially:
+   `+`, `-`, `*`, `ash`, `logand`, `logior`, `logxor`, `not`, `1+`, `1-`, and the comparisons.
+2. **Dead-branch elimination** for constant tests: `(if <const> a b)` compiles only the live
+   branch; `(when nil ...)` / `(and ... nil ...)` collapse. Easy once the test folds to a literal.
+3. **Safety-gated check elision** (the actual `(speed 3) (safety 0)` story): at low safety, skip
+   emitting `OP_ASSERT_TYPE` (already done for `the`), arg-count checks, and bounds checks.
+
+**Correctness prerequisite — local-declare scoping**: `cl_optimize_settings` is a single global
+mutable. A `(locally (declare (optimize (speed 3))) ...)` or per-`defun` declaration must
+**save the old settings, apply, compile the body, then restore** — otherwise a local declaration
+leaks into sibling top-level forms. This must land alongside (or before) any `speed` consumer.
+
+**Scope**: Only fold fixnum arithmetic and boolean constants initially. Bignum/float/ratio folding
+can follow later.
+
+**Expected gain**: 10-15% smaller bytecode, fewer VM dispatch cycles; check elision adds further
+gains at `(safety 0)`.
+
+**Files**: `src/core/compiler.c` (`compile_call`, `compile_if`), `src/core/compiler_extra.c`
+(local-declare save/restore around `locally`/`defun`/`lambda` bodies).
 
 ---
 
@@ -161,6 +198,44 @@ Maximize throughput and minimize latency of the CL-Amiga bytecode VM and runtime
 **Result**: factorial 1000 x5000 benchmark: **5.908s → 2.677s (2.2x speedup)**. ECL (GMP): 1.348s. Remaining gap is algorithmic (schoolbook O(n²) vs GMP's Karatsuba O(n^1.585)).
 
 **Files**: `src/core/bignum.c`
+
+---
+
+### 1.8 Bytecode Peephole Post-Pass (gated behind `speed >= 2`)
+
+The higher-ceiling, higher-risk companion to 1.3. Build this **only after 1.3 ships and profiling
+shows the emit-time wins are insufficient** — and build it as a proper decode → rewrite → re-encode
+pass, never as in-place byte twiddling.
+
+**The dominating constraint — relative jumps**: jumps encode a **relative i32 offset**
+(`cl_patch_jump`, `compiler.c:254`: `offset = code_pos - (patch_pos + 4)`; `cl_emit_loop_jump`
+similarly). Any pass that changes the *length* of emitted bytecode must relocate **every** jump or
+it silently corrupts control flow — exactly the bug class this project fears. This is why naive
+in-place peephole over the flat buffer is unsafe.
+
+**Robust shape (decode → rewrite → re-encode)**:
+1. Decode `c->code[0..code_pos]` into an instruction list, resolving each jump's target to an
+   *instruction index* and marking every instruction that is a jump target (basic-block boundary —
+   never fuse a pattern across one).
+2. Run peephole rewrites on the instruction list.
+3. Re-emit, recomputing all relative offsets from scratch.
+
+**Candidate patterns** (stack-VM classics):
+- `OP_STORE n; OP_LOAD n` → `OP_DUP; OP_STORE n` (avoid store-then-reload)
+- drop `OP_POP` of an unused pure value
+- `OP_NOT; OP_JNIL` → `OP_JTRUE` (fuse)
+- jump-to-jump threading
+- dead code after `OP_RET` / `OP_JMP` up to the next jump target
+
+**Bonus**: the JIT walker consumes the same bytecode, so a peephole pass improves **both the
+interpreter and the JIT** for free.
+
+**Risk / validation**: a mis-relocated jump is a silent miscompile. Requires a dedicated
+differential fuzz harness in the spirit of gc-stress — compile representative forms at `speed 0`
+and `speed 3` and assert identical results — before it can be trusted on by default.
+
+**Files**: new `src/core/peephole.c` (decode/rewrite/re-encode), called from the bytecode
+finalization path in `src/core/compiler.c` when `cl_optimize_settings.speed >= 2`.
 
 ---
 
@@ -366,8 +441,8 @@ Recommended sequence balancing impact vs. risk:
 | 3 | 1.1 (CLOS dispatch cache) | ✅ DONE (b315f2a) |
 | 4 | 1.4 (computed goto), 1.5 (TLV bypass) | ✅ DONE |
 | 5 | 1.6 (HT rehash + hash fix), 1.7 (32-bit limb bignum mul) | ✅ DONE (3c58761, fbb7e29) |
-| 6 | 1.3 (constant folding), 2.4 (set ops in C) | Pending |
-| 7 | 2.5 (free-list segregation) | Pending |
+| 6 | 1.3 (declaim-speed: const-fold + dead-branch + check-elision + local-declare scoping), 2.4 (set ops in C) | Pending |
+| 7 | 1.8 (bytecode peephole post-pass, after 1.3 + profiling), 2.5 (free-list segregation) | Pending |
 | 8 | 3.1 (slot access), 3.2 (keyword pre-comp) | Pending |
 
 ## Validation
