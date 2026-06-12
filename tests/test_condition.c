@@ -351,6 +351,34 @@ TEST(lisp_printer_aesthetic_uses_report)
         "\"#<CONDITION TYPE-ERROR>\"");
 }
 
+TEST(lisp_define_condition_report_symbol)
+{
+    /* Regression: define-condition with a :report FUNCTION-NAME SYMBOL (CLHS
+       allows a string, a symbol naming a (condition stream) function, or a
+       lambda).  The symbol form used to splice bare into funcall's evaluated
+       slot -> "Unbound variable: <name>".  This is the cl-who / hunchentoot
+       script-engine ASSERTION-FAILED shape: (:report print-assertion). */
+    eval_print("(defun my-rep (c s) (declare (ignore c)) (write-string \"hi-from-fn\" s))");
+    eval_print(
+        "(define-condition my-rep-cond (error) ((x :initarg :x)) (:report my-rep))");
+    ASSERT_STR_EQ(eval_print(
+        "(format nil \"~a\" (make-condition 'my-rep-cond :x 1))"),
+        "\"hi-from-fn\"");
+    /* A lambda :report still works (function expression in the evaluated slot). */
+    eval_print(
+        "(define-condition my-rep-cond2 (error) ((x :initarg :x))"
+        "  (:report (lambda (c s) (declare (ignore c)) (write-string \"lam\" s))))");
+    ASSERT_STR_EQ(eval_print(
+        "(format nil \"~a\" (make-condition 'my-rep-cond2 :x 1))"),
+        "\"lam\"");
+    /* A string :report is still verbatim. */
+    eval_print(
+        "(define-condition my-rep-cond3 (error) () (:report \"static msg\"))");
+    ASSERT_STR_EQ(eval_print(
+        "(format nil \"~a\" (make-condition 'my-rep-cond3))"),
+        "\"static msg\"");
+}
+
 /* --- Lisp-level signal/warn/error tests --- */
 
 TEST(lisp_signal_returns_nil)
@@ -1198,6 +1226,7 @@ int main(void)
     RUN(lisp_typep_condition);
     RUN(lisp_printer);
     RUN(lisp_printer_aesthetic_uses_report);
+    RUN(lisp_define_condition_report_symbol);
 
     /* Signal/warn/error tests */
     RUN(lisp_signal_returns_nil);

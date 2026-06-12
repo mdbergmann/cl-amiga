@@ -60,6 +60,7 @@ static void compile_destructure_pattern(CL_Compiler *c, int pos_slot,
                 if (elem == SYM_AMP_REST || elem == SYM_AMP_BODY) {
                     /* &rest after &optional */
                     CL_Obj rest_var = cl_car(cl_cdr(rest));
+                    CL_Obj after;
                     slot = cl_env_add_local(env, rest_var);
                     cl_emit(c, OP_LOAD);
                     cl_emit(c, (uint8_t)pos_slot);
@@ -67,6 +68,17 @@ static void compile_destructure_pattern(CL_Compiler *c, int pos_slot,
                     cl_emit(c, (uint8_t)slot);
                     cl_emit(c, OP_POP);
                     CL_GC_UNPROTECT(1);
+                    /* &key may follow &rest (e.g. (a &optional b &rest r &key k)).
+                     * The plain &rest handler above checks for this; the one
+                     * nested in &optional must too, or the &key vars are never
+                     * bound ("Unbound variable: K").  Hand off to the outer loop
+                     * with pattern pointing at &key, mirroring the &key-after-
+                     * &optional case above. */
+                    after = cl_cdr(cl_cdr(rest)); /* skip &rest, rest_var */
+                    if (!CL_NULL_P(after) && cl_car(after) == SYM_AMP_KEY) {
+                        pattern = after;
+                        goto optional_done;
+                    }
                     goto done;
                 }
 

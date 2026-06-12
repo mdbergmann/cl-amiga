@@ -984,11 +984,21 @@
                                     (%set-condition-slot-value c ',slot-name val))))))))
                  slot-specs)
        ,@(when report
-           (if (stringp report)
-             `((defmethod print-object ((c ,name) stream)
-                 (write-string ,report stream)))
-             `((defmethod print-object ((c ,name) stream)
-                 (funcall ,report c stream)))))
+           (cond
+             ((stringp report)
+              `((defmethod print-object ((c ,name) stream)
+                  (write-string ,report stream))))
+             ;; A SYMBOL :report arg names a function of (condition stream)
+             ;; (CLHS define-condition).  Splicing it bare into funcall's first
+             ;; (evaluated) slot would read it as a VARIABLE — "Unbound variable:
+             ;; FOO" — so quote it as a function designator.  A lambda
+             ;; expression already evaluates to a function, so pass it through.
+             ((symbolp report)
+              `((defmethod print-object ((c ,name) stream)
+                  (funcall ',report c stream))))
+             (t
+              `((defmethod print-object ((c ,name) stream)
+                  (funcall ,report c stream))))))
        ,@(when default-initargs
            `((%set-condition-default-initargs ',name ',default-initargs)))
        ',name)))

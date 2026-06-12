@@ -215,11 +215,20 @@ static int eval_feature_expr(CL_Obj expr)
 }
 
 /* Skip (read and discard) a single form from the reader.
- * Increments read_suppress so that errors (unknown packages, etc.) are suppressed. */
+ * Increments read_suppress so that errors (unknown packages, etc.) are suppressed.
+ *
+ * read_expr() returns CL_READER_SKIP (rather than a real datum) when it reads a
+ * false #+/#- conditional, which yields no object.  A skipped datum may itself
+ * be such a conditional — e.g. the `#+lispworks #+lispworks :element-type
+ * 'lw:simple-char` idiom, where the OUTER #+ must skip a genuine datum, reading
+ * PAST the inner #+ (which produced nothing) and discarding the form after it.
+ * So loop until an actual datum is read-and-discarded (or EOF), mirroring how
+ * read_list (line ~877) and the top-level read loops drop CL_READER_SKIP. */
 static void skip_form(void)
 {
+    CL_Obj r;
     read_suppress++;
-    read_expr();  /* Just read and discard */
+    do { r = read_expr(); } while (r == CL_READER_SKIP && !eof_seen);
     read_suppress--;
 }
 

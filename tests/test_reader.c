@@ -399,10 +399,14 @@ TEST(feature_suppress_unknown_char_name)
 
 TEST(feature_suppress_nested)
 {
-    /* Nested feature conditionals: both skipped, read final form */
-    CL_Obj obj = reads("#+nonexistent #+also-nonexistent foo 42");
-    ASSERT(CL_FIXNUM_P(obj));
-    ASSERT_EQ_INT(CL_FIXNUM_VAL(obj), 42);
+    /* Nested `#+a #+b X Y` with BOTH features absent: the inner #+ skips X, and
+     * the outer #+ must read PAST the empty inner to skip Y as well -- so BOTH
+     * X and Y are dropped.  Verified against SBCL and CLISP: the bare top-level
+     * "#+nonexistent #+also-nonexistent foo 42" form consumes foo AND 42 and
+     * signals END-OF-FILE.  (The previous expectation of 42 here encoded the
+     * old skip_form() under-skip bug.)  Use a list so the outcome is
+     * observable: bar (inner) and baz (outer) are both dropped -> (FOO). */
+    ASSERT_STR_EQ(read_print("(foo #+nonexistent #+also-nonexistent bar baz)"), "(FOO)");
 }
 
 TEST(feature_suppress_unknown_dispatch)
@@ -411,6 +415,38 @@ TEST(feature_suppress_unknown_dispatch)
     CL_Obj obj = reads("#+nonexistent #! 42");
     ASSERT(CL_FIXNUM_P(obj));
     ASSERT_EQ_INT(CL_FIXNUM_VAL(obj), 42);
+}
+
+TEST(feature_suppress_nested_two_forms)
+{
+    /* Regression: the `#+a #+a x y` idiom (one #+ per form) must skip BOTH
+     * x and y when the feature is absent.  The OUTER #+ has to skip a genuine
+     * datum, reading PAST the inner #+ (which yields nothing) to discard `y`.
+     * The old skip_form() read only once, stopping at the inner #+'s empty
+     * result, so it left `y` behind -> `(A Y B)` instead of `(A B)`. */
+    ASSERT_STR_EQ(read_print("(a #+nonexistent #+nonexistent :x y b)"), "(A B)");
+}
+
+TEST(feature_suppress_nested_two_forms_clwho)
+{
+    /* The exact cl-who construct that exposed the bug:
+     *   (make-string total #+:lispworks #+:lispworks :element-type 'lw:simple-char)
+     * Both the :element-type keyword AND the 'lw:simple-char (whose package LW
+     * does not exist) live in the absent-feature branch, so the whole tail is
+     * suppressed -> (MAKE-STRING TOTAL), with no "Package LW not found". */
+    ASSERT_STR_EQ(
+        read_print("(make-string total #+nonexistent #+nonexistent "
+                   ":element-type 'lw:simple-char)"),
+        "(MAKE-STRING TOTAL)");
+}
+
+TEST(feature_suppress_nested_toplevel_extra)
+{
+    /* Same under-skip at top level: outer #+ must consume past the inner #+
+     * and the leftover token so the NEXT real form (99) is returned. */
+    CL_Obj obj = reads("#+nonexistent #+nonexistent foo bar 99");
+    ASSERT(CL_FIXNUM_P(obj));
+    ASSERT_EQ_INT(CL_FIXNUM_VAL(obj), 99);
 }
 
 TEST(feature_suppress_in_list)
@@ -689,6 +725,9 @@ int main(void)
     RUN(feature_suppress_internal_symbol);
     RUN(feature_suppress_unknown_char_name);
     RUN(feature_suppress_nested);
+    RUN(feature_suppress_nested_two_forms);
+    RUN(feature_suppress_nested_two_forms_clwho);
+    RUN(feature_suppress_nested_toplevel_extra);
     RUN(feature_suppress_unknown_dispatch);
     RUN(feature_suppress_in_list);
 
