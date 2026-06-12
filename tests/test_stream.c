@@ -717,6 +717,74 @@ TEST(open_element_type_character_default)
     remove("/tmp/cl_test_chstream.tmp");
 }
 
+/* Regression: OPEN :external-format :latin-1 makes a character file stream
+ * 8-bit transparent — every code point 0..255 round-trips as a single byte,
+ * with no UTF-8 transcoding.  Without it, clamiga's default UTF-8 stream
+ * doubles each byte > 127 (a multipart upload written to a temp file by
+ * rfc2388 inflated and corrupted; see trunk/hunchentoot-clamiga.lisp).
+ * We write code-char 252 (ü) plus an ASCII char, read the file back as raw
+ * bytes, and assert the on-disk content is exactly the two bytes #xFC #x41
+ * (NOT the 3-byte UTF-8 form #xC3 #xBC #x41). */
+TEST(open_latin1_external_format_byte_faithful)
+{
+    const char *expr =
+        "(progn"
+        " (with-open-file (s \"/tmp/cl_test_latin1.tmp\" :direction :output"
+        "                    :if-exists :supersede :external-format :latin-1)"
+        "   (write-char (code-char 252) s)"
+        "   (write-char #\\A s))"
+        " (with-open-file (s \"/tmp/cl_test_latin1.tmp\" :element-type '(unsigned-byte 8))"
+        "   (let ((b0 (read-byte s)) (b1 (read-byte s)) (b2 (read-byte s nil :eof)))"
+        "     (list b0 b1 b2))))";
+    CL_Obj result = cl_eval_string(expr);
+    char buf[64];
+    cl_prin1_to_string(result, buf, sizeof(buf));
+    ASSERT_STR_EQ(buf, "(252 65 :EOF)");
+    remove("/tmp/cl_test_latin1.tmp");
+}
+
+/* A latin-1 stream reads high bytes back as the matching code points (no UTF-8
+ * decode), and STREAM-EXTERNAL-FORMAT reports :LATIN-1. */
+TEST(open_latin1_read_roundtrip_and_format)
+{
+    const char *expr =
+        "(progn"
+        " (with-open-file (s \"/tmp/cl_test_latin1r.tmp\" :direction :output"
+        "                    :if-exists :supersede :external-format :latin-1)"
+        "   (dotimes (i 256) (write-char (code-char i) s)))"
+        " (with-open-file (s \"/tmp/cl_test_latin1r.tmp\" :external-format :latin-1)"
+        "   (let ((ok t))"
+        "     (dotimes (i 256)"
+        "       (unless (= (char-code (read-char s)) i) (setf ok nil)))"
+        "     (list ok (stream-external-format s) (read-char s nil :eof)))))";
+    CL_Obj result = cl_eval_string(expr);
+    char buf[64];
+    cl_prin1_to_string(result, buf, sizeof(buf));
+    ASSERT_STR_EQ(buf, "(T :LATIN-1 :EOF)");
+    remove("/tmp/cl_test_latin1r.tmp");
+}
+
+/* Alternative :external-format spellings (:iso-8859-1, :latin1, :iso8859-1)
+ * must all activate the latin-1 8-bit-transparent mode — a typo in any of the
+ * strcmp targets in format_is_latin1() would go undetected without this test. */
+TEST(open_iso8859_spelling_byte_faithful)
+{
+    const char *expr =
+        "(progn"
+        " (with-open-file (s \"/tmp/cl_test_iso8859.tmp\" :direction :output"
+        "                    :if-exists :supersede :external-format :iso-8859-1)"
+        "   (write-char (code-char 252) s)"
+        "   (write-char #\\A s))"
+        " (with-open-file (s \"/tmp/cl_test_iso8859.tmp\" :element-type '(unsigned-byte 8))"
+        "   (let ((b0 (read-byte s)) (b1 (read-byte s)) (b2 (read-byte s nil :eof)))"
+        "     (list b0 b1 b2))))";
+    CL_Obj result = cl_eval_string(expr);
+    char buf[64];
+    cl_prin1_to_string(result, buf, sizeof(buf));
+    ASSERT_STR_EQ(buf, "(252 65 :EOF)");
+    remove("/tmp/cl_test_iso8859.tmp");
+}
+
 TEST(charpos_tracking)
 {
     CL_Obj s = cl_make_string_output_stream();
@@ -2818,6 +2886,9 @@ int main(void)
     RUN(open_element_type_binary_reported);
     RUN(open_relative_honors_default_pathname_defaults);
     RUN(open_element_type_character_default);
+    RUN(open_latin1_external_format_byte_faithful);
+    RUN(open_latin1_read_roundtrip_and_format);
+    RUN(open_iso8859_spelling_byte_faithful);
     RUN(charpos_tracking);
     RUN(read_line_string_stream);
 

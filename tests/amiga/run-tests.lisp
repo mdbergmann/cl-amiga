@@ -2738,6 +2738,19 @@
 (check "loop minimize" 1 (loop for x in '(3 1 4 1 5 9 2 6) minimize x))
 (check "loop append" '(a b c d e) (loop for x in '((a b) (c d) (e)) append x))
 (check "loop nconc" '(1 2 3 4) (loop for x in '((1 2) (3 4)) nconc (copy-list x)))
+;; Regression: mixing COLLECT with NCONC/APPEND in one loop must keep source
+;; order (CLHS 6.1.3).  COLLECT builds reversed (push + final nreverse); NCONC/
+;; APPEND used to build forward, so the finalizer reversed the result when the
+;; two were mixed -- which reversed cl-ppcre register-groups-bind (the
+;; normalize-var-list `if (consp e) nconc ... else collect ...' shape).
+(check "loop if nconc else collect" '(a b c)
+  (loop for x in '(a b c) if (consp x) nconc (list (car x)) else collect x))
+(check "loop if nconc else collect both" '(a b1 b2 c)
+  (loop for x in '(a (b1 b2) c) if (consp x) nconc (copy-list x) else collect x))
+(check "loop collect+nconc interleaved" '(1 10 2 20 3 30)
+  (loop for x in '(1 2 3) collect x nconc (list (* x 10))))
+(check "loop if append else collect" '(1 2 3 4 5)
+  (loop for x in '((1 2) 3 (4 5)) if (listp x) append x else collect x))
 (check "loop return" 3 (loop for x in '(1 2 3 4 5) do (when (= x 3) (return x))))
 (check "loop return in do+let" 42 (loop while t do (let ((x 42)) (return x))))
 (check "loop return in do+let*" 3 (loop while t do (let* ((a 1) (b 2)) (return (+ a b)))))

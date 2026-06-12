@@ -1925,8 +1925,24 @@ type is purely advisory here, so it is discarded once parsed."
         ((%loop-simple-type-spec-p (car rest)) (cdr rest))
         (t rest)))
 
+(defun %loop-list-accum-p (kn)
+  "True if accumulation kind KN builds a list (COLLECT/NCONC/APPEND)."
+  (or (string= kn "COLLECT") (string= kn "COLLECTING")
+      (string= kn "NCONC") (string= kn "NCONCING")
+      (string= kn "APPEND") (string= kn "APPENDING")))
+
 (defun %loop-accum-body (kn expr accum-var)
-  "Generate the body form for accumulation kind KN."
+  "Generate the body form for accumulation kind KN.
+
+List accumulators (COLLECT/NCONC/APPEND) all build the accumulator in
+REVERSED order (newest element first) so that a single NREVERSE at loop
+end yields the correct order.  This is what lets COLLECT, NCONC and
+APPEND be freely mixed into the same accumulation (CLHS 6.1.3) — e.g.
+`(loop ... if x nconc l else collect e)`.  COLLECT pushes one element;
+NCONC reverse-splices the list destructively (NRECONC — the list may be
+destroyed, like NCONC); APPEND reverse-copies it (REVAPPEND — no
+destruction, like APPEND).  The finalizer (%loop-list-accum-p) emits the
+matching NREVERSE."
   (cond
     ((or (string= kn "COLLECT") (string= kn "COLLECTING"))
      `(push ,expr ,accum-var))
@@ -1945,9 +1961,9 @@ type is purely advisory here, so it is discarded once parsed."
           (when (or (null ,accum-var) (< ,tmp ,accum-var))
             (setq ,accum-var ,tmp)))))
     ((or (string= kn "APPEND") (string= kn "APPENDING"))
-     `(setq ,accum-var (append ,accum-var ,expr)))
+     `(setq ,accum-var (revappend ,expr ,accum-var)))
     (t
-     `(setq ,accum-var (nconc ,accum-var ,expr)))))
+     `(setq ,accum-var (nreconc ,expr ,accum-var)))))
 
 (defun %loop-accum-keyword-p (sym)
   "Check if SYM is an accumulation keyword."
@@ -2322,7 +2338,7 @@ type is purely advisory here, so it is discarded once parsed."
       ;; Accumulation
       ((%loop-accum-keyword-p sub)
        (let* ((kn (symbol-name sub))
-              (is-collect (or (string= kn "COLLECT") (string= kn "COLLECTING")))
+              (is-list-accum (%loop-list-accum-p kn))
               (is-sum (or (string= kn "SUM") (string= kn "SUMMING")))
               (is-count (or (string= kn "COUNT") (string= kn "COUNTING")))
               (init-val (if (or is-sum is-count) 0 nil))
@@ -2340,13 +2356,13 @@ type is purely advisory here, so it is discarded once parsed."
                (unless (member accum-var into-vars)
                  (push accum-var into-vars)
                  (push (list accum-var init-val) bindings)
-                 (when is-collect
+                 (when is-list-accum
                    (push `(setq ,accum-var (nreverse ,accum-var)) epilogue))))
              (progn
                (unless default-accum
                  (setq default-accum (gensym "ACC"))
                  (push (list default-accum init-val) bindings)
-                 (setq result-form (if is-collect `(nreverse ,default-accum)
+                 (setq result-form (if is-list-accum `(nreverse ,default-accum)
                                        default-accum)))
                (setq accum-var default-accum)))
          (setq form (%loop-accum-body kn expr accum-var))))
@@ -2503,7 +2519,7 @@ type is purely advisory here, so it is discarded once parsed."
             ;; Accumulation (unified)
             ((%loop-accum-keyword-p kw)
              (let* ((kn (symbol-name kw))
-                    (is-collect (or (string= kn "COLLECT") (string= kn "COLLECTING")))
+                    (is-list-accum (%loop-list-accum-p kn))
                     (is-sum (or (string= kn "SUM") (string= kn "SUMMING")))
                     (is-count (or (string= kn "COUNT") (string= kn "COUNTING")))
                     (init-val (if (or is-sum is-count) 0 nil))
@@ -2524,13 +2540,13 @@ type is purely advisory here, so it is discarded once parsed."
                      (unless (member accum-var into-vars)
                        (push accum-var into-vars)
                        (push (list accum-var init-val) bindings)
-                       (when is-collect
+                       (when is-list-accum
                          (push `(setq ,accum-var (nreverse ,accum-var)) epilogue))))
                    (progn
                      (unless default-accum
                        (setq default-accum (gensym "ACC"))
                        (push (list default-accum init-val) bindings)
-                       (setq result-form (if is-collect `(nreverse ,default-accum)
+                       (setq result-form (if is-list-accum `(nreverse ,default-accum)
                                              default-accum)))
                      (setq accum-var default-accum)))
                (push (%loop-accum-body kn expr accum-var) body)))

@@ -7335,6 +7335,42 @@ TEST(eval_loop_nconc)
         "(loop for x in '((1 2) (3 4)) nconc (copy-list x))"), "(1 2 3 4)");
 }
 
+/* Regression: LOOP must let COLLECT, NCONC and APPEND be mixed into the same
+ * accumulation and keep source order (CLHS 6.1.3).  COLLECT builds the result
+ * reversed (push) and relies on a final NREVERSE; NCONC/APPEND used to build
+ * forward, so the finalizer's "reverse?" decision — taken from whichever clause
+ * appeared first — was wrong for the others, silently REVERSING the result.
+ * This broke cl-ppcre's NORMALIZE-VAR-LIST (a `loop ... if (consp e) nconc ...
+ * else collect ...`), so REGISTER-GROUPS-BIND bound regex groups in reverse —
+ * which made hunchentoot compute a negative Content-Length on a Range request
+ * and corrupted cl-who table rendering.  Now all list accumulators build
+ * reversed (NRECONC/REVAPPEND) under one uniform final NREVERSE. */
+TEST(eval_loop_mixed_collect_nconc)
+{
+    /* The exact normalize-var-list shape: if/else mixing nconc and collect,
+     * here with every element taking the COLLECT (else) branch. */
+    ASSERT_STR_EQ(eval_print(
+        "(loop for x in '(a b c)"
+        "  if (consp x) nconc (list (car x)) else collect x)"), "(A B C)");
+    /* Both branches exercised, order preserved across the mix. */
+    ASSERT_STR_EQ(eval_print(
+        "(loop for x in '(a (b1 b2) c)"
+        "  if (consp x) nconc (copy-list x) else collect x)"), "(A B1 B2 C)");
+    /* COLLECT and NCONC interleaved unconditionally in one iteration. */
+    ASSERT_STR_EQ(eval_print(
+        "(loop for x in '(1 2 3) collect x nconc (list (* x 10)))"),
+        "(1 10 2 20 3 30)");
+    /* APPEND mixed with COLLECT keeps order too. */
+    ASSERT_STR_EQ(eval_print(
+        "(loop for x in '((1 2) 3 (4 5))"
+        "  if (listp x) append x else collect x)"), "(1 2 3 4 5)");
+    /* Pure NCONC / APPEND still correct (no spurious reversal). */
+    ASSERT_STR_EQ(eval_print(
+        "(loop for x in '((1 2) (3 4)) nconc (copy-list x))"), "(1 2 3 4)");
+    ASSERT_STR_EQ(eval_print(
+        "(loop for x in '((a b) (c d)) append x)"), "(A B C D)");
+}
+
 TEST(eval_loop_return)
 {
     /* return clause */
@@ -9805,6 +9841,7 @@ int main(void)
     RUN(eval_loop_minimize);
     RUN(eval_loop_append);
     RUN(eval_loop_nconc);
+    RUN(eval_loop_mixed_collect_nconc);
     RUN(eval_loop_return);
     RUN(eval_loop_return_clause);
     RUN(eval_loop_return_in_do_let);

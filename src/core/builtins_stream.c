@@ -61,6 +61,8 @@ static CL_Obj KW_RENAME = CL_NIL;
 static CL_Obj KW_RENAME_AND_DELETE = CL_NIL;
 static CL_Obj KW_OVERWRITE = CL_NIL;
 static CL_Obj KW_ELEMENT_TYPE_OPEN = CL_NIL;  /* OPEN :element-type */
+static CL_Obj KW_EXTERNAL_FORMAT = CL_NIL;    /* OPEN :external-format */
+static CL_Obj KW_LATIN_1 = CL_NIL;            /* :latin-1 (stream-external-format report) */
 
 /* --- Stream argument resolution helpers --- */
 
@@ -707,7 +709,28 @@ static const char *coerce_to_filename(CL_Obj *arg)
     return ((CL_String *)CL_OBJ_TO_PTR(*arg))->data;
 }
 
-/* (open filename &key :direction :if-exists :if-does-not-exist) */
+/* True if an :external-format designator names LATIN-1 / ISO-8859-1.
+ * Accepts a bare keyword (:latin-1, :latin1, :iso-8859-1, :iso8859-1) or a
+ * list whose first element is one of those (the (:latin-1 :eol-style :lf)
+ * form some libraries pass).  Anything else — including :default and :utf-8 —
+ * means the clamiga default (UTF-8), so we return 0. */
+static int format_is_latin1(CL_Obj fmt)
+{
+    const char *name;
+    if (fmt == CL_UNBOUND || CL_NULL_P(fmt))
+        return 0;
+    if (CL_CONS_P(fmt))
+        fmt = ((CL_Cons *)CL_OBJ_TO_PTR(fmt))->car;
+    if (!CL_SYMBOL_OR_NIL_P(fmt))
+        return 0;
+    name = cl_symbol_name(fmt);
+    return strcmp(name, "LATIN-1") == 0
+        || strcmp(name, "LATIN1") == 0
+        || strcmp(name, "ISO-8859-1") == 0
+        || strcmp(name, "ISO8859-1") == 0;
+}
+
+/* (open filename &key :direction :if-exists :if-does-not-exist :external-format) */
 static CL_Obj bi_open(CL_Obj *args, int n)
 {
     CL_String *path_str;
@@ -875,6 +898,17 @@ static CL_Obj bi_open(CL_Obj *args, int n)
         CL_Obj et = find_keyword_arg(args, n, 1, KW_ELEMENT_TYPE_OPEN);
         if (et != CL_UNBOUND && !CL_NULL_P(et))
             st->element_type = et;
+    }
+
+    /* Record :external-format.  clamiga character streams are UTF-8 by default;
+     * :latin-1 / :iso-8859-1 selects the 8-bit-transparent path so each byte
+     * 0..255 round-trips verbatim (needed for faithful binary I/O over a
+     * character stream — e.g. rfc2388 writing a multipart upload to a temp
+     * file).  Anything else (incl. :default / :utf-8) keeps the UTF-8 default. */
+    {
+        CL_Obj ef = find_keyword_arg(args, n, 1, KW_EXTERNAL_FORMAT);
+        if (format_is_latin1(ef))
+            st->flags |= CL_STREAM_FLAG_LATIN1;
     }
 
     return stream;
@@ -1503,12 +1537,17 @@ static CL_Obj bi_stream_element_type(CL_Obj *args, int n)
 }
 
 /* (stream-external-format stream) => format
- * clamiga uses UTF-8 for all character streams; return :DEFAULT. */
+ * clamiga uses UTF-8 for character streams (reported as :DEFAULT); a stream
+ * opened with :external-format :latin-1 reports :LATIN-1. */
 static CL_Obj bi_stream_external_format(CL_Obj *args, int n)
 {
+    CL_Stream *st;
     CL_UNUSED(n);
     if (!CL_STREAM_P(args[0]))
         cl_error(CL_ERR_TYPE, "STREAM-EXTERNAL-FORMAT: not a stream");
+    st = (CL_Stream *)CL_OBJ_TO_PTR(args[0]);
+    if (st->flags & CL_STREAM_FLAG_LATIN1)
+        return KW_LATIN_1;
     return KW_STREAM_DEFAULT;
 }
 
@@ -1648,6 +1687,8 @@ void cl_builtins_stream_init(void)
     KW_RENAME_AND_DELETE = cl_intern_keyword("RENAME-AND-DELETE", 17);
     KW_OVERWRITE = cl_intern_keyword("OVERWRITE", 9);
     KW_ELEMENT_TYPE_OPEN = cl_intern_keyword("ELEMENT-TYPE", 12);
+    KW_EXTERNAL_FORMAT = cl_intern_keyword("EXTERNAL-FORMAT", 15);
+    KW_LATIN_1 = cl_intern_keyword("LATIN-1", 7);
     KW_STREAM_DEFAULT = cl_intern_keyword("DEFAULT", 7);
 
     /* Step 1 */
@@ -1747,5 +1788,7 @@ void cl_builtins_stream_init(void)
     cl_gc_register_root(&KW_RENAME_AND_DELETE);
     cl_gc_register_root(&KW_OVERWRITE);
     cl_gc_register_root(&KW_ELEMENT_TYPE_OPEN);
+    cl_gc_register_root(&KW_EXTERNAL_FORMAT);
+    cl_gc_register_root(&KW_LATIN_1);
     cl_gc_register_root(&KW_STREAM_DEFAULT);
 }
