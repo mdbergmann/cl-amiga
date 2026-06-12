@@ -703,6 +703,7 @@ const char *platform_expand_home(const char *path, char *buf, int bufsize)
 #include <exec/ports.h>
 #include <exec/tasks.h>
 #include <dos/dostags.h>
+#include <sys/time.h>   /* struct timeval for WaitSelect zero-timeout poll */
 
 /* Address-length type for accept/getsockname/getsockopt.  The MorphOS
  * socket.library API takes LONG* (and does not declare socklen_t), whereas
@@ -753,7 +754,7 @@ typedef struct { uint32_t bits[CL_FDSET_WORDS]; } CL_fdset;
 /* ---- Reactor request protocol ---- */
 enum {
     REQ_CONNECT = 1, REQ_LISTEN, REQ_ACCEPT,
-    REQ_READFILL, REQ_WRITE, REQ_CLOSE, REQ_SHUTDOWN
+    REQ_READFILL, REQ_WRITE, REQ_CLOSE, REQ_SHUTDOWN, REQ_POLL
 };
 
 typedef struct SockReq {
@@ -829,6 +830,38 @@ static void reactor_try_read(SockReq *req)
     else if (n == 0)                 { req->result = 0;      reactor_reply(req); } /* EOF */
     else if (Errno() == EWOULDBLOCK) { pend_read[slot] = req; }                    /* park */
     else                             { req->result = -1;     reactor_reply(req); }
+}
+
+/* Non-blocking readiness probe (REQ_POLL), backing CL:LISTEN on socket streams.
+ * Buffered data is checked caller-side; here we probe only the fd with a
+ * zero-timeout WaitSelect.  result: 1 = readable now (data, or for a listener a
+ * pending connection), 0 = would block, 2 = EOF (peer closed), -1 = invalid.
+ * A readable CONNECTION socket is MSG_PEEK'd to tell data from EOF; a listener
+ * has no IOBuf and is never peeked (recv on a listen fd is invalid). */
+static void reactor_try_poll(SockReq *req)
+{
+    int slot = (int)req->slot;
+    LONG fd = socket_table[slot];
+    CL_fdset rset;
+    struct timeval tv;
+    LONG r;
+    if (fd < 0) { req->result = -1; reactor_reply(req); return; }
+    CL_FD_ZERO(&rset);
+    CL_FD_SET(fd, &rset);
+    tv.tv_sec = 0;
+    tv.tv_usec = 0;
+    r = WaitSelect(fd + 1, &rset, NULL, NULL, &tv, NULL);
+    if (r <= 0 || !CL_FD_ISSET(fd, &rset)) { req->result = 0; reactor_reply(req); return; }
+    if (!socket_buf[slot]) { req->result = 1; reactor_reply(req); return; }  /* listener: pending conn */
+    {
+        char peek;
+        LONG pn = recv(fd, &peek, 1, MSG_PEEK);
+        if (pn > 0)                      req->result = 1;   /* real data */
+        else if (pn == 0)                req->result = 2;   /* EOF */
+        else if (Errno() == EWOULDBLOCK) req->result = 0;   /* spurious */
+        else                             req->result = 2;
+    }
+    reactor_reply(req);
 }
 
 /* send from the caller's write buffer (continuing at pend_wpos); complete or park. */
@@ -994,6 +1027,7 @@ static void reactor_handle(SockReq *req)
     case REQ_ACCEPT:   reactor_try_accept(req);    break;
     case REQ_READFILL: reactor_try_read(req);      break;
     case REQ_WRITE:    reactor_try_write(req);     break;
+    case REQ_POLL:     reactor_try_poll(req);      break;
     case REQ_CLOSE:    reactor_do_close(req);      break;
     default:           req->result = -1; reactor_reply(req); break;
     }
@@ -1225,6 +1259,21 @@ int platform_socket_read(PlatformSocket sh)
         b->rlen = req.result;
         return (unsigned char)b->rbuf[0];
     }
+}
+
+int platform_socket_data_available(PlatformSocket sh)
+{
+    IOBuf *b;
+    SockReq req;
+    if (sh == 0 || sh >= PLATFORM_SOCKET_TABLE_SIZE) return -1;
+    b = socket_buf[sh];
+    if (b && b->rpos < b->rlen)
+        return 1;                       /* already-buffered bytes */
+    /* Probe the fd via the reactor (it owns the WaitSelect/recv calls). */
+    memset(&req, 0, sizeof(req));
+    req.op = REQ_POLL; req.slot = sh;
+    sock_call(&req);
+    return req.result;                  /* 1 ready, 0 would-block, 2 EOF, -1 invalid */
 }
 
 int platform_socket_write(PlatformSocket sh, int byte)

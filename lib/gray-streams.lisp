@@ -55,7 +55,13 @@
 ;;; Fundamental stream class hierarchy
 ;;; ====================================================================
 
-(defclass fundamental-stream (standard-object)
+;; Inherit from the built-in STREAM class (not just STANDARD-OBJECT) so that
+;; CLOS methods specialized on STREAM dispatch to Gray stream instances — e.g.
+;; rfc2388:parse-mime ((input stream) ...), which hunchentoot's multipart
+;; form-data parser calls on a flexi (Gray) stream.  Without STREAM in the CPL
+;; that dispatch fails with "No applicable method" even though TYPEP reports
+;; the instance as a STREAM.
+(defclass fundamental-stream (stream standard-object)
   ((open-p :initform t :accessor stream-open-p))
   (:documentation "Base class for Gray streams."))
 
@@ -340,7 +346,8 @@ the position where end-of-file was reached."))
       (orig-print   (symbol-function 'print))
       (orig-write   (symbol-function 'write))
       (orig-format  (symbol-function 'format))
-      (orig-pprint  (symbol-function 'pprint)))
+      (orig-pprint  (symbol-function 'pprint))
+      (orig-listen  (symbol-function 'listen)))
 
   (defun %gray-stream-p (x)
     "Return T if X is a Gray stream (CLOS instance of fundamental-stream)."
@@ -653,6 +660,18 @@ the position where end-of-file was reached."))
             nil)
           (funcall orig-pprint object s))))
 
+  ;; LISTEN — for Gray streams dispatch to stream-listen; otherwise delegate
+  ;; to the original C builtin (which knows about socket / string streams).
+  ;; The earlier "no C builtin" assumption was wrong and made LISTEN return
+  ;; NIL for every non-Gray stream, breaking e.g. usocket:wait-for-input over
+  ;; socket streams (hunchentoot's accept loop).
+  (defun listen (&optional stream)
+    (let ((s (%resolve-input-stream stream)))
+      (if (%gray-stream-p s)
+          (gray:stream-listen s)
+          (funcall orig-listen s))))
+  (export 'listen)
+
 ) ;; end let
 
 ;; CLEAR-INPUT — no C builtin, define directly
@@ -662,13 +681,5 @@ the position where end-of-file was reached."))
       (gray:stream-clear-input s)))
   nil)
 (export 'clear-input)
-
-;; LISTEN — no C builtin, define directly
-(defun listen (&optional stream)
-  (let ((s (%resolve-input-stream stream)))
-    (if (%gray-stream-p s)
-        (gray:stream-listen s)
-        nil)))
-(export 'listen)
 
 (in-package "COMMON-LISP-USER")

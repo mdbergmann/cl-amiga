@@ -3985,10 +3985,11 @@ void cl_register_macro(CL_Obj name, CL_Obj expander)
     CL_GC_PROTECT(name);
     CL_GC_PROTECT(expander);
     pair = cl_cons(name, expander);
+    CL_GC_PROTECT(pair);            /* the 2nd cons can compact — keep PAIR live */
     cl_tables_wrlock();
     macro_table = cl_cons(pair, macro_table);
     cl_tables_rwunlock();
-    CL_GC_UNPROTECT(2);
+    CL_GC_UNPROTECT(3);
 }
 
 /* Snapshot-and-release iteration:
@@ -4046,10 +4047,11 @@ void cl_register_compiler_macro(CL_Obj name, CL_Obj expander)
     CL_GC_PROTECT(name);
     CL_GC_PROTECT(expander);
     pair = cl_cons(name, expander);
+    CL_GC_PROTECT(pair);            /* the 2nd cons can compact — keep PAIR live */
     cl_tables_wrlock();
     compiler_macro_table = cl_cons(pair, compiler_macro_table);
     cl_tables_rwunlock();
-    CL_GC_UNPROTECT(2);
+    CL_GC_UNPROTECT(3);
 }
 
 CL_Obj cl_get_compiler_macro(CL_Obj name)
@@ -4075,10 +4077,11 @@ void cl_register_type(CL_Obj name, CL_Obj expander)
     CL_GC_PROTECT(name);
     CL_GC_PROTECT(expander);
     pair = cl_cons(name, expander);
+    CL_GC_PROTECT(pair);            /* the 2nd cons can compact — keep PAIR live */
     cl_tables_wrlock();
     type_table = cl_cons(pair, type_table);
     cl_tables_rwunlock();
-    CL_GC_UNPROTECT(2);
+    CL_GC_UNPROTECT(3);
 }
 
 CL_Obj cl_get_type_expander(CL_Obj name)
@@ -4104,10 +4107,11 @@ void cl_register_setf_function(CL_Obj accessor, CL_Obj setf_fn_sym)
     CL_GC_PROTECT(accessor);
     CL_GC_PROTECT(setf_fn_sym);
     pair = cl_cons(accessor, setf_fn_sym);
+    CL_GC_PROTECT(pair);            /* the 2nd cons can compact — keep PAIR live */
     cl_tables_wrlock();
     setf_fn_table = cl_cons(pair, setf_fn_table);
     cl_tables_rwunlock();
-    CL_GC_UNPROTECT(2);
+    CL_GC_UNPROTECT(3);
 }
 
 /* --- Public API --- */

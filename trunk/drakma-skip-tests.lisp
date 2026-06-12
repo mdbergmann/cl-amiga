@@ -5,22 +5,20 @@
 ;; cl-amiga runs drakma as an HTTP/HTTPS *client* over the usocket cl-amiga
 ;; backend + cl+ssl.  The tests left running here exercise exactly that and
 ;; pass reliably: plain HTTP and HTTPS, GET and POST (google.com), streamed
-;; responses (STREAM / FORCE-BINARY), and — most importantly — cl+ssl
-;; certificate verification (the VERIFY.* badssl.com tests).
+;; responses (STREAM / FORCE-BINARY), cl+ssl certificate verification (the
+;; VERIFY.* badssl.com tests), AND — as of 2026-06-12 — the form-POST/PUT
+;; tests that stand up a LOCAL hunchentoot server (post/put-x-www-form,
+;; post/put-multipart-form).  Hunchentoot now runs as a server over the
+;; usocket cl-amiga backend; see trunk/hunchentoot-clamiga.lisp.
 ;;
-;; The tests redefined below as fiveam SKIPs each fail for a reason ORTHOGONAL
-;; to the HTTP/HTTPS-client-+-cl+ssl goal, in three groups:
+;; The only tests still redefined below as fiveam SKIPs depend on httpbin.org,
+;; which is ORTHOGONAL to the client+server-on-cl-amiga goal:
 ;;
-;;   1. Local hunchentoot SERVER — these stand up a hunchentoot acceptor and
-;;      POST to it.  Running hunchentoot as a server over the usocket backend
-;;      (its blocking accept loop + self-connect shutdown-wake + per-connection
-;;      handling) is a separate, not-yet-done effort.
-;;
-;;   2. httpbin.org dependency — these assert on httpbin.org responses, but
-;;      httpbin rate-limits aggressively (returns 503) and sometimes stalls,
-;;      which makes them flaky/hang in unattended runs regardless of cl-amiga.
-;;      gzip-content/deflate-content also exercise chipz streaming decode
-;;      (now supported, see below) but httpbin remains their real blocker.
+;;   httpbin.org dependency — these assert on httpbin.org responses, but
+;;   httpbin rate-limits aggressively (returns 503) and sometimes stalls,
+;;   which makes them flaky/hang in unattended runs regardless of cl-amiga.
+;;   gzip-content/deflate-content also exercise chipz streaming decode
+;;   (now supported, see below) but httpbin remains their real blocker.
 ;;
 ;; NOTE: chipz streaming decompression (drakma's :decode-content t, which wraps
 ;; the reply in chipz:make-decompressing-stream) IS now supported on cl-amiga
@@ -29,8 +27,7 @@
 ;; run here and pass.  Only the httpbin-backed decode tests stay skipped, for
 ;; the httpbin flakiness above — not for any chipz limitation.
 ;;
-;; Remove the relevant SKIPs (and, for groups 2/3, the underlying support) to
-;; re-enable a test.
+;; Remove the relevant SKIPs (and the underlying support) to re-enable a test.
 
 (in-package :drakma-test)
 
@@ -39,11 +36,7 @@
 (macrolet ((skip-tests (reason &rest names)
              `(progn ,@(mapcar (lambda (n) `(5am:test ,n (5am:skip ,reason)))
                                names))))
-  ;; Group 1: local hunchentoot server not supported over the usocket backend.
-  (skip-tests "cl-amiga: hunchentoot-over-usocket server not yet supported"
-              post-x-www-form put-x-www-form
-              post-multipart-form put-multipart-form)
-  ;; Group 2: assert on httpbin.org, which rate-limits (503) and stalls.
+  ;; Assert on httpbin.org, which rate-limits (503) and stalls.
   ;; gzip-content/deflate-content also stream-gunzip via chipz (now supported),
   ;; but httpbin — not chipz — is what makes them flaky here.
   (skip-tests "cl-amiga: depends on httpbin.org which rate-limits (503) / stalls — flaky"

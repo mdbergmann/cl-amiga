@@ -7,6 +7,7 @@
 #include <sys/stat.h>
 #include <sys/wait.h>
 #include <sys/socket.h>
+#include <sys/select.h>
 #include <netinet/in.h>
 #include <netdb.h>
 #include <time.h>
@@ -588,6 +589,58 @@ int platform_socket_read(PlatformSocket sh)
         cl_gc_leave_safe_region();
         if (n <= 0) return -1;
         return (int)byte;
+    }
+}
+
+/* Non-blocking readiness probe, used to back CL:LISTEN on socket streams.
+ * Returns:
+ *    1  data is available — a read returns a byte now (or, for a listener
+ *       slot, a client connection is pending and accept() won't block);
+ *    0  a read/accept would block (nothing ready yet);
+ *    2  at end of file — the peer closed and a read returns EOF immediately;
+ *   -1  invalid handle.
+ * Uses select() with a zero timeout (never blocks, no GC safe region needed).
+ * select() reports a half-closed peer as "readable", so for a connection
+ * socket we MSG_PEEK one byte to tell real data (1) from EOF (2); a listener
+ * has no IOBuf and is never peeked (recv on a listen fd is invalid) — a
+ * readable listener always means a pending connection. */
+int platform_socket_data_available(PlatformSocket sh)
+{
+    IOBuf *b;
+    int fd;
+    fd_set rset;
+    struct timeval tv;
+    int r;
+    if (sh == 0 || sh >= PLATFORM_SOCKET_TABLE_SIZE || socket_table[sh] < 0)
+        return -1;
+    b = socket_buf[sh];
+    if (b && b->rpos < b->rlen)
+        return 1;                       /* already-buffered bytes */
+    fd = socket_table[sh];
+    if (fd < 0 || fd >= FD_SETSIZE)
+        return -1;
+    FD_ZERO(&rset);
+    FD_SET(fd, &rset);
+    tv.tv_sec = 0;
+    tv.tv_usec = 0;
+    r = select(fd + 1, &rset, NULL, NULL, &tv);
+    if (r < 0) {
+        if (errno == EINTR) return 0;   /* treat as "not ready yet" */
+        return -1;
+    }
+    if (r == 0 || !FD_ISSET(fd, &rset))
+        return 0;                       /* would block */
+    if (!b)
+        return 1;                       /* listener: connection pending */
+    /* Connection socket is readable: distinguish data from a closed peer. */
+    {
+        char peek;
+        ssize_t pn = recv(fd, &peek, 1, MSG_PEEK);
+        if (pn > 0)  return 1;          /* real data waiting */
+        if (pn == 0) return 2;          /* peer closed => EOF */
+        if (errno == EWOULDBLOCK || errno == EAGAIN || errno == EINTR)
+            return 0;                   /* spurious wakeup */
+        return 2;                       /* error => report as EOF-ish */
     }
 }
 

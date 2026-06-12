@@ -60,6 +60,7 @@ static CL_Obj KW_NEW_VERSION = CL_NIL;
 static CL_Obj KW_RENAME = CL_NIL;
 static CL_Obj KW_RENAME_AND_DELETE = CL_NIL;
 static CL_Obj KW_OVERWRITE = CL_NIL;
+static CL_Obj KW_ELEMENT_TYPE_OPEN = CL_NIL;  /* OPEN :element-type */
 
 /* --- Stream argument resolution helpers --- */
 
@@ -830,6 +831,17 @@ static CL_Obj bi_open(CL_Obj *args, int n)
     st->handle_id = (uint32_t)fh;
     st->string_buf = args[0];  /* Store pathname string for probe-file/pathname */
 
+    /* Record :element-type so STREAM-ELEMENT-TYPE reports it.  A non-character
+     * type (e.g. (unsigned-byte 8)) marks a binary stream — drakma's
+     * SEND-CONTENT checks (subtypep (stream-element-type s) 'octet) before it
+     * will stream a file body, so getting this right is what lets a file POST
+     * (multipart form-data) work.  Default (absent) is CHARACTER. */
+    {
+        CL_Obj et = find_keyword_arg(args, n, 1, KW_ELEMENT_TYPE_OPEN);
+        if (et != CL_UNBOUND && !CL_NULL_P(et))
+            st->element_type = et;
+    }
+
     return stream;
 }
 
@@ -1432,6 +1444,12 @@ static CL_Obj bi_stream_element_type(CL_Obj *args, int n)
     if (!CL_STREAM_P(args[0]))
         cl_error(CL_ERR_TYPE, "STREAM-ELEMENT-TYPE: not a stream");
     st = (CL_Stream *)CL_OBJ_TO_PTR(args[0]);
+    /* A file stream's explicitly recorded element-type (from OPEN
+     * :element-type '(unsigned-byte 8)) wins — this is how a binary file
+     * stream reports itself.  Only FILE streams store a type here; for
+     * TWO-WAY/SYNONYM streams the element_type slot holds a child stream. */
+    if (st->stream_type == CL_STREAM_FILE && !CL_NULL_P(st->element_type))
+        return st->element_type;
     if (st->stream_type == CL_STREAM_SOCKET) {
         /* Return (UNSIGNED-BYTE 8) — split cons calls to prevent the inner
          * result from living only in a register when the outer cons runs. */
@@ -1469,6 +1487,18 @@ static CL_Obj bi_listen(CL_Obj *args, int n)
     if (st->flags & CL_STREAM_FLAG_EOF) return CL_NIL;
     if (st->stream_type == CL_STREAM_STRING || st->stream_type == CL_STREAM_CBUF)
         return (st->position < st->out_buf_len) ? CL_T : CL_NIL;
+    if (st->stream_type == CL_STREAM_SOCKET) {
+        /* Non-blocking readiness probe.  Returns T only when a character is
+         * immediately available; NIL at end of file or when a read would block
+         * — exactly the CLHS LISTEN contract.  For a listener stream "data
+         * available" means a client connection is pending, which is what the
+         * usocket cl-amiga backend's wait-for-input uses to drive
+         * hunchentoot's accept loop. */
+        int r = platform_socket_data_available((PlatformSocket)st->handle_id);
+        if (r == 2)                       /* EOF: peer closed */
+            st->flags |= CL_STREAM_FLAG_EOF;
+        return (r == 1) ? CL_T : CL_NIL;
+    }
     return CL_NIL;  /* conservative: unknown availability */
 }
 
@@ -1582,6 +1612,7 @@ void cl_builtins_stream_init(void)
     KW_RENAME  = cl_intern_keyword("RENAME", 6);
     KW_RENAME_AND_DELETE = cl_intern_keyword("RENAME-AND-DELETE", 17);
     KW_OVERWRITE = cl_intern_keyword("OVERWRITE", 9);
+    KW_ELEMENT_TYPE_OPEN = cl_intern_keyword("ELEMENT-TYPE", 12);
     KW_STREAM_DEFAULT = cl_intern_keyword("DEFAULT", 7);
 
     /* Step 1 */
@@ -1680,5 +1711,6 @@ void cl_builtins_stream_init(void)
     cl_gc_register_root(&KW_RENAME);
     cl_gc_register_root(&KW_RENAME_AND_DELETE);
     cl_gc_register_root(&KW_OVERWRITE);
+    cl_gc_register_root(&KW_ELEMENT_TYPE_OPEN);
     cl_gc_register_root(&KW_STREAM_DEFAULT);
 }

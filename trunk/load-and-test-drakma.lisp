@@ -59,6 +59,11 @@
 (format t "~%--- Loading :drakma-test ---~%")
 (asdf:load-system :drakma-test)
 
+;; The form-POST tests run drakma against a LOCAL hunchentoot server over the
+;; usocket cl-amiga backend.  Apply the cl-amiga Hunchentoot portability shims
+;; (see trunk/hunchentoot-clamiga.lisp) now that hunchentoot is loaded.
+(load "trunk/hunchentoot-clamiga.lisp")
+
 ;; Redefine the out-of-scope tests as skips (see file header for the three
 ;; groups + reasons).  Loaded as a file so its top (in-package :drakma-test)
 ;; takes effect before the skip forms are read — DRAKMA-TEST does not exist

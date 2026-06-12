@@ -184,6 +184,44 @@ TEST(make_array_string_class_of_is_string)
         "STRING");
 }
 
+/* Regression: a DEFTYPE alias for CHARACTER must upgrade to a STRING, not a
+ * general (vector t).  flexi-streams' (deftype char* () 'character) hit this:
+ * OCTETS-TO-STRING built (make-array n :element-type 'char*) and got a
+ * SIMPLE-VECTOR of characters, so STRINGP was NIL and hunchentoot's
+ * x-www-form POST parsing — (split "&" <that>) — failed. */
+TEST(make_array_deftype_character_is_string)
+{
+    ASSERT_STR_EQ(eval_print(
+        "(progn (deftype my-char () 'character)"
+        "       (stringp (make-array 3 :element-type 'my-char :initial-element #\\a)))"),
+        "T");
+    /* nested deftype alias resolves too */
+    ASSERT_STR_EQ(eval_print(
+        "(progn (deftype my-char2 () 'my-char)"
+        "       (stringp (make-array 2 :element-type 'my-char2 :initial-element #\\x)))"),
+        "T");
+    /* a deftype alias for BIT upgrades to a bit-vector */
+    ASSERT_STR_EQ(eval_print(
+        "(progn (deftype my-bit () 'bit)"
+        "       (bit-vector-p (make-array 4 :element-type 'my-bit :initial-element 0)))"),
+        "T");
+}
+
+/* Regression: UPGRADED-ARRAY-ELEMENT-TYPE must expand deftypes (CLHS — it
+ * accepts any type specifier).  A CHARACTER alias upgrades to CHARACTER, a
+ * BIT alias to BIT, everything else to T. */
+TEST(upgraded_array_element_type_expands_deftype)
+{
+    ASSERT_STR_EQ(eval_print(
+        "(progn (deftype my-char3 () 'character) (upgraded-array-element-type 'my-char3))"),
+        "CHARACTER");
+    ASSERT_STR_EQ(eval_print(
+        "(progn (deftype my-bit2 () 'bit) (upgraded-array-element-type 'my-bit2))"),
+        "BIT");
+    ASSERT_STR_EQ(eval_print("(upgraded-array-element-type 'character)"), "CHARACTER");
+    ASSERT_STR_EQ(eval_print("(upgraded-array-element-type 'fixnum)"), "T");
+}
+
 TEST(make_array_adjustable)
 {
     ASSERT_STR_EQ(eval_print(
@@ -1123,6 +1161,10 @@ int main(void)
 
     /* subtypep */
     RUN(subtypep_array);
+
+    /* deftype element-type expansion (flexi-streams octets-to-string regression) */
+    RUN(make_array_deftype_character_is_string);
+    RUN(upgraded_array_element_type_expands_deftype);
 
     teardown();
     REPORT();
