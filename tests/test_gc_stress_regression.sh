@@ -733,6 +733,37 @@ check_contains "#'(setf name) + >32-fn LABELS under stress" "SLC:42" "$out"
 check_absent   "no corrupted constant pool from #'(setf)"   "corrupted constant pool" "$out"
 check_absent   "no undefined-global from LABELS overflow"   "Undefined function: FN35" "$out"
 
+# --- Case: MAKE-ARRAY :element-type deftype alias under GC stress -------------
+# classify_array_elt_type calls cl_vm_apply (to evaluate the deftype expander),
+# which can trigger a compacting GC.  After compaction the `element_type` C
+# local in bi_make_array held a stale arena offset; the subsequent
+# !CL_NULL_P(element_type) check at the "default initial-element to 0" site
+# happened to be correct in practice (non-zero stale offset → non-NIL), but
+# violated GC safety.
+# Fix: capture has_element_type_spec = !CL_NULL_P(element_type) BEFORE calling
+# classify_array_elt_type, and use the boolean instead of re-reading element_type.
+cat > "$WORK/mkarr-deftype.lisp" <<'EOF'
+;; deftype alias for CHARACTER -> classify_array_elt_type expands via cl_vm_apply
+(deftype my-char () 'character)
+(let ((s (make-array 5 :element-type 'my-char :initial-element #\a)))
+  (format t "MKARR-CHAR:~a ~a~%" (stringp s) (length s)))
+;; deftype alias for BIT -> classify expands
+(deftype my-bit () 'bit)
+(let ((bv (make-array 8 :element-type 'my-bit :initial-element 0)))
+  (setf (bit bv 3) 1)
+  (format t "MKARR-BIT:~a ~a~%" (bit-vector-p bv) (bit bv 3)))
+;; deftype alias for T (general) -> no char/bit path, should still build a vector
+(deftype my-t () t)
+(let ((v (make-array 4 :element-type 'my-t)))
+  (setf (aref v 0) 42)
+  (format t "MKARR-T:~a ~a~%" (vectorp v) (aref v 0)))
+EOF
+out=$(run_stress "$WORK/mkarr-deftype.lisp")
+check_contains "make-array with deftype CHARACTER alias makes a string"       "MKARR-CHAR:T 5"   "$out"
+check_contains "make-array with deftype BIT alias makes a bit-vector"         "MKARR-BIT:T 1"    "$out"
+check_contains "make-array with deftype T alias makes a vector"               "MKARR-T:T 42"     "$out"
+check_absent   "no corruption from stale element_type across classify GC"     "Unbound variable\|type 0\|corrupted\|Undefined" "$out"
+
 echo ""
 echo "$passed passed, $failed failed, $total total"
 [ "$failed" -eq 0 ]
