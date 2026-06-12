@@ -719,6 +719,41 @@ static CL_Obj bi_open(CL_Obj *args, int n)
     CL_Obj stream;
     CL_Stream *st;
 
+    /* Per CL spec (and as LOAD already does): merge the filespec with
+     * *default-pathname-defaults* so a relative pathname resolves against the
+     * caller's bound default rather than just the process cwd.  Without this,
+     * (with-open-file (f #P"fz.jpg") ...) under a rebound
+     * *default-pathname-defaults* (e.g. a test harness) fails to find the
+     * file.  Streams (pathname designators) are left to coerce_to_filename. */
+    if (CL_PATHNAME_P(args[0]) || CL_ANY_STRING_P(args[0])) {
+        extern CL_Obj cl_parse_namestring(const char *str, uint32_t len);
+        extern const char *cl_coerce_to_namestring(CL_Obj arg, char *buf, uint32_t bufsz);
+        extern CL_Obj bi_merge_pathnames(CL_Obj *margs, int mn);
+        CL_Obj path_pn, merge_args[1];
+        char ns_buf[1024];
+        if (CL_PATHNAME_P(args[0])) {
+            path_pn = args[0];
+        } else {
+#ifdef CL_WIDE_STRINGS
+            if (CL_WIDE_STRING_P(args[0])) {
+                char wbuf[1024];
+                uint32_t wn = cl_wide_string_to_utf8(args[0], wbuf, sizeof(wbuf));
+                path_pn = cl_parse_namestring(wbuf, wn);
+            } else
+#endif
+            {
+                CL_String *s = (CL_String *)CL_OBJ_TO_PTR(args[0]);
+                path_pn = cl_parse_namestring(s->data, s->length);
+            }
+        }
+        CL_GC_PROTECT(path_pn);
+        merge_args[0] = path_pn;
+        path_pn = bi_merge_pathnames(merge_args, 1);
+        CL_GC_UNPROTECT(1);
+        cl_coerce_to_namestring(path_pn, ns_buf, sizeof(ns_buf));
+        args[0] = cl_make_string(ns_buf, (uint32_t)strlen(ns_buf));
+    }
+
     if (!coerce_to_filename(&args[0]))
         cl_error(CL_ERR_TYPE, "OPEN: filename must be a string or pathname");
     path_str = (CL_String *)CL_OBJ_TO_PTR(args[0]);

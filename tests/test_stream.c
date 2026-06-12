@@ -676,6 +676,30 @@ TEST(open_element_type_binary_reported)
     remove("/tmp/cl_test_binstream.tmp");
 }
 
+/* Regression: OPEN must merge a relative pathname with
+ * *default-pathname-defaults* (like LOAD), not just resolve against the
+ * process cwd.  hunchentoot's test suite rebinds *default-pathname-defaults*
+ * to its source dir and does (with-open-file (f #P"fz.jpg") ...); without the
+ * merge that OPEN failed with "cannot open file".  Here we write a file into a
+ * temp dir, rebind *default-pathname-defaults* to that dir, then open it by
+ * its bare relative name. */
+TEST(open_relative_honors_default_pathname_defaults)
+{
+    const char *expr =
+        "(progn"
+        " (with-open-file (s \"/tmp/cl_test_dpd_file.txt\" :direction :output"
+        "                    :if-exists :supersede)"
+        "   (write-string \"zappa\" s))"
+        " (let ((*default-pathname-defaults* #P\"/tmp/\"))"
+        "   (with-open-file (s #P\"cl_test_dpd_file.txt\")"
+        "     (read-line s))))";
+    CL_Obj result = cl_eval_string(expr);
+    char buf[64];
+    cl_prin1_to_string(result, buf, sizeof(buf));
+    ASSERT_STR_EQ(buf, "\"zappa\"");
+    remove("/tmp/cl_test_dpd_file.txt");
+}
+
 /* A character stream (no :element-type) still reports CHARACTER. */
 TEST(open_element_type_character_default)
 {
@@ -2792,6 +2816,7 @@ int main(void)
     RUN(close_stream);
     RUN(file_stream_write_read);
     RUN(open_element_type_binary_reported);
+    RUN(open_relative_honors_default_pathname_defaults);
     RUN(open_element_type_character_default);
     RUN(charpos_tracking);
     RUN(read_line_string_stream);

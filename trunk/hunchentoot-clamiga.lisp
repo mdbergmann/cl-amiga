@@ -27,3 +27,28 @@
 (defun set-timeouts (usocket read-timeout write-timeout)
   (declare (ignore usocket read-timeout write-timeout))
   nil)
+
+;;; ---------------------------------------------------------------------------
+;;; cl-fad (FAD) portability shims.
+;;;
+;;; cl-fad dispatches its filesystem primitives on the host implementation with
+;;; #+(or :sbcl :lispworks ...) and falls through to (error "... not
+;;; implemented") for any Lisp it doesn't know — which cl-amiga is.  Hunchentoot
+;;; uses FAD:FILE-EXISTS-P in HANDLE-STATIC-FILE (serving the test's fz.jpg image
+;;; and uploaded files) and FAD:LIST-DIRECTORY in the folder dispatcher, so
+;;; without these the static-file / folder / upload handlers 500.
+;;;
+;;; cl-amiga's CL:PROBE-FILE already returns the truename of an existing file or
+;;; directory (directory truename in directory form) and NIL otherwise — exactly
+;;; FAD:FILE-EXISTS-P's contract and what the upstream :sbcl branch does.
+(defun cl-fad:file-exists-p (pathspec)
+  (probe-file pathspec))
+
+;;; FAD:LIST-DIRECTORY enumerates the entries of a directory.  CL:DIRECTORY with
+;;; a wild pathname over the directory does the same; mirror cl-fad's contract of
+;;; returning directories in directory form (PATHNAME-AS-DIRECTORY).
+(defun cl-fad:list-directory (dirname &key (follow-symlinks t))
+  (declare (ignore follow-symlinks))
+  (let ((dir (cl-fad:pathname-as-directory dirname)))
+    (directory (make-pathname :name :wild :type :wild
+                              :defaults dir))))

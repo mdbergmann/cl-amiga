@@ -3912,6 +3912,35 @@ TEST(eval_defsetf_long_form)
     ASSERT_EQ_INT(eval_int("(dslot \"n\")"), 15);
 }
 
+/* Regression: PRIN1 of a string with a non-ASCII char must emit the actual
+ * character, NOT a non-conformant "\\uXXXX" escape.  CL has no \\u string
+ * escape, so the old form failed to re-read EQUAL and broke downstream HTML
+ * escaping of Latin-1 parameter values in cl-who (the hunchentoot foreign-
+ * character parameter tests rendered no "&#xFC;").  Round-tripping through a
+ * string-output-stream brings the codepoint back as a single char, so the
+ * printed form of (string (code-char 252)) is the 3 chars  "  ü  "  =
+ * (34 252 34), not the 8-char \\u00FC escape (34 92 117 48 48 70 67 34). */
+TEST(eval_prin1_wide_string_no_u_escape)
+{
+    /* A wide string with a non-ASCII char round-trips through a string stream
+     * as the real codepoint (252), NOT the 6-char ü escape the old printer
+     * emitted (which would read back as 34 92 117 48 48 70 67 ...). */
+    ASSERT_STR_EQ(eval_print(
+        "(map 'list 'char-code"
+        "  (with-output-to-string (o) (prin1 (string (code-char 252)) o)))"),
+        "(34 252 34)");
+    /* PRIN1-TO-STRING of the same wide string round-trips via READ-FROM-STRING
+     * to an EQUAL string (the \u escape never did). */
+    ASSERT_STR_EQ(eval_print(
+        "(char-code (char (read-from-string (prin1-to-string (string (code-char 252)))) 0))"),
+        "252");
+    /* #\" and #\\ are still escaped with a leading #\\ (ASCII, no encoding). */
+    ASSERT_STR_EQ(eval_print(
+        "(map 'list 'char-code"
+        "  (with-output-to-string (o) (prin1 (coerce (list #\\\" #\\\\) 'string) o)))"),
+        "(34 92 34 92 92 34)");
+}
+
 /* Regression: stream EOF must signal a proper END-OF-FILE condition (CLHS),
  * not a generic simple-error — libraries (e.g. url-rewrite) catch
  * (end-of-file () ...) to terminate read loops. */
@@ -9518,6 +9547,7 @@ int main(void)
     RUN(eval_string_coerce);
     RUN(eval_string_fns_on_fill_pointer_string);
     RUN(eval_defsetf_long_form);
+    RUN(eval_prin1_wide_string_no_u_escape);
     RUN(eval_end_of_file_condition);
     RUN(eval_parse_integer);
     RUN(eval_write_to_string);

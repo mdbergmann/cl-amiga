@@ -257,6 +257,21 @@ static CL_Obj bi_make_array(CL_Obj *args, int n)
         CL_Obj result;
         CL_Vector *v;
 
+        /* CLHS: a negative dimension, or one exceeding ARRAY-DIMENSION-LIMIT,
+         * must signal an error (a subtype of ERROR, hence catchable by
+         * HANDLER-CASE) — not fatally abort the VM.  A bogus length (e.g. a
+         * negative HTTP Range size computed by a caller) otherwise casts to a
+         * near-2^32 uint32_t and trips cl_alloc's hard header-size guard via
+         * cl_storage_error, which escapes ordinary (error () ...) handlers. */
+        if (CL_FIXNUM_VAL(dim_arg) < 0)
+            cl_error(CL_ERR_TYPE,
+                     "MAKE-ARRAY: array dimension must be non-negative (got %d)",
+                     (int)CL_FIXNUM_VAL(dim_arg));
+        if (length > CL_HDR_SIZE_MASK)
+            cl_error(CL_ERR_TYPE,
+                     "MAKE-ARRAY: array dimension %u exceeds ARRAY-DIMENSION-LIMIT (%u)",
+                     (unsigned)length, (unsigned)CL_HDR_SIZE_MASK);
+
         /* :fill-pointer T means fill-pointer = array size (CLHS) */
         if (fill_pointer_is_t)
             fill_ptr = length;
