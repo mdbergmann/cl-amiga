@@ -757,21 +757,34 @@ CL_Obj compile_block(CL_Compiler *c, CL_Obj form)
     CL_Obj tag = cl_car(cl_cdr(form));
     CL_Obj body = cl_cdr(cl_cdr(form));
     int saved_block_count = c->block_count;
-    int needs_nlx = tree_needs_nlx_block(body, tag);
+    int needs_nlx;
     CL_BlockInfo *bi;
     CL_TailFrame *tf;
 
     /* Hard cap: writing to c->blocks[CL_MAX_BLOCKS] would clobber the
      * adjacent block_count field (silent stack-corruption that surfaces
      * later as a SIGBUS in compile_return_from when iterating
-     * c->blocks[].tag).  Raise a clean compile error instead. */
+     * c->blocks[].tag).  Raise a clean compile error instead.  Checked
+     * before the GC_PROTECTs below so the error path leaks no roots. */
     if (c->block_count >= CL_MAX_BLOCKS) {
         cl_error(CL_ERR_OVERFLOW,
                  "BLOCK nesting depth exceeded (%d): "
                  "consider raising CL_MAX_BLOCKS", CL_MAX_BLOCKS);
     }
 
+    /* GC SAFETY: tree_needs_nlx_block → nlx_scan_body MACROEXPANDS the body
+     * forms (to see through macros like a (push ...) hiding a return-from),
+     * which allocates and can trigger a compacting GC.  `body` and `tag` are
+     * unprotected C locals derived from `form`; without protecting them ACROSS
+     * the scan they hold stale arena offsets afterward, and compile_nontail_body
+     * would walk relocated/garbage cons cells — dropping the real body (e.g. a
+     * LOOP expansion's (let* ...)) and returning a freed-then-reused cell as the
+     * "tail", surfacing as "Unbound variable: ITEM<n>/ACC<n>" under GC stress.
+     * Same class as the compile_tagbody/tree_has_closure_forms fix.  Protect
+     * BEFORE the scan, not after. */
     CL_GC_PROTECT(body);
+    CL_GC_PROTECT(tag);
+    needs_nlx = tree_needs_nlx_block(body, tag);
 
     /* Push block info (for compile-time lookup by return-from) */
     bi = &c->blocks[c->block_count++];
@@ -809,7 +822,7 @@ CL_Obj compile_block(CL_Compiler *c, CL_Obj form)
 
         {
             CL_Obj tail = compile_nontail_body(c, body);
-            CL_GC_UNPROTECT(1);
+            CL_GC_UNPROTECT(2);  /* tag, body */
             return tail;  /* CL_NIL means caller emits OP_NIL for empty body */
         }
     } else {
@@ -832,7 +845,7 @@ CL_Obj compile_block(CL_Compiler *c, CL_Obj form)
 
         {
             CL_Obj tail = compile_nontail_body(c, body);
-            CL_GC_UNPROTECT(1);
+            CL_GC_UNPROTECT(2);  /* tag, body */
             return tail;
         }
     }

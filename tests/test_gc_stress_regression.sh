@@ -899,13 +899,8 @@ check_absent   "no not-a-string-designator from stale string-vector copy"  "not 
 # (this is the cl-ppcre normalize-var-list shape that reversed regex groups).
 # NB: this exercises the if/else mix (the cl-ppcre normalize-var-list shape) —
 # the accumulator is built via NRECONC/REVAPPEND/push and finalized with one
-# NREVERSE.  It is wrapped in a DEFUN deliberately: a loop with *two* sequential
-# accumulation clauses per iteration (e.g. `collect x nconc ...`), or a bare
-# top-level COLLECT loop, trips a SEPARATE pre-existing compiler-cursor bug whose
-# ITEM/ACC gensym gets split under forced-every-alloc compaction ("Unbound
-# variable: ITEM<n>"); that is independent of this order fix (the result is
-# correct whenever it doesn't crash, and is correct in normal builds) and out of
-# scope here.  The single-clause if/else body compiles cleanly under stress.
+# NREVERSE.  (The separate two-clause / bare-COLLECT compiler-cursor bug it was
+# once grouped with here is now fixed — see the next case.)
 cat > "$WORK/loop-accum.lisp" <<'EOF'
 (defun la-mix (xs)
   (loop for x in xs if (consp x) nconc (copy-list x) else collect x))
@@ -917,6 +912,35 @@ EOF
 out=$(run_stress "$WORK/loop-accum.lisp")
 check_contains "loop mixed collect/nconc keeps order under GC stress" "LACC:(A 39 40 B)" "$out"
 check_absent   "no reversal/corruption in loop accumulation under stress" "corrupted\|type 0\|Unbound" "$out"
+
+# --- Case: BLOCK body survives compaction during the NLX scan ----------------
+# Regression for the compile_block GC-safety fix.  compile_block calls
+# tree_needs_nlx_block(body, tag) — which MACROEXPANDS the body (nlx_scan_body
+# sees through macros to detect a return-from crossing a closure) and therefore
+# allocates — while `body`/`tag` were still unprotected C locals.  Under
+# forced-every-alloc compaction the body cons relocated, the post-scan
+# CL_GC_PROTECT pinned a STALE offset, and compile_nontail_body returned a
+# freed-then-reused cell as the block's "tail": the real (let* ...) was dropped
+# and a bare gensym surfaced as "Unbound variable: ITEM<n>/ACC<n>".  Every LOOP
+# expands to (block nil (let* ...)), so a bare-COLLECT loop and a loop with two
+# sequential accumulation clauses per iteration are the natural triggers.  Same
+# class as the compile_tagbody/tree_has_closure_forms scan-before-protect fix.
+cat > "$WORK/loop-block.lisp" <<'EOF'
+;; Bare top-level COLLECT (was "Unbound variable: ACC<n>")
+(format t "BARE:~a~%" (loop for x in '(1 2 3) collect x))
+;; Two accumulation clauses per iteration (was "Unbound variable: ITEM<n>")
+(format t "TWO:~a~%" (loop for x in '(1 2 3) collect x nconc (list (* x 10))))
+;; Same shape inside a DEFUN, called repeatedly to churn the heap
+(defun lb-two (xs) (loop for x in xs collect x nconc (list x)))
+(let ((last nil))
+  (dotimes (i 30) (setq last (lb-two (list i (+ i 100)))))
+  (format t "DEFUN:~a~%" last))
+EOF
+out=$(run_stress "$WORK/loop-block.lisp")
+check_contains "bare COLLECT loop compiles under GC stress"        "BARE:(1 2 3)" "$out"
+check_contains "two-clause COLLECT/NCONC loop under GC stress"     "TWO:(1 10 2 20 3 30)" "$out"
+check_contains "two-clause accum loop in DEFUN under GC stress"    "DEFUN:(29 29 129 129)" "$out"
+check_absent   "no split ITEM/ACC gensym from stale BLOCK body"    "Unbound\|corrupted\|type 0\|not of type" "$out"
 
 # --- Case: OPEN :external-format :latin-1 file round-trip under GC stress ----
 # The latin-1 stream feature: a character file stream opened :external-format
