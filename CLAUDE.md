@@ -87,6 +87,7 @@ Any C code that holds `CL_Obj` values across allocating calls **must** GC-protec
 ## Documentation
 
 - **When adding or changing a feature, check `README.md` for outdated or missing content** and update it as part of the change — the README must not drift from what the code actually does.
+- **Keep README changes user-facing and high-level.** Document what a feature is and how to use it. Do **not** add changelog-style notes, fixed-bug descriptions, internal implementation details, root-cause analyses, or other low-level information that isn't relevant to someone using the project. Those belong in commit messages, tests, or memory — not the README.
 - For a new feature, add a short section describing how it works. Keep prose minimal: the best documentation is a comprehensive, runnable test file that demonstrates the feature end-to-end. Create such a test file if one doesn't already exist, then have the README point to it (e.g. "see `tests/test_ffi.c` / `tests/amiga/ffi-tests.lisp` for usage examples").
 - Prefer linking to authoritative, executable examples over long explanatory text — the test file is the source of truth and stays current because `make test` runs it.
 

@@ -158,76 +158,20 @@ Reusable Lisp loaders in `trunk/` that load and exercise third-party libraries o
 ./build/host/clamiga --heap 256M --load trunk/load-and-test-hunchentoot.lisp    # Hunchentoot server (host only)
 ```
 
-`load-and-test-drakma.lisp` is the SSL-enabled HTTP path: it loads **drakma**
-with **cl+ssl** (against the host's OpenSSL) over the **usocket** cl-amiga
-backend and runs drakma's own fiveam suite. cl-amiga drives drakma as an
-HTTP/HTTPS **client**, and that is what the run exercises and passes: plain
-HTTP and HTTPS, GET and POST, streamed responses, and **cl+ssl certificate
-verification** (the badssl.com `VERIFY.*` tests). cl+ssl works because cl-amiga
-now reports the host OS/arch as `*features*` (`:darwin`/`:linux` +
-`:arm64`/`:x86-64`), letting its `define-foreign-library` resolve the right
-OpenSSL; the usocket backend (`usocket/backend/clamiga.lisp`, in the usocket
-fork) maps usocket onto `ext:open-tcp-stream` / `ext:socket-listen`. drakma's
-`:decode-content t` (streaming gunzip/inflate of compressed replies) also works:
-the **chipz** fork (`mdbergmann/chipz`) has a `#+cl-amiga` Gray-stream branch so
-`chipz:make-decompressing-stream` decodes through cl-amiga's Gray streams — the
-google.com gzip-decode tests pass (see `trunk/test-chipz-stream.lisp` for a
-focused, runnable gunzip example). cl-amiga's Gray streams expose
-`gray:stream-read-sequence` / `gray:stream-write-sequence` (the
-trivial-gray-streams `(stream sequence start end &key)` signature), so
-`read-sequence`/`write-sequence` on a Gray stream dispatch to a single bulk
-method instead of looping byte-by-byte: chipz decompresses straight into the
-caller's buffer (see `trunk/test-gray-sequence.lisp` for the dispatch tests).
-The suite also runs the form-POST/PUT tests, which stand up a local
-**hunchentoot server** and POST to it: hunchentoot now runs as a server over
-the usocket cl-amiga backend (its acceptor loop drives off `cl:listen` on the
-listening socket — see below — and the cl-amiga portability shims in
-`trunk/hunchentoot-clamiga.lisp`). The only remaining skipped tests depend on
-the flaky httpbin.org service, orthogonal to the client+server goal, and are
-skipped with documented reasons (`trunk/drakma-skip-tests.lisp`). It is
-**host-only**: it needs a TCP/IP stack and network access, which the
-Amiga/FS-UAE test harness lacks.
+`load-and-test-drakma.lisp` drives **drakma** as an HTTP/HTTPS **client** and
+runs drakma's own test suite: plain HTTP and HTTPS, GET and POST, streamed and
+gzip-decoded responses, and cl+ssl certificate verification. It loads over the
+**usocket** cl-amiga backend, with **cl+ssl** against the host's OpenSSL and the
+**chipz** fork for decompression.
 
-`load-and-test-hunchentoot.lisp` is the dedicated **server-side** counterpart:
-cl-amiga itself *is* the web server. It starts a Hunchentoot `easy-acceptor`
-over the usocket cl-amiga backend (so the accept loop runs on a cl-amiga MP
-taskmaster thread) and runs Hunchentoot's own built-in confidence suite
-(`hunchentoot/test`, `HUNCHENTOOT-TEST:TEST-HUNCHENTOOT`) against it, driving
-**drakma** over loopback through cookies, sessions, multipart parameter
-decoding, redirection and basic auth. It applies the same
-`trunk/hunchentoot-clamiga.lisp` shims and renders its HTML test pages with
-**cl-who**. Like the drakma script it is **host-only** (needs loopback TCP/IP).
+`load-and-test-hunchentoot.lisp` runs cl-amiga itself as a web **server**: it
+starts a Hunchentoot `easy-acceptor` and runs Hunchentoot's built-in confidence
+suite against it (driving drakma over loopback through cookies, sessions,
+multipart parameters, redirection and basic auth), rendering HTML with
+**cl-who**.
 
-Getting the session/cookie pages to render exposed and fixed three latent
-conformance gaps (regression tests in `tests/test_vm.c`:
-`eval_defsetf_long_form`, `eval_string_fns_on_fill_pointer_string`,
-`eval_end_of_file_condition`, plus GC-stress coverage in
-`tests/test_gc_stress_regression.sh`):
-
-- **Long-form `defsetf`** (CLHS 5.5.5) — `(defsetf access (lambda-list)
-  (store-vars) body...)` is now supported; previously only the short form
-  worked, so `(setf (session-value x) v)` mis-compiled to a call of the access
-  lambda list. The C compiler delegates the long form to the
-  `clamiga::%defsetf-long` helper macro, which expands into a
-  `define-setf-expander`.
-- **String functions accept fill-pointer / adjustable strings** — `string=`,
-  `string-equal`, `string<`…, `write-string`, `string-upcase`/`-downcase`/
-  `-trim`/`-capitalize` now treat a `(vector character)` with a fill pointer
-  (`CL_STRING_VECTOR_P`) as a valid string, via vector-aware `cl_string_length`
-  / `cl_string_char_at` / `cl_string_copy`.
-- **`end-of-file` condition** — `read-char`/`peek-char`/`read-line`/`read`/
-  `read-byte` signal a proper `END-OF-FILE` condition at EOF (new `CL_ERR_EOF`
-  + the gray-streams shadows), so `(handler-case … (end-of-file () …))` loops
-  (e.g. hunchentoot's url-rewrite) terminate as the standard requires.
-
-`cl:listen` works on socket streams (both connected sockets and listening
-sockets): it reports a connected socket as ready when a byte is available and a
-listening socket as ready when a client connection is pending, backed by a
-non-blocking `platform_socket_data_available` (a zero-timeout `select` on
-POSIX / `WaitSelect` via the reactor on Amiga). That is what lets
-`usocket:wait-for-input` — and hence hunchentoot's accept loop — work. See
-`tests/test_stream.c` (`socket_listen_reports_readiness`) for a runnable
-round-trip.
+Both scripts are **host-only** — they need a TCP/IP stack and network access,
+which the Amiga/FS-UAE test harness lacks.
 
 ### Loading source and FASL files
 
