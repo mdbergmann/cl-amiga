@@ -381,6 +381,14 @@ static CL_Obj string_designator_to_obj(CL_Obj obj, uint32_t *out_len)
         *out_len = cl_string_length(obj);
         return obj;
     }
+    /* Adjustable / fill-pointer character vector — a valid CL string.  The
+     * read accessors (cl_string_length / cl_string_char_at) are vector-aware,
+     * so return it as-is; no allocation, no GC hazard for the two-arg
+     * comparison callers. */
+    if (CL_STRING_VECTOR_P(obj)) {
+        *out_len = cl_string_length(obj);
+        return obj;
+    }
     if (CL_NULL_P(obj)) {
         CL_Symbol *sym = (CL_Symbol *)CL_OBJ_TO_PTR(SYM_NIL);
         *out_len = cl_string_length(sym->name);
@@ -545,6 +553,11 @@ static CL_Obj bi_string_not_equal(CL_Obj *args, int n)
 static CL_Obj coerce_to_string_obj(CL_Obj obj, const char *func_name)
 {
     if (CL_ANY_STRING_P(obj))
+        return obj;
+    /* Adjustable / fill-pointer character vector — a valid CL string.
+     * Returned as-is; callers (string-upcase/-trim/...) copy it via
+     * cl_string_copy, which materializes a fresh simple string. */
+    if (CL_STRING_VECTOR_P(obj))
         return obj;
     if (CL_NULL_P(obj)) {
         CL_Symbol *sym = (CL_Symbol *)CL_OBJ_TO_PTR(SYM_NIL);

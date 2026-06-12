@@ -18,6 +18,10 @@ static inline uint32_t cl_string_length(CL_Obj str)
     if (CL_WIDE_STRING_P(str))
         return ((CL_WideString *)CL_OBJ_TO_PTR(str))->length;
 #endif
+    /* Adjustable / fill-pointer character vector (CLHS: a valid STRING).
+     * Active length honors the fill pointer. */
+    if (CL_STRING_VECTOR_P(str))
+        return cl_vector_active_length((CL_Vector *)CL_OBJ_TO_PTR(str));
     return ((CL_String *)CL_OBJ_TO_PTR(str))->length;
 }
 
@@ -28,6 +32,11 @@ static inline int cl_string_char_at(CL_Obj str, uint32_t idx)
     if (CL_WIDE_STRING_P(str))
         return (int)((CL_WideString *)CL_OBJ_TO_PTR(str))->data[idx];
 #endif
+    if (CL_STRING_VECTOR_P(str)) {
+        CL_Vector *v = (CL_Vector *)CL_OBJ_TO_PTR(str);
+        CL_Obj ch = cl_vector_data(v)[idx];
+        return CL_CHAR_P(ch) ? (int)CL_CHAR_VAL(ch) : 0;
+    }
     return (int)(unsigned char)((CL_String *)CL_OBJ_TO_PTR(str))->data[idx];
 }
 

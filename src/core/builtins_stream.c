@@ -159,7 +159,7 @@ static CL_Obj bi_read_char(CL_Obj *args, int n)
     ch = cl_stream_read_char(stream);
     if (ch == -1) {
         if (eof_error_p)
-            cl_error(CL_ERR_GENERAL, "READ-CHAR: end of file");
+            cl_error(CL_ERR_EOF, "READ-CHAR: end of file");
         return eof_value;
     }
     return CL_MAKE_CHAR(ch);
@@ -189,7 +189,7 @@ static CL_Obj bi_read_byte(CL_Obj *args, int n)
     byte = cl_stream_read_byte(stream);
     if (byte == -1) {
         if (eof_error_p)
-            cl_error(CL_ERR_GENERAL, "READ-BYTE: end of file");
+            cl_error(CL_ERR_EOF, "READ-BYTE: end of file");
         return eof_value;
     }
     return CL_MAKE_FIXNUM(byte);
@@ -254,7 +254,7 @@ static CL_Obj bi_peek_char(CL_Obj *args, int n)
 
     if (ch == -1) {
         if (eof_error_p)
-            cl_error(CL_ERR_GENERAL, "PEEK-CHAR: end of file");
+            cl_error(CL_ERR_EOF, "PEEK-CHAR: end of file");
         return eof_value;
     }
     return CL_MAKE_CHAR(ch);
@@ -337,7 +337,7 @@ static CL_Obj bi_read_line(CL_Obj *args, int n)
     if (!got_any && ch == -1) {
         if (buf != stack_buf) platform_free(buf);
         if (eof_error_p)
-            cl_error(CL_ERR_GENERAL, "READ-LINE: end of file");
+            cl_error(CL_ERR_EOF, "READ-LINE: end of file");
         cl_mv_values[0] = eof_value;
         cl_mv_values[1] = CL_T;
         cl_mv_count = 2;
@@ -365,7 +365,7 @@ static CL_Obj bi_write_string(CL_Obj *args, int n)
     uint32_t start = 0, end, slen;
     int i;
 
-    if (!CL_ANY_STRING_P(args[0]))
+    if (!CL_ANY_STRING_P(args[0]) && !CL_STRING_VECTOR_P(args[0]))
         cl_error(CL_ERR_TYPE, "WRITE-STRING: argument is not a string");
     slen = cl_string_length(args[0]);
     end = slen;
@@ -1530,7 +1530,7 @@ static CL_Obj bi_read_char_no_hang(CL_Obj *args, int n)
         /* Check for EOF */
         if (st->flags & CL_STREAM_FLAG_EOF) {
             if (eof_error_p)
-                cl_error(CL_ERR_GENERAL, "READ-CHAR-NO-HANG: end of file");
+                cl_error(CL_ERR_EOF, "READ-CHAR-NO-HANG: end of file");
             return eof_value;
         }
         return CL_NIL;
@@ -1540,7 +1540,7 @@ static CL_Obj bi_read_char_no_hang(CL_Obj *args, int n)
         int ch = cl_stream_read_char(stream);
         if (ch == -1) {
             if (eof_error_p)
-                cl_error(CL_ERR_GENERAL, "READ-CHAR-NO-HANG: end of file");
+                cl_error(CL_ERR_EOF, "READ-CHAR-NO-HANG: end of file");
             return eof_value;
         }
         return CL_MAKE_CHAR(ch);

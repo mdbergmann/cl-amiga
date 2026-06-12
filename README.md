@@ -198,6 +198,28 @@ decoding, redirection and basic auth. It applies the same
 `trunk/hunchentoot-clamiga.lisp` shims and renders its HTML test pages with
 **cl-who**. Like the drakma script it is **host-only** (needs loopback TCP/IP).
 
+Getting the session/cookie pages to render exposed and fixed three latent
+conformance gaps (regression tests in `tests/test_vm.c`:
+`eval_defsetf_long_form`, `eval_string_fns_on_fill_pointer_string`,
+`eval_end_of_file_condition`, plus GC-stress coverage in
+`tests/test_gc_stress_regression.sh`):
+
+- **Long-form `defsetf`** (CLHS 5.5.5) — `(defsetf access (lambda-list)
+  (store-vars) body...)` is now supported; previously only the short form
+  worked, so `(setf (session-value x) v)` mis-compiled to a call of the access
+  lambda list. The C compiler delegates the long form to the
+  `clamiga::%defsetf-long` helper macro, which expands into a
+  `define-setf-expander`.
+- **String functions accept fill-pointer / adjustable strings** — `string=`,
+  `string-equal`, `string<`…, `write-string`, `string-upcase`/`-downcase`/
+  `-trim`/`-capitalize` now treat a `(vector character)` with a fill pointer
+  (`CL_STRING_VECTOR_P`) as a valid string, via vector-aware `cl_string_length`
+  / `cl_string_char_at` / `cl_string_copy`.
+- **`end-of-file` condition** — `read-char`/`peek-char`/`read-line`/`read`/
+  `read-byte` signal a proper `END-OF-FILE` condition at EOF (new `CL_ERR_EOF`
+  + the gray-streams shadows), so `(handler-case … (end-of-file () …))` loops
+  (e.g. hunchentoot's url-rewrite) terminate as the standard requires.
+
 `cl:listen` works on socket streams (both connected sockets and listening
 sockets): it reports a connected socket as ready when a byte is available and a
 listening socket as ready when a client connection is pending, backed by a
