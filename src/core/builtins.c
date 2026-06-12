@@ -637,24 +637,12 @@ static CL_Obj bi_mapcar(CL_Obj *args, int n)
             lists[i] = cl_cdr(lists[i]);
         }
 
-        /* Call function */
-        if (CL_FUNCTION_P(func)) {
-            CL_Function *f = (CL_Function *)CL_OBJ_TO_PTR(func);
-            if (nlists < f->min_args)
-                cl_error(CL_ERR_ARGS,
-                         "MAPCAR: too few arguments to function (got %d, min %d)",
-                         nlists, f->min_args);
-            if (f->max_args >= 0 && nlists > f->max_args)
-                cl_error(CL_ERR_ARGS,
-                         "MAPCAR: too many arguments to function (got %d, max %d)",
-                         nlists, f->max_args);
-            val = f->func(call_args, nlists);
-        } else if (CL_BYTECODE_P(func) || CL_CLOSURE_P(func)) {
-            val = cl_vm_apply(func, call_args, nlists);
-        } else {
-            cl_error(CL_ERR_TYPE, "MAPCAR: not a function");
-            val = CL_NIL;
-        }
+        /* Call function.  cl_vm_apply GC-roots call_args across the call —
+         * essential because the mapped function may allocate (and compact)
+         * while reading its own args, which would otherwise relocate an arg
+         * out from under this unprotected C array (e.g. MAPCAR #'LIST
+         * splitting a gensym under GC stress). */
+        val = cl_vm_apply(func, call_args, nlists);
 
         {
             CL_Obj cell = cl_cons(val, CL_NIL);
@@ -712,7 +700,10 @@ static CL_Obj bi_apply(CL_Obj *args, int n)
             cl_error(CL_ERR_TYPE, "APPLY: NULL function pointer in %s",
                      CL_NULL_P(f->name) ? "?" : cl_symbol_name(f->name));
         }
-        return f->func(flat_args, nflat);
+        /* via cl_vm_apply: it GC-roots flat_args (a C-local array, not on the
+         * VM stack) across the call so the applied builtin can compact while
+         * reading its own args. */
+        return cl_vm_apply(func, flat_args, nflat);
     }
     if (CL_BYTECODE_P(func) || CL_CLOSURE_P(func)) {
         return cl_vm_apply(func, flat_args, nflat);

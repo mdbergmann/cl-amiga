@@ -51,11 +51,8 @@ static CL_Obj call_test(CL_Obj test_fn, CL_Obj a, CL_Obj b)
     CL_Obj targs[2];
     targs[0] = a;
     targs[1] = b;
-    if (CL_FUNCTION_P(test_fn)) {
-        CL_Function *f = (CL_Function *)CL_OBJ_TO_PTR(test_fn);
-        return f->func(targs, 2);
-    }
-    if (CL_BYTECODE_P(test_fn) || CL_CLOSURE_P(test_fn))
+    if (CL_FUNCTION_P(test_fn) || CL_BYTECODE_P(test_fn) || CL_CLOSURE_P(test_fn))
+        /* cl_vm_apply GC-roots targs across the call. */
         return cl_vm_apply(test_fn, targs, 2);
     cl_error(CL_ERR_TYPE, "not a function (test)");
     return CL_NIL;
@@ -66,11 +63,8 @@ static CL_Obj call_pred(CL_Obj pred_fn, CL_Obj item)
 {
     CL_Obj pargs[1];
     pargs[0] = item;
-    if (CL_FUNCTION_P(pred_fn)) {
-        CL_Function *f = (CL_Function *)CL_OBJ_TO_PTR(pred_fn);
-        return f->func(pargs, 1);
-    }
-    if (CL_BYTECODE_P(pred_fn) || CL_CLOSURE_P(pred_fn))
+    if (CL_FUNCTION_P(pred_fn) || CL_BYTECODE_P(pred_fn) || CL_CLOSURE_P(pred_fn))
+        /* cl_vm_apply GC-roots pargs across the call. */
         return cl_vm_apply(pred_fn, pargs, 1);
     cl_error(CL_ERR_TYPE, "not a function (predicate)");
     return CL_NIL;
@@ -771,7 +765,9 @@ static CL_Obj call_func(CL_Obj func, CL_Obj *call_args, int nargs)
         if (f->max_args >= 0 && nargs > f->max_args)
             cl_error(CL_ERR_ARGS, "too many arguments (got %d, max %d)",
                      nargs, f->max_args);
-        return f->func(call_args, nargs);
+        /* via cl_vm_apply: it GC-roots call_args across the call (the mapped
+         * function may compact while reading its own args). */
+        return cl_vm_apply(func, call_args, nargs);
     }
     if (CL_BYTECODE_P(func) || CL_CLOSURE_P(func))
         return cl_vm_apply(func, call_args, nargs);
