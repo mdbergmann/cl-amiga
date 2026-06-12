@@ -25,6 +25,12 @@ extern CL_Obj condition_slot_table;    /* builtins_condition.c */
 /* Active compiler chain is accessed via cl_active_compiler macro (thread.h) */
 typedef struct CL_Compiler_s CL_Compiler;
 
+/* thread.h defines `pending_lambda_name` as a macro for `(CT->pending_lambda_name)`,
+ * but the GC walks every thread via an explicit `t->` pointer (not CT), so we
+ * must reference the raw struct member.  Drop the macro here — mem.c only ever
+ * touches this field through `t->pending_lambda_name`, never the macro form. */
+#undef pending_lambda_name
+
 /* STW GC coordination (defined in thread.c) */
 extern void cl_gc_stop_the_world(void);
 extern void cl_gc_resume_the_world(void);
@@ -1279,6 +1285,11 @@ static void gc_mark_thread_roots(CL_Thread *t)
     }
     gc_mark_obj(t->pending_tag);
     gc_mark_obj(t->pending_value);
+    /* Compiler hand-off: holds a CL_Obj symbol across compile_expr's allocations
+     * (set in compile_named_lambda/compile_defun, consumed in compile_lambda).
+     * Must be marked AND updated or a compaction mid-lambda-compile leaves
+     * bc->name a stale offset under GC stress. */
+    gc_mark_obj(t->pending_lambda_name);
 
     /* Thread metadata */
     gc_mark_obj(t->name);
@@ -2024,6 +2035,7 @@ static void gc_update_thread_roots(CL_Thread *t)
         gc_update_slot(&t->mv_values[i]);
     gc_update_slot(&t->pending_tag);
     gc_update_slot(&t->pending_value);
+    gc_update_slot(&t->pending_lambda_name);  /* see gc_mark counterpart */
 
     /* Thread metadata */
     gc_update_slot(&t->name);

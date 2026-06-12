@@ -1257,6 +1257,18 @@
 (check "deftype compound match int" t (typep 42 'str-or-num))
 (check "deftype compound match str" t (typep "hi" 'str-or-num))
 (check "deftype compound no" nil (typep #\A 'str-or-num))
+; Several deftypes in sequence: the type NAME must register as the canonical
+; interned symbol so SUBTYPEP / UPGRADED-ARRAY-ELEMENT-TYPE resolve the expander.
+; (Host gc-stress regression for the compile_deftype name-protection fix; here it
+; is the functional check that the expander is found for each definition.)
+(deftype my-char () 'character)
+(deftype my-u8 () '(unsigned-byte 8))
+(deftype my-int () 'integer)
+(check "deftype my-char subtypep character" t (and (subtypep 'my-char 'character) t))
+(check "deftype my-u8 subtypep integer"     t (and (subtypep 'my-u8 'integer) t))
+(check "deftype my-int subtypep integer"    t (and (subtypep 'my-int 'integer) t))
+(check "deftype upgraded-array-element-type" 'character
+       (upgraded-array-element-type 'my-char))
 
 ; --- Type system: subtypep ---
 (check "subtypep fixnum<number" t (subtypep 'fixnum 'number))
@@ -1616,6 +1628,20 @@
          (a (car x))
          (b (cadr x)))
     (and (null (car a)) (null (cdr a)) (eq a b))))
+
+; Printer: base string with a high byte (> 127) round-trips through a string
+; output stream as its real code point, not the U+FFFD replacement char.
+; (Host CL_WIDE_STRINGS regression for print_string's signed-char bug; on the
+; non-wide Amiga build base strings are 8-bit transparent — this guards that the
+; unsigned-char + per-char princ change keeps the byte faithful here too.)
+(check "prin1 base-string high byte round-trip" '(34 92 34 252 92 92 34)
+       (map 'list 'char-code
+            (with-output-to-string (o)
+              (prin1 (coerce (list #\" (code-char 252) #\\) 'string) o))))
+(check "princ base-string high byte round-trip" '(252)
+       (map 'list 'char-code
+            (with-output-to-string (o)
+              (princ (coerce (list (code-char 252)) 'string) o))))
 
 ; Printer: uninterned
 (check "print uninterned" "#:HELLO" (prin1-to-string '#:HELLO))

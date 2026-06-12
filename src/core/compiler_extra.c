@@ -1432,20 +1432,36 @@ void compile_deftype(CL_Compiler *c, CL_Obj form)
     CL_Obj name = cl_car(cl_cdr(form));
     CL_Obj lambda_list = cl_car(cl_cdr(cl_cdr(form)));
     CL_Obj body = cl_cdr(cl_cdr(cl_cdr(form)));
+    CL_Obj lambda_form;
     int idx;
 
-    CL_Obj lambda_form = cl_cons(SYM_LAMBDA,
-                                  cl_cons(lambda_list, body));
+    /* GC SAFETY: `name` is a raw C local read out of `form`.  cl_compile_env
+     * does NOT re-protect the `expr` it forwards, so `form` (and thus a bare
+     * `name` read from it) is rooted only in the bi_load/compile-file caller's
+     * frame — a separate C local that the compactor forwards independently.
+     * Every allocating call below (the cl_cons pair that builds lambda_form,
+     * then compile_expr compiling the whole expander lambda) can compact and
+     * relocate the symbol; an unprotected `name` then holds a stale offset (an
+     * orphan ~1 object off from the relocated canonical symbol).  cl_add_constant
+     * would bake that stale offset into the constant pool, so OP_DEFTYPE
+     * registers a NON-canonical name in type_table and cl_get_type_expander's
+     * `cl_car(pair) == name` identity check never matches the interned symbol —
+     * subtypep/upgraded-array-element-type then silently fail for the deftype.
+     * Protect BEFORE the first allocation, not after. */
+    CL_GC_PROTECT(name);
+
+    lambda_form = cl_cons(SYM_LAMBDA, cl_cons(lambda_list, body));
     CL_GC_PROTECT(lambda_form);
 
     compile_expr(c, lambda_form);
 
-    CL_GC_UNPROTECT(1);
+    CL_GC_UNPROTECT(1);            /* lambda_form — name stays protected */
 
     /* OP_DEFTYPE pops the closure, registers type, pushes name */
     idx = cl_add_constant(c, name);
     cl_emit(c, OP_DEFTYPE);
     cl_emit_u16(c, (uint16_t)idx);
+    CL_GC_UNPROTECT(1);            /* name */
 }
 
 /* --- Defvar / Defparameter --- */
@@ -1459,6 +1475,12 @@ void compile_defvar(CL_Compiler *c, CL_Obj form)
 
     sym->flags |= CL_SYM_SPECIAL;
 
+    /* GC SAFETY: compile_expr(init-form) can compact under GC stress and
+     * relocate the `name` symbol.  cl_compile_env does not re-protect the form,
+     * so a bare `name` would go stale and cl_add_constant/cl_emit_const would
+     * bake a stale offset into OP_DEFVAR / the return value — marking the WRONG
+     * symbol special at FASL load.  Same class as compile_deftype. */
+    CL_GC_PROTECT(name);
     if (!CL_NULL_P(rest)) {
         int idx;
         compile_expr(c, cl_car(rest));
@@ -1468,6 +1490,7 @@ void compile_defvar(CL_Compiler *c, CL_Obj form)
         cl_emit_u16(c, (uint16_t)idx);
     }
     cl_emit_const(c, name);
+    CL_GC_UNPROTECT(1);
 }
 
 void compile_defparameter(CL_Compiler *c, CL_Obj form)
@@ -1480,6 +1503,9 @@ void compile_defparameter(CL_Compiler *c, CL_Obj form)
 
     sym->flags |= CL_SYM_SPECIAL;
 
+    /* GC SAFETY: see compile_defvar — protect `name` across compile_expr's
+     * compaction so OP_GSTORE/OP_DEFVAR get the live symbol, not a stale one. */
+    CL_GC_PROTECT(name);
     if (!CL_NULL_P(rest)) {
         compile_expr(c, cl_car(rest));
         idx = cl_add_constant(c, name);
@@ -1494,6 +1520,7 @@ void compile_defparameter(CL_Compiler *c, CL_Obj form)
         cl_emit_u16(c, (uint16_t)idx);
     }
     cl_emit_const(c, name);
+    CL_GC_UNPROTECT(1);
 }
 
 void compile_defconstant(CL_Compiler *c, CL_Obj form)
@@ -1514,6 +1541,8 @@ void compile_defconstant(CL_Compiler *c, CL_Obj form)
 
     sym->flags |= CL_SYM_CONSTANT;
 
+    /* GC SAFETY: see compile_defvar — protect `name` across compile_expr. */
+    CL_GC_PROTECT(name);
     if (!CL_NULL_P(rest)) {
         compile_expr(c, cl_car(rest));
         idx = cl_add_constant(c, name);
@@ -1522,6 +1551,7 @@ void compile_defconstant(CL_Compiler *c, CL_Obj form)
         cl_emit(c, OP_POP);
     }
     cl_emit_const(c, name);
+    CL_GC_UNPROTECT(1);
 }
 
 /* --- named-lambda --- */

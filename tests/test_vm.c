@@ -3941,6 +3941,33 @@ TEST(eval_prin1_wide_string_no_u_escape)
         "(34 92 34 92 92 34)");
 }
 
+/* Regression: a BASE string (TYPE_STRING, from COERCE 'string of ASCII-fitting
+ * chars) holding a byte > 127 must round-trip through a string-output stream as
+ * its real codepoint, not U+FFFD.  print_string used to read each char as a
+ * SIGNED char, so 0xFC sign-extended to -4, dodged cl_stream_write_char's
+ * `ch > 0x7F` latin-1→UTF-8 encode test, and got written as a lone raw byte that
+ * get-output-stream-string then mis-decoded as the replacement char 65533.  Both
+ * the prin1 (escape) and princ (raw) branches are covered. */
+TEST(eval_prin1_base_string_high_byte_roundtrip)
+{
+    /* prin1 of a base string with #\ü (252): the ü survives as 252, not 65533. */
+    ASSERT_STR_EQ(eval_print(
+        "(map 'list 'char-code"
+        "  (with-output-to-string (o)"
+        "    (prin1 (coerce (list #\\\" (code-char 252) #\\\\) 'string) o)))"),
+        "(34 92 34 252 92 92 34)");
+    /* princ (no escapes) of a base string high byte also survives as 252. */
+    ASSERT_STR_EQ(eval_print(
+        "(map 'list 'char-code"
+        "  (with-output-to-string (o) (princ (coerce (list (code-char 252)) 'string) o)))"),
+        "(252)");
+    /* Full PRIN1 → READ-FROM-STRING round-trip preserves the codepoint. */
+    ASSERT_STR_EQ(eval_print(
+        "(char-code (char (read-from-string"
+        "  (prin1-to-string (coerce (list (code-char 252)) 'string))) 0))"),
+        "252");
+}
+
 /* Regression: stream EOF must signal a proper END-OF-FILE condition (CLHS),
  * not a generic simple-error — libraries (e.g. url-rewrite) catch
  * (end-of-file () ...) to terminate read loops. */
@@ -9584,6 +9611,7 @@ int main(void)
     RUN(eval_string_fns_on_fill_pointer_string);
     RUN(eval_defsetf_long_form);
     RUN(eval_prin1_wide_string_no_u_escape);
+    RUN(eval_prin1_base_string_high_byte_roundtrip);
     RUN(eval_end_of_file_condition);
     RUN(eval_parse_integer);
     RUN(eval_write_to_string);

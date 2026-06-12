@@ -968,6 +968,46 @@ out=$(run_stress "$WORK/latin1-open.lisp")
 check_contains "latin-1 file stream byte-faithful under GC stress" "LATIN1:(252 65 EOF)" "$out"
 check_absent   "no corruption on latin-1 OPEN keyword parse under stress" "Unbound\|corrupted\|type 0\|Undefined" "$out"
 
+# --- Case: DEFTYPE/DEFVAR/DEFPARAMETER name symbol survives compile ----------
+# Regression for the compile_deftype (and sibling compile_defvar/defparameter/
+# defconstant) GC-safety fix.  These read the definition NAME as a bare C local
+# out of `form`, then call compile_expr to compile the expander lambda / init
+# form — heavy allocation.  cl_compile_env does NOT re-protect the form it
+# forwards, so an unprotected `name` went stale across that compaction: the
+# symbol relocated but `name` kept the OLD offset (an orphan ~1 object off), and
+# cl_add_constant baked that stale offset into the constant pool.  OP_DEFTYPE
+# then registered a NON-canonical (garbage-named) symbol in type_table, so
+# cl_get_type_expander's `cl_car(pair) == name` identity check never matched the
+# interned symbol and SUBTYPEP/UPGRADED-ARRAY-ELEMENT-TYPE silently returned
+# NIL/T for the deftype.  Only the SECOND+ definition in a file corrupts (heap
+# pressure must build), so several are defined; loaded from SOURCE under stress
+# (the read-compile-run path is where the corruption fires — a clean FASL load
+# deserializes symbols correctly and would mask it).  See the
+# [deftype-symbol-dup-gcstress] memory note (root cause was this, not interning).
+cat > "$WORK/deftype-defs.lisp" <<'EOF'
+(defvar *gcs-dv* (list 10 20 30))
+(defparameter *gcs-dp* (+ 40 2))
+(defconstant +gcs-dc+ (* 6 7))
+(deftype gcs-ty1 () 'character)
+(deftype gcs-ty2 () '(unsigned-byte 8))
+(deftype gcs-ty3 () 'integer)
+(format t "DT:~a:~a:~a~%"
+  (and (subtypep 'gcs-ty1 'character) t)
+  (and (subtypep 'gcs-ty2 'integer) t)
+  (and (subtypep 'gcs-ty3 'integer) t))
+(format t "UAET:~a~%" (upgraded-array-element-type 'gcs-ty1))
+;; defvar/defparameter/defconstant: special flag + value land on the canonical
+;; symbol (a stale OP_DEFVAR/OP_GSTORE name would mark/store the wrong symbol).
+(format t "DV:~a:~a:~a~%" *gcs-dv* *gcs-dp* +gcs-dc+)
+(format t "DVSPEC:~a~%" (let ((*gcs-dv* :rebound)) *gcs-dv*))
+EOF
+out=$(run_stress "$WORK/deftype-defs.lisp")
+check_contains "deftype name symbol survives compile under GC stress (subtypep)" "DT:T:T:T" "$out"
+check_contains "deftype upgraded-array-element-type correct under GC stress"     "UAET:CHARACTER" "$out"
+check_contains "defvar/defparameter/defconstant values correct under GC stress"  "DV:(10 20 30):42:42" "$out"
+check_contains "defvar special binding works under GC stress"                    "DVSPEC:REBOUND" "$out"
+check_absent   "no stale/garbage deftype name (type_table lookup miss)"          "Unbound\|corrupted\|type 0\|Undefined" "$out"
+
 echo ""
 echo "$passed passed, $failed failed, $total total"
 [ "$failed" -eq 0 ]
