@@ -1886,7 +1886,7 @@ static CL_Obj bi_read(CL_Obj *args, int n)
     result = cl_read_from_stream(stream);
     if (cl_reader_eof()) {
         if (eof_error_p)
-            cl_error(CL_ERR_GENERAL, "READ: end of file");
+            cl_error(CL_ERR_EOF, "READ: end of file");
         return eof_value;
     }
     return result;
@@ -1921,7 +1921,7 @@ static CL_Obj bi_read_delimited_list(CL_Obj *args, int n)
         for (;;) {
             ch = cl_stream_read_char(stream);
             if (ch == -1)
-                cl_error(CL_ERR_GENERAL, "READ-DELIMITED-LIST: unexpected end of file");
+                cl_error(CL_ERR_EOF, "READ-DELIMITED-LIST: unexpected end of file");
             if (ch == delim_char) {
                 CL_GC_UNPROTECT(2);
                 return result;
@@ -1934,7 +1934,7 @@ static CL_Obj bi_read_delimited_list(CL_Obj *args, int n)
         obj = cl_read_from_stream(stream);
         if (cl_reader_eof()) {
             CL_GC_UNPROTECT(2);
-            cl_error(CL_ERR_GENERAL, "READ-DELIMITED-LIST: unexpected end of file");
+            cl_error(CL_ERR_EOF, "READ-DELIMITED-LIST: unexpected end of file");
             return CL_NIL;
         }
         /* Append to list */

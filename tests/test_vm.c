@@ -3831,6 +3831,129 @@ TEST(eval_string_coerce)
     ASSERT_STR_EQ(eval_print("(string #\\A)"), "\"A\"");
 }
 
+/* Regression: string functions must accept adjustable / fill-pointer
+ * character vectors (CL_STRING_VECTOR_P) as valid CL strings — not just
+ * simple TYPE_STRING.  hunchentoot's url-rewrite builds tag names this way
+ * and passed them to STRING-EQUAL / WRITE-STRING / STRING-UPCASE, which
+ * previously errored "not a string designator". */
+TEST(eval_string_fns_on_fill_pointer_string)
+{
+    /* Build an adjustable fill-pointer string and push chars into it. */
+    const char *mk =
+        "(let ((s (make-array 0 :element-type 'character "
+        "                       :fill-pointer 0 :adjustable t)))"
+        "  (vector-push-extend #\\H s) (vector-push-extend #\\i s) s)";
+    char buf[512];
+    snprintf(buf, sizeof(buf), "(string-equal %s \"hi\")", mk);
+    ASSERT_STR_EQ(eval_print(buf), "T");
+    snprintf(buf, sizeof(buf), "(string= %s \"Hi\")", mk);
+    ASSERT_STR_EQ(eval_print(buf), "T");
+    snprintf(buf, sizeof(buf), "(string-upcase %s)", mk);
+    ASSERT_STR_EQ(eval_print(buf), "\"HI\"");
+    snprintf(buf, sizeof(buf), "(string-downcase %s)", mk);
+    ASSERT_STR_EQ(eval_print(buf), "\"hi\"");
+    snprintf(buf, sizeof(buf),
+             "(with-output-to-string (o) (write-string %s o))", mk);
+    ASSERT_STR_EQ(eval_print(buf), "\"Hi\"");
+    /* The printer already treats string vectors as strings; confirm a
+     * fill-pointer string PRINCs as its chars, not as #(...). */
+    snprintf(buf, sizeof(buf), "(princ-to-string %s)", mk);
+    ASSERT_STR_EQ(eval_print(buf), "\"Hi\"");
+    /* string-trim and string-capitalize on fill-pointer strings */
+    ASSERT_STR_EQ(eval_print(
+        "(string-trim \" \""
+        "  (let ((s (make-array 0 :element-type 'character"
+        "              :fill-pointer 0 :adjustable t)))"
+        "    (vector-push-extend #\\space s)"
+        "    (vector-push-extend #\\h s)"
+        "    (vector-push-extend #\\i s)"
+        "    (vector-push-extend #\\space s)"
+        "    s))"), "\"hi\"");
+    ASSERT_STR_EQ(eval_print(
+        "(string-capitalize"
+        "  (let ((s (make-array 0 :element-type 'character"
+        "              :fill-pointer 0 :adjustable t)))"
+        "    (vector-push-extend #\\h s)"
+        "    (vector-push-extend #\\e s)"
+        "    (vector-push-extend #\\l s)"
+        "    (vector-push-extend #\\l s)"
+        "    (vector-push-extend #\\o s)"
+        "    s))"), "\"Hello\"");
+}
+
+/* Regression: long-form DEFSETF (CLHS 5.5.5).  Previously compile_defsetf
+ * only handled the short form and mis-stored the access lambda list as the
+ * "updater", so (setf (place ...) v) emitted FLOAD of a cons → corruption.
+ * hunchentoot's (defsetf session-value (symbol &optional session) (new) ...)
+ * is the real-world trigger. */
+TEST(eval_defsetf_long_form)
+{
+    cl_eval_string("(defvar *dsl* (make-hash-table :test 'equal))");
+    cl_eval_string("(defun dslot (k &optional (tag :d)) (gethash (cons k tag) *dsl*))");
+    cl_eval_string(
+        "(defsetf dslot (k &optional (tag :d)) (v)"
+        "  `(setf (gethash (cons ,k ,tag) *dsl*) ,v))");
+    /* one arg: tag defaults */
+    cl_eval_string("(setf (dslot \"a\") 1)");
+    ASSERT_EQ_INT(eval_int("(dslot \"a\")"), 1);
+    /* two args */
+    cl_eval_string("(setf (dslot \"b\" :x) 2)");
+    ASSERT_EQ_INT(eval_int("(dslot \"b\" :x)"), 2);
+    ASSERT_STR_EQ(eval_print("(dslot \"b\")"), "NIL");
+    /* subform evaluated exactly once */
+    cl_eval_string("(defvar *dsl-n* 0)");
+    cl_eval_string("(defun dsl-key () (incf *dsl-n*) \"k\")");
+    cl_eval_string("(setf (dslot (dsl-key)) 42)");
+    ASSERT_EQ_INT(eval_int("*dsl-n*"), 1);
+    ASSERT_EQ_INT(eval_int("(dslot \"k\")"), 42);
+    /* incf composes through the place */
+    cl_eval_string("(setf (dslot \"n\") 10)");
+    cl_eval_string("(incf (dslot \"n\") 5)");
+    ASSERT_EQ_INT(eval_int("(dslot \"n\")"), 15);
+}
+
+/* Regression: stream EOF must signal a proper END-OF-FILE condition (CLHS),
+ * not a generic simple-error — libraries (e.g. url-rewrite) catch
+ * (end-of-file () ...) to terminate read loops. */
+TEST(eval_end_of_file_condition)
+{
+    ASSERT_STR_EQ(eval_print(
+        "(handler-case (with-input-from-string (s \"a\") (read-char s) (read-char s))"
+        "  (end-of-file () :caught))"), ":CAUGHT");
+    ASSERT_STR_EQ(eval_print(
+        "(handler-case (with-input-from-string (s \"\") (peek-char nil s))"
+        "  (end-of-file () :caught))"), ":CAUGHT");
+    ASSERT_STR_EQ(eval_print(
+        "(handler-case (with-input-from-string (s \"x\") (read-line s) (read-line s))"
+        "  (end-of-file () :caught))"), ":CAUGHT");
+    /* eof-error-p nil still returns the eof-value, no condition */
+    ASSERT_STR_EQ(eval_print(
+        "(with-input-from-string (s \"\") (read-char s nil :eof))"), ":EOF");
+    ASSERT_STR_EQ(eval_print(
+        "(with-input-from-string (s \"\") (peek-char nil s nil :none))"), ":NONE");
+    /* read-byte EOF — regression: must signal END-OF-FILE, not a generic error */
+    ASSERT_STR_EQ(eval_print(
+        "(handler-case (with-input-from-string (s \"\") (read-byte s))"
+        "  (end-of-file () :caught))"), ":CAUGHT");
+    ASSERT_STR_EQ(eval_print(
+        "(with-input-from-string (s \"\") (read-byte s nil :eof))"), ":EOF");
+    /* read-char-no-hang EOF — regression: must signal END-OF-FILE, not a generic error.
+     * Uses a file stream so CL_STREAM_FLAG_EOF gets set (string streams don't set it). */
+    eval_print("(with-open-file (out \"/tmp/.cl-clamiga-eof-test\""
+               "  :direction :output :if-exists :supersede"
+               "  :if-does-not-exist :create))");
+    ASSERT_STR_EQ(eval_print(
+        "(handler-case"
+        "  (with-open-file (s \"/tmp/.cl-clamiga-eof-test\")"
+        "    (read-char s nil nil)"   /* reaches EOF, sets CL_STREAM_FLAG_EOF */
+        "    (read-char-no-hang s))"  /* flag set → signals END-OF-FILE */
+        "  (end-of-file () :caught))"), ":CAUGHT");
+    ASSERT_STR_EQ(eval_print(
+        "(with-open-file (s \"/tmp/.cl-clamiga-eof-test\")"
+        "  (read-char s nil nil)"
+        "  (read-char-no-hang s nil :eof))"), ":EOF");
+}
+
 TEST(eval_parse_integer)
 {
     ASSERT_EQ_INT(eval_int("(parse-integer \"42\")"), 42);
@@ -9393,6 +9516,9 @@ int main(void)
     RUN(eval_concatenate);
     RUN(eval_char_accessor);
     RUN(eval_string_coerce);
+    RUN(eval_string_fns_on_fill_pointer_string);
+    RUN(eval_defsetf_long_form);
+    RUN(eval_end_of_file_condition);
     RUN(eval_parse_integer);
     RUN(eval_write_to_string);
     RUN(eval_prin1_to_string);

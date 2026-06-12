@@ -802,6 +802,51 @@ out=$(run_stress "$WORK/cond-report-symbol.lisp")
 check_contains "define-condition :report symbol funcalls under stress"   "REPSYM:rep-ok" "$out"
 check_absent   "no unbound-variable from :report symbol under stress"     "Unbound variable\|type 0\|corrupted" "$out"
 
+# --- Case: long-form DEFSETF under GC stress --------------------------------
+# Regression for the compile_defsetf long-form fix (was the hunchentoot
+# "threaded type=0" misdiagnosis): the C compiler delegates the long form to
+# clamiga::%defsetf-long, which builds a define-setf-expander.  Exercise that
+# expansion + the (setf (place ...) v) compilation path under compaction so a
+# stale form/lambda-list offset in the long-form expansion would surface.
+#
+# NOTE: deliberately ONE (setf place ...) per run.  Compiling a *second*
+# define-setf-expander-based place (long-form defsetf, or shipped LDB/GETF)
+# under forced-every-alloc compaction trips a SEPARATE, pre-existing
+# compiler GC bug — the expander's gensym binding name is lost from the
+# compile env so the body's reference mis-emits as a global → "Unbound
+# variable: TMP<n>".  Reproduces with `(setf (ldb (byte 4 0) a) 5)` twice
+# under CLAMIGA_GC_STRESS=1 and is unrelated to the long-form defsetf fix.
+# Tracked in the [defsetf-expander-gcstress-unbound] memory note.
+cat > "$WORK/defsetf-long.lisp" <<'EOF'
+(defvar *dsg* (make-hash-table :test 'equal))
+(defun dsg (k &optional (tag :d)) (gethash (cons k tag) *dsg*))
+(defsetf dsg (k &optional (tag :d)) (v)
+  `(setf (gethash (cons ,k ,tag) *dsg*) ,v))
+(setf (dsg "a") 42)
+(format t "DSETFL:~a:~a~%" (dsg "a") (dsg "a" :d))
+EOF
+out=$(run_stress "$WORK/defsetf-long.lisp")
+check_contains "long-form defsetf place set/get correct under GC stress"  "DSETFL:42:42" "$out"
+check_absent   "no corrupted FLOAD/cons from stale defsetf expansion"     "not a symbol\|type 0\|corrupted\|Undefined" "$out"
+
+# --- Case: string fns on fill-pointer strings under GC stress ---------------
+# Regression for the CL_STRING_VECTOR_P string-fn fix: adjustable/fill-pointer
+# character vectors are valid CL strings.  cl_string_copy materializes them
+# (allocates) — exercise that + STRING-EQUAL/STRING-UPCASE under compaction.
+cat > "$WORK/string-vec.lisp" <<'EOF'
+(let ((hits 0))
+  (dotimes (i 30)
+    (let ((s (make-array 0 :element-type 'character :fill-pointer 0 :adjustable t)))
+      (vector-push-extend #\H s) (vector-push-extend #\i s)
+      (when (string-equal s "hi") (incf hits))
+      (when (string= (string-upcase s) "HI") (incf hits))
+      (with-output-to-string (o) (write-string s o))))
+  (format t "STRVEC:~a~%" hits))
+EOF
+out=$(run_stress "$WORK/string-vec.lisp")
+check_contains "string fns on fill-pointer string correct under GC stress" "STRVEC:60" "$out"
+check_absent   "no not-a-string-designator from stale string-vector copy"  "not a string designator\|type 0\|corrupted" "$out"
+
 echo ""
 echo "$passed passed, $failed failed, $total total"
 [ "$failed" -eq 0 ]

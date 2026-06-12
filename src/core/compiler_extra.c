@@ -1377,8 +1377,33 @@ void compile_defsetf(CL_Compiler *c, CL_Obj form)
     /* Short form: (defsetf accessor updater)
      * Registers that (setf (accessor args...) val) → (updater args... val) */
     CL_Obj accessor = cl_car(cl_cdr(form));
-    CL_Obj updater = cl_car(cl_cdr(cl_cdr(form)));
+    CL_Obj third    = cl_car(cl_cdr(cl_cdr(form)));
+    CL_Obj updater;
     int acc_idx, upd_idx;
+
+    /* Long form (CLHS 5.5.5):
+     *   (defsetf access-fn defsetf-lambda-list (store-var*) [decl|doc]* form*)
+     * The 3rd element is the access lambda list (a cons), or an empty
+     * lambda list (NIL) followed by a store-variable list.  The short
+     * form's updater is always a (non-NIL) symbol, so a cons in the 3rd
+     * slot — or NIL with trailing forms — unambiguously marks the long
+     * form.  Delegate to the Lisp helper clamiga::%defsetf-long, which
+     * expands into a define-setf-expander so subforms are evaluated once
+     * and &optional/&key defaults in the lambda list are honored. */
+    if (CL_CONS_P(third) ||
+        (CL_NULL_P(third) && !CL_NULL_P(cl_cdr(cl_cdr(cl_cdr(form)))))) {
+        CL_Obj sym = cl_intern_in("%DEFSETF-LONG", 13, cl_package_clamiga);
+        CL_Obj new_form;
+        CL_GC_PROTECT(sym);
+        new_form = cl_cons(sym, cl_cdr(form));
+        CL_GC_UNPROTECT(1);
+        CL_GC_PROTECT(new_form);
+        compile_expr(c, new_form);
+        CL_GC_UNPROTECT(1);
+        return;
+    }
+
+    updater = third;
 
     /* Store mapping in setf_table at compile time (immediate side effect) */
     {

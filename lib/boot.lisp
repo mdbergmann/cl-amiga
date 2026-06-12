@@ -478,6 +478,50 @@
               (list 'let* bindings store-form)))))
        ',access-fn)))
 
+;; Long-form DEFSETF (CLHS 5.5.5):
+;;   (defsetf access-fn defsetf-lambda-list (store-variable*) [decl|doc]* form*)
+;; The C compiler (compile_defsetf) rewrites the long form to a call to this
+;; helper macro, which expands it into a DEFINE-SETF-EXPANDER.  Semantics: the
+;; access-fn's argument subforms become temp gensyms (evaluated once, in
+;; order); the defsetf-lambda-list variables are bound to those temps; the
+;; store-variables are bound to fresh store gensyms; BODY is then evaluated as
+;; a macro body to produce the storing form.  Using a real lambda + APPLY to
+;; bind the lambda-list against the temps lets &optional/&key defaults work.
+(defmacro clamiga::%defsetf-long (access-fn lambda-list store-vars &body body)
+  ;; Strip a trailing &environment var from the access lambda list (CLHS
+  ;; permits it); bind it to NIL since the compiler-side expander has no
+  ;; environment to thread here.
+  (let ((env-pos (position-if (lambda (x)
+                                (and (symbolp x)
+                                     (string= (symbol-name x) "&ENVIRONMENT")))
+                              lambda-list))
+        (clean-ll lambda-list)
+        (env-var nil)
+        (args (gensym "ARGS")))
+    (when env-pos
+      (setq env-var (nth (1+ env-pos) lambda-list))
+      (setq clean-ll (append (subseq lambda-list 0 env-pos)
+                             (subseq lambda-list (+ env-pos 2)))))
+    `(define-setf-expander ,access-fn (&rest ,args)
+       (let* ((temps (mapcar (lambda (a)
+                               (declare (ignore a))
+                               (gensym "TMP"))
+                             ,args))
+              ,@(mapcar (lambda (sv) `(,sv (gensym "STORE"))) store-vars)
+              (stores (list ,@store-vars)))
+         (values
+          temps
+          ,args
+          stores
+          (apply (lambda ,clean-ll
+                   ,@(if env-var
+                         `((let ((,env-var nil))
+                             (declare (ignorable ,env-var))
+                             ,@body))
+                         body))
+                 temps)
+          (cons ',access-fn temps))))))
+
 ;; (setf (ldb bytespec int-place) new-byte) — CLHS 5.1.4 expander.
 ;; Composes with int-place's own setf expansion so subforms (e.g. of
 ;; (aref ...) under the LDB) are evaluated exactly once.

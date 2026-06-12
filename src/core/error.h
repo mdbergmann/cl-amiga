@@ -42,6 +42,7 @@
 #define CL_ERR_STORAGE    9
 #define CL_ERR_EXIT      10
 #define CL_ERR_FILE      11
+#define CL_ERR_EOF       12  /* maps to the END-OF-FILE condition (CLHS) */
 
 /* Error handler frame stack */
 #define CL_MAX_ERROR_FRAMES 16

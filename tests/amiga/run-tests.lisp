@@ -5344,6 +5344,73 @@
         (error () (mk :caught)))
       (reverse log))))
 
+; --- Long-form DEFSETF (CLHS 5.5.5) + string-vector string fns + END-OF-FILE
+;     condition.  Regression for the hunchentoot session/cookie page bugs:
+;     (1) long-form defsetf was unsupported (the threaded "type=0" was really
+;     (setf (session-value ..) ..) mis-compiling to FLOAD of the access lambda
+;     list); (2) string fns rejected adjustable/fill-pointer strings; (3) EOF
+;     signalled a plain error, not END-OF-FILE.  Mirrors tests/test_vm.c. ---
+(defvar *dsl-h* (make-hash-table :test 'equal))
+(defun dsl-get (k &optional (tag :d)) (gethash (cons k tag) *dsl-h*))
+(defsetf dsl-get (k &optional (tag :d)) (v)
+  `(setf (gethash (cons ,k ,tag) *dsl-h*) ,v))
+(check "long-form defsetf, default optional" 1
+  (progn (setf (dsl-get "a") 1) (dsl-get "a")))
+(check "long-form defsetf, supplied optional" 2
+  (progn (setf (dsl-get "b" :x) 2) (dsl-get "b" :x)))
+(check "long-form defsetf, optional defaults on read" nil (dsl-get "b"))
+(check "long-form defsetf, incf composes" 15
+  (progn (setf (dsl-get "n") 10) (incf (dsl-get "n") 5) (dsl-get "n")))
+
+(defun make-fp-string (s)
+  (let ((v (make-array 0 :element-type 'character :fill-pointer 0 :adjustable t)))
+    (dotimes (i (length s)) (vector-push-extend (char s i) v))
+    v))
+(check "string-equal on fill-pointer string" t (string-equal (make-fp-string "hi") "HI"))
+(check "string= on fill-pointer string" t (string= (make-fp-string "hi") "hi"))
+(check "string-upcase on fill-pointer string" "HI" (string-upcase (make-fp-string "hi")))
+(check "write-string on fill-pointer string" "hi"
+  (with-output-to-string (o) (write-string (make-fp-string "hi") o)))
+(check "princ fill-pointer string is chars not #(...)" "hi"
+  (princ-to-string (make-fp-string "hi")))
+(check "string-trim on fill-pointer string" "hi"
+  (string-trim " " (make-fp-string " hi ")))
+(check "string-capitalize on fill-pointer string" "Hello"
+  (string-capitalize (make-fp-string "hello")))
+
+(check "read-char EOF signals end-of-file" :eof
+  (handler-case (with-input-from-string (s "a") (read-char s) (read-char s))
+    (end-of-file () :eof)))
+(check "peek-char EOF signals end-of-file" :eof
+  (handler-case (with-input-from-string (s "") (peek-char nil s))
+    (end-of-file () :eof)))
+(check "read-line EOF signals end-of-file" :eof
+  (handler-case (with-input-from-string (s "x") (read-line s) (read-line s))
+    (end-of-file () :eof)))
+(check "read-char eof-error-p nil returns eof-value" :none
+  (with-input-from-string (s "") (read-char s nil :none)))
+(check "read-byte EOF signals end-of-file" :eof
+  (handler-case (with-input-from-string (s "") (read-byte s))
+    (end-of-file () :eof)))
+(check "read-byte eof-error-p nil returns eof-value" :none
+  (with-input-from-string (s "") (read-byte s nil :none)))
+; read-char-no-hang EOF requires a file stream (CL_STREAM_FLAG_EOF is only
+; set by byte-oriented streams); create a temp file to test against.
+(let ((eof-path #+amigaos "T:cl-rcnh-eof.tmp"
+                #-amigaos "/tmp/.cl-clamiga-rcnh-eof.tmp"))
+  (with-open-file (out eof-path :direction :output
+                   :if-exists :supersede :if-does-not-exist :create))
+  (check "read-char-no-hang EOF signals end-of-file" :eof
+    (handler-case
+      (with-open-file (s eof-path)
+        (read-char s nil nil)      ; sets CL_STREAM_FLAG_EOF
+        (read-char-no-hang s))     ; flag set → signals END-OF-FILE
+      (end-of-file () :eof)))
+  (check "read-char-no-hang eof-value at EOF" :none
+    (with-open-file (s eof-path)
+      (read-char s nil nil)
+      (read-char-no-hang s nil :none))))
+
 ; --- Summary ---
 (format t "~%=== Results ===~%")
 (format t "Passed: ~A~%" *pass-count*)

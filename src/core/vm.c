@@ -1506,6 +1506,41 @@ static CL_Obj cl_vm_run(int base_fp, int base_nlx)
                         (CL_HEAP_P(sym) && sym < cl_heap.arena_size)
                             ? CL_HDR_TYPE(CL_OBJ_TO_PTR(sym)) : -1,
                         cl_vm.fp, ip, (unsigned)frame->bytecode);
+#ifdef DEBUG_VM
+                {
+                    /* Dump the offending bytecode's identity + full constant
+                     * pool so we can tell a targeted marking gap (one bad
+                     * const) from wholesale corruption, and name the function. */
+                    CL_Bytecode *dbc = NULL;
+                    CL_Obj bco = frame->bytecode;
+                    if (CL_HEAP_P(bco) && bco < cl_heap.arena_size) {
+                        void *bp = CL_OBJ_TO_PTR(bco);
+                        if (CL_HDR_TYPE(bp) == TYPE_CLOSURE) {
+                            CL_Closure *cc = (CL_Closure *)bp;
+                            if (CL_HEAP_P(cc->bytecode) && cc->bytecode < cl_heap.arena_size)
+                                dbc = (CL_Bytecode *)CL_OBJ_TO_PTR(cc->bytecode);
+                        } else if (CL_HDR_TYPE(bp) == TYPE_BYTECODE) {
+                            dbc = (CL_Bytecode *)bp;
+                        }
+                    }
+                    if (dbc) {
+                        int ci;
+                        fprintf(stderr, "[VM] FLOAD: in bytecode '%s' (%s:%u) n_constants=%u\n",
+                                (CL_HEAP_P(dbc->name) && CL_SYMBOL_P(dbc->name))
+                                    ? cl_symbol_name(dbc->name) : "?",
+                                dbc->source_file ? dbc->source_file : "?",
+                                dbc->source_line, dbc->n_constants);
+                        for (ci = 0; ci < dbc->n_constants; ci++) {
+                            CL_Obj cv = dbc->constants[ci];
+                            int t = (CL_HEAP_P(cv) && cv < cl_heap.arena_size)
+                                        ? CL_HDR_TYPE(CL_OBJ_TO_PTR(cv)) : -1;
+                            fprintf(stderr, "[VM]   const[%d] = 0x%08x type=%d %s\n",
+                                    ci, (unsigned)cv, t,
+                                    (t == TYPE_SYMBOL) ? cl_symbol_name(cv) : "");
+                        }
+                    }
+                }
+#endif /* DEBUG_VM */
                 cl_capture_backtrace();
                 fprintf(stderr, "%s", cl_backtrace_buf);
                 cl_error(CL_ERR_GENERAL, "OP_FLOAD: corrupted constant pool entry");

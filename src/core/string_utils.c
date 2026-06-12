@@ -1,6 +1,42 @@
 #include "string_utils.h"
 #include "mem.h"
 
+/* Materialize a range [start,end) of an adjustable/fill-pointer character
+ * vector (CL_STRING_VECTOR_P) into a fresh simple string.  Picks a wide
+ * string if any char exceeds 255 (when wide strings are enabled), else a
+ * base TYPE_STRING.  Allocates — GC-protects vobj across the allocation and
+ * re-fetches the data pointer afterward (the source may have moved). */
+static CL_Obj string_vector_range_to_string(CL_Obj vobj, uint32_t start, uint32_t end)
+{
+    uint32_t i, n = end - start;
+    CL_Obj result;
+    CL_Vector *v;
+    CL_Obj *data;
+    CL_GC_PROTECT(vobj);
+#ifdef CL_WIDE_STRINGS
+    {
+        int wide = 0;
+        v = (CL_Vector *)CL_OBJ_TO_PTR(vobj);
+        data = cl_vector_data(v);
+        for (i = 0; i < n; i++) {
+            CL_Obj ch = data[start + i];
+            if (CL_CHAR_P(ch) && (uint32_t)CL_CHAR_VAL(ch) > 255) { wide = 1; break; }
+        }
+        result = wide ? cl_make_wide_string(NULL, n) : cl_make_string(NULL, n);
+    }
+#else
+    result = cl_make_string(NULL, n);
+#endif
+    CL_GC_UNPROTECT(1);
+    v = (CL_Vector *)CL_OBJ_TO_PTR(vobj);
+    data = cl_vector_data(v);
+    for (i = 0; i < n; i++) {
+        CL_Obj ch = data[start + i];
+        cl_string_set_char_at(result, i, CL_CHAR_P(ch) ? CL_CHAR_VAL(ch) : 0);
+    }
+    return result;
+}
+
 CL_Obj cl_string_copy(CL_Obj str)
 {
 #ifdef CL_WIDE_STRINGS
@@ -9,6 +45,8 @@ CL_Obj cl_string_copy(CL_Obj str)
         return cl_make_wide_string(ws->data, ws->length);
     }
 #endif
+    if (CL_STRING_VECTOR_P(str))
+        return string_vector_range_to_string(str, 0, cl_string_length(str));
     {
         CL_String *s = (CL_String *)CL_OBJ_TO_PTR(str);
         return cl_make_string(s->data, s->length);
@@ -23,6 +61,8 @@ CL_Obj cl_string_substring(CL_Obj str, uint32_t start, uint32_t end)
         return cl_make_wide_string(ws->data + start, end - start);
     }
 #endif
+    if (CL_STRING_VECTOR_P(str))
+        return string_vector_range_to_string(str, start, end);
     {
         CL_String *s = (CL_String *)CL_OBJ_TO_PTR(str);
         return cl_make_string(s->data + start, end - start);
