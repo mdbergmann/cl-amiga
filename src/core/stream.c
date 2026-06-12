@@ -493,8 +493,10 @@ int cl_stream_read_char(CL_Obj stream)
     ch = stream_read_raw_byte(st);
 
 #ifdef CL_WIDE_STRINGS
-    /* Decode UTF-8 multi-byte sequences for byte-oriented streams */
-    if (ch > 0x7F && ch != -1)
+    /* Decode UTF-8 multi-byte sequences for byte-oriented streams.  A LATIN-1
+     * stream is 8-bit transparent: the raw byte 0..255 IS the code point, so
+     * skip UTF-8 decoding entirely. */
+    if (ch > 0x7F && ch != -1 && !(st->flags & CL_STREAM_FLAG_LATIN1))
         ch = stream_decode_utf8(st, ch);
 #endif
 
@@ -560,6 +562,11 @@ void cl_stream_write_char(CL_Obj stream, int ch)
 {
     CL_Stream *st;
     void *iolock;
+#ifdef CL_WIDE_STRINGS
+    /* A LATIN-1 stream is 8-bit transparent: write the low byte raw, no UTF-8.
+     * `encode` is non-zero only when this char must be UTF-8-encoded. */
+    int encode;
+#endif
 
     stream = resolve_stream(stream, 1);
     if (CL_NULL_P(stream)) return;
@@ -570,13 +577,17 @@ void cl_stream_write_char(CL_Obj stream, int ch)
     if (!(st->direction & CL_STREAM_OUTPUT))
         return;
 
+#ifdef CL_WIDE_STRINGS
+    encode = (ch > 0x7F) && !(st->flags & CL_STREAM_FLAG_LATIN1);
+#endif
+
     iolock = stream_lock_for(st, 1);
     if (iolock) platform_mutex_lock(iolock);
 
     switch (st->stream_type) {
     case CL_STREAM_CONSOLE: {
 #ifdef CL_WIDE_STRINGS
-        if (ch > 0x7F) {
+        if (encode) {
             char utf8[5];
             int nb = cl_utf8_encode(ch, utf8);
             if (nb > 0) { utf8[nb] = '\0'; platform_write_string(utf8); }
@@ -592,7 +603,7 @@ void cl_stream_write_char(CL_Obj stream, int ch)
     }
     case CL_STREAM_FILE:
 #ifdef CL_WIDE_STRINGS
-        if (ch > 0x7F) {
+        if (encode) {
             char utf8[4];
             int nb = cl_utf8_encode(ch, utf8);
             if (nb > 0)
@@ -604,7 +615,7 @@ void cl_stream_write_char(CL_Obj stream, int ch)
     case CL_STREAM_STRING:
         /* String output buffers store raw bytes; encode UTF-8 for non-ASCII */
 #ifdef CL_WIDE_STRINGS
-        if (ch > 0x7F) {
+        if (encode) {
             char utf8[4];
             int nb = cl_utf8_encode(ch, utf8);
             int j;
@@ -616,7 +627,7 @@ void cl_stream_write_char(CL_Obj stream, int ch)
         break;
     case CL_STREAM_SOCKET:
 #ifdef CL_WIDE_STRINGS
-        if (ch > 0x7F) {
+        if (encode) {
             char utf8[4];
             int nb = cl_utf8_encode(ch, utf8);
             if (nb > 0)

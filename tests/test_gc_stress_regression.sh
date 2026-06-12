@@ -890,6 +890,60 @@ out=$(run_stress "$WORK/string-vec.lisp")
 check_contains "string fns on fill-pointer string correct under GC stress" "STRVEC:60" "$out"
 check_absent   "no not-a-string-designator from stale string-vector copy"  "not a string designator\|type 0\|corrupted" "$out"
 
+# --- Case: LOOP mixed COLLECT/NCONC accumulation under GC stress ------------
+# Regression for the loop-accumulation order fix: COLLECT/NCONC/APPEND now all
+# build the result list reversed (push / NRECONC / REVAPPEND) under one final
+# NREVERSE, so they can be mixed and still keep source order (CLHS 6.1.3).  The
+# accumulator list is built incrementally with allocating ops; exercise it under
+# forced-every-alloc compaction so a stale accumulator/tail offset would surface
+# (this is the cl-ppcre normalize-var-list shape that reversed regex groups).
+# NB: this exercises the if/else mix (the cl-ppcre normalize-var-list shape) —
+# the accumulator is built via NRECONC/REVAPPEND/push and finalized with one
+# NREVERSE.  It is wrapped in a DEFUN deliberately: a loop with *two* sequential
+# accumulation clauses per iteration (e.g. `collect x nconc ...`), or a bare
+# top-level COLLECT loop, trips a SEPARATE pre-existing compiler-cursor bug whose
+# ITEM/ACC gensym gets split under forced-every-alloc compaction ("Unbound
+# variable: ITEM<n>"); that is independent of this order fix (the result is
+# correct whenever it doesn't crash, and is correct in normal builds) and out of
+# scope here.  The single-clause if/else body compiles cleanly under stress.
+cat > "$WORK/loop-accum.lisp" <<'EOF'
+(defun la-mix (xs)
+  (loop for x in xs if (consp x) nconc (copy-list x) else collect x))
+(let ((last nil))
+  (dotimes (i 40)
+    (setq last (la-mix (list 'a (list i (+ i 1)) 'b))))
+  (format t "LACC:~a~%" last))
+EOF
+out=$(run_stress "$WORK/loop-accum.lisp")
+check_contains "loop mixed collect/nconc keeps order under GC stress" "LACC:(A 39 40 B)" "$out"
+check_absent   "no reversal/corruption in loop accumulation under stress" "corrupted\|type 0\|Unbound" "$out"
+
+# --- Case: OPEN :external-format :latin-1 file round-trip under GC stress ----
+# The latin-1 stream feature: a character file stream opened :external-format
+# :latin-1 is 8-bit transparent (each code point 0..255 maps to one raw byte,
+# no UTF-8).  The write/read paths themselves don't allocate, but OPEN parses
+# the :external-format keyword (format_is_latin1 reads the keyword's symbol
+# name) and the whole with-open-file form is compiled/evaluated here under
+# forced-every-alloc compaction, so a stale keyword/stream offset on that path
+# would surface.  We write the high byte 252 (ü) + 'A' through a latin-1 stream
+# and read the file back as raw octets — must be exactly (252 65), NOT the
+# 3-byte UTF-8 form a default character stream would have produced.
+cat > "$WORK/latin1-open.lisp" <<'EOF'
+(dotimes (i 8)
+  (with-open-file (o "/tmp/clamiga_gcstress_latin1.tmp" :direction :output
+                     :if-exists :supersede :external-format :latin-1)
+    (write-char (code-char 252) o)
+    (write-char #\A o)))
+(let ((bytes (with-open-file (in "/tmp/clamiga_gcstress_latin1.tmp"
+                                 :element-type '(unsigned-byte 8))
+               (list (read-byte in) (read-byte in) (read-byte in nil :eof)))))
+  (format t "LATIN1:~a~%" bytes))
+EOF
+out=$(run_stress "$WORK/latin1-open.lisp")
+# NB: ~a (princ) prints the keyword :EOF without its colon -> EOF.
+check_contains "latin-1 file stream byte-faithful under GC stress" "LATIN1:(252 65 EOF)" "$out"
+check_absent   "no corruption on latin-1 OPEN keyword parse under stress" "Unbound\|corrupted\|type 0\|Undefined" "$out"
+
 echo ""
 echo "$passed passed, $failed failed, $total total"
 [ "$failed" -eq 0 ]

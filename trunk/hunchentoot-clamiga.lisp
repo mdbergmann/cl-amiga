@@ -52,3 +52,56 @@
   (let ((dir (cl-fad:pathname-as-directory dirname)))
     (directory (make-pathname :name :wild :type :wild
                               :defaults dir))))
+
+;;; ---------------------------------------------------------------------------
+;;; rfc2388 multipart upload: write the temp file as LATIN-1 (byte-faithful).
+;;;
+;;; A multipart/form-data file upload is binary, but rfc2388 parses the request
+;;; over a CHARACTER stream (hunchentoot wraps the socket in a flexi-stream with
+;;; :external-format :latin-1, so each request byte 0..255 arrives as the
+;;; corresponding code-char).  PARSE-MIME copies those characters straight to a
+;;; temp file via WITH-OPEN-FILE — and for byte-faithful output that file MUST
+;;; be opened LATIN-1 too, or clamiga's default UTF-8 character stream encodes
+;;; every code point > 127 as two bytes and the uploaded file is corrupted
+;;; (its size inflates and the bytes no longer match what was sent).
+;;;
+;;; Upstream rfc2388 already opens the temp file :external-format :latin-1, but
+;;; only inside a #+(or :sbcl :lispworks :allegro :openmcl :clisp) reader
+;;; conditional — cl-amiga is none of those, so on cl-amiga the keyword is
+;;; dropped and the file opens UTF-8.  We redefine the stream PARSE-MIME method
+;;; to always pass :external-format :latin-1 (which clamiga's OPEN honours as
+;;; the 8-bit-transparent path).  Identical to the upstream method otherwise.
+(in-package :rfc2388)
+
+(defmethod parse-mime ((input stream) boundary &key (write-content-to-file t))
+  (unless (nth-value 1 (read-until-next-boundary input boundary t))
+    (return-from parse-mime nil))
+  (let ((result ()))
+    (loop
+      (let ((headers (loop
+                       for header = (parse-header input)
+                       while header
+                       when (string-equal "CONTENT-TYPE" (header-name header))
+                       do (setf (header-value header)
+                                (parse-content-type (header-value header)))
+                       collect header)))
+        (let ((file-name (get-file-name headers)))
+          (cond ((and write-content-to-file file-name)
+                 (let ((temp-file (make-tmp-file-name)))
+                   (multiple-value-bind (text more)
+                       (with-open-file (out-file (ensure-directories-exist temp-file)
+                                                 :direction :output
+                                                 :external-format :latin-1)
+                         (read-until-next-boundary input boundary nil out-file))
+                     (declare (ignore text))
+                     (when (and (stringp file-name) (plusp (length file-name)))
+                       (push (make-mime-part temp-file headers) result))
+                     (when (not more) (return)))))
+                (t
+                 (multiple-value-bind (text more)
+                     (read-until-next-boundary input boundary)
+                   (push (make-mime-part text headers) result)
+                   (when (not more) (return))))))))
+    (nreverse result)))
+
+(in-package :hunchentoot)

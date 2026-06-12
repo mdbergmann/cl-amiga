@@ -425,6 +425,11 @@ typedef struct {
 /* Stream flags */
 #define CL_STREAM_FLAG_OPEN  0x01
 #define CL_STREAM_FLAG_EOF   0x02
+/* External format is LATIN-1 (ISO-8859-1): characters map 1:1 to bytes 0..255,
+ * with no UTF-8 transcoding on read/write.  Default (flag clear) is UTF-8.
+ * Set by OPEN :external-format :latin-1; only meaningful for CL_WIDE_STRINGS
+ * builds (non-wide builds are already raw 8-bit). */
+#define CL_STREAM_FLAG_LATIN1 0x04
 
 typedef struct {
     CL_Header hdr;
