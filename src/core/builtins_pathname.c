@@ -13,6 +13,8 @@
 #include "mem.h"
 #include "error.h"
 #include "vm.h"
+#include "stream.h"
+#include "string_utils.h"
 #include "../platform/platform.h"
 #include <string.h>
 #include <stdio.h>
@@ -306,6 +308,46 @@ uint32_t cl_pathname_to_namestring(CL_Pathname *pn, char *buf, uint32_t bufsz)
     return pos;
 }
 
+/* Materialize any CL string designator — base string, wide string, or
+ * adjustable/fill-pointer character vector — into a NUL-terminated C buffer
+ * (UTF-8 for non-ASCII).  Returns 1 on success, 0 if ARG is not string-like.
+ * CLHS pathname designators include all of these string flavours, not only
+ * TYPE_STRING; without this, (pathname <fill-pointer-string>) and friends
+ * wrongly signalled a type-error (hunchentoot's HTTP Range handler builds
+ * such strings and passes them to PATHNAME). */
+static int string_desig_to_cbuf(CL_Obj arg, char *buf, uint32_t bufsz)
+{
+    uint32_t len, i, pos = 0;
+    if (CL_STRING_P(arg)) {
+        CL_String *s = (CL_String *)CL_OBJ_TO_PTR(arg);
+        uint32_t n = s->length < bufsz - 1 ? s->length : bufsz - 1;
+        memcpy(buf, s->data, n);
+        buf[n] = '\0';
+        return 1;
+    }
+    if (!CL_ANY_STRING_P(arg) && !CL_STRING_VECTOR_P(arg))
+        return 0;
+    len = cl_string_length(arg);
+    for (i = 0; i < len && pos < bufsz - 5; i++) {
+        int ch = cl_string_char_at(arg, i);
+        if (ch < 0x80) {
+            buf[pos++] = (char)ch;
+        } else {
+#ifdef CL_WIDE_STRINGS
+            char u8[4];
+            int nb = cl_utf8_encode(ch, u8), j;
+            for (j = 0; j < nb && pos < bufsz - 1; j++)
+                buf[pos++] = u8[j];
+#else
+            /* Non-wide build: base/vector chars are single bytes (0–255). */
+            buf[pos++] = (char)ch;
+#endif
+        }
+    }
+    buf[pos] = '\0';
+    return 1;
+}
+
 /*
  * Get namestring as a C string from either a string or pathname argument.
  * Returns pointer to a static buffer.
@@ -322,11 +364,32 @@ const char *cl_coerce_to_namestring(CL_Obj arg, char *buf, uint32_t bufsz)
         cl_pathname_to_namestring(pn, buf, bufsz);
         return buf;
     }
+    /* File stream → its associated pathname (CLHS pathname designator). */
+    if (CL_STREAM_P(arg)) {
+        CL_Stream *st = (CL_Stream *)CL_OBJ_TO_PTR(arg);
+        if (st->stream_type == CL_STREAM_FILE && CL_ANY_STRING_P(st->string_buf))
+            return cl_coerce_to_namestring(st->string_buf, buf, bufsz);
+    }
+    /* Wide string / fill-pointer character vector — also valid strings. */
+    if (string_desig_to_cbuf(arg, buf, bufsz)) {
+        char tmp[1024];
+        const char *expanded;
+        if (buf[0] != '~') return buf;
+        expanded = platform_expand_home(buf, tmp, (int)sizeof(tmp));
+        if (expanded != buf) {
+            uint32_t n = (uint32_t)strlen(expanded);
+            if (n >= bufsz) n = bufsz - 1;
+            memcpy(buf, expanded, n);
+            buf[n] = '\0';
+        }
+        return buf;
+    }
     cl_error(CL_ERR_TYPE, "Expected string or pathname");
     return "";
 }
 
-/* Coerce argument to pathname (string -> parse, pathname -> identity) */
+/* Coerce argument to pathname (string/wide/vector -> parse, pathname ->
+ * identity, file stream -> its pathname). */
 static CL_Obj coerce_to_pathname(CL_Obj arg)
 {
     if (CL_PATHNAME_P(arg)) return arg;
@@ -334,7 +397,17 @@ static CL_Obj coerce_to_pathname(CL_Obj arg)
         CL_String *s = (CL_String *)CL_OBJ_TO_PTR(arg);
         return cl_parse_namestring(s->data, s->length);
     }
-    cl_error(CL_ERR_TYPE, "PATHNAME: expected string or pathname");
+    if (CL_STREAM_P(arg)) {
+        CL_Stream *st = (CL_Stream *)CL_OBJ_TO_PTR(arg);
+        if (st->stream_type == CL_STREAM_FILE && CL_ANY_STRING_P(st->string_buf))
+            return coerce_to_pathname(st->string_buf);
+    }
+    {
+        char buf[1024];
+        if (string_desig_to_cbuf(arg, buf, sizeof(buf)))
+            return cl_parse_namestring(buf, (uint32_t)strlen(buf));
+    }
+    cl_error(CL_ERR_TYPE, "PATHNAME: expected string, pathname, or file stream");
     return CL_NIL;
 }
 

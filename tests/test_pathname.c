@@ -118,6 +118,27 @@ TEST(pathname_from_pathname)
     ASSERT_STR_EQ(eval_print("(pathnamep (pathname #P\"foo.lisp\"))"), "T");
 }
 
+/* Regression: a pathname designator is any string flavour — base string,
+ * wide string, OR an adjustable/fill-pointer character vector — not only
+ * TYPE_STRING.  PATHNAME / NAMESTRING wrongly type-error'd on fill-pointer
+ * strings, which hunchentoot's HTTP Range handler builds and passes to
+ * PATHNAME (a 500 "PATHNAME: expected string or pathname"). */
+TEST(pathname_from_fill_pointer_string)
+{
+    const char *mk =
+        "(let ((s (make-array 0 :element-type 'character"
+        "                       :fill-pointer 0 :adjustable t)))"
+        "  (dolist (c '(#\\f #\\o #\\o #\\. #\\t #\\x #\\t)) (vector-push-extend c s))"
+        "  s)";
+    char buf[512];
+    snprintf(buf, sizeof(buf), "(pathnamep (pathname %s))", mk);
+    ASSERT_STR_EQ(eval_print(buf), "T");
+    snprintf(buf, sizeof(buf), "(pathname-name (pathname %s))", mk);
+    ASSERT_STR_EQ(eval_print(buf), "\"foo\"");
+    snprintf(buf, sizeof(buf), "(namestring %s)", mk);
+    ASSERT_STR_EQ(eval_print(buf), "\"foo.txt\"");
+}
+
 /* --- pathname-name --- */
 
 TEST(pathname_name_simple)
@@ -673,6 +694,7 @@ int main(void)
     RUN(pathnamep_false_number);
     RUN(pathname_from_string);
     RUN(pathname_from_pathname);
+    RUN(pathname_from_fill_pointer_string);
     RUN(pathname_name_simple);
     RUN(pathname_name_with_dir);
     RUN(pathname_name_no_ext);

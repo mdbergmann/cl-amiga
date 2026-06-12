@@ -87,6 +87,26 @@ TEST(make_array_simple)
     ASSERT_STR_EQ(eval_print("(aref (make-array 3) 0)"), "NIL");
 }
 
+/* Regression: a negative or absurdly large dimension must signal a CATCHABLE
+ * error (subtype of ERROR), not fatally abort the VM.  Previously a negative
+ * fixnum dimension cast to a near-2^32 uint32_t and tripped cl_alloc's hard
+ * header-size guard via cl_storage_error, which escapes ordinary
+ * (handler-case ... (error () ...)).  A bad HTTP Range size in hunchentoot
+ * triggered exactly this. */
+TEST(make_array_bad_dimension_is_catchable)
+{
+    /* negative dimension -> caught */
+    ASSERT_EQ_INT(eval_errors("(make-array -1)"), 1);
+    /* over-limit (but still fixnum) dimension -> caught */
+    ASSERT_EQ_INT(eval_errors("(make-array 20000000)"), 1);
+    /* and it is a proper ERROR (handler-case (error) catches it) */
+    ASSERT_STR_EQ(eval_print(
+        "(handler-case (make-array -1048552 :element-type '(unsigned-byte 8))"
+        "  (error () :caught))"), ":CAUGHT");
+    /* a legitimate large-but-valid array still works */
+    ASSERT_EQ_INT(eval_int("(length (make-array 100000))"), 100000);
+}
+
 TEST(make_array_initial_element)
 {
     ASSERT_EQ_INT(eval_int("(aref (make-array 3 :initial-element 42) 0)"), 42);
@@ -1053,6 +1073,7 @@ int main(void)
 
     /* Construction */
     RUN(make_array_simple);
+    RUN(make_array_bad_dimension_is_catchable);
     RUN(make_array_initial_element);
     RUN(make_array_initial_contents);
     RUN(make_array_fill_pointer);

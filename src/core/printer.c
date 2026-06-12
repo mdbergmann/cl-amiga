@@ -8,6 +8,7 @@
 #include "stream.h"
 #include "vm.h"
 #include "../platform/platform.h"
+#include "string_utils.h"
 #include <stdio.h>
 #include <string.h>
 #include "ascii_ctype.h"
@@ -311,13 +312,35 @@ static void circle_assign_labels(void)
 static void out_char(int ch)
 {
     if (printer_stream != CL_NIL) {
+        /* Stream layer (cl_stream_write_char) handles UTF-8 encoding of
+         * non-ASCII codepoints per destination (string/file/socket/console). */
         cl_stream_write_char(printer_stream, ch);
     } else if (to_buffer) {
+#ifdef CL_WIDE_STRINGS
+        if (ch > 0x7F) {
+            /* UTF-8 encode into the C buffer so a non-ASCII char survives as
+             * its real codepoint (not a truncated byte) — mirrors the string
+             * stream path. */
+            char utf8[4];
+            int nb = cl_utf8_encode(ch, utf8), j;
+            for (j = 0; j < nb && out_pos < out_size - 1; j++)
+                out_buf[out_pos++] = utf8[j];
+        } else
+#endif
         if (out_pos < out_size - 1)
             out_buf[out_pos++] = (char)ch;
     } else {
-        char c[2] = { (char)ch, '\0' };
-        platform_write_string(c);
+#ifdef CL_WIDE_STRINGS
+        if (ch > 0x7F) {
+            char utf8[5];
+            int nb = cl_utf8_encode(ch, utf8);
+            if (nb > 0) { utf8[nb] = '\0'; platform_write_string(utf8); }
+        } else
+#endif
+        {
+            char c[2] = { (char)ch, '\0' };
+            platform_write_string(c);
+        }
     }
     if (ch == '\n') current_column = 0; else current_column++;
 }
@@ -930,17 +953,12 @@ static void print_obj(CL_Obj obj)
                 if (ch == '"' || ch == '\\') out_char('\\');
                 if (ch == '\n') { out_char('\\'); out_char('n'); continue; }
                 if (ch == '\t') { out_char('\\'); out_char('t'); continue; }
-                if (ch < 128)
-                    out_char((char)ch);
-                else {
-                    /* Print non-ASCII as \uXXXX or \UXXXXXXXX */
-                    char esc[12];
-                    if (ch <= 0xFFFF)
-                        snprintf(esc, sizeof(esc), "\\u%04X", ch);
-                    else
-                        snprintf(esc, sizeof(esc), "\\U%08X", ch);
-                    out_str(esc);
-                }
+                /* Non-ASCII graphic chars are written verbatim (the output
+                 * layer UTF-8-encodes per destination stream), NOT as \uXXXX:
+                 * CL has no such string escape, so the old form failed to
+                 * re-read to an EQUAL string and broke downstream HTML escaping
+                 * of e.g. Latin-1 parameter values (cl-who &#xFC;). */
+                out_char((int)ch);
             }
             out_char('"');
         } else {
