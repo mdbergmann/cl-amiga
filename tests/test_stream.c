@@ -653,6 +653,46 @@ TEST(file_stream_write_read)
     remove(path);
 }
 
+/* Regression: OPEN must honour :element-type so STREAM-ELEMENT-TYPE reports a
+ * binary stream as (UNSIGNED-BYTE 8), not CHARACTER.  drakma's SEND-CONTENT
+ * checks (subtypep (stream-element-type s) 'octet) before it will stream a
+ * file body, so a wrong CHARACTER answer broke hunchentoot multipart file
+ * POSTs ("Don't know how to send content #<FILE-INPUT-STREAM>"). */
+TEST(open_element_type_binary_reported)
+{
+    const char *expr =
+        "(progn"
+        " (with-open-file (s \"/tmp/cl_test_binstream.tmp\" :direction :output"
+        "                    :if-exists :supersede :element-type '(unsigned-byte 8))"
+        "   (write-byte 65 s))"
+        " (with-open-file (s \"/tmp/cl_test_binstream.tmp\" :element-type '(unsigned-byte 8))"
+        "   (list (subtypep (stream-element-type s) '(unsigned-byte 8))"
+        "         (subtypep (stream-element-type s) 'character))))";
+    CL_Obj result = cl_eval_string(expr);
+    char buf[64];
+    cl_prin1_to_string(result, buf, sizeof(buf));
+    /* binary subtype yes, character subtype no */
+    ASSERT_STR_EQ(buf, "(T NIL)");
+    remove("/tmp/cl_test_binstream.tmp");
+}
+
+/* A character stream (no :element-type) still reports CHARACTER. */
+TEST(open_element_type_character_default)
+{
+    const char *expr =
+        "(progn"
+        " (with-open-file (s \"/tmp/cl_test_chstream.tmp\" :direction :output"
+        "                    :if-exists :supersede)"
+        "   (write-char #\\A s))"
+        " (with-open-file (s \"/tmp/cl_test_chstream.tmp\")"
+        "   (stream-element-type s)))";
+    CL_Obj result = cl_eval_string(expr);
+    char buf[64];
+    cl_prin1_to_string(result, buf, sizeof(buf));
+    ASSERT_STR_EQ(buf, "CHARACTER");
+    remove("/tmp/cl_test_chstream.tmp");
+}
+
 TEST(charpos_tracking)
 {
     CL_Obj s = cl_make_string_output_stream();
@@ -1503,6 +1543,76 @@ TEST(socket_stream_close)
     }
 
     { int status; waitpid(pid, &status, 0); }
+}
+
+/* Regression: CL:LISTEN on a socket stream must report real readiness, which
+ * is what usocket:wait-for-input uses to drive hunchentoot's accept loop.
+ * Exercises platform_socket_data_available (the primitive bi_listen calls):
+ * a listener becomes ready when a connection is pending; a connection stream
+ * becomes ready when data arrives and reports EOF (2) when the peer closes. */
+TEST(socket_listen_reports_readiness)
+{
+    int bound_port = 0;
+    CL_Obj listener = cl_make_listen_stream(0, 1, &bound_port);
+    CL_Stream *lst, *cst;
+    struct sockaddr_in addr;
+    CL_Obj conn;
+    int cfd, i, avail;
+
+    ASSERT(!CL_NULL_P(listener));
+    ASSERT(bound_port > 0);
+    lst = (CL_Stream *)CL_OBJ_TO_PTR(listener);
+
+    /* No client yet: listener is not ready. */
+    ASSERT_EQ_INT(platform_socket_data_available((PlatformSocket)lst->handle_id), 0);
+
+    /* Connect a raw client. */
+    cfd = socket(AF_INET, SOCK_STREAM, 0);
+    ASSERT(cfd >= 0);
+    memset(&addr, 0, sizeof(addr));
+    addr.sin_family = AF_INET;
+    addr.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+    addr.sin_port = htons((uint16_t)bound_port);
+    ASSERT(connect(cfd, (struct sockaddr *)&addr, sizeof(addr)) == 0);
+
+    /* The pending connection makes the listener readable (poll up to ~1s). */
+    for (i = 0, avail = 0; i < 100; i++) {
+        avail = platform_socket_data_available((PlatformSocket)lst->handle_id);
+        if (avail == 1) break;
+        usleep(10000);
+    }
+    ASSERT_EQ_INT(avail, 1);
+
+    /* Accept; the listener returns to not-ready. */
+    conn = cl_socket_stream_accept(listener);
+    ASSERT(!CL_NULL_P(conn));
+    ASSERT_EQ_INT(platform_socket_data_available((PlatformSocket)lst->handle_id), 0);
+    cst = (CL_Stream *)CL_OBJ_TO_PTR(conn);
+
+    /* No data sent yet: connection not ready. */
+    ASSERT_EQ_INT(platform_socket_data_available((PlatformSocket)cst->handle_id), 0);
+
+    /* Client writes a byte: connection becomes ready, then we read it. */
+    ASSERT(write(cfd, "X", 1) == 1);
+    for (i = 0, avail = 0; i < 100; i++) {
+        avail = platform_socket_data_available((PlatformSocket)cst->handle_id);
+        if (avail == 1) break;
+        usleep(10000);
+    }
+    ASSERT_EQ_INT(avail, 1);
+    ASSERT_EQ_INT(cl_stream_read_byte(conn), 'X');
+
+    /* Client closes: a subsequent probe reports EOF (code 2, => CL:LISTEN NIL). */
+    close(cfd);
+    for (i = 0, avail = 0; i < 100; i++) {
+        avail = platform_socket_data_available((PlatformSocket)cst->handle_id);
+        if (avail == 2) break;
+        usleep(10000);
+    }
+    ASSERT_EQ_INT(avail, 2);
+
+    cl_stream_close(conn);
+    cl_stream_close(listener);
 }
 
 TEST(socket_stream_connect_failure)
@@ -2681,6 +2791,8 @@ int main(void)
     RUN(peek_char_test);
     RUN(close_stream);
     RUN(file_stream_write_read);
+    RUN(open_element_type_binary_reported);
+    RUN(open_element_type_character_default);
     RUN(charpos_tracking);
     RUN(read_line_string_stream);
 
@@ -2760,6 +2872,7 @@ int main(void)
     RUN(socket_stream_connect_failure);
     RUN(socket_stream_connect_write_read);
     RUN(socket_stream_close);
+    RUN(socket_listen_reports_readiness);
     RUN(socket_stream_write_string);
     RUN(eval_open_tcp_stream_connect_failure);
     RUN(eval_open_tcp_stream_read_byte);

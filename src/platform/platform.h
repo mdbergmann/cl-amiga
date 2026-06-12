@@ -76,6 +76,10 @@ int            platform_socket_read(PlatformSocket sh);       /* Read one byte, 
 int            platform_socket_write(PlatformSocket sh, int byte); /* Write one byte, 0=ok, -1=error */
 int            platform_socket_write_buf(PlatformSocket sh, const char *buf, uint32_t len); /* Write buffer */
 int            platform_socket_flush(PlatformSocket sh);      /* Flush output, 0=ok */
+/* Non-blocking readiness probe: 1 if a read/accept would not block (buffered
+ * data, fd readable, or EOF; for a listener: a connection is pending), 0 if it
+ * would block, -1 on an invalid handle.  Backs CL:LISTEN for socket streams. */
+int            platform_socket_data_available(PlatformSocket sh);
 
 /* Server-side: bind to `port` and start listening.
  * loopback != 0 binds 127.0.0.1 only; otherwise INADDR_ANY (all interfaces).

@@ -5,6 +5,8 @@
 #include "error.h"
 #include "string_utils.h"
 #include "thread.h"
+#include "compiler.h"  /* cl_get_type_expander */
+#include "vm.h"        /* cl_vm_apply */
 #include "../platform/platform.h"
 #include <string.h>
 
@@ -46,6 +48,44 @@ static CL_Obj make_string_like(CL_Obj src, uint32_t length)
 #endif
     (void)src;
     return cl_make_string(NULL, length);
+}
+
+/* Classify an array element-type specifier, EXPANDING user deftypes, so that
+ * e.g. flexi-streams' (deftype char* () 'character) upgrades to a CHARACTER
+ * array (string) rather than a general (vector t).  Sets the out-flags it can
+ * determine and leaves the rest untouched:
+ *   *is_char       — a CHARACTER subtype (build a string)
+ *   *is_wide_char  — that subtype admits codes > 255 (CHARACTER / EXTENDED-CHAR)
+ *   *is_bit        — a BIT subtype (build a bit-vector)
+ * Only symbol type specifiers are classified (NIL and compound specifiers are
+ * handled by the callers); unrecognised symbols stay a general T array.  DEPTH
+ * bounds the deftype-expansion recursion.
+ *
+ * GC: cl_get_type_expander/cl_vm_apply may compact.  Callers pass an element
+ * type that is already GC-rooted (a builtin arg slot); no unrooted CL_Obj is
+ * held across the apply here. */
+static void classify_array_elt_type(CL_Obj type, int depth,
+                                    int *is_char, int *is_wide_char, int *is_bit)
+{
+    const char *nm;
+    CL_Obj ex;
+    if (depth <= 0 || !CL_SYMBOL_P(type))
+        return;
+    nm = cl_symbol_name(type);
+    if (strcmp(nm, "CHARACTER") == 0 || strcmp(nm, "EXTENDED-CHAR") == 0) {
+        *is_char = 1; *is_wide_char = 1; return;
+    }
+    if (strcmp(nm, "BASE-CHAR") == 0 || strcmp(nm, "STANDARD-CHAR") == 0) {
+        *is_char = 1; return;
+    }
+    if (strcmp(nm, "BIT") == 0) { *is_bit = 1; return; }
+    if (strcmp(nm, "T") == 0 || strcmp(nm, "*") == 0)
+        return;
+    /* A user deftype alias — expand once and recurse. */
+    ex = cl_get_type_expander(type);
+    if (!CL_NULL_P(ex))
+        classify_array_elt_type(cl_vm_apply(ex, NULL, 0), depth - 1,
+                                is_char, is_wide_char, is_bit);
 }
 
 /* Helper: get element from any 1D sequence (list, string, vector) */
@@ -139,6 +179,7 @@ static CL_Obj bi_make_array(CL_Obj *args, int n)
     int has_initial_element = 0;
     int has_initial_contents = 0;
     int has_displaced_to = 0;
+    int has_element_type_spec = 0; /* non-NIL :element-type was given — captured before classify can compact */
     int element_type_bit = 0;
     int element_type_char = 0;
     /* Distinguishes the upgraded character width: an explicit CHARACTER /
@@ -177,25 +218,23 @@ static CL_Obj bi_make_array(CL_Obj *args, int n)
                 flags |= CL_VEC_FLAG_ADJUSTABLE;
         } else if (args[i] == KW_ELEMENT_TYPE) {
             element_type = args[i + 1];
+            /* Capture nullness BEFORE classify_array_elt_type, which calls
+             * cl_vm_apply and can trigger a compacting GC.  After compaction,
+             * element_type (a C local) may be a stale arena offset; the boolean
+             * is safe to use later without re-reading element_type. */
+            has_element_type_spec = !CL_NULL_P(element_type);
             /* (array nil (n)) is a STRING subtype (CLHS 15.1.2.2) — only
              * zero-length is well-defined since no value is storable, but
              * the result must satisfy STRINGP.  Folding it into the
              * character branch produces an empty TYPE_STRING. */
-            if (CL_NULL_P(element_type))
+            if (!has_element_type_spec)
                 element_type_char = 1;
-            else if (CL_SYMBOL_P(element_type)) {
-                const char *ename = cl_symbol_name(element_type);
-                if (strcmp(ename, "BIT") == 0)
-                    element_type_bit = 1;
-                else if (strcmp(ename, "CHARACTER") == 0 ||
-                         strcmp(ename, "EXTENDED-CHAR") == 0) {
-                    element_type_char = 1;
-                    element_type_wide_char = 1;
-                }
-                else if (strcmp(ename, "BASE-CHAR") == 0 ||
-                         strcmp(ename, "STANDARD-CHAR") == 0)
-                    element_type_char = 1;
-            }
+            else
+                /* Classify CHARACTER/BIT element types, expanding deftypes so
+                 * aliases like flexi-streams' CHAR* (=> CHARACTER) build a
+                 * string, not a (vector t). */
+                classify_array_elt_type(element_type, 16, &element_type_char,
+                                        &element_type_wide_char, &element_type_bit);
         } else if (args[i] == KW_DISPLACED_TO) {
             displaced_to = args[i + 1];
             if (!CL_NULL_P(displaced_to))
@@ -418,7 +457,7 @@ static CL_Obj bi_make_array(CL_Obj *args, int n)
         }
 
         /* For numeric element types, default initial-element to 0 */
-        if (!has_initial_element && !has_initial_contents && !CL_NULL_P(element_type)) {
+        if (!has_initial_element && !has_initial_contents && has_element_type_spec) {
             if (!element_type_bit && !element_type_char) {
                 initial_element = CL_MAKE_FIXNUM(0);
                 has_initial_element = 1;
@@ -1048,24 +1087,17 @@ static CL_Obj bi_array_in_bounds_p(CL_Obj *args, int n)
 static CL_Obj bi_upgraded_array_element_type(CL_Obj *args, int n)
 {
     CL_Obj typespec = args[0];
+    int is_char = 0, is_wide_char = 0, is_bit = 0;
     (void)n;
 
-    /* Check for CHARACTER subtypes */
-    if (CL_SYMBOL_P(typespec) || CL_NULL_P(typespec)) {
-        const char *tname = "";
-        if (CL_SYMBOL_P(typespec)) {
-            CL_Symbol *s = (CL_Symbol *)CL_OBJ_TO_PTR(typespec);
-            CL_String *sn = (CL_String *)CL_OBJ_TO_PTR(s->name);
-            tname = sn->data;
-        }
-        if (strcmp(tname, "CHARACTER") == 0 ||
-            strcmp(tname, "BASE-CHAR") == 0 ||
-            strcmp(tname, "EXTENDED-CHAR") == 0 ||
-            strcmp(tname, "STANDARD-CHAR") == 0)
-            return cl_intern("CHARACTER", 9);
-        if (strcmp(tname, "BIT") == 0)
-            return cl_intern("BIT", 3);
-    }
+    /* Classify CHARACTER / BIT subtypes, expanding user deftypes (so an alias
+     * like flexi-streams' CHAR* upgrades to CHARACTER, not T).  Everything
+     * else upgrades to the general element type T. */
+    classify_array_elt_type(typespec, 16, &is_char, &is_wide_char, &is_bit);
+    if (is_char)
+        return cl_intern("CHARACTER", 9);
+    if (is_bit)
+        return cl_intern("BIT", 3);
     return SYM_T;
 }
 

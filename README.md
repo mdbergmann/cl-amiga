@@ -176,11 +176,25 @@ focused, runnable gunzip example). cl-amiga's Gray streams expose
 trivial-gray-streams `(stream sequence start end &key)` signature), so
 `read-sequence`/`write-sequence` on a Gray stream dispatch to a single bulk
 method instead of looping byte-by-byte: chipz decompresses straight into the
-caller's buffer (see `trunk/test-gray-sequence.lisp` for the dispatch tests). The suite's remaining skipped tests need a
-local hunchentoot **server** or the flaky httpbin.org service — both orthogonal
-to the client goal — and are skipped with documented reasons
-(`trunk/drakma-skip-tests.lisp`). It is **host-only**: it needs a TCP/IP stack
-and network access, which the Amiga/FS-UAE test harness lacks.
+caller's buffer (see `trunk/test-gray-sequence.lisp` for the dispatch tests).
+The suite also runs the form-POST/PUT tests, which stand up a local
+**hunchentoot server** and POST to it: hunchentoot now runs as a server over
+the usocket cl-amiga backend (its acceptor loop drives off `cl:listen` on the
+listening socket — see below — and the cl-amiga portability shims in
+`trunk/hunchentoot-clamiga.lisp`). The only remaining skipped tests depend on
+the flaky httpbin.org service, orthogonal to the client+server goal, and are
+skipped with documented reasons (`trunk/drakma-skip-tests.lisp`). It is
+**host-only**: it needs a TCP/IP stack and network access, which the
+Amiga/FS-UAE test harness lacks.
+
+`cl:listen` works on socket streams (both connected sockets and listening
+sockets): it reports a connected socket as ready when a byte is available and a
+listening socket as ready when a client connection is pending, backed by a
+non-blocking `platform_socket_data_available` (a zero-timeout `select` on
+POSIX / `WaitSelect` via the reactor on Amiga). That is what lets
+`usocket:wait-for-input` — and hence hunchentoot's accept loop — work. See
+`tests/test_stream.c` (`socket_listen_reports_readiness`) for a runnable
+round-trip.
 
 ### Loading source and FASL files
 
