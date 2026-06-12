@@ -2876,6 +2876,32 @@ TEST(eval_destructuring_bind_key)
         "(1 NIL 3)");
 }
 
+TEST(eval_destructuring_bind_optional_rest_key)
+{
+    /* Regression: &optional + &rest + &key ALL together — the &rest handler
+       nested inside the &optional branch did `goto done` and never processed
+       a trailing &key, so the &key vars were left unbound ("Unbound variable").
+       This is the cl-who WITH-HTML-OUTPUT lambda list shape (var &optional
+       stream &rest rest &key prologue indent).  Verified vs SBCL/CLISP. */
+    ASSERT_STR_EQ(eval_print(
+        "(destructuring-bind (var &optional stream &rest rest &key indent)"
+        "    '(s nil :indent 9)"
+        "  (list var stream rest indent))"),
+        "(S NIL (:INDENT 9) 9)");
+    /* &key absent from the args: indent defaults to NIL, rest is empty. */
+    ASSERT_STR_EQ(eval_print(
+        "(destructuring-bind (var &optional stream &rest rest &key indent)"
+        "    '(s nil)"
+        "  (list var stream rest indent))"),
+        "(S NIL NIL NIL)");
+    /* Two &key vars after &rest, both supplied out of order. */
+    ASSERT_STR_EQ(eval_print(
+        "(destructuring-bind (a &optional b &rest r &key x y)"
+        "    '(1 2 :y 20 :x 10)"
+        "  (list a b r x y))"),
+        "(1 2 (:Y 20 :X 10) 10 20)");
+}
+
 /* --- defsetf --- */
 
 TEST(eval_defsetf_short)
@@ -9303,6 +9329,7 @@ int main(void)
     RUN(eval_destructuring_bind_optional_provided);
     RUN(eval_destructuring_bind_body);
     RUN(eval_destructuring_bind_key);
+    RUN(eval_destructuring_bind_optional_rest_key);
     RUN(eval_defsetf_short);
     RUN(eval_defsetf_cadr);
     RUN(eval_get_setf_expansion_defsetf);

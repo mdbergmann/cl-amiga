@@ -155,6 +155,7 @@ Reusable Lisp loaders in `trunk/` that load and exercise third-party libraries o
 ./build/host/clamiga --heap 96M  --load trunk/load-and-test-ansi.lisp           # ANSI cons + symbols + numbers
 ./build/host/clamiga --heap 256M --load trunk/load-and-test-cffi.lisp           # CFFI backend
 ./build/host/clamiga --heap 256M --load trunk/load-and-test-drakma.lisp         # drakma HTTP/HTTPS (host only)
+./build/host/clamiga --heap 256M --load trunk/load-and-test-hunchentoot.lisp    # Hunchentoot server (host only)
 ```
 
 `load-and-test-drakma.lisp` is the SSL-enabled HTTP path: it loads **drakma**
@@ -186,6 +187,16 @@ the flaky httpbin.org service, orthogonal to the client+server goal, and are
 skipped with documented reasons (`trunk/drakma-skip-tests.lisp`). It is
 **host-only**: it needs a TCP/IP stack and network access, which the
 Amiga/FS-UAE test harness lacks.
+
+`load-and-test-hunchentoot.lisp` is the dedicated **server-side** counterpart:
+cl-amiga itself *is* the web server. It starts a Hunchentoot `easy-acceptor`
+over the usocket cl-amiga backend (so the accept loop runs on a cl-amiga MP
+taskmaster thread) and runs Hunchentoot's own built-in confidence suite
+(`hunchentoot/test`, `HUNCHENTOOT-TEST:TEST-HUNCHENTOOT`) against it, driving
+**drakma** over loopback through cookies, sessions, multipart parameter
+decoding, redirection and basic auth. It applies the same
+`trunk/hunchentoot-clamiga.lisp` shims and renders its HTML test pages with
+**cl-who**. Like the drakma script it is **host-only** (needs loopback TCP/IP).
 
 `cl:listen` works on socket streams (both connected sockets and listening
 sockets): it reports a connected socket as ready when a byte is available and a
