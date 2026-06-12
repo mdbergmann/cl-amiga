@@ -657,11 +657,17 @@ static void print_list(CL_Obj obj)
 static void print_string(CL_Obj obj)
 {
     CL_String *s = (CL_String *)CL_OBJ_TO_PTR(obj);
+    uint32_t i;
+    /* Base strings (TYPE_STRING) hold latin-1 bytes: a byte 0x80..0xFF is a
+     * codepoint in [128,255], not a UTF-8 fragment. Read each byte UNSIGNED so
+     * high bytes take out_char's encode path (cl_stream_write_char UTF-8-encodes
+     * codepoints > 0x7F for non-latin-1 streams). Reading it as a signed `char`
+     * would sign-extend 0xFC to -4, dodge the `ch > 0x7F` test, and emit a lone
+     * raw byte that get-output-stream-string then mis-decodes to U+FFFD. */
     if (print_escape_p() || print_readably_p()) {
-        uint32_t i;
         out_char('"');
         for (i = 0; i < s->length; i++) {
-            char ch = s->data[i];
+            int ch = (unsigned char)s->data[i];
             if (ch == '"' || ch == '\\') out_char('\\');
             if (ch == '\n') { out_char('\\'); out_char('n'); continue; }
             if (ch == '\t') { out_char('\\'); out_char('t'); continue; }
@@ -669,7 +675,9 @@ static void print_string(CL_Obj obj)
         }
         out_char('"');
     } else {
-        out_str(s->data);
+        /* princ: per-char (not out_str) so high bytes are encoded, not dumped raw */
+        for (i = 0; i < s->length; i++)
+            out_char((unsigned char)s->data[i]);
     }
 }
 
