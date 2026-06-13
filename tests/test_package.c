@@ -130,7 +130,8 @@ TEST(c_internal_helpers_not_external_in_cl)
 {
     static const char *const internal[] = {
         "%LOOP-SKIP-TYPE-SPEC", "%LOOP-SIMPLE-TYPE-SPEC-P",
-        "%LOOP-PARSE-FOR", "%METHOD-APPLICABLE-P", NULL
+        "%LOOP-PARSE-FOR", "%LOOP-LIST-ACCUM-P",
+        "%METHOD-APPLICABLE-P", NULL
     };
     const char *const *p;
     for (p = internal; *p != NULL; p++) {
