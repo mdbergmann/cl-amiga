@@ -1913,6 +1913,87 @@ TEST(platform_socket_listen_busy_port)
     platform_socket_close(a);
 }
 
+/* Regression: the POSIX socket table grows on demand, well past the old fixed
+ * 16-slot cap and across the 64-slot block boundary, and recycles freed slots.
+ * Holds many simultaneous connections at once, verifies every handle is valid,
+ * distinct and carries data, then proves close() returns slots to the
+ * free-list so a second wave reuses them. */
+#define MANY_CONNS 100
+TEST(platform_socket_table_grows_many_connections)
+{
+    int port = 0;
+    PlatformSocket lst;
+    PlatformSocket cli[MANY_CONNS], conn[MANY_CONNS];
+    PlatformSocket max_handle = 0;
+    int i, j;
+
+    lst = platform_socket_listen(0, 1, &port);
+    ASSERT(lst != PLATFORM_SOCKET_INVALID);
+    ASSERT(port > 0);
+
+    /* Interleave connect+accept: the listen backlog is small, so draining each
+     * pending connection before opening the next keeps the queue from filling. */
+    for (i = 0; i < MANY_CONNS; i++) {
+        cli[i]  = platform_socket_connect("127.0.0.1", port);
+        ASSERT(cli[i] != PLATFORM_SOCKET_INVALID);
+        conn[i] = platform_socket_accept(lst);
+        ASSERT(conn[i] != PLATFORM_SOCKET_INVALID);
+        if (cli[i]  > max_handle) max_handle = cli[i];
+        if (conn[i] > max_handle) max_handle = conn[i];
+    }
+
+    /* With 1 listener + 200 connection slots live at once, handles must have
+     * climbed past the old 16-slot cap AND past the 64-slot first block — i.e.
+     * the table genuinely grew rather than capping out. */
+    ASSERT(max_handle > 64);
+
+    /* All client and server handles are distinct (no two claims collided). */
+    {
+        PlatformSocket all[2 * MANY_CONNS];
+        for (i = 0; i < MANY_CONNS; i++) { all[i] = cli[i]; all[MANY_CONNS + i] = conn[i]; }
+        for (i = 0; i < 2 * MANY_CONNS; i++) {
+            ASSERT(all[i] != lst);
+            for (j = i + 1; j < 2 * MANY_CONNS; j++)
+                ASSERT(all[i] != all[j]);
+        }
+    }
+
+    /* Every connection round-trips a distinct byte, proving each slot points at
+     * its own fd and IOBuf (no aliasing across the grown blocks). */
+    for (i = 0; i < MANY_CONNS; i++) {
+        int byte = 'A' + (i % 26);
+        ASSERT_EQ_INT(platform_socket_write(cli[i], byte), 0);
+        ASSERT_EQ_INT(platform_socket_flush(cli[i]), 0);
+        ASSERT_EQ_INT(platform_socket_read(conn[i]), byte);
+    }
+
+    /* Close everything, returning all slots to the free-list. */
+    for (i = 0; i < MANY_CONNS; i++) {
+        platform_socket_close(cli[i]);
+        platform_socket_close(conn[i]);
+    }
+
+    /* A second wave reuses recycled slots: it must still succeed and stay
+     * within the high-water mark (no unbounded growth from churn). */
+    {
+        PlatformSocket c2, n2, hi2 = 0;
+        for (i = 0; i < MANY_CONNS; i++) {
+            c2 = platform_socket_connect("127.0.0.1", port);
+            ASSERT(c2 != PLATFORM_SOCKET_INVALID);
+            n2 = platform_socket_accept(lst);
+            ASSERT(n2 != PLATFORM_SOCKET_INVALID);
+            if (c2 > hi2) hi2 = c2;
+            if (n2 > hi2) hi2 = n2;
+            platform_socket_close(c2);
+            platform_socket_close(n2);
+        }
+        ASSERT(hi2 <= max_handle);   /* recycled, not grown further */
+    }
+
+    platform_socket_close(lst);
+}
+#undef MANY_CONNS
+
 /* The cl_make_listen_stream / cl_socket_stream_accept wrappers. */
 TEST(socket_stream_listen_accept)
 {
@@ -2267,6 +2348,86 @@ TEST(socket_read_parked_allows_same_socket_reply)
     cl_stream_close(server);
     cl_stream_close(listener);
     CL_GC_UNPROTECT(3);
+}
+
+/* Regression for the dynamic socket table: the per-socket I/O lock must keep
+ * working for handles past the old fixed 16-slot cap and across the lock
+ * table's block boundary.  Pre-opens enough low handles that the test pair
+ * lands at handle >= 32 (lock block >= 1), then reruns the SLY same-socket
+ * reply scenario: a worker parked reading the server must not block the reply
+ * written on that same high-handle socket.  This would deadlock if the lock
+ * lookup returned NULL for the high handle (the pre-fix behaviour) or if locks
+ * were striped (a collision would alias read and write of the same socket). */
+TEST(socket_read_parked_high_handle_lock_independent)
+{
+    enum { HOLD = 20 };
+    PlatformSocket hold_lst, hold_cli[HOLD], hold_srv[HOLD];
+    int port = 0, i;
+    CL_Obj listener = CL_NIL, client = CL_NIL, server = CL_NIL;
+    ReadBlockerCtx ctx;
+    void *wth = NULL, *wdog = NULL;
+    CL_Stream *sst;
+
+    /* Hold low handles open so the test pair is forced past block 0. */
+    hold_lst = platform_socket_listen(0, 1, &port);
+    ASSERT(hold_lst != PLATFORM_SOCKET_INVALID);
+    ASSERT(port > 0);
+    for (i = 0; i < HOLD; i++) {
+        hold_cli[i] = platform_socket_connect("127.0.0.1", port);
+        ASSERT(hold_cli[i] != PLATFORM_SOCKET_INVALID);
+        hold_srv[i] = platform_socket_accept(hold_lst);
+        ASSERT(hold_srv[i] != PLATFORM_SOCKET_INVALID);
+    }
+
+    CL_GC_PROTECT(listener);
+    CL_GC_PROTECT(client);
+    CL_GC_PROTECT(server);
+    ASSERT(make_loopback_stream_pair(&listener, &client, &server));
+    ASSERT(!CL_NULL_P(server));
+
+    /* The whole point: the server stream's handle must be past the old 16-slot
+     * cap and into a second lock block (>= 32). */
+    sst = (CL_Stream *)CL_OBJ_TO_PTR(server);
+    ASSERT(sst->handle_id >= 32);
+
+    memset(&ctx, 0, sizeof(ctx));
+    ctx.thread.id = 1;
+    ctx.thread.status = 1;
+    ctx.thread.mv_count = 1;
+    ctx.stream = server;
+    ctx.got = -2;
+
+    g_read_test_done = 0;
+    platform_thread_create(&wdog, read_test_watchdog,
+                           (void *)"high-handle same-socket reply write", 0);
+    platform_thread_create(&wth, socket_read_blocker, &ctx, 0);
+
+    while (!ctx.parked) platform_sleep_ms(5);
+    platform_sleep_ms(100);
+
+    /* Reply on the server stream while the worker is parked reading it. */
+    cl_stream_write_byte(server, 'A');
+    flush_socket_stream(server);
+    ASSERT_EQ_INT(cl_stream_read_byte(client), 'A');
+
+    cl_stream_write_byte(client, 'Z');
+    flush_socket_stream(client);
+    platform_thread_join(wth, NULL);
+    ASSERT_EQ_INT(ctx.got, 'Z');
+
+    g_read_test_done = 1;
+    platform_thread_join(wdog, NULL);
+
+    cl_stream_close(client);
+    cl_stream_close(server);
+    cl_stream_close(listener);
+    CL_GC_UNPROTECT(3);
+
+    for (i = 0; i < HOLD; i++) {
+        platform_socket_close(hold_cli[i]);
+        platform_socket_close(hold_srv[i]);
+    }
+    platform_socket_close(hold_lst);
 }
 
 /* The reported symptom: console output from another thread must proceed while
@@ -3202,6 +3363,7 @@ int main(void)
     RUN(eval_open_tcp_stream_write_byte);
     RUN(platform_socket_listen_accept);
     RUN(platform_socket_listen_busy_port);
+    RUN(platform_socket_table_grows_many_connections);
     RUN(socket_stream_listen_accept);
     RUN(socket_stream_accept_non_listener);
     RUN(eval_socket_listen_accept_roundtrip);
@@ -3213,6 +3375,7 @@ int main(void)
     RUN(eval_socket_local_port_type_error);
     RUN(socket_concurrent_accept_connect);
     RUN(socket_read_parked_allows_same_socket_reply);
+    RUN(socket_read_parked_high_handle_lock_independent);
     RUN(socket_read_parked_allows_console_write);
     RUN(stw_gc_with_thread_blocked_in_socket_read);
 

@@ -376,14 +376,18 @@ The Amiga test suite passes **2525 / 2525** on the JIT config; per-opcode JIT co
 - **Platform abstraction** — all OS calls go through `platform.h` (POSIX and AmigaOS implementations)
 - **FFI** — generic foreign pointer type + peek/poke (all platforms); 68k assembly trampoline for AmigaOS register-based library calls
 - **Threading** (MP package) — kernel threads, per-thread dynamic bindings (TLV), locks, named condition variables, thread interruption/destruction, type predicates; stop-the-world GC with safepoints; POSIX pthreads (with `__thread`-backed TLS) and AmigaOS processes/SignalSemaphores
-- **TCP networking** — BSD sockets (POSIX) and bsdsocket.library (AmigaOS). Socket
-  streams support per-connection read/write timeouts: `(setf (ext:socket-stream-timeout
-  stream :input) seconds)` (also `:output`) arms a `select`/`WaitSelect` deadline so a
-  read/write that stalls past the timeout signals `ext:socket-timeout` (a subtype of
-  `stream-error`) instead of blocking forever; the value is in seconds (fractional
-  allowed), `nil` clears it, and reading the place back returns the current setting. See
-  `tests/test_stream.c` (`socket_read_timeout_*`, `eval_socket_stream_timeout_*`) and
-  `tests/amiga/run-tests.lisp` for usage.
+- **TCP networking** — BSD sockets (POSIX) and bsdsocket.library (AmigaOS). On the
+  POSIX host the socket table grows on demand, so a server can hold thousands of
+  simultaneous connections (readiness waits use `poll`, which has no `FD_SETSIZE`
+  ceiling); on AmigaOS the table is a fixed 64 slots, bounded by bsdsocket.library's
+  per-task descriptor table. Socket streams support per-connection read/write timeouts:
+  `(setf (ext:socket-stream-timeout stream :input) seconds)` (also `:output`) arms a
+  `poll`/`WaitSelect` deadline so a read/write that stalls past the timeout signals
+  `ext:socket-timeout` (a subtype of `stream-error`) instead of blocking forever; the
+  value is in seconds (fractional allowed), `nil` clears it, and reading the place back
+  returns the current setting. See `tests/test_stream.c`
+  (`platform_socket_table_grows_many_connections`, `socket_read_timeout_*`,
+  `eval_socket_stream_timeout_*`) and `tests/amiga/run-tests.lisp` for usage.
 
 ### Declarations (`declaim` / `proclaim` / `declare`)
 
@@ -428,7 +432,7 @@ See `cl_process_declaration_specifier` in `src/core/compiler_extra.c` and
 - **Threading** — `MP` package covers the core bordeaux-threads surface (threads with `interrupt`/`destroy`, mutex + recursive locks, named condition variables with timeout, `with-lock-held` / `with-recursive-lock-held`, type predicates). `(ql:quickload :bordeaux-threads)` and Quicklisp itself currently rely on local patches we ship — `lib/quicklisp-compat.lisp` (maps the BT v2 surface onto `MP`, adapts Quicklisp's network/HTTP layer) plus the shims in `contrib/shims/` symlinked into `~/quicklisp/local-projects` by `make install-shims`; the plan is to upstream these once the remaining API gaps close. Not yet covered: semaphores, atomic integers, `with-timeout`, `:timeout` on `acquire-lock`
 - **ANSI CL gaps** — while major subsystems work (CLOS, conditions, packages, the full numeric tower, arrays, pathnames, streams, loop, format), some corners of the spec remain unimplemented
 - **Socket timeout clock on AmigaOS** — the socket read/write timeout deadlines are measured with a `DateStamp`-based millisecond clock, which resets at midnight. A timeout window that straddles 00:00 can therefore fire early or late by up to the elapsed-since-midnight amount — a once-a-day edge that is harmless for the typical second-scale timeouts but not exact. Switching the Amiga deadline source to a monotonic `timer.device` clock would remove it. (POSIX is unaffected.)
-- **Socket write timeouts over loopback** — a `:output` timeout fires only when the send genuinely cannot make progress (the peer's receive window and the local send buffer are both full). On a `127.0.0.1` connection the host kernel may buffer the data effectively without bound — macOS, in particular, keeps a loopback socket writable no matter how much unread data is queued — so a write timeout will not trigger there even against a peer that never reads. This is a host-buffering property, not a CL-Amiga limit; write timeouts behave normally against real remote peers and on AmigaOS. (Read timeouts are unaffected and fire reliably everywhere.) Because of this, the write-timeout path is exercised by the success-path test (a timed write to a draining peer) rather than a loopback saturation test; it shares the same `select`/deadline mechanism as the read path.
+- **Socket write timeouts over loopback** — a `:output` timeout fires only when the send genuinely cannot make progress (the peer's receive window and the local send buffer are both full). On a `127.0.0.1` connection the host kernel may buffer the data effectively without bound — macOS, in particular, keeps a loopback socket writable no matter how much unread data is queued — so a write timeout will not trigger there even against a peer that never reads. This is a host-buffering property, not a CL-Amiga limit; write timeouts behave normally against real remote peers and on AmigaOS. (Read timeouts are unaffected and fire reliably everywhere.) Because of this, the write-timeout path is exercised by the success-path test (a timed write to a draining peer) rather than a loopback saturation test; it shares the same readiness-wait/deadline mechanism as the read path (`poll` on POSIX, `WaitSelect` on AmigaOS).
 
 ## TODO
 

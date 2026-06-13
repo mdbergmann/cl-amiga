@@ -734,7 +734,10 @@ typedef socklen_t cl_socklen_t;
 struct Library *SocketBase = NULL;   /* opened by, and only used from, the reactor */
 static LONG socket_errno = 0;
 
-#define PLATFORM_SOCKET_TABLE_SIZE 16
+/* Fixed cap: bounded by bsdsocket.library's per-task descriptor table (Roadshow
+ * default ~64).  Going higher would require SocketBaseTags(SBTC_DTABLESIZE).
+ * The host (platform_posix.c) has no such ceiling and grows its table on demand. */
+#define PLATFORM_SOCKET_TABLE_SIZE 64
 
 /* Reactor-owned: fd per slot (-1 = free), IOBuf per slot (NULL for listeners).
  * Slot 0 is reserved as the INVALID handle.  Only the reactor mutates fds; the

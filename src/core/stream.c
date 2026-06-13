@@ -57,11 +57,63 @@ static void *cl_console_read_mutex = NULL;
 static void *cl_console_write_mutex = NULL;
 static void *cl_file_io_mutex = NULL;
 
-/* Per-socket read/write locks, indexed by socket handle (1..N-1).  Slot count
- * must cover the platform socket-handle range (both POSIX and Amiga use 16). */
-#define CL_STREAM_SOCKET_SLOTS 16
-static void *cl_sock_read_mutex[CL_STREAM_SOCKET_SLOTS];
-static void *cl_sock_write_mutex[CL_STREAM_SOCKET_SLOTS];
+/* Per-socket read/write locks, keyed by socket handle.  The lock MUST be per
+ * handle, not striped (handle % N): a thread parked in a blocking read on one
+ * socket must never stall I/O on a different socket, and reading a socket must
+ * never block writing it (full duplex) — striping would reintroduce exactly the
+ * cross-connection blocking this split was built to avoid (the SLY deadlock).
+ *
+ * The POSIX socket table grows without a fixed ceiling, so this table grows to
+ * match it: a segmented directory of lazily-allocated, never-freed blocks of
+ * read/write mutex pairs.  Because blocks are never freed and a block pointer is
+ * published only once (fully initialised), a looked-up lock stays valid for the
+ * life of the process and the I/O hot path reads it without the table mutex.
+ * Amiga handles stay within the first two blocks (handles 1..63). */
+typedef struct {
+    void *read_mutex;
+    void *write_mutex;
+} SockLockPair;
+
+#define CL_SOCK_LOCK_BLOCK_SHIFT 5
+#define CL_SOCK_LOCK_BLOCK_SIZE  (1 << CL_SOCK_LOCK_BLOCK_SHIFT)   /* 32 handles/block */
+#define CL_SOCK_LOCK_BLOCK_MASK  (CL_SOCK_LOCK_BLOCK_SIZE - 1)
+#define CL_SOCK_LOCK_MAX_BLOCKS  2048                              /* up to 65536 handles */
+
+static SockLockPair * volatile cl_sock_lock_dir[CL_SOCK_LOCK_MAX_BLOCKS];
+
+/* Resolve a socket handle to its lock pair, lazily allocating and initialising
+ * the covering block on first use (under the table mutex, so two threads racing
+ * the same new block don't double-allocate it).  Returns NULL for the reserved
+ * handle 0, an out-of-range handle, or on allocation failure (caller then runs
+ * unlocked, as it did before any locks existed). */
+static SockLockPair *sock_lock_pair(uint32_t h)
+{
+    uint32_t blk = h >> CL_SOCK_LOCK_BLOCK_SHIFT;
+    SockLockPair *b;
+    if (h == 0 || blk >= CL_SOCK_LOCK_MAX_BLOCKS) return NULL;
+    b = cl_sock_lock_dir[blk];
+    if (!b) {
+        platform_mutex_lock(cl_stream_table_mutex);
+        b = cl_sock_lock_dir[blk];          /* re-check after acquiring the lock */
+        if (!b) {
+            b = (SockLockPair *)platform_alloc((uint32_t)(CL_SOCK_LOCK_BLOCK_SIZE *
+                                                          sizeof(SockLockPair)));
+            if (b) {
+                int i;
+                for (i = 0; i < CL_SOCK_LOCK_BLOCK_SIZE; i++) {
+                    b[i].read_mutex = NULL;
+                    b[i].write_mutex = NULL;
+                    platform_mutex_init(&b[i].read_mutex);
+                    platform_mutex_init(&b[i].write_mutex);
+                }
+                cl_sock_lock_dir[blk] = b;  /* publish only after full init */
+            }
+        }
+        platform_mutex_unlock(cl_stream_table_mutex);
+        if (!b) return NULL;
+    }
+    return &b[h & CL_SOCK_LOCK_BLOCK_MASK];
+}
 
 /* --- C-buffer input stream side table --- */
 
@@ -85,10 +137,7 @@ void cl_stream_init(void)
         platform_mutex_init(&cl_console_write_mutex);
     if (!cl_file_io_mutex)
         platform_mutex_init(&cl_file_io_mutex);
-    for (i = 1; i < CL_STREAM_SOCKET_SLOTS; i++) {
-        if (!cl_sock_read_mutex[i])  platform_mutex_init(&cl_sock_read_mutex[i]);
-        if (!cl_sock_write_mutex[i]) platform_mutex_init(&cl_sock_write_mutex[i]);
-    }
+    /* Per-socket lock blocks are allocated lazily on first use (sock_lock_pair). */
 
     for (i = 0; i < CL_STREAM_BUF_TABLE_SIZE; i++) {
         outbuf_table[i].data = NULL;
@@ -370,9 +419,9 @@ static void *stream_lock_for(CL_Stream *st, int writing)
     case CL_STREAM_FILE:
         return cl_file_io_mutex;
     case CL_STREAM_SOCKET: {
-        uint32_t h = st->handle_id;
-        if (h == 0 || h >= CL_STREAM_SOCKET_SLOTS) return NULL;
-        return writing ? cl_sock_write_mutex[h] : cl_sock_read_mutex[h];
+        SockLockPair *p = sock_lock_pair(st->handle_id);
+        if (!p) return NULL;
+        return writing ? p->write_mutex : p->read_mutex;
     }
     default:
         return NULL;
