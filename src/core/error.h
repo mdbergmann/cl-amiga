@@ -43,6 +43,7 @@
 #define CL_ERR_EXIT      10
 #define CL_ERR_FILE      11
 #define CL_ERR_EOF       12  /* maps to the END-OF-FILE condition (CLHS) */
+#define CL_ERR_TIMEOUT   13  /* maps to EXT:SOCKET-TIMEOUT (subtype of STREAM-ERROR) */
 
 /* Error handler frame stack */
 #define CL_MAX_ERROR_FRAMES 16

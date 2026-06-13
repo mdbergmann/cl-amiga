@@ -118,6 +118,13 @@ CL_Obj cl_socket_stream_accept(CL_Obj listener);
  * (OS-assigned ephemeral port). */
 int cl_listen_stream_local_port(CL_Obj stream);
 
+/* Get/set the read (which==0) or write (which==1) timeout in milliseconds on a
+ * socket stream; 0 = block indefinitely.  The setter mirrors the value into the
+ * platform socket layer so a blocked read/write gives up after the deadline and
+ * raises EXT:SOCKET-TIMEOUT.  Returns 0 / no-op for non-socket streams. */
+uint32_t cl_socket_stream_get_timeout(CL_Obj stream, int which);
+void     cl_socket_stream_set_timeout(CL_Obj stream, int which, uint32_t ms);
+
 /* Create a synonym stream that delegates to the value of symbol. */
 CL_Obj cl_make_synonym_stream(CL_Obj symbol);
 

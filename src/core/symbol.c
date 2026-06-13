@@ -132,6 +132,7 @@ CL_Obj SYM_CELL_ERROR = CL_NIL;
 CL_Obj SYM_UNBOUND_SLOT = CL_NIL;
 CL_Obj SYM_STREAM_ERROR = CL_NIL;
 CL_Obj SYM_END_OF_FILE = CL_NIL;
+CL_Obj SYM_SOCKET_TIMEOUT = CL_NIL;
 CL_Obj SYM_FILE_ERROR = CL_NIL;
 CL_Obj SYM_PACKAGE_ERROR = CL_NIL;
 CL_Obj SYM_PARSE_ERROR = CL_NIL;
@@ -565,6 +566,10 @@ void cl_symbol_init(void)
     SYM_UNBOUND_SLOT             = cl_intern_in("UNBOUND-SLOT", 12, cl_package_cl);
     SYM_STREAM_ERROR             = cl_intern_in("STREAM-ERROR", 12, cl_package_cl);
     SYM_END_OF_FILE              = cl_intern_in("END-OF-FILE", 11, cl_package_cl);
+    /* EXT:SOCKET-TIMEOUT — implementation extension (not a CLHS condition);
+     * lives in EXT and is exported so user code can name it in handler clauses. */
+    SYM_SOCKET_TIMEOUT           = cl_intern_in("SOCKET-TIMEOUT", 14, cl_package_ext);
+    cl_export_symbol(SYM_SOCKET_TIMEOUT, cl_package_ext);
     SYM_FILE_ERROR               = cl_intern_in("FILE-ERROR", 10, cl_package_cl);
     SYM_PACKAGE_ERROR            = cl_intern_in("PACKAGE-ERROR", 13, cl_package_cl);
     SYM_PARSE_ERROR              = cl_intern_in("PARSE-ERROR", 11, cl_package_cl);

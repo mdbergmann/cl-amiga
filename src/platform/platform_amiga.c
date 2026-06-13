@@ -742,6 +742,11 @@ static LONG socket_errno = 0;
  * the request/reply handshake serialises access. */
 static LONG   socket_table[PLATFORM_SOCKET_TABLE_SIZE];
 static IOBuf *socket_buf[PLATFORM_SOCKET_TABLE_SIZE];
+/* Per-socket read/write timeouts in milliseconds (0 = none).  Written by
+ * client threads via platform_socket_set_timeout and read by the client stubs
+ * to stamp each request; stream.c serialises per socket+direction. */
+static int    socket_rtimeout[PLATFORM_SOCKET_TABLE_SIZE];
+static int    socket_wtimeout[PLATFORM_SOCKET_TABLE_SIZE];
 
 /* ---- Minimal fd_set (the toolchain headers don't provide one) ----
  * Standard BSD layout: bit n in word n/32, which is what WaitSelect expects. */
@@ -766,7 +771,8 @@ typedef struct SockReq {
     int            loopback;     /* listen */
     char          *buf;          /* readfill destination / write source */
     uint32_t       len;          /* readfill capacity / write length */
-    volatile int            result;    /* readfill: bytes (0=EOF); else 0=ok/-1=err */
+    int            timeout_ms;   /* readfill/write: 0 = block forever, else deadline */
+    volatile int            result;    /* readfill: bytes (0=EOF, -2=timeout); else 0=ok/-1=err/-2=timeout */
     volatile PlatformSocket out_slot;  /* connect/listen/accept: new slot */
     volatile int            out_port;  /* listen: bound port */
 } SockReq;
@@ -784,6 +790,26 @@ static void           *reactor_init_mutex = NULL;
 static SockReq *pend_read[PLATFORM_SOCKET_TABLE_SIZE];
 static SockReq *pend_write[PLATFORM_SOCKET_TABLE_SIZE];
 static uint32_t pend_wpos[PLATFORM_SOCKET_TABLE_SIZE];
+/* Absolute deadline (platform_time_ms) for a parked read/write; valid only
+ * when the matching pend_*_has_deadline flag is set.  Lets the reactor time a
+ * parked op out instead of waiting on it forever. */
+static uint32_t pend_read_deadline[PLATFORM_SOCKET_TABLE_SIZE];
+static uint32_t pend_write_deadline[PLATFORM_SOCKET_TABLE_SIZE];
+static int      pend_read_has_deadline[PLATFORM_SOCKET_TABLE_SIZE];
+static int      pend_write_has_deadline[PLATFORM_SOCKET_TABLE_SIZE];
+
+/* Stamp a parked op's deadline from its requested timeout (ms). */
+static void reactor_arm_deadline(int slot, int timeout_ms, int is_write)
+{
+    if (timeout_ms > 0) {
+        uint32_t dl = platform_time_ms() + (uint32_t)timeout_ms;
+        if (is_write) { pend_write_deadline[slot] = dl; pend_write_has_deadline[slot] = 1; }
+        else          { pend_read_deadline[slot]  = dl; pend_read_has_deadline[slot]  = 1; }
+    } else {
+        if (is_write) pend_write_has_deadline[slot] = 0;
+        else          pend_read_has_deadline[slot]  = 0;
+    }
+}
 
 /* ===== Reactor-side helpers (run in the reactor task; may call bsdsocket) ===== */
 
@@ -813,6 +839,10 @@ static void reactor_free_slot(int slot)
     if (socket_buf[slot]) { iobuf_free(socket_buf[slot]); socket_buf[slot] = NULL; }
     socket_table[slot] = -1;
     pend_wpos[slot] = 0;
+    pend_read_has_deadline[slot] = 0;
+    pend_write_has_deadline[slot] = 0;
+    socket_rtimeout[slot] = 0;
+    socket_wtimeout[slot] = 0;
 }
 
 static void reactor_reply(SockReq *req) { ReplyMsg(&req->msg); }
@@ -828,7 +858,8 @@ static void reactor_try_read(SockReq *req)
     n = recv(fd, req->buf, (LONG)req->len, 0);
     if (n > 0)                       { req->result = (int)n; reactor_reply(req); }
     else if (n == 0)                 { req->result = 0;      reactor_reply(req); } /* EOF */
-    else if (Errno() == EWOULDBLOCK) { pend_read[slot] = req; }                    /* park */
+    else if (Errno() == EWOULDBLOCK) { pend_read[slot] = req;                      /* park */
+                                       reactor_arm_deadline(slot, req->timeout_ms, 0); }
     else                             { req->result = -1;     reactor_reply(req); }
 }
 
@@ -878,9 +909,11 @@ static void reactor_try_write(SockReq *req)
         off += (uint32_t)n;
         pend_wpos[slot] = off;
         if (off >= req->len) { pend_wpos[slot] = 0; req->result = 0; reactor_reply(req); }
-        else                 { pend_write[slot] = req; }   /* more to send — park */
+        else                 { pend_write[slot] = req;     /* more to send — park */
+                               reactor_arm_deadline(slot, req->timeout_ms, 1); }
     } else if (Errno() == EWOULDBLOCK) {
         pend_write[slot] = req;                            /* park */
+        reactor_arm_deadline(slot, req->timeout_ms, 1);
     } else {
         pend_wpos[slot] = 0; req->result = -1; reactor_reply(req);
     }
@@ -1037,6 +1070,7 @@ static void reactor_resume_read(int slot)
 {
     SockReq *req = pend_read[slot];
     pend_read[slot] = NULL;
+    pend_read_has_deadline[slot] = 0;
     if (req->op == REQ_ACCEPT) reactor_try_accept(req);
     else                       reactor_try_read(req);
 }
@@ -1045,8 +1079,34 @@ static void reactor_resume_write(int slot)
 {
     SockReq *req = pend_write[slot];
     pend_write[slot] = NULL;
+    pend_write_has_deadline[slot] = 0;
     if (req->op == REQ_CONNECT) reactor_finish_connect(req);
     else                        reactor_try_write(req);
+}
+
+/* Time out any parked op whose deadline has elapsed: hand the waiting thread
+ * PLATFORM_SOCKET_TIMEOUT and clear the park slot. */
+static void reactor_expire_deadlines(uint32_t now)
+{
+    int i;
+    for (i = 1; i < PLATFORM_SOCKET_TABLE_SIZE; i++) {
+        if (pend_read[i] && pend_read_has_deadline[i] &&
+            (int32_t)(pend_read_deadline[i] - now) <= 0) {
+            SockReq *req = pend_read[i];
+            pend_read[i] = NULL; pend_read_has_deadline[i] = 0;
+            req->result = PLATFORM_SOCKET_TIMEOUT;
+            req->out_slot = PLATFORM_SOCKET_INVALID;   /* in case it was an accept */
+            reactor_reply(req);
+        }
+        if (pend_write[i] && pend_write_has_deadline[i] &&
+            (int32_t)(pend_write_deadline[i] - now) <= 0) {
+            SockReq *req = pend_write[i];
+            pend_write[i] = NULL; pend_write_has_deadline[i] = 0;
+            pend_wpos[i] = 0;
+            req->result = PLATFORM_SOCKET_TIMEOUT;
+            reactor_reply(req);
+        }
+    }
 }
 
 static void reactor_loop(void)
@@ -1058,6 +1118,8 @@ static void reactor_loop(void)
         CL_fdset rset, wset;
         int maxfd = -1, i;
         ULONG sigs = portsig;
+        int have_deadline = 0;
+        uint32_t earliest = 0;
 
         CL_FD_ZERO(&rset);
         CL_FD_ZERO(&wset);
@@ -1066,11 +1128,36 @@ static void reactor_loop(void)
             if (fd < 0) continue;
             if (pend_read[i])  { CL_FD_SET(fd, &rset); if (fd > maxfd) maxfd = fd; }
             if (pend_write[i]) { CL_FD_SET(fd, &wset); if (fd > maxfd) maxfd = fd; }
+            /* Track the soonest deadline so WaitSelect wakes to expire it. */
+            if (pend_read[i] && pend_read_has_deadline[i]) {
+                if (!have_deadline || (int32_t)(pend_read_deadline[i] - earliest) < 0)
+                    { earliest = pend_read_deadline[i]; have_deadline = 1; }
+            }
+            if (pend_write[i] && pend_write_has_deadline[i]) {
+                if (!have_deadline || (int32_t)(pend_write_deadline[i] - earliest) < 0)
+                    { earliest = pend_write_deadline[i]; have_deadline = 1; }
+            }
         }
 
         if (maxfd < 0) {
             /* No parked socket ops — just wait for the next request. */
             Wait(portsig);
+        } else if (have_deadline) {
+            /* Bound the wait by the soonest deadline; clamp to >= 0. */
+            uint32_t now = platform_time_ms();
+            int32_t rem = (int32_t)(earliest - now);
+            struct timeval tv;
+            if (rem < 0) rem = 0;
+            tv.tv_sec  = rem / 1000;
+            tv.tv_usec = (rem % 1000) * 1000;
+            WaitSelect(maxfd + 1, &rset, &wset, NULL, &tv, &sigs);
+            for (i = 1; i < PLATFORM_SOCKET_TABLE_SIZE; i++) {
+                LONG fd = socket_table[i];
+                if (fd < 0) continue;
+                if (pend_read[i]  && CL_FD_ISSET(fd, &rset)) reactor_resume_read(i);
+                if (pend_write[i] && CL_FD_ISSET(fd, &wset)) reactor_resume_write(i);
+            }
+            reactor_expire_deadlines(platform_time_ms());
         } else {
             WaitSelect(maxfd + 1, &rset, &wset, NULL, NULL, &sigs);
             for (i = 1; i < PLATFORM_SOCKET_TABLE_SIZE; i++) {
@@ -1110,6 +1197,8 @@ static void reactor_entry(void)
     for (i = 0; i < PLATFORM_SOCKET_TABLE_SIZE; i++) {
         socket_table[i] = -1; socket_buf[i] = NULL;
         pend_read[i] = NULL; pend_write[i] = NULL; pend_wpos[i] = 0;
+        pend_read_has_deadline[i] = 0; pend_write_has_deadline[i] = 0;
+        socket_rtimeout[i] = 0; socket_wtimeout[i] = 0;
     }
 
     if (port) {
@@ -1205,9 +1294,20 @@ static int sock_flush(PlatformSocket sh)
     if (!b || b->wlen == 0) return 0;
     memset(&req, 0, sizeof(req));
     req.op = REQ_WRITE; req.slot = sh; req.buf = b->wbuf; req.len = (uint32_t)b->wlen;
+    req.timeout_ms = socket_wtimeout[sh];
     sock_call(&req);
+    /* On timeout the bytes were not fully sent; drop the buffer either way (the
+     * stream is being torn down) and report the distinct timeout code. */
     b->wlen = 0;
+    if (req.result == PLATFORM_SOCKET_TIMEOUT) return PLATFORM_SOCKET_TIMEOUT;
     return req.result;
+}
+
+void platform_socket_set_timeout(PlatformSocket sh, int read_ms, int write_ms)
+{
+    if (sh == 0 || sh >= PLATFORM_SOCKET_TABLE_SIZE) return;
+    socket_rtimeout[sh] = (read_ms  > 0) ? read_ms  : 0;
+    socket_wtimeout[sh] = (write_ms > 0) ? write_ms : 0;
 }
 
 /* All public entry points run on arbitrary client threads.  They never call
@@ -1253,7 +1353,9 @@ int platform_socket_read(PlatformSocket sh)
         memset(&req, 0, sizeof(req));
         req.op = REQ_READFILL; req.slot = sh;
         req.buf = b->rbuf; req.len = PLATFORM_IOBUF_SIZE;
+        req.timeout_ms = socket_rtimeout[sh];
         sock_call(&req);
+        if (req.result == PLATFORM_SOCKET_TIMEOUT) return PLATFORM_SOCKET_TIMEOUT;
         if (req.result <= 0) return -1;   /* EOF or error */
         b->rpos = 1;
         b->rlen = req.result;
@@ -1303,7 +1405,8 @@ int platform_socket_write_buf(PlatformSocket sh, const char *buf, uint32_t len)
         b->wlen += chunk;
         pos += (uint32_t)chunk;
         if (b->wlen >= PLATFORM_IOBUF_SIZE) {
-            if (sock_flush(sh) != 0) return -1;
+            int fr = sock_flush(sh);
+            if (fr != 0) return fr;     /* propagate -1 (error) or -2 (timeout) */
         }
     }
     return 0;
