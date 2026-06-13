@@ -376,7 +376,14 @@ The Amiga test suite passes **2525 / 2525** on the JIT config; per-opcode JIT co
 - **Platform abstraction** — all OS calls go through `platform.h` (POSIX and AmigaOS implementations)
 - **FFI** — generic foreign pointer type + peek/poke (all platforms); 68k assembly trampoline for AmigaOS register-based library calls
 - **Threading** (MP package) — kernel threads, per-thread dynamic bindings (TLV), locks, named condition variables, thread interruption/destruction, type predicates; stop-the-world GC with safepoints; POSIX pthreads (with `__thread`-backed TLS) and AmigaOS processes/SignalSemaphores
-- **TCP networking** — BSD sockets (POSIX) and bsdsocket.library (AmigaOS)
+- **TCP networking** — BSD sockets (POSIX) and bsdsocket.library (AmigaOS). Socket
+  streams support per-connection read/write timeouts: `(setf (ext:socket-stream-timeout
+  stream :input) seconds)` (also `:output`) arms a `select`/`WaitSelect` deadline so a
+  read/write that stalls past the timeout signals `ext:socket-timeout` (a subtype of
+  `stream-error`) instead of blocking forever; the value is in seconds (fractional
+  allowed), `nil` clears it, and reading the place back returns the current setting. See
+  `tests/test_stream.c` (`socket_read_timeout_*`, `eval_socket_stream_timeout_*`) and
+  `tests/amiga/run-tests.lisp` for usage.
 
 ### Declarations (`declaim` / `proclaim` / `declare`)
 
@@ -420,6 +427,7 @@ See `cl_process_declaration_specifier` in `src/core/compiler_extra.c` and
 - **Stream external formats** — character streams default to UTF-8; `(open … :external-format :latin-1)` (also `:iso-8859-1`) selects an 8-bit-transparent stream where each code point 0–255 maps to a single raw byte with no transcoding, for byte-faithful I/O over a character stream (e.g. an `rfc2388` multipart upload written to a temp file). `stream-external-format` reports `:latin-1` / `:default`. Other named encodings are not yet selectable. See `tests/test_stream.c` (`open_latin1_*`) and `tests/amiga/run-tests.lisp` for usage.
 - **Threading** — `MP` package covers the core bordeaux-threads surface (threads with `interrupt`/`destroy`, mutex + recursive locks, named condition variables with timeout, `with-lock-held` / `with-recursive-lock-held`, type predicates). `(ql:quickload :bordeaux-threads)` and Quicklisp itself currently rely on local patches we ship — `lib/quicklisp-compat.lisp` (maps the BT v2 surface onto `MP`, adapts Quicklisp's network/HTTP layer) plus the shims in `contrib/shims/` symlinked into `~/quicklisp/local-projects` by `make install-shims`; the plan is to upstream these once the remaining API gaps close. Not yet covered: semaphores, atomic integers, `with-timeout`, `:timeout` on `acquire-lock`
 - **ANSI CL gaps** — while major subsystems work (CLOS, conditions, packages, the full numeric tower, arrays, pathnames, streams, loop, format), some corners of the spec remain unimplemented
+- **Socket timeout clock on AmigaOS** — the socket read/write timeout deadlines are measured with a `DateStamp`-based millisecond clock, which resets at midnight. A timeout window that straddles 00:00 can therefore fire early or late by up to the elapsed-since-midnight amount — a once-a-day edge that is harmless for the typical second-scale timeouts but not exact. Switching the Amiga deadline source to a monotonic `timer.device` clock would remove it. (POSIX is unaffected.)
 
 ## TODO
 

@@ -2831,6 +2831,233 @@ TEST(make_two_way_stream_rejects_non_stream)
     ASSERT(result == cl_intern_keyword("TYPE-ERROR", 10));
 }
 
+/* ===== Socket read/write timeout tests ===== */
+
+/* A read on a socket with a timeout set, when the peer sends nothing, returns
+ * PLATFORM_SOCKET_TIMEOUT at the platform layer (distinct from -1 EOF) and must
+ * NOT mark the stream at EOF — it is a deadline, not a close. */
+TEST(socket_read_timeout_fires)
+{
+    int bound_port = 0;
+    CL_Obj listener = cl_make_listen_stream(0, 1, &bound_port);
+    CL_Obj client, conn;
+    CL_Stream *cst;
+    int rc;
+
+    ASSERT(!CL_NULL_P(listener));
+    ASSERT(bound_port > 0);
+
+    client = cl_make_socket_stream("127.0.0.1", bound_port);
+    ASSERT(!CL_NULL_P(client));
+    conn = cl_socket_stream_accept(listener);   /* server side; sends nothing */
+    ASSERT(!CL_NULL_P(conn));
+
+    cst = (CL_Stream *)CL_OBJ_TO_PTR(client);
+    platform_socket_set_timeout((PlatformSocket)cst->handle_id, 100, 0);  /* 100ms read */
+
+    rc = platform_socket_read((PlatformSocket)cst->handle_id);
+    ASSERT_EQ_INT(rc, PLATFORM_SOCKET_TIMEOUT);
+    /* Stream-level EOF flag must remain clear (timeout != EOF). */
+    ASSERT(!(cst->flags & CL_STREAM_FLAG_EOF));
+
+    cl_stream_close(conn);
+    cl_stream_close(client);
+    cl_stream_close(listener);
+}
+
+/* With a timeout set but data already waiting, the read returns the byte and
+ * never trips the timeout path — guards against false positives. */
+TEST(socket_read_timeout_not_triggered_when_data_present)
+{
+    int bound_port = 0;
+    CL_Obj listener = cl_make_listen_stream(0, 1, &bound_port);
+    CL_Obj client, conn;
+    CL_Stream *cst;
+    int rc;
+
+    ASSERT(!CL_NULL_P(listener));
+    client = cl_make_socket_stream("127.0.0.1", bound_port);
+    ASSERT(!CL_NULL_P(client));
+    conn = cl_socket_stream_accept(listener);
+    ASSERT(!CL_NULL_P(conn));
+
+    /* Server writes a byte before the client reads, then flushes it to the wire. */
+    cl_stream_write_byte(conn, 'Z');
+    {
+        CL_Stream *sst = (CL_Stream *)CL_OBJ_TO_PTR(conn);
+        platform_socket_flush((PlatformSocket)sst->handle_id);
+    }
+
+    cst = (CL_Stream *)CL_OBJ_TO_PTR(client);
+    platform_socket_set_timeout((PlatformSocket)cst->handle_id, 2000, 0);
+    rc = platform_socket_read((PlatformSocket)cst->handle_id);
+    ASSERT_EQ_INT(rc, 'Z');
+
+    cl_stream_close(conn);
+    cl_stream_close(client);
+    cl_stream_close(listener);
+}
+
+/* The Lisp accessor round-trips seconds and keeps :input/:output independent;
+ * NIL clears.  Uses numeric = comparison to stay float-type agnostic. */
+TEST(eval_socket_stream_timeout_accessor)
+{
+    int bound_port = 0;
+    CL_Obj listener = cl_make_listen_stream(0, 1, &bound_port);
+    char expr[512];
+    CL_Obj result;
+
+    ASSERT(!CL_NULL_P(listener));
+    ASSERT(bound_port > 0);
+
+    snprintf(expr, sizeof(expr),
+        "(let* ((c (ext:open-tcp-stream \"127.0.0.1\" %d)))"
+        "  (setf (ext:socket-stream-timeout c :input) 1.5)"
+        "  (prog1"
+        "    (list (= 1.5 (ext:socket-stream-timeout c :input))"   /* round-trip */
+        "          (null (ext:socket-stream-timeout c :output))"   /* independent */
+        "          (progn (setf (ext:socket-stream-timeout c :input) nil)"
+        "                 (null (ext:socket-stream-timeout c :input))))" /* NIL clears */
+        "    (close c)))",
+        bound_port);
+    result = cl_eval_string(expr);
+    /* Expect (T T T): drain the accept and check. */
+    {
+        CL_Obj conn = cl_socket_stream_accept(listener);
+        ASSERT(!CL_NULL_P(result));
+        ASSERT(CL_CONS_P(result));
+        ASSERT(cl_car(result) == SYM_T);
+        ASSERT(cl_car(cl_cdr(result)) == SYM_T);
+        ASSERT(cl_car(cl_cdr(cl_cdr(result))) == SYM_T);
+        if (!CL_NULL_P(conn)) cl_stream_close(conn);
+    }
+    cl_stream_close(listener);
+}
+
+/* A timed-out READ-CHAR signals EXT:SOCKET-TIMEOUT, which is a subtype of
+ * STREAM-ERROR (and ERROR).  Verifies the whole stream-level signalling path. */
+TEST(eval_socket_read_timeout_signals_condition)
+{
+    int bound_port = 0;
+    CL_Obj listener = cl_make_listen_stream(0, 1, &bound_port);
+    char expr[512];
+    CL_Obj result, conn;
+
+    ASSERT(!CL_NULL_P(listener));
+    ASSERT(bound_port > 0);
+
+    snprintf(expr, sizeof(expr),
+        "(let ((c (ext:open-tcp-stream \"127.0.0.1\" %d)))"
+        "  (setf (ext:socket-stream-timeout c :input) 1)"   /* 1s; server is silent */
+        "  (unwind-protect"
+        "      (handler-case (progn (read-char c) :no-timeout)"
+        "        (ext:socket-timeout (e)"
+        "          (list (typep e 'ext:socket-timeout) (typep e 'stream-error))))"
+        "    (close c)))",
+        bound_port);
+    /* The client connects via the listen backlog (no accept needed for the
+     * handshake) and times out reading because the server never sends; drain
+     * the backlogged connection afterwards. */
+    result = cl_eval_string(expr);
+    conn = cl_socket_stream_accept(listener);
+    ASSERT(CL_CONS_P(result));               /* the handler's (T T), not :no-timeout */
+    ASSERT(cl_car(result) == SYM_T);
+    ASSERT(cl_car(cl_cdr(result)) == SYM_T);
+    if (!CL_NULL_P(conn)) cl_stream_close(conn);
+    cl_stream_close(listener);
+}
+
+/* NOTE on write-timeout testing: a write timeout cannot be reliably triggered
+ * over host loopback.  macOS buffers a loopback connection effectively without
+ * bound, so select() never reports the send window closed even against a peer
+ * that never reads (verified empirically) — a saturation-based test either
+ * spins or hangs.  The write-timeout *mechanism* is the same non-blocking
+ * send()/select()-deadline path proven by the read-timeout tests above (a write
+ * deadline that elapses returns PLATFORM_SOCKET_TIMEOUT from socket_flush_wbuf,
+ * which cl_stream_write_* / finish-output turn into EXT:SOCKET-TIMEOUT); the
+ * AmigaOS reactor parks writes with the identical deadline logic.  What we CAN
+ * test deterministically is the complementary property: arming a write timeout
+ * must not break a normal write to a draining peer, and finish-output (whose
+ * flush is the timed path that hunchentoot uses to push a response) must not
+ * spuriously signal. */
+TEST(eval_socket_write_timeout_does_not_break_normal_write)
+{
+    int server_fd, port;
+    pid_t pid;
+    int pipefd[2];
+    char expr[512];
+    CL_Obj result;
+
+    ASSERT(pipe(pipefd) == 0);
+    port = start_echo_server(&server_fd);
+    ASSERT(port > 0);
+
+    /* Server: accept, drain 4 bytes, relay them to the parent via a pipe. */
+    pid = fork();
+    if (pid == 0) {
+        struct sockaddr_in caddr;
+        socklen_t clen = sizeof(caddr);
+        char rb[16];
+        ssize_t n;
+        int cfd = accept(server_fd, (struct sockaddr *)&caddr, &clen);
+        close(server_fd);
+        close(pipefd[0]);
+        if (cfd >= 0) {
+            n = read(cfd, rb, sizeof(rb));
+            if (n > 0) { ssize_t w = write(pipefd[1], rb, (size_t)n); (void)w; }
+            close(cfd);
+        }
+        _exit(0);
+    }
+    close(server_fd);
+    close(pipefd[1]);
+
+    snprintf(expr, sizeof(expr),
+        "(let ((c (ext:open-tcp-stream \"127.0.0.1\" %d)))"
+        "  (setf (ext:socket-stream-timeout c :output) 5)"   /* generous deadline */
+        "  (unwind-protect"
+        "      (handler-case (progn (write-string \"PING\" c) (finish-output c) :ok)"
+        "        (ext:socket-timeout () :unexpected-timeout))"
+        "    (close c)))",
+        port);
+    result = cl_eval_string(expr);
+    ASSERT(result == cl_intern_keyword("OK", 2));
+
+    /* The peer must have actually received the bytes through the timed flush. */
+    {
+        char rb[8];
+        ssize_t n = read(pipefd[0], rb, sizeof(rb));
+        ASSERT(n == 4);
+        ASSERT(rb[0] == 'P' && rb[1] == 'I' && rb[2] == 'N' && rb[3] == 'G');
+    }
+    close(pipefd[0]);
+    kill(pid, SIGKILL);
+    { int status; waitpid(pid, &status, 0); }
+}
+
+/* Direction keyword validation: a bogus direction is a type error. */
+TEST(eval_socket_stream_timeout_bad_direction)
+{
+    int bound_port = 0;
+    CL_Obj listener = cl_make_listen_stream(0, 1, &bound_port);
+    char expr[512];
+    CL_Obj result, conn;
+
+    ASSERT(!CL_NULL_P(listener));
+    snprintf(expr, sizeof(expr),
+        "(let ((c (ext:open-tcp-stream \"127.0.0.1\" %d)))"
+        "  (unwind-protect"
+        "      (handler-case (ext:socket-stream-timeout c :sideways)"
+        "        (type-error (e) (declare (ignore e)) :bad-dir))"
+        "    (close c)))",
+        bound_port);
+    result = cl_eval_string(expr);
+    conn = cl_socket_stream_accept(listener);
+    ASSERT(result == cl_intern_keyword("BAD-DIR", 7));
+    if (!CL_NULL_P(conn)) cl_stream_close(conn);
+    cl_stream_close(listener);
+}
+
 int main(void)
 {
     test_init();
@@ -2988,6 +3215,14 @@ int main(void)
     RUN(socket_read_parked_allows_same_socket_reply);
     RUN(socket_read_parked_allows_console_write);
     RUN(stw_gc_with_thread_blocked_in_socket_read);
+
+    /* Socket read/write timeout */
+    RUN(socket_read_timeout_fires);
+    RUN(socket_read_timeout_not_triggered_when_data_present);
+    RUN(eval_socket_stream_timeout_accessor);
+    RUN(eval_socket_read_timeout_signals_condition);
+    RUN(eval_socket_write_timeout_does_not_break_normal_write);
+    RUN(eval_socket_stream_timeout_bad_direction);
 
 #ifdef CL_WIDE_STRINGS
     /* UTF-8 codec tests */

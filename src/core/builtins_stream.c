@@ -438,35 +438,34 @@ static CL_Obj bi_fresh_line(CL_Obj *args, int n)
     return CL_NIL;
 }
 
+/* Flush a stream for finish/force-output.  Shared so a socket write deadline
+ * that elapses while draining the buffer raises EXT:SOCKET-TIMEOUT here too,
+ * rather than being silently swallowed (these are what hunchentoot calls to
+ * push a response). */
+static void flush_output_stream(CL_Stream *st)
+{
+    if (st->stream_type == CL_STREAM_FILE) {
+        platform_file_flush((PlatformFile)st->handle_id);
+    } else if (st->stream_type == CL_STREAM_SOCKET) {
+        if (platform_socket_flush((PlatformSocket)st->handle_id) == PLATFORM_SOCKET_TIMEOUT)
+            cl_error(CL_ERR_TIMEOUT, "WRITE on socket stream timed out after %u ms",
+                     (unsigned)st->write_timeout_ms);
+    }
+}
+
 /* (finish-output &optional stream) => NIL */
 static CL_Obj bi_finish_output(CL_Obj *args, int n)
 {
-    CL_Obj stream;
-    CL_Stream *st;
-    if (n > 0 && !CL_NULL_P(args[0]) && CL_STREAM_P(args[0])) {
-        stream = args[0];
-        st = (CL_Stream *)CL_OBJ_TO_PTR(stream);
-        if (st->stream_type == CL_STREAM_FILE)
-            platform_file_flush((PlatformFile)st->handle_id);
-        else if (st->stream_type == CL_STREAM_SOCKET)
-            platform_socket_flush((PlatformSocket)st->handle_id);
-    }
+    if (n > 0 && !CL_NULL_P(args[0]) && CL_STREAM_P(args[0]))
+        flush_output_stream((CL_Stream *)CL_OBJ_TO_PTR(args[0]));
     return CL_NIL;
 }
 
 /* (force-output &optional stream) => NIL */
 static CL_Obj bi_force_output(CL_Obj *args, int n)
 {
-    CL_Obj stream;
-    CL_Stream *st;
-    if (n > 0 && !CL_NULL_P(args[0]) && CL_STREAM_P(args[0])) {
-        stream = args[0];
-        st = (CL_Stream *)CL_OBJ_TO_PTR(stream);
-        if (st->stream_type == CL_STREAM_FILE)
-            platform_file_flush((PlatformFile)st->handle_id);
-        else if (st->stream_type == CL_STREAM_SOCKET)
-            platform_socket_flush((PlatformSocket)st->handle_id);
-    }
+    if (n > 0 && !CL_NULL_P(args[0]) && CL_STREAM_P(args[0]))
+        flush_output_stream((CL_Stream *)CL_OBJ_TO_PTR(args[0]));
     return CL_NIL;
 }
 

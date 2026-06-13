@@ -431,6 +431,9 @@ const char *platform_expand_home(const char *path, char *buf, int bufsize)
 
 static int socket_table[PLATFORM_SOCKET_TABLE_SIZE];
 static IOBuf *socket_buf[PLATFORM_SOCKET_TABLE_SIZE];
+/* Per-socket read/write timeouts in milliseconds; 0 = block indefinitely. */
+static int socket_rtimeout[PLATFORM_SOCKET_TABLE_SIZE];
+static int socket_wtimeout[PLATFORM_SOCKET_TABLE_SIZE];
 static int socket_table_init = 0;
 
 /* Serialises slot claim (connect/listen/accept) and slot free (close) so a
@@ -458,6 +461,8 @@ static void socket_table_ensure_init(void)
         for (i = 0; i < PLATFORM_SOCKET_TABLE_SIZE; i++) {
             socket_table[i] = -1;
             socket_buf[i] = NULL;
+            socket_rtimeout[i] = 0;
+            socket_wtimeout[i] = 0;
         }
         platform_mutex_init(&socket_table_mutex);
         socket_table_init = 1;
@@ -514,22 +519,52 @@ PlatformSocket platform_socket_connect(const char *host, int port)
 }
 
 /* Flush socket write buffer to the wire */
+/* Forward declaration: readiness wait shared by read and write paths. */
+static int socket_wait_ready(int fd, int timeout_ms, int want_write);
+
 static int socket_flush_wbuf(PlatformSocket sh)
 {
     IOBuf *b;
-    int fd;
+    int fd, wtimeout;
     ssize_t total = 0;
     if (sh == 0 || sh >= PLATFORM_SOCKET_TABLE_SIZE) return -1;
     b = socket_buf[sh];
     if (!b || b->wlen == 0) return 0;
     fd = socket_table[sh];
+    wtimeout = socket_wtimeout[sh];
     /* write() can block when the peer's receive window is full — bracket the
      * whole drain loop so a slow reader cannot stall a stop-the-world GC. */
     cl_gc_enter_safe_region();
-    while (total < b->wlen) {
-        ssize_t n = write(fd, b->wbuf + total, (size_t)(b->wlen - total));
-        if (n <= 0) { cl_gc_leave_safe_region(); return -1; }
-        total += n;
+    if (wtimeout > 0) {
+        /* Timed drain.  A blocking write() would stall until ALL bytes fit even
+         * after select() reports only a sliver of space, so use non-blocking
+         * send() + select() instead.  All waits share ONE absolute deadline:
+         * select() can spuriously report a loopback socket writable while
+         * send() still returns EAGAIN, so a per-call timeout could spin forever
+         * — the shared deadline guarantees the loop terminates within wtimeout. */
+        uint32_t deadline = platform_time_ms() + (uint32_t)wtimeout;
+        while (total < b->wlen) {
+            ssize_t n = send(fd, b->wbuf + total, (size_t)(b->wlen - total), MSG_DONTWAIT);
+            if (n > 0) { total += n; continue; }
+            if (n < 0 && errno == EINTR) continue;
+            if (n < 0 && (errno == EAGAIN || errno == EWOULDBLOCK)) {
+                int32_t rem = (int32_t)(deadline - platform_time_ms());
+                int rr;
+                if (rem <= 0) { cl_gc_leave_safe_region(); return PLATFORM_SOCKET_TIMEOUT; }
+                rr = socket_wait_ready(fd, rem, 1);
+                if (rr < 0)  { cl_gc_leave_safe_region(); return -1; }
+                if (rr == 0) { cl_gc_leave_safe_region(); return PLATFORM_SOCKET_TIMEOUT; }
+                continue;
+            }
+            cl_gc_leave_safe_region();
+            return -1;   /* n == 0 or a real send() error */
+        }
+    } else {
+        while (total < b->wlen) {
+            ssize_t n = write(fd, b->wbuf + total, (size_t)(b->wlen - total));
+            if (n <= 0) { cl_gc_leave_safe_region(); return -1; }
+            total += n;
+        }
     }
     cl_gc_leave_safe_region();
     b->wlen = 0;
@@ -549,18 +584,64 @@ void platform_socket_close(PlatformSocket sh)
         buf = socket_buf[sh];
         socket_table[sh] = -1;
         socket_buf[sh] = NULL;
+        socket_rtimeout[sh] = 0;
+        socket_wtimeout[sh] = 0;
         socket_table_unlock();
         if (fd >= 0) close(fd);
         iobuf_free(buf);
     }
 }
 
+void platform_socket_set_timeout(PlatformSocket sh, int read_ms, int write_ms)
+{
+    if (sh == 0 || sh >= PLATFORM_SOCKET_TABLE_SIZE) return;
+    socket_table_lock();
+    socket_rtimeout[sh] = (read_ms  > 0) ? read_ms  : 0;
+    socket_wtimeout[sh] = (write_ms > 0) ? write_ms : 0;
+    socket_table_unlock();
+}
+
+/* Wait until `fd` is readable (want_write==0) or writable (want_write==1),
+ * up to timeout_ms.  Returns 1 ready, 0 timed out, -1 error/invalid.  The
+ * select() blocks, so the caller must already be in a GC safe region.
+ * An absolute deadline is computed from timeout_ms so that EINTR retries
+ * consume elapsed time rather than resetting the full timeout each iteration. */
+static int socket_wait_ready(int fd, int timeout_ms, int want_write)
+{
+    fd_set fds;
+    struct timeval tv;
+    int r;
+    uint32_t deadline;
+    int32_t rem;
+    if (fd < 0 || fd >= FD_SETSIZE)
+        return -1;
+    deadline = platform_time_ms() + (uint32_t)timeout_ms;
+    for (;;) {
+        rem = (int32_t)(deadline - platform_time_ms());
+        if (rem <= 0) return 0;             /* deadline elapsed */
+        FD_ZERO(&fds);
+        FD_SET(fd, &fds);
+        tv.tv_sec  = rem / 1000;
+        tv.tv_usec = (rem % 1000) * 1000;
+        r = select(fd + 1, want_write ? NULL : &fds,
+                          want_write ? &fds : NULL, NULL, &tv);
+        if (r < 0) {
+            if (errno == EINTR) continue;   /* retry, deadline unchanged */
+            return -1;
+        }
+        if (r == 0) return 0;               /* timed out */
+        return FD_ISSET(fd, &fds) ? 1 : 0;
+    }
+}
+
 int platform_socket_read(PlatformSocket sh)
 {
     IOBuf *b;
+    int rtimeout;
     if (sh == 0 || sh >= PLATFORM_SOCKET_TABLE_SIZE || socket_table[sh] < 0)
         return -1;
     b = socket_buf[sh];
+    rtimeout = socket_rtimeout[sh];
     if (b) {
         if (b->rpos < b->rlen)
             return (unsigned char)b->rbuf[b->rpos++];
@@ -571,6 +652,13 @@ int platform_socket_read(PlatformSocket sh)
             int fd = socket_table[sh];
             ssize_t n;
             cl_gc_enter_safe_region();
+            if (rtimeout > 0) {
+                int rr = socket_wait_ready(fd, rtimeout, 0);
+                if (rr <= 0) {
+                    cl_gc_leave_safe_region();
+                    return (rr == 0) ? PLATFORM_SOCKET_TIMEOUT : -1;
+                }
+            }
             n = read(fd, b->rbuf, PLATFORM_IOBUF_SIZE);
             cl_gc_leave_safe_region();
             if (n <= 0) return -1;
@@ -585,6 +673,13 @@ int platform_socket_read(PlatformSocket sh)
         unsigned char byte;
         ssize_t n;
         cl_gc_enter_safe_region();
+        if (rtimeout > 0) {
+            int rr = socket_wait_ready(fd, rtimeout, 0);
+            if (rr <= 0) {
+                cl_gc_leave_safe_region();
+                return (rr == 0) ? PLATFORM_SOCKET_TIMEOUT : -1;
+            }
+        }
         n = read(fd, &byte, 1);
         cl_gc_leave_safe_region();
         if (n <= 0) return -1;
@@ -684,7 +779,8 @@ int platform_socket_write_buf(PlatformSocket sh, const char *buf, uint32_t len)
             b->wlen += chunk;
             pos += (uint32_t)chunk;
             if (b->wlen >= PLATFORM_IOBUF_SIZE) {
-                if (socket_flush_wbuf(sh) != 0) return -1;
+                int fr = socket_flush_wbuf(sh);
+                if (fr != 0) return fr;     /* propagate -1 (error) or -2 (timeout) */
             }
         }
         return 0;

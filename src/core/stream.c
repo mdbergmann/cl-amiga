@@ -159,6 +159,8 @@ CL_Obj cl_make_stream(uint32_t direction, uint32_t stream_type)
     st->element_type = CL_NIL;  /* Will be set to CHARACTER symbol later */
     st->charpos = 0;
     st->line = 1;
+    st->read_timeout_ms = 0;
+    st->write_timeout_ms = 0;
     return CL_PTR_TO_OBJ(st);
 }
 
@@ -402,6 +404,17 @@ static int stream_read_raw_byte(CL_Stream *st)
     }
 }
 
+/* Raise EXT:SOCKET-TIMEOUT when a socket read/write missed its deadline.
+ * cl_error longjmps, so callers MUST release any held iolock first.
+ * timeout_ms must be captured from st->read/write_timeout_ms BEFORE any
+ * platform call that enters a GC safe region, since compaction can move st. */
+static CL_NORETURN void stream_raise_timeout(int is_write, uint32_t timeout_ms)
+{
+    cl_error(CL_ERR_TIMEOUT, "%s on socket stream timed out after %u ms",
+             is_write ? "WRITE" : "READ",
+             (unsigned)timeout_ms);
+}
+
 #ifdef CL_WIDE_STRINGS
 /* Decode a UTF-8 character from a byte-oriented stream.
  * first_byte is already read; reads continuation bytes as needed. */
@@ -490,16 +503,26 @@ int cl_stream_read_char(CL_Obj stream)
     }
 
     /* Byte-oriented streams: read raw byte, then UTF-8 decode */
-    ch = stream_read_raw_byte(st);
+    {
+        uint32_t rto = st->read_timeout_ms;  /* capture before safe region: platform_socket_read
+                                              * enters cl_gc_enter/leave_safe_region and a
+                                              * concurrent STW-GC may compact the arena, making
+                                              * the derived st pointer stale. */
+        ch = stream_read_raw_byte(st);
 
 #ifdef CL_WIDE_STRINGS
-    /* Decode UTF-8 multi-byte sequences for byte-oriented streams.  A LATIN-1
-     * stream is 8-bit transparent: the raw byte 0..255 IS the code point, so
-     * skip UTF-8 decoding entirely. */
-    if (ch > 0x7F && ch != -1 && !(st->flags & CL_STREAM_FLAG_LATIN1))
-        ch = stream_decode_utf8(st, ch);
+        /* Decode UTF-8 multi-byte sequences for byte-oriented streams.  A LATIN-1
+         * stream is 8-bit transparent: the raw byte 0..255 IS the code point, so
+         * skip UTF-8 decoding entirely. */
+        if (ch > 0x7F && ch != -1 && !(st->flags & CL_STREAM_FLAG_LATIN1))
+            ch = stream_decode_utf8(st, ch);
 #endif
 
+        if (ch == PLATFORM_SOCKET_TIMEOUT) {   /* deadline elapsed, not EOF */
+            if (iolock) platform_mutex_unlock(iolock);
+            stream_raise_timeout(0, rto);
+        }
+    }
     if (ch == -1)
         st->flags |= CL_STREAM_FLAG_EOF;
     if (iolock) platform_mutex_unlock(iolock);
@@ -550,8 +573,14 @@ int cl_stream_read_byte(CL_Obj stream)
     }
 
     /* Raw byte read — no UTF-8 decoding */
-    ch = stream_read_raw_byte(st);
-
+    {
+        uint32_t rto = st->read_timeout_ms;  /* capture before safe region */
+        ch = stream_read_raw_byte(st);
+        if (ch == PLATFORM_SOCKET_TIMEOUT) {   /* deadline elapsed, not EOF */
+            if (iolock) platform_mutex_unlock(iolock);
+            stream_raise_timeout(0, rto);
+        }
+    }
     if (ch == -1)
         st->flags |= CL_STREAM_FLAG_EOF;
     if (iolock) platform_mutex_unlock(iolock);
@@ -562,6 +591,7 @@ void cl_stream_write_char(CL_Obj stream, int ch)
 {
     CL_Stream *st;
     void *iolock;
+    int wr = 0;   /* socket write result, for timeout detection */
 #ifdef CL_WIDE_STRINGS
     /* A LATIN-1 stream is 8-bit transparent: write the low byte raw, no UTF-8.
      * `encode` is non-zero only when this char must be UTF-8-encoded. */
@@ -584,66 +614,75 @@ void cl_stream_write_char(CL_Obj stream, int ch)
     iolock = stream_lock_for(st, 1);
     if (iolock) platform_mutex_lock(iolock);
 
-    switch (st->stream_type) {
-    case CL_STREAM_CONSOLE: {
+    /* Capture timeout before the socket write: platform_socket_write* may call
+     * socket_flush_wbuf which enters a GC safe region; a concurrent STW-GC can
+     * compact the arena, making st stale.  Read the field now while st is valid. */
+    {
+        uint32_t wto = st->write_timeout_ms;
+
+        switch (st->stream_type) {
+        case CL_STREAM_CONSOLE: {
 #ifdef CL_WIDE_STRINGS
-        if (encode) {
-            char utf8[5];
-            int nb = cl_utf8_encode(ch, utf8);
-            if (nb > 0) { utf8[nb] = '\0'; platform_write_string(utf8); }
-        } else
+            if (encode) {
+                char utf8[5];
+                int nb = cl_utf8_encode(ch, utf8);
+                if (nb > 0) { utf8[nb] = '\0'; platform_write_string(utf8); }
+            } else
 #endif
-        {
-            char buf[2];
-            buf[0] = (char)ch;
-            buf[1] = '\0';
-            platform_write_string(buf);
+            {
+                char buf[2];
+                buf[0] = (char)ch;
+                buf[1] = '\0';
+                platform_write_string(buf);
+            }
+            break;
         }
-        break;
-    }
-    case CL_STREAM_FILE:
+        case CL_STREAM_FILE:
 #ifdef CL_WIDE_STRINGS
-        if (encode) {
-            char utf8[4];
-            int nb = cl_utf8_encode(ch, utf8);
-            if (nb > 0)
-                platform_file_write_buf((PlatformFile)st->handle_id, utf8, (uint32_t)nb);
-        } else
+            if (encode) {
+                char utf8[4];
+                int nb = cl_utf8_encode(ch, utf8);
+                if (nb > 0)
+                    platform_file_write_buf((PlatformFile)st->handle_id, utf8, (uint32_t)nb);
+            } else
 #endif
-        platform_file_write_char((PlatformFile)st->handle_id, ch);
-        break;
-    case CL_STREAM_STRING:
-        /* String output buffers store raw bytes; encode UTF-8 for non-ASCII */
+            platform_file_write_char((PlatformFile)st->handle_id, ch);
+            break;
+        case CL_STREAM_STRING:
+            /* String output buffers store raw bytes; encode UTF-8 for non-ASCII */
 #ifdef CL_WIDE_STRINGS
-        if (encode) {
-            char utf8[4];
-            int nb = cl_utf8_encode(ch, utf8);
-            int j;
-            for (j = 0; j < nb; j++)
-                cl_stream_outbuf_putchar(st, (unsigned char)utf8[j]);
-        } else
+            if (encode) {
+                char utf8[4];
+                int nb = cl_utf8_encode(ch, utf8);
+                int j;
+                for (j = 0; j < nb; j++)
+                    cl_stream_outbuf_putchar(st, (unsigned char)utf8[j]);
+            } else
 #endif
-        cl_stream_outbuf_putchar(st, ch);
-        break;
-    case CL_STREAM_SOCKET:
+            cl_stream_outbuf_putchar(st, ch);
+            break;
+        case CL_STREAM_SOCKET:
 #ifdef CL_WIDE_STRINGS
-        if (encode) {
-            char utf8[4];
-            int nb = cl_utf8_encode(ch, utf8);
-            if (nb > 0)
-                platform_socket_write_buf((PlatformSocket)st->handle_id, utf8, (uint32_t)nb);
-        } else
+            if (encode) {
+                char utf8[4];
+                int nb = cl_utf8_encode(ch, utf8);
+                if (nb > 0)
+                    wr = platform_socket_write_buf((PlatformSocket)st->handle_id, utf8, (uint32_t)nb);
+            } else
 #endif
-        platform_socket_write((PlatformSocket)st->handle_id, ch);
-        break;
-    }
+            wr = platform_socket_write((PlatformSocket)st->handle_id, ch);
+            break;
+        }
 
-    if (ch == '\n')
-        st->charpos = 0;
-    else
-        st->charpos++;
+        if (ch == '\n')
+            st->charpos = 0;
+        else
+            st->charpos++;
 
-    if (iolock) platform_mutex_unlock(iolock);
+        if (iolock) platform_mutex_unlock(iolock);
+        if (wr == PLATFORM_SOCKET_TIMEOUT)
+            stream_raise_timeout(1, wto);
+    }
 }
 
 /* Write one raw byte to stream — no UTF-8 encoding.
@@ -652,6 +691,7 @@ void cl_stream_write_byte(CL_Obj stream, int byte)
 {
     CL_Stream *st;
     void *iolock;
+    int wr = 0;   /* socket write result, for timeout detection */
 
     stream = resolve_stream(stream, 1);
     if (CL_NULL_P(stream)) return;
@@ -665,26 +705,32 @@ void cl_stream_write_byte(CL_Obj stream, int byte)
     iolock = stream_lock_for(st, 1);
     if (iolock) platform_mutex_lock(iolock);
 
-    switch (st->stream_type) {
-    case CL_STREAM_CONSOLE: {
-        char buf[2];
-        buf[0] = (char)(unsigned char)byte;
-        buf[1] = '\0';
-        platform_write_string(buf);
-        break;
-    }
-    case CL_STREAM_FILE:
-        platform_file_write_char((PlatformFile)st->handle_id, byte);
-        break;
-    case CL_STREAM_STRING:
-        cl_stream_outbuf_putchar(st, byte);
-        break;
-    case CL_STREAM_SOCKET:
-        platform_socket_write((PlatformSocket)st->handle_id, byte);
-        break;
-    }
+    {
+        uint32_t wto = st->write_timeout_ms;  /* capture before safe region */
 
-    if (iolock) platform_mutex_unlock(iolock);
+        switch (st->stream_type) {
+        case CL_STREAM_CONSOLE: {
+            char buf[2];
+            buf[0] = (char)(unsigned char)byte;
+            buf[1] = '\0';
+            platform_write_string(buf);
+            break;
+        }
+        case CL_STREAM_FILE:
+            platform_file_write_char((PlatformFile)st->handle_id, byte);
+            break;
+        case CL_STREAM_STRING:
+            cl_stream_outbuf_putchar(st, byte);
+            break;
+        case CL_STREAM_SOCKET:
+            wr = platform_socket_write((PlatformSocket)st->handle_id, byte);
+            break;
+        }
+
+        if (iolock) platform_mutex_unlock(iolock);
+        if (wr == PLATFORM_SOCKET_TIMEOUT)
+            stream_raise_timeout(1, wto);
+    }
 }
 
 void cl_stream_write_string(CL_Obj stream, const char *str, uint32_t len)
@@ -692,6 +738,7 @@ void cl_stream_write_string(CL_Obj stream, const char *str, uint32_t len)
     CL_Stream *st;
     uint32_t i;
     void *iolock;
+    int wr = 0;   /* socket write result, for timeout detection */
 
     stream = resolve_stream(stream, 1);
     if (CL_NULL_P(stream)) return;
@@ -705,47 +752,53 @@ void cl_stream_write_string(CL_Obj stream, const char *str, uint32_t len)
     iolock = stream_lock_for(st, 1);
     if (iolock) platform_mutex_lock(iolock);
 
-    switch (st->stream_type) {
-    case CL_STREAM_CONSOLE: {
-        /* Chunk to stack buffer for platform_write_string (needs NUL) */
-        char tmp[257];
-        uint32_t pos = 0;
-        while (pos < len) {
-            uint32_t chunk = len - pos;
-            if (chunk > 256) chunk = 256;
-            memcpy(tmp, str + pos, chunk);
-            tmp[chunk] = '\0';
-            platform_write_string(tmp);
-            pos += chunk;
-        }
-        break;
-    }
-    case CL_STREAM_FILE:
-        platform_file_write_buf((PlatformFile)st->handle_id, str, len);
-        break;
-    case CL_STREAM_STRING:
-        for (i = 0; i < len; i++)
-            cl_stream_outbuf_putchar(st, (unsigned char)str[i]);
-        break;
-    case CL_STREAM_SOCKET:
-        platform_socket_write_buf((PlatformSocket)st->handle_id, str, len);
-        break;
-    }
-
-    /* Update charpos: find last newline */
     {
-        uint32_t last_nl = 0xFFFFFFFF;
-        for (i = 0; i < len; i++) {
-            if (str[i] == '\n')
-                last_nl = i;
-        }
-        if (last_nl != 0xFFFFFFFF)
-            st->charpos = len - last_nl - 1;
-        else
-            st->charpos += len;
-    }
+        uint32_t wto = st->write_timeout_ms;  /* capture before safe region */
 
-    if (iolock) platform_mutex_unlock(iolock);
+        switch (st->stream_type) {
+        case CL_STREAM_CONSOLE: {
+            /* Chunk to stack buffer for platform_write_string (needs NUL) */
+            char tmp[257];
+            uint32_t pos = 0;
+            while (pos < len) {
+                uint32_t chunk = len - pos;
+                if (chunk > 256) chunk = 256;
+                memcpy(tmp, str + pos, chunk);
+                tmp[chunk] = '\0';
+                platform_write_string(tmp);
+                pos += chunk;
+            }
+            break;
+        }
+        case CL_STREAM_FILE:
+            platform_file_write_buf((PlatformFile)st->handle_id, str, len);
+            break;
+        case CL_STREAM_STRING:
+            for (i = 0; i < len; i++)
+                cl_stream_outbuf_putchar(st, (unsigned char)str[i]);
+            break;
+        case CL_STREAM_SOCKET:
+            wr = platform_socket_write_buf((PlatformSocket)st->handle_id, str, len);
+            break;
+        }
+
+        /* Update charpos: find last newline */
+        {
+            uint32_t last_nl = 0xFFFFFFFF;
+            for (i = 0; i < len; i++) {
+                if (str[i] == '\n')
+                    last_nl = i;
+            }
+            if (last_nl != 0xFFFFFFFF)
+                st->charpos = len - last_nl - 1;
+            else
+                st->charpos += len;
+        }
+
+        if (iolock) platform_mutex_unlock(iolock);
+        if (wr == PLATFORM_SOCKET_TIMEOUT)
+            stream_raise_timeout(1, wto);
+    }
 }
 
 int cl_stream_peek_char(CL_Obj stream)
@@ -1003,6 +1056,31 @@ CL_Obj cl_socket_stream_accept(CL_Obj listener)
     st = (CL_Stream *)CL_OBJ_TO_PTR(s);
     st->handle_id = (uint32_t)conn;
     return s;
+}
+
+uint32_t cl_socket_stream_get_timeout(CL_Obj stream, int which)
+{
+    CL_Stream *st;
+    stream = resolve_stream(stream, which ? 1 : 0);
+    if (CL_NULL_P(stream)) return 0;
+    st = (CL_Stream *)CL_OBJ_TO_PTR(stream);
+    if (st->stream_type != CL_STREAM_SOCKET) return 0;
+    return which ? st->write_timeout_ms : st->read_timeout_ms;
+}
+
+void cl_socket_stream_set_timeout(CL_Obj stream, int which, uint32_t ms)
+{
+    CL_Stream *st;
+    stream = resolve_stream(stream, which ? 1 : 0);
+    if (CL_NULL_P(stream)) return;
+    st = (CL_Stream *)CL_OBJ_TO_PTR(stream);
+    if (st->stream_type != CL_STREAM_SOCKET) return;
+    if (which) st->write_timeout_ms = ms;
+    else       st->read_timeout_ms = ms;
+    /* Push both current values down to the platform layer in one call. */
+    platform_socket_set_timeout((PlatformSocket)st->handle_id,
+                                (int)st->read_timeout_ms,
+                                (int)st->write_timeout_ms);
 }
 
 CL_Obj cl_make_synonym_stream(CL_Obj symbol)

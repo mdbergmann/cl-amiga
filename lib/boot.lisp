@@ -2822,6 +2822,12 @@ matching NREVERSE."
 
 (export '(defglobal))
 
+;; Make socket read/write timeouts settable:
+;;   (setf (ext:socket-stream-timeout stream :input)  seconds)
+;;   (setf (ext:socket-stream-timeout stream :output) seconds)
+;; The setter receives (stream direction new-value) per the defsetf short form.
+(defsetf socket-stream-timeout %set-socket-stream-timeout)
+
 ;;; ============================================================
 ;;; MP package: threading macros and stubs
 ;;; ============================================================

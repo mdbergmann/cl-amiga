@@ -69,13 +69,21 @@ long         platform_file_length(PlatformFile fh);
 /* TCP Socket I/O */
 typedef uint32_t PlatformSocket;
 #define PLATFORM_SOCKET_INVALID 0
+/* Returned by read/write/flush when a per-socket timeout elapses before the
+ * operation could make progress.  Distinct from -1 (EOF/error) so the stream
+ * layer can raise EXT:SOCKET-TIMEOUT rather than treating it as a clean EOF. */
+#define PLATFORM_SOCKET_TIMEOUT (-2)
 
 PlatformSocket platform_socket_connect(const char *host, int port);
 void           platform_socket_close(PlatformSocket sh);
-int            platform_socket_read(PlatformSocket sh);       /* Read one byte, -1 on EOF/error */
-int            platform_socket_write(PlatformSocket sh, int byte); /* Write one byte, 0=ok, -1=error */
-int            platform_socket_write_buf(PlatformSocket sh, const char *buf, uint32_t len); /* Write buffer */
-int            platform_socket_flush(PlatformSocket sh);      /* Flush output, 0=ok */
+int            platform_socket_read(PlatformSocket sh);       /* Read one byte, -1 EOF/err, -2 timeout */
+int            platform_socket_write(PlatformSocket sh, int byte); /* Write one byte, 0=ok, -1=err, -2=timeout */
+int            platform_socket_write_buf(PlatformSocket sh, const char *buf, uint32_t len); /* 0=ok,-1=err,-2=timeout */
+int            platform_socket_flush(PlatformSocket sh);      /* Flush output, 0=ok, -1=err, -2=timeout */
+/* Set per-socket read/write timeouts in milliseconds; 0 = block indefinitely
+ * (the default).  When a timeout is set, a read/write that cannot make progress
+ * within the window returns PLATFORM_SOCKET_TIMEOUT instead of blocking. */
+void           platform_socket_set_timeout(PlatformSocket sh, int read_ms, int write_ms);
 /* Non-blocking readiness probe: 1 if a read/accept would not block (buffered
  * data, fd readable, or EOF; for a listener: a connection is pending), 0 if it
  * would block, -1 on an invalid handle.  Backs CL:LISTEN for socket streams. */

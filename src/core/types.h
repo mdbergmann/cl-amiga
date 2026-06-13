@@ -446,6 +446,8 @@ typedef struct {
     CL_Obj   element_type;   /* Symbol (CHARACTER) */
     uint32_t charpos;        /* Column position: 0 = at BOL, 0xFFFFFFFF = unknown */
     uint32_t line;           /* 1-based line number of next char to read */
+    uint32_t read_timeout_ms;  /* Socket read timeout in ms; 0 = none (runtime-only, not in FASL) */
+    uint32_t write_timeout_ms; /* Socket write timeout in ms; 0 = none (runtime-only, not in FASL) */
 } CL_Stream;
 
 #define CL_STREAM_P(obj) (CL_HEAP_P(obj) && CL_HDR_TYPE(CL_OBJ_TO_PTR(obj)) == TYPE_STREAM)

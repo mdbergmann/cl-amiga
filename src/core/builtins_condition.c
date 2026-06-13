@@ -113,6 +113,13 @@ static void build_hierarchy(void)
                 cl_cons(SYM_STREAM_ERROR, CL_NIL)),
         condition_hierarchy);
 
+    /* socket-timeout (EXT) -> stream-error: a socket read/write deadline
+     * elapsed.  A subtype of STREAM-ERROR so generic stream handlers catch it. */
+    condition_hierarchy = cl_cons(
+        cl_cons(SYM_SOCKET_TIMEOUT,
+                cl_cons(SYM_STREAM_ERROR, CL_NIL)),
+        condition_hierarchy);
+
     /* stream-error -> error */
     condition_hierarchy = cl_cons(
         cl_cons(SYM_STREAM_ERROR,
@@ -919,6 +926,7 @@ CL_Obj cl_create_condition_from_error(int code, const char *msg)
     case CL_ERR_PARSE:     type_sym = SYM_PARSE_ERROR; break;
     case CL_ERR_FILE:      type_sym = SYM_FILE_ERROR; break;
     case CL_ERR_EOF:       type_sym = SYM_END_OF_FILE; break;
+    case CL_ERR_TIMEOUT:   type_sym = SYM_SOCKET_TIMEOUT; break;
     default:               type_sym = SYM_SIMPLE_ERROR; break;
     }
 

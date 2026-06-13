@@ -3485,6 +3485,73 @@ static CL_Obj bi_socket_local_port(CL_Obj *args, int n)
     return CL_MAKE_FIXNUM(port);
 }
 
+/* Decode a :INPUT / :OUTPUT / :IO direction keyword into which-timeout flags.
+ * *do_read and *do_write are set accordingly; signals a type error otherwise. */
+static void socket_timeout_dir(CL_Obj dir, const char *fn, int *do_read, int *do_write)
+{
+    const char *name = NULL;
+    *do_read = 0;
+    *do_write = 0;
+    if (CL_SYMBOL_P(dir)) {
+        CL_Symbol *s = (CL_Symbol *)CL_OBJ_TO_PTR(dir);
+        if (CL_STRING_P(s->name))
+            name = ((CL_String *)CL_OBJ_TO_PTR(s->name))->data;
+    }
+    if (name && strcmp(name, "INPUT") == 0)       { *do_read = 1; }
+    else if (name && strcmp(name, "OUTPUT") == 0) { *do_write = 1; }
+    else if (name && strcmp(name, "IO") == 0)     { *do_read = 1; *do_write = 1; }
+    else
+        cl_error(CL_ERR_TYPE, "%s: direction must be :INPUT, :OUTPUT or :IO", fn);
+}
+
+/* (ext:socket-stream-timeout stream direction) => seconds-or-NIL
+ * Returns the read (:INPUT) or write (:OUTPUT) timeout of a socket stream in
+ * seconds, or NIL when no timeout is set.  :IO returns the read timeout.
+ * Settable via (setf (ext:socket-stream-timeout stream direction) seconds). */
+static CL_Obj bi_socket_stream_timeout(CL_Obj *args, int n)
+{
+    int do_read, do_write;
+    uint32_t ms;
+    CL_UNUSED(n);
+    if (!CL_STREAM_P(args[0]))
+        cl_error(CL_ERR_TYPE, "EXT:SOCKET-STREAM-TIMEOUT: not a stream");
+    socket_timeout_dir(args[1], "EXT:SOCKET-STREAM-TIMEOUT", &do_read, &do_write);
+    ms = cl_socket_stream_get_timeout(args[0], do_write && !do_read ? 1 : 0);
+    if (ms == 0) return CL_NIL;
+    return cl_make_double_float((double)ms / 1000.0);
+}
+
+/* (ext:%set-socket-stream-timeout stream direction seconds) => seconds
+ * Setter behind (setf socket-stream-timeout).  `seconds` is a non-negative real
+ * (fractional allowed) or NIL to clear.  Mirrors the value into the platform
+ * socket layer so a blocked read/write gives up and raises EXT:SOCKET-TIMEOUT. */
+static CL_Obj bi_set_socket_stream_timeout(CL_Obj *args, int n)
+{
+    int do_read, do_write;
+    uint32_t ms;
+    CL_Obj val = args[2];
+    CL_UNUSED(n);
+    if (!CL_STREAM_P(args[0]))
+        cl_error(CL_ERR_TYPE, "(SETF EXT:SOCKET-STREAM-TIMEOUT): not a stream");
+    socket_timeout_dir(args[1], "(SETF EXT:SOCKET-STREAM-TIMEOUT)", &do_read, &do_write);
+    if (CL_NULL_P(val)) {
+        ms = 0;
+    } else {
+        double secs;
+        if (!CL_REALP(val))
+            cl_error(CL_ERR_TYPE,
+                     "(SETF EXT:SOCKET-STREAM-TIMEOUT): timeout must be a non-negative real or NIL");
+        secs = cl_to_double(val);
+        if (secs < 0.0)
+            cl_error(CL_ERR_GENERAL,
+                     "(SETF EXT:SOCKET-STREAM-TIMEOUT): timeout must be non-negative");
+        ms = (uint32_t)(secs * 1000.0 + 0.5);
+    }
+    if (do_read)  cl_socket_stream_set_timeout(args[0], 0, ms);
+    if (do_write) cl_socket_stream_set_timeout(args[0], 1, ms);
+    return val;
+}
+
 /* --- Registration --- */
 
 void cl_builtins_io_init(void)
@@ -3598,6 +3665,8 @@ void cl_builtins_io_init(void)
     extfun("SOCKET-LISTEN", bi_socket_listen, 1, 2);
     extfun("SOCKET-ACCEPT", bi_socket_accept, 1, 1);
     extfun("SOCKET-LOCAL-PORT", bi_socket_local_port, 1, 1);
+    extfun("SOCKET-STREAM-TIMEOUT", bi_socket_stream_timeout, 2, 2);
+    extfun("%SET-SOCKET-STREAM-TIMEOUT", bi_set_socket_stream_timeout, 3, 3);
 
     /* Pretty-printing keywords */
     KW_LINEAR    = cl_intern_keyword("LINEAR", 6);

@@ -14,18 +14,24 @@
 
 ;;; SET-TIMEOUTS.  Hunchentoot's set-timeouts.lisp sets the per-connection read
 ;;; and write timeouts through implementation-specific socket options
-;;; (SO_RCVTIMEO / fd-stream-timeout / ...).  cl-amiga's sockets expose no
-;;; Lisp-level timeout option (the EXT socket layer is a plain bidirectional
-;;; stream), so the upstream definition reaches its #-(or ...) fallback and
-;;; signals NOT-IMPLEMENTED — which, raised inside the acceptor's accept loop,
-;;; kills the listener thread right after it accepts a connection.
+;;; (SO_RCVTIMEO / fd-stream-timeout / ...), and its #-(or ...) fallback signals
+;;; NOT-IMPLEMENTED for any Lisp it doesn't recognise.
 ;;;
-;;; We make it a no-op: connections simply have no socket-level timeout, which
-;;; matches what Hunchentoot already does on platforms that lack the option
-;;; (e.g. :clasp only warns).  This is fine for the test server; a stalled peer
-;;; would block its own handler thread but not the acceptor.
+;;; cl-amiga now exposes a real per-stream timeout: (setf (ext:socket-stream-
+;;; timeout stream :input/:output) seconds) arms a select()/WaitSelect() deadline
+;;; in the platform socket layer, and a read/write that misses it raises
+;;; EXT:SOCKET-TIMEOUT (a subtype of STREAM-ERROR) instead of blocking forever.
+;;; The clamiga usocket backend stores the raw EXT socket stream as the usocket's
+;;; stream slot, so we set the timeout straight on it.  Timeouts are in seconds
+;;; (fractional allowed); NIL clears.  A stalled peer now unblocks its own worker
+;;; thread rather than pinning it indefinitely.
 (defun set-timeouts (usocket read-timeout write-timeout)
-  (declare (ignore usocket read-timeout write-timeout))
+  (let ((stream (usocket:socket-stream usocket)))
+    (when stream
+      (when read-timeout
+        (setf (ext:socket-stream-timeout stream :input) read-timeout))
+      (when write-timeout
+        (setf (ext:socket-stream-timeout stream :output) write-timeout))))
   nil)
 
 ;;; ---------------------------------------------------------------------------

@@ -2100,6 +2100,87 @@
              (close c) (close s)))
       (close l))))
 
+; --- Socket read/write timeouts (ext:socket-stream-timeout) ---
+; (setf (ext:socket-stream-timeout stream :input/:output) seconds) arms a
+; WaitSelect deadline in the platform socket layer; a read/write that misses it
+; raises EXT:SOCKET-TIMEOUT (a subtype of STREAM-ERROR) instead of blocking.
+; 0.5 is exactly representable, so the numeric = round-trip is float-safe.
+(check "socket-stream-timeout accessor round-trips (input)" t
+  (let ((l (ext:socket-listen 0 t)))
+    (unwind-protect
+         (let* ((p (ext:socket-local-port l))
+                (c (ext:open-tcp-stream "127.0.0.1" p))
+                (s (ext:socket-accept l)))
+           (unwind-protect
+                (progn
+                  (setf (ext:socket-stream-timeout c :input) 0.5)
+                  (= 0.5 (ext:socket-stream-timeout c :input)))
+             (close c) (close s)))
+      (close l))))
+
+(check "socket-stream-timeout unset reads NIL; :output independent" t
+  (let ((l (ext:socket-listen 0 t)))
+    (unwind-protect
+         (let* ((p (ext:socket-local-port l))
+                (c (ext:open-tcp-stream "127.0.0.1" p))
+                (s (ext:socket-accept l)))
+           (unwind-protect
+                (progn
+                  (setf (ext:socket-stream-timeout c :input) 1)
+                  (null (ext:socket-stream-timeout c :output)))
+             (close c) (close s)))
+      (close l))))
+
+; A read that exceeds the deadline (peer sends nothing) signals EXT:SOCKET-TIMEOUT,
+; which must be catchable both as socket-timeout and as a generic stream-error.
+(check "socket read timeout signals EXT:SOCKET-TIMEOUT" :timeout-streamerr
+  (let ((l (ext:socket-listen 0 t)))
+    (unwind-protect
+         (let* ((p (ext:socket-local-port l))
+                (c (ext:open-tcp-stream "127.0.0.1" p))
+                (s (ext:socket-accept l)))
+           (unwind-protect
+                (progn
+                  (setf (ext:socket-stream-timeout c :input) 0.5)
+                  ;; server (s) deliberately sends nothing
+                  (handler-case (progn (read-char c) :no-timeout)
+                    (ext:socket-timeout (e)
+                      (if (typep e 'stream-error) :timeout-streamerr :timeout))))
+             (close c) (close s)))
+      (close l))))
+
+; Arming a write timeout must not break a normal write to a draining peer, and
+; the timed flush (force-output) must not spuriously signal.  (A write timeout
+; cannot be reliably *triggered* over loopback — buffers absorb the data — so we
+; test the complementary success path; the write deadline shares the read path's
+; mechanism, which the read-timeout test above exercises.)
+(check "write with timeout set succeeds to a draining peer" 90  ; #\Z
+  (let ((l (ext:socket-listen 0 t)))
+    (unwind-protect
+         (let* ((p (ext:socket-local-port l))
+                (c (ext:open-tcp-stream "127.0.0.1" p))
+                (s (ext:socket-accept l)))
+           (unwind-protect
+                (progn
+                  (setf (ext:socket-stream-timeout c :output) 5)  ; generous deadline
+                  (write-char #\Z c)
+                  (force-output c)             ; timed flush path; must not signal
+                  (char-code (read-char s)))   ; peer drains -> verifies receipt
+             (close c) (close s)))
+      (close l))))
+
+(check "socket-stream-timeout bad direction is a type error" :bad-dir
+  (let ((l (ext:socket-listen 0 t)))
+    (unwind-protect
+         (let* ((p (ext:socket-local-port l))
+                (c (ext:open-tcp-stream "127.0.0.1" p))
+                (s (ext:socket-accept l)))
+           (unwind-protect
+                (handler-case (ext:socket-stream-timeout c :sideways)
+                  (type-error () :bad-dir))
+             (close c) (close s)))
+      (close l))))
+
 ; --- Concurrent socket I/O: a thread parked in a blocking socket read must
 ; not block other I/O (regression for the SLY :spawn deadlock).  Stream I/O
 ; locks are split per socket and per direction (src/core/stream.c), and the

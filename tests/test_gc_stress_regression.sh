@@ -1008,6 +1008,39 @@ check_contains "defvar/defparameter/defconstant values correct under GC stress" 
 check_contains "defvar special binding works under GC stress"                    "DVSPEC:REBOUND" "$out"
 check_absent   "no stale/garbage deftype name (type_table lookup miss)"          "Unbound\|corrupted\|type 0\|Undefined" "$out"
 
+# --- Case: socket read timeout + accessor under GC stress -------------------
+# Exercises the new allocating paths added with EXT:SOCKET-STREAM-TIMEOUT:
+#  - the accessor returns the timeout as a freshly-consed double-float;
+#  - a timed-out READ-CHAR builds an EXT:SOCKET-TIMEOUT condition
+#    (cl_make_string + cons for the report) and formats it with ~A.
+# A stale CL_Obj on any of those paths would surface here as a wrong value,
+# a wrong condition type, or a corrupted report string under forced compaction.
+# 0.5s is exactly representable, so the numeric = round-trip is float-safe.
+cat > "$WORK/sockto.lisp" <<'EOF'
+(let* ((l (ext:socket-listen 0 t))
+       (p (ext:socket-local-port l))
+       (c (ext:open-tcp-stream "127.0.0.1" p)))
+  (setf (ext:socket-stream-timeout c :input) 0.5)
+  (format t "STO-RT:~a~%" (= 0.5 (ext:socket-stream-timeout c :input)))
+  (format t "STO:~a~%"
+    (handler-case (progn (read-char c) :no-timeout)
+      (ext:socket-timeout (e)
+        (if (and (typep e 'stream-error) (stringp (format nil "~a" e)))
+            :timeout-ok :timeout-bad))))
+  (close c)
+  (close l))
+EOF
+out=$(run_stress "$WORK/sockto.lisp")
+check_contains "socket-stream-timeout accessor double-float round-trips under stress" "STO-RT:T" "$out"
+check_contains "timed-out read-char signals EXT:SOCKET-TIMEOUT under stress"          "STO:TIMEOUT-OK" "$out"
+check_absent   "no corruption from stale CL_Obj in timeout condition path"            "TIMEOUT-BAD\|corrupted\|type 0\|Unbound\|Undefined" "$out"
+
+# NOTE: there is no write-timeout GC-stress case — a write timeout cannot be
+# reliably triggered over host loopback (macOS buffers it effectively without
+# bound, so the write never blocks).  The read-timeout case above already
+# exercises the EXT:SOCKET-TIMEOUT condition-build/format allocation path under
+# forced compaction; the write path builds the identical condition.
+
 echo ""
 echo "$passed passed, $failed failed, $total total"
 [ "$failed" -eq 0 ]
