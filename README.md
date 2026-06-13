@@ -12,11 +12,11 @@ CL-Amiga is a bytecode-compiled Common Lisp environment written in C (C89/C99). 
 
 CL-Amiga can load **ASDF**, install and run **Quicklisp**, and successfully quickload libraries including **Alexandria**, **fiveam**, **FSet**, and **Sento** — their `asdf:test-system` suites pass end-to-end. Sento pulls in **lparallel**, **serapeum**, **bordeaux-threads**, **log4cl** and friends along the way.
 
-**ANSI conformance** — the Paul Dietz ANSI test suite (`third_party/ansi-test/`) is the working spec. A bootstrap in `trunk/` runs it on host and Amiga, writing tallies to `build/load-and-test-logs/`:
+**ANSI conformance** — the Paul Dietz ANSI test suite (`third_party/ansi-test/`) is the working spec. A bootstrap in `trunk/` runs it on host and Amiga:
 
-- **CONS + SYMBOLS + NUMBERS** (`load-and-test-ansi.lisp`) — **4471 / 4471 (100%)** passing (3027 cons + symbols, 1444 numbers).
+- **CONS, SYMBOLS, and NUMBERS** (`load-and-test-ansi.lisp`) — passing.
 
-Over 2240 host tests and ~2525 Amiga tests cover the implementation, including threading, CLOS, conditions, the full numeric tower, FFI, the m68k JIT, and AmigaOS GUI (Intuition/Graphics/GadTools).
+A broad test suite covers the implementation, including threading, CLOS, conditions, the full numeric tower, FFI, the m68k JIT, and AmigaOS GUI (Intuition/Graphics/GadTools).
 
 ## Building
 
@@ -102,16 +102,7 @@ Quicklisp runs on CL-Amiga, but the stock client doesn't recognise this implemen
 - `contrib/shims/` (installed by `make install-shims`) — `closer-mop` (re-exports CL-Amiga's AMOP subset under CLOSER-MOP names), `trivial-cltl2` (the CLtL2 functions serapeum/trivia call), and `trivial-garbage` (weak hash-tables). Downstream libraries `:use` these by name; the shims let them resolve via Quicklisp's local-projects searcher.
 - `lib/asdf.lisp` — `#+cl-amiga` adaptations: real binary FASL compile/load for cross-session persistence, AmigaOS path/device handling, and `*asdf-session*` NULL-safety.
 
-**Confirmed working** via `quickload` + `asdf:test-system` (`trunk/run-load-and-test-all.sh`; results land in `build/load-and-test-logs/`):
-
-| Library | Heap  | Result                            |
-|---------|-------|-----------------------------------|
-| fiveam  | 24M   | 114 / 114                         |
-| FSet    | 24M   | 16 / 17 (1 pre-existing failure)  |
-| str     | 64M   | 400 / 400                         |
-| Sento   | 192M¹ | 533 / 535 (2 timing-flaky)        |
-
-¹ Cold cache, compiling the full dependency tree (~96–128M warm). Sento pulls in **alexandria, serapeum, lparallel, log4cl, bordeaux-threads** and friends, which load and run along the way. On Amiga use `stack 800000`.
+Libraries confirmed working via `quickload` + `asdf:test-system` (`trunk/run-load-and-test-all.sh`) include **fiveam**, **FSet**, **str**, and **Sento**. Sento cold-compiles its full dependency tree — **alexandria, serapeum, lparallel, log4cl, bordeaux-threads** and friends — so give it ~96–128M of heap (more for a cold cache) and `stack 800000` on Amiga.
 
 ### Integration test scripts
 
@@ -432,7 +423,7 @@ Measured on the high-end FS-UAE config (A4000 / 68040 / Picasso96). The A/B micr
 
 Compute-bound code sees the largest wins; call-heavy code is bounded by the same per-call helper round-trip the interpreter pays. On the real-world `examples/gfx/bouncing-lines.lisp` demo (FFI-dominated — five lines drawn through `graphics.library` each frame), the JIT now reaches **~615 FPS** versus **~500 FPS** on the bytecode VM. That lead only materialised once native `amiga-call` dispatch and `defcfun` compiler-macro inlining landed (467 → 525 → 615 FPS as those merged), since the frame time is mostly FFI calls rather than arithmetic. The remaining gap to compiled ACE BASIC (~1900 FPS through the same ROM graphics calls) is the structural cost of a dynamic, GC'd, tagged-value language — per-argument unboxing, dispatch and symbol lookup per call, GC safepoints — not codegen.
 
-The Amiga test suite passes **2525 / 2525** on the JIT config; per-opcode JIT coverage (counter-bump, value-correctness, and unwind-recovery assertions) lives in `tests/amiga/test-jit.lisp`.
+The Amiga test suite passes on the JIT config; per-opcode JIT coverage (counter-bump, value-correctness, and unwind-recovery assertions) lives in `tests/amiga/test-jit.lisp`.
 
 ## Known Limitations and Future Work
 
@@ -494,7 +485,7 @@ examples/
   gfx/            Graphics demos (bouncing-lines.lisp)
 tests/
   test_*.c        Host test suites (C)
-  amiga/          Amiga test suite (Lisp, ~2525 tests)
+  amiga/          Amiga test suite (Lisp)
 trunk/            Integration test scripts (ANSI, Sento, FSet, fiveam, str, ...)
 third_party/
   ansi-test/      Paul Dietz ANSI CL conformance test suite
