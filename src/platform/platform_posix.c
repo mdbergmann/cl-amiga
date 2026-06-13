@@ -8,6 +8,7 @@
 #include <sys/wait.h>
 #include <sys/socket.h>
 #include <sys/select.h>
+#include <poll.h>
 #include <netinet/in.h>
 #include <netdb.h>
 #include <time.h>
@@ -425,22 +426,43 @@ const char *platform_expand_home(const char *path, char *buf, int bufsize)
     return buf;
 }
 
-/* --- TCP Socket I/O --- */
+/* --- TCP Socket I/O ---
+ *
+ * Unlike the Amiga reactor (a fixed 64-slot table bounded by bsdsocket's
+ * descriptor table), the POSIX host has no such ceiling — a busy server can
+ * hold thousands of connections — so the socket table grows on demand.
+ *
+ * A PlatformSocket handle IS a slot index handed to the Lisp layer, so a slot
+ * must never move or be renumbered once allocated.  That rules out a realloc'd
+ * flat array (it would move the backing store out from under the lock-free
+ * read/write paths).  Instead this is a segmented (two-level) table: a fixed
+ * directory of block pointers, each block lazily allocated and published once.
+ * Resolving a handle is two indexed loads of immutable data, so the hot
+ * read/write path stays lock-free; only slot claim/free take the mutex.
+ * Slot 0 is the reserved INVALID handle. */
+typedef struct {
+    int    fd;          /* -1 = free */
+    IOBuf *buf;         /* NULL for listeners and the no-buffer fallback */
+    int    rtimeout;    /* read timeout in ms; 0 = block indefinitely */
+    int    wtimeout;    /* write timeout in ms; 0 = block indefinitely */
+    int    next_free;   /* free-list link; valid only while fd < 0, 0 = end */
+} SockSlot;
 
-#define PLATFORM_SOCKET_TABLE_SIZE 16
+#define SOCK_BLOCK_SHIFT 6
+#define SOCK_BLOCK_SIZE  (1 << SOCK_BLOCK_SHIFT)   /* 64 slots per block */
+#define SOCK_BLOCK_MASK  (SOCK_BLOCK_SIZE - 1)
+#define SOCK_MAX_BLOCKS  1024                       /* up to 65536 sockets */
 
-static int socket_table[PLATFORM_SOCKET_TABLE_SIZE];
-static IOBuf *socket_buf[PLATFORM_SOCKET_TABLE_SIZE];
-/* Per-socket read/write timeouts in milliseconds; 0 = block indefinitely. */
-static int socket_rtimeout[PLATFORM_SOCKET_TABLE_SIZE];
-static int socket_wtimeout[PLATFORM_SOCKET_TABLE_SIZE];
-static int socket_table_init = 0;
+static SockSlot * volatile socket_dir[SOCK_MAX_BLOCKS]; /* NULL until allocated */
+static int       socket_nblocks   = 0;              /* blocks allocated so far */
+static int       socket_free_head = 0;              /* free-list head, 0 = empty */
+static int       socket_table_init = 0;
 
-/* Serialises slot claim (connect/listen/accept) and slot free (close) so a
- * threaded server — e.g. an accept loop on one thread while another connects
- * — can never race two claims onto the same table index.  Only the table
- * mutation is guarded; the blocking syscalls (connect/accept/flush/close) and
- * the per-byte read/write paths (each on its own caller-owned slot) run
+/* Serialises slot claim (connect/listen/accept), slot free (close), and block
+ * growth so a threaded server — e.g. an accept loop on one thread while
+ * another connects — can never race two claims onto the same index.  Only the
+ * table mutation is guarded; the blocking syscalls (connect/accept/flush/close)
+ * and the per-byte read/write paths (each on its own caller-owned slot) run
  * unlocked.  Initialised on first use, which is single-threaded. */
 static void *socket_table_mutex = NULL;
 
@@ -454,16 +476,76 @@ static void socket_table_unlock(void)
     if (socket_table_mutex) platform_mutex_unlock(socket_table_mutex);
 }
 
+/* Resolve a handle to its slot, or NULL if it names a never-allocated slot.
+ * Reads only published (immutable) directory pointers — the block pointer is
+ * stored last in socket_grow_locked, after the block is fully initialised, and
+ * is never freed or changed — so this is safe to call from the lock-free
+ * read/write paths. */
+static SockSlot *sock_slot(PlatformSocket sh)
+{
+    unsigned blk = (unsigned)sh >> SOCK_BLOCK_SHIFT;
+    SockSlot *b;
+    if (blk >= (unsigned)SOCK_MAX_BLOCKS) return NULL;
+    b = socket_dir[blk];
+    if (!b) return NULL;
+    return &b[(unsigned)sh & SOCK_BLOCK_MASK];
+}
+
+/* Allocate one more block and push its slots onto the free-list (in ascending
+ * order so low indices are handed out first).  Slot 0 — the INVALID handle — is
+ * reserved and never linked.  Caller holds the lock.  Returns 1 on success, 0
+ * if the directory is full or out of memory. */
+static int socket_grow_locked(void)
+{
+    SockSlot *blk;
+    int base, start, i;
+    if (socket_nblocks >= SOCK_MAX_BLOCKS) return 0;
+    blk = (SockSlot *)calloc(SOCK_BLOCK_SIZE, sizeof(SockSlot));
+    if (!blk) return 0;
+    base  = socket_nblocks << SOCK_BLOCK_SHIFT;
+    start = (base == 0) ? 1 : 0;          /* reserve global slot 0 */
+    if (base == 0) blk[0].fd = -1;        /* slot 0: never claimed, mark invalid */
+    for (i = SOCK_BLOCK_SIZE - 1; i >= start; i--) {
+        blk[i].fd = -1;
+        blk[i].next_free = socket_free_head;
+        socket_free_head = base + i;
+    }
+    /* Publish the fully-initialised block last so a lock-free reader never
+     * observes a directory pointer to uninitialised slots. */
+    socket_dir[socket_nblocks] = blk;
+    socket_nblocks++;
+    return 1;
+}
+
+/* Claim a free slot for fd, allocating an IOBuf when want_buf (NULL for
+ * listeners).  Caller holds the lock.  Returns the slot index, or 0 (INVALID)
+ * if the table can't grow or the IOBuf alloc fails. */
+static PlatformSocket socket_claim_locked(int fd, int want_buf)
+{
+    int idx;
+    SockSlot *s;
+    if (socket_free_head == 0 && !socket_grow_locked())
+        return PLATFORM_SOCKET_INVALID;
+    idx = socket_free_head;
+    s = sock_slot((PlatformSocket)idx);
+    if (want_buf) {
+        IOBuf *b = iobuf_alloc();
+        if (!b) return PLATFORM_SOCKET_INVALID;   /* leave slot on free-list */
+        s->buf = b;
+    } else {
+        s->buf = NULL;
+    }
+    socket_free_head = s->next_free;   /* pop only after the buf alloc succeeds */
+    s->fd = fd;
+    s->rtimeout = 0;
+    s->wtimeout = 0;
+    s->next_free = 0;
+    return (PlatformSocket)idx;
+}
+
 static void socket_table_ensure_init(void)
 {
     if (!socket_table_init) {
-        int i;
-        for (i = 0; i < PLATFORM_SOCKET_TABLE_SIZE; i++) {
-            socket_table[i] = -1;
-            socket_buf[i] = NULL;
-            socket_rtimeout[i] = 0;
-            socket_wtimeout[i] = 0;
-        }
         platform_mutex_init(&socket_table_mutex);
         socket_table_init = 1;
     }
@@ -473,7 +555,7 @@ PlatformSocket platform_socket_connect(const char *host, int port)
 {
     struct hostent *he;
     struct sockaddr_in addr;
-    int fd, i;
+    int fd;
 
     socket_table_ensure_init();
 
@@ -502,20 +584,18 @@ PlatformSocket platform_socket_connect(const char *host, int port)
         }
     }
 
-    /* Find free slot (slot 0 reserved as INVALID) */
-    socket_table_lock();
-    for (i = 1; i < PLATFORM_SOCKET_TABLE_SIZE; i++) {
-        if (socket_table[i] == -1) {
-            socket_table[i] = fd;
-            socket_buf[i] = iobuf_alloc();
-            socket_table_unlock();
-            return (PlatformSocket)i;
+    /* Claim a slot (slot 0 reserved as INVALID); the table grows on demand. */
+    {
+        PlatformSocket sh;
+        socket_table_lock();
+        sh = socket_claim_locked(fd, 1);
+        socket_table_unlock();
+        if (sh == PLATFORM_SOCKET_INVALID) {
+            close(fd);
+            return PLATFORM_SOCKET_INVALID;
         }
+        return sh;
     }
-    socket_table_unlock();
-
-    close(fd);
-    return PLATFORM_SOCKET_INVALID;
 }
 
 /* Flush socket write buffer to the wire */
@@ -526,12 +606,13 @@ static int socket_flush_wbuf(PlatformSocket sh)
 {
     IOBuf *b;
     int fd, wtimeout;
+    SockSlot *s = sock_slot(sh);
     ssize_t total = 0;
-    if (sh == 0 || sh >= PLATFORM_SOCKET_TABLE_SIZE) return -1;
-    b = socket_buf[sh];
+    if (sh == 0 || !s) return -1;
+    b = s->buf;
     if (!b || b->wlen == 0) return 0;
-    fd = socket_table[sh];
-    wtimeout = socket_wtimeout[sh];
+    fd = s->fd;
+    wtimeout = s->wtimeout;
     /* write() can block when the peer's receive window is full — bracket the
      * whole drain loop so a slow reader cannot stall a stop-the-world GC. */
     cl_gc_enter_safe_region();
@@ -573,19 +654,22 @@ static int socket_flush_wbuf(PlatformSocket sh)
 
 void platform_socket_close(PlatformSocket sh)
 {
-    if (sh > 0 && sh < PLATFORM_SOCKET_TABLE_SIZE && socket_table[sh] >= 0) {
+    SockSlot *s = sock_slot(sh);
+    if (sh > 0 && s && s->fd >= 0) {
         int fd;
         IOBuf *buf;
         socket_flush_wbuf(sh);
-        /* Detach the slot under the lock, then do the blocking close() and
-         * free() outside it. */
+        /* Detach the slot and return it to the free-list under the lock, then
+         * do the blocking close() and free() outside it. */
         socket_table_lock();
-        fd = socket_table[sh];
-        buf = socket_buf[sh];
-        socket_table[sh] = -1;
-        socket_buf[sh] = NULL;
-        socket_rtimeout[sh] = 0;
-        socket_wtimeout[sh] = 0;
+        fd = s->fd;
+        buf = s->buf;
+        s->fd = -1;
+        s->buf = NULL;
+        s->rtimeout = 0;
+        s->wtimeout = 0;
+        s->next_free = socket_free_head;
+        socket_free_head = (int)sh;
         socket_table_unlock();
         if (fd >= 0) close(fd);
         iobuf_free(buf);
@@ -594,10 +678,11 @@ void platform_socket_close(PlatformSocket sh)
 
 void platform_socket_set_timeout(PlatformSocket sh, int read_ms, int write_ms)
 {
-    if (sh == 0 || sh >= PLATFORM_SOCKET_TABLE_SIZE) return;
+    SockSlot *s = sock_slot(sh);
+    if (sh == 0 || !s) return;
     socket_table_lock();
-    socket_rtimeout[sh] = (read_ms  > 0) ? read_ms  : 0;
-    socket_wtimeout[sh] = (write_ms > 0) ? write_ms : 0;
+    s->rtimeout = (read_ms  > 0) ? read_ms  : 0;
+    s->wtimeout = (write_ms > 0) ? write_ms : 0;
     socket_table_unlock();
 }
 
@@ -608,29 +693,31 @@ void platform_socket_set_timeout(PlatformSocket sh, int read_ms, int write_ms)
  * consume elapsed time rather than resetting the full timeout each iteration. */
 static int socket_wait_ready(int fd, int timeout_ms, int want_write)
 {
-    fd_set fds;
-    struct timeval tv;
+    struct pollfd pfd;
     int r;
+    short want;
     uint32_t deadline;
     int32_t rem;
-    if (fd < 0 || fd >= FD_SETSIZE)
-        return -1;
+    /* poll() has no FD_SETSIZE ceiling, so a host server holding thousands of
+     * connections (fd numbers well above 1024) still works — select() does not. */
+    if (fd < 0) return -1;
+    want = want_write ? POLLOUT : POLLIN;
     deadline = platform_time_ms() + (uint32_t)timeout_ms;
     for (;;) {
         rem = (int32_t)(deadline - platform_time_ms());
         if (rem <= 0) return 0;             /* deadline elapsed */
-        FD_ZERO(&fds);
-        FD_SET(fd, &fds);
-        tv.tv_sec  = rem / 1000;
-        tv.tv_usec = (rem % 1000) * 1000;
-        r = select(fd + 1, want_write ? NULL : &fds,
-                          want_write ? &fds : NULL, NULL, &tv);
+        pfd.fd = fd;
+        pfd.events = want;
+        pfd.revents = 0;
+        r = poll(&pfd, 1, rem);
         if (r < 0) {
             if (errno == EINTR) continue;   /* retry, deadline unchanged */
             return -1;
         }
         if (r == 0) return 0;               /* timed out */
-        return FD_ISSET(fd, &fds) ? 1 : 0;
+        /* Report ready on the wanted event, or on an error/hangup condition so
+         * the caller's send()/recv() surfaces the real result. */
+        return (pfd.revents & (want | POLLERR | POLLHUP | POLLNVAL)) ? 1 : 0;
     }
 }
 
@@ -638,10 +725,11 @@ int platform_socket_read(PlatformSocket sh)
 {
     IOBuf *b;
     int rtimeout;
-    if (sh == 0 || sh >= PLATFORM_SOCKET_TABLE_SIZE || socket_table[sh] < 0)
+    SockSlot *s = sock_slot(sh);
+    if (sh == 0 || !s || s->fd < 0)
         return -1;
-    b = socket_buf[sh];
-    rtimeout = socket_rtimeout[sh];
+    b = s->buf;
+    rtimeout = s->rtimeout;
     if (b) {
         if (b->rpos < b->rlen)
             return (unsigned char)b->rbuf[b->rpos++];
@@ -649,7 +737,7 @@ int platform_socket_read(PlatformSocket sh)
          * it as a GC safe region; capture the fd first since a concurrent close
          * could clear the slot while we are parked. */
         {
-            int fd = socket_table[sh];
+            int fd = s->fd;
             ssize_t n;
             cl_gc_enter_safe_region();
             if (rtimeout > 0) {
@@ -669,7 +757,7 @@ int platform_socket_read(PlatformSocket sh)
     }
     /* Fallback: no buffer */
     {
-        int fd = socket_table[sh];
+        int fd = s->fd;
         unsigned char byte;
         ssize_t n;
         cl_gc_enter_safe_region();
@@ -703,27 +791,26 @@ int platform_socket_data_available(PlatformSocket sh)
 {
     IOBuf *b;
     int fd;
-    fd_set rset;
-    struct timeval tv;
+    struct pollfd pfd;
     int r;
-    if (sh == 0 || sh >= PLATFORM_SOCKET_TABLE_SIZE || socket_table[sh] < 0)
+    SockSlot *s = sock_slot(sh);
+    if (sh == 0 || !s || s->fd < 0)
         return -1;
-    b = socket_buf[sh];
+    b = s->buf;
     if (b && b->rpos < b->rlen)
         return 1;                       /* already-buffered bytes */
-    fd = socket_table[sh];
-    if (fd < 0 || fd >= FD_SETSIZE)
+    fd = s->fd;
+    if (fd < 0)
         return -1;
-    FD_ZERO(&rset);
-    FD_SET(fd, &rset);
-    tv.tv_sec = 0;
-    tv.tv_usec = 0;
-    r = select(fd + 1, &rset, NULL, NULL, &tv);
+    pfd.fd = fd;
+    pfd.events = POLLIN;
+    pfd.revents = 0;
+    r = poll(&pfd, 1, 0);               /* zero timeout: never blocks */
     if (r < 0) {
         if (errno == EINTR) return 0;   /* treat as "not ready yet" */
         return -1;
     }
-    if (r == 0 || !FD_ISSET(fd, &rset))
+    if (r == 0 || !(pfd.revents & (POLLIN | POLLHUP | POLLERR)))
         return 0;                       /* would block */
     if (!b)
         return 1;                       /* listener: connection pending */
@@ -742,9 +829,10 @@ int platform_socket_data_available(PlatformSocket sh)
 int platform_socket_write(PlatformSocket sh, int byte)
 {
     IOBuf *b;
-    if (sh == 0 || sh >= PLATFORM_SOCKET_TABLE_SIZE || socket_table[sh] < 0)
+    SockSlot *s = sock_slot(sh);
+    if (sh == 0 || !s || s->fd < 0)
         return -1;
-    b = socket_buf[sh];
+    b = s->buf;
     if (b) {
         b->wbuf[b->wlen++] = (char)byte;
         if (b->wlen >= PLATFORM_IOBUF_SIZE)
@@ -753,7 +841,7 @@ int platform_socket_write(PlatformSocket sh, int byte)
     }
     /* Fallback: no buffer */
     {
-        int fd = socket_table[sh];
+        int fd = s->fd;
         unsigned char bb = (unsigned char)byte;
         ssize_t n;
         cl_gc_enter_safe_region();
@@ -766,9 +854,10 @@ int platform_socket_write(PlatformSocket sh, int byte)
 int platform_socket_write_buf(PlatformSocket sh, const char *buf, uint32_t len)
 {
     IOBuf *b;
-    if (sh == 0 || sh >= PLATFORM_SOCKET_TABLE_SIZE || socket_table[sh] < 0)
+    SockSlot *s = sock_slot(sh);
+    if (sh == 0 || !s || s->fd < 0)
         return -1;
-    b = socket_buf[sh];
+    b = s->buf;
     if (b) {
         uint32_t pos = 0;
         while (pos < len) {
@@ -788,7 +877,7 @@ int platform_socket_write_buf(PlatformSocket sh, const char *buf, uint32_t len)
     /* Fallback: direct write */
     {
         ssize_t total = 0;
-        int fd = socket_table[sh];
+        int fd = s->fd;
         cl_gc_enter_safe_region();
         while ((uint32_t)total < len) {
             ssize_t n = write(fd, buf + total, (size_t)(len - (uint32_t)total));
@@ -808,7 +897,7 @@ int platform_socket_flush(PlatformSocket sh)
 PlatformSocket platform_socket_listen(int port, int loopback, int *actual_port)
 {
     struct sockaddr_in addr;
-    int fd, i, on = 1;
+    int fd, on = 1;
 
     socket_table_ensure_init();
 
@@ -840,55 +929,51 @@ PlatformSocket platform_socket_listen(int port, int loopback, int *actual_port)
     }
 
     /* Listener occupies a slot but needs no IOBuf — it is never read/written. */
-    socket_table_lock();
-    for (i = 1; i < PLATFORM_SOCKET_TABLE_SIZE; i++) {
-        if (socket_table[i] == -1) {
-            socket_table[i] = fd;
-            socket_buf[i] = NULL;
-            socket_table_unlock();
-            return (PlatformSocket)i;
+    {
+        PlatformSocket sh;
+        socket_table_lock();
+        sh = socket_claim_locked(fd, 0);
+        socket_table_unlock();
+        if (sh == PLATFORM_SOCKET_INVALID) {
+            close(fd);
+            return PLATFORM_SOCKET_INVALID;
         }
+        return sh;
     }
-    socket_table_unlock();
-
-    close(fd);
-    return PLATFORM_SOCKET_INVALID;
 }
 
 PlatformSocket platform_socket_accept(PlatformSocket listener)
 {
     struct sockaddr_in caddr;
     socklen_t clen = sizeof(caddr);
-    int fd, i;
+    int fd;
+    SockSlot *ls = sock_slot(listener);
 
-    if (listener == 0 || listener >= PLATFORM_SOCKET_TABLE_SIZE ||
-        socket_table[listener] < 0)
+    if (listener == 0 || !ls || ls->fd < 0)
         return PLATFORM_SOCKET_INVALID;
 
     /* accept() blocks — must run outside the table lock, and as a GC safe
      * region so a thread parked here waiting for a client does not stall a
      * concurrent stop-the-world GC.  This is the SLY read-loop deadlock. */
     {
-        int lfd = socket_table[listener];
+        int lfd = ls->fd;
         cl_gc_enter_safe_region();
         fd = accept(lfd, (struct sockaddr *)&caddr, &clen);
         cl_gc_leave_safe_region();
     }
     if (fd < 0) return PLATFORM_SOCKET_INVALID;
 
-    socket_table_lock();
-    for (i = 1; i < PLATFORM_SOCKET_TABLE_SIZE; i++) {
-        if (socket_table[i] == -1) {
-            socket_table[i] = fd;
-            socket_buf[i] = iobuf_alloc();
-            socket_table_unlock();
-            return (PlatformSocket)i;
+    {
+        PlatformSocket sh;
+        socket_table_lock();
+        sh = socket_claim_locked(fd, 1);
+        socket_table_unlock();
+        if (sh == PLATFORM_SOCKET_INVALID) {
+            close(fd);
+            return PLATFORM_SOCKET_INVALID;
         }
+        return sh;
     }
-    socket_table_unlock();
-
-    close(fd);
-    return PLATFORM_SOCKET_INVALID;
 }
 
 void platform_init(void)
