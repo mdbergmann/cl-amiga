@@ -45,37 +45,7 @@ Bypass a single commit with `git commit --no-verify`. See
 [`scripts/review/README.md`](scripts/review/README.md) for the full flow,
 toggles, and safety guarantees.
 
-### Cross-compile for AmigaOS
-
-First, install the `m68k-amigaos-gcc` cross toolchain:
-
-```
-./tools/setup-toolchain.sh          # auto-pick: download on macOS arm64, build elsewhere
-./tools/setup-toolchain.sh --build   # force build-from-source on any host
-./tools/setup-toolchain.sh --help    # all options
-```
-
-The toolchain itself is tracked as a git submodule
-(`tools/m68k-amigaos-gcc` → [AmigaPorts/m68k-amigaos-gcc](https://github.com/AmigaPorts/m68k-amigaos-gcc),
-pinned). On macOS arm64 the script downloads a prebuilt `prefix/` tarball
-from the cl-amiga release; on every other host it runs `git submodule
-update --init` and invokes the upstream `make all` (host build deps —
-`gmp`, `mpfr`, `mpc`, `wget`, etc. — see `tools/m68k-amigaos-gcc/README.md`).
-
-Then build CL-Amiga:
-
-```
-make -f Makefile.cross amiga        # Cross-compile with m68k-amigaos-gcc
-make -f Makefile.cross test-amiga   # Build, deploy to FS-UAE, run Amiga tests
-make -f Makefile.cross clean        # Remove cross-build artifacts
-```
-
-### Build inside AmigaOS (vbcc)
-
-```
-cd CLAmiga:
-make -f Makefile.amiga
-```
+(For building the AmigaOS binary, see [Building for AmigaOS](#building-for-amigaos) below.)
 
 ## Usage
 
@@ -199,7 +169,33 @@ Pre-built `lib/boot.fasl` and `lib/clos.fasl` ship with the binary; on the lower
 
 Note: string literals in `lib/*.lisp` must stay ASCII-only — the Amiga build is compiled without `CL_WIDE_STRINGS` to save RAM and cannot read host FASLs that contain `FASL_TAG_WIDE_STRING`. The writer auto-downgrades all-ASCII wide strings to byte strings; non-ASCII chars in source string literals will fail Amiga boot with a `BAD_TAG` deserialize error. Comments are unaffected.
 
-### Emacs (SLY) integration
+## Host FFI (dlopen + libffi + CFFI)
+
+The `FFI` package provides foreign pointers and typed peek/poke on **all**
+platforms (on AmigaOS the `AMIGA` package adds register-based library calls — see
+[Raw FFI Access](#raw-ffi-access)). On the POSIX dev host the `FFI` package
+additionally provides a real, general-purpose foreign-function engine — dynamic
+library loading (`ffi:load-library`/`ffi:symbol-pointer` via `dlopen`/`dlsym`),
+arbitrary C calls with full argument/return marshaling (`ffi:call-foreign`,
+libffi-backed, incl. variadics), Lisp-as-C callbacks (`ffi:make-callback`, libffi
+closures), and typed memory access
+(`ffi:peek-i8/i16/i32/u64/i64/single/double/pointer` and the matching `poke-*`).
+
+```lisp
+;; Resolve and call libc directly
+(ffi:call-foreign (ffi:symbol-pointer "pow") :double '(:double :double) '(2d0 10d0))
+;; => 1024.0d0
+```
+
+On top of this engine cl-amiga ships a **CFFI** backend (`cffi-clamiga.lisp`,
+in the CFFI source tree), so the standard CFFI API — `defcfun`,
+`foreign-funcall`, `mem-ref`, `defcallback`, `defcstruct`, foreign strings —
+works on the host. This is what lets CFFI-dependent Quicklisp systems load.
+Foreign calls/callbacks are host-only; on AmigaOS use the library-vector model
+(`AMIGA.FFI`) instead. See `tests/test_ffi.c` and
+`trunk/load-and-test-cffi.lisp` for runnable end-to-end examples.
+
+## Emacs (SLY) integration
 
 CL-Amiga speaks the SLYNK protocol, so you can drive it from Emacs with [SLY](https://github.com/joaotavora/sly) — REPL, completion, `M-.`, the inspector, and the SLDB debugger. This targets the **host** build (`build/host/clamiga`) and needs a SLY checkout whose `slynk/backend/` includes the CL-Amiga backend (`clamiga.lisp`).
 
@@ -207,7 +203,7 @@ clamiga comes up exactly like every other implementation — there is no clamiga
 
 > **Heap sizing:** the 4 MB default thrashes the GC once SLYNK and its contribs load. Use **`--heap 96M` as a practical minimum** — that also carries a real application's dependency graph (e.g. `(asdf:load-system :sento)`). Give more headroom (`512M`) if you can.
 
-#### Method A — auto-start with `M-x sly` (recommended)
+### Method A — auto-start with `M-x sly` (recommended)
 
 Add a `clamiga` entry to `sly-lisp-implementations`. No custom `:init` is needed — `:directory` points clamiga at the source root so the backend's `(require "gray-streams")` resolves:
 
@@ -223,7 +219,7 @@ Add a `clamiga` entry to `sly-lisp-implementations`. No custom `:init` is needed
 
 Then `M-x sly` and pick `clamiga` (or `C-u M-x sly` to choose). SLY starts a server on an OS-assigned port (via ASDF + `slynk.asd`, which includes the CL-Amiga backend) and connects automatically.
 
-#### Method B — external server + `M-x sly-connect`
+### Method B — external server + `M-x sly-connect`
 
 Start a server in a terminal, then connect to it (useful to keep the image alive across reconnects). A launcher ships with cl-amiga:
 
@@ -248,6 +244,98 @@ tail -f /dev/null | ./build/host/clamiga --heap 96M \
     --eval '(load "/path/to/sly/slynk/slynk-loader.lisp")' \
     --eval '(funcall (read-from-string "slynk-loader:init"))' \
     --eval '(funcall (read-from-string "slynk:create-server") :port 4005 :dont-close t)'
+```
+
+## Architecture
+
+- **Single-pass compiler** from S-expressions to bytecode, executed by a stack-based VM
+- **Tagged 32-bit values** (`CL_Obj = uint32_t`) — heap pointers are arena-relative byte offsets
+- **Memory-efficient** — bump allocator with free-list fallback, mark-and-sweep GC with sliding compaction (auto-triggered when fragmentation blocks an allocation that a normal GC couldn't satisfy); designed for 68020 @ 14 MHz with 8 MB RAM
+- **Platform abstraction** — all OS calls go through `platform.h` (POSIX and AmigaOS implementations)
+- **FFI** — generic foreign pointer type + peek/poke (all platforms); 68k assembly trampoline for AmigaOS register-based library calls
+- **Threading** (MP package) — kernel threads, per-thread dynamic bindings (TLV), locks, named condition variables, thread interruption/destruction, type predicates; stop-the-world GC with safepoints; POSIX pthreads (with `__thread`-backed TLS) and AmigaOS processes/SignalSemaphores
+- **TCP networking** — BSD sockets (POSIX) and bsdsocket.library (AmigaOS). On the
+  POSIX host the socket table grows on demand, so a server can hold thousands of
+  simultaneous connections (readiness waits use `poll`, which has no `FD_SETSIZE`
+  ceiling); on AmigaOS the table is a fixed 64 slots, bounded by bsdsocket.library's
+  per-task descriptor table. Socket streams support per-connection read/write timeouts:
+  `(setf (ext:socket-stream-timeout stream :input) seconds)` (also `:output`) arms a
+  `poll`/`WaitSelect` deadline so a read/write that stalls past the timeout signals
+  `ext:socket-timeout` (a subtype of `stream-error`) instead of blocking forever; the
+  value is in seconds (fractional allowed), `nil` clears it, and reading the place back
+  returns the current setting. See `tests/test_stream.c`
+  (`platform_socket_table_grows_many_connections`, `socket_read_timeout_*`,
+  `eval_socket_stream_timeout_*`) and `tests/amiga/run-tests.lisp` for usage.
+
+### Declarations (`declaim` / `proclaim` / `declare`)
+
+cl-amiga accepts the full ANSI declaration syntax so that portable code compiles
+without error, but only a subset of declarations currently changes behavior. The
+rest are parsed and accepted as conforming no-ops.
+
+- **`declaim`** processes its specifiers at compile time (it is a compiler special
+  form); **`proclaim`** is the runtime function form and processes the same
+  specifiers. **`declare`** handles leading declarations in a body — `special`
+  declarations are scoped to the current binding form, all other specifiers are
+  applied globally.
+- **`special`** — *honored.* Marks the variable as dynamically bound (per-thread
+  dynamic bindings / TLV). `declaim`/`proclaim` make it globally special; a local
+  `(declare (special x))` is scoped to its binding form.
+- **`optimize`** — *partially honored.* The qualities `speed`, `safety`, `space`,
+  and `debug` are parsed (bare `quality` ≡ level 3; values clamped to 0–3) and
+  stored in a global settings record (all default to 1). Only **`safety`** is
+  currently consulted: at `safety 0` the runtime type check that a `(the type
+  value)` form would otherwise emit (`OP_ASSERT_TYPE`) is omitted and tail
+  position is preserved; at `safety ≥ 1` the check is emitted. `speed`, `space`,
+  and `debug` are recorded but do not yet affect code generation.
+  `compilation-speed` is interned (so libraries can name `cl:compilation-speed`)
+  but ignored, and any non-standard quality — e.g. `security` — is silently
+  accepted and ignored.
+- **`inline` / `notinline`** — set/clear an inline flag on the function symbol
+  (visible via `describe`), but the compiler does not yet perform inlining or
+  suppress it based on the flag.
+- **`type`, `ftype`, `ignore`, `ignorable`, `dynamic-extent`** — accepted but
+  currently no-ops (no type propagation, unused-variable warnings, or
+  stack-allocation).
+
+See `cl_process_declaration_specifier` in `src/core/compiler_extra.c` and
+`compile_the` (the `safety`-gated type assertion) for the implementation.
+
+## Building for AmigaOS
+
+### Cross-compile (m68k-amigaos-gcc)
+
+Cross-compiling on a POSIX host is the **preferred** way to build the Amiga
+binary — faster than compiling inside the emulator with vbcc.
+
+First, install the `m68k-amigaos-gcc` cross toolchain:
+
+```
+./tools/setup-toolchain.sh          # auto-pick: download on macOS arm64, build elsewhere
+./tools/setup-toolchain.sh --build   # force build-from-source on any host
+./tools/setup-toolchain.sh --help    # all options
+```
+
+The toolchain itself is tracked as a git submodule
+(`tools/m68k-amigaos-gcc` → [AmigaPorts/m68k-amigaos-gcc](https://github.com/AmigaPorts/m68k-amigaos-gcc),
+pinned). On macOS arm64 the script downloads a prebuilt `prefix/` tarball
+from the cl-amiga release; on every other host it runs `git submodule
+update --init` and invokes the upstream `make all` (host build deps —
+`gmp`, `mpfr`, `mpc`, `wget`, etc. — see `tools/m68k-amigaos-gcc/README.md`).
+
+Then build CL-Amiga:
+
+```
+make -f Makefile.cross amiga        # Cross-compile with m68k-amigaos-gcc
+make -f Makefile.cross test-amiga   # Build, deploy to FS-UAE, run Amiga tests
+make -f Makefile.cross clean        # Remove cross-build artifacts
+```
+
+### Build inside AmigaOS (vbcc)
+
+```
+cd CLAmiga:
+make -f Makefile.amiga
 ```
 
 ## AmigaOS Native GUI
@@ -313,29 +401,7 @@ When the abstractions aren't enough, drop to raw library calls:
   (amiga:close-library dos))
 ```
 
-### Host FFI: dlopen + libffi + CFFI
-
-On the POSIX dev host the `FFI` package additionally provides a real,
-general-purpose foreign-function engine — dynamic library loading
-(`ffi:load-library`/`ffi:symbol-pointer` via `dlopen`/`dlsym`), arbitrary C
-calls with full argument/return marshaling (`ffi:call-foreign`, libffi-backed,
-incl. variadics), Lisp-as-C callbacks (`ffi:make-callback`, libffi closures),
-and typed memory access (`ffi:peek-i8/i16/i32/u64/i64/single/double/pointer`
-and the matching `poke-*`).
-
-```lisp
-;; Resolve and call libc directly
-(ffi:call-foreign (ffi:symbol-pointer "pow") :double '(:double :double) '(2d0 10d0))
-;; => 1024.0d0
-```
-
-On top of this engine cl-amiga ships a **CFFI** backend (`cffi-clamiga.lisp`,
-in the CFFI source tree), so the standard CFFI API — `defcfun`,
-`foreign-funcall`, `mem-ref`, `defcallback`, `defcstruct`, foreign strings —
-works on the host. This is what lets CFFI-dependent Quicklisp systems load.
-Foreign calls/callbacks are host-only; on AmigaOS use the library-vector model
-(`AMIGA.FFI`) instead. See `tests/test_ffi.c` and
-`trunk/load-and-test-cffi.lisp` for runnable end-to-end examples.
+(For the host's general-purpose foreign-function engine, see [Host FFI](#host-ffi-dlopen--libffi--cffi) above.)
 
 ### Available Amiga Modules
 
@@ -367,61 +433,6 @@ Measured on the high-end FS-UAE config (A4000 / 68040 / Picasso96). The A/B micr
 Compute-bound code sees the largest wins; call-heavy code is bounded by the same per-call helper round-trip the interpreter pays. On the real-world `examples/gfx/bouncing-lines.lisp` demo (FFI-dominated — five lines drawn through `graphics.library` each frame), the JIT now reaches **~615 FPS** versus **~500 FPS** on the bytecode VM. That lead only materialised once native `amiga-call` dispatch and `defcfun` compiler-macro inlining landed (467 → 525 → 615 FPS as those merged), since the frame time is mostly FFI calls rather than arithmetic. The remaining gap to compiled ACE BASIC (~1900 FPS through the same ROM graphics calls) is the structural cost of a dynamic, GC'd, tagged-value language — per-argument unboxing, dispatch and symbol lookup per call, GC safepoints — not codegen.
 
 The Amiga test suite passes **2525 / 2525** on the JIT config; per-opcode JIT coverage (counter-bump, value-correctness, and unwind-recovery assertions) lives in `tests/amiga/test-jit.lisp`.
-
-## Architecture
-
-- **Single-pass compiler** from S-expressions to bytecode, executed by a stack-based VM
-- **Tagged 32-bit values** (`CL_Obj = uint32_t`) — heap pointers are arena-relative byte offsets
-- **Memory-efficient** — bump allocator with free-list fallback, mark-and-sweep GC with sliding compaction (auto-triggered when fragmentation blocks an allocation that a normal GC couldn't satisfy); designed for 68020 @ 14 MHz with 8 MB RAM
-- **Platform abstraction** — all OS calls go through `platform.h` (POSIX and AmigaOS implementations)
-- **FFI** — generic foreign pointer type + peek/poke (all platforms); 68k assembly trampoline for AmigaOS register-based library calls
-- **Threading** (MP package) — kernel threads, per-thread dynamic bindings (TLV), locks, named condition variables, thread interruption/destruction, type predicates; stop-the-world GC with safepoints; POSIX pthreads (with `__thread`-backed TLS) and AmigaOS processes/SignalSemaphores
-- **TCP networking** — BSD sockets (POSIX) and bsdsocket.library (AmigaOS). On the
-  POSIX host the socket table grows on demand, so a server can hold thousands of
-  simultaneous connections (readiness waits use `poll`, which has no `FD_SETSIZE`
-  ceiling); on AmigaOS the table is a fixed 64 slots, bounded by bsdsocket.library's
-  per-task descriptor table. Socket streams support per-connection read/write timeouts:
-  `(setf (ext:socket-stream-timeout stream :input) seconds)` (also `:output`) arms a
-  `poll`/`WaitSelect` deadline so a read/write that stalls past the timeout signals
-  `ext:socket-timeout` (a subtype of `stream-error`) instead of blocking forever; the
-  value is in seconds (fractional allowed), `nil` clears it, and reading the place back
-  returns the current setting. See `tests/test_stream.c`
-  (`platform_socket_table_grows_many_connections`, `socket_read_timeout_*`,
-  `eval_socket_stream_timeout_*`) and `tests/amiga/run-tests.lisp` for usage.
-
-### Declarations (`declaim` / `proclaim` / `declare`)
-
-cl-amiga accepts the full ANSI declaration syntax so that portable code compiles
-without error, but only a subset of declarations currently changes behavior. The
-rest are parsed and accepted as conforming no-ops.
-
-- **`declaim`** processes its specifiers at compile time (it is a compiler special
-  form); **`proclaim`** is the runtime function form and processes the same
-  specifiers. **`declare`** handles leading declarations in a body — `special`
-  declarations are scoped to the current binding form, all other specifiers are
-  applied globally.
-- **`special`** — *honored.* Marks the variable as dynamically bound (per-thread
-  dynamic bindings / TLV). `declaim`/`proclaim` make it globally special; a local
-  `(declare (special x))` is scoped to its binding form.
-- **`optimize`** — *partially honored.* The qualities `speed`, `safety`, `space`,
-  and `debug` are parsed (bare `quality` ≡ level 3; values clamped to 0–3) and
-  stored in a global settings record (all default to 1). Only **`safety`** is
-  currently consulted: at `safety 0` the runtime type check that a `(the type
-  value)` form would otherwise emit (`OP_ASSERT_TYPE`) is omitted and tail
-  position is preserved; at `safety ≥ 1` the check is emitted. `speed`, `space`,
-  and `debug` are recorded but do not yet affect code generation.
-  `compilation-speed` is interned (so libraries can name `cl:compilation-speed`)
-  but ignored, and any non-standard quality — e.g. `security` — is silently
-  accepted and ignored.
-- **`inline` / `notinline`** — set/clear an inline flag on the function symbol
-  (visible via `describe`), but the compiler does not yet perform inlining or
-  suppress it based on the flag.
-- **`type`, `ftype`, `ignore`, `ignorable`, `dynamic-extent`** — accepted but
-  currently no-ops (no type propagation, unused-variable warnings, or
-  stack-allocation).
-
-See `cl_process_declaration_specifier` in `src/core/compiler_extra.c` and
-`compile_the` (the `safety`-gated type assertion) for the implementation.
 
 ## Known Limitations and Future Work
 
