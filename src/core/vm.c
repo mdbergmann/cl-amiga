@@ -482,6 +482,18 @@ static int32_t read_i32(uint8_t *code, uint32_t *ip)
     return val;
 }
 
+/* --- Diagnostic ring of recent OP_TAGBODY_PUSH events (always-on) ---
+ * Records the tag stored into each NLX tagbody frame at push time so the
+ * "GO: tagbody frame not found" failure path can show whether the target
+ * tagbody was pushed with the expected (non-NIL cons) id.  This isolates a
+ * tag that was wrong AT PUSH (constant-pool / compile issue) from one that
+ * was a valid cons at push and got zeroed LATER (GC-update of nlx->tag).
+ * Native-PPC/MorphOS-only failure; see memory morphos_ppc_port_status. */
+#define VM_TBPUSH_RING 8
+static CL_Obj   vm_tbpush_tag[VM_TBPUSH_RING];
+static uint16_t vm_tbpush_idx[VM_TBPUSH_RING];
+static uint32_t vm_tbpush_pos = 0;
+
 /* --- Trace helpers --- */
 
 static CL_Obj get_func_name(CL_Obj func_obj)
@@ -2879,6 +2891,21 @@ static CL_Obj cl_vm_run(int base_fp, int base_nlx)
             CL_Obj tagbody_id = constants[id_idx];
             CL_NLXFrame *nlx;
 
+            /* Diagnostic: record the id stored at push.  An NLX tagbody always
+             * gets a fresh cons id at compile time, so a NIL id here means the
+             * constant pool / id_idx is wrong at push (vs. a later GC zeroing of
+             * the frame tag).  Always-on; see the GO-failure dump. */
+            vm_tbpush_tag[vm_tbpush_pos & (VM_TBPUSH_RING - 1)] = tagbody_id;
+            vm_tbpush_idx[vm_tbpush_pos & (VM_TBPUSH_RING - 1)] = id_idx;
+            vm_tbpush_pos++;
+            if (tagbody_id == CL_NIL) {
+                char wbuf[96];
+                snprintf(wbuf, sizeof(wbuf),
+                    "[NLX] WARN: TAGBODY_PUSH stored NIL id (const #%u, "
+                    "constants=%p)\n", (unsigned)id_idx, (void *)constants);
+                platform_write_string(wbuf);
+            }
+
             if (cl_nlx_top >= CL_MAX_NLX_FRAMES)
                 cl_error(CL_ERR_OVERFLOW, "NLX stack overflow");
 
@@ -3067,6 +3094,29 @@ static CL_Obj cl_vm_run(int base_fp, int base_nlx)
                             : "tag IS present -> see per-frame note above "
                               "(type-byte corruption or scan miscompile)"));
                 platform_write_string(dbuf);
+
+                /* Recent TAGBODY_PUSH ids — was the target ever pushed with the
+                 * wanted (non-NIL) tag?  If the wanted id appears here, the push
+                 * was correct and the live frame tag was zeroed afterwards (GC);
+                 * if it never appears (or appears as NIL), the id was already
+                 * wrong at push time. */
+                {
+                    uint32_t k, shown = vm_tbpush_pos < VM_TBPUSH_RING
+                                            ? vm_tbpush_pos : VM_TBPUSH_RING;
+                    platform_write_string("[NLX] recent TAGBODY_PUSH ids "
+                                          "(newest first):\n");
+                    for (k = 0; k < shown; k++) {
+                        uint32_t s = (vm_tbpush_pos - 1 - k) & (VM_TBPUSH_RING - 1);
+                        snprintf(dbuf, sizeof(dbuf),
+                            "[NLX]   push const #%u -> tag=0x%08x%s\n",
+                            (unsigned)vm_tbpush_idx[s],
+                            (unsigned)vm_tbpush_tag[s],
+                            vm_tbpush_tag[s] == tagbody_id
+                                ? "  <== this is the wanted id (pushed OK; "
+                                  "zeroed later)" : "");
+                        platform_write_string(dbuf);
+                    }
+                }
             }
             cl_error(CL_ERR_GENERAL,
                      "GO: tagbody frame not found (id=0x%08x, nlx_top=%d)",
