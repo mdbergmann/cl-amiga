@@ -50,6 +50,10 @@ heap_for() {
       *-cffi.lisp)                            echo 192 ;;
       *-ansi.lisp)                            echo 96 ;;
       *-sento.lisp|*-sento-system.lisp)       echo 192 ;;
+      # chipi pulls in the full sento+drakma stack and a large test suite; at
+      # 96M the moving GC thrashes (50x slower, hits the timeout). Its own
+      # script header documents 256M for host — match it.
+      *-chipi.lisp)                           echo 256 ;;
     *)                                        echo 96 ;;
   esac
 }
@@ -64,49 +68,74 @@ timeout_for() {
   esac
 }
 
-# Distil a finished log down to one human-readable result line. Each test
-# family prints its tally differently, so probe for the formats we know.
-summarize() {
+# Classify a finished log by the tally format it prints. One place decides the
+# format so summarize() and counts_for() can never disagree. Probe order is
+# significant (closer-mop's smoke line has no numbers; check it before the
+# numeric formats). Echoes one of: fset | rt | fiveam | closermop | none.
+# True (exit 0) if the log carries a clamiga uncaught-error / crash marker.
+# Used to tell a script that died mid-run (no tally printed) from one that
+# merely uses a tally format we don't recognize.
+has_error_marker() {
+  grep -qE "ERROR:|Guru|Fatal error|[Uu]nhandled condition|stack overflow" "$1"
+}
+
+fmt_kind() {
   log="$1"
-  if grep -q "FSet Results" "$log"; then
-    grep "FSet Results" "$log" | tail -1 | sed 's/^[^A-Za-z]*//; s/ *=*$//'
-  elif grep -qE "^passed: [0-9]" "$log"; then            # ansi rt:do-tests
-    echo "passed=$(grep -E '^passed: ' "$log" | tail -1 | awk '{print $2}')" \
-         "failed=$(grep -E '^failed: ' "$log" | tail -1 | awk '{print $2}')"
-  elif grep -q "shim OK" "$log"; then                    # closer-mop smoke test
-    echo "closer-mop shim OK"
-  elif grep -qE "Pass: [0-9]+ \(" "$log"; then           # fiveam-style (5am/str/sento)
-    echo "$(grep -E 'Pass: [0-9]+ \(' "$log" | tail -1 | sed 's/^ *//')" \
-         "/ $(grep -E 'Fail: [0-9]+ \(' "$log" | tail -1 | sed 's/^ *//')"
-  else
-    echo "?? no recognized summary — check the log"
+  if   grep -q "FSet Results" "$log";        then echo fset
+  elif grep -qE "^passed: [0-9]" "$log";     then echo rt          # ansi rt:do-tests
+  elif grep -q "shim OK" "$log";             then echo closermop   # smoke test, no numbers
+  elif grep -qE "Pass: [0-9]+ \(" "$log";    then echo fiveam      # 5am/str/sento/chipi
+  else                                            echo none
   fi
 }
 
-# Extract numeric pass/fail from a log file. Outputs: "<pass> <fail>"
-# Matches the same format priority as summarize(). Unrecognized logs and
-# closer-mop (no per-test numbers) both yield "0 0".
+# Extract numeric pass/fail from a log file. Outputs: "<pass> <fail>".
+# closermop (no per-test numbers) and unrecognized logs both yield "0 0".
 counts_for() {
   log="$1"
-  if grep -q "FSet Results" "$log"; then
-    pass=$(grep "FSet Results" "$log" | tail -1 | \
-           awk '{for(i=1;i<=NF;i++) if($i~/^passed/) {print $(i-1); exit}}')
-    fail=$(grep "FSet Results" "$log" | tail -1 | \
-           awk '{for(i=1;i<=NF;i++) if($i~/^failed/) {print $(i-1); exit}}')
-    echo "${pass:-0} ${fail:-0}"
-  elif grep -qE "^passed: [0-9]" "$log"; then
-    pass=$(grep -E '^passed: ' "$log" | tail -1 | awk '{print $2}')
-    fail=$(grep -E '^failed: ' "$log" | tail -1 | awk '{print $2}')
-    echo "${pass:-0} ${fail:-0}"
-  elif grep -q "shim OK" "$log"; then
-    echo "0 0"
-  elif grep -qE "Pass: [0-9]+ \(" "$log"; then
-    pass=$(grep -E 'Pass: [0-9]+ \(' "$log" | tail -1 | awk '{print $2}')
-    fail=$(grep -E 'Fail: [0-9]+ \(' "$log" | tail -1 | awk '{print $2}')
-    echo "${pass:-0} ${fail:-0}"
-  else
-    echo "0 0"
-  fi
+  case "$(fmt_kind "$log")" in
+    fset)
+      pass=$(grep "FSet Results" "$log" | tail -1 | \
+             awk '{for(i=1;i<=NF;i++) if($i~/^passed/) {print $(i-1); exit}}')
+      fail=$(grep "FSet Results" "$log" | tail -1 | \
+             awk '{for(i=1;i<=NF;i++) if($i~/^failed/) {print $(i-1); exit}}')
+      echo "${pass:-0} ${fail:-0}" ;;
+    rt)
+      pass=$(grep -E '^passed: ' "$log" | tail -1 | awk '{print $2}')
+      fail=$(grep -E '^failed: ' "$log" | tail -1 | awk '{print $2}')
+      echo "${pass:-0} ${fail:-0}" ;;
+    fiveam)
+      pass=$(grep -E 'Pass: [0-9]+ \(' "$log" | tail -1 | awk '{print $2}')
+      fail=$(grep -E 'Fail: [0-9]+ \(' "$log" | tail -1 | awk '{print $2}')
+      echo "${pass:-0} ${fail:-0}" ;;
+    *)
+      echo "0 0" ;;
+  esac
+}
+
+# Distil a finished log to ONE result line in a uniform shape across all test
+# families: "<N> passed, <M> failed". closer-mop's smoke test has no per-test
+# numbers; a log with neither a recognized summary nor an error marker is
+# flagged so it gets looked at (a clean run always prints one of the known
+# tallies — a missing tally means the script died before reporting).
+summarize() {
+  log="$1"
+  case "$(fmt_kind "$log")" in
+    closermop)
+      echo "smoke test OK" ;;
+    none)
+      # No tally printed. Distinguish a script that errored out (clamiga prints
+      # an uncaught-error / Guru line) from one that simply uses an unknown
+      # format, so the table says something actionable instead of "ok".
+      if has_error_marker "$log"; then
+        echo "errored before printing a summary — check the log"
+      else
+        echo "?? no recognized summary — check the log"
+      fi ;;
+    *)
+      set -- $(counts_for "$log")
+      echo "$1 passed, $2 failed" ;;
+  esac
 }
 
 # --- Tally-only path: aggregate pre-existing logs without running clamiga ---
@@ -188,6 +217,14 @@ for f in trunk/load-and-test-*.lisp; do
     *)   status="exit=$ec" ;;
   esac
   [ "$ec" -eq 0 ] || fail_count=$((fail_count + 1))
+
+  # A clean exit code can still hide a broken run: a script that errored out
+  # before printing any recognized tally (e.g. a missing test package) exits 0
+  # but never reported. Flag it red rather than letting "ok" mask it.
+  if [ "$ec" -eq 0 ] && [ "$(fmt_kind "$log")" = none ] && has_error_marker "$log"; then
+    status="ERRORED"
+    fail_count=$((fail_count + 1))
+  fi
 
   counts=$(counts_for "$log")
   c_pass=$(echo "$counts" | awk '{print $1}')
