@@ -45,6 +45,8 @@ typedef struct {
     uint32_t total_consed;      /* Bytes ever allocated (monotonic, never reset) */
     uint32_t gc_count;          /* Number of GC cycles */
     uint32_t compact_count;     /* Number of compaction cycles */
+    uint32_t freelist_steps;    /* Total free-list blocks walked (monotonic
+                                 * diagnostic; spots O(n) walk pathologies) */
 } CL_Heap;
 
 extern CL_Heap cl_heap;
