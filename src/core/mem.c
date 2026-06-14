@@ -15,6 +15,14 @@
 #include <execinfo.h>
 #endif
 
+/* mem.c's view of CL_NLXFrame layout, exported for a cross-TU consistency
+ * check with vm.c (MorphOS/PPC NLX tag-zeroing investigation).  The GC writes
+ * &nlx_stack[i].tag through this TU's struct layout; if its sizeof / offsetof
+ * differ from vm.c's (e.g. a jmp_buf size inconsistency across translation
+ * units), the GC and the VM disagree on where `tag` lives. */
+const uint32_t cl_mem_sizeof_nlxframe  = (uint32_t)sizeof(CL_NLXFrame);
+const uint32_t cl_mem_offsetof_nlx_tag = (uint32_t)offsetof(CL_NLXFrame, tag);
+
 /* External roots needed for GC marking */
 extern CL_Obj macro_table, setf_table, setf_fn_table, setf_expander_table, type_table, compiler_macro_table;
 extern CL_Obj cl_clos_class_table;

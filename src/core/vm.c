@@ -3070,13 +3070,48 @@ static CL_Obj cl_vm_run(int base_fp, int base_nlx)
                     (unsigned)tagbody_id, (unsigned)id_idx, cl_nlx_top,
                     (unsigned)sizeof(CL_NLXFrame));
                 platform_write_string(dbuf);
+                /* Layout probe: if a PPC setjmp overran nlx->buf it would corrupt
+                 * the fields that physically FOLLOW buf (vm_sp, vm_fp, tag, ...).
+                 * Print the byte offsets so an overrun is obvious from the gap,
+                 * and per frame dump vm_sp/vm_fp — if THOSE are also garbage on a
+                 * frame whose tag is 0, the corruption is a contiguous buf overrun,
+                 * not a logic bug. */
+                snprintf(dbuf, sizeof(dbuf),
+                    "[NLX] layout: off(buf)=%u off(vm_sp)=%u off(vm_fp)=%u "
+                    "off(tag)=%u off(result)=%u\n",
+                    (unsigned)offsetof(CL_NLXFrame, buf),
+                    (unsigned)offsetof(CL_NLXFrame, vm_sp),
+                    (unsigned)offsetof(CL_NLXFrame, vm_fp),
+                    (unsigned)offsetof(CL_NLXFrame, tag),
+                    (unsigned)offsetof(CL_NLXFrame, result));
+                platform_write_string(dbuf);
+                /* Cross-TU check: vm.c vs mem.c (the GC).  If these disagree,
+                 * the GC writes nlx->tag at a different offset than the VM reads
+                 * it -> a header/jmp_buf layout inconsistency across TUs. */
+                {
+                    extern const uint32_t cl_mem_sizeof_nlxframe;
+                    extern const uint32_t cl_mem_offsetof_nlx_tag;
+                    snprintf(dbuf, sizeof(dbuf),
+                        "[NLX] layout XTU: vm.c sizeof=%u off(tag)=%u | "
+                        "mem.c sizeof=%u off(tag)=%u%s\n",
+                        (unsigned)sizeof(CL_NLXFrame),
+                        (unsigned)offsetof(CL_NLXFrame, tag),
+                        (unsigned)cl_mem_sizeof_nlxframe,
+                        (unsigned)cl_mem_offsetof_nlx_tag,
+                        (sizeof(CL_NLXFrame) != cl_mem_sizeof_nlxframe ||
+                         offsetof(CL_NLXFrame, tag) != cl_mem_offsetof_nlx_tag)
+                            ? "  <== MISMATCH! GC and VM disagree on layout"
+                            : "  (consistent)");
+                    platform_write_string(dbuf);
+                }
                 for (di = cl_nlx_top - 1; di >= 0; di--) {
                     unsigned rawtype = (unsigned)cl_nlx_stack[di].type;
                     unsigned ftag = (unsigned)cl_nlx_stack[di].tag;
                     if (ftag == (unsigned)tagbody_id) n_tag_anytype++;
                     snprintf(dbuf, sizeof(dbuf),
-                        "[NLX]   frame[%d] type=%u tag=0x%08x%s\n",
+                        "[NLX]   frame[%d] type=%u tag=0x%08x vm_sp=%d vm_fp=%d%s\n",
                         di, rawtype, ftag,
+                        cl_nlx_stack[di].vm_sp, cl_nlx_stack[di].vm_fp,
                         (ftag == (unsigned)tagbody_id)
                             ? (rawtype == CL_NLX_TAGBODY
                                  ? "  <== MATCH (scan should have hit this!)"
