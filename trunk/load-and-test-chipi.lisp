@@ -30,5 +30,27 @@
 (ensure-ql-lib :fiveam)
 (ensure-ql-lib :cl-mock)
 
-(format t "~%--- (asdf:test-system :chipi) ---~%")
-(asdf:test-system :chipi)
+;; chipi's INFLUX-PERSISTENCE-TESTS are integration tests that require a live
+;; InfluxDB instance — they hit a hard-coded host (see
+;; cl-hab/test/persistence-influx-test.lisp).  When that host is unreachable
+;; every test blocks on its AWAIT-COND timeout (and, with no socket connect
+;; timeout, can stall far longer), so the suite is unsuitable for an
+;; unattended run.  Load the test system, drop that one suite from the tree,
+;; then run the remainder.
+(asdf:load-system :chipi/tests)
+
+;; A fiveam suite stores its children in BOTH an ordered name list and a
+;; hash table (the run loop walks the name list).  fiveam::rem-test clears
+;; both, but operates on the *test* bundle special — so bind it to the parent
+;; suite's bundle before removing the influx child.
+(let ((parent (find-symbol "TEST-SUITE" "CHIPI.TESTS"))
+      (influx (find-symbol "INFLUX-PERSISTENCE-TESTS"
+                           "CHIPI.INFLUX-PERSISTENCE-TEST")))
+  (if (and parent influx (fiveam:get-test parent))
+      (let ((fiveam::*test* (fiveam::tests (fiveam:get-test parent))))
+        (fiveam::rem-test influx)
+        (format t "~&;; Skipping INFLUX-PERSISTENCE-TESTS (needs a live InfluxDB)~%"))
+      (format t "~&;; WARNING: could not locate influx suite to skip~%")))
+
+(format t "~%--- (fiveam:run! chipi.tests:test-suite) ---~%")
+(fiveam:run! (find-symbol "TEST-SUITE" "CHIPI.TESTS"))
