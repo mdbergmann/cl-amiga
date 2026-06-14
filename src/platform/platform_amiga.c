@@ -993,6 +993,9 @@ static void reactor_start_connect(SockReq *req)
         if (slot < 0) { CloseSocket(fd); req->result = -1; req->out_slot = PLATFORM_SOCKET_INVALID; reactor_reply(req); return; }
         req->slot = (PlatformSocket)slot;
         pend_write[slot] = req;
+        /* Bound the handshake when a connect timeout was requested; the reactor
+         * reaps it in reactor_expire_deadlines if the peer never replies. */
+        reactor_arm_deadline(slot, req->timeout_ms, 1);
     } else {
         CloseSocket(fd); req->result = -1; req->out_slot = PLATFORM_SOCKET_INVALID; reactor_reply(req);
     }
@@ -1106,7 +1109,16 @@ static void reactor_expire_deadlines(uint32_t now)
             SockReq *req = pend_write[i];
             pend_write[i] = NULL; pend_write_has_deadline[i] = 0;
             pend_wpos[i] = 0;
-            req->result = PLATFORM_SOCKET_TIMEOUT;
+            if (req->op == REQ_CONNECT) {
+                /* Handshake never completed: tear down the reserved socket and
+                 * report failure (out_slot INVALID), matching the error path of
+                 * reactor_finish_connect. */
+                if (socket_table[i] >= 0) { CloseSocket(socket_table[i]); reactor_free_slot(i); }
+                req->result = -1;
+                req->out_slot = PLATFORM_SOCKET_INVALID;
+            } else {
+                req->result = PLATFORM_SOCKET_TIMEOUT;
+            }
             reactor_reply(req);
         }
     }
@@ -1318,7 +1330,7 @@ void platform_socket_set_timeout(PlatformSocket sh, int read_ms, int write_ms)
  * Read/write buffering stays caller-side (in the slot's IOBuf), so only a
  * buffer refill/flush costs a reactor round-trip, not every byte. */
 
-PlatformSocket platform_socket_connect(const char *host, int port)
+PlatformSocket platform_socket_connect(const char *host, int port, int connect_ms)
 {
     SockReq req;
     /* Copy hostname onto the stack so sock_call's cl_gc_enter_safe_region()
@@ -1328,6 +1340,9 @@ PlatformSocket platform_socket_connect(const char *host, int port)
     host_buf[sizeof(host_buf) - 1] = '\0';
     memset(&req, 0, sizeof(req));
     req.op = REQ_CONNECT; req.host = host_buf; req.port = port;
+    /* connect_ms > 0 arms a deadline on the parked handshake (see
+     * reactor_start_connect / reactor_expire_deadlines); 0 waits forever. */
+    req.timeout_ms = connect_ms;
     sock_call(&req);
     return req.out_slot;
 }

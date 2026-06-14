@@ -1571,7 +1571,7 @@ TEST(socket_stream_connect_write_read)
     close(server_fd);
 
     /* Connect via our socket stream */
-    stream = cl_make_socket_stream("127.0.0.1", port);
+    stream = cl_make_socket_stream("127.0.0.1", port, 0);
     ASSERT(!CL_NULL_P(stream));
     ASSERT(CL_STREAM_P(stream));
 
@@ -1617,7 +1617,7 @@ TEST(socket_stream_close)
     }
     close(server_fd);
 
-    stream = cl_make_socket_stream("127.0.0.1", port);
+    stream = cl_make_socket_stream("127.0.0.1", port, 0);
     ASSERT(!CL_NULL_P(stream));
 
     /* Verify open */
@@ -1710,8 +1710,25 @@ TEST(socket_listen_reports_readiness)
 TEST(socket_stream_connect_failure)
 {
     /* Connecting to a port with nothing listening should return NIL */
-    CL_Obj stream = cl_make_socket_stream("127.0.0.1", 1);  /* Port 1: unlikely to be listening */
+    CL_Obj stream = cl_make_socket_stream("127.0.0.1", 1, 0);  /* Port 1: unlikely to be listening */
     ASSERT(CL_NULL_P(stream));
+}
+
+/* Regression: a bounded connect to an unreachable address must fail within the
+ * requested window rather than stalling on the OS connect timeout.  10.255.255.1
+ * is a black-hole route (SYNs are dropped), so an unbounded connect would block
+ * for ~75s; with a 1s budget platform_socket_connect must give up promptly. */
+TEST(socket_connect_timeout_unreachable)
+{
+    uint32_t t0, elapsed;
+    PlatformSocket sh;
+    t0 = platform_time_ms();
+    sh = platform_socket_connect("10.255.255.1", 8086, 1000);
+    elapsed = platform_time_ms() - t0;
+    ASSERT_EQ_INT(sh, PLATFORM_SOCKET_INVALID);
+    /* Should bail around the 1s deadline; allow generous slack for CI load but
+     * well under the multi-second OS connect timeout it replaces. */
+    ASSERT(elapsed < 5000);
 }
 
 TEST(socket_stream_write_string)
@@ -1740,7 +1757,7 @@ TEST(socket_stream_write_string)
     }
     close(server_fd);
 
-    stream = cl_make_socket_stream("127.0.0.1", port);
+    stream = cl_make_socket_stream("127.0.0.1", port, 0);
     ASSERT(!CL_NULL_P(stream));
 
     /* Write via write_string */
@@ -1874,7 +1891,7 @@ TEST(platform_socket_listen_accept)
     ASSERT(lst != PLATFORM_SOCKET_INVALID);
     ASSERT(port > 0);
 
-    cli = platform_socket_connect("127.0.0.1", port);
+    cli = platform_socket_connect("127.0.0.1", port, 0);
     ASSERT(cli != PLATFORM_SOCKET_INVALID);
 
     conn = platform_socket_accept(lst);
@@ -1934,7 +1951,7 @@ TEST(platform_socket_table_grows_many_connections)
     /* Interleave connect+accept: the listen backlog is small, so draining each
      * pending connection before opening the next keeps the queue from filling. */
     for (i = 0; i < MANY_CONNS; i++) {
-        cli[i]  = platform_socket_connect("127.0.0.1", port);
+        cli[i]  = platform_socket_connect("127.0.0.1", port, 0);
         ASSERT(cli[i] != PLATFORM_SOCKET_INVALID);
         conn[i] = platform_socket_accept(lst);
         ASSERT(conn[i] != PLATFORM_SOCKET_INVALID);
@@ -1978,7 +1995,7 @@ TEST(platform_socket_table_grows_many_connections)
     {
         PlatformSocket c2, n2, hi2 = 0;
         for (i = 0; i < MANY_CONNS; i++) {
-            c2 = platform_socket_connect("127.0.0.1", port);
+            c2 = platform_socket_connect("127.0.0.1", port, 0);
             ASSERT(c2 != PLATFORM_SOCKET_INVALID);
             n2 = platform_socket_accept(lst);
             ASSERT(n2 != PLATFORM_SOCKET_INVALID);
@@ -2016,7 +2033,7 @@ TEST(socket_stream_listen_accept)
         ASSERT(st->flags & CL_STREAM_FLAG_OPEN);
     }
 
-    client = cl_make_socket_stream("127.0.0.1", port);
+    client = cl_make_socket_stream("127.0.0.1", port, 0);
     ASSERT(!CL_NULL_P(client));
 
     conn = cl_socket_stream_accept(listener);
@@ -2107,7 +2124,7 @@ TEST(socket_stream_local_port)
     ASSERT(eph > 0);
 
     /* A connected socket (from accept) is not a listener -> -1. */
-    client = cl_make_socket_stream("127.0.0.1", eph);
+    client = cl_make_socket_stream("127.0.0.1", eph, 0);
     ASSERT(!CL_NULL_P(client));
     conn = cl_socket_stream_accept(listener);
     ASSERT(!CL_NULL_P(conn));
@@ -2197,7 +2214,7 @@ TEST(socket_concurrent_accept_connect)
         a.result = PLATFORM_SOCKET_INVALID;
         ASSERT_EQ_INT(platform_thread_create(&th, sock_accept_worker, &a, 0), 0);
 
-        cli = platform_socket_connect("127.0.0.1", port);
+        cli = platform_socket_connect("127.0.0.1", port, 0);
         ASSERT(cli != PLATFORM_SOCKET_INVALID);
 
         platform_thread_join(th, NULL);
@@ -2286,7 +2303,7 @@ static int make_loopback_stream_pair(CL_Obj *listener, CL_Obj *client,
     platform_socket_close(probe);
     *listener = cl_make_listen_stream(port, 1, NULL);
     if (CL_NULL_P(*listener)) return 0;
-    *client = cl_make_socket_stream("127.0.0.1", port);
+    *client = cl_make_socket_stream("127.0.0.1", port, 0);
     if (CL_NULL_P(*client)) return 0;
     *server = cl_socket_stream_accept(*listener);
     return !CL_NULL_P(*server);
@@ -2373,7 +2390,7 @@ TEST(socket_read_parked_high_handle_lock_independent)
     ASSERT(hold_lst != PLATFORM_SOCKET_INVALID);
     ASSERT(port > 0);
     for (i = 0; i < HOLD; i++) {
-        hold_cli[i] = platform_socket_connect("127.0.0.1", port);
+        hold_cli[i] = platform_socket_connect("127.0.0.1", port, 0);
         ASSERT(hold_cli[i] != PLATFORM_SOCKET_INVALID);
         hold_srv[i] = platform_socket_accept(hold_lst);
         ASSERT(hold_srv[i] != PLATFORM_SOCKET_INVALID);
@@ -3008,7 +3025,7 @@ TEST(socket_read_timeout_fires)
     ASSERT(!CL_NULL_P(listener));
     ASSERT(bound_port > 0);
 
-    client = cl_make_socket_stream("127.0.0.1", bound_port);
+    client = cl_make_socket_stream("127.0.0.1", bound_port, 0);
     ASSERT(!CL_NULL_P(client));
     conn = cl_socket_stream_accept(listener);   /* server side; sends nothing */
     ASSERT(!CL_NULL_P(conn));
@@ -3037,7 +3054,7 @@ TEST(socket_read_timeout_not_triggered_when_data_present)
     int rc;
 
     ASSERT(!CL_NULL_P(listener));
-    client = cl_make_socket_stream("127.0.0.1", bound_port);
+    client = cl_make_socket_stream("127.0.0.1", bound_port, 0);
     ASSERT(!CL_NULL_P(client));
     conn = cl_socket_stream_accept(listener);
     ASSERT(!CL_NULL_P(conn));
@@ -3354,6 +3371,7 @@ int main(void)
 
     /* TCP Socket Stream tests */
     RUN(socket_stream_connect_failure);
+    RUN(socket_connect_timeout_unreachable);
     RUN(socket_stream_connect_write_read);
     RUN(socket_stream_close);
     RUN(socket_listen_reports_readiness);

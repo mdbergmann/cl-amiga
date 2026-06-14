@@ -373,7 +373,7 @@ TEST(stw_gc_with_thread_blocked_in_accept)
     g_stw_gc_done = 1;  /* tell the watchdog we survived */
 
     /* Unblock the worker so it can finish, then join everything. */
-    client = platform_socket_connect("127.0.0.1", port);
+    client = platform_socket_connect("127.0.0.1", port, 0);
     platform_thread_join(whandle, NULL);
     platform_thread_join(wdog, NULL);
 

@@ -1018,9 +1018,9 @@ CL_Obj cl_get_output_stream_string(CL_Obj stream)
     return result;
 }
 
-CL_Obj cl_make_socket_stream(const char *host, int port)
+CL_Obj cl_make_socket_stream(const char *host, int port, int connect_ms)
 {
-    PlatformSocket sh = platform_socket_connect(host, port);
+    PlatformSocket sh = platform_socket_connect(host, port, connect_ms);
     CL_Obj s;
     CL_Stream *st;
     if (sh == PLATFORM_SOCKET_INVALID)

@@ -100,8 +100,9 @@ CL_Obj cl_make_string_output_stream(void);
 CL_Obj cl_get_output_stream_string(CL_Obj stream);
 
 /* Create a bidirectional TCP socket stream connected to host:port.
- * Returns CL_NIL on connection failure. */
-CL_Obj cl_make_socket_stream(const char *host, int port);
+ * connect_ms > 0 bounds the connect handshake (unreachable host fails fast);
+ * 0 blocks until the OS gives up.  Returns CL_NIL on connection failure. */
+CL_Obj cl_make_socket_stream(const char *host, int port, int connect_ms);
 
 /* Create a listening (server) socket stream bound to `port`.
  * loopback != 0 binds 127.0.0.1 only; otherwise all interfaces.

@@ -74,7 +74,12 @@ typedef uint32_t PlatformSocket;
  * layer can raise EXT:SOCKET-TIMEOUT rather than treating it as a clean EOF. */
 #define PLATFORM_SOCKET_TIMEOUT (-2)
 
-PlatformSocket platform_socket_connect(const char *host, int port);
+/* Connect to host:port and return a socket handle, or PLATFORM_SOCKET_INVALID
+ * on error/timeout.  connect_ms > 0 bounds the TCP connect handshake to that
+ * many milliseconds (an unreachable host fails fast instead of stalling on the
+ * OS connect timeout); connect_ms == 0 blocks until the OS gives up — the
+ * historical behaviour. */
+PlatformSocket platform_socket_connect(const char *host, int port, int connect_ms);
 void           platform_socket_close(PlatformSocket sh);
 int            platform_socket_read(PlatformSocket sh);       /* Read one byte, -1 EOF/err, -2 timeout */
 int            platform_socket_write(PlatformSocket sh, int byte); /* Write one byte, 0=ok, -1=err, -2=timeout */

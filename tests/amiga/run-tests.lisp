@@ -2181,6 +2181,34 @@
              (close c) (close s)))
       (close l))))
 
+; --- Connect timeout (ext:open-tcp-stream third arg) ---
+; The optional connect-timeout (seconds) bounds the TCP handshake so an
+; unreachable host fails fast instead of stalling on the OS connect timeout.
+; A reachable peer must still connect normally when a budget is supplied.
+(check "open-tcp-stream connect timeout: reachable peer round-trips" 90  ; #\Z
+  (let ((l (ext:socket-listen 0 t)))
+    (unwind-protect
+         (let* ((p (ext:socket-local-port l))
+                (c (ext:open-tcp-stream "127.0.0.1" p 5))  ; 5s budget, plenty
+                (s (ext:socket-accept l)))
+           (unwind-protect
+                (progn (write-char #\Z c) (force-output c)
+                       (char-code (read-char s)))
+             (close c) (close s)))
+      (close l))))
+
+; A connect to a port with nothing listening must fail (refused) rather than
+; succeed, and must not hang — the bounded path tears the socket down.  Bind an
+; ephemeral port, then close the listener so the port is free but unserved.
+(check "open-tcp-stream connect timeout: refused port fails fast" :refused
+  (let* ((l (ext:socket-listen 0 t))
+         (p (ext:socket-local-port l)))
+    (close l)
+    (handler-case
+        (let ((c (ext:open-tcp-stream "127.0.0.1" p 2)))
+          (close c) :connected)
+      (error () :refused))))
+
 ; --- Concurrent socket I/O: a thread parked in a blocking socket read must
 ; not block other I/O (regression for the SLY :spawn deadlock).  Stream I/O
 ; locks are split per socket and per direction (src/core/stream.c), and the

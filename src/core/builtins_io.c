@@ -21,6 +21,7 @@
 #include <stdio.h>
 #include <string.h>
 #include <stdlib.h>
+#include <limits.h>
 
 /* Per-unit FASL serialization buffer cap.  When a top-level form's
  * serialized bytecode exceeds this, the unit (and the whole file's
@@ -3400,26 +3401,41 @@ static CL_Obj bi_system_command(CL_Obj *args, int n)
     return CL_MAKE_FIXNUM(exit_code);
 }
 
-/* (ext:open-tcp-stream host port) => stream or NIL
+/* (ext:open-tcp-stream host port &optional connect-timeout) => stream or NIL
  * Like LispWorks comm:open-tcp-stream / CLISP socket:socket-connect.
- * Returns a bidirectional binary stream connected to host:port. */
+ * Returns a bidirectional binary stream connected to host:port.
+ * CONNECT-TIMEOUT, when supplied as a non-negative real, bounds the connect
+ * handshake to that many seconds (fractions allowed) so an unreachable host
+ * fails fast instead of hanging on the OS connect timeout; NIL or omitted
+ * blocks until the OS gives up. */
 static CL_Obj bi_open_tcp_stream(CL_Obj *args, int n)
 {
     CL_Obj host_obj = args[0];
     CL_Obj port_obj = args[1];
     CL_String *host_str;
     int port;
+    int connect_ms = 0;
     CL_Obj stream;
-    CL_UNUSED(n);
     if (!CL_STRING_P(host_obj))
         cl_error(CL_ERR_TYPE, "EXT:OPEN-TCP-STREAM: host must be a string");
     if (!CL_FIXNUM_P(port_obj))
         cl_error(CL_ERR_TYPE, "EXT:OPEN-TCP-STREAM: port must be an integer");
+    if (n >= 3 && !CL_NULL_P(args[2])) {
+        double secs;
+        if (!CL_REALP(args[2]))
+            cl_error(CL_ERR_TYPE,
+                     "EXT:OPEN-TCP-STREAM: connect-timeout must be a non-negative real or NIL");
+        secs = cl_to_double(args[2]);
+        if (secs < 0.0)
+            cl_error(CL_ERR_GENERAL,
+                     "EXT:OPEN-TCP-STREAM: connect-timeout must be non-negative");
+        connect_ms = (secs * 1000.0 >= (double)INT_MAX) ? INT_MAX : (int)(secs * 1000.0 + 0.5);
+    }
     host_str = (CL_String *)CL_OBJ_TO_PTR(host_obj);
     port = CL_FIXNUM_VAL(port_obj);
     if (port < 1 || port > 65535)
         cl_error(CL_ERR_GENERAL, "EXT:OPEN-TCP-STREAM: port must be 1-65535");
-    stream = cl_make_socket_stream(host_str->data, port);
+    stream = cl_make_socket_stream(host_str->data, port, connect_ms);
     if (CL_NULL_P(stream))
         cl_error(CL_ERR_GENERAL, "EXT:OPEN-TCP-STREAM: failed to connect to %s:%d",
                  host_str->data, port);
@@ -3661,7 +3677,7 @@ void cl_builtins_io_init(void)
     extfun("GETENV", bi_getenv, 1, 1);
     extfun("GETCWD", bi_getcwd, 0, 0);
     extfun("SYSTEM-COMMAND", bi_system_command, 1, 1);
-    extfun("OPEN-TCP-STREAM", bi_open_tcp_stream, 2, 2);
+    extfun("OPEN-TCP-STREAM", bi_open_tcp_stream, 2, 3);
     extfun("SOCKET-LISTEN", bi_socket_listen, 1, 2);
     extfun("SOCKET-ACCEPT", bi_socket_accept, 1, 1);
     extfun("SOCKET-LOCAL-PORT", bi_socket_local_port, 1, 1);
