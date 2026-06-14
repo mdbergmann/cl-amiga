@@ -2647,7 +2647,13 @@
 
 ; %mkdir creates directory
 (check "mkdir" t (%mkdir "T:cl_test_step10_dir"))
-(check "mkdir-probe" #P"T:cl_test_step10_dir" (probe-file "T:cl_test_step10_dir"))
+; PROBE-FILE of an on-disk directory returns directory form (trailing slash),
+; even when queried without one — matches conformant TRUENAME/PROBE-FILE so
+; (directory-pathname-p (probe-file ...)) / uiop:directory-exists-p work.
+(check "mkdir-probe" #P"T:cl_test_step10_dir/" (probe-file "T:cl_test_step10_dir"))
+(check "mkdir-probe-dir-form" (list nil nil)
+       (let ((p (probe-file "T:cl_test_step10_dir")))
+         (list (pathname-name p) (pathname-type p))))
 
 ; --- Step 12: Readtable + Compile ---
 

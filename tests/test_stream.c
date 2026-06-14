@@ -1352,6 +1352,56 @@ TEST(eval_probe_file_not_exists)
     ASSERT(CL_NULL_P(result));
 }
 
+/* Regression: TRUENAME / PROBE-FILE of a real directory given in FILE form
+ * (no trailing slash) must return a DIRECTORY-form pathname (pathname-name and
+ * pathname-type NIL, pathname-directory carrying the final component), because
+ * the on-disk object is a directory.  Previously the trailing slash was only
+ * preserved when the *input* had one, so (directory-pathname-p (truename
+ * "/tmp/dir")) was NIL for a real directory; uiop:directory-exists-p — (and
+ * (directory-pathname-p (probe-file* x :truename t)) ...) — then wrongly
+ * returned NIL (the chipi MAKE-PERSISTENCE--SIMPLE failure: its storage path
+ * has no trailing slash). */
+TEST(eval_truename_dir_no_slash_is_dir_form)
+{
+    const char *path = "/tmp/cl_test_truename_dir";
+    CL_Obj result;
+    ASSERT(platform_mkdir(path) == 0);
+
+    /* TRUENAME of the directory WITHOUT a trailing slash => directory form:
+     * name + type NIL, and the final component lands in pathname-directory. */
+    result = cl_eval_string(
+        "(let ((p (truename #P\"/tmp/cl_test_truename_dir\")))"
+        "  (and (null (pathname-name p)) (null (pathname-type p))"
+        "       (member \"cl_test_truename_dir\" (pathname-directory p)"
+        "               :test #'equal)))");
+    ASSERT(!CL_NULL_P(result));
+
+    /* PROBE-FILE likewise normalizes a directory to directory form. */
+    result = cl_eval_string(
+        "(let ((p (probe-file #P\"/tmp/cl_test_truename_dir\")))"
+        "  (and p (null (pathname-name p)) (null (pathname-type p))))");
+    ASSERT(!CL_NULL_P(result));
+
+    rmdir(path);
+}
+
+/* The directory-form fix must NOT turn files into directories: TRUENAME of a
+ * regular file keeps its NAME component (stays in file form). */
+TEST(eval_truename_file_stays_file_form)
+{
+    const char *path = "/tmp/cl_test_truename_file.tmp";
+    PlatformFile f = platform_file_open(path, PLATFORM_FILE_WRITE);
+    CL_Obj result;
+    platform_file_write_string(f, "x");
+    platform_file_close(f);
+
+    result = cl_eval_string(
+        "(pathname-name (truename #P\"/tmp/cl_test_truename_file.tmp\"))");
+    ASSERT(!CL_NULL_P(result)); /* name is "cl_test_truename_file" */
+
+    remove(path);
+}
+
 TEST(eval_delete_file)
 {
     const char *path = "/tmp/cl_test_delete_eval.tmp";
@@ -3349,6 +3399,8 @@ int main(void)
     RUN(eval_get_universal_time);
     RUN(eval_probe_file_exists);
     RUN(eval_probe_file_not_exists);
+    RUN(eval_truename_dir_no_slash_is_dir_form);
+    RUN(eval_truename_file_stays_file_form);
     RUN(eval_delete_file);
     RUN(eval_file_write_date);
     RUN(eval_file_namestring);
