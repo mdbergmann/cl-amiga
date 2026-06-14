@@ -3014,12 +3014,63 @@ static CL_Obj cl_vm_run(int base_fp, int base_nlx)
                     CL_LONGJMP(cl_nlx_stack[i].buf, 1);
                 }
             }
-#ifdef DEBUG_NLX
-            fprintf(stderr, "[NLX] TAGBODY_GO: NO MATCHING FRAME for id=0x%08x\n",
-                    (unsigned)tagbody_id);
-            fflush(stderr);
-#endif
-            cl_error(CL_ERR_GENERAL, "GO: tagbody frame not found");
+            /* Diagnostic dump (always compiled — this is a fatal path, so the
+             * cost is irrelevant, and the bare "frame not found" message gives
+             * no clue WHY the scan missed.  Routed through platform_write_string
+             * so it lands on the same stream as the ERROR/backtrace (stdout) —
+             * the DEBUG_NLX fprintf(stderr) traces are easy to lose when only
+             * stdout is captured.
+             *
+             * The three distinguishing questions, answered below:
+             *   1. Is nlx_top sane / is the stack empty?  -> frame popped early
+             *      or never pushed.
+             *   2. Does ANY frame carry tag==tagbody_id but with type != 3
+             *      (CL_NLX_TAGBODY)?  -> the `type` byte was corrupted (PPC
+             *      struct-alignment / setjmp writing past jmp_buf), so the scan
+             *      condition `type == CL_NLX_TAGBODY` rejects a frame that is in
+             *      fact the right one.
+             *   3. Does NO frame carry tag==tagbody_id at all?  -> the id cons
+             *      identity differs (stale offset after a moving GC, or a
+             *      constant-pool mismatch).
+             * Surfaced a native-PPC/MorphOS-only failure where the m68k bytecode
+             * build (JIT and --no-jit) works — see morphos_ppc_port_status. */
+            {
+                int di, n_tag_anytype = 0;
+                char dbuf[160];
+                snprintf(dbuf, sizeof(dbuf),
+                    "\n[NLX] GO failed: want tag=0x%08x (const #%u) "
+                    "nlx_top=%d sizeof(frame)=%u\n",
+                    (unsigned)tagbody_id, (unsigned)id_idx, cl_nlx_top,
+                    (unsigned)sizeof(CL_NLXFrame));
+                platform_write_string(dbuf);
+                for (di = cl_nlx_top - 1; di >= 0; di--) {
+                    unsigned rawtype = (unsigned)cl_nlx_stack[di].type;
+                    unsigned ftag = (unsigned)cl_nlx_stack[di].tag;
+                    if (ftag == (unsigned)tagbody_id) n_tag_anytype++;
+                    snprintf(dbuf, sizeof(dbuf),
+                        "[NLX]   frame[%d] type=%u tag=0x%08x%s\n",
+                        di, rawtype, ftag,
+                        (ftag == (unsigned)tagbody_id)
+                            ? (rawtype == CL_NLX_TAGBODY
+                                 ? "  <== MATCH (scan should have hit this!)"
+                                 : "  <== tag matches but type!=3 (CORRUPT type byte)")
+                            : "");
+                    platform_write_string(dbuf);
+                }
+                snprintf(dbuf, sizeof(dbuf),
+                    "[NLX] verdict: %s\n",
+                    cl_nlx_top <= 0
+                        ? "NLX stack EMPTY -> frame popped early / never pushed"
+                        : (n_tag_anytype == 0
+                            ? "no frame carries this tag -> stale id (moving GC?) "
+                              "or constant-pool identity mismatch"
+                            : "tag IS present -> see per-frame note above "
+                              "(type-byte corruption or scan miscompile)"));
+                platform_write_string(dbuf);
+            }
+            cl_error(CL_ERR_GENERAL,
+                     "GO: tagbody frame not found (id=0x%08x, nlx_top=%d)",
+                     (unsigned)tagbody_id, cl_nlx_top);
             VM_BREAK;
         }
 
