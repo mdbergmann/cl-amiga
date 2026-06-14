@@ -3410,8 +3410,16 @@ int cl_lookup_global_symbol_macro_p(CL_Obj sym, CL_Obj *out)
     CL_Obj plist;
 
     if (!CL_SYMBOL_P(sym)) return 0;
-    if (indicator == 0)
+    if (indicator == 0) {
         indicator = cl_intern_in("%SYMBOL-MACRO-EXPANSION", 23, cl_package_clamiga);
+        /* The interned indicator symbol lives in the arena and is relocated by
+         * the compacting GC.  Register this cache so the compactor forwards it;
+         * otherwise, after a compaction the stale offset never matches the
+         * (forwarded) indicator stored on a symbol's plist and every global
+         * symbol-macro lookup spuriously misses — e.g. a DEFINE-SYMBOL-MACRO
+         * compiled just before a use stops expanding ("Unbound variable"). */
+        cl_gc_register_root(&indicator);
+    }
 
     s = (CL_Symbol *)CL_OBJ_TO_PTR(sym);
     plist = s->plist;

@@ -2440,6 +2440,13 @@ static CL_Obj parse_restart_options(CL_Obj forms, CL_Obj *report,
         KW_INTERACTIVE = cl_intern_keyword("INTERACTIVE", 11);
         KW_TEST = cl_intern_keyword("TEST", 4);
         CL_GC_UNPROTECT(1);
+        /* These interned keywords live in the arena and are relocated by the
+         * compacting GC; register the caches so the compactor forwards them.
+         * Otherwise a post-compaction `head == KW_*` compares against a stale
+         * offset and silently fails to parse :REPORT/:INTERACTIVE/:TEST. */
+        cl_gc_register_root(&KW_REPORT);
+        cl_gc_register_root(&KW_INTERACTIVE);
+        cl_gc_register_root(&KW_TEST);
     }
 
     *report = CL_UNBOUND;
