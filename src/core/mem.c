@@ -56,8 +56,23 @@ static void gc_mark(void);
 static void gc_sweep(void);
 void gc_mark_obj(CL_Obj obj);
 static void gc_mark_push(CL_Obj obj);
-static void *alloc_from_free_list(uint32_t *sizep);
+static void *alloc_from_free_list(uint32_t *sizep, uint32_t max_steps);
 static void *alloc_from_bump(uint32_t size);
+
+/* Fast-path bound on the first-fit free-list walk.  alloc_from_free_list is
+ * O(list length); under a fragmented heap (many small blocks interspersed with
+ * live objects) an allocation-heavy workload would degrade to O(n) per
+ * allocation — O(n^2) overall — which manifests as a 100% CPU hang (e.g. the
+ * bignum-heavy power-of-ten table built at FASL load time by jzon's
+ * eisel-lemire).  cl_alloc probes only this many blocks on the fast path; if no
+ * fit turns up it compacts (which resets the bump pointer and clears
+ * fragmentation, restoring the O(1) bump path) rather than walking the whole
+ * list.  A full unbounded walk is still used as the last resort before
+ * declaring the heap exhausted, so a fit deep in the list is never missed.
+ * See tests/test_alloc_freelist_perf.c for the regression test. */
+#ifndef CL_FREELIST_PROBE_LIMIT
+#define CL_FREELIST_PROBE_LIMIT 32
+#endif
 #ifdef DEBUG_GC
 static void gc_verify_marked(void);
 static void gc_dump_roots_dbg(void);
@@ -135,6 +150,7 @@ void cl_mem_init(uint32_t heap_size)
     cl_heap.total_consed = 0;
     cl_heap.gc_count = 0;
     cl_heap.compact_count = 0;
+    cl_heap.freelist_steps = 0;
 
     gc_root_count = 0;
     gc_mark_top = 0;
@@ -188,14 +204,20 @@ static void *alloc_from_bump(uint32_t size)
     return NULL;
 }
 
-static void *alloc_from_free_list(uint32_t *sizep)
+/* First-fit allocation from the free list.  Walks at most max_steps blocks
+ * (0 == unbounded); returns NULL if no fit is found within the bound. */
+static void *alloc_from_free_list(uint32_t *sizep, uint32_t max_steps)
 {
     uint32_t size = *sizep;
     uint32_t *prev_off = &cl_heap.free_list;
     uint32_t cur_off = cl_heap.free_list;
+    uint32_t steps = 0;
 
     while (cur_off) {
         CL_FreeBlock *block = (CL_FreeBlock *)(cl_heap.arena + cur_off);
+        cl_heap.freelist_steps++;
+        if (max_steps && ++steps > max_steps)
+            return NULL;
         if (block->size >= size) {
             uint32_t remainder = block->size - size;
             if (remainder >= CL_MIN_ALLOC_SIZE) {
@@ -316,28 +338,36 @@ void *cl_alloc(uint8_t type, uint32_t size)
 
     if (multi) platform_mutex_lock(alloc_mutex);
 
-    /* Try bump allocator first */
+    /* Fast path: bump allocator, then a *bounded* first-fit free-list probe.
+     * The bound keeps a single allocation cheap (O(CL_FREELIST_PROBE_LIMIT))
+     * even when the free list is long; if no fit turns up quickly we fall
+     * through to GC/compaction below rather than walking the whole list. */
     ptr = alloc_from_bump(size);
     if (!ptr) {
         /* Try free list (may update size if using entire oversized block) */
-        ptr = alloc_from_free_list(&size);
+        ptr = alloc_from_free_list(&size, CL_FREELIST_PROBE_LIMIT);
     }
     if (!ptr) {
         /* Need GC — release alloc_mutex so other threads can reach safepoints,
-         * then run STW GC, then re-acquire and retry */
+         * then run STW GC, then re-acquire and retry.  A sweep coalesces dead
+         * objects into the free list (cheap); retry bump and a bounded probe. */
         if (multi) platform_mutex_unlock(alloc_mutex);
         cl_gc();
         if (multi) platform_mutex_lock(alloc_mutex);
-        ptr = alloc_from_free_list(&size);
+        ptr = alloc_from_bump(size);
         if (!ptr) {
-            ptr = alloc_from_bump(size);
+            ptr = alloc_from_free_list(&size, CL_FREELIST_PROBE_LIMIT);
         }
     }
     if (!ptr && gc_last_compact_cycle != cl_heap.gc_count) {
-        /* Normal GC didn't help — try compaction to eliminate fragmentation.
-         * First attempt: set pending flag for VM-level safe-point compaction.
-         * If the VM dispatch loop runs compaction before we retry, great.
-         * If not, we fall through to heap-exhausted error.
+        /* Sweep + bounded probe still found no quick fit.  Either the heap is
+         * genuinely full, or it is fragmented enough that the free list is long
+         * and the bounded probe keeps missing — and a sweep-only cl_gc() does
+         * NOT reset the bump pointer, so once the arena high-water mark is
+         * reached every allocation is served by the O(n) free-list walk
+         * (O(n^2) for allocation-heavy code such as the bignum-heavy table jzon
+         * builds at FASL load).  Compaction resets the bump pointer and clears
+         * fragmentation, restoring the O(1) bump path.
          *
          * NOTE: compaction is a moving GC.  All CL_Obj C locals that survive
          * across allocating calls MUST be GC-protected so compaction can
@@ -356,6 +386,12 @@ void *cl_alloc(uint8_t type, uint32_t size)
         gc_compact_pending = 0;
         if (multi) platform_mutex_lock(alloc_mutex);
         ptr = alloc_from_bump(size);
+    }
+    if (!ptr) {
+        /* Last resort before declaring the heap exhausted: the fit may be
+         * deeper in the free list than the bounded probe reached.  Walk the
+         * whole list once so a genuine fit is never missed. */
+        ptr = alloc_from_free_list(&size, 0 /* unbounded */);
     }
     if (!ptr) {
         if (multi) platform_mutex_unlock(alloc_mutex);
