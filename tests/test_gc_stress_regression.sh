@@ -1041,6 +1041,35 @@ check_absent   "no corruption from stale CL_Obj in timeout condition path"      
 # exercises the EXT:SOCKET-TIMEOUT condition-build/format allocation path under
 # forced compaction; the write path builds the identical condition.
 
+# --- Case: global symbol-macro (DEFINE-SYMBOL-MACRO) lookup under stress -----
+# Bug: cl_lookup_global_symbol_macro_p cached the %SYMBOL-MACRO-EXPANSION plist
+# indicator in an UNREGISTERED `static CL_Obj`.  Compaction relocated the
+# interned indicator symbol, but the stale cached offset no longer matched the
+# (forwarded) indicator stored on a symbol's plist, so every global
+# symbol-macro lookup spuriously missed.  A DEFINE-SYMBOL-MACRO compiled just
+# before a use stopped expanding — the use compiled as a plain free variable
+# and errored "Unbound variable" at load/run (hunchentoot/drakma specials.lisp
+# *SUPPORTS-THREADS-P*).  Fix: cl_gc_register_root(&indicator).
+# NOTE: this runs the *source* directly under stress (like the handler-case /
+# let cases) so the symbol-macro use is COMPILED while compaction is forced —
+# pre-compiling a clean FASL would bake in the (correct) expansion and miss the
+# compile-time lookup entirely.
+cat > "$WORK/symmac.lisp" <<'EOF'
+(defpackage :gcstress-sm-target (:use :cl) (:export #:*backing*))
+(in-package :gcstress-sm-target)
+(defvar *backing* :expanded-ok)
+(defpackage :gcstress-sm (:use :cl) (:export #:probe))
+(in-package :gcstress-sm)
+(eval-when (:compile-toplevel :load-toplevel :execute)
+  (define-symbol-macro *the-macro* gcstress-sm-target:*backing*))
+(defvar *captured* (load-time-value (and *the-macro* :have-it)))
+(defun probe () (list *the-macro* *captured*))
+(format t "SYMMAC:~a~%" (probe))
+EOF
+out=$(run_stress "$WORK/symmac.lisp")
+check_contains "global symbol-macro expands (compiled under stress)" "SYMMAC:(EXPANDED-OK HAVE-IT)" "$out"
+check_absent   "no unbound-var from stale symbol-macro indicator"    "Unbound variable" "$out"
+
 echo ""
 echo "$passed passed, $failed failed, $total total"
 [ "$failed" -eq 0 ]
