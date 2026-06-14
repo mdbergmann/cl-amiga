@@ -9,6 +9,7 @@
 #include <sys/socket.h>
 #include <sys/select.h>
 #include <poll.h>
+#include <fcntl.h>
 #include <netinet/in.h>
 #include <netdb.h>
 #include <time.h>
@@ -551,7 +552,10 @@ static void socket_table_ensure_init(void)
     }
 }
 
-PlatformSocket platform_socket_connect(const char *host, int port)
+/* Defined below; used here to bound a non-blocking connect by its deadline. */
+static int socket_wait_ready(int fd, int timeout_ms, int want_write);
+
+PlatformSocket platform_socket_connect(const char *host, int port, int connect_ms)
 {
     struct hostent *he;
     struct sockaddr_in addr;
@@ -573,7 +577,34 @@ PlatformSocket platform_socket_connect(const char *host, int port)
     addr.sin_port = htons((uint16_t)port);
     memcpy(&addr.sin_addr, he->h_addr_list[0], (size_t)he->h_length);
 
-    {
+    if (connect_ms > 0) {
+        /* Bounded connect: go non-blocking, fire the handshake, then poll for
+         * writability up to connect_ms.  Writable + SO_ERROR==0 means connected;
+         * a timeout or a connect error both fail fast.  Restore blocking mode so
+         * the rest of the stream code (which read()s blocking) is unaffected. */
+        int flags = fcntl(fd, F_GETFL, 0);
+        int rc, ok = 0;
+        if (flags < 0) { close(fd); return PLATFORM_SOCKET_INVALID; }
+        fcntl(fd, F_SETFL, flags | O_NONBLOCK);
+        cl_gc_enter_safe_region();
+        rc = connect(fd, (struct sockaddr *)&addr, sizeof(addr));
+        if (rc == 0) {
+            ok = 1;                                  /* connected immediately */
+        } else if (errno == EINPROGRESS) {
+            if (socket_wait_ready(fd, connect_ms, 1) == 1) {
+                int err = 0;
+                socklen_t elen = (socklen_t)sizeof(err);
+                if (getsockopt(fd, SOL_SOCKET, SO_ERROR, &err, &elen) == 0 && err == 0)
+                    ok = 1;
+            }
+        }
+        cl_gc_leave_safe_region();
+        fcntl(fd, F_SETFL, flags);
+        if (!ok) {
+            close(fd);
+            return PLATFORM_SOCKET_INVALID;
+        }
+    } else {
         int rc;
         cl_gc_enter_safe_region();
         rc = connect(fd, (struct sockaddr *)&addr, sizeof(addr));
