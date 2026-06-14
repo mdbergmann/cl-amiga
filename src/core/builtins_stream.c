@@ -980,29 +980,42 @@ static CL_Obj bi_get_universal_time(CL_Obj *args, int n)
 
 /* --- File system functions (Step 10) --- */
 
+/* If RESOLVED (length RLEN, capacity BUFSIZE) names a directory on disk and
+ * lacks a trailing slash, append one so the pathname is in CL "directory form"
+ * (pathname-directory set; name/type NIL).  platform_realpath strips the
+ * trailing slash even for directories, so we re-derive directory-ness from the
+ * filesystem object type rather than from the caller's input.  Conformant
+ * TRUENAME/PROBE-FILE report an existing directory in directory form whether or
+ * not the input had a trailing slash; without this,
+ * (directory-pathname-p (truename "/tmp/foo")) is NIL for a real directory
+ * /tmp/foo, so uiop:directory-exists-p — (and (directory-pathname-p
+ * (probe-file* x :truename t)) ...) — wrongly returns NIL (chipi
+ * MAKE-PERSISTENCE--SIMPLE).  Returns the possibly-updated length. */
+static size_t ensure_dir_form_slash(char *resolved, size_t rlen, size_t bufsize)
+{
+    if (rlen > 0 && resolved[rlen - 1] != '/' && rlen + 1 < bufsize &&
+        platform_file_is_directory(resolved)) {
+        resolved[rlen] = '/';
+        resolved[rlen + 1] = '\0';
+        rlen++;
+    }
+    return rlen;
+}
+
 /* (truename pathname) => resolved pathname (symlinks resolved)
  * Signals FILE-ERROR if the file does not exist. */
 static CL_Obj bi_truename(CL_Obj *args, int n)
 {
     const char *path;
     char resolved[512];
-    size_t plen, rlen;
+    size_t rlen;
     CL_UNUSED(n);
     path = coerce_to_filename(&args[0]);
     if (!path)
         cl_error(CL_ERR_TYPE, "TRUENAME: argument must be a pathname designator");
     if (!platform_realpath(path, resolved, (int)sizeof(resolved)))
         cl_error(CL_ERR_FILE, "TRUENAME: file does not exist \"%s\"", path);
-    /* Preserve trailing slash for directory pathnames — realpath strips it,
-     * but CL directory pathnames need it for directoryp checks. */
-    plen = strlen(path);
-    rlen = strlen(resolved);
-    if (plen > 0 && path[plen - 1] == '/' &&
-        rlen > 0 && resolved[rlen - 1] != '/' && rlen + 1 < sizeof(resolved)) {
-        resolved[rlen] = '/';
-        resolved[rlen + 1] = '\0';
-        rlen++;
-    }
+    rlen = ensure_dir_form_slash(resolved, strlen(resolved), sizeof(resolved));
     {
         extern CL_Obj cl_parse_namestring(const char *str, uint32_t len);
         return cl_parse_namestring(resolved, (uint32_t)rlen);
@@ -1021,15 +1034,8 @@ static CL_Obj bi_probe_file(CL_Obj *args, int n)
     if (!platform_file_exists(path)) return CL_NIL;
     /* Return truename (symlinks resolved) per CL spec */
     if (platform_realpath(path, resolved, (int)sizeof(resolved))) {
-        size_t plen = strlen(path);
-        size_t rlen = strlen(resolved);
-        /* Preserve trailing slash for directory pathnames */
-        if (plen > 0 && path[plen - 1] == '/' &&
-            rlen > 0 && resolved[rlen - 1] != '/' && rlen + 1 < sizeof(resolved)) {
-            resolved[rlen] = '/';
-            resolved[rlen + 1] = '\0';
-            rlen++;
-        }
+        size_t rlen = ensure_dir_form_slash(resolved, strlen(resolved),
+                                            sizeof(resolved));
         {
             extern CL_Obj cl_parse_namestring(const char *str, uint32_t len);
             return cl_parse_namestring(resolved, (uint32_t)rlen);
