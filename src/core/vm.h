@@ -154,6 +154,14 @@ CL_Obj cl_unwrap_funcallable(CL_Obj obj);
 /* True if OBJ is a funcallable instance (i.e. a GF struct). */
 int cl_funcallable_instance_p(CL_Obj obj);
 
+/* Register SYM (a struct-type name symbol) as a funcallable generic-function
+ * type, so structs of that type are recognized by cl_funcallable_instance_p.
+ * Used to support custom generic-function metaclasses (CLHS
+ * :generic-function-class) — subclasses of STANDARD-GENERIC-FUNCTION whose
+ * instances must still dispatch through their discriminating-function slot.
+ * Idempotent; STANDARD-GENERIC-FUNCTION is always registered. */
+void cl_register_funcallable_gf_type(CL_Obj sym);
+
 /* Push/pop on VM value stack (for builtins) */
 void cl_vm_push(CL_Obj val);
 CL_Obj cl_vm_pop(void);

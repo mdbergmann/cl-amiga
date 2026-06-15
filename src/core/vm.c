@@ -340,25 +340,56 @@ void cl_nlx_debug_dump(const char *where, unsigned tag)
  * VM + funcall/apply treat it as transparent — they unwrap to slot 3 and
  * dispatch normally.  Slot 3 may itself be any callable (closure, bytecode,
  * builtin), including one installed by SET-FUNCALLABLE-INSTANCE-FUNCTION. */
+/* Registered funcallable generic-function struct-type name symbols.  Slot 0 is
+ * always STANDARD-GENERIC-FUNCTION; additional entries are subclasses declared
+ * via :generic-function-class (CLHS) and registered from Lisp through
+ * cl_register_funcallable_gf_type.  A struct is a funcallable instance iff its
+ * type_desc matches one of these.  The set is tiny in practice (the common
+ * case is a single entry), so a linear scan on the call hot path is cheap.
+ *
+ * Each slot is a GC root: the symbols are arena-resident and the compacting GC
+ * relocates them, so without registration the cached offsets go stale after a
+ * compaction and a live GF struct would no longer be recognized ("Not a
+ * function: heap object type 10") — a heap-layout-dependent corruption seen
+ * under GC stress by DEFCLASS redefinition. */
+#define CL_MAX_GF_TYPES 16
+static CL_Obj cl_gf_type_syms[CL_MAX_GF_TYPES];
+static int cl_gf_type_count = 0;
+static int cl_gf_types_inited = 0;
+
+static void cl_gf_types_init(void)
+{
+    int i;
+    for (i = 0; i < CL_MAX_GF_TYPES; i++) {
+        cl_gf_type_syms[i] = CL_NIL;
+        cl_gc_register_root(&cl_gf_type_syms[i]);
+    }
+    cl_gf_type_syms[0] = cl_intern("STANDARD-GENERIC-FUNCTION", 25);
+    cl_gf_type_count = 1;
+    cl_gf_types_inited = 1;
+}
+
+void cl_register_funcallable_gf_type(CL_Obj sym)
+{
+    int i;
+    if (!cl_gf_types_inited) cl_gf_types_init();
+    if (!CL_SYMBOL_P(sym)) return;
+    for (i = 0; i < cl_gf_type_count; i++)
+        if (cl_gf_type_syms[i] == sym) return;  /* already registered */
+    if (cl_gf_type_count < CL_MAX_GF_TYPES)
+        cl_gf_type_syms[cl_gf_type_count++] = sym;
+}
+
 int cl_funcallable_instance_p(CL_Obj obj)
 {
-    static CL_Obj sym_sgf = CL_NIL;
+    CL_Obj td;
+    int i;
     if (!CL_STRUCT_P(obj)) return 0;
-    if (sym_sgf == CL_NIL) {
-        sym_sgf = cl_intern("STANDARD-GENERIC-FUNCTION", 25);
-        /* sym_sgf caches an arena-resident symbol offset.  Symbols are
-         * relocated by the compacting GC, so without registering &sym_sgf
-         * as a global root the cached offset goes stale after the next
-         * compaction — and then every funcallable-instance check below
-         * silently fails (a live GF struct is no longer recognized, so the
-         * VM calls it as a plain struct → "Not a function: heap object
-         * type 10").  This was a heap-layout-dependent corruption exposed
-         * under GC stress by DEFCLASS redefinition (REMOVE over a class's
-         * long direct-subclasses list shifts the live set enough to move
-         * the symbol). */
-        cl_gc_register_root(&sym_sgf);
-    }
-    return ((CL_Struct *)CL_OBJ_TO_PTR(obj))->type_desc == sym_sgf;
+    if (!cl_gf_types_inited) cl_gf_types_init();
+    td = ((CL_Struct *)CL_OBJ_TO_PTR(obj))->type_desc;
+    for (i = 0; i < cl_gf_type_count; i++)
+        if (cl_gf_type_syms[i] == td) return 1;
+    return 0;
 }
 
 CL_Obj cl_unwrap_funcallable(CL_Obj obj)

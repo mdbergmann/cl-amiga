@@ -293,6 +293,20 @@ static CL_Obj bi_make_struct(CL_Obj *args, int n)
     return obj;
 }
 
+/* (%register-funcallable-gf-type type-name) — declare TYPE-NAME (a struct-type
+ * name symbol naming a STANDARD-GENERIC-FUNCTION subclass) as a funcallable
+ * generic-function type, so its instances dispatch as functions.  Supports
+ * custom generic-function metaclasses (CLHS :generic-function-class). */
+static CL_Obj bi_register_funcallable_gf_type(CL_Obj *args, int n)
+{
+    CL_UNUSED(n);
+    if (!CL_SYMBOL_P(args[0]))
+        cl_error(CL_ERR_TYPE,
+                 "%%REGISTER-FUNCALLABLE-GF-TYPE: name must be a symbol");
+    cl_register_funcallable_gf_type(args[0]);
+    return args[0];
+}
+
 /* (%struct-ref obj index) */
 static CL_Obj bi_struct_ref(CL_Obj *args, int n)
 {
@@ -563,6 +577,8 @@ void cl_builtins_struct_init(void)
 {
     cl_register_builtin("%REGISTER-STRUCT-TYPE", bi_register_struct_type, 4, 4, cl_package_clamiga);
     cl_register_builtin("%MAKE-STRUCT", bi_make_struct, 1, -1, cl_package_clamiga);
+    cl_register_builtin("%REGISTER-FUNCALLABLE-GF-TYPE",
+                        bi_register_funcallable_gf_type, 1, 1, cl_package_clamiga);
     cl_register_builtin("%STRUCT-REF", bi_struct_ref, 2, 2, cl_package_clamiga);
     cl_register_builtin("%STRUCT-SET", bi_struct_set, 3, 3, cl_package_clamiga);
     cl_register_builtin("%COPY-STRUCT", bi_copy_struct, 1, 1, cl_package_clamiga);

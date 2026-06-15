@@ -4103,6 +4103,40 @@
 (check "compute-discriminating-function dispatches" :int-case
   (funcall (compute-discriminating-function (ensure-generic-function 'fsc-amiga-cdf)) 7))
 
+; --- Custom generic-function metaclass (CLHS :generic-function-class) ---
+; This is the snooze defroute pattern: a custom GF class whose instances
+; self-register via initialize-instance :after.
+(defclass rgf-amiga (cl:standard-generic-function) ()
+  (:metaclass funcallable-standard-class))
+(defvar *rgf-amiga-registry* (make-hash-table))
+(defmethod initialize-instance :after ((gf rgf-amiga) &rest args)
+  (declare (ignore args))
+  (setf (gethash (generic-function-name gf) *rgf-amiga-registry*) gf))
+(defgeneric rga-amiga (x) (:generic-function-class rgf-amiga)
+  (:method ((x integer)) (* x 2)))
+(check "custom gf-class type-of" 'rgf-amiga (type-of #'rga-amiga))
+(check "custom gf-class functionp" t (functionp #'rga-amiga))
+(check "custom gf typep own class" t (typep #'rga-amiga 'rgf-amiga))
+(check "custom gf typep standard-generic-function" t
+  (typep #'rga-amiga 'standard-generic-function))
+(check "custom gf callable" 42 (rga-amiga 21))
+(check "custom gf funcall" 16 (funcall #'rga-amiga 8))
+(check "custom gf initialize-instance :after fired" t
+  (eq (gethash 'rga-amiga *rgf-amiga-registry*) #'rga-amiga))
+; dispatch ON the custom GF as a specialized argument
+(defgeneric classify-amiga-gf (g))
+(defmethod classify-amiga-gf ((g rgf-amiga)) :custom)
+(defmethod classify-amiga-gf ((g standard-generic-function)) :standard)
+(defgeneric plain-amiga-gf (x))
+(check "dispatch on custom gf arg" :custom (classify-amiga-gf #'rga-amiga))
+(check "dispatch on plain gf arg" :standard (classify-amiga-gf #'plain-amiga-gf))
+; explicit standard-generic-function keeps base behavior
+(defgeneric gfd-amiga-explicit (x)
+  (:generic-function-class standard-generic-function)
+  (:method ((x t)) x))
+(check "explicit standard gf-class type-of" 'standard-generic-function
+  (type-of #'gfd-amiga-explicit))
+
 ; --- Method metaobject protocol (MOP) ---
 (defgeneric mmop-amiga-bl (x))
 (defmethod mmop-amiga-bl ((x integer)) :int)

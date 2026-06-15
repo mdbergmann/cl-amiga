@@ -486,6 +486,37 @@ check_contains "defclass first definition works under GC stress"        "REDEF1:
 check_contains "defclass redefinition works under GC stress"            "REDEF2:11 HI" "$out"
 check_absent   "no struct-as-function from stale funcallable-instance cache" "Not a function: heap object type" "$out"
 
+# --- Case 19b: custom generic-function metaclass under GC stress -------------
+# :generic-function-class registers the custom type symbol in the C-side
+# cl_gf_type_syms[] root set and creates the GF via %make-struct of that type
+# + an initialize-instance call (the snooze defroute self-registration shape).
+# Under stress the registered type symbol and the GF struct relocate; if the
+# new root slots or the funcallable check were not GC-safe, the GF would stop
+# being recognized as funcallable ("Not a function: heap object type") or its
+# type_desc would go stale (wrong TYPE-OF / dispatch miss).
+cat > "$WORK/clos-gfclass.lisp" <<'EOF'
+(defclass gcs-rgf (cl:standard-generic-function) ()
+  (:metaclass funcallable-standard-class))
+(defvar *gcs-rgf-reg* (make-hash-table))
+(defmethod initialize-instance :after ((gf gcs-rgf) &rest args)
+  (declare (ignore args))
+  (setf (gethash (generic-function-name gf) *gcs-rgf-reg*) gf))
+;; Define several custom-class GFs so a compaction lands across the
+;; %make-struct / initialize-instance / first-call sequence.
+(dotimes (i 8)
+  (let ((name (intern (format nil "GCS-ROUTE-~a" i))))
+    (eval `(defgeneric ,name (x) (:generic-function-class gcs-rgf)
+             (:method ((x integer)) (+ x ,i))))))
+(let ((gf (symbol-function 'gcs-route-5)))
+  (format t "GFCLASS:~a/~a/~a/~a~%"
+          (type-of gf) (functionp gf)
+          (funcall gf 100)
+          (and (eq (gethash 'gcs-route-5 *gcs-rgf-reg*) gf) t)))
+EOF
+out=$(run_stress "$WORK/clos-gfclass.lisp")
+check_contains "custom gf-class type/functionp/call/register under GC stress" "GFCLASS:GCS-RGF/T/105/T" "$out"
+check_absent   "no stale funcallable-instance for custom gf-class under stress" "Not a function: heap object type" "$out"
+
 # --- Case 20: two top-level DEFUNs — compile_defun lambda_list survives -------
 # Bug: compile_defun read `lambda_list` (and `body`) from the defun form, then
 # built block_body/lambda_form via cl_cons BEFORE consing lambda_list in.  Under

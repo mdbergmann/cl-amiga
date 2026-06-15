@@ -2643,6 +2643,82 @@ TEST(funcallable_gf_cpl_has_function)
         "(FUNCALLABLE-STANDARD-OBJECT FUNCTION STANDARD-OBJECT T)");
 }
 
+/* --- Custom generic-function metaclass (CLHS :generic-function-class) --- */
+
+TEST(gfclass_custom_type_of)
+{
+    /* defgeneric (:generic-function-class C) tags the GF struct with C, so
+       TYPE-OF and CLASS-OF report the custom class, not the base GF. */
+    eval_print("(defclass rgf-a (cl:standard-generic-function) ()"
+               "  (:metaclass funcallable-standard-class))");
+    eval_print("(defgeneric rga (x) (:generic-function-class rgf-a)"
+               "  (:method ((x integer)) (* x 2)))");
+    ASSERT_STR_EQ(eval_print("(type-of #'rga)"), "RGF-A");
+    ASSERT_STR_EQ(eval_print("(class-name (class-of #'rga))"), "RGF-A");
+}
+
+TEST(gfclass_custom_is_funcallable)
+{
+    /* A custom-class GF must still be FUNCTIONP and callable/funcallable,
+       and TYPEP as both its own class and standard-generic-function. */
+    eval_print("(defclass rgf-b (cl:standard-generic-function) ()"
+               "  (:metaclass funcallable-standard-class))");
+    eval_print("(defgeneric rgb (x) (:generic-function-class rgf-b)"
+               "  (:method ((x integer)) (+ x 100)))");
+    ASSERT_STR_EQ(eval_print("(functionp #'rgb)"), "T");
+    ASSERT_STR_EQ(eval_print("(typep #'rgb 'rgf-b)"), "T");
+    ASSERT_STR_EQ(eval_print("(typep #'rgb 'standard-generic-function)"), "T");
+    ASSERT_STR_EQ(eval_print("(typep #'rgb 'function)"), "T");
+    ASSERT_STR_EQ(eval_print("(rgb 5)"), "105");
+    ASSERT_STR_EQ(eval_print("(funcall #'rgb 7)"), "107");
+    ASSERT_STR_EQ(eval_print("(apply #'rgb '(8))"), "108");
+}
+
+TEST(gfclass_initialize_instance_after_fires)
+{
+    /* The make-instance protocol must run for a custom-class GF so user
+       INITIALIZE-INSTANCE :AFTER methods fire (this is exactly how snooze's
+       defroute self-registers each route). */
+    eval_print("(defclass rgf-c (cl:standard-generic-function) ()"
+               "  (:metaclass funcallable-standard-class))");
+    eval_print("(defvar *rgf-registry* (make-hash-table))");
+    eval_print("(defmethod initialize-instance :after"
+               "    ((gf rgf-c) &rest args) (declare (ignore args))"
+               "  (setf (gethash (generic-function-name gf) *rgf-registry*) gf))");
+    eval_print("(defgeneric rgc (x) (:generic-function-class rgf-c)"
+               "  (:method ((x t)) x))");
+    /* The :after stored the GF under its name. */
+    ASSERT_STR_EQ(eval_print("(eq (gethash 'rgc *rgf-registry*) #'rgc)"), "T");
+}
+
+TEST(gfclass_dispatch_on_gf_argument)
+{
+    /* A custom GF must dispatch as the specialized argument of *another* GF
+       (snooze's api.lisp methods specialize on resource-generic-function). */
+    eval_print("(defclass rgf-d (cl:standard-generic-function) ()"
+               "  (:metaclass funcallable-standard-class))");
+    eval_print("(defgeneric rgd (x) (:generic-function-class rgf-d)"
+               "  (:method ((x t)) x))");
+    eval_print("(defgeneric classify-gf (g))");
+    eval_print("(defmethod classify-gf ((g rgf-d)) :custom)");
+    eval_print("(defmethod classify-gf ((g standard-generic-function)) :standard)");
+    eval_print("(defgeneric plain-gf (x))");
+    ASSERT_STR_EQ(eval_print("(classify-gf #'rgd)"), ":CUSTOM");
+    ASSERT_STR_EQ(eval_print("(classify-gf #'plain-gf)"), ":STANDARD");
+}
+
+TEST(gfclass_default_unchanged)
+{
+    /* An explicit :generic-function-class standard-generic-function (and the
+       common no-option case) must keep the base behavior. */
+    eval_print("(defgeneric gfd-explicit (x)"
+               "  (:generic-function-class standard-generic-function)"
+               "  (:method ((x t)) x))");
+    ASSERT_STR_EQ(eval_print("(type-of #'gfd-explicit)"),
+                  "STANDARD-GENERIC-FUNCTION");
+    ASSERT_STR_EQ(eval_print("(gfd-explicit 42)"), "42");
+}
+
 /* ============================================================
  * Method metaobject protocol (MOP)
  * ============================================================ */
@@ -4062,6 +4138,11 @@ int main(void)
     RUN(funcallable_compute_discriminating_function_default);
     RUN(funcallable_gf_type_of);
     RUN(funcallable_gf_cpl_has_function);
+    RUN(gfclass_custom_type_of);
+    RUN(gfclass_custom_is_funcallable);
+    RUN(gfclass_initialize_instance_after_fires);
+    RUN(gfclass_dispatch_on_gf_argument);
+    RUN(gfclass_default_unchanged);
 
     /* Method metaobject protocol (MOP) */
     RUN(mmop_method_generic_function_backlink);
