@@ -176,6 +176,13 @@ test-fast: $(TEST_BINS) host
 		echo "FAIL"; \
 		failed=1; \
 	fi; \
+	echo "--- test_compile_file_package ---"; \
+	if sh $(TEST_SRCDIR)/test_compile_file_package.sh $(BUILDDIR)/clamiga; then \
+		echo "PASS"; \
+	else \
+		echo "FAIL"; \
+		failed=1; \
+	fi; \
 	echo "--- test_test_extra ---"; \
 	if sh $(TEST_SRCDIR)/test_test_extra.sh; then \
 		echo "PASS"; \

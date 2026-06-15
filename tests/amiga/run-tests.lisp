@@ -4517,6 +4517,35 @@
 (load "T:fasl-locmac.fasl")
 (check "locally defmacro available later" '(:loc 9) *cf-loc*)
 
+; --- COMPILE-FILE reader package vs *PACKAGE* churn ---
+; The reader interns each form's symbols using the package set by the file's
+; IN-PACKAGE forms.  A compile-time *PACKAGE* change by means other than
+; IN-PACKAGE (here a SETF, standing in for ASDF's session machinery unwinding
+; dynamic *PACKAGE* bindings) must NOT leak into the reader, so a later form
+; still interns in the file's IN-PACKAGE package.  Regression for esrap's
+; "FUNCTION: OUTPUT is not a valid function name" (EXPRESSION-CASE interning in
+; COMMON-LISP-USER).  IN-PACKAGE — including nested in PROGN — must still switch
+; the reader package.
+(defpackage "CF-CHURN-AMI" (:use "CL"))
+(defpackage "CF-OTHER-AMI" (:use "CL"))
+(with-open-file (s "T:fasl-churn.lisp" :direction :output :if-exists :supersede)
+  (write-string "(in-package :cf-churn-ami)" s) (terpri s)
+  (write-string "(eval-when (:compile-toplevel :load-toplevel :execute) (setf *package* (find-package :cf-other-ami)))" s) (terpri s)
+  (write-string "(defvar cf-churn-marker-ami 1)" s) (terpri s))
+(compile-file "T:fasl-churn.lisp" :output-file "T:fasl-churn.fasl")
+(check "compile-file package churn does not leak to reader" t
+  (and (not (null (find-symbol "CF-CHURN-MARKER-AMI" :cf-churn-ami)))
+       (null (find-symbol "CF-CHURN-MARKER-AMI" :cf-other-ami))))
+
+(defpackage "CF-NEST-AMI" (:use "CL"))
+(with-open-file (s "T:fasl-nestpkg.lisp" :direction :output :if-exists :supersede)
+  (write-string "(progn (in-package :cf-nest-ami))" s) (terpri s)
+  (write-string "(defvar cf-nest-marker-ami 2)" s) (terpri s))
+(compile-file "T:fasl-nestpkg.lisp" :output-file "T:fasl-nestpkg.fasl")
+(check "compile-file progn-wrapped in-package switches reader" t
+  (not (null (find-symbol "CF-NEST-MARKER-AMI" :cf-nest-ami))))
+(in-package "COMMON-LISP-USER")
+
 ; --- Dispatch cache ---
 (defgeneric dcache-test (x))
 (defmethod dcache-test ((x point)) (point-x x))

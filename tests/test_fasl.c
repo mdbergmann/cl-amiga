@@ -1992,6 +1992,15 @@ TEST(compile_file_preserves_package)
     delete_cached_fasl("/tmp/cf-test6.lisp");
 }
 
+/* NOTE: the compile-file reader-package regression (PROGN/EVAL-WHEN-wrapped
+ * IN-PACKAGE keeps switching the reader package, and transient compile-time
+ * *PACKAGE* churn does not leak to the reader) is covered by the shell test
+ * tests/test_compile_file_package.sh, which runs clamiga fresh per case.  It
+ * is not a C unit test here because compile-file under test_fasl's
+ * accumulated/never-compacted heap hits the O(n^2) free-list slow path and
+ * trips the per-test watchdog (a pre-existing harness limitation, unrelated
+ * to the fix). */
+
 TEST(load_fasl_preserves_package)
 {
     /* in-package in loaded FASL doesn't leak */
