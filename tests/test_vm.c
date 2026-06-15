@@ -962,6 +962,40 @@ TEST(eval_subtypep_bounded_integer_ranges)
     ASSERT_STR_EQ(eval_print("(multiple-value-list (subtypep '(unsigned-byte 8) 't))"), "(T T)");
 }
 
+/* (mod n) is a valid compound type specifier for TYPEP (CLHS type MOD):
+ * non-negative integers strictly less than n.  ironclad's index/digest code
+ * uses (typep x '(mod ...)) heavily via check-type. */
+TEST(eval_typep_mod)
+{
+    ASSERT_STR_EQ(eval_print("(typep 0 '(mod 8))"), "T");
+    ASSERT_STR_EQ(eval_print("(typep 7 '(mod 8))"), "T");
+    ASSERT_STR_EQ(eval_print("(typep 8 '(mod 8))"), "NIL");   /* upper bound exclusive */
+    ASSERT_STR_EQ(eval_print("(typep -1 '(mod 8))"), "NIL");  /* negatives excluded */
+    ASSERT_STR_EQ(eval_print("(typep 1/2 '(mod 8))"), "NIL"); /* non-integers excluded */
+    /* Large bound forces a bignum comparison. */
+    ASSERT_STR_EQ(eval_print("(typep 4000000000 '(mod 4294967296))"), "T");
+    ASSERT_STR_EQ(eval_print("(typep 4294967296 '(mod 4294967296))"), "NIL");
+}
+
+/* FDEFINITION accepts a function name, which per the CLHS glossary is a symbol
+ * OR a list (SETF symbol).  snooze calls (fdefinition '(setf hunchentoot:...))
+ * to invoke setf-expanders by name. */
+TEST(eval_fdefinition_setf)
+{
+    eval_print("(defun (setf fd-place) (val obj) (setf (car obj) val) val)");
+    /* (fdefinition '(setf fd-place)) returns the setter function. */
+    ASSERT_STR_EQ(eval_print("(functionp (fdefinition '(setf fd-place)))"), "T");
+    eval_print("(defparameter *fd-cell* (list 1 2))");
+    eval_print("(funcall (fdefinition '(setf fd-place)) 99 *fd-cell*)");
+    ASSERT_STR_EQ(eval_print("(car *fd-cell*)"), "99");
+    /* Plain-symbol function names still work. */
+    ASSERT_STR_EQ(eval_print("(functionp (fdefinition 'car))"), "T");
+    /* SYMBOL-FUNCTION, by contrast, must reject a (setf foo) list. */
+    ASSERT_STR_EQ(eval_print(
+        "(handler-case (progn (symbol-function '(setf fd-place)) :no-error)"
+        "  (type-error () :type-error))"), ":TYPE-ERROR");
+}
+
 /* Serapeum's with-subtype-dispatch / with-simple-vector-dispatch needs
  * (subtypep <vec-type> '(simple-array * (*))) to return T for simple 1-D
  * vectors, otherwise it raises "X is not a subtype of (SIMPLE-ARRAY * (*))".
@@ -9392,6 +9426,8 @@ int main(void)
     RUN(eval_macroexpand_symbol_macro_nil_expansion);
     RUN(eval_subtypep_typep_env_arg);
     RUN(eval_subtypep_bounded_integer_ranges);
+    RUN(eval_typep_mod);
+    RUN(eval_fdefinition_setf);
     RUN(eval_subtypep_compound_array_specs);
     RUN(eval_subtypep_typed_compound_array_specs);
     RUN(eval_subtypep_compound_combinators);

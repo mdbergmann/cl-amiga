@@ -71,6 +71,33 @@ static CL_Obj bi_symbol_function(CL_Obj *args, int n)
     return s->function;
 }
 
+/* FDEFINITION accepts a function name, which per the CLHS glossary is either a
+ * symbol or a list (SETF symbol).  SYMBOL-FUNCTION only accepts a symbol, so
+ * this is a separate entry point that additionally resolves the (SETF foo)
+ * form to the symbol that holds the setter function. */
+static CL_Obj bi_fdefinition(CL_Obj *args, int n)
+{
+    CL_Obj name = args[0];
+    CL_UNUSED(n);
+    if (CL_CONS_P(name)) {
+        /* (setf accessor) — resolve to the setter symbol, then its function. */
+        CL_Obj head = cl_car(name);
+        CL_Obj rest = cl_cdr(name);
+        if (CL_SYMBOL_P(head) &&
+            strcmp(cl_symbol_name(head), "SETF") == 0 &&
+            CL_CONS_P(rest) && CL_SYMBOL_P(cl_car(rest)) &&
+            CL_NULL_P(cl_cdr(rest))) {
+            CL_Obj setf_sym = cl_setf_function_symbol(cl_car(rest));
+            CL_Symbol *s = (CL_Symbol *)CL_OBJ_TO_PTR(setf_sym);
+            if (s->function == CL_UNBOUND)
+                cl_signal_undefined_function(name);
+            return s->function;
+        }
+        cl_signal_type_error(name, "FUNCTION-NAME", "FDEFINITION");
+    }
+    return bi_symbol_function(args, n);
+}
+
 /* --- Setf helpers --- */
 
 static CL_Obj bi_setf_nth(CL_Obj *args, int n)
@@ -314,7 +341,7 @@ void cl_builtins_mutation_init(void)
     /* Symbol accessors */
     defun("SYMBOL-VALUE", bi_symbol_value, 1, 1);
     defun("SYMBOL-FUNCTION", bi_symbol_function, 1, 1);
-    defun("FDEFINITION", bi_symbol_function, 1, 1);
+    defun("FDEFINITION", bi_fdefinition, 1, 1);
 
     /* Setf helpers */
     cl_register_builtin("%SETF-NTH", bi_setf_nth, 3, 3, cl_package_clamiga);

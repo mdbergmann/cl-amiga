@@ -924,27 +924,36 @@
 ;;   - closures use value capture, so setq on outer variables doesn't propagate;
 ;;     rplaca on a shared cons cell does propagate
 (defmacro handler-case (form &rest clauses)
+  ;; Normal-return path uses (return-from BLK (handler-bind ... FORM)) so ALL
+  ;; values of FORM are returned (CLHS: handler-case yields the values of its
+  ;; body when no condition is handled).  An earlier version bound the CATCH
+  ;; result to a single variable, which collapsed multiple values to the
+  ;; primary one — e.g. (handler-case (values a b) ...) lost b, breaking
+  ;; callers like rfc2388/str-based code that destructure a (values ...).
+  ;; On a handled condition the handler throws TAG, the RETURN-FROM is skipped,
+  ;; CATCH returns normally, and control falls through to the clause dispatch.
   (let ((tag (gensym "HC"))
-        (box (gensym "BOX")))
+        (box (gensym "BOX"))
+        (blk (gensym "HCBLK")))
     `(let ((,box (cons nil nil)))
-       (let ((result (catch ',tag
-                       (handler-bind
-                         ,(mapcar (lambda (clause)
-                                    `(,(car clause) (lambda (c)
-                                                      (rplaca ,box c)
-                                                      (throw ',tag ',tag))))
-                                  clauses)
-                         ,form))))
-         (if (eq result ',tag)
-             (typecase (car ,box)
-               ,@(mapcar (lambda (clause)
-                           (let ((type (car clause))
-                                 (arglist (cadr clause))
-                                 (body (cddr clause)))
-                             `(,type (let ((,(if arglist (car arglist) (gensym)) (car ,box)))
-                                       ,@body))))
-                         clauses))
-             result)))))
+       (block ,blk
+         (catch ',tag
+           (return-from ,blk
+             (handler-bind
+               ,(mapcar (lambda (clause)
+                          `(,(car clause) (lambda (c)
+                                            (rplaca ,box c)
+                                            (throw ',tag ',tag))))
+                        clauses)
+               ,form)))
+         (typecase (car ,box)
+           ,@(mapcar (lambda (clause)
+                       (let ((type (car clause))
+                             (arglist (cadr clause))
+                             (body (cddr clause)))
+                         `(,type (let ((,(if arglist (car arglist) (gensym)) (car ,box)))
+                                   ,@body))))
+                     clauses))))))
 
 ;; ignore-errors — catch errors, return (values nil condition)
 (defmacro ignore-errors (&rest body)
@@ -1331,9 +1340,24 @@ when the param has no explicit default.  CL spec 3.4.6 requires this."
                         ((null copier-opt) nil)
                         (t copier-opt)))
            (forms nil))
-      (if (eq type-opt 'vector)
-          ;; --- (:type vector) mode: represent as simple-vector, not a real struct ---
-          (progn
+      ;; A typed-sequence struct: (:type vector), (:type (vector ELT [SIZE]))
+      ;; — e.g. ironclad's (:type (vector (unsigned-byte 32))) — or (:type
+      ;; list) — e.g. rfc2388's (defstruct (header (:type list) ...)).  The
+      ;; declared element type/size are advisory and ignored; the value is a
+      ;; real CL:VECTOR / CL:LIST so REPLACE/AREF/SVREF/NTH work on it, and
+      ;; snooze's (second (parse-header ...)) sees an actual list.
+      (if (or (eq type-opt 'vector)
+              (eq type-opt 'list)
+              (and (consp type-opt) (eq (car type-opt) 'vector)))
+          ;; --- (:type vector) / (:type list) mode: represent as a typed
+          ;; sequence (CL:VECTOR or CL:LIST), not a real struct ---
+          (let* ((seq-kind (cond
+                             ((or (eq type-opt 'vector)
+                                  (and (consp type-opt)
+                                       (eq (car type-opt) 'vector)))
+                              'vector)
+                             (t 'list)))
+                 (builder (if (eq seq-kind 'vector) 'vector 'list)))
             ;; Constructor
             (when ctor-name
               (if boa-lambda-list
@@ -1351,21 +1375,27 @@ when the param has no explicit default.  CL spec 3.4.6 requires this."
                                                     sdefault)))
                                             all-slots)))
                     (push `(defun ,ctor-name ,(%boa-patch-defaults boa-lambda-list all-slots)
-                             (vector ,@slot-inits))
+                             (,builder ,@slot-inits))
                           forms))
                   (let ((key-params (mapcar (lambda (s) (list (car s) (cadr s)))
                                             all-slots)))
                     (push `(defun ,ctor-name (&key ,@key-params)
-                             (vector ,@(mapcar #'car all-slots)))
+                             (,builder ,@(mapcar #'car all-slots)))
                           forms))))
-            ;; No predicate or copier for (:type vector) — no type discrimination
-            ;; Accessors use svref, setters use (setf (svref ...))
+            ;; No predicate or copier for typed-sequence structs — no type
+            ;; discrimination.  Accessors index by position (svref / nth).
             (let ((idx 0))
               (dolist (sname slot-names)
                 (let* ((acc-name (intern (concatenate 'string prefix (symbol-name sname))))
-                       (setter-name (intern (concatenate 'string "%SET-" (symbol-name acc-name)))))
-                  (push `(defun ,acc-name (obj) (svref obj ,idx)) forms)
-                  (push `(defun ,setter-name (obj val) (setf (svref obj ,idx) val)) forms)
+                       (setter-name (intern (concatenate 'string "%SET-" (symbol-name acc-name))))
+                       (getter-form (if (eq seq-kind 'vector)
+                                        `(svref obj ,idx)
+                                        `(nth ,idx obj)))
+                       (set-place   (if (eq seq-kind 'vector)
+                                        `(svref obj ,idx)
+                                        `(nth ,idx obj))))
+                  (push `(defun ,acc-name (obj) ,getter-form) forms)
+                  (push `(defun ,setter-name (obj val) (setf ,set-place val)) forms)
                   (push `(defsetf ,acc-name ,setter-name) forms))
                 (setq idx (+ idx 1))))
             ;; EVAL-WHEN (not PROGN): a top-level DEFSTRUCT must register its

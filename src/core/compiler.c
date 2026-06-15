@@ -4109,6 +4109,15 @@ CL_Obj cl_get_type_expander(CL_Obj name)
 
 /* --- Setf function table --- */
 
+/* Public wrapper around resolve_setf_fn_symbol: given the accessor symbol FOO
+ * (the FOO in a (setf FOO) function name), return the symbol that names the
+ * (setf FOO) function.  Used by FDEFINITION/FBOUNDP/FMAKUNBOUND to honour the
+ * (setf symbol) function-name form (CLHS glossary "function name"). */
+CL_Obj cl_setf_function_symbol(CL_Obj accessor)
+{
+    return resolve_setf_fn_symbol(accessor);
+}
+
 void cl_register_setf_function(CL_Obj accessor, CL_Obj setf_fn_sym)
 {
     CL_Obj pair;

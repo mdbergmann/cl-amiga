@@ -3319,6 +3319,14 @@ We do not track declarations — return NIL."
   (declare (ignore gf))
   nil)
 
+;;; --- Compute-applicable-methods (CLHS / AMOP 8.6.4) ---
+;;; The standard generic function returning the applicable methods of GF for
+;;; ARGS, most-specific-first.  Used by portable CLOS clients (e.g. snooze's
+;;; route dispatch).  We expose the bootstrap implementation under the public
+;;; name; it already honours class and EQL specializers.
+(defun compute-applicable-methods (gf args)
+  (%compute-applicable-methods gf args))
+
 ;;; --- Compute-applicable-methods-using-classes ---
 ;;; AMOP 8.6.6 / closer-mop: determine applicable methods from a list
 ;;; of argument classes alone.  Return (VALUES METHODS VALIDP).  VALIDP

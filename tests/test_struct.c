@@ -249,6 +249,53 @@ TEST(struct_boa_constructor)
     ASSERT_STR_EQ(eval_print("(boa3-b (make-boa3 1))"), "99");
 }
 
+/* --- Typed-sequence structs: (:type vector) / (:type list) --- */
+
+TEST(struct_type_vector)
+{
+    /* Bare (:type vector): value is a real vector, accessors index it. */
+    eval_print("(defstruct (tv1 (:type vector)) a b)");
+    ASSERT_STR_EQ(eval_print("(vectorp (make-tv1 :a 1 :b 2))"), "T");
+    ASSERT_STR_EQ(eval_print("(tv1-a (make-tv1 :a 1 :b 2))"), "1");
+    ASSERT_STR_EQ(eval_print("(tv1-b (make-tv1 :a 1 :b 2))"), "2");
+    /* setf accessor mutates the underlying vector */
+    eval_print("(defparameter *tv* (make-tv1 :a 1 :b 2))");
+    eval_print("(setf (tv1-b *tv*) 99)");
+    ASSERT_STR_EQ(eval_print("(tv1-b *tv*)"), "99");
+}
+
+TEST(struct_type_vector_compound)
+{
+    /* (:type (vector ELEMENT-TYPE)) — ironclad's digest-register form.  The
+     * element type is advisory; the value is still a real CL:VECTOR usable
+     * with REPLACE/AREF. */
+    eval_print("(defstruct (tv2 (:type (vector (unsigned-byte 32)))"
+               "             (:constructor make-tv2 ())) (a 7) (b 8))");
+    ASSERT_STR_EQ(eval_print("(vectorp (make-tv2))"), "T");
+    ASSERT_STR_EQ(eval_print("(tv2-a (make-tv2))"), "7");
+    ASSERT_STR_EQ(eval_print("(aref (make-tv2) 1)"), "8");
+    /* REPLACE works because it is a real sequence */
+    eval_print("(defparameter *tv2* (make-tv2))");
+    eval_print("(replace *tv2* #(11 22))");
+    ASSERT_STR_EQ(eval_print("(tv2-a *tv2*)"), "11");
+}
+
+TEST(struct_type_list)
+{
+    /* (:type list) — rfc2388's header form.  Value is a real list, so
+     * positional access (NTH / SECOND) works on it. */
+    eval_print("(defstruct (tl1 (:type list)"
+               "             (:constructor make-tl1 (name value parameters)))"
+               "  name value parameters)");
+    ASSERT_STR_EQ(eval_print("(listp (make-tl1 \"n\" \"v\" nil))"), "T");
+    ASSERT_STR_EQ(eval_print("(tl1-value (make-tl1 \"n\" \"v\" nil))"), "\"v\"");
+    /* second element of the list IS the value slot (snooze relies on this) */
+    ASSERT_STR_EQ(eval_print("(second (make-tl1 \"n\" \"v\" nil))"), "\"v\"");
+    eval_print("(defparameter *tl* (make-tl1 \"n\" \"v\" nil))");
+    eval_print("(setf (tl1-value *tl*) \"x\")");
+    ASSERT_STR_EQ(eval_print("(tl1-value *tl*)"), "\"x\"");
+}
+
 int main(void)
 {
     test_init();
@@ -283,6 +330,11 @@ int main(void)
     RUN(struct_no_slots);
     RUN(struct_slot_no_default);
     RUN(struct_boa_constructor);
+
+    /* Typed-sequence structs */
+    RUN(struct_type_vector);
+    RUN(struct_type_vector_compound);
+    RUN(struct_type_list);
 
     teardown();
     REPORT();
