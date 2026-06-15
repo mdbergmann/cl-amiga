@@ -1084,10 +1084,13 @@ static int cf_form_needs_compile_time_eval(CL_Obj expr)
 
 /* Forward declarations — helpers reference each other. */
 static void cf_bc_vec_append(CL_Obj *bc_vec_p, int *bc_count_p, CL_Obj bytecode);
-static void cf_process_toplevel_form(CL_Obj expr,
-                                     CL_Obj lex_env,
-                                     CL_Obj *bc_vec_p,
-                                     int *bc_count_p);
+/* Returns 1 if processing this form (re)set the reader package via an
+ * IN-PACKAGE (at any nesting), so the caller must NOT restore the
+ * pre-form package; 0 otherwise.  See the bi_compile_file read loop. */
+static int cf_process_toplevel_form(CL_Obj expr,
+                                    CL_Obj lex_env,
+                                    CL_Obj *bc_vec_p,
+                                    int *bc_count_p);
 
 /* Process a top-level (eval-when (situations...) body...) per CLHS Table 3-9.
  * Called by cf_process_toplevel_form after the macroexpand-1 loop, when the
@@ -1099,13 +1102,14 @@ static void cf_process_toplevel_form(CL_Obj expr,
  *   LT    → compile each body; emit to FASL; do NOT eval at compile time
  *   EX    → "not at top-level" semantics: compile+eval; do NOT emit
  *   none  → do nothing */
-static void cf_process_toplevel_eval_when(CL_Obj form,
-                                          CL_Obj lex_env,
-                                          CL_Obj *bc_vec_p,
-                                          int *bc_count_p)
+static int cf_process_toplevel_eval_when(CL_Obj form,
+                                         CL_Obj lex_env,
+                                         CL_Obj *bc_vec_p,
+                                         int *bc_count_p)
 {
     CL_Obj situations, body, sit, rest;
     int has_ct = 0, has_lt = 0, has_ex = 0;
+    int saw_in_package = 0;   /* an IN-PACKAGE body form changed the reader pkg */
 
     /* lex_env is consulted on every loop iteration below, across cl_compile_lex
      * calls that can trigger moving GC; protect it so compaction forwards our
@@ -1136,6 +1140,8 @@ static void cf_process_toplevel_eval_when(CL_Obj form,
         while (!CL_NULL_P(rest)) {
             CL_Obj sub = cl_car(rest);
             CL_Obj bc;
+            if (CL_CONS_P(sub) && cl_car(sub) == SYM_IN_PACKAGE)
+                saw_in_package = 1;
             cl_ltv_init_count = 0;
             CL_GC_PROTECT(sub);
             bc = CL_CONS_P(lex_env) ? cl_compile_lex(sub, lex_env) : cl_compile(sub);
@@ -1158,6 +1164,8 @@ static void cf_process_toplevel_eval_when(CL_Obj form,
         while (!CL_NULL_P(rest)) {
             CL_Obj sub = cl_car(rest);
             CL_Obj bc;
+            if (CL_CONS_P(sub) && cl_car(sub) == SYM_IN_PACKAGE)
+                saw_in_package = 1;
             cl_ltv_init_count = 0;
             CL_GC_PROTECT(sub);
             bc = CL_CONS_P(lex_env) ? cl_compile_lex(sub, lex_env) : cl_compile(sub);
@@ -1179,6 +1187,8 @@ static void cf_process_toplevel_eval_when(CL_Obj form,
         while (!CL_NULL_P(rest)) {
             CL_Obj sub = cl_car(rest);
             CL_Obj bc;
+            if (CL_CONS_P(sub) && cl_car(sub) == SYM_IN_PACKAGE)
+                saw_in_package = 1;
             cl_ltv_init_count = 0;
             CL_GC_PROTECT(sub);
             bc = CL_CONS_P(lex_env) ? cl_compile_lex(sub, lex_env) : cl_compile(sub);
@@ -1200,6 +1210,8 @@ static void cf_process_toplevel_eval_when(CL_Obj form,
         while (!CL_NULL_P(rest)) {
             CL_Obj sub = cl_car(rest);
             CL_Obj bc;
+            if (CL_CONS_P(sub) && cl_car(sub) == SYM_IN_PACKAGE)
+                saw_in_package = 1;
             cl_ltv_init_count = 0;
             CL_GC_PROTECT(sub);
             bc = CL_CONS_P(lex_env) ? cl_compile_lex(sub, lex_env) : cl_compile(sub);
@@ -1218,6 +1230,7 @@ static void cf_process_toplevel_eval_when(CL_Obj form,
     /* else: no active situation — do nothing */
 
     CL_GC_UNPROTECT(1); /* lex_env */
+    return saw_in_package;
 }
 
 /* Process a single top-level form for compile-file.
@@ -1258,13 +1271,14 @@ static void cf_bc_vec_append(CL_Obj *bc_vec_p, int *bc_count_p, CL_Obj bytecode)
     vec->data[(*bc_count_p)++] = bytecode;
 }
 
-static void cf_process_toplevel_form(CL_Obj expr,
-                                     CL_Obj lex_env,
-                                     CL_Obj *bc_vec_p,
-                                     int *bc_count_p)
+static int cf_process_toplevel_form(CL_Obj expr,
+                                    CL_Obj lex_env,
+                                    CL_Obj *bc_vec_p,
+                                    int *bc_count_p)
 {
     CL_Obj bytecode;
     CL_Obj head;
+    int changed_pkg = 0;   /* OR of nested IN-PACKAGE results */
 
     /* LEX_ENV (CL_NIL or an alist from cl_build_lex_env) carries the local
      * macros/symbol-macros of any enclosing top-level MACROLET/SYMBOL-MACROLET
@@ -1279,7 +1293,7 @@ static void cf_process_toplevel_form(CL_Obj expr,
      * not macros and return unchanged on the first iteration. */
     for (;;) {
         CL_Obj exp;
-        if (!CL_CONS_P(expr)) { CL_GC_UNPROTECT(2); return; }
+        if (!CL_CONS_P(expr)) { CL_GC_UNPROTECT(2); return 0; }
         exp = cl_macroexpand_1_env(expr, lex_env);
         if (exp == expr) break;
         expr = exp;
@@ -1292,12 +1306,13 @@ static void cf_process_toplevel_form(CL_Obj expr,
         CL_Obj subs = cl_cdr(expr);
         CL_GC_PROTECT(subs);
         while (!CL_NULL_P(subs)) {
-            cf_process_toplevel_form(cl_car(subs), lex_env, bc_vec_p, bc_count_p);
+            changed_pkg |= cf_process_toplevel_form(cl_car(subs), lex_env,
+                                                    bc_vec_p, bc_count_p);
             subs = cl_cdr(subs);
         }
         CL_GC_UNPROTECT(1);     /* subs */
         CL_GC_UNPROTECT(2);     /* expr, lex_env */
-        return;
+        return changed_pkg;
     }
 
     /* LOCALLY: body forms (after any declarations) are fresh top-level forms
@@ -1308,12 +1323,13 @@ static void cf_process_toplevel_form(CL_Obj expr,
         while (!CL_NULL_P(subs)) {
             CL_Obj sub = cl_car(subs);
             if (!(CL_CONS_P(sub) && cl_car(sub) == SYM_DECLARE))
-                cf_process_toplevel_form(sub, lex_env, bc_vec_p, bc_count_p);
+                changed_pkg |= cf_process_toplevel_form(sub, lex_env,
+                                                        bc_vec_p, bc_count_p);
             subs = cl_cdr(subs);
         }
         CL_GC_UNPROTECT(1);     /* subs */
         CL_GC_UNPROTECT(2);     /* expr, lex_env */
-        return;
+        return changed_pkg;
     }
 
     /* MACROLET / SYMBOL-MACROLET: process the body as top-level forms with the
@@ -1337,19 +1353,21 @@ static void cf_process_toplevel_form(CL_Obj expr,
         body = cl_cdr(cl_cdr(expr));
         CL_GC_PROTECT(body);
         while (!CL_NULL_P(body)) {
-            cf_process_toplevel_form(cl_car(body), new_env, bc_vec_p, bc_count_p);
+            changed_pkg |= cf_process_toplevel_form(cl_car(body), new_env,
+                                                    bc_vec_p, bc_count_p);
             body = cl_cdr(body);
         }
         CL_GC_UNPROTECT(2);     /* body, new_env */
         CL_GC_UNPROTECT(2);     /* expr, lex_env */
-        return;
+        return changed_pkg;
     }
 
     /* EVAL-WHEN: dispatch per CLHS Table 3-9. */
     if (head == SYM_EVAL_WHEN) {
-        cf_process_toplevel_eval_when(expr, lex_env, bc_vec_p, bc_count_p);
+        changed_pkg = cf_process_toplevel_eval_when(expr, lex_env,
+                                                    bc_vec_p, bc_count_p);
         CL_GC_UNPROTECT(2);     /* expr, lex_env */
-        return;
+        return changed_pkg;
     }
 
     /* All other forms: compile to bytecode.
@@ -1362,7 +1380,7 @@ static void cf_process_toplevel_form(CL_Obj expr,
     bytecode = CL_CONS_P(lex_env) ? cl_compile_lex(expr, lex_env)
                                   : cl_compile(expr);
 
-    if (CL_NULL_P(bytecode)) { cl_ltv_init_count = 0; CL_GC_UNPROTECT(2); return; }
+    if (CL_NULL_P(bytecode)) { cl_ltv_init_count = 0; CL_GC_UNPROTECT(2); return 0; }
     cl_ltv_init_count = 0;
 
     CL_GC_PROTECT(bytecode);
@@ -1372,6 +1390,11 @@ static void cf_process_toplevel_form(CL_Obj expr,
     cf_bc_vec_append(bc_vec_p, bc_count_p, bytecode);
     CL_GC_UNPROTECT(1);         /* bytecode */
     CL_GC_UNPROTECT(2);         /* expr, lex_env */
+    /* IN-PACKAGE (compile_in_package fast path or the deferred
+     * %SET-CURRENT-PACKAGE runtime path) is the only top-level form that
+     * legitimately changes the file reader's package; report it so the
+     * caller keeps the new package instead of restoring. */
+    return (head == SYM_IN_PACKAGE) ? 1 : 0;
 }
 
 /* --- compile-file ---
@@ -1631,7 +1654,32 @@ static CL_Obj bi_compile_file(CL_Obj *args, int n)
             fflush(stderr);
 #endif
             CL_GC_PROTECT(expr);
-            cf_process_toplevel_form(expr, CL_NIL, &bc_vec, &bc_collect_count);
+            {
+                /* Preserve the file reader's package across this form.  The
+                 * reader interns symbols using cl_current_package, set by the
+                 * file's IN-PACKAGE forms (compile_in_package).  Compiling or
+                 * compile-time-evaluating a form can transiently rebind
+                 * *PACKAGE* — e.g. ASDF's session/visiting machinery unwinds
+                 * dynamic bindings during the operate that drives compile-file
+                 * — and each *PACKAGE* dynbind/unbind syncs cl_current_package
+                 * (cl_sync_current_package_from_dynamic).  Left unchecked, the
+                 * reader switches to the wrong package mid-file, so a later
+                 * form's symbols intern in COMMON-LISP-USER instead of the
+                 * file's package; that yields a *different* symbol object than
+                 * the file's earlier forms registered, so e.g. a macro defined
+                 * earlier looks "undefined" and the call compiles as a bare
+                 * function call.  Restore cl_current_package unless this form
+                 * was an IN-PACKAGE (whose change must persist for the rest of
+                 * the file).  See tests/test_compile_file_package.c. */
+                CL_Obj reader_pkg = cl_current_package;
+                int form_set_package;
+                CL_GC_PROTECT(reader_pkg);
+                form_set_package = cf_process_toplevel_form(
+                    expr, CL_NIL, &bc_vec, &bc_collect_count);
+                if (!form_set_package)
+                    cl_current_package = reader_pkg;
+                CL_GC_UNPROTECT(1); /* reader_pkg */
+            }
             CL_GC_UNPROTECT(1);
             CL_UNCATCH();
         } else {
