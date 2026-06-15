@@ -8594,6 +8594,47 @@ TEST(eval_destructuring_bind_rest_key)
         "(1 (:X 10 :Y 20) 10 20)");
 }
 
+TEST(eval_destructuring_bind_arity_strict)
+{
+    /* CLHS: a list that does not match the structure of the lambda list
+       (too few or too many elements) must signal an error. */
+    /* too few required */
+    ASSERT_STR_EQ(eval_print(
+        "(handler-case (destructuring-bind (a b) '(\"x\") (list a b))"
+        "  (error () :err))"), ":ERR");
+    /* too many for a required-only pattern */
+    ASSERT_STR_EQ(eval_print(
+        "(handler-case (destructuring-bind (a b) '(1 2 3) (list a b))"
+        "  (error () :err))"), ":ERR");
+    /* too few inside a nested pattern */
+    ASSERT_STR_EQ(eval_print(
+        "(handler-case (destructuring-bind (a (b c)) '(1 (2)) (list a b c))"
+        "  (error () :err))"), ":ERR");
+    /* too many with &optional but no &rest */
+    ASSERT_STR_EQ(eval_print(
+        "(handler-case (destructuring-bind (a &optional b) '(1 2 3) (list a b))"
+        "  (error () :err))"), ":ERR");
+    /* exact match still binds */
+    ASSERT_STR_EQ(eval_print(
+        "(destructuring-bind (a b) '(1 2) (list a b))"), "(1 2)");
+    /* nested exact match */
+    ASSERT_STR_EQ(eval_print(
+        "(destructuring-bind (a (b c)) '(1 (2 3)) (list a b c))"),
+        "(1 2 3)");
+    /* &rest legitimately absorbs the remainder — no error */
+    ASSERT_STR_EQ(eval_print(
+        "(destructuring-bind (a &rest r) '(1 2 3) (list a r))"),
+        "(1 (2 3))");
+    /* missing optional is fine */
+    ASSERT_STR_EQ(eval_print(
+        "(destructuring-bind (a &optional b) '(1) (list a b))"),
+        "(1 NIL)");
+    /* dotted tail absorbs the remainder — no error */
+    ASSERT_STR_EQ(eval_print(
+        "(destructuring-bind (a . b) '(1 2 3) (list a b))"),
+        "(1 (2 3))");
+}
+
 /* --- Synonym stream tests (Bug 14) --- */
 
 TEST(eval_synonym_stream)
@@ -10189,6 +10230,7 @@ int main(void)
     RUN(eval_special_var_unwind_closure);
     RUN(eval_special_var_unwind_block_return);
     RUN(eval_destructuring_bind_rest_key);
+    RUN(eval_destructuring_bind_arity_strict);
 
     /* synonym streams, compile-file vars, directory (Bug 14) */
     RUN(eval_synonym_stream);
