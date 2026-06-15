@@ -761,6 +761,17 @@
 (check "d-bind &optional default" '(1 10) (destructuring-bind (a &optional (b 10)) '(1) (list a b)))
 (check "d-bind &optional provided" '(1 2) (destructuring-bind (a &optional (b 10)) '(1 2) (list a b)))
 (check "d-bind &body" '(1 (2 3)) (destructuring-bind (a &body b) '(1 2 3) (list a b)))
+; CLHS: a list that does not match the lambda-list structure must signal an error.
+(check "d-bind too-few errors" :err
+  (handler-case (destructuring-bind (a b) '("x") (list a b)) (error () :err)))
+(check "d-bind too-many errors" :err
+  (handler-case (destructuring-bind (a b) '(1 2 3) (list a b)) (error () :err)))
+(check "d-bind nested too-few errors" :err
+  (handler-case (destructuring-bind (a (b c)) '(1 (2)) (list a b c)) (error () :err)))
+(check "d-bind &optional too-many errors" :err
+  (handler-case (destructuring-bind (a &optional b) '(1 2 3) (list a b)) (error () :err)))
+(check "d-bind exact ok" '(1 2) (destructuring-bind (a b) '(1 2) (list a b)))
+(check "d-bind dotted absorbs rest" '(1 (2 3)) (destructuring-bind (a . b) '(1 2 3) (list a b)))
 
 ; --- defsetf ---
 (defun my-get-t (vec i) (aref vec i))

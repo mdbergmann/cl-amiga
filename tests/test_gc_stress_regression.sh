@@ -785,6 +785,30 @@ out=$(run_stress "$WORK/db-opt-rest-key.lisp")
 check_contains "destructuring &optional+&rest+&key binds keys under stress" "DB:V39/NIL/(INDENT 39)/39" "$out"
 check_absent   "no unbound/corruption in opt+rest+key destructuring"        "Unbound variable\|type 0\|corrupted\|Undefined" "$out"
 
+# --- Case: DESTRUCTURING-BIND arity guards under GC stress -------------------
+# Regression for the arity-strictness fix: compile_destructure_pattern now emits
+# `(error "...")` guards for too-few/too-many elements.  Building that error form
+# (cl_make_string + cl_cons) allocates at compile time, so the `pattern` cursor
+# must stay GC-protected across it.  Compile + run the guarded forms under stress
+# and confirm the error fires cleanly (no stale-offset corruption / wrong result).
+cat > "$WORK/db-arity.lisp" <<'EOF'
+(defun arity-probe ()
+  (let ((few  (handler-case (destructuring-bind (a b) '(1) (list a b))
+                (error () :few)))
+        (many (handler-case (destructuring-bind (a b) '(1 2 3) (list a b))
+                (error () :many)))
+        (nest (handler-case (destructuring-bind (a (b c)) '(1 (2)) (list a b c))
+                (error () :nest)))
+        (ok   (destructuring-bind (a b) '(1 2) (list a b))))
+    (format nil "~a/~a/~a/~a" few many nest ok)))
+(let ((last nil))
+  (dotimes (i 30) (setq last (arity-probe)))
+  (format t "DBARITY:~a~%" last))
+EOF
+out=$(run_stress "$WORK/db-arity.lisp")
+check_contains "destructuring-bind arity guards fire correctly under stress" "DBARITY:FEW/MANY/NEST/(1 2)" "$out"
+check_absent   "no corruption from stale pattern cursor in arity guards"     "Unbound variable\|type 0\|corrupted\|Undefined" "$out"
+
 # --- Case: DEFINE-CONDITION :report function-name SYMBOL under GC stress -----
 # Regression for the boot.lisp :report fix: a SYMBOL :report names a function;
 # it must be funcalled as a function designator (',report), not spliced bare

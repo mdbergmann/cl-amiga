@@ -10,6 +10,29 @@
 
 /* --- Destructuring --- */
 
+/* Emit bytecode that unconditionally signals a SIMPLE-ERROR with MSG.
+ * Used by the destructuring-bind arity guards: CLHS requires an error to be
+ * signalled when the supplied list does not match the structure of the
+ * lambda list (too few or too many elements).  Compiles `(error "MSG")`,
+ * which never returns, so any bytecode that follows a guard is reached only
+ * when the guard passed. */
+static void emit_dbind_error(CL_Compiler *c, const char *msg)
+{
+    CL_Obj str, err_sym, tail, form;
+    str = cl_make_string(msg, (uint32_t)strlen(msg));
+    CL_GC_PROTECT(str);
+    err_sym = cl_intern_in("ERROR", 5, cl_package_cl);
+    CL_GC_PROTECT(err_sym);
+    tail = cl_cons(str, CL_NIL);
+    CL_GC_PROTECT(tail);
+    form = cl_cons(err_sym, tail);
+    CL_GC_UNPROTECT(3);
+    /* compile_expr GC-protects its own argument on entry, so building `form`
+     * immediately before the call is safe. */
+    compile_expr(c, form);
+    cl_emit(c, OP_POP);  /* error never returns; keeps the stack balanced */
+}
+
 /* Recursive destructuring pattern walker.
  * pos_slot: local slot holding the current list position.
  * pattern: the destructuring lambda list (nested list).
@@ -20,6 +43,12 @@ static void compile_destructure_pattern(CL_Compiler *c, int pos_slot,
     CL_CompEnv *env = c->env;
     int saved_tail = c->in_tail;
     c->in_tail = 0;
+
+    /* GC-protect the pattern cursor: the arity guards below (emit_dbind_error)
+     * and default-value compilation allocate and may compact, which would
+     * leave an unprotected `pattern` C-local holding a stale offset.  All exit
+     * paths funnel through `done:`, where this is unprotected. */
+    CL_GC_PROTECT(pattern);
 
     while (!CL_NULL_P(pattern)) {
         CL_Obj elem = cl_car(pattern);
@@ -37,7 +66,7 @@ static void compile_destructure_pattern(CL_Compiler *c, int pos_slot,
             pattern = cl_cdr(cl_cdr(pattern)); /* skip &rest var */
             if (!CL_NULL_P(pattern) && cl_car(pattern) == SYM_AMP_KEY)
                 continue; /* let &key handler process it */
-            break;
+            goto done; /* &rest absorbs the remainder — no too-many check */
         }
 
         /* &optional — remaining elements are optional with defaults */
@@ -145,6 +174,17 @@ static void compile_destructure_pattern(CL_Compiler *c, int pos_slot,
                 elem = CL_NULL_P(rest) ? CL_NIL : cl_car(rest);
             }
             CL_GC_UNPROTECT(1);
+            /* Optionals exhausted with no following &rest/&key: per CLHS any
+             * leftover element is a too-many arity error. */
+            {
+                int ok_pos;
+                cl_emit(c, OP_LOAD);
+                cl_emit(c, (uint8_t)pos_slot);
+                ok_pos = cl_emit_jump(c, OP_JNIL);
+                emit_dbind_error(c,
+                    "destructuring-bind: too many elements in list for lambda list");
+                cl_patch_jump(c, ok_pos);
+            }
             goto done;
         optional_done:
             /* Continue outer loop — pattern points to &key */
@@ -293,6 +333,20 @@ static void compile_destructure_pattern(CL_Compiler *c, int pos_slot,
             goto done;
         }
 
+        /* Required parameter: the list must still have an element here.
+         * (CLHS: too-few elements must signal an error.)  emit_dbind_error
+         * may compact, so re-read `elem` from the protected `pattern`. */
+        {
+            int ok_pos;
+            cl_emit(c, OP_LOAD);
+            cl_emit(c, (uint8_t)pos_slot);
+            ok_pos = cl_emit_jump(c, OP_JTRUE);  /* element present → bind */
+            emit_dbind_error(c,
+                "destructuring-bind: too few elements in list for lambda list");
+            cl_patch_jump(c, ok_pos);
+        }
+        elem = cl_car(pattern);
+
         if (CL_CONS_P(elem)) {
             /* Nested pattern: extract sublist, recurse */
             int sub_slot = alloc_temp_slot(env);
@@ -334,10 +388,25 @@ static void compile_destructure_pattern(CL_Compiler *c, int pos_slot,
                 cl_emit(c, (uint8_t)slot);
                 cl_emit(c, OP_POP);
             }
-            break;
+            goto done; /* dotted tail absorbs the remainder — no too-many check */
         }
     }
+
+    /* Natural loop exit: a proper, required-only pattern (no &rest/&optional/
+     * &key/&body and no dotted tail) was fully consumed.  Per CLHS the list
+     * must now be exhausted; any leftover element is a too-many arity error.
+     * The &-keyword and dotted paths jump straight to `done:`, skipping this. */
+    {
+        int ok_pos;
+        cl_emit(c, OP_LOAD);
+        cl_emit(c, (uint8_t)pos_slot);
+        ok_pos = cl_emit_jump(c, OP_JNIL);  /* list empty → ok */
+        emit_dbind_error(c,
+            "destructuring-bind: too many elements in list for lambda list");
+        cl_patch_jump(c, ok_pos);
+    }
 done:
+    CL_GC_UNPROTECT(1);  /* pattern */
     c->in_tail = saved_tail;
 }
 
