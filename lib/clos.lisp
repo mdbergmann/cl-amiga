@@ -1897,7 +1897,9 @@ When called with no arguments, passes the original method arguments."
 (defun ensure-generic-function (name &key lambda-list
                                           (method-combination-name 'standard
                                                                    method-combination-name-p)
-                                          method-combination-options)
+                                          method-combination-options
+                                          (generic-function-class
+                                            'standard-generic-function))
   "Find or create a generic function named NAME.
 Installs the GF metaobject itself in the symbol-function cell; the VM
 transparently unwraps funcallable instances to their discriminating
@@ -1939,8 +1941,22 @@ already-existing GF the installed combination is preserved."
           existing)
         (let* ((combo (%resolve-method-combination
                         method-combination-name method-combination-options))
-               (gf (%make-struct 'standard-generic-function
-                     name lambda-list nil nil combo nil nil nil nil))
+               ;; CLHS :generic-function-class — a STANDARD-GENERIC-FUNCTION
+               ;; subclass.  When supplied the GF struct is tagged with that
+               ;; class (so TYPE-OF / dispatch see it) and the class is
+               ;; declared funcallable so the VM still dispatches through its
+               ;; discriminating-function slot.  Custom-class GFs are created
+               ;; via the make-instance protocol (initialize-instance below)
+               ;; so user (initialize-instance :after) methods fire.
+               (gf-class-name (if (symbolp generic-function-class)
+                                  generic-function-class
+                                  (class-name generic-function-class)))
+               (custom-class-p (not (eq gf-class-name 'standard-generic-function)))
+               (gf (progn
+                     (when custom-class-p
+                       (%register-funcallable-gf-type gf-class-name))
+                     (%make-struct gf-class-name
+                       name lambda-list nil nil combo nil nil nil nil)))
                (dispatch-fn (%build-discriminating-function gf lambda-list)))
           (%set-gf-discriminating-function gf dispatch-fn)
           (setf (gethash name *generic-function-table*) gf)
@@ -1954,6 +1970,14 @@ already-existing GF the installed combination is preserved."
                     (hidden-sym (intern hidden-name (find-package :clamiga))))
                (setf (symbol-function hidden-sym) gf)
                (%register-setf-function accessor hidden-sym))))
+          ;; Fire the make-instance initialization protocol for custom GF
+          ;; classes.  The 9 GF slots are already populated (non-unbound), so
+          ;; the default SHARED-INITIALIZE leaves them intact and only user
+          ;; INITIALIZE-INSTANCE :AFTER methods (e.g. snooze route
+          ;; registration) run.  STANDARD-GENERIC-FUNCTION skips this to keep
+          ;; the boot/common path unchanged.
+          (when custom-class-p
+            (initialize-instance gf))
           gf))))
 
 (defun %resolve-method-combination (name options)
@@ -1978,9 +2002,14 @@ already-existing GF the installed combination is preserved."
   "Define a generic function."
   (let ((method-defs nil)
         (combo-name 'standard)
-        (combo-options nil))
+        (combo-options nil)
+        (gf-class 'standard-generic-function))
     (dolist (opt options)
       (cond
+        ;; CLHS :generic-function-class — name of a STANDARD-GENERIC-FUNCTION
+        ;; subclass to instantiate (e.g. snooze's resource-generic-function).
+        ((and (consp opt) (eq (car opt) :generic-function-class))
+         (setq gf-class (cadr opt)))
         ;; Inline method definition
         ((and (consp opt) (eq (car opt) :method))
          ;; (:method [qualifiers...] specialized-lambda-list &body body)
@@ -2007,7 +2036,8 @@ already-existing GF the installed combination is preserved."
             `(ensure-generic-function ',name
                :lambda-list ',lambda-list
                :method-combination-name ',combo-name
-               :method-combination-options ',combo-options)))
+               :method-combination-options ',combo-options
+               :generic-function-class ',gf-class)))
       (if method-defs
           `(progn ,egf-form ,@method-defs)
           egf-form))))

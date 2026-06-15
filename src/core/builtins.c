@@ -18,6 +18,11 @@
 #include <stdlib.h>
 #include <unistd.h>
 
+/* Cached, GC-registered symbols for the destructuring-bind arity-error runtime
+ * helpers; declared extern in compiler_internal.h, interned in cl_builtins_init. */
+CL_Obj cl_dbind_too_few_sym = CL_NIL;
+CL_Obj cl_dbind_too_many_sym = CL_NIL;
+
 /* Shared: register a builtin in a specific package */
 void cl_register_builtin(const char *name, CL_CFunc func,
                           int min, int max, CL_Obj package)
@@ -312,6 +317,29 @@ static CL_Obj bi_functionp(CL_Obj *args, int n)
     return (CL_FUNCTION_P(obj) || CL_CLOSURE_P(obj) ||
             CL_BYTECODE_P(obj) || cl_funcallable_instance_p(obj))
         ? SYM_T : CL_NIL;
+}
+
+/* Runtime helpers invoked by destructuring-bind arity guards.  The compiler
+ * emits a 0-arg call to one of these when a required element is missing or an
+ * extra element is present; signalling from a tiny shared builtin keeps the
+ * per-binding bytecode small (no inline (error "...") form / string constant)
+ * and avoids re-entering the expression compiler — important on the
+ * memory-constrained target and to keep destructuring-bind compilation cheap.
+ * (CLHS: a list that does not match the lambda-list structure must error.) */
+static CL_Obj bi_dbind_too_few(CL_Obj *args, int n)
+{
+    CL_UNUSED(args); CL_UNUSED(n);
+    cl_error(CL_ERR_ARGS,
+             "destructuring-bind: too few elements in list for the lambda list");
+    return CL_NIL;
+}
+
+static CL_Obj bi_dbind_too_many(CL_Obj *args, int n)
+{
+    CL_UNUSED(args); CL_UNUSED(n);
+    cl_error(CL_ERR_ARGS,
+             "destructuring-bind: too many elements in list for the lambda list");
+    return CL_NIL;
 }
 
 /* (compiled-function-p object) => boolean
@@ -1419,6 +1447,14 @@ void cl_builtins_init(void)
 
     /* Property lists */
     defun("SYMBOL-PLIST", bi_symbol_plist, 1, 1);
+    cl_register_builtin("%DBIND-TOO-FEW", bi_dbind_too_few, 0, 0, cl_package_clamiga);
+    cl_register_builtin("%DBIND-TOO-MANY", bi_dbind_too_many, 0, 0, cl_package_clamiga);
+    /* Cache + GC-root the helper symbols so the compiler's destructuring-bind
+     * arity guards can be emitted without allocating (see compiler_internal.h). */
+    cl_dbind_too_few_sym = cl_intern_in("%DBIND-TOO-FEW", 14, cl_package_clamiga);
+    cl_gc_register_root(&cl_dbind_too_few_sym);
+    cl_dbind_too_many_sym = cl_intern_in("%DBIND-TOO-MANY", 15, cl_package_clamiga);
+    cl_gc_register_root(&cl_dbind_too_many_sym);
     cl_register_builtin("%SET-SYMBOL-PLIST", bi_set_symbol_plist, 2, 2, cl_package_clamiga);
     defun("GET", bi_get, 2, 3);
     cl_register_builtin("%SETF-GET", bi_setf_get, 3, 3, cl_package_clamiga);

@@ -10,27 +10,27 @@
 
 /* --- Destructuring --- */
 
-/* Emit bytecode that unconditionally signals a SIMPLE-ERROR with MSG.
- * Used by the destructuring-bind arity guards: CLHS requires an error to be
- * signalled when the supplied list does not match the structure of the
- * lambda list (too few or too many elements).  Compiles `(error "MSG")`,
- * which never returns, so any bytecode that follows a guard is reached only
- * when the guard passed. */
-static void emit_dbind_error(CL_Compiler *c, const char *msg)
+/* Emit bytecode that unconditionally signals an arity error for the
+ * destructuring-bind guards: CLHS requires an error when the supplied list
+ * does not match the structure of the lambda list (too few or too many
+ * elements).  HELPER_SYM is a cached, GC-rooted CLAMIGA runtime builtin
+ * (cl_dbind_too_few_sym / cl_dbind_too_many_sym) that does the signalling.
+ * The call never returns, so bytecode following a guard runs only when the
+ * guard passed. */
+static void emit_dbind_error(CL_Compiler *c, CL_Obj helper_sym)
 {
-    CL_Obj str, err_sym, tail, form;
-    str = cl_make_string(msg, (uint32_t)strlen(msg));
-    CL_GC_PROTECT(str);
-    err_sym = cl_intern_in("ERROR", 5, cl_package_cl);
-    CL_GC_PROTECT(err_sym);
-    tail = cl_cons(str, CL_NIL);
-    CL_GC_PROTECT(tail);
-    form = cl_cons(err_sym, tail);
-    CL_GC_UNPROTECT(3);
-    /* compile_expr GC-protects its own argument on entry, so building `form`
-     * immediately before the call is safe. */
-    compile_expr(c, form);
-    cl_emit(c, OP_POP);  /* error never returns; keeps the stack balanced */
+    /* Emit a 0-arg call to the cached helper symbol as raw bytecode.  This
+     * allocates NOTHING (the symbol is pre-interned and GC-rooted, cl_emit/
+     * cl_add_constant only touch the compiler's own buffers), so no GC
+     * compaction can occur here — compile_destructure_pattern therefore needs
+     * no GC root over its `pattern` cursor, and cannot leak one across a
+     * compile-time cl_error longjmp.  The helper signals and never returns. */
+    int idx = cl_add_constant(c, helper_sym);
+    cl_emit(c, OP_FLOAD);
+    cl_emit_u16(c, (uint16_t)idx);
+    cl_emit(c, OP_CALL);
+    cl_emit(c, 0);       /* 0 arguments */
+    cl_emit(c, OP_POP);  /* helper never returns; keeps the stack balanced */
 }
 
 /* Recursive destructuring pattern walker.
@@ -44,12 +44,13 @@ static void compile_destructure_pattern(CL_Compiler *c, int pos_slot,
     int saved_tail = c->in_tail;
     c->in_tail = 0;
 
-    /* GC-protect the pattern cursor: the arity guards below (emit_dbind_error)
-     * and default-value compilation allocate and may compact, which would
-     * leave an unprotected `pattern` C-local holding a stale offset.  All exit
-     * paths funnel through `done:`, where this is unprotected. */
-    CL_GC_PROTECT(pattern);
-
+    /* NB: this walker must remain allocation-free in the required-parameter
+     * path.  The arity guards emit calls to pre-interned helper symbols
+     * (emit_dbind_error allocates nothing), and the &optional/&key default
+     * compilation already GC-protects its own `rest` cursor — so the `pattern`
+     * cursor never needs a GC root here.  (An earlier version GC-protected
+     * `pattern` for the whole function; that root leaked across a compile-time
+     * cl_error longjmp during heavy cold loads, corrupting the heap.) */
     while (!CL_NULL_P(pattern)) {
         CL_Obj elem = cl_car(pattern);
 
@@ -181,8 +182,7 @@ static void compile_destructure_pattern(CL_Compiler *c, int pos_slot,
                 cl_emit(c, OP_LOAD);
                 cl_emit(c, (uint8_t)pos_slot);
                 ok_pos = cl_emit_jump(c, OP_JNIL);
-                emit_dbind_error(c,
-                    "destructuring-bind: too many elements in list for lambda list");
+                emit_dbind_error(c, cl_dbind_too_many_sym);
                 cl_patch_jump(c, ok_pos);
             }
             goto done;
@@ -334,18 +334,15 @@ static void compile_destructure_pattern(CL_Compiler *c, int pos_slot,
         }
 
         /* Required parameter: the list must still have an element here.
-         * (CLHS: too-few elements must signal an error.)  emit_dbind_error
-         * may compact, so re-read `elem` from the protected `pattern`. */
+         * (CLHS: too-few elements must signal an error.) */
         {
             int ok_pos;
             cl_emit(c, OP_LOAD);
             cl_emit(c, (uint8_t)pos_slot);
             ok_pos = cl_emit_jump(c, OP_JTRUE);  /* element present → bind */
-            emit_dbind_error(c,
-                "destructuring-bind: too few elements in list for lambda list");
+            emit_dbind_error(c, cl_dbind_too_few_sym);
             cl_patch_jump(c, ok_pos);
         }
-        elem = cl_car(pattern);
 
         if (CL_CONS_P(elem)) {
             /* Nested pattern: extract sublist, recurse */
@@ -401,12 +398,10 @@ static void compile_destructure_pattern(CL_Compiler *c, int pos_slot,
         cl_emit(c, OP_LOAD);
         cl_emit(c, (uint8_t)pos_slot);
         ok_pos = cl_emit_jump(c, OP_JNIL);  /* list empty → ok */
-        emit_dbind_error(c,
-            "destructuring-bind: too many elements in list for lambda list");
+        emit_dbind_error(c, cl_dbind_too_many_sym);
         cl_patch_jump(c, ok_pos);
     }
 done:
-    CL_GC_UNPROTECT(1);  /* pattern */
     c->in_tail = saved_tail;
 }
 
