@@ -510,6 +510,26 @@ TEST(lisp_handler_case_no_error)
         "3");
 }
 
+TEST(lisp_handler_case_multiple_values)
+{
+    /* CLHS: when no condition is signaled, handler-case returns ALL the values
+     * of its body.  Regression: an earlier expansion bound the CATCH result to
+     * one variable, collapsing (values a b) to just a — which broke callers
+     * that (multiple-value-bind (x y) (handler-case (values ...) ...)), e.g.
+     * rfc2388/str-based apikey id destructuring in chipi. */
+    ASSERT_STR_EQ(eval_print(
+        "(multiple-value-list (handler-case (values 1 2 3) (error () :err)))"),
+        "(1 2 3)");
+    /* ignore-errors is built on handler-case and must also pass them through. */
+    ASSERT_STR_EQ(eval_print(
+        "(multiple-value-list (ignore-errors (values 7 8 9)))"),
+        "(7 8 9)");
+    /* A clause body may itself return multiple values. */
+    ASSERT_STR_EQ(eval_print(
+        "(multiple-value-list (handler-case (error \"x\") (error () (values :a :b))))"),
+        "(:A :B)");
+}
+
 TEST(lisp_handler_case_type_dispatch)
 {
     /* handler-case dispatches on condition type */
@@ -1249,6 +1269,7 @@ int main(void)
     /* handler-case / ignore-errors tests */
     RUN(lisp_handler_case_catches_error);
     RUN(lisp_handler_case_no_error);
+    RUN(lisp_handler_case_multiple_values);
     RUN(lisp_handler_case_type_dispatch);
     RUN(lisp_handler_case_t_catches_any_condition);
     RUN(lisp_handler_bind_t_catches_any_condition);

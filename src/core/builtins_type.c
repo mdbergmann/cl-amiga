@@ -566,6 +566,21 @@ static int typep_check(CL_Obj obj, CL_Obj type_spec)
             return 1;
         }
 
+        /* (mod n) — non-negative integer [0, n)  (CLHS 4.2.3 / type MOD) */
+        if (CL_SYMBOL_P(head) &&
+            strcmp(cl_symbol_name(head), "MOD") == 0) {
+            if (!CL_FIXNUM_P(obj) && !CL_BIGNUM_P(obj)) return 0;
+            if (cl_arith_minusp(obj)) return 0;
+            if (!CL_NULL_P(args)) {
+                CL_Obj n = cl_car(args);
+                if (CL_FIXNUM_P(n) || CL_BIGNUM_P(n)) {
+                    /* obj < n */
+                    return cl_arith_minusp(cl_arith_sub(obj, n));
+                }
+            }
+            return 1;
+        }
+
         /* (signed-byte n) — integer [-2^(n-1), 2^(n-1)) */
         if (CL_SYMBOL_P(head) &&
             strcmp(cl_symbol_name(head), "SIGNED-BYTE") == 0) {

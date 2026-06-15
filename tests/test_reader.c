@@ -606,6 +606,22 @@ TEST(read_2d_array_lowercase)
  * Regression: jzon's jzon.lisp uses (macrolet ((#1=#:|| () ...)) ... (#1# ...))
  * which previously errored "Invalid radix prefix #1=", breaking the whole load. */
 
+/* --- #n<char> user dispatch macro with an infix numeric arg ---
+ * Regression: ironclad's readtable registers #@ via SET-DISPATCH-MACRO-CHARACTER
+ * and writes s-box literals as #32@(...).  The reader previously parsed the 32
+ * as a radix prefix and errored "Invalid radix prefix #32@" because it never
+ * consulted the user dispatch table once digits had been seen. */
+TEST(read_dispatch_macro_numeric_arg)
+{
+    cl_eval_string(
+        "(set-dispatch-macro-character #\\# #\\@"
+        "  (lambda (s c arg) (declare (ignore c)) (list arg (read s nil nil))))");
+    /* #32@(...) calls the macro with arg=32 and the following list. */
+    ASSERT_STR_EQ(read_print("#32@(1 2 3)"), "(32 (1 2 3))");
+    /* No infix arg => arg is NIL (existing non-numeric dispatch path). */
+    ASSERT_STR_EQ(read_print("#@(4 5)"), "(NIL (4 5))");
+}
+
 TEST(read_label_value)
 {
     /* #n=object evaluates to object */
@@ -745,6 +761,7 @@ int main(void)
     RUN(read_2d_array_lowercase);
 
     /* #n= / #n# shared-and-circular-structure labels */
+    RUN(read_dispatch_macro_numeric_arg);
     RUN(read_label_value);
     RUN(read_label_shared);
     RUN(read_label_shared_multidigit);

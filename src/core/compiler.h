@@ -101,6 +101,8 @@ CL_Obj cl_get_type_expander(CL_Obj name);
 
 /* Setf function table: (defun (setf accessor) ...) */
 void cl_register_setf_function(CL_Obj accessor, CL_Obj setf_fn_sym);
+/* Resolve the (setf FOO) function-name to the symbol holding its function. */
+CL_Obj cl_setf_function_symbol(CL_Obj accessor);
 
 /* Optimization settings (used by (declare (optimize ...))) */
 typedef struct {

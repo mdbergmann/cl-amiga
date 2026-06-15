@@ -3787,6 +3787,22 @@ TEST(control_macros_macroexpand_conformantly)
                   "T");
 }
 
+/* COMPUTE-APPLICABLE-METHODS is a standard CLHS/AMOP function; portable CLOS
+ * clients (e.g. snooze) call it by name.  It must be FBOUND and return the
+ * applicable methods most-specific-first. */
+TEST(compute_applicable_methods_public)
+{
+    eval_print("(defgeneric cam-g (x))");
+    eval_print("(defmethod cam-g ((x integer)) 'int)");
+    eval_print("(defmethod cam-g ((x number)) 'num)");
+    eval_print("(defmethod cam-g ((x string)) 'str)");
+    ASSERT_STR_EQ(eval_print("(fboundp 'compute-applicable-methods)"), "T");
+    /* integer arg => integer and number methods apply (2). */
+    ASSERT_STR_EQ(eval_print("(length (compute-applicable-methods #'cam-g (list 5)))"), "2");
+    /* string arg => only the string method (1). */
+    ASSERT_STR_EQ(eval_print("(length (compute-applicable-methods #'cam-g (list \"a\")))"), "1");
+}
+
 int main(void)
 {
     test_init();
@@ -4146,6 +4162,7 @@ int main(void)
     RUN(allocate_instance_gf_default_method);
     RUN(defmethod_aux_specialized_lambda_list);
     RUN(control_macros_macroexpand_conformantly);
+    RUN(compute_applicable_methods_public);
 
     teardown();
     REPORT();

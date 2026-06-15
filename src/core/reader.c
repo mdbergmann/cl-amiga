@@ -1481,6 +1481,20 @@ static CL_Obj read_expr(void)
                 if (ch >= '0' && ch <= '9') {
                     num_val = num_val * 10 + (ch - '0');
                 } else {
+                    /* #n<char> where <char> is a user-defined dispatch
+                     * sub-character (set-dispatch-macro-character): call
+                     * (fn stream sub-char num-arg) with the infix integer.
+                     * e.g. ironclad's #32@(...) array reader. */
+                    if (ch >= 0 && ch < CL_RT_CHARS) {
+                        CL_Readtable *rt = cl_readtable_current();
+                        if (!CL_NULL_P(rt->dispatch_fn[ch])) {
+                            CL_Obj args[3];
+                            args[0] = reader_stream;
+                            args[1] = CL_MAKE_CHAR(ch);
+                            args[2] = CL_MAKE_FIXNUM(num_val);
+                            return cl_vm_apply(rt->dispatch_fn[ch], args, 3);
+                        }
+                    }
                     cl_reader_error(CL_ERR_PARSE, "Invalid radix prefix #%d%c", num_val, ch);
                     return CL_NIL;
                 }
