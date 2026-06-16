@@ -466,8 +466,12 @@ static CL_NORETURN void stream_raise_timeout(int is_write, uint32_t timeout_ms)
 
 #ifdef CL_WIDE_STRINGS
 /* Decode a UTF-8 character from a byte-oriented stream.
- * first_byte is already read; reads continuation bytes as needed. */
-static int stream_decode_utf8(CL_Stream *st, int first_byte)
+ * first_byte is already read; reads continuation bytes as needed.
+ * Takes the stream as a CL_Obj (not a CL_Stream *) because each
+ * continuation-byte read may block inside a GC safe region, where a
+ * concurrent STW-GC can compact the arena and relocate the stream object —
+ * so the pointer is re-derived from the (GC-protected) offset on every read. */
+static int stream_decode_utf8(CL_Obj stream, int first_byte)
 {
     unsigned char b0 = (unsigned char)first_byte;
     int cp, expected, i;
@@ -489,7 +493,10 @@ static int stream_decode_utf8(CL_Stream *st, int first_byte)
     }
 
     for (i = 1; i < expected; i++) {
-        int b = stream_read_raw_byte(st);
+        int b;
+        CL_GC_PROTECT(stream);   /* read may compact; forward the offset */
+        b = stream_read_raw_byte((CL_Stream *)CL_OBJ_TO_PTR(stream));
+        CL_GC_UNPROTECT(1);
         if (b == -1 || (b & 0xC0) != 0x80) {
             return 0xFFFD;  /* Truncated or invalid continuation */
         }
@@ -551,21 +558,30 @@ int cl_stream_read_char(CL_Obj stream)
         return ch;
     }
 
-    /* Byte-oriented streams: read raw byte, then UTF-8 decode */
+    /* Byte-oriented streams: read raw byte, then UTF-8 decode.
+     * platform_socket_read enters cl_gc_enter/leave_safe_region, so a
+     * concurrent STW-GC may compact the arena DURING the read and relocate
+     * this stream object.  `stream` is an unrooted C local, so its offset goes
+     * stale too — GC-protect it across the read and re-derive `st` from the
+     * (forwarded) offset before touching any st-> field.  Without this the
+     * `st->flags |= EOF` write below (hit on every Connection:close EOF) would
+     * scribble into whatever object slid into the old location. */
     {
-        uint32_t rto = st->read_timeout_ms;  /* capture before safe region: platform_socket_read
-                                              * enters cl_gc_enter/leave_safe_region and a
-                                              * concurrent STW-GC may compact the arena, making
-                                              * the derived st pointer stale. */
+        uint32_t rto = st->read_timeout_ms;  /* capture while st is valid */
+        CL_GC_PROTECT(stream);
         ch = stream_read_raw_byte(st);
+        st = (CL_Stream *)CL_OBJ_TO_PTR(stream);   /* st may have moved */
 
 #ifdef CL_WIDE_STRINGS
         /* Decode UTF-8 multi-byte sequences for byte-oriented streams.  A LATIN-1
          * stream is 8-bit transparent: the raw byte 0..255 IS the code point, so
          * skip UTF-8 decoding entirely. */
-        if (ch > 0x7F && ch != -1 && !(st->flags & CL_STREAM_FLAG_LATIN1))
-            ch = stream_decode_utf8(st, ch);
+        if (ch > 0x7F && ch != -1 && !(st->flags & CL_STREAM_FLAG_LATIN1)) {
+            ch = stream_decode_utf8(stream, ch);
+            st = (CL_Stream *)CL_OBJ_TO_PTR(stream);   /* decode read more bytes */
+        }
 #endif
+        CL_GC_UNPROTECT(1);
 
         if (ch == PLATFORM_SOCKET_TIMEOUT) {   /* deadline elapsed, not EOF */
             if (iolock) platform_mutex_unlock(iolock);
@@ -621,10 +637,15 @@ int cl_stream_read_byte(CL_Obj stream)
         return ch;
     }
 
-    /* Raw byte read — no UTF-8 decoding */
+    /* Raw byte read — no UTF-8 decoding.  Same GC hazard as cl_stream_read_char:
+     * the read may compact and relocate st, so protect the offset across it and
+     * re-derive st before the EOF-flag write. */
     {
-        uint32_t rto = st->read_timeout_ms;  /* capture before safe region */
+        uint32_t rto = st->read_timeout_ms;  /* capture while st is valid */
+        CL_GC_PROTECT(stream);
         ch = stream_read_raw_byte(st);
+        st = (CL_Stream *)CL_OBJ_TO_PTR(stream);   /* st may have moved */
+        CL_GC_UNPROTECT(1);
         if (ch == PLATFORM_SOCKET_TIMEOUT) {   /* deadline elapsed, not EOF */
             if (iolock) platform_mutex_unlock(iolock);
             stream_raise_timeout(0, rto);
@@ -665,9 +686,12 @@ void cl_stream_write_char(CL_Obj stream, int ch)
 
     /* Capture timeout before the socket write: platform_socket_write* may call
      * socket_flush_wbuf which enters a GC safe region; a concurrent STW-GC can
-     * compact the arena, making st stale.  Read the field now while st is valid. */
+     * compact the arena, making st stale.  Read the field now while st is valid,
+     * GC-protect the offset across the write, and re-derive st before the
+     * st->charpos update below. */
     {
         uint32_t wto = st->write_timeout_ms;
+        CL_GC_PROTECT(stream);
 
         switch (st->stream_type) {
         case CL_STREAM_CONSOLE: {
@@ -722,6 +746,9 @@ void cl_stream_write_char(CL_Obj stream, int ch)
             wr = platform_socket_write((PlatformSocket)st->handle_id, ch);
             break;
         }
+
+        st = (CL_Stream *)CL_OBJ_TO_PTR(stream);   /* a socket flush may have moved st */
+        CL_GC_UNPROTECT(1);
 
         if (ch == '\n')
             st->charpos = 0;
@@ -803,6 +830,7 @@ void cl_stream_write_string(CL_Obj stream, const char *str, uint32_t len)
 
     {
         uint32_t wto = st->write_timeout_ms;  /* capture before safe region */
+        CL_GC_PROTECT(stream);   /* socket flush may compact; re-derive st after */
 
         switch (st->stream_type) {
         case CL_STREAM_CONSOLE: {
@@ -830,6 +858,9 @@ void cl_stream_write_string(CL_Obj stream, const char *str, uint32_t len)
             wr = platform_socket_write_buf((PlatformSocket)st->handle_id, str, len);
             break;
         }
+
+        st = (CL_Stream *)CL_OBJ_TO_PTR(stream);   /* a socket flush may have moved st */
+        CL_GC_UNPROTECT(1);
 
         /* Update charpos: find last newline */
         {
@@ -893,33 +924,43 @@ void cl_stream_close(CL_Obj stream)
 
     st->flags &= ~CL_STREAM_FLAG_OPEN;
 
-    switch (st->stream_type) {
-    case CL_STREAM_FILE:
-        if (st->handle_id != 0) {
-            platform_file_flush((PlatformFile)st->handle_id);
-            platform_file_close((PlatformFile)st->handle_id);
+    /* Capture the handle/type before any teardown call: platform_socket_flush
+     * and platform_socket_close (and the file equivalents) enter GC safe
+     * regions, so a concurrent STW-GC can compact and relocate st between the
+     * flush and the close.  Reading st->handle_id for the close THROUGH a stale
+     * st could yield a garbage slot number and close an UNRELATED live socket,
+     * corrupting another in-flight connection (intermittent "No status line"). */
+    {
+        uint32_t stype  = st->stream_type;
+        uint32_t handle = st->handle_id;
+        uint32_t obh    = st->out_buf_handle;
+        uint32_t dir    = st->direction;
+        switch (stype) {
+        case CL_STREAM_FILE:
+            if (handle != 0) {
+                platform_file_flush((PlatformFile)handle);
+                platform_file_close((PlatformFile)handle);
+            }
+            break;
+        case CL_STREAM_STRING:
+            if ((dir & CL_STREAM_OUTPUT) && obh != 0)
+                cl_stream_free_outbuf(obh);
+            break;
+        case CL_STREAM_CBUF:
+            if (handle > 0 && handle < CL_CBUF_TABLE_SIZE) {
+                cbuf_table[handle].data = NULL;
+                cbuf_table[handle].len = 0;
+            }
+            break;
+        case CL_STREAM_SOCKET:
+            if (handle != 0) {
+                platform_socket_flush((PlatformSocket)handle);
+                platform_socket_close((PlatformSocket)handle);
+            }
+            break;
+        default:
+            break;
         }
-        break;
-    case CL_STREAM_STRING:
-        if ((st->direction & CL_STREAM_OUTPUT) && st->out_buf_handle != 0)
-            cl_stream_free_outbuf(st->out_buf_handle);
-        break;
-    case CL_STREAM_CBUF: {
-        uint32_t idx = st->handle_id;
-        if (idx > 0 && idx < CL_CBUF_TABLE_SIZE) {
-            cbuf_table[idx].data = NULL;
-            cbuf_table[idx].len = 0;
-        }
-        break;
-    }
-    case CL_STREAM_SOCKET:
-        if (st->handle_id != 0) {
-            platform_socket_flush((PlatformSocket)st->handle_id);
-            platform_socket_close((PlatformSocket)st->handle_id);
-        }
-        break;
-    default:
-        break;
     }
 
     if (iolock) platform_mutex_unlock(iolock);
@@ -979,16 +1020,27 @@ CL_Obj cl_make_string_output_stream(void)
     uint32_t h;
     if (CL_NULL_P(s)) return CL_NIL;
 
-    st = (CL_Stream *)CL_OBJ_TO_PTR(s);
+    /* cl_stream_alloc_outbuf runs a GC (sweep + possible compaction) when the
+     * outbuf table is full.  `s` is a freshly-built stream not yet reachable
+     * from any root, so that GC would sweep it (or compaction would relocate
+     * it, leaving this C local with a stale offset) — and `st` derived before
+     * the call would dangle.  Protect `s` across the alloc and derive `st`
+     * afterward.  This is the deterministic corruption behind the periodic
+     * "argument is not a stream" failures when many string-output-streams are
+     * created in a loop (e.g. chunga read-line* per HTTP request). */
+    CL_GC_PROTECT(s);
     h = cl_stream_alloc_outbuf(256);
     if (h == 0) {
+        CL_GC_UNPROTECT(1);
         cl_error(0,
                  "String output stream buffer table exhausted (%d slots)",
                  CL_STREAM_BUF_TABLE_SIZE - 1);
         return CL_NIL;
     }
+    st = (CL_Stream *)CL_OBJ_TO_PTR(s);   /* derive after alloc — s may have moved */
     st->out_buf_handle = h;
     st->out_buf_size = 256;
+    CL_GC_UNPROTECT(1);
     return s;
 }
 

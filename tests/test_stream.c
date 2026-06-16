@@ -537,6 +537,37 @@ TEST(string_output_stream_write_string)
     }
 }
 
+/* Regression: cl_make_string_output_stream must GC-protect its freshly-built
+ * stream across cl_stream_alloc_outbuf.  When the outbuf table fills, that call
+ * runs an internal GC (to finalize dead streams) which would otherwise sweep or
+ * relocate the not-yet-rooted new stream, returning a dangling/stale object —
+ * surfacing later as "argument is not a stream".  Loop creating MANY unreachable
+ * string-output-streams: once the table is full (~CL_STREAM_BUF_TABLE_SIZE) the
+ * internal GC fires on every subsequent make, so each new stream must remain a
+ * valid, writable string stream. */
+TEST(make_string_output_stream_survives_table_full_gc)
+{
+    int i;
+    int iterations = CL_STREAM_BUF_TABLE_SIZE * 3;  /* well past one full table */
+    for (i = 0; i < iterations; i++) {
+        CL_Obj s = cl_make_string_output_stream();  /* intentionally NOT rooted */
+        CL_Obj result;
+        ASSERT(CL_STREAM_P(s));                      /* not corrupted by inner GC */
+        cl_stream_write_string(s, "abc", 3);
+        CL_GC_PROTECT(s);
+        result = cl_get_output_stream_string(s);
+        CL_GC_UNPROTECT(1);
+        ASSERT(CL_STRING_P(result));
+        {
+            CL_String *rs = (CL_String *)CL_OBJ_TO_PTR(result);
+            ASSERT_EQ_INT((int)rs->length, 3);
+            ASSERT_STR_EQ(rs->data, "abc");
+        }
+        /* s + result drop out of reach here, so their slots are reclaimable by
+         * the next iteration's table-full GC — keeping the table churning. */
+    }
+}
+
 TEST(get_output_stream_string_resets)
 {
     CL_Obj s = cl_make_string_output_stream();
@@ -3334,6 +3365,7 @@ int main(void)
     RUN(string_output_stream_write_chars);
     RUN(string_output_stream_write_string);
     RUN(get_output_stream_string_resets);
+    RUN(make_string_output_stream_survives_table_full_gc);
     RUN(unread_char_test);
     RUN(peek_char_test);
     RUN(close_stream);
