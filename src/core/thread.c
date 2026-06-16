@@ -150,6 +150,7 @@ void cl_gc_stop_the_world(void)
 
     /* Wait until all other threads have reached a safepoint or are inside
      * a safe region (blocking syscall not touching the heap). */
+    if (self) self->wait_kind = 4;  /* GC-STW-WAIT (diagnostic) */
     for (;;) {
         int all_stopped = 1;
         platform_mutex_lock(cl_thread_list_lock);
@@ -157,6 +158,10 @@ void cl_gc_stop_the_world(void)
             if (t != self && t->gc_requested
                 && !t->gc_stopped && !t->in_safe_region) {
                 all_stopped = 0;
+                /* Record which thread is holding up the world so a watchdog
+                 * dump can name the straggler that never reached a safepoint
+                 * (e.g. a thread blocked in a syscall outside a safe region). */
+                if (self) self->wait_lock_id = (int)t->id;
                 break;
             }
         }
@@ -165,6 +170,7 @@ void cl_gc_stop_the_world(void)
         if (all_stopped) break;
         platform_condvar_wait(gc_condvar, gc_mutex);
     }
+    if (self) self->wait_kind = 0;
     /* gc_mutex remains held — caller runs GC then calls resume */
 }
 
