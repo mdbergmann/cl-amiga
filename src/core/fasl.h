@@ -26,7 +26,7 @@
 #include "../platform/platform.h"
 
 #define CL_FASL_MAGIC    0x434C4641  /* "CLFA" */
-#define CL_FASL_VERSION  11  /* v11: restart-case landing applies handler post-unwind (cons-dispatch sequence) */
+#define CL_FASL_VERSION  12  /* v12: destructuring-bind walker now emits bytecode for &whole / &aux / destructuring &rest|&body (was mis-bound as required params); changes emitted bytecode for any destructuring pattern using them */
 
 /* Serialized constant type tags */
 #define FASL_TAG_NIL         0x00

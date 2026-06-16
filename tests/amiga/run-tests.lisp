@@ -772,6 +772,21 @@
   (handler-case (destructuring-bind (a &optional b) '(1 2 3) (list a b)) (error () :err)))
 (check "d-bind exact ok" '(1 2) (destructuring-bind (a b) '(1 2) (list a b)))
 (check "d-bind dotted absorbs rest" '(1 (2 3)) (destructuring-bind (a . b) '(1 2 3) (list a b)))
+; CLHS 3.4.4/3.4.5: &whole, &aux, and destructuring &rest must be honoured
+; (these were mis-bound as required params, causing spurious "too few" errors
+;  that broke esrap's defrule / macros.lisp).
+(check "d-bind &whole" '((1 2) 1 2) (destructuring-bind (&whole w a b) '(1 2) (list w a b)))
+(check "d-bind &whole+rest" '((1 2 3) 1 (2 3))
+  (destructuring-bind (&whole w a &rest r) '(1 2 3) (list w a r)))
+(check "d-bind &aux" '(1 2 99) (destructuring-bind (a b &aux (c 99)) '(1 2) (list a b c)))
+(check "d-bind &aux let*-init" '(3 nil)
+  (destructuring-bind (a &aux (b (+ a 2)) c) '(1) (list b c)))
+(check "d-bind &optional+&aux" '(1 9 5)
+  (destructuring-bind (a &optional (b 9) &aux (c 5)) '(1) (list a b c)))
+(check "d-bind destructuring &rest" '(1 2 3)
+  (destructuring-bind (a &rest (b c)) '(1 2 3) (list a b c)))
+(check "d-bind too-few still errors after &whole/&aux fix" :err
+  (handler-case (destructuring-bind (a b c) '(1 2) (list a b c)) (error () :err)))
 
 ; --- defsetf ---
 (defun my-get-t (vec i) (aref vec i))

@@ -8635,6 +8635,49 @@ TEST(eval_destructuring_bind_arity_strict)
         "(1 (2 3))");
 }
 
+TEST(eval_destructuring_bind_whole_aux)
+{
+    /* CLHS 3.4.4/3.4.5: destructuring lambda lists support &whole and &aux.
+       Before these were handled, the walker treated &whole / &aux as ordinary
+       required parameters — mis-binding the variables and inflating the
+       required-arity count, so the arity guards reported a spurious "too few
+       elements" (this broke esrap's defrule and macros.lisp). */
+    /* &whole binds the entire list, consumes no element */
+    ASSERT_STR_EQ(eval_print(
+        "(destructuring-bind (&whole w a b) '(1 2) (list w a b))"),
+        "((1 2) 1 2)");
+    /* &whole + &rest */
+    ASSERT_STR_EQ(eval_print(
+        "(destructuring-bind (&whole w a &rest r) '(1 2 3) (list w a r))"),
+        "((1 2 3) 1 (2 3))");
+    /* &aux binds let*-style with no list element / no arity constraint */
+    ASSERT_STR_EQ(eval_print(
+        "(destructuring-bind (a b &aux (c 99)) '(1 2) (list a b c))"),
+        "(1 2 99)");
+    /* &aux default is NIL; later aux/earlier params are visible to inits */
+    ASSERT_STR_EQ(eval_print(
+        "(destructuring-bind (a &aux (b (+ a 2)) c) '(1) (list b c))"),
+        "(3 NIL)");
+    /* &optional followed by &aux */
+    ASSERT_STR_EQ(eval_print(
+        "(destructuring-bind (a &optional (b 9) &aux (c 5)) '(1) (list a b c))"),
+        "(1 9 5)");
+    /* destructuring &rest: the rest var may itself be a pattern */
+    ASSERT_STR_EQ(eval_print(
+        "(destructuring-bind (a &rest (b c)) '(1 2 3) (list a b c))"),
+        "(1 2 3)");
+    /* genuine too-few still errors (guard intact after the &whole/&aux fix) */
+    ASSERT_STR_EQ(eval_print(
+        "(handler-case (destructuring-bind (a b c) '(1 2) (list a b c))"
+        "  (error () :err))"), ":ERR");
+    /* a macro lambda list with &whole + &rest expands correctly.  Define the
+       macro and use it in separate top-level forms so the macro is registered
+       before its use is compiled. */
+    eval_print("(defmacro mw (&whole form a &rest r) (declare (ignore a r))"
+               "  (list 'quote form))");
+    ASSERT_STR_EQ(eval_print("(mw 1 2 3)"), "(MW 1 2 3)");
+}
+
 /* --- Synonym stream tests (Bug 14) --- */
 
 TEST(eval_synonym_stream)
@@ -10231,6 +10274,7 @@ int main(void)
     RUN(eval_special_var_unwind_block_return);
     RUN(eval_destructuring_bind_rest_key);
     RUN(eval_destructuring_bind_arity_strict);
+    RUN(eval_destructuring_bind_whole_aux);
 
     /* synonym streams, compile-file vars, directory (Bug 14) */
     RUN(eval_synonym_stream);

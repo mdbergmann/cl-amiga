@@ -54,9 +54,74 @@ static void compile_destructure_pattern(CL_Compiler *c, int pos_slot,
     while (!CL_NULL_P(pattern)) {
         CL_Obj elem = cl_car(pattern);
 
-        /* &rest / &body — bind remaining list to next symbol */
+        /* &whole var — bind var to the ENTIRE list being destructured and
+         * consume no elements (CLHS 3.4.4/3.4.5; may only appear first, where
+         * pos_slot still holds the full list).  Skipping this left the walker
+         * to treat `&whole` and its var as ordinary required parameters,
+         * mis-binding them and inflating the required-arity count — which the
+         * arity guards then reported as a spurious "too few elements". */
+        if (elem == SYM_AMP_WHOLE) {
+            CL_Obj whole_var = cl_car(cl_cdr(pattern));
+            if (CL_SYMBOL_P(whole_var)) {
+                int slot = cl_env_add_local(env, whole_var);
+                cl_emit(c, OP_LOAD);
+                cl_emit(c, (uint8_t)pos_slot);
+                cl_emit(c, OP_STORE);
+                cl_emit(c, (uint8_t)slot);
+                cl_emit(c, OP_POP);
+            }
+            pattern = cl_cdr(cl_cdr(pattern)); /* skip &whole + var */
+            continue;
+        }
+
+        /* &aux var | (var [init]) ... — local let*-style bindings that take no
+         * list element and impose no arity constraint (CLHS 3.4.1).  Terminal:
+         * nothing list-consuming may follow.  init is compiled BEFORE the var
+         * is added to the env so it cannot resolve to its own (yet-unset) slot,
+         * while earlier aux vars / params remain visible. */
+        if (elem == SYM_AMP_AUX) {
+            CL_Obj rest = cl_cdr(pattern);
+            CL_GC_PROTECT(rest);
+            while (!CL_NULL_P(rest)) {
+                CL_Obj spec = cl_car(rest);
+                CL_Obj var = spec, init = CL_NIL;
+                int slot;
+                if (CL_CONS_P(spec)) {
+                    var = cl_car(spec);
+                    if (!CL_NULL_P(cl_cdr(spec)))
+                        init = cl_car(cl_cdr(spec));
+                }
+                compile_expr(c, init);          /* value (var not yet in scope) */
+                slot = cl_env_add_local(env, var);
+                cl_emit(c, OP_STORE);
+                cl_emit(c, (uint8_t)slot);
+                cl_emit(c, OP_POP);
+                rest = cl_cdr(rest);
+            }
+            CL_GC_UNPROTECT(1);
+            goto done; /* aux is terminal — no arity check */
+        }
+
+        /* &rest / &body — bind remaining list to next var.  The var may be a
+         * nested destructuring pattern (e.g. macro lambda lists like alexandria
+         * if-let's `&body (then &optional else)`); in that case stash the rest
+         * list in a temp and recurse rather than binding a cons as a "local". */
         if (elem == SYM_AMP_REST || elem == SYM_AMP_BODY) {
             CL_Obj rest_var = cl_car(cl_cdr(pattern));
+            if (CL_CONS_P(rest_var)) {
+                int tmp = alloc_temp_slot(env);
+                cl_emit(c, OP_LOAD);
+                cl_emit(c, (uint8_t)pos_slot);
+                cl_emit(c, OP_STORE);
+                cl_emit(c, (uint8_t)tmp);
+                cl_emit(c, OP_POP);
+                compile_destructure_pattern(c, tmp, rest_var);
+                pattern = cl_cdr(cl_cdr(pattern)); /* skip &rest pattern */
+                if (!CL_NULL_P(pattern) && cl_car(pattern) == SYM_AMP_KEY)
+                    continue;
+                goto done;
+            }
+            {
             int slot = cl_env_add_local(env, rest_var);
             cl_emit(c, OP_LOAD);
             cl_emit(c, (uint8_t)pos_slot);
@@ -68,6 +133,7 @@ static void compile_destructure_pattern(CL_Compiler *c, int pos_slot,
             if (!CL_NULL_P(pattern) && cl_car(pattern) == SYM_AMP_KEY)
                 continue; /* let &key handler process it */
             goto done; /* &rest absorbs the remainder — no too-many check */
+            }
         }
 
         /* &optional — remaining elements are optional with defaults */
@@ -84,6 +150,13 @@ static void compile_destructure_pattern(CL_Compiler *c, int pos_slot,
                 if (elem == SYM_AMP_KEY) {
                     /* &key after &optional: break to outer loop to process keys */
                     pattern = rest;  /* rest starts at &key */
+                    CL_GC_UNPROTECT(1);
+                    goto optional_done;
+                }
+                if (elem == SYM_AMP_AUX) {
+                    /* &aux after &optional: hand back to the outer loop, which
+                     * binds the aux vars and terminates (no arity check). */
+                    pattern = rest;  /* rest starts at &aux */
                     CL_GC_UNPROTECT(1);
                     goto optional_done;
                 }
