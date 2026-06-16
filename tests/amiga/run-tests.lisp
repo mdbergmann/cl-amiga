@@ -4357,10 +4357,28 @@
 ; --- user-homedir-pathname ---
 (check "user-homedir-pathname type" t (pathnamep (user-homedir-pathname)))
 
-; --- %set-condition-default-initargs ---
-(check "set-condition-default-initargs stub" nil (%set-condition-default-initargs 'foo '(:x 1)))
-(define-condition amiga-test-cond (error) () (:default-initargs :x 1))
-(check "define-condition with default-initargs" 'amiga-test-cond 'amiga-test-cond)
+; --- define-condition :default-initargs (merged by make-condition/error) ---
+(define-condition amiga-di-cond (simple-condition) ()
+  (:default-initargs :format-control "amiga default"))
+;; Default applies when the initarg is omitted (was NIL while the setter was a stub).
+(check "default-initargs via make-condition" "amiga default"
+       (simple-condition-format-control (make-condition 'amiga-di-cond)))
+;; Default applies via error/signal too.
+(check "default-initargs via error" "amiga default"
+       (handler-case (error 'amiga-di-cond)
+         (amiga-di-cond (c) (simple-condition-format-control c))))
+;; Explicit initarg overrides the default (CLHS 7.1.4).
+(check "default-initargs explicit overrides" "explicit"
+       (simple-condition-format-control
+        (make-condition 'amiga-di-cond :format-control "explicit")))
+;; Explicit NIL is preserved (a default must not clobber it).
+(check "default-initargs explicit nil preserved" nil
+       (simple-condition-format-control
+        (make-condition 'amiga-di-cond :format-control nil)))
+;; A subclass without its own default-initargs inherits the parent's.
+(define-condition amiga-di-sub (amiga-di-cond) ())
+(check "default-initargs inherited by subclass" "amiga default"
+       (simple-condition-format-control (make-condition 'amiga-di-sub)))
 
 ; --- ASDF-session features ---
 (check "lisp-implementation-type returns string" t (stringp (lisp-implementation-type)))

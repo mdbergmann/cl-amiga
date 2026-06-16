@@ -1017,10 +1017,9 @@
   (restart-case (apply #'error datum args)
     (continue () :report (lambda (s) (apply #'format s format-control args)) nil)))
 
-;; %set-condition-default-initargs — stub (default initargs not yet used)
-(defun %set-condition-default-initargs (name initargs)
-  (declare (ignore name initargs))
-  nil)
+;; %set-condition-default-initargs is a CLAMIGA builtin (builtins_condition.c):
+;; it records a condition type's :default-initargs so make-condition / error /
+;; signal can fill in initargs the caller omitted.
 
 ;; define-condition — define a user condition type with slots and readers
 (defmacro define-condition (name parent-types slot-specs &rest options)

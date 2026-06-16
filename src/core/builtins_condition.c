@@ -70,6 +70,23 @@ CL_Obj condition_hierarchy = CL_NIL;
  * ((type-name . ((slot-name . :initarg) ...)) ...) */
 CL_Obj condition_slot_table = CL_NIL;
 
+/* Default-initargs for user condition types (define-condition's
+ * :default-initargs option):
+ *   ((type-name initarg1 val1 initarg2 val2 ...) ...)
+ * The values are stored as literal objects — the define-condition macro
+ * passes them quoted — so an init *form* like (:x (foo)) would be taken
+ * verbatim rather than re-evaluated per instance.  This covers the literal
+ * values (strings/keywords/numbers) that conditions use in practice; full
+ * per-instance form evaluation is intentionally not implemented. */
+CL_Obj condition_default_initargs = CL_NIL;
+
+/* Fill in any initarg the caller of make-condition / error / signal omitted
+ * from TYPE_SYM's (and its ancestors') registered :default-initargs.
+ * Defined after the hierarchy walker below; forward-declared here because
+ * bi_make_condition (above it) also calls it. */
+static CL_Obj merge_default_initargs(CL_Obj type_sym, CL_Obj slots,
+                                     CL_Obj *report_string);
+
 /* Build the hierarchy alist during init */
 static void build_hierarchy(void)
 {
@@ -324,6 +341,20 @@ static CL_Obj slot_lookup(CL_Obj slots, CL_Obj key)
     return CL_NIL;
 }
 
+/* True if KEY appears as the car of any pair in the SLOTS alist.
+ * Unlike slot_lookup this distinguishes "present with value NIL" from
+ * "absent" — needed so a merged default-initarg never clobbers an initarg
+ * the caller explicitly supplied as NIL. */
+static int slot_present_p(CL_Obj slots, CL_Obj key)
+{
+    while (!CL_NULL_P(slots)) {
+        if (cl_car(cl_car(slots)) == key)
+            return 1;
+        slots = cl_cdr(slots);
+    }
+    return 0;
+}
+
 /* Format a condition's report string, applying :format-arguments if present.
  * Returns a CL string object, or CL_NIL if no format-control. */
 static CL_Obj format_condition_report(CL_Condition *c)
@@ -418,6 +449,9 @@ static CL_Obj bi_make_condition(CL_Obj *args, int n)
         if (args[i] == KW_FORMAT_CONTROL && CL_STRING_P(args[i + 1]))
             report_string = args[i + 1];
     }
+
+    /* Fill in any :default-initargs the caller omitted (CLHS make-condition). */
+    slots = merge_default_initargs(type_sym, slots, &report_string);
 
     {
         CL_Obj result = cl_make_condition(type_sym, slots, report_string);
@@ -625,6 +659,104 @@ static CL_Obj condition_parent_in(CL_Obj hierarchy, CL_Obj type_name)
         entry = cl_cdr(entry);
     }
     return CL_NIL;
+}
+
+/* Merge any registered :default-initargs for TYPE_SYM (and its ancestors)
+ * into SLOTS, for every initarg the caller did not already supply.  Returns
+ * the (possibly extended) slots alist.  A more-specific class's
+ * default-initarg shadows a less-specific one — we walk most-specific first
+ * and add only absent initargs (CLHS 7.1.4).
+ *
+ * If a merged-in :format-control is a string and *REPORT_STRING is still
+ * NIL, it is also published as the condition's report string so the default
+ * message prints.  Parent inheritance follows the first-parent chain, which
+ * covers the single-inheritance conditions that carry default-initargs in
+ * practice. */
+static CL_Obj merge_default_initargs(CL_Obj type_sym, CL_Obj slots,
+                                     CL_Obj *report_string)
+{
+    CL_Obj hierarchy, di_table, type, plist;
+
+    if (!CL_SYMBOL_P(type_sym))
+        return slots;
+
+    cl_tables_rdlock();
+    hierarchy = condition_hierarchy;
+    di_table = condition_default_initargs;
+    cl_tables_rwunlock();
+
+    /* Fast path: no user condition declared any default-initargs.  Avoids
+     * all the work for the built-in error/signal paths. */
+    if (CL_NULL_P(di_table))
+        return slots;
+
+    CL_GC_PROTECT(type_sym);
+    CL_GC_PROTECT(slots);
+    CL_GC_PROTECT(hierarchy);
+    CL_GC_PROTECT(di_table);
+    type = type_sym;
+    CL_GC_PROTECT(type);
+    plist = CL_NIL;
+    CL_GC_PROTECT(plist);          /* cursor spans cl_cons() below */
+
+    while (!CL_NULL_P(type) && CL_SYMBOL_P(type)) {
+        /* Locate this type's default-initargs plist (no allocation). */
+        CL_Obj t = di_table;
+        plist = CL_NIL;
+        while (!CL_NULL_P(t)) {
+            CL_Obj entry = cl_car(t);
+            if (cl_car(entry) == type) { plist = cl_cdr(entry); break; }
+            t = cl_cdr(t);
+        }
+        /* Add each (key val) the caller omitted.  cl_cons can compact, so
+         * only GC-protected locals (plist, slots, *report_string's target)
+         * may be relied on afterward — re-read the stored value rather than
+         * caching `val` across the cons. */
+        while (!CL_NULL_P(plist) && !CL_NULL_P(cl_cdr(plist))) {
+            CL_Obj key = cl_car(plist);
+            CL_Obj val = cl_car(cl_cdr(plist));
+            if (!slot_present_p(slots, key)) {
+                int is_fmt = (key == KW_FORMAT_CONTROL && CL_STRING_P(val)
+                              && CL_NULL_P(*report_string));
+                slots = cl_cons(cl_cons(key, val), slots);
+                if (is_fmt)
+                    *report_string = cl_cdr(cl_car(slots));  /* post-compaction */
+            }
+            plist = cl_cdr(cl_cdr(plist));
+        }
+        type = condition_parent_in(hierarchy, type);
+    }
+
+    CL_GC_UNPROTECT(6);
+    return slots;
+}
+
+/* (%set-condition-default-initargs name initargs)
+ * Records NAME's default-initargs plist (from define-condition's
+ * :default-initargs option) so condition creation can fill in any initarg
+ * the caller omitted. */
+static CL_Obj bi_set_condition_default_initargs(CL_Obj *args, int n)
+{
+    CL_Obj name = args[0];
+    CL_Obj initargs = args[1];
+    CL_Obj entry;
+    CL_UNUSED(n);
+
+    if (!CL_SYMBOL_P(name))
+        cl_error(CL_ERR_TYPE,
+                 "%%SET-CONDITION-DEFAULT-INITARGS: name must be a symbol");
+
+    /* GC-protect both locals across the cl_cons calls (see the matching
+     * note in bi_register_condition_type). */
+    CL_GC_PROTECT(name);
+    CL_GC_PROTECT(initargs);
+    entry = cl_cons(name, initargs);   /* (name . plist) */
+    CL_GC_PROTECT(entry);
+    cl_tables_wrlock();
+    condition_default_initargs = cl_cons(entry, condition_default_initargs);
+    cl_tables_rwunlock();
+    CL_GC_UNPROTECT(3);
+    return name;
 }
 
 /* Find initarg keyword for a slot-name in a snapshot of the condition
@@ -1018,6 +1150,11 @@ static CL_Obj coerce_to_condition(CL_Obj *args, int n, CL_Obj default_type)
             if (key == KW_FORMAT_CONTROL && CL_STRING_P(val))
                 report = val;
         }
+
+        /* Fill in any :default-initargs not supplied at the signal site
+         * (CLHS define-condition :default-initargs).  This is what makes
+         * (error 'my-error) carry my-error's default :format-control etc. */
+        slots = merge_default_initargs(arg, slots, &report);
 
         {
             CL_Obj result = cl_make_condition(arg, slots, report);
@@ -1459,6 +1596,7 @@ void cl_builtins_condition_init(void)
     cl_register_builtin("%REGISTER-CONDITION-TYPE", bi_register_condition_type, 3, 3, cl_package_clamiga);
     cl_register_builtin("CONDITION-SLOT-VALUE", bi_condition_slot_value, 2, 2, cl_package_clamiga);
     cl_register_builtin("%SET-CONDITION-SLOT-VALUE", bi_set_condition_slot_value, 3, 3, cl_package_clamiga);
+    cl_register_builtin("%SET-CONDITION-DEFAULT-INITARGS", bi_set_condition_default_initargs, 2, 2, cl_package_clamiga);
 
     /* Signaling */
     defun("SIGNAL", bi_signal, 1, -1);

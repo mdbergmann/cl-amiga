@@ -154,6 +154,28 @@ out=$(run_stress "$WORK/cond.lisp")
 check_contains "define-condition works under GC stress"            "COND:42 ok" "$out"
 check_absent   "no OOB offset in condition hierarchy/slot table"   "Undefined function\|type 0\|corrupted" "$out"
 
+# --- Case 5b: DEFINE-CONDITION :default-initargs under GC stress -------------
+# Bug: merge_default_initargs conses (initarg . value) pairs onto the slots
+# alist while walking condition_default_initargs / the parent chain; an
+# unprotected cursor or table head would leave a stale offset after the
+# compaction those cons'es can trigger, dropping the merged default.
+cat > "$WORK/di.lisp" <<'EOF'
+(define-condition my-gcstress-di (simple-condition) ()
+  (:default-initargs :format-control "merged default"))
+(define-condition my-gcstress-di-sub (my-gcstress-di) ())
+(let ((c (make-condition 'my-gcstress-di))
+      (s (make-condition 'my-gcstress-di-sub)))
+  (format t "DI:~a~%" (simple-condition-format-control c))
+  (format t "DISUB:~a~%" (simple-condition-format-control s))
+  (format t "DIERR:~a~%"
+          (handler-case (error 'my-gcstress-di)
+            (my-gcstress-di (e) (simple-condition-format-control e)))))
+EOF
+out=$(run_stress "$WORK/di.lisp")
+check_contains "default-initargs merged via make-condition under stress" "DI:merged default" "$out"
+check_contains "default-initargs inherited by subclass under stress"     "DISUB:merged default" "$out"
+check_contains "default-initargs merged via error/signal under stress"   "DIERR:merged default" "$out"
+
 # --- Case 6: SETF GETHASH new key in EQ hashtable under GC stress -----------
 # Bug: bi_setf_gethash captured bucket_idx + chain head before cl_cons();
 # compaction relocated objects (EQ hashing is by offset) and rehashed the table,
