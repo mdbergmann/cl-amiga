@@ -1956,6 +1956,22 @@
 (check "scale-float double" 8.0d0 (scale-float 1.0d0 3))
 (check "decode-float reconstruct" 3.14 (multiple-value-bind (s e g) (decode-float 3.14) (* (scale-float s e) g)))
 
+; --- IEEE-754 raw bit access (float-features :cl-amiga backend, used by jzon) ---
+(check "double-float-bits 25.5d0" 4627870829588250624 (clamiga:double-float-bits 25.5d0))
+(check "double-float-bits 1.0d0" 4607182418800017408 (clamiga:double-float-bits 1.0d0))
+(check "single-float-bits 1.0" 1065353216 (clamiga:single-float-bits 1.0))
+(check "single-float-bits 25.5" 1103888384 (clamiga:single-float-bits 25.5))
+(check "double-float-bits roundtrip" t (= 25.5d0 (clamiga:bits-double-float (clamiga:double-float-bits 25.5d0))))
+(check "single-float-bits roundtrip" t (eql -2.5 (clamiga:bits-single-float (clamiga:single-float-bits -2.5))))
+(check "double-float-bits -0.0d0 sign bit" 9223372036854775808 (clamiga:double-float-bits -0.0d0))
+
+; --- Regression: 2-arg LOG of a large double overflowed to infinity ---
+(check "log huge double base2" 1024 (round (log most-positive-double-float 2)))
+(check "log huge single base2" 128 (round (log most-positive-single-float 2)))
+(check "log two-arg 8 2" t (< (abs (- (log 8.0d0 2.0d0) 3.0d0)) 1.0d-10))
+(check "log two-arg 100 10" t (< (abs (- (log 100.0d0 10.0d0) 2.0d0)) 1.0d-10))
+(check "log complex modulus" t (< (abs (- (realpart (log #C(3.0d0 4.0d0))) 1.6094379124341003d0)) 1.0d-10))
+
 ; --- Rounding functions (Step 10) ---
 (check "truncate float 1arg" 2 (truncate 2.7))
 (check "truncate float neg" -2 (truncate -2.7))

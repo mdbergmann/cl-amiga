@@ -170,7 +170,21 @@ static cdbl c_exp(cdbl z)
 static cdbl c_log(cdbl z)
 {
     cdbl r;
-    r.re = 0.5 * log(z.re * z.re + z.im * z.im);
+    /* log|z|, computed WITHOUT squaring the components: z.re*z.re overflows
+     * to +inf for large reals (e.g. most-positive-double-float ~1.8e308)
+     * even though log|z| (~709) is finite — this broke the 2-arg LOG path,
+     * which routes both legs through here.  Scale by the larger magnitude:
+     *   log|z| = log(mx) + 0.5*log(1 + (mn/mx)^2). */
+    double ar = z.re < 0.0 ? -z.re : z.re;
+    double ai = z.im < 0.0 ? -z.im : z.im;
+    double mx = ar > ai ? ar : ai;
+    double mn = ar > ai ? ai : ar;
+    if (mx == 0.0) {
+        r.re = log(0.0);           /* -inf, as log(|0|) */
+    } else {
+        double t = mn / mx;
+        r.re = log(mx) + 0.5 * log(1.0 + t * t);
+    }
     r.im = atan2(z.im, z.re);
     return r;
 }
@@ -287,6 +301,13 @@ static CL_Obj bi_log(CL_Obj *args, int n)
             cl_error(CL_ERR_DIVZERO, "LOG: argument must be non-zero");
         if (b.re == 1.0 && b.im == 0.0)
             cl_error(CL_ERR_DIVZERO, "LOG: base must not be 1");
+        /* Both operands real and positive: compute log(n)/log(base) with the
+         * real log() directly, matching the one-arg path's precision.  This
+         * also sidesteps overflow entirely — log(most-positive-double-float)
+         * is ~709, whereas the complex helper would square the operand. */
+        if (!is_cx && !b_cx && z.im == 0.0 && b.im == 0.0
+            && z.re > 0.0 && b.re > 0.0)
+            return make_result(log(z.re) / log(b.re), is_double);
         numer = c_log(z);
         denom = c_log(b);
         q = c_div(numer, denom);

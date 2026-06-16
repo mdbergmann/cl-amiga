@@ -1320,6 +1320,97 @@ static CL_Obj bi_scale_float(CL_Obj *args, int n)
     return cl_make_single_float((float)result);
 }
 
+/* ---- IEEE-754 raw bit access (float-features :cl-amiga backend) ----
+ *
+ * float-features' SINGLE/DOUBLE-FLOAT-BITS accessors (and their inverses)
+ * have no portable branch — on any unrecognised Lisp they signal
+ * "Implementation not supported."  jzon relies on DOUBLE-FLOAT-BITS to
+ * serialise floats to JSON, so cl-amiga would silently fail to emit any
+ * float (breaking SSE item-change messages, etc.).  We expose the raw
+ * IEEE-754 bit reinterpretation as CLAMIGA-package builtins; float-features'
+ * #+cl-amiga branch calls these.  Registered in cl_builtins_arith_init. */
+
+/* uint64 -> CL integer (fixnum if it fits, else 4-limb bignum). */
+static CL_Obj float_bits_u64_to_obj(uint64_t v)
+{
+    CL_Obj bn;
+    CL_Bignum *b;
+    if (v <= (uint64_t)CL_FIXNUM_MAX)
+        return CL_MAKE_FIXNUM((int32_t)v);
+    bn = cl_make_bignum(4, 0);
+    b = (CL_Bignum *)CL_OBJ_TO_PTR(bn);
+    b->limbs[0] = (uint16_t)(v & 0xFFFF);
+    b->limbs[1] = (uint16_t)((v >> 16) & 0xFFFF);
+    b->limbs[2] = (uint16_t)((v >> 32) & 0xFFFF);
+    b->limbs[3] = (uint16_t)((v >> 48) & 0xFFFF);
+    return cl_bignum_normalize(bn);
+}
+
+/* CL integer -> low 64 bits (two's complement). */
+static uint64_t float_bits_obj_to_u64(CL_Obj o, const char *op)
+{
+    if (CL_FIXNUM_P(o))
+        return (uint64_t)(int64_t)CL_FIXNUM_VAL(o);
+    if (CL_BIGNUM_P(o)) {
+        CL_Bignum *b = (CL_Bignum *)CL_OBJ_TO_PTR(o);
+        uint64_t v = 0;
+        uint32_t i;
+        for (i = 0; i < b->length && i < 4; i++)
+            v |= ((uint64_t)b->limbs[i]) << (16 * i);
+        if (b->sign)
+            v = (uint64_t)(-(int64_t)v);
+        return v;
+    }
+    cl_error(CL_ERR_TYPE, "%s: not an integer", op);
+    return 0;
+}
+
+/* (single-float-bits float) -> (unsigned-byte 32) */
+static CL_Obj bi_single_float_bits(CL_Obj *args, int n)
+{
+    float f;
+    uint32_t bits;
+    CL_UNUSED(n);
+    check_float(args[0], "SINGLE-FLOAT-BITS");
+    f = (float)cl_to_double(args[0]);
+    memcpy(&bits, &f, sizeof bits);
+    return float_bits_u64_to_obj((uint64_t)bits);
+}
+
+/* (double-float-bits float) -> (unsigned-byte 64) */
+static CL_Obj bi_double_float_bits(CL_Obj *args, int n)
+{
+    double d;
+    uint64_t bits;
+    CL_UNUSED(n);
+    check_float(args[0], "DOUBLE-FLOAT-BITS");
+    d = cl_to_double(args[0]);
+    memcpy(&bits, &d, sizeof bits);
+    return float_bits_u64_to_obj(bits);
+}
+
+/* (bits-single-float (unsigned-byte 32)) -> single-float */
+static CL_Obj bi_bits_single_float(CL_Obj *args, int n)
+{
+    uint32_t bits;
+    float f;
+    CL_UNUSED(n);
+    bits = (uint32_t)float_bits_obj_to_u64(args[0], "BITS-SINGLE-FLOAT");
+    memcpy(&f, &bits, sizeof f);
+    return cl_make_single_float(f);
+}
+
+/* (bits-double-float (unsigned-byte 64)) -> double-float */
+static CL_Obj bi_bits_double_float(CL_Obj *args, int n)
+{
+    uint64_t bits;
+    double d;
+    CL_UNUSED(n);
+    bits = float_bits_obj_to_u64(args[0], "BITS-DOUBLE-FLOAT");
+    memcpy(&d, &bits, sizeof d);
+    return cl_make_double_float(d);
+}
+
 /* --- Registration ---
  *
  * Table-driven: hundreds of defun() call sites used to compile to
@@ -1426,6 +1517,13 @@ void cl_builtins_arith_init(void)
     cl_register_builtins(arith_builtins,
                          sizeof(arith_builtins) / sizeof(arith_builtins[0]),
                          cl_package_cl);
+
+    /* IEEE-754 raw bit access for the float-features :cl-amiga backend
+     * (jzon float serialisation). Exposed in the CLAMIGA package. */
+    cl_register_builtin("SINGLE-FLOAT-BITS", bi_single_float_bits, 1, 1, cl_package_clamiga);
+    cl_register_builtin("DOUBLE-FLOAT-BITS", bi_double_float_bits, 1, 1, cl_package_clamiga);
+    cl_register_builtin("BITS-SINGLE-FLOAT", bi_bits_single_float, 1, 1, cl_package_clamiga);
+    cl_register_builtin("BITS-DOUBLE-FLOAT", bi_bits_double_float, 1, 1, cl_package_clamiga);
 
     /* Initialize bignum subsystem */
     cl_bignum_init();
