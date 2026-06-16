@@ -3890,6 +3890,24 @@
 (defgeneric nmp-test (x))
 (defmethod nmp-test ((x point)) (if (next-method-p) 'has-next 'no-next))
 (check "next-method-p" 'no-next (nmp-test (make-instance 'point :x 0 :y 0)))
+; Regression: an auxiliary (:after) method must NOT see an ENCLOSING dispatch's
+; call-next-method specials.  :after methods run raw, so the effective method
+; must bind *call-next-method-function*/*next-method-p-function* to NIL around
+; them; otherwise a non-conformant :after doing (when (next-method-p)
+; (call-next-method)) leaks into the outer GF's chain whenever the GF is
+; dispatched from inside another GF's method (real failure: a sento mailbox
+; init :after jumped into hunchentoot's request handler on a worker thread).
+(defparameter *cnm-leak* nil)
+(defclass cnm-inner () ())
+(defmethod initialize-instance :after ((o cnm-inner) &key)
+  (when (next-method-p) (call-next-method)))
+(defclass cnm-base () ())
+(defclass cnm-derived (cnm-base) ())
+(defgeneric cnm-ping (x))
+(defmethod cnm-ping ((x cnm-base)) (setf *cnm-leak* t) :base)
+(defmethod cnm-ping ((x cnm-derived)) (make-instance 'cnm-inner) :derived)
+(check "aux-method cnm no-leak result" :derived (cnm-ping (make-instance 'cnm-derived)))
+(check "aux-method cnm no-leak flag" nil *cnm-leak*)
 ; Regression: &aux in a specialized method lambda list whose init-form calls
 ; an accessor on a specialized arg must NOT be parsed as a specializer (it
 ; was handed to FIND-CLASS -> "No class named (...)").  Broke cl-routes/drakma.
@@ -5251,6 +5269,28 @@
 (check "thread top abort restart prin1 unchanged" "#<RESTART ABORT>"
   (mp:join-thread (mp:make-thread
     (lambda () (prin1-to-string (find-restart 'abort))))))
+
+; --- MP:DUMP-THREAD-WAITS ---
+(check "dump-thread-waits returns nil single-threaded" nil
+  (mp:dump-thread-waits))
+
+(check "dump-thread-waits returns nil with live worker" nil
+  (let* ((lk (mp:make-lock))
+         (cv (mp:make-condition-variable))
+         (ready (list nil))
+         (thr (mp:make-thread
+                (lambda ()
+                  (mp:acquire-lock lk)
+                  (setf (car ready) t)
+                  (mp:condition-wait cv lk)
+                  (mp:release-lock lk)))))
+    (mp:acquire-lock lk)
+    (loop until (car ready) do (mp:release-lock lk) (mp:thread-yield) (mp:acquire-lock lk))
+    (let ((result (mp:dump-thread-waits)))
+      (mp:condition-notify cv)
+      (mp:release-lock lk)
+      (mp:join-thread thr)
+      result)))
 
 ; --- FFI (generic) ---
 (require "ffi")

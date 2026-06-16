@@ -1484,15 +1484,31 @@ When called with no arguments, passes the original method arguments."
                  primary-chain
                  (lambda (&rest call-args)
                    (let ((args (if call-args call-args *current-method-args*)))
-                     ;; Execute :before methods
-                     (dolist (m before)
-                       (apply (method-function m) args))
-                     ;; Execute primary chain (preserve multiple values)
-                     (let ((results (multiple-value-list (apply primary-chain args))))
-                       ;; Execute :after methods
-                       (dolist (m after)
+                     ;; :before/:after (auxiliary) methods are applied RAW, so
+                     ;; without this they would observe whatever CALL-NEXT-METHOD
+                     ;; specials an ENCLOSING dispatch left bound — e.g. when this
+                     ;; GF is dispatched from inside another GF's method.  Per the
+                     ;; standard an auxiliary method has no next method, so bind
+                     ;; the trio to NIL: (NEXT-METHOD-P) => NIL and CALL-NEXT-METHOD
+                     ;; => "no next method".  Without this a non-conformant :after
+                     ;; doing (when (next-method-p) (call-next-method)) jumps into
+                     ;; the OUTER method's chain (observed: a sento mailbox :after
+                     ;; leaking into hunchentoot's request handler on a worker
+                     ;; thread, only because that handler had the specials bound).
+                     ;; The primary chain rebinds the trio itself (%MAKE-METHOD-
+                     ;; CHAIN), so its methods are unaffected.
+                     (let ((*call-next-method-function* nil)
+                           (*call-next-method-args* nil)
+                           (*next-method-p-function* nil))
+                       ;; Execute :before methods
+                       (dolist (m before)
                          (apply (method-function m) args))
-                       (values-list results)))))))
+                       ;; Execute primary chain (preserve multiple values)
+                       (let ((results (multiple-value-list (apply primary-chain args))))
+                         ;; Execute :after methods
+                         (dolist (m after)
+                           (apply (method-function m) args))
+                         (values-list results))))))))
       (if around
           (%make-around-chain around call-primary)
           call-primary))))

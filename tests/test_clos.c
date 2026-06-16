@@ -3879,6 +3879,39 @@ TEST(compute_applicable_methods_public)
     ASSERT_STR_EQ(eval_print("(length (compute-applicable-methods #'cam-g (list \"a\")))"), "1");
 }
 
+/* Regression: an auxiliary (:before/:after) method must NOT observe the
+ * CALL-NEXT-METHOD specials of an ENCLOSING dispatch.  :before/:after methods
+ * are applied raw, so the effective method must bind *call-next-method-function*
+ * / *next-method-p-function* to NIL around them; otherwise a non-conformant
+ * :after doing (when (next-method-p) (call-next-method)) leaks into the outer
+ * GF's method chain whenever the GF is dispatched from inside another GF's
+ * method.  Real-world failure: a sento mailbox INITIALIZE-INSTANCE :after
+ * jumped into hunchentoot's request handler when a make-instance ran on a
+ * hunchentoot worker thread (whose enclosing dispatch had the specials bound);
+ * the main thread worked only because its enclosing values happened to be NIL.
+ * This reproduces it single-threaded by nesting the dispatch explicitly. */
+TEST(aux_method_no_cnm_leak_from_enclosing_dispatch)
+{
+    eval_print("(defparameter *cnm-leak* nil)");
+    /* Inner class whose :after consults next-method-p / call-next-method
+     * (non-conformant, but exactly what sento's mailbox init does). */
+    eval_print("(defclass cnm-inner () ())");
+    eval_print("(defmethod initialize-instance :after ((o cnm-inner) &key)"
+               "  (when (next-method-p) (call-next-method)))");
+    /* Outer GF with a CALL-NEXT-METHOD chain: while the cnm-derived primary
+     * runs, *next-method-p-function* is bound (cnm-base's method is next). */
+    eval_print("(defclass cnm-base () ())");
+    eval_print("(defclass cnm-derived (cnm-base) ())");
+    eval_print("(defgeneric cnm-ping (x))");
+    eval_print("(defmethod cnm-ping ((x cnm-base)) (setf *cnm-leak* t) :base)");
+    /* Dispatch the inner make-instance while the outer specials are bound; do
+     * NOT call-next-method here, so cnm-base's method is reachable ONLY if the
+     * inner :after leaks the outer chain. */
+    eval_print("(defmethod cnm-ping ((x cnm-derived)) (make-instance 'cnm-inner) :derived)");
+    ASSERT_STR_EQ(eval_print("(cnm-ping (make-instance 'cnm-derived))"), ":DERIVED");
+    ASSERT_STR_EQ(eval_print("*cnm-leak*"), "NIL");
+}
+
 int main(void)
 {
     test_init();
@@ -4244,6 +4277,7 @@ int main(void)
     RUN(defmethod_aux_specialized_lambda_list);
     RUN(control_macros_macroexpand_conformantly);
     RUN(compute_applicable_methods_public);
+    RUN(aux_method_no_cnm_leak_from_enclosing_dispatch);
 
     teardown();
     REPORT();
