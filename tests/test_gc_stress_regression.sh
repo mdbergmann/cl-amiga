@@ -1199,6 +1199,26 @@ out=$(run_stress "$WORK/symmac.lisp")
 check_contains "global symbol-macro expands (compiled under stress)" "SYMMAC:(EXPANDED-OK HAVE-IT)" "$out"
 check_absent   "no unbound-var from stale symbol-macro indicator"    "Unbound variable" "$out"
 
+# --- Case: IEEE float-bits builtins under stress ---------------------------
+# clamiga:double-float-bits returns a 4-limb bignum (allocates) and
+# bits-double-float rebuilds the double; compaction before every allocation
+# would expose any stale CL_Obj in the conversion helpers.  These back
+# float-features' :cl-amiga branch (jzon float serialisation).
+cat > "$WORK/fbits.lisp" <<'EOF'
+(let ((ok t))
+  (dotimes (i 60)
+    (let ((b (clamiga:double-float-bits 25.5d0)))
+      (unless (and (= b 4627870829588250624)
+                   (= 25.5d0 (clamiga:bits-double-float b)))
+        (setf ok nil)))
+    (unless (eql -2.5 (clamiga:bits-single-float (clamiga:single-float-bits -2.5)))
+      (setf ok nil)))
+  (format t "FBITS:~a~%" (if ok "ok" "CORRUPT")))
+EOF
+out=$(run_stress "$WORK/fbits.lisp")
+check_contains "IEEE float-bits round-trip exact under GC stress" "FBITS:ok" "$out"
+check_absent   "no corruption/error in float-bits under stress"   "CORRUPT\|not an integer\|not a float" "$out"
+
 echo ""
 echo "$passed passed, $failed failed, $total total"
 [ "$failed" -eq 0 ]

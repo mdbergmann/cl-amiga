@@ -856,6 +856,74 @@ TEST(rounding_huge_float)
 }
 
 /* ================================================================
+ * IEEE-754 raw bit access (CLAMIGA: builtins; float-features backend
+ * that jzon relies on to serialise floats to JSON).
+ * ================================================================ */
+
+TEST(double_float_bits_known)
+{
+    /* 25.5d0 = 0x4039800000000000, 1.0d0 = 0x3FF0000000000000 */
+    ASSERT_STR_EQ(eval_print("(clamiga:double-float-bits 25.5d0)"), "4627870829588250624");
+    ASSERT_STR_EQ(eval_print("(clamiga:double-float-bits 1.0d0)"), "4607182418800017408");
+    ASSERT_STR_EQ(eval_print("(clamiga:double-float-bits 0.0d0)"), "0");
+}
+
+TEST(single_float_bits_known)
+{
+    /* 1.0 = 0x3F800000 = 1065353216, 25.5 = 0x41CC0000 = 1103888384 */
+    ASSERT_STR_EQ(eval_print("(clamiga:single-float-bits 1.0)"), "1065353216");
+    ASSERT_STR_EQ(eval_print("(clamiga:single-float-bits 25.5)"), "1103888384");
+    ASSERT_STR_EQ(eval_print("(clamiga:single-float-bits 0.0)"), "0");
+}
+
+TEST(double_float_bits_roundtrip)
+{
+    ASSERT_STR_EQ(eval_print("(= 25.5d0 (clamiga:bits-double-float (clamiga:double-float-bits 25.5d0)))"), "T");
+    ASSERT_STR_EQ(eval_print("(= -1.5d0 (clamiga:bits-double-float (clamiga:double-float-bits -1.5d0)))"), "T");
+    ASSERT_STR_EQ(eval_print("(= 3.14159d0 (clamiga:bits-double-float (clamiga:double-float-bits 3.14159d0)))"), "T");
+}
+
+TEST(single_float_bits_roundtrip)
+{
+    ASSERT_STR_EQ(eval_print("(eql 1.0 (clamiga:bits-single-float (clamiga:single-float-bits 1.0)))"), "T");
+    ASSERT_STR_EQ(eval_print("(eql -2.5 (clamiga:bits-single-float (clamiga:single-float-bits -2.5)))"), "T");
+}
+
+TEST(float_bits_signed_zero)
+{
+    /* -0.0 has the sign bit set: 0x8000000000000000 / 0x80000000 */
+    ASSERT_STR_EQ(eval_print("(clamiga:double-float-bits -0.0d0)"), "9223372036854775808");
+    ASSERT_STR_EQ(eval_print("(clamiga:single-float-bits -0.0)"), "2147483648");
+}
+
+/* ================================================================
+ * Regression: 2-arg LOG of a large double overflowed to +inf because
+ * the complex-log helper squared the operand (re*re overflows for
+ * most-positive-double-float even though log|z| is finite).
+ * ================================================================ */
+
+TEST(log_huge_double_base2)
+{
+    /* (log 1.79e308 2) ~ 1024, NOT infinity */
+    ASSERT_STR_EQ(eval_print("(round (log most-positive-double-float 2))"), "1024");
+    ASSERT_STR_EQ(eval_print("(round (log most-positive-single-float 2))"), "128");
+}
+
+TEST(log_two_arg_basic)
+{
+    /* Tolerance-based: log(n)/log(base) is not required to be bit-exact. */
+    ASSERT_STR_EQ(eval_print("(< (abs (- (log 8.0d0 2.0d0) 3.0d0)) 1.0d-10)"), "T");
+    ASSERT_STR_EQ(eval_print("(< (abs (- (log 100.0d0 10.0d0) 2.0d0)) 1.0d-10)"), "T");
+}
+
+TEST(log_complex_modulus)
+{
+    /* log #C(3 4): |z|=5 -> realpart=ln 5=1.6094..., imagpart=atan2(4,3)=0.9272... */
+    ASSERT_STR_EQ(eval_print("(< (abs (- (realpart (log #C(3.0d0 4.0d0))) 1.6094379124341003d0)) 1.0d-10)"), "T");
+    ASSERT_STR_EQ(eval_print("(< (abs (- (imagpart (log #C(3.0d0 4.0d0))) 0.9272952180016122d0)) 1.0d-10)"), "T");
+}
+
+/* ================================================================
  * Regression: float printer honors *read-default-float-format*
  * ================================================================ */
 
@@ -1048,6 +1116,18 @@ int main(void)
     RUN(numeq_complex_real);
     RUN(ordered_compare_rejects_complex);
     RUN(rounding_huge_float);
+
+    /* IEEE-754 raw bit access (float-features :cl-amiga backend) */
+    RUN(double_float_bits_known);
+    RUN(single_float_bits_known);
+    RUN(double_float_bits_roundtrip);
+    RUN(single_float_bits_roundtrip);
+    RUN(float_bits_signed_zero);
+
+    /* Regression: 2-arg LOG of a large double overflowed to +inf */
+    RUN(log_huge_double_base2);
+    RUN(log_two_arg_basic);
+    RUN(log_complex_modulus);
 
     /* Regression: float printer honors *read-default-float-format* */
     RUN(print_double_default_single_has_marker);
