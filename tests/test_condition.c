@@ -379,6 +379,63 @@ TEST(lisp_define_condition_report_symbol)
         "\"static msg\"");
 }
 
+TEST(lisp_define_condition_default_initargs)
+{
+    /* Regression: define-condition :default-initargs were silently dropped
+       (%set-condition-default-initargs was a no-op stub), so a condition
+       signalled without explicit initargs carried NIL where the default
+       should be — e.g. (simple-condition-format-control) returned NIL.
+       This is the chipi-api auth-controller failure shape:
+         (define-condition auth-access-rights-error (auth-error) ()
+           (:default-initargs :format-control "Insufficient access rights"))
+       caught and checked via simple-condition-format-control. */
+    eval_print(
+        "(define-condition di-err (simple-condition) ()"
+        "  (:default-initargs :format-control \"the default\"))");
+
+    /* Default applies via MAKE-CONDITION when the initarg is omitted. */
+    ASSERT_STR_EQ(eval_print(
+        "(simple-condition-format-control (make-condition 'di-err))"),
+        "\"the default\"");
+
+    /* Default applies via ERROR/SIGNAL (coerce_to_condition path). */
+    ASSERT_STR_EQ(eval_print(
+        "(handler-case (error 'di-err)"
+        "  (di-err (c) (simple-condition-format-control c)))"),
+        "\"the default\"");
+
+    /* An explicit initarg OVERRIDES the default (CLHS 7.1.4 precedence). */
+    ASSERT_STR_EQ(eval_print(
+        "(simple-condition-format-control"
+        "  (make-condition 'di-err :format-control \"explicit\"))"),
+        "\"explicit\"");
+
+    /* An explicit NIL is preserved — a default must not clobber it. */
+    ASSERT_STR_EQ(eval_print(
+        "(simple-condition-format-control"
+        "  (make-condition 'di-err :format-control nil))"),
+        "NIL");
+
+    /* The default :format-control also drives the printed report. */
+    ASSERT_STR_EQ(eval_print(
+        "(format nil \"~a\" (make-condition 'di-err))"),
+        "\"the default\"");
+
+    /* A subclass inherits its OWN default-initargs (single-parent chain). */
+    eval_print(
+        "(define-condition di-sub (di-err) ()"
+        "  (:default-initargs :format-control \"sub default\"))");
+    ASSERT_STR_EQ(eval_print(
+        "(simple-condition-format-control (make-condition 'di-sub))"),
+        "\"sub default\"");
+
+    /* A subclass with NO default-initargs of its own inherits the parent's. */
+    eval_print("(define-condition di-sub2 (di-err) ())");
+    ASSERT_STR_EQ(eval_print(
+        "(simple-condition-format-control (make-condition 'di-sub2))"),
+        "\"the default\"");
+}
+
 /* --- Lisp-level signal/warn/error tests --- */
 
 TEST(lisp_signal_returns_nil)
@@ -1247,6 +1304,7 @@ int main(void)
     RUN(lisp_printer);
     RUN(lisp_printer_aesthetic_uses_report);
     RUN(lisp_define_condition_report_symbol);
+    RUN(lisp_define_condition_default_initargs);
 
     /* Signal/warn/error tests */
     RUN(lisp_signal_returns_nil);
