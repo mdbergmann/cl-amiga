@@ -77,6 +77,17 @@ typedef struct {
     int dyn_mark;          /* binding stack depth at frame creation */
     int handler_mark;      /* handler stack depth at frame creation */
     int restart_mark;      /* restart stack depth at frame creation */
+    int error_mark;        /* C-level error-frame (CL_CATCH) stack depth at
+                            * frame creation.  Restored when this NLX frame is
+                            * unwound to, so error frames pushed in C functions
+                            * deeper than this NLX — abandoned by the longjmp —
+                            * are dropped.  Without this, a later cl_error /
+                            * rethrow longjmps to a stale error frame whose
+                            * setjmp SP points into an already-unwound (now
+                            * reused) stack region, corrupting a live caller's
+                            * frame (observed: COMPILE-FILE canary smash when an
+                            * error unwinds through an unwind-protect during a
+                            * compile-time eval). */
     int gc_root_mark;      /* GC root stack depth at frame creation */
     void *compiler_mark;   /* active compiler chain head at frame creation */
     int mv_count;          /* multiple value count to preserve across NLX */

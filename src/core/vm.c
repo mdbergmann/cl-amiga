@@ -2777,6 +2777,7 @@ static CL_Obj cl_vm_run(int base_fp, int base_nlx)
             nlx->dyn_mark = cl_dyn_top;
             nlx->handler_mark = cl_handler_top;
             nlx->restart_mark = cl_restart_top;
+            nlx->error_mark = cl_error_frame_top;
             nlx->gc_root_mark = gc_root_count;
             nlx->compiler_mark = cl_compiler_mark();
             nlx->mv_count = 1;
@@ -2804,6 +2805,7 @@ static CL_Obj cl_vm_run(int base_fp, int base_nlx)
                 cl_dynbind_restore_to(nlx->dyn_mark);
                 cl_handler_top = nlx->handler_mark;
                 cl_restart_top = nlx->restart_mark;
+                cl_error_frame_top = nlx->error_mark;
                 gc_root_count = nlx->gc_root_mark;
                 cl_compiler_restore_to(nlx->compiler_mark);
                 cl_saved_pending_top = nlx->saved_pending_mark;
@@ -2928,6 +2930,7 @@ static CL_Obj cl_vm_run(int base_fp, int base_nlx)
             nlx->dyn_mark = cl_dyn_top;
             nlx->handler_mark = cl_handler_top;
             nlx->restart_mark = cl_restart_top;
+            nlx->error_mark = cl_error_frame_top;
             nlx->gc_root_mark = gc_root_count;
             nlx->compiler_mark = cl_compiler_mark();
             nlx->saved_pending_mark = cl_saved_pending_top;
@@ -2959,6 +2962,7 @@ static CL_Obj cl_vm_run(int base_fp, int base_nlx)
                 cl_dynbind_restore_to(nlx->dyn_mark);
                 cl_handler_top = nlx->handler_mark;
                 cl_restart_top = nlx->restart_mark;
+                cl_error_frame_top = nlx->error_mark;
                 gc_root_count = nlx->gc_root_mark;
                 cl_compiler_restore_to(nlx->compiler_mark);
                 cl_saved_pending_top = nlx->saved_pending_mark;
@@ -3409,6 +3413,7 @@ static CL_Obj cl_vm_run(int base_fp, int base_nlx)
             nlx->dyn_mark = cl_dyn_top;
             nlx->handler_mark = cl_handler_top;
             nlx->restart_mark = cl_restart_top;
+            nlx->error_mark = cl_error_frame_top;
             nlx->gc_root_mark = gc_root_count;
             nlx->compiler_mark = cl_compiler_mark();
             nlx->mv_count = 1;
@@ -3428,6 +3433,7 @@ static CL_Obj cl_vm_run(int base_fp, int base_nlx)
                 cl_dynbind_restore_to(nlx->dyn_mark);
                 cl_handler_top = nlx->handler_mark;
                 cl_restart_top = nlx->restart_mark;
+                cl_error_frame_top = nlx->error_mark;
                 gc_root_count = nlx->gc_root_mark;
                 cl_compiler_restore_to(nlx->compiler_mark);
                 cl_saved_pending_top = nlx->saved_pending_mark;
@@ -3494,6 +3500,7 @@ static CL_Obj cl_vm_run(int base_fp, int base_nlx)
             nlx->dyn_mark = cl_dyn_top;
             nlx->handler_mark = cl_handler_top;
             nlx->restart_mark = cl_restart_top;
+            nlx->error_mark = cl_error_frame_top;
             nlx->gc_root_mark = gc_root_count;
             nlx->compiler_mark = cl_compiler_mark();
 
@@ -3548,6 +3555,7 @@ static CL_Obj cl_vm_run(int base_fp, int base_nlx)
                 cl_dynbind_restore_to(nlx->dyn_mark);
                 cl_handler_top = nlx->handler_mark;
                 cl_restart_top = nlx->restart_mark;
+                cl_error_frame_top = nlx->error_mark;
                 gc_root_count = nlx->gc_root_mark;
                 cl_compiler_restore_to(nlx->compiler_mark);
                 cl_saved_pending_top = nlx->saved_pending_mark;
