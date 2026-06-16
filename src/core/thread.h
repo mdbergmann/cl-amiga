@@ -286,6 +286,18 @@ typedef struct CL_Thread_s {
     int         rdlock_tables_sites_top;
     int         rdlock_package_held;
 
+    /* ---- Wait-state diagnostics (deadlock triage) ----
+     * What this thread is currently blocked on.  Set just before a thread
+     * parks in MP:CONDITION-WAIT / a blocking MP:ACQUIRE-LOCK / a stop-the-world
+     * GC barrier and cleared on wake.  Read by another thread via
+     * (MP:DUMP-THREAD-WAITS) to tell a lost-wakeup (a worker still parked on its
+     * queue condvar after a notify) apart from a lock-ordering deadlock (a thread
+     * blocked acquiring a held lock) or a stalled stop-the-world GC.  Single-writer
+     * (the owning thread) so the racy cross-thread read is fine for diagnostics. */
+    volatile int wait_kind;     /* 0=running,1=condwait,2=condwait/timeout,3=lock-acquire,4=GC-STW-wait */
+    volatile int wait_cv_id;    /* condvar id when wait_kind is condwait */
+    volatile int wait_lock_id;  /* lock id when condwait/lock-acquire; straggler tid for GC-STW-wait */
+
     /* ---- COMPILE-FILE per-thread state ---- */
     /* Set to 1 while COMPILE-FILE is active (thread-local so concurrent
      * compile-file calls on different threads don't race on this flag). */

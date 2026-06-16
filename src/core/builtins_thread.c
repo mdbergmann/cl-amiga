@@ -16,6 +16,7 @@
 #include "stream.h"
 #include "float.h"
 #include "compiler.h"
+#include "string_utils.h"
 #include "../platform/platform.h"
 #include "../platform/platform_thread.h"
 #include <string.h>
@@ -242,6 +243,21 @@ static void *thread_entry(void *arg)
          * leftover closure object we deliberately kept there for GC during
          * the apply above. */
         t->result = CL_NIL;
+        /* Diagnostic: a worker that dies via an uncaught error otherwise
+         * vanishes silently (status 3), which is very hard to debug — e.g. a
+         * Hunchentoot request thread aborting mid-handler just closes the
+         * connection.  Surface the error code+message when CLAMIGA_THREAD_ERRORS
+         * is set in the environment. */
+        {
+            char envbuf[8];
+            if (platform_getenv("CLAMIGA_THREAD_ERRORS", envbuf, sizeof(envbuf))) {
+                fprintf(stderr,
+                        "[THREAD-ERROR] worker tid=%u died: err=%d msg=\"%s\"\n",
+                        t->id, err,
+                        t->pending_error_msg[0] ? t->pending_error_msg : "(none)");
+                fflush(stderr);
+            }
+        }
     }
 
     /* CL_UNCATCH inline */
@@ -548,6 +564,75 @@ static CL_Obj bi_all_threads(CL_Obj *args, int n)
     return result;
 }
 
+/* Print a CL string name to stderr (NIL -> "(unnamed)"), char by char so we
+ * need no transient C buffer allocation. */
+static void dump_print_name(CL_Obj name)
+{
+    if (CL_NULL_P(name) || !CL_STRING_P(name)) {
+        fprintf(stderr, "(unnamed)");
+        return;
+    }
+    {
+        uint32_t len = cl_string_length(name), i;
+        for (i = 0; i < len; i++) {
+            int c = cl_string_char_at(name, i);
+            fputc((c >= 32 && c < 127) ? c : '?', stderr);
+        }
+    }
+}
+
+/* (mp:dump-thread-waits) -> nil
+ * Diagnostic: print, for every live thread, what synchronization primitive it
+ * is currently blocked on.  Distinguishes a lost-wakeup (a worker still parked
+ * in condwait on its queue condvar after the producer already notified) from a
+ * lock-ordering deadlock (a thread blocked acquiring a held lock).  Intended to
+ * be called from a watchdog when a hang is detected. */
+static CL_Obj bi_dump_thread_waits(CL_Obj *args, int n)
+{
+    int i;
+    CL_UNUSED(args);
+    CL_UNUSED(n);
+    fprintf(stderr, "==== MP:DUMP-THREAD-WAITS (%u live threads) ====\n",
+            cl_thread_count);
+    for (i = 0; i < CL_MAX_THREADS; i++) {
+        CL_Thread *t = cl_thread_table[i];
+        const char *st, *wk;
+        if (!t) continue;
+        switch (t->status) {
+        case 0: st = "created";  break;
+        case 1: st = "running";  break;
+        case 2: st = "finished"; break;
+        case 3: st = "aborted";  break;
+        default: st = "?";       break;
+        }
+        switch (t->wait_kind) {
+        case 0: wk = "RUN";                 break;
+        case 1: wk = "CONDWAIT";            break;
+        case 2: wk = "CONDWAIT/timeout";    break;
+        case 3: wk = "LOCK-ACQUIRE(block)"; break;
+        case 4: wk = "GC-STW-WAIT";         break;
+        default: wk = "?";                  break;
+        }
+        fprintf(stderr, "  tid=%-3u status=%-8s name=\"", t->id, st);
+        dump_print_name(t->name);
+        fprintf(stderr, "\" %s", wk);
+        if (t->wait_kind == 1 || t->wait_kind == 2)
+            fprintf(stderr, " cv=%d lock=%d", t->wait_cv_id, t->wait_lock_id);
+        else if (t->wait_kind == 3)
+            fprintf(stderr, " lock=%d", t->wait_lock_id);
+        else if (t->wait_kind == 4)
+            fprintf(stderr, " waiting-for-tid=%d", t->wait_lock_id);
+        /* GC coordination flags — a thread with gc_req=1 but stopped=0 and
+         * safe=0 is the straggler holding up a stop-the-world GC. */
+        fprintf(stderr, " [gc_req=%d stopped=%d safe=%d]",
+                (int)t->gc_requested, (int)t->gc_stopped, (int)t->in_safe_region);
+        fprintf(stderr, "\n");
+    }
+    fprintf(stderr, "==== end ====\n");
+    fflush(stderr);
+    return CL_NIL;
+}
+
 /* (mp:thread-name thread) -> string/nil */
 static CL_Obj bi_thread_name(CL_Obj *args, int n)
 {
@@ -666,9 +751,16 @@ static CL_Obj bi_acquire_lock(CL_Obj *args, int n)
     if (wait_p) {
         /* Blocking acquire — bracket with safe region so a concurrent
          * stop-the-world GC does not deadlock waiting on this thread. */
+        CL_Thread *self = CL_MT() ? cl_get_current_thread() : NULL;
+        if (self) {
+            self->wait_kind = 3;
+            self->wait_lock_id = (int)lk->lock_id;
+            self->wait_cv_id = -1;
+        }
         cl_gc_enter_safe_region();
         platform_mutex_lock(mutex);
         cl_gc_leave_safe_region();
+        if (self) self->wait_kind = 0;
         return CL_T;
     } else {
         return (platform_mutex_trylock(mutex) == 0) ? CL_T : CL_NIL;
@@ -784,21 +876,37 @@ static CL_Obj bi_condition_wait(CL_Obj *args, int n)
         double secs = cl_to_double(args[2]);
         uint32_t ms;
         int timed_out;
+        CL_Thread *self = CL_MT() ? cl_get_current_thread() : NULL;
         if (secs <= 0.0)
             ms = 0;
         else if (secs > 4294967.0)
             ms = 0xFFFFFFFFu;
         else
             ms = (uint32_t)(secs * 1000.0);
+        if (self) {
+            self->wait_kind = 2;
+            self->wait_cv_id = (int)cv->condvar_id;
+            self->wait_lock_id = (int)lk->lock_id;
+        }
         cl_gc_enter_safe_region();
         timed_out = platform_condvar_wait_timeout(cv_handle, mutex, ms);
         cl_gc_leave_safe_region();
+        if (self) self->wait_kind = 0;
         return timed_out ? CL_NIL : CL_T;
     }
 
-    cl_gc_enter_safe_region();
-    platform_condvar_wait(cv_handle, mutex);
-    cl_gc_leave_safe_region();
+    {
+        CL_Thread *self = CL_MT() ? cl_get_current_thread() : NULL;
+        if (self) {
+            self->wait_kind = 1;
+            self->wait_cv_id = (int)cv->condvar_id;
+            self->wait_lock_id = (int)lk->lock_id;
+        }
+        cl_gc_enter_safe_region();
+        platform_condvar_wait(cv_handle, mutex);
+        cl_gc_leave_safe_region();
+        if (self) self->wait_kind = 0;
+    }
     return CL_T;
 }
 
@@ -1037,6 +1145,7 @@ void cl_builtins_thread_init(void)
     mp_defun("ALL-THREADS",             bi_all_threads,             0, 0);
     mp_defun("THREAD-NAME",             bi_thread_name,             1, 1);
     mp_defun("THREAD-YIELD",            bi_thread_yield,            0, 0);
+    mp_defun("DUMP-THREAD-WAITS",       bi_dump_thread_waits,       0, 0);
 
     mp_defun("MAKE-LOCK",               bi_make_lock,               0, 1);
     mp_defun("%MAKE-RECURSIVE-LOCK",    bi_make_recursive_lock,     0, 1);

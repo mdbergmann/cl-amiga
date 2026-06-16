@@ -823,6 +823,43 @@ TEST(make_lock_concurrent_no_deadlock)
 }
 
 /* ================================================================
+ * MP:DUMP-THREAD-WAITS
+ * ================================================================ */
+
+/* (mp:dump-thread-waits) must return NIL without signaling an error,
+ * even when called single-threaded (only the main thread is in the
+ * table). */
+TEST(dump_thread_waits_returns_nil)
+{
+    const char *r = eval_print("(mp:dump-thread-waits)");
+    ASSERT_STR_EQ(r, "NIL");
+}
+
+/* With a live worker present, dump-thread-waits must still return NIL
+ * and must not crash — the per-thread printing path is exercised. */
+TEST(dump_thread_waits_with_live_worker)
+{
+    const char *r = eval_print(
+        "(let* ((lk (mp:make-lock))"
+        "       (cv (mp:make-condition-variable))"
+        "       (ready (list nil))"
+        "       (thr (mp:make-thread"
+        "              (lambda ()"
+        "                (mp:acquire-lock lk)"
+        "                (setf (car ready) t)"
+        "                (mp:condition-wait cv lk)"
+        "                (mp:release-lock lk)))))"
+        "  (mp:acquire-lock lk)"
+        "  (loop until (car ready) do (mp:release-lock lk) (mp:thread-yield) (mp:acquire-lock lk))"
+        "  (let ((result (mp:dump-thread-waits)))"
+        "    (mp:condition-notify cv)"
+        "    (mp:release-lock lk)"
+        "    (mp:join-thread thr)"
+        "    result))");
+    ASSERT_STR_EQ(r, "NIL");
+}
+
+/* ================================================================
  * main
  * ================================================================ */
 
@@ -921,6 +958,10 @@ int main(void)
     RUN(thread_direct_abort_call_unwinds_cleanly);
     RUN(thread_top_abort_restart_princ_shows_report);
     RUN(thread_top_abort_restart_prin1_unchanged);
+
+    /* MP:DUMP-THREAD-WAITS */
+    RUN(dump_thread_waits_returns_nil);
+    RUN(dump_thread_waits_with_live_worker);
 
     teardown();
 
