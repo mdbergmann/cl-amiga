@@ -1894,3 +1894,36 @@
 ; `/` path — but the walker's prescan and emitter are in place so any
 ; future inliner that emits OP_DIV picks them up immediately.  No direct
 ; test reaches the emitter through Lisp source today.
+
+; --- GC compaction reloc: a JIT'd body bakes heap CL_Obj references as
+; 32-bit immediate operands (here the OP_FLOAD symbol for the helper
+; call).  A *moving* compaction relocates those symbols; the immediates
+; buried in the platform_alloc'd code buffer are invisible to the
+; conservative stack scan and would go stale unless cl_jit_compile's
+; reloc table + the compactor's forwarding pass (mem.c, TYPE_BYTECODE)
+; rewrite them in place.  Pre-fix this crashed with "OP_FLOAD: JIT call
+; site has non-symbol constant 0x........" once a GC fired mid-loop.
+;
+; Heap-pressure recipe mirrors run-tests.lisp's "rational/float compare
+; gc-safe": a retained filler array keeps the heap full so the
+; per-iteration consing forces compaction while the JIT'd loop runs.
+(defun jit-reloc-add1 (x) (+ x 1))
+(defun jit-reloc-sum (n)
+  (let ((acc 0))
+    (dotimes (i n acc)
+      (setq acc (+ acc (jit-reloc-add1 i)))
+      (list i i i))))            ; per-iteration alloc to pressure the heap
+
+; Confirm the body actually runs as native code (else the test wouldn't
+; exercise the baked-immediate path at all).
+(check "jit-reloc-sum runs native" t
+  (let ((before (clamiga::%jit-invoke-count)))
+    (jit-reloc-sum 3)
+    (> (clamiga::%jit-invoke-count) before)))
+
+; sum_{i=0}^{99} (i+1) = 5050.  A stale FLOAD symbol would crash or call
+; the wrong function; the retained filler keeps the heap pressured so a
+; compaction relocates jit-reloc-add1 mid-run.
+(check "jit-reloc-sum gc-safe result" 5050
+  (let ((filler (make-array 50000 :initial-element 1)))
+    (+ (jit-reloc-sum 100) (aref filler 0) -1)))

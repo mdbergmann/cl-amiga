@@ -90,6 +90,67 @@ void cl_jit_init(void)
     }
 }
 
+/* --- JIT relocation table ------------------------------------------------
+ *
+ * The matchers and walker bake heap CL_Obj references (symbols, block /
+ * tagbody tags, closure templates, the self-bytecode, FFI base symbols,
+ * quoted constants) directly into the generated m68k code as 32-bit
+ * immediate operands.  Those immediates are arena-relative offsets; the
+ * moving compactor relocates the referenced objects but cannot see the
+ * offsets buried in the platform_alloc'd code buffer, so without help
+ * they go stale after a compaction and the next execution dereferences
+ * garbage (classic symptom: "OP_FLOAD: JIT call site has non-symbol
+ * constant 0x........" after a GC fired mid-loop).
+ *
+ * Fix: every emit of a heap CL_Obj immediate records the byte offset of
+ * its 4-byte field here.  cl_jit_compile copies the finished table onto
+ * the bytecode (bc->native_relocs); the compactor walks it and forwards
+ * each immediate in place (mem.c, TYPE_BYTECODE).  Non-heap immediates
+ * (arg counts, slot indices, regspecs, fixnum/char/NIL constants) never
+ * move and are deliberately NOT recorded.
+ *
+ * Sticky OOM mirrors CodeBuf: if a growth allocation fails, `oom` latches
+ * and cl_jit_compile discards the native code (the function falls back to
+ * the interpreter) rather than ship code with un-forwardable immediates. */
+typedef struct {
+    uint32_t *offs;
+    uint32_t  count;
+    uint32_t  cap;
+    int       oom;
+} JitRelocs;
+
+static void jit_relocs_init(JitRelocs *r)
+{
+    r->offs = NULL; r->count = 0; r->cap = 0; r->oom = 0;
+}
+
+static void jit_relocs_free(JitRelocs *r)
+{
+    if (r->offs) platform_free(r->offs);
+    r->offs = NULL; r->count = 0; r->cap = 0;
+}
+
+/* Record that a 4-byte CL_Obj heap immediate lives at native-code byte
+ * offset `off`.  Grows the table geometrically; latches `oom` on failure. */
+static void jit_reloc_record(JitRelocs *r, uint32_t off)
+{
+    if (r->oom) return;
+    if (r->count == r->cap) {
+        uint32_t new_cap = (r->cap == 0) ? 8 : (r->cap * 2);
+        uint32_t *grown = (uint32_t *)platform_alloc(
+            (unsigned long)new_cap * sizeof(uint32_t));
+        if (grown == NULL) { r->oom = 1; return; }
+        if (r->offs) {
+            uint32_t i;
+            for (i = 0; i < r->count; i++) grown[i] = r->offs[i];
+            platform_free(r->offs);
+        }
+        r->offs = grown;
+        r->cap = new_cap;
+    }
+    r->offs[r->count++] = off;
+}
+
 /* Match `(defun f () <literal>)` and extract the returned CL_Obj.
  *
  * The compiler emits a fixed 6-byte epilogue for any zero-arg lambda
@@ -414,6 +475,53 @@ static void cache_dup(CodeBuf *cb, int *head, int *depth)
     }
 }
 
+/* --- CL_Obj immediate emitters (relocation-aware) ------------------------
+ *
+ * Every place that bakes a heap CL_Obj as a literal operand routes
+ * through one of these so the offset is recorded in the JitRelocs table
+ * (see "JIT relocation table" above).  Raw-integer operands (arg counts,
+ * slot/constant indices, regspecs, FFI offsets) are NOT heap references
+ * and keep calling the bare m68k_emit_* encoders directly. */
+
+/* Emit `move.l #obj,-(a7)` for a CL_Obj C-ABI arg, recording a reloc
+ * when obj is a heap pointer.  (+2 skips the 2-byte opcode to point at
+ * the 4-byte immediate field.) */
+static void emit_obj_imm_predec(CodeBuf *cb, JitRelocs *r, CL_Obj obj)
+{
+    if (CL_HEAP_P(obj))
+        jit_reloc_record(r, cb_len(cb) + 2);
+    m68k_emit_move_l_imm32_predec(cb, (uint32_t)obj, REG_A7);
+}
+
+/* Load a CL_Obj literal into D0, recording a reloc for heap pointers.
+ * Forces the 32-bit MOVE.L #imm form for heap objects (rather than the
+ * 8-bit MOVEQ the plain helper might pick) so the reloc always patches a
+ * full 4-byte field. */
+static void emit_obj_imm_d0(CodeBuf *cb, JitRelocs *r, CL_Obj val)
+{
+    if (CL_HEAP_P(val)) {
+        jit_reloc_record(r, cb_len(cb) + 2);
+        m68k_emit_move_l_imm32(cb, (uint32_t)val, REG_D0);
+    } else {
+        emit_load_imm_d0(cb, val);
+    }
+}
+
+/* Push a CL_Obj literal onto the operand cache, recording a reloc for
+ * heap pointers and forcing the 32-bit immediate form (MOVEQ carries
+ * only 8 bits and could not be reliably forwarded). */
+static void cache_push_obj(CodeBuf *cb, int *head, int *depth,
+                           JitRelocs *r, CL_Obj val)
+{
+    if (!CL_HEAP_P(val)) {
+        cache_push_imm(cb, head, depth, (uint32_t)val);
+        return;
+    }
+    cache_make_room_for_push(cb, head, depth);
+    jit_reloc_record(r, cb_len(cb) + 2);
+    m68k_emit_move_l_imm32(cb, (uint32_t)val, (M68kReg)*head);
+}
+
 /* --- Per-opcode walker ---------------------------------------------------
  *
  * The walker emits a complete native function for any bytecode built
@@ -595,7 +703,7 @@ static void emit_arith_compute(CodeBuf *cb, int is_sub, uint32_t helper,
  * branches to load_t (e.g. 13=BLT, 14=BGT, 12=BGE, 15=BLE, 7=BEQ).
  * The slow-path helper itself returns CL_T/CL_NIL in D0. */
 static void emit_compare_compute(CodeBuf *cb, uint8_t cond_code, uint32_t helper,
-                                 int cache_head, int cache_depth)
+                                 int cache_head, int cache_depth, JitRelocs *relocs)
 {
     int32_t beq_a_pc, beq_b_pc, taken_pc, bra1_pc, bra2_pc;
     int32_t slow_off, done_off, load_t_off;
@@ -615,9 +723,10 @@ static void emit_compare_compute(CodeBuf *cb, uint8_t cond_code, uint32_t helper
     bra1_pc = (int32_t)cb_len(cb) + 2;
     m68k_emit_bra_w(cb, 0);
 
-    /* Taken: load CL_T into D0. */
+    /* Taken: load CL_T into D0 (reloc-recorded — CL_T is a heap symbol
+     * whose offset shifts under a compacting GC). */
     load_t_off = (int32_t)cb_len(cb);
-    m68k_emit_move_l_imm32(cb, (uint32_t)CL_T, REG_D0);
+    emit_obj_imm_d0(cb, relocs, CL_T);
     bra2_pc = (int32_t)cb_len(cb) + 2;
     m68k_emit_bra_w(cb, 0);
 
@@ -868,7 +977,7 @@ static int prescan_branch_targets(const CL_Bytecode *bc, uint8_t *is_target)
     return 1;
 }
 
-static int walker_compile(const CL_Bytecode *bc, CodeBuf *cb)
+static int walker_compile(const CL_Bytecode *bc, CodeBuf *cb, JitRelocs *relocs)
 {
     uint16_t arity;
     uint16_t n_locals;
@@ -1031,7 +1140,7 @@ static int walker_compile(const CL_Bytecode *bc, CodeBuf *cb)
             break;
 
         case OP_T:
-            cache_push_imm(cb, &cache_head, &cache_depth, (uint32_t)CL_T);
+            cache_push_obj(cb, &cache_head, &cache_depth, relocs, CL_T);
             break;
 
         case OP_CONST: {
@@ -1042,7 +1151,7 @@ static int walker_compile(const CL_Bytecode *bc, CodeBuf *cb)
             ip += 2;
             if (idx >= bc->n_constants || bc->constants == NULL) goto fail;
             val = bc->constants[idx];
-            cache_push_imm(cb, &cache_head, &cache_depth, (uint32_t)val);
+            cache_push_obj(cb, &cache_head, &cache_depth, relocs, val);
             break;
         }
 
@@ -1181,7 +1290,7 @@ static int walker_compile(const CL_Bytecode *bc, CodeBuf *cb)
             if (!CL_SYMBOL_P(sym)) goto fail;
 
             cache_flush(cb, &cache_head, &cache_depth);
-            m68k_emit_move_l_imm32_predec(cb, (uint32_t)sym, REG_A7);
+            emit_obj_imm_predec(cb, relocs, sym);
             m68k_emit_jsr_abs_l(cb, helper);
             m68k_emit_addq_l_an(cb, 4, REG_A7);
             cache_push_dn(cb, &cache_head, &cache_depth, REG_D0);
@@ -1208,7 +1317,7 @@ static int walker_compile(const CL_Bytecode *bc, CodeBuf *cb)
              * conservative scan reaches stack but not cache regs. */
             cache_flush(cb, &cache_head, &cache_depth);
             m68k_emit_move_l_an_to_predec_am(cb, REG_A7, REG_A7);
-            m68k_emit_move_l_imm32_predec(cb, (uint32_t)sym, REG_A7);
+            emit_obj_imm_predec(cb, relocs, sym);
             m68k_emit_jsr_abs_l(cb, helper);
             m68k_emit_addq_l_an(cb, 8, REG_A7);
             break;
@@ -1233,7 +1342,7 @@ static int walker_compile(const CL_Bytecode *bc, CodeBuf *cb)
 
             cache_flush(cb, &cache_head, &cache_depth);
             m68k_emit_move_l_an_to_predec_am(cb, REG_A7, REG_A7);
-            m68k_emit_move_l_imm32_predec(cb, (uint32_t)sym, REG_A7);
+            emit_obj_imm_predec(cb, relocs, sym);
             m68k_emit_jsr_abs_l(cb, helper);
             m68k_emit_addq_l_an(cb, 8, REG_A7);
             break;
@@ -1254,7 +1363,7 @@ static int walker_compile(const CL_Bytecode *bc, CodeBuf *cb)
             cache_pop_to_dn(cb, &cache_head, &cache_depth, REG_D1);
             cache_flush(cb, &cache_head, &cache_depth);
             m68k_emit_move_l_dn_predec_an(cb, REG_D1, REG_A7);
-            m68k_emit_move_l_imm32_predec(cb, (uint32_t)sym, REG_A7);
+            emit_obj_imm_predec(cb, relocs, sym);
             m68k_emit_jsr_abs_l(cb, helper);
             m68k_emit_addq_l_an(cb, 8, REG_A7);
             break;
@@ -1378,7 +1487,7 @@ static int walker_compile(const CL_Bytecode *bc, CodeBuf *cb)
             cache_flush(cb, &cache_head, &cache_depth);
 
             /* alloc: PEA tag (via imm32 predec), JSR alloc, drop arg. */
-            m68k_emit_move_l_imm32_predec(cb, (uint32_t)tag, REG_A7);
+            emit_obj_imm_predec(cb, relocs, tag);
             m68k_emit_jsr_abs_l(cb, alloc_helper);
             m68k_emit_addq_l_an(cb, 4, REG_A7);
 
@@ -1454,7 +1563,7 @@ static int walker_compile(const CL_Bytecode *bc, CodeBuf *cb)
 
             /* push value, then tag (so tag at (a7), value at 4(a7)). */
             m68k_emit_move_l_dn_predec_an(cb, REG_D1, REG_A7);
-            m68k_emit_move_l_imm32_predec(cb, (uint32_t)tag, REG_A7);
+            emit_obj_imm_predec(cb, relocs, tag);
             m68k_emit_jsr_abs_l(cb, helper);
             /* Unreachable past here — helper longjmps.  Don't bother
              * with the addq; if we ever fall through (we don't), it'd
@@ -1594,7 +1703,7 @@ static int walker_compile(const CL_Bytecode *bc, CodeBuf *cb)
             cache_flush(cb, &cache_head, &cache_depth);
 
             /* alloc(tagbody_id) → D0 = &nlx->buf. */
-            m68k_emit_move_l_imm32_predec(cb, (uint32_t)tagbody_id, REG_A7);
+            emit_obj_imm_predec(cb, relocs, tagbody_id);
             m68k_emit_jsr_abs_l(cb, alloc_helper);
             m68k_emit_addq_l_an(cb, 4, REG_A7);
 
@@ -1662,7 +1771,7 @@ static int walker_compile(const CL_Bytecode *bc, CodeBuf *cb)
              * id at (a7), tag_index at 4(a7).  Push tag_index first
              * (high address), then id (low address). */
             m68k_emit_move_l_dn_predec_an(cb, REG_D1, REG_A7);
-            m68k_emit_move_l_imm32_predec(cb, (uint32_t)tagbody_id, REG_A7);
+            emit_obj_imm_predec(cb, relocs, tagbody_id);
             m68k_emit_jsr_abs_l(cb, helper);
             /* Unreachable past here — helper longjmps. */
             break;
@@ -1816,7 +1925,7 @@ static int walker_compile(const CL_Bytecode *bc, CodeBuf *cb)
             if (!CL_SYMBOL_P(sym)) goto fail;
 
             cache_flush(cb, &cache_head, &cache_depth);
-            m68k_emit_move_l_imm32_predec(cb, (uint32_t)sym, REG_A7);
+            emit_obj_imm_predec(cb, relocs, sym);
             m68k_emit_jsr_abs_l(cb, helper);
             m68k_emit_addq_l_an(cb, 4, REG_A7);
             cache_push_dn(cb, &cache_head, &cache_depth, REG_D0);
@@ -1930,7 +2039,7 @@ static int walker_compile(const CL_Bytecode *bc, CodeBuf *cb)
                  * source and dest (source EA evaluated before the
                  * predec, so the read picks up the pre-predec slot
                  * just fine). */
-                m68k_emit_move_l_imm32_predec(cb, self_obj, REG_A7);
+                emit_obj_imm_predec(cb, relocs, self_obj);
                 m68k_emit_move_l_disp_an_predec_am(cb,
                     (int16_t)(4 * ((int32_t)nargs + 1)), REG_A7, REG_A7);
                 m68k_emit_jsr_abs_l(cb, guard);
@@ -2181,7 +2290,7 @@ static int walker_compile(const CL_Bytecode *bc, CodeBuf *cb)
              * first so it lands at 8(a7) post-JSR, then dup val from
              * 4(a7) to (a7) so it lands at 4(a7) post-JSR.  Helper sig
              * is (val, type_spec). */
-            m68k_emit_move_l_imm32_predec(cb, (uint32_t)type_spec, REG_A7);
+            emit_obj_imm_predec(cb, relocs, type_spec);
             m68k_emit_move_l_disp_an_predec_am(cb, 4, REG_A7, REG_A7); /* dup val */
             m68k_emit_jsr_abs_l(cb, helper);
             m68k_emit_addq_l_an(cb, 8, REG_A7);
@@ -2209,7 +2318,7 @@ static int walker_compile(const CL_Bytecode *bc, CodeBuf *cb)
             cache_pop_to_dn(cb, &cache_head, &cache_depth, REG_D1);    /* handler */
             cache_flush(cb, &cache_head, &cache_depth);
             m68k_emit_move_l_dn_predec_an(cb, REG_D1, REG_A7);          /* push handler */
-            m68k_emit_move_l_imm32_predec(cb, (uint32_t)type_sym, REG_A7); /* push type_sym */
+            emit_obj_imm_predec(cb, relocs, type_sym); /* push type_sym */
             m68k_emit_jsr_abs_l(cb, helper);
             m68k_emit_addq_l_an(cb, 8, REG_A7);
             break;
@@ -2257,7 +2366,7 @@ static int walker_compile(const CL_Bytecode *bc, CodeBuf *cb)
             m68k_emit_move_l_disp_an_predec_am(cb, 8, REG_A0, REG_A7);  /* push interactive */
             m68k_emit_move_l_disp_an_predec_am(cb, 12, REG_A0, REG_A7); /* push report */
             m68k_emit_move_l_disp_an_predec_am(cb, 16, REG_A0, REG_A7); /* push handler */
-            m68k_emit_move_l_imm32_predec(cb, (uint32_t)name_sym, REG_A7); /* push name */
+            emit_obj_imm_predec(cb, relocs, name_sym); /* push name */
             m68k_emit_jsr_abs_l(cb, helper);
             /* Drop 24 C-arg bytes + 20 operand-slot bytes = 44 bytes. */
             m68k_emit_lea_disp_an_to_am(cb, 44, REG_A7, REG_A7);
@@ -2344,7 +2453,7 @@ static int walker_compile(const CL_Bytecode *bc, CodeBuf *cb)
             cache_pop_to_dn(cb, &cache_head, &cache_depth, REG_D0);
             emit_compare_compute(cb, /*BLT*/13,
                                  (uint32_t)(uintptr_t)&cl_jit_runtime_lt,
-                                 cache_head, cache_depth);
+                                 cache_head, cache_depth, relocs);
             cache_push_dn(cb, &cache_head, &cache_depth, REG_D0);
             break;
 
@@ -2353,7 +2462,7 @@ static int walker_compile(const CL_Bytecode *bc, CodeBuf *cb)
             cache_pop_to_dn(cb, &cache_head, &cache_depth, REG_D0);
             emit_compare_compute(cb, /*BGT*/14,
                                  (uint32_t)(uintptr_t)&cl_jit_runtime_gt,
-                                 cache_head, cache_depth);
+                                 cache_head, cache_depth, relocs);
             cache_push_dn(cb, &cache_head, &cache_depth, REG_D0);
             break;
 
@@ -2362,7 +2471,7 @@ static int walker_compile(const CL_Bytecode *bc, CodeBuf *cb)
             cache_pop_to_dn(cb, &cache_head, &cache_depth, REG_D0);
             emit_compare_compute(cb, /*BLE*/15,
                                  (uint32_t)(uintptr_t)&cl_jit_runtime_le,
-                                 cache_head, cache_depth);
+                                 cache_head, cache_depth, relocs);
             cache_push_dn(cb, &cache_head, &cache_depth, REG_D0);
             break;
 
@@ -2371,7 +2480,7 @@ static int walker_compile(const CL_Bytecode *bc, CodeBuf *cb)
             cache_pop_to_dn(cb, &cache_head, &cache_depth, REG_D0);
             emit_compare_compute(cb, /*BGE*/12,
                                  (uint32_t)(uintptr_t)&cl_jit_runtime_ge,
-                                 cache_head, cache_depth);
+                                 cache_head, cache_depth, relocs);
             cache_push_dn(cb, &cache_head, &cache_depth, REG_D0);
             break;
 
@@ -2380,7 +2489,7 @@ static int walker_compile(const CL_Bytecode *bc, CodeBuf *cb)
             cache_pop_to_dn(cb, &cache_head, &cache_depth, REG_D0);
             emit_compare_compute(cb, /*BEQ*/7,
                                  (uint32_t)(uintptr_t)&cl_jit_runtime_numeq,
-                                 cache_head, cache_depth);
+                                 cache_head, cache_depth, relocs);
             cache_push_dn(cb, &cache_head, &cache_depth, REG_D0);
             break;
 
@@ -2400,7 +2509,7 @@ static int walker_compile(const CL_Bytecode *bc, CodeBuf *cb)
             m68k_emit_bra_w(cb, 0);
 
             load_t_off = (int32_t)cb_len(cb);
-            m68k_emit_move_l_imm32(cb, (uint32_t)CL_T, REG_D0);
+            emit_obj_imm_d0(cb, relocs, CL_T);
             done_off = (int32_t)cb_len(cb);
 
             m68k_patch_disp16(cb_data(cb), cb_len(cb), (uint32_t)beq_pc,
@@ -2428,7 +2537,7 @@ static int walker_compile(const CL_Bytecode *bc, CodeBuf *cb)
             m68k_emit_bra_w(cb, 0);
 
             load_t_off = (int32_t)cb_len(cb);
-            m68k_emit_move_l_imm32(cb, (uint32_t)CL_T, REG_D0);
+            emit_obj_imm_d0(cb, relocs, CL_T);
             done_off = (int32_t)cb_len(cb);
 
             m68k_patch_disp16(cb_data(cb), cb_len(cb), (uint32_t)beq_pc,
@@ -2670,7 +2779,7 @@ static int walker_compile(const CL_Bytecode *bc, CodeBuf *cb)
             m68k_emit_move_l_an_to_am(cb, REG_A7, REG_A0);
             m68k_emit_move_l_an_predec_am(cb, REG_A0, REG_A7);            /* values */
             m68k_emit_move_l_imm32_predec(cb, n_upvals_local, REG_A7);    /* n_upvals */
-            m68k_emit_move_l_imm32_predec(cb, (uint32_t)tmpl_obj, REG_A7);/* tmpl_obj */
+            emit_obj_imm_predec(cb, relocs, tmpl_obj);                    /* tmpl_obj */
             m68k_emit_jsr_abs_l(cb, helper);
             /* Drop 3 C args + n_upvals*4 bytes of values via one LEA.
              * Can't use addq.l for the 12-byte drop alone — addq.l only
@@ -2745,7 +2854,7 @@ static int walker_compile(const CL_Bytecode *bc, CodeBuf *cb)
             m68k_emit_move_l_imm32_predec(cb, (uint32_t)n_args, REG_A7);
             m68k_emit_move_l_imm32_predec(cb, regspec, REG_A7);
             m68k_emit_move_l_imm32_predec(cb, (uint32_t)offset_se, REG_A7);
-            m68k_emit_move_l_imm32_predec(cb, (uint32_t)base_sym, REG_A7);
+            emit_obj_imm_predec(cb, relocs, base_sym);
             m68k_emit_jsr_abs_l(cb, helper);
             /* Drop the 5 C args (20 bytes), then the n_args operand
              * slots that the dispatch consumed. */
@@ -2869,23 +2978,33 @@ cleanup:
 void cl_jit_compile(CL_Bytecode *bc)
 {
     CodeBuf cb;
+    JitRelocs relocs;
     uint8_t *code;
     uint32_t len;
     CL_Obj value;
     uint8_t slot;
 
     if (bc == NULL || !jit_active) return;
-    bc->native_code = NULL;
-    bc->native_len  = 0;
+    /* Drop any stale native code + relocs from a prior compile of this
+     * bytecode (re-JIT after redefinition / repeated FASL load). */
+    if (bc->native_code) { platform_free(bc->native_code); }
+    if (bc->native_relocs) { platform_free(bc->native_relocs); }
+    bc->native_code   = NULL;
+    bc->native_len    = 0;
+    bc->native_relocs = NULL;
+    bc->native_reloc_count = 0;
 
     cb_init(&cb, 8);
+    jit_relocs_init(&relocs);
 
     if (matches_trivial_leaf(bc, &value)) {
         /* Emit: load <value> into D0 ; rts.  m68k SysV ABI returns the
          * function result in D0, so the load + rts is a complete leaf
          * function callable from C with no register save/restore (the
-         * load only touches D0, which is caller-saved). */
-        emit_load_imm_d0(&cb, value);
+         * load only touches D0, which is caller-saved).  emit_obj_imm_d0
+         * records a reloc when <value> is a heap object (e.g. a quoted
+         * symbol/list) so the compactor can forward the baked literal. */
+        emit_obj_imm_d0(&cb, &relocs, value);
         m68k_emit_rts(&cb);
     } else if (matches_passthrough(bc, &slot)) {
         /* Emit: move.l (8 + 4*slot)(sp),d0 ; rts.  The C ABI on m68k
@@ -2894,11 +3013,11 @@ void cl_jit_compile(CL_Bytecode *bc)
          * native_code to the matching arity's C function-pointer type
          * and passes args through normal calling convention with
          * `func` prepended, so user-arg j sits at C-ABI slot (j+1)
-         * = (4 + 4*(j+1))(sp) = (8 + 4*j)(sp). */
+         * = (4 + 4*(j+1))(sp) = (8 + 4*j)(sp).  No heap immediates. */
         int16_t disp = (int16_t)(8 + 4 * (int)slot);
         m68k_emit_move_l_disp_an_to_dn(&cb, disp, REG_A7, REG_D0);
         m68k_emit_rts(&cb);
-    } else if (walker_compile(bc, &cb)) {
+    } else if (walker_compile(bc, &cb, &relocs)) {
         /* Walker handled it — full per-opcode template emission with
          * LINK frame + m68k-stack operand stack.  Larger code than the
          * matchers' tight templates, but covers any shape built from
@@ -2907,15 +3026,49 @@ void cl_jit_compile(CL_Bytecode *bc)
         /* Walker bailed (unsupported opcode, oversized frame, etc.) —
          * discard whatever it emitted into cb and fall back to the
          * bytecode interpreter for this function. */
+        jit_relocs_free(&relocs);
+        cb_free(&cb);
+        return;
+    }
+
+    /* If the reloc table couldn't be grown (OOM), we can't guarantee the
+     * compactor will forward every baked heap immediate — shipping this
+     * code would risk stale offsets after a move.  Fall back to the
+     * interpreter instead. */
+    if (relocs.oom || relocs.count > 0xFFFF) {
+        jit_relocs_free(&relocs);
         cb_free(&cb);
         return;
     }
 
     code = cb_finish(&cb, &len);
-    if (code == NULL) return;
+    if (code == NULL) { jit_relocs_free(&relocs); return; }
 
     bc->native_code = code;
     bc->native_len  = len;
+
+    /* Hand the reloc table to the bytecode.  Right-size it: the walker
+     * over-allocates geometrically, so copy into an exact buffer (and
+     * keep NULL when there were no heap immediates). */
+    if (relocs.count > 0) {
+        uint32_t *tab = (uint32_t *)platform_alloc(
+            (unsigned long)relocs.count * sizeof(uint32_t));
+        if (tab == NULL) {
+            /* Can't store the table → can't safely keep the native code. */
+            jit_relocs_free(&relocs);
+            platform_free(code);
+            bc->native_code = NULL;
+            bc->native_len  = 0;
+            return;
+        }
+        {
+            uint32_t i;
+            for (i = 0; i < relocs.count; i++) tab[i] = relocs.offs[i];
+        }
+        bc->native_relocs      = tab;
+        bc->native_reloc_count = (uint16_t)relocs.count;
+    }
+    jit_relocs_free(&relocs);
 
     /* Flush I-cache so the freshly written bytes aren't stale on
      * 68040/060.  On 68020/030 this is a no-op (no write-back I-cache). */
@@ -3391,6 +3544,11 @@ int cl_jit_emit_stub(CL_Bytecode *bc)
     if (code == NULL) return 0;
 
     if (bc->native_code) platform_free(bc->native_code);
+    /* The stub bakes no heap immediates — drop any reloc table the prior
+     * native code carried so the compactor doesn't patch the stub. */
+    if (bc->native_relocs) platform_free(bc->native_relocs);
+    bc->native_relocs = NULL;
+    bc->native_reloc_count = 0;
     bc->native_code = code;
     bc->native_len  = len;
     platform_cache_clear(code, len);
