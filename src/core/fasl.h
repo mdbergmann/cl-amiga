@@ -26,7 +26,7 @@
 #include "../platform/platform.h"
 
 #define CL_FASL_MAGIC    0x434C4641  /* "CLFA" */
-#define CL_FASL_VERSION  12  /* v12: destructuring-bind walker now emits bytecode for &whole / &aux / destructuring &rest|&body (was mis-bound as required params); changes emitted bytecode for any destructuring pattern using them */
+#define CL_FASL_VERSION  13  /* v13: defstruct honors ALL (:constructor ...) options (was: only the last; earlier BOA/keyword constructors were silently dropped), and define-compiler-macro now strips &environment from its lambda list (was: leaked into the inner destructuring-bind as a bogus required param); changes emitted bytecode/expansion for any defstruct with multiple constructors or compiler-macro using &environment */
 
 /* Serialized constant type tags */
 #define FASL_TAG_NIL         0x00

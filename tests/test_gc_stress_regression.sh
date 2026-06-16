@@ -840,6 +840,58 @@ out=$(run_stress "$WORK/db-arity.lisp")
 check_contains "destructuring-bind arity guards fire correctly under stress" "DBARITY:FEW/MANY/NEST/(1 2)" "$out"
 check_absent   "no corruption from stale pattern cursor in arity guards"     "Unbound variable\|type 0\|corrupted\|Undefined" "$out"
 
+# --- Case: defstruct with MULTIPLE (:constructor ...) options under GC stress -
+# Regression for the defstruct fix: every (:constructor ...) option must be
+# emitted (was: only the last survived).  Compile a struct with two BOA
+# constructors over (:include)d slots (esrap's failed-parse shape) to a clean
+# FASL, then exercise both constructors under stress — the whole defstruct
+# expansion (ctor-specs list, slot-init mapcar, %make-struct) allocates.
+cat > "$WORK/multi-ctor.lisp" <<'EOF'
+(defstruct (mcb (:constructor nil)) (e nil) (p 0) (d nil))
+(defstruct (mcl (:include mcb)
+            (:constructor mcl-full (e p d))
+            (:constructor mcl/no-pos (e d))))
+(defun ctor-probe ()
+  (let ((a (mcl-full 'x 7 'z))
+        (b (mcl/no-pos 'q 'w)))
+    (format nil "~a/~a/~a/~a"
+            (mcb-e a) (mcb-p a) (mcb-p b) (mcb-d b))))
+(let ((last nil))
+  (dotimes (i 30) (setq last (ctor-probe)))
+  (format t "MULTICTOR:~a~%" last))
+EOF
+compile_fasl "$WORK/multi-ctor.lisp" "$WORK/multi-ctor.fasl"
+cat > "$WORK/multi-ctor-load.lisp" <<EOF
+(load "$WORK/multi-ctor.fasl")
+EOF
+out=$(run_stress "$WORK/multi-ctor-load.lisp")
+check_contains "defstruct emits all (:constructor) options under stress" "MULTICTOR:X/7/0/W" "$out"
+check_absent   "no dropped-constructor/corruption in multi-ctor defstruct" "Undefined\|Unbound variable\|type 0\|corrupted" "$out"
+
+# --- Case: define-compiler-macro with &environment under GC stress -----------
+# Regression for the boot.lisp fix: define-compiler-macro must strip
+# &environment from its lambda list before building the inner
+# destructuring-bind.  The expansion (%dcm-split-env / %dcm-split-whole +
+# nested list building) allocates; under stress a stale cursor would either
+# corrupt the cleaned lambda list or re-leak &environment as a required param
+# (-> spurious "too few elements" while compiling the define-compiler-macro).
+# Loaded as SOURCE so the expansion+compile happens under stress; the
+# subsequent EVAL fires the now-registered compiler macro (folds 21 -> 42).
+cat > "$WORK/dcm-env.lisp" <<'EOF'
+(defun dcm-fn (x) x)
+(define-compiler-macro dcm-fn (&whole form x &environment env)
+  (declare (ignorable env)) (if (integerp x) (* 2 x) form))
+(defun dcm2-fn (a b) (list a b))
+(define-compiler-macro dcm2-fn (a b &environment env)
+  (declare (ignorable env)) (list 'list b a))
+(format t "DCMENV:~a~%" (eval '(dcm-fn 21)))
+(format t "DCMENV2:~a~%" (eval '(dcm2-fn 1 2)))
+EOF
+out=$(run_stress "$WORK/dcm-env.lisp")
+check_contains "define-compiler-macro strips &environment (folds) under stress" "DCMENV:42" "$out"
+check_contains "define-compiler-macro &environment without &whole under stress" "DCMENV2:(2 1)" "$out"
+check_absent   "no too-few/corruption from &environment in compiler-macro" "too few\|Unbound variable\|type 0\|corrupted\|Undefined" "$out"
+
 # --- Case: DEFINE-CONDITION :report function-name SYMBOL under GC stress -----
 # Regression for the boot.lisp :report fix: a SYMBOL :report names a function;
 # it must be funcalled as a function designator (',report), not spliced bare

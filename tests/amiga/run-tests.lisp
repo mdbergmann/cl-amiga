@@ -1770,6 +1770,46 @@
 (check "defstruct include typep parent" t (typep (make-child-st) 'base-st))
 (check "defstruct include typep child" t (typep (make-child-st) 'child-st))
 (check "defstruct include typep neg" nil (typep (make-base-st) 'child-st))
+;; Multiple (:constructor ...) options — all must be defined (CLHS 3.4.6.6).
+;; Regression: previously only the last option survived (esrap failed-parse's
+;; make-failed-parse vanished -> "Undefined function").
+(defstruct (mctor (:constructor mctor-full (a b c))
+                  (:constructor mctor-short (a c)))
+  (a nil) (b 0) (c nil))
+(check "defstruct multi-ctor full a"  'x (mctor-a (mctor-full 'x 5 'z)))
+(check "defstruct multi-ctor full b"  5  (mctor-b (mctor-full 'x 5 'z)))
+(check "defstruct multi-ctor short b" 0  (mctor-b (mctor-short 'p 'q)))
+(check "defstruct multi-ctor short c" 'q (mctor-c (mctor-short 'p 'q)))
+(check "defstruct multi-ctor fboundp 1" t (and (fboundp 'mctor-full) t))
+(check "defstruct multi-ctor fboundp 2" t (and (fboundp 'mctor-short) t))
+;; Two BOA constructors over (:include)d slots — esrap failed-parse's shape.
+(defstruct (mc-base (:constructor nil)) (e nil) (p 0) (d nil))
+(defstruct (mc-leaf (:include mc-base)
+                    (:constructor mc-leaf-full (e p d))
+                    (:constructor mc-leaf/no-pos (e d))))
+(check "defstruct multi-ctor include full p" 7 (mc-base-p (mc-leaf-full 'e 7 'd)))
+(check "defstruct multi-ctor include nopos p" 0 (mc-base-p (mc-leaf/no-pos 'e 'd)))
+(check "defstruct multi-ctor include nopos d" 'd (mc-base-d (mc-leaf/no-pos 'e 'd)))
+;; Mixed BOA + keyword constructor on the same struct.
+(defstruct (mc-mix (:constructor mc-mix-boa (x y)) (:constructor mc-mix-kw))
+  (x 1) (y 2))
+(check "defstruct multi-ctor boa+kw boa" 10 (mc-mix-x (mc-mix-boa 10 20)))
+(check "defstruct multi-ctor boa+kw kw"  99 (mc-mix-y (mc-mix-kw :y 99)))
+
+; --- define-compiler-macro &environment ---
+;; define-compiler-macro must strip &environment from its lambda list (any
+;; position, with or without &whole); otherwise it leaks into the inner
+;; destructuring-bind as a required param -> "too few elements" at compile.
+(defun cmenv-fn (x) x)
+(define-compiler-macro cmenv-fn (&whole form x &environment env)
+  (declare (ignorable env)) (if (integerp x) (* 2 x) form))
+(check "compiler-macro &environment folds" 42 (cmenv-fn 21))
+(defparameter *cmv* 5)
+(check "compiler-macro &environment declines" 5 (cmenv-fn *cmv*))
+(defun cmenv2-fn (a b) (list a b))
+(define-compiler-macro cmenv2-fn (a b &environment env)
+  (declare (ignorable env)) (list 'list b a))
+(check "compiler-macro &environment no-whole" '(2 1) (cmenv2-fn 1 2))
 
 ; --- the ---
 (check "the fixnum" 42 (the fixnum 42))
