@@ -1408,6 +1408,21 @@
                         (get-output-stream-string s))))
   (check "trace stream silent after untrace" "" captured))
 
+;; Regression: creating MANY string-output-streams in a loop exhausts the
+;; internal outbuf table; the table-full path runs a GC to reclaim dead
+;; streams, which must not sweep/relocate the not-yet-rooted stream being
+;; built (was returned dangling -> "argument is not a stream").  Each newly
+;; created stream must stay a valid, writable string stream across that GC.
+(check "string-output-stream survives table-full GC churn" t
+       (let ((all-ok t))
+         (dotimes (i 800)
+           (let ((s (make-string-output-stream)))
+             (unless (streamp s) (setf all-ok nil))
+             (write-string "abc" s)
+             (unless (string= "abc" (get-output-stream-string s))
+               (setf all-ok nil))))
+         all-ok))
+
 ; --- Backtrace (error recovery) ---
 ; Test that errors in nested calls don't break subsequent evaluation
 (defun bt-err-inner () (error "test error"))
