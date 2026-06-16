@@ -249,6 +249,72 @@ TEST(struct_boa_constructor)
     ASSERT_STR_EQ(eval_print("(boa3-b (make-boa3 1))"), "99");
 }
 
+TEST(struct_multiple_constructors)
+{
+    /* CLHS 3.4.6.6: a struct may declare several (:constructor ...) options;
+     * each one must be defined.  Regression: previously only the LAST option
+     * was honored — earlier constructors were silently dropped (e.g. esrap's
+     * failed-parse with both make-failed-parse and make-failed-parse/no-position
+     * → "Undefined function: MAKE-FAILED-PARSE"). */
+    eval_print("(defstruct (mc1"
+               "             (:constructor mc1-full (a b c))"
+               "             (:constructor mc1-short (a c)))"
+               "  (a nil) (b 0) (c nil))");
+    ASSERT_STR_EQ(eval_print("(fboundp 'mc1-full)"), "T");
+    ASSERT_STR_EQ(eval_print("(fboundp 'mc1-short)"), "T");
+    ASSERT_STR_EQ(eval_print("(mc1-a (mc1-full 'x 5 'z))"), "X");
+    ASSERT_STR_EQ(eval_print("(mc1-b (mc1-full 'x 5 'z))"), "5");
+    ASSERT_STR_EQ(eval_print("(mc1-c (mc1-full 'x 5 'z))"), "Z");
+    /* mc1-short omits b → inherits the slot default (0) */
+    ASSERT_STR_EQ(eval_print("(mc1-a (mc1-short 'p 'q))"), "P");
+    ASSERT_STR_EQ(eval_print("(mc1-b (mc1-short 'p 'q))"), "0");
+    ASSERT_STR_EQ(eval_print("(mc1-c (mc1-short 'p 'q))"), "Q");
+
+    /* Mixed: a BOA constructor AND a keyword constructor on the same struct. */
+    eval_print("(defstruct (mc2"
+               "             (:constructor mc2-boa (x y))"
+               "             (:constructor mc2-kw))"
+               "  (x 1) (y 2))");
+    ASSERT_STR_EQ(eval_print("(mc2-x (mc2-boa 10 20))"), "10");
+    ASSERT_STR_EQ(eval_print("(mc2-y (mc2-kw :y 99))"), "99");
+    ASSERT_STR_EQ(eval_print("(mc2-x (mc2-kw))"), "1");
+
+    /* Multiple BOA constructors over an (:include)d parent's slots — the
+     * exact shape esrap's failed-parse uses. */
+    eval_print("(defstruct (mc-base (:constructor nil)) (e nil) (p 0) (d nil))");
+    eval_print("(defstruct (mc-leaf (:include mc-base)"
+               "             (:constructor mc-leaf-full (e p d))"
+               "             (:constructor mc-leaf/no-pos (e d))))");
+    ASSERT_STR_EQ(eval_print("(mc-base-e (mc-leaf-full 'ex 7 'de))"), "EX");
+    ASSERT_STR_EQ(eval_print("(mc-base-p (mc-leaf-full 'ex 7 'de))"), "7");
+    /* /no-pos omits p → inherited slot default (0) */
+    ASSERT_STR_EQ(eval_print("(mc-base-p (mc-leaf/no-pos 'ex 'de))"), "0");
+    ASSERT_STR_EQ(eval_print("(mc-base-d (mc-leaf/no-pos 'ex 'de))"), "DE");
+}
+
+TEST(struct_compiler_macro_environment)
+{
+    /* define-compiler-macro must strip &environment from its lambda list;
+     * otherwise &environment + its var leak into the inner destructuring-bind
+     * as bogus required params → spurious "too few elements" at compile time
+     * (alexandria's of-type compiler-macro shape).  &environment may appear
+     * after &whole and at any position. */
+    eval_print("(defun cmenv-fn (x) x)");
+    eval_print("(define-compiler-macro cmenv-fn (&whole form x &environment env)"
+               "  (declare (ignorable env)) (if (integerp x) (* 2 x) form))");
+    /* compiler macro folds a constant arg */
+    ASSERT_STR_EQ(eval_print("(cmenv-fn 21)"), "42");
+    /* declines (returns form) on a non-constant arg */
+    eval_print("(defparameter *cmv* 5)");
+    ASSERT_STR_EQ(eval_print("(cmenv-fn *cmv*)"), "5");
+
+    /* &environment without &whole */
+    eval_print("(defun cmenv2-fn (a b) (list a b))");
+    eval_print("(define-compiler-macro cmenv2-fn (a b &environment env)"
+               "  (declare (ignorable env)) `(list ,b ,a))");
+    ASSERT_STR_EQ(eval_print("(cmenv2-fn 1 2)"), "(2 1)");
+}
+
 /* --- Typed-sequence structs: (:type vector) / (:type list) --- */
 
 TEST(struct_type_vector)
@@ -330,6 +396,8 @@ int main(void)
     RUN(struct_no_slots);
     RUN(struct_slot_no_default);
     RUN(struct_boa_constructor);
+    RUN(struct_multiple_constructors);
+    RUN(struct_compiler_macro_environment);
 
     /* Typed-sequence structs */
     RUN(struct_type_vector);

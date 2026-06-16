@@ -320,13 +320,30 @@
 ;; and the compiler proceeds with the regular call path.  See
 ;; cl_get_compiler_macro / compile_call in compiler.c.
 ;;
-;; Lambda list supports &whole (must be first) for the decline pattern.
-;; &environment is silently stripped — the compiler always passes NIL.
+;; Lambda list supports &whole (must be first) for the decline pattern and
+;; &environment (any position); &environment's var is bound to the macro
+;; environment the compiler passes as the expander's 2nd argument.
 (defun %dcm-split-whole (ll)
   "Return (cons WHOLE-VAR CLEANED-LL).  WHOLE-VAR is NIL when no &whole."
   (if (and (consp ll) (eq (car ll) '&whole))
       (cons (cadr ll) (cddr ll))
       (cons nil ll)))
+
+;; Remove a single `&environment <var>` pair from anywhere in a
+;; compiler-macro lambda list (CLHS 3.4.4: &environment may appear at any
+;; position).  Returns (cons ENV-VAR CLEANED-LL); ENV-VAR is NIL when absent.
+;; Compared by symbol-name so a wrong-package &ENVIRONMENT is still caught.
+;; Without this strip, &environment + its var flow into the inner
+;; DESTRUCTURING-BIND as bogus required params → spurious "too few elements"
+;; (e.g. alexandria's `(define-compiler-macro of-type (&whole form type
+;; &environment env) ...)`).
+(defun %dcm-split-env (ll)
+  (cond ((not (consp ll)) (cons nil ll))
+        ((and (symbolp (car ll))
+              (string= (symbol-name (car ll)) "&ENVIRONMENT"))
+         (cons (cadr ll) (cddr ll)))
+        (t (let ((sub (%dcm-split-env (cdr ll))))
+             (cons (car sub) (cons (car ll) (cdr sub)))))))
 
 ;; CLHS 3.4.11: the body is enclosed in an implicit block named NAME,
 ;; same rule as defun (CLHS 3.4.10).  Libraries (e.g. serapeum's fnil)
@@ -343,20 +360,28 @@
          (block-name (if setf-p (cadr name) name))
          (form-var (gensym "FORM"))
          (env-var  (gensym "ENV"))
-         (split    (%dcm-split-whole lambda-list))
+         (env-split (%dcm-split-env lambda-list))
+         (user-env (car env-split))
+         (split    (%dcm-split-whole (cdr env-split)))
          (whole    (car split))
          (clean    (cdr split))
          (inner    `(destructuring-bind ,clean (cdr ,form-var)
-                      (block ,block-name ,@body))))
+                      (block ,block-name ,@body)))
+         (with-whole (if whole `(let ((,whole ,form-var)) ,inner) inner)))
     (if setf-p
         `',name
         `(progn
            (clamiga::%setf-compiler-macro-function
             (lambda (,form-var ,env-var)
-              (declare (ignore ,env-var))
-              ,(if whole
-                   `(let ((,whole ,form-var)) ,inner)
-                   inner))
+              ,@(if user-env
+                    ;; Expose the macro environment to the user's
+                    ;; &environment var (the compiler passes the env as the
+                    ;; expander's 2nd arg).
+                    `((let ((,user-env ,env-var))
+                        (declare (ignorable ,user-env))
+                        ,with-whole))
+                    `((declare (ignore ,env-var))
+                      ,with-whole)))
             ',name)
            ',name))))
 
@@ -1261,8 +1286,10 @@ when the param has no explicit default.  CL spec 3.4.6 requires this."
          (name-str (symbol-name name))
          ;; Parse options
          (conc-name-opt nil) (conc-name-set nil)
-         (constructor-opt nil) (constructor-set nil)
-         (boa-lambda-list nil)
+         ;; CLHS 3.4.6.6: a struct may declare MANY (:constructor ...) options.
+         ;; CONSTRUCTORS collects (NAME HAS-BOA-P BOA-LAMBDA-LIST) per option;
+         ;; (:constructor nil) suppresses (adds nothing).
+         (constructors nil) (constructor-set nil)
          (predicate-opt nil) (predicate-set nil)
          (copier-opt nil) (copier-set nil)
          (include-name nil) (include-slots nil)
@@ -1279,12 +1306,15 @@ when the param has no explicit default.  CL spec 3.4.6 requires this."
          (setq conc-name-opt nil))
         ((and (consp opt) (eq (car opt) :constructor))
          (setq constructor-set t)
-         (setq constructor-opt (cadr opt))
-         (when (cddr opt)
-           (setq boa-lambda-list (caddr opt))))
+         ;; (:constructor name)          => keyword constructor
+         ;; (:constructor name arglist)  => BOA constructor
+         ;; (:constructor nil)           => suppress (record nothing)
+         (when (cadr opt)
+           (setq constructors
+                 (cons (list (cadr opt) (consp (cddr opt)) (caddr opt))
+                       constructors))))
         ((eq opt :constructor)
-         (setq constructor-set t)
-         (setq constructor-opt nil))
+         (setq constructor-set t))
         ((and (consp opt) (eq (car opt) :predicate))
          (setq predicate-set t)
          (setq predicate-opt (cadr opt)))
@@ -1324,11 +1354,13 @@ when the param has no explicit default.  CL spec 3.4.6 requires this."
                      ((not conc-name-set) (concatenate 'string name-str "-"))
                      ((null conc-name-opt) "")
                      (t (symbol-name conc-name-opt))))
-           ;; Constructor name
-           (ctor-name (cond
-                        ((not constructor-set) (intern (concatenate 'string "MAKE-" name-str)))
-                        ((null constructor-opt) nil)
-                        (t constructor-opt)))
+           ;; Constructor specs (NAME HAS-BOA-P BOA-LL).  With no (:constructor
+           ;; ...) option, default to a single keyword constructor MAKE-<name>.
+           (ctor-specs (reverse
+                        (if constructor-set
+                            constructors
+                            (list (list (intern (concatenate 'string "MAKE-" name-str))
+                                        nil nil)))))
            ;; Predicate name
            (pred-name (cond
                         ((not predicate-set) (intern (concatenate 'string name-str "-P")))
@@ -1358,30 +1390,33 @@ when the param has no explicit default.  CL spec 3.4.6 requires this."
                               'vector)
                              (t 'list)))
                  (builder (if (eq seq-kind 'vector) 'vector 'list)))
-            ;; Constructor
-            (when ctor-name
-              (if boa-lambda-list
-                  (let ((slot-inits (mapcar (lambda (s)
-                                              (let* ((sname (car s))
-                                                     (sdefault (cadr s)))
-                                                (if (member sname boa-lambda-list
-                                                            :test (lambda (name p)
-                                                                    (cond ((symbolp p)
-                                                                           (and (not (member p '(&optional &key &rest &aux)))
-                                                                                (eq name p)))
-                                                                          ((consp p) (eq name (car p)))
-                                                                          (t nil))))
-                                                    sname
-                                                    sdefault)))
-                                            all-slots)))
-                    (push `(defun ,ctor-name ,(%boa-patch-defaults boa-lambda-list all-slots)
-                             (,builder ,@slot-inits))
-                          forms))
-                  (let ((key-params (mapcar (lambda (s) (list (car s) (cadr s)))
-                                            all-slots)))
-                    (push `(defun ,ctor-name (&key ,@key-params)
-                             (,builder ,@(mapcar #'car all-slots)))
-                          forms))))
+            ;; Constructors (one per (:constructor ...) option)
+            (dolist (cspec ctor-specs)
+              (let ((ctor-name (car cspec))
+                    (has-boa (cadr cspec))
+                    (boa-lambda-list (caddr cspec)))
+                (if has-boa
+                    (let ((slot-inits (mapcar (lambda (s)
+                                                (let* ((sname (car s))
+                                                       (sdefault (cadr s)))
+                                                  (if (member sname boa-lambda-list
+                                                              :test (lambda (name p)
+                                                                      (cond ((symbolp p)
+                                                                             (and (not (member p '(&optional &key &rest &aux)))
+                                                                                  (eq name p)))
+                                                                            ((consp p) (eq name (car p)))
+                                                                            (t nil))))
+                                                      sname
+                                                      sdefault)))
+                                              all-slots)))
+                      (push `(defun ,ctor-name ,(%boa-patch-defaults boa-lambda-list all-slots)
+                               (,builder ,@slot-inits))
+                            forms))
+                    (let ((key-params (mapcar (lambda (s) (list (car s) (cadr s)))
+                                              all-slots)))
+                      (push `(defun ,ctor-name (&key ,@key-params)
+                               (,builder ,@(mapcar #'car all-slots)))
+                            forms)))))
             ;; No predicate or copier for typed-sequence structs — no type
             ;; discrimination.  Accessors index by position (svref / nth).
             (let ((idx 0))
@@ -1413,36 +1448,39 @@ when the param has no explicit default.  CL spec 3.4.6 requires this."
                    ,(if include-name `',include-name nil)
                    ',all-slots)
                 forms)
-          ;; Constructor
-          (when ctor-name
-            (if boa-lambda-list
-                ;; BOA constructor: positional args mapped to slots by name
-                (let ((slot-inits (mapcar (lambda (s)
-                                            ;; For each slot, use the BOA param if named,
-                                            ;; otherwise use the slot default
-                                            (let* ((sname (car s))
-                                                   (sdefault (cadr s)))
-                                              ;; Check if slot name appears in BOA params
-                                              (if (member sname boa-lambda-list
-                                                          :test (lambda (name p)
-                                                                  (cond ((symbolp p)
-                                                                         (and (not (member p '(&optional &key &rest &aux)))
-                                                                              (eq name p)))
-                                                                        ((consp p) (eq name (car p)))
-                                                                        (t nil))))
-                                                  sname
-                                                  sdefault)))
-                                          all-slots)))
-                  (push `(defun ,ctor-name ,(%boa-patch-defaults boa-lambda-list all-slots)
-                           (%make-struct ',name ,@slot-inits))
-                        forms))
-                ;; Standard keyword constructor
-                (let ((key-params (mapcar (lambda (s)
-                                            (list (car s) (cadr s)))
-                                          all-slots)))
-                  (push `(defun ,ctor-name (&key ,@key-params)
-                           (%make-struct ',name ,@(mapcar #'car all-slots)))
-                        forms))))
+          ;; Constructors (one per (:constructor ...) option; CLHS 3.4.6.6)
+          (dolist (cspec ctor-specs)
+            (let ((ctor-name (car cspec))
+                  (has-boa (cadr cspec))
+                  (boa-lambda-list (caddr cspec)))
+              (if has-boa
+                  ;; BOA constructor: positional args mapped to slots by name
+                  (let ((slot-inits (mapcar (lambda (s)
+                                              ;; For each slot, use the BOA param if named,
+                                              ;; otherwise use the slot default
+                                              (let* ((sname (car s))
+                                                     (sdefault (cadr s)))
+                                                ;; Check if slot name appears in BOA params
+                                                (if (member sname boa-lambda-list
+                                                            :test (lambda (name p)
+                                                                    (cond ((symbolp p)
+                                                                           (and (not (member p '(&optional &key &rest &aux)))
+                                                                                (eq name p)))
+                                                                          ((consp p) (eq name (car p)))
+                                                                          (t nil))))
+                                                    sname
+                                                    sdefault)))
+                                            all-slots)))
+                    (push `(defun ,ctor-name ,(%boa-patch-defaults boa-lambda-list all-slots)
+                             (%make-struct ',name ,@slot-inits))
+                          forms))
+                  ;; Standard keyword constructor
+                  (let ((key-params (mapcar (lambda (s)
+                                              (list (car s) (cadr s)))
+                                            all-slots)))
+                    (push `(defun ,ctor-name (&key ,@key-params)
+                             (%make-struct ',name ,@(mapcar #'car all-slots)))
+                          forms)))))
           ;; Predicate
           (when pred-name
             (push `(defun ,pred-name (obj) (typep obj ',name))
