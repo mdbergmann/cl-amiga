@@ -743,6 +743,9 @@ void cl_symbol_init(void)
         s->flags |= CL_SYM_SPECIAL;
         s->value = SYM_T;
     }
+    /* Reader dereferences this handle on every #. — forward it across
+     * compaction (see SYM_STAR_READTABLE note below). */
+    cl_gc_register_root(&SYM_STAR_READ_EVAL);
 
     /* *READ-BASE* — CL spec, default 10 */
     {
@@ -822,6 +825,9 @@ void cl_symbol_init(void)
 #endif
         s->value = features;
     }
+    /* Reader dereferences this handle on every #+ / #- — forward it across
+     * compaction (see SYM_STAR_READTABLE note below). */
+    cl_gc_register_root(&SYM_STAR_FEATURES);
 
     /* LAMBDA-LIST-KEYWORDS — CL constant */
     {
@@ -893,6 +899,13 @@ void cl_symbol_init(void)
         rt_sym->value = CL_MAKE_FIXNUM(1);
         rt_sym->flags |= CL_SYM_SPECIAL;
     }
+    /* The C reader/runtime dereferences SYM_STAR_READTABLE by this global
+     * handle (resolve_readtable_idx, cl_readtable_current).  The *READTABLE*
+     * symbol is interned late enough that a moving compaction can relocate it;
+     * register the handle so the compactor forwards it, otherwise the reader
+     * reads a stale symbol and loses user dispatch macros (e.g. ironclad's
+     * #n@ array reader) after the first compaction. */
+    cl_gc_register_root(&SYM_STAR_READTABLE);
 
     /* Standard CL symbols that have no global binding but must be exported.
        These are used as macrolet names in boot.lisp macros (loop, pprint-logical-block)

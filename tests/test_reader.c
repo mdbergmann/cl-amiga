@@ -622,6 +622,58 @@ TEST(read_dispatch_macro_numeric_arg)
     ASSERT_STR_EQ(read_print("#@(4 5)"), "(NIL (4 5))");
 }
 
+/* The C reader resolves the "current" readtable by dereferencing the
+ * SYM_STAR_READTABLE global handle (resolve_readtable_idx / cl_readtable_
+ * current), and a user dispatch macro installed on a *copied* readtable lives
+ * in the readtable pool's dispatch_fn[] (a non-default slot reached only via
+ * that handle).  This exercises that whole path across forced compactions:
+ *   - the pool's macro_fn[]/dispatch_fn[] CL_Obj entries are GC-rooted and
+ *     forwarded (mem.c gc_update_shared_roots) — if they weren't, the relocated
+ *     ARRAY-READER closure would be swept or left stale and the read below would
+ *     fault or error "Invalid radix prefix";
+ *   - SYM_STAR_READTABLE is a registered global root so the handle is forwarded.
+ *
+ * NB on coverage: the bug that motivated the SYM_STAR_READTABLE registration
+ * (ironclad's #n@ reader silently dropped after the *READTABLE* symbol relocated
+ * — "Invalid radix prefix #32@", which blocked loading ironclad/chipi-api) only
+ * fires when the *READTABLE* symbol itself moves to a new arena offset.  That
+ * symbol is interned at boot and the C unit harness has only live boot data
+ * below it, so cl_gc_compact() never slides it — identical to the relocation-
+ * dependent rehash bugs documented in test_gc_rehash.c, which note the GC-stress
+ * harness can't relocate a live boot object either.  The symbol-relocation
+ * reproduction is therefore the ironclad/chipi-api integration load (heap-scale
+ * fragmentation); this unit test guards the dispatch-resolution + pool-forwarding
+ * half of the path. */
+TEST(readtable_dispatch_survives_compaction)
+{
+    int i;
+
+    /* Install a user dispatch macro on a *copy* of the readtable and make that
+     * copy the current *READTABLE* — the exact ironclad shape. */
+    cl_eval_string(
+        "(progn"
+        "  (setf *readtable* (copy-readtable *readtable*))"
+        "  (set-dispatch-macro-character #\\# #\\@"
+        "    (lambda (s c arg) (declare (ignore c)) (list arg (read s nil nil)))))");
+
+    /* Sanity before any compaction. */
+    ASSERT_STR_EQ(read_print("#7@(1 2)"), "(7 (1 2))");
+
+    /* Force moving compactions: churn allocates garbage, a normal GC frees it,
+     * then two forced compactions relocate the live set (incl. the pool's
+     * ARRAY-READER closure). */
+    for (i = 0; i < 800; i++)
+        cl_cons(CL_MAKE_FIXNUM(i), CL_NIL);
+    cl_eval_string("(dotimes (i 20000) (cons i i))");
+    cl_gc();
+    cl_gc_compact();
+    cl_gc_compact();
+
+    /* The dispatch macro must still resolve and its (relocated) closure run. */
+    ASSERT_STR_EQ(read_print("#32@(1 2 3)"), "(32 (1 2 3))");
+    ASSERT_STR_EQ(read_print("#@(4 5)"), "(NIL (4 5))");
+}
+
 TEST(read_label_value)
 {
     /* #n=object evaluates to object */
@@ -762,6 +814,7 @@ int main(void)
 
     /* #n= / #n# shared-and-circular-structure labels */
     RUN(read_dispatch_macro_numeric_arg);
+    RUN(readtable_dispatch_survives_compaction);
     RUN(read_label_value);
     RUN(read_label_shared);
     RUN(read_label_shared_multidigit);

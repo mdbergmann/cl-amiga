@@ -2751,6 +2751,21 @@
 ; copy-readtable
 (check "copy-readtable" t (readtablep (copy-readtable)))
 
+; set-dispatch-macro-character with an infix numeric arg (#n@), installed on a
+; COPIED readtable made the current *READTABLE* — the ironclad #32@ s-box reader
+; shape (which blocked loading ironclad/chipi-api).  Reading #32@(...) must
+; consult the user dispatch table, and must keep working across a moving
+; compaction: the *READTABLE* symbol is reached only via the C SYM_STAR_READTABLE
+; global handle and the dispatch closure lives in the readtable pool — both must
+; be GC-forwarded or the macro is silently dropped ("Invalid radix prefix #32@").
+(let ((*readtable* (copy-readtable *readtable*)))
+  (set-dispatch-macro-character #\# #\@
+    (lambda (s c arg) (declare (ignore c)) (list arg (read s nil nil))))
+  (check "dispatch-macro-infix-arg" '(32 (1 2 3)) (read-from-string "#32@(1 2 3)"))
+  (check "dispatch-macro-no-arg"    '(nil (4 5))  (read-from-string "#@(4 5)"))
+  (dotimes (i 30000) (cons i i))   ; churn to provoke compaction
+  (check "dispatch-macro-after-gc" '(32 (1 2 3)) (read-from-string "#32@(1 2 3)")))
+
 ; compile nil lambda
 (check "compile-nil-lambda" 42 (funcall (compile nil '(lambda (x) (+ x 1))) 41))
 
