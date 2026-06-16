@@ -172,6 +172,12 @@ static int              jit_scan_cand_cap = 0;
 static JitFwdCandidate *jit_fwd_cand_buf  = NULL;
 static int              jit_fwd_cand_cap  = 0;
 
+/* Set during a compaction's reference-update pass when at least one
+ * CL_Obj immediate baked into JIT native code was rewritten in place.
+ * cl_gc_compact flushes the CPU caches once at the end so 68040/060
+ * don't execute stale instruction-cache copies of the patched code. */
+static int gc_native_code_patched = 0;
+
 void cl_mem_shutdown(void)
 {
     if (cl_heap.arena) {
@@ -1892,6 +1898,29 @@ static void gc_update_children(void *ptr, uint8_t type)
             for (i = 0; i < bc->n_keys; i++)
                 gc_update_slot(&bc->key_syms[i]);
         }
+        /* Forward CL_Obj heap references baked as 32-bit immediates into
+         * the JIT'd native code.  native_relocs lists the byte offset of
+         * each such 4-byte big-endian field; without this pass a moving
+         * compaction would leave stale arena offsets in executable code
+         * (m68k JIT only — native_relocs is NULL on host / non-JIT). The
+         * code buffer is platform_alloc'd (does not itself move), so the
+         * raw pointer stays valid whether we visit the object's old or
+         * new copy; only the referenced objects shift.  Stop-the-world
+         * GC means no thread is mid-fetch of these bytes. */
+        if (bc->native_code && bc->native_relocs) {
+            uint32_t r;
+            for (r = 0; r < bc->native_reloc_count; r++) {
+                uint8_t *p = bc->native_code + bc->native_relocs[r];
+                CL_Obj old = ((CL_Obj)p[0] << 24) | ((CL_Obj)p[1] << 16) |
+                             ((CL_Obj)p[2] << 8)  |  (CL_Obj)p[3];
+                CL_Obj nw = gc_forward(old);
+                if (nw != old) {
+                    p[0] = (uint8_t)(nw >> 24); p[1] = (uint8_t)(nw >> 16);
+                    p[2] = (uint8_t)(nw >> 8);  p[3] = (uint8_t)(nw);
+                    gc_native_code_patched = 1;
+                }
+            }
+        }
         break;
     }
     case TYPE_VECTOR: {
@@ -2393,6 +2422,8 @@ void cl_gc_compact(void)
     platform_write_string("GC: compaction starting...\n");
 #endif
 
+    gc_native_code_patched = 0;
+
     /* Pass 1: Mark (standard) */
     gc_mark();
 
@@ -2428,6 +2459,13 @@ void cl_gc_compact(void)
 
     /* Clean up forwarding table */
     gc_fwd_free();
+
+    /* If we rewrote any CL_Obj immediate inside JIT'd native code, flush
+     * the CPU caches so 68040/060 re-fetch the patched instruction bytes
+     * instead of serving stale instruction-cache lines.  No-op on host
+     * and on 68020/030 (no write-back I-cache). */
+    if (gc_native_code_patched)
+        platform_cache_clear(NULL, 0);
 
     /* Rehash hash tables whose keys hash by object identity (offsets changed) */
     gc_rehash_tables();

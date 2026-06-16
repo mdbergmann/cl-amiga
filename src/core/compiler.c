@@ -946,6 +946,8 @@ void compile_lambda(CL_Compiler *c, CL_Obj form)
 
     bc->native_code = NULL;
     bc->native_len  = 0;
+    bc->native_relocs = NULL;
+    bc->native_reloc_count = 0;
     cl_jit_compile(bc);  /* no-op on host / when JIT_M68K undefined */
 
     const_idx = cl_add_constant(c, CL_PTR_TO_OBJ(bc));
@@ -4329,6 +4331,8 @@ static CL_Obj cl_compile_env(CL_Obj expr, CL_Obj lex_env)
 
     bc->native_code = NULL;
     bc->native_len  = 0;
+    bc->native_relocs = NULL;
+    bc->native_reloc_count = 0;
     cl_jit_compile(bc);  /* no-op on host / when JIT_M68K undefined */
 
     /* Unregister compiler from GC root chain */

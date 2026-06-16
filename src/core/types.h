@@ -240,6 +240,18 @@ typedef struct {
      * specs/native-backend.md. */
     uint8_t *native_code;
     uint32_t native_len;
+    /* Relocation table for CL_Obj immediates baked into native_code.
+     * Each entry is a byte offset into native_code at which a 4-byte
+     * big-endian CL_Obj *heap* reference (symbol, tag, template, …) was
+     * emitted as a literal operand.  The moving compactor forwards each
+     * one in place (mem.c gc_update_children, TYPE_BYTECODE) so that
+     * relocating an object does not leave a stale arena offset baked
+     * into the generated code.  platform_alloc'd, parallel to
+     * native_code; NULL when the function baked no heap immediates.
+     * Not FASL-serialized — rebuilt by cl_jit_compile on load, exactly
+     * like native_code.  See specs/native-backend.md "GC interaction". */
+    uint32_t *native_relocs;
+    uint16_t native_reloc_count;
     /* Original source lambda-list (the params form as written, including
      * &optional/&key default forms).  CL_NIL when not captured (top-level
      * forms, builtins).  Retained for arglist / Sly introspection; see

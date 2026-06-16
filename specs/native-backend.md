@@ -650,6 +650,46 @@ the arith, compare, `OP_CAR`/`OP_CDR`, `OP_FLOAD`, `OP_GLOAD` /
 `OP_GSTORE`, `OP_DYNBIND` / `OP_DYNUNBIND`, and `OP_STRUCT_REF` /
 `OP_STRUCT_SET` paths all conform.
 
+**Baked heap-CL_Obj immediates are relocated across compaction
+(landed 2026-06-16).**  The conservative stack scan above only reaches
+operand values *spilled onto the m68k stack*.  It does **not** see the
+CL_Obj literals the emitters bake directly into the instruction stream
+as 32-bit immediate operands — `OP_FLOAD`/`OP_GLOAD`/`OP_GSTORE`/
+`OP_FSTORE`/`OP_DYNBIND` symbols, `OP_BLOCK_PUSH`/`OP_BLOCK_RETURN`
+tags, `OP_TAGBODY_PUSH`/`OP_TAGBODY_GO` ids, `OP_ASSERT_TYPE` /
+`OP_HANDLER_PUSH` / `OP_RESTART_PUSH` type/name symbols, the
+`OP_CLOSURE` template, the `OP_AMIGA_CALL` library-base symbol, the
+`OP_TAILCALL` self-bytecode, `OP_CONST` quoted constants, the boolean
+`CL_T` materialised by the compares / `OP_EQ` / `OP_NOT`, and the
+trivial-leaf matcher's literal.  Those immediates are arena-relative
+offsets; the moving compactor relocates the referenced objects but
+cannot see offsets buried in the platform_alloc'd code buffer, so
+without help they go stale after a compaction and the next execution
+dereferences a moved object (observed symptom: "`OP_FLOAD: JIT call
+site has non-symbol constant 0x........`" when a GC fired mid-loop in
+the ratio/float arithmetic stress test).
+
+Fix: each emitter that bakes a *heap* CL_Obj routes through
+`emit_obj_imm_predec` / `emit_obj_imm_d0` / `cache_push_obj`
+(`jit.c`), which (a) force the 32-bit `MOVE.L #imm` form so the field
+is always 4 bytes and (b) record the immediate's byte offset in a
+per-function `JitRelocs` table.  `cl_jit_compile` copies the finished
+table onto the bytecode (`bc->native_relocs` / `native_reloc_count`,
+parallel to `native_code`; rebuilt on FASL load, not serialised).  The
+compactor's reference-update pass forwards every entry in place
+(`mem.c` `gc_update_children`, `TYPE_BYTECODE`) and, if any immediate
+moved, flushes the CPU caches once at the end of `cl_gc_compact` so
+68040/060 re-fetch the patched bytes.  Raw-integer immediates (arg
+counts, slot/constant indices, regspecs, FFI offsets, `NIL`/fixnum
+constants) are *not* heap references and are deliberately not recorded
+(a `CL_HEAP_P` guard trims them — and never misclassifies a small
+integer that happens to be 4-byte-aligned, since those emitters keep
+calling the bare `m68k_emit_*` encoders).  Host coverage:
+`tests/test_gc_jit_reloc.c` synthesises the native_code + reloc table a
+JIT'd `OP_FLOAD` produces and checks the compactor rewrites the baked
+offset; end-to-end coverage is `tests/amiga/run-tests.lisp`'s
+"rational/float compare gc-safe" and `tests/amiga/test-jit.lisp`.
+
 **Branches** use a single-pass label table (`bc_to_native[ip]`):
 forward branches emit a `Bcc.W` with a placeholder displacement plus
 a patch record; `OP_RET` resolves them all in one pass.  Out-of-range
