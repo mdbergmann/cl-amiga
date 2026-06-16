@@ -273,6 +273,16 @@ void cl_emit_loop_jump(CL_Compiler *c, uint8_t op, int target)
 int alloc_temp_slot(CL_CompEnv *env)
 {
     int slot = env->local_count;
+    if (slot >= CL_MAX_LOCALS) {
+        /* Writing env->locals[CL_MAX_LOCALS] would overrun the fixed
+         * locals[]/boxed[] arrays in the heap-allocated CL_CompEnv,
+         * silently corrupting adjacent compiler state.  Raise a clean
+         * compile error instead. */
+        cl_error(CL_ERR_OVERFLOW,
+                 "Too many local variable slots in one function (max %d): "
+                 "simplify or split the function", CL_MAX_LOCALS);
+        return 0;
+    }
     env->locals[slot] = CL_NIL;
     env->local_count++;
     if (env->local_count > env->max_locals)
