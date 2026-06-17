@@ -549,6 +549,43 @@ TEST(lisp_handler_bind_body_value)
         "3");
 }
 
+TEST(lisp_handler_bind_textual_order)
+{
+    /* CLHS 9.1.4.1: when several handler-bind clauses match the same
+     * condition and decline (return normally), they must fire in the order
+     * they are written, top to bottom.  Here both CONDITION (general, first)
+     * and WARNING (specific, second) match a SIMPLE-WARNING.  The general
+     * one is listed first, so it must run first.  Regression: clamiga used
+     * to run them newest-first (i.e. reverse textual order), yielding
+     * (:B :A) and breaking libraries like snooze that put a broad handler
+     * first to do setup the later, more specific handler depends on. */
+    ASSERT_STR_EQ(eval_print(
+        "(let ((log nil))"
+        "  (handler-bind ((condition (lambda (c) (declare (ignore c)) (push :a log)))"
+        "                 (warning   (lambda (c) (declare (ignore c)) (push :b log))))"
+        "    (signal (make-condition 'simple-warning :format-control \"w\")))"
+        "  (nreverse log))"),
+        "(:A :B)");
+}
+
+TEST(lisp_handler_bind_earlier_handler_sets_state_for_later)
+{
+    /* The snooze failure mode in miniature: a broad first handler computes
+     * state that the later, more specific handler reads.  With the buggy
+     * reverse order the specific handler ran first and saw NIL. */
+    ASSERT_STR_EQ(eval_print(
+        "(let ((ready nil) (result :unset))"
+        "  (catch 'tag"
+        "    (handler-bind"
+        "        ((condition (lambda (c) (declare (ignore c)) (setf ready t)))"
+        "         (warning   (lambda (c) (declare (ignore c))"
+        "                      (setf result (if ready :ready :not-ready))"
+        "                      (throw 'tag result))))"
+        "      (signal (make-condition 'simple-warning :format-control \"w\"))))"
+        "  result)"),
+        ":READY");
+}
+
 TEST(lisp_handler_case_catches_error)
 {
     /* handler-case catches error and runs clause body */
@@ -1323,6 +1360,8 @@ int main(void)
     RUN(lisp_handler_bind_no_match);
     RUN(lisp_handler_bind_multiple_clauses);
     RUN(lisp_handler_bind_body_value);
+    RUN(lisp_handler_bind_textual_order);
+    RUN(lisp_handler_bind_earlier_handler_sets_state_for_later);
 
     /* handler-case / ignore-errors tests */
     RUN(lisp_handler_case_catches_error);

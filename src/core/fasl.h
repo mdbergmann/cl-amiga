@@ -26,7 +26,7 @@
 #include "../platform/platform.h"
 
 #define CL_FASL_MAGIC    0x434C4641  /* "CLFA" */
-#define CL_FASL_VERSION  13  /* v13: defstruct honors ALL (:constructor ...) options (was: only the last; earlier BOA/keyword constructors were silently dropped), and define-compiler-macro now strips &environment from its lambda list (was: leaked into the inner destructuring-bind as a bogus required param); changes emitted bytecode/expansion for any defstruct with multiple constructors or compiler-macro using &environment */
+#define CL_FASL_VERSION  14  /* v14: handler-bind now pushes its clause handlers in reverse textual order so that cl_signal_condition (which walks the handler stack newest-first) fires them in CLHS top-to-bottom order; changes the emitted OP_HANDLER_PUSH sequence (and thus FASL bytes) for any handler-bind with 2+ clauses */
 
 /* Serialized constant type tags */
 #define FASL_TAG_NIL         0x00
