@@ -1008,6 +1008,28 @@ static void concat_list_cb(CL_Obj elem, void *ctx_)
     }
 }
 
+/* Is element-type ET (a CL_Obj type specifier) a character type?  Expands
+ * deftypes up to DEPTH levels.  Used to decide STRING vs VECTOR for a
+ * compound (vector ELT ...) result type.  Mirrors coerce_elt_type_is_char. */
+static int concat_elt_type_is_char(CL_Obj type, int depth)
+{
+    extern CL_Obj cl_get_type_expander(CL_Obj name);
+    if (depth <= 0) return 0;
+    if (CL_SYMBOL_P(type)) {
+        const char *nm = cl_symbol_name(type);
+        if (strcmp(nm, "CHARACTER") == 0 || strcmp(nm, "BASE-CHAR") == 0 ||
+            strcmp(nm, "STANDARD-CHAR") == 0 || strcmp(nm, "EXTENDED-CHAR") == 0)
+            return 1;
+        if (strcmp(nm, "*") == 0) return 0;
+        {
+            CL_Obj ex = cl_get_type_expander(type);
+            if (!CL_NULL_P(ex))
+                return concat_elt_type_is_char(cl_vm_apply(ex, NULL, 0), depth - 1);
+        }
+    }
+    return 0;
+}
+
 static CL_Obj bi_concatenate(CL_Obj *args, int n)
 {
     CL_Obj result_type = args[0];
@@ -1016,6 +1038,45 @@ static CL_Obj bi_concatenate(CL_Obj *args, int n)
 
     if (CL_NULL_P(result_type))
         cl_error(CL_ERR_TYPE, "CONCATENATE: result type must not be NIL");
+
+    /* Expand user deftypes while the result-type is a bare symbol, so e.g.
+     * babel's UNICODE-STRING -> (vector unicode-char *) is understood. */
+    {
+        extern CL_Obj cl_get_type_expander(CL_Obj name);
+        int guard = 16;
+        while (guard-- > 0 && CL_SYMBOL_P(result_type)) {
+            CL_Obj ex = cl_get_type_expander(result_type);
+            if (CL_NULL_P(ex)) break;
+            result_type = cl_vm_apply(ex, NULL, 0);
+        }
+    }
+
+    /* Normalize a compound type specifier — e.g. ironclad's
+     * (simple-array (unsigned-byte 8) (*)) or (vector character) — down to a
+     * base STRING/VECTOR result type.  A character element type means a
+     * string; any other vector/array type is built as a general vector. */
+    if (CL_CONS_P(result_type)) {
+        extern CL_Obj cl_package_cl;
+        CL_Obj head = cl_car(result_type);
+        if (CL_SYMBOL_P(head)) {
+            const char *hname = cl_symbol_name(head);
+            if (strcmp(hname, "SIMPLE-ARRAY") == 0 || strcmp(hname, "ARRAY") == 0 ||
+                strcmp(hname, "VECTOR") == 0 || strcmp(hname, "SIMPLE-VECTOR") == 0) {
+                CL_Obj eargs = cl_cdr(result_type);
+                if (!CL_NULL_P(eargs) &&
+                    concat_elt_type_is_char(cl_car(eargs), 8))
+                    result_type = cl_intern_in("STRING", 6, cl_package_cl);
+                else
+                    result_type = cl_intern_in("VECTOR", 6, cl_package_cl);
+            } else {
+                /* (string ...) / (base-string ...) etc. — use the head name. */
+                result_type = head;
+            }
+        } else {
+            cl_error(CL_ERR_TYPE, "CONCATENATE: invalid result type");
+        }
+    }
+
     if (!CL_SYMBOL_P(result_type))
         cl_error(CL_ERR_TYPE, "CONCATENATE: result type must be a type specifier");
     tname = cl_symbol_name(result_type);

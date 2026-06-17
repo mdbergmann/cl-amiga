@@ -874,6 +874,13 @@
 (check "subseq string end" "llo" (subseq "hello" 2))
 (check "subseq list" '(b c) (subseq '(a b c d) 1 3))
 (check "concatenate" "hello world" (concatenate 'string "hello" " " "world"))
+(check "concatenate compound byte-array" #(65 66 0 2)
+  (concatenate '(simple-array (unsigned-byte 8) (*))
+               (map 'vector #'char-code "AB") (vector 0) (vector 2)))
+(check "concatenate compound char-array" "abcd"
+  (concatenate '(vector character) "ab" "cd"))
+(check "concatenate compound simple-array char" "xyz"
+  (concatenate '(simple-array character (*)) "xy" "z"))
 (check "char access" #\h (char "hello" 0))
 (check "schar access" #\b (schar "abc" 1))
 (check "string from sym" "FOO" (string 'foo))

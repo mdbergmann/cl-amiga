@@ -1301,6 +1301,27 @@ out=$(run_stress "$WORK/smm.lisp")
 check_contains "symbol-macrolet bindings survive scanner expansion under GC stress" "SMM:46" "$out"
 check_absent   "no Unbound-variable from scanner expansion under GC stress" "Unbound variable" "$out"
 
+# --- Case: CONCATENATE with a compound result-type specifier --------------
+# ironclad's ED448-DOM uses (concatenate '(simple-array (unsigned-byte 8) (*))
+# ...).  Normalizing the compound type-spec expands deftypes (cl_vm_apply) and
+# interns STRING/VECTOR before allocating the result — exercise that the
+# result-type local and the freshly-built vector survive compaction.
+cat > "$WORK/cat.lisp" <<'EOF'
+(format t "CAT:~a~%"
+  (handler-case
+      (let ((v (concatenate '(simple-array (unsigned-byte 8) (*))
+                            (map 'vector #'char-code "AB")
+                            (vector 0) (vector 2))))
+        (format nil "~a:~a:~a:~a" (aref v 0) (aref v 1) (aref v 2) (aref v 3)))
+    (error (e) (declare (ignore e)) -1)))
+(format t "CATS:~a~%"
+  (handler-case (concatenate '(vector character) "ab" "cd")
+    (error (e) (declare (ignore e)) -1)))
+EOF
+out=$(run_stress "$WORK/cat.lisp")
+check_contains "concatenate compound byte-array result survives GC stress" "CAT:65:66:0:2" "$out"
+check_contains "concatenate compound char-array result survives GC stress" "CATS:abcd" "$out"
+
 echo ""
 echo "$passed passed, $failed failed, $total total"
 [ "$failed" -eq 0 ]
