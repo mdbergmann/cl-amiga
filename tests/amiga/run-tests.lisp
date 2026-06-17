@@ -1571,6 +1571,18 @@
 (check "define-condition typep not warning" nil (typep (make-condition 'my-error) 'warning))
 (define-condition app-err (error) ())
 (check "define-condition handler-case" :caught (handler-case (error 'app-err) (app-err (c) :caught)))
+; A slot-specifier may be a bare SYMBOL (no options), not only a list — CLHS
+; DEFINE-CONDITION/DEFCLASS.  Used to signal "CAR: argument is not of type
+; LIST" at compile time; this is the fast-http (clog dependency) shape
+; (define-condition fast-http-error (simple-error) (description) ...).
+(check "define-condition bare-slot" t
+       (conditionp (make-condition (define-condition bss-err (simple-error) (description)))))
+(define-condition bss-sub (bss-err) ((description :initarg :description :reader bss-desc)))
+(check "define-condition bare-slot subtype" t (typep (make-condition 'bss-sub) 'bss-err))
+(check "define-condition bare-slot reader" "d"
+       (bss-desc (make-condition 'bss-sub :description "d")))
+(define-condition bss-err2 (error) (a (b :initarg :b :reader bss-b)))
+(check "define-condition mixed-slots" 7 (bss-b (make-condition 'bss-err2 :b 7)))
 
 ; --- check-type ---
 (check "check-type pass" :ok (let ((x 42)) (check-type x integer) :ok))
@@ -2767,6 +2779,15 @@
 ; get-macro-character for # => NIL fn, T non-term-p (second value)
 (check "get-macro-char-hash" (list nil t) (multiple-value-list (get-macro-character #\#)))
 
+; get-macro-character for #\" returns a real FUNCTION (the built-in string
+; reader), not NIL — pythonic-string-reader (mgl-pax/clog) grabs and funcalls
+; it, and would otherwise hit "Not a function: NIL".  Funcalling it reads a
+; "..." body with the opening quote treated as already consumed.
+(check "get-macro-char-string-fn" t (functionp (get-macro-character #\")))
+(check "get-macro-char-string-read" "hi"
+       (let ((s (make-string-input-stream "hi\" rest")))
+         (funcall (get-macro-character #\") s #\")))
+
 ; copy-readtable
 (check "copy-readtable" t (readtablep (copy-readtable)))
 
@@ -2815,12 +2836,18 @@
 (check "char-name space" "Space" (char-name #\Space))
 (check "char-name newline" "Newline" (char-name #\Newline))
 (check "char-name graphic" nil (char-name #\A))
+; U+FFFD REPLACEMENT CHARACTER — the standard Unicode name flexi-streams uses
+; (via clack's hunchentoot handler, a clog dependency).  The reader, char-name
+; and name-char must all know it.
+(check "char-name replacement" "Replacement_Character" (char-name #\Replacement_Character))
+(check "char-code replacement" 65533 (char-code #\Replacement_Character))
 
 ; name-char
 (check "name-char space" #\Space (name-char "Space"))
 (check "name-char upper" #\Space (name-char "SPACE"))
 (check "name-char newline" #\Newline (name-char "Newline"))
 (check "name-char invalid" nil (name-char "xyzzy"))
+(check "name-char replacement" 65533 (char-code (name-char "Replacement_Character")))
 
 ; char-equal (case-insensitive)
 (check "char-equal ci" t (char-equal #\a #\A))

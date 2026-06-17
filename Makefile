@@ -372,7 +372,7 @@ QL_LOCAL_PROJECTS ?= $(HOME)/quicklisp/local-projects
 # packages and reject cl-amiga as an "unsupported Lisp".
 install-shims:
 	@mkdir -p $(QL_LOCAL_PROJECTS)
-	@for shim in closer-mop trivial-cltl2 trivial-garbage; do \
+	@for shim in closer-mop trivial-cltl2 trivial-garbage swank; do \
 	  src="$(CURDIR)/contrib/shims/$$shim"; \
 	  dst="$(QL_LOCAL_PROJECTS)/$$shim"; \
 	  if [ -L "$$dst" ]; then \

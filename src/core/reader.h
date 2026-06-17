@@ -18,6 +18,10 @@ CL_Obj cl_read(void);
 /* Read one S-expression from a CL_Stream object */
 CL_Obj cl_read_from_stream(CL_Obj stream);
 
+/* Read a standard "..." string from STREAM (opening quote already consumed).
+ * Backs the callable returned by GET-MACRO-CHARACTER for the built-in #\". */
+CL_Obj cl_read_standard_string_from_stream(CL_Obj stream);
+
 /* Read from a string buffer (backward-compatible convenience) */
 typedef struct {
     const char *buf;

@@ -1023,7 +1023,13 @@
 
 ;; define-condition — define a user condition type with slots and readers
 (defmacro define-condition (name parent-types slot-specs &rest options)
-  (let ((parent (cond ((consp parent-types) (car parent-types))
+  ;; A slot-specifier may be a bare symbol (a slot name with no options) or a
+  ;; list (slot-name . options) — see CLHS DEFINE-CONDITION / DEFCLASS.
+  ;; Normalize the bare-symbol form to (slot-name) so the CAR/CDR slot walks
+  ;; below stay valid (otherwise (car 'name) signals a TYPE-ERROR).
+  (let* ((slot-specs (mapcar (lambda (spec) (if (consp spec) spec (list spec)))
+                             slot-specs))
+         (parent (cond ((consp parent-types) (car parent-types))
                       ((null parent-types) 'condition)
                       (t parent-types)))
         (parents-list (cond ((consp parent-types) parent-types)

@@ -18,6 +18,7 @@
 #include "vm.h"
 #include "bignum.h"
 #include "readtable.h"
+#include "reader.h"
 #include "string_utils.h"
 #include "compiler.h"  /* cl_tables_wrlock / cl_tables_rwunlock */
 #include "../platform/platform.h"
@@ -31,9 +32,13 @@
 static void defun(const char *name, CL_CFunc func, int min, int max)
 {
     CL_Obj sym = cl_intern_in(name, (uint32_t)strlen(name), cl_package_cl);
-    CL_Obj fn = cl_make_function(func, sym, min, max);
-    CL_Symbol *s = (CL_Symbol *)CL_OBJ_TO_PTR(sym);
+    CL_Obj fn;
+    CL_Symbol *s;
+    CL_GC_PROTECT(sym);
+    fn = cl_make_function(func, sym, min, max);
+    s = (CL_Symbol *)CL_OBJ_TO_PTR(sym);
     s->function = fn;
+    CL_GC_UNPROTECT(1);
 }
 
 /* --- Pre-interned keyword symbols --- */
@@ -1243,6 +1248,22 @@ static CL_Obj bi_readtablep(CL_Obj *args, int n)
     return CL_NIL;
 }
 
+/* Callable wrapper for the built-in #\" string reader, returned by
+ * GET-MACRO-CHARACTER so libraries that grab and re-dispatch the standard
+ * string reader (e.g. pythonic-string-reader) get a real function instead of
+ * NIL.  Registered as CL-AMIGA's %READ-STANDARD-STRING; kept here so
+ * GET-MACRO-CHARACTER can hand it back.  GC-rooted in cl_builtins_stream_init. */
+static CL_Obj standard_string_reader_fn = CL_NIL;
+
+/* (%read-standard-string stream char) => string
+ * Reads a "..." string from STREAM with the opening quote already consumed,
+ * matching the standard macro-character protocol (the CHAR arg is ignored). */
+static CL_Obj bi_read_standard_string(CL_Obj *args, int n)
+{
+    CL_UNUSED(n);
+    return cl_read_standard_string_from_stream(args[0]);
+}
+
 /* (get-macro-character char &optional readtable) => fn, non-terminating-p */
 static CL_Obj bi_get_macro_character(CL_Obj *args, int n)
 {
@@ -1258,11 +1279,18 @@ static CL_Obj bi_get_macro_character(CL_Obj *args, int n)
     if (ch >= 0 && ch < CL_RT_CHARS &&
         (rt->syntax[ch] == CL_CHAR_TERM_MACRO ||
          rt->syntax[ch] == CL_CHAR_NONTERM_MACRO)) {
-        /* Return 2 values: function (or NIL for built-in), non-terminating-p */
+        /* Return 2 values: function, non-terminating-p.  Built-in macro chars
+         * are read inline in C, so macro_fn[ch] is NIL — but a caller that
+         * grabs the standard reader expects a callable (pythonic-string-reader
+         * funcalls the result).  Hand back the %READ-STANDARD-STRING wrapper
+         * for #\" so that protocol works. */
+        CL_Obj fn = rt->macro_fn[ch];
+        if (CL_NULL_P(fn) && ch == '"')
+            fn = standard_string_reader_fn;
         cl_mv_count = 2;
-        cl_mv_values[0] = rt->macro_fn[ch];
+        cl_mv_values[0] = fn;
         cl_mv_values[1] = (rt->syntax[ch] == CL_CHAR_NONTERM_MACRO) ? CL_T : CL_NIL;
-        return rt->macro_fn[ch];
+        return fn;
     }
     cl_mv_count = 2;
     cl_mv_values[0] = CL_NIL;
@@ -1762,6 +1790,19 @@ void cl_builtins_stream_init(void)
     /* Step 12: Readtable */
     defun("READTABLEP", bi_readtablep, 1, 1);
     defun("GET-MACRO-CHARACTER", bi_get_macro_character, 1, 2);
+    /* Callable backing GET-MACRO-CHARACTER's result for the built-in #\". */
+    {
+        CL_Obj ssr_sym = cl_intern_in("%READ-STANDARD-STRING",
+                                      (uint32_t)strlen("%READ-STANDARD-STRING"),
+                                      cl_package_clamiga);
+        CL_Symbol *ssr;
+        CL_GC_PROTECT(ssr_sym);
+        standard_string_reader_fn =
+            cl_make_function(bi_read_standard_string, ssr_sym, 2, 2);
+        ssr = (CL_Symbol *)CL_OBJ_TO_PTR(ssr_sym);
+        ssr->function = standard_string_reader_fn;
+        CL_GC_UNPROTECT(1);
+    }
     defun("SET-MACRO-CHARACTER", bi_set_macro_character, 2, 4);
     defun("MAKE-DISPATCH-MACRO-CHARACTER", bi_make_dispatch_macro_character, 1, 3);
     defun("SET-DISPATCH-MACRO-CHARACTER", bi_set_dispatch_macro_character, 3, 4);
@@ -1796,4 +1837,5 @@ void cl_builtins_stream_init(void)
     cl_gc_register_root(&KW_EXTERNAL_FORMAT);
     cl_gc_register_root(&KW_LATIN_1);
     cl_gc_register_root(&KW_STREAM_DEFAULT);
+    cl_gc_register_root(&standard_string_reader_fn);
 }

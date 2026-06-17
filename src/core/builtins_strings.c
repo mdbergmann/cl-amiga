@@ -1476,6 +1476,7 @@ static const struct { int code; const char *name; } char_names[] = {
     {0x1D, "Gs"},  {0x1E, "Rs"},  {0x1F, "Us"},
     {0xA0, "No-Break_Space"},
     {0x3000, "Ideographic_Space"},
+    {0xFFFD, "Replacement_Character"},
     {0, NULL}
 };
 

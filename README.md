@@ -99,7 +99,7 @@ Quicklisp runs on CL-Amiga, but the stock client doesn't recognise this implemen
 **What we patch** (the local changes shipped with the project):
 
 - `lib/quicklisp-compat.lisp` — routes Quicklisp's networking through `ext:open-tcp-stream` and plain CL stream ops (working around generic-function dispatch limits in the stock `ql-network` interface), supplies a minimal `make-broadcast-stream` for its HTTP layer, adapts `directory-entries` to CL-Amiga's `directory`, and maps the bordeaux-threads v2 surface onto the `MP` package.
-- `contrib/shims/` (installed by `make install-shims`) — `closer-mop` (re-exports CL-Amiga's AMOP subset under CLOSER-MOP names), `trivial-cltl2` (the CLtL2 functions serapeum/trivia call), and `trivial-garbage` (weak hash-tables). Downstream libraries `:use` these by name; the shims let them resolve via Quicklisp's local-projects searcher.
+- `contrib/shims/` (installed by `make install-shims`) — `closer-mop` (re-exports CL-Amiga's AMOP subset under CLOSER-MOP names), `trivial-cltl2` (the CLtL2 functions serapeum/trivia call), `trivial-garbage` (weak hash-tables), and `swank` (a tiny stub package — several libraries such as clack name the `swank` system only to reach a couple of symbols for an optional remote-debug server they never start). Downstream libraries `:use` these by name; the shims let them resolve via Quicklisp's local-projects searcher.
 - `lib/asdf.lisp` — `#+cl-amiga` adaptations: real binary FASL compile/load for cross-session persistence, AmigaOS path/device handling, and `*asdf-session*` NULL-safety.
 
 Libraries confirmed working via `quickload` + `asdf:test-system` (`trunk/run-load-and-test-all.sh`) include **fiveam**, **FSet**, **str**, **closer-mop**, **CFFI**, **chipi** (cl-hab), and **Sento** — plus, on the host, the **drakma** HTTP/HTTPS client and the **Hunchentoot** web server (these two need a TCP/IP stack; see [Integration test scripts](#integration-test-scripts)). Loading these pulls in and exercises a much wider dependency graph along the way — **alexandria, serapeum, lparallel, log4cl, bordeaux-threads, cl+ssl, usocket, chipz, cl-who** and friends. Sento cold-compiles its full dependency tree, so give it ~96–128M of heap (more for a cold cache) and `stack 800000` on Amiga.
@@ -481,7 +481,7 @@ lib/
     graphics.lisp   Drawing, text rendering
     gadtools.lisp   GadTools gadgets, menus
 contrib/
-  shims/          closer-mop / trivial-cltl2 / trivial-garbage shims for Quicklisp
+  shims/          closer-mop / trivial-cltl2 / trivial-garbage / swank shims for Quicklisp
 examples/
   gfx/            Graphics demos (bouncing-lines.lisp)
 tests/
