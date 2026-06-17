@@ -3108,6 +3108,19 @@ static void compile_call(CL_Compiler *c, CL_Obj form)
     CL_Obj args = cl_cdr(form);
     int nargs = 0;
     int saved_tail = c->in_tail;
+    char func_name_buf[128];
+
+    /* Snapshot before any allocating call: compile_expr in the argument loop
+     * can compact the heap, relocating `func` (unprotected CL_Obj local).
+     * cl_symbol_name returns arena data that moves with the symbol on compaction. */
+    if (CL_SYMBOL_P(func)) {
+        const char *n = cl_symbol_name(func);
+        strncpy(func_name_buf, n, sizeof(func_name_buf) - 1);
+        func_name_buf[sizeof(func_name_buf) - 1] = '\0';
+    } else {
+        strncpy(func_name_buf, "<anonymous>", sizeof(func_name_buf) - 1);
+        func_name_buf[sizeof(func_name_buf) - 1] = '\0';
+    }
 
     /* Validate form structure — CDR must be a proper list */
     if (!CL_NULL_P(args) && !CL_CONS_P(args)) {
@@ -3367,6 +3380,19 @@ static void compile_call(CL_Compiler *c, CL_Obj form)
 
     CL_GC_UNPROTECT(1);
     c->in_tail = saved_tail;
+
+    /* OP_CALL/OP_TAILCALL encode the argument count in a single byte; a call
+     * with more than 255 args would silently wrap the count and desync the VM
+     * stack (the callee slot would land on an argument value).  Signal a clean
+     * compile error instead.  Compiler-generated calls that can grow unbounded
+     * (notably quasiquote's APPEND) chunk themselves to stay within this bound;
+     * see CL_QQ_MAX_CALL_ARGS in compiler_extra.c. */
+    if (nargs > 255) {
+        cl_error(CL_ERR_OVERFLOW,
+                 "Too many arguments in call to %s (%d, max 255)",
+                 func_name_buf,
+                 nargs);
+    }
 
     if (c->in_tail) {
         cl_emit(c, OP_TAILCALL);

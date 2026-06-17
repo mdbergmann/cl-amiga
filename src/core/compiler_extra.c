@@ -229,25 +229,84 @@ static CL_Obj qq_quote(CL_Obj x)
     }
 }
 
-/* Simplify (APPEND ...) forms */
+/* Max args we put in a single generated APPEND/LIST call.  A quasiquote
+ * template with N top-level elements expands to one APPEND with N segment
+ * args; OP_CALL/OP_TAILCALL encode the arg count in a single byte, so a
+ * call with > 255 args silently truncates the count and corrupts the VM
+ * stack.  ironclad's threefish.lisp has setf templates of ~289 elements
+ * (the 1024-bit ARX round macro), which is exactly this case.  Chunk the
+ * APPEND into nested groups so no single call exceeds this bound; APPEND is
+ * associative and every segment is freshly consed, so nesting is
+ * value-preserving.  Kept comfortably below 255 for headroom. */
+#define CL_QQ_MAX_CALL_ARGS 128
+
+static int qq_proper_length(CL_Obj l)
+{
+    int n = 0;
+    while (CL_CONS_P(l)) { n++; l = cl_cdr(l); }
+    return n;
+}
+
+/* Simplify (APPEND ...) forms, chunking when the arg list is too long to
+ * encode in a single OP_CALL byte (see CL_QQ_MAX_CALL_ARGS). */
 static CL_Obj qq_append(CL_Obj args)
 {
     CL_Obj sym_append;
     /* Protect args: cl_intern_in allocates and may compact the heap. */
     CL_GC_PROTECT(args);
     sym_append = cl_intern_in("APPEND", 6, cl_package_cl);
+    CL_GC_PROTECT(sym_append);
     if (CL_NULL_P(args)) {
-        CL_GC_UNPROTECT(1);
+        CL_GC_UNPROTECT(2);
         return CL_NIL;
     }
     if (CL_NULL_P(cl_cdr(args))) {
         CL_Obj val = cl_car(args);
-        CL_GC_UNPROTECT(1);
+        CL_GC_UNPROTECT(2);
         return val;
     }
-    {
+    if (qq_proper_length(args) <= CL_QQ_MAX_CALL_ARGS) {
         CL_Obj val = cl_cons(sym_append, args);
-        CL_GC_UNPROTECT(1);
+        CL_GC_UNPROTECT(2);
+        return val;
+    }
+    /* Too many segments: partition into groups of CL_QQ_MAX_CALL_ARGS, wrap
+     * each group in its own (APPEND group...) and recurse on the list of
+     * group forms (so the outer call also stays within the bound). */
+    {
+        CL_Obj groups = CL_NIL, groups_tail = CL_NIL;
+        CL_Obj cur = args;
+        CL_Obj val;
+        CL_GC_PROTECT(groups);
+        CL_GC_PROTECT(groups_tail);
+        CL_GC_PROTECT(cur);
+        while (!CL_NULL_P(cur)) {
+            CL_Obj group = CL_NIL, group_tail = CL_NIL;
+            int k = 0;
+            CL_GC_PROTECT(group);
+            CL_GC_PROTECT(group_tail);
+            while (!CL_NULL_P(cur) && k < CL_QQ_MAX_CALL_ARGS) {
+                CL_Obj cell = cl_cons(cl_car(cur), CL_NIL);
+                if (CL_NULL_P(group)) group = cell;
+                else ((CL_Cons *)CL_OBJ_TO_PTR(group_tail))->cdr = cell;
+                group_tail = cell;
+                cur = cl_cdr(cur);
+                k++;
+            }
+            {
+                CL_Obj group_form = cl_cons(sym_append, group);
+                CL_Obj gcell;
+                CL_GC_PROTECT(group_form);
+                gcell = cl_cons(group_form, CL_NIL);
+                if (CL_NULL_P(groups)) groups = gcell;
+                else ((CL_Cons *)CL_OBJ_TO_PTR(groups_tail))->cdr = gcell;
+                groups_tail = gcell;
+                CL_GC_UNPROTECT(1); /* group_form */
+            }
+            CL_GC_UNPROTECT(2); /* group, group_tail */
+        }
+        val = qq_append(groups);
+        CL_GC_UNPROTECT(5); /* groups, groups_tail, cur, args, sym_append */
         return val;
     }
 }

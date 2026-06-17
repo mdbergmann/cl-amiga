@@ -893,6 +893,52 @@ TEST(eval_quasiquote_splicing_nconc)
     ASSERT_STR_EQ(eval_print("`(,.'(1 2) ,.'(3 4))"), "(1 2 3 4)");
 }
 
+/* Regression: a quasiquote template with > 255 top-level elements expands to
+ * a single APPEND call.  OP_CALL/OP_TAILCALL encode the arg count in one byte,
+ * so the count used to wrap (e.g. 600 -> 88) while the code still pushed every
+ * segment, desyncing the VM stack so a segment value landed in the callee slot
+ * ("Not a function: heap object type 0").  This is exactly ironclad
+ * threefish.lisp's 1024-bit ARX round macro (setf template ~289 elements).
+ * qq_append now chunks the APPEND so templates of any size compile and run. */
+TEST(eval_quasiquote_large_call_args)
+{
+    static char src[16384];
+    int i, pos;
+
+    /* 300 (literal . unquote) pairs = 600 top-level elements. */
+    pos = 0;
+    pos += snprintf(src + pos, sizeof(src) - pos, "(let ((x 7)) (length `(");
+    for (i = 0; i < 300; i++)
+        pos += snprintf(src + pos, sizeof(src) - pos, "a%d ,x ", i);
+    pos += snprintf(src + pos, sizeof(src) - pos, ")))");
+    ASSERT_EQ_INT(eval_int(src), 600);
+
+    /* Value correctness across a chunk boundary (chunk size 128): odd indices
+     * are the unquoted x; index 257 must still read back as x's value. */
+    pos = 0;
+    pos += snprintf(src + pos, sizeof(src) - pos, "(let ((x 99)) (nth 257 `(");
+    for (i = 0; i < 300; i++)
+        pos += snprintf(src + pos, sizeof(src) - pos, "k%d ,x ", i);
+    pos += snprintf(src + pos, sizeof(src) - pos, ")))");
+    ASSERT_EQ_INT(eval_int(src), 99);
+
+    /* Unquote-splicing with > 128 splice segments also chunks correctly. */
+    pos = 0;
+    pos += snprintf(src + pos, sizeof(src) - pos, "(length `(");
+    for (i = 0; i < 200; i++)
+        pos += snprintf(src + pos, sizeof(src) - pos, ",@(list %d) ", i);
+    pos += snprintf(src + pos, sizeof(src) - pos, "))");
+    ASSERT_EQ_INT(eval_int(src), 200);
+
+    /* ...and the spliced values land in order across the chunk boundary. */
+    pos = 0;
+    pos += snprintf(src + pos, sizeof(src) - pos, "(nth 175 `(");
+    for (i = 0; i < 200; i++)
+        pos += snprintf(src + pos, sizeof(src) - pos, ",@(list %d) ", i);
+    pos += snprintf(src + pos, sizeof(src) - pos, "))");
+    ASSERT_EQ_INT(eval_int(src), 175);
+}
+
 /* CLHS: macroexpand-1 form &optional env => expansion, expanded-p
  * (1) Returns two values
  * (2) Accepts optional env argument (ignored)
@@ -9510,6 +9556,7 @@ int main(void)
     RUN(eval_quasiquote_unquote);
     RUN(eval_quasiquote_splicing);
     RUN(eval_quasiquote_splicing_nconc);
+    RUN(eval_quasiquote_large_call_args);
     RUN(eval_quasiquote_vector_unquote);
     RUN(eval_quasiquote_vector_splice);
     RUN(eval_macroexpand_1_values_and_env);

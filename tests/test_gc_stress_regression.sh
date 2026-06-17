@@ -1219,6 +1219,47 @@ out=$(run_stress "$WORK/fbits.lisp")
 check_contains "IEEE float-bits round-trip exact under GC stress" "FBITS:ok" "$out"
 check_absent   "no corruption/error in float-bits under stress"   "CORRUPT\|not an integer\|not a float" "$out"
 
+# --- Case: large quasiquote template (chunked APPEND) under stress ---------
+# A quasiquote with > 255 top-level elements expands to a single APPEND call,
+# which qq_append (compiler_extra.c) splits into nested chunks of <= 128 args
+# so the OP_CALL byte count can't overflow.  The chunk builder conses a fresh
+# group list per chunk plus the wrapping APPEND forms — many allocations during
+# COMPILE; under GC stress an unprotected CL_Obj there would stale and corrupt
+# the generated code.  Mirrors ironclad threefish.lisp's 1024-bit ARX round
+# macro (setf template ~289 elements).  The source is generated with 300
+# (literal . unquote) pairs = 600 top-level elements.
+{
+    printf '(defun qqbig ()\n  (let ((x 7))\n    `('
+    i=0
+    while [ "$i" -lt 300 ]; do printf 'k%d ,x ' "$i"; i=$((i + 1)); done
+    printf ')))\n'
+    printf '(let ((r (qqbig)))\n  (format t "QQBIG:~a:~a:~a~%%" (length r) (nth 257 r) (nth 399 r)))\n'
+} > "$WORK/qqbig.lisp"
+out=$(run_stress "$WORK/qqbig.lisp")
+# 600 elements; odd indices are the unquoted x (=7), at/after a 128-arg chunk
+# boundary -> chunking must preserve both order and the unquoted value.
+check_contains "large quasiquote (chunked APPEND) compiles+runs under GC stress" "QQBIG:600:7:7" "$out"
+check_absent   "no bad-callee corruption from chunked quasiquote under stress"   "Not a function\|heap object type" "$out"
+
+# --- Case: compile_call nargs>255 error reports correct function name under GC stress ---
+# Bug: func in compile_call is an unprotected CL_Obj; compile_expr calls in the
+# argument loop can compact the heap, making func (and its name string) stale.
+# The nargs>255 error path then dereferences a relocated arena address for the
+# function name, producing a garbled name or a crash under stress.
+# Fix: snapshot func's name into a stack char buffer before the argument loop so
+# the error message uses stable stack data regardless of subsequent compaction.
+{
+    printf '(defun nargs255-target (&rest args) (length args))\n'
+    printf '(handler-case\n  (nargs255-target '
+    i=0
+    while [ "$i" -lt 260 ]; do printf '(make-list 1) '; i=$((i + 1)); done
+    printf ')\n'
+    printf '  (error (e) (format t "NARGS255:~~a~~%%" (format nil "~~a" e))))\n'
+} > "$WORK/nargs255.lisp"
+out=$(run_stress "$WORK/nargs255.lisp")
+check_contains "nargs>255 error names correct function under GC stress" "NARGS255:Too many arguments in call to NARGS255-TARGET" "$out"
+check_absent   "no crash or garbage name in nargs>255 error path"        "type 0\|corrupted\|Undefined\|Unbound" "$out"
+
 echo ""
 echo "$passed passed, $failed failed, $total total"
 [ "$failed" -eq 0 ]
