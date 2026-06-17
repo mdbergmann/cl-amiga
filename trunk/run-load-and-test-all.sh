@@ -57,6 +57,9 @@ heap_for() {
       # clog pulls in a larger dep tree (clack/lack/ironclad/yason/websocket…);
       # its script header documents 256M as required — match it.
       *-clog.lisp)                            echo 256 ;;
+      # chipi-ui is chipi-api + clog combined (the union of both dep trees);
+      # needs the same 256M headroom.
+      *-chipi-ui.lisp)                        echo 256 ;;
     *)                                        echo 96 ;;
   esac
 }
@@ -66,6 +69,9 @@ heap_for() {
 timeout_for() {
   case "$1" in
     *-sento.lisp|*-sento-system.lisp) echo 1800 ;;
+    # chipi-ui cold-compiles chipi + chipi-api + the whole clog dep tree from
+    # scratch, the heaviest of the load-and-test scripts — give it room.
+    *-chipi-ui.lisp)                  echo 1800 ;;
     *-ansi.lisp)                      echo 900 ;;
     *)                                echo 600 ;;
   esac
