@@ -4484,6 +4484,16 @@
 (check "dotted quasiquote" '(a . 3)
   `(a . ,(+ 1 2)))
 
+; --- Large quasiquote: > 255 top-level elements expands to one APPEND;
+; qq_append must chunk the call so the OP_CALL byte count cannot wrap
+; (regression for ironclad threefish.lisp 1024-bit ARX macro).
+(defun qq-big-1 ()
+  (let ((x 7))
+    `(k0 ,x k1 ,x k2 ,x k3 ,x k4 ,x k5 ,x k6 ,x k7 ,x k8 ,x k9 ,x k10 ,x k11 ,x k12 ,x k13 ,x k14 ,x k15 ,x k16 ,x k17 ,x k18 ,x k19 ,x k20 ,x k21 ,x k22 ,x k23 ,x k24 ,x k25 ,x k26 ,x k27 ,x k28 ,x k29 ,x k30 ,x k31 ,x k32 ,x k33 ,x k34 ,x k35 ,x k36 ,x k37 ,x k38 ,x k39 ,x k40 ,x k41 ,x k42 ,x k43 ,x k44 ,x k45 ,x k46 ,x k47 ,x k48 ,x k49 ,x k50 ,x k51 ,x k52 ,x k53 ,x k54 ,x k55 ,x k56 ,x k57 ,x k58 ,x k59 ,x k60 ,x k61 ,x k62 ,x k63 ,x k64 ,x k65 ,x k66 ,x k67 ,x k68 ,x k69 ,x k70 ,x k71 ,x k72 ,x k73 ,x k74 ,x k75 ,x k76 ,x k77 ,x k78 ,x k79 ,x k80 ,x k81 ,x k82 ,x k83 ,x k84 ,x k85 ,x k86 ,x k87 ,x k88 ,x k89 ,x k90 ,x k91 ,x k92 ,x k93 ,x k94 ,x k95 ,x k96 ,x k97 ,x k98 ,x k99 ,x k100 ,x k101 ,x k102 ,x k103 ,x k104 ,x k105 ,x k106 ,x k107 ,x k108 ,x k109 ,x k110 ,x k111 ,x k112 ,x k113 ,x k114 ,x k115 ,x k116 ,x k117 ,x k118 ,x k119 ,x k120 ,x k121 ,x k122 ,x k123 ,x k124 ,x k125 ,x k126 ,x k127 ,x k128 ,x k129 ,x k130 ,x k131 ,x k132 ,x k133 ,x k134 ,x k135 ,x k136 ,x k137 ,x k138 ,x k139 ,x k140 ,x k141 ,x k142 ,x k143 ,x k144 ,x k145 ,x k146 ,x k147 ,x k148 ,x k149 ,x k150 ,x k151 ,x k152 ,x k153 ,x k154 ,x k155 ,x k156 ,x k157 ,x k158 ,x k159 ,x k160 ,x k161 ,x k162 ,x k163 ,x k164 ,x k165 ,x k166 ,x k167 ,x k168 ,x k169 ,x k170 ,x k171 ,x k172 ,x k173 ,x k174 ,x k175 ,x k176 ,x k177 ,x k178 ,x k179 ,x k180 ,x k181 ,x k182 ,x k183 ,x k184 ,x k185 ,x k186 ,x k187 ,x k188 ,x k189 ,x k190 ,x k191 ,x k192 ,x k193 ,x k194 ,x k195 ,x k196 ,x k197 ,x k198 ,x k199 ,x k200 ,x k201 ,x k202 ,x k203 ,x k204 ,x k205 ,x k206 ,x k207 ,x k208 ,x k209 ,x k210 ,x k211 ,x k212 ,x k213 ,x k214 ,x k215 ,x k216 ,x k217 ,x k218 ,x k219 ,x k220 ,x k221 ,x k222 ,x k223 ,x k224 ,x k225 ,x k226 ,x k227 ,x k228 ,x k229 ,x k230 ,x k231 ,x k232 ,x k233 ,x k234 ,x k235 ,x k236 ,x k237 ,x k238 ,x k239 ,x k240 ,x k241 ,x k242 ,x k243 ,x k244 ,x k245 ,x k246 ,x k247 ,x k248 ,x k249 ,x k250 ,x k251 ,x k252 ,x k253 ,x k254 ,x k255 ,x k256 ,x k257 ,x k258 ,x k259 ,x k260 ,x k261 ,x k262 ,x k263 ,x k264 ,x k265 ,x k266 ,x k267 ,x k268 ,x k269 ,x k270 ,x k271 ,x k272 ,x k273 ,x k274 ,x k275 ,x k276 ,x k277 ,x k278 ,x k279 ,x k280 ,x k281 ,x k282 ,x k283 ,x k284 ,x k285 ,x k286 ,x k287 ,x k288 ,x k289 ,x k290 ,x k291 ,x k292 ,x k293 ,x k294 ,x k295 ,x k296 ,x k297 ,x k298 ,x k299 ,x )))
+(check "large-qq length" 600 (length (qq-big-1)))
+(check "large-qq unquote slot survives chunking" 7 (nth 257 (qq-big-1)))
+(check "large-qq literal slot survives chunking" (quote k199) (nth 398 (qq-big-1)))
+
 ; --- reader-error condition ---
 (check "reader-error typep" t (typep (make-condition 'reader-error) 'reader-error))
 (check "reader-error is parse-error" t (typep (make-condition 'reader-error) 'parse-error))
