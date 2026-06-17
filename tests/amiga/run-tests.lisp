@@ -1483,6 +1483,9 @@
 (check "handler-bind error match" 42 (catch 'test-tag (handler-bind ((error (lambda (c) (throw 'test-tag 42)))) (signal (make-condition 'simple-error :format-control "boom")))))
 (check "handler-bind no match" :untouched (catch 'test-tag (handler-bind ((type-error (lambda (c) (throw 'test-tag :touched)))) (signal (make-condition 'simple-warning :format-control "w")) :untouched)))
 (check "handler-bind body value" 3 (handler-bind ((error (lambda (c) nil))) (+ 1 2)))
+; CLHS 9.1.4.1: declining handlers fire in textual (top-to-bottom) order.
+(check "handler-bind textual order" '(:a :b) (let ((log nil)) (handler-bind ((condition (lambda (c) (declare (ignore c)) (push :a log))) (warning (lambda (c) (declare (ignore c)) (push :b log)))) (signal (make-condition 'simple-warning :format-control "w"))) (nreverse log)))
+(check "handler-bind earlier sets state for later" :ready (let ((ready nil) (result :unset)) (catch 'tag (handler-bind ((condition (lambda (c) (declare (ignore c)) (setf ready t))) (warning (lambda (c) (declare (ignore c)) (setf result (if ready :ready :not-ready)) (throw 'tag result)))) (signal (make-condition 'simple-warning :format-control "w")))) result))
 
 ; --- handler-case ---
 (check "handler-case catches error" 42 (handler-case (error "boom") (error (c) 42)))

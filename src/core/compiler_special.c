@@ -2522,19 +2522,37 @@ CL_Obj compile_handler_bind(CL_Compiler *c, CL_Obj form)
     /* (handler-bind ((type handler-expr) ...) body...)
      *
      * Trampoline-aware: prelude pushes each handler, body's tail form
-     * returns to the driver, postlude emits OP_HANDLER_POP <count>. */
+     * returns to the driver, postlude emits OP_HANDLER_POP <count>.
+     *
+     * CLHS 9.1.4.1: when a condition is signalled, applicable handlers of
+     * a handler-bind are tried in the order they are written (top to
+     * bottom).  cl_signal_condition walks the flat handler stack from the
+     * top down (newest first, so inner handler-binds take precedence), so
+     * to make a single handler-bind's clauses fire in textual order we must
+     * push them so the textually-FIRST clause ends up on top — i.e. push in
+     * reverse textual order.  (Handler expressions are normally lambda /
+     * #'function literals with no side effects, so the reversed evaluation
+     * order of the clause expressions is not observable.) */
     CL_Obj clauses = cl_car(cl_cdr(form));
     CL_Obj body = cl_cdr(cl_cdr(form));
+    CL_Obj rev = CL_NIL;
     int count = 0;
     CL_Obj cl;
     CL_TailFrame *tf;
 
-    /* For each (type handler) clause: compile handler, push onto handler stack.
-     * Protect body (used after the loop) and the cursor cl — compile_expr can
-     * compact, making bare locals stale.  Re-read type_sym after compile_expr. */
+    /* Build a reverse-order copy of the clause list, then push from it so
+     * the first textual clause lands on top of the handler stack.  Protect
+     * body (used after the loop), rev, and the cursor cl — cl_cons (build
+     * loop) and compile_expr (push loop) can compact, making bare offset
+     * locals stale.  Re-read type_sym after compile_expr. */
     CL_GC_PROTECT(body);
+    CL_GC_PROTECT(rev);
     cl = clauses;
     CL_GC_PROTECT(cl);
+    for (; !CL_NULL_P(cl); cl = cl_cdr(cl))
+        rev = cl_cons(cl_car(cl), rev);
+
+    cl = rev;
     while (!CL_NULL_P(cl)) {
         CL_Obj clause      = cl_car(cl);
         CL_Obj handler_expr = cl_car(cl_cdr(clause));
@@ -2548,7 +2566,7 @@ CL_Obj compile_handler_bind(CL_Compiler *c, CL_Obj form)
         count++;
         cl = cl_cdr(cl);
     }
-    CL_GC_UNPROTECT(2); /* cl, body */
+    CL_GC_UNPROTECT(3); /* cl, rev, body */
 
     tf = cl_tail_push(c);
     tf->kind = CL_TAIL_HANDLER_BIND;
