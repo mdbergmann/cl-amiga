@@ -1749,6 +1749,37 @@
 (check "symbol-macrolet nested" 20 (symbol-macrolet ((x 10)) (symbol-macrolet ((x 20)) x)))
 (check "symbol-macrolet multi" 30 (symbol-macrolet ((x 10) (y 20)) (+ x y)))
 
+; --- Scanner + symbol-macrolet + &environment (ironclad sha3.lisp:65) ---
+;; The closure/NLX compiler pre-scanners speculatively expand any global macro
+;; they meet; they must register enclosing symbol-macrolet bindings into the
+;; compiler env first, so an &environment-aware expander that resolves a
+;; symbol-macro via (macroexpand x env) — like ironclad's GET-KECCAK-ROTATE-
+;; OFFSET inside a DOTIMES-UNROLLED — folds to its constant instead of signaling
+;; "Unbound variable: X" mid-scan.  The error only escapes when an outer
+;; HANDLER-CASE is active during compilation (as ASDF installs); CHECK supplies
+;; one, and EVAL makes the DEFUN compile inside it.
+(defun smm-tmexpand (form env)
+  (let ((real (macroexpand form env)))
+    (if (atom real) real
+        (cons (car real)
+              (mapcar (lambda (x) (smm-tmexpand x env)) (cdr real))))))
+(defmacro smm-unrolled ((var limit) &body body &environment env)
+  (loop for i from 0 below (eval (smm-tmexpand limit env))
+        collect (list 'symbol-macrolet (list (list var i))
+                      (cons 'progn body)) into forms
+        finally (return (cons 'progn forms))))
+(defparameter *smm-offs*
+  (make-array '(2 2) :initial-contents '((10 11) (12 13))))
+(defmacro smm-get (x y &environment env)
+  (aref *smm-offs* (eval (smm-tmexpand x env)) (eval (smm-tmexpand y env))))
+(check "scanner symbol-macrolet &environment macro (ironclad sha3)" 46
+  (progn
+    (eval '(defun smm-keccak (acc)
+             (smm-unrolled (x 2)
+               (smm-unrolled (y 2)
+                 (setf acc (+ acc (smm-get x y)))))))
+    (smm-keccak 0)))
+
 ; --- Debugger ---
 (check "invoke-debugger exists" t (functionp #'invoke-debugger))
 (check "*debugger-hook* initial" nil *debugger-hook*)
