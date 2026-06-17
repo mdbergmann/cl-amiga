@@ -54,6 +54,9 @@ heap_for() {
       # 96M the moving GC thrashes (50x slower, hits the timeout). Its own
       # script header documents 256M for host — match it.
       *-chipi.lisp)                           echo 256 ;;
+      # clog pulls in a larger dep tree (clack/lack/ironclad/yason/websocket…);
+      # its script header documents 256M as required — match it.
+      *-clog.lisp)                            echo 256 ;;
     *)                                        echo 96 ;;
   esac
 }
@@ -81,11 +84,12 @@ has_error_marker() {
 
 fmt_kind() {
   log="$1"
-  if   grep -q "FSet Results" "$log";        then echo fset
-  elif grep -qE "^passed: [0-9]" "$log";     then echo rt          # ansi rt:do-tests
-  elif grep -q "shim OK" "$log";             then echo closermop   # smoke test, no numbers
-  elif grep -qE "Pass: [0-9]+ \(" "$log";    then echo fiveam      # 5am/str/sento/chipi
-  else                                            echo none
+  if   grep -q "FSet Results" "$log";                       then echo fset
+  elif grep -qE "^passed: [0-9]" "$log";                   then echo rt          # ansi rt:do-tests
+  elif grep -q "shim OK" "$log";                           then echo closermop   # smoke test, no numbers
+  elif grep -qE "Pass: [0-9]+ \(" "$log";                  then echo fiveam      # 5am/str/sento/chipi
+  elif grep -q "CLOG loaded: all probed entry points" "$log"; then echo clog      # clog smoke test
+  else                                                          echo none
   fi
 }
 
@@ -121,7 +125,7 @@ counts_for() {
 summarize() {
   log="$1"
   case "$(fmt_kind "$log")" in
-    closermop)
+    closermop|clog)
       echo "smoke test OK" ;;
     none)
       # No tally printed. Distinguish a script that errored out (clamiga prints
