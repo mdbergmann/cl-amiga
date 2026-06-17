@@ -1535,6 +1535,30 @@ TEST(get_macro_character_hash)
     ASSERT_STR_EQ(buf, "(NIL T)");
 }
 
+TEST(get_macro_character_string)
+{
+    /* Regression: #\" is read inline in C, so its macro_fn is NIL — but a
+       caller that grabs the standard string reader expects a FUNCTION it can
+       funcall (pythonic-string-reader, an mgl-pax/clog dependency, does
+       exactly this and otherwise funcalls NIL -> "Not a function: NIL").
+       GET-MACRO-CHARACTER hands back the %READ-STANDARD-STRING wrapper. */
+    char buf[64];
+    CL_Obj r;
+
+    /* It is a real function, not NIL. */
+    r = cl_eval_string("(functionp (get-macro-character #\\\"))");
+    cl_prin1_to_string(r, buf, sizeof(buf));
+    ASSERT_STR_EQ(buf, "T");
+
+    /* Funcalling it (stream macro-char) reads a "..." body — the opening quote
+       is treated as already consumed, per the macro-character protocol. */
+    r = cl_eval_string(
+        "(let ((s (make-string-input-stream \"hi\\\" rest\")))"
+        "  (funcall (get-macro-character #\\\") s #\\\"))");
+    cl_prin1_to_string(r, buf, sizeof(buf));
+    ASSERT_STR_EQ(buf, "\"hi\"");
+}
+
 TEST(set_macro_character_excl)
 {
     /* Define ! as a reader macro: set it up via C API directly to verify */
@@ -3447,6 +3471,7 @@ int main(void)
     RUN(readtablep_non_readtable);
     RUN(get_macro_character_paren);
     RUN(get_macro_character_hash);
+    RUN(get_macro_character_string);
     RUN(set_macro_character_excl);
     RUN(copy_readtable_preserves);
     RUN(compile_nil_lambda);

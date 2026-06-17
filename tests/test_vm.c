@@ -5887,6 +5887,9 @@ TEST(eval_char_name)
     ASSERT_STR_EQ(eval_print("(char-name #\\Space)"), "\"Space\"");
     ASSERT_STR_EQ(eval_print("(char-name #\\Newline)"), "\"Newline\"");
     ASSERT_STR_EQ(eval_print("(char-name #\\A)"), "NIL");
+    /* U+FFFD round-trips through char-name (clack/flexi-streams dependency). */
+    ASSERT_STR_EQ(eval_print("(char-name #\\Replacement_Character)"),
+                  "\"Replacement_Character\"");
 }
 
 TEST(eval_name_char)
@@ -5895,6 +5898,9 @@ TEST(eval_name_char)
     ASSERT_STR_EQ(eval_print("(name-char \"SPACE\")"), "#\\Space");
     ASSERT_STR_EQ(eval_print("(name-char \"Newline\")"), "#\\Newline");
     ASSERT_STR_EQ(eval_print("(name-char \"xyzzy\")"), "NIL");
+    /* name-char of the Unicode replacement-character name yields U+FFFD. */
+    ASSERT_STR_EQ(eval_print("(char-code (name-char \"Replacement_Character\"))"),
+                  "65533");
 }
 
 TEST(eval_char_ci_compare)

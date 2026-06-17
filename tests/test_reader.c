@@ -195,6 +195,21 @@ TEST(read_char_newline)
     ASSERT_EQ_INT(CL_CHAR_VAL(obj), '\n');
 }
 
+TEST(read_char_replacement_character)
+{
+    /* Regression: #\Replacement_Character (U+FFFD) is the standard Unicode
+       character name flexi-streams uses for flex:*substitution-char* (reached
+       via clack's hunchentoot handler — a clog dependency).  The reader used
+       to signal "Unknown character name: Replacement_Character". */
+    CL_Obj obj = reads("#\\Replacement_Character");
+    ASSERT(CL_CHAR_P(obj));
+    ASSERT_EQ_INT(CL_CHAR_VAL(obj), 0xFFFD);
+    /* Case-insensitive, like the other named chars. */
+    obj = reads("#\\REPLACEMENT_CHARACTER");
+    ASSERT(CL_CHAR_P(obj));
+    ASSERT_EQ_INT(CL_CHAR_VAL(obj), 0xFFFD);
+}
+
 /* --- Keyword --- */
 
 TEST(read_keyword)
@@ -762,6 +777,7 @@ int main(void)
     RUN(read_char_literal);
     RUN(read_char_space);
     RUN(read_char_newline);
+    RUN(read_char_replacement_character);
     RUN(read_keyword);
     RUN(read_with_comment);
     RUN(roundtrip_integer);

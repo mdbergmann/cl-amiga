@@ -379,6 +379,36 @@ TEST(lisp_define_condition_report_symbol)
         "\"static msg\"");
 }
 
+TEST(lisp_define_condition_bare_symbol_slot)
+{
+    /* Regression: a slot-specifier in DEFINE-CONDITION may be a bare SYMBOL
+       (a slot name with no options) as well as a list (CLHS DEFINE-CONDITION
+       / DEFCLASS).  define-condition's slot walk called (car spec) on every
+       spec, so a bare symbol -> "CAR: argument is not of type LIST" at
+       compile time.  This is the fast-http (clog dependency) shape:
+         (define-condition fast-http-error (simple-error) (description) ...) */
+    eval_print(
+        "(define-condition bss-err (simple-error) (description))");
+    /* Defining it no longer errors; it is a real condition type. */
+    ASSERT_STR_EQ(eval_print("(conditionp (make-condition 'bss-err))"), "T");
+    ASSERT_STR_EQ(eval_print("(typep (make-condition 'bss-err) 'error)"), "T");
+
+    /* A subtype that re-specifies the same slot with options (the fast-http
+       subclass pattern: bare slot in the parent, (description ...) in each
+       child) works, and the slot is real — readable via a reader. */
+    eval_print(
+        "(define-condition bss-sub (bss-err)"
+        "  ((description :initarg :description :reader bss-desc)))");
+    ASSERT_STR_EQ(eval_print("(typep (make-condition 'bss-sub) 'bss-err)"), "T");
+    ASSERT_STR_EQ(eval_print(
+        "(bss-desc (make-condition 'bss-sub :description \"d\"))"), "\"d\"");
+
+    /* A bare-symbol slot and a list slot mixed in one definition. */
+    eval_print(
+        "(define-condition bss-err2 (error) (a (b :initarg :b :reader bss-b)))");
+    ASSERT_STR_EQ(eval_print("(bss-b (make-condition 'bss-err2 :b 7))"), "7");
+}
+
 TEST(lisp_define_condition_default_initargs)
 {
     /* Regression: define-condition :default-initargs were silently dropped
@@ -1341,6 +1371,7 @@ int main(void)
     RUN(lisp_printer);
     RUN(lisp_printer_aesthetic_uses_report);
     RUN(lisp_define_condition_report_symbol);
+    RUN(lisp_define_condition_bare_symbol_slot);
     RUN(lisp_define_condition_default_initargs);
 
     /* Signal/warn/error tests */

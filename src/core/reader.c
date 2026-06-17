@@ -815,6 +815,27 @@ static CL_Obj read_string(void)
 #endif
 }
 
+/* Read a standard "..." string body from STREAM, assuming the opening quote
+ * has already been consumed — i.e. the standard reader-macro protocol, where a
+ * macro-character function is called with (stream macro-char).  Exposed so
+ * GET-MACRO-CHARACTER can hand callers a real callable for the built-in #\"
+ * reader, which clamiga otherwise handles inline in C (so macro_fn[#\"] is
+ * NIL).  Libraries such as pythonic-string-reader grab the standard #\" reader
+ * and re-dispatch to it; without this they would funcall NIL. */
+CL_Obj cl_read_standard_string_from_stream(CL_Obj stream)
+{
+    CL_Obj saved = reader_stream;
+    CL_Obj result;
+    /* read_string allocates (the result string); GC-protect the saved stream
+     * offset so the restore below is still valid after a compaction. */
+    CL_GC_PROTECT(saved);
+    reader_stream = stream;
+    result = read_string();
+    reader_stream = saved;
+    CL_GC_UNPROTECT(1);
+    return result;
+}
+
 int cl_srcloc_lookup(CL_Obj cons_obj)
 {
     uint32_t idx = (cons_obj >> 2) % CL_SRCLOC_SIZE;
@@ -1067,6 +1088,9 @@ static CL_Obj read_expr(void)
                 if (strcasecmp(name, "Ideographic_Space") == 0 ||
                     strcasecmp(name, "Ideographic_space") == 0 ||
                     strcasecmp(name, "IDEOGRAPHIC_SPACE") == 0) return CL_MAKE_CHAR(0x3000);
+                /* U+FFFD REPLACEMENT CHARACTER — used by flexi-streams
+                   (flex:*substitution-char*) via clack's hunchentoot handler. */
+                if (strcasecmp(name, "Replacement_Character") == 0) return CL_MAKE_CHAR(0xFFFD);
                 /* Hex codepoint: #\U+XXXX or #\u+XXXX */
                 if ((name[0] == 'U' || name[0] == 'u') && name[1] == '+') {
                     char *endp;
