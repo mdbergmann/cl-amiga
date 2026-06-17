@@ -1260,6 +1260,47 @@ out=$(run_stress "$WORK/nargs255.lisp")
 check_contains "nargs>255 error names correct function under GC stress" "NARGS255:Too many arguments in call to NARGS255-TARGET" "$out"
 check_absent   "no crash or garbage name in nargs>255 error path"        "type 0\|corrupted\|Undefined\|Unbound" "$out"
 
+# --- Case: scanner registers symbol-macrolet bindings before speculative
+#     macroexpansion (ironclad sha3.lisp:65 "Unbound variable: X") ---
+# The closure/NLX pre-scanners (scan_body_for_boxing, nlx_scan) register an
+# enclosing symbol-macrolet's bindings into the active compiler env before
+# speculatively expanding an &environment-aware global macro, so the expander
+# can resolve the symbol-macro via (macroexpand x env).  Those bindings are
+# stored as CL_Obj offsets in the platform-alloc'd compiler env; under stress
+# every macroexpand-driven allocation compacts the heap, so the env's
+# symbol_macros[] offsets must be GC-forwarded (cl_compiler_gc_update_thread).
+# A stale offset there would corrupt the expansion or reintroduce the
+# "Unbound variable: X" failure mid-scan.  The function is compiled inside a
+# HANDLER-CASE (as ASDF does), so any scan-time error escapes and yields -1.
+cat > "$WORK/smm.lisp" <<'EOF'
+(defun smm-tmexpand (form env)
+  (let ((real (macroexpand form env)))
+    (if (atom real) real
+        (cons (car real)
+              (mapcar (lambda (x) (smm-tmexpand x env)) (cdr real))))))
+(defmacro smm-unrolled ((var limit) &body body &environment env)
+  (loop for i from 0 below (eval (smm-tmexpand limit env))
+        collect (list 'symbol-macrolet (list (list var i))
+                      (cons 'progn body)) into forms
+        finally (return (cons 'progn forms))))
+(defparameter *smm-offs*
+  (make-array '(2 2) :initial-contents '((10 11) (12 13))))
+(defmacro smm-get (x y &environment env)
+  (aref *smm-offs* (eval (smm-tmexpand x env)) (eval (smm-tmexpand y env))))
+(format t "SMM:~a~%"
+  (handler-case
+      (progn
+        (eval '(defun smm-keccak (acc)
+                 (smm-unrolled (x 2)
+                   (smm-unrolled (y 2)
+                     (setf acc (+ acc (smm-get x y)))))))
+        (smm-keccak 0))
+    (error (e) (declare (ignore e)) -1)))
+EOF
+out=$(run_stress "$WORK/smm.lisp")
+check_contains "symbol-macrolet bindings survive scanner expansion under GC stress" "SMM:46" "$out"
+check_absent   "no Unbound-variable from scanner expansion under GC stress" "Unbound variable" "$out"
+
 echo ""
 echo "$passed passed, $failed failed, $total total"
 [ "$failed" -eq 0 ]

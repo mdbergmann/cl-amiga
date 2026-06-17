@@ -9222,6 +9222,60 @@ TEST(eval_ccase_ctypecase)
     ASSERT_STR_EQ(eval_print("(ctypecase \"hi\" (string :s) (integer :i))"), ":S");
 }
 
+TEST(eval_scanner_symbol_macrolet_environment)
+{
+    /* Regression (ironclad sha3.lisp:65 "Unbound variable: X").
+     *
+     * The compiler's closure/NLX pre-scanners (scan_body_for_boxing and
+     * nlx_scan) speculatively macroexpand any global macro they meet, to see
+     * through macro-generated closures.  They must register enclosing
+     * SYMBOL-MACROLET bindings into the active compiler env first, because an
+     * &environment-aware expander may resolve a symbol-macro via
+     * (macroexpand x env).  ironclad's GET-KECCAK-ROTATE-OFFSET does exactly
+     * that for an x bound by a SYMBOL-MACROLET that DOTIMES-UNROLLED emits; if
+     * the scanner expands it without the binding, the expander signals
+     * "Unbound variable: X" mid-scan.
+     *
+     * That spurious scan-time error is normally swallowed by the scanner's
+     * CL_CATCH — UNLESS an outer HANDLER-CASE / UNWIND-PROTECT is active during
+     * compilation (as ASDF's compile driver installs), in which case cl_error
+     * signals through the condition system / NLX stack first and the outer
+     * handler hijacks it, aborting the whole compilation.  The fix makes the
+     * speculative expansion SUCCEED (fold to its constant) so no error is
+     * raised.  This test reproduces the ASDF condition with an explicit
+     * HANDLER-CASE around the function's compilation. */
+    cl_eval_string(
+        "(defun smm-tmexpand (form env)"
+        "  (let ((real (macroexpand form env)))"
+        "    (if (atom real) real"
+        "        (cons (car real)"
+        "              (mapcar (lambda (x) (smm-tmexpand x env)) (cdr real))))))");
+    cl_eval_string(
+        "(defmacro smm-unrolled ((var limit) &body body &environment env)"
+        "  (loop for i from 0 below (eval (smm-tmexpand limit env))"
+        "        collect (list 'symbol-macrolet (list (list var i))"
+        "                      (cons 'progn body)) into forms"
+        "        finally (return (cons 'progn forms))))");
+    cl_eval_string(
+        "(defparameter *smm-offs*"
+        "  (make-array '(2 2) :initial-contents '((10 11) (12 13))))");
+    cl_eval_string(
+        "(defmacro smm-get (x y &environment env)"
+        "  (aref *smm-offs* (eval (smm-tmexpand x env))"
+        "                   (eval (smm-tmexpand y env))))");
+    /* Compile smm-keccak inside a HANDLER-CASE.  Sum of the 2x2 table is 46;
+     * without the fix the scan-time error escapes and the clause returns -1. */
+    ASSERT_EQ_INT(eval_int(
+        "(handler-case"
+        "    (progn"
+        "      (eval '(defun smm-keccak (acc)"
+        "               (smm-unrolled (x 2)"
+        "                 (smm-unrolled (y 2)"
+        "                   (setf acc (+ acc (smm-get x y)))))))"
+        "      (smm-keccak 0))"
+        "  (error (e) (declare (ignore e)) -1))"), 46);
+}
+
 TEST(eval_heap_exhaustion_error)
 {
     /* Accumulating live data until heap is full should signal CL_ERR_STORAGE
@@ -10414,6 +10468,9 @@ int main(void)
     RUN(eval_alpha_char_p_unicode);
     RUN(eval_upper_lower_case_unicode);
     RUN(eval_concatenate_type_error);
+
+    /* compiler scanner: symbol-macrolet + &environment macro (ironclad sha3) */
+    RUN(eval_scanner_symbol_macrolet_environment);
 #ifdef CL_WIDE_STRINGS
     RUN(eval_wide_string_reader);
     RUN(eval_string_trim_wide);

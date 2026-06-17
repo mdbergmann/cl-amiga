@@ -813,9 +813,39 @@ static int nlx_scan(CL_Obj form, int mode, CL_Obj tag, int anon)
         }
         goto done;
     }
-    /* (macrolet/symbol-macrolet (bindings) body...) — skip bindings. */
-    if (head == SYM_MACROLET || head == SYM_SYMBOL_MACROLET) {
+    /* (macrolet (bindings) body...) — skip bindings, scan body. */
+    if (head == SYM_MACROLET) {
         if (CL_CONS_P(rest)) r = nlx_scan_body(cl_cdr(rest), mode, tag, anon);
+        goto done;
+    }
+    /* (symbol-macrolet ((sym expansion)...) body...) — skip bindings, but
+     * register them into the active compiler env while scanning the body.
+     * scan_nlx_macroexpand_1 builds each expanded macro's &environment from
+     * cl_build_lex_env(cl_active_compiler->env); without the symbol-macros in
+     * scope an &environment-aware expander (e.g. ironclad's
+     * GET-KECCAK-ROTATE-OFFSET, which (eval (trivial-macroexpand-all x env)) on
+     * an x bound by an enclosing symbol-macrolet) sees x unbound and signals
+     * "Unbound variable: X" mid-scan — a failure that an outer ASDF
+     * handler/unwind-protect hijacks before scan_nlx_macroexpand_1's CL_CATCH
+     * can contain it.  Registering the bindings makes the expansion fold to its
+     * constant and succeed.  Mirrors the symbol-macrolet case in
+     * scan_body_for_boxing(). */
+    if (head == SYM_SYMBOL_MACROLET) {
+        CL_CompEnv *env = cl_active_compiler ? cl_active_compiler->env : NULL;
+        int saved_smc = env ? env->symbol_macro_count : 0;
+        if (!CL_CONS_P(rest)) goto done;
+        if (env) {
+            CL_Obj b = cl_car(rest);
+            while (CL_CONS_P(b)) {
+                CL_Obj binding = cl_car(b);
+                if (CL_CONS_P(binding) && CL_CONS_P(cl_cdr(binding)))
+                    cl_env_add_symbol_macro(env, cl_car(binding),
+                                            cl_car(cl_cdr(binding)));
+                b = cl_cdr(b);
+            }
+        }
+        r = nlx_scan_body(cl_cdr(rest), mode, tag, anon);
+        if (env) env->symbol_macro_count = saved_smc;
         goto done;
     }
 

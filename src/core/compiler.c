@@ -1295,16 +1295,49 @@ top:
     /* (symbol-macrolet ((sym expansion) ...) . body)
      * Same reasoning as MACROLET — the bindings are (sym expansion) pairs,
      * not forms to evaluate.  Walking them generically would treat sym as
-     * a function call head if it has any arguments. */
+     * a function call head if it has any arguments.
+     *
+     * The bindings MUST be registered into the active compiler env while we
+     * walk the body: this scanner speculatively macroexpands any global macro
+     * it meets (to see through macro-generated closures), building that macro's
+     * &environment from cl_build_lex_env(cl_active_compiler->env).  An
+     * &environment-aware expander that resolves a symbol-macro via
+     * (macroexpand sym env) — e.g. ironclad's GET-KECCAK-ROTATE-OFFSET, which
+     * does (eval (trivial-macroexpand-all x env)) for an x bound by an
+     * enclosing (symbol-macrolet ((x N)) ...) emitted by dotimes-unrolled —
+     * will otherwise see x unbound and signal "Unbound variable: X" mid-scan.
+     * That speculative failure cannot be reliably contained by the CL_CATCH in
+     * the macro-expansion block below: cl_error signals through the condition
+     * system and unwinds the NLX stack first, so an outer handler / unwind-
+     * protect installed by ASDF's compile driver hijacks it and aborts the whole
+     * compilation.  Registering the bindings makes the expansion SUCCEED (it
+     * folds to the constant), so no spurious error is ever raised. */
     if (head == SYM_SYMBOL_MACROLET) {
-        CL_Obj body;
+        CL_Obj bindings, body;
+        CL_CompEnv *env = cl_active_compiler ? cl_active_compiler->env : NULL;
+        int saved_smc = env ? env->symbol_macro_count : 0;
         if (!CL_CONS_P(rest)) return;
+        bindings = cl_car(rest);
         body = cl_cdr(rest);
+        if (env) {
+            CL_Obj b = bindings;
+            while (CL_CONS_P(b)) {
+                CL_Obj binding = cl_car(b);
+                if (CL_CONS_P(binding) && CL_CONS_P(cl_cdr(binding)))
+                    cl_env_add_symbol_macro(env, cl_car(binding),
+                                            cl_car(cl_cdr(binding)));
+                b = cl_cdr(b);
+            }
+        }
+        CL_GC_PROTECT(body);
         while (CL_CONS_P(body)) {
             scan_body_for_boxing(cl_car(body), vars, n_vars,
                                  mutated, captured, closure_depth);
             body = cl_cdr(body);
         }
+        CL_GC_UNPROTECT(1);
+        /* Pop the symbol-macros we added so the env is unchanged for siblings. */
+        if (env) env->symbol_macro_count = saved_smc;
         return;
     }
 
