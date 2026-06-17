@@ -3895,6 +3895,20 @@ TEST(eval_concatenate)
     /* Empty inputs */
     ASSERT_STR_EQ(eval_print("(concatenate 'string)"), "\"\"");
     ASSERT_STR_EQ(eval_print("(concatenate 'vector)"), "#()");
+    /* Compound result-type specifiers (ironclad ed448-dom uses
+     * (simple-array (unsigned-byte 8) (*))) — a non-character array/vector
+     * element type yields a general vector; a character element type a
+     * string. */
+    ASSERT_STR_EQ(eval_print(
+        "(concatenate '(simple-array (unsigned-byte 8) (*)) "
+        "(map 'vector #'char-code \"AB\") (vector 0) (vector 2))"),
+        "#(65 66 0 2)");
+    ASSERT_STR_EQ(eval_print("(concatenate '(vector character) \"ab\" \"cd\")"),
+        "\"abcd\"");
+    ASSERT_STR_EQ(eval_print("(concatenate '(simple-array character (*)) \"xy\" \"z\")"),
+        "\"xyz\"");
+    ASSERT_STR_EQ(eval_print("(concatenate '(vector t) '(1 2) #(3))"),
+        "#(1 2 3)");
 }
 
 TEST(eval_char_accessor)
