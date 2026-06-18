@@ -752,7 +752,8 @@ TEST(open_element_type_character_default)
  * 8-bit transparent — every code point 0..255 round-trips as a single byte,
  * with no UTF-8 transcoding.  Without it, clamiga's default UTF-8 stream
  * doubles each byte > 127 (a multipart upload written to a temp file by
- * rfc2388 inflated and corrupted; see trunk/hunchentoot-clamiga.lisp).
+ * rfc2388 inflated and corrupted; see the rfc2388 fork's #+cl-amiga
+ * :latin-1 external-format branch in PARSE-MIME).
  * We write code-char 252 (ü) plus an ASCII char, read the file back as raw
  * bytes, and assert the on-disk content is exactly the two bytes #xFC #x41
  * (NOT the 3-byte UTF-8 form #xC3 #xBC #x41). */
