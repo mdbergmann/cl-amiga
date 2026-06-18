@@ -87,9 +87,21 @@ TEST_BINS   = $(patsubst $(TEST_SRCDIR)/%.c,$(BUILDDIR)/tests/%,$(TEST_SRCS))
 LIB_SRCS = $(PLATFORM_SRC) $(CORE_SRC) $(JIT_SRC)
 LIB_OBJS = $(patsubst $(SRCDIR)/%.c,$(BUILDDIR)/%.o,$(LIB_SRCS))
 
-.PHONY: host test test-fast test-plus test-extra linux-test clean verify-amiga install-hooks
+.PHONY: host test test-fast test-plus test-extra linux-test clean verify-amiga install-hooks docs-check docs-update
 
 host: $(BUILDDIR)/clamiga
+
+# Keep the docs/*.md package symbol lists in sync with the real exports.
+# docs-check (CI/pre-commit) fails if any documented extension package's export
+# set drifts from docs/package-symbols.txt, or if docs/clamiga.md references a
+# CLAMIGA symbol that is no longer exported.  docs-update regenerates the
+# snapshot after you have updated the prose.  See tools/docs/package-symbols.sh.
+docs-check: host
+	@sh tools/docs/package-symbols.sh check $(BUILDDIR)/clamiga
+
+docs-update: host
+	@sh tools/docs/package-symbols.sh generate $(BUILDDIR)/clamiga > docs/package-symbols.txt
+	@echo "docs-update: regenerated docs/package-symbols.txt"
 
 $(BUILDDIR)/clamiga: $(HOST_OBJS)
 	@mkdir -p $(dir $@)

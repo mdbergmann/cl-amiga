@@ -1,0 +1,35 @@
+# CLAMIGA symbols that docs/clamiga.md documents as user-facing.
+#
+# `make docs-check` verifies each of these is still a live CLAMIGA export.
+# The other ~224 CLAMIGA exports are internal %/*-prefixed plumbing and are
+# intentionally NOT tracked here.  When you document a new CLAMIGA symbol in
+# docs/clamiga.md, add it below.
+
+# IEEE float bits
+SINGLE-FLOAT-BITS
+DOUBLE-FLOAT-BITS
+BITS-SINGLE-FLOAT
+BITS-DOUBLE-FLOAT
+
+# Package-local nicknames
+ADD-PACKAGE-LOCAL-NICKNAME
+REMOVE-PACKAGE-LOCAL-NICKNAME
+PACKAGE-LOCAL-NICKNAMES
+
+# Type predicates / condition access
+STRUCTUREP
+CONDITIONP
+CONDITION-TYPE-NAME
+CONDITION-SLOT-VALUE
+
+# JIT & trace toggles
+%JIT-SET-ACTIVE
+%JIT-ACTIVE-P
+%JIT-SET-FRAMES
+%JIT-FRAMES-P
+%JIT-DISASSEMBLE
+%JIT-INVOKE-COUNT
+%TRACE-FUNCTION
+%UNTRACE-FUNCTION
+%UNTRACE-ALL
+%GET-GC-COUNT
