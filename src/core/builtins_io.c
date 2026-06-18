@@ -988,10 +988,25 @@ static int make_fasl_cache_path(const char *input, char *output, uint32_t outsiz
     src = resolved;
 #else
     {
-        const char *home = platform_getenv("HOME", root, sizeof(root));
-        if (!home) return 0;
-        snprintf(root, sizeof(root), "%s/.cache/common-lisp/cl-amiga-%s-fasl%d/",
-                 home, CL_VERSION_STRING, CL_FASL_VERSION);
+        char envbuf[400];
+        /* CLAMIGA_FASL_CACHE_DIR overrides the default ~/.cache/common-lisp
+           location. The load-and-test runner sets this per script so each
+           script gets its own cache: scripts that compile the same shared
+           library under different *features* (e.g. :hunchentoot-no-ssl) would
+           otherwise poison one another's FASLs, since ASDF's staleness check
+           keys only on source mtime, not on *features*. Still namespaced by
+           CL_FASL_VERSION so a version bump invalidates it. */
+        const char *override =
+            platform_getenv("CLAMIGA_FASL_CACHE_DIR", envbuf, sizeof(envbuf));
+        if (override && override[0]) {
+            snprintf(root, sizeof(root), "%s/cl-amiga-%s-fasl%d/",
+                     override, CL_VERSION_STRING, CL_FASL_VERSION);
+        } else {
+            const char *home = platform_getenv("HOME", envbuf, sizeof(envbuf));
+            if (!home) return 0;
+            snprintf(root, sizeof(root), "%s/.cache/common-lisp/cl-amiga-%s-fasl%d/",
+                     home, CL_VERSION_STRING, CL_FASL_VERSION);
+        }
     }
     /* Strip leading '/' */
     src = resolved;

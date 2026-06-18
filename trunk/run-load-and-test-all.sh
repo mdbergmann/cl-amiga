@@ -22,8 +22,16 @@
 
 set -u
 
-CLAMIGA=build/host/clamiga
-LOGDIR=build/load-and-test-logs
+# CLAMIGA / LOGDIR / CACHE_PARENT are overridable via the environment so the
+# regression test (tests/test_test_extra.sh) can drive the runner against a fake
+# binary and a throwaway cache without touching the real build tree.
+CLAMIGA=${CLAMIGA:-build/host/clamiga}
+LOGDIR=${LOGDIR:-build/load-and-test-logs}
+CACHE_PARENT=${CLAMIGA_FASL_CACHE_PARENT:-$HOME/.cache/common-lisp}
+# Each script gets its own FASL cache under here (see the per-script isolation
+# note below). Kept separate from CACHE_PARENT/cl-amiga-* so we never disturb
+# the user's interactive cache.
+PERSCRIPT_CACHE="$CACHE_PARENT/clamiga-test-extra"
 COLD=0
 TALLY_DIR=""
 
@@ -52,8 +60,12 @@ heap_for() {
       *-sento.lisp|*-sento-system.lisp)       echo 192 ;;
       # chipi pulls in the full sento+drakma stack and a large test suite; at
       # 96M the moving GC thrashes (50x slower, hits the timeout). Its own
-      # script header documents 256M for host — match it.
-      *-chipi.lisp)                           echo 256 ;;
+      # script header documents 256M for host — match it. chipi-api is the same
+      # web+actor stack (drakma/usocket/jzon/ironclad/snooze) and likewise
+      # documents 256M; at 96M the jzon/ironclad paths run under heavy
+      # fragmentation and its item/SSE integ tests TYPE-ERROR / drop. Note the
+      # globs are distinct: *-chipi.lisp does NOT match *-chipi-api.lisp.
+      *-chipi.lisp|*-chipi-api.lisp)          echo 256 ;;
       # clog pulls in a larger dep tree (clack/lack/ironclad/yason/websocket…);
       # its script header documents 256M as required — match it.
       *-clog.lisp)                            echo 256 ;;
@@ -66,12 +78,21 @@ heap_for() {
 
 # Wall-clock timeout (seconds) per script. Cold sento compiles a large dep
 # tree from scratch, so it gets the most headroom.
+#
+# Note: each script now has its own FASL cache (per-script isolation, see the
+# FASL-cache correctness note below), so a script can no longer reuse deps
+# compiled by an earlier script — every script bears its full cold-compile cost
+# on first run. The chipi* web scripts pull a big stack (drakma/usocket/jzon's
+# heavy eisel-lemire, hunchentoot, snooze, sento), so they need cold headroom.
 timeout_for() {
   case "$1" in
     *-sento.lisp|*-sento-system.lisp) echo 1800 ;;
     # chipi-ui cold-compiles chipi + chipi-api + the whole clog dep tree from
     # scratch, the heaviest of the load-and-test scripts — give it room.
     *-chipi-ui.lisp)                  echo 1800 ;;
+    # chipi-api / chipi cold-compile the full web+actor stack (jzon eisel-lemire
+    # alone is minutes of bignum-heavy work); 600s is not enough on a cold cache.
+    *-chipi-api.lisp|*-chipi.lisp)    echo 1800 ;;
     *-ansi.lisp)                      echo 900 ;;
     *)                                echo 600 ;;
   esac
@@ -188,6 +209,49 @@ if ! ls trunk/load-and-test-*.lisp >/dev/null 2>&1; then
   exit 2
 fi
 
+# FASL-cache correctness.
+#
+# These scripts hit two distinct cache hazards. Both are defended here by giving
+# each script its own FASL cache directory (CLAMIGA_FASL_CACHE_DIR, honoured by
+# make_fasl_cache_path in src/core/builtins_io.c) and invalidating it when the
+# clamiga binary changes:
+#
+#  1. Cross-script *features* poisoning. Scripts deliberately compile the SAME
+#     shared library under different *features* (e.g. drakma builds hunchentoot
+#     with SSL while load-and-test-hunchentoot pushes :hunchentoot-no-ssl).
+#     ASDF's staleness check keys only on source mtime, NOT on *features*, so in
+#     a shared cache whichever script runs first wins and the others load FASLs
+#     compiled for the wrong feature set (e.g. "No class named SSL-ACCEPTOR").
+#     A per-script cache makes every script compile its own deps under its own
+#     features — and stays warm across re-runs of that same script.
+#
+#  2. Stale-binary reuse. The cache is otherwise keyed only by CL_VERSION_STRING
+#     + CL_FASL_VERSION; the clamiga binary is rebuilt far more often than the
+#     FASL version is bumped (and WIP rebuilds violate that contract by
+#     construction), so a fresh binary can silently load bytecode emitted by the
+#     previous binary — missing classes, bad CLOS dispatch, SIGSEGV. We
+#     fingerprint the binary's contents and wipe the per-script caches whenever
+#     it changes; same-binary re-runs stay warm.
+#
+# --cold wipes each script's cache per-script (below), so the binary guard is a
+# no-op there.
+if [ "$COLD" -eq 0 ]; then
+  BINID_FILE="$PERSCRIPT_CACHE/.clamiga-binid"
+  # cksum is POSIX and present on macOS + Linux; output is "<crc> <size> <name>"
+  # — keep crc+size, drop the path so a moved tree doesn't force a wipe.
+  cur_binid=$(cksum "$CLAMIGA" 2>/dev/null | awk '{print $1, $2}')
+  prev_binid=""
+  [ -f "$BINID_FILE" ] && prev_binid=$(cat "$BINID_FILE" 2>/dev/null)
+  if [ -n "$cur_binid" ] && [ "$cur_binid" != "$prev_binid" ]; then
+    if [ -d "$PERSCRIPT_CACHE" ]; then
+      echo ">>> clamiga binary changed since last run — wiping stale FASL cache" >&2
+      rm -rf "$PERSCRIPT_CACHE"
+    fi
+    mkdir -p "$PERSCRIPT_CACHE"
+    printf '%s\n' "$cur_binid" > "$BINID_FILE"
+  fi
+fi
+
 mkdir -p "$LOGDIR"
 SUMMARY="$LOGDIR/SUMMARY.txt"
 : > "$SUMMARY"
@@ -205,15 +269,19 @@ for f in trunk/load-and-test-*.lisp; do
   tmo=$(timeout_for "$f")
   log="$LOGDIR/${name%.lisp}.log"
 
+  # Per-script FASL cache (see the FASL-cache correctness note above). --cold
+  # wipes this script's cache so it truly cold-compiles every time.
+  script_cache="$PERSCRIPT_CACHE/${name%.lisp}"
   if [ "$COLD" -eq 1 ]; then
-    rm -rf "$HOME"/.cache/common-lisp/cl-amiga-*
+    rm -rf "$script_cache"
   fi
 
   total_scripts=$((total_scripts + 1))
   echo ">>> $name  (heap ${heap}M, timeout ${tmo}s, cold=$COLD)" >&2
   # stdin from /dev/null so the post-load REPL sees EOF and exits instead
   # of blocking; everything (incl. stderr) captured to the per-script log.
-  timeout "$tmo" "$CLAMIGA" --no-userinit --heap "${heap}M" --load "$f" </dev/null >"$log" 2>&1
+  CLAMIGA_FASL_CACHE_DIR="$script_cache" \
+    timeout "$tmo" "$CLAMIGA" --no-userinit --heap "${heap}M" --load "$f" </dev/null >"$log" 2>&1
   ec=$?
 
   result=$(summarize "$log")

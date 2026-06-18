@@ -1542,6 +1542,40 @@ TEST(eval_loop_for_and_parallel)
         "((0 100) (1 101) (2 102))");
 }
 
+/* CLHS 6.1.2.1.3 (for-as-on-list): the end of the list is tested "as if by
+ * using atom", NOT endp.  So FOR/ON over a non-list (or the dotted tail of an
+ * improper list) terminates the loop instead of signalling a TYPE-ERROR.
+ * Regression: clamiga used endp, so e.g. chipi-api's equal-item-lists-p test
+ * helper -- which does (loop for (k v) on <hash-table> by #'cddr ...) and
+ * relies on the conforming zero-iteration behaviour -- crashed with a
+ * TYPE-ERROR where SBCL passes vacuously.  FOR/IN, by contrast, correctly
+ * keeps using endp. */
+TEST(eval_loop_for_on_uses_atom_end_test)
+{
+    /* Proper list: ON still iterates every tail. */
+    ASSERT_STR_EQ(eval_print("(loop for x on '(1 2 3) collect (car x))"),
+                  "(1 2 3)");
+    /* Non-list atom: ON terminates with zero iterations (atom test true). */
+    ASSERT_STR_EQ(eval_print("(loop for x on 'foo collect x)"), "NIL");
+    /* Destructuring var ON a non-list atom: same -- this is the chipi case. */
+    ASSERT_STR_EQ(eval_print(
+        "(loop for (k v) on 'foo by #'cddr collect k)"), "NIL");
+    /* Destructuring ON a non-list via a hash-table, mirroring the failing
+     * chipi-api equal-item-lists-p helper exactly. */
+    ASSERT_STR_EQ(eval_print(
+        "(loop for (k v) on (make-hash-table) by #'cddr collect k)"), "NIL");
+    /* Improper (dotted) list: ON stops at the atom tail. */
+    ASSERT_STR_EQ(eval_print("(loop for x on '(1 2 . 3) collect (car x))"),
+                  "(1 2)");
+    /* Destructuring plist walk over a proper list still works. */
+    ASSERT_STR_EQ(eval_print(
+        "(loop for (k v) on '(:a 1 :b 2) by #'cddr collect (list k v))"),
+        "((:A 1) (:B 2))");
+    /* FOR/IN keeps the strict endp semantics: a non-list atom is an error
+     * (CL_ERR_TYPE == 2). */
+    ASSERT_STR_EQ(eval_print("(loop for x in 'foo collect x)"), "ERROR:2");
+}
+
 TEST(eval_quasiquote_nested_list)
 {
     ASSERT_STR_EQ(eval_print("`(a (b ,(+ 1 2)))"), "(A (B 3))");
@@ -2230,6 +2264,43 @@ TEST(eval_block_return_through_macro_closure)
     ASSERT_STR_EQ(eval_print(
         "(block done (with-conn (when t (return-from done :ok))) :nope)"),
         ":OK");
+}
+
+TEST(eval_return_from_across_catch_no_nlx_leak)
+{
+    /* Regression: a local RETURN-FROM that jumps over an intervening CATCH
+       (or HANDLER-BIND) must NOT use the cheap local-jump path — that would
+       skip the OP_UNCATCH / OP_HANDLER_POP and strand the frame on the NLX
+       stack on every NORMAL exit.  Looping such a form more than
+       CL_MAX_NLX_FRAMES (2048) times overflowed the NLX stack ("NLX stack
+       overflow"); this is exactly how handler-case's
+       (block B (catch 'T (return-from B ...))) expansion leaked one CATCH
+       frame per call when reading an SSL stream byte-by-byte (cl+ssl). */
+
+    /* Direct shape: block wrapping a catch with a normal-path return-from. */
+    eval_print("(defun rf-over-catch (n) "
+               "  (let ((acc 0)) "
+               "    (dotimes (i n acc) "
+               "      (setq acc (block blk (catch 'tg (return-from blk 1)))))))");
+    /* 5000 > 2048: pre-fix this overflowed the NLX stack. */
+    ASSERT_EQ_INT(eval_int("(rf-over-catch 5000)"), 1);
+
+    /* The real-world trigger: handler-case on the normal (no-condition)
+       path, looped well past the NLX cap. */
+    ASSERT_EQ_INT(eval_int(
+        "(let ((acc 0)) (dotimes (i 5000 acc) "
+        "  (setq acc (handler-case (+ i 1) (error () -1)))) 7)"), 7);
+
+    /* Multiple values still flow through the (no-condition) handler-case
+       path — the block return must preserve them. */
+    ASSERT_STR_EQ(eval_print(
+        "(multiple-value-list "
+        "  (dotimes (i 3000 (handler-case (values 1 2 3) (error () nil)))))"),
+        "(1 2 3)");
+
+    /* And the handled path still works after the promotion to NLX. */
+    ASSERT_EQ_INT(eval_int(
+        "(handler-case (error \"boom\") (error () 42))"), 42);
 }
 
 TEST(eval_macro_non_closure_keeps_local_go)
@@ -9654,6 +9725,7 @@ int main(void)
     RUN(scanner_skips_macrolet_bindings);
     RUN(eval_loop_of_type_after_into);
     RUN(eval_loop_for_and_parallel);
+    RUN(eval_loop_for_on_uses_atom_end_test);
     RUN(eval_quasiquote_nested_list);
     RUN(eval_quasiquote_dotted);
     RUN(eval_quasiquote_in_macro);
@@ -9713,6 +9785,7 @@ int main(void)
     RUN(eval_tagbody_nlx_dispatch_stack_balance);
     RUN(eval_tagbody_go_through_macro_closure);
     RUN(eval_block_return_through_macro_closure);
+    RUN(eval_return_from_across_catch_no_nlx_leak);
     RUN(eval_macro_non_closure_keeps_local_go);
     RUN(eval_catch_basic);
     RUN(eval_catch_normal);

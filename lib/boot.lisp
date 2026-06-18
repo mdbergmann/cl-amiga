@@ -2120,7 +2120,13 @@ matching NREVERSE."
          (setq rest (cdr rest)))
        (list rest
              (list (list var list-expr))
-             (list `(when (endp ,var) (go ,end-tag)))
+             ;; CLHS 6.1.2.1.3 (for-as-on-list): the end of the list is tested
+             ;; "as if by using atom" -- NOT endp.  This matters when the value
+             ;; stepped over is not a proper list (e.g. a dotted list or, as
+             ;; some library tests do, a non-list object): atom terminates the
+             ;; loop with zero iterations, whereas endp would signal a
+             ;; TYPE-ERROR.  (for-as-in-list, above, correctly uses endp.)
+             (list `(when (atom ,var) (go ,end-tag)))
              nil
              (list (if by-fn
                        `(setq ,var (funcall ,by-fn ,var))

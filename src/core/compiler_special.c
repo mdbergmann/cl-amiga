@@ -692,11 +692,21 @@ static int nlx_scan(CL_Obj form, int mode, CL_Obj tag, int anon)
          * descend the closure body (skipping its lambda list). */
     }
 
-    /* (unwind-protect ...) containing a return-from to our tag must force a
-     * named/anonymous BLOCK onto the NLX path: a local OP_JMP would bypass
-     * the unwind-protect's OP_UWPOP + cleanup forms (CLHS: cleanups must run
-     * on any non-local exit). */
-    if (mode == NLX_BLOCK && head == SYM_UNWIND_PROTECT)
+    /* A return-from to our tag nested inside a dynamic-extent form —
+     * unwind-protect, catch, or handler-bind — must force the BLOCK onto the
+     * NLX path.  A cheap local OP_JMP would bypass the matching cleanup pop
+     * (OP_UWPOP / OP_UNCATCH / OP_HANDLER_POP), leaving the catch / handler
+     * frame stranded on its runtime stack.  This leaks one frame per *normal*
+     * exit, so a hot path overflows: handler-case expands to
+     *   (block B (catch 'T (return-from B (handler-bind ... form))))
+     * and a local return-from B jumps over the OP_UNCATCH, leaking a CATCH
+     * NLX frame on every call → eventual "NLX stack overflow" (seen reading
+     * an SSL stream byte-by-byte via cl+ssl's handler-case in stream-read-byte).
+     * The NLX BLOCK_RETURN path instead restores cl_nlx_top / cl_handler_top /
+     * cl_restart_top from the block frame's saved marks, unwinding them. */
+    if (mode == NLX_BLOCK &&
+        (head == SYM_UNWIND_PROTECT || head == SYM_CATCH ||
+         head == SYM_HANDLER_BIND))
         return nlx_scan(form, NLX_FIND_RF, tag, anon);
 
     scan_nlx_recurse_depth++;
