@@ -3187,8 +3187,11 @@ static CL_Obj bi_copy_pprint_dispatch(CL_Obj *args, int n)
 
 /* --- Modules (provide / require) --- */
 
-/* Get module name as a C string from a string or symbol argument */
-static const char *module_name_cstr(CL_Obj arg, uint32_t *len_out)
+/* Get module name as a C string from a string or symbol argument.
+   charbuf must be a caller-supplied buffer of at least 8 bytes; it is used
+   when arg is a character (the only case that cannot return a pointer into
+   heap-managed storage directly). */
+static const char *module_name_cstr(CL_Obj arg, uint32_t *len_out, char *charbuf)
 {
     if (CL_STRING_P(arg)) {
         CL_String *s = (CL_String *)CL_OBJ_TO_PTR(arg);
@@ -3201,7 +3204,19 @@ static const char *module_name_cstr(CL_Obj arg, uint32_t *len_out)
         *len_out = name->length;
         return name->data;
     }
-    cl_error(CL_ERR_TYPE, "module name must be a string or symbol");
+    if (CL_CHAR_P(arg)) {
+        /* A character is a valid string designator (CLHS glossary): it
+           denotes the singleton string containing just that character.
+           Use caller-supplied stack buffer so concurrent calls from different
+           threads don't race on shared state. */
+        int nb = cl_utf8_encode(CL_CHAR_VAL(arg), charbuf);
+        if (nb < 0) nb = 0;
+        charbuf[nb] = '\0';
+        *len_out = (uint32_t)nb;
+        return charbuf;
+    }
+    cl_error(CL_ERR_TYPE,
+             "module name must be a string designator (string, symbol, or character)");
     *len_out = 0;
     return NULL;
 }
@@ -3230,11 +3245,11 @@ static CL_Obj bi_provide(CL_Obj *args, int n)
 {
     uint32_t len;
     const char *name;
-    CL_Symbol *mod_sym;
+    char charbuf[8];
     CL_Obj name_str;
 
     CL_UNUSED(n);
-    name = module_name_cstr(args[0], &len);
+    name = module_name_cstr(args[0], &len, charbuf);
 
     if (module_provided_p(name, len))
         return SYM_T;
@@ -3255,8 +3270,9 @@ static CL_Obj bi_require(CL_Obj *args, int n)
 {
     uint32_t len;
     const char *name;
+    char charbuf[8];
 
-    name = module_name_cstr(args[0], &len);
+    name = module_name_cstr(args[0], &len, charbuf);
 
     /* Already provided? */
     if (module_provided_p(name, len))
@@ -3283,14 +3299,14 @@ static CL_Obj bi_require(CL_Obj *args, int n)
         }
     } else {
         /* Implementation-defined search: try .fasl first, then .lisp */
-        char path[256];
+        char path[512];
         CL_Obj load_args[1];
         CL_Obj path_obj;
         int found = 0;
 
         /* Try .fasl and .lisp; prefer .fasl only if newer than .lisp */
         {
-            char fasl_path[256], lisp_path[256];
+            char fasl_path[512], lisp_path[512];
             int have_fasl = 0, have_lisp = 0;
 
             snprintf(fasl_path, sizeof(fasl_path), "lib/%.*s.fasl", (int)len, name);
@@ -3304,6 +3320,28 @@ static CL_Obj bi_require(CL_Obj *args, int n)
                 snprintf(lisp_path, sizeof(lisp_path), "PROGDIR:lib/%.*s.lisp", (int)len, name);
                 have_fasl = platform_file_exists(fasl_path);
                 have_lisp = platform_file_exists(lisp_path);
+            }
+#else
+            /* Host fallback: when clamiga is launched from a directory other
+               than its source root (e.g. an editor/Sly session whose cwd
+               follows the file buffer), cwd-relative "lib/" won't exist.
+               Honour $CLAMIGA_HOME so the bundled lib/ is still found without
+               forcing the process working directory — on Amiga PROGDIR: above
+               already serves this role. */
+            if (!have_fasl && !have_lisp) {
+                char homebuf[256];
+                const char *home = platform_getenv("CLAMIGA_HOME", homebuf, sizeof(homebuf));
+                if (home && home[0]) {
+                    size_t hlen = strlen(home);
+                    /* tolerate a trailing slash on CLAMIGA_HOME */
+                    int hcut = (hlen > 0 && home[hlen - 1] == '/') ? (int)(hlen - 1) : (int)hlen;
+                    snprintf(fasl_path, sizeof(fasl_path), "%.*s/lib/%.*s.fasl",
+                             hcut, home, (int)len, name);
+                    snprintf(lisp_path, sizeof(lisp_path), "%.*s/lib/%.*s.lisp",
+                             hcut, home, (int)len, name);
+                    have_fasl = platform_file_exists(fasl_path);
+                    have_lisp = platform_file_exists(lisp_path);
+                }
             }
 #endif
 

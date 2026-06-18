@@ -15,6 +15,16 @@ endif
 CFLAGS_HOST = -std=c99 -D_GNU_SOURCE -Wall -Wextra -Wpedantic -g -O3 -flto -DPLATFORM_POSIX -DCL_WIDE_STRINGS $(FFI_CFLAGS) $(DEBUG_FLAGS)
 HOST_LIBS   = -lm $(FFI_LIBS)
 
+# Test builds deliberately drop -flto and use -O1 instead of -O3.  The shipped
+# clamiga binary is built once at -O3 -flto, but the ~50 unit-test binaries each
+# link the entire runtime, and with -flto every one of those links re-runs
+# whole-program LTO over the whole runtime — that link step, repeated per test
+# binary, dominates `make test` wall-clock.  -O1 + no LTO compiles fast and runs
+# fast enough for the suite (gc-stress, which needs the optimized binary, builds
+# its own -O3 clamiga separately and is unaffected).  Test objects live in their
+# own tree so they never clash with the -O3 -flto objects linked into clamiga.
+CFLAGS_TEST = -std=c99 -D_GNU_SOURCE -Wall -Wextra -Wpedantic -g -O1 -DPLATFORM_POSIX -DCL_WIDE_STRINGS $(FFI_CFLAGS) $(DEBUG_FLAGS)
+
 SRCDIR   = src
 BUILDDIR = build/host
 
@@ -86,6 +96,10 @@ TEST_BINS   = $(patsubst $(TEST_SRCDIR)/%.c,$(BUILDDIR)/tests/%,$(TEST_SRCS))
 # Core sources without main (for linking with tests)
 LIB_SRCS = $(PLATFORM_SRC) $(CORE_SRC) $(JIT_SRC)
 LIB_OBJS = $(patsubst $(SRCDIR)/%.c,$(BUILDDIR)/%.o,$(LIB_SRCS))
+
+# Separate, non-LTO object tree for the test binaries (see CFLAGS_TEST above).
+TESTOBJDIR    = $(BUILDDIR)/test-obj
+LIB_TEST_OBJS = $(patsubst $(SRCDIR)/%.c,$(TESTOBJDIR)/%.o,$(LIB_SRCS))
 
 .PHONY: host test test-fast test-plus test-extra linux-test clean verify-amiga install-hooks docs-check docs-update
 
@@ -241,9 +255,21 @@ test-plus: test-fast
 	fi; \
 	echo "=== All tests passed ==="
 
-$(BUILDDIR)/tests/%: $(TEST_SRCDIR)/%.c $(TEST_SRCDIR)/test.h $(LIB_OBJS)
+$(TESTOBJDIR)/%.o: $(SRCDIR)/%.c
 	@mkdir -p $(dir $@)
-	$(CC_HOST) $(CFLAGS_HOST) -I$(SRCDIR) -I$(TEST_SRCDIR) -o $@ $< $(LIB_OBJS) $(HOST_LIBS)
+	$(CC_HOST) $(CFLAGS_TEST) -I$(SRCDIR) -MMD -MP -c -o $@ $<
+
+# Without this, make treats the test objects as intermediate files (they are
+# only reached through the pattern rule above) and deletes them after each
+# build — forcing a full recompile of the runtime on every `make test`.
+# .SECONDARY keeps them so incremental test builds are fast.
+.SECONDARY: $(LIB_TEST_OBJS)
+
+-include $(LIB_TEST_OBJS:.o=.d)
+
+$(BUILDDIR)/tests/%: $(TEST_SRCDIR)/%.c $(TEST_SRCDIR)/test.h $(LIB_TEST_OBJS)
+	@mkdir -p $(dir $@)
+	$(CC_HOST) $(CFLAGS_TEST) -I$(SRCDIR) -I$(TEST_SRCDIR) -o $@ $< $(LIB_TEST_OBJS) $(HOST_LIBS)
 
 # Cold-load smoke test: runs the sento test suite end-to-end from an
 # empty FASL cache.  Exercises the source-load + auto-cache path that

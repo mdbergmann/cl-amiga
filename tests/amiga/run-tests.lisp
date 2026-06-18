@@ -3888,6 +3888,11 @@
 (check "provide symbol name" "TEST-MOD-SYM" (find "TEST-MOD-SYM" *modules* :test #'string=))
 (check "require already provided" nil (require "test-mod-1"))
 (check "modules is list" t (listp *modules*))
+; CLHS: module-name is a string designator, which includes characters
+; (a character denotes the singleton string containing it).
+(check "provide character designator" t (provide #\Z))
+(check "modules contains char-named module" "Z" (find "Z" *modules* :test #'string=))
+(check "require character already provided" nil (require #\Z))
 
 ; --- Read-time eval (#.) ---
 (check "#. arithmetic" 3 #.(+ 1 2))

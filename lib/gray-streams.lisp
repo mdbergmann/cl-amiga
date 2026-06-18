@@ -682,4 +682,8 @@ the position where end-of-file was reached."))
   nil)
 (export 'clear-input)
 
+;; Register the module so a second (require "gray-streams") is a no-op
+;; instead of reloading and recompiling this file every time.
+(provide "gray-streams")
+
 (in-package "COMMON-LISP-USER")
