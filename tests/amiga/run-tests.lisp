@@ -2767,6 +2767,14 @@
 ; *default-pathname-defaults* is a pathname
 (check "default-pn-defaults" t (pathnamep *default-pathname-defaults*))
 
+; *default-pathname-defaults* is seeded with the cwd as an ABSOLUTE directory
+; pathname, so relative merges resolve to absolute (ASDF :tree needs this).
+(check "default-pn-defaults-absolute" :absolute
+       (first (pathname-directory *default-pathname-defaults*)))
+(check "default-pn-defaults-merge-absolute" :absolute
+       (first (pathname-directory
+               (merge-pathnames "systems/" *default-pathname-defaults*))))
+
 ; --- LOGICAL-PATHNAME class ---
 (check "logical-pathname-class-exists" 'logical-pathname
   (class-name (find-class 'logical-pathname)))

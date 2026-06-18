@@ -868,6 +868,7 @@ static CL_Obj bi_translate_pathname(CL_Obj *args, int n)
 
 void cl_builtins_pathname_init(void)
 {
+    cl_gc_register_root(&SYM_STAR_DEFAULT_PATHNAME_DEFAULTS);
     defun("PATHNAMEP", bi_pathnamep, 1, 1);
     defun("PATHNAME", bi_pathname, 1, 1);
     defun("PARSE-NAMESTRING", bi_parse_namestring, 1, 1);
@@ -888,9 +889,36 @@ void cl_builtins_pathname_init(void)
     defun("PATHNAME-MATCH-P", bi_pathname_match_p, 2, 2);
     defun("TRANSLATE-PATHNAME", bi_translate_pathname, 3, 3);
 
-    /* Initialize *default-pathname-defaults* to empty pathname */
+    /* Initialize *default-pathname-defaults* to the process's current working
+     * directory in absolute directory form.  Conforming implementations seed it
+     * with the cwd so relative merges (merge-pathnames, ASDF :tree directives,
+     * etc.) resolve to absolute pathnames.  An empty pathname here would leave
+     * (merge-pathnames "x/" *default-pathname-defaults*) relative, which ASDF's
+     * source-registry rejects ("Expected an absolute pathname").  Fall back to
+     * the empty pathname only if the cwd cannot be determined. */
     {
-        CL_Symbol *s = (CL_Symbol *)CL_OBJ_TO_PTR(SYM_STAR_DEFAULT_PATHNAME_DEFAULTS);
-        s->value = cl_make_pathname(CL_NIL, CL_NIL, CL_NIL, CL_NIL, CL_NIL, CL_NIL);
+        char cwd[512];
+        CL_Obj dpd = CL_NIL;
+        if (platform_getcwd(cwd, (int)sizeof(cwd))) {
+            uint32_t clen = (uint32_t)strlen(cwd);
+            /* Ensure directory form (trailing separator) so the namestring has
+             * no name/type component. */
+            if (clen > 0 && clen + 1 < sizeof(cwd)
+                && cwd[clen - 1] != '/'
+#ifdef PLATFORM_AMIGA
+                && cwd[clen - 1] != ':'
+#endif
+               ) {
+                cwd[clen] = '/';
+                cwd[clen + 1] = '\0';
+                clen++;
+            }
+            dpd = cl_parse_namestring(cwd, clen);
+        }
+        if (CL_NULL_P(dpd))
+            dpd = cl_make_pathname(CL_NIL, CL_NIL, CL_NIL, CL_NIL, CL_NIL, CL_NIL);
+        /* Dereference after all allocating calls so we hold a fresh pointer
+         * even if GC compaction relocated the symbol object. */
+        ((CL_Symbol *)CL_OBJ_TO_PTR(SYM_STAR_DEFAULT_PATHNAME_DEFAULTS))->value = dpd;
     }
 }
