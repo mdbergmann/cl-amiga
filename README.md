@@ -104,6 +104,37 @@ Quicklisp runs on CL-Amiga, but the stock client doesn't recognise this implemen
 
 Libraries confirmed working via `quickload` + `asdf:test-system` (`trunk/run-load-and-test-all.sh`) include **fiveam**, **FSet**, **str**, **closer-mop**, **CFFI**, **chipi** (cl-hab), and **Sento** — plus, on the host, the **drakma** HTTP/HTTPS client and the **Hunchentoot** web server (these two need a TCP/IP stack; see [Integration test scripts](#integration-test-scripts)). Loading these pulls in and exercises a much wider dependency graph along the way — **alexandria, serapeum, lparallel, log4cl, bordeaux-threads, cl+ssl, usocket, chipz, cl-who** and friends. Sento cold-compiles its full dependency tree, so give it ~96–128M of heap (more for a cold cache) and `stack 800000` on Amiga.
 
+### Library forks (CL-Amiga backends)
+
+Several third-party libraries don't recognise CL-Amiga and either lack a porting
+layer for it or assume features of other implementations. For these, the project
+maintains forks that add a CL-Amiga backend (a new `*-clamiga.lisp` file) or a
+small `#+cl-amiga` / `#+clamiga` adaptation. Clone them into
+`~/quicklisp/local-projects/` (Amiga: `S:quicklisp/local-projects/`) so
+Quicklisp's local-projects searcher picks them up ahead of the stock dist
+versions. The goal is to upstream each one as the remaining API gaps close.
+
+| Library | Fork repository | What the CL-Amiga support adds |
+|---------|-----------------|--------------------------------|
+| **usocket** | https://github.com/mdbergmann/usocket | `backend/clamiga.lisp` — a usocket backend that wraps CL-Amiga's `EXT`-package TCP sockets/streams. The networking foundation for drakma and Hunchentoot. |
+| **bordeaux-threads** | https://github.com/mdbergmann/bordeaux-threads | `apiv1/impl-clamiga.lisp` + `apiv2/impl-clamiga.lisp` — maps the BT v1 and v2 thread/lock/condition-variable surface onto CL-Amiga's `MP` package. Pulled in by Sento, lparallel, and most concurrent libraries. |
+| **cffi** | https://github.com/mdbergmann/cffi | `src/cffi-clamiga.lisp` — a CFFI-SYS backend built on CL-Amiga's `FFI` package (fully functional on the POSIX host; AmigaOS uses the library-vector model). Lets CFFI-dependent systems load. |
+| **trivial-features** | https://github.com/mdbergmann/trivial-features | `src/tf-clamiga.lisp` — populates `*features*` with CL-Amiga's OS/CPU/endianness keywords. Required by CFFI and cl+ssl for platform detection. |
+| **chipz** | https://github.com/mdbergmann/chipz | `#+cl-amiga` Gray-stream branch in `stream.lisp` — makes `make-decompressing-stream` work. Enables drakma's gzip/deflate `:decode-content`. |
+| **float-features** | https://codeberg.org/mdbergmann/float-features | `#+cl-amiga` branch using CL-Amiga's IEEE float-bits builtins (`clamiga:single-float-bits`, …). Needed by jzon to serialize floats (e.g. chipi-api's SSE JSON). |
+| **rfc2388** | https://github.com/mdbergmann/rfc2388 | `#+cl-amiga` MIME multipart parsing using a `:latin-1` external format. Used by Hunchentoot for multipart form/file uploads. |
+| **cl-fad** | https://github.com/mdbergmann/cl-fad | `#+:cl-amiga` directory/pathname/file utilities (`list-directory`, `file-exists-p`, …) mapped onto CL-Amiga's `directory`/`probe-file`. Used by Hunchentoot. |
+| **hunchentoot** | https://github.com/mdbergmann/hunchentoot | `#+:cl-amiga` web-server adaptations (e.g. `set-timeouts` over the usocket clamiga backend). Runs CL-Amiga as an HTTP server. |
+| **atomics** | https://codeberg.org/mdbergmann/atomics | `#+clamiga` compare-and-swap / atomic-op branch in `atomics.lisp`. Backs bordeaux-threads v2's atomic API. |
+| **fset** | https://github.com/mdbergmann/fset | `#+cl-amiga` branches in `Code/port.lisp` (lock/memory-barrier stubs onto the `MP` package, a `make-char` helper). The functional-collections library; its own suite passes 17/17 on CL-Amiga. |
+
+> **fset dependency:** fset 2.4.x requires `misc-extensions` ≥ 4.2.4, which is
+> newer than the version in the bundled Quicklisp dist. Clone the upstream
+> [slburson/misc-extensions](https://github.com/slburson/misc-extensions) (≥ 4.2.4)
+> into `~/quicklisp/local-projects/` as well — it needs no CL-Amiga patch and
+> loads as-is, but the local-projects copy must take precedence over the older dist
+> release for fset to build.
+
 ### Integration test scripts
 
 Reusable Lisp loaders in `trunk/` that load and exercise third-party libraries on both host and Amiga:
