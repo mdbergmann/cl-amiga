@@ -270,6 +270,29 @@ tail -f /dev/null | ./build/host/clamiga --heap 96M \
     --eval '(funcall (read-from-string "slynk:create-server") :port 4005 :dont-close t)'
 ```
 
+## Package Reference
+
+Beyond `COMMON-LISP` / `COMMON-LISP-USER`, CL-Amiga ships several packages for
+platform extensions, threading, FFI, the Gray-streams protocol, the CLOS
+Metaobject Protocol, and the AmigaOS GUI. `COMMON-LISP-USER` already `:use`s most
+of them, so their symbols are usually available unqualified at the REPL. Each has
+its own reference page under [`docs/`](docs/README.md):
+
+| Package | What it provides | Doc |
+|---------|------------------|-----|
+| `EXT` | TCP sockets, GC control, environment access, debug/introspection | [docs/ext.md](docs/ext.md) |
+| `MP` | Threads, locks, condition variables, memory barriers | [docs/mp.md](docs/mp.md) |
+| `FFI` | Foreign pointers, typed peek/poke, libffi calls & callbacks | [docs/ffi.md](docs/ffi.md) |
+| `GRAY` | Gray-streams protocol (define stream classes in Lisp) | [docs/gray.md](docs/gray.md) |
+| `MOP` | CLOS Metaobject Protocol (AMOP / closer-mop subset) | [docs/mop.md](docs/mop.md) |
+| `CLAMIGA` | IEEE float bits, package-local nicknames, JIT/trace toggles | [docs/clamiga.md](docs/clamiga.md) |
+| `AMIGA`, `AMIGA.*` | Raw library calls, FFI tag lists, Intuition, Graphics, GadTools | [docs/amiga.md](docs/amiga.md) |
+
+The symbol lists in those pages are kept honest by `make docs-check`, which
+diffs the real package exports against a committed snapshot; run
+`make docs-update` after changing a package's exports. See
+[docs/README.md](docs/README.md#keeping-the-lists-in-sync).
+
 ## Architecture
 
 - **Single-pass compiler** from S-expressions to bytecode, executed by a stack-based VM
