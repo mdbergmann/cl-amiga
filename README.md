@@ -104,6 +104,33 @@ Quicklisp runs on CL-Amiga, but the stock client doesn't recognise this implemen
 
 Libraries confirmed working via `quickload` + `asdf:test-system` (`trunk/run-load-and-test-all.sh`) include **fiveam**, **FSet**, **str**, **closer-mop**, **CFFI**, **chipi** (cl-hab), and **Sento** — plus, on the host, the **drakma** HTTP/HTTPS client and the **Hunchentoot** web server (these two need a TCP/IP stack; see [Integration test scripts](#integration-test-scripts)). Loading these pulls in and exercises a much wider dependency graph along the way — **alexandria, serapeum, lparallel, log4cl, bordeaux-threads, cl+ssl, usocket, chipz, cl-who** and friends. Sento cold-compiles its full dependency tree, so give it ~96–128M of heap (more for a cold cache) and `stack 800000` on Amiga.
 
+### Ocicl
+
+[Ocicl](https://github.com/ocicl/ocicl) is an alternative to Quicklisp that distributes ASDF systems as OCI artifacts pulled from a container registry. It has two halves: the `ocicl` command-line tool, which fetches systems over HTTPS into a project-local `systems/` directory, and a runtime hook that teaches ASDF where to find them. CL-Amiga consumes the second half directly — once the systems are on disk, an `ocicl`-managed `systems/` tree is just `.asd` files plus sources, which CL-Amiga's ASDF loads like any other source registry.
+
+**Install the systems with the host `ocicl` tool.** Run the upstream CLI (on the macOS/Linux host, or anywhere you have it) from your project directory to vendor the systems you need:
+
+```sh
+cd my-project
+ocicl install alexandria       # downloads into ./systems/ and records ./systems.csv
+```
+
+This populates a `systems/` subdirectory and a `systems.csv` manifest inside the project.
+
+**Point ASDF at the tree from `.clamigarc`.** CL-Amiga reads `~/.clamigarc` (Amiga: `S:.clamigarc`) at startup, so add an `asdf:initialize-source-registry` form there to register the project's `systems/` directory as a search tree:
+
+```lisp
+(require "asdf")
+(asdf:initialize-source-registry
+  '(:source-registry
+    (:tree #P"my-project/systems/")
+    :inherit-configuration))
+```
+
+After that, `(asdf:load-system "alexandria")` resolves against the `ocicl`-installed copy. Use an absolute path (or several `:tree` entries) if you work across multiple project directories. Because this is plain ASDF, the CL-Amiga library forks listed below still apply — clone any needed `*-clamiga.lisp` fork into a directory covered by the source registry so it takes precedence over the stock system.
+
+> CL-Amiga does not yet run the `ocicl` fetcher natively (that needs an on-Amiga OCI-registry client); install on the host and copy or share the `systems/` tree to the Amiga side.
+
 ### Library forks (CL-Amiga backends)
 
 Several third-party libraries don't recognise CL-Amiga and either lack a porting
