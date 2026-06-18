@@ -54,10 +54,9 @@
 (format t "~%--- Loading hunchentoot (plain HTTP; :hunchentoot-no-ssl) ---~%")
 (asdf:load-system :hunchentoot)
 
-;; Apply the cl-amiga Hunchentoot portability shims (set-timeouts no-op, etc.)
-;; now that hunchentoot is loaded — without these the acceptor's accept loop
-;; dies right after accepting a connection.  See trunk/hunchentoot-clamiga.lisp.
-(load "trunk/hunchentoot-clamiga.lisp")
+;; The cl-amiga Hunchentoot portability (SET-TIMEOUTS) now ships as an in-source
+;; #+cl-amiga branch in the hunchentoot fork (local-projects), so loading the
+;; system above already installs it — no separate patch load needed.
 
 ;; Load Hunchentoot's own test system: the example handlers (test-handlers),
 ;; the assertion/script engine (script-engine), and the confidence script
