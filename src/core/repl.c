@@ -695,6 +695,101 @@ static void boot_timing_log(const char *phase, uint32_t t_start, uint32_t *t_pre
 }
 #define BOOT_TIME(phase) boot_timing_log((phase), t_start, &t_prev)
 
+/* Load boot from one (fasl, src) path pair.  Returns 1 if boot was loaded
+   (from the FASL or, failing that, the source), 0 if neither file was present
+   or loadable.  Factored out so the cwd-relative, Amiga PROGDIR:, and host
+   $CLAMIGA_HOME locations are all tried with identical semantics (stale-FASL
+   header validation + recompile-after-source).  cmd buffers are sized for
+   absolute paths built from $CLAMIGA_HOME. */
+static int try_load_boot_pair(const char *fasl_path, const char *src_path)
+{
+    int boot_loaded = 0;
+    int fasl_fresh = 0;
+
+    /* Try FASL if it exists and is not stale.  Pre-validate the header so a
+       fasl from a previous CL_FASL_VERSION is dropped cleanly rather than
+       longjmping out of cl_fasl_load with the VM stack/frame pointers
+       half-unwound (see below). */
+    if (platform_file_exists(fasl_path)) {
+        uint32_t fasl_mt = platform_file_mtime(fasl_path);
+        uint32_t src_mt  = platform_file_mtime(src_path);
+        int header_ok = 0;
+        if (fasl_mt > 0 && fasl_mt >= src_mt) {
+            unsigned long hsize = 0;
+            char *hbuf = platform_file_read(fasl_path, &hsize);
+            if (hbuf) {
+                if (hsize >= 6) {
+                    uint32_t magic = ((uint32_t)(uint8_t)hbuf[0] << 24) |
+                                     ((uint32_t)(uint8_t)hbuf[1] << 16) |
+                                     ((uint32_t)(uint8_t)hbuf[2] << 8) |
+                                     ((uint32_t)(uint8_t)hbuf[3]);
+                    uint32_t fver  = ((uint32_t)(uint8_t)hbuf[4] << 8) |
+                                     ((uint32_t)(uint8_t)hbuf[5]);
+                    if (magic == CL_FASL_MAGIC && fver == CL_FASL_VERSION)
+                        header_ok = 1;
+                }
+                platform_free(hbuf);
+            }
+            if (!header_ok) {
+                /* Stale or unrecognised — drop it and fall through to source
+                   so the next startup writes a fresh one. */
+                platform_file_delete(fasl_path);
+            }
+        }
+        if (header_ok) {
+            int err; CL_CATCH(err);
+            if (err == CL_ERR_NONE) {
+                char cmd[720];
+                snprintf(cmd, sizeof(cmd), "(load \"%s\")", fasl_path);
+                cl_eval_string(cmd);
+                boot_loaded = 1;
+                fasl_fresh = 1;
+            } else {
+                /* cl_error_unwind clears nlx/dynbind/handlers/GC roots but
+                   leaves cl_vm.sp / cl_vm.fp pointing into the aborted eval —
+                   reset before the next cl_eval_string so it starts on a clean
+                   VM stack. */
+                cl_vm.sp = 0;
+                cl_vm.fp = 0;
+            }
+            CL_UNCATCH();
+        }
+    }
+
+    /* Fall back to source */
+    if (!boot_loaded && platform_file_exists(src_path)) {
+        int err; CL_CATCH(err);
+        if (err == CL_ERR_NONE) {
+            char cmd[720];
+            snprintf(cmd, sizeof(cmd), "(load \"%s\")", src_path);
+            cl_eval_string(cmd);
+            boot_loaded = 1;
+        } else {
+            cl_vm.sp = 0;
+            cl_vm.fp = 0;
+        }
+        CL_UNCATCH();
+    }
+
+    /* Recompile FASL if we loaded from source */
+    if (boot_loaded && !fasl_fresh) {
+        int err; CL_CATCH(err);
+        if (err == CL_ERR_NONE) {
+            char cmd[1440];
+            snprintf(cmd, sizeof(cmd),
+                "(compile-file \"%s\" :output-file \"%s\")",
+                src_path, fasl_path);
+            cl_eval_string(cmd);
+        } else {
+            cl_vm.sp = 0;
+            cl_vm.fp = 0;
+        }
+        CL_UNCATCH();
+    }
+
+    return boot_loaded;
+}
+
 void cl_repl_init_no_userinit(int no_userinit)
 {
     uint32_t t_start = platform_time_ms();
@@ -758,91 +853,32 @@ void cl_repl_init_no_userinit(int no_userinit)
         int npairs = (int)(sizeof(fasl_src_pairs) / sizeof(fasl_src_pairs[0]));
 
         for (bi = 0; bi < npairs && !boot_loaded; bi++) {
-            const char *fasl_path = fasl_src_pairs[bi][0];
-            const char *src_path  = fasl_src_pairs[bi][1];
-            int fasl_fresh = 0;
+            boot_loaded = try_load_boot_pair(fasl_src_pairs[bi][0],
+                                             fasl_src_pairs[bi][1]);
+        }
 
-            /* Try FASL if it exists and is not stale.  Pre-validate the
-               header so a fasl from a previous CL_FASL_VERSION is dropped
-               cleanly rather than longjmping out of cl_fasl_load with the
-               VM stack/frame pointers half-unwound (see below). */
-            if (platform_file_exists(fasl_path)) {
-                uint32_t fasl_mt = platform_file_mtime(fasl_path);
-                uint32_t src_mt  = platform_file_mtime(src_path);
-                int header_ok = 0;
-                if (fasl_mt > 0 && fasl_mt >= src_mt) {
-                    unsigned long hsize = 0;
-                    char *hbuf = platform_file_read(fasl_path, &hsize);
-                    if (hbuf) {
-                        if (hsize >= 6) {
-                            uint32_t magic = ((uint32_t)(uint8_t)hbuf[0] << 24) |
-                                             ((uint32_t)(uint8_t)hbuf[1] << 16) |
-                                             ((uint32_t)(uint8_t)hbuf[2] << 8) |
-                                             ((uint32_t)(uint8_t)hbuf[3]);
-                            uint32_t fver  = ((uint32_t)(uint8_t)hbuf[4] << 8) |
-                                             ((uint32_t)(uint8_t)hbuf[5]);
-                            if (magic == CL_FASL_MAGIC && fver == CL_FASL_VERSION)
-                                header_ok = 1;
-                        }
-                        platform_free(hbuf);
-                    }
-                    if (!header_ok) {
-                        /* Stale or unrecognised — drop it and fall through
-                           to source so the next startup writes a fresh one. */
-                        platform_file_delete(fasl_path);
-                    }
-                }
-                if (header_ok) {
-                    int err; CL_CATCH(err);
-                    if (err == CL_ERR_NONE) {
-                        char cmd[256];
-                        snprintf(cmd, sizeof(cmd), "(load \"%s\")", fasl_path);
-                        cl_eval_string(cmd);
-                        boot_loaded = 1;
-                        fasl_fresh = 1;
-                    } else {
-                        /* cl_error_unwind clears nlx/dynbind/handlers/GC roots
-                           but leaves cl_vm.sp / cl_vm.fp pointing into the
-                           aborted eval — reset before the next cl_eval_string
-                           so it starts on a clean VM stack. */
-                        cl_vm.sp = 0;
-                        cl_vm.fp = 0;
-                    }
-                    CL_UNCATCH();
-                }
-            }
-
-            /* Fall back to source */
-            if (!boot_loaded && platform_file_exists(src_path)) {
-                int err; CL_CATCH(err);
-                if (err == CL_ERR_NONE) {
-                    char cmd[256];
-                    snprintf(cmd, sizeof(cmd), "(load \"%s\")", src_path);
-                    cl_eval_string(cmd);
-                    boot_loaded = 1;
-                } else {
-                    cl_vm.sp = 0;
-                    cl_vm.fp = 0;
-                }
-                CL_UNCATCH();
-            }
-
-            /* Recompile FASL if we loaded from source */
-            if (boot_loaded && !fasl_fresh) {
-                int err; CL_CATCH(err);
-                if (err == CL_ERR_NONE) {
-                    char cmd[512];
-                    snprintf(cmd, sizeof(cmd),
-                        "(compile-file \"%s\" :output-file \"%s\")",
-                        src_path, fasl_path);
-                    cl_eval_string(cmd);
-                } else {
-                    cl_vm.sp = 0;
-                    cl_vm.fp = 0;
-                }
-                CL_UNCATCH();
+#ifndef PLATFORM_AMIGA
+        /* Host fallback: when clamiga is launched from a directory other than
+           its source root (e.g. an editor/Sly session whose cwd follows the
+           file buffer), cwd-relative "lib/" won't exist.  Honour $CLAMIGA_HOME
+           so the bundled lib/ is still found without forcing the process
+           working directory — keeping the cwd free to track the buffer.  On
+           Amiga the PROGDIR: pair above already plays this role. */
+        if (!boot_loaded) {
+            const char *home = getenv("CLAMIGA_HOME");
+            if (home && home[0]) {
+                char fasl_path[700], src_path[700];
+                size_t hlen = strlen(home);
+                int hcut = (hlen > 0 && home[hlen - 1] == '/') ? (int)(hlen - 1)
+                                                               : (int)hlen;
+                snprintf(fasl_path, sizeof(fasl_path), "%.*s/lib/boot.fasl",
+                         hcut, home);
+                snprintf(src_path, sizeof(src_path), "%.*s/lib/boot.lisp",
+                         hcut, home);
+                boot_loaded = try_load_boot_pair(fasl_path, src_path);
             }
         }
+#endif
         (void)boot_loaded;
     }
     BOOT_TIME("load boot (FASL or source)");

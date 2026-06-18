@@ -269,23 +269,30 @@ Foreign calls/callbacks are host-only; on AmigaOS use the library-vector model
 
 CL-Amiga speaks the SLYNK protocol, so you can drive it from Emacs with [SLY](https://github.com/joaotavora/sly) — REPL, completion, `M-.`, the inspector, and the SLDB debugger. This targets the **host** build (`build/host/clamiga`) and needs a SLY checkout whose `slynk/backend/` includes the CL-Amiga backend (`clamiga.lisp`).
 
-clamiga comes up exactly like every other implementation — there is no clamiga-specific Lisp startup file or init form. The backend (`slynk/backend/clamiga.lisp`) pulls in clamiga's Gray streams itself via `(require "gray-streams")`, so just run clamiga from its source root (or set SLY's `:directory`) so that resolves `lib/gray-streams.lisp`.
+clamiga comes up exactly like every other implementation — there is no clamiga-specific Lisp startup file or init form. The backend (`slynk/backend/clamiga.lisp`) pulls in clamiga's Gray streams itself via `(require "gray-streams")`, which needs to locate the bundled `lib/`.
+
+clamiga finds `lib/` in two ways: relative to the current working directory (so running it from the source root just works), and — failing that — under **`$CLAMIGA_HOME`** (on AmigaOS the equivalent is `PROGDIR:`, the executable's own directory). Setting `CLAMIGA_HOME` is the better choice for editor integration: it frees clamiga's working directory to follow the file buffer you launch from (so `sly-pwd` matches the source you're editing, like other implementations), instead of being pinned to clamiga's source root by SLY's `:directory`.
 
 > **Heap sizing:** the 4 MB default thrashes the GC once SLYNK and its contribs load. Use **`--heap 96M` as a practical minimum** — that also carries a real application's dependency graph (e.g. `(asdf:load-system :sento)`). Give more headroom (`512M`) if you can.
 
 ### Method A — auto-start with `M-x sly` (recommended)
 
-Add a `clamiga` entry to `sly-lisp-implementations`. No custom `:init` is needed — `:directory` points clamiga at the source root so the backend's `(require "gray-streams")` resolves:
+Add a `clamiga` entry to `sly-lisp-implementations`. Point clamiga at its `lib/` with `CLAMIGA_HOME` rather than SLY's `:directory`, so the connection's working directory follows the buffer you start from instead of being forced to the source root:
 
 ```elisp
 (defvar my/clamiga-root "/path/to/cl-amiga")
 (defvar my/clamiga-bin  (expand-file-name "build/host/clamiga" my/clamiga-root))
 
+;; Let the backend's (require "gray-streams") find lib/ no matter the cwd,
+;; while leaving the cwd (sly-pwd) free to track the file buffer.
+(setenv "CLAMIGA_HOME" my/clamiga-root)
+
 (with-eval-after-load 'sly
   (add-to-list 'sly-lisp-implementations
-               `(clamiga (,my/clamiga-bin "--heap" "512M")
-                         :directory ,my/clamiga-root)))
+               `(clamiga (,my/clamiga-bin "--heap" "512M"))))
 ```
+
+(If you prefer the old behaviour of pinning the working directory to the source root, drop the `setenv` and add `:directory ,my/clamiga-root` back to the entry instead.)
 
 Then `M-x sly` and pick `clamiga` (or `C-u M-x sly` to choose). SLY starts a server on an OS-assigned port (via ASDF + `slynk.asd`, which includes the CL-Amiga backend) and connects automatically.
 
