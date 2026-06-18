@@ -9,7 +9,8 @@
 ;; VERIFY.* badssl.com tests), AND — as of 2026-06-12 — the form-POST/PUT
 ;; tests that stand up a LOCAL hunchentoot server (post/put-x-www-form,
 ;; post/put-multipart-form).  Hunchentoot now runs as a server over the
-;; usocket cl-amiga backend; see trunk/hunchentoot-clamiga.lisp.
+;; usocket cl-amiga backend (cl-amiga portability is an in-source #+cl-amiga
+;; branch in the hunchentoot/cl-fad/rfc2388 forks).
 ;;
 ;; The only tests still redefined below as fiveam SKIPs depend on httpbin.org,
 ;; which is ORTHOGONAL to the client+server-on-cl-amiga goal:

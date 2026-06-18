@@ -60,9 +60,9 @@
 (asdf:load-system :drakma-test)
 
 ;; The form-POST tests run drakma against a LOCAL hunchentoot server over the
-;; usocket cl-amiga backend.  Apply the cl-amiga Hunchentoot portability shims
-;; (see trunk/hunchentoot-clamiga.lisp) now that hunchentoot is loaded.
-(load "trunk/hunchentoot-clamiga.lisp")
+;; usocket cl-amiga backend.  The cl-amiga Hunchentoot/cl-fad/rfc2388
+;; portability now lives as in-source #+cl-amiga branches in those forks
+;; (local-projects), installed when the systems load above.
 
 ;; Redefine the out-of-scope tests as skips (see file header for the three
 ;; groups + reasons).  Loaded as a file so its top (in-package :drakma-test)

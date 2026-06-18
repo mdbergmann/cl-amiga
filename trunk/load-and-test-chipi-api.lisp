@@ -36,11 +36,9 @@
 ;; chipi-api's integration tests (API-INTEGTESTS) start a real Hunchentoot
 ;; easy-acceptor and drive it over the loopback with drakma.  Hunchentoot's
 ;; per-connection SET-TIMEOUTS (and a couple of cl-fad/rfc2388 primitives)
-;; have per-Lisp conditionals that fall through to NOT-IMPLEMENTED on
-;; cl-amiga — without these shims the acceptor's worker thread dies right
-;; after accepting the connection and every request hangs.  Same patch the
-;; hunchentoot/drakma server scripts use.
-(load "trunk/hunchentoot-clamiga.lisp")
+;; have per-Lisp conditionals — these now carry in-source #+cl-amiga branches
+;; in the respective forks under quicklisp local-projects, so no separate
+;; patch load is needed here.
 
 (format t "~%--- (fiveam:run! chipi-api.tests:test-suite) ---~%")
 (fiveam:run! (find-symbol "TEST-SUITE" "CHIPI-API.TESTS"))

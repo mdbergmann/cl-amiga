@@ -10,7 +10,7 @@
 ;; The chipi-ui/tests suite is browser-free: the rendering tests stub the CLOG
 ;; connection (clog-connection:execute/query) and assert on the generated DOM
 ;; commands, so no websocket/Hunchentoot acceptor is started here — and the
-;; hunchentoot-clamiga.lisp acceptor shims are therefore not needed.
+;; cl-amiga hunchentoot acceptor portability is therefore not exercised.
 ;;
 ;; Usage (host):
 ;;   ./build/host/clamiga --heap 256M --load trunk/load-and-test-chipi-ui.lisp
