@@ -419,6 +419,26 @@ TEST(default_pathname_defaults)
     ASSERT_STR_EQ(eval_print("(pathnamep *default-pathname-defaults*)"), "T");
 }
 
+/* Regression: *default-pathname-defaults* must be seeded with the cwd as an
+ * ABSOLUTE directory pathname.  An empty/relative default left relative merges
+ * relative, which ASDF's source-registry rejects ("Expected an absolute
+ * pathname") — see the Ocicl :tree setup in the README. */
+TEST(default_pathname_defaults_is_absolute)
+{
+    ASSERT_STR_EQ(eval_print(
+        "(eq :absolute (first (pathname-directory *default-pathname-defaults*)))"),
+        "T");
+}
+
+/* A relative pathname merged against the default must come out absolute. */
+TEST(default_pathname_defaults_merge_absolute)
+{
+    ASSERT_STR_EQ(eval_print(
+        "(eq :absolute (first (pathname-directory"
+        "  (merge-pathnames \"systems/\" *default-pathname-defaults*))))"),
+        "T");
+}
+
 /* --- pathname-host / pathname-version --- */
 
 TEST(pathname_host_nil)
@@ -740,6 +760,8 @@ int main(void)
     RUN(pathname_amiga_namestring);
     RUN(coerce_string_to_pathname);
     RUN(default_pathname_defaults);
+    RUN(default_pathname_defaults_is_absolute);
+    RUN(default_pathname_defaults_merge_absolute);
     RUN(pathname_host_nil);
     RUN(pathname_version_nil);
     RUN(pathname_dir_only);

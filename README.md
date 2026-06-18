@@ -117,17 +117,36 @@ ocicl install alexandria       # downloads into ./systems/ and records ./systems
 
 This populates a `systems/` subdirectory and a `systems.csv` manifest inside the project.
 
-**Point ASDF at the tree from `.clamigarc`.** CL-Amiga reads `~/.clamigarc` (Amiga: `S:.clamigarc`) at startup, so add an `asdf:initialize-source-registry` form there to register the project's `systems/` directory as a search tree:
+**Point ASDF at the tree from `.clamigarc`.** CL-Amiga reads `~/.clamigarc` (Amiga: `S:.clamigarc`) at startup, so add an `asdf:initialize-source-registry` form there to register the project's `systems/` directory as a search tree. ASDF requires `:tree`/`:directory` pathnames to be **absolute**, so merge the relative subdirectory against `*default-pathname-defaults*` (seeded with the current working directory) rather than passing a bare relative `#P"systems/"`:
 
 ```lisp
 (require "asdf")
 (asdf:initialize-source-registry
-  '(:source-registry
-    (:tree #P"my-project/systems/")
+  `(:source-registry
+    (:tree ,(merge-pathnames "systems/" *default-pathname-defaults*))
     :inherit-configuration))
 ```
 
-After that, `(asdf:load-system "alexandria")` resolves against the `ocicl`-installed copy. Use an absolute path (or several `:tree` entries) if you work across multiple project directories. Because this is plain ASDF, the CL-Amiga library forks listed below still apply — clone any needed `*-clamiga.lisp` fork into a directory covered by the source registry so it takes precedence over the stock system.
+(Note the backquote and `,` — the form is built with a computed absolute pathname, not quoted literally.) If the project doesn't live at the directory clamiga is launched from, use the `:home` token (resolved against your home directory regardless of the cwd) or a plain absolute pathname instead:
+
+```lisp
+(asdf:initialize-source-registry
+  '(:source-registry
+    (:tree (:home "my-project/systems/"))
+    :inherit-configuration))
+```
+
+`ocicl` sometimes vendors into `ocicl/` rather than `systems/`; list both as separate `:tree` entries (earlier entries win on name clashes) so either layout is picked up:
+
+```lisp
+(asdf:initialize-source-registry
+  `(:source-registry
+    (:tree ,(merge-pathnames "systems/" *default-pathname-defaults*))
+    (:tree ,(merge-pathnames "ocicl/"   *default-pathname-defaults*))
+    :inherit-configuration))
+```
+
+After that, `(asdf:load-system "alexandria")` resolves against the `ocicl`-installed copy. Because this is plain ASDF, the CL-Amiga library forks listed below still apply — clone any needed `*-clamiga.lisp` fork into a directory covered by the source registry so it takes precedence over the stock system.
 
 > CL-Amiga does not yet run the `ocicl` fetcher natively (that needs an on-Amiga OCI-registry client); install on the host and copy or share the `systems/` tree to the Amiga side.
 
