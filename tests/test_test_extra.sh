@@ -114,6 +114,63 @@ check "exit_zero_when_all_pass" "0" "$([ "$ec" -eq 0 ] && echo 0 || echo 1)"
 check "grand_total_header_present" "=== GRAND TOTAL ===" \
   "$(echo "$output" | grep "^=== GRAND TOTAL ===$")"
 
+# ---- Stale-FASL-cache guard (binary fingerprint) ----
+# The guard lives in the runner's normal path, so drive the runner with a fake
+# clamiga and throwaway cache/log dirs (env overrides) and assert it wipes the
+# ASDF FASL cache exactly when the clamiga binary's contents change — and leaves
+# a warm cache untouched when the binary is unchanged.
+
+REPO_ROOT=$(cd "$SCRIPT_DIR/.." && pwd)
+guard_cache=$(mktemp -d)
+guard_log=$(mktemp -d)
+guard_bindir=$(mktemp -d)
+guard_bin="$guard_bindir/clamiga"
+trap 'rm -rf "$fixture_fail" "$fixture_pass" "$guard_cache" "$guard_log" "$guard_bindir"' EXIT
+
+printf '#!/bin/sh\nexit 0\n' > "$guard_bin"
+chmod +x "$guard_bin"
+
+run_guard() {
+  ( cd "$REPO_ROOT" && \
+    CLAMIGA="$guard_bin" \
+    LOGDIR="$guard_log" \
+    CLAMIGA_FASL_CACHE_PARENT="$guard_cache" \
+    sh "$RUNNER" >/dev/null 2>&1 )
+}
+
+# The runner keeps its per-script caches under <cache_parent>/clamiga-test-extra
+# and records the binary fingerprint there.
+guard_perscript="$guard_cache/clamiga-test-extra"
+
+seed_marker() {
+  mkdir -p "$guard_perscript/somescript"
+  : > "$guard_perscript/somescript/stale.fasl"
+}
+
+marker_state() {
+  [ -e "$guard_perscript/somescript/stale.fasl" ] && echo present || echo gone
+}
+
+# First run: a populated cache exists but no binid is recorded yet -> wipe it
+# (the binary that produced those FASLs is unknown / presumed different).
+seed_marker
+run_guard
+check "guard_wipes_cache_when_binid_unknown" "gone" "$(marker_state)"
+check "guard_records_binid" "yes" \
+  "$([ -f "$guard_perscript/.clamiga-binid" ] && echo yes || echo no)"
+
+# Second run, same binary, cache repopulated: fingerprint matches -> keep warm.
+seed_marker
+run_guard
+check "guard_keeps_cache_when_binary_unchanged" "present" "$(marker_state)"
+
+# Third run, binary contents changed: fingerprint differs -> wipe.
+printf '#!/bin/sh\necho changed\nexit 0\n' > "$guard_bin"
+chmod +x "$guard_bin"
+seed_marker
+run_guard
+check "guard_wipes_cache_when_binary_changes" "gone" "$(marker_state)"
+
 # ---- Summary ----
 
 echo ""

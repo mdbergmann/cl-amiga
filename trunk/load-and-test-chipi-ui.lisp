@@ -3,7 +3,7 @@
 ;; chipi-ui depends on chipi-api (REST/SSE web API) and clog (websocket GUI),
 ;; so this script is the union of the chipi-api and clog loaders:
 ;;   * push :hunchentoot-no-ssl + :websocket-driver-no-ssl BEFORE any cl+ssl
-;;     .asd is read (clog is server-only; see load-and-test-clog.lisp)
+;;     .asd is read (clog is server-only)
 ;;   * load-libs-ql.lisp sets up the dist + local-projects searchers and the
 ;;     :drakma-no-ssl feature; ENSURE-QL-LIB fetches releases on a cold cache
 ;;

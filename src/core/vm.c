@@ -314,6 +314,64 @@ static CL_Obj call_builtin(CL_Function *func, CL_Obj *args, int nargs);
 static CL_Obj cl_vm_run(int base_fp, int base_nlx);
 void vm_trace_dump(void);
 
+/* Forward decls for the backtrace helpers used by the overflow summary
+ * (defined later in this file). */
+static CL_Obj get_func_name(CL_Obj func_obj);
+static int lookup_source_line(CL_Bytecode *bc, uint32_t ip);
+static CL_Bytecode *get_frame_bytecode(CL_Frame *f);
+
+/* Summarize the NLX stack at an overflow.  Compiled in unconditionally because
+ * an NLX overflow is fatal and we want this diagnostic in the field, not just
+ * a bare "NLX stack overflow" error.  An overflow almost always means a frame
+ * is being *leaked* (pushed but never popped) on some hot path, so we print:
+ *  - a per-type histogram (which kind of frame is piling up),
+ *  - the most-repeated tag among the top frames (the leaking construct), and
+ *  - the function that owns the leaking frame (file:line), which points
+ *    straight at the offending Lisp form. */
+void cl_nlx_overflow_summary(const char *where)
+{
+    int k;
+    int counts[4] = {0,0,0,0};
+    unsigned top_tag = 0; int top_tag_cnt = 0;
+    int window = cl_nlx_top < 64 ? cl_nlx_top : 64;
+
+    fprintf(stderr, "[NLX-OVERFLOW] %s top=%d max=%d\n",
+            where, cl_nlx_top, CL_MAX_NLX_FRAMES);
+    for (k = 0; k < cl_nlx_top && k < CL_MAX_NLX_FRAMES; k++) {
+        int t = cl_nlx_stack[k].type;
+        if (t >= 0 && t < 4) counts[t]++;
+    }
+    fprintf(stderr, "[NLX-OVERFLOW] by type: CATCH=%d UWPROT=%d BLOCK=%d TAGBODY=%d\n",
+            counts[0], counts[1], counts[2], counts[3]);
+    /* Most-repeated tag among the top `window` frames = the leak signature. */
+    for (k = cl_nlx_top - 1; k >= 0 && k > cl_nlx_top - window - 1; k--) {
+        unsigned tg = (unsigned)cl_nlx_stack[k].tag;
+        int cnt = 0, j;
+        for (j = cl_nlx_top - 1; j >= 0; j--)
+            if ((unsigned)cl_nlx_stack[j].tag == tg) cnt++;
+        if (cnt > top_tag_cnt) { top_tag_cnt = cnt; top_tag = tg; }
+    }
+    fprintf(stderr, "[NLX-OVERFLOW] most-repeated tag=0x%08x count=%d\n",
+            top_tag, top_tag_cnt);
+    /* Function owning the leaking frame (vm_fp of the top NLX entry). */
+    if (cl_nlx_top > 0) {
+        int lf = cl_nlx_stack[cl_nlx_top - 1].vm_fp - 1;
+        if (lf >= 0 && lf < cl_vm.fp) {
+            CL_Frame *f = &cl_vm.frames[lf];
+            CL_Obj nm = get_func_name(f->bytecode);
+            CL_Bytecode *bc = get_frame_bytecode(f);
+            int line = bc ? lookup_source_line(bc, f->ip) : 0;
+            const char *file = bc ? bc->source_file : NULL;
+            fprintf(stderr, "[NLX-OVERFLOW] leaking frame[%d] func=%s file=%s line=%d\n",
+                    lf, CL_SYMBOL_P(nm) ? cl_symbol_name(nm) : "<anon>",
+                    file ? file : "?", line);
+        }
+    }
+    cl_capture_backtrace();
+    fprintf(stderr, "[NLX-OVERFLOW] backtrace:\n%s", cl_backtrace_buf);
+    fflush(stderr);
+}
+
 #ifdef DEBUG_NLX
 /* Dump the current NLX (non-local-exit) frame stack to stderr.  Built only
  * with -DDEBUG_NLX; used to diagnose platform-specific setjmp/longjmp
@@ -2759,8 +2817,10 @@ static CL_Obj cl_vm_run(int base_fp, int base_nlx)
             CL_Obj block_tag = constants[tag_idx];
             CL_NLXFrame *nlx;
 
-            if (cl_nlx_top >= CL_MAX_NLX_FRAMES)
-                cl_error(CL_ERR_OVERFLOW, "NLX stack overflow");
+            if (cl_nlx_top >= CL_MAX_NLX_FRAMES) {
+                    cl_nlx_overflow_summary("vm");
+                    cl_error(CL_ERR_OVERFLOW, "NLX stack overflow");
+                }
 
             nlx = &cl_nlx_stack[cl_nlx_top];
             nlx->type = CL_NLX_BLOCK;
@@ -2912,8 +2972,10 @@ static CL_Obj cl_vm_run(int base_fp, int base_nlx)
             CL_Obj tagbody_id = constants[id_idx];
             CL_NLXFrame *nlx;
 
-            if (cl_nlx_top >= CL_MAX_NLX_FRAMES)
-                cl_error(CL_ERR_OVERFLOW, "NLX stack overflow");
+            if (cl_nlx_top >= CL_MAX_NLX_FRAMES) {
+                    cl_nlx_overflow_summary("vm");
+                    cl_error(CL_ERR_OVERFLOW, "NLX stack overflow");
+                }
 
             nlx = &cl_nlx_stack[cl_nlx_top];
             nlx->type = CL_NLX_TAGBODY;
@@ -3395,8 +3457,10 @@ static CL_Obj cl_vm_run(int base_fp, int base_nlx)
             CL_Obj catch_tag = cl_vm_pop();
             CL_NLXFrame *nlx;
 
-            if (cl_nlx_top >= CL_MAX_NLX_FRAMES)
-                cl_error(CL_ERR_OVERFLOW, "NLX stack overflow");
+            if (cl_nlx_top >= CL_MAX_NLX_FRAMES) {
+                    cl_nlx_overflow_summary("vm");
+                    cl_error(CL_ERR_OVERFLOW, "NLX stack overflow");
+                }
 
             nlx = &cl_nlx_stack[cl_nlx_top];
             nlx->type = CL_NLX_CATCH;
@@ -3482,8 +3546,10 @@ static CL_Obj cl_vm_run(int base_fp, int base_nlx)
             int32_t uwp_offset = read_i32(code, &ip);
             CL_NLXFrame *nlx;
 
-            if (cl_nlx_top >= CL_MAX_NLX_FRAMES)
-                cl_error(CL_ERR_OVERFLOW, "NLX stack overflow");
+            if (cl_nlx_top >= CL_MAX_NLX_FRAMES) {
+                    cl_nlx_overflow_summary("vm");
+                    cl_error(CL_ERR_OVERFLOW, "NLX stack overflow");
+                }
 
             nlx = &cl_nlx_stack[cl_nlx_top];
             nlx->type = CL_NLX_UWPROT;

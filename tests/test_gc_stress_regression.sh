@@ -1248,16 +1248,25 @@ check_absent   "no bad-callee corruption from chunked quasiquote under stress"  
 # function name, producing a garbled name or a crash under stress.
 # Fix: snapshot func's name into a stack char buffer before the argument loop so
 # the error message uses stable stack data regardless of subsequent compaction.
+#
+# Note: this is necessarily a *compile-time* diagnostic, not a runtime
+# condition.  OP_CALL/OP_TAILCALL encode the argument count in a single byte,
+# so a >255-arg call cannot be represented in bytecode at all -- there is no
+# runtime call to signal a program-error from.  The compiler therefore rejects
+# the form while compiling it, which happens before any enclosing HANDLER-CASE
+# runtime handler is installed (the whole top-level form is compiled, then
+# run).  So we check the top-level error output directly rather than wrapping
+# in HANDLER-CASE -- the regression we guard against is a garbled/stale
+# function NAME in that message under compaction, which this still exercises.
 {
     printf '(defun nargs255-target (&rest args) (length args))\n'
-    printf '(handler-case\n  (nargs255-target '
+    printf '(nargs255-target '
     i=0
     while [ "$i" -lt 260 ]; do printf '(make-list 1) '; i=$((i + 1)); done
     printf ')\n'
-    printf '  (error (e) (format t "NARGS255:~~a~~%%" (format nil "~~a" e))))\n'
 } > "$WORK/nargs255.lisp"
 out=$(run_stress "$WORK/nargs255.lisp")
-check_contains "nargs>255 error names correct function under GC stress" "NARGS255:Too many arguments in call to NARGS255-TARGET" "$out"
+check_contains "nargs>255 error names correct function under GC stress" "Too many arguments in call to NARGS255-TARGET (260, max 255)" "$out"
 check_absent   "no crash or garbage name in nargs>255 error path"        "type 0\|corrupted\|Undefined\|Unbound" "$out"
 
 # --- Case: scanner registers symbol-macrolet bindings before speculative
@@ -1321,6 +1330,31 @@ EOF
 out=$(run_stress "$WORK/cat.lisp")
 check_contains "concatenate compound byte-array result survives GC stress" "CAT:65:66:0:2" "$out"
 check_contains "concatenate compound char-array result survives GC stress" "CATS:abcd" "$out"
+
+# --- Case: RETURN-FROM over an intervening CATCH promotes BLOCK to NLX -------
+# Bug: a local RETURN-FROM that jumps over an intervening CATCH/HANDLER-BIND
+# took the cheap local-jump path, skipping OP_UNCATCH/OP_HANDLER_POP and
+# leaking the catch/handler frame on every NORMAL exit — overflowing the NLX
+# stack on hot paths (handler-case expands to
+# (block B (catch 'T (return-from B (handler-bind ... form))))).
+# Fix: nlx_scan promotes such a block to the NLX path; the promotion decision
+# macroexpands the body (allocates), so the scan's `body`/`tag` cursors must
+# survive compaction.  Compile to a clean FASL, then load+run under GC stress.
+cat > "$WORK/nlxcatch.lisp" <<'EOF'
+(defun nlxc-loop (n)
+  (let ((acc 0))
+    (dotimes (i n acc)
+      (setq acc (handler-case (block blk (catch 'tg (return-from blk 1)))
+                  (error () -1))))))
+(format t "NLXC:~a~%" (nlxc-loop 5000))
+(format t "NLXCMV:~a~%"
+  (multiple-value-list
+    (dotimes (i 3000 (handler-case (values 1 2 3) (error () nil))))))
+EOF
+out=$(run_stress "$WORK/nlxcatch.lisp")
+check_contains "return-from over catch: no NLX leak under GC stress" "NLXC:1" "$out"
+check_contains "handler-case mv through promoted block under GC stress" "NLXCMV:(1 2 3)" "$out"
+check_absent   "no NLX overflow from leaked catch frame" "NLX stack overflow" "$out"
 
 echo ""
 echo "$passed passed, $failed failed, $total total"

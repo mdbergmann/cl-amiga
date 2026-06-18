@@ -488,6 +488,24 @@
 (check "catch nested outer" 42 (catch 'outer (catch 'inner (throw 'outer 42))))
 (check "throw no value" nil (catch 'done (throw 'done)))
 
+; Regression: a local RETURN-FROM jumping over an intervening CATCH (or
+; HANDLER-BIND) must not take the cheap local-jump path — that skips the
+; OP_UNCATCH/OP_HANDLER_POP and strands the frame on the NLX stack on every
+; NORMAL exit.  Looping past CL_MAX_NLX_FRAMES (2048) overflowed it; this is
+; how handler-case's (block B (catch 'T (return-from B ...))) leaked one CATCH
+; frame per call (cl+ssl reading an SSL stream byte-by-byte).
+(defun rf-over-catch-t (n)
+  (let ((acc 0))
+    (dotimes (i n acc)
+      (setq acc (block blk (catch 'tg (return-from blk 1)))))))
+(check "return-from over catch no nlx leak" 1 (rf-over-catch-t 5000))
+(check "handler-case normal path no nlx leak" 7
+  (let ((acc 0)) (dotimes (i 5000 acc)
+    (setq acc (handler-case (+ i 1) (error () -1)))) 7))
+(check "handler-case mv through block" '(1 2 3)
+  (multiple-value-list
+    (dotimes (i 3000 (handler-case (values 1 2 3) (error () nil))))))
+
 ; --- Phase 4 Tier 2: unwind-protect ---
 (check "uwp normal" '(42 t) (let ((log nil)) (let ((r (unwind-protect 42 (setq log t)))) (list r log))))
 (check "uwp throw cleanup" t (let ((cleanup nil)) (catch 'done (unwind-protect (throw 'done 1) (setq cleanup t))) cleanup))
@@ -3153,6 +3171,15 @@
 (check "loop destr dotted" '((x 1) (y 2) (z 3)) (loop for (a . b) in '((x . 1) (y . 2) (z . 3)) collect (list a b)))
 (check "loop destr nested" '(6 15) (loop for (a (b c)) in '((1 (2 3)) (4 (5 6))) collect (+ a b c)))
 (check "loop destr on" '((1 (2 3)) (2 (3)) (3 nil)) (loop for (a . b) on '(1 2 3) collect (list a b)))
+; CLHS 6.1.2.1.3: FOR/ON tests the end of the list "as if by using atom" (NOT
+; endp), so ON over a non-list atom or the dotted tail of an improper list
+; terminates instead of signalling a TYPE-ERROR.  FOR/IN keeps endp semantics.
+(check "loop on non-list atom" nil (loop for x on 'foo collect x))
+(check "loop destr on non-list atom" nil (loop for (k v) on 'foo by #'cddr collect k))
+(check "loop destr on hash-table" nil (loop for (k v) on (make-hash-table) by #'cddr collect k))
+(check "loop on dotted list stops at atom" '(1 2) (loop for x on '(1 2 . 3) collect (car x)))
+(check "loop destr on plist by cddr" '((:a 1) (:b 2)) (loop for (k v) on '(:a 1 :b 2) by #'cddr collect (list k v)))
+(check "loop in non-list atom still errors" :caught (handler-case (loop for x in 'foo collect x) (type-error () :caught)))
 
 ; --- Printer control variables (Steps 1-2) ---
 ; Default values per CL spec
