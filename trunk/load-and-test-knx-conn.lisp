@@ -42,26 +42,16 @@
 (ensure-ql-lib :fiveam)
 (ensure-ql-lib :cl-mock)
 
-;; Load knx-conn (and its sento + log4cl deps) before running the tests so the
-;; log4cl warm-cache workaround below can run against a loaded log4cl.
+;; Load knx-conn (and its sento + log4cl deps) before running the tests.
+;;
+;; On a WARM FASL cache, sento is loaded from FASL rather than recompiled, so
+;; log4cl's logger objects — embedded as literal constants in the compiled
+;; (log:debug ...) statements — are reconstructed via log4cl's MAKE-LOAD-FORM
+;; method (it returns (%get-logger ...), which re-registers the logger in the
+;; live tree).  clamiga's FASL writer now honors MAKE-LOAD-FORM (CLHS 7.6), so
+;; the parent (SENTO) logger is registered on load and the tests'
+;; (log:config '(sento) :warn) succeeds without any pre-creation workaround.
 (asdf:load-system :knx-conn)
-
-;; --- log4cl warm-cache workaround ---
-;; On a COLD FASL cache sento is compiled in this image, and macroexpanding its
-;; (log:debug ...) forms creates the log4cl logger objects (including the parent
-;; (SENTO) category) in the live logger tree, where they persist for the run.
-;; On a WARM cache sento is loaded from FASL instead: log4cl embeds those logger
-;; objects as literal constants in the compiled log statements and relies on
-;; MAKE-LOAD-FORM to reconstruct them at load time — but clamiga's FASL writer
-;; does not yet honor MAKE-LOAD-FORM, so the (SENTO) logger is never registered.
-;; knx-client-test.lisp / knx-connect-test.lisp then call
-;;   (log:config '(sento) :warn)
-;; which log4cl rejects with "Logger named (SENTO) not found".  Pre-create the
-;; (SENTO) logger here so that call succeeds; harmless on a cold cache where it
-;; already exists.  read-from-string defers reading the LOG4CL:* symbols until
-;; runtime, after log4cl has been loaded above.
-(ignore-errors
-  (eval (read-from-string "(log4cl:make-logger '(sento))")))
 
 (format t "~%--- Running (asdf:test-system :knx-conn) ---~%")
 (asdf:test-system :knx-conn)
