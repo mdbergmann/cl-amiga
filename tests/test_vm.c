@@ -9357,9 +9357,10 @@ TEST(eval_eval_self_evaluating_opaque)
 
 TEST(eval_ccase_ctypecase)
 {
-    /* CCASE / CTYPECASE: continuable variants of ECASE / ETYPECASE.  We
-     * approximate as their non-continuable cousins (no STORE-VALUE restart).
-     * Required for lparallel's central scheduler. */
+    /* CCASE / CTYPECASE: continuable variants of ECASE / ETYPECASE with a
+     * STORE-VALUE restart (see test_condition.c for the retry coverage).  They
+     * are also called with a bare, non-place keyFORM (literal / quote), as here
+     * and in lparallel's central scheduler — that must still compile and match. */
     ASSERT_STR_EQ(eval_print("(ccase 'b ((a) 1) ((b) 2) ((c) 3))"), "2");
     ASSERT_STR_EQ(eval_print("(ccase 5 ((1) :one) ((2 5) :two-or-five))"),
                   ":TWO-OR-FIVE");

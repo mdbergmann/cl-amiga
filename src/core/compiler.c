@@ -1211,16 +1211,22 @@ top:
         return;
     }
 
-    /* (lambda params . body) — body is at increased closure depth */
+    /* (lambda params . body) — body is at increased closure depth.
+     * GC SAFETY: protect the `body` cursor across the recursive scan (which
+     * macroexpands → allocates → can compact) so the advancing cl_cdr does not
+     * follow a stale offset.  Same fix applies to every body-walking handler
+     * below. */
     if (head == SYM_LAMBDA) {
         CL_Obj body;
         if (!CL_CONS_P(rest)) return; /* malformed lambda */
         body = cl_cdr(rest); /* skip param list */
+        CL_GC_PROTECT(body);
         while (CL_CONS_P(body)) {
             scan_body_for_boxing(cl_car(body), vars, n_vars,
                                  mutated, captured, closure_depth + 1);
             body = cl_cdr(body);
         }
+        CL_GC_UNPROTECT(1);
         return;
     }
 
@@ -1229,11 +1235,13 @@ top:
         CL_Obj body;
         if (!CL_CONS_P(rest) || !CL_CONS_P(cl_cdr(rest))) return;
         body = cl_cdr(cl_cdr(rest)); /* skip name and param list */
+        CL_GC_PROTECT(body);
         while (CL_CONS_P(body)) {
             scan_body_for_boxing(cl_car(body), vars, n_vars,
                                  mutated, captured, closure_depth + 1);
             body = cl_cdr(body);
         }
+        CL_GC_UNPROTECT(1);
         return;
     }
 
@@ -1246,26 +1254,74 @@ top:
      * not evaluable forms; a key like TUPLE could be a macro name). */
     if (head == SYM_CASE || head == SYM_ECASE ||
         head == SYM_TYPECASE || head == SYM_ETYPECASE) {
-        CL_Obj clauses;
+        CL_Obj keyform, clauses;
         if (!CL_CONS_P(rest)) return;
+        /* Read keyform and clauses up front, then protect: the keyform scan
+         * below can compact, which would otherwise stale a `cl_cdr(rest)` read
+         * afterwards (rest itself is an unprotected local). */
+        keyform = cl_car(rest);
+        clauses = cl_cdr(rest);
+        CL_GC_PROTECT(keyform);
+        CL_GC_PROTECT(clauses);
         /* Scan keyform */
-        scan_body_for_boxing(cl_car(rest), vars, n_vars,
+        scan_body_for_boxing(keyform, vars, n_vars,
                              mutated, captured, closure_depth);
         /* Scan clause bodies (skip keys) */
-        clauses = cl_cdr(rest);
         while (CL_CONS_P(clauses)) {
             CL_Obj clause = cl_car(clauses);
             if (CL_CONS_P(clause)) {
                 /* Skip key (car), scan body forms (cdr) */
                 CL_Obj cbody = cl_cdr(clause);
+                CL_GC_PROTECT(cbody);
                 while (CL_CONS_P(cbody)) {
                     scan_body_for_boxing(cl_car(cbody), vars, n_vars,
                                          mutated, captured, closure_depth);
                     cbody = cl_cdr(cbody);
                 }
+                CL_GC_UNPROTECT(1);
             }
             clauses = cl_cdr(clauses);
         }
+        CL_GC_UNPROTECT(2);
+        return;
+    }
+
+    /* (restart-case main-form (name (params...) [options...] body...) ...)
+     * compile_restart_case turns every clause into a (lambda (params...) body)
+     * closure that runs at the catch landing.  A clause body that mutates an
+     * enclosing variable — e.g. a STORE-VALUE restart doing (setf place new),
+     * as CCASE/CTYPECASE require — therefore captures that variable through a
+     * closure, so it must be scanned at closure_depth + 1.  Without this the
+     * variable is marked mutated but not captured, so it is never boxed and the
+     * handler's setf updates a private copy that the main form can't see. */
+    if (head == SYM_RESTART_CASE) {
+        CL_Obj main_form, clauses;
+        if (!CL_CONS_P(rest)) return;
+        main_form = cl_car(rest);
+        clauses = cl_cdr(rest);
+        CL_GC_PROTECT(main_form);
+        CL_GC_PROTECT(clauses);
+        scan_body_for_boxing(main_form, vars, n_vars,
+                             mutated, captured, closure_depth);
+        while (CL_CONS_P(clauses)) {
+            CL_Obj clause = cl_car(clauses);
+            /* Skip the restart name (car) and param list (cadr); scan the
+             * remaining options + body forms as closure bodies (depth + 1).
+             * Scanning the :report/:interactive/:test option values at the
+             * raised depth is also correct — they too become closures. */
+            if (CL_CONS_P(clause) && CL_CONS_P(cl_cdr(clause))) {
+                CL_Obj cbody = cl_cdr(cl_cdr(clause));
+                CL_GC_PROTECT(cbody);
+                while (CL_CONS_P(cbody)) {
+                    scan_body_for_boxing(cl_car(cbody), vars, n_vars,
+                                         mutated, captured, closure_depth + 1);
+                    cbody = cl_cdr(cbody);
+                }
+                CL_GC_UNPROTECT(1);
+            }
+            clauses = cl_cdr(clauses);
+        }
+        CL_GC_UNPROTECT(2);
         return;
     }
 
@@ -1284,11 +1340,13 @@ top:
         CL_Obj body;
         if (!CL_CONS_P(rest)) return;
         body = cl_cdr(rest); /* skip the bindings list */
+        CL_GC_PROTECT(body);
         while (CL_CONS_P(body)) {
             scan_body_for_boxing(cl_car(body), vars, n_vars,
                                  mutated, captured, closure_depth);
             body = cl_cdr(body);
         }
+        CL_GC_UNPROTECT(1);
         return;
     }
 
@@ -1347,17 +1405,21 @@ top:
         if (!CL_CONS_P(rest)) return;
         defs = cl_car(rest);
         body = cl_cdr(rest);
+        CL_GC_PROTECT(defs);
+        CL_GC_PROTECT(body);
         /* Scan each function definition body at increased depth */
         while (CL_CONS_P(defs)) {
             CL_Obj def = cl_car(defs);
             CL_Obj fbody;
             if (!CL_CONS_P(def) || !CL_CONS_P(cl_cdr(def))) { defs = cl_cdr(defs); continue; }
             fbody = cl_cdr(cl_cdr(def)); /* skip name and params */
+            CL_GC_PROTECT(fbody);
             while (CL_CONS_P(fbody)) {
                 scan_body_for_boxing(cl_car(fbody), vars, n_vars,
                                      mutated, captured, closure_depth + 1);
                 fbody = cl_cdr(fbody);
             }
+            CL_GC_UNPROTECT(1);
             defs = cl_cdr(defs);
         }
         /* Scan outer body at current depth */
@@ -1366,6 +1428,7 @@ top:
                                  mutated, captured, closure_depth);
             body = cl_cdr(body);
         }
+        CL_GC_UNPROTECT(2);
         return;
     }
 
@@ -1379,6 +1442,14 @@ top:
         if (!CL_CONS_P(rest)) return;
         bindings = cl_car(rest);
         body = cl_cdr(rest);
+        /* GC SAFETY: the recursive scan_body_for_boxing below macroexpands and
+         * therefore allocates/compacts; protect the `bindings` and `body`
+         * cursors so the cl_cdr that advances them does not follow a stale
+         * pre-compaction offset (observed as "CDR: argument is not of type
+         * LIST" at compile time when a LET body form is a heavily-expanding
+         * macro under heap pressure). */
+        CL_GC_PROTECT(bindings);
+        CL_GC_PROTECT(body);
         /* Scan value forms only (skip var names) */
         while (CL_CONS_P(bindings)) {
             CL_Obj clause = cl_car(bindings);
@@ -1396,6 +1467,7 @@ top:
                                  mutated, captured, closure_depth);
             body = cl_cdr(body);
         }
+        CL_GC_UNPROTECT(2);
         return;
     }
 
@@ -1406,35 +1478,43 @@ top:
      * registered macro (e.g. fiveam's TEST vs a `(test)` pattern), which
      * can invoke the expander with wrong arity and crash the VM. */
     if (head == SYM_DESTRUCTURING_BIND) {
-        CL_Obj body;
+        CL_Obj value_form, body;
         if (!CL_CONS_P(rest) || !CL_CONS_P(cl_cdr(rest))) return;
-        /* Skip pattern (first element of rest) — structural, not evaluated */
-        scan_body_for_boxing(cl_car(cl_cdr(rest)), vars, n_vars,
-                             mutated, captured, closure_depth);
+        /* Read value-form and body up front, then protect: scanning value-form
+         * can compact and otherwise stale a later cl_cdr(rest) for the body. */
+        value_form = cl_car(cl_cdr(rest));   /* skip pattern (structural) */
         body = cl_cdr(cl_cdr(rest));
+        CL_GC_PROTECT(value_form);
+        CL_GC_PROTECT(body);
+        scan_body_for_boxing(value_form, vars, n_vars,
+                             mutated, captured, closure_depth);
         while (CL_CONS_P(body)) {
             scan_body_for_boxing(cl_car(body), vars, n_vars,
                                  mutated, captured, closure_depth);
             body = cl_cdr(body);
         }
+        CL_GC_UNPROTECT(2);
         return;
     }
 
     /* (multiple-value-bind (var...) values-form body...)
      * Same reasoning as let/let*: the var list is not a macro call. */
     if (head == SYM_MULTIPLE_VALUE_BIND) {
-        CL_Obj body;
+        CL_Obj value_form, body;
         if (!CL_CONS_P(rest) || !CL_CONS_P(cl_cdr(rest))) return;
-        /* Scan values-form (second element of rest) */
-        scan_body_for_boxing(cl_car(cl_cdr(rest)), vars, n_vars,
-                             mutated, captured, closure_depth);
-        /* Scan body */
+        value_form = cl_car(cl_cdr(rest));
         body = cl_cdr(cl_cdr(rest));
+        CL_GC_PROTECT(value_form);
+        CL_GC_PROTECT(body);
+        /* Scan values-form, then body */
+        scan_body_for_boxing(value_form, vars, n_vars,
+                             mutated, captured, closure_depth);
         while (CL_CONS_P(body)) {
             scan_body_for_boxing(cl_car(body), vars, n_vars,
                                  mutated, captured, closure_depth);
             body = cl_cdr(body);
         }
+        CL_GC_UNPROTECT(2);
         return;
     }
 
@@ -1449,6 +1529,11 @@ top:
         if (!CL_CONS_P(cl_cdr(rest))) return;
         end_clause = cl_car(cl_cdr(rest));
         body = cl_cdr(cl_cdr(rest));
+        /* Protect all three cursors: the init/step/end/body scans below compact
+         * and would otherwise stale these bare locals (and the `res` cursor). */
+        CL_GC_PROTECT(var_clauses);
+        CL_GC_PROTECT(end_clause);
+        CL_GC_PROTECT(body);
         /* Scan init and step forms (skip var names) */
         while (CL_CONS_P(var_clauses)) {
             CL_Obj clause = cl_car(var_clauses);
@@ -1465,14 +1550,16 @@ top:
         }
         /* Scan end-test and result forms */
         if (CL_CONS_P(end_clause)) {
+            CL_Obj res = cl_cdr(end_clause);
+            CL_GC_PROTECT(res);   /* protect before the end-test scan compacts */
             scan_body_for_boxing(cl_car(end_clause), vars, n_vars,
                                  mutated, captured, closure_depth);
-            CL_Obj res = cl_cdr(end_clause);
             while (CL_CONS_P(res)) {
                 scan_body_for_boxing(cl_car(res), vars, n_vars,
                                      mutated, captured, closure_depth);
                 res = cl_cdr(res);
             }
+            CL_GC_UNPROTECT(1);
         }
         /* Scan body */
         while (CL_CONS_P(body)) {
@@ -1480,6 +1567,7 @@ top:
                                  mutated, captured, closure_depth);
             body = cl_cdr(body);
         }
+        CL_GC_UNPROTECT(3); /* body, end_clause, var_clauses */
         return;
     }
 

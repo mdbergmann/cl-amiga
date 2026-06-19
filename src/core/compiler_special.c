@@ -2706,6 +2706,18 @@ void compile_restart_case(CL_Compiler *c, CL_Obj form)
 
     c->in_tail = 0;
 
+    /* GC SAFETY: protect main_form and clauses *before* the catch-frame setup
+     * below.  cl_cons (catch tag) and cl_emit_const both allocate and can
+     * trigger a compacting GC, which would leave these freshly-read offsets
+     * stale.  This bites when restart-case arrives via a macro expansion (a
+     * fresh arena tree only reachable through the driver's protected `expr`,
+     * not through `form` here) under heap pressure: a later cl_cdr then walks
+     * pre-compaction garbage ("CDR: argument is not of type LIST" at compile
+     * time).  Protecting up front (rather than at 2731 as before) closes the
+     * window. */
+    CL_GC_PROTECT(main_form);
+    CL_GC_PROTECT(clauses);
+
     /* Reserve a local slot for the dispatch cons at the catch landing.
      * Must be allocated before main_form compiles (same pattern as
      * compile_unwind_protect) so nested forms don't reuse this index. */
@@ -2717,6 +2729,7 @@ void compile_restart_case(CL_Compiler *c, CL_Obj form)
 
     /* Generate unique catch tag (a fresh cons cell) */
     catch_tag = cl_cons(CL_NIL, CL_NIL);
+    CL_GC_PROTECT(catch_tag);  /* used in every iteration after compile_expr */
 
     /* Set up catch frame with the unique tag */
     cl_emit_const(c, catch_tag);  /* push tag */
@@ -2725,12 +2738,10 @@ void compile_restart_case(CL_Compiler *c, CL_Obj form)
     cl_emit_i32(c, 0);  /* placeholder for landing offset */
 
     /* Push restart bindings: for each clause, compile lambda + push tag + OP_RESTART_PUSH.
-     * Protect the cursor and catch_tag — compile_expr/cl_cons inside the loop can
-     * compact, making bare locals stale.  Re-read restart_name after allocating calls. */
+     * Protect the cursor — compile_expr/cl_cons inside the loop can compact,
+     * making bare locals stale.  Re-read restart_name after allocating calls. */
     cl_iter = clauses;
     CL_GC_PROTECT(cl_iter);    /* loop cursor */
-    CL_GC_PROTECT(catch_tag);  /* used in every iteration after compile_expr */
-    CL_GC_PROTECT(main_form);  /* used after the loop; compaction inside loop stales it */
     while (!CL_NULL_P(cl_iter)) {
         CL_Obj clause = cl_car(cl_iter);
         CL_Obj params = cl_car(cl_cdr(clause));
@@ -2772,7 +2783,7 @@ void compile_restart_case(CL_Compiler *c, CL_Obj form)
         count++;
         cl_iter = cl_cdr(cl_iter);
     }
-    CL_GC_UNPROTECT(3); /* main_form, catch_tag, cl_iter */
+    CL_GC_UNPROTECT(4); /* cl_iter, catch_tag, clauses, main_form */
 
     /* Compile the main form */
     compile_expr(c, main_form);

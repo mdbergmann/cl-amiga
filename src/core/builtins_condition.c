@@ -1566,6 +1566,45 @@ static CL_Obj bi_muffle_warning(CL_Obj *args, int n)
     return bi_invoke_restart(mw_args, 1);
 }
 
+/* Shared body for STORE-VALUE / USE-VALUE (CLHS 9.1): invoke the innermost
+ * restart named NAME that is applicable to the optional condition, passing
+ * VALUE as its single argument.  If no such restart is established, return NIL
+ * (these functions never error on a missing restart). */
+static CL_Obj invoke_value_restart(CL_Obj name, CL_Obj *args, int n)
+{
+    CL_Obj value = (n >= 1) ? args[0] : CL_NIL;
+    CL_Obj condition = (n >= 2) ? args[1] : CL_NIL;
+    CL_Obj call_args[1];
+    int i;
+    /* restart_applicable can call cl_vm_apply (for :test fns), which may
+     * compact.  Protect all three locals so subsequent iterations see
+     * current arena offsets after any compaction. */
+    CL_GC_PROTECT(value);
+    CL_GC_PROTECT(name);
+    CL_GC_PROTECT(condition);
+    for (i = cl_restart_top - 1; i >= cl_restart_floor; i--) {
+        if (cl_restart_stack[i].name == name && restart_applicable(i, condition)) {
+            call_args[0] = value;
+            CL_GC_UNPROTECT(3);
+            return invoke_restart_at_binding(i, call_args, 1);
+        }
+    }
+    CL_GC_UNPROTECT(3);
+    return CL_NIL;
+}
+
+/* (store-value value &optional condition) */
+static CL_Obj bi_store_value(CL_Obj *args, int n)
+{
+    return invoke_value_restart(SYM_STORE_VALUE, args, n);
+}
+
+/* (use-value value &optional condition) */
+static CL_Obj bi_use_value(CL_Obj *args, int n)
+{
+    return invoke_value_restart(SYM_USE_VALUE, args, n);
+}
+
 /* --- Registration --- */
 
 void cl_builtins_condition_init(void)
@@ -1612,4 +1651,11 @@ void cl_builtins_condition_init(void)
     defun("ABORT", bi_abort, 0, 1);
     defun("CONTINUE", bi_continue_restart, 0, 1);
     defun("MUFFLE-WARNING", bi_muffle_warning, 0, 1);
+    defun("STORE-VALUE", bi_store_value, 1, 2);
+    defun("USE-VALUE", bi_use_value, 1, 2);
+    /* Register restart-name globals as GC roots so compaction forwards them;
+     * invoke_value_restart compares cl_restart_stack[i].name (GC-forwarded)
+     * against these, so both sides must track through compaction. */
+    cl_gc_register_root(&SYM_STORE_VALUE);
+    cl_gc_register_root(&SYM_USE_VALUE);
 }

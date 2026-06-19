@@ -1407,6 +1407,60 @@ out=$(run_stress "$WORK/cat.lisp")
 check_contains "concatenate compound byte-array result survives GC stress" "CAT:65:66:0:2" "$out"
 check_contains "concatenate compound char-array result survives GC stress" "CATS:abcd" "$out"
 
+# --- Case: continuable CCASE STORE-VALUE retry under GC stress ---------------
+# Bug: scan_body_for_boxing did not descend RESTART-CASE clause bodies at
+# closure depth, so a (setf place ...) inside a STORE-VALUE handler — as CCASE/
+# CTYPECASE require — left the variable unboxed; the handler updated a private
+# copy and the loop re-read the stale value, retrying forever.
+# Fix: scan restart-case clause bodies at closure_depth + 1 so the mutated var
+# is boxed and shared with the loop's re-test.  Exercise compile under stress.
+cat > "$WORK/ccase.lisp" <<'EOF'
+(format t "CCASE:~a~%"
+  (let ((x 'zzz))
+    (handler-bind ((type-error (lambda (c) (declare (ignore c))
+                                 (store-value 'b))))
+      (ccase x (a 'A) (b 'B) (c 'C)))))
+(format t "CTYPE:~a~%"
+  (let ((x 'sym))
+    (handler-bind ((type-error (lambda (c) (declare (ignore c))
+                                 (store-value 42))))
+      (ctypecase x (string 's) (integer 'i)))))
+EOF
+out=$(run_stress "$WORK/ccase.lisp")
+check_contains "ccase store-value retry survives GC stress"      "CCASE:B" "$out"
+check_contains "ctypecase store-value retry survives GC stress"  "CTYPE:I" "$out"
+check_absent   "no infinite retry / stale-box from ccase under stress" "RUNAWAY\|Unbound" "$out"
+
+# --- Case: macro-expanding-to-RESTART-CASE compiled inside a LET under stress -
+# Two compile-time GC bugs (surfaced by continuable CCASE/CTYPECASE, which are
+# macros expanding to a LET-over-RESTART-CASE):
+#  1. compile_restart_case read main_form/clauses before protecting them, so the
+#     catch-tag cl_cons / cl_emit_const between read and protect could compact
+#     and stale them — fatal when restart-case arrives via a (fresh-arena) macro
+#     expansion.
+#  2. scan_body_for_boxing's LET/CASE/FLET/etc. handlers walked their body with
+#     an unprotected cursor across the recursive scan (which macroexpands and
+#     compacts), so cl_cdr followed a stale offset ("CDR: argument is not of
+#     type LIST" at compile time).
+# Both fire when a LET body is a macro that expands to a restart-case under heap
+# pressure.  Use a fresh user macro so it isn't confused with CCASE itself.
+cat > "$WORK/macro-rcase.lisp" <<'EOF'
+(defmacro mrc (place)
+  (let ((g (gensym)) (b (gensym)) (n (gensym)))
+    `(let ((,g ,place))
+       (block ,b
+         (loop
+           (cond ((eql ,g 5) (return-from ,b 'ok))
+                 (t (restart-case (error "x")
+                      (store-value (,n)
+                        :report "r" :interactive (lambda () (list 1))
+                        (setf ,place ,n) (setq ,g ,n))))))))))
+(format t "MRC:~a~%" (let ((x 5)) (mrc x)))
+EOF
+out=$(run_stress "$WORK/macro-rcase.lisp")
+check_contains "macro->let->restart-case compiles+runs under GC stress" "MRC:OK" "$out"
+check_absent   "no stale-cursor CDR fault compiling restart-case under stress" "not of type LIST\|#<unknown>" "$out"
+
 # --- Case: RETURN-FROM over an intervening CATCH promotes BLOCK to NLX -------
 # Bug: a local RETURN-FROM that jumps over an intervening CATCH/HANDLER-BIND
 # took the cheap local-jump path, skipping OP_UNCATCH/OP_HANDLER_POP and
@@ -1431,6 +1485,33 @@ out=$(run_stress "$WORK/nlxcatch.lisp")
 check_contains "return-from over catch: no NLX leak under GC stress" "NLXC:1" "$out"
 check_contains "handler-case mv through promoted block under GC stress" "NLXCMV:(1 2 3)" "$out"
 check_absent   "no NLX overflow from leaked catch frame" "NLX stack overflow" "$out"
+
+# --- Case: STORE-VALUE / USE-VALUE restart-name comparison survives compaction --
+# Bug: SYM_STORE_VALUE and SYM_USE_VALUE were unregistered C-global CL_Obj values.
+# After GC compaction cl_restart_stack[i].name was forwarded to the new offset, but
+# the C globals still held the pre-compaction offset, so the name comparison in
+# invoke_value_restart always failed — store-value/use-value silently returned NIL.
+# Also: the local `value`/`name`/`condition` copies inside invoke_value_restart were
+# not GC-protected, so any compaction triggered by restart_applicable (for :test fns)
+# left them stale.
+# Fix: cl_gc_register_root(&SYM_STORE_VALUE/USE_VALUE) in cl_builtins_condition_init;
+# CL_GC_PROTECT(value/name/condition) in invoke_value_restart.
+cat > "$WORK/sv.lisp" <<'EOF'
+;; Force enough allocation to trigger compaction under GC stress, then
+;; exercise store-value and use-value restart lookup.
+(defun sv-test ()
+  (let ((pad (make-list 5000)))
+    (declare (ignore pad)))
+  (list
+   (restart-case (store-value 7)
+     (store-value (v) (* v 6)))
+   (restart-case (use-value 21)
+     (use-value (v) (* v 2)))))
+(format t "SV:~a~%" (sv-test))
+EOF
+out=$(run_stress "$WORK/sv.lisp")
+check_contains "store-value finds restart after compaction"          "SV:(42 42)" "$out"
+check_absent   "store-value/use-value did not return NIL post-compact" "SV:(NIL\|SV:NIL" "$out"
 
 echo ""
 echo "$passed passed, $failed failed, $total total"
