@@ -27,6 +27,7 @@
 #include "core/debugger.h"
 #include "core/repl.h"
 #include "platform/platform.h"
+#include <stddef.h>
 #include <string.h>
 
 static void setup(void)
@@ -168,6 +169,86 @@ TEST(backtrace_from_debugger_hook)
     ASSERT(truthy("(member 49 (mapcar #'cdr *hlocals*))"));
 }
 
+/* --- Regression: a long, deep backtrace must not overflow cl_backtrace_buf --- *
+ *
+ * cl_capture_backtrace() formats up to ~20 frames into the fixed 2048-byte
+ * per-thread backtrace_buf, which sits immediately before c_stack_base in the
+ * thread struct.  snprintf returns the length it WOULD have written, so a naive
+ * `pos += snprintf(...)` can push pos past the buffer; the next snprintf then
+ * computes a NEGATIVE (CL_BACKTRACE_BUF_SIZE - pos), which wraps to a huge
+ * size_t and writes "  ... N more frames\n" unbounded past the buffer — smashing
+ * c_stack_base.  A corrupted c_stack_base makes every later cl_check_c_stack
+ * compute a garbage "used" value and signal a bogus "C stack overflow", which is
+ * exactly what broke the ASDF source-registry walk (deep frames, long file
+ * paths) under `make test-extra`.
+ *
+ * This test builds a deep chain of distinct frames with very long source-file
+ * names, signals an error (cl_error captures the backtrace), and then scans the
+ * memory immediately AFTER the buffer for the overflow's signature text
+ * ("more frames", emitted only by the tail snprintf).  That text can never
+ * legitimately live in the struct fields past backtrace_buf, so finding it is
+ * unambiguous proof of an out-of-bounds write.  It also checks c_stack_base is
+ * intact and that ordinary evaluation afterward does not spuriously overflow. */
+TEST(backtrace_long_frames_no_buffer_overflow)
+{
+    CL_Thread *t = cl_get_current_thread();
+    char *base_before;
+    int err;
+
+    /* ~280-char namestring: every "<anonymous> (FILE:LINE)" line is huge, so the
+     * frame loop blows past the 2048-byte buffer after only a handful of frames
+     * (forcing the overshoot), while the >20-frame depth makes the tail
+     * "... N more frames" snprintf fire — the exact unbounded write being
+     * guarded against. */
+    static const char long_file[] =
+        "a-really-long-source-file-namestring-used-to-make-each-backtrace-frame-"
+        "line-very-large-so-that-the-formatted-backtrace-text-comfortably-exceeds-"
+        "the-fixed-two-kilobyte-cl-backtrace-buf-and-would-overflow-into-the-"
+        "adjacent-c-stack-base-field-if-pos-were-not-clamped.lisp";
+
+    /* A chain of DISTINCT functions f1->f2->...->f25, f25 errors.  Distinct
+     * names/lines defeat the backtrace cycle-collapser (a self-recursive
+     * function would be summarised to a couple of lines and never overflow),
+     * so cl_capture_backtrace formats the full max_show window of long lines —
+     * comfortably more than 2048 bytes of text. */
+    {
+        int i;
+        char def[128];
+        eval_in_file(long_file, "(defun f25 () (error \"bottom\"))");
+        for (i = 24; i >= 1; i--) {
+            snprintf(def, sizeof(def),
+                     "(defun f%d () (let ((r (f%d))) r))", i, i + 1);
+            eval_in_file(long_file, def);
+        }
+    }
+
+    base_before = t->c_stack_base;
+    ASSERT(base_before != NULL);  /* set during init */
+
+    CL_CATCH(err);
+    if (err == CL_ERR_NONE) {
+        eval_in_file(long_file, "(f1)");  /* signals -> cl_capture_backtrace */
+        CL_UNCATCH();
+    } else {
+        CL_UNCATCH();
+    }
+
+    /* Primary detector: the tail "... N more frames" string must never have been
+     * written past the end of the buffer.  Scan the 512 bytes following the
+     * buffer for that signature (which cannot occur there legitimately). */
+    ASSERT(memmem((char *)t + offsetof(CL_Thread, backtrace_buf) + CL_BACKTRACE_BUF_SIZE, 512,
+                  "more frames", 11) == NULL);
+    /* The adjacent c_stack_base field must be intact, and the formatted text
+     * must stay NUL-terminated within the buffer bounds. */
+    ASSERT(t->c_stack_base == base_before);
+    ASSERT(strnlen(t->backtrace_buf, CL_BACKTRACE_BUF_SIZE) < CL_BACKTRACE_BUF_SIZE);
+
+    cl_current_source_file = NULL;
+
+    /* And ordinary shallow evaluation must not spuriously overflow now. */
+    ASSERT(cl_eval_string("(+ 1 2)") != CL_NIL);
+}
+
 int main(void)
 {
     test_init();
@@ -178,6 +259,7 @@ int main(void)
     RUN(frame_locals_values);
     RUN(frame_locals_out_of_range);
     RUN(backtrace_from_debugger_hook);
+    RUN(backtrace_long_frames_no_buffer_overflow);
 
     teardown();
     REPORT();

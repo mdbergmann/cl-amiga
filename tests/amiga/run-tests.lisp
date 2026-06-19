@@ -5916,6 +5916,42 @@
       (read-char s nil nil)
       (read-char-no-hang s nil :none))))
 
+; --- Regression: backtrace buffer overflow must not corrupt c_stack_base ---
+; A deep chain of 25 distinct functions with a long source-file name fills the
+; 2048-byte backtrace_buf and would overflow into c_stack_base if pos were not
+; clamped.  A corrupted c_stack_base makes every subsequent cl_check_c_stack
+; compute a garbage "used" value and signal a bogus "C stack overflow".
+; After triggering the deep backtrace, (+ 1 2) must still return 3.
+(progn
+  (defun bt-overflow-f25 () (error "bt-overflow-bottom"))
+  (defun bt-overflow-f24 () (let ((r (bt-overflow-f25))) r))
+  (defun bt-overflow-f23 () (let ((r (bt-overflow-f24))) r))
+  (defun bt-overflow-f22 () (let ((r (bt-overflow-f23))) r))
+  (defun bt-overflow-f21 () (let ((r (bt-overflow-f22))) r))
+  (defun bt-overflow-f20 () (let ((r (bt-overflow-f21))) r))
+  (defun bt-overflow-f19 () (let ((r (bt-overflow-f20))) r))
+  (defun bt-overflow-f18 () (let ((r (bt-overflow-f19))) r))
+  (defun bt-overflow-f17 () (let ((r (bt-overflow-f18))) r))
+  (defun bt-overflow-f16 () (let ((r (bt-overflow-f17))) r))
+  (defun bt-overflow-f15 () (let ((r (bt-overflow-f16))) r))
+  (defun bt-overflow-f14 () (let ((r (bt-overflow-f15))) r))
+  (defun bt-overflow-f13 () (let ((r (bt-overflow-f14))) r))
+  (defun bt-overflow-f12 () (let ((r (bt-overflow-f13))) r))
+  (defun bt-overflow-f11 () (let ((r (bt-overflow-f12))) r))
+  (defun bt-overflow-f10 () (let ((r (bt-overflow-f11))) r))
+  (defun bt-overflow-f9  () (let ((r (bt-overflow-f10))) r))
+  (defun bt-overflow-f8  () (let ((r (bt-overflow-f9)))  r))
+  (defun bt-overflow-f7  () (let ((r (bt-overflow-f8)))  r))
+  (defun bt-overflow-f6  () (let ((r (bt-overflow-f7)))  r))
+  (defun bt-overflow-f5  () (let ((r (bt-overflow-f6)))  r))
+  (defun bt-overflow-f4  () (let ((r (bt-overflow-f5)))  r))
+  (defun bt-overflow-f3  () (let ((r (bt-overflow-f4)))  r))
+  (defun bt-overflow-f2  () (let ((r (bt-overflow-f3)))  r))
+  (defun bt-overflow-f1  () (let ((r (bt-overflow-f2)))  r)))
+(handler-case (bt-overflow-f1) (error () nil))
+(check "backtrace-buf overflow: c_stack_base intact, no spurious stack-overflow" 3
+  (+ 1 2))
+
 ; --- Summary ---
 (format t "~%=== Results ===~%")
 (format t "Passed: ~A~%" *pass-count*)
