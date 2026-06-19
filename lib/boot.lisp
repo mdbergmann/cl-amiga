@@ -1091,20 +1091,82 @@
        (unless (typep ,val ',type)
          (error 'type-error :datum ,val :expected-type ',type)))))
 
-;; ccase — like ecase (signals an error if no clause matches), but the error
-;; is continuable: in a real implementation a STORE-VALUE restart lets the user
-;; supply a new keyform value and retry.  We don't have a debugger that can
-;; offer restarts interactively, so we treat CCASE as ECASE (one-shot type
-;; error) — the host-incompatible difference is the restart presentation, not
-;; the value-on-success or value-on-mismatch behaviour.  (A fully continuable
-;; CCASE/CTYPECASE with a working STORE-VALUE retry is a separate feature; an
-;; auto-generated restart-case/go version deadlocked on clamiga's NLX path.)
-(defmacro ccase (keyplace &rest clauses)
-  `(ecase ,keyplace ,@clauses))
+;; KEYPLACE is settable (a place we can SETF) when it is a non-constant symbol
+;; or a non-QUOTE compound form.  Self-evaluating literals (numbers, strings,
+;; T/NIL/keywords) and (quote ...) forms are NOT places — CCASE/CTYPECASE are
+;; sometimes called with such a bare keyFORM (e.g. lparallel), and emitting a
+;; (setf <literal> ...) for them would fail to COMPILE even though that branch
+;; is never reached at runtime.  For those we still offer the STORE-VALUE retry,
+;; but it only updates the loop's local copy, not the (non-existent) place.
+(defun %ccase-place-p (keyplace)
+  (cond ((symbolp keyplace)
+         (not (or (null keyplace) (eq keyplace t) (keywordp keyplace))))
+        ((consp keyplace) (not (eq (car keyplace) 'quote)))
+        (t nil)))
 
-;; ctypecase — same relationship to etypecase.
+;; ccase — like ecase, but the type-error it signals when no clause matches is
+;; *continuable* (CLHS 5.3): it establishes a STORE-VALUE restart that stores a
+;; new value into KEYPLACE and retries from the top.  The current value lives in
+;; a local the loop re-tests; the STORE-VALUE handler updates that local (and,
+;; when KEYPLACE is a real place, the place too).  The handler body is compiled
+;; as a closure, so the boxing analysis must — and now does — share the local
+;; with the re-test, otherwise the retry would loop forever.
+(defmacro ccase (keyplace &rest clauses)
+  (let ((blk (gensym "CCASE"))
+        (g (gensym "VAL"))
+        (nv (gensym "NEWVAL"))
+        (place-p (%ccase-place-p keyplace))
+        (keys '()))
+    (dolist (clause clauses)
+      (let ((k (car clause)))
+        (if (listp k) (setq keys (append keys k))
+            (setq keys (append keys (list k))))))
+    `(let ((,g ,keyplace))
+       (block ,blk
+         (loop
+           (cond
+             ,@(mapcar
+                (lambda (clause)
+                  (let ((k (car clause)) (body (cdr clause)))
+                    (if (listp k)
+                        `((member ,g ',k) (return-from ,blk (progn ,@body)))
+                        `((eql ,g ',k) (return-from ,blk (progn ,@body))))))
+                clauses)
+             (t (restart-case
+                  (error 'type-error :datum ,g :expected-type '(member ,@keys))
+                  (store-value (,nv)
+                    :report "Supply a new value for the place and retry."
+                    :interactive (lambda () (list (eval (read))))
+                    ,@(when place-p `((setf ,keyplace ,nv)))
+                    (setq ,g ,nv))))))))))
+
+;; ctypecase — same relationship to etypecase: a continuable type-error with a
+;; STORE-VALUE restart that stores into KEYPLACE and retries.
 (defmacro ctypecase (keyplace &rest clauses)
-  `(etypecase ,keyplace ,@clauses))
+  (let ((blk (gensym "CTYPECASE"))
+        (g (gensym "VAL"))
+        (nv (gensym "NEWVAL"))
+        (place-p (%ccase-place-p keyplace))
+        (types '()))
+    (dolist (clause clauses)
+      (setq types (append types (list (car clause)))))
+    `(let ((,g ,keyplace))
+       (block ,blk
+         (loop
+           (cond
+             ,@(mapcar
+                (lambda (clause)
+                  `((typep ,g ',(car clause))
+                    (return-from ,blk (progn ,@(cdr clause)))))
+                clauses)
+             (t (restart-case
+                  (error 'type-error :datum ,g
+                         :expected-type '(or ,@types))
+                  (store-value (,nv)
+                    :report "Supply a new value for the place and retry."
+                    :interactive (lambda () (list (eval (read))))
+                    ,@(when place-p `((setf ,keyplace ,nv)))
+                    (setq ,g ,nv))))))))))
 
 ;; assert — signal error if test-form is false
 (defmacro assert (test-form &optional places string &rest args)

@@ -398,6 +398,28 @@
        (handler-case (let ((x 5)) (ccase x ((1) 'a))) (type-error () 'te) (error () 'wrong)))
 (check "ctypecase no-match type-error" 'te
        (handler-case (let ((x 5)) (ctypecase x (string 's))) (type-error () 'te) (error () 'wrong)))
+; continuable CCASE/CTYPECASE: STORE-VALUE restart stores into the place and retries (CLHS 5.3)
+(check "ccase direct match" 'b (let ((x 'b)) (ccase x (a 'A) (b 'B))))
+(check "ccase store-value retry" 'B
+       (let ((x 'zzz))
+         (handler-bind ((type-error (lambda (c) (declare (ignore c)) (store-value 'b))))
+           (ccase x (a 'A) (b 'B)))))
+(check "ccase store-value mutates place" 'a
+       (let ((x 'zzz))
+         (handler-bind ((type-error (lambda (c) (declare (ignore c)) (store-value 'a))))
+           (ccase x (a 'A) (b 'B)))
+         x))
+(check "ccase expected-type" '(member 1 2)
+       (handler-case (let ((x 9)) (ccase x (1 'a) (2 'b)))
+         (type-error (c) (type-error-expected-type c))))
+(check "ctypecase store-value retry" 'i
+       (let ((x 'sym))
+         (handler-bind ((type-error (lambda (c) (declare (ignore c)) (store-value 42))))
+           (ctypecase x (string 's) (integer 'i)))))
+; store-value / use-value convenience functions (CLHS 9.1)
+(check "store-value function" 42 (restart-case (store-value 7) (store-value (v) (* v 6))))
+(check "use-value function" 42 (restart-case (use-value 21) (use-value (v) (* v 2))))
+(check "store-value no restart returns nil" nil (store-value 1))
 (check "typecase int" 'num (typecase 42 (integer 'num) (string 'str)))
 (check "typecase str" 'str (typecase "hi" (integer 'num) (string 'str)))
 
@@ -915,9 +937,13 @@
 (check "subseq string end" "llo" (subseq "hello" 2))
 (check "subseq list" '(b c) (subseq '(a b c d) 1 3))
 (check "concatenate" "hello world" (concatenate 'string "hello" " " "world"))
-(check "concatenate compound byte-array" #(65 66 0 2)
-  (concatenate '(simple-array (unsigned-byte 8) (*))
-               (map 'vector #'char-code "AB") (vector 0) (vector 2)))
+; EQUAL never descends general vectors (CLHS), so a #(...) literal can't match
+; the (distinct) concatenate result — compare element-wise with EQUALP, as the
+; rest of the vector-content checks below do.
+(check "concatenate compound byte-array" t
+  (equalp #(65 66 0 2)
+          (concatenate '(simple-array (unsigned-byte 8) (*))
+                       (map 'vector #'char-code "AB") (vector 0) (vector 2))))
 (check "concatenate compound char-array" "abcd"
   (concatenate '(vector character) "ab" "cd"))
 (check "concatenate compound simple-array char" "xyz"

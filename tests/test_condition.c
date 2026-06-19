@@ -852,6 +852,107 @@ TEST(lisp_invoke_restart_by_object)
         "42");
 }
 
+TEST(lisp_store_value_function)
+{
+    /* (store-value v) invokes the innermost STORE-VALUE restart with v */
+    ASSERT_STR_EQ(eval_print(
+        "(restart-case (store-value 7)"
+        "  (store-value (v) (* v 6)))"),
+        "42");
+    /* returns NIL when no STORE-VALUE restart is established */
+    ASSERT_STR_EQ(eval_print("(store-value 99)"), "NIL");
+}
+
+TEST(lisp_use_value_function)
+{
+    /* (use-value v) invokes the innermost USE-VALUE restart with v */
+    ASSERT_STR_EQ(eval_print(
+        "(restart-case (use-value 21)"
+        "  (use-value (v) (* v 2)))"),
+        "42");
+    ASSERT_STR_EQ(eval_print("(use-value 1)"), "NIL");
+}
+
+TEST(lisp_restart_case_store_value_mutates_outer_var)
+{
+    /* The STORE-VALUE clause body is compiled as a closure; a (setf x ...)
+     * inside it must mutate the ENCLOSING variable (boxing analysis must
+     * treat restart-case clause bodies as closures).  Regression for the
+     * boxing bug that made continuable CCASE/CTYPECASE loop forever. */
+    ASSERT_STR_EQ(eval_print(
+        "(let ((x 10))"
+        "  (restart-case"
+        "      (progn (handler-bind ((error (lambda (c) (declare (ignore c))"
+        "                                      (store-value 99))))"
+        "               (error \"boom\"))"
+        "             x)"
+        "    (store-value (nv) (setf x nv) x)))"),
+        "99");
+}
+
+TEST(lisp_ccase_direct_match)
+{
+    ASSERT_STR_EQ(eval_print("(let ((x 'b)) (ccase x (a 'A) (b 'B) (c 'C)))"), "B");
+    /* grouped keys */
+    ASSERT_STR_EQ(eval_print("(let ((x 2)) (ccase x ((1 2 3) 'lo) ((4 5) 'hi)))"), "LO");
+    /* empty body returns NIL */
+    ASSERT_STR_EQ(eval_print("(let ((x 'a)) (ccase x (a) (b 'B)))"), "NIL");
+}
+
+TEST(lisp_ccase_store_value_retry)
+{
+    /* No clause matches 'zzz; the handler stores a good value, which the
+     * loop re-reads and matches — CCASE returns the matching clause body. */
+    ASSERT_STR_EQ(eval_print(
+        "(let ((x 'zzz))"
+        "  (handler-bind ((type-error (lambda (c) (declare (ignore c))"
+        "                               (store-value 'b))))"
+        "    (ccase x (a 'A) (b 'B))))"),
+        "B");
+    /* the store actually mutates the place */
+    ASSERT_STR_EQ(eval_print(
+        "(let ((x 'zzz))"
+        "  (handler-bind ((type-error (lambda (c) (declare (ignore c))"
+        "                               (store-value 'a))))"
+        "    (ccase x (a 'A) (b 'B)))"
+        "  x)"),
+        "A");
+    /* complex place: (car cell) */
+    ASSERT_STR_EQ(eval_print(
+        "(let ((cell (list 'bad)))"
+        "  (handler-bind ((type-error (lambda (c) (declare (ignore c))"
+        "                               (store-value 'y))))"
+        "    (ccase (car cell) (x 'X) (y 'Y))))"),
+        "Y");
+}
+
+TEST(lisp_ccase_expected_type)
+{
+    /* CCASE's type-error reports (member key...) as the expected type */
+    ASSERT_STR_EQ(eval_print(
+        "(handler-case (let ((x 99)) (ccase x (1 'a) (2 'b)))"
+        "  (type-error (c) (type-error-expected-type c)))"),
+        "(MEMBER 1 2)");
+}
+
+TEST(lisp_ctypecase_direct_and_retry)
+{
+    ASSERT_STR_EQ(eval_print(
+        "(let ((x 5)) (ctypecase x (string 's) (integer 'i)))"), "I");
+    /* store-value retry */
+    ASSERT_STR_EQ(eval_print(
+        "(let ((x 'sym))"
+        "  (handler-bind ((type-error (lambda (c) (declare (ignore c))"
+        "                               (store-value 42))))"
+        "    (ctypecase x (string 's) (integer 'i))))"),
+        "I");
+    /* expected-type is (or type...) */
+    ASSERT_STR_EQ(eval_print(
+        "(handler-case (let ((x 'sym)) (ctypecase x (string 's) (integer 'i)))"
+        "  (type-error (c) (type-error-expected-type c)))"),
+        "(OR STRING INTEGER)");
+}
+
 TEST(lisp_restart_report_string)
 {
     /* PRINC of a restart prints its :report string; PRIN1 prints #<RESTART name> */
@@ -1417,6 +1518,13 @@ int main(void)
     RUN(lisp_restart_name);
     RUN(lisp_compute_restarts_returns_objects);
     RUN(lisp_invoke_restart_by_object);
+    RUN(lisp_store_value_function);
+    RUN(lisp_use_value_function);
+    RUN(lisp_restart_case_store_value_mutates_outer_var);
+    RUN(lisp_ccase_direct_match);
+    RUN(lisp_ccase_store_value_retry);
+    RUN(lisp_ccase_expected_type);
+    RUN(lisp_ctypecase_direct_and_retry);
     RUN(lisp_restart_report_string);
     RUN(lisp_restart_report_function);
     RUN(lisp_restart_no_report_princ);
