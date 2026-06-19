@@ -671,14 +671,32 @@ static int frame_is_stub(CL_Frame *f)
     return f->code == f->stub_code;
 }
 
+/* Advance pos by snprintf's return value, clamping to the buffer end.
+ * snprintf returns the number of characters it WOULD have written had the
+ * buffer been large enough — which can exceed the space actually available.
+ * Adding that raw value to pos would push pos past CL_BACKTRACE_BUF_SIZE, and
+ * a later (CL_BACKTRACE_BUF_SIZE - pos) would then underflow to a huge size_t,
+ * making the next snprintf write unbounded past the buffer (corrupting the
+ * adjacent c_stack_base field — a real heap-struct smash, not just truncation).
+ * Clamping keeps pos in [0, CL_BACKTRACE_BUF_SIZE-1] so the size arg stays
+ * positive. Returns the (clamped) new pos. */
+static int bt_advance(int pos, int n)
+{
+    if (n < 0) return pos;  /* snprintf encoding error: leave pos unchanged */
+    pos += n;
+    if (pos > CL_BACKTRACE_BUF_SIZE - 1) pos = CL_BACKTRACE_BUF_SIZE - 1;
+    return pos;
+}
+
 /* Format a single backtrace frame into buf+pos, return new pos */
 static int bt_format_frame(int pos, int depth, CL_Obj name,
                            const char *file, int line)
 {
     int n;
+    if (pos >= CL_BACKTRACE_BUF_SIZE - 1) return pos;
     n = snprintf(cl_backtrace_buf + pos,
                  CL_BACKTRACE_BUF_SIZE - pos, "  %d: ", depth);
-    pos += n;
+    pos = bt_advance(pos, n);
     if (pos >= CL_BACKTRACE_BUF_SIZE - 1) return pos;
 
     if (!CL_NULL_P(name) && CL_SYMBOL_P(name)) {
@@ -710,7 +728,7 @@ static int bt_format_frame(int pos, int depth, CL_Obj name,
                          "<anonymous>\n");
         }
     }
-    pos += n;
+    pos = bt_advance(pos, n);
     return pos;
 }
 
@@ -790,11 +808,13 @@ void cl_capture_backtrace(void)
                 const char *file = bc ? bc->source_file : NULL;
                 pos = bt_format_frame(pos, depth, nm, file, line);
             }
-            n = snprintf(cl_backtrace_buf + pos,
-                         CL_BACKTRACE_BUF_SIZE - pos,
-                         "  --- above %d frames repeat %d times (%d frames total) ---\n",
-                         cycle_len, repeat_count, cycle_len * repeat_count);
-            pos += n;
+            if (pos < CL_BACKTRACE_BUF_SIZE - 1) {
+                n = snprintf(cl_backtrace_buf + pos,
+                             CL_BACKTRACE_BUF_SIZE - pos,
+                             "  --- above %d frames repeat %d times (%d frames total) ---\n",
+                             cycle_len, repeat_count, cycle_len * repeat_count);
+                pos = bt_advance(pos, n);
+            }
             /* Skip past the repeated frames, show remaining */
             {
                 int skip_to = i - cycle_len * repeat_count;
@@ -807,7 +827,7 @@ void cl_capture_backtrace(void)
                     pos = bt_format_frame(pos, depth, nm, file, line);
                     if (pos >= CL_BACKTRACE_BUF_SIZE - 1) break;
                 }
-                if (j >= 0) {
+                if (j >= 0 && pos < CL_BACKTRACE_BUF_SIZE - 1) {
                     snprintf(cl_backtrace_buf + pos,
                              CL_BACKTRACE_BUF_SIZE - pos,
                              "  ... %d more frames\n", j + 1);
@@ -834,7 +854,7 @@ void cl_capture_backtrace(void)
         if (pos >= CL_BACKTRACE_BUF_SIZE - 1) break;
     }
 
-    if (cl_vm.fp > max_show) {
+    if (cl_vm.fp > max_show && pos < CL_BACKTRACE_BUF_SIZE - 1) {
         snprintf(cl_backtrace_buf + pos,
                  CL_BACKTRACE_BUF_SIZE - pos,
                  "  ... %d more frames\n", cl_vm.fp - max_show);
