@@ -75,7 +75,7 @@ then delegates to `scripts/review/pre-commit.sh`.
 |-----|---------|---------|
 | `CLAUDE_REVIEW_MODEL` | `sonnet` | model for the review pass |
 | `CLAUDE_FIX_MODEL`    | `sonnet` | model for the fix pass (try `opus` for harder fixes) |
-| `CLAUDE_REVIEW_TIMEOUT`| `600`   | seconds per claude call (needs `timeout`/`gtimeout`); the agentic Read+grep review can take several minutes |
+| `CLAUDE_REVIEW_TIMEOUT`| `5400`  | seconds per claude call (needs `timeout`/`gtimeout`); the agentic Read+grep review and the fix agent can each take many minutes, and a large multi-file diff (40 KB+) needs the headroom |
 | `CLAUDE_RUN_TESTS`    | `1`      | run the test stage (`0` to skip) |
 | `CLAUDE_TEST_TARGET`  | `test-fast` | make target for the test stage (`test` = incl. sento) |
 | `CLAUDE_TEST_TIMEOUT` | `600`    | seconds for the test stage |
