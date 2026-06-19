@@ -1513,6 +1513,69 @@ out=$(run_stress "$WORK/sv.lisp")
 check_contains "store-value finds restart after compaction"          "SV:(42 42)" "$out"
 check_absent   "store-value/use-value did not return NIL post-compact" "SV:(NIL\|SV:NIL" "$out"
 
+# --- Case: MAKE-LOAD-FORM reconstruction under GC stress ---------------------
+# The FASL MAKE-LOAD-FORM path has two GC-sensitive halves:
+#   (writer) cl_fasl_mlf_prepass walks the constant graph and calls the user
+#     MAKE-LOAD-FORM method (clamiga::%FASL-LOAD-FORM) per literal object — that
+#     runs arbitrary Lisp and compacts.  Its worklist/seen arrays and the
+#     (creation . init) result cache hold raw CL_Obj offsets that must be
+#     GC-rooted+forwarded (cl_fasl_gc_mark_mlf / cl_fasl_gc_update_mlf).
+#   (reader) FASL_TAG_LOAD_FORM compiles+evaluates the creation form, registers
+#     the object at the OBJ_DEF id (so the init form's OBJ_REF self-loop
+#     resolves), then compiles+evaluates the init form — all allocating.
+# Two probes: (1) compile a clean FASL and LOAD it under stress (reader half);
+# (2) compile the source UNDER stress (writer half / pre-pass walk), then load
+# it and check the reconstruction is intact, including the EQ self-reference.
+cat > "$WORK/mlf.lisp" <<'EOF'
+(defpackage :gcstress-mlf (:use :cl))
+(in-package :gcstress-mlf)
+(defclass node ()
+  ((label :initarg :label :accessor node-label)
+   (n     :initarg :n     :accessor node-n)
+   (self  :accessor node-self)))
+(defmethod make-load-form ((x node) &optional env)
+  (declare (ignore env))
+  (make-load-form-saving-slots x))
+(defvar *node*
+  #.(let ((x (make-instance 'node :label "hi" :n 7)))
+      (setf (node-self x) x)
+      x))
+(defun mlf-probe ()
+  (list (node-label *node*) (node-n *node*) (eq *node* (node-self *node*))))
+EOF
+
+# (1) reader half: clean compile, load under stress.
+if compile_fasl "$WORK/mlf.lisp" "$WORK/mlf.fasl"; then
+    cat > "$WORK/mlf-load.lisp" <<EOF
+(load "$WORK/mlf.fasl")
+(format t "MLF-LOAD:~a~%" (gcstress-mlf::mlf-probe))
+EOF
+    out=$(run_stress "$WORK/mlf-load.lisp")
+    check_contains "make-load-form reconstruction loads under GC stress"   "MLF-LOAD:(hi 7 T)" "$out"
+    check_absent   "no corruption reconstructing MLF object on load"        "Undefined\|Unbound\|type 0\|corrupted" "$out"
+else
+    echo "  SKIP  make-load-form clean FASL compile failed"
+fi
+
+# (2) writer half: compile the source UNDER stress (exercises the pre-pass walk
+#     + %FASL-LOAD-FORM call + serialization under compaction), then load clean.
+cat > "$WORK/mlf-compile.lisp" <<EOF
+(compile-file "$WORK/mlf.lisp" :output-file "$WORK/mlf-s.fasl")
+(format t "MLF-COMPILED~%")
+EOF
+out=$(run_stress "$WORK/mlf-compile.lisp")
+check_contains "make-load-form pre-pass compiles under GC stress" "MLF-COMPILED" "$out"
+if echo "$out" | grep -q "MLF-COMPILED"; then
+    cat > "$WORK/mlf-s-load.lisp" <<EOF
+(load "$WORK/mlf-s.fasl")
+(format t "MLF-SLOAD:~a~%" (gcstress-mlf::mlf-probe))
+EOF
+    out2=$(env -u CLAMIGA_GC_STRESS timeout 60 "$CLAMIGA" --no-userinit --heap 48M \
+               --non-interactive --load "$WORK/mlf-s-load.lisp" 2>&1)
+    check_contains "FASL written under GC-stress compile reconstructs correctly" "MLF-SLOAD:(hi 7 T)" "$out2"
+    check_absent   "no corruption in FASL written by pre-pass under stress"      "Undefined\|Unbound\|type 0\|corrupted" "$out2"
+fi
+
 echo ""
 echo "$passed passed, $failed failed, $total total"
 [ "$failed" -eq 0 ]

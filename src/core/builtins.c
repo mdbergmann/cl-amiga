@@ -1546,7 +1546,8 @@ void cl_builtins_init(void)
     defstub("MAKE-BROADCAST-STREAM");
     defstub("MAKE-CONCATENATED-STREAM");
     defstub("MAKE-ECHO-STREAM");
-    defstub("MAKE-LOAD-FORM-SAVING-SLOTS");
+    /* MAKE-LOAD-FORM (generic function) and MAKE-LOAD-FORM-SAVING-SLOTS
+     * are defined in lib/clos.lisp (CLHS 7.6); no stub here. */
     defstub("METHOD-COMBINATION-ERROR");
     defstub("PPRINT-TAB");
     defstub("PPRINT-TABULAR");

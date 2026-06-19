@@ -26,7 +26,7 @@
 #include "../platform/platform.h"
 
 #define CL_FASL_MAGIC    0x434C4641  /* "CLFA" */
-#define CL_FASL_VERSION  15  /* v15: (setf ACCESSOR) functions are now stored on a package-qualified hidden symbol %SETF-<home-package>::<name> (was %SETF-<name>, which collided across packages); the synthesized symbol baked into compiled defun/defmethod/define-condition setters changes the FASL constant bytes */
+#define CL_FASL_VERSION  16  /* v16: MAKE-LOAD-FORM support — a literal object reachable from compiled code whose class has a user MAKE-LOAD-FORM method is now serialized as FASL_TAG_LOAD_FORM (creation form + init form) instead of FASL_TAG_STRUCT, and reconstructed by evaluating those forms at load time */
 
 /* Serialized constant type tags */
 #define FASL_TAG_NIL         0x00
@@ -62,6 +62,16 @@
                                      CLOS class metaobjects (STANDARD-CLASS/BUILT-IN-CLASS
                                      structs) are cyclic by design — preserves identity
                                      and avoids re-creating broken stand-ins. */
+#define FASL_TAG_LOAD_FORM  0x1E  /* creation-form(obj), init-form(obj):
+                                     a literal object whose class has a user
+                                     MAKE-LOAD-FORM method.  Reconstructed at
+                                     load time by evaluating the creation form
+                                     to build the object, registering it at the
+                                     enclosing OBJ_DEF id (so the init form's
+                                     OBJ_REF self-reference resolves to it),
+                                     then evaluating the init form for effect.
+                                     The forms are plain data (cons trees);
+                                     they are compiled+evaluated at load. */
 #define FASL_TAG_LOCK       0x1D  /* u8 flags (bit 0 = recursive), name(obj):
                                      fresh-at-load-time mutex.  Identity is not
                                      preserved across host processes (the platform
@@ -187,6 +197,20 @@ void cl_fasl_reader_register(CL_FaslReader *r);
 void cl_fasl_reader_unregister(CL_FaslReader *r);
 void cl_fasl_gc_mark_readers(void);
 void cl_fasl_gc_update_readers(void (*update_fn)(CL_Obj *));
+
+/* --- MAKE-LOAD-FORM writer pre-pass (see FASL_TAG_LOAD_FORM) ---
+ * cl_fasl_mlf_prepass walks the constant graph of the BC_COUNT bytecode
+ * units in BC_VEC (a Lisp vector) and records a (creation . init) load
+ * form for every literal object whose class has a user MAKE-LOAD-FORM
+ * method, so the serializer can emit FASL_TAG_LOAD_FORM for them.  Call
+ * it once before serializing a COMPILE-FILE run's units, and
+ * cl_fasl_mlf_cleanup() once serialization (or an error path) is done.
+ * The mark/update hooks GC-root the pre-pass state — the pre-pass calls
+ * user code that can compact. */
+void cl_fasl_mlf_prepass(CL_Obj bc_vec, int bc_count);
+void cl_fasl_mlf_cleanup(void);
+void cl_fasl_gc_mark_mlf(void);
+void cl_fasl_gc_update_mlf(void (*update_fn)(CL_Obj *));
 /* Error-unwind snapshot/restore of the active-reader count (cl_error longjmps
  * past cl_fasl_reader_unregister; the error frame restores the count). */
 int  cl_fasl_reader_save_count(void);
