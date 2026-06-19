@@ -294,6 +294,17 @@ static CL_Obj bi_register_setf_function(CL_Obj *args, int n)
     return args[0];
 }
 
+/* (%setf-store-symbol accessor-sym) — the package-qualified hidden symbol
+ * that stores accessor's (setf accessor) function.  CLOS :accessor writers
+ * use this so they agree with the compiler's setf-place resolution. */
+static CL_Obj bi_setf_store_symbol(CL_Obj *args, int n)
+{
+    CL_UNUSED(n);
+    if (!CL_SYMBOL_P(args[0]))
+        cl_error(CL_ERR_TYPE, "%%SETF-STORE-SYMBOL: argument must be a symbol");
+    return cl_setf_store_symbol(args[0]);
+}
+
 extern CL_Obj setf_expander_table;
 extern CL_Obj setf_table;
 
@@ -357,6 +368,7 @@ void cl_builtins_mutation_init(void)
     defun("MAKUNBOUND", bi_makunbound, 1, 1);
     defun("SPECIAL-OPERATOR-P", bi_special_operator_p, 1, 1);
     cl_register_builtin("%REGISTER-SETF-FUNCTION", bi_register_setf_function, 2, 2, cl_package_clamiga);
+    cl_register_builtin("%SETF-STORE-SYMBOL", bi_setf_store_symbol, 1, 1, cl_package_clamiga);
     cl_register_builtin("%REGISTER-SETF-EXPANDER", bi_register_setf_expander, 2, 2, cl_package_clamiga);
     cl_register_builtin("%GET-DEFSETF-SETTER", bi_get_defsetf_setter, 1, 1, cl_package_clamiga);
 }

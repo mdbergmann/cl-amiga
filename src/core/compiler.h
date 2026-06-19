@@ -103,6 +103,10 @@ CL_Obj cl_get_type_expander(CL_Obj name);
 void cl_register_setf_function(CL_Obj accessor, CL_Obj setf_fn_sym);
 /* Resolve the (setf FOO) function-name to the symbol holding its function. */
 CL_Obj cl_setf_function_symbol(CL_Obj accessor);
+/* Package-qualified hidden CLAMIGA symbol that stores accessor's (setf
+ * accessor) function — shared by the compiler and CLOS so they never collide
+ * on same-named accessors in different packages. */
+CL_Obj cl_setf_store_symbol(CL_Obj accessor);
 
 /* Optimization settings (used by (declare (optimize ...))) */
 typedef struct {

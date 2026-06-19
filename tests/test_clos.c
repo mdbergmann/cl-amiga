@@ -781,6 +781,27 @@ TEST(gf_accessor_setf)
         "99");
 }
 
+/* Regression (local-time/local-time-duration): a CLOS :accessor named the same
+ * in two different packages must produce DISTINCT (setf accessor) writer GFs.
+ * Previously both shared the %SETF-<name> hidden symbol, so the second class's
+ * writer GF clobbered the first's — (setf (accessor obj)) on the first class's
+ * instance hit "No applicable method".  Now keyed by %SETF-<package>::<name>. */
+TEST(gf_accessor_setf_distinct_per_package)
+{
+    /* Packages must exist before the package-qualified accessor symbols are
+     * READ, so create them in their own eval_print calls (not inside one form). */
+    eval_print("(defpackage :clos-setf-a (:use :cl))");
+    eval_print("(defpackage :clos-setf-b (:use :cl))");
+    eval_print("(defclass csa () ((v :accessor clos-setf-a::sec-of :initform 1)))");
+    eval_print("(defclass csb () ((v :accessor clos-setf-b::sec-of :initform 2)))");
+    ASSERT_STR_EQ(eval_print(
+        "(let ((a (make-instance 'csa)) (b (make-instance 'csb)))"
+        "  (setf (clos-setf-a::sec-of a) 100)"
+        "  (setf (clos-setf-b::sec-of b) 200)"
+        "  (list (clos-setf-a::sec-of a) (clos-setf-b::sec-of b)))"),
+        "(100 200)");
+}
+
 TEST(gf_initialize_instance)
 {
     /* initialize-instance should be a GF now — add a custom :after method */
@@ -4022,6 +4043,7 @@ int main(void)
     RUN(gf_accessor);
     RUN(gf_accessor_works);
     RUN(gf_accessor_setf);
+    RUN(gf_accessor_setf_distinct_per_package);
     RUN(gf_initialize_instance);
 
     /* Phase 8: change-class + reinitialize-instance */

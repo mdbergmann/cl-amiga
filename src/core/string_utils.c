@@ -118,7 +118,15 @@ CL_Obj cl_string_narrow(CL_Obj wide_str)
     return result;
 }
 
-/* --- UTF-8 codec --- */
+#endif /* CL_WIDE_STRINGS */
+
+/* --- UTF-8 codec ---
+ * cl_utf8_encode / cl_utf8_decode are pure codecs with no wide-string
+ * dependency, and are used unconditionally across the runtime (builtins_io,
+ * builtins_pathname, builtins_stream, printer, reader, stream, ...) — including
+ * in non-wide (Amiga) builds.  They therefore live OUTSIDE the CL_WIDE_STRINGS
+ * guard; without this the Amiga build fails to link (undefined cl_utf8_encode).
+ */
 
 int cl_utf8_encode(int cp, char *buf)
 {
@@ -212,6 +220,8 @@ int cl_utf8_decode(const unsigned char *buf, uint32_t buflen, int *codepoint)
     *codepoint = cp;
     return expected;
 }
+
+#ifdef CL_WIDE_STRINGS  /* wide-string <-> UTF-8 conversion helpers */
 
 uint32_t cl_wide_string_to_utf8(CL_Obj wide_str, char *buf, uint32_t buf_size)
 {

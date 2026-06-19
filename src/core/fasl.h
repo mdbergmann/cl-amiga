@@ -26,7 +26,7 @@
 #include "../platform/platform.h"
 
 #define CL_FASL_MAGIC    0x434C4641  /* "CLFA" */
-#define CL_FASL_VERSION  14  /* v14: handler-bind now pushes its clause handlers in reverse textual order so that cl_signal_condition (which walks the handler stack newest-first) fires them in CLHS top-to-bottom order; changes the emitted OP_HANDLER_PUSH sequence (and thus FASL bytes) for any handler-bind with 2+ clauses */
+#define CL_FASL_VERSION  15  /* v15: (setf ACCESSOR) functions are now stored on a package-qualified hidden symbol %SETF-<home-package>::<name> (was %SETF-<name>, which collided across packages); the synthesized symbol baked into compiled defun/defmethod/define-condition setters changes the FASL constant bytes */
 
 /* Serialized constant type tags */
 #define FASL_TAG_NIL         0x00

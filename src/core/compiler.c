@@ -2181,6 +2181,43 @@ static int is_composite_cadr(CL_Obj sym)
  * single source of truth for the (setf place) calling convention; both
  * setf-PLACE compilation and #'(setf foo) function references go through it
  * so they agree on which symbol holds the setter. */
+/* Synthesize the hidden CLAMIGA symbol that stores the (setf ACCESSOR)
+ * function.  The name is package-qualified — %SETF-<home-package>::<name> —
+ * so that same-named accessors in different packages (e.g. LOCAL-TIME::SEC-OF
+ * vs LOCAL-TIME-DURATION::SEC-OF) get DISTINCT storage symbols instead of
+ * colliding on a single %SETF-<name> (which silently clobbered one writer).
+ * Both the C (defun (setf foo)) path and the Lisp CLOS :accessor path go
+ * through this (the latter via the %SETF-STORE-SYMBOL builtin), so they always
+ * agree on the same symbol for a given accessor. */
+CL_Obj cl_setf_store_symbol(CL_Obj accessor)
+{
+    extern CL_Obj cl_package_cl;
+    CL_Symbol *sym = (CL_Symbol *)CL_OBJ_TO_PTR(accessor);
+    CL_String *sname = (CL_String *)CL_OBJ_TO_PTR(sym->name);
+    char buf[512];
+    int len;
+    /* Standard COMMON-LISP accessors keep the canonical unqualified
+     * %SETF-<name> form: their setters are hand-written (C builtins like
+     * %SETF-MACRO-FUNCTION, defsetf forms, etc.) under that exact name, and
+     * accessor names are unique within a package so they cannot collide.
+     * Only non-CL (user/library) accessors get package-qualified — that is
+     * where same-named accessors in different packages otherwise clobbered
+     * each other (e.g. LOCAL-TIME::SEC-OF vs LOCAL-TIME-DURATION::SEC-OF). */
+    if (!CL_NULL_P(sym->package) && sym->package != cl_package_cl) {
+        CL_Package *pkg = (CL_Package *)CL_OBJ_TO_PTR(sym->package);
+        CL_String *pname = (CL_String *)CL_OBJ_TO_PTR(pkg->name);
+        len = snprintf(buf, sizeof(buf), "%%SETF-%.*s::%.*s",
+                       (int)pname->length, pname->data,
+                       (int)sname->length, sname->data);
+    } else {
+        /* COMMON-LISP accessor, or an uninterned symbol with no package. */
+        len = snprintf(buf, sizeof(buf), "%%SETF-%.*s",
+                       (int)sname->length, sname->data);
+    }
+    if (len >= (int)sizeof(buf)) len = (int)sizeof(buf) - 1;
+    return cl_intern_in(buf, (uint32_t)len, cl_package_clamiga);
+}
+
 static CL_Obj resolve_setf_fn_symbol(CL_Obj accessor)
 {
     CL_Obj setf_fn = CL_NIL;
@@ -2196,15 +2233,8 @@ static CL_Obj resolve_setf_fn_symbol(CL_Obj accessor)
         sfe = cl_cdr(sfe);
     }
     cl_tables_rwunlock();
-    if (CL_NULL_P(setf_fn)) {
-        CL_Symbol *sym = (CL_Symbol *)CL_OBJ_TO_PTR(accessor);
-        CL_String *sname = (CL_String *)CL_OBJ_TO_PTR(sym->name);
-        char buf[256];
-        int len = snprintf(buf, sizeof(buf), "%%SETF-%.*s",
-                           (int)sname->length, sname->data);
-        if (len >= (int)sizeof(buf)) len = (int)sizeof(buf) - 1;
-        setf_fn = cl_intern_in(buf, (uint32_t)len, cl_package_clamiga);
-    }
+    if (CL_NULL_P(setf_fn))
+        setf_fn = cl_setf_store_symbol(accessor);
     return setf_fn;
 }
 
