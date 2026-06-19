@@ -788,6 +788,23 @@ static int coerce_elt_type_is_char(CL_Obj type, int depth)
     return 0;
 }
 
+/* A BIT element type means the (vector/array bit ...) result is a bit-vector. */
+static int coerce_elt_type_is_bit(CL_Obj type, int depth)
+{
+    if (depth <= 0) return 0;
+    if (CL_SYMBOL_P(type)) {
+        const char *nm = cl_symbol_name(type);
+        if (strcmp(nm, "BIT") == 0) return 1;
+        if (strcmp(nm, "*") == 0) return 0;
+        {
+            CL_Obj ex = cl_get_type_expander(type);
+            if (!CL_NULL_P(ex))
+                return coerce_elt_type_is_bit(cl_vm_apply(ex, NULL, 0), depth - 1);
+        }
+    }
+    return 0;
+}
+
 static CL_Obj bi_coerce(CL_Obj *args, int n)
 {
     CL_Obj obj = args[0];
@@ -818,12 +835,16 @@ static CL_Obj bi_coerce(CL_Obj *args, int n)
             /* (simple-array ...) / (array ...) / (vector ...) / (simple-vector ...) */
             if (strcmp(hname, "SIMPLE-ARRAY") == 0 || strcmp(hname, "ARRAY") == 0 ||
                 strcmp(hname, "VECTOR") == 0 || strcmp(hname, "SIMPLE-VECTOR") == 0) {
-                /* A character element type means a string; otherwise a
-                 * general vector (we don't otherwise specialize). */
+                /* A character element type means a string, a BIT element
+                 * type means a bit-vector; otherwise a general vector (we
+                 * don't otherwise specialize). */
                 CL_Obj eargs = cl_cdr(result_type);
                 if (!CL_NULL_P(eargs) &&
                     coerce_elt_type_is_char(cl_car(eargs), 8))
                     result_type = cl_intern_in("STRING", 6, cl_package_cl);
+                else if (!CL_NULL_P(eargs) &&
+                         coerce_elt_type_is_bit(cl_car(eargs), 8))
+                    result_type = cl_intern_in("BIT-VECTOR", 10, cl_package_cl);
                 else
                     result_type = cl_intern_in("VECTOR", 6, cl_package_cl);
             } else if (strcmp(hname, "COMPLEX") == 0) {

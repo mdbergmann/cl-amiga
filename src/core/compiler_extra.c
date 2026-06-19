@@ -717,6 +717,7 @@ void compile_case(CL_Compiler *c, CL_Obj form, int error_if_no_match)
     int done_patches[MAX_PATCHES];
     int n_done = 0;
     int had_default = 0;
+    CL_Obj ecase_expected = CL_NIL;
 
     /* Allocate temp slot for keyform value */
     temp_slot = env->local_count;
@@ -732,8 +733,46 @@ void compile_case(CL_Compiler *c, CL_Obj form, int error_if_no_match)
     cl_emit(c, (uint8_t)temp_slot);
     cl_emit(c, OP_POP);
 
-    /* Process clauses */
+    /* GC-protect clauses before the pre-scan: the cl_cons calls below
+     * allocate unconditionally and can trigger compaction, staling the
+     * arena-relative offset held in the 'clauses' C local. */
     CL_GC_PROTECT(clauses);
+
+    /* For ECASE, pre-scan the clause keys to build the expected-type
+     * specifier (member k1 k2 ...) used in the fall-through TYPE-ERROR
+     * (CLHS 5.3: ECASE signals an error of type TYPE-ERROR).  Built here,
+     * while the clause list is fresh, and GC-protected across the main walk
+     * (compile_progn below allocates and may move objects). */
+    if (error_if_no_match) {
+        CL_Obj keylist = CL_NIL;
+        CL_Obj cl2 = clauses;
+        CL_Obj ks;
+        CL_GC_PROTECT(keylist);
+        CL_GC_PROTECT(cl2);
+        while (!CL_NULL_P(cl2)) {
+            ks = cl_car(cl_car(cl2));
+            if (ks != SYM_T && ks != SYM_OTHERWISE) {
+                if (CL_CONS_P(ks)) {
+                    CL_Obj k = ks;
+                    CL_GC_PROTECT(k);
+                    while (!CL_NULL_P(k)) {
+                        keylist = cl_cons(cl_car(k), keylist);
+                        k = cl_cdr(k);
+                    }
+                    CL_GC_UNPROTECT(1);
+                } else {
+                    keylist = cl_cons(ks, keylist);
+                }
+            }
+            cl2 = cl_cdr(cl2);
+        }
+        ecase_expected = cl_cons(cl_intern_in("MEMBER", 6, cl_package_cl),
+                                 keylist);
+        CL_GC_UNPROTECT(2); /* cl2, keylist */
+        CL_GC_PROTECT(ecase_expected);
+    }
+
+    /* Process clauses */
     while (!CL_NULL_P(clauses)) {
         CL_Obj clause = cl_car(clauses);
         CL_Obj keys = cl_car(clause);
@@ -810,24 +849,33 @@ void compile_case(CL_Compiler *c, CL_Obj form, int error_if_no_match)
         CL_GC_UNPROTECT(2); /* body, keys */
         clauses = cl_cdr(clauses);
     }
-    CL_GC_UNPROTECT(1);
+    /* Stack now: [clauses] (case) or [clauses, ecase_expected] (ecase) */
 
     /* No default matched */
     if (!had_default) {
         if (error_if_no_match) {
-            /* ecase: signal error */
+            /* ecase: signal (error 'type-error :datum <val>
+             *                       :expected-type '(member k1 k2 ...))
+             * per CLHS 5.3 (must be of type TYPE-ERROR, not SIMPLE-ERROR). */
             CL_Obj sym_error = cl_intern_in("ERROR", 5, cl_package_cl);
-            CL_Obj errmsg = cl_make_string("ECASE: no matching clause", 25);
             int idx = cl_add_constant(c, sym_error);
             cl_emit(c, OP_FLOAD);
             cl_emit_u16(c, (uint16_t)idx);
-            cl_emit_const(c, errmsg);
+            cl_emit_const(c, SYM_TYPE_ERROR);
+            cl_emit_const(c, cl_intern_keyword("DATUM", 5));
+            cl_emit(c, OP_LOAD);
+            cl_emit(c, (uint8_t)temp_slot);
+            cl_emit_const(c, cl_intern_keyword("EXPECTED-TYPE", 13));
+            cl_emit_const(c, ecase_expected);
             cl_emit(c, OP_CALL);
-            cl_emit(c, 1);
+            cl_emit(c, 5);
         } else {
             cl_emit(c, OP_NIL);
         }
     }
+    if (error_if_no_match)
+        CL_GC_UNPROTECT(1); /* ecase_expected */
+    CL_GC_UNPROTECT(1); /* clauses */
 
     /* Patch all done-jumps */
     {
@@ -857,6 +905,7 @@ void compile_typecase(CL_Compiler *c, CL_Obj form, int error_if_no_match)
     int had_default = 0;
     CL_Obj sym_typep;
     int typep_idx;
+    CL_Obj etypecase_expected = CL_NIL;
 
     /* Allocate temp slot for keyform value */
     temp_slot = env->local_count;
@@ -877,8 +926,32 @@ void compile_typecase(CL_Compiler *c, CL_Obj form, int error_if_no_match)
     sym_typep = cl_intern_in("TYPEP", 5, cl_package_cl);
     typep_idx = cl_add_constant(c, sym_typep);
 
-    /* Process clauses */
+    /* GC-protect clauses before the pre-scan: cl_cons below allocates
+     * and can trigger compaction, staling the 'clauses' C local. */
     CL_GC_PROTECT(clauses);
+
+    /* For ETYPECASE, pre-scan the clause type-specs to build the
+     * expected-type specifier (or t1 t2 ...) used in the fall-through
+     * TYPE-ERROR (CLHS 5.3: ETYPECASE signals an error of type TYPE-ERROR).
+     * GC-protected across the main walk below. */
+    if (error_if_no_match) {
+        CL_Obj typelist = CL_NIL;
+        CL_Obj cl2 = clauses;
+        CL_Obj ty;
+        CL_GC_PROTECT(typelist);
+        CL_GC_PROTECT(cl2);
+        while (!CL_NULL_P(cl2)) {
+            ty = cl_car(cl_car(cl2));
+            if (ty != SYM_T && ty != SYM_OTHERWISE)
+                typelist = cl_cons(ty, typelist);
+            cl2 = cl_cdr(cl2);
+        }
+        etypecase_expected = cl_cons(SYM_OR, typelist);
+        CL_GC_UNPROTECT(2); /* cl2, typelist */
+        CL_GC_PROTECT(etypecase_expected);
+    }
+
+    /* Process clauses */
     while (!CL_NULL_P(clauses)) {
         CL_Obj clause = cl_car(clauses);
         CL_Obj type_spec = cl_car(clause);
@@ -928,27 +1001,33 @@ void compile_typecase(CL_Compiler *c, CL_Obj form, int error_if_no_match)
         CL_GC_UNPROTECT(2); /* body, type_spec */
         clauses = cl_cdr(clauses);
     }
-    CL_GC_UNPROTECT(1);
+    /* Stack now: [clauses] (typecase) or [clauses, etypecase_expected] (etypecase) */
 
     /* No default */
     if (!had_default) {
         if (error_if_no_match) {
+            /* etypecase: signal (error 'type-error :datum <val>
+             *                          :expected-type '(or t1 t2 ...))
+             * per CLHS 5.3 (must be of type TYPE-ERROR). */
             CL_Obj sym_error = cl_intern_in("ERROR", 5, cl_package_cl);
-            CL_Obj errmsg = cl_make_string(
-                "ETYPECASE: ~S fell through without matching any clause", 54);
             int idx = cl_add_constant(c, sym_error);
             cl_emit(c, OP_FLOAD);
             cl_emit_u16(c, (uint16_t)idx);
-            cl_emit_const(c, errmsg);
-            /* Push the keyform value so error message shows what failed */
+            cl_emit_const(c, SYM_TYPE_ERROR);
+            cl_emit_const(c, cl_intern_keyword("DATUM", 5));
             cl_emit(c, OP_LOAD);
             cl_emit(c, (uint8_t)temp_slot);
+            cl_emit_const(c, cl_intern_keyword("EXPECTED-TYPE", 13));
+            cl_emit_const(c, etypecase_expected);
             cl_emit(c, OP_CALL);
-            cl_emit(c, 2);
+            cl_emit(c, 5);
         } else {
             cl_emit(c, OP_NIL);
         }
     }
+    if (error_if_no_match)
+        CL_GC_UNPROTECT(1); /* etypecase_expected */
+    CL_GC_UNPROTECT(1); /* clauses */
 
     /* Patch done-jumps */
     {
@@ -1715,29 +1794,26 @@ void compile_defun(CL_Compiler *c, CL_Obj form)
     if (CL_CONS_P(name) && cl_car(name) == SYM_SETF && CL_CONS_P(cl_cdr(name))) {
         CL_Obj accessor = cl_car(cl_cdr(name));
         is_setf_fn = 1;
+        /* Protect accessor across the allocating cl_setf_store_symbol / cl_cons
+         * below — those can compact and otherwise leave this bare local (and
+         * real_name, which aliases it) holding a stale offset. */
+        CL_GC_PROTECT(accessor);
+
+        /* Hidden symbol %SETF-<package>::<name> for storing the function.
+         * Interned in CLAMIGA, package-qualified so same-named accessors in
+         * different packages don't collide; matches compile_setf_place's
+         * late-binding path (both go through cl_setf_store_symbol). */
+        store_sym = cl_setf_store_symbol(accessor);
+
+        /* Register in setf_fn_table: (accessor . store_sym).
+         * Protect store_sym so the compactor forwards this caller-level local;
+         * cl_register_setf_function internally forwards its own parameter
+         * copies but cannot update the variable here. */
+        CL_GC_PROTECT(store_sym);
+        cl_register_setf_function(accessor, store_sym);
+        CL_GC_UNPROTECT(1);  /* store_sym — re-protected unconditionally below */
         real_name = accessor;  /* block name = accessor name */
-
-        /* Create hidden symbol %SETF-<name> for storing the function.
-         * Intern in CLAMIGA so it matches compile_setf_place's late-
-         * binding path and stays out of the accessor's home package. */
-        {
-            CL_Symbol *sym = (CL_Symbol *)CL_OBJ_TO_PTR(accessor);
-            CL_String *sname = (CL_String *)CL_OBJ_TO_PTR(sym->name);
-            char buf[256];
-            int len;
-            len = snprintf(buf, sizeof(buf), "%%SETF-%.*s",
-                           (int)sname->length, sname->data);
-            if (len >= (int)sizeof(buf)) len = (int)sizeof(buf) - 1;
-            store_sym = cl_intern_in(buf, (uint32_t)len, cl_package_clamiga);
-        }
-
-        /* Register in setf_fn_table: (accessor . store_sym) */
-        {
-            CL_Obj pair = cl_cons(accessor, store_sym);
-            cl_tables_wrlock();
-            setf_fn_table = cl_cons(pair, setf_fn_table);
-            cl_tables_rwunlock();
-        }
+        CL_GC_UNPROTECT(1);    /* accessor */
     }
 
     /* Protect real_name and store_sym after the setf block has set their

@@ -1085,9 +1085,7 @@ Specialize via defmethod to provide lazy initialization."
         (push (%slot-spec->direct-def-form spec) slot-def-forms)
         ;; Generate accessor functions
         (dolist (accessor accessors)
-          (let ((setter-name (intern (concatenate 'string
-                                      "%SETF-" (symbol-name accessor))
-                                    (find-package :clamiga))))
+          (let ((setter-name (clamiga::%setf-store-symbol accessor)))
             (push `(defun ,accessor (obj)
                      (slot-value obj ',slot-name))
                   accessor-defs)
@@ -1936,8 +1934,7 @@ already-existing GF the installed combination is preserved."
              (setf (symbol-function name) existing))
             ((and (consp name) (eq (car name) 'setf) (consp (cdr name)))
              (let* ((accessor (cadr name))
-                    (hidden-name (concatenate 'string "%SETF-" (symbol-name accessor)))
-                    (hidden-sym (intern hidden-name (find-package :clamiga))))
+                    (hidden-sym (clamiga::%setf-store-symbol accessor)))
                (setf (symbol-function hidden-sym) existing))))
           ;; Update method combination if explicitly supplied (or if we
           ;; can now resolve STANDARD — important for GFs created before
@@ -1982,8 +1979,7 @@ already-existing GF the installed combination is preserved."
             ;; (setf accessor) — install GF on hidden symbol
             ((and (consp name) (eq (car name) 'setf) (consp (cdr name)))
              (let* ((accessor (cadr name))
-                    (hidden-name (concatenate 'string "%SETF-" (symbol-name accessor)))
-                    (hidden-sym (intern hidden-name (find-package :clamiga))))
+                    (hidden-sym (clamiga::%setf-store-symbol accessor)))
                (setf (symbol-function hidden-sym) gf)
                (%register-setf-function accessor hidden-sym))))
           ;; Fire the make-instance initialization protocol for custom GF

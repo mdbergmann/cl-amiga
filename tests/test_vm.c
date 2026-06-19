@@ -326,6 +326,29 @@ TEST(eval_function_ref_setf)
         "  (car *fref-cell*))"), "42");
 }
 
+/* Regression: (setf ACCESSOR) functions defined on same-named accessors in
+ * DIFFERENT packages must stay distinct.  The hidden storage symbol was
+ * %SETF-<name> (name-only), so the two writers collided on one function cell
+ * (last definition won) — e.g. (setf local-time::sec-of) got clobbered by
+ * (setf local-time-duration::sec-of).  Now keyed by %SETF-<package>::<name>.
+ * Covers both the funcall #'(setf x) and (setf (x ..) ..) place paths. */
+TEST(eval_setf_function_distinct_per_package)
+{
+    /* Packages must exist before the package-qualified symbols are READ, so
+     * create them in their own eval_print calls (not inside one form). */
+    eval_print("(defpackage :setf-p1 (:use :cl))");
+    eval_print("(defpackage :setf-p2 (:use :cl))");
+    eval_print("(defun (setf setf-p1::acc) (v x) (setf (car x) (list :p1 v)) v)");
+    eval_print("(defun (setf setf-p2::acc) (v x) (setf (car x) (list :p2 v)) v)");
+    ASSERT_STR_EQ(eval_print(
+        "(let ((c1 (list 0)) (c2 (list 0)))"
+        "  (funcall #'(setf setf-p1::acc) 11 c1)"
+        "  (funcall #'(setf setf-p2::acc) 22 c2)"
+        "  (setf (setf-p1::acc c1) 33)"
+        "  (list (car c1) (car c2)))"),
+        "((:P1 33) (:P2 22))");
+}
+
 /* Regression: a LABELS with more than the old CL_MAX_LOCAL_FUNS (32) functions
  * in scope, where a function bound past slot 32 is referenced via #' and
  * called.  Overflow used to silently fail to bind the name, so #'fn resolved
@@ -1954,6 +1977,34 @@ TEST(eval_case)
     ASSERT_STR_EQ(eval_print("(case 5 ((1 2) 'low) ((3 4) 'high) (t 'other))"), "OTHER");
     ASSERT_STR_EQ(eval_print("(case 99 (1 'a))"), "NIL");
     ASSERT_STR_EQ(eval_print("(ecase 2 (1 'a) (2 'b))"), "B");
+    ASSERT_STR_EQ(eval_print("(ecase 3 ((1 2) 'low) ((3 4) 'high))"), "HIGH");
+}
+
+/* Regression: ECASE/ETYPECASE/CCASE/CTYPECASE must signal TYPE-ERROR (CLHS
+ * 5.3), not SIMPLE-ERROR, with the unmatched value as datum and a (member
+ * ...)/(or ...) expected-type.  CCASE/CTYPECASE also establish STORE-VALUE. */
+TEST(eval_exhaustive_case_type_error)
+{
+    ASSERT_STR_EQ(eval_print(
+        "(handler-case (ecase 5 (1 'a) (2 'b))"
+        "  (type-error (e) (list (type-error-datum e)"
+        "                        (type-error-expected-type e)))"
+        "  (error () 'wrong-class))"),
+        "(5 (MEMBER 2 1))");
+    ASSERT_STR_EQ(eval_print(
+        "(handler-case (etypecase 5 (string 's) (symbol 'y))"
+        "  (type-error (e) (list (type-error-datum e)"
+        "                        (type-error-expected-type e)))"
+        "  (error () 'wrong-class))"),
+        "(5 (OR SYMBOL STRING))");
+    ASSERT_STR_EQ(eval_print(
+        "(handler-case (let ((x 5)) (ccase x ((1) 'a)))"
+        "  (type-error () 'te) (error () 'wrong-class))"),
+        "TE");
+    ASSERT_STR_EQ(eval_print(
+        "(handler-case (let ((x 5)) (ctypecase x (string 's)))"
+        "  (type-error () 'te) (error () 'wrong-class))"),
+        "TE");
 }
 
 TEST(eval_typecase)
@@ -4997,6 +5048,15 @@ TEST(eval_coerce)
     ASSERT_STR_EQ(eval_print("(funcall (coerce #'+ 'function) 1 2)"), "3");
     ASSERT_STR_EQ(eval_print("(funcall (coerce '+ 'function) 3 4)"), "7");
     ASSERT_STR_EQ(eval_print("(funcall (coerce '(lambda (x) (* x 2)) 'function) 5)"), "10");
+    /* Regression: a BIT element type in a compound (vector/array bit ...)
+     * result spec must yield a bit-vector, not a general SIMPLE-VECTOR. */
+    ASSERT_STR_EQ(eval_print("(bit-vector-p (coerce '(1 0 1) '(vector bit 3)))"), "T");
+    ASSERT_STR_EQ(eval_print("(bit-vector-p (coerce '(1 0 1) '(vector bit)))"), "T");
+    ASSERT_STR_EQ(eval_print("(bit-vector-p (coerce '(1 0 1) '(array bit (3))))"), "T");
+    ASSERT_STR_EQ(eval_print("(coerce '(1 0 1 1 1 1 0 0) '(vector bit 8))"), "#*10111100");
+    ASSERT_STR_EQ(eval_print("(equal (coerce '(1 0 1) '(vector bit 3)) #*101)"), "T");
+    /* Non-bit, non-char element types still give a general vector. */
+    ASSERT_STR_EQ(eval_print("(type-of (coerce '(1 2 3) '(vector fixnum 3)))"), "SIMPLE-VECTOR");
 }
 
 /* --- Compound typep --- */
@@ -9644,6 +9704,7 @@ int main(void)
     RUN(eval_lambda);
     RUN(eval_function_ref);
     RUN(eval_function_ref_setf);
+    RUN(eval_setf_function_distinct_per_package);
     RUN(eval_labels_past_32_funs);
     RUN(eval_error_unbound);
     RUN(eval_error_divzero);
@@ -9756,6 +9817,7 @@ int main(void)
     RUN(eval_prog1);
     RUN(eval_prog2);
     RUN(eval_case);
+    RUN(eval_exhaustive_case_type_error);
     RUN(eval_typecase);
     RUN(eval_flet);
     RUN(eval_labels);

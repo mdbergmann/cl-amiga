@@ -58,6 +58,9 @@ heap_for() {
       *-cffi.lisp)                            echo 192 ;;
       *-ansi.lisp)                            echo 96 ;;
       *-sento.lisp|*-sento-system.lisp)       echo 192 ;;
+      # knx-conn pulls in the full sento actor stack plus usocket/local-time;
+      # like the sento scripts it thrashes the moving GC below ~192M.
+      *-knx-conn.lisp)                        echo 192 ;;
       # chipi pulls in the full sento+drakma stack and a large test suite; at
       # 96M the moving GC thrashes (50x slower, hits the timeout). Its own
       # script header documents 256M for host — match it. chipi-api is the same
@@ -87,6 +90,9 @@ heap_for() {
 timeout_for() {
   case "$1" in
     *-sento.lisp|*-sento-system.lisp) echo 1800 ;;
+    # knx-conn cold-compiles the whole sento dep tree from scratch — same
+    # headroom as the sento scripts.
+    *-knx-conn.lisp)                  echo 1800 ;;
     # chipi-ui cold-compiles chipi + chipi-api + the whole clog dep tree from
     # scratch, the heaviest of the load-and-test scripts — give it room.
     *-chipi-ui.lisp)                  echo 1800 ;;

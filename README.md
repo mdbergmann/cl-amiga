@@ -190,6 +190,7 @@ Reusable Lisp loaders in `trunk/` that load and exercise third-party libraries o
 ./build/host/clamiga --heap 24M  --load trunk/load-and-test-fset.lisp           # FSet
 ./build/host/clamiga --heap 64M  --load trunk/load-and-test-str.lisp            # str
 ./build/host/clamiga --heap 192M --load trunk/load-and-test-sento-system.lisp   # Sento (cold cache)
+./build/host/clamiga --heap 192M --load trunk/load-and-test-knx-conn.lisp       # knx-conn KNXnet/IP (fiveam)
 ./build/host/clamiga --heap 96M  --load trunk/load-and-test-ansi.lisp           # ANSI cons + symbols + numbers
 ./build/host/clamiga --heap 256M --load trunk/load-and-test-cffi.lisp           # CFFI backend
 ./build/host/clamiga --heap 256M --load trunk/load-and-test-drakma.lisp         # drakma HTTP/HTTPS (host only)

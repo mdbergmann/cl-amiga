@@ -306,6 +306,82 @@ check_contains "case compiles correctly under GC stress"     "CASE:two" "$out"
 check_contains "typecase compiles correctly under GC stress" "TYPECASE:str:hello" "$out"
 check_absent   "no unbound/undefined from stale case locals" "Unbound variable\|Undefined" "$out"
 
+# --- Case 11b: ECASE/ETYPECASE fall-through TYPE-ERROR built under GC stress -
+# The fall-through TYPE-ERROR for ECASE/ETYPECASE pre-scans the clause keys to
+# build a (member ...)/(or ...) expected-type at compile time.  That cl_cons
+# loop must keep the accumulator (keylist/typelist), clause cursor, and the
+# resulting expected spec GC-protected across the main clause walk, or a
+# compaction mid-compile leaves a stale spec / corrupt error.
+cat > "$WORK/ecase_err.lisp" <<'EOF'
+(format t "ECASE-TE:~a~%"
+  (handler-case (ecase 5 (1 'a) (2 'b) (3 'c))
+    (type-error (e) (list (type-error-datum e) (type-error-expected-type e)))
+    (error () 'wrong-class)))
+(format t "ETYPECASE-TE:~a~%"
+  (handler-case (etypecase 5 (string 's) (symbol 'y))
+    (type-error () 'te)
+    (error () 'wrong-class)))
+EOF
+out=$(run_stress "$WORK/ecase_err.lisp")
+check_contains "ecase fall-through type-error under GC stress" "ECASE-TE:(5 (MEMBER" "$out"
+check_contains "etypecase fall-through type-error under GC stress" "ETYPECASE-TE:TE" "$out"
+check_absent   "no wrong condition class from stale ecase spec" "wrong-class\|WRONG-CLASS" "$out"
+
+# --- Case 11b-match: ECASE/ETYPECASE matching key compiled under GC stress ---
+# Bug (HIGH): compile_case/compile_typecase did not protect 'clauses' before
+# the pre-scan cl_cons loop; a compaction during that loop staled 'clauses' so
+# that the subsequent CL_GC_PROTECT at the main-walk start registered the stale
+# offset.  Under gc-stress, the matching path produced corrupt bytecode (stale
+# key constants) so a matching ecase returned wrong results.
+# Fix: CL_GC_PROTECT(clauses) moved to before the pre-scan block.
+cat > "$WORK/ecase_match.lisp" <<'EOF'
+(format t "ECASE-M:~a~%" (ecase 1 (1 'a) (2 'b) (3 'c)))
+(format t "ECASE-M2:~a~%" (ecase 2 ((1 2) :low) ((3 4) :high)))
+(format t "ETYPECASE-M:~a~%"
+  (etypecase "hello" (string :str) (integer :int)))
+(format t "ETYPECASE-M2:~a~%"
+  (etypecase 42 (string :str) ((integer 0 100) :small-int)))
+EOF
+out=$(run_stress "$WORK/ecase_match.lisp")
+check_contains "ecase matching key correct under GC stress"           "ECASE-M:A"       "$out"
+check_contains "ecase multi-key match correct under GC stress"        "ECASE-M2:LOW"    "$out"
+check_contains "etypecase string match correct under GC stress"       "ETYPECASE-M:STR" "$out"
+check_contains "etypecase compound type match correct under GC stress" "ETYPECASE-M2:SMALL-INT" "$out"
+check_absent   "no error from matching ecase/etypecase under stress"  "Error\|Unbound"  "$out"
+
+# --- Case 11c: COERCE to (vector/array bit ...) under GC stress --------------
+# (coerce list '(vector bit N)) must allocate and return a real bit-vector even
+# when a compaction fires inside the bit-vector allocation path.
+cat > "$WORK/coerce_bit.lisp" <<'EOF'
+(dotimes (i 4)
+  (let ((bv (coerce (list 1 0 1 1 1 1 0 0) '(vector bit 8))))
+    (format t "COERCE-BIT:~a:~a~%" (bit-vector-p bv) bv)))
+EOF
+out=$(run_stress "$WORK/coerce_bit.lisp")
+# Pattern is a regex; "#*" would be a metachar, so assert the bit-vector-p=T
+# result (exact value #*10111100 is covered by the host/Amiga unit tests).
+check_contains "coerce to (vector bit N) yields bit-vector under GC stress" "COERCE-BIT:T:" "$out"
+
+# --- Case 11d: (defun (setf accessor)) hidden symbol under GC stress ---------
+# compile_defun synthesizes the package-qualified %SETF-<pkg>::<name> storage
+# symbol via cl_setf_store_symbol (an interning, allocating call) and conses
+# it into setf_fn_table.  The accessor local must stay protected across that,
+# and two same-named accessors in different packages must register distinct
+# storage symbols.
+cat > "$WORK/setf_pkg.lisp" <<'EOF'
+(defpackage :gcs-a (:use :cl))
+(defpackage :gcs-b (:use :cl))
+(defun (setf gcs-a::acc) (v x) (setf (car x) (list :a v)) v)
+(defun (setf gcs-b::acc) (v x) (setf (car x) (list :b v)) v)
+(let ((c1 (list 0)) (c2 (list 0)))
+  (funcall #'(setf gcs-a::acc) 11 c1)
+  (funcall #'(setf gcs-b::acc) 22 c2)
+  (format t "SETF-PKG:~a~%" (list (car c1) (car c2))))
+EOF
+out=$(run_stress "$WORK/setf_pkg.lisp")
+# ~A (princ) prints keywords without the leading colon, so :A/:B render as A/B.
+check_contains "(setf accessor) distinct per package under GC stress" "SETF-PKG:((A 11) (B 22))" "$out"
+
 # --- Case 12: Quasiquote builder compiled under GC stress --------------------
 # Bug: qq_expand's main list loop held `cursor` and `rest` as unprotected
 # C-locals across qq_expand_list (which allocates).  cursor=rest at end of

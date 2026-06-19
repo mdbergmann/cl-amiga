@@ -1060,9 +1060,7 @@
                              (list `(defmethod ,reader ((c ,name)) (condition-slot-value c ',slot-name)))
                              (list `(defun ,reader (c) (condition-slot-value c ',slot-name)))))
                        (when accessor
-                         (let ((setter-name (intern (concatenate 'string
-                                                     "%SETF-" (symbol-name accessor))
-                                                   (find-package :clamiga))))
+                         (let ((setter-name (clamiga::%setf-store-symbol accessor)))
                            (list `(defun ,setter-name (val c)
                                     (%set-condition-slot-value c ',slot-name val))))))))
                  slot-specs)
@@ -1098,7 +1096,9 @@
 ;; supply a new keyform value and retry.  We don't have a debugger that can
 ;; offer restarts interactively, so we treat CCASE as ECASE (one-shot type
 ;; error) — the host-incompatible difference is the restart presentation, not
-;; the value-on-success or value-on-mismatch behaviour.
+;; the value-on-success or value-on-mismatch behaviour.  (A fully continuable
+;; CCASE/CTYPECASE with a working STORE-VALUE retry is a separate feature; an
+;; auto-generated restart-case/go version deadlocked on clamiga's NLX path.)
 (defmacro ccase (keyplace &rest clauses)
   `(ecase ,keyplace ,@clauses))
 

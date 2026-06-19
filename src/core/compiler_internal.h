@@ -202,6 +202,9 @@ extern CL_Obj cl_dbind_too_many_sym;
 extern CL_Obj macro_table;
 extern CL_Obj setf_table;
 extern CL_Obj setf_fn_table;
+/* Synthesize the package-qualified hidden CLAMIGA symbol that stores a
+ * (setf ACCESSOR) function (see compiler.c). */
+CL_Obj cl_setf_store_symbol(CL_Obj accessor);
 extern CL_Obj setf_expander_table;
 extern CL_Obj type_table;
 extern CL_Obj SETF_SYM_CAR, SETF_SYM_CDR, SETF_SYM_FIRST, SETF_SYM_REST;

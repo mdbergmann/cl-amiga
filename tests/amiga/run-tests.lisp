@@ -387,6 +387,17 @@
 (check "case multi-key" 'other (case 5 ((1 2) 'low) ((3 4) 'high) (t 'other)))
 (check "case no match" nil (case 99 (1 'a)))
 (check "ecase match" 'b (ecase 2 (1 'a) (2 'b)))
+; ECASE/ETYPECASE/CCASE/CTYPECASE must signal TYPE-ERROR (CLHS 5.3), not SIMPLE-ERROR
+(check "ecase no-match type-error" 'te
+       (handler-case (ecase 5 (1 'a) (2 'b)) (type-error () 'te) (error () 'wrong)))
+(check "ecase type-error datum" 5
+       (handler-case (ecase 5 (1 'a)) (type-error (e) (type-error-datum e))))
+(check "etypecase no-match type-error" 'te
+       (handler-case (etypecase 5 (string 's)) (type-error () 'te) (error () 'wrong)))
+(check "ccase no-match type-error" 'te
+       (handler-case (let ((x 5)) (ccase x ((1) 'a))) (type-error () 'te) (error () 'wrong)))
+(check "ctypecase no-match type-error" 'te
+       (handler-case (let ((x 5)) (ctypecase x (string 's))) (type-error () 'te) (error () 'wrong)))
 (check "typecase int" 'num (typecase 42 (integer 'num) (string 'str)))
 (check "typecase str" 'str (typecase "hi" (integer 'num) (string 'str)))
 
@@ -400,6 +411,18 @@
 (defun (setf sl-acc) (v x) (setf (car x) v) v)
 (check "sharp-quote (setf name)" 42
        (let ((cell (list 0))) (funcall #'(setf sl-acc) 42 cell) (car cell)))
+; Regression (local-time/local-time-duration): (setf ACCESSOR) functions on
+; same-named accessors in DIFFERENT packages must stay distinct (hidden store
+; symbol is now %SETF-<package>::<name>, not the colliding %SETF-<name>).
+(defpackage :setf-pkg-a (:use :cl))
+(defpackage :setf-pkg-b (:use :cl))
+(defun (setf setf-pkg-a::acc) (v x) (setf (car x) (list :a v)) v)
+(defun (setf setf-pkg-b::acc) (v x) (setf (car x) (list :b v)) v)
+(check "(setf accessor) distinct per package" '((:a 11) (:b 22))
+       (let ((c1 (list 0)) (c2 (list 0)))
+         (funcall #'(setf setf-pkg-a::acc) 11 c1)
+         (funcall #'(setf setf-pkg-b::acc) 22 c2)
+         (list (car c1) (car c2))))
 ; Regression (chipz inflate.lisp 37-fn state machine): a LABELS with >32
 ; functions must bind+resolve #' to a function past slot 32 (CL_MAX_LOCAL_FUNS
 ; was 32, now 64).  fn35 is the 36th; #'fn35 must call it, not a global.
@@ -1283,6 +1306,14 @@
 (check "coerce vector->list" '(1 2 3) (coerce (vector 1 2 3) 'list))
 (check "coerce nil->list" nil (coerce nil 'list))
 (check "coerce nil->vector" t (equalp (coerce nil 'vector) (vector)))
+; A BIT element type in (vector/array bit ...) must yield a bit-vector
+(check "coerce list->(vector bit N)" t (bit-vector-p (coerce '(1 0 1) '(vector bit 3))))
+(check "coerce list->(vector bit)" t (bit-vector-p (coerce '(1 0 1) '(vector bit))))
+(check "coerce list->(array bit (N))" t (bit-vector-p (coerce '(1 0 1) '(array bit (3)))))
+(check "coerce (vector bit) value" #*10111100 (coerce '(1 0 1 1 1 1 0 0) '(vector bit 8)))
+(check "coerce (vector bit) equal lit" t (equal (coerce '(1 0 1) '(vector bit 3)) #*101))
+(check "coerce (vector fixnum) stays general" t
+       (not (bit-vector-p (coerce '(1 2 3) '(vector fixnum 3)))))
 
 ; --- Type system: compound typep ---
 (check "typep or match int" t (typep 42 '(or integer string)))
