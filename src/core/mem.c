@@ -1470,6 +1470,14 @@ static void gc_mark(void)
         cl_fasl_gc_mark_readers();
     }
 
+    /* Active MAKE-LOAD-FORM writer pre-pass — its walk/result arrays hold
+     * CL_Obj offsets that a compaction during a user MAKE-LOAD-FORM method
+     * must keep live and forward. */
+    {
+        extern void cl_fasl_gc_mark_mlf(void);
+        cl_fasl_gc_mark_mlf();
+    }
+
     /* Drain mark stack iteratively (children pushed by gc_mark_obj above).
      * Do NOT clear gc_mark_overflow here — it may have been set during
      * root marking above, and the re-scan loop below must handle it. */
@@ -2215,6 +2223,13 @@ static void gc_update_shared_roots(void)
     {
         extern void cl_fasl_gc_update_readers(void (*update_fn)(CL_Obj *));
         cl_fasl_gc_update_readers(gc_update_slot);
+    }
+
+    /* MAKE-LOAD-FORM writer pre-pass — forward the relocated offsets in
+     * its walk/result arrays (mirrors cl_fasl_gc_mark_mlf). */
+    {
+        extern void cl_fasl_gc_update_mlf(void (*update_fn)(CL_Obj *));
+        cl_fasl_gc_update_mlf(gc_update_slot);
     }
 }
 

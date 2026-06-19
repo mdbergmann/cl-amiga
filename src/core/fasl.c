@@ -54,6 +54,379 @@ void cl_fasl_writer_release(CL_FaslWriter *w)
     w->shared_count = 0;
 }
 
+/* ================================================================
+ * MAKE-LOAD-FORM writer support  (see fasl.h FASL_TAG_LOAD_FORM)
+ * ================================================================
+ *
+ * Before a COMPILE-FILE run serializes its bytecode units, it calls
+ * cl_fasl_mlf_prepass() over the collected bytecodes.  The pre-pass
+ * walks the constant graph and, for every literal object whose class
+ * has a user MAKE-LOAD-FORM method, calls clamiga::%FASL-LOAD-FORM to
+ * obtain (creation-form . init-form) and records it.  fasl_ser_step's
+ * TYPE_STRUCT case then emits FASL_TAG_LOAD_FORM for those objects
+ * (looked up by EQ via cl_fasl_mlf_lookup) instead of dumping slots.
+ *
+ * Why a pre-pass and not an inline call?  %FASL-LOAD-FORM runs arbitrary
+ * user code and allocates, so it can trigger compaction.  The
+ * serializer's offset-keyed dedup tables (shared_objs / shared_hash)
+ * and its work stack can't tolerate objects moving mid-serialization,
+ * so ALL MAKE-LOAD-FORM calls happen here, up front — serialization
+ * itself never allocates from the arena.  During the pre-pass the
+ * walk's work/seen arrays and the result cache hold raw CL_Obj offsets,
+ * so they are registered as GC roots (cl_fasl_gc_mark_mlf /
+ * cl_fasl_gc_update_mlf, mirroring the active-reader rooting).
+ *
+ * Single-threaded: like the DEBUG_FASL histogram globals, the writer
+ * path assumes COMPILE-FILE is not run concurrently from multiple
+ * threads, so a single file-static context is safe.
+ *
+ * Zero cost when unused: the pre-pass is gated on
+ * clamiga::%MAKE-LOAD-FORM-ACTIVE-P — when no user MAKE-LOAD-FORM method
+ * exists (the case for virtually every file), the graph walk is skipped
+ * entirely and serialization behaves exactly as before. */
+
+typedef struct {
+    /* Result cache — persists through the whole serialize loop.  One
+     * entry per literal object that has a MAKE-LOAD-FORM method. */
+    CL_Obj  *objs;
+    CL_Obj  *creations;
+    CL_Obj  *inits;
+    uint32_t count;
+    uint32_t cap;
+    /* Pre-pass-only graph-walk state (freed when the walk ends). */
+    CL_Obj  *work;            /* worklist of objects still to walk */
+    uint32_t work_count;
+    uint32_t work_cap;
+    CL_Obj  *seen;            /* container objects already walked (cycle break) */
+    uint32_t seen_count;
+    uint32_t seen_cap;
+    int      active;          /* nonzero between prepass and cleanup */
+} FaslMlfState;
+
+static FaslMlfState g_mlf;    /* zero-initialized; single-threaded compile-file */
+
+/* Mirror of the metaobject test in fasl_ser_step's TYPE_STRUCT case:
+ * STANDARD-CLASS / BUILT-IN-CLASS / FUNCALLABLE-STANDARD-CLASS structs
+ * are cyclic CLOS metaobjects that serialize as FASL_TAG_CLASS_REF and
+ * must never be treated as load-form candidates or walked into. */
+static int fasl_struct_is_class_metaobject(CL_Obj obj)
+{
+    CL_Struct *st = (CL_Struct *)CL_OBJ_TO_PTR(obj);
+    CL_Symbol *td_sym;
+    CL_String *td_nm;
+    if (!CL_HEAP_P(st->type_desc) ||
+        CL_HDR_TYPE(CL_OBJ_TO_PTR(st->type_desc)) != TYPE_SYMBOL)
+        return 0;
+    td_sym = (CL_Symbol *)CL_OBJ_TO_PTR(st->type_desc);
+    td_nm  = (CL_String *)CL_OBJ_TO_PTR(td_sym->name);
+    return (td_nm->length == 14 &&
+            (memcmp(td_nm->data, "STANDARD-CLASS", 14) == 0 ||
+             memcmp(td_nm->data, "BUILT-IN-CLASS", 14) == 0)) ||
+           (td_nm->length == 26 &&
+            memcmp(td_nm->data, "FUNCALLABLE-STANDARD-CLASS", 26) == 0);
+}
+
+/* Append v to a platform-allocated CL_Obj array, growing on demand.
+ * Does not allocate from the arena, so it never triggers GC.  Returns 0
+ * only on OOM (caller aborts the pre-pass). */
+static int fasl_mlf_arr_push(CL_Obj **arr, uint32_t *count, uint32_t *cap,
+                             CL_Obj v)
+{
+    if (*count >= *cap) {
+        uint32_t ncap = *cap ? *cap * 2 : 64;
+        CL_Obj *n = (CL_Obj *)platform_alloc(ncap * sizeof(CL_Obj));
+        if (!n) return 0;
+        if (*arr) {
+            memcpy(n, *arr, (*count) * sizeof(CL_Obj));
+            platform_free(*arr);
+        }
+        *arr = n;
+        *cap = ncap;
+    }
+    (*arr)[(*count)++] = v;
+    return 1;
+}
+
+/* Append (obj, creation, init) to the parallel result-cache arrays,
+ * growing all three together.  No arena allocation, so GC-safe. */
+static int fasl_mlf_cache_push(CL_Obj obj, CL_Obj creation, CL_Obj init)
+{
+    if (g_mlf.count >= g_mlf.cap) {
+        uint32_t ncap = g_mlf.cap ? g_mlf.cap * 2 : 16;
+        CL_Obj *no = (CL_Obj *)platform_alloc(ncap * sizeof(CL_Obj));
+        CL_Obj *nc = (CL_Obj *)platform_alloc(ncap * sizeof(CL_Obj));
+        CL_Obj *ni = (CL_Obj *)platform_alloc(ncap * sizeof(CL_Obj));
+        if (!no || !nc || !ni) {
+            if (no) platform_free(no);
+            if (nc) platform_free(nc);
+            if (ni) platform_free(ni);
+            return 0;
+        }
+        if (g_mlf.objs) {
+            memcpy(no, g_mlf.objs,      g_mlf.count * sizeof(CL_Obj));
+            memcpy(nc, g_mlf.creations, g_mlf.count * sizeof(CL_Obj));
+            memcpy(ni, g_mlf.inits,     g_mlf.count * sizeof(CL_Obj));
+            platform_free(g_mlf.objs);
+            platform_free(g_mlf.creations);
+            platform_free(g_mlf.inits);
+        }
+        g_mlf.objs = no;
+        g_mlf.creations = nc;
+        g_mlf.inits = ni;
+        g_mlf.cap = ncap;
+    }
+    g_mlf.objs[g_mlf.count] = obj;
+    g_mlf.creations[g_mlf.count] = creation;
+    g_mlf.inits[g_mlf.count] = init;
+    g_mlf.count++;
+    return 1;
+}
+
+/* True if a container object has already been enqueued/walked. */
+static int fasl_mlf_seen_p(CL_Obj obj)
+{
+    uint32_t k;
+    for (k = 0; k < g_mlf.seen_count; k++)
+        if (g_mlf.seen[k] == obj) return 1;
+    return 0;
+}
+
+/* Look up OBJECT's cached load form.  Hot path: called for every struct
+ * the serializer emits.  When no MAKE-LOAD-FORM methods exist the cache
+ * is empty and this returns immediately. */
+static int cl_fasl_mlf_lookup(CL_Obj obj, CL_Obj *creation, CL_Obj *init)
+{
+    uint32_t k;
+    for (k = 0; k < g_mlf.count; k++) {
+        if (g_mlf.objs[k] == obj) {
+            *creation = g_mlf.creations[k];
+            *init = g_mlf.inits[k];
+            return 1;
+        }
+    }
+    return 0;
+}
+
+/* GC mark/update hooks: the walk arrays and the result cache hold raw
+ * arena offsets that a compaction during %FASL-LOAD-FORM must forward.
+ * Called from mem.c during the stop-the-world mark/update phases. */
+void cl_fasl_gc_mark_mlf(void)
+{
+    extern void gc_mark_obj(CL_Obj obj);
+    uint32_t k;
+    if (!g_mlf.active) return;
+    for (k = 0; k < g_mlf.count; k++) {
+        gc_mark_obj(g_mlf.objs[k]);
+        gc_mark_obj(g_mlf.creations[k]);
+        gc_mark_obj(g_mlf.inits[k]);
+    }
+    for (k = 0; k < g_mlf.work_count; k++) gc_mark_obj(g_mlf.work[k]);
+    for (k = 0; k < g_mlf.seen_count; k++) gc_mark_obj(g_mlf.seen[k]);
+}
+
+void cl_fasl_gc_update_mlf(void (*update_fn)(CL_Obj *))
+{
+    uint32_t k;
+    if (!g_mlf.active) return;
+    for (k = 0; k < g_mlf.count; k++) {
+        update_fn(&g_mlf.objs[k]);
+        update_fn(&g_mlf.creations[k]);
+        update_fn(&g_mlf.inits[k]);
+    }
+    for (k = 0; k < g_mlf.work_count; k++) update_fn(&g_mlf.work[k]);
+    for (k = 0; k < g_mlf.seen_count; k++) update_fn(&g_mlf.seen[k]);
+}
+
+/* Free all pre-pass state and reset.  Safe to call repeatedly. */
+void cl_fasl_mlf_cleanup(void)
+{
+    if (g_mlf.objs)      platform_free(g_mlf.objs);
+    if (g_mlf.creations) platform_free(g_mlf.creations);
+    if (g_mlf.inits)     platform_free(g_mlf.inits);
+    if (g_mlf.work)      platform_free(g_mlf.work);
+    if (g_mlf.seen)      platform_free(g_mlf.seen);
+    memset(&g_mlf, 0, sizeof(g_mlf));
+}
+
+/* Free the walk-only arrays once the walk is finished, keeping the
+ * result cache for the serialize phase. */
+static void fasl_mlf_free_walk_state(void)
+{
+    if (g_mlf.work) { platform_free(g_mlf.work); g_mlf.work = NULL; }
+    if (g_mlf.seen) { platform_free(g_mlf.seen); g_mlf.seen = NULL; }
+    g_mlf.work_count = g_mlf.work_cap = 0;
+    g_mlf.seen_count = g_mlf.seen_cap = 0;
+}
+
+/* Resolve a CLAMIGA-package function by name; CL_NIL if undefined
+ * (e.g. CLOS not loaded — the pre-pass then no-ops). */
+static CL_Obj fasl_mlf_clamiga_fn(const char *name, int len)
+{
+    CL_Obj sym = cl_intern_in(name, len, cl_package_clamiga);
+    CL_Symbol *s = (CL_Symbol *)CL_OBJ_TO_PTR(sym);
+    return s->function;
+}
+
+/* Enqueue OBJ for walking if it is a heap object. */
+static int fasl_mlf_enqueue(CL_Obj obj)
+{
+    if (!CL_HEAP_P(obj)) return 1;
+    return fasl_mlf_arr_push(&g_mlf.work, &g_mlf.work_count, &g_mlf.work_cap, obj);
+}
+
+/* Pre-pass entry point: walk the constant graph of the BC_COUNT bytecode
+ * units in BC_VEC (a Lisp vector) and populate the load-form cache.
+ * Leaves g_mlf.active = 1 and the cache live for the serialize phase;
+ * the caller must invoke cl_fasl_mlf_cleanup() once serialization is
+ * done.  GC-safe: %FASL-LOAD-FORM may compact, and all live walk state
+ * is GC-rooted via cl_fasl_gc_mark_mlf / cl_fasl_gc_update_mlf. */
+void cl_fasl_mlf_prepass(CL_Obj bc_vec, int bc_count)
+{
+    CL_Obj active_fn, fasl_fn;
+    CL_Vector *bcv;
+    int i;
+
+    cl_fasl_mlf_cleanup();
+    g_mlf.active = 1;
+
+    /* Gate: only walk when MAKE-LOAD-FORM has at least one user method. */
+    active_fn = fasl_mlf_clamiga_fn("%MAKE-LOAD-FORM-ACTIVE-P", 24);
+    if (CL_NULL_P(active_fn) || active_fn == CL_UNBOUND) return;  /* CLOS / helper not loaded */
+    if (CL_NULL_P(cl_vm_apply(active_fn, NULL, 0))) return;
+
+    fasl_fn = fasl_mlf_clamiga_fn("%FASL-LOAD-FORM", 15);
+    if (CL_NULL_P(fasl_fn) || fasl_fn == CL_UNBOUND) return;
+
+    if (CL_NULL_P(bc_vec) || !CL_HEAP_P(bc_vec)) return;
+    bcv = (CL_Vector *)CL_OBJ_TO_PTR(bc_vec);
+    for (i = 0; i < bc_count && (uint32_t)i < bcv->length; i++) {
+        /* Re-fetch bcv each iteration — fasl_mlf_enqueue never allocates
+         * from the arena, so no compaction here, but keep it robust. */
+        bcv = (CL_Vector *)CL_OBJ_TO_PTR(bc_vec);
+        if (!fasl_mlf_enqueue(cl_vector_data(bcv)[i])) goto done;
+    }
+
+    while (g_mlf.work_count > 0) {
+        CL_Obj obj = g_mlf.work[--g_mlf.work_count];
+        uint8_t htype;
+        if (!CL_HEAP_P(obj)) continue;
+        htype = CL_HDR_TYPE(CL_OBJ_TO_PTR(obj));
+
+        switch (htype) {
+        case TYPE_CONS: {
+            if (fasl_mlf_seen_p(obj)) break;
+            if (!fasl_mlf_arr_push(&g_mlf.seen, &g_mlf.seen_count,
+                                   &g_mlf.seen_cap, obj)) goto done;
+            if (!fasl_mlf_enqueue(cl_car(obj))) goto done;
+            if (!fasl_mlf_enqueue(cl_cdr(obj))) goto done;
+            break;
+        }
+        case TYPE_VECTOR: {
+            CL_Vector *v;
+            uint32_t k;
+            if (fasl_mlf_seen_p(obj)) break;
+            if (!fasl_mlf_arr_push(&g_mlf.seen, &g_mlf.seen_count,
+                                   &g_mlf.seen_cap, obj)) goto done;
+            v = (CL_Vector *)CL_OBJ_TO_PTR(obj);
+            for (k = 0; k < v->length; k++)
+                if (!fasl_mlf_enqueue(cl_vector_data(v)[k])) goto done;
+            break;
+        }
+        case TYPE_BYTECODE: {
+            CL_Bytecode *bc;
+            uint16_t k;
+            if (fasl_mlf_seen_p(obj)) break;
+            if (!fasl_mlf_arr_push(&g_mlf.seen, &g_mlf.seen_count,
+                                   &g_mlf.seen_cap, obj)) goto done;
+            bc = (CL_Bytecode *)CL_OBJ_TO_PTR(obj);
+            for (k = 0; k < bc->n_constants; k++)
+                if (!fasl_mlf_enqueue(bc->constants[k])) goto done;
+            for (k = 0; k < bc->n_keys; k++)
+                if (!fasl_mlf_enqueue(bc->key_syms[k])) goto done;
+            if (!fasl_mlf_enqueue(bc->name)) goto done;
+            break;
+        }
+        case TYPE_CLOSURE: {
+            CL_Closure *cl_obj;
+            uint32_t n_upvalues, k, alloc_size;
+            if (fasl_mlf_seen_p(obj)) break;
+            if (!fasl_mlf_arr_push(&g_mlf.seen, &g_mlf.seen_count,
+                                   &g_mlf.seen_cap, obj)) goto done;
+            cl_obj = (CL_Closure *)CL_OBJ_TO_PTR(obj);
+            if (!fasl_mlf_enqueue(cl_obj->bytecode)) goto done;
+            alloc_size = CL_HDR_SIZE(cl_obj);
+            n_upvalues = (alloc_size - sizeof(CL_Closure)) / sizeof(CL_Obj);
+            for (k = 0; k < n_upvalues; k++)
+                if (!fasl_mlf_enqueue(cl_obj->upvalues[k])) goto done;
+            break;
+        }
+        case TYPE_STRUCT: {
+            CL_Obj forms = CL_NIL, arg;
+            uint32_t seen_idx;
+            int sf, ss, sn, sroots, err;
+            if (fasl_mlf_seen_p(obj)) break;
+            if (!fasl_mlf_arr_push(&g_mlf.seen, &g_mlf.seen_count,
+                                   &g_mlf.seen_cap, obj)) goto done;
+            seen_idx = g_mlf.seen_count - 1;   /* obj's stable, GC-rooted slot */
+            /* CLOS metaobjects serialize as CLASS_REF — never load forms,
+             * and their cyclic slots must not be walked. */
+            if (fasl_struct_is_class_metaobject(obj)) break;
+
+            /* %FASL-LOAD-FORM runs an arbitrary user method.  obj is held
+             * across its (compacting) execution via the GC-rooted seen[]
+             * slot, re-read afterwards — no CL_GC_PROTECT, so a longjmp out
+             * of a faulty method can't leak a protect entry.  An error is
+             * treated as "no load form": obj falls back to the built-in
+             * structure dump (a valid instance on load), and we keep going. */
+            sf = cl_vm.fp; ss = cl_vm.sp; sn = cl_nlx_top;
+            sroots = gc_root_count;
+            arg = g_mlf.seen[seen_idx];
+            CL_CATCH(err);
+            if (err == CL_ERR_NONE) {
+                forms = cl_vm_apply(fasl_fn, &arg, 1);
+                CL_UNCATCH();
+            } else {
+                /* Restore VM/GC state leaked by the aborted method. */
+                cl_vm.fp = sf; cl_vm.sp = ss; cl_nlx_top = sn;
+                gc_root_count = sroots;
+                CL_UNCATCH();
+                forms = CL_NIL;
+            }
+            obj = g_mlf.seen[seen_idx];        /* forwarded across compaction */
+
+            if (CL_HEAP_P(forms) &&
+                CL_HDR_TYPE(CL_OBJ_TO_PTR(forms)) == TYPE_CONS) {
+                CL_Obj creation = cl_car(forms);
+                CL_Obj init = cl_cdr(forms);
+                if (!fasl_mlf_cache_push(obj, creation, init)) goto done;
+                /* Recurse into the load forms — their literals may include
+                 * further objects that need MAKE-LOAD-FORM treatment. */
+                if (!fasl_mlf_enqueue(creation)) goto done;
+                if (!fasl_mlf_enqueue(init)) goto done;
+            } else {
+                /* No method: recurse into slots — a plain struct/cons can
+                 * still contain an MLF object deeper down. */
+                CL_Struct *st = (CL_Struct *)CL_OBJ_TO_PTR(obj);
+                uint32_t k;
+                if (!fasl_mlf_enqueue(st->type_desc)) goto done;
+                for (k = 0; k < st->n_slots; k++) {
+                    st = (CL_Struct *)CL_OBJ_TO_PTR(obj);  /* re-fetch */
+                    if (!fasl_mlf_enqueue(st->slots[k])) goto done;
+                }
+            }
+            break;
+        }
+        default:
+            /* Leaf (symbol, string, number, package, pathname, lock, …):
+             * cannot transitively reach an MLF object. */
+            break;
+        }
+    }
+
+done:
+    fasl_mlf_free_walk_state();
+}
+
 void cl_fasl_write_u8(CL_FaslWriter *w, uint8_t val)
 {
     if (w->error) return;
@@ -742,7 +1115,24 @@ static int fasl_ser_step(CL_FaslWriter *w, FaslSerStack *s)
             /* Wire format: tag | type_desc-bytes | n_slots | slot-bytes...
              * The n_slots u32 appears after the type_desc subtree, so we
              * defer slots to PHASE_STRUCT_AFTER_TYPEDESC. */
-            CL_Struct *st = (CL_Struct *)CL_OBJ_TO_PTR(obj);
+            CL_Struct *st;
+            CL_Obj mlf_creation, mlf_init;
+            /* MAKE-LOAD-FORM: if the pre-pass recorded a load form for this
+             * object, emit FASL_TAG_LOAD_FORM (creation form, then init
+             * form) instead of dumping slots.  The enclosing OBJ_DEF — the
+             * shared-object wrapper already wrote it above and registered
+             * obj's id — lets the init form's self-reference round-trip as
+             * an OBJ_REF resolving to the creation result.  Serialize
+             * creation first (push it last so the LIFO drive pops it
+             * first), then the init form. */
+            if (cl_fasl_mlf_lookup(obj, &mlf_creation, &mlf_init)) {
+                cl_fasl_write_u8(w, FASL_TAG_LOAD_FORM);
+                s->frames[idx].phase = PHASE_DONE;
+                if (!fasl_ser_stack_push(w, s, mlf_init, PHASE_START)) return 1;
+                if (!fasl_ser_stack_push(w, s, mlf_creation, PHASE_START)) return 1;
+                return 0;
+            }
+            st = (CL_Struct *)CL_OBJ_TO_PTR(obj);
             /* CLOS class metaobjects (STANDARD-CLASS / BUILT-IN-CLASS
              * structs) are cyclic by design: their effective-slots,
              * precedence-list, and direct-subclasses slots back-reference
@@ -1598,6 +1988,45 @@ CL_Obj cl_fasl_deserialize_obj(CL_FaslReader *r)
         uint16_t id = cl_fasl_read_u16(r);
         if (r->error || !r->shared_objs || id >= r->shared_count) return CL_NIL;
         return r->shared_objs[id];
+    }
+
+    case FASL_TAG_LOAD_FORM: {
+        /* MAKE-LOAD-FORM reconstruction (writer counterpart: the
+         * TYPE_STRUCT case in fasl_ser_step).  Wire layout, under an
+         * enclosing OBJ_DEF id:
+         *     FASL_TAG_LOAD_FORM | <creation-form data> | <init-form data>
+         *
+         * 1. Evaluate the creation form to build the object.
+         * 2. Register it at the enclosing OBJ_DEF id BEFORE reading the
+         *    init form, so the init form's self-reference (an OBJ_REF to
+         *    that id) resolves to the freshly-built object — the required
+         *    circular self-reference.
+         * 3. Evaluate the init form for its slot-setting effect.
+         * The forms are plain data; they are compiled and evaluated here,
+         * at load time.  Cost is negligible (small forms). */
+        uint32_t pending = r->pending_obj_def_id;
+        CL_Obj creation, obj, init;
+
+        /* The creation form must not consume the OBJ_DEF id — the object
+         * it builds does.  Clear pending across the creation-form read. */
+        r->pending_obj_def_id = CL_FASL_NO_PENDING;
+        creation = cl_fasl_deserialize_obj(r);
+        if (r->error) return CL_NIL;
+        CL_GC_PROTECT(creation);
+        obj = cl_vm_eval(cl_compile(creation));
+        CL_GC_PROTECT(obj);
+
+        /* Register obj at the enclosing OBJ_DEF id so the init form's
+         * OBJ_REF self-reference resolves to it. */
+        r->pending_obj_def_id = pending;
+        cl_fasl_consume_pending_obj_def(r, obj);
+
+        init = cl_fasl_deserialize_obj(r);
+        CL_GC_PROTECT(init);
+        if (!r->error && !CL_NULL_P(init))
+            cl_vm_eval(cl_compile(init));
+        CL_GC_UNPROTECT(3);
+        return obj;
     }
 
     case FASL_TAG_STRING: {

@@ -1724,6 +1724,16 @@ static CL_Obj bi_compile_file(CL_Obj *args, int n)
     cl_stream_close(stream);
     platform_free(src_buf);
 
+    /* --- MAKE-LOAD-FORM pre-pass ---
+     * Walk the collected units' constant graph and record load forms for
+     * any literal object whose class has a user MAKE-LOAD-FORM method, so
+     * the serializer below can emit FASL_TAG_LOAD_FORM for them.  This is
+     * a no-op (skips the walk) when no such method exists.  It runs here,
+     * before any byte serialization, because the user methods it calls can
+     * allocate/compact and the serializer's offset-keyed tables cannot
+     * tolerate that mid-serialization. */
+    cl_fasl_mlf_prepass(bc_vec, bc_collect_count);
+
     /* --- Deferred FASL serialization --- */
     {
         int bci;
@@ -1778,6 +1788,11 @@ static CL_Obj bi_compile_file(CL_Obj *args, int n)
         }
 
     }
+
+    /* Release the MAKE-LOAD-FORM pre-pass cache now that serialization is
+     * done (also clears the GC roots it held).  The remaining steps
+     * (file write) don't reference it. */
+    cl_fasl_mlf_cleanup();
 
 #ifdef DEBUG_COMPILER
     fprintf(stderr, "[compile-file %s] all forms done, n_units=%u, writing FASL\n",

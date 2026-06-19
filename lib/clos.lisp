@@ -3529,5 +3529,93 @@ protocol hook a user metaclass would override to substitute a subclass."
   (setf (gethash (cons x doc-type) *documentation-table*) new-value))
 
 (%clos-trace "Portable MOP shims")
+
+;;; ====================================================================
+;;; MAKE-LOAD-FORM (CLHS 3.2.4.4 / Section 7.6)
+;;; ====================================================================
+;;;
+;;; The file compiler invokes MAKE-LOAD-FORM (through the FASL writer's
+;;; pre-pass, see src/core/fasl.c) for every literal object reachable
+;;; from compiled code whose class has a user-defined MAKE-LOAD-FORM
+;;; method.  Such an object is reconstructed at load time by evaluating
+;;; the two forms the method returns (a "creation form" and an "init
+;;; form") instead of being dumped slot-for-slot.
+;;;
+;;; Plain structures with NO applicable method keep using the built-in
+;;; FASL_TAG_STRUCT fast path — only classes that opt in via a method
+;;; route through load forms.  Accordingly MAKE-LOAD-FORM is a generic
+;;; function with NO default method: the standard mandates that the
+;;; default behavior on an object with no method is to signal an error
+;;; (here NO-APPLICABLE-METHOD), and the absence of a default is what
+;;; keeps every ordinary struct on the fast path.
+
+(defgeneric make-load-form (object &optional environment))
+
+(defun %object-load-form-type-name (object)
+  "Type-name symbol handed to %ALLOCATE-FOR-LOAD.  For both CLOS
+   instances and plain structures this is the struct type descriptor;
+   for a CLOS instance it equals the class name."
+  (%struct-type-name object))
+
+(defun %object-load-form-slot-names (object)
+  "All slot names of OBJECT.  Mirrors SLOT-VALUE's own dispatch: CLOS
+   effective slots when OBJECT's class carries a slot-index-table, else
+   the structure's slot names."
+  (let ((class (find-class (%struct-type-name object) nil)))
+    (if (and class (class-slot-index-table class))
+        (mapcar #'slot-definition-name (class-slots class))
+        (%struct-slot-names (%struct-type-name object)))))
+
+(defun clamiga::%allocate-for-load (type-name)
+  "Allocate a bare instance of TYPE-NAME for MAKE-LOAD-FORM-SAVING-SLOTS
+   reconstruction: a CLOS instance with unbound slots, or a plain
+   structure with NIL slots.  The init form supplies the real values."
+  (let ((class (find-class type-name nil)))
+    (if (and class (class-slot-index-table class))
+        (allocate-instance class)
+        (apply #'%make-struct type-name
+               (make-list (%struct-slot-count type-name)
+                          :initial-element nil)))))
+
+(defun make-load-form-saving-slots (object &key slot-names environment)
+  "CLHS 7.6: return (VALUES creation-form init-form) that reconstruct
+   OBJECT by allocating an instance of its type and restoring SLOT-NAMES
+   (default: all slots).  Unbound slots are left unbound.  The init form
+   references OBJECT itself, so the FASL writer shares it with the
+   creation result — the resulting object is EQ to the one the creation
+   form produced (the required circular self-reference)."
+  (declare (ignore environment))
+  (let ((names (or slot-names (%object-load-form-slot-names object)))
+        (inits nil))
+    (dolist (sn names)
+      (when (slot-boundp object sn)
+        (push `(setf (slot-value ',object ',sn) ',(slot-value object sn))
+              inits)))
+    (values
+     `(clamiga::%allocate-for-load ',(%object-load-form-type-name object))
+     `(progn ,@(nreverse inits) ',object))))
+
+(defun clamiga::%make-load-form-active-p ()
+  "T iff MAKE-LOAD-FORM has at least one user method.  The FASL writer's
+   pre-pass calls this once per COMPILE-FILE run and skips the constant
+   graph walk entirely when it returns NIL — so every file that does not
+   define a MAKE-LOAD-FORM method pays zero pre-pass cost and keeps the
+   exact prior serialization behavior."
+  (and (fboundp 'make-load-form)
+       (let ((gf (fdefinition 'make-load-form)))
+         (and (typep gf 'standard-generic-function)
+              (gf-methods gf)
+              t))))
+
+(defun clamiga::%fasl-load-form (object)
+  "Called by the FASL writer's pre-pass.  If OBJECT has an applicable
+   MAKE-LOAD-FORM method, call it and return (creation-form . init-form)
+   (init-form may be NIL); otherwise return NIL so the writer keeps
+   OBJECT on the built-in structure-dump path."
+  (when (and (fboundp 'make-load-form)
+             (compute-applicable-methods #'make-load-form (list object)))
+    (multiple-value-bind (creation init) (make-load-form object)
+      (cons creation init))))
+
 ;;; --- Provide module ---
 (provide "clos")

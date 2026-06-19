@@ -4798,6 +4798,28 @@
 (load "T:fasl-ltv3.fasl")
 (check "LTV distinct forms" nil (eq (ltv-d1) (ltv-d2)))
 
+; --- MAKE-LOAD-FORM under COMPILE-FILE (CLHS 7.6) ---
+; A literal CLOS instance whose class defines a MAKE-LOAD-FORM method is
+; serialized as creation + init forms and reconstructed at load time, NOT
+; dumped slot-for-slot.  MAKE-LOAD-FORM-SAVING-SLOTS embeds the object in its
+; init form, so the self-referential slot must reconstruct EQ to the object
+; itself (the circular self-reference).  Uses FIND-SYMBOL so the check reads
+; without the file's package existing at this reader's read time.
+(with-open-file (s "T:fasl-mlf.lisp" :direction :output :if-exists :supersede)
+  (write-string "(defpackage :mlf-ami (:use :cl))" s) (terpri s)
+  (write-string "(in-package :mlf-ami)" s) (terpri s)
+  (write-string "(defclass mlfnode () ((label :initarg :label :accessor mlf-label) (n :initarg :n :accessor mlf-n) (self :accessor mlf-self)))" s) (terpri s)
+  (write-string "(defmethod make-load-form ((x mlfnode) &optional env) (declare (ignore env)) (make-load-form-saving-slots x))" s) (terpri s)
+  (write-string "(defvar *mlf* #.(let ((x (make-instance 'mlfnode :label \"hi\" :n 7))) (setf (mlf-self x) x) x))" s) (terpri s)
+  (write-string "(in-package :cl-user)" s) (terpri s))
+(compile-file "T:fasl-mlf.lisp" :output-file "T:fasl-mlf.fasl")
+(load "T:fasl-mlf.fasl")
+(check "make-load-form slot values + circular self-ref" '("hi" 7 t)
+  (let ((x (symbol-value (find-symbol "*MLF*" "MLF-AMI"))))
+    (list (funcall (find-symbol "MLF-LABEL" "MLF-AMI") x)
+          (funcall (find-symbol "MLF-N" "MLF-AMI") x)
+          (if (eq x (funcall (find-symbol "MLF-SELF" "MLF-AMI") x)) t nil))))
+
 ; --- Top-level MACROLET / SYMBOL-MACROLET / LOCALLY under COMPILE-FILE ---
 ; (CLHS 3.2.3.1: their body forms are processed as top-level forms, so
 ; compile-time side effects inside them — DEFPACKAGE, DEFMACRO — take effect

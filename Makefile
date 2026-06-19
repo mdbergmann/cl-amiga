@@ -216,6 +216,13 @@ test-fast: $(TEST_BINS) host
 		echo "FAIL"; \
 		failed=1; \
 	fi; \
+	echo "--- test_make_load_form ---"; \
+	if sh $(TEST_SRCDIR)/test_make_load_form.sh $(BUILDDIR)/clamiga; then \
+		echo "PASS"; \
+	else \
+		echo "FAIL"; \
+		failed=1; \
+	fi; \
 	echo "--- test_test_extra ---"; \
 	if sh $(TEST_SRCDIR)/test_test_extra.sh; then \
 		echo "PASS"; \
