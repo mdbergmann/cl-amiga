@@ -203,12 +203,33 @@ static CL_Obj do_rounding(CL_Obj *args, int n, int mode,
     {
         double a = cl_to_double(num);
         double b = cl_to_double(args[1]);
-        double dq, dr;
+        double quot, dq, dr;
         int is_dbl = CL_DOUBLE_FLOAT_P(num) || CL_DOUBLE_FLOAT_P(args[1]);
         CL_Obj qobj, robj;
         if (b == 0.0) cl_error(CL_ERR_DIVZERO, "Division by zero");
-        dq = apply_round(a / b, mode);
-        dr = a - dq * b;
+        /* Compute the quotient at the operands' contagion precision: when
+         * both are single floats, divide in single precision so the result
+         * matches (/ a b).  Promoting to double first can yield e.g.
+         * 6.9999998 where the single-float quotient rounds to 7.0f, which
+         * would make (floor a b) disagree with (floor (/ a b)) and round
+         * the wrong way at exact-integer boundaries (CLHS 12.1.4.4). */
+        if (is_dbl)
+            quot = a / b;
+        else
+            quot = (double)((float)a / (float)b);
+        dq = apply_round(quot, mode);
+        /* Compute the remainder with the product rounded to a double in its
+         * own statement (the `volatile` defeats FMA contraction of a-dq*b).
+         * An FMA would evaluate a - dq*b to its exact value, which for FLOOR
+         * can be a tiny remainder of the WRONG sign (e.g. -2e-17 against a
+         * positive divisor) — violating the CL contract that the remainder
+         * share the divisor's sign, disagreeing with the rounded quotient,
+         * and signalling SVREF-out-of-range when callers index by it.
+         * Rounding the product keeps r consistent with q (matches SBCL). */
+        {
+            volatile double prod = dq * b;
+            dr = a - prod;
+        }
         if (float_quotient)
             qobj = is_dbl ? cl_make_double_float(dq)
                           : cl_make_single_float((float)dq);

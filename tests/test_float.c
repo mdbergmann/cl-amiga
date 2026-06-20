@@ -331,6 +331,36 @@ TEST(floor_mv)
     ASSERT_STR_EQ(eval_print("(multiple-value-list (floor -2.5))"), "(-3 0.5)");
 }
 
+/* Regression (cl-spark): two-arg FLOOR of single floats must compute the
+ * quotient at the operands' precision so it agrees with (/ a b).  Promoting
+ * to double first yielded 6.9999998 where the single-float quotient rounds
+ * to 7.0f, making (floor a b) round one short of (floor (/ a b)). */
+TEST(floor_float_quotient_consistent_with_div)
+{
+    /* (/ (log 6) (/ (log 6) 7)) = 7.0f, so the floor must be 7, not 6. */
+    ASSERT_STR_EQ(eval_print("(floor (log 6) (/ (log 6) 7))"), "7");
+    ASSERT_STR_EQ(eval_print("(floor (sqrt 6) (/ (sqrt 6) 7))"), "7");
+    /* The quotient and (/ a b)'s floor must agree exactly. */
+    ASSERT_STR_EQ(eval_print(
+        "(let ((m (log 6))) (= (floor m (/ m 7)) (floor (/ m (/ m 7)))))"),
+                  "T");
+}
+
+/* Regression (cl-spark): the FLOOR remainder must share the divisor's sign
+ * (CLHS 12.1.4.4).  An FMA-contracted a-dq*b produced a tiny NEGATIVE
+ * remainder against a positive divisor (e.g. -2e-17), which then indexed
+ * SVREF with -1.  The remainder here must be exactly 0.0d0, never negative. */
+TEST(floor_remainder_sign_invariant)
+{
+    ASSERT_STR_EQ(eval_print("(nth-value 1 (floor 1.0d0 (* (/ 2.0d0 350) 7)))"),
+                  "0.0d0");
+    /* Generalised: remainder is never negative for a positive divisor. */
+    ASSERT_STR_EQ(eval_print(
+        "(loop for n in '(0.0d0 1.0d0 0.5d0 0.25d0)"
+        "      always (>= (nth-value 1 (floor n (* (/ 2.0d0 350) 7))) 0))"),
+                  "T");
+}
+
 /* --- ceiling --- */
 
 TEST(ceiling_integer)
@@ -1041,6 +1071,8 @@ int main(void)
     RUN(floor_float_1arg);
     RUN(floor_float_2args);
     RUN(floor_mv);
+    RUN(floor_float_quotient_consistent_with_div);
+    RUN(floor_remainder_sign_invariant);
     RUN(ceiling_integer);
     RUN(ceiling_float_1arg);
     RUN(ceiling_mv);

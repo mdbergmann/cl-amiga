@@ -6031,6 +6031,70 @@
 (check "backtrace-buf overflow: c_stack_base intact, no spurious stack-overflow" 3
   (+ 1 2))
 
+; --- cl-spark regressions: FORMAT justification, wide-string output,
+;     LOOP parallel stepping, and FLOOR float consistency ---
+
+; ~mincol,colinc,minpad,padchar<...~> justification (CLHS 22.3.6.2): the
+; segments are spread across the field with padding in the gaps.
+(check "justify three segments" "0            75            150"
+  (format nil "~30<~A~;~A~;~A~>" "0" "75" "150"))
+(check "justify with pad char" "0------------75------------150"
+  (format nil "~30,,,'-<~A~;~A~;~A~>" "0" "75" "150"))
+; SBCL reference (spark-test.lisp): the later gap absorbs the odd column.
+(check "justify uneven padding" "11-----------222------------33"
+  (format nil "~30,,,'-<~A~;~A~;~A~>" 11 222 33))
+(check "justify single right" "        hi"
+  (format nil "~10<~A~>" "hi"))
+(check "justify atsign left" "hi        "
+  (format nil "~10@<~A~>" "hi"))
+(check "justify V mincol" "0            75            150"
+  (format nil "~V<~A~;~A~;~A~>" 30 "0" "75" "150"))
+
+; PRINC of an 8-bit (Latin-1) string with a high byte round-trips its code.
+(check "princ high-byte string code" 252
+  (char-code (char (princ-to-string (string (code-char 252))) 0)))
+(check "with-output-to-string high byte" 252
+  (char-code (char (with-output-to-string (s)
+                     (princ (string (code-char 252)) s)) 0)))
+
+; LOOP FOR ... AND ... steps in parallel (CLHS 6.1.2.1.4) — Fibonacci, not
+; powers of two.
+(check "loop for/and parallel fib"
+  '(0 1 1 2 3 5 8 13 21)
+  (loop for i from 0 to 8 collect
+        (loop for f1 = 0 then f2 and f2 = 1 then (+ f1 f2)
+              repeat i finally (return f1))))
+(check "loop for/and parallel swap" '(2 1)
+  (loop for a = 1 then b and b = 2 then a
+        repeat 3 finally (return (list a b))))
+(check "loop for = then uses init first" '(7 14 28 56)
+  (loop for x = 7 then (* x 2) repeat 4 collect x))
+(check "loop sequential for stays sequential" '(10 20 30)
+  (loop for i from 1 to 3 for j = (* i 10) collect j))
+; cl-ppcre create-matcher-aux idiom: separate FOR = THEN clauses step in
+; source order (the THEN stepper keeps its place before the no-THEN clause).
+(check "loop sequential then chain" '(c (b (a nf)))
+  (loop for e in '(a b c)
+        for curr = 'nf then next
+        for next = (list e curr)
+        finally (return next)))
+; CLHS 6.1.2.1.4: mixed AND group (= THEN + FROM) must step in parallel.
+; a's step (+ a j) uses pre-step j. Correct: (0 1 3); wrong: (0 2 5).
+(check "loop for/and mixed then+from parallel" '(0 1 3)
+  (loop for a = 0 then (+ a j) and j from 1 repeat 3 collect a))
+(check "loop for/and mixed from+then parallel" '(0 1 3)
+  (loop for j from 1 and a = 0 then (+ a j) repeat 3 collect a))
+
+; Two-arg FLOOR of floats: quotient agrees with (/ a b); remainder shares the
+; divisor's sign (never a tiny negative against a positive divisor).
+(check "floor float quotient matches /" 7
+  (floor (log 6) (/ (log 6) 7)))
+(check "floor float remainder non-negative" 0.0d0
+  (nth-value 1 (floor 1.0d0 (* (/ 2.0d0 350) 7))))
+(check "floor float remainder sign invariant" t
+  (loop for n in '(0.0d0 1.0d0 0.5d0 0.25d0)
+        always (>= (nth-value 1 (floor n (* (/ 2.0d0 350) 7))) 0)))
+
 ; --- Summary ---
 (format t "~%=== Results ===~%")
 (format t "Passed: ~A~%" *pass-count*)

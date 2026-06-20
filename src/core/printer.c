@@ -970,14 +970,15 @@ static void print_obj(CL_Obj obj)
             }
             out_char('"');
         } else {
+            /* princ: emit every code point through out_char, which
+             * UTF-8-encodes non-ASCII chars for the destination (string
+             * stream / file / console).  Substituting '?' here truncated
+             * wide chars (e.g. the scale glyphs ˫ ˧, U+02EB/U+02E7) to '?'
+             * whenever a wide string was princ'd — including via
+             * WITH-OUTPUT-TO-STRING / FORMAT ~A of a string argument. */
             uint32_t i;
-            for (i = 0; i < ws->length; i++) {
-                uint32_t ch = ws->data[i];
-                if (ch < 128)
-                    out_char((char)ch);
-                else
-                    out_char('?');  /* TODO: UTF-8 output in Phase 2 */
-            }
+            for (i = 0; i < ws->length; i++)
+                out_char((int)ws->data[i]);
         }
         break;
     }
