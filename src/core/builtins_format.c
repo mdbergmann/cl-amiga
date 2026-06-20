@@ -1201,18 +1201,50 @@ static void fmt_recursive(FmtCtx *ctx, FmtDirective *d)
 }
 
 /* ================================================================
- * ~<...~> / ~<...~:>  — Justification / Logical Block
+ * ~mincol,colinc,minpad,padchar<...~>  — Justification (CLHS 22.3.6.2)
  *
- * Simplified: we don't track output column, so no padding is applied.
- * Behavior:
- *   ~<seg1~;seg2~;...~;segN~>  → emit each segment in order.
- *   ~<seg1~:;seg2~;...~;segN~> → seg1 is the overflow indicator (skipped);
- *                                emit seg2..segN.
- *   ~<...~:>                   → logical block (pretty-printer); we just
- *                                emit the body. Pretty-print directives
- *                                ~_, ~:_, ~@_, ~:@_, ~I, ~/PPRINT-NEWLINE/
- *                                inside are handled as no-ops or spaces.
+ * The body is divided into segments by ~; separators. Each segment is
+ * rendered independently, then the segments are spread across a field of
+ * at least `mincol` columns by inserting `padchar` padding in the gaps
+ * between them:
+ *
+ *   - no modifiers:  segments are spread with the first against the left
+ *                    margin and the last against the right margin
+ *                    (padding only in the n-1 interior gaps).  A single
+ *                    segment with no modifiers is right-justified.
+ *   - `:` modifier:  padding is also inserted before the first segment.
+ *   - `@` modifier:  padding is also inserted after the last segment.
+ *
+ * Padding is distributed as evenly as possible; when it does not divide
+ * evenly, the later gaps receive the extra column(s) (matching SBCL).
+ *
+ * A leading `~:;` separator marks the first segment as the pretty-printer
+ * overflow/per-line-prefix indicator; we do not track line width, so that
+ * segment is skipped.  A `~<...~:>` logical block (mincol defaulting to 0)
+ * reduces to emitting the segments in order, unchanged.
+ *
+ * Segment lengths are measured in CHARACTERS (not bytes) so that
+ * multi-byte UTF-8 content (e.g. the scale glyphs ˫ + ˧) aligns correctly.
  * ================================================================ */
+
+#define FMT_MAX_JSEGS (FMT_MAX_SEPS + 1)
+
+/* Advance past a ~; separator directive. `sp` points at its leading '~';
+ * the returned pointer is just past the ';' (the start of the next
+ * segment). */
+static const char *fmt_skip_separator(const char *sp)
+{
+    sp++; /* past '~' */
+    while (*sp && ((*sp >= '0' && *sp <= '9') || *sp == ',' || *sp == '\'' ||
+                   *sp == '+' || *sp == '-' || *sp == 'V' || *sp == 'v' ||
+                   *sp == '#')) {
+        if (*sp == '\'') { sp++; if (*sp) sp++; }
+        else sp++;
+    }
+    while (*sp == ':' || *sp == '@') sp++;
+    if (*sp == ';') sp++;
+    return sp;
+}
 
 static void fmt_justify(FmtCtx *ctx, FmtDirective *d)
 {
@@ -1221,12 +1253,27 @@ static void fmt_justify(FmtCtx *ctx, FmtDirective *d)
     int n_seps = 0;
     const char *body_end;
     int first_seg_is_overflow = 0;
+    int total_segs;
     int i;
-    int start_seg = 0;
+
+    const char *seg_starts[FMT_MAX_JSEGS];
+    const char *seg_ends[FMT_MAX_JSEGS];
+    uint32_t *seg_cps[FMT_MAX_JSEGS];   /* rendered text as code points */
+    int   seg_clen[FMT_MAX_JSEGS];      /* character count */
+    int   n_segs = 0;
+
+    int32_t mincol  = fmt_param(d, 0, 0);
+    int32_t colinc  = fmt_param(d, 1, 1);
+    int32_t minpad  = fmt_param(d, 2, 0);
+    int32_t padchar = fmt_param(d, 3, (int32_t)' ');
+
+    int pad_before, pad_after, n_gaps;
+    int text_len, needed, field, total_pad, base, extra;
+    int gap_idx;
     FmtCtx sub;
-    char *body_copy;
-    int body_len;
-    CL_UNUSED(d);
+
+    if (colinc < 1) colinc = 1;
+    if (minpad < 0)  minpad = 0;
 
     body_end = fmt_find_close(body_start, '<', '>', seps, &n_seps, FMT_MAX_SEPS);
     if (!body_end) {
@@ -1234,11 +1281,9 @@ static void fmt_justify(FmtCtx *ctx, FmtDirective *d)
         return;
     }
 
-    /* Check first separator (if any) for ':' modifier — that means the
-     * preceding section is the overflow indicator. */
+    /* Detect a leading ~:; (overflow / per-line-prefix segment). */
     if (n_seps > 0) {
         const char *sp = seps[0] + 1; /* past '~' */
-        /* skip prefix params */
         while (*sp && ((*sp >= '0' && *sp <= '9') || *sp == ',' || *sp == '\'' ||
                        *sp == '+' || *sp == '-' || *sp == 'V' || *sp == 'v' ||
                        *sp == '#')) {
@@ -1248,41 +1293,120 @@ static void fmt_justify(FmtCtx *ctx, FmtDirective *d)
         if (*sp == ':') first_seg_is_overflow = 1;
     }
 
-    /* Build a body_copy excluding the overflow segment if present. */
-    if (first_seg_is_overflow) {
-        /* Start after the first separator. seps[0] points to '~' before
-         * the separator directive char. We need to skip past the directive
-         * char. The directive char comes after any params, ':' or '@'. */
-        const char *skip = seps[0] + 1;
-        while (*skip && ((*skip >= '0' && *skip <= '9') || *skip == ',' || *skip == '\'' ||
-                         *skip == '+' || *skip == '-' || *skip == 'V' || *skip == 'v' ||
-                         *skip == '#')) {
-            if (*skip == '\'') { skip++; if (*skip) skip++; }
-            else skip++;
+    /* Compute the byte range of every segment within the format string.
+     * seps[i] points at the '~' of the i-th separator; the body ends two
+     * chars before body_end (the '~' of the closing '~>'). */
+    total_segs = n_seps + 1;
+    {
+        const char *cur = body_start;
+        for (i = 0; i < total_segs; i++) {
+            seg_starts[i] = cur;
+            if (i < n_seps) {
+                seg_ends[i] = seps[i];
+                cur = fmt_skip_separator(seps[i]);
+            } else {
+                seg_ends[i] = body_end - 2;
+            }
         }
-        while (*skip == ':' || *skip == '@') skip++;
-        if (*skip) skip++; /* past ';' */
-        body_start = skip;
-        start_seg = 1;
-        (void)start_seg;
     }
-    (void)i;
 
-    /* Body extends from body_start to (body_end - 2) — body_end points
-     * past the close '>', so '~>' starts two chars before. */
-    body_len = (int)(body_end - 2 - body_start);
-    if (body_len < 0) body_len = 0;
-    body_copy = (char *)platform_alloc((uint32_t)body_len + 1);
-    memcpy(body_copy, body_start, (uint32_t)body_len);
-    body_copy[body_len] = '\0';
-
+    /* Render each segment (skipping the overflow segment if present) into
+     * its own C-heap string, recording byte and character lengths.  Arg
+     * consumption flows across the segments via the shared sub context. */
     sub = *ctx;
-    sub.fmt = body_copy;
-    sub.pos = body_copy;
-    fmt_run(&sub);
-    platform_free(body_copy);
+    for (i = first_seg_is_overflow ? 1 : 0; i < total_segs; i++) {
+        CL_Obj sstream, result;
+        int blen = (int)(seg_ends[i] - seg_starts[i]);
+        char *body_copy;
+        int rlen;
+        uint32_t *cps;
+        int j;
 
-    /* Update parent state */
+        if (blen < 0) blen = 0;
+        body_copy = (char *)platform_alloc((uint32_t)blen + 1);
+        memcpy(body_copy, seg_starts[i], (uint32_t)blen);
+        body_copy[blen] = '\0';
+
+        sstream = cl_make_string_output_stream();
+        CL_GC_PROTECT(sstream);
+        sub.stream = sstream;
+        sub.fmt = body_copy;
+        sub.pos = body_copy;
+        sub.escape = 0;
+        fmt_run(&sub);
+        platform_free(body_copy);
+
+        result = cl_get_output_stream_string(sstream);
+        {
+            CL_Stream *tmp_st = (CL_Stream *)CL_OBJ_TO_PTR(sstream);
+            cl_stream_free_outbuf(tmp_st->out_buf_handle);
+            tmp_st->out_buf_handle = 0;
+        }
+        /* Copy the code points out of the arena into C heap.  Using the
+         * character accessors keeps base and wide (UTF-32) result strings
+         * correct — the segment length must be measured in characters for
+         * the padding math, and each character re-emitted via
+         * cl_stream_write_char (which re-encodes wide code points). */
+        rlen = (int)cl_string_length(result);
+        cps = (uint32_t *)platform_alloc((uint32_t)(rlen > 0 ? rlen : 1) *
+                                         (uint32_t)sizeof(uint32_t));
+        for (j = 0; j < rlen; j++)
+            cps[j] = (uint32_t)cl_string_char_at(result, (uint32_t)j);
+        CL_GC_UNPROTECT(1);
+
+        seg_cps[n_segs] = cps;
+        seg_clen[n_segs] = rlen;
+        n_segs++;
+    }
+
+    /* Determine the padding gaps. */
+    pad_before = d->colon ? 1 : 0;
+    pad_after  = d->atsign ? 1 : 0;
+    if (n_segs <= 1) {
+        /* A single segment with no modifiers is right-justified. */
+        if (!pad_before && !pad_after) pad_before = 1;
+        n_gaps = pad_before + pad_after;
+    } else {
+        n_gaps = pad_before + pad_after + (n_segs - 1);
+    }
+    if (n_gaps < 1) n_gaps = 1; /* defensive: never divide by zero */
+
+    text_len = 0;
+    for (i = 0; i < n_segs; i++) text_len += seg_clen[i];
+
+    /* Field width = smallest mincol + k*colinc (k>=0) that holds the text
+     * plus the minimum required padding. */
+    needed = text_len + minpad * n_gaps;
+    field = mincol;
+    while (field < needed) field += colinc;
+    total_pad = field - text_len;
+    if (total_pad < 0) total_pad = 0;
+    base  = total_pad / n_gaps;
+    extra = total_pad % n_gaps;
+
+    /* Emit: optional leading pad, segments with interior pads, optional
+     * trailing pad.  The last `extra` gaps each get one more padchar. */
+    gap_idx = 0;
+#define FMT_EMIT_GAP() do {                                                   \
+        int _amt = base + ((gap_idx >= n_gaps - extra) ? 1 : 0);             \
+        int _k;                                                              \
+        for (_k = 0; _k < _amt; _k++)                                         \
+            cl_stream_write_char(ctx->stream, (int)padchar);                  \
+        gap_idx++;                                                            \
+    } while (0)
+
+    if (pad_before) FMT_EMIT_GAP();
+    for (i = 0; i < n_segs; i++) {
+        int j;
+        for (j = 0; j < seg_clen[i]; j++)
+            cl_stream_write_char(ctx->stream, (int)seg_cps[i][j]);
+        platform_free(seg_cps[i]);
+        if (i < n_segs - 1) FMT_EMIT_GAP();
+    }
+    if (pad_after) FMT_EMIT_GAP();
+#undef FMT_EMIT_GAP
+
+    /* Update parent state. */
     ctx->ai = sub.ai;
     ctx->pos = body_end;
 }

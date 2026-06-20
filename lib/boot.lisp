@@ -2151,6 +2151,43 @@ matching NREVERSE."
              (%loop-destructure-bindings (cdr pattern) `(cdr ,source))))
     (t nil)))
 
+(defun %loop-all-simple-setq-p (forms)
+  "True when every form in FORMS is a plain (SETQ symbol expr)."
+  (every (lambda (f)
+           (and (consp f) (eq (car f) 'setq)
+                (consp (cdr f)) (symbolp (cadr f))
+                (consp (cddr f)) (null (cdddr f))))
+         forms))
+
+(defun %loop-parallelize-setqs (forms)
+  "Turn a list of (SETQ var expr) forms — the per-iteration steppers of a
+group of AND-connected FOR clauses — into a single form that steps them in
+PARALLEL (CLHS 6.1.2.1.4): every step expression is evaluated against the
+pre-step values (captured in temporaries) before any variable is assigned.
+Returns a one-element list holding that LET form."
+  (let* ((temps   (mapcar (lambda (f) (declare (ignore f)) (gensym "PAR")) forms))
+         (binds   (mapcar (lambda (tmp f) (list tmp (caddr f))) temps forms))
+         (assigns (mapcar (lambda (tmp f) (list 'setq (cadr f) tmp)) temps forms)))
+    (list (append (list 'let binds) assigns))))
+
+(defun %loop-build-then-step (flag specs)
+  "Build the preamble stepper for a group of FOR var = init THEN step clauses.
+SPECS is a list of (var init-expr step-expr).  On the first iteration (FLAG
+true) the variables are initialised in order; on subsequent iterations they
+are stepped in PARALLEL — every step expression is read against the previous
+values before any variable is assigned (CLHS 6.1.2.1.4).  A single-clause
+group reduces to the ordinary sequential init-then-step."
+  (let* ((inits (mapcar (lambda (s) (list 'setq (car s) (cadr s))) specs))
+         (temps (mapcar (lambda (s) (declare (ignore s)) (gensym "PAR")) specs))
+         (tbinds (mapcar (lambda (tmp s) (list tmp (caddr s))) temps specs))
+         (tassign (mapcar (lambda (tmp s) (list 'setq (car s) tmp)) temps specs))
+         (step-form (if (cdr specs)
+                        (append (list 'let tbinds) tassign)   ; parallel
+                        (list 'setq (car (car specs)) (caddr (car specs))))))
+    `(if ,flag
+         (progn ,@inits (setq ,flag nil))
+         ,step-form)))
+
 (defun %loop-parse-for (rest var sub-kw end-tag)
   "Parse a FOR/AS clause. Returns (new-rest bindings end-tests pre-body steps)."
   (cond
@@ -2218,16 +2255,20 @@ matching NREVERSE."
          (setq has-then t)
          (setq rest (cdr rest)))
        (if has-then
-           ;; WITH THEN: first iteration uses init-expr, subsequent use step-expr
-           ;; Assignment must be in preamble (before body), not steps (after body)
-           (let ((flag (gensym "FIRST")))
-             (list rest
-                   (list (list var nil) (list flag t))
-                   (list `(if ,flag
-                              (progn (setq ,var ,init-expr) (setq ,flag nil))
-                              (setq ,var ,step-expr)))
-                   nil
-                   nil))
+           ;; WITH THEN: first iteration uses init-expr, subsequent use
+           ;; step-expr — the assignment happens in the PREAMBLE (before the
+           ;; body).  We do NOT bake the if-flag form here; instead we hand
+           ;; the (var init step) tuple back as the 6th result element so the
+           ;; FOR/AND group handler can emit a single shared-flag stepper.
+           ;; For a lone clause that stepper is the usual sequential if-flag;
+           ;; for AND-connected clauses it steps them in PARALLEL
+           ;; (CLHS 6.1.2.1.4).  Bind the variable to NIL up front.
+           (list rest
+                 (list (list var nil))
+                 nil
+                 nil
+                 nil
+                 (list var init-expr step-expr))   ; 6th elt: then-spec
            ;; WITHOUT THEN: re-evaluate expr each iteration
            ;; Assignment in preamble so variable is set before body runs
            (list rest
@@ -2628,31 +2669,84 @@ matching NREVERSE."
             ;; which matches parallel semantics for the iteration forms we
             ;; support (IN, ON, FROM/TO/BY, =, = THEN).
             ((or (%loop-keyword-p kw "FOR") (%loop-keyword-p kw "AS"))
-             (block parse-for-and
-               (tagbody
-                 for-and-next
-                 (let* ((raw-var (car rest))
-                        (destructuring (consp raw-var))
-                        (var (if destructuring (gensym "DVAR") raw-var))
-                        ;; CLHS 6.1.2.1: an optional type-spec may follow
-                        ;; the variable, e.g. (loop for i fixnum from 0 ...).
-                        (after-var (%loop-skip-type-spec (cdr rest)))
-                        (sub-kw (car after-var))
-                        (r (%loop-parse-for (cdr after-var) var sub-kw end-tag)))
-                   (setq rest (car r))
-                   (dolist (b (cadr r)) (push b bindings))
-                   (when destructuring
-                     (dolist (v (%loop-destructure-vars raw-var))
-                       (push (list v nil) bindings)))
-                   (dolist (e (caddr r)) (push e preamble))
-                   (dolist (p (car (cdddr r))) (push p preamble))
-                   (when destructuring
-                     (dolist (a (%loop-destructure-assigns raw-var var))
-                       (push a preamble)))
-                   (dolist (s (cadr (cdddr r))) (push s steps)))
-                 (when (and rest (%loop-keyword-p (car rest) "AND"))
-                   (setq rest (cdr rest))
-                   (go for-and-next)))))
+             (let ((grp-steps nil)       ; this AND-group's step forms (reversed)
+                   (grp-then-specs nil)   ; (var init step) for = THEN clauses
+                   (grp-count 0))
+               (block parse-for-and
+                 (tagbody
+                   for-and-next
+                   (let* ((raw-var (car rest))
+                          (destructuring (consp raw-var))
+                          (var (if destructuring (gensym "DVAR") raw-var))
+                          ;; CLHS 6.1.2.1: an optional type-spec may follow
+                          ;; the variable, e.g. (loop for i fixnum from 0 ...).
+                          (after-var (%loop-skip-type-spec (cdr rest)))
+                          (sub-kw (car after-var))
+                          (r (%loop-parse-for (cdr after-var) var sub-kw end-tag))
+                          (then-spec (nth 5 r)))
+                     (setq rest (car r))
+                     (setq grp-count (+ grp-count 1))
+                     (dolist (b (cadr r)) (push b bindings))
+                     (when destructuring
+                       (dolist (v (%loop-destructure-vars raw-var))
+                         (push (list v nil) bindings)))
+                     (dolist (e (caddr r)) (push e preamble))
+                     (dolist (p (car (cdddr r))) (push p preamble))
+                     (when destructuring
+                       (dolist (a (%loop-destructure-assigns raw-var var))
+                         (push a preamble)))
+                     (dolist (s (cadr (cdddr r))) (push s grp-steps))
+                     (when then-spec (push then-spec grp-then-specs)))
+                   (when (and rest (%loop-keyword-p (car rest) "AND"))
+                     (setq rest (cdr rest))
+                     (go for-and-next))))
+               ;; CLHS 6.1.2.1.4: variables introduced by a single
+               ;; FOR ... AND ... AND ... are stepped in PARALLEL — every step
+               ;; expression must see pre-step values before any variable is set.
+               ;;
+               ;; Pure = THEN group: one shared first-iteration flag; parallel
+               ;; step via let-temps in preamble (handled by %loop-build-then-step).
+               ;;
+               ;; Pure FROM/numeric group: all step forms go to `steps`, parallel
+               ;; via let-temps when more than one stepper.
+               ;;
+               ;; Mixed group (= THEN + FROM in the same AND group): putting THEN
+               ;; steps in preamble and FROM steps in `steps` violates CLHS 6.1.2.1.4
+               ;; because FROM steps (in `steps`) run before the next preamble, so a
+               ;; THEN step expression in preamble would see the already-incremented
+               ;; FROM value.  Fix: emit only the first-iteration init for each = THEN
+               ;; var in preamble; move ALL step forms (FROM + THEN) into `steps` as a
+               ;; single parallel let-temp block.
+               (setq grp-then-specs (nreverse grp-then-specs))
+               (setq grp-steps (nreverse grp-steps))
+               (cond
+                 ((null grp-then-specs)
+                  ;; Pure FROM/numeric group.
+                  (if (and (> grp-count 1) (%loop-all-simple-setq-p grp-steps))
+                      (dolist (s (%loop-parallelize-setqs grp-steps)) (push s steps))
+                      (dolist (s grp-steps) (push s steps))))
+                 ((= (length grp-then-specs) grp-count)
+                  ;; Pure = THEN group.
+                  (let ((flag (gensym "FIRST")))
+                    (push (list flag t) bindings)
+                    (push (%loop-build-then-step flag grp-then-specs) preamble)))
+                 (t
+                  ;; Mixed = THEN + FROM group: init only in preamble; all steps
+                  ;; (FROM + THEN) combined into one parallel step in `steps`.
+                  (dolist (spec grp-then-specs)
+                    (let ((flag (gensym "FIRST")))
+                      (push (list flag t) bindings)
+                      (push `(when ,flag
+                               (setq ,(car spec) ,(cadr spec))
+                               (setq ,flag nil))
+                            preamble)))
+                  (let ((all-steps (append grp-steps
+                                          (mapcar (lambda (spec)
+                                                    `(setq ,(car spec) ,(caddr spec)))
+                                                  grp-then-specs))))
+                    (if (%loop-all-simple-setq-p all-steps)
+                        (dolist (s (%loop-parallelize-setqs all-steps)) (push s steps))
+                        (dolist (s all-steps) (push s steps))))))))
             ;; RETURN
             ((%loop-keyword-p kw "RETURN")
              (push `(return-from ,block-name ,(car rest)) body)

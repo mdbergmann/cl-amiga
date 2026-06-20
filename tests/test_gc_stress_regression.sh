@@ -1576,6 +1576,28 @@ EOF
     check_absent   "no corruption in FASL written by pre-pass under stress"      "Undefined\|Unbound\|type 0\|corrupted" "$out2"
 fi
 
+# --- Case: FORMAT ~<...~> justification under stress ----------------------
+# fmt_justify renders each segment into a fresh string-output-stream and
+# copies the result's code points out of the arena.  Under compaction the
+# protected sstream and the result string can relocate mid-render; if the
+# copy used a stale arena pointer the padded scale line would be corrupted.
+# Reproduces the cl-spark vspark scale line (wide glyphs ˫ + ˧).
+cat > "$WORK/just.lisp" <<'EOF'
+(dotimes (i 50)
+  (let ((s (format nil "~30,,,'-<~A~;~A~;~A~>" "0" "75" "150")))
+    (unless (string= s "0------------75------------150")
+      (format t "JUST-BAD:~s~%" s) (return)))
+  (let ((w (format nil "~10,,,'-<~A~;~A~;~A~>"
+                   (code-char 747) #\+ (code-char 743))))
+    (unless (and (= (char-code (char w 0)) 747)
+                 (= (char-code (char w (1- (length w)))) 743))
+      (format t "JUST-WIDE-BAD:~s~%" w) (return))))
+(format t "JUST-OK~%")
+EOF
+out=$(run_stress "$WORK/just.lisp")
+check_contains "FORMAT ~< justification stable under GC stress" "JUST-OK" "$out"
+check_absent   "no corrupted justification output"              "JUST-BAD\|JUST-WIDE-BAD" "$out"
+
 echo ""
 echo "$passed passed, $failed failed, $total total"
 [ "$failed" -eq 0 ]
