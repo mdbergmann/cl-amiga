@@ -131,7 +131,15 @@ TEST(c_internal_helpers_not_external_in_cl)
     static const char *const internal[] = {
         "%LOOP-SKIP-TYPE-SPEC", "%LOOP-SIMPLE-TYPE-SPEC-P",
         "%LOOP-PARSE-FOR", "%LOOP-LIST-ACCUM-P",
-        "%METHOD-APPLICABLE-P", NULL
+        "%METHOD-APPLICABLE-P",
+        /* Leaked once (FASL 16 era): the LOOP parallel-stepping, CCASE
+         * place-check, and MAKE-LOAD-FORM helpers were defined as plain
+         * DEFUNs in CL before cl_package_export_defined_cl_symbols ran,
+         * so they leaked into COMMON-LISP's external set. */
+        "%LOOP-ALL-SIMPLE-SETQ-P", "%LOOP-BUILD-THEN-STEP",
+        "%LOOP-PARALLELIZE-SETQS", "%CCASE-PLACE-P",
+        "%OBJECT-LOAD-FORM-SLOT-NAMES", "%OBJECT-LOAD-FORM-TYPE-NAME",
+        NULL
     };
     const char *const *p;
     for (p = internal; *p != NULL; p++) {

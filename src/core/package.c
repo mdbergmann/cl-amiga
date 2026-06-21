@@ -739,6 +739,21 @@ void cl_package_export_defined_cl_symbols(void)
              * Lisp-level bindings: function, value, macro, type,
              * struct, or CLOS class. */
             should_export = symbol_has_binding(sym);
+            /* Never export internal `%`-prefixed helpers.  No standard
+             * CL symbol starts with `%`; the prefix is this project's
+             * internal-helper convention.  boot.lisp / clos.lisp define
+             * a number of `%loop-...`, `%ccase-...`, `%object-load-form-...`
+             * helpers as plain DEFUNs in the CL package (current package
+             * during bootstrap), giving them function bindings.  Without
+             * this guard, whichever ones happen to be defined before this
+             * discovery pass runs would leak into COMMON-LISP's external
+             * set and fail the ANSI NO-EXTRA-SYMBOLS-EXPORTED test, while
+             * those defined afterwards stay internal — a timing-dependent
+             * inconsistency.  Skip them unconditionally. */
+            if (should_export) {
+                const char *nm = cl_symbol_name(sym);
+                if (nm && nm[0] == '%') should_export = 0;
+            }
             if (should_export) {
                 if (!(s->flags & CL_SYM_EXPORTED))
                     s->flags |= CL_SYM_EXPORTED;
@@ -786,6 +801,7 @@ static const char *const clos_internal_names[] = {
     "%BUILD-EFFECTIVE-METHOD", "%BUILD-LONG-EFFECTIVE-METHOD",
     "%BUILD-SHORT-EFFECTIVE-METHOD", "%BUILD-SLOT-INDEX-TABLE",
     "%C3-MERGE", "%CALL-METHOD-IMPL", "%CALL-WITH-METHOD-COMBINATION",
+    "%CCASE-PLACE-P",
     "%CLASS-OF", "%CLONE-METHOD-COMBINATION", "%CLOS-TRACE",
     "%COMPUTE-APPLICABLE-METHODS",
     "%COMPUTE-BUILTIN-CPL", "%COMPUTE-CLASS-PRECEDENCE-LIST",
@@ -820,10 +836,12 @@ static const char *const clos_internal_names[] = {
     "%INSTALL-METHOD-IN-GF",
     "%INVALIDATE-ALL-GF-CACHES",
     "%LOOP-ACCUM-BODY", "%LOOP-ACCUM-KEYWORD-P",
+    "%LOOP-ALL-SIMPLE-SETQ-P", "%LOOP-BUILD-THEN-STEP",
     "%LOOP-DESTRUCTURE-ASSIGNS", "%LOOP-DESTRUCTURE-BINDINGS",
     "%LOOP-DESTRUCTURE-VARS",
     "%LOOP-KEYWORD-P", "%LOOP-KEYWORD-SYM-P",
     "%LOOP-LIST-ACCUM-P",
+    "%LOOP-PARALLELIZE-SETQS",
     "%LOOP-PARSE-COND-SUBCLAUSE", "%LOOP-PARSE-FOR",
     "%LOOP-SIMPLE-TYPE-SPEC-P", "%LOOP-SKIP-TYPE-SPEC",
     "%MAKE-AROUND-CHAIN",
@@ -835,6 +853,7 @@ static const char *const clos_internal_names[] = {
     "%METHOD-APPLICABLE-P", "%METHOD-COMBINATION-KEY",
     "%METHOD-MORE-SPECIFIC-P",
     "%NOTIFY-DEPENDENTS",
+    "%OBJECT-LOAD-FORM-SLOT-NAMES", "%OBJECT-LOAD-FORM-TYPE-NAME",
     "%PACKAGE-EXTERNAL-SYMBOLS", "%PACKAGE-SYMBOLS",
     "%PARSE-SLOT-SPEC", "%PARSE-SPECIALIZED-LAMBDA-LIST",
     "%PLACE-DIRECT-MUTATOR-P", "%PLACE-DIRECT-MUTATORS",
