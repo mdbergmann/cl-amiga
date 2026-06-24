@@ -497,6 +497,236 @@ TEST(stw_gc_with_thread_blocked_in_read_line)
 }
 
 /* ================================================================
+ * Regression: error unwind through a GC-protected C frame must
+ * restore gc_root_count (the "sento gc_mark SEGV").
+ *
+ * The original bug: a C builtin such as bi_map does CL_GC_PROTECT on
+ * its result/tail accumulators before a loop, then a nested call
+ * signals an error mid-loop.  cl_error_unwind longjmps back to the
+ * enclosing CL_CATCH but, on the *nested* error-frame path, did NOT
+ * restore gc_root_count.  The unwound builtin's stack-local CL_Obj
+ * slots stayed registered in this thread's gc_roots[].  That stack
+ * memory was then reused by later calls, so a subsequent gc_mark
+ * (often from ANOTHER thread — gc_mark_thread_roots walks ALL threads'
+ * roots) dereferenced a stale slot whose bytes now decoded to a bogus
+ * heap header with a multi-megabyte length, and walked off the arena.
+ *
+ * Fix (commit b2ad54d): CL_ErrorFrame.saved_gc_roots, captured in
+ * cl_error_frame_push() and restored in cl_error_unwind() before the
+ * longjmp.  These two tests assert that invariant directly and under
+ * concurrent GC.
+ *
+ * NOTE: the leak lives ONLY on the nested error-frame path
+ * (cl_error_frame_top > 1); the outermost frame calls
+ * cl_gc_reset_roots() which zeroes the count regardless.  So both
+ * tests wrap the erroring inner CL_CATCH in an OUTER CL_CATCH —
+ * exactly the sento/fiveam topology (handler-case per actor message
+ * around the bi_map call).
+ * ================================================================ */
+
+/* Mimics bi_map: protect accumulators, then a nested call errors
+ * mid-loop.  Never returns — cl_error longjmps to the nearest CL_CATCH. */
+static CL_NORETURN void map_like_builtin_that_errors(void)
+{
+    CL_Obj func   = CL_NIL;
+    CL_Obj result = CL_NIL;
+    CL_Obj tail   = CL_NIL;
+
+    CL_GC_PROTECT(func);
+    CL_GC_PROTECT(result);
+    CL_GC_PROTECT(tail);
+
+    /* Build a partial accumulator, then "the mapped function signals"
+     * mid-loop — just like a Lisp error raised inside (map ... func ...). */
+    result = cl_cons(CL_MAKE_FIXNUM(0), result);
+    result = cl_cons(CL_MAKE_FIXNUM(1), result);
+    tail   = result;
+    cl_error(CL_ERR_GENERAL, "simulated error from mapped function");
+
+    /* No CL_GC_UNPROTECT: cl_error above is noreturn (longjmps to the
+     * nearest CL_CATCH).  Leaving the 3 roots pushed is the whole point —
+     * the unwind must reclaim them; that is what this test verifies. */
+}
+
+TEST(error_unwind_restores_gc_roots_nested)
+{
+    int outer_err;
+    int base = CT->gc_root_count;
+    CL_Obj keep = CL_NIL;
+
+    CL_CATCH(outer_err);                 /* frame 0 */
+    if (outer_err == CL_ERR_NONE) {
+        int inner_err, mid;
+
+        /* A legitimately-protected root held across the inner unwind.  Its
+         * slot must survive; the leaked builtin slots must not. */
+        keep = cl_cons(CL_MAKE_FIXNUM(42), CL_NIL);
+        CL_GC_PROTECT(keep);             /* gc_root_count = base + 1 */
+        mid = CT->gc_root_count;
+
+        CL_CATCH(inner_err);             /* nested frame; saved_gc_roots = mid */
+        if (inner_err == CL_ERR_NONE) {
+            map_like_builtin_that_errors();   /* +3 roots, then longjmp */
+            ASSERT(0);                   /* must not fall through */
+        }
+        CL_UNCATCH();                    /* pop the inner frame */
+
+        /* THE REGRESSION CHECK: the 3 roots pushed by the unwound builtin
+         * must have been dropped — gc_root_count is back to the inner
+         * catch-site snapshot, not mid + 3 (the pre-b2ad54d leak). */
+        ASSERT_EQ_INT(CT->gc_root_count, mid);
+
+        /* And the legitimately-protected root must still be live & intact
+         * across a GC — which now must not walk any stale slot. */
+        cl_gc();
+        ASSERT(CL_CONS_P(keep));
+        ASSERT_EQ_INT(CL_FIXNUM_VAL(cl_car(keep)), 42);
+
+        CL_GC_UNPROTECT(1);              /* pop keep */
+    }
+    CL_UNCATCH();                        /* pop the outer frame */
+
+    ASSERT_EQ_INT(CT->gc_root_count, base);
+}
+
+/* ----------------------------------------------------------------
+ * Concurrent variant: a worker repeatedly maps-and-errors (each error
+ * unwinding through a GC-protected frame) while the main thread hammers
+ * stop-the-world GC.  This is the actual sento topology — a worker doing
+ * bi_map+error while another thread's gc_mark_thread_roots walks every
+ * thread's roots.
+ *
+ * Two failure signals, either of which flags a regression:
+ *   1. Drift: with the outer frame held open for the whole loop, a
+ *      leaked unwind adds +3 unreclaimed roots each iteration, so
+ *      gc_root_count climbs off its baseline.  The worker checks this
+ *      every iteration and bails.
+ *   2. Crash: a leaked stale root, walked by a concurrent compacting GC,
+ *      dereferences the poison written into the reused stack frame and
+ *      SEGVs — turning a silent leak into a loud process abort.
+ * ---------------------------------------------------------------- */
+
+typedef struct {
+    CL_Thread     thread;
+    volatile int  ready;
+    volatile int  done;
+    int           iters;
+    int           result_ok;
+} MapErrCtx;
+
+/* Reuse the just-unwound builtin's stack region with a poison CL_Obj: a
+ * heap-tagged value at a ~4GB offset.  If a stale root still points here,
+ * a concurrent gc_mark dereferences far past the arena and crashes.
+ * Harmless when roots were correctly dropped. */
+static void poison_reused_frame(void)
+{
+    volatile CL_Obj junk[24];
+    int i;
+    for (i = 0; i < 24; i++)
+        junk[i] = (CL_Obj)0xFFFFFFF8u;   /* (x & 3)==0 => looks heap, huge offset */
+    if (junk[0] == CL_NIL) junk[0] = 0;  /* defeat dead-store elimination */
+}
+
+static void *map_error_victim(void *arg)
+{
+    MapErrCtx *ctx = (MapErrCtx *)arg;
+    CL_Thread *t = &ctx->thread;
+    int outer_err;
+
+    platform_tls_set(t);
+    cl_thread_register(t);
+    ctx->ready = 1;
+
+    CL_CATCH(outer_err);                 /* held open for the whole loop */
+    if (outer_err == CL_ERR_NONE) {
+        CL_Obj keep = CL_NIL;
+        int baseline, i;
+
+        keep = cl_cons(CL_MAKE_FIXNUM(7), CL_NIL);
+        CL_GC_PROTECT(keep);
+        baseline = CT->gc_root_count;    /* must hold flat across all iters */
+
+        ctx->result_ok = 1;
+        for (i = 0; i < ctx->iters; i++) {
+            int inner_err;
+
+            CL_CATCH(inner_err);         /* nested frame each iteration */
+            if (inner_err == CL_ERR_NONE)
+                map_like_builtin_that_errors();   /* +3 roots, then longjmp */
+            CL_UNCATCH();
+
+            /* Signal 1 — drift. */
+            if (CT->gc_root_count != baseline) {
+                ctx->result_ok = 0;
+                break;
+            }
+
+            poison_reused_frame();
+
+            /* Allocate so the concurrent STW collector reaches us at a
+             * safepoint and the moving GC actually compacts/relocates. */
+            keep = cl_cons(CL_MAKE_FIXNUM(i), keep);
+        }
+
+        /* The legitimately-protected list must be intact after the storm. */
+        if (!CL_CONS_P(keep) || CL_FIXNUM_VAL(cl_car(keep)) != ctx->iters - 1)
+            ctx->result_ok = 0;
+
+        CL_GC_UNPROTECT(1);
+    } else {
+        ctx->result_ok = 0;              /* the outer frame must never catch */
+    }
+    CL_UNCATCH();
+
+    cl_thread_unregister(t);
+    ctx->done = 1;
+    return NULL;
+}
+
+TEST(concurrent_gc_vs_map_error_unwind)
+{
+    void *vhandle;
+    MapErrCtx ctx;
+    int spins;
+
+    /* Small heap so the concurrent GC compacts (moves objects) often —
+     * relocation is when a stale root does the most damage. */
+    cl_mem_shutdown();
+    cl_mem_init(512 * 1024);
+
+    memset(&ctx, 0, sizeof(ctx));
+    ctx.thread.id = 1;
+    ctx.thread.status = 1;
+    ctx.thread.mv_count = 1;
+    ctx.iters = 400;
+    ctx.result_ok = 0;
+
+    platform_thread_create(&vhandle, map_error_victim, &ctx, 0);
+
+    while (!ctx.ready)
+        platform_sleep_ms(1);
+
+    /* Collector: hammer STW GC concurrently with the victim's
+     * protect/error/unwind loop.  If a leaked root survives an unwind,
+     * one of these gc_mark passes walks poison and SEGVs.  The spin cap
+     * is a safety net against a coordination hang. */
+    spins = 0;
+    while (!ctx.done && spins < 1000000) {
+        cl_gc();
+        spins++;
+    }
+
+    platform_thread_join(vhandle, NULL);
+
+    ASSERT_EQ_INT(ctx.result_ok, 1);
+    ASSERT_EQ_INT(ctx.done, 1);
+
+    /* Restore normal heap. */
+    cl_mem_shutdown();
+    cl_mem_init(4 * 1024 * 1024);
+}
+
+/* ================================================================
  * main
  * ================================================================ */
 
@@ -524,6 +754,11 @@ int main(void)
 
     /* Regression: STW GC vs. thread blocked in stdin read_line (SLY :spawn hang) */
     RUN(stw_gc_with_thread_blocked_in_read_line);
+
+    /* Regression: error unwind through a GC-protected frame restores
+     * gc_root_count (the sento gc_mark SEGV) — deterministic + concurrent */
+    RUN(error_unwind_restores_gc_roots_nested);
+    RUN(concurrent_gc_vs_map_error_unwind);
 
     teardown();
 
