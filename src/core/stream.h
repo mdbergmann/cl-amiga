@@ -39,6 +39,18 @@ uint32_t cl_stream_alloc_outbuf(uint32_t initial_size);
 /* Free an output buffer by handle */
 void cl_stream_free_outbuf(uint32_t handle);
 
+/* Mark-driven outbuf reclamation, driven by the GC.  cl_gc()/cl_gc_compact()
+ * call _gc_mark_begin() before marking, _gc_mark_use() for every live output
+ * stream's handle during marking, and _gc_reclaim() after marking to free
+ * slots no live stream pinned.  This replaces freeing outbufs from dead-corpse
+ * finalization, which was unsafe under handle reuse (see stream.c). */
+void cl_stream_outbuf_gc_mark_begin(void);
+void cl_stream_outbuf_gc_mark_use(uint32_t handle);
+void cl_stream_outbuf_gc_reclaim(void);
+/* Release a freshly-allocated outbuf's creation-window pin once its owning
+ * stream is set (see stream.c outbuf_pinned). */
+void cl_stream_outbuf_unpin(uint32_t handle);
+
 /* Get pointer to output buffer data */
 char *cl_stream_outbuf_data(uint32_t handle);
 

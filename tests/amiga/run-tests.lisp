@@ -1505,6 +1505,32 @@
                (setf all-ok nil))))
          all-ok))
 
+;; Regression: a LIVE string-output-stream's content must survive a GC.  The
+;; outbuf side table recycles a handle the moment a dead stream's slot is freed;
+;; the GC used to free outbufs from each dead stream's stale out_buf_handle, so
+;; if a live stream had recycled that handle, re-finalizing the dead corpse
+;; freed the live stream's buffer — its accumulated text silently vanished
+;; (observed as chunga READ-LINE* returning "" for a non-empty HTTP header under
+;; load, desyncing drakma's framing).  Each iteration builds a string in its own
+;; WITH-OUTPUT-TO-STRING — reusing the outbuf handle the previous iteration's
+;; CLOSE just freed — and forces a sweep GC (EXT:GC, no compaction) WHILE the
+;; stream is live and half-built, so the reclaim runs at exactly the moment the
+;; dead corpse would have freed this live stream's recycled buffer.  The string
+;; must come back intact.  (The host C test
+;; outbuf_live_survives_dead_stream_sharing_handle is the deterministic guard;
+;; this is the on-Amiga coverage.  Allocation is kept light on purpose: heavy
+;; compaction churn here trips a separate, pre-existing moving-GC bug.)
+(check "string-output-stream content survives outbuf reclaim under GC" 0
+       (let ((fails 0))
+         (dotimes (i 50)
+           (let ((s (with-output-to-string (out)
+                      (write-string "Content-Length: 32" out)
+                      (ext:gc)   ; reclaim runs while OUT is live & half-built
+                      (write-string " (ok)" out)
+                      (ext:gc))))
+             (unless (string= s "Content-Length: 32 (ok)") (incf fails))))
+         fails))
+
 ; --- Backtrace (error recovery) ---
 ; Test that errors in nested calls don't break subsequent evaluation
 (defun bt-err-inner () (error "test error"))

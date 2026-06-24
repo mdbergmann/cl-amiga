@@ -167,6 +167,73 @@ TEST(outbuf_alloc_free)
     cl_stream_free_outbuf(h);
 }
 
+/* Regression: a LIVE string-output-stream's outbuf must NOT be freed by the GC
+ * just because a DEAD stream records the same handle.  Outbuf handles are
+ * recycled the instant a slot is freed, so after a dead stream A frees handle
+ * H and a live stream B reuses it, A's stale st->out_buf_handle still names H.
+ * The old GC freed outbufs from each dead corpse's handle, so re-finalizing A
+ * freed B's live buffer (B's accumulated text vanished — surfaced as chunga
+ * READ-LINE* returning "" for a non-empty HTTP header under concurrent GC,
+ * desyncing drakma's response framing).  The fix reclaims outbufs by stream
+ * LIVENESS (mark phase pins each live stream's slot) instead of from dead
+ * corpses.  Here we forge that exact state: a garbage output stream whose
+ * out_buf_handle aliases the live stream's slot.  The live content must
+ * survive the GC. */
+TEST(outbuf_live_survives_dead_stream_sharing_handle)
+{
+    CL_Obj live = cl_make_string_output_stream();
+    CL_Obj dead;
+    CL_Stream *st;
+    uint32_t h;
+    int i;
+
+    CL_GC_PROTECT(live);
+    st = (CL_Stream *)CL_OBJ_TO_PTR(live);
+    h = st->out_buf_handle;
+    cl_stream_outbuf_putchar(st, 'D');
+    cl_stream_outbuf_putchar(st, 'A');
+    cl_stream_outbuf_putchar(st, 'T');
+    cl_stream_outbuf_putchar(st, 'A');
+
+    /* Forge a DEAD output stream whose handle aliases the live slot, then drop
+     * its only reference so it is garbage at the next GC. */
+    dead = cl_make_stream(CL_STREAM_OUTPUT, CL_STREAM_STRING);
+    ((CL_Stream *)CL_OBJ_TO_PTR(dead))->out_buf_handle = h;
+    dead = CL_NIL;
+
+    for (i = 0; i < 100; i++)
+        cl_cons(CL_MAKE_FIXNUM(i), CL_NIL);
+    cl_gc();
+
+    /* The live stream (re-derived; it may have moved) keeps its buffer. */
+    st = (CL_Stream *)CL_OBJ_TO_PTR(live);
+    ASSERT_EQ_INT((int)st->out_buf_handle, (int)h);
+    ASSERT(cl_stream_outbuf_data(h) != NULL);
+    ASSERT_EQ_INT((int)cl_stream_outbuf_len(h), 4);
+    ASSERT(memcmp(cl_stream_outbuf_data(h), "DATA", 4) == 0);
+
+    CL_GC_UNPROTECT(1);
+}
+
+/* Companion: a genuinely dead string-output-stream's outbuf IS reclaimed by
+ * the mark-driven sweep (no slot leak), so the table-full path keeps working. */
+TEST(outbuf_dead_stream_reclaimed)
+{
+    CL_Obj dead = cl_make_string_output_stream();
+    uint32_t h = ((CL_Stream *)CL_OBJ_TO_PTR(dead))->out_buf_handle;
+    int i;
+
+    ASSERT(cl_stream_outbuf_data(h) != NULL);
+    dead = CL_NIL;  /* drop reference */
+
+    for (i = 0; i < 100; i++)
+        cl_cons(CL_MAKE_FIXNUM(i), CL_NIL);
+    cl_gc();
+
+    /* No live stream pinned the slot — it must have been freed. */
+    ASSERT(cl_stream_outbuf_data(h) == NULL);
+}
+
 TEST(outbuf_putchar)
 {
     CL_Obj s = cl_make_stream(CL_STREAM_OUTPUT, CL_STREAM_STRING);
@@ -3360,6 +3427,8 @@ int main(void)
 
     /* Output buffers */
     RUN(outbuf_alloc_free);
+    RUN(outbuf_live_survives_dead_stream_sharing_handle);
+    RUN(outbuf_dead_stream_reclaimed);
     RUN(outbuf_putchar);
     RUN(outbuf_write_string);
     RUN(outbuf_growth);

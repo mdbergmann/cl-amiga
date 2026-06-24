@@ -1045,6 +1045,10 @@ static void gc_mark_children(void *ptr, uint8_t type)
         CL_Stream *st = (CL_Stream *)ptr;
         gc_mark_push(st->string_buf);
         gc_mark_push(st->element_type);
+        /* Pin this live output stream's outbuf slot so the post-mark reclaim
+         * (cl_stream_outbuf_gc_reclaim) doesn't free a buffer still in use. */
+        if ((st->direction & CL_STREAM_OUTPUT) && st->out_buf_handle != 0)
+            cl_stream_outbuf_gc_mark_use(st->out_buf_handle);
         break;
     }
     case TYPE_RATIO: {
@@ -1519,12 +1523,14 @@ static void gc_mark(void)
 static void gc_finalize_dead(uint8_t *ptr)
 {
     switch (CL_HDR_TYPE(ptr)) {
-    case TYPE_STREAM: {
-        CL_Stream *st = (CL_Stream *)ptr;
-        if ((st->direction & CL_STREAM_OUTPUT) && st->out_buf_handle != 0)
-            cl_stream_free_outbuf(st->out_buf_handle);
+    case TYPE_STREAM:
+        /* Output-stream outbuf slots are NOT freed here.  Freeing a dead
+         * stream's st->out_buf_handle is unsafe: the slot's handle may already
+         * have been recycled by a live string-output-stream (handles are
+         * reused as soon as a slot is freed), so re-finalizing a stale corpse
+         * would free the LIVE stream's buffer.  Outbufs are reclaimed instead
+         * by the mark-driven cl_stream_outbuf_gc_reclaim() after marking. */
         break;
-    }
     case TYPE_LOCK: {
         CL_Lock *lk = (CL_Lock *)ptr;
         if (lk->lock_id < CL_MAX_LOCKS) {
@@ -2443,7 +2449,11 @@ void cl_gc_compact(void)
     gc_native_code_patched = 0;
 
     /* Pass 1: Mark (standard) */
+    cl_stream_outbuf_gc_mark_begin();
     gc_mark();
+    /* Reclaim outbuf slots of streams that didn't survive marking, BEFORE the
+     * slide overwrites their (now-dead) stream objects. */
+    cl_stream_outbuf_gc_reclaim();
 
 #ifdef DEBUG_GC
     /* Verify parent→child mark invariant immediately after marking so that
@@ -2937,7 +2947,11 @@ void cl_gc(void)
         platform_write_string(buf);
     }
 #endif
+    cl_stream_outbuf_gc_mark_begin();
     gc_mark();
+    /* Reclaim outbuf slots no live stream pinned, before gc_sweep coalesces
+     * the dead stream objects into free blocks. */
+    cl_stream_outbuf_gc_reclaim();
 #ifdef DEBUG_GC
     gc_verify_marked();
     if (gc_verify_errors > 0)
