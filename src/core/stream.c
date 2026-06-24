@@ -32,6 +32,27 @@ typedef struct {
 static CL_OutBuf outbuf_table[CL_STREAM_BUF_TABLE_SIZE];
 static int stream_initialized = 0;
 
+/* GC mark bitmap for outbuf slots.  The outbuf side table is reclaimed by the
+ * GC driven by STREAM LIVENESS, not by finalizing dead corpses: freeing a
+ * slot from a dead stream's st->out_buf_handle is unsafe because that handle
+ * may already have been reused by a *live* string-output-stream (handles are
+ * recycled the moment a slot's data is freed).  Re-finalizing the stale corpse
+ * would then free the live stream's buffer, silently truncating its output
+ * (observed as chunga READ-LINE* returning "" for a non-empty HTTP header
+ * under concurrent GC, desyncing drakma's response framing).  Instead, each GC
+ * clears this bitmap, marks the slot of every LIVE output stream, then frees
+ * any slot still allocated but unmarked. */
+static uint8_t outbuf_inuse[CL_STREAM_BUF_TABLE_SIZE];
+
+/* Creation-window pin.  A freshly allocated outbuf is not yet referenced by
+ * any stream object, so the liveness-driven reclaim above would free it out
+ * from under the stream being built — a window a *preemptive* stop-the-world
+ * GC (AmigaOS task suspension) can hit between cl_stream_alloc_outbuf returning
+ * the handle and the caller storing it in st->out_buf_handle.  alloc pins the
+ * slot; the caller unpins once the live, GC-reachable stream owns it.  Pinned
+ * slots are never reclaimed; mark-begin does NOT clear pins. */
+static uint8_t outbuf_pinned[CL_STREAM_BUF_TABLE_SIZE];
+
 /* Mutex protecting outbuf_table and cbuf_table slot allocation/deallocation */
 static void *cl_stream_table_mutex = NULL;
 
@@ -143,6 +164,8 @@ void cl_stream_init(void)
         outbuf_table[i].data = NULL;
         outbuf_table[i].capacity = 0;
         outbuf_table[i].length = 0;
+        outbuf_inuse[i] = 0;
+        outbuf_pinned[i] = 0;
     }
     stream_initialized = 1;
 
@@ -234,6 +257,7 @@ uint32_t cl_stream_alloc_outbuf(uint32_t initial_size)
             outbuf_table[i].data = data;
             outbuf_table[i].capacity = initial_size;
             outbuf_table[i].length = 0;
+            outbuf_pinned[i] = 1;  /* protect until the owning stream is set */
 #ifdef DEBUG_STREAM
             {
                 char dbg[64];
@@ -273,6 +297,7 @@ void cl_stream_free_outbuf(uint32_t handle)
         outbuf_table[handle].data = NULL;
         outbuf_table[handle].capacity = 0;
         outbuf_table[handle].length = 0;
+        outbuf_pinned[handle] = 0;
 #ifdef DEBUG_STREAM
         {
             char dbg[64];
@@ -293,6 +318,47 @@ char *cl_stream_outbuf_data(uint32_t handle)
     if (handle > 0 && handle < CL_STREAM_BUF_TABLE_SIZE)
         return outbuf_table[handle].data;
     return NULL;
+}
+
+/* --- Mark-driven outbuf reclamation (see outbuf_inuse comment above) --- */
+
+/* Called once at the start of every GC mark phase: clear the in-use bitmap. */
+void cl_stream_outbuf_gc_mark_begin(void)
+{
+    uint32_t i;
+    for (i = 0; i < CL_STREAM_BUF_TABLE_SIZE; i++)
+        outbuf_inuse[i] = 0;
+}
+
+/* Called while marking each LIVE output stream: pin its outbuf slot. */
+void cl_stream_outbuf_gc_mark_use(uint32_t handle)
+{
+    if (handle > 0 && handle < CL_STREAM_BUF_TABLE_SIZE)
+        outbuf_inuse[handle] = 1;
+}
+
+/* Release the creation-window pin once a live stream owns the slot; from here
+ * on the slot is protected by the mark phase (cl_stream_outbuf_gc_mark_use). */
+void cl_stream_outbuf_unpin(uint32_t handle)
+{
+    if (handle > 0 && handle < CL_STREAM_BUF_TABLE_SIZE)
+        outbuf_pinned[handle] = 0;
+}
+
+/* Called after marking completes (world stopped, so no table mutex needed —
+ * mirrors gc_finalize_dead): free every allocated slot that no live stream
+ * pinned.  These belong to streams that became unreachable this cycle. */
+void cl_stream_outbuf_gc_reclaim(void)
+{
+    uint32_t i;
+    for (i = 1; i < CL_STREAM_BUF_TABLE_SIZE; i++) {
+        if (outbuf_table[i].data && !outbuf_inuse[i] && !outbuf_pinned[i]) {
+            platform_free(outbuf_table[i].data);
+            outbuf_table[i].data = NULL;
+            outbuf_table[i].capacity = 0;
+            outbuf_table[i].length = 0;
+        }
+    }
 }
 
 uint32_t cl_stream_outbuf_len(uint32_t handle)
@@ -1040,6 +1106,9 @@ CL_Obj cl_make_string_output_stream(void)
     st = (CL_Stream *)CL_OBJ_TO_PTR(s);   /* derive after alloc — s may have moved */
     st->out_buf_handle = h;
     st->out_buf_size = 256;
+    /* The (still GC-protected) stream now owns the slot, so the mark phase will
+     * keep it alive — release the creation-window pin. */
+    cl_stream_outbuf_unpin(h);
     CL_GC_UNPROTECT(1);
     return s;
 }
