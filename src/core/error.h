@@ -165,6 +165,12 @@ CL_NORETURN void cl_abort_current_thread(const char *msg);
 CL_NORETURN void cl_signal_type_error(CL_Obj datum, const char *expected_type_name,
                                       const char *fn_name);
 
+/* As cl_signal_type_error, but the expected type is supplied as an already
+ * built Lisp type specifier (e.g. a compound (VECTOR * 8) form) rather than a
+ * name string.  Use when the call site has the type as a CL_Obj. */
+CL_NORETURN void cl_signal_type_error_obj(CL_Obj datum, CL_Obj expected_type,
+                                          const char *fn_name);
+
 /* Signal an ARITHMETIC-ERROR subtype (FLOATING-POINT-OVERFLOW etc.)
  * with :operation and :operands slots populated, then unwind.  Pass
  * the type name as one of SYM_FLOATING_POINT_OVERFLOW / _UNDERFLOW /

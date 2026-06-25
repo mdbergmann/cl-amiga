@@ -81,6 +81,12 @@ static void parse_seq_args(CL_Obj *args, int n, int kw_start, SeqArgs *sa)
             if (!CL_NULL_P(val) && CL_FIXNUM_P(val)) {
                 sa->count = CL_FIXNUM_VAL(val);
                 if (sa->count < 0) sa->count = 0;
+            } else if (CL_BIGNUM_P(val)) {
+                /* A bignum :count can't bound any real sequence's match
+                 * total.  A negative bignum means "remove none" (count 0);
+                 * a positive one means effectively unlimited (sentinel -1). */
+                if (((CL_Bignum *)CL_OBJ_TO_PTR(val))->sign != 0)
+                    sa->count = 0;
             }
         } else if (kw == KW_FROM_END) {
             sa->from_end = !CL_NULL_P(val);
@@ -232,7 +238,9 @@ static int32_t seq_length(CL_Obj seq)
         CL_BitVector *bv = (CL_BitVector *)CL_OBJ_TO_PTR(seq);
         return (int32_t)cl_bv_active_length(bv);
     }
-    cl_error(CL_ERR_TYPE, "not a sequence");
+    /* Carry :datum/:expected-type so handler code (and the ANSI
+     * check-type-error tests) can recover the offending object. */
+    cl_signal_type_error(seq, "SEQUENCE", "sequence operation");
     return 0;
 }
 
@@ -256,7 +264,7 @@ static CL_Obj seq_elt(CL_Obj seq, int32_t idx)
         if ((uint32_t)idx >= cl_bv_active_length(bv)) cl_error(CL_ERR_ARGS, "index out of bounds");
         return CL_MAKE_FIXNUM(cl_bv_get_bit(bv, (uint32_t)idx));
     }
-    cl_error(CL_ERR_TYPE, "not a sequence");
+    cl_signal_type_error(seq, "SEQUENCE", "sequence operation");
     return CL_NIL;
 }
 
@@ -1057,7 +1065,7 @@ static CL_Obj remove_from_vector(CL_Obj seq, int32_t start, int32_t end,
      * CL_Vector would read a wild offset and crash.  Signal a type-error per
      * CLHS instead (REMOVE et al. require a sequence designator). */
     if (!CL_VECTOR_P(seq))
-        cl_error(CL_ERR_TYPE, "argument is not a sequence");
+        cl_signal_type_error(seq, "SEQUENCE", "REMOVE");
     v = (CL_Vector *)CL_OBJ_TO_PTR(seq);
     vlen = (int32_t)cl_vector_active_length(v);
     int32_t i, out = 0, removed = 0;
@@ -1291,7 +1299,7 @@ static CL_Obj bi_remove_duplicates(CL_Obj *args, int n)
     end = (sa.end < 0 || sa.end > len) ? len : sa.end;
     is_list = (CL_CONS_P(seq) || CL_NULL_P(seq));
     if (!is_list && !seq_is_array(seq))
-        cl_error(CL_ERR_TYPE, "REMOVE-DUPLICATES: not a sequence");
+        cl_signal_type_error(seq, "SEQUENCE", "REMOVE-DUPLICATES");
 
     CL_GC_PROTECT(seq);   /* local copy of args[0]; protect across allocations */
     CL_GC_PROTECT(result);
@@ -1401,7 +1409,7 @@ static CL_Obj do_subst(int mode, int destructive, CL_Obj *args, int n)
     end = (sa.end < 0 || sa.end > len) ? len : sa.end;
     is_list = (CL_CONS_P(seq) || CL_NULL_P(seq));
     if (!is_list && !seq_is_array(seq))
-        cl_error(CL_ERR_TYPE, "SUBSTITUTE: not a sequence");
+        cl_signal_type_error(seq, "SEQUENCE", "SUBSTITUTE");
 
     CL_GC_PROTECT(seq);   /* local copy of args[2]; protect across allocations */
     CL_GC_PROTECT(newitem);
@@ -1503,29 +1511,41 @@ static CL_Obj bi_reduce(CL_Obj *args, int n)
     cl_check_seq_keywords(args, n, 2,
         SK_KEY | SK_FROM_END | SK_START | SK_END | SK_INITIAL_VALUE);
 
-    /* Parse keyword args manually */
-    for (i = 2; i + 1 < n; i += 2) {
-        if (args[i] == KW_INITIAL_VALUE) {
-            initial = args[i + 1];
-            has_initial = 1;
-        } else if (args[i] == KW_KEY) {
-            key_fn = args[i + 1];
-        } else if (args[i] == KW_START) {
-            if (CL_FIXNUM_P(args[i + 1])) start = CL_FIXNUM_VAL(args[i + 1]);
-        } else if (args[i] == KW_END) {
-            /* handled below */
-        } else if (args[i] == KW_FROM_END) {
-            if (!CL_NULL_P(args[i + 1]))
-                from_end = 1;
+    /* Parse keyword args manually.  CLHS 3.4.1.4: when a keyword is
+     * supplied more than once, the leftmost pair is the one that takes
+     * effect — so only record the first occurrence of each keyword. */
+    {
+        int seen_key = 0, seen_start = 0, seen_from_end = 0;
+        for (i = 2; i + 1 < n; i += 2) {
+            if (args[i] == KW_INITIAL_VALUE) {
+                if (!has_initial) { initial = args[i + 1]; has_initial = 1; }
+            } else if (args[i] == KW_KEY) {
+                if (!seen_key) { key_fn = args[i + 1]; seen_key = 1; }
+            } else if (args[i] == KW_START) {
+                if (!seen_start) {
+                    if (CL_FIXNUM_P(args[i + 1])) start = CL_FIXNUM_VAL(args[i + 1]);
+                    seen_start = 1;
+                }
+            } else if (args[i] == KW_END) {
+                /* handled below */
+            } else if (args[i] == KW_FROM_END) {
+                if (!seen_from_end) {
+                    if (!CL_NULL_P(args[i + 1])) from_end = 1;
+                    seen_from_end = 1;
+                }
+            }
         }
     }
 
     len = seq_length(seq);
-    /* Re-scan for :end */
+    /* Re-scan for :end (leftmost wins) */
     end_val = len;
     for (i = 2; i + 1 < n; i += 2) {
-        if (args[i] == KW_END && !CL_NULL_P(args[i + 1]) && CL_FIXNUM_P(args[i + 1]))
-            end_val = CL_FIXNUM_VAL(args[i + 1]);
+        if (args[i] == KW_END) {
+            if (!CL_NULL_P(args[i + 1]) && CL_FIXNUM_P(args[i + 1]))
+                end_val = CL_FIXNUM_VAL(args[i + 1]);
+            break;
+        }
     }
 
     if (start >= end_val) {
@@ -1702,7 +1722,9 @@ static CL_Obj bi_replace(CL_Obj *args, int n)
     end1 = len1;
     end2 = len2;
 
-    for (i = 2; i + 1 < n; i += 2) {
+    /* CLHS 3.4.1.4: leftmost duplicate keyword wins — walk back-to-front. */
+    for (i = ((n - 2) & ~1); i >= 2; i -= 2) {
+        if (i + 1 >= n) continue;
         if (args[i] == KW_START1 && CL_FIXNUM_P(args[i + 1]))
             start1 = CL_FIXNUM_VAL(args[i + 1]);
         else if (args[i] == KW_END1 && !CL_NULL_P(args[i + 1]) && CL_FIXNUM_P(args[i + 1]))
@@ -1869,7 +1891,7 @@ static CL_Obj bi_copy_seq(CL_Obj *args, int n)
         return result;
     }
     CL_GC_UNPROTECT(1);
-    cl_error(CL_ERR_TYPE, "COPY-SEQ: not a sequence");
+    cl_signal_type_error(seq, "SEQUENCE", "COPY-SEQ");
     return CL_NIL;
 }
 
@@ -1880,14 +1902,34 @@ static CL_Obj bi_map_into(CL_Obj *args, int n)
     int n_seqs = n - 2;
     CL_Obj seqs[16];
     CL_Obj call_args[16];
-    int32_t i, idx = 0, result_len;
-    int j;
+    CL_Obj res_cur;
+    int32_t idx = 0, result_cap;
+    int j, result_is_list, result_is_array;
 
     if (n_seqs > 16) n_seqs = 16;
     for (j = 0; j < n_seqs; j++)
         seqs[j] = args[j + 2];
 
-    result_len = seq_length(result_seq);
+    result_is_list = (CL_CONS_P(result_seq) || CL_NULL_P(result_seq));
+    result_is_array = (CL_VECTOR_P(result_seq) || CL_ANY_STRING_P(result_seq) ||
+                       CL_BIT_VECTOR_P(result_seq));
+    if (!result_is_list && !result_is_array)
+        cl_signal_type_error(result_seq, "SEQUENCE", "MAP-INTO");
+
+    /* CLHS MAP-INTO: a fill pointer on the result is *ignored* when deciding
+     * how many elements to store — the storage size bounds it instead — and
+     * is afterwards set to the number of elements stored.  So cap on the full
+     * allocated length, not the active (fill-pointer) length. */
+    if (CL_VECTOR_P(result_seq))
+        result_cap = (int32_t)((CL_Vector *)CL_OBJ_TO_PTR(result_seq))->length;
+    else if (CL_BIT_VECTOR_P(result_seq))
+        result_cap = (int32_t)((CL_BitVector *)CL_OBJ_TO_PTR(result_seq))->length;
+    else
+        result_cap = seq_length(result_seq);
+
+    res_cur = result_seq;       /* list write cursor */
+    CL_GC_PROTECT(result_seq);  /* protect against compaction in cl_vm_apply loop */
+    CL_GC_PROTECT(res_cur);
 
     /* Precompute source sequence lengths for non-list types */
     {
@@ -1899,60 +1941,50 @@ static CL_Obj bi_map_into(CL_Obj *args, int n)
                 src_lens[j] = seq_length(seqs[j]);
         }
 
-    for (idx = 0; idx < result_len; idx++) {
-        CL_Obj val;
-        /* Check if any source sequence is exhausted */
-        for (j = 0; j < n_seqs; j++) {
-            if (src_lens[j] >= 0) {
-                if (idx >= src_lens[j]) goto map_into_done;
-            } else {
-                if (CL_NULL_P(seqs[j])) goto map_into_done;
-            }
-        }
-        /* Gather arguments */
-        for (j = 0; j < n_seqs; j++) {
-            if (src_lens[j] < 0) {
-                call_args[j] = cl_car(seqs[j]);
-                seqs[j] = cl_cdr(seqs[j]);
-            } else {
-                call_args[j] = seq_elt(seqs[j], idx);
-            }
-        }
-        /* Call function.  cl_vm_apply GC-roots call_args (a C-local array)
-         * across the call so the mapped function can compact while reading
-         * its own args.  n_seqs==0 → call with 0 args per the CL spec. */
-        val = cl_vm_apply(func, call_args, n_seqs);
-        /* Store into result */
-        if (CL_VECTOR_P(result_seq) || CL_ANY_STRING_P(result_seq) ||
-            CL_BIT_VECTOR_P(result_seq)) {
-            arr_seq_set(result_seq, idx, val);
-        }
-        /* For list result, handled below */
-    }
-    } /* end src_lens block */
-
-map_into_done:
-    /* For list: re-traverse and store */
-    if (CL_CONS_P(result_seq)) {
-        /* Re-run to fill list (simpler approach) */
-        CL_Obj cur = result_seq;
-        /* Reset source seqs */
-        for (j = 0; j < n_seqs; j++)
-            seqs[j] = args[j + 2];
-        for (i = 0; i < idx && !CL_NULL_P(cur); i++) {
+        for (idx = 0; idx < result_cap; idx++) {
             CL_Obj val;
+            if (result_is_list && CL_NULL_P(res_cur)) break;
+            /* Check if any source sequence is exhausted */
             for (j = 0; j < n_seqs; j++) {
-                if (CL_CONS_P(seqs[j])) {
+                if (src_lens[j] >= 0) {
+                    if (idx >= src_lens[j]) goto map_into_done;
+                } else {
+                    if (CL_NULL_P(seqs[j])) goto map_into_done;
+                }
+            }
+            /* Gather arguments */
+            for (j = 0; j < n_seqs; j++) {
+                if (src_lens[j] < 0) {
                     call_args[j] = cl_car(seqs[j]);
                     seqs[j] = cl_cdr(seqs[j]);
                 } else {
-                    call_args[j] = seq_elt(seqs[j], i);
+                    call_args[j] = seq_elt(seqs[j], idx);
                 }
             }
+            /* Call the mapping function exactly once per stored element.
+             * cl_vm_apply GC-roots call_args; res_cur is CL_GC_PROTECTed so
+             * it survives compaction triggered inside the call. */
             val = cl_vm_apply(func, call_args, n_seqs);
-            ((CL_Cons *)CL_OBJ_TO_PTR(cur))->car = val;
-            cur = cl_cdr(cur);
+            if (result_is_list) {
+                ((CL_Cons *)CL_OBJ_TO_PTR(res_cur))->car = val;
+                res_cur = cl_cdr(res_cur);
+            } else {
+                arr_seq_set(result_seq, idx, val);
+            }
         }
+    } /* end src_lens block */
+
+map_into_done:
+    CL_GC_UNPROTECT(2); /* pops res_cur then result_seq */
+    /* Set the fill pointer of a fill-pointered result to the count stored. */
+    if (CL_VECTOR_P(result_seq)) {
+        CL_Vector *rv = (CL_Vector *)CL_OBJ_TO_PTR(result_seq);
+        if (rv->fill_pointer != CL_NO_FILL_POINTER)
+            rv->fill_pointer = (uint32_t)idx;
+    } else if (CL_BIT_VECTOR_P(result_seq)) {
+        CL_BitVector *rbv = (CL_BitVector *)CL_OBJ_TO_PTR(result_seq);
+        if (rbv->fill_pointer != CL_NO_FILL_POINTER)
+            rbv->fill_pointer = (uint32_t)idx;
     }
 
     return result_seq;

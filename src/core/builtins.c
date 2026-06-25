@@ -244,7 +244,7 @@ static CL_Obj bi_reverse(CL_Obj *args, int n)
             cl_bv_set_bit(rv, i, cl_bv_get_bit(bv, blen - 1 - i));
         return result;
     }
-    cl_error(CL_ERR_TYPE, "REVERSE: not a sequence");
+    cl_signal_type_error(seq, "SEQUENCE", "REVERSE");
     return CL_NIL;
 }
 
@@ -519,6 +519,40 @@ static CL_Obj bi_equal(CL_Obj *args, int n)
 static int cl_equalp_pred(CL_Obj a, CL_Obj b);
 
 /* EQUALP: case-insensitive, numeric =, recursive on arrays/structs */
+/* --- EQUALP 1-D array helpers (string / vector / bit-vector) --- */
+/* These let EQUALP compare arrays of differing specialization element-wise,
+ * e.g. a string against a (vector character) or a bit-vector against a
+ * (vector bit), as required by CLHS (element type is ignored). */
+static int equalp_arr1d_p(CL_Obj x)
+{
+    return CL_ANY_STRING_P(x) || CL_VECTOR_P(x) || CL_BIT_VECTOR_P(x);
+}
+
+static int equalp_arr1d_rank(CL_Obj x)
+{
+    if (CL_VECTOR_P(x)) {
+        /* CL_Vector.rank: 0 = simple 1-D, >1 = multi-dimensional. */
+        uint8_t r = ((CL_Vector *)CL_OBJ_TO_PTR(x))->rank;
+        return r > 1 ? (int)r : 1;
+    }
+    return 1; /* strings and bit-vectors are always rank 1 */
+}
+
+static uint32_t equalp_arr1d_len(CL_Obj x)
+{
+    if (CL_ANY_STRING_P(x)) return cl_string_length(x);
+    if (CL_BIT_VECTOR_P(x)) return ((CL_BitVector *)CL_OBJ_TO_PTR(x))->length;
+    return ((CL_Vector *)CL_OBJ_TO_PTR(x))->length;
+}
+
+static CL_Obj equalp_arr1d_elt(CL_Obj x, uint32_t i)
+{
+    if (CL_ANY_STRING_P(x)) return CL_MAKE_CHAR(cl_string_char_at(x, i));
+    if (CL_BIT_VECTOR_P(x))
+        return CL_MAKE_FIXNUM(cl_bv_get_bit((CL_BitVector *)CL_OBJ_TO_PTR(x), i));
+    return cl_vector_data((CL_Vector *)CL_OBJ_TO_PTR(x))[i];
+}
+
 static CL_Obj bi_equalp(CL_Obj *args, int n)
 {
     CL_Obj a = args[0], b = args[1];
@@ -587,6 +621,23 @@ static CL_Obj bi_equalp(CL_Obj *args, int n)
         nwords = CL_BV_WORDS(ba->length);
         if (nwords == 0) return SYM_T;
         return memcmp(ba->data, bb_bv->data, nwords * sizeof(uint32_t)) == 0 ? SYM_T : CL_NIL;
+    }
+    /* Mixed 1-D arrays of differing specialization (string vs char vector,
+     * bit-vector vs bit vector, ...).  Same-type combinations are handled by
+     * the branches above; this catches the cross-type cases.  Both must be
+     * rank 1 with equal dimensions and equalp corresponding elements. */
+    if (equalp_arr1d_p(a) && equalp_arr1d_p(b) &&
+        equalp_arr1d_rank(a) == 1 && equalp_arr1d_rank(b) == 1) {
+        uint32_t la = equalp_arr1d_len(a), lb = equalp_arr1d_len(b);
+        uint32_t i;
+        if (la != lb) return CL_NIL;
+        for (i = 0; i < la; i++) {
+            CL_Obj pair[2];
+            pair[0] = equalp_arr1d_elt(a, i);
+            pair[1] = equalp_arr1d_elt(b, i);
+            if (CL_NULL_P(bi_equalp(pair, 2))) return CL_NIL;
+        }
+        return SYM_T;
     }
     /* Structs: same type, slot-wise equalp */
     if (CL_STRUCT_P(a) && CL_STRUCT_P(b)) {

@@ -897,35 +897,23 @@ static CL_Obj bi_set_condition_slot_value(CL_Obj *args, int n)
  * original argument and fail when datum is NIL.  Use this helper from
  * call sites that already know both values (car, cdr, rplaca/rplacd,
  * etc.) so the slots survive into Lisp-land. */
-void cl_signal_type_error(CL_Obj datum, const char *expected_type_name,
-                          const char *fn_name)
+/* Core implementation: expected_type is an already-built Lisp type specifier.
+ * type_name_for_msg is a human-readable string for the report (may be NULL). */
+static CL_NORETURN void signal_type_error_core(CL_Obj datum, CL_Obj expected_type,
+                                               const char *type_name_for_msg,
+                                               const char *fn_name)
 {
-    CL_Obj expected_type;
     CL_Obj report = CL_NIL;
     CL_Obj slots = CL_NIL;
     CL_Obj cond;
     char msgbuf[128];
 
     CL_GC_PROTECT(datum);
-    /* Compound type specs like "(INTEGER 1 *)" must be read as Lisp
-     * expressions, not interned as symbols, so that (typep datum
-     * expected-type) in handler code works correctly. */
-    if (expected_type_name[0] == '(') {
-        CL_ReadStream rs;
-        rs.buf = expected_type_name;
-        rs.pos = 0;
-        rs.len = (int)strlen(expected_type_name);
-        rs.line = 1;
-        expected_type = cl_read_from_string(&rs);
-    } else {
-        expected_type = cl_intern_in(expected_type_name,
-                                     (uint32_t)strlen(expected_type_name),
-                                     cl_package_cl);
-    }
     CL_GC_PROTECT(expected_type);
 
     snprintf(msgbuf, sizeof(msgbuf),
-             "%s: argument is not of type %s", fn_name, expected_type_name);
+             "%s: argument is not of type %s", fn_name,
+             type_name_for_msg ? type_name_for_msg : "(see expected-type)");
     report = cl_make_string(msgbuf, (uint32_t)strlen(msgbuf));
     CL_GC_PROTECT(report);
 
@@ -951,6 +939,37 @@ void cl_signal_type_error(CL_Obj datum, const char *expected_type_name,
 
     cl_signal_condition(cond);
     cl_error_from_condition(cond);
+}
+
+void cl_signal_type_error(CL_Obj datum, const char *expected_type_name,
+                          const char *fn_name)
+{
+    CL_Obj expected_type;
+
+    CL_GC_PROTECT(datum);
+    /* Compound type specs like "(INTEGER 1 *)" must be read as Lisp
+     * expressions, not interned as symbols, so that (typep datum
+     * expected-type) in handler code works correctly. */
+    if (expected_type_name[0] == '(') {
+        CL_ReadStream rs;
+        rs.buf = expected_type_name;
+        rs.pos = 0;
+        rs.len = (int)strlen(expected_type_name);
+        rs.line = 1;
+        expected_type = cl_read_from_string(&rs);
+    } else {
+        expected_type = cl_intern_in(expected_type_name,
+                                     (uint32_t)strlen(expected_type_name),
+                                     cl_package_cl);
+    }
+    CL_GC_UNPROTECT(1);
+    signal_type_error_core(datum, expected_type, expected_type_name, fn_name);
+}
+
+void cl_signal_type_error_obj(CL_Obj datum, CL_Obj expected_type,
+                              const char *fn_name)
+{
+    signal_type_error_core(datum, expected_type, NULL, fn_name);
 }
 
 /* Signal an ARITHMETIC-ERROR subtype (floating-point-overflow/-underflow,

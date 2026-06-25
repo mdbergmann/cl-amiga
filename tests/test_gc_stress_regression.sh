@@ -1622,6 +1622,24 @@ out=$(run_stress "$WORK/seqfns.lisp")
 check_contains "sequence functions stable under GC stress" "SEQFN-OK" "$out"
 check_absent   "no corrupted sequence results"             "SEQFN-BAD" "$out"
 
+# --- Case: MAP-INTO into a list keeps its write cursor live under stress ----
+# MAP-INTO calls the mapping function once per element and stores the result
+# through a GC-protected list cursor (res_cur).  If that cursor went stale
+# across the allocating mapping call, the destination list would be corrupted.
+cat > "$WORK/mapinto.lisp" <<'EOF'
+(let ((bad nil))
+  (dotimes (i 80)
+    (unless (equalp (let ((a (copy-seq (list 0 0 0 0))))
+                      (map-into a (lambda (x) (list x x)) (list 1 2 3 4)))
+                    (list (list 1 1) (list 2 2) (list 3 3) (list 4 4)))
+      (setq bad :map-into-list))
+    (when bad (return)))
+  (if bad (format t "MAPINTO-BAD:~s~%" bad) (format t "MAPINTO-OK~%")))
+EOF
+out=$(run_stress "$WORK/mapinto.lisp")
+check_contains "map-into list cursor stable under GC stress" "MAPINTO-OK" "$out"
+check_absent   "no corrupted map-into list"                  "MAPINTO-BAD" "$out"
+
 echo ""
 echo "$passed passed, $failed failed, $total total"
 [ "$failed" -eq 0 ]
