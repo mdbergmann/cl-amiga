@@ -3205,15 +3205,23 @@ TEST(eval_equalp)
     ASSERT_STR_EQ(eval_print("(equalp (make-hash-table) (make-hash-table))"), "T");
     ASSERT_STR_EQ(eval_print("(equalp (make-hash-table) 5)"), "NIL");
 
-    /* EQUALP compares array-dimension values (fill pointer is irrelevant):
-       (make-array 5 :fill-pointer 2) has dimension 5, not 2. */
+    /* EQUALP compares two vectors as SEQUENCES: by ACTIVE length (the fill
+       pointer if present), comparing only the active prefix.  This matches
+       SBCL/CLISP and is mandated by ansi-test EQUALP.11
+       (data-and-control-flow/equalp.lsp): (equalp #(1 2 3) <dim-8 fp-3 (1 2 3)>)
+       => T, and REVERSE-VECTOR.6.  A fill-pointered vector is equalp to a plain
+       vector holding the same active elements. */
     ASSERT_STR_EQ(eval_print(
         "(equalp (make-array 5 :fill-pointer 2 :initial-contents '(1 2 3 4 5))"
-        "        (make-array 2 :initial-contents '(1 2)))"), "NIL"); /* dim 5 != 2 */
-    /* Two size-5 arrays with different fill pointers but identical elements -> equalp */
+        "        (make-array 2 :initial-contents '(1 2)))"), "T"); /* active (1 2) == (1 2) */
+    /* Same storage size, different fill pointers -> different active lengths -> not equalp. */
     ASSERT_STR_EQ(eval_print(
         "(equalp (make-array 5 :fill-pointer 2 :initial-contents '(1 2 3 4 5))"
-        "        (make-array 5 :fill-pointer 3 :initial-contents '(1 2 3 4 5)))"), "T");
+        "        (make-array 5 :fill-pointer 3 :initial-contents '(1 2 3 4 5)))"), "NIL");
+    /* Active length 2 vs a plain length-5 vector -> not equalp. */
+    ASSERT_STR_EQ(eval_print(
+        "(equalp (make-array 5 :fill-pointer 2 :initial-contents '(1 2 3 4 5))"
+        "        (make-array 5 :initial-contents '(1 2 3 4 5)))"), "NIL");
     /* EQUALP on multidimensional arrays: same dims + equalp elements */
     ASSERT_STR_EQ(eval_print("(equalp #2A((1 2) (3 4)) #2A((1 2) (3 4)))"), "T");
     ASSERT_STR_EQ(eval_print("(equalp #2A((1 2) (3 4)) #2A((1 2) (3 5)))"), "NIL");
@@ -3221,6 +3229,80 @@ TEST(eval_equalp)
     ASSERT_STR_EQ(eval_print("(equalp #2A((1 2) (3 4)) #(1 2 3 4))"), "NIL");
     /* equalp descends vectors element-wise regardless of representation */
     ASSERT_STR_EQ(eval_print("(equalp #(1 2 3) (vector 1 2 3))"), "T");
+    /* Fill-pointer bit-vectors compare by active length too. */
+    ASSERT_STR_EQ(eval_print(
+        "(equalp (make-array 6 :element-type 'bit :fill-pointer 3"
+        "          :initial-contents '(1 0 1 1 1 1)) #*101)"), "T"); /* active (1 0 1) */
+    ASSERT_STR_EQ(eval_print(
+        "(equalp (make-array 6 :element-type 'bit :fill-pointer 3"
+        "          :initial-contents '(1 0 1 1 1 1)) #*1011)"), "NIL"); /* active len 3 != 4 */
+    /* Same storage, different fill pointers -> different active lengths -> not equalp. */
+    ASSERT_STR_EQ(eval_print(
+        "(equalp (make-array 6 :element-type 'bit :fill-pointer 3"
+        "          :initial-contents '(1 0 1 1 1 1))"
+        "        (make-array 6 :element-type 'bit :fill-pointer 5"
+        "          :initial-contents '(1 0 1 1 1 1)))"), "NIL");
+}
+
+/* Sequence operations on adjustable / fill-pointer / displaced character
+ * vectors (string-vectors) and bit-vectors: result type and active length. */
+TEST(eval_string_vector_seq_ops)
+{
+    /* REVERSE of a fill-pointer string yields a STRING of the active length,
+       not a general (vector character). */
+    ASSERT_STR_EQ(eval_print(
+        "(let ((s (make-array 9 :element-type 'character"
+        "          :initial-contents \"12345ZZZZ\" :fill-pointer 5)))"
+        "  (let ((r (reverse s))) (list (stringp r) r)))"), "(T \"54321\")");
+    /* REVERSE of a fill-pointer bit-vector honours the active length. */
+    ASSERT_STR_EQ(eval_print(
+        "(reverse (make-array 10 :element-type 'bit"
+        "          :initial-contents '(0 0 0 1 1 0 1 0 1 0) :fill-pointer 5))"), "#*11000");
+    /* SUBSTITUTE on an adjustable string returns a STRING. */
+    ASSERT_STR_EQ(eval_print(
+        "(let ((s (make-array 5 :element-type 'character"
+        "          :initial-contents \"abcab\" :adjustable t)))"
+        "  (let ((r (substitute #\\x #\\a s))) (list (stringp r) r)))"), "(T \"xbcxb\")");
+    /* NSUBSTITUTE on a fill-pointer string mutates only the active region. */
+    ASSERT_STR_EQ(eval_print(
+        "(let ((s (make-array 9 :element-type 'character"
+        "          :initial-contents \"abcabZZZZ\" :fill-pointer 5)))"
+        "  (nsubstitute #\\x #\\a s) (list (length s) (string= s \"xbcxb\")))"), "(5 T)");
+    /* REMOVE-IF on an adjustable string returns a STRING. */
+    ASSERT_STR_EQ(eval_print(
+        "(let ((s (make-array 10 :element-type 'character"
+        "          :initial-contents \"ab1c23def4\" :adjustable t)))"
+        "  (let ((r (remove-if #'alpha-char-p s))) (list (stringp r) r)))"), "(T \"1234\")");
+    /* COPY-SEQ of an adjustable base-char string is a SIMPLE string. */
+    ASSERT_STR_EQ(eval_print(
+        "(simple-string-p (copy-seq (make-array 4 :element-type 'base-char"
+        "          :initial-contents '(#\\a #\\b #\\c #\\d) :adjustable t)))"), "T");
+    /* MAKE-ARRAY displacing a (one-element) list dimension onto a vector must
+       install a real displaced view, not a fresh NIL-filled array. */
+    ASSERT_STR_EQ(eval_print(
+        "(let* ((v1 (copy-seq #(a b c d e f g h)))"
+        "       (v2 (make-array '(4) :displaced-to v1 :displaced-index-offset 2)))"
+        "  (copy-seq v2))"), "#(C D E F)");
+    /* MAKE-ARRAY displacing onto a string while requesting a fill pointer keeps
+       the fill pointer (the active length is honoured). */
+    ASSERT_STR_EQ(eval_print(
+        "(let* ((s0 \"XXabcdeYYY\")"
+        "       (s (make-array 5 :element-type 'character :displaced-to s0"
+        "           :displaced-index-offset 2 :fill-pointer 3)))"
+        "  (list (length s) (string= s \"abc\")))"), "(3 T)");
+    /* AREF ignores the fill pointer (accesses the whole bit-vector storage). */
+    ASSERT_STR_EQ(eval_print(
+        "(let ((b (make-array 8 :element-type 'bit :initial-element 0 :fill-pointer 4)))"
+        "  (fill b 1) (loop for i from 0 below 8 collect (aref b i)))"),
+        "(1 1 1 1 0 0 0 0)");
+    /* MAKE-ARRAY :initial-contents from a BIT-VECTOR source copies its bits
+       (the array seq accessor must handle bit-vector sources, not just lists). */
+    ASSERT_STR_EQ(eval_print(
+        "(coerce (make-array 9 :element-type 'bit :initial-contents #*001011000) 'list)"),
+        "(0 0 1 0 1 1 0 0 0)");
+    /* REMOVE :count :from-end on a (simple) string removes the LAST matches. */
+    ASSERT_STR_EQ(eval_print("(remove #\\b \"abcdbad\" :count 1 :from-end t)"), "\"abcdad\"");
+    ASSERT_STR_EQ(eval_print("(remove #\\b \"abcdbad\" :count 1)"), "\"acdbad\"");
 }
 
 /* --- defun block (return-from inside do) --- */
@@ -9983,6 +10065,7 @@ int main(void)
     RUN(eval_defsetf_cadr);
     RUN(eval_get_setf_expansion_defsetf);
     RUN(eval_equalp);
+    RUN(eval_string_vector_seq_ops);
     RUN(eval_defun_return_from);
 
     /* Cross-closure return-from */

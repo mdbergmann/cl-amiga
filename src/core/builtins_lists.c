@@ -512,7 +512,7 @@ static CL_Obj bi_nreverse(CL_Obj *args, int n)
     }
     if (CL_BIT_VECTOR_P(seq)) {
         CL_BitVector *bv = (CL_BitVector *)CL_OBJ_TO_PTR(seq);
-        uint32_t blen = bv->length;
+        uint32_t blen = cl_bv_active_length(bv);   /* honour fill pointer */
         uint32_t i, half = blen / 2;
         for (i = 0; i < half; i++) {
             uint32_t a = cl_bv_get_bit(bv, i);
