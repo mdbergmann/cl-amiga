@@ -9666,6 +9666,63 @@ static void test_eval_concatenate_type_error(void)
         ":GOT-TYPE-ERROR");
 }
 
+/* Regression: a non-symbol in keyword-argument position must signal a
+ * program-error, not crash.  Previously the VM's keyword-matching loop fed the
+ * non-symbol straight to cl_symbol_name() (an unchecked CL_OBJ_TO_PTR deref),
+ * and the resulting garbage pointer was passed as a "%s" arg to cl_error,
+ * crashing inside vsnprintf.  Surfaced by ansi-test MAKE-SEQUENCE.ERROR.13:
+ * (make-sequence 'list 10 0 0) — the integer 0 lands in the &key plist's key
+ * slot.  Covers the normal call path, the APPLY path and the macro that wraps
+ * make-sequence. */
+static void test_eval_nonsymbol_keyword_program_error(void)
+{
+    /* Direct call path (OP_CALL / OP_TAILCALL keyword matching). */
+    ASSERT_STR_EQ(eval_print(
+        "(handler-case (funcall (lambda (&key foo) foo) 0 0) "
+        "  (program-error () :got-program-error))"),
+        ":GOT-PROGRAM-ERROR");
+    /* APPLY path. */
+    ASSERT_STR_EQ(eval_print(
+        "(handler-case (apply (lambda (&key foo) foo) '(0 0)) "
+        "  (program-error () :got-program-error))"),
+        ":GOT-PROGRAM-ERROR");
+    /* The exact ansi-test form. */
+    ASSERT_STR_EQ(eval_print(
+        "(handler-case (make-sequence 'list 10 0 0) "
+        "  (program-error () :got-program-error))"),
+        ":GOT-PROGRAM-ERROR");
+    /* A genuine unknown (but symbol) keyword still reports cleanly. */
+    ASSERT_STR_EQ(eval_print(
+        "(handler-case (funcall (lambda (&key foo) foo) :bar 1) "
+        "  (program-error () :got-program-error))"),
+        ":GOT-PROGRAM-ERROR");
+}
+
+/* Regression: REMOVE / REMOVE-IF / REMOVE-IF-NOT on a non-sequence must signal
+ * a type-error, not crash.  bi_remove ruled out lists/strings/bit-vectors/NIL
+ * and then routed everything else to remove_from_vector, which dereferenced
+ * the argument as a CL_Vector — a wild read for a number, symbol, etc.
+ * Surfaced by ansi-test REMOVE.ERROR.11 ((remove 'a x) over the type universe,
+ * which includes non-sequences). */
+static void test_eval_remove_nonsequence_type_error(void)
+{
+    ASSERT_STR_EQ(eval_print(
+        "(handler-case (remove 'a 5) (type-error () :got-type-error))"),
+        ":GOT-TYPE-ERROR");
+    ASSERT_STR_EQ(eval_print(
+        "(handler-case (remove 'a 'foo) (type-error () :got-type-error))"),
+        ":GOT-TYPE-ERROR");
+    ASSERT_STR_EQ(eval_print(
+        "(handler-case (remove-if #'evenp 5) (type-error () :got-type-error))"),
+        ":GOT-TYPE-ERROR");
+    ASSERT_STR_EQ(eval_print(
+        "(handler-case (remove-if-not #'evenp 'foo) "
+        "  (type-error () :got-type-error))"),
+        ":GOT-TYPE-ERROR");
+    /* Sanity: a real vector still works. */
+    ASSERT_STR_EQ(eval_print("(remove 3 #(1 2 3 4 3 5))"), "#(1 2 4 5)");
+}
+
 int main(void)
 {
     test_init();
@@ -10618,6 +10675,8 @@ int main(void)
     RUN(eval_alpha_char_p_unicode);
     RUN(eval_upper_lower_case_unicode);
     RUN(eval_concatenate_type_error);
+    RUN(eval_nonsymbol_keyword_program_error);
+    RUN(eval_remove_nonsequence_type_error);
 
     /* compiler scanner: symbol-macrolet + &environment macro (ironclad sha3) */
     RUN(eval_scanner_symbol_macrolet_environment);

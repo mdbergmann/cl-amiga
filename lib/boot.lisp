@@ -1932,36 +1932,97 @@ including any dotted-list terminator (so the result is also dotted)."
           (t (error 'type-error :datum pair :expected-type 'list)))))
 
 ;; --- make-sequence ---
+(defun %seq-elt-type-is-char (et)
+  (and (symbolp et)
+       (let ((n (symbol-name et)))
+         (or (string= n "CHARACTER") (string= n "BASE-CHAR")
+             (string= n "STANDARD-CHAR") (string= n "EXTENDED-CHAR")))))
+
+(defun %seq-elt-type-is-bit (et)
+  (and (symbolp et) (string= (symbol-name et) "BIT")))
+
+(defun %seq-len-arg (x)
+  "Interpret a length spec element: an integer is a constraint; * or NIL is none."
+  (if (integerp x) x nil))
+
+(defun %seq-ctor-info (type)
+  "Classify a sequence constructor TYPE.  Returns (values KIND LENGTH) where
+   KIND is one of :list :cons :null :string :bit-vector :vector, or NIL when
+   the type does not denote a constructible sequence.  LENGTH is the declared
+   length constraint (an integer) or NIL when unspecified or `*`."
+  ;; Resolve a class metaobject down to its proper name.
+  (when (and (not (symbolp type)) (not (consp type))
+             (typep type 'standard-class))
+    (setq type (class-name type)))
+  (cond
+    ((symbolp type)
+     (let ((n (symbol-name type)))
+       (cond
+         ((string= n "LIST") (values :list nil))
+         ((string= n "CONS") (values :cons nil))
+         ((string= n "NULL") (values :null nil))
+         ((or (string= n "STRING") (string= n "SIMPLE-STRING")
+              (string= n "BASE-STRING") (string= n "SIMPLE-BASE-STRING"))
+          (values :string nil))
+         ((or (string= n "BIT-VECTOR") (string= n "SIMPLE-BIT-VECTOR"))
+          (values :bit-vector nil))
+         ((or (string= n "VECTOR") (string= n "SIMPLE-VECTOR")
+              (string= n "ARRAY") (string= n "SIMPLE-ARRAY"))
+          (values :vector nil))
+         (t (values nil nil)))))
+    ((consp type)
+     (let* ((head (car type))
+            (hn (and (symbolp head) (symbol-name head)))
+            (rest (cdr type)))
+       (cond
+         ((null hn) (values nil nil))
+         ((or (string= hn "STRING") (string= hn "SIMPLE-STRING")
+              (string= hn "BASE-STRING") (string= hn "SIMPLE-BASE-STRING"))
+          (values :string (%seq-len-arg (and rest (car rest)))))
+         ((or (string= hn "BIT-VECTOR") (string= hn "SIMPLE-BIT-VECTOR"))
+          (values :bit-vector (%seq-len-arg (and rest (car rest)))))
+         ((or (string= hn "VECTOR") (string= hn "SIMPLE-VECTOR"))
+          (let ((elt (and rest (car rest)))
+                (len (%seq-len-arg (and rest (cdr rest) (cadr rest)))))
+            (cond ((%seq-elt-type-is-char elt) (values :string len))
+                  ((%seq-elt-type-is-bit elt)  (values :bit-vector len))
+                  (t (values :vector len)))))
+         ((or (string= hn "ARRAY") (string= hn "SIMPLE-ARRAY"))
+          (let ((elt (and rest (car rest))))
+            (cond ((%seq-elt-type-is-char elt) (values :string nil))
+                  ((%seq-elt-type-is-bit elt)  (values :bit-vector nil))
+                  (t (values :vector nil)))))
+         (t (values nil nil)))))
+    (t (values nil nil))))
+
 (defun make-sequence (type size &key (initial-element nil ie-p))
   "Create a sequence of the given TYPE and SIZE."
-  (let ((tname (if (symbolp type) (symbol-name type) "")))
-    (cond
-      ((or (string= tname "LIST"))
-       (if ie-p
-           (make-list size :initial-element initial-element)
+  (multiple-value-bind (kind len) (%seq-ctor-info type)
+    (when (and len (/= len size))
+      (error 'type-error :datum size :expected-type type))
+    (case kind
+      (:list
+       (if ie-p (make-list size :initial-element initial-element)
            (make-list size)))
-      ((or (string= tname "VECTOR")
-           (string= tname "SIMPLE-VECTOR")
-           (string= tname "ARRAY"))
-       (if ie-p
-           (make-array size :initial-element initial-element)
-           (make-array size)))
-      ((or (string= tname "STRING")
-           (string= tname "SIMPLE-STRING")
-           (string= tname "BASE-STRING")
-           (string= tname "SIMPLE-BASE-STRING"))
-       (if ie-p
-           (make-string size :initial-element initial-element)
+      (:cons
+       (when (zerop size)
+         (error 'type-error :datum size :expected-type type))
+       (if ie-p (make-list size :initial-element initial-element)
+           (make-list size)))
+      (:null
+       (unless (zerop size)
+         (error 'type-error :datum size :expected-type type))
+       nil)
+      (:string
+       (if ie-p (make-string size :initial-element initial-element)
            (make-string size)))
-      ;; Handle (vector element-type) and (simple-array element-type (size)) compound specs
-      ((and (consp type)
-            (let ((head (symbol-name (car type))))
-              (or (string= head "VECTOR") (string= head "SIMPLE-VECTOR")
-                  (string= head "ARRAY") (string= head "SIMPLE-ARRAY"))))
-       (if ie-p
-           (make-array size :initial-element initial-element)
+      (:bit-vector
+       (make-array size :element-type 'bit
+                        :initial-element (if ie-p initial-element 0)))
+      (:vector
+       (if ie-p (make-array size :initial-element initial-element)
            (make-array size)))
-      (t (error "MAKE-SEQUENCE: unsupported type ~S" type)))))
+      (t (error 'type-error :datum type :expected-type 'sequence)))))
 
 ;; --- Pathname functions (Step 10) ---
 ;; Core pathname functions (pathname, pathnamep, parse-namestring, namestring,

@@ -23,6 +23,7 @@ static void defun(const char *name, CL_CFunc func, int min, int max)
 /* --- Pre-interned keyword symbols --- */
 
 static CL_Obj KW_TEST = CL_NIL;
+static CL_Obj KW_TEST_NOT = CL_NIL;
 static CL_Obj KW_KEY = CL_NIL;
 static CL_Obj KW_START1 = CL_NIL;
 static CL_Obj KW_END1 = CL_NIL;
@@ -283,16 +284,6 @@ static void map_collect_args(CL_Obj *seqs, int32_t *lens, CL_Obj *orig_seqs,
 }
 
 /* Helper: match result-type symbol name */
-static int map_result_type_match(CL_Obj result_type, const char *name, uint32_t len)
-{
-    if (CL_SYMBOL_P(result_type)) {
-        CL_Symbol *s = (CL_Symbol *)CL_OBJ_TO_PTR(result_type);
-        CL_String *sn = (CL_String *)CL_OBJ_TO_PTR(s->name);
-        return sn->length == len && memcmp(sn->data, name, len) == 0;
-    }
-    return 0;
-}
-
 /* True if TYPE denotes a character subtype (CHARACTER/BASE-CHAR/... or a
  * deftype that expands to one).  Used to decide whether a (vector ...)
  * result-type should yield a string. DEPTH bounds deftype recursion. */
@@ -312,6 +303,103 @@ static int seq_elt_type_is_char(CL_Obj type, int depth)
         }
     }
     return 0;
+}
+
+/* True if TYPE denotes the BIT type (or a deftype expanding to it). */
+static int seq_elt_type_is_bit(CL_Obj type, int depth)
+{
+    if (depth <= 0) return 0;
+    if (CL_SYMBOL_P(type)) {
+        const char *nm = cl_symbol_name(type);
+        if (strcmp(nm, "BIT") == 0) return 1;
+        if (strcmp(nm, "*") == 0) return 0;
+        {
+            CL_Obj ex = cl_get_type_expander(type);
+            if (!CL_NULL_P(ex))
+                return seq_elt_type_is_bit(cl_vm_apply(ex, NULL, 0), depth - 1);
+        }
+    }
+    return 0;
+}
+
+/* Classify a sequence constructor result-type (for MERGE / MAKE-SEQUENCE).
+ *   0 = nil/null, 1 = list, 2 = string, 3 = (general) vector,
+ *   4 = bit-vector, -1 = unknown.
+ * *len_out is set to the declared length, or -1 when unspecified / `*`.
+ * DEPTH bounds deftype-expansion recursion. */
+static int seq_ctor_type_class(CL_Obj rt, int depth, int32_t *len_out)
+{
+    *len_out = -1;
+    if (depth <= 0) return -1;
+    if (CL_NULL_P(rt)) return 0;
+    if (CL_SYMBOL_P(rt)) {
+        const char *nm = cl_symbol_name(rt);
+        if (strcmp(nm, "NULL") == 0) return 0;
+        if (strcmp(nm, "LIST") == 0 || strcmp(nm, "CONS") == 0) return 1;
+        if (strcmp(nm, "STRING") == 0 || strcmp(nm, "SIMPLE-STRING") == 0 ||
+            strcmp(nm, "BASE-STRING") == 0 || strcmp(nm, "SIMPLE-BASE-STRING") == 0)
+            return 2;
+        if (strcmp(nm, "BIT-VECTOR") == 0 || strcmp(nm, "SIMPLE-BIT-VECTOR") == 0)
+            return 4;
+        if (strcmp(nm, "VECTOR") == 0 || strcmp(nm, "SIMPLE-VECTOR") == 0 ||
+            strcmp(nm, "ARRAY") == 0 || strcmp(nm, "SIMPLE-ARRAY") == 0)
+            return 3;
+        {
+            CL_Obj ex = cl_get_type_expander(rt);
+            if (!CL_NULL_P(ex))
+                return seq_ctor_type_class(cl_vm_apply(ex, NULL, 0), depth - 1, len_out);
+        }
+        return -1;
+    }
+    if (CL_CONS_P(rt)) {
+        CL_Obj head = cl_car(rt);
+        if (CL_SYMBOL_P(head)) {
+            const char *nm = cl_symbol_name(head);
+            CL_Obj rest = cl_cdr(rt);
+            int cls = -1;
+            CL_Obj lenarg = CL_NIL;
+            if (strcmp(nm, "LIST") == 0 || strcmp(nm, "CONS") == 0) return 1;
+            if (strcmp(nm, "STRING") == 0 || strcmp(nm, "SIMPLE-STRING") == 0 ||
+                strcmp(nm, "BASE-STRING") == 0 || strcmp(nm, "SIMPLE-BASE-STRING") == 0) {
+                cls = 2;
+                lenarg = CL_NULL_P(rest) ? CL_NIL : cl_car(rest);
+            } else if (strcmp(nm, "BIT-VECTOR") == 0 ||
+                       strcmp(nm, "SIMPLE-BIT-VECTOR") == 0) {
+                cls = 4;
+                lenarg = CL_NULL_P(rest) ? CL_NIL : cl_car(rest);
+            } else if (strcmp(nm, "VECTOR") == 0 || strcmp(nm, "SIMPLE-VECTOR") == 0) {
+                /* (vector [elt-type [length]]) */
+                CL_Obj eltarg = CL_NULL_P(rest) ? CL_NIL : cl_car(rest);
+                lenarg = (CL_NULL_P(rest) || CL_NULL_P(cl_cdr(rest)))
+                             ? CL_NIL : cl_car(cl_cdr(rest));
+                if (!CL_NULL_P(eltarg) && seq_elt_type_is_char(eltarg, 8)) cls = 2;
+                else if (!CL_NULL_P(eltarg) && seq_elt_type_is_bit(eltarg, 8)) cls = 4;
+                else cls = 3;
+            } else if (strcmp(nm, "ARRAY") == 0 || strcmp(nm, "SIMPLE-ARRAY") == 0) {
+                CL_Obj eltarg = CL_NULL_P(rest) ? CL_NIL : cl_car(rest);
+                if (!CL_NULL_P(eltarg) && seq_elt_type_is_char(eltarg, 8)) cls = 2;
+                else if (!CL_NULL_P(eltarg) && seq_elt_type_is_bit(eltarg, 8)) cls = 4;
+                else cls = 3;
+            } else {
+                CL_Obj ex = cl_get_type_expander(head);
+                if (!CL_NULL_P(ex)) {
+                    CL_Obj arg_array[16];
+                    int na = 0;
+                    CL_Obj r = rest;
+                    while (!CL_NULL_P(r) && na < 16) {
+                        arg_array[na++] = cl_car(r);
+                        r = cl_cdr(r);
+                    }
+                    return seq_ctor_type_class(cl_vm_apply(ex, arg_array, na),
+                                               depth - 1, len_out);
+                }
+                return -1;
+            }
+            if (CL_FIXNUM_P(lenarg)) *len_out = CL_FIXNUM_VAL(lenarg);
+            return cls;
+        }
+    }
+    return -1;
 }
 
 /* Classify a MAP/MERGE result-type specifier into:
@@ -492,6 +580,7 @@ static CL_Obj bi_mismatch(CL_Obj *args, int n)
 {
     CL_Obj seq1 = args[0], seq2 = args[1];
     CL_Obj test_fn = SYM_EQL_FN;
+    CL_Obj test_not_fn = CL_NIL;
     CL_Obj key_fn = CL_NIL;
     int32_t start1 = 0, end1, start2 = 0, end2;
     int32_t len1, len2;
@@ -499,9 +588,14 @@ static CL_Obj bi_mismatch(CL_Obj *args, int n)
     int ki;
     int from_end = 0;
 
+    cl_check_seq_keywords(args, n, 2,
+        SK_TEST | SK_TEST_NOT | SK_KEY | SK_START1 | SK_END1 |
+        SK_START2 | SK_END2 | SK_FROM_END);
+
     /* Parse keywords */
     for (ki = 2; ki + 1 < n; ki += 2) {
         if (args[ki] == KW_TEST) test_fn = cl_coerce_funcdesig(args[ki + 1], ":TEST");
+        else if (args[ki] == KW_TEST_NOT) test_not_fn = cl_coerce_funcdesig(args[ki + 1], ":TEST-NOT");
         else if (args[ki] == KW_KEY) key_fn = CL_NULL_P(args[ki + 1]) ? CL_NIL : cl_coerce_funcdesig(args[ki + 1], ":KEY");
         else if (args[ki] == KW_START1 && CL_FIXNUM_P(args[ki + 1])) start1 = CL_FIXNUM_VAL(args[ki + 1]);
         else if (args[ki] == KW_END1 && !CL_NULL_P(args[ki + 1]) && CL_FIXNUM_P(args[ki + 1])) end1 = CL_FIXNUM_VAL(args[ki + 1]);
@@ -535,7 +629,10 @@ static CL_Obj bi_mismatch(CL_Obj *args, int n)
         while (i >= start1 && j >= start2) {
             CL_Obj e1 = apply_key(key_fn, seq_elt(seq1, i));
             CL_Obj e2 = apply_key(key_fn, seq_elt(seq2, j));
-            if (CL_NULL_P(call_test(test_fn, e1, e2))) {
+            int match = !CL_NULL_P(test_not_fn)
+                ? CL_NULL_P(call_test(test_not_fn, e1, e2))
+                : !CL_NULL_P(call_test(test_fn, e1, e2));
+            if (!match) {
                 mismatch_pos = i + 1;
                 break;
             }
@@ -557,7 +654,10 @@ static CL_Obj bi_mismatch(CL_Obj *args, int n)
     while (i < end1 && j < end2) {
         CL_Obj e1 = apply_key(key_fn, seq_elt(seq1, i));
         CL_Obj e2 = apply_key(key_fn, seq_elt(seq2, j));
-        if (CL_NULL_P(call_test(test_fn, e1, e2)))
+        int match = !CL_NULL_P(test_not_fn)
+            ? CL_NULL_P(call_test(test_not_fn, e1, e2))
+            : !CL_NULL_P(call_test(test_fn, e1, e2));
+        if (!match)
             return CL_MAKE_FIXNUM(i);
         i++;
         j++;
@@ -577,18 +677,25 @@ static CL_Obj bi_search(CL_Obj *args, int n)
 {
     CL_Obj seq1 = args[0], seq2 = args[1];
     CL_Obj test_fn = SYM_EQL_FN;
+    CL_Obj test_not_fn = CL_NIL;
     CL_Obj key_fn = CL_NIL;
     int32_t start1 = 0, end1, start2 = 0, end2;
     int32_t len1, len2, sublen;
     int32_t i, j;
-    int ki;
+    int ki, from_end = 0;
+
+    cl_check_seq_keywords(args, n, 2,
+        SK_TEST | SK_TEST_NOT | SK_KEY | SK_START1 | SK_END1 |
+        SK_START2 | SK_END2 | SK_FROM_END);
 
     /* Parse keywords */
     for (ki = 2; ki + 1 < n; ki += 2) {
         if (args[ki] == KW_TEST) test_fn = cl_coerce_funcdesig(args[ki + 1], ":TEST");
+        else if (args[ki] == KW_TEST_NOT) test_not_fn = cl_coerce_funcdesig(args[ki + 1], ":TEST-NOT");
         else if (args[ki] == KW_KEY) key_fn = CL_NULL_P(args[ki + 1]) ? CL_NIL : cl_coerce_funcdesig(args[ki + 1], ":KEY");
         else if (args[ki] == KW_START1 && CL_FIXNUM_P(args[ki + 1])) start1 = CL_FIXNUM_VAL(args[ki + 1]);
         else if (args[ki] == KW_START2 && CL_FIXNUM_P(args[ki + 1])) start2 = CL_FIXNUM_VAL(args[ki + 1]);
+        else if (args[ki] == KW_FROM_END && !CL_NULL_P(args[ki + 1])) from_end = 1;
     }
 
     len1 = seq_length(seq1);
@@ -604,18 +711,37 @@ static CL_Obj bi_search(CL_Obj *args, int n)
     }
 
     sublen = end1 - start1;
-    if (sublen <= 0) return CL_MAKE_FIXNUM(start2); /* Empty needle matches at start */
+    /* Empty needle matches at start2 (or end2 searching from the end). */
+    if (sublen <= 0)
+        return CL_MAKE_FIXNUM(from_end ? end2 : start2);
 
-    /* Brute-force search */
+    /* Brute-force search.  With :from-end, scan right-to-left and return the
+     * leftmost index of the rightmost match. */
+    if (from_end) {
+        for (i = end2 - sublen; i >= start2; i--) {
+            int match = 1;
+            for (j = 0; j < sublen; j++) {
+                CL_Obj e1 = apply_key(key_fn, seq_elt(seq1, start1 + j));
+                CL_Obj e2 = apply_key(key_fn, seq_elt(seq2, i + j));
+                int m = !CL_NULL_P(test_not_fn)
+                    ? CL_NULL_P(call_test(test_not_fn, e1, e2))
+                    : !CL_NULL_P(call_test(test_fn, e1, e2));
+                if (!m) { match = 0; break; }
+            }
+            if (match) return CL_MAKE_FIXNUM(i);
+        }
+        return CL_NIL;
+    }
+
     for (i = start2; i + sublen <= end2; i++) {
         int match = 1;
         for (j = 0; j < sublen; j++) {
             CL_Obj e1 = apply_key(key_fn, seq_elt(seq1, start1 + j));
             CL_Obj e2 = apply_key(key_fn, seq_elt(seq2, i + j));
-            if (CL_NULL_P(call_test(test_fn, e1, e2))) {
-                match = 0;
-                break;
-            }
+            int m = !CL_NULL_P(test_not_fn)
+                ? CL_NULL_P(call_test(test_not_fn, e1, e2))
+                : !CL_NULL_P(call_test(test_fn, e1, e2));
+            if (!m) { match = 0; break; }
         }
         if (match) return CL_MAKE_FIXNUM(i);
     }
@@ -735,6 +861,12 @@ static void seq_to_array(CL_Obj seq, CL_Obj **out, int32_t *out_len)
         arr = (CL_Obj *)platform_alloc((uint32_t)(len * (int32_t)sizeof(CL_Obj)));
         for (i = 0; i < len; i++)
             arr[i] = CL_MAKE_CHAR(cl_string_char_at(seq, (uint32_t)i));
+    } else if (CL_BIT_VECTOR_P(seq)) {
+        CL_BitVector *bv = (CL_BitVector *)CL_OBJ_TO_PTR(seq);
+        len = (int32_t)cl_bv_active_length(bv);
+        arr = (CL_Obj *)platform_alloc((uint32_t)(len * (int32_t)sizeof(CL_Obj)));
+        for (i = 0; i < len; i++)
+            arr[i] = CL_MAKE_FIXNUM(cl_bv_get_bit(bv, (uint32_t)i));
     } else {
         *out = NULL; *out_len = 0;
         cl_error(CL_ERR_TYPE, "MERGE: not a sequence");
@@ -754,25 +886,19 @@ static CL_Obj bi_merge(CL_Obj *args, int n)
     CL_Obj pred = cl_coerce_funcdesig(args[3], "MERGE");
     CL_Obj key_fn = CL_NIL;
     int i, rt;
+    int32_t len_constraint = -1;
 
+    cl_check_seq_keywords(args, n, 4, SK_KEY);
     for (i = 4; i + 1 < n; i += 2) {
         if (args[i] == KW_KEY)
             key_fn = CL_NULL_P(args[i + 1]) ? CL_NIL : cl_coerce_funcdesig(args[i + 1], ":KEY");
     }
 
-    rt = -1;
-    if (CL_NULL_P(result_type) || map_result_type_match(result_type, "NULL", 4))
-        rt = 0;
-    else if (map_result_type_match(result_type, "LIST", 4) ||
-             map_result_type_match(result_type, "CONS", 4))
-        rt = 1;
-    else if (map_result_type_match(result_type, "VECTOR", 6) ||
-             map_result_type_match(result_type, "SIMPLE-VECTOR", 13))
-        rt = 2;
+    /* Classify the result-type: 0=null 1=list 2=string 3=vector 4=bit-vector.
+     * len_constraint is the declared length, or -1 when unspecified / `*`. */
+    rt = seq_ctor_type_class(result_type, 16, &len_constraint);
     if (rt < 0)
         cl_error(CL_ERR_ARGS, "MERGE: unsupported result-type");
-
-    if (rt == 0) return CL_NIL;
 
     /* Fast path: list merge when both inputs are lists */
     if (rt == 1 && (CL_NULL_P(seq1) || CL_CONS_P(seq1)) &&
@@ -831,7 +957,19 @@ static CL_Obj bi_merge(CL_Obj *args, int n)
         if (a1) platform_free(a1);
         if (a2) platform_free(a2);
 
-        if (rt == 1) {
+        /* A declared length must match the actual result length. */
+        if (len_constraint >= 0 && len_constraint != ntotal) {
+            if (out) platform_free(out);
+            cl_error(CL_ERR_TYPE, "MERGE: result length does not match result-type");
+        }
+
+        if (rt == 0) {
+            /* result-type NULL: only the empty merge is well typed. */
+            if (out) platform_free(out);
+            if (ntotal != 0)
+                cl_error(CL_ERR_TYPE, "MERGE: non-empty result for result-type NULL");
+            return CL_NIL;
+        } else if (rt == 1) {
             /* Build list result, reading each out[] element into a protected
              * local so cl_cons compaction cannot make later out[i] reads stale */
             CL_Obj elem = CL_NIL;
@@ -847,8 +985,24 @@ static CL_Obj bi_merge(CL_Obj *args, int n)
                 tail = cell;
             }
             CL_GC_UNPROTECT(3);
+        } else if (rt == 2) {
+            /* String result.  Merged elements are characters (immediate
+             * values), so out[] cannot go stale across the alloc. */
+            result = cl_make_string(NULL, (uint32_t)ntotal);
+            for (i = 0; i < ntotal; i++)
+                cl_string_set_char_at(result, (uint32_t)i,
+                                      CL_CHAR_P(out[i]) ? CL_CHAR_VAL(out[i]) : 0);
+        } else if (rt == 4) {
+            /* Bit-vector result.  Merged elements are fixnums 0/1 (immediate). */
+            result = cl_make_bit_vector((uint32_t)ntotal);
+            {
+                CL_BitVector *bv = (CL_BitVector *)CL_OBJ_TO_PTR(result);
+                for (i = 0; i < ntotal; i++)
+                    cl_bv_set_bit(bv, (uint32_t)i,
+                                  (CL_FIXNUM_P(out[i]) && CL_FIXNUM_VAL(out[i]) != 0));
+            }
         } else {
-            /* Build vector result */
+            /* General vector result */
             result = cl_make_vector((uint32_t)ntotal);
             {
                 CL_Vector *v = (CL_Vector *)CL_OBJ_TO_PTR(result);
@@ -881,12 +1035,58 @@ static void vector_insertion_sort(CL_Obj *data, int32_t len, CL_Obj pred, CL_Obj
     }
 }
 
+/* Set element I of a string / bit-vector / vector sequence. */
+static void array_seq_set(CL_Obj seq, int32_t i, CL_Obj v)
+{
+    if (CL_ANY_STRING_P(seq)) {
+        if (CL_CHAR_P(v)) cl_string_set_char_at(seq, (uint32_t)i, CL_CHAR_VAL(v));
+    } else if (CL_BIT_VECTOR_P(seq)) {
+        uint32_t p = (uint32_t)i;  /* cl_bv_set_bit evaluates its index twice */
+        cl_bv_set_bit((CL_BitVector *)CL_OBJ_TO_PTR(seq), p,
+                      (CL_FIXNUM_P(v) && CL_FIXNUM_VAL(v) != 0));
+    } else if (CL_VECTOR_P(seq)) {
+        cl_vector_data((CL_Vector *)CL_OBJ_TO_PTR(seq))[i] = v;
+    }
+}
+
+/* In-place stable insertion sort for string / bit-vector sequences.  Elements
+ * are snapshotted into a C array first; for these element types the values are
+ * immediate (characters / bits), so the snapshot is unaffected by a compacting
+ * GC triggered inside the :key / predicate calls. */
+static void array_seq_insertion_sort(CL_Obj seq, int32_t len, CL_Obj pred, CL_Obj key_fn)
+{
+    int32_t i, j;
+    CL_Obj *tmp;
+    if (len <= 1) return;
+    tmp = (CL_Obj *)platform_alloc((uint32_t)(len * (int32_t)sizeof(CL_Obj)));
+    CL_GC_PROTECT(seq);    /* writeback after sort may compact via apply_key/call_test */
+    CL_GC_PROTECT(pred);
+    CL_GC_PROTECT(key_fn);
+    for (i = 0; i < len; i++) tmp[i] = seq_elt(seq, i);
+    for (i = 1; i < len; i++) {
+        CL_Obj val = tmp[i];
+        CL_Obj kval = apply_key(key_fn, val);
+        j = i - 1;
+        while (j >= 0) {
+            CL_Obj kj = apply_key(key_fn, tmp[j]);
+            if (CL_NULL_P(call_test(pred, kval, kj))) break;
+            tmp[j + 1] = tmp[j];
+            j--;
+        }
+        tmp[j + 1] = val;
+    }
+    for (i = 0; i < len; i++) array_seq_set(seq, i, tmp[i]);
+    CL_GC_UNPROTECT(3);
+    platform_free(tmp);
+}
+
 static CL_Obj bi_sort(CL_Obj *args, int n)
 {
     CL_Obj seq = args[0], pred = cl_coerce_funcdesig(args[1], "SORT");
     CL_Obj key_fn = CL_NIL;
     int i;
 
+    cl_check_seq_keywords(args, n, 2, SK_KEY);
     /* Parse :key */
     for (i = 2; i + 1 < n; i += 2) {
         if (args[i] == KW_KEY)
@@ -902,7 +1102,12 @@ static CL_Obj bi_sort(CL_Obj *args, int n)
     if (CL_VECTOR_P(seq)) {
         CL_Vector *v = (CL_Vector *)CL_OBJ_TO_PTR(seq);
         vector_insertion_sort(cl_vector_data(v), (int32_t)cl_vector_active_length(v), pred, key_fn);
-        return seq;
+        return args[0];
+    }
+
+    if (CL_ANY_STRING_P(seq) || CL_BIT_VECTOR_P(seq)) {
+        array_seq_insertion_sort(seq, seq_length(seq), pred, key_fn);
+        return args[0];
     }
 
     cl_error(CL_ERR_TYPE, "SORT: not a sequence");
@@ -923,6 +1128,7 @@ void cl_builtins_sequence2_init(void)
 {
     /* Pre-intern keyword symbols */
     KW_TEST   = cl_intern_keyword("TEST", 4);
+    KW_TEST_NOT = cl_intern_keyword("TEST-NOT", 8);
     KW_KEY    = cl_intern_keyword("KEY", 3);
     KW_START1 = cl_intern_keyword("START1", 6);
     KW_END1   = cl_intern_keyword("END1", 4);
@@ -962,6 +1168,7 @@ void cl_builtins_sequence2_init(void)
 
     /* Register cached symbols for GC compaction forwarding */
     cl_gc_register_root(&KW_TEST);
+    cl_gc_register_root(&KW_TEST_NOT);
     cl_gc_register_root(&KW_KEY);
     cl_gc_register_root(&KW_START1);
     cl_gc_register_root(&KW_END1);

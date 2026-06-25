@@ -1,8 +1,8 @@
 ;; load-and-test-ansi.lisp
 ;;
 ;; Bootstrap of the ANSI Common Lisp test suite (Paul Dietz / ansi-test).
-;; Loads the rt framework + aux + universe + the CONS, SYMBOLS and NUMBERS
-;; chapters, then runs them all in a single rt:do-tests pass.
+;; Loads the rt framework + aux + universe + the CONS, SYMBOLS, NUMBERS and
+;; SEQUENCES chapters, then runs them all in a single rt:do-tests pass.
 ;;
 ;; Usage (host):
 ;;   ./build/host/clamiga --heap 96M --load trunk/load-and-test-ansi.lisp
@@ -18,7 +18,7 @@
 (defparameter *aux-dir* (truename "third_party/ansi-test/auxiliary/"))
 (setq *default-pathname-defaults* *ansi-test-dir*)
 
-(format t "~%=== ANSI test bootstrap (rt + aux + universe + cons + symbols + numbers) ===~%")
+(format t "~%=== ANSI test bootstrap (rt + aux + universe + cons + symbols + numbers + sequences) ===~%")
 (format t "ansi-test dir: ~A~%" *ansi-test-dir*)
 
 ;; --- Bootstrap (still in CL-USER) ---
@@ -92,6 +92,13 @@
 (common-lisp:format common-lisp:t "~%--- Loading numbers chapter ---~%")
 (common-lisp:load
  (common-lisp:merge-pathnames "numbers/load.lsp"
+                              (common-lisp:symbol-value
+                               'common-lisp-user::*ansi-test-dir*)))
+
+;; --- Load sequences chapter ---
+(common-lisp:format common-lisp:t "~%--- Loading sequences chapter ---~%")
+(common-lisp:load
+ (common-lisp:merge-pathnames "sequences/load.lsp"
                               (common-lisp:symbol-value
                                'common-lisp-user::*ansi-test-dir*)))
 

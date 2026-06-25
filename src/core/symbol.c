@@ -378,6 +378,12 @@ const char *cl_symbol_name(CL_Obj sym)
     CL_Symbol *s;
     CL_String *name;
     if (CL_NULL_P(sym)) return "NIL";
+    /* Defensive: callers occasionally hand us a non-symbol (e.g. a non-symbol
+     * value in keyword-argument position).  Dereferencing it as a CL_Symbol
+     * would read a garbage offset and, when the result is fed to a "%s"
+     * cl_error format, crash inside vsnprintf.  Return a safe marker instead so
+     * the caller's diagnostic prints rather than SEGVs. */
+    if (!CL_SYMBOL_P(sym)) return "(non-symbol)";
     s = (CL_Symbol *)CL_OBJ_TO_PTR(sym);
     name = (CL_String *)CL_OBJ_TO_PTR(s->name);
     return name->data;

@@ -1598,6 +1598,30 @@ out=$(run_stress "$WORK/just.lisp")
 check_contains "FORMAT ~< justification stable under GC stress" "JUST-OK" "$out"
 check_absent   "no corrupted justification output"              "JUST-BAD\|JUST-WIDE-BAD" "$out"
 
+# --- Case: sequence functions snapshot allocation under stress ------------
+# SUBSTITUTE/NSUBSTITUTE/REMOVE-DUPLICATES/SORT/MERGE/CONCATENATE snapshot the
+# input elements into heap vectors / C buffers and call user :test/:key
+# functions that can compact mid-operation.  If a snapshot or result handle
+# went stale, the produced sequence would be corrupted.
+cat > "$WORK/seqfns.lisp" <<'EOF'
+(let ((bad nil))
+  (dotimes (i 80)
+    (unless (equalp (substitute 0 1 (copy-seq #*010101)) #*000000) (setq bad :subst-bv))
+    (unless (string= (substitute #\Z #\a (copy-seq "banana")) "bZnZnZ") (setq bad :subst-str))
+    (unless (equalp (nsubstitute 'b 'a (copy-seq #(a b a c)) :count 1 :from-end t) #(a b b c))
+      (setq bad :nsubst))
+    (unless (equalp (remove-duplicates (copy-seq #(1 2 1 3 2 4))) #(1 3 2 4)) (setq bad :remdup))
+    (unless (equalp (sort (copy-seq #*10011101) #'<) #*00011111) (setq bad :sort-bv))
+    (unless (equalp (merge 'bit-vector (copy-seq #*011) (copy-seq #*001) #'<) #*000111)
+      (setq bad :merge-bv))
+    (unless (equalp (concatenate 'bit-vector #*01 #*10) #*0110) (setq bad :concat-bv))
+    (when bad (return)))
+  (if bad (format t "SEQFN-BAD:~s~%" bad) (format t "SEQFN-OK~%")))
+EOF
+out=$(run_stress "$WORK/seqfns.lisp")
+check_contains "sequence functions stable under GC stress" "SEQFN-OK" "$out"
+check_absent   "no corrupted sequence results"             "SEQFN-BAD" "$out"
+
 echo ""
 echo "$passed passed, $failed failed, $total total"
 [ "$failed" -eq 0 ]

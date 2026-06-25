@@ -387,25 +387,14 @@ static CL_Obj bi_make_array(CL_Obj *args, int n)
                         bv->data[nw - 1] &= (1u << (length % 32)) - 1;
                 }
             } else if (has_initial_contents) {
-                uint32_t j;
-                if (CL_VECTOR_P(initial_contents)) {
-                    /* Vector initial-contents */
-                    CL_Vector *iv = (CL_Vector *)CL_OBJ_TO_PTR(initial_contents);
-                    CL_Obj *idata = cl_vector_data(iv);
-                    uint32_t ilen = iv->length < length ? iv->length : length;
-                    for (j = 0; j < ilen; j++) {
-                        if (CL_FIXNUM_P(idata[j]) && CL_FIXNUM_VAL(idata[j]) == 1)
-                            bv->data[j / 32] |= (1u << (j % 32));
-                    }
-                } else {
-                    /* List initial-contents */
-                    CL_Obj cur = initial_contents;
-                    for (j = 0; j < length && !CL_NULL_P(cur); j++) {
-                        CL_Obj elem = cl_car(cur);
-                        if (CL_FIXNUM_P(elem) && CL_FIXNUM_VAL(elem) == 1)
-                            bv->data[j / 32] |= (1u << (j % 32));
-                        cur = cl_cdr(cur);
-                    }
+                /* Any sequence (list, vector, string or bit-vector) works as
+                 * initial-contents — read it element-by-element via seq_elt. */
+                uint32_t j, ilen = seq_length(initial_contents);
+                if (ilen > length) ilen = length;
+                for (j = 0; j < ilen; j++) {
+                    CL_Obj elem = seq_elt(initial_contents, j);
+                    if (CL_FIXNUM_P(elem) && CL_FIXNUM_VAL(elem) == 1)
+                        bv->data[j / 32] |= (1u << (j % 32));
                 }
             }
             return result;

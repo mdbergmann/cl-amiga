@@ -1149,6 +1149,31 @@
 (check "remove-if" '(1 3 5) (remove-if #'my-evenp '(1 2 3 4 5)))
 (check "remove-if-not" '(2 4) (remove-if-not #'my-evenp '(1 2 3 4 5)))
 
+; remove on a non-sequence must signal type-error, not crash (ansi-test
+; REMOVE.ERROR.11: (remove 'a x) over a type universe including non-sequences).
+; Previously remove_from_vector dereferenced the argument as a CL_Vector.
+(check "remove non-sequence number" 'te
+  (handler-case (remove 'a 5) (type-error () 'te) (error () 'wrong)))
+(check "remove non-sequence symbol" 'te
+  (handler-case (remove 'a 'foo) (type-error () 'te) (error () 'wrong)))
+(check "remove-if non-sequence" 'te
+  (handler-case (remove-if #'my-evenp 5) (type-error () 'te) (error () 'wrong)))
+(check "remove-if-not non-sequence" 'te
+  (handler-case (remove-if-not #'my-evenp 'foo) (type-error () 'te) (error () 'wrong)))
+
+; A non-symbol in keyword-argument position must signal program-error, not
+; crash (ansi-test MAKE-SEQUENCE.ERROR.13: (make-sequence 'list 10 0 0)).
+; Previously the integer key was fed to cl_symbol_name -> garbage "%s".
+(check "non-symbol keyword call" 'pe
+  (handler-case (funcall (lambda (&key foo) foo) 0 0)
+    (program-error () 'pe) (error () 'wrong)))
+(check "non-symbol keyword apply" 'pe
+  (handler-case (apply (lambda (&key foo) foo) '(0 0))
+    (program-error () 'pe) (error () 'wrong)))
+(check "non-symbol keyword make-sequence" 'pe
+  (handler-case (make-sequence 'list 10 0 0)
+    (program-error () 'pe) (error () 'wrong)))
+
 ; remove/remove-if/remove-if-not on bit-vectors
 (check "remove 0 bv" "#*111" (format nil "~A" (remove 0 #*10101)))
 (check "remove 1 bv" "#*00" (format nil "~A" (remove 1 #*10101)))
@@ -6120,6 +6145,125 @@
 (check "floor float remainder sign invariant" t
   (loop for n in '(0.0d0 1.0d0 0.5d0 0.25d0)
         always (>= (nth-value 1 (floor n (* (/ 2.0d0 350) 7))) 0)))
+
+; --- Sequence functions: ANSI conformance regressions (2026-06-25) ---
+; SUBSTITUTE / NSUBSTITUTE on bit-vectors and strings, :count handling,
+; :from-end reverse order, leftmost-keyword precedence.
+(check "substitute bit-vector" '(0 0 0 0 0 0)
+       (coerce (substitute 0 1 (copy-seq #*010101)) 'list))
+(check "substitute string" "bZnZnZ" (substitute #\Z #\a (copy-seq "banana")))
+(check "substitute :count from-end" '(0 1 0 1 1 1)
+       (coerce (substitute 1 0 (copy-seq #*010101) :count 1 :from-end t) 'list))
+(check "nsubstitute :count -1 is zero" '(a b a c)
+       (nsubstitute 'b 'a (copy-seq '(a b a c)) :count -1))
+(check "nsubstitute :count 1 from-end" '(a b b c)
+       (coerce (nsubstitute 'b 'a (copy-seq #(a b a c)) :count 1 :from-end t) 'list))
+(check "substitute-if bit-vector" '(0 0 0)
+       (coerce (substitute-if 0 #'oddp (copy-seq #*111)) 'list))
+(check "leftmost :key wins" '(a 2 0 3 a 0 3)
+       (substitute 'a 0 (list 1 2 0 3 1 0 3) :key #'1- :key #'identity))
+
+; MAKE-SEQUENCE: bit-vector / cons / null / class objects / compound types
+(check "make-sequence bit-vector" '(0 0 0 0 0)
+       (coerce (make-sequence 'bit-vector 5 :initial-element 0) 'list))
+(check "make-sequence cons" '(x x x) (make-sequence 'cons 3 :initial-element 'x))
+(check "make-sequence null" nil (make-sequence 'null 0))
+(check "make-sequence (string *)" "xxxx"
+       (make-sequence '(string *) 4 :initial-element #\x))
+(check "make-sequence find-class list" '(z z)
+       (make-sequence (find-class 'list) 2 :initial-element 'z))
+(check "make-sequence symbol -> type-error" 'te
+       (handler-case (make-sequence 'symbol 5) (type-error () 'te) (error () 'wrong)))
+(check "make-sequence cons 0 -> type-error" 'te
+       (handler-case (make-sequence 'cons 0) (type-error () 'te) (error () 'wrong)))
+(check "make-sequence (vector * 4) 3 -> type-error" 'te
+       (handler-case (make-sequence '(vector * 4) 3) (type-error () 'te) (error () 'wrong)))
+
+; MERGE on string / bit-vector / compound result types + length constraints
+(check "merge string" "1234"
+       (merge 'string (list #\1 #\3) (list #\2 #\4) #'char<))
+(check "merge bit-vector" '(0 0 1 1)
+       (coerce (merge 'bit-vector (list 0 1) (list 0 1) #'<) 'list))
+(check "merge (vector * 6)" '(1 2 3 4 5 6)
+       (coerce (merge '(vector * 6) (list 1 2 3) (list 4 5 6) #'<) 'list))
+(check "merge length mismatch -> type-error" 'te
+       (handler-case (merge '(vector * 3) (list 1 2 3) (list 4 5 6) #'<)
+         (type-error () 'te) (error () 'wrong)))
+
+; CONCATENATE on bit-vector / cons / null + length constraints
+(check "concatenate bit-vector" '(0 1 1 0)
+       (coerce (concatenate 'bit-vector #*01 #*10) 'list))
+(check "concatenate cons" '(a b c) (concatenate 'cons '(a b) '(c)))
+(check "concatenate null empty" nil (concatenate 'null nil nil))
+(check "concatenate (vector * 3) mismatch -> type-error" 'te
+       (handler-case (concatenate '(vector * 3) '(a b c d e))
+         (type-error () 'te) (error () 'wrong)))
+
+; SORT / STABLE-SORT on strings and bit-vectors
+(check "sort string" "abcd" (sort (copy-seq "dbca") #'char<))
+(check "sort bit-vector" '(0 0 1 1) (coerce (sort (copy-seq #*1010) #'<) 'list))
+(check "stable-sort string" "abc" (stable-sort (copy-seq "cba") #'char<))
+
+; REPLACE on bit-vectors, overlap-safe self replace
+(check "replace bit-vector" '(0 1 1 1 0 0 1)
+       (coerce (replace (copy-seq #*1101001) #*011) 'list))
+
+; ELT bounds and FILL bounds signal type-error
+(check "elt out of bounds -> type-error" 'te
+       (handler-case (elt '(a b c) 5) (type-error () 'te) (error () 'wrong)))
+(check "elt nil -> type-error" 'te
+       (handler-case (elt nil 0) (type-error () 'te) (error () 'wrong)))
+(check "elt negative -> type-error" 'te
+       (handler-case (elt '(a b c) -1) (type-error () 'te) (error () 'wrong)))
+(check "fill :start -1 -> type-error" 'te
+       (handler-case (fill (make-array 5) 'x :start -1) (type-error () 'te) (error () 'wrong)))
+
+; REDUCE: empty subsequence calls fn with no args; from-end on strings
+(check "reduce empty calls fn no args" 0 (reduce #'+ nil))
+(check "reduce empty range" 0 (reduce #'+ '(1 2 3) :start 0 :end 0))
+(check "reduce from-end string" '(#\a #\b . g)
+       (reduce #'cons "ab" :from-end t :initial-value 'g))
+
+; MAP-INTO on bit-vector results (self-map)
+(check "map-into bit-vector self" '(1 0 1 1 0 0 1)
+       (coerce (let ((v (copy-seq #*0100110))) (map-into v (lambda (x) (- 1 x)) v)) 'list))
+
+; REMOVE-DUPLICATES keep-last default / keep-first with :from-end
+(check "remove-duplicates keep-last" '(3 4 1 5 6 2 7)
+       (remove-duplicates '(1 2 3 4 1 3 4 1 2 5 6 2 7)))
+(check "remove-duplicates from-end keep-first" '(1 2 3 4 5 6)
+       (remove-duplicates '(1 2 3 4 1 3 4 1 2 5 6 2) :from-end t))
+
+; DELETE delegates to REMOVE's full keyword behaviour
+(check "delete :count" '(b a a c) (delete 'a (list 'a 'b 'a 'a 'c) :count 1))
+(check "delete-if :start" '(1 3) (delete-if #'evenp (list 1 2 3 4) :start 1))
+
+; SEARCH :from-end and :test-not; MISMATCH :test-not
+(check "search from-end" 2 (search '(a) '(a b a b) :from-end t))
+(check "mismatch :test-not" 2
+       (mismatch '(1 2 3 4) '(10 11 7 123) :test-not #'(lambda (x y) (= x (- y 4)))))
+
+; Keyword-argument validation (CLHS 3.4.1.4) signals program-error
+(check "count bad keyword -> program-error" 'pe
+       (handler-case (count nil nil :bad t) (program-error () 'pe) (error () 'wrong)))
+(check "count odd keyword -> program-error" 'pe
+       (handler-case (count nil nil :key) (program-error () 'pe) (error () 'wrong)))
+(check "remove bad keyword -> program-error" 'pe
+       (handler-case (remove 'a nil :bad t) (program-error () 'pe) (error () 'wrong)))
+(check "count :allow-other-keys lets bad through" 0
+       (count 'a nil :bad t :allow-other-keys t))
+; FIND/POSITION/COUNT must reject :count (not in their CLHS lambda lists)
+(check "find :count -> program-error" 'pe
+       (handler-case (find 'a '(1 2 3) :count 1) (program-error () 'pe) (error () 'wrong)))
+(check "position :count -> program-error" 'pe
+       (handler-case (position 'a '(1 2 3) :count 1) (program-error () 'pe) (error () 'wrong)))
+(check "count :initial-value -> program-error" 'pe
+       (handler-case (count 'a '(1 2 3) :initial-value 0) (program-error () 'pe) (error () 'wrong)))
+; FIND-IF/-NOT, POSITION-IF/-NOT, COUNT-IF/-NOT must reject :test/:test-not
+(check "find-if :test -> program-error" 'pe
+       (handler-case (find-if #'numberp '(1) :test #'eql) (program-error () 'pe) (error () 'wrong)))
+(check "count-if-not :test-not -> program-error" 'pe
+       (handler-case (count-if-not #'numberp '(1) :test-not #'eql) (program-error () 'pe) (error () 'wrong)))
 
 ; --- Summary ---
 (format t "~%=== Results ===~%")
