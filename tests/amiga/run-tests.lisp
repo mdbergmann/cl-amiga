@@ -4049,7 +4049,17 @@
 (check "direct-supers t" nil (class-direct-superclasses (find-class 't)))
 (check "cpl fixnum" '(fixnum integer rational real number t) (mapcar #'class-name (class-precedence-list (find-class 'fixnum))))
 (check "cpl cons" '(cons list sequence t) (mapcar #'class-name (class-precedence-list (find-class 'cons))))
-(check "cpl null" '(null symbol t list sequence) (mapcar #'class-name (class-precedence-list (find-class 'null))))
+;; NULL is a subclass of both SYMBOL and LIST; the CPL must keep T last so
+;; that a LIST-specialized method outranks the default (T) method for NIL.
+(check "cpl null" '(null symbol list sequence t) (mapcar #'class-name (class-precedence-list (find-class 'null))))
+(check "cpl vector" '(vector array sequence t) (mapcar #'class-name (class-precedence-list (find-class 'vector))))
+;; Dispatch regression: NIL is a LIST, so the LIST method must win over T.
+(defgeneric %dnl (x))
+(defmethod %dnl (x) "t")
+(defmethod %dnl ((x list)) "list")
+(check "dispatch nil as list" "list" (%dnl nil))
+(check "dispatch list as list" "list" (%dnl '(1 2)))
+(check "dispatch non-list as t" "t" (%dnl 5))
 (check "direct-subclasses integer has fixnum" t (if (member (find-class 'fixnum) (class-direct-subclasses (find-class 'integer)) :test #'eq) t nil))
 (check "direct-subclasses integer has bignum" t (if (member (find-class 'bignum) (class-direct-subclasses (find-class 'integer)) :test #'eq) t nil))
 
