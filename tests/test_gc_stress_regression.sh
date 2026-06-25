@@ -1095,6 +1095,28 @@ out=$(run_stress "$WORK/string-vec.lisp")
 check_contains "string fns on fill-pointer string correct under GC stress" "STRVEC:60" "$out"
 check_absent   "no not-a-string-designator from stale string-vector copy"  "not a string designator\|type 0\|corrupted" "$out"
 
+# --- Case: sequence ops returning a STRING result for string-vector inputs ---
+# REVERSE / SUBSTITUTE / REMOVE-IF / COPY-SEQ on an adjustable character vector
+# allocate a fresh STRING result (make_seq_result_like / copy_array_seq) while the
+# source string-vector must stay GC-rooted across the allocation.  A stale source
+# offset would corrupt the copied characters under compaction.
+cat > "$WORK/strvec-seq.lisp" <<'EOF'
+(let ((bad nil))
+  (dotimes (i 40)
+    (let ((s (make-array 5 :element-type 'character
+                         :initial-contents "abcab" :adjustable t)))
+      (unless (and (stringp (reverse s)) (string= (reverse s) "bacba")
+                   (stringp (substitute #\x #\a s)) (string= (substitute #\x #\a s) "xbcxb")
+                   (stringp (remove-if #'alpha-char-p s))
+                   (simple-string-p (copy-seq s)) (string= (copy-seq s) "abcab"))
+        (setq bad :strvec-seq))
+      (when bad (return))))
+  (if bad (format t "STRVECSEQ-BAD:~s~%" bad) (format t "STRVECSEQ-OK~%")))
+EOF
+out=$(run_stress "$WORK/strvec-seq.lisp")
+check_contains "string-vector sequence ops return strings under GC stress" "STRVECSEQ-OK" "$out"
+check_absent   "no corrupted string-vector sequence result"                "STRVECSEQ-BAD" "$out"
+
 # --- Case: LOOP mixed COLLECT/NCONC accumulation under GC stress ------------
 # Regression for the loop-accumulation order fix: COLLECT/NCONC/APPEND now all
 # build the result list reversed (push / NRECONC / REVAPPEND) under one final

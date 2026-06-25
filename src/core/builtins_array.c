@@ -94,6 +94,10 @@ static CL_Obj seq_elt(CL_Obj seq, uint32_t index)
     if (CL_ANY_STRING_P(seq)) {
         return CL_MAKE_CHAR(cl_string_char_at(seq, index));
     }
+    if (CL_BIT_VECTOR_P(seq)) {
+        return CL_MAKE_FIXNUM(
+            cl_bv_get_bit((CL_BitVector *)CL_OBJ_TO_PTR(seq), index));
+    }
     if (CL_VECTOR_P(seq)) {
         CL_Vector *v = (CL_Vector *)CL_OBJ_TO_PTR(seq);
         return cl_vector_data(v)[index];
@@ -112,6 +116,9 @@ static uint32_t seq_length(CL_Obj seq)
 {
     if (CL_ANY_STRING_P(seq)) {
         return cl_string_length(seq);
+    }
+    if (CL_BIT_VECTOR_P(seq)) {
+        return cl_bv_active_length((CL_BitVector *)CL_OBJ_TO_PTR(seq));
     }
     if (CL_VECTOR_P(seq)) {
         CL_Vector *v = (CL_Vector *)CL_OBJ_TO_PTR(seq);
@@ -251,6 +258,16 @@ static CL_Obj bi_make_array(CL_Obj *args, int n)
     if (has_displaced_to && (has_initial_element || has_initial_contents))
         cl_error(CL_ERR_ARGS, "MAKE-ARRAY: cannot specify :displaced-to with :initial-element or :initial-contents");
 
+    /* A one-element dimension list (n) denotes the same rank-1 array as the
+     * integer n.  Normalise it so the 1-D path below handles every option
+     * (displacement, fill pointer, element type) uniformly — the list and
+     * integer spellings must not diverge.  Without this, :displaced-to was
+     * silently dropped for e.g. (make-array '(8) :displaced-to v), yielding a
+     * fresh NIL-filled array instead of a displaced view. */
+    if (CL_CONS_P(dim_arg) && CL_NULL_P(cl_cdr(dim_arg)) &&
+        CL_FIXNUM_P(cl_car(dim_arg)))
+        dim_arg = cl_car(dim_arg);
+
     /* --- 1D case: dim_arg is a fixnum --- */
     if (CL_FIXNUM_P(dim_arg)) {
         uint32_t length = (uint32_t)CL_FIXNUM_VAL(dim_arg);
@@ -284,6 +301,26 @@ static CL_Obj bi_make_array(CL_Obj *args, int n)
                 uint32_t slen = cl_string_length(displaced_to);
                 if (displaced_offset + length > slen)
                     cl_error(CL_ERR_ARGS, "MAKE-ARRAY: displaced bounds exceed target string length");
+                /* clamiga can't install a true displaced view onto a packed
+                 * base/wide string (its bytes are not CL_Obj element storage),
+                 * so it copies the requested window.  A :fill-pointer or
+                 * :adjustable request still has to be honoured, though, which a
+                 * simple string can't carry — build a character vector
+                 * (CL_VEC_FLAG_STRING) in that case so the fill pointer and
+                 * adjustability survive (matches the non-displaced path). */
+                if (flags & (CL_VEC_FLAG_FILL_POINTER | CL_VEC_FLAG_ADJUSTABLE)) {
+                    CL_Obj sv;
+                    uint32_t j;
+                    CL_GC_PROTECT(displaced_to);
+                    sv = cl_make_array(length, 0, NULL,
+                                       flags | CL_VEC_FLAG_STRING, fill_ptr);
+                    CL_GC_UNPROTECT(1);
+                    for (j = 0; j < length; j++)
+                        cl_vector_data((CL_Vector *)CL_OBJ_TO_PTR(sv))[j] =
+                            CL_MAKE_CHAR(cl_string_char_at(displaced_to,
+                                                           displaced_offset + j));
+                    return sv;
+                }
                 /* Create new string with copied characters.  cl_make_string
                  * may GC-compact, so protect displaced_to until we've copied
                  * each character. */
@@ -370,7 +407,12 @@ static CL_Obj bi_make_array(CL_Obj *args, int n)
         /* Bit vector path */
         if (element_type_bit) {
             CL_BitVector *bv;
+            /* Protect initial_contents across the (compacting) allocation so the
+             * seq_elt reads below stay valid — otherwise a stale offset crashes
+             * or silently copies garbage bits under GC stress. */
+            CL_GC_PROTECT(initial_contents);
             result = cl_make_bit_vector(length);
+            CL_GC_UNPROTECT(1);
             bv = (CL_BitVector *)CL_OBJ_TO_PTR(result);
             bv->flags = flags;
             bv->fill_pointer = fill_ptr;
@@ -411,7 +453,12 @@ static CL_Obj bi_make_array(CL_Obj *args, int n)
                         cl_error(CL_ERR_TYPE, "MAKE-ARRAY: :initial-element for character array must be a character");
                     init_char = initial_element;
                 }
+                /* cl_make_array compacts (esp. under GC stress); protect
+                 * initial_contents so the seq_elt reads below don't dereference
+                 * a stale arena offset (which crashes inside MAKE-ARRAY). */
+                CL_GC_PROTECT(initial_contents);
                 result = cl_make_array(length, 0, NULL, flags | CL_VEC_FLAG_STRING, fill_ptr);
+                CL_GC_UNPROTECT(1);
                 v = (CL_Vector *)CL_OBJ_TO_PTR(result);
                 for (j = 0; j < length; j++)
                     cl_vector_data(v)[j] = init_char;
@@ -651,7 +698,9 @@ static CL_Obj bi_aref(CL_Obj *args, int n)
         if (!CL_FIXNUM_P(args[1]))
             cl_error(CL_ERR_TYPE, "AREF: index must be a fixnum");
         idx = CL_FIXNUM_VAL(args[1]);
-        if (idx < 0 || (uint32_t)idx >= cl_bv_active_length(bv))
+        /* AREF accesses the underlying array, ignoring any fill pointer
+         * (CLHS 'aref'): bound on the total length, not the active length. */
+        if (idx < 0 || (uint32_t)idx >= bv->length)
             cl_error(CL_ERR_ARGS, "AREF: index %d out of range", (int)idx);
         return CL_MAKE_FIXNUM(cl_bv_get_bit(bv, (uint32_t)idx));
     }
@@ -747,7 +796,8 @@ static CL_Obj bi_setf_aref(CL_Obj *args, int n)
         if (!CL_FIXNUM_P(args[2]))
             cl_error(CL_ERR_TYPE, "%SETF-AREF: index must be a fixnum");
         idx = CL_FIXNUM_VAL(args[2]);
-        if (idx < 0 || (uint32_t)idx >= cl_bv_active_length(bv))
+        /* (SETF AREF) accesses the underlying array, ignoring fill pointers. */
+        if (idx < 0 || (uint32_t)idx >= bv->length)
             cl_error(CL_ERR_ARGS, "%SETF-AREF: index %d out of range", (int)idx);
         if (!CL_FIXNUM_P(value))
             cl_error(CL_ERR_TYPE, "%SETF-AREF: value must be 0 or 1 for bit vector");

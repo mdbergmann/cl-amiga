@@ -49,6 +49,11 @@ static inline void cl_string_set_char_at(CL_Obj str, uint32_t idx, int ch)
         return;
     }
 #endif
+    /* Adjustable / fill-pointer character vector: elements are CL_MAKE_CHAR. */
+    if (CL_STRING_VECTOR_P(str)) {
+        cl_vector_data((CL_Vector *)CL_OBJ_TO_PTR(str))[idx] = CL_MAKE_CHAR(ch);
+        return;
+    }
     ((CL_String *)CL_OBJ_TO_PTR(str))->data[idx] = (char)ch;
 }
 

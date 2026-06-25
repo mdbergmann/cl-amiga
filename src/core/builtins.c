@@ -212,6 +212,29 @@ static CL_Obj bi_reverse(CL_Obj *args, int n)
         }
         return result;
     }
+    /* String-like (simple string OR adjustable/fill-pointer character vector):
+     * REVERSE yields a fresh simple STRING of the active length. Checked before
+     * the general-vector branch because a string-vector is also CL_VECTOR_P. */
+    if (CL_ANY_STRING_P(seq) || CL_STRING_VECTOR_P(seq)) {
+        uint32_t slen = cl_string_length(seq);
+        CL_Obj result;
+        uint32_t i;
+        int wide = 0;
+        CL_GC_PROTECT(seq);
+#ifdef CL_WIDE_STRINGS
+        if (CL_WIDE_STRING_P(seq)) wide = 1;
+        else for (i = 0; i < slen; i++)
+            if (cl_string_char_at(seq, i) > 255) { wide = 1; break; }
+        result = wide ? cl_make_wide_string(NULL, slen) : cl_make_string(NULL, slen);
+#else
+        (void)wide;
+        result = cl_make_string(NULL, slen);
+#endif
+        for (i = 0; i < slen; i++)
+            cl_string_set_char_at(result, i, cl_string_char_at(seq, slen - 1 - i));
+        CL_GC_UNPROTECT(1);
+        return result;
+    }
     if (CL_VECTOR_P(seq)) {
         CL_Vector *v = (CL_Vector *)CL_OBJ_TO_PTR(seq);
         uint32_t alen = cl_vector_active_length(v);
@@ -224,18 +247,9 @@ static CL_Obj bi_reverse(CL_Obj *args, int n)
             cl_vector_data(rv)[i] = cl_vector_data(v)[alen - 1 - i];
         return result;
     }
-    if (CL_ANY_STRING_P(seq)) {
-        uint32_t slen = cl_string_length(seq);
-        CL_Obj result;
-        uint32_t i;
-        result = cl_string_copy(seq);
-        for (i = 0; i < slen; i++)
-            cl_string_set_char_at(result, i, cl_string_char_at(seq, slen - 1 - i));
-        return result;
-    }
     if (CL_BIT_VECTOR_P(seq)) {
         CL_BitVector *bv = (CL_BitVector *)CL_OBJ_TO_PTR(seq);
-        uint32_t blen = bv->length;
+        uint32_t blen = cl_bv_active_length(bv);   /* honour fill pointer */
         CL_Obj result = cl_make_bit_vector(blen);
         CL_BitVector *rv = (CL_BitVector *)CL_OBJ_TO_PTR(result);
         uint32_t i;
@@ -541,8 +555,8 @@ static int equalp_arr1d_rank(CL_Obj x)
 static uint32_t equalp_arr1d_len(CL_Obj x)
 {
     if (CL_ANY_STRING_P(x)) return cl_string_length(x);
-    if (CL_BIT_VECTOR_P(x)) return ((CL_BitVector *)CL_OBJ_TO_PTR(x))->length;
-    return ((CL_Vector *)CL_OBJ_TO_PTR(x))->length;
+    if (CL_BIT_VECTOR_P(x)) return cl_bv_active_length((CL_BitVector *)CL_OBJ_TO_PTR(x));
+    return cl_vector_active_length((CL_Vector *)CL_OBJ_TO_PTR(x));
 }
 
 static CL_Obj equalp_arr1d_elt(CL_Obj x, uint32_t i)
@@ -590,37 +604,57 @@ static CL_Obj bi_equalp(CL_Obj *args, int n)
         }
         return SYM_T;
     }
-    /* Vectors/arrays (CLHS EQUALP): same rank, matching array-dimension values
-       (fill pointers are irrelevant — array-dimension ignores them), and all
-       corresponding elements (row-major-aref order) are equalp. Element type
-       and array specialization are ignored. */
+    /* Vectors (CLHS EQUALP): EQUALP compares two vectors as SEQUENCES — the
+       relevant length is the ACTIVE length (the fill pointer if present) and
+       only the active prefix is compared.  A fill-pointered vector is therefore
+       equalp to a plain vector holding the same active elements.  This matches
+       SBCL/CLISP and is mandated by the ANSI test suite itself: ansi-test
+       data-and-control-flow/equalp.lsp EQUALP.11 asserts
+         (equalp #(1 2 3) (make-array 8 :initial-contents '(1..8) :fill-pointer 3)) => T
+       (dimension 8 vs 3, but the active prefix (1 2 3) matches), and
+       sequences/reverse.lsp REVERSE-VECTOR.6 likewise compares a fill-pointer
+       vector against a plain literal.  (Multidimensional arrays cannot have a
+       fill pointer, so cl_vector_active_length == length there and the per-axis
+       dimension check above still governs.)  Element type/specialization are
+       ignored. */
     if (CL_VECTOR_P(a) && CL_VECTOR_P(b)) {
         CL_Vector *va = (CL_Vector *)CL_OBJ_TO_PTR(a);
         CL_Vector *vb = (CL_Vector *)CL_OBJ_TO_PTR(b);
         CL_Obj *da, *db;
-        uint32_t i;
+        uint32_t i, na, nb;
         if (va->rank != vb->rank) return CL_NIL;
         for (i = 0; i < va->rank; i++)        /* compare dimensions (rank>1) */
             if (va->data[i] != vb->data[i]) return CL_NIL;
-        if (va->length != vb->length) return CL_NIL;  /* array-dimension (ignores fill pointer) */
+        na = cl_vector_active_length(va);
+        nb = cl_vector_active_length(vb);
+        if (na != nb) return CL_NIL;          /* active length (fill pointer counts) */
         da = cl_vector_data(va);
         db = cl_vector_data(vb);
-        for (i = 0; i < va->length; i++) {
+        for (i = 0; i < na; i++) {
             CL_Obj pair[2];
             pair[0] = da[i]; pair[1] = db[i];
             if (CL_NULL_P(bi_equalp(pair, 2))) return CL_NIL;
         }
         return SYM_T;
     }
-    /* Bit vectors */
+    /* Bit vectors: compare by ACTIVE length (the fill pointer if present),
+       matching the vector branch above. The whole-word memcmp fast path is only
+       valid when neither has a fill pointer; otherwise compare bit-by-bit. */
     if (CL_BIT_VECTOR_P(a) && CL_BIT_VECTOR_P(b)) {
         CL_BitVector *ba = (CL_BitVector *)CL_OBJ_TO_PTR(a);
         CL_BitVector *bb_bv = (CL_BitVector *)CL_OBJ_TO_PTR(b);
-        uint32_t nwords;
-        if (ba->length != bb_bv->length) return CL_NIL;
-        nwords = CL_BV_WORDS(ba->length);
-        if (nwords == 0) return SYM_T;
-        return memcmp(ba->data, bb_bv->data, nwords * sizeof(uint32_t)) == 0 ? SYM_T : CL_NIL;
+        uint32_t na = cl_bv_active_length(ba), nb = cl_bv_active_length(bb_bv);
+        uint32_t i;
+        if (na != nb) return CL_NIL;
+        if (ba->fill_pointer == CL_NO_FILL_POINTER &&
+            bb_bv->fill_pointer == CL_NO_FILL_POINTER) {
+            uint32_t nwords = CL_BV_WORDS(na);
+            if (nwords == 0) return SYM_T;
+            return memcmp(ba->data, bb_bv->data, nwords * sizeof(uint32_t)) == 0 ? SYM_T : CL_NIL;
+        }
+        for (i = 0; i < na; i++)
+            if (cl_bv_get_bit(ba, i) != cl_bv_get_bit(bb_bv, i)) return CL_NIL;
+        return SYM_T;
     }
     /* Mixed 1-D arrays of differing specialization (string vs char vector,
      * bit-vector vs bit vector, ...).  Same-type combinations are handled by

@@ -1077,12 +1077,13 @@
 (check "equal genvec same obj" t (let ((v (vector 1 2 3))) (equal v v)))
 (check "equalp genvec content" t (equalp (vector 1 2 3) (vector 1 2 3)))
 (check "equalp genvec diff" nil (equalp (vector 1 2 3) (vector 1 2 4)))
-; EQUALP compares array-dimension values (fill pointer is irrelevant)
-(check "equalp fillptr" nil
+; EQUALP compares vectors as sequences: by ACTIVE length (fill pointer counts)
+; (ansi-test EQUALP.11 / REVERSE-VECTOR.6; matches SBCL/CLISP)
+(check "equalp fillptr" t
        (equalp (make-array 5 :fill-pointer 2 :initial-contents '(1 2 3 4 5))
-               (make-array 2 :initial-contents '(1 2)))) ; dim 5 != 2
-; two size-5 arrays with different fill pointers but same elements -> equalp
-(check "equalp fillptr same dim" t
+               (make-array 2 :initial-contents '(1 2)))) ; active (1 2) == (1 2)
+; two size-5 arrays with different fill pointers -> different active lengths
+(check "equalp fillptr same dim" nil
        (equalp (make-array 5 :fill-pointer 2 :initial-contents '(1 2 3 4 5))
                (make-array 5 :fill-pointer 3 :initial-contents '(1 2 3 4 5))))
 ; EQUALP on multidimensional arrays: same dims + equalp elements
@@ -6348,6 +6349,68 @@
        (handler-case (find-if #'numberp '(1) :test #'eql) (program-error () 'pe) (error () 'wrong)))
 (check "count-if-not :test-not -> program-error" 'pe
        (handler-case (count-if-not #'numberp '(1) :test-not #'eql) (program-error () 'pe) (error () 'wrong)))
+
+; --- Adjustable / fill-pointer / displaced array sequence ops ---
+; EQUALP compares vectors as sequences: by ACTIVE length (fill pointer counts).
+; (ansi-test EQUALP.11 / REVERSE-VECTOR.6; matches SBCL/CLISP)
+(check "equalp fill-pointer vector active" t
+       (equalp (make-array 5 :fill-pointer 2 :initial-contents '(1 2 3 4 5)) #(1 2))) ; active (1 2) == (1 2)
+(check "equalp fill-pointer vector differing active" nil
+       (equalp (make-array 5 :fill-pointer 2 :initial-contents '(1 2 3 4 5))
+               (make-array 5 :fill-pointer 3 :initial-contents '(1 2 3 4 5)))) ; fp 2 vs 3 -> different active lengths
+(check "equalp fill-pointer bit-vector active" t
+       (equalp (make-array 6 :element-type 'bit :fill-pointer 3
+                           :initial-contents '(1 0 1 1 1 1)) #*101)) ; active (1 0 1) == #*101
+; REVERSE of a fill-pointer string -> STRING of the active length.
+(check "reverse fill-pointer string is string" t
+       (let ((s (make-array 9 :element-type 'character
+                            :initial-contents "12345ZZZZ" :fill-pointer 5)))
+         (let ((r (reverse s))) (and (stringp r) (string= r "54321")))))
+; REVERSE of a fill-pointer bit-vector honours active length.
+(check "reverse fill-pointer bit-vector" '(1 1 0 0 0)
+       (coerce (reverse (make-array 10 :element-type 'bit
+                          :initial-contents '(0 0 0 1 1 0 1 0 1 0) :fill-pointer 5)) 'list))
+; SUBSTITUTE/REMOVE-IF on an adjustable string return STRINGs.
+(check "substitute adjustable string is string" t
+       (let ((s (make-array 5 :element-type 'character
+                            :initial-contents "abcab" :adjustable t)))
+         (let ((r (substitute #\x #\a s))) (and (stringp r) (string= r "xbcxb")))))
+(check "remove-if adjustable string is string" t
+       (let ((s (make-array 10 :element-type 'character
+                            :initial-contents "ab1c23def4" :adjustable t)))
+         (let ((r (remove-if #'alpha-char-p s))) (and (stringp r) (string= r "1234")))))
+; NSUBSTITUTE on a fill-pointer string mutates only the active region.
+(check "nsubstitute fill-pointer string active" t
+       (let ((s (make-array 9 :element-type 'character
+                            :initial-contents "abcabZZZZ" :fill-pointer 5)))
+         (nsubstitute #\x #\a s) (and (= (length s) 5) (string= s "xbcxb"))))
+; COPY-SEQ of an adjustable base-char string is a SIMPLE string.
+(check "copy-seq adjustable base string simple" t
+       (simple-string-p (copy-seq (make-array 4 :element-type 'base-char
+                            :initial-contents '(#\a #\b #\c #\d) :adjustable t))))
+; MAKE-ARRAY: a one-element list dimension displaces like the integer form.
+(check "make-array list-dim displaced view" '(c d e f)
+       (let* ((v1 (copy-seq #(a b c d e f g h)))
+              (v2 (make-array '(4) :displaced-to v1 :displaced-index-offset 2)))
+         (coerce (copy-seq v2) 'list)))
+; MAKE-ARRAY: displacing onto a string with a fill pointer keeps it.
+(check "make-array displaced string keeps fill pointer" t
+       (let* ((s0 "XXabcdeYYY")
+              (s (make-array 5 :element-type 'character :displaced-to s0
+                             :displaced-index-offset 2 :fill-pointer 3)))
+         (and (= (length s) 3) (string= s "abc"))))
+; AREF ignores the fill pointer (whole bit-vector storage is accessible).
+(check "aref ignores bit-vector fill pointer" '(1 1 1 1 0 0 0 0)
+       (let ((b (make-array 8 :element-type 'bit :initial-element 0 :fill-pointer 4)))
+         (fill b 1) (loop for i from 0 below 8 collect (aref b i))))
+; MAKE-ARRAY :initial-contents from a bit-vector source copies its bits.
+(check "make-array initial-contents from bit-vector" '(0 0 1 0 1 1 0 0 0)
+       (coerce (make-array 9 :element-type 'bit :initial-contents #*001011000) 'list))
+; REMOVE :count :from-end on a string removes the LAST matches.
+(check "remove count from-end string" "abcdad"
+       (remove #\b "abcdbad" :count 1 :from-end t))
+(check "remove count from-start string" "acdbad"
+       (remove #\b "abcdbad" :count 1))
 
 ; --- Summary ---
 (format t "~%=== Results ===~%")

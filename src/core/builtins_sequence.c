@@ -305,6 +305,45 @@ static void arr_seq_set(CL_Obj seq, int32_t i, CL_Obj val)
                       CL_FIXNUM_VAL(val) != 0);
 }
 
+/* String-like = a simple string (TYPE_STRING / TYPE_WIDE_STRING) OR an
+ * adjustable / fill-pointer character vector (CL_VEC_FLAG_STRING).  Both are
+ * valid CL STRINGs and the sequence functions must produce STRING results for
+ * either, not a general (vector character). */
+static int seq_is_string_like(CL_Obj seq)
+{
+    return CL_ANY_STRING_P(seq) || CL_STRING_VECTOR_P(seq);
+}
+
+/* True if a string-like sequence holds any character code > 255 (needs wide
+ * storage to round-trip without truncation). */
+static int seq_string_needs_wide(CL_Obj seq)
+{
+#ifdef CL_WIDE_STRINGS
+    int32_t i, len = (int32_t)cl_string_length(seq);
+    if (CL_WIDE_STRING_P(seq)) return 1;
+    for (i = 0; i < len; i++)
+        if (cl_string_char_at(seq, (uint32_t)i) > 255) return 1;
+#else
+    (void)seq;
+#endif
+    return 0;
+}
+
+/* Make a fresh simple result sequence of the same broad class as SEQ
+ * (string / bit-vector / general vector) holding LENGTH elements.  Used so the
+ * non-destructive sequence functions return a result of the correct type. */
+static CL_Obj make_seq_result_like(CL_Obj seq, uint32_t length)
+{
+    if (seq_is_string_like(seq)) {
+#ifdef CL_WIDE_STRINGS
+        if (seq_string_needs_wide(seq)) return cl_make_wide_string(NULL, length);
+#endif
+        return cl_make_string(NULL, length);
+    }
+    if (CL_BIT_VECTOR_P(seq)) return cl_make_bit_vector(length);
+    return cl_make_vector(length);
+}
+
 /* Fresh copy of an array sequence preserving element values and active length.
  * GC-protects `seq` so the source pointer re-derived after the (compacting)
  * allocation is forwarded to the relocated object. */
@@ -312,7 +351,15 @@ static CL_Obj copy_array_seq(CL_Obj seq)
 {
     CL_Obj result;
     CL_GC_PROTECT(seq);
-    if (CL_VECTOR_P(seq)) {
+    if (seq_is_string_like(seq)) {
+        /* Includes adjustable/fill-pointer character vectors: produce a simple
+         * STRING of the active length, copying characters individually. */
+        uint32_t alen = cl_string_length(seq);
+        uint32_t i;
+        result = make_seq_result_like(seq, alen);
+        for (i = 0; i < alen; i++)
+            cl_string_set_char_at(result, i, cl_string_char_at(seq, i));
+    } else if (CL_VECTOR_P(seq)) {
         CL_Vector *v = (CL_Vector *)CL_OBJ_TO_PTR(seq);
         uint32_t alen = cl_vector_active_length(v);
         CL_Vector *rv;
@@ -320,8 +367,6 @@ static CL_Obj copy_array_seq(CL_Obj seq)
         rv = (CL_Vector *)CL_OBJ_TO_PTR(result);
         v = (CL_Vector *)CL_OBJ_TO_PTR(seq); /* refresh after alloc */
         memcpy(cl_vector_data(rv), cl_vector_data(v), alen * sizeof(CL_Obj));
-    } else if (CL_ANY_STRING_P(seq)) {
-        result = cl_string_copy(seq);
     } else {
         /* bit vector */
         CL_BitVector *bv = (CL_BitVector *)CL_OBJ_TO_PTR(seq);
@@ -904,28 +949,51 @@ static CL_Obj remove_from_list(CL_Obj seq, int32_t start, int32_t end,
 
 /* remove_from_string: shared string path for remove/remove-if/remove-if-not.
    mode: 0=remove (item+test), 1=remove-if (pred), 2=remove-if-not (pred) */
+static int remove_str_match(int mode, CL_Obj test_fn, CL_Obj key_fn,
+                            CL_Obj item_or_pred, CL_Obj elem)
+{
+    CL_Obj keyed = apply_key(key_fn, elem);
+    if (mode == 0) return !CL_NULL_P(call_test(test_fn, item_or_pred, keyed));
+    if (mode == 1) return seq_pred_match(item_or_pred, CL_NIL, elem);
+    return !seq_pred_match(item_or_pred, CL_NIL, elem);
+}
+
 static CL_Obj remove_from_string(CL_Obj seq, CL_Obj item_or_pred,
                                   CL_Obj test_fn, CL_Obj key_fn,
                                   int32_t start, int32_t end,
-                                  int32_t count, int mode)
+                                  int32_t count, int from_end, int mode)
 {
     int32_t slen = (int32_t)cl_string_length(seq);
     char buf[1024];
     int32_t out = 0, i, removed = 0;
+    int32_t skip_matches = 0;   /* leading matches to KEEP for :from-end + :count */
 
     if (end < 0) end = slen;
+
+    /* :from-end with a :count removes the LAST `count` matches.  Count all
+     * matches in [start,end) first, then keep the leading (total - count). */
+    if (from_end && count >= 0) {
+        int32_t total = 0;
+        for (i = start; i < end && i < slen; i++) {
+            CL_Obj elem = CL_MAKE_CHAR(cl_string_char_at(seq, (uint32_t)i));
+            if (remove_str_match(mode, test_fn, key_fn, item_or_pred, elem))
+                total++;
+        }
+        skip_matches = total - count;
+        if (skip_matches < 0) skip_matches = 0;
+    }
 
     for (i = 0; i < slen && out < (int32_t)sizeof(buf) - 1; i++) {
         CL_Obj elem = CL_MAKE_CHAR(cl_string_char_at(seq, (uint32_t)i));
         int should_remove = 0;
-        if (i >= start && i < end && (count < 0 || removed < count)) {
-            CL_Obj keyed = apply_key(key_fn, elem);
-            if (mode == 0) {
-                should_remove = !CL_NULL_P(call_test(test_fn, item_or_pred, keyed));
-            } else if (mode == 1) {
-                should_remove = seq_pred_match(item_or_pred, CL_NIL, elem);
+        int gate = from_end ? 1 : (count < 0 || removed < count);
+        if (i >= start && i < end && gate &&
+            remove_str_match(mode, test_fn, key_fn, item_or_pred, elem)) {
+            if (from_end && count >= 0) {
+                if (skip_matches > 0) skip_matches--;  /* keep this leading match */
+                else should_remove = 1;
             } else {
-                should_remove = !seq_pred_match(item_or_pred, CL_NIL, elem);
+                should_remove = 1;
             }
         }
         if (should_remove) {
@@ -1073,7 +1141,7 @@ static CL_Obj remove_from_vector(CL_Obj seq, int32_t start, int32_t end,
     CL_Obj result;
 
     if (end < 0) end = vlen;
-    if (vlen == 0) return cl_make_vector(0);
+    if (vlen == 0) return make_seq_result_like(seq, 0);
 
     keep = (uint8_t *)platform_alloc((uint32_t)vlen);
     memset(keep, 1, (uint32_t)vlen);
@@ -1148,16 +1216,21 @@ static CL_Obj remove_from_vector(CL_Obj seq, int32_t start, int32_t end,
     for (i = 0; i < vlen; i++)
         if (keep[i]) out++;
 
-    result = cl_make_vector((uint32_t)out);
+    /* A string-vector (adjustable/fill-pointer character array) must yield a
+     * STRING, not a general (vector character); make_seq_result_like picks the
+     * class from SEQ.  arr_seq_set performs no allocation, so `elts` (re-derived
+     * once after the result allocation) stays valid across the fill loop.
+     * GC-protect `seq` across the allocation so compaction forwards it. */
+    CL_GC_PROTECT(seq);
+    result = make_seq_result_like(seq, (uint32_t)out);
+    CL_GC_UNPROTECT(1);
     v = (CL_Vector *)CL_OBJ_TO_PTR(seq);
     {
-        CL_Vector *rv = (CL_Vector *)CL_OBJ_TO_PTR(result);
-        CL_Obj *relts = cl_vector_data(rv);
         CL_Obj *elts = cl_vector_data(v);
         int32_t j = 0;
         for (i = 0; i < vlen; i++) {
             if (keep[i])
-                relts[j++] = elts[i];
+                arr_seq_set(result, j++, elts[i]);
         }
     }
 
@@ -1195,7 +1268,7 @@ static CL_Obj bi_remove(CL_Obj *args, int n)
     }
     if (CL_ANY_STRING_P(seq)) {
         return remove_from_string(seq, item, sa.test_fn, sa.key_fn,
-                                  sa.start, sa.end, sa.count, 0);
+                                  sa.start, sa.end, sa.count, sa.from_end, 0);
     }
     if (CL_BIT_VECTOR_P(seq)) {
         if (!CL_NULL_P(sa.test_not_fn))
@@ -1228,7 +1301,7 @@ static CL_Obj bi_remove_if(CL_Obj *args, int n)
     }
     if (CL_ANY_STRING_P(seq)) {
         return remove_from_string(seq, pred, CL_NIL, sa.key_fn,
-                                  sa.start, sa.end, sa.count, 1);
+                                  sa.start, sa.end, sa.count, sa.from_end, 1);
     }
     if (CL_BIT_VECTOR_P(seq)) {
         return remove_from_bitvector(seq, sa.start, sa.end, sa.count, sa.from_end,
@@ -1255,7 +1328,7 @@ static CL_Obj bi_remove_if_not(CL_Obj *args, int n)
     }
     if (CL_ANY_STRING_P(seq)) {
         return remove_from_string(seq, pred, CL_NIL, sa.key_fn,
-                                  sa.start, sa.end, sa.count, 2);
+                                  sa.start, sa.end, sa.count, sa.from_end, 2);
     }
     if (CL_BIT_VECTOR_P(seq)) {
         return remove_from_bitvector(seq, sa.start, sa.end, sa.count, sa.from_end,
@@ -1355,9 +1428,7 @@ static CL_Obj bi_remove_duplicates(CL_Obj *args, int n)
             CL_GC_UNPROTECT(1);
         } else {
             int32_t k = 0;
-            if (CL_ANY_STRING_P(seq)) result = cl_make_string(NULL, (uint32_t)kept);
-            else if (CL_BIT_VECTOR_P(seq)) result = cl_make_bit_vector((uint32_t)kept);
-            else result = cl_make_vector((uint32_t)kept);
+            result = make_seq_result_like(seq, (uint32_t)kept);
             for (i = 0; i < len; i++)
                 if (keep[i]) arr_seq_set(result, k++, arr_seq_get(tmp, i));
         }
@@ -1861,32 +1932,13 @@ static CL_Obj bi_copy_seq(CL_Obj *args, int n)
         CL_GC_UNPROTECT(3);
         return result;
     }
-    if (CL_VECTOR_P(seq)) {
-        CL_Vector *v = (CL_Vector *)CL_OBJ_TO_PTR(seq);
-        uint32_t alen = cl_vector_active_length(v);
-        CL_Obj result = cl_make_vector(alen);
-        CL_Vector *rv = (CL_Vector *)CL_OBJ_TO_PTR(result);
-        /* cl_make_vector may have compacted, relocating seq — re-derive the
-         * source pointer (seq is GC-protected, so its offset is current). */
-        v = (CL_Vector *)CL_OBJ_TO_PTR(seq);
-        memcpy(cl_vector_data(rv), cl_vector_data(v), alen * sizeof(CL_Obj));
-        CL_GC_UNPROTECT(1);
-        return result;
-    }
-    if (CL_ANY_STRING_P(seq)) {
-        CL_Obj result = cl_string_copy(seq);
-        CL_GC_UNPROTECT(1);
-        return result;
-    }
-    if (CL_BIT_VECTOR_P(seq)) {
-        CL_BitVector *bv = (CL_BitVector *)CL_OBJ_TO_PTR(seq);
-        uint32_t blen = bv->length;
-        uint32_t nwords = CL_BV_WORDS(blen);
-        CL_Obj result = cl_make_bit_vector(blen);
-        CL_BitVector *rv = (CL_BitVector *)CL_OBJ_TO_PTR(result);
-        /* Re-derive bv after the (possibly compacting) allocation. */
-        bv = (CL_BitVector *)CL_OBJ_TO_PTR(seq);
-        memcpy(rv->data, bv->data, nwords * sizeof(uint32_t));
+    /* Arrays (general vector, string, adjustable/fill-pointer character vector,
+     * bit-vector): copy_array_seq produces a fresh SIMPLE sequence of the same
+     * broad class and the active length — including a STRING (not a general
+     * vector) for a string-vector, and the active length for fill-pointered
+     * vectors / bit-vectors. */
+    if (seq_is_array(seq)) {
+        CL_Obj result = copy_array_seq(seq);
         CL_GC_UNPROTECT(1);
         return result;
     }
