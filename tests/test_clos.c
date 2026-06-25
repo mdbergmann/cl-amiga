@@ -325,12 +325,46 @@ TEST(cpl_cons)
 
 TEST(cpl_null)
 {
+    /* NULL is a subclass of both SYMBOL and LIST.  The CPL must place T
+       last; a naive append+dedup of the supers' CPLs put T in the middle
+       (NULL SYMBOL T LIST SEQUENCE), which made method dispatch rank a
+       T-specialized method above a LIST-specialized one for NIL. */
     ASSERT_STR_EQ(eval_print(
         "(mapcar #'class-name (class-precedence-list (find-class 'null)))"),
-        "(NULL SYMBOL T LIST SEQUENCE)");
-    /* Note: CL spec CPL is (NULL SYMBOL LIST SEQUENCE T) but our C3
-       linearization of bootstrap classes produces this order.
-       Method dispatch still works correctly. */
+        "(NULL SYMBOL LIST SEQUENCE T)");
+}
+
+TEST(cpl_vector)
+{
+    /* VECTOR is a subclass of both ARRAY and SEQUENCE -- another diamond
+       whose CPL must keep T last. */
+    ASSERT_STR_EQ(eval_print(
+        "(mapcar #'class-name (class-precedence-list (find-class 'vector)))"),
+        "(VECTOR ARRAY SEQUENCE T)");
+}
+
+/* Dispatch: NIL is a LIST, so a method specialized on LIST must be chosen
+   over the default (T) method.  Regression for the malformed NULL CPL. */
+TEST(dispatch_nil_as_list)
+{
+    eval_print("(defgeneric dnl (x))");
+    eval_print("(defmethod dnl (x) \"T\")");
+    eval_print("(defmethod dnl ((x list)) \"LIST\")");
+    ASSERT_STR_EQ(eval_print("(dnl nil)"), "\"LIST\"");
+    ASSERT_STR_EQ(eval_print("(dnl '(1 2))"), "\"LIST\"");
+    ASSERT_STR_EQ(eval_print("(dnl 5)"), "\"T\"");
+}
+
+/* Dispatch: an empty vector (a SEQUENCE) must select a SEQUENCE method
+   over the default. */
+TEST(dispatch_vector_as_sequence)
+{
+    eval_print("(defgeneric dvs (x))");
+    eval_print("(defmethod dvs (x) \"T\")");
+    eval_print("(defmethod dvs ((x sequence)) \"SEQ\")");
+    ASSERT_STR_EQ(eval_print("(dvs #())"), "\"SEQ\"");
+    ASSERT_STR_EQ(eval_print("(dvs #(1 2))"), "\"SEQ\"");
+    ASSERT_STR_EQ(eval_print("(dvs 5)"), "\"T\"");
 }
 
 /* setf find-class */
@@ -3985,6 +4019,9 @@ int main(void)
     RUN(cpl_fixnum);
     RUN(cpl_cons);
     RUN(cpl_null);
+    RUN(cpl_vector);
+    RUN(dispatch_nil_as_list);
+    RUN(dispatch_vector_as_sequence);
     RUN(setf_find_class);
     RUN(direct_subclasses_integer);
 

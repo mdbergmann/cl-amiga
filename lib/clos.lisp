@@ -155,23 +155,59 @@ directly instead of attempting a symbol lookup."
 
 ;;; --- CPL computation for bootstrap classes ---
 
+;;; C3 linearization merge.  Defined here (before the bootstrap classes)
+;;; so %compute-builtin-cpl can produce a *correct* precedence order for
+;;; built-in classes with multiple superclasses (the diamonds NULL ->
+;;; SYMBOL+LIST and VECTOR -> ARRAY+SEQUENCE).  A naive append+dedup
+;;; merge places the shared ancestor T (and SEQUENCE) too early, e.g.
+;;; (NULL SYMBOL T LIST SEQUENCE), which then makes a method specialized
+;;; on T look *more* specific than one on LIST during dispatch ordering.
+;;; %compute-class-precedence-list (defined later) reuses this same merge.
+(defun %c3-merge (lists)
+  "Merge step of C3 linearization. LISTS is a list of lists."
+  (let ((result nil))
+    (loop
+      ;; Remove empty lists
+      (setq lists (remove nil lists))
+      (when (null lists)
+        (return (nreverse result)))
+      ;; Find a candidate: head of some list that doesn't appear in
+      ;; the tail of any other list
+      (let ((candidate nil))
+        (dolist (l lists)
+          (let ((head (car l))
+                (dominated nil))
+            ;; Check if head appears in tail of any list
+            (dolist (l2 lists)
+              (when (member head (cdr l2) :test #'eq)
+                (setq dominated t)
+                (return)))
+            (unless dominated
+              (setq candidate head)
+              (return))))
+        (unless candidate
+          (error "Inconsistent class precedence list -- C3 linearization failed"))
+        ;; Remove candidate from all lists
+        (push candidate result)
+        (setq lists
+              (mapcar (lambda (l)
+                        (if (eq (car l) candidate)
+                            (cdr l)
+                            l))
+                      lists))))))
+
 (defun %compute-builtin-cpl (class)
-  "Compute class precedence list for a built-in class.
-   Supers must already have their CPLs set."
-  (let ((result (list class)))
-    (dolist (super (class-direct-superclasses class))
-      (let ((super-cpl (class-precedence-list super)))
-        (if super-cpl
-            (setq result (append result super-cpl))
-            (setq result (append result (list super))))))
-    ;; Remove duplicates keeping first occurrence
-    (let ((seen nil)
-          (out nil))
-      (dolist (c result)
-        (unless (member c seen :test #'eq)
-          (push c seen)
-          (push c out)))
-      (nreverse out))))
+  "Compute class precedence list for a built-in class via C3 linearization.
+   Supers must already have their CPLs set (bootstrap creates classes in
+   dependency order, supers before subs)."
+  (let ((supers (class-direct-superclasses class)))
+    (if (null supers)
+        (list class)
+        (%c3-merge
+         (cons (list class)
+               (append
+                (mapcar #'class-precedence-list supers)
+                (list supers)))))))
 
 ;;; --- Bootstrap helper ---
 ;;; Classes are created in dependency order (supers before subs),
@@ -723,38 +759,8 @@ Specialize via defmethod to provide lazy initialization."
 ;;; Phase 2: C3 Linearization
 ;;; ====================================================================
 
-(defun %c3-merge (lists)
-  "Merge step of C3 linearization. LISTS is a list of lists."
-  (let ((result nil))
-    (loop
-      ;; Remove empty lists
-      (setq lists (remove nil lists))
-      (when (null lists)
-        (return (nreverse result)))
-      ;; Find a candidate: head of some list that doesn't appear in
-      ;; the tail of any other list
-      (let ((candidate nil))
-        (dolist (l lists)
-          (let ((head (car l))
-                (dominated nil))
-            ;; Check if head appears in tail of any list
-            (dolist (l2 lists)
-              (when (member head (cdr l2) :test #'eq)
-                (setq dominated t)
-                (return)))
-            (unless dominated
-              (setq candidate head)
-              (return))))
-        (unless candidate
-          (error "Inconsistent class precedence list -- C3 linearization failed"))
-        ;; Remove candidate from all lists
-        (push candidate result)
-        (setq lists
-              (mapcar (lambda (l)
-                        (if (eq (car l) candidate)
-                            (cdr l)
-                            l))
-                      lists))))))
+;; %c3-merge is defined earlier (before the bootstrap classes) so the
+;; built-in class CPLs can use it too.
 
 (defun %compute-class-precedence-list (class)
   "Compute CPL using C3 linearization. Supers must already have CPLs."
