@@ -90,7 +90,7 @@ static int32_t seq_length(CL_Obj seq)
         CL_BitVector *bv = (CL_BitVector *)CL_OBJ_TO_PTR(seq);
         return (int32_t)cl_bv_active_length(bv);
     }
-    cl_error(CL_ERR_TYPE, "not a sequence");
+    cl_signal_type_error(seq, "SEQUENCE", "sequence operation");
     return 0;
 }
 
@@ -114,7 +114,7 @@ static CL_Obj seq_elt(CL_Obj seq, int32_t idx)
         if ((uint32_t)idx >= cl_bv_active_length(bv)) cl_error(CL_ERR_ARGS, "index out of bounds");
         return CL_MAKE_FIXNUM(cl_bv_get_bit(bv, (uint32_t)idx));
     }
-    cl_error(CL_ERR_TYPE, "not a sequence");
+    cl_signal_type_error(seq, "SEQUENCE", "sequence operation");
     return CL_NIL;
 }
 
@@ -482,15 +482,21 @@ static CL_Obj bi_map(CL_Obj *args, int n)
     int i;
     int32_t idx = 0;
     int rt; /* 0=nil, 1=list, 2=string, 3=vector */
+    int32_t decl_len = -1;
 
     /* Classify the result-type FIRST: seq_result_type_class may expand a
      * deftype via cl_vm_apply, which can allocate/compact.  Only args[]
      * (GC-rooted) is live at this point, so no offsets are stale across it. */
     rt = seq_result_type_class(result_type, 16);
     if (rt < 0) {
-        cl_error(CL_ERR_ARGS, "MAP: unsupported result-type");
+        /* A result-type that is not a recognized subtype of SEQUENCE
+         * (e.g. SYMBOL) is a type-error per CLHS MAP, not a program-error. */
+        cl_signal_type_error(result_type, "SEQUENCE", "MAP");
         return CL_NIL;
     }
+    /* Capture a declared length constraint, e.g. (vector * 8) or (string 5),
+     * so we can reject a mismatched produced length with a type-error. */
+    (void)seq_ctor_type_class(result_type, 16, &decl_len);
 
     func = cl_coerce_funcdesig(args[1], "MAP");
     if (nseqs > 16) nseqs = 16;
@@ -532,6 +538,10 @@ static CL_Obj bi_map(CL_Obj *args, int n)
                 cl_string_set_char_at(result, (uint32_t)idx,
                                       CL_CHAR_P(val) ? CL_CHAR_VAL(val) : 0);
             }
+            /* CLHS: a result-type length that disagrees with the produced
+             * length is a type-error (datum = produced sequence). */
+            if (decl_len >= 0 && decl_len != min_len)
+                cl_signal_type_error_obj(result, args[0], "MAP"); /* args[0] GC-rooted; result_type may be stale */
             CL_GC_UNPROTECT(2);
             return result;
         } else {
@@ -545,6 +555,8 @@ static CL_Obj bi_map(CL_Obj *args, int n)
                 val = call_func(func, call_args, nseqs);
                 cl_vector_data((CL_Vector *)CL_OBJ_TO_PTR(result))[idx] = val;
             }
+            if (decl_len >= 0 && decl_len != min_len)
+                cl_signal_type_error_obj(result, args[0], "MAP"); /* args[0] GC-rooted; result_type may be stale */
             CL_GC_UNPROTECT(2);
             return result;
         }
@@ -592,25 +604,27 @@ static CL_Obj bi_mismatch(CL_Obj *args, int n)
         SK_TEST | SK_TEST_NOT | SK_KEY | SK_START1 | SK_END1 |
         SK_START2 | SK_END2 | SK_FROM_END);
 
-    /* Parse keywords */
-    for (ki = 2; ki + 1 < n; ki += 2) {
+    /* Parse keywords.  CLHS 3.4.1.4: on a repeated keyword the leftmost
+     * pair wins.  Walk the plist back-to-front so the leftmost occurrence
+     * is applied last and overwrites later duplicates. */
+    for (ki = ((n - 2) & ~1); ki >= 2; ki -= 2) {
+        if (ki + 1 >= n) continue;
         if (args[ki] == KW_TEST) test_fn = cl_coerce_funcdesig(args[ki + 1], ":TEST");
         else if (args[ki] == KW_TEST_NOT) test_not_fn = cl_coerce_funcdesig(args[ki + 1], ":TEST-NOT");
         else if (args[ki] == KW_KEY) key_fn = CL_NULL_P(args[ki + 1]) ? CL_NIL : cl_coerce_funcdesig(args[ki + 1], ":KEY");
         else if (args[ki] == KW_START1 && CL_FIXNUM_P(args[ki + 1])) start1 = CL_FIXNUM_VAL(args[ki + 1]);
-        else if (args[ki] == KW_END1 && !CL_NULL_P(args[ki + 1]) && CL_FIXNUM_P(args[ki + 1])) end1 = CL_FIXNUM_VAL(args[ki + 1]);
         else if (args[ki] == KW_START2 && CL_FIXNUM_P(args[ki + 1])) start2 = CL_FIXNUM_VAL(args[ki + 1]);
-        else if (args[ki] == KW_END2 && !CL_NULL_P(args[ki + 1]) && CL_FIXNUM_P(args[ki + 1])) end2 = CL_FIXNUM_VAL(args[ki + 1]);
-        else if (args[ki] == KW_FROM_END && !CL_NULL_P(args[ki + 1])) from_end = 1;
+        else if (args[ki] == KW_FROM_END) from_end = !CL_NULL_P(args[ki + 1]);
     }
 
     len1 = seq_length(seq1);
     len2 = seq_length(seq2);
 
-    /* Set defaults for end if not provided */
+    /* Set defaults for end if not provided (leftmost wins) */
     end1 = len1;
     end2 = len2;
-    for (ki = 2; ki + 1 < n; ki += 2) {
+    for (ki = ((n - 2) & ~1); ki >= 2; ki -= 2) {
+        if (ki + 1 >= n) continue;
         if (args[ki] == KW_END1 && !CL_NULL_P(args[ki + 1]) && CL_FIXNUM_P(args[ki + 1]))
             end1 = CL_FIXNUM_VAL(args[ki + 1]);
         if (args[ki] == KW_END2 && !CL_NULL_P(args[ki + 1]) && CL_FIXNUM_P(args[ki + 1]))
@@ -688,14 +702,16 @@ static CL_Obj bi_search(CL_Obj *args, int n)
         SK_TEST | SK_TEST_NOT | SK_KEY | SK_START1 | SK_END1 |
         SK_START2 | SK_END2 | SK_FROM_END);
 
-    /* Parse keywords */
-    for (ki = 2; ki + 1 < n; ki += 2) {
+    /* Parse keywords.  CLHS 3.4.1.4: leftmost duplicate wins — walk the
+     * plist back-to-front so the leftmost pair is applied last. */
+    for (ki = ((n - 2) & ~1); ki >= 2; ki -= 2) {
+        if (ki + 1 >= n) continue;
         if (args[ki] == KW_TEST) test_fn = cl_coerce_funcdesig(args[ki + 1], ":TEST");
         else if (args[ki] == KW_TEST_NOT) test_not_fn = cl_coerce_funcdesig(args[ki + 1], ":TEST-NOT");
         else if (args[ki] == KW_KEY) key_fn = CL_NULL_P(args[ki + 1]) ? CL_NIL : cl_coerce_funcdesig(args[ki + 1], ":KEY");
         else if (args[ki] == KW_START1 && CL_FIXNUM_P(args[ki + 1])) start1 = CL_FIXNUM_VAL(args[ki + 1]);
         else if (args[ki] == KW_START2 && CL_FIXNUM_P(args[ki + 1])) start2 = CL_FIXNUM_VAL(args[ki + 1]);
-        else if (args[ki] == KW_FROM_END && !CL_NULL_P(args[ki + 1])) from_end = 1;
+        else if (args[ki] == KW_FROM_END) from_end = !CL_NULL_P(args[ki + 1]);
     }
 
     len1 = seq_length(seq1);
@@ -703,7 +719,8 @@ static CL_Obj bi_search(CL_Obj *args, int n)
     end1 = len1;
     end2 = len2;
 
-    for (ki = 2; ki + 1 < n; ki += 2) {
+    for (ki = ((n - 2) & ~1); ki >= 2; ki -= 2) {
+        if (ki + 1 >= n) continue;
         if (args[ki] == KW_END1 && !CL_NULL_P(args[ki + 1]) && CL_FIXNUM_P(args[ki + 1]))
             end1 = CL_FIXNUM_VAL(args[ki + 1]);
         if (args[ki] == KW_END2 && !CL_NULL_P(args[ki + 1]) && CL_FIXNUM_P(args[ki + 1]))
@@ -1110,7 +1127,7 @@ static CL_Obj bi_sort(CL_Obj *args, int n)
         return args[0];
     }
 
-    cl_error(CL_ERR_TYPE, "SORT: not a sequence");
+    cl_signal_type_error(seq, "SEQUENCE", "SORT");
     return CL_NIL;
 }
 

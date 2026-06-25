@@ -522,7 +522,7 @@ static CL_Obj bi_nreverse(CL_Obj *args, int n)
         }
         return seq;
     }
-    cl_error(CL_ERR_TYPE, "NREVERSE: not a sequence");
+    cl_signal_type_error(seq, "SEQUENCE", "NREVERSE");
     return CL_NIL;
 }
 

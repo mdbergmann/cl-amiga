@@ -1089,6 +1089,80 @@
 (check "equalp 2d array" t (equalp #2a((1 2) (3 4)) #2a((1 2) (3 4))))
 (check "equalp 2d array diff" nil (equalp #2a((1 2) (3 4)) #2a((1 2) (3 5))))
 (check "equalp 2d vs 1d shape" nil (equalp #2a((1 2) (3 4)) #(1 2 3 4)))
+; EQUALP across differing 1-D array specializations (CLHS: element type ignored).
+; A string and a (vector character) of the same chars are EQUALP; likewise a
+; bit-vector and a vector of the same bits.  (Regression: FIND with :test #'equalp
+; over a list mixing strings and char vectors used to miss the vector.)
+(check "equalp string vs charvec" t (equalp "ab" (vector #\a #\b)))
+(check "equalp charvec vs string" t (equalp (vector #\a #\b) "ab"))
+(check "equalp string vs charvec diff" nil (equalp "ab" (vector #\a #\c)))
+(check "equalp string vs charvec len" nil (equalp "ab" (vector #\a #\b #\c)))
+(check "equalp string vs charvec ci" t (equalp "AB" (vector #\a #\b)))
+(check "equalp bitvec vs vec" t (equalp #*101 (vector 1 0 1)))
+(check "equalp bitvec vs vec diff" nil (equalp #*101 (vector 1 1 1)))
+(check "find equalp mixed list" t
+       (equalp (find "ab" (list "a" (vector #\b #\a) (vector #\a #\b) (vector #\d #\e))
+                     :test #'equalp)
+               (vector #\a #\b)))
+
+; --- sequence functions on a non-sequence signal TYPE-ERROR carrying :datum ---
+; (Regression: these used to raise a bare type-error with NIL :datum, failing
+;  the ANSI check-type-error tests.)
+(defun seq-type-error-datum (thunk)
+  (handler-case (progn (funcall thunk) :no-error)
+    (type-error (c) (type-error-datum c))))
+(check "count non-seq datum" 7 (seq-type-error-datum (lambda () (count 'a 7))))
+(check "find non-seq datum" 7 (seq-type-error-datum (lambda () (find 'a 7))))
+(check "reverse non-seq datum" 7 (seq-type-error-datum (lambda () (reverse 7))))
+(check "copy-seq non-seq datum" 7 (seq-type-error-datum (lambda () (copy-seq 7))))
+(check "remove non-seq datum" 7 (seq-type-error-datum (lambda () (remove 'a 7))))
+(check "sort non-seq datum" 7 (seq-type-error-datum (lambda () (sort 7 #'<))))
+(check "reduce non-seq datum" 7 (seq-type-error-datum (lambda () (reduce #'+ 7))))
+
+; --- repeated keyword: leftmost pair wins (CLHS 3.4.1.4) ---
+(check "reduce dup from-end" '(1 2 3)
+       (reduce #'cons '(1 2 3) :from-end t :from-end nil
+               :initial-value nil :initial-value 'a))
+(check "mismatch dup test" 2
+       (mismatch "1234" "1244" :test #'equal :test (complement #'equal)))
+(check "search dup keys" 4
+       (search '(c d) '(a b c d c d e) :start1 0 :start2 0 :start1 1
+               :start2 6 :from-end t :from-end nil))
+(check "replace dup keys" "xyzdefg"
+       (replace (copy-seq "abcdefg") "xyz" :start1 0 :start2 0 :end1 3 :end2 3
+                :start1 1 :start2 1 :end1 2 :end1 2))
+
+; --- MAP-INTO: function called exactly once per element; fill pointer set ---
+(check "map-into list once" '(6 5 4 3 2 1)
+       (let ((a (copy-seq '(a b c d e f))) (b nil))
+         (map-into a (lambda (x) (push x b) x) '(1 2 3 4 5 6))
+         b))
+(check "map-into fillptr count" 2
+       (let ((a (make-array 6 :initial-element 'x :fill-pointer 3)))
+         (map-into a #'identity '(1 2))
+         (fill-pointer a)))
+(check "map-into fillptr grows" 5
+       (let ((a (make-array 6 :initial-element 'x :fill-pointer 3)))
+         (map-into a #'identity '(1 2 3 4 5))
+         (fill-pointer a)))
+
+; --- MAP result-type validation is a TYPE-ERROR (not program-error) ---
+(check "map bad result-type" t
+       (handler-case (progn (map 'symbol #'identity '(a b c)) nil)
+         (type-error () t)))
+(check "map result-type length mismatch" t
+       (handler-case (progn (map '(vector * 8) #'identity '(a b c)) nil)
+         (type-error () t)))
+
+; --- COERCE to a numeric type the object already satisfies is the identity ---
+(check "coerce 0 rational" 0 (coerce 0 'rational))
+(check "coerce ratio rational" 1/2 (coerce 1/2 'rational))
+(check "coerce 5 real" 5 (coerce 5 'real))
+
+; --- REMOVE :count as a (bignum) negative integer is treated as zero ---
+(check "remove negative bignum count" '(1 2 3 2 6 1 2 4 1 3 2 7)
+       (remove 3 (copy-seq '(1 2 3 2 6 1 2 4 1 3 2 7))
+               :count -1000000000000))
 ; --- compiler use-after-free regression (cl_compile_env protect flag) ---
 ; A macro performing a non-local exit during its own expansion, used inside
 ; compiled lambda-bearing forms; pre-fix the NLX unwind freed the in-progress

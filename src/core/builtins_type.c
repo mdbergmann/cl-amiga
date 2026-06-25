@@ -1148,6 +1148,15 @@ static CL_Obj bi_coerce(CL_Obj *args, int n)
         return CL_NIL;
     }
 
+    /* CLHS COERCE: "If the result-type is a recognizable subtype of the type
+     * of object, ... object is returned."  In particular coercing a value to a
+     * numeric type it already satisfies (RATIONAL, REAL, NUMBER, COMPLEX, RATIO,
+     * (UNSIGNED-BYTE n), ...) is the identity — no conversion is performed.
+     * Use the original (unreduced) result-type so length/range constraints are
+     * honored. */
+    if (cl_typep(obj, args[1]))
+        return args[0]; /* args[] is GC-rooted; obj may be stale after cl_typep compacts */
+
     cl_error(CL_ERR_TYPE, "COERCE: unknown result type %s",
              cl_symbol_name(result_type));
     return CL_NIL;
