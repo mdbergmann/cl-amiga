@@ -993,6 +993,22 @@ static void concat_vec_cb(CL_Obj elem, void *ctx_)
         cl_vector_data(v)[ctx->pos++] = elem;
 }
 
+/* Callback context for bit-vector result */
+typedef struct { CL_Obj bv; uint32_t pos; } concat_bv_ctx;
+static void concat_bv_cb(CL_Obj elem, void *ctx_)
+{
+    concat_bv_ctx *ctx = (concat_bv_ctx *)ctx_;
+    CL_BitVector *bv = (CL_BitVector *)CL_OBJ_TO_PTR(ctx->bv);
+    if (ctx->pos < cl_bv_active_length(bv)) {
+        uint32_t p = ctx->pos;  /* cl_bv_set_bit evaluates its index twice */
+        if (!CL_FIXNUM_P(elem) ||
+            (CL_FIXNUM_VAL(elem) != 0 && CL_FIXNUM_VAL(elem) != 1))
+            cl_error(CL_ERR_TYPE, "CONCATENATE: element is not a bit for bit-vector result");
+        cl_bv_set_bit(bv, p, CL_FIXNUM_VAL(elem) != 0);
+        ctx->pos = p + 1;
+    }
+}
+
 /* Callback context for list result */
 typedef struct { CL_Obj head; CL_Obj tail; } concat_list_ctx;
 static void concat_list_cb(CL_Obj elem, void *ctx_)
@@ -1006,6 +1022,25 @@ static void concat_list_cb(CL_Obj elem, void *ctx_)
         ((CL_Cons *)CL_OBJ_TO_PTR(ctx->tail))->cdr = cell;
         ctx->tail = cell;
     }
+}
+
+/* Is element-type ET the BIT type?  Expands deftypes up to DEPTH levels.
+ * Used to decide BIT-VECTOR vs VECTOR for a compound (vector ELT ...) type. */
+static int concat_elt_type_is_bit(CL_Obj type, int depth)
+{
+    extern CL_Obj cl_get_type_expander(CL_Obj name);
+    if (depth <= 0) return 0;
+    if (CL_SYMBOL_P(type)) {
+        const char *nm = cl_symbol_name(type);
+        if (strcmp(nm, "BIT") == 0) return 1;
+        if (strcmp(nm, "*") == 0) return 0;
+        {
+            CL_Obj ex = cl_get_type_expander(type);
+            if (!CL_NULL_P(ex))
+                return concat_elt_type_is_bit(cl_vm_apply(ex, NULL, 0), depth - 1);
+        }
+    }
+    return 0;
 }
 
 /* Is element-type ET (a CL_Obj type specifier) a character type?  Expands
@@ -1035,6 +1070,7 @@ static CL_Obj bi_concatenate(CL_Obj *args, int n)
     CL_Obj result_type = args[0];
     const char *tname;
     int i;
+    int32_t len_con = -1;  /* declared length constraint, or -1 if none */
 
     if (CL_NULL_P(result_type))
         cl_error(CL_ERR_TYPE, "CONCATENATE: result type must not be NIL");
@@ -1060,16 +1096,26 @@ static CL_Obj bi_concatenate(CL_Obj *args, int n)
         CL_Obj head = cl_car(result_type);
         if (CL_SYMBOL_P(head)) {
             const char *hname = cl_symbol_name(head);
+            CL_Obj rest = cl_cdr(result_type);
             if (strcmp(hname, "SIMPLE-ARRAY") == 0 || strcmp(hname, "ARRAY") == 0 ||
                 strcmp(hname, "VECTOR") == 0 || strcmp(hname, "SIMPLE-VECTOR") == 0) {
-                CL_Obj eargs = cl_cdr(result_type);
-                if (!CL_NULL_P(eargs) &&
-                    concat_elt_type_is_char(cl_car(eargs), 8))
+                /* (vector elt-type [length]) — capture the length constraint. */
+                CL_Obj lenarg = (CL_NULL_P(rest) || CL_NULL_P(cl_cdr(rest)))
+                                    ? CL_NIL : cl_car(cl_cdr(rest));
+                if (CL_FIXNUM_P(lenarg)) len_con = CL_FIXNUM_VAL(lenarg);
+                if (!CL_NULL_P(rest) &&
+                    concat_elt_type_is_char(cl_car(rest), 8))
                     result_type = cl_intern_in("STRING", 6, cl_package_cl);
+                else if (!CL_NULL_P(rest) &&
+                         concat_elt_type_is_bit(cl_car(rest), 8))
+                    result_type = cl_intern_in("BIT-VECTOR", 10, cl_package_cl);
                 else
                     result_type = cl_intern_in("VECTOR", 6, cl_package_cl);
             } else {
-                /* (string ...) / (base-string ...) etc. — use the head name. */
+                /* (string [length]) / (bit-vector [length]) etc. — the length,
+                 * if any, is the first compound argument. */
+                if (!CL_NULL_P(rest) && CL_FIXNUM_P(cl_car(rest)))
+                    len_con = CL_FIXNUM_VAL(cl_car(rest));
                 result_type = head;
             }
         } else {
@@ -1080,6 +1126,10 @@ static CL_Obj bi_concatenate(CL_Obj *args, int n)
     if (!CL_SYMBOL_P(result_type))
         cl_error(CL_ERR_TYPE, "CONCATENATE: result type must be a type specifier");
     tname = cl_symbol_name(result_type);
+
+    /* A declared length must match the actual concatenated length. */
+    if (len_con >= 0 && (uint32_t)len_con != concat_total_length(args, n))
+        cl_error(CL_ERR_TYPE, "CONCATENATE: result length does not match result-type");
 
     /* String result types */
     if (strcmp(tname, "STRING") == 0 || strcmp(tname, "SIMPLE-STRING") == 0 ||
@@ -1120,8 +1170,28 @@ static CL_Obj bi_concatenate(CL_Obj *args, int n)
         return ctx.vec;
     }
 
+    /* Bit-vector result types */
+    if (strcmp(tname, "BIT-VECTOR") == 0 || strcmp(tname, "SIMPLE-BIT-VECTOR") == 0) {
+        uint32_t total = concat_total_length(args, n);
+        concat_bv_ctx ctx;
+        ctx.bv = cl_make_bit_vector(total);
+        ctx.pos = 0;
+        CL_GC_PROTECT(ctx.bv);
+        for (i = 1; i < n; i++)
+            concat_iterate(args[i], concat_bv_cb, &ctx);
+        CL_GC_UNPROTECT(1);
+        return ctx.bv;
+    }
+
+    /* NULL result type: only the empty concatenation is well typed. */
+    if (strcmp(tname, "NULL") == 0) {
+        if (concat_total_length(args, n) != 0)
+            cl_error(CL_ERR_TYPE, "CONCATENATE: non-empty result for result-type NULL");
+        return CL_NIL;
+    }
+
     /* List result type */
-    if (strcmp(tname, "LIST") == 0) {
+    if (strcmp(tname, "LIST") == 0 || strcmp(tname, "CONS") == 0) {
         concat_list_ctx ctx = { CL_NIL, CL_NIL };
         CL_GC_PROTECT(ctx.head);
         CL_GC_PROTECT(ctx.tail);

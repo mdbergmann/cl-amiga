@@ -58,18 +58,6 @@ static CL_Obj call_test(CL_Obj test_fn, CL_Obj a, CL_Obj b)
     return CL_NIL;
 }
 
-/* Call a 1-arg predicate function */
-static CL_Obj call_pred(CL_Obj pred_fn, CL_Obj item)
-{
-    CL_Obj pargs[1];
-    pargs[0] = item;
-    if (CL_FUNCTION_P(pred_fn) || CL_BYTECODE_P(pred_fn) || CL_CLOSURE_P(pred_fn))
-        /* cl_vm_apply GC-roots pargs across the call. */
-        return cl_vm_apply(pred_fn, pargs, 1);
-    cl_error(CL_ERR_TYPE, "not a function (predicate)");
-    return CL_NIL;
-}
-
 /* Extract :test keyword argument from args[start..n-1], return default (eql) if absent */
 static CL_Obj extract_test_arg(CL_Obj *args, int n, int start)
 {
@@ -538,63 +526,21 @@ static CL_Obj bi_nreverse(CL_Obj *args, int n)
     return CL_NIL;
 }
 
+/* DELETE / DELETE-IF / DELETE-IF-NOT share REMOVE's full behaviour (keyword
+ * handling, :count, :start, :end, :from-end, :key, :test/:test-not and
+ * argument validation).  CLHS permits the destructive operations to "but need
+ * not" modify the argument, so delegating to the non-destructive REMOVE family
+ * is conforming and keeps a single source of truth for the semantics. */
 static CL_Obj bi_delete(CL_Obj *args, int n)
 {
-    CL_Obj item = args[0], seq = args[1];
-    CL_Obj test_fn;
-    CL_Obj prev = CL_NIL, curr;
-
-    /* DELETE permits destructive modification per CLHS, but the result is
-     * defined by REMOVE's semantics.  For non-list sequences (vectors,
-     * strings, bit-vectors) we delegate to REMOVE — yielding a fresh
-     * sequence is permitted ("the destructive operations may, but need
-     * not, modify the argument") and avoids tripping the list-only loop
-     * below on cl_car of a vector. */
-    if (CL_NULL_P(seq)) return CL_NIL;
-    if (!CL_CONS_P(seq)) {
-        extern CL_Obj bi_remove_export(CL_Obj *args, int n);
-        return bi_remove_export(args, n);
-    }
-
-    test_fn = extract_test_arg(args, n, 2);
-    curr = seq;
-
-    while (!CL_NULL_P(curr)) {
-        if (!CL_NULL_P(call_test(test_fn, item, cl_car(curr)))) {
-            if (CL_NULL_P(prev)) {
-                seq = cl_cdr(curr);
-            } else {
-                ((CL_Cons *)CL_OBJ_TO_PTR(prev))->cdr = cl_cdr(curr);
-            }
-            curr = cl_cdr(curr);
-        } else {
-            prev = curr;
-            curr = cl_cdr(curr);
-        }
-    }
-    return seq;
+    extern CL_Obj bi_remove_export(CL_Obj *args, int n);
+    return bi_remove_export(args, n);
 }
 
 static CL_Obj bi_delete_if(CL_Obj *args, int n)
 {
-    CL_Obj pred = cl_coerce_funcdesig(args[0], "DELETE-IF"), list = args[1];
-    CL_Obj prev = CL_NIL, curr = list;
-    CL_UNUSED(n);
-
-    while (!CL_NULL_P(curr)) {
-        if (!CL_NULL_P(call_pred(pred, cl_car(curr)))) {
-            if (CL_NULL_P(prev)) {
-                list = cl_cdr(curr);
-            } else {
-                ((CL_Cons *)CL_OBJ_TO_PTR(prev))->cdr = cl_cdr(curr);
-            }
-            curr = cl_cdr(curr);
-        } else {
-            prev = curr;
-            curr = cl_cdr(curr);
-        }
-    }
-    return list;
+    extern CL_Obj bi_remove_if_export(CL_Obj *args, int n);
+    return bi_remove_if_export(args, n);
 }
 
 static CL_Obj bi_nsubst(CL_Obj *args, int n)
@@ -1111,7 +1057,7 @@ void cl_builtins_lists_init(void)
     defun("NCONC", bi_nconc, 0, -1);
     defun("NREVERSE", bi_nreverse, 1, 1);
     defun("DELETE", bi_delete, 2, -1);
-    defun("DELETE-IF", bi_delete_if, 2, 2);
+    defun("DELETE-IF", bi_delete_if, 2, -1);
     defun("NSUBST", bi_nsubst, 3, -1);
 
     /* Copy/construction */

@@ -2258,9 +2258,13 @@ static CL_Obj cl_vm_run(int base_fp, int base_nlx)
                                     break;
                                 }
                             }
-                            if (!found && key != KW_ALLOW_OTHER_KEYS && !allow)
+                            if (!found && key != KW_ALLOW_OTHER_KEYS && !allow) {
+                                if (!CL_SYMBOL_P(key))
+                                    cl_error(CL_ERR_ARGS,
+                                             "Invalid keyword argument: not a symbol");
                                 cl_error(CL_ERR_ARGS, "Unknown keyword argument: %s",
                                          cl_symbol_name(key));
+                            }
                             }
                         }
                     }
@@ -2402,9 +2406,13 @@ static CL_Obj cl_vm_run(int base_fp, int base_nlx)
                                     break;
                                 }
                             }
-                            if (!found && key != KW_ALLOW_OTHER_KEYS && !allow)
+                            if (!found && key != KW_ALLOW_OTHER_KEYS && !allow) {
+                                if (!CL_SYMBOL_P(key))
+                                    cl_error(CL_ERR_ARGS,
+                                             "Invalid keyword argument: not a symbol");
                                 cl_error(CL_ERR_ARGS, "Unknown keyword argument: %s",
                                          cl_symbol_name(key));
+                            }
                             }
                         }
                     }
@@ -3426,9 +3434,13 @@ static CL_Obj cl_vm_run(int base_fp, int base_nlx)
                                     found = 1; break;
                                 }
                             }
-                            if (!found && key != KW_ALLOW_OTHER_KEYS && !allow)
+                            if (!found && key != KW_ALLOW_OTHER_KEYS && !allow) {
+                                if (!CL_SYMBOL_P(key))
+                                    cl_error(CL_ERR_ARGS,
+                                             "APPLY: invalid keyword argument: not a symbol");
                                 cl_error(CL_ERR_ARGS, "APPLY: unknown keyword argument: %s",
                                          cl_symbol_name(key));
+                            }
                             }
                         }
                     }
