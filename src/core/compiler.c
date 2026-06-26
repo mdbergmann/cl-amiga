@@ -3078,15 +3078,62 @@ static void compile_setf_place(CL_Compiler *c, CL_Obj place, CL_Obj val_form)
                  * (defun (setf name) ...) and (defgeneric (setf name) ...) /
                  * (defmethod (setf name) ...).  See resolve_setf_fn_symbol. */
                 CL_Obj setf_fn = resolve_setf_fn_symbol(head);
+                /* Late-bound setf: (setf (foo a b) val) calls the (setf foo)
+                 * function value-first: (%setf-foo val a b).  CLHS 5.1.1.1.1
+                 * requires the PLACE subforms (a b) to be evaluated
+                 * left-to-right BEFORE the value form.  That order is only
+                 * OBSERVABLE when (a) a place subform has a side effect —
+                 * compound non-quoted form — OR (b) val_form is compound and
+                 * could modify a symbol that appears as an atom place subform.
+                 * Take the fast path only when BOTH place subforms AND val_form
+                 * are atoms or quoted constants (e.g. `(setf (acc obj) v)` where
+                 * obj and v are both simple), avoiding a let*-per-setf-site
+                 * compile cost that is heavy in large CLOS systems. */
                 {
-                    /* Late-bound setf: (setf (foo a b) val) calls the
-                     * (setf foo) function value-first: (%setf-foo val a b).
-                     * But CLHS 5.1.1.1.1 requires the PLACE subforms (a b) to
-                     * be evaluated left-to-right BEFORE the value form, then
-                     * the value.  A naive "FLOAD; emit val; emit args; CALL"
-                     * evaluates val first — wrong order (ansi subseq.order.3/.4).
-                     * Rewrite via let* temps to force place-then-value order
-                     * and return the stored value:
+                    int needs_order = 0;
+                    CL_Obj w = cl_cdr(place);
+                    while (!CL_NULL_P(w)) {
+                        CL_Obj a = cl_car(w);
+                        if (CL_CONS_P(a) && cl_car(a) != SYM_QUOTE) {
+                            needs_order = 1;
+                            break;
+                        }
+                        w = cl_cdr(w);
+                    }
+                    /* val_form compound: may have side effects visible through
+                     * atom place subforms — require ordered evaluation. */
+                    if (!needs_order &&
+                        CL_CONS_P(val_form) && cl_car(val_form) != SYM_QUOTE) {
+                        needs_order = 1;
+                    }
+                    if (!needs_order) {
+                        /* Fast path: value first (place subforms side-effect-free). */
+                        CL_Obj args = cl_cdr(place);
+                        int nargs = 0;
+                        int idx = cl_add_constant(c, setf_fn);
+                        cl_emit(c, OP_FLOAD);
+                        cl_emit_u16(c, (uint16_t)idx);
+                        /* GC-protect args cursor — compile_expr can compact it. */
+                        CL_GC_PROTECT(args);
+                        compile_expr(c, val_form);  /* new-value FIRST */
+                        nargs++;
+                        while (!CL_NULL_P(args)) {
+                            compile_expr(c, cl_car(args));
+                            nargs++;
+                            args = cl_cdr(args);
+                        }
+                        CL_GC_UNPROTECT(1);          /* args */
+                        cl_emit(c, OP_CALL);
+                        cl_emit(c, (uint8_t)nargs);
+                        CL_GC_UNPROTECT(2);           /* place, val_form */
+                        c->in_tail = saved_tail;
+                        return;
+                    }
+                }
+                {
+                    /* Ordered path: a place subform or val_form may have side
+                     * effects (ansi subseq.order.3/.4).  Rewrite via let* temps
+                     * to force place-then-value order, returning the stored value:
                      *   (let* ((#:t1 a) (#:t2 b) (#:v val))
                      *     (%setf-foo #:v #:t1 #:t2) #:v) */
                     CL_Obj args = cl_cdr(place);
