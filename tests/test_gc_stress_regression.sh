@@ -1662,6 +1662,43 @@ out=$(run_stress "$WORK/mapinto.lisp")
 check_contains "map-into list cursor stable under GC stress" "MAPINTO-OK" "$out"
 check_absent   "no corrupted map-into list"                  "MAPINTO-BAD" "$out"
 
+# --- Case: compile_if re-derives then/else AFTER compiling the test --------
+# Bug: compile_if read then_form/else_form from `form` BEFORE compile_expr(test),
+# which allocates and can compact (moving GC).  Only `form` was GC-protected, so
+# the then_form/else_form C locals held stale pre-move offsets; the returned
+# (stale) then_form was trampolined and emitted as a bogus self-evaluating
+# constant — an interior pointer into an unrelated object — corrupting the
+# constant pool.  Surfaced as "malformed call form (dotted pair)" / "CDR not a
+# list" compiling a WHEN/UNLESS/IF body inside a LET/DOTIMES under GC stress.
+# The corruption is layout-sensitive (~40% per process), so run the form several
+# times and require EVERY run to produce the correct result.
+cat > "$WORK/compile-if.lisp" <<'EOF'
+(let ((bad nil))
+  (dotimes (i 200)
+    (unless (equalp (let ((a (copy-seq (list 0 0 0 0))))
+                      (map-into a (lambda (x) (list x x)) (list 1 2 3 4)))
+                    (list (list 1 1) (list 2 2) (list 3 3) (list 4 4)))
+      (setq bad :compile-if))
+    (when bad (return)))
+  (if bad (format t "COMPILEIF-BAD:~s~%" bad) (format t "COMPILEIF-OK~%")))
+EOF
+compileif_ok=1
+for _r in 1 2 3 4 5 6 7 8; do
+    o=$(run_stress "$WORK/compile-if.lisp")
+    if ! echo "$o" | grep -q "COMPILEIF-OK"; then
+        compileif_ok=0
+        compileif_out="$o"
+        break
+    fi
+done
+if [ "$compileif_ok" -eq 1 ]; then
+    out="COMPILEIF-OK"
+else
+    out="$compileif_out"
+fi
+check_contains "compile_if then/else stable under GC stress (8 runs)" "COMPILEIF-OK" "$out"
+check_absent   "no corrupted constant pool from stale if-branch"      "COMPILEIF-BAD" "$out"
+
 echo ""
 echo "$passed passed, $failed failed, $total total"
 [ "$failed" -eq 0 ]
