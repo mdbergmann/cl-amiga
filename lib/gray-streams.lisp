@@ -316,6 +316,18 @@ the position where end-of-file was reached."))
 
 (in-package "COMMON-LISP")
 
+;; Install the CL-I/O integration exactly ONCE per image.  Re-loading this
+;; file (quicklisp-compat.lisp LOADs it after boot already did, and any
+;; library that pulls trivial-gray-streams can trigger another LOAD) must
+;; NOT re-run the LET below.  Each ORIG-X binding captures (SYMBOL-FUNCTION
+;; 'X) at load time; after the first load X is already the gray-overridden
+;; generic function, so a second load would bind e.g. ORIG-CLOSE to the
+;; CLOSE GF itself.  The (STREAM T) method then does (FUNCALL ORIG-CLOSE
+;; STREAM), which re-dispatches CLOSE on the same class → unbounded
+;; self-recursion (observed: "%GF-DISPATCH-CACHED" VM frame stack overflow
+;; closing an ordinary file stream while quickloading).  The marker is a
+;; symbol plist entry so it persists across LOADs and is package-safe.
+(unless (get 'gray::%cl-io-integration-installed 'done)
 ;; Save original C builtins
 (let ((orig-read-char (symbol-function 'read-char))
       (orig-write-char (symbol-function 'write-char))
@@ -673,6 +685,8 @@ the position where end-of-file was reached."))
   (export 'listen)
 
 ) ;; end let
+(setf (get 'gray::%cl-io-integration-installed 'done) t)
+) ;; end (unless ... already installed)
 
 ;; CLEAR-INPUT — no C builtin, define directly
 (defun clear-input (&optional stream)
