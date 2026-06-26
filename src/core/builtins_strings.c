@@ -1209,13 +1209,31 @@ static CL_Obj bi_char_accessor(CL_Obj *args, int n)
 {
     int32_t idx;
     CL_UNUSED(n);
-    if (!CL_ANY_STRING_P(args[0]))
+    /* Accept non-simple strings too: a fill-pointer/adjustable character vector
+     * (string-vector) is a valid CL string — stringp/typep 'string/class-of all
+     * report it as a string, so CHAR must work on it as well. */
+    if (!CL_ANY_STRING_P(args[0]) && !CL_STRING_VECTOR_P(args[0]))
         cl_error(CL_ERR_TYPE, "CHAR: not a string");
     if (!CL_FIXNUM_P(args[1]))
         cl_error(CL_ERR_TYPE, "CHAR: index must be an integer");
     idx = CL_FIXNUM_VAL(args[1]);
     if (idx < 0 || (uint32_t)idx >= cl_string_length(args[0]))
         cl_error(CL_ERR_ARGS, "CHAR: index %d out of range", (int)idx);
+    return CL_MAKE_CHAR(cl_string_char_at(args[0], (uint32_t)idx));
+}
+
+/* SCHAR requires a *simple-string* (CLHS §17.1) — no fill-pointer/adjustable vectors. */
+static CL_Obj bi_schar_accessor(CL_Obj *args, int n)
+{
+    int32_t idx;
+    CL_UNUSED(n);
+    if (!CL_ANY_STRING_P(args[0]))
+        cl_error(CL_ERR_TYPE, "SCHAR: not a simple-string");
+    if (!CL_FIXNUM_P(args[1]))
+        cl_error(CL_ERR_TYPE, "SCHAR: index must be an integer");
+    idx = CL_FIXNUM_VAL(args[1]);
+    if (idx < 0 || (uint32_t)idx >= cl_string_length(args[0]))
+        cl_error(CL_ERR_ARGS, "SCHAR: index %d out of range", (int)idx);
     return CL_MAKE_CHAR(cl_string_char_at(args[0], (uint32_t)idx));
 }
 
@@ -1958,7 +1976,7 @@ void cl_builtins_strings_init(void)
     cl_register_builtin("%SETF-SUBSEQ", bi_setf_subseq, 3, 4, cl_package_clamiga);
     defun("CONCATENATE", bi_concatenate, 1, -1);
     defun("CHAR", bi_char_accessor, 2, 2);
-    defun("SCHAR", bi_char_accessor, 2, 2);
+    defun("SCHAR", bi_schar_accessor, 2, 2);
     defun("STRING", bi_string_coerce, 1, 1);
     defun("PARSE-INTEGER", bi_parse_integer, 1, -1);
     defun("WRITE-TO-STRING", bi_write_to_string, 1, -1);

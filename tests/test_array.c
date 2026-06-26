@@ -146,6 +146,43 @@ TEST(make_array_fill_pointer_t_string)
         "  (vector-push-extend #\\z s) s)"), "\"xyz\"");
 }
 
+/* A fill-pointer/adjustable character vector (string-vector) is a valid CL
+ * STRING: stringp / typep 'string report it as one, so CHAR and (SETF CHAR)
+ * must accept it too.  Regression: CHAR used to reject string-vectors with
+ * "CHAR: not a string", which broke FSet's COMPARE-STRINGS-LEXICOGRAPHICALLY
+ * (it falls back to CHAR when SIMPLE-STRING-P is false). */
+TEST(char_accessor_on_string_vector)
+{
+    ASSERT_STR_EQ(eval_print(
+        "(stringp (make-array 3 :element-type 'character :fill-pointer 3 :adjustable t))"), "T");
+    ASSERT_STR_EQ(eval_print(
+        "(simple-string-p (make-array 3 :element-type 'character :fill-pointer 3 :adjustable t))"),
+        "NIL");
+    /* CHAR reads a string-vector */
+    ASSERT_STR_EQ(eval_print(
+        "(let ((s (make-array 3 :element-type 'character :fill-pointer 3 :adjustable t)))"
+        "  (setf (char s 0) #\\a) (setf (char s 1) #\\b) (setf (char s 2) #\\c)"
+        "  (char s 1))"), "#\\b");
+    /* CHAR honors the active (fill-pointer) length */
+    ASSERT_STR_EQ(eval_print(
+        "(let ((s (make-array 4 :element-type 'character :fill-pointer 2 :adjustable t)))"
+        "  (setf (char s 0) #\\x) (setf (char s 1) #\\y)"
+        "  (list (char s 0) (char s 1)))"), "(#\\x #\\y)");
+}
+
+/* SCHAR requires a simple-string (CLHS §17.1); it must signal a type-error
+ * when given a non-simple string (fill-pointer/adjustable character vector). */
+TEST(schar_requires_simple_string)
+{
+    /* SCHAR works on a simple string */
+    ASSERT_STR_EQ(eval_print("(schar \"hello\" 1)"), "#\\e");
+    /* SCHAR on a non-simple string (fill-pointer vector) must error */
+    ASSERT(eval_errors(
+        "(let ((s (make-array 3 :element-type 'character :fill-pointer 3 :adjustable t)))"
+        "  (setf (char s 0) #\\a) (setf (char s 1) #\\b) (setf (char s 2) #\\c)"
+        "  (schar s 0))"));
+}
+
 TEST(make_array_initial_contents_string)
 {
     /* :initial-contents with a string source */
@@ -1078,6 +1115,8 @@ int main(void)
     RUN(make_array_initial_contents);
     RUN(make_array_fill_pointer);
     RUN(make_array_fill_pointer_t_string);
+    RUN(char_accessor_on_string_vector);
+    RUN(schar_requires_simple_string);
     RUN(make_array_initial_contents_string);
     RUN(make_array_base_char_is_base_string);
     RUN(make_array_character_is_wide_string);

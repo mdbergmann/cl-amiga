@@ -731,6 +731,9 @@
 (check "vpush-ext noadj adj-p" nil (let ((v (make-array 2 :fill-pointer 0))) (vector-push-extend 10 v) (vector-push-extend 20 v) (vector-push-extend 30 v) (adjustable-array-p v)))
 (check "vpush-ext noadj zero" 42 (let ((v (make-array 0 :fill-pointer 0))) (vector-push-extend 42 v) (aref v 0)))
 (check "vpush-ext noadj char" "xyz" (let ((s (make-array 2 :element-type 'character :fill-pointer 0))) (vector-push-extend #\x s) (vector-push-extend #\y s) (vector-push-extend #\z s) s))
+; CHAR works on a fill-pointer character vector (string-vector): it is a valid
+; non-simple STRING, so CHAR must accept it (FSet compare-strings fallback path).
+(check "char on string-vector" #\b (let ((s (make-array 3 :element-type 'character :fill-pointer 3 :adjustable t))) (setf (char s 0) #\a) (setf (char s 1) #\b) (setf (char s 2) #\c) (char s 1)))
 ; make-array :element-type 'base-char builds a BASE-STRING, matching make-string
 ; (FSet seq leaves rely on this; on the Amiga all strings are narrow anyway).
 (check "make-array base-char base-string" t (typep (make-array 3 :element-type 'base-char :initial-element #\a) 'base-string))
@@ -6411,6 +6414,14 @@
        (remove #\b "abcdbad" :count 1 :from-end t))
 (check "remove count from-start string" "acdbad"
        (remove #\b "abcdbad" :count 1))
+
+; SCHAR requires a simple-string (CLHS 17.1); it must reject non-simple strings.
+(check "schar reads simple string" #\e (schar "hello" 1))
+(check "schar rejects non-simple string signals type-error" t
+       (let ((s (make-array 3 :element-type 'character :fill-pointer 3 :adjustable t)))
+         (setf (char s 0) #\a) (setf (char s 1) #\b) (setf (char s 2) #\c)
+         (handler-case (progn (schar s 0) nil)
+           (type-error () t))))
 
 ; --- Summary ---
 (format t "~%=== Results ===~%")
