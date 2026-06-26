@@ -1013,6 +1013,25 @@
                   (progn (setf c (incf i)) 4))
           (progn (setf d (incf i)) "xyz"))
     (list s a b c d)))
+; (SETF fn) fast path: atom place subform + atom value — correct stored value.
+(defclass setf-order-cls () ((x :initarg :x :initform 0 :accessor soc-x)))
+(check "setf fn fast path atom" 42
+  (let ((obj (make-instance 'setf-order-cls)))
+    (setf (soc-x obj) 42)
+    (soc-x obj)))
+; (SETF fn) ordering regression (CLHS 5.1.1.1.1): atom place subforms must be
+; evaluated BEFORE compound val_form, even when the latter has side effects that
+; modify a symbol used as a place arg.  (setf (fn x) (setq x 99)) must call fn
+; with the OLD value of x (1), not the post-setq value (99).
+(defvar *setf-order-place-arg* nil)
+(defun setf-order-probe (x) x)
+(defun (setf setf-order-probe) (new-val place-arg)
+  (setf *setf-order-place-arg* place-arg)
+  new-val)
+(check "setf fn order place-before-val" 1
+  (progn
+    (let ((x 1)) (setf (setf-order-probe x) (setq x 99)))
+    *setf-order-place-arg*))
 (check "char access" #\h (char "hello" 0))
 (check "schar access" #\b (schar "abc" 1))
 (check "string from sym" "FOO" (string 'foo))
