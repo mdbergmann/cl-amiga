@@ -6504,6 +6504,25 @@
          (handler-case (progn (schar s 0) nil)
            (type-error () t))))
 
+; --- Gray-streams reload idempotency (regression) ---
+; Re-LOADing lib/gray-streams.lisp must not corrupt CLOS dispatch.  The
+; integration block captured ORIG-CLOSE/-READ-CHAR/etc. as (SYMBOL-FUNCTION
+; 'X) at load time; a second LOAD (boot pulls it once, quicklisp-compat LOADs
+; it again) would capture the already-installed gray GFs, so the (STREAM T)
+; CLOSE method's (FUNCALL ORIG-CLOSE STREAM) re-dispatched CLOSE on the same
+; class -> unbounded self-recursion -> VM frame stack overflow.  A one-shot
+; install guard makes the file reload-safe.  Run this LAST: it installs the
+; gray CL-I/O wrappers into the image.
+(load "lib/gray-streams.lisp")
+(load "lib/gray-streams.lisp")
+(check "gray-streams reload: close file stream does not recurse" t
+       (let ((p (concatenate 'string *test-tmp* "_clt_grayreload.txt")))
+         (let ((s (open p :direction :output))) (write-string "hi" s) (close s))
+         (let ((s (open p :direction :input)))
+           (prog1 (and (eql (read-char s) #\h) t) (close s)))))
+(check "gray-streams reload: close string stream does not recurse" t
+       (let ((s (make-string-output-stream))) (write-char #\X s) (close s) t))
+
 ; --- Summary ---
 (format t "~%=== Results ===~%")
 (format t "Passed: ~A~%" *pass-count*)
