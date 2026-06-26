@@ -9871,6 +9871,40 @@ static void test_eval_remove_nonsequence_type_error(void)
     ASSERT_STR_EQ(eval_print("(remove 3 #(1 2 3 4 3 5))"), "#(1 2 4 5)");
 }
 
+/* Regression: the builtin func-ptr sanity check must not assume host
+ * function pointers are 4-byte aligned.  x86-64/ARM64 ABIs give no such
+ * guarantee — gcc -O1 (default -falign-functions) routinely emits functions
+ * on odd byte boundaries (the inlined-macro stub used during boot landed at
+ * 0x...593 here).  An alignment-based check rejected that as a "corrupted C
+ * function pointer" and aborted boot in some link layouts, while passing in
+ * others — so every test binary crashed at boot on Linux while clamiga (a
+ * different layout) survived.  See cl_vm_builtin_fptr_plausible in vm.c. */
+TEST(builtin_fptr_plausible_unaligned)
+{
+    uintptr_t base;
+
+    /* NULL and tiny addresses are always rejected (a clobbered func slot is
+       typically a small tagged CL_Obj, not a code address). */
+    ASSERT_EQ_INT(cl_vm_builtin_fptr_plausible(NULL), 0);
+    ASSERT_EQ_INT(cl_vm_builtin_fptr_plausible((const void *)(uintptr_t)0x4), 0);
+    ASSERT_EQ_INT(cl_vm_builtin_fptr_plausible((const void *)(uintptr_t)0xFFF), 0);
+
+    /* A real, callable function pointer is plausible. */
+    ASSERT_EQ_INT(cl_vm_builtin_fptr_plausible((const void *)(uintptr_t)&setup), 1);
+
+    /* Core of the fix: a high but non-4-byte-aligned address.  On host this
+       MUST be accepted (the old code rejected it); on m68k an odd code
+       pointer is genuinely impossible and stays rejected. */
+    base = ((uintptr_t)&setup) & ~(uintptr_t)0xFFF; /* page-aligned, >= 0x1000 */
+    base |= 0x1000u;
+#ifdef PLATFORM_AMIGA
+    ASSERT_EQ_INT(cl_vm_builtin_fptr_plausible((const void *)(base | 0x1u)), 0);
+#else
+    ASSERT_EQ_INT(cl_vm_builtin_fptr_plausible((const void *)(base | 0x1u)), 1);
+    ASSERT_EQ_INT(cl_vm_builtin_fptr_plausible((const void *)(base | 0x3u)), 1);
+#endif
+}
+
 int main(void)
 {
     test_init();
@@ -10838,6 +10872,7 @@ int main(void)
     /* heap exhaustion / storage errors — MUST stay last; heap state is
      * unreliable afterwards.  Append new tests ABOVE this line. */
     RUN(eval_heap_exhaustion_error);
+    RUN(builtin_fptr_plausible_unaligned);
 
     teardown();
     REPORT();

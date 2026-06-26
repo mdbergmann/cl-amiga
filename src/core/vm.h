@@ -180,6 +180,12 @@ CL_Obj cl_vm_pop(void);
 /* C stack overflow detection */
 void cl_check_c_stack(const char *context);
 
+/* Heuristic sanity check on a builtin's native function pointer (used before
+ * dispatch to catch a clobbered func slot).  Returns 1 if plausible, 0 if it
+ * should be rejected as corrupt.  Exposed for unit testing — see vm.c for the
+ * platform rationale (notably: host function pointers are NOT 4-byte aligned). */
+int cl_vm_builtin_fptr_plausible(const void *fptr);
+
 /* Opcode-frequency profiler. Counters only increment when built with
  * -DPROFILE_OPCODES; dump still works (prints "not compiled in" message). */
 void cl_op_counts_reset(void);

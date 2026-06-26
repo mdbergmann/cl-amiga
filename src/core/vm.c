@@ -1015,6 +1015,30 @@ static int nlx_frame_is_stale(CL_NLXFrame *nlx)
     return target->code != nlx->code;
 }
 
+/* Cheap heuristic: does fptr look like a real native code pointer rather than
+ * a clobbered func slot?  Returns 1 if plausible, 0 if it should be rejected
+ * as corrupt.  Kept as a separate, non-static function so it can be unit
+ * tested directly (see tests/test_vm.c builtin_fptr_plausible).
+ *
+ * - All platforms: reject NULL and tiny addresses (< 0x1000) — a clobbered
+ *   slot is typically a small tagged CL_Obj, not a code address.
+ * - Amiga/m68k: instructions are 2-byte aligned, so a valid code pointer is
+ *   always even; an odd value means the slot was clobbered.
+ * - Host (x86-64/ARM64): the ABI does NOT guarantee any function alignment.
+ *   With -O1 and the default -falign-functions, gcc routinely places
+ *   functions on odd/2-byte boundaries (e.g. bi_inlined_macro_stub at
+ *   0x...593), so an alignment test here produces false "corrupt func ptr"
+ *   aborts that depend on link layout.  Only the low-address guard applies. */
+int cl_vm_builtin_fptr_plausible(const void *fptr)
+{
+    uintptr_t fp_val = (uintptr_t)fptr;
+    if (fp_val < 0x1000) return 0;
+#ifdef PLATFORM_AMIGA
+    if ((fp_val & 0x1) != 0) return 0;
+#endif
+    return 1;
+}
+
 /* Validate builtin call arguments — called before the actual fptr dispatch.
  * Separated from call_builtin to keep call_builtin's stack frame tiny
  * (minimizes surface area for stack corruption). */
@@ -1037,21 +1061,14 @@ static void validate_builtin(CL_Function *func, int nargs)
         cl_error(CL_ERR_TYPE, "NULL C function pointer in %s",
                  CL_NULL_P(func->name) ? "?" : cl_symbol_name(func->name));
     }
-    {
-        uintptr_t fp_val = (uintptr_t)fptr;
-#ifdef PLATFORM_AMIGA
-        if (fp_val < 0x1000 || (fp_val & 0x1) != 0) {
-#else
-        if (fp_val < 0x1000 || (fp_val & 0x3) != 0) {
-#endif
-            fprintf(stderr, "[VM] call_builtin: CORRUPT func ptr %p in %s (obj=0x%08x)\n",
-                    (void *)fptr,
-                    CL_NULL_P(func->name) ? "?" : cl_symbol_name(func->name),
-                    (unsigned)CL_PTR_TO_OBJ(func));
-            cl_capture_backtrace();
-            fprintf(stderr, "%s", cl_backtrace_buf);
-            cl_error(CL_ERR_GENERAL, "Corrupted C function pointer");
-        }
+    if (!cl_vm_builtin_fptr_plausible((const void *)fptr)) {
+        fprintf(stderr, "[VM] call_builtin: CORRUPT func ptr %p in %s (obj=0x%08x)\n",
+                (void *)fptr,
+                CL_NULL_P(func->name) ? "?" : cl_symbol_name(func->name),
+                (unsigned)CL_PTR_TO_OBJ(func));
+        cl_capture_backtrace();
+        fprintf(stderr, "%s", cl_backtrace_buf);
+        cl_error(CL_ERR_GENERAL, "Corrupted C function pointer");
     }
 }
 
