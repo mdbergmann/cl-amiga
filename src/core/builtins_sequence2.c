@@ -489,14 +489,65 @@ static CL_Obj bi_map(CL_Obj *args, int n)
      * (GC-rooted) is live at this point, so no offsets are stale across it. */
     rt = seq_result_type_class(result_type, 16);
     if (rt < 0) {
-        /* A result-type that is not a recognized subtype of SEQUENCE
-         * (e.g. SYMBOL) is a type-error per CLHS MAP, not a program-error. */
-        cl_signal_type_error(result_type, "SEQUENCE", "MAP");
-        return CL_NIL;
+        /* An (or t1 t2 ...) of sequence subtypes is a valid MAP result-type
+         * (MAP.48 / MAP.ERROR.11): the result must be a member of one of the
+         * branches whose declared length matches the produced length.  Resolve
+         * the branch against the produced length here. */
+        if (CL_CONS_P(result_type) && CL_SYMBOL_P(cl_car(result_type)) &&
+            strcmp(cl_symbol_name(cl_car(result_type)), "OR") == 0) {
+            int32_t produced = 0x7FFFFFFF;
+            CL_Obj branch;
+            int found_cls = -1;   /* raw class of the (single) matching branch */
+            int ambiguous = 0;
+            int nsq = (nseqs > 16) ? 16 : nseqs;
+            for (i = 0; i < nsq; i++) {
+                int32_t l = every_seq_len(args[i + 2]);
+                if (l < 0) l = seq_length(args[i + 2]);
+                if (l < produced) produced = l;
+            }
+            /* A branch matches when it is a sequence subtype whose declared
+             * length agrees with the produced length.  CLHS leaves the element
+             * type ambiguous when several branches of different element types
+             * match (MAP.ERROR.10: (or (vector bit) (vector t))) — signal an
+             * error in that case.  Exactly one matching class → produce it;
+             * none → type-error (MAP.ERROR.11). */
+            CL_GC_PROTECT(branch);
+            for (branch = cl_cdr(result_type); !CL_NULL_P(branch);
+                 branch = cl_cdr(branch)) {
+                int32_t blen = -1;
+                int bcls = seq_ctor_type_class(cl_car(branch), 16, &blen);
+                if (bcls >= 0 && (blen < 0 || blen == produced)) {
+                    if (found_cls < 0) found_cls = bcls;
+                    else if (found_cls != bcls) ambiguous = 1;
+                }
+            }
+            CL_GC_UNPROTECT(1);
+            if (found_cls < 0 || ambiguous) {
+                /* Produce a vector of the mapped length and signal a type-error
+                 * whose DATUM is that produced sequence and EXPECTED-TYPE the
+                 * result-type object — the ansi `signals-error ... type-error`
+                 * check requires (typep datum expected-type) to be NIL
+                 * (MAP.ERROR.11); MAP.ERROR.10 only needs some error.  Force a
+                 * length mismatch so the post-production check below fires
+                 * cl_signal_type_error_obj(result, args[0], "MAP"). */
+                rt = 3;
+                decl_len = (produced == 0x7FFFFFFF ? 0 : produced) + 1;
+            } else {
+                rt = (found_cls == 4) ? 3 : found_cls;  /* bit-vector handled as vector */
+                /* Branch already validated against the produced length. */
+                decl_len = -1;
+            }
+        } else {
+            /* A result-type that is not a recognized subtype of SEQUENCE
+             * (e.g. SYMBOL) is a type-error per CLHS MAP, not a program-error. */
+            cl_signal_type_error(result_type, "SEQUENCE", "MAP");
+            return CL_NIL;
+        }
+    } else {
+        /* Capture a declared length constraint, e.g. (vector * 8) or (string 5),
+         * so we can reject a mismatched produced length with a type-error. */
+        (void)seq_ctor_type_class(result_type, 16, &decl_len);
     }
-    /* Capture a declared length constraint, e.g. (vector * 8) or (string 5),
-     * so we can reject a mismatched produced length with a type-error. */
-    (void)seq_ctor_type_class(result_type, 16, &decl_len);
 
     func = cl_coerce_funcdesig(args[1], "MAP");
     if (nseqs > 16) nseqs = 16;

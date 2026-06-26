@@ -14,7 +14,7 @@ CL-Amiga can load **ASDF**, install and run **Quicklisp**, and successfully quic
 
 **ANSI conformance** — the Paul Dietz ANSI test suite (`third_party/ansi-test/`) is the working spec. A bootstrap in `trunk/` runs it on host and Amiga:
 
-- **CONS, SYMBOLS, and NUMBERS** (`load-and-test-ansi.lisp`) — passing.
+- **CONS, SYMBOLS, NUMBERS, and SEQUENCES** (`load-and-test-ansi.lisp`) — passing.
 
 A broad test suite covers the implementation, including threading, CLOS, conditions, the full numeric tower, FFI, the m68k JIT, and AmigaOS GUI (Intuition/Graphics/GadTools).
 

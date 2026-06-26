@@ -3079,25 +3079,70 @@ static void compile_setf_place(CL_Compiler *c, CL_Obj place, CL_Obj val_form)
                  * (defmethod (setf name) ...).  See resolve_setf_fn_symbol. */
                 CL_Obj setf_fn = resolve_setf_fn_symbol(head);
                 {
-                    /* Late-bound setf: (setf (foo a b) val) → (%setf-foo val a b)
-                     * Value first — matches CL (setf name) function convention */
+                    /* Late-bound setf: (setf (foo a b) val) calls the
+                     * (setf foo) function value-first: (%setf-foo val a b).
+                     * But CLHS 5.1.1.1.1 requires the PLACE subforms (a b) to
+                     * be evaluated left-to-right BEFORE the value form, then
+                     * the value.  A naive "FLOAD; emit val; emit args; CALL"
+                     * evaluates val first — wrong order (ansi subseq.order.3/.4).
+                     * Rewrite via let* temps to force place-then-value order
+                     * and return the stored value:
+                     *   (let* ((#:t1 a) (#:t2 b) (#:v val))
+                     *     (%setf-foo #:v #:t1 #:t2) #:v) */
                     CL_Obj args = cl_cdr(place);
-                    int nargs = 0;
-                    int idx = cl_add_constant(c, setf_fn);
-                    cl_emit(c, OP_FLOAD);
-                    cl_emit_u16(c, (uint16_t)idx);
-                    /* GC-protect args cursor — compile_expr(val_form) can compact, making it stale */
+                    CL_Obj gv;
+                    CL_Obj bind_head = CL_NIL, bind_tail = CL_NIL;
+                    CL_Obj temp_head = CL_NIL, temp_tail = CL_NIL;
+                    CL_Obj vbind, call_form, let_form;
+                    /* setf_fn is an interned symbol that must survive the many
+                     * allocations below — protect it (and every cursor). */
+                    CL_GC_PROTECT(setf_fn);
                     CL_GC_PROTECT(args);
-                    compile_expr(c, val_form);  /* new-value FIRST */
-                    nargs++;
+                    gv = cl_gensym_with_name("V");
+                    CL_GC_PROTECT(gv);
+                    CL_GC_PROTECT(bind_head);
+                    CL_GC_PROTECT(bind_tail);
+                    CL_GC_PROTECT(temp_head);
+                    CL_GC_PROTECT(temp_tail);
                     while (!CL_NULL_P(args)) {
-                        compile_expr(c, cl_car(args));
-                        nargs++;
+                        CL_Obj a = cl_car(args);
+                        CL_Obj gt, binding, cell;
+                        /* a and gt are held across allocating cl_cons/gensym
+                         * calls — protect them (compacting GC). */
+                        CL_GC_PROTECT(a);
+                        gt = cl_gensym_with_name("T");
+                        CL_GC_PROTECT(gt);
+                        binding = cl_cons(a, CL_NIL);
+                        binding = cl_cons(gt, binding);   /* (#:t a) */
+                        cell = cl_cons(binding, CL_NIL);
+                        if (CL_NULL_P(bind_head)) bind_head = cell;
+                        else ((CL_Cons *)CL_OBJ_TO_PTR(bind_tail))->cdr = cell;
+                        bind_tail = cell;
+                        cell = cl_cons(gt, CL_NIL);       /* temp ref */
+                        if (CL_NULL_P(temp_head)) temp_head = cell;
+                        else ((CL_Cons *)CL_OBJ_TO_PTR(temp_tail))->cdr = cell;
+                        temp_tail = cell;
+                        CL_GC_UNPROTECT(2);               /* gt, a */
                         args = cl_cdr(args);
                     }
-                    CL_GC_UNPROTECT(1);                   /* args */
-                    cl_emit(c, OP_CALL);
-                    cl_emit(c, (uint8_t)nargs);
+                    /* append (#:v val) binding last */
+                    vbind = cl_cons(val_form, CL_NIL);
+                    vbind = cl_cons(gv, vbind);
+                    vbind = cl_cons(vbind, CL_NIL);
+                    if (CL_NULL_P(bind_head)) bind_head = vbind;
+                    else ((CL_Cons *)CL_OBJ_TO_PTR(bind_tail))->cdr = vbind;
+                    /* (setf_fn #:v #:t1 #:t2 ...) */
+                    call_form = cl_cons(gv, temp_head);
+                    call_form = cl_cons(setf_fn, call_form);
+                    CL_GC_PROTECT(call_form);
+                    /* (let* bindings call_form #:v) */
+                    let_form = cl_cons(gv, CL_NIL);
+                    let_form = cl_cons(call_form, let_form);
+                    let_form = cl_cons(bind_head, let_form);
+                    let_form = cl_cons(SYM_LETSTAR, let_form);
+                    CL_GC_PROTECT(let_form);
+                    compile_expr(c, let_form);
+                    CL_GC_UNPROTECT(9);  /* setf_fn args gv bind_head bind_tail temp_head temp_tail call_form let_form */
                 }
             }
         }

@@ -3305,6 +3305,72 @@ TEST(eval_string_vector_seq_ops)
     ASSERT_STR_EQ(eval_print("(remove #\\b \"abcdbad\" :count 1)"), "\"acdbad\"");
 }
 
+/* --- ANSI sequences conformance: the last 10 SEQUENCES-chapter failures --- */
+TEST(eval_ansi_sequences_last10)
+{
+    /* FILL.ORDER.4: duplicate :start/:end keywords — CLHS 3.4.1.4 leftmost
+       wins (here :end 3, :start 1), and all value forms are evaluated. */
+    ASSERT_STR_EQ(eval_print(
+        "(let ((i 0) (a (copy-seq #(a a a a))))"
+        "  (list (fill a 'z :end (progn (incf i) 3) :end (progn (incf i) 1)"
+        "               :start (progn (incf i) 1) :start (progn (incf i) 0)) i))"),
+        "(#(A Z Z A) 4)");
+
+    /* (SETF FILL-POINTER) works on a fill-pointer bit-vector (MISMATCH-BIT-VECTOR.24). */
+    ASSERT_STR_EQ(eval_print(
+        "(let ((m (make-array 6 :element-type 'bit"
+        "          :initial-contents '(0 0 1 0 1 1) :fill-pointer 4)))"
+        "  (list (length m) (setf (fill-pointer m) 6) (length m)))"),
+        "(4 6 6)");
+
+    /* SUBSEQ of a fill-pointer character vector returns a STRING of the active
+       length, with and without an end index (SUBSEQ-STRING.3). */
+    ASSERT_STR_EQ(eval_print(
+        "(let ((s (make-array 10 :element-type 'character"
+        "          :initial-contents \"abcdefghij\" :fill-pointer 8)))"
+        "  (list (stringp (subseq s 0)) (subseq s 0) (subseq s 2) (subseq s 2 5)))"),
+        "(T \"abcdefgh\" \"cdefgh\" \"cde\")");
+
+    /* CONCATENATE honours the active length of a fill-pointer bit-vector and a
+       declared length constraint (CONCATENATE.30 / .30A). */
+    ASSERT_STR_EQ(eval_print(
+        "(let ((x (make-array 10 :element-type 'bit"
+        "          :initial-contents '(0 1 1 0 0 1 0 1 1 1) :fill-pointer 5)))"
+        "  (list (concatenate 'bit-vector x '(0))"
+        "        (concatenate '(bit-vector 10) x x)"
+        "        (concatenate '(bit-vector *) x)))"),
+        "(#*011000 #*0110001100 #*01100)");
+
+    /* MAP with an (or ...) result type: the branch whose declared length matches
+       the produced length is used (MAP.48). */
+    ASSERT_STR_EQ(eval_print(
+        "(map '(or (vector t 10) (vector t 5)) #'identity '(1 2 3 4 5))"),
+        "#(1 2 3 4 5)");
+    /* No branch matches the produced length → type-error (MAP.ERROR.11). */
+    ASSERT_STR_EQ(eval_print(
+        "(handler-case (progn (map '(or (vector t 5) (vector t 10))"
+        "                          #'identity '(1 2 3 4 5 6)) :no-error)"
+        "  (type-error () :type-error))"),
+        ":TYPE-ERROR");
+    /* Ambiguous element type across matching branches → error (MAP.ERROR.10). */
+    ASSERT_STR_EQ(eval_print(
+        "(handler-case (progn (map '(or (vector bit) (vector t))"
+        "                          #'identity '(1 0 1)) :no-error)"
+        "  (error () :error))"),
+        ":ERROR");
+
+    /* (SETF SUBSEQ) evaluates the PLACE subforms left-to-right BEFORE the value
+       form, per CLHS 5.1.1.1.1 (SUBSEQ.ORDER.3): a=1 b=2 c=3 d=4. */
+    ASSERT_STR_EQ(eval_print(
+        "(let ((i 0) a b c d (s (copy-seq \"abcdefgh\")))"
+        "  (setf (subseq (progn (setf a (incf i)) s)"
+        "                (progn (setf b (incf i)) 1)"
+        "                (progn (setf c (incf i)) 4))"
+        "        (progn (setf d (incf i)) \"xyz\"))"
+        "  (list s a b c d))"),
+        "(\"axyzefgh\" 1 2 3 4)");
+}
+
 /* --- defun block (return-from inside do) --- */
 
 TEST(eval_defun_return_from)
@@ -10066,6 +10132,7 @@ int main(void)
     RUN(eval_get_setf_expansion_defsetf);
     RUN(eval_equalp);
     RUN(eval_string_vector_seq_ops);
+    RUN(eval_ansi_sequences_last10);
     RUN(eval_defun_return_from);
 
     /* Cross-closure return-from */

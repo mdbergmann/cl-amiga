@@ -1341,6 +1341,19 @@ static CL_Obj bi_setf_fill_pointer(CL_Obj *args, int n)
     CL_Vector *vec;
     int32_t new_fp;
     CL_UNUSED(n);
+    if (CL_BIT_VECTOR_P(args[0])) {
+        CL_BitVector *bv = (CL_BitVector *)CL_OBJ_TO_PTR(args[0]);
+        if (bv->fill_pointer == CL_NO_FILL_POINTER)
+            cl_error(CL_ERR_TYPE, "(SETF FILL-POINTER): bit vector has no fill pointer");
+        if (!CL_FIXNUM_P(args[1]))
+            cl_error(CL_ERR_TYPE, "(SETF FILL-POINTER): new value must be a fixnum");
+        new_fp = CL_FIXNUM_VAL(args[1]);
+        if (new_fp < 0 || (uint32_t)new_fp > bv->length)
+            cl_error(CL_ERR_ARGS, "(SETF FILL-POINTER): %d out of range (0-%d)",
+                     (int)new_fp, (int)bv->length);
+        bv->fill_pointer = (uint32_t)new_fp;
+        return args[1];
+    }
     if (!CL_VECTOR_P(args[0]))
         cl_error(CL_ERR_TYPE, "(SETF FILL-POINTER): not a vector");
     vec = (CL_Vector *)CL_OBJ_TO_PTR(args[0]);
