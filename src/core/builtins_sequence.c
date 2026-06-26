@@ -1723,9 +1723,13 @@ static CL_Obj bi_fill(CL_Obj *args, int n)
 
     /* Parse and validate :start / :end.  Both must be valid bounding indices
      * (CLHS): :start a non-negative integer <= length, :end nil or an integer
-     * in [start, length].  Anything else is a type-error. */
-    for (i = 2; i + 1 < n; i += 2) {
-        CL_Obj v = args[i + 1];
+     * in [start, length].  Anything else is a type-error.
+     * CLHS 3.4.1.4: leftmost duplicate keyword wins — walk back-to-front so
+     * the leftmost occurrence is applied last (FILL.ORDER.4). */
+    for (i = ((n - 2) & ~1); i >= 2; i -= 2) {
+        CL_Obj v;
+        if (i + 1 >= n) continue;
+        v = args[i + 1];
         if (args[i] == KW_START) {
             if (!CL_FIXNUM_P(v) || CL_FIXNUM_VAL(v) < 0 || CL_FIXNUM_VAL(v) > len)
                 cl_error(CL_ERR_TYPE, "FILL: :start is not a valid bounding index");
@@ -1735,6 +1739,8 @@ static CL_Obj bi_fill(CL_Obj *args, int n)
                 if (!CL_FIXNUM_P(v) || CL_FIXNUM_VAL(v) < 0 || CL_FIXNUM_VAL(v) > len)
                     cl_error(CL_ERR_TYPE, "FILL: :end is not a valid bounding index");
                 end_val = CL_FIXNUM_VAL(v);
+            } else {
+                end_val = len;
             }
         }
     }

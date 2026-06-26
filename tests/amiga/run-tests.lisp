@@ -968,6 +968,51 @@
   (concatenate '(vector character) "ab" "cd"))
 (check "concatenate compound simple-array char" "xyz"
   (concatenate '(simple-array character (*)) "xy" "z"))
+; --- ANSI sequences conformance: the last 10 SEQUENCES-chapter fixes ---
+; FILL: duplicate :start/:end keywords — leftmost wins (CLHS 3.4.1.4), all
+; value forms evaluated (FILL.ORDER.4).
+(check "fill leftmost keyword wins" '((a z z a) 4)
+  (let ((i 0) (a (copy-seq #(a a a a))))
+    (let ((r (fill a 'z :end (progn (incf i) 3) :end (progn (incf i) 1)
+                   :start (progn (incf i) 1) :start (progn (incf i) 0))))
+      (list (coerce r 'list) i))))
+; (SETF FILL-POINTER) on a fill-pointer bit-vector (MISMATCH-BIT-VECTOR.24).
+(check "setf fill-pointer bit-vector" '(4 6 6)
+  (let ((m (make-array 6 :element-type 'bit
+            :initial-contents '(0 0 1 0 1 1) :fill-pointer 4)))
+    (list (length m) (setf (fill-pointer m) 6) (length m))))
+; SUBSEQ of a fill-pointer character vector returns a STRING (SUBSEQ-STRING.3).
+(check "subseq string-vector returns string" '(t "abcdefgh" "cdefgh" "cde")
+  (let ((s (make-array 10 :element-type 'character
+            :initial-contents "abcdefghij" :fill-pointer 8)))
+    (list (stringp (subseq s 0)) (subseq s 0) (subseq s 2) (subseq s 2 5))))
+; CONCATENATE honours the active length of a fill-pointer bit-vector and a
+; declared length constraint (CONCATENATE.30 / .30A).
+(check "concatenate fill-pointer bit-vector active length" t
+  (let ((x (make-array 10 :element-type 'bit
+            :initial-contents '(0 1 1 0 0 1 0 1 1 1) :fill-pointer 5)))
+    (and (equalp (concatenate 'bit-vector x '(0)) #*011000)
+         (equalp (concatenate '(bit-vector 10) x x) #*0110001100)
+         (equalp (concatenate '(bit-vector *) x) #*01100)
+         t)))
+; MAP with an (or ...) result type: branch matching the produced length (MAP.48).
+(check "map or-result-type matching length" t
+  (equalp (map '(or (vector t 10) (vector t 5)) #'identity '(1 2 3 4 5))
+          #(1 2 3 4 5)))
+; No branch matches the produced length → type-error (MAP.ERROR.11).
+(check "map or-result-type no match type-error" :type-error
+  (handler-case (progn (map '(or (vector t 5) (vector t 10))
+                            #'identity '(1 2 3 4 5 6)) :no-error)
+    (type-error () :type-error)))
+; (SETF SUBSEQ) evaluates PLACE subforms left-to-right before the value form
+; (CLHS 5.1.1.1.1, SUBSEQ.ORDER.3): a=1 b=2 c=3 d=4.
+(check "setf subseq eval order" '("axyzefgh" 1 2 3 4)
+  (let ((i 0) a b c d (s (copy-seq "abcdefgh")))
+    (setf (subseq (progn (setf a (incf i)) s)
+                  (progn (setf b (incf i)) 1)
+                  (progn (setf c (incf i)) 4))
+          (progn (setf d (incf i)) "xyz"))
+    (list s a b c d)))
 (check "char access" #\h (char "hello" 0))
 (check "schar access" #\b (schar "abc" 1))
 (check "string from sym" "FOO" (string 'foo))

@@ -699,6 +699,37 @@ static CL_Obj bi_subseq(CL_Obj *args, int n)
         if (start > end) start = end;
         return cl_string_substring(args[0], (uint32_t)start, (uint32_t)end);
     }
+    /* String-vector subseq (adjustable / fill-pointer character vector):
+     * a valid CL STRING, so SUBSEQ must return a STRING, not a general
+     * vector (SUBSEQ-STRING.3 / SUBSEQ.SPECIALIZED-STRING.1). */
+    if (CL_STRING_VECTOR_P(args[0])) {
+        uint32_t len = cl_string_length(args[0]);
+        CL_Obj result;
+        int32_t i, rlen;
+        end = (n > 2 && !CL_NULL_P(args[2]) && CL_FIXNUM_P(args[2]))
+            ? CL_FIXNUM_VAL(args[2]) : (int32_t)len;
+        if (start < 0) start = 0;
+        if (end > (int32_t)len) end = (int32_t)len;
+        if (start > end) start = end;
+        rlen = end - start;
+        CL_GC_PROTECT(args[0]);
+#ifdef CL_WIDE_STRINGS
+        {
+            int wide = 0;
+            for (i = 0; i < rlen; i++)
+                if (cl_string_char_at(args[0], (uint32_t)(start + i)) > 255) { wide = 1; break; }
+            result = wide ? cl_make_wide_string(NULL, (uint32_t)rlen)
+                          : cl_make_string(NULL, (uint32_t)rlen);
+        }
+#else
+        result = cl_make_string(NULL, (uint32_t)rlen);
+#endif
+        for (i = 0; i < rlen; i++)
+            cl_string_set_char_at(result, (uint32_t)i,
+                                  cl_string_char_at(args[0], (uint32_t)(start + i)));
+        CL_GC_UNPROTECT(1);
+        return result;
+    }
     /* Vector subseq */
     if (CL_VECTOR_P(args[0])) {
         CL_Vector *v = (CL_Vector *)CL_OBJ_TO_PTR(args[0]);
@@ -913,7 +944,7 @@ static uint32_t concat_total_length(CL_Obj *args, int n)
             while (CL_CONS_P(p)) { total++; p = cl_cdr(p); }
         } else if (CL_BIT_VECTOR_P(args[i])) {
             CL_BitVector *bv = (CL_BitVector *)CL_OBJ_TO_PTR(args[i]);
-            total += bv->length;
+            total += cl_bv_active_length(bv);
         } else {
             cl_error(CL_ERR_TYPE, "CONCATENATE: argument is not a sequence");
         }
@@ -946,8 +977,8 @@ static void concat_iterate(CL_Obj seq, concat_cb cb, void *ctx)
         }
     } else if (CL_BIT_VECTOR_P(seq)) {
         CL_BitVector *bv = (CL_BitVector *)CL_OBJ_TO_PTR(seq);
-        uint32_t j;
-        for (j = 0; j < bv->length; j++)
+        uint32_t alen = cl_bv_active_length(bv), j;
+        for (j = 0; j < alen; j++)
             cb(CL_MAKE_FIXNUM(cl_bv_get_bit(bv, j)), ctx);
     } else {
         cl_error(CL_ERR_TYPE, "CONCATENATE: argument is not a sequence");
