@@ -175,6 +175,16 @@ summarize() {
   esac
 }
 
+# Format a whole-second duration compactly, dropping leading zero units:
+#   45 -> "45s", 83 -> "1m23s", 3725 -> "1h02m05s".
+fmt_dur() {
+  s=$1
+  if   [ "$s" -ge 3600 ]; then printf '%dh%02dm%02ds' $((s/3600)) $(((s%3600)/60)) $((s%60))
+  elif [ "$s" -ge 60 ];   then printf '%dm%02ds' $((s/60)) $((s%60))
+  else                         printf '%ds' "$s"
+  fi
+}
+
 # --- Tally-only path: aggregate pre-existing logs without running clamiga ---
 if [ -n "$TALLY_DIR" ]; then
   if [ ! -d "$TALLY_DIR" ]; then
@@ -266,8 +276,9 @@ fail_count=0
 total_scripts=0
 total_pass=0
 total_fail=0
-printf '%-32s %-5s %-9s %s\n' "SCRIPT" "HEAP" "STATUS" "RESULT" | tee -a "$SUMMARY"
-printf '%-32s %-5s %-9s %s\n' "------" "----" "------" "------" | tee -a "$SUMMARY"
+total_time=0
+printf '%-32s %-5s %-9s %-8s %s\n' "SCRIPT" "HEAP" "STATUS" "TIME" "RESULT" | tee -a "$SUMMARY"
+printf '%-32s %-5s %-9s %-8s %s\n' "------" "----" "------" "----" "------" | tee -a "$SUMMARY"
 
 for f in trunk/load-and-test-*.lisp; do
   name=$(basename "$f")
@@ -286,9 +297,12 @@ for f in trunk/load-and-test-*.lisp; do
   echo ">>> $name  (heap ${heap}M, timeout ${tmo}s, cold=$COLD)" >&2
   # stdin from /dev/null so the post-load REPL sees EOF and exits instead
   # of blocking; everything (incl. stderr) captured to the per-script log.
+  start_s=$(date +%s)
   CLAMIGA_FASL_CACHE_DIR="$script_cache" \
     timeout "$tmo" "$CLAMIGA" --no-userinit --heap "${heap}M" --load "$f" </dev/null >"$log" 2>&1
   ec=$?
+  elapsed=$(( $(date +%s) - start_s ))
+  total_time=$((total_time + elapsed))
 
   result=$(summarize "$log")
   if grep -q "load-libs-ql: fetching" "$log"; then
@@ -316,7 +330,7 @@ for f in trunk/load-and-test-*.lisp; do
   total_pass=$((total_pass + c_pass))
   total_fail=$((total_fail + c_fail))
 
-  printf '%-32s %-5s %-9s %s\n' "$name" "${heap}M" "$status" "$result" | tee -a "$SUMMARY"
+  printf '%-32s %-5s %-9s %-8s %s\n' "$name" "${heap}M" "$status" "$(fmt_dur "$elapsed")" "$result" | tee -a "$SUMMARY"
 done
 
 echo "" | tee -a "$SUMMARY"
@@ -327,6 +341,7 @@ ok_count=$((total_scripts - fail_count))
   echo "=== GRAND TOTAL ==="
   echo "scripts: $ok_count/$total_scripts ok"
   echo "tests:   $total_pass passed, $total_fail failed"
+  echo "time:    $(fmt_dur "$total_time") total"
 } | tee -a "$SUMMARY"
 
 if [ "$fail_count" -gt 0 ] || [ "$total_fail" -gt 0 ]; then
