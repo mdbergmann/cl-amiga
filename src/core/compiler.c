@@ -322,27 +322,41 @@ static void compile_quote(CL_Compiler *c, CL_Obj form)
  * (serapeum's dispatch-case) blew the stack at a few hundred levels. */
 static CL_Obj compile_if(CL_Compiler *c, CL_Obj form)
 {
-    CL_Obj rest = cl_cdr(form);
-    CL_Obj test = cl_car(rest);
-    CL_Obj then_form = cl_car(cl_cdr(rest));
-    CL_Obj else_form;
+    CL_Obj rest, test, then_form, else_form;
     int saved_tail = c->in_tail;
     int jnil_pos;
     CL_TailFrame *tf;
 
-    /* `(if test then)` and `(if test then nil)` are equivalent (CLHS
-     * 5.2): treat both as "no else" — we'll emit OP_NIL inline in the
-     * AFTER_THEN postlude rather than dispatching the literal NIL. */
-    {
-        CL_Obj cdr2 = cl_cdr(cl_cdr(rest));
-        else_form = CL_NULL_P(cdr2) ? CL_NIL : cl_car(cdr2);
-    }
-
     CL_GC_PROTECT(form);
+
+    rest = cl_cdr(form);
+    test = cl_car(rest);
 
     c->in_tail = 0;
     compile_expr(c, test);
     jnil_pos = cl_emit_jump(c, OP_JNIL);
+
+    /* GC SAFETY: re-derive then/else from `form` AFTER compile_expr(test).
+     * compile_expr(test) allocates and can trigger a compacting (moving) GC.
+     * `form` is GC-protected (above) so its cons cells stay live and are
+     * forwarded, but a `then_form`/`else_form` read *before* that compaction
+     * would be a stale C local holding a pre-move offset.  Returned as the
+     * trampoline continuation, such a stale offset surfaces as a bogus
+     * "self-evaluating" constant — an interior pointer into an unrelated
+     * object — corrupting the constant pool under GC stress (observed as
+     * "malformed call form (dotted pair)" / "CDR not a list" compiling a
+     * WHEN/UNLESS/IF body inside a LET/DOTIMES).  Reading them here, from the
+     * forwarded `form`, yields live offsets.
+     *
+     * `(if test then)` and `(if test then nil)` are equivalent (CLHS 5.2):
+     * treat both as "no else" — we emit OP_NIL inline in the AFTER_THEN
+     * postlude rather than dispatching the literal NIL. */
+    rest = cl_cdr(form);  /* re-derive: the earlier `rest` local is now stale */
+    then_form = cl_car(cl_cdr(rest));
+    {
+        CL_Obj cdr2 = cl_cdr(cl_cdr(rest));
+        else_form = CL_NULL_P(cdr2) ? CL_NIL : cl_car(cdr2);
+    }
 
     CL_GC_UNPROTECT(1);
 

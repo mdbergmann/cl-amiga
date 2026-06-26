@@ -329,6 +329,23 @@
 (check "decf in dotimes"             45  (let ((n 50)) (dotimes (i 5) (decf n)) n))
 (check "two sequential incf"         2   (let ((n 0)) (incf n) (incf n) n))
 (check "incf in nested dotimes"      6   (let ((n 0)) (dotimes (i 3) (dotimes (j 2) (incf n))) n))
+;; Regression: compile_if read then_form/else_form BEFORE compiling the test.
+;; compile_expr(test) can compact (moving GC); only `form` was protected, so the
+;; then/else C locals went stale and the returned then-branch was emitted as a
+;; bogus interior-pointer constant, corrupting the constant pool ("malformed
+;; call form" / "CDR not a list").  Exercise an IF/WHEN/UNLESS with an allocating
+;; test inside a LET/DOTIMES so the then/else branches stay correct.
+(check "if allocating-test then/else" :yes
+  (if (equalp (copy-seq (list 1 2 3)) (list 1 2 3)) :yes :no))
+(check "if alloc-test branches in dotimes" 200
+  (let ((n 0))
+    (dotimes (i 200)
+      (if (equalp (let ((a (copy-seq (list 0 0 0 0))))
+                    (map-into a (lambda (x) (list x x)) (list 1 2 3 4)))
+                  (list (list 1 1) (list 2 2) (list 3 3) (list 4 4)))
+          (incf n)
+          (return)))
+    n))
 ;; CLHS 6.1.1: a var-spec may be a bare symbol (bound to NIL, no step).
 ;; Regression: the compiler used to CAR the spec assuming a list, so a
 ;; bare symbol broke compilation (puri/drakma -> chipi load failure).
