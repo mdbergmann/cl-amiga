@@ -26,7 +26,7 @@
 #include "../platform/platform.h"
 
 #define CL_FASL_MAGIC    0x434C4641  /* "CLFA" */
-#define CL_FASL_VERSION  16  /* v16: MAKE-LOAD-FORM support — a literal object reachable from compiled code whose class has a user MAKE-LOAD-FORM method is now serialized as FASL_TAG_LOAD_FORM (creation form + init form) instead of FASL_TAG_STRUCT, and reconstructed by evaluating those forms at load time */
+#define CL_FASL_VERSION  17  /* v17: boxing pre-scan now sees through MACROLET/SYMBOL-MACROLET — a variable assigned only through a local macro inside a FLET/LABELS closure is correctly boxed, so the emitted bytecode differs (and is correct) for affected functions. The wire format is unchanged, but FASLs compiled by the prior (buggy) compiler contain the wrong, unboxed bytecode and MUST be recompiled, hence the bump. */
 
 /* Serialized constant type tags */
 #define FASL_TAG_NIL         0x00

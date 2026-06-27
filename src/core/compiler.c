@@ -1066,7 +1066,20 @@ top:
     if (CL_SYMBOL_P(form)) {
         if (closure_depth > 0) {
             int idx = find_var_index(form, vars, n_vars);
-            if (idx >= 0) captured[idx] = 1;
+            if (idx >= 0) {
+                captured[idx] = 1;
+            } else if (cl_active_compiler) {
+                /* A SYMBOL-MACROLET symbol read inside a closure resolves to its
+                 * expansion (often an enclosing variable); scan the expansion so
+                 * that variable is marked captured for boxing. */
+                CL_Obj sm = cl_env_lookup_symbol_macro(cl_active_compiler->env, form);
+                if (!CL_NULL_P(sm)) {
+                    CL_GC_PROTECT(sm);
+                    scan_body_for_boxing(sm, vars, n_vars,
+                                         mutated, captured, closure_depth);
+                    CL_GC_UNPROTECT(1);
+                }
+            }
         }
         return;
     }
@@ -1106,8 +1119,31 @@ top:
             /* For symbols (simple variable places), mark as mutated */
             if (CL_SYMBOL_P(place)) {
                 int idx = find_var_index(place, vars, n_vars);
-                if (idx >= 0) mutated[idx] = 1;
-                if (closure_depth > 0 && idx >= 0) captured[idx] = 1;
+                if (idx >= 0) {
+                    mutated[idx] = 1;
+                    if (closure_depth > 0) captured[idx] = 1;
+                } else if (cl_active_compiler) {
+                    /* (setf SYM val) where SYM is a SYMBOL-MACROLET symbol —
+                     * the real place is its expansion.  Scan (setf <expansion>
+                     * val) so the underlying variable is marked mutated (and, in
+                     * a closure, captured) and therefore boxed.  Without this a
+                     * write through a symbol-macro inside a FLET/LABELS closure
+                     * is silently dropped, the symbol-macrolet analogue of the
+                     * macrolet boxing bug. */
+                    CL_Obj sm = cl_env_lookup_symbol_macro(cl_active_compiler->env,
+                                                           place);
+                    if (!CL_NULL_P(sm)) {
+                        CL_Obj sf;
+                        CL_GC_PROTECT(sm);
+                        sf = cl_cons(val, CL_NIL);
+                        CL_GC_PROTECT(sf);
+                        sf = cl_cons(sm, sf);
+                        sf = cl_cons(SYM_SETF, sf);
+                        scan_body_for_boxing(sf, vars, n_vars,
+                                             mutated, captured, closure_depth);
+                        CL_GC_UNPROTECT(2);
+                    }
+                }
             } else if (CL_CONS_P(place) && cl_car(place) == SYM_THE) {
                 /* (setf (the type var) val) — the inner var is mutated */
                 CL_Obj inner = cl_car(cl_cdr(cl_cdr(place)));
@@ -1351,16 +1387,66 @@ top:
      * smashes bi_compile_file's stack canary on return.  Skip the bindings
      * entirely and only scan the macrolet body. */
     if (head == SYM_MACROLET) {
-        CL_Obj body;
+        CL_Obj bindings, body;
+        CL_CompEnv *env = cl_active_compiler ? cl_active_compiler->env : NULL;
+        int saved_lmc = env ? env->local_macro_count : 0;
         if (!CL_CONS_P(rest)) return;
+        bindings = cl_car(rest);
         body = cl_cdr(rest); /* skip the bindings list */
         CL_GC_PROTECT(body);
+        /* Install the macrolet's local macro expanders into the compiler env so
+         * the body scan below can macroexpand macrolet-defined macro calls and
+         * thereby see the SETF/closure forms they hide.  Without this a variable
+         * that is only ever assigned through a macrolet macro used inside a
+         * FLET/LABELS closure is never marked mutated, so it is not boxed and the
+         * write is silently dropped — the closure mutates a private copy while
+         * the enclosing binding stays at its initial value.  This surfaced as
+         * local-time:parse-timestring returning NIL for month/day (its
+         * PARSE-INTEGER-INTO macrolet does `(setf month value)` inside the date
+         * labels functions), which made chipi's influx persistence parse fail.
+         * Mirror compile_macrolet, but guard the expander compile so a malformed
+         * macrolet can't abort the whole boxing pre-scan (best effort: on failure
+         * we just scan the body without expanders, the prior behaviour). */
+        if (env && scan_macro_depth < SCAN_MACRO_MAX_DEPTH) {
+            int saved_sp = cl_vm.sp;
+            int saved_fp = cl_vm.fp;
+            int saved_dyn = cl_dyn_top;
+            int saved_nlx = cl_nlx_top;
+            int saved_handler = cl_handler_top;
+            int saved_restart = cl_restart_top;
+            int saved_debugger = cl_debugger_enabled;
+            int saved_gc_roots = gc_root_count;
+            cl_debugger_enabled = 0;
+            scan_macro_depth++;
+            {
+                int err; CL_CATCH(err);
+                if (err == 0) {
+                    cl_macrolet_install_expanders(env, bindings);
+                    CL_UNCATCH();
+                } else {
+                    CL_UNCATCH();
+                    cl_vm.sp = saved_sp;
+                    cl_vm.fp = saved_fp;
+                    cl_dynbind_restore_to(saved_dyn);
+                    cl_nlx_top = saved_nlx;
+                    gc_root_count = saved_gc_roots;
+                    if (env) env->local_macro_count = saved_lmc;
+                }
+            }
+            scan_macro_depth--;
+            cl_debugger_enabled = saved_debugger;
+            cl_handler_top = saved_handler;
+            cl_restart_top = saved_restart;
+        }
         while (CL_CONS_P(body)) {
             scan_body_for_boxing(cl_car(body), vars, n_vars,
                                  mutated, captured, closure_depth);
             body = cl_cdr(body);
         }
         CL_GC_UNPROTECT(1);
+        /* Pop the local macros we added so the env is unchanged for siblings
+         * (compile_macrolet re-installs them for the real compile pass). */
+        if (env) env->local_macro_count = saved_lmc;
         return;
     }
 
@@ -1588,8 +1674,19 @@ top:
 
     /* Expand macros before scanning so we can see through macro-generated
      * lambdas and setf forms. Save/restore VM state to handle expansion
-     * errors gracefully without corrupting compiler state. */
-    if (CL_SYMBOL_P(head) && cl_macro_p(head) &&
+     * errors gracefully without corrupting compiler state.
+     *
+     * LOCAL (macrolet) macros must be expanded here too: cl_macro_p only
+     * knows the global macro table, so a macrolet-defined macro call would
+     * otherwise fall through to the general walk and its hidden mutations
+     * would be missed (the boxing bug fixed in the SYM_MACROLET handler
+     * above only installs the expanders — this is where they get used).
+     * cl_macroexpand_1_env consults the lex-env's local macros first, so
+     * expansion below works once the env carries them. */
+    if (CL_SYMBOL_P(head) &&
+        (cl_macro_p(head) ||
+         (cl_active_compiler &&
+          !CL_NULL_P(cl_env_lookup_local_macro(cl_active_compiler->env, head)))) &&
         scan_macro_depth < SCAN_MACRO_MAX_DEPTH) {
         int saved_sp = cl_vm.sp;
         int saved_fp = cl_vm.fp;
@@ -2439,14 +2536,20 @@ static void compile_setf_place(CL_Compiler *c, CL_Obj place, CL_Obj val_form)
                     /* Local macrolet expander is a 2-arg (form env) wrapper
                      * (see compile_macrolet); see also bi_call_macro_expander. */
                     CL_Obj call_args[2];
-                    CL_Obj lex_env = cl_build_lex_env(c->env);
+                    CL_Obj lex_env;
+                    /* GC SAFETY: protect local_exp AND place before
+                     * cl_build_lex_env allocates/compacts — same stale-closure
+                     * hazard as the function-position local-macro path. */
+                    CL_GC_PROTECT(local_exp);
+                    CL_GC_PROTECT(place);
+                    lex_env = cl_build_lex_env(c->env);
                     call_args[0] = place;
                     call_args[1] = lex_env;
                     CL_GC_PROTECT(lex_env);
                     {
                         CL_Obj expanded;
                         expanded = cl_vm_apply(local_exp, call_args, 2);
-                        CL_GC_UNPROTECT(1);
+                        CL_GC_UNPROTECT(3);
                         compile_setf_place(c, expanded, val_form);
                         c->in_tail = saved_tail;
                         return;
@@ -3856,10 +3959,17 @@ static int compile_expr_step(CL_Compiler *c, CL_Obj *expr_p)
                  * macros installed by compile_defmacro. */
                 CL_Obj expanded;
                 CL_Obj call_args[2];
-                CL_Obj lex_env = cl_build_lex_env(c->env);
+                CL_Obj lex_env;
+                /* GC SAFETY: protect local_expander BEFORE cl_build_lex_env,
+                 * which allocates and can compact — otherwise the expander
+                 * closure offset goes stale and cl_vm_apply would run a
+                 * relocated (wrong) closure.  `expr` stays valid: the outer
+                 * compile_expr driver protects &expr, so reading it after
+                 * cl_build_lex_env (below) yields the forwarded value. */
+                CL_GC_PROTECT(local_expander);
+                lex_env = cl_build_lex_env(c->env);
                 call_args[0] = expr;
                 call_args[1] = lex_env;
-                CL_GC_PROTECT(local_expander);
                 CL_GC_PROTECT(lex_env);
                 {
                     int _fp0 = cl_vm.fp, _sp0 = cl_vm.sp;

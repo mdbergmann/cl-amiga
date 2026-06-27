@@ -2836,6 +2836,13 @@ void cl_macrolet_install_expanders(CL_CompEnv *env, CL_Obj bindings)
             CL_Obj mbody = cl_cdr(cl_cdr(binding));
             CL_Obj lambda_form, bytecode, closure;
 
+            /* GC SAFETY: mname is held until cl_env_add_local_macro below, which
+             * is reached only AFTER cl_compile + cl_vm_eval (both allocate and
+             * can compact).  Without protection the macro would be registered
+             * under a stale/garbage name offset after a compaction — the local
+             * macrolet expander could then not be found (treated as an undefined
+             * function) or resolve to the wrong symbol. */
+            CL_GC_PROTECT(mname);
             CL_GC_PROTECT(lambda_list);
             CL_GC_PROTECT(mbody);
 
@@ -3014,6 +3021,7 @@ void cl_macrolet_install_expanders(CL_CompEnv *env, CL_Obj bindings)
             CL_GC_UNPROTECT(3); /* lambda_form, mbody, lambda_list */
 
             cl_env_add_local_macro(env, mname, closure);
+            CL_GC_UNPROTECT(1); /* mname */
 
             b = cl_cdr(b);
         }

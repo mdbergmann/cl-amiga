@@ -2112,6 +2112,47 @@
                  (setf acc (+ acc (smm-get x y)))))))
     (smm-keccak 0)))
 
+; --- Scanner: macrolet/symbol-macrolet setf boxing (local-time parse-timestring) ---
+;; The boxing pre-scan must macroexpand MACROLET (and SYMBOL-MACROLET) forms
+;; while scanning a FLET/LABELS body, or a `(setf var ...)` hidden in such a
+;; macro is never seen -> the enclosing variable is not boxed and the closure's
+;; write is silently dropped.  local-time's %SPLIT-TIMESTRING uses a
+;; PARSE-INTEGER-INTO macrolet to `(setf month value)` inside its date LABELS;
+;; without the fix month/day came back NIL and `(<= 1 month 12)` raised
+;; "<=: argument is not of type REAL", which broke chipi influx persistence.
+(check "scanner macrolet setf outer var in labels" 99
+  (let ((m 0))
+    (macrolet ((setm (x) `(setf m ,x)))
+      (labels ((s () (setm 99)))
+        (s)
+        m))))
+(check "scanner macrolet inside labels body setf" 7
+  (let ((m 0))
+    (labels ((s () (macrolet ((setm (x) `(setf m ,x))) (setm 7))))
+      (s)
+      m)))
+(check "scanner macrolet setf outer var in flet" 5
+  (let ((m 0))
+    (flet ((s () (macrolet ((setm (x) `(setf m ,x))) (setm 5))))
+      (s)
+      m)))
+(check "scanner macrolet parse-into shape (local-time)" '(2026 6 27)
+  (let (y mo d)
+    (macrolet ((into (place v lo hi)
+                 `(progn (setf ,place ,v)
+                         (unless (<= ,lo ,place ,hi) (error "range"))
+                         (values))))
+      (labels ((sy (v) (into y v 1 9999))
+               (sm (v) (into mo v 1 12))
+               (sd (v) (into d v 1 31)))
+        (sy 2026) (sm 6) (sd 27)
+        (list y mo d)))))
+(check "scanner symbol-macrolet setf outer var in labels" 42
+  (let ((m 0))
+    (labels ((s () (symbol-macrolet ((q m)) (setf q 42))))
+      (s)
+      m)))
+
 ; --- Debugger ---
 (check "invoke-debugger exists" t (functionp #'invoke-debugger))
 (check "*debugger-hook* initial" nil *debugger-hook*)
