@@ -89,6 +89,16 @@ static uint32_t gc_fwd_table_entries = 0;
  * when the heap is genuinely full (no fragmentation to reclaim). */
 static uint32_t gc_last_compact_cycle = 0xFFFFFFFF;
 
+/* Number of sweep-only GCs (cl_gc) run since the last compaction.  A sweep
+ * never resets the bump pointer, so once the bump is exhausted a run of
+ * sweeps makes no lasting progress: each just re-coalesces the free list and
+ * the next allocation sweeps again.  When this counter crosses
+ * GC_SWEEPS_BEFORE_COMPACT (and the heap is not genuinely near-full) cl_alloc
+ * forces a compaction, which resets the bump pointer and defragments — escaping
+ * the "sweep-forever" regime.  Reset to 0 by cl_gc_compact. */
+static uint32_t gc_sweeps_since_compact = 0;
+
+
 #ifdef DEBUG_GC_STRESS
 /* GC-stress debugging: when ready, force a compaction before every single-
  * threaded allocation (see cl_alloc).  Enabled at runtime after boot so the
@@ -152,6 +162,8 @@ void cl_mem_init(uint32_t heap_size)
     cl_heap.gc_count = 0;
     cl_heap.compact_count = 0;
     cl_heap.freelist_steps = 0;
+    gc_last_compact_cycle = 0xFFFFFFFF;
+    gc_sweeps_since_compact = 0;
 
     gc_root_count = 0;
     gc_mark_top = 0;
@@ -355,44 +367,78 @@ void *cl_alloc(uint8_t type, uint32_t size)
         ptr = alloc_from_free_list(&size, CL_FREELIST_PROBE_LIMIT);
     }
     if (!ptr) {
-        /* Need GC — release alloc_mutex so other threads can reach safepoints,
-         * then run STW GC, then re-acquire and retry.  A sweep coalesces dead
-         * objects into the free list (cheap); retry bump and a bounded probe. */
+        /* Bump exhausted and the bounded free-list probe missed.  Sweep first:
+         * it is cheaper than compaction, may itself free a fit, AND recomputes
+         * the live-set size (cl_heap.total_allocated) so the compaction decision
+         * below uses a FRESH measurement — not a stale high-water that an
+         * earlier transient peak could pin near the arena size.  Release
+         * alloc_mutex first so other threads can reach safepoints during STW. */
         if (multi) platform_mutex_unlock(alloc_mutex);
         cl_gc();
         if (multi) platform_mutex_lock(alloc_mutex);
+        gc_sweeps_since_compact++;
         ptr = alloc_from_bump(size);
         if (!ptr) {
-            ptr = alloc_from_free_list(&size, CL_FREELIST_PROBE_LIMIT);
+            /* Guard: skip the free-list probe when Trigger 2 would compact
+             * immediately afterward.  alloc_from_free_list zeroes the block it
+             * extracts (memset in the return path); a zeroed block has a zero
+             * size field, which stops every compaction pass's arena scan at that
+             * slot, leaving live objects above it without forwarding addresses —
+             * the next bump allocation then silently overwrites them.  Skipping
+             * the probe keeps the arena intact so cl_gc_compact() can walk it
+             * cleanly; ptr stays NULL and the compaction block below fires via
+             * Trigger 1 (!ptr), satisfying this allocation after compaction. */
+            uint32_t probe_live_hwm = cl_heap.arena_size - (cl_heap.arena_size >> 3);
+            int will_compact_t2 = (gc_last_compact_cycle != cl_heap.gc_count) &&
+                                  (cl_heap.total_allocated < probe_live_hwm) &&
+                                  (gc_sweeps_since_compact >= GC_SWEEPS_BEFORE_COMPACT);
+            if (!will_compact_t2)
+                ptr = alloc_from_free_list(&size, CL_FREELIST_PROBE_LIMIT);
         }
-    }
-    if (!ptr && gc_last_compact_cycle != cl_heap.gc_count) {
-        /* Sweep + bounded probe still found no quick fit.  Either the heap is
-         * genuinely full, or it is fragmented enough that the free list is long
-         * and the bounded probe keeps missing — and a sweep-only cl_gc() does
-         * NOT reset the bump pointer, so once the arena high-water mark is
-         * reached every allocation is served by the O(n) free-list walk
-         * (O(n^2) for allocation-heavy code such as the bignum-heavy table jzon
-         * builds at FASL load).  Compaction resets the bump pointer and clears
-         * fragmentation, restoring the O(1) bump path.
+
+        /* Now decide whether to ALSO compact (which resets the bump pointer and
+         * defragments).  Gated to once per GC cycle.  Two triggers:
          *
-         * NOTE: compaction is a moving GC.  All CL_Obj C locals that survive
-         * across allocating calls MUST be GC-protected so compaction can
-         * update them.  Raw C pointers derived from CL_Obj (e.g. via
-         * CL_OBJ_TO_PTR) must be re-derived after any allocating call.
+         *   1. The sweep + bounded probe STILL found no fit — compaction is the
+         *      only remaining way to satisfy this allocation (the long-standing
+         *      last-resort path).
          *
-         * Safe to run even while JIT'd code is on the m68k stack:
-         * gc_scan_jit_native_stack validates each conservative candidate
-         * against the arena's real header offsets before marking, so the
-         * compactor never relocates based on a phantom root at a
-         * mid-object byte. */
-        gc_compact_pending = 1;
-        gc_last_compact_cycle = cl_heap.gc_count;
-        if (multi) platform_mutex_unlock(alloc_mutex);
-        cl_gc_compact();
-        gc_compact_pending = 0;
-        if (multi) platform_mutex_lock(alloc_mutex);
-        ptr = alloc_from_bump(size);
+         *   2. We have swept GC_SWEEPS_BEFORE_COMPACT times since the last
+         *      compaction AND the heap is not near-full.  A sweep-only cl_gc()
+         *      never resets the bump pointer, so when a fragmented free list
+         *      defeats the bounded probe we can keep "succeeding" via a buried
+         *      free block while running a full mark-sweep on nearly every
+         *      allocation — the "sweep-forever" pathology (acutely heap-size
+         *      sensitive: hundreds to thousands of GCs cold-compiling a large
+         *      system, while a nearby heap size needs ~15).  Compaction frees a
+         *      large contiguous run of bump space, escaping the loop.
+         *      "Not near-full" uses the FRESH live-set size from the sweep just
+         *      done, so a heap that is mostly reclaimable garbage (compaction
+         *      frees >= 1/8 of the arena — worthwhile) is distinguished from one
+         *      genuinely packed with live data (compaction would only thrash, so
+         *      we stay on the sweep + free-list-reuse path).
+         *
+         * NOTE: compaction is a moving GC.  All CL_Obj C locals live across an
+         * allocating call MUST be GC-protected, and raw pointers derived from
+         * CL_Obj re-derived afterwards.  (This site already compacted before —
+         * no new requirement.)  Safe while JIT'd code is on the m68k stack:
+         * gc_scan_jit_native_stack offset-validates each conservative root. */
+        if (gc_last_compact_cycle != cl_heap.gc_count) {
+            uint32_t live_hwm =
+                cl_heap.arena_size - (cl_heap.arena_size >> 3);   /* 7/8 arena */
+            int compaction_worthwhile = (cl_heap.total_allocated < live_hwm);
+            if (!ptr ||
+                (compaction_worthwhile &&
+                 gc_sweeps_since_compact >= GC_SWEEPS_BEFORE_COMPACT)) {
+                gc_compact_pending = 1;
+                gc_last_compact_cycle = cl_heap.gc_count;
+                if (multi) platform_mutex_unlock(alloc_mutex);
+                cl_gc_compact();   /* resets bump + gc_sweeps_since_compact */
+                gc_compact_pending = 0;
+                if (multi) platform_mutex_lock(alloc_mutex);
+                ptr = alloc_from_bump(size);
+            }
+        }
     }
     if (!ptr) {
         /* Last resort before declaring the heap exhausted: the fit may be
@@ -2503,6 +2549,10 @@ void cl_gc_compact(void)
 
     cl_heap.gc_count++;
     cl_heap.compact_count++;
+
+    /* The bump pointer was just reset to the end of the surviving objects, so
+     * the sweep-forever escape counter starts fresh — see gc_sweeps_since_compact. */
+    gc_sweeps_since_compact = 0;
 
 #ifdef DEBUG_GC
     /* Post-compaction verification: check all live objects have valid refs */

@@ -355,6 +355,46 @@
   (do* ((a) (b 5) (c 0 (1+ c))) ((= c 3) (list a b c)) (setq a (cons c a))))
 (check "do* bare-var only" 7 (do* (x) ((eq x :done) 7) (setq x :done)))
 
+; --- Allocator: sweep-forever escape (moving GC bounded under fragmentation) ---
+; Companion to the host C regression tests/test_alloc_sweep_escape.c, which
+; precisely reproduces the "sweep-forever" GC pathology: once the bump pointer
+; was exhausted, a fragmented free list could defeat the bounded free-list probe
+; so that cl_alloc ran a full mark-and-sweep on nearly every allocation without
+; ever compacting (a sweep never resets the bump pointer).  Cold-compiling a
+; large system spent minutes in the GC, with collection counts exploding at some
+; heap sizes (e.g. 1293 collections where a nearby size needed ~15).  Fix: after
+; GC_SWEEPS_BEFORE_COMPACT bump-exhausted sweeps without progress (and when the
+; heap is not near-full, judged from the FRESH post-sweep live-set size),
+; compact to reset the bump pointer and escape the loop.
+;
+; Reproducing the exact free-list micro-structure needs C-level bump-pointer
+; introspection, so the precise guard lives in the host C test.  Here we
+; exercise the SAME shared allocator slow path + moving GC on the real Amiga
+; target at its 8M test heap under heavy fragmented allocation, and assert that
+; (a) the retained live data survives every compaction uncorrupted and (b) the
+; collection count stays well below the allocation count (a gross regression to
+; one-GC-per-allocation would blow this bound).
+(check "alloc sweep-forever escape: live intact + GC bounded" t
+  (let ((live nil) (dead nil))
+    ;; Fragment + push the bump toward the top of the 8M heap.  Retained 400-elem
+    ;; vectors stay live (~70% of heap); the 100-elem ones are dropped, leaving
+    ;; isolated holes a sweep cannot coalesce.
+    (dotimes (i 3500)
+      (push (make-array 400) live)
+      (push (make-array 100) dead))
+    (setf dead nil)
+    (let ((g0 (clamiga::%get-gc-count)))
+      ;; Flood: short-lived medium vectors, each discarded immediately, forcing
+      ;; the bump-exhausted slow path and repeated moving compactions.
+      (dotimes (i 3000) (make-array 1000))
+      (let ((collections (- (clamiga::%get-gc-count) g0)))
+        ;; Live data uncorrupted by all the moving-GC compactions, AND the GC
+        ;; stayed bounded (nowhere near one collection per allocation).
+        (and (= (length live) 3500)
+             (vectorp (car live))
+             (= (length (car live)) 400)
+             (< collections 1000))))))
+
 ; --- Quasiquote ---
 (check "qq atom" 42 `42)
 (check "qq symbol" 'foo `foo)
