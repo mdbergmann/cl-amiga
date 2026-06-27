@@ -862,6 +862,49 @@ check_contains "#'(setf name) + >32-fn LABELS under stress" "SLC:42" "$out"
 check_absent   "no corrupted constant pool from #'(setf)"   "corrupted constant pool" "$out"
 check_absent   "no undefined-global from LABELS overflow"   "Undefined function: FN35" "$out"
 
+# --- Case: macrolet/symbol-macrolet setf boxing under GC stress ---------------
+# scan_body_for_boxing must install a MACROLET's expanders into the compiler env
+# (allocates: cl_compile + cl_cons) and expand them while scanning a FLET/LABELS
+# body, so a `(setf outer-var ...)` hidden inside the macro is seen and the var
+# is boxed.  The SYMBOL-MACROLET place path conses up a `(setf <expansion> val)`
+# form.  Both run during the boxing pre-scan, so compile this under stress to
+# force a compacting GC through those allocating paths.  Without the fix the
+# closure's write is dropped (the var keeps its init value); the local-time
+# parse-timestring shape that exposed this then yields NIL month.
+cat > "$WORK/mlet-box.lisp" <<'EOF'
+(in-package :cl-user)
+;; macrolet-defined SETM hides a (setf m ...) of the enclosing M inside the
+;; LABELS closure S; the boxing pre-scan must expand SETM to see the write.
+(defun mlet-box-run ()
+  (let ((m 0))
+    (macrolet ((setm (x) `(setf m ,x)))
+      (labels ((s () (setm 99)))
+        (s)
+        m))))
+;; macrolet nested *inside* the LABELS function body
+(defun mlet-box-run2 ()
+  (let ((m 0))
+    (labels ((s () (macrolet ((setm (x) `(setf m ,x))) (setm 7))))
+      (s)
+      m)))
+;; symbol-macrolet analogue: setf through the symbol-macro Q (-> M)
+(defun smlet-box-run ()
+  (let ((m 0))
+    (labels ((s () (symbol-macrolet ((q m)) (setf q 42))))
+      (s)
+      m)))
+EOF
+cat > "$WORK/mlet-box-run.lisp" <<EOF
+(load "$WORK/mlet-box.lisp")
+(format t "MLET:~a~%" (mlet-box-run))
+(format t "MLET2:~a~%" (mlet-box-run2))
+(format t "SMLET:~a~%" (smlet-box-run))
+EOF
+out=$(run_stress "$WORK/mlet-box-run.lisp")
+check_contains "macrolet setf boxing in labels under stress" "MLET:99" "$out"
+check_contains "macrolet-in-labels setf boxing under stress" "MLET2:7" "$out"
+check_contains "symbol-macrolet setf boxing in labels under stress" "SMLET:42" "$out"
+
 # --- Case: MAKE-ARRAY :element-type deftype alias under GC stress -------------
 # classify_array_elt_type calls cl_vm_apply (to evaluate the deftype expander),
 # which can trigger a compacting GC.  After compaction the `element_type` C

@@ -9570,6 +9570,69 @@ TEST(eval_scanner_symbol_macrolet_environment)
         "  (error (e) (declare (ignore e)) -1))"), 46);
 }
 
+/* Regression (local-time:parse-timestring returned NIL month/day → chipi
+ * influx persistence "CDR/%STRUCT-REF" failures).
+ *
+ * The boxing pre-scan (scan_body_for_boxing) decides which enclosing
+ * variables a FLET/LABELS closure mutates, so it can box them and make the
+ * write visible outside the closure.  It MUST macroexpand MACROLET-defined
+ * macros while scanning a closure body — otherwise a `(setf var ...)` hidden
+ * inside such a macro is never seen, the variable is not boxed, and the
+ * closure mutates a private copy while the enclosing binding keeps its
+ * initial value.  local-time's %SPLIT-TIMESTRING does exactly this: a
+ * PARSE-INTEGER-INTO macrolet does `(setf month value)` inside the date
+ * LABELS functions, so month/day came back NIL and a later `(<= 1 month 12)`
+ * raised "<=: argument is not of type REAL".
+ *
+ * The fix installs the macrolet's expanders into the compiler env for the
+ * duration of the body scan (and makes the scan-time expansion path
+ * recognise local macros).  The SYMBOL-MACROLET variant is the same bug. */
+TEST(eval_scanner_macrolet_setf_boxing)
+{
+    /* setf of an enclosing lexical through a MACROLET macro, inside LABELS */
+    ASSERT_EQ_INT(eval_int(
+        "(let ((m 0))"
+        "  (macrolet ((setm (x) `(setf m ,x)))"
+        "    (labels ((s () (setm 99)))"
+        "      (s)"
+        "      m)))"), 99);
+
+    /* same, but the MACROLET is nested *inside* the LABELS function body */
+    ASSERT_EQ_INT(eval_int(
+        "(let ((m 0))"
+        "  (labels ((s () (macrolet ((setm (x) `(setf m ,x))) (setm 7))))"
+        "    (s)"
+        "    m))"), 7);
+
+    /* FLET form */
+    ASSERT_EQ_INT(eval_int(
+        "(let ((m 0))"
+        "  (flet ((s () (macrolet ((setm (x) `(setf m ,x))) (setm 5))))"
+        "    (s)"
+        "    m))"), 5);
+
+    /* The local-time shape: a parse-into macrolet that setf's outer vars from
+     * inside LABELS, then reads them — must reflect the writes, not NIL. */
+    ASSERT_STR_EQ(eval_print(
+        "(let (y mo d)"
+        "  (macrolet ((into (place v lo hi)"
+        "               `(progn (setf ,place ,v)"
+        "                       (unless (<= ,lo ,place ,hi) (error \"range\"))"
+        "                       (values))))"
+        "    (labels ((sy (v) (into y v 1 9999))"
+        "             (sm (v) (into mo v 1 12))"
+        "             (sd (v) (into d v 1 31)))"
+        "      (sy 2026) (sm 6) (sd 27)"
+        "      (list y mo d))))"), "(2026 6 27)");
+
+    /* SYMBOL-MACROLET analogue: setf through a symbol-macro inside LABELS. */
+    ASSERT_EQ_INT(eval_int(
+        "(let ((m 0))"
+        "  (labels ((s () (symbol-macrolet ((q m)) (setf q 42))))"
+        "    (s)"
+        "    m))"), 42);
+}
+
 TEST(eval_heap_exhaustion_error)
 {
     /* Accumulating live data until heap is full should signal CL_ERR_STORAGE
@@ -10864,6 +10927,8 @@ int main(void)
 
     /* compiler scanner: symbol-macrolet + &environment macro (ironclad sha3) */
     RUN(eval_scanner_symbol_macrolet_environment);
+    /* compiler scanner: macrolet/symbol-macrolet setf boxing (local-time) */
+    RUN(eval_scanner_macrolet_setf_boxing);
 #ifdef CL_WIDE_STRINGS
     RUN(eval_wide_string_reader);
     RUN(eval_string_trim_wide);
