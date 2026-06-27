@@ -9631,6 +9631,24 @@ TEST(eval_scanner_macrolet_setf_boxing)
         "  (labels ((s () (symbol-macrolet ((q m)) (setf q 42))))"
         "    (s)"
         "    m))"), 42);
+
+    /* In-place macrolet (no FLET/LABELS) whose expansion both setfs a place
+     * and references global macro stubs (SETF/PROGN have macro-functions for
+     * MACROEXPAND conformance).  Compiling the inner (setf y v) re-enters the
+     * global-macro check, whose cl_build_lex_env conses a non-empty lexical
+     * env from the enclosing macrolet binding; the local `expr`/`head` copies
+     * in compile_expr_step must be refreshed after that allocation or the
+     * setf is dispatched with the relocated enclosing PROGN form.  Surfaced
+     * under GC stress as "%SETF-SETF" / the wrong (hi) value (see the
+     * mlet-into case in test_gc_stress_regression.sh). */
+    ASSERT_EQ_INT(eval_int(
+        "(let ((y 0))"
+        "  (macrolet ((into (place v lo hi)"
+        "               `(progn (setf ,place ,v)"
+        "                       (unless (<= ,lo ,place ,hi) (error \"range\"))"
+        "                       (values))))"
+        "    (into y 2026 1 9999))"
+        "  y)"), 2026);
 }
 
 TEST(eval_heap_exhaustion_error)
