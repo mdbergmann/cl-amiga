@@ -10,6 +10,7 @@
 #include "core/vm.h"
 #include "core/builtins.h"
 #include "core/repl.h"
+#include "core/compiler_internal.h" /* determine_boxed_vars (deep-scan regression) */
 #include "platform/platform.h"
 #ifdef PLATFORM_POSIX
 #include <locale.h>
@@ -6133,6 +6134,69 @@ TEST(eval_environment_macrolet_captures_symbol_macros)
         "(QUOTE FOUND)");
 }
 
+TEST(eval_environment_macrolet_inside_binding_form)
+{
+    /* Regression: a MACROLET macro whose &environment is NOT the first
+     * lambda-list element, used inside a binding form (LET) that triggers
+     * the boxing pre-scan.  The pre-scan installs the macrolet expanders to
+     * "see through" macrolet calls, then the real compile installs them
+     * again.  cl_macrolet_install_expanders used to splice &environment out
+     * by DESTRUCTIVELY mutating the shared lambda-list, so the 2nd install
+     * saw no &environment and never re-bound the env var, making the
+     * expander body's reference to it "Unbound variable: ENV".  This is the
+     * exact shape of ironclad sha3.lisp's STATE-AREF macrolets. */
+    ASSERT_EQ_INT(eval_int(
+        "(let ((v (make-array 3 :initial-element 0)))"
+        "  (macrolet ((setit (i val &environment env)"
+        "               `(setf (aref v ,(macroexpand i env)) ,val)))"
+        "    (symbol-macrolet ((idx 1))"
+        "      (setit idx 99)"
+        "      (aref v 1))))"), 99);
+    /* &environment last, two required params, used as a read place. */
+    ASSERT_EQ_INT(eval_int(
+        "(let ((v (make-array '(2 2) :initial-element 7)))"
+        "  (macrolet ((g (x y &environment env)"
+        "               `(aref v ,(macroexpand x env) ,(macroexpand y env))))"
+        "    (g 1 1)))"), 7);
+}
+
+TEST(scanner_deep_nesting_no_root_overflow)
+{
+    /* Regression: scan_body_for_boxing recurses through the LET/MACROLET/FLET/
+     * COND/... special-form handlers and the macro-expansion fall-through
+     * WITHOUT bumping its scan_recurse_depth guard, and each level holds GC
+     * roots (the walk cursor / body / macro expansion) across its recursive
+     * call.  A deeply nested binding form — the shape serapeum's
+     * sequences.lisp macro-expands into (cascading DO-VECTOR/SEQ-DISPATCH/
+     * WITH-VREF) — drove gc_root_count to the per-thread CL_GC_ROOT_STACK_SIZE
+     * ceiling, where cl_gc_pop_roots abort()s the whole process.  The
+     * gc_root_count backstop at the top of scan_body_for_boxing now bails out
+     * before that.  Build (let ((a (let ((a (... 0 ...))) a))) a) ~2500 deep
+     * (well past the 1024-root ceiling) and run the boxing pre-scan on it
+     * directly: it must RETURN, not crash. */
+    CL_Obj sym_a = cl_intern("A", 1);
+    CL_Obj form = CL_MAKE_FIXNUM(0);
+    CL_Obj body;
+    CL_Obj vars[1];
+    uint8_t boxed[1];
+    int i;
+    CL_GC_PROTECT(sym_a);
+    CL_GC_PROTECT(form);
+    for (i = 0; i < 2500; i++) {
+        /* form := (let ((a <form>)) a) */
+        CL_Obj binding  = cl_cons(sym_a, cl_cons(form, CL_NIL));   /* (a <form>) */
+        CL_Obj bindings = cl_cons(binding, CL_NIL);                /* ((a <form>)) */
+        form = cl_cons(SYM_LET, cl_cons(bindings, cl_cons(sym_a, CL_NIL)));
+    }
+    vars[0] = sym_a;
+    body = cl_cons(form, CL_NIL);
+    CL_GC_PROTECT(body);
+    /* Without the backstop this abort()s; with it, it returns cleanly. */
+    determine_boxed_vars(body, vars, 1, boxed);
+    CL_GC_UNPROTECT(3);
+    ASSERT(1); /* reached here -> no GC-root-stack overflow abort */
+}
+
 /* define-symbol-macro — global (stored on symbol plist, consulted by
    compile_symbol via cl_lookup_global_symbol_macro).  Regression tests
    for the sento/serapeum +alist-breakeven+ defconst pattern, which
@@ -10493,6 +10557,8 @@ int main(void)
     RUN(eval_environment_symbol_macrolet_expand);
     RUN(eval_environment_with_boolean_idiom);
     RUN(eval_environment_macrolet_captures_symbol_macros);
+    RUN(eval_environment_macrolet_inside_binding_form);
+    RUN(scanner_deep_nesting_no_root_overflow);
     RUN(eval_define_symbol_macro_basic);
     RUN(eval_define_symbol_macro_read_time_eval);
     RUN(eval_define_symbol_macro_macroexpand_1);
