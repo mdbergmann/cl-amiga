@@ -1029,9 +1029,6 @@
   ;; below stay valid (otherwise (car 'name) signals a TYPE-ERROR).
   (let* ((slot-specs (mapcar (lambda (spec) (if (consp spec) spec (list spec)))
                              slot-specs))
-         (parent (cond ((consp parent-types) (car parent-types))
-                      ((null parent-types) 'condition)
-                      (t parent-types)))
         (parents-list (cond ((consp parent-types) parent-types)
                             ((null parent-types) '(condition))
                             (t (list parent-types))))
@@ -1045,7 +1042,11 @@
         (:report (setq report (cadr opt)))
         (:default-initargs (setq default-initargs (cdr opt)))))
     `(progn
-       (%register-condition-type ',name ',parent ',slot-pairs)
+       ;; Register the FULL parent list so condition type membership
+       ;; (TYPEP / SUBTYPEP / handler-case) sees every superclass, including
+       ;; ones where ERROR is not the first parent (e.g. usocket's
+       ;; (define-condition socket-error (socket-condition error))).
+       (%register-condition-type ',name ',parents-list ',slot-pairs)
        (when (fboundp '%register-condition-class)
          (%register-condition-class ',name ',parents-list))
        ,@(mapcan (lambda (slot-spec)
@@ -1795,7 +1796,7 @@ when the param has no explicit default.  CL spec 3.4.6 requires this."
          (total-days (+ (* y 365)
                         (truncate (+ y 3) 4)        ; leap years (every 4)
                         (- (truncate (+ y 99) 100)) ; minus century years
-                        (truncate (+ y 399) 400)))   ; plus 400-year cycles
+                        (truncate (+ y 299) 400)))   ; plus 400-year cycles
          ;; Add days for months within the year
          (leap (and (zerop (mod year 4))
                     (or (not (zerop (mod year 100)))

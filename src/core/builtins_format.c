@@ -1527,9 +1527,14 @@ static void fmt_dispatch(FmtCtx *ctx, FmtDirective *d)
                        CL_HDR_TYPE(CL_OBJ_TO_PTR(arg)) == TYPE_BIGNUM));
         if (is_num) {
             double val = cl_to_double(arg);
-            if (digs < 0)
-                len = snprintf(buf, sizeof(buf), "%g", val);
-            else
+            if (digs < 0) {
+                /* No d parameter: print the shortest faithful (round-tripping)
+                   representation rather than "%g"'s 6-significant-digit default,
+                   which silently truncates (e.g. 1234.567f0 -> "1234.57"). */
+                int as_double = !(CL_HEAP_P(arg) &&
+                                  CL_HDR_TYPE(CL_OBJ_TO_PTR(arg)) == TYPE_SINGLE_FLOAT);
+                len = cl_float_shortest_g(buf, (int)sizeof(buf), val, as_double);
+            } else
                 len = snprintf(buf, sizeof(buf), "%.*f", (int)digs, val);
             if (len < 0) len = 0;
             if (len > (int)sizeof(buf) - 1) len = (int)sizeof(buf) - 1;

@@ -331,9 +331,9 @@ TEST(complex_exp_log)
      * canonicalize #C(0 0) → 0 per CLHS 12.1.5.3. */
     ASSERT_STR_EQ(eval_print("(exp #C(0.0 0.0))"), "#C(1.0 0.0)");
     /* log(i) = 0 + (pi/2)i */
-    ASSERT_STR_EQ(eval_print("(log #C(0 1))"), "#C(0.0 1.5708)");
+    ASSERT_STR_EQ(eval_print("(log #C(0 1))"), "#C(0.0 1.5707964)");
     /* log of negative real promotes to complex (CLHS 12.1.5.3) */
-    ASSERT_STR_EQ(eval_print("(log -1)"), "#C(0.0 3.14159)");
+    ASSERT_STR_EQ(eval_print("(log -1)"), "#C(0.0 3.1415927)");
     /* log(1, base) = 0 — round-trip */
     ASSERT_STR_EQ(eval_print("(< (abs (- (log 100.0 10.0) 2.0)) 0.001)"), "T");
 }
@@ -341,16 +341,16 @@ TEST(complex_exp_log)
 TEST(complex_trig)
 {
     /* sin(i) = i*sinh(1) ≈ i*1.1752 — purely imaginary, real=0. */
-    ASSERT_STR_EQ(eval_print("(sin #C(0 1))"), "#C(0.0 1.1752)");
+    ASSERT_STR_EQ(eval_print("(sin #C(0 1))"), "#C(0.0 1.1752012)");
     /* cos(i) = cosh(1) ≈ 1.5431 — purely real but result is complex
        because the input was complex. */
-    ASSERT_STR_EQ(eval_print("(cos #C(0 1))"), "#C(1.54308 -0.0)");
+    ASSERT_STR_EQ(eval_print("(cos #C(0 1))"), "#C(1.5430807 -0.0)");
     /* asin / acos / atanh of out-of-range real → complex. */
-    ASSERT_STR_EQ(eval_print("(asin 2.0)"), "#C(1.5708 -1.31696)");
-    ASSERT_STR_EQ(eval_print("(acos 2.0)"), "#C(0.0 1.31696)");
-    ASSERT_STR_EQ(eval_print("(atanh 2.0)"), "#C(0.549306 -1.5708)");
+    ASSERT_STR_EQ(eval_print("(asin 2.0)"), "#C(1.5707964 -1.316958)");
+    ASSERT_STR_EQ(eval_print("(acos 2.0)"), "#C(0.0 1.316958)");
+    ASSERT_STR_EQ(eval_print("(atanh 2.0)"), "#C(0.54930615 -1.5707964)");
     /* acosh of x<1 → complex. */
-    ASSERT_STR_EQ(eval_print("(acosh 0.0)"), "#C(0.0 1.5708)");
+    ASSERT_STR_EQ(eval_print("(acosh 0.0)"), "#C(0.0 1.5707964)");
 }
 
 TEST(complex_cis)

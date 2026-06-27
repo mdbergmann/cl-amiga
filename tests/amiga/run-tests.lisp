@@ -1916,6 +1916,23 @@
 (define-condition bss-err2 (error) (a (b :initarg :b :reader bss-b)))
 (check "define-condition mixed-slots" 7 (bss-b (make-condition 'bss-err2 :b 7)))
 
+; ERROR as a non-first superclass must still make the condition an ERROR for
+; typep / subtypep / handler-case (regression: usocket SOCKET-ERROR is
+; (define-condition socket-error (socket-condition error)) — only the first
+; parent was registered, so it escaped (error ...) handlers and chipi's
+; InfluxDB fetch future never completed on an unknown host).
+(define-condition mi-base (condition) ())
+(define-condition mi-err (mi-base error) ())
+(define-condition mi-sub (mi-err) ())
+(check "define-condition error-2nd-parent typep"  t   (typep (make-condition 'mi-err) 'error))
+(check "define-condition error-2nd-parent typep-base" t (typep (make-condition 'mi-err) 'mi-base))
+(check "define-condition error-2nd-parent subtypep" t (subtypep 'mi-err 'error))
+(check "define-condition error-2nd-parent inherited" t (typep (make-condition 'mi-sub) 'error))
+(check "define-condition error-2nd-parent handler-case" :as-error
+       (handler-case (error 'mi-err) (error () :as-error) (condition () :as-cond)))
+; must not spuriously widen a pure non-error condition
+(check "define-condition non-error-not-widened" nil (typep (make-condition 'mi-base) 'error))
+
 ; --- check-type ---
 (check "check-type pass" :ok (let ((x 42)) (check-type x integer) :ok))
 (check "check-type fail" "hello" (handler-case (let ((x "hello")) (check-type x integer)) (type-error (c) (type-error-datum c))))
@@ -2846,6 +2863,13 @@
 (check "print single 5.0 default-double" "5.0f0" (let ((*read-default-float-format* 'double-float)) (prin1-to-string 5.0)))
 (check "print single sci-notation default-double" "1f-05" (let ((*read-default-float-format* 'double-float)) (prin1-to-string 1.0e-5)))
 
+; --- Float printer full-precision round-trip (regression: %g 6-sig-dig truncation) ---
+(check "float printer single full precision" "1234.567" (prin1-to-string 1234.567))
+(check "float printer single roundtrip" t (= 1234.567 (read-from-string (prin1-to-string 1234.567))))
+(check "float printer double pi full precision" "3.141592653589793d0" (prin1-to-string (coerce pi 'double-float)))
+(check "float printer double pi roundtrip" t (= 3.141592653589793d0 (read-from-string (prin1-to-string 3.141592653589793d0))))
+(check "format ~f full precision" "1234.567" (format nil "~f" 1234.567))
+
 ; --- File streams / open / with-open-file (Step 8) ---
 ; Use /tmp/ on POSIX, T: on Amiga — both are writable temp directories
 ; Detect by trying /tmp/ first (fails on Amiga), fall back to T:
@@ -3168,6 +3192,21 @@
 
 ; encode/decode round-trip
 (check "encode-decode-roundtrip" (list 30 45 12 15 6 2025) (multiple-value-bind (s mi h d mo y) (decode-universal-time (encode-universal-time 30 45 12 15 6 2025)) (list s mi h d mo y)))
+
+; encode-universal-time absolute values (regression: leap-day overcount made
+; dates in 1999-2000 one day (86400s) too large; UTC universal = unix + 2208988800)
+(check "encode-ut-1999-01-01" 3124137600 (encode-universal-time 0 0 0 1 1 1999 0))
+(check "encode-ut-2000-01-01" 3155673600 (encode-universal-time 0 0 0 1 1 2000 0))
+(check "encode-ut-2000-02-29" 3160771200 (encode-universal-time 0 0 0 29 2 2000 0))
+(check "encode-ut-2000-03-01" 3160857600 (encode-universal-time 0 0 0 1 3 2000 0))
+(check "encode-ut-2001-01-01" 3187296000 (encode-universal-time 0 0 0 1 1 2001 0))
+(check "encode-ut-2026-06-27" 3991507200 (encode-universal-time 0 0 0 27 6 2026 0))
+; encode is the inverse of decode in the formerly-broken range
+; (encode args are second=33 minute=22 hour=11; decode returns s mi h ... in that order)
+(check "encode-decode-roundtrip-2000" (list 33 22 11 29 2 2000)
+  (multiple-value-bind (s mi h d mo y)
+      (decode-universal-time (encode-universal-time 33 22 11 29 2 2000 0) 0)
+    (list s mi h d mo y)))
 
 ; get-decoded-time returns 9 values
 (check "get-decoded-time-count" 9 (length (multiple-value-list (get-decoded-time))))

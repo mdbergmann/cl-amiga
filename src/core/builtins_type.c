@@ -2159,6 +2159,21 @@ static CL_Obj bi_subtypep(CL_Obj *args, int n)
             cl_mv_values[1] = SYM_T;
             return result ? SYM_T : CL_NIL;
         }
+        /* Condition type hierarchy: walk the full (multi-parent) superclass
+         * graph so (subtypep 'socket-error 'error) is certain T even when ERROR
+         * is not the first superclass.  Same registry TYPEP / handler-case use. */
+        {
+            extern int cl_condition_type_matches(CL_Obj cond_type, CL_Obj handler_type);
+            extern int cl_is_condition_type(CL_Obj type_sym);
+            if (CL_SYMBOL_P(type1) && CL_SYMBOL_P(type2) &&
+                cl_is_condition_type(type1) && cl_is_condition_type(type2)) {
+                result = cl_condition_type_matches(type1, type2);
+                cl_mv_count = 2;
+                cl_mv_values[0] = result ? SYM_T : CL_NIL;
+                cl_mv_values[1] = SYM_T;
+                return result ? SYM_T : CL_NIL;
+            }
+        }
         /* Unknown type: return (NIL NIL) */
         cl_mv_count = 2;
         cl_mv_values[0] = CL_NIL;
