@@ -2129,6 +2129,41 @@
                  (setf acc (+ acc (smm-get x y)))))))
     (smm-keccak 0)))
 
+;; A MACROLET-defined (not DEFMACRO) macro whose &environment is NOT the first
+;; lambda-list element, used inside a LET that triggers the boxing pre-scan.
+;; cl_macrolet_install_expanders runs twice on the shared lambda list (once in
+;; the pre-scan, once in the real compile); the &environment strip must NOT
+;; mutate that shared structure, else the 2nd install drops &environment and the
+;; expander body's env reference becomes "Unbound variable: ENV".  This is the
+;; exact shape of ironclad sha3.lisp's STATE-AREF / GET-KECCAK-ROTATE-OFFSET.
+(check "scanner macrolet non-first &environment in binding form" 99
+  (let ((v (make-array 3 :initial-element 0)))
+    (macrolet ((setit (i val &environment env)
+                 `(setf (aref v ,(macroexpand i env)) ,val)))
+      (symbol-macrolet ((idx 1))
+        (setit idx 99)
+        (aref v 1)))))
+
+;; Deeply-nested binding form: scan_body_for_boxing recurses through the LET/
+;; MACROLET/... handlers and the macro fall-through holding GC roots across each
+;; recursive call.  Serapeum's sequences.lisp expands into nesting deep enough to
+;; exhaust the GC-root stack and abort the compile (host sento-system suite); a
+;; gc_root_count backstop in scan_body_for_boxing now bails before that.  The full
+;; trigger (~1000 levels) would overflow the Amiga C stack first and is host-only
+;; (covered by test_vm.c scanner_deep_nesting_no_root_overflow), so here just
+;; confirm the scanner still boxes correctly through MODERATE nesting: ACC is
+;; mutated by the ADD closure (so it must be boxed) and the call is buried 60 LETs
+;; deep, forcing the scanner to recurse through all of them and still mark ACC.
+(check "scanner boxes mutated var through deep nesting" 1
+  (let ((acc 0))
+    (flet ((add () (setf acc (1+ acc))))
+      (macrolet ((deep ()
+                   (let ((form '(add)))
+                     (dotimes (i 60) (setf form (list 'let '((d 0)) form)))
+                     form)))
+        (deep)))
+    acc))
+
 ; --- Scanner: macrolet/symbol-macrolet setf boxing (local-time parse-timestring) ---
 ;; The boxing pre-scan must macroexpand MACROLET (and SYMBOL-MACROLET) forms
 ;; while scanning a FLET/LABELS body, or a `(setf var ...)` hidden in such a

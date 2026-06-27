@@ -924,6 +924,33 @@ check_contains "symbol-macrolet setf boxing in labels under stress" "SMLET:42" "
 check_contains "in-place macrolet setf+stub keeps live expr under stress" "MINTO:2026" "$out"
 check_absent   "no %SETF-SETF from stale expr in macrolet body"           "%SETF-SETF" "$out"
 
+# --- Case: macrolet &environment (non-first) inside a binding form ------------
+# cl_macrolet_install_expanders runs TWICE on the same shared lambda-list: the
+# boxing pre-scan installs the expanders to see through macrolet calls, then the
+# real compile_macrolet installs them again.  The &environment strip must be
+# NON-DESTRUCTIVE — the old code spliced &environment out by mutating a prior
+# cons's cdr, so the 2nd install saw no &environment and never re-bound the env
+# var, making the expander body "Unbound variable: ENV".  This is ironclad
+# sha3.lisp's STATE-AREF shape (&environment last, used inside a LET).  The
+# rebuild conses a fresh lambda-list, so exercise it under compaction.
+cat > "$WORK/mlet-env.lisp" <<'EOF'
+(in-package :cl-user)
+(defun mlet-env-run ()
+  (let ((v (make-array 3 :initial-element 0)))
+    (macrolet ((setit (i val &environment env)
+                 `(setf (aref v ,(macroexpand i env)) ,val)))
+      (symbol-macrolet ((idx 1))
+        (setit idx 99)
+        (aref v 1)))))
+EOF
+cat > "$WORK/mlet-env-run.lisp" <<EOF
+(load "$WORK/mlet-env.lisp")
+(format t "MLETENV:~a~%" (mlet-env-run))
+EOF
+out=$(run_stress "$WORK/mlet-env-run.lisp")
+check_contains "macrolet non-first &environment in binding form under stress" "MLETENV:99" "$out"
+check_absent   "no unbound ENV from destructive &environment strip"           "Unbound variable: ENV" "$out"
+
 # --- Case: MAKE-ARRAY :element-type deftype alias under GC stress -------------
 # classify_array_elt_type calls cl_vm_apply (to evaluate the deftype expander),
 # which can trigger a compacting GC.  After compaction the `element_type` C

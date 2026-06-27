@@ -1062,6 +1062,35 @@ top:
     if (scan_recurse_depth >= SCAN_MAX_RECURSE_DEPTH)
         return;
 
+    /* Hard safety net against GC-root-stack exhaustion.  scan_recurse_depth
+     * above only counts the general list walk — the macro-expansion
+     * fall-through and the LET/MACROLET/FLET/COND/... special-form handlers
+     * all recurse into scan_body_for_boxing WITHOUT bumping it, while each
+     * level holds GC roots (the walk cursor, the body, the macro expansion)
+     * across its recursive call.  Deeply macro-nested code therefore recurses
+     * far past SCAN_MAX_RECURSE_DEPTH and can drive gc_root_count to the
+     * per-thread CL_GC_ROOT_STACK_SIZE ceiling, where cl_gc_pop_roots
+     * abort()s the process (observed compiling serapeum's sequences.lisp:
+     * cascading DO-VECTOR / SEQ-DISPATCH / WITH-VREF expansions).  Bail out
+     * before that.  This is a conservative best-effort pre-scan — bailing
+     * only risks under-boxing a variable nested absurdly deep (the prior
+     * behaviour when the macro/recurse limits fire), which is far safer than
+     * crashing the compile.  Leave headroom for cl_cons's transient pushes
+     * and the few roots this frame still takes below. */
+    if (gc_root_count >= CL_GC_ROOT_STACK_SIZE - 64) {
+#ifdef DEBUG_COMPILER
+        static int warned_root_limit = 0;
+        if (!warned_root_limit) {
+            warned_root_limit = 1;
+            fprintf(stderr,
+                    "; note: boxing pre-scan truncated at GC-root limit "
+                    "(deeply macro-nested form); some variables in the "
+                    "deepest forms may not be boxed\n");
+        }
+#endif
+        return;
+    }
+
     /* Symbol reference */
     if (CL_SYMBOL_P(form)) {
         if (closure_depth > 0) {

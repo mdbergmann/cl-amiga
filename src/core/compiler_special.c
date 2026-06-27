@@ -2848,35 +2848,73 @@ void cl_macrolet_install_expanders(CL_CompEnv *env, CL_Obj bindings)
 
             /* Strip &environment (same as defmacro).  The env-var is
              * bound at the top of the body to the current lexical env,
-             * captured by the caller and read via %MACROEXPAND-ENV. */
+             * captured by the caller and read via %MACROEXPAND-ENV.
+             *
+             * IMPORTANT: rebuild the lambda list NON-DESTRUCTIVELY.  The
+             * macrolet binding's lambda list is shared source structure and
+             * cl_macrolet_install_expanders runs more than once on it: the
+             * boxing pre-scan (scan_body_for_boxing) installs the expanders
+             * to see through macrolet calls, then the real compile_macrolet
+             * installs them again.  Splicing &environment out by mutating a
+             * prior cons's cdr would permanently drop it from the source, so
+             * the 2nd install would never re-bind the env var and the
+             * expander body's reference to it became "Unbound variable: ENV"
+             * (e.g. ironclad sha3.lisp's STATE-AREF macrolets, whose
+             * &environment is not the first lambda-list element). */
             {
+                CL_Obj env_var = CL_NIL;
+                int found_env = 0;
                 CL_Obj cur2 = lambda_list;
-                CL_Obj prev2 = CL_NIL;
                 while (!CL_NULL_P(cur2)) {
-                    CL_Obj p = cl_car(cur2);
-                    if (p == SYM_AMP_ENVIRONMENT) {
+                    if (cl_car(cur2) == SYM_AMP_ENVIRONMENT) {
                         CL_Obj next2 = cl_cdr(cur2);
-                        CL_Obj env_var = CL_NULL_P(next2) ? CL_NIL : cl_car(next2);
-                        CL_Obj after2 = CL_NULL_P(next2) ? CL_NIL : cl_cdr(next2);
-                        if (CL_NULL_P(prev2))
-                            lambda_list = after2;
-                        else
-                            ((CL_Cons *)CL_OBJ_TO_PTR(prev2))->cdr = after2;
-                        if (CL_SYMBOL_P(env_var)) {
-                            CL_Obj capture_sym =
-                                cl_intern_in("%MACROEXPAND-ENV", 16,
-                                             cl_package_clamiga);
-                            CL_Obj capture_call = cl_cons(capture_sym, CL_NIL);
-                            CL_Obj bind = cl_cons(env_var,
-                                                  cl_cons(capture_call, CL_NIL));
-                            CL_Obj binds = cl_cons(bind, CL_NIL);
-                            CL_Obj let_f = cl_cons(SYM_LET, cl_cons(binds, mbody));
-                            mbody = cl_cons(let_f, CL_NIL);
-                        }
+                        env_var = CL_NULL_P(next2) ? CL_NIL : cl_car(next2);
+                        found_env = 1;
                         break;
                     }
-                    prev2 = cur2;
                     cur2 = cl_cdr(cur2);
+                }
+                if (found_env) {
+                    /* Copy lambda_list, omitting "&environment <var>".
+                     * cl_cons below can compact, so GC-protect the walk
+                     * cursor cur2 (points into the protected lambda_list, but
+                     * is a separate C local that would otherwise go stale)
+                     * along with the list being built. */
+                    CL_Obj new_ll = CL_NIL, new_tail = CL_NIL;
+                    CL_GC_PROTECT(env_var);
+                    CL_GC_PROTECT(new_ll);
+                    CL_GC_PROTECT(new_tail);
+                    CL_GC_PROTECT(cur2);
+                    cur2 = lambda_list;
+                    while (!CL_NULL_P(cur2)) {
+                        CL_Obj p = cl_car(cur2);
+                        if (p == SYM_AMP_ENVIRONMENT) {
+                            cur2 = cl_cdr(cur2);              /* skip &environment */
+                            if (!CL_NULL_P(cur2))
+                                cur2 = cl_cdr(cur2);         /* skip the env var */
+                            continue;
+                        }
+                        {
+                            CL_Obj cell = cl_cons(p, CL_NIL);
+                            if (CL_NULL_P(new_ll)) new_ll = cell;
+                            else ((CL_Cons *)CL_OBJ_TO_PTR(new_tail))->cdr = cell;
+                            new_tail = cell;
+                        }
+                        cur2 = cl_cdr(cur2);
+                    }
+                    lambda_list = new_ll;
+                    if (CL_SYMBOL_P(env_var)) {
+                        CL_Obj capture_sym =
+                            cl_intern_in("%MACROEXPAND-ENV", 16,
+                                         cl_package_clamiga);
+                        CL_Obj capture_call = cl_cons(capture_sym, CL_NIL);
+                        CL_Obj bind = cl_cons(env_var,
+                                              cl_cons(capture_call, CL_NIL));
+                        CL_Obj binds = cl_cons(bind, CL_NIL);
+                        CL_Obj let_f = cl_cons(SYM_LET, cl_cons(binds, mbody));
+                        mbody = cl_cons(let_f, CL_NIL);
+                    }
+                    CL_GC_UNPROTECT(4); /* cur2, new_tail, new_ll, env_var */
                 }
             }
 
