@@ -15,6 +15,18 @@
 #define CL_GC_MARK_STACK_SIZE 4096
 #define CL_GC_ROOT_STACK_SIZE 1024
 #define CL_MIN_ALLOC_SIZE     16  /* Minimum allocation (aligned) */
+
+/* Tripwire: force compaction after this many bump-exhausted sweeps without
+ * an intervening compaction.  A sweep-only GC never resets the bump pointer,
+ * so once bump is exhausted the allocator can "succeed" via a recycled free
+ * block on every iteration while running a full mark-sweep — the
+ * "sweep-forever" pathology.  Overridable at build time so the regression
+ * test (test_alloc_sweep_escape.c) can tighten the bound independently of
+ * the default value. */
+#ifndef GC_SWEEPS_BEFORE_COMPACT
+#define GC_SWEEPS_BEFORE_COMPACT 8
+#endif
+
 /* Arena alignment: 8-byte on 64-bit hosts (CL_Bytecode et al. have pointer
  * fields that require natural alignment), 4-byte on 32-bit (Amiga). */
 #if UINTPTR_MAX > 0xFFFFFFFFu
