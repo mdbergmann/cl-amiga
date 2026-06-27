@@ -11,6 +11,8 @@
 #include "mem.h"
 #include "error.h"
 #include <math.h>
+#include <stdio.h>
+#include <stdlib.h>
 
 /* ================================================================
  * Conversion helpers
@@ -49,6 +51,35 @@ double cl_to_double(CL_Obj obj)
 float cl_to_float(CL_Obj obj)
 {
     return (float)cl_to_double(obj);
+}
+
+int cl_float_shortest_g(char *buf, int bufsz, double value, int is_double)
+{
+    /* Find the minimal number of significant digits whose "%g" rendering reads
+       back to exactly the original float (round-trip).  binary32 needs at most
+       9 significant digits, binary64 at most 17.  We then render with at least
+       a floor precision (6 for single, 15 for double — the historical "%g" /
+       "%.15g" widths) so that round magnitudes such as 100.0 stay in fixed
+       notation instead of collapsing to "1e+02"; the floor only ever adds
+       digits that "%g" immediately strips as trailing zeros, so the result is
+       still the shortest *faithful* representation. */
+    int maxprec = is_double ? 17 : 9;
+    int floorp  = is_double ? 15 : 6;
+    int prec, p = maxprec, len;
+    char tmp[48];
+    for (prec = 1; prec <= maxprec; prec++) {
+        snprintf(tmp, sizeof(tmp), "%.*g", prec, value);
+        if (is_double ? (strtod(tmp, (char **)0) == value)
+                      : ((float)strtod(tmp, (char **)0) == (float)value)) {
+            p = prec;
+            break;
+        }
+    }
+    if (p < floorp) p = floorp;
+    len = snprintf(buf, (size_t)bufsz, "%.*g", p, value);
+    if (len < 0) { buf[0] = '\0'; return 0; }
+    if (len > bufsz - 1) len = bufsz - 1;
+    return len;
 }
 
 /* ================================================================

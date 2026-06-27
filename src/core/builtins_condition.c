@@ -595,43 +595,51 @@ static CL_Obj bi_file_error_pathname(CL_Obj *args, int n)
 static CL_Obj bi_register_condition_type(CL_Obj *args, int n)
 {
     CL_Obj name = args[0];
-    CL_Obj parent = args[1];
+    CL_Obj parents = args[1];   /* list of parent symbols (legacy: a lone symbol) */
     CL_Obj slot_pairs = args[2];
-    CL_Obj entry;
+    CL_Obj entry = CL_NIL;
     CL_UNUSED(n);
 
     if (!CL_SYMBOL_P(name))
         cl_error(CL_ERR_TYPE, "%%REGISTER-CONDITION-TYPE: name must be a symbol");
-    if (!CL_SYMBOL_P(parent) && !CL_NULL_P(parent))
-        cl_error(CL_ERR_TYPE, "%%REGISTER-CONDITION-TYPE: parent must be a symbol");
+    if (!CL_SYMBOL_P(parents) && !CL_NULL_P(parents) && !CL_CONS_P(parents))
+        cl_error(CL_ERR_TYPE,
+                 "%%REGISTER-CONDITION-TYPE: parents must be a symbol or list");
 
     /* GC-protect ALL the CL_Obj locals across the cl_cons calls below.
-     * args[] entries are VM-rooted, but the cached `name`/`parent`/`slot_pairs`
+     * args[] entries are VM-rooted, but the cached `name`/`parents`/`slot_pairs`
      * locals are not — the nested cl_cons() allocations can trigger a
      * compacting GC that relocates the symbols, leaving the locals holding
      * stale offsets.  Storing a stale `name` here produced cons cells with
      * out-of-bounds car/cdr offsets (caught by the GC verifier) when a
-     * define-condition was loaded under heap pressure. */
+     * define-condition was loaded under heap pressure.
+     * `entry` must also be protected: it holds a freshly-consed pair and is
+     * passed as CAR to a second cl_cons() which can itself trigger compaction,
+     * leaving `entry` stale before it is stored in the global tables. */
     CL_GC_PROTECT(name);
-    CL_GC_PROTECT(parent);
+    CL_GC_PROTECT(parents);
     CL_GC_PROTECT(slot_pairs);
-
-    /* Add (name parent) to condition_hierarchy.
-     *
-     * Build the (parent) tail in a SEPARATE, GC-protected step rather than
-     * as a single nested cl_cons(name, cl_cons(parent, CL_NIL)).  The nested
-     * form is GC-unsafe: C does not order the outer call's argument
-     * evaluation, so `name` is read into an unprotected temporary BEFORE the
-     * inner cl_cons() runs.  Under heap pressure that inner allocation can
-     * trigger a compacting GC that relocates the symbol; the outer call then
-     * conses with a stale (mid-object) `name` offset.  Observed as the
-     * symbol's own plist field being clobbered to 0x800000 (the GC mark bit)
-     * because the stale offset pointed 16 bytes into the live symbol and the
-     * mark phase set the mark bit there.  Splitting the cons so `name` is
-     * re-read from its protected local AFTER the inner allocation is safe. */
-    entry = cl_cons(parent, CL_NIL);   /* (parent) */
     CL_GC_PROTECT(entry);
-    entry = cl_cons(name, entry);      /* (name parent) — name re-read post-alloc */
+
+    /* Add (name parent1 parent2 ...) to condition_hierarchy.  ALL parents must
+     * be recorded, not just the first: a condition whose SECOND (or later)
+     * superclass is ERROR — e.g. usocket's SOCKET-ERROR is
+     * (define-condition socket-error (socket-condition error)) — must still be
+     * recognised as a subtype of ERROR by cl_condition_type_matches() (and
+     * hence TYPEP / SUBTYPEP / handler-case).  Previously only (car parents)
+     * was stored, so such conditions escaped (error ...) handlers.
+     *
+     * Accept a lone symbol for backward compatibility by wrapping it in a
+     * one-element list.  Each cl_cons() can trigger a compacting GC, so the
+     * locals stay protected and `name` is re-read from its protected slot
+     * AFTER the inner allocation (see the historical note above on the stale
+     * mid-object offset that clobbered a symbol's plist with the mark bit). */
+    if (CL_SYMBOL_P(parents)) {
+        entry = cl_cons(parents, CL_NIL);   /* (parent) */
+        parents = entry;
+    }
+    /* parents is now a (possibly empty) proper list of parent symbols */
+    entry = cl_cons(name, parents);   /* (name . parents) — name re-read post-alloc */
     cl_tables_wrlock();
     condition_hierarchy = cl_cons(entry, condition_hierarchy);
     cl_tables_rwunlock();

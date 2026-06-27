@@ -586,14 +586,14 @@ TEST(log_zero_is_divzero)
 TEST(log_negative_returns_complex)
 {
     /* CLHS 12.1.5.3: (log negative) → complex; was non-conformant ERROR. */
-    ASSERT_STR_EQ(eval_print("(log -1)"), "#C(0.0 3.14159)");
-    ASSERT_STR_EQ(eval_print("(log -1.0d0)"), "#C(0.0d0 3.14159265358979d0)");
+    ASSERT_STR_EQ(eval_print("(log -1)"), "#C(0.0 3.1415927)");
+    ASSERT_STR_EQ(eval_print("(log -1.0d0)"), "#C(0.0d0 3.141592653589793d0)");
 }
 
 TEST(log_complex)
 {
     /* (log i) = i*pi/2 */
-    ASSERT_STR_EQ(eval_print("(log #C(0 1))"), "#C(0.0 1.5708)");
+    ASSERT_STR_EQ(eval_print("(log #C(0 1))"), "#C(0.0 1.5707964)");
 }
 
 TEST(log_error_bad_base)
@@ -745,8 +745,8 @@ TEST(asin_double)
 TEST(asin_outside_domain_returns_complex)
 {
     /* CLHS 12.1.5.3: ASIN of |x|>1 returns complex (used to be ERROR). */
-    ASSERT_STR_EQ(eval_print("(asin 2.0)"), "#C(1.5708 -1.31696)");
-    ASSERT_STR_EQ(eval_print("(asin -2.0)"), "#C(-1.5708 1.31696)");
+    ASSERT_STR_EQ(eval_print("(asin 2.0)"), "#C(1.5707964 -1.316958)");
+    ASSERT_STR_EQ(eval_print("(asin -2.0)"), "#C(-1.5707964 1.316958)");
 }
 
 /* --- acos --- */
@@ -775,8 +775,8 @@ TEST(acos_double)
 TEST(acos_outside_domain_returns_complex)
 {
     /* CLHS 12.1.5.3: ACOS of |x|>1 returns complex. */
-    ASSERT_STR_EQ(eval_print("(acos 2.0)"), "#C(0.0 1.31696)");
-    ASSERT_STR_EQ(eval_print("(acos -2.0)"), "#C(3.14159 -1.31696)");
+    ASSERT_STR_EQ(eval_print("(acos 2.0)"), "#C(0.0 1.316958)");
+    ASSERT_STR_EQ(eval_print("(acos -2.0)"), "#C(3.1415927 -1.316958)");
 }
 
 /* --- atan --- */
@@ -1011,6 +1011,40 @@ TEST(print_single_sci_default_double)
                   "\"1f-05\"");
 }
 
+/* Regression: the printer must emit enough significant digits to round-trip.
+ * "%g" alone defaults to 6 significant digits and silently dropped precision
+ * (e.g. 1234.567f0 printed as "1234.57", a *different* single-float — this
+ * broke local-time and the chipi influx persistence round-trip). */
+TEST(print_single_full_precision_roundtrip)
+{
+    ASSERT_STR_EQ(eval_print("(prin1-to-string 1234.567)"), "\"1234.567\"");
+    /* the printed form must read back to the identical float */
+    ASSERT_STR_EQ(eval_print("(= 1234.567 (read-from-string (prin1-to-string 1234.567)))"),
+                  "T");
+    /* pi/2 as a single-float needs 8 significant digits */
+    ASSERT_STR_EQ(eval_print("(prin1-to-string (coerce (/ pi 2) 'single-float))"),
+                  "\"1.5707964\"");
+    /* round magnitudes stay in fixed notation, not "1e+02" */
+    ASSERT_STR_EQ(eval_print("(prin1-to-string 100.0)"), "\"100.0\"");
+}
+
+TEST(print_double_full_precision_roundtrip)
+{
+    /* binary64 pi needs 16 significant digits; "%.15g" used to truncate. */
+    ASSERT_STR_EQ(eval_print("(prin1-to-string (coerce pi 'double-float))"),
+                  "\"3.141592653589793d0\"");
+    ASSERT_STR_EQ(eval_print("(= 3.141592653589793d0"
+                             " (read-from-string (prin1-to-string 3.141592653589793d0)))"),
+                  "T");
+}
+
+/* Regression: ~F with no d parameter must round-trip too (it shared the
+ * 6-significant-digit "%g" default). */
+TEST(format_f_no_digits_full_precision)
+{
+    ASSERT_STR_EQ(eval_print("(format nil \"~f\" 1234.567)"), "\"1234.567\"");
+}
+
 /* ================================================================ */
 
 int main(void)
@@ -1169,6 +1203,9 @@ int main(void)
     RUN(print_single_default_double_gets_f0);
     RUN(print_single_whole_default_double);
     RUN(print_single_sci_default_double);
+    RUN(print_single_full_precision_roundtrip);
+    RUN(print_double_full_precision_roundtrip);
+    RUN(format_f_no_digits_full_precision);
 
     teardown();
     REPORT();

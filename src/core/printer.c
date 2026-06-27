@@ -554,7 +554,7 @@ static void print_single_float(float value)
     char buf[32];
     char *e;
     int emit_marker = default_float_is_double();
-    sprintf(buf, "%g", (double)value);
+    cl_float_shortest_g(buf, (int)sizeof(buf), (double)value, 0);
     e = strchr(buf, 'e');
     if (!e) e = strchr(buf, 'E');
     if (e) {
@@ -572,7 +572,7 @@ static void print_double_float(double value)
     char buf[48];
     char *e;
     int omit_marker = default_float_is_double();
-    sprintf(buf, "%.15g", value);
+    cl_float_shortest_g(buf, (int)sizeof(buf), value, 1);
     e = strchr(buf, 'e');
     if (!e) e = strchr(buf, 'E');
     if (e) {

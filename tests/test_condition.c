@@ -321,6 +321,39 @@ TEST(lisp_typep_condition)
     ASSERT_STR_EQ(eval_print("(typep 42 'condition)"), "NIL");
 }
 
+/* Regression: a condition whose ERROR superclass is NOT the first parent must
+ * still be recognised as an ERROR by typep / subtypep / handler-case.  This
+ * mirrors usocket's (define-condition socket-error (socket-condition error));
+ * previously only the first parent was registered, so the condition escaped
+ * (error ...) handlers and chipi's InfluxDB fetch future never completed. */
+TEST(lisp_condition_multiple_inheritance)
+{
+    eval_print("(define-condition mi-base (condition) ())");
+    eval_print("(define-condition mi-err (mi-base error) ())");      /* error 2nd */
+    eval_print("(define-condition mi-sub (mi-err) ())");             /* inherits */
+
+    ASSERT_STR_EQ(eval_print("(typep (make-condition 'mi-err) 'error)"), "T");
+    ASSERT_STR_EQ(eval_print("(typep (make-condition 'mi-err) 'mi-base)"), "T");
+    ASSERT_STR_EQ(eval_print("(typep (make-condition 'mi-sub) 'error)"), "T");
+    ASSERT_STR_EQ(eval_print("(typep (make-condition 'mi-sub) 'mi-base)"), "T");
+
+    ASSERT_STR_EQ(eval_print("(subtypep 'mi-err 'error)"), "T");
+    ASSERT_STR_EQ(eval_print("(subtypep 'mi-sub 'error)"), "T");
+    ASSERT_STR_EQ(eval_print("(subtypep 'mi-err 'mi-base)"), "T");
+
+    /* handler-case must dispatch to the (error ...) clause, not fall through */
+    ASSERT_STR_EQ(eval_print(
+        "(handler-case (error 'mi-err) (error () :as-error) (condition () :as-cond))"),
+        ":AS-ERROR");
+    ASSERT_STR_EQ(eval_print(
+        "(handler-case (error 'mi-sub) (error () :as-error) (condition () :as-cond))"),
+        ":AS-ERROR");
+
+    /* must NOT spuriously widen: a pure non-error condition stays non-error */
+    ASSERT_STR_EQ(eval_print("(subtypep 'mi-base 'error)"), "NIL");
+    ASSERT_STR_EQ(eval_print("(typep (make-condition 'mi-base) 'error)"), "NIL");
+}
+
 TEST(lisp_printer)
 {
     /* Condition without report_string */
@@ -1469,6 +1502,7 @@ int main(void)
     RUN(lisp_simple_condition_accessors);
     RUN(lisp_type_of);
     RUN(lisp_typep_condition);
+    RUN(lisp_condition_multiple_inheritance);
     RUN(lisp_printer);
     RUN(lisp_printer_aesthetic_uses_report);
     RUN(lisp_define_condition_report_symbol);

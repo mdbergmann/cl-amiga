@@ -48,6 +48,14 @@ CL_Obj cl_make_double_float(double value);
 double cl_to_double(CL_Obj obj);
 float  cl_to_float(CL_Obj obj);
 
+/* Write into BUF the shortest decimal string (printf "%g" style, may use an
+   exponent) that reads back to exactly VALUE at the requested precision class:
+   is_double != 0 for double-float (binary64), 0 for single-float (binary32).
+   This is what the CL printer needs — "%g" alone defaults to 6 significant
+   digits and silently drops precision (e.g. 1234.567f0 -> "1234.57", which is
+   a *different* float).  Returns the string length. */
+int cl_float_shortest_g(char *buf, int bufsz, double value, int is_double);
+
 /* --- Float arithmetic (called from cl_arith_* when either operand is float) --- */
 
 CL_Obj cl_float_add(CL_Obj a, CL_Obj b);
