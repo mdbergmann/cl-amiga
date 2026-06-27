@@ -3963,11 +3963,13 @@ static int compile_expr_step(CL_Compiler *c, CL_Obj *expr_p)
                 /* GC SAFETY: protect local_expander BEFORE cl_build_lex_env,
                  * which allocates and can compact — otherwise the expander
                  * closure offset goes stale and cl_vm_apply would run a
-                 * relocated (wrong) closure.  `expr` stays valid: the outer
-                 * compile_expr driver protects &expr, so reading it after
-                 * cl_build_lex_env (below) yields the forwarded value. */
+                 * relocated (wrong) closure.  Likewise the local `expr` copy
+                 * goes stale across that compaction, so re-read it from the
+                 * GC-protected *expr_p (the driver protects &expr, so it is
+                 * forwarded) rather than passing the stale local form. */
                 CL_GC_PROTECT(local_expander);
                 lex_env = cl_build_lex_env(c->env);
+                expr = *expr_p;
                 call_args[0] = expr;
                 call_args[1] = lex_env;
                 CL_GC_PROTECT(lex_env);
@@ -4029,6 +4031,19 @@ static int compile_expr_step(CL_Compiler *c, CL_Obj *expr_p)
             CL_Obj expanded;
             CL_Obj lex_env = cl_build_lex_env(c->env);
             CL_GC_PROTECT(lex_env);
+            /* GC SAFETY: cl_build_lex_env allocates (and, with local
+             * macrolet/symbol-macrolet bindings in scope, conses a non-empty
+             * lexical env), so a compaction may have run.  Our local `expr`
+             * and `head` copies hold pre-compaction offsets and are now stale;
+             * refresh them from the GC-protected *expr_p (the driver keeps
+             * &expr protected, so it was forwarded).  Without this, when the
+             * macro is an identity stub (expanded == expr, so no trampoline)
+             * the stale `expr`/`head` fall through to special-form dispatch
+             * and compile a relocated, aliased form — e.g. a macrolet body's
+             * `(setf y v)` was dispatched with the enclosing PROGN form,
+             * yielding a bogus "%SETF-SETF"/wrong value under GC stress. */
+            expr = *expr_p;
+            head = cl_car(expr);
             expanded = cl_macroexpand_1_env(expr, lex_env);
             CL_GC_UNPROTECT(1);
             if (cl_vm.fp != _fp0 || cl_vm.sp != _sp0) {

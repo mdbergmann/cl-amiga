@@ -2152,6 +2152,22 @@
     (labels ((s () (symbol-macrolet ((q m)) (setf q 42))))
       (s)
       m)))
+;; In-place macrolet (no FLET/LABELS): the expansion both setfs a place and
+;; references global macro stubs (SETF/PROGN have macro-functions for
+;; MACROEXPAND conformance).  Compiling the inner (setf y v) re-enters the
+;; global-macro check, whose cl_build_lex_env conses a non-empty lexical env
+;; from the enclosing macrolet binding -> a compaction; compile_expr_step's
+;; local expr/head copies must be refreshed afterwards or the setf compiles
+;; the relocated enclosing PROGN form (was "%SETF-SETF" / hi value under GC
+;; stress).  Must be 2026, not 9999.
+(check "scanner in-place macrolet setf+stub keeps live expr" 2026
+  (let ((y 0))
+    (macrolet ((into (place v lo hi)
+                 `(progn (setf ,place ,v)
+                         (unless (<= ,lo ,place ,hi) (error "range"))
+                         (values))))
+      (into y 2026 1 9999))
+    y))
 
 ; --- Debugger ---
 (check "invoke-debugger exists" t (functionp #'invoke-debugger))

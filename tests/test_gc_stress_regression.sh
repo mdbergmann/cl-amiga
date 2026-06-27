@@ -893,17 +893,36 @@ cat > "$WORK/mlet-box.lisp" <<'EOF'
     (labels ((s () (symbol-macrolet ((q m)) (setf q 42))))
       (s)
       m)))
+;; In-place macrolet (no FLET/LABELS) whose expansion contains BOTH a
+;; (setf place v) and a later reference to a *global* macro stub (SETF/PROGN
+;; are macro-functions for MACROEXPAND conformance).  Compiling the inner
+;; (setf y v) re-enters the global-macro check, whose cl_build_lex_env conses
+;; a NON-EMPTY lexical env (the enclosing macrolet binding) -> a compaction.
+;; compile_expr_step's unprotected local `expr`/`head` then went stale and the
+;; setf was dispatched with the relocated, aliased enclosing PROGN form,
+;; yielding "%SETF-SETF" / the wrong (hi) value.  Must read 2026, not 9999.
+(defun mlet-into-run ()
+  (let ((y 0))
+    (macrolet ((into (place v lo hi)
+                 `(progn (setf ,place ,v)
+                         (unless (<= ,lo ,place ,hi) (error "range"))
+                         (values))))
+      (into y 2026 1 9999))
+    y))
 EOF
 cat > "$WORK/mlet-box-run.lisp" <<EOF
 (load "$WORK/mlet-box.lisp")
 (format t "MLET:~a~%" (mlet-box-run))
 (format t "MLET2:~a~%" (mlet-box-run2))
 (format t "SMLET:~a~%" (smlet-box-run))
+(format t "MINTO:~a~%" (mlet-into-run))
 EOF
 out=$(run_stress "$WORK/mlet-box-run.lisp")
 check_contains "macrolet setf boxing in labels under stress" "MLET:99" "$out"
 check_contains "macrolet-in-labels setf boxing under stress" "MLET2:7" "$out"
 check_contains "symbol-macrolet setf boxing in labels under stress" "SMLET:42" "$out"
+check_contains "in-place macrolet setf+stub keeps live expr under stress" "MINTO:2026" "$out"
+check_absent   "no %SETF-SETF from stale expr in macrolet body"           "%SETF-SETF" "$out"
 
 # --- Case: MAKE-ARRAY :element-type deftype alias under GC stress -------------
 # classify_array_elt_type calls cl_vm_apply (to evaluate the deftype expander),
