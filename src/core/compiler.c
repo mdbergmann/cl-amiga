@@ -2288,11 +2288,21 @@ static void compile_setq(CL_Compiler *c, CL_Obj form)
         int slot;
         int saved_tail = c->in_tail;
 
-        /* Check if var is a symbol macro — rewrite as (setf expansion val) */
+        /* Check if var is a symbol macro — rewrite as (setf expansion val).
+         * A lexical symbol-macro is shadow-aware (an inner LET wins).  A global
+         * symbol-macro is consulted only when var is NOT lexically bound as a
+         * variable or upvalue, so a LET binding of the same name shadows it
+         * (CLHS 3.1.2.1.1) — serapeum's `local` assigns through such a
+         * lexical rebinding of a global symbol-macro's name. */
         if (CL_SYMBOL_P(var)) {
             CL_Obj expansion = CL_NIL;
+            int _uvd, _uvi;
+            int lexically_bound =
+                cl_env_lookup(c->env, var) >= 0 ||
+                (c->env && cl_env_lookup_upvalue(c->env, var, &_uvd, &_uvi));
             if (cl_env_lookup_symbol_macro_p(c->env, var, &expansion) ||
-                cl_lookup_global_symbol_macro_p(var, &expansion)) {
+                (!lexically_bound &&
+                 cl_lookup_global_symbol_macro_p(var, &expansion))) {
                 compile_setf_place(c, expansion, val);
                 rest = cl_cdr(cl_cdr(rest));
                 if (!CL_NULL_P(rest)) {
@@ -2483,10 +2493,17 @@ static void compile_setf_place(CL_Compiler *c, CL_Obj place, CL_Obj val_form)
 
     if (CL_SYMBOL_P(place)) {
         int slot;
-        /* Check if place is a symbol macro — rewrite as (setf expansion val) */
+        /* Check if place is a symbol macro — rewrite as (setf expansion val).
+         * As in compile_symbol/compile_setq, a global symbol-macro is shadowed
+         * by a lexically-bound variable or upvalue of the same name. */
         CL_Obj expansion = CL_NIL;
+        int _uvd, _uvi;
+        int lexically_bound =
+            cl_env_lookup(c->env, place) >= 0 ||
+            (c->env && cl_env_lookup_upvalue(c->env, place, &_uvd, &_uvi));
         if (cl_env_lookup_symbol_macro_p(c->env, place, &expansion) ||
-            cl_lookup_global_symbol_macro_p(place, &expansion)) {
+            (!lexically_bound &&
+             cl_lookup_global_symbol_macro_p(place, &expansion))) {
             compile_setf_place(c, expansion, val_form);
             c->in_tail = saved_tail;
             return;
@@ -3339,8 +3356,11 @@ static void compile_setf_place(CL_Compiler *c, CL_Obj place, CL_Obj val_form)
         if (CL_CONS_P(place) && CL_SYMBOL_P(cl_car(place)))
             cl_error(CL_ERR_GENERAL, "SETF: invalid place (%s ...)",
                      cl_symbol_name(cl_car(place)));
-        else
-            cl_error(CL_ERR_GENERAL, "SETF: invalid place");
+        else {
+            char _pb[160];
+            cl_prin1_to_string(place, _pb, sizeof(_pb));
+            cl_error(CL_ERR_GENERAL, "SETF: invalid place: %s", _pb);
+        }
     }
 
     c->in_tail = saved_tail;
@@ -3885,14 +3905,15 @@ static void compile_symbol(CL_Compiler *c, CL_Obj sym)
         }
     }
 
-    /* Check symbol macros before variable lookup — lexical first, then global.
-     * Use the predicate forms so a symbol-macro whose expansion is NIL (e.g.
+    /* Lexical symbol-macro (symbol-macrolet) — innermost lexical binding.
+     * cl_env_lookup_symbol_macro_p is shadow-aware: it returns 0 when an inner
+     * LET binds the same name, so the lexical-variable lookup below wins.
+     * Use the predicate form so a symbol-macro whose expansion is NIL (e.g.
      * (symbol-macrolet ((a nil)) a)) is still recognized as a symbol-macro
      * rather than falling through to an unbound-variable reference. */
     {
         CL_Obj expansion = CL_NIL;
-        if (cl_env_lookup_symbol_macro_p(c->env, sym, &expansion) ||
-            cl_lookup_global_symbol_macro_p(sym, &expansion)) {
+        if (cl_env_lookup_symbol_macro_p(c->env, sym, &expansion)) {
             compile_expr(c, expansion);
             return;
         }
@@ -3914,6 +3935,19 @@ static void compile_symbol(CL_Compiler *c, CL_Obj sym)
             cl_emit(c, (uint8_t)uv_idx);
             if (c->env->upvalues[uv_idx].is_boxed)
                 cl_emit(c, OP_CELL_REF);
+            return;
+        }
+    }
+
+    /* Global symbol-macro (define-symbol-macro) — checked only after lexical
+     * variable / upvalue lookups, so a lexically-bound variable of the same
+     * name shadows it (CLHS 3.1.2.1.1).  serapeum's `local` relies on this:
+     * it binds a global symbol-macro's name as a fresh lexical variable and
+     * then assigns through it. */
+    {
+        CL_Obj expansion = CL_NIL;
+        if (cl_lookup_global_symbol_macro_p(sym, &expansion)) {
+            compile_expr(c, expansion);
             return;
         }
     }

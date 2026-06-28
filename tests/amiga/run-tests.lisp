@@ -557,6 +557,20 @@
 (check "macroexpand nested" '(+ 5 1) (macroexpand '(me-wrap 5)))
 (check "macroexpand non-macro" '(+ 1 2) (macroexpand '(+ 1 2)))
 
+; --- Regression: a lexical LET shadows a SYMBOL-MACROLET / global symbol-macro ---
+; (CLHS 3.1.2.1.1).  serapeum's `local` rebinds a symbol-macro's name as a fresh
+; lexical variable and assigns through it; the symbol-macro must not leak in.
+(check "let shadows symbol-macrolet" '(2 10)
+  (let ((g 10)) (symbol-macrolet ((x g)) (let ((x nil)) (setq x 2) (list x g)))))
+(check "let shadows sym-macro setf" 5
+  (let ((g 10)) (symbol-macrolet ((x g)) (let ((x 5)) (setf g 99) x))))
+(define-symbol-macro amiga-gsm-shadow 1)
+(check "let shadows global sym-macro read" 5
+  (let ((amiga-gsm-shadow 5)) amiga-gsm-shadow))
+(check "let shadows global sym-macro setq" 9
+  (let ((amiga-gsm-shadow 5)) (setq amiga-gsm-shadow 9) amiga-gsm-shadow))
+(check "global sym-macro still active outside let" 1 amiga-gsm-shadow)
+
 ; --- Phase 4 Tier 2: tagbody/go ---
 (check "tagbody basic" 2 (let ((x 0)) (tagbody (setq x 1) (setq x (+ x 1))) x))
 (check "tagbody forward go" 0 (let ((x 0)) (tagbody (go end) (setq x 99) end) x))
@@ -629,6 +643,23 @@
     (handler-bind ((warning (lambda (a) (push a log) (muffle-warning))))
       (warn 'simple-warning :format-control "w"))
     (length log)))
+
+; A handler that establishes its own IGNORE-ERRORS / HANDLER-BIND while running
+; must not clobber its own slot on the handler stack.  cl_signal_condition used
+; to truncate the handler-stack top to the running handler's mark, so the inner
+; ignore-errors overwrote that slot; a later error then invoked the stale
+; binding and threw into a handler-case CATCH tag that no longer existed
+; ("No catch for tag").  This is ASDF's condition-muffling shape (it blocked
+; serapeum's suite).  With the fix the WARNING handler stays a WARNING handler
+; and the real error reaches the outer HANDLER-CASE.
+(check "handler no slot clobber after inner ignore-errors" "real error"
+  (handler-case
+      (handler-bind ((warning (lambda (c) (declare (ignore c))
+                                (ignore-errors (error "inner probe"))
+                                nil)))
+        (warn "trigger")
+        (error "real error"))
+    (error (c) (simple-condition-format-control c))))
 
 ; --- Phase 4 Tier 2: unwind-protect ---
 (check "uwp normal" '(42 t) (let ((log nil)) (let ((r (unwind-protect 42 (setq log t)))) (list r log))))
@@ -1671,6 +1702,19 @@
 (check "subtypep anything<t" t (subtypep 'number 't))
 (check "subtypep mv second val" '(t t) (multiple-value-list (subtypep 'fixnum 'number)))
 (check "subtypep mv not sub" '(nil t) (multiple-value-list (subtypep 'string 'number)))
+
+; --- subtypep: bounded float/real/rational ranges (serapeum random-range-type) ---
+(check "subtypep sf-range<number" '(t t)
+       (multiple-value-list (subtypep '(single-float 0.0 (10.0)) 'number)))
+(check "subtypep sf-range<float" '(t t)
+       (multiple-value-list (subtypep '(single-float 0.0 (10.0)) 'float)))
+(check "subtypep df-range<real" '(t t)
+       (multiple-value-list (subtypep '(double-float 0.0d0 (10.0d0)) 'real)))
+(check "subtypep ratl-range<number" '(t t)
+       (multiple-value-list (subtypep '(rational 0 (10)) 'number)))
+; no false positives
+(check "subtypep sf-not<sf-range" nil
+       (nth-value 0 (subtypep 'single-float '(single-float 0.0 1.0))))
 
 ; --- Type system: typecase with compound ---
 (check "typecase or int" "match" (typecase 42 ((or integer string) "match") (t "no")))

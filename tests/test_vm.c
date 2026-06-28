@@ -1032,6 +1032,58 @@ TEST(eval_subtypep_bounded_integer_ranges)
     ASSERT_STR_EQ(eval_print("(multiple-value-list (subtypep '(unsigned-byte 8) 't))"), "(T T)");
 }
 
+/* Bounded float/real/rational range specifiers are subtypes of their base
+ * kind and broader numeric supertypes.  serapeum's RANDOM-RANGE-TYPE builds
+ * e.g. (single-float 0.0 (10.0)) and asserts (subtypep type 'number). */
+TEST(eval_subtypep_bounded_float_ranges)
+{
+    ASSERT_STR_EQ(eval_print("(multiple-value-list (subtypep '(single-float 0.0 (10.0)) 'number))"), "(T T)");
+    ASSERT_STR_EQ(eval_print("(multiple-value-list (subtypep '(single-float 0.0 (10.0)) 'float))"), "(T T)");
+    ASSERT_STR_EQ(eval_print("(multiple-value-list (subtypep '(single-float 0.0 (10.0)) 'single-float))"), "(T T)");
+    ASSERT_STR_EQ(eval_print("(multiple-value-list (subtypep '(double-float 0.0d0 (10.0d0)) 'number))"), "(T T)");
+    ASSERT_STR_EQ(eval_print("(multiple-value-list (subtypep '(double-float 0.0d0 (10.0d0)) 'real))"), "(T T)");
+    ASSERT_STR_EQ(eval_print("(multiple-value-list (subtypep '(rational 0 (10)) 'number))"), "(T T)");
+    /* No false positives: a base kind is NOT a subtype of a bounded subrange,
+     * and unrelated float kinds are not subtypes of each other. */
+    ASSERT_STR_EQ(eval_print("(nth-value 0 (subtypep 'single-float '(single-float 0.0 1.0)))"), "NIL");
+    ASSERT_STR_EQ(eval_print("(nth-value 0 (subtypep '(single-float 0.0 1.0) 'double-float))"), "NIL");
+}
+
+/* CLHS 3.1.2.1.1: a lexical variable binding (LET, LET-star, a lambda list) shadows a
+ * SYMBOL-MACROLET or DEFINE-SYMBOL-MACRO binding of the same name for the
+ * extent of its scope.  serapeum's `local` relies on this when it rebinds a
+ * symbol-macro's name as a fresh lexical variable and then assigns to it. */
+TEST(eval_let_shadows_symbol_macrolet)
+{
+    /* Inner LET shadows an enclosing SYMBOL-MACROLET; setq/read hit the var. */
+    ASSERT_STR_EQ(eval_print(
+        "(let ((g 10)) (symbol-macrolet ((x g)) (let ((x nil)) (setq x 2) (list x g))))"),
+        "(2 10)");
+    ASSERT_STR_EQ(eval_print(
+        "(let ((g 10)) (symbol-macrolet ((x g)) (let ((x 5)) (setf g 99) x)))"),
+        "5");
+    /* An inner SYMBOL-MACROLET still shadows an outer LET (other direction). */
+    ASSERT_STR_EQ(eval_print(
+        "(let ((x 1)) (symbol-macrolet ((x 2)) x))"),
+        "2");
+}
+
+/* A lexical LET binding also shadows a *global* DEFINE-SYMBOL-MACRO. */
+TEST(eval_let_shadows_global_symbol_macro)
+{
+    eval_print("(define-symbol-macro gsm-shadow 1)");
+    ASSERT_STR_EQ(eval_print("gsm-shadow"), "1");
+    ASSERT_STR_EQ(eval_print("(let ((gsm-shadow 5)) gsm-shadow)"), "5");
+    ASSERT_STR_EQ(eval_print("(let ((gsm-shadow 5)) (setq gsm-shadow 9) gsm-shadow)"), "9");
+    ASSERT_STR_EQ(eval_print("(let ((gsm-shadow 5)) (setf gsm-shadow 9) gsm-shadow)"), "9");
+    /* setf (values ...) through a lexical rebinding of the global sym-macro. */
+    ASSERT_STR_EQ(eval_print(
+        "(let ((gsm-shadow 0) (y 0)) (setf (values gsm-shadow y) (values 4 7)) (list gsm-shadow y))"),
+        "(4 7)");
+    /* Outside the LET the global symbol-macro is still in effect. */
+    ASSERT_STR_EQ(eval_print("gsm-shadow"), "1");
+}
+
 /* (mod n) is a valid compound type specifier for TYPEP (CLHS type MOD):
  * non-negative integers strictly less than n.  ironclad's index/digest code
  * uses (typep x '(mod ...)) heavily via check-type. */
@@ -10222,6 +10274,9 @@ int main(void)
     RUN(eval_macroexpand_symbol_macro_nil_expansion);
     RUN(eval_subtypep_typep_env_arg);
     RUN(eval_subtypep_bounded_integer_ranges);
+    RUN(eval_subtypep_bounded_float_ranges);
+    RUN(eval_let_shadows_symbol_macrolet);
+    RUN(eval_let_shadows_global_symbol_macro);
     RUN(eval_typep_mod);
     RUN(eval_fdefinition_setf);
     RUN(eval_subtypep_compound_array_specs);

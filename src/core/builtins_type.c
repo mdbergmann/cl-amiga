@@ -2170,6 +2170,37 @@ static CL_Obj bi_subtypep(CL_Obj *args, int n)
                 type1 = cl_intern_in("INTEGER", 7, cl_package_cl);
         }
     }
+    /* Collapse a *bounded* float/real/rational range on the LEFT to its
+     * atomic base type.  A bounded numeric interval (e.g. (single-float 0.0
+     * (10.0))) is always a subtype of its unbounded base kind and that kind's
+     * supertypes, so the type-id hierarchy below then settles
+     *   (subtypep '(single-float 0.0 (10.0)) 'number)  => T
+     *   (subtypep '(single-float 0.0 (10.0)) 'float)   => T
+     * (serapeum's random-range-type asserts exactly these).  Only the LEFT
+     * (candidate subtype) side is collapsed: a bounded numeric type on the
+     * RIGHT stays unrecognized (id2 = UNKNOWN → uncertain) so we never falsely
+     * report a narrowing such as (subtypep 'single-float '(single-float 0 1)).
+     * Integer ranges are handled with exact arithmetic above and are left
+     * untouched here. */
+    if (CL_CONS_P(type1)) {
+        CL_Obj head = cl_car(type1);
+        if (CL_SYMBOL_P(head)) {
+            const char *hn = cl_symbol_name(head);
+            const char *base = NULL;
+            if (strcmp(hn, "SINGLE-FLOAT") == 0 || strcmp(hn, "SHORT-FLOAT") == 0)
+                base = "SINGLE-FLOAT";
+            else if (strcmp(hn, "DOUBLE-FLOAT") == 0 || strcmp(hn, "LONG-FLOAT") == 0)
+                base = "DOUBLE-FLOAT";
+            else if (strcmp(hn, "FLOAT") == 0)
+                base = "FLOAT";
+            else if (strcmp(hn, "REAL") == 0)
+                base = "REAL";
+            else if (strcmp(hn, "RATIONAL") == 0)
+                base = "RATIONAL";
+            if (base)
+                type1 = cl_intern_in(base, (int)strlen(base), cl_package_cl);
+        }
+    }
     if (CL_CONS_P(type2)) {
         CL_Obj head = cl_car(type2);
         if (CL_SYMBOL_P(head)) {

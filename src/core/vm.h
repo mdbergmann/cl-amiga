@@ -101,6 +101,13 @@ typedef struct {
     CL_Obj type_name;     /* Condition type symbol to match */
     CL_Obj handler;       /* Handler function (closure or function) */
     int handler_mark;     /* Handler stack depth when this binding was established */
+    int active;           /* 0 while this binding (and the more-recent ones in
+                           * its signalling band) is being run, so a condition
+                           * signalled inside the handler does not re-invoke it
+                           * (CLHS 9.1.4).  cl_signal_condition disables the band
+                           * instead of truncating cl_handler_top, so a HANDLER-
+                           * BIND established by the running handler pushes ABOVE
+                           * this slot rather than overwriting it. */
 } CL_HandlerBinding;
 
 #define CL_MAX_HANDLER_BINDINGS 64
