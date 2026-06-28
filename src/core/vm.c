@@ -372,6 +372,7 @@ void cl_nlx_overflow_summary(const char *where)
     fflush(stderr);
 }
 
+
 #ifdef DEBUG_NLX
 /* Dump the current NLX (non-local-exit) frame stack to stderr.  Built only
  * with -DDEBUG_NLX; used to diagnose platform-specific setjmp/longjmp
@@ -2789,6 +2790,7 @@ static CL_Obj cl_vm_run(int base_fp, int base_nlx)
             cl_handler_stack[cl_handler_top].type_name = type_sym;
             cl_handler_stack[cl_handler_top].handler = handler;
             cl_handler_stack[cl_handler_top].handler_mark = cl_handler_top;
+            cl_handler_stack[cl_handler_top].active = 1;
             cl_handler_top++;
             VM_BREAK;
         }

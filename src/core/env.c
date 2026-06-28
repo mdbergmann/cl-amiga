@@ -40,13 +40,19 @@ CL_CompEnv *cl_env_create(CL_CompEnv *parent)
             for (i = 0; i < n; i++) {
                 CL_Obj sm_name = parent->symbol_macros[i].name;
                 int is_locally_shadowed = 0;
-                if (i < parent->inherited_symbol_macro_count) {
-                    int j;
-                    for (j = 0; j < parent->local_count; j++) {
-                        if (parent->locals[j] == sm_name) {
-                            is_locally_shadowed = 1;
-                            break;
-                        }
+                int j;
+                /* A parent local of the same name shadows the symbol-macro.
+                 * For inherited symbol-macros (from a grandparent across a
+                 * closure boundary) any parent local shadows it; for the
+                 * parent's own (symbol-macrolet-added) ones, only a local
+                 * bound in an inner scope — slot >= the local_count current
+                 * when the symbol-macro was established — shadows it. */
+                int threshold = (i < parent->inherited_symbol_macro_count)
+                    ? 0 : parent->symbol_macros[i].local_count_at_create;
+                for (j = parent->local_count - 1; j >= threshold; j--) {
+                    if (parent->locals[j] == sm_name) {
+                        is_locally_shadowed = 1;
+                        break;
                     }
                 }
                 if (!is_locally_shadowed) {
@@ -199,6 +205,8 @@ int cl_env_add_symbol_macro(CL_CompEnv *env, CL_Obj name, CL_Obj expansion)
     if (env->symbol_macro_count >= CL_MAX_SYMBOL_MACROS) return -1;
     env->symbol_macros[env->symbol_macro_count].name = name;
     env->symbol_macros[env->symbol_macro_count].expansion = expansion;
+    env->symbol_macros[env->symbol_macro_count].local_count_at_create =
+        env->local_count;
     return env->symbol_macro_count++;
 }
 
@@ -212,9 +220,16 @@ int cl_env_lookup_symbol_macro_p(CL_CompEnv *env, CL_Obj name, CL_Obj *out)
     int i;
     for (i = env->symbol_macro_count - 1; i >= 0; i--) {
         if (env->symbol_macros[i].name != name) continue;
-        /* Locally-added symbol-macro (added via symbol-macrolet in this env) —
-         * always wins. */
+        /* Locally-added symbol-macro (added via symbol-macrolet in this env).
+         * Per CLHS, a lexical variable binding (LET, LET-star, a lambda list,
+         * etc.) of the same name shadows the symbol-macro for the extent of
+         * its scope.  The symbol-macro wins only if no local of this name was
+         * bound in an inner scope - i.e. no local sits at a slot >= the
+         * local_count that was current when this symbol-macro was set up. */
         if (i >= env->inherited_symbol_macro_count) {
+            int slot = cl_env_lookup(env, name);
+            if (slot >= env->symbol_macros[i].local_count_at_create)
+                return 0;  /* shadowed by an inner lexical binding */
             if (out) *out = env->symbol_macros[i].expansion;
             return 1;
         }

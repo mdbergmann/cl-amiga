@@ -36,6 +36,10 @@ typedef struct {
 typedef struct {
     CL_Obj name;       /* symbol */
     CL_Obj expansion;  /* form to substitute */
+    int local_count_at_create; /* env->local_count when this symbol-macro was
+                                * added; a lexical local at slot >= this value
+                                * was bound in an inner scope and shadows it
+                                * (CLHS: a LET binding shadows a symbol-macro). */
 } CL_SymbolMacro;
 
 typedef struct CL_CompEnv {

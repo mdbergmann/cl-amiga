@@ -1308,7 +1308,7 @@ CL_Obj cl_create_condition_from_error(int code, const char *msg)
 CL_Obj cl_signal_condition(CL_Obj condition)
 {
     CL_Condition *cond;
-    int i, saved_top;
+    int i;
 
     if (!CL_CONDITION_P(condition))
         return CL_NIL;
@@ -1332,16 +1332,38 @@ CL_Obj cl_signal_condition(CL_Obj condition)
 #endif
 
     for (i = cl_handler_top - 1; i >= cl_handler_floor; i--) {
+        if (!cl_handler_stack[i].active)
+            continue;
         if (cl_condition_type_matches(cond->type_name,
                                       cl_handler_stack[i].type_name)) {
-            /* Truncate handler stack to this handler's mark so that
-             * the handler itself doesn't see itself in the stack
-             * (prevents infinite recursion if handler signals same type) */
-            saved_top = cl_handler_top;
-            cl_handler_top = cl_handler_stack[i].handler_mark;
+            /* CLHS 9.1.4: while a handler runs, that handler and every handler
+             * established more recently than it are disabled, so a condition it
+             * signals is handled by the *outer* handlers.  Disable the band
+             * [i, cl_handler_top) by clearing the `active` flags rather than by
+             * truncating cl_handler_top.  Truncating made a HANDLER-BIND/IGNORE-
+             * ERRORS established inside the handler push onto slot i, clobbering
+             * this handler's own binding; once cl_handler_top was restored, that
+             * stale binding was invoked for a later, unrelated condition and
+             * threw into a handler-case CATCH tag that no longer existed
+             * ("No catch for tag").  Keeping cl_handler_top intact makes the
+             * handler's pushes land above the band instead. */
+            int band_lo = i;
+            int band_hi = cl_handler_top;
+            int j;
+            int saved_active[CL_MAX_HANDLER_BINDINGS];
+            for (j = band_lo; j < band_hi; j++) {
+                saved_active[j] = cl_handler_stack[j].active;
+                cl_handler_stack[j].active = 0;
+            }
             cl_vm_apply(cl_handler_stack[i].handler, &condition, 1);
-            cl_handler_top = saved_top;
-            /* Handler returned normally — continue searching */
+            /* GC may have compacted during the handler call; re-derive cond
+             * from the GC-tracked CL_Obj so the next iteration's type check
+             * uses a valid pointer. */
+            cond = (CL_Condition *)CL_OBJ_TO_PTR(condition);
+            /* Handler returned normally (declined) — re-enable the band and
+             * keep searching the outer (lower-index) handlers. */
+            for (j = band_lo; j < band_hi; j++)
+                cl_handler_stack[j].active = saved_active[j];
         }
     }
 

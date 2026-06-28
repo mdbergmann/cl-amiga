@@ -603,6 +603,51 @@ TEST(lisp_handler_bind_multiple_clauses)
         ":WARN");
 }
 
+/* Regression: a handler that establishes its own HANDLER-BIND / IGNORE-ERRORS
+ * while running must NOT clobber its own slot on the handler stack.  The old
+ * cl_signal_condition truncated cl_handler_top to the running handler's mark,
+ * so an IGNORE-ERRORS inside the handler pushed onto that slot, overwriting the
+ * handler's binding with a stale ERROR handler whose handler-case CATCH tag was
+ * gone once the handler returned.  A later, unrelated error then invoked the
+ * stale binding and threw into the dead tag ("No catch for tag").  This is the
+ * shape of ASDF's condition-muffling handler (match-condition-p uses
+ * ignore-errors) wrapping a load that signals a warning and then an error —
+ * exactly what blocked bringing up serapeum's test suite.
+ *
+ * With the fix the WARNING handler's slot is preserved (it stays a WARNING
+ * handler), so the later (error ...) is not intercepted by it and propagates to
+ * the outer HANDLER-CASE, which reports the real condition. */
+TEST(lisp_handler_no_slot_clobber_after_inner_ignore_errors)
+{
+    ASSERT_STR_EQ(eval_print(
+        "(handler-case"
+        "    (handler-bind ((warning (lambda (c) (declare (ignore c))"
+        "                              (ignore-errors (error \"inner probe\"))"
+        "                              nil)))"
+        "      (warn \"trigger\")"
+        "      (error \"real error\"))"
+        "  (error (c) (simple-condition-format-control c)))"),
+        "\"real error\"");
+}
+
+/* The inner IGNORE-ERRORS inside a handler still works (catches its own error)
+ * and the handler can still decline so the outer search continues. */
+TEST(lisp_handler_inner_ignore_errors_catches)
+{
+    /* The handler runs IGNORE-ERRORS around a form that errors: ignore-errors
+     * returns (values nil condition), so probe ends up NIL — i.e. the inner
+     * error was caught by the handler's own ignore-errors, not lost.  The
+     * handler then muffles so WARN returns cleanly. */
+    ASSERT_STR_EQ(eval_print(
+        "(let ((probe :none))"
+        "  (handler-bind ((warning (lambda (c) (declare (ignore c))"
+        "                            (setq probe (ignore-errors (error \"x\") :no-error))"
+        "                            (muffle-warning))))"
+        "    (warn \"w\"))"
+        "  probe)"),
+        "NIL");
+}
+
 TEST(lisp_handler_bind_body_value)
 {
     /* handler-bind returns body value on normal exit */
@@ -1599,6 +1644,8 @@ int main(void)
     RUN(lisp_handler_bind_error_type);
     RUN(lisp_handler_bind_no_match);
     RUN(lisp_handler_bind_multiple_clauses);
+    RUN(lisp_handler_no_slot_clobber_after_inner_ignore_errors);
+    RUN(lisp_handler_inner_ignore_errors_catches);
     RUN(lisp_handler_bind_body_value);
     RUN(lisp_handler_bind_textual_order);
     RUN(lisp_handler_bind_earlier_handler_sets_state_for_later);

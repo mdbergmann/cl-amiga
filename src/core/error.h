@@ -89,6 +89,18 @@ typedef struct {
      * parent env (use-after-free in cl_env_resolve_fun_upvalue) — crashed
      * compiling babel's large macro-generated forms.  Mirrors saved_gc_roots. */
     void *saved_active_compiler;
+    /* Condition-system stack tops at push time.  When an error unwinds to a
+     * *nested* error frame (cl_error / cl_error_unwind, cl_error_frame_top>1),
+     * the longjmp abandons every Lisp/VM frame in between — including any
+     * HANDLER-BIND / RESTART-CASE whose OP_HANDLER_POP / OP_RESTART_POP never
+     * runs.  Restoring these to the push-time snapshot drops those orphaned
+     * bindings.  Without it a handler-bind handler established inside the
+     * frame (e.g. ASDF's condition-muffling handler, or an IGNORE-ERRORS
+     * around a failed probe) survives on cl_handler_stack and is later invoked
+     * for an unrelated condition — throwing into a catch tag that no longer
+     * exists ("No catch for tag").  Mirrors saved_gc_roots. */
+    int saved_handler_top;
+    int saved_restart_top;
 } CL_ErrorFrame;
 
 /* Push an error frame.  Returns the frame index, or -1 on overflow.

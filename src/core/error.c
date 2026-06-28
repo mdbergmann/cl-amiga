@@ -46,6 +46,8 @@ int cl_error_frame_push(void)
     cl_error_frames[cl_error_frame_top].saved_in_debugger = cl_in_debugger;
     cl_error_frames[cl_error_frame_top].saved_fasl_readers = cl_fasl_reader_save_count();
     cl_error_frames[cl_error_frame_top].saved_active_compiler = cl_compiler_mark();
+    cl_error_frames[cl_error_frame_top].saved_handler_top = cl_handler_top;
+    cl_error_frames[cl_error_frame_top].saved_restart_top = cl_restart_top;
     return cl_error_frame_top++;
 }
 
@@ -96,6 +98,14 @@ CL_NORETURN static void cl_error_unwind(int code)
         cl_in_debugger = cl_error_frames[cl_error_frame_top - 1].saved_in_debugger;
         cl_fasl_reader_restore_count(cl_error_frames[cl_error_frame_top - 1].saved_fasl_readers);
         cl_compiler_force_restore_to(cl_error_frames[cl_error_frame_top - 1].saved_active_compiler);
+        /* Drop any HANDLER-BIND / RESTART-CASE bindings established since this
+         * frame was pushed — their POP opcodes are abandoned by the longjmp.
+         * Leaving them stranded lets a later condition invoke a handler whose
+         * catch tag is already gone (see CL_ErrorFrame.saved_handler_top). */
+        if (cl_handler_top > cl_error_frames[cl_error_frame_top - 1].saved_handler_top)
+            cl_handler_top = cl_error_frames[cl_error_frame_top - 1].saved_handler_top;
+        if (cl_restart_top > cl_error_frames[cl_error_frame_top - 1].saved_restart_top)
+            cl_restart_top = cl_error_frames[cl_error_frame_top - 1].saved_restart_top;
         CL_LONGJMP(cl_error_frames[cl_error_frame_top - 1].buf, code);
     }
 
