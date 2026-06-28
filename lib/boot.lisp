@@ -1033,6 +1033,22 @@
                             ((null parent-types) '(condition))
                             (t (list parent-types))))
         (slot-pairs (mapcar (lambda (spec) (cons (car spec) (getf (cdr spec) :initarg))) slot-specs))
+        ;; For each slot that declares an :initform, build a registration spec
+        ;; (slot-name initarg . thunk) so make-condition can evaluate the form
+        ;; per instance for any slot the caller does not supply.  Slots whose
+        ;; initform is the literal NIL are skipped — an absent condition slot
+        ;; already reads as NIL, so there is nothing to install.
+        (initform-spec-forms
+         (let ((acc nil))
+           (dolist (spec slot-specs)
+             (let* ((opts (cdr spec))
+                    (tail (member :initform opts)))
+               (when (and tail (cadr tail))
+                 (push `(list ',(car spec)
+                              ',(getf opts :initarg)
+                              (lambda () ,(cadr tail)))
+                       acc))))
+           (nreverse acc)))
         (report nil)
         (default-initargs nil)
         (clos-available (fboundp '%add-method-to-gf)))
@@ -1083,6 +1099,8 @@
                   (funcall ,report c stream))))))
        ,@(when default-initargs
            `((%set-condition-default-initargs ',name ',default-initargs)))
+       ,@(when (and initform-spec-forms (fboundp '%register-condition-slot-initforms))
+           `((%register-condition-slot-initforms ',name (list ,@initform-spec-forms))))
        ',name)))
 
 ;; check-type — signal type-error if place is not of type

@@ -1479,6 +1479,76 @@ TEST(lisp_break_with_continue)
         ":AFTER-BREAK");
 }
 
+/* Regression: a WARNING handler that is a Lisp closure calling (muffle-warning)
+ * — as opposed to #'muffle-warning installed directly — must muffle cleanly.
+ * The muffle restart is thrown from inside a bytecode handler frame; WARN's
+ * hand-rolled catch landing previously did not restore cl_vm.sp/fp, corrupting
+ * the VM so a spurious "restart MUFFLE-WARNING not found" surfaced afterward. */
+TEST(lisp_muffle_warning_from_closure_handler)
+{
+    ASSERT_STR_EQ(eval_print(
+        "(let ((log nil))"
+        "  (handler-bind ((warning (lambda (a) (push a log) (muffle-warning))))"
+        "    (warn 'simple-warning :format-control \"w\"))"
+        "  (length log))"),
+        "1");
+}
+
+/* Regression: handler-bind in tail position must still pop its handlers.  The
+ * body's tail call was emitted as OP_TAILCALL, replacing the frame and skipping
+ * OP_HANDLER_POP — leaking one binding per call until the 64-slot handler stack
+ * overflowed.  5000 iterations >> 64, so a leak would error here. */
+TEST(lisp_handler_bind_tail_position_no_leak)
+{
+    eval_print("(defun %lk-inner () 42)");
+    eval_print("(defun %lk-hb () (handler-bind ((warning #'identity)) (%lk-inner)))");
+    ASSERT_STR_EQ(eval_print("(progn (dotimes (i 5000) (%lk-hb)) :done)"), ":DONE");
+}
+
+/* Regression: catch in tail position must pop its NLX frame (same class of bug
+ * as handler-bind above).  5000 iterations >> 2048-frame stack. */
+TEST(lisp_catch_tail_position_no_leak)
+{
+    eval_print("(defun %lk-inner2 () 7)");
+    eval_print("(defun %lk-catch () (catch 'tag (%lk-inner2)))");
+    ASSERT_STR_EQ(eval_print("(progn (dotimes (i 5000) (%lk-catch)) :done)"), ":DONE");
+}
+
+/* Regression: a define-condition slot :initform must be evaluated per instance
+ * when the initarg is not supplied (CLHS 7.1.3). */
+TEST(lisp_condition_slot_initform_instance)
+{
+    eval_print("(define-condition %ci-test (error)"
+               "  ((s :initform 42 :accessor %ci-s)))");
+    ASSERT_STR_EQ(eval_print("(%ci-s (make-condition '%ci-test))"), "42");
+    /* An explicitly supplied initarg overrides the initform. */
+    eval_print("(define-condition %ci-test2 (error)"
+               "  ((s :initarg :s :initform 42 :accessor %ci-s2)))");
+    ASSERT_STR_EQ(eval_print("(%ci-s2 (make-condition '%ci-test2 :s 7))"), "7");
+}
+
+/* Regression: a class-allocated slot with no initarg (fiasco's PROGRESS-CHAR /
+ * CONTEXT shape) must return its :initform value rather than NIL. */
+TEST(lisp_condition_slot_initform_class_allocation)
+{
+    eval_print("(define-condition %cc-test (warning)"
+               "  ((pc :initform #\\X :accessor %cc-pc :allocation :class)))");
+    ASSERT_STR_EQ(eval_print("(%cc-pc (make-condition '%cc-test))"), "#\\X");
+}
+
+/* Regression: the initform is evaluated at make-condition time (capturing the
+ * dynamic environment then), not lazily at read time — fiasco's CONTEXT slot
+ * (:initform *context*) depends on this. */
+TEST(lisp_condition_slot_initform_evaluated_at_make_time)
+{
+    eval_print("(defvar *ci-dyn* :outer)");
+    eval_print("(define-condition %cd-test (error)"
+               "  ((ctx :initform *ci-dyn* :accessor %cd-ctx)))");
+    ASSERT_STR_EQ(eval_print(
+        "(%cd-ctx (let ((*ci-dyn* :inner)) (make-condition '%cd-test)))"),
+        ":INNER");
+}
+
 int main(void)
 {
     setup();
@@ -1508,6 +1578,9 @@ int main(void)
     RUN(lisp_define_condition_report_symbol);
     RUN(lisp_define_condition_bare_symbol_slot);
     RUN(lisp_define_condition_default_initargs);
+    RUN(lisp_condition_slot_initform_instance);
+    RUN(lisp_condition_slot_initform_class_allocation);
+    RUN(lisp_condition_slot_initform_evaluated_at_make_time);
 
     /* Signal/warn/error tests */
     RUN(lisp_signal_returns_nil);
@@ -1515,6 +1588,7 @@ int main(void)
     RUN(lisp_signal_with_symbol);
     RUN(lisp_warn_returns_nil);
     RUN(lisp_warn_with_symbol);
+    RUN(lisp_muffle_warning_from_closure_handler);
     RUN(lisp_warn_goes_to_error_output);
     RUN(lisp_warn_symbol_goes_to_error_output);
     RUN(lisp_error_still_caught);
@@ -1528,6 +1602,8 @@ int main(void)
     RUN(lisp_handler_bind_body_value);
     RUN(lisp_handler_bind_textual_order);
     RUN(lisp_handler_bind_earlier_handler_sets_state_for_later);
+    RUN(lisp_handler_bind_tail_position_no_leak);
+    RUN(lisp_catch_tail_position_no_leak);
 
     /* handler-case / ignore-errors tests */
     RUN(lisp_handler_case_catches_error);

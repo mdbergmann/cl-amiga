@@ -608,6 +608,28 @@
   (multiple-value-list
     (dotimes (i 3000 (handler-case (values 1 2 3) (error () nil))))))
 
+; handler-bind / catch in TAIL position must still pop their handler / NLX
+; frame.  Previously the body's tail form emitted OP_TAILCALL, replacing the
+; frame and skipping OP_HANDLER_POP / OP_UNCATCH, leaking one binding per call
+; until the handler (64) / NLX (2048) stack overflowed.  These were the
+; mechanism behind fiasco's "Handler stack overflow" after ~20 tests.
+(defun hb-inner () 42)
+(defun hb-tail () (handler-bind ((warning #'identity)) (hb-inner)))
+(check "handler-bind tail no leak" :ok (progn (dotimes (i 5000) (hb-tail)) :ok))
+(defun catch-tail () (catch 'tg (hb-inner)))
+(check "catch tail no leak" :ok (progn (dotimes (i 5000) (catch-tail)) :ok))
+
+; A WARNING handler that is a closure calling (muffle-warning) — not
+; #'muffle-warning installed directly — must muffle cleanly.  WARN's catch
+; landing had to restore the VM stack pointers after the muffle restart unwound
+; through the bytecode handler frame, else a spurious "restart MUFFLE-WARNING
+; not found" surfaced.
+(check "muffle-warning from closure handler" 1
+  (let ((log nil))
+    (handler-bind ((warning (lambda (a) (push a log) (muffle-warning))))
+      (warn 'simple-warning :format-control "w"))
+    (length log)))
+
 ; --- Phase 4 Tier 2: unwind-protect ---
 (check "uwp normal" '(42 t) (let ((log nil)) (let ((r (unwind-protect 42 (setq log t)))) (list r log))))
 (check "uwp throw cleanup" t (let ((cleanup nil)) (catch 'done (unwind-protect (throw 'done 1) (setq cleanup t))) cleanup))
@@ -1084,6 +1106,13 @@
 (check "write-to-string" "42" (write-to-string 42))
 (check "princ-to-string" "hello" (princ-to-string "hello"))
 (check "princ-to-string num" "42" (princ-to-string 42))
+; PRINC (*print-escape* nil) of a pathname prints the bare namestring; PRIN1
+; keeps the #P"..." reader syntax.  local-time's reread-timezone-repository
+; takes substrings of (princ-to-string pathname), so #P"..." corrupted the
+; zone-name keys and find-timezone-by-location-name returned NIL.
+(check "princ-to-string pathname" "/foo/bar/UTC" (princ-to-string #P"/foo/bar/UTC"))
+(check "prin1-to-string pathname" "#P\"/foo/bar/UTC\"" (prin1-to-string #P"/foo/bar/UTC"))
+(check "format ~A pathname" "/foo/bar/UTC" (format nil "~A" #P"/foo/bar/UTC"))
 
 ; --- Phase 5 Tier 3: List utilities ---
 (check "nthcdr 0" '(1 2 3) (nthcdr 0 '(1 2 3)))
@@ -1932,6 +1961,21 @@
        (handler-case (error 'mi-err) (error () :as-error) (condition () :as-cond)))
 ; must not spuriously widen a pure non-error condition
 (check "define-condition non-error-not-widened" nil (typep (make-condition 'mi-base) 'error))
+
+; Slot :initform must be evaluated per instance when the initarg is unsupplied
+; (CLHS 7.1.3).  Covers a plain slot, a class-allocated slot with no initarg
+; (fiasco's PROGRESS-CHAR / CONTEXT shape, which returned NIL and crashed the
+; fiasco failure reporter), and make-time evaluation of a dynamic initform.
+(define-condition ci-inst (error) ((s :initform 42 :accessor ci-s)))
+(check "condition slot initform instance" 42 (ci-s (make-condition 'ci-inst)))
+(define-condition ci-inst2 (error) ((s :initarg :s :initform 42 :accessor ci-s2)))
+(check "condition slot initform overridden by initarg" 7 (ci-s2 (make-condition 'ci-inst2 :s 7)))
+(define-condition ci-cls (warning) ((pc :initform #\X :accessor ci-pc :allocation :class)))
+(check "condition class-allocated slot initform" #\X (ci-pc (make-condition 'ci-cls)))
+(defvar *ci-dyn* :outer)
+(define-condition ci-dyn (error) ((ctx :initform *ci-dyn* :accessor ci-ctx)))
+(check "condition slot initform evaluated at make-time" :inner
+       (ci-ctx (let ((*ci-dyn* :inner)) (make-condition 'ci-dyn))))
 
 ; --- check-type ---
 (check "check-type pass" :ok (let ((x 42)) (check-type x integer) :ok))

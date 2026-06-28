@@ -22,6 +22,7 @@ extern CL_Obj struct_table;  /* builtins_struct.c: struct type registry */
 extern CL_Obj condition_hierarchy;        /* builtins_condition.c */
 extern CL_Obj condition_slot_table;       /* builtins_condition.c */
 extern CL_Obj condition_default_initargs; /* builtins_condition.c */
+extern CL_Obj condition_slot_initforms;   /* builtins_condition.c */
 
 /* Active compiler chain is accessed via cl_active_compiler macro (thread.h) */
 typedef struct CL_Compiler_s CL_Compiler;
@@ -1482,6 +1483,7 @@ static void gc_mark(void)
     gc_mark_obj(condition_hierarchy);
     gc_mark_obj(condition_slot_table);
     gc_mark_obj(condition_default_initargs);
+    gc_mark_obj(condition_slot_initforms);
 
     /* Thread system: main thread's Lisp object */
     {
@@ -2242,6 +2244,7 @@ static void gc_update_shared_roots(void)
     gc_update_slot(&condition_hierarchy);
     gc_update_slot(&condition_slot_table);
     gc_update_slot(&condition_default_initargs);
+    gc_update_slot(&condition_slot_initforms);
 
     /* Main thread Lisp object */
     {

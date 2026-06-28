@@ -69,6 +69,21 @@ TEST(pathname_read_with_dir)
     ASSERT_STR_EQ(eval_print("#P\"/foo/bar.lisp\""), "#P\"/foo/bar.lisp\"");
 }
 
+/* Regression: PRINC / ~A / *print-escape* nil must print the bare namestring,
+ * not the #P"..." reader syntax (PRIN1 keeps #P"...").  local-time's
+ * REREAD-TIMEZONE-REPOSITORY computes substring offsets from
+ * (princ-to-string pathname); the #P"..." prefix shifted every offset and
+ * corrupted the zone-name hash keys, so find-timezone-by-location-name failed. */
+TEST(pathname_princ_bare_namestring)
+{
+    ASSERT_STR_EQ(eval_print("(princ-to-string #P\"/foo/bar/UTC\")"),
+                  "\"/foo/bar/UTC\"");
+    ASSERT_STR_EQ(eval_print("(prin1-to-string #P\"/foo/bar/UTC\")"),
+                  "\"#P\\\"/foo/bar/UTC\\\"\"");
+    ASSERT_STR_EQ(eval_print("(format nil \"~A\" #P\"/foo/bar/UTC\")"),
+                  "\"/foo/bar/UTC\"");
+}
+
 TEST(pathname_read_relative)
 {
     ASSERT_STR_EQ(eval_print("#P\"dir/file.txt\""), "#P\"dir/file.txt\"");
@@ -705,6 +720,7 @@ int main(void)
 
     RUN(pathname_read_simple);
     RUN(pathname_read_with_dir);
+    RUN(pathname_princ_bare_namestring);
     RUN(pathname_read_relative);
     RUN(pathname_read_empty);
     RUN(pathname_read_case_insensitive);

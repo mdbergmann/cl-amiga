@@ -1336,9 +1336,18 @@ static void print_obj(CL_Obj obj)
         char ns_buf[1024];
         extern uint32_t cl_pathname_to_namestring(CL_Pathname *pn, char *buf, uint32_t bufsz);
         cl_pathname_to_namestring(pn, ns_buf, sizeof(ns_buf));
-        out_str("#P\"");
-        out_str(ns_buf);
-        out_char('"');
+        /* PRIN1/print-readably use the #P"..." reader syntax; PRINC (~A,
+         * *print-escape* nil) prints the bare namestring.  local-time's
+         * REREAD-TIMEZONE-REPOSITORY relies on (princ-to-string pathname)
+         * returning just the namestring to compute substring offsets, so
+         * emitting #P"..." here corrupted every zone's hash key. */
+        if (print_escape_p() || print_readably_p()) {
+            out_str("#P\"");
+            out_str(ns_buf);
+            out_char('"');
+        } else {
+            out_str(ns_buf);
+        }
         break;
     }
 

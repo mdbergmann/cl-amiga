@@ -2772,8 +2772,19 @@ static CL_Obj cl_vm_run(int base_fp, int base_nlx)
             CL_Obj type_sym = constants[idx];
             CL_Obj handler = cl_vm_pop();
 
-            if (cl_handler_top >= CL_MAX_HANDLER_BINDINGS)
+            if (cl_handler_top >= CL_MAX_HANDLER_BINDINGS) {
+#ifdef DEBUG_HANDLER_OVF
+                int _hi;
+                fprintf(stderr, "[HANDLER-OVF] dump of %d bindings:\n", cl_handler_top);
+                for (_hi = 0; _hi < cl_handler_top; _hi++) {
+                    char _b[64];
+                    cl_prin1_to_string(cl_handler_stack[_hi].type_name, _b, sizeof(_b));
+                    fprintf(stderr, "  [%d] %s mark=%d\n", _hi, _b,
+                            cl_handler_stack[_hi].handler_mark);
+                }
+#endif
                 cl_error(CL_ERR_OVERFLOW, "Handler stack overflow");
+            }
 
             cl_handler_stack[cl_handler_top].type_name = type_sym;
             cl_handler_stack[cl_handler_top].handler = handler;

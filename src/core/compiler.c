@@ -2187,6 +2187,7 @@ static CL_Obj emit_tail_postlude(CL_Compiler *c, CL_TailFrame *tf)
     case CL_TAIL_HANDLER_BIND:
         cl_emit(c, OP_HANDLER_POP);
         cl_emit(c, (uint8_t)tf->saved_macro_count); /* count of handlers */
+        c->in_tail = tf->saved_tail;  /* restore: body was forced non-tail */
         return CL_NIL;
     case CL_TAIL_MULTIPLE_VALUE_BIND:
         cl_env_clear_boxed(c->env, tf->saved_local_count);

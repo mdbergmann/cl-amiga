@@ -1788,6 +1788,42 @@ fi
 check_contains "compile_if then/else stable under GC stress (8 runs)" "COMPILEIF-OK" "$out"
 check_absent   "no corrupted constant pool from stale if-branch"      "COMPILEIF-BAD" "$out"
 
+# --- Case: apply_condition_slot_initforms :initform thunk under GC stress -----
+# Bug path: apply_condition_slot_initforms calls cl_vm_apply(thunk, NULL, 0) to
+# evaluate the :initform lambda, which can trigger a compacting GC.  The function
+# GC-protects `type_sym`, `slots`, `hierarchy`, `if_table`, `type`, and the inner
+# `specs` cursor, and re-reads `slot_nm` from the protected chain after the call.
+# Exercise a no-:initarg slot (keyed by slot name) whose initform captures a
+# dynamic variable rebound at make-condition time, over both the make-condition
+# and the error/signal paths (bi_signal funnels through the same helper).
+# NOTE: a deliberately single-slot condition — a *multi*-slot define-condition
+# preceded by a defvar/defparameter trips a SEPARATE, PRE-EXISTING compile/load
+# GC bug (reproduces on the parent commit; see the slot-initform memory note),
+# which would mask this check; keep this case focused on the initform path.
+cat > "$WORK/slot-initform.lisp" <<'EOF'
+(defparameter *gcs-captured* :default)
+(define-condition my-gcstress-initform (error)
+  ((val :reader initform-val :initform *gcs-captured*)))  ; no :initarg → keyed by slot name
+;; Call many times so a compaction lands inside cl_vm_apply during initform eval.
+(let ((bad nil))
+  (dotimes (i 50)
+    (let ((c (let ((*gcs-captured* i)) (make-condition 'my-gcstress-initform))))
+      (unless (eql (initform-val c) i)
+        (setq bad (list :val-mismatch i (initform-val c))) (return))))
+  (if bad
+      (format t "SINITFORM-BAD:~s~%" bad)
+      (format t "SINITFORM-OK~%")))
+;; Also verify via the error/signal path (bi_signal uses apply_condition_slot_initforms).
+(let ((*gcs-captured* :via-error))
+  (format t "SINITFORM-ERR:~a~%"
+    (handler-case (error 'my-gcstress-initform)
+      (my-gcstress-initform (e) (initform-val e)))))
+EOF
+out=$(run_stress "$WORK/slot-initform.lisp")
+check_contains "slot :initform thunk evaluated correctly under GC stress (make-condition)" "SINITFORM-OK" "$out"
+check_contains "slot :initform thunk captures rebinding correctly under GC stress (error)" "SINITFORM-ERR:VIA-ERROR" "$out"
+check_absent   "no corruption in apply_condition_slot_initforms under stress" "SINITFORM-BAD\|Unbound\|type 0\|corrupted\|Undefined" "$out"
+
 echo ""
 echo "$passed passed, $failed failed, $total total"
 [ "$failed" -eq 0 ]
