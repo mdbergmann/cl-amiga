@@ -1012,6 +1012,87 @@ static CL_Obj bi_set_condition_slot_value(CL_Obj *args, int n)
     return value;
 }
 
+/* Resolve the alist key (initarg keyword or slot name) used to store
+ * SLOT-NAME's value in COND's slots alist, walking the type hierarchy. */
+static CL_Obj condition_slot_key(CL_Condition *cond, CL_Obj slot_name)
+{
+    CL_Obj cur_type = cond->type_name;
+    CL_Obj initarg = CL_NIL;
+    CL_Obj hierarchy_snap, slot_table_snap;
+    cl_tables_rdlock();
+    hierarchy_snap = condition_hierarchy;
+    slot_table_snap = condition_slot_table;
+    cl_tables_rwunlock();
+    while (!CL_NULL_P(cur_type) && CL_NULL_P(initarg)) {
+        initarg = find_slot_initarg_in(slot_table_snap, cur_type, slot_name);
+        if (CL_NULL_P(initarg))
+            cur_type = condition_parent_in(hierarchy_snap, cur_type);
+    }
+    return CL_NULL_P(initarg) ? slot_name : initarg;
+}
+
+/* (condition-slot-boundp condition slot-name)
+ * T when the slot has a value in the condition's slots alist (a supplied
+ * initarg or an evaluated :initform), NIL when it is genuinely unbound. */
+static CL_Obj bi_condition_slot_boundp(CL_Obj *args, int n)
+{
+    CL_Obj cond_obj = args[0];
+    CL_Obj slot_name = args[1];
+    CL_Condition *cond;
+    CL_Obj initarg;
+    CL_UNUSED(n);
+
+    if (!CL_CONDITION_P(cond_obj))
+        cl_error(CL_ERR_TYPE, "CONDITION-SLOT-BOUNDP: not a condition");
+
+    cond = (CL_Condition *)CL_OBJ_TO_PTR(cond_obj);
+    initarg = condition_slot_key(cond, slot_name);
+    if (slot_present_p(cond->slots, initarg))
+        return CL_T;
+    /* A slot with no :initarg is keyed by its name; check that too. */
+    if (slot_present_p(cond->slots, slot_name))
+        return CL_T;
+    return CL_NIL;
+}
+
+/* (%condition-slot-makunbound condition slot-name)
+ * Remove the slot's (key . value) pair from the condition's slots alist so
+ * it reads as unbound.  Returns the condition. */
+static CL_Obj bi_condition_slot_makunbound(CL_Obj *args, int n)
+{
+    CL_Obj cond_obj = args[0];
+    CL_Obj slot_name = args[1];
+    CL_Condition *cond;
+    CL_Obj key, slots, prev;
+    CL_UNUSED(n);
+
+    if (!CL_CONDITION_P(cond_obj))
+        cl_error(CL_ERR_TYPE, "%CONDITION-SLOT-MAKUNBOUND: not a condition");
+
+    cond = (CL_Condition *)CL_OBJ_TO_PTR(cond_obj);
+    key = condition_slot_key(cond, slot_name);
+
+    /* Unlink any pair keyed by the initarg key or the bare slot name. */
+    prev = CL_NIL;
+    slots = cond->slots;
+    while (!CL_NULL_P(slots)) {
+        CL_Obj sp = cl_car(slots);
+        CL_Obj k = cl_car(sp);
+        if (k == key || k == slot_name) {
+            CL_Obj rest = cl_cdr(slots);
+            if (CL_NULL_P(prev))
+                cond->slots = rest;
+            else
+                ((CL_Cons *)CL_OBJ_TO_PTR(prev))->cdr = rest;
+            slots = rest;
+            continue;
+        }
+        prev = slots;
+        slots = cl_cdr(slots);
+    }
+    return cond_obj;
+}
+
 /* --- Signaling --- */
 
 /* Build and signal a TYPE-ERROR with :datum and :expected-type slots
@@ -1812,6 +1893,8 @@ void cl_builtins_condition_init(void)
     cl_register_builtin("%REGISTER-CONDITION-TYPE", bi_register_condition_type, 3, 3, cl_package_clamiga);
     cl_register_builtin("CONDITION-SLOT-VALUE", bi_condition_slot_value, 2, 2, cl_package_clamiga);
     cl_register_builtin("%SET-CONDITION-SLOT-VALUE", bi_set_condition_slot_value, 3, 3, cl_package_clamiga);
+    cl_register_builtin("CONDITION-SLOT-BOUNDP", bi_condition_slot_boundp, 2, 2, cl_package_clamiga);
+    cl_register_builtin("%CONDITION-SLOT-MAKUNBOUND", bi_condition_slot_makunbound, 2, 2, cl_package_clamiga);
     cl_register_builtin("%SET-CONDITION-DEFAULT-INITARGS", bi_set_condition_default_initargs, 2, 2, cl_package_clamiga);
     cl_register_builtin("%REGISTER-CONDITION-SLOT-INITFORMS", bi_register_condition_slot_initforms, 2, 2, cl_package_clamiga);
 

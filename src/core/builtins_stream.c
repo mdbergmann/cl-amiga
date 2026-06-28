@@ -1385,16 +1385,37 @@ static CL_Obj bi_get_dispatch_macro_character(CL_Obj *args, int n)
     int sub_ch, rt_idx;
     CL_Readtable *rt;
 
+    int disp_ch;
+
     if (!CL_CHAR_P(args[0]))
         cl_error(CL_ERR_TYPE, "GET-DISPATCH-MACRO-CHARACTER: disp-char must be a character");
     if (!CL_CHAR_P(args[1]))
         cl_error(CL_ERR_TYPE, "GET-DISPATCH-MACRO-CHARACTER: sub-char must be a character");
+    disp_ch = CL_CHAR_VAL(args[0]);
     sub_ch = CL_CHAR_VAL(args[1]);
-    if (sub_ch < 0 || sub_ch >= CL_RT_CHARS)
-        return CL_NIL;
 
     rt_idx = resolve_readtable_idx(args, n, 2);
     rt = cl_readtable_get(rt_idx);
+
+    /* CLHS get-dispatch-macro-character: signal an error if disp-char is not a
+     * dispatching macro character in the readtable.  In clamiga a dispatching
+     * macro character has macro syntax but NO plain macro-function installed —
+     * it routes through the built-in dispatch path (e.g. #).  A character with
+     * a macro-function (set via set-macro-character, e.g. a custom backquote)
+     * is an ordinary macro character, not a dispatching one.  Libraries such as
+     * named-readtables rely on this error to tell the two apart when merging
+     * readtables; returning NIL instead silently misclassifies ordinary macro
+     * characters as dispatching ones. */
+    if (disp_ch < 0 || disp_ch >= CL_RT_CHARS ||
+        (rt->syntax[disp_ch] != CL_CHAR_TERM_MACRO &&
+         rt->syntax[disp_ch] != CL_CHAR_NONTERM_MACRO) ||
+        !CL_NULL_P(rt->macro_fn[disp_ch]))
+        cl_error(CL_ERR_TYPE,
+                 "GET-DISPATCH-MACRO-CHARACTER: %c is not a dispatching macro character",
+                 (disp_ch >= 32 && disp_ch < 127) ? disp_ch : '?');
+
+    if (sub_ch < 0 || sub_ch >= CL_RT_CHARS)
+        return CL_NIL;
     return rt->dispatch_fn[sub_ch];
 }
 

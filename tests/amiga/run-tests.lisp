@@ -6842,6 +6842,54 @@
        (let ((*print-case* :downcase))
          (with-standard-io-syntax (princ-to-string 'foo))))
 
+; --- Regression: trivia conformance fixes ---
+(require "clos")
+
+; #S(type slot value ...) structure-literal reader (CLHS 2.4.8.13).
+(defstruct sread-pt x y)
+(defstruct (sread-pt3 (:include sread-pt)) z)
+(check "#S reader constructs struct" 1 (sread-pt-x #S(sread-pt :x 1 :y 2)))
+(check "#S reader second slot"       2 (sread-pt-y #S(sread-pt :x 1 :y 2)))
+(check "#S reader inherited slots"   3 (sread-pt3-z #S(sread-pt3 :x 1 :y 2 :z 3)))
+(check "#S reader value unevaluated" 'foo (sread-pt-x #S(sread-pt :x foo :y 2)))
+(check "#S reader bare symbol slots" 5 (sread-pt-x #S(sread-pt x 5 y 6)))
+
+; SLOT-VALUE / WITH-SLOTS work on condition objects (CLHS 9.1).
+(define-condition sv-cnd () ((a :initarg :a) (b :initarg :b)))
+(check "slot-value on condition" 10
+       (slot-value (make-condition 'sv-cnd :a 10 :b 20) 'a))
+(check "slot-value on condition NIL value" nil
+       (slot-value (make-condition 'sv-cnd :a nil :b 1) 'a))
+(check "with-slots on condition" '(7 8)
+       (with-slots (a b) (make-condition 'sv-cnd :a 7 :b 8) (list a b)))
+(check "setf slot-value on condition" 99
+       (let ((c (make-condition 'sv-cnd :a 1 :b 2)))
+         (setf (slot-value c 'a) 99)
+         (slot-value c 'a)))
+(check "slot-boundp on condition bound"   t
+       (slot-boundp (make-condition 'sv-cnd :a 1 :b 2) 'a))
+(check "slot-boundp on condition unbound" nil
+       (slot-boundp (make-condition 'sv-cnd :a 1) 'b))
+
+; DEFSTRUCT CLOS classes expose slot metaobjects (MOP introspection).
+(defstruct mopst-pt mx my)
+(check "struct class-slots populated" '(mx my)
+       (mapcar #'slot-definition-name (class-slots (find-class 'mopst-pt))))
+(check "struct class-slots initarg" '(:mx)
+       (slot-definition-initargs (car (class-slots (find-class 'mopst-pt)))))
+
+; symbol-macrolet whose expansion is NIL is a valid binding, not unbound.
+(check "symbol-macrolet nil expansion" nil (symbol-macrolet ((sm nil)) sm))
+(check "symbol-macrolet nil in list" '(nil nil)
+       (symbol-macrolet ((sm nil)) (list sm sm)))
+(check "symbol-macrolet non-nil still ok" 6 (symbol-macrolet ((sm 5)) (+ sm 1)))
+
+; get-dispatch-macro-character signals an error for a non-dispatch character.
+(check "get-dispatch-macro-character on # ok" nil
+       (get-dispatch-macro-character #\# #\Z))
+(check "get-dispatch-macro-character on constituent errors" :err
+       (handler-case (get-dispatch-macro-character #\a #\x) (error () :err)))
+
 ; --- Summary ---
 (format t "~%=== Results ===~%")
 (format t "Passed: ~A~%" *pass-count*)

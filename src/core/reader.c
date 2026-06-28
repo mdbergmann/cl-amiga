@@ -1301,6 +1301,46 @@ static CL_Obj read_expr(void)
             cl_reader_error(CL_ERR_PARSE, "#C requires exactly two elements: (real imag)");
             return CL_NIL;
         }
+        if (ch == 's' || ch == 'S') {
+            /* #S(type slot value slot value ...) => structure literal
+             * (CLHS 2.4.8.13).  The type and slot/value plist are read as
+             * objects, then the structure is built at read time by calling
+             * the runtime helper %READ-EVAL-STRUCT, which locates the
+             * default keyword constructor MAKE-<type> and applies it. */
+            CL_Obj spec, quoted, form, helper_sym, bytecode, result;
+            skip_whitespace();
+            ch = read_char();
+            if (ch != '(') {
+                if (read_suppress) { if (ch >= 0) unread_char(ch); return CL_NIL; }
+                cl_reader_error(CL_ERR_PARSE,
+                    "#S must be followed by (type slot value ...)");
+                return CL_NIL;
+            }
+            spec = read_list();          /* (type slot value ...) */
+            if (read_suppress) return CL_NIL;
+            CL_GC_PROTECT(spec);
+            /* Build (%READ-EVAL-STRUCT (QUOTE spec)) and evaluate it. */
+            quoted = cl_cons(spec, CL_NIL);                /* (spec) */
+            CL_GC_PROTECT(quoted);
+            quoted = cl_cons(SYM_QUOTE, quoted);           /* (QUOTE spec) */
+            CL_GC_PROTECT(quoted);
+            form = cl_cons(quoted, CL_NIL);                /* ((QUOTE spec)) */
+            CL_GC_PROTECT(form);
+            /* The helper lives in the CLAMIGA package (see boot.lisp); intern
+             * there so the same symbol is found whether boot was loaded from
+             * source or FASL (the current package at boot time is not fixed). */
+            helper_sym = cl_intern_in("%READ-EVAL-STRUCT", 17, cl_package_clamiga);
+            CL_GC_PROTECT(helper_sym);         /* protect across cl_cons below */
+            form = cl_cons(helper_sym, form);  /* (%READ-EVAL-STRUCT (QUOTE spec)) */
+            CL_GC_PROTECT(form);
+            bytecode = cl_compile(form);
+            if (!CL_NULL_P(bytecode))
+                result = cl_vm_eval(bytecode);
+            else
+                result = CL_NIL;
+            CL_GC_UNPROTECT(6);
+            return result;
+        }
         if (ch == '(') {
             /* #(e1 e2 ...) => simple vector */
             CL_Obj elems = CL_NIL;

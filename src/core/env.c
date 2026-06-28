@@ -202,27 +202,45 @@ int cl_env_add_symbol_macro(CL_CompEnv *env, CL_Obj name, CL_Obj expansion)
     return env->symbol_macro_count++;
 }
 
-CL_Obj cl_env_lookup_symbol_macro(CL_CompEnv *env, CL_Obj name)
+/* Predicate form: returns 1 and stores the expansion in *out when NAME is
+ * bound as a lexical symbol-macro, else 0.  A symbol-macro whose expansion is
+ * NIL is a legitimate binding (e.g. (symbol-macrolet ((a nil)) a)), so callers
+ * MUST distinguish "found, expands to NIL" from "not found" via the return
+ * value — never by testing the expansion against NIL. */
+int cl_env_lookup_symbol_macro_p(CL_CompEnv *env, CL_Obj name, CL_Obj *out)
 {
     int i;
     for (i = env->symbol_macro_count - 1; i >= 0; i--) {
         if (env->symbol_macros[i].name != name) continue;
         /* Locally-added symbol-macro (added via symbol-macrolet in this env) —
          * always wins. */
-        if (i >= env->inherited_symbol_macro_count)
-            return env->symbol_macros[i].expansion;
+        if (i >= env->inherited_symbol_macro_count) {
+            if (out) *out = env->symbol_macros[i].expansion;
+            return 1;
+        }
         /* Inherited from parent — shadowed by any local of the same name in
          * this env (e.g. a lambda parameter shadows an outer symbol-macrolet
          * binding of the same name, per CL lexical scoping). */
         {
             int j;
             for (j = 0; j < env->local_count; j++) {
-                if (env->locals[j] == name) return CL_NIL;
+                if (env->locals[j] == name) return 0;
             }
         }
-        return env->symbol_macros[i].expansion;
+        if (out) *out = env->symbol_macros[i].expansion;
+        return 1;
     }
-    return CL_NIL;
+    return 0;
+}
+
+/* Convenience wrapper: returns the expansion, or NIL when NAME is not a
+ * symbol-macro.  Ambiguous when the expansion itself is NIL — use
+ * cl_env_lookup_symbol_macro_p in code paths where that distinction matters. */
+CL_Obj cl_env_lookup_symbol_macro(CL_CompEnv *env, CL_Obj name)
+{
+    CL_Obj out = CL_NIL;
+    cl_env_lookup_symbol_macro_p(env, name, &out);
+    return out;
 }
 
 CL_Obj cl_build_lex_env(CL_CompEnv *env)

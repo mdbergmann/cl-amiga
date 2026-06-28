@@ -3967,6 +3967,82 @@ TEST(aux_method_no_cnm_leak_from_enclosing_dispatch)
     ASSERT_STR_EQ(eval_print("*cnm-leak*"), "NIL");
 }
 
+/* === SLOT-VALUE / WITH-SLOTS on condition objects (CLHS 9.1) ===
+ * Conditions are a distinct object type in clamiga (not CLOS instances), but
+ * the standard slot-access functions must still work on them. */
+
+TEST(slot_value_on_condition)
+{
+    eval_print("(define-condition sv-cond () "
+               "  ((a :initarg :a) (b :initarg :b)))");
+    eval_print("(defparameter *svc* (make-condition 'sv-cond :a 10 :b 20))");
+    ASSERT_STR_EQ(eval_print("(slot-value *svc* 'a)"), "10");
+    ASSERT_STR_EQ(eval_print("(slot-value *svc* 'b)"), "20");
+}
+
+TEST(slot_value_on_condition_nil_value)
+{
+    /* A slot explicitly initialized to NIL reads back as NIL (not an error). */
+    eval_print("(define-condition sv-niln () ((x :initarg :x)))");
+    eval_print("(defparameter *svn* (make-condition 'sv-niln :x nil))");
+    ASSERT_STR_EQ(eval_print("(slot-value *svn* 'x)"), "NIL");
+}
+
+TEST(with_slots_on_condition)
+{
+    eval_print("(define-condition ws-cond () "
+               "  ((s :initarg :s) (tt :initarg :tt)))");
+    eval_print("(defparameter *wsc* (make-condition 'ws-cond :s 'foo :tt 'bar))");
+    ASSERT_STR_EQ(eval_print(
+        "(with-slots (s tt) *wsc* (list s tt))"), "(FOO BAR)");
+}
+
+TEST(setf_slot_value_on_condition)
+{
+    eval_print("(define-condition ss-cond () ((v :initarg :v)))");
+    eval_print("(defparameter *ssc* (make-condition 'ss-cond :v 1))");
+    eval_print("(setf (slot-value *ssc* 'v) 99)");
+    ASSERT_STR_EQ(eval_print("(slot-value *ssc* 'v)"), "99");
+}
+
+TEST(slot_boundp_on_condition)
+{
+    eval_print("(define-condition sb-cond () "
+               "  ((bound :initarg :bound) (unbound)))");
+    eval_print("(defparameter *sbc* (make-condition 'sb-cond :bound 1))");
+    ASSERT_STR_EQ(eval_print("(slot-boundp *sbc* 'bound)"), "T");
+    ASSERT_STR_EQ(eval_print("(slot-boundp *sbc* 'unbound)"), "NIL");
+}
+
+/* === DEFSTRUCT CLOS classes expose slot metaobjects (MOP) ===
+ * class-slots / compute-slots must reflect the struct's real layout so MOP
+ * introspection (closer-mop callers such as trivia) works. */
+
+TEST(struct_class_slots_populated)
+{
+    eval_print("(defstruct mop-point xx yy)");
+    ASSERT_STR_EQ(eval_print(
+        "(mapcar #'slot-definition-name (class-slots (find-class 'mop-point)))"),
+        "(XX YY)");
+    /* The initarg keyword is reified so trivia's slot lookup by :initarg works. */
+    ASSERT_STR_EQ(eval_print(
+        "(slot-definition-initargs (car (class-slots (find-class 'mop-point))))"),
+        "(:XX)");
+}
+
+TEST(struct_class_slots_inherited)
+{
+    eval_print("(defstruct mop-base aa bb)");
+    eval_print("(defstruct (mop-sub (:include mop-base)) cc)");
+    /* Inherited slots first, then own — matching the physical layout. */
+    ASSERT_STR_EQ(eval_print(
+        "(mapcar #'slot-definition-name (class-slots (find-class 'mop-sub)))"),
+        "(AA BB CC)");
+    /* SLOT-VALUE still resolves through the structure fast-path. */
+    ASSERT_STR_EQ(eval_print(
+        "(slot-value (make-mop-sub :aa 1 :bb 2 :cc 3) 'cc)"), "3");
+}
+
 int main(void)
 {
     test_init();
@@ -4337,6 +4413,14 @@ int main(void)
     RUN(control_macros_macroexpand_conformantly);
     RUN(compute_applicable_methods_public);
     RUN(aux_method_no_cnm_leak_from_enclosing_dispatch);
+
+    RUN(slot_value_on_condition);
+    RUN(slot_value_on_condition_nil_value);
+    RUN(with_slots_on_condition);
+    RUN(setf_slot_value_on_condition);
+    RUN(slot_boundp_on_condition);
+    RUN(struct_class_slots_populated);
+    RUN(struct_class_slots_inherited);
 
     teardown();
     REPORT();
