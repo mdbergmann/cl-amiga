@@ -26,7 +26,7 @@
 #include "../platform/platform.h"
 
 #define CL_FASL_MAGIC    0x434C4641  /* "CLFA" */
-#define CL_FASL_VERSION  17  /* v17: boxing pre-scan now sees through MACROLET/SYMBOL-MACROLET — a variable assigned only through a local macro inside a FLET/LABELS closure is correctly boxed, so the emitted bytecode differs (and is correct) for affected functions. The wire format is unchanged, but FASLs compiled by the prior (buggy) compiler contain the wrong, unboxed bytecode and MUST be recompiled, hence the bump. */
+#define CL_FASL_VERSION  18  /* v18: HANDLER-BIND and CATCH in tail position now compile their body as a non-tail call (OP_CALL, not OP_TAILCALL) so the OP_HANDLER_POP / OP_UNCATCH postlude runs — previously the tail call replaced the frame and leaked one handler/NLX binding per call until the stack overflowed. Wire format unchanged, but FASLs compiled by the prior (buggy) compiler contain the leaking bytecode and MUST be recompiled, hence the bump. */
 
 /* Serialized constant type tags */
 #define FASL_TAG_NIL         0x00

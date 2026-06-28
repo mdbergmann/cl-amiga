@@ -1406,8 +1406,12 @@ void compile_catch(CL_Compiler *c, CL_Obj form)
     catch_pos = c->code_pos;
     cl_emit_i32(c, 0); /* placeholder */
 
-    /* Compile body (progn) */
-    c->in_tail = saved_tail;
+    /* Compile body (progn).  Keep in_tail = 0: the body must fall through to
+     * the OP_UNCATCH below so the catch (NLX) frame is popped on normal exit.
+     * Restoring saved_tail here would let the body's tail form emit OP_TAILCALL,
+     * replacing the frame and skipping OP_UNCATCH — one leaked NLX frame per
+     * call until the frame stack overflows (same class as the handler-bind /
+     * NLX-block tail leak). */
     if (CL_NULL_P(body))
         cl_emit(c, OP_NIL);
     else
@@ -1424,6 +1428,8 @@ void compile_catch(CL_Compiler *c, CL_Obj form)
 
     /* [past_landing]: both paths converge, result is on stack */
     cl_patch_jump(c, jmp_pos);
+
+    c->in_tail = saved_tail;  /* restore for the caller's continuation */
 }
 
 /* --- Unwind-protect --- */
@@ -2611,6 +2617,15 @@ CL_Obj compile_handler_bind(CL_Compiler *c, CL_Obj form)
     tf = cl_tail_push(c);
     tf->kind = CL_TAIL_HANDLER_BIND;
     tf->saved_macro_count = count;  /* reused: handler count for HANDLER_POP */
+    /* Disable tail calls inside the body — the body must return to the
+     * OP_HANDLER_POP postlude so the pushed handler bindings are popped.
+     * Without this, a handler-bind whose body's tail form is a call (the
+     * extremely common `(defun f () (handler-bind (...) (g)))` shape) emits
+     * OP_TAILCALL, which replaces the frame and skips OP_HANDLER_POP, leaking
+     * one binding per call until the 64-slot handler stack overflows.  Mirrors
+     * the CL_TAIL_BLOCK_NLX handling of NLX blocks above. */
+    tf->saved_tail = c->in_tail;
+    c->in_tail = 0;
     return compile_body_tail(c, body);
 }
 

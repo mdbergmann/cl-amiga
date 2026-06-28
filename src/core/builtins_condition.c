@@ -80,12 +80,27 @@ CL_Obj condition_slot_table = CL_NIL;
  * per-instance form evaluation is intentionally not implemented. */
 CL_Obj condition_default_initargs = CL_NIL;
 
+/* Slot :initform thunks for user condition types (define-condition slot
+ * :initform option):
+ *   ((type-name (slot-name initarg-or-nil thunk) ...) ...)
+ * Each thunk is a zero-argument closure that evaluates the slot's initform in
+ * the lexical environment of the define-condition.  Unlike :default-initargs,
+ * initforms are re-evaluated per instance at make-condition time, which is
+ * required for forms that read dynamic state (e.g. fiasco's CONTEXT slot whose
+ * initform is *CONTEXT*).  A slot whose value was supplied via its initarg (or
+ * already present by slot name) is left untouched.  Slots that have no initarg
+ * are keyed in the instance's slots alist by their SLOT NAME. */
+CL_Obj condition_slot_initforms = CL_NIL;
+
 /* Fill in any initarg the caller of make-condition / error / signal omitted
  * from TYPE_SYM's (and its ancestors') registered :default-initargs.
  * Defined after the hierarchy walker below; forward-declared here because
  * bi_make_condition (above it) also calls it. */
 static CL_Obj merge_default_initargs(CL_Obj type_sym, CL_Obj slots,
                                      CL_Obj *report_string);
+/* Likewise forward-declared: evaluates registered slot :initform thunks for
+ * any slot the caller left unsupplied (defined after the hierarchy walker). */
+static CL_Obj apply_condition_slot_initforms(CL_Obj type_sym, CL_Obj slots);
 
 /* Build the hierarchy alist during init */
 static void build_hierarchy(void)
@@ -452,6 +467,8 @@ static CL_Obj bi_make_condition(CL_Obj *args, int n)
 
     /* Fill in any :default-initargs the caller omitted (CLHS make-condition). */
     slots = merge_default_initargs(type_sym, slots, &report_string);
+    /* Evaluate slot :initforms for any slot still unsupplied (CLHS 7.1.3). */
+    slots = apply_condition_slot_initforms(type_sym, slots);
 
     {
         CL_Obj result = cl_make_condition(type_sym, slots, report_string);
@@ -739,6 +756,74 @@ static CL_Obj merge_default_initargs(CL_Obj type_sym, CL_Obj slots,
     return slots;
 }
 
+/* Evaluate the registered slot :initform thunks for TYPE_SYM (and its
+ * ancestors) for every slot whose value the caller did not supply, prepending
+ * (key . value) to SLOTS.  A slot with an initarg is keyed by that initarg; a
+ * slot without one is keyed by its slot name.  Most-specific class wins (we
+ * walk most-specific first and skip slots already present), matching CLHS slot
+ * shadowing.  Returns the (possibly extended) slots alist.
+ *
+ * Fast path: a no-op when no user condition registered any slot initform,
+ * which is the case for every built-in error/signal path. */
+static CL_Obj apply_condition_slot_initforms(CL_Obj type_sym, CL_Obj slots)
+{
+    CL_Obj hierarchy, if_table, type;
+
+    if (!CL_SYMBOL_P(type_sym))
+        return slots;
+
+    cl_tables_rdlock();
+    hierarchy = condition_hierarchy;
+    if_table = condition_slot_initforms;
+    cl_tables_rwunlock();
+
+    if (CL_NULL_P(if_table))
+        return slots;
+
+    CL_GC_PROTECT(type_sym);
+    CL_GC_PROTECT(slots);
+    CL_GC_PROTECT(hierarchy);
+    CL_GC_PROTECT(if_table);
+    type = type_sym;
+    CL_GC_PROTECT(type);
+
+    while (!CL_NULL_P(type) && CL_SYMBOL_P(type)) {
+        /* Locate this type's initform spec list (no allocation). */
+        CL_Obj t = if_table;
+        CL_Obj specs = CL_NIL;
+        CL_GC_PROTECT(specs);            /* cursor spans cl_vm_apply below */
+        while (!CL_NULL_P(t)) {
+            CL_Obj entry = cl_car(t);
+            if (cl_car(entry) == type) { specs = cl_cdr(entry); break; }
+            t = cl_cdr(t);
+        }
+        while (!CL_NULL_P(specs)) {
+            CL_Obj spec    = cl_car(specs);          /* (slot-name initarg thunk) */
+            CL_Obj slot_nm = cl_car(spec);
+            CL_Obj initarg = cl_car(cl_cdr(spec));
+            CL_Obj thunk   = cl_car(cl_cdr(cl_cdr(spec)));
+            int supplied   = (!CL_NULL_P(initarg) && slot_present_p(slots, initarg))
+                             || slot_present_p(slots, slot_nm);
+            if (!supplied) {
+                CL_Obj val = cl_vm_apply(thunk, NULL, 0);
+                CL_GC_PROTECT(val);
+                /* cl_vm_apply may have compacted: re-read slot_nm from the
+                 * still-protected `specs` chain rather than trusting the stale
+                 * offset captured before the call. */
+                slot_nm = cl_car(cl_car(specs));
+                slots = cl_cons(cl_cons(slot_nm, val), slots);
+                CL_GC_UNPROTECT(1);
+            }
+            specs = cl_cdr(specs);
+        }
+        CL_GC_UNPROTECT(1);             /* specs */
+        type = condition_parent_in(hierarchy, type);
+    }
+
+    CL_GC_UNPROTECT(5);
+    return slots;
+}
+
 /* (%set-condition-default-initargs name initargs)
  * Records NAME's default-initargs plist (from define-condition's
  * :default-initargs option) so condition creation can fill in any initarg
@@ -762,6 +847,31 @@ static CL_Obj bi_set_condition_default_initargs(CL_Obj *args, int n)
     CL_GC_PROTECT(entry);
     cl_tables_wrlock();
     condition_default_initargs = cl_cons(entry, condition_default_initargs);
+    cl_tables_rwunlock();
+    CL_GC_UNPROTECT(3);
+    return name;
+}
+
+/* (%register-condition-slot-initforms name specs)
+ * Records NAME's slot :initform thunks (from define-condition).  SPECS is a
+ * list of (slot-name initarg-or-nil thunk) entries (proper list). */
+static CL_Obj bi_register_condition_slot_initforms(CL_Obj *args, int n)
+{
+    CL_Obj name = args[0];
+    CL_Obj specs = args[1];
+    CL_Obj entry;
+    CL_UNUSED(n);
+
+    if (!CL_SYMBOL_P(name))
+        cl_error(CL_ERR_TYPE,
+                 "%%REGISTER-CONDITION-SLOT-INITFORMS: name must be a symbol");
+
+    CL_GC_PROTECT(name);
+    CL_GC_PROTECT(specs);
+    entry = cl_cons(name, specs);   /* (name . specs) */
+    CL_GC_PROTECT(entry);
+    cl_tables_wrlock();
+    condition_slot_initforms = cl_cons(entry, condition_slot_initforms);
     cl_tables_rwunlock();
     CL_GC_UNPROTECT(3);
     return name;
@@ -825,9 +935,15 @@ static CL_Obj bi_condition_slot_value(CL_Obj *args, int n)
         }
     }
 
-    if (CL_NULL_P(initarg))
-        return CL_NIL;
-    return slot_lookup(cond->slots, initarg);
+    /* Prefer the initarg-keyed value (caller-supplied or a default-initarg);
+     * fall back to a value keyed by the slot name itself, which is how an
+     * evaluated :initform for a slot is stored (see
+     * apply_condition_slot_initforms — covers slots with no :initarg). */
+    if (!CL_NULL_P(initarg) && slot_present_p(cond->slots, initarg))
+        return slot_lookup(cond->slots, initarg);
+    if (slot_present_p(cond->slots, slot_name))
+        return slot_lookup(cond->slots, slot_name);
+    return CL_NIL;
 }
 
 /* (%set-condition-slot-value condition slot-name value) */
@@ -864,31 +980,34 @@ static CL_Obj bi_set_condition_slot_value(CL_Obj *args, int n)
         }
     }
 
-    if (CL_NULL_P(initarg)) {
-        cl_error(CL_ERR_ARGS, "%SET-CONDITION-SLOT-VALUE: unknown slot");
-        return CL_NIL;
-    }
+    /* A slot with no :initarg is stored/looked up by its slot name (this is
+     * how an evaluated :initform value lands in the alist); a slot with an
+     * initarg uses that keyword as the key. */
+    {
+        CL_Obj key = CL_NULL_P(initarg) ? slot_name : initarg;
 
-    /* Update existing slot value */
-    {
-        CL_Obj slots = cond->slots;
-        while (!CL_NULL_P(slots)) {
-            CL_Obj sp = cl_car(slots);
-            if (cl_car(sp) == initarg) {
-                ((CL_Cons *)CL_OBJ_TO_PTR(sp))->cdr = value;
-                return value;
+        /* Update existing slot value */
+        {
+            CL_Obj slots = cond->slots;
+            while (!CL_NULL_P(slots)) {
+                CL_Obj sp = cl_car(slots);
+                if (cl_car(sp) == key) {
+                    ((CL_Cons *)CL_OBJ_TO_PTR(sp))->cdr = value;
+                    return value;
+                }
+                slots = cl_cdr(slots);
             }
-            slots = cl_cdr(slots);
         }
-    }
-    /* Slot not found in alist — add it */
-    {
-        CL_Obj new_pair;
-        CL_GC_PROTECT(cond_obj);
-        new_pair = cl_cons(initarg, value);
-        cond = (CL_Condition *)CL_OBJ_TO_PTR(cond_obj);
-        cond->slots = cl_cons(new_pair, cond->slots);
-        CL_GC_UNPROTECT(1);
+        /* Slot not found in alist — add it */
+        {
+            CL_Obj new_pair;
+            CL_GC_PROTECT(cond_obj);
+            CL_GC_PROTECT(key);
+            new_pair = cl_cons(key, value);
+            cond = (CL_Condition *)CL_OBJ_TO_PTR(cond_obj);
+            cond->slots = cl_cons(new_pair, cond->slots);
+            CL_GC_UNPROTECT(2);
+        }
     }
     return value;
 }
@@ -1182,6 +1301,7 @@ static CL_Obj coerce_to_condition(CL_Obj *args, int n, CL_Obj default_type)
          * (CLHS define-condition :default-initargs).  This is what makes
          * (error 'my-error) carry my-error's default :format-control etc. */
         slots = merge_default_initargs(arg, slots, &report);
+        slots = apply_condition_slot_initforms(arg, slots);
 
         {
             CL_Obj result = cl_make_condition(arg, slots, report);
@@ -1265,6 +1385,12 @@ static CL_Obj bi_warn(CL_Obj *args, int n)
         frame->dyn_mark = cl_dyn_top;
         frame->handler_mark = cl_handler_top;
         frame->restart_mark = cl_restart_top;
+        /* Save the remaining unwind marks so the muffle landing below can
+         * restore the full VM/GC/error state — see the comment there. */
+        frame->error_mark = cl_error_frame_top;
+        frame->gc_root_mark = gc_root_count;
+        frame->compiler_mark = cl_compiler_mark();
+        frame->saved_pending_mark = cl_saved_pending_top;
         cl_nlx_top++;
 
         /* Push muffle-warning restart */
@@ -1283,7 +1409,31 @@ static CL_Obj bi_warn(CL_Obj *args, int n)
         }
 
         if (setjmp(frame->buf) != 0) {
-            /* muffle-warning was invoked — skip warning output */
+            /* muffle-warning was invoked.  The throw may have unwound through
+             * one or more bytecode VM frames — this happens whenever the
+             * WARNING handler is a Lisp closure that *calls* (muffle-warning)
+             * (e.g. fiasco's `(lambda (a) ... (muffle-warning))`), as opposed
+             * to #'muffle-warning being installed as the handler directly.  In
+             * that case cl_vm.sp/fp (and any dynamic bindings, GC roots or
+             * C-level error frames the handler established) are left dangling
+             * by the longjmp.  Restore them from the saved NLX frame exactly as
+             * the canonical CATCH landing in vm.c does, otherwise the VM stack
+             * stays misaligned and later code misbehaves (observed: a spurious
+             * "restart MUFFLE-WARNING not found" / VM re-entry).
+             *
+             * Recompute the frame pointer from the global stack: locals are
+             * indeterminate after longjmp (C99 7.13.2.1) and cl_throw_to_tag
+             * set cl_nlx_top to this frame's index. */
+            CL_NLXFrame *f = &cl_nlx_stack[cl_nlx_top];
+            cl_dynbind_restore_to(f->dyn_mark);
+            cl_handler_top = f->handler_mark;
+            cl_restart_top = f->restart_mark;
+            cl_error_frame_top = f->error_mark;
+            gc_root_count = f->gc_root_mark;
+            cl_compiler_restore_to(f->compiler_mark);
+            cl_saved_pending_top = f->saved_pending_mark;
+            cl_vm.sp = f->vm_sp;
+            cl_vm.fp = f->vm_fp;
             muffled = 1;
         }
     }
@@ -1663,6 +1813,7 @@ void cl_builtins_condition_init(void)
     cl_register_builtin("CONDITION-SLOT-VALUE", bi_condition_slot_value, 2, 2, cl_package_clamiga);
     cl_register_builtin("%SET-CONDITION-SLOT-VALUE", bi_set_condition_slot_value, 3, 3, cl_package_clamiga);
     cl_register_builtin("%SET-CONDITION-DEFAULT-INITARGS", bi_set_condition_default_initargs, 2, 2, cl_package_clamiga);
+    cl_register_builtin("%REGISTER-CONDITION-SLOT-INITFORMS", bi_register_condition_slot_initforms, 2, 2, cl_package_clamiga);
 
     /* Signaling */
     defun("SIGNAL", bi_signal, 1, -1);
