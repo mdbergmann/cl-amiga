@@ -735,6 +735,14 @@ static CL_Obj bi_mapcar(CL_Obj *args, int n)
     CL_GC_PROTECT(func);
     CL_GC_PROTECT(result);
     CL_GC_PROTECT(tail);
+    /* GC-protect the list CURSORS: cl_vm_apply below runs the mapped function,
+     * which may allocate and compact (moving GC).  Without rooting &lists[i]
+     * the cursors keep pre-compaction offsets and the next cl_car/cl_cdr walks
+     * relocated/garbage memory ("CAR: argument is not of type LIST").  Each
+     * &lists[i] is registered once; reassigning lists[i] across iterations is
+     * fine because the compactor forwards whatever value the address holds. */
+    for (i = 0; i < nlists; i++)
+        CL_GC_PROTECT(lists[i]);
 
     for (;;) {
         CL_Obj val;
@@ -769,7 +777,7 @@ static CL_Obj bi_mapcar(CL_Obj *args, int n)
     }
 
 done:
-    CL_GC_UNPROTECT(3);
+    CL_GC_UNPROTECT(3 + nlists);
     return result;
 }
 

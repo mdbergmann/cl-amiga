@@ -173,13 +173,20 @@ static CL_Obj bi_every(CL_Obj *args, int n)
         lens[i] = every_seq_len(seqs[i]);
     }
 
+    /* GC-protect the list cursors across call_func: the predicate may allocate
+     * and compact, relocating the list being walked (see the map-family note). */
+    CL_GC_PROTECT(pred);
+    CL_GC_PROTECT(last_result);
+    for (i = 0; i < nseqs; i++)
+        CL_GC_PROTECT(seqs[i]);
+
     for (;;) {
         /* Check exhaustion */
         for (i = 0; i < nseqs; i++) {
             if (lens[i] >= 0) {
-                if (idx >= lens[i]) return last_result;
+                if (idx >= lens[i]) goto every_done;
             } else {
-                if (CL_NULL_P(seqs[i])) return last_result;
+                if (CL_NULL_P(seqs[i])) goto every_done;
             }
         }
         /* Collect elements */
@@ -193,8 +200,12 @@ static CL_Obj bi_every(CL_Obj *args, int n)
         }
         idx++;
         last_result = call_func(pred, call_args, nseqs);
-        if (CL_NULL_P(last_result)) return CL_NIL;
+        if (CL_NULL_P(last_result)) { last_result = CL_NIL; goto every_done; }
     }
+
+every_done:
+    CL_GC_UNPROTECT(2 + nseqs);
+    return last_result;
 }
 
 static CL_Obj bi_some(CL_Obj *args, int n)
@@ -206,6 +217,7 @@ static CL_Obj bi_some(CL_Obj *args, int n)
     CL_Obj call_args[16];
     int i;
     int32_t idx = 0;
+    CL_Obj result = CL_NIL;
 
     if (nseqs > 16) nseqs = 16;
     for (i = 0; i < nseqs; i++) {
@@ -213,13 +225,17 @@ static CL_Obj bi_some(CL_Obj *args, int n)
         lens[i] = every_seq_len(seqs[i]);
     }
 
+    /* GC-protect the list cursors across call_func (see bi_every / map note). */
+    CL_GC_PROTECT(pred);
+    for (i = 0; i < nseqs; i++)
+        CL_GC_PROTECT(seqs[i]);
+
     for (;;) {
-        CL_Obj result;
         for (i = 0; i < nseqs; i++) {
             if (lens[i] >= 0) {
-                if (idx >= lens[i]) return CL_NIL;
+                if (idx >= lens[i]) { result = CL_NIL; goto some_done; }
             } else {
-                if (CL_NULL_P(seqs[i])) return CL_NIL;
+                if (CL_NULL_P(seqs[i])) { result = CL_NIL; goto some_done; }
             }
         }
         for (i = 0; i < nseqs; i++) {
@@ -232,8 +248,12 @@ static CL_Obj bi_some(CL_Obj *args, int n)
         }
         idx++;
         result = call_func(pred, call_args, nseqs);
-        if (!CL_NULL_P(result)) return result;
+        if (!CL_NULL_P(result)) goto some_done;
     }
+
+some_done:
+    CL_GC_UNPROTECT(1 + nseqs);
+    return result;
 }
 
 static CL_Obj bi_notany(CL_Obj *args, int n)
@@ -558,9 +578,19 @@ static CL_Obj bi_map(CL_Obj *args, int n)
     }
 
     if (rt == 0) {
-        /* nil/null result-type: iterate for side-effects */
+        /* nil/null result-type: iterate for side-effects.
+         * GC-protect the seq cursors (and orig_seqs, used for index access on
+         * vector/string args): call_func runs the mapped function, which may
+         * allocate and compact, relocating list cursors and vector/string
+         * objects.  Without this the next cl_car(seqs[i]) / every_seq_elt walks
+         * stale offsets ("CAR: argument is not of type LIST"). */
+        CL_GC_PROTECT(func);
+        for (i = 0; i < nseqs; i++) { CL_GC_PROTECT(seqs[i]); CL_GC_PROTECT(orig_seqs[i]); }
         for (idx = 0; ; idx++) {
-            if (map_exhausted(seqs, lens, nseqs, idx)) return CL_NIL;
+            if (map_exhausted(seqs, lens, nseqs, idx)) {
+                CL_GC_UNPROTECT(1 + 2 * nseqs);
+                return CL_NIL;
+            }
             map_collect_args(seqs, lens, orig_seqs, call_args, nseqs, idx);
             call_func(func, call_args, nseqs);
         }
@@ -582,6 +612,8 @@ static CL_Obj bi_map(CL_Obj *args, int n)
             CL_GC_PROTECT(func);
             result = cl_make_string(NULL, (uint32_t)min_len);
             CL_GC_PROTECT(result);
+            /* Protect seq cursors across call_func (see rt==0 note). */
+            for (i = 0; i < nseqs; i++) { CL_GC_PROTECT(seqs[i]); CL_GC_PROTECT(orig_seqs[i]); }
             for (idx = 0; idx < min_len; idx++) {
                 CL_Obj val;
                 map_collect_args(seqs, lens, orig_seqs, call_args, nseqs, idx);
@@ -589,6 +621,7 @@ static CL_Obj bi_map(CL_Obj *args, int n)
                 cl_string_set_char_at(result, (uint32_t)idx,
                                       CL_CHAR_P(val) ? CL_CHAR_VAL(val) : 0);
             }
+            CL_GC_UNPROTECT(2 * nseqs);
             /* CLHS: a result-type length that disagrees with the produced
              * length is a type-error (datum = produced sequence). */
             if (decl_len >= 0 && decl_len != min_len)
@@ -600,12 +633,15 @@ static CL_Obj bi_map(CL_Obj *args, int n)
             CL_GC_PROTECT(func);
             result = cl_make_vector((uint32_t)min_len);
             CL_GC_PROTECT(result);
+            /* Protect seq cursors across call_func (see rt==0 note). */
+            for (i = 0; i < nseqs; i++) { CL_GC_PROTECT(seqs[i]); CL_GC_PROTECT(orig_seqs[i]); }
             for (idx = 0; idx < min_len; idx++) {
                 CL_Obj val;
                 map_collect_args(seqs, lens, orig_seqs, call_args, nseqs, idx);
                 val = call_func(func, call_args, nseqs);
                 cl_vector_data((CL_Vector *)CL_OBJ_TO_PTR(result))[idx] = val;
             }
+            CL_GC_UNPROTECT(2 * nseqs);
             if (decl_len >= 0 && decl_len != min_len)
                 cl_signal_type_error_obj(result, args[0], "MAP"); /* args[0] GC-rooted; result_type may be stale */
             CL_GC_UNPROTECT(2);
@@ -617,6 +653,8 @@ static CL_Obj bi_map(CL_Obj *args, int n)
     CL_GC_PROTECT(func);
     CL_GC_PROTECT(result);
     CL_GC_PROTECT(tail);
+    /* Protect seq cursors across call_func (see rt==0 note). */
+    for (i = 0; i < nseqs; i++) { CL_GC_PROTECT(seqs[i]); CL_GC_PROTECT(orig_seqs[i]); }
 
     for (idx = 0; ; idx++) {
         CL_Obj val, cell;
@@ -631,7 +669,7 @@ static CL_Obj bi_map(CL_Obj *args, int n)
         tail = cell;
     }
 
-    CL_GC_UNPROTECT(3);
+    CL_GC_UNPROTECT(3 + 2 * nseqs);
     return result;
 }
 

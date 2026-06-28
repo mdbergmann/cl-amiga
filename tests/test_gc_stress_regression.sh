@@ -1796,10 +1796,10 @@ check_absent   "no corrupted constant pool from stale if-branch"      "COMPILEIF
 # Exercise a no-:initarg slot (keyed by slot name) whose initform captures a
 # dynamic variable rebound at make-condition time, over both the make-condition
 # and the error/signal paths (bi_signal funnels through the same helper).
-# NOTE: a deliberately single-slot condition — a *multi*-slot define-condition
-# preceded by a defvar/defparameter trips a SEPARATE, PRE-EXISTING compile/load
-# GC bug (reproduces on the parent commit; see the slot-initform memory note),
-# which would mask this check; keep this case focused on the initform path.
+# NOTE: kept deliberately single-slot to keep this case focused on the initform
+# path.  The *multi*-slot define-condition-after-defvar corruption it used to
+# avoid was a separate bug (map builtins not protecting their list cursors) and
+# is now fixed and covered by the dedicated "map cursor" case below.
 cat > "$WORK/slot-initform.lisp" <<'EOF'
 (defparameter *gcs-captured* :default)
 (define-condition my-gcstress-initform (error)
@@ -1823,6 +1823,102 @@ out=$(run_stress "$WORK/slot-initform.lisp")
 check_contains "slot :initform thunk evaluated correctly under GC stress (make-condition)" "SINITFORM-OK" "$out"
 check_contains "slot :initform thunk captures rebinding correctly under GC stress (error)" "SINITFORM-ERR:VIA-ERROR" "$out"
 check_absent   "no corruption in apply_condition_slot_initforms under stress" "SINITFORM-BAD\|Unbound\|type 0\|corrupted\|Undefined" "$out"
+
+# --- Case: MAPCAR/MAP family list cursors survive compaction -----------------
+# Bug: bi_mapcar/bi_mapc/bi_mapcan/bi_maplist/bi_mapl/bi_mapcon and bi_map /
+# bi_map_into held their `lists[]` / `seqs[]` list-cursor C arrays UNPROTECTED
+# across the mapped-function call (cl_vm_apply/call_func).  When the mapped
+# function allocates (e.g. conses), the moving GC relocates the list being
+# walked, leaving the cursor at a stale offset — the next cl_car(cursor) reads
+# a relocated/garbage cell ("CAR: argument is not of type LIST").
+#
+# This surfaced as the define-condition-after-defvar heisenbug: define-condition
+# macroexpands to `(mapcar (lambda (spec) ... (list spec)) slot-specs)` (the
+# `(list spec)` cons triggers the relocating compaction), so a multi-slot
+# condition compiled right after a cons-allocating top-level form (defvar,
+# defparameter, (list ...)) corrupted the slot walk and the type never
+# registered.  Reproduce that exact shape, plus direct mapcar/map-into probes.
+cat > "$WORK/mapcursor.lisp" <<'EOF'
+;; (1) define-condition after a cons-allocating top-level form — the original
+;;     heisenbug.  These MUST be separate top-level forms (the defparameter has
+;;     to *execute* before the define-condition is compiled).
+(defparameter *mc-x* :default)
+(define-condition mc-cond (error)
+  ((a :reader mc-a) (b :reader mc-b) (c :reader mc-c)))
+(format t "MC-COND:~a~%" (typep (make-condition 'mc-cond) 'mc-cond))
+
+;; (2) mapcar with an allocating mapped function over a freshly-consed list —
+;;     every (list e) relocates the cursor.  Result must be intact and correct.
+(let ((r (mapcar (lambda (e) (list e e)) (list 1 2 3 4 5 6 7 8))))
+  (format t "MC-MAPCAR:~a~%" (equal r '((1 1)(2 2)(3 3)(4 4)(5 5)(6 6)(7 7)(8 8)))))
+
+;; (3) two-list mapcar (two cursors) with an allocating function.
+(let ((r (mapcar (lambda (x y) (cons x y)) (list 1 2 3) (list 'a 'b 'c))))
+  (format t "MC-MAPCAR2:~a~%" (equal r '((1 . a)(2 . b)(3 . c)))))
+
+;; (4) map 'list over a consed list with an allocating function.
+(let ((r (map 'list (lambda (e) (list e)) (list 10 20 30 40))))
+  (format t "MC-MAP:~a~%" (equal r '((10)(20)(30)(40)))))
+
+;; (5) map-into a fresh list from a consed source with an allocating function.
+(let ((dst (make-list 4)))
+  (map-into dst (lambda (e) (list e)) (list 5 6 7 8))
+  (format t "MC-MAPINTO:~a~%" (equal dst '((5)(6)(7)(8)))))
+
+;; (6) mapcan with an allocating function (builds + nconcs fresh lists).
+(let ((r (mapcan (lambda (e) (list e (* e 10))) (list 1 2 3))))
+  (format t "MC-MAPCAN:~a~%" (equal r '(1 10 2 20 3 30))))
+
+;; (7) mapc / mapl / maplist / mapcon — the remaining list-map cursors.
+(let ((acc nil))
+  (mapc (lambda (e) (push (list e) acc)) (list 1 2 3 4))
+  (format t "MC-MAPC:~a~%" (equal (nreverse acc) '((1)(2)(3)(4)))))
+(let ((acc nil))
+  (mapl (lambda (tl) (push (list (car tl)) acc)) (list 5 6 7))
+  (format t "MC-MAPL:~a~%" (equal (nreverse acc) '((5)(6)(7)))))
+(let ((r (maplist (lambda (tl) (list (length tl))) (list 1 2 3 4))))
+  (format t "MC-MAPLIST:~a~%" (equal r '((4)(3)(2)(1)))))
+(let ((r (mapcon (lambda (tl) (list (car tl) (* (car tl) 10))) (list 1 2 3))))
+  (format t "MC-MAPCON:~a~%" (equal r '(1 10 2 20 3 30))))
+
+;; (8) every / some / notevery / notany with predicates that CONS (allocate),
+;;     walking a freshly-consed list — the same cursor-relocation path.
+(format t "MC-EVERY:~a~%"
+  (every (lambda (e) (car (list (plusp e)))) (list 1 2 3 4 5 6)))
+(format t "MC-SOME:~a~%"
+  (eql 4 (some (lambda (e) (car (list (and (evenp e) e)))) (list 1 3 4 5))))
+(format t "MC-NOTEVERY:~a~%"
+  (notevery (lambda (e) (car (list (oddp e)))) (list 1 3 4)))
+(format t "MC-NOTANY:~a~%"
+  (notany (lambda (e) (car (list (> e 100)))) (list 1 2 3)))
+
+;; (9) reduce with a :key function and an allocating reducer, both forward and
+;;     :from-end, over freshly-consed lists (forward `cur` and :from-end vector).
+(format t "MC-REDUCE:~a~%"
+  (eql 30 (reduce (lambda (a b) (car (list (+ a b))))
+                  (list '(1) '(2) '(3) '(4)) :key #'car :initial-value 20)))
+(format t "MC-REDUCE-FE:~a~%"
+  (eql 24 (reduce (lambda (e a) (car (list (+ e a))))
+                  (list '(1) '(2) '(3) '(4)) :key #'car :from-end t :initial-value 14)))
+EOF
+out=$(run_stress "$WORK/mapcursor.lisp")
+check_contains "define-condition after defparameter registers under GC stress" "MC-COND:T" "$out"
+check_contains "mapcar allocating fn keeps list cursor under GC stress"        "MC-MAPCAR:T" "$out"
+check_contains "two-list mapcar keeps both cursors under GC stress"            "MC-MAPCAR2:T" "$out"
+check_contains "map 'list allocating fn keeps cursor under GC stress"          "MC-MAP:T" "$out"
+check_contains "map-into allocating fn keeps source cursor under GC stress"    "MC-MAPINTO:T" "$out"
+check_contains "mapcan allocating fn keeps cursor under GC stress"             "MC-MAPCAN:T" "$out"
+check_contains "mapc allocating fn keeps cursor under GC stress"               "MC-MAPC:T" "$out"
+check_contains "mapl allocating fn keeps cursor under GC stress"               "MC-MAPL:T" "$out"
+check_contains "maplist allocating fn keeps cursor under GC stress"            "MC-MAPLIST:T" "$out"
+check_contains "mapcon allocating fn keeps cursor under GC stress"             "MC-MAPCON:T" "$out"
+check_contains "every consing predicate keeps cursor under GC stress"          "MC-EVERY:T" "$out"
+check_contains "some consing predicate keeps cursor under GC stress"           "MC-SOME:T" "$out"
+check_contains "notevery consing predicate keeps cursor under GC stress"       "MC-NOTEVERY:T" "$out"
+check_contains "notany consing predicate keeps cursor under GC stress"         "MC-NOTANY:T" "$out"
+check_contains "reduce :key + allocating reducer keeps cursor under GC stress" "MC-REDUCE:T" "$out"
+check_contains "reduce :from-end :key keeps vector elements under GC stress"   "MC-REDUCE-FE:T" "$out"
+check_absent   "no corrupted cursor in map family under stress" "argument is not of type LIST\|unknown type specifier\|corrupted\|type 0" "$out"
 
 echo ""
 echo "$passed passed, $failed failed, $total total"
