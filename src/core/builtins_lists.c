@@ -734,9 +734,16 @@ static CL_Obj bi_mapc(CL_Obj *args, int n)
     for (i = 0; i < nlists; i++)
         lists[i] = args[i + 1];
 
+    /* GC-protect the list cursors across call_func (it runs the mapped
+     * function, which may allocate and compact, relocating the cursors). */
+    CL_GC_PROTECT(func);
+    CL_GC_PROTECT(first_list);
+    for (i = 0; i < nlists; i++)
+        CL_GC_PROTECT(lists[i]);
+
     for (;;) {
         for (i = 0; i < nlists; i++) {
-            if (CL_NULL_P(lists[i])) return first_list;
+            if (CL_NULL_P(lists[i])) goto mapc_done;
         }
         for (i = 0; i < nlists; i++) {
             call_args[i] = cl_car(lists[i]);
@@ -744,6 +751,10 @@ static CL_Obj bi_mapc(CL_Obj *args, int n)
         }
         call_func(func, call_args, nlists);
     }
+
+mapc_done:
+    CL_GC_UNPROTECT(2 + nlists);
+    return first_list;
 }
 
 static CL_Obj bi_mapcan(CL_Obj *args, int n)
@@ -762,6 +773,9 @@ static CL_Obj bi_mapcan(CL_Obj *args, int n)
     CL_GC_PROTECT(func);
     CL_GC_PROTECT(result);
     CL_GC_PROTECT(tail);
+    /* Protect cursors across call_func (mapped fn may allocate/compact). */
+    for (i = 0; i < nlists; i++)
+        CL_GC_PROTECT(lists[i]);
 
     for (;;) {
         CL_Obj val;
@@ -791,7 +805,7 @@ static CL_Obj bi_mapcan(CL_Obj *args, int n)
     }
 
 mapcan_done:
-    CL_GC_UNPROTECT(3);
+    CL_GC_UNPROTECT(3 + nlists);
     return result;
 }
 
@@ -811,6 +825,9 @@ static CL_Obj bi_maplist(CL_Obj *args, int n)
     CL_GC_PROTECT(func);
     CL_GC_PROTECT(result);
     CL_GC_PROTECT(tail);
+    /* Protect cursors across call_func (mapped fn may allocate/compact). */
+    for (i = 0; i < nlists; i++)
+        CL_GC_PROTECT(lists[i]);
 
     for (;;) {
         CL_Obj val;
@@ -840,7 +857,7 @@ static CL_Obj bi_maplist(CL_Obj *args, int n)
     }
 
 maplist_done:
-    CL_GC_UNPROTECT(3);
+    CL_GC_UNPROTECT(3 + nlists);
     return result;
 }
 
@@ -857,9 +874,15 @@ static CL_Obj bi_mapl(CL_Obj *args, int n)
     for (i = 0; i < nlists; i++)
         lists[i] = args[i + 1];
 
+    /* Protect cursors across call_func (mapped fn may allocate/compact). */
+    CL_GC_PROTECT(func);
+    CL_GC_PROTECT(first_list);
+    for (i = 0; i < nlists; i++)
+        CL_GC_PROTECT(lists[i]);
+
     for (;;) {
         for (i = 0; i < nlists; i++) {
-            if (CL_NULL_P(lists[i])) return first_list;
+            if (CL_NULL_P(lists[i])) goto mapl_done;
         }
         for (i = 0; i < nlists; i++)
             call_args[i] = lists[i];
@@ -869,6 +892,10 @@ static CL_Obj bi_mapl(CL_Obj *args, int n)
         for (i = 0; i < nlists; i++)
             lists[i] = cl_cdr(lists[i]);
     }
+
+mapl_done:
+    CL_GC_UNPROTECT(2 + nlists);
+    return first_list;
 }
 
 static CL_Obj bi_mapcon(CL_Obj *args, int n)
@@ -887,6 +914,9 @@ static CL_Obj bi_mapcon(CL_Obj *args, int n)
     CL_GC_PROTECT(func);
     CL_GC_PROTECT(result);
     CL_GC_PROTECT(tail);
+    /* Protect cursors across call_func (mapped fn may allocate/compact). */
+    for (i = 0; i < nlists; i++)
+        CL_GC_PROTECT(lists[i]);
 
     for (;;) {
         CL_Obj val;
@@ -917,7 +947,7 @@ static CL_Obj bi_mapcon(CL_Obj *args, int n)
     }
 
 mapcon_done:
-    CL_GC_UNPROTECT(3);
+    CL_GC_UNPROTECT(3 + nlists);
     return result;
 }
 

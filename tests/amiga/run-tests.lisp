@@ -1944,6 +1944,46 @@
        (bss-desc (make-condition 'bss-sub :description "d")))
 (define-condition bss-err2 (error) (a (b :initarg :b :reader bss-b)))
 (check "define-condition mixed-slots" 7 (bss-b (make-condition 'bss-err2 :b 7)))
+; Regression: the map family (mapcar/map/map-into/...) walked their list cursors
+; in unprotected C arrays across the mapped-function call, so an allocating
+; mapped function relocated the list under the moving GC and the cursor went
+; stale ("CAR: argument is not of type LIST").  define-condition expands to
+; (mapcar (lambda (spec) ... (list spec)) slot-specs), so a multi-slot condition
+; compiled after a cons-allocating top-level form lost its slot walk.
+(defparameter *mc-reg* :default)
+(define-condition mc-reg-cond (error) ((a :reader mc-a) (b :reader mc-b) (c :reader mc-c)))
+(check "define-condition multi-slot after defparameter" t
+       (typep (make-condition 'mc-reg-cond) 'mc-reg-cond))
+(check "mapcar allocating fn keeps cursor" '((1 1) (2 2) (3 3) (4 4))
+       (mapcar (lambda (e) (list e e)) (list 1 2 3 4)))
+(check "map 'list allocating fn keeps cursor" '((10) (20) (30))
+       (map 'list (lambda (e) (list e)) (list 10 20 30)))
+(check "maplist allocating fn keeps cursor" '((4) (3) (2) (1))
+       (maplist (lambda (tl) (list (length tl))) (list 1 2 3 4)))
+(check "mapcon allocating fn keeps cursor" '(1 10 2 20 3 30)
+       (mapcon (lambda (tl) (list (car tl) (* (car tl) 10))) (list 1 2 3)))
+(check "mapc allocating fn keeps cursor" '(1 2 3 4)
+       (let ((acc '()))
+         (mapc (lambda (e) (push (list e) acc)) (list 1 2 3 4))
+         (mapcar #'car (nreverse acc))))
+(check "mapl allocating fn keeps cursor" '(1 2 3)
+       (let ((acc '()))
+         (mapl (lambda (tl) (push (list (car tl)) acc)) (list 1 2 3))
+         (mapcar #'car (nreverse acc))))
+(check "every consing predicate keeps cursor" t
+       (every (lambda (e) (car (list (plusp e)))) (list 1 2 3 4 5)))
+(check "some consing predicate keeps cursor" 4
+       (some (lambda (e) (car (list (and (evenp e) e)))) (list 1 3 4 5)))
+(check "notevery consing predicate keeps cursor" t
+       (notevery (lambda (e) (car (list (evenp e)))) (list 2 4 5 6)))
+(check "notany consing predicate keeps cursor" t
+       (notany (lambda (e) (car (list (oddp e)))) (list 2 4 6 8)))
+(check "reduce :key + allocating reducer keeps cursor" 30
+       (reduce (lambda (a b) (car (list (+ a b))))
+               (list '(1) '(2) '(3) '(4)) :key #'car :initial-value 20))
+(check "reduce :from-end :key keeps elements" 24
+       (reduce (lambda (e a) (car (list (+ e a))))
+               (list '(1) '(2) '(3) '(4)) :key #'car :from-end t :initial-value 14))
 
 ; ERROR as a non-first superclass must still make the condition an ERROR for
 ; typep / subtypep / handler-case (regression: usocket SOCKET-ERROR is

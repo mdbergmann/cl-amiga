@@ -1642,34 +1642,46 @@ static CL_Obj bi_reduce(CL_Obj *args, int n)
 
         CL_GC_PROTECT(accum);
         CL_GC_PROTECT(func);
+        CL_GC_PROTECT(key_fn);  /* stale otherwise once apply_key/call_test compacts */
 
         if (!(CL_CONS_P(seq) || CL_NULL_P(seq))) {
-            /* Any array sequence (vector / string / bit-vector): random access */
+            /* Any array sequence (vector / string / bit-vector): random access.
+             * seq is args[1] (GC-rooted), so it survives the compactions that
+             * apply_key/call_test trigger. */
             int32_t idx;
             for (idx = end_val - 1; idx >= start; idx--) {
                 CL_Obj elem = apply_key(key_fn, seq_elt(seq, idx));
                 accum = call_test(func, elem, accum);
             }
         } else {
-            /* List: collect elements into temp array, then iterate backwards */
-            CL_Obj *elts = (CL_Obj *)platform_alloc(
-                (uint32_t)(sub_len * sizeof(CL_Obj)));
+            /* List: collect elements into a GC-managed vector, then iterate
+             * backwards.  A vector is a single heap object traced by the GC, so
+             * its elements are forwarded across the compactions that
+             * apply_key/call_test trigger — unlike a platform_alloc C array,
+             * whose CL_Obj entries (arena offsets) would go stale. */
+            CL_Obj vec = cl_make_vector((uint32_t)(sub_len < 0 ? 0 : sub_len));
             CL_Obj cur = seq;
             int32_t idx = 0, j = 0;
+            CL_GC_PROTECT(vec);
+            /* Collection does not allocate (cl_car/cl_cdr only), so `cur` and the
+             * vector store are safe without further protection. */
             while (idx < start && !CL_NULL_P(cur)) { cur = cl_cdr(cur); idx++; }
             while (idx < end_val && !CL_NULL_P(cur)) {
-                elts[j++] = cl_car(cur);
+                cl_vector_data((CL_Vector *)CL_OBJ_TO_PTR(vec))[j++] = cl_car(cur);
                 cur = cl_cdr(cur);
                 idx++;
             }
             for (idx = j - 1; idx >= 0; idx--) {
-                CL_Obj elem = apply_key(key_fn, elts[idx]);
+                /* Re-deref vec each iteration: a compaction in the prior
+                 * call_test may have relocated the vector object. */
+                CL_Obj elem = apply_key(key_fn,
+                    cl_vector_data((CL_Vector *)CL_OBJ_TO_PTR(vec))[idx]);
                 accum = call_test(func, elem, accum);
             }
-            platform_free(elts);
+            CL_GC_UNPROTECT(1); /* vec */
         }
 
-        CL_GC_UNPROTECT(2);
+        CL_GC_UNPROTECT(3); /* key_fn, func, accum */
         return accum;
     }
 
@@ -1683,10 +1695,14 @@ static CL_Obj bi_reduce(CL_Obj *args, int n)
 
     CL_GC_PROTECT(accum);
     CL_GC_PROTECT(func);
+    CL_GC_PROTECT(key_fn);
 
     if (CL_CONS_P(seq) || CL_NULL_P(seq)) {
         CL_Obj cur = seq;
         int32_t idx = 0;
+        /* GC-protect the list cursor: call_test (the reducing fn) and apply_key
+         * may allocate and compact, relocating the list (see the map note). */
+        CL_GC_PROTECT(cur);
         /* Skip to start */
         while (idx < start && !CL_NULL_P(cur)) { cur = cl_cdr(cur); idx++; }
         while (idx < end_val && !CL_NULL_P(cur)) {
@@ -1695,6 +1711,7 @@ static CL_Obj bi_reduce(CL_Obj *args, int n)
             cur = cl_cdr(cur);
             idx++;
         }
+        CL_GC_UNPROTECT(1);
     } else {
         int32_t idx;
         for (idx = start; idx < end_val; idx++) {
@@ -1703,7 +1720,7 @@ static CL_Obj bi_reduce(CL_Obj *args, int n)
         }
     }
 
-    CL_GC_UNPROTECT(2);
+    CL_GC_UNPROTECT(3); /* key_fn, func, accum */
     return accum;
 }
 
@@ -1988,6 +2005,13 @@ static CL_Obj bi_map_into(CL_Obj *args, int n)
     res_cur = result_seq;       /* list write cursor */
     CL_GC_PROTECT(result_seq);  /* protect against compaction in cl_vm_apply loop */
     CL_GC_PROTECT(res_cur);
+    CL_GC_PROTECT(func);
+    /* Protect the source seq cursors too: cl_vm_apply runs the mapped function,
+     * which may allocate and compact, relocating the list cursors in seqs[]
+     * (and the vector/string objects read via seq_elt).  Without rooting them
+     * the next cl_car(seqs[j]) walks stale memory under GC stress. */
+    for (j = 0; j < n_seqs; j++)
+        CL_GC_PROTECT(seqs[j]);
 
     /* Precompute source sequence lengths for non-list types */
     {
@@ -2033,7 +2057,7 @@ static CL_Obj bi_map_into(CL_Obj *args, int n)
     } /* end src_lens block */
 
 map_into_done:
-    CL_GC_UNPROTECT(2); /* pops res_cur then result_seq */
+    CL_GC_UNPROTECT(3 + n_seqs); /* pops seqs[], func, res_cur, result_seq */
     /* Set the fill pointer of a fill-pointered result to the count stored. */
     if (CL_VECTOR_P(result_seq)) {
         CL_Vector *rv = (CL_Vector *)CL_OBJ_TO_PTR(result_seq);
