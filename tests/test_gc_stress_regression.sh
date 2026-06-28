@@ -1920,6 +1920,31 @@ check_contains "reduce :key + allocating reducer keeps cursor under GC stress" "
 check_contains "reduce :from-end :key keeps vector elements under GC stress"   "MC-REDUCE-FE:T" "$out"
 check_absent   "no corrupted cursor in map family under stress" "argument is not of type LIST\|unknown type specifier\|corrupted\|type 0" "$out"
 
+# --- Case: #S(...) structure-literal reader under GC stress ----------------
+# The #S reader conses a helper-call form and constructs the struct at read
+# time.  Under compaction every alloc relocates, so the spec list, the quoted
+# form, and the constructor args must all stay GC-protected; a stale offset
+# would corrupt the slot values.
+cat > "$WORK/sreader.lisp" <<'EOF'
+(defstruct sgs-pt x y)
+(defstruct (sgs-pt3 (:include sgs-pt)) z)
+;; Read many #S literals so a compaction lands mid-read.
+(let ((ok t))
+  (dotimes (i 200)
+    (let ((p #S(sgs-pt :x "alpha" :y "beta"))
+          (q #S(sgs-pt3 :x 1 :y 2 :z 3)))
+      (unless (and (equal (sgs-pt-x p) "alpha")
+                   (equal (sgs-pt-y p) "beta")
+                   (eql (sgs-pt3-z q) 3)
+                   (eql (sgs-pt-x q) 1))
+        (setq ok nil))))
+  (format t "SREADER:~a~%" ok))
+EOF
+out=$(run_stress "$WORK/sreader.lisp")
+check_contains "#S reader builds correct struct under GC stress" "SREADER:T" "$out"
+check_absent   "#S reader no corruption under GC stress" \
+  "not of type\|unknown type specifier\|corrupted\|type 0\|Unbound" "$out"
+
 echo ""
 echo "$passed passed, $failed failed, $total total"
 [ "$failed" -eq 0 ]

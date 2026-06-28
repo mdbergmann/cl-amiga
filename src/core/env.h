@@ -107,6 +107,10 @@ CL_Obj cl_env_lookup_local_macro(CL_CompEnv *env, CL_Obj name);
 /* Symbol macro bindings (symbol-macrolet) */
 int cl_env_add_symbol_macro(CL_CompEnv *env, CL_Obj name, CL_Obj expansion);
 CL_Obj cl_env_lookup_symbol_macro(CL_CompEnv *env, CL_Obj name);
+/* Predicate form — distinguishes "found, expands to NIL" from "not found".
+ * Use this wherever a NIL expansion must still be treated as a symbol-macro
+ * (e.g. variable reference / setf place compilation). */
+int cl_env_lookup_symbol_macro_p(CL_CompEnv *env, CL_Obj name, CL_Obj *out);
 
 /* Build a Lisp-visible snapshot of the lexical environment's symbol
  * macros, for use as the &environment argument of a macro expander.

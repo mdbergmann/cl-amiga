@@ -3409,6 +3409,40 @@ TEST(eval_socket_stream_timeout_bad_direction)
     cl_stream_close(listener);
 }
 
+/* CLHS get-dispatch-macro-character: signals an error when the character is
+ * not a dispatching macro character.  named-readtables' readtable merge relies
+ * on this error to distinguish ordinary macro characters (e.g. a custom
+ * backquote) from dispatching ones — without it, fare-quasiquote's backquote
+ * was misclassified and dropped, breaking trivia's quasiquote patterns. */
+TEST(eval_get_dispatch_macro_character_conformance)
+{
+    char buf[64];
+    CL_Obj r;
+    /* # IS a dispatching macro character: no error, NIL for an unbound sub. */
+    r = cl_eval_string(
+        "(handler-case (list :ok (get-dispatch-macro-character #\\# #\\Z))"
+        "  (error () :err))");
+    cl_prin1_to_string(r, buf, sizeof(buf));
+    ASSERT_STR_EQ(buf, "(:OK NIL)");
+
+    /* A constituent character is NOT a dispatching macro character → error. */
+    r = cl_eval_string(
+        "(handler-case (progn (get-dispatch-macro-character #\\a #\\x) :no-error)"
+        "  (error () :err))");
+    cl_prin1_to_string(r, buf, sizeof(buf));
+    ASSERT_STR_EQ(buf, ":ERR");
+
+    /* An ordinary macro character (set via set-macro-character) is NOT a
+     * dispatching one → error. */
+    r = cl_eval_string(
+        "(let ((rt (copy-readtable nil)))"
+        "  (set-macro-character #\\! (lambda (s c) (declare (ignore s c)) :bang) nil rt)"
+        "  (handler-case (progn (get-dispatch-macro-character #\\! #\\x rt) :no-error)"
+        "    (error () :err)))");
+    cl_prin1_to_string(r, buf, sizeof(buf));
+    ASSERT_STR_EQ(buf, ":ERR");
+}
+
 int main(void)
 {
     test_init();
@@ -3613,6 +3647,8 @@ int main(void)
     RUN(read_line_utf8_file);
     RUN(unread_char_utf8);
 #endif
+
+    RUN(eval_get_dispatch_macro_character_conformance);
 
     teardown();
     REPORT();

@@ -523,6 +523,47 @@ directly instead of attempting a symbol lookup."
   (%make-struct 'standard-effective-slot-definition
     name initargs location initfunction allocation))
 
+;;; --- DEFSTRUCT class registration with reified slot metaobjects ---
+;;;
+;;; DEFSTRUCT (in boot.lisp) registers a CLOS class for each structure so
+;;; CLOS dispatch on structure types works.  The bare %MAKE-BOOTSTRAP-CLASS
+;;; leaves the class with no slot metaobjects, so MOP introspection
+;;; (CLASS-SLOTS / COMPUTE-SLOTS — used by closer-mop callers such as
+;;; trivia's structure-pattern decomposition and serapeum) sees an empty
+;;; slot list.  This helper populates the effective- and direct-slot
+;;; definitions so introspection reflects the real layout.
+;;;
+;;; ALL-SLOT-NAMES is the full ordered slot list (inherited slots first),
+;;; matching the structure's physical slot indices, so each effective slot's
+;;; LOCATION is its %STRUCT-REF index.  We deliberately leave the
+;;; slot-index-table NIL: SLOT-VALUE / (SETF SLOT-VALUE) detect structures
+;;; via STRUCTUREP and use %FIND-STRUCT-SLOT-INDEX, so routing them through
+;;; the index-table path is unnecessary and would duplicate that logic.
+(defun %register-struct-class (name supers all-slot-names)
+  (let* ((class (%make-bootstrap-class name supers))
+         (idx 0)
+         (eslots
+           (mapcar (lambda (sname)
+                     (prog1
+                         (%make-effective-slot-def
+                          sname
+                          (list (intern (symbol-name sname) :keyword))
+                          nil :instance idx)
+                       (setq idx (1+ idx))))
+                   all-slot-names)))
+    (%set-class-effective-slots class eslots)
+    ;; Direct-slot-definitions mirror the effective ones (DEFSTRUCT has no
+    ;; per-class slot inheritance metadata to distinguish own vs inherited,
+    ;; and COMPUTE-SLOTS dedups by name across the CPL anyway).
+    (%set-class-direct-slots class
+      (mapcar (lambda (esd)
+                (%make-direct-slot-def
+                 (slot-definition-name esd)
+                 (slot-definition-initargs esd)
+                 nil nil nil :instance nil nil nil))
+              eslots))
+    class))
+
 ;;; --- Slot-definition-class protocol ---
 ;;;
 ;;; Plain functions for now; upgraded to GFs at the bottom of clos.lisp
@@ -659,6 +700,11 @@ directly instead of attempting a symbol lookup."
          (unless idx
            (error "~S has no slot named ~S" instance slot-name))
          (%struct-ref instance idx)))
+      ;; Conditions are a distinct object type in clamiga (not CLOS instances),
+      ;; but CLHS 9.1 permits SLOT-VALUE on them — delegate to the condition
+      ;; slot machinery so WITH-SLOTS / SLOT-VALUE work on condition objects.
+      ((conditionp instance)
+       (condition-slot-value instance slot-name))
       (t
        (error "~S has no slot-index-table (not a CLOS instance)" instance)))))
 
@@ -690,6 +736,9 @@ Specialize via defmethod to provide lazy initialization."
            (error "~S has no slot named ~S" instance slot-name))
          (%struct-set instance idx new-value)
          new-value))
+      ((conditionp instance)
+       (%set-condition-slot-value instance slot-name new-value)
+       new-value)
       (t
        (error "~S has no slot-index-table (not a CLOS instance)" instance)))))
 
@@ -716,6 +765,11 @@ Specialize via defmethod to provide lazy initialization."
        (unless (%find-struct-slot-index instance slot-name)
          (error "~S has no slot named ~S" instance slot-name))
        t)
+      ;; A condition slot is "bound" when it has a value in the slots alist
+      ;; (a supplied initarg or an evaluated :initform); CONDITION-SLOT-BOUNDP
+      ;; distinguishes that from a genuinely unbound slot.
+      ((conditionp instance)
+       (condition-slot-boundp instance slot-name))
       (t
        (error "~S has no slot-index-table (not a CLOS instance)" instance)))))
 
@@ -738,6 +792,9 @@ Specialize via defmethod to provide lazy initialization."
                instance))))
       ((structurep instance)
        (error "SLOT-MAKUNBOUND is not supported for structures: ~S" instance))
+      ((conditionp instance)
+       (%condition-slot-makunbound instance slot-name)
+       instance)
       (t
        (error "~S has no slot-index-table (not a CLOS instance)" instance)))))
 

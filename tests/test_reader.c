@@ -492,6 +492,47 @@ TEST(read_time_eval_in_list)
     ASSERT_STR_EQ(read_print("(a #.(+ 10 20) b)"), "(A 30 B)");
 }
 
+/* --- #S(...) structure-literal reader (CLHS 2.4.8.13) --- */
+
+TEST(read_struct_literal_basic)
+{
+    /* #S(type :slot value ...) constructs a struct via MAKE-<type>. */
+    cl_eval_string("(defstruct sr-point x y)");
+    ASSERT_STR_EQ(read_print("#S(SR-POINT :X 1 :Y 2)"), "#S(SR-POINT :X 1 :Y 2)");
+}
+
+TEST(read_struct_literal_default_slot)
+{
+    /* A slot omitted from the literal gets its defstruct default. */
+    cl_eval_string("(defstruct sr-def (a 7) b)");
+    ASSERT_STR_EQ(read_print("#S(SR-DEF :B 3)"), "#S(SR-DEF :A 7 :B 3)");
+}
+
+TEST(read_struct_literal_inherited)
+{
+    /* Included (inherited) slots are accepted by the literal. */
+    cl_eval_string("(defstruct sr-base u v)");
+    cl_eval_string("(defstruct (sr-sub (:include sr-base)) w)");
+    ASSERT_STR_EQ(read_print("#S(SR-SUB :U 1 :V 2 :W 3)"),
+                  "#S(SR-SUB :U 1 :V 2 :W 3)");
+}
+
+TEST(read_struct_literal_values_unevaluated)
+{
+    /* Slot values are read as literal objects, NOT evaluated: a symbol
+     * value stays a symbol (this is what lets trivia treat #S slots as
+     * sub-patterns). */
+    cl_eval_string("(defstruct sr-lit s)");
+    ASSERT_STR_EQ(read_print("#S(SR-LIT :S FOO)"), "#S(SR-LIT :S FOO)");
+}
+
+TEST(read_struct_literal_bare_symbol_slots)
+{
+    /* Slot names may be bare symbols (not keywords) per CLHS — coerced. */
+    cl_eval_string("(defstruct sr-bare p q)");
+    ASSERT_STR_EQ(read_print("#S(SR-BARE P 1 Q 2)"), "#S(SR-BARE :P 1 :Q 2)");
+}
+
 /* --- #nA multi-dimensional array reader --- */
 
 TEST(read_2d_array)
@@ -819,6 +860,13 @@ int main(void)
     RUN(read_time_eval_arithmetic);
     RUN(read_time_eval_list);
     RUN(read_time_eval_in_list);
+
+    /* #S(...) structure-literal reader */
+    RUN(read_struct_literal_basic);
+    RUN(read_struct_literal_default_slot);
+    RUN(read_struct_literal_inherited);
+    RUN(read_struct_literal_values_unevaluated);
+    RUN(read_struct_literal_bare_symbol_slots);
 
     /* #nA multi-dimensional array reader */
     RUN(read_2d_array);

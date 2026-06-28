@@ -1621,10 +1621,18 @@ when the param has no explicit default.  CL spec 3.4.6 requires this."
                       forms)
                 (push `(defsetf ,acc-name ,setter-name) forms))
               (setq idx (+ idx 1))))
-          ;; Register struct as CLOS class if CLOS is loaded
-          (push `(when (fboundp '%make-bootstrap-class)
-                   (%make-bootstrap-class ',name
-                     (list (find-class ',(or include-name 'structure-object)))))
+          ;; Register struct as CLOS class if CLOS is loaded.  Prefer
+          ;; %register-struct-class (populates slot metaobjects so MOP
+          ;; introspection — class-slots/compute-slots — reflects the real
+          ;; layout); fall back to the bare class for older bootstraps.
+          (push `(cond
+                   ((fboundp '%register-struct-class)
+                    (%register-struct-class ',name
+                      (list (find-class ',(or include-name 'structure-object)))
+                      ',slot-names))
+                   ((fboundp '%make-bootstrap-class)
+                    (%make-bootstrap-class ',name
+                      (list (find-class ',(or include-name 'structure-object))))))
                 forms)
           ;; :print-function — defmethod print-object calling (fn obj stream depth)
           (when print-function-opt
@@ -1644,6 +1652,38 @@ when the param has no explicit default.  CL spec 3.4.6 requires this."
           ;; inherited slots during COMPILE-FILE macroexpansion (CLHS 3.2.3.1).
           `(eval-when (:compile-toplevel :load-toplevel :execute)
              ,@(reverse forms) ',name))))))
+
+;; #S(type slot value ...) structure-literal reader support (CLHS 2.4.8.13).
+;; The C reader reads the (type slot value ...) list and calls this helper to
+;; build the structure at read time, locating the default keyword constructor
+;; MAKE-<type> in the type symbol's home package and applying it.  Slot names
+;; are coerced to keywords so both #S(POINT :X 1) and #S(POINT X 1) work.
+;;
+;; Defined explicitly in the CLAMIGA package (not the current package, which
+;; varies with the load path) so the C reader's cl_intern_in(...,
+;; cl_package_clamiga) resolves the SAME symbol regardless of whether boot is
+;; loaded from source or FASL.
+(defun clamiga::%read-eval-struct (spec)
+  (unless (consp spec)
+    (error "#S: malformed structure literal ~S" spec))
+  (let ((type (car spec))
+        (plist (cdr spec)))
+    (unless (symbolp type)
+      (error "#S: ~S is not a symbol naming a structure type" type))
+    (let ((ctor (find-symbol (concatenate 'string "MAKE-" (symbol-name type))
+                             (symbol-package type)))
+          (args nil))
+      (unless (and ctor (fboundp ctor))
+        (error "#S: structure type ~S has no default constructor (~A)"
+               type (concatenate 'string "MAKE-" (symbol-name type))))
+      (do ((p plist (cddr p)))
+          ((null p))
+        (let ((slot (car p)))
+          (unless (and (cdr p) (symbolp slot))
+            (error "#S: malformed slot/value plist in ~S" spec))
+          (push (intern (symbol-name slot) :keyword) args)
+          (push (cadr p) args)))
+      (apply ctor (nreverse args)))))
 
 ;; CL bitwise functions not in C builtins
 (defun logandc1 (integer-1 integer-2) (logand (lognot integer-1) integer-2))

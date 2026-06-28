@@ -189,6 +189,7 @@ Reusable Lisp loaders in `trunk/` that load and exercise third-party libraries o
 ./build/host/clamiga --heap 24M  --load trunk/load-and-test-alexandria.lisp     # Alexandria (250/250)
 ./build/host/clamiga --heap 24M  --load trunk/load-and-test-5am.lisp            # Fiveam
 ./build/host/clamiga --heap 24M  --load trunk/load-and-test-fset.lisp           # FSet
+./build/host/clamiga --heap 64M  --load trunk/load-and-test-trivia.lisp         # Trivia pattern matcher (490/490)
 ./build/host/clamiga --heap 24M  --load trunk/load-and-test-cl-spark.lisp       # cl-spark (sparklines, 68/68)
 ./build/host/clamiga --heap 64M  --load trunk/load-and-test-str.lisp            # str
 ./build/host/clamiga --heap 192M --load trunk/load-and-test-sento-system.lisp   # Sento (cold cache)

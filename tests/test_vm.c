@@ -9715,6 +9715,22 @@ TEST(eval_scanner_macrolet_setf_boxing)
         "  y)"), 2026);
 }
 
+TEST(eval_symbol_macrolet_nil_expansion)
+{
+    /* A symbol-macro whose expansion is literally NIL is a valid binding;
+     * referencing it must yield NIL, NOT "Unbound variable" (the lexical
+     * symbol-macro lookup used CL_NIL as both the not-found sentinel and a
+     * legitimate expansion).  This is the minimal form of the trivia
+     * (match nil (nil t)) failure. */
+    ASSERT_STR_EQ(eval_print("(symbol-macrolet ((a nil)) a)"), "NIL");
+    ASSERT_STR_EQ(eval_print("(symbol-macrolet ((a nil)) (list a a))"), "(NIL NIL)");
+    /* Compiled inside a lambda body, too. */
+    ASSERT_STR_EQ(eval_print(
+        "(funcall (lambda () (symbol-macrolet ((a nil)) a)))"), "NIL");
+    /* A non-NIL expansion still works (no regression). */
+    ASSERT_STR_EQ(eval_print("(symbol-macrolet ((a 5)) (+ a 1))"), "6");
+}
+
 TEST(eval_heap_exhaustion_error)
 {
     /* Accumulating live data until heap is full should signal CL_ERR_STORAGE
@@ -11013,6 +11029,8 @@ int main(void)
     RUN(eval_scanner_symbol_macrolet_environment);
     /* compiler scanner: macrolet/symbol-macrolet setf boxing (local-time) */
     RUN(eval_scanner_macrolet_setf_boxing);
+    /* symbol-macro whose expansion is NIL (trivia (match nil (nil t))) */
+    RUN(eval_symbol_macrolet_nil_expansion);
 #ifdef CL_WIDE_STRINGS
     RUN(eval_wide_string_reader);
     RUN(eval_string_trim_wide);
