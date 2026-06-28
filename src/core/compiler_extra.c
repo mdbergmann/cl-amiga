@@ -1111,6 +1111,7 @@ CL_Obj compile_multiple_value_bind(CL_Compiler *c, CL_Obj form)
     tf->kind = CL_TAIL_MULTIPLE_VALUE_BIND;
     tf->saved_local_count = saved_local_count;
     tf->saved_tail = saved_tail;
+    tf->saved_notinline_count = c->notinline_count;
     return compile_body_tail(c, body);
 }
 
@@ -2317,6 +2318,17 @@ CL_Obj process_body_declarations(CL_Compiler *c, CL_Obj body)
             CL_Obj specs = cl_cdr(form);
             while (!CL_NULL_P(specs)) {
                 CL_Obj spec = cl_car(specs);
+                if (CL_CONS_P(spec) && cl_car(spec) == SYM_NOTINLINE_DECL) {
+                    /* Record lexically-scoped notinline so compile_call can
+                     * suppress compiler-macro expansion for these operators
+                     * (CLHS 3.2.2.1.3).  Still call the global processor below
+                     * for its existing inline-flag side effect. */
+                    CL_Obj fns = cl_cdr(spec);
+                    while (!CL_NULL_P(fns)) {
+                        cl_compiler_push_notinline(c, cl_car(fns));
+                        fns = cl_cdr(fns);
+                    }
+                }
                 if (!(CL_CONS_P(spec) && cl_car(spec) == SYM_SPECIAL_DECL))
                     cl_process_declaration_specifier(spec);
                 specs = cl_cdr(specs);
@@ -2350,6 +2362,9 @@ CL_Obj compile_locally(CL_Compiler *c, CL_Obj form)
     CL_Obj body = cl_cdr(form);
     CL_TailFrame *tf = cl_tail_push(c);
     tf->kind = CL_TAIL_LOCALLY;
+    /* Save before process_body_declarations (in compile_body_tail) pushes any
+     * notinline names, so the LOCALLY postlude can pop them back off. */
+    tf->saved_notinline_count = c->notinline_count;
     return compile_body_tail(c, body);
 }
 

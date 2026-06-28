@@ -932,6 +932,31 @@
   (destructuring-bind (a &rest (b c)) '(1 2 3) (list a b c)))
 (check "d-bind too-few still errors after &whole/&aux fix" :err
   (handler-case (destructuring-bind (a b c) '(1 2) (list a b c)) (error () :err)))
+; destructuring-bind must be a real macro MACROEXPAND actually expands (CLHS),
+; else code-walkers that recurse on (macroexpand form) loop forever.
+(check "d-bind macroexpands" t
+  (nth-value 1 (macroexpand-1 '(destructuring-bind (a b) y (list a b)))))
+(check "d-bind expansion runs" '(1 2 3 (4 5))
+  (eval (macroexpand-1 '(destructuring-bind (a (b c) &rest d) '(1 (2 3) 4 5) (list a b c d)))))
+
+; --- define-modify-macro with &optional (var default) ---
+; Regression: the (delta 1) spec was spliced whole into the call form, emitting
+; (fn place (delta 1)) → "Undefined function: DELTA".
+(defun dmm-plus-t (a b) (+ a b))
+(define-modify-macro dmm-incf-t (&optional (delta 1)) dmm-plus-t)
+(check "define-modify-macro optional default" 6 (let ((x 5)) (dmm-incf-t x) x))
+(check "define-modify-macro optional given" 15 (let ((x 5)) (dmm-incf-t x 10) x))
+
+; --- notinline inhibits compiler-macro expansion (CLHS 3.2.2.1.3) ---
+; The compiler-macro fallback idiom wraps the call in a notinline shield; without
+; honoring notinline the macro re-fires forever (GC-root overflow compiling
+; serapeum).
+(defun nicm-fn-t (x) (* x 2))
+(define-compiler-macro nicm-fn-t (&whole form x)
+  (declare (ignore form))
+  `(locally (declare (notinline nicm-fn-t)) (+ 0 (nicm-fn-t ,x))))
+(check "notinline stops compiler-macro" 10 (nicm-fn-t 5))
+(check "notinline scoped re-expands" 12 (locally (declare (notinline nicm-fn-t)) (nicm-fn-t 6)))
 
 ; --- defsetf ---
 (defun my-get-t (vec i) (aref vec i))
