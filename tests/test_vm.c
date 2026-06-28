@@ -3105,6 +3105,64 @@ TEST(eval_destructuring_bind_optional_rest_key)
         "(1 2 (:Y 20 :X 10) 10 20)");
 }
 
+/* Regression: destructuring-bind must be a real macro that MACROEXPAND
+   actually expands (CLHS).  It used to be registered as an identity "inlined
+   macro stub" — MACRO-FUNCTION returned non-NIL but MACROEXPAND-1 returned the
+   form unchanged.  A code-walker that recurses on (macroexpand form) — e.g.
+   serapeum's internal-definitions walker — then looped forever.  The native
+   compile path is still used to compile it (the stub is only consulted at
+   runtime), so it must STILL produce correct results too. */
+TEST(eval_destructuring_bind_macroexpands)
+{
+    /* second value of macroexpand-1 must be T (it really expanded) */
+    ASSERT_STR_EQ(eval_print(
+        "(if (nth-value 1 (macroexpand-1 '(destructuring-bind (a b) y (list a b))))"
+        "    'expanded 'unchanged)"),
+        "EXPANDED");
+    /* the expansion, when evaluated standalone, must still be correct */
+    ASSERT_STR_EQ(eval_print(
+        "(eval (macroexpand-1 '(destructuring-bind (a (b c) &rest d) '(1 (2 3) 4 5)"
+        "                        (list a b c d))))"),
+        "(1 2 3 (4 5))");
+    /* &key/&optional/supplied-p through the macroexpansion path */
+    ASSERT_STR_EQ(eval_print(
+        "(eval (macroexpand-1 '(destructuring-bind (&key (a 0 ap)) '(:a 7)"
+        "                        (list a ap))))"),
+        "(7 T)");
+}
+
+/* Regression: define-modify-macro with an &optional spec that has a default,
+   e.g. (&optional (delta 1)), spliced the whole (delta 1) spec into the call
+   form so the generated macro emitted (function place (delta 1)) — evaluating
+   (delta 1) as a call → "Undefined function: DELTA".  Must pass the var. */
+TEST(eval_define_modify_macro_optional_default)
+{
+    eval_print("(defun dmm-plus (a b) (+ a b))");
+    eval_print("(define-modify-macro dmm-incf (&optional (delta 1)) dmm-plus)");
+    ASSERT_EQ_INT(eval_int("(let ((x 5)) (dmm-incf x) x)"), 6);
+    ASSERT_EQ_INT(eval_int("(let ((x 5)) (dmm-incf x 10) x)"), 15);
+}
+
+/* Regression: a lexical (declare (notinline f)) must inhibit compiler-macro
+   expansion of f (CLHS 3.2.2.1.3).  The standard compiler-macro fallback idiom
+   expands (f ...) into (locally (declare (notinline f)) (... (f ...))); without
+   honoring notinline the compiler re-fires the compiler macro on the inner call
+   forever (observed as a GC-root-stack overflow compiling serapeum). */
+TEST(eval_notinline_suppresses_compiler_macro)
+{
+    eval_print("(defun nicm-fn (x) (* x 2))");
+    /* compiler macro that wraps the call in a notinline shield, exactly the
+       idiom that used to loop.  It must terminate and call the real function. */
+    eval_print(
+        "(define-compiler-macro nicm-fn (&whole form x)"
+        "  (declare (ignore form))"
+        "  `(locally (declare (notinline nicm-fn)) (+ 0 (nicm-fn ,x))))");
+    /* terminates → real nicm-fn runs inside the notinline scope → 5*2 = 10 */
+    ASSERT_EQ_INT(eval_int("(nicm-fn 5)"), 10);
+    /* notinline scope ends after the locally: a fresh call expands again. */
+    ASSERT_EQ_INT(eval_int("(locally (declare (notinline nicm-fn)) (nicm-fn 6))"), 12);
+}
+
 /* --- defsetf --- */
 
 TEST(eval_defsetf_short)
@@ -10322,6 +10380,9 @@ int main(void)
     RUN(eval_destructuring_bind_body);
     RUN(eval_destructuring_bind_key);
     RUN(eval_destructuring_bind_optional_rest_key);
+    RUN(eval_destructuring_bind_macroexpands);
+    RUN(eval_define_modify_macro_optional_default);
+    RUN(eval_notinline_suppresses_compiler_macro);
     RUN(eval_defsetf_short);
     RUN(eval_defsetf_cadr);
     RUN(eval_get_setf_expansion_defsetf);

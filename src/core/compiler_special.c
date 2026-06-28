@@ -1598,6 +1598,7 @@ CL_Obj compile_flet(CL_Compiler *c, CL_Obj form)
     tf->saved_local_count = saved_local_count;
     tf->saved_block_count = saved_fun_count;  /* reused: saved_local_fun_count */
     tf->saved_tail = saved_tail;
+    tf->saved_notinline_count = c->notinline_count;
     return compile_body_tail(c, body);
 }
 
@@ -1713,6 +1714,7 @@ CL_Obj compile_labels(CL_Compiler *c, CL_Obj form)
         tf->saved_local_count = saved_local_count;
         tf->saved_block_count = saved_fun_count;  /* reused: saved_local_fun_count */
         tf->saved_tail = saved_tail;
+        tf->saved_notinline_count = c->notinline_count;
         return compile_body_tail(c, body);
     }
 }
@@ -3093,10 +3095,11 @@ CL_Obj compile_macrolet(CL_Compiler *c, CL_Obj form)
 
     cl_macrolet_install_expanders(env, bindings);
 
-    /* Trampoline body — postlude restores local_macro_count. */
+    /* Trampoline body — postlude restores local_macro_count and notinline_count. */
     tf = cl_tail_push(c);
     tf->kind = CL_TAIL_MACROLET;
     tf->saved_macro_count = saved_macro_count;
+    tf->saved_notinline_count = c->notinline_count;
     return compile_body_tail(c, body);
 }
 
@@ -3127,6 +3130,7 @@ CL_Obj compile_symbol_macrolet(CL_Compiler *c, CL_Obj form)
     tf = cl_tail_push(c);
     tf->kind = CL_TAIL_SYMBOL_MACROLET;
     tf->saved_macro_count = saved_symbol_macro_count;
+    tf->saved_notinline_count = c->notinline_count;
     return compile_body_tail(c, body);
 }
 

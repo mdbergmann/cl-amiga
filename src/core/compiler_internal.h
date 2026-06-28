@@ -39,6 +39,15 @@
 #define CL_MAX_TAGBODIES 16
 #define CL_MAX_OUTER_TAGS 64
 
+/* Lexically-active (declare (notinline f ...)) operators.  Tracked so the
+ * compiler can suppress compiler-macro expansion for those names (CLHS
+ * 3.2.2.1.3): the standard compiler-macro fallback idiom expands
+ *   (f ...) -> (locally (declare (notinline f)) (... (f ...)))
+ * and relies on notinline to stop the macro re-firing on the inner call.
+ * Without honoring it the expansion recurses forever.  Rare in practice, so
+ * a small cap is plenty; overflow just falls back to the old behavior. */
+#define CL_MAX_NOTINLINE 32
+
 /* Tail-trampoline frame kinds.  When compile_expr trampolines on a form
  * that has a tail child (e.g. LET's last body form, PROGN's last form),
  * it pushes one of these onto the compiler's tail stack so the postlude
@@ -87,6 +96,9 @@ typedef struct {
     /* MACROLET / SYMBOL-MACROLET state */
     int      saved_macro_count;      /* env->local_macro_count (MACROLET)
                                       * or env->symbol_macro_count (SYMBOL_MACROLET) */
+    /* (declare (notinline ...)) scope: count to restore in the postlude so
+     * notinline names declared in a body stop applying once the body ends. */
+    int      saved_notinline_count;
     /* Continuation form to dispatch when this postlude drains (used by
      * IF_AFTER_THEN to carry the ELSE form across THEN's compilation).
      * GC-traced via cl_compiler_gc_mark_thread's tail_stack walk.
@@ -187,6 +199,10 @@ typedef struct CL_Compiler_s {
     CL_TailFrame *tail_stack;
     int tail_count;
     int tail_capacity;
+    /* Lexically-active notinline operators (see CL_MAX_NOTINLINE).  A simple
+     * stack scoped by saved_notinline_count markers in body postludes. */
+    CL_Obj notinline_fns[CL_MAX_NOTINLINE];
+    int notinline_count;
 } CL_Compiler;
 
 /* --- Shared globals (defined in compiler.c) --- */
@@ -324,6 +340,10 @@ void compile_the(CL_Compiler *c, CL_Obj form);
 CL_Obj process_body_declarations(CL_Compiler *c, CL_Obj body);
 CL_Obj scan_local_specials(CL_Obj body);
 int is_locally_special(CL_Obj var, CL_Obj local_specials);
+
+/* Lexical notinline tracking (CLHS 3.2.2.1.3) */
+void cl_compiler_push_notinline(CL_Compiler *c, CL_Obj func);
+int cl_compiler_notinline_p(CL_Compiler *c, CL_Obj func);
 
 /* Boxing analysis for mutable closure bindings */
 void determine_boxed_vars(CL_Obj body, CL_Obj *vars, int n_vars,

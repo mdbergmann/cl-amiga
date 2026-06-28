@@ -334,10 +334,16 @@
          (rest-pos (position '&rest lambda-list))
          (rest-var (when rest-pos (nth (1+ rest-pos) lambda-list)))
          ;; the individually-passed argument vars (required + optional),
-         ;; i.e. everything before &rest with the &optional marker dropped
-         (individual (remove '&optional
-                             (if rest-pos (subseq lambda-list 0 rest-pos)
-                                 lambda-list))))
+         ;; i.e. everything before &rest with the &optional marker dropped.
+         ;; An optional spec may be (var default) or (var default supplied-p)
+         ;; — take just the var name, otherwise the spliced (var default)
+         ;; would be emitted as a call form, e.g. (&optional (delta 1))
+         ;; splicing literal (delta 1) → "Undefined function: DELTA".
+         (individual (mapcar (lambda (spec)
+                               (if (consp spec) (car spec) spec))
+                             (remove '&optional
+                                     (if rest-pos (subseq lambda-list 0 rest-pos)
+                                         lambda-list)))))
     `(defmacro ,name (,place-var ,@lambda-list &environment ,env-var)
        ,@(when documentation (list documentation))
        (multiple-value-bind (vars vals stores store access)
@@ -350,6 +356,97 @@
                   (append (mapcar #'list vars vals)
                           (list (list (car stores) new-val))))
             (list store)))))))
+
+;; destructuring-bind (CLHS macro).  clamiga compiles destructuring-bind via a
+;; native special-form path (compile_destructuring_bind), dispatched ahead of
+;; the macro-expansion check, so normal compilation never uses this macro.
+;; But MACROEXPAND and code-walkers (iterate, serapeum's internal-definitions
+;; walker) require destructuring-bind to be a *real* macro that actually
+;; expands — a walker doing (expand (macroexpand form)) loops forever if
+;; macroexpand returns the form unchanged.  This provides that genuine
+;; expansion, equivalent to the native path: a let*-cursor walk of the
+;; destructuring lambda list.
+(defun %dbind-parse-opt (item)
+  "Parse a &optional spec: var | (var [default [supplied-p]])."
+  (if (consp item)
+      (values (car item)
+              (if (cdr item) (cadr item) nil)
+              (if (cddr item) (caddr item) nil))
+      (values item nil nil)))
+
+(defun %dbind-parse-key (item)
+  "Parse a &key spec, returning (values keyword var default supplied-p).
+Spec is var | (var ...) | ((keyword var) ...)."
+  (if (consp item)
+      (let ((head (car item)))
+        (if (consp head)
+            (values (car head) (cadr head)
+                    (if (cdr item) (cadr item) nil)
+                    (if (cddr item) (caddr item) nil))
+            (values (intern (symbol-name head) (find-package "KEYWORD")) head
+                    (if (cdr item) (cadr item) nil)
+                    (if (cddr item) (caddr item) nil))))
+      (values (intern (symbol-name item) (find-package "KEYWORD")) item nil nil)))
+
+(defun %dbind-expand (lambda-list source body)
+  (let ((bindings nil)              ; reversed list of (var init-form)
+        (missing (gensym "DBMISS")))
+    (labels
+        ((b (var init) (setq bindings (cons (list var init) bindings)))
+         (walk (ll src)
+           ;; Bind a cursor to SRC, then advance it through the segments.
+           ;; Re-binding the same cursor symbol in let* sequentially advances
+           ;; it (later binding shadows the earlier one).
+           (let ((cur (gensym "DB")))
+             (b cur src)
+             (scan ll 0 cur)))
+         (scan (ll mode cur)        ; mode: 0=required 1=optional 2=key 3=aux
+           (when ll
+             (let ((item (car ll)))
+               (cond
+                 ((eq item '&whole)
+                  (b (cadr ll) cur) (scan (cddr ll) mode cur))
+                 ((eq item '&optional) (scan (cdr ll) 1 cur))
+                 ((or (eq item '&rest) (eq item '&body))
+                  (b (cadr ll) cur) (scan (cddr ll) mode cur))
+                 ((eq item '&key) (scan (cdr ll) 2 cur))
+                 ((eq item '&allow-other-keys) (scan (cdr ll) mode cur))
+                 ((eq item '&aux) (scan (cdr ll) 3 cur))
+                 ((= mode 0)
+                  (b (gensym)
+                     (list 'unless (list 'consp cur)
+                           (list 'error "destructuring-bind: too few values for ~S"
+                                 (list 'quote lambda-list))))
+                  (if (consp item)
+                      (walk item (list 'car cur))
+                      (b item (list 'car cur)))
+                  (b cur (list 'cdr cur))
+                  (scan (cdr ll) 0 cur))
+                 ((= mode 1)
+                  (multiple-value-bind (var default supp) (%dbind-parse-opt item)
+                    (when supp (b supp (list 'consp cur)))
+                    (let ((val (list 'if (list 'consp cur) (list 'car cur) default)))
+                      (if (consp var) (walk var val) (b var val)))
+                    (b cur (list 'cdr cur)))
+                  (scan (cdr ll) 1 cur))
+                 ((= mode 2)
+                  (multiple-value-bind (kw var default supp) (%dbind-parse-key item)
+                    (let ((f (gensym "DBF")))
+                      (b f (list 'getf cur kw (list 'quote missing)))
+                      (when supp (b supp (list 'not (list 'eq f (list 'quote missing)))))
+                      (b var (list 'if (list 'eq f (list 'quote missing)) default f))))
+                  (scan (cdr ll) 2 cur))
+                 ((= mode 3)
+                  (if (consp item)
+                      (b (car item) (cadr item))
+                      (b item nil))
+                  (scan (cdr ll) 3 cur))))))
+         )
+      (walk lambda-list source)
+      (cons 'let* (cons (nreverse bindings) body)))))
+
+(defmacro destructuring-bind (lambda-list expr &body body)
+  (%dbind-expand lambda-list expr body))
 
 ;; Compiler macros (CLHS 3.2.2.1).  The expander runs at compile time
 ;; on the call form; returning the original form (eq) means "decline"

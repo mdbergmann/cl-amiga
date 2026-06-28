@@ -1875,6 +1875,7 @@ static CL_Obj compile_let(CL_Compiler *c, CL_Obj form, int sequential)
     int saved_local_count = env->local_count;
     int saved_tail = c->in_tail;
     int special_count = 0;
+    int saved_notinline_count = c->notinline_count;
 
     /* GC-protect form components that survive across allocating calls */
     CL_GC_PROTECT(bindings);
@@ -2120,6 +2121,7 @@ static CL_Obj compile_let(CL_Compiler *c, CL_Obj form, int sequential)
         tf->saved_local_count = saved_local_count;
         tf->special_count = special_count;
         tf->saved_tail = saved_tail;
+        tf->saved_notinline_count = saved_notinline_count;
         tf->n_gc_roots = 0;
         return tail;
     }
@@ -2142,16 +2144,22 @@ static CL_Obj emit_tail_postlude(CL_Compiler *c, CL_TailFrame *tf)
         }
         cl_env_clear_boxed(c->env, tf->saved_local_count);
         c->env->local_count = tf->saved_local_count;
+        c->notinline_count = tf->saved_notinline_count;
+        return CL_NIL;
+    case CL_TAIL_LOCALLY:
+        /* Pure body wrapper, but pop any notinline names it declared. */
+        c->notinline_count = tf->saved_notinline_count;
         return CL_NIL;
     case CL_TAIL_PROGN:
-    case CL_TAIL_LOCALLY:
         /* No postlude — pure body wrapper. */
         return CL_NIL;
     case CL_TAIL_SYMBOL_MACROLET:
         c->env->symbol_macro_count = tf->saved_macro_count;
+        c->notinline_count = tf->saved_notinline_count;
         return CL_NIL;
     case CL_TAIL_MACROLET:
         c->env->local_macro_count = tf->saved_macro_count;
+        c->notinline_count = tf->saved_notinline_count;
         return CL_NIL;
     case CL_TAIL_PROGV:
         cl_emit(c, OP_PROGV_UNBIND);
@@ -2193,6 +2201,7 @@ static CL_Obj emit_tail_postlude(CL_Compiler *c, CL_TailFrame *tf)
         cl_env_clear_boxed(c->env, tf->saved_local_count);
         c->env->local_count = tf->saved_local_count;
         c->in_tail = tf->saved_tail;
+        c->notinline_count = tf->saved_notinline_count;
         return CL_NIL;
     case CL_TAIL_FLET:
     case CL_TAIL_LABELS:
@@ -2200,6 +2209,7 @@ static CL_Obj emit_tail_postlude(CL_Compiler *c, CL_TailFrame *tf)
         c->env->local_count = tf->saved_local_count;
         c->env->local_fun_count = tf->saved_block_count;  /* reused: saved_local_fun_count */
         c->in_tail = tf->saved_tail;
+        c->notinline_count = tf->saved_notinline_count;
         return CL_NIL;
     case CL_TAIL_EVAL_WHEN:
         /* No postlude — pure body wrapper. */
@@ -3529,6 +3539,7 @@ static void compile_call(CL_Compiler *c, CL_Obj form)
      * symbol isn't shadowed by a local function or upvalue, matching
      * regular function-name resolution rules. */
     if (CL_SYMBOL_P(func) &&
+        !cl_compiler_notinline_p(c, func) &&
         cl_env_lookup_local_fun(c->env, func) < 0 &&
         (!c->env || cl_env_resolve_fun_upvalue(c->env, func) < 0))
     {
@@ -4055,6 +4066,10 @@ static int compile_expr_step(CL_Compiler *c, CL_Obj *expr_p)
         if (head == SYM_ECASE)       { compile_case(c, expr, 1); return 0; }
         if (head == SYM_TYPECASE)    { compile_typecase(c, expr, 0); return 0; }
         if (head == SYM_ETYPECASE)   { compile_typecase(c, expr, 1); return 0; }
+        /* destructuring-bind also has a genuine Lisp macro (lib/boot.lisp) for
+         * MACROEXPAND/code-walker conformance, but must compile via its native
+         * special-form path — so dispatch it here, ahead of the macro check. */
+        if (head == SYM_DESTRUCTURING_BIND) { compile_destructuring_bind(c, expr); return 0; }
 
         if (CL_SYMBOL_P(head) && cl_macro_p(head)) {
             int _fp0 = cl_vm.fp, _sp0 = cl_vm.sp;
@@ -4216,7 +4231,6 @@ static int compile_expr_step(CL_Compiler *c, CL_Obj *expr_p)
             *expr_p = tail;
             return 1;
         }
-        if (head == SYM_DESTRUCTURING_BIND) { compile_destructuring_bind(c, expr); return 0; }
         if (head == SYM_HANDLER_BIND) {
             CL_Obj tail = compile_handler_bind(c, expr);
             if (CL_NULL_P(tail)) { cl_emit(c, OP_NIL); return 0; }
@@ -4525,6 +4539,32 @@ CL_Obj cl_get_compiler_macro(CL_Obj name)
         list = cl_cdr(list);
     }
     return CL_NIL;
+}
+
+/* --- Lexical notinline tracking (CLHS 3.2.2.1.3) --- */
+
+/* Record FUNC as notinline in the current lexical scope.  Deduplicates and
+ * silently ignores names past CL_MAX_NOTINLINE (falls back to old behavior).
+ * Callers save c->notinline_count before the scope and restore it after. */
+void cl_compiler_push_notinline(CL_Compiler *c, CL_Obj func)
+{
+    int i;
+    if (!CL_SYMBOL_P(func)) return;
+    for (i = 0; i < c->notinline_count; i++)
+        if (c->notinline_fns[i] == func) return;   /* already active */
+    if (c->notinline_count < CL_MAX_NOTINLINE)
+        c->notinline_fns[c->notinline_count++] = func;
+}
+
+/* 1 if FUNC is lexically declared notinline — used to suppress
+ * compiler-macro expansion, which CLHS says notinline must inhibit. */
+int cl_compiler_notinline_p(CL_Compiler *c, CL_Obj func)
+{
+    int i;
+    for (i = 0; i < c->notinline_count; i++)
+        if (c->notinline_fns[i] == func)
+            return 1;
+    return 0;
 }
 
 /* --- Type table (for deftype) --- */
@@ -4886,6 +4926,8 @@ void cl_compiler_gc_mark_thread(CL_Thread *t)
             for (j = 0; j < c->tagbodies[i].n_tags; j++)
                 gc_mark_obj(c->tagbodies[i].tags[j].tag);
         }
+        for (i = 0; i < c->notinline_count; i++)
+            gc_mark_obj(c->notinline_fns[i]);
         for (i = 0; i < c->outer_block_count; i++)
             gc_mark_obj(c->outer_blocks[i]);
         for (i = 0; i < c->outer_tag_count; i++) {
@@ -4967,6 +5009,8 @@ void cl_compiler_gc_update_thread(CL_Thread *t, void (*update)(CL_Obj *))
             for (j = 0; j < c->tagbodies[i].n_tags; j++)
                 update(&c->tagbodies[i].tags[j].tag);
         }
+        for (i = 0; i < c->notinline_count; i++)
+            update(&c->notinline_fns[i]);
         for (i = 0; i < c->outer_block_count; i++)
             update(&c->outer_blocks[i]);
         for (i = 0; i < c->outer_tag_count; i++) {
