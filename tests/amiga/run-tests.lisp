@@ -6778,6 +6778,70 @@
 (check "gray-streams reload: close string stream does not recurse" t
        (let ((s (make-string-output-stream))) (write-char #\X s) (close s) t))
 
+; --- Alexandria-driven conformance regressions ---
+; Bugs surfaced by ALEXANDRIA's test suite; see tests/test_alexandria_regress.c
+; and trunk/load-and-test-alexandria.lisp.
+
+; DELETE is destructive on lists: deleting the middle element mutates the
+; shared head cons so an alias sees the splice.
+(check "delete splices list in place" '(1 3)
+       (let* ((x (list 1 2 3)) (x* x)) (delete 2 x) x*))
+(check "delete-if destructive on list" '(1 3)
+       (let* ((x (list 1 2 3 4)) (x* x)) (delete-if #'evenp x) x*))
+
+; ROTATEF / SHIFTF / DEFINE-MODIFY-MACRO must evaluate each place's subforms
+; exactly once (via GET-SETF-EXPANSION).
+(check "rotatef evaluates place subforms once" 2
+       (let ((p 0) (v (vector 10 20 30)))
+         (rotatef (svref v (incf p)) (svref v (incf p))) p))
+; (coerce result vectors to lists — the CHECK macro compares with EQUAL,
+;  which does not descend into vectors)
+(check "rotatef swaps values" '(30 20 10)
+       (let ((v (vector 10 20 30))) (rotatef (aref v 0) (aref v 2)) (coerce v 'list)))
+(check "shiftf subforms once + returns first old" '(20 1 (10 99 30))
+       (let ((p 0) (v (vector 10 20 30)))
+         (list (shiftf (svref v (incf p)) 99) p (coerce v 'list))))
+; (defined as its own top-level form so the macro exists before the using
+;  form below is compiled)
+(define-modify-macro %amiga-maxf (&rest n) max)
+(check "define-modify-macro evaluates place once" '(2 (0 2 0))
+       (let ((xv (vector 0 0 0)) (p 0))
+         (%amiga-maxf (svref xv (incf p)) (incf p))
+         (list p (coerce xv 'list))))
+
+; A correct Fisher-Yates shuffle (depends on ROTATEF being single-eval) yields
+; a permutation, never duplicates/drops.
+(check "fisher-yates shuffle is a permutation" t
+       (let ((v (vector 0 1 2 3 4 5 6 7 8 9)))
+         (loop for i from 0 below 10
+               do (rotatef (aref v i) (aref v (+ i (random (- 10 i))))))
+         (equalp (sort (copy-seq v) #'<) (vector 0 1 2 3 4 5 6 7 8 9))))
+
+; EVERY returns a boolean T, not the last (truthy) predicate value.
+(check "every returns boolean T" t
+       (every (lambda (x) (member x '(1 2 3))) '(1 2 3)))
+(check "every returns NIL on failure" nil
+       (every (lambda (x) (member x '(1 2 3))) '(1 2 9)))
+
+; SUBTYPEP settles exact compound identities.
+(check "subtypep list <= (or null cons)" t (subtypep 'list '(or null cons)))
+(check "subtypep (or null cons) <= list" t (subtypep '(or null cons) 'list))
+(check "subtypep null <= (and symbol list)" t (subtypep 'null '(and symbol list)))
+(check "subtypep (and symbol list) <= null" t (subtypep '(and symbol list) 'null))
+
+; TYPEP: a multidimensional array is not a sequence.
+(check "typep 2d-array is not sequence" nil (typep #2a((1 2) (3 4)) 'sequence))
+(check "typep vector is sequence" t (typep #(1 2 3) 'sequence))
+
+; READ-BYTE on an output-only stream signals an error (not EOF).
+(check "read-byte on broadcast stream errors" :err
+       (handler-case (read-byte (make-broadcast-stream)) (error () :err)))
+
+; WITH-STANDARD-IO-SYNTAX binds *PRINT-CASE* to :UPCASE.
+(check "with-standard-io-syntax resets *print-case*" "FOO"
+       (let ((*print-case* :downcase))
+         (with-standard-io-syntax (princ-to-string 'foo))))
+
 ; --- Summary ---
 (format t "~%=== Results ===~%")
 (format t "Passed: ~A~%" *pass-count*)

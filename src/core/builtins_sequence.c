@@ -947,6 +947,165 @@ static CL_Obj remove_from_list(CL_Obj seq, int32_t start, int32_t end,
     return result;
 }
 
+/* Decide whether the element at one list position matches, for the destructive
+ * list path.  Mirrors the per-element test in remove_from_list. */
+static int del_elem_match(int mode, CL_Obj item, CL_Obj test_fn,
+                          CL_Obj key_fn, CL_Obj elem)
+{
+    if (mode == 0) {
+        CL_Obj keyed = apply_key(key_fn, elem);
+        return !CL_NULL_P(call_test(test_fn, item, keyed));
+    } else if (mode == 3) {
+        CL_Obj keyed = apply_key(key_fn, elem);
+        return CL_NULL_P(call_test(test_fn, item, keyed));
+    } else if (mode == 1) {
+        return seq_pred_match(item, key_fn, elem);
+    }
+    return !seq_pred_match(item, key_fn, elem);
+}
+
+/* Destructive list delete (CLHS DELETE/DELETE-IF/DELETE-IF-NOT for lists):
+ * splice matching conses out of `seq` in place by relinking cdr pointers and
+ * return the (possibly new) head.  Same argument shape and mode codes as
+ * remove_from_list.  Callers must treat the input as consumed and use the
+ * returned value (delete "might destroy" its argument — and here it does, so
+ * code that holds an alias to an interior cons sees the splice, as ANSI and
+ * other implementations allow). */
+static CL_Obj delete_from_list(CL_Obj seq, int32_t start, int32_t end,
+                               int32_t count, int from_end,
+                               CL_Obj item, CL_Obj test_fn, CL_Obj key_fn,
+                               int mode)
+{
+    CL_Obj head = seq, prev = CL_NIL, cur = CL_NIL;
+    int32_t i, removed = 0, skip_count = 0;
+
+    /* No allocation happens here, but call_test/apply_key may run user code
+     * that allocates and triggers compaction; protect every live offset. */
+    CL_GC_PROTECT(head);
+    CL_GC_PROTECT(prev);
+    CL_GC_PROTECT(cur);
+    CL_GC_PROTECT(item);
+    CL_GC_PROTECT(test_fn);
+    CL_GC_PROTECT(key_fn);
+
+    if (from_end && count >= 0) {
+        /* First pass: count total matches in range, so we keep all but the
+         * last `count` of them (skip the leading skip_count matches). */
+        int32_t total_matches = 0;
+        cur = seq;
+        for (i = 0; !CL_NULL_P(cur); i++, cur = cl_cdr(cur)) {
+            if (i >= start && (end < 0 || i < end) &&
+                del_elem_match(mode, item, test_fn, key_fn, cl_car(cur)))
+                total_matches++;
+        }
+        skip_count = total_matches - count;
+        if (skip_count < 0) skip_count = 0;
+    }
+
+    cur = seq;
+    i = 0;
+    while (!CL_NULL_P(cur)) {
+        int should_remove = 0;
+
+        if (i >= start && (end < 0 || i < end) &&
+            (from_end || count < 0 || removed < count)) {
+            if (del_elem_match(mode, item, test_fn, key_fn, cl_car(cur))) {
+                if (from_end && count >= 0) {
+                    if (skip_count > 0) skip_count--;   /* keep this one */
+                    else should_remove = 1;
+                } else {
+                    should_remove = 1;
+                }
+            }
+        }
+
+        /* Read next AFTER del_elem_match: apply_key/call_test may compact,
+         * making a pre-read next stale. cur is GC-protected so it's valid. */
+        {
+            CL_Obj next = cl_cdr(cur);
+            if (should_remove) {
+                removed++;
+                if (CL_NULL_P(prev))
+                    head = next;
+                else
+                    ((CL_Cons *)CL_OBJ_TO_PTR(prev))->cdr = next;
+                /* prev stays put; cur advances */
+            } else {
+                prev = cur;
+            }
+            cur = next;
+        }
+        i++;
+    }
+
+    CL_GC_UNPROTECT(6); /* key_fn, test_fn, item, cur, prev, head */
+    return head;
+}
+
+CL_Obj bi_remove_export(CL_Obj *args, int n);
+CL_Obj bi_remove_if_export(CL_Obj *args, int n);
+CL_Obj bi_remove_if_not_export(CL_Obj *args, int n);
+CL_Obj bi_delete_export(CL_Obj *args, int n);
+CL_Obj bi_delete_if_export(CL_Obj *args, int n);
+CL_Obj bi_delete_if_not_export(CL_Obj *args, int n);
+
+/* DELETE: destructive on lists, otherwise same as REMOVE. */
+CL_Obj bi_delete_export(CL_Obj *args, int n)
+{
+    CL_Obj item = args[0], seq = args[1];
+    SeqArgs sa;
+    cl_check_seq_keywords(args, n, 2, SK_ALL);
+    parse_seq_args(args, n, 2, &sa);
+
+    if (CL_NULL_P(seq)) return CL_NIL;
+    if (CL_CONS_P(seq)) {
+        int32_t len = seq_length(seq);
+        int32_t end = (sa.end < 0) ? len : sa.end;
+        if (!CL_NULL_P(sa.test_not_fn))
+            return delete_from_list(seq, sa.start, end, sa.count, sa.from_end,
+                                    item, sa.test_not_fn, sa.key_fn, 3);
+        return delete_from_list(seq, sa.start, end, sa.count, sa.from_end,
+                                item, sa.test_fn, sa.key_fn, 0);
+    }
+    /* Non-list sequences: REMOVE's allocating paths are already the
+     * standard-permitted behaviour. */
+    return bi_remove_export(args, n);
+}
+
+CL_Obj bi_delete_if_export(CL_Obj *args, int n)
+{
+    CL_Obj pred = args[0], seq = args[1];
+    SeqArgs sa;
+    cl_check_seq_keywords(args, n, 2, SK_ALL);
+    parse_seq_args(args, n, 2, &sa);
+
+    if (CL_NULL_P(seq)) return CL_NIL;
+    if (CL_CONS_P(seq)) {
+        int32_t len = seq_length(seq);
+        int32_t end = (sa.end < 0) ? len : sa.end;
+        return delete_from_list(seq, sa.start, end, sa.count, sa.from_end,
+                                pred, CL_NIL, sa.key_fn, 1);
+    }
+    return bi_remove_if_export(args, n);
+}
+
+CL_Obj bi_delete_if_not_export(CL_Obj *args, int n)
+{
+    CL_Obj pred = args[0], seq = args[1];
+    SeqArgs sa;
+    cl_check_seq_keywords(args, n, 2, SK_ALL);
+    parse_seq_args(args, n, 2, &sa);
+
+    if (CL_NULL_P(seq)) return CL_NIL;
+    if (CL_CONS_P(seq)) {
+        int32_t len = seq_length(seq);
+        int32_t end = (sa.end < 0) ? len : sa.end;
+        return delete_from_list(seq, sa.start, end, sa.count, sa.from_end,
+                                pred, CL_NIL, sa.key_fn, 2);
+    }
+    return bi_remove_if_not_export(args, n);
+}
+
 /* remove_from_string: shared string path for remove/remove-if/remove-if-not.
    mode: 0=remove (item+test), 1=remove-if (pred), 2=remove-if-not (pred) */
 static int remove_str_match(int mode, CL_Obj test_fn, CL_Obj key_fn,
@@ -2121,9 +2280,8 @@ void cl_builtins_sequence_init(void)
     defun("REMOVE-IF-NOT", bi_remove_if_not, 2, -1);
     defun("REMOVE-DUPLICATES", bi_remove_duplicates, 1, -1);
     defun("DELETE-DUPLICATES", bi_remove_duplicates, 1, -1);
-    /* DELETE-IF-NOT: spec allows but doesn't require in-place modification;
-     * sharing the non-destructive implementation is conforming. */
-    defun("DELETE-IF-NOT", bi_remove_if_not, 2, -1);
+    /* DELETE-IF-NOT: destructive on lists (splices in place), like DELETE. */
+    defun("DELETE-IF-NOT", bi_delete_if_not_export, 2, -1);
 
     /* Substitute family */
     defun("SUBSTITUTE", bi_substitute, 3, -1);

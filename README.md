@@ -186,6 +186,7 @@ versions. The goal is to upstream each one as the remaining API gaps close.
 Reusable Lisp loaders in `trunk/` that load and exercise third-party libraries on both host and Amiga:
 
 ```
+./build/host/clamiga --heap 24M  --load trunk/load-and-test-alexandria.lisp     # Alexandria (250/250)
 ./build/host/clamiga --heap 24M  --load trunk/load-and-test-5am.lisp            # Fiveam
 ./build/host/clamiga --heap 24M  --load trunk/load-and-test-fset.lisp           # FSet
 ./build/host/clamiga --heap 24M  --load trunk/load-and-test-cl-spark.lisp       # cl-spark (sparklines, 68/68)

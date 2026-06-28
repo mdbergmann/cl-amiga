@@ -1066,11 +1066,25 @@ static int fasl_ser_step(CL_FaslWriter *w, FaslSerStack *s)
         case TYPE_VECTOR: {
             CL_Vector *v = (CL_Vector *)CL_OBJ_TO_PTR(obj);
             uint32_t len = v->length;
-            cl_fasl_write_u8(w, FASL_TAG_VECTOR);
-            cl_fasl_write_u32(w, len);
+            if (v->rank > 1) {
+                /* Multidimensional array: preserve rank + dims so it doesn't
+                 * reload as a flat 1-D vector.  Dimensions live in
+                 * data[0..rank-1] as fixnums; elements follow at data[rank]. */
+                uint8_t k;
+                cl_fasl_write_u8(w, FASL_TAG_MD_ARRAY);
+                cl_fasl_write_u32(w, len);
+                cl_fasl_write_u8(w, v->rank);
+                for (k = 0; k < v->rank; k++)
+                    cl_fasl_write_u32(w, (uint32_t)CL_FIXNUM_VAL(v->data[k]));
+            } else {
+                cl_fasl_write_u8(w, FASL_TAG_VECTOR);
+                cl_fasl_write_u32(w, len);
+            }
             if (len == 0) return 1;
             /* Push elements one-at-a-time via PHASE_VECTOR_NEXT — keeps
-             * worklist depth O(1) per vector regardless of length. */
+             * worklist depth O(1) per vector regardless of length.  The phase
+             * uses cl_vector_data(), which already skips the dim storage for
+             * rank>1, so the same streaming works for both tags. */
             s->frames[idx].phase = PHASE_VECTOR_NEXT;
             s->frames[idx].index = 0;
             return 0;
@@ -2205,6 +2219,31 @@ CL_Obj cl_fasl_deserialize_obj(CL_FaslReader *r)
             /* Re-fetch v since GC may have occurred */
             v = (CL_Vector *)CL_OBJ_TO_PTR(result);
             v->data[i] = elt;
+        }
+        CL_GC_UNPROTECT(1);
+        return result;
+    }
+
+    case FASL_TAG_MD_ARRAY: {
+        uint32_t len = cl_fasl_read_u32(r);
+        uint8_t rank = cl_fasl_read_u8(r);
+        uint32_t dims[16];   /* matches MAKE-ARRAY's dims buffer (rank<=16) */
+        CL_Obj result;
+        CL_Vector *v;
+        uint32_t i;
+        uint8_t k;
+        if (rank < 2 || rank > 16) { r->error = 1; return CL_NIL; }
+        for (k = 0; k < rank; k++)
+            dims[k] = cl_fasl_read_u32(r);
+        if (r->error) return CL_NIL;
+        result = cl_make_array(len, rank, dims, CL_VEC_FLAG_MULTIDIM,
+                               CL_NO_FILL_POINTER);
+        CL_GC_PROTECT(result);
+        for (i = 0; i < len; i++) {
+            CL_Obj elt = cl_fasl_deserialize_obj(r);
+            /* Re-fetch v + element base since GC may have moved the array. */
+            v = (CL_Vector *)CL_OBJ_TO_PTR(result);
+            cl_vector_data(v)[i] = elt;
         }
         CL_GC_UNPROTECT(1);
         return result;

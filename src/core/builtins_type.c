@@ -168,8 +168,17 @@ static int typep_symbol(CL_Obj obj, CL_Obj type_sym)
         v = (CL_Vector *)CL_OBJ_TO_PTR(obj);
         return v->rank <= 1 && v->flags == 0;
     }
-    if (strcmp(tname, "SEQUENCE") == 0)
-        return CL_NULL_P(obj) || CL_CONS_P(obj) || CL_ANY_STRING_P(obj) || CL_VECTOR_P(obj) || CL_BIT_VECTOR_P(obj);
+    if (strcmp(tname, "SEQUENCE") == 0) {
+        /* Only lists and one-dimensional arrays (vectors) are sequences;
+         * a multidimensional array is NOT a sequence (CLHS "sequence"). */
+        if (CL_NULL_P(obj) || CL_CONS_P(obj) || CL_ANY_STRING_P(obj) || CL_BIT_VECTOR_P(obj))
+            return 1;
+        if (CL_VECTOR_P(obj)) {
+            CL_Vector *v = (CL_Vector *)CL_OBJ_TO_PTR(obj);
+            return v->rank <= 1;
+        }
+        return 0;
+    }
     if (strcmp(tname, "FUNCTION") == 0)
         return CL_FUNCTION_P(obj) || CL_CLOSURE_P(obj) || CL_BYTECODE_P(obj)
             || cl_funcallable_instance_p(obj);
@@ -1819,6 +1828,44 @@ int cl_subtypep_integer_ranges(CL_Obj t1, CL_Obj t2)
     return (r1.lo >= r2.lo && r1.hi <= r2.hi) ? 1 : 0;
 }
 
+/* Rewrite a couple of exact two-element compound type identities to their
+ * atomic equivalent so the pairwise hierarchy can settle them with certainty:
+ *   (or null cons)   / (or cons null)     ==  LIST   (a list is NIL or a cons)
+ *   (and symbol list) / (and list symbol) ==  NULL   (NIL is the only object
+ *                                                      that is both)
+ * Returns the canonical symbol when matched, else the type unchanged.  These
+ * are genuine identities, so the rewrite is always conforming; it lets
+ * ALEXANDRIA:TYPE= settle e.g. (type= 'list '(or null cons)). */
+static CL_Obj normalize_type_spec(CL_Obj type)
+{
+    CL_Obj head, a, b, rest, rest2;
+    int ida, idb;
+    if (!CL_CONS_P(type)) return type;
+    head = cl_car(type);
+    if (head != TYPE_SYM_OR && head != TYPE_SYM_AND) return type;
+    rest = cl_cdr(type);
+    if (!CL_CONS_P(rest)) return type;
+    a = cl_car(rest);
+    rest2 = cl_cdr(rest);
+    if (!CL_CONS_P(rest2)) return type;            /* fewer than 2 elements */
+    b = cl_car(rest2);
+    if (!CL_NULL_P(cl_cdr(rest2))) return type;     /* more than 2 elements */
+    if (!(CL_SYMBOL_P(a) || CL_NULL_P(a))) return type;
+    if (!(CL_SYMBOL_P(b) || CL_NULL_P(b))) return type;
+    ida = type_name_to_id(cl_symbol_name(a));
+    idb = type_name_to_id(cl_symbol_name(b));
+    if (head == TYPE_SYM_OR) {
+        if ((ida == TID_NULL && idb == TID_CONS) ||
+            (ida == TID_CONS && idb == TID_NULL))
+            return cl_intern_in("LIST", 4, cl_package_cl);
+    } else { /* AND */
+        if ((ida == TID_SYMBOL && idb == TID_LIST) ||
+            (ida == TID_LIST && idb == TID_SYMBOL))
+            return cl_intern_in("NULL", 4, cl_package_cl);
+    }
+    return type;
+}
+
 static CL_Obj bi_subtypep(CL_Obj *args, int n)
 {
     CL_Obj type1 = args[0];
@@ -1841,6 +1888,18 @@ static CL_Obj bi_subtypep(CL_Obj *args, int n)
         if (!CL_NULL_P(expander)) {
             type2 = cl_vm_apply(expander, &type2, 0);
             CL_Obj rargs[2] = { type1, type2 };
+            return bi_subtypep(rargs, 2);
+        }
+    }
+
+    /* Canonicalize exact compound identities ((or null cons)==list,
+     * (and symbol list)==null) to their atomic form, then re-decide. */
+    {
+        CL_Obj nt1 = normalize_type_spec(type1);
+        CL_Obj nt2 = normalize_type_spec(type2);
+        if (nt1 != type1 || nt2 != type2) {
+            CL_Obj rargs[2];
+            rargs[0] = nt1; rargs[1] = nt2;
             return bi_subtypep(rargs, 2);
         }
     }

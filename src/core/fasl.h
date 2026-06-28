@@ -26,7 +26,7 @@
 #include "../platform/platform.h"
 
 #define CL_FASL_MAGIC    0x434C4641  /* "CLFA" */
-#define CL_FASL_VERSION  18  /* v18: HANDLER-BIND and CATCH in tail position now compile their body as a non-tail call (OP_CALL, not OP_TAILCALL) so the OP_HANDLER_POP / OP_UNCATCH postlude runs — previously the tail call replaced the frame and leaked one handler/NLX binding per call until the stack overflowed. Wire format unchanged, but FASLs compiled by the prior (buggy) compiler contain the leaking bytecode and MUST be recompiled, hence the bump. */
+#define CL_FASL_VERSION  19  /* v19: multidimensional arrays (rank>1) now serialize via FASL_TAG_MD_ARRAY, preserving rank and dimensions; previously every CL_Vector was written with FASL_TAG_VECTOR carrying only the flat element count, so a literal like #2A((1 2)(3 4)) reloaded from a FASL as a rank-1 vector #(1 2 3 4). New tag in the wire format → bump. */
 
 /* Serialized constant type tags */
 #define FASL_TAG_NIL         0x00
@@ -79,6 +79,13 @@
                                      references within one FASL share via OBJ_DEF/REF
                                      so a struct slot and its callers all see the
                                      same fresh lock after load. */
+#define FASL_TAG_MD_ARRAY   0x1F  /* u32 length, u8 rank, u32[rank] dims, then
+                                     `length` elements: a multidimensional array
+                                     (rank>1).  FASL_TAG_VECTOR stays the compact
+                                     rank<=1 form; only true multi-dim arrays use
+                                     this tag, so the rank/dims are preserved
+                                     across compile-file instead of collapsing to
+                                     a flat 1-D vector. */
 
 /* Error codes for FASL operations */
 #define FASL_OK              0

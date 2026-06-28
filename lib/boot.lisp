@@ -280,40 +280,76 @@
 (defsetf readtable-case %setf-readtable-case)
 
 ;; rotatef — rotate values among places
+;; rotatef — rotate values among places (CLHS 5.3).  Each place's subforms
+;; must be evaluated exactly once, left to right, so we go through
+;; GET-SETF-EXPANSION rather than re-reading the place form on the store
+;; (the old version re-evaluated subforms — e.g. a (random ...) index in
+;; (aref v (+ i (random n))) — once for the read and again for the write,
+;; corrupting Fisher-Yates shuffles).
 (defmacro rotatef (&rest places)
   (if (< (length places) 2)
       nil
-      (let ((temps (mapcar (lambda (x) (declare (ignore x)) (gensym)) places)))
-        `(let ,(mapcar #'list temps places)
-           ,@(mapcar (lambda (p v) `(setf ,p ,v))
-                     places
-                     (append (cdr temps) (list (car temps))))
-           nil))))
+      (let ((let*-binds nil) (svars nil) (accesses nil) (store-forms nil))
+        (dolist (p places)
+          (multiple-value-bind (vars vals stores store access)
+              (get-setf-expansion p)
+            (setq let*-binds (append let*-binds (mapcar #'list vars vals)))
+            (setq svars (append svars (list (car stores))))
+            (setq accesses (append accesses (list access)))
+            (setq store-forms (append store-forms (list store)))))
+        `(let* ,let*-binds
+           ;; Read every place (into its store var) BEFORE any write, so all
+           ;; reads see the old values; store var i gets place i+1, last gets 1.
+           (let ,(mapcar #'list svars (append (cdr accesses) (list (car accesses))))
+             ,@store-forms
+             nil)))))
 
-;; shiftf — shift values among places, return first
+;; shiftf — shift values among places, return the first place's old value
+;; (CLHS 5.3).  Subforms evaluated once via GET-SETF-EXPANSION, same as rotatef.
 (defmacro shiftf (&rest places-and-newval)
   (let* ((places (butlast places-and-newval))
          (newval (car (last places-and-newval)))
-         (temps (mapcar (lambda (x) (declare (ignore x)) (gensym)) places))
-         (tval (gensym)))
-    `(let (,@(mapcar #'list temps places)
-           (,tval ,newval))
-       ,@(mapcar (lambda (p v) `(setf ,p ,v))
-                 places
-                 (append (cdr temps) (list tval)))
-       ,(car temps))))
+         (let*-binds nil) (svars nil) (accesses nil) (store-forms nil)
+         (nv-temp (gensym "NV")) (result (gensym "RES")))
+    (dolist (p places)
+      (multiple-value-bind (vars vals stores store access)
+          (get-setf-expansion p)
+        (setq let*-binds (append let*-binds (mapcar #'list vars vals)))
+        (setq svars (append svars (list (car stores))))
+        (setq accesses (append accesses (list access)))
+        (setq store-forms (append store-forms (list store)))))
+    `(let* (,@let*-binds (,nv-temp ,newval))
+       (let ((,result ,(car accesses))
+             ,@(mapcar #'list svars (append (cdr accesses) (list nv-temp))))
+         ,@store-forms
+         ,result))))
 
-;; define-modify-macro — define a macro that modifies a place
+;; define-modify-macro — define a macro that modifies a place (CLHS 5.1.3).
+;; The generated macro must read/write the place evaluating its subforms only
+;; once, so it expands through GET-SETF-EXPANSION (the old version expanded to
+;; (setf place (fn place args)), evaluating the place — and its subforms — twice).
 (defmacro define-modify-macro (name lambda-list function &optional documentation)
-  (let ((place-var (gensym "PLACE"))
-        (has-rest (member '&rest lambda-list))
-        (plain-args (remove '&rest (remove '&optional lambda-list))))
-    `(defmacro ,name (,place-var ,@lambda-list)
+  (let* ((place-var (gensym "PLACE"))
+         (env-var (gensym "ENV"))
+         (rest-pos (position '&rest lambda-list))
+         (rest-var (when rest-pos (nth (1+ rest-pos) lambda-list)))
+         ;; the individually-passed argument vars (required + optional),
+         ;; i.e. everything before &rest with the &optional marker dropped
+         (individual (remove '&optional
+                             (if rest-pos (subseq lambda-list 0 rest-pos)
+                                 lambda-list))))
+    `(defmacro ,name (,place-var ,@lambda-list &environment ,env-var)
        ,@(when documentation (list documentation))
-       (list 'setf ,place-var
-             ,(if has-rest
-                  `(list* ',function ,place-var ,@plain-args)
-                  `(list ',function ,place-var ,@plain-args))))))
+       (multiple-value-bind (vars vals stores store access)
+           (get-setf-expansion ,place-var ,env-var)
+         (let ((new-val ,(if rest-var
+                             `(list* ',function access ,@individual ,rest-var)
+                             `(list ',function access ,@individual))))
+           (append
+            (list 'let*
+                  (append (mapcar #'list vars vals)
+                          (list (list (car stores) new-val))))
+            (list store)))))))
 
 ;; Compiler macros (CLHS 3.2.2.1).  The expander runs at compile time
 ;; on the call form; returning the original form (eq) means "decline"
@@ -921,16 +957,7 @@
                     (values nil nil nil))))
          ,@body))))
 
-(defmacro with-standard-io-syntax (&body body)
-  `(let ((*package* (find-package :common-lisp-user))
-         (*print-base* 10)
-         (*print-radix* nil)
-         (*print-circle* nil)
-         (*print-escape* t)
-         (*print-readably* nil)
-         (*read-base* 10)
-         (*read-eval* t))
-     ,@body))
+;; (canonical definition below, near the printer helpers)
 
 (defmacro print-unreadable-object ((object stream &key type identity) &body body)
   (let ((obj-var (gensym)))
@@ -1743,11 +1770,26 @@ when the param has no explicit default.  CL spec 3.4.6 requires this."
        loop-end))
     i))
 
-;; with-standard-io-syntax — bind I/O variables to standard values
-;; Minimal implementation: only binds *package* to CL-USER for now.
-;; Future: bind *readtable*, *print-readably*, etc. when implemented.
+;; with-standard-io-syntax — bind the reader/printer control variables to
+;; their standard values (CLHS "with-standard-io-syntax").  Binding the full
+;; set matters: e.g. alexandria's FORMAT-SYMBOL wraps its FORMAT in this macro
+;; precisely so an outer *PRINT-CASE* of :DOWNCASE/:CAPITALIZE cannot change
+;; the symbol name it builds.  Only the control variables implemented in this
+;; runtime are bound.
 (defmacro with-standard-io-syntax (&body body)
-  `(let ((*package* (find-package "CL-USER")))
+  `(let ((*package* (find-package "CL-USER"))
+         (*print-base* 10)
+         (*print-radix* nil)
+         (*print-case* :upcase)
+         (*print-circle* nil)
+         (*print-escape* t)
+         (*print-gensym* t)
+         (*print-level* nil)
+         (*print-length* nil)
+         (*print-readably* t)
+         (*read-base* 10)
+         (*read-default-float-format* 'single-float)
+         (*read-eval* t))
      ,@body))
 
 ;; --- Printer-to-string functions ---

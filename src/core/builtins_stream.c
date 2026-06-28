@@ -193,6 +193,13 @@ static CL_Obj bi_read_byte(CL_Obj *args, int n)
 
     if (!CL_STREAM_P(stream))
         cl_error(CL_ERR_TYPE, "READ-BYTE: argument is not a stream");
+    {
+        /* Reading from an output-only stream (e.g. a broadcast stream) is an
+         * error, not EOF (CLHS: input functions require an input stream). */
+        CL_Stream *st = (CL_Stream *)CL_OBJ_TO_PTR(stream);
+        if (st->direction != CL_STREAM_INPUT && st->direction != CL_STREAM_IO)
+            cl_error(CL_ERR_TYPE, "READ-BYTE: stream is not an input stream");
+    }
     byte = cl_stream_read_byte(stream);
     if (byte == -1) {
         if (eof_error_p)

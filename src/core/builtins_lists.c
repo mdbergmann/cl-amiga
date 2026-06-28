@@ -533,14 +533,14 @@ static CL_Obj bi_nreverse(CL_Obj *args, int n)
  * is conforming and keeps a single source of truth for the semantics. */
 static CL_Obj bi_delete(CL_Obj *args, int n)
 {
-    extern CL_Obj bi_remove_export(CL_Obj *args, int n);
-    return bi_remove_export(args, n);
+    extern CL_Obj bi_delete_export(CL_Obj *args, int n);
+    return bi_delete_export(args, n);
 }
 
 static CL_Obj bi_delete_if(CL_Obj *args, int n)
 {
-    extern CL_Obj bi_remove_if_export(CL_Obj *args, int n);
-    return bi_remove_if_export(args, n);
+    extern CL_Obj bi_delete_if_export(CL_Obj *args, int n);
+    return bi_delete_if_export(args, n);
 }
 
 static CL_Obj bi_nsubst(CL_Obj *args, int n)
