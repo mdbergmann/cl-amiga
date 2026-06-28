@@ -205,7 +205,10 @@ static CL_Obj bi_every(CL_Obj *args, int n)
 
 every_done:
     CL_GC_UNPROTECT(2 + nseqs);
-    return last_result;
+    /* EVERY returns a boolean (CLHS): T when every call succeeded, NIL when a
+     * call returned false — never the raw (possibly non-T truthy) predicate
+     * value, which would break callers that EQ/EQUAL the result against T. */
+    return CL_NULL_P(last_result) ? CL_NIL : SYM_T;
 }
 
 static CL_Obj bi_some(CL_Obj *args, int n)

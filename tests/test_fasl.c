@@ -1090,6 +1090,43 @@ TEST(serialize_vector)
     ASSERT_EQ_INT(CL_FIXNUM_VAL(v->data[2]), 30);
 }
 
+/* A multidimensional array must round-trip with its rank and dimensions
+ * intact — previously every CL_Vector serialized as a flat element count, so
+ * #2A((1 2)(3 4)) reloaded from a FASL as the rank-1 vector #(1 2 3 4). */
+TEST(serialize_md_array_preserves_rank)
+{
+    uint8_t buf[256];
+    CL_FaslWriter w;
+    CL_FaslReader r;
+    CL_Obj arr, result;
+    CL_Vector *v;
+    CL_Obj *elts;
+
+    arr = cl_eval_string("#2a((1 2) (3 4))");
+    ASSERT(CL_VECTOR_P(arr));
+    v = (CL_Vector *)CL_OBJ_TO_PTR(arr);
+    ASSERT_EQ_INT(v->rank, 2);
+
+    cl_fasl_writer_init(&w, buf, sizeof(buf));
+    cl_fasl_serialize_obj(&w, arr);
+    ASSERT_EQ_INT(w.error, FASL_OK);
+
+    cl_fasl_reader_init(&r, buf, w.pos);
+    result = cl_fasl_deserialize_obj(&r);
+    ASSERT_EQ_INT(r.error, FASL_OK);
+    ASSERT(CL_VECTOR_P(result));
+    v = (CL_Vector *)CL_OBJ_TO_PTR(result);
+    ASSERT_EQ_INT(v->rank, 2);
+    ASSERT_EQ_INT(v->length, 4);
+    ASSERT_EQ_INT(CL_FIXNUM_VAL(v->data[0]), 2);   /* dim 0 */
+    ASSERT_EQ_INT(CL_FIXNUM_VAL(v->data[1]), 2);   /* dim 1 */
+    elts = cl_vector_data(v);                       /* skips dim storage */
+    ASSERT_EQ_INT(CL_FIXNUM_VAL(elts[0]), 1);
+    ASSERT_EQ_INT(CL_FIXNUM_VAL(elts[1]), 2);
+    ASSERT_EQ_INT(CL_FIXNUM_VAL(elts[2]), 3);
+    ASSERT_EQ_INT(CL_FIXNUM_VAL(elts[3]), 4);
+}
+
 TEST(serialize_vector_empty)
 {
     uint8_t buf[64];
@@ -2552,6 +2589,7 @@ int main(void)
     RUN(serialize_bignum);
     RUN(serialize_bignum_negative);
     RUN(serialize_vector);
+    RUN(serialize_md_array_preserves_rank);
     RUN(serialize_vector_empty);
     RUN(serialize_vector_mixed_types);
     RUN(serialize_bit_vector);
