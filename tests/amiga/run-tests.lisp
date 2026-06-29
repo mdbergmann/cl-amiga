@@ -1778,6 +1778,14 @@
 (check "subtypep sf-not<sf-range" nil
        (nth-value 0 (subtypep 'single-float '(single-float 0.0 1.0))))
 
+; --- subtypep: (not B) overlap case (serapeum soft-list-of) ---
+(check "subtypep null<(not null)" '(nil t)
+       (multiple-value-list (subtypep 'null '(not null))))
+(check "subtypep fixnum<(not integer)" '(nil t)
+       (multiple-value-list (subtypep 'fixnum '(not integer))))
+(check "subtypep integer<(not null) uncertain" '(nil nil)
+       (multiple-value-list (subtypep 'integer '(not null))))
+
 ; --- Type system: typecase with compound ---
 (check "typecase or int" "match" (typecase 42 ((or integer string) "match") (t "no")))
 (check "typecase or str" "match" (typecase "hi" ((or integer string) "match") (t "no")))

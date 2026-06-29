@@ -1073,6 +1073,20 @@ TEST(eval_subtypep_bounded_float_ranges)
     ASSERT_STR_EQ(eval_print("(nth-value 0 (subtypep '(single-float 0.0 1.0) 'double-float))"), "NIL");
 }
 
+/* (subtypep A (not B)): when A is a non-empty subtype of B (certain), A overlaps
+ * B and is certainly NOT a subtype of (not B) — answer (NIL T), not uncertain.
+ * serapeum's SOFT-LIST-OF deftype branches on (subtypep 'null type); with
+ * type = (not null) it needs (subtypep 'null '(not null)) => (NIL T) to pick
+ * PROPER-LIST-WITHOUT-NIL? over PROPER-LIST?. */
+TEST(eval_subtypep_not_overlap)
+{
+    ASSERT_STR_EQ(eval_print("(multiple-value-list (subtypep 'null '(not null)))"), "(NIL T)");
+    ASSERT_STR_EQ(eval_print("(multiple-value-list (subtypep 'fixnum '(not integer)))"), "(NIL T)");
+    ASSERT_STR_EQ(eval_print("(multiple-value-list (subtypep 'integer '(not number)))"), "(NIL T)");
+    /* A type unrelated to B stays uncertain (no false certainty). */
+    ASSERT_STR_EQ(eval_print("(multiple-value-list (subtypep 'integer '(not null)))"), "(NIL NIL)");
+}
+
 /* CLHS 3.1.2.1.1: a lexical variable binding (LET, LET-star, a lambda list) shadows a
  * SYMBOL-MACROLET or DEFINE-SYMBOL-MACRO binding of the same name for the
  * extent of its scope.  serapeum's `local` relies on this when it rebinds a
@@ -10300,6 +10314,7 @@ int main(void)
     RUN(eval_subtypep_typep_env_arg);
     RUN(eval_subtypep_bounded_integer_ranges);
     RUN(eval_subtypep_bounded_float_ranges);
+    RUN(eval_subtypep_not_overlap);
     RUN(eval_let_shadows_symbol_macrolet);
     RUN(eval_let_shadows_global_symbol_macro);
     RUN(eval_typep_mod);
