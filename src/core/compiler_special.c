@@ -823,6 +823,39 @@ static int nlx_scan(CL_Obj form, int mode, CL_Obj tag, int anon)
         }
         goto done;
     }
+    /* (handler-bind ((type handler-form)...) body...) — the clause CAR is a
+     * condition TYPE specifier, not evaluated code.  Scan only the handler
+     * EXPRESSION (cadr) of each clause and the body, skipping the type spec.
+     * Without this the general fall-through expands (type handler-form) as a
+     * macro call when the condition type is also a macro (e.g. serapeum's
+     * DISPATCH-CASE-ERROR, a `(&key type datum)` macro that is also the
+     * condition class), signaling "odd number of keyword arguments" out of
+     * the speculative expansion — the nlx_scan twin of the scan_body_for_boxing
+     * handler-bind guard.  HANDLER-CASE is a real macro that expands to
+     * handler-bind + typecase, both covered (typecase keys skipped above). */
+    if (head == SYM_HANDLER_BIND) {
+        CL_Obj clauses, body;
+        if (!CL_CONS_P(rest)) goto done;
+        clauses = cl_car(rest);
+        body = cl_cdr(rest);
+        /* Protect both the clause cursor and body: the recursive nlx_scan below
+         * macroexpands handler expressions and can compact, staling bare offset
+         * locals.  `body` (= cl_cdr(rest)) must be pre-computed and protected
+         * here — after the while loop `rest` itself is stale, so re-deriving
+         * cl_cdr(rest) at line 850 would walk garbage. */
+        CL_GC_PROTECT(clauses);
+        CL_GC_PROTECT(body);
+        while (CL_CONS_P(clauses)) {
+            CL_Obj clause = cl_car(clauses);
+            if (CL_CONS_P(clause) && CL_CONS_P(cl_cdr(clause)))
+                if (nlx_scan(cl_car(cl_cdr(clause)), mode, tag, anon)) { r = 1; break; }
+            clauses = cl_cdr(clauses);
+        }
+        CL_GC_UNPROTECT(2);
+        if (!r) r = nlx_scan_body(body, mode, tag, anon);
+        goto done;
+    }
+
     /* (macrolet (bindings) body...) — skip bindings, scan body. */
     if (head == SYM_MACROLET) {
         if (CL_CONS_P(rest)) r = nlx_scan_body(cl_cdr(rest), mode, tag, anon);

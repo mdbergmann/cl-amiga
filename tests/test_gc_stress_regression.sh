@@ -266,6 +266,62 @@ else
     failed=$((failed + 1))
 fi
 
+# --- Case 9b: condition type that is ALSO a (&key) macro under GC stress -----
+# Bug: scan_body_for_boxing (boxing analysis) and nlx_scan (block NLX analysis)
+# had no handler-bind/handler-case case, so their general fall-through walked a
+# handler clause (TYPE handler-fn) as a form and speculatively macroexpanded
+# TYPE.  When TYPE is a condition name that is ALSO a (&key ...) macro (serapeum's
+# DISPATCH-CASE-ERROR / fiveam SIGNALS shape), the expansion got one positional
+# arg → "odd number of keyword arguments", aborting the compile.  Both scanners
+# now skip the clause type spec; the new handler-bind cursor is GC-protected.
+cat > "$WORK/cond_macro_type.lisp" <<'EOF'
+(defmacro %gcs-dce (&key type datum) (declare (ignore type datum)) nil)
+(define-condition %gcs-dce (error) ())
+;; handler-case path (boxing scan walks the captured-BOX let)
+(format t "HC-MAC:~a~%"
+  (handler-case (error '%gcs-dce)
+    (%gcs-dce (c) (declare (ignore c)) :caught)))
+;; signals-style handler-bind inside block/return-from (NLX scan)
+(format t "HB-MAC:~a~%"
+  (block blk
+    (handler-bind ((%gcs-dce (lambda (c) (declare (ignore c))
+                               (return-from blk :caught))))
+      (error '%gcs-dce))
+    :fell-through))
+EOF
+out=$(run_stress "$WORK/cond_macro_type.lisp")
+check_contains "handler-case macro-named cond type compiles under GC stress" "HC-MAC:CAUGHT" "$out"
+check_contains "handler-bind macro-named cond type compiles under GC stress" "HB-MAC:CAUGHT" "$out"
+check_absent   "no odd-keyword-args from speculative type macroexpand"       "odd number of keyword" "$out"
+
+# --- Case 9c: handler-bind BODY scan: return-from in body, macro in handler expr -
+# Bug: nlx_scan's SYM_HANDLER_BIND branch computed body via cl_cdr(rest) AFTER
+# the while loop, but `rest` was set at the top of nlx_scan (a bare CL_Obj C
+# local); the while loop calls nlx_scan recursively, macroexpanding handler
+# expressions and potentially compacting — leaving `rest` stale.  When the
+# return-from is in the HANDLER EXPRESSION (Case 9b shape), r=1 causes a break
+# BEFORE cl_cdr(rest) is evaluated.  When return-from is in the BODY (not any
+# handler expression), r stays 0 and the stale cl_cdr(rest) is dereferenced,
+# walking garbage memory.
+# Fix: pre-compute body=cl_cdr(rest) before CL_GC_PROTECT(clauses), add a
+# second CL_GC_PROTECT(body), use body in nlx_scan_body(); CL_GC_UNPROTECT(2).
+cat > "$WORK/hb-body-rf.lisp" <<'EOF'
+(defmacro %hb-body-nop (&rest args) (declare (ignore args)) nil)
+(let ((result
+       (block done
+         (handler-bind
+           ;; Handler expression uses a user macro (macroexpand + compact under
+           ;; GC stress) but does NOT contain return-from, so r=0 after the
+           ;; while loop and nlx_scan_body(body,...) is called on the stale rest.
+           ((error (lambda (c) (declare (ignore c)) (%hb-body-nop 1 2 3 4 5))))
+           ;; return-from is in the BODY of handler-bind, not in any handler expr
+           (return-from done :body-rf)))))
+  (format t "HB-BODY:~a~%" result))
+EOF
+out=$(run_stress "$WORK/hb-body-rf.lisp")
+check_contains "handler-bind body return-from (not in handler expr) under GC stress" "HB-BODY:BODY-RF" "$out"
+check_absent   "no crash/corruption from stale rest in handler-bind body scan" "Unbound variable\|type 0\|corrupted\|not of type" "$out"
+
 # --- Case 10: RESTART-CASE compiled under GC stress --------------------------
 # Bug: compile_restart_case did not protect the clause-list cursor (cl_iter) or
 # catch_tag across compile_expr/cl_cons calls inside the loop; restart_name was

@@ -661,6 +661,23 @@
         (error "real error"))
     (error (c) (simple-condition-format-control c))))
 
+; A condition type whose name is ALSO a (&key ...) macro (serapeum's
+; DISPATCH-CASE-ERROR / the fiveam SIGNALS shape) must not trip the compiler's
+; boxing/NLX scanners.  Those scanners had no handler-bind/handler-case case, so
+; their general walk speculatively macroexpanded the handler clause type as a
+; form — (TYPE handler-fn) with one positional arg → "odd number of keyword
+; arguments", aborting the compile.  This blocked serapeum's dispatch-case test.
+(defmacro %amiga-dce (&key type datum) (declare (ignore type datum)) nil)
+(define-condition %amiga-dce (error) ())
+(check "handler-case macro-named cond type" :caught
+  (handler-case (error '%amiga-dce) (%amiga-dce (c) (declare (ignore c)) :caught)))
+(check "handler-bind macro-named cond type in block" :caught
+  (block blk
+    (handler-bind ((%amiga-dce (lambda (c) (declare (ignore c))
+                                 (return-from blk :caught))))
+      (error '%amiga-dce))
+    :fell-through))
+
 ; --- Phase 4 Tier 2: unwind-protect ---
 (check "uwp normal" '(42 t) (let ((log nil)) (let ((r (unwind-protect 42 (setq log t)))) (list r log))))
 (check "uwp throw cleanup" t (let ((cleanup nil)) (catch 'done (unwind-protect (throw 'done 1) (setq cleanup t))) cleanup))
