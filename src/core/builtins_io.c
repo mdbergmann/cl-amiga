@@ -1748,9 +1748,12 @@ static CL_Obj bi_compile_file(CL_Obj *args, int n)
                 CL_Bytecode *bcobj = (CL_Bytecode *)CL_OBJ_TO_PTR(bc);
                 CL_String *bname = CL_NULL_P(bcobj->name) ? NULL :
                     (CL_String *)CL_OBJ_TO_PTR(((CL_Symbol *)CL_OBJ_TO_PTR(bcobj->name))->name);
-                fprintf(stderr, "[compile-file] serializing unit %d/%d name=%s\n",
+                fprintf(stderr, "[compile-file] serializing unit %d/%d name=%s src-line=%u nconst=%u codelen=%u\n",
                         bci + 1, bc_collect_count,
-                        bname ? bname->data : "<anon>");
+                        bname ? bname->data : "<anon>",
+                        (unsigned)bcobj->source_line,
+                        (unsigned)bcobj->n_constants,
+                        (unsigned)bcobj->code_len);
                 fflush(stderr);
             }
 #endif
@@ -1777,9 +1780,10 @@ static CL_Obj bi_compile_file(CL_Obj *args, int n)
                 char msg[1024];
                 snprintf(msg, sizeof(msg),
                          "; Warning: FASL unit failed in %s "
-                         "(unit %d/%d, name=%s, reason=%s, error=%d) — skipping FASL cache for this file\n",
+                         "(unit %d/%d, name=%s, src-line=%u, reason=%s, error=%d) — skipping FASL cache for this file\n",
                          in_path, bci + 1, bc_collect_count,
                          bname ? bname->data : "<anon>",
+                         (unsigned)bcobj->source_line,
                          reason, unit_err);
                 cl_write_cstring_to_stdout(msg);
                 fasl_incomplete = 1;

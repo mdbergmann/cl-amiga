@@ -589,6 +589,34 @@ static int fasl_shared_get_or_insert(CL_FaslWriter *w, CL_Obj obj,
     return 0;
 }
 
+/* Lookup-only probe of the dedup table — never inserts.  Returns 1 and
+ * sets *out_id when obj is already registered, 0 otherwise.  Used by the
+ * inline CDR-spine walk to detect a cons that has already been serialized
+ * (a circular list whose tail loops back to an enclosing/earlier cons, or
+ * a structurally-shared tail) so it can emit an OBJ_REF and stop instead
+ * of walking the cycle forever.  Unlike get_or_insert this does not
+ * allocate a new id for misses — cdr cells stay un-deduped on the wire
+ * (no per-cell OBJ_DEF bloat), so acyclic lists serialize byte-for-byte
+ * as before. */
+static int fasl_shared_lookup(CL_FaslWriter *w, CL_Obj obj, uint16_t *out_id)
+{
+    uint32_t mask, slot;
+    uint16_t entry;
+
+    if (!w->shared_objs || !w->shared_hash || w->shared_hash_cap == 0)
+        return 0;
+    mask = w->shared_hash_cap - 1;
+    slot = fasl_obj_hash(obj) & mask;
+    while ((entry = w->shared_hash[slot]) != 0) {
+        if (w->shared_objs[entry - 1] == obj) {
+            *out_id = (uint16_t)(entry - 1);
+            return 1;
+        }
+        slot = (slot + 1) & mask;
+    }
+    return 0;
+}
+
 /* --- Serialize a CL_Obj constant (iterative) ---
  *
  * Serialization is a pre-order tree walk over the constant graph.  An
@@ -845,7 +873,11 @@ static int fasl_ser_step(CL_FaslWriter *w, FaslSerStack *s)
          * cons of any list reaches this site (cdr cells are walked inline
          * by PHASE_CONS_NEXT_CAR), so dedup applies per list head — enough
          * to break the amplification and small enough not to bloat every
-         * cdr cell with an OBJ_DEF wrapper.
+         * cdr cell with an OBJ_DEF wrapper.  PHASE_CONS_NEXT_CAR additionally
+         * does a lookup-only probe per cdr cell (fasl_shared_lookup): a cdr
+         * that loops back to an already-registered cons — a circular list
+         * literal or a shared tail — emits an OBJ_REF and stops the spine
+         * instead of walking the cycle forever.
          *
          * Reader's OBJ_DEF/REF handler is type-agnostic — no reader-side
          * change needed. */
@@ -1210,8 +1242,30 @@ static int fasl_ser_step(CL_FaslWriter *w, FaslSerStack *s)
      * stay in this phase.  Else push the final CDR and exit. */
     if (phase == PHASE_CONS_NEXT_CAR) {
         if (CL_HEAP_P(obj) && CL_HDR_TYPE(CL_OBJ_TO_PTR(obj)) == TYPE_CONS) {
-            CL_Obj car_v = cl_car(obj);
-            CL_Obj cdr_v = cl_cdr(obj);
+            CL_Obj car_v, cdr_v;
+            uint16_t ref_id;
+            /* Cycle / shared-tail guard.  If this cdr cell was already
+             * serialized — e.g. a circular list literal `#1=(1 2 3 . #1#)`
+             * whose tail loops back to the list head, or two lists sharing
+             * a common tail — emit an OBJ_REF to it and terminate the spine.
+             * Without this, the inline CDR walk follows the cycle forever,
+             * filling the unit buffer until it overflows the cap (the
+             * symptom that forced source-load fallback for serapeum's
+             * copy-firstn test).  The list head and every CAR-reached
+             * sub-list head are registered in the dedup table by the
+             * OBJ_DEF/REF wrapper in PHASE_START, so a back-reference to any
+             * of them is found here.  The reader already resolves an
+             * OBJ_REF in final-cdr position (FASL_TAG_OBJ_REF →
+             * shared_objs[id]), so no reader change is needed and acyclic
+             * lists are unaffected (lookup-only, no per-cell OBJ_DEF). */
+            if (fasl_shared_lookup(w, obj, &ref_id)) {
+                cl_fasl_write_u8(w, FASL_TAG_OBJ_REF);
+                cl_fasl_write_u16(w, ref_id);
+                s->frames[idx].phase = PHASE_DONE;
+                return 1;
+            }
+            car_v = cl_car(obj);
+            cdr_v = cl_cdr(obj);
             cl_fasl_write_u8(w, FASL_TAG_CONS);
             s->frames[idx].obj = cdr_v;
             /* phase stays PHASE_CONS_NEXT_CAR */
