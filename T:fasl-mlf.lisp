@@ -1,0 +1,6 @@
+(defpackage :mlf-ami (:use :cl))
+(in-package :mlf-ami)
+(defclass mlfnode () ((label :initarg :label :accessor mlf-label) (n :initarg :n :accessor mlf-n) (self :accessor mlf-self)))
+(defmethod make-load-form ((x mlfnode) &optional env) (declare (ignore env)) (make-load-form-saving-slots x))
+(defvar *mlf* #.(let ((x (make-instance 'mlfnode :label "hi" :n 7))) (setf (mlf-self x) x) x))
+(in-package :cl-user)
