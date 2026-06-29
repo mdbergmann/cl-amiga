@@ -1689,6 +1689,31 @@ void compile_defconstant(CL_Compiler *c, CL_Obj form)
         cl_emit_u16(c, (uint16_t)idx);
         cl_emit(c, OP_POP);
     }
+    /* Runtime: mark the symbol constant so CONSTANTP works even when this
+     * defconstant is loaded from a precompiled FASL (where the compile-time
+     * flag set above does not survive into the loading session).  Emit a
+     * call to (%MARK-CONSTANT 'name) and discard its result. */
+    {
+        CL_Obj mark_form, inner, mc_sym, mc_arg, quoted;
+        /* Finding 1: protect inner cons across the outer cl_cons allocation. */
+        inner = cl_cons(name, CL_NIL);
+        CL_GC_PROTECT(inner);
+        quoted = cl_cons(SYM_QUOTE, inner);
+        CL_GC_UNPROTECT(1);
+        CL_GC_PROTECT(quoted);
+        /* Finding 2: materialise each sub-result into a protected local before
+         * the outer cl_cons so that evaluation order cannot leave either stale. */
+        mc_sym = cl_intern_in("%MARK-CONSTANT", 14, cl_package_clamiga);
+        CL_GC_PROTECT(mc_sym);
+        mc_arg = cl_cons(quoted, CL_NIL);
+        CL_GC_PROTECT(mc_arg);
+        mark_form = cl_cons(mc_sym, mc_arg);
+        CL_GC_UNPROTECT(2); /* mc_sym, mc_arg */
+        CL_GC_PROTECT(mark_form);
+        compile_expr(c, mark_form);
+        cl_emit(c, OP_POP);
+        CL_GC_UNPROTECT(2); /* quoted, mark_form */
+    }
     cl_emit_const(c, name);
     CL_GC_UNPROTECT(1);
 }

@@ -167,6 +167,21 @@ static CL_Obj bi_symbol_constant_p(CL_Obj *args, int n)
     return (s->flags & CL_SYM_CONSTANT) ? SYM_T : CL_NIL;
 }
 
+/* %MARK-CONSTANT: mark a symbol as a constant variable at runtime.
+   defconstant emits a call to this so that CONSTANTP works even when the
+   form is loaded from a precompiled FASL (the compile-time flag set in
+   compile_defconstant does not survive into a fresh load). */
+static CL_Obj bi_mark_constant(CL_Obj *args, int n)
+{
+    CL_Symbol *s;
+    CL_UNUSED(n);
+    if (!CL_SYMBOL_P(args[0]))
+        cl_signal_type_error(args[0], "SYMBOL", "%MARK-CONSTANT");
+    s = (CL_Symbol *)CL_OBJ_TO_PTR(args[0]);
+    s->flags |= CL_SYM_CONSTANT;
+    return args[0];
+}
+
 extern CL_Obj setf_fn_table;
 
 /* Helper: if name is (setf sym), look up the setf-fn symbol in setf_fn_table.
@@ -363,6 +378,7 @@ void cl_builtins_mutation_init(void)
     /* Boundp / Fboundp */
     defun("BOUNDP", bi_boundp, 1, 1);
     cl_register_builtin("%SYMBOL-CONSTANT-P", bi_symbol_constant_p, 1, 1, cl_package_clamiga);
+    cl_register_builtin("%MARK-CONSTANT", bi_mark_constant, 1, 1, cl_package_clamiga);
     defun("FBOUNDP", bi_fboundp, 1, 1);
     defun("FMAKUNBOUND", bi_fmakunbound, 1, 1);
     defun("MAKUNBOUND", bi_makunbound, 1, 1);

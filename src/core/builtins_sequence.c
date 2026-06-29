@@ -295,14 +295,25 @@ static void arr_seq_set(CL_Obj seq, int32_t i, CL_Obj val)
         return;
     }
     if (CL_ANY_STRING_P(seq)) {
-        if (CL_CHAR_P(val))
-            cl_string_set_char_at(seq, (uint32_t)i, CL_CHAR_VAL(val));
+        /* A string's element type is CHARACTER; storing anything else is a
+         * type-error (CLHS).  Previously this silently dropped non-character
+         * values, which let e.g. REPLACE into a string from a list of
+         * non-characters succeed quietly instead of signalling. */
+        if (!CL_CHAR_P(val))
+            cl_signal_type_error(val, "CHARACTER", "storing into a string");
+        cl_string_set_char_at(seq, (uint32_t)i, CL_CHAR_VAL(val));
         return;
     }
-    /* bit vector */
-    if (CL_FIXNUM_P(val))
-        cl_bv_set_bit((CL_BitVector *)CL_OBJ_TO_PTR(seq), (uint32_t)i,
-                      CL_FIXNUM_VAL(val) != 0);
+    /* bit vector: element type is BIT (0 or 1). */
+    {
+        int32_t v;
+        if (!CL_FIXNUM_P(val))
+            cl_signal_type_error(val, "BIT", "storing into a bit vector");
+        v = CL_FIXNUM_VAL(val);
+        if (v != 0 && v != 1)
+            cl_signal_type_error(val, "BIT", "storing into a bit vector");
+        cl_bv_set_bit((CL_BitVector *)CL_OBJ_TO_PTR(seq), (uint32_t)i, v != 0);
+    }
 }
 
 /* String-like = a simple string (TYPE_STRING / TYPE_WIDE_STRING) OR an
