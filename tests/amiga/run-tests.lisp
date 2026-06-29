@@ -5317,6 +5317,32 @@
 (load "T:fasl-pkgonce.fasl")
 (check "compile-file no double make-package" t (not (null (find-package :fasl-pkgonce-test))))
 
+; Regression: a circular list constant in a compiled file must serialize
+; without the FASL writer walking the cycle forever (which overflowed the
+; per-unit buffer cap and forced a slow source-load fallback — serapeum's
+; copy-firstn test).  The reconstructed literal must still be circular.
+(with-open-file (s "T:fasl-circ.lisp" :direction :output :if-exists :supersede)
+  (write-string "(defun fasl-circ-fn () '#1=(1 2 3 . #1#))" s) (terpri s))
+(compile-file "T:fasl-circ.lisp" :output-file "T:fasl-circ.fasl")
+(check "compile-file circular constant creates FASL" t
+  (not (null (probe-file "T:fasl-circ.fasl"))))
+(load "T:fasl-circ.fasl")
+(check "FASL circular constant first three" '(1 2 3)
+  (let ((c (fasl-circ-fn))) (list (first c) (second c) (third c))))
+(check "FASL circular constant loops back" t
+  (let ((c (fasl-circ-fn))) (eq c (nthcdr 3 c))))
+(check "FASL circular constant fourth elt" 1
+  (fourth (fasl-circ-fn)))
+
+; Regression: a sublist appearing both as an element (CAR) and as the
+; final CDR tail must round-trip as the SAME (EQ) object.
+(with-open-file (s "T:fasl-share.lisp" :direction :output :if-exists :supersede)
+  (write-string "(defun fasl-share-fn () '(#2=(9 9) 1 . #2#))" s) (terpri s))
+(compile-file "T:fasl-share.lisp" :output-file "T:fasl-share.fasl")
+(load "T:fasl-share.fasl")
+(check "FASL shared sublist preserved" t
+  (let ((c (fasl-share-fn))) (eq (car c) (cddr c))))
+
 ; --- LOAD-TIME-VALUE under COMPILE-FILE ---
 
 ; Regression: LTV referencing a forward function must not signal Undefined function.

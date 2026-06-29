@@ -26,7 +26,7 @@
 #include "../platform/platform.h"
 
 #define CL_FASL_MAGIC    0x434C4641  /* "CLFA" */
-#define CL_FASL_VERSION  19  /* v19: multidimensional arrays (rank>1) now serialize via FASL_TAG_MD_ARRAY, preserving rank and dimensions; previously every CL_Vector was written with FASL_TAG_VECTOR carrying only the flat element count, so a literal like #2A((1 2)(3 4)) reloaded from a FASL as a rank-1 vector #(1 2 3 4). New tag in the wire format → bump. */
+#define CL_FASL_VERSION  20  /* v20: FASL_TAG_OBJ_REF now appears in CDR-spine position for two new writer cases: (1) circular cons cells whose CDR loops back to a dedup-registered head, and (2) cons cells in CDR position that were themselves registered as list heads via OBJ_DEF. Old writers never emitted OBJ_REF in CDR position; bumping forces stale cached FASLs to be re-written rather than risking misinterpretation on future format changes. */
 
 /* Serialized constant type tags */
 #define FASL_TAG_NIL         0x00

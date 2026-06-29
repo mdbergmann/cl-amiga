@@ -761,6 +761,82 @@ TEST(serialize_nested_cons)
     ASSERT_EQ_INT(CL_FIXNUM_VAL(cl_cdr(cl_cdr(result))), 4);
 }
 
+/* Regression: a circular list constant — `#1=(1 2 3 . #1#)` — must
+ * serialize without the inline CDR walk looping back over the cycle
+ * forever (which filled the unit buffer until it overflowed the 64 MB
+ * cap and forced a slow source-load fallback; see serapeum's copy-firstn
+ * test).  The writer now emits an OBJ_REF when the spine loops back to an
+ * already-serialized cons, and the reader reconstructs the cycle. */
+TEST(serialize_circular_list)
+{
+    uint8_t buf[256];
+    CL_FaslWriter w;
+    CL_FaslReader r;
+    CL_Obj c0, c1, c2, result, cur;
+
+    /* Build #1=(1 2 3 . #1#): c0=(1 . c1), c1=(2 . c2), c2=(3 . c0). */
+    c2 = cl_cons(CL_MAKE_FIXNUM(3), CL_NIL); CL_GC_PROTECT(c2);
+    c1 = cl_cons(CL_MAKE_FIXNUM(2), c2);     CL_GC_PROTECT(c1);
+    c0 = cl_cons(CL_MAKE_FIXNUM(1), c1);     CL_GC_PROTECT(c0);
+    /* Close the cycle: cdr of the last cell points back to the head. */
+    ((CL_Cons *)CL_OBJ_TO_PTR(c2))->cdr = c0;
+
+    cl_fasl_writer_init(&w, buf, sizeof(buf));
+    cl_fasl_serialize_obj(&w, c0);
+    /* The whole cycle must fit easily — no overflow, terminated by OBJ_REF. */
+    ASSERT_EQ_INT(w.error, FASL_OK);
+    CL_GC_UNPROTECT(3);
+
+    cl_fasl_reader_init(&r, buf, w.pos);
+    result = cl_fasl_deserialize_obj(&r);
+    ASSERT_EQ_INT(r.error, FASL_OK);
+
+    /* Walk 1 2 3 then verify the 4th cdr is EQ the head (cycle closed). */
+    cur = result;
+    ASSERT_EQ_INT(CL_FIXNUM_VAL(cl_car(cur)), 1); cur = cl_cdr(cur);
+    ASSERT_EQ_INT(CL_FIXNUM_VAL(cl_car(cur)), 2); cur = cl_cdr(cur);
+    ASSERT_EQ_INT(CL_FIXNUM_VAL(cl_car(cur)), 3); cur = cl_cdr(cur);
+    ASSERT(cur == result);
+    /* And one more lap stays consistent. */
+    ASSERT_EQ_INT(CL_FIXNUM_VAL(cl_car(cl_cdr(cur))), 2);
+}
+
+/* Regression: a sublist that appears both as a list element (reached as a
+ * CAR, so registered by the OBJ_DEF/REF wrapper) and again as a CDR tail
+ * must round-trip as the SAME object — the CDR walk resolves the second
+ * occurrence to an OBJ_REF rather than re-emitting it.  Covers the cycle
+ * guard's lookup hitting a wrapper-registered cons that is not the spine
+ * head. */
+TEST(serialize_shared_sublist)
+{
+    uint8_t buf[512];
+    CL_FaslWriter w;
+    CL_FaslReader r;
+    CL_Obj shared, lst, result;
+
+    /* lst = (#1=(9 9) 1 . #1#): element 0 is `shared`, and the final cdr
+     * is `shared` again. */
+    shared = cl_cons(CL_MAKE_FIXNUM(9),
+                     cl_cons(CL_MAKE_FIXNUM(9), CL_NIL));
+    CL_GC_PROTECT(shared);
+    lst = cl_cons(shared, cl_cons(CL_MAKE_FIXNUM(1), shared));
+    CL_GC_PROTECT(lst);
+
+    cl_fasl_writer_init(&w, buf, sizeof(buf));
+    cl_fasl_serialize_obj(&w, lst);
+    ASSERT_EQ_INT(w.error, FASL_OK);
+    CL_GC_UNPROTECT(2);
+
+    cl_fasl_reader_init(&r, buf, w.pos);
+    result = cl_fasl_deserialize_obj(&r);
+    ASSERT_EQ_INT(r.error, FASL_OK);
+
+    /* car == (9 9); cddr must be EQ that same object. */
+    ASSERT_EQ_INT(CL_FIXNUM_VAL(cl_car(cl_car(result))), 9);
+    ASSERT_EQ_INT(CL_FIXNUM_VAL(cl_car(cl_cdr(result))), 1);
+    ASSERT(cl_cdr(cl_cdr(result)) == cl_car(result));
+}
+
 TEST(serialize_deeply_nested_list)
 {
     uint8_t buf[4096];
@@ -2575,6 +2651,8 @@ int main(void)
     RUN(serialize_list);
     RUN(serialize_dotted_list);
     RUN(serialize_nested_cons);
+    RUN(serialize_circular_list);
+    RUN(serialize_shared_sublist);
     RUN(serialize_deeply_nested_list);
     RUN(serialize_deep_car_chain_no_overflow);
     RUN(serialize_long_proper_list_50k);
