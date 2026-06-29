@@ -934,12 +934,24 @@ static CL_Obj bi_file_position(CL_Obj *args, int n)
     st = (CL_Stream *)CL_OBJ_TO_PTR(args[0]);
     if (st->stream_type == CL_STREAM_STRING) {
         if (n > 1 && !CL_NULL_P(args[1])) {
-            /* Set position */
-            if (CL_FIXNUM_P(args[1]))
+            /* Set position; discard any pushed-back char so the next read
+             * starts cleanly at the requested index. */
+            if (CL_FIXNUM_P(args[1])) {
                 st->position = (uint32_t)CL_FIXNUM_VAL(args[1]);
+                st->unread_char = -1;
+            }
             return CL_T;
         }
-        return CL_MAKE_FIXNUM((int32_t)st->position);
+        /* A pushed-back char (from PEEK-CHAR/UNREAD-CHAR) has already advanced
+         * st->position even though it will be re-served by the next READ-CHAR,
+         * so the logical read position is one code point earlier.  This is what
+         * makes WITH-INPUT-FROM-STRING's :INDEX (and thus PARSE-FLOAT/-INTEGER's
+         * second value) correct when a parser peeks past trailing junk. */
+        {
+            int32_t pos = (int32_t)st->position;
+            if (st->unread_char != -1 && pos > 0) pos--;
+            return CL_MAKE_FIXNUM(pos);
+        }
     }
     if (st->stream_type != CL_STREAM_FILE)
         return CL_NIL;

@@ -3443,6 +3443,61 @@ TEST(eval_get_dispatch_macro_character_conformance)
     ASSERT_STR_EQ(buf, ":ERR");
 }
 
+/* Regression: WITH-INPUT-FROM-STRING must honor :START/:END/:INDEX (CLHS).
+ * The macro previously ignored every keyword, so :START reading and the
+ * :INDEX place (used by serapeum's PARSE-FLOAT for its second value) were
+ * silently wrong. */
+TEST(eval_with_input_from_string_index_start_end)
+{
+    char buf[64];
+    CL_Obj r;
+    /* :START offsets the read; :INDEX receives the stop index. */
+    r = cl_eval_string(
+        "(let (pos)"
+        "  (let ((v (with-input-from-string (s \"21\" :start 1 :index pos)"
+        "             (read s))))"
+        "    (list v pos)))");
+    cl_prin1_to_string(r, buf, sizeof(buf));
+    ASSERT_STR_EQ(buf, "(1 2)");
+
+    /* :END bounds the substream so only the first token is visible. */
+    r = cl_eval_string(
+        "(with-input-from-string (s \"12 34\" :end 2)"
+        "  (read s nil :eof))");
+    cl_prin1_to_string(r, buf, sizeof(buf));
+    ASSERT_STR_EQ(buf, "12");
+}
+
+/* Regression: FILE-POSITION on a string input stream must discount a
+ * pushed-back character (PEEK-CHAR / UNREAD-CHAR).  PEEK-CHAR reads ahead and
+ * stashes the char, advancing st->position; the logical read position is one
+ * code point earlier.  This is what makes WITH-INPUT-FROM-STRING's :INDEX (and
+ * PARSE-FLOAT's second value over trailing junk like "2x") correct. */
+TEST(eval_file_position_accounts_for_peek)
+{
+    char buf[64];
+    CL_Obj r;
+    /* Read '2', peek at 'x' (no consume) -> position is 1, not 2. */
+    r = cl_eval_string(
+        "(let (pos)"
+        "  (with-input-from-string (s \"2x\" :index pos)"
+        "    (read-char s)"
+        "    (peek-char nil s nil nil))"
+        "  pos)");
+    cl_prin1_to_string(r, buf, sizeof(buf));
+    ASSERT_STR_EQ(buf, "1");
+
+    /* UNREAD-CHAR likewise leaves the logical position before the char. */
+    r = cl_eval_string(
+        "(let ((s (make-string-input-stream \"ab\")))"
+        "  (read-char s)"
+        "  (read-char s)"
+        "  (unread-char #\\b s)"
+        "  (file-position s))");
+    cl_prin1_to_string(r, buf, sizeof(buf));
+    ASSERT_STR_EQ(buf, "1");
+}
+
 int main(void)
 {
     test_init();
@@ -3649,6 +3704,8 @@ int main(void)
 #endif
 
     RUN(eval_get_dispatch_macro_character_conformance);
+    RUN(eval_with_input_from_string_index_start_end);
+    RUN(eval_file_position_accounts_for_peek);
 
     teardown();
     REPORT();
