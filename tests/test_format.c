@@ -180,6 +180,95 @@ TEST(justify_wide_glyph_segments)
                   "(747 743)");
 }
 
+/* FORMATTER (CLHS 22.3.6.4) returns a function usable as a ~? control. */
+TEST(formatter_basic)
+{
+    /* funcall directly */
+    ASSERT_STR_EQ(eval_print(
+        "(with-output-to-string (s) (funcall (formatter \"~d-~d\") s 3 4))"),
+        "\"3-4\"");
+    /* via ~? — args passed as a list */
+    ASSERT_STR_EQ(eval_print(
+        "(format nil \"~?\" (formatter \"~d/~d\") '(7 8))"),
+        "\"7/8\"");
+}
+
+/* Regression: a ~? whose control is a function (which re-enters the VM via
+ * apply) must NOT clobber the parent format's remaining args — a trailing
+ * directive after ~? must still read the correct arg.  Before the
+ * stable-arg-copy fix the trailing ~A read into the consumed arg list, so
+ * (format nil "~?~a" (formatter "...") '(nil 500 t "k") "") printed "500 kT"
+ * instead of "500 k" (serapeum FILE-SIZE-HUMAN-READABLE / FORMAT-HUMAN-SIZE). */
+TEST(formatter_recursive_no_arg_clobber)
+{
+    ASSERT_STR_EQ(eval_print(
+        "(format nil \"~?~a\" (formatter \"~a~a~a~a\") '(1 2 3 4) \"X\")"),
+        "\"1234X\"");
+    ASSERT_STR_EQ(eval_print(
+        "(format nil \"~?~a\" (formatter \"~:[~d~;~,1f~]~:[~; ~]~a\")"
+        " '(nil 500 t \"k\") \"\")"),
+        "\"500 k\"");
+    ASSERT_STR_EQ(eval_print(
+        "(format nil \"~a ~? ~a\" :start (formatter \"~d/~d\") '(7 8) :end)"),
+        "\"START 7/8 END\"");
+}
+
+/* ~@? with a function control (FORMATTER): the function must return the
+ * unconsumed arg tail so the parent format context can advance correctly.
+ * Before the fix, ~@? + function consumed ALL remaining parent args,
+ * so a trailing directive after ~@? would see NIL instead of its arg. */
+TEST(formatter_atsign_function)
+{
+    /* Trailing ~A must see the arg that the formatter did not consume. */
+    ASSERT_STR_EQ(eval_print(
+        "(format nil \"~@? and ~A\" (formatter \"~A ~A\") 1 2 3)"),
+        "\"1 2 and 3\"");
+    /* Formatter consumes 1 arg; trailing ~A gets the second. */
+    ASSERT_STR_EQ(eval_print(
+        "(format nil \"~@?~A\" (formatter \"~D\") 42 99)"),
+        "\"4299\"");
+    /* Formatter consumes all available args; no trailing directive. */
+    ASSERT_STR_EQ(eval_print(
+        "(format nil \"~@?\" (formatter \"~A ~A\") 1 2)"),
+        "\"1 2\"");
+    /* String control for ~@? still works (regression). */
+    ASSERT_STR_EQ(eval_print(
+        "(format nil \"~@? and ~A\" \"~A ~A\" 1 2 3)"),
+        "\"1 2 and 3\"");
+}
+
+/* WITH-OUTPUT-TO-STRING with a target string (CLHS): output is appended to the
+ * supplied fill-pointer string and the form returns the body value, not the
+ * string.  The macro previously ignored the target and always made a fresh
+ * stream (serapeum WITH-STRING). */
+TEST(with_output_to_string_target)
+{
+    ASSERT_STR_EQ(eval_print(
+        "(let ((out (make-array 4 :adjustable t :fill-pointer 4"
+        "                       :element-type 'character :initial-contents \"the \")))"
+        "  (with-output-to-string (s out) (write-string \"string\" s))"
+        "  out)"),
+        "\"the string\"");
+    /* Returns the body value, not the string, when a target is given. */
+    ASSERT_STR_EQ(eval_print(
+        "(let ((out (make-array 0 :adjustable t :fill-pointer 0 :element-type 'character)))"
+        "  (with-output-to-string (s out) (write-string \"x\" s) :body-value))"),
+        ":BODY-VALUE");
+    /* No target → returns the accumulated string (regression). */
+    ASSERT_STR_EQ(eval_print(
+        "(with-output-to-string (s) (write-string \"hi\" s))"),
+        "\"hi\"");
+    /* Non-trivial string-form must be evaluated exactly once, not per character. */
+    ASSERT_STR_EQ(eval_print(
+        "(let ((n 0))"
+        "  (flet ((get-buf () (incf n)"
+        "                    (make-array 0 :adjustable t :fill-pointer 0"
+        "                                :element-type 'character)))"
+        "    (with-output-to-string (s (get-buf)) (write-string \"abc\" s))"
+        "    n))"),
+        "1");
+}
+
 int main(void)
 {
     setup();
@@ -192,6 +281,11 @@ int main(void)
     RUN(justify_colon_before);
     RUN(justify_v_param);
     RUN(justify_no_mincol_concatenates);
+
+    RUN(formatter_basic);
+    RUN(formatter_recursive_no_arg_clobber);
+    RUN(formatter_atsign_function);
+    RUN(with_output_to_string_target);
 
     RUN(princ_wide_char);
     RUN(princ_wide_string);

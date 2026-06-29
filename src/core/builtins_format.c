@@ -6,6 +6,7 @@
  */
 
 #include "builtins.h"
+#include "vm.h"
 #include "symbol.h"
 #include "package.h"
 #include "mem.h"
@@ -25,6 +26,9 @@
 
 #define FMT_MAX_PARAMS 4
 #define FMT_PARAM_UNSET (-1)
+/* Upper bound on the number of args copied into a GC-rooted buffer in
+ * cl_format_to_stream — matches the runtime call-arguments-limit. */
+#define FMT_MAX_ARGS 64
 
 typedef struct {
     int32_t params[FMT_MAX_PARAMS];
@@ -1160,8 +1164,66 @@ static void fmt_recursive(FmtCtx *ctx, FmtDirective *d)
     const char *fmt;
     FmtCtx sub;
 
+    /* The control argument may be a function (e.g. produced by FORMATTER) —
+     * CLHS 22.3.5.3.  Apply it to the stream and the args; it performs its own
+     * formatting.  ~? takes the args as a list; ~@? takes the remaining parent
+     * args inline. */
+    if (CL_FUNCTION_P(fmt_str_obj) || CL_BYTECODE_P(fmt_str_obj) ||
+        CL_CLOSURE_P(fmt_str_obj) || cl_funcallable_instance_p(fmt_str_obj)) {
+        CL_Obj call_args[64];
+        /* cl_vm_apply pushes its frame over the VM-stack region that ctx->args
+         * points into, clobbering the parent's not-yet-consumed args (so a
+         * directive after ~? would read garbage).  Snapshot the parent args
+         * into a GC-rooted local across the apply, then copy the GC-updated
+         * values back into the (stable) VM-stack arg slots.  Scoped to this
+         * rare function-control path so ordinary FORMAT pays nothing. */
+        CL_Obj saved[FMT_MAX_ARGS];
+        int sn = ctx->nargs;
+        int si;
+        int cn = 0;
+        if (sn > FMT_MAX_ARGS) sn = FMT_MAX_ARGS;
+        for (si = 0; si < sn; si++) {
+            saved[si] = ctx->args[si];
+            cl_gc_push_root(&saved[si]);
+        }
+        call_args[cn++] = ctx->stream;
+        if (d->atsign) {
+            /* ~@? — pass remaining parent args inline.  The function returns
+             * the unconsumed tail as a list (CLHS 22.3.6.4); use that to
+             * advance ctx->ai by the number actually consumed rather than
+             * assuming all remaining args were consumed. */
+            int old_ai = ctx->ai;
+            int n_passed;
+            CL_Obj result;
+            CL_Obj tmp;
+            int remaining;
+            while (ctx->ai < ctx->nargs && cn < 64)
+                call_args[cn++] = ctx->args[ctx->ai++];
+            n_passed = cn - 1; /* exclude stream */
+            result = cl_vm_apply(fmt_str_obj, call_args, cn);
+            remaining = 0;
+            tmp = result;
+            while (CL_CONS_P(tmp)) { remaining++; tmp = cl_cdr(tmp); }
+            ctx->ai = old_ai + (n_passed - remaining);
+        } else {
+            /* ~? — next arg is a list of args for the control. */
+            CL_Obj arg_list = fmt_next_arg(ctx);
+            while (!CL_NULL_P(arg_list) && cn < 64) {
+                call_args[cn++] = cl_car(arg_list);
+                arg_list = cl_cdr(arg_list);
+            }
+            cl_vm_apply(fmt_str_obj, call_args, cn);
+        }
+        /* Restore the parent args (relocated by any GC during the apply) into
+         * their stable VM-stack slots so trailing directives read correctly. */
+        for (si = 0; si < sn; si++)
+            ctx->args[si] = saved[si];
+        cl_gc_pop_roots(sn);
+        return;
+    }
+
     if (!CL_ANY_STRING_P(fmt_str_obj)) {
-        cl_error(CL_ERR_TYPE, "FORMAT ~?: argument must be a string");
+        cl_error(CL_ERR_TYPE, "FORMAT ~?: argument must be a string or function");
         return;
     }
     fmt = fmt_str_as_utf8(fmt_str_obj, &alloc);
@@ -1669,6 +1731,87 @@ static void fmt_run(FmtCtx *ctx)
         }
     }
     CL_GC_UNPROTECT(1);
+}
+
+/* ================================================================
+ * %FORMATTER-INNER — internal helper for the FORMATTER macro (CLHS 22.3.6.4)
+ *
+ * (clamiga::%formatter-inner stream ctrl-str args-list) -> remaining-args-list
+ *
+ * Applies the format control string CTRL-STR to ARGS-LIST, writing to STREAM,
+ * and returns the unconsumed argument tail as a list.  This lets the function
+ * produced by FORMATTER report which args it did not consume, so ~@? can
+ * advance the parent arg index correctly instead of assuming all remaining
+ * args were consumed.
+ *
+ * Registered lazily on the first cl_format_to_stream call so the symbol
+ * exists before any boot.lisp formatter lambda is invoked.
+ * ================================================================ */
+
+static CL_Obj bi__formatter_inner(CL_Obj *args, int nargs)
+{
+    CL_Obj stream, ctrl, arg_list;
+    CL_Obj fmt_buf[FMT_MAX_ARGS + 2];
+    char *alloc = NULL;
+    const char *fmt;
+    FmtCtx ctx;
+    int n = 0, i, consumed;
+    CL_Obj tmp;
+
+    if (nargs < 3) return CL_NIL;
+    stream   = args[0];
+    ctrl     = args[1];
+    arg_list = args[2];
+
+    if (!CL_ANY_STRING_P(ctrl)) {
+        cl_error(CL_ERR_TYPE, "%formatter-inner: control must be a string");
+        return CL_NIL;
+    }
+
+    fmt_buf[0] = stream;
+    fmt_buf[1] = ctrl;
+    tmp = arg_list;
+    while (!CL_NULL_P(tmp) && CL_CONS_P(tmp) && n < FMT_MAX_ARGS) {
+        fmt_buf[2 + n] = cl_car(tmp);
+        n++;
+        tmp = cl_cdr(tmp);
+    }
+
+    /* GC-root the args buffer and the original arg_list: fmt_run can compact. */
+    for (i = 0; i < 2 + n; i++)
+        cl_gc_push_root(&fmt_buf[i]);
+    cl_gc_push_root(&arg_list);
+
+    fmt = fmt_str_as_utf8(fmt_buf[1], &alloc);
+
+    ctx.stream = fmt_buf[0];
+    ctx.fmt    = fmt;
+    ctx.pos    = fmt;
+    ctx.args   = fmt_buf;
+    ctx.nargs  = 2 + n;
+    ctx.ai     = 2;
+    ctx.escape = 0;
+
+    fmt_run(&ctx);
+
+    consumed = ctx.ai - 2;
+    cl_gc_pop_roots(3 + n); /* fmt_buf[0..n+1] + arg_list */
+    if (alloc) platform_free(alloc);
+
+    /* Return nthcdr(consumed, arg_list) — the unconsumed argument tail. */
+    tmp = arg_list;
+    for (i = 0; i < consumed && CL_CONS_P(tmp); i++)
+        tmp = cl_cdr(tmp);
+    return tmp;
+}
+
+/* Register %FORMATTER-INNER, the helper the FORMATTER macro expands into.
+ * Called from cl_builtins_io_init so it is bound before any FORMATTER lambda is
+ * invoked (including a direct funcall before any FORMAT call). */
+void cl_format_builtins_init(void)
+{
+    cl_register_builtin("%FORMATTER-INNER", bi__formatter_inner,
+                        3, 3, cl_package_clamiga);
 }
 
 /* ================================================================
