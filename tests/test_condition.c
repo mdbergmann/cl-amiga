@@ -1594,6 +1594,48 @@ TEST(lisp_condition_slot_initform_evaluated_at_make_time)
         ":INNER");
 }
 
+/* Regression: a condition type whose name is ALSO a (&key ...) macro must not
+ * trip the compiler's speculative macroexpansion in a handler-case clause head.
+ * Serapeum's DISPATCH-CASE-ERROR is both the condition class and a
+ * `(&key type datum)` macro; handler-case expands to a let (binding a captured
+ * BOX) + handler-bind + typecase, and scan_body_for_boxing walked the
+ * handler-bind clause (%hc-dce (lambda ...)) as a form, macroexpanding %hc-dce
+ * with one positional arg → "odd number of keyword arguments".  The clause CAR
+ * is a type spec, not code; the boxing scan must skip it. */
+TEST(lisp_handler_case_type_is_keyword_macro)
+{
+    eval_print("(defmacro %hc-dce (&key type datum)"
+               "  (declare (ignore type datum)) nil)");
+    eval_print("(define-condition %hc-dce (error) ())");
+    ASSERT_STR_EQ(eval_print(
+        "(handler-case (error '%hc-dce)"
+        "  (%hc-dce (c) (declare (ignore c)) :caught))"),
+        ":CAUGHT");
+    /* Non-handled path still returns the body value. */
+    ASSERT_STR_EQ(eval_print(
+        "(handler-case 7 (%hc-dce (c) (declare (ignore c)) :caught))"),
+        "7");
+}
+
+/* Regression (NLX-scan twin of the above): the same macro-named condition type
+ * in a handler-bind inside a block/return-from.  The block triggers
+ * tree_needs_nlx_block → nlx_scan, which likewise walked the handler-bind
+ * clause head and macroexpanded it.  This is the exact shape of fiveam's
+ * SIGNALS macro that broke serapeum's dispatch-case test registration. */
+TEST(lisp_handler_bind_type_macro_in_block)
+{
+    eval_print("(defmacro %hb-dce (&key type datum)"
+               "  (declare (ignore type datum)) nil)");
+    eval_print("(define-condition %hb-dce (error) ())");
+    ASSERT_STR_EQ(eval_print(
+        "(block blk"
+        "  (handler-bind ((%hb-dce (lambda (c) (declare (ignore c))"
+        "                            (return-from blk :caught))))"
+        "    (error '%hb-dce))"
+        "  :fell-through)"),
+        ":CAUGHT");
+}
+
 int main(void)
 {
     setup();
@@ -1626,6 +1668,8 @@ int main(void)
     RUN(lisp_condition_slot_initform_instance);
     RUN(lisp_condition_slot_initform_class_allocation);
     RUN(lisp_condition_slot_initform_evaluated_at_make_time);
+    RUN(lisp_handler_case_type_is_keyword_macro);
+    RUN(lisp_handler_bind_type_macro_in_block);
 
     /* Signal/warn/error tests */
     RUN(lisp_signal_returns_nil);

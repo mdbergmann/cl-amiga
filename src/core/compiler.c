@@ -1404,6 +1404,43 @@ top:
         return;
     }
 
+    /* (handler-bind ((type handler-form) ...) body...)
+     * The clause CAR is a condition TYPE specifier, not an evaluable form.
+     * The general fall-through would walk each clause and try to macroexpand
+     * (type handler-form) as a call — and a condition type that is ALSO a
+     * macro (e.g. serapeum's DISPATCH-CASE-ERROR, a `(&key type datum)` macro
+     * that is also the condition class name) gets bogus args, signaling
+     * "odd number of keyword arguments" out of the speculative expansion.
+     * (This is the same hazard the typecase/case/do/macrolet handlers above
+     * guard against.)  Scan only the handler EXPRESSION (cadr) of each clause
+     * and the body, skipping the type spec.  HANDLER-CASE is a macro that
+     * expands to handler-bind + typecase, so this also covers it (the
+     * typecase keys are skipped by the typecase handler above). */
+    if (head == SYM_HANDLER_BIND) {
+        CL_Obj clauses, body;
+        if (!CL_CONS_P(rest)) return;
+        clauses = cl_car(rest);
+        body = cl_cdr(rest); /* skip the clause list */
+        CL_GC_PROTECT(clauses);
+        CL_GC_PROTECT(body);
+        /* Scan each clause's handler expression (cadr), skip the type (car) */
+        while (CL_CONS_P(clauses)) {
+            CL_Obj clause = cl_car(clauses);
+            if (CL_CONS_P(clause) && CL_CONS_P(cl_cdr(clause)))
+                scan_body_for_boxing(cl_car(cl_cdr(clause)), vars, n_vars,
+                                     mutated, captured, closure_depth);
+            clauses = cl_cdr(clauses);
+        }
+        /* Scan body forms */
+        while (CL_CONS_P(body)) {
+            scan_body_for_boxing(cl_car(body), vars, n_vars,
+                                 mutated, captured, closure_depth);
+            body = cl_cdr(body);
+        }
+        CL_GC_UNPROTECT(2); /* body, clauses */
+        return;
+    }
+
     /* (macrolet ((name lambda-list . body) ...) . body)
      * The macro definitions are templates compiled at the macrolet site
      * (see compile_macrolet) — they are NOT regular code in this scope.
