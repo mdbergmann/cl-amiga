@@ -1207,6 +1207,32 @@ top:
                                              mutated, captured, closure_depth);
                     }
                 }
+            } else if (CL_CONS_P(place) &&
+                       cl_car(place) == cl_intern_in("VALUES", 6, cl_package_cl)) {
+                /* (setf (values v1 v2 ...) val) — each vi is mutated.  This
+                 * place is expanded specially by compile_setf_place (not via a
+                 * registered setf-expander), so the scanner must mark each
+                 * variable itself; otherwise a write through it inside a closure
+                 * is silently dropped.  serapeum's MVFOLD compiler macro emits
+                 * (setf (values seed0 seed1) (funcall ...)) hoisted into a
+                 * do-each thunk, so seed0/seed1 must be boxed to survive. */
+                CL_Obj vplaces = cl_cdr(place);
+                CL_GC_PROTECT(vplaces);
+                while (CL_CONS_P(vplaces)) {
+                    CL_Obj vp = cl_car(vplaces);
+                    if (CL_SYMBOL_P(vp)) {
+                        int idx = find_var_index(vp, vars, n_vars);
+                        if (idx >= 0) {
+                            mutated[idx] = 1;
+                            if (closure_depth > 0) captured[idx] = 1;
+                        }
+                    } else {
+                        scan_body_for_boxing(vp, vars, n_vars,
+                                             mutated, captured, closure_depth);
+                    }
+                    vplaces = cl_cdr(vplaces);
+                }
+                CL_GC_UNPROTECT(1);
             } else if (CL_CONS_P(place)) {
                 /* Generalized place — check for define-setf-expander.
                  * If one is registered, call it to get the expansion form

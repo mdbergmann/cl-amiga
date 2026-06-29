@@ -2444,6 +2444,21 @@
       (into y 2026 1 9999))
     y))
 
+;; (setf (values a b) ...) inside a closure must box a AND b — the boxing
+;; scanner used to treat the VALUES place as a read, so the closure's writes
+;; were dropped (outer a/b kept their initial values).  serapeum's MVFOLD
+;; compiler macro emits (setf (values seed0 seed1) (funcall ...)) hoisted into a
+;; do-each thunk.
+(check "scanner setf-values boxing across closure" '(6 3)
+  (let ((a 0) (b 0))
+    (flet ((stp (x) (setf (values a b) (values (+ a x) (max b x)))))
+      (mapc #'stp '(1 2 3)))
+    (list a b)))
+(check "scanner setf-values boxes second value" '(7 9)
+  (let ((a 0) (b 0))
+    (funcall (lambda () (setf (values a b) (values 7 9))))
+    (list a b)))
+
 ; --- Debugger ---
 (check "invoke-debugger exists" t (functionp #'invoke-debugger))
 (check "*debugger-hook* initial" nil *debugger-hook*)

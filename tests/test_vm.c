@@ -653,6 +653,47 @@ TEST(eval_setf_boxing_across_closure)
     ASSERT_EQ_INT(eval_int("(test-reduce #'+ 0)"), 6);
 }
 
+/* Regression: (setf (values a b) ...) inside a closure must box a and b.
+ * The boxing scanner recognized (setf var ...) but treated (setf (values a b)
+ * ...) as a read of a/b, so they weren't boxed and the closure's writes were
+ * silently dropped (outer a/b kept their initial values).  serapeum's MVFOLD
+ * compiler macro hits this: it emits (setf (values seed0 seed1) (funcall ...))
+ * hoisted into a do-each thunk. */
+TEST(eval_setf_values_boxing_across_closure)
+{
+    eval_print("(defun test-setf-values-box (a b)"
+               "  (flet ((step1 (x) (setf (values a b) (values (+ a x) (max b x)))))"
+               "    (mapc #'step1 '(1 2 3)))"
+               "  (list a b))");
+    ASSERT_STR_EQ(eval_print("(test-setf-values-box 0 0)"), "(6 3)");
+    /* both values must update, not just the first */
+    eval_print("(defun test-sv-second (a b)"
+               "  (funcall (lambda () (setf (values a b) (values 7 9))))"
+               "  (list a b))");
+    ASSERT_STR_EQ(eval_print("(test-sv-second 0 0)"), "(7 9)");
+}
+
+/* Regression (gc-stress): non-symbol sub-place inside (setf (values ...) ...).
+ * The boxing scanner's VALUES branch walked vplaces without GC-protecting the
+ * cursor; scan_body_for_boxing on a non-symbol vp can macroexpand→allocate→
+ * compact, leaving the cursor stale.  Exercise the else branch under gc-stress
+ * by using (car x) as a sub-place inside the VALUES form. */
+TEST(eval_setf_values_nonsymbol_place_gcstress)
+{
+    /* (setf (values (car x) b) ...) — (car x) is a non-symbol place, so the
+     * boxing scanner takes the else branch and recurses into scan_body_for_boxing.
+     * Under GC stress the vplaces cursor must survive the recursive scan. */
+    eval_print("(defun test-sv-nonsym (x b)"
+               "  (funcall (lambda () (setf (values (car x) b) (values 10 20))))"
+               "  (list (car x) b))");
+    ASSERT_STR_EQ(eval_print("(test-sv-nonsym (list 0) 0)"), "(10 20)");
+    /* Multiple non-symbol sub-places to walk more iterations of the cursor loop */
+    eval_print("(defun test-sv-multi-nonsym (x y)"
+               "  (funcall (lambda () (setf (values (car x) (car y)) (values 3 7))))"
+               "  (list (car x) (car y)))");
+    ASSERT_STR_EQ(eval_print("(test-sv-multi-nonsym (list 0) (list 0))"), "(3 7)");
+}
+
 /* --- AND / OR / COND --- */
 
 TEST(eval_and)
@@ -10286,6 +10327,8 @@ int main(void)
     RUN(eval_cell_do_let_capture);
     RUN(eval_cell_readonly_no_boxing);
     RUN(eval_setf_boxing_across_closure);
+    RUN(eval_setf_values_boxing_across_closure);
+    RUN(eval_setf_values_nonsymbol_place_gcstress);
 
     RUN(eval_and);
     RUN(eval_or);
