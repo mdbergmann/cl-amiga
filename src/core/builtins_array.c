@@ -69,7 +69,16 @@ static void classify_array_elt_type(CL_Obj type, int depth,
 {
     const char *nm;
     CL_Obj ex;
-    if (depth <= 0 || !CL_SYMBOL_P(type))
+    if (depth <= 0)
+        return;
+    /* Compound integer subtypes of BIT — e.g. (integer 0 1), (integer 0 (1)),
+     * (unsigned-byte 1), (mod 2) — upgrade to a bit-vector. */
+    if (CL_CONS_P(type)) {
+        extern int cl_type_is_bit_subtype(CL_Obj type);
+        if (cl_type_is_bit_subtype(type)) *is_bit = 1;
+        return;
+    }
+    if (!CL_SYMBOL_P(type))
         return;
     nm = cl_symbol_name(type);
     if (strcmp(nm, "CHARACTER") == 0 || strcmp(nm, "EXTENDED-CHAR") == 0) {
