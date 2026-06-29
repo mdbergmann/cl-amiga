@@ -1731,6 +1731,24 @@
 (check "deftype upgraded-array-element-type" 'character
        (upgraded-array-element-type 'my-char))
 
+; Integer subtypes of BIT upgrade to a bit-vector (serapeum RANGE/SBIT regression).
+(check "uaet (integer 0 1)" 'bit (upgraded-array-element-type '(integer 0 1)))
+(check "uaet (integer 0 (1))" 'bit (upgraded-array-element-type '(integer 0 (1))))
+(check "uaet (unsigned-byte 1)" 'bit (upgraded-array-element-type '(unsigned-byte 1)))
+(check "uaet (mod 2)" 'bit (upgraded-array-element-type '(mod 2)))
+(check "uaet (unsigned-byte 8)" t (upgraded-array-element-type '(unsigned-byte 8)))
+(check "make-array bit-subtype is bit-vector" t
+       (bit-vector-p (make-array 3 :element-type '(integer 0 (1)))))
+(check "make-array bit-subtype sbit works" #*100
+       (let ((b (make-array 3 :element-type '(integer 0 (1))))) (setf (sbit b 0) 1) b))
+; (simple-array ET (*)) honors the element type — a T vector is not a bit array.
+(check "typep T-vec (simple-array bit)" nil (typep (vector 1 2) '(simple-array bit (*))))
+(check "typep T-vec (simple-array t)" t (typep (vector 1 2) '(simple-array t (*))))
+(check "typep bit-vec (simple-array bit)" t (typep #*101 '(simple-array bit (*))))
+(check "typep bit-vec (simple-array t)" nil (typep #*101 '(simple-array t (*))))
+(check "typep string (simple-array character)" t (typep "ab" '(simple-array character (*))))
+(check "typep string (simple-array t)" nil (typep "ab" '(simple-array t (*))))
+
 ; --- Type system: subtypep ---
 (check "subtypep fixnum<number" t (subtypep 'fixnum 'number))
 (check "subtypep fixnum<integer" t (subtypep 'fixnum 'integer))

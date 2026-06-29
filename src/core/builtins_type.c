@@ -550,13 +550,50 @@ static int typep_check(CL_Obj obj, CL_Obj type_spec)
         /* (array element-type dims), (simple-array element-type dims) */
         if (head == TYPE_SYM_ARRAY || head == TYPE_SYM_SIMPLE_ARRAY) {
             if (!typep_symbol(obj, head)) return 0;
-            /* Skip element-type, check rank/dimensions if provided */
-            if (!CL_NULL_P(args) && !CL_NULL_P(cl_cdr(args))) {
-                CL_Obj dims = cl_car(cl_cdr(args));
-                if (CL_FIXNUM_P(dims)) {
-                    /* dims is a rank */
-                    CL_Vector *v = (CL_Vector *)CL_OBJ_TO_PTR(obj);
-                    return v->rank == (uint32_t)CL_FIXNUM_VAL(dims);
+            /* Element-type constraint.  clamiga has exactly three specialized
+             * element types — BIT (bit-vectors), CHARACTER (strings) and the
+             * general T.  An object matches (simple-array ET (*)) only if its
+             * actual upgraded element type equals (upgraded-array-element-type
+             * ET); without this check a general T vector spuriously satisfied
+             * (simple-array bit (*)), which made serapeum's WITH-TYPE-DISPATCH
+             * pick the BIT branch (whose first listed type is bit) and call
+             * SBIT on a non-bit vector. */
+            if (!CL_NULL_P(args)) {
+                CL_Obj et = cl_car(args);
+                int et_star = (CL_SYMBOL_P(et) &&
+                               strcmp(cl_symbol_name(et), "*") == 0);
+                if (!et_star) {
+                    extern int cl_type_is_bit_subtype(CL_Obj type);
+                    int et_bit = 0, et_char = 0;
+                    int obj_bit = CL_BIT_VECTOR_P(obj);
+                    int obj_char = CL_ANY_STRING_P(obj);
+                    if (CL_SYMBOL_P(et)) {
+                        const char *en = cl_symbol_name(et);
+                        if (strcmp(en, "BIT") == 0) et_bit = 1;
+                        else if (strcmp(en, "CHARACTER") == 0 ||
+                                 strcmp(en, "BASE-CHAR") == 0 ||
+                                 strcmp(en, "STANDARD-CHAR") == 0 ||
+                                 strcmp(en, "EXTENDED-CHAR") == 0) et_char = 1;
+                        else if (cl_type_is_bit_subtype(et)) et_bit = 1;
+                        /* every other symbol (T, FIXNUM, INTEGER, ...) upgrades
+                         * to T on this implementation. */
+                    } else if (CL_CONS_P(et)) {
+                        if (cl_type_is_bit_subtype(et)) et_bit = 1;
+                    }
+                    if (et_bit) { if (!obj_bit) return 0; }
+                    else if (et_char) { if (!obj_char) return 0; }
+                    else { if (obj_bit || obj_char) return 0; } /* upgrades to T */
+                }
+                /* Rank/dimensions, if provided. */
+                if (!CL_NULL_P(cl_cdr(args))) {
+                    CL_Obj dims = cl_car(cl_cdr(args));
+                    if (CL_FIXNUM_P(dims)) {
+                        /* dims is a rank; bit-vectors and strings are rank 1. */
+                        uint32_t rank = 1;
+                        if (CL_VECTOR_P(obj))
+                            rank = ((CL_Vector *)CL_OBJ_TO_PTR(obj))->rank;
+                        return rank == (uint32_t)CL_FIXNUM_VAL(dims);
+                    }
                 }
             }
             return 1;
@@ -1826,6 +1863,18 @@ int cl_subtypep_integer_ranges(CL_Obj t1, CL_Obj t2)
 
     /* r1 ⊆ r2 iff [r1.lo, r1.hi] ⊆ [r2.lo, r2.hi]. */
     return (r1.lo >= r2.lo && r1.hi <= r2.hi) ? 1 : 0;
+}
+
+/* Returns 1 if TYPE is an integer subtype whose value set is contained in
+ * BIT = (integer 0 1), else 0.  Used by make-array / upgraded-array-element-type
+ * so that element-type specs like (integer 0 1), (integer 0 (1)),
+ * (unsigned-byte 1) and (mod 2) build a real bit-vector instead of a general
+ * T vector — without this, serapeum's RANGE (whose int ranges use such bounds)
+ * dispatched to SBIT on a non-bit vector. */
+int cl_type_is_bit_subtype(CL_Obj type)
+{
+    int_range_t r = parse_integer_spec(type);
+    return (r.integer_typed && r.known && r.lo >= 0 && r.hi <= 1) ? 1 : 0;
 }
 
 /* Rewrite a couple of exact two-element compound type identities to their

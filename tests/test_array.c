@@ -279,6 +279,28 @@ TEST(upgraded_array_element_type_expands_deftype)
     ASSERT_STR_EQ(eval_print("(upgraded-array-element-type 'fixnum)"), "T");
 }
 
+/* Regression: integer subtypes whose value set is contained in BIT = (integer
+ * 0 1) must upgrade to BIT, so make-array builds a real bit-vector.  serapeum's
+ * RANGE produces bit ranges with bounds like (integer 0 (1)) and then dispatches
+ * on the result type; without the upgrade it was a general T vector and SBIT
+ * blew up with "not a bit vector". */
+TEST(upgraded_array_element_type_bit_subtypes)
+{
+    ASSERT_STR_EQ(eval_print("(upgraded-array-element-type '(integer 0 1))"), "BIT");
+    ASSERT_STR_EQ(eval_print("(upgraded-array-element-type '(integer 0 (1)))"), "BIT");
+    ASSERT_STR_EQ(eval_print("(upgraded-array-element-type '(unsigned-byte 1))"), "BIT");
+    ASSERT_STR_EQ(eval_print("(upgraded-array-element-type '(mod 2))"), "BIT");
+    /* not subtypes of BIT → general T */
+    ASSERT_STR_EQ(eval_print("(upgraded-array-element-type '(integer 0 2))"), "T");
+    ASSERT_STR_EQ(eval_print("(upgraded-array-element-type '(unsigned-byte 8))"), "T");
+    ASSERT_STR_EQ(eval_print("(upgraded-array-element-type '(integer -1 1))"), "T");
+    /* make-array builds a true bit-vector that SBIT accepts */
+    ASSERT_STR_EQ(eval_print(
+        "(let ((b (make-array 3 :element-type '(integer 0 (1)))))"
+        "  (setf (sbit b 0) 1) (list (bit-vector-p b) b))"),
+        "(T #*100)");
+}
+
 TEST(make_array_adjustable)
 {
     ASSERT_STR_EQ(eval_print(
@@ -983,6 +1005,29 @@ TEST(typep_simple_array)
     ASSERT_STR_EQ(eval_print("(typep (make-array 5 :adjustable t) 'simple-array)"), "NIL");
 }
 
+/* Regression: (simple-array ET (*)) must honor the element type — a general T
+ * vector is NOT a (simple-array bit (*)).  This was the second half of the
+ * serapeum RANGE/SBIT bug: WITH-TYPE-DISPATCH lists (simple-array bit (*))
+ * first, so a T vector that wrongly matched it dispatched to SBIT. */
+TEST(typep_simple_array_element_type)
+{
+    /* general T vector */
+    ASSERT_STR_EQ(eval_print("(typep (vector 1 2) '(simple-array t (*)))"), "T");
+    ASSERT_STR_EQ(eval_print("(typep (vector 1 2) '(simple-array bit (*)))"), "NIL");
+    ASSERT_STR_EQ(eval_print("(typep (vector 1 2) '(simple-array character (*)))"), "NIL");
+    ASSERT_STR_EQ(eval_print("(typep (vector 1 2) '(simple-array * (*)))"), "T");
+    /* bit-vector */
+    ASSERT_STR_EQ(eval_print("(typep #*101 '(simple-array bit (*)))"), "T");
+    ASSERT_STR_EQ(eval_print("(typep #*101 '(simple-array t (*)))"), "NIL");
+    /* string */
+    ASSERT_STR_EQ(eval_print("(typep \"ab\" '(simple-array character (*)))"), "T");
+    ASSERT_STR_EQ(eval_print("(typep \"ab\" '(simple-array t (*)))"), "NIL");
+    ASSERT_STR_EQ(eval_print("(typep \"ab\" '(simple-array bit (*)))"), "NIL");
+    /* integer subtype of BIT names the bit-vector type too */
+    ASSERT_STR_EQ(eval_print("(typep #*101 '(simple-array (integer 0 1) (*)))"), "T");
+    ASSERT_STR_EQ(eval_print("(typep (vector 1 2) '(simple-array (integer 0 1) (*)))"), "NIL");
+}
+
 /* ============================================================ */
 /* type-of for arrays                                           */
 /* ============================================================ */
@@ -1202,6 +1247,7 @@ int main(void)
     RUN(typep_vector);
     RUN(typep_simple_vector);
     RUN(typep_simple_array);
+    RUN(typep_simple_array_element_type);
 
     /* type-of */
     RUN(type_of_array);
@@ -1225,6 +1271,7 @@ int main(void)
     /* deftype element-type expansion (flexi-streams octets-to-string regression) */
     RUN(make_array_deftype_character_is_string);
     RUN(upgraded_array_element_type_expands_deftype);
+    RUN(upgraded_array_element_type_bit_subtypes);
 
     teardown();
     REPORT();
