@@ -778,6 +778,14 @@
 (defparameter *sv2* 0)
 (defun read-sv2 () *sv2*)
 (check "special visible in fn" 99 (let ((*sv2* 99)) (read-sv2)))
+;; (defvar name) with no init-form proclaims the variable special but leaves it
+;; unbound (CLHS).  The special proclamation must take effect at load time (not
+;; only at compile time) so a dynamic LET binding is visible to a separately
+;; compiled reader even when loaded from a precompiled FASL.
+(defvar *dv-noinit*)
+(defun read-dv-noinit () *dv-noinit*)
+(check "defvar no-init unbound" nil (boundp '*dv-noinit*))
+(check "defvar no-init special dynamic" 55 (let ((*dv-noinit* 55)) (read-dv-noinit)))
 (check "special fn restored" 0 (read-sv2))
 (defparameter *sv3* 1)
 (check "special nested" 3 (let ((*sv3* 2)) (let ((*sv3* 3)) *sv3*)))

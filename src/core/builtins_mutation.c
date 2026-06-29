@@ -182,6 +182,23 @@ static CL_Obj bi_mark_constant(CL_Obj *args, int n)
     return args[0];
 }
 
+/* %MARK-SPECIAL: proclaim a symbol special at runtime, WITHOUT binding it.
+   (defvar name) with no init-form emits a call to this so the special
+   proclamation works even when loaded from a precompiled FASL — the
+   compile-time flag set in compile_defvar does not survive into a fresh load.
+   Unlike OP_DEFVAR this never touches the symbol's value, so the variable
+   stays unbound (CLHS defvar with no init form). */
+static CL_Obj bi_mark_special(CL_Obj *args, int n)
+{
+    CL_Symbol *s;
+    CL_UNUSED(n);
+    if (!CL_SYMBOL_P(args[0]))
+        cl_signal_type_error(args[0], "SYMBOL", "%MARK-SPECIAL");
+    s = (CL_Symbol *)CL_OBJ_TO_PTR(args[0]);
+    s->flags |= CL_SYM_SPECIAL;
+    return args[0];
+}
+
 extern CL_Obj setf_fn_table;
 
 /* Helper: if name is (setf sym), look up the setf-fn symbol in setf_fn_table.
@@ -379,6 +396,7 @@ void cl_builtins_mutation_init(void)
     defun("BOUNDP", bi_boundp, 1, 1);
     cl_register_builtin("%SYMBOL-CONSTANT-P", bi_symbol_constant_p, 1, 1, cl_package_clamiga);
     cl_register_builtin("%MARK-CONSTANT", bi_mark_constant, 1, 1, cl_package_clamiga);
+    cl_register_builtin("%MARK-SPECIAL", bi_mark_special, 1, 1, cl_package_clamiga);
     defun("FBOUNDP", bi_fboundp, 1, 1);
     defun("FMAKUNBOUND", bi_fmakunbound, 1, 1);
     defun("MAKUNBOUND", bi_makunbound, 1, 1);
