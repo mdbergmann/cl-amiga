@@ -4172,6 +4172,51 @@
 ; --- Advanced format: ~? recursive, ~R radix (Step 6) ---
 (check "format ~? recursive" "1 2 and 3" (format nil "~? and ~A" "~A ~A" '(1 2) 3))
 (check "format ~@? atsign" "1 2 and 3" (format nil "~@? and ~A" "~A ~A" 1 2 3))
+; formatter (CLHS): returns a function usable as a ~? control.
+(check "formatter funcall" "3-4"
+  (with-output-to-string (s) (funcall (formatter "~d-~d") s 3 4)))
+(check "formatter via ~?" "7/8" (format nil "~?" (formatter "~d/~d") '(7 8)))
+; A ~? function control re-enters the VM; a trailing directive must still see
+; the right args (serapeum file-size-human-readable regression).
+(check "formatter ~? no arg clobber" "1234X"
+  (format nil "~?~a" (formatter "~a~a~a~a") '(1 2 3 4) "X"))
+(check "formatter ~? conditional no clobber" "500 k"
+  (format nil "~?~a" (formatter "~:[~d~;~,1f~]~:[~; ~]~a") '(nil 500 t "k") ""))
+; ~@? with a function (formatter) control: trailing directive must see unconsumed arg.
+(check "formatter ~@? function trailing" "1 2 and 3"
+  (format nil "~@? and ~A" (formatter "~A ~A") 1 2 3))
+(check "formatter ~@? function partial" "4299"
+  (format nil "~@?~A" (formatter "~D") 42 99))
+(check "formatter ~@? function consumes all" "1 2"
+  (format nil "~@?" (formatter "~A ~A") 1 2))
+; with-output-to-string with a target fill-pointer string (serapeum with-string).
+(check "with-output-to-string target appends" "the string"
+  (let ((out (make-array 4 :adjustable t :fill-pointer 4
+                         :element-type 'character :initial-contents "the ")))
+    (with-output-to-string (s out) (write-string "string" s))
+    out))
+(check "with-output-to-string target returns body" :body-value
+  (let ((out (make-array 0 :adjustable t :fill-pointer 0 :element-type 'character)))
+    (with-output-to-string (s out) (write-string "x" s) :body-value)))
+(check "with-output-to-string target string-form evaluated once" 1
+  (let ((n 0))
+    (flet ((get-buf () (incf n)
+                       (make-array 0 :adjustable t :fill-pointer 0
+                                   :element-type 'character)))
+      (with-output-to-string (s (get-buf)) (write-string "abc" s))
+      n)))
+; CLHS: string-form is evaluated before the body forms (side-effects visible inside body).
+(check "with-output-to-string target string-form eval before body" t
+  (let ((ready nil)
+        (out (make-array 0 :adjustable t :fill-pointer 0 :element-type 'character)))
+    (with-output-to-string (s (progn (setf ready t) out))
+      (write-string (if ready "ok" "bad") s))
+    (string= (coerce out 'string) "ok")))
+; CLHS: with a target string, the form returns the values returned by the body forms.
+(check "with-output-to-string target multiple values" '(1 2)
+  (let ((out (make-array 0 :adjustable t :fill-pointer 0 :element-type 'character)))
+    (multiple-value-list
+      (with-output-to-string (s out) (values 1 2)))))
 (check "format ~R zero" "zero" (format nil "~R" 0))
 (check "format ~R cardinal" "forty-two" (format nil "~R" 42))
 (check "format ~R thousand" "one thousand two hundred thirty-four" (format nil "~R" 1234))

@@ -1851,12 +1851,42 @@ when the param has no explicit default.  CL spec 3.4.6 requires this."
 
 ;; --- String stream macros ---
 
+;; with-output-to-string (var &optional string-form &key element-type) decl* form*
+;; (CLHS).  With no STRING-FORM, returns the accumulated string.  When
+;; STRING-FORM is supplied it must be a string with a fill pointer: output is
+;; appended to it (via vector-push-extend) and the form returns the value of
+;; the body, not the string.
 (defmacro with-output-to-string (spec &body body)
-  (let ((var (car spec)))
-    `(let ((,var (make-string-output-stream)))
-       (unwind-protect
-         (locally ,@body (get-output-stream-string ,var))
-         (close ,var)))))
+  (let* ((var (car spec))
+         (rest (cdr spec))
+         ;; STRING-FORM is the first optional, unless it's a keyword (then only
+         ;; keyword options were supplied and there is no target string).
+         (string-form (and rest (not (keywordp (car rest))) (car rest))))
+    (if string-form
+        (let ((tmp (gensym "TMP")) (i (gensym "I"))
+              (target (gensym "TARGET")))
+          `(let* ((,target ,string-form)
+                  (,var (make-string-output-stream)))
+             (unwind-protect
+               (multiple-value-prog1
+                 (locally ,@body)
+                 (let ((,tmp (get-output-stream-string ,var)))
+                   (dotimes (,i (length ,tmp))
+                     (vector-push-extend (char ,tmp ,i) ,target))))
+               (close ,var))))
+        `(let ((,var (make-string-output-stream)))
+           (unwind-protect
+             (locally ,@body (get-output-stream-string ,var))
+             (close ,var))))))
+
+;; formatter (CLHS 22.3.6.4): (formatter control-string) => function.
+;; The function writes using control-string and returns the unconsumed arg
+;; tail, so ~@? can advance the parent arg pointer by the right count.
+(defmacro formatter (control-string)
+  (let ((stream (gensym "STREAM"))
+        (args (gensym "ARGS")))
+    `(lambda (,stream &rest ,args)
+       (clamiga::%formatter-inner ,stream ,control-string ,args))))
 
 ;; with-input-from-string (var string &key index start end) decl* form*
 ;; (CLHS).  START/END bound the substring made available through the stream;

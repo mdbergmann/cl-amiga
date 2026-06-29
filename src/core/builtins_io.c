@@ -240,6 +240,7 @@ static CL_Obj bi_pprint(CL_Obj *args, int n)
 
 /* Defined in builtins_format.c */
 extern void cl_format_to_stream(CL_Obj stream, CL_Obj *args, int n);
+extern void cl_format_builtins_init(void);
 
 static CL_Obj bi_format(CL_Obj *args, int n)
 {
@@ -3723,6 +3724,7 @@ void cl_builtins_io_init(void)
     defun("PRINC", bi_princ, 1, 2);
     defun("PPRINT", bi_pprint, 1, 2);
     defun("FORMAT", bi_format, 1, -1);
+    cl_format_builtins_init();  /* registers CLAMIGA::%FORMATTER-INNER */
 
     /* Read / Load / Eval */
     defun("READ", bi_read, 0, -1);
