@@ -26,7 +26,7 @@
 #include "../platform/platform.h"
 
 #define CL_FASL_MAGIC    0x434C4641  /* "CLFA" */
-#define CL_FASL_VERSION  21  /* v21: defconstant now emits a runtime (%MARK-CONSTANT 'name) call so CONSTANTP works for constants loaded from a precompiled FASL (the compile-time CL_SYM_CONSTANT flag does not survive into a fresh load). This changes the bytecode emitted for every defconstant form; bumping forces stale cached FASLs (which lack the mark call) to be recompiled so their constants are correctly recognized. */
+#define CL_FASL_VERSION  22  /* v22: (defvar name) with no init-form now emits a runtime (%MARK-SPECIAL 'name) call so the special proclamation works for variables loaded from a precompiled FASL (the compile-time CL_SYM_SPECIAL flag does not survive into a fresh load — bare defvars were non-special on load, breaking dynamic LET binding e.g. serapeum DEFPLACE). Changes the bytecode emitted for every no-init defvar; bumping forces stale cached FASLs to be recompiled. v21: defconstant emits a runtime (%MARK-CONSTANT 'name) call so CONSTANTP works for FASL-loaded constants. */
 
 /* Serialized constant type tags */
 #define FASL_TAG_NIL         0x00

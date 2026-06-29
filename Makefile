@@ -237,6 +237,13 @@ test-fast: $(TEST_BINS) host
 		echo "FAIL"; \
 		failed=1; \
 	fi; \
+	echo "--- test_defvar_special_fasl ---"; \
+	if sh $(TEST_SRCDIR)/test_defvar_special_fasl.sh $(BUILDDIR)/clamiga; then \
+		echo "PASS"; \
+	else \
+		echo "FAIL"; \
+		failed=1; \
+	fi; \
 	echo "--- test_test_extra ---"; \
 	if sh $(TEST_SRCDIR)/test_test_extra.sh; then \
 		echo "PASS"; \
