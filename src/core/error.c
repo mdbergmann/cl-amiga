@@ -47,6 +47,7 @@ int cl_error_frame_push(void)
     cl_error_frames[cl_error_frame_top].saved_fasl_readers = cl_fasl_reader_save_count();
     cl_error_frames[cl_error_frame_top].saved_active_compiler = cl_compiler_mark();
     cl_error_frames[cl_error_frame_top].saved_handler_top = cl_handler_top;
+    cl_error_frames[cl_error_frame_top].saved_handler_active_mask = cl_handler_active_mask;
     cl_error_frames[cl_error_frame_top].saved_restart_top = cl_restart_top;
     return cl_error_frame_top++;
 }
@@ -104,6 +105,10 @@ CL_NORETURN static void cl_error_unwind(int code)
          * catch tag is already gone (see CL_ErrorFrame.saved_handler_top). */
         if (cl_handler_top > cl_error_frames[cl_error_frame_top - 1].saved_handler_top)
             cl_handler_top = cl_error_frames[cl_error_frame_top - 1].saved_handler_top;
+        /* Restore the disabled-handler band to its state at frame push, so a
+         * band disabled by a handler we are unwinding out of is re-enabled
+         * (mirrors the NLX-landing restore in vm.c). */
+        cl_handler_active_mask = cl_error_frames[cl_error_frame_top - 1].saved_handler_active_mask;
         if (cl_restart_top > cl_error_frames[cl_error_frame_top - 1].saved_restart_top)
             cl_restart_top = cl_error_frames[cl_error_frame_top - 1].saved_restart_top;
         CL_LONGJMP(cl_error_frames[cl_error_frame_top - 1].buf, code);
@@ -160,6 +165,7 @@ void cl_error(int code, const char *fmt, ...)
         cl_pending_throw = 0;
         cl_dynbind_restore_to(0);
         cl_handler_top = 0;
+        cl_handler_active_mask = 0;
         cl_restart_top = 0;
         cl_gc_reset_roots();
         cl_jit_restore_depth(0);

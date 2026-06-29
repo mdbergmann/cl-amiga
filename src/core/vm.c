@@ -239,6 +239,7 @@ void cl_vm_init(uint32_t stack_size, int frame_size)
     cl_saved_pending_top = 0;
     cl_dyn_top = 0;
     cl_handler_top = 0;
+    cl_handler_active_mask = 0;
     cl_restart_top = 0;
     cl_pending_throw = 0;
     cl_mv_count = 1;
@@ -2790,15 +2791,20 @@ static CL_Obj cl_vm_run(int base_fp, int base_nlx)
             cl_handler_stack[cl_handler_top].type_name = type_sym;
             cl_handler_stack[cl_handler_top].handler = handler;
             cl_handler_stack[cl_handler_top].handler_mark = cl_handler_top;
-            cl_handler_stack[cl_handler_top].active = 1;
+            /* Mark this binding enabled in the active mask (see thread.h). */
+            cl_handler_active_mask |= ((uint64_t)1 << cl_handler_top);
             cl_handler_top++;
             VM_BREAK;
         }
 
         VM_CASE(OP_HANDLER_POP): {
             uint8_t count = code[ip++];
+            int old_top = cl_handler_top;
             cl_handler_top -= count;
             if (cl_handler_top < 0) cl_handler_top = 0;
+            /* Clear the active bits of the popped bindings so a later snapshot
+             * never carries a stale enabled bit for a reused slot. */
+            cl_handler_active_mask &= ~CL_HANDLER_BAND_MASK(cl_handler_top, old_top);
             VM_BREAK;
         }
 
@@ -2894,6 +2900,7 @@ static CL_Obj cl_vm_run(int base_fp, int base_nlx)
             nlx->base_fp = base_fp;
             nlx->dyn_mark = cl_dyn_top;
             nlx->handler_mark = cl_handler_top;
+            nlx->handler_active_mask = cl_handler_active_mask;
             nlx->restart_mark = cl_restart_top;
             nlx->error_mark = cl_error_frame_top;
             nlx->gc_root_mark = gc_root_count;
@@ -2922,6 +2929,11 @@ static CL_Obj cl_vm_run(int base_fp, int base_nlx)
                 nlx = &cl_nlx_stack[cl_nlx_top];
                 cl_dynbind_restore_to(nlx->dyn_mark);
                 cl_handler_top = nlx->handler_mark;
+                /* Restore the CLHS 9.1.4 disabled-handler band to its state at
+                 * this frame's establishment.  If the throw unwound out of a
+                 * running handler (e.g. INVOKE-RESTART), this re-enables the
+                 * band that handler had disabled, so the next SIGNAL is caught. */
+                cl_handler_active_mask = nlx->handler_active_mask;
                 cl_restart_top = nlx->restart_mark;
                 cl_error_frame_top = nlx->error_mark;
                 gc_root_count = nlx->gc_root_mark;
@@ -3049,6 +3061,7 @@ static CL_Obj cl_vm_run(int base_fp, int base_nlx)
             nlx->base_fp = base_fp;
             nlx->dyn_mark = cl_dyn_top;
             nlx->handler_mark = cl_handler_top;
+            nlx->handler_active_mask = cl_handler_active_mask;
             nlx->restart_mark = cl_restart_top;
             nlx->error_mark = cl_error_frame_top;
             nlx->gc_root_mark = gc_root_count;
@@ -3081,6 +3094,11 @@ static CL_Obj cl_vm_run(int base_fp, int base_nlx)
                 nlx = &cl_nlx_stack[cl_nlx_top];
                 cl_dynbind_restore_to(nlx->dyn_mark);
                 cl_handler_top = nlx->handler_mark;
+                /* Restore the CLHS 9.1.4 disabled-handler band to its state at
+                 * this frame's establishment.  If the throw unwound out of a
+                 * running handler (e.g. INVOKE-RESTART), this re-enables the
+                 * band that handler had disabled, so the next SIGNAL is caught. */
+                cl_handler_active_mask = nlx->handler_active_mask;
                 cl_restart_top = nlx->restart_mark;
                 cl_error_frame_top = nlx->error_mark;
                 gc_root_count = nlx->gc_root_mark;
@@ -3538,6 +3556,7 @@ static CL_Obj cl_vm_run(int base_fp, int base_nlx)
             nlx->base_fp = base_fp;
             nlx->dyn_mark = cl_dyn_top;
             nlx->handler_mark = cl_handler_top;
+            nlx->handler_active_mask = cl_handler_active_mask;
             nlx->restart_mark = cl_restart_top;
             nlx->error_mark = cl_error_frame_top;
             nlx->gc_root_mark = gc_root_count;
@@ -3558,6 +3577,11 @@ static CL_Obj cl_vm_run(int base_fp, int base_nlx)
                 nlx = &cl_nlx_stack[cl_nlx_top];
                 cl_dynbind_restore_to(nlx->dyn_mark);
                 cl_handler_top = nlx->handler_mark;
+                /* Restore the CLHS 9.1.4 disabled-handler band to its state at
+                 * this frame's establishment.  If the throw unwound out of a
+                 * running handler (e.g. INVOKE-RESTART), this re-enables the
+                 * band that handler had disabled, so the next SIGNAL is caught. */
+                cl_handler_active_mask = nlx->handler_active_mask;
                 cl_restart_top = nlx->restart_mark;
                 cl_error_frame_top = nlx->error_mark;
                 gc_root_count = nlx->gc_root_mark;
@@ -3627,6 +3651,7 @@ static CL_Obj cl_vm_run(int base_fp, int base_nlx)
             nlx->base_fp = base_fp;
             nlx->dyn_mark = cl_dyn_top;
             nlx->handler_mark = cl_handler_top;
+            nlx->handler_active_mask = cl_handler_active_mask;
             nlx->restart_mark = cl_restart_top;
             nlx->error_mark = cl_error_frame_top;
             nlx->gc_root_mark = gc_root_count;
@@ -3682,6 +3707,11 @@ static CL_Obj cl_vm_run(int base_fp, int base_nlx)
                 nlx = &cl_nlx_stack[cl_nlx_top];
                 cl_dynbind_restore_to(nlx->dyn_mark);
                 cl_handler_top = nlx->handler_mark;
+                /* Restore the CLHS 9.1.4 disabled-handler band to its state at
+                 * this frame's establishment.  If the throw unwound out of a
+                 * running handler (e.g. INVOKE-RESTART), this re-enables the
+                 * band that handler had disabled, so the next SIGNAL is caught. */
+                cl_handler_active_mask = nlx->handler_active_mask;
                 cl_restart_top = nlx->restart_mark;
                 cl_error_frame_top = nlx->error_mark;
                 gc_root_count = nlx->gc_root_mark;

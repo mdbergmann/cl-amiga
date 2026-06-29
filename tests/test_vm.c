@@ -306,6 +306,30 @@ TEST(eval_lambda)
     ASSERT_EQ_INT(eval_int("((lambda (x) (* x x)) 5)"), 25);
 }
 
+/* Regression: a literal NIL appearing as a non-final form in a LAMBDA body
+ * must not truncate the body.  compile_body conflated "compile_body_tail
+ * returned NIL" (empty body) with "the tail form is the literal NIL" — when
+ * the body's first form was NIL and more forms followed, it pushed a
+ * PROGN_ITER frame but then short-circuited to OP_NIL and abandoned the
+ * frame, dropping every form after the NIL.  The lambda silently returned
+ * NIL.  Exposed by serapeum's define-case-macro, which expands the dispatch
+ * cont into (lambda (...) (declare ...) nil `(cond ...)) — the leading NIL
+ * dropped the (cond ...) so faux-case/string-case/etc. all returned NIL. */
+TEST(eval_lambda_leading_nil_body)
+{
+    /* Bare leading NIL, then a value form. */
+    ASSERT_EQ_INT(eval_int("(funcall (lambda () nil 42))"), 42);
+    /* Leading NIL after a declaration. */
+    ASSERT_EQ_INT(eval_int(
+        "(funcall (lambda (x) (declare (ignorable x)) nil (+ x 1)) 10)"), 11);
+    /* Multiple leading NILs. */
+    ASSERT_EQ_INT(eval_int("(funcall (lambda (x) nil nil (* x 2)) 10)"), 20);
+    /* A lone NIL body is still NIL (genuinely "returns nil"). */
+    ASSERT_STR_EQ(eval_print("(funcall (lambda () nil))"), "NIL");
+    /* Empty body is NIL. */
+    ASSERT_STR_EQ(eval_print("(funcall (lambda ()))"), "NIL");
+}
+
 TEST(eval_function_ref)
 {
     ASSERT_STR_EQ(eval_print("(mapcar #'1+ '(1 2 3))"), "(2 3 4)");
@@ -10213,6 +10237,7 @@ int main(void)
     RUN(eval_defun_fibonacci);
     RUN(eval_defun_multiarg);
     RUN(eval_lambda);
+    RUN(eval_lambda_leading_nil_body);
     RUN(eval_function_ref);
     RUN(eval_function_ref_setf);
     RUN(eval_setf_function_distinct_per_package);
