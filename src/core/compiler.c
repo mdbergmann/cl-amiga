@@ -437,7 +437,10 @@ void compile_progn(CL_Compiler *c, CL_Obj forms)
 {
     int tail_base = c->tail_count;
     CL_Obj tail = compile_progn_tail(c, forms);
-    if (CL_NULL_P(tail)) {
+    /* See compile_body: a NIL tail with a pushed PROGN_ITER frame means a
+     * leading literal NIL form with more forms after it — compile the NIL
+     * and drain, don't short-circuit (which would drop the trailing forms). */
+    if (CL_NULL_P(tail) && c->tail_count == tail_base) {
         cl_emit(c, OP_NIL);
         return;
     }
@@ -3873,7 +3876,15 @@ void compile_body(CL_Compiler *c, CL_Obj forms)
      * as already-existing).  We drain explicitly afterward. */
     int tail_base = c->tail_count;
     CL_Obj tail = compile_body_tail(c, forms);
-    if (CL_NULL_P(tail)) {
+    /* A NIL `tail` is ambiguous: it can mean either an empty body OR that the
+     * tail form is the literal NIL.  When compile_body_tail pushed a
+     * PROGN_ITER frame (c->tail_count > tail_base), the body had a leading
+     * literal NIL form followed by more forms — e.g. (lambda () nil 42), which
+     * serapeum's define-case-macro emits.  In that case we must NOT short to
+     * OP_NIL: compile the NIL tail (the leading form) and drain the frame so
+     * the trailing forms are still emitted.  Only short-circuit when no frame
+     * was pushed (genuinely empty body, or a single literal NIL form). */
+    if (CL_NULL_P(tail) && c->tail_count == tail_base) {
         cl_emit(c, OP_NIL);
         return;
     }

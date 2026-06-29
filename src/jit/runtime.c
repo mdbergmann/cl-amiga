@@ -814,12 +814,13 @@ void *cl_jit_runtime_block_alloc(CL_Obj tag)
     nlx->constants      = NULL;
     nlx->bytecode       = CL_NIL;
     nlx->base_fp        = 0;
-    nlx->dyn_mark       = cl_dyn_top;
-    nlx->handler_mark   = cl_handler_top;
-    nlx->restart_mark   = cl_restart_top;
-    nlx->gc_root_mark   = gc_root_count;
-    nlx->compiler_mark  = cl_compiler_mark();
-    nlx->mv_count       = 1;
+    nlx->dyn_mark            = cl_dyn_top;
+    nlx->handler_mark        = cl_handler_top;
+    nlx->handler_active_mask = cl_handler_active_mask;
+    nlx->restart_mark        = cl_restart_top;
+    nlx->gc_root_mark        = gc_root_count;
+    nlx->compiler_mark       = cl_compiler_mark();
+    nlx->mv_count            = 1;
     return &nlx->buf;
 }
 
@@ -865,9 +866,10 @@ CL_Obj cl_jit_runtime_block_post_longjmp(void)
     cl_vm.fp = nlx->vm_fp;
 
     cl_dynbind_restore_to(nlx->dyn_mark);
-    cl_handler_top  = nlx->handler_mark;
-    cl_restart_top  = nlx->restart_mark;
-    gc_root_count   = nlx->gc_root_mark;
+    cl_handler_top          = nlx->handler_mark;
+    cl_handler_active_mask  = nlx->handler_active_mask;
+    cl_restart_top          = nlx->restart_mark;
+    gc_root_count           = nlx->gc_root_mark;
     cl_compiler_restore_to(nlx->compiler_mark);
     cl_mv_count = nlx->mv_count;
     for (mi = 0; mi < cl_mv_count && mi < CL_MAX_MV; mi++)
@@ -959,12 +961,13 @@ void *cl_jit_runtime_catch_alloc(CL_Obj tag)
     nlx->constants      = NULL;
     nlx->bytecode       = CL_NIL;
     nlx->base_fp        = 0;
-    nlx->dyn_mark       = cl_dyn_top;
-    nlx->handler_mark   = cl_handler_top;
-    nlx->restart_mark   = cl_restart_top;
-    nlx->gc_root_mark   = gc_root_count;
-    nlx->compiler_mark  = cl_compiler_mark();
-    nlx->mv_count       = 1;
+    nlx->dyn_mark            = cl_dyn_top;
+    nlx->handler_mark        = cl_handler_top;
+    nlx->handler_active_mask = cl_handler_active_mask;
+    nlx->restart_mark        = cl_restart_top;
+    nlx->gc_root_mark        = gc_root_count;
+    nlx->compiler_mark       = cl_compiler_mark();
+    nlx->mv_count            = 1;
     return &nlx->buf;
 }
 
@@ -1004,9 +1007,10 @@ CL_Obj cl_jit_runtime_catch_post_longjmp(void)
     cl_vm.fp = nlx->vm_fp;
 
     cl_dynbind_restore_to(nlx->dyn_mark);
-    cl_handler_top  = nlx->handler_mark;
-    cl_restart_top  = nlx->restart_mark;
-    gc_root_count   = nlx->gc_root_mark;
+    cl_handler_top          = nlx->handler_mark;
+    cl_handler_active_mask  = nlx->handler_active_mask;
+    cl_restart_top          = nlx->restart_mark;
+    gc_root_count           = nlx->gc_root_mark;
     cl_compiler_restore_to(nlx->compiler_mark);
     cl_mv_count = nlx->mv_count;
     for (mi = 0; mi < cl_mv_count && mi < CL_MAX_MV; mi++)
@@ -1079,12 +1083,13 @@ void *cl_jit_runtime_uwprot_alloc(void)
     nlx->constants      = cur ? cur->constants : NULL;
     nlx->bytecode       = cur ? cur->bytecode  : CL_NIL;
     nlx->base_fp        = 0;
-    nlx->dyn_mark       = cl_dyn_top;
-    nlx->handler_mark   = cl_handler_top;
-    nlx->restart_mark   = cl_restart_top;
-    nlx->gc_root_mark   = gc_root_count;
-    nlx->compiler_mark  = cl_compiler_mark();
-    nlx->mv_count       = 1;
+    nlx->dyn_mark            = cl_dyn_top;
+    nlx->handler_mark        = cl_handler_top;
+    nlx->handler_active_mask = cl_handler_active_mask;
+    nlx->restart_mark        = cl_restart_top;
+    nlx->gc_root_mark        = gc_root_count;
+    nlx->compiler_mark       = cl_compiler_mark();
+    nlx->mv_count            = 1;
     return &nlx->buf;
 }
 
@@ -1122,9 +1127,10 @@ void cl_jit_runtime_uwprot_post_longjmp(void)
     cl_vm.sp = nlx->vm_sp;
     cl_vm.fp = nlx->vm_fp;
     cl_dynbind_restore_to(nlx->dyn_mark);
-    cl_handler_top  = nlx->handler_mark;
-    cl_restart_top  = nlx->restart_mark;
-    gc_root_count   = nlx->gc_root_mark;
+    cl_handler_top          = nlx->handler_mark;
+    cl_handler_active_mask  = nlx->handler_active_mask;
+    cl_restart_top          = nlx->restart_mark;
+    gc_root_count           = nlx->gc_root_mark;
     cl_compiler_restore_to(nlx->compiler_mark);
     /* Intentionally don't touch cl_mv_count / cl_mv_values: the
      * protected-form's MVs are captured via OP_MV_TO_LIST in the
@@ -1393,18 +1399,20 @@ void cl_jit_runtime_handler_push(CL_Obj type_sym, CL_Obj handler)
     cl_handler_stack[cl_handler_top].handler = handler;
     cl_handler_stack[cl_handler_top].handler_mark = cl_handler_top;
     /* Mirror the VM's OP_HANDLER_PUSH (core/vm.c): a freshly pushed handler
-     * must be ACTIVE, else cl_signal_condition's `if (!active) continue;`
-     * band gate (added when CLHS 9.1.4 handler-disabling landed) skips it and
-     * the condition escapes uncaught.  A reused stack slot can carry a stale
-     * active=0 from a prior band-disable, so this assignment is mandatory. */
-    cl_handler_stack[cl_handler_top].active = 1;
+     * must be ACTIVE, else cl_signal_condition's band gate (added when CLHS
+     * 9.1.4 handler-disabling landed) skips it and the condition escapes
+     * uncaught.  A reused stack slot can carry a stale disabled bit from a
+     * prior band-disable, so setting the bit here is mandatory. */
+    cl_handler_active_mask |= ((uint64_t)1 << cl_handler_top);
     cl_handler_top++;
 }
 
 void cl_jit_runtime_handler_pop(uint32_t count)
 {
+    int old_top = cl_handler_top;
     cl_handler_top -= (int)count;
     if (cl_handler_top < 0) cl_handler_top = 0;
+    cl_handler_active_mask &= ~CL_HANDLER_BAND_MASK(cl_handler_top, old_top);
 }
 
 void cl_jit_runtime_restart_push(CL_Obj name_sym, CL_Obj handler, CL_Obj report,
@@ -1474,12 +1482,13 @@ void *cl_jit_runtime_tagbody_alloc(CL_Obj tagbody_id)
     nlx->constants      = NULL;
     nlx->bytecode       = CL_NIL;
     nlx->base_fp        = 0;
-    nlx->dyn_mark       = cl_dyn_top;
-    nlx->handler_mark   = cl_handler_top;
-    nlx->restart_mark   = cl_restart_top;
-    nlx->gc_root_mark   = gc_root_count;
-    nlx->compiler_mark  = cl_compiler_mark();
-    nlx->mv_count       = 1;
+    nlx->dyn_mark            = cl_dyn_top;
+    nlx->handler_mark        = cl_handler_top;
+    nlx->handler_active_mask = cl_handler_active_mask;
+    nlx->restart_mark        = cl_restart_top;
+    nlx->gc_root_mark        = gc_root_count;
+    nlx->compiler_mark       = cl_compiler_mark();
+    nlx->mv_count            = 1;
     return &nlx->buf;
 }
 
@@ -1515,11 +1524,12 @@ CL_Obj cl_jit_runtime_tagbody_post_longjmp(void)
     cl_vm.fp = nlx->vm_fp;
 
     cl_dynbind_restore_to(nlx->dyn_mark);
-    cl_handler_top = nlx->handler_mark;
-    cl_restart_top = nlx->restart_mark;
-    gc_root_count  = nlx->gc_root_mark;
+    cl_handler_top          = nlx->handler_mark;
+    cl_handler_active_mask  = nlx->handler_active_mask;
+    cl_restart_top          = nlx->restart_mark;
+    gc_root_count           = nlx->gc_root_mark;
     cl_compiler_restore_to(nlx->compiler_mark);
-    cl_mv_count    = 1;
+    cl_mv_count             = 1;
 
     tag_index = nlx->result;
     /* Re-arm: a tagbody stays usable for repeated GO until the

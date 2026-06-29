@@ -25,7 +25,12 @@
 
 (let* ((five (find-package "IT.BESE.FIVEAM"))
        (run-sym (and five (find-symbol "RUN" five)))
-       (results (and run-sym (funcall run-sym (read-from-string "serapeum")))))
+       ;; The suite is named SERAPEUM.TESTS::SERAPEUM (def-suite serapeum in
+       ;; the serapeum.tests package).  Resolve it there, NOT in CL-USER, or
+       ;; FiveAM finds no such suite and returns an empty result list.
+       (tpkg (find-package "SERAPEUM.TESTS"))
+       (suite-sym (and tpkg (find-symbol "SERAPEUM" tpkg)))
+       (results (and run-sym suite-sym (funcall run-sym suite-sym))))
   (flet ((status-name (r)
            ;; FiveAM result classes: TEST-PASSED / TEST-FAILURE /
            ;; TEST-SKIPPED / UNEXPECTED-TEST-FAILURE etc.  Classify by the

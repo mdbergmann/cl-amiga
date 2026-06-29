@@ -1332,29 +1332,32 @@ CL_Obj cl_signal_condition(CL_Obj condition)
 #endif
 
     for (i = cl_handler_top - 1; i >= cl_handler_floor; i--) {
-        if (!cl_handler_stack[i].active)
+        if (!((cl_handler_active_mask >> i) & 1))
             continue;
         if (cl_condition_type_matches(cond->type_name,
                                       cl_handler_stack[i].type_name)) {
             /* CLHS 9.1.4: while a handler runs, that handler and every handler
              * established more recently than it are disabled, so a condition it
              * signals is handled by the *outer* handlers.  Disable the band
-             * [i, cl_handler_top) by clearing the `active` flags rather than by
-             * truncating cl_handler_top.  Truncating made a HANDLER-BIND/IGNORE-
-             * ERRORS established inside the handler push onto slot i, clobbering
-             * this handler's own binding; once cl_handler_top was restored, that
-             * stale binding was invoked for a later, unrelated condition and
-             * threw into a handler-case CATCH tag that no longer existed
-             * ("No catch for tag").  Keeping cl_handler_top intact makes the
-             * handler's pushes land above the band instead. */
-            int band_lo = i;
-            int band_hi = cl_handler_top;
-            int j;
-            int saved_active[CL_MAX_HANDLER_BINDINGS];
-            for (j = band_lo; j < band_hi; j++) {
-                saved_active[j] = cl_handler_stack[j].active;
-                cl_handler_stack[j].active = 0;
-            }
+             * [i, cl_handler_top) by clearing those bits in the active mask
+             * rather than by truncating cl_handler_top.  Truncating made a
+             * HANDLER-BIND/IGNORE-ERRORS established inside the handler push
+             * onto slot i, clobbering this handler's own binding; once
+             * cl_handler_top was restored, that stale binding was invoked for a
+             * later, unrelated condition and threw into a handler-case CATCH tag
+             * that no longer existed ("No catch for tag").  Keeping
+             * cl_handler_top intact makes the handler's pushes land above the
+             * band instead.
+             *
+             * The mask is restored on BOTH exit paths: normally below, and —
+             * crucially — on a NON-LOCAL exit (the handler INVOKE-RESTARTs a
+             * restart in its own dynamic extent, e.g. fiveam's process-failure),
+             * via the snapshot stored in the NLX/error frame the throw unwinds
+             * to.  The old per-frame `active` save lived only in this C frame's
+             * locals and was lost to the longjmp, leaving the band permanently
+             * disabled so the *next* signal escaped uncaught. */
+            uint64_t saved_mask = cl_handler_active_mask;
+            cl_handler_active_mask &= ~CL_HANDLER_BAND_MASK(i, cl_handler_top);
             cl_vm_apply(cl_handler_stack[i].handler, &condition, 1);
             /* GC may have compacted during the handler call; re-derive cond
              * from the GC-tracked CL_Obj so the next iteration's type check
@@ -1362,8 +1365,7 @@ CL_Obj cl_signal_condition(CL_Obj condition)
             cond = (CL_Condition *)CL_OBJ_TO_PTR(condition);
             /* Handler returned normally (declined) — re-enable the band and
              * keep searching the outer (lower-index) handlers. */
-            for (j = band_lo; j < band_hi; j++)
-                cl_handler_stack[j].active = saved_active[j];
+            cl_handler_active_mask = saved_mask;
         }
     }
 

@@ -782,6 +782,34 @@ TEST(lisp_handler_case_t_catches_secondary_error_from_invoke_restart)
         ":CAUGHT");
 }
 
+TEST(lisp_handler_bind_handler_invokes_restart_repeatedly)
+{
+    /* Regression (fiveam process-failure pattern): a HANDLER-BIND handler that
+     * INVOKE-RESTARTs a WITH-SIMPLE-RESTART established in its OWN dynamic
+     * extent must keep working for EVERY signal, not just the first.  The
+     * handler's non-local exit (invoke-restart longjmp) unwinds past
+     * cl_signal_condition, so the CLHS 9.1.4 disabled-band must be restored
+     * from the NLX-frame snapshot — otherwise the handler stays disabled and
+     * the SECOND signal escapes uncaught.  This blocked fiveam: every test
+     * after the first failing check aborted the whole run.
+     *
+     * COUNT counts how many of the 3 signals reached the (continuing) handler;
+     * a correct system records all 3. */
+    ASSERT_STR_EQ(eval_print(
+        "(let ((count 0))"
+        "  (flet ((check (ok)"
+        "           (unless ok"
+        "             (with-simple-restart (skip \"skip\")"
+        "               (error 'simple-error :format-control \"fail\"))"
+        "             (incf count))))"
+        "    (handler-bind ((simple-error"
+        "                     (lambda (e) (declare (ignore e))"
+        "                       (invoke-restart (find-restart 'skip)))))"
+        "      (check nil) (check t) (check nil) (check nil)))"
+        "    count))"),
+        "3");
+}
+
 TEST(lisp_ignore_errors)
 {
     /* ignore-errors catches error, returns nil */
@@ -1704,6 +1732,7 @@ int main(void)
     RUN(lisp_handler_case_t_catches_any_condition);
     RUN(lisp_handler_bind_t_catches_any_condition);
     RUN(lisp_handler_case_t_catches_secondary_error_from_invoke_restart);
+    RUN(lisp_handler_bind_handler_invokes_restart_repeatedly);
     RUN(lisp_ignore_errors);
     RUN(lisp_ignore_errors_no_error);
 

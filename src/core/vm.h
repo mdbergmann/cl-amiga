@@ -90,6 +90,12 @@ typedef struct {
                             * compile-time eval). */
     int gc_root_mark;      /* GC root stack depth at frame creation */
     void *compiler_mark;   /* active compiler chain head at frame creation */
+    uint64_t handler_active_mask; /* cl_handler_active_mask snapshot at frame
+                            * creation.  Restored when this NLX frame is unwound
+                            * to, so a CLHS 9.1.4 disabled-handler band set by a
+                            * running handler is re-enabled when that handler
+                            * exits via a non-local transfer through here (e.g.
+                            * INVOKE-RESTART out of a HANDLER-BIND handler). */
     int mv_count;          /* multiple value count to preserve across NLX */
     CL_Obj mv_values[CL_MAX_MV]; /* multiple values to preserve across NLX */
     int saved_pending_mark; /* saved_pending_top depth at frame creation */
@@ -101,16 +107,19 @@ typedef struct {
     CL_Obj type_name;     /* Condition type symbol to match */
     CL_Obj handler;       /* Handler function (closure or function) */
     int handler_mark;     /* Handler stack depth when this binding was established */
-    int active;           /* 0 while this binding (and the more-recent ones in
-                           * its signalling band) is being run, so a condition
-                           * signalled inside the handler does not re-invoke it
-                           * (CLHS 9.1.4).  cl_signal_condition disables the band
-                           * instead of truncating cl_handler_top, so a HANDLER-
-                           * BIND established by the running handler pushes ABOVE
-                           * this slot rather than overwriting it. */
+    /* The per-binding enabled/disabled state (CLHS 9.1.4) now lives in the
+     * per-thread cl_handler_active_mask (bit j = binding j enabled), so it can
+     * be snapshot/restored across non-local exits.  See thread.h. */
 } CL_HandlerBinding;
 
 #define CL_MAX_HANDLER_BINDINGS 64
+
+/* Bit mask for handler indices [lo, hi) (used to disable a band in
+ * cl_handler_active_mask).  hi may equal CL_MAX_HANDLER_BINDINGS (64); shifting
+ * by 64 is undefined, so clamp that to the all-ones upper bound. */
+#define CL_HANDLER_BAND_MASK(lo, hi) \
+    ((((hi) >= 64) ? ~(uint64_t)0 : (((uint64_t)1 << (hi)) - 1)) \
+     & ~(((uint64_t)1 << (lo)) - 1))
 /* --- Restart binding stack --- */
 
 typedef struct {

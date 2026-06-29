@@ -139,6 +139,14 @@
 ; --- Lambda ---
 (check "lambda call" 25 ((lambda (x) (* x x)) 5))
 (check "funcall builtin" 7 (funcall #'+ 3 4))
+; Regression: a literal NIL as a non-final lambda body form must not truncate
+; the body (compile_body conflated empty-body with a NIL tail form + pending
+; PROGN_ITER frame, dropping later forms).  Exposed by serapeum define-case-macro.
+(check "lambda leading nil body" 42 (funcall (lambda () nil 42)))
+(check "lambda leading nil after decl" 11
+       (funcall (lambda (x) (declare (ignorable x)) nil (+ x 1)) 10))
+(check "lambda multiple leading nils" 20 (funcall (lambda (x) nil nil (* x 2)) 10))
+(check "lambda lone nil body" nil (funcall (lambda () nil)))
 
 ; --- Setq ---
 (setq *my-var* 100)
@@ -632,6 +640,25 @@
 (check "handler-bind tail no leak" :ok (progn (dotimes (i 5000) (hb-tail)) :ok))
 (defun catch-tail () (catch 'tg (hb-inner)))
 (check "catch tail no leak" :ok (progn (dotimes (i 5000) (catch-tail)) :ok))
+
+; Regression (fiveam process-failure pattern): a handler-bind handler that
+; invoke-restarts a with-simple-restart in its OWN dynamic extent must keep
+; working for EVERY signal.  The handler's non-local exit unwinds past
+; cl_signal_condition, so the CLHS 9.1.4 disabled-band must be restored from the
+; NLX-frame snapshot, else the SECOND signal escapes uncaught (blocked fiveam:
+; every test after the first failing check aborted the run).
+(check "handler invokes restart repeatedly" 3
+       (let ((count 0))
+         (flet ((chk (ok)
+                  (unless ok
+                    (with-simple-restart (skip "skip")
+                      (error 'simple-error :format-control "fail"))
+                    (incf count))))
+           (handler-bind ((simple-error
+                            (lambda (e) (declare (ignore e))
+                              (invoke-restart (find-restart 'skip)))))
+             (chk nil) (chk t) (chk nil) (chk nil)))
+         count))
 
 ; A WARNING handler that is a closure calling (muffle-warning) — not
 ; #'muffle-warning installed directly — must muffle cleanly.  WARN's catch

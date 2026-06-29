@@ -101,6 +101,11 @@ typedef struct {
      * exists ("No catch for tag").  Mirrors saved_gc_roots. */
     int saved_handler_top;
     int saved_restart_top;
+    /* cl_handler_active_mask snapshot at push time.  Restored on the unwind
+     * path (cl_error_unwind) alongside saved_handler_top, so a CLHS 9.1.4
+     * disabled-handler band is re-enabled when a C-level cl_error longjmp
+     * unwinds out of the handler that disabled it.  Mirrors saved_handler_top. */
+    uint64_t saved_handler_active_mask;
 } CL_ErrorFrame;
 
 /* Push an error frame.  Returns the frame index, or -1 on overflow.

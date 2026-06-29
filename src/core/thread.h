@@ -78,6 +78,17 @@ typedef struct CL_Thread_s {
     CL_HandlerBinding handler_stack[CL_MAX_HANDLER_BINDINGS];
     int               handler_top;
     int               handler_floor;
+    /* Per-handler "active" bit (bit j = handler_stack[j] enabled).  This is the
+     * authoritative replacement for the per-frame `active` flag: it is snapshot
+     * into every NLX / error frame at establishment and restored verbatim on
+     * unwind, so the CLHS 9.1.4 "disabled band" set by a running handler is
+     * automatically restored when the handler exits via a NON-LOCAL transfer
+     * (e.g. a handler that INVOKE-RESTARTs a restart in its own dynamic extent
+     * — fiveam's process-failure pattern).  Before this, the band-restore lived
+     * only in C locals in cl_signal_condition and was skipped by the longjmp,
+     * leaving the handler permanently disabled so the next signal escaped.
+     * CL_MAX_HANDLER_BINDINGS == 64 fits exactly in a uint64_t. */
+    uint64_t          handler_active_mask;
 
     /* ---- Restart stack ---- */
     CL_RestartBinding restart_stack[CL_MAX_RESTART_BINDINGS];
@@ -487,6 +498,7 @@ int    cl_symbol_boundp(CL_Obj sym);
 #define cl_handler_stack    (CT->handler_stack)
 #define cl_handler_top      (CT->handler_top)
 #define cl_handler_floor    (CT->handler_floor)
+#define cl_handler_active_mask (CT->handler_active_mask)
 
 /* Restart stack */
 #define cl_restart_stack    (CT->restart_stack)
