@@ -184,6 +184,11 @@ static void *thread_entry(void *arg)
             frame->result = CL_NIL;
             frame->dyn_mark = t->dyn_top;
             frame->handler_mark = t->handler_top;
+            /* Snapshot the disabled-handler band like the vm.c/jit NLX setup
+             * sites, so an unwind to this thread-abort frame restores it
+             * consistently (harmless today — mask is 0 at thread entry — but
+             * required once a handler is established before this frame). */
+            frame->handler_active_mask = t->handler_active_mask;
             frame->restart_mark = t->restart_top;
             frame->gc_root_mark = t->gc_root_count;
             frame->mv_count = 1;
@@ -234,6 +239,7 @@ static void *thread_entry(void *arg)
         } else {
             t->restart_top = t->nlx_stack[my_nlx_idx].restart_mark;
             t->handler_top = t->nlx_stack[my_nlx_idx].handler_mark;
+            t->handler_active_mask = t->nlx_stack[my_nlx_idx].handler_active_mask;
             cl_dynbind_restore_to(t->nlx_stack[my_nlx_idx].dyn_mark);
         }
     } else {
