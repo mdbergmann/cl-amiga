@@ -136,8 +136,13 @@ static CL_Obj do_rounding(CL_Obj *args, int n, int mode,
                               : cl_make_single_float((float)dq);
             else
                 qobj = double_to_integer(dq);
+            /* Protect qobj: when dq is large, double_to_integer allocates a
+             * bignum, and the cl_make_*_float(dr) below can compact, leaving
+             * an unprotected qobj pointing at moved-from memory. */
+            CL_GC_PROTECT(qobj);
             robj = is_dbl ? cl_make_double_float(dr)
                           : cl_make_single_float((float)dr);
+            CL_GC_UNPROTECT(1);
             cl_mv_count = 2;
             cl_mv_values[0] = qobj;
             cl_mv_values[1] = robj;
@@ -235,8 +240,12 @@ static CL_Obj do_rounding(CL_Obj *args, int n, int mode,
                           : cl_make_single_float((float)dq);
         else
             qobj = double_to_integer(dq);
+        /* Protect qobj across the remainder allocation — see the 1-arg float
+         * path above for why an unprotected bignum quotient goes stale here. */
+        CL_GC_PROTECT(qobj);
         robj = is_dbl ? cl_make_double_float(dr)
                       : cl_make_single_float((float)dr);
+        CL_GC_UNPROTECT(1);
         cl_mv_count = 2;
         cl_mv_values[0] = qobj;
         cl_mv_values[1] = robj;
