@@ -2141,6 +2141,27 @@ static CL_Obj bi_subtypep(CL_Obj *args, int n)
             return cl_mv_values[0];
         }
 
+        /* T1 ⊆ (not B) iff T1 ∩ B = ∅.  We answer the certain "no" case: if
+         * T1 ⊆ B (with certainty) and T1 is non-empty, then T1 overlaps B and
+         * is certainly NOT a subtype of (not B).  e.g. (subtypep 'null '(not
+         * null)) => (NIL T), which serapeum's SOFT-LIST-OF deftype relies on to
+         * pick PROPER-LIST-WITHOUT-NIL? over PROPER-LIST?.  Full disjointness
+         * reasoning (the certain "yes" case) is left uncertain. */
+        if (head2 == TYPE_SYM_NOT && CL_CONS_P(cl_cdr(type2)) &&
+            !CL_NULL_P(type1)) {
+            CL_Obj inner = cl_car(cl_cdr(type2));
+            CL_Obj sub_args[2]; CL_Obj prim;
+            sub_args[0] = type1; sub_args[1] = inner;
+            prim = bi_subtypep(sub_args, 2);
+            if (prim == SYM_T && cl_mv_values[1] == SYM_T) {
+                cl_mv_count = 2;
+                cl_mv_values[0] = CL_NIL;
+                cl_mv_values[1] = SYM_T;
+                return CL_NIL;
+            }
+            /* else fall through to the uncertain default */
+        }
+
         /* (member x1 x2 ...) ⊆ T2 iff every xi is typep T2. */
         if (head1 == TYPE_SYM_MEMBER) {
             CL_Obj rest = cl_cdr(type1);
