@@ -766,6 +766,10 @@
        (handler-case (set '+dc-test+ 0)
          (error (c) 42)))
 (check "defconstant value preserved" 42 +dc-test+)
+;; defconstant must mark the symbol CONSTANTP at run/load time (not only at
+;; compile time) so it works when loaded from a precompiled FASL.
+(check "defconstant constantp" t (and (constantp '+dc-test+) t))
+(check "defparameter not constantp" nil (constantp '*dp1*))
 (defparameter *sv1* 1)
 (check "special let binding" 2 (let ((*sv1* 2)) *sv1*))
 (check "special restored" 1 *sv1*)
@@ -1549,6 +1553,22 @@
 (defparameter *repl-list* (list 1 2 3 4 5))
 (replace *repl-list* '(a b c) :start1 1)
 (check "replace" '(1 a b c 5) *repl-list*)
+; replace into a typed sequence must enforce the element type (CLHS): storing a
+; non-character into a string or a non-bit into a bit-vector is a type-error,
+; not a silent drop.
+(check "replace string non-char type-error" t
+       (handler-case
+           (progn (replace (make-array 3 :element-type 'character :initial-element #\Space)
+                           '(foo bar))
+                  nil)
+         (type-error () t)))
+(check "replace bit-vector non-bit type-error" t
+       (handler-case
+           (progn (replace (make-array 3 :element-type 'bit :initial-element 0) '(2))
+                  nil)
+         (type-error () t)))
+(check "replace string char ok" "ab_"
+       (replace (copy-seq "___") "ab"))
 
 ; every, some, notany, notevery
 (check "every true" t (every #'my-evenp '(2 4 6)))

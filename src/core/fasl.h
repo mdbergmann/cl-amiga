@@ -26,7 +26,7 @@
 #include "../platform/platform.h"
 
 #define CL_FASL_MAGIC    0x434C4641  /* "CLFA" */
-#define CL_FASL_VERSION  20  /* v20: FASL_TAG_OBJ_REF now appears in CDR-spine position for two new writer cases: (1) circular cons cells whose CDR loops back to a dedup-registered head, and (2) cons cells in CDR position that were themselves registered as list heads via OBJ_DEF. Old writers never emitted OBJ_REF in CDR position; bumping forces stale cached FASLs to be re-written rather than risking misinterpretation on future format changes. */
+#define CL_FASL_VERSION  21  /* v21: defconstant now emits a runtime (%MARK-CONSTANT 'name) call so CONSTANTP works for constants loaded from a precompiled FASL (the compile-time CL_SYM_CONSTANT flag does not survive into a fresh load). This changes the bytecode emitted for every defconstant form; bumping forces stale cached FASLs (which lack the mark call) to be recompiled so their constants are correctly recognized. */
 
 /* Serialized constant type tags */
 #define FASL_TAG_NIL         0x00

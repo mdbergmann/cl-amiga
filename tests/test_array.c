@@ -183,6 +183,36 @@ TEST(schar_requires_simple_string)
         "  (schar s 0))"));
 }
 
+/* Regression: storing into a typed sequence (string / bit-vector) via the
+ * internal arr_seq_set path — used by REPLACE, MAP-INTO, SUBSTITUTE, etc. —
+ * must enforce the element type, signalling a type-error for an invalid
+ * element instead of silently dropping it.  serapeum's PAD-START relied on
+ * (REPLACE <char-string> <list-of-non-chars>) raising a type-error. */
+TEST(replace_into_string_type_checks)
+{
+    /* a char goes in fine */
+    ASSERT_STR_EQ(eval_print(
+        "(replace (copy-seq \"___\") \"ab\")"), "\"ab_\"");
+    /* a non-character element must signal a type-error, not be dropped */
+    ASSERT(eval_errors(
+        "(replace (make-array 3 :element-type 'character :initial-element #\\Space)"
+        "         '(foo bar))"));
+    /* the partial store must not have happened silently: still all spaces */
+    ASSERT_STR_EQ(eval_print(
+        "(let ((s (make-array 3 :element-type 'character :initial-element #\\Space)))"
+        "  (ignore-errors (replace s '(foo bar))) s)"),
+        "\"   \"");
+    /* bit-vector: a non-bit element is a type-error */
+    ASSERT(eval_errors(
+        "(replace (make-array 3 :element-type 'bit :initial-element 0) '(foo))"));
+    ASSERT(eval_errors(
+        "(replace (make-array 3 :element-type 'bit :initial-element 0) '(2))"));
+    /* a valid bit still works */
+    ASSERT_STR_EQ(eval_print(
+        "(replace (make-array 3 :element-type 'bit :initial-element 0) '(1 1))"),
+        "#*110");
+}
+
 TEST(make_array_initial_contents_string)
 {
     /* :initial-contents with a string source */
@@ -1162,6 +1192,7 @@ int main(void)
     RUN(make_array_fill_pointer_t_string);
     RUN(char_accessor_on_string_vector);
     RUN(schar_requires_simple_string);
+    RUN(replace_into_string_type_checks);
     RUN(make_array_initial_contents_string);
     RUN(make_array_base_char_is_base_string);
     RUN(make_array_character_is_wide_string);
