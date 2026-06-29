@@ -1392,6 +1392,12 @@ void cl_jit_runtime_handler_push(CL_Obj type_sym, CL_Obj handler)
     cl_handler_stack[cl_handler_top].type_name = type_sym;
     cl_handler_stack[cl_handler_top].handler = handler;
     cl_handler_stack[cl_handler_top].handler_mark = cl_handler_top;
+    /* Mirror the VM's OP_HANDLER_PUSH (core/vm.c): a freshly pushed handler
+     * must be ACTIVE, else cl_signal_condition's `if (!active) continue;`
+     * band gate (added when CLHS 9.1.4 handler-disabling landed) skips it and
+     * the condition escapes uncaught.  A reused stack slot can carry a stale
+     * active=0 from a prior band-disable, so this assignment is mandatory. */
+    cl_handler_stack[cl_handler_top].active = 1;
     cl_handler_top++;
 }
 
