@@ -1858,12 +1858,22 @@ when the param has no explicit default.  CL spec 3.4.6 requires this."
          (locally ,@body (get-output-stream-string ,var))
          (close ,var)))))
 
+;; with-input-from-string (var string &key index start end) decl* form*
+;; (CLHS).  START/END bound the substring made available through the stream;
+;; INDEX, if supplied, is a place set on exit (normal or non-local) to the
+;; index in STRING at which the stream stopped reading — the same value
+;; PARSE-INTEGER/PARSE-FLOAT return as their second value.
 (defmacro with-input-from-string (spec &body body)
-  (let ((var (car spec))
-        (string (cadr spec)))
-    `(let ((,var (make-string-input-stream ,string)))
+  (let* ((var (car spec))
+         (string (cadr spec))
+         (opts (cddr spec))
+         (index (getf opts :index))
+         (start (getf opts :start 0))
+         (end (getf opts :end)))
+    `(let ((,var (make-string-input-stream ,string ,start ,end)))
        (unwind-protect
          (locally ,@body)
+         ,@(when index `((setf ,index (file-position ,var))))
          (close ,var)))))
 
 ;; with-open-file — open a file stream, execute body, ensure close

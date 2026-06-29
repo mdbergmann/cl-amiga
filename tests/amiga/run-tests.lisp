@@ -2772,6 +2772,16 @@
 ; unread-char
 (check "unread-char" #\H (let ((s (make-string-input-stream "Hi"))) (let ((c (read-char s))) (unread-char c s) (read-char s))))
 
+; with-input-from-string :start/:end/:index (CLHS) and file-position vs peek/unread.
+; Regression for serapeum PARSE-FLOAT's second value (stop index over junk).
+(check "wifs :start value" 1 (with-input-from-string (s "21" :start 1) (read s)))
+(check "wifs :index value" 2 (let (pos) (with-input-from-string (s "21" :start 1 :index pos) (read s)) pos))
+(check "wifs :end bounds" 12 (with-input-from-string (s "12 34" :end 2) (read s nil :eof)))
+(check "file-position after peek" 1
+  (let (pos) (with-input-from-string (s "2x" :index pos) (read-char s) (peek-char nil s nil nil)) pos))
+(check "file-position after unread" 1
+  (let ((s (make-string-input-stream "ab"))) (read-char s) (read-char s) (unread-char #\b s) (file-position s)))
+
 ; write-string :start :end
 (check "write-string start end" "llo" (let ((s (make-string-output-stream))) (write-string "Hello" s :start 2 :end 5) (get-output-stream-string s)))
 
