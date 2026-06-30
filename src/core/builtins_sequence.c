@@ -378,6 +378,10 @@ static CL_Obj copy_array_seq(CL_Obj seq)
         rv = (CL_Vector *)CL_OBJ_TO_PTR(result);
         v = (CL_Vector *)CL_OBJ_TO_PTR(seq); /* refresh after alloc */
         memcpy(cl_vector_data(rv), cl_vector_data(v), alen * sizeof(CL_Obj));
+        /* Preserve the declared element type (serapeum VECT-TYPE / ansi
+         * COPY-SEQ.23): a copy of a specialized numeric vector must report the
+         * same ARRAY-ELEMENT-TYPE. */
+        rv->elt_type = v->elt_type;
     } else {
         /* bit vector */
         CL_BitVector *bv = (CL_BitVector *)CL_OBJ_TO_PTR(seq);

@@ -5408,6 +5408,23 @@
 (check "fixnum array still stores tagged values" 5
        (let ((a (make-array 2 :element-type 'fixnum)))
          (setf (aref a 0) 5) (aref a 0)))
+; copy-seq / subseq / make-sequence preserve a specialized element type
+(check "copy-seq preserves single-float element type" 'single-float
+       (array-element-type
+        (copy-seq (make-array 3 :element-type 'single-float
+                                :initial-contents '(1.0 2.0 3.0)))))
+(check "subseq preserves single-float element type" 'single-float
+       (array-element-type
+        (subseq (make-array 5 :element-type 'single-float
+                              :initial-contents '(1.0 2.0 3.0 4.0 5.0)) 1 4)))
+(check "make-sequence honors (vector single-float)" 'single-float
+       (array-element-type (make-sequence '(vector single-float) 4
+                                          :initial-element 1.0)))
+(check "make-sequence (vector single-float) typep" t
+       (typep (make-sequence '(vector single-float) 4 :initial-element 1.0)
+              '(vector single-float)))
+(check "copy-seq of general vector stays T" t
+       (eq 't (array-element-type (copy-seq (vector 1 2 3)))))
 
 ; --- CLOS Phase 9: print-object ---
 (check "print-object class" "#<STANDARD-CLASS INTEGER>" (print-object (find-class 'integer) nil))

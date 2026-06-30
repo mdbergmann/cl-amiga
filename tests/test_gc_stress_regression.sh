@@ -1038,6 +1038,29 @@ check_contains "make-array with deftype BIT alias makes a bit-vector"         "M
 check_contains "make-array with deftype T alias makes a vector"               "MKARR-T:T 42"     "$out"
 check_absent   "no corruption from stale element_type across classify GC"     "Unbound variable\|type 0\|corrupted\|Undefined" "$out"
 
+# --- Case: specialized element type preserved through seq fns under GC stress -
+# copy_array_seq / bi_subseq allocate a fresh result vector (which can compact)
+# and then copy the source data and element-type code across.  Exercise the
+# element-type propagation under stress so a stale source/result CL_Vector*
+# (wrong elt_type byte) would surface as a mismatched ARRAY-ELEMENT-TYPE.
+cat > "$WORK/seq-elt-type.lisp" <<'EOF'
+(dotimes (i 30)
+  (let* ((v (make-array 6 :element-type 'single-float
+                          :initial-contents '(1.0 2.0 3.0 4.0 5.0 6.0)))
+         (c (copy-seq v))
+         (s (subseq v 1 5))
+         (m (make-sequence '(vector single-float) 4 :initial-element 1.0)))
+    (declare (ignore i))
+    (format t "SEQ-ELT:~a ~a ~a ~a~%"
+            (array-element-type c) (array-element-type s)
+            (array-element-type m) (equalp v c))))
+EOF
+out=$(run_stress "$WORK/seq-elt-type.lisp")
+check_contains "copy-seq/subseq/make-sequence preserve SINGLE-FLOAT under stress" \
+               "SEQ-ELT:SINGLE-FLOAT SINGLE-FLOAT SINGLE-FLOAT T" "$out"
+check_absent   "no element-type corruption from seq fns under stress" \
+               "Unbound variable\|type 0\|corrupted\|Undefined" "$out"
+
 # --- Case: CLAMIGA::%TYPE-EXPANDER-driven TYPEXPAND under GC stress ----------
 # %type-expander returns the deftype expander closure; a portable typexpand
 # applies it to the compound type's args.  That apply runs user code that

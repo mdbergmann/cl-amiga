@@ -795,6 +795,7 @@ void cl_package_export_defined_cl_symbols(void)
  * builtins_io.c, compiler.c etc.) are intentionally omitted — those slots
  * are already filled. */
 static const char *const clos_internal_names[] = {
+    "+STANDARD-CLASS-SLOT-LAYOUT+",
     "%ADD-METHOD-TO-GF", "%ASSIGN-SLOT-LOCATIONS",
     "%BOA-PATCH-DEFAULTS", "%BODY-SIMPLE-PRIMARY-P",
     "%BUILD-DISCRIMINATING-FUNCTION",

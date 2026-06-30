@@ -752,6 +752,10 @@ static CL_Obj bi_subseq(CL_Obj *args, int n)
             CL_Obj *rdata = cl_vector_data(rv);
             for (i = 0; i < rlen; i++)
                 rdata[i] = data[start + i];
+            /* Preserve the declared element type (serapeum VECT-TYPE / ansi
+             * SUBSEQ.SPECIALIZED-VECTOR.2): a subsequence of a specialized
+             * numeric vector must report the same ARRAY-ELEMENT-TYPE. */
+            rv->elt_type = v->elt_type;
         }
         CL_GC_UNPROTECT(1);
         return result;
