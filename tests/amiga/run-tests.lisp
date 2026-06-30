@@ -742,14 +742,15 @@
   (nth-value 1 (compile nil '(lambda (x y z) (%amiga-eif x y z)))))
 (check "compile no warnings-p plain lambda" nil
   (nth-value 1 (compile nil '(lambda (x) x))))
-; Regression: pure ERROR (non-warning) at compile time sets failure-p but NOT
-; warnings-p (CLHS COMPILE: warnings-p reflects only WARNING conditions).
-; (signal ...) is used so the error is detected but not propagated.
+; Regression: a pure ERROR (non-warning) at compile time sets BOTH warnings-p
+; and failure-p (CLHS COMPILE: warnings-p is true for any condition of type
+; ERROR or WARNING).  (signal ...) is used so the error is detected but not
+; propagated.
 (defmacro %amiga-err-only ()
   (signal (make-condition 'simple-error :format-control "ct-err"))
   42)
-(check "compile error-only: warnings-p NIL" nil
-  (nth-value 1 (compile nil '(lambda () (%amiga-err-only)))))
+(check "compile error-only: warnings-p T" t
+  (not (null (nth-value 1 (compile nil '(lambda () (%amiga-err-only)))))))
 (check "compile error-only: failure-p T" t
   (not (null (nth-value 2 (compile nil '(lambda () (%amiga-err-only)))))))
 
