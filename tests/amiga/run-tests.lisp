@@ -6023,6 +6023,40 @@
 (check "long-form standard/context order" '(a/cx b/cx b/ar a/ar prim)
   (amc-scg (make-instance 'amc-sb)))
 
+; --- no-applicable-method (CLHS 7.6.6.3) ---
+; Standard GF exists and signals an error of type ERROR.
+(check "no-applicable-method is bound" t (and (fboundp 'no-applicable-method) t))
+(check "no-applicable-method signals error" t
+  (handler-case (no-applicable-method #'no-applicable-method (list 1))
+    (error (e) (typep e 'error))))
+; A direct call and a real dispatch miss signal the SAME condition type
+; (the serapeum NO-APPLICABLE-METHOD-ERROR pattern depends on this).
+(defgeneric nam-gwnm (x))
+(check "no-applicable-method consistent type" t
+  (eq (handler-case (no-applicable-method #'no-applicable-method (list 1))
+        (error (e) (type-of e)))
+      (handler-case (nam-gwnm 1)
+        (error (e) (type-of e)))))
+; Full serapeum deftype pattern: derive the miss type, catch a real miss.
+(deftype nam-err ()
+  (load-time-value
+   (handler-case (no-applicable-method #'no-applicable-method (list 1))
+     (error (e) (type-of e)))))
+(defgeneric nam-gwnm2 (x))
+(check "no-applicable-method deftype proper-subtype" t
+  (and (subtypep 'nam-err 'error)
+       (not (nth-value 0 (subtypep 'error 'nam-err)))))
+(check "no-applicable-method deftype catches miss" 'caught
+  (handler-case (nam-gwnm2 1) (nam-err () 'caught)))
+; CLHS 7.6.6.3: a user method on no-applicable-method that returns normally
+; must have its return value propagated (regression for when vs return-from).
+(defgeneric nam-rv-gf (x))
+(defmethod no-applicable-method ((gf (eql #'nam-rv-gf)) &rest args)
+  (declare (ignore args))
+  42)
+(check "no-applicable-method return value propagated" 42
+  (nam-rv-gf 'anything))
+
 ; ============================================================
 ; Threading (MP package)
 ; ============================================================

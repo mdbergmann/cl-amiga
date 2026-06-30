@@ -1688,6 +1688,18 @@ When called with no arguments, passes the original method arguments."
           (push ht result)))
       (nreverse result))))
 
+(defun %no-applicable-method (gf args)
+  "Invoke the standard NO-APPLICABLE-METHOD generic function (CLHS 7.6.6.3)
+   for a dispatch miss on GF with ARGS (a list).  Centralizes every
+   no-applicable-method signal so user methods on NO-APPLICABLE-METHOD see
+   every miss, and so the signaled condition type is uniform.  Falls back to
+   a plain error if NO-APPLICABLE-METHOD is not yet defined (early boot,
+   before its GF is established)."
+  (if (fboundp 'no-applicable-method)
+      (apply #'no-applicable-method gf args)
+      (error "No applicable method for ~S with args of types ~S"
+             (gf-name gf) (mapcar #'type-of args))))
+
 (defun %gf-dispatch-eql (gf args)
   "Dispatch a GF with EQL specializers using mixed EQL/class cache.
    Cache structure at each level: (eql-ht . class-ht) cons.
@@ -1737,8 +1749,7 @@ When called with no arguments, passes the original method arguments."
           (if found
               (if emf
                   (apply emf args)
-                  (error "No applicable method for ~S with args of types ~S"
-                         (gf-name gf) (mapcar #'type-of args)))
+                  (%no-applicable-method gf args))
               (let ((methods (%compute-applicable-methods gf args)))
                 (if methods
                     (let ((new-emf (%dispatch-build-emf gf methods)))
@@ -1746,8 +1757,7 @@ When called with no arguments, passes the original method arguments."
                       (apply new-emf args))
                     (progn
                       (setf (gethash key ht) nil)
-                      (error "No applicable method for ~S with args of types ~S"
-                             (gf-name gf) (mapcar #'type-of args)))))))))))
+                      (%no-applicable-method gf args))))))))))
 
 (defun %gf-dispatch-cached (gf args n-specialized)
   "Look up or compute effective method using nested class cache.
@@ -1780,8 +1790,7 @@ When called with no arguments, passes the original method arguments."
           (if found
               (if emf
                   (apply emf args)
-                  (error "No applicable method for ~S with args of types ~S"
-                         (gf-name gf) (mapcar #'type-of args)))
+                  (%no-applicable-method gf args))
               (let ((methods (%compute-applicable-methods gf args)))
                 (if methods
                     (let ((new-emf (%dispatch-build-emf gf methods)))
@@ -1789,8 +1798,7 @@ When called with no arguments, passes the original method arguments."
                       (apply new-emf args))
                     (progn
                       (setf (gethash class table) nil)
-                      (error "No applicable method for ~S with args of types ~S"
-                             (gf-name gf) (mapcar #'type-of args)))))))))))
+                      (%no-applicable-method gf args))))))))))
 
 ;;; --- GF dispatch ---
 
@@ -1806,9 +1814,8 @@ When called with no arguments, passes the original method arguments."
        (%gf-dispatch-eql gf args))
       (t
        (let ((methods (%compute-applicable-methods gf args)))
-         (when (null methods)
-           (error "No applicable method for ~S with args of types ~S"
-                  (gf-name gf) (mapcar #'type-of args)))
+         (unless methods
+           (return-from %gf-dispatch (%no-applicable-method gf args)))
          (let ((*current-method-args* args))
            (apply (%dispatch-build-emf gf methods) args)))))))
 
@@ -1859,8 +1866,7 @@ When called with no arguments, passes the original method arguments."
 ;;; EQL-dispatched paths.
 
 (defun %gf-1-no-method-error (gf a)
-  (error "No applicable method for ~S with args of types ~S"
-         (gf-name gf) (list (type-of a))))
+  (%no-applicable-method gf (list a)))
 
 (defun %gf-dispatch-1-slow (gf a)
   (let ((mode (gf-cacheable-p gf))
@@ -1892,8 +1898,7 @@ When called with no arguments, passes the original method arguments."
       (t (%gf-dispatch gf args)))))
 
 (defun %gf-2-no-method-error (gf a b)
-  (error "No applicable method for ~S with args of types ~S"
-         (gf-name gf) (list (type-of a) (type-of b))))
+  (%no-applicable-method gf (list a b)))
 
 (defun %gf-2-resolve (gf a b args table key c1 c2)
   "Look up EMF for the 2-arg call in TABLE keyed by KEY; compute on
@@ -2380,6 +2385,20 @@ already-existing GF the installed combination is preserved."
 (defgeneric initialize-instance (instance &rest initargs))
 (defmethod initialize-instance ((instance t) &rest initargs)
   (apply #'shared-initialize instance t initargs))
+
+;;; --- no-applicable-method (CLHS 7.6.6.3) ---
+;;; Called by the dispatch machinery (via %NO-APPLICABLE-METHOD) when a
+;;; generic function is invoked and no method is applicable.  Defined as a
+;;; generic function so users can specialize it on a generic-function to
+;;; customize the behavior; the default method signals an error of type
+;;; ERROR (a SIMPLE-ERROR), as the standard requires.
+(defgeneric no-applicable-method (generic-function &rest function-arguments))
+(defmethod no-applicable-method ((generic-function t) &rest function-arguments)
+  (error "No applicable method for ~S with args of types ~S"
+         (if (typep generic-function 'standard-generic-function)
+             (gf-name generic-function)
+             generic-function)
+         (mapcar #'type-of function-arguments)))
 
 ;;; --- slot-unbound as a generic function ---
 ;;; Upgrade the plain function to a GF so that classes can specialize

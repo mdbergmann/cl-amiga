@@ -1462,7 +1462,7 @@ static const char *const cl_reserved_symbol_names[] = {
     "MAKE-INSTANCES-OBSOLETE", "MAKE-LOAD-FORM",
     "MAKE-METHOD", "MAKE-TWO-WAY-STREAM",
     "METHOD", "METHOD-COMBINATION",
-    "NO-APPLICABLE-METHOD", "NO-NEXT-METHOD",
+    "NO-NEXT-METHOD",
     "PHASE",
     "RESTART",
     "SIGNED-BYTE", "SIGNUM",
