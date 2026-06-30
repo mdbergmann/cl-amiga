@@ -634,10 +634,12 @@ CL_Obj *cl_vector_data_fn(CL_Vector *v)
 {
     uint32_t offset = 0;
     while (v->flags & CL_VEC_FLAG_DISPLACED) {
-        /* data[1] stores displaced-index-offset as a fixnum (0 for internal displacement) */
-        if (CL_FIXNUM_P(v->data[1]))
-            offset += (uint32_t)CL_FIXNUM_VAL(v->data[1]);
-        v = (CL_Vector *)CL_OBJ_TO_PTR(v->data[0]);
+        /* Backing ref at data[base], displaced-index-offset (fixnum) at
+         * data[base+1].  base accounts for multi-dim dimension storage. */
+        uint32_t base = CL_DISP_BASE_IDX(v);
+        if (CL_FIXNUM_P(v->data[base + 1]))
+            offset += (uint32_t)CL_FIXNUM_VAL(v->data[base + 1]);
+        v = (CL_Vector *)CL_OBJ_TO_PTR(v->data[base]);
     }
     {
         CL_Obj *base = v->rank > 1 ? &v->data[v->rank] : v->data;
@@ -1030,8 +1032,9 @@ static void gc_mark_children(void *ptr, uint8_t type)
         CL_Vector *v = (CL_Vector *)ptr;
         uint32_t i;
         if (v->flags & CL_VEC_FLAG_DISPLACED) {
-            /* Displaced: data[0] is the backing vector reference */
-            gc_mark_push(v->data[0]);
+            /* Displaced: the backing vector reference is at data[base]
+             * (base skips multi-dim dimension storage). */
+            gc_mark_push(v->data[CL_DISP_BASE_IDX(v)]);
         } else {
             /* For multi-dim: data[0..rank-1] are dim fixnums, elements at data[rank..] */
             uint32_t n_entries = (v->rank > 1) ? (uint32_t)v->rank + v->length : v->length;
@@ -1991,7 +1994,7 @@ static void gc_update_children(void *ptr, uint8_t type)
         CL_Vector *v = (CL_Vector *)ptr;
         uint32_t i;
         if (v->flags & CL_VEC_FLAG_DISPLACED) {
-            gc_update_slot(&v->data[0]);
+            gc_update_slot(&v->data[CL_DISP_BASE_IDX(v)]);
         } else {
             uint32_t n_entries = (v->rank > 1) ? (uint32_t)v->rank + v->length : v->length;
             for (i = 0; i < n_entries; i++)
@@ -2590,7 +2593,7 @@ void cl_gc_compact(void)
             } else if (vtype == TYPE_VECTOR) {
                 CL_Vector *v = (CL_Vector *)vptr;
                 uint32_t vi;
-                uint32_t nelt = (v->flags & CL_VEC_FLAG_DISPLACED) ? 1 :
+                uint32_t nelt = (v->flags & CL_VEC_FLAG_DISPLACED) ? CL_DISP_BASE_IDX(v) + 2 :
                                 ((v->rank > 1) ? (uint32_t)v->rank + v->length : v->length);
                 for (vi = 0; vi < nelt && vc_errs < 5; vi++) {
                     CL_Obj elt = v->data[vi];
@@ -2751,7 +2754,8 @@ static void gc_verify_marked(void)
                 CL_Vector *v = (CL_Vector *)ptr;
                 uint32_t i;
                 if (v->flags & CL_VEC_FLAG_DISPLACED) {
-                    gc_verify_check_ref(parent_off, "displaced", v->data[0]);
+                    gc_verify_check_ref(parent_off, "displaced",
+                                        v->data[CL_DISP_BASE_IDX(v)]);
                 } else {
                     uint32_t n = (v->rank > 1) ? (uint32_t)v->rank + v->length : v->length;
                     for (i = 0; i < n; i++)
@@ -2945,7 +2949,7 @@ static void gc_verify_after_sweep(void)
                 CL_Vector *v = (CL_Vector *)ptr;
                 uint32_t i;
                 if (v->flags & CL_VEC_FLAG_DISPLACED) {
-                    CHECK_FIELD(v->data[0], "displaced");
+                    CHECK_FIELD(v->data[CL_DISP_BASE_IDX(v)], "displaced");
                 } else {
                     uint32_t n = (v->rank > 1) ? (uint32_t)v->rank + v->length : v->length;
                     for (i = 0; i < n; i++)
