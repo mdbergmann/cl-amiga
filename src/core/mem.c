@@ -173,18 +173,27 @@ void cl_mem_init(uint32_t heap_size)
     platform_mutex_init(&alloc_mutex);
 }
 
-/* Persistent JIT-stack scan/forward candidate buffers — defined here
- * so cl_mem_shutdown can free them; helpers and full doc live with
- * gc_scan_jit_native_stack / gc_forward_jit_native_stack below. */
-typedef struct {
-    uint32_t  value;
-    CL_Obj   *addr;
-} JitFwdCandidate;
-
+/* Persistent JIT-stack scan candidate buffer — defined here so
+ * cl_mem_shutdown can free it; helpers and full doc live with
+ * gc_scan_jit_native_stack below. */
 static uint32_t        *jit_scan_cand_buf = NULL;
 static int              jit_scan_cand_cap = 0;
-static JitFwdCandidate *jit_fwd_cand_buf  = NULL;
-static int              jit_fwd_cand_cap  = 0;
+
+/* Pinned-object set for the moving compactor (option B).  The mark-phase
+ * conservative JIT-stack scan records, in ascending arena-offset order,
+ * every *validated* real-object offset referenced from the current
+ * thread's JIT m68k stack.  gc_compute_forwarding keeps these objects at
+ * their current offset (forwarding = identity) so the JIT's spilled
+ * operand pointers and any C-stack words that merely *look* like heap
+ * offsets stay valid without rewriting the C stack.  This replaces the
+ * old gc_forward_jit_native_stack writeback, which could mis-rewrite a
+ * coincidental-integer C-stack word that happened to equal a live
+ * object's offset (a layout-roulette corruption — see
+ * specs/native-backend.md §"GC interaction").  Rebuilt every mark; only
+ * non-empty when a JIT frame is live (jit_depth > 0). */
+static uint32_t        *jit_pinned       = NULL;
+static int              jit_pinned_count = 0;
+static int              jit_pinned_cap   = 0;
 
 /* Set during a compaction's reference-update pass when at least one
  * CL_Obj immediate baked into JIT native code was rewritten in place.
@@ -203,10 +212,11 @@ void cl_mem_shutdown(void)
         jit_scan_cand_buf = NULL;
         jit_scan_cand_cap = 0;
     }
-    if (jit_fwd_cand_buf) {
-        platform_free(jit_fwd_cand_buf);
-        jit_fwd_cand_buf = NULL;
-        jit_fwd_cand_cap = 0;
+    if (jit_pinned) {
+        platform_free(jit_pinned);
+        jit_pinned = NULL;
+        jit_pinned_cap = 0;
+        jit_pinned_count = 0;
     }
     if (alloc_mutex) {
         platform_mutex_destroy(alloc_mutex);
@@ -1237,6 +1247,31 @@ static int cand_cmp(const void *a, const void *b)
     return (aa < bb) ? -1 : (aa > bb) ? 1 : 0;
 }
 
+/* Append a validated pinned offset.  Called from gc_scan_jit_native_stack's
+ * ascending arena walk, so the array stays sorted; skip consecutive
+ * duplicates (multiple stack slots can reference the same object).  On
+ * OOM the object is still marked live (gc_mark_obj already ran) — it just
+ * won't be pinned, so it may move; that reintroduces the staleness risk
+ * for this one cycle but never corrupts, so a best-effort append is safe. */
+static void jit_pin_record(uint32_t offset)
+{
+    if (jit_pinned_count > 0 && jit_pinned[jit_pinned_count - 1] == offset)
+        return;
+    if (jit_pinned_count >= jit_pinned_cap) {
+        int new_cap = jit_pinned_cap ? jit_pinned_cap * 2 : 256;
+        uint32_t *buf = (uint32_t *)platform_alloc(
+            (unsigned long)new_cap * sizeof(uint32_t));
+        if (!buf) return;
+        if (jit_pinned) {
+            memcpy(buf, jit_pinned, (size_t)jit_pinned_count * sizeof(uint32_t));
+            platform_free(jit_pinned);
+        }
+        jit_pinned = buf;
+        jit_pinned_cap = new_cap;
+    }
+    jit_pinned[jit_pinned_count++] = offset;
+}
+
 static int cand_bsearch(const uint32_t *arr, int n, uint32_t key)
 {
     int lo = 0, hi = n - 1;
@@ -1315,6 +1350,11 @@ static void gc_scan_jit_native_stack(CL_Thread *t)
         offset = (uint32_t)(p - cl_heap.arena);
         if (cand_bsearch(candidates, n_cand, offset)) {
             gc_mark_obj((CL_Obj)offset);
+            /* Pin it: the compactor must not move an object reachable only
+             * through a conservative (offset-valued) C-stack reference, or
+             * the JIT's spilled pointer would dangle.  Recorded in ascending
+             * order (this walk is monotonic) for gc_compute_forwarding. */
+            jit_pin_record(offset);
         }
         p += size;
     }
@@ -1454,6 +1494,10 @@ static void gc_mark(void)
     CL_Thread *t;
 
     gc_mark_overflow = 0;
+    /* Reset the pinned-object set; the conservative JIT-stack scan
+     * (gc_scan_jit_native_stack, reached via gc_mark_thread_roots) rebuilds
+     * it this cycle.  Stays empty unless a JIT frame is live. */
+    jit_pinned_count = 0;
 
     /* Mark all roots directly (not via gc_mark_push).
      * gc_mark_obj immediately sets the mark bit then pushes children.
@@ -1759,144 +1803,46 @@ static void gc_compute_forwarding(void)
 {
     uint8_t *ptr = cl_heap.arena + CL_ALIGN;
     uint8_t *end = cl_heap.arena + cl_heap.bump;
-    uint32_t new_offset = CL_ALIGN;  /* Skip offset 0 (NIL sentinel) */
+    uint32_t new_offset = CL_ALIGN;  /* free pointer; skip offset 0 (NIL) */
+    int pin_i = 0;                   /* index into the sorted jit_pinned[] */
 
     while (ptr < end) {
         uint32_t size = CL_HDR_SIZE(ptr);
+        uint32_t old_offset;
         if (size == 0) break;
 
         if (CL_HDR_MARKED(ptr)) {
-            uint32_t old_offset = (uint32_t)(ptr - cl_heap.arena);
-            gc_fwd_table[old_offset / CL_ALIGN] = new_offset;
-            new_offset += size;
+            old_offset = (uint32_t)(ptr - cl_heap.arena);
+
+            /* Advance past pins below this object (jit_pinned[] is sorted
+             * ascending, and we visit objects in ascending offset order). */
+            while (pin_i < jit_pinned_count && jit_pinned[pin_i] < old_offset)
+                pin_i++;
+
+            if (pin_i < jit_pinned_count && jit_pinned[pin_i] == old_offset) {
+                /* Pinned: keep in place.  The free pointer is <= old_offset
+                 * here (all live data below this object compacts into
+                 * [CL_ALIGN, old_offset)), so leaving [new_offset, old_offset)
+                 * as a temporary hole and resuming the free pointer at the
+                 * pin's end preserves the monotonic, no-overlap invariant. */
+                gc_fwd_table[old_offset / CL_ALIGN] = old_offset;
+                new_offset = old_offset + size;
+                pin_i++;
+            } else {
+                gc_fwd_table[old_offset / CL_ALIGN] = new_offset;
+                new_offset += size;
+            }
         }
         ptr += size;
     }
 }
 
-/* Conservative forwarding-update pass for a thread's JIT m68k stack.
- * Mirrors gc_scan_jit_native_stack from the mark phase: same two-phase
- * candidate collection, same offset validation against real header
- * positions, same scan-window bounds.  Difference is the second phase
- * writes the forwarding offset back to the stack slot instead of
- * calling gc_mark_obj.
- *
- * Without this pass, conservatively marked JIT-spilled offsets survive
- * the sweep (so the object lives) but the spill slots still hold the
- * pre-slide offset — every subsequent read from those slots dereferences
- * a moved object's old position.  Cache reg copies in D5/D6/D7 stay
- * stale unconditionally (registers aren't memory), so JIT'd code MUST
- * reload from these stack slots after any allocating helper.
- *
- * Runs in Pass 3 of cl_gc_compact, after gc_compute_forwarding has
- * populated gc_fwd_table and before gc_slide moves the objects.
- *
- * Capacity policy matches the marker: a persistent, grow-on-demand
- * buffer in mem.c static storage, pre-sized once per call to the scan
- * window's word count.  Overflow is impossible by construction; steady
- * state is zero allocations per GC. */
-static int jit_fwd_cand_reserve(int need)
-{
-    int new_cap;
-    JitFwdCandidate *buf;
-    if (jit_fwd_cand_cap >= need) return 1;
-    new_cap = jit_fwd_cand_cap ? jit_fwd_cand_cap : 256;
-    while (new_cap < need) new_cap *= 2;
-    buf = (JitFwdCandidate *)platform_alloc(
-        (unsigned long)new_cap * sizeof(JitFwdCandidate));
-    if (!buf) return 0;
-    if (jit_fwd_cand_buf) platform_free(jit_fwd_cand_buf);
-    jit_fwd_cand_buf = buf;
-    jit_fwd_cand_cap = new_cap;
-    return 1;
-}
-
-static int jit_fwd_cand_cmp(const void *a, const void *b)
-{
-    uint32_t aa = ((const JitFwdCandidate *)a)->value;
-    uint32_t bb = ((const JitFwdCandidate *)b)->value;
-    return (aa < bb) ? -1 : (aa > bb) ? 1 : 0;
-}
-
-static void gc_forward_jit_native_stack(CL_Thread *t)
-{
-    JitFwdCandidate *candidates;
-    int n_cand = 0;
-    int upper;
-    char *scan_lo;
-    char *scan_hi;
-    uintptr_t addr;
-    uint8_t *p;
-    uint8_t *end;
-    int ci;
-    static int oom_warned = 0;
-
-    if (t->jit_depth <= 0 || t->jit_stack_top == NULL) return;
-    if (t != cl_get_current_thread()) return;
-
-    scan_lo = (char *)&scan_lo;
-    scan_hi = (char *)t->jit_stack_top;
-    if (scan_hi <= scan_lo) return;
-
-    addr = (uintptr_t)scan_lo;
-    addr = (addr + 3u) & ~(uintptr_t)3u;
-    if (addr + 4 > (uintptr_t)scan_hi) return;
-
-    upper = (int)(((uintptr_t)scan_hi - addr) / 4);
-    if (!jit_fwd_cand_reserve(upper)) {
-        if (!oom_warned) {
-            oom_warned = 1;
-            platform_write_string(
-                "GC: JIT native-stack forward buffer allocation failed — "
-                "some slots may not be updated this cycle\n");
-        }
-        return;
-    }
-    candidates = jit_fwd_cand_buf;
-
-    /* Phase 1: collect (slot-address, value) pairs.  Same filter as the
-     * marker, plus we keep the address so we can write back. */
-    for (; addr + 4 <= (uintptr_t)scan_hi; addr += 4) {
-        CL_Obj w = *(const CL_Obj *)(uintptr_t)addr;
-        if (CL_NULL_P(w) || CL_FIXNUM_P(w) || CL_CHAR_P(w)) continue;
-        if (w >= cl_heap.arena_size) continue;
-        candidates[n_cand].value = (uint32_t)w;
-        candidates[n_cand].addr  = (CL_Obj *)(uintptr_t)addr;
-        n_cand++;
-    }
-
-    if (n_cand == 0) return;
-
-    qsort(candidates, n_cand, sizeof(JitFwdCandidate), jit_fwd_cand_cmp);
-
-    /* Phase 2: merge-walk the pre-slide arena and the sorted candidates.
-     * For each real header offset, advance past phantom mid-object
-     * candidates (value < offset), then forward every candidate whose
-     * value matches the header offset exactly. */
-    p   = cl_heap.arena + CL_ALIGN;
-    end = cl_heap.arena + cl_heap.bump;
-    ci  = 0;
-    while (p < end && ci < n_cand) {
-        uint32_t size = CL_HDR_SIZE(p);
-        uint32_t offset;
-        if (size == 0) break;
-        offset = (uint32_t)(p - cl_heap.arena);
-
-        while (ci < n_cand && candidates[ci].value < offset) ci++;
-
-        while (ci < n_cand && candidates[ci].value == offset) {
-            uint32_t idx = offset / CL_ALIGN;
-            if (idx < gc_fwd_table_entries) {
-                uint32_t fwd = gc_fwd_table[idx];
-                if (fwd != 0)
-                    *candidates[ci].addr = (CL_Obj)fwd;
-            }
-            ci++;
-        }
-
-        p += size;
-    }
-}
+/* (The former gc_forward_jit_native_stack writeback pass was removed when
+ * the compactor switched to pinning conservatively-referenced objects —
+ * option B in specs/native-backend.md §"GC interaction".  Pinned objects
+ * never move, so the JIT's spilled operand offsets on the C stack stay
+ * valid with no writeback, and a coincidental-integer C-stack word that
+ * merely equals a live object's offset is no longer mis-rewritten.) */
 
 /* Translate a CL_Obj through the forwarding table.
  * Returns obj unchanged if it's not a movable heap pointer. */
@@ -2225,9 +2171,10 @@ static void gc_update_thread_roots(CL_Thread *t)
         }
     }
 
-    /* JIT native stack — conservative forward update mirrors the
-     * mark-phase scan in gc_mark_thread_roots. */
-    gc_forward_jit_native_stack(t);
+    /* JIT native stack needs no forward-update pass: the mark-phase scan
+     * (gc_scan_jit_native_stack) pins every conservatively-referenced
+     * object, so they stay at their current offset and the JIT's spilled
+     * C-stack offsets remain valid without rewriting the stack. */
 }
 #define gc_root_count (CT->gc_root_count)
 
@@ -2318,13 +2265,53 @@ static void gc_update_all_references(void)
     }
 }
 
+/* Write valid free-block header(s) covering [offset, offset+total) and
+ * thread them onto the free list, so the arena's linear "walk by header
+ * size" stays consistent across the gap.  Mirrors gc_sweep's free-block
+ * format (size in the header low bits, type/mark = 0 → an unmarked block
+ * the walk skips).  Splits gaps larger than the 23-bit size field into
+ * multiple blocks.  `total` is always a CL_ALIGN multiple and, when
+ * non-zero, >= CL_MIN_ALLOC_SIZE (>= sizeof(CL_FreeBlock)), so every
+ * piece can hold the 8-byte header. */
+static void gc_make_free_gap(uint32_t offset, uint32_t total)
+{
+    while (total > 0) {
+        uint32_t chunk = total;
+        if (chunk > CL_HDR_SIZE_MASK)
+            chunk = CL_HDR_SIZE_MASK & ~(uint32_t)(CL_ALIGN - 1);
+        {
+            CL_FreeBlock *fb = (CL_FreeBlock *)(cl_heap.arena + offset);
+            fb->size = chunk;                       /* type=0, mark=0, size=chunk */
+            fb->next_offset = cl_heap.free_list;
+            cl_heap.free_list = offset;
+#ifdef DEBUG_GC
+            if (chunk > sizeof(CL_FreeBlock))
+                memset((uint8_t *)fb + sizeof(CL_FreeBlock), 0xDE,
+                       chunk - sizeof(CL_FreeBlock));
+#endif
+        }
+        offset += chunk;
+        total  -= chunk;
+    }
+}
+
 /* Pass 4: Slide live objects to their forwarding addresses.
- * Objects only move downward (or stay), so forward copy is safe. */
+ * Objects only move downward (or stay), so forward copy is safe.
+ *
+ * Pinned objects (option B) keep their offset, which can leave a gap
+ * between the compacted run below them and the pin.  Those gaps are
+ * filled with free-block headers (gc_make_free_gap) and threaded onto
+ * the free list — both so the linear arena walk stays valid and so the
+ * allocator can reclaim the space.  With no pins this degenerates to a
+ * gap-free compaction (free_list ends empty). */
 static void gc_slide(void)
 {
     uint8_t *ptr = cl_heap.arena + CL_ALIGN;
     uint8_t *end = cl_heap.arena + cl_heap.bump;
-    uint32_t new_bump = CL_ALIGN;
+    uint32_t fill = CL_ALIGN;          /* next contiguous position in new layout */
+    uint32_t live_total = 0;
+
+    cl_heap.free_list = 0;
 
     while (ptr < end) {
         uint32_t size = CL_HDR_SIZE(ptr);
@@ -2337,9 +2324,14 @@ static void gc_slide(void)
             /* Clear mark bit before copying */
             CL_HDR_CLR_MARK(ptr);
 
+            /* Gap before this object's new position (only at pins) → free. */
+            if (new_offset > fill)
+                gc_make_free_gap(fill, new_offset - fill);
+
             if (new_offset != old_offset)
                 memmove(cl_heap.arena + new_offset, ptr, size);
-            new_bump = new_offset + size;
+            fill = new_offset + size;
+            live_total += size;
         } else {
             /* Dead object — release external resources before overwriting */
             gc_finalize_dead(ptr);
@@ -2347,9 +2339,10 @@ static void gc_slide(void)
         ptr += size;
     }
 
-    cl_heap.bump = new_bump;
-    cl_heap.free_list = 0;  /* No fragmentation after compaction */
-    cl_heap.total_allocated = new_bump - CL_ALIGN;
+    cl_heap.bump = fill;
+    /* total_allocated counts live data; gap free-blocks below bump are on
+     * the free list and excluded (matches gc_sweep's accounting). */
+    cl_heap.total_allocated = live_total;
 }
 
 /* Is a key's hash address-sensitive — i.e. does it change when the compacting

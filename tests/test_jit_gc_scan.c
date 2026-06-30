@@ -23,7 +23,10 @@
  * window.  That forces the value to be observable in memory at GC
  * time, exactly like a JIT-spilled operand.
  *
- * See specs/native-backend.md §"GC interaction" option A.
+ * The moving compactor PINS conservatively-referenced objects (they keep
+ * their offset) rather than rewriting the C stack, so the JIT's spilled
+ * pointers stay valid and coincidental-integer C-stack words are never
+ * mis-rewritten.  See specs/native-backend.md §"GC interaction" option B.
  */
 
 extern volatile int cl_jit_active_threads;  /* mem.c */
@@ -202,100 +205,21 @@ static void zero_scratch_stack(void)
     for (i = 0; i < (int)sizeof(buf); i++) buf[i] = 0;
 }
 
-/* --- Compaction's update phase forwards JIT-stack candidates in place.
- * Without this pass, a JIT-spilled offset survives the sweep (conservative
- * scan keeps the object alive) but the slot still holds the pre-slide
- * offset and dereferences the object's *old* arena position after
- * compaction.  The forwarding pass mirrors the mark-phase scan and
- * rewrites each candidate slot to gc_fwd_table[offset/CL_ALIGN].
+/* --- Compaction PINS objects reachable only through a conservative
+ * (offset-valued) JIT-stack reference: option B in
+ * specs/native-backend.md §"GC interaction".  A pinned object keeps its
+ * arena offset across a moving compaction, so the JIT's spilled operand
+ * pointer (and any C-stack word that merely looks like that offset) stays
+ * valid with NO stack writeback — which is what eliminates the old
+ * coincidental-integer corruption.
  *
- * The kept cons is also rooted via CL_GC_PROTECT.  That way the test
- * doesn't depend on conservative-scan-as-liveness — both the protected
- * local and the JIT-stack slot must resolve to the same forwarded
- * offset, which is the exact invariant the new pass enforces. --- */
+ * Here the kept cons is referenced ONLY from the volatile JIT-stack slot
+ * buf[1] (not CL_GC_PROTECT'd), so the conservative scan is its sole
+ * root.  After compaction it must (a) still be alive, (b) sit at the SAME
+ * offset (pinned, not moved), and (c) be reachable through the untouched
+ * buf[1] slot. --- */
 
-/* Static so -O3 -flto can't prove the local doesn't escape an external
- * write — cl_gc_compact updates this slot via the CL_GC_PROTECT path,
- * and the optimizer treats reads after the call as needing a reload.
- * Reset per test. */
-static CL_Obj test_kept_slot;
-
-TEST(forward_updates_jit_stack)
-{
-    volatile CL_Obj buf[4];
-    uint32_t old_off, new_off_from_root, new_off_from_buf;
-
-    setup();
-    test_kept_slot = CL_NIL;
-
-    /* Wipe C-stack debris from prior tests BEFORE allocating, so any
-     * stale CL_Obj values left by earlier RUN()s can't be conservatively
-     * rooted by the scan during compaction.  zero_scratch_stack writes
-     * 128 KB of zeros into the stack region the scan will walk. */
-    zero_scratch_stack();
-
-    /* Garbage allocated BEFORE the kept cons so compaction has to
-     * slide it forward.  Unrooted → unmarked → elided in pass 4. */
-    {
-        int i;
-        for (i = 0; i < 100; i++)
-            cl_cons(CL_MAKE_FIXNUM(i), CL_NIL);
-    }
-
-    test_kept_slot = cl_cons(CL_MAKE_FIXNUM(42), CL_MAKE_FIXNUM(99));
-    CL_GC_PROTECT(test_kept_slot);
-    old_off = (uint32_t)test_kept_slot;
-
-    buf[0] = 0;
-    buf[1] = test_kept_slot;
-    buf[2] = 0;
-    buf[3] = 0;
-
-    CT->jit_stack_top = (void *)((char *)&buf[3] + sizeof(buf[0]) + 16);
-    CT->jit_depth = 1;
-    cl_jit_active_threads = 1;
-
-    cl_gc_compact();
-
-    new_off_from_root = (uint32_t)test_kept_slot;
-    new_off_from_buf  = (uint32_t)buf[1];
-
-    /* Both paths (CL_GC_PROTECT update and JIT-stack forwarding) must
-     * land on the same forwarded offset.  This is the load-bearing
-     * invariant the new pass enforces. */
-    ASSERT_EQ_INT(new_off_from_buf, new_off_from_root);
-
-    /* And the new offset still resolves to the original cons. */
-    ASSERT(CL_CONS_P(test_kept_slot));
-    ASSERT_EQ_INT(CL_FIXNUM_VAL(cl_car(test_kept_slot)), 42);
-    ASSERT_EQ_INT(CL_FIXNUM_VAL(cl_cdr(test_kept_slot)), 99);
-
-    /* Movement is a desirable precondition (otherwise the equality
-     * above is vacuous), but the conservative scan running with
-     * jit_depth=1 can pin garbage from C-stack debris and prevent
-     * the slide.  Treat it as a smoke check — log but don't fail.
-     * forward_skipped_when_depth_zero (jit_depth=0) is where we get
-     * the firm "kept actually moves" assertion. */
-    if (new_off_from_root == old_off) {
-        printf("  NOTE: kept did not move (conservative-scan pinning) — "
-               "equality test still validated forwarding consistency\n");
-    }
-
-    CL_GC_UNPROTECT(1);
-    (void)buf;
-    cl_jit_active_threads = 0;
-    CT->jit_depth = 0;
-    CT->jit_stack_top = NULL;
-    test_kept_slot = CL_NIL;
-    teardown();
-}
-
-/* --- Same setup with jit_depth == 0: forwarding pass must skip the
- * stack window, so the slot keeps its pre-compaction offset.  Pairs
- * with `forward_updates_jit_stack` the way `scan_skipped_when_depth_zero`
- * pairs with `scan_keeps_obj_alive`. --- */
-
-TEST(forward_skipped_when_depth_zero)
+TEST(pinned_obj_does_not_move)
 {
     volatile CL_Obj buf[4];
     CL_Obj kept;
@@ -303,6 +227,12 @@ TEST(forward_skipped_when_depth_zero)
 
     setup();
 
+    /* Wipe C-stack debris from prior tests so stale CL_Obj values can't
+     * be conservatively pinned by the scan during compaction. */
+    zero_scratch_stack();
+
+    /* Garbage before the kept cons — unrooted, reclaimed by compaction
+     * (proves the compaction actually ran and slid live data). */
     {
         int i;
         for (i = 0; i < 100; i++)
@@ -310,9 +240,82 @@ TEST(forward_skipped_when_depth_zero)
     }
 
     kept = cl_cons(CL_MAKE_FIXNUM(42), CL_MAKE_FIXNUM(99));
-    CL_GC_PROTECT(kept);
     old_off = (uint32_t)kept;
 
+    buf[0] = 0;
+    buf[1] = kept;          /* sole reference: a conservative JIT-stack root */
+    buf[2] = 0;
+    buf[3] = 0;
+    kept = CL_NIL;          /* drop the precise local; only buf[1] roots it */
+
+    CT->jit_stack_top = (void *)((char *)&buf[3] + sizeof(buf[0]) + 16);
+    CT->jit_depth = 1;
+    cl_jit_active_threads = 1;
+
+    cl_gc_compact();
+
+    /* Pinned: the object stayed at its original offset, and buf[1] — never
+     * rewritten — still points at it.  Content intact. */
+    ASSERT_EQ_INT((uint32_t)buf[1], old_off);
+    ASSERT(!test_is_freed(old_off));
+    ASSERT(CL_CONS_P((CL_Obj)old_off));
+    ASSERT_EQ_INT(CL_FIXNUM_VAL(cl_car((CL_Obj)old_off)), 42);
+    ASSERT_EQ_INT(CL_FIXNUM_VAL(cl_cdr((CL_Obj)old_off)), 99);
+
+    /* Pinning the cons above the reclaimed garbage leaves a gap below it.
+     * That gap MUST be filled with valid free-block headers, or the GC's
+     * linear arena walk (which steps by header size from CL_ALIGN) desyncs
+     * on the stale bytes — the exact "CAR: not a LIST" corruption this fix
+     * addresses.  Exercise the walk: drop the pin and run more GCs + allocs;
+     * a desync would crash or corrupt here. */
+    CT->jit_depth = 0;
+    CT->jit_stack_top = NULL;
+    cl_jit_active_threads = 0;
+    buf[1] = 0;
+    cl_gc();          /* walk #1: must traverse the gap free-block cleanly */
+    {
+        int i;
+        for (i = 0; i < 200; i++)   /* reuse the freed gap, allocate fresh */
+            cl_cons(CL_MAKE_FIXNUM(i), CL_MAKE_FIXNUM(i + 1));
+    }
+    cl_gc_compact();  /* walk #2: full compaction over the post-gap heap */
+
+    (void)buf;
+    cl_jit_active_threads = 0;
+    CT->jit_depth = 0;
+    CT->jit_stack_top = NULL;
+    teardown();
+}
+
+/* --- Same shape, but a CL_GC_PROTECT'd object that is NOT referenced
+ * from the JIT stack still moves under compaction.  Proves pinning is
+ * specific to conservative JIT-stack roots and that compaction is in fact
+ * relocating objects (so the pin in the previous test is meaningful). --- */
+
+static CL_Obj test_moved_slot;   /* static: survive -O3/-flto reload */
+
+TEST(unpinned_obj_moves)
+{
+    volatile CL_Obj buf[4];
+    uint32_t old_off;
+
+    setup();
+    test_moved_slot = CL_NIL;
+    zero_scratch_stack();
+
+    {
+        int i;
+        for (i = 0; i < 100; i++)
+            cl_cons(CL_MAKE_FIXNUM(i), CL_NIL);
+    }
+
+    test_moved_slot = cl_cons(CL_MAKE_FIXNUM(42), CL_MAKE_FIXNUM(99));
+    CL_GC_PROTECT(test_moved_slot);
+    old_off = (uint32_t)test_moved_slot;
+
+    /* JIT-stack slot holds a RAW INTEGER equal to old_off, not derived
+     * from a live reference path — but jit_depth=0 means the scan is
+     * skipped, so it neither pins nor is rewritten. */
     buf[0] = 0;
     buf[1] = (CL_Obj)old_off;
     buf[2] = 0;
@@ -324,14 +327,17 @@ TEST(forward_skipped_when_depth_zero)
 
     cl_gc_compact();
 
-    /* `kept` moved (CL_GC_PROTECT path), but buf[1] was outside the
-     * forwarding pass's reach (jit_depth=0), so it still holds the
-     * stale pre-compaction offset. */
-    ASSERT((uint32_t)kept != old_off);
+    /* Not pinned (jit_depth=0): the rooted object moved, and buf[1] — a
+     * raw integer outside any scan — was left untouched at the stale
+     * offset (no writeback exists anymore). */
+    ASSERT((uint32_t)test_moved_slot != old_off);
     ASSERT_EQ_INT((uint32_t)buf[1], old_off);
+    ASSERT(CL_CONS_P(test_moved_slot));
+    ASSERT_EQ_INT(CL_FIXNUM_VAL(cl_car(test_moved_slot)), 42);
 
     CL_GC_UNPROTECT(1);
     (void)buf;
+    test_moved_slot = CL_NIL;
     teardown();
 }
 
@@ -369,8 +375,8 @@ int main(void)
     RUN(scan_keeps_obj_alive);
     RUN(scan_skipped_when_depth_zero);
     RUN(compaction_runs_even_when_jit_active);
-    RUN(forward_updates_jit_stack);
-    RUN(forward_skipped_when_depth_zero);
+    RUN(pinned_obj_does_not_move);
+    RUN(unpinned_obj_moves);
     RUN(unwind_resets_jit_active_count);
     REPORT();
 }
