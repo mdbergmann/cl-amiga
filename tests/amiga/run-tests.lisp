@@ -1820,6 +1820,20 @@
 (check "deftype upgraded-array-element-type" 'character
        (upgraded-array-element-type 'my-char))
 
+; CLAMIGA::%TYPE-EXPANDER exposes the deftype expander table to Lisp so a
+; portable TYPEXPAND can resolve user deftype aliases (introspect-environment
+; shim → serapeum EXPLODE-TYPE).  A built-in type name has no expander; an
+; atom alias's expander takes no args; a parameterized alias is applied to
+; the compound type's args.
+(check "%type-expander builtin is nil" nil (clamiga::%type-expander 'list))
+(check "%type-expander non-symbol is nil" nil (clamiga::%type-expander 42))
+(deftype %tx-disj () '(or string number))
+(check "%type-expander atom alias expands" '(or string number)
+       (funcall (clamiga::%type-expander '%tx-disj)))
+(deftype %tx-range (lo hi) `(integer ,lo ,hi))
+(check "%type-expander parameterized alias expands" '(integer 0 9)
+       (funcall (clamiga::%type-expander '%tx-range) 0 9))
+
 ; Integer subtypes of BIT upgrade to a bit-vector (serapeum RANGE/SBIT regression).
 (check "uaet (integer 0 1)" 'bit (upgraded-array-element-type '(integer 0 1)))
 (check "uaet (integer 0 (1))" 'bit (upgraded-array-element-type '(integer 0 (1))))

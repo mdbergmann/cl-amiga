@@ -2368,6 +2368,22 @@ static CL_Obj bi_subtypep(CL_Obj *args, int n)
     return result ? SYM_T : CL_NIL;
 }
 
+/* (clamiga::%type-expander NAME) → the deftype expander closure registered
+ * for the symbol NAME, or NIL if NAME has no deftype expander.
+ *
+ * Exposes the internal deftype type_table to Lisp so a portable typexpand
+ * can be implemented on top of it (see the introspect-environment shim,
+ * contrib/shims/introspect-environment/).  The returned closure takes the
+ * compound type's arguments — e.g. the expander for `(deftype foo (a b) ...)`
+ * is applied to (a b); an atom deftype's expander takes no arguments. */
+static CL_Obj bi_type_expander(CL_Obj *args, int n)
+{
+    (void)n;
+    if (!CL_SYMBOL_P(args[0]))
+        return CL_NIL;
+    return cl_get_type_expander(args[0]);
+}
+
 /* --- Public typep API --- */
 
 int cl_typep(CL_Obj obj, CL_Obj type_spec)
@@ -2419,6 +2435,10 @@ void cl_builtins_type_init(void)
     defun("UPGRADED-COMPLEX-PART-TYPE", bi_upgraded_complex_part_type, 1, 2);
     defun("COERCE", bi_coerce, 2, 2);
     defun("SUBTYPEP", bi_subtypep, 2, 3);
+    /* Internal: expose the deftype expander table for a portable typexpand
+     * (introspect-environment shim). */
+    cl_register_builtin("%TYPE-EXPANDER", bi_type_expander, 1, 1,
+                        cl_package_clamiga);
 
     /* Register cached symbols for GC compaction forwarding */
     cl_gc_register_root(&TYPE_SYM_OR);
