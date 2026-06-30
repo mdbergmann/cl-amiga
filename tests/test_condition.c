@@ -1738,8 +1738,11 @@ TEST(c_compile_detect_error_only)
     cl_signal_condition(cond);  /* no handlers → returns NIL, no debugger */
     cl_compile_detect_depth = saved_depth;
 
-    ASSERT_EQ_INT(cl_compile_warnings_p, 0); /* error-only must NOT set warnings-p */
-    ASSERT_EQ_INT(cl_compile_failure_p,  1); /* error-only MUST set failure-p */
+    /* CLHS: warnings-p is true for any condition of type ERROR or WARNING, so a
+     * pure ERROR sets BOTH warnings-p and failure-p (failure-p excludes only
+     * style-warning, which an error is not). */
+    ASSERT_EQ_INT(cl_compile_warnings_p, 1);
+    ASSERT_EQ_INT(cl_compile_failure_p,  1);
 
     cl_compile_warnings_p = saved_w;
     cl_compile_failure_p  = saved_f;
@@ -1783,15 +1786,16 @@ TEST(lisp_compile_reports_warnings_p)
         "(let ((*error-output* (make-string-output-stream)))"
         "  (nth-value 2 (compile nil '(lambda () (%sw 1)))))"),
         "NIL");
-    /* Regression: pure ERROR (non-warning) at compile time must set failure-p
-     * but NOT warnings-p.  Use (signal ...) so the error is detected by the
-     * compile-detect machinery but not propagated (no handler needed). */
+    /* CLHS: a pure ERROR (non-warning) detected at compile time sets BOTH
+     * warnings-p and failure-p (warnings-p covers "error or warning").  Use
+     * (signal ...) so the error is detected by the compile-detect machinery
+     * but not propagated (no handler needed). */
     eval_print("(defmacro %err-only-macro ()"
                "  (signal (make-condition 'simple-error :format-control \"ct-err\"))"
                "  42)");
     ASSERT_STR_EQ(eval_print(
         "(nth-value 1 (compile nil '(lambda () (%err-only-macro))))"),
-        "NIL");
+        "T");
     ASSERT_STR_EQ(eval_print(
         "(nth-value 2 (compile nil '(lambda () (%err-only-macro))))"),
         "T");

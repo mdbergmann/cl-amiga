@@ -1426,12 +1426,12 @@ CL_Obj cl_signal_condition(CL_Obj condition)
         int is_warning = cl_condition_type_matches(cond->type_name, SYM_WARNING);
         int is_error   = cl_condition_type_matches(cond->type_name, SYM_ERROR_COND);
         cond = (CL_Condition *)CL_OBJ_TO_PTR(condition);
-        /* Per CLHS COMPILE: warnings-p is T only when a WARNING was detected;
-         * a pure ERROR (not a subtype of WARNING) sets failure-p but NOT
-         * warnings-p. */
-        if (is_warning)
-            cl_compile_warnings_p = 1;
+        /* Per CLHS COMPILE: warnings-p is true if any condition of type ERROR
+         * *or* WARNING was detected; failure-p is true for the same set minus
+         * STYLE-WARNING.  So an ERROR sets both; a STYLE-WARNING sets only
+         * warnings-p; a non-style WARNING sets both. */
         if (is_warning || is_error) {
+            cl_compile_warnings_p = 1;
             if (!cl_condition_type_matches(cond->type_name, SYM_STYLE_WARNING))
                 cl_compile_failure_p = 1;
             cond = (CL_Condition *)CL_OBJ_TO_PTR(condition);
