@@ -1038,6 +1038,43 @@ check_contains "make-array with deftype BIT alias makes a bit-vector"         "M
 check_contains "make-array with deftype T alias makes a vector"               "MKARR-T:T 42"     "$out"
 check_absent   "no corruption from stale element_type across classify GC"     "Unbound variable\|type 0\|corrupted\|Undefined" "$out"
 
+# --- Case: CLAMIGA::%TYPE-EXPANDER-driven TYPEXPAND under GC stress ----------
+# %type-expander returns the deftype expander closure; a portable typexpand
+# applies it to the compound type's args.  That apply runs user code that
+# conses the expansion, so a compaction can land mid-expand.  Exercise the
+# atom-alias (0-arg) and parameterized (N-arg) apply paths in a loop, plus the
+# fully-resolving fixpoint loop, to surface any stale-CL_Obj bug.  This is the
+# mechanism serapeum's EXPLODE-TYPE relies on (introspect-environment shim).
+cat > "$WORK/type-expander.lisp" <<'EOF'
+(defun tx1 (type)
+  (multiple-value-bind (head args)
+      (if (consp type) (values (car type) (cdr type)) (values type nil))
+    (if (symbolp head)
+        (let ((ex (clamiga::%type-expander head)))
+          (if ex (values (apply ex args) t) (values type nil)))
+        (values type nil))))
+(defun tx (type)
+  (loop (multiple-value-bind (new exp) (tx1 type)
+          (if exp (setf type new) (return type)))))
+(deftype tx-disj () '(or string number (member :x :y)))
+(deftype tx-range (lo hi) `(integer ,lo ,hi))
+(let ((a nil) (b nil) (c nil))
+  (dotimes (i 30)
+    (setq a (tx 'tx-disj))
+    (setq b (funcall (clamiga::%type-expander 'tx-range) i (+ i 1)))
+    (setq c (clamiga::%type-expander 'list)))
+  (format t "TX-DISJ:~a~%" a)
+  (format t "TX-RANGE:~a~%" b)
+  (format t "TX-BUILTIN:~a~%" c))
+EOF
+out=$(run_stress "$WORK/type-expander.lisp")
+# NB: ~a (princ) drops the keyword colon, so (MEMBER :X :Y) prints as (MEMBER X Y);
+# the dotimes loop ends at i=29, so the last tx-range apply is (29 30).
+check_contains "%type-expander atom alias fully expands under stress"  "TX-DISJ:(OR STRING NUMBER (MEMBER X Y))" "$out"
+check_contains "%type-expander parameterized alias applies under stress" "TX-RANGE:(INTEGER 29 30)" "$out"
+check_contains "%type-expander returns NIL for a built-in type name"   "TX-BUILTIN:NIL" "$out"
+check_absent   "no corruption from %type-expander apply under stress"  "Unbound variable\|type 0\|corrupted\|Undefined" "$out"
+
 # --- Case: DESTRUCTURING-BIND &optional+&rest+&key under GC stress ----------
 # Regression for the compile_destructure_pattern fix: the &rest handler nested
 # in the &optional branch used to `goto done`, skipping a trailing &key (so the
