@@ -425,24 +425,59 @@ validation** in `mem.c::gc_scan_jit_native_stack`.
    `gc_mark_obj`.  Phantom marks at non-object-start bytes are
    impossible.
 
-With phantom marks ruled out, the compactor can run even while
-JIT'd code holds operand values on the m68k stack: those values
-are either real heap offsets (which the compactor already updates
-via its reference rewrite pass) or coincidental integers (which
-never get marked or referenced from the heap, so the compactor
-never touches them).
+With phantom marks ruled out, the *mark* phase is safe: a candidate
+is either a real heap offset (marked → object retained) or a
+coincidental integer (no header match → ignored).
 
-`cl_jit_active_threads` survives as an informational counter (for
-future JIT-aware diagnostics or a faster early-out path) but no
-longer gates compaction in `cl_alloc` or `cl_gc_compact_if_pending`.
+**Superseded (the writeback pass had a corruption bug).**  The
+initial landing paired the mark scan with a *forwarding writeback*
+(`gc_forward_jit_native_stack`): after the slide, it rewrote every
+matching C-stack slot to the object's new offset, so JIT-spilled
+operand pointers wouldn't dangle.  The flaw: the writeback could not
+tell a real spilled pointer from a **coincidental integer that
+happens to equal a live object's arena offset** — a loop counter, a
+size, a hash, a bucket index sitting anywhere on the C call stack
+between the GC and the JIT entry.  It rewrote those too, corrupting
+the value.  This is a *moving*-collector hazard the header-offset
+validation does **not** prevent (validation only confirms the value
+is a valid object start; a raw integer can be one).  It manifested as
+a layout-roulette corruption — e.g. a class metaobject occasionally
+failing to register (`(setf (find-class …) …)` silently lost), only
+under the JIT, never on host, shifting with unrelated code size.
 
-Option B (pinning) and Option C (precise stack maps) remain spec'd
-as future paths if conservative *retention* (not corruption)
-becomes a measurable problem — typically it doesn't for this kind
-of workload.
+**Landed (option B — pinning):** the mark-phase scan now *pins* every
+validated conservatively-referenced object (records its offset in the
+sorted `jit_pinned[]` set), and `gc_compute_forwarding` keeps each
+pinned object at its current offset (forwarding = identity).  Pinned
+objects never move, so the JIT's spilled C-stack offsets stay valid
+**with no writeback** — `gc_forward_jit_native_stack` was removed
+entirely.  A coincidental integer that equals a live object's offset
+now merely *pins* that object (harmless over-pinning, the
+forwarding-side analogue of conservative over-retention) and is never
+itself rewritten.  Because this is a Lisp2 sliding compactor, pinning
+is cheap: when the address-ordered forwarding walk reaches a pinned
+object the free pointer is always ≤ its offset (all live data below it
+compacts into the space below it), so the pin stays put, leaving a gap
+between the compacted run and the pin.  `gc_slide` fills each such gap
+with valid free-block header(s) (`gc_make_free_gap`, mirroring
+`gc_sweep`'s format) and threads them onto the free list — this is
+*mandatory*: the arena's linear "walk by header size" would otherwise
+desync on the stale bytes in the gap (observed as a `CAR: not a LIST`
+corruption ~mid-suite).  The reclaimed gaps are immediately
+reusable, so a pinned compaction lands in the same free-list + bump
+state as a sweep.  Pins exist only while a JIT frame is live
+(`jit_depth > 0`) and number only a handful (the live operand spills),
+so the effect is small — unlike Option A (suppress compaction), which
+hit the OOM cliff above.
 
-Precise stack maps can come later if retention turns out to be a real
-problem (typically isn't for this kind of workload).
+`cl_jit_active_threads` survives as an informational counter; it no
+longer gates compaction.  Host coverage:
+`tests/test_jit_gc_scan.c` (`pinned_obj_does_not_move`,
+`unpinned_obj_moves`).
+
+Option C (precise stack maps) remains a future path if conservative
+*retention* (not corruption) ever becomes a measurable problem —
+typically it doesn't for this workload.
 
 ### Build wiring
 
@@ -690,22 +725,21 @@ JIT'd `OP_FLOAD` produces and checks the compactor rewrites the baked
 offset; end-to-end coverage is `tests/amiga/run-tests.lisp`'s
 "rational/float compare gc-safe" and `tests/amiga/test-jit.lisp`.
 
-> **KNOWN ISSUE (open, pre-existing, m68k JIT only).** There is a latent
-> baked-immediate / compaction reloc gap that manifests as a *layout-roulette*
-> corruption: under the JIT, a class metaobject occasionally fails to register
-> (`(setf (find-class …) …)` silently does not take effect → a later
-> `make-instance` signals "No class named …").  It is **not** reproducible on
-> the host (not even under `make test-gc-stress`, which forces compaction every
-> alloc) and disappears with `--no-jit`, so it is specific to native code
-> baking a heap offset the compactor does not forward.  It is sensitive to
-> heap/code layout: which (if any) class is hit shifts as unrelated code grows.
-> Currently it surfaces on `tests/amiga/run-tests.lisp`'s `sv-amiga-default`
-> slot-value-using-class checks (2 failures) after the MOP-metaclass /
-> array-element-type work enlarged `clos.fasl`.  The real fix is to find the
-> opcode whose CL_Obj immediate is emitted without a `jit_reloc_record` (audit
-> `walker_compile` in `src/jit/jit.c`); a host repro will need a synthetic
-> native_code+reloc fixture like `tests/test_gc_jit_reloc.c` for the offending
-> opcode.
+> **RESOLVED — was NOT a reloc gap.** This previously-open layout-roulette
+> corruption (under the JIT, a class metaobject occasionally failing to
+> register — `(setf (find-class …) …)` silently lost → later `make-instance`
+> signals "No class named …", surfacing on `tests/amiga/run-tests.lisp`'s
+> `sv-amiga-default` checks, 2 failures) was originally hypothesised to be a
+> missing `jit_reloc_record`.  That hypothesis was **disproven**: a host audit
+> that runs the real `walker_compile` under `-DJIT_M68K` over the whole boot +
+> the failing test found the reloc table is *complete* — no opcode bakes an
+> un-relocated heap offset.  The actual cause was the conservative JIT-stack
+> **forwarding writeback** (`gc_forward_jit_native_stack`) corrupting a
+> coincidental-integer C-stack word during a compaction fired while a JIT frame
+> was live — see "Superseded (the writeback pass had a corruption bug)" and the
+> option-B pinning landing in §"GC interaction" above.  Fixed by pinning
+> conservatively-referenced objects and removing the writeback; the full Amiga
+> suite passes with the JIT enabled.
 
 **Branches** use a single-pass label table (`bc_to_native[ip]`):
 forward branches emit a `Bcc.W` with a placeholder displacement plus
