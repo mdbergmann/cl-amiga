@@ -3153,17 +3153,50 @@ The :MOST-SPECIFIC-LAST option (supplied via DEFGENERIC's
           (apply (method-function method) args))
         (apply (method-function method) args))))
 
+(defun %make-anon-method (fn)
+  "Construct an anonymous method (CLHS MAKE-METHOD) whose method-function
+   is FN.  Used by CALL-METHOD to wrap a (MAKE-METHOD FORM) designator into
+   a real method object.  simple-primary-p is NIL so that %make-method-chain
+   always wraps the anonymous method in a closure that properly binds
+   *call-next-method-function* to the \"No next method\" error before
+   invoking FN — preventing infinite recursion when FORM calls
+   call-next-method and the anonymous method is the last in the chain."
+  (%make-struct 'standard-method
+    nil nil nil fn nil nil))
+
+(defun %make-method-designator-p (x)
+  "True when X is a (MAKE-METHOD FORM) designator appearing in a
+   CALL-METHOD argument position.  Compared by symbol-name so it matches
+   regardless of which package the combination body interned MAKE-METHOD
+   in."
+  (and (consp x)
+       (symbolp (car x))
+       (string= (symbol-name (car x)) "MAKE-METHOD")))
+
+(defun %call-method-designator-form (m)
+  "Expand a CALL-METHOD method designator M into a form yielding a method
+   object.  A real method object is quoted as a literal constant; a
+   (MAKE-METHOD FORM) designator becomes a freshly built anonymous method
+   whose function evaluates FORM (which may itself contain CALL-METHOD)."
+  (if (%make-method-designator-p m)
+      (list '%make-anon-method
+            (list 'lambda '(&rest %mm-args)
+                  '(declare (ignore %mm-args))
+                  (cadr m)))
+      (list 'quote m)))
+
 (defmacro call-method (method &optional next-methods)
   "CLHS pseudo-operator used inside forms returned by
 DEFINE-METHOD-COMBINATION bodies.  Expands into a call to
 %CALL-METHOD-IMPL on METHOD with NEXT-METHODS as the call-next-method
-chain.  Both METHOD and NEXT-METHODS are spliced in as literal method
-objects / lists by the combination body's backquote — we wrap them in
-QUOTE so the compiler treats them as constants rather than nested
-function calls."
+chain.  METHOD and the elements of NEXT-METHODS are spliced in as literal
+method objects by the combination body's backquote; each is wrapped in
+QUOTE so the compiler treats it as a constant.  A (MAKE-METHOD FORM)
+designator in either position is instead expanded into a runtime call to
+%MAKE-ANON-METHOD so FORM is evaluated when that method is invoked."
   (list '%call-method-impl
-        (list 'quote method)
-        (list 'quote next-methods)))
+        (%call-method-designator-form method)
+        (cons 'list (mapcar #'%call-method-designator-form next-methods))))
 
 (defun %build-long-effective-method (gf combination methods)
   "Build an EMF for a long-form COMBINATION.  The combination's builder
@@ -3192,25 +3225,42 @@ PATTERN elements are compared with EQL; a lone * in PATTERN means
      (%match-qualifier-pattern (cdr qualifiers) (cdr pattern)))
     (t nil)))
 
+(defun %method-group-order (spec-tail)
+  "Read the :ORDER long-form group option from SPEC-TAIL, defaulting to
+   :MOST-SPECIFIC-FIRST.  Qualifier patterns are lists and predicates are
+   non-keyword symbols, so a top-level :ORDER keyword is unambiguous."
+  (let ((tail spec-tail))
+    (loop
+      (when (null tail) (return :most-specific-first))
+      (when (eq (car tail) :order)
+        (return (or (cadr tail) :most-specific-first)))
+      (setq tail (cdr tail)))))
+
 (defun %filter-methods-by-spec (methods spec-tail)
   "Select methods that satisfy the group specifier SPEC-TAIL (the part
 after the group-variable name in a long-form group-spec).  Supported:
   ()                 — unqualified methods
   (qualifier...)     — exact qualifier list, optionally ending in *
-  (symbol)           — SYMBOL names a predicate of the qualifier list"
-  (let ((pattern (car spec-tail)))
-    (cond
-      ((null pattern)
-       (remove-if-not (lambda (m) (null (method-qualifiers m))) methods))
-      ((and (symbolp pattern)
-            (not (keywordp pattern))
-            (fboundp pattern))
-       (remove-if-not (lambda (m) (funcall pattern (method-qualifiers m))) methods))
-      ((listp pattern)
-       (remove-if-not (lambda (m)
-                        (%match-qualifier-pattern (method-qualifiers m) pattern))
-                      methods))
-      (t methods))))
+  (symbol)           — SYMBOL names a predicate of the qualifier list
+The :ORDER option reorders the matched methods: METHODS arrive
+most-specific-first, and :MOST-SPECIFIC-LAST reverses them."
+  (let* ((pattern (car spec-tail))
+         (matched
+           (cond
+             ((null pattern)
+              (remove-if-not (lambda (m) (null (method-qualifiers m))) methods))
+             ((and (symbolp pattern)
+                   (not (keywordp pattern))
+                   (fboundp pattern))
+              (remove-if-not (lambda (m) (funcall pattern (method-qualifiers m))) methods))
+             ((listp pattern)
+              (remove-if-not (lambda (m)
+                               (%match-qualifier-pattern (method-qualifiers m) pattern))
+                             methods))
+             (t methods))))
+    (if (eq (%method-group-order spec-tail) :most-specific-last)
+        (reverse matched)
+        matched)))
 
 ;;; --- define-method-combination ---
 
