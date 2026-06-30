@@ -1915,6 +1915,22 @@ static CL_Obj normalize_type_spec(CL_Obj type)
     return type;
 }
 
+/* The empty type — NIL, or an element-less (member)/(or).  CLHS: `(member)`
+ * with zero arguments denotes the empty type, and `(or)` is likewise empty.
+ * Recognising these lets subtypep treat them as equivalent to NIL. */
+static int tspec_is_empty(CL_Obj t)
+{
+    if (CL_NULL_P(t))
+        return 1;
+    if (CL_CONS_P(t)) {
+        CL_Obj head = cl_car(t);
+        if ((head == TYPE_SYM_MEMBER || head == TYPE_SYM_OR) &&
+            CL_NULL_P(cl_cdr(t)))
+            return 1;
+    }
+    return 0;
+}
+
 static CL_Obj bi_subtypep(CL_Obj *args, int n)
 {
     CL_Obj type1 = args[0];
@@ -1974,17 +1990,21 @@ static CL_Obj bi_subtypep(CL_Obj *args, int n)
         cl_mv_values[1] = SYM_T;
         return SYM_T;
     }
-    /* Symmetric: NIL is the empty type, so only NIL is a subtype of NIL.
-     * Most non-NIL specs return (NIL T), but a compound (AND ... (NOT
-     * ...)) may itself be empty — that's the path UPGRADED-COMPLEX-PART-
-     * TYPE relies on, so let those fall through to the AND handler. */
-    if (CL_NULL_P(type2)) {
-        if (CL_NULL_P(type1)) {
-            cl_mv_count = 2;
-            cl_mv_values[0] = SYM_T;
-            cl_mv_values[1] = SYM_T;
-            return SYM_T;
-        }
+    /* The empty type (NIL, or an element-less (member)/(or)) is a subtype of
+     * every type — CLHS 4.2.3.  Fire this before TID resolution so an empty
+     * (member) — which would otherwise reduce to a cons spec — is recognised. */
+    if (tspec_is_empty(type1)) {
+        cl_mv_count = 2;
+        cl_mv_values[0] = SYM_T;
+        cl_mv_values[1] = SYM_T;
+        return SYM_T;
+    }
+    /* Symmetric: NIL is the empty type, so only the empty type is a subtype of
+     * it (type1-empty is already handled above).  Most non-empty specs return
+     * (NIL T), but a compound (AND ... (NOT ...)) may itself be empty — that's
+     * the path UPGRADED-COMPLEX-PART-TYPE relies on, so let those fall through
+     * to the AND handler. */
+    if (tspec_is_empty(type2)) {
         if (!(CL_CONS_P(type1) && cl_car(type1) == TYPE_SYM_AND)) {
             cl_mv_count = 2;
             cl_mv_values[0] = CL_NIL;
