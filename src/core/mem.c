@@ -594,6 +594,7 @@ CL_Obj cl_make_vector(uint32_t length)
     v->fill_pointer = CL_NO_FILL_POINTER;
     v->flags = 0;
     v->rank = 0;
+    v->elt_type = CL_VEC_ELT_T;
     v->_reserved = 0;
     /* data[] already zeroed (= CL_NIL) by cl_alloc */
     return CL_PTR_TO_OBJ(v);
@@ -617,6 +618,7 @@ CL_Obj cl_make_array(uint32_t total, uint8_t rank, uint32_t *dims,
     v->fill_pointer = fill_ptr;
     v->flags = flags;
     v->rank = rank;
+    v->elt_type = CL_VEC_ELT_T;
     v->_reserved = 0;
     /* Store dimensions as fixnums for multi-dim */
     if (rank > 1 && dims) {

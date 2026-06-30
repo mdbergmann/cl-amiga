@@ -74,6 +74,24 @@ them.
 `add-direct-method`, `remove-direct-method`, `add-direct-subclass`,
 `remove-direct-subclass`.
 
+## User-defined metaclasses
+
+A subclass of `standard-class` may be defined and used as a class's metaclass
+via the `defclass` `(:metaclass …)` option. The class it creates is an
+*instance* of that metaclass, so methods specialized on the metaclass —
+`allocate-instance`, `initialize-instance` (including `:around`),
+`validate-superclass` — dispatch on it, and metaclass slots (with
+`:initarg`/`:reader`) and `:default-initargs` work. A metaclass
+`initialize-instance :around` may rewrite `:direct-superclasses` while the
+class is being built. This covers the two common ecosystem patterns
+(serapeum's `abstract-standard-class` and `topmost-object-class`); see
+`tests/test_mop_metaclass.c` for runnable examples.
+
+The class metaobject keeps a fixed internal layout for speed on the 68020:
+metaclasses add their own slots after the standard ones, but a metaclass whose
+*own* layout diverges from `standard-class` (full meta-recursion) is not
+supported.
+
 > **Limitation:** the MOP implementation is a working subset, not the complete
 > AMOP — see [Known Limitations](../README.md#known-limitations-and-future-work)
 > ("full CLOS MOP").

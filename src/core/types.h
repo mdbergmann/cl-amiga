@@ -283,13 +283,28 @@ typedef struct {
 /* Sentinel: no fill pointer */
 #define CL_NO_FILL_POINTER  0xFFFFFFFFu
 
+/* General-vector element-type codes (elt_type field).  CHARACTER and BIT
+ * element types are tracked via CL_VEC_FLAG_STRING / a separate bit-vector
+ * object, so they are not represented here.  clamiga stores all numeric
+ * elements as tagged CL_Obj regardless of code; the code only records the
+ * declared element type so ARRAY-ELEMENT-TYPE and (TYPEP x '(VECTOR fixnum))
+ * can distinguish a specialized numeric array from a general (VECTOR T) one
+ * (serapeum's VECT-TYPE).  Runtime-only: not preserved across FASL (which
+ * reloads vectors as plain T vectors), matching the existing handling of the
+ * fill-pointer/adjustable flags. */
+#define CL_VEC_ELT_T              0  /* general / unspecified — element type T */
+#define CL_VEC_ELT_FIXNUM         1
+#define CL_VEC_ELT_SINGLE_FLOAT   2
+#define CL_VEC_ELT_DOUBLE_FLOAT   3
+
 typedef struct {
     CL_Header hdr;
     uint32_t length;          /* Total element count */
     uint32_t fill_pointer;    /* CL_NO_FILL_POINTER = none */
     uint8_t  flags;           /* CL_VEC_FLAG_* */
     uint8_t  rank;            /* 0 = simple 1D, >1 = multi-dim */
-    uint16_t _reserved;       /* Alignment padding */
+    uint8_t  elt_type;        /* CL_VEC_ELT_* (general-vector declared element type) */
+    uint8_t  _reserved;       /* Alignment padding */
     CL_Obj data[];            /* For rank>1: dims in data[0..rank-1], elements at data[rank] */
 } CL_Vector;
 

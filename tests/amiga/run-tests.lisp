@@ -5352,6 +5352,63 @@
               (lambda (x) x) '(x))))
     (multiple-value-list (make-method-lambda gf m '(lambda (x) x) nil))))
 
+; --- User-defined metaclasses (MOP, specs/mop.md) ---
+;; A metaclass is a subclass of standard-class; its instances (classes) reuse
+;; the fixed 12-slot class layout plus any metaclass slots at index 12+.
+(defclass amiga-abstract-mc (standard-class) ())
+(defmethod allocate-instance ((a amiga-abstract-mc) &rest initargs)
+  (declare (ignore initargs))
+  (error "Cannot allocate instances of abstract class ~s" (class-name a)))
+(defclass amiga-abstract-shape () () (:metaclass amiga-abstract-mc))
+(check "metaclass: class-of is the metaclass" 'amiga-abstract-mc
+       (class-name (class-of (find-class 'amiga-abstract-shape))))
+(check "metaclass abstract: make-instance signals" :signalled
+       (handler-case (progn (make-instance 'amiga-abstract-shape) :no-error)
+         (error () :signalled)))
+;; abstract metaclass must not break normal make-instance
+(defclass amiga-plain-pt () ((x :initarg :x :accessor amiga-plain-x)))
+(check "metaclass abstract: normal class still instantiable" 9
+       (amiga-plain-x (make-instance 'amiga-plain-pt :x 9)))
+;; TOPMOST-OBJECT: metaclass :around injects a superclass + :default-initargs
+(defclass amiga-topmost () ())
+(defclass amiga-topmost-mc (standard-class)
+  ((topc :initarg :topc :reader amiga-topc)))
+(defmethod validate-superclass ((c1 amiga-topmost-mc) (c2 standard-class)) t)
+(defun amiga-ins-super (sc list)
+  (cond ((null list) (list sc))
+        ((subtypep sc (first list)) (cons sc list))
+        (t (cons (first list) (amiga-ins-super sc (rest list))))))
+(defmethod initialize-instance :around
+    ((class amiga-topmost-mc) &rest initargs &key direct-superclasses topc)
+  (if (find topc direct-superclasses :test (lambda (a b) (subtypep b a)))
+      (call-next-method)
+      (apply #'call-next-method class
+             :direct-superclasses (amiga-ins-super (find-class topc) direct-superclasses)
+             initargs)))
+(defclass amiga-meta (amiga-topmost-mc) () (:default-initargs :topc 'amiga-topmost))
+(defclass amiga-tc-user () () (:metaclass amiga-meta))
+(check "metaclass topmost: instance is typep injected superclass" t
+       (typep (make-instance 'amiga-tc-user) 'amiga-topmost))
+(check "metaclass topmost: metaclass slot from default-initargs" 'amiga-topmost
+       (amiga-topc (find-class 'amiga-tc-user)))
+
+; --- Specialized array element types (VECT-TYPE, specs/mop.md) ---
+(check "array-element-type fixnum array" 'fixnum
+       (array-element-type (make-array 3 :element-type 'fixnum)))
+(check "array-element-type general stays T" t
+       (eq 't (array-element-type (make-array 3))))
+(check "fixnum array is not (vector t)" nil
+       (typep (make-array 3 :element-type 'fixnum :adjustable t :fill-pointer 0)
+              '(vector t)))
+(check "general vector is (vector t)" t (typep (vector 1 2 3) '(vector t)))
+(check "fixnum array is (vector fixnum)" t
+       (typep (make-array 3 :element-type 'fixnum) '(vector fixnum)))
+(check "general vector is not (vector fixnum)" nil
+       (typep #(1 2 3) '(vector fixnum)))
+(check "fixnum array still stores tagged values" 5
+       (let ((a (make-array 2 :element-type 'fixnum)))
+         (setf (aref a 0) 5) (aref a 0)))
+
 ; --- CLOS Phase 9: print-object ---
 (check "print-object class" "#<STANDARD-CLASS INTEGER>" (print-object (find-class 'integer) nil))
 (check "print-object gf" "#<STANDARD-GENERIC-FUNCTION GREET>" (print-object (gethash 'greet *generic-function-table*) nil))

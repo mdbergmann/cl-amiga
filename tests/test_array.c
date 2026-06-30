@@ -306,7 +306,15 @@ TEST(upgraded_array_element_type_expands_deftype)
         "(progn (deftype my-bit2 () 'bit) (upgraded-array-element-type 'my-bit2))"),
         "BIT");
     ASSERT_STR_EQ(eval_print("(upgraded-array-element-type 'character)"), "CHARACTER");
-    ASSERT_STR_EQ(eval_print("(upgraded-array-element-type 'fixnum)"), "T");
+    /* FIXNUM / SINGLE-FLOAT / DOUBLE-FLOAT are specialized element types kept
+     * distinct from the general T so a (VECTOR FIXNUM) is not a (VECTOR T)
+     * (serapeum's VECT-TYPE). */
+    ASSERT_STR_EQ(eval_print("(upgraded-array-element-type 'fixnum)"), "FIXNUM");
+    ASSERT_STR_EQ(eval_print("(upgraded-array-element-type 'single-float)"), "SINGLE-FLOAT");
+    ASSERT_STR_EQ(eval_print("(upgraded-array-element-type 'double-float)"), "DOUBLE-FLOAT");
+    /* still T: integer subranges and other types we don't specialize */
+    ASSERT_STR_EQ(eval_print("(upgraded-array-element-type 'integer)"), "T");
+    ASSERT_STR_EQ(eval_print("(upgraded-array-element-type 'number)"), "T");
 }
 
 /* Regression: integer subtypes whose value set is contained in BIT = (integer
@@ -329,6 +337,45 @@ TEST(upgraded_array_element_type_bit_subtypes)
         "(let ((b (make-array 3 :element-type '(integer 0 (1)))))"
         "  (setf (sbit b 0) 1) (list (bit-vector-p b) b))"),
         "(T #*100)");
+}
+
+/* Specialized numeric element types (FIXNUM / SINGLE-FLOAT / DOUBLE-FLOAT)
+ * are kept distinct from the general T so a (VECTOR FIXNUM) is not a
+ * (VECTOR T).  Regression for serapeum's VECT-TYPE; see specs/mop.md note on
+ * the array element-type representation. */
+TEST(make_array_specialized_element_type)
+{
+    /* array-element-type reports the specialized type */
+    ASSERT_STR_EQ(eval_print(
+        "(array-element-type (make-array 3 :element-type 'fixnum))"), "FIXNUM");
+    ASSERT_STR_EQ(eval_print(
+        "(array-element-type (make-array 3 :element-type 'single-float))"),
+        "SINGLE-FLOAT");
+    /* unspecialized arrays stay T */
+    ASSERT_STR_EQ(eval_print("(array-element-type (make-array 3))"), "T");
+    ASSERT_STR_EQ(eval_print("(array-element-type (vector 1 2 3))"), "T");
+    ASSERT_STR_EQ(eval_print(
+        "(array-element-type (make-array 3 :element-type 'integer))"), "T");
+    /* (vector t) excludes a specialized fixnum array */
+    ASSERT_STR_EQ(eval_print(
+        "(typep (make-array 3 :element-type 'fixnum :adjustable t :fill-pointer 0)"
+        "       '(vector t))"), "NIL");
+    /* but a general vector is still (vector t) */
+    ASSERT_STR_EQ(eval_print("(typep (vector 1 2 3) '(vector t))"), "T");
+    ASSERT_STR_EQ(eval_print("(typep #() '(vector t))"), "T");
+    /* (vector fixnum) matches only the specialized array */
+    ASSERT_STR_EQ(eval_print(
+        "(typep (make-array 3 :element-type 'fixnum) '(vector fixnum))"), "T");
+    ASSERT_STR_EQ(eval_print("(typep #(1 2 3) '(vector fixnum))"), "NIL");
+    /* (array t) / (array fixnum) likewise discriminate */
+    ASSERT_STR_EQ(eval_print(
+        "(typep (make-array 3 :element-type 'fixnum) '(array t))"), "NIL");
+    ASSERT_STR_EQ(eval_print(
+        "(typep (make-array 3 :element-type 'fixnum) '(array fixnum))"), "T");
+    /* the array still holds general tagged values regardless of code */
+    ASSERT_STR_EQ(eval_print(
+        "(let ((a (make-array 2 :element-type 'fixnum)))"
+        "  (setf (aref a 0) 5) (aref a 0))"), "5");
 }
 
 TEST(make_array_adjustable)
@@ -1266,6 +1313,7 @@ int main(void)
     RUN(make_array_character_is_wide_string);
     RUN(make_array_base_char_wide_content_widens);
     RUN(make_array_string_class_of_is_string);
+    RUN(make_array_specialized_element_type);
     RUN(make_array_adjustable);
     RUN(make_array_2d);
     RUN(make_array_3d);

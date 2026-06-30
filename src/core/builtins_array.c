@@ -97,6 +97,45 @@ static void classify_array_elt_type(CL_Obj type, int depth,
                                 is_char, is_wide_char, is_bit);
 }
 
+/* Classify a general (non-bit, non-char) array element-type into a
+ * CL_VEC_ELT_* code, expanding user deftypes.  Returns CL_VEC_ELT_T for T,
+ * compound specifiers, and anything unrecognised — clamiga only specializes
+ * the numeric element types real implementations would not upgrade to T
+ * (FIXNUM, SINGLE/DOUBLE-FLOAT), so a general (VECTOR T) and a
+ * (VECTOR FIXNUM) stay distinguishable.  Elements are still stored as tagged
+ * CL_Obj regardless of code.  GC: cl_vm_apply may compact, but TYPE is a
+ * GC-rooted builtin arg and no unrooted CL_Obj is held across the apply. */
+static uint8_t classify_general_elt_code(CL_Obj type, int depth)
+{
+    const char *nm;
+    CL_Obj ex;
+    if (depth <= 0 || !CL_SYMBOL_P(type))
+        return CL_VEC_ELT_T;
+    nm = cl_symbol_name(type);
+    if (strcmp(nm, "FIXNUM") == 0)
+        return CL_VEC_ELT_FIXNUM;
+    if (strcmp(nm, "SINGLE-FLOAT") == 0 || strcmp(nm, "SHORT-FLOAT") == 0)
+        return CL_VEC_ELT_SINGLE_FLOAT;
+    if (strcmp(nm, "DOUBLE-FLOAT") == 0 || strcmp(nm, "LONG-FLOAT") == 0)
+        return CL_VEC_ELT_DOUBLE_FLOAT;
+    ex = cl_get_type_expander(type);
+    if (!CL_NULL_P(ex))
+        return classify_general_elt_code(cl_vm_apply(ex, NULL, 0), depth - 1);
+    return CL_VEC_ELT_T;
+}
+
+/* Map a CL_VEC_ELT_* code to its element-type symbol (T for the general
+ * case).  Used by ARRAY-ELEMENT-TYPE and UPGRADED-ARRAY-ELEMENT-TYPE. */
+static CL_Obj elt_code_to_type(uint8_t code)
+{
+    switch (code) {
+    case CL_VEC_ELT_FIXNUM:       return cl_intern("FIXNUM", 6);
+    case CL_VEC_ELT_SINGLE_FLOAT: return cl_intern("SINGLE-FLOAT", 12);
+    case CL_VEC_ELT_DOUBLE_FLOAT: return cl_intern("DOUBLE-FLOAT", 12);
+    default:                      return SYM_T;
+    }
+}
+
 /* Helper: get element from any 1D sequence (list, string, vector) */
 static CL_Obj seq_elt(CL_Obj seq, uint32_t index)
 {
@@ -205,6 +244,11 @@ static CL_Obj bi_make_array(CL_Obj *args, int n)
      * them consistent matters because (TYPEP s 'BASE-STRING) is how callers
      * like FSet track whether a string leaf holds only base characters. */
     int element_type_wide_char = 0;
+    /* Declared element-type code for a general (non-bit/non-char) vector, so
+     * (TYPEP a '(VECTOR FIXNUM)) / ARRAY-ELEMENT-TYPE can distinguish a
+     * specialized numeric array from a general (VECTOR T).  Captured before
+     * classify_array_elt_type can compact (element_type may then be stale). */
+    uint8_t element_type_code = CL_VEC_ELT_T;
     uint32_t fill_ptr = CL_NO_FILL_POINTER;
     uint32_t displaced_offset = 0;
     int fill_pointer_is_t = 0;
@@ -251,6 +295,13 @@ static CL_Obj bi_make_array(CL_Obj *args, int n)
                  * string, not a (vector t). */
                 classify_array_elt_type(element_type, 16, &element_type_char,
                                         &element_type_wide_char, &element_type_bit);
+            /* Re-read: classify_array_elt_type may have called cl_vm_apply
+             * (deftype expansion) which can compact, making element_type stale. */
+            element_type = args[i + 1];
+            /* Record a specialized general (non-bit/non-char) element type so
+             * the array is distinguishable from a (VECTOR T). */
+            if (has_element_type_spec && !element_type_char && !element_type_bit)
+                element_type_code = classify_general_elt_code(element_type, 16);
         } else if (args[i] == KW_DISPLACED_TO) {
             displaced_to = args[i + 1];
             if (!CL_NULL_P(displaced_to))
@@ -374,6 +425,7 @@ static CL_Obj bi_make_array(CL_Obj *args, int n)
                     dv->fill_pointer = fill_ptr;
                     dv->flags = dflags;
                     dv->rank = 0;
+                    dv->elt_type = CL_VEC_ELT_T;
                     dv->_reserved = 0;
                     dv->data[0] = displaced_to;
                     dv->data[1] = CL_MAKE_FIXNUM((int32_t)displaced_offset);
@@ -531,6 +583,7 @@ static CL_Obj bi_make_array(CL_Obj *args, int n)
 
         result = cl_make_array(length, 0, NULL, flags, fill_ptr);
         v = (CL_Vector *)CL_OBJ_TO_PTR(result);
+        v->elt_type = element_type_code;
 
         if (has_initial_element) {
             uint32_t j;
@@ -689,6 +742,7 @@ static CL_Obj bi_make_array(CL_Obj *args, int n)
                 dv->fill_pointer = CL_NO_FILL_POINTER;
                 dv->flags = dflags;
                 dv->rank = rank;
+                dv->elt_type = element_type_code;
                 dv->_reserved = 0;
                 for (di = 0; di < (uint32_t)rank; di++)
                     dv->data[di] = CL_MAKE_FIXNUM((int32_t)dims[di]);
@@ -700,6 +754,7 @@ static CL_Obj bi_make_array(CL_Obj *args, int n)
         }
 
         v = (CL_Vector *)CL_OBJ_TO_PTR(result);
+        v->elt_type = element_type_code;
 
         if (has_initial_element) {
             uint32_t j;
@@ -1124,7 +1179,7 @@ static CL_Obj bi_array_element_type(CL_Obj *args, int n)
         CL_Vector *v = (CL_Vector *)CL_OBJ_TO_PTR(args[0]);
         if (v->flags & CL_VEC_FLAG_STRING)
             return cl_intern("CHARACTER", 9);
-        return SYM_T;
+        return elt_code_to_type(v->elt_type);
     }
     cl_error(CL_ERR_TYPE, "ARRAY-ELEMENT-TYPE: not an array");
     return CL_NIL;
@@ -1183,8 +1238,10 @@ static CL_Obj bi_array_in_bounds_p(CL_Obj *args, int n)
 /* ======================================================= */
 
 /* (upgraded-array-element-type typespec &optional environment) → typespec
- * clamiga arrays are all general (element type T), except strings (CHARACTER)
- * and bit-vectors (BIT).  Returns T for all other types. */
+ * clamiga upgrades to CHARACTER (strings), BIT (bit-vectors), and the
+ * specialized numeric types FIXNUM / SINGLE-FLOAT / DOUBLE-FLOAT (which it
+ * keeps distinct from T so a (VECTOR FIXNUM) is not a (VECTOR T) — see
+ * classify_general_elt_code).  Everything else upgrades to T. */
 static CL_Obj bi_upgraded_array_element_type(CL_Obj *args, int n)
 {
     CL_Obj typespec = args[0];
@@ -1192,14 +1249,16 @@ static CL_Obj bi_upgraded_array_element_type(CL_Obj *args, int n)
     (void)n;
 
     /* Classify CHARACTER / BIT subtypes, expanding user deftypes (so an alias
-     * like flexi-streams' CHAR* upgrades to CHARACTER, not T).  Everything
-     * else upgrades to the general element type T. */
+     * like flexi-streams' CHAR* upgrades to CHARACTER, not T). */
     classify_array_elt_type(typespec, 16, &is_char, &is_wide_char, &is_bit);
+    /* Re-read: classify_array_elt_type may have called cl_vm_apply (deftype
+     * expansion) which can trigger a compacting GC, making typespec stale. */
+    typespec = args[0];
     if (is_char)
         return cl_intern("CHARACTER", 9);
     if (is_bit)
         return cl_intern("BIT", 3);
-    return SYM_T;
+    return elt_code_to_type(classify_general_elt_code(typespec, 16));
 }
 
 /* ======================================================= */

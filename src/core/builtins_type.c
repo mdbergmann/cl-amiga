@@ -68,6 +68,26 @@ static CL_Obj TYPE_SYM_SIMPLE_BIT_VECTOR = CL_NIL;
 /* Forward declaration */
 static int typep_check(CL_Obj obj, CL_Obj type_spec);
 
+/* Map a (VECTOR/ARRAY element-type) specifier to the general-vector element
+ * code (CL_VEC_ELT_*) it constrains, or -1 when ET imposes no general-code
+ * constraint (BIT, CHARACTER, INTEGER, class names, deftypes, ...).  Only the
+ * directly-named specialized numeric types and T are recognized — enough to
+ * distinguish a (VECTOR FIXNUM) from a (VECTOR T) without invoking deftype
+ * expansion (which could compact while OBJ is held in a C local). */
+static int vec_elt_spec_code(CL_Obj et)
+{
+    const char *en;
+    if (!CL_SYMBOL_P(et)) return -1;
+    en = cl_symbol_name(et);
+    if (strcmp(en, "T") == 0) return CL_VEC_ELT_T;
+    if (strcmp(en, "FIXNUM") == 0) return CL_VEC_ELT_FIXNUM;
+    if (strcmp(en, "SINGLE-FLOAT") == 0 || strcmp(en, "SHORT-FLOAT") == 0)
+        return CL_VEC_ELT_SINGLE_FLOAT;
+    if (strcmp(en, "DOUBLE-FLOAT") == 0 || strcmp(en, "LONG-FLOAT") == 0)
+        return CL_VEC_ELT_DOUBLE_FLOAT;
+    return -1;
+}
+
 /* --- typep for simple symbol type specifiers --- */
 
 static int typep_symbol(CL_Obj obj, CL_Obj type_sym)
@@ -508,7 +528,23 @@ static int typep_check(CL_Obj obj, CL_Obj type_spec)
         /* (vector element-type size) */
         if (head == TYPE_SYM_VECTOR) {
             if (!typep_symbol(obj, head)) return 0;
-            /* Skip element-type check (we only have T vectors) */
+            /* Element-type constraint.  Only the specialized numeric codes
+             * (FIXNUM / SINGLE-FLOAT / DOUBLE-FLOAT) and T are discriminated,
+             * and only for general vectors — strings and bit-vectors keep
+             * their existing behavior.  This is what makes (TYPEP fixnum-arr
+             * '(VECTOR T)) NIL (serapeum's VECT-TYPE) while a general T vector
+             * still matches. */
+            if (!CL_NULL_P(args)) {
+                CL_Obj et = cl_car(args);
+                if (!(CL_SYMBOL_P(et) && strcmp(cl_symbol_name(et), "*") == 0) &&
+                    CL_VECTOR_P(obj) &&
+                    !(((CL_Vector *)CL_OBJ_TO_PTR(obj))->flags & CL_VEC_FLAG_STRING)) {
+                    int want = vec_elt_spec_code(et);
+                    if (want >= 0 &&
+                        (uint8_t)want != ((CL_Vector *)CL_OBJ_TO_PTR(obj))->elt_type)
+                        return 0;
+                }
+            }
             if (!CL_NULL_P(args) && !CL_NULL_P(cl_cdr(args))) {
                 CL_Obj size_spec = cl_car(cl_cdr(args));
                 if (CL_FIXNUM_P(size_spec)) {
@@ -575,14 +611,28 @@ static int typep_check(CL_Obj obj, CL_Obj type_spec)
                                  strcmp(en, "STANDARD-CHAR") == 0 ||
                                  strcmp(en, "EXTENDED-CHAR") == 0) et_char = 1;
                         else if (cl_type_is_bit_subtype(et)) et_bit = 1;
-                        /* every other symbol (T, FIXNUM, INTEGER, ...) upgrades
-                         * to T on this implementation. */
+                        /* every other symbol (T, INTEGER, ...) falls through to
+                         * the numeric-code path below; FIXNUM, SINGLE-FLOAT,
+                         * and DOUBLE-FLOAT are handled by vec_elt_spec_code and
+                         * do NOT upgrade to T. */
                     } else if (CL_CONS_P(et)) {
                         if (cl_type_is_bit_subtype(et)) et_bit = 1;
                     }
                     if (et_bit) { if (!obj_bit) return 0; }
                     else if (et_char) { if (!obj_char) return 0; }
-                    else { if (obj_bit || obj_char) return 0; } /* upgrades to T */
+                    else {
+                        if (obj_bit || obj_char) return 0; /* not a numeric array */
+                        /* General element type: discriminate the specialized
+                         * numeric codes (FIXNUM / SINGLE/DOUBLE-FLOAT) from T,
+                         * so (ARRAY T) excludes a (ARRAY FIXNUM) and vice versa. */
+                        if (CL_VECTOR_P(obj)) {
+                            int want = vec_elt_spec_code(et);
+                            if (want < 0) want = CL_VEC_ELT_T; /* INTEGER, ... → T */
+                            if ((uint8_t)want !=
+                                ((CL_Vector *)CL_OBJ_TO_PTR(obj))->elt_type)
+                                return 0;
+                        }
+                    }
                 }
                 /* Rank/dimensions, if provided. */
                 if (!CL_NULL_P(cl_cdr(args))) {
