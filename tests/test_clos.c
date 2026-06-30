@@ -1321,6 +1321,69 @@ TEST(emf_cache_no_applicable_cached)
         "NO-METHOD");
 }
 
+/* CLHS 7.6.6.3: NO-APPLICABLE-METHOD is a standard generic function called
+ * when a GF is invoked with no applicable method.  Regression for the
+ * serapeum NO-APPLICABLE-METHOD-ERROR test, which derives the dispatch-miss
+ * condition type via (no-applicable-method #'no-applicable-method (list 1)). */
+TEST(no_applicable_method_gf_exists)
+{
+    /* The standard function is bound and signals an error of type ERROR. */
+    ASSERT_STR_EQ(eval_print("(fboundp 'no-applicable-method)"), "T");
+    ASSERT_STR_EQ(eval_print(
+        "(handler-case (no-applicable-method #'no-applicable-method (list 1))"
+        "  (error (e) (typep e 'error)))"),
+        "T");
+}
+
+TEST(no_applicable_method_consistent_type)
+{
+    /* A direct call and a real dispatch miss signal the SAME condition type,
+     * so the serapeum deftype (derived from the former) catches the latter. */
+    eval_print("(defgeneric nam-gwnm (x))");
+    ASSERT_STR_EQ(eval_print(
+        "(eq (handler-case (no-applicable-method #'no-applicable-method (list 1))"
+        "       (error (e) (type-of e)))"
+        "    (handler-case (nam-gwnm 1)"
+        "       (error (e) (type-of e))))"),
+        "T");
+}
+
+TEST(no_applicable_method_serapeum_deftype)
+{
+    /* The full serapeum portability.lisp pattern: a deftype whose body
+     * derives the dispatch-miss error type, then used to catch a real miss. */
+    eval_print(
+        "(deftype nam-err ()"
+        "  (load-time-value"
+        "   (handler-case (no-applicable-method #'no-applicable-method (list 1))"
+        "     (error (e) (type-of e)))))");
+    eval_print("(defgeneric nam-gwnm2 (x))");
+    /* proper subtype of ERROR */
+    ASSERT_STR_EQ(eval_print(
+        "(and (subtypep 'nam-err 'error)"
+        "     (not (nth-value 0 (subtypep 'error 'nam-err))))"),
+        "T");
+    /* catches a real dispatch miss */
+    ASSERT_STR_EQ(eval_print(
+        "(handler-case (nam-gwnm2 1) (nam-err () 'caught))"),
+        "CAUGHT");
+}
+
+/* CLHS 7.6.6.3: a user method on NO-APPLICABLE-METHOD that returns normally
+ * must have its return values propagated — not silently discarded.  Regression
+ * for %gf-dispatch using (when ...) instead of (return-from ... ...). */
+TEST(no_applicable_method_return_value)
+{
+    eval_print("(defgeneric nam-rv-gf (x))");
+    /* Install a method that returns a sentinel instead of signaling.
+     * Eql-specialized on this GF so it doesn't affect any other test. */
+    eval_print(
+        "(defmethod no-applicable-method ((gf (eql #'nam-rv-gf)) &rest args)"
+        "  (declare (ignore args))"
+        "  42)");
+    ASSERT_STR_EQ(eval_print("(nam-rv-gf 'anything)"), "42");
+}
+
 /* === Phase 13: Multi-dispatch cache === */
 
 TEST(multi_cache_two_arg)
@@ -4290,6 +4353,10 @@ int main(void)
     RUN(emf_cache_before_after_around);
     RUN(emf_cache_next_method_p);
     RUN(emf_cache_no_applicable_cached);
+    RUN(no_applicable_method_gf_exists);
+    RUN(no_applicable_method_consistent_type);
+    RUN(no_applicable_method_serapeum_deftype);
+    RUN(no_applicable_method_return_value);
 
     /* Phase 13: Multi-dispatch cache */
     RUN(multi_cache_two_arg);
