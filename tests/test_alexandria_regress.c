@@ -132,6 +132,37 @@ TEST(subtypep_list_union_identity)
     ASSERT_STR_EQ(eval_print("(subtypep '(and symbol list) 'null)"), "T");
 }
 
+/* --- SUBTYPEP: an element-less (member) is the empty type (≡ NIL) --- */
+TEST(subtypep_empty_member_is_bottom_type)
+{
+    /* CLHS 4.2.3 / member: `(member)` with zero elements denotes the empty
+     * type, so it is type= to NIL.  Both directions of subtypep must be
+     * certain T (the second value), not the "unknown" (NIL NIL). */
+    ASSERT_STR_EQ(eval_print("(subtypep '(member) nil)"), "T");
+    ASSERT_STR_EQ(eval_print("(subtypep 'nil '(member))"), "T");
+    ASSERT_STR_EQ(eval_print("(subtypep '(member) '(member))"), "T");
+    /* The empty type is a subtype of any type (NIL ⊆ everything). */
+    ASSERT_STR_EQ(eval_print("(subtypep '(member) 'integer)"), "T");
+    ASSERT_STR_EQ(eval_print("(subtypep 'nil 'integer)"), "T");
+    /* A non-empty type is NOT a subtype of the empty (member). */
+    ASSERT_STR_EQ(eval_print("(subtypep 'integer '(member))"), "NIL");
+    /* Nothing is of the empty member type. */
+    ASSERT_STR_EQ(eval_print("(typep :x '(member))"), "NIL");
+    ASSERT_STR_EQ(eval_print("(typep nil '(member))"), "NIL");
+
+    /* (or) with zero disjuncts is also the empty type (CLHS 4.4 / type-specifier OR).
+     * tspec_is_empty must recognise both forms; the old code fell into the OR
+     * compound handler producing (NIL T) for (subtypep 'nil '(or)). */
+    ASSERT_STR_EQ(eval_print("(subtypep '(or) nil)"), "T");
+    ASSERT_STR_EQ(eval_print("(subtypep 'nil '(or))"), "T");
+    ASSERT_STR_EQ(eval_print("(subtypep '(or) '(or))"), "T");
+    ASSERT_STR_EQ(eval_print("(subtypep '(or) 'integer)"), "T");
+    ASSERT_STR_EQ(eval_print("(subtypep 'integer '(or))"), "NIL");
+    /* (member) and (or) denote the same empty type — mutual subtype. */
+    ASSERT_STR_EQ(eval_print("(subtypep '(member) '(or))"), "T");
+    ASSERT_STR_EQ(eval_print("(subtypep '(or) '(member))"), "T");
+}
+
 /* --- TYPEP: multidimensional array is not a sequence --- */
 TEST(typep_md_array_not_sequence)
 {
@@ -168,6 +199,7 @@ int main(void)
     RUN(define_modify_macro_evaluates_place_once);
     RUN(every_returns_boolean_t);
     RUN(subtypep_list_union_identity);
+    RUN(subtypep_empty_member_is_bottom_type);
     RUN(typep_md_array_not_sequence);
     RUN(read_byte_output_stream_errors);
     RUN(with_standard_io_syntax_resets_print_case);

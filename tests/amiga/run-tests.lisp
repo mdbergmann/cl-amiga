@@ -745,14 +745,26 @@
 ; Regression: a pure ERROR (non-warning) at compile time sets BOTH warnings-p
 ; and failure-p (CLHS COMPILE: warnings-p is true for any condition of type
 ; ERROR or WARNING).  (signal ...) is used so the error is detected but not
-; propagated.
+; propagated past the COMPILE detection machinery.
+;
+; NB: the COMPILE itself must run OUTSIDE `check`, because `check` wraps its
+; actual-form in (handler-case ... (error (c) ...)).  Per CLHS, `signal`
+; invokes every matching handler, so that error handler would catch the
+; macro's compile-time (signal simple-error) and report a spurious "signaled
+; error" failure.  We capture warnings-p/failure-p where no ERROR handler is
+; active, then assert on the captured values.
 (defmacro %amiga-err-only ()
   (signal (make-condition 'simple-error :format-control "ct-err"))
   42)
+(multiple-value-bind (%eo-fn %eo-warnings-p %eo-failure-p)
+    (compile nil '(lambda () (%amiga-err-only)))
+  (declare (ignore %eo-fn))
+  (defparameter *amiga-err-only-warnings-p* %eo-warnings-p)
+  (defparameter *amiga-err-only-failure-p* %eo-failure-p))
 (check "compile error-only: warnings-p T" t
-  (not (null (nth-value 1 (compile nil '(lambda () (%amiga-err-only)))))))
+  (not (null *amiga-err-only-warnings-p*)))
 (check "compile error-only: failure-p T" t
-  (not (null (nth-value 2 (compile nil '(lambda () (%amiga-err-only)))))))
+  (not (null *amiga-err-only-failure-p*)))
 
 ; --- Phase 4 Tier 2: unwind-protect ---
 (check "uwp normal" '(42 t) (let ((log nil)) (let ((r (unwind-protect 42 (setq log t)))) (list r log))))
@@ -1862,6 +1874,38 @@
        (multiple-value-list (subtypep 'fixnum '(not integer))))
 (check "subtypep integer<(not null) uncertain" '(nil nil)
        (multiple-value-list (subtypep 'integer '(not null))))
+
+; --- subtypep: element-less (member) is the empty type (serapeum explode-type) ---
+(check "subtypep (member)<nil" '(t t)
+       (multiple-value-list (subtypep '(member) nil)))
+(check "subtypep nil<(member)" '(t t)
+       (multiple-value-list (subtypep 'nil '(member))))
+(check "subtypep (member)<(member)" '(t t)
+       (multiple-value-list (subtypep '(member) '(member))))
+(check "subtypep (member)<integer" '(t t)
+       (multiple-value-list (subtypep '(member) 'integer)))
+(check "subtypep integer<(member)" '(nil t)
+       (multiple-value-list (subtypep 'integer '(member))))
+(check "typep :x (member)" nil (typep :x '(member)))
+
+; --- subtypep: zero-disjunct (or) is also the empty type ---
+; CLHS type-specifier OR: (or) with no disjuncts denotes the empty type (≡ NIL).
+; tspec_is_empty must recognise (or) the same way it does (member).
+; The old compound-OR handler returned (NIL T) for (subtypep 'nil '(or)).
+(check "subtypep (or)<nil" '(t t)
+       (multiple-value-list (subtypep '(or) nil)))
+(check "subtypep nil<(or)" '(t t)
+       (multiple-value-list (subtypep 'nil '(or))))
+(check "subtypep (or)<(or)" '(t t)
+       (multiple-value-list (subtypep '(or) '(or))))
+(check "subtypep (or)<integer" '(t t)
+       (multiple-value-list (subtypep '(or) 'integer)))
+(check "subtypep integer<(or)" '(nil t)
+       (multiple-value-list (subtypep 'integer '(or))))
+(check "subtypep (member)<(or)" '(t t)
+       (multiple-value-list (subtypep '(member) '(or))))
+(check "subtypep (or)<(member)" '(t t)
+       (multiple-value-list (subtypep '(or) '(member))))
 
 ; --- Type system: typecase with compound ---
 (check "typecase or int" "match" (typecase 42 ((or integer string) "match") (t "no")))
