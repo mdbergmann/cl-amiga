@@ -153,6 +153,31 @@ directly instead of attempting a symbol lookup."
 
 (defsetf find-class %set-find-class)
 
+;;; --- Metaclass detection ---
+;;; A user-defined metaclass is a subclass of STANDARD-CLASS.  Its
+;;; instances are class metaobjects: they reuse the fixed 12-slot class
+;;; layout (NAME, DIRECT-SUPERCLASSES, ... at indices 0-11) and append
+;;; any metaclass-specific slots at indices 12+.  See specs/mop.md
+;;; Design Principle 2.  STANDARD-CLASS itself and BUILT-IN-CLASS are not
+;;; treated as user metaclasses (they are created during bootstrap, never
+;;; via %ENSURE-CLASS).
+(defun %metaclass-p (class)
+  "True if CLASS is a metaclass — i.e. a proper subclass of STANDARD-CLASS."
+  (let ((std (find-class 'standard-class nil)))
+    (and std
+         (not (eq class std))
+         (member std (class-precedence-list class) :test #'eq)
+         t)))
+
+;;; The fixed 12-slot layout shared by every class metaobject (and by the
+;;; struct type of any user metaclass, which appends its own slots after).
+(defconstant +standard-class-slot-layout+
+  '((name nil) (direct-superclasses nil) (direct-slots nil)
+    (cpl nil) (effective-slots nil) (slot-index-table nil)
+    (direct-subclasses nil) (direct-methods nil)
+    (prototype nil) (finalized-p nil) (default-initargs nil)
+    (direct-default-initargs nil)))
+
 ;;; --- CPL computation for bootstrap classes ---
 
 ;;; C3 linearization merge.  Defined here (before the bootstrap classes)
@@ -936,8 +961,52 @@ Specialize via defmethod to provide lazy initialization."
 
 ;;; --- Class creation at runtime ---
 
+(defun %finalize-and-register-class (class name supers direct-super-names)
+  "Shared tail of class creation: run the finalization protocol, register
+   the instance struct type, install the class in the class table, link it
+   into each super's direct-subclasses, and invalidate dispatch caches.
+   Used by both the standard %ENSURE-CLASS path and the metaclass path
+   (the INITIALIZE-INSTANCE method on class metaobjects)."
+  ;; Run the finalization protocol. Routes through the GF if available
+  ;; (always the case once clos.lisp finishes loading), otherwise falls
+  ;; back to the internal body.
+  (if (fboundp 'finalize-inheritance)
+      (finalize-inheritance class)
+      (%finalize-inheritance-body class))
+  ;; Register struct type with the finalized slot layout. The struct only
+  ;; holds :INSTANCE-allocated slots — :CLASS slots live on the class
+  ;; itself via the cons cell returned by SLOT-DEFINITION-LOCATION.  A
+  ;; metaclass (subclass of STANDARD-CLASS) reuses the fixed 12-slot class
+  ;; layout and appends its own slots after index 11 (see %METACLASS-P).
+  (let* ((instance-esds nil))
+    (dolist (esd (class-effective-slots class))
+      (when (eq (slot-definition-allocation esd) :instance)
+        (push esd instance-esds)))
+    (setq instance-esds (nreverse instance-esds))
+    (let ((struct-slot-specs
+            (mapcar (lambda (esd) (list (slot-definition-name esd) nil))
+                    instance-esds)))
+      (if (%metaclass-p class)
+          (%register-struct-type name (+ 12 (length instance-esds))
+                                 'standard-class
+                                 (append +standard-class-slot-layout+
+                                         struct-slot-specs))
+          (%register-struct-type name (length instance-esds)
+                                 (if direct-super-names (car direct-super-names) nil)
+                                 struct-slot-specs))))
+  ;; Register class
+  (setf (find-class name) class)
+  ;; Register as subclass of each direct super
+  (dolist (super supers)
+    (%set-class-direct-subclasses super
+      (cons class (class-direct-subclasses super))))
+  ;; Invalidate all GF dispatch caches (class hierarchy changed)
+  (when (fboundp '%invalidate-all-gf-caches)
+    (%invalidate-all-gf-caches))
+  class)
+
 (defun %ensure-class (name direct-super-names direct-slot-defs
-                      &optional direct-default-initargs)
+                      &optional direct-default-initargs metaclass)
   "Create or update a CLOS class. Called by defclass expansion (and by
    the ENSURE-CLASS GF after keyword args have been destructured).
    DIRECT-SLOT-DEFS is a list of STANDARD-DIRECT-SLOT-DEFINITION instances
@@ -947,51 +1016,78 @@ Specialize via defmethod to provide lazy initialization."
    The class struct is allocated here; the CPL, effective slots, and
    effective default-initargs are computed by FINALIZE-INHERITANCE so
    that MOP :around methods on COMPUTE-SLOTS, COMPUTE-CLASS-PRECEDENCE-LIST,
-   and COMPUTE-DEFAULT-INITARGS get a chance to run."
-  (let* ((old-class (find-class name nil))
-         (supers (if direct-super-names
-                     (mapcar #'find-class direct-super-names)
-                     (list (find-class 'standard-object))))
-         (class (%make-struct 'standard-class
-                  name supers direct-slot-defs
-                  nil nil nil nil nil nil nil nil nil)))
-    (%set-class-direct-default-initargs class direct-default-initargs)
-    ;; On redefinition, drop the old class from each former super's
-    ;; direct-subclasses so the old metaobject and its slot-defs are
-    ;; reachable only from find-class — which we're about to overwrite.
+   and COMPUTE-DEFAULT-INITARGS get a chance to run.
+
+   When METACLASS names a user metaclass (a subclass of STANDARD-CLASS),
+   the class metaobject is allocated as an instance of that metaclass and
+   built through the INITIALIZE-INSTANCE generic function, so metaclass
+   methods (e.g. an :AROUND that rewrites :DIRECT-SUPERCLASSES, as in
+   serapeum's TOPMOST-OBJECT-CLASS) and metaclass :DEFAULT-INITARGS apply."
+  (if (and metaclass (not (eq metaclass 'standard-class)))
+      (%ensure-class-via-metaclass name direct-super-names direct-slot-defs
+                                   direct-default-initargs metaclass)
+      (let* ((old-class (find-class name nil))
+             (supers (if direct-super-names
+                         (mapcar #'find-class direct-super-names)
+                         (list (find-class 'standard-object))))
+             (class (%make-struct 'standard-class
+                      name supers direct-slot-defs
+                      nil nil nil nil nil nil nil nil nil)))
+        (%set-class-direct-default-initargs class direct-default-initargs)
+        ;; On redefinition, drop the old class from each former super's
+        ;; direct-subclasses so the old metaobject and its slot-defs are
+        ;; reachable only from find-class — which we're about to overwrite.
+        (when old-class
+          (dolist (old-super (class-direct-superclasses old-class))
+            (%set-class-direct-subclasses old-super
+              (remove old-class (class-direct-subclasses old-super) :test #'eq))))
+        (%finalize-and-register-class class name supers direct-super-names))))
+
+;;; --- Metaclass-driven class creation ---
+;;; Allocate the class metaobject as an instance of its metaclass (reusing
+;;; the fixed 12-slot layout plus the metaclass's own slots) and run it
+;;; through INITIALIZE-INSTANCE so metaclass methods and :DEFAULT-INITARGS
+;;; participate.  The primary INITIALIZE-INSTANCE method specialized on
+;;; STANDARD-CLASS (defined in Phase 7) does the actual class building.
+
+(defun %merge-metaclass-default-initargs (meta-class initargs)
+  "Prepend the metaclass's effective :DEFAULT-INITARGS to INITARGS for any
+   key not already supplied, evaluating each default initfunction."
+  (let ((defaults (and meta-class (class-default-initargs meta-class)))
+        (result initargs))
+    (when defaults
+      (let ((not-found (cons nil nil)))
+        (dolist (default defaults)
+          (let ((key (first default))
+                (initfn (second default)))
+            (when (eq (getf result key not-found) not-found)
+              (setq result (append result (list key (funcall initfn)))))))))
+    result))
+
+(defun %ensure-class-via-metaclass (name direct-super-names direct-slot-defs
+                                    direct-default-initargs meta-name)
+  ;; On redefinition, drop the old class from each former super's
+  ;; direct-subclasses (parity with the standard %ENSURE-CLASS path).
+  (let ((old-class (find-class name nil)))
     (when old-class
       (dolist (old-super (class-direct-superclasses old-class))
         (%set-class-direct-subclasses old-super
-          (remove old-class (class-direct-subclasses old-super) :test #'eq))))
-    ;; Run the finalization protocol. Routes through the GF if available
-    ;; (always the case once clos.lisp finishes loading), otherwise falls
-    ;; back to the internal body.
-    (if (fboundp 'finalize-inheritance)
-        (finalize-inheritance class)
-        (%finalize-inheritance-body class))
-    ;; Register struct type with the finalized slot layout. The struct
-    ;; only holds :INSTANCE-allocated slots — :CLASS slots live on the
-    ;; class itself via the cons cell returned by SLOT-DEFINITION-LOCATION.
-    (let* ((instance-esds nil))
-      (dolist (esd (class-effective-slots class))
-        (when (eq (slot-definition-allocation esd) :instance)
-          (push esd instance-esds)))
-      (setq instance-esds (nreverse instance-esds))
-      (let ((struct-slot-specs
-              (mapcar (lambda (esd) (list (slot-definition-name esd) nil))
-                      instance-esds)))
-        (%register-struct-type name (length instance-esds)
-                               (if direct-super-names (car direct-super-names) nil)
-                               struct-slot-specs)))
-    ;; Register class
-    (setf (find-class name) class)
-    ;; Register as subclass of each direct super
-    (dolist (super supers)
-      (%set-class-direct-subclasses super
-        (cons class (class-direct-subclasses super))))
-    ;; Invalidate all GF dispatch caches (class hierarchy changed)
-    (when (fboundp '%invalidate-all-gf-caches)
-      (%invalidate-all-gf-caches))
+          (remove old-class (class-direct-subclasses old-super) :test #'eq)))))
+  (let* ((meta-class (find-class meta-name))
+         (total-slots (length (%struct-slot-names meta-name)))
+         (n-extra (- total-slots 12))
+         ;; 12 fixed class slots (filled by INITIALIZE-INSTANCE) + the
+         ;; metaclass's own slots, initially unbound.
+         (class (apply #'%make-struct meta-name
+                       (append (make-list 12 :initial-element nil)
+                               (make-list (max 0 n-extra)
+                                          :initial-element *slot-unbound-marker*))))
+         (initargs (%merge-metaclass-default-initargs meta-class
+                     (list :name name
+                           :direct-superclasses direct-super-names
+                           :direct-slots direct-slot-defs
+                           :direct-default-initargs direct-default-initargs))))
+    (apply #'initialize-instance class initargs)
     class))
 
 ;;; --- Class finalization body ---
@@ -1019,8 +1115,11 @@ Specialize via defmethod to provide lazy initialization."
   "Fill in SLOT-DEFINITION-LOCATION for each effective slot. Instance
    slots get the next integer struct index. Class-allocated slots get
    a cons (NAME . VALUE) — inherited from a superclass when the class
-   does not provide its own direct definition for the same name."
-  (let ((instance-i 0))
+   does not provide its own direct definition for the same name.
+
+   A metaclass (subclass of STANDARD-CLASS) reserves indices 0-11 for the
+   fixed class layout, so its own instance slots start at index 12."
+  (let ((instance-i (if (%metaclass-p class) 12 0)))
     (dolist (esd effective-slots)
       (let ((name (slot-definition-name esd)))
         (cond
@@ -2386,6 +2485,57 @@ already-existing GF the installed combination is preserved."
 (defmethod initialize-instance ((instance t) &rest initargs)
   (apply #'shared-initialize instance t initargs))
 
+;;; --- Class metaobject initialization (metaclass support) ---
+;;; When a class is created with a user metaclass (:metaclass option),
+;;; %ENSURE-CLASS-VIA-METACLASS allocates the class metaobject as an
+;;; instance of that metaclass and calls INITIALIZE-INSTANCE on it.  This
+;;; primary method (specialized on STANDARD-CLASS, so it applies to every
+;;; class metaobject) populates the fixed 12-slot class layout from the
+;;; initargs, then any metaclass-specific slots (e.g. TOPMOST-CLASS) via
+;;; the slot/initarg machinery, then finalizes and registers the class.
+;;;
+;;; Metaclass :AROUND methods (e.g. serapeum's TOPMOST-OBJECT-CLASS, which
+;;; injects a superclass into :DIRECT-SUPERCLASSES) wrap this primary
+;;; method and observe/modify the initargs via CALL-NEXT-METHOD.
+;;;
+;;; Normal classes (metaclass = STANDARD-CLASS) never reach here: they are
+;;; built directly by %ENSURE-CLASS without going through INITIALIZE-INSTANCE.
+(defmethod initialize-instance ((class standard-class) &rest initargs
+                                &key name direct-superclasses
+                                &allow-other-keys)
+  (let ((supers (if direct-superclasses
+                    (mapcar #'find-class direct-superclasses)
+                    (list (find-class 'standard-object)))))
+    (%struct-set class 0 name)                              ; 0: name
+    (%struct-set class 1 supers)                            ; 1: direct-superclasses
+    (%struct-set class 2 (getf initargs :direct-slots))     ; 2: direct-slots
+    (%set-class-direct-default-initargs class
+      (getf initargs :direct-default-initargs))             ; 11
+    ;; Populate metaclass-specific slots (indices 12+) from the initargs,
+    ;; matching each slot's :INITARG against the supplied keys.  The
+    ;; metaclass's effective slots carry the locations assigned (at 12+)
+    ;; by %ASSIGN-SLOT-LOCATIONS.
+    (let ((index-table (class-slot-index-table (class-of class))))
+      (when index-table
+        (maphash
+         (lambda (slot-name esd)
+           (declare (ignore slot-name))
+           (when (eq (slot-definition-allocation esd) :instance)
+             (multiple-value-bind (val supplied)
+                 (%find-initarg-value initargs (slot-definition-initargs esd))
+               (if supplied
+                   (%struct-set class (slot-definition-location esd) val)
+                   (let ((initfn (slot-definition-initfunction esd)))
+                     (when (and initfn
+                                (eq (%struct-ref class (slot-definition-location esd))
+                                    *slot-unbound-marker*))
+                       (%struct-set class (slot-definition-location esd)
+                                    (funcall initfn))))))))
+         index-table)))
+    (%finalize-and-register-class class name supers
+                                  (mapcar #'class-name supers))
+    class))
+
 ;;; --- no-applicable-method (CLHS 7.6.6.3) ---
 ;;; Called by the dispatch machinery (via %NO-APPLICABLE-METHOD) when a
 ;;; generic function is invoked and no method is applicable.  Defined as a
@@ -2579,7 +2729,9 @@ already-existing GF the installed combination is preserved."
   (let* ((direct-supers (getf keys :direct-superclasses))
          (direct-slots  (getf keys :direct-slots))
          (direct-inits  (getf keys :direct-default-initargs))
-         (new-class (%ensure-class name direct-supers direct-slots direct-inits)))
+         (metaclass     (getf keys :metaclass))
+         (new-class (%ensure-class name direct-supers direct-slots direct-inits
+                                   metaclass)))
     ;; Redefinition: %ENSURE-CLASS allocates a fresh class struct, so
     ;; any dependents previously registered on the old metaobject would
     ;; be orphaned.  Migrate them to the new struct and then notify
@@ -2605,16 +2757,22 @@ already-existing GF the installed combination is preserved."
   "Define a new CLOS class (with generic function accessors)."
   (let ((accessor-defs nil)
         (slot-def-forms nil)
-        (default-initarg-forms nil))
+        (default-initarg-forms nil)
+        (metaclass-name nil))
     ;; Parse class options
     (dolist (opt class-options)
-      (when (and (consp opt) (eq (car opt) :default-initargs))
-        ;; (:default-initargs :key1 val1 :key2 val2 ...)
-        (let ((args (cdr opt)))
-          (loop while args
-                do (let ((key (pop args))
-                         (val (pop args)))
-                     (push `(list ',key (lambda () ,val)) default-initarg-forms))))))
+      (when (consp opt)
+        (cond
+          ((eq (car opt) :default-initargs)
+           ;; (:default-initargs :key1 val1 :key2 val2 ...)
+           (let ((args (cdr opt)))
+             (loop while args
+                   do (let ((key (pop args))
+                            (val (pop args)))
+                        (push `(list ',key (lambda () ,val)) default-initarg-forms)))))
+          ((eq (car opt) :metaclass)
+           ;; (:metaclass NAME)
+           (setq metaclass-name (cadr opt))))))
     ;; Parse each slot specifier
     (dolist (spec slot-specifiers)
       (let* ((parsed (%parse-slot-spec spec))
@@ -2651,7 +2809,8 @@ already-existing GF the installed combination is preserved."
        (ensure-class ',name
          :direct-superclasses ',direct-superclasses
          :direct-slots (list ,@slot-def-forms)
-         :direct-default-initargs (list ,@(nreverse default-initarg-forms)))
+         :direct-default-initargs (list ,@(nreverse default-initarg-forms))
+         ,@(when metaclass-name `(:metaclass ',metaclass-name)))
        ,@accessor-defs
        (find-class ',name))))
 

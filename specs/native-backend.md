@@ -690,6 +690,23 @@ JIT'd `OP_FLOAD` produces and checks the compactor rewrites the baked
 offset; end-to-end coverage is `tests/amiga/run-tests.lisp`'s
 "rational/float compare gc-safe" and `tests/amiga/test-jit.lisp`.
 
+> **KNOWN ISSUE (open, pre-existing, m68k JIT only).** There is a latent
+> baked-immediate / compaction reloc gap that manifests as a *layout-roulette*
+> corruption: under the JIT, a class metaobject occasionally fails to register
+> (`(setf (find-class …) …)` silently does not take effect → a later
+> `make-instance` signals "No class named …").  It is **not** reproducible on
+> the host (not even under `make test-gc-stress`, which forces compaction every
+> alloc) and disappears with `--no-jit`, so it is specific to native code
+> baking a heap offset the compactor does not forward.  It is sensitive to
+> heap/code layout: which (if any) class is hit shifts as unrelated code grows.
+> Currently it surfaces on `tests/amiga/run-tests.lisp`'s `sv-amiga-default`
+> slot-value-using-class checks (2 failures) after the MOP-metaclass /
+> array-element-type work enlarged `clos.fasl`.  The real fix is to find the
+> opcode whose CL_Obj immediate is emitted without a `jit_reloc_record` (audit
+> `walker_compile` in `src/jit/jit.c`); a host repro will need a synthetic
+> native_code+reloc fixture like `tests/test_gc_jit_reloc.c` for the offending
+> opcode.
+
 **Branches** use a single-pass label table (`bc_to_native[ip]`):
 forward branches emit a `Bcc.W` with a placeholder displacement plus
 a patch record; `OP_RET` resolves them all in one pass.  Out-of-range

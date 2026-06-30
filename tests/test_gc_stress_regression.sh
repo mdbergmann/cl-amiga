@@ -2170,6 +2170,113 @@ check_contains "APPLY large &rest list correct under GC stress" "APPLY-REST-GC:T
 check_absent   "no stale arg/callee_bc or corruption in OP_APPLY &rest build" \
   "APPLY-REST-GC:NIL\|not of type\|corrupted\|type 0\|too many\|Unbound" "$out"
 
+# --- Case: user-defined metaclasses survive compaction ---------------------
+# Bug class: %ENSURE-CLASS-VIA-METACLASS allocates the class metaobject as an
+# instance of its metaclass and runs it through INITIALIZE-INSTANCE (which
+# conses supers, merges :default-initargs, populates metaclass slots).  Every
+# alloc can compact, so the class object, its supers, and the metaclass slot
+# value must all survive relocation.  Covers serapeum ABSTRACT-CLASS /
+# TOPMOST-OBJECT (specs/mop.md user-defined metaclasses).
+cat > "$WORK/metaclass.lisp" <<'EOF'
+(defclass gcs-abstract-mc (standard-class) ())
+(defmethod allocate-instance ((a gcs-abstract-mc) &rest initargs)
+  (declare (ignore initargs)) (error "abstract"))
+(defclass gcs-topmost () ())
+(defclass gcs-topmost-mc (standard-class)
+  ((topc :initarg :topc :reader gcs-topc)))
+(defmethod validate-superclass ((c1 gcs-topmost-mc) (c2 standard-class)) t)
+(defun gcs-ins (sc list)
+  (cond ((null list) (list sc))
+        ((subtypep sc (first list)) (cons sc list))
+        (t (cons (first list) (gcs-ins sc (rest list))))))
+(defmethod initialize-instance :around
+    ((class gcs-topmost-mc) &rest initargs &key direct-superclasses topc)
+  (if (find topc direct-superclasses :test (lambda (a b) (subtypep b a)))
+      (call-next-method)
+      (apply #'call-next-method class
+             :direct-superclasses (gcs-ins (find-class topc) direct-superclasses)
+             initargs)))
+(defclass gcs-meta (gcs-topmost-mc) () (:default-initargs :topc 'gcs-topmost))
+(let ((ok t))
+  (dotimes (i 40)
+    (eval `(defclass ,(intern (format nil "GCS-ABS-~d" i)) ()
+             () (:metaclass gcs-abstract-mc)))
+    (let ((junk (make-list 20)))
+      (declare (ignore junk))
+      (unless (eq :sig
+                  (handler-case
+                      (progn (make-instance (intern (format nil "GCS-ABS-~d" i)))
+                             :no)
+                    (error () :sig)))
+        (setf ok nil)))
+    (eval `(defclass ,(intern (format nil "GCS-TOP-~d" i)) ()
+             () (:metaclass gcs-meta)))
+    (unless (typep (make-instance (intern (format nil "GCS-TOP-~d" i)))
+                   'gcs-topmost)
+      (setf ok nil)))
+  (format t "METACLASS-GC:~a~%" ok))
+EOF
+out=$(run_stress "$WORK/metaclass.lisp")
+check_contains "user metaclass abstract+topmost correct under GC stress" "METACLASS-GC:T" "$out"
+check_absent   "no corruption in metaclass class creation under GC stress" \
+  "METACLASS-GC:NIL\|not of type\|corrupted\|type 0\|Unbound\|No applicable" "$out"
+
+# --- Case: specialized-element-type arrays keep their code under compaction -
+# Bug class: make-array records a general-vector element-type code (elt_type)
+# so (VECTOR FIXNUM) is distinct from (VECTOR T).  The code lives in the
+# vector header; compaction must relocate the header (and its code) intact
+# while the array also holds live CL_Obj elements.  Covers serapeum VECT-TYPE.
+cat > "$WORK/elttype.lisp" <<'EOF'
+(let ((ok t))
+  (dotimes (i 80)
+    (let ((fa (make-array 4 :element-type 'fixnum :adjustable t :fill-pointer 0))
+          (junk (make-list 15)))
+      (declare (ignore junk))
+      (vector-push-extend (* i 1) fa)
+      (vector-push-extend (* i 2) fa)
+      (unless (and (eq 'fixnum (array-element-type fa))
+                   (not (typep fa '(vector t)))
+                   (typep fa '(vector fixnum))
+                   (= (aref fa 0) (* i 1))
+                   (= (aref fa 1) (* i 2)))
+        (setf ok nil)))
+    (let ((ta (make-array 3 :initial-element i)))
+      (unless (and (typep ta '(vector t))
+                   (eq 't (array-element-type ta)))
+        (setf ok nil))))
+  (format t "ELTTYPE-GC:~a~%" ok))
+;; Deftype alias for FIXNUM: classify_array_elt_type calls cl_vm_apply for the
+;; expander, which triggers a compacting GC under stress.  element_type (bi_make_array)
+;; and typespec (bi_upgraded_array_element_type) are C locals that must be
+;; re-read from the GC-rooted args[] slot after classify returns.
+(deftype gcs-myfixnum () 'fixnum)
+(deftype gcs-msingle () 'single-float)
+(let ((ok2 t))
+  (dotimes (i 40)
+    (let ((va (make-array 4 :element-type 'gcs-myfixnum))
+          (junk (make-list 10)))
+      (declare (ignore junk))
+      (setf (aref va 0) (* i 3))
+      (setf (aref va 1) (+ i 1))
+      (unless (and (eq 'fixnum (array-element-type va))
+                   (typep va '(vector fixnum))
+                   (not (typep va '(vector t)))
+                   (= (aref va 0) (* i 3))
+                   (= (aref va 1) (+ i 1))
+                   ;; upgraded-array-element-type must also re-read typespec after classify
+                   (eq 'fixnum (upgraded-array-element-type 'gcs-myfixnum))
+                   (eq 'single-float (upgraded-array-element-type 'gcs-msingle)))
+        (setf ok2 nil))))
+  (format t "ELTTYPE-DEF:~a~%" ok2))
+EOF
+out=$(run_stress "$WORK/elttype.lisp")
+check_contains "specialized element-type arrays correct under GC stress" "ELTTYPE-GC:T" "$out"
+check_absent   "no corruption in element-type-coded arrays under GC stress" \
+  "ELTTYPE-GC:NIL\|not of type\|corrupted\|type 0\|Unbound" "$out"
+check_contains "make-array+upgraded-array-elt-type with deftype alias under GC stress" "ELTTYPE-DEF:T" "$out"
+check_absent   "no stale element_type/typespec from deftype alias classify compaction" \
+  "ELTTYPE-DEF:NIL\|not of type\|corrupted\|type 0\|Unbound" "$out"
+
 echo ""
 echo "$passed passed, $failed failed, $total total"
 [ "$failed" -eq 0 ]
