@@ -901,11 +901,36 @@ static int coerce_elt_type_is_bit(CL_Obj type, int depth)
     return 0;
 }
 
+/* Classify a general (non-char, non-bit) coerce element type into a
+ * CL_VEC_ELT_* code so (coerce x '(vector single-float)) builds a vector that
+ * reports the specialized ARRAY-ELEMENT-TYPE (serapeum VECT-TYPE; alexandria
+ * COPY-SEQUENCE.1 via coerce).  Mirrors classify_general_elt_code in
+ * builtins_array.c; only the numeric types clamiga specializes are recognized,
+ * everything else stays CL_VEC_ELT_T. */
+static uint8_t coerce_general_elt_code(CL_Obj type, int depth)
+{
+    if (depth <= 0 || !CL_SYMBOL_P(type)) return CL_VEC_ELT_T;
+    {
+        const char *nm = cl_symbol_name(type);
+        CL_Obj ex;
+        if (strcmp(nm, "FIXNUM") == 0) return CL_VEC_ELT_FIXNUM;
+        if (strcmp(nm, "SINGLE-FLOAT") == 0 || strcmp(nm, "SHORT-FLOAT") == 0)
+            return CL_VEC_ELT_SINGLE_FLOAT;
+        if (strcmp(nm, "DOUBLE-FLOAT") == 0 || strcmp(nm, "LONG-FLOAT") == 0)
+            return CL_VEC_ELT_DOUBLE_FLOAT;
+        ex = cl_get_type_expander(type);
+        if (!CL_NULL_P(ex))
+            return coerce_general_elt_code(cl_vm_apply(ex, NULL, 0), depth - 1);
+    }
+    return CL_VEC_ELT_T;
+}
+
 static CL_Obj bi_coerce(CL_Obj *args, int n)
 {
     CL_Obj obj = args[0];
     CL_Obj result_type = args[1];
     const char *tname;
+    uint8_t coerce_vec_elt_code = CL_VEC_ELT_T; /* specialized elt type for VECTOR result */
     CL_UNUSED(n);
 
     /* Expand user deftypes in the result-type so e.g. babel's
@@ -941,8 +966,13 @@ static CL_Obj bi_coerce(CL_Obj *args, int n)
                 else if (!CL_NULL_P(eargs) &&
                          coerce_elt_type_is_bit(cl_car(eargs), 8))
                     result_type = cl_intern_in("BIT-VECTOR", 10, cl_package_cl);
-                else
+                else {
+                    /* General vector: preserve a specialized numeric element
+                     * type (e.g. (vector single-float)) on the result. */
+                    if (!CL_NULL_P(eargs))
+                        coerce_vec_elt_code = coerce_general_elt_code(cl_car(eargs), 8);
                     result_type = cl_intern_in("VECTOR", 6, cl_package_cl);
+                }
             } else if (strcmp(hname, "COMPLEX") == 0) {
                 /* (coerce x (complex part-type)) — build a complex whose
                  * realpart and imagpart are coerced to part-type. */
@@ -1163,6 +1193,7 @@ static CL_Obj bi_coerce(CL_Obj *args, int n)
             CL_Vector *v = (CL_Vector *)CL_OBJ_TO_PTR(vec);
             for (ii = 0; ii < slen; ii++)
                 cl_vector_data(v)[ii] = CL_MAKE_CHAR(cl_string_char_at(obj, ii));
+            v->elt_type = coerce_vec_elt_code;
             return vec;
         }
         if (CL_BIT_VECTOR_P(obj)) {
@@ -1175,6 +1206,7 @@ static CL_Obj bi_coerce(CL_Obj *args, int n)
             v = (CL_Vector *)CL_OBJ_TO_PTR(vec);
             for (ii = 0; ii < bvlen; ii++)
                 cl_vector_data(v)[ii] = CL_MAKE_FIXNUM(cl_bv_get_bit(bv, ii));
+            v->elt_type = coerce_vec_elt_code;
             return vec;
         }
         if (CL_NULL_P(obj) || CL_CONS_P(obj)) {
@@ -1194,6 +1226,7 @@ static CL_Obj bi_coerce(CL_Obj *args, int n)
                 cl_vector_data(v)[i] = cl_car(p);
                 p = cl_cdr(p);
             }
+            v->elt_type = coerce_vec_elt_code;
             return vec;
         }
         cl_error(CL_ERR_TYPE, "COERCE: cannot coerce to VECTOR");

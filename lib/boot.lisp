@@ -2184,10 +2184,12 @@ including any dotted-list terminator (so the result is also dotted)."
   (if (integerp x) x nil))
 
 (defun %seq-ctor-info (type)
-  "Classify a sequence constructor TYPE.  Returns (values KIND LENGTH) where
-   KIND is one of :list :cons :null :string :bit-vector :vector, or NIL when
-   the type does not denote a constructible sequence.  LENGTH is the declared
-   length constraint (an integer) or NIL when unspecified or `*`."
+  "Classify a sequence constructor TYPE.  Returns (values KIND LENGTH ELT-TYPE)
+   where KIND is one of :list :cons :null :string :bit-vector :vector, or NIL
+   when the type does not denote a constructible sequence.  LENGTH is the
+   declared length constraint (an integer) or NIL when unspecified or `*`.
+   ELT-TYPE is the declared element type for a specialized :vector (e.g.
+   SINGLE-FLOAT from (VECTOR SINGLE-FLOAT)) or NIL for a general vector."
   ;; Resolve a class metaobject down to its proper name.
   (when (and (not (symbolp type)) (not (consp type))
              (typep type 'standard-class))
@@ -2224,18 +2226,18 @@ including any dotted-list terminator (so the result is also dotted)."
                 (len (%seq-len-arg (and rest (cdr rest) (cadr rest)))))
             (cond ((%seq-elt-type-is-char elt) (values :string len))
                   ((%seq-elt-type-is-bit elt)  (values :bit-vector len))
-                  (t (values :vector len)))))
+                  (t (values :vector len (and elt (not (eq elt '*)) elt))))))
          ((or (string= hn "ARRAY") (string= hn "SIMPLE-ARRAY"))
           (let ((elt (and rest (car rest))))
             (cond ((%seq-elt-type-is-char elt) (values :string nil))
                   ((%seq-elt-type-is-bit elt)  (values :bit-vector nil))
-                  (t (values :vector nil)))))
+                  (t (values :vector nil (and elt (not (eq elt '*)) elt))))))
          (t (values nil nil)))))
     (t (values nil nil))))
 
 (defun make-sequence (type size &key (initial-element nil ie-p))
   "Create a sequence of the given TYPE and SIZE."
-  (multiple-value-bind (kind len) (%seq-ctor-info type)
+  (multiple-value-bind (kind len elt) (%seq-ctor-info type)
     (when (and len (/= len size))
       (error 'type-error :datum size :expected-type type))
     (case kind
@@ -2258,8 +2260,13 @@ including any dotted-list terminator (so the result is also dotted)."
        (make-array size :element-type 'bit
                         :initial-element (if ie-p initial-element 0)))
       (:vector
-       (if ie-p (make-array size :initial-element initial-element)
-           (make-array size)))
+       ;; Preserve a specialized element type (e.g. (VECTOR SINGLE-FLOAT)) so
+       ;; the result reports the right ARRAY-ELEMENT-TYPE (ansi MAKE-SEQUENCE.29).
+       (if elt
+           (if ie-p (make-array size :element-type elt :initial-element initial-element)
+               (make-array size :element-type elt))
+           (if ie-p (make-array size :initial-element initial-element)
+               (make-array size))))
       (t (error 'type-error :datum type :expected-type 'sequence)))))
 
 ;; --- Pathname functions (Step 10) ---

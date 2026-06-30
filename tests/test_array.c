@@ -378,6 +378,67 @@ TEST(make_array_specialized_element_type)
         "  (setf (aref a 0) 5) (aref a 0))"), "5");
 }
 
+/* Regression: the non-destructive sequence functions must preserve a
+ * specialized numeric element type, so a COPY-SEQ / SUBSEQ of a (VECTOR
+ * SINGLE-FLOAT) still reports SINGLE-FLOAT, and MAKE-SEQUENCE on a typed
+ * vector type produces a vector of that type.  ansi COPY-SEQ.23 /
+ * SUBSEQ.SPECIALIZED-VECTOR.2 / MAKE-SEQUENCE.29; alexandria COPY-SEQUENCE.1. */
+TEST(seq_funcs_preserve_specialized_element_type)
+{
+    /* COPY-SEQ keeps the element type and the values */
+    ASSERT_STR_EQ(eval_print(
+        "(array-element-type"
+        "  (copy-seq (make-array 3 :element-type 'single-float"
+        "                          :initial-contents '(1.0 2.0 3.0))))"),
+        "SINGLE-FLOAT");
+    ASSERT_STR_EQ(eval_print(
+        "(array-element-type"
+        "  (copy-seq (make-array 3 :element-type 'double-float"
+        "                          :initial-contents '(1.0d0 2.0d0 3.0d0))))"),
+        "DOUBLE-FLOAT");
+    ASSERT_STR_EQ(eval_print(
+        "(equalp (make-array 2 :element-type 'single-float :initial-contents '(1.0 2.0))"
+        "        (copy-seq (make-array 2 :element-type 'single-float"
+        "                              :initial-contents '(1.0 2.0))))"), "T");
+    /* a general vector copy stays T */
+    ASSERT_STR_EQ(eval_print("(array-element-type (copy-seq (vector 1 2 3)))"), "T");
+    /* SUBSEQ keeps the element type */
+    ASSERT_STR_EQ(eval_print(
+        "(array-element-type"
+        "  (subseq (make-array 5 :element-type 'single-float"
+        "                        :initial-contents '(1.0 2.0 3.0 4.0 5.0)) 1 4))"),
+        "SINGLE-FLOAT");
+    ASSERT_STR_EQ(eval_print(
+        "(subseq (make-array 5 :element-type 'single-float"
+        "                      :initial-contents '(1.0 2.0 3.0 4.0 5.0)) 1 4)"),
+        "#(2.0 3.0 4.0)");
+    /* MAKE-SEQUENCE honors a specialized (vector ...) type */
+    ASSERT_STR_EQ(eval_print(
+        "(array-element-type (make-sequence '(vector single-float) 4"
+        "                                   :initial-element 1.0))"),
+        "SINGLE-FLOAT");
+    ASSERT_STR_EQ(eval_print(
+        "(typep (make-sequence '(vector single-float) 4 :initial-element 1.0)"
+        "       '(vector single-float))"), "T");
+    /* an unspecialized vector type stays T */
+    ASSERT_STR_EQ(eval_print(
+        "(array-element-type (make-sequence 'vector 3))"), "T");
+    ASSERT_STR_EQ(eval_print(
+        "(array-element-type (make-sequence '(vector t) 3))"), "T");
+    /* COERCE to a specialized vector type honors the element type (this is the
+     * path alexandria's COPY-SEQUENCE uses for a non-matching target type) */
+    ASSERT_STR_EQ(eval_print(
+        "(array-element-type (coerce '(1 2 3) '(vector fixnum)))"), "FIXNUM");
+    ASSERT_STR_EQ(eval_print(
+        "(array-element-type (coerce '(1.0 2.0) '(vector single-float)))"),
+        "SINGLE-FLOAT");
+    ASSERT_STR_EQ(eval_print(
+        "(typep (coerce '(1 2 3) '(vector fixnum)) '(vector fixnum))"), "T");
+    /* COERCE to a plain vector stays T */
+    ASSERT_STR_EQ(eval_print(
+        "(array-element-type (coerce '(1 2 3) 'vector))"), "T");
+}
+
 TEST(make_array_adjustable)
 {
     ASSERT_STR_EQ(eval_print(
@@ -1314,6 +1375,7 @@ int main(void)
     RUN(make_array_base_char_wide_content_widens);
     RUN(make_array_string_class_of_is_string);
     RUN(make_array_specialized_element_type);
+    RUN(seq_funcs_preserve_specialized_element_type);
     RUN(make_array_adjustable);
     RUN(make_array_2d);
     RUN(make_array_3d);
