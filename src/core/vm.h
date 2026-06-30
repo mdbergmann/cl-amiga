@@ -133,6 +133,13 @@ typedef struct {
 /* Signal a condition — walks handler stack, returns NIL if no handler transferred */
 CL_Obj cl_signal_condition(CL_Obj condition);
 
+/* COMPILE warning/failure detection — see builtins_condition.c.  While
+ * cl_compile_detect_depth > 0, signaled warnings/errors set these flags so
+ * COMPILE can return warnings-p / failure-p. */
+extern int cl_compile_detect_depth;
+extern int cl_compile_warnings_p;
+extern int cl_compile_failure_p;
+
 /* Throw a value to a catch tag (for restart invocation from debugger) */
 void cl_throw_to_tag(CL_Obj tag, CL_Obj value);
 

@@ -2955,14 +2955,47 @@ static CL_Obj bi_compile(CL_Obj *args, int n)
     CL_Obj name = args[0];
 
     if (n > 1 && !CL_NULL_P(args[1])) {
-        /* (compile nil '(lambda (x) x)) — compile lambda form, return function */
-        CL_Obj bc = cl_compile(args[1]);
-        CL_Obj fn = cl_vm_eval(bc);
+        /* (compile nil '(lambda (x) x)) — compile lambda form, return function.
+         * Detect warnings/errors signaled during compilation (e.g. a macro that
+         * calls WARN at expansion time) so we can report warnings-p/failure-p
+         * per CLHS COMPILE.  Save/restore the detection state so nested COMPILE
+         * calls don't clobber an outer one's tally.
+         *
+         * CL_CATCH wraps the compile+eval so that a compile-time error (e.g. a
+         * macro that calls ERROR at expansion time) propagates to the caller but
+         * still decrements cl_compile_detect_depth.  Without this, any NLX out
+         * of cl_compile/cl_vm_eval leaves the depth elevated, causing all later
+         * unrelated conditions to spuriously set warnings-p/failure-p. */
+        CL_Obj bc, fn;
+        int saved_w = cl_compile_warnings_p;
+        int saved_f = cl_compile_failure_p;
+        int compile_err;
+        fn = CL_NIL;
+        cl_compile_warnings_p = 0;
+        cl_compile_failure_p = 0;
+        cl_compile_detect_depth++;
+        CL_CATCH(compile_err);
+        if (compile_err != CL_ERR_NONE) {
+            char saved_msg[512];
+            int  saved_code = compile_err;
+            snprintf(saved_msg, sizeof(saved_msg), "%s", cl_error_msg);
+            CL_UNCATCH();
+            cl_compile_detect_depth--;
+            cl_compile_warnings_p = saved_w;
+            cl_compile_failure_p  = saved_f;
+            cl_error(saved_code, "%s", saved_msg);
+        }
+        bc = cl_compile(args[1]);
+        fn = cl_vm_eval(bc);
+        CL_UNCATCH();
+        cl_compile_detect_depth--;
         /* Return 3 values per CL spec: function, warnings-p, failure-p */
         cl_mv_count = 3;
         cl_mv_values[0] = fn;
-        cl_mv_values[1] = CL_NIL;
-        cl_mv_values[2] = CL_NIL;
+        cl_mv_values[1] = cl_compile_warnings_p ? CL_T : CL_NIL;
+        cl_mv_values[2] = cl_compile_failure_p ? CL_T : CL_NIL;
+        cl_compile_warnings_p = saved_w;
+        cl_compile_failure_p  = saved_f;
         return fn;
     }
 

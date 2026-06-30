@@ -705,6 +705,54 @@
       (error '%amiga-dce))
     :fell-through))
 
+; A handler-case / handler-bind clause type that is a deftype aliasing a
+; condition class must be expanded so it matches the signaled condition
+; (serapeum/portability's NO-APPLICABLE-METHOD-ERROR pattern).
+(deftype %amiga-err-alias () 'simple-error)
+(check "handler-case deftype-alias clause" :caught
+  (handler-case (error "boom") (%amiga-err-alias () :caught)))
+(check "handler-bind deftype-alias clause" :caught-hb
+  (block b
+    (handler-bind ((%amiga-err-alias (lambda (c) (declare (ignore c))
+                                       (return-from b :caught-hb))))
+      (error "boom"))
+    :fell-through))
+(deftype %amiga-err-or () '(or type-error simple-warning))
+(check "handler-case deftype-alias (or ...) clause" :caught
+  (handler-case (error 'type-error :datum 1 :expected-type 'string)
+    (%amiga-err-or () :caught)))
+(check "handler-case deftype-alias declines non-member" :as-error
+  (handler-case (error 'program-error)
+    (%amiga-err-or () :wrong)
+    (error () :as-error)))
+
+; COMPILE detects warnings signaled during compilation (e.g. a macro that
+; calls WARN at expansion time, like serapeum's EIF/EIF-LET) and returns
+; warnings-p / failure-p (CLHS COMPILE values 2 and 3).
+(defmacro %amiga-eif (test then &optional (else nil else?))
+  (unless else? (warn "missing else"))
+  (list 'if test then else))
+(check "compile warnings-p on WARN at expand" t
+  (let ((*error-output* (make-string-output-stream)))
+    (not (null (nth-value 1 (compile nil '(lambda (x y) (%amiga-eif x y))))))))
+(check "compile failure-p on WARN at expand" t
+  (let ((*error-output* (make-string-output-stream)))
+    (not (null (nth-value 2 (compile nil '(lambda (x y) (%amiga-eif x y))))))))
+(check "compile no warnings-p when complete" nil
+  (nth-value 1 (compile nil '(lambda (x y z) (%amiga-eif x y z)))))
+(check "compile no warnings-p plain lambda" nil
+  (nth-value 1 (compile nil '(lambda (x) x))))
+; Regression: pure ERROR (non-warning) at compile time sets failure-p but NOT
+; warnings-p (CLHS COMPILE: warnings-p reflects only WARNING conditions).
+; (signal ...) is used so the error is detected but not propagated.
+(defmacro %amiga-err-only ()
+  (signal (make-condition 'simple-error :format-control "ct-err"))
+  42)
+(check "compile error-only: warnings-p NIL" nil
+  (nth-value 1 (compile nil '(lambda () (%amiga-err-only)))))
+(check "compile error-only: failure-p T" t
+  (not (null (nth-value 2 (compile nil '(lambda () (%amiga-err-only)))))))
+
 ; --- Phase 4 Tier 2: unwind-protect ---
 (check "uwp normal" '(42 t) (let ((log nil)) (let ((r (unwind-protect 42 (setq log t)))) (list r log))))
 (check "uwp throw cleanup" t (let ((cleanup nil)) (catch 'done (unwind-protect (throw 'done 1) (setq cleanup t))) cleanup))

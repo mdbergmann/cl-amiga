@@ -318,8 +318,12 @@ static CL_Obj find_parents(CL_Obj type_sym)
 }
 
 /* Check if cond_type is a subtype of (or equal to) handler_type.
- * Walks the hierarchy recursively. Public for use by handler-bind etc. */
-int cl_condition_type_matches(CL_Obj cond_type, CL_Obj handler_type)
+ * Walks the condition hierarchy and, for a handler_type that is a user
+ * deftype alias (or a compound OR/AND of type names), expands it so that
+ * e.g. (handler-case ... (my-error-alias () ...)) — where my-error-alias is
+ * (deftype my-error-alias () 'simple-error) — still matches a SIMPLE-ERROR.
+ * DEPTH bounds the deftype-expansion recursion. */
+static int cond_type_matches_depth(CL_Obj cond_type, CL_Obj handler_type, int depth)
 {
     CL_Obj parents;
 
@@ -332,15 +336,97 @@ int cl_condition_type_matches(CL_Obj cond_type, CL_Obj handler_type)
     if (cond_type == handler_type)
         return 1;
 
-    /* Walk parent chain */
+    /* Compound type specifier on the handler side: (or ...) / (and ...).
+     * A deftype alias may expand to one of these (e.g. portability's
+     * no-applicable-method-error type when an implementation signals a
+     * compound condition type).
+     *
+     * GC safety: the recursive cond_type_matches_depth call can reach the
+     * deftype expansion path and invoke cl_vm_apply, which allocates and may
+     * compact the heap.  Protect `cond_type` and the list cursor `rest` so the
+     * compactor forwards them; without this, `rest = cl_cdr(rest)` after the
+     * recursive call dereferences a stale arena offset. */
+    if (CL_CONS_P(handler_type)) {
+        CL_Obj head = cl_car(handler_type);
+        CL_Obj rest = cl_cdr(handler_type);
+        if (head == SYM_OR) {
+            int match = 0;
+            CL_GC_PROTECT(cond_type);
+            CL_GC_PROTECT(rest);
+            while (!CL_NULL_P(rest)) {
+                if (cond_type_matches_depth(cond_type, cl_car(rest), depth)) {
+                    match = 1;
+                    break;
+                }
+                rest = cl_cdr(rest);
+            }
+            CL_GC_UNPROTECT(2);
+            return match;
+        }
+        if (head == SYM_AND) {
+            if (CL_NULL_P(rest))
+                return 1; /* (and) ≡ T */
+            {
+                int match = 1;
+                CL_GC_PROTECT(cond_type);
+                CL_GC_PROTECT(rest);
+                while (!CL_NULL_P(rest)) {
+                    if (!cond_type_matches_depth(cond_type, cl_car(rest), depth)) {
+                        match = 0;
+                        break;
+                    }
+                    rest = cl_cdr(rest);
+                }
+                CL_GC_UNPROTECT(2);
+                return match;
+            }
+        }
+        /* Other compounds (satisfies, not, member, …) aren't expressible
+         * through the condition hierarchy — decline. */
+        return 0;
+    }
+
+    /* Walk parent chain.
+     * GC safety: the recursive call can compact the heap (deftype expansion
+     * path via cl_vm_apply); protect both `parents` (cursor) and `handler_type`
+     * (used in the deftype expansion check below after the loop). */
     parents = find_parents(cond_type);
-    while (!CL_NULL_P(parents)) {
-        if (cl_condition_type_matches(cl_car(parents), handler_type))
-            return 1;
-        parents = cl_cdr(parents);
+    {
+        int found = 0;
+        CL_GC_PROTECT(parents);
+        CL_GC_PROTECT(handler_type);
+        while (!CL_NULL_P(parents)) {
+            if (cond_type_matches_depth(cl_car(parents), handler_type, depth)) {
+                found = 1;
+                break;
+            }
+            parents = cl_cdr(parents);
+        }
+        CL_GC_UNPROTECT(2);
+        if (found) return 1;
+    }
+
+    /* No match through the class hierarchy.  If handler_type names a user
+     * deftype, expand it once and retry — this is what makes a deftype that
+     * aliases a condition class usable as a handler/handler-case clause. */
+    if (depth < 8 && CL_SYMBOL_P(handler_type)) {
+        CL_Obj expander = cl_get_type_expander(handler_type);
+        if (!CL_NULL_P(expander)) {
+            CL_Obj expanded;
+            CL_GC_PROTECT(cond_type);
+            expanded = cl_vm_apply(expander, NULL, 0);
+            CL_GC_UNPROTECT(1);
+            if (!CL_NULL_P(expanded) && expanded != handler_type)
+                return cond_type_matches_depth(cond_type, expanded, depth + 1);
+        }
     }
 
     return 0;
+}
+
+int cl_condition_type_matches(CL_Obj cond_type, CL_Obj handler_type)
+{
+    return cond_type_matches_depth(cond_type, handler_type, 0);
 }
 
 /* --- Slot lookup helper --- */
@@ -1302,6 +1388,16 @@ CL_Obj cl_create_condition_from_error(int code, const char *msg)
     return cl_make_condition(type_sym, slots, report);
 }
 
+/* COMPILE warning/failure detection (CLHS COMPILE return values 2 and 3).
+ * While cl_compile_detect_depth > 0, every signaled WARNING/ERROR is recorded
+ * so COMPILE can report warnings-p (any warning or error) and failure-p (any
+ * error, or any warning other than style-warning).  Counting happens before
+ * the handler search so it reflects what the compiler *detected*, regardless
+ * of whether a handler later muffles the condition. */
+int cl_compile_detect_depth = 0;
+int cl_compile_warnings_p = 0;
+int cl_compile_failure_p = 0;
+
 /* Walk handler stack top-down, calling matching handlers.
  * Handlers run in the signaler's dynamic context without unwinding.
  * Returns NIL if no handler transferred control. */
@@ -1314,6 +1410,33 @@ CL_Obj cl_signal_condition(CL_Obj condition)
         return CL_NIL;
 
     cond = (CL_Condition *)CL_OBJ_TO_PTR(condition);
+
+    /* cl_condition_type_matches can now compact the heap: for a handler whose
+     * clause type is a user deftype, it calls the deftype's expander via
+     * cl_vm_apply (allocates).  That moves the condition object, so the bare
+     * C local `condition`/`cond` would go stale across the loop below.  Root
+     * `condition` for the duration so the compactor forwards it, and re-derive
+     * `cond` from it after every potentially-allocating call.  (Without this,
+     * a later loop iteration dereferenced a relocated condition — observed as
+     * heap corruption / a shutdown hang on the Amiga, where the heap layout
+     * triggers compaction the host run did not.) */
+    CL_GC_PROTECT(condition);
+
+    if (cl_compile_detect_depth > 0) {
+        int is_warning = cl_condition_type_matches(cond->type_name, SYM_WARNING);
+        int is_error   = cl_condition_type_matches(cond->type_name, SYM_ERROR_COND);
+        cond = (CL_Condition *)CL_OBJ_TO_PTR(condition);
+        /* Per CLHS COMPILE: warnings-p is T only when a WARNING was detected;
+         * a pure ERROR (not a subtype of WARNING) sets failure-p but NOT
+         * warnings-p. */
+        if (is_warning)
+            cl_compile_warnings_p = 1;
+        if (is_warning || is_error) {
+            if (!cl_condition_type_matches(cond->type_name, SYM_STYLE_WARNING))
+                cl_compile_failure_p = 1;
+            cond = (CL_Condition *)CL_OBJ_TO_PTR(condition);
+        }
+    }
 
 #ifdef DEBUG_CONDITION
     {
@@ -1332,6 +1455,10 @@ CL_Obj cl_signal_condition(CL_Obj condition)
 #endif
 
     for (i = cl_handler_top - 1; i >= cl_handler_floor; i--) {
+        /* Re-derive cond each iteration: a prior iteration's matcher (deftype
+         * expander) or handler call may have compacted the heap.  `condition`
+         * is GC-rooted above, so this always yields the current location. */
+        cond = (CL_Condition *)CL_OBJ_TO_PTR(condition);
         if (!((cl_handler_active_mask >> i) & 1))
             continue;
         if (cl_condition_type_matches(cond->type_name,
@@ -1369,6 +1496,7 @@ CL_Obj cl_signal_condition(CL_Obj condition)
         }
     }
 
+    CL_GC_UNPROTECT(1);  /* condition */
     return CL_NIL;
 }
 
