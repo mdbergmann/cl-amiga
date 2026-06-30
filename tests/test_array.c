@@ -952,6 +952,74 @@ TEST(displaced_with_fill_pointer)
         "  (aref d 1))"), 30);
 }
 
+TEST(displaced_multidim_read)
+{
+    /* A multi-dimensional array displaced onto a vector must read its
+       elements through the backing (regression: the multi-dim make-array
+       path used to ignore :displaced-to and return a fresh NIL array). */
+    ASSERT_EQ_INT(eval_int(
+        "(let* ((a (make-array 12))"
+        "       (d (make-array '(2 3) :displaced-to a :displaced-index-offset 0)))"
+        "  (dotimes (i 12) (setf (aref a i) (1+ i)))"
+        "  (aref d 1 2))"), 6);   /* row-major 5 -> a[5]=6 */
+    /* row-major-aref chases the displacement */
+    ASSERT_EQ_INT(eval_int(
+        "(let* ((a (make-array 12))"
+        "       (d (make-array '(2 3) :displaced-to a :displaced-index-offset 2)))"
+        "  (dotimes (i 12) (setf (aref a i) (1+ i)))"
+        "  (row-major-aref d 5))"), 8);   /* a[2+5]=a[7]=8 */
+}
+
+TEST(displaced_multidim_write_through)
+{
+    /* Writes through a displaced multi-dim array reach the backing. */
+    ASSERT_EQ_INT(eval_int(
+        "(let* ((a (make-array 12 :initial-element 0))"
+        "       (d (make-array '(2 3) :displaced-to a :displaced-index-offset 2)))"
+        "  (setf (aref d 1 2) 99)"   /* row-major 5 -> a[7] */
+        "  (aref a 7))"), 99);
+}
+
+TEST(displaced_multidim_dims)
+{
+    /* Shape/rank/total-size of a displaced multi-dim array are its own. */
+    ASSERT_STR_EQ(eval_print(
+        "(let* ((a (make-array 48))"
+        "       (d (make-array '(2 3 3 2) :displaced-to a)))"
+        "  (list (array-rank d) (array-dimensions d) (array-total-size d)))"),
+        "(4 (2 3 3 2) 36)");
+}
+
+TEST(displaced_multidim_displacement_query)
+{
+    /* array-displacement reports backing + offset for a multi-dim view. */
+    ASSERT_STR_EQ(eval_print(
+        "(let* ((a (make-array 12))"
+        "       (d (make-array '(2 3) :displaced-to a :displaced-index-offset 4)))"
+        "  (multiple-value-bind (arr off) (array-displacement d)"
+        "    (list (eq arr a) off)))"), "(T 4)");
+}
+
+TEST(displaced_multidim_nested)
+{
+    /* serapeum RESHAPE pattern: a 1-D array displaced onto a multi-dim array
+       that is itself displaced onto a vector — the chase must accumulate
+       offsets across both levels. */
+    ASSERT_EQ_INT(eval_int(
+        "(let* ((a (make-array 48))"
+        "       (m (make-array '(2 3 3 2) :displaced-to a))"
+        "       (r (make-array 36 :displaced-to m)))"
+        "  (dotimes (i 48) (setf (aref a i) (1+ i)))"
+        "  (aref r 35))"), 36);
+}
+
+TEST(displaced_multidim_error_bounds)
+{
+    /* Offset + total size beyond the backing must error. */
+    ASSERT(eval_errors(
+        "(make-array '(2 3) :displaced-to (make-array 5) :displaced-index-offset 0)"));
+}
+
 /* ============================================================ */
 /* Type predicates: arrayp, vectorp, simple-vector-p,           */
 /*                  adjustable-array-p                          */
@@ -1266,6 +1334,12 @@ int main(void)
     RUN(array_displacement_not_displaced);
     RUN(displaced_vector_error_bounds);
     RUN(displaced_with_fill_pointer);
+    RUN(displaced_multidim_read);
+    RUN(displaced_multidim_write_through);
+    RUN(displaced_multidim_dims);
+    RUN(displaced_multidim_displacement_query);
+    RUN(displaced_multidim_nested);
+    RUN(displaced_multidim_error_bounds);
 
     /* Type predicates */
     RUN(arrayp);

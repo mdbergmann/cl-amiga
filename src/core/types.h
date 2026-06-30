@@ -299,8 +299,14 @@ typedef struct {
 #define CL_STRING_VECTOR_P(obj) \
     (CL_VECTOR_P(obj) && (((CL_Vector *)CL_OBJ_TO_PTR(obj))->flags & CL_VEC_FLAG_STRING))
 
+/* For a displaced vector, the backing ref and offset live just past any
+ * dimension storage: data[rank]/data[rank+1] for a multi-dim displaced array
+ * (rank>1, dims occupy data[0..rank-1]), else data[0]/data[1] for a 1-D
+ * displaced vector (rank<=1, no dim storage). */
+#define CL_DISP_BASE_IDX(v)  ((v)->rank > 1 ? (uint32_t)(v)->rank : 0u)
+
 /* Access helpers: data pointer (skips dimension storage for multi-dim) */
-/* For displaced vectors, follow data[0] to the backing vector */
+/* For displaced vectors, follow the backing ref to the backing vector */
 CL_Obj *cl_vector_data_fn(CL_Vector *v);
 #define cl_vector_data(v)  \
     ((v)->flags & CL_VEC_FLAG_DISPLACED \

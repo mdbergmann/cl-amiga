@@ -2111,6 +2111,38 @@ check_contains "cond-type-matches OR branch type-error side correct under GC str
 check_absent   "no wrong-branch or corruption in cond_type_matches_depth OR/parent" \
   "wrong-te\|wrong-sw\|wrong-mc\|corrupted\|type 0\|Unbound\|not of type" "$out"
 
+# --- Case: displaced multi-dimensional arrays survive compaction -----------
+# Bug class: a displaced multi-dim array stores its backing ref at data[rank]
+# (after the dimension fixnums), unlike a 1-D displaced vector (data[0]).  The
+# GC mark/relocate paths and cl_vector_data_fn must locate the backing at the
+# rank-adjusted slot; if compaction relocates the backing and the ref isn't
+# forwarded, element reads return stale data (or NIL).  serapeum RESHAPE.
+cat > "$WORK/dispmd.lisp" <<'EOF'
+(let ((ok t))
+  (dotimes (i 200)
+    ;; Fresh backing + a 2-D and a nested 1-D-over-multi-dim view each iter,
+    ;; consing in between to force a compaction with the views live.
+    (let* ((a (make-array 48))
+           (junk nil))
+      (dotimes (k 48) (setf (aref a k) (1+ k)))
+      (setf junk (make-list 20))
+      (let* ((m (make-array '(2 3 3 2) :displaced-to a :displaced-index-offset 0))
+             (more (make-list 20))
+             (r (make-array 36 :displaced-to m)))
+        (declare (ignore junk more))
+        ;; 2-D read through one level, nested read through two levels.
+        (unless (and (= (aref m 1 2 2 1) 36)
+                     (= (row-major-aref m 0) 1)
+                     (= (aref r 35) 36)
+                     (equal (array-dimensions m) '(2 3 3 2)))
+          (setf ok nil)))))
+  (format t "DISPMD-GC:~a~%" ok))
+EOF
+out=$(run_stress "$WORK/dispmd.lisp")
+check_contains "displaced multi-dim arrays read correctly under GC stress" "DISPMD-GC:T" "$out"
+check_absent   "no stale/NIL element or corruption in displaced multi-dim path" \
+  "DISPMD-GC:NIL\|not of type\|corrupted\|type 0\|out of range" "$out"
+
 echo ""
 echo "$passed passed, $failed failed, $total total"
 [ "$failed" -eq 0 ]

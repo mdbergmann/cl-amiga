@@ -659,6 +659,43 @@ static CL_Obj bi_make_array(CL_Obj *args, int n)
             if (fill_ptr != CL_NO_FILL_POINTER)
                 cl_error(CL_ERR_ARGS, "MAKE-ARRAY: fill pointer only valid for vectors (1D)");
             flags |= CL_VEC_FLAG_MULTIDIM;
+            if (has_displaced_to) {
+                /* Displaced multi-dim array.  Layout: dims in data[0..rank-1],
+                 * backing ref at data[rank], offset at data[rank+1] (see
+                 * CL_DISP_BASE_IDX).  The backing must be a real array whose
+                 * elements are CL_Objs — clamiga's packed strings (and copying
+                 * bit-vectors) can't carry a live multi-dim view. */
+                CL_Vector *dv;
+                uint32_t n_data, alloc_size, di;
+                uint8_t dflags;
+                if (!CL_VECTOR_P(displaced_to))
+                    cl_error(CL_ERR_TYPE,
+                             "MAKE-ARRAY: :displaced-to target for a multi-dimensional "
+                             "array must be a (non-string, non-bit) array");
+                {
+                    CL_Vector *target = (CL_Vector *)CL_OBJ_TO_PTR(displaced_to);
+                    if (displaced_offset + total > target->length)
+                        cl_error(CL_ERR_ARGS,
+                                 "MAKE-ARRAY: displaced bounds exceed target array");
+                }
+                n_data = (uint32_t)rank + 2;
+                alloc_size = sizeof(CL_Vector) + n_data * sizeof(CL_Obj);
+                dflags = flags | CL_VEC_FLAG_DISPLACED;
+                CL_GC_PROTECT(displaced_to);
+                result = CL_PTR_TO_OBJ((CL_Vector *)cl_alloc(TYPE_VECTOR, alloc_size));
+                CL_GC_UNPROTECT(1);
+                dv = (CL_Vector *)CL_OBJ_TO_PTR(result);
+                dv->length = total;
+                dv->fill_pointer = CL_NO_FILL_POINTER;
+                dv->flags = dflags;
+                dv->rank = rank;
+                dv->_reserved = 0;
+                for (di = 0; di < (uint32_t)rank; di++)
+                    dv->data[di] = CL_MAKE_FIXNUM((int32_t)dims[di]);
+                dv->data[rank] = displaced_to;
+                dv->data[rank + 1] = CL_MAKE_FIXNUM((int32_t)displaced_offset);
+                return result;
+            }
             result = cl_make_array(total, rank, dims, flags, CL_NO_FILL_POINTER);
         }
 
@@ -947,10 +984,11 @@ static CL_Obj bi_array_displacement(CL_Obj *args, int n)
     if (CL_VECTOR_P(args[0])) {
         CL_Vector *v = (CL_Vector *)CL_OBJ_TO_PTR(args[0]);
         if (v->flags & CL_VEC_FLAG_DISPLACED) {
-            CL_Obj backing = v->data[0];
+            uint32_t base = CL_DISP_BASE_IDX(v);
+            CL_Obj backing = v->data[base];
             uint32_t offset = 0;
-            if (CL_FIXNUM_P(v->data[1]))
-                offset = (uint32_t)CL_FIXNUM_VAL(v->data[1]);
+            if (CL_FIXNUM_P(v->data[base + 1]))
+                offset = (uint32_t)CL_FIXNUM_VAL(v->data[base + 1]);
             cl_mv_count = 2;
             cl_mv_values[0] = backing;
             cl_mv_values[1] = CL_MAKE_FIXNUM((int32_t)offset);

@@ -7108,6 +7108,32 @@
               (s (make-array 5 :element-type 'character :displaced-to s0
                              :displaced-index-offset 2 :fill-pointer 3)))
          (and (= (length s) 3) (string= s "abc"))))
+; MAKE-ARRAY: a multi-dimensional array can displace onto a vector; element
+; access chases the backing (regression: the multi-dim path used to ignore
+; :displaced-to and return a fresh NIL-filled array).
+(check "make-array multidim displaced read" 6
+       (let* ((a (make-array 12))
+              (d (make-array '(2 3) :displaced-to a :displaced-index-offset 0)))
+         (dotimes (i 12) (setf (aref a i) (1+ i)))
+         (aref d 1 2)))                          ; row-major 5 -> a[5]=6
+(check "make-array multidim displaced write-through" 99
+       (let* ((a (make-array 12 :initial-element 0))
+              (d (make-array '(2 3) :displaced-to a :displaced-index-offset 2)))
+         (setf (aref d 1 2) 99)                  ; row-major 5 -> a[7]
+         (aref a 7)))
+(check "make-array multidim displaced dims/displacement" '(2 (2 3) 6 t 4)
+       (let* ((a (make-array 12))
+              (d (make-array '(2 3) :displaced-to a :displaced-index-offset 4)))
+         (multiple-value-bind (arr off) (array-displacement d)
+           (list (array-rank d) (array-dimensions d) (array-total-size d)
+                 (eq arr a) off))))
+; serapeum RESHAPE pattern: 1-D displaced onto multi-dim displaced onto vector.
+(check "make-array nested multidim displacement" 36
+       (let* ((a (make-array 48))
+              (m (make-array '(2 3 3 2) :displaced-to a))
+              (r (make-array 36 :displaced-to m)))
+         (dotimes (i 48) (setf (aref a i) (1+ i)))
+         (aref r 35)))
 ; AREF ignores the fill pointer (whole bit-vector storage is accessible).
 (check "aref ignores bit-vector fill pointer" '(1 1 1 1 0 0 0 0)
        (let ((b (make-array 8 :element-type 'bit :initial-element 0 :fill-pointer 4)))
