@@ -12,6 +12,13 @@
 #define CL_VM_STACK_SIZE  (16 * 1024)  /* 16K entries = 64KB */
 #define CL_VM_FRAME_SIZE  1024         /* Max call frames */
 
+/* CALL-ARGUMENTS-LIMIT: the most arguments OP_APPLY will spread onto the VM
+ * stack for a single call.  Independent of LAMBDA-PARAMETERS-LIMIT (the cap on
+ * *declared* parameters) because a &rest function accepts arbitrarily many
+ * actual arguments.  Bounded well below CL_VM_STACK_SIZE so a large APPLY plus
+ * the callee's frame/locals cannot overflow the stack. */
+#define CL_CALL_ARGS_LIMIT  4096
+
 /* Call frame */
 typedef struct {
     CL_Obj bytecode;     /* Current CL_Bytecode or CL_Closure */
@@ -20,7 +27,9 @@ typedef struct {
     uint32_t ip;         /* Instruction pointer */
     uint32_t bp;         /* Base pointer (locals start) */
     int n_locals;
-    uint8_t nargs;       /* Actual argument count (for OP_ARGC) */
+    uint16_t nargs;      /* Actual argument count (for OP_ARGC); widened to
+                            uint16_t so APPLY can spread > 255 args (up to
+                            CL_CALL_ARGS_LIMIT) to a &rest function. */
     uint8_t stub_code[3]; /* For cl_vm_apply stub frames: OP_CALL,nargs,OP_HALT.
                              Embedded here so it survives longjmp past the
                              cl_vm_apply C frame (stack-use-after-return fix). */

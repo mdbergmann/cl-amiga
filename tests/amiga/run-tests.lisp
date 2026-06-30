@@ -170,6 +170,25 @@
 (check "apply +" 6 (apply #'+ '(1 2 3)))
 (check "apply list" '(1 2 3) (apply #'list '(1 2 3)))
 
+; APPLY must spread more than the old 64-arg cap (CALL-ARGUMENTS-LIMIT).
+; serapeum's (apply #'string+ <list>) tripped "too many arguments (>64)".
+; Counts kept <= 255 so the JIT apply trampoline (limited by its stub frame)
+; handles them too.
+(defun ar-amiga (&rest xs) (length xs))
+(check "apply rest 100" 100 (apply #'ar-amiga (loop for i from 1 to 100 collect i)))
+(check "apply rest 255" 255 (apply #'ar-amiga (loop for i from 1 to 255 collect i)))
+(defun arr-amiga (a b &rest xs) (list a b (length xs)))
+(check "apply required+rest 200" '(1 2 198)
+  (apply #'arr-amiga (loop for i from 1 to 200 collect i)))
+(defun asum-amiga (&rest xs) (reduce #'+ xs :initial-value 0))
+(check "apply rest ordered sum" 5050
+  (apply #'asum-amiga (loop for i from 1 to 100 collect i)))
+(check "apply builtin over 64" 200
+  (length (apply #'list (loop for i from 1 to 200 collect i))))
+(check "call-arguments-limit >= lambda-parameters-limit" t
+  (and (>= call-arguments-limit lambda-parameters-limit)
+       (plusp call-arguments-limit)))
+
 ; --- Macros ---
 (defmacro always-42 () 42)
 (check "macro constant" 42 (always-42))

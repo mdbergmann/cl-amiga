@@ -3436,7 +3436,7 @@ CL_Obj cl_jit_invoke(CL_Obj func_obj, CL_Bytecode *bc, int nargs)
         sf->ip        = 0;
         sf->bp        = (uint32_t)(cl_vm.sp - nargs);
         sf->n_locals  = nargs;
-        sf->nargs     = (uint8_t)nargs;
+        sf->nargs     = (uint16_t)nargs;
         sf->nlx_level = cl_nlx_top;
         pushed_frame  = 1;
     }

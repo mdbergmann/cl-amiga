@@ -8809,6 +8809,58 @@ TEST(eval_apply_symbol_funcall)
     ASSERT_EQ_INT(eval_int("(apply '* 2 '(3 4))"), 24);
 }
 
+/* Regression: APPLY must spread far more than the old 64-arg cap onto the VM
+ * stack (CALL-ARGUMENTS-LIMIT).  serapeum's (apply #'string+ <up-to-1000>)
+ * tripped the old "too many arguments (>64)" error.  Cover a &rest bytecode
+ * function, required+&rest, and builtins, all past 64/255. */
+TEST(eval_apply_rest_over_64)
+{
+    /* &rest bytecode function applied to 100 / 255 / 1000 args. */
+    ASSERT_EQ_INT(eval_int(
+        "(progn (defun %ar (&rest xs) (length xs))"
+        " (apply #'%ar (loop for i from 1 to 100 collect i)))"), 100);
+    ASSERT_EQ_INT(eval_int(
+        "(apply #'%ar (loop for i from 1 to 255 collect i))"), 255);
+    ASSERT_EQ_INT(eval_int(
+        "(apply #'%ar (loop for i from 1 to 1000 collect i))"), 1000);
+}
+
+TEST(eval_apply_required_plus_rest_over_64)
+{
+    /* Required args bind first, the surplus forms the &rest list. */
+    ASSERT_STR_EQ(eval_print(
+        "(progn (defun %arr (a b &rest xs) (list a b (length xs)))"
+        " (apply #'%arr (loop for i from 1 to 200 collect i)))"),
+        "(1 2 198)");
+}
+
+TEST(eval_apply_builtin_over_64)
+{
+    /* Builtins have an (int nargs) ABI — bounded only by the stack. */
+    ASSERT_EQ_INT(eval_int(
+        "(length (apply #'list (loop for i from 1 to 300 collect i)))"), 300);
+    ASSERT_EQ_INT(eval_int(
+        "(apply #'+ (loop for i from 1 to 500 collect 1))"), 500);
+}
+
+TEST(eval_apply_rest_value_correct)
+{
+    /* The spread elements must arrive in order, not just in the right count:
+     * sum the &rest list collected from APPLY. */
+    ASSERT_EQ_INT(eval_int(
+        "(progn (defun %asum (&rest xs) (reduce #'+ xs :initial-value 0))"
+        " (apply #'%asum (loop for i from 1 to 100 collect i)))"), 5050);
+}
+
+TEST(eval_call_arguments_limit_constant)
+{
+    /* CALL-ARGUMENTS-LIMIT must be a positive integer not smaller than
+     * LAMBDA-PARAMETERS-LIMIT (CLHS). */
+    ASSERT_STR_EQ(eval_print(
+        "(and (>= call-arguments-limit lambda-parameters-limit)"
+        " (plusp call-arguments-limit))"), "T");
+}
+
 /* --- package-used-by-list --- */
 
 TEST(eval_package_used_by_list)
@@ -11069,6 +11121,11 @@ int main(void)
     /* apply with symbols */
     RUN(eval_apply_symbol);
     RUN(eval_apply_symbol_funcall);
+    RUN(eval_apply_rest_over_64);
+    RUN(eval_apply_required_plus_rest_over_64);
+    RUN(eval_apply_builtin_over_64);
+    RUN(eval_apply_rest_value_correct);
+    RUN(eval_call_arguments_limit_constant);
 
     /* package-used-by-list */
     RUN(eval_package_used_by_list);
