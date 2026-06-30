@@ -21,7 +21,6 @@
 /* Local macros for statics moved into CL_Thread */
 #define vm_extra_args       (CT->vm_extra_args_buf)
 #define vm_extra_args_count (CT->vm_extra_count)
-#define vm_flat_args        (CT->vm_flat_args_buf)
 #define vm_trace            (CT->vm_trace_buf)
 #define vm_trace_idx        (CT->vm_trace_pos)
 #define vm_eval_max_depth   (CT->vm_max_eval_depth)
@@ -470,9 +469,6 @@ CL_Obj cl_vm_apply(CL_Obj func, CL_Obj *args, int nargs)
      */
     int i;
 
-    /* Clamp nargs to 255 (OP_CALL u8 limit) */
-    if (nargs > 255) nargs = 255;
-
     /* Unwrap funcallable instances (e.g. a generic-function struct) so the
      * standard call path sees the underlying discriminating function. */
     func = cl_unwrap_funcallable(func);
@@ -492,12 +488,29 @@ CL_Obj cl_vm_apply(CL_Obj func, CL_Obj *args, int nargs)
         int saved_sp = cl_vm.sp;
         int base = cl_vm.sp;
         CL_Obj result;
+        /* Builtins take an (int nargs, args[]) ABI, so there is no 255 cap —
+         * only the VM stack bounds them (call-arguments-limit). */
+        if (nargs > CL_CALL_ARGS_LIMIT ||
+            base + nargs >= (int)cl_vm.stack_size - 16)
+            cl_error(CL_ERR_ARGS,
+                     "APPLY: too many arguments (call-arguments-limit is %d)",
+                     CL_CALL_ARGS_LIMIT);
         for (i = 0; i < nargs; i++)
             cl_vm_push(args[i]);
         result = call_builtin(f, &cl_vm.stack[base], nargs);
         cl_vm.sp = saved_sp;
         return result;
     }
+
+    /* Bytecode / closure callees go through a stub OP_CALL whose nargs operand
+     * is a single byte; that path cannot represent more than 255 actual args.
+     * (The inline OP_APPLY in cl_vm_run handles up to CALL-ARGUMENTS-LIMIT for
+     * &rest callees; this trampoline is the fallback used by MAPCAR/REDUCE/JIT.)
+     * Error clearly rather than silently truncating the call. */
+    if (nargs > 255)
+        cl_error(CL_ERR_ARGS,
+                 "APPLY: too many arguments (got %d; this call path is "
+                 "limited to 255)", nargs);
 
     /* Bytecode / closure: push func+args on VM stack, set up a tiny
      * stub frame with OP_CALL+OP_HALT, and run the dispatch loop.
@@ -3257,16 +3270,25 @@ static CL_Obj cl_vm_run(int base_fp, int base_nlx)
             CL_Obj apply_func = cl_vm_pop();
             int nflat = 0;
             int ai;
+            int args_base = cl_vm.sp;  /* spread args live at [args_base..sp) */
 
-            /* Flatten arglist into static buffer */
+            /* Spread arglist directly onto the VM stack (GC-rooted, no fixed
+             * buffer).  Neither cl_car/cl_cdr nor cl_vm_push allocate, so
+             * `arglist` cannot move mid-loop.  Bounded by CALL-ARGUMENTS-LIMIT
+             * and the VM stack so a huge APPLY cannot overflow. */
             {
                 CL_Obj a = arglist;
-                while (!CL_NULL_P(a) && nflat < 64) {
-                    vm_flat_args[nflat++] = cl_car(a);
+                while (!CL_NULL_P(a)) {
+                    if (nflat >= CL_CALL_ARGS_LIMIT)
+                        cl_error(CL_ERR_ARGS,
+                                 "APPLY: too many arguments "
+                                 "(call-arguments-limit is %d)",
+                                 CL_CALL_ARGS_LIMIT);
+                    if (cl_vm.sp >= (int)cl_vm.stack_size - 16)
+                        cl_error(CL_ERR_OVERFLOW, "APPLY: VM stack overflow");
+                    cl_vm_push(cl_car(a));
+                    nflat++;
                     a = cl_cdr(a);
-                }
-                if (!CL_NULL_P(a)) {
-                    cl_error(CL_ERR_ARGS, "APPLY: too many arguments (>64) in arglist");
                 }
             }
 
@@ -3285,10 +3307,11 @@ static CL_Obj cl_vm_run(int base_fp, int base_nlx)
                 int traced = is_func_traced(apply_func);
                 CL_Obj result;
                 if (traced) {
-                    trace_print_entry(f->name, vm_flat_args, nflat);
+                    trace_print_entry(f->name, &cl_vm.stack[args_base], nflat);
                     cl_trace_depth++;
                 }
-                result = call_builtin(f, vm_flat_args, nflat);
+                result = call_builtin(f, &cl_vm.stack[args_base], nflat);
+                cl_vm.sp = args_base;  /* drop the spread args */
                 if (traced) {
                     cl_trace_depth--;
                     trace_print_exit(f->name, result);
@@ -3336,16 +3359,12 @@ static CL_Obj cl_vm_run(int base_fp, int base_nlx)
 #endif
                 cl_vm_push(result);
             } else if (CL_BYTECODE_P(apply_func) || CL_CLOSURE_P(apply_func)) {
-                /* Push func + flattened args onto VM stack and dispatch
-                 * inline like OP_CALL — avoids cl_vm_apply C stack nesting */
-                cl_vm_push(apply_func);
-                for (ai = 0; ai < nflat; ai++)
-                    cl_vm_push(vm_flat_args[ai]);
-
-                /* Now set up the call frame inline (same as OP_CALL non-tail path) */
+                /* The spread args already sit on the VM stack at args_base
+                 * (no func slot beneath them).  Dispatch inline like OP_CALL —
+                 * avoids cl_vm_apply C stack nesting. */
                 {
-                    uint8_t call_nargs = (uint8_t)nflat;
-                    CL_Obj call_func = cl_vm.stack[cl_vm.sp - call_nargs - 1];
+                    int call_nargs = nflat;
+                    CL_Obj call_func = apply_func;
                     CL_Bytecode *callee_bc;
                     CL_Frame *new_frame;
                     int callee_arity, has_rest, n_opt, has_key;
@@ -3384,7 +3403,9 @@ static CL_Obj cl_vm_run(int base_fp, int base_nlx)
                     n_opt = callee_bc->n_optional;
                     has_key = callee_bc->flags & 1;
                     min_args = callee_arity;
-                    max_args = (has_rest || has_key) ? 255 : callee_arity + n_opt;
+                    max_args = (has_rest || has_key)
+                                 ? CL_CALL_ARGS_LIMIT
+                                 : callee_arity + n_opt;
                     n_positional = callee_arity + n_opt;
 
                     if (call_nargs < min_args)
@@ -3397,53 +3418,57 @@ static CL_Obj cl_vm_run(int base_fp, int base_nlx)
                     if (has_rest || has_key)
                         CL_GC_PROTECT(call_func);
 
-                    /* Remove func slot, shift args down */
-                    {
-                        int j;
-                        for (j = 0; j < call_nargs; j++)
-                            cl_vm.stack[cl_vm.sp - call_nargs - 1 + j] =
-                                cl_vm.stack[cl_vm.sp - call_nargs + j];
-                        cl_vm.sp--;
-                    }
+                    /* Args already sit at args_base with no func slot beneath. */
+                    new_bp = args_base;
 
-                    new_bp = cl_vm.sp - call_nargs;
-
-                    /* Save extra args for &rest/&key */
-                    if (has_key || has_rest) {
+                    /* Save extra args for &key matching only.  Keyword args are
+                     * few in practice, so the bounded buffer is fine here; the
+                     * &rest list (below) is built straight off the stack and is
+                     * NOT subject to this cap. */
+                    if (has_key) {
                         for (ai = n_positional; ai < call_nargs; ai++) {
                             if (n_extra < 256)
                                 vm_extra_args[n_extra++] = cl_vm.stack[new_bp + ai];
                         }
-                        vm_extra_args_count = n_extra;
                     }
+                    /* Keep vm_extra_args_count truthful (the GC marks
+                     * vm_extra_args[0..count)) before the &rest cons below can
+                     * trigger compaction — n_extra is 0 unless &key populated. */
+                    vm_extra_args_count = n_extra;
 
-                    /* Truncate to positional */
-                    if (call_nargs > n_positional)
-                        cl_vm.sp = new_bp + n_positional;
-
-                    /* Fill missing optionals */
-                    while (cl_vm.sp < (int)(new_bp + n_positional))
-                        cl_vm_push(CL_NIL);
-
-                    /* &rest */
-                    if (has_rest) {
+                    /* &rest: cons the surplus args directly off the stack, while
+                     * their slots are still live (before truncation).  cl_cons
+                     * protects both its arguments, and the stack slots are
+                     * GC-rooted, so the partial list survives compaction. */
+                    {
                         CL_Obj rest = CL_NIL;
-                        int j;
-                        for (j = n_extra - 1; j >= 0; j--)
-                            rest = cl_cons(vm_extra_args[j], rest);
-                        cl_vm_push(rest);
-
-                        /* Re-derive callee_bc: cl_cons() above may trigger GC
-                         * compaction which moves arena objects.  call_func was
-                         * GC-protected so its CL_Obj was updated, but the raw
-                         * C pointer callee_bc still points to the OLD arena
-                         * location (now potentially reused by new allocations). */
-                        if (CL_CLOSURE_P(call_func)) {
-                            CL_Closure *cl2 = (CL_Closure *)CL_OBJ_TO_PTR(call_func);
-                            callee_bc = (CL_Bytecode *)CL_OBJ_TO_PTR(cl2->bytecode);
-                        } else {
-                            callee_bc = (CL_Bytecode *)CL_OBJ_TO_PTR(call_func);
+                        if (has_rest) {
+                            int j;
+                            for (j = call_nargs - 1; j >= n_positional; j--)
+                                rest = cl_cons(cl_vm.stack[new_bp + j], rest);
+                            /* Re-derive callee_bc: cl_cons() may have triggered
+                             * GC compaction.  call_func is GC-protected so its
+                             * CL_Obj was forwarded, but the raw C pointer
+                             * callee_bc still aimed at the old arena location. */
+                            if (CL_CLOSURE_P(call_func)) {
+                                CL_Closure *cl2 = (CL_Closure *)CL_OBJ_TO_PTR(call_func);
+                                callee_bc = (CL_Bytecode *)CL_OBJ_TO_PTR(cl2->bytecode);
+                            } else {
+                                callee_bc = (CL_Bytecode *)CL_OBJ_TO_PTR(call_func);
+                            }
                         }
+
+                        /* Truncate to positional */
+                        if (call_nargs > n_positional)
+                            cl_vm.sp = new_bp + n_positional;
+
+                        /* Fill missing optionals */
+                        while (cl_vm.sp < (int)(new_bp + n_positional))
+                            cl_vm_push(CL_NIL);
+
+                        /* Push the &rest list built above. */
+                        if (has_rest)
+                            cl_vm_push(rest);
                     }
 
                     /* Fill remaining locals */

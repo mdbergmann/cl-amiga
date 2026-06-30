@@ -13,6 +13,7 @@
 #include "symbol.h"
 #include "package.h"
 #include "error.h"
+#include "vm.h"
 #include "../platform/platform.h"
 #include <string.h>
 #include <stdio.h>
@@ -2106,12 +2107,13 @@ void cl_bignum_init(void)
     s->value = CL_MAKE_FIXNUM(CL_FIXNUM_MIN);
     s->flags |= CL_SYM_CONSTANT;
 
-    /* CALL-ARGUMENTS-LIMIT — must be ≤ the size of vm_flat_args_buf used
-     * by OP_APPLY's static flatten buffer (see thread.h).  Any user APPLY
-     * exceeding this signals an args error. */
+    /* CALL-ARGUMENTS-LIMIT — the most arguments OP_APPLY will spread onto the
+     * VM stack for one call (see CL_CALL_ARGS_LIMIT in vm.h).  Larger than
+     * LAMBDA-PARAMETERS-LIMIT because a &rest function accepts arbitrarily many
+     * actual arguments even though no function may *declare* that many. */
     sym = cl_intern_in("CALL-ARGUMENTS-LIMIT", 20, cl_package_cl);
     s = (CL_Symbol *)CL_OBJ_TO_PTR(sym);
-    s->value = CL_MAKE_FIXNUM(64);
+    s->value = CL_MAKE_FIXNUM(CL_CALL_ARGS_LIMIT);
     s->flags |= CL_SYM_CONSTANT;
     /* LAMBDA-PARAMETERS-LIMIT — same upper bound for our compiler. */
     sym = cl_intern_in("LAMBDA-PARAMETERS-LIMIT", 23, cl_package_cl);

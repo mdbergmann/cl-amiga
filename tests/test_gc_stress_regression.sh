@@ -2143,6 +2143,33 @@ check_contains "displaced multi-dim arrays read correctly under GC stress" "DISP
 check_absent   "no stale/NIL element or corruption in displaced multi-dim path" \
   "DISPMD-GC:NIL\|not of type\|corrupted\|type 0\|out of range" "$out"
 
+# --- Case: APPLY spreads a large arglist; &rest list survives compaction ---
+# Bug class: OP_APPLY spreads the arglist onto the VM stack, then conses the
+# surplus into the callee's &rest list.  cl_cons() can compact mid-build, so
+# the partially-built rest list, the call_func, and the raw callee_bc pointer
+# must all survive relocation (call_func is GC-protected and callee_bc is
+# re-derived after the cons loop).  A stale arg or callee_bc would corrupt the
+# call.  Covers the CALL-ARGUMENTS-LIMIT change (serapeum string+).
+cat > "$WORK/apply_rest.lisp" <<'EOF'
+(defun %gcs-ar (&rest xs) (reduce #'+ xs :initial-value 0))
+(defun %gcs-arr (a b &rest xs) (list a b (length xs) (reduce #'+ xs :initial-value 0)))
+(let ((ok t))
+  (dotimes (i 60)
+    ;; 1..100 spread to a &rest fn: count and ordered-sum must both hold.
+    (let* ((args (loop for k from 1 to 100 collect k))
+           (junk (make-list 30)))
+      (declare (ignore junk))
+      (unless (= (apply #'%gcs-ar args) 5050) (setf ok nil)))
+    ;; required + &rest, surplus past the old 64 cap.
+    (let* ((args (loop for k from 1 to 200 collect k)))
+      (unless (equal (apply #'%gcs-arr args) '(1 2 198 20097)) (setf ok nil))))
+  (format t "APPLY-REST-GC:~a~%" ok))
+EOF
+out=$(run_stress "$WORK/apply_rest.lisp")
+check_contains "APPLY large &rest list correct under GC stress" "APPLY-REST-GC:T" "$out"
+check_absent   "no stale arg/callee_bc or corruption in OP_APPLY &rest build" \
+  "APPLY-REST-GC:NIL\|not of type\|corrupted\|type 0\|too many\|Unbound" "$out"
+
 echo ""
 echo "$passed passed, $failed failed, $total total"
 [ "$failed" -eq 0 ]

@@ -365,29 +365,34 @@ CL_Obj cl_jit_runtime_call(CL_Obj *operand_top, uint32_t nargs)
     return cl_vm_apply(func, args, (int)nargs);
 }
 
-/* Backing for OP_APPLY.  Mirrors vm.c::OP_APPLY: flatten `arglist` into
- * a stack-local CL_Obj[64] (same cap the VM uses), resolve a SYMBOL
- * func through its function cell, then delegate to cl_vm_apply which
- * handles builtins, closures, and JIT-compiled callees uniformly.  The
- * VM's OP_APPLY inlines the dispatch to avoid C-stack growth on deep
- * apply chains; the JIT can't replicate that without an inline
- * dispatch loop, so accept the extra cl_vm_apply call cost — apply
- * chains aren't a hot path in JIT'd code, and going through cl_vm_apply
- * keeps the implementation small and correct.  Allocates (cl_vm_apply
- * may cons frames, invoke user code), so the walker cache_flushes
- * before the JSR. */
+/* Backing for OP_APPLY.  Flatten `arglist` into a stack-local buffer, resolve
+ * a SYMBOL func through its function cell, then delegate to cl_vm_apply which
+ * handles builtins, closures, and JIT-compiled callees uniformly.  The VM's
+ * OP_APPLY inlines the dispatch to avoid C-stack growth on deep apply chains;
+ * the JIT can't replicate that without an inline dispatch loop, so accept the
+ * extra cl_vm_apply call cost — apply chains aren't a hot path in JIT'd code,
+ * and going through cl_vm_apply keeps the implementation small and correct.
+ * Builtins and bytecode/closure callees are both bounded to 255 by
+ * cl_vm_apply's stub frame (it errors clearly past that).  We keep the flatten
+ * buffer small and on the C stack — a CALL-ARGUMENTS-LIMIT-sized array here
+ * would blow the Amiga 64K stack.  Code needing > 255 args runs through the
+ * VM's inline OP_APPLY (cl_vm_run), which spreads onto the GC-rooted VM stack.
+ * Allocates (cl_vm_apply may cons frames, invoke user code), so the walker
+ * cache_flushes before the JSR. */
+#define CL_JIT_APPLY_MAX 255
 CL_Obj cl_jit_runtime_apply(CL_Obj func, CL_Obj arglist)
 {
-    CL_Obj args[64];
+    CL_Obj args[CL_JIT_APPLY_MAX];
     int nargs = 0;
 
-    while (!CL_NULL_P(arglist) && nargs < 64) {
+    while (!CL_NULL_P(arglist)) {
+        if (nargs >= CL_JIT_APPLY_MAX)
+            cl_error(CL_ERR_ARGS,
+                     "APPLY: too many arguments (got > %d via the JIT apply "
+                     "trampoline)", CL_JIT_APPLY_MAX);
         args[nargs++] = cl_car(arglist);
         arglist = cl_cdr(arglist);
     }
-    if (!CL_NULL_P(arglist))
-        cl_error(CL_ERR_ARGS,
-                 "APPLY: too many arguments (>64) in arglist");
 
     if (CL_SYMBOL_P(func)) {
         CL_Symbol *s = (CL_Symbol *)CL_OBJ_TO_PTR(func);
