@@ -1664,6 +1664,139 @@ TEST(lisp_handler_bind_type_macro_in_block)
         ":CAUGHT");
 }
 
+/* Regression: a handler-case / handler-bind clause type that is a user
+ * deftype aliasing a condition class must be expanded so it matches the
+ * signaled condition.  This is serapeum/portability's NO-APPLICABLE-METHOD-ERROR
+ * pattern: (deftype no-applicable-method-error () 'simple-error) used as a
+ * handler-case clause around a generic-function call with no applicable
+ * method.  Previously cl_condition_type_matches only walked the condition
+ * class hierarchy and never expanded the alias, so the condition escaped. */
+TEST(lisp_handler_case_deftype_alias_clause)
+{
+    eval_print("(deftype %nam-err () 'simple-error)");
+    /* handler-case must dispatch through the alias to the real class. */
+    ASSERT_STR_EQ(eval_print(
+        "(handler-case (error \"boom\")"
+        "  (%nam-err () :caught))"),
+        ":CAUGHT");
+    /* handler-bind likewise. */
+    ASSERT_STR_EQ(eval_print(
+        "(block b"
+        "  (handler-bind ((%nam-err (lambda (c) (declare (ignore c))"
+        "                             (return-from b :caught-hb))))"
+        "    (error \"boom\"))"
+        "  :fell-through)"),
+        ":CAUGHT-HB");
+    /* A non-matching condition must still decline (alias is for SIMPLE-ERROR,
+     * a plain WARNING is not a SIMPLE-ERROR). */
+    ASSERT_STR_EQ(eval_print(
+        "(handler-case (signal (make-condition 'simple-warning"
+        "                                      :format-control \"w\"))"
+        "  (%nam-err () :wrongly-caught)"
+        "  (warning () :as-warning))"),
+        ":AS-WARNING");
+}
+
+/* A deftype alias that expands to a compound (or ...) of condition classes
+ * must match if the condition is any of them. */
+TEST(lisp_handler_case_deftype_alias_or_clause)
+{
+    eval_print("(deftype %err-or-warn () '(or type-error simple-warning))");
+    ASSERT_STR_EQ(eval_print(
+        "(handler-case (error 'type-error :datum 1 :expected-type 'string)"
+        "  (%err-or-warn () :caught))"),
+        ":CAUGHT");
+    ASSERT_STR_EQ(eval_print(
+        "(handler-case (signal (make-condition 'simple-warning"
+        "                                      :format-control \"w\"))"
+        "  (%err-or-warn () :caught-warn)"
+        "  (warning () :as-warning))"),
+        ":CAUGHT-WARN");
+    /* program-error is neither branch → declines through to the next clause. */
+    ASSERT_STR_EQ(eval_print(
+        "(handler-case (error 'program-error)"
+        "  (%err-or-warn () :wrongly-caught)"
+        "  (error () :as-error))"),
+        ":AS-ERROR");
+}
+
+/* Regression: pure ERROR (not WARNING) during compile-detect set warnings-p,
+ * violating CLHS COMPILE which says warnings-p reflects only WARNING conditions.
+ * Directly manipulate the detect state and call cl_signal_condition so we can
+ * verify the flag behaviour in isolation. */
+TEST(c_compile_detect_error_only)
+{
+    CL_Obj cond;
+    int saved_depth = cl_compile_detect_depth;
+    int saved_w     = cl_compile_warnings_p;
+    int saved_f     = cl_compile_failure_p;
+
+    cond = cl_make_condition(SYM_SIMPLE_ERROR, CL_NIL, CL_NIL);
+    cl_compile_detect_depth = 1;
+    cl_compile_warnings_p   = 0;
+    cl_compile_failure_p    = 0;
+    cl_signal_condition(cond);  /* no handlers → returns NIL, no debugger */
+    cl_compile_detect_depth = saved_depth;
+
+    ASSERT_EQ_INT(cl_compile_warnings_p, 0); /* error-only must NOT set warnings-p */
+    ASSERT_EQ_INT(cl_compile_failure_p,  1); /* error-only MUST set failure-p */
+
+    cl_compile_warnings_p = saved_w;
+    cl_compile_failure_p  = saved_f;
+}
+
+/* CLHS COMPILE returns warnings-p (value 2) and failure-p (value 3) true when
+ * the compiler detects a WARNING/ERROR — e.g. a macro that calls WARN at
+ * expansion time (serapeum's EIF/EIF-LET).  Style-warnings set warnings-p but
+ * not failure-p; a clean compile sets neither. */
+TEST(lisp_compile_reports_warnings_p)
+{
+    eval_print("(defmacro %eif (test then &optional (else nil else?))"
+               "  (unless else? (warn \"missing else\"))"
+               "  (list 'if test then else))");
+    /* WARN at macroexpansion → warnings-p (and failure-p) true. */
+    ASSERT_STR_EQ(eval_print(
+        "(let ((*error-output* (make-string-output-stream)))"
+        "  (nth-value 1 (compile nil '(lambda (x y) (%eif x y)))))"),
+        "T");
+    ASSERT_STR_EQ(eval_print(
+        "(let ((*error-output* (make-string-output-stream)))"
+        "  (nth-value 2 (compile nil '(lambda (x y) (%eif x y)))))"),
+        "T");
+    /* Complete form → no warning → both NIL. */
+    ASSERT_STR_EQ(eval_print(
+        "(nth-value 1 (compile nil '(lambda (x y z) (%eif x y z))))"),
+        "NIL");
+    /* Plain lambda → no warning. */
+    ASSERT_STR_EQ(eval_print(
+        "(nth-value 1 (compile nil '(lambda (x) x)))"),
+        "NIL");
+    /* style-warning sets warnings-p but not failure-p. */
+    eval_print("(defmacro %sw (x)"
+               "  (warn (make-condition 'style-warning))"
+               "  x)");
+    ASSERT_STR_EQ(eval_print(
+        "(let ((*error-output* (make-string-output-stream)))"
+        "  (nth-value 1 (compile nil '(lambda () (%sw 1)))))"),
+        "T");
+    ASSERT_STR_EQ(eval_print(
+        "(let ((*error-output* (make-string-output-stream)))"
+        "  (nth-value 2 (compile nil '(lambda () (%sw 1)))))"),
+        "NIL");
+    /* Regression: pure ERROR (non-warning) at compile time must set failure-p
+     * but NOT warnings-p.  Use (signal ...) so the error is detected by the
+     * compile-detect machinery but not propagated (no handler needed). */
+    eval_print("(defmacro %err-only-macro ()"
+               "  (signal (make-condition 'simple-error :format-control \"ct-err\"))"
+               "  42)");
+    ASSERT_STR_EQ(eval_print(
+        "(nth-value 1 (compile nil '(lambda () (%err-only-macro))))"),
+        "NIL");
+    ASSERT_STR_EQ(eval_print(
+        "(nth-value 2 (compile nil '(lambda () (%err-only-macro))))"),
+        "T");
+}
+
 int main(void)
 {
     setup();
@@ -1676,6 +1809,7 @@ int main(void)
     RUN(c_signal_no_handlers);
     RUN(c_error_creates_condition);
     RUN(c_create_condition_from_error);
+    RUN(c_compile_detect_error_only);
     RUN(c_error_print_goes_to_error_output);
     RUN(c_handler_stack_nlx);
 
@@ -1698,6 +1832,9 @@ int main(void)
     RUN(lisp_condition_slot_initform_evaluated_at_make_time);
     RUN(lisp_handler_case_type_is_keyword_macro);
     RUN(lisp_handler_bind_type_macro_in_block);
+    RUN(lisp_handler_case_deftype_alias_clause);
+    RUN(lisp_handler_case_deftype_alias_or_clause);
+    RUN(lisp_compile_reports_warnings_p);
 
     /* Signal/warn/error tests */
     RUN(lisp_signal_returns_nil);

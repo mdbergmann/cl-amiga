@@ -2001,6 +2001,79 @@ check_contains "#S reader builds correct struct under GC stress" "SREADER:T" "$o
 check_absent   "#S reader no corruption under GC stress" \
   "not of type\|unknown type specifier\|corrupted\|type 0\|Unbound" "$out"
 
+# --- Case: handler matcher expanding a deftype alias under GC stress -------
+# cl_condition_type_matches now calls a clause type's deftype expander (via
+# cl_vm_apply) so a handler clause that is a deftype alias of a condition class
+# still matches.  That allocates, so it can compact mid-signal.  The signal
+# loop in cl_signal_condition must re-derive its `cond` pointer (and keep
+# `condition` GC-rooted) afterwards — otherwise, once the non-matching alias
+# clause was probed, the loop checked the OUTER handler through a relocated
+# condition object (stale arena offset), silently failing to catch.  Here the
+# inner clause is an alias that does NOT match a SIMPLE-ERROR, forcing the loop
+# to continue to the outer ERROR handler through the just-compacted state.
+cat > "$WORK/hcalias.lisp" <<'EOF'
+(deftype gcs-warn-alias () 'simple-warning)   ; a SIMPLE-ERROR is NOT this
+(let ((ok t))
+  (dotimes (i 200)
+    (let ((r (handler-case
+                 (handler-case (error "boom")
+                   (gcs-warn-alias () :wrong))   ; probe expands deftype -> compacts
+               (error () :outer-caught))))       ; must still catch via valid cond
+      (unless (eq r :outer-caught) (setq ok nil))))
+  (format t "HCALIAS:~a~%" ok))
+EOF
+out=$(run_stress "$WORK/hcalias.lisp")
+check_contains "handler matcher deftype-alias keeps cond valid under GC stress" "HCALIAS:T" "$out"
+check_absent   "no stale condition after deftype-alias probe under GC stress" \
+  "not of type\|unknown type specifier\|corrupted\|type 0\|Unbound\|No catch" "$out"
+
+# --- Case: cond_type_matches_depth OR/AND cursor and parent-chain GC safety ---
+# Bug (HIGH): in the OR/AND traversal loop of cond_type_matches_depth, `cond_type`
+# and the list cursor `rest` were unprotected C locals across the recursive
+# cond_type_matches_depth call.  When the handler type is a deftype alias that
+# expands to (or ...), each branch check reaches the deftype expansion path and
+# calls cl_vm_apply, which allocates.  Under GC stress that compacts the heap,
+# making `rest` (and `cond_type`) stale so the next cl_cdr(rest) dereferences
+# a relocated or freed offset.
+# Similarly, in the parent-chain while loop, `parents` and `handler_type` were
+# unprotected, so a handler with multiple-parent conditions (e.g. a condition
+# inheriting from both a domain class and ERROR) could stale the loop cursor.
+# Fix: CL_GC_PROTECT(cond_type)+CL_GC_PROTECT(rest) in OR/AND; likewise for
+# the parent chain.
+cat > "$WORK/ctype_gc.lisp" <<'EOF'
+; deftype that expands to (or ...) — forces the OR traversal branch
+(deftype %gcs-ctype-or () '(or type-error simple-warning))
+; multi-parent condition (parent-chain traversal): error is the 2nd parent
+(define-condition %gcs-mc-base (condition) ())
+(define-condition %gcs-mc-err (%gcs-mc-base error) ())
+; repeat many times so a compaction fires mid-loop
+(let ((ok t))
+  (dotimes (i 200)
+    ; OR branch, first alternative (type-error)
+    (let ((r (handler-case
+                 (error 'type-error :datum 1 :expected-type 'string)
+               (%gcs-ctype-or () :caught-te)
+               (error () :wrong-te))))
+      (unless (eq r :caught-te) (setf ok nil)))
+    ; OR branch, second alternative (simple-warning)
+    (let ((r (handler-case
+                 (signal (make-condition 'simple-warning :format-control "w"))
+               (%gcs-ctype-or () :caught-sw)
+               (warning () :wrong-sw))))
+      (unless (eq r :caught-sw) (setf ok nil)))
+    ; parent-chain: multi-parent condition, error is 2nd parent
+    (let ((r (handler-case
+                 (error '%gcs-mc-err)
+               (error () :caught-mc)
+               (condition () :wrong-mc))))
+      (unless (eq r :caught-mc) (setf ok nil))))
+  (format t "CTYPE-GC:~a~%" ok))
+EOF
+out=$(run_stress "$WORK/ctype_gc.lisp")
+check_contains "cond-type-matches OR branch type-error side correct under GC stress" "CTYPE-GC:T" "$out"
+check_absent   "no wrong-branch or corruption in cond_type_matches_depth OR/parent" \
+  "wrong-te\|wrong-sw\|wrong-mc\|corrupted\|type 0\|Unbound\|not of type" "$out"
+
 echo ""
 echo "$passed passed, $failed failed, $total total"
 [ "$failed" -eq 0 ]
