@@ -5964,6 +5964,65 @@
 (check "emf cache negative cached" 'no-method
   (handler-case (emf-neg "world") (error (c) 'no-method)))
 
+; --- Long-form method combination: MAKE-METHOD + :ORDER (serapeum) ---
+; (make-method FORM) in a CALL-METHOD next-methods list builds an
+; anonymous method whose body evaluates FORM.
+(define-method-combination amc-mk ()
+  ((primary ()))
+  `(call-method ,(first primary) ((make-method 99))))
+(defgeneric amc-mkg (x) (:method-combination amc-mk))
+(defmethod amc-mkg ((x t)) (call-next-method))
+(check "long-form make-method next" 99 (amc-mkg 1))
+
+; Regression: (make-method (call-next-method)) as the last next-method must
+; signal "No next method" rather than infinitely recursing (bug: simple-primary-p
+; =T on anon methods caused the leaf optimization to bind
+; *call-next-method-function* to the anon method's own function).
+(define-method-combination amc-mmcnm ()
+  ((primary ()))
+  `(call-method ,(first primary) ((make-method (call-next-method)))))
+(defgeneric amc-mmcnmg (x) (:method-combination amc-mmcnm))
+(defmethod amc-mmcnmg ((x t)) (call-next-method))
+(check "make-method (call-next-method) signals error" :no-next
+  (handler-case (amc-mmcnmg 1) (error () :no-next)))
+
+; :ORDER :MOST-SPECIFIC-LAST reverses the matched methods.
+(defclass amc-a () ())
+(defclass amc-b (amc-a) ())
+(define-method-combination amc-msl ()
+  ((all () :order :most-specific-last))
+  `(list ,@(mapcar (lambda (m) `(call-method ,m ())) all)))
+(defgeneric amc-mslg (x) (:method-combination amc-msl))
+(defmethod amc-mslg ((x amc-a)) 'a)
+(defmethod amc-mslg ((x amc-b)) 'b)
+(check "long-form order most-specific-last" '(a b)
+  (amc-mslg (make-instance 'amc-b)))
+
+; End-to-end serapeum STANDARD/CONTEXT combination shape.
+(define-method-combination amc-sc ()
+  ((around (:around))
+   (context (:context) :order :most-specific-last)
+   (primary ()))
+  (let* ((form `(call-method ,(first primary)))
+         (around-form (if around
+                          `(call-method ,(first around)
+                                        (,@(rest around) (make-method ,form)))
+                          form)))
+    (if context
+        `(call-method ,(first context)
+                      (,@(rest context) (make-method ,around-form)))
+        around-form)))
+(defclass amc-sa () ())
+(defclass amc-sb (amc-sa) ())
+(defgeneric amc-scg (x) (:method-combination amc-sc))
+(defmethod amc-scg ((x amc-sa)) '(prim))
+(defmethod amc-scg :around ((x amc-sa)) (cons 'a/ar (call-next-method)))
+(defmethod amc-scg :around ((x amc-sb)) (cons 'b/ar (call-next-method)))
+(defmethod amc-scg :context ((x amc-sa)) (cons 'a/cx (call-next-method)))
+(defmethod amc-scg :context ((x amc-sb)) (cons 'b/cx (call-next-method)))
+(check "long-form standard/context order" '(a/cx b/cx b/ar a/ar prim)
+  (amc-scg (make-instance 'amc-sb)))
+
 ; ============================================================
 ; Threading (MP package)
 ; ============================================================

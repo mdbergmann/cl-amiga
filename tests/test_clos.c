@@ -3272,6 +3272,93 @@ TEST(mc_define_long_form_qualifier_pattern)
     ASSERT_STR_EQ(eval_print("(mc-tg 1)"), ":TAGGED");
 }
 
+TEST(mc_long_form_make_method)
+{
+    /* (MAKE-METHOD FORM) in a CALL-METHOD next-methods list builds an
+       anonymous method whose body evaluates FORM.  serapeum's
+       standard/context combination relies on this to wrap an around-form
+       as the next method of a :context method. */
+    eval_print(
+        "(define-method-combination mc-mk ()"
+        "  ((primary ()))"
+        "  `(call-method ,(first primary) ((make-method 99))))");
+    eval_print("(defgeneric mc-mkg (x) (:method-combination mc-mk))");
+    eval_print("(defmethod mc-mkg ((x t)) (call-next-method))");
+    /* The primary's CALL-NEXT-METHOD lands in the MAKE-METHOD body -> 99. */
+    ASSERT_STR_EQ(eval_print("(mc-mkg 1)"), "99");
+}
+
+/* Regression: (make-method (call-next-method)) as the last in a next-methods
+   list must signal "No next method" rather than infinitely recursing.
+   Bug: simple-primary-p=T on anon methods triggered the leaf optimization,
+   which returned the anon method's own function as *call-next-method-function*
+   — so (call-next-method) inside the body re-entered itself. */
+TEST(mc_make_method_cnm_signals_no_next_method)
+{
+    eval_print(
+        "(define-method-combination mc-mmcnm ()"
+        "  ((primary ()))"
+        "  `(call-method ,(first primary)"
+        "      ((make-method (call-next-method)))))");
+    eval_print("(defgeneric mc-mmcnmg (x) (:method-combination mc-mmcnm))");
+    eval_print("(defmethod mc-mmcnmg ((x t)) (call-next-method))");
+    /* primary -> (call-next-method) -> anon method body -> (call-next-method)
+       with no further next method -> must error, not loop */
+    ASSERT_STR_EQ(
+        eval_print("(handler-case (mc-mmcnmg 1) (error () :no-next))"),
+        ":NO-NEXT");
+}
+
+TEST(mc_long_form_order_most_specific_last)
+{
+    /* The :ORDER :MOST-SPECIFIC-LAST group option reverses the matched
+       methods, which otherwise arrive most-specific-first. */
+    eval_print("(defclass msl-a () ())");
+    eval_print("(defclass msl-b (msl-a) ())");
+    eval_print(
+        "(define-method-combination mc-msl ()"
+        "  ((all () :order :most-specific-last))"
+        "  `(list ,@(mapcar (lambda (m) `(call-method ,m ())) all)))");
+    eval_print("(defgeneric mc-mslg (x) (:method-combination mc-msl))");
+    eval_print("(defmethod mc-mslg ((x msl-a)) 'a)");
+    eval_print("(defmethod mc-mslg ((x msl-b)) 'b)");
+    /* most-specific-last => least-specific (A) first. */
+    ASSERT_STR_EQ(eval_print("(mc-mslg (make-instance 'msl-b))"), "(A B)");
+}
+
+TEST(mc_long_form_standard_context)
+{
+    /* End-to-end reproduction of serapeum's STANDARD/CONTEXT combination:
+       :context methods (most-specific-last) wrap :around methods, which
+       wrap the primary, all via MAKE-METHOD + CALL-METHOD. */
+    eval_print(
+        "(define-method-combination sc ()"
+        "  ((around (:around))"
+        "   (context (:context) :order :most-specific-last)"
+        "   (primary ()))"
+        "  (let* ((form `(call-method ,(first primary)))"
+        "         (around-form (if around"
+        "                          `(call-method ,(first around)"
+        "                                        (,@(rest around) (make-method ,form)))"
+        "                          form)))"
+        "    (if context"
+        "        `(call-method ,(first context)"
+        "                      (,@(rest context) (make-method ,around-form)))"
+        "        around-form)))");
+    eval_print("(defclass sc-a () ())");
+    eval_print("(defclass sc-b (sc-a) ())");
+    eval_print("(defgeneric scg (x) (:method-combination sc))");
+    eval_print("(defmethod scg ((x sc-a)) '(prim))");
+    eval_print("(defmethod scg :around ((x sc-a)) (cons 'a/ar (call-next-method)))");
+    eval_print("(defmethod scg :around ((x sc-b)) (cons 'b/ar (call-next-method)))");
+    eval_print("(defmethod scg :context ((x sc-a)) (cons 'a/cx (call-next-method)))");
+    eval_print("(defmethod scg :context ((x sc-b)) (cons 'b/cx (call-next-method)))");
+    /* context least-specific-first (A/CX B/CX), around most-specific-first
+       (B/AR A/AR), then the primary. */
+    ASSERT_STR_EQ(eval_print("(scg (make-instance 'sc-b))"),
+                  "(A/CX B/CX B/AR A/AR PRIM)");
+}
+
 TEST(mc_method_combination_object_type)
 {
     /* Registered combinations are STANDARD-METHOD-COMBINATION structs. */
@@ -4355,6 +4442,10 @@ int main(void)
     RUN(mc_define_long_form_basic);
     RUN(mc_define_long_form_multiple_groups);
     RUN(mc_define_long_form_qualifier_pattern);
+    RUN(mc_long_form_make_method);
+    RUN(mc_make_method_cnm_signals_no_next_method);
+    RUN(mc_long_form_order_most_specific_last);
+    RUN(mc_long_form_standard_context);
     RUN(mc_method_combination_object_type);
     RUN(mc_method_combination_class_bootstrapped);
     RUN(mc_call_method_uses_current_args);
