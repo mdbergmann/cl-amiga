@@ -11,6 +11,7 @@
 #include "string_utils.h"
 #include "../platform/platform.h"
 #include "../platform/platform_thread.h"
+#include "thread.h"   /* cl_gc_safe_mutex_lock, CL_MT */
 #include <string.h>
 #ifdef DEBUG_STREAM
 #include <stdio.h>
@@ -599,7 +600,14 @@ int cl_stream_read_char(CL_Obj stream)
         return -1;
 
     iolock = stream_lock_for(st, 0);
-    if (iolock) platform_mutex_lock(iolock);
+    /* cl_gc_safe_mutex_lock's contended path enters a GC safe region, so a
+     * peer's STW-GC can compact and relocate st while we're blocked here.
+     * Protect the offset across the call and re-derive st before touching
+     * any st-> field. */
+    CL_GC_PROTECT(stream);
+    cl_gc_safe_mutex_lock(iolock);
+    st = (CL_Stream *)CL_OBJ_TO_PTR(stream);
+    CL_GC_UNPROTECT(1);
 
     /* Check for pushed-back character (already decoded code point) */
     if (st->unread_char != -1) {
@@ -678,7 +686,13 @@ int cl_stream_read_byte(CL_Obj stream)
         return -1;
 
     iolock = stream_lock_for(st, 0);
-    if (iolock) platform_mutex_lock(iolock);
+    /* See cl_stream_read_char: the contended path can enter a GC safe region
+     * and let a peer compact the arena while we're blocked, so protect the
+     * offset and re-derive st before touching any st-> field. */
+    CL_GC_PROTECT(stream);
+    cl_gc_safe_mutex_lock(iolock);
+    st = (CL_Stream *)CL_OBJ_TO_PTR(stream);
+    CL_GC_UNPROTECT(1);
 
     /* Check for pushed-back byte */
     if (st->unread_char != -1) {
@@ -748,7 +762,13 @@ void cl_stream_write_char(CL_Obj stream, int ch)
 #endif
 
     iolock = stream_lock_for(st, 1);
-    if (iolock) platform_mutex_lock(iolock);
+    /* See cl_stream_read_char: the contended path can enter a GC safe region
+     * and let a peer compact the arena while we're blocked, so protect the
+     * offset and re-derive st before touching any st-> field. */
+    CL_GC_PROTECT(stream);
+    cl_gc_safe_mutex_lock(iolock);
+    st = (CL_Stream *)CL_OBJ_TO_PTR(stream);
+    CL_GC_UNPROTECT(1);
 
     /* Capture timeout before the socket write: platform_socket_write* may call
      * socket_flush_wbuf which enters a GC safe region; a concurrent STW-GC can
@@ -845,7 +865,13 @@ void cl_stream_write_byte(CL_Obj stream, int byte)
         return;
 
     iolock = stream_lock_for(st, 1);
-    if (iolock) platform_mutex_lock(iolock);
+    /* See cl_stream_read_char: the contended path can enter a GC safe region
+     * and let a peer compact the arena while we're blocked, so protect the
+     * offset and re-derive st before touching any st-> field. */
+    CL_GC_PROTECT(stream);
+    cl_gc_safe_mutex_lock(iolock);
+    st = (CL_Stream *)CL_OBJ_TO_PTR(stream);
+    CL_GC_UNPROTECT(1);
 
     {
         uint32_t wto = st->write_timeout_ms;  /* capture before safe region */
@@ -892,7 +918,13 @@ void cl_stream_write_string(CL_Obj stream, const char *str, uint32_t len)
         return;
 
     iolock = stream_lock_for(st, 1);
-    if (iolock) platform_mutex_lock(iolock);
+    /* See cl_stream_read_char: the contended path can enter a GC safe region
+     * and let a peer compact the arena while we're blocked, so protect the
+     * offset and re-derive st before touching any st-> field. */
+    CL_GC_PROTECT(stream);
+    cl_gc_safe_mutex_lock(iolock);
+    st = (CL_Stream *)CL_OBJ_TO_PTR(stream);
+    CL_GC_UNPROTECT(1);
 
     {
         uint32_t wto = st->write_timeout_ms;  /* capture before safe region */
@@ -986,7 +1018,13 @@ void cl_stream_close(CL_Obj stream)
     iolock = (st->stream_type == CL_STREAM_FILE ||
               st->stream_type == CL_STREAM_SOCKET)
                  ? stream_lock_for(st, 1) : NULL;
-    if (iolock) platform_mutex_lock(iolock);
+    /* See cl_stream_read_char: the contended path can enter a GC safe region
+     * and let a peer compact the arena while we're blocked, so protect the
+     * offset and re-derive st before touching any st-> field. */
+    CL_GC_PROTECT(stream);
+    cl_gc_safe_mutex_lock(iolock);
+    st = (CL_Stream *)CL_OBJ_TO_PTR(stream);
+    CL_GC_UNPROTECT(1);
 
     st->flags &= ~CL_STREAM_FLAG_OPEN;
 
