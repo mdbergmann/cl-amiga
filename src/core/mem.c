@@ -1454,6 +1454,26 @@ static void gc_mark_thread_roots(CL_Thread *t)
         gc_mark_obj(t->pr_inprog[i]);
     }
 
+    /* Current printer output target (format/print/write).  Held in a thread
+     * field for the whole print, across allocating sub-prints (print-object
+     * hooks, string-stream outbuf growth).  A peer thread's compaction while
+     * this thread is parked mid-print relocates the stream object; without
+     * marking+forwarding this slot, out_char/out_str dereference a stale
+     * offset and scribble into freed arena — the multi-thread `(format nil …)`
+     * corruption.  Single-writer (owning thread), stopped during STW GC. */
+    gc_mark_obj(t->pr_stream);
+
+    /* *print-circle* detection table keys — live CL_Obj references while a
+     * circular/shared print is in progress (pr_circle_active).  Same hazard
+     * as pr_stream: relocated out from under the parked printer thread. */
+    if (t->pr_circle_active) {
+        int ci;
+        for (ci = 0; ci < CL_CIRCLE_HT_SIZE; ci++) {
+            if (!CL_NULL_P(t->pr_circle_keys[ci]))
+                gc_mark_obj(t->pr_circle_keys[ci]);
+        }
+    }
+
     /* Pending LOAD-TIME-VALUE (cell, thunk) pairs (compile-file only) */
     for (i = 0; i < t->ltv_init_count; i++) {
         gc_mark_obj(t->ltv_init_cells[i]);
@@ -2139,6 +2159,20 @@ static void gc_update_thread_roots(CL_Thread *t)
     for (i = 0; i < t->pr_inprog_top; i++)
         gc_update_slot(&t->pr_inprog[i]);
 
+    /* Current printer output target — forward the relocated stream offset so
+     * a parked printer thread resumes writing to the moved object, not the
+     * stale one (mirror of the gc_mark_thread_roots counterpart). */
+    gc_update_slot(&t->pr_stream);
+
+    /* *print-circle* detection table keys (only meaningful while active). */
+    if (t->pr_circle_active) {
+        int ci;
+        for (ci = 0; ci < CL_CIRCLE_HT_SIZE; ci++) {
+            if (!CL_NULL_P(t->pr_circle_keys[ci]))
+                gc_update_slot(&t->pr_circle_keys[ci]);
+        }
+    }
+
     /* Pending LOAD-TIME-VALUE (cell, thunk) pairs (compile-file only) */
     for (i = 0; i < t->ltv_init_count; i++) {
         gc_update_slot(&t->ltv_init_cells[i]);
@@ -2531,6 +2565,7 @@ void cl_gc_compact(void)
 
     /* Pass 4: Slide objects */
     gc_slide();
+
 
     /* Clean up forwarding table */
     gc_fwd_free();
