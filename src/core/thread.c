@@ -109,6 +109,31 @@ void cl_gc_leave_safe_region(void)
     platform_mutex_unlock(gc_mutex);
 }
 
+/* Acquire an internal C mutex GC-cooperatively.  See thread.h for the deadlock
+ * this avoids.  Fast path: an uncontended trylock — no gc_mutex traffic, so the
+ * hot I/O paths pay only one atomic.  Slow path (contended): bracket the
+ * blocking wait in a safe region so a peer's stop-the-world GC counts this
+ * thread as stopped and proceeds; cl_gc_leave_safe_region() on the far side
+ * parks us if a GC is now running.  We hold the lock while parked, which is safe
+ * because every other contender waits the same GC-cooperative way — none stalls
+ * the world — and GC touches no data these locks protect.
+ *
+ * Use this ONLY for a lock that can be held across a blocking syscall / GC safe
+ * region (the per-stream I/O locks).  Do NOT use it for a lock whose critical
+ * section a GC touches (e.g. the stream side-table mutex): the safe region turns
+ * the acquisition into a peer-compaction safepoint, and such short, non-blocking
+ * critical sections don't need it anyway — a waiter is only briefly delayed. */
+void cl_gc_safe_mutex_lock(void *mutex)
+{
+    if (!mutex) return;
+    if (!CL_MT()) { platform_mutex_lock(mutex); return; }
+    if (platform_mutex_trylock(mutex) == 0)
+        return;                       /* uncontended — no GC coordination */
+    cl_gc_enter_safe_region();
+    platform_mutex_lock(mutex);
+    cl_gc_leave_safe_region();
+}
+
 /* ---- Stop-the-world GC coordination ---- */
 
 /* Called by the GC initiator (from cl_gc) to stop all other threads.
