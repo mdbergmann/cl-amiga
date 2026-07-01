@@ -452,6 +452,14 @@ void cl_thread_handle_interrupt(CL_Thread *t);  /* slow path: handle pending int
 void cl_gc_enter_safe_region(void);
 void cl_gc_leave_safe_region(void);
 
+/* Acquire an internal C mutex that may be held across a GC safepoint or a
+ * blocking-syscall safe region without stalling a concurrent stop-the-world GC.
+ * A plain platform_mutex_lock() on such a contended lock is neither a safepoint
+ * nor a safe region, so a peer running STW waits for the blocked thread forever
+ * while the current holder parks in leave_safe_region still holding the lock.
+ * Fast (uncontended) path is a single trylock; pair with platform_mutex_unlock. */
+void cl_gc_safe_mutex_lock(void *mutex);
+
 /* ---- TLV functions ---- */
 
 /* TLV table operations */

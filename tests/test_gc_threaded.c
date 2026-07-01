@@ -12,6 +12,7 @@
 #include "core/package.h"
 #include "core/symbol.h"
 #include "core/thread.h"
+#include "core/stream.h"
 #include "platform/platform.h"
 #include "platform/platform_thread.h"
 
@@ -497,6 +498,344 @@ TEST(stw_gc_with_thread_blocked_in_read_line)
 }
 
 /* ================================================================
+ * Regression: stop-the-world GC must not deadlock behind a thread
+ * BLOCKED ON an internal I/O lock that is held across a GC safe region.
+ *
+ * The hazard (the rare extreme-concurrency STW deadlock): thread A
+ * holds a stream I/O lock (e.g. a per-socket write lock) and enters a
+ * GC safe region for the blocking write() syscall — so STW counts A as
+ * stopped.  Thread B wants the SAME lock and blocks in
+ * platform_mutex_lock(), which is neither a safepoint nor a safe region,
+ * so a peer's STW waits for B forever; meanwhile A returns from the
+ * syscall and parks in cl_gc_leave_safe_region() *still holding the
+ * lock*.  Nobody makes progress.
+ *
+ * Fix: internal stream locks are acquired via cl_gc_safe_mutex_lock(),
+ * which brackets the contended blocking wait in a safe region so STW
+ * counts the waiter as stopped.  This test drives that path directly: A
+ * takes the lock and enters a safe region (modelling the blocking
+ * write); B contends via cl_gc_safe_mutex_lock(); the main thread then
+ * runs a full STW cl_gc(), which must return.  A watchdog aborts on hang
+ * so a regression is a loud failure, not an indefinite stall.
+ * ================================================================ */
+
+typedef struct {
+    CL_Thread    thread;
+    void        *lock;
+    volatile int holding;     /* A: acquired lock + entered safe region */
+    volatile int contending;  /* B: about to block on the held lock */
+    volatile int release;     /* main -> A: leave safe region + unlock */
+    volatile int done;
+} IoLockCtx;
+
+static volatile int g_iolock_gc_done = 0;
+
+static void *iolock_deadlock_watchdog(void *arg)
+{
+    int waited_ms = 0;
+    (void)arg;
+    while (!g_iolock_gc_done && waited_ms < 5000) {
+        platform_sleep_ms(50);
+        waited_ms += 50;
+    }
+    if (!g_iolock_gc_done) {
+        fprintf(stderr,
+            "\nFATAL: stop-the-world GC deadlocked behind a thread blocked on an "
+            "internal I/O lock\n  held across a GC safe region.  This is the rare "
+            "extreme-concurrency STW deadlock:\n  cl_gc_safe_mutex_lock() has "
+            "regressed (see thread.c), or a stream lock site is\n  back to a plain "
+            "platform_mutex_lock() (see stream.c).\n");
+        abort();
+    }
+    return NULL;
+}
+
+/* A: hold the lock and sit in a safe region, as a blocking socket write would. */
+static void *iolock_holder(void *arg)
+{
+    IoLockCtx *ctx = (IoLockCtx *)arg;
+    CL_Thread *t = &ctx->thread;
+    platform_tls_set(t);
+    cl_thread_register(t);
+
+    cl_gc_safe_mutex_lock(ctx->lock);   /* uncontended: fast path, no safe region */
+    cl_gc_enter_safe_region();          /* model the blocking write() syscall */
+    ctx->holding = 1;
+    while (!ctx->release)
+        platform_sleep_ms(5);
+    cl_gc_leave_safe_region();          /* "syscall" returns */
+    platform_mutex_unlock(ctx->lock);
+
+    cl_thread_unregister(t);
+    ctx->done = 1;
+    return NULL;
+}
+
+/* B: contend for the SAME lock.  cl_gc_safe_mutex_lock must put it into a safe
+ * region while blocked so a concurrent STW counts it as stopped. */
+static void *iolock_contender(void *arg)
+{
+    IoLockCtx *ctx = (IoLockCtx *)arg;
+    CL_Thread *t = &ctx->thread;
+    platform_tls_set(t);
+    cl_thread_register(t);
+
+    ctx->contending = 1;
+    cl_gc_safe_mutex_lock(ctx->lock);   /* contended: blocks GC-cooperatively */
+    platform_mutex_unlock(ctx->lock);
+
+    cl_thread_unregister(t);
+    ctx->done = 1;
+    return NULL;
+}
+
+TEST(stw_gc_with_thread_blocked_on_io_lock)
+{
+    void *ah, *bh, *wdog;
+    void *lock = NULL;
+    IoLockCtx a, b;
+
+    platform_mutex_init(&lock);
+    ASSERT(lock != NULL);
+
+    memset(&a, 0, sizeof(a));
+    a.thread.id = 1; a.thread.status = 1; a.thread.mv_count = 1; a.lock = lock;
+    memset(&b, 0, sizeof(b));
+    b.thread.id = 2; b.thread.status = 1; b.thread.mv_count = 1; b.lock = lock;
+
+    g_iolock_gc_done = 0;
+    platform_thread_create(&wdog, iolock_deadlock_watchdog, NULL, 0);
+
+    /* Start A and wait until it holds the lock inside a safe region. */
+    platform_thread_create(&ah, iolock_holder, &a, 0);
+    while (!a.holding)
+        platform_sleep_ms(5);
+
+    /* Start B and give it a beat to actually block on the held lock. */
+    platform_thread_create(&bh, iolock_contender, &b, 0);
+    while (!b.contending)
+        platform_sleep_ms(5);
+    platform_sleep_ms(100);
+
+    /* The operation that used to hang forever: STW must count BOTH the
+     * safe-region holder and the safe-region-blocked contender as stopped. */
+    cl_gc();
+    g_iolock_gc_done = 1;   /* tell the watchdog we survived */
+
+    /* Let A release; B then acquires and releases in turn. */
+    a.release = 1;
+    platform_thread_join(ah, NULL);
+    platform_thread_join(bh, NULL);
+    platform_thread_join(wdog, NULL);
+
+    platform_mutex_destroy(lock);
+
+    ASSERT(a.done && b.done);
+}
+
+/* ================================================================
+ * Regression: data reachable through a stream object relocated by a
+ * compacting GC must stay correct across cl_gc_safe_mutex_lock's
+ * contended path.
+ *
+ * The test above only proves stop-the-world GC doesn't deadlock behind
+ * a thread blocked on a bare platform mutex.  It says nothing about
+ * memory safety: cl_stream_read_char/write_char/write_byte/write_string/
+ * close all derive `st` from the CL_Obj `stream` BEFORE calling
+ * cl_gc_safe_mutex_lock(iolock), and that call's contended path parks
+ * in a GC safe region.  Unless `stream` is GC-protected across the call
+ * and `st` re-derived afterward, a peer's compaction mid-wait relocates
+ * the stream object and every subsequent st-> access on the far side of
+ * the lock reads/writes through a stale offset.
+ *
+ * This drives that exact race through the real cl_stream_read_char API
+ * (not a bare mutex): A holds the shared console-read lock, parked in a
+ * real blocking read (platform_getchar on a redirected, empty stdin
+ * pipe).  B contends for the SAME lock, which blocks it inside
+ * cl_gc_safe_mutex_lock's contended path.  While both are parked, the
+ * main thread builds dead garbage ahead of the two stream objects and
+ * forces a real compacting GC, so the compaction actually relocates
+ * both.  A is then unblocked and B's contended lock acquisition follows;
+ * both must read back the exact bytes fed into the pipe afterward, and
+ * the stream objects must remain intact (TYPE_STREAM, correct
+ * flags/unread_char) through the relocation.
+ * ================================================================ */
+
+typedef struct {
+    CL_Thread    thread;
+    CL_Obj       stream;
+    volatile int about_to_block;  /* set right before the blocking call */
+    volatile int done;
+    int          ch;              /* result of cl_stream_read_char */
+} StreamRaceCtx;
+
+static volatile int g_stream_race_done = 0;
+
+static void *stream_race_watchdog(void *arg)
+{
+    int waited_ms = 0;
+    (void)arg;
+    while (!g_stream_race_done && waited_ms < 5000) {
+        platform_sleep_ms(50);
+        waited_ms += 50;
+    }
+    if (!g_stream_race_done) {
+        fprintf(stderr,
+            "\nFATAL: a stream read blocked on a contended I/O lock did not "
+            "complete correctly after a concurrent compacting GC.  The "
+            "CL_GC_PROTECT around cl_gc_safe_mutex_lock in cl_stream_read_char "
+            "has regressed (see stream.c).\n");
+        abort();
+    }
+    return NULL;
+}
+
+/* A: hold the shared console-read lock and block in a real blocking read,
+ * exactly like the production hazard this regression covers. */
+static void *stream_race_holder(void *arg)
+{
+    StreamRaceCtx *ctx = (StreamRaceCtx *)arg;
+    CL_Thread *t = &ctx->thread;
+    platform_tls_set(t);
+    cl_thread_register(t);
+
+    ctx->about_to_block = 1;
+    ctx->ch = cl_stream_read_char(ctx->stream);   /* blocks in platform_getchar() */
+
+    cl_thread_unregister(t);
+    ctx->done = 1;
+    return NULL;
+}
+
+/* B: contend for the SAME lock via the real stream API.  With the fix,
+ * cl_stream_read_char GC-protects its `stream` local across the contended
+ * cl_gc_safe_mutex_lock() call, so a concurrent compaction relocating the
+ * stream object doesn't leave `st` dangling once the lock is acquired. */
+static void *stream_race_contender(void *arg)
+{
+    StreamRaceCtx *ctx = (StreamRaceCtx *)arg;
+    CL_Thread *t = &ctx->thread;
+    platform_tls_set(t);
+    cl_thread_register(t);
+
+    ctx->about_to_block = 1;
+    ctx->ch = cl_stream_read_char(ctx->stream);
+
+    cl_thread_unregister(t);
+    ctx->done = 1;
+    return NULL;
+}
+
+TEST(stream_read_survives_iolock_contention_and_compaction)
+{
+    void *ah, *bh, *wdog;
+    StreamRaceCtx a, b;
+    CL_Obj stream_a, stream_b;
+    CL_Obj junk;
+    int i;
+    int pipefd[2];
+    int saved_stdin;
+
+    cl_stream_init();
+
+    /* Redirect stdin to the read end of an empty pipe so both readers block
+     * until we choose to feed bytes in. */
+    ASSERT_EQ_INT(pipe(pipefd), 0);
+    saved_stdin = dup(STDIN_FILENO);
+    ASSERT(saved_stdin >= 0);
+    ASSERT(dup2(pipefd[0], STDIN_FILENO) >= 0);
+    clearerr(stdin);
+
+    /* Dead garbage ahead of the two stream objects, so a forced compaction
+     * actually slides them to a new offset instead of being a no-op. */
+    junk = CL_NIL;
+    for (i = 0; i < 512; i++)
+        junk = cl_cons(CL_MAKE_FIXNUM(i), CL_NIL);
+    (void)junk;   /* unreachable after the loop — pure compaction fodder */
+
+    stream_a = cl_make_stream(CL_STREAM_INPUT, CL_STREAM_CONSOLE);
+    CL_GC_PROTECT(stream_a);
+    stream_b = cl_make_stream(CL_STREAM_INPUT, CL_STREAM_CONSOLE);
+    CL_GC_PROTECT(stream_b);
+
+    memset(&a, 0, sizeof(a));
+    a.thread.id = 1; a.thread.status = 1; a.thread.mv_count = 1; a.stream = stream_a;
+    memset(&b, 0, sizeof(b));
+    b.thread.id = 2; b.thread.status = 1; b.thread.mv_count = 1; b.stream = stream_b;
+
+    g_stream_race_done = 0;
+    platform_thread_create(&wdog, stream_race_watchdog, NULL, 0);
+
+    /* Start A and wait until it's about to block in the real getchar(). */
+    platform_thread_create(&ah, stream_race_holder, &a, 0);
+    while (!a.about_to_block)
+        platform_sleep_ms(5);
+    platform_sleep_ms(50);   /* let it actually reach platform_getchar() */
+
+    /* Start B and give it a beat to actually block contending for the SAME
+     * console-read lock A now holds. */
+    platform_thread_create(&bh, stream_race_contender, &b, 0);
+    while (!b.about_to_block)
+        platform_sleep_ms(5);
+    platform_sleep_ms(100);
+
+    /* Force a real moving compaction while both are parked: A inside the
+     * blocking read's safe region, B inside cl_gc_safe_mutex_lock's
+     * contended-wait safe region.  This relocates both CL_Stream objects. */
+    cl_gc_compact();
+
+    /* Overwrite the space vacated by the slide — exactly where the two
+     * streams used to sit — with different heap data.  Without this, a
+     * stale (unprotected) `st` might coincidentally still read back
+     * correct-looking bytes, since compaction only moves live data down and
+     * doesn't clear what's left behind; a stale read only reliably shows up
+     * once that space is reused for something else. */
+    {
+        CL_Obj poison = CL_NIL;
+        for (i = 0; i < 4096; i++)
+            poison = cl_cons(CL_MAKE_FIXNUM(0xBEEF), CL_NIL);
+        (void)poison;
+    }
+
+    /* Feed both bytes at once: A's getchar() consumes the first as soon as
+     * it wakes and releases the lock; B's getchar() (once it has acquired
+     * the now-free lock) finds the second already buffered, so neither
+     * blocks again. */
+    ASSERT_EQ_INT((int)write(pipefd[1], "AB", 2), 2);
+
+    platform_thread_join(ah, NULL);
+    platform_thread_join(bh, NULL);
+    g_stream_race_done = 1;   /* tell the watchdog we survived */
+    platform_thread_join(wdog, NULL);
+
+    close(pipefd[1]);
+    dup2(saved_stdin, STDIN_FILENO);
+    close(saved_stdin);
+    close(pipefd[0]);
+    clearerr(stdin);
+
+    CL_GC_UNPROTECT(2);
+
+    ASSERT(a.done && b.done);
+    ASSERT_EQ_INT(a.ch, (int)'A');
+    ASSERT_EQ_INT(b.ch, (int)'B');
+
+    /* The (relocated) stream objects must still be intact — a stale `st`
+     * after the contended lock would read/write through whatever now
+     * occupies the old offset instead of the real stream. */
+    ASSERT(CL_STREAM_P(stream_a));
+    ASSERT(CL_STREAM_P(stream_b));
+    {
+        CL_Stream *sa = (CL_Stream *)CL_OBJ_TO_PTR(stream_a);
+        CL_Stream *sb = (CL_Stream *)CL_OBJ_TO_PTR(stream_b);
+        ASSERT(sa->flags & CL_STREAM_FLAG_OPEN);
+        ASSERT(sb->flags & CL_STREAM_FLAG_OPEN);
+        ASSERT_EQ_INT(sa->unread_char, -1);
+        ASSERT_EQ_INT(sb->unread_char, -1);
+    }
+}
+
+/* ================================================================
  * Regression: error unwind through a GC-protected C frame must
  * restore gc_root_count (the "sento gc_mark SEGV").
  *
@@ -754,6 +1093,14 @@ int main(void)
 
     /* Regression: STW GC vs. thread blocked in stdin read_line (SLY :spawn hang) */
     RUN(stw_gc_with_thread_blocked_in_read_line);
+
+    /* Regression: STW GC vs. thread blocked ON an internal I/O lock held
+     * across a GC safe region (the rare extreme-concurrency STW deadlock) */
+    RUN(stw_gc_with_thread_blocked_on_io_lock);
+
+    /* Regression: a compacting GC racing cl_gc_safe_mutex_lock's contended
+     * path must not corrupt the relocated stream object it was fired on */
+    RUN(stream_read_survives_iolock_contention_and_compaction);
 
     /* Regression: error unwind through a GC-protected frame restores
      * gc_root_count (the sento gc_mark SEGV) — deterministic + concurrent */
