@@ -172,8 +172,22 @@ static void *thread_entry(void *arg)
          * inside cl_make_restart() after abort_tag is assigned, C's
          * unspecified evaluation order may read abort_tag after relocation. */
         abort_report  = get_thread_abort_report();
+        /* GC-protect abort_report across the remaining allocations: on a worker
+         * thread this setup runs concurrently with other threads, so any of the
+         * allocating calls below (get_thread_abort_handler, cl_cons,
+         * cl_make_restart) can be interrupted by a PEER thread's stop-the-world
+         * compaction that relocates these objects.  Without protection, the
+         * unprotected C locals hold stale offsets and cl_make_restart bakes them
+         * into the abort restart — permanently corrupting restart_stack[0], so
+         * every later GC marks a garbage offset (ORing the mark bit into a live
+         * data word).  Single-thread never hit this: the worker's own allocs
+         * only compact under this thread, at points the convention already
+         * covers, and the main thread's abort setup runs before any peer exists. */
+        CL_GC_PROTECT(abort_report);
         abort_handler = get_thread_abort_handler();
+        CL_GC_PROTECT(abort_handler);
         abort_tag = cl_cons(SYM_ABORT, CL_NIL);
+        CL_GC_PROTECT(abort_tag);
 
         if (t->nlx_top < t->nlx_max) {
             CL_NLXFrame *frame = &t->nlx_stack[t->nlx_top];
@@ -210,6 +224,12 @@ static void *thread_entry(void *arg)
                 my_restart_idx = t->restart_top;
                 t->restart_top++;
             }
+
+            /* abort_tag/report/handler are now rooted via the nlx frame and the
+             * abort restart entry (or discarded); release the startup pins.
+             * Done before CL_SETJMP so the normal path balances; the abort
+             * longjmp path restores gc_root_count from frame->gc_root_mark. */
+            CL_GC_UNPROTECT(3);
 
             if (CL_SETJMP(frame->buf) != 0)
                 aborted = 1;

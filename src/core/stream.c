@@ -1115,11 +1115,25 @@ CL_Obj cl_make_string_output_stream(void)
 
 CL_Obj cl_get_output_stream_string(CL_Obj stream)
 {
-    CL_Stream *st = (CL_Stream *)CL_OBJ_TO_PTR(stream);
+    CL_Stream *st;
     char *data;
     uint32_t len;
     CL_Obj result;
 
+    /* Building the result string ALLOCATES (cl_make_string / cl_utf8_to_cl_string),
+     * which can trigger a compacting GC — either this thread's own, or a peer
+     * thread's stop-the-world compaction while we are parked at cl_alloc's
+     * safepoint.  That relocates the stream object, so the `st` raw pointer
+     * (and the `stream` C-local offset) captured before the alloc go stale.
+     * Using the stale `st` afterward for cl_stream_outbuf_reset(st->out_buf_handle)
+     * and the st->out_buf_len/charpos writes reads a garbage handle and scribbles
+     * into whatever slid into the stream's old slot — under multi-thread FORMAT
+     * this reset a PEER's live outbuf, so `(format nil …)` returned corrupt/
+     * cross-contaminated results.  Protect `stream` so the compactor forwards it,
+     * and re-derive `st` after the allocation.  `data` points into the
+     * platform-alloc'd (non-arena) outbuf, so it stays valid across the move. */
+    CL_GC_PROTECT(stream);
+    st = (CL_Stream *)CL_OBJ_TO_PTR(stream);
     data = cl_stream_outbuf_data(st->out_buf_handle);
     len = cl_stream_outbuf_len(st->out_buf_handle);
     if (!data || len == 0)
@@ -1133,9 +1147,12 @@ CL_Obj cl_get_output_stream_string(CL_Obj stream)
 #endif
     }
 
+    /* Re-derive st: the alloc above may have relocated the stream object. */
+    st = (CL_Stream *)CL_OBJ_TO_PTR(stream);
     cl_stream_outbuf_reset(st->out_buf_handle);
     st->out_buf_len = 0;
     st->charpos = 0;
+    CL_GC_UNPROTECT(1);
     return result;
 }
 
