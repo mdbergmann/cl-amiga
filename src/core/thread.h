@@ -218,6 +218,14 @@ typedef struct CL_Thread_s {
      * See specs/native-backend.md §"GC interaction" — option A. */
     int    jit_depth;
     void  *jit_stack_top;
+    /* Captured C stack pointer at the moment this thread PARKED for a
+     * stop-the-world GC (safepoint or safe-region entry).  A peer thread that
+     * initiates a compaction cannot use its own SP as the lower bound when
+     * conservatively scanning THIS thread's JIT native stack — it must use the
+     * point below which this thread's JIT-spilled operands live, i.e. where it
+     * froze.  The GC scans [jit_park_sp .. jit_stack_top) for such peers.  Only
+     * meaningful while the thread is stopped with jit_depth > 0. */
+    void  *jit_park_sp;
 
     /* nargs the innermost JIT-entry was invoked with.  Backs OP_ARGC
      * inside JIT'd code (which has no `frame` pointer the way the VM
@@ -268,6 +276,16 @@ typedef struct CL_Thread_s {
     /* ---- GC coordination ---- */
     volatile uint8_t gc_requested;
     volatile uint8_t gc_stopped;
+    /* 0 = newborn: registered in cl_thread_list (so GC marks/forwards its
+     * roots) but its OS thread has not yet reached the online barrier, so it
+     * cannot cooperate with stop-the-world.  1 = live: participates in STW.
+     * A stop-the-world initiator waits only for `gc_live` threads; a newborn
+     * would never reach a safepoint and would hang the world.  The
+     * newborn→live transition happens under gc_mutex in cl_gc_thread_online,
+     * serialized against the STW request so a thread that comes online during
+     * an in-progress STW parks instead of touching the stopped heap.
+     * See cl_gc_thread_online / cl_gc_stop_the_world. */
+    volatile uint8_t gc_live;
     /* Non-zero while the thread is in a blocking syscall that does not touch
      * the heap (e.g. pthread_join).  STW treats such a thread as already
      * stopped — it cannot reach a Lisp-level safepoint, but it also cannot
@@ -413,6 +431,9 @@ extern void       *cl_thread_list_lock; /* mutex protecting the list */
 extern uint32_t    cl_thread_count;     /* number of registered threads */
 
 void cl_thread_register(CL_Thread *t);
+/* Register a make-thread child whose OS thread does not exist yet: a newborn
+ * skipped by the STW wait loop until it reaches cl_gc_thread_online. */
+void cl_thread_register_newborn(CL_Thread *t);
 void cl_thread_unregister(CL_Thread *t);
 
 /* ---- GC coordination ---- */
@@ -444,6 +465,16 @@ void cl_thread_unregister(CL_Thread *t);
 
 void cl_gc_safepoint(void);           /* slow path: stop until GC completes */
 void cl_thread_handle_interrupt(CL_Thread *t);  /* slow path: handle pending interrupt */
+
+/* Bring a freshly-created worker online: the first thing its OS thread must do
+ * (before touching the heap) is transition from newborn to `gc_live` under
+ * gc_mutex.  If a stop-the-world GC is in progress and already requested this
+ * thread, the barrier parks here until it completes instead of racing the
+ * stopped/compacting heap.  This closes the newborn-vs-STW hang: the parent
+ * registers the child before creating its OS thread (so GC roots are marked),
+ * but until the child reaches this barrier it is invisible to the STW wait
+ * loop, which only waits for `gc_live` threads. */
+void cl_gc_thread_online(CL_Thread *self);
 
 /* Mark the current thread as entering / leaving a blocking syscall that does
  * not touch the heap.  Bracket calls like platform_thread_join with
