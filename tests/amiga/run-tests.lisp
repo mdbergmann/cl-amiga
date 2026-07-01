@@ -6185,6 +6185,58 @@
           (setq bad (1+ bad)))))
     bad))
 
+; Regression: concurrent MP:MAKE-THREAD + EXT:GC-COMPACT at several workers must
+; not hang, corrupt, or crash.  Guards the thread-vs-moving-GC cluster:
+;   - newborn stop-the-world hang (registered-before-OS-thread child waited on
+;     forever) — a hang here fails the whole suite via the FS-UAE watchdog;
+;   - child->result double-forward (gc_roots aliasing t->result) and the stale
+;     `func` C-local in thread_entry — both showed as a worker applying a
+;     wrong-typed object, so a corrupt worker returns :corrupt not :ok.
+; Each worker allocates a fresh closure and fresh list, compacts, and validates.
+(check "concurrent gc-compact multi-worker no corruption" t
+  (let ((threads nil) (ok t))
+    (dotimes (w 4)
+      (let ((id w))
+        (push (mp:make-thread
+                (lambda ()
+                  (let ((bad nil))
+                    (dotimes (i 40)
+                      (let ((s (list id i (list 'k i) "abc")))
+                        (ext:gc-compact)
+                        (unless (and (eql (first s) id) (eql (second s) i)
+                                     (equal (third s) (list 'k i))
+                                     (equal (fourth s) "abc"))
+                          (setq bad t))))
+                    (if bad :corrupt :ok)))
+                :name "w")
+              threads)))
+    (dolist (thr threads)
+      (unless (eq (mp:join-thread thr) :ok) (setq ok nil)))
+    ok))
+
+; Regression: a worker's fresh heap return value (cons/string) must survive a
+; peer thread's compaction that runs while JOIN-THREAD is parked.  The result
+; used to live only in the unregistered worker's t->result — neither marked nor
+; forwarded — so JOIN returned a stale offset (garbage).  Fixed by publishing it
+; into the GC-managed wrapper.  A wrong result here means the fix regressed.
+(check "join returns live heap result under concurrent gc" t
+  (let ((threads nil) (ok t))
+    (dotimes (w 4)
+      (let ((id w))
+        (push (cons id
+                    (mp:make-thread
+                      (lambda ()
+                        (dotimes (i 20) (ext:gc-compact))
+                        (list id (list 'tag id)))
+                      :name "w"))
+              threads)))
+    (dolist (pair threads)
+      (let* ((id (car pair)) (r (mp:join-thread (cdr pair))))
+        (unless (and (consp r) (eql (first r) id)
+                     (equal (second r) (list 'tag id)))
+          (setq ok nil))))
+    ok))
+
 ; --- Thread yield ---
 (check "thread-yield no crash" nil
   (mp:thread-yield))

@@ -554,6 +554,10 @@ typedef struct {
     CL_Header hdr;
     uint32_t thread_id;   /* Side table index -> CL_Thread* */
     CL_Obj name;          /* CL string or NIL */
+    CL_Obj result;        /* Worker's return value, published here before the
+                           * worker unregisters.  Lives on the GC-managed
+                           * wrapper (not the unregistered CL_Thread) so it stays
+                           * marked+forwarded until JOIN-THREAD reads it. */
 } CL_ThreadObj;
 
 #define CL_THREAD_P(obj) (CL_HEAP_P(obj) && CL_HDR_TYPE(CL_OBJ_TO_PTR(obj)) == TYPE_THREAD)
