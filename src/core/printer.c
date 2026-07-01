@@ -610,6 +610,14 @@ static void print_list(CL_Obj obj)
     if (max_len >= 0 && max_len == 0) {
         out_str("...");
     } else {
+        /* `obj` is the list-walk cursor.  It starts as the (rooted) argument
+         * but is immediately advanced by cl_cdr, after which it lives ONLY in
+         * this C local.  print_obj below can allocate (a Lisp print-object
+         * method via cl_vm_apply, bignum digits) and thus reach a GC safepoint,
+         * where a peer thread's stop-the-world compaction relocates the list
+         * and would leave `obj` a stale offset.  Protect the cursor so the
+         * compactor forwards it. */
+        CL_GC_PROTECT(obj);
         print_obj(cl_car(obj));
         count++;
         obj = cl_cdr(obj);
@@ -645,6 +653,7 @@ static void print_list(CL_Obj obj)
             out_str(" . ");
             print_obj(obj);
         }
+        CL_GC_UNPROTECT(1);  /* balance the cursor protect (else-branch only) */
     }
 
     if (pretty && pp_indent_top > 0)

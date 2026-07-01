@@ -786,6 +786,14 @@ static CL_Obj bi_subseq(CL_Obj *args, int n)
     {
         CL_Obj list = args[0], result = CL_NIL, tail = CL_NIL;
         int32_t i = 0;
+        /* `list` is the source cursor: it starts at args[0] (a VM-stack root)
+         * but is immediately reassigned by cl_cdr, so from the first step it
+         * lives ONLY in this C local — no longer aliased by any root.  The
+         * cl_cons below can trigger a compacting GC (single-thread, or a peer
+         * thread's stop-the-world compaction while we are parked at cl_alloc's
+         * safepoint), which relocates the source list and would leave `list`
+         * a stale offset.  Protect it alongside result/tail. */
+        CL_GC_PROTECT(list);
         CL_GC_PROTECT(result);
         CL_GC_PROTECT(tail);
         end = (n > 2 && !CL_NULL_P(args[2]) && CL_FIXNUM_P(args[2]))
@@ -800,7 +808,7 @@ static CL_Obj bi_subseq(CL_Obj *args, int n)
             list = cl_cdr(list);
             i++;
         }
-        CL_GC_UNPROTECT(2);
+        CL_GC_UNPROTECT(3);
         return result;
     }
 }
