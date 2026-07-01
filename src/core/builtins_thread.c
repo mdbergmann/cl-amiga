@@ -100,6 +100,16 @@ static void *thread_entry(void *arg)
     /* 1. Set up TLS for this OS thread */
     platform_tls_set(t);
 
+    /* 1a. Come online for stop-the-world GC.  Until now the child was a
+     *     newborn: registered in cl_thread_list (so GC marks/forwards its
+     *     roots — notably t->result below) but invisible to the STW wait loop.
+     *     This barrier transitions it to `gc_live` under gc_mutex, parking here
+     *     if a peer STW is already in progress so we never touch the stopped
+     *     heap.  MUST run before the `func = t->result` read: if a compaction
+     *     ran during the parent's create window, t->result was forwarded and
+     *     we must read the post-barrier (up-to-date) value. */
+    cl_gc_thread_online(t);
+
     /* 2. TLV snapshot was done by parent before thread_create */
 
     /* 3. Mark as running */
@@ -107,19 +117,24 @@ static void *thread_entry(void *arg)
 
     /* 4. Retrieve stashed function (stored in result field by parent).
      *
-     *    DO NOT clear t->result here.  The parent registered
-     *    gc_roots[0] = &t->result (see bi_make_thread), so t->result is the
-     *    ONLY GC root keeping `func` (a freshly-allocated closure object)
-     *    alive while we apply it below.  Nulling it would leave `func`
-     *    reachable only through this unrooted C local — a concurrent
+     *    DO NOT clear t->result here.  t->result is a GC root: it is marked by
+     *    gc_mark_thread_roots and forwarded by gc_update_thread_roots as thread
+     *    metadata, so it is the ONLY thing keeping `func` (a freshly-allocated
+     *    closure object) alive while we apply it below.  Nulling it would leave
+     *    `func` reachable only through this unrooted C local — a concurrent
      *    stop-the-world mark-and-sweep (e.g. another thread calling (gc))
      *    would then sweep the closure mid-apply, and cl_vm_apply would run
      *    on freed memory, erroring out so t->result stays NIL and
      *    join-thread returns NIL instead of the real result.  We overwrite
-     *    t->result with the computed result only AFTER cl_vm_apply returns. */
+     *    t->result with the computed result only AFTER cl_vm_apply returns.
+     *
+     *    Reading t->result AFTER cl_gc_thread_online (step 1a) is deliberate:
+     *    any compaction during the parent's create window has already forwarded
+     *    this slot, so we read the live (relocated) closure offset. */
     func = t->result;
 
-    /* GC-protect func via gc_roots (already set up by parent) */
+    /* func stays GC-safe via t->result (see the note above at step 4) —
+     * no gc_roots[] entry is added here; do not reintroduce one. */
 
     /* 5. Call user function inside error handler.
      *    CL_CATCH/CL_UNCATCH macros use compatibility names that are
@@ -236,6 +251,16 @@ static void *thread_entry(void *arg)
         }
 
         if (!aborted) {
+            /* Re-read func from t->result: the abort-restart setup above
+             * (cl_cons / cl_make_restart, and get_thread_abort_* on the first
+             * thread) allocates, and any of those allocations — or a peer
+             * thread's stop-the-world compaction during them — can relocate the
+             * closure.  t->result is a GC root (marked+forwarded as thread
+             * metadata), so it holds the live offset; the `func` C-local read
+             * back at thread entry does NOT get forwarded and is now stale.
+             * Applying the stale local was the multi-thread "Not a function:
+             * heap object type N" corruption. */
+            func = t->result;
             result = cl_vm_apply(func, NULL, 0);
             t->result = result;
         } else {
@@ -294,6 +319,22 @@ static void *thread_entry(void *arg)
 
     /* 6. Clear gc_roots — we're done using func */
     t->gc_root_count = 0;
+
+    /* 6a. Publish the result into the GC-managed wrapper BEFORE unregistering.
+     *   After step 7 unregisters this worker, gc_mark_thread_roots no longer
+     *   marks or forwards t->result, so a peer thread's compaction that runs
+     *   while JOIN-THREAD is parked (in cl_gc_leave_safe_region around
+     *   pthread_join) would sweep or relocate the result object out from under
+     *   the reader — JOIN-THREAD then returns a stale offset (garbage / an
+     *   unrelated live object).  The wrapper (CL_ThreadObj) IS a GC-managed
+     *   heap object, kept reachable by the user's thread reference and
+     *   marked+forwarded via gc_{mark,update} TYPE_THREAD, so storing the
+     *   result there keeps it live and current until JOIN reads it.  We are
+     *   still registered here, so t->thread_obj is a valid, forwarded offset. */
+    if (CL_THREAD_P(t->thread_obj)) {
+        CL_ThreadObj *wrap = (CL_ThreadObj *)CL_OBJ_TO_PTR(t->thread_obj);
+        wrap->result = t->result;
+    }
 
     /* 7. Unregister from thread list BEFORE publishing the terminal status.
      *
@@ -404,22 +445,32 @@ static CL_Obj bi_make_thread(CL_Obj *args, int n)
      * empty (tlv_entry_count == 0) and reads fall through to globals — so we
      * deliberately do NOT copy the parent's TLV table here. */
 
-    /* Stash func in child->result for the entry wrapper to retrieve */
+    /* Stash func in child->result for the entry wrapper to retrieve.
+     *
+     * child->result (and child->name above) are GC roots automatically: once
+     * the child is registered, gc_mark_thread_roots marks t->result / t->name
+     * as thread metadata and gc_update_thread_roots forwards those exact slots
+     * after a compaction (see mem.c).  So the closure stays live and its offset
+     * is kept current across any peer thread's stop-the-world GC.
+     *
+     * Do NOT also register &child->result / &child->name in child->gc_roots[].
+     * gc_update_thread_roots would then forward each slot TWICE — once via the
+     * gc_roots[] entry and once via the direct t->result / t->name update — and
+     * gc_forward() is not idempotent: re-forwarding an already-relocated offset
+     * re-maps it through whatever live object now occupies that arena slot,
+     * leaving child->result pointing at the wrong object.  That was the
+     * multi-thread "func has wrong type at thread entry → TYPE-ERROR" corruption
+     * exposed once concurrent make-thread stopped hanging.  gc_root_count stays
+     * 0; the worker uses gc_roots[] for its own CL_GC_PROTECT calls. */
     child->result = func;
 
-    /* GC-protect func: set up gc_roots in child so GC can mark it */
-    child->gc_roots[0] = &child->result;
-    child->gc_root_count = 1;
-
-    /* Also protect child->name */
-    if (!CL_NULL_P(name)) {
-        child->gc_roots[1] = &child->name;
-        child->gc_root_count = 2;
-    }
-
-    /* Register child in thread list BEFORE creating OS thread,
-     * so GC can mark its roots even if child hasn't started yet */
-    cl_thread_register(child);
+    /* Register child in thread list BEFORE creating OS thread, so GC can mark
+     * its roots even though the child hasn't started yet.  Register it as a
+     * NEWBORN (gc_live == 0): it has no OS thread and cannot reach a safepoint,
+     * so a concurrent stop-the-world must NOT wait for it — otherwise the world
+     * hangs forever waiting for a thread that will never stop.  The child flips
+     * itself to live via cl_gc_thread_online once its OS thread starts. */
+    cl_thread_register_newborn(child);
 
     /* Create the Lisp-visible thread object */
     CL_GC_PROTECT(func);
@@ -481,7 +532,24 @@ static CL_Obj bi_join_thread(CL_Obj *args, int n)
     platform_thread_join(t->platform_handle, NULL);
     cl_gc_leave_safe_region();
 
-    result = t->result;
+    /* Re-derive tobj: cl_gc_leave_safe_region() can PARK this thread while a
+     * peer thread runs a stop-the-world compaction, which relocates the wrapper
+     * object.  The `tobj` C-pointer computed before the safe region is then
+     * stale — it points at the wrapper's pre-move address.  Using it below would
+     * read a garbage thread_id (so cl_thread_table_free clears the wrong slot,
+     * leaving cl_thread_table[id] pointing at the worker we free here) and write
+     * `-1` to the stale address (so the real wrapper keeps thread_id=id).  The
+     * result: gc_finalize_dead later frees this same worker a SECOND time —
+     * the multi-thread "pointer being freed was not allocated" crash.  args[0]
+     * is a VM-stack root, forwarded by the compaction, so re-read through it. */
+    tobj = (CL_ThreadObj *)CL_OBJ_TO_PTR(args[0]);
+
+    /* Read the result from the GC-managed wrapper, not the worker's t->result:
+     * the worker published it there before unregistering (see thread_entry step
+     * 6a), and the wrapper's slot is marked+forwarded across any compaction that
+     * ran while we were parked in the safe region above.  t->result is no longer
+     * a GC root once the worker unregistered, so it may be stale here. */
+    result = tobj->result;
 
     /* Clean up worker thread resources, then invalidate this wrapper's
      * slot index.  Without the invalidation, if MAKE-THREAD reuses the

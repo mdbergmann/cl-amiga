@@ -1143,6 +1143,7 @@ static void gc_mark_children(void *ptr, uint8_t type)
     case TYPE_THREAD: {
         CL_ThreadObj *to = (CL_ThreadObj *)ptr;
         gc_mark_push(to->name);
+        gc_mark_push(to->result);
         break;
     }
     case TYPE_LOCK: {
@@ -1297,12 +1298,23 @@ static void gc_scan_jit_native_stack(CL_Thread *t)
     static int oom_warned = 0;
 
     if (t->jit_depth <= 0 || t->jit_stack_top == NULL) return;
-    if (t != cl_get_current_thread()) return;
 
-    /* Lower bound: a local in this frame — strictly below any JIT'd
-     * frame on the C call chain leading here, so [scan_lo, scan_hi)
-     * covers every JIT-spilled word. */
-    scan_lo = (char *)&scan_lo;
+    /* Lower bound of the scan window.
+     *  - Current (compacting) thread: a local in THIS frame — strictly below
+     *    any JIT'd frame on the C call chain leading here.
+     *  - A stopped PEER thread (multi-thread STW): its own frozen stack
+     *    pointer, captured when it parked at a safepoint / safe region.  We
+     *    cannot use our own SP — the peer runs on a different C stack.  Without
+     *    this, a peer parked inside JIT'd code had its spilled operands neither
+     *    marked nor pinned, so the compactor relocated the referenced objects
+     *    and the peer resumed with dangling offsets (the multi-thread JIT-vs-
+     *    moving-GC corruption). */
+    if (t == cl_get_current_thread()) {
+        scan_lo = (char *)&scan_lo;
+    } else {
+        if (t->jit_park_sp == NULL) return;
+        scan_lo = (char *)t->jit_park_sp;
+    }
     scan_hi = (char *)t->jit_stack_top;
     if (scan_hi <= scan_lo) return;
 
@@ -1826,6 +1838,14 @@ static void gc_compute_forwarding(void)
     uint32_t new_offset = CL_ALIGN;  /* free pointer; skip offset 0 (NIL) */
     int pin_i = 0;                   /* index into the sorted jit_pinned[] */
 
+    /* jit_pinned[] must be ascending for the single-pass merge below.  A single
+     * thread's scan already appends in ascending order (monotonic arena walk),
+     * but with multi-thread STW each stopped thread's JIT stack is scanned in
+     * turn, so pins from different threads concatenate out of order — sort. */
+    if (jit_pinned_count > 1)
+        qsort(jit_pinned, (size_t)jit_pinned_count, sizeof(jit_pinned[0]),
+              cand_cmp);
+
     while (ptr < end) {
         uint32_t size = CL_HDR_SIZE(ptr);
         uint32_t old_offset;
@@ -2054,6 +2074,7 @@ static void gc_update_children(void *ptr, uint8_t type)
     case TYPE_THREAD: {
         CL_ThreadObj *to = (CL_ThreadObj *)ptr;
         gc_update_slot(&to->name);
+        gc_update_slot(&to->result);
         break;
     }
     case TYPE_LOCK: {

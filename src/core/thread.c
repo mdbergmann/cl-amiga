@@ -28,14 +28,33 @@ uint32_t    cl_thread_count     = 0;
 static void *gc_mutex   = NULL;  /* protects GC state transitions */
 static void *gc_condvar = NULL;  /* threads wait here during STW; initiator waits for all stopped */
 
-/* Register a thread in the global thread list */
-void cl_thread_register(CL_Thread *t)
+/* Register a thread in the global thread list.
+ * `live` = 1 marks it as participating in stop-the-world immediately; use this
+ * when the calling context IS the thread's own running OS thread (it can reach
+ * safepoints).  `live` = 0 registers a NEWBORN: linked so GC marks its roots,
+ * but skipped by the STW wait loop until its OS thread reaches
+ * cl_gc_thread_online — see gc_live in thread.h. */
+static void cl_thread_register_ex(CL_Thread *t, uint8_t live)
 {
     platform_mutex_lock(cl_thread_list_lock);
+    t->gc_live = live;
     t->next = cl_thread_list;
     cl_thread_list = t;
     cl_thread_count++;
     platform_mutex_unlock(cl_thread_list_lock);
+}
+
+/* Register an already-running thread (self-registration): live immediately. */
+void cl_thread_register(CL_Thread *t)
+{
+    cl_thread_register_ex(t, 1);
+}
+
+/* Register a thread whose OS thread does not exist yet (the make-thread child):
+ * a newborn that becomes live only when it reaches cl_gc_thread_online. */
+void cl_thread_register_newborn(CL_Thread *t)
+{
+    cl_thread_register_ex(t, 0);
 }
 
 /* Unregister a thread from the global thread list */
@@ -62,6 +81,12 @@ void cl_gc_safepoint(void)
     if (!self || !self->gc_requested)
         return;
 
+    /* Record where we froze so a peer's compaction can conservatively scan
+     * THIS thread's JIT native stack ([jit_park_sp .. jit_stack_top)) — the
+     * peer cannot use its own SP as the lower bound.  Captured before we mark
+     * ourselves stopped so it is valid the instant the initiator observes us. */
+    self->jit_park_sp = CL_CAPTURE_SP();
+
     platform_mutex_lock(gc_mutex);
     self->gc_stopped = 1;
     /* Wake GC initiator who may be waiting for all threads to stop */
@@ -83,6 +108,11 @@ void cl_gc_enter_safe_region(void)
      * with, so a "safe region" is a no-op.  Guards against locking a destroyed
      * gc_mutex (ObtainSemaphore(NULL) on Amiga) during exit teardown. */
     if (!gc_mutex) return;
+    /* Freeze point for JIT-stack scanning: the blocking syscall we are about to
+     * enter runs on stack BELOW here, while any JIT-spilled operands live ABOVE
+     * — so [jit_park_sp .. jit_stack_top) covers exactly this thread's JIT
+     * frames for a peer's compaction (see jit_park_sp in thread.h). */
+    self->jit_park_sp = CL_CAPTURE_SP();
     platform_mutex_lock(gc_mutex);
     self->in_safe_region = 1;
     /* Wake any STW initiator counting safe-region threads as stopped */
@@ -95,6 +125,9 @@ void cl_gc_leave_safe_region(void)
     CL_Thread *self = (CL_Thread *)platform_tls_get();
     if (!self) return;
     if (!gc_mutex) return;  /* see cl_gc_enter_safe_region */
+    /* Re-capture the freeze point: the syscall has returned, so we are about to
+     * park at this frame (below our still-intact JIT frames) until GC finishes. */
+    self->jit_park_sp = CL_CAPTURE_SP();
     platform_mutex_lock(gc_mutex);
     /* If a GC is currently running, park here until it completes — we
      * cannot return to the heap-touching caller while the world is
@@ -132,6 +165,48 @@ void cl_gc_safe_mutex_lock(void *mutex)
     cl_gc_enter_safe_region();
     platform_mutex_lock(mutex);
     cl_gc_leave_safe_region();
+}
+
+/* ---- Newborn → live transition (thread startup barrier) ---- */
+
+/* Called once at the top of a worker's entry function, BEFORE it touches the
+ * heap.  Atomically (under gc_mutex) transitions the thread from newborn
+ * (gc_live == 0) to live (gc_live == 1) so it starts participating in
+ * stop-the-world GC — but only after making sure it does not come online in
+ * the middle of an STW that has already stopped the world.
+ *
+ * Race analysis (the whole point of this function):
+ *   The STW initiator sets gc_requested on all other threads and then, in its
+ *   wait loop, waits ONLY for `gc_live` threads (a newborn has no OS thread to
+ *   reach a safepoint, so waiting for it would hang the world).  Both the
+ *   request/wait and this barrier serialize on gc_mutex, so relative to the
+ *   initiator holding gc_mutex this thread is either fully before or fully
+ *   after:
+ *     - Before the initiator's request: we see gc_requested == 0, become live,
+ *       and unlock.  The initiator then requests us (we're live now) and waits
+ *       for us; we reach a safepoint at our first allocation and park.  Safe.
+ *     - After (initiator already requested us and is in its wait loop, which
+ *       releases gc_mutex only inside condvar_wait): we see gc_requested == 1
+ *       and park here WITHOUT becoming live or touching the heap.  The wait
+ *       loop skips us (gc_live still 0), so the world stops without us; resume
+ *       clears gc_requested and wakes us, and we then become live.  Safe.
+ */
+void cl_gc_thread_online(CL_Thread *self)
+{
+    if (!self) return;
+    if (!gc_mutex) { self->gc_live = 1; return; }
+    platform_mutex_lock(gc_mutex);
+    /* Park if a stop-the-world is in progress and requested us: we must not
+     * enter the heap-touching caller while the world is stopped.  We stay a
+     * newborn (gc_live == 0) so the initiator's wait loop does not wait on us. */
+    while (self->gc_requested) {
+        self->gc_stopped = 1;
+        platform_condvar_broadcast(gc_condvar);
+        platform_condvar_wait(gc_condvar, gc_mutex);
+    }
+    self->gc_stopped = 0;
+    self->gc_live = 1;   /* now participate in stop-the-world */
+    platform_mutex_unlock(gc_mutex);
 }
 
 /* ---- Stop-the-world GC coordination ---- */
@@ -180,7 +255,13 @@ void cl_gc_stop_the_world(void)
         int all_stopped = 1;
         platform_mutex_lock(cl_thread_list_lock);
         for (t = cl_thread_list; t; t = t->next) {
-            if (t != self && t->gc_requested
+            /* Skip newborns (gc_live == 0): they are registered so GC marks
+             * their roots, but their OS thread has not reached the online
+             * barrier and can never hit a safepoint — waiting for one would
+             * hang the world.  cl_gc_thread_online parks any newborn that
+             * comes online while this STW is in progress, so skipping them
+             * here cannot let a thread touch the stopped heap. */
+            if (t != self && t->gc_live && t->gc_requested
                 && !t->gc_stopped && !t->in_safe_region) {
                 all_stopped = 0;
                 /* Record which thread is holding up the world so a watchdog
@@ -568,6 +649,7 @@ void cl_thread_init(void)
     /* Mark as running */
     cl_main_thread.id = 0;
     cl_main_thread.status = 1; /* running */
+    cl_main_thread.gc_live = 1; /* main thread always participates in STW */
 
     /* Initialize side tables */
     memset(cl_thread_table, 0, sizeof(cl_thread_table));
