@@ -2842,6 +2842,19 @@ static CL_Obj bi_ext_gc(CL_Obj *args, int n)
     return CL_NIL;
 }
 
+/* (ext:gc-compact) — force a full moving (compacting) GC now.
+ * Unlike (ext:gc), which is a mark-sweep that only compacts when the allocator
+ * has flagged fragmentation, this always relocates live objects.  Useful for
+ * reclaiming a contiguous run of the arena, and for deterministically
+ * exercising the moving collector (e.g. multi-thread GC stress tests that must
+ * relocate a peer thread's roots).  Returns NIL. */
+static CL_Obj bi_ext_gc_compact(CL_Obj *args, int n)
+{
+    CL_UNUSED(args); CL_UNUSED(n);
+    cl_gc_compact();
+    return CL_NIL;
+}
+
 static CL_Obj bi_time_report(CL_Obj *args, int n)
 {
     uint32_t start_time, end_time, elapsed;
@@ -3829,6 +3842,7 @@ void cl_builtins_io_init(void)
     defun("MACHINE-INSTANCE", bi_machine_instance, 0, 0);
     /* Extension functions (EXT package) */
     extfun("GC", bi_ext_gc, 0, 0);
+    extfun("GC-COMPACT", bi_ext_gc_compact, 0, 0);
     extfun("GETENV", bi_getenv, 1, 1);
     extfun("GETCWD", bi_getcwd, 0, 0);
     extfun("SYSTEM-COMMAND", bi_system_command, 1, 1);
