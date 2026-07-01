@@ -1799,6 +1799,36 @@ When called with no arguments, passes the original method arguments."
       (error "No applicable method for ~S with args of types ~S"
              (gf-name gf) (mapcar #'type-of args))))
 
+(defvar *gf-cache-heals* 0
+  "Count of self-healed stale negative dispatch-cache entries.  A non-zero
+   value means the dispatch cache disagreed with the live method list at
+   least once (a relocation artifact, a concurrent cache write from another
+   thread, or a missed invalidation) and was corrected.  Exposed for
+   diagnostics; normally zero.")
+
+(defun %dispatch-negative-hit (gf args table key)
+  "A cache lookup returned a *negative* entry (present, value NIL) meaning
+   \"no method applies\" for this class tuple.  The dispatch cache is only a
+   memo of a pure function (the applicable-method set for a tuple of argument
+   classes), so a cached negative that contradicts the live method list is by
+   definition stale — it can arise from a GC relocation touching the EQ-keyed
+   cache, a concurrent cache write from another thread (sento spins up worker
+   threads that dispatch GFs while the main thread loads systems), or a missed
+   invalidation.  Rather than trust the memo, recompute from the authoritative
+   method list: if methods now apply, heal the cache entry and dispatch;
+   otherwise the miss is genuine and we signal NO-APPLICABLE-METHOD.  This
+   never turns a correct miss into a spurious call — a genuine no-method
+   recomputes empty and still signals — it only rescues a stale/corrupt
+   negative that would otherwise wrongly report \"No applicable method\" for a
+   method that plainly exists."
+  (let ((methods (%compute-applicable-methods gf args)))
+    (if methods
+        (let ((emf (%dispatch-build-emf gf methods)))
+          (setq *gf-cache-heals* (+ *gf-cache-heals* 1))
+          (setf (gethash key table) emf)
+          (apply emf args))
+        (%no-applicable-method gf args))))
+
 (defun %gf-dispatch-eql (gf args)
   "Dispatch a GF with EQL specializers using mixed EQL/class cache.
    Cache structure at each level: (eql-ht . class-ht) cons.
@@ -1848,7 +1878,7 @@ When called with no arguments, passes the original method arguments."
           (if found
               (if emf
                   (apply emf args)
-                  (%no-applicable-method gf args))
+                  (%dispatch-negative-hit gf args ht key))
               (let ((methods (%compute-applicable-methods gf args)))
                 (if methods
                     (let ((new-emf (%dispatch-build-emf gf methods)))
@@ -1889,7 +1919,7 @@ When called with no arguments, passes the original method arguments."
           (if found
               (if emf
                   (apply emf args)
-                  (%no-applicable-method gf args))
+                  (%dispatch-negative-hit gf args table class))
               (let ((methods (%compute-applicable-methods gf args)))
                 (if methods
                     (let ((new-emf (%dispatch-build-emf gf methods)))
@@ -1981,7 +2011,7 @@ When called with no arguments, passes the original method arguments."
          (multiple-value-bind (emf found) (gethash class cache)
            (cond
              ((and found emf) (funcall emf a))
-             (found (%gf-1-no-method-error gf a))
+             (found (%dispatch-negative-hit gf args cache class))
              (t
               (let ((methods (%compute-applicable-methods gf args)))
                 (cond
@@ -2006,7 +2036,7 @@ When called with no arguments, passes the original method arguments."
   (multiple-value-bind (emf found) (gethash key table)
     (cond
       ((and found emf) (funcall emf a b))
-      (found (%gf-2-no-method-error gf a b))
+      (found (%dispatch-negative-hit gf args table key))
       (t
        (let ((methods (%compute-applicable-methods gf args)))
          (cond

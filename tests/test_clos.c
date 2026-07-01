@@ -236,6 +236,48 @@ TEST(dispatch_string_method_on_make_array_string)
         ":STR");
 }
 
+/* Regression: a stale/corrupt NEGATIVE dispatch-cache entry (present, value
+ * NIL — "no method applies") must not be trusted blindly.  The cache is only
+ * a memo of a pure function, so on a negative hit the dispatcher re-verifies
+ * against the live method list and heals the entry when a method plainly
+ * exists.  This is the mechanism behind the field report "No applicable
+ * method for FIND-OPERATION with args of types (COMPILE-OP SYMBOL)" — a
+ * method that clearly exists yet dispatch reported a miss because a corrupt
+ * negative cache entry (from a GC relocation of the EQ-keyed cache or a
+ * concurrent cache write) shadowed it. */
+TEST(dispatch_negative_cache_self_heals)
+{
+    eval_print("(defclass neg-op () ())");
+    eval_print("(defgeneric neg-find (ctx spec))");
+    eval_print("(defmethod neg-find ((c t) (s neg-op)) (list :op s))");
+    eval_print("(defmethod neg-find ((c t) (s symbol)) :sym)");
+    eval_print("(defmethod neg-find ((c t) (s string)) :str)");
+    /* Prime the cache with a real call so the nested table exists. */
+    eval_print("(defparameter *no* (make-instance 'neg-op))");
+    ASSERT_STR_EQ(eval_print("(neg-find *no* 'load-thing)"), ":SYM");
+    /* Poke a stale NEGATIVE entry for (neg-op -> SYMBOL) and drop the inline
+     * cache so the dispatch table is actually consulted. */
+    eval_print(
+        "(let* ((gf (fdefinition 'neg-find))"
+        "       (cache (gf-dispatch-cache gf))"
+        "       (inner (gethash (class-of *no*) cache)))"
+        "  (setf (gethash (class-of 'x) inner) nil)"
+        "  (%set-gf-inline-cache gf nil))");
+    /* Before the fix this signaled "No applicable method"; now it heals. */
+    ASSERT_STR_EQ(eval_print("(neg-find *no* 'prepare-thing)"), ":SYM");
+}
+
+/* The heal must not paper over a GENUINE no-applicable-method: recomputing
+ * from the live method list still finds nothing for an unspecialized arg
+ * class, so an error is still signaled. */
+TEST(dispatch_genuine_miss_still_errors)
+{
+    eval_print("(defgeneric gm-only-str (x))");
+    eval_print("(defmethod gm-only-str ((x string)) :str)");
+    /* 42 is a fixnum — no applicable method; must error, not return NIL. */
+    ASSERT_STR_EQ(eval_print("(gm-only-str 42)"), "ERROR:1");
+}
+
 TEST(class_of_nil_is_null_class)
 {
     ASSERT_STR_EQ(eval_print("(class-name (class-of nil))"), "NULL");
@@ -4231,6 +4273,8 @@ int main(void)
     RUN(class_of_42_is_fixnum_class);
     RUN(class_of_string_is_string_class);
     RUN(dispatch_string_method_on_make_array_string);
+    RUN(dispatch_negative_cache_self_heals);
+    RUN(dispatch_genuine_miss_still_errors);
     RUN(class_of_nil_is_null_class);
     RUN(class_of_cons_is_cons_class);
     RUN(class_of_eq_find_class);

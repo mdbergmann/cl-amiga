@@ -3624,6 +3624,39 @@
          (defmethod fs-test-amiga ((x file-stream)) :fs)
          :ok))
 
+; --- Regression: dispatch self-heals a stale NEGATIVE cache entry ---
+; A corrupt negative dispatch-cache entry (present, value NIL = "no method")
+; must not shadow a method that plainly exists.  This is the mechanism behind
+; the ASDF field report "No applicable method for FIND-OPERATION with args of
+; types (COMPILE-OP SYMBOL)": a method existed but a corrupt negative cache
+; entry (GC relocation of the EQ-keyed cache / a concurrent cache write) made
+; dispatch wrongly report a miss.  On a negative hit the dispatcher now
+; re-verifies against the live method list and heals the entry.
+(defclass neg-op-amiga () ())
+(defgeneric neg-find-amiga (ctx spec))
+(defmethod neg-find-amiga ((c t) (s neg-op-amiga)) :op)
+(defmethod neg-find-amiga ((c t) (s symbol)) :sym)
+(defmethod neg-find-amiga ((c t) (s string)) :str)
+(defparameter *neg-op-amiga* (make-instance 'neg-op-amiga))
+(check "dispatch-negative-cache-primes" :sym (neg-find-amiga *neg-op-amiga* 'a-thing))
+(check "dispatch-negative-cache-self-heals" :sym
+  (progn
+    ;; Poke a stale NEGATIVE entry for (neg-op-amiga -> SYMBOL) and drop the
+    ;; inline cache so the dispatch table is actually consulted.
+    (let* ((gf (fdefinition 'neg-find-amiga))
+           (cache (gf-dispatch-cache gf))
+           (inner (gethash (class-of *neg-op-amiga*) cache)))
+      (setf (gethash (class-of 'x) inner) nil)
+      (%set-gf-inline-cache gf nil))
+    ;; Before the fix this signaled "No applicable method"; now it heals.
+    (neg-find-amiga *neg-op-amiga* 'other-thing)))
+; A genuine no-applicable-method must STILL error (heal recomputes empty).
+(check "dispatch-genuine-miss-still-errors" :caught
+  (handler-case (progn (defgeneric gm-str-amiga (x))
+                       (defmethod gm-str-amiga ((x string)) :str)
+                       (gm-str-amiga 42))
+    (error () :caught)))
+
 ; decode-universal-time returns 9 values
 (check "decode-ut-count" 9 (length (multiple-value-list (decode-universal-time (get-universal-time)))))
 
