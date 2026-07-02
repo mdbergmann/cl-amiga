@@ -132,6 +132,25 @@ TEST(worker_deep_recursion_survives_like_main)
     ASSERT_STR_EQ(w, "500");
 }
 
+/* Regression: a worker must tolerate deep NLX (CATCH/BLOCK/UNWIND-PROTECT)
+ * nesting up to its own nlx_stack capacity, and the overflow guards must bound
+ * against the PER-THREAD capacity (cl_nlx_max) — not the global CL_MAX_NLX_FRAMES
+ * constant.  Historically the worker nlx_stack was allocated with only 256 slots
+ * while every push guard compared against CL_MAX_NLX_FRAMES (2048), so a worker
+ * nesting 257..2048 NLX frames wrote past the end of its allocation (silent heap
+ * corruption).  Nesting 400 CATCH frames (> the old 256 allocation) must now
+ * simply work: the throw unwinds to the innermost catch and 42 propagates out. */
+TEST(worker_deep_nlx_nesting_no_corruption)
+{
+    const char *w = eval_print(
+        "(mp:join-thread"
+        "  (mp:make-thread"
+        "    (lambda ()"
+        "      (labels ((c (n) (if (<= n 0) (throw 'done 42) (catch 'done (c (1- n))))))"
+        "        (catch 'done (c 400))))))");
+    ASSERT_STR_EQ(w, "42");
+}
+
 /* Regression: an error raised deep enough to be near (but under) the frame
  * limit must still be catchable on a worker.  With the old compact worker sizes,
  * a handler-case wrapping deep work could be bypassed entirely when the frame
@@ -918,6 +937,7 @@ int main(void)
 
     /* Worker VM sizes must match main (asdf:load-system under Sly hang) */
     RUN(worker_deep_recursion_survives_like_main);
+    RUN(worker_deep_nlx_nesting_no_corruption);
     RUN(worker_handler_case_runs_after_deep_work);
 
     /* Thread predicates */
