@@ -2403,6 +2403,41 @@ check_contains "throw values survive allocating unwind-protect cleanup" "THROWMV
 check_absent   "no stale throw values / lost catch tags under GC stress" \
   "BAD-THROW-MV\|BAD-NESTED-MV\|No catch for tag\|corrupted" "$out"
 
+# --- Case: oversized allocation must not corrupt the arena -----------------
+# Bug: cl_alloc's >8MB header-size guard ran AFTER alloc_from_bump had
+# already advanced the bump pointer; the guard's longjmp left a
+# headerless region inside the walked bump front, and every later arena
+# walk (sweep/forwarding/slide) desynced there — live objects above the
+# hole were overwritten.  (make-array 3000000) passes the element-count
+# check but requests ~12MB of bytes, hitting the guard whenever the heap
+# is big enough for the request to fit in bump space.
+# Note: the oversized-allocation guard signals via cl_storage_error (a
+# C-level error frame, deliberately allocation-free), which aborts the
+# offending top-level form rather than unwinding into handler-case; the
+# loader reports it and continues.  What matters here is (a) the clean
+# error message and (b) a fully intact heap afterwards — the C-level
+# regression (bump must not advance) is asserted by tests/test_alloc_guard.c.
+cat > "$WORK/bigalloc.lisp" <<'EOF'
+(make-array 3000000)
+;; The heap must be fully intact afterwards: allocate, force compaction,
+;; and verify data survives.
+(let ((keep '()))
+  (dotimes (i 50) (push (list i (format nil "x~d" i)) keep))
+  (ext:gc-compact)
+  (let ((ok t))
+    (dotimes (i 50)
+      (let ((e (nth (- 49 i) keep)))
+        (unless (and (eql (first e) i)
+                     (string= (second e) (format nil "x~d" i)))
+          (setf ok nil))))
+    (format t "BIGALLOC-2:~a~%" ok)))
+EOF
+out=$(run_stress "$WORK/bigalloc.lisp")
+check_contains "oversized make-array signals a clean storage error" "Allocation too large for header" "$out"
+check_contains "heap fully intact after oversized-allocation error"   "BIGALLOC-2:T" "$out"
+check_absent   "no arena-walk corruption after oversized allocation" \
+  "corrupted\|not of type\|type 0\|Guru" "$out"
+
 echo ""
 echo "$passed passed, $failed failed, $total total"
 [ "$failed" -eq 0 ]

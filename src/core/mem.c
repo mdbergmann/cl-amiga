@@ -366,6 +366,18 @@ void *cl_alloc(uint8_t type, uint32_t size)
     if (size < CL_MIN_ALLOC_SIZE)
         size = CL_MIN_ALLOC_SIZE;
 
+    /* Guard: size must fit the 23-bit header size field.  This MUST run
+     * before alloc_from_bump: the old post-allocation guard fired after
+     * the bump pointer had already advanced, longjmp'ing out via
+     * cl_storage_error and leaving a headerless region inside the walked
+     * bump front — every later arena walk (sweep, mark-overflow rescan,
+     * forwarding, slide) desynced there, silently corrupting the heap.
+     * Reachable from pure Lisp: (make-array 3000000) passes the element-
+     * count check but requests ~12MB of bytes. */
+    if (size > CL_HDR_SIZE_MASK)
+        cl_storage_error("Allocation too large for header: %u bytes (max %u)",
+                         (unsigned)size, (unsigned)CL_HDR_SIZE_MASK);
+
     if (multi) platform_mutex_lock(alloc_mutex);
 
     /* Fast path: bump allocator, then a *bounded* first-fit free-list probe.
@@ -462,13 +474,9 @@ void *cl_alloc(uint8_t type, uint32_t size)
         cl_storage_error("Heap exhausted (requested %u bytes)", (unsigned)size);
     }
 
-    /* Guard: size must fit in the 23-bit header size field.
-     * If this fires, an object exceeds ~8MB — architecturally unsupported. */
-    if (size > CL_HDR_SIZE_MASK) {
-        if (multi) platform_mutex_unlock(alloc_mutex);
-        cl_storage_error("Allocation too large for header: %u bytes (max %u)",
-                         (unsigned)size, (unsigned)CL_HDR_SIZE_MASK);
-    }
+    /* (The header-size guard runs at function entry, BEFORE any bump
+     * advance — see above.  alloc_from_free_list can only ever shrink-fit
+     * or return the exact block, never grow size past the mask.) */
 
     /* Initialize: zero entire block, then set header.
      * Zeroing prevents stale data in padding/trailing bytes from being
