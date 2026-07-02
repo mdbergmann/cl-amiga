@@ -2323,6 +2323,44 @@ check_contains "condition report formats :format-arguments under GC stress" "CON
 check_absent   "no corrupted pointer in condition report under GC stress" \
   "corrupted\|not of type\|BAD-REPORT" "$out"
 
+# --- Case: SORT of a general vector with an allocating predicate/:key -----
+# Bug: vector_insertion_sort captured cl_vector_data(v) ONCE and kept
+# reading/writing through it across every user predicate/:key call; a
+# compaction inside the predicate relocated the vector and the sort
+# read/wrote the vector's OLD arena location.  The discriminator below
+# makes the predicate drop a large live reference on its first call, so
+# the next stress-compaction inside the sort slides the vector down over
+# the freed space: the old code then "sorts" the stale copy and returns
+# the vector UNSORTED (silent corruption); the fix re-derives the data
+# pointer from the rooted vector after every user call.
+# (Kept as flat top-level forms: a (let (...) (dotimes ...)) wrapper
+# trips an unrelated, pre-existing compile-time GC-stress crash in
+# compile_dotimes/compile_tagbody — see the tier-2 compiler findings.)
+cat > "$WORK/sortvec.lisp" <<'EOF'
+(defvar *junk* (make-list 2000))
+(defvar *v* (coerce (loop for i from 30 downto 1 collect (list i)) 'vector))
+(defvar *pred*
+  (lambda (a b)
+    (setq *junk* nil)  ; dies mid-sort -> next compaction slides *v*
+    (< (first (list (car a))) (car b))))
+(sort *v* *pred*)
+(defvar *keys* (map 'list #'car *v*))
+(format t "SORTVEC:~a~%"
+        (if (equal *keys* (loop for i from 1 to 30 collect i)) t *keys*))
+;; :key variant — allocating :key on a general vector of heap objects
+(defvar *kv* (vector "dd" "b" "ccc" "a"))
+(sort *kv* #'< :key (lambda (s) (first (list (length s)))))
+;; stable sort by length: "b" and "a" (both length 1) keep order
+(format t "SORTKEY:~a~%"
+        (if (equal (coerce *kv* 'list) '("b" "a" "dd" "ccc"))
+            t (coerce *kv* 'list)))
+EOF
+out=$(run_stress "$WORK/sortvec.lisp")
+check_contains "sort vector with allocating predicate under GC stress" "SORTVEC:T" "$out"
+check_contains "sort vector with allocating :key under GC stress"      "SORTKEY:T" "$out"
+check_absent   "no corruption sorting vector under GC stress" \
+  "corrupted\|not of type\|type 0\|FATAL" "$out"
+
 echo ""
 echo "$passed passed, $failed failed, $total total"
 [ "$failed" -eq 0 ]
