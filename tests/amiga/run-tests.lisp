@@ -6312,6 +6312,32 @@
 (check "thread make with name" "worker"
   (mp:thread-name (mp:make-thread (lambda () nil) :name "worker")))
 
+; Regression: a worker thread must tolerate the same call-nesting depth as the
+; main thread.  Worker VM frame/stack sizes used to be much smaller than main's,
+; so a recursion ~300-deep overflowed the worker's VM frame stack (256 frames)
+; where the main thread (1024) coped.  That overflow could not be caught (running
+; a handler itself needs frames) so the worker died silently and its result was
+; lost -- which is why (asdf:load-system ...) hung under Sly (slynk evaluates on
+; a channel worker thread) yet loaded fine headless (main thread).  Depth 300 is
+; over the old worker limit (256): pre-fix the worker dies and join-thread
+; returns NIL; post-fix it returns 300 exactly like the main thread.
+(check "worker tolerates deep recursion like main thread" 300
+  (mp:join-thread
+   (mp:make-thread
+    (lambda ()
+      (labels ((r (n) (if (<= n 0) 0 (1+ (funcall #'r (1- n))))))
+        (r 300))))))
+
+; Regression: an error raised inside deep work on a worker must still be
+; catchable -- a handler-case that used to be bypassed when the worker's frame
+; stack filled now runs, just as on the main thread.
+(check "worker handler-case runs after deep work" :caught
+  (mp:join-thread
+   (mp:make-thread
+    (lambda ()
+      (labels ((r (n) (if (<= n 0) (error "boom") (1+ (funcall #'r (1- n))))))
+        (handler-case (r 260) (error (e) (declare (ignore e)) :caught)))))))
+
 ; --- Thread predicates ---
 (check "thread alive-p after join" nil
   (let ((thr (mp:make-thread (lambda () 42))))
