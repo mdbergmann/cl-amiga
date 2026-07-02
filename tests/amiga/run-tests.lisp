@@ -6298,6 +6298,88 @@
           (setq ok nil))))
     ok))
 
+; Regression: concurrent (re)definition of a method must not make a peer
+; thread's dispatch of the SAME generic function spuriously signal "No
+; applicable method" for a method that plainly exists.  This is the multi-
+; threaded race behind the ASDF field report "No applicable method for
+; ACTION-STATUS with args of types (NULL LOAD-OP SYSTEM)" during
+; (asdf:load-system ...): worker/watcher threads dispatch GFs while the main
+; thread (re)defines methods.  Root cause (lib/clos.lisp %install-method-in-gf):
+; the method list was updated in TWO stores (store old-minus-replaced, THEN
+; cons the new method on), leaving a window where GF-METHODS transiently
+; EXCLUDED the method being (re)defined; a dispatcher walking the list in that
+; window computed an empty applicable set.  Fixed by a SINGLE atomic
+; %set-gf-methods store, so a concurrent reader always sees a complete list.
+; Shaped like ACTION-STATUS: a NULL-specialized method beside a class method.
+(defclass amdisp-op () ())
+(defclass amdisp-load-op (amdisp-op) ())
+(defclass amdisp-comp () ())
+(defclass amdisp-sys (amdisp-comp) ())
+(defgeneric amdisp-status (plan operation component))
+(defmethod amdisp-status ((plan null) (o amdisp-op) (c amdisp-comp)) :null-method)
+(defmethod amdisp-status ((p amdisp-comp) (o amdisp-op) (c amdisp-comp)) :plan-method)
+(defparameter *amdisp-o* (make-instance 'amdisp-load-op))
+(defparameter *amdisp-c* (make-instance 'amdisp-sys))
+(check "concurrent add-method does not break peer dispatch" 0
+  (let ((dispatchers nil) (redefiners nil) (fails 0))
+    ;; Redefiners: repeatedly re-install the null method (each install first
+    ;; removes the existing matching method — the window the fix closes).
+    (dotimes (r 2)
+      (push (mp:make-thread
+              (lambda ()
+                (dotimes (i 600)
+                  (eval '(defmethod amdisp-status ((plan null) (o amdisp-op)
+                                                    (c amdisp-comp)) :null-method)))
+                :ok)
+              :name "redef")
+            redefiners))
+    ;; Dispatchers: (amdisp-status nil o c) must ALWAYS resolve to :null-method.
+    ;; Each returns its own spurious-miss count (no shared counter to race on).
+    (dotimes (d 3)
+      (push (mp:make-thread
+              (lambda ()
+                (let ((bad 0))
+                  (dotimes (i 5000)
+                    (let ((v (handler-case (amdisp-status nil *amdisp-o* *amdisp-c*)
+                               (error () :fail))))
+                      (unless (eq v :null-method) (setq bad (1+ bad)))))
+                  bad))
+              :name "disp")
+            dispatchers))
+    (dolist (thr dispatchers) (setq fails (+ fails (mp:join-thread thr))))
+    (dolist (thr redefiners) (mp:join-thread thr))
+    fails))
+
+; Regression: writer-writer race — two threads installing GENUINELY
+; DIFFERENT methods (distinct EQL specializers) on the SAME gf concurrently
+; must not lose either install.  The single-store fix above only guarantees
+; a concurrent READER never sees a torn list; it does not by itself stop two
+; WRITERS from racing: both can read the same old GF-METHODS before either
+; stores, so whichever %set-gf-methods lands second silently discards the
+; other thread's method (a lost update).  Unlike the test above, which
+; repeatedly reinstalls the SAME method (so a lost update is invisible —
+; any surviving install is equivalent), every method here is unique, so a
+; lost update leaves a permanent, detectable gap.  Guarded by
+; *gf-methods-lock* in lib/clos.lisp.
+(defgeneric amdisp-writer-gf (x))
+(check "concurrent add-method of distinct methods loses none" 0
+  (let ((installers nil) (missing 0) (n-per-writer 300))
+    (dotimes (w 2)
+      (push (mp:make-thread
+              (let ((base (* w n-per-writer)))
+                (lambda ()
+                  (dotimes (i n-per-writer)
+                    (let ((n (+ base i)))
+                      (eval `(defmethod amdisp-writer-gf ((x (eql ,n))) ,n))))
+                  :ok))
+              :name "writer")
+            installers))
+    (dolist (thr installers) (mp:join-thread thr))
+    (dotimes (n (* 2 n-per-writer))
+      (let ((v (handler-case (amdisp-writer-gf n) (error () :fail))))
+        (unless (eql v n) (setq missing (1+ missing)))))
+    missing))
+
 ; --- Thread yield ---
 (check "thread-yield no crash" nil
   (mp:thread-yield))
