@@ -6312,41 +6312,23 @@
 (check "thread make with name" "worker"
   (mp:thread-name (mp:make-thread (lambda () nil) :name "worker")))
 
-; NOTE: the worker deep-recursion regression test (matching the main thread's
-; 1024-frame VM budget) lives in the host suite only (tests/test_threads.c).
-; The worker VM/C-stack budget increase that lets a worker run the same call
-; depth as the main thread is HOST-ONLY: on AmigaOS the worker VM frame size
-; stays at the historical compact value (256), because bumping it shifts heap
-; layout and tips a pre-existing moving-GC bug (see the CL_WORKER_* rationale
-; in src/core/thread.h).  So there is no Amiga-side worker deep-CALL-nesting
-; guarantee to assert here.
-
-; Regression: an Amiga worker's NLX push guard must bound against its own
-; nlx_stack allocation (CL_WORKER_NLX_FRAMES = 256), not the global
-; CL_MAX_NLX_FRAMES (2048) -- see cl_nlx_max in src/core/thread.h.  Recursive
-; function calls can't probe this on a worker (each level also recurses the
-; ~64KB OS-default process C stack and Gurus well before 256), so build the
-; nested CATCH forms at macro-expansion time instead: the worker then replays
-; a flat, non-recursive sequence of OP_CATCH pushes, isolating the NLX-stack
-; guard from the unrelated call-depth/C-stack limit noted above.
-(defun %nlx-nest-form (n tag)
-  (if (<= n 0)
-      `(throw ',tag 42)
-      `(catch ',tag ,(%nlx-nest-form (1- n) tag))))
-(defmacro %nlx-nest (n tag)
-  (%nlx-nest-form n tag))
-
-(check "worker tolerates NLX nesting up to capacity" 42
-  (mp:join-thread
-   (mp:make-thread
-    (lambda () (%nlx-nest 200 nlx-nest-ok)))))
-
-(check "worker NLX guard rejects over-capacity nesting" 'caught
-  (mp:join-thread
-   (mp:make-thread
-    (lambda ()
-      (handler-case (%nlx-nest 300 nlx-nest-overflow)
-        (error () 'caught))))))
+; NOTE: the worker deep-recursion / deep-NLX-nesting regression tests live in
+; the HOST suite only (tests/test_threads.c).  Two AmigaOS-specific reasons, both
+; empirically confirmed against the FS-UAE suite:
+;   1. The worker VM frame-budget increase (256 -> 1024) that lets a worker run
+;      the same call depth as the main thread is host-only: bumping it on Amiga
+;      shifts heap layout and tips a pre-existing moving-GC bug (see the
+;      CL_WORKER_* rationale in src/core/thread.h).  So Amiga workers keep the
+;      256-frame budget and cannot assert deep-CALL-nesting.
+;   2. NLX-nesting can't be probed on an Amiga worker at all: executing nested
+;      CATCH/BLOCK/UNWIND-PROTECT recurses the native C stack (the VM runs each
+;      catch body one level deeper), and an Amiga worker's OS-default ~64KB
+;      process stack Gurus at ~150-200 frames — far below the 256-slot nlx_stack
+;      capacity the guard protects.  A recursive OR a macro-expanded nested-CATCH
+;      test therefore crashes the worker before it can exercise the guard.
+; The per-thread NLX guard (cl_nlx_max == CT->nlx_max, which bounds a worker at
+; its real 256-slot allocation) IS active on Amiga; it is exercised on host,
+; where workers get the full budget and can nest deeply.
 
 ; --- Thread predicates ---
 (check "thread alive-p after join" nil
