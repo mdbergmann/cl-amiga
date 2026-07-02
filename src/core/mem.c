@@ -1379,6 +1379,90 @@ static void gc_scan_jit_native_stack(CL_Thread *t)
  * We must #undef gc_root_count here because thread.h defines it as
  * (CT->gc_root_count), which collides with t->gc_root_count member access. */
 #undef gc_root_count
+
+/* Audit the GC root registries for double registration.
+ *
+ * gc_forward is NOT idempotent (the forwarding table is keyed by
+ * pre-compaction offsets), so a CL_Obj slot reachable from two root
+ * entries is forwarded twice on compaction: the second lookup maps the
+ * already-forwarded offset through whatever object's OLD offset it now
+ * coincides with, silently rewriting the root to an unrelated object.
+ * Every slot must therefore appear at most once across global_roots and
+ * all thread root stacks combined.  Returns the number of violations
+ * and prints one line per offender so the source can be found.
+ *
+ * Walks cl_thread_list and every thread's gc_roots[]/gc_root_count, which
+ * are otherwise only safe to read under a stop-the-world pause (peer
+ * threads mutate their own root stack via CL_GC_PROTECT/UNPROTECT, and
+ * thread create/exit mutates the list's `next` links).  Since this is a
+ * diagnostic entry point reachable from Lisp at any time (ext:%gc-audit-roots),
+ * bracket the walk with cl_gc_stop_the_world()/cl_gc_resume_the_world()
+ * ourselves, matching the pattern in cl_gc_compact(). */
+int cl_gc_audit_roots(void)
+{
+    int violations = 0;
+    int i, j;
+    CL_Thread *t, *t2;
+    int multithread = (cl_thread_count > 1);
+
+    if (multithread)
+        cl_gc_stop_the_world();
+
+    for (i = 0; i < n_global_roots; i++) {
+        for (j = i + 1; j < n_global_roots; j++) {
+            if (global_roots[i] == global_roots[j]) {
+                fprintf(stderr, "GC root audit: address registered twice "
+                        "in global roots\n");
+                violations++;
+            }
+        }
+        for (t = cl_thread_list; t; t = t->next) {
+            for (j = 0; j < t->gc_root_count; j++) {
+                if (t->gc_roots[j] == global_roots[i]) {
+                    fprintf(stderr, "GC root audit: global root also on a "
+                            "thread root stack (double-forward hazard)\n");
+                    violations++;
+                }
+            }
+        }
+    }
+
+    /* Duplicate address registered twice within the same thread's own
+     * gc_roots[] stack (e.g. an accidental double CL_GC_PROTECT). */
+    for (t = cl_thread_list; t; t = t->next) {
+        for (i = 0; i < t->gc_root_count; i++) {
+            for (j = i + 1; j < t->gc_root_count; j++) {
+                if (t->gc_roots[i] == t->gc_roots[j]) {
+                    fprintf(stderr, "GC root audit: address registered "
+                            "twice on the same thread's root stack\n");
+                    violations++;
+                }
+            }
+        }
+    }
+
+    /* Same address registered on two different threads' root stacks. */
+    for (t = cl_thread_list; t; t = t->next) {
+        for (t2 = t->next; t2; t2 = t2->next) {
+            for (i = 0; i < t->gc_root_count; i++) {
+                for (j = 0; j < t2->gc_root_count; j++) {
+                    if (t->gc_roots[i] == t2->gc_roots[j]) {
+                        fprintf(stderr, "GC root audit: address registered "
+                                "on two different thread root stacks "
+                                "(double-forward hazard)\n");
+                        violations++;
+                    }
+                }
+            }
+        }
+    }
+
+    if (multithread)
+        cl_gc_resume_the_world();
+
+    return violations;
+}
+
 static void gc_mark_thread_roots(CL_Thread *t)
 {
     int i;

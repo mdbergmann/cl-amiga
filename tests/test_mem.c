@@ -4,7 +4,13 @@
 #include "core/error.h"
 #include "core/package.h"
 #include "core/symbol.h"
+#include "core/thread.h"
 #include "platform/platform.h"
+
+/* thread.h defines gc_root_count as (CT->gc_root_count) for the common
+ * case of accessing the *current* thread's root stack; undef it here so
+ * tests can address a specific CL_Thread's gc_root_count field by name. */
+#undef gc_root_count
 
 static void setup(void)
 {
@@ -181,6 +187,77 @@ TEST(gc_coalesce_no_overlap)
     CL_GC_UNPROTECT(1);
 }
 
+TEST(gc_root_registries_no_double_registration)
+{
+    /* Regression: cl_package_init pushed 8 package roots (9 on Amiga)
+     * but popped only 6 (7), leaving &cl_package_cl and
+     * &cl_package_keyword on the main thread's root stack while the
+     * same addresses were ALSO registered via cl_gc_register_root.
+     * gc_forward is not idempotent, so on a compaction that moved
+     * either package the doubly-reachable slot was forwarded twice
+     * into an unrelated object.  The audit must be clean after init. */
+    ASSERT_EQ_INT(cl_gc_audit_roots(), 0);
+}
+
+TEST(gc_root_audit_detects_same_thread_duplicate)
+{
+    /* Regression: cl_gc_audit_roots only checked global-vs-global and
+     * global-vs-thread duplicates, missing an accidental double
+     * CL_GC_PROTECT of the same variable on one thread's own gc_roots[]
+     * stack -- the same non-idempotent-gc_forward hazard. */
+    CL_Obj slot = CL_NIL;
+
+    CL_GC_PROTECT(slot);
+    CL_GC_PROTECT(slot);
+    ASSERT(cl_gc_audit_roots() >= 1);
+    CL_GC_UNPROTECT(2);
+
+    ASSERT_EQ_INT(cl_gc_audit_roots(), 0);
+}
+
+TEST(gc_root_audit_detects_cross_thread_duplicate)
+{
+    /* Regression: cl_gc_audit_roots never compared two different threads'
+     * root stacks against each other, missing the same slot address
+     * registered on both -- also a double-forward hazard. */
+    static CL_Thread fake_thread;
+    CL_Obj slot = CL_NIL;
+
+    memset(&fake_thread, 0, sizeof(fake_thread));
+
+    CL_GC_PROTECT(slot);
+
+    fake_thread.gc_roots[0] = &slot;
+    fake_thread.gc_root_count = 1;
+    fake_thread.next = cl_thread_list;
+    cl_thread_list = &fake_thread;
+
+    ASSERT(cl_gc_audit_roots() >= 1);
+
+    cl_thread_list = fake_thread.next;
+    CL_GC_UNPROTECT(1);
+
+    ASSERT_EQ_INT(cl_gc_audit_roots(), 0);
+}
+
+TEST(gc_root_audit_stops_the_world_when_multithreaded)
+{
+    /* Regression: cl_gc_audit_roots walked cl_thread_list and every
+     * thread's gc_roots[]/gc_root_count without any synchronization,
+     * racing thread create/exit (t->next) and peer CL_GC_PROTECT/UNPROTECT
+     * (gc_roots[]/gc_root_count) whenever cl_thread_count > 1. It must
+     * now bracket the walk with cl_gc_stop_the_world()/resume so the
+     * traversal only ever runs single-threaded from the collector's
+     * point of view. With only the current thread registered, forcing
+     * cl_thread_count > 1 must not hang (no peer thread to wait for) and
+     * the audit result must be unaffected. */
+    cl_thread_count = 2;
+
+    ASSERT_EQ_INT(cl_gc_audit_roots(), 0);
+
+    cl_thread_count = 1;
+}
+
 TEST(heap_stats)
 {
     /* Verify arena is initialized and stats don't crash */
@@ -203,6 +280,10 @@ int main(void)
     RUN(gc_chain);
     RUN(gc_reclaims_memory);
     RUN(gc_coalesce_no_overlap);
+    RUN(gc_root_registries_no_double_registration);
+    RUN(gc_root_audit_detects_same_thread_duplicate);
+    RUN(gc_root_audit_detects_cross_thread_duplicate);
+    RUN(gc_root_audit_stops_the_world_when_multithreaded);
     RUN(heap_stats);
 
     teardown();
