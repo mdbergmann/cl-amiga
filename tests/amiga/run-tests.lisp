@@ -3657,6 +3657,34 @@
                        (gm-str-amiga 42))
     (error () :caught)))
 
+; --- Regression: standard combination self-heals a missing-primary set ---
+; "No applicable primary method" field report: dispatch got an applicable set
+; with only :around (primary dropped by transient corruption).
+; %dispatch-standard-emf re-verifies against the live method list.
+(defclass npf-op-amiga () ())
+(defclass npf-comp-amiga () ())
+(defgeneric npf-amiga (o c))
+(defmethod npf-amiga :around ((o t) (c t)) (list :around (call-next-method)))
+(defmethod npf-amiga ((o npf-op-amiga) (c npf-comp-amiga)) :prim)
+(defparameter *npf-o-amiga* (make-instance 'npf-op-amiga))
+(defparameter *npf-c-amiga* (make-instance 'npf-comp-amiga))
+(check "dispatch-no-primary-normal" '(:around :prim)
+  (npf-amiga *npf-o-amiga* *npf-c-amiga*))
+(check "dispatch-no-primary-self-heals" '(:around :prim)
+  (let* ((gf (fdefinition 'npf-amiga))
+         (around-only (remove-if (lambda (m) (null (method-qualifiers m)))
+                                 (%compute-applicable-methods
+                                  gf (list *npf-o-amiga* *npf-c-amiga*)))))
+    (let ((*current-method-args* (list *npf-o-amiga* *npf-c-amiga*)))
+      (funcall (%dispatch-standard-emf gf around-only)
+               *npf-o-amiga* *npf-c-amiga*))))
+; Genuine no-primary (only :around) must still error.
+(check "dispatch-genuine-no-primary-errors" :caught
+  (handler-case (progn (defgeneric only-around-amiga (x))
+                       (defmethod only-around-amiga :around ((x t)) (call-next-method))
+                       (only-around-amiga 5))
+    (error () :caught)))
+
 ; decode-universal-time returns 9 values
 (check "decode-ut-count" 9 (length (multiple-value-list (decode-universal-time (get-universal-time)))))
 

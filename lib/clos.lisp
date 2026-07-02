@@ -1608,6 +1608,26 @@ When called with no arguments, passes the original method arguments."
 
 ;;; --- Standard method combination ---
 
+(defvar *gf-cache-heals* 0
+  "Count of self-healed dispatch inconsistencies: a stale negative
+   dispatch-cache entry, or a standard-combination method set that lacked a
+   primary until recomputed from the live method list.  A non-zero value
+   means the dispatch cache / applicable-method computation disagreed with
+   the authoritative method list at least once — a GC relocation artifact, a
+   concurrent cache write / method-list read from another thread, or a missed
+   invalidation — and was corrected.  Exposed for field diagnosis; normally
+   zero.")
+
+(defvar *clos-diagnose-no-primary* nil
+  "When true, a genuine \"no applicable primary method\" miss (after the
+   self-heal recompute also fails to find one) dumps a diagnostic to
+   *ERROR-OUTPUT* via %REPORT-DISPATCH-NO-PRIMARY: arg classes, their
+   precedence lists, and the GF's full method roster.  Default NIL — this is
+   an ordinary, common user error (only :before/:after/:around methods
+   defined) as well as the symptom of the rare dispatch-metadata corruption
+   the heal targets, so the dump is opt-in field-diagnosis output, not
+   printed on every occurrence.")
+
 (defun %build-effective-method (methods)
   "Build a cacheable effective method closure (args-independent)."
   (let ((around nil)
@@ -1678,22 +1698,98 @@ When called with no arguments, passes the original method arguments."
   (let ((*current-method-args* args))
     (apply (%build-effective-method methods) args)))
 
+(defun %methods-have-primary-p (methods)
+  "True if METHODS contains at least one primary (unqualified) method."
+  (dolist (m methods nil)
+    (when (null (method-qualifiers m)) (return t))))
+
+(defun %report-dispatch-no-primary (gf args applicable recomputed)
+  "Emit a diagnostic when standard combination finds applicable methods but
+   NO primary among them.  In conformant code this is a genuine user error
+   (only :before/:after/:around defined); but it also surfaces the same
+   intermittent dispatch-metadata corruption as the negative-cache path —
+   a GC relocation of a class's precedence list or the GF method list, or a
+   concurrent mutation from another thread (log4cl's watcher / sento workers
+   run while the main thread dispatches), which drops the primary from the
+   applicable set even though it plainly exists.  Dump enough to tell the two
+   apart on the next occurrence: the arg classes + their precedence lists
+   (to spot a truncated CPL), and the GF's full defined-method roster with
+   qualifiers/specializers (to spot a short/corrupt method list).  A no-op
+   unless *CLOS-DIAGNOSE-NO-PRIMARY* is true — see its docstring."
+  (when *clos-diagnose-no-primary*
+   (let ((*print-length* 20) (*print-level* 4))
+    (format *error-output*
+            "~&; [dispatch] No applicable PRIMARY method for ~S~%"
+            (if (typep gf 'standard-generic-function) (gf-name gf) gf))
+    (when args
+      (format *error-output* "; [dispatch]   arg classes: ~S~%"
+              (mapcar (lambda (a) (class-name (class-of a))) args))
+      (dolist (a args)
+        (let ((c (class-of a)))
+          (format *error-output* "; [dispatch]   CPL(~S): ~S~%"
+                  (class-name c)
+                  (ignore-errors
+                    (mapcar #'class-name (class-precedence-list c)))))))
+    (when (typep gf 'standard-generic-function)
+      (let ((all (gf-methods gf)))
+        (format *error-output*
+                "; [dispatch]   ~D defined method(s) on GF; ~D applicable, ~D on recompute~%"
+                (length all) (length applicable) (length recomputed))
+        (format *error-output* "; [dispatch]   applicable qualifiers: ~S~%"
+                (mapcar #'method-qualifiers applicable))
+        (dolist (m all)
+          (format *error-output* "; [dispatch]     method q=~S specs=~S~%"
+                  (method-qualifiers m)
+                  (ignore-errors
+                    (mapcar (lambda (s)
+                              (cond ((eql-specializer-p s)
+                                     (list 'eql (eql-specializer-object s)))
+                                    ((typep s 'class) (class-name s))
+                                    (t s)))
+                            (method-specializers m))))))))))
+
+(defun %dispatch-standard-emf (gf methods)
+  "Build a standard-combination EMF from METHODS, but if there is no primary
+   method, first re-verify against the live method list (via
+   %COMPUTE-APPLICABLE-METHODS on *CURRENT-METHOD-ARGS*, bound by every
+   dispatch resolver) before letting %BUILD-EFFECTIVE-METHOD signal \"No
+   applicable primary method\".  A recomputed set that DOES contain a primary
+   means the set handed in was stale/corrupt (same class of transient
+   dispatch-metadata corruption as the negative-cache bug); use it and heal.
+   Otherwise the miss is genuine (or the corruption is persistent) — dump a
+   diagnostic and fall through to the normal error.  Bounded: exactly one
+   recompute, no loop.  Preserves the fast path bit-for-bit when a primary is
+   present."
+  (if (%methods-have-primary-p methods)
+      (%build-effective-method methods)
+      (let* ((args *current-method-args*)
+             (recomputed (and args (typep gf 'standard-generic-function)
+                              (%compute-applicable-methods gf args))))
+        (if (and recomputed (%methods-have-primary-p recomputed))
+            (progn
+              (setq *gf-cache-heals* (+ *gf-cache-heals* 1))
+              (%build-effective-method recomputed))
+            (progn
+              (%report-dispatch-no-primary gf args methods recomputed)
+              ;; Genuine miss / persistent corruption: signal as before.
+              (%build-effective-method methods))))))
+
 (defun %dispatch-build-emf (gf methods)
   "Build an EMF honouring the GF's method combination.
    GF is the generic-function metaobject.  When the combination slot is
-   NIL (pre-Phase-8 GFs) or names the standard combination, the original
-   %BUILD-EFFECTIVE-METHOD path is used — so existing dispatch is
-   preserved bit-for-bit.  Non-standard combinations route through
-   %BUILD-SHORT-EFFECTIVE-METHOD or %BUILD-LONG-EFFECTIVE-METHOD."
+   NIL (pre-Phase-8 GFs) or names the standard combination, the
+   %BUILD-EFFECTIVE-METHOD path is used (via %DISPATCH-STANDARD-EMF, which
+   adds a no-primary re-verify/heal + diagnostic).  Non-standard combinations
+   route through %BUILD-SHORT-EFFECTIVE-METHOD or %BUILD-LONG-EFFECTIVE-METHOD."
   (let ((combo (gf-method-combination gf)))
     (cond
-      ((null combo) (%build-effective-method methods))
-      ((eq (%struct-ref combo 2) :standard) (%build-effective-method methods))
+      ((null combo) (%dispatch-standard-emf gf methods))
+      ((eq (%struct-ref combo 2) :standard) (%dispatch-standard-emf gf methods))
       ((eq (%struct-ref combo 2) :short)
        (%build-short-effective-method combo methods))
       ((eq (%struct-ref combo 2) :long)
        (%build-long-effective-method gf combo methods))
-      (t (%build-effective-method methods)))))
+      (t (%dispatch-standard-emf gf methods)))))
 
 (defun %make-method-chain (methods)
   "Build a call-next-method chain from primary methods."
@@ -1798,13 +1894,6 @@ When called with no arguments, passes the original method arguments."
       (apply #'no-applicable-method gf args)
       (error "No applicable method for ~S with args of types ~S"
              (gf-name gf) (mapcar #'type-of args))))
-
-(defvar *gf-cache-heals* 0
-  "Count of self-healed stale negative dispatch-cache entries.  A non-zero
-   value means the dispatch cache disagreed with the live method list at
-   least once (a relocation artifact, a concurrent cache write from another
-   thread, or a missed invalidation) and was corrected.  Exposed for
-   diagnostics; normally zero.")
 
 (defun %dispatch-negative-hit (gf args table key)
   "A cache lookup returned a *negative* entry (present, value NIL) meaning
