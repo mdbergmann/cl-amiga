@@ -2480,6 +2480,17 @@ already-existing GF the installed combination is preserved."
            (eq (car gf-name) 'setf)
            (eq (cadr gf-name) 'slot-value-using-class))))
 
+(defvar *gf-methods-lock* (mp:make-lock "gf-methods-lock")
+  "Serializes the read-modify-write of GF-METHODS across concurrent
+   %INSTALL-METHOD-IN-GF / %UNINSTALL-METHOD-FROM-GF calls (possibly on
+   different GFs).  The single %SET-GF-METHODS store is atomic at the
+   reader's granularity — a dispatcher never sees a torn list — but two
+   writers that both read the old list before either stores race to a
+   lost update: whichever store lands second silently discards the
+   other's method/removal.  A coarse global lock (rather than a lock
+   per GF) keeps the fix simple and correct; GF (re)definition is not a
+   hot path, so serializing it across all GFs has no measurable cost.")
+
 (defun %install-method-in-gf (gf method)
   "Low-level install: put METHOD into GF's method list, replacing any
    method with matching qualifiers and specializers.  Invalidates the
@@ -2492,12 +2503,30 @@ already-existing GF the installed combination is preserved."
         (specializers (method-specializers method))
         (gf-name (gf-name gf)))
     (%set-method-generic-function method gf)
-    (%set-gf-methods gf
-      (remove-if (lambda (m)
-                   (and (equal (method-qualifiers m) qualifiers)
-                        (equal (method-specializers m) specializers)))
-                 (gf-methods gf)))
-    (%set-gf-methods gf (cons method (gf-methods gf)))
+    ;; Update the method list with a SINGLE atomic store, under
+    ;; *GF-METHODS-LOCK* so concurrent installers/uninstallers don't race
+    ;; each other's read-modify-write (see the lock's docstring).  Building
+    ;; the full new list (new method consed onto the old list minus any it
+    ;; replaces) and storing it once means a concurrent dispatcher on
+    ;; another thread always observes a *complete* method list — either the
+    ;; old set or the new set, both of which contain every applicable
+    ;; method. The previous two-step form (store the filtered list, THEN
+    ;; cons the method on) left a window where GF-METHODS transiently
+    ;; EXCLUDED the method being (re)defined; a dispatcher that walked the
+    ;; list in that window computed an empty applicable set and wrongly
+    ;; signalled "No applicable method" for a method that plainly exists.
+    ;; That is the multi-threaded race behind the ASDF field reports
+    ;; (log4cl's watcher / worker threads dispatch GFs while the main
+    ;; thread (re)defines methods during asdf:load-system).  %struct-set is
+    ;; a single word store, so the swap is atomic at the reader's
+    ;; granularity.
+    (mp:with-lock-held (*gf-methods-lock*)
+      (%set-gf-methods gf
+        (cons method
+              (remove-if (lambda (m)
+                           (and (equal (method-qualifiers m) qualifiers)
+                                (equal (method-specializers m) specializers)))
+                         (gf-methods gf)))))
     (%set-gf-dispatch-cache gf nil)
     (%set-gf-inline-cache gf nil)
     ;; Defer cacheable-p / eql-value-sets recompute to first dispatch.
@@ -2517,8 +2546,9 @@ already-existing GF the installed combination is preserved."
    dispatch state.  Returns GF.  Broadcasts UPDATE-DEPENDENT so
    observers see removals regardless of whether the caller used the
    REMOVE-METHOD GF or this primitive."
-  (%set-gf-methods gf
-    (remove method (gf-methods gf) :test #'eq))
+  (mp:with-lock-held (*gf-methods-lock*)
+    (%set-gf-methods gf
+      (remove method (gf-methods gf) :test #'eq)))
   (%set-gf-dispatch-cache gf nil)
   (%set-gf-inline-cache gf nil)
   ;; Lazy: see %install-method-in-gf.  Mark dirty; %gf-dispatch recomputes
