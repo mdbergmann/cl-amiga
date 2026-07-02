@@ -366,11 +366,70 @@ void cl_thread_shutdown(void);
 
 /* ---- Thread creation API ---- */
 
-/* Worker thread VM/NLX sizes (compact: ~123KB per thread on Amiga) */
-#define CL_WORKER_VM_STACK_SIZE  4096   /* 4K entries = 16KB */
-#define CL_WORKER_VM_FRAME_SIZE  256    /* 256 frames = ~15KB */
-#define CL_WORKER_NLX_FRAMES     256    /* 256 NLX frames = ~50KB */
-#define CL_WORKER_SAVED_PENDING   64    /* 64 saved-pending entries = ~39KB */
+/* Worker thread VM/NLX sizes.
+ *
+ * These MUST match the main thread's sizes (CL_VM_STACK_SIZE / CL_VM_FRAME_SIZE
+ * / CL_MAX_NLX_FRAMES / CL_MAX_SAVED_PENDING).  They used to be 4x-16x smaller
+ * ("compact worker sizes") to save memory when spawning many threads — but that
+ * asymmetry was a silent-corruption bug: a worker overflowed its VM frame stack
+ * at ~256 nested calls where the main thread tolerates ~1024.  Worse, the
+ * overflow is UNRECOVERABLE on a worker: signalling the overflow condition to
+ * run a Lisp handler (handler-case / handler-bind / a debugger hook) itself
+ * needs frames, and there are none, so the error escapes every Lisp handler and
+ * unwinds all the way out to thread_entry — the worker thread just dies, status
+ * 3, with no debugger and no result.
+ *
+ * That is exactly what made (asdf:load-system ...) hang under Sly: slynk runs
+ * the REPL evaluation on a channel worker thread; the load's ASDF-traversal +
+ * CLOS-dispatch + macroexpansion call chains exceed 256 frames but fit under
+ * 1024, so the load succeeds on the main thread (headless) yet silently kills
+ * the slynk worker.  Emacs then never receives a :return (REPL hangs forever)
+ * and a later request to the dead thread makes slynk answer "Thread not found".
+ * See tests/test_threads.c:worker_deep_recursion_survives_like_main and
+ * tests/amiga/run-tests.lisp.
+ *
+ * A worker that cannot run the same code the main thread can is not a useful
+ * worker; correctness wins over the per-thread memory saving.  Deriving these
+ * from the main-thread constants also stops them drifting apart again. */
+#define CL_WORKER_VM_STACK_SIZE  CL_VM_STACK_SIZE   /* 16K entries = 64KB */
+#define CL_WORKER_VM_FRAME_SIZE  CL_VM_FRAME_SIZE   /* 1024 frames */
+#define CL_WORKER_NLX_FRAMES     CL_MAX_NLX_FRAMES  /* 2048 NLX frames */
+#define CL_WORKER_SAVED_PENDING  CL_MAX_SAVED_PENDING /* 256 saved-pending */
+
+/* OS/C stack for a worker thread.  This is a SEPARATE resource from the
+ * heap-allocated VM frame stack above: every nested cl_vm_apply also consumes
+ * one native C stack frame, so the OS stack must be big enough to actually USE
+ * the CL_WORKER_VM_FRAME_SIZE call-frame budget.  Passing 0 to
+ * platform_thread_create takes the OS default, which is far smaller than the
+ * main thread's: only ~512KB on macOS (main = 8MB) and 64KB on AmigaOS.  A
+ * worker whose OS stack is smaller than main's would then SIGSEGV (host, guard
+ * page) or silently corrupt memory (AmigaOS has no guard page) at a call depth
+ * the main thread handles fine — the same "works on main, dies on a worker"
+ * asymmetry as the VM-frame-size bug, just one level down.  Match the main
+ * thread on host; on AmigaOS use a bounded value (RAM is scarce) that still
+ * clears the OS default by a wide margin. */
+#if defined(PLATFORM_AMIGA)
+#define CL_WORKER_C_STACK_SIZE  (512u * 1024u)         /* AmigaOS: 512KB */
+#else
+#define CL_WORKER_C_STACK_SIZE  (8u * 1024u * 1024u)   /* host: match main (8MB) */
+#endif
+
+/* Concrete per-worker memory cost on AmigaOS (m68k, 32-bit pointers), so the
+ * tradeoff above is quantified rather than left as "bigger":
+ *   VM stack:      16K entries * 4B               =  64KB
+ *   VM frames:    1024 * sizeof(CL_Frame)  (~34B)  =  34KB
+ *   NLX frames:   2048 * sizeof(CL_NLXFrame)(~298B)= 596KB
+ *   saved-pending: 256 * sizeof(CL_SavedPending)(~616B) = 154KB
+ *                                        fixed subtotal ~= 848KB
+ *   + CL_WORKER_C_STACK_SIZE (native OS stack)      = 512KB
+ *                                        total per worker ~= 1.36MB
+ * On real 8MB Amiga hardware that leaves room for only a handful of
+ * concurrent mp:make-thread workers alongside the Lisp heap and main
+ * thread — budget for roughly 4-5 simultaneous workers (the same count
+ * exercised by tests/amiga/run-tests.lisp's "concurrent add-method does
+ * not break peer dispatch" test), not dozens. Callers spawning many
+ * short-lived workers should join/reclaim them promptly instead of
+ * keeping large pools alive. */
 
 /* Thread side table: maps thread_id -> CL_Thread* */
 #define CL_MAX_THREADS 256
