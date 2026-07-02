@@ -162,7 +162,13 @@ if [ $RC -ne 0 ] || [ -z "$REVIEW_OUT" ]; then
   exit 1
 fi
 
-STATUS_LINE="$(printf '%s\n' "$REVIEW_OUT" | head -n1)"
+# The reviewer is INSTRUCTED to put "STATUS: CLEAN|ISSUES" on the first
+# line, but in practice it sometimes leads with a sentence of prose and
+# the STATUS line follows.  Grep the first explicit STATUS: line anywhere
+# in the output; fall back to line 1 only if none is present.  Without
+# this, a CLEAN review whose first line is prose is mis-parsed as ISSUES
+# and the commit is blocked despite a recorded clean verdict.
+STATUS_LINE="$(printf '%s\n' "$REVIEW_OUT" | grep -m1 '^STATUS:' || printf '%s\n' "$REVIEW_OUT" | head -n1)"
 
 {
   printf '## %s — parent %s (staged)\n\n' "$TS" "$PARENT"
