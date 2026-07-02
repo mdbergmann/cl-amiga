@@ -120,6 +120,20 @@ enum CL_ObjType {
 #define CL_MAKE_HDR(type, size) \
     (((uint32_t)(type) << CL_HDR_TYPE_SHIFT) | ((uint32_t)(size) & CL_HDR_SIZE_MASK))
 
+/* Array size/rank bounds used by MAKE-ARRAY's dimension checks.  These must
+ * track the Lisp-visible ARRAY-DIMENSION-LIMIT / ARRAY-TOTAL-SIZE-LIMIT
+ * constants registered in bignum.c (def_const calls) — they are the
+ * documented boundary a conforming program can query via
+ * (array-dimension-limit) / (array-total-size-limit), so the guard and the
+ * constant must agree.  CL_ARRAY_MAX_RANK mirrors the fixed-size `dims[16]`
+ * stack buffers used across builtins_array.c/printer.c/fasl.c — it is an
+ * implementation restriction, deliberately not tied to ARRAY-RANK-LIMIT
+ * (256 in bignum.c), since CLHS permits make-array to impose additional
+ * limits below array-rank-limit as long as it signals a proper error. */
+#define CL_ARRAY_DIMENSION_LIMIT   (1u << 20)
+#define CL_ARRAY_TOTAL_SIZE_LIMIT  (1u << 20)
+#define CL_ARRAY_MAX_RANK          16u
+
 /* --- Cons cell --- */
 
 typedef struct {
@@ -368,6 +382,14 @@ typedef struct {
     CL_Obj bucket_vec;      /* CL_NIL = use inline buckets[], else CL_Vector */
     CL_Obj buckets[];       /* Flexible array: initial buckets (used when bucket_vec==NIL) */
 } CL_Hashtable;
+
+/* Hard cap on bucket counts.  The bucket vector must fit the 23-bit
+ * allocation-size header (2^20 buckets * 4 bytes = 4MB); a larger count
+ * would overflow the uint32 size computations (a bucket_count of 2^31
+ * once wrapped the allocation to ~24 bytes while gethash indexed 2^31
+ * "buckets" — wild heap reads/writes).  Tables at the cap keep working
+ * with longer chains; growth beyond it is skipped, never wrapped. */
+#define CL_HT_MAX_BUCKETS (1u << 20)
 
 /* Hash-table flags (CL_Hashtable.flags).  Runtime-only — never serialized, so
  * adding one needs no FASL version bump. */

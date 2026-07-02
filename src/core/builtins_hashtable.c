@@ -312,6 +312,8 @@ static void ht_maybe_rehash(CL_Obj ht_obj)
         return;
 
     new_count = old_count * 2;
+    if (new_count > CL_HT_MAX_BUCKETS)
+        return;  /* at the cap: keep working with longer chains */
 
     /* Allocate new bucket vector — GC may fire */
     CL_GC_PROTECT(ht_obj);
@@ -425,11 +427,28 @@ static CL_Obj bi_make_hash_table(CL_Obj *args, int n)
             uint32_t requested;
             if (!CL_FIXNUM_P(args[i + 1]))
                 cl_error(CL_ERR_TYPE, "MAKE-HASH-TABLE: :size must be a number");
+            if (CL_FIXNUM_VAL(args[i + 1]) < 0)
+                cl_error(CL_ERR_TYPE,
+                         "MAKE-HASH-TABLE: :size must be non-negative (got %d)",
+                         (int)CL_FIXNUM_VAL(args[i + 1]));
             requested = (uint32_t)CL_FIXNUM_VAL(args[i + 1]);
             if (requested < 1) requested = 1;
+            /* Cap :size so the ceil(size/0.75) computation below and the
+             * bucket allocation cannot overflow uint32_t.  A huge :size
+             * (e.g. 1073741823) previously wrapped `requested * 4 + 2`
+             * and cl_make_hashtable's power-of-2 round-up, producing a
+             * tiny allocation whose bucket_count field claimed 2^31
+             * buckets — every gethash/puthash then indexed far past the
+             * object (wild heap reads/writes).  :size is a hint (CLHS),
+             * so clamping is conformant; cl_make_hashtable enforces its
+             * own hard cap as well. */
+            if (requested > CL_HT_MAX_BUCKETS)
+                requested = CL_HT_MAX_BUCKETS;
             /* :size is expected entry count; set bucket_count = ceil(size / 0.75)
              * so we don't immediately rehash after filling to :size entries */
             size = (requested * 4 + 2) / 3;
+            if (size > CL_HT_MAX_BUCKETS)
+                size = CL_HT_MAX_BUCKETS;
         }
     }
 
@@ -558,7 +577,8 @@ static CL_Obj bi_setf_gethash_sync(CL_Obj ht_obj, CL_Obj key, CL_Obj value)
      * already grew the table) the spare vector is simply dropped for GC. */
     ht = (CL_Hashtable *)CL_OBJ_TO_PTR(ht_obj);
     prealloc_buckets = ht->bucket_count;
-    if (ht->count + 1 > (prealloc_buckets * 3) / 4)
+    if (ht->count + 1 > (prealloc_buckets * 3) / 4 &&
+        prealloc_buckets * 2 <= CL_HT_MAX_BUCKETS)
         pre_vec = cl_make_vector(prealloc_buckets * 2);
     CL_GC_PROTECT(pre_vec);
 
