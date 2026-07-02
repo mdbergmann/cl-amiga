@@ -8,8 +8,48 @@
 #include "error.h"
 #include "vm.h"
 #include "string_utils.h"
+#include "thread.h"   /* CL_MT, platform_mutex_* (via platform_thread.h) */
 #include "../platform/platform.h"
 #include <string.h>
+
+/* --- Thread-safe (CL_HT_FLAG_SYNC) table serialization ---
+ *
+ * The CLOS dispatch caches (lib/clos.lisp) are hash tables that are read and
+ * written from multiple threads: the main thread loading a system while
+ * worker / watcher threads (sento, log4cl) dispatch the same generic
+ * functions.  Every other hash table in the system is single-owner, so the
+ * common path stays completely lock-free; only tables created with the
+ * CL_HT_FLAG_SYNC flag pay for serialization, and even those only on the
+ * cache-miss slow path (the monomorphic inline-cache fast path in clos.lisp
+ * never touches the table).
+ *
+ * A single global mutex serializes access to all synchronized tables.  That
+ * is coarse but correct and cheap where it matters: contention is confined to
+ * concurrent slow-path GF dispatches, which are rare, and correctness beats
+ * throughput here.  Critical sections are deliberately kept ALLOCATION-FREE —
+ * all consing / bucket-vector growth happens BEFORE the lock is taken — so a
+ * holder can never park at a GC safepoint while holding the lock (which would
+ * otherwise stall a stop-the-world GC waiting on a peer blocked on the lock).
+ * That is exactly why a plain, non-reentrant platform mutex is safe here:
+ * short, non-blocking sections, no callback into Lisp, no reentry. */
+static void *ht_sync_mutex = NULL;
+
+/* Enter/leave the sync section for HT.  Returns whether the lock was taken so
+ * the matching leave is unconditional (cl_thread_count could in principle drop
+ * between enter and leave; the boolean keeps the pairing exact). */
+static int ht_sync_enter(CL_Hashtable *ht)
+{
+    if ((ht->flags & CL_HT_FLAG_SYNC) && ht_sync_mutex && CL_MT()) {
+        platform_mutex_lock(ht_sync_mutex);
+        return 1;
+    }
+    return 0;
+}
+
+static void ht_sync_leave(int locked)
+{
+    if (locked) platform_mutex_unlock(ht_sync_mutex);
+}
 
 /* Helper to register a builtin */
 static void defun(const char *name, CL_CFunc func, int min, int max)
@@ -305,6 +345,36 @@ static void ht_maybe_rehash(CL_Obj ht_obj)
     ht->bucket_count = new_count;
 }
 
+/* Relink every entry of HT into NEW_VEC (a bucket vector the caller already
+ * allocated and sized to the doubled bucket count) and switch HT over to it.
+ * This is the allocation-free tail of ht_maybe_rehash — split out so the SYNC
+ * insert path can grow the table from inside its allocation-free critical
+ * section using a vector pre-allocated before the lock was taken. */
+static void ht_rehash_into(CL_Hashtable *ht, CL_Obj new_vec)
+{
+    uint32_t old_count = ht->bucket_count;
+    uint32_t new_count = ((CL_Vector *)CL_OBJ_TO_PTR(new_vec))->length;
+    CL_Obj *old_bkts = ht_get_buckets(ht);
+    CL_Obj *new_bkts = ((CL_Vector *)CL_OBJ_TO_PTR(new_vec))->data;
+    uint32_t i;
+
+    for (i = 0; i < old_count; i++) {
+        CL_Obj chain = old_bkts[i];
+        while (!CL_NULL_P(chain)) {
+            CL_Obj next = cl_cdr(chain);
+            CL_Obj pair = cl_car(chain);
+            CL_Obj key = cl_car(pair);
+            uint32_t new_idx = hash_obj(key, ht->test) & (new_count - 1);
+            ((CL_Cons *)CL_OBJ_TO_PTR(chain))->cdr = new_bkts[new_idx];
+            new_bkts[new_idx] = chain;
+            chain = next;
+        }
+    }
+
+    ht->bucket_vec = new_vec;
+    ht->bucket_count = new_count;
+}
+
 /* --- Builtins --- */
 
 static CL_Obj bi_make_hash_table(CL_Obj *args, int n)
@@ -379,22 +449,31 @@ static CL_Obj bi_gethash(CL_Obj *args, int n)
         cl_error(CL_ERR_TYPE, "GETHASH: not a hash table");
 
     ht = (CL_Hashtable *)CL_OBJ_TO_PTR(ht_obj);
+    /* For a synchronized table hold the lock across the whole walk so a
+     * concurrent rehash (which swaps bucket_vec and bucket_count and relinks
+     * cells between buckets) can never be observed half-applied.  The walk is
+     * allocation-free, so the lock is released promptly.  For plain tables this
+     * is a no-op and the walk runs exactly as before. */
     {
+        int locked = ht_sync_enter(ht);
         CL_Obj *bkts = ht_get_buckets(ht);
         bucket_idx = hash_obj(key, ht->test) & (ht->bucket_count - 1);
         chain = bkts[bucket_idx];
-    }
 
-    while (!CL_NULL_P(chain)) {
-        CL_Obj pair = cl_car(chain);
-        if (keys_equal(cl_car(pair), key, ht->test)) {
-            /* Found — return value, T as second value */
-            cl_mv_count = 2;
-            cl_mv_values[0] = cl_cdr(pair);
-            cl_mv_values[1] = SYM_T;
-            return cl_cdr(pair);
+        while (!CL_NULL_P(chain)) {
+            CL_Obj pair = cl_car(chain);
+            if (keys_equal(cl_car(pair), key, ht->test)) {
+                /* Found — return value, T as second value */
+                CL_Obj val = cl_cdr(pair);
+                ht_sync_leave(locked);
+                cl_mv_count = 2;
+                cl_mv_values[0] = val;
+                cl_mv_values[1] = SYM_T;
+                return val;
+            }
+            chain = cl_cdr(chain);
         }
-        chain = cl_cdr(chain);
+        ht_sync_leave(locked);
     }
 
     /* Not found — return default, NIL as second value */
@@ -446,6 +525,85 @@ int cl_hashtable_equalp(CL_Obj a_obj, CL_Obj b_obj,
     return 1;
 }
 
+/* (SETF GETHASH) for a CL_HT_FLAG_SYNC table.  Kept separate from the plain
+ * path so the common single-owner case is untouched.  The strategy for a
+ * lock-safe, allocation-free critical section:
+ *   1. Allocate the (key . value) pair and its chain cell BEFORE the lock —
+ *      allocation may compact (a GC safepoint), which must never happen while
+ *      the sync mutex is held.
+ *   2. Speculatively pre-allocate a doubled bucket vector (also before the
+ *      lock) if this insert is likely to cross the 3/4 load factor, so the
+ *      rehash relink under the lock needs no allocation.
+ *   3. Under the lock: recompute the bucket from the current (possibly
+ *      GC-forwarded) key offset, update in place if the key is present, else
+ *      splice the pre-consed cell and, if now over the load factor and the
+ *      pre-allocated vector still fits, relink into it. */
+static CL_Obj bi_setf_gethash_sync(CL_Obj ht_obj, CL_Obj key, CL_Obj value)
+{
+    CL_Hashtable *ht;
+    CL_Obj pair, new_chain, pre_vec = CL_NIL;
+    uint32_t bucket_idx, prealloc_buckets;
+    int locked;
+
+    CL_GC_PROTECT(ht_obj);
+    CL_GC_PROTECT(key);
+    CL_GC_PROTECT(value);
+    pair = cl_cons(key, value);
+    CL_GC_PROTECT(pair);
+    new_chain = cl_cons(pair, CL_NIL);
+    CL_GC_PROTECT(new_chain);
+
+    /* Predict a rehash and pre-allocate its bucket vector while we still may
+     * allocate.  If the prediction is wrong (key already present, or a peer
+     * already grew the table) the spare vector is simply dropped for GC. */
+    ht = (CL_Hashtable *)CL_OBJ_TO_PTR(ht_obj);
+    prealloc_buckets = ht->bucket_count;
+    if (ht->count + 1 > (prealloc_buckets * 3) / 4)
+        pre_vec = cl_make_vector(prealloc_buckets * 2);
+    CL_GC_PROTECT(pre_vec);
+
+    /* --- allocation-free critical section --- */
+    ht = (CL_Hashtable *)CL_OBJ_TO_PTR(ht_obj);
+    locked = ht_sync_enter(ht);
+    {
+        CL_Obj *bkts = ht_get_buckets(ht);
+        CL_Obj cursor;
+        /* Key offset may have moved during the allocations above. */
+        key = ((CL_Cons *)CL_OBJ_TO_PTR(pair))->car;
+        bucket_idx = hash_obj(key, ht->test) & (ht->bucket_count - 1);
+
+        /* Update existing entry in place. */
+        cursor = bkts[bucket_idx];
+        while (!CL_NULL_P(cursor)) {
+            CL_Obj p = cl_car(cursor);
+            if (keys_equal(cl_car(p), key, ht->test)) {
+                ((CL_Cons *)CL_OBJ_TO_PTR(p))->cdr = value;
+                ht_sync_leave(locked);
+                CL_GC_UNPROTECT(6);
+                return value;
+            }
+            cursor = cl_cdr(cursor);
+        }
+
+        /* New entry: prepend the pre-consed cell. */
+        ((CL_Cons *)CL_OBJ_TO_PTR(new_chain))->cdr = bkts[bucket_idx];
+        bkts[bucket_idx] = new_chain;
+        ht->count++;
+
+        /* Grow using the pre-allocated vector, only if it still matches the
+         * table's current bucket count (a peer may have grown it while we were
+         * allocating, in which case we skip — the next insert re-checks). */
+        if (!CL_NULL_P(pre_vec) &&
+            ht->count > (ht->bucket_count * 3) / 4 &&
+            ((CL_Vector *)CL_OBJ_TO_PTR(pre_vec))->length == ht->bucket_count * 2) {
+            ht_rehash_into(ht, pre_vec);
+        }
+    }
+    ht_sync_leave(locked);
+    CL_GC_UNPROTECT(6);
+    return value;
+}
+
 static CL_Obj bi_setf_gethash(CL_Obj *args, int n)
 {
     /* (%SETF-GETHASH key hash-table value) — set and return value */
@@ -461,6 +619,9 @@ static CL_Obj bi_setf_gethash(CL_Obj *args, int n)
         cl_error(CL_ERR_TYPE, "(SETF GETHASH): not a hash table");
 
     ht = (CL_Hashtable *)CL_OBJ_TO_PTR(ht_obj);
+    if ((ht->flags & CL_HT_FLAG_SYNC) && CL_MT())
+        return bi_setf_gethash_sync(ht_obj, key, value);
+
     {
         CL_Obj *bkts = ht_get_buckets(ht);
         bucket_idx = hash_obj(key, ht->test) & (ht->bucket_count - 1);
@@ -538,33 +699,42 @@ static CL_Obj bi_remhash(CL_Obj *args, int n)
         cl_error(CL_ERR_TYPE, "REMHASH: not a hash table");
 
     ht = (CL_Hashtable *)CL_OBJ_TO_PTR(ht_obj);
+    /* Allocation-free — safe to hold the sync lock across the whole unlink. */
     {
+        int locked = ht_sync_enter(ht);
         CL_Obj *bkts = ht_get_buckets(ht);
         bucket_idx = hash_obj(key, ht->test) & (ht->bucket_count - 1);
         cursor = bkts[bucket_idx];
-    }
+        prev = CL_NIL;
 
-    prev = CL_NIL;
-
-    while (!CL_NULL_P(cursor)) {
-        CL_Obj pair = cl_car(cursor);
-        if (keys_equal(cl_car(pair), key, ht->test)) {
-            /* Remove from chain */
-            if (CL_NULL_P(prev)) {
-                ht_get_buckets(ht)[bucket_idx] = cl_cdr(cursor);
-            } else {
-                ((CL_Cons *)CL_OBJ_TO_PTR(prev))->cdr = cl_cdr(cursor);
+        while (!CL_NULL_P(cursor)) {
+            CL_Obj pair = cl_car(cursor);
+            if (keys_equal(cl_car(pair), key, ht->test)) {
+                /* Remove from chain */
+                if (CL_NULL_P(prev)) {
+                    ht_get_buckets(ht)[bucket_idx] = cl_cdr(cursor);
+                } else {
+                    ((CL_Cons *)CL_OBJ_TO_PTR(prev))->cdr = cl_cdr(cursor);
+                }
+                ht->count--;
+                ht_sync_leave(locked);
+                return SYM_T;
             }
-            ht->count--;
-            return SYM_T;
+            prev = cursor;
+            cursor = cl_cdr(cursor);
         }
-        prev = cursor;
-        cursor = cl_cdr(cursor);
+        ht_sync_leave(locked);
     }
 
     return CL_NIL;
 }
 
+/* NOTE: does not take ht_sync_enter/leave for CL_HT_FLAG_SYNC tables — the
+ * bucket walk below calls arbitrary user Lisp per entry via cl_vm_apply,
+ * which can allocate and park at a GC safepoint (or re-enter this same
+ * table), so holding ht_sync_mutex across it would violate the
+ * allocation-free critical-section invariant documented at the top of this
+ * file and risks deadlock. See the CL_HT_FLAG_SYNC comment in types.h. */
 static CL_Obj bi_maphash(CL_Obj *args, int n)
 {
     CL_Obj func = cl_coerce_funcdesig(args[0], "MAPHASH");
@@ -618,11 +788,13 @@ static CL_Obj bi_clrhash(CL_Obj *args, int n)
 
     ht = (CL_Hashtable *)CL_OBJ_TO_PTR(args[0]);
     {
+        int locked = ht_sync_enter(ht);
         CL_Obj *bkts = ht_get_buckets(ht);
         for (i = 0; i < ht->bucket_count; i++)
             bkts[i] = CL_NIL;
+        ht->count = 0;
+        ht_sync_leave(locked);
     }
-    ht->count = 0;
     return args[0];
 }
 
@@ -696,6 +868,11 @@ static CL_Obj bi_hash_table_rehash_threshold(CL_Obj *args, int n)
     return cl_make_single_float(0.75f);
 }
 
+/* NOTE: does not take ht_sync_enter/leave for CL_HT_FLAG_SYNC tables — the
+ * bucket walk below builds the result list with cl_cons(), an allocating
+ * call that can trigger a GC safepoint, so holding ht_sync_mutex across it
+ * would violate the allocation-free critical-section invariant documented
+ * at the top of this file. See the CL_HT_FLAG_SYNC comment in types.h. */
 static CL_Obj bi_hash_table_pairs(CL_Obj *args, int n)
 {
     CL_Obj ht_obj = args[0];
@@ -724,6 +901,36 @@ static CL_Obj bi_hash_table_pairs(CL_Obj *args, int n)
 
     CL_GC_UNPROTECT(2);
     return result;
+}
+
+/* CLAMIGA::%MAKE-SYNC-HASH-TABLE test-symbol — create a thread-safe hash table
+ * (CL_HT_FLAG_SYNC).  Used internally by the CLOS dispatch caches, which are
+ * mutated concurrently by peer threads.  TEST is one of the symbols
+ * EQ/EQL/EQUAL/EQUALP. */
+static CL_Obj bi_make_sync_hash_table(CL_Obj *args, int n)
+{
+    uint32_t test = CL_HT_TEST_EQ;
+    CL_Obj ht_obj;
+    CL_Hashtable *ht;
+    CL_UNUSED(n);
+
+    if (!CL_SYMBOL_P(args[0]))
+        cl_error(CL_ERR_ARGS, "%%MAKE-SYNC-HASH-TABLE: test must be a symbol");
+    {
+        const char *name = cl_symbol_name(args[0]);
+        if (strcmp(name, "EQ") == 0)          test = CL_HT_TEST_EQ;
+        else if (strcmp(name, "EQL") == 0)    test = CL_HT_TEST_EQL;
+        else if (strcmp(name, "EQUAL") == 0)  test = CL_HT_TEST_EQUAL;
+        else if (strcmp(name, "EQUALP") == 0) test = CL_HT_TEST_EQUALP;
+        else cl_error(CL_ERR_ARGS,
+                      "%%MAKE-SYNC-HASH-TABLE: test must be EQ, EQL, EQUAL, or EQUALP");
+    }
+
+    ht_obj = cl_make_hashtable(CL_HT_DEFAULT_BUCKETS, test);
+    if (CL_NULL_P(ht_obj)) return CL_NIL;
+    ht = (CL_Hashtable *)CL_OBJ_TO_PTR(ht_obj);
+    ht->flags |= CL_HT_FLAG_SYNC;
+    return ht_obj;
 }
 
 /* --- sxhash --- */
@@ -761,7 +968,13 @@ void cl_builtins_hashtable_init(void)
     defun("HASH-TABLE-REHASH-THRESHOLD", bi_hash_table_rehash_threshold, 1, 1);
     cl_register_builtin("%SETF-GETHASH", bi_setf_gethash, 3, 3, cl_package_clamiga);
     cl_register_builtin("%HASH-TABLE-PAIRS", bi_hash_table_pairs, 1, 1, cl_package_clamiga);
+    cl_register_builtin("%MAKE-SYNC-HASH-TABLE", bi_make_sync_hash_table, 1, 1, cl_package_clamiga);
     defun("SXHASH", bi_sxhash, 1, 1);
+
+    /* Global mutex serializing access to CL_HT_FLAG_SYNC (CLOS dispatch cache)
+     * tables.  Initialized once at startup; never destroyed. */
+    if (!ht_sync_mutex)
+        platform_mutex_init(&ht_sync_mutex);
 
     /* Register cached symbols for GC compaction forwarding */
     cl_gc_register_root(&KW_TEST);

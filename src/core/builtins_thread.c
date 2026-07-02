@@ -491,9 +491,13 @@ static CL_Obj bi_make_thread(CL_Obj *args, int n)
      * Required for bordeaux-threads-2 .known-threads. eql lookups. */
     child->thread_obj = thread_obj;
 
-    /* Create OS thread */
+    /* Create OS thread.  Pass an explicit C stack size (CL_WORKER_C_STACK_SIZE)
+     * rather than 0/OS-default: the default is far smaller than the main
+     * thread's stack (512KB vs 8MB on macOS, 64KB on AmigaOS), which would make
+     * a worker crash/corrupt at a call depth main handles.  See the define. */
     if (platform_thread_create(&child->platform_handle,
-                               thread_entry, child, 0) != 0) {
+                               thread_entry, child,
+                               CL_WORKER_C_STACK_SIZE) != 0) {
         cl_thread_unregister(child);
         cl_thread_table_free(thread_id);
         cl_thread_free_worker(child);

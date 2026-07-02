@@ -224,6 +224,64 @@ TEST(class_of_string_is_string_class)
     ASSERT_STR_EQ(eval_print("(class-name (class-of \"hello\"))"), "STRING");
 }
 
+/* Regression (CLOS dispatch field bug): CLASS-OF of a built-in-typed object
+ * must NOT depend on *PACKAGE*.  bi_class_of used to intern the class name
+ * ("SYMBOL", "CONS", ...) via *PACKAGE*-relative cl_intern; when *PACKAGE*
+ * did not resolve the name to its COMMON-LISP-package symbol (KEYWORD here,
+ * or another thread's *PACKAGE* leaking through the shared cl_current_package
+ * global in a multi-threaded Sly/sento/log4cl session), CLASS-OF interned the
+ * WRONG symbol, missed *class-table*, and silently fell back to the T class.
+ * That made GF dispatch see arg class T instead of SYMBOL and signal
+ * "No applicable method for ... (X SYMBOL)" even though a (t symbol) method
+ * applied.  Pre-fix these return NIL (class-of gave the T class); post-fix T. */
+TEST(class_of_symbol_independent_of_package)
+{
+    ASSERT_STR_EQ(eval_print(
+        "(let ((sc (find-class 'symbol)))"
+        "  (let ((*package* (find-package :keyword)))"
+        "    (eq sc (class-of 'foo))))"),
+        "T");
+}
+
+TEST(class_of_builtins_independent_of_package)
+{
+    ASSERT_STR_EQ(eval_print(
+        "(let ((sc (find-class 'symbol))"
+        "      (cc (find-class 'cons))"
+        "      (strc (find-class 'string))"
+        "      (fc (find-class 'fixnum)))"
+        "  (let ((*package* (find-package :keyword)))"
+        "    (and (eq sc (class-of 'foo))"
+        "         (eq cc (class-of '(1 2)))"
+        "         (eq strc (class-of \"x\"))"
+        "         (eq fc (class-of 42)))))"),
+        "T");
+}
+
+/* %class-of must yield a COMMON-LISP-package symbol regardless of *PACKAGE*,
+ * so the *class-table* (CL-symbol-keyed) lookup in CLASS-OF hits. */
+TEST(class_of_name_symbol_is_cl_package)
+{
+    ASSERT_STR_EQ(eval_print(
+        "(let ((*package* (find-package :keyword)))"
+        "  (eq (find-package :common-lisp) (symbol-package (%class-of 'foo))))"),
+        "T");
+}
+
+/* End-to-end: a (t symbol) method stays applicable even when the call is made
+ * with *PACKAGE* bound to a package that does not inherit CL:SYMBOL — the
+ * shape of the ASDF FIND-OPERATION field failure. */
+TEST(dispatch_symbol_method_independent_of_package)
+{
+    eval_print("(defgeneric clos-symdisp (a b))");
+    eval_print("(defmethod clos-symdisp ((a t) (b symbol)) :sym)");
+    eval_print("(defmethod clos-symdisp ((a t) (b string)) :str)");
+    ASSERT_STR_EQ(eval_print(
+        "(let ((*package* (find-package :keyword)))"
+        "  (clos-symdisp 42 'anything))"),
+        ":SYM");
+}
+
 /* Regression: a STRING-specialized method must be applicable to a string
  * produced by MAKE-ARRAY (wide string), not just to a literal string. */
 TEST(dispatch_string_method_on_make_array_string)
@@ -234,6 +292,192 @@ TEST(dispatch_string_method_on_make_array_string)
     ASSERT_STR_EQ(eval_print(
         "(clos-strdisp (make-array 3 :element-type 'character :initial-element #\\a))"),
         ":STR");
+}
+
+/* Regression: a stale/corrupt NEGATIVE dispatch-cache entry (present, value
+ * NIL — "no method applies") must not be trusted blindly.  The cache is only
+ * a memo of a pure function, so on a negative hit the dispatcher re-verifies
+ * against the live method list and heals the entry when a method plainly
+ * exists.  This is the mechanism behind the field report "No applicable
+ * method for FIND-OPERATION with args of types (COMPILE-OP SYMBOL)" — a
+ * method that clearly exists yet dispatch reported a miss because a corrupt
+ * negative cache entry (from a GC relocation of the EQ-keyed cache or a
+ * concurrent cache write) shadowed it. */
+TEST(dispatch_negative_cache_self_heals)
+{
+    eval_print("(defclass neg-op () ())");
+    eval_print("(defgeneric neg-find (ctx spec))");
+    eval_print("(defmethod neg-find ((c t) (s neg-op)) (list :op s))");
+    eval_print("(defmethod neg-find ((c t) (s symbol)) :sym)");
+    eval_print("(defmethod neg-find ((c t) (s string)) :str)");
+    /* Prime the cache with a real call so the nested table exists. */
+    eval_print("(defparameter *no* (make-instance 'neg-op))");
+    ASSERT_STR_EQ(eval_print("(neg-find *no* 'load-thing)"), ":SYM");
+    /* Poke a stale NEGATIVE entry for (neg-op -> SYMBOL) and drop the inline
+     * cache so the dispatch table is actually consulted. */
+    eval_print(
+        "(let* ((gf (fdefinition 'neg-find))"
+        "       (cache (gf-dispatch-cache gf))"
+        "       (inner (gethash (class-of *no*) cache)))"
+        "  (setf (gethash (class-of 'x) inner) nil)"
+        "  (%set-gf-inline-cache gf nil))");
+    /* Before the fix this signaled "No applicable method"; now it heals. */
+    ASSERT_STR_EQ(eval_print("(neg-find *no* 'prepare-thing)"), ":SYM");
+}
+
+/* The heal must not paper over a GENUINE no-applicable-method: recomputing
+ * from the live method list still finds nothing for an unspecialized arg
+ * class, so an error is still signaled. */
+TEST(dispatch_genuine_miss_still_errors)
+{
+    eval_print("(defgeneric gm-only-str (x))");
+    eval_print("(defmethod gm-only-str ((x string)) :str)");
+    /* 42 is a fixnum — no applicable method; must error, not return NIL. */
+    ASSERT_STR_EQ(eval_print("(gm-only-str 42)"), "ERROR:1");
+}
+
+/* Regression: standard combination must self-heal when handed an applicable
+ * method set that is missing its primary (only :around/:before/:after) — the
+ * "No applicable primary method" field report during asdf:load-system.  This
+ * is the same intermittent dispatch-metadata corruption as the negative-cache
+ * case (a GC relocation or concurrent method-list read dropping the primary),
+ * so %DISPATCH-STANDARD-EMF re-verifies against the live method list before
+ * letting %BUILD-EFFECTIVE-METHOD error. */
+TEST(dispatch_no_primary_self_heals)
+{
+    eval_print("(defclass npf-op () ())");
+    eval_print("(defclass npf-comp () ())");
+    eval_print("(defgeneric npf (o c))");
+    eval_print("(defmethod npf :around ((o t) (c t)) (list :around (call-next-method)))");
+    eval_print("(defmethod npf ((o npf-op) (c npf-comp)) :prim)");
+    eval_print("(defparameter *npf-o* (make-instance 'npf-op))");
+    eval_print("(defparameter *npf-c* (make-instance 'npf-comp))");
+    /* Normal dispatch: :around wraps the primary. */
+    ASSERT_STR_EQ(eval_print("(npf *npf-o* *npf-c*)"), "(:AROUND :PRIM)");
+    /* Feed %DISPATCH-STANDARD-EMF a primary-less applicable set (only the
+     * :around) while the GF still has its primary; the heal recomputes and
+     * dispatches correctly. */
+    ASSERT_STR_EQ(eval_print(
+        "(let* ((gf (fdefinition 'npf))"
+        "       (around-only (remove-if (lambda (m) (null (method-qualifiers m)))"
+        "                                (%compute-applicable-methods gf (list *npf-o* *npf-c*)))))"
+        "  (let ((*current-method-args* (list *npf-o* *npf-c*)))"
+        "    (funcall (%dispatch-standard-emf gf around-only) *npf-o* *npf-c*)))"),
+        "(:AROUND :PRIM)");
+}
+
+/* But a GENUINE no-primary (only :around defined) must still error after the
+ * recompute finds no primary either. */
+TEST(dispatch_genuine_no_primary_still_errors)
+{
+    eval_print("(defgeneric onlyaround (x))");
+    eval_print("(defmethod onlyaround :around ((x t)) (call-next-method))");
+    ASSERT_STR_EQ(eval_print("(onlyaround 5)"), "ERROR:1");
+}
+
+/* Regression: the FIRST (uncached) dispatch miss must self-heal too.  The
+ * negative-cache heal (%DISPATCH-NEGATIVE-HIT) only fires on a *second* call —
+ * the first call, on a fresh cache, computes the applicable set directly and,
+ * before this fix, immediately cached a negative AND signaled "No applicable
+ * method" if that one computation came up empty.  That is the exact field
+ * report shape "No applicable method for FIND-OPERATION with args of types
+ * (PREPARE-OP SYMBOL)" hitting on the very first find-operation dispatch of a
+ * load.  %DISPATCH-HEAL-EMPTY recomputes (bounded, yielding) from the live
+ * method list before giving up, so a transient empty set (a GC relocation /
+ * concurrent metadata mutation window) is corrected on the first miss.  Here we
+ * drive the healer directly with args that DO have a method: it returns a
+ * callable EMF and bumps *GF-CACHE-HEALS*. */
+TEST(dispatch_fresh_miss_empty_self_heals)
+{
+    eval_print("(defclass fme-op () ())");
+    eval_print("(defgeneric fme (ctx spec))");
+    eval_print("(defmethod fme ((c t) (s symbol)) :sym)");
+    eval_print("(defparameter *fme* (make-instance 'fme-op))");
+    ASSERT_STR_EQ(eval_print(
+        "(let* ((gf (fdefinition 'fme))"
+        "       (h0 *gf-cache-heals*)"
+        "       (emf (%dispatch-heal-empty gf (list *fme* 'a-sym))))"
+        "  (list (and (functionp emf) (funcall emf *fme* 'a-sym))"
+        "        (> *gf-cache-heals* h0)))"),
+        "(:SYM T)");
+}
+
+/* The fresh-miss heal must NOT paper over a genuine no-applicable-method: for a
+ * GF that has methods but none applicable to these argument types, the healer
+ * recomputes empty every time and returns NIL, so the dispatcher signals the
+ * error exactly as before. */
+TEST(dispatch_fresh_miss_genuine_still_errors)
+{
+    eval_print("(defgeneric fmg (x))");
+    eval_print("(defmethod fmg ((x string)) :str)");
+    /* Healer returns NIL for a non-string arg (no method applies). */
+    ASSERT_STR_EQ(eval_print(
+        "(%dispatch-heal-empty (fdefinition 'fmg) (list 42))"), "NIL");
+    /* And the ordinary call still errors. */
+    ASSERT_STR_EQ(eval_print("(fmg 42)"), "ERROR:1");
+}
+
+/* The no-primary heal is gated on the GF's ROSTER actually containing a primary
+ * method (%GF-ROSTER-HAS-PRIMARY-P): a GF that defines a primary but had it
+ * transiently dropped from the applicable set retries-and-heals, while a GF
+ * with only :around/:before/:after can never heal and must not waste retries.
+ * %RECOMPUTE-METHODS-UNTIL is the shared bounded-retry-with-yield used by both
+ * self-heals. */
+TEST(dispatch_no_primary_roster_gate)
+{
+    eval_print("(defgeneric rg-prim (x))");
+    eval_print("(defmethod rg-prim ((x integer)) :int)");
+    eval_print("(defgeneric rg-around (x))");
+    eval_print("(defmethod rg-around :around ((x t)) (call-next-method))");
+    /* Roster gate: T for a GF with a primary, NIL for around-only. */
+    ASSERT_STR_EQ(eval_print("(%gf-roster-has-primary-p (fdefinition 'rg-prim))"), "T");
+    ASSERT_STR_EQ(eval_print("(%gf-roster-has-primary-p (fdefinition 'rg-around))"), "NIL");
+    /* The shared retry helper returns a satisfying (has-primary) set for a GF
+     * whose primary applies to the args. */
+    ASSERT_STR_EQ(eval_print(
+        "(let ((s (%recompute-methods-until (fdefinition 'rg-prim) (list 5)"
+        "                                   #'%methods-have-primary-p)))"
+        "  (and (consp s) (%methods-have-primary-p s)))"),
+        "T");
+    /* ...and NIL when no recompute can satisfy the predicate (no applicable
+     * primary for these args). */
+    ASSERT_STR_EQ(eval_print(
+        "(%recompute-methods-until (fdefinition 'rg-prim) (list \"str\")"
+        "                          #'%methods-have-primary-p)"), "NIL");
+}
+
+/* Regression: %GF-DISPATCH's uncached/variadic fallback branch (the T clause
+ * taken when GF-CACHEABLE-P is neither an integer nor :EQL) used to call
+ * %DISPATCH-HEAL-EMPTY before binding *CURRENT-METHOD-ARGS* to ARGS, unlike
+ * every other dispatch resolver (%GF-DISPATCH-EQL, %GF-DISPATCH-CACHED,
+ * %GF-DISPATCH-1-SLOW, %GF-2-RESOLVE).  %DISPATCH-HEAL-EMPTY's no-primary
+ * fallback (via %DISPATCH-BUILD-EMF -> %DISPATCH-STANDARD-EMF) reads that
+ * dynamic var, so a stale/default binding could recompute against the wrong
+ * argument list.  Spy on %DISPATCH-HEAL-EMPTY to capture *CURRENT-METHOD-ARGS*
+ * at the exact moment %GF-DISPATCH invokes it from the T branch. */
+TEST(gf_dispatch_slow_path_binds_current_method_args_before_heal)
+{
+    eval_print("(defgeneric gdca-fn (x))");
+    eval_print("(defmethod gdca-fn ((x symbol)) :sym)");
+    /* Force the T fallback: a mode that is neither an integer nor :EQL
+     * bypasses %GF-DISPATCH-1-SLOW's fast integer-mode branch, which falls
+     * through to (%GF-DISPATCH GF ARGS). */
+    eval_print("(%set-gf-cacheable-p (fdefinition 'gdca-fn) :forced-slow)");
+    eval_print("(defparameter *gdca-captured* :unset)");
+    eval_print(
+        "(let ((orig (symbol-function '%dispatch-heal-empty)))"
+        "  (unwind-protect"
+        "      (progn"
+        "        (setf (symbol-function '%dispatch-heal-empty)"
+        "              (lambda (gf args)"
+        "                (setq *gdca-captured* *current-method-args*)"
+        "                (funcall orig gf args)))"
+        "        (ignore-errors (gdca-fn 42)))"
+        "    (setf (symbol-function '%dispatch-heal-empty) orig)))");
+    /* 42 has no applicable GDCA-FN method, so %COMPUTE-APPLICABLE-METHODS
+     * returns empty and %GF-DISPATCH calls %DISPATCH-HEAL-EMPTY with
+     * ARGS = (42); *CURRENT-METHOD-ARGS* must already equal that by then. */
+    ASSERT_STR_EQ(eval_print("*gdca-captured*"), "(42)");
 }
 
 TEST(class_of_nil_is_null_class)
@@ -4230,7 +4474,19 @@ int main(void)
     RUN(find_class_unknown_error);
     RUN(class_of_42_is_fixnum_class);
     RUN(class_of_string_is_string_class);
+    RUN(class_of_symbol_independent_of_package);
+    RUN(class_of_builtins_independent_of_package);
+    RUN(class_of_name_symbol_is_cl_package);
+    RUN(dispatch_symbol_method_independent_of_package);
     RUN(dispatch_string_method_on_make_array_string);
+    RUN(dispatch_negative_cache_self_heals);
+    RUN(dispatch_genuine_miss_still_errors);
+    RUN(dispatch_no_primary_self_heals);
+    RUN(dispatch_genuine_no_primary_still_errors);
+    RUN(dispatch_fresh_miss_empty_self_heals);
+    RUN(dispatch_fresh_miss_genuine_still_errors);
+    RUN(dispatch_no_primary_roster_gate);
+    RUN(gf_dispatch_slow_path_binds_current_method_args_before_heal);
     RUN(class_of_nil_is_null_class);
     RUN(class_of_cons_is_cons_class);
     RUN(class_of_eq_find_class);

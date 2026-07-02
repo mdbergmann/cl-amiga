@@ -366,11 +366,45 @@ void cl_thread_shutdown(void);
 
 /* ---- Thread creation API ---- */
 
-/* Worker thread VM/NLX sizes (compact: ~123KB per thread on Amiga) */
-#define CL_WORKER_VM_STACK_SIZE  4096   /* 4K entries = 16KB */
-#define CL_WORKER_VM_FRAME_SIZE  256    /* 256 frames = ~15KB */
-#define CL_WORKER_NLX_FRAMES     256    /* 256 NLX frames = ~50KB */
-#define CL_WORKER_SAVED_PENDING   64    /* 64 saved-pending entries = ~39KB */
+/* Worker thread VM/NLX/C-stack sizes.
+ *
+ * HOST: match the main thread's budgets.  Worker threads used to get a 4x-16x
+ * smaller VM stack / call-frame stack / NLX stack / OS stack than the main
+ * thread, which was a silent-death bug: a worker overflowed its VM frame stack
+ * at ~256 nested calls where the main thread tolerates ~1024, and the overflow
+ * is UNRECOVERABLE (running the Lisp handler that would report it itself needs
+ * frames, and there are none), so the worker just dies -- status 3, no debugger,
+ * no result.  That is what made (asdf:load-system ...) hang under Sly: slynk
+ * evaluates on a channel worker thread, and a big load's ASDF + CLOS-dispatch +
+ * macroexpansion call chains exceed 256 frames but fit under 1024, so it loads
+ * fine headless (main thread) yet silently kills the slynk worker -- Emacs never
+ * gets a :return (REPL hangs forever) and a later request answers "Thread not
+ * found".  See tests/test_threads.c:worker_deep_recursion_survives_like_main.
+ *
+ * AMIGA: keep the historical compact sizes -- byte-for-byte what shipped before
+ * this fix.  Two reasons: (1) RAM is scarce on the 8MB target, and (2) the
+ * decisive one -- bumping these sizes shifts heap/binary layout enough to tip a
+ * PRE-EXISTING, layout-fragile moving-GC bug into firing (a Guru partway through
+ * the Amiga test suite; the parent commit passes the whole suite).  The bug is
+ * NOT in this code: the crash lands on the main thread before any worker exists,
+ * and moves to a different, unrelated test for a different layout (the
+ * heisenbug signature).  Until that GC bug is fixed separately, the worker-size
+ * fix stays host-only -- which is where it is needed: Sly connects to the host
+ * binary, so the hang is a host problem, and Amiga worker code keeps the
+ * pre-existing 256-frame budget it has always run with. */
+#if defined(PLATFORM_AMIGA)
+#define CL_WORKER_VM_STACK_SIZE  4096   /* 4K entries = 16KB (pre-fix value) */
+#define CL_WORKER_VM_FRAME_SIZE  256    /* 256 frames        (pre-fix value) */
+#define CL_WORKER_NLX_FRAMES     256    /* 256 NLX frames    (pre-fix value) */
+#define CL_WORKER_SAVED_PENDING   64    /* 64 saved-pending  (pre-fix value) */
+#define CL_WORKER_C_STACK_SIZE     0    /* OS default (~64KB, pre-fix value) */
+#else
+#define CL_WORKER_VM_STACK_SIZE  CL_VM_STACK_SIZE      /* 16K entries = 64KB */
+#define CL_WORKER_VM_FRAME_SIZE  CL_VM_FRAME_SIZE      /* 1024 frames */
+#define CL_WORKER_NLX_FRAMES     CL_MAX_NLX_FRAMES     /* 2048 NLX frames */
+#define CL_WORKER_SAVED_PENDING  CL_MAX_SAVED_PENDING  /* 256 saved-pending */
+#define CL_WORKER_C_STACK_SIZE   (8u * 1024u * 1024u)  /* match main (8MB) */
+#endif
 
 /* Thread side table: maps thread_id -> CL_Thread* */
 #define CL_MAX_THREADS 256
@@ -526,6 +560,17 @@ int    cl_symbol_boundp(CL_Obj sym);
 /* NLX stack */
 #define cl_nlx_stack        (CT->nlx_stack)
 #define cl_nlx_top          (CT->nlx_top)
+/* Per-thread NLX capacity: the number of CL_NLXFrame slots actually allocated
+ * for THIS thread's nlx_stack (CL_MAX_NLX_FRAMES for the main thread,
+ * CL_WORKER_NLX_FRAMES for workers — which is smaller on AmigaOS).  Every NLX
+ * push guard and diagnostic loop MUST bound against this, NOT the global
+ * CL_MAX_NLX_FRAMES constant: a worker with a smaller allocation would
+ * otherwise be allowed to write past the end of its nlx_stack (heap
+ * corruption).  This must hold on every platform, including AmigaOS — a
+ * memory-safety guard is not allowed to be loosened to dodge an unrelated,
+ * pre-existing layout-fragile moving-GC bug; that bug needs a real fix (see
+ * memory note sly_load_hang_worker_vm_frame_budget), not a wider NLX bound. */
+#define cl_nlx_max          (CT->nlx_max)
 
 /* Saved pending-throw stack */
 #define cl_saved_pending_stack  (CT->saved_pending_stack)

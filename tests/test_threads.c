@@ -106,6 +106,67 @@ TEST(thread_join_cons_result)
     ASSERT_STR_EQ(r, "(1 2 3)");
 }
 
+/* Regression: a worker thread must tolerate the same call-nesting depth as the
+ * main thread.  Worker VM sizes used to be 4x smaller (256 frames vs 1024), so a
+ * recursion ~300-deep overflowed the worker's VM frame stack where the main
+ * thread coped fine.  That overflow could not be caught (running a Lisp handler
+ * itself needs frames) so the worker died silently, its result lost — which is
+ * why (asdf:load-system ...) hung under Sly (slynk evaluates on a channel worker
+ * thread) yet loaded fine headless (main thread).  Depth 500 is > the old worker
+ * limit (256) and < the main limit (1024): pre-fix the worker dies and
+ * join-thread returns NIL; post-fix it returns 500 exactly like the main thread. */
+TEST(worker_deep_recursion_survives_like_main)
+{
+    /* Sanity: the main thread computes it (well under 1024 frames). */
+    const char *m = eval_print(
+        "(labels ((r (n) (if (<= n 0) 0 (1+ (funcall #'r (1- n)))))) (r 500))");
+    ASSERT_STR_EQ(m, "500");
+
+    /* The worker must produce the identical result — not NIL from a dead thread. */
+    const char *w = eval_print(
+        "(mp:join-thread"
+        "  (mp:make-thread"
+        "    (lambda ()"
+        "      (labels ((r (n) (if (<= n 0) 0 (1+ (funcall #'r (1- n))))))"
+        "        (r 500)))))");
+    ASSERT_STR_EQ(w, "500");
+}
+
+/* Regression: a worker must tolerate deep NLX (CATCH/BLOCK/UNWIND-PROTECT)
+ * nesting up to its own nlx_stack capacity, and the overflow guards must bound
+ * against the PER-THREAD capacity (cl_nlx_max) — not the global CL_MAX_NLX_FRAMES
+ * constant.  Historically the worker nlx_stack was allocated with only 256 slots
+ * while every push guard compared against CL_MAX_NLX_FRAMES (2048), so a worker
+ * nesting 257..2048 NLX frames wrote past the end of its allocation (silent heap
+ * corruption).  Nesting 400 CATCH frames (> the old 256 allocation) must now
+ * simply work: the throw unwinds to the innermost catch and 42 propagates out. */
+TEST(worker_deep_nlx_nesting_no_corruption)
+{
+    const char *w = eval_print(
+        "(mp:join-thread"
+        "  (mp:make-thread"
+        "    (lambda ()"
+        "      (labels ((c (n) (if (<= n 0) (throw 'done 42) (catch 'done (c (1- n))))))"
+        "        (catch 'done (c 400))))))");
+    ASSERT_STR_EQ(w, "42");
+}
+
+/* Regression: an error raised deep enough to be near (but under) the frame
+ * limit must still be catchable on a worker.  With the old compact worker sizes,
+ * a handler-case wrapping deep work could be bypassed entirely when the frame
+ * stack filled.  Now a worker matches the main thread: the handler runs and its
+ * value is returned. */
+TEST(worker_handler_case_runs_after_deep_work)
+{
+    const char *w = eval_print(
+        "(mp:join-thread"
+        "  (mp:make-thread"
+        "    (lambda ()"
+        "      (labels ((r (n) (if (<= n 0) (error \"boom\") (1+ (funcall #'r (1- n))))))"
+        "        (handler-case (r 400) (error (e) (declare (ignore e)) :caught))))))");
+    ASSERT_STR_EQ(w, ":CAUGHT");
+}
+
 /* ================================================================
  * Thread predicates
  * ================================================================ */
@@ -873,6 +934,11 @@ int main(void)
     RUN(thread_make_with_name);
     RUN(thread_join_returns_result);
     RUN(thread_join_cons_result);
+
+    /* Worker VM sizes must match main (asdf:load-system under Sly hang) */
+    RUN(worker_deep_recursion_survives_like_main);
+    RUN(worker_deep_nlx_nesting_no_corruption);
+    RUN(worker_handler_case_runs_after_deep_work);
 
     /* Thread predicates */
     RUN(thread_alive_p_before_join);

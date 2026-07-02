@@ -364,9 +364,37 @@ typedef struct {
     uint32_t test;          /* CL_HT_TEST_EQ/EQL/EQUAL */
     uint32_t count;         /* Number of entries */
     uint32_t bucket_count;  /* Number of buckets (always power of 2) */
+    uint32_t flags;         /* CL_HT_FLAG_* bits (plain uint32, NOT a CL_Obj) */
     CL_Obj bucket_vec;      /* CL_NIL = use inline buckets[], else CL_Vector */
     CL_Obj buckets[];       /* Flexible array: initial buckets (used when bucket_vec==NIL) */
 } CL_Hashtable;
+
+/* Hash-table flags (CL_Hashtable.flags).  Runtime-only — never serialized, so
+ * adding one needs no FASL version bump. */
+#define CL_HT_FLAG_SYNC 0x1u   /* Thread-safe table: concurrent GETHASH / (SETF
+                                * GETHASH) / REMHASH / CLRHASH are serialized so
+                                * peer threads cannot corrupt the bucket chains.
+                                * Used by the otherwise lock-free CLOS dispatch
+                                * caches, which are read and written from
+                                * multiple threads (main loader + worker/watcher
+                                * threads dispatching the same GF).
+                                *
+                                * NOT covered: MAPHASH, %HASH-TABLE-PAIRS, and
+                                * the raw bucket walks behind DESCRIBE/INSPECT.
+                                * These walk every bucket chain without the
+                                * lock, so a concurrent (SETF GETHASH)/REMHASH
+                                * on the same table can be observed mid-splice
+                                * or mid-rehash. This is an accepted gap, not
+                                * an oversight: MAPHASH calls arbitrary user
+                                * Lisp per entry, and holding ht_sync_mutex
+                                * across a callback (which can itself allocate
+                                * and park at a GC safepoint, or re-enter the
+                                * same table) would violate the allocation-free
+                                * critical-section invariant documented in
+                                * builtins_hashtable.c and risk deadlock. Do
+                                * not concurrently MAPHASH / %HASH-TABLE-PAIRS
+                                * / DESCRIBE / INSPECT a CL_HT_FLAG_SYNC table
+                                * while a peer thread may be mutating it. */
 
 #define CL_HASHTABLE_P(obj) (CL_HEAP_P(obj) && CL_HDR_TYPE(CL_OBJ_TO_PTR(obj)) == TYPE_HASHTABLE)
 
