@@ -2300,6 +2300,29 @@ check_contains "make-array+upgraded-array-elt-type with deftype alias under GC s
 check_absent   "no stale element_type/typespec from deftype alias classify compaction" \
   "ELTTYPE-DEF:NIL\|not of type\|corrupted\|type 0\|Unbound" "$out"
 
+# --- Case: condition report with :format-arguments under GC stress --------
+# Bug: format_condition_report read the format-control string and every
+# format argument out of c->slots into un-rooted C locals BEFORE
+# cl_make_string_output_stream / cl_format_to_stream allocated (and
+# compacted) — the report then formatted relocated garbage ("CAR:
+# corrupted pointer") on every (error "..." args) whose report is printed.
+cat > "$WORK/condreport.lisp" <<'EOF'
+(let ((ok t))
+  (dotimes (i 30)
+    (let ((rpt (handler-case
+                   (error "gcstress ~a ~s ~d end" (list i (+ i 1)) "str" i)
+                 (error (c) (format nil "~a" c)))))
+      (unless (string= rpt (format nil "gcstress (~d ~d) \"str\" ~d end"
+                                   i (+ i 1) i))
+        (format t "BAD-REPORT:~s~%" rpt)
+        (setf ok nil))))
+  (format t "CONDREPORT:~a~%" ok))
+EOF
+out=$(run_stress "$WORK/condreport.lisp")
+check_contains "condition report formats :format-arguments under GC stress" "CONDREPORT:T" "$out"
+check_absent   "no corrupted pointer in condition report under GC stress" \
+  "corrupted\|not of type\|BAD-REPORT" "$out"
+
 echo ""
 echo "$passed passed, $failed failed, $total total"
 [ "$failed" -eq 0 ]
