@@ -15,6 +15,10 @@
 #include "../platform/platform.h"
 #include "../platform/platform_thread.h"
 #include <string.h>
+#ifdef DEBUG_THREAD_RACE_HOOKS
+#include <stdio.h>
+#include <stdlib.h>
+#endif
 
 static CL_Thread cl_main_thread;
 CL_Thread *cl_main_thread_ptr = NULL;
@@ -27,6 +31,16 @@ uint32_t    cl_thread_count     = 0;
 /* ---- GC coordination ---- */
 static void *gc_mutex   = NULL;  /* protects GC state transitions */
 static void *gc_condvar = NULL;  /* threads wait here during STW; initiator waits for all stopped */
+
+#ifdef DEBUG_THREAD_RACE_HOOKS
+/* Set immediately before the STW initiator (cl_gc_stop_the_world) parks in
+ * platform_condvar_wait, i.e. the instant it has found a straggler and is
+ * about to sleep for a wakeup.  cl_debug_thread_exit_race_selftest()'s
+ * worker spins on this so its unregister always lands inside the exact
+ * window cl_thread_unregister's gc_condvar broadcast fixes, instead of
+ * relying on scheduler timing to hit it (see selftest below). */
+static volatile int dbg_race_stw_parked = 0;
+#endif
 
 /* Register a thread in the global thread list.
  * `live` = 1 marks it as participating in stop-the-world immediately; use this
@@ -71,6 +85,24 @@ void cl_thread_unregister(CL_Thread *t)
         }
     }
     platform_mutex_unlock(cl_thread_list_lock);
+
+    /* Wake a possible STW initiator.  cl_gc_stop_the_world may be parked
+     * in platform_condvar_wait(gc_condvar) waiting for exactly this
+     * thread to reach a safepoint; a thread past its last safepoint that
+     * exits instead never stops, so without this broadcast the initiator
+     * re-scans only on other threads' safepoint broadcasts — with none
+     * left, GC (and the whole process) hangs forever.  Must be done
+     * AFTER releasing the list lock: the initiator acquires gc_mutex
+     * then the list lock, so taking gc_mutex while holding the list lock
+     * here would be an ABBA deadlock.  Holding gc_mutex around the
+     * broadcast closes the lost-wakeup window (the initiator either
+     * holds gc_mutex scanning — and will see the shrunken list — or is
+     * inside condvar_wait and receives the broadcast). */
+    if (gc_mutex) {
+        platform_mutex_lock(gc_mutex);
+        platform_condvar_broadcast(gc_condvar);
+        platform_mutex_unlock(gc_mutex);
+    }
 }
 
 /* ---- GC safepoint (slow path) ---- */
@@ -274,6 +306,9 @@ void cl_gc_stop_the_world(void)
         platform_mutex_unlock(cl_thread_list_lock);
 
         if (all_stopped) break;
+#ifdef DEBUG_THREAD_RACE_HOOKS
+        dbg_race_stw_parked = 1;
+#endif
         platform_condvar_wait(gc_condvar, gc_mutex);
     }
     if (self) self->wait_kind = 0;
@@ -297,6 +332,78 @@ void cl_gc_resume_the_world(void)
     platform_condvar_broadcast(gc_condvar);
     platform_mutex_unlock(gc_mutex);
 }
+
+#ifdef DEBUG_THREAD_RACE_HOOKS
+/* ---- Deterministic repro/regression check for the STW-hang-on-exit fix ----
+ *
+ * The bug cl_thread_unregister's gc_condvar broadcast fixes needs a worker
+ * to exit (unregister) at the exact instant the STW initiator has found it
+ * as the sole straggler and is parking in platform_condvar_wait — too
+ * narrow a window to land reliably via ordinary thread-churn timing on a
+ * multi-core host.  This self-test forces the window directly: the worker
+ * never reaches a safepoint (simulating one that already crossed its last
+ * one) and only unregisters once dbg_race_stw_parked confirms the
+ * initiator is about to sleep.  If cl_thread_unregister's wakeup were
+ * missing or broken, cl_gc_stop_the_world below never returns and the
+ * process hangs — the shell test wraps this binary in `timeout` to turn
+ * that hang into a deterministic FAIL. */
+
+static void *dbg_race_worker_fn(void *arg)
+{
+    CL_Thread *t = (CL_Thread *)arg;
+    cl_thread_register(t);            /* live=1: the STW below will target it */
+    while (!dbg_race_stw_parked)      /* wait for the initiator to park */
+        platform_thread_yield();
+    cl_thread_unregister(t);          /* exits WITHOUT ever hitting a safepoint */
+    return NULL;
+}
+
+/* Runs the race deterministically and reports the outcome on stdout/exit
+ * code; invoked automatically at process start when this build is compiled
+ * with -DDEBUG_THREAD_RACE_HOOKS (see tests/test_mt_thread_exit_gc.sh and
+ * the `test-mt-thread-exit-race` Makefile target). */
+static void dbg_race_selftest_and_exit(void)
+{
+    CL_Thread *worker;
+    void *handle;
+    int spins;
+
+    cl_thread_init();
+    worker = cl_thread_alloc_worker();
+    if (!worker) {
+        fprintf(stderr, "RACE-SELFTEST: worker alloc failed\n");
+        exit(2);
+    }
+
+    if (platform_thread_create(&handle, dbg_race_worker_fn, worker,
+                               CL_WORKER_C_STACK_SIZE) != 0) {
+        fprintf(stderr, "RACE-SELFTEST: thread_create failed\n");
+        cl_thread_free_worker(worker);
+        exit(2);
+    }
+
+    /* Wait for the worker to register (bounded — this is not the race
+     * window under test, just startup). */
+    for (spins = 0; cl_thread_count < 2 && spins < 1000000; spins++)
+        platform_thread_yield();
+    if (cl_thread_count < 2) {
+        fprintf(stderr, "RACE-SELFTEST: worker never registered\n");
+        exit(2);
+    }
+
+    cl_gc_stop_the_world();   /* hangs here if the fix regresses */
+    cl_gc_resume_the_world();
+
+    printf("RACE-SELFTEST-OK\n");
+    exit(0);
+}
+
+__attribute__((constructor))
+static void dbg_race_selftest_ctor(void)
+{
+    dbg_race_selftest_and_exit();  /* never returns */
+}
+#endif /* DEBUG_THREAD_RACE_HOOKS */
 
 /* ---- Thread interrupt handling (slow path) ---- */
 
