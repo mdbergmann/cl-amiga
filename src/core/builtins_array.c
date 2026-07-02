@@ -344,10 +344,10 @@ static CL_Obj bi_make_array(CL_Obj *args, int n)
             cl_error(CL_ERR_TYPE,
                      "MAKE-ARRAY: array dimension must be non-negative (got %d)",
                      (int)CL_FIXNUM_VAL(dim_arg));
-        if (length > CL_HDR_SIZE_MASK)
+        if (length > CL_ARRAY_DIMENSION_LIMIT)
             cl_error(CL_ERR_TYPE,
                      "MAKE-ARRAY: array dimension %u exceeds ARRAY-DIMENSION-LIMIT (%u)",
-                     (unsigned)length, (unsigned)CL_HDR_SIZE_MASK);
+                     (unsigned)length, (unsigned)CL_ARRAY_DIMENSION_LIMIT);
 
         /* :fill-pointer T means fill-pointer = array size (CLHS) */
         if (fill_pointer_is_t)
@@ -604,22 +604,44 @@ static CL_Obj bi_make_array(CL_Obj *args, int n)
 
     /* --- Multi-dim case: dim_arg is a list of fixnums --- */
     if (CL_CONS_P(dim_arg) || CL_NULL_P(dim_arg)) {
-        uint32_t dims[16];
+        uint32_t dims[CL_ARRAY_MAX_RANK];
         uint8_t rank = 0;
         uint32_t total = 1;
         CL_Obj cur = dim_arg;
         CL_Obj result;
         CL_Vector *v;
 
-        /* Count rank and compute total size */
-        while (!CL_NULL_P(cur) && rank < 16) {
+        /* Count rank and compute total size.  Mirror the 1-D path's
+         * dimension checks (negative / over ARRAY-DIMENSION-LIMIT must be
+         * catchable type-errors), and check the running product for
+         * uint32 overflow BEFORE multiplying: e.g. '(65536 65537) wraps
+         * total to 65536, allocating a small vector whose stored dims
+         * claim the full extent — later per-dimension-checked AREF
+         * writes then land far outside the allocation. */
+        while (!CL_NULL_P(cur) && rank < CL_ARRAY_MAX_RANK) {
             if (!CL_FIXNUM_P(cl_car(cur)))
                 cl_error(CL_ERR_TYPE, "MAKE-ARRAY: dimension must be a fixnum");
+            if (CL_FIXNUM_VAL(cl_car(cur)) < 0)
+                cl_error(CL_ERR_TYPE,
+                         "MAKE-ARRAY: array dimension must be non-negative (got %d)",
+                         (int)CL_FIXNUM_VAL(cl_car(cur)));
             dims[rank] = (uint32_t)CL_FIXNUM_VAL(cl_car(cur));
+            if (dims[rank] > CL_ARRAY_DIMENSION_LIMIT)
+                cl_error(CL_ERR_TYPE,
+                         "MAKE-ARRAY: array dimension %u exceeds ARRAY-DIMENSION-LIMIT (%u)",
+                         (unsigned)dims[rank], (unsigned)CL_ARRAY_DIMENSION_LIMIT);
+            if (dims[rank] != 0 && total > CL_ARRAY_TOTAL_SIZE_LIMIT / dims[rank])
+                cl_error(CL_ERR_TYPE,
+                         "MAKE-ARRAY: total array size exceeds ARRAY-TOTAL-SIZE-LIMIT (%u)",
+                         (unsigned)CL_ARRAY_TOTAL_SIZE_LIMIT);
             total *= dims[rank];
             rank++;
             cur = cl_cdr(cur);
         }
+        if (!CL_NULL_P(cur))
+            cl_error(CL_ERR_TYPE,
+                     "MAKE-ARRAY: array rank exceeds implementation limit (%u)",
+                     (unsigned)CL_ARRAY_MAX_RANK);
 
         /* :fill-pointer T means fill-pointer = array size (CLHS) */
         if (fill_pointer_is_t && rank == 1)

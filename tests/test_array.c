@@ -1314,6 +1314,54 @@ TEST(print_3d)
         "#3A(((1 2) (3 4)) ((5 6) (7 8)))");
 }
 
+TEST(make_array_multidim_size_overflow)
+{
+    /* Regression: the multi-dim total-size product had no negative /
+     * dimension-limit / uint32-overflow checks (the 1-D path has all
+     * three).  '(65536 65537) wrapped total to 65536, allocating a
+     * small vector whose stored dims claimed the full extent — every
+     * per-dimension-checked AREF write then landed far outside the
+     * allocation (in-arena OOB writes = silent heap corruption). */
+    ASSERT(eval_errors("(make-array '(65536 65537))"));
+    ASSERT(eval_errors("(make-array '(16777216 16777216))"));
+    ASSERT(eval_errors("(make-array '(3 -1))"));
+    ASSERT(eval_errors("(make-array '(1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17))"));
+    /* Must be a catchable error, not a VM abort */
+    ASSERT_STR_EQ(":CAUGHT",
+        eval_print("(handler-case (make-array '(65536 65537)) (error () :caught))"));
+    /* Sane multi-dim arrays still work */
+    ASSERT_STR_EQ("7",
+        eval_print("(let ((a (make-array '(2 3) :initial-element 7))) (aref a 1 2))"));
+}
+
+TEST(make_hash_table_size_overflow)
+{
+    /* Regression: a huge or negative :size wrapped the bucket-count
+     * computation (requested*4+2 and bucket_count*sizeof(CL_Obj)),
+     * allocating a ~24-byte table whose bucket_count field claimed 2^31
+     * buckets — every gethash/puthash then indexed wildly outside the
+     * object. */
+    ASSERT(eval_errors("(make-hash-table :size -1)"));
+    /* Huge :size is a hint (CLHS): clamped to CL_HT_MAX_BUCKETS.  In a
+     * small test heap the (legitimate, clamped) 4MB bucket vector may
+     * still exceed free space — that must be a clean catchable error.
+     * Pre-fix this wrapped to a ~24-byte allocation claiming 2^30
+     * buckets and gethash wild-wrote far outside it (crash). */
+    {
+        const char *r = eval_print(
+            "(handler-case"
+            " (let ((ht (make-hash-table :size most-positive-fixnum)))"
+            "  (setf (gethash 'a ht) 42) (gethash 'a ht))"
+            " (error () :clean-error))");
+        ASSERT(strcmp(r, "42") == 0 || strcmp(r, ":CLEAN-ERROR") == 0 ||
+               strncmp(r, "ERROR:", 6) == 0 /* storage-error via CL_CATCH */);
+    }
+    /* A large-but-allocatable :size must produce a working table */
+    ASSERT_STR_EQ("42",
+        eval_print("(let ((ht (make-hash-table :size 5000)))"
+                   " (setf (gethash 'a ht) 42) (gethash 'a ht))"));
+}
+
 TEST(print_2d_empty)
 {
     ASSERT_STR_EQ(eval_print("(make-array '(2 0))"), "#2A(() ())");
@@ -1478,6 +1526,8 @@ int main(void)
     RUN(print_2d);
     RUN(print_3d);
     RUN(print_2d_empty);
+    RUN(make_array_multidim_size_overflow);
+    RUN(make_hash_table_size_overflow);
     RUN(print_array_nil);
 
     /* subtypep */
