@@ -6321,20 +6321,32 @@
 ; in src/core/thread.h).  So there is no Amiga-side worker deep-CALL-nesting
 ; guarantee to assert here.
 
-; Regression: a worker must tolerate deep NLX (CATCH/BLOCK/UNWIND-PROTECT)
-; nesting up to its own nlx_stack capacity, and the overflow guards must bound
-; against the per-thread nlx_max -- not the global CL_MAX_NLX_FRAMES -- or a
-; worker whose nlx_stack allocation is smaller than the global bound (as on
-; AmigaOS, where CL_WORKER_NLX_FRAMES is 256 vs the main thread's 2048) would
-; be allowed to write past the end of its allocation (silent heap corruption).
-; 200 is comfortably under the AmigaOS worker cap (256); the throw unwinds to
-; the innermost catch and 42 propagates out.
-(check "worker tolerates deep NLX nesting" 42
+; Regression: an Amiga worker's NLX push guard must bound against its own
+; nlx_stack allocation (CL_WORKER_NLX_FRAMES = 256), not the global
+; CL_MAX_NLX_FRAMES (2048) -- see cl_nlx_max in src/core/thread.h.  Recursive
+; function calls can't probe this on a worker (each level also recurses the
+; ~64KB OS-default process C stack and Gurus well before 256), so build the
+; nested CATCH forms at macro-expansion time instead: the worker then replays
+; a flat, non-recursive sequence of OP_CATCH pushes, isolating the NLX-stack
+; guard from the unrelated call-depth/C-stack limit noted above.
+(defun %nlx-nest-form (n tag)
+  (if (<= n 0)
+      `(throw ',tag 42)
+      `(catch ',tag ,(%nlx-nest-form (1- n) tag))))
+(defmacro %nlx-nest (n tag)
+  (%nlx-nest-form n tag))
+
+(check "worker tolerates NLX nesting up to capacity" 42
+  (mp:join-thread
+   (mp:make-thread
+    (lambda () (%nlx-nest 200 nlx-nest-ok)))))
+
+(check "worker NLX guard rejects over-capacity nesting" 'caught
   (mp:join-thread
    (mp:make-thread
     (lambda ()
-      (labels ((c (n) (if (<= n 0) (throw 'done 42) (catch 'done (c (1- n))))))
-        (catch 'done (c 200)))))))
+      (handler-case (%nlx-nest 300 nlx-nest-overflow)
+        (error () 'caught))))))
 
 ; --- Thread predicates ---
 (check "thread alive-p after join" nil

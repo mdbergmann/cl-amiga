@@ -566,7 +566,10 @@ int    cl_symbol_boundp(CL_Obj sym);
  * push guard and diagnostic loop MUST bound against this, NOT the global
  * CL_MAX_NLX_FRAMES constant: a worker with a smaller allocation would
  * otherwise be allowed to write past the end of its nlx_stack (heap
- * corruption). */
+ * corruption).  This must hold on every platform, including AmigaOS — a
+ * memory-safety guard is not allowed to be loosened to dodge an unrelated,
+ * pre-existing layout-fragile moving-GC bug; that bug needs a real fix (see
+ * memory note sly_load_hang_worker_vm_frame_budget), not a wider NLX bound. */
 #define cl_nlx_max          (CT->nlx_max)
 
 /* Saved pending-throw stack */
