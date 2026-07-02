@@ -3685,6 +3685,77 @@
                        (only-around-amiga 5))
     (error () :caught)))
 
+; --- Regression: the FIRST (uncached) dispatch miss self-heals too ---
+; The negative-cache heal only fires on a SECOND call; the first call computes
+; the applicable set directly and, before the fix, cached a negative AND
+; signaled "No applicable method" if that single computation came up empty (the
+; field report "No applicable method for FIND-OPERATION with args (PREPARE-OP
+; SYMBOL)" hitting on the very first find-operation dispatch of a load).
+; %dispatch-heal-empty recomputes from the live method list first.
+(defclass fme-op-amiga () ())
+(defgeneric fme-amiga (ctx spec))
+(defmethod fme-amiga ((c t) (s symbol)) :sym)
+(defparameter *fme-op-amiga* (make-instance 'fme-op-amiga))
+(check "dispatch-fresh-miss-self-heals" '(:sym t)
+  (let* ((gf (fdefinition 'fme-amiga))
+         (h0 *gf-cache-heals*)
+         (emf (%dispatch-heal-empty gf (list *fme-op-amiga* 'a-sym))))
+    (list (and (functionp emf) (funcall emf *fme-op-amiga* 'a-sym))
+          (> *gf-cache-heals* h0))))
+; A genuine fresh miss (no method for these types) must return NIL / still error.
+(check "dispatch-fresh-miss-genuine-nil" nil
+  (progn (defgeneric fmg-amiga (x))
+         (defmethod fmg-amiga ((x string)) :str)
+         (%dispatch-heal-empty (fdefinition 'fmg-amiga) (list 42))))
+(check "dispatch-fresh-miss-genuine-errors" :caught
+  (handler-case (fmg-amiga 42) (error () :caught)))
+
+; --- Regression: no-primary heal is gated on the GF roster + shared retry ---
+; The no-primary self-heal retries-with-yield (%recompute-methods-until) only
+; when the GF's roster actually contains a primary (%gf-roster-has-primary-p);
+; an :around-only GF errors immediately with no wasted retries.
+(defgeneric rg-prim-amiga (x))
+(defmethod rg-prim-amiga ((x integer)) :int)
+(defgeneric rg-around-amiga (x))
+(defmethod rg-around-amiga :around ((x t)) (call-next-method))
+(check "dispatch-roster-has-primary-t" t
+  (%gf-roster-has-primary-p (fdefinition 'rg-prim-amiga)))
+(check "dispatch-roster-has-primary-nil" nil
+  (%gf-roster-has-primary-p (fdefinition 'rg-around-amiga)))
+(check "dispatch-recompute-until-finds" t
+  (let ((s (%recompute-methods-until (fdefinition 'rg-prim-amiga) (list 5)
+                                     #'%methods-have-primary-p)))
+    (and (consp s) (%methods-have-primary-p s) t)))
+(check "dispatch-recompute-until-nil" nil
+  (%recompute-methods-until (fdefinition 'rg-prim-amiga) (list "str")
+                            #'%methods-have-primary-p))
+
+; --- Regression: %gf-dispatch's uncached/variadic (T) fallback branch must
+; bind *current-method-args* to ARGS before calling %dispatch-heal-empty ---
+; Every other dispatch resolver (%gf-dispatch-eql, %gf-dispatch-cached,
+; %gf-dispatch-1-slow, %gf-2-resolve) binds *current-method-args* before
+; invoking %dispatch-heal-empty; the T branch used to invoke it first and only
+; bind afterward, so %dispatch-heal-empty's no-primary fallback (which reads
+; *current-method-args*) could see a stale/default binding instead of the real
+; call args.  Spy on %dispatch-heal-empty to capture *current-method-args* at
+; the moment %gf-dispatch (reached via %gf-dispatch-1-slow's T clause, forced
+; by a non-integer/non-:eql cacheable-p mode) invokes it.
+(defgeneric gdca-fn-amiga (x))
+(defmethod gdca-fn-amiga ((x symbol)) :sym)
+(%set-gf-cacheable-p (fdefinition 'gdca-fn-amiga) :forced-slow)
+(defparameter *gdca-captured-amiga* :unset)
+(check "gf-dispatch-slow-path-binds-current-method-args" (list 42)
+  (let ((orig (symbol-function '%dispatch-heal-empty)))
+    (unwind-protect
+        (progn
+          (setf (symbol-function '%dispatch-heal-empty)
+                (lambda (gf args)
+                  (setq *gdca-captured-amiga* *current-method-args*)
+                  (funcall orig gf args)))
+          (ignore-errors (gdca-fn-amiga 42)))
+      (setf (symbol-function '%dispatch-heal-empty) orig))
+    *gdca-captured-amiga*))
+
 ; decode-universal-time returns 9 values
 (check "decode-ut-count" 9 (length (multiple-value-list (decode-universal-time (get-universal-time)))))
 
