@@ -278,6 +278,45 @@ TEST(dispatch_genuine_miss_still_errors)
     ASSERT_STR_EQ(eval_print("(gm-only-str 42)"), "ERROR:1");
 }
 
+/* Regression: standard combination must self-heal when handed an applicable
+ * method set that is missing its primary (only :around/:before/:after) — the
+ * "No applicable primary method" field report during asdf:load-system.  This
+ * is the same intermittent dispatch-metadata corruption as the negative-cache
+ * case (a GC relocation or concurrent method-list read dropping the primary),
+ * so %DISPATCH-STANDARD-EMF re-verifies against the live method list before
+ * letting %BUILD-EFFECTIVE-METHOD error. */
+TEST(dispatch_no_primary_self_heals)
+{
+    eval_print("(defclass npf-op () ())");
+    eval_print("(defclass npf-comp () ())");
+    eval_print("(defgeneric npf (o c))");
+    eval_print("(defmethod npf :around ((o t) (c t)) (list :around (call-next-method)))");
+    eval_print("(defmethod npf ((o npf-op) (c npf-comp)) :prim)");
+    eval_print("(defparameter *npf-o* (make-instance 'npf-op))");
+    eval_print("(defparameter *npf-c* (make-instance 'npf-comp))");
+    /* Normal dispatch: :around wraps the primary. */
+    ASSERT_STR_EQ(eval_print("(npf *npf-o* *npf-c*)"), "(:AROUND :PRIM)");
+    /* Feed %DISPATCH-STANDARD-EMF a primary-less applicable set (only the
+     * :around) while the GF still has its primary; the heal recomputes and
+     * dispatches correctly. */
+    ASSERT_STR_EQ(eval_print(
+        "(let* ((gf (fdefinition 'npf))"
+        "       (around-only (remove-if (lambda (m) (null (method-qualifiers m)))"
+        "                                (%compute-applicable-methods gf (list *npf-o* *npf-c*)))))"
+        "  (let ((*current-method-args* (list *npf-o* *npf-c*)))"
+        "    (funcall (%dispatch-standard-emf gf around-only) *npf-o* *npf-c*)))"),
+        "(:AROUND :PRIM)");
+}
+
+/* But a GENUINE no-primary (only :around defined) must still error after the
+ * recompute finds no primary either. */
+TEST(dispatch_genuine_no_primary_still_errors)
+{
+    eval_print("(defgeneric onlyaround (x))");
+    eval_print("(defmethod onlyaround :around ((x t)) (call-next-method))");
+    ASSERT_STR_EQ(eval_print("(onlyaround 5)"), "ERROR:1");
+}
+
 TEST(class_of_nil_is_null_class)
 {
     ASSERT_STR_EQ(eval_print("(class-name (class-of nil))"), "NULL");
@@ -4275,6 +4314,8 @@ int main(void)
     RUN(dispatch_string_method_on_make_array_string);
     RUN(dispatch_negative_cache_self_heals);
     RUN(dispatch_genuine_miss_still_errors);
+    RUN(dispatch_no_primary_self_heals);
+    RUN(dispatch_genuine_no_primary_still_errors);
     RUN(class_of_nil_is_null_class);
     RUN(class_of_cons_is_cons_class);
     RUN(class_of_eq_find_class);
