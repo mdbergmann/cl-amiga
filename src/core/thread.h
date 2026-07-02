@@ -366,97 +366,45 @@ void cl_thread_shutdown(void);
 
 /* ---- Thread creation API ---- */
 
-/* Worker thread VM/NLX sizes.
+/* Worker thread VM/NLX/C-stack sizes.
  *
- * The VM stack / VM frame / saved-pending sizes MUST match the main thread's
- * (CL_VM_STACK_SIZE / CL_VM_FRAME_SIZE / CL_MAX_SAVED_PENDING); the NLX budget
- * matches main on host but is capped on AmigaOS (see CL_WORKER_NLX_FRAMES).
- * They used to be 4x-16x smaller across the board
- * ("compact worker sizes") to save memory when spawning many threads — but that
- * asymmetry was a silent-corruption bug: a worker overflowed its VM frame stack
- * at ~256 nested calls where the main thread tolerates ~1024.  Worse, the
- * overflow is UNRECOVERABLE on a worker: signalling the overflow condition to
- * run a Lisp handler (handler-case / handler-bind / a debugger hook) itself
- * needs frames, and there are none, so the error escapes every Lisp handler and
- * unwinds all the way out to thread_entry — the worker thread just dies, status
- * 3, with no debugger and no result.
+ * HOST: match the main thread's budgets.  Worker threads used to get a 4x-16x
+ * smaller VM stack / call-frame stack / NLX stack / OS stack than the main
+ * thread, which was a silent-death bug: a worker overflowed its VM frame stack
+ * at ~256 nested calls where the main thread tolerates ~1024, and the overflow
+ * is UNRECOVERABLE (running the Lisp handler that would report it itself needs
+ * frames, and there are none), so the worker just dies -- status 3, no debugger,
+ * no result.  That is what made (asdf:load-system ...) hang under Sly: slynk
+ * evaluates on a channel worker thread, and a big load's ASDF + CLOS-dispatch +
+ * macroexpansion call chains exceed 256 frames but fit under 1024, so it loads
+ * fine headless (main thread) yet silently kills the slynk worker -- Emacs never
+ * gets a :return (REPL hangs forever) and a later request answers "Thread not
+ * found".  See tests/test_threads.c:worker_deep_recursion_survives_like_main.
  *
- * That is exactly what made (asdf:load-system ...) hang under Sly: slynk runs
- * the REPL evaluation on a channel worker thread; the load's ASDF-traversal +
- * CLOS-dispatch + macroexpansion call chains exceed 256 frames but fit under
- * 1024, so the load succeeds on the main thread (headless) yet silently kills
- * the slynk worker.  Emacs then never receives a :return (REPL hangs forever)
- * and a later request to the dead thread makes slynk answer "Thread not found".
- * See tests/test_threads.c:worker_deep_recursion_survives_like_main and
- * tests/amiga/run-tests.lisp.
- *
- * A worker that cannot run the same code the main thread can is not a useful
- * worker; correctness wins over the per-thread memory saving.  Deriving these
- * from the main-thread constants also stops them drifting apart again. */
-#define CL_WORKER_VM_STACK_SIZE  CL_VM_STACK_SIZE   /* 16K entries = 64KB */
-#define CL_WORKER_VM_FRAME_SIZE  CL_VM_FRAME_SIZE   /* 1024 frames */
-#define CL_WORKER_SAVED_PENDING  CL_MAX_SAVED_PENDING /* 256 saved-pending */
-
-/* NLX (BLOCK/CATCH/TAGBODY/UNWIND-PROTECT) frames are the single largest
- * per-worker cost (~298B each), so on the memory-constrained AmigaOS target we
- * cap workers below the main thread's CL_MAX_NLX_FRAMES rather than matching it.
- * 512 is 2x the historical worker value (256, which never produced a reported
- * NLX overflow) yet saves ~447KB/worker vs the full 2048 — the difference
- * between ~1.36MB and ~0.9MB per worker on 8MB hardware.  It is deliberately
- * decoupled from the VM frame budget (which MUST match main — that was the
- * actual hang bug): NLX depth is normally a small fraction of call depth.
- *
- * This is safe ONLY because every NLX overflow guard and diagnostic loop bounds
- * against the per-thread capacity cl_nlx_max (== CT->nlx_max, set to this value
- * for workers) rather than the global CL_MAX_NLX_FRAMES constant — see vm.c
- * (OP_BLOCK_PUSH/OP_CATCH/OP_TAGBODY/OP_UNWIND_PROTECT + the NLX diagnostics),
- * builtins_condition.c and jit/runtime.c.  If you make this smaller than main,
- * that invariant MUST hold or a worker will write past its shorter nlx_stack.
- * Tradeoff: a worker nesting >512 simultaneously-live NLX frames on Amiga hits
- * the same unrecoverable-overflow class as the VM-frame bug (silent thread
- * death); raise toward CL_MAX_NLX_FRAMES if a real Amiga workload needs it.
- * Host is unconstrained, so it keeps the full main-thread budget. */
+ * AMIGA: keep the historical compact sizes -- byte-for-byte what shipped before
+ * this fix.  Two reasons: (1) RAM is scarce on the 8MB target, and (2) the
+ * decisive one -- bumping these sizes shifts heap/binary layout enough to tip a
+ * PRE-EXISTING, layout-fragile moving-GC bug into firing (a Guru partway through
+ * the Amiga test suite; the parent commit passes the whole suite).  The bug is
+ * NOT in this code: the crash lands on the main thread before any worker exists,
+ * and moves to a different, unrelated test for a different layout (the
+ * heisenbug signature).  Until that GC bug is fixed separately, the worker-size
+ * fix stays host-only -- which is where it is needed: Sly connects to the host
+ * binary, so the hang is a host problem, and Amiga worker code keeps the
+ * pre-existing 256-frame budget it has always run with. */
 #if defined(PLATFORM_AMIGA)
-#define CL_WORKER_NLX_FRAMES     512                /* AmigaOS: bounded */
+#define CL_WORKER_VM_STACK_SIZE  4096   /* 4K entries = 16KB (pre-fix value) */
+#define CL_WORKER_VM_FRAME_SIZE  256    /* 256 frames        (pre-fix value) */
+#define CL_WORKER_NLX_FRAMES     256    /* 256 NLX frames    (pre-fix value) */
+#define CL_WORKER_SAVED_PENDING   64    /* 64 saved-pending  (pre-fix value) */
+#define CL_WORKER_C_STACK_SIZE     0    /* OS default (~64KB, pre-fix value) */
 #else
-#define CL_WORKER_NLX_FRAMES     CL_MAX_NLX_FRAMES  /* host: match main (2048) */
+#define CL_WORKER_VM_STACK_SIZE  CL_VM_STACK_SIZE      /* 16K entries = 64KB */
+#define CL_WORKER_VM_FRAME_SIZE  CL_VM_FRAME_SIZE      /* 1024 frames */
+#define CL_WORKER_NLX_FRAMES     CL_MAX_NLX_FRAMES     /* 2048 NLX frames */
+#define CL_WORKER_SAVED_PENDING  CL_MAX_SAVED_PENDING  /* 256 saved-pending */
+#define CL_WORKER_C_STACK_SIZE   (8u * 1024u * 1024u)  /* match main (8MB) */
 #endif
-
-/* OS/C stack for a worker thread.  This is a SEPARATE resource from the
- * heap-allocated VM frame stack above: every nested cl_vm_apply also consumes
- * one native C stack frame, so the OS stack must be big enough to actually USE
- * the CL_WORKER_VM_FRAME_SIZE call-frame budget.  Passing 0 to
- * platform_thread_create takes the OS default, which is far smaller than the
- * main thread's: only ~512KB on macOS (main = 8MB) and 64KB on AmigaOS.  A
- * worker whose OS stack is smaller than main's would then SIGSEGV (host, guard
- * page) or silently corrupt memory (AmigaOS has no guard page) at a call depth
- * the main thread handles fine — the same "works on main, dies on a worker"
- * asymmetry as the VM-frame-size bug, just one level down.  Match the main
- * thread on host; on AmigaOS use a bounded value (RAM is scarce) that still
- * clears the OS default by a wide margin. */
-#if defined(PLATFORM_AMIGA)
-#define CL_WORKER_C_STACK_SIZE  (512u * 1024u)         /* AmigaOS: 512KB */
-#else
-#define CL_WORKER_C_STACK_SIZE  (8u * 1024u * 1024u)   /* host: match main (8MB) */
-#endif
-
-/* Concrete per-worker memory cost on AmigaOS (m68k, 32-bit pointers), so the
- * tradeoff above is quantified rather than left as "bigger":
- *   VM stack:      16K entries * 4B               =  64KB
- *   VM frames:    1024 * sizeof(CL_Frame)  (~34B)  =  34KB
- *   NLX frames:    512 * sizeof(CL_NLXFrame)(~298B)= 149KB  (Amiga cap; 2048 on host)
- *   saved-pending: 256 * sizeof(CL_SavedPending)(~616B) = 154KB
- *                                        fixed subtotal ~= 401KB
- *   + CL_WORKER_C_STACK_SIZE (native OS stack)      = 512KB
- *                                        total per worker ~= 0.9MB
- * On real 8MB Amiga hardware that leaves room for a modest number of
- * concurrent mp:make-thread workers alongside the Lisp heap and main
- * thread — budget for roughly 7-8 simultaneous workers at ~0.9MB each
- * (the 5-thread "concurrent add-method does not break peer dispatch"
- * test in tests/amiga/run-tests.lisp stays comfortably within that),
- * not dozens. Callers spawning many
- * short-lived workers should join/reclaim them promptly instead of
- * keeping large pools alive. */
 
 /* Thread side table: maps thread_id -> CL_Thread* */
 #define CL_MAX_THREADS 256
@@ -614,8 +562,8 @@ int    cl_symbol_boundp(CL_Obj sym);
 #define cl_nlx_top          (CT->nlx_top)
 /* Per-thread NLX capacity: the number of CL_NLXFrame slots actually allocated
  * for THIS thread's nlx_stack (CL_MAX_NLX_FRAMES for the main thread,
- * CL_WORKER_NLX_FRAMES for workers — which may be smaller on AmigaOS).  Every
- * NLX push guard and diagnostic loop MUST bound against this, NOT the global
+ * CL_WORKER_NLX_FRAMES for workers — which is smaller on AmigaOS).  Every NLX
+ * push guard and diagnostic loop MUST bound against this, NOT the global
  * CL_MAX_NLX_FRAMES constant: a worker with a smaller allocation would
  * otherwise be allowed to write past the end of its nlx_stack (heap
  * corruption). */

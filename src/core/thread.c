@@ -557,10 +557,10 @@ CL_Thread *cl_thread_alloc_worker(void)
     if (!t) return NULL;
     memset(t, 0, sizeof(CL_Thread));
 
-    /* Allocate VM stack and frames.  Worker sizes equal the main thread's
-     * (the CL_WORKER_ sizes now derive from the main-thread constants in
-     * thread.h): a worker with a smaller budget silently dies at a call or NLX
-     * depth that the main thread handles. */
+    /* Allocate VM stack and frames.  On host the CL_WORKER_ sizes equal the
+     * main thread's, so a worker can run the same call/NLX depth main can (a
+     * smaller budget silently kills the worker — see thread.h).  On AmigaOS they
+     * stay at the historical compact sizes; see the CL_WORKER_* rationale. */
     t->vm.stack = (CL_Obj *)platform_alloc(
         CL_WORKER_VM_STACK_SIZE * sizeof(CL_Obj));
     if (!t->vm.stack) { platform_free(t); return NULL; }

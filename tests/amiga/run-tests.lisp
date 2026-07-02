@@ -6312,44 +6312,29 @@
 (check "thread make with name" "worker"
   (mp:thread-name (mp:make-thread (lambda () nil) :name "worker")))
 
-; Regression: a worker thread must tolerate the same call-nesting depth as the
-; main thread.  Worker VM frame/stack sizes used to be much smaller than main's,
-; so a recursion ~300-deep overflowed the worker's VM frame stack (256 frames)
-; where the main thread (1024) coped.  That overflow could not be caught (running
-; a handler itself needs frames) so the worker died silently and its result was
-; lost -- which is why (asdf:load-system ...) hung under Sly (slynk evaluates on
-; a channel worker thread) yet loaded fine headless (main thread).  Depth 300 is
-; over the old worker limit (256): pre-fix the worker dies and join-thread
-; returns NIL; post-fix it returns 300 exactly like the main thread.
-(check "worker tolerates deep recursion like main thread" 300
-  (mp:join-thread
-   (mp:make-thread
-    (lambda ()
-      (labels ((r (n) (if (<= n 0) 0 (1+ (funcall #'r (1- n))))))
-        (r 300))))))
+; NOTE: the worker deep-recursion regression test (matching the main thread's
+; 1024-frame VM budget) lives in the host suite only (tests/test_threads.c).
+; The worker VM/C-stack budget increase that lets a worker run the same call
+; depth as the main thread is HOST-ONLY: on AmigaOS the worker VM frame size
+; stays at the historical compact value (256), because bumping it shifts heap
+; layout and tips a pre-existing moving-GC bug (see the CL_WORKER_* rationale
+; in src/core/thread.h).  So there is no Amiga-side worker deep-CALL-nesting
+; guarantee to assert here.
 
 ; Regression: a worker must tolerate deep NLX (CATCH/BLOCK/UNWIND-PROTECT)
-; nesting, and the overflow guards must bound against the per-thread nlx_max --
-; not the global CL_MAX_NLX_FRAMES.  The worker nlx_stack is capped at 512 on
-; AmigaOS (host: 2048); nesting 400 catch frames (over the old 256 allocation)
-; must work rather than corrupt the heap.  The throw unwinds to the innermost
-; catch and 42 propagates out.
+; nesting up to its own nlx_stack capacity, and the overflow guards must bound
+; against the per-thread nlx_max -- not the global CL_MAX_NLX_FRAMES -- or a
+; worker whose nlx_stack allocation is smaller than the global bound (as on
+; AmigaOS, where CL_WORKER_NLX_FRAMES is 256 vs the main thread's 2048) would
+; be allowed to write past the end of its allocation (silent heap corruption).
+; 200 is comfortably under the AmigaOS worker cap (256); the throw unwinds to
+; the innermost catch and 42 propagates out.
 (check "worker tolerates deep NLX nesting" 42
   (mp:join-thread
    (mp:make-thread
     (lambda ()
       (labels ((c (n) (if (<= n 0) (throw 'done 42) (catch 'done (c (1- n))))))
-        (catch 'done (c 400)))))))
-
-; Regression: an error raised inside deep work on a worker must still be
-; catchable -- a handler-case that used to be bypassed when the worker's frame
-; stack filled now runs, just as on the main thread.
-(check "worker handler-case runs after deep work" :caught
-  (mp:join-thread
-   (mp:make-thread
-    (lambda ()
-      (labels ((r (n) (if (<= n 0) (error "boom") (1+ (funcall #'r (1- n))))))
-        (handler-case (r 260) (error (e) (declare (ignore e)) :caught)))))))
+        (catch 'done (c 200)))))))
 
 ; --- Thread predicates ---
 (check "thread alive-p after join" nil
