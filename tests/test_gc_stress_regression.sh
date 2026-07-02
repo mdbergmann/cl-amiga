@@ -2361,6 +2361,48 @@ check_contains "sort vector with allocating :key under GC stress"      "SORTKEY:
 check_absent   "no corruption sorting vector under GC stress" \
   "corrupted\|not of type\|type 0\|FATAL" "$out"
 
+# --- Case: THROW multiple values through an allocating unwind-protect ------
+# Bug: t->pending_mv_values[], the saved_pending_stack[] snapshots, and
+# nlx_stack[i].mv_values were neither marked nor forwarded by the GC.  A
+# throw carrying (values ...) with heap objects runs the unwind-protect
+# cleanup (arbitrary allocating Lisp) between the throw and the catch
+# landing; a sweep during the cleanup collected the secondary values and
+# a compaction left them (and the saved pending_tag) as stale offsets —
+# garbage values or "No catch for tag".
+cat > "$WORK/throwmv.lisp" <<'EOF'
+(let ((ok t))
+  (dotimes (i 40)
+    (multiple-value-bind (a b c)
+        (catch 'tag
+          (unwind-protect
+              (throw 'tag (values i (list i (+ i 1)) (format nil "s~d" i)))
+            ;; allocating cleanup -> compaction while values are parked
+            (make-list 20)))
+      (unless (and (eql a i)
+                   (equal b (list i (+ i 1)))
+                   (string= c (format nil "s~d" i)))
+        (format t "BAD-THROW-MV:~s ~s ~s~%" a b c)
+        (setf ok nil))))
+  ;; nested unwind-protects: outer throw's snapshot lives on
+  ;; saved_pending_stack while the inner cleanup allocates
+  (dotimes (i 40)
+    (multiple-value-bind (x y)
+        (catch 'outer
+          (unwind-protect
+              (unwind-protect
+                  (throw 'outer (values (list i) (list (* i 2))))
+                (make-list 15))
+            (make-list 15)))
+      (unless (and (equal x (list i)) (equal y (list (* i 2))))
+        (format t "BAD-NESTED-MV:~s ~s~%" x y)
+        (setf ok nil))))
+  (format t "THROWMV:~a~%" ok))
+EOF
+out=$(run_stress "$WORK/throwmv.lisp")
+check_contains "throw values survive allocating unwind-protect cleanup" "THROWMV:T" "$out"
+check_absent   "no stale throw values / lost catch tags under GC stress" \
+  "BAD-THROW-MV\|BAD-NESTED-MV\|No catch for tag\|corrupted" "$out"
+
 echo ""
 echo "$passed passed, $failed failed, $total total"
 [ "$failed" -eq 0 ]
