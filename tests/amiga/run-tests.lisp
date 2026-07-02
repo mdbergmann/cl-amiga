@@ -6380,6 +6380,55 @@
         (unless (eql v n) (setq missing (1+ missing)))))
     missing))
 
+; Regression: concurrent SLOW-PATH dispatch must not corrupt a generic
+; function's dispatch-cache hash table.  A GF's dispatch cache is read AND
+; written from multiple threads (main loader + sento/log4cl workers dispatching
+; the same GF).  It was a plain lock-free hash table: two threads splicing new
+; entries onto the same bucket, or one rehashing (relinking every cell into a
+; doubled bucket vector) while another walks it, could cross-link the chains and
+; crash rarely under contention.  Fixed by creating dispatch caches with
+; %MAKE-SYNC-HASH-TABLE (lib/clos.lisp %make-dispatch-cache), whose access is
+; serialized (CL_HT_FLAG_SYNC in builtins_hashtable.c) with an allocation-free
+; critical section — so only the slow path pays, and the monomorphic inline
+; cache fast path stays lock-free.  Many threads dispatch one polymorphic GF
+; over many classes, refilling a fresh (empty) cache each round to maximise the
+; splice/rehash contention window.  A corrupt table shows up as a crash (the
+; FS-UAE watchdog kills the run) or a wrong/errored dispatch result.
+(defparameter *amcache-classes*
+  (let ((v (make-array 24)))
+    (dotimes (i 24)
+      (let ((name (intern (format nil "AMCACHE-CLASS-~a" i))))
+        (eval `(defclass ,name () ()))
+        (setf (aref v i) name)))
+    v))
+(defparameter *amcache-instances*
+  (let ((v (make-array 24)))
+    (dotimes (i 24) (setf (aref v i) (make-instance (aref *amcache-classes* i))))
+    v))
+(check "concurrent dispatch does not corrupt the dispatch cache" 0
+  (let ((fails 0))
+    (dotimes (round 4)
+      ;; Fresh GF each round → empty dispatch cache, refilled concurrently.
+      (eval '(defgeneric amcache-dispatch (x)))
+      (dotimes (i 24)
+        (eval `(defmethod amcache-dispatch ((x ,(aref *amcache-classes* i))) ,i)))
+      (let ((workers nil))
+        (dotimes (w 4)
+          (push (mp:make-thread
+                  (lambda ()
+                    (let ((bad 0))
+                      (dotimes (p 20)
+                        (dotimes (i 24)
+                          (let ((r (handler-case
+                                       (amcache-dispatch (aref *amcache-instances* i))
+                                     (error () :fail))))
+                            (unless (eql r i) (setq bad (1+ bad))))))
+                      bad))
+                  :name "amcache-disp")
+                workers))
+        (dolist (thr workers) (setq fails (+ fails (mp:join-thread thr))))))
+    fails))
+
 ; --- Thread yield ---
 (check "thread-yield no crash" nil
   (mp:thread-yield))
