@@ -474,30 +474,37 @@ static CL_Obj format_condition_report(CL_Condition *c)
         CL_Obj sstream, result;
         int list_len = 0;
         CL_Obj tmp;
-        CL_Obj fmt_args_arr[32];  /* max 30 format args */
+        CL_Obj args_buf[32];  /* [dest, fmt, up to 30 format args] */
         int i;
 
-        /* Count and collect format arguments from list */
+        /* Collect the control string and arguments into args_buf BEFORE
+         * any allocation, then GC-root every slot: both
+         * cl_make_string_output_stream and cl_format_to_stream allocate
+         * and can compact, which would leave the un-rooted CL_Obj copies
+         * (and the fmt_ctrl local) as stale arena offsets — the report
+         * then formats relocated garbage ("CAR: corrupted pointer" under
+         * GC stress on every (error "..." args) whose report is printed).
+         * Same idiom as %FORMATTER-INNER in builtins_format.c. */
+        args_buf[0] = CL_NIL;  /* destination, filled in below */
+        args_buf[1] = fmt_ctrl;
         for (tmp = fmt_args; !CL_NULL_P(tmp) && list_len < 30; tmp = cl_cdr(tmp))
-            fmt_args_arr[list_len++] = cl_car(tmp);
+            args_buf[2 + list_len++] = cl_car(tmp);
+        for (i = 0; i < 2 + list_len; i++)
+            cl_gc_push_root(&args_buf[i]);
 
         sstream = cl_make_string_output_stream();
         CL_GC_PROTECT(sstream);
-        {
-            CL_Obj args_buf[32];
-            args_buf[0] = sstream;  /* destination (unused by cl_format_to_stream) */
-            args_buf[1] = fmt_ctrl;
-            for (i = 0; i < list_len; i++)
-                args_buf[2 + i] = fmt_args_arr[i];
-            cl_format_to_stream(sstream, args_buf, 2 + list_len);
-        }
+        args_buf[0] = sstream;  /* destination (unused by cl_format_to_stream) */
+        cl_format_to_stream(sstream, args_buf, 2 + list_len);
         result = cl_get_output_stream_string(sstream);
         {
+            /* Re-derive the stream pointer from the rooted sstream — the
+             * result-string allocation above may have compacted. */
             CL_Stream *tmp_st = (CL_Stream *)CL_OBJ_TO_PTR(sstream);
             cl_stream_free_outbuf(tmp_st->out_buf_handle);
             tmp_st->out_buf_handle = 0;
         }
-        CL_GC_UNPROTECT(1);
+        CL_GC_UNPROTECT(1 + 2 + list_len);
         return result;
     }
 }
@@ -1678,6 +1685,9 @@ static CL_Obj bi_warn(CL_Obj *args, int n)
         {
             CL_Condition *c = (CL_Condition *)CL_OBJ_TO_PTR(cond);
             CL_Obj report = format_condition_report(c);
+            /* format_condition_report allocates — re-derive c from the
+             * rooted cond before touching it again. */
+            c = (CL_Condition *)CL_OBJ_TO_PTR(cond);
             cl_color_set(CL_COLOR_YELLOW);
             cl_write_cstring_to_error("WARNING: ");
             if (!CL_NULL_P(report) && CL_STRING_P(report)) {
@@ -1719,12 +1729,20 @@ static CL_Obj bi_error(CL_Obj *args, int n)
      * :format-control, so conditions signaled by name keep a NIL report
      * and let PRINT-OBJECT dispatch supply the text. */
     {
+        CL_Obj rpt;
+        /* cond must be rooted: format_condition_report allocates (string
+         * stream + formatting), and a compaction would leave the local a
+         * stale offset — the re-derive below would then write
+         * report_string into the object's OLD location and the stale
+         * cond would be signaled. */
+        CL_GC_PROTECT(cond);
         c = (CL_Condition *)CL_OBJ_TO_PTR(cond);
-        CL_Obj rpt = format_condition_report(c);
+        rpt = format_condition_report(c);
         if (!CL_NULL_P(rpt) && CL_STRING_P(rpt)) {
             c = (CL_Condition *)CL_OBJ_TO_PTR(cond);  /* GC may have moved it */
             c->report_string = rpt;
         }
+        CL_GC_UNPROTECT(1);
     }
 
     cl_signal_condition(cond);
