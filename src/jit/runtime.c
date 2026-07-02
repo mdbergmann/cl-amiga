@@ -805,7 +805,7 @@ static int jit_nlx_frame_is_stale(CL_NLXFrame *nlx)
 void *cl_jit_runtime_block_alloc(CL_Obj tag)
 {
     CL_NLXFrame *nlx;
-    if (cl_nlx_top >= CL_MAX_NLX_FRAMES)
+    if (cl_nlx_top >= cl_nlx_max)
         cl_error(CL_ERR_OVERFLOW, "NLX stack overflow");
     nlx = &cl_nlx_stack[cl_nlx_top];
     nlx->type           = CL_NLX_BLOCK;
@@ -950,7 +950,7 @@ void cl_jit_runtime_block_return(CL_Obj tag, CL_Obj value)
 void *cl_jit_runtime_catch_alloc(CL_Obj tag)
 {
     CL_NLXFrame *nlx;
-    if (cl_nlx_top >= CL_MAX_NLX_FRAMES)
+    if (cl_nlx_top >= cl_nlx_max)
         cl_error(CL_ERR_OVERFLOW, "NLX stack overflow");
     nlx = &cl_nlx_stack[cl_nlx_top];
     nlx->type           = CL_NLX_CATCH;
@@ -1066,7 +1066,7 @@ void *cl_jit_runtime_uwprot_alloc(void)
 {
     CL_NLXFrame *nlx;
     CL_Frame    *cur;
-    if (cl_nlx_top >= CL_MAX_NLX_FRAMES)
+    if (cl_nlx_top >= cl_nlx_max)
         cl_error(CL_ERR_OVERFLOW, "NLX stack overflow");
     nlx = &cl_nlx_stack[cl_nlx_top];
     /* Snapshot the current VM frame's code/constants/bytecode so the
@@ -1470,7 +1470,7 @@ void cl_jit_runtime_restart_pop(uint32_t count)
 void *cl_jit_runtime_tagbody_alloc(CL_Obj tagbody_id)
 {
     CL_NLXFrame *nlx;
-    if (cl_nlx_top >= CL_MAX_NLX_FRAMES)
+    if (cl_nlx_top >= cl_nlx_max)
         cl_error(CL_ERR_OVERFLOW, "NLX stack overflow");
     nlx = &cl_nlx_stack[cl_nlx_top];
     nlx->type           = CL_NLX_TAGBODY;

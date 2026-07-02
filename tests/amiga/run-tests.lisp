@@ -6328,6 +6328,19 @@
       (labels ((r (n) (if (<= n 0) 0 (1+ (funcall #'r (1- n))))))
         (r 300))))))
 
+; Regression: a worker must tolerate deep NLX (CATCH/BLOCK/UNWIND-PROTECT)
+; nesting, and the overflow guards must bound against the per-thread nlx_max --
+; not the global CL_MAX_NLX_FRAMES.  The worker nlx_stack is capped at 512 on
+; AmigaOS (host: 2048); nesting 400 catch frames (over the old 256 allocation)
+; must work rather than corrupt the heap.  The throw unwinds to the innermost
+; catch and 42 propagates out.
+(check "worker tolerates deep NLX nesting" 42
+  (mp:join-thread
+   (mp:make-thread
+    (lambda ()
+      (labels ((c (n) (if (<= n 0) (throw 'done 42) (catch 'done (c (1- n))))))
+        (catch 'done (c 400)))))))
+
 ; Regression: an error raised inside deep work on a worker must still be
 ; catchable -- a handler-case that used to be bypassed when the worker's frame
 ; stack filled now runs, just as on the main thread.

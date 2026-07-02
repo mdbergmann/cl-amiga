@@ -1608,7 +1608,7 @@ static CL_Obj bi_warn(CL_Obj *args, int n)
     CL_GC_PROTECT(tag);
 
     /* Push NLX catch frame for the muffle-warning restart */
-    if (cl_nlx_top < CL_MAX_NLX_FRAMES) {
+    if (cl_nlx_top < cl_nlx_max) {
         CL_NLXFrame *frame = &cl_nlx_stack[cl_nlx_top];
         frame->type = CL_NLX_CATCH;
         frame->tag = tag;
