@@ -101,7 +101,7 @@ LIB_OBJS = $(patsubst $(SRCDIR)/%.c,$(BUILDDIR)/%.o,$(LIB_SRCS))
 TESTOBJDIR    = $(BUILDDIR)/test-obj
 LIB_TEST_OBJS = $(patsubst $(SRCDIR)/%.c,$(TESTOBJDIR)/%.o,$(LIB_SRCS))
 
-.PHONY: host test test-fast test-plus test-extra linux-test clean verify-amiga install-hooks docs-check docs-update
+.PHONY: host test test-fast test-plus test-extra linux-test clean verify-amiga install-hooks docs-check docs-update test-gc-stress test-mt-thread-exit-race
 
 host: $(BUILDDIR)/clamiga
 
@@ -223,6 +223,13 @@ test-fast: $(TEST_BINS) host
 		echo "FAIL"; \
 		failed=1; \
 	fi; \
+	echo "--- test_mt_thread_exit_gc ---"; \
+	if sh $(TEST_SRCDIR)/test_mt_thread_exit_gc.sh $(BUILDDIR)/clamiga; then \
+		echo "PASS"; \
+	else \
+		echo "FAIL"; \
+		failed=1; \
+	fi; \
 	echo "--- test_load_keywords ---"; \
 	if sh $(TEST_SRCDIR)/test_load_keywords.sh $(BUILDDIR)/clamiga; then \
 		echo "PASS"; \
@@ -297,6 +304,21 @@ test-gc-stress:
 		DEBUG_FLAGS="-DDEBUG_GC_STRESS"
 	@echo "--- test_gc_stress_regression ---"
 	@sh $(TEST_SRCDIR)/test_gc_stress_regression.sh $(GC_STRESS_BUILDDIR)/clamiga
+
+# `make test-mt-thread-exit-race` builds a dedicated DEBUG_THREAD_RACE_HOOKS
+# binary whose sole purpose (see the constructor in src/core/thread.c) is to
+# deterministically force the exact STW-hang-on-thread-exit race window that
+# cl_thread_unregister's gc_condvar broadcast fixes, instead of relying on
+# scheduler timing to hit it.  Kept out of the fast tier because it needs a
+# separate build; run it after touching thread registration, safepoints, or
+# stop-the-world coordination in thread.c.
+RACE_BUILDDIR = build/host-race
+test-mt-thread-exit-race: host
+	@$(MAKE) --no-print-directory host \
+		BUILDDIR=$(RACE_BUILDDIR) \
+		DEBUG_FLAGS="-DDEBUG_THREAD_RACE_HOOKS"
+	@echo "--- test_mt_thread_exit_gc (deterministic race) ---"
+	@sh $(TEST_SRCDIR)/test_mt_thread_exit_gc.sh $(BUILDDIR)/clamiga $(RACE_BUILDDIR)/clamiga
 
 # `make test-plus` adds the host-cold-test (sento cold-load smoke test) on top
 # of the fast tier.
