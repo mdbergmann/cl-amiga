@@ -1608,6 +1608,37 @@ When called with no arguments, passes the original method arguments."
 
 ;;; --- Standard method combination ---
 
+(defvar *gf-cache-heals* 0
+  "Count of self-healed dispatch inconsistencies: a stale negative
+   dispatch-cache entry, or a standard-combination method set that lacked a
+   primary until recomputed from the live method list.  A non-zero value
+   means the dispatch cache / applicable-method computation disagreed with
+   the authoritative method list at least once — a GC relocation artifact, a
+   concurrent cache write / method-list read from another thread, or a missed
+   invalidation — and was corrected.  Exposed for field diagnosis; normally
+   zero.")
+
+(defvar *clos-diagnose-no-primary* nil
+  "When true, a genuine \"no applicable primary method\" miss (after the
+   self-heal recompute also fails to find one) dumps a diagnostic to
+   *ERROR-OUTPUT* via %REPORT-DISPATCH-NO-PRIMARY: arg classes, their
+   precedence lists, and the GF's full method roster.  Default NIL — this is
+   an ordinary, common user error (only :before/:after/:around methods
+   defined) as well as the symptom of the rare dispatch-metadata corruption
+   the heal targets, so the dump is opt-in field-diagnosis output, not
+   printed on every occurrence.")
+
+(defvar *clos-diagnose-no-applicable* nil
+  "When true, a fresh dispatch miss that computes an EMPTY applicable-method
+   set for a GF that HAS methods — the first-call analogue of the stale
+   negative-cache entry %DISPATCH-NEGATIVE-HIT heals, but reached before any
+   negative entry exists to heal — dumps a diagnostic to *ERROR-OUTPUT* (arg
+   classes + their precedence lists + the GF's method roster) after the
+   self-heal retries also come up empty.  Default NIL: a fresh empty set is
+   usually a genuine user error (a GF called with argument types it has no
+   method for), so the dump is opt-in field-diagnosis output, printed only
+   when this flag is set before reproducing the symptom.")
+
 (defun %build-effective-method (methods)
   "Build a cacheable effective method closure (args-independent)."
   (let ((around nil)
@@ -1678,22 +1709,188 @@ When called with no arguments, passes the original method arguments."
   (let ((*current-method-args* args))
     (apply (%build-effective-method methods) args)))
 
+(defun %methods-have-primary-p (methods)
+  "True if METHODS contains at least one primary (unqualified) method."
+  (dolist (m methods nil)
+    (when (null (method-qualifiers m)) (return t))))
+
+(defun %dispatch-dump-metadata (gf args applicable recomputed)
+  "Dump the argument classes, their class-precedence-lists, and the GF's full
+   method roster (qualifiers + specializers) to *ERROR-OUTPUT*.  Shared by the
+   no-primary and no-applicable field diagnostics — a truncated CPL points at
+   class-metadata corruption, a short/wrong method list at method-list
+   corruption, so the same dump distinguishes the two failure modes for either
+   symptom.  APPLICABLE/RECOMPUTED may be NIL when the caller has no such set
+   to report (the fresh-empty case)."
+  (let ((*print-length* 20) (*print-level* 4))
+    (when args
+      (format *error-output* "; [dispatch]   arg classes: ~S~%"
+              (mapcar (lambda (a) (class-name (class-of a))) args))
+      (dolist (a args)
+        (let ((c (class-of a)))
+          (format *error-output* "; [dispatch]   CPL(~S): ~S~%"
+                  (class-name c)
+                  (ignore-errors
+                    (mapcar #'class-name (class-precedence-list c)))))))
+    (when (typep gf 'standard-generic-function)
+      (let ((all (gf-methods gf)))
+        (format *error-output*
+                "; [dispatch]   ~D defined method(s) on GF; ~D applicable, ~D on recompute~%"
+                (length all) (length applicable) (length recomputed))
+        (format *error-output* "; [dispatch]   applicable qualifiers: ~S~%"
+                (mapcar #'method-qualifiers applicable))
+        (dolist (m all)
+          (format *error-output* "; [dispatch]     method q=~S specs=~S~%"
+                  (method-qualifiers m)
+                  (ignore-errors
+                    (mapcar (lambda (s)
+                              (cond ((eql-specializer-p s)
+                                     (list 'eql (eql-specializer-object s)))
+                                    ((typep s 'class) (class-name s))
+                                    (t s)))
+                            (method-specializers m)))))))))
+
+(defun %report-dispatch-no-primary (gf args applicable recomputed)
+  "Emit a diagnostic when standard combination finds applicable methods but
+   NO primary among them.  In conformant code this is a genuine user error
+   (only :before/:after/:around defined); but it also surfaces the same
+   intermittent dispatch-metadata corruption as the negative-cache path —
+   a GC relocation of a class's precedence list or the GF method list, or a
+   concurrent mutation from another thread (log4cl's watcher / sento workers
+   run while the main thread dispatches), which drops the primary from the
+   applicable set even though it plainly exists.  Dump enough to tell the two
+   apart on the next occurrence: the arg classes + their precedence lists
+   (to spot a truncated CPL), and the GF's full defined-method roster with
+   qualifiers/specializers (to spot a short/corrupt method list).  A no-op
+   unless *CLOS-DIAGNOSE-NO-PRIMARY* is true — see its docstring."
+  (when *clos-diagnose-no-primary*
+    (format *error-output*
+            "~&; [dispatch] No applicable PRIMARY method for ~S~%"
+            (if (typep gf 'standard-generic-function) (gf-name gf) gf))
+    (%dispatch-dump-metadata gf args applicable recomputed)))
+
+(defvar *dispatch-heal-retries* 6
+  "How many times a dispatch self-heal recomputes the applicable-method set,
+   yielding between tries, before giving up.  A transient dispatch-metadata
+   inconsistency (a GC relocation window, or a concurrent metadata mutation
+   from a peer thread — log4cl's watcher / sento workers on the single-core
+   AmigaOS target) needs at least one yield for the mutator / GC to make
+   progress, after which the recompute observes the corrected set; the extra
+   tries add margin.  Only ever reached on a dispatch MISS for a GF that
+   plainly has the needed method — never on the hot path — so the cost is
+   confined to the rare heal.")
+
+(defun %recompute-methods-until (gf args predicate)
+  "Recompute (%COMPUTE-APPLICABLE-METHODS GF ARGS) up to *DISPATCH-HEAL-RETRIES*
+   times, YIELDING between tries, and return the first recomputed set that
+   satisfies PREDICATE — or NIL if none does.  The yield is what makes the
+   retry meaningful: the recompute is a pure function of the live dispatch
+   metadata, so a plain re-run with no yield just observes the same
+   (transiently corrupt) state every time.  Giving a concurrent mutator / GC a
+   scheduling slot lets the window close, after which the recompute sees the
+   real set.  Shared by both self-heals — empty applicable set (PREDICATE =
+   non-empty) and missing primary (PREDICATE = has-primary)."
+  (when (and args (typep gf 'standard-generic-function))
+    (dotimes (i *dispatch-heal-retries*)
+      (let ((methods (%compute-applicable-methods gf args)))
+        (when (funcall predicate methods)
+          (return-from %recompute-methods-until methods)))
+      (mp:thread-yield)))
+  nil)
+
+(defun %gf-roster-has-primary-p (gf)
+  "True if GF's method roster contains at least one primary (unqualified)
+   method.  Distinguishes a genuine \"only :around/:before/:after defined\"
+   user error (no retry — it can never yield an applicable primary) from a
+   suspicious applicable set that lacks a primary the GF plainly defines
+   (retry-and-heal)."
+  (and (typep gf 'standard-generic-function)
+       (dolist (m (gf-methods gf) nil)
+         (when (null (method-qualifiers m)) (return t)))))
+
+(defun %dispatch-standard-emf (gf methods)
+  "Build a standard-combination EMF from METHODS, but if there is no primary
+   method, first re-verify against the live method list (via
+   %RECOMPUTE-METHODS-UNTIL on *CURRENT-METHOD-ARGS*, bound by every dispatch
+   resolver) before letting %BUILD-EFFECTIVE-METHOD signal \"No applicable
+   primary method\".  A recomputed set that DOES contain a primary means the
+   set handed in was stale/corrupt (same class of transient dispatch-metadata
+   corruption as the negative-cache bug — a GC relocation of an argument
+   class's precedence list, or a concurrent metadata read while a peer thread
+   mutates it, dropping the applicable primary while the ((t)(t)) :around
+   survives); retry-with-yield and heal.  Gated on the GF's roster actually
+   containing a primary: a GF with only :around/:before/:after can never heal,
+   so it errors immediately with no wasted retries.  Otherwise the miss is
+   genuine (or the corruption is persistent) — dump a diagnostic and fall
+   through to the normal error.  Preserves the fast path bit-for-bit when a
+   primary is present in the handed-in set."
+  (if (%methods-have-primary-p methods)
+      (%build-effective-method methods)
+      (let* ((args *current-method-args*)
+             (recomputed (and (%gf-roster-has-primary-p gf)
+                              (%recompute-methods-until
+                               gf args #'%methods-have-primary-p))))
+        (if recomputed
+            (progn
+              (setq *gf-cache-heals* (+ *gf-cache-heals* 1))
+              (%build-effective-method recomputed))
+            (progn
+              (%report-dispatch-no-primary
+               gf args methods
+               (and args (typep gf 'standard-generic-function)
+                    (%compute-applicable-methods gf args)))
+              ;; Genuine miss / persistent corruption: signal as before.
+              (%build-effective-method methods))))))
+
 (defun %dispatch-build-emf (gf methods)
   "Build an EMF honouring the GF's method combination.
    GF is the generic-function metaobject.  When the combination slot is
-   NIL (pre-Phase-8 GFs) or names the standard combination, the original
-   %BUILD-EFFECTIVE-METHOD path is used — so existing dispatch is
-   preserved bit-for-bit.  Non-standard combinations route through
-   %BUILD-SHORT-EFFECTIVE-METHOD or %BUILD-LONG-EFFECTIVE-METHOD."
+   NIL (pre-Phase-8 GFs) or names the standard combination, the
+   %BUILD-EFFECTIVE-METHOD path is used (via %DISPATCH-STANDARD-EMF, which
+   adds a no-primary re-verify/heal + diagnostic).  Non-standard combinations
+   route through %BUILD-SHORT-EFFECTIVE-METHOD or %BUILD-LONG-EFFECTIVE-METHOD."
   (let ((combo (gf-method-combination gf)))
     (cond
-      ((null combo) (%build-effective-method methods))
-      ((eq (%struct-ref combo 2) :standard) (%build-effective-method methods))
+      ((null combo) (%dispatch-standard-emf gf methods))
+      ((eq (%struct-ref combo 2) :standard) (%dispatch-standard-emf gf methods))
       ((eq (%struct-ref combo 2) :short)
        (%build-short-effective-method combo methods))
       ((eq (%struct-ref combo 2) :long)
        (%build-long-effective-method gf combo methods))
-      (t (%build-effective-method methods)))))
+      (t (%dispatch-standard-emf gf methods)))))
+
+(defun %dispatch-heal-empty (gf args)
+  "A *fresh* (uncached) dispatch miss on GF for ARGS computed an EMPTY
+   applicable-method set.  This is the first-call analogue of the stale
+   negative-cache entry %DISPATCH-NEGATIVE-HIT heals: the same transient
+   dispatch-metadata corruption — a GC relocation of a class precedence list
+   or the GF method list, or a concurrent metadata mutation from a peer thread
+   (log4cl's watcher / sento workers dispatch while the main thread loads a
+   system) — can make one %COMPUTE-APPLICABLE-METHODS pass observe an empty set
+   even though a method plainly applies.  On the *first* miss no negative entry
+   exists yet, so nothing had a chance to self-heal, and the plain path would
+   cache a (now stale) negative AND immediately signal NO-APPLICABLE-METHOD.
+
+   Defend that first miss the same way: if GF actually has methods, recompute
+   with yields between tries (%RECOMPUTE-METHODS-UNTIL) so any in-flight window
+   can close.  Return an EMF to dispatch through if a retry finds methods (and
+   bump *GF-CACHE-HEALS*), or NIL for a genuine miss — the caller then caches
+   the negative + signals NO-APPLICABLE-METHOD exactly as before.  A GF with
+   zero methods, or a real type mismatch, recomputes empty every time and
+   returns NIL, so this never turns a genuine miss into a spurious call."
+  (when (gf-methods gf)
+    (let ((methods (%recompute-methods-until gf args (lambda (m) m))))
+      (cond
+        (methods
+         (setq *gf-cache-heals* (+ *gf-cache-heals* 1))
+         (return-from %dispatch-heal-empty (%dispatch-build-emf gf methods)))
+        (*clos-diagnose-no-applicable*
+         (format *error-output*
+                 "~&; [dispatch] Fresh miss computed EMPTY applicable set for ~S (GF has ~D method(s))~%"
+                 (if (typep gf 'standard-generic-function) (gf-name gf) gf)
+                 (length (gf-methods gf)))
+         (%dispatch-dump-metadata gf args nil nil)))))
+  nil)
 
 (defun %make-method-chain (methods)
   "Build a call-next-method chain from primary methods."
@@ -1799,6 +1996,45 @@ When called with no arguments, passes the original method arguments."
       (error "No applicable method for ~S with args of types ~S"
              (gf-name gf) (mapcar #'type-of args))))
 
+(defun %make-dispatch-cache (test)
+  "Create a hash table for a generic-function dispatch cache.
+
+   Dispatch caches are the one class of hash table in the system that is read
+   AND written from multiple threads: the main thread loading a system while
+   worker / watcher threads (sento, log4cl) dispatch the same generic
+   functions.  A plain (lock-free) table can have its bucket chains corrupted
+   when two threads splice or rehash it at once, which crashes rarely under
+   contention.  A synchronized table serializes those slow-path cache updates
+   internally (see CL_HT_FLAG_SYNC in builtins_hashtable.c).
+
+   This guards only the slow (cache-miss) path — the monomorphic inline-cache
+   fast path in the discriminating function never touches this table, so the
+   hot dispatch path pays nothing.  TEST is 'EQ or 'EQL."
+  (clamiga::%make-sync-hash-table test))
+
+(defun %dispatch-negative-hit (gf args table key)
+  "A cache lookup returned a *negative* entry (present, value NIL) meaning
+   \"no method applies\" for this class tuple.  The dispatch cache is only a
+   memo of a pure function (the applicable-method set for a tuple of argument
+   classes), so a cached negative that contradicts the live method list is by
+   definition stale — it can arise from a GC relocation touching the EQ-keyed
+   cache, a concurrent cache write from another thread (sento spins up worker
+   threads that dispatch GFs while the main thread loads systems), or a missed
+   invalidation.  Rather than trust the memo, recompute from the authoritative
+   method list: if methods now apply, heal the cache entry and dispatch;
+   otherwise the miss is genuine and we signal NO-APPLICABLE-METHOD.  This
+   never turns a correct miss into a spurious call — a genuine no-method
+   recomputes empty and still signals — it only rescues a stale/corrupt
+   negative that would otherwise wrongly report \"No applicable method\" for a
+   method that plainly exists."
+  (let ((methods (%compute-applicable-methods gf args)))
+    (if methods
+        (let ((emf (%dispatch-build-emf gf methods)))
+          (setq *gf-cache-heals* (+ *gf-cache-heals* 1))
+          (setf (gethash key table) emf)
+          (apply emf args))
+        (%no-applicable-method gf args))))
+
 (defun %gf-dispatch-eql (gf args)
   "Dispatch a GF with EQL specializers using mixed EQL/class cache.
    Cache structure at each level: (eql-ht . class-ht) cons.
@@ -1809,8 +2045,8 @@ When called with no arguments, passes the original method arguments."
          (cache (gf-dispatch-cache gf)))
     (unless cache
       ;; Initialize: (eql-ht . class-ht) cons
-      (setq cache (cons (make-hash-table :test 'eql)
-                        (make-hash-table :test 'eq)))
+      (setq cache (cons (%make-dispatch-cache 'eql)
+                        (%make-dispatch-cache 'eq)))
       (%set-gf-dispatch-cache gf cache))
     ;; Navigate/create nested levels for each position with EQL/class specializers
     (let ((node cache)
@@ -1829,8 +2065,8 @@ When called with no arguments, passes the original method arguments."
                (key (if use-eql arg (class-of arg)))
                (next (gethash key ht)))
           (unless next
-            (setq next (cons (make-hash-table :test 'eql)
-                             (make-hash-table :test 'eq)))
+            (setq next (cons (%make-dispatch-cache 'eql)
+                             (%make-dispatch-cache 'eq)))
             (setf (gethash key ht) next))
           (setq node next)
           (setq a (cdr a))
@@ -1848,22 +2084,26 @@ When called with no arguments, passes the original method arguments."
           (if found
               (if emf
                   (apply emf args)
-                  (%no-applicable-method gf args))
+                  (%dispatch-negative-hit gf args ht key))
               (let ((methods (%compute-applicable-methods gf args)))
                 (if methods
                     (let ((new-emf (%dispatch-build-emf gf methods)))
                       (setf (gethash key ht) new-emf)
                       (apply new-emf args))
-                    (progn
-                      (setf (gethash key ht) nil)
-                      (%no-applicable-method gf args))))))))))
+                    (let ((healed (%dispatch-heal-empty gf args)))
+                      (if healed
+                          (progn (setf (gethash key ht) healed)
+                                 (apply healed args))
+                          (progn
+                            (setf (gethash key ht) nil)
+                            (%no-applicable-method gf args))))))))))))
 
 (defun %gf-dispatch-cached (gf args n-specialized)
   "Look up or compute effective method using nested class cache.
    N-SPECIALIZED is the number of specialized arg positions."
   (let ((cache (gf-dispatch-cache gf)))
     (unless cache
-      (setq cache (make-hash-table :test 'eq))
+      (setq cache (%make-dispatch-cache 'eq))
       (%set-gf-dispatch-cache gf cache))
     ;; Navigate/create nested hash tables for positions 0..n-specialized-2
     (let ((table cache)
@@ -1876,7 +2116,7 @@ When called with no arguments, passes the original method arguments."
         (let* ((class (class-of (car a)))
                (next (gethash class table)))
           (unless next
-            (setq next (make-hash-table :test 'eq))
+            (setq next (%make-dispatch-cache 'eq))
             (setf (gethash class table) next))
           (setq table next)
           (setq a (cdr a))
@@ -1889,15 +2129,19 @@ When called with no arguments, passes the original method arguments."
           (if found
               (if emf
                   (apply emf args)
-                  (%no-applicable-method gf args))
+                  (%dispatch-negative-hit gf args table class))
               (let ((methods (%compute-applicable-methods gf args)))
                 (if methods
                     (let ((new-emf (%dispatch-build-emf gf methods)))
                       (setf (gethash class table) new-emf)
                       (apply new-emf args))
-                    (progn
-                      (setf (gethash class table) nil)
-                      (%no-applicable-method gf args))))))))))
+                    (let ((healed (%dispatch-heal-empty gf args)))
+                      (if healed
+                          (progn (setf (gethash class table) healed)
+                                 (apply healed args))
+                          (progn
+                            (setf (gethash class table) nil)
+                            (%no-applicable-method gf args))))))))))))
 
 ;;; --- GF dispatch ---
 
@@ -1914,7 +2158,12 @@ When called with no arguments, passes the original method arguments."
       (t
        (let ((methods (%compute-applicable-methods gf args)))
          (unless methods
-           (return-from %gf-dispatch (%no-applicable-method gf args)))
+           (let* ((*current-method-args* args)
+                  (healed (%dispatch-heal-empty gf args)))
+             (return-from %gf-dispatch
+               (if healed
+                   (apply healed args)
+                   (%no-applicable-method gf args)))))
          (let ((*current-method-args* args))
            (apply (%dispatch-build-emf gf methods) args)))))))
 
@@ -1976,12 +2225,12 @@ When called with no arguments, passes the original method arguments."
              (class (class-of a))
              (*current-method-args* args))
          (unless cache
-           (setq cache (make-hash-table :test 'eq))
+           (setq cache (%make-dispatch-cache 'eq))
            (%set-gf-dispatch-cache gf cache))
          (multiple-value-bind (emf found) (gethash class cache)
            (cond
              ((and found emf) (funcall emf a))
-             (found (%gf-1-no-method-error gf a))
+             (found (%dispatch-negative-hit gf args cache class))
              (t
               (let ((methods (%compute-applicable-methods gf args)))
                 (cond
@@ -1992,8 +2241,13 @@ When called with no arguments, passes the original method arguments."
                        (%set-gf-inline-cache gf (cons class new-emf)))
                      (funcall new-emf a)))
                   (t
-                   (setf (gethash class cache) nil)
-                   (%gf-1-no-method-error gf a)))))))))
+                   (let ((healed (%dispatch-heal-empty gf args)))
+                     (if healed
+                         (progn (setf (gethash class cache) healed)
+                                (funcall healed a))
+                         (progn
+                           (setf (gethash class cache) nil)
+                           (%gf-1-no-method-error gf a))))))))))))
       (t (%gf-dispatch gf args)))))
 
 (defun %gf-2-no-method-error (gf a b)
@@ -2006,7 +2260,7 @@ When called with no arguments, passes the original method arguments."
   (multiple-value-bind (emf found) (gethash key table)
     (cond
       ((and found emf) (funcall emf a b))
-      (found (%gf-2-no-method-error gf a b))
+      (found (%dispatch-negative-hit gf args table key))
       (t
        (let ((methods (%compute-applicable-methods gf args)))
          (cond
@@ -2017,8 +2271,13 @@ When called with no arguments, passes the original method arguments."
                 (%set-gf-inline-cache gf (cons c1 (cons c2 new-emf))))
               (funcall new-emf a b)))
            (t
-            (setf (gethash key table) nil)
-            (%gf-2-no-method-error gf a b))))))))
+            (let ((healed (%dispatch-heal-empty gf args)))
+              (if healed
+                  (progn (setf (gethash key table) healed)
+                         (funcall healed a b))
+                  (progn
+                    (setf (gethash key table) nil)
+                    (%gf-2-no-method-error gf a b)))))))))))
 
 (defun %gf-dispatch-2-slow (gf a b)
   (let ((mode (gf-cacheable-p gf))
@@ -2030,7 +2289,7 @@ When called with no arguments, passes the original method arguments."
              (c2 (class-of b))
              (*current-method-args* args))
          (unless cache
-           (setq cache (make-hash-table :test 'eq))
+           (setq cache (%make-dispatch-cache 'eq))
            (%set-gf-dispatch-cache gf cache))
          (cond
            ((>= mode 2)
@@ -2039,7 +2298,7 @@ When called with no arguments, passes the original method arguments."
             ;; agree on key shape.
             (let ((inner (gethash c1 cache)))
               (unless inner
-                (setq inner (make-hash-table :test 'eq))
+                (setq inner (%make-dispatch-cache 'eq))
                 (setf (gethash c1 cache) inner))
               (%gf-2-resolve gf a b args inner c2 c1 c2)))
            (t
@@ -2361,6 +2620,17 @@ already-existing GF the installed combination is preserved."
            (eq (car gf-name) 'setf)
            (eq (cadr gf-name) 'slot-value-using-class))))
 
+(defvar *gf-methods-lock* (mp:make-lock "gf-methods-lock")
+  "Serializes the read-modify-write of GF-METHODS across concurrent
+   %INSTALL-METHOD-IN-GF / %UNINSTALL-METHOD-FROM-GF calls (possibly on
+   different GFs).  The single %SET-GF-METHODS store is atomic at the
+   reader's granularity — a dispatcher never sees a torn list — but two
+   writers that both read the old list before either stores race to a
+   lost update: whichever store lands second silently discards the
+   other's method/removal.  A coarse global lock (rather than a lock
+   per GF) keeps the fix simple and correct; GF (re)definition is not a
+   hot path, so serializing it across all GFs has no measurable cost.")
+
 (defun %install-method-in-gf (gf method)
   "Low-level install: put METHOD into GF's method list, replacing any
    method with matching qualifiers and specializers.  Invalidates the
@@ -2373,12 +2643,30 @@ already-existing GF the installed combination is preserved."
         (specializers (method-specializers method))
         (gf-name (gf-name gf)))
     (%set-method-generic-function method gf)
-    (%set-gf-methods gf
-      (remove-if (lambda (m)
-                   (and (equal (method-qualifiers m) qualifiers)
-                        (equal (method-specializers m) specializers)))
-                 (gf-methods gf)))
-    (%set-gf-methods gf (cons method (gf-methods gf)))
+    ;; Update the method list with a SINGLE atomic store, under
+    ;; *GF-METHODS-LOCK* so concurrent installers/uninstallers don't race
+    ;; each other's read-modify-write (see the lock's docstring).  Building
+    ;; the full new list (new method consed onto the old list minus any it
+    ;; replaces) and storing it once means a concurrent dispatcher on
+    ;; another thread always observes a *complete* method list — either the
+    ;; old set or the new set, both of which contain every applicable
+    ;; method. The previous two-step form (store the filtered list, THEN
+    ;; cons the method on) left a window where GF-METHODS transiently
+    ;; EXCLUDED the method being (re)defined; a dispatcher that walked the
+    ;; list in that window computed an empty applicable set and wrongly
+    ;; signalled "No applicable method" for a method that plainly exists.
+    ;; That is the multi-threaded race behind the ASDF field reports
+    ;; (log4cl's watcher / worker threads dispatch GFs while the main
+    ;; thread (re)defines methods during asdf:load-system).  %struct-set is
+    ;; a single word store, so the swap is atomic at the reader's
+    ;; granularity.
+    (mp:with-lock-held (*gf-methods-lock*)
+      (%set-gf-methods gf
+        (cons method
+              (remove-if (lambda (m)
+                           (and (equal (method-qualifiers m) qualifiers)
+                                (equal (method-specializers m) specializers)))
+                         (gf-methods gf)))))
     (%set-gf-dispatch-cache gf nil)
     (%set-gf-inline-cache gf nil)
     ;; Defer cacheable-p / eql-value-sets recompute to first dispatch.
@@ -2398,8 +2686,9 @@ already-existing GF the installed combination is preserved."
    dispatch state.  Returns GF.  Broadcasts UPDATE-DEPENDENT so
    observers see removals regardless of whether the caller used the
    REMOVE-METHOD GF or this primitive."
-  (%set-gf-methods gf
-    (remove method (gf-methods gf) :test #'eq))
+  (mp:with-lock-held (*gf-methods-lock*)
+    (%set-gf-methods gf
+      (remove method (gf-methods gf) :test #'eq)))
   (%set-gf-dispatch-cache gf nil)
   (%set-gf-inline-cache gf nil)
   ;; Lazy: see %install-method-in-gf.  Mark dirty; %gf-dispatch recomputes

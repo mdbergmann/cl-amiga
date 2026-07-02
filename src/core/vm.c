@@ -336,8 +336,8 @@ void cl_nlx_overflow_summary(const char *where)
     int window = cl_nlx_top < 64 ? cl_nlx_top : 64;
 
     fprintf(stderr, "[NLX-OVERFLOW] %s top=%d max=%d\n",
-            where, cl_nlx_top, CL_MAX_NLX_FRAMES);
-    for (k = 0; k < cl_nlx_top && k < CL_MAX_NLX_FRAMES; k++) {
+            where, cl_nlx_top, cl_nlx_max);
+    for (k = 0; k < cl_nlx_top && k < cl_nlx_max; k++) {
         int t = cl_nlx_stack[k].type;
         if (t >= 0 && t < 4) counts[t]++;
     }
@@ -383,7 +383,7 @@ void cl_nlx_debug_dump(const char *where, unsigned tag)
     int k;
     static const char *tn[4] = { "CATCH", "UWPROT", "BLOCK", "TAGBODY" };
     fprintf(stderr, "[NLX] %s tag=0x%08x top=%d\n", where, tag, cl_nlx_top);
-    for (k = cl_nlx_top; k >= 0 && k < CL_MAX_NLX_FRAMES; k--) {
+    for (k = cl_nlx_top; k >= 0 && k < cl_nlx_max; k--) {
         int t = cl_nlx_stack[k].type;
         fprintf(stderr, "        [%d] type=%s tag=0x%08x vm_sp=%d vm_fp=%d\n",
                 k, (t >= 0 && t < 4) ? tn[t] : "?",
@@ -2894,7 +2894,7 @@ static CL_Obj cl_vm_run(int base_fp, int base_nlx)
             CL_Obj block_tag = constants[tag_idx];
             CL_NLXFrame *nlx;
 
-            if (cl_nlx_top >= CL_MAX_NLX_FRAMES) {
+            if (cl_nlx_top >= cl_nlx_max) {
                     cl_nlx_overflow_summary("vm");
                     cl_error(CL_ERR_OVERFLOW, "NLX stack overflow");
                 }
@@ -3055,7 +3055,7 @@ static CL_Obj cl_vm_run(int base_fp, int base_nlx)
             CL_Obj tagbody_id = constants[id_idx];
             CL_NLXFrame *nlx;
 
-            if (cl_nlx_top >= CL_MAX_NLX_FRAMES) {
+            if (cl_nlx_top >= cl_nlx_max) {
                     cl_nlx_overflow_summary("vm");
                     cl_error(CL_ERR_OVERFLOW, "NLX stack overflow");
                 }
@@ -3562,7 +3562,7 @@ static CL_Obj cl_vm_run(int base_fp, int base_nlx)
             CL_Obj catch_tag = cl_vm_pop();
             CL_NLXFrame *nlx;
 
-            if (cl_nlx_top >= CL_MAX_NLX_FRAMES) {
+            if (cl_nlx_top >= cl_nlx_max) {
                     cl_nlx_overflow_summary("vm");
                     cl_error(CL_ERR_OVERFLOW, "NLX stack overflow");
                 }
@@ -3657,7 +3657,7 @@ static CL_Obj cl_vm_run(int base_fp, int base_nlx)
             int32_t uwp_offset = read_i32(code, &ip);
             CL_NLXFrame *nlx;
 
-            if (cl_nlx_top >= CL_MAX_NLX_FRAMES) {
+            if (cl_nlx_top >= cl_nlx_max) {
                     cl_nlx_overflow_summary("vm");
                     cl_error(CL_ERR_OVERFLOW, "NLX stack overflow");
                 }

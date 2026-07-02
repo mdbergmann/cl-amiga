@@ -3624,6 +3624,138 @@
          (defmethod fs-test-amiga ((x file-stream)) :fs)
          :ok))
 
+; --- Regression: dispatch self-heals a stale NEGATIVE cache entry ---
+; A corrupt negative dispatch-cache entry (present, value NIL = "no method")
+; must not shadow a method that plainly exists.  This is the mechanism behind
+; the ASDF field report "No applicable method for FIND-OPERATION with args of
+; types (COMPILE-OP SYMBOL)": a method existed but a corrupt negative cache
+; entry (GC relocation of the EQ-keyed cache / a concurrent cache write) made
+; dispatch wrongly report a miss.  On a negative hit the dispatcher now
+; re-verifies against the live method list and heals the entry.
+(defclass neg-op-amiga () ())
+(defgeneric neg-find-amiga (ctx spec))
+(defmethod neg-find-amiga ((c t) (s neg-op-amiga)) :op)
+(defmethod neg-find-amiga ((c t) (s symbol)) :sym)
+(defmethod neg-find-amiga ((c t) (s string)) :str)
+(defparameter *neg-op-amiga* (make-instance 'neg-op-amiga))
+(check "dispatch-negative-cache-primes" :sym (neg-find-amiga *neg-op-amiga* 'a-thing))
+(check "dispatch-negative-cache-self-heals" :sym
+  (progn
+    ;; Poke a stale NEGATIVE entry for (neg-op-amiga -> SYMBOL) and drop the
+    ;; inline cache so the dispatch table is actually consulted.
+    (let* ((gf (fdefinition 'neg-find-amiga))
+           (cache (gf-dispatch-cache gf))
+           (inner (gethash (class-of *neg-op-amiga*) cache)))
+      (setf (gethash (class-of 'x) inner) nil)
+      (%set-gf-inline-cache gf nil))
+    ;; Before the fix this signaled "No applicable method"; now it heals.
+    (neg-find-amiga *neg-op-amiga* 'other-thing)))
+; A genuine no-applicable-method must STILL error (heal recomputes empty).
+(check "dispatch-genuine-miss-still-errors" :caught
+  (handler-case (progn (defgeneric gm-str-amiga (x))
+                       (defmethod gm-str-amiga ((x string)) :str)
+                       (gm-str-amiga 42))
+    (error () :caught)))
+
+; --- Regression: standard combination self-heals a missing-primary set ---
+; "No applicable primary method" field report: dispatch got an applicable set
+; with only :around (primary dropped by transient corruption).
+; %dispatch-standard-emf re-verifies against the live method list.
+(defclass npf-op-amiga () ())
+(defclass npf-comp-amiga () ())
+(defgeneric npf-amiga (o c))
+(defmethod npf-amiga :around ((o t) (c t)) (list :around (call-next-method)))
+(defmethod npf-amiga ((o npf-op-amiga) (c npf-comp-amiga)) :prim)
+(defparameter *npf-o-amiga* (make-instance 'npf-op-amiga))
+(defparameter *npf-c-amiga* (make-instance 'npf-comp-amiga))
+(check "dispatch-no-primary-normal" '(:around :prim)
+  (npf-amiga *npf-o-amiga* *npf-c-amiga*))
+(check "dispatch-no-primary-self-heals" '(:around :prim)
+  (let* ((gf (fdefinition 'npf-amiga))
+         (around-only (remove-if (lambda (m) (null (method-qualifiers m)))
+                                 (%compute-applicable-methods
+                                  gf (list *npf-o-amiga* *npf-c-amiga*)))))
+    (let ((*current-method-args* (list *npf-o-amiga* *npf-c-amiga*)))
+      (funcall (%dispatch-standard-emf gf around-only)
+               *npf-o-amiga* *npf-c-amiga*))))
+; Genuine no-primary (only :around) must still error.
+(check "dispatch-genuine-no-primary-errors" :caught
+  (handler-case (progn (defgeneric only-around-amiga (x))
+                       (defmethod only-around-amiga :around ((x t)) (call-next-method))
+                       (only-around-amiga 5))
+    (error () :caught)))
+
+; --- Regression: the FIRST (uncached) dispatch miss self-heals too ---
+; The negative-cache heal only fires on a SECOND call; the first call computes
+; the applicable set directly and, before the fix, cached a negative AND
+; signaled "No applicable method" if that single computation came up empty (the
+; field report "No applicable method for FIND-OPERATION with args (PREPARE-OP
+; SYMBOL)" hitting on the very first find-operation dispatch of a load).
+; %dispatch-heal-empty recomputes from the live method list first.
+(defclass fme-op-amiga () ())
+(defgeneric fme-amiga (ctx spec))
+(defmethod fme-amiga ((c t) (s symbol)) :sym)
+(defparameter *fme-op-amiga* (make-instance 'fme-op-amiga))
+(check "dispatch-fresh-miss-self-heals" '(:sym t)
+  (let* ((gf (fdefinition 'fme-amiga))
+         (h0 *gf-cache-heals*)
+         (emf (%dispatch-heal-empty gf (list *fme-op-amiga* 'a-sym))))
+    (list (and (functionp emf) (funcall emf *fme-op-amiga* 'a-sym))
+          (> *gf-cache-heals* h0))))
+; A genuine fresh miss (no method for these types) must return NIL / still error.
+(check "dispatch-fresh-miss-genuine-nil" nil
+  (progn (defgeneric fmg-amiga (x))
+         (defmethod fmg-amiga ((x string)) :str)
+         (%dispatch-heal-empty (fdefinition 'fmg-amiga) (list 42))))
+(check "dispatch-fresh-miss-genuine-errors" :caught
+  (handler-case (fmg-amiga 42) (error () :caught)))
+
+; --- Regression: no-primary heal is gated on the GF roster + shared retry ---
+; The no-primary self-heal retries-with-yield (%recompute-methods-until) only
+; when the GF's roster actually contains a primary (%gf-roster-has-primary-p);
+; an :around-only GF errors immediately with no wasted retries.
+(defgeneric rg-prim-amiga (x))
+(defmethod rg-prim-amiga ((x integer)) :int)
+(defgeneric rg-around-amiga (x))
+(defmethod rg-around-amiga :around ((x t)) (call-next-method))
+(check "dispatch-roster-has-primary-t" t
+  (%gf-roster-has-primary-p (fdefinition 'rg-prim-amiga)))
+(check "dispatch-roster-has-primary-nil" nil
+  (%gf-roster-has-primary-p (fdefinition 'rg-around-amiga)))
+(check "dispatch-recompute-until-finds" t
+  (let ((s (%recompute-methods-until (fdefinition 'rg-prim-amiga) (list 5)
+                                     #'%methods-have-primary-p)))
+    (and (consp s) (%methods-have-primary-p s) t)))
+(check "dispatch-recompute-until-nil" nil
+  (%recompute-methods-until (fdefinition 'rg-prim-amiga) (list "str")
+                            #'%methods-have-primary-p))
+
+; --- Regression: %gf-dispatch's uncached/variadic (T) fallback branch must
+; bind *current-method-args* to ARGS before calling %dispatch-heal-empty ---
+; Every other dispatch resolver (%gf-dispatch-eql, %gf-dispatch-cached,
+; %gf-dispatch-1-slow, %gf-2-resolve) binds *current-method-args* before
+; invoking %dispatch-heal-empty; the T branch used to invoke it first and only
+; bind afterward, so %dispatch-heal-empty's no-primary fallback (which reads
+; *current-method-args*) could see a stale/default binding instead of the real
+; call args.  Spy on %dispatch-heal-empty to capture *current-method-args* at
+; the moment %gf-dispatch (reached via %gf-dispatch-1-slow's T clause, forced
+; by a non-integer/non-:eql cacheable-p mode) invokes it.
+(defgeneric gdca-fn-amiga (x))
+(defmethod gdca-fn-amiga ((x symbol)) :sym)
+(%set-gf-cacheable-p (fdefinition 'gdca-fn-amiga) :forced-slow)
+(defparameter *gdca-captured-amiga* :unset)
+(check "gf-dispatch-slow-path-binds-current-method-args" (list 42)
+  (let ((orig (symbol-function '%dispatch-heal-empty)))
+    (unwind-protect
+        (progn
+          (setf (symbol-function '%dispatch-heal-empty)
+                (lambda (gf args)
+                  (setq *gdca-captured-amiga* *current-method-args*)
+                  (funcall orig gf args)))
+          (ignore-errors (gdca-fn-amiga 42)))
+      (setf (symbol-function '%dispatch-heal-empty) orig))
+    *gdca-captured-amiga*))
+
 ; decode-universal-time returns 9 values
 (check "decode-ut-count" 9 (length (multiple-value-list (decode-universal-time (get-universal-time)))))
 
@@ -4809,6 +4941,37 @@
 (check "%class-of stream" 'stream (%class-of (make-string-input-stream "hi")))
 (defstruct clos-amiga-pt (x 0) (y 0))
 (check "%class-of struct" 'clos-amiga-pt (%class-of (make-clos-amiga-pt :x 1)))
+
+; Regression (CLOS dispatch field bug): CLASS-OF of a built-in-typed object
+; must NOT depend on *PACKAGE*.  bi_class_of interned the class name via a
+; *PACKAGE*-relative intern (backed by a thread-shared cl_current_package
+; global); when *PACKAGE* did not resolve the name to its CL-package symbol
+; (KEYWORD here, or a peer thread's *PACKAGE* in a multi-threaded session),
+; CLASS-OF returned the wrong symbol, missed *class-table*, and fell back to
+; the T class — making GF dispatch signal "No applicable method for (X SYMBOL)".
+(check "class-of symbol independent of *package*" t
+       (let ((sc (find-class 'symbol)))
+         (let ((*package* (find-package :keyword)))
+           (eq sc (class-of 'foo)))))
+(check "class-of builtins independent of *package*" t
+       (let ((sc (find-class 'symbol))
+             (cc (find-class 'cons))
+             (strc (find-class 'string))
+             (fc (find-class 'fixnum)))
+         (let ((*package* (find-package :keyword)))
+           (and (eq sc (class-of 'foo))
+                (eq cc (class-of '(1 2)))
+                (eq strc (class-of "x"))
+                (eq fc (class-of 42))))))
+(check "%class-of name is CL-package symbol under any *package*" t
+       (let ((*package* (find-package :keyword)))
+         (eq (find-package :common-lisp) (symbol-package (%class-of 'foo)))))
+(defgeneric clos-amiga-symdisp (a b))
+(defmethod clos-amiga-symdisp ((a t) (b symbol)) :sym)
+(defmethod clos-amiga-symdisp ((a t) (b string)) :str)
+(check "dispatch (t symbol) applicable under foreign *package*" :sym
+       (let ((*package* (find-package :keyword)))
+         (clos-amiga-symdisp 42 'anything)))
 
 ; --- CLOS: Bootstrap core classes (Step 2) ---
 (require "clos")
@@ -6149,6 +6312,24 @@
 (check "thread make with name" "worker"
   (mp:thread-name (mp:make-thread (lambda () nil) :name "worker")))
 
+; NOTE: the worker deep-recursion / deep-NLX-nesting regression tests live in
+; the HOST suite only (tests/test_threads.c).  Two AmigaOS-specific reasons, both
+; empirically confirmed against the FS-UAE suite:
+;   1. The worker VM frame-budget increase (256 -> 1024) that lets a worker run
+;      the same call depth as the main thread is host-only: bumping it on Amiga
+;      shifts heap layout and tips a pre-existing moving-GC bug (see the
+;      CL_WORKER_* rationale in src/core/thread.h).  So Amiga workers keep the
+;      256-frame budget and cannot assert deep-CALL-nesting.
+;   2. NLX-nesting can't be probed on an Amiga worker at all: executing nested
+;      CATCH/BLOCK/UNWIND-PROTECT recurses the native C stack (the VM runs each
+;      catch body one level deeper), and an Amiga worker's OS-default ~64KB
+;      process stack Gurus at ~150-200 frames — far below the 256-slot nlx_stack
+;      capacity the guard protects.  A recursive OR a macro-expanded nested-CATCH
+;      test therefore crashes the worker before it can exercise the guard.
+; The per-thread NLX guard (cl_nlx_max == CT->nlx_max, which bounds a worker at
+; its real 256-slot allocation) IS active on Amiga; it is exercised on host,
+; where workers get the full budget and can nest deeply.
+
 ; --- Thread predicates ---
 (check "thread alive-p after join" nil
   (let ((thr (mp:make-thread (lambda () 42))))
@@ -6236,6 +6417,137 @@
                      (equal (second r) (list 'tag id)))
           (setq ok nil))))
     ok))
+
+; Regression: concurrent (re)definition of a method must not make a peer
+; thread's dispatch of the SAME generic function spuriously signal "No
+; applicable method" for a method that plainly exists.  This is the multi-
+; threaded race behind the ASDF field report "No applicable method for
+; ACTION-STATUS with args of types (NULL LOAD-OP SYSTEM)" during
+; (asdf:load-system ...): worker/watcher threads dispatch GFs while the main
+; thread (re)defines methods.  Root cause (lib/clos.lisp %install-method-in-gf):
+; the method list was updated in TWO stores (store old-minus-replaced, THEN
+; cons the new method on), leaving a window where GF-METHODS transiently
+; EXCLUDED the method being (re)defined; a dispatcher walking the list in that
+; window computed an empty applicable set.  Fixed by a SINGLE atomic
+; %set-gf-methods store, so a concurrent reader always sees a complete list.
+; Shaped like ACTION-STATUS: a NULL-specialized method beside a class method.
+(defclass amdisp-op () ())
+(defclass amdisp-load-op (amdisp-op) ())
+(defclass amdisp-comp () ())
+(defclass amdisp-sys (amdisp-comp) ())
+(defgeneric amdisp-status (plan operation component))
+(defmethod amdisp-status ((plan null) (o amdisp-op) (c amdisp-comp)) :null-method)
+(defmethod amdisp-status ((p amdisp-comp) (o amdisp-op) (c amdisp-comp)) :plan-method)
+(defparameter *amdisp-o* (make-instance 'amdisp-load-op))
+(defparameter *amdisp-c* (make-instance 'amdisp-sys))
+(check "concurrent add-method does not break peer dispatch" 0
+  (let ((dispatchers nil) (redefiners nil) (fails 0))
+    ;; Redefiners: repeatedly re-install the null method (each install first
+    ;; removes the existing matching method — the window the fix closes).
+    (dotimes (r 2)
+      (push (mp:make-thread
+              (lambda ()
+                (dotimes (i 600)
+                  (eval '(defmethod amdisp-status ((plan null) (o amdisp-op)
+                                                    (c amdisp-comp)) :null-method)))
+                :ok)
+              :name "redef")
+            redefiners))
+    ;; Dispatchers: (amdisp-status nil o c) must ALWAYS resolve to :null-method.
+    ;; Each returns its own spurious-miss count (no shared counter to race on).
+    (dotimes (d 3)
+      (push (mp:make-thread
+              (lambda ()
+                (let ((bad 0))
+                  (dotimes (i 5000)
+                    (let ((v (handler-case (amdisp-status nil *amdisp-o* *amdisp-c*)
+                               (error () :fail))))
+                      (unless (eq v :null-method) (setq bad (1+ bad)))))
+                  bad))
+              :name "disp")
+            dispatchers))
+    (dolist (thr dispatchers) (setq fails (+ fails (mp:join-thread thr))))
+    (dolist (thr redefiners) (mp:join-thread thr))
+    fails))
+
+; Regression: writer-writer race — two threads installing GENUINELY
+; DIFFERENT methods (distinct EQL specializers) on the SAME gf concurrently
+; must not lose either install.  The single-store fix above only guarantees
+; a concurrent READER never sees a torn list; it does not by itself stop two
+; WRITERS from racing: both can read the same old GF-METHODS before either
+; stores, so whichever %set-gf-methods lands second silently discards the
+; other thread's method (a lost update).  Unlike the test above, which
+; repeatedly reinstalls the SAME method (so a lost update is invisible —
+; any surviving install is equivalent), every method here is unique, so a
+; lost update leaves a permanent, detectable gap.  Guarded by
+; *gf-methods-lock* in lib/clos.lisp.
+(defgeneric amdisp-writer-gf (x))
+(check "concurrent add-method of distinct methods loses none" 0
+  (let ((installers nil) (missing 0) (n-per-writer 300))
+    (dotimes (w 2)
+      (push (mp:make-thread
+              (let ((base (* w n-per-writer)))
+                (lambda ()
+                  (dotimes (i n-per-writer)
+                    (let ((n (+ base i)))
+                      (eval `(defmethod amdisp-writer-gf ((x (eql ,n))) ,n))))
+                  :ok))
+              :name "writer")
+            installers))
+    (dolist (thr installers) (mp:join-thread thr))
+    (dotimes (n (* 2 n-per-writer))
+      (let ((v (handler-case (amdisp-writer-gf n) (error () :fail))))
+        (unless (eql v n) (setq missing (1+ missing)))))
+    missing))
+
+; Regression: concurrent SLOW-PATH dispatch must not corrupt a generic
+; function's dispatch-cache hash table.  A GF's dispatch cache is read AND
+; written from multiple threads (main loader + sento/log4cl workers dispatching
+; the same GF).  It was a plain lock-free hash table: two threads splicing new
+; entries onto the same bucket, or one rehashing (relinking every cell into a
+; doubled bucket vector) while another walks it, could cross-link the chains and
+; crash rarely under contention.  Fixed by creating dispatch caches with
+; %MAKE-SYNC-HASH-TABLE (lib/clos.lisp %make-dispatch-cache), whose access is
+; serialized (CL_HT_FLAG_SYNC in builtins_hashtable.c) with an allocation-free
+; critical section — so only the slow path pays, and the monomorphic inline
+; cache fast path stays lock-free.  Many threads dispatch one polymorphic GF
+; over many classes, refilling a fresh (empty) cache each round to maximise the
+; splice/rehash contention window.  A corrupt table shows up as a crash (the
+; FS-UAE watchdog kills the run) or a wrong/errored dispatch result.
+(defparameter *amcache-classes*
+  (let ((v (make-array 24)))
+    (dotimes (i 24)
+      (let ((name (intern (format nil "AMCACHE-CLASS-~a" i))))
+        (eval `(defclass ,name () ()))
+        (setf (aref v i) name)))
+    v))
+(defparameter *amcache-instances*
+  (let ((v (make-array 24)))
+    (dotimes (i 24) (setf (aref v i) (make-instance (aref *amcache-classes* i))))
+    v))
+(check "concurrent dispatch does not corrupt the dispatch cache" 0
+  (let ((fails 0))
+    (dotimes (round 4)
+      ;; Fresh GF each round → empty dispatch cache, refilled concurrently.
+      (eval '(defgeneric amcache-dispatch (x)))
+      (dotimes (i 24)
+        (eval `(defmethod amcache-dispatch ((x ,(aref *amcache-classes* i))) ,i)))
+      (let ((workers nil))
+        (dotimes (w 4)
+          (push (mp:make-thread
+                  (lambda ()
+                    (let ((bad 0))
+                      (dotimes (p 20)
+                        (dotimes (i 24)
+                          (let ((r (handler-case
+                                       (amcache-dispatch (aref *amcache-instances* i))
+                                     (error () :fail))))
+                            (unless (eql r i) (setq bad (1+ bad))))))
+                      bad))
+                  :name "amcache-disp")
+                workers))
+        (dolist (thr workers) (setq fails (+ fails (mp:join-thread thr))))))
+    fails))
 
 ; --- Thread yield ---
 (check "thread-yield no crash" nil
