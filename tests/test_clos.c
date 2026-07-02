@@ -224,6 +224,64 @@ TEST(class_of_string_is_string_class)
     ASSERT_STR_EQ(eval_print("(class-name (class-of \"hello\"))"), "STRING");
 }
 
+/* Regression (CLOS dispatch field bug): CLASS-OF of a built-in-typed object
+ * must NOT depend on *PACKAGE*.  bi_class_of used to intern the class name
+ * ("SYMBOL", "CONS", ...) via *PACKAGE*-relative cl_intern; when *PACKAGE*
+ * did not resolve the name to its COMMON-LISP-package symbol (KEYWORD here,
+ * or another thread's *PACKAGE* leaking through the shared cl_current_package
+ * global in a multi-threaded Sly/sento/log4cl session), CLASS-OF interned the
+ * WRONG symbol, missed *class-table*, and silently fell back to the T class.
+ * That made GF dispatch see arg class T instead of SYMBOL and signal
+ * "No applicable method for ... (X SYMBOL)" even though a (t symbol) method
+ * applied.  Pre-fix these return NIL (class-of gave the T class); post-fix T. */
+TEST(class_of_symbol_independent_of_package)
+{
+    ASSERT_STR_EQ(eval_print(
+        "(let ((sc (find-class 'symbol)))"
+        "  (let ((*package* (find-package :keyword)))"
+        "    (eq sc (class-of 'foo))))"),
+        "T");
+}
+
+TEST(class_of_builtins_independent_of_package)
+{
+    ASSERT_STR_EQ(eval_print(
+        "(let ((sc (find-class 'symbol))"
+        "      (cc (find-class 'cons))"
+        "      (strc (find-class 'string))"
+        "      (fc (find-class 'fixnum)))"
+        "  (let ((*package* (find-package :keyword)))"
+        "    (and (eq sc (class-of 'foo))"
+        "         (eq cc (class-of '(1 2)))"
+        "         (eq strc (class-of \"x\"))"
+        "         (eq fc (class-of 42)))))"),
+        "T");
+}
+
+/* %class-of must yield a COMMON-LISP-package symbol regardless of *PACKAGE*,
+ * so the *class-table* (CL-symbol-keyed) lookup in CLASS-OF hits. */
+TEST(class_of_name_symbol_is_cl_package)
+{
+    ASSERT_STR_EQ(eval_print(
+        "(let ((*package* (find-package :keyword)))"
+        "  (eq (find-package :common-lisp) (symbol-package (%class-of 'foo))))"),
+        "T");
+}
+
+/* End-to-end: a (t symbol) method stays applicable even when the call is made
+ * with *PACKAGE* bound to a package that does not inherit CL:SYMBOL — the
+ * shape of the ASDF FIND-OPERATION field failure. */
+TEST(dispatch_symbol_method_independent_of_package)
+{
+    eval_print("(defgeneric clos-symdisp (a b))");
+    eval_print("(defmethod clos-symdisp ((a t) (b symbol)) :sym)");
+    eval_print("(defmethod clos-symdisp ((a t) (b string)) :str)");
+    ASSERT_STR_EQ(eval_print(
+        "(let ((*package* (find-package :keyword)))"
+        "  (clos-symdisp 42 'anything))"),
+        ":SYM");
+}
+
 /* Regression: a STRING-specialized method must be applicable to a string
  * produced by MAKE-ARRAY (wide string), not just to a literal string. */
 TEST(dispatch_string_method_on_make_array_string)
@@ -4416,6 +4474,10 @@ int main(void)
     RUN(find_class_unknown_error);
     RUN(class_of_42_is_fixnum_class);
     RUN(class_of_string_is_string_class);
+    RUN(class_of_symbol_independent_of_package);
+    RUN(class_of_builtins_independent_of_package);
+    RUN(class_of_name_symbol_is_cl_package);
+    RUN(dispatch_symbol_method_independent_of_package);
     RUN(dispatch_string_method_on_make_array_string);
     RUN(dispatch_negative_cache_self_heals);
     RUN(dispatch_genuine_miss_still_errors);

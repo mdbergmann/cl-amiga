@@ -463,47 +463,72 @@ static CL_Obj bi_struct_slot_count(CL_Obj *args, int n)
  * For built-in types: returns canonical CL class name symbol.
  * Used by CLOS class-of to map objects to class metaobjects.
  */
+/* Resolve a built-in class NAME to its canonical class-name symbol.
+ *
+ * The built-in class names (SYMBOL, CONS, STRING, FIXNUM, BIGNUM, RATIO, ...)
+ * are all standard COMMON-LISP-package symbols, and *class-table* (see
+ * clos.lisp) is keyed by those exact CL-package symbols.  They MUST be
+ * resolved in the COMMON-LISP package — NOT via *PACKAGE*-relative cl_intern.
+ *
+ * cl_intern interns relative to cl_current_package, a *shared C global* synced
+ * from the per-thread *PACKAGE* dynamic binding.  If *PACKAGE* is (or is
+ * transiently clobbered to) a package that does not resolve the name to its
+ * CL-package symbol — e.g. KEYWORD during a #. / #+ reader excursion, or
+ * another thread's *PACKAGE* leaking through the global in a multi-threaded
+ * session (Sly/slynk workers, sento, log4cl's watcher) — cl_intern would
+ * return a *different* symbol.  (gethash that-symbol *class-table*) then misses
+ * and class-of silently falls back to the T class, which makes CLOS dispatch
+ * compute an empty applicable-method set even though a method plainly applies
+ * ("No applicable method for ... (X SYMBOL)").  Struct/condition objects are
+ * unaffected (they return their stored type_desc/type_name), which is exactly
+ * why the field failures only ever mis-classified the built-in-typed argument.
+ * Interning in cl_package_cl makes class-of independent of *PACKAGE* and of
+ * the thread-shared cl_current_package. */
+static CL_Obj class_name_sym(const char *name, uint32_t len)
+{
+    return cl_intern_in(name, len, cl_package_cl);
+}
+
 static CL_Obj bi_class_of(CL_Obj *args, int n)
 {
     CL_Obj obj = args[0];
-    const char *name;
     CL_UNUSED(n);
 
     if (CL_NULL_P(obj))
-        return cl_intern("NULL", 4);
+        return class_name_sym("NULL", 4);
     if (CL_FIXNUM_P(obj))
-        return cl_intern("FIXNUM", 6);
+        return class_name_sym("FIXNUM", 6);
     if (CL_CHAR_P(obj))
-        return cl_intern("CHARACTER", 9);
+        return class_name_sym("CHARACTER", 9);
 
     if (CL_HEAP_P(obj)) {
         switch (CL_HDR_TYPE(CL_OBJ_TO_PTR(obj))) {
         case TYPE_CONS:
-            return cl_intern("CONS", 4);
+            return class_name_sym("CONS", 4);
         case TYPE_SYMBOL:
-            return cl_intern("SYMBOL", 6);
+            return class_name_sym("SYMBOL", 6);
         case TYPE_STRING:
 #ifdef CL_WIDE_STRINGS
         case TYPE_WIDE_STRING:
 #endif
-            return cl_intern("STRING", 6);
+            return class_name_sym("STRING", 6);
         case TYPE_FUNCTION:
         case TYPE_CLOSURE:
-            return cl_intern("FUNCTION", 8);
+            return class_name_sym("FUNCTION", 8);
         case TYPE_BYTECODE:
-            return cl_intern("COMPILED-FUNCTION", 17);
+            return class_name_sym("COMPILED-FUNCTION", 17);
         case TYPE_VECTOR: {
             CL_Vector *v = (CL_Vector *)CL_OBJ_TO_PTR(obj);
             if (v->flags & CL_VEC_FLAG_STRING)
-                return cl_intern("STRING", 6);
+                return class_name_sym("STRING", 6);
             return (v->rank <= 1)
-                ? cl_intern("VECTOR", 6)
-                : cl_intern("ARRAY", 5);
+                ? class_name_sym("VECTOR", 6)
+                : class_name_sym("ARRAY", 5);
         }
         case TYPE_PACKAGE:
-            return cl_intern("PACKAGE", 7);
+            return class_name_sym("PACKAGE", 7);
         case TYPE_HASHTABLE:
-            return cl_intern("HASH-TABLE", 10);
+            return class_name_sym("HASH-TABLE", 10);
         case TYPE_CONDITION: {
             CL_Condition *cond = (CL_Condition *)CL_OBJ_TO_PTR(obj);
             return cond->type_name;
@@ -513,27 +538,26 @@ static CL_Obj bi_class_of(CL_Obj *args, int n)
             return st->type_desc;
         }
         case TYPE_BIGNUM:
-            return cl_intern("BIGNUM", 6);
+            return class_name_sym("BIGNUM", 6);
         case TYPE_SINGLE_FLOAT:
-            return cl_intern("SINGLE-FLOAT", 12);
+            return class_name_sym("SINGLE-FLOAT", 12);
         case TYPE_DOUBLE_FLOAT:
-            return cl_intern("DOUBLE-FLOAT", 12);
+            return class_name_sym("DOUBLE-FLOAT", 12);
         case TYPE_RATIO:
-            return cl_intern("RATIO", 5);
+            return class_name_sym("RATIO", 5);
         case TYPE_STREAM:
-            return cl_intern("STREAM", 6);
+            return class_name_sym("STREAM", 6);
         case TYPE_RANDOM_STATE:
-            return cl_intern("RANDOM-STATE", 12);
+            return class_name_sym("RANDOM-STATE", 12);
         case TYPE_BIT_VECTOR:
-            return cl_intern("BIT-VECTOR", 10);
+            return class_name_sym("BIT-VECTOR", 10);
         case TYPE_PATHNAME:
-            return cl_intern("PATHNAME", 8);
+            return class_name_sym("PATHNAME", 8);
         default:
             break;
         }
     }
-    name = "T";
-    return cl_intern(name, (uint32_t)strlen(name));
+    return class_name_sym("T", 1);
 }
 
 /* --- Registration --- */

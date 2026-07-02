@@ -4942,6 +4942,37 @@
 (defstruct clos-amiga-pt (x 0) (y 0))
 (check "%class-of struct" 'clos-amiga-pt (%class-of (make-clos-amiga-pt :x 1)))
 
+; Regression (CLOS dispatch field bug): CLASS-OF of a built-in-typed object
+; must NOT depend on *PACKAGE*.  bi_class_of interned the class name via a
+; *PACKAGE*-relative intern (backed by a thread-shared cl_current_package
+; global); when *PACKAGE* did not resolve the name to its CL-package symbol
+; (KEYWORD here, or a peer thread's *PACKAGE* in a multi-threaded session),
+; CLASS-OF returned the wrong symbol, missed *class-table*, and fell back to
+; the T class — making GF dispatch signal "No applicable method for (X SYMBOL)".
+(check "class-of symbol independent of *package*" t
+       (let ((sc (find-class 'symbol)))
+         (let ((*package* (find-package :keyword)))
+           (eq sc (class-of 'foo)))))
+(check "class-of builtins independent of *package*" t
+       (let ((sc (find-class 'symbol))
+             (cc (find-class 'cons))
+             (strc (find-class 'string))
+             (fc (find-class 'fixnum)))
+         (let ((*package* (find-package :keyword)))
+           (and (eq sc (class-of 'foo))
+                (eq cc (class-of '(1 2)))
+                (eq strc (class-of "x"))
+                (eq fc (class-of 42))))))
+(check "%class-of name is CL-package symbol under any *package*" t
+       (let ((*package* (find-package :keyword)))
+         (eq (find-package :common-lisp) (symbol-package (%class-of 'foo)))))
+(defgeneric clos-amiga-symdisp (a b))
+(defmethod clos-amiga-symdisp ((a t) (b symbol)) :sym)
+(defmethod clos-amiga-symdisp ((a t) (b string)) :str)
+(check "dispatch (t symbol) applicable under foreign *package*" :sym
+       (let ((*package* (find-package :keyword)))
+         (clos-amiga-symdisp 42 'anything)))
+
 ; --- CLOS: Bootstrap core classes (Step 2) ---
 (require "clos")
 (check "find-class integer" t (structurep (find-class 'integer)))
