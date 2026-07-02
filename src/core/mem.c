@@ -678,6 +678,7 @@ CL_Obj cl_make_hashtable(uint32_t bucket_count, uint32_t test)
     ht->test = test;
     ht->count = 0;
     ht->bucket_count = bucket_count;
+    ht->flags = 0;
     ht->bucket_vec = CL_NIL;
     /* buckets[] already zeroed (= CL_NIL) by cl_alloc */
     return CL_PTR_TO_OBJ(ht);

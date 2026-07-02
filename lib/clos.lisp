@@ -1895,6 +1895,22 @@ When called with no arguments, passes the original method arguments."
       (error "No applicable method for ~S with args of types ~S"
              (gf-name gf) (mapcar #'type-of args))))
 
+(defun %make-dispatch-cache (test)
+  "Create a hash table for a generic-function dispatch cache.
+
+   Dispatch caches are the one class of hash table in the system that is read
+   AND written from multiple threads: the main thread loading a system while
+   worker / watcher threads (sento, log4cl) dispatch the same generic
+   functions.  A plain (lock-free) table can have its bucket chains corrupted
+   when two threads splice or rehash it at once, which crashes rarely under
+   contention.  A synchronized table serializes those slow-path cache updates
+   internally (see CL_HT_FLAG_SYNC in builtins_hashtable.c).
+
+   This guards only the slow (cache-miss) path — the monomorphic inline-cache
+   fast path in the discriminating function never touches this table, so the
+   hot dispatch path pays nothing.  TEST is 'EQ or 'EQL."
+  (clamiga::%make-sync-hash-table test))
+
 (defun %dispatch-negative-hit (gf args table key)
   "A cache lookup returned a *negative* entry (present, value NIL) meaning
    \"no method applies\" for this class tuple.  The dispatch cache is only a
@@ -1928,8 +1944,8 @@ When called with no arguments, passes the original method arguments."
          (cache (gf-dispatch-cache gf)))
     (unless cache
       ;; Initialize: (eql-ht . class-ht) cons
-      (setq cache (cons (make-hash-table :test 'eql)
-                        (make-hash-table :test 'eq)))
+      (setq cache (cons (%make-dispatch-cache 'eql)
+                        (%make-dispatch-cache 'eq)))
       (%set-gf-dispatch-cache gf cache))
     ;; Navigate/create nested levels for each position with EQL/class specializers
     (let ((node cache)
@@ -1948,8 +1964,8 @@ When called with no arguments, passes the original method arguments."
                (key (if use-eql arg (class-of arg)))
                (next (gethash key ht)))
           (unless next
-            (setq next (cons (make-hash-table :test 'eql)
-                             (make-hash-table :test 'eq)))
+            (setq next (cons (%make-dispatch-cache 'eql)
+                             (%make-dispatch-cache 'eq)))
             (setf (gethash key ht) next))
           (setq node next)
           (setq a (cdr a))
@@ -1982,7 +1998,7 @@ When called with no arguments, passes the original method arguments."
    N-SPECIALIZED is the number of specialized arg positions."
   (let ((cache (gf-dispatch-cache gf)))
     (unless cache
-      (setq cache (make-hash-table :test 'eq))
+      (setq cache (%make-dispatch-cache 'eq))
       (%set-gf-dispatch-cache gf cache))
     ;; Navigate/create nested hash tables for positions 0..n-specialized-2
     (let ((table cache)
@@ -1995,7 +2011,7 @@ When called with no arguments, passes the original method arguments."
         (let* ((class (class-of (car a)))
                (next (gethash class table)))
           (unless next
-            (setq next (make-hash-table :test 'eq))
+            (setq next (%make-dispatch-cache 'eq))
             (setf (gethash class table) next))
           (setq table next)
           (setq a (cdr a))
@@ -2095,7 +2111,7 @@ When called with no arguments, passes the original method arguments."
              (class (class-of a))
              (*current-method-args* args))
          (unless cache
-           (setq cache (make-hash-table :test 'eq))
+           (setq cache (%make-dispatch-cache 'eq))
            (%set-gf-dispatch-cache gf cache))
          (multiple-value-bind (emf found) (gethash class cache)
            (cond
@@ -2149,7 +2165,7 @@ When called with no arguments, passes the original method arguments."
              (c2 (class-of b))
              (*current-method-args* args))
          (unless cache
-           (setq cache (make-hash-table :test 'eq))
+           (setq cache (%make-dispatch-cache 'eq))
            (%set-gf-dispatch-cache gf cache))
          (cond
            ((>= mode 2)
@@ -2158,7 +2174,7 @@ When called with no arguments, passes the original method arguments."
             ;; agree on key shape.
             (let ((inner (gethash c1 cache)))
               (unless inner
-                (setq inner (make-hash-table :test 'eq))
+                (setq inner (%make-dispatch-cache 'eq))
                 (setf (gethash c1 cache) inner))
               (%gf-2-resolve gf a b args inner c2 c1 c2)))
            (t
