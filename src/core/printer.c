@@ -135,6 +135,40 @@ void cl_printer_state_reset(void)
     CT->pr_circle_active = 0;
 }
 
+/* --- GC-safe *PRINT-* control save/restore (WRITE / PPRINT / W-T-S) ---
+ *
+ * The keyword-override builtins snapshot all print-control specials, set the
+ * overrides, print, and restore.  The snapshot lives in a caller C array —
+ * under compacting GC every slot must be a registered root or the restore
+ * writes pre-compaction offsets back into the symbol values, corrupting
+ * the *PRINT-CASE* / *PRINT-LEVEL* etc. bindings for the rest of the
+ * session (audit tier 4: IO2 bi_write, IO3 bi_pprint, FS12 write-to-string).
+ * Pointers-to-symbols (not values): the SYM_PRINT_* globals are themselves
+ * forwarded on compaction, so the table must chase them per call. */
+static CL_Obj *print_ctrl_syms[CL_PRINT_CTRL_COUNT] = {
+    &SYM_PRINT_ESCAPE, &SYM_PRINT_READABLY, &SYM_PRINT_BASE, &SYM_PRINT_RADIX,
+    &SYM_PRINT_LEVEL, &SYM_PRINT_LENGTH, &SYM_PRINT_CASE, &SYM_PRINT_GENSYM,
+    &SYM_PRINT_ARRAY, &SYM_PRINT_CIRCLE, &SYM_PRINT_PRETTY,
+    &SYM_PRINT_RIGHT_MARGIN, &SYM_PRINT_PPRINT_DISPATCH
+};
+
+void cl_print_controls_save(CL_Obj *saved)
+{
+    int i;
+    for (i = 0; i < CL_PRINT_CTRL_COUNT; i++) {
+        saved[i] = cl_symbol_value(*print_ctrl_syms[i]);
+        CL_GC_PROTECT(saved[i]);
+    }
+}
+
+void cl_print_controls_restore(CL_Obj *saved)
+{
+    int i;
+    for (i = 0; i < CL_PRINT_CTRL_COUNT; i++)
+        cl_set_symbol_value(*print_ctrl_syms[i], saved[i]);
+    CL_GC_UNPROTECT(CL_PRINT_CTRL_COUNT);
+}
+
 /* Returns 1 if obj is currently being printed (re-entrant on same object).
  * Used to short-circuit print-object-hook dispatch on circular structures. */
 static int pr_inprog_contains(CL_Obj obj)

@@ -1,6 +1,6 @@
 # GC Audit Tier 4 — Fix Plan
 
-Status: **IN PROGRESS** — Batches 1 (compiler criticals) and 2 (format/printer) applied on branch fix/tier4-gc-corruption; batches 3-7 pending.
+Status: **IN PROGRESS** — Batches 1 (compiler criticals), 2 (format/printer) and 3 (IO/strings/reader) applied on branch fix/tier4-gc-corruption; batches 4-7 pending.
 Findings source: 12-agent audit sweep 2026-07-03 (session 5580131b). ~85 findings, ~25 CRITICAL.
 Branch: `fix/tier4-gc-corruption` (create from master at c70b4e4 or later).
 
@@ -67,29 +67,29 @@ Batch tests: `tier4-printer.lisp` block in test_gc_stress_regression.sh (16 chec
 
 ---
 
-## Batch 3 — IO / strings / reader (restore class + cursor cluster)
+## Batch 3 — IO / strings / reader (restore class + cursor cluster) — **DONE**
 
-Files: builtins_io.c, builtins_strings.c, reader.c.
+Files: builtins_io.c, builtins_strings.c, reader.c, printer.c/printer.h (helper).
 
 - [x] **IO1 [V] bi_load *LOAD-PATHNAME* staleness** — **done in batch 2** (both blocks: source path and FASL-cache twin; load_pathname_obj protected immediately after the first parse). Pulled forward because the new gc_mark_obj badmark guard turned it into a deterministic abort in 6 existing gc-stress cases (any nested `(load ...)` under stress).
-- [ ] **Shared fix: print-control save/restore helper.** IO2 bi_write (:117-207, 13 saved values), IO3 bi_pprint (:231-243), FS12 bi_write_to_string (builtins_strings.c:1518-1565, 12 saved values) all stale-restore *PRINT-* specials across allocating prints. Fix once: a helper that snapshots the print controls into a protected `CL_Obj[16]` (loop-protect each slot / GC-vector) and restores from the forwarded copies; bi_write also must `return args[0]` not the stale `obj`. (Longer term these should be real TLV dynamic binds — also fixes the FS16 MT value-race; do the protected-snapshot now, note TLV as follow-up.)
-- [ ] **IO4 [A] bi_read_delimited_list** (builtins_io.c:2034-2087): `stream` unprotected across reader+cons loop. Protect.
-- [ ] **IO5/IO6/IO7 [A] pprint-dispatch cluster** (builtins_io.c): ~~IO5 set-pprint-dispatch~~ **done in batch 2** (needed by its tests). Remaining: IO6 copy-pprint-dispatch `cur`; IO7 bi_pprint_dispatch walk across allocating cl_typep (protect cursors, re-read locals from args after allocs).
-- [ ] **IO8 [A] bi_require** (builtins_io.c:3412-3427): `pathnames` cursor walked across bi_load. Protect.
-- [ ] **IO9 [A] bi_macroexpand** (builtins_io.c:2164-2197): `env` stale across expander iterations (walked as alist!); stale `form` EQ-test; `any_expansion` stale SYM_T copy. Protect env+form, re-read. bi_macroexpand_1: stale form compare → wrong secondary value.
-- [ ] **IO10 [A] disassemble** (builtins_io.c:2635-2832): raw `bc`/`code`/`constants` held across allocating output (Gray/string streams — SLY). Fix: protect the bytecode CL_Obj, re-derive per instruction; constants/code are platform memory once re-derived from the moved object.
-- [ ] **IO11 [A] extfun** (builtins_io.c:57-64): `sym` unprotected across cl_make_function (sibling `defun` fixed in tier 3). Protect + re-derive s.
-- [ ] **IO12 [A]** (builtins_io.c:469, 1964): protect `merge_args[0]` across bi_merge_pathnames (match bi_compile_file's commented fix). Latent.
-- [ ] **FS10 [A] bi_string_trim/left/right** (builtins_strings.c:664-701): `set = args[0]` copied before `coerce_to_string_obj(args[1])` which allocates for char designators (conforming: `(string-trim "x" #\a)`). Fix: re-read `set = args[0]` after the coerce (all three).
-- [ ] **FS11 [A] bi_concatenate compound result-type** (builtins_strings.c:1160-1190): `rest` stale after `concat_elt_type_is_char` runs a deftype expander (`(concatenate '(vector octet) …)` — ironclad/babel). Fix: protect result_type, re-derive rest after each is_char/is_bit call.
-- [ ] **R1 [V] reader #nA flatten** (reader.c:1483-1520): `lst` cursor + `work[8]` array unprotected across per-element cl_cons. Fix: register `&work[i]` roots (rank ≤ 8) for the loop + keep cursor in a protected local re-read per iteration.
-- [ ] **R2 [V] cl_read_from_stream saved_stream** (reader.c:1636/1666): the one unprotected member of the save/restore set; restore writes a stale offset into CT->rd_stream on nested reads. Protect (mirror cl_read_standard_string_from_stream). 
-- [ ] **R3 [A] cl_read_from_string** (reader.c:1678/1741): same, incl. setup allocs before reassignment. Protect.
-- [ ] **R4 [A] cl_read saved_uninterned** (reader.c:1615/1622): same class, nested-stdin-read only. Protect.
-- [ ] **R5 [A] ensure_feature_keywords** (reader.c:164-175 + eval_feature_expr 185-213): kw_and assigned → later interns can compact before `cl_gc_register_root(&kw_and)` registers a stale offset (one-shot, permanent). Fix: register each root immediately after its assignment; call ensure_feature_keywords() BEFORE reading head/rest in eval_feature_expr.
-- [ ] **R6 [A] CL_READER_SKIP sentinel leak** (reader.c:953-974, 1018-1021, 879-881, 1437): quote/backquote/#'/dotted-cdr/#nA don't filter `#+nope`-skips → 0x06 embeds in user structure (`'#+removed-feature foo bar`). Not GC-unsafe; CLHS 2.4.8.17 conformance. Fix: re-read on skip in each handler.
+- [x] **Shared fix: print-control save/restore helper** — `cl_print_controls_save/restore` (printer.c, CL_PRINT_CTRL_COUNT=13): snapshots all *PRINT-* controls into a caller array with every slot pushed as a GC root; restore writes back the forwarded values and pops. Used by bi_write (also now returns `args[0]`, dead CL_Symbol* locals deleted), bi_write_to_string; bi_pprint protects its 2 saved values + `stream` directly (restoring all 13 would clobber user setqs of unrelated controls from inside print-object methods). TLV dynamic binds remain the long-term follow-up (FS16).
+- [x] **IO4 [A] bi_read_delimited_list** — `stream` protected alongside result/tail.
+- [x] **IO5/IO6/IO7 [A] pprint-dispatch cluster** — IO5 done in batch 2. IO6 copy-pprint-dispatch `cur` protected; IO7 bi_pprint_dispatch: cur/best_fn rooted, object read from args[0], winning fn re-derived through the forwarded cursor AFTER cl_typep (dead typep_args removed).
+- [x] **IO8 [A] bi_require** — `pathnames` cursor + all three `load_args[0]` C slots registered as roots (bi_load treats args[0] as a rooted, forwarded slot).
+- [x] **IO9 [A] bi_macroexpand** — form/env protected across the expander loop; expanded-p tracked as a C int (no stale SYM_T copy). bi_macroexpand_1 compares against rooted args[0].
+- [x] **IO10 [A] disassemble** — disasm_bytecode now takes the CL_Obj (rooted); code/constants/scalars hoisted ONCE at entry (platform memory — stable, constants slots forwarded in place); bc re-derived for the name print; OP_CLOSURE n_upvalues hoisted; builtin branch roots fn->name before the first write.
+- [x] **IO11 [A] extfun** — sym protected across cl_make_function, s derived after (mirrors defun).
+- [x] **IO12 [A]** — merge_args[0] + path_pn protected in bi_load and bi_compile_file_pathname (mirrors bi_compile_file).
+- [x] **FS10 [A] bi_string_trim/left/right** — `set = args[0]` re-read after the allocating coerce (all three).
+- [x] **FS11 [A] bi_concatenate compound result-type** — result_type protected across the is_char/is_bit deftype-expander checks; rest re-derived between them.
+- [x] **R1 [V] reader #nA flatten** — work[0..7] + inner lst cursor all registered as roots for the flatten loop.
+- [x] **R2 [V] cl_read_from_stream saved_stream** — protected (4th member of the save set).
+- [x] **R3 [A] cl_read_from_string** — saved_stream protected.
+- [x] **R4 [A] cl_read saved_uninterned** — protected.
+- [x] **R5 [A] ensure_feature_keywords** — each kw root registered immediately after its intern; eval_feature_expr calls ensure BEFORE reading head/rest **with expr protected across the ensure** (the naive reorder introduced a deterministic `#-(or)` CAR-type-error under stress — first-call interns compact while expr is live; caught by the tier-2 T2-FORMS gc-stress case).
+- [x] **R6 [A] CL_READER_SKIP sentinel leak** — quote/backquote/unquote(+splicing)/#'/dotted-cdr/#nA all loop past CL_READER_SKIP (CLHS 2.4.8.17: `'#+nope foo bar` reads as `'BAR`). The pre-fix binary crashed outright on this case under stress (the 0x06 sentinel embedded in structure) — the discriminating check for the batch.
 
-Batch tests: gc-stress cases for load-under-stress *LOAD-PATHNAME* identity, write/pprint restore integrity, string-trim char designator, concatenate deftype, #2A reading, nested read-from-string; Amiga t4 checks mirroring.
+Batch tests: `tier4-io.lisp` block in test_gc_stress_regression.sh (18 checks: IO2/IO3/IO4/IO6/IO7/IO8/IO9/IO10/IO12/FS10/FS11/FS12/R1/R2/R5/R6 + completion + corruption-absent; pre-fix worktree run confirmed R6 crashes pre-fix and all T4C checks pass post-fix); Amiga t4 batch-3 mirror checks in tests/amiga/run-tests.lisp.
 
 ---
 

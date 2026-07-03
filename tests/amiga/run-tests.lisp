@@ -7975,6 +7975,68 @@
          (catch tag (throw tag 1))
          (unwind-protect (progn (make-list 10) 1) (make-list 100))))
 
+; --- Tier-4 audit batch 3: IO / strings / reader ---
+; Mirrors the host gc-stress tier4-io block (see
+; tests/test_gc_stress_regression.sh); behavior-level checks here.
+(check "t4 write :base override restored" "255"
+       (progn (let ((s (make-string-output-stream)))
+                (write 255 :stream s :base 16))
+              (write-to-string 255)))
+(check "t4 write returns its object" 7
+       (let ((s (make-string-output-stream))) (write 7 :stream s)))
+(check "t4 write-to-string :base restored" '("FF" "255")
+       (list (write-to-string 255 :base 16) (write-to-string 255)))
+(check "t4 pprint restores print-escape binding" :restored
+       (let ((*print-escape* nil))
+         (let ((s (make-string-output-stream))) (pprint '(1 2) s))
+         (if *print-escape* :leaked :restored)))
+(check "t4 read-delimited-list" '(1 2 3 4 5)
+       (with-input-from-string (in "1 2 3 4 5 ]")
+         (read-delimited-list #\] in)))
+(deftype t4c-small () '(integer 0 9))
+; priority 5 so this entry beats the batch-2 t4b-small entry (same range)
+(set-pprint-dispatch 't4c-small (lambda (s o) (format s "[sm ~d]" o)) 5)
+(check "t4 pprint-dispatch lookup + funcall" "[sm 5]"
+       (let ((fn (pprint-dispatch 5)))
+         (with-output-to-string (s) (funcall fn s 5))))
+(check "t4 copy-pprint-dispatch copy dispatches" :hit
+       (if (nth-value 1 (pprint-dispatch 5 (copy-pprint-dispatch))) :hit :miss))
+(defmacro t4c-m1 (x) (list 't4c-m2 x))
+(defmacro t4c-m2 (x) (list 'list x x))
+(check "t4 macroexpand chain + expanded-p" '((list 3 3) t)
+       (multiple-value-list (macroexpand '(t4c-m1 3))))
+(check "t4 macroexpand-1 unchanged expanded-p" nil
+       (nth-value 1 (macroexpand-1 '(quote z))))
+(defun t4c-d (x) (+ x 1))
+(check "t4 disassemble to string stream" :ok
+       (let ((out (with-output-to-string (*standard-output*)
+                    (disassemble 't4c-d))))
+         (if (and (search "Disassembly" out) (search "Constants" out)) :ok :fail)))
+(check "t4 string-trim char designator" "a" (string-trim "x" #\a))
+(check "t4 string-right-trim symbol designator" "X" (string-right-trim "A" 'xa))
+(deftype t4c-oct () '(unsigned-byte 8))
+(check "t4 concatenate deftype compound type" '(1 2 3)
+       (coerce (concatenate '(vector t4c-oct) #(1 2) #(3)) 'list))
+(check "t4 #3A reader" '(1 6 8)
+       (let ((a (read-from-string "#3A(((1 2) (3 4)) ((5 6) (7 8)))")))
+         (list (aref a 0 0 0) (aref a 1 0 1) (aref a 1 1 1))))
+(check "t4 nested read-from-string" '(a (x y) b)
+       (read-from-string "(a #.(cl:read-from-string \"(x y)\") b)"))
+(check "t4 cons feature expressions" '(7 8 9)
+       (list (read-from-string "#+(and) 7")
+             (read-from-string "#-(or) 8")
+             (read-from-string "#+(and common-lisp (not t4c-no-such-ft)) 9")))
+(check "t4 skip sentinel quote" '(quote bar)
+       (read-from-string "'#+t4c-no-such-feature foo bar"))
+(check "t4 skip sentinel function" '(function bar)
+       (read-from-string "#'#+t4c-no-such-feature foo bar"))
+(check "t4 skip sentinel dotted cdr" '(a . c)
+       (read-from-string "(a . #+t4c-no-such-feature b c)"))
+(check "t4 skip sentinel #nA contents" 4
+       (aref (read-from-string "#2A#+t4c-no-such-feature x ((1 2) (3 4))") 1 1))
+(check "t4 skip sentinel #. read-time eval" 5
+       (read-from-string "#.#+t4c-no-such-feature x 5"))
+
 ; --- Summary ---
 (format t "~%=== Results ===~%")
 (format t "Passed: ~A~%" *pass-count*)

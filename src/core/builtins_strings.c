@@ -666,8 +666,11 @@ static CL_Obj bi_string_trim(CL_Obj *args, int n)
     CL_Obj set, str;
     uint32_t start, end;
     CL_UNUSED(n);
-    set = args[0];
+    /* GC SAFETY (audit tier 4, FS10): coerce_to_string_obj allocates for a
+     * character/symbol designator — read the char-bag from the rooted
+     * args[0] slot AFTER the coerce, not before. */
     str = coerce_to_string_obj(args[1], "STRING-TRIM");
+    set = args[0];
     start = 0;
     end = cl_string_length(str);
     while (start < end && trim_char_in_set(cl_string_char_at(str, start), set)) start++;
@@ -680,8 +683,9 @@ static CL_Obj bi_string_left_trim(CL_Obj *args, int n)
     CL_Obj set, str;
     uint32_t start, len;
     CL_UNUSED(n);
-    set = args[0];
+    /* GC SAFETY (audit tier 4, FS10): re-read set after the allocating coerce */
     str = coerce_to_string_obj(args[1], "STRING-LEFT-TRIM");
+    set = args[0];
     start = 0;
     len = cl_string_length(str);
     while (start < len && trim_char_in_set(cl_string_char_at(str, start), set)) start++;
@@ -693,8 +697,9 @@ static CL_Obj bi_string_right_trim(CL_Obj *args, int n)
     CL_Obj set, str;
     uint32_t end;
     CL_UNUSED(n);
-    set = args[0];
+    /* GC SAFETY (audit tier 4, FS10): re-read set after the allocating coerce */
     str = coerce_to_string_obj(args[1], "STRING-RIGHT-TRIM");
+    set = args[0];
     end = cl_string_length(str);
     while (end > 0 && trim_char_in_set(cl_string_char_at(str, end - 1), set)) end--;
     return cl_string_substring(str, 0, end);
@@ -1168,12 +1173,22 @@ static CL_Obj bi_concatenate(CL_Obj *args, int n)
                 /* (vector elt-type [length]) — capture the length constraint. */
                 CL_Obj lenarg = (CL_NULL_P(rest) || CL_NULL_P(cl_cdr(rest)))
                                     ? CL_NIL : cl_car(cl_cdr(rest));
+                int is_char, is_bit;
                 if (CL_FIXNUM_P(lenarg)) len_con = CL_FIXNUM_VAL(lenarg);
-                if (!CL_NULL_P(rest) &&
-                    concat_elt_type_is_char(cl_car(rest), 8))
+                /* GC SAFETY (audit tier 4, FS11): the elt-type checks can run
+                 * a deftype expander (cl_vm_apply — compacts), e.g.
+                 * (concatenate '(vector octet) …).  Keep the compound type
+                 * rooted and re-derive rest after each check. */
+                CL_GC_PROTECT(result_type);
+                is_char = !CL_NULL_P(rest) &&
+                          concat_elt_type_is_char(cl_car(rest), 8);
+                rest = cl_cdr(result_type);
+                is_bit = !is_char && !CL_NULL_P(rest) &&
+                         concat_elt_type_is_bit(cl_car(rest), 8);
+                CL_GC_UNPROTECT(1);
+                if (is_char)
                     result_type = cl_intern_in("STRING", 6, cl_package_cl);
-                else if (!CL_NULL_P(rest) &&
-                         concat_elt_type_is_bit(cl_car(rest), 8))
+                else if (is_bit)
                     result_type = cl_intern_in("BIT-VECTOR", 10, cl_package_cl);
                 else
                     result_type = cl_intern_in("VECTOR", 6, cl_package_cl);
@@ -1508,26 +1523,14 @@ static CL_Obj bi_write_to_string(CL_Obj *args, int n)
 {
     char buf[1024];
     int len, i;
-    CL_Symbol *se = NULL, *sr = NULL, *sb = NULL, *sx = NULL;
-    CL_Symbol *sl = NULL, *sn = NULL, *sc = NULL, *sg = NULL;
-    CL_Symbol *sa = NULL, *si = NULL, *sp = NULL, *sm = NULL;
-    CL_Obj prev_e, prev_r, prev_b, prev_x, prev_l, prev_n;
-    CL_Obj prev_c, prev_g, prev_a, prev_i, prev_p, prev_m;
+    /* GC SAFETY (audit tier 4, FS12): the print below compacts — the saved
+     * *PRINT-* values must be GC-rooted or the restore writes stale offsets
+     * back into the control symbols (see cl_print_controls_save). */
+    CL_Obj saved_ctrl[CL_PRINT_CTRL_COUNT];
     int has_keywords = (n > 1);
 
     if (has_keywords) {
-        prev_e = cl_symbol_value(SYM_PRINT_ESCAPE);
-        prev_r = cl_symbol_value(SYM_PRINT_READABLY);
-        prev_b = cl_symbol_value(SYM_PRINT_BASE);
-        prev_x = cl_symbol_value(SYM_PRINT_RADIX);
-        prev_l = cl_symbol_value(SYM_PRINT_LEVEL);
-        prev_n = cl_symbol_value(SYM_PRINT_LENGTH);
-        prev_c = cl_symbol_value(SYM_PRINT_CASE);
-        prev_g = cl_symbol_value(SYM_PRINT_GENSYM);
-        prev_a = cl_symbol_value(SYM_PRINT_ARRAY);
-        prev_i = cl_symbol_value(SYM_PRINT_CIRCLE);
-        prev_p = cl_symbol_value(SYM_PRINT_PRETTY);
-        prev_m = cl_symbol_value(SYM_PRINT_RIGHT_MARGIN);
+        cl_print_controls_save(saved_ctrl);
 
         for (i = 1; i + 1 < n; i += 2) {
             CL_Obj kw = args[i];
@@ -1549,20 +1552,8 @@ static CL_Obj bi_write_to_string(CL_Obj *args, int n)
 
     len = cl_prin1_to_string(args[0], buf, sizeof(buf));
 
-    if (has_keywords) {
-        cl_set_symbol_value(SYM_PRINT_ESCAPE, prev_e);
-        cl_set_symbol_value(SYM_PRINT_READABLY, prev_r);
-        cl_set_symbol_value(SYM_PRINT_BASE, prev_b);
-        cl_set_symbol_value(SYM_PRINT_RADIX, prev_x);
-        cl_set_symbol_value(SYM_PRINT_LEVEL, prev_l);
-        cl_set_symbol_value(SYM_PRINT_LENGTH, prev_n);
-        cl_set_symbol_value(SYM_PRINT_CASE, prev_c);
-        cl_set_symbol_value(SYM_PRINT_GENSYM, prev_g);
-        cl_set_symbol_value(SYM_PRINT_ARRAY, prev_a);
-        cl_set_symbol_value(SYM_PRINT_CIRCLE, prev_i);
-        cl_set_symbol_value(SYM_PRINT_PRETTY, prev_p);
-        cl_set_symbol_value(SYM_PRINT_RIGHT_MARGIN, prev_m);
-    }
+    if (has_keywords)
+        cl_print_controls_restore(saved_ctrl);
 
     return cl_make_string(buf, (uint32_t)len);
 }
