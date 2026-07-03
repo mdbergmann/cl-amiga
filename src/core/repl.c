@@ -538,9 +538,12 @@ void cl_repl(void)
                     /* Set - to current form */
                     cl_set_symbol_value(SYM_MINUS, expr);
 
+                    /* expr stays protected through the EVAL too: the
+                     * history update below stores it into +, and an
+                     * unprotected expr is stale after eval compacts.
+                     * On error the longjmp restores the root count. */
                     CL_GC_PROTECT(expr);
                     bytecode = cl_compile(expr);
-                    CL_GC_UNPROTECT(1);
 
                     if (!CL_NULL_P(bytecode)) {
                         result = cl_vm_eval(bytecode);
@@ -553,6 +556,7 @@ void cl_repl(void)
                         cl_color_reset();
                         cl_write_cstring_to_stdout("\n");
                     }
+                    CL_GC_UNPROTECT(1);
                 }
                 CL_UNCATCH();
             } else if (err == CL_ERR_EXIT) {

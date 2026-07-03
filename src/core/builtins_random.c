@@ -15,13 +15,18 @@
 #include "../platform/platform.h"
 #include <string.h>
 
-/* Helper to register a builtin */
+/* Helper to register a builtin.  sym is protected across the function
+ * alloc — cl_make_function can compact and leave sym/s stale. */
 static void defun(const char *name, CL_CFunc func, int min, int max)
 {
     CL_Obj sym = cl_intern_in(name, (uint32_t)strlen(name), cl_package_cl);
-    CL_Obj fn = cl_make_function(func, sym, min, max);
-    CL_Symbol *s = (CL_Symbol *)CL_OBJ_TO_PTR(sym);
+    CL_Obj fn;
+    CL_Symbol *s;
+    CL_GC_PROTECT(sym);
+    fn = cl_make_function(func, sym, min, max);
+    s = (CL_Symbol *)CL_OBJ_TO_PTR(sym);
     s->function = fn;
+    CL_GC_UNPROTECT(1);
 }
 
 /* --- xorshift128 PRNG --- */
@@ -87,6 +92,13 @@ static CL_Obj bi_random(CL_Obj *args, int n)
         rbn = (CL_Bignum *)CL_OBJ_TO_PTR(result);
         /* Re-read bn pointer after potential GC */
         bn = (CL_Bignum *)CL_OBJ_TO_PTR(limit);
+        /* Re-derive rs too: the alloc may have moved the random-state, and
+         * xorshift128_next WRITES through the pointer — a stale rs would
+         * corrupt whatever now lives at the old location. */
+        if (n >= 2 && !CL_NULL_P(args[1]))
+            rs = (CL_RandomState *)CL_OBJ_TO_PTR(args[1]);
+        else
+            rs = get_default_random_state();
         for (i = 0; i < bn->length; i++) {
             rbn->limbs[i] = (uint16_t)(xorshift128_next(rs) & 0xFFFF);
         }
@@ -112,7 +124,8 @@ static CL_Obj bi_random(CL_Obj *args, int n)
             CL_GC_PROTECT(limit);
             q = cl_arith_truncate(r_obj, limit);
             CL_GC_PROTECT(q);
-            rem = cl_arith_sub(r_obj, cl_arith_mul(q, limit));
+            rem = cl_arith_mul(q, limit);
+            rem = cl_arith_sub(r_obj, rem);
             CL_GC_UNPROTECT(3);
             return rem;
         }
@@ -165,9 +178,11 @@ static CL_Obj bi_make_random_state(CL_Obj *args, int n)
 
     /* arg = NIL or no arg: copy *random-state* */
     if (CL_NULL_P(arg)) {
-        src = get_default_random_state();
         result = cl_make_random_state(0);
         dst = (CL_RandomState *)CL_OBJ_TO_PTR(result);
+        /* Derive src only AFTER the alloc — a pointer taken before it
+         * dangles once the alloc compacts (copies a garbage seed). */
+        src = get_default_random_state();
         dst->s[0] = src->s[0];
         dst->s[1] = src->s[1];
         dst->s[2] = src->s[2];
@@ -177,11 +192,11 @@ static CL_Obj bi_make_random_state(CL_Obj *args, int n)
 
     /* arg = random-state: copy it */
     if (CL_RANDOM_STATE_P(arg)) {
-        src = (CL_RandomState *)CL_OBJ_TO_PTR(arg);
         result = cl_make_random_state(0);
         dst = (CL_RandomState *)CL_OBJ_TO_PTR(result);
-        /* Re-read src after potential GC */
-        src = (CL_RandomState *)CL_OBJ_TO_PTR(arg);
+        /* Re-read src from the rooted args[0] after the alloc — the arg
+         * local copy is itself stale after compaction. */
+        src = (CL_RandomState *)CL_OBJ_TO_PTR(args[0]);
         dst->s[0] = src->s[0];
         dst->s[1] = src->s[1];
         dst->s[2] = src->s[2];

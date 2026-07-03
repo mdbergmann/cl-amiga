@@ -1067,6 +1067,10 @@ CL_Obj cl_arith_mod(CL_Obj a, CL_Obj b)
         int rem_is_zero;
         int heap_bufs = 0;
 
+        /* b is read (sign check + cl_arith_add) after bignum_from_limbs
+         * below can compact — keep it forwarded. */
+        CL_GC_PROTECT(b);
+
         al = to_limbs(a, &a_len, &a_sign, ta);
         bl = to_limbs(b, &b_len, &b_sign, tb);
 
@@ -1108,6 +1112,7 @@ CL_Obj cl_arith_mod(CL_Obj a, CL_Obj b)
             }
         }
 
+        CL_GC_UNPROTECT(1);
         return rem_obj;
     }
 }
@@ -1141,9 +1146,16 @@ CL_Obj cl_arith_negate(CL_Obj a)
     }
     {
         CL_Bignum *bn = (CL_Bignum *)CL_OBJ_TO_PTR(a);
-        CL_Obj result = cl_make_bignum(bn->length, bn->sign ? 0 : 1);
-        CL_Bignum *rbn = (CL_Bignum *)CL_OBJ_TO_PTR(result);
-        memcpy(rbn->limbs, bn->limbs, bn->length * sizeof(uint16_t));
+        uint16_t len = bn->length;
+        uint16_t sign = bn->sign ? 0 : 1;
+        CL_Obj result;
+        CL_Bignum *rbn;
+        CL_GC_PROTECT(a);
+        result = cl_make_bignum(len, sign);
+        bn = (CL_Bignum *)CL_OBJ_TO_PTR(a);
+        rbn = (CL_Bignum *)CL_OBJ_TO_PTR(result);
+        memcpy(rbn->limbs, bn->limbs, len * sizeof(uint16_t));
+        CL_GC_UNPROTECT(1);
         return cl_bignum_normalize(result);
     }
 }
@@ -1215,9 +1227,15 @@ CL_Obj cl_arith_abs(CL_Obj a)
         CL_Bignum *bn = (CL_Bignum *)CL_OBJ_TO_PTR(a);
         if (bn->sign == 0) return a;
         {
-            CL_Obj result = cl_make_bignum(bn->length, 0);
-            CL_Bignum *rbn = (CL_Bignum *)CL_OBJ_TO_PTR(result);
-            memcpy(rbn->limbs, bn->limbs, bn->length * sizeof(uint16_t));
+            uint16_t len = bn->length;
+            CL_Obj result;
+            CL_Bignum *rbn;
+            CL_GC_PROTECT(a);
+            result = cl_make_bignum(len, 0);
+            bn = (CL_Bignum *)CL_OBJ_TO_PTR(a);
+            rbn = (CL_Bignum *)CL_OBJ_TO_PTR(result);
+            memcpy(rbn->limbs, bn->limbs, len * sizeof(uint16_t));
+            CL_GC_UNPROTECT(1);
             return result;
         }
     }
@@ -1277,8 +1295,18 @@ int cl_numeric_equal(CL_Obj a, CL_Obj b)
     if (ac && bc) {
         CL_Complex *ca = (CL_Complex *)CL_OBJ_TO_PTR(a);
         CL_Complex *cb = (CL_Complex *)CL_OBJ_TO_PTR(b);
-        return cl_arith_compare(ca->realpart, cb->realpart) == 0 &&
-               cl_arith_compare(ca->imagpart, cb->imagpart) == 0;
+        /* Snapshot the imagparts before the realpart compare — it
+         * allocates for ratio/bignum parts, which would leave ca/cb
+         * dangling for the second field read. */
+        CL_Obj ai = ca->imagpart;
+        CL_Obj bi = cb->imagpart;
+        int req;
+        CL_GC_PROTECT(ai);
+        CL_GC_PROTECT(bi);
+        req = cl_arith_compare(ca->realpart, cb->realpart) == 0;
+        req = req && cl_arith_compare(ai, bi) == 0;
+        CL_GC_UNPROTECT(2);
+        return req;
     }
     if (ac) {
         CL_Complex *ca = (CL_Complex *)CL_OBJ_TO_PTR(a);
@@ -1564,19 +1592,25 @@ CL_Obj cl_arith_isqrt(CL_Obj n)
      * test then terminates correctly.  Starting from a lower bound (eg
      * 2^floor(bl/2)) bounces above the true sqrt on the first step
      * and would terminate immediately with a wrong answer. */
+    /* Protect n BEFORE the initial ash — it allocates a bignum for large n
+     * and would leave n stale (protecting afterward roots a stale value). */
+    CL_GC_PROTECT(n);
+
     {
         int bl = cl_arith_integer_length(n);
         x = cl_arith_ash(CL_MAKE_FIXNUM(1), CL_MAKE_FIXNUM((bl + 1) / 2));
     }
 
-    CL_GC_PROTECT(n);
     CL_GC_PROTECT(x);
 
-    /* Iterate */
+    /* Iterate.  Inner allocating calls are kept in separate statements so
+     * the protected locals are re-read from (forwarded) memory afterward,
+     * not captured in registers before the alloc. */
     {
         int iters = 0;
         while (iters++ < 1000) {
-            x1 = cl_arith_add(x, cl_arith_truncate(n, x));
+            x1 = cl_arith_truncate(n, x);
+            x1 = cl_arith_add(x, x1);
             x1 = cl_arith_truncate(x1, CL_MAKE_FIXNUM(2));
             if (cl_arith_compare(x1, x) >= 0) break;
             x = x1;
@@ -1584,7 +1618,9 @@ CL_Obj cl_arith_isqrt(CL_Obj n)
     }
 
     /* Ensure x*x <= n < (x+1)*(x+1) */
-    while (cl_arith_compare(cl_arith_mul(x, x), n) > 0) {
+    for (;;) {
+        x1 = cl_arith_mul(x, x);
+        if (cl_arith_compare(x1, n) <= 0) break;
         x = cl_arith_sub(x, CL_MAKE_FIXNUM(1));
     }
 
@@ -1778,11 +1814,12 @@ CL_Obj cl_arith_ash(CL_Obj n, CL_Obj count)
         while (r_len > 1 && result[r_len - 1] == 0) r_len--;
 
         {
-            CL_Obj res = bignum_from_limbs(result, r_len, n_sign);
-            /* Arithmetic shift: for negatives, floor toward -inf */
+            CL_Obj res;
+            /* Arithmetic shift: for negatives, floor toward -inf.
+             * Check the shifted-out bits BEFORE bignum_from_limbs — nl may
+             * point into n's limbs, which move if the alloc compacts. */
+            int any_set = 0;
             if (n_sign) {
-                /* Check if any shifted-out bits were set */
-                int any_set = 0;
                 uint32_t ws;
                 for (ws = 0; ws < word_shift && ws < n_len; ws++) {
                     if (nl[ws] != 0) { any_set = 1; break; }
@@ -1791,9 +1828,10 @@ CL_Obj cl_arith_ash(CL_Obj n, CL_Obj count)
                     if (nl[word_shift] & ((1u << bit_shift) - 1))
                         any_set = 1;
                 }
-                if (any_set) {
-                    res = cl_arith_sub(res, CL_MAKE_FIXNUM(1));
-                }
+            }
+            res = bignum_from_limbs(result, r_len, n_sign);
+            if (n_sign && any_set) {
+                res = cl_arith_sub(res, CL_MAKE_FIXNUM(1));
             }
             return res;
         }
@@ -2090,6 +2128,34 @@ static void def_const(const char *name, uint32_t len, int32_t val,
     if (sym_out) *sym_out = sym;
 }
 
+/* Float-constant definers: the float alloc can compact, so the symbol is
+ * protected across it and the CL_Symbol* derived only afterward. */
+static void def_float_single(const char *name, uint32_t len, float v)
+{
+    CL_Obj fsym = cl_intern_in(name, len, cl_package_cl);
+    CL_Obj fval;
+    CL_Symbol *fs;
+    CL_GC_PROTECT(fsym);
+    fval = cl_make_single_float(v);
+    fs = (CL_Symbol *)CL_OBJ_TO_PTR(fsym);
+    fs->value = fval;
+    fs->flags |= CL_SYM_CONSTANT;
+    CL_GC_UNPROTECT(1);
+}
+
+static void def_float_double(const char *name, uint32_t len, double v)
+{
+    CL_Obj fsym = cl_intern_in(name, len, cl_package_cl);
+    CL_Obj fval;
+    CL_Symbol *fs;
+    CL_GC_PROTECT(fsym);
+    fval = cl_make_double_float(v);
+    fs = (CL_Symbol *)CL_OBJ_TO_PTR(fsym);
+    fs->value = fval;
+    fs->flags |= CL_SYM_CONSTANT;
+    CL_GC_UNPROTECT(1);
+}
+
 void cl_bignum_init(void)
 {
     CL_Obj sym;
@@ -2159,48 +2225,21 @@ void cl_bignum_init(void)
 
     /* Float limit constants */
     {
-        CL_Obj fsym;
-        CL_Symbol *fs;
+        def_float_single("MOST-POSITIVE-SINGLE-FLOAT", 26, 3.4028235e+38f);
 
-        fsym = cl_intern_in("MOST-POSITIVE-SINGLE-FLOAT", 26, cl_package_cl);
-        fs = (CL_Symbol *)CL_OBJ_TO_PTR(fsym);
-        fs->value = cl_make_single_float(3.4028235e+38f);
-        fs->flags |= CL_SYM_CONSTANT;
+        def_float_single("MOST-NEGATIVE-SINGLE-FLOAT", 26, -3.4028235e+38f);
 
-        fsym = cl_intern_in("MOST-NEGATIVE-SINGLE-FLOAT", 26, cl_package_cl);
-        fs = (CL_Symbol *)CL_OBJ_TO_PTR(fsym);
-        fs->value = cl_make_single_float(-3.4028235e+38f);
-        fs->flags |= CL_SYM_CONSTANT;
+        def_float_double("MOST-POSITIVE-DOUBLE-FLOAT", 26, 1.7976931348623157e+308);
 
-        fsym = cl_intern_in("MOST-POSITIVE-DOUBLE-FLOAT", 26, cl_package_cl);
-        fs = (CL_Symbol *)CL_OBJ_TO_PTR(fsym);
-        fs->value = cl_make_double_float(1.7976931348623157e+308);
-        fs->flags |= CL_SYM_CONSTANT;
+        def_float_double("MOST-NEGATIVE-DOUBLE-FLOAT", 26, -1.7976931348623157e+308);
 
-        fsym = cl_intern_in("MOST-NEGATIVE-DOUBLE-FLOAT", 26, cl_package_cl);
-        fs = (CL_Symbol *)CL_OBJ_TO_PTR(fsym);
-        fs->value = cl_make_double_float(-1.7976931348623157e+308);
-        fs->flags |= CL_SYM_CONSTANT;
+        def_float_single("LEAST-POSITIVE-SINGLE-FLOAT", 27, 1.17549435e-38f);
 
-        fsym = cl_intern_in("LEAST-POSITIVE-SINGLE-FLOAT", 27, cl_package_cl);
-        fs = (CL_Symbol *)CL_OBJ_TO_PTR(fsym);
-        fs->value = cl_make_single_float(1.17549435e-38f);
-        fs->flags |= CL_SYM_CONSTANT;
+        def_float_single("LEAST-NEGATIVE-SINGLE-FLOAT", 27, -1.17549435e-38f);
 
-        fsym = cl_intern_in("LEAST-NEGATIVE-SINGLE-FLOAT", 27, cl_package_cl);
-        fs = (CL_Symbol *)CL_OBJ_TO_PTR(fsym);
-        fs->value = cl_make_single_float(-1.17549435e-38f);
-        fs->flags |= CL_SYM_CONSTANT;
+        def_float_double("LEAST-POSITIVE-DOUBLE-FLOAT", 27, 2.2250738585072014e-308);
 
-        fsym = cl_intern_in("LEAST-POSITIVE-DOUBLE-FLOAT", 27, cl_package_cl);
-        fs = (CL_Symbol *)CL_OBJ_TO_PTR(fsym);
-        fs->value = cl_make_double_float(2.2250738585072014e-308);
-        fs->flags |= CL_SYM_CONSTANT;
-
-        fsym = cl_intern_in("LEAST-NEGATIVE-DOUBLE-FLOAT", 27, cl_package_cl);
-        fs = (CL_Symbol *)CL_OBJ_TO_PTR(fsym);
-        fs->value = cl_make_double_float(-2.2250738585072014e-308);
-        fs->flags |= CL_SYM_CONSTANT;
+        def_float_double("LEAST-NEGATIVE-DOUBLE-FLOAT", 27, -2.2250738585072014e-308);
 
         /* Epsilons defined by binary-search semantics per CLHS 12.1.4.4:
          *   <kind>-FLOAT-EPSILON           = smallest e where (1+e) /= 1
@@ -2215,93 +2254,45 @@ void cl_bignum_init(void)
             float fn = nextafterf(ldexpf(1.0f, -25), 2.0f);
             double dp = nextafter(ldexp(1.0, -53), 2.0);
             double dn = nextafter(ldexp(1.0, -54), 2.0);
-            fsym = cl_intern_in("SINGLE-FLOAT-EPSILON", 20, cl_package_cl);
-            fs = (CL_Symbol *)CL_OBJ_TO_PTR(fsym);
-            fs->value = cl_make_single_float(fp);
-            fs->flags |= CL_SYM_CONSTANT;
+            def_float_single("SINGLE-FLOAT-EPSILON", 20, fp);
 
-            fsym = cl_intern_in("DOUBLE-FLOAT-EPSILON", 20, cl_package_cl);
-            fs = (CL_Symbol *)CL_OBJ_TO_PTR(fsym);
-            fs->value = cl_make_double_float(dp);
-            fs->flags |= CL_SYM_CONSTANT;
+            def_float_double("DOUBLE-FLOAT-EPSILON", 20, dp);
 
-            fsym = cl_intern_in("SHORT-FLOAT-EPSILON", 19, cl_package_cl);
-            fs = (CL_Symbol *)CL_OBJ_TO_PTR(fsym);
-            fs->value = cl_make_single_float(fp);
-            fs->flags |= CL_SYM_CONSTANT;
+            def_float_single("SHORT-FLOAT-EPSILON", 19, fp);
 
-            fsym = cl_intern_in("LONG-FLOAT-EPSILON", 18, cl_package_cl);
-            fs = (CL_Symbol *)CL_OBJ_TO_PTR(fsym);
-            fs->value = cl_make_double_float(dp);
-            fs->flags |= CL_SYM_CONSTANT;
+            def_float_double("LONG-FLOAT-EPSILON", 18, dp);
 
             (void)fn; (void)dn; /* used below */
         }
 
         /* short-float/long-float aliases for most-positive/negative */
-        fsym = cl_intern_in("MOST-POSITIVE-SHORT-FLOAT", 25, cl_package_cl);
-        fs = (CL_Symbol *)CL_OBJ_TO_PTR(fsym);
-        fs->value = cl_make_single_float(3.4028235e+38f);
-        fs->flags |= CL_SYM_CONSTANT;
+        def_float_single("MOST-POSITIVE-SHORT-FLOAT", 25, 3.4028235e+38f);
 
-        fsym = cl_intern_in("MOST-NEGATIVE-SHORT-FLOAT", 25, cl_package_cl);
-        fs = (CL_Symbol *)CL_OBJ_TO_PTR(fsym);
-        fs->value = cl_make_single_float(-3.4028235e+38f);
-        fs->flags |= CL_SYM_CONSTANT;
+        def_float_single("MOST-NEGATIVE-SHORT-FLOAT", 25, -3.4028235e+38f);
 
-        fsym = cl_intern_in("MOST-POSITIVE-LONG-FLOAT", 24, cl_package_cl);
-        fs = (CL_Symbol *)CL_OBJ_TO_PTR(fsym);
-        fs->value = cl_make_double_float(1.7976931348623157e+308);
-        fs->flags |= CL_SYM_CONSTANT;
+        def_float_double("MOST-POSITIVE-LONG-FLOAT", 24, 1.7976931348623157e+308);
 
-        fsym = cl_intern_in("MOST-NEGATIVE-LONG-FLOAT", 24, cl_package_cl);
-        fs = (CL_Symbol *)CL_OBJ_TO_PTR(fsym);
-        fs->value = cl_make_double_float(-1.7976931348623157e+308);
-        fs->flags |= CL_SYM_CONSTANT;
+        def_float_double("MOST-NEGATIVE-LONG-FLOAT", 24, -1.7976931348623157e+308);
 
-        fsym = cl_intern_in("LEAST-POSITIVE-SHORT-FLOAT", 26, cl_package_cl);
-        fs = (CL_Symbol *)CL_OBJ_TO_PTR(fsym);
-        fs->value = cl_make_single_float(1.17549435e-38f);
-        fs->flags |= CL_SYM_CONSTANT;
+        def_float_single("LEAST-POSITIVE-SHORT-FLOAT", 26, 1.17549435e-38f);
 
-        fsym = cl_intern_in("LEAST-NEGATIVE-SHORT-FLOAT", 26, cl_package_cl);
-        fs = (CL_Symbol *)CL_OBJ_TO_PTR(fsym);
-        fs->value = cl_make_single_float(-1.17549435e-38f);
-        fs->flags |= CL_SYM_CONSTANT;
+        def_float_single("LEAST-NEGATIVE-SHORT-FLOAT", 26, -1.17549435e-38f);
 
-        fsym = cl_intern_in("LEAST-POSITIVE-LONG-FLOAT", 25, cl_package_cl);
-        fs = (CL_Symbol *)CL_OBJ_TO_PTR(fsym);
-        fs->value = cl_make_double_float(2.2250738585072014e-308);
-        fs->flags |= CL_SYM_CONSTANT;
+        def_float_double("LEAST-POSITIVE-LONG-FLOAT", 25, 2.2250738585072014e-308);
 
-        fsym = cl_intern_in("LEAST-NEGATIVE-LONG-FLOAT", 25, cl_package_cl);
-        fs = (CL_Symbol *)CL_OBJ_TO_PTR(fsym);
-        fs->value = cl_make_double_float(-2.2250738585072014e-308);
-        fs->flags |= CL_SYM_CONSTANT;
+        def_float_double("LEAST-NEGATIVE-LONG-FLOAT", 25, -2.2250738585072014e-308);
 
         {
             float fn = nextafterf(ldexpf(1.0f, -25), 2.0f);
             double dn = nextafter(ldexp(1.0, -54), 2.0);
 
-            fsym = cl_intern_in("SINGLE-FLOAT-NEGATIVE-EPSILON", 29, cl_package_cl);
-            fs = (CL_Symbol *)CL_OBJ_TO_PTR(fsym);
-            fs->value = cl_make_single_float(fn);
-            fs->flags |= CL_SYM_CONSTANT;
+            def_float_single("SINGLE-FLOAT-NEGATIVE-EPSILON", 29, fn);
 
-            fsym = cl_intern_in("DOUBLE-FLOAT-NEGATIVE-EPSILON", 29, cl_package_cl);
-            fs = (CL_Symbol *)CL_OBJ_TO_PTR(fsym);
-            fs->value = cl_make_double_float(dn);
-            fs->flags |= CL_SYM_CONSTANT;
+            def_float_double("DOUBLE-FLOAT-NEGATIVE-EPSILON", 29, dn);
 
-            fsym = cl_intern_in("SHORT-FLOAT-NEGATIVE-EPSILON", 28, cl_package_cl);
-            fs = (CL_Symbol *)CL_OBJ_TO_PTR(fsym);
-            fs->value = cl_make_single_float(fn);
-            fs->flags |= CL_SYM_CONSTANT;
+            def_float_single("SHORT-FLOAT-NEGATIVE-EPSILON", 28, fn);
 
-            fsym = cl_intern_in("LONG-FLOAT-NEGATIVE-EPSILON", 27, cl_package_cl);
-            fs = (CL_Symbol *)CL_OBJ_TO_PTR(fsym);
-            fs->value = cl_make_double_float(dn);
-            fs->flags |= CL_SYM_CONSTANT;
+            def_float_double("LONG-FLOAT-NEGATIVE-EPSILON", 27, dn);
         }
 
         /* LEAST-{POSITIVE,NEGATIVE}-NORMALIZED-* — CLHS distinguishes
@@ -2311,50 +2302,23 @@ void cl_bignum_init(void)
          * value (FLT_MIN / DBL_MIN); both pairs of constants therefore
          * share their values here.  If we ever expose subnormals these
          * should be re-derived. */
-        fsym = cl_intern_in("LEAST-POSITIVE-NORMALIZED-SINGLE-FLOAT", 38, cl_package_cl);
-        fs = (CL_Symbol *)CL_OBJ_TO_PTR(fsym);
-        fs->value = cl_make_single_float(1.17549435e-38f);
-        fs->flags |= CL_SYM_CONSTANT;
+        def_float_single("LEAST-POSITIVE-NORMALIZED-SINGLE-FLOAT", 38, 1.17549435e-38f);
 
-        fsym = cl_intern_in("LEAST-NEGATIVE-NORMALIZED-SINGLE-FLOAT", 38, cl_package_cl);
-        fs = (CL_Symbol *)CL_OBJ_TO_PTR(fsym);
-        fs->value = cl_make_single_float(-1.17549435e-38f);
-        fs->flags |= CL_SYM_CONSTANT;
+        def_float_single("LEAST-NEGATIVE-NORMALIZED-SINGLE-FLOAT", 38, -1.17549435e-38f);
 
-        fsym = cl_intern_in("LEAST-POSITIVE-NORMALIZED-DOUBLE-FLOAT", 38, cl_package_cl);
-        fs = (CL_Symbol *)CL_OBJ_TO_PTR(fsym);
-        fs->value = cl_make_double_float(2.2250738585072014e-308);
-        fs->flags |= CL_SYM_CONSTANT;
+        def_float_double("LEAST-POSITIVE-NORMALIZED-DOUBLE-FLOAT", 38, 2.2250738585072014e-308);
 
-        fsym = cl_intern_in("LEAST-NEGATIVE-NORMALIZED-DOUBLE-FLOAT", 38, cl_package_cl);
-        fs = (CL_Symbol *)CL_OBJ_TO_PTR(fsym);
-        fs->value = cl_make_double_float(-2.2250738585072014e-308);
-        fs->flags |= CL_SYM_CONSTANT;
+        def_float_double("LEAST-NEGATIVE-NORMALIZED-DOUBLE-FLOAT", 38, -2.2250738585072014e-308);
 
-        fsym = cl_intern_in("LEAST-POSITIVE-NORMALIZED-SHORT-FLOAT", 37, cl_package_cl);
-        fs = (CL_Symbol *)CL_OBJ_TO_PTR(fsym);
-        fs->value = cl_make_single_float(1.17549435e-38f);
-        fs->flags |= CL_SYM_CONSTANT;
+        def_float_single("LEAST-POSITIVE-NORMALIZED-SHORT-FLOAT", 37, 1.17549435e-38f);
 
-        fsym = cl_intern_in("LEAST-NEGATIVE-NORMALIZED-SHORT-FLOAT", 37, cl_package_cl);
-        fs = (CL_Symbol *)CL_OBJ_TO_PTR(fsym);
-        fs->value = cl_make_single_float(-1.17549435e-38f);
-        fs->flags |= CL_SYM_CONSTANT;
+        def_float_single("LEAST-NEGATIVE-NORMALIZED-SHORT-FLOAT", 37, -1.17549435e-38f);
 
-        fsym = cl_intern_in("LEAST-POSITIVE-NORMALIZED-LONG-FLOAT", 36, cl_package_cl);
-        fs = (CL_Symbol *)CL_OBJ_TO_PTR(fsym);
-        fs->value = cl_make_double_float(2.2250738585072014e-308);
-        fs->flags |= CL_SYM_CONSTANT;
+        def_float_double("LEAST-POSITIVE-NORMALIZED-LONG-FLOAT", 36, 2.2250738585072014e-308);
 
-        fsym = cl_intern_in("LEAST-NEGATIVE-NORMALIZED-LONG-FLOAT", 36, cl_package_cl);
-        fs = (CL_Symbol *)CL_OBJ_TO_PTR(fsym);
-        fs->value = cl_make_double_float(-2.2250738585072014e-308);
-        fs->flags |= CL_SYM_CONSTANT;
+        def_float_double("LEAST-NEGATIVE-NORMALIZED-LONG-FLOAT", 36, -2.2250738585072014e-308);
 
         /* PI — IEEE-754 closest double to π. */
-        fsym = cl_intern_in("PI", 2, cl_package_cl);
-        fs = (CL_Symbol *)CL_OBJ_TO_PTR(fsym);
-        fs->value = cl_make_double_float(3.14159265358979323846);
-        fs->flags |= CL_SYM_CONSTANT;
+        def_float_double("PI", 2, 3.14159265358979323846);
     }
 }

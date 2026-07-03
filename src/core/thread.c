@@ -112,6 +112,11 @@ void cl_gc_safepoint(void)
     CL_Thread *self = (CL_Thread *)platform_tls_get();
     if (!self || !self->gc_requested)
         return;
+    /* Shutdown teardown window: cl_thread_shutdown nulls gc_mutex; a
+     * straggling worker must not lock a destroyed mutex
+     * (ObtainSemaphore(NULL) on Amiga) — same guard as enter/leave_safe_region. */
+    if (!gc_mutex)
+        return;
 
     /* Record where we froze so a peer's compaction can conservatively scan
      * THIS thread's JIT native stack ([jit_park_sp .. jit_stack_top)) — the
@@ -293,6 +298,17 @@ void cl_gc_stop_the_world(void)
              * hang the world.  cl_gc_thread_online parks any newborn that
              * comes online while this STW is in progress, so skipping them
              * here cannot let a thread touch the stopped heap. */
+            /* A thread whose registration landed AFTER the request phase
+             * above has gc_requested==0 and would be treated as stopped
+             * while its OS thread runs.  Today that is unreachable only
+             * because bi_make_thread's wrapper alloc is a mandatory
+             * safepoint between registering and creating the OS thread —
+             * an incidental invariant.  Make it structural: (re)request
+             * any live, unrequested peer during each rescan (idempotent,
+             * under the list lock); it then parks at its next safepoint
+             * before all_stopped can become true. */
+            if (t != self && t->gc_live && !t->gc_requested)
+                t->gc_requested = 1;
             if (t != self && t->gc_live && t->gc_requested
                 && !t->gc_stopped && !t->in_safe_region) {
                 all_stopped = 0;
@@ -414,6 +430,15 @@ void cl_thread_handle_interrupt(CL_Thread *t)
     if (!t->interrupt_pending)
         return;
 
+    /* Defer while holding an internal rwlock reader: an interrupt closure
+     * that signals — or a destroy — unwinds via longjmp, and nothing
+     * restores rdlock_tables_held/rdlock_package_held on that path.  The
+     * leaked reader count then blocks the next writer FOREVER (process-
+     * wide hang).  Leaving interrupt_pending set retries at the next
+     * safepoint outside the locked section. */
+    if (t->rdlock_tables_held > 0 || t->rdlock_package_held > 0)
+        return;
+
     /* Pair with the publisher's barrier (bi_interrupt_thread /
      * bi_destroy_thread): having observed interrupt_pending == 1, order
      * the payload reads (destroy_requested / interrupt_func) after it —
@@ -421,11 +446,25 @@ void cl_thread_handle_interrupt(CL_Thread *t)
      * order and consume the flag with a stale NIL payload. */
     platform_memory_barrier();
 
+    /* Consume under cl_thread_list_lock — the same lock the publishers
+     * hold.  The old unlocked read-then-clear raced a concurrent second
+     * publish: this thread's NIL/0 stores clobbered the fresh payload
+     * (interrupt silently dropped), or cleared interrupt_pending while a
+     * concurrent destroy_requested stayed set — the destroy was then
+     * never seen again (mp:destroy-thread of a busy worker never took
+     * effect). */
+    if (cl_thread_list_lock) platform_mutex_lock(cl_thread_list_lock);
+    if (!t->interrupt_pending) {
+        if (cl_thread_list_lock) platform_mutex_unlock(cl_thread_list_lock);
+        return;
+    }
+
     /* destroy-thread: abort the thread by raising an error */
     if (t->destroy_requested) {
         t->destroy_requested = 0;
         t->interrupt_pending = 0;
         t->interrupt_func = CL_NIL;
+        if (cl_thread_list_lock) platform_mutex_unlock(cl_thread_list_lock);
         /* Quiet abort: runs handler-case / unwind-protect cleanups but does
          * not enter the debugger, so a destroyed worker unwinds silently
          * instead of dropping into SLDB / fgets(stdin). */
@@ -437,6 +476,7 @@ void cl_thread_handle_interrupt(CL_Thread *t)
     func = t->interrupt_func;
     t->interrupt_func = CL_NIL;
     t->interrupt_pending = 0;
+    if (cl_thread_list_lock) platform_mutex_unlock(cl_thread_list_lock);
 
     if (!CL_NULL_P(func)) {
         cl_vm_apply(func, NULL, 0);

@@ -267,6 +267,11 @@ static CL_Obj fasl_mlf_clamiga_fn(const char *name, int len)
     return s->function;
 }
 
+int cl_fasl_mlf_active_p(void)
+{
+    return g_mlf.active;
+}
+
 /* Enqueue OBJ for walking if it is a heap object. */
 static int fasl_mlf_enqueue(CL_Obj obj)
 {
@@ -289,15 +294,32 @@ void cl_fasl_mlf_prepass(CL_Obj bc_vec, int bc_count)
     cl_fasl_mlf_cleanup();
     g_mlf.active = 1;
 
+    /* bc_vec is dereferenced after the %MAKE-LOAD-FORM-ACTIVE-P apply,
+     * and fasl_fn is applied for EVERY MLF candidate below — the first
+     * user method's allocations would leave both stale (the caller's own
+     * protect covers the caller's variable, not these parameter copies).
+     * Root them for the whole prepass; every exit path unprotects. */
+    CL_GC_PROTECT(bc_vec);
+
     /* Gate: only walk when MAKE-LOAD-FORM has at least one user method. */
     active_fn = fasl_mlf_clamiga_fn("%MAKE-LOAD-FORM-ACTIVE-P", 24);
-    if (CL_NULL_P(active_fn) || active_fn == CL_UNBOUND) return;  /* CLOS / helper not loaded */
-    if (CL_NULL_P(cl_vm_apply(active_fn, NULL, 0))) return;
+    if (CL_NULL_P(active_fn) || active_fn == CL_UNBOUND) {
+        CL_GC_UNPROTECT(1);
+        return;  /* CLOS / helper not loaded */
+    }
+    if (CL_NULL_P(cl_vm_apply(active_fn, NULL, 0))) {
+        CL_GC_UNPROTECT(1);
+        return;
+    }
 
     fasl_fn = fasl_mlf_clamiga_fn("%FASL-LOAD-FORM", 15);
-    if (CL_NULL_P(fasl_fn) || fasl_fn == CL_UNBOUND) return;
+    if (CL_NULL_P(fasl_fn) || fasl_fn == CL_UNBOUND) {
+        CL_GC_UNPROTECT(1);
+        return;
+    }
+    CL_GC_PROTECT(fasl_fn);
 
-    if (CL_NULL_P(bc_vec) || !CL_HEAP_P(bc_vec)) return;
+    if (CL_NULL_P(bc_vec) || !CL_HEAP_P(bc_vec)) goto done;
     bcv = (CL_Vector *)CL_OBJ_TO_PTR(bc_vec);
     for (i = 0; i < bc_count && (uint32_t)i < bcv->length; i++) {
         /* Re-fetch bcv each iteration — fasl_mlf_enqueue never allocates
@@ -424,6 +446,7 @@ void cl_fasl_mlf_prepass(CL_Obj bc_vec, int bc_count)
     }
 
 done:
+    CL_GC_UNPROTECT(2);   /* bc_vec, fasl_fn */
     fasl_mlf_free_walk_state();
 }
 
@@ -1643,6 +1666,12 @@ void cl_fasl_reader_init(CL_FaslReader *r, const uint8_t *data, uint32_t size)
     r->shared_count = 0;
     r->shared_objs = NULL;  /* lazily allocated when OBJ_DEF tag is encountered */
     r->pending_obj_def_id = 0xFFFFFFFFu;  /* none pending */
+    /* Zero the gensym table: the reader is a stack local, and a corrupted
+     * FASL whose first GENSYM_DEF carries a large id would set
+     * gensym_count past uninitialized entries — the active-reader GC
+     * hooks then MARK stack garbage as object offsets (corruption from
+     * bad input instead of a clean load error). */
+    memset(r->gensym_objs, 0, sizeof(r->gensym_objs));
 }
 
 /* --- Active-reader registry: GC-rooting of the dedup tables ---
@@ -1776,6 +1805,143 @@ void cl_fasl_reader_restore_count(int n)
             }
         }
         platform_mutex_unlock(fasl_registry_mutex);
+    }
+}
+
+/* --- Active-writer registry: GC-rooting of the writer's gensym dedup ---
+ *
+ * bi_load's auto-cache serializes one FASL unit per top-level form,
+ * INTERLEAVED with reading/compiling/evaluating the next forms (which
+ * allocate and compact).  The persistent file-level CL_FaslWriter's
+ * gensym_objs[] holds CL_Obj offsets across all of that; without
+ * mark+update hooks a moved/collected gensym's old offset could collide
+ * with a DIFFERENT live gensym's new offset, making the EQ dedup compare
+ * emit a GENSYM_REF to the wrong id — a silently wrong cached FASL.
+ * (bi_compile_file serializes after all evaluation and needs no rooting;
+ * cf_emit_fasl_unit's per-unit writer never crosses an allocation.) */
+#define FASL_MAX_ACTIVE_WRITERS 8
+static CL_FaslWriter *fasl_active_writers[FASL_MAX_ACTIVE_WRITERS];
+static uint32_t       fasl_active_writer_owners[FASL_MAX_ACTIVE_WRITERS];
+static int            fasl_active_writer_count = 0;
+
+void cl_fasl_writer_register(CL_FaslWriter *w)
+{
+    int ok;
+    if (!fasl_registry_mutex)
+        platform_mutex_init(&fasl_registry_mutex);
+
+    if (CL_MT()) platform_mutex_lock(fasl_registry_mutex);
+    ok = fasl_active_writer_count < FASL_MAX_ACTIVE_WRITERS;
+    if (ok) {
+        fasl_active_writers[fasl_active_writer_count] = w;
+        fasl_active_writer_owners[fasl_active_writer_count] = CT->id;
+        fasl_active_writer_count++;
+    }
+    if (CL_MT()) platform_mutex_unlock(fasl_registry_mutex);
+
+    if (!ok)
+        cl_error(CL_ERR_GENERAL, "FASL: active-writer table full (max %d)",
+                 FASL_MAX_ACTIVE_WRITERS);
+}
+
+void cl_fasl_writer_unregister(CL_FaslWriter *w)
+{
+    int i;
+    if (CL_MT()) platform_mutex_lock(fasl_registry_mutex);
+    if (fasl_active_writer_count > 0 &&
+        fasl_active_writers[fasl_active_writer_count - 1] == w) {
+        fasl_active_writer_count--;
+        if (CL_MT()) platform_mutex_unlock(fasl_registry_mutex);
+        return;
+    }
+    for (i = fasl_active_writer_count - 1; i >= 0; i--) {
+        if (fasl_active_writers[i] == w) {
+            int j;
+            for (j = i; j < fasl_active_writer_count - 1; j++) {
+                fasl_active_writers[j] = fasl_active_writers[j + 1];
+                fasl_active_writer_owners[j] = fasl_active_writer_owners[j + 1];
+            }
+            fasl_active_writer_count--;
+            if (CL_MT()) platform_mutex_unlock(fasl_registry_mutex);
+            return;
+        }
+    }
+    if (CL_MT()) platform_mutex_unlock(fasl_registry_mutex);
+}
+
+/* Error-unwind support — mirrors cl_fasl_reader_save/restore_count: a
+ * longjmp out of bi_load would otherwise leave a registry entry pointing
+ * at the (leaked) writer forever, retaining its gensyms and eventually
+ * filling the table. */
+int cl_fasl_writer_save_count(void)
+{
+    if (!CL_MT())
+        return fasl_active_writer_count;
+    {
+        uint32_t tid = CT->id;
+        int i, count = 0;
+        if (!fasl_registry_mutex) return 0;
+        platform_mutex_lock(fasl_registry_mutex);
+        for (i = 0; i < fasl_active_writer_count; i++)
+            if (fasl_active_writer_owners[i] == tid)
+                count++;
+        platform_mutex_unlock(fasl_registry_mutex);
+        return count;
+    }
+}
+
+void cl_fasl_writer_restore_count(int n)
+{
+    int i;
+    if (n < 0) return;
+    if (!CL_MT()) {
+        if (n <= fasl_active_writer_count)
+            fasl_active_writer_count = n;
+        return;
+    }
+    if (!fasl_registry_mutex) return;
+    {
+        uint32_t tid = CT->id;
+        int thread_count = 0;
+        platform_mutex_lock(fasl_registry_mutex);
+        for (i = 0; i < fasl_active_writer_count; i++)
+            if (fasl_active_writer_owners[i] == tid)
+                thread_count++;
+        for (i = fasl_active_writer_count - 1; i >= 0 && thread_count > n; i--) {
+            if (fasl_active_writer_owners[i] == tid) {
+                int j;
+                for (j = i; j < fasl_active_writer_count - 1; j++) {
+                    fasl_active_writers[j] = fasl_active_writers[j + 1];
+                    fasl_active_writer_owners[j] = fasl_active_writer_owners[j + 1];
+                }
+                fasl_active_writer_count--;
+                thread_count--;
+            }
+        }
+        platform_mutex_unlock(fasl_registry_mutex);
+    }
+}
+
+void cl_fasl_gc_mark_writers(void)
+{
+    extern void gc_mark_obj(CL_Obj obj);
+    int i;
+    uint16_t k;
+    for (i = 0; i < fasl_active_writer_count; i++) {
+        CL_FaslWriter *w = fasl_active_writers[i];
+        for (k = 0; k < w->gensym_count; k++)
+            gc_mark_obj(w->gensym_objs[k]);
+    }
+}
+
+void cl_fasl_gc_update_writers(void (*update_fn)(CL_Obj *))
+{
+    int i;
+    uint16_t k;
+    for (i = 0; i < fasl_active_writer_count; i++) {
+        CL_FaslWriter *w = fasl_active_writers[i];
+        for (k = 0; k < w->gensym_count; k++)
+            update_fn(&w->gensym_objs[k]);
     }
 }
 
@@ -1974,12 +2140,17 @@ CL_Obj cl_fasl_deserialize_obj(CL_FaslReader *r)
         if (r->error || sym_len >= sizeof(sym_buf)) return CL_NIL;
         cl_fasl_read_bytes(r, sym_buf, sym_len);
         sym_buf[sym_len] = '\0';
-        sym_obj = cl_make_symbol(cl_make_string(sym_buf, sym_len));
-        if (id < FASL_MAX_GENSYMS) {
-            r->gensym_objs[id] = sym_obj;
-            if (id >= r->gensym_count)
-                r->gensym_count = id + 1;
+        /* The writer allocates gensym ids contiguously (0, 1, 2, ...) — a
+         * non-contiguous id means a corrupted/truncated FASL; reject it
+         * instead of widening gensym_count over unwritten entries. */
+        if (id >= FASL_MAX_GENSYMS || id > r->gensym_count) {
+            r->error = FASL_ERR_BAD_TAG;
+            return CL_NIL;
         }
+        sym_obj = cl_make_symbol(cl_make_string(sym_buf, sym_len));
+        r->gensym_objs[id] = sym_obj;
+        if (id >= r->gensym_count)
+            r->gensym_count = id + 1;
         return sym_obj;
     }
 
@@ -2648,7 +2819,14 @@ CL_Obj cl_fasl_load(const uint8_t *data, uint32_t size)
     cl_fasl_reader_register(&r);
     n_units = cl_fasl_read_header(&r);
     if (r.error) {
-        switch (r.error) {
+        int hdr_err = r.error;
+        /* cl_error longjmps: the reader REGISTRY is restored by the error
+         * unwind (CL_ErrorFrame fasl-reader top), but the lazily-malloc'd
+         * shared_objs table would leak — free it before signaling (up to
+         * 256 KB per failed load; the old unregister/return after cl_error
+         * was dead code). */
+        if (r.shared_objs) { platform_free(r.shared_objs); r.shared_objs = NULL; r.shared_count = 0; }
+        switch (hdr_err) {
         case FASL_ERR_BAD_MAGIC:
             cl_error(CL_ERR_GENERAL, "FASL: invalid magic number");
             break;
@@ -2659,8 +2837,7 @@ CL_Obj cl_fasl_load(const uint8_t *data, uint32_t size)
             cl_error(CL_ERR_GENERAL, "FASL: header read error");
             break;
         }
-        cl_fasl_reader_unregister(&r);
-        return CL_NIL;
+        return CL_NIL;  /* not reached */
     }
 
     for (i = 0; i < n_units; i++) {
@@ -2669,6 +2846,7 @@ CL_Obj cl_fasl_load(const uint8_t *data, uint32_t size)
         cl_fasl_read_u32(&r); /* skip unit length */
 
         if (r.error) {
+            if (r.shared_objs) { platform_free(r.shared_objs); r.shared_objs = NULL; r.shared_count = 0; }
             cl_error(CL_ERR_GENERAL,
                      "FASL: truncated unit header at unit %u/%u (pos %u, size %u)",
                      (unsigned)i, (unsigned)n_units,
@@ -2678,10 +2856,12 @@ CL_Obj cl_fasl_load(const uint8_t *data, uint32_t size)
 
         bc_obj = cl_fasl_deserialize_bytecode(&r);
         if (r.error) {
+            int des_err = r.error;
+            if (r.shared_objs) { platform_free(r.shared_objs); r.shared_objs = NULL; r.shared_count = 0; }
             cl_error(CL_ERR_GENERAL,
                      "FASL: deserialize failed: unit %u/%u %s at pos %u (unit_start %u, size %u)",
                      (unsigned)i, (unsigned)n_units,
-                     fasl_err_name(r.error),
+                     fasl_err_name(des_err),
                      (unsigned)r.pos, (unsigned)unit_start, (unsigned)r.size);
             return CL_NIL;
         }
