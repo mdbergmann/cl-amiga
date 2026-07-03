@@ -298,6 +298,12 @@ typedef struct CL_Thread_s {
     CL_Obj interrupt_func;               /* function for interrupt-thread */
 
     /* ---- Thread registry ---- */
+    /* Set (under cl_thread_list_lock) by the JOIN-THREAD that claimed this
+     * worker's platform handle.  While set, the zombie reaper and any
+     * concurrent JOIN must not free the worker — the claimant owns the
+     * cleanup; late joiners wait for the table slot to clear and read the
+     * result from the GC-managed wrapper. */
+    volatile uint8_t join_in_progress;
     struct CL_Thread_s *next;
     void *platform_handle;
 

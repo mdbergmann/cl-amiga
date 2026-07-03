@@ -825,6 +825,7 @@ void *cl_jit_runtime_block_alloc(CL_Obj tag)
     nlx->restart_mark        = cl_restart_top;
     nlx->gc_root_mark        = gc_root_count;
     nlx->compiler_mark       = cl_compiler_mark();
+    nlx->saved_jit_depth     = CT->jit_depth;
     nlx->mv_count            = 1;
     return &nlx->buf;
 }
@@ -875,6 +876,7 @@ CL_Obj cl_jit_runtime_block_post_longjmp(void)
     cl_handler_active_mask  = nlx->handler_active_mask;
     cl_restart_top          = nlx->restart_mark;
     gc_root_count           = nlx->gc_root_mark;
+    cl_jit_restore_depth(nlx->saved_jit_depth);
     cl_compiler_restore_to(nlx->compiler_mark);
     cl_mv_count = nlx->mv_count;
     for (mi = 0; mi < cl_mv_count && mi < CL_MAX_MV; mi++)
@@ -972,6 +974,7 @@ void *cl_jit_runtime_catch_alloc(CL_Obj tag)
     nlx->restart_mark        = cl_restart_top;
     nlx->gc_root_mark        = gc_root_count;
     nlx->compiler_mark       = cl_compiler_mark();
+    nlx->saved_jit_depth     = CT->jit_depth;
     nlx->mv_count            = 1;
     return &nlx->buf;
 }
@@ -1016,6 +1019,7 @@ CL_Obj cl_jit_runtime_catch_post_longjmp(void)
     cl_handler_active_mask  = nlx->handler_active_mask;
     cl_restart_top          = nlx->restart_mark;
     gc_root_count           = nlx->gc_root_mark;
+    cl_jit_restore_depth(nlx->saved_jit_depth);
     cl_compiler_restore_to(nlx->compiler_mark);
     cl_mv_count = nlx->mv_count;
     for (mi = 0; mi < cl_mv_count && mi < CL_MAX_MV; mi++)
@@ -1094,6 +1098,7 @@ void *cl_jit_runtime_uwprot_alloc(void)
     nlx->restart_mark        = cl_restart_top;
     nlx->gc_root_mark        = gc_root_count;
     nlx->compiler_mark       = cl_compiler_mark();
+    nlx->saved_jit_depth     = CT->jit_depth;
     nlx->mv_count            = 1;
     return &nlx->buf;
 }
@@ -1136,6 +1141,7 @@ void cl_jit_runtime_uwprot_post_longjmp(void)
     cl_handler_active_mask  = nlx->handler_active_mask;
     cl_restart_top          = nlx->restart_mark;
     gc_root_count           = nlx->gc_root_mark;
+    cl_jit_restore_depth(nlx->saved_jit_depth);
     cl_compiler_restore_to(nlx->compiler_mark);
     /* Intentionally don't touch cl_mv_count / cl_mv_values: the
      * protected-form's MVs are captured via OP_MV_TO_LIST in the
@@ -1195,22 +1201,18 @@ void cl_jit_runtime_uwprot_rethrow(void)
             }
         }
         {
+            /* Propagate through cl_error_frame_longjmp so the top error
+             * frame's snapshots (gc roots, jit depth, FASL readers,
+             * compiler chain, handler/restart tops) are restored — the
+             * bare longjmp here used to skip all of them, leaving
+             * gc_root_count dangling into unwound C stack frames. */
             int err_code = cl_pending_error_code;
             cl_pending_throw = 0;
-            cl_nlx_top = 0;
-            cl_dynbind_restore_to(0);
-            cl_handler_top = 0;
-            cl_restart_top = 0;
             cl_error_code = err_code;
             strncpy(cl_error_msg, cl_pending_error_msg,
                     sizeof(cl_error_msg) - 1);
             cl_error_msg[sizeof(cl_error_msg) - 1] = '\0';
-            if (cl_error_frame_top > 0) {
-                CL_LONGJMP(cl_error_frames[cl_error_frame_top - 1].buf,
-                           err_code);
-            }
-            /* No error frame — fatal, same as vm.c. */
-            cl_error(err_code, "%s", cl_error_msg);  /* exits via the no-frame path */
+            cl_error_frame_longjmp(err_code);
         }
     }
 }
@@ -1493,6 +1495,7 @@ void *cl_jit_runtime_tagbody_alloc(CL_Obj tagbody_id)
     nlx->restart_mark        = cl_restart_top;
     nlx->gc_root_mark        = gc_root_count;
     nlx->compiler_mark       = cl_compiler_mark();
+    nlx->saved_jit_depth     = CT->jit_depth;
     nlx->mv_count            = 1;
     return &nlx->buf;
 }
@@ -1533,6 +1536,7 @@ CL_Obj cl_jit_runtime_tagbody_post_longjmp(void)
     cl_handler_active_mask  = nlx->handler_active_mask;
     cl_restart_top          = nlx->restart_mark;
     gc_root_count           = nlx->gc_root_mark;
+    cl_jit_restore_depth(nlx->saved_jit_depth);
     cl_compiler_restore_to(nlx->compiler_mark);
     cl_mv_count             = 1;
 

@@ -130,8 +130,29 @@ static int n_global_roots = 0;
 
 void cl_gc_register_root(CL_Obj *root_ptr)
 {
-    if (n_global_roots < CL_MAX_GLOBAL_ROOTS)
-        global_roots[n_global_roots++] = root_ptr;
+    int i;
+    /* Idempotent: registering the same address twice must be a no-op.
+     * gc_forward is NOT idempotent (the forwarding table is keyed by
+     * pre-compaction offsets), so a slot forwarded twice through two
+     * registry entries would be rewritten to an unrelated object.  The
+     * init functions that register handles re-run on every heap
+     * re-initialization (each C unit test, embedded restarts) and would
+     * otherwise duplicate every entry.  Registration is boot-time-only,
+     * so the linear scan costs nothing at runtime. */
+    for (i = 0; i < n_global_roots; i++) {
+        if (global_roots[i] == root_ptr)
+            return;
+    }
+    if (n_global_roots >= CL_MAX_GLOBAL_ROOTS) {
+        /* A silently-dropped root is a guaranteed future memory
+         * corruption (the slot goes stale on the next compaction and is
+         * never marked).  Fail loudly at boot instead. */
+        platform_write_string(
+            "FATAL: cl_gc_register_root: CL_MAX_GLOBAL_ROOTS exceeded — "
+            "raise the limit in mem.h\n");
+        exit(1);
+    }
+    global_roots[n_global_roots++] = root_ptr;
 }
 
 /* Align size up to CL_ALIGN boundary */
@@ -169,6 +190,13 @@ void cl_mem_init(uint32_t heap_size)
     gc_root_count = 0;
     gc_mark_top = 0;
 
+    /* Reset the global root registry: registered slots are static C
+     * globals still holding offsets into the PREVIOUS heap after a
+     * shutdown/re-init cycle.  Marking them before their init functions
+     * re-assign and re-register would set mark bits at arbitrary offsets
+     * in the fresh arena. */
+    n_global_roots = 0;
+
     /* Initialize allocation mutex */
     platform_mutex_init(&alloc_mutex);
 }
@@ -195,6 +223,21 @@ static uint32_t        *jit_pinned       = NULL;
 static int              jit_pinned_count = 0;
 static int              jit_pinned_cap   = 0;
 
+/* Free-list snapshot for the conservative JIT-stack scan.  A free block's
+ * header word is its raw size (<= CL_HDR_SIZE_MASK), which reads as an
+ * UNMARKED TYPE_CONS — so a stale spill word holding a freed offset would
+ * pass phase-2 header validation, and gc_mark_obj would mark the free
+ * block live while gc_mark_children chases its next_offset link and
+ * poisoned payload as car/cdr.  The scan must therefore skip offsets
+ * that are on the free list.  Collected (sorted ascending) at most once
+ * per GC cycle, lazily on the first scan; the free list cannot change
+ * during STW marking.  On snapshot OOM, membership falls back to a
+ * linear free-list walk per matched candidate. */
+static uint32_t        *jit_scan_free_snap  = NULL;
+static int              jit_scan_free_count = 0;
+static int              jit_scan_free_cap   = 0;
+static int              jit_scan_free_valid = 0;
+
 /* Set during a compaction's reference-update pass when at least one
  * CL_Obj immediate baked into JIT native code was rewritten in place.
  * cl_gc_compact flushes the CPU caches once at the end so 68040/060
@@ -217,6 +260,13 @@ void cl_mem_shutdown(void)
         jit_pinned = NULL;
         jit_pinned_cap = 0;
         jit_pinned_count = 0;
+    }
+    if (jit_scan_free_snap) {
+        platform_free(jit_scan_free_snap);
+        jit_scan_free_snap = NULL;
+        jit_scan_free_cap = 0;
+        jit_scan_free_count = 0;
+        jit_scan_free_valid = 0;
     }
     if (alloc_mutex) {
         platform_mutex_destroy(alloc_mutex);
@@ -557,13 +607,38 @@ CL_Obj cl_make_string(const char *str, uint32_t len)
 CL_Obj cl_make_wide_string(const uint32_t *chars, uint32_t len)
 {
     uint32_t alloc_size = sizeof(CL_WideString) + len * sizeof(uint32_t);
-    CL_WideString *s = (CL_WideString *)cl_alloc(TYPE_WIDE_STRING, alloc_size);
-    if (!s) return CL_NIL;
+    CL_WideString *s;
+    uint32_t stack_buf[64];
+    uint32_t *safe_chars = NULL;
+
+    /* If chars points into the arena, copy to a safe buffer first.
+     * cl_alloc below may trigger GC compaction which moves arena objects,
+     * making the original pointer stale (same guard as cl_make_string). */
+    if (chars && (const uint8_t *)chars >= cl_heap.arena &&
+        (const uint8_t *)chars < cl_heap.arena + cl_heap.arena_size) {
+        if (len <= sizeof(stack_buf) / sizeof(stack_buf[0])) {
+            memcpy(stack_buf, chars, len * sizeof(uint32_t));
+            safe_chars = stack_buf;
+        } else {
+            safe_chars = (uint32_t *)platform_alloc(len * sizeof(uint32_t));
+            if (safe_chars)
+                memcpy(safe_chars, chars, len * sizeof(uint32_t));
+        }
+        chars = safe_chars ? safe_chars : chars;
+    }
+
+    s = (CL_WideString *)cl_alloc(TYPE_WIDE_STRING, alloc_size);
+    if (!s) {
+        if (safe_chars && safe_chars != stack_buf) platform_free(safe_chars);
+        return CL_NIL;
+    }
     s->length = len;
     if (chars)
         memcpy(s->data, chars, len * sizeof(uint32_t));
     else
         memset(s->data, 0, len * sizeof(uint32_t));
+
+    if (safe_chars && safe_chars != stack_buf) platform_free(safe_chars);
     return CL_PTR_TO_OBJ(s);
 }
 #endif
@@ -1294,6 +1369,57 @@ static int cand_bsearch(const uint32_t *arr, int n, uint32_t key)
     return 0;
 }
 
+/* Snapshot the free list into jit_scan_free_snap, sorted ascending.
+ * Leaves jit_scan_free_valid = 0 on OOM (callers fall back to a linear
+ * free-list walk).  Called at most once per GC cycle — gc_mark resets
+ * the valid flag alongside jit_pinned_count. */
+static void jit_scan_collect_free_snapshot(void)
+{
+    uint32_t cur;
+    int n = 0;
+
+    for (cur = cl_heap.free_list; cur;
+         cur = ((CL_FreeBlock *)(cl_heap.arena + cur))->next_offset)
+        n++;
+
+    if (n > jit_scan_free_cap) {
+        int new_cap = jit_scan_free_cap ? jit_scan_free_cap : 256;
+        uint32_t *buf;
+        while (new_cap < n) new_cap *= 2;
+        buf = (uint32_t *)platform_alloc((unsigned long)new_cap * sizeof(uint32_t));
+        if (!buf) return;
+        if (jit_scan_free_snap) platform_free(jit_scan_free_snap);
+        jit_scan_free_snap = buf;
+        jit_scan_free_cap = new_cap;
+    }
+
+    n = 0;
+    for (cur = cl_heap.free_list; cur;
+         cur = ((CL_FreeBlock *)(cl_heap.arena + cur))->next_offset)
+        jit_scan_free_snap[n++] = cur;
+
+    if (n > 1)
+        qsort(jit_scan_free_snap, (size_t)n, sizeof(uint32_t), cand_cmp);
+    jit_scan_free_count = n;
+    jit_scan_free_valid = 1;
+}
+
+/* Is `offset` the start of a free-list block?  Uses the per-cycle
+ * snapshot when available, else walks the free list directly. */
+static int gc_offset_is_free_block(uint32_t offset)
+{
+    if (jit_scan_free_valid)
+        return cand_bsearch(jit_scan_free_snap, jit_scan_free_count, offset);
+    {
+        uint32_t cur;
+        for (cur = cl_heap.free_list; cur;
+             cur = ((CL_FreeBlock *)(cl_heap.arena + cur))->next_offset) {
+            if (cur == offset) return 1;
+        }
+    }
+    return 0;
+}
+
 static void gc_scan_jit_native_stack(CL_Thread *t)
 {
     uint32_t *candidates;
@@ -1358,6 +1484,12 @@ static void gc_scan_jit_native_stack(CL_Thread *t)
     /* Sort candidates so the arena walk can binary-search. */
     qsort(candidates, n_cand, sizeof(candidates[0]), cand_cmp);
 
+    /* Snapshot the free list once per GC cycle so the walk below can
+     * reject candidates that point at free blocks (their header word is
+     * a raw size that masquerades as an unmarked TYPE_CONS). */
+    if (!jit_scan_free_valid)
+        jit_scan_collect_free_snapshot();
+
     /* Phase 2: walk the arena bump-front; for each real header
      * offset that appears in `candidates`, mark it.  Walking from
      * CL_ALIGN (offset 0 is reserved for NIL) by header size,
@@ -1369,7 +1501,8 @@ static void gc_scan_jit_native_stack(CL_Thread *t)
         uint32_t offset;
         if (size == 0) break;       /* defensive: malformed header */
         offset = (uint32_t)(p - cl_heap.arena);
-        if (cand_bsearch(candidates, n_cand, offset)) {
+        if (cand_bsearch(candidates, n_cand, offset) &&
+            !gc_offset_is_free_block(offset)) {
             gc_mark_obj((CL_Obj)offset);
             /* Pin it: the compactor must not move an object reachable only
              * through a conservative (offset-valued) C-stack reference, or
@@ -1660,6 +1793,9 @@ static void gc_mark(void)
      * (gc_scan_jit_native_stack, reached via gc_mark_thread_roots) rebuilds
      * it this cycle.  Stays empty unless a JIT frame is live. */
     jit_pinned_count = 0;
+    /* Invalidate the free-list snapshot — the free list has changed since
+     * the last cycle; the first JIT-stack scan this cycle re-collects it. */
+    jit_scan_free_valid = 0;
 
     /* Mark all roots directly (not via gc_mark_push).
      * gc_mark_obj immediately sets the mark bit then pushes children.
@@ -2469,20 +2605,48 @@ static void gc_update_all_references(void)
     }
 }
 
+/* Chunk size for splitting a free gap of `total` bytes under alignment
+ * `align`: at most CL_HDR_SIZE_MASK, align-multiple, and never leaving a
+ * remainder too small to hold a CL_FreeBlock header.  With align=4
+ * (Amiga) the naive cap CL_HDR_SIZE_MASK & ~3 can leave a 4-byte
+ * remainder; the next iteration's CL_FreeBlock write (8 bytes) would
+ * then overrun the gap and smash the following — pinned — object's
+ * header.  Non-static so the unit test can exercise the align=4
+ * arithmetic on the host (whose CL_ALIGN is 8). */
+uint32_t gc_free_gap_chunk(uint32_t total, uint32_t align)
+{
+    uint32_t chunk = total;
+    if (chunk > CL_HDR_SIZE_MASK) {
+        chunk = CL_HDR_SIZE_MASK & ~(align - 1u);
+        if (total - chunk < (uint32_t)sizeof(CL_FreeBlock))
+            chunk -= CL_MIN_ALLOC_SIZE;
+    }
+    return chunk;
+}
+
 /* Write valid free-block header(s) covering [offset, offset+total) and
  * thread them onto the free list, so the arena's linear "walk by header
  * size" stays consistent across the gap.  Mirrors gc_sweep's free-block
  * format (size in the header low bits, type/mark = 0 → an unmarked block
  * the walk skips).  Splits gaps larger than the 23-bit size field into
- * multiple blocks.  `total` is always a CL_ALIGN multiple and, when
- * non-zero, >= CL_MIN_ALLOC_SIZE (>= sizeof(CL_FreeBlock)), so every
- * piece can hold the 8-byte header. */
+ * multiple blocks (see gc_free_gap_chunk for the remainder invariant).
+ * `total` is always a CL_ALIGN multiple and, when non-zero,
+ * >= CL_MIN_ALLOC_SIZE (>= sizeof(CL_FreeBlock)), so every piece can
+ * hold the 8-byte header. */
 static void gc_make_free_gap(uint32_t offset, uint32_t total)
 {
     while (total > 0) {
-        uint32_t chunk = total;
-        if (chunk > CL_HDR_SIZE_MASK)
-            chunk = CL_HDR_SIZE_MASK & ~(uint32_t)(CL_ALIGN - 1);
+        uint32_t chunk = gc_free_gap_chunk(total, CL_ALIGN);
+        if (chunk < (uint32_t)sizeof(CL_FreeBlock)) {
+            /* Degenerate sub-header gap (caller invariant broken — total
+             * itself smaller than a CL_FreeBlock).  Write a bare size-only
+             * header so the linear arena walk stays in sync, but leave the
+             * block off the free list: there is no room for the
+             * next_offset link, and writing one would smash the following
+             * object.  The space is reclaimed by the next compaction. */
+            ((CL_Header *)(cl_heap.arena + offset))->header = chunk;
+            return;
+        }
         {
             CL_FreeBlock *fb = (CL_FreeBlock *)(cl_heap.arena + offset);
             fb->size = chunk;                       /* type=0, mark=0, size=chunk */

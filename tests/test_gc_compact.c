@@ -552,10 +552,68 @@ TEST(compact_mixed_types)
     CL_GC_UNPROTECT(4);
 }
 
+/* --- Free-gap split arithmetic (gc_make_free_gap's chunking) ---
+ *
+ * A pin gap larger than the 23-bit header size field is split into
+ * multiple free blocks.  Every piece — including the final remainder —
+ * must be able to hold an 8-byte CL_FreeBlock header, or the header
+ * write overruns the gap and smashes the pinned object's header just
+ * above it.  With 4-byte alignment (Amiga) the naive cap
+ * CL_HDR_SIZE_MASK & ~3 leaves a 4-byte remainder whenever
+ * total % 8388604 == 4.  The host runs with CL_ALIGN == 8, so the
+ * arithmetic is exercised directly for both alignments here. */
+
+extern uint32_t gc_free_gap_chunk(uint32_t total, uint32_t align);
+
+static void check_gap_split(uint32_t total, uint32_t align)
+{
+    uint32_t remaining = total;
+    int guard = 0;
+    while (remaining > 0) {
+        uint32_t chunk = gc_free_gap_chunk(remaining, align);
+        ASSERT(chunk > 0);
+        ASSERT(chunk <= remaining);
+        ASSERT(chunk <= CL_HDR_SIZE_MASK);
+        ASSERT_EQ_INT((int)(chunk % align), 0);
+        /* The invariant under test: every piece holds a full header. */
+        ASSERT(chunk >= (uint32_t)sizeof(CL_FreeBlock));
+        remaining -= chunk;
+        ASSERT(++guard < 64);   /* termination */
+    }
+}
+
+TEST(free_gap_split_never_leaves_sub_header_remainder)
+{
+    uint32_t aligns[2];
+    int ai;
+    aligns[0] = 4;   /* Amiga */
+    aligns[1] = 8;   /* 64-bit host */
+
+    for (ai = 0; ai < 2; ai++) {
+        uint32_t align = aligns[ai];
+        uint32_t cap = CL_HDR_SIZE_MASK & ~(align - 1u);
+        uint32_t t;
+
+        /* The Amiga killer: total = cap + 4 (remainder 4 pre-fix). */
+        check_gap_split(cap + align, align);
+        /* Around the cap and multiples of it. */
+        for (t = 0; t <= 8 * align; t += align) {
+            check_gap_split(cap + t, align);
+            check_gap_split(2 * cap + t, align);
+        }
+        /* Small gaps (no split path). */
+        for (t = 2 * align; t <= 16 * align; t += align)
+            check_gap_split(t, align);
+        /* Large gap: > 3 chunks. */
+        check_gap_split(3 * cap + align, align);
+    }
+}
+
 int main(void)
 {
     setup();
 
+    RUN(free_gap_split_never_leaves_sub_header_remainder);
     RUN(compact_basic);
     RUN(compact_chain_integrity);
     RUN(compact_symbol_values);

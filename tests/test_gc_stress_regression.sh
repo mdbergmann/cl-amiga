@@ -2403,14 +2403,79 @@ check_contains "throw values survive allocating unwind-protect cleanup" "THROWMV
 check_absent   "no stale throw values / lost catch tags under GC stress" \
   "BAD-THROW-MV\|BAD-NESTED-MV\|No catch for tag\|corrupted" "$out"
 
+# --- Case: compiling LET-wrapped iteration forms under GC stress -----------
+# Coverage for the compile_let -> compile_dotimes/do/do* -> compile_tagbody
+# recursion with inner LET + closures + macro-expanding bodies (INCF), the
+# shape of a compile-time SIGBUS observed 2026-07-03 on master@8ed36ee
+# (backtrace ended in cl_alloc inside a stress compaction).  The original
+# exact form was lost and the crash has not been reproduced since; these
+# shapes keep the suspect compile paths exercised under forced compaction.
+cat > "$WORK/looping.lisp" <<'EOF'
+(let ((ok t))
+  (dotimes (i 20)
+    (let ((v (make-array 4 :initial-element i)))
+      (unless (eql (aref v 2) i) (setf ok nil))))
+  (dotimes (i 20)
+    (let ((v (lambda () i)))
+      (unless (eql (funcall v) i) (setf ok nil))))
+  (let ((acc 0))
+    (do ((i 0 (+ i 1)))
+        ((>= i 20))
+      (let ((v (lambda () (incf acc i))))
+        (funcall v)))
+    (unless (= acc 190) (setf ok nil)))
+  (do* ((j 0 (+ j 1))
+        (w (list j) (list j)))
+       ((>= j 10))
+    (let ((u (lambda () (first w))))
+      (when (< (funcall u) 0) (setf ok nil))))
+  (format t "LOOPCOMPILE:~a~%" ok))
+EOF
+out=$(run_stress "$WORK/looping.lisp")
+check_contains "LET-wrapped dotimes/do/do* with closures compile+run under GC stress" \
+  "LOOPCOMPILE:T" "$out"
+
+# --- Case: wide-string copy from an arena-interior source ------------------
+# Bug: cl_make_wide_string lacked cl_make_string's arena-interior source
+# guard.  cl_string_copy / cl_string_substring pass ws->data (an interior
+# pointer into the source wide string); the cl_alloc inside
+# cl_make_wide_string compacts (stress: before every alloc) and MOVES the
+# source, so the memcpy reads from the source's pre-move address.
+# Repro shape matters: the dead space below the source must be SMALL (one
+# cons) so the destination allocation lands overlapping the source's old
+# tail — cl_alloc's memset then zeroes the stale bytes before the copy.
+# (A large dead gap slides the source far down but leaves its old bytes
+# intact, so the stale read still returns the right data and hides the bug.)
+cat > "$WORK/widecopy.lisp" <<'EOF'
+(let ((ok t))
+  (dotimes (i 30)
+    (let ((junk (cons 1 2))
+          (src (concatenate 'string "αβγδεζ" "ηθικλμ")))
+      (setf junk nil)
+      (let ((s (subseq src 3 9)))
+        (unless (string= s "δεζηθι")
+          (format t "BAD-WIDE-COPY:~s~%" s)
+          (setf ok nil)))
+      (let ((c (copy-seq src)))
+        (unless (string= c "αβγδεζηθικλμ")
+          (format t "BAD-WIDE-COPY2:~s~%" c)
+          (setf ok nil)))))
+  (format t "WIDECOPY:~a~%" ok))
+EOF
+out=$(run_stress "$WORK/widecopy.lisp")
+check_contains "wide-string subseq/copy-seq survive compaction of the source" "WIDECOPY:T" "$out"
+check_absent   "no garbage code points in wide-string copies under GC stress" \
+  "BAD-WIDE-COPY" "$out"
+
 # --- Case: oversized allocation must not corrupt the arena -----------------
 # Bug: cl_alloc's >8MB header-size guard ran AFTER alloc_from_bump had
 # already advanced the bump pointer; the guard's longjmp left a
 # headerless region inside the walked bump front, and every later arena
 # walk (sweep/forwarding/slide) desynced there — live objects above the
-# hole were overwritten.  (make-array 3000000) passes the element-count
-# check but requests ~12MB of bytes, hitting the guard whenever the heap
-# is big enough for the request to fit in bump space.
+# hole were overwritten.  (ash 1 100000000) requests ~12.5MB of bignum
+# limbs in a single allocation, hitting the guard.  ((make-array 3000000)
+# no longer reaches it: the ARRAY-DIMENSION-LIMIT check rejects the
+# dimension first — asserted separately below.)
 # Note: the oversized-allocation guard signals via cl_storage_error (a
 # C-level error frame, deliberately allocation-free), which aborts the
 # offending top-level form rather than unwinding into handler-case; the
@@ -2418,6 +2483,7 @@ check_absent   "no stale throw values / lost catch tags under GC stress" \
 # error message and (b) a fully intact heap afterwards — the C-level
 # regression (bump must not advance) is asserted by tests/test_alloc_guard.c.
 cat > "$WORK/bigalloc.lisp" <<'EOF'
+(ash 1 100000000)
 (make-array 3000000)
 ;; The heap must be fully intact afterwards: allocate, force compaction,
 ;; and verify data survives.
@@ -2433,7 +2499,8 @@ cat > "$WORK/bigalloc.lisp" <<'EOF'
     (format t "BIGALLOC-2:~a~%" ok)))
 EOF
 out=$(run_stress "$WORK/bigalloc.lisp")
-check_contains "oversized make-array signals a clean storage error" "Allocation too large for header" "$out"
+check_contains "oversized bignum allocation signals a clean storage error" "Allocation too large for header" "$out"
+check_contains "oversized make-array signals a clean dimension-limit error" "exceeds ARRAY-DIMENSION-LIMIT" "$out"
 check_contains "heap fully intact after oversized-allocation error"   "BIGALLOC-2:T" "$out"
 check_absent   "no arena-walk corruption after oversized allocation" \
   "corrupted\|not of type\|type 0\|Guru" "$out"
