@@ -96,8 +96,13 @@ CL_Obj cl_ratio_add(CL_Obj a, CL_Obj b)
     CL_GC_PROTECT(an); CL_GC_PROTECT(ad);
     CL_GC_PROTECT(bn); CL_GC_PROTECT(bd);
 
-    num = cl_arith_add(cl_arith_mul(an, bd), cl_arith_mul(bn, ad));
-    CL_GC_UNPROTECT(4);
+    /* Split the two products: the first result must be protected across
+     * the second mul's allocation (an unprotected nested temp goes stale). */
+    num = cl_arith_mul(an, bd);
+    CL_GC_PROTECT(num);
+    den = cl_arith_mul(bn, ad);
+    num = cl_arith_add(num, den);
+    CL_GC_UNPROTECT(5);
 
     CL_GC_PROTECT(num);
     CL_GC_PROTECT(ad);
@@ -119,8 +124,12 @@ CL_Obj cl_ratio_sub(CL_Obj a, CL_Obj b)
     CL_GC_PROTECT(an); CL_GC_PROTECT(ad);
     CL_GC_PROTECT(bn); CL_GC_PROTECT(bd);
 
-    num = cl_arith_sub(cl_arith_mul(an, bd), cl_arith_mul(bn, ad));
-    CL_GC_UNPROTECT(4);
+    /* Split the two products (see cl_ratio_add). */
+    num = cl_arith_mul(an, bd);
+    CL_GC_PROTECT(num);
+    den = cl_arith_mul(bn, ad);
+    num = cl_arith_sub(num, den);
+    CL_GC_UNPROTECT(5);
 
     CL_GC_PROTECT(num);
     CL_GC_PROTECT(ad);
@@ -188,8 +197,12 @@ CL_Obj cl_ratio_negate(CL_Obj a)
 {
     if (CL_RATIO_P(a)) {
         CL_Ratio *r = (CL_Ratio *)CL_OBJ_TO_PTR(a);
-        CL_Obj neg_num = cl_arith_negate(r->numerator);
-        return cl_make_ratio(neg_num, r->denominator);
+        CL_Obj den = r->denominator;
+        CL_Obj neg_num;
+        CL_GC_PROTECT(den);
+        neg_num = cl_arith_negate(r->numerator);
+        CL_GC_UNPROTECT(1);
+        return cl_make_ratio(neg_num, den);
     }
     return cl_arith_negate(a);
 }
@@ -198,8 +211,12 @@ CL_Obj cl_ratio_abs(CL_Obj a)
 {
     if (CL_RATIO_P(a)) {
         CL_Ratio *r = (CL_Ratio *)CL_OBJ_TO_PTR(a);
-        CL_Obj abs_num = cl_arith_abs(r->numerator);
-        return cl_make_ratio(abs_num, r->denominator);
+        CL_Obj den = r->denominator;
+        CL_Obj abs_num;
+        CL_GC_PROTECT(den);
+        abs_num = cl_arith_abs(r->numerator);
+        CL_GC_UNPROTECT(1);
+        return cl_make_ratio(abs_num, den);
     }
     return cl_arith_abs(a);
 }

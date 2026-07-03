@@ -44,9 +44,13 @@ static void mkdir_p(const char *path);
 static void defun(const char *name, CL_CFunc func, int min, int max)
 {
     CL_Obj sym = cl_intern_in(name, (uint32_t)strlen(name), cl_package_cl);
-    CL_Obj fn = cl_make_function(func, sym, min, max);
-    CL_Symbol *s = (CL_Symbol *)CL_OBJ_TO_PTR(sym);
+    CL_Obj fn;
+    CL_Symbol *s;
+    CL_GC_PROTECT(sym);
+    fn = cl_make_function(func, sym, min, max);
+    s = (CL_Symbol *)CL_OBJ_TO_PTR(sym);
     s->function = fn;
+    CL_GC_UNPROTECT(1);
 }
 
 /* Helper to register an extension builtin in the EXT package (exported) */
@@ -414,6 +418,15 @@ static CL_Obj bi_load(CL_Obj *args, int n)
 
     CL_GC_PROTECT(saved_package);
 
+    /* Reap a leaked MAKE-LOAD-FORM cache: if a prior COMPILE-FILE unwound
+     * between its prepass and cleanup, g_mlf stayed active and the
+     * auto-cache serialization below would consult its stale entries.
+     * LOAD never runs while a compile-file's cache is legitimately live
+     * (compile-file evaluates forms BEFORE its prepass), so active here
+     * always means leaked. */
+    if (cl_fasl_mlf_active_p())
+        cl_fasl_mlf_cleanup();
+
     /* Parse keyword args: :verbose, :print, :if-does-not-exist, :external-format */
     for (i = 1; i + 1 < n; i += 2) {
         if (args[i] == cl_intern_keyword("VERBOSE", 7)) {
@@ -754,6 +767,12 @@ static CL_Obj bi_load(CL_Obj *args, int n)
                 do_cache = 1;
                 cl_fasl_writer_init(fw, fasl_buf, fasl_capacity);
                 cl_fasl_write_header(fw, 0); /* patch n_units later */
+                /* GC-root the writer's gensym dedup table: units are
+                 * serialized interleaved with compiling/evaluating later
+                 * forms, which compact — unrooted entries went stale and
+                 * could EQ-collide with a different gensym's new offset
+                 * (silently wrong GENSYM_REF in the cached FASL). */
+                cl_fasl_writer_register(fw);
             } else {
                 if (fasl_buf) platform_free(fasl_buf);
                 if (unit_buf) platform_free(unit_buf);
@@ -840,7 +859,10 @@ static CL_Obj bi_load(CL_Obj *args, int n)
                 platform_free(buf);
                 if (unit_buf) platform_free(unit_buf);
                 if (fasl_buf) platform_free(fasl_buf);
-                if (fw) platform_free(fw);
+                if (fw) {
+                    cl_fasl_writer_unregister(fw);
+                    platform_free(fw);
+                }
                 cl_set_symbol_value(SYM_STAR_LOAD_PATHNAME, saved_load_pathname);
                 cl_set_symbol_value(SYM_STAR_LOAD_TRUENAME, saved_load_truename);
                 cl_current_package = saved_package;
@@ -880,6 +902,7 @@ static CL_Obj bi_load(CL_Obj *args, int n)
     if (fasl_buf) platform_free(fasl_buf);
     if (unit_buf) platform_free(unit_buf);
     if (fw) {
+        cl_fasl_writer_unregister(fw);
         cl_fasl_writer_release(fw);
         platform_free(fw);
     }
@@ -3644,10 +3667,24 @@ static CL_Obj bi_open_tcp_stream(CL_Obj *args, int n)
     port = CL_FIXNUM_VAL(port_obj);
     if (port < 1 || port > 65535)
         cl_error(CL_ERR_GENERAL, "EXT:OPEN-TCP-STREAM: port must be 1-65535");
-    stream = cl_make_socket_stream(host_str->data, port, connect_ms);
-    if (CL_NULL_P(stream))
-        cl_error(CL_ERR_GENERAL, "EXT:OPEN-TCP-STREAM: failed to connect to %s:%d",
-                 host_str->data, port);
+    /* Copy the hostname out of the arena: cl_make_socket_stream allocates
+     * (cl_make_stream), so host_str->data is stale in the error message
+     * below — printing a garbage hostname. */
+    {
+        char host_buf[256];
+        uint32_t hl = host_str->length;
+        if (hl >= sizeof(host_buf))
+            cl_error(CL_ERR_GENERAL,
+                     "EXT:OPEN-TCP-STREAM: hostname too long (%u bytes, max %u)",
+                     (unsigned)hl, (unsigned)sizeof(host_buf) - 1);
+        memcpy(host_buf, host_str->data, hl);
+        host_buf[hl] = '\0';
+        stream = cl_make_socket_stream(host_buf, port, connect_ms);
+        if (CL_NULL_P(stream))
+            cl_error(CL_ERR_GENERAL,
+                     "EXT:OPEN-TCP-STREAM: failed to connect to %s:%d",
+                     host_buf, port);
+    }
     return stream;
 }
 

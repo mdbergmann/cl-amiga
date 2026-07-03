@@ -25,9 +25,13 @@
 static void defun(const char *name, CL_CFunc func, int min, int max)
 {
     CL_Obj sym = cl_intern_in(name, (uint32_t)strlen(name), cl_package_cl);
-    CL_Obj fn = cl_make_function(func, sym, min, max);
-    CL_Symbol *s = (CL_Symbol *)CL_OBJ_TO_PTR(sym);
+    CL_Obj fn;
+    CL_Symbol *s;
+    CL_GC_PROTECT(sym);
+    fn = cl_make_function(func, sym, min, max);
+    s = (CL_Symbol *)CL_OBJ_TO_PTR(sym);
     s->function = fn;
+    CL_GC_UNPROTECT(1);
 }
 
 /* Pre-interned compound type specifier head symbols */
@@ -307,8 +311,12 @@ static int typep_symbol(CL_Obj obj, CL_Obj type_sym)
     {
         CL_Obj expander = cl_get_type_expander(type_sym);
         if (!CL_NULL_P(expander)) {
-            /* Call expander with no args, get expanded type spec */
-            CL_Obj expanded = cl_vm_apply(expander, NULL, 0);
+            /* Call expander with no args, get expanded type spec.
+             * obj must survive the expander's allocations. */
+            CL_Obj expanded;
+            CL_GC_PROTECT(obj);
+            expanded = cl_vm_apply(expander, NULL, 0);
+            CL_GC_UNPROTECT(1);
             return typep_check(obj, expanded);
         }
     }
@@ -371,18 +379,25 @@ static int check_numeric_range(CL_Obj obj, CL_Obj head, CL_Obj args)
     low_spec = cl_car(args);
     args = cl_cdr(args);
 
-    /* Check low bound */
+    /* Check low bound.  cl_arith_compare allocates on the ratio and
+     * float-vs-rational paths — obj and the args cursor are read again
+     * for the high bound, so root them across it. */
     if (low_spec != TYPE_SYM_STAR && !CL_NULL_P(low_spec)) {
+        int fail;
+        CL_GC_PROTECT(obj);
+        CL_GC_PROTECT(args);
         if (CL_CONS_P(low_spec)) {
             /* (number) = exclusive lower bound */
             CL_Obj bound = cl_car(low_spec);
             cmp = cl_arith_compare(obj, bound);
-            if (cmp <= 0) return 0;  /* obj <= bound: fail */
+            fail = (cmp <= 0);       /* obj <= bound: fail */
         } else {
             /* number = inclusive lower bound */
             cmp = cl_arith_compare(obj, low_spec);
-            if (cmp < 0) return 0;   /* obj < bound: fail */
+            fail = (cmp < 0);        /* obj < bound: fail */
         }
+        CL_GC_UNPROTECT(2);
+        if (fail) return 0;
     }
 
     /* No high bound specified */
@@ -432,25 +447,37 @@ static int typep_check(CL_Obj obj, CL_Obj type_spec)
             return 1;
         }
 
-        /* (or t1 t2 ...) */
+        /* (or t1 t2 ...) — the recursion allocates whenever a branch hits a
+         * deftype expander / satisfies / ratio range, so obj and the walk
+         * cursor must be rooted across it. */
         if (head == TYPE_SYM_OR) {
             CL_Obj rest = args;
+            CL_GC_PROTECT(obj);
+            CL_GC_PROTECT(rest);
             while (!CL_NULL_P(rest)) {
-                if (typep_check(obj, cl_car(rest)))
+                if (typep_check(obj, cl_car(rest))) {
+                    CL_GC_UNPROTECT(2);
                     return 1;
+                }
                 rest = cl_cdr(rest);
             }
+            CL_GC_UNPROTECT(2);
             return 0;
         }
 
         /* (and t1 t2 ...) */
         if (head == TYPE_SYM_AND) {
             CL_Obj rest = args;
+            CL_GC_PROTECT(obj);
+            CL_GC_PROTECT(rest);
             while (!CL_NULL_P(rest)) {
-                if (!typep_check(obj, cl_car(rest)))
+                if (!typep_check(obj, cl_car(rest))) {
+                    CL_GC_UNPROTECT(2);
                     return 0;
+                }
                 rest = cl_cdr(rest);
             }
+            CL_GC_UNPROTECT(2);
             return 1;
         }
 
@@ -656,8 +683,15 @@ static int typep_check(CL_Obj obj, CL_Obj type_spec)
             if (cl_arith_minusp(obj)) return 0;
             if (!CL_NULL_P(args) && CL_FIXNUM_P(cl_car(args))) {
                 int32_t bits = CL_FIXNUM_VAL(cl_car(args));
-                CL_Obj limit = cl_arith_ash(CL_MAKE_FIXNUM(1), CL_MAKE_FIXNUM(bits));
-                return cl_arith_minusp(cl_arith_sub(obj, limit));
+                CL_Obj limit;
+                int res;
+                /* The ash can allocate a bignum limit — obj (itself a
+                 * bignum here) must be forwarded across it. */
+                CL_GC_PROTECT(obj);
+                limit = cl_arith_ash(CL_MAKE_FIXNUM(1), CL_MAKE_FIXNUM(bits));
+                res = cl_arith_minusp(cl_arith_sub(obj, limit));
+                CL_GC_UNPROTECT(1);
+                return res;
             }
             return 1;
         }
@@ -683,12 +717,21 @@ static int typep_check(CL_Obj obj, CL_Obj type_spec)
             if (!CL_FIXNUM_P(obj) && !CL_BIGNUM_P(obj)) return 0;
             if (!CL_NULL_P(args) && CL_FIXNUM_P(cl_car(args))) {
                 int32_t bits = CL_FIXNUM_VAL(cl_car(args));
-                CL_Obj half = cl_arith_ash(CL_MAKE_FIXNUM(1),
-                                           CL_MAKE_FIXNUM(bits - 1));
-                CL_Obj neg_half = cl_arith_negate(half);
+                CL_Obj half, neg_half;
+                int res;
+                /* obj crosses the ash/negate/sub allocations; half is read
+                 * again for the second sub after negate allocates. */
+                CL_GC_PROTECT(obj);
+                half = cl_arith_ash(CL_MAKE_FIXNUM(1),
+                                    CL_MAKE_FIXNUM(bits - 1));
+                CL_GC_PROTECT(half);
+                neg_half = cl_arith_negate(half);
                 /* obj >= -half && obj < half */
-                return !cl_arith_minusp(cl_arith_sub(obj, neg_half)) &&
-                        cl_arith_minusp(cl_arith_sub(obj, half));
+                res = !cl_arith_minusp(cl_arith_sub(obj, neg_half));
+                if (res)
+                    res = cl_arith_minusp(cl_arith_sub(obj, half));
+                CL_GC_UNPROTECT(2);
+                return res;
             }
             return 1;
         }
@@ -697,18 +740,25 @@ static int typep_check(CL_Obj obj, CL_Obj type_spec)
         if (CL_SYMBOL_P(head) &&
             strcmp(cl_symbol_name(head), "INTEGER") == 0) {
             if (!CL_FIXNUM_P(obj) && !CL_BIGNUM_P(obj)) return 0;
-            /* Check bounds if provided */
+            /* Check bounds if provided.  The low-bound sub allocates for
+             * bignums, so obj and the args cursor must survive it before
+             * the high bound is walked/compared. */
             if (!CL_NULL_P(args)) {
                 CL_Obj low = cl_car(args);
+                int fail = 0;
+                CL_GC_PROTECT(obj);
+                CL_GC_PROTECT(args);
                 if (CL_FIXNUM_P(low) || CL_BIGNUM_P(low)) {
-                    if (cl_arith_minusp(cl_arith_sub(obj, low))) return 0;
+                    if (cl_arith_minusp(cl_arith_sub(obj, low))) fail = 1;
                 }
-                if (!CL_NULL_P(cl_cdr(args))) {
+                if (!fail && !CL_NULL_P(cl_cdr(args))) {
                     CL_Obj high = cl_car(cl_cdr(args));
                     if (CL_FIXNUM_P(high) || CL_BIGNUM_P(high)) {
-                        if (cl_arith_minusp(cl_arith_sub(high, obj))) return 0;
+                        if (cl_arith_minusp(cl_arith_sub(high, obj))) fail = 1;
                     }
                 }
+                CL_GC_UNPROTECT(2);
+                return !fail;
             }
             return 1;
         }
@@ -728,29 +778,49 @@ static int typep_check(CL_Obj obj, CL_Obj type_spec)
                 strcmp(cl_symbol_name(part_type), "*") == 0)
                 return 1;
             cx = (CL_Complex *)CL_OBJ_TO_PTR(obj);
-            return typep_check(cx->realpart, part_type) &&
-                   typep_check(cx->imagpart, part_type);
+            {
+                /* Snapshot both parts first: the recursive check can
+                 * allocate (deftype expansion), leaving cx dangling. */
+                CL_Obj re = cx->realpart;
+                CL_Obj im = cx->imagpart;
+                int res;
+                CL_GC_PROTECT(im);
+                CL_GC_PROTECT(part_type);
+                res = typep_check(re, part_type);
+                if (res)
+                    res = typep_check(im, part_type);
+                CL_GC_UNPROTECT(2);
+                return res;
+            }
         }
 
         /* (cons [car-type [cdr-type]]) — cons cell type */
         if (CL_SYMBOL_P(head) &&
             strcmp(cl_symbol_name(head), "CONS") == 0) {
             if (!CL_CONS_P(obj)) return 0;
-            /* Optionally check car/cdr types (symbol or compound) */
+            /* Optionally check car/cdr types (symbol or compound).
+             * obj and args are re-read after the car-type recursion,
+             * which can allocate — root them across it. */
             if (!CL_NULL_P(args)) {
-                CL_Obj car_type = cl_car(args);
+                int fail = 0;
+                CL_Obj car_type;
+                CL_GC_PROTECT(obj);
+                CL_GC_PROTECT(args);
+                car_type = cl_car(args);
                 /* Skip only the * wildcard */
                 if (!(CL_SYMBOL_P(car_type) &&
                       strcmp(cl_symbol_name(car_type), "*") == 0)) {
-                    if (!typep_check(cl_car(obj), car_type)) return 0;
+                    if (!typep_check(cl_car(obj), car_type)) fail = 1;
                 }
-                if (!CL_NULL_P(cl_cdr(args))) {
+                if (!fail && !CL_NULL_P(cl_cdr(args))) {
                     CL_Obj cdr_type = cl_car(cl_cdr(args));
                     if (!(CL_SYMBOL_P(cdr_type) &&
                           strcmp(cl_symbol_name(cdr_type), "*") == 0)) {
-                        if (!typep_check(cl_cdr(obj), cdr_type)) return 0;
+                        if (!typep_check(cl_cdr(obj), cdr_type)) fail = 1;
                     }
                 }
+                CL_GC_UNPROTECT(2);
+                if (fail) return 0;
             }
             return 1;
         }
@@ -767,7 +837,11 @@ static int typep_check(CL_Obj obj, CL_Obj type_spec)
                     arg_array[nargs++] = cl_car(rest);
                     rest = cl_cdr(rest);
                 }
+                /* obj must survive the expander (arg_array is copied onto
+                 * the rooted VM stack by cl_vm_apply itself). */
+                CL_GC_PROTECT(obj);
                 expanded = cl_vm_apply(expander, arg_array, nargs);
+                CL_GC_UNPROTECT(1);
                 return typep_check(obj, expanded);
             }
         }
@@ -934,9 +1008,7 @@ static CL_Obj bi_coerce(CL_Obj *args, int n)
     CL_UNUSED(n);
 
     /* Expand user deftypes in the result-type so e.g. babel's
-     * UNICODE-STRING -> (vector unicode-char *) is understood.  OBJ is
-     * args[0] (GC-rooted); the expander apply may compact but holds no
-     * other unrooted locals. */
+     * UNICODE-STRING -> (vector unicode-char *) is understood. */
     {
         int guard = 16;
         while (guard-- > 0 && CL_SYMBOL_P(result_type)) {
@@ -945,6 +1017,10 @@ static CL_Obj bi_coerce(CL_Obj *args, int n)
             result_type = cl_vm_apply(ex, NULL, 0);
         }
     }
+    /* The args[0] SLOT is rooted and forwarded (VM stack, or protected by
+     * the recursive complex call sites below), but the obj LOCAL COPY is
+     * stale after the expander applies above — re-read it. */
+    obj = args[0];
 
     /* Handle compound type specifiers like (simple-array fixnum (*)):
      * extract the base type name and coerce as that sequence type. */
@@ -959,7 +1035,11 @@ static CL_Obj bi_coerce(CL_Obj *args, int n)
                 /* A character element type means a string, a BIT element
                  * type means a bit-vector; otherwise a general vector (we
                  * don't otherwise specialize). */
+                /* eargs is re-read after coerce_elt_type_is_char/bit and
+                 * coerce_general_elt_code, all of which can run an
+                 * elt-type deftype expander via cl_vm_apply — root it. */
                 CL_Obj eargs = cl_cdr(result_type);
+                CL_GC_PROTECT(eargs);
                 if (!CL_NULL_P(eargs) &&
                     coerce_elt_type_is_char(cl_car(eargs), 8))
                     result_type = cl_intern_in("STRING", 6, cl_package_cl);
@@ -973,6 +1053,8 @@ static CL_Obj bi_coerce(CL_Obj *args, int n)
                         coerce_vec_elt_code = coerce_general_elt_code(cl_car(eargs), 8);
                     result_type = cl_intern_in("VECTOR", 6, cl_package_cl);
                 }
+                CL_GC_UNPROTECT(1);
+                obj = args[0];  /* re-read after the expander applies */
             } else if (strcmp(hname, "COMPLEX") == 0) {
                 /* (coerce x (complex part-type)) — build a complex whose
                  * realpart and imagpart are coerced to part-type. */
@@ -994,14 +1076,21 @@ static CL_Obj bi_coerce(CL_Obj *args, int n)
                     return CL_NIL;
                 }
                 CL_GC_PROTECT(part_type);
-                CL_GC_PROTECT(re_obj);
                 CL_GC_PROTECT(im_obj);
+                /* coerce_args is a C array, NOT the VM stack — the recursive
+                 * bi_coerce re-reads its args[] slots after allocating, so
+                 * the slots themselves must be rooted for each call. */
                 coerce_args[0] = re_obj; coerce_args[1] = part_type;
+                CL_GC_PROTECT(coerce_args[0]);
+                CL_GC_PROTECT(coerce_args[1]);
                 re_obj = bi_coerce(coerce_args, 2);
+                CL_GC_UNPROTECT(2);
                 CL_GC_PROTECT(re_obj);
                 coerce_args[0] = im_obj; coerce_args[1] = part_type;
+                CL_GC_PROTECT(coerce_args[0]);
+                CL_GC_PROTECT(coerce_args[1]);
                 im_obj = bi_coerce(coerce_args, 2);
-                CL_GC_UNPROTECT(4);
+                CL_GC_UNPROTECT(5);
                 CL_GC_PROTECT(re_obj);
                 CL_GC_PROTECT(im_obj);
                 {
@@ -1075,15 +1164,19 @@ static CL_Obj bi_coerce(CL_Obj *args, int n)
             char c = (char)CL_CHAR_VAL(obj);
             return cl_make_string(&c, 1);
         }
-        /* Coerce list of characters to string */
+        /* Coerce list of characters to string.  obj is rooted across the
+         * result allocation and the cursor re-read from it afterward —
+         * pre-fix, p walked a stale list after cl_make_string compacted. */
         if (CL_NULL_P(obj) || CL_CONS_P(obj)) {
             CL_Obj p = obj;
             uint32_t len = 0;
             uint32_t i;
             CL_Obj result;
             while (!CL_NULL_P(p)) { len++; p = cl_cdr(p); }
+            CL_GC_PROTECT(obj);
             result = cl_make_string(NULL, len);
             p = obj;
+            CL_GC_UNPROTECT(1);
             for (i = 0; i < len; i++) {
                 CL_Obj elem = cl_car(p);
                 if (!CL_CHAR_P(elem))
@@ -1093,13 +1186,18 @@ static CL_Obj bi_coerce(CL_Obj *args, int n)
             }
             return result;
         }
-        /* Coerce vector of characters to string */
+        /* Coerce vector of characters to string — derive the data pointer
+         * only AFTER the result allocation. */
         if (CL_VECTOR_P(obj)) {
-            CL_Vector *v = (CL_Vector *)CL_OBJ_TO_PTR(obj);
-            uint32_t len = cl_vector_active_length(v);
-            CL_Obj *elts = cl_vector_data(v);
+            uint32_t len =
+                cl_vector_active_length((CL_Vector *)CL_OBJ_TO_PTR(obj));
             uint32_t i;
-            CL_Obj result = cl_make_string(NULL, len);
+            CL_Obj result;
+            CL_Obj *elts;
+            CL_GC_PROTECT(obj);
+            result = cl_make_string(NULL, len);
+            elts = cl_vector_data((CL_Vector *)CL_OBJ_TO_PTR(obj));
+            CL_GC_UNPROTECT(1);
             for (i = 0; i < len; i++) {
                 if (!CL_CHAR_P(elts[i]))
                     cl_error(CL_ERR_TYPE, "COERCE: vector element is not a character");
@@ -1121,9 +1219,11 @@ static CL_Obj bi_coerce(CL_Obj *args, int n)
             CL_Obj bvobj;
             CL_BitVector *bv;
             while (!CL_NULL_P(p)) { len++; p = cl_cdr(p); }
+            CL_GC_PROTECT(obj);
             bvobj = cl_make_bit_vector(len);
             bv = (CL_BitVector *)CL_OBJ_TO_PTR(bvobj);
-            p = obj;
+            p = obj;  /* re-read from the rooted slot after the alloc */
+            CL_GC_UNPROTECT(1);
             for (ii = 0; ii < len; ii++) {
                 CL_Obj elem = cl_car(p);
                 if (CL_FIXNUM_P(elem) && CL_FIXNUM_VAL(elem) == 1)
@@ -1139,23 +1239,28 @@ static CL_Obj bi_coerce(CL_Obj *args, int n)
     /* (coerce x 'list) */
     if (strcmp(tname, "LIST") == 0) {
         if (CL_NULL_P(obj) || CL_CONS_P(obj)) return obj;
+        /* obj must be rooted too in the loops below: each cl_cons compacts
+         * under stress, and the source pointer/char reads re-derive from
+         * obj every iteration — pre-fix they re-derived from a stale copy. */
         if (CL_BIT_VECTOR_P(obj)) {
             CL_BitVector *bv = (CL_BitVector *)CL_OBJ_TO_PTR(obj);
             CL_Obj result = CL_NIL;
             uint32_t ii = bv->length;
+            CL_GC_PROTECT(obj);
             CL_GC_PROTECT(result);
             while (ii > 0) {
                 ii--;
                 bv = (CL_BitVector *)CL_OBJ_TO_PTR(obj);
                 result = cl_cons(CL_MAKE_FIXNUM(cl_bv_get_bit(bv, ii)), result);
             }
-            CL_GC_UNPROTECT(1);
+            CL_GC_UNPROTECT(2);
             return result;
         }
         if (CL_VECTOR_P(obj)) {
             CL_Vector *v;
             CL_Obj result = CL_NIL;
             uint32_t i;
+            CL_GC_PROTECT(obj);
             CL_GC_PROTECT(result);
             v = (CL_Vector *)CL_OBJ_TO_PTR(obj);
             i = cl_vector_active_length(v);
@@ -1164,19 +1269,20 @@ static CL_Obj bi_coerce(CL_Obj *args, int n)
                 v = (CL_Vector *)CL_OBJ_TO_PTR(obj);
                 result = cl_cons(cl_vector_data(v)[i], result);
             }
-            CL_GC_UNPROTECT(1);
+            CL_GC_UNPROTECT(2);
             return result;
         }
         if (CL_ANY_STRING_P(obj)) {
             CL_Obj result = CL_NIL;
             uint32_t i;
+            CL_GC_PROTECT(obj);
             CL_GC_PROTECT(result);
             i = cl_string_length(obj);
             while (i > 0) {
                 i--;
                 result = cl_cons(CL_MAKE_CHAR(cl_string_char_at(obj, i)), result);
             }
-            CL_GC_UNPROTECT(1);
+            CL_GC_UNPROTECT(2);
             return result;
         }
         cl_error(CL_ERR_TYPE, "COERCE: cannot coerce to LIST");
@@ -1186,23 +1292,33 @@ static CL_Obj bi_coerce(CL_Obj *args, int n)
     /* (coerce x 'vector) or (coerce x 'simple-vector) */
     if (strcmp(tname, "VECTOR") == 0 || strcmp(tname, "SIMPLE-VECTOR") == 0) {
         if (CL_VECTOR_P(obj)) return obj;
+        /* All three source walks below read through obj after
+         * cl_make_vector can compact — root obj across the alloc and
+         * re-derive source pointers afterward. */
         if (CL_ANY_STRING_P(obj)) {
             uint32_t slen = cl_string_length(obj);
             uint32_t ii;
-            CL_Obj vec = cl_make_vector(slen);
-            CL_Vector *v = (CL_Vector *)CL_OBJ_TO_PTR(vec);
+            CL_Obj vec;
+            CL_Vector *v;
+            CL_GC_PROTECT(obj);
+            vec = cl_make_vector(slen);
+            CL_GC_UNPROTECT(1);
+            v = (CL_Vector *)CL_OBJ_TO_PTR(vec);
             for (ii = 0; ii < slen; ii++)
                 cl_vector_data(v)[ii] = CL_MAKE_CHAR(cl_string_char_at(obj, ii));
             v->elt_type = coerce_vec_elt_code;
             return vec;
         }
         if (CL_BIT_VECTOR_P(obj)) {
-            CL_BitVector *bv = (CL_BitVector *)CL_OBJ_TO_PTR(obj);
-            uint32_t bvlen = bv->length;
+            uint32_t bvlen = ((CL_BitVector *)CL_OBJ_TO_PTR(obj))->length;
             uint32_t ii;
-            CL_Obj vec = cl_make_vector(bvlen);
+            CL_Obj vec;
+            CL_BitVector *bv;
             CL_Vector *v;
+            CL_GC_PROTECT(obj);
+            vec = cl_make_vector(bvlen);
             bv = (CL_BitVector *)CL_OBJ_TO_PTR(obj);
+            CL_GC_UNPROTECT(1);
             v = (CL_Vector *)CL_OBJ_TO_PTR(vec);
             for (ii = 0; ii < bvlen; ii++)
                 cl_vector_data(v)[ii] = CL_MAKE_FIXNUM(cl_bv_get_bit(bv, ii));
@@ -1219,9 +1335,11 @@ static CL_Obj bi_coerce(CL_Obj *args, int n)
                 len++;
                 p = cl_cdr(p);
             }
+            CL_GC_PROTECT(obj);
             vec = cl_make_vector(len);
             v = (CL_Vector *)CL_OBJ_TO_PTR(vec);
-            p = obj;
+            p = obj;  /* re-read from the rooted slot after the alloc */
+            CL_GC_UNPROTECT(1);
             for (i = 0; i < len; i++) {
                 cl_vector_data(v)[i] = cl_car(p);
                 p = cl_cdr(p);
@@ -1250,10 +1368,15 @@ static CL_Obj bi_coerce(CL_Obj *args, int n)
                 extern CL_Obj cl_vm_eval(CL_Obj bytecode);
                 extern CL_Obj cl_intern_in(const char *name, uint32_t len, CL_Obj pkg);
                 extern CL_Obj cl_package_cl;
-                CL_Obj fn_sym = cl_intern_in("FUNCTION", 8, cl_package_cl);
-                CL_Obj form = cl_cons(fn_sym, cl_cons(obj, CL_NIL));
+                /* Build the inner cons FIRST: nesting the two conses would
+                 * leave fn_sym stale when the inner one compacts (FUNCTION
+                 * is interned already, so the intern itself is a lookup). */
+                CL_Obj form = cl_cons(obj, CL_NIL);
+                CL_Obj fn_sym;
                 CL_Obj bytecode;
                 CL_GC_PROTECT(form);
+                fn_sym = cl_intern_in("FUNCTION", 8, cl_package_cl);
+                form = cl_cons(fn_sym, form);
                 bytecode = cl_compile(form);
                 CL_GC_UNPROTECT(1);
                 if (CL_NULL_P(bytecode))
@@ -2021,21 +2144,29 @@ static CL_Obj bi_subtypep(CL_Obj *args, int n)
     int id1, id2, result;
     CL_UNUSED(n);
 
-    /* Expand deftype'd symbols before anything else */
+    /* Expand deftype'd symbols before anything else.  The OTHER type local
+     * must survive the expander apply — pre-fix, rargs picked up a stale
+     * copy captured before the apply compacted. */
     if (CL_SYMBOL_P(type1)) {
         CL_Obj expander = cl_get_type_expander(type1);
         if (!CL_NULL_P(expander)) {
+            CL_Obj rargs[2];
+            CL_GC_PROTECT(type2);
             type1 = cl_vm_apply(expander, &type1, 0);
+            CL_GC_UNPROTECT(1);
             /* Recurse with expanded types */
-            CL_Obj rargs[2] = { type1, type2 };
+            rargs[0] = type1; rargs[1] = type2;
             return bi_subtypep(rargs, 2);
         }
     }
     if (CL_SYMBOL_P(type2)) {
         CL_Obj expander = cl_get_type_expander(type2);
         if (!CL_NULL_P(expander)) {
+            CL_Obj rargs[2];
+            CL_GC_PROTECT(type1);
             type2 = cl_vm_apply(expander, &type2, 0);
-            CL_Obj rargs[2] = { type1, type2 };
+            CL_GC_UNPROTECT(1);
+            rargs[0] = type1; rargs[1] = type2;
             return bi_subtypep(rargs, 2);
         }
     }
@@ -2115,13 +2246,19 @@ static CL_Obj bi_subtypep(CL_Obj *args, int n)
          * which broke serapeum's exhaustiveness checks under
          * typecase-of / etypecase-of. */
         if (head1 == TYPE_SYM_OR) {
+            /* The recursion allocates whenever nested specs hit deftype
+             * expanders — the walk cursor and the cross-used type local
+             * must be rooted across it (same in the walkers below). */
             CL_Obj rest = cl_cdr(type1);
             int saw_unknown = 0;
+            CL_GC_PROTECT(rest);
+            CL_GC_PROTECT(type2);
             while (!CL_NULL_P(rest)) {
                 CL_Obj sub_args[2]; CL_Obj prim;
                 sub_args[0] = cl_car(rest); sub_args[1] = type2;
                 prim = bi_subtypep(sub_args, 2);
                 if (cl_mv_values[1] == SYM_T && prim == CL_NIL) {
+                    CL_GC_UNPROTECT(2);
                     cl_mv_count = 2;
                     cl_mv_values[0] = CL_NIL;
                     cl_mv_values[1] = SYM_T;
@@ -2130,6 +2267,7 @@ static CL_Obj bi_subtypep(CL_Obj *args, int n)
                 if (cl_mv_values[1] != SYM_T) saw_unknown = 1;
                 rest = cl_cdr(rest);
             }
+            CL_GC_UNPROTECT(2);
             cl_mv_count = 2;
             cl_mv_values[0] = saw_unknown ? CL_NIL : SYM_T;
             cl_mv_values[1] = saw_unknown ? CL_NIL : SYM_T;
@@ -2141,11 +2279,14 @@ static CL_Obj bi_subtypep(CL_Obj *args, int n)
         if (head2 == TYPE_SYM_OR) {
             CL_Obj rest = cl_cdr(type2);
             int saw_unknown = 0;
+            CL_GC_PROTECT(rest);
+            CL_GC_PROTECT(type1);
             while (!CL_NULL_P(rest)) {
                 CL_Obj sub_args[2]; CL_Obj prim;
                 sub_args[0] = type1; sub_args[1] = cl_car(rest);
                 prim = bi_subtypep(sub_args, 2);
                 if (cl_mv_values[1] == SYM_T && prim == SYM_T) {
+                    CL_GC_UNPROTECT(2);
                     cl_mv_count = 2;
                     cl_mv_values[0] = SYM_T;
                     cl_mv_values[1] = SYM_T;
@@ -2154,6 +2295,7 @@ static CL_Obj bi_subtypep(CL_Obj *args, int n)
                 if (cl_mv_values[1] != SYM_T) saw_unknown = 1;
                 rest = cl_cdr(rest);
             }
+            CL_GC_UNPROTECT(2);
             cl_mv_count = 2;
             cl_mv_values[0] = CL_NIL;
             cl_mv_values[1] = saw_unknown ? CL_NIL : SYM_T;
@@ -2168,18 +2310,30 @@ static CL_Obj bi_subtypep(CL_Obj *args, int n)
          * return T,T (the ANSI UPGRADED-COMPLEX-PART-TYPE tests rely on
          * this rule). */
         if (head1 == TYPE_SYM_AND) {
-            CL_Obj rest = cl_cdr(type1);
+            CL_Obj rest;
             int saw_unknown = 0;
+            /* type1/type2 stay rooted for the whole branch: every recursive
+             * bi_subtypep below can compact, and the cursors re-derive from
+             * type1 afterward. */
+            CL_GC_PROTECT(type1);
+            CL_GC_PROTECT(type2);
             /* Empty-intersection check: scan for (NOT Yj), then check each
              * non-NOT Xi ⊆ Yj. */
             {
                 CL_Obj r1 = cl_cdr(type1);
+                CL_GC_PROTECT(r1);
                 while (!CL_NULL_P(r1)) {
                     CL_Obj cl1 = cl_car(r1);
                     if (CL_CONS_P(cl1) && cl_car(cl1) == TYPE_SYM_NOT &&
                         CL_CONS_P(cl_cdr(cl1))) {
                         CL_Obj y = cl_car(cl_cdr(cl1));
                         CL_Obj r2 = cl_cdr(type1);
+                        /* cl1 is compared by identity against cl2 on every
+                         * inner iteration — it must be forwarded too, or a
+                         * stale offset makes the != test misfire. */
+                        CL_GC_PROTECT(cl1);
+                        CL_GC_PROTECT(y);
+                        CL_GC_PROTECT(r2);
                         while (!CL_NULL_P(r2)) {
                             CL_Obj cl2 = cl_car(r2);
                             if (cl2 != cl1 &&
@@ -2189,6 +2343,7 @@ static CL_Obj bi_subtypep(CL_Obj *args, int n)
                                 prim = bi_subtypep(sub_args, 2);
                                 if (cl_mv_values[1] == SYM_T && prim == SYM_T) {
                                     /* (and ... Xi ... (not Yj)) is empty */
+                                    CL_GC_UNPROTECT(6);
                                     cl_mv_count = 2;
                                     cl_mv_values[0] = SYM_T;
                                     cl_mv_values[1] = SYM_T;
@@ -2197,15 +2352,20 @@ static CL_Obj bi_subtypep(CL_Obj *args, int n)
                             }
                             r2 = cl_cdr(r2);
                         }
+                        CL_GC_UNPROTECT(3);
                     }
                     r1 = cl_cdr(r1);
                 }
+                CL_GC_UNPROTECT(1);
             }
+            rest = cl_cdr(type1);
+            CL_GC_PROTECT(rest);
             while (!CL_NULL_P(rest)) {
                 CL_Obj sub_args[2]; CL_Obj prim;
                 sub_args[0] = cl_car(rest); sub_args[1] = type2;
                 prim = bi_subtypep(sub_args, 2);
                 if (cl_mv_values[1] == SYM_T && prim == SYM_T) {
+                    CL_GC_UNPROTECT(3);
                     cl_mv_count = 2;
                     cl_mv_values[0] = SYM_T;
                     cl_mv_values[1] = SYM_T;
@@ -2214,6 +2374,7 @@ static CL_Obj bi_subtypep(CL_Obj *args, int n)
                 if (cl_mv_values[1] != SYM_T) saw_unknown = 1;
                 rest = cl_cdr(rest);
             }
+            CL_GC_UNPROTECT(3);
             cl_mv_count = 2;
             cl_mv_values[0] = CL_NIL;
             cl_mv_values[1] = saw_unknown ? CL_NIL : SYM_T;
@@ -2225,11 +2386,14 @@ static CL_Obj bi_subtypep(CL_Obj *args, int n)
         if (head2 == TYPE_SYM_AND) {
             CL_Obj rest = cl_cdr(type2);
             int saw_unknown = 0;
+            CL_GC_PROTECT(rest);
+            CL_GC_PROTECT(type1);
             while (!CL_NULL_P(rest)) {
                 CL_Obj sub_args[2]; CL_Obj prim;
                 sub_args[0] = type1; sub_args[1] = cl_car(rest);
                 prim = bi_subtypep(sub_args, 2);
                 if (cl_mv_values[1] == SYM_T && prim == CL_NIL) {
+                    CL_GC_UNPROTECT(2);
                     cl_mv_count = 2;
                     cl_mv_values[0] = CL_NIL;
                     cl_mv_values[1] = SYM_T;
@@ -2238,6 +2402,7 @@ static CL_Obj bi_subtypep(CL_Obj *args, int n)
                 if (cl_mv_values[1] != SYM_T) saw_unknown = 1;
                 rest = cl_cdr(rest);
             }
+            CL_GC_UNPROTECT(2);
             cl_mv_count = 2;
             cl_mv_values[0] = saw_unknown ? CL_NIL : SYM_T;
             cl_mv_values[1] = saw_unknown ? CL_NIL : SYM_T;
@@ -2254,8 +2419,14 @@ static CL_Obj bi_subtypep(CL_Obj *args, int n)
             !CL_NULL_P(type1)) {
             CL_Obj inner = cl_car(cl_cdr(type2));
             CL_Obj sub_args[2]; CL_Obj prim;
+            /* This branch can FALL THROUGH — type1/type2 (and head1, used
+             * below) are still live after the allocating recursion. */
+            CL_GC_PROTECT(type1);
+            CL_GC_PROTECT(type2);
             sub_args[0] = type1; sub_args[1] = inner;
             prim = bi_subtypep(sub_args, 2);
+            CL_GC_UNPROTECT(2);
+            head1 = CL_CONS_P(type1) ? cl_car(type1) : head1;
             if (prim == SYM_T && cl_mv_values[1] == SYM_T) {
                 cl_mv_count = 2;
                 cl_mv_values[0] = CL_NIL;
@@ -2268,8 +2439,11 @@ static CL_Obj bi_subtypep(CL_Obj *args, int n)
         /* (member x1 x2 ...) ⊆ T2 iff every xi is typep T2. */
         if (head1 == TYPE_SYM_MEMBER) {
             CL_Obj rest = cl_cdr(type1);
+            CL_GC_PROTECT(rest);
+            CL_GC_PROTECT(type2);
             while (!CL_NULL_P(rest)) {
                 if (!cl_typep(cl_car(rest), type2)) {
+                    CL_GC_UNPROTECT(2);
                     cl_mv_count = 2;
                     cl_mv_values[0] = CL_NIL;
                     cl_mv_values[1] = SYM_T;
@@ -2277,6 +2451,7 @@ static CL_Obj bi_subtypep(CL_Obj *args, int n)
                 }
                 rest = cl_cdr(rest);
             }
+            CL_GC_UNPROTECT(2);
             cl_mv_count = 2;
             cl_mv_values[0] = SYM_T;
             cl_mv_values[1] = SYM_T;

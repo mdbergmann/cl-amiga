@@ -3195,6 +3195,14 @@
           (close c) :connected)
       (error () :refused))))
 
+; A hostname that doesn't fit the internal 256-byte copy buffer must signal an
+; error rather than silently connecting to a truncated (and wrong) host.
+(check "open-tcp-stream hostname too long signals error" :too-long
+  (handler-case
+      (let ((c (ext:open-tcp-stream (make-string 300 :initial-element #\a) 80)))
+        (close c) :connected)
+    (error () :too-long)))
+
 ; --- Concurrent socket I/O: a thread parked in a blocking socket read must
 ; not block other I/O (regression for the SLY :spawn deadlock).  Stream I/O
 ; locks are split per socket and per direction (src/core/stream.c), and the
@@ -7835,6 +7843,81 @@
        (get-dispatch-macro-character #\# #\Z))
 (check "get-dispatch-macro-character on constituent errors" :err
        (handler-case (get-dispatch-macro-character #\a #\x) (error () :err)))
+
+; --- Tier-3 GC/threading audit regressions (2026-07) ---
+; Lisp-visible fixes from the tier-3 batch: numeric-tower staleness with
+; big operands, coerce/typep/subtypep re-derives, bit-vector source
+; re-derive after result alloc, package mutation stores, condition
+; creation staleness, the WARN muffle active-mask restore, and the
+; interactive-restart argument list.
+
+(check "t3 abs bignum" (expt 10 30) (abs (- (expt 10 30))))
+(check "t3 mod bignum" (- (expt 10 25) 1)
+       (mod (- (+ (expt 10 30) 1)) (expt 10 25)))
+(check "t3 ash floor" (- (+ (expt 2 97) 1)) (ash (- (+ (expt 2 100) 1)) -3))
+(check "t3 isqrt bignum" (expt 10 15) (isqrt (expt 10 30)))
+(check "t3 ratio add" 37037036703703703677/21 (+ 12345678901234567890/7 1/3))
+(check "t3 ratio neg" -12345678901234567890/7 (- 12345678901234567890/7))
+(check "t3 sqrt neg" #C(0.0 2.0) (sqrt -4.0))
+(check "t3 floor big ratio" '(1763668414462081127 1/7)
+       (multiple-value-list (floor 12345678901234567890/7)))
+(check "t3 mod ratio" 9/14 (mod 12345678901234567890/7 3/2))
+(check "t3 signum" -1.0 (signum -3.5))
+(check "t3 lcm big" (* (expt 2 70) 243) (lcm (expt 2 70) 243))
+(check "t3 max mixed" 12345678901234567890 (max 1.5 12345678901234567890))
+(check "t3 dpb 64" (- (expt 2 64) 1) (dpb -1 (byte 64 0) 0))
+(check "t3 boole andc1 big" 5 (boole boole-andc1 (expt 2 70) (+ (expt 2 70) 5)))
+(check "t3 random bignum" t
+       (let ((r (random (expt 2 64))))
+         (and (integerp r) (>= r 0) (< r (expt 2 64)) t)))
+(check "t3 equalp complex" t (equalp (sqrt -4.0) #C(0.0 2.0)))
+
+(deftype t3a-small () '(integer 0 10))
+(check "t3 typep deftype" t (typep 5 't3a-small))
+(check "t3 typep or" t (typep "x" '(or t3a-small string)))
+(check "t3 typep ub64" t (typep (- (expt 2 64) 1) '(unsigned-byte 64)))
+(check "t3 coerce list->string" "abc" (coerce '(#\a #\b #\c) 'string))
+(check "t3 coerce vec->list" '(1 2 3) (coerce #(1 2 3) 'list))
+(check "t3 coerce str->vector" t (equalp #(#\a #\b) (coerce "ab" 'vector)))
+(check "t3 subtypep deftype" t (and (subtypep 't3a-small 'integer) t))
+(check "t3 subtypep or" t
+       (and (subtypep '(or t3a-small string) '(or string integer)) t))
+
+(check "t3 bit-and" #*1000 (bit-and #*1010 #*1100))
+(check "t3 bit-not" #*0101 (bit-not #*1010))
+
+(defpackage :t3a-pkg (:use :cl))
+(check "t3 export inherited" :external
+       (progn (export (intern "T3FOO" :t3a-pkg) :t3a-pkg)
+              (nth-value 1 (find-symbol "T3FOO" :t3a-pkg))))
+(check "t3 setf get new indicator" 42
+       (progn (setf (get 't3-some-sym 't3-fresh-ind) 42)
+              (get 't3-some-sym 't3-fresh-ind)))
+
+(define-condition t3a-cond (error)
+  ((a :initarg :a :reader t3a-a :initform 41)
+   (b :initarg :b :reader t3a-b))
+  (:default-initargs :b 7))
+(check "t3 make-condition initform" 41 (t3a-a (make-condition 't3a-cond)))
+(check "t3 error by name" '(5 7)
+       (handler-case (error 't3a-cond :a 5)
+         (t3a-cond (c) (list (t3a-a c) (t3a-b c)))))
+; three warns under ONE handler-bind — pre-fix only the first was caught
+; (handler active mask not restored across the muffle longjmp)
+(check "t3 warn muffle x3" 3
+       (let ((cnt 0))
+         (handler-bind ((warning (lambda (c) (declare (ignore c))
+                                   (incf cnt) (muffle-warning))))
+           (warn "w1") (warn "w2") (warn "w3"))
+         cnt))
+(check "t3 invoke-restart-interactively" '(1 2 3)
+       (restart-case
+           (invoke-restart-interactively (find-restart 'use-these))
+         (use-these (&rest vals)
+           :interactive (lambda () (list 1 2 3))
+           vals)))
+(check "t3 merge-pathnames relative" "f"
+       (pathname-name (merge-pathnames "sub/f.lisp" #P"/base/d/")))
 
 ; --- Summary ---
 (format t "~%=== Results ===~%")

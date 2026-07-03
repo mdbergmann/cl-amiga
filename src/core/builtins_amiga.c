@@ -33,10 +33,14 @@ CL_Obj cl_amiga_ffi_call_sym = CL_NIL;
 static void amiga_defun(const char *name, CL_CFunc func, int min, int max)
 {
     CL_Obj sym = cl_intern_in(name, (uint32_t)strlen(name), cl_package_amiga);
-    CL_Obj fn = cl_make_function(func, sym, min, max);
-    CL_Symbol *s = (CL_Symbol *)CL_OBJ_TO_PTR(sym);
+    CL_Obj fn;
+    CL_Symbol *s;
+    CL_GC_PROTECT(sym);
+    fn = cl_make_function(func, sym, min, max);
+    s = (CL_Symbol *)CL_OBJ_TO_PTR(sym);
     s->function = fn;
     cl_export_symbol(sym, cl_package_amiga);
+    CL_GC_UNPROTECT(1);
 }
 
 /* Pre-interned register keyword symbols */
@@ -59,7 +63,14 @@ static int decode_register_keyword(CL_Obj kw)
     if (kw == kw_a2) return 10;
     if (kw == kw_a3) return 11;
     if (kw == kw_a4) return 12;
-    if (kw == kw_a5) return 13;
+    /* :A5 (index 13) is deliberately REJECTED: ffi_dispatch_m68k.s only
+     * loads d0-d7/a0-a4 (a5 is its scratch/frame register — see the
+     * comment at the top of the dispatcher).  Accepting it here silently
+     * dropped the argument. */
+    if (kw == kw_a5)
+        cl_error(CL_ERR_ARGS,
+                 "AMIGA FFI: register :A5 is reserved by the call "
+                 "dispatcher and cannot carry an argument (use d0-d7/a0-a4)");
     return -1;
 }
 

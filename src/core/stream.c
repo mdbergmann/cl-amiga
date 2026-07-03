@@ -940,6 +940,14 @@ void cl_stream_write_string(CL_Obj stream, const char *str, uint32_t len)
 
     {
         uint32_t wto = st->write_timeout_ms;  /* capture before safe region */
+        /* Compute the charpos delta BEFORE the write: for blocking file/
+         * socket writes a peer compaction can move an arena-interior str
+         * while we are parked, so str must not be re-read afterward. */
+        uint32_t last_nl = 0xFFFFFFFF;
+        for (i = 0; i < len; i++) {
+            if (str[i] == '\n')
+                last_nl = i;
+        }
         CL_GC_PROTECT(stream);   /* socket flush may compact; re-derive st after */
 
         switch (st->stream_type) {
@@ -972,23 +980,44 @@ void cl_stream_write_string(CL_Obj stream, const char *str, uint32_t len)
         st = (CL_Stream *)CL_OBJ_TO_PTR(stream);   /* a socket flush may have moved st */
         CL_GC_UNPROTECT(1);
 
-        /* Update charpos: find last newline */
-        {
-            uint32_t last_nl = 0xFFFFFFFF;
-            for (i = 0; i < len; i++) {
-                if (str[i] == '\n')
-                    last_nl = i;
-            }
-            if (last_nl != 0xFFFFFFFF)
-                st->charpos = len - last_nl - 1;
-            else
-                st->charpos += len;
-        }
+        /* Update charpos from the pre-computed newline position */
+        if (last_nl != 0xFFFFFFFF)
+            st->charpos = len - last_nl - 1;
+        else
+            st->charpos += len;
 
         if (iolock) platform_mutex_unlock(iolock);
         if (wr == PLATFORM_SOCKET_TIMEOUT)
             stream_raise_timeout(1, wto);
     }
+}
+
+/* Write a Lisp base-string's [start, end) range to a stream, safe for
+ * ARENA-resident sources: blocking file/socket writes park in a GC safe
+ * region (MT), a peer compaction moves the string, and the platform layer
+ * would resume copying from a dangling pointer (garbage bytes on the
+ * wire).  Chunk through a C stack buffer, re-deriving the source from the
+ * rooted strobj per chunk, so no arena pointer is ever live across a
+ * blocking call.  strobj must be a base string (TYPE_STRING). */
+void cl_stream_write_lisp_string(CL_Obj stream, CL_Obj strobj,
+                                 uint32_t start, uint32_t end)
+{
+    char chunk[512];
+    CL_GC_PROTECT(stream);
+    CL_GC_PROTECT(strobj);
+    while (start < end) {
+        uint32_t nb = end - start;
+        /* volatile: m68k-amigaos-gcc at -O2 miscompiles `data + start`
+         * folded straight into the copy (dropped the first byte in the
+         * old bi_write_string fast path) — force the base pointer through
+         * memory before the offset math. */
+        const char *volatile src = ((CL_String *)CL_OBJ_TO_PTR(strobj))->data;
+        if (nb > (uint32_t)sizeof(chunk)) nb = (uint32_t)sizeof(chunk);
+        memcpy(chunk, src + start, nb);
+        cl_stream_write_string(stream, chunk, nb);
+        start += nb;
+    }
+    CL_GC_UNPROTECT(2);
 }
 
 int cl_stream_peek_char(CL_Obj stream)

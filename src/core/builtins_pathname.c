@@ -24,9 +24,13 @@
 static void defun(const char *name, CL_CFunc func, int min, int max)
 {
     CL_Obj sym = cl_intern_in(name, (uint32_t)strlen(name), cl_package_cl);
-    CL_Obj fn = cl_make_function(func, sym, min, max);
-    CL_Symbol *s = (CL_Symbol *)CL_OBJ_TO_PTR(sym);
+    CL_Obj fn;
+    CL_Symbol *s;
+    CL_GC_PROTECT(sym);
+    fn = cl_make_function(func, sym, min, max);
+    s = (CL_Symbol *)CL_OBJ_TO_PTR(sym);
     s->function = fn;
+    CL_GC_UNPROTECT(1);
 }
 
 /* ================================================================
@@ -524,6 +528,21 @@ static CL_Obj bi_make_pathname(CL_Obj *args, int n)
     int has_name = 0, has_type = 0, has_version = 0;
     int i;
 
+    /* Two passes: coerce :defaults FIRST (it allocates when the designator
+     * is a string — component values captured before it would go stale),
+     * then collect the explicit components from the rooted args[], then
+     * fill the unset ones from the protected defaults pathname. */
+    CL_Obj def_pn = CL_NIL;
+    CL_Obj result;
+
+    for (i = 0; i + 1 < n; i += 2) {
+        if (args[i] == KW_DEFAULTS) {
+            def_pn = coerce_to_pathname(args[i + 1]);
+            break;  /* leftmost :defaults wins (CLHS keyword semantics) */
+        }
+    }
+    CL_GC_PROTECT(def_pn);
+
     for (i = 0; i + 1 < n; i += 2) {
         CL_Obj key = args[i];
         CL_Obj val = args[i + 1];
@@ -533,67 +552,69 @@ static CL_Obj bi_make_pathname(CL_Obj *args, int n)
         else if (key == KW_NAME) { pn_name = val; has_name = 1; }
         else if (key == KW_TYPE) { pn_type = val; has_type = 1; }
         else if (key == KW_VERSION) { version = val; has_version = 1; }
-        else if (key == KW_DEFAULTS) {
-            /* Merge with defaults — only fill in components not explicitly provided.
-               Per CL spec, :defaults accepts any pathname designator. */
-            CL_Obj def_pn = coerce_to_pathname(val);
-            CL_Pathname *def = (CL_Pathname *)CL_OBJ_TO_PTR(def_pn);
-            if (!has_host) host = def->host;
-            if (!has_device) device = def->device;
-            if (!has_directory) directory = def->directory;
-            if (!has_name) pn_name = def->name;
-            if (!has_type) pn_type = def->type;
-            if (!has_version) version = def->version;
-        }
     }
 
-    return cl_make_pathname(host, device, directory, pn_name, pn_type, version);
+    if (!CL_NULL_P(def_pn)) {
+        CL_Pathname *def = (CL_Pathname *)CL_OBJ_TO_PTR(def_pn);
+        if (!has_host) host = def->host;
+        if (!has_device) device = def->device;
+        if (!has_directory) directory = def->directory;
+        if (!has_name) pn_name = def->name;
+        if (!has_type) pn_type = def->type;
+        if (!has_version) version = def->version;
+    }
+
+    result = cl_make_pathname(host, device, directory, pn_name, pn_type, version);
+    CL_GC_UNPROTECT(1);
+    return result;
 }
 
 /* (merge-pathnames pathname &optional defaults default-version) */
 CL_Obj bi_merge_pathnames(CL_Obj *args, int n)
 {
-    CL_Obj pn_obj = coerce_to_pathname(args[0]);
+    CL_Obj pn_obj;
     CL_Obj def_obj;
     CL_Pathname *pn, *def;
     CL_Obj host, device, directory, pn_name, pn_type, version;
+    CL_Obj result;
+
+    /* pn_obj must survive the coercion of the DEFAULTS designator (it
+     * allocates for string designators / the make-pathname fallback), and
+     * both stay rooted across the directory merge below. */
+    pn_obj = coerce_to_pathname(args[0]);
+    CL_GC_PROTECT(pn_obj);
 
     if (n >= 2) {
         def_obj = coerce_to_pathname(args[1]);
     } else {
         /* Use *default-pathname-defaults* */
-        {
-            CL_Obj dpd_val = cl_symbol_value(SYM_STAR_DEFAULT_PATHNAME_DEFAULTS);
-            if (!CL_NULL_P(dpd_val) && CL_PATHNAME_P(dpd_val))
-                def_obj = dpd_val;
-            else
-                def_obj = cl_make_pathname(CL_NIL, CL_NIL, CL_NIL, CL_NIL, CL_NIL, CL_NIL);
-        }
+        CL_Obj dpd_val = cl_symbol_value(SYM_STAR_DEFAULT_PATHNAME_DEFAULTS);
+        if (!CL_NULL_P(dpd_val) && CL_PATHNAME_P(dpd_val))
+            def_obj = dpd_val;
+        else
+            def_obj = cl_make_pathname(CL_NIL, CL_NIL, CL_NIL, CL_NIL, CL_NIL, CL_NIL);
     }
+    CL_GC_PROTECT(def_obj);
 
     pn = (CL_Pathname *)CL_OBJ_TO_PTR(pn_obj);
     def = (CL_Pathname *)CL_OBJ_TO_PTR(def_obj);
 
-    /* Fill in missing components from defaults */
-    host      = CL_NULL_P(pn->host)      ? def->host      : pn->host;
-    device    = CL_NULL_P(pn->device)    ? def->device    : pn->device;
-    pn_name   = CL_NULL_P(pn->name)     ? def->name      : pn->name;
-    pn_type   = CL_NULL_P(pn->type)     ? def->type      : pn->type;
-    version   = CL_NULL_P(pn->version)  ? def->version   : pn->version;
-
-    /* Merge directories per CL spec: if pathname has :RELATIVE directory
-       and defaults have a directory, append relative components to defaults */
+    /* Merge directories FIRST — it is the only allocating step, and the
+     * other components are extracted only afterward so they cannot go
+     * stale (the old code captured them before the merge loop's conses
+     * and passed stale offsets to cl_make_pathname). */
     if (CL_NULL_P(pn->directory)) {
         directory = def->directory;
     } else if (!CL_NULL_P(def->directory) && CL_CONS_P(pn->directory) &&
                cl_car(pn->directory) == KW_RELATIVE) {
         /* Build merged list: copy def->directory, then append cdr(pn->directory) */
         CL_Obj merged = CL_NIL, tail = CL_NIL;
-        CL_Obj src;
-        CL_GC_PROTECT(pn_obj);
-        CL_GC_PROTECT(def_obj);
+        CL_Obj src = CL_NIL;
         CL_GC_PROTECT(merged);
         CL_GC_PROTECT(tail);
+        /* src walks lists whose cells move on every cons — root the
+         * cursor too. */
+        CL_GC_PROTECT(src);
 
         /* Copy all of def->directory */
         for (src = def->directory; CL_CONS_P(src); src = cl_cdr(src)) {
@@ -607,6 +628,7 @@ CL_Obj bi_merge_pathnames(CL_Obj *args, int n)
             }
         }
         /* Append pn's relative components (skip :RELATIVE keyword) */
+        pn = (CL_Pathname *)CL_OBJ_TO_PTR(pn_obj);
         for (src = cl_cdr(pn->directory); CL_CONS_P(src); src = cl_cdr(src)) {
             CL_Obj cell = cl_cons(cl_car(src), CL_NIL);
             if (CL_NULL_P(merged)) {
@@ -618,7 +640,7 @@ CL_Obj bi_merge_pathnames(CL_Obj *args, int n)
             }
         }
         directory = merged;
-        CL_GC_UNPROTECT(4);
+        CL_GC_UNPROTECT(3);
         /* Re-fetch pointers after potential GC */
         pn = (CL_Pathname *)CL_OBJ_TO_PTR(pn_obj);
         def = (CL_Pathname *)CL_OBJ_TO_PTR(def_obj);
@@ -626,10 +648,20 @@ CL_Obj bi_merge_pathnames(CL_Obj *args, int n)
         directory = pn->directory;
     }
 
+    /* Fill in missing components from defaults — no allocation between
+     * here and cl_make_pathname, so plain locals are safe. */
+    host      = CL_NULL_P(pn->host)      ? def->host      : pn->host;
+    device    = CL_NULL_P(pn->device)    ? def->device    : pn->device;
+    pn_name   = CL_NULL_P(pn->name)     ? def->name      : pn->name;
+    pn_type   = CL_NULL_P(pn->type)     ? def->type      : pn->type;
+    version   = CL_NULL_P(pn->version)  ? def->version   : pn->version;
+
     if (n >= 3 && CL_NULL_P(version))
         version = args[2];
 
-    return cl_make_pathname(host, device, directory, pn_name, pn_type, version);
+    result = cl_make_pathname(host, device, directory, pn_name, pn_type, version);
+    CL_GC_UNPROTECT(2);
+    return result;
 }
 
 /* (file-namestring pathname) — just the name.type part */
@@ -845,13 +877,20 @@ static CL_Obj bi_wild_pathname_p(CL_Obj *args, int n)
  * (no wildcard support — just string equality) */
 static CL_Obj bi_pathname_match_p(CL_Obj *args, int n)
 {
+    CL_Obj ns1, ns2;
+    CL_String *s1, *s2;
+    int eq;
     CL_UNUSED(n);
-    CL_Obj ns1 = bi_namestring(&args[0], 1);
-    CL_Obj ns2 = bi_namestring(&args[1], 1);
-    CL_String *s1 = (CL_String *)CL_OBJ_TO_PTR(ns1);
-    CL_String *s2 = (CL_String *)CL_OBJ_TO_PTR(ns2);
+    /* ns1 must survive the second namestring call — it always allocates. */
+    ns1 = bi_namestring(&args[0], 1);
+    CL_GC_PROTECT(ns1);
+    ns2 = bi_namestring(&args[1], 1);
+    CL_GC_UNPROTECT(1);
+    s1 = (CL_String *)CL_OBJ_TO_PTR(ns1);
+    s2 = (CL_String *)CL_OBJ_TO_PTR(ns2);
     if (s1->length != s2->length) return CL_NIL;
-    return memcmp(s1->data, s2->data, s1->length) == 0 ? CL_T : CL_NIL;
+    eq = memcmp(s1->data, s2->data, s1->length) == 0;
+    return eq ? CL_T : CL_NIL;
 }
 
 /* translate-pathname — simplified: just return the source pathname

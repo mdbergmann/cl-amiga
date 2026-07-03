@@ -33,9 +33,13 @@ static CL_Obj SYM_DEBUGGER_HOOK;
 static void defun(const char *name, CL_CFunc func, int min, int max)
 {
     CL_Obj sym = cl_intern_in(name, (uint32_t)strlen(name), cl_package_cl);
-    CL_Obj fn = cl_make_function(func, sym, min, max);
-    CL_Symbol *s = (CL_Symbol *)CL_OBJ_TO_PTR(sym);
+    CL_Obj fn;
+    CL_Symbol *s;
+    CL_GC_PROTECT(sym);
+    fn = cl_make_function(func, sym, min, max);
+    s = (CL_Symbol *)CL_OBJ_TO_PTR(sym);
     s->function = fn;
+    CL_GC_UNPROTECT(1);
     cl_export_symbol(sym, cl_package_cl);
 }
 
@@ -49,9 +53,17 @@ static void defun(const char *name, CL_CFunc func, int min, int max)
 static void display_condition(CL_Obj condition, void (*emit)(const char *),
                               int use_color)
 {
-    CL_Condition *cond = (CL_Condition *)CL_OBJ_TO_PTR(condition);
+    CL_Condition *cond;
     char buf[256];
     CL_Obj report_str = CL_NIL;
+
+    /* Both the PRINT-OBJECT hook apply and every emit can allocate (emit
+     * routes through the debug-io / error-output stream, which may be a
+     * Gray stream dispatching into Lisp — the SLY configuration).  Root the
+     * condition and the report string, and derive cond only after those
+     * calls. */
+    CL_GC_PROTECT(condition);
+    CL_GC_PROTECT(report_str);
 
     /* Try PRINT-OBJECT dispatch via the hook set up by clos.lisp.
      * Protect with CL_CATCH: if the user's PRINT-OBJECT method itself
@@ -82,20 +94,26 @@ static void display_condition(CL_Obj condition, void (*emit)(const char *),
 
     if (use_color) cl_color_set(CL_COLOR_BOLD_RED);
     emit("\nDebugger entered: ");
+    cond = (CL_Condition *)CL_OBJ_TO_PTR(condition);
     cl_prin1_to_string(cond->type_name, buf, sizeof(buf));
     emit(buf);
 
+    /* Prefer the hook result; else the condition's own report string.
+     * Either way keep the string in the rooted report_str and re-derive
+     * the CL_String* after each allocating emit. */
+    if (CL_NULL_P(report_str)) {
+        cond = (CL_Condition *)CL_OBJ_TO_PTR(condition);
+        report_str = cond->report_string;
+    }
     if (!CL_NULL_P(report_str)) {
-        CL_String *s = (CL_String *)CL_OBJ_TO_PTR(report_str);
+        CL_String *s;
         emit(": ");
-        emit(s->data);
-    } else if (!CL_NULL_P(cond->report_string)) {
-        CL_String *s = (CL_String *)CL_OBJ_TO_PTR(cond->report_string);
-        emit(": ");
+        s = (CL_String *)CL_OBJ_TO_PTR(report_str);
         emit(s->data);
     }
     if (use_color) cl_color_reset();
     emit("\n");
+    CL_GC_UNPROTECT(2);
 }
 
 /* Display backtrace */
@@ -248,6 +266,15 @@ void cl_invoke_debugger(CL_Obj condition)
             CL_Obj hook_args[2];
             int err;
 
+            /* Root condition and saved_hook across the hook apply: if the
+             * hook returns normally, saved_hook is written back into
+             * *DEBUGGER-HOOK*'s value cell (a stale offset there corrupts
+             * every later debugger entry) and condition is displayed below.
+             * A control-transferring hook longjmps past the unprotect —
+             * the unwind restores the root count. */
+            CL_GC_PROTECT(condition);
+            CL_GC_PROTECT(saved_hook);
+
             /* Set *debugger-hook* to NIL before calling hook */
             cl_set_symbol_value(SYM_DEBUGGER_HOOK, CL_NIL);
 
@@ -267,6 +294,7 @@ void cl_invoke_debugger(CL_Obj condition)
 
             /* Restore hook value */
             cl_set_symbol_value(SYM_DEBUGGER_HOOK, saved_hook);
+            CL_GC_UNPROTECT(2);
         }
     }
 

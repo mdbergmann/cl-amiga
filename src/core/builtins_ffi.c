@@ -16,6 +16,7 @@
 #include "string_utils.h"
 #include "vm.h"
 #include "../platform/platform.h"
+#include "../platform/platform_thread.h"
 #include <string.h>
 #include <stdio.h>
 
@@ -87,10 +88,14 @@ static CL_Obj ffi_i64_to_obj(int64_t v)
 static void ffi_defun(const char *name, CL_CFunc func, int min, int max)
 {
     CL_Obj sym = cl_intern_in(name, (uint32_t)strlen(name), cl_package_ffi);
-    CL_Obj fn = cl_make_function(func, sym, min, max);
-    CL_Symbol *s = (CL_Symbol *)CL_OBJ_TO_PTR(sym);
+    CL_Obj fn;
+    CL_Symbol *s;
+    CL_GC_PROTECT(sym);
+    fn = cl_make_function(func, sym, min, max);
+    s = (CL_Symbol *)CL_OBJ_TO_PTR(sym);
     s->function = fn;
     cl_export_symbol(sym, cl_package_ffi);
+    CL_GC_UNPROTECT(1);
 }
 
 /* ================================================================
@@ -734,6 +739,10 @@ typedef struct {
 } FFICallback;
 
 static FFICallback ffi_callbacks[CL_FFI_MAX_CALLBACKS];
+/* Serializes slot claim/release: two MP threads scanning for a free slot
+ * unlocked could claim the SAME slot, clobbering each other's lisp_fn /
+ * plat_closure (foreign code then invokes the wrong Lisp function). */
+static void *ffi_callback_lock = NULL;
 
 /* Invoked (via the platform trampoline) when foreign code calls a callback.
  * Marshals C args -> CL, applies the Lisp function, marshals the result back. */
@@ -778,12 +787,19 @@ static CL_Obj bi_ffi_make_callback(CL_Obj *args, int nargs)
         atypes[n++] = ffi_kw_to_type(cl_car(tlist));
     }
 
+    /* Claim the slot under the lock (in_use=1 immediately) so a peer
+     * thread's scan cannot pick the same slot; release it on failure. */
+    if (ffi_callback_lock) platform_mutex_lock(ffi_callback_lock);
     for (slot = 0; slot < CL_FFI_MAX_CALLBACKS; slot++)
         if (!ffi_callbacks[slot].in_use) break;
-    if (slot == CL_FFI_MAX_CALLBACKS)
+    if (slot == CL_FFI_MAX_CALLBACKS) {
+        if (ffi_callback_lock) platform_mutex_unlock(ffi_callback_lock);
         cl_error(CL_ERR_GENERAL, "FFI:MAKE-CALLBACK: too many live callbacks (max %d)", CL_FFI_MAX_CALLBACKS);
-
+    }
     cb = &ffi_callbacks[slot];
+    cb->in_use = 1;
+    if (ffi_callback_lock) platform_mutex_unlock(ffi_callback_lock);
+
     cb->ret_type = ret_type;
     cb->nargs = n;
     for (i = 0; i < n; i++) cb->arg_types[i] = atypes[i];
@@ -792,11 +808,11 @@ static CL_Obj bi_ffi_make_callback(CL_Obj *args, int nargs)
     code = platform_ffi_make_closure(ret_type, n, atypes, ffi_callback_handler, cb, &plat);
     if (!code) {
         cb->lisp_fn = CL_NIL;
+        cb->in_use = 0;
         cl_error(CL_ERR_GENERAL, "FFI:MAKE-CALLBACK: callbacks are not supported on this platform");
     }
     cb->plat_closure = plat;
     cb->code_handle = platform_ffi_register(code);
-    cb->in_use = 1;
     return cl_make_foreign_pointer(cb->code_handle, 0, 0);
 }
 
@@ -817,18 +833,21 @@ static CL_Obj bi_ffi_free_callback(CL_Obj *args, int nargs)
     fp = (CL_ForeignPtr *)CL_OBJ_TO_PTR(args[0]);
     h = fp->address;
 
+    if (ffi_callback_lock) platform_mutex_lock(ffi_callback_lock);
     for (slot = 0; slot < CL_FFI_MAX_CALLBACKS; slot++) {
         FFICallback *cb = &ffi_callbacks[slot];
         if (cb->in_use && cb->code_handle == h) {
             platform_ffi_free_closure(cb->plat_closure);
             platform_ffi_release(cb->code_handle);
-            cb->in_use = 0;
             cb->lisp_fn = CL_NIL;
             cb->plat_closure = NULL;
             cb->code_handle = 0;
+            cb->in_use = 0;
+            if (ffi_callback_lock) platform_mutex_unlock(ffi_callback_lock);
             return CL_NIL;
         }
     }
+    if (ffi_callback_lock) platform_mutex_unlock(ffi_callback_lock);
     cl_error(CL_ERR_GENERAL, "FFI:FREE-CALLBACK: not a live callback pointer");
     return CL_NIL;
 }
@@ -847,6 +866,7 @@ void cl_builtins_ffi_init(void)
             ffi_callbacks[ci].lisp_fn = CL_NIL;
             cl_gc_register_root(&ffi_callbacks[ci].lisp_fn);
         }
+        platform_mutex_init(&ffi_callback_lock);
     }
 
     /* Register all keyword cache slots as GC roots BEFORE any cl_intern_keyword

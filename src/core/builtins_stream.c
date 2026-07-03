@@ -160,14 +160,16 @@ static CL_Obj bi_read_char(CL_Obj *args, int n)
 {
     CL_Obj stream = resolve_input_stream(args, n, 0);
     int eof_error_p = (n < 2 || !CL_NULL_P(args[1]));
-    CL_Obj eof_value = (n >= 3) ? args[2] : CL_NIL;
     int ch;
 
     ch = cl_stream_read_char(stream);
     if (ch == -1) {
         if (eof_error_p)
             cl_error(CL_ERR_EOF, "READ-CHAR: end of file");
-        return eof_value;
+        /* Re-read the eof-value from the rooted args[] — the blocking read
+         * can park in a safe region while a peer compacts, staling a copy
+         * taken before it. */
+        return (n >= 3) ? args[2] : CL_NIL;
     }
     return CL_MAKE_CHAR(ch);
 }
@@ -188,7 +190,6 @@ static CL_Obj bi_read_byte(CL_Obj *args, int n)
 {
     CL_Obj stream = args[0];
     int eof_error_p = (n < 2 || !CL_NULL_P(args[1]));
-    CL_Obj eof_value = (n >= 3) ? args[2] : CL_NIL;
     int byte;
 
     if (!CL_STREAM_P(stream))
@@ -204,7 +205,9 @@ static CL_Obj bi_read_byte(CL_Obj *args, int n)
     if (byte == -1) {
         if (eof_error_p)
             cl_error(CL_ERR_EOF, "READ-BYTE: end of file");
-        return eof_value;
+        /* Re-read from rooted args[] — the blocking read can park in a
+         * safe region while a peer compacts (see bi_read_char). */
+        return (n >= 3) ? args[2] : CL_NIL;
     }
     return CL_MAKE_FIXNUM(byte);
 }
@@ -237,6 +240,12 @@ static CL_Obj bi_peek_char(CL_Obj *args, int n)
     CL_Obj eof_value = (n >= 4) ? args[3] : CL_NIL;
     int ch;
 
+    /* MT: a blocking read parks in a GC safe region — a peer compaction
+     * moves the stream and eof_value; both are re-used across/after the
+     * loops below, so root them. */
+    CL_GC_PROTECT(stream);
+    CL_GC_PROTECT(eof_value);
+
     if (CL_NULL_P(peek_type)) {
         /* NIL: just peek at next char */
         ch = cl_stream_peek_char(stream);
@@ -266,6 +275,7 @@ static CL_Obj bi_peek_char(CL_Obj *args, int n)
         return CL_NIL;
     }
 
+    CL_GC_UNPROTECT(2);
     if (ch == -1) {
         if (eof_error_p)
             cl_error(CL_ERR_EOF, "PEEK-CHAR: end of file");
@@ -304,6 +314,11 @@ static CL_Obj bi_read_line(CL_Obj *args, int n)
     int got_any = 0;
     int missing_newline = 1;
     CL_Obj result;
+
+    /* MT: each blocking read can park in a safe region while a peer
+     * compacts — stream and eof_value are re-used afterward. */
+    CL_GC_PROTECT(stream);
+    CL_GC_PROTECT(eof_value);
 
     for (;;) {
         ch = cl_stream_read_char(stream);
@@ -347,6 +362,8 @@ static CL_Obj bi_read_line(CL_Obj *args, int n)
         buf[len++] = (char)ch;
 #endif
     }
+
+    CL_GC_UNPROTECT(2);
 
     if (!got_any && ch == -1) {
         if (buf != stack_buf) platform_free(buf);
@@ -399,20 +416,23 @@ static CL_Obj bi_write_string(CL_Obj *args, int n)
     if (start > slen) start = slen;
     if (end > slen) end = slen;
     if (start < end) {
-        /* Fast path for base strings */
+        /* Fast path for base strings: cl_stream_write_lisp_string chunks
+         * through a C buffer, re-deriving the source per chunk — passing
+         * the raw arena pointer let a blocking file/socket write resume
+         * copying from a dangling pointer after a peer MT compaction
+         * (garbage bytes on the wire).  It also sidesteps the old m68k
+         * `base_data + start` miscompilation workaround: the offset math
+         * happens on a freshly derived pointer inside the helper. */
         if (cl_string_is_base(args[0])) {
-            /* m68k workaround: at -O2, m68k-amigaos-gcc miscompiles
-             * `cl_string_base_data(arg) + start` so the first byte of
-             * every base-string write is dropped.  Routing the pointer
-             * through a `volatile` local forces it to materialize through
-             * memory and prevents the bad fold.  Affects buffered string
-             * and file output alike. */
-            const char *volatile data_ptr = cl_string_base_data(args[0]);
-            cl_stream_write_string(stream, data_ptr + start, end - start);
+            cl_stream_write_lisp_string(stream, args[0], start, end);
         } else {
             uint32_t j;
+            /* MT: each write can park in a safe region — keep the stream
+             * handle forwarded across the loop (args[0] is rooted). */
+            CL_GC_PROTECT(stream);
             for (j = start; j < end; j++)
                 cl_stream_write_char(stream, cl_string_char_at(args[0], j));
+            CL_GC_UNPROTECT(1);
         }
     }
 
@@ -1088,17 +1108,23 @@ static CL_Obj bi_delete_file(CL_Obj *args, int n)
 /* (rename-file filespec new-name) => new-name, old-truename, new-truename (3 values) */
 static CL_Obj bi_rename_file(CL_Obj *args, int n)
 {
+    char old_buf[1024];
     const char *old_path, *new_path;
     CL_UNUSED(n);
     old_path = coerce_to_filename(&args[0]);
     if (!old_path)
         cl_error(CL_ERR_TYPE, "RENAME-FILE: first argument must be a pathname designator");
+    /* old_path points into the arena; the second coercion below allocates
+     * (pathname/wide-string/~ paths) and compaction would leave it
+     * dangling — silently renaming the WRONG file.  Copy it out first. */
+    strncpy(old_buf, old_path, sizeof(old_buf) - 1);
+    old_buf[sizeof(old_buf) - 1] = '\0';
     new_path = coerce_to_filename(&args[1]);
     if (!new_path)
         cl_error(CL_ERR_TYPE, "RENAME-FILE: second argument must be a pathname designator");
-    if (platform_file_rename(old_path, new_path) != 0)
+    if (platform_file_rename(old_buf, new_path) != 0)
         cl_error(CL_ERR_GENERAL, "RENAME-FILE: cannot rename '%s' to '%s'",
-                 old_path, new_path);
+                 old_buf, new_path);
     /* Return 3 values: new-name, old-truename, new-truename */
     cl_mv_values[0] = args[1];
     cl_mv_values[1] = args[0];
@@ -1688,7 +1714,8 @@ static CL_Obj bi_read_char_no_hang(CL_Obj *args, int n)
         if (ch == -1) {
             if (eof_error_p)
                 cl_error(CL_ERR_EOF, "READ-CHAR-NO-HANG: end of file");
-            return eof_value;
+            /* Re-read from rooted args[] (see bi_read_char). */
+            return (n >= 3) ? args[2] : CL_NIL;
         }
         return CL_MAKE_CHAR(ch);
     }

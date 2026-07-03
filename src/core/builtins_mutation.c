@@ -8,13 +8,18 @@
 #include "../platform/platform_thread.h"
 #include <string.h>
 
-/* Helper to register a builtin */
+/* Helper to register a builtin.  sym is protected across the function
+ * alloc — cl_make_function can compact and leave sym/s stale. */
 static void defun(const char *name, CL_CFunc func, int min, int max)
 {
     CL_Obj sym = cl_intern_in(name, (uint32_t)strlen(name), cl_package_cl);
-    CL_Obj fn = cl_make_function(func, sym, min, max);
-    CL_Symbol *s = (CL_Symbol *)CL_OBJ_TO_PTR(sym);
+    CL_Obj fn;
+    CL_Symbol *s;
+    CL_GC_PROTECT(sym);
+    fn = cl_make_function(func, sym, min, max);
+    s = (CL_Symbol *)CL_OBJ_TO_PTR(sym);
     s->function = fn;
+    CL_GC_UNPROTECT(1);
 }
 
 /* --- Mutation --- */
@@ -90,7 +95,9 @@ static CL_Obj bi_fdefinition(CL_Obj *args, int n)
             CL_Obj setf_sym = cl_setf_function_symbol(cl_car(rest));
             CL_Symbol *s = (CL_Symbol *)CL_OBJ_TO_PTR(setf_sym);
             if (s->function == CL_UNBOUND)
-                cl_signal_undefined_function(name);
+                /* re-read: the %SETF-* intern above may have compacted,
+                 * and the signaled condition would carry a stale name */
+                cl_signal_undefined_function(args[0]);
             return s->function;
         }
         cl_signal_type_error(name, "FUNCTION-NAME", "FDEFINITION");
