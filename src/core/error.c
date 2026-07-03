@@ -19,10 +19,11 @@
 
 /* Restore the current thread's jit_depth to new_depth, keeping the
  * global cl_jit_active_threads counter consistent.  Used on every
- * cl_error unwind path so longjmp out of JIT'd code drops both the
+ * cl_error unwind path — and on every NLX-frame longjmp landing in
+ * vm.c / jit runtime — so a longjmp out of JIT'd code drops both the
  * per-thread depth and the global "any-thread-active" gate.
  * See specs/native-backend.md §"GC interaction" option A. */
-static void cl_jit_restore_depth(int new_depth)
+void cl_jit_restore_depth(int new_depth)
 {
     extern volatile int cl_jit_active_threads;
     int cur = CT->jit_depth;
@@ -59,32 +60,16 @@ void cl_error_init(void)
     cl_error_msg[0] = '\0';
 }
 
-/* Unwind after the debugger returned — shared between cl_error and
- * cl_error_from_condition. Assumes cl_error_code/cl_error_msg are set. */
-CL_NORETURN static void cl_error_unwind(int code)
+/* Longjmp to the current top C error frame, restoring the per-frame
+ * snapshots exactly like cl_error's own unwind.  Shared by
+ * cl_error_unwind and the deferred-error replay paths — vm.c's
+ * OP_UWRETHROW (pending_throw == 2) and the JIT runtime's
+ * uwprot-rethrow — which previously longjmp'd to the frame with NONE
+ * of these restores, leaving gc_root_count pointing at unwound C stack
+ * slots, jit_depth stale, stranded FASL readers and compilers, and
+ * orphaned handler/restart bindings. */
+CL_NORETURN void cl_error_frame_longjmp(int code)
 {
-    /* Check for interposing unwind-protect frames in NLX stack.
-     * Skip stale frames whose VM frame was reused by a tail call —
-     * longjmping to a stale UWPROT restores wrong code/constants. */
-    {
-        int i;
-        for (i = cl_nlx_top - 1; i >= 0; i--) {
-            if (cl_nlx_stack[i].type == CL_NLX_UWPROT) {
-                CL_Frame *tf = &cl_vm.frames[cl_nlx_stack[i].vm_fp - 1];
-                if (tf->code != cl_nlx_stack[i].code)
-                    continue;
-                cl_pending_throw = 2;
-                cl_pending_error_code = code;
-                strncpy(cl_pending_error_msg, cl_error_msg,
-                        sizeof(cl_pending_error_msg) - 1);
-                cl_pending_error_msg[sizeof(cl_pending_error_msg) - 1] = '\0';
-                cl_nlx_top = i;
-                CL_LONGJMP(cl_nlx_stack[i].buf, 1);
-            }
-        }
-    }
-
-    /* No UWPROT found — propagating to C error handler. */
     if (cl_error_frame_top > 1) {
         /* Nested error frame — jump to it without destroying global state.
          * The caller is responsible for restoring VM/binding state.
@@ -146,6 +131,35 @@ CL_NORETURN static void cl_error_unwind(int code)
     cl_color_reset();
     platform_write_string("\n");
     exit(1);
+}
+
+/* Unwind after the debugger returned — shared between cl_error and
+ * cl_error_from_condition. Assumes cl_error_code/cl_error_msg are set. */
+CL_NORETURN static void cl_error_unwind(int code)
+{
+    /* Check for interposing unwind-protect frames in NLX stack.
+     * Skip stale frames whose VM frame was reused by a tail call —
+     * longjmping to a stale UWPROT restores wrong code/constants. */
+    {
+        int i;
+        for (i = cl_nlx_top - 1; i >= 0; i--) {
+            if (cl_nlx_stack[i].type == CL_NLX_UWPROT) {
+                CL_Frame *tf = &cl_vm.frames[cl_nlx_stack[i].vm_fp - 1];
+                if (tf->code != cl_nlx_stack[i].code)
+                    continue;
+                cl_pending_throw = 2;
+                cl_pending_error_code = code;
+                strncpy(cl_pending_error_msg, cl_error_msg,
+                        sizeof(cl_pending_error_msg) - 1);
+                cl_pending_error_msg[sizeof(cl_pending_error_msg) - 1] = '\0';
+                cl_nlx_top = i;
+                CL_LONGJMP(cl_nlx_stack[i].buf, 1);
+            }
+        }
+    }
+
+    /* No UWPROT found — propagate to the top C error frame. */
+    cl_error_frame_longjmp(code);
 }
 
 void cl_error(int code, const char *fmt, ...)

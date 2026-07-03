@@ -414,6 +414,13 @@ void cl_thread_handle_interrupt(CL_Thread *t)
     if (!t->interrupt_pending)
         return;
 
+    /* Pair with the publisher's barrier (bi_interrupt_thread /
+     * bi_destroy_thread): having observed interrupt_pending == 1, order
+     * the payload reads (destroy_requested / interrupt_func) after it —
+     * on ARM64 the loads can otherwise be satisfied in the reverse
+     * order and consume the flag with a stale NIL payload. */
+    platform_memory_barrier();
+
     /* destroy-thread: abort the thread by raising an error */
     if (t->destroy_requested) {
         t->destroy_requested = 0;

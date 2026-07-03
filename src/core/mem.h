@@ -121,8 +121,12 @@ void cl_gc_reset_roots(void);
 
 /* Global root registration (static/global CL_Obj variables).
  * Registered roots are marked during GC and updated during compaction.
- * Use for cached interned symbols (keywords, type symbols, etc.). */
-#define CL_MAX_GLOBAL_ROOTS 512
+ * Use for cached interned symbols (keywords, type symbols, etc.).
+ * Registration is idempotent per address; overflowing the table is a
+ * loud boot-time fatal (a dropped root corrupts on the next compaction).
+ * 1024 covers the ~220 symbol.c handles + ~230 registrations across the
+ * builtins with headroom. */
+#define CL_MAX_GLOBAL_ROOTS 1024
 void cl_gc_register_root(CL_Obj *root_ptr);
 
 /* Audit for double-registered roots (global vs. global, global vs. any

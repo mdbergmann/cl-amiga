@@ -164,6 +164,19 @@ int cl_error_frame_push(void);
 /* Signal an error — jumps to nearest CL_CATCH */
 CL_NORETURN void cl_error(int code, const char *fmt, ...);
 
+/* Longjmp to the current top C error frame with cl_error's full
+ * per-frame snapshot restores (gc roots, jit depth, debugger state,
+ * FASL readers, compiler chain, handler/restart tops).  For the
+ * deferred-error replay paths (vm.c OP_UWRETHROW, JIT uwprot-rethrow)
+ * after all interposing unwind-protect cleanups have run.  The caller
+ * must have set cl_error_code / cl_error_msg. */
+CL_NORETURN void cl_error_frame_longjmp(int code);
+
+/* Restore CT->jit_depth (and the cl_jit_active_threads gate) to a saved
+ * snapshot on a longjmp landing — used by the CL_ErrorFrame and
+ * CL_NLXFrame restore paths. */
+void cl_jit_restore_depth(int new_depth);
+
 /* Unwind with an existing condition object. Caller must have already
  * signaled via cl_signal_condition. Preserves the condition so the
  * debugger can dispatch PRINT-OBJECT for a meaningful report. */
