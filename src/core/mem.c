@@ -195,6 +195,21 @@ static uint32_t        *jit_pinned       = NULL;
 static int              jit_pinned_count = 0;
 static int              jit_pinned_cap   = 0;
 
+/* Free-list snapshot for the conservative JIT-stack scan.  A free block's
+ * header word is its raw size (<= CL_HDR_SIZE_MASK), which reads as an
+ * UNMARKED TYPE_CONS — so a stale spill word holding a freed offset would
+ * pass phase-2 header validation, and gc_mark_obj would mark the free
+ * block live while gc_mark_children chases its next_offset link and
+ * poisoned payload as car/cdr.  The scan must therefore skip offsets
+ * that are on the free list.  Collected (sorted ascending) at most once
+ * per GC cycle, lazily on the first scan; the free list cannot change
+ * during STW marking.  On snapshot OOM, membership falls back to a
+ * linear free-list walk per matched candidate. */
+static uint32_t        *jit_scan_free_snap  = NULL;
+static int              jit_scan_free_count = 0;
+static int              jit_scan_free_cap   = 0;
+static int              jit_scan_free_valid = 0;
+
 /* Set during a compaction's reference-update pass when at least one
  * CL_Obj immediate baked into JIT native code was rewritten in place.
  * cl_gc_compact flushes the CPU caches once at the end so 68040/060
@@ -217,6 +232,13 @@ void cl_mem_shutdown(void)
         jit_pinned = NULL;
         jit_pinned_cap = 0;
         jit_pinned_count = 0;
+    }
+    if (jit_scan_free_snap) {
+        platform_free(jit_scan_free_snap);
+        jit_scan_free_snap = NULL;
+        jit_scan_free_cap = 0;
+        jit_scan_free_count = 0;
+        jit_scan_free_valid = 0;
     }
     if (alloc_mutex) {
         platform_mutex_destroy(alloc_mutex);
@@ -1294,6 +1316,57 @@ static int cand_bsearch(const uint32_t *arr, int n, uint32_t key)
     return 0;
 }
 
+/* Snapshot the free list into jit_scan_free_snap, sorted ascending.
+ * Leaves jit_scan_free_valid = 0 on OOM (callers fall back to a linear
+ * free-list walk).  Called at most once per GC cycle — gc_mark resets
+ * the valid flag alongside jit_pinned_count. */
+static void jit_scan_collect_free_snapshot(void)
+{
+    uint32_t cur;
+    int n = 0;
+
+    for (cur = cl_heap.free_list; cur;
+         cur = ((CL_FreeBlock *)(cl_heap.arena + cur))->next_offset)
+        n++;
+
+    if (n > jit_scan_free_cap) {
+        int new_cap = jit_scan_free_cap ? jit_scan_free_cap : 256;
+        uint32_t *buf;
+        while (new_cap < n) new_cap *= 2;
+        buf = (uint32_t *)platform_alloc((unsigned long)new_cap * sizeof(uint32_t));
+        if (!buf) return;
+        if (jit_scan_free_snap) platform_free(jit_scan_free_snap);
+        jit_scan_free_snap = buf;
+        jit_scan_free_cap = new_cap;
+    }
+
+    n = 0;
+    for (cur = cl_heap.free_list; cur;
+         cur = ((CL_FreeBlock *)(cl_heap.arena + cur))->next_offset)
+        jit_scan_free_snap[n++] = cur;
+
+    if (n > 1)
+        qsort(jit_scan_free_snap, (size_t)n, sizeof(uint32_t), cand_cmp);
+    jit_scan_free_count = n;
+    jit_scan_free_valid = 1;
+}
+
+/* Is `offset` the start of a free-list block?  Uses the per-cycle
+ * snapshot when available, else walks the free list directly. */
+static int gc_offset_is_free_block(uint32_t offset)
+{
+    if (jit_scan_free_valid)
+        return cand_bsearch(jit_scan_free_snap, jit_scan_free_count, offset);
+    {
+        uint32_t cur;
+        for (cur = cl_heap.free_list; cur;
+             cur = ((CL_FreeBlock *)(cl_heap.arena + cur))->next_offset) {
+            if (cur == offset) return 1;
+        }
+    }
+    return 0;
+}
+
 static void gc_scan_jit_native_stack(CL_Thread *t)
 {
     uint32_t *candidates;
@@ -1358,6 +1431,12 @@ static void gc_scan_jit_native_stack(CL_Thread *t)
     /* Sort candidates so the arena walk can binary-search. */
     qsort(candidates, n_cand, sizeof(candidates[0]), cand_cmp);
 
+    /* Snapshot the free list once per GC cycle so the walk below can
+     * reject candidates that point at free blocks (their header word is
+     * a raw size that masquerades as an unmarked TYPE_CONS). */
+    if (!jit_scan_free_valid)
+        jit_scan_collect_free_snapshot();
+
     /* Phase 2: walk the arena bump-front; for each real header
      * offset that appears in `candidates`, mark it.  Walking from
      * CL_ALIGN (offset 0 is reserved for NIL) by header size,
@@ -1369,7 +1448,8 @@ static void gc_scan_jit_native_stack(CL_Thread *t)
         uint32_t offset;
         if (size == 0) break;       /* defensive: malformed header */
         offset = (uint32_t)(p - cl_heap.arena);
-        if (cand_bsearch(candidates, n_cand, offset)) {
+        if (cand_bsearch(candidates, n_cand, offset) &&
+            !gc_offset_is_free_block(offset)) {
             gc_mark_obj((CL_Obj)offset);
             /* Pin it: the compactor must not move an object reachable only
              * through a conservative (offset-valued) C-stack reference, or
@@ -1660,6 +1740,9 @@ static void gc_mark(void)
      * (gc_scan_jit_native_stack, reached via gc_mark_thread_roots) rebuilds
      * it this cycle.  Stays empty unless a JIT frame is live. */
     jit_pinned_count = 0;
+    /* Invalidate the free-list snapshot — the free list has changed since
+     * the last cycle; the first JIT-stack scan this cycle re-collects it. */
+    jit_scan_free_valid = 0;
 
     /* Mark all roots directly (not via gc_mark_push).
      * gc_mark_obj immediately sets the mark bit then pushes children.

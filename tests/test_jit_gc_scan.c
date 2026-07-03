@@ -341,6 +341,82 @@ TEST(unpinned_obj_moves)
     teardown();
 }
 
+/* Is `offset` the start of a block on the heap's free list? */
+static int test_free_list_contains(uint32_t offset)
+{
+    uint32_t cur = cl_heap.free_list;
+    while (cur) {
+        CL_FreeBlock *fb = (CL_FreeBlock *)(cl_arena_base + cur);
+        if (cur == offset) return 1;
+        cur = fb->next_offset;
+    }
+    return 0;
+}
+
+/* --- A stale spill word holding a FREED offset must not resurrect the
+ * free block.  A free block's header word is its raw size, which reads
+ * as an unmarked TYPE_CONS: without the free-list skip in phase 2 the
+ * scan marks it live, gc_mark_children chases its next_offset link and
+ * poisoned payload as car/cdr, and the sweep silently drops the block
+ * from the free list (treating garbage as an allocated cons).  The
+ * regression assertion: after a GC with the stale spill in the scan
+ * window, the freed block is still ON the free list. --- */
+
+TEST(scan_skips_free_list_blocks)
+{
+    volatile CL_Obj buf[4];
+    CL_Obj l1, l2, victim;
+    uint32_t free_off;
+
+    setup();
+    zero_scratch_stack();
+
+    /* Live neighbours on both sides so the victim's block can't
+     * coalesce away — its exact offset must reappear in the free list. */
+    l1 = cl_cons(CL_MAKE_FIXNUM(1), CL_NIL);
+    victim = cl_cons(CL_MAKE_FIXNUM(2), CL_NIL);
+    l2 = cl_cons(CL_MAKE_FIXNUM(3), CL_NIL);
+    CL_GC_PROTECT(l1);
+    CL_GC_PROTECT(l2);
+
+    free_off = (uint32_t)victim;
+    victim = CL_NIL;
+
+    /* Sweep the victim into the free list (no JIT scan yet). */
+    cl_gc();
+    ASSERT(test_free_list_contains(free_off));
+
+    /* Plant the freed offset as a stale JIT spill in the scan window. */
+    buf[0] = 0;
+    buf[1] = (CL_Obj)free_off;
+    buf[2] = 0;
+    buf[3] = 0;
+    CT->jit_stack_top = (void *)((char *)&buf[3] + sizeof(buf[0]) + 16);
+    CT->jit_depth = 1;
+    cl_jit_active_threads = 1;
+
+    cl_gc();
+
+    /* The free block must have been skipped by the conservative scan:
+     * still unmarked, still on the free list.  (Pre-fix: marked live,
+     * swept as an allocated cons, absent from the list.) */
+    ASSERT(test_free_list_contains(free_off));
+    ASSERT(!(((CL_Header *)(cl_arena_base + free_off))->header & CL_HDR_MARK_BIT));
+
+    /* Live neighbours untouched. */
+    ASSERT(CL_CONS_P(l1));
+    ASSERT(CL_CONS_P(l2));
+    ASSERT_EQ_INT(CL_FIXNUM_VAL(cl_car(l1)), 1);
+    ASSERT_EQ_INT(CL_FIXNUM_VAL(cl_car(l2)), 3);
+
+    CL_GC_UNPROTECT(2);
+    (void)buf;
+    cl_jit_active_threads = 0;
+    CT->jit_depth = 0;
+    CT->jit_stack_top = NULL;
+    teardown();
+}
+
 /* --- cl_error_unwind resets jit_depth and the global counter when
  * unwinding past a simulated JIT frame. --- */
 
@@ -377,6 +453,7 @@ int main(void)
     RUN(compaction_runs_even_when_jit_active);
     RUN(pinned_obj_does_not_move);
     RUN(unpinned_obj_moves);
+    RUN(scan_skips_free_list_blocks);
     RUN(unwind_resets_jit_active_count);
     REPORT();
 }
