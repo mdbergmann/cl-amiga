@@ -3081,6 +3081,141 @@ check_contains "C11 quasiquote vector template + splice under stress"  "T4-C11:(
 check_absent   "no unbound/undefined/CDR-type-error in tier-4 compiler cases" \
   "Unbound variable\|Undefined\|not of type\|corrupted\|Guru" "$out"
 
+# --- Tier-4 audit batch 2: format stack smash + printer element loops -------
+# (audit 2026-07 tier 4, batch 2)
+#   FS1 fmt_padded_integer comma loop had no bounds check: 101 digits with
+#       comma-interval 1 wrote 201 bytes into char with_commas[192] (SMASH).
+#   FS2 fmt_recursive ~? string-control snapshot sub_args[64] was not rooted
+#       across fmt_run (sibling of the fixed ~{~} bug).
+#   P1  printer TYPE_STRUCT: cl_struct_slot_names ALLOCATES but ran before the
+#       protect; type name + n_slots then read through the stale struct ptr.
+#   P2/P3 vector/#nA element loops held a raw cl_vector_data pointer across
+#       recursive print_obj (struct elements always allocate slot names).
+#   P4  try_pprint_dispatch: cl_typep can run a deftype expander (allocates);
+#       cursor/best_fn/caller obj went stale.  Also: in buffer mode the
+#       dispatch fn was handed a NIL stream and its output silently dropped.
+#   P5  TYPE_RESTART report-function path never re-derived r/obj across three
+#       allocating calls; wide report text degraded to #<RESTART>.
+#   P6  saved printer_stream / *print-escape* restores were unprotected C
+#       locals across the print (stale offsets written back on restore).
+#   FS4 render_integer stale-restored *print-base*/*print-radix*.
+#   P7  TYPE_COMPLEX/TYPE_RATIO read components through a raw ptr mid-print.
+#   P10 longjmp out of a print hook / pprint-dispatch fn leaked pr_depth,
+#       pr_inprog_top, pprint_dispatch_active, circle_active (dispatch
+#       permanently disabled, "#<...>" markers).  Now restored via
+#       CL_ErrorFrame/CL_NLXFrame printer_mark.
+cat > "$WORK/tier4-printer.lisp" <<'EOF'
+(in-package :cl-user)
+;; P1/P2: vector of structs — every element print allocates (slot names).
+(defstruct t4b-pt x y)
+(format t "T4B-P2:~a~%"
+        (format nil "~S" (vector (make-t4b-pt :x 1 :y 2) (make-t4b-pt :x 3 :y 4))))
+;; P3: multi-dimensional array of structs (print_array_slice re-derive).
+(format t "T4B-P3:~a~%"
+        (format nil "~S" (make-array '(2 2)
+                          :initial-contents (list (list (make-t4b-pt :x 1 :y 2) 5)
+                                                  (list 6 (make-t4b-pt :x 3 :y 4))))))
+;; P1: struct nested inside a struct (slot_names window + slot loop).
+(defstruct t4b-box inner tag)
+(format t "T4B-P1:~a~%"
+        (format nil "~S" (make-t4b-box :inner (make-t4b-pt :x 7 :y 8) :tag :k)))
+;; P4: pprint dispatch where cl_typep runs a deftype expander per entry.
+(deftype t4b-small () '(integer 0 9))
+(set-pprint-dispatch 't4b-small (lambda (s obj) (format s "<small ~D>" obj)))
+(format t "T4B-P4:~a~%" (write-to-string 5 :pretty t))
+;; P5: restart whose report FUNCTION conses while printing (princ of restart).
+(format t "T4B-P5:~a~%"
+        (restart-case
+            (let ((r (find-restart 't4b-resume)))
+              (format nil "~A" r))
+          (t4b-resume () :report
+                       (lambda (s) (format s "resume-~{~A~}" (list 1 2 3)))
+                       nil)))
+;; P5 conformance: report emitting non-ASCII (wide string) must still splice.
+(format t "T4B-P5W:~a~%"
+        (restart-case
+            (let ((r (find-restart 't4b-wide)))
+              (format nil "~A" r))
+          (t4b-wide () :report
+                     (lambda (s) (format s "<r~aport>" "ë"))
+                     nil)))
+;; P6: print-object method that re-enters the printer via (format nil ...).
+(defstruct t4b-inner v)
+(defmethod print-object ((o t4b-inner) s)
+  (format s "[inner ~A]" (format nil "~A" (t4b-inner-v o))))
+(format t "T4B-P6:~a~%" (format nil "~A" (make-t4b-inner :v (list 1 2))))
+;; P7: ratio with bignum numerator + complex.
+(format t "T4B-P7:~a~%" (format nil "~S ~S" (/ (expt 10 30) 3) (complex 1 -2)))
+;; FS2: ~? string control with heap args and a trailing parent directive.
+(format t "T4B-FS2:~a~%" (format nil "~? ~A" "<~A+~A>" (list (list 1) "x") (list 9)))
+;; FS1: comma grouping of a 101-digit bignum (old stack smash).
+(format t "T4B-FS1:~a~%" (length (format nil "~,,,1:D" (expt 10 100))))
+;; FS4: *print-base*/*print-radix* restore across render_integer.
+(format t "T4B-FS4:~a~%" (let ((*print-radix* t) (*print-base* 2))
+                           (format nil "~X" 255)
+                           (write-to-string 3)))
+;; P10: an aborted print must not leak printer state.
+(defparameter *t4b-n* 0)
+(defstruct t4b-once v)
+(defmethod print-object ((o t4b-once) s)
+  (incf *t4b-n*)
+  (if (= *t4b-n* 1) (error "first print boom") (format s "[ok ~A]" (t4b-once-v o))))
+(defparameter *t4b-obj* (make-t4b-once :v 7))
+(format t "T4B-P10A:~a~%" (handler-case (format nil "~A" *t4b-obj*) (error () :caught)))
+;; same object again: a leaked pr_inprog entry would print #<...> instead.
+(format t "T4B-P10B:~a~%" (format nil "~A" *t4b-obj*))
+;; a pprint-dispatch fn that errors must not disable dispatch forever.
+;; (LET-bind *print-pretty* rather than write-to-string :pretty — the
+;; keyword path's global set/restore is skipped on the abort; that restore
+;; class is the batch-3 FS12/IO2 item.)
+(deftype t4b-neg () '(integer -9 -1))
+(set-pprint-dispatch 't4b-neg (lambda (s o) (declare (ignore s o)) (error "dispatch boom")))
+(format t "T4B-P10C:~a~%" (handler-case (let ((*print-pretty* t)) (prin1-to-string -5))
+                            (error () :caught)))
+(format t "T4B-P10D:~a~%" (let ((*print-pretty* t)) (prin1-to-string 5)))
+;; IO5 (pulled forward from batch 3): set-pprint-dispatch removal-path rebuild
+;; conses under stress; the surviving entry must still dispatch.
+(set-pprint-dispatch 't4b-neg nil)
+(format t "T4B-IO5:~a ~a~%"
+        (let ((*print-pretty* t)) (prin1-to-string -5))
+        (let ((*print-pretty* t)) (prin1-to-string 5)))
+EOF
+out=$(run_stress "$WORK/tier4-printer.lisp")
+check_contains "P2 vector of structs prints under GC stress" \
+  "T4B-P2:#(#S(T4B-PT :X 1 :Y 2) #S(T4B-PT :X 3 :Y 4))" "$out"
+check_contains "P3 #2A array of structs prints under GC stress" \
+  "T4B-P3:#2A((#S(T4B-PT :X 1 :Y 2) 5) (6 #S(T4B-PT :X 3 :Y 4)))" "$out"
+check_contains "P1 nested struct slot names print under GC stress" \
+  "T4B-P1:#S(T4B-BOX :INNER #S(T4B-PT :X 7 :Y 8) :TAG :K)" "$out"
+check_contains "P4 pprint dispatch via deftype + buffer-mode capture" \
+  "T4B-P4:<small 5>" "$out"
+check_contains "P5 restart report function output under GC stress" \
+  "T4B-P5:resume-123" "$out"
+check_contains "P5W wide restart report splices" \
+  "T4B-P5W:<r" "$out"
+check_absent   "P5W not degraded to #<RESTART>" \
+  "T4B-P5W:#<RESTART" "$out"
+check_contains "P6 nested print via print-object method" \
+  "T4B-P6:\[inner (1 2)\]" "$out"
+check_contains "P7 bignum ratio + complex print under GC stress" \
+  "T4B-P7:1000000000000000000000000000000/3 #C(1 -2)" "$out"
+check_contains "FS2 ~? string-control args survive fmt_run compaction" \
+  "T4B-FS2:<(1)+x> (9)" "$out"
+check_contains "FS1 101-digit comma grouping (no stack smash)" \
+  "T4B-FS1:201" "$out"
+check_contains "FS4 print-base/radix restored across render_integer" \
+  "T4B-FS4:#b11" "$out"
+check_contains "P10 aborted print caught" "T4B-P10A:CAUGHT" "$out"
+check_contains "P10 no leaked pr_inprog marker on reprint" \
+  "T4B-P10B:\[ok 7\]" "$out"
+check_contains "P10 erroring dispatch fn caught" "T4B-P10C:CAUGHT" "$out"
+check_contains "P10 pprint dispatch still enabled after aborted dispatch" \
+  "T4B-P10D:<small 5>" "$out"
+check_contains "IO5 set-pprint-dispatch removal rebuild under GC stress" \
+  "T4B-IO5:-5 <small 5>" "$out"
+check_absent   "no corruption in tier-4 printer/format cases" \
+  "T4B-BAD\|corrupted pointer\|not of type\|Guru\|SIGSEGV" "$out"
+
 echo ""
 echo "$passed passed, $failed failed, $total total"
 [ "$failed" -eq 0 ]

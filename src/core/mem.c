@@ -1027,6 +1027,24 @@ void cl_gc_push_root_dbg(CL_Obj *root, const char *file, int line)
     } else {
         fprintf(stderr, "FATAL: GC root stack overflow (%d/%d) at %s:%d — increase CL_GC_ROOT_STACK_SIZE\n",
                 gc_root_count, CL_GC_ROOT_STACK_SIZE, file, line);
+        /* Dump run-length-compressed pusher sites: a root LEAK (push without
+         * pop, usually across a longjmp) shows up as one site repeated
+         * hundreds of times.  Only sites recorded via CL_GC_PROTECT carry
+         * file/line; plain cl_gc_push_root entries show the previous
+         * occupant's stale site — treat those with suspicion. */
+        {
+            int di, dj;
+            for (di = 0; di < CL_GC_ROOT_STACK_SIZE; di = dj) {
+                const char *df = CT->gc_root_files[di];
+                int dl = CT->gc_root_lines[di];
+                for (dj = di + 1; dj < CL_GC_ROOT_STACK_SIZE &&
+                         CT->gc_root_files[dj] == df &&
+                         CT->gc_root_lines[dj] == dl; dj++)
+                    ;
+                fprintf(stderr, "  roots[%4d..%4d] %s:%d (x%d)\n",
+                        di, dj - 1, df ? df : "?", dl, dj - di);
+            }
+        }
         cl_capture_backtrace();
         fprintf(stderr, "%s", cl_backtrace_buf);
         fflush(stderr);
@@ -1063,6 +1081,27 @@ void cl_gc_reset_roots(void)
 
 /* --- Mark Phase --- */
 
+#if defined(DEBUG_GC) || defined(DEBUG_GC_STRESS)
+/* Highest valid type tag — keep in sync with enum CL_ObjType (TYPE_WIDE_STRING
+ * sits AFTER TYPE_RESTART when wide strings are compiled in). */
+#ifdef CL_WIDE_STRINGS
+#define GC_DBG_MAX_TYPE TYPE_WIDE_STRING
+#else
+#define GC_DBG_MAX_TYPE TYPE_RESTART
+#endif
+/* Object whose children are currently being pushed — provenance for the
+ * gc_mark_push plausibility guard.  NULL while pushing from the root set. */
+static void *gc_dbg_mark_parent;
+/* Which root category / index the mark walk is currently processing —
+ * provenance for badmarks that come from the root set itself. */
+static const char *gc_dbg_root_src = "?";
+static int gc_dbg_root_idx = -1;
+#define GC_DBG_SRC(tag, idx) \
+    (gc_dbg_mark_parent = NULL, gc_dbg_root_src = (tag), gc_dbg_root_idx = (idx))
+#else
+#define GC_DBG_SRC(tag, idx) ((void)0)
+#endif
+
 static void gc_mark_push(CL_Obj obj)
 {
     /* Skip immediates and out-of-bounds */
@@ -1075,6 +1114,37 @@ static void gc_mark_push(CL_Obj obj)
      * overflow re-scan efficient (only pushes truly unmarked children) */
     if (CL_HDR_MARKED(CL_OBJ_TO_PTR(obj)))
         return;
+
+#if defined(DEBUG_GC) || defined(DEBUG_GC_STRESS)
+    /* Plausibility guard with provenance — see gc_mark_obj's twin.  Checking
+     * at PUSH time (not pop) means gc_dbg_mark_parent still names the object
+     * whose slot held the bad reference. */
+    {
+        void *cptr = CL_OBJ_TO_PTR(obj);
+        if ((obj & (CL_ALIGN - 1)) != 0 || CL_HDR_SIZE(cptr) == 0 ||
+            obj + CL_HDR_SIZE(cptr) > cl_heap.bump ||
+            CL_HDR_TYPE(cptr) > GC_DBG_MAX_TYPE) {
+            fprintf(stderr,
+                    "[GC-BADMARK] gc_mark_push(0x%08x): implausible object "
+                    "start (type=%u size=%u bump=0x%08x)\n",
+                    (unsigned)obj, (unsigned)CL_HDR_TYPE(cptr),
+                    (unsigned)CL_HDR_SIZE(cptr), (unsigned)cl_heap.bump);
+            if (gc_dbg_mark_parent) {
+                fprintf(stderr,
+                        "  parent @0x%08x type=%u size=%u\n",
+                        (unsigned)((uint8_t *)gc_dbg_mark_parent - cl_heap.arena),
+                        (unsigned)CL_HDR_TYPE(gc_dbg_mark_parent),
+                        (unsigned)CL_HDR_SIZE(gc_dbg_mark_parent));
+            } else {
+                fprintf(stderr, "  parent: (root set — no parent object)\n");
+            }
+            cl_capture_backtrace();
+            fprintf(stderr, "%s", cl_backtrace_buf);
+            fflush(stderr);
+            abort();
+        }
+    }
+#endif
 
     if (gc_mark_top < CL_GC_MARK_STACK_SIZE) {
         gc_mark_stack[gc_mark_top++] = obj;
@@ -1090,6 +1160,9 @@ static void gc_mark_push(CL_Obj obj)
 
 static void gc_mark_children(void *ptr, uint8_t type)
 {
+#if defined(DEBUG_GC) || defined(DEBUG_GC_STRESS)
+    gc_dbg_mark_parent = ptr;
+#endif
     switch (type) {
     case TYPE_CONS: {
         CL_Cons *c = (CL_Cons *)ptr;
@@ -1282,6 +1355,38 @@ void gc_mark_obj(CL_Obj obj)
     ptr = CL_OBJ_TO_PTR(obj);
 
     if (CL_HDR_MARKED(ptr)) return;
+#if defined(DEBUG_GC) || defined(DEBUG_GC_STRESS)
+    /* Plausibility guard: marking an offset that is not a real object start
+     * ORs CL_HDR_MARK_BIT into arbitrary object interiors (observed: a
+     * hashtable's flags word and bucket slot), which the compactor then
+     * treats as live headers — silent corruption far from the culprit.
+     * A stale/interior/double-forwarded reference is the only way to get
+     * here; abort loudly with the offending offset so the referrer can be
+     * hunted while it is still on the stack. */
+    if ((obj & (CL_ALIGN - 1)) != 0 || CL_HDR_SIZE(ptr) == 0 ||
+        obj + CL_HDR_SIZE(ptr) > cl_heap.bump ||
+        CL_HDR_TYPE(ptr) > GC_DBG_MAX_TYPE) {
+        fprintf(stderr,
+                "[GC-BADMARK] gc_mark_obj(0x%08x): implausible object start "
+                "(type=%u size=%u bump=0x%08x) — interior or stale offset\n"
+                "  source: %s[%d]%s\n",
+                (unsigned)obj, (unsigned)CL_HDR_TYPE(ptr),
+                (unsigned)CL_HDR_SIZE(ptr), (unsigned)cl_heap.bump,
+                gc_dbg_root_src, gc_dbg_root_idx,
+                gc_dbg_mark_parent ? " (via object children)" : "");
+#ifdef DEBUG_GC
+        if (gc_dbg_root_idx >= 0 && strcmp(gc_dbg_root_src, "gc_roots") == 0 &&
+            CT->gc_root_files[gc_dbg_root_idx])
+            fprintf(stderr, "  root pushed at %s:%d\n",
+                    CT->gc_root_files[gc_dbg_root_idx],
+                    CT->gc_root_lines[gc_dbg_root_idx]);
+#endif
+        cl_capture_backtrace();
+        fprintf(stderr, "%s", cl_backtrace_buf);
+        fflush(stderr);
+        abort();
+    }
+#endif
     CL_HDR_SET_MARK(ptr);
     gc_mark_children(ptr, CL_HDR_TYPE(ptr));
 }
@@ -1621,11 +1726,13 @@ static void gc_mark_thread_roots(CL_Thread *t)
 
     /* GC root stack */
     for (i = 0; i < t->gc_root_count; i++) {
+        GC_DBG_SRC("gc_roots", i);
         gc_mark_obj(*t->gc_roots[i]);
     }
 
     /* Dynamic binding stack (saved old values) */
     for (i = 0; i < t->dyn_top; i++) {
+        GC_DBG_SRC("dyn_stack", i);
         gc_mark_obj(t->dyn_stack[i].symbol);
         gc_mark_obj(t->dyn_stack[i].old_value);
     }
@@ -1640,6 +1747,7 @@ static void gc_mark_thread_roots(CL_Thread *t)
      * Values that live across an ALLOCATING unwind-protect cleanup are
      * parked in pending_mv_values / saved_pending_stack, marked below. */
     for (i = 0; i < t->nlx_top; i++) {
+        GC_DBG_SRC("nlx_stack", i);
         gc_mark_obj(t->nlx_stack[i].tag);
         gc_mark_obj(t->nlx_stack[i].result);
         gc_mark_obj(t->nlx_stack[i].bytecode);
@@ -1647,12 +1755,14 @@ static void gc_mark_thread_roots(CL_Thread *t)
 
     /* Handler stack */
     for (i = 0; i < t->handler_top; i++) {
+        GC_DBG_SRC("handler_stack", i);
         gc_mark_obj(t->handler_stack[i].type_name);
         gc_mark_obj(t->handler_stack[i].handler);
     }
 
     /* Restart stack */
     for (i = 0; i < t->restart_top; i++) {
+        GC_DBG_SRC("restart_stack", i);
         gc_mark_obj(t->restart_stack[i].name);
         gc_mark_obj(t->restart_stack[i].handler);
         gc_mark_obj(t->restart_stack[i].tag);
@@ -1662,6 +1772,7 @@ static void gc_mark_thread_roots(CL_Thread *t)
     /* VM execution stack */
     if (t->vm.stack) {
         for (i = 0; i < t->vm.sp; i++) {
+            GC_DBG_SRC("vm.stack", i);
             gc_mark_obj(t->vm.stack[i]);
         }
     }
@@ -1672,13 +1783,16 @@ static void gc_mark_thread_roots(CL_Thread *t)
 
     /* Bytecode objects referenced by active VM frames */
     for (i = 0; i < t->vm.fp; i++) {
+        GC_DBG_SRC("vm.frames.bytecode", i);
         gc_mark_obj(t->vm.frames[i].bytecode);
     }
 
     /* Multiple values and pending throw state */
     for (i = 0; i < CL_MAX_MV; i++) {
+        GC_DBG_SRC("mv_values", i);
         gc_mark_obj(t->mv_values[i]);
     }
+    GC_DBG_SRC("pending_tag/value", 0);
     gc_mark_obj(t->pending_tag);
     gc_mark_obj(t->pending_value);
     /* Secondary values of an in-flight THROW.  These are live while an
@@ -1714,9 +1828,11 @@ static void gc_mark_thread_roots(CL_Thread *t)
      * (set in compile_named_lambda/compile_defun, consumed in compile_lambda).
      * Must be marked AND updated or a compaction mid-lambda-compile leaves
      * bc->name a stale offset under GC stress. */
+    GC_DBG_SRC("pending_lambda_name", 0);
     gc_mark_obj(t->pending_lambda_name);
 
     /* Thread metadata */
+    GC_DBG_SRC("thread-metadata", 0);
     gc_mark_obj(t->name);
     gc_mark_obj(t->result);
     gc_mark_obj(t->interrupt_func);
@@ -1724,10 +1840,12 @@ static void gc_mark_thread_roots(CL_Thread *t)
 
     /* Current lexical env installed for a macro expander — keeps the
      * &environment alist alive while the expander runs. */
+    GC_DBG_SRC("current_lex_env", 0);
     gc_mark_obj(t->current_lex_env);
 
     /* Reader state — in-flight reader stream plus per-read uninterned
      * symbol alist (so #:foo identity survives a GC during a long READ). */
+    GC_DBG_SRC("reader-state", 0);
     gc_mark_obj(t->rd_stream);
     gc_mark_obj(t->rd_uninterned);
     gc_mark_obj(t->rd_labels);
@@ -1737,6 +1855,7 @@ static void gc_mark_thread_roots(CL_Thread *t)
      * Lisp print-object method doesn't sweep the object whose recursion
      * we're guarding. */
     for (i = 0; i < t->pr_inprog_top; i++) {
+        GC_DBG_SRC("pr_inprog", i);
         gc_mark_obj(t->pr_inprog[i]);
     }
 
@@ -1747,6 +1866,7 @@ static void gc_mark_thread_roots(CL_Thread *t)
      * marking+forwarding this slot, out_char/out_str dereference a stale
      * offset and scribble into freed arena — the multi-thread `(format nil …)`
      * corruption.  Single-writer (owning thread), stopped during STW GC. */
+    GC_DBG_SRC("pr_stream", 0);
     gc_mark_obj(t->pr_stream);
 
     /* *print-circle* detection table keys — live CL_Obj references while a
@@ -1755,25 +1875,30 @@ static void gc_mark_thread_roots(CL_Thread *t)
     if (t->pr_circle_active) {
         int ci;
         for (ci = 0; ci < CL_CIRCLE_HT_SIZE; ci++) {
-            if (!CL_NULL_P(t->pr_circle_keys[ci]))
+            if (!CL_NULL_P(t->pr_circle_keys[ci])) {
+                GC_DBG_SRC("pr_circle_keys", ci);
                 gc_mark_obj(t->pr_circle_keys[ci]);
+            }
         }
     }
 
     /* Pending LOAD-TIME-VALUE (cell, thunk) pairs (compile-file only) */
     for (i = 0; i < t->ltv_init_count; i++) {
+        GC_DBG_SRC("ltv_init", i);
         gc_mark_obj(t->ltv_init_cells[i]);
         gc_mark_obj(t->ltv_init_thunks[i]);
     }
 
     /* Compiler constants (active compilers may hold CL_Obj values
      * in platform_alloc'd memory not reachable from the GC arena) */
+    GC_DBG_SRC("compiler-constants", 0);
     {
         extern void cl_compiler_gc_mark_thread(CL_Thread *t);
         cl_compiler_gc_mark_thread(t);
     }
 
     /* VM-internal buffers (e.g. vm_extra_args during &rest processing) */
+    GC_DBG_SRC("vm_extra_args", 0);
     {
         extern void cl_vm_gc_mark_extra_thread(CL_Thread *t);
         cl_vm_gc_mark_extra_thread(t);
@@ -1786,11 +1911,13 @@ static void gc_mark_thread_roots(CL_Thread *t)
         for (ti = 0; ti < CL_TLV_TABLE_SIZE; ti++) {
             CL_Obj sym = t->tlv_table[ti].symbol;
             if (sym != CL_NIL && sym != CL_UNBOUND) {
+                GC_DBG_SRC("tlv_table", ti);
                 gc_mark_obj(sym);
                 gc_mark_obj(t->tlv_table[ti].value);
             }
         }
     }
+    GC_DBG_SRC("shared-globals", 0);
 }
 /* Restore gc_root_count macro for the rest of mem.c */
 #define gc_root_count (CT->gc_root_count)
@@ -2910,6 +3037,143 @@ static int gc_key_addr_sensitive(CL_Obj key, uint32_t test)
     }
 }
 
+#if defined(DEBUG_GC) || defined(DEBUG_GC_STRESS)
+/* Chain-integrity check: every bucket chain must terminate within ht->count
+ * steps.  A longer walk means a chain CYCLE (double-forwarded bucket slot or
+ * a put through a stale table pointer) — without this check the next
+ * gc_rehash_table spins forever, which is undebuggable in the field. */
+static void gc_verify_ht_chains(CL_Hashtable *ht, const char *when)
+{
+    CL_Obj *bkts;
+    uint32_t i, walked = 0;
+    if (!CL_NULL_P(ht->bucket_vec))
+        bkts = ((CL_Vector *)CL_OBJ_TO_PTR(ht->bucket_vec))->data;
+    else
+        bkts = ht->buckets;
+    for (i = 0; i < ht->bucket_count; i++) {
+        CL_Obj chain = bkts[i];
+        while (!CL_NULL_P(chain)) {
+            if (++walked > ht->count + 8) {
+                CL_Cons *e0 = (CL_Cons *)CL_OBJ_TO_PTR(bkts[i]);
+                fprintf(stderr,
+                        "[GC-HT-BUG] %s: hashtable @0x%08x (test=%u count=%u "
+                        "buckets=%u flags=0x%x) chain walk exceeded count at "
+                        "bucket %u — cycle/corruption\n"
+                        "  chain=0x%08x entry->car(pair)=0x%08x "
+                        "entry->cdr=0x%08x\n",
+                        when,
+                        (unsigned)((uint8_t *)ht - cl_heap.arena),
+                        (unsigned)ht->test, (unsigned)ht->count,
+                        (unsigned)ht->bucket_count, (unsigned)ht->flags,
+                        (unsigned)i,
+                        (unsigned)bkts[i], (unsigned)e0->car,
+                        (unsigned)e0->cdr);
+                if (CL_CONS_P(e0->car)) {
+                    CL_Cons *p0 = (CL_Cons *)CL_OBJ_TO_PTR(e0->car);
+                    fprintf(stderr, "  pair key=0x%08x val=0x%08x\n",
+                            (unsigned)p0->car, (unsigned)p0->cdr);
+                }
+                /* Re-walk the arena and print the last objects leading up to
+                 * this table — a desynced walk (bad header size upstream)
+                 * shows up as implausible type/size runs here. */
+                {
+                    uint8_t *wp = cl_heap.arena + CL_ALIGN;
+                    uint8_t *wend = cl_heap.arena + cl_heap.bump;
+                    uint32_t woff[8]; uint32_t wtype[8]; uint32_t wsize[8];
+                    int wn = 0;
+                    while (wp < wend && wp <= (uint8_t *)ht) {
+                        uint32_t wsz = CL_HDR_SIZE(wp);
+                        if (wsz == 0) break;
+                        woff[wn & 7] = (uint32_t)(wp - cl_heap.arena);
+                        wtype[wn & 7] = CL_HDR_TYPE(wp);
+                        wsize[wn & 7] = wsz;
+                        wn++;
+                        wp += wsz;
+                    }
+                    {
+                        int k, first = wn > 8 ? wn - 8 : 0;
+                        for (k = first; k < wn; k++)
+                            fprintf(stderr,
+                                    "  walk[%d] @0x%08x type=%u size=%u\n",
+                                    k, (unsigned)woff[k & 7],
+                                    (unsigned)wtype[k & 7],
+                                    (unsigned)wsize[k & 7]);
+                        fprintf(stderr, "  walk ended at 0x%08x (ht at 0x%08x, bump 0x%08x)\n",
+                                (unsigned)(wp - cl_heap.arena),
+                                (unsigned)((uint8_t *)ht - cl_heap.arena),
+                                (unsigned)cl_heap.bump);
+                    }
+                }
+                /* Who references this table?  A symbol-value referrer names
+                 * the variable holding it. */
+                {
+                    CL_Obj ht_obj = CL_PTR_TO_OBJ((uint8_t *)ht);
+                    uint8_t *wp = cl_heap.arena + CL_ALIGN;
+                    uint8_t *wend = cl_heap.arena + cl_heap.bump;
+                    int found = 0;
+                    while (wp < wend && found < 8) {
+                        uint32_t wsz = CL_HDR_SIZE(wp);
+                        uint32_t nw, w;
+                        if (wsz == 0) break;
+                        nw = wsz / 4;
+                        for (w = 1; w < nw; w++) {
+                            if (((uint32_t *)wp)[w] == ht_obj) {
+                                fprintf(stderr,
+                                        "  referrer @0x%08x type=%u word=%u",
+                                        (unsigned)(wp - cl_heap.arena),
+                                        (unsigned)CL_HDR_TYPE(wp), (unsigned)w);
+                                if (CL_HDR_TYPE(wp) == TYPE_SYMBOL) {
+                                    CL_Symbol *rs = (CL_Symbol *)wp;
+                                    if (CL_HEAP_P(rs->name)) {
+                                        CL_String *rn = (CL_String *)CL_OBJ_TO_PTR(rs->name);
+                                        fprintf(stderr, " symbol=%.*s",
+                                                (int)rn->length, rn->data);
+                                    }
+                                }
+                                fprintf(stderr, "\n");
+                                found++;
+                            }
+                        }
+                        wp += wsz;
+                    }
+                    if (!found)
+                        fprintf(stderr, "  no arena referrer (C-global/root/TLV?)\n");
+                }
+                cl_capture_backtrace();
+                fprintf(stderr, "%s", cl_backtrace_buf);
+                fflush(stderr);
+                abort();
+            }
+            if (!CL_CONS_P(chain)) {
+                fprintf(stderr,
+                        "[GC-HT-BUG] %s: hashtable %p bucket %u chain entry "
+                        "is not a cons (0x%08x)\n",
+                        when, (void *)ht, (unsigned)i, (unsigned)chain);
+                fflush(stderr);
+                abort();
+            }
+            chain = ((CL_Cons *)CL_OBJ_TO_PTR(chain))->cdr;
+        }
+    }
+}
+/* Sweep the arena and verify every populated table (see gc_verify_ht_chains). */
+static void gc_verify_all_ht_chains(const char *when)
+{
+    uint8_t *ptr = cl_heap.arena + CL_ALIGN;
+    uint8_t *end = cl_heap.arena + cl_heap.bump;
+    while (ptr < end) {
+        uint32_t size = CL_HDR_SIZE(ptr);
+        if (size == 0) break;
+        if (CL_HDR_TYPE(ptr) == TYPE_HASHTABLE) {
+            CL_Hashtable *ht = (CL_Hashtable *)ptr;
+            if (ht->count > 0)
+                gc_verify_ht_chains(ht, when);
+        }
+        ptr += size;
+    }
+}
+#endif
+
 /* Rehash a single hash table after compaction (no allocation). Recomputes each
  * key's bucket with the table's own test, since relocated objects now hash to
  * different values. Skips tables whose every key is hash-stable. */
@@ -2929,6 +3193,10 @@ static void gc_rehash_table(CL_Hashtable *ht)
     } else {
         bkts = ht->buckets;
     }
+
+#if defined(DEBUG_GC) || defined(DEBUG_GC_STRESS)
+    gc_verify_ht_chains(ht, "pre-rehash");
+#endif
 
     /* Do any keys have address-sensitive hashes? If not, the buckets are still
      * valid after the move and we can leave the table untouched. */
@@ -3079,6 +3347,11 @@ void cl_gc_compact(void)
 
     /* Rehash hash tables whose keys hash by object identity (offsets changed) */
     gc_rehash_tables();
+#if defined(DEBUG_GC) || defined(DEBUG_GC_STRESS)
+    /* Every object in the arena is a live survivor here — a dirty chain now
+     * means THIS compact (or the mutator window before it) corrupted it. */
+    gc_verify_all_ht_chains("post-rehash");
+#endif
 
     /* Rehash per-thread TLV tables (keyed by symbol offset, which changed) */
     gc_rehash_tlv_tables();

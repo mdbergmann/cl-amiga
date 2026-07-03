@@ -331,11 +331,18 @@ static char *render_integer(CL_Obj obj, int32_t base, char *buf, int bufsz,
     CL_Obj prev_x = cl_symbol_value(SYM_PRINT_RADIX);
     int len;
 
+    /* GC SAFETY: cl_princ_to_string can compact (pprint dispatch typep,
+     * print hooks); the saved values are heap objects when *print-radix*
+     * is T (a heap symbol) — protect so the restore writes the forwarded
+     * offsets, not stale ones. */
+    CL_GC_PROTECT(prev_b);
+    CL_GC_PROTECT(prev_x);
     cl_set_symbol_value(SYM_PRINT_BASE, CL_MAKE_FIXNUM(base));
     cl_set_symbol_value(SYM_PRINT_RADIX, CL_NIL);
     len = cl_princ_to_string(obj, buf, bufsz);
     cl_set_symbol_value(SYM_PRINT_BASE, prev_b);
     cl_set_symbol_value(SYM_PRINT_RADIX, prev_x);
+    CL_GC_UNPROTECT(2);
     *len_out = len;
     return buf;
 }
@@ -348,7 +355,11 @@ static void fmt_padded_integer(FmtCtx *ctx, FmtDirective *d, int32_t base)
 {
     CL_Obj arg = fmt_next_arg(ctx);
     char raw[128];
-    char with_commas[192];
+    /* Worst case: every digit of raw[] gets a group separator (comma-interval
+     * 1) — dlen digits + dlen-1 separators + NUL = 2*127 = 254 bytes for the
+     * 127-digit raw[] cap.  Must hold that or the copy loop below smashes the
+     * stack (`(format nil "~,,,1:D" (expt 10 100))` overran the old 192). */
+    char with_commas[256];
     int raw_len;
     int32_t mincol   = fmt_param(d, 0, 0);
     int32_t padchar  = fmt_param(d, 1, (int32_t)' ');
@@ -376,39 +387,21 @@ static void fmt_padded_integer(FmtCtx *ctx, FmtDirective *d, int32_t base)
 
     /* Insert commas if :modifier */
     if (d->colon && comma_int > 0 && dlen > comma_int) {
-        int n_commas = (dlen - 1) / comma_int;
-        int out_len = dlen + n_commas;
-        int si = dlen - 1;
-        int di = out_len - 1;
-        int count = 0;
-        if (out_len >= (int)sizeof(with_commas))
-            out_len = (int)sizeof(with_commas) - 1;
-        with_commas[out_len] = '\0';
-        for (; si >= 0 && di >= 0; si--, di--) {
-            with_commas[di] = digits[si];
-            count++;
-            if (count == comma_int && si > 0 && di > 0) {
-                di--;
-                with_commas[di] = (char)commachar;
-                count = 0;
-            }
+        int wi = 0, ri;
+        for (ri = 0; ri < dlen; ri++) {
+            /* Up to 2 bytes this iteration (separator + digit) + NUL after
+             * the loop.  Unreachable while raw[] caps dlen at 127, but stay
+             * loud rather than smash the stack if that ever changes. */
+            if (wi >= (int)sizeof(with_commas) - 3)
+                cl_error(CL_ERR_GENERAL,
+                         "FORMAT ~~:D: grouped digits exceed internal buffer");
+            if (ri > 0 && ((dlen - ri) % comma_int == 0))
+                with_commas[wi++] = (char)commachar;
+            with_commas[wi++] = digits[ri];
         }
-        digits = with_commas + di + (di >= 0 ? 0 : 1);
-        /* Recalculate — point to start */
-        if (di < 0) di = 0;
+        with_commas[wi] = '\0';
         digits = with_commas;
-        /* Actually let's just recalculate properly */
-        {
-            int wi = 0, ri = 0;
-            for (ri = 0; ri < dlen; ri++) {
-                if (ri > 0 && ((dlen - ri) % comma_int == 0))
-                    with_commas[wi++] = (char)commachar;
-                with_commas[wi++] = (negative ? raw[ri + 1] : raw[ri]);
-            }
-            with_commas[wi] = '\0';
-            digits = with_commas;
-            dlen = wi;
-        }
+        dlen = wi;
     }
 
     /* Compute final length with sign */
@@ -775,9 +768,13 @@ static void fmt_goto(FmtCtx *ctx, FmtDirective *d)
         ctx->ai -= (int)n;
         if (ctx->ai < 0) ctx->ai = 0;
     } else {
-        /* ~n* — skip forward n args (default 1) */
+        /* ~n* — skip forward n args (default 1).  Clamp both ends: a
+         * negative parameter (e.g. `~-5*`, or V taking a negative arg)
+         * would otherwise index before ctx->args[] — OOB read fed to the
+         * printer (mirror the lower clamp in the `:` branch). */
         int32_t n = fmt_param(d, 0, 1);
         ctx->ai += (int)n;
+        if (ctx->ai < 0) ctx->ai = 0;
         if (ctx->ai > ctx->nargs) ctx->ai = ctx->nargs;
     }
 }
@@ -1274,6 +1271,7 @@ static void fmt_recursive(FmtCtx *ctx, FmtDirective *d)
         CL_Obj arg_list = fmt_next_arg(ctx);
         CL_Obj tmp;
         int sub_n = 0;
+        int si;
         CL_Obj sub_args[64];
 
         tmp = arg_list;
@@ -1282,10 +1280,17 @@ static void fmt_recursive(FmtCtx *ctx, FmtDirective *d)
             tmp = cl_cdr(tmp);
         }
 
+        /* GC SAFETY: sub_args is a C array, not a rooted VM-stack slice —
+         * the sub-run's directives can allocate and compact (exact sibling
+         * of the fixed ~{~} sub_args bug), so root every snapshot slot
+         * across fmt_run. */
+        for (si = 0; si < sub_n; si++)
+            cl_gc_push_root(&sub_args[si]);
         sub.args = sub_args;
         sub.nargs = sub_n;
         sub.ai = 0;
         fmt_run(&sub);
+        cl_gc_pop_roots(sub_n);
     }
 
     if (alloc) platform_free(alloc);

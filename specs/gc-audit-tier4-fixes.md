@@ -1,6 +1,6 @@
 # GC Audit Tier 4 — Fix Plan
 
-Status: **IN PROGRESS** — Batch 1 (compiler criticals) applied on branch fix/tier4-gc-corruption; batches 2-7 pending.
+Status: **IN PROGRESS** — Batches 1 (compiler criticals) and 2 (format/printer) applied on branch fix/tier4-gc-corruption; batches 3-7 pending.
 Findings source: 12-agent audit sweep 2026-07-03 (session 5580131b). ~85 findings, ~25 CRITICAL.
 Branch: `fix/tier4-gc-corruption` (create from master at c70b4e4 or later).
 
@@ -42,24 +42,28 @@ Batch tests: extend gc-stress LOOPCOMPILE family with case/typecase/&key-default
 
 ---
 
-## Batch 2 — Format stack smash + printer element loops
+## Batch 2 — Format stack smash + printer element loops — **DONE**
 
-Files: builtins_format.c, printer.c.
+Files: builtins_format.c, printer.c (+ error.h/error.c, vm.h/vm.c, jit/runtime.c, builtins_condition.c for P10; builtins_io.c for IO5; mem.c for V12 + diagnostics).
 
-- [ ] **FS1 [V] fmt_padded_integer STACK SMASH** (builtins_format.c:401-411): the "recalculate properly" comma loop has no bounds check on `wi`; dlen ≤ 127 digits + interval-1 commas = up to 254 bytes into `char with_commas[192]`. `(format nil "~,,,1:D" (expt 10 100))`. Fix: bound the loop (`wi < sizeof(with_commas)-1`) + signal a format error on truncation; delete the dead first loop while there. Host regression test.
-- [ ] **FS3 [A] fmt_goto plain `~n*`** (builtins_format.c:777-782): signed param, no lower clamp → `ctx->args[-3]` OOB read. Fix: clamp `ctx->ai` at 0 (mirror the `:` branch).
-- [ ] **FS2 [A] fmt_recursive `~?` string-control** (builtins_format.c:1274-1288): `sub_args[64]` snapshot NOT rooted across fmt_run — exact sibling of the fixed `~{~}` sub_args bug. Fix: same protect/pop pattern as fmt_iteration.
-- [ ] **P1 [V] printer TYPE_STRUCT slot_names window** (printer.c:1200-1216): `cl_struct_slot_names` ALLOCATES (cons per slot) but is called before the `CL_GC_PROTECT(obj)` at :1217; `out_str(cl_symbol_name(st->type_desc))` :1211 and `nslots = st->n_slots` :1216 read through stale `st`. Fix: protect obj before :1200; re-derive st after the call.
-- [ ] **P2 [V] printer TYPE_VECTOR 1-D** (printer.c:1078-1106): raw `elts = cl_vector_data(v)` held across recursive `print_obj(elts[i])` (element prints allocate: structs always via slot_names, hooks, pprint). Fix: protect obj; re-derive v/elts each iteration; capture vec_len once. Trigger: printing a vector of structs/CLOS instances.
-- [ ] **P3 [A] print_array_slice** (printer.c:695-721, call :1076): same raw `elts` across element prints for #nA arrays. Fix: pass the vector CL_Obj (caller-protected), re-derive `cl_vector_data` before each access. Also read dims before the first output (MT).
-- [ ] **P4 [A] try_pprint_dispatch** (printer.c:729-772): `cl_typep` allocates (deftype/satisfies via cl_vm_apply); `cur`/`entry`/`best_fn` + caller `obj` stale; print_obj then derefs stale obj at :914. Fix: protect obj+cur+best_fn, re-derive entry per iteration.
-- [ ] **P5 [A] TYPE_RESTART fallback** (printer.c:1309-1356): `r` derived at :1310, never re-derived after 3 allocating calls; fallback reachable (report emits non-ASCII → wide string fails `CL_STRING_P`). Fix: recover obj from `pr_inprog` + re-derive r (like the STRUCT/CONDITION hook fix); ALSO handle TYPE_WIDE_STRING report text (conformance).
-- [ ] **P6 [A] saved printer_stream restore** (printer.c:1473/1499, 1575/1625; prev_e/prev_r in cl_prin1/princ_to_stream/to_string 1512-1537/1640-1655): `prev = printer_stream` unprotected C local across print_obj; nested print (hook → format nil) + compaction → stale stream offset written back into CT->pr_stream. Fix: protect `prev` (and prev_e/prev_r) across the print. Cross-confirmed independently by the strings agent.
-- [ ] **FS4 [A] render_integer** (builtins_format.c:330-338): `prev_x` (*print-radix* = T, heap symbol) stale restore across cl_princ_to_string. Protect both saves.
-- [ ] **P7 [A] TYPE_COMPLEX/TYPE_RATIO** (printer.c:894-902/860-891): `cx`/`r` raw ptr across `print_obj(realpart)`/output. Fix: read both components into protected locals up front.
-- [ ] **P10 [A] printer NLX leaks (robustness)**: `pprint_dispatch_active` never cleared on longjmp from a dispatch fn (pretty printing permanently disabled); `pr_inprog_top`/`current_depth` leak on signaling hooks; cl_write_to_stream restores skipped on stream-error longjmp. Fix: restore via error-frame fields or setjmp-free cleanup pattern used elsewhere.
+- [x] **FS1 [V] fmt_padded_integer STACK SMASH** — dead first loop deleted, single bounded grouping loop, `with_commas` sized 256 (worst case 254 for the 127-digit raw[] cap) + loud cl_error backstop. Host regression tests in test_format.c.
+- [x] **FS3 [A] fmt_goto plain `~n*`** — clamped both ends (negative param no longer reads `ctx->args[-3]`). The `~n@*` +2 sub-context bias remains FS8 (deferred).
+- [x] **FS2 [A] fmt_recursive `~?` string-control** — sub_args slots rooted across fmt_run (mirrors the fixed `~{~}` pattern).
+- [x] **P1 [V] TYPE_STRUCT slot_names window** — obj protected before cl_struct_slot_names, st re-derived after; slot loop keeps obj+cursor rooted.
+- [x] **P2 [V] TYPE_VECTOR 1-D** — obj protected, data pointer re-derived per element.
+- [x] **P3 [A] print_array_slice** — takes the vector CL_Obj; each recursion level roots its copy and re-derives per element.
+- [x] **P4 [A] try_pprint_dispatch** — takes `CL_Obj *obj_p` (caller's slot forwards); cur/best_fn rooted across cl_typep; best_fn re-derived from the rooted cursor. PLUS: buffer-mode prints (write-to-string) previously handed the dispatch fn a NIL stream and silently dropped its output — now captured via a string stream and spliced (restart-report pattern). PLUS: the recursion guard is held across the SCAN so a cl_typep that signals can't recurse through condition printing.
+- [x] **P5 [A] TYPE_RESTART fallback** — obj recovered from pr_inprog + kept rooted across get-output-stream-string; r re-derived for the fallback; wide-string report text spliced per code point (conformance).
+- [x] **P6 [A] saved printer_stream restore** — `prev` protected in cl_write_to_stream / write_to_buffer_internal (+ pre-init branches); prev_e/prev_r protected in all four prin1/princ entry points.
+- [x] **FS4 [A] render_integer** — prev_b/prev_x protected across cl_princ_to_string.
+- [x] **P7 [A] TYPE_COMPLEX/TYPE_RATIO** — components read up front; second component protected across the first's print.
+- [x] **P10 [A] printer NLX leaks** — new `CL_PrinterState` snapshot (pr_depth, pr_inprog_top, pprint_dispatch_active, circle_active; printer.h) embedded in CL_ErrorFrame (`saved_printer`) and CL_NLXFrame (`printer_mark`); restored on every longjmp landing (error.c nested+outermost+EXIT paths, vm.c 4 NLX landings, jit/runtime.c 4 twins, builtins_condition.c muffle landing).
+- [x] **IO5 (pulled forward from batch 3): bi_set_pprint_dispatch** — removal + rebuild loops rooted (cursor/result/table), type-spec/function re-read from rooted args[]. Was corrupting the dispatch table on the 2nd set-pprint-dispatch under stress (dead-closure "Unknown opcode 0x00" / CAR-type-error → unbounded error recursion). IO6/IO7 remain in batch 3.
+- [x] **V12 (NEW, found by batch-2 tests): OP_UWPROT parks stale pending_tag/value** (vm.c arming block): with no throw in flight, cl_pending_tag/value still hold the last completed throw's objects; the parking slot is GC-skipped while pending_throw==0, so the cleanup body's compactions stale the parked copies and UWRETHROW restored stale offsets into the always-marked globals — the next mark walk follows them into object interiors and ORs mark bits mid-object (observed: GF dispatch-cache bucket array → circular chain → gc_rehash_table spins forever). Fix: park NILs when no throw is armed. Pre-existing (reproduced at batch-1 HEAD); THE deterministic hang behind the tier4-printer stress case.
+- [x] **IO1 pulled forward too** (see batch 3 entry) — the badmark guard exposed it as the cause of 6 pre-existing gc-stress case failures (nested `(load ...)`).
+- [x] **GC diagnostics (permanent, DEBUG_GC/DEBUG_GC_STRESS-guarded)**: gc_mark_obj/gc_mark_push plausibility guards ("badmark": abort on implausible object start, with root-category + parent-object + CL_GC_PROTECT file:line provenance); hashtable chain-cycle verify in gc_rehash_table + post-rehash arena sweep; root-stack-overflow histogram of pusher sites. These made V12 findable in minutes and make the whole interior-mark class deterministic in CI (immediately caught IO1 in existing cases).
 
-Batch tests: gc-stress printing vectors/arrays of structs; format regression tests for FS1/FS3 (host); `~?` under stress.
+Batch tests: `tier4-printer.lisp` block in test_gc_stress_regression.sh (16 checks: P1/P2/P3/P4/P5/P5W/P6/P7/FS1/FS2/FS4/P10×4/IO5 — verified failing on a pre-fix worktree: P4 empty, P5W degraded, P10B `#<...>`, P10C root-stack overflow, then deterministic GC hang); host format regressions in tests/test_format.c (FS1 grouped 101-digit bignum, grouping correctness, FS3 clamps, FS2 behavior).
 
 ---
 
@@ -67,10 +71,10 @@ Batch tests: gc-stress printing vectors/arrays of structs; format regression tes
 
 Files: builtins_io.c, builtins_strings.c, reader.c.
 
-- [ ] **IO1 [V] bi_load *LOAD-PATHNAME* staleness** (builtins_io.c:660-674 AND the FASL-cache-hit duplicate at 548-561): `load_pathname_obj` assigned, then the SECOND `cl_parse_namestring` (truename) allocates before the PROTECT at :674 → stale offsets bound into *LOAD-PATHNAME*/*LOAD-TRUENAME* (ASDF reads them constantly). Fix: protect load_pathname_obj immediately after the first parse (mirror bi_compile_file's cfp/cft fix). Both blocks.
+- [x] **IO1 [V] bi_load *LOAD-PATHNAME* staleness** — **done in batch 2** (both blocks: source path and FASL-cache twin; load_pathname_obj protected immediately after the first parse). Pulled forward because the new gc_mark_obj badmark guard turned it into a deterministic abort in 6 existing gc-stress cases (any nested `(load ...)` under stress).
 - [ ] **Shared fix: print-control save/restore helper.** IO2 bi_write (:117-207, 13 saved values), IO3 bi_pprint (:231-243), FS12 bi_write_to_string (builtins_strings.c:1518-1565, 12 saved values) all stale-restore *PRINT-* specials across allocating prints. Fix once: a helper that snapshots the print controls into a protected `CL_Obj[16]` (loop-protect each slot / GC-vector) and restores from the forwarded copies; bi_write also must `return args[0]` not the stale `obj`. (Longer term these should be real TLV dynamic binds — also fixes the FS16 MT value-race; do the protected-snapshot now, note TLV as follow-up.)
 - [ ] **IO4 [A] bi_read_delimited_list** (builtins_io.c:2034-2087): `stream` unprotected across reader+cons loop. Protect.
-- [ ] **IO5/IO6/IO7 [A] pprint-dispatch cluster** (builtins_io.c:3174-3251, 3302-3317, 3257-3296): set-pprint-dispatch rebuild/remove cursors + type_spec/function/table; copy-pprint-dispatch `cur`; pprint-dispatch walk across allocating cl_typep. Protect cursors, re-read locals from args after allocs.
+- [ ] **IO5/IO6/IO7 [A] pprint-dispatch cluster** (builtins_io.c): ~~IO5 set-pprint-dispatch~~ **done in batch 2** (needed by its tests). Remaining: IO6 copy-pprint-dispatch `cur`; IO7 bi_pprint_dispatch walk across allocating cl_typep (protect cursors, re-read locals from args after allocs).
 - [ ] **IO8 [A] bi_require** (builtins_io.c:3412-3427): `pathnames` cursor walked across bi_load. Protect.
 - [ ] **IO9 [A] bi_macroexpand** (builtins_io.c:2164-2197): `env` stale across expander iterations (walked as alist!); stale `form` EQ-test; `any_expansion` stale SYM_T copy. Protect env+form, re-read. bi_macroexpand_1: stale form compare → wrong secondary value.
 - [ ] **IO10 [A] disassemble** (builtins_io.c:2635-2832): raw `bc`/`code`/`constants` held across allocating output (Gray/string streams — SLY). Fix: protect the bytecode CL_Obj, re-derive per instruction; constants/code are platform memory once re-derived from the moved object.

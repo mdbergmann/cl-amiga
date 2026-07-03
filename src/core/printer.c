@@ -106,6 +106,35 @@ static int print_case(void)
 #define pr_inprog       (CT->pr_inprog)
 #define pr_inprog_top   (CT->pr_inprog_top)
 
+/* NLX snapshot/restore of the leak-prone printer flags — see printer.h.
+ * pr_inprog_top / current_depth are the local macros above (the bare
+ * CT->pr_inprog_top spelling would be re-expanded by its own macro). */
+CL_PrinterState cl_printer_state_save(void)
+{
+    CL_PrinterState s;
+    s.depth = current_depth;
+    s.inprog_top = pr_inprog_top;
+    s.dispatch_active = CT->pr_pprint_dispatch_active;
+    s.circle_active = CT->pr_circle_active;
+    return s;
+}
+
+void cl_printer_state_restore(CL_PrinterState s)
+{
+    current_depth = s.depth;
+    pr_inprog_top = s.inprog_top;
+    CT->pr_pprint_dispatch_active = s.dispatch_active;
+    CT->pr_circle_active = s.circle_active;
+}
+
+void cl_printer_state_reset(void)
+{
+    current_depth = 0;
+    pr_inprog_top = 0;
+    CT->pr_pprint_dispatch_active = 0;
+    CT->pr_circle_active = 0;
+}
+
 /* Returns 1 if obj is currently being printed (re-entrant on same object).
  * Used to short-circuit print-object-hook dispatch on circular structures. */
 static int pr_inprog_contains(CL_Obj obj)
@@ -691,11 +720,16 @@ static void print_string(CL_Obj obj)
 }
 
 /* Recursive helper for multi-dim array printing.
- * Prints one dimension slice, advancing *row_major as elements are printed. */
-static void print_array_slice(CL_Obj *elts, uint32_t *dims, uint8_t rank,
+ * Prints one dimension slice, advancing *row_major as elements are printed.
+ * GC SAFETY: takes the vector as a CL_Obj, not a raw data pointer — element
+ * prints can compact (struct elements allocate via cl_struct_slot_names,
+ * hooks, pprint dispatch), so each level roots its own copy and the data
+ * pointer is re-derived per element. */
+static void print_array_slice(CL_Obj vec, uint32_t *dims, uint8_t rank,
                               uint8_t dim, uint32_t *row_major, int32_t max_len)
 {
     uint32_t i;
+    CL_GC_PROTECT(vec);
     out_char('(');
     for (i = 0; i < dims[dim]; i++) {
         if (max_len >= 0 && (int32_t)i >= max_len) {
@@ -711,13 +745,15 @@ static void print_array_slice(CL_Obj *elts, uint32_t *dims, uint8_t rank,
         }
         if (i > 0) out_char(' ');
         if (dim == rank - 1) {
-            print_obj(elts[*row_major]);
+            CL_Vector *v = (CL_Vector *)CL_OBJ_TO_PTR(vec);
+            print_obj(cl_vector_data(v)[*row_major]);
             (*row_major)++;
         } else {
-            print_array_slice(elts, dims, rank, dim + 1, row_major, max_len);
+            print_array_slice(vec, dims, rank, dim + 1, row_major, max_len);
         }
     }
     out_char(')');
+    CL_GC_UNPROTECT(1);
 }
 
 /*
@@ -726,9 +762,8 @@ static void print_array_slice(CL_Obj *elts, uint32_t *dims, uint8_t rank,
  */
 #define pprint_dispatch_active (CT->pr_pprint_dispatch_active)
 
-static int try_pprint_dispatch(CL_Obj obj)
+static int try_pprint_dispatch(CL_Obj *obj_p)
 {
-    CL_Symbol *sd;
     CL_Obj table, cur, best_fn;
     int32_t best_priority;
 
@@ -738,35 +773,86 @@ static int try_pprint_dispatch(CL_Obj obj)
     if (CL_NULL_P(table)) return 0;
     if (!print_pretty_p()) return 0;
 
-    /* Linear scan for best matching entry */
+    /* Linear scan for best matching entry.
+     * GC SAFETY: cl_typep can allocate (deftype expansion / SATISFIES run
+     * user code via cl_vm_apply) — root the caller's obj slot, the cursor
+     * and the best-match fn so they forward across each test; entry fields
+     * are re-derived from the rooted cursor after a match.
+     * The recursion guard is held across the SCAN too, not just the apply:
+     * a cl_typep that signals mid-scan gets its condition printed by the
+     * error path, and if that print re-entered this scan the same signal
+     * would recurse without bound (condition → scan → signal → condition
+     * ...) until the GC root stack overflows.  The guard is restored on
+     * longjmp via the error/NLX-frame printer snapshot. */
     best_fn = CL_NIL;
     best_priority = -999999;
     cur = table;
+    cl_gc_push_root(obj_p);
+    CL_GC_PROTECT(cur);
+    CL_GC_PROTECT(best_fn);
+    pprint_dispatch_active = 1;
     while (!CL_NULL_P(cur)) {
         CL_Obj entry = cl_car(cur);
         CL_Obj type_spec = cl_car(entry);
         CL_Obj prio_fn = cl_cdr(entry);
         int32_t prio = CL_FIXNUM_P(cl_car(prio_fn)) ? CL_FIXNUM_VAL(cl_car(prio_fn)) : 0;
-        CL_Obj fn = cl_cdr(prio_fn);
 
-        if (cl_typep(obj, type_spec) && prio > best_priority) {
+        if (cl_typep(*obj_p, type_spec) && prio > best_priority) {
             best_priority = prio;
-            best_fn = fn;
+            best_fn = cl_cdr(cl_cdr(cl_car(cur)));
         }
         cur = cl_cdr(cur);
     }
 
-    if (CL_NULL_P(best_fn)) return 0;
+    if (CL_NULL_P(best_fn)) {
+        pprint_dispatch_active = 0;
+        CL_GC_UNPROTECT(3);
+        return 0;
+    }
 
-    /* Call the dispatch function: (fn stream obj) */
-    {
-        CL_Obj stream = printer_stream;
+    /* Call the dispatch function: (fn stream obj).  obj_p/cur/best_fn stay
+     * rooted from the scan above so best_fn survives any alloc below. */
+    if (!to_buffer) {
         CL_Obj call_args[2];
-        call_args[0] = stream;
-        call_args[1] = obj;
-        pprint_dispatch_active = 1;
+        call_args[0] = printer_stream;
+        call_args[1] = *obj_p;
         cl_vm_apply(best_fn, call_args, 2);
         pprint_dispatch_active = 0;
+        CL_GC_UNPROTECT(3);
+    } else {
+        /* Buffer mode (write-to-string / princ-to-string): printer_stream is
+         * NIL here — a user fn handed NIL would treat it as format's
+         * "return a string" destination and the output would be silently
+         * dropped.  Capture through a real string stream and splice (same
+         * pattern as the TYPE_RESTART report-function path). */
+        CL_Obj call_args[2];
+        CL_Obj sstream, text;
+        sstream = cl_make_string_output_stream();
+        CL_GC_PROTECT(sstream);
+        call_args[0] = sstream;
+        call_args[1] = *obj_p;
+        cl_vm_apply(best_fn, call_args, 2);
+        pprint_dispatch_active = 0;
+        text = cl_get_output_stream_string(sstream);
+        {
+            CL_Stream *tmp_st = (CL_Stream *)CL_OBJ_TO_PTR(sstream);
+            cl_stream_free_outbuf(tmp_st->out_buf_handle);
+            tmp_st->out_buf_handle = 0;
+        }
+        CL_GC_UNPROTECT(4);
+        if (CL_STRING_P(text)) {
+            CL_String *ts = (CL_String *)CL_OBJ_TO_PTR(text);
+            out_str(ts->data);
+        }
+#ifdef CL_WIDE_STRINGS
+        else if (CL_HEAP_P(text) &&
+                 CL_HDR_TYPE(CL_OBJ_TO_PTR(text)) == TYPE_WIDE_STRING) {
+            CL_WideString *tw = (CL_WideString *)CL_OBJ_TO_PTR(text);
+            uint32_t twi;
+            for (twi = 0; twi < tw->length; twi++)
+                out_char((int)tw->data[twi]);
+        }
+#endif
     }
     return 1;
 }
@@ -795,8 +881,10 @@ static void print_obj(CL_Obj obj)
         /* cc == 1: #n= emitted, fall through to print contents */
     }
 
-    /* Check pprint dispatch table */
-    if (try_pprint_dispatch(obj)) return;
+    /* Check pprint dispatch table.  Takes &obj so a compacting cl_typep
+     * inside the scan forwards our local — the switch below would otherwise
+     * deref a stale offset. */
+    if (try_pprint_dispatch(&obj)) return;
 
     if (CL_NULL_P(obj)) {
         out_symbol_name("NIL");
@@ -861,6 +949,12 @@ static void print_obj(CL_Obj obj)
         CL_Ratio *r = (CL_Ratio *)CL_OBJ_TO_PTR(obj);
         int32_t base = print_base();
         int radix = print_radix_p();
+        /* GC SAFETY: read both components up front and protect the second —
+         * don't reach back through the raw r pointer after emitting the
+         * numerator (output can reach allocating paths). */
+        CL_Obj num = r->numerator;
+        CL_Obj den = r->denominator;
+        CL_GC_PROTECT(den);
         /* Radix prefix (same as bignum/fixnum but NO trailing dot) */
         if (radix) {
             switch (base) {
@@ -878,26 +972,34 @@ static void print_obj(CL_Obj obj)
             }
         }
         /* Print numerator */
-        if (CL_FIXNUM_P(r->numerator))
-            out_integer(CL_FIXNUM_VAL(r->numerator), base, 0);
+        if (CL_FIXNUM_P(num))
+            out_integer(CL_FIXNUM_VAL(num), base, 0);
         else
-            cl_bignum_print_base(r->numerator, base, out_str);
+            cl_bignum_print_base(num, base, out_str);
         out_char('/');
         /* Print denominator */
-        if (CL_FIXNUM_P(r->denominator))
-            out_integer(CL_FIXNUM_VAL(r->denominator), base, 0);
+        if (CL_FIXNUM_P(den))
+            out_integer(CL_FIXNUM_VAL(den), base, 0);
         else
-            cl_bignum_print_base(r->denominator, base, out_str);
+            cl_bignum_print_base(den, base, out_str);
+        CL_GC_UNPROTECT(1);
         return;
     }
 
     if (CL_COMPLEX_P(obj)) {
         CL_Complex *cx = (CL_Complex *)CL_OBJ_TO_PTR(obj);
+        /* GC SAFETY: print_obj(realpart) can compact (pprint dispatch,
+         * hooks) — read both parts up front and protect the second instead
+         * of re-reading through the stale cx afterwards. */
+        CL_Obj re = cx->realpart;
+        CL_Obj im = cx->imagpart;
+        CL_GC_PROTECT(im);
         out_str("#C(");
-        print_obj(cx->realpart);
+        print_obj(re);
         out_char(' ');
-        print_obj(cx->imagpart);
+        print_obj(im);
         out_char(')');
+        CL_GC_UNPROTECT(1);
         return;
     }
 
@@ -1073,15 +1175,19 @@ static void print_obj(CL_Obj obj)
             for (d = 0; d < rank; d++)
                 dims[d] = (uint32_t)CL_FIXNUM_VAL(v->data[d]);
             current_depth++;
-            print_array_slice(cl_vector_data(v), dims, rank, 0, &rm, max_len);
+            print_array_slice(obj, dims, rank, 0, &rm, max_len);
             current_depth--;
         } else {
             /* 1D vector: #(...) */
             uint32_t i;
             uint32_t vec_len = cl_vector_active_length(v);
-            CL_Obj *elts = cl_vector_data(v);
             int pretty = print_pretty_p();
             int32_t margin = pretty ? print_right_margin() : 0;
+            /* GC SAFETY: element prints can compact (struct elements always
+             * allocate via cl_struct_slot_names; hooks, pprint dispatch) —
+             * protect obj and re-derive the data pointer per element instead
+             * of holding a raw elts pointer across print_obj. */
+            CL_GC_PROTECT(obj);
             current_depth++;
             out_str("#(");
             if (pretty && pp_indent_top < PP_INDENT_MAX)
@@ -1097,12 +1203,14 @@ static void print_obj(CL_Obj obj)
                     else
                         out_char(' ');
                 }
-                print_obj(elts[i]);
+                v = (CL_Vector *)CL_OBJ_TO_PTR(obj);
+                print_obj(cl_vector_data(v)[i]);
             }
             if (pretty && pp_indent_top > 0)
                 pp_indent_top--;
             out_char(')');
             current_depth--;
+            CL_GC_UNPROTECT(1);
         }
         break;
     }
@@ -1197,10 +1305,19 @@ static void print_obj(CL_Obj obj)
             break;
         }
 
+        /* GC SAFETY: cl_struct_slot_names ALLOCATES (a cons per slot) and
+         * the recursive print_obj on a slot can compact (nested hook
+         * dispatch, pprint) — protect obj BEFORE the slot-names call and
+         * re-derive st after it, then keep obj + the slot_names cursor
+         * rooted for the whole slot loop, re-deriving st each iteration. */
+        CL_GC_PROTECT(obj);
         slot_names = cl_struct_slot_names(st->type_desc);
+        CL_GC_PROTECT(slot_names);
+        st = (CL_Struct *)CL_OBJ_TO_PTR(obj);
 
         if (max_depth >= 0 && current_depth >= max_depth) {
             out_char('#');
+            CL_GC_UNPROTECT(2);
             break;
         }
         current_depth++;
@@ -1209,13 +1326,8 @@ static void print_obj(CL_Obj obj)
             pp_indent_stack[pp_indent_top++] = current_column;
         if (!CL_NULL_P(st->type_desc))
             out_str(cl_symbol_name(st->type_desc));
-        /* GC SAFETY: the recursive print_obj on a slot can compact (nested
-         * hook dispatch, bignum printing) — root obj and the slot_names
-         * cursor and re-derive st each iteration. */
         {
             uint32_t nslots = st->n_slots;
-            CL_GC_PROTECT(obj);
-            CL_GC_PROTECT(slot_names);
             for (i = 0; i < nslots; i++) {
                 if (pretty && current_column >= margin)
                     pp_newline_indent();
@@ -1230,8 +1342,8 @@ static void print_obj(CL_Obj obj)
                 st = (CL_Struct *)CL_OBJ_TO_PTR(obj);
                 print_obj(st->slots[i]);
             }
-            CL_GC_UNPROTECT(2);
         }
+        CL_GC_UNPROTECT(2);
         if (pretty && pp_indent_top > 0)
             pp_indent_top--;
         out_char(')');
@@ -1332,18 +1444,40 @@ static void print_obj(CL_Obj obj)
                 cl_vm_apply(report_fn, rargs, 1);
                 current_depth--;
                 pr_inprog_top--;
+                /* GC SAFETY: the apply can compact — obj and the raw r
+                 * pointer are stale.  pr_inprog[] is GC-updated, so recover
+                 * the forwarded offset from the slot just popped (same as
+                 * the STRUCT/CONDITION hook paths), keep it rooted across
+                 * the allocating get-output-stream-string, and re-derive r
+                 * for the #<RESTART NAME> fallback below. */
+                obj = pr_inprog[pr_inprog_top];
+                CL_GC_PROTECT(obj);
                 text = cl_get_output_stream_string(sstream);
                 {
                     CL_Stream *tmp_st = (CL_Stream *)CL_OBJ_TO_PTR(sstream);
                     cl_stream_free_outbuf(tmp_st->out_buf_handle);
                     tmp_st->out_buf_handle = 0;
                 }
-                CL_GC_UNPROTECT(2);
+                CL_GC_UNPROTECT(3);
+                r = (CL_Restart *)CL_OBJ_TO_PTR(obj);
                 if (CL_STRING_P(text)) {
                     CL_String *ts = (CL_String *)CL_OBJ_TO_PTR(text);
                     out_str(ts->data);
                     break;
                 }
+#ifdef CL_WIDE_STRINGS
+                /* A report that emitted non-ASCII comes back as a wide
+                 * string — print it per code point instead of degrading to
+                 * the #<RESTART ...> fallback (out_char UTF-8-encodes). */
+                if (CL_HEAP_P(text) &&
+                    CL_HDR_TYPE(CL_OBJ_TO_PTR(text)) == TYPE_WIDE_STRING) {
+                    CL_WideString *tw = (CL_WideString *)CL_OBJ_TO_PTR(text);
+                    uint32_t twi;
+                    for (twi = 0; twi < tw->length; twi++)
+                        out_char((int)tw->data[twi]);
+                    break;
+                }
+#endif
             }
         }
         /* Escaped form (or no report): #<RESTART NAME>. */
@@ -1476,6 +1610,12 @@ void cl_write_to_stream(CL_Obj obj, CL_Obj stream)
     int32_t prev_indent_top = pp_indent_top;
     int prev_circle_active = circle_active;
     int prev_to_buffer = to_buffer;
+    /* GC SAFETY: print_obj can compact (hooks, pprint dispatch, struct
+     * slot names).  prev is a heap stream offset held in a C local across
+     * the whole print — protect it so the restore doesn't write a stale
+     * offset back into CT->pr_stream (a nested print via hook → format nil
+     * would then emit through a garbage stream). */
+    CL_GC_PROTECT(prev);
     current_depth = 0;
     current_column = 0;
     pp_indent_top = 0;
@@ -1501,25 +1641,32 @@ void cl_write_to_stream(CL_Obj obj, CL_Obj stream)
     current_depth = prev_depth;
     current_column = prev_column;
     pp_indent_top = prev_indent_top;
+    CL_GC_UNPROTECT(1);
 }
 
 void cl_prin1_to_stream(CL_Obj obj, CL_Obj stream)
 {
-    CL_Symbol *se;
     CL_Obj prev_e;
     if (CL_NULL_P(SYM_PRINT_ESCAPE)) {
         /* Before init — fall through directly */
         CL_Obj prev = printer_stream;
+        CL_GC_PROTECT(prev);
         to_buffer = 0;
         printer_stream = stream;
         print_obj(obj);
         printer_stream = prev;
+        CL_GC_UNPROTECT(1);
         return;
     }
+    /* GC SAFETY (restore class): the print can compact; the saved special
+     * value may be a heap object — protect it so the restore rebinds the
+     * forwarded offset, not a stale one.  Same in the variants below. */
     prev_e = cl_symbol_value(SYM_PRINT_ESCAPE);
+    CL_GC_PROTECT(prev_e);
     cl_set_symbol_value(SYM_PRINT_ESCAPE, CL_T);
     cl_write_to_stream(obj, stream);
     cl_set_symbol_value(SYM_PRINT_ESCAPE, prev_e);
+    CL_GC_UNPROTECT(1);
 }
 
 void cl_princ_to_stream(CL_Obj obj, CL_Obj stream)
@@ -1527,19 +1674,24 @@ void cl_princ_to_stream(CL_Obj obj, CL_Obj stream)
     CL_Obj prev_e, prev_r;
     if (CL_NULL_P(SYM_PRINT_ESCAPE)) {
         CL_Obj prev = printer_stream;
+        CL_GC_PROTECT(prev);
         to_buffer = 0;
         printer_stream = stream;
         print_obj(obj);
         printer_stream = prev;
+        CL_GC_UNPROTECT(1);
         return;
     }
     prev_e = cl_symbol_value(SYM_PRINT_ESCAPE);
     prev_r = cl_symbol_value(SYM_PRINT_READABLY);
+    CL_GC_PROTECT(prev_e);
+    CL_GC_PROTECT(prev_r);
     cl_set_symbol_value(SYM_PRINT_ESCAPE, CL_NIL);
     cl_set_symbol_value(SYM_PRINT_READABLY, CL_NIL);
     cl_write_to_stream(obj, stream);
     cl_set_symbol_value(SYM_PRINT_ESCAPE, prev_e);
     cl_set_symbol_value(SYM_PRINT_READABLY, prev_r);
+    CL_GC_UNPROTECT(2);
 }
 
 void cl_print_to_stream(CL_Obj obj, CL_Obj stream)
@@ -1589,6 +1741,10 @@ static int write_to_buffer_internal(CL_Obj obj, char *buf, int bufsize)
     int prev_out_size = out_size;
     int result_pos;
 
+    /* GC SAFETY: prev is a heap stream offset saved in a C local across
+     * print_obj — protect it (see cl_write_to_stream). */
+    CL_GC_PROTECT(prev);
+
     /* Preserve current_depth across nested write_to_buffer_internal
      * calls so the hard recursion cap in print_obj sees the cumulative
      * depth.  current_depth is restored by save/restore below — this
@@ -1626,6 +1782,7 @@ static int write_to_buffer_internal(CL_Obj obj, char *buf, int bufsize)
     current_depth = prev_depth;
     current_column = prev_column;
     pp_indent_top = prev_indent_top;
+    CL_GC_UNPROTECT(1);
     return result_pos;
 }
 
@@ -1637,10 +1794,14 @@ int cl_prin1_to_string(CL_Obj obj, char *buf, int bufsize)
         /* Before init */
         return write_to_buffer_internal(obj, buf, bufsize);
     }
+    /* GC SAFETY (restore class): protect the saved special values across
+     * the print — see cl_prin1_to_stream. */
     prev_e = cl_symbol_value(SYM_PRINT_ESCAPE);
+    CL_GC_PROTECT(prev_e);
     cl_set_symbol_value(SYM_PRINT_ESCAPE, CL_T);
     result = write_to_buffer_internal(obj, buf, bufsize);
     cl_set_symbol_value(SYM_PRINT_ESCAPE, prev_e);
+    CL_GC_UNPROTECT(1);
     return result;
 }
 
@@ -1653,11 +1814,14 @@ int cl_princ_to_string(CL_Obj obj, char *buf, int bufsize)
     }
     prev_e = cl_symbol_value(SYM_PRINT_ESCAPE);
     prev_r = cl_symbol_value(SYM_PRINT_READABLY);
+    CL_GC_PROTECT(prev_e);
+    CL_GC_PROTECT(prev_r);
     cl_set_symbol_value(SYM_PRINT_ESCAPE, CL_NIL);
     cl_set_symbol_value(SYM_PRINT_READABLY, CL_NIL);
     result = write_to_buffer_internal(obj, buf, bufsize);
     cl_set_symbol_value(SYM_PRINT_ESCAPE, prev_e);
     cl_set_symbol_value(SYM_PRINT_READABLY, prev_r);
+    CL_GC_UNPROTECT(2);
     return result;
 }
 

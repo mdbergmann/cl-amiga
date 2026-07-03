@@ -542,12 +542,19 @@ static CL_Obj bi_load(CL_Obj *args, int n)
                         } else if (magic == CL_FASL_MAGIC) {
                             /* Try loading from FASL; fall back to source on error */
                             int fasl_err;
-                            /* Bind load-pathname and load-truename */
+                            /* Bind load-pathname and load-truename.
+                             * GC SAFETY (audit tier 4, IO1): protect
+                             * load_pathname_obj BEFORE the second
+                             * cl_parse_namestring — it allocates, and the
+                             * old protect-after left a stale offset bound
+                             * into *LOAD-PATHNAME* (ASDF reads it
+                             * constantly).  Mirrors bi_compile_file. */
                             {
                                 extern CL_Obj cl_parse_namestring(const char *str, uint32_t len);
                                 load_pathname_obj = cl_parse_namestring(path_buf,
                                     (uint32_t)strlen(path_buf));
                             }
+                            CL_GC_PROTECT(load_pathname_obj);
                             {
                                 char resolved[512];
                                 if (platform_realpath(path_buf, resolved, (int)sizeof(resolved))) {
@@ -558,7 +565,6 @@ static CL_Obj bi_load(CL_Obj *args, int n)
                                     load_truename_obj = load_pathname_obj;
                                 }
                             }
-                            CL_GC_PROTECT(load_pathname_obj);
                             CL_GC_PROTECT(load_truename_obj);
                             lp_sym = (CL_Symbol *)CL_OBJ_TO_PTR(SYM_STAR_LOAD_PATHNAME);
                             lt_sym = (CL_Symbol *)CL_OBJ_TO_PTR(SYM_STAR_LOAD_TRUENAME);
@@ -654,12 +660,16 @@ static CL_Obj bi_load(CL_Obj *args, int n)
         }
     }
 
-    /* Bind *load-pathname* and *load-truename* per CL spec */
+    /* Bind *load-pathname* and *load-truename* per CL spec.
+     * GC SAFETY (audit tier 4, IO1): protect load_pathname_obj BEFORE the
+     * second cl_parse_namestring (it allocates) — see the FASL-cache twin
+     * above. */
     {
         extern CL_Obj cl_parse_namestring(const char *str, uint32_t len);
         load_pathname_obj = cl_parse_namestring(path_buf,
                                                 (uint32_t)strlen(path_buf));
     }
+    CL_GC_PROTECT(load_pathname_obj);
     /* Resolve truename to absolute path */
     {
         char resolved[512];
@@ -671,7 +681,6 @@ static CL_Obj bi_load(CL_Obj *args, int n)
             load_truename_obj = load_pathname_obj;
         }
     }
-    CL_GC_PROTECT(load_pathname_obj);
     CL_GC_PROTECT(load_truename_obj);
     lp_sym = (CL_Symbol *)CL_OBJ_TO_PTR(SYM_STAR_LOAD_PATHNAME);
     lt_sym = (CL_Symbol *)CL_OBJ_TO_PTR(SYM_STAR_LOAD_TRUENAME);
@@ -3177,7 +3186,7 @@ static CL_Obj bi_set_pprint_dispatch(CL_Obj *args, int n)
     CL_Obj function = args[1];
     int32_t priority = 0;
     CL_Symbol *sym;
-    CL_Obj table, prev, cur, entry, new_entry;
+    CL_Obj table, cur, entry, new_entry;
 
     if (n >= 3 && CL_FIXNUM_P(args[2]))
         priority = CL_FIXNUM_VAL(args[2]);
@@ -3189,34 +3198,28 @@ static CL_Obj bi_set_pprint_dispatch(CL_Obj *args, int n)
     else
         table = cl_symbol_value(SYM_PRINT_PPRINT_DISPATCH);
 
-    /* If function is nil, remove matching entry */
+    /* GC SAFETY (audit tier 4, IO5): both rebuild loops below cons per
+     * iteration — the cursor, the accumulating result and the table must be
+     * rooted or every entry after the first compaction is consed from stale
+     * offsets (corrupt table → CAR-type-error/dead-closure crashes on the
+     * next pretty print).  type_spec/function are re-read from the rooted
+     * args[] slots after allocs instead of trusting the C locals. */
+
+    /* If function is nil, remove matching entry (rebuild without it) */
     if (CL_NULL_P(function)) {
-        prev = CL_NIL;
+        CL_Obj result = CL_NIL;
+        CL_GC_PROTECT(result);
         cur = table;
+        CL_GC_PROTECT(cur);
         while (!CL_NULL_P(cur)) {
+            type_spec = args[0];
             entry = cl_car(cur);
-            if (cl_car(entry) == type_spec) {
-                if (CL_NULL_P(prev))
-                    table = cl_cdr(cur);
-                else {
-                    /* Can't rplacd easily from C, rebuild without this entry */
-                    CL_Obj result = CL_NIL;
-                    CL_Obj scan = table;
-                    CL_GC_PROTECT(result);
-                    while (!CL_NULL_P(scan)) {
-                        if (scan != cur)
-                            result = cl_cons(cl_car(scan), result);
-                        scan = cl_cdr(scan);
-                    }
-                    CL_GC_UNPROTECT(1);
-                    table = result;
-                }
-                break;
-            }
-            prev = cur;
+            if (cl_car(entry) != type_spec)
+                result = cl_cons(entry, result);
             cur = cl_cdr(cur);
         }
-        cl_set_symbol_value(SYM_PRINT_PPRINT_DISPATCH, table);
+        CL_GC_UNPROTECT(2);
+        cl_set_symbol_value(SYM_PRINT_PPRINT_DISPATCH, result);
         return CL_NIL;
     }
 
@@ -3225,26 +3228,27 @@ static CL_Obj bi_set_pprint_dispatch(CL_Obj *args, int n)
         CL_Obj result = CL_NIL;
         CL_GC_PROTECT(result);
         cur = table;
+        CL_GC_PROTECT(cur);
         while (!CL_NULL_P(cur)) {
+            type_spec = args[0];
             entry = cl_car(cur);
             if (cl_car(entry) != type_spec)
-                result = cl_cons(cl_car(cur), result);
+                result = cl_cons(entry, result);
             cur = cl_cdr(cur);
         }
-        CL_GC_UNPROTECT(1);
+        CL_GC_UNPROTECT(2);
         table = result;
     }
 
-    /* Build new entry: (type-spec priority . function) */
-    new_entry = cl_cons(CL_MAKE_FIXNUM(priority), function);
+    /* Build new entry (type-spec priority . function) and push it onto the
+     * table.  Each cons can compact: keep table rooted and read
+     * type-spec/function from the rooted args[] slots. */
+    CL_GC_PROTECT(table);
+    new_entry = cl_cons(CL_MAKE_FIXNUM(priority), args[1]);
     CL_GC_PROTECT(new_entry);
-    new_entry = cl_cons(type_spec, new_entry);
-    CL_GC_UNPROTECT(1);
-
-    /* Cons onto front of table */
-    CL_GC_PROTECT(new_entry);
+    new_entry = cl_cons(args[0], new_entry);
     table = cl_cons(new_entry, table);
-    CL_GC_UNPROTECT(1);
+    CL_GC_UNPROTECT(2);
 
     cl_set_symbol_value(SYM_PRINT_PPRINT_DISPATCH, table);
     return CL_NIL;
