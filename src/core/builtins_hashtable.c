@@ -519,27 +519,45 @@ int cl_hashtable_equalp(CL_Obj a_obj, CL_Obj b_obj,
     if (a->test != b->test) return 0;
     if (a->count != b->count) return 0;
 
-    for (i = 0; i < a->bucket_count; i++) {
-        CL_Obj chain = ht_get_buckets(a)[i];
-        while (!CL_NULL_P(chain)) {
-            CL_Obj pair = cl_car(chain);
-            CL_Obj key  = cl_car(pair);
-            CL_Obj aval = cl_cdr(pair);
-            uint32_t bidx = hash_obj(key, b->test) & (b->bucket_count - 1);
-            CL_Obj bchain = ht_get_buckets(b)[bidx];
-            int found = 0;
-            while (!CL_NULL_P(bchain)) {
-                CL_Obj bpair = cl_car(bchain);
-                if (keys_equal(cl_car(bpair), key, b->test)) {
-                    if (!val_eq(aval, cl_cdr(bpair))) return 0;
-                    found = 1;
-                    break;
+    /* GC SAFETY: keys_equal/val_eq can compact (EQUALP tests recurse through
+     * bi_equalp, whose numeric compares allocate).  Both chain cursors are
+     * protected roots, the table pointers are re-derived from the rooted
+     * handles, and keys/values are re-read from the cursors at each use. */
+    {
+        CL_Obj chain = CL_NIL, bchain = CL_NIL;
+        uint32_t bucket_count = a->bucket_count;
+        CL_GC_PROTECT(a_obj);
+        CL_GC_PROTECT(b_obj);
+        CL_GC_PROTECT(chain);
+        CL_GC_PROTECT(bchain);
+        for (i = 0; i < bucket_count; i++) {
+            chain = ht_get_buckets((CL_Hashtable *)CL_OBJ_TO_PTR(a_obj))[i];
+            while (!CL_NULL_P(chain)) {
+                int found = 0;
+                CL_Hashtable *bh = (CL_Hashtable *)CL_OBJ_TO_PTR(b_obj);
+                uint32_t bidx = hash_obj(cl_car(cl_car(chain)), bh->test)
+                                & (bh->bucket_count - 1);
+                bchain = ht_get_buckets(bh)[bidx];
+                while (!CL_NULL_P(bchain)) {
+                    if (keys_equal(cl_car(cl_car(bchain)), cl_car(cl_car(chain)),
+                                   ((CL_Hashtable *)CL_OBJ_TO_PTR(b_obj))->test)) {
+                        if (!val_eq(cl_cdr(cl_car(chain)), cl_cdr(cl_car(bchain)))) {
+                            CL_GC_UNPROTECT(4);
+                            return 0;
+                        }
+                        found = 1;
+                        break;
+                    }
+                    bchain = cl_cdr(bchain);
                 }
-                bchain = cl_cdr(bchain);
+                if (!found) {
+                    CL_GC_UNPROTECT(4);
+                    return 0;
+                }
+                chain = cl_cdr(chain);
             }
-            if (!found) return 0;
-            chain = cl_cdr(chain);
         }
+        CL_GC_UNPROTECT(4);
     }
     return 1;
 }
@@ -771,26 +789,34 @@ static CL_Obj bi_maphash(CL_Obj *args, int n)
     CL_GC_PROTECT(func);
     CL_GC_PROTECT(ht_obj);
 
-    for (i = 0; i < ht->bucket_count; i++) {
-        CL_Obj chain = ht_get_buckets(ht)[i];
-        while (!CL_NULL_P(chain)) {
-            CL_Obj pair = cl_car(chain);
-            CL_Obj call_args[2];
-            call_args[0] = cl_car(pair);
-            call_args[1] = cl_cdr(pair);
+    {
+        /* GC SAFETY: the chain cursor is re-read (cl_cdr) after cl_vm_apply
+         * runs arbitrary user code that can compact — without a root the
+         * cursor holds a stale pre-move offset. */
+        CL_Obj chain = CL_NIL;
+        CL_GC_PROTECT(chain);
+        for (i = 0; i < ht->bucket_count; i++) {
+            chain = ht_get_buckets(ht)[i];
+            while (!CL_NULL_P(chain)) {
+                CL_Obj pair = cl_car(chain);
+                CL_Obj call_args[2];
+                call_args[0] = cl_car(pair);
+                call_args[1] = cl_cdr(pair);
 
-            if (CL_FUNCTION_P(func) || CL_BYTECODE_P(func) || CL_CLOSURE_P(func)) {
-                /* cl_vm_apply GC-roots call_args across the call (the function
-                 * may compact while reading its key/value args). */
-                cl_vm_apply(func, call_args, 2);
-            } else {
-                cl_error(CL_ERR_TYPE, "MAPHASH: not a function");
+                if (CL_FUNCTION_P(func) || CL_BYTECODE_P(func) || CL_CLOSURE_P(func)) {
+                    /* cl_vm_apply GC-roots call_args across the call (the function
+                     * may compact while reading its key/value args). */
+                    cl_vm_apply(func, call_args, 2);
+                } else {
+                    cl_error(CL_ERR_TYPE, "MAPHASH: not a function");
+                }
+
+                /* Re-dereference after potential GC from function call */
+                ht = (CL_Hashtable *)CL_OBJ_TO_PTR(ht_obj);
+                chain = cl_cdr(chain);
             }
-
-            /* Re-dereference after potential GC from function call */
-            ht = (CL_Hashtable *)CL_OBJ_TO_PTR(ht_obj);
-            chain = cl_cdr(chain);
         }
+        CL_GC_UNPROTECT(1);
     }
 
     CL_GC_UNPROTECT(2);

@@ -48,9 +48,13 @@ static void compile_destructure_pattern(CL_Compiler *c, int pos_slot,
      * path.  The arity guards emit calls to pre-interned helper symbols
      * (emit_dbind_error allocates nothing), and the &optional/&key default
      * compilation already GC-protects its own `rest` cursor — so the `pattern`
-     * cursor never needs a GC root here.  (An earlier version GC-protected
-     * `pattern` for the whole function; that root leaked across a compile-time
-     * cl_error longjmp during heavy cold loads, corrupting the heap.) */
+     * cursor needs no GC root for the plain walk.  (An earlier version
+     * GC-protected `pattern` for the whole function; that root leaked across
+     * a compile-time cl_error longjmp during heavy cold loads, corrupting the
+     * heap.)  The two nested-pattern recursion sites are the exception: they
+     * DO allocate (nested defaults compile via compile_expr) and re-read
+     * `pattern` afterwards, so each protects the cursor just across the
+     * recursive call. */
     while (!CL_NULL_P(pattern)) {
         CL_Obj elem = cl_car(pattern);
 
@@ -92,6 +96,11 @@ static void compile_destructure_pattern(CL_Compiler *c, int pos_slot,
                         init = cl_car(cl_cdr(spec));
                 }
                 compile_expr(c, init);          /* value (var not yet in scope) */
+                /* GC SAFETY: compile_expr(init) can compact — re-derive var
+                 * from the protected cursor before registering it, else a
+                 * stale symbol offset lands in env->locals. */
+                spec = cl_car(rest);
+                var = CL_CONS_P(spec) ? cl_car(spec) : spec;
                 slot = cl_env_add_local(env, var);
                 cl_emit(c, OP_STORE);
                 cl_emit(c, (uint8_t)slot);
@@ -115,7 +124,11 @@ static void compile_destructure_pattern(CL_Compiler *c, int pos_slot,
                 cl_emit(c, OP_STORE);
                 cl_emit(c, (uint8_t)tmp);
                 cl_emit(c, OP_POP);
+                /* GC SAFETY: the recursion can compile nested defaults
+                 * (allocates, can compact) and `pattern` is re-read after. */
+                CL_GC_PROTECT(pattern);
                 compile_destructure_pattern(c, tmp, rest_var);
+                CL_GC_UNPROTECT(1);
                 pattern = cl_cdr(cl_cdr(pattern)); /* skip &rest pattern */
                 if (!CL_NULL_P(pattern) && cl_car(pattern) == SYM_AMP_KEY)
                     continue;
@@ -294,11 +307,15 @@ static void compile_destructure_pattern(CL_Compiler *c, int pos_slot,
                         keyword_sym = cl_car(first);
                         var = cl_car(cl_cdr(first));
                     } else {
-                        var = first;
-                        /* keyword derived from var name */
-                        kw_name = cl_symbol_name(var);
+                        /* keyword derived from var name.
+                         * GC SAFETY: cl_intern_keyword may intern a NEW
+                         * keyword (allocates, can compact) — re-derive spec
+                         * and var from the protected cursor afterwards. */
+                        kw_name = cl_symbol_name(first);
                         keyword_sym = cl_intern_keyword(kw_name,
                                          (uint32_t)strlen(kw_name));
+                        spec = cl_car(rest);
+                        var = cl_car(spec);
                     }
                     if (!CL_NULL_P(cl_cdr(spec)))
                         default_val = cl_car(cl_cdr(spec));
@@ -306,10 +323,12 @@ static void compile_destructure_pattern(CL_Compiler *c, int pos_slot,
                         !CL_NULL_P(cl_cdr(cl_cdr(spec))))
                         supplied_p = cl_car(cl_cdr(cl_cdr(spec)));
                 } else {
-                    var = spec;
-                    kw_name = cl_symbol_name(var);
+                    kw_name = cl_symbol_name(spec);
                     keyword_sym = cl_intern_keyword(kw_name,
                                      (uint32_t)strlen(kw_name));
+                    /* GC SAFETY: same re-derive as above. */
+                    spec = cl_car(rest);
+                    var = spec;
                 }
 
                 var_slot = cl_env_add_local(env, var);
@@ -418,7 +437,11 @@ static void compile_destructure_pattern(CL_Compiler *c, int pos_slot,
         }
 
         if (CL_CONS_P(elem)) {
-            /* Nested pattern: extract sublist, recurse */
+            /* Nested pattern: extract sublist, recurse.
+             * GC SAFETY: the recursion is NOT allocation-free — a nested
+             * &optional/&key/&aux default compiles via compile_expr and can
+             * compact.  Protect the `pattern` cursor across it (locally, not
+             * for the whole walk — see the NB at function top). */
             int sub_slot = alloc_temp_slot(env);
             cl_emit(c, OP_LOAD);
             cl_emit(c, (uint8_t)pos_slot);
@@ -426,7 +449,9 @@ static void compile_destructure_pattern(CL_Compiler *c, int pos_slot,
             cl_emit(c, OP_STORE);
             cl_emit(c, (uint8_t)sub_slot);
             cl_emit(c, OP_POP);
+            CL_GC_PROTECT(pattern);
             compile_destructure_pattern(c, sub_slot, elem);
+            CL_GC_UNPROTECT(1);
         } else if (CL_SYMBOL_P(elem)) {
             /* Simple variable: bind (car pos) */
             int slot = cl_env_add_local(env, elem);
@@ -723,13 +748,19 @@ static int nlx_scan(CL_Obj form, int mode, CL_Obj tag, int anon)
 
     /* (setq/setf place value ...) — scan value forms (places aren't code
      * that creates closures, and expanding a setf-place macro would be a
-     * spurious side effect). */
+     * spurious side effect).
+     * GC SAFETY (all handlers below): the recursive nlx_scan/nlx_scan_body
+     * calls macroexpand in the VM and can compact — every cursor or local
+     * re-read after such a call must be GC-protected (same as the
+     * handler-bind case further down). */
     if (head == SYM_SETQ || head == SYM_SETF) {
         CL_Obj p = rest;
+        CL_GC_PROTECT(p);
         while (CL_CONS_P(p) && CL_CONS_P(cl_cdr(p))) {
-            if (nlx_scan(cl_car(cl_cdr(p)), mode, tag, anon)) { r = 1; goto done; }
+            if (nlx_scan(cl_car(cl_cdr(p)), mode, tag, anon)) { r = 1; break; }
             p = cl_cdr(cl_cdr(p));
         }
+        CL_GC_UNPROTECT(1);
         goto done;
     }
 
@@ -750,13 +781,16 @@ static int nlx_scan(CL_Obj form, int mode, CL_Obj tag, int anon)
         if (!CL_CONS_P(rest)) goto done;
         defs = cl_car(rest);
         body = cl_cdr(rest);
+        CL_GC_PROTECT(defs);
+        CL_GC_PROTECT(body);
         while (CL_CONS_P(defs)) {
             CL_Obj def = cl_car(defs);
             if (CL_CONS_P(def) && CL_CONS_P(cl_cdr(def)))
-                if (nlx_scan_body(cl_cdr(cl_cdr(def)), mode, tag, anon)) { r = 1; goto done; }
+                if (nlx_scan_body(cl_cdr(cl_cdr(def)), mode, tag, anon)) { r = 1; break; }
             defs = cl_cdr(defs);
         }
-        r = nlx_scan_body(body, mode, tag, anon);
+        if (!r) r = nlx_scan_body(body, mode, tag, anon);
+        CL_GC_UNPROTECT(2);
         goto done;
     }
     /* (let/let* ((var value)...) body...) — scan values + body, skip names. */
@@ -765,27 +799,34 @@ static int nlx_scan(CL_Obj form, int mode, CL_Obj tag, int anon)
         if (!CL_CONS_P(rest)) goto done;
         bindings = cl_car(rest);
         body = cl_cdr(rest);
+        CL_GC_PROTECT(bindings);
+        CL_GC_PROTECT(body);
         while (CL_CONS_P(bindings)) {
             CL_Obj clause = cl_car(bindings);
             if (CL_CONS_P(clause) && CL_CONS_P(cl_cdr(clause)))
-                if (nlx_scan(cl_car(cl_cdr(clause)), mode, tag, anon)) { r = 1; goto done; }
+                if (nlx_scan(cl_car(cl_cdr(clause)), mode, tag, anon)) { r = 1; break; }
             bindings = cl_cdr(bindings);
         }
-        r = nlx_scan_body(body, mode, tag, anon);
+        if (!r) r = nlx_scan_body(body, mode, tag, anon);
+        CL_GC_UNPROTECT(2);
         goto done;
     }
     /* (destructuring-bind pattern value body...) — skip pattern. */
     if (head == SYM_DESTRUCTURING_BIND) {
         if (!CL_CONS_P(rest) || !CL_CONS_P(cl_cdr(rest))) goto done;
-        if (nlx_scan(cl_car(cl_cdr(rest)), mode, tag, anon)) { r = 1; goto done; }
-        r = nlx_scan_body(cl_cdr(cl_cdr(rest)), mode, tag, anon);
+        CL_GC_PROTECT(rest);
+        if (nlx_scan(cl_car(cl_cdr(rest)), mode, tag, anon)) r = 1;
+        else r = nlx_scan_body(cl_cdr(cl_cdr(rest)), mode, tag, anon);
+        CL_GC_UNPROTECT(1);
         goto done;
     }
     /* (multiple-value-bind (vars...) value body...) — skip var list. */
     if (head == SYM_MULTIPLE_VALUE_BIND) {
         if (!CL_CONS_P(rest) || !CL_CONS_P(cl_cdr(rest))) goto done;
-        if (nlx_scan(cl_car(cl_cdr(rest)), mode, tag, anon)) { r = 1; goto done; }
-        r = nlx_scan_body(cl_cdr(cl_cdr(rest)), mode, tag, anon);
+        CL_GC_PROTECT(rest);
+        if (nlx_scan(cl_car(cl_cdr(rest)), mode, tag, anon)) r = 1;
+        else r = nlx_scan_body(cl_cdr(cl_cdr(rest)), mode, tag, anon);
+        CL_GC_UNPROTECT(1);
         goto done;
     }
     /* (do/do* ((var init [step])...) (end result...) body...) — skip names. */
@@ -796,17 +837,27 @@ static int nlx_scan(CL_Obj form, int mode, CL_Obj tag, int anon)
         if (!CL_CONS_P(cl_cdr(rest))) goto done;
         endc = cl_car(cl_cdr(rest));
         body = cl_cdr(cl_cdr(rest));
+        CL_GC_PROTECT(clauses);
+        CL_GC_PROTECT(endc);
+        CL_GC_PROTECT(body);
         while (CL_CONS_P(clauses)) {
             CL_Obj clause = cl_car(clauses);
             if (CL_CONS_P(clause) && CL_CONS_P(cl_cdr(clause))) {
-                if (nlx_scan(cl_car(cl_cdr(clause)), mode, tag, anon)) { r = 1; goto done; }
-                if (CL_CONS_P(cl_cdr(cl_cdr(clause))))
-                    if (nlx_scan(cl_car(cl_cdr(cl_cdr(clause))), mode, tag, anon)) { r = 1; goto done; }
+                /* clause is re-read after the first nlx_scan below, which can
+                 * compact — keep a protected cursor for it too. */
+                CL_GC_PROTECT(clause);
+                if (nlx_scan(cl_car(cl_cdr(clause)), mode, tag, anon)) r = 1;
+                else if (CL_CONS_P(cl_cdr(cl_cdr(clause))) &&
+                         nlx_scan(cl_car(cl_cdr(cl_cdr(clause))), mode, tag, anon))
+                    r = 1;
+                CL_GC_UNPROTECT(1);
+                if (r) break;
             }
             clauses = cl_cdr(clauses);
         }
-        if (CL_CONS_P(endc) && nlx_scan_body(endc, mode, tag, anon)) { r = 1; goto done; }
-        r = nlx_scan_body(body, mode, tag, anon);
+        if (!r && CL_CONS_P(endc) && nlx_scan_body(endc, mode, tag, anon)) r = 1;
+        if (!r) r = nlx_scan_body(body, mode, tag, anon);
+        CL_GC_UNPROTECT(3);
         goto done;
     }
     /* (case/typecase keyform (key body...)...) — skip keys. */
@@ -814,13 +865,21 @@ static int nlx_scan(CL_Obj form, int mode, CL_Obj tag, int anon)
         head == SYM_TYPECASE || head == SYM_ETYPECASE) {
         CL_Obj clauses;
         if (!CL_CONS_P(rest)) goto done;
-        if (nlx_scan(cl_car(rest), mode, tag, anon)) { r = 1; goto done; }
+        CL_GC_PROTECT(rest);
+        if (nlx_scan(cl_car(rest), mode, tag, anon)) {
+            r = 1;
+            CL_GC_UNPROTECT(1);
+            goto done;
+        }
         clauses = cl_cdr(rest);
+        CL_GC_UNPROTECT(1);
+        CL_GC_PROTECT(clauses);
         while (CL_CONS_P(clauses)) {
             CL_Obj clause = cl_car(clauses);
-            if (CL_CONS_P(clause) && nlx_scan_body(cl_cdr(clause), mode, tag, anon)) { r = 1; goto done; }
+            if (CL_CONS_P(clause) && nlx_scan_body(cl_cdr(clause), mode, tag, anon)) { r = 1; break; }
             clauses = cl_cdr(clauses);
         }
+        CL_GC_UNPROTECT(1);
         goto done;
     }
     /* (handler-bind ((type handler-form)...) body...) — the clause CAR is a
@@ -1425,14 +1484,22 @@ void compile_catch(CL_Compiler *c, CL_Obj form)
 {
     /* (catch tag body...) */
     CL_Obj tag_form = cl_car(cl_cdr(form));
-    CL_Obj body = cl_cdr(cl_cdr(form));
+    CL_Obj body;
     int saved_tail = c->in_tail;
     int catch_pos, jmp_pos;
 
     c->in_tail = 0;
 
+    /* GC SAFETY: compile_expr(tag_form) allocates and can compact; protect
+     * `form` and re-derive `body` afterwards (same shape as compile_if). */
+    CL_GC_PROTECT(form);
+
     /* Compile tag expression (push tag value on stack) */
     compile_expr(c, tag_form);
+
+    body = cl_cdr(cl_cdr(form));
+    CL_GC_UNPROTECT(1);
+    CL_GC_PROTECT(body);
 
     /* OP_CATCH offset_to_landing: setjmp; on throw jumps to landing */
     cl_emit(c, OP_CATCH);
@@ -1449,6 +1516,8 @@ void compile_catch(CL_Compiler *c, CL_Obj form)
         cl_emit(c, OP_NIL);
     else
         compile_progn(c, body);
+
+    CL_GC_UNPROTECT(1);  /* body */
 
     /* OP_UNCATCH: pop catch frame (normal exit) */
     cl_emit(c, OP_UNCATCH);
@@ -1478,7 +1547,7 @@ void compile_unwind_protect(CL_Compiler *c, CL_Obj form)
      * common idioms like (mv-bind (v p) (with-lock-held (l) (gethash k h)))
      * where p (presentp) is the second value. */
     CL_Obj protected_form = cl_car(cl_cdr(form));
-    CL_Obj cleanup_forms = cl_cdr(cl_cdr(form));
+    CL_Obj cleanup_forms;
     CL_CompEnv *env = c->env;
     int saved_local_count = env->local_count;
     int saved_tail = c->in_tail;
@@ -1501,8 +1570,16 @@ void compile_unwind_protect(CL_Compiler *c, CL_Obj form)
     uwprot_pos = c->code_pos;
     cl_emit_i32(c, 0); /* placeholder */
 
+    /* GC SAFETY: compile_expr(protected_form) allocates and can compact;
+     * protect `form` and derive cleanup_forms only afterwards (same shape
+     * as compile_if — a pre-compaction read would be a stale offset). */
+    CL_GC_PROTECT(form);
+
     /* Compile protected form (leaves primary on stack, MV buffer holds rest) */
     compile_expr(c, protected_form);
+
+    cleanup_forms = cl_cdr(cl_cdr(form));
+    CL_GC_UNPROTECT(1);
 
     /* OP_MV_TO_LIST: pop primary, build full list of all values, push list */
     cl_emit(c, OP_MV_TO_LIST);
@@ -1567,12 +1644,16 @@ CL_Obj compile_flet(CL_Compiler *c, CL_Obj form)
      * a tail frame that restores local + local-fun counts in the
      * postlude.  Body's tail form returns to the driver. */
     CL_Obj bindings = cl_car(cl_cdr(form));
-    CL_Obj body = cl_cdr(cl_cdr(form));
+    CL_Obj body;
     CL_CompEnv *env = c->env;
     int saved_local_count = env->local_count;
     int saved_fun_count = env->local_fun_count;
     int saved_tail = c->in_tail;
     CL_TailFrame *tf;
+
+    /* GC SAFETY: phase 1's compile_expr calls compact — protect `form` and
+     * derive `body` only after them. */
+    CL_GC_PROTECT(form);
 
     /* Phase 1: compile each function in outer scope, store in anonymous slots */
     {
@@ -1581,17 +1662,25 @@ CL_Obj compile_flet(CL_Compiler *c, CL_Obj form)
         while (!CL_NULL_P(b)) {
             CL_Obj binding = cl_car(b);
             CL_Obj fname = cl_car(binding);
-            CL_Obj lambda_list = cl_car(cl_cdr(binding));
             CL_Obj fbody = cl_cdr(cl_cdr(binding));
             CL_Obj lambda_form;
             int slot;
 
             /* Build (lambda (params) (block name body...)) per CL spec:
-             * flet functions have an implicit block named after the function */
+             * flet functions have an implicit block named after the function.
+             * GC SAFETY: each cl_cons can compact — build the chain one call
+             * at a time (cl_cons forwards its own args) and re-derive
+             * lambda_list from the protected cursor b only after the conses
+             * that precede its use; a nested cl_cons(lambda_list, cl_cons(..))
+             * may read lambda_list before the inner cons moves it. */
             {
-                CL_Obj block_form = cl_cons(SYM_BLOCK, cl_cons(fname, fbody));
-                lambda_form = cl_cons(SYM_LAMBDA,
-                               cl_cons(lambda_list, cl_cons(block_form, CL_NIL)));
+                CL_Obj block_form = cl_cons(fname, fbody);
+                CL_Obj lambda_list;
+                block_form = cl_cons(SYM_BLOCK, block_form);
+                lambda_form = cl_cons(block_form, CL_NIL);
+                lambda_list = cl_car(cl_cdr(cl_car(b)));  /* re-derive post-compaction */
+                lambda_form = cl_cons(lambda_list, lambda_form);
+                lambda_form = cl_cons(SYM_LAMBDA, lambda_form);
             }
             CL_GC_PROTECT(lambda_form);
 
@@ -1626,6 +1715,9 @@ CL_Obj compile_flet(CL_Compiler *c, CL_Obj form)
 
     c->in_tail = saved_tail;
 
+    body = cl_cdr(cl_cdr(form));  /* re-derive: phase 1 may have compacted */
+    CL_GC_UNPROTECT(1);
+
     tf = cl_tail_push(c);
     tf->kind = CL_TAIL_FLET;
     tf->saved_local_count = saved_local_count;
@@ -1646,11 +1738,15 @@ CL_Obj compile_labels(CL_Compiler *c, CL_Obj form)
      *
      * Trampoline-aware: same shape as compile_flet, postlude restores env. */
     CL_Obj bindings = cl_car(cl_cdr(form));
-    CL_Obj body = cl_cdr(cl_cdr(form));
+    CL_Obj body;
     CL_CompEnv *env = c->env;
     int saved_local_count = env->local_count;
     int saved_fun_count = env->local_fun_count;
     int saved_tail = c->in_tail;
+
+    /* GC SAFETY: phase 2's compile_expr calls compact — protect `form` and
+     * derive `body` only after them. */
+    CL_GC_PROTECT(form);
 
     /* Phase 1: pre-allocate slots, initialize to NIL, box them, and register
      * all function names. Boxing is required so that closures compiled in
@@ -1711,16 +1807,21 @@ CL_Obj compile_labels(CL_Compiler *c, CL_Obj form)
         while (!CL_NULL_P(b)) {
             CL_Obj binding = cl_car(b);
             CL_Obj fname = cl_car(binding);
-            CL_Obj lambda_list = cl_car(cl_cdr(binding));
             CL_Obj fbody = cl_cdr(cl_cdr(binding));
             CL_Obj lambda_form;
 
             /* Build (lambda (params) (block name body...)) per CL spec:
-             * labels functions have an implicit block named after the function */
+             * labels functions have an implicit block named after the function.
+             * GC SAFETY: same sequenced-cons + re-derive shape as compile_flet
+             * — see the comment there. */
             {
-                CL_Obj block_form = cl_cons(SYM_BLOCK, cl_cons(fname, fbody));
-                lambda_form = cl_cons(SYM_LAMBDA,
-                               cl_cons(lambda_list, cl_cons(block_form, CL_NIL)));
+                CL_Obj block_form = cl_cons(fname, fbody);
+                CL_Obj lambda_list;
+                block_form = cl_cons(SYM_BLOCK, block_form);
+                lambda_form = cl_cons(block_form, CL_NIL);
+                lambda_list = cl_car(cl_cdr(cl_car(b)));  /* re-derive post-compaction */
+                lambda_form = cl_cons(lambda_list, lambda_form);
+                lambda_form = cl_cons(SYM_LAMBDA, lambda_form);
             }
             CL_GC_PROTECT(lambda_form);
 
@@ -1741,6 +1842,8 @@ CL_Obj compile_labels(CL_Compiler *c, CL_Obj form)
 
     /* Phase 3: compile body via trampoline */
     c->in_tail = saved_tail;
+    body = cl_cdr(cl_cdr(form));  /* re-derive: phase 2 may have compacted */
+    CL_GC_UNPROTECT(1);
     {
         CL_TailFrame *tf = cl_tail_push(c);
         tf->kind = CL_TAIL_LABELS;
@@ -2192,6 +2295,15 @@ void compile_do(CL_Compiler *c, CL_Obj form)
         }
     }
 
+    /* GC-protect BEFORE the boxing pre-scan — scan_body_for_boxing
+     * macroexpands in the VM (allocates, can compact), and compile_expr
+     * below compacts too, making inits[]/vars[]/steps[]/end_test/
+     * result_forms/body stale.  var_clauses is re-walked by each cursor. */
+    CL_GC_PROTECT(var_clauses);
+    CL_GC_PROTECT(body);
+    CL_GC_PROTECT(end_test);
+    CL_GC_PROTECT(result_forms);
+
     /* Check which do vars are captured (all stepped vars are mutated by loop) */
     {
         uint8_t mutated[CL_MAX_BINDINGS], captured[CL_MAX_BINDINGS];
@@ -2199,8 +2311,17 @@ void compile_do(CL_Compiler *c, CL_Obj form)
         memset(mutated, 0, (size_t)n);
         memset(captured, 0, (size_t)n);
         memset(do_boxed, 0, (size_t)n);
-        /* Scan body, end-test, result forms, and step forms */
+        /* Root vars[] and steps[] across the scans: find_var_index compares
+         * vars[] by identity, and steps[i] is scanned after earlier scans may
+         * have compacted (same discipline as determine_boxed_vars). */
+        for (i = 0; i < n; i++)
+            CL_GC_PROTECT(vars[i]);
+        for (i = 0; i < n; i++)
+            CL_GC_PROTECT(steps[i]);
+        /* Scan body, end-test, result forms, and step forms — with a
+         * protected cursor (each scan can compact and stale the cursor). */
         cur = body;
+        CL_GC_PROTECT(cur);
         while (CL_CONS_P(cur)) {
             scan_body_for_boxing(cl_car(cur), vars, n, mutated, captured, 0);
             cur = cl_cdr(cur);
@@ -2211,9 +2332,11 @@ void compile_do(CL_Compiler *c, CL_Obj form)
             scan_body_for_boxing(cl_car(cur), vars, n, mutated, captured, 0);
             cur = cl_cdr(cur);
         }
+        CL_GC_UNPROTECT(1);  /* cur */
         for (i = 0; i < n; i++) {
             scan_body_for_boxing(steps[i], vars, n, mutated, captured, 0);
         }
+        cl_gc_pop_roots(2 * n);  /* vars[], steps[] */
         /* Stepped vars are always mutated; all do vars with step forms need boxing if captured */
         for (i = 0; i < n; i++) {
             do_boxed[i] = (has_step[i] && captured[i]) ? 1 :
@@ -2222,13 +2345,6 @@ void compile_do(CL_Compiler *c, CL_Obj form)
     }
 
     c->in_tail = 0;
-
-    /* GC-protect — compile_expr below can compact, making inits[]/vars[]/steps[]/
-     * end_test/result_forms/body stale.  var_clauses is re-walked by each cursor. */
-    CL_GC_PROTECT(var_clauses);
-    CL_GC_PROTECT(body);
-    CL_GC_PROTECT(end_test);
-    CL_GC_PROTECT(result_forms);
 
     /* Parallel init: evaluate all init forms onto stack.
      * Walk var_clauses with a protected cursor — compile_expr can compact inits[] stale. */
@@ -2444,7 +2560,20 @@ void compile_do_star(CL_Compiler *c, CL_Obj form)
         memset(mutated, 0, (size_t)n);
         memset(captured, 0, (size_t)n);
         memset(do_boxed, 0, (size_t)n);
+        /* GC-protect BEFORE the boxing pre-scan — scan_body_for_boxing
+         * macroexpands in the VM (allocates, can compact); root vars[] and
+         * steps[] across the scans and walk with a protected cursor (same
+         * discipline as determine_boxed_vars / compile_do). */
+        CL_GC_PROTECT(var_clauses);
+        CL_GC_PROTECT(body);
+        CL_GC_PROTECT(end_test);
+        CL_GC_PROTECT(result_forms);
+        for (i = 0; i < n; i++)
+            CL_GC_PROTECT(vars[i]);
+        for (i = 0; i < n; i++)
+            CL_GC_PROTECT(steps[i]);
         cur = body;
+        CL_GC_PROTECT(cur);
         while (CL_CONS_P(cur)) {
             scan_body_for_boxing(cl_car(cur), vars, n, mutated, captured, 0);
             cur = cl_cdr(cur);
@@ -2455,22 +2584,19 @@ void compile_do_star(CL_Compiler *c, CL_Obj form)
             scan_body_for_boxing(cl_car(cur), vars, n, mutated, captured, 0);
             cur = cl_cdr(cur);
         }
+        CL_GC_UNPROTECT(1);  /* cur */
         for (i = 0; i < n; i++)
             scan_body_for_boxing(steps[i], vars, n, mutated, captured, 0);
+        cl_gc_pop_roots(2 * n);  /* vars[], steps[] */
         for (i = 0; i < n; i++) {
             do_boxed[i] = (has_step[i] && captured[i]) ? 1 :
                           (mutated[i] && captured[i]) ? 1 : 0;
         }
+        /* var_clauses/body/end_test/result_forms stay protected: compile_expr
+         * below compacts too — the matching UNPROTECT(4) is at function end. */
     }
 
     c->in_tail = 0;
-
-    /* GC-protect — compile_expr below can compact, making inits[]/vars[]/steps[]/
-     * end_test/result_forms/body stale.  var_clauses is re-walked by each cursor. */
-    CL_GC_PROTECT(var_clauses);
-    CL_GC_PROTECT(body);
-    CL_GC_PROTECT(end_test);
-    CL_GC_PROTECT(result_forms);
 
     /* Sequential init: evaluate and store each var immediately.
      * Walk var_clauses with a protected cursor — compile_expr can compact inits[]/vars[] stale. */
@@ -3121,12 +3247,17 @@ CL_Obj compile_macrolet(CL_Compiler *c, CL_Obj form)
 {
     /* (macrolet ((name (params) body...) ...) body...) */
     CL_Obj bindings = cl_car(cl_cdr(form));
-    CL_Obj body = cl_cdr(cl_cdr(form));
+    CL_Obj body;
     CL_CompEnv *env = c->env;
     int saved_macro_count = env->local_macro_count;
     CL_TailFrame *tf;
 
+    /* GC SAFETY: install_expanders compiles+evals each expander (allocates,
+     * can compact); protect `form` and derive `body` only afterwards. */
+    CL_GC_PROTECT(form);
     cl_macrolet_install_expanders(env, bindings);
+    body = cl_cdr(cl_cdr(form));
+    CL_GC_UNPROTECT(1);
 
     /* Trampoline body — postlude restores local_macro_count and notinline_count. */
     tf = cl_tail_push(c);
@@ -3174,14 +3305,20 @@ CL_Obj compile_progv(CL_Compiler *c, CL_Obj form)
     /* (progv symbols-form values-form body...) — emit BIND prelude,
      * trampoline the body, postlude emits UNBIND. */
     CL_Obj symbols_form = cl_car(cl_cdr(form));
-    CL_Obj values_form  = cl_car(cl_cdr(cl_cdr(form)));
-    CL_Obj body = cl_cdr(cl_cdr(cl_cdr(form)));
+    CL_Obj values_form;
+    CL_Obj body;
     int saved_tail = c->in_tail;
     CL_TailFrame *tf;
 
     c->in_tail = 0;
+    /* GC SAFETY: each compile_expr allocates and can compact; protect `form`
+     * and re-derive values_form/body after the preceding compile. */
+    CL_GC_PROTECT(form);
     compile_expr(c, symbols_form);
+    values_form = cl_car(cl_cdr(cl_cdr(form)));
     compile_expr(c, values_form);
+    body = cl_cdr(cl_cdr(cl_cdr(form)));
+    CL_GC_UNPROTECT(1);
     cl_emit(c, OP_PROGV_BIND);
 
     tf = cl_tail_push(c);

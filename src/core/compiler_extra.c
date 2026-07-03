@@ -127,6 +127,7 @@ void compile_cond(CL_Compiler *c, CL_Obj form)
         return;
     }
 
+    CL_GC_PROTECT(form);
     CL_GC_PROTECT(clauses);
     while (!CL_NULL_P(clauses)) {
         CL_Obj clause = cl_car(clauses);
@@ -146,6 +147,12 @@ void compile_cond(CL_Compiler *c, CL_Obj form)
             /* Compile test */
             c->in_tail = 0;
             compile_expr(c, test);
+
+            /* GC SAFETY: re-derive body from the protected cursor AFTER
+             * compile_expr(test) — it allocates and can compact, leaving the
+             * pre-read body a stale offset (same shape as compile_if). */
+            clause = cl_car(clauses);
+            body = cl_cdr(clause);
 
             if (CL_NULL_P(body)) {
                 /* (cond (test)) with no body — return the test value itself.
@@ -174,9 +181,11 @@ void compile_cond(CL_Compiler *c, CL_Obj form)
 
         clauses = cl_cdr(clauses);
     }
-    CL_GC_UNPROTECT(1);
+    CL_GC_UNPROTECT(2);  /* clauses, form */
 
-    /* If the last clause wasn't a t-default, we need a NIL fallthrough */
+    /* If the last clause wasn't a t-default, we need a NIL fallthrough.
+     * form was protected across the compiles above, so this re-walk reads
+     * the forwarded list. */
     {
         CL_Obj last_clause;
         CL_Obj c2 = cl_cdr(form);
@@ -1234,14 +1243,24 @@ void compile_multiple_value_call(CL_Compiler *c, CL_Obj form)
     sym_append = cl_intern_in("APPEND", 6, cl_package_cl);
     sym_mvl    = cl_intern_in("MULTIPLE-VALUE-LIST", 19, cl_package_cl);
 
+    /* GC SAFETY: the conses below can compact — protect the cursor and the
+     * interned symbols (symbols move under compaction too), and build each
+     * chain one cl_cons at a time. */
     CL_GC_PROTECT(fn_form);
     CL_GC_PROTECT(append_args);
+    CL_GC_PROTECT(sym_apply);
+    CL_GC_PROTECT(sym_append);
+    CL_GC_PROTECT(sym_mvl);
 
     /* Build list of (multiple-value-list formN) in reverse */
-    for (f = value_forms; !CL_NULL_P(f); f = cl_cdr(f)) {
-        CL_Obj mvl_call = cl_cons(sym_mvl, cl_cons(cl_car(f), CL_NIL));
+    f = value_forms;
+    CL_GC_PROTECT(f);
+    for (; !CL_NULL_P(f); f = cl_cdr(f)) {
+        CL_Obj mvl_call = cl_cons(cl_car(f), CL_NIL);
+        mvl_call = cl_cons(sym_mvl, mvl_call);
         append_args = cl_cons(mvl_call, append_args);
     }
+    CL_GC_UNPROTECT(1);  /* f */
 
     /* Reverse to restore order */
     {
@@ -1255,12 +1274,12 @@ void compile_multiple_value_call(CL_Compiler *c, CL_Obj form)
         CL_GC_UNPROTECT(1);
     }
 
-    /* Build (apply fn (append mvl1 mvl2 ...)) */
-    result = cl_cons(sym_apply,
-                cl_cons(fn_form,
-                    cl_cons(cl_cons(sym_append, append_args),
-                        CL_NIL)));
-    CL_GC_UNPROTECT(2);
+    /* Build (apply fn (append mvl1 mvl2 ...)) — sequenced conses */
+    result = cl_cons(sym_append, append_args);
+    result = cl_cons(result, CL_NIL);
+    result = cl_cons(fn_form, result);
+    result = cl_cons(sym_apply, result);
+    CL_GC_UNPROTECT(5);  /* fn_form, append_args, sym_apply, sym_append, sym_mvl */
 
     compile_expr(c, result);
 }
@@ -1300,7 +1319,10 @@ CL_Obj compile_eval_when(CL_Compiler *c, CL_Obj form)
         }
         if (has_def) {
             /* First pass: compile and eval each form individually so
-               macros/types are available for later forms in this body */
+               macros/types are available for later forms in this body.
+               GC SAFETY: protect body for the whole pass — it is handed to
+               compile_progn_tail below and cl_compile/cl_vm_eval compact. */
+            CL_GC_PROTECT(body);
             for (rest = body; !CL_NULL_P(rest); rest = cl_cdr(rest)) {
                 CL_Obj sub = cl_car(rest);
                 CL_Obj bc;
@@ -1311,6 +1333,7 @@ CL_Obj compile_eval_when(CL_Compiler *c, CL_Obj form)
                 }
                 CL_GC_UNPROTECT(1);
             }
+            CL_GC_UNPROTECT(1);  /* body */
             /* Second pass falls through to the trampoline body below so
              * bytecodes are preserved for FASL serialization (compile-file).
              * Macros are now available; definitions may eval twice — harmless. */
@@ -1531,11 +1554,14 @@ void compile_defsetf(CL_Compiler *c, CL_Obj form)
      * and &optional/&key defaults in the lambda list are honored. */
     if (CL_CONS_P(third) ||
         (CL_NULL_P(third) && !CL_NULL_P(cl_cdr(cl_cdr(cl_cdr(form)))))) {
-        CL_Obj sym = cl_intern_in("%DEFSETF-LONG", 13, cl_package_clamiga);
-        CL_Obj new_form;
+        CL_Obj sym, new_form;
+        /* GC SAFETY: cl_intern_in can allocate — protect form so the
+         * cl_cdr(form) read below sees the forwarded list. */
+        CL_GC_PROTECT(form);
+        sym = cl_intern_in("%DEFSETF-LONG", 13, cl_package_clamiga);
         CL_GC_PROTECT(sym);
         new_form = cl_cons(sym, cl_cdr(form));
-        CL_GC_UNPROTECT(1);
+        CL_GC_UNPROTECT(2);  /* sym, form */
         CL_GC_PROTECT(new_form);
         compile_expr(c, new_form);
         CL_GC_UNPROTECT(1);
@@ -1543,6 +1569,12 @@ void compile_defsetf(CL_Compiler *c, CL_Obj form)
     }
 
     updater = third;
+
+    /* GC SAFETY: the table conses below can compact — keep accessor/updater
+     * forwarded for the cl_add_constant calls after (a stale symbol in the
+     * constant pool would make OP_DEFSETF register a non-canonical name). */
+    CL_GC_PROTECT(accessor);
+    CL_GC_PROTECT(updater);
 
     /* Store mapping in setf_table at compile time (immediate side effect) */
     {
@@ -1555,6 +1587,7 @@ void compile_defsetf(CL_Compiler *c, CL_Obj form)
     /* Emit OP_DEFSETF so the mapping is registered at load time (FASL) */
     acc_idx = cl_add_constant(c, accessor);
     upd_idx = cl_add_constant(c, updater);
+    CL_GC_UNPROTECT(2);  /* accessor, updater */
     cl_emit(c, OP_DEFSETF);
     cl_emit(c, (uint8_t)(acc_idx >> 8));
     cl_emit(c, (uint8_t)(acc_idx));
@@ -1745,9 +1778,14 @@ void compile_defconstant(CL_Compiler *c, CL_Obj form)
 void compile_named_lambda(CL_Compiler *c, CL_Obj form)
 {
     /* (named-lambda name lambda-list &body body) → named closure */
-    CL_Obj name = cl_car(cl_cdr(form));
     CL_Obj rest = cl_cdr(cl_cdr(form));
-    CL_Obj lambda_form = cl_cons(SYM_LAMBDA, rest);
+    CL_Obj lambda_form, name;
+    /* GC SAFETY: the cl_cons can compact — derive name from the protected
+     * form only afterwards, else pending_lambda_name gets a stale symbol. */
+    CL_GC_PROTECT(form);
+    lambda_form = cl_cons(SYM_LAMBDA, rest);
+    name = cl_car(cl_cdr(form));
+    CL_GC_UNPROTECT(1);
     CL_GC_PROTECT(lambda_form);
     pending_lambda_name = name;
     compile_expr(c, lambda_form);
@@ -2009,15 +2047,22 @@ void compile_defmacro(CL_Compiler *c, CL_Obj form)
                     lambda_list = after;
                 else
                     ((CL_Cons *)CL_OBJ_TO_PTR(prev))->cdr = after;
-                /* Wrap body: (let ((env-var (CLAMIGA::%MACROEXPAND-ENV))) ...body) */
+                /* Wrap body: (let ((env-var (CLAMIGA::%MACROEXPAND-ENV))) ...body)
+                 * GC SAFETY: sequenced conses with env_var protected — the
+                 * intern/cons calls can compact and env_var is re-read across
+                 * them (body is protected at function entry). */
                 if (CL_SYMBOL_P(env_var)) {
-                    CL_Obj capture_sym =
-                        cl_intern_in("%MACROEXPAND-ENV", 16, cl_package_clamiga);
-                    CL_Obj capture_call = cl_cons(capture_sym, CL_NIL);
-                    CL_Obj binding = cl_cons(env_var, cl_cons(capture_call, CL_NIL));
-                    CL_Obj bindings = cl_cons(binding, CL_NIL);
-                    CL_Obj let_form = cl_cons(SYM_LET, cl_cons(bindings, body));
+                    CL_Obj capture_sym, capture_call, binding, bindings, let_form;
+                    CL_GC_PROTECT(env_var);
+                    capture_sym = cl_intern_in("%MACROEXPAND-ENV", 16, cl_package_clamiga);
+                    capture_call = cl_cons(capture_sym, CL_NIL);
+                    binding = cl_cons(capture_call, CL_NIL);
+                    binding = cl_cons(env_var, binding);
+                    bindings = cl_cons(binding, CL_NIL);
+                    let_form = cl_cons(bindings, body);
+                    let_form = cl_cons(SYM_LET, let_form);
                     body = cl_cons(let_form, CL_NIL);
+                    CL_GC_UNPROTECT(1);
                 }
                 break;
             }
@@ -2058,6 +2103,9 @@ void compile_defmacro(CL_Compiler *c, CL_Obj form)
 
         CL_GC_PROTECT(new_ll);
         CL_GC_PROTECT(new_ll_tail);
+        /* GC SAFETY: the loop allocates (gensyms + conses) and re-reads the
+         * cursor each iteration. */
+        CL_GC_PROTECT(cur);
 
         while (!CL_NULL_P(cur)) {
             CL_Obj param = cl_car(cur);
@@ -2082,9 +2130,13 @@ void compile_defmacro(CL_Compiler *c, CL_Obj form)
                 CL_Obj db_form;
                 CL_GC_PROTECT(gs);
 
-                /* Wrap body: (destructuring-bind pattern gensym ...body) */
-                db_form = cl_cons(SYM_DESTRUCTURING_BIND,
-                           cl_cons(param, cl_cons(gs, body)));
+                /* Wrap body: (destructuring-bind pattern gensym ...body).
+                 * GC SAFETY: sequenced conses; param re-derived from the
+                 * protected cursor after the gensym/cons allocations. */
+                db_form = cl_cons(gs, body);
+                param = cl_car(cur);
+                db_form = cl_cons(param, db_form);
+                db_form = cl_cons(SYM_DESTRUCTURING_BIND, db_form);
                 body = cl_cons(db_form, CL_NIL);
 
                 /* Add gensym to new lambda list */
@@ -2104,11 +2156,17 @@ void compile_defmacro(CL_Compiler *c, CL_Obj form)
                     CL_Obj db_form;
                     CL_GC_PROTECT(gs);
 
-                    db_form = cl_cons(SYM_DESTRUCTURING_BIND,
-                               cl_cons(next_param, cl_cons(gs, body)));
+                    /* GC SAFETY: sequenced conses; next_param and param
+                     * re-derived from the protected cursor after the
+                     * gensym/cons allocations. */
+                    db_form = cl_cons(gs, body);
+                    next_param = cl_car(cl_cdr(cur));
+                    db_form = cl_cons(next_param, db_form);
+                    db_form = cl_cons(SYM_DESTRUCTURING_BIND, db_form);
                     body = cl_cons(db_form, CL_NIL);
 
                     /* Add &body/&rest gensym to new lambda list */
+                    param = cl_car(cur);
                     cell = cl_cons(param, CL_NIL);
                     if (CL_NULL_P(new_ll)) { new_ll = cell; }
                     else { ((CL_Cons *)CL_OBJ_TO_PTR(new_ll_tail))->cdr = cell; }
@@ -2138,7 +2196,7 @@ void compile_defmacro(CL_Compiler *c, CL_Obj form)
         }
 
         lambda_list = new_ll;
-        CL_GC_UNPROTECT(2); /* new_ll, new_ll_tail */
+        CL_GC_UNPROTECT(3); /* new_ll, new_ll_tail, cur */
     }
 
     /* CL spec: a macro's body is enclosed in an implicit BLOCK named
@@ -2446,11 +2504,17 @@ void compile_the(CL_Compiler *c, CL_Obj form)
     if (cl_optimize_settings.safety >= 1) {
         /* Disable tail position: ASSERT_TYPE must run after value form */
         int saved_tail = c->in_tail;
+        int idx;
         c->in_tail = 0;
+        /* GC SAFETY: compile_expr can compact — protect args and re-derive
+         * type_spec after, else a stale offset lands in the constant pool. */
+        CL_GC_PROTECT(args);
         compile_expr(c, value_form);
+        type_spec = cl_car(args);
+        CL_GC_UNPROTECT(1);
         c->in_tail = saved_tail;
 
-        int idx = cl_add_constant(c, type_spec);
+        idx = cl_add_constant(c, type_spec);
         cl_emit(c, OP_ASSERT_TYPE);
         cl_emit_u16(c, (uint16_t)idx);
     } else {

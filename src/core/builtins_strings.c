@@ -410,6 +410,22 @@ static CL_Obj string_designator_to_obj(CL_Obj obj, uint32_t *out_len)
     return CL_NIL;
 }
 
+/* Coerce both comparison arguments.  GC SAFETY: coercing the SECOND
+ * designator can allocate (a character designator conses a fresh 1-char
+ * string) and compact, staling an already-coerced first string — so `a`
+ * is rooted across the second coercion. */
+static void string_designators_2(CL_Obj *args, CL_Obj *a_out, uint32_t *la,
+                                 CL_Obj *b_out, uint32_t *lb)
+{
+    CL_Obj a = string_designator_to_obj(args[0], la);
+    CL_Obj b;
+    CL_GC_PROTECT(a);
+    b = string_designator_to_obj(args[1], lb);
+    CL_GC_UNPROTECT(1);
+    *a_out = a;
+    *b_out = b;
+}
+
 /* Compare characters of two strings in subranges.
  * Returns <0, 0, or >0 like memcmp. */
 static int string_compare_range(CL_Obj a, uint32_t a_start,
@@ -452,8 +468,7 @@ static CL_Obj bi_string_eq(CL_Obj *args, int n)
 {
     uint32_t la, lb, s1, e1, s2, e2;
     CL_Obj a, b;
-    a = string_designator_to_obj(args[0], &la);
-    b = string_designator_to_obj(args[1], &lb);
+    string_designators_2(args, &a, &la, &b, &lb);
     if (CL_NULL_P(a) || CL_NULL_P(b)) cl_error(CL_ERR_TYPE, "STRING=: not a string designator");
     parse_string_bounds(args, n, la, lb, &s1, &e1, &s2, &e2);
     if ((e1 - s1) != (e2 - s2)) return CL_NIL;
@@ -464,8 +479,7 @@ static CL_Obj bi_string_equal(CL_Obj *args, int n)
 {
     uint32_t la, lb, s1, e1, s2, e2, i;
     CL_Obj a, b;
-    a = string_designator_to_obj(args[0], &la);
-    b = string_designator_to_obj(args[1], &lb);
+    string_designators_2(args, &a, &la, &b, &lb);
     if (CL_NULL_P(a) || CL_NULL_P(b)) cl_error(CL_ERR_TYPE, "STRING-EQUAL: not a string designator");
     parse_string_bounds(args, n, la, lb, &s1, &e1, &s2, &e2);
     if ((e1 - s1) != (e2 - s2)) return CL_NIL;
@@ -508,8 +522,7 @@ static CL_Obj string_cmp_op(CL_Obj *args, int n, int op, str_cmp_fn cmp_fn,
     uint32_t la, lb, s1, e1, s2, e2, len1, len2, min_len;
     CL_Obj a, b;
     int cmp;
-    a = string_designator_to_obj(args[0], &la);
-    b = string_designator_to_obj(args[1], &lb);
+    string_designators_2(args, &a, &la, &b, &lb);
     if (CL_NULL_P(a) || CL_NULL_P(b)) cl_error(CL_ERR_TYPE, "%s: not a string designator", name);
     parse_string_bounds(args, n, la, lb, &s1, &e1, &s2, &e2);
     len1 = e1 - s1; len2 = e2 - s2;
@@ -712,7 +725,8 @@ static CL_Obj bi_subseq(CL_Obj *args, int n)
         if (end > (int32_t)len) end = (int32_t)len;
         if (start > end) start = end;
         rlen = end - start;
-        CL_GC_PROTECT(args[0]);
+        /* args[0] is an already-rooted VM-stack slot: forwarded on
+         * compaction without (and never with) an extra CL_GC_PROTECT. */
 #ifdef CL_WIDE_STRINGS
         {
             int wide = 0;
@@ -727,7 +741,6 @@ static CL_Obj bi_subseq(CL_Obj *args, int n)
         for (i = 0; i < rlen; i++)
             cl_string_set_char_at(result, (uint32_t)i,
                                   cl_string_char_at(args[0], (uint32_t)(start + i)));
-        CL_GC_UNPROTECT(1);
         return result;
     }
     /* Vector subseq */
@@ -743,7 +756,6 @@ static CL_Obj bi_subseq(CL_Obj *args, int n)
         if (end > (int32_t)len) end = (int32_t)len;
         if (start > end) start = end;
         rlen = end - start;
-        CL_GC_PROTECT(args[0]);
         result = cl_make_vector((uint32_t)rlen);
         v = (CL_Vector *)CL_OBJ_TO_PTR(args[0]);
         data = cl_vector_data(v);
@@ -757,7 +769,6 @@ static CL_Obj bi_subseq(CL_Obj *args, int n)
              * numeric vector must report the same ARRAY-ELEMENT-TYPE. */
             rv->elt_type = v->elt_type;
         }
-        CL_GC_UNPROTECT(1);
         return result;
     }
     if (CL_BIT_VECTOR_P(args[0])) {
@@ -771,7 +782,6 @@ static CL_Obj bi_subseq(CL_Obj *args, int n)
         if (end > (int32_t)len) end = (int32_t)len;
         if (start > end) start = end;
         rlen = end - start;
-        CL_GC_PROTECT(args[0]);
         result = cl_make_bit_vector((uint32_t)rlen);
         bv = (CL_BitVector *)CL_OBJ_TO_PTR(args[0]);
         {
@@ -779,7 +789,6 @@ static CL_Obj bi_subseq(CL_Obj *args, int n)
             for (i = 0; i < rlen; i++)
                 cl_bv_set_bit(rv, (uint32_t)i, cl_bv_get_bit(bv, (uint32_t)(start + i)));
         }
-        CL_GC_UNPROTECT(1);
         return result;
     }
     /* List subseq */
@@ -969,32 +978,42 @@ typedef void (*concat_cb)(CL_Obj elem, void *ctx);
 
 static void concat_iterate(CL_Obj seq, concat_cb cb, void *ctx)
 {
+    /* GC SAFETY: the callback can allocate (the LIST result conses per
+     * element) and compact — protect seq, re-derive object pointers per
+     * element instead of caching them, and root the list cursor. */
+    CL_GC_PROTECT(seq);
     if (CL_ANY_STRING_P(seq)) {
         uint32_t slen = cl_string_length(seq), j;
         for (j = 0; j < slen; j++)
             cb(CL_MAKE_CHAR(cl_string_char_at(seq, j)), ctx);
     } else if (CL_VECTOR_P(seq)) {
-        CL_Vector *v = (CL_Vector *)CL_OBJ_TO_PTR(seq);
-        uint32_t len = cl_vector_active_length(v);
+        uint32_t len = cl_vector_active_length((CL_Vector *)CL_OBJ_TO_PTR(seq));
         uint32_t j;
         for (j = 0; j < len; j++)
-            cb(cl_vector_data(v)[j], ctx);
+            cb(cl_vector_data((CL_Vector *)CL_OBJ_TO_PTR(seq))[j], ctx);
     } else if (CL_NULL_P(seq)) {
         /* empty */
     } else if (CL_CONS_P(seq)) {
         CL_Obj p = seq;
+        CL_GC_PROTECT(p);
         while (CL_CONS_P(p)) {
             cb(cl_car(p), ctx);
             p = cl_cdr(p);
         }
+        CL_GC_UNPROTECT(1);
     } else if (CL_BIT_VECTOR_P(seq)) {
-        CL_BitVector *bv = (CL_BitVector *)CL_OBJ_TO_PTR(seq);
-        uint32_t alen = cl_bv_active_length(bv), j;
+        uint32_t alen =
+            cl_bv_active_length((CL_BitVector *)CL_OBJ_TO_PTR(seq));
+        uint32_t j;
         for (j = 0; j < alen; j++)
-            cb(CL_MAKE_FIXNUM(cl_bv_get_bit(bv, j)), ctx);
+            cb(CL_MAKE_FIXNUM(
+                   cl_bv_get_bit((CL_BitVector *)CL_OBJ_TO_PTR(seq), j)), ctx);
     } else {
+        CL_GC_UNPROTECT(1);
         cl_error(CL_ERR_TYPE, "CONCATENATE: argument is not a sequence");
+        return;
     }
+    CL_GC_UNPROTECT(1);
 }
 
 /* Callback context for string result */

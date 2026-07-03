@@ -77,6 +77,11 @@ void cl_load_file(const char *path)
         CL_Obj stream, load_pathname_obj, load_truename_obj;
         CL_Obj saved_load_pathname, saved_load_truename;
 
+        /* GC SAFETY: these saved dynamic values are restored after the load
+         * evaluates arbitrary code — they must be forwarded roots or the
+         * restore writes stale pre-compaction offsets into the globals. */
+        CL_GC_PROTECT(saved_package);
+
         /* Bind *load-pathname* and *load-truename* per CL spec */
         {
             extern CL_Obj cl_parse_namestring(const char *str, uint32_t len);
@@ -87,6 +92,8 @@ void cl_load_file(const char *path)
         CL_GC_PROTECT(load_truename_obj);
         saved_load_pathname = cl_symbol_value(SYM_STAR_LOAD_PATHNAME);
         saved_load_truename = cl_symbol_value(SYM_STAR_LOAD_TRUENAME);
+        CL_GC_PROTECT(saved_load_pathname);
+        CL_GC_PROTECT(saved_load_truename);
         cl_set_symbol_value(SYM_STAR_LOAD_PATHNAME, load_pathname_obj);
         cl_set_symbol_value(SYM_STAR_LOAD_TRUENAME, load_truename_obj);
 
@@ -134,7 +141,7 @@ void cl_load_file(const char *path)
                     cl_set_symbol_value(SYM_STAR_LOAD_PATHNAME, saved_load_pathname);
                     cl_set_symbol_value(SYM_STAR_LOAD_TRUENAME, saved_load_truename);
                     CL_GC_UNPROTECT(1); /* stream */
-                    CL_GC_UNPROTECT(2); /* load_truename_obj, load_pathname_obj */
+                    CL_GC_UNPROTECT(5); /* saved_lt, saved_lp, lt_obj, lp_obj, saved_package */
                     cl_current_source_file = prev_file;
                     cl_current_file_id = prev_file_id;
                     cl_reader_set_line(prev_line);
@@ -153,7 +160,7 @@ void cl_load_file(const char *path)
         /* Restore *load-pathname* and *load-truename* */
         cl_set_symbol_value(SYM_STAR_LOAD_PATHNAME, saved_load_pathname);
         cl_set_symbol_value(SYM_STAR_LOAD_TRUENAME, saved_load_truename);
-        CL_GC_UNPROTECT(2); /* load_truename_obj, load_pathname_obj */
+        CL_GC_UNPROTECT(5); /* saved_lt, saved_lp, lt_obj, lp_obj, saved_package */
 
         cl_current_source_file = prev_file;
         cl_current_file_id = prev_file_id;
@@ -798,6 +805,9 @@ void cl_repl_init_no_userinit(int no_userinit)
     /* Load standard library in CL package so macros/functions are
        accessible from any package that :use's CL */
     CL_Obj saved_pkg = cl_current_package;
+    /* GC SAFETY: the boot loads below compact — saved_pkg must be a
+     * forwarded root for the restore at the end. */
+    CL_GC_PROTECT(saved_pkg);
     cl_current_package = cl_package_cl;
     {
         CL_Symbol *pkg_sym = (CL_Symbol *)CL_OBJ_TO_PTR(SYM_STAR_PACKAGE);
@@ -903,6 +913,7 @@ void cl_repl_init_no_userinit(int no_userinit)
         CL_Symbol *pkg_sym = (CL_Symbol *)CL_OBJ_TO_PTR(SYM_STAR_PACKAGE);
         pkg_sym->value = saved_pkg;
     }
+    CL_GC_UNPROTECT(1);  /* saved_pkg */
 
     if (!no_userinit) {
         load_user_init();
@@ -936,6 +947,7 @@ void cl_repl_init_minimal(void)
      * but skip boot.lisp, CLOS, and user init.
      * For unit tests that need cl_compile/cl_eval_string. */
     CL_Obj saved_pkg = cl_current_package;
+    CL_GC_PROTECT(saved_pkg);
     cl_current_package = cl_package_cl;
     {
         CL_Symbol *pkg_sym = (CL_Symbol *)CL_OBJ_TO_PTR(SYM_STAR_PACKAGE);
@@ -952,4 +964,5 @@ void cl_repl_init_minimal(void)
         CL_Symbol *pkg_sym = (CL_Symbol *)CL_OBJ_TO_PTR(SYM_STAR_PACKAGE);
         pkg_sym->value = saved_pkg;
     }
+    CL_GC_UNPROTECT(1);  /* saved_pkg */
 }

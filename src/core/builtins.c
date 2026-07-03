@@ -172,6 +172,11 @@ static CL_Obj bi_append(CL_Obj *args, int n)
 
     CL_GC_PROTECT(result);
     CL_GC_PROTECT(tail);
+    /* GC SAFETY: the input cursor is re-read (cl_cdr) after each cl_cons
+     * compaction — it must be a forwarded root (args[i] itself is a rooted
+     * VM-stack slot, but this local walks INTO the list). */
+    list = CL_NIL;
+    CL_GC_PROTECT(list);
 
     for (i = 0; i < n - 1; i++) {
         list = args[i];
@@ -189,11 +194,11 @@ static CL_Obj bi_append(CL_Obj *args, int n)
 
     /* Last arg shared (not copied) */
     if (CL_NULL_P(result)) {
-        CL_GC_UNPROTECT(2);
+        CL_GC_UNPROTECT(3);
         return args[n - 1];
     }
     ((CL_Cons *)CL_OBJ_TO_PTR(tail))->cdr = args[n - 1];
-    CL_GC_UNPROTECT(2);
+    CL_GC_UNPROTECT(3);
     return result;
 }
 
@@ -206,10 +211,13 @@ static CL_Obj bi_reverse(CL_Obj *args, int n)
 
     if (CL_CONS_P(seq)) {
         CL_Obj result = CL_NIL;
+        /* GC SAFETY: seq is re-read after each cl_cons compaction. */
+        CL_GC_PROTECT(seq);
         while (!CL_NULL_P(seq)) {
             result = cl_cons(cl_car(seq), result);
             seq = cl_cdr(seq);
         }
+        CL_GC_UNPROTECT(1);
         return result;
     }
     /* String-like (simple string OR adjustable/fill-pointer character vector):
@@ -583,12 +591,21 @@ static CL_Obj bi_equalp(CL_Obj *args, int n)
     /* Numbers: use numeric = (cross-type) */
     if (CL_NUMBER_P(a) && CL_NUMBER_P(b))
         return cl_arith_compare(a, b) == 0 ? SYM_T : CL_NIL;
-    /* Conses: recursive */
+    /* Conses: recursive.
+     * GC SAFETY: the recursion can allocate (numeric EQUALP on ratios /
+     * bignums goes through cl_arith_compare) and compact — a and b are
+     * re-read (cl_cdr) after it, so they must be forwarded roots. */
     if (CL_CONS_P(a) && CL_CONS_P(b)) {
         CL_Obj pair[2];
+        CL_GC_PROTECT(a);
+        CL_GC_PROTECT(b);
         pair[0] = cl_car(a); pair[1] = cl_car(b);
-        if (CL_NULL_P(bi_equalp(pair, 2))) return CL_NIL;
+        if (CL_NULL_P(bi_equalp(pair, 2))) {
+            CL_GC_UNPROTECT(2);
+            return CL_NIL;
+        }
         pair[0] = cl_cdr(a); pair[1] = cl_cdr(b);
+        CL_GC_UNPROTECT(2);
         return bi_equalp(pair, 2);
     }
     /* Strings: case-insensitive */
@@ -628,13 +645,22 @@ static CL_Obj bi_equalp(CL_Obj *args, int n)
         na = cl_vector_active_length(va);
         nb = cl_vector_active_length(vb);
         if (na != nb) return CL_NIL;          /* active length (fill pointer counts) */
-        da = cl_vector_data(va);
-        db = cl_vector_data(vb);
+        /* GC SAFETY: the element recursion can compact — re-derive the data
+         * pointers from the protected handles on every iteration instead of
+         * holding raw pre-compaction pointers across the loop. */
+        CL_GC_PROTECT(a);
+        CL_GC_PROTECT(b);
         for (i = 0; i < na; i++) {
             CL_Obj pair[2];
+            da = cl_vector_data((CL_Vector *)CL_OBJ_TO_PTR(a));
+            db = cl_vector_data((CL_Vector *)CL_OBJ_TO_PTR(b));
             pair[0] = da[i]; pair[1] = db[i];
-            if (CL_NULL_P(bi_equalp(pair, 2))) return CL_NIL;
+            if (CL_NULL_P(bi_equalp(pair, 2))) {
+                CL_GC_UNPROTECT(2);
+                return CL_NIL;
+            }
         }
+        CL_GC_UNPROTECT(2);
         return SYM_T;
     }
     /* Bit vectors: compare by ACTIVE length (the fill pointer if present),
@@ -665,26 +691,45 @@ static CL_Obj bi_equalp(CL_Obj *args, int n)
         uint32_t la = equalp_arr1d_len(a), lb = equalp_arr1d_len(b);
         uint32_t i;
         if (la != lb) return CL_NIL;
+        /* GC SAFETY: a/b are re-read via equalp_arr1d_elt after each
+         * (potentially compacting) element recursion. */
+        CL_GC_PROTECT(a);
+        CL_GC_PROTECT(b);
         for (i = 0; i < la; i++) {
             CL_Obj pair[2];
             pair[0] = equalp_arr1d_elt(a, i);
             pair[1] = equalp_arr1d_elt(b, i);
-            if (CL_NULL_P(bi_equalp(pair, 2))) return CL_NIL;
+            if (CL_NULL_P(bi_equalp(pair, 2))) {
+                CL_GC_UNPROTECT(2);
+                return CL_NIL;
+            }
         }
+        CL_GC_UNPROTECT(2);
         return SYM_T;
     }
     /* Structs: same type, slot-wise equalp */
     if (CL_STRUCT_P(a) && CL_STRUCT_P(b)) {
         CL_Struct *sa = (CL_Struct *)CL_OBJ_TO_PTR(a);
         CL_Struct *sb = (CL_Struct *)CL_OBJ_TO_PTR(b);
-        uint32_t i;
+        uint32_t i, nslots;
         if (sa->type_desc != sb->type_desc) return CL_NIL;
         if (sa->n_slots != sb->n_slots) return CL_NIL;
-        for (i = 0; i < sa->n_slots; i++) {
+        nslots = sa->n_slots;
+        /* GC SAFETY: re-derive the struct pointers from the protected
+         * handles each iteration — the slot recursion can compact. */
+        CL_GC_PROTECT(a);
+        CL_GC_PROTECT(b);
+        for (i = 0; i < nslots; i++) {
             CL_Obj pair[2];
+            sa = (CL_Struct *)CL_OBJ_TO_PTR(a);
+            sb = (CL_Struct *)CL_OBJ_TO_PTR(b);
             pair[0] = sa->slots[i]; pair[1] = sb->slots[i];
-            if (CL_NULL_P(bi_equalp(pair, 2))) return CL_NIL;
+            if (CL_NULL_P(bi_equalp(pair, 2))) {
+                CL_GC_UNPROTECT(2);
+                return CL_NIL;
+            }
         }
+        CL_GC_UNPROTECT(2);
         return SYM_T;
     }
     /* Hash tables (CLHS): same test, same number of entries, and every key in
