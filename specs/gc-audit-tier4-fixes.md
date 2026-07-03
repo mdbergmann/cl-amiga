@@ -1,6 +1,6 @@
 # GC Audit Tier 4 — Fix Plan
 
-Status: **IN PROGRESS** — Batches 1 (compiler criticals), 2 (format/printer) and 3 (IO/strings/reader) applied on branch fix/tier4-gc-corruption; batches 4-7 pending.
+Status: **IN PROGRESS** — Batches 1 (compiler criticals), 2 (format/printer), 3 (IO/strings/reader) and 4 (sequences/lists/hash/VM) applied on branch fix/tier4-gc-corruption; batches 5-7 pending.
 Findings source: 12-agent audit sweep 2026-07-03 (session 5580131b). ~85 findings, ~25 CRITICAL.
 Branch: `fix/tier4-gc-corruption` (create from master at c70b4e4 or later).
 
@@ -93,32 +93,31 @@ Batch tests: `tier4-io.lisp` block in test_gc_stress_regression.sh (18 checks: I
 
 ---
 
-## Batch 4 — Sequences, lists, hashtable, VM opcodes
+## Batch 4 — Sequences, lists, hashtable, VM opcodes — **DONE**
 
 Files: builtins_sequence.c, builtins_sequence2.c, builtins.c, builtins_lists.c, builtins_hashtable.c, builtins_array.c, vm.c.
 
-- [ ] **S4 [V] list_merge_sort** (builtins_sequence2.c:988-995): protect `pred`/`key_fn` alongside list/mid (UNPROTECT 4). Trigger: `(sort list pred)` len ≥ 3 with any allocating predicate.
-- [ ] **S5 [A] bi_map string/vector result** (builtins_sequence2.c:619-623/640-644): seqs[]/orig_seqs[] rooted only AFTER `cl_make_string`/`cl_make_vector`. Fix: re-read `seqs[i] = orig_seqs[i] = args[i+2]` after the result alloc (cursors haven't advanced yet).
-- [ ] **S1 [A] remove_from_list stale elem** (builtins_sequence.c:1044→1064, 1012→1034): re-read `elem = cl_car(cur)` after the match test (cur is a forwarded root). Covers remove/remove-if/-not on lists.
-- [ ] **S2 [A] bi_reduce list :from-end** (builtins_sequence.c:1994-1995): seed cursor from `args[1]` (not stale `seq`) after cl_make_vector; also the CL_CONS_P test. No user fn needed to trigger.
-- [ ] **S3 [A] bi_reduce forward list** (builtins_sequence.c:2024→2033): same via apply_key window — use args[1].
-- [ ] **S6 [A] array_seq_insertion_sort kval** (builtins_sequence2.c:1261-1266): protect `kval` across the inner apply_key/call_test loop (mirror vector_insertion_sort fix).
-- [ ] **S7 [A] bi_map result-type staleness** (builtins_sequence2.c:517-576): re-read `result_type = args[0]` after every classify that can run a deftype expander.
-- [ ] **S8 [A] bi_merge pre-classification** (builtins_sequence2.c:1062-1088): classify result-type FIRST, then read seq1/seq2/pred/key_fn from args.
-- [ ] **L1 [V] bi_nsubst** (builtins_lists.c:597-628): zero protection; destructive stores through stale `tree` after user :test; `sub_args[5]` C array passed as recursion args[] (not a rooted VM slice). Fix: refactor to `nsubst_rec(new, old, tree, test_fn)` mirroring subst_rec — protect params per frame, re-read tree after each call_test/recursion before the `->car/->cdr` stores.
-- [ ] **L2 [V] bi_reverse vector + bit-vector branches** (builtins.c:253-274): protect `seq` (cons/string branches do); the existing "re-fetch after GC" comment re-derives from the stale local — fix it to re-derive from the protected value.
-- [ ] **L3 [V] bi_make_list** (builtins_lists.c:1076-1079): protect `init_elem` alongside result.
-- [ ] **L4 [A] bi_jit_dump_bytes** (builtins.c:1060-1067): hoist `native_code`/len into C locals before the cons loop (platform memory is stable; the `bc` re-read isn't).
-- [ ] **AH1 [A] bi_hash_table_pairs** (builtins_hashtable.c:942-948): protect the `chain` cursor (mirror bi_maphash fix). Backs with-hash-table-iterator AND LOOP hash iteration — the single highest-traffic finding in this batch.
-- [ ] **AH2 [A] bi_make_array keyword parse** (builtins_array.c:231-333): after each classify (deftype expander via cl_vm_apply), re-read `dim_arg = args[0]` and initial_element/initial_contents/displaced_to from their remembered args[] indices (only element_type is re-read today; later PROTECTs root already-stale values).
-- [ ] **AH3 [A] bi_adjust_array size checks** (builtins_array.c:1671-1724): reject negative fixnums and dims > CL_ARRAY_DIMENSION_LIMIT before `cl_make_array` (list-dims branch too). `(adjust-array v -1)` currently wraps alloc_size → heap smash.
-- [ ] **AH4 [A] bi_vector_push_extend extension arg** (builtins_array.c:1589-1623): cap `new_cap` against CL_ARRAY_DIMENSION_LIMIT / overflow-check `old_len + ext`.
-- [ ] **V2/V3/V4 [V] OP_DEFMACRO/OP_DEFTYPE/OP_DEFSETF stale push** (vm.c:2739-2771): push `constants[idx]` (forwarded in place) instead of the stale local after cl_register_macro/type/setf-cons.
-- [ ] **V1 [A] OP_ASSERT_TYPE** (vm.c:2867-2884): re-read `val = cl_vm.stack[cl_vm.sp-1]` and `type_spec = constants[idx]` after cl_typep AND between the two condition-slot cons lines.
-- [ ] **V5-V8 [A] TRACE paths** (vm.c:2069-2080, 2200-2209/2308/2346/2463, 3310-3321, 615-645): protect `func_obj` whenever traced and re-derive `f`/`callee_bc` after every trace print (OP_APPLY's `apply_func` isn't rooted at all — can be swept); inside trace_print_entry/exit protect `name_sym`/`result` across their own allocating writes.
-- [ ] **V11 [A]** OP_APPLY frame push: set `new_frame->nlx_level` like OP_CALL does (or delete the write-only field).
+- [x] **S4 [V] list_merge_sort** — pred/key_fn protected alongside list/mid (UNPROTECT 4).
+- [x] **S5 [A] bi_map string/vector result** — `seqs[i] = orig_seqs[i] = args[i+2]` re-read after the result alloc, before the cursor PROTECTs.
+- [x] **S1 [A] remove_from_list stale elem** — elem re-read from the forwarded `cur` after the match test (both from-end and forward passes). PLUS: `seq` itself now protected (UNPROTECT 7) — the from-end second pass re-seeds `cur = seq` after the counting pass has already run allocating tests.
+- [x] **S2/S3 [A] bi_reduce list paths** — cursor seeded from `args[1]` in both the :from-end vector-collect and forward paths, AND the CL_CONS_P branch test reads args[1] (a stale offset can misclassify the sequence).
+- [x] **S6 [A] array_seq_insertion_sort** — val/kval hoisted + rooted for the loop (mirrors vector_insertion_sort; kval is heap when :key returns e.g. a string).
+- [x] **S7 [A] bi_map result-type** — `result_type = args[0]` re-read immediately after seq_result_type_class (covers the (or ...) walk, the non-OR type-error, and the else-branch re-classification).
+- [x] **S8 [A] bi_merge pre-classification** — result-type classified FIRST from args[0]; pred rooted before the :key coerce; key_fn/seq1/seq2 read+rooted after all setup allocs; general path's inner protects reduced to a1/a2/out (outer 4 + inner 3 = the existing UNPROTECT(7)s).
+- [x] **L1 [V] bi_nsubst** — refactored to `nsubst_rec(new, old, tree, test_fn)` mirroring subst_rec; per-frame roots; destructive stores re-derive the cons pointer from the rooted tree AFTER each recursion.
+- [x] **L2 [V] bi_reverse vector + bit-vector branches** — seq protected across the result alloc; re-fetch now goes through the forwarded value.
+- [x] **L3 [V] bi_make_list** — init_elem protected alongside result.
+- [x] **L4 [A] bi_jit_dump_bytes** — native_code/native_len hoisted to C locals before the cons loop (bc is an arena pointer; the buffer is platform memory). Not host-reachable (native_code NULL without JIT) — no host regression test; covered by Amiga JIT usage.
+- [x] **AH1 [A] bi_hash_table_pairs** — chain cursor rooted (mirror bi_maphash).
+- [x] **AH2 [A] bi_make_array keyword parse** — parse loop now records args[] INDICES only; dim_arg/initial_element/initial_contents/displaced_to/element_type materialized from the rooted slots after the loop (classify runs in-loop on fresh reads as before).
+- [x] **AH3 [A] bi_adjust_array size checks** — negative dims (both fixnum and list spelling) and dims > CL_ARRAY_DIMENSION_LIMIT are catchable type-errors before any allocation.
+- [x] **AH4 [A] bi_vector_push_extend extension arg** — negative extension → type-error; extension that would exceed ARRAY-DIMENSION-LIMIT → type-error (extension is a CLHS minimum — clamping would silently violate it); doubling path clamped; old_len at the limit → error.
+- [x] **V2/V3/V4 [V] OP_DEFMACRO/OP_DEFTYPE/OP_DEFSETF** — push `constants[idx]` re-read after the allocating registrar (pool is platform memory, entries forwarded in place). Note: OP_DEFSETF's cons-under-wrlock remains a batch-6 item (T2).
+- [x] **V1 [A] OP_ASSERT_TYPE** — type_spec/val re-read after cl_typep, val re-read between the two condition-slot conses, both re-read again for the fall-through prin1s (signal handlers ran arbitrary code).
+- [x] **V5-V8 [A] TRACE paths** — trace_print_entry roots name_sym, trace_print_exit roots name_sym+result (writes/prin1 allocate); OP_CALL builtin branch re-derives f from the rooted fn stack slot after entry print and after call_builtin, result rooted across exit print; tailcall + normal-call traced paths re-read func_obj from the still-live stack slot and re-derive callee_bc after the entry print; OP_RET roots result across the exit print; OP_APPLY roots apply_func for the whole opcode (its slot is overwritten by the spread), re-derives f, roots result.
+- [x] **V11 [A]** OP_APPLY frame push sets `new_frame->nlx_level = cl_nlx_top` (mirrors OP_CALL; field kept).
 
-Batch tests: gc-stress for sort/map/reduce/remove with allocating :test/:key/pred; hash-iteration under stress; nsubst with allocating test; reverse/make-list; deftype-driven make-array/adjust-array error tests (host, CLHS-verified); traced-builtin under stress; top-level defmacro/deftype/defsetf under stress.
+Batch tests: `tier4-seq.lisp` block in test_gc_stress_regression.sh (21 checks: S4/S6/S5/S7/S8/S1/S2-S3/L1/L2/L3/AH1/AH2/V2/V3/V4/V1/V5/V5b/V7 + completion + corruption-absent — pre-fix worktree run at d9ba80d: crashes at S6, 18/21 fail; post-fix 326/326); host CLHS error tests in tests/test_array.c (adjust_array_negative_dimension, adjust_array_dimension_limit, vector_push_extend_bad_extension); Amiga t4 batch-4 mirror block (30 checks) in tests/amiga/run-tests.lisp.
 
 ---
 

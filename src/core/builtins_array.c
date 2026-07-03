@@ -259,13 +259,22 @@ static CL_Obj bi_make_array(CL_Obj *args, int n)
     uint8_t flags = 0;
     int i;
 
-    /* Parse keyword args */
+    /* Parse keyword args.
+     * GC SAFETY: the :element-type branch runs deftype expanders via
+     * cl_vm_apply, which can allocate and compact — any CL_Obj local copied
+     * out of args[] BEFORE that point (dim_arg, initial_element, ...) would
+     * then be a stale offset, and the later CL_GC_PROTECTs would root the
+     * stale value.  So the loop only remembers each keyword's args[] INDEX
+     * (plus immediate-derived flags); the object values are materialized
+     * from the rooted args[] slots after the loop. */
+    {
+    int ie_idx = -1, ic_idx = -1, dt_idx = -1, et_idx = -1;
     for (i = 1; i + 1 < n; i += 2) {
         if (args[i] == KW_INITIAL_ELEMENT) {
-            initial_element = args[i + 1];
+            ie_idx = i + 1;
             has_initial_element = 1;
         } else if (args[i] == KW_INITIAL_CONTENTS) {
-            initial_contents = args[i + 1];
+            ic_idx = i + 1;
             has_initial_contents = 1;
         } else if (args[i] == KW_FILL_POINTER) {
             /* :fill-pointer T means start at array size (CLHS), integer means that value */
@@ -281,6 +290,7 @@ static CL_Obj bi_make_array(CL_Obj *args, int n)
             if (!CL_NULL_P(args[i + 1]))
                 flags |= CL_VEC_FLAG_ADJUSTABLE;
         } else if (args[i] == KW_ELEMENT_TYPE) {
+            et_idx = i + 1;
             element_type = args[i + 1];
             /* Capture nullness BEFORE classify_array_elt_type, which calls
              * cl_vm_apply and can trigger a compacting GC.  After compaction,
@@ -307,13 +317,22 @@ static CL_Obj bi_make_array(CL_Obj *args, int n)
             if (has_element_type_spec && !element_type_char && !element_type_bit)
                 element_type_code = classify_general_elt_code(element_type, 16);
         } else if (args[i] == KW_DISPLACED_TO) {
-            displaced_to = args[i + 1];
-            if (!CL_NULL_P(displaced_to))
-                has_displaced_to = 1;
+            dt_idx = i + 1;
+            has_displaced_to = !CL_NULL_P(args[i + 1]);
         } else if (args[i] == KW_DISPLACED_INDEX_OFFSET) {
             if (CL_FIXNUM_P(args[i + 1]))
                 displaced_offset = (uint32_t)CL_FIXNUM_VAL(args[i + 1]);
         }
+    }
+
+    /* Materialize the object values from the rooted args[] slots — any
+     * classify above may have compacted, so this is the only safe point to
+     * take C-local copies. */
+    dim_arg = args[0];
+    if (ie_idx >= 0) initial_element  = args[ie_idx];
+    if (ic_idx >= 0) initial_contents = args[ic_idx];
+    if (dt_idx >= 0) displaced_to     = args[dt_idx];
+    if (et_idx >= 0) element_type     = args[et_idx];
     }
 
     if (has_initial_element && has_initial_contents)
@@ -1586,16 +1605,38 @@ static CL_Obj bi_vector_push_extend(CL_Obj *args, int n)
         return CL_MAKE_FIXNUM((int32_t)fp);
     }
 
-    /* Need to extend: compute new capacity */
+    /* Need to extend: compute new capacity.  All arithmetic is capped
+     * against CL_ARRAY_DIMENSION_LIMIT — a huge or negative extension
+     * argument would otherwise wrap `old_len + ext` (uint32) and allocate
+     * a tiny backing store whose new_data[fp] write lands out of bounds. */
     old_len = vec->length;
+    if (old_len >= CL_ARRAY_DIMENSION_LIMIT)
+        cl_error(CL_ERR_GENERAL,
+                 "VECTOR-PUSH-EXTEND: cannot extend beyond ARRAY-DIMENSION-LIMIT (%u)",
+                 (unsigned)CL_ARRAY_DIMENSION_LIMIT);
     new_cap = old_len * 2;
     if (new_cap < 4) new_cap = 4;
     /* Honor optional extension argument */
     if (n >= 3 && CL_FIXNUM_P(args[2])) {
-        uint32_t ext = (uint32_t)CL_FIXNUM_VAL(args[2]);
-        if (new_cap < old_len + ext)
-            new_cap = old_len + ext;
+        int32_t ext_val = CL_FIXNUM_VAL(args[2]);
+        if (ext_val < 0)
+            cl_error(CL_ERR_TYPE,
+                     "VECTOR-PUSH-EXTEND: extension must be a non-negative integer (got %d)",
+                     (int)ext_val);
+        /* CLHS: the extension is the MINIMUM number of elements to add — if
+         * honoring it would exceed ARRAY-DIMENSION-LIMIT, signal instead of
+         * silently clamping below the requested minimum. */
+        if ((uint32_t)ext_val > CL_ARRAY_DIMENSION_LIMIT - old_len)
+            cl_error(CL_ERR_TYPE,
+                     "VECTOR-PUSH-EXTEND: extension %d would exceed ARRAY-DIMENSION-LIMIT (%u)",
+                     (int)ext_val, (unsigned)CL_ARRAY_DIMENSION_LIMIT);
+        if (new_cap < old_len + (uint32_t)ext_val)
+            new_cap = old_len + (uint32_t)ext_val;
     }
+    /* The doubling path may overshoot the limit — clamping is fine there
+     * (growth of at least one element is all that's required). */
+    if (new_cap > CL_ARRAY_DIMENSION_LIMIT)
+        new_cap = CL_ARRAY_DIMENSION_LIMIT;
 
     /* Allocate new backing vector (GC may fire).  args[] slots are already
      * GC-rooted VM-stack slots — protecting them again would double-forward
@@ -1667,17 +1708,33 @@ static CL_Obj bi_adjust_array(CL_Obj *args, int n)
     if (old_vec->rank > 1)
         cl_error(CL_ERR_GENERAL, "ADJUST-ARRAY: multi-dimensional arrays not yet supported");
 
-    /* Parse new-dimensions (fixnum for 1D) */
+    /* Parse new-dimensions (fixnum for 1D).  A negative dimension must be
+     * rejected HERE: casting it to uint32_t wraps to a near-2^32 length whose
+     * alloc_size computation wraps again inside cl_make_array — a silent heap
+     * smash, not an error.  Same for dims over ARRAY-DIMENSION-LIMIT (mirrors
+     * MAKE-ARRAY's checks; both are catchable type-errors per CLHS). */
     if (CL_FIXNUM_P(args[1])) {
+        if (CL_FIXNUM_VAL(args[1]) < 0)
+            cl_error(CL_ERR_TYPE,
+                     "ADJUST-ARRAY: array dimension must be non-negative (got %d)",
+                     (int)CL_FIXNUM_VAL(args[1]));
         new_len = (uint32_t)CL_FIXNUM_VAL(args[1]);
     } else if (CL_CONS_P(args[1])) {
         if (!CL_FIXNUM_P(cl_car(args[1])))
             cl_error(CL_ERR_TYPE, "ADJUST-ARRAY: dimension must be a fixnum");
+        if (CL_FIXNUM_VAL(cl_car(args[1])) < 0)
+            cl_error(CL_ERR_TYPE,
+                     "ADJUST-ARRAY: array dimension must be non-negative (got %d)",
+                     (int)CL_FIXNUM_VAL(cl_car(args[1])));
         new_len = (uint32_t)CL_FIXNUM_VAL(cl_car(args[1]));
     } else {
         cl_error(CL_ERR_TYPE, "ADJUST-ARRAY: invalid dimensions");
         return CL_NIL;
     }
+    if (new_len > CL_ARRAY_DIMENSION_LIMIT)
+        cl_error(CL_ERR_TYPE,
+                 "ADJUST-ARRAY: array dimension %u exceeds ARRAY-DIMENSION-LIMIT (%u)",
+                 (unsigned)new_len, (unsigned)CL_ARRAY_DIMENSION_LIMIT);
 
     /* Parse keyword args */
     for (i = 2; i + 1 < (uint32_t)n; i += 2) {

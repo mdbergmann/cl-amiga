@@ -253,10 +253,16 @@ static CL_Obj bi_reverse(CL_Obj *args, int n)
     if (CL_VECTOR_P(seq)) {
         CL_Vector *v = (CL_Vector *)CL_OBJ_TO_PTR(seq);
         uint32_t alen = cl_vector_active_length(v);
-        CL_Obj result = cl_make_vector(alen);
-        CL_Vector *rv = (CL_Vector *)CL_OBJ_TO_PTR(result);
+        CL_Obj result;
+        CL_Vector *rv;
         uint32_t i;
-        /* Re-fetch after potential GC */
+        /* Protect seq across the allocation: the "re-fetch" below must go
+         * through the FORWARDED value — re-deriving from an unprotected
+         * (stale) offset after a compaction reads whatever now lives there. */
+        CL_GC_PROTECT(seq);
+        result = cl_make_vector(alen);
+        CL_GC_UNPROTECT(1);
+        rv = (CL_Vector *)CL_OBJ_TO_PTR(result);
         v = (CL_Vector *)CL_OBJ_TO_PTR(seq);
         for (i = 0; i < alen; i++)
             cl_vector_data(rv)[i] = cl_vector_data(v)[alen - 1 - i];
@@ -265,9 +271,13 @@ static CL_Obj bi_reverse(CL_Obj *args, int n)
     if (CL_BIT_VECTOR_P(seq)) {
         CL_BitVector *bv = (CL_BitVector *)CL_OBJ_TO_PTR(seq);
         uint32_t blen = cl_bv_active_length(bv);   /* honour fill pointer */
-        CL_Obj result = cl_make_bit_vector(blen);
-        CL_BitVector *rv = (CL_BitVector *)CL_OBJ_TO_PTR(result);
+        CL_Obj result;
+        CL_BitVector *rv;
         uint32_t i;
+        CL_GC_PROTECT(seq);   /* see the vector branch above */
+        result = cl_make_bit_vector(blen);
+        CL_GC_UNPROTECT(1);
+        rv = (CL_BitVector *)CL_OBJ_TO_PTR(result);
         bv = (CL_BitVector *)CL_OBJ_TO_PTR(seq);
         for (i = 0; i < blen; i++)
             cl_bv_set_bit(rv, i, cl_bv_get_bit(bv, blen - 1 - i));
@@ -1054,16 +1064,22 @@ static CL_Obj bi_jit_dump_bytes(CL_Obj *args, int n)
     if (bc->native_code == NULL || bc->native_len == 0) return CL_NIL;
 
     /* Build the byte list back-to-front so each cl_cons prepends — no
-     * tail pointer needed.  GC-protect the in-progress head; the
-     * bc->native_code buffer is platform_alloc'd (outside the arena)
-     * so it's stable across collections. */
-    result = CL_NIL;
-    CL_GC_PROTECT(result);
-    for (i = bc->native_len; i > 0; i--) {
-        result = cl_cons(CL_MAKE_FIXNUM((int32_t)bc->native_code[i - 1]),
-                         result);
+     * tail pointer needed.  GC-protect the in-progress head.  The
+     * native_code buffer is platform_alloc'd (outside the arena) so it's
+     * stable across collections — but `bc` itself is an ARENA pointer that
+     * goes stale on the first compacting cl_cons, so hoist the buffer
+     * pointer and length into C locals before the loop. */
+    {
+        const uint8_t *native_code = bc->native_code;
+        uint32_t native_len = bc->native_len;
+        result = CL_NIL;
+        CL_GC_PROTECT(result);
+        for (i = native_len; i > 0; i--) {
+            result = cl_cons(CL_MAKE_FIXNUM((int32_t)native_code[i - 1]),
+                             result);
+        }
+        CL_GC_UNPROTECT(1);
     }
-    CL_GC_UNPROTECT(1);
     return result;
 }
 

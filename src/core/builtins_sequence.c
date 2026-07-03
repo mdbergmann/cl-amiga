@@ -979,6 +979,10 @@ static CL_Obj remove_from_list(CL_Obj seq, int32_t start, int32_t end,
     CL_GC_PROTECT(item);
     CL_GC_PROTECT(test_fn);
     CL_GC_PROTECT(key_fn);
+    /* `seq` is re-read for the second from-end pass after the counting pass
+     * has already run allocating apply_key/call_test calls — protect it so
+     * that re-read doesn't start from a stale offset. */
+    CL_GC_PROTECT(seq);
 
     if (from_end && count >= 0) {
         /* Two-pass: count matches from end */
@@ -1031,7 +1035,12 @@ static CL_Obj remove_from_list(CL_Obj seq, int32_t start, int32_t end,
                 }
             }
             if (!match) {
-                CL_Obj cell = cl_cons(elem, CL_NIL);
+                CL_Obj cell;
+                /* Re-read elem: the match test above ran allocating
+                 * apply_key/call_test — `cur` is a forwarded root, the
+                 * pre-test elem copy may be a stale offset. */
+                elem = cl_car(cur);
+                cell = cl_cons(elem, CL_NIL);
                 if (CL_NULL_P(result)) result = cell;
                 else ((CL_Cons *)CL_OBJ_TO_PTR(tail))->cdr = cell;
                 tail = cell;
@@ -1061,7 +1070,11 @@ static CL_Obj remove_from_list(CL_Obj seq, int32_t start, int32_t end,
             if (should_remove) {
                 removed++;
             } else {
-                CL_Obj cell = cl_cons(elem, CL_NIL);
+                CL_Obj cell;
+                /* Re-read elem after the allocating match test (see the
+                 * from-end pass above). */
+                elem = cl_car(cur);
+                cell = cl_cons(elem, CL_NIL);
                 if (CL_NULL_P(result)) result = cell;
                 else ((CL_Cons *)CL_OBJ_TO_PTR(tail))->cdr = cell;
                 tail = cell;
@@ -1069,7 +1082,7 @@ static CL_Obj remove_from_list(CL_Obj seq, int32_t start, int32_t end,
         }
     }
 
-    CL_GC_UNPROTECT(6); /* key_fn, test_fn, item, cur, tail, result */
+    CL_GC_UNPROTECT(7); /* seq, key_fn, test_fn, item, cur, tail, result */
     return result;
 }
 
@@ -1975,7 +1988,11 @@ static CL_Obj bi_reduce(CL_Obj *args, int n)
         CL_GC_PROTECT(func);
         CL_GC_PROTECT(key_fn);  /* stale otherwise once apply_key/call_test compacts */
 
-        if (!(CL_CONS_P(seq) || CL_NULL_P(seq))) {
+        /* Test args[1], not the local seq: when there is no :initial-value the
+         * apply_key above may already have compacted, staling the local (and a
+         * stale offset can misclassify, sending a list down the random-access
+         * path or vice versa). */
+        if (!(CL_CONS_P(args[1]) || CL_NULL_P(args[1]))) {
             /* Any array sequence (vector / string / bit-vector): random access.
              * Read through args[1] each iteration — the VM-stack slot is a
              * forwarded root, unlike the local `seq` copy which goes stale
@@ -1992,7 +2009,10 @@ static CL_Obj bi_reduce(CL_Obj *args, int n)
              * apply_key/call_test trigger — unlike a platform_alloc C array,
              * whose CL_Obj entries (arena offsets) would go stale. */
             CL_Obj vec = cl_make_vector((uint32_t)(sub_len < 0 ? 0 : sub_len));
-            CL_Obj cur = seq;
+            /* Seed the cursor from args[1] (a forwarded VM-stack slot), not the
+             * local seq: both the cl_make_vector above and the no-initial-value
+             * apply_key earlier can compact, leaving seq a stale offset. */
+            CL_Obj cur = args[1];
             int32_t idx = 0, j = 0;
             CL_GC_PROTECT(vec);
             /* Collection does not allocate (cl_car/cl_cdr only), so `cur` and the
@@ -2029,8 +2049,10 @@ static CL_Obj bi_reduce(CL_Obj *args, int n)
     CL_GC_PROTECT(func);
     CL_GC_PROTECT(key_fn);
 
-    if (CL_CONS_P(seq) || CL_NULL_P(seq)) {
-        CL_Obj cur = seq;
+    /* args[1], not the stale local seq: the no-initial-value apply_key above
+     * may have compacted (same window as the :from-end path). */
+    if (CL_CONS_P(args[1]) || CL_NULL_P(args[1])) {
+        CL_Obj cur = args[1];
         int32_t idx = 0;
         /* GC-protect the list cursor: call_test (the reducing fn) and apply_key
          * may allocate and compact, relocating the list (see the map note). */

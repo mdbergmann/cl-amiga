@@ -928,6 +928,7 @@ static CL_Obj bi_hash_table_pairs(CL_Obj *args, int n)
     CL_Obj ht_obj = args[0];
     CL_Hashtable *ht;
     CL_Obj result = CL_NIL;
+    CL_Obj chain = CL_NIL;
     uint32_t i;
     CL_UNUSED(n);
 
@@ -936,10 +937,15 @@ static CL_Obj bi_hash_table_pairs(CL_Obj *args, int n)
 
     CL_GC_PROTECT(ht_obj);
     CL_GC_PROTECT(result);
+    /* The chain cursor is walked across the allocating cl_cons below —
+     * without a root the compaction leaves it a stale offset and the next
+     * cl_cdr walks garbage (mirrors the bi_maphash fix).  This backs
+     * with-hash-table-iterator and LOOP hash iteration. */
+    CL_GC_PROTECT(chain);
 
     ht = (CL_Hashtable *)CL_OBJ_TO_PTR(ht_obj);
     for (i = 0; i < ht->bucket_count; i++) {
-        CL_Obj chain = ht_get_buckets(ht)[i];
+        chain = ht_get_buckets(ht)[i];
         while (!CL_NULL_P(chain)) {
             CL_Obj pair = cl_car(chain);
             result = cl_cons(pair, result);
@@ -949,7 +955,7 @@ static CL_Obj bi_hash_table_pairs(CL_Obj *args, int n)
         }
     }
 
-    CL_GC_UNPROTECT(2);
+    CL_GC_UNPROTECT(3);
     return result;
 }
 
