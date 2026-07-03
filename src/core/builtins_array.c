@@ -1593,12 +1593,11 @@ static CL_Obj bi_vector_push_extend(CL_Obj *args, int n)
             new_cap = old_len + ext;
     }
 
-    /* Allocate new backing vector (GC may fire) */
-    CL_GC_PROTECT(args[0]);
-    CL_GC_PROTECT(args[1]);
+    /* Allocate new backing vector (GC may fire).  args[] slots are already
+     * GC-rooted VM-stack slots — protecting them again would double-forward
+     * them on compaction (gc_forward is not idempotent). */
     new_arr = cl_make_array(new_cap, 0, NULL,
                             CL_VEC_FLAG_ADJUSTABLE, CL_NO_FILL_POINTER);
-    CL_GC_UNPROTECT(2);
 
     /* Re-fetch after potential GC */
     vec = (CL_Vector *)CL_OBJ_TO_PTR(args[1]);
@@ -1714,11 +1713,12 @@ static CL_Obj bi_adjust_array(CL_Obj *args, int n)
         uint8_t new_flags =
             (old_vec->flags | CL_VEC_FLAG_ADJUSTABLE) & ~CL_VEC_FLAG_DISPLACED;
         /* GC SAFETY: initial_element is read AFTER this allocation (the
-         * new-element fill below) — keep it forwarded across the compaction. */
-        CL_GC_PROTECT(args[0]);
+         * new-element fill below) — keep it forwarded across the compaction.
+         * args[0] is NOT protected: it is an already-rooted VM-stack slot,
+         * and double-registering it would double-forward it. */
         CL_GC_PROTECT(initial_element);
         new_arr = cl_make_array(new_len, 0, NULL, new_flags, new_fp);
-        CL_GC_UNPROTECT(2);
+        CL_GC_UNPROTECT(1);
     }
 
     /* Re-fetch after potential GC */

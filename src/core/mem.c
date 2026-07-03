@@ -207,6 +207,12 @@ void cl_mem_init(uint32_t heap_size)
 static uint32_t        *jit_scan_cand_buf = NULL;
 static int              jit_scan_cand_cap = 0;
 
+/* Persistent buffer for the deduplicated registered-root forwarding pass
+ * (see gc_update_registered_roots below) — defined here so
+ * cl_mem_shutdown can free it. */
+static CL_Obj         **gc_root_slot_buf = NULL;
+static uint32_t         gc_root_slot_cap = 0;
+
 /* Pinned-object set for the moving compactor (option B).  The mark-phase
  * conservative JIT-stack scan records, in ascending arena-offset order,
  * every *validated* real-object offset referenced from the current
@@ -267,6 +273,11 @@ void cl_mem_shutdown(void)
         jit_scan_free_cap = 0;
         jit_scan_free_count = 0;
         jit_scan_free_valid = 0;
+    }
+    if (gc_root_slot_buf) {
+        platform_free(gc_root_slot_buf);
+        gc_root_slot_buf = NULL;
+        gc_root_slot_cap = 0;
     }
     if (alloc_mutex) {
         platform_mutex_destroy(alloc_mutex);
@@ -2393,9 +2404,10 @@ static void gc_update_thread_roots(CL_Thread *t)
 {
     int i;
 
-    /* GC root stack — CL_Obj* pointers to C stack variables */
-    for (i = 0; i < t->gc_root_count; i++)
-        gc_update_slot(t->gc_roots[i]);
+    /* The gc_roots[] stack (CL_Obj* pointers to C locals) is NOT forwarded
+     * here — gc_update_registered_roots forwards all threads' entries from
+     * one deduplicated address list, so a slot registered twice (or one
+     * aliasing a VM-stack slot below) is forwarded exactly once. */
 
     /* Dynamic binding stack */
     for (i = 0; i < t->dyn_top; i++) {
@@ -2533,6 +2545,118 @@ static void gc_update_thread_roots(CL_Thread *t)
      * object, so they stay at their current offset and the JIT's spilled
      * C-stack offsets remain valid without rewriting the stack. */
 }
+
+/* --- Registered-root forwarding with dedup (double-forward hardening) ---
+ *
+ * gc_forward is NOT idempotent: the forwarding table is keyed by
+ * pre-compaction offsets, so forwarding the same slot twice maps the
+ * already-forwarded offset through whatever object's OLD offset it now
+ * coincides with — silently rewriting the slot to an unrelated object.
+ * Historically each root registry was forwarded by its own loop, so any
+ * slot reachable from two entries (an accidental double CL_GC_PROTECT,
+ * a global both cl_gc_register_root'ed and protected, or a protect of an
+ * already-rooted VM-stack slot like CL_GC_PROTECT(args[i])) corrupted
+ * with layout-roulette timing.  This pass forwards all dynamically-
+ * registered slots (global_roots[] + every thread's gc_roots[]) from one
+ * sorted, deduplicated address list, and skips addresses that alias a
+ * live VM-stack slot (those are owned by the vm.stack loop in
+ * gc_update_thread_roots) — making duplicate registration harmless by
+ * construction.  cl_gc_audit_roots remains the tool for locating the
+ * offending registration site.  (gc_root_slot_buf itself is declared with
+ * the other persistent GC buffers near the top of the file, so
+ * cl_mem_shutdown can free it.) */
+static int root_slot_cmp(const void *a, const void *b)
+{
+    CL_Obj * const *pa = (CL_Obj * const *)a;
+    CL_Obj * const *pb = (CL_Obj * const *)b;
+    if (*pa < *pb) return -1;
+    if (*pa > *pb) return 1;
+    return 0;
+}
+
+/* Does slot point into a thread's live VM stack slice [stack, stack+sp)?
+ * Those slots are forwarded exactly once by gc_update_thread_roots. */
+static int root_slot_on_vm_stack(CL_Obj *slot)
+{
+    CL_Thread *t;
+    for (t = cl_thread_list; t; t = t->next) {
+        if (t->vm.stack && slot >= t->vm.stack &&
+            slot < t->vm.stack + t->vm.sp)
+            return 1;
+    }
+    return 0;
+}
+
+static void gc_update_registered_roots(void)
+{
+    uint32_t total = (uint32_t)n_global_roots;
+    uint32_t n = 0, i;
+    CL_Thread *t;
+    int j;
+#ifdef DEBUG_GC
+    uint32_t dups = 0, aliased = 0;
+#endif
+
+    for (t = cl_thread_list; t; t = t->next)
+        total += (uint32_t)t->gc_root_count;
+    if (total == 0)
+        return;
+
+    if (total > gc_root_slot_cap) {
+        CL_Obj **buf = (CL_Obj **)platform_alloc(total * sizeof(CL_Obj *));
+        if (buf) {
+            if (gc_root_slot_buf) platform_free(gc_root_slot_buf);
+            gc_root_slot_buf = buf;
+            gc_root_slot_cap = total;
+        }
+    }
+    if (total > gc_root_slot_cap) {
+        /* Buffer allocation failed — fall back to per-registry loops.
+         * Exact-duplicate addresses would still double-forward here, but
+         * skipping the update entirely would corrupt EVERY slot; the
+         * VM-stack alias check needs no memory, so it still applies. */
+        for (j = 0; j < n_global_roots; j++)
+            gc_update_slot(global_roots[j]);
+        for (t = cl_thread_list; t; t = t->next)
+            for (j = 0; j < t->gc_root_count; j++)
+                if (!root_slot_on_vm_stack(t->gc_roots[j]))
+                    gc_update_slot(t->gc_roots[j]);
+        return;
+    }
+
+    for (j = 0; j < n_global_roots; j++)
+        gc_root_slot_buf[n++] = global_roots[j];
+    for (t = cl_thread_list; t; t = t->next)
+        for (j = 0; j < t->gc_root_count; j++)
+            gc_root_slot_buf[n++] = t->gc_roots[j];
+
+    qsort(gc_root_slot_buf, (size_t)n, sizeof(CL_Obj *), root_slot_cmp);
+
+    for (i = 0; i < n; i++) {
+        if (i > 0 && gc_root_slot_buf[i] == gc_root_slot_buf[i - 1]) {
+#ifdef DEBUG_GC
+            dups++;
+#endif
+            continue;               /* duplicate registration — forward once */
+        }
+        if (root_slot_on_vm_stack(gc_root_slot_buf[i])) {
+#ifdef DEBUG_GC
+            aliased++;
+#endif
+            continue;               /* owned by the vm.stack forwarding loop */
+        }
+        gc_update_slot(gc_root_slot_buf[i]);
+    }
+
+#ifdef DEBUG_GC
+    if (dups || aliased)
+        fprintf(stderr, "GC: root dedup skipped %u duplicate and %u "
+                "VM-stack-aliased registration(s) this compaction "
+                "(harmless, but run ext:%%gc-audit-roots to find the "
+                "redundant CL_GC_PROTECT / cl_gc_register_root)\n",
+                (unsigned)dups, (unsigned)aliased);
+#endif
+}
 #define gc_root_count (CT->gc_root_count)
 
 /* Pass 3c: Update shared (non-per-thread) roots (mirrors gc_mark shared section) */
@@ -2575,12 +2699,9 @@ static void gc_update_shared_roots(void)
         }
     }
 
-    /* Registered global roots (cached keyword/type symbols, etc.) */
-    {
-        int gi;
-        for (gi = 0; gi < n_global_roots; gi++)
-            gc_update_slot(global_roots[gi]);
-    }
+    /* Registered global roots (cached keyword/type symbols, etc.) are
+     * forwarded by gc_update_registered_roots — one deduplicated pass
+     * shared with the thread gc_roots[] stacks. */
 
     /* Active FASL readers — forward the relocated offsets in their dedup
      * tables (mirrors cl_fasl_gc_mark_readers in the mark phase). */
@@ -2606,6 +2727,12 @@ static void gc_update_all_references(void)
     /* Update per-thread roots */
     for (t = cl_thread_list; t; t = t->next)
         gc_update_thread_roots(t);
+
+    /* Registered root slots (global_roots[] + all thread gc_roots[]),
+     * deduplicated so a doubly-registered slot is forwarded exactly once.
+     * Disjoint from the passes above/below: entries aliasing a live
+     * VM-stack slot are skipped (the vm.stack loop owns those). */
+    gc_update_registered_roots();
 
     /* Update shared globals */
     gc_update_shared_roots();

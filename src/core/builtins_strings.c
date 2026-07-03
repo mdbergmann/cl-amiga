@@ -725,7 +725,8 @@ static CL_Obj bi_subseq(CL_Obj *args, int n)
         if (end > (int32_t)len) end = (int32_t)len;
         if (start > end) start = end;
         rlen = end - start;
-        CL_GC_PROTECT(args[0]);
+        /* args[0] is an already-rooted VM-stack slot: forwarded on
+         * compaction without (and never with) an extra CL_GC_PROTECT. */
 #ifdef CL_WIDE_STRINGS
         {
             int wide = 0;
@@ -740,7 +741,6 @@ static CL_Obj bi_subseq(CL_Obj *args, int n)
         for (i = 0; i < rlen; i++)
             cl_string_set_char_at(result, (uint32_t)i,
                                   cl_string_char_at(args[0], (uint32_t)(start + i)));
-        CL_GC_UNPROTECT(1);
         return result;
     }
     /* Vector subseq */
@@ -756,7 +756,6 @@ static CL_Obj bi_subseq(CL_Obj *args, int n)
         if (end > (int32_t)len) end = (int32_t)len;
         if (start > end) start = end;
         rlen = end - start;
-        CL_GC_PROTECT(args[0]);
         result = cl_make_vector((uint32_t)rlen);
         v = (CL_Vector *)CL_OBJ_TO_PTR(args[0]);
         data = cl_vector_data(v);
@@ -770,7 +769,6 @@ static CL_Obj bi_subseq(CL_Obj *args, int n)
              * numeric vector must report the same ARRAY-ELEMENT-TYPE. */
             rv->elt_type = v->elt_type;
         }
-        CL_GC_UNPROTECT(1);
         return result;
     }
     if (CL_BIT_VECTOR_P(args[0])) {
@@ -784,7 +782,6 @@ static CL_Obj bi_subseq(CL_Obj *args, int n)
         if (end > (int32_t)len) end = (int32_t)len;
         if (start > end) start = end;
         rlen = end - start;
-        CL_GC_PROTECT(args[0]);
         result = cl_make_bit_vector((uint32_t)rlen);
         bv = (CL_BitVector *)CL_OBJ_TO_PTR(args[0]);
         {
@@ -792,7 +789,6 @@ static CL_Obj bi_subseq(CL_Obj *args, int n)
             for (i = 0; i < rlen; i++)
                 cl_bv_set_bit(rv, (uint32_t)i, cl_bv_get_bit(bv, (uint32_t)(start + i)));
         }
-        CL_GC_UNPROTECT(1);
         return result;
     }
     /* List subseq */

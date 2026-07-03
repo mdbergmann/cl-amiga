@@ -2069,9 +2069,10 @@ static CL_Obj bi_eval(CL_Obj *args, int n)
 {
     CL_Obj bytecode;
     CL_UNUSED(n);
-    CL_GC_PROTECT(args[0]);
+    /* args[0] is a VM-stack slot — already GC-rooted and forwarded on
+     * compaction.  Do NOT CL_GC_PROTECT it: registering an already-rooted
+     * slot forwards it twice (gc_forward is not idempotent). */
     bytecode = cl_compile(args[0]);
-    CL_GC_UNPROTECT(1);
     if (CL_NULL_P(bytecode)) return CL_NIL;
     return cl_vm_eval(bytecode);
 }
