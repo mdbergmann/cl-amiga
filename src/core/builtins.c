@@ -27,10 +27,17 @@ CL_Obj cl_dbind_too_many_sym = CL_NIL;
 void cl_register_builtin(const char *name, CL_CFunc func,
                           int min, int max, CL_Obj package)
 {
+    /* sym is protected across the function alloc — cl_make_function can
+     * compact and leave sym/s stale (latent at boot where the heap is
+     * dense, but wrong by contract and fatal if ever run post-boot). */
     CL_Obj sym = cl_intern_in(name, (uint32_t)strlen(name), package);
-    CL_Obj fn = cl_make_function(func, sym, min, max);
-    CL_Symbol *s = (CL_Symbol *)CL_OBJ_TO_PTR(sym);
+    CL_Obj fn;
+    CL_Symbol *s;
+    CL_GC_PROTECT(sym);
+    fn = cl_make_function(func, sym, min, max);
+    s = (CL_Symbol *)CL_OBJ_TO_PTR(sym);
     s->function = fn;
+    CL_GC_UNPROTECT(1);
     /* Do NOT set s->value here.  Per CLHS, function and value cells are
      * disjoint: (boundp 'car) must return NIL even though CAR is fbound.
      * Setting value = fn silently broke BOUNDP / SYMBOL-VALUE for every
@@ -588,9 +595,11 @@ static CL_Obj bi_equalp(CL_Obj *args, int n)
         if (cb >= 'a' && cb <= 'z') cb -= 32;
         return ca == cb ? SYM_T : CL_NIL;
     }
-    /* Numbers: use numeric = (cross-type) */
+    /* Numbers: use numeric = (cross-type).  cl_numeric_equal, not
+     * cl_arith_compare — the latter is the ORDERED comparator and does not
+     * handle complex numbers, so (equalp #C(0.0 2.0) #C(0.0 2.0)) was NIL. */
     if (CL_NUMBER_P(a) && CL_NUMBER_P(b))
-        return cl_arith_compare(a, b) == 0 ? SYM_T : CL_NIL;
+        return cl_numeric_equal(a, b) ? SYM_T : CL_NIL;
     /* Conses: recursive.
      * GC SAFETY: the recursion can allocate (numeric EQUALP on ratios /
      * bignums goes through cl_arith_compare) and compact — a and b are
@@ -1212,11 +1221,14 @@ static CL_Obj bi_setf_get(CL_Obj *args, int n)
         }
         plist = cl_cdr(cl_cdr(plist));
     }
-    /* Not found — prepend indicator+value */
+    /* Not found — prepend indicator+value.  Split the nested conses: the
+     * inner one compacts, leaving the indicator local copy stale for the
+     * outer — re-read it from the rooted args[]. */
     {
         CL_Obj new_plist;
         CL_GC_PROTECT(value);
-        new_plist = cl_cons(indicator, cl_cons(value, s->plist));
+        new_plist = cl_cons(value, s->plist);
+        new_plist = cl_cons(args[1], new_plist);
         CL_GC_UNPROTECT(1);
         /* Re-fetch symbol pointer after potential GC */
         s = (CL_Symbol *)CL_OBJ_TO_PTR(args[0]);
@@ -1700,21 +1712,8 @@ void cl_builtins_init(void)
     cl_package_export_all_cl_symbols();
 
     /* Process control — in CL-USER, not CL (quit/exit are non-standard) */
-    {
-        CL_Obj sym;
-        CL_Obj fn;
-        CL_Symbol *s;
-
-        sym = cl_intern_in("QUIT", 4, cl_package_cl_user);
-        fn = cl_make_function(bi_quit, sym, 0, 1);
-        s = (CL_Symbol *)CL_OBJ_TO_PTR(sym);
-        s->function = fn;
-
-        sym = cl_intern_in("EXIT", 4, cl_package_cl_user);
-        fn = cl_make_function(bi_quit, sym, 0, 1);
-        s = (CL_Symbol *)CL_OBJ_TO_PTR(sym);
-        s->function = fn;
-    }
+    cl_register_builtin("QUIT", bi_quit, 0, 1, cl_package_cl_user);
+    cl_register_builtin("EXIT", bi_quit, 0, 1, cl_package_cl_user);
 
     /* Register cached symbols for GC compaction forwarding */
     cl_gc_register_root(&trace_list);

@@ -46,6 +46,7 @@ int cl_error_frame_push(void)
     cl_error_frames[cl_error_frame_top].saved_debugger_depth = cl_debugger_depth;
     cl_error_frames[cl_error_frame_top].saved_in_debugger = cl_in_debugger;
     cl_error_frames[cl_error_frame_top].saved_fasl_readers = cl_fasl_reader_save_count();
+    cl_error_frames[cl_error_frame_top].saved_fasl_writers = cl_fasl_writer_save_count();
     cl_error_frames[cl_error_frame_top].saved_active_compiler = cl_compiler_mark();
     cl_error_frames[cl_error_frame_top].saved_handler_top = cl_handler_top;
     cl_error_frames[cl_error_frame_top].saved_handler_active_mask = cl_handler_active_mask;
@@ -83,6 +84,7 @@ CL_NORETURN void cl_error_frame_longjmp(int code)
         cl_debugger_depth = cl_error_frames[cl_error_frame_top - 1].saved_debugger_depth;
         cl_in_debugger = cl_error_frames[cl_error_frame_top - 1].saved_in_debugger;
         cl_fasl_reader_restore_count(cl_error_frames[cl_error_frame_top - 1].saved_fasl_readers);
+        cl_fasl_writer_restore_count(cl_error_frames[cl_error_frame_top - 1].saved_fasl_writers);
         cl_compiler_force_restore_to(cl_error_frames[cl_error_frame_top - 1].saved_active_compiler);
         /* Drop any HANDLER-BIND / RESTART-CASE bindings established since this
          * frame was pushed — their POP opcodes are abandoned by the longjmp.
@@ -119,6 +121,7 @@ CL_NORETURN void cl_error_frame_longjmp(int code)
         /* Drop any active FASL readers — their stack-local CL_FaslReaders are
          * unwound away.  Restore to the outermost frame's snapshot (normally 0). */
         cl_fasl_reader_restore_count(cl_error_frames[cl_error_frame_top - 1].saved_fasl_readers);
+        cl_fasl_writer_restore_count(cl_error_frames[cl_error_frame_top - 1].saved_fasl_writers);
         /* Free any compilers stranded by the unwound compile (see field doc). */
         cl_compiler_force_restore_to(cl_error_frames[cl_error_frame_top - 1].saved_active_compiler);
         CL_LONGJMP(cl_error_frames[cl_error_frame_top - 1].buf, code);
@@ -195,6 +198,7 @@ void cl_error(int code, const char *fmt, ...)
             gc_root_count = cl_error_frames[cl_error_frame_top - 1].saved_gc_roots;
             cl_jit_restore_depth(cl_error_frames[cl_error_frame_top - 1].saved_jit_depth);
             cl_fasl_reader_restore_count(cl_error_frames[cl_error_frame_top - 1].saved_fasl_readers);
+        cl_fasl_writer_restore_count(cl_error_frames[cl_error_frame_top - 1].saved_fasl_writers);
             cl_compiler_force_restore_to(cl_error_frames[cl_error_frame_top - 1].saved_active_compiler);
             CL_LONGJMP(cl_error_frames[cl_error_frame_top - 1].buf, code);
         }

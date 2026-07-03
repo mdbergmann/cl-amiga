@@ -50,9 +50,13 @@ typedef struct {
 static void defun(const char *name, CL_CFunc func, int min, int max)
 {
     CL_Obj sym = cl_intern_in(name, (uint32_t)strlen(name), cl_package_cl);
-    CL_Obj fn = cl_make_function(func, sym, min, max);
-    CL_Symbol *s = (CL_Symbol *)CL_OBJ_TO_PTR(sym);
+    CL_Obj fn;
+    CL_Symbol *s;
+    CL_GC_PROTECT(sym);
+    fn = cl_make_function(func, sym, min, max);
+    s = (CL_Symbol *)CL_OBJ_TO_PTR(sym);
     s->function = fn;
+    CL_GC_UNPROTECT(1);
 }
 
 /* --- Output helpers --- */
@@ -182,10 +186,15 @@ CL_Obj cl_inspect_get_component(CL_Obj obj, int idx, const char **label)
     if (CL_STRUCT_P(obj)) {
         CL_Struct *st = (CL_Struct *)CL_OBJ_TO_PTR(obj);
         if (idx < 0 || (uint32_t)idx >= st->n_slots) return CL_NIL;
-        /* Try to get slot name */
+        /* Try to get slot name.  cl_struct_slot_names ALLOCATES (conses
+         * the name list) — obj is rooted across it and st re-derived
+         * before the slot read below. */
         {
-            CL_Obj names = cl_struct_slot_names(st->type_desc);
+            CL_Obj names;
             int i = 0;
+            CL_GC_PROTECT(obj);
+            names = cl_struct_slot_names(st->type_desc);
+            CL_GC_UNPROTECT(1);
             while (!CL_NULL_P(names) && i < idx) {
                 names = cl_cdr(names);
                 i++;
@@ -202,6 +211,7 @@ CL_Obj cl_inspect_get_component(CL_Obj obj, int idx, const char **label)
                 *label = idx_label;
             }
         }
+        st = (CL_Struct *)CL_OBJ_TO_PTR(obj);
         return st->slots[idx];
     }
 
@@ -337,7 +347,10 @@ static void inspect_show(InspectState *state)
         cl_color_reset();
     }
 
-    /* Components */
+    /* Components.  The writes above (and each component print below) can
+     * allocate — the obj local copy goes stale, so re-read it from the
+     * GC-rooted navigation-stack slot before every use. */
+    obj = state->stack[state->depth].object;
     ncomp = cl_inspect_component_count(obj);
     if (ncomp == 0) {
         write_str("  (no navigable components)\n");
@@ -349,7 +362,9 @@ static void inspect_show(InspectState *state)
 
     for (i = 0; i < show_max; i++) {
         const char *label;
-        CL_Obj comp = cl_inspect_get_component(obj, i, &label);
+        CL_Obj comp;
+        obj = state->stack[state->depth].object;
+        comp = cl_inspect_get_component(obj, i, &label);
 
         snprintf(buf, sizeof(buf), "  %2d: ", i);
         cl_color_set(CL_COLOR_DIM_GREEN);

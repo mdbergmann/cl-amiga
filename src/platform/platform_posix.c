@@ -560,12 +560,24 @@ PlatformSocket platform_socket_connect(const char *host, int port, int connect_m
     struct hostent *he;
     struct sockaddr_in addr;
     int fd;
+    char host_buf[256];
 
     socket_table_ensure_init();
 
+    /* Copy the hostname to the C stack first: host may point into the
+     * Lisp arena, and the safe region below lets a peer thread's
+     * compaction move it while we're parked in DNS — resolving a garbage
+     * hostname.  (The Amiga implementation stack-copies for exactly this
+     * reason.) */
+    {
+        size_t hl = strlen(host);
+        if (hl >= sizeof(host_buf)) return PLATFORM_SOCKET_INVALID;
+        memcpy(host_buf, host, hl + 1);
+    }
+
     /* DNS resolution can block on the network — stay GC-cooperative. */
     cl_gc_enter_safe_region();
-    he = gethostbyname(host);
+    he = gethostbyname(host_buf);
     cl_gc_leave_safe_region();
     if (!he) return PLATFORM_SOCKET_INVALID;
 

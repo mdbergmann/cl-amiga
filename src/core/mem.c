@@ -1880,6 +1880,13 @@ static void gc_mark(void)
         cl_fasl_gc_mark_readers();
     }
 
+    /* Active FASL WRITERS — bi_load's auto-cache writer holds gensym dedup
+     * entries across the interleaved compile/eval of later forms. */
+    {
+        extern void cl_fasl_gc_mark_writers(void);
+        cl_fasl_gc_mark_writers();
+    }
+
     /* Active MAKE-LOAD-FORM writer pre-pass — its walk/result arrays hold
      * CL_Obj offsets that a compaction during a user MAKE-LOAD-FORM method
      * must keep live and forward. */
@@ -1955,6 +1962,13 @@ static void gc_finalize_dead(uint8_t *ptr)
          * by the mark-driven cl_stream_outbuf_gc_reclaim() after marking. */
         break;
     case TYPE_LOCK: {
+        /* KNOWN LIMITATION: if a program drops every reference to a lock
+         * wrapper while some thread still HOLDS the platform mutex
+         * (acquired earlier, wrapper discarded), this destroys a locked
+         * mutex — undefined behavior on pthreads.  Blocked WAITERS are
+         * safe (their args root the wrapper); only a holder-with-no-
+         * reference is exposed.  Tracking held state would need a
+         * per-lock owner field — deferred (tier-3 audit I8). */
         CL_Lock *lk = (CL_Lock *)ptr;
         if (lk->lock_id < CL_MAX_LOCKS) {
             void *h = cl_lock_table[lk->lock_id];
@@ -2710,6 +2724,13 @@ static void gc_update_shared_roots(void)
         cl_fasl_gc_update_readers(gc_update_slot);
     }
 
+    /* Active FASL writers — forward the gensym dedup entries (mirrors
+     * cl_fasl_gc_mark_writers). */
+    {
+        extern void cl_fasl_gc_update_writers(void (*update_fn)(CL_Obj *));
+        cl_fasl_gc_update_writers(gc_update_slot);
+    }
+
     /* MAKE-LOAD-FORM writer pre-pass — forward the relocated offsets in
      * its walk/result arrays (mirrors cl_fasl_gc_mark_mlf). */
     {
@@ -3049,9 +3070,10 @@ void cl_gc_compact(void)
     gc_fwd_free();
 
     /* If we rewrote any CL_Obj immediate inside JIT'd native code, flush
-     * the CPU caches so 68040/060 re-fetch the patched instruction bytes
-     * instead of serving stale instruction-cache lines.  No-op on host
-     * and on 68020/030 (no write-back I-cache). */
+     * the CPU caches so the patched instruction bytes are re-fetched.
+     * REQUIRED on every 68020+ — the 020/030 also have an I-cache (256 B)
+     * that can serve stale pre-patch lines; only the 68000/010 lack one.
+     * Do NOT "optimize" this to 040/060-only.  No-op on host. */
     if (gc_native_code_patched)
         platform_cache_clear(NULL, 0);
 

@@ -165,12 +165,18 @@ static void import_symbol_nolock(CL_Obj sym, CL_Obj package)
         CL_Package *pkg = (CL_Package *)CL_OBJ_TO_PTR(package);
         CL_Vector *tbl = (CL_Vector *)CL_OBJ_TO_PTR(pkg->symbols);
         uint32_t idx = s->hash % tbl->length;
+        CL_Obj chain;
 
         CL_GC_PROTECT(package);
         CL_GC_PROTECT(sym);
-        tbl->data[idx] = cl_cons(sym, tbl->data[idx]);
-        CL_GC_UNPROTECT(2);
+        chain = cl_cons(sym, tbl->data[idx]);
+        /* Re-derive after the cons: the store must hit the MOVED table,
+         * not the pre-compaction location (cf. cl_package_add_symbol). */
+        pkg = (CL_Package *)CL_OBJ_TO_PTR(package);
+        tbl = (CL_Vector *)CL_OBJ_TO_PTR(pkg->symbols);
+        tbl->data[idx] = chain;
         pkg->sym_count++;
+        CL_GC_UNPROTECT(2);
     }
 }
 
@@ -363,6 +369,11 @@ void cl_export_symbol(CL_Obj sym, CL_Obj package)
     CL_Symbol *s;
     CL_String *sname;
     if (CL_NULL_P(sym)) return;
+    /* sym and package are read again after import_symbol_nolock and the
+     * exported-list cons — both allocate, so root the parameters for the
+     * whole function and re-derive raw pointers after each alloc. */
+    CL_GC_PROTECT(sym);
+    CL_GC_PROTECT(package);
     s = (CL_Symbol *)CL_OBJ_TO_PTR(sym);
     sname = (CL_String *)CL_OBJ_TO_PTR(s->name);
 
@@ -378,18 +389,19 @@ void cl_export_symbol(CL_Obj sym, CL_Obj package)
     /* Add to package's exported list (idempotent). */
     if (!exported_p_nolock(sym, package)) {
         CL_Package *pkg;
-        CL_GC_PROTECT(package);
-        CL_GC_PROTECT(sym);
+        CL_Obj chain;
+        chain = cl_cons(sym, ((CL_Package *)CL_OBJ_TO_PTR(package))->exported_symbols);
         pkg = (CL_Package *)CL_OBJ_TO_PTR(package);
-        pkg->exported_symbols = cl_cons(sym, pkg->exported_symbols);
-        CL_GC_UNPROTECT(2);
+        pkg->exported_symbols = chain;
     }
     /* Keep the legacy global flag in sync (used by printer / describe
      * fast paths and by FASL loader as a "any package exports this"
      * heuristic).  Source of truth for find-symbol is the per-package
      * list above. */
+    s = (CL_Symbol *)CL_OBJ_TO_PTR(sym);
     s->flags |= CL_SYM_EXPORTED;
     if (cl_package_rwlock) platform_rwlock_unlock(cl_package_rwlock);
+    CL_GC_UNPROTECT(2);
 }
 
 /* Unexport SYM from PACKAGE.  Removes SYM from PACKAGE's exported list
@@ -444,19 +456,24 @@ void cl_shadow_symbol(const char *name, uint32_t len, CL_Obj package)
         return;
     }
 
-    /* Create new symbol in this package */
+    /* Create new symbol in this package.  package is protected BEFORE the
+     * first alloc (the old code protected it after cl_make_string — rooting
+     * an already-stale value), and the hash is computed from the caller's
+     * name buffer before anything can move it. */
     {
-        CL_Obj name_str = cl_make_string(name, len);
+        uint32_t h = cl_hash_string(name, len);
+        CL_Obj name_str;
         CL_Obj sym;
         CL_Symbol *s;
 
-        CL_GC_PROTECT(name_str);
         CL_GC_PROTECT(package);
+        name_str = cl_make_string(name, len);
+        CL_GC_PROTECT(name_str);
         sym = cl_make_symbol(name_str);
         CL_GC_UNPROTECT(2);
 
         s = (CL_Symbol *)CL_OBJ_TO_PTR(sym);
-        s->hash = cl_hash_string(name, len);
+        s->hash = h;
         cl_package_add_symbol(package, sym);
     }
     if (cl_package_rwlock) platform_rwlock_unlock(cl_package_rwlock);
@@ -482,10 +499,15 @@ void cl_use_package(CL_Obj pkg_to_use, CL_Obj using_pkg)
         list = cl_cdr(list);
     }
 
-    /* Add to use-list */
+    /* Add to use-list.  The cons can compact — re-derive user before the
+     * store so it hits the moved package, not the old location. */
     CL_GC_PROTECT(using_pkg);
     CL_GC_PROTECT(pkg_to_use);
-    user->use_list = cl_cons(pkg_to_use, user->use_list);
+    {
+        CL_Obj cell = cl_cons(pkg_to_use, user->use_list);
+        user = (CL_Package *)CL_OBJ_TO_PTR(using_pkg);
+        user->use_list = cell;
+    }
     CL_GC_UNPROTECT(2);
     if (cl_package_rwlock) platform_rwlock_unlock(cl_package_rwlock);
 }
@@ -541,7 +563,9 @@ void cl_add_package_local_nickname(CL_Obj nick_str, CL_Obj target_pkg, CL_Obj in
         list = cl_cdr(list);
     }
 
-    /* Prepend new entry */
+    /* Prepend new entry.  Both conses can compact — re-derive p before
+     * each store (the old code stored through a p captured before the
+     * second cons). */
     {
         CL_Obj entry;
         CL_GC_PROTECT(in_pkg);
@@ -550,7 +574,9 @@ void cl_add_package_local_nickname(CL_Obj nick_str, CL_Obj target_pkg, CL_Obj in
         entry = cl_cons(nick_str, target_pkg);
         CL_GC_PROTECT(entry);
         p = (CL_Package *)CL_OBJ_TO_PTR(in_pkg);
-        p->local_nicknames = cl_cons(entry, p->local_nicknames);
+        entry = cl_cons(entry, p->local_nicknames);
+        p = (CL_Package *)CL_OBJ_TO_PTR(in_pkg);
+        p->local_nicknames = entry;
         CL_GC_UNPROTECT(4);
     }
     if (cl_package_rwlock) platform_rwlock_unlock(cl_package_rwlock);
@@ -1075,16 +1101,23 @@ void cl_package_init(void)
     cl_register_package(cl_package_amiga);
 #endif
 
-    /* Add nicknames */
+    /* Add nicknames.  Derive the package pointer only AFTER the string
+     * and cons allocations — cl_package_cl/_cl_user are registered roots,
+     * so re-reading them post-alloc always yields the forwarded package
+     * (identity at boot, but correct by contract). */
     {
-        CL_Package *cl_pkg = (CL_Package *)CL_OBJ_TO_PTR(cl_package_cl);
         CL_Obj nick = cl_make_string("CL", 2);
-        cl_pkg->nicknames = cl_cons(nick, CL_NIL);
+        CL_Package *cl_pkg;
+        nick = cl_cons(nick, CL_NIL);
+        cl_pkg = (CL_Package *)CL_OBJ_TO_PTR(cl_package_cl);
+        cl_pkg->nicknames = nick;
     }
     {
-        CL_Package *user_pkg = (CL_Package *)CL_OBJ_TO_PTR(cl_package_cl_user);
         CL_Obj nick = cl_make_string("CL-USER", 7);
-        user_pkg->nicknames = cl_cons(nick, CL_NIL);
+        CL_Package *user_pkg;
+        nick = cl_cons(nick, CL_NIL);
+        user_pkg = (CL_Package *)CL_OBJ_TO_PTR(cl_package_cl_user);
+        user_pkg->nicknames = nick;
     }
 
     /* CL-USER uses CL, EXT, CLAMIGA, MOP, MP, FFI, AMIGA */

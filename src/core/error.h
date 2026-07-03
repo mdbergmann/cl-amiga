@@ -80,6 +80,9 @@ typedef struct {
      * local CL_FaslReader was unwound — otherwise a later GC walks the active
      * list and dereferences freed stack memory.  Mirrors saved_gc_roots. */
     int saved_fasl_readers;
+    /* Active FASL-writer count — same discipline as saved_fasl_readers for
+     * bi_load's auto-cache writer registered across compile/eval. */
+    int saved_fasl_writers;
     /* Active-compiler chain snapshot (cl_compiler_mark) at push time.  A
      * cl_error longjmp abandons the C frames of any compile in progress within
      * this frame's dynamic extent; cl_error_unwind force-frees every compiler

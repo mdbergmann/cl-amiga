@@ -10,13 +10,18 @@
 #include "../platform/platform.h"
 #include <string.h>
 
-/* Helper to register a builtin */
+/* Helper to register a builtin.  sym is protected across the function
+ * alloc — cl_make_function can compact and leave sym/s stale. */
 static void defun(const char *name, CL_CFunc func, int min, int max)
 {
     CL_Obj sym = cl_intern_in(name, (uint32_t)strlen(name), cl_package_cl);
-    CL_Obj fn = cl_make_function(func, sym, min, max);
-    CL_Symbol *s = (CL_Symbol *)CL_OBJ_TO_PTR(sym);
+    CL_Obj fn;
+    CL_Symbol *s;
+    CL_GC_PROTECT(sym);
+    fn = cl_make_function(func, sym, min, max);
+    s = (CL_Symbol *)CL_OBJ_TO_PTR(sym);
     s->function = fn;
+    CL_GC_UNPROTECT(1);
 }
 
 /* ======================================================= */
@@ -183,6 +188,11 @@ static CL_Obj bitvec_binop(CL_Obj *args, int n, BvBinOp op)
 
     nwords = CL_BV_WORDS(bv1->length);
     result = resolve_result(opt_result, bv1, bv1->length);
+    /* resolve_result allocates when the result arg is NIL/omitted — the
+     * source pointers dangle after the compaction; re-derive from the
+     * rooted args[] before the copy loop. */
+    bv1 = (CL_BitVector *)CL_OBJ_TO_PTR(args[0]);
+    bv2 = (CL_BitVector *)CL_OBJ_TO_PTR(args[1]);
 
     for (i = 0; i < nwords; i++)
         result->data[i] = op(bv1->data[i], bv2->data[i]);
@@ -226,6 +236,8 @@ static CL_Obj bi_bit_not(CL_Obj *args, int n)
 
     nwords = CL_BV_WORDS(bv->length);
     result = resolve_result(opt_result, bv, bv->length);
+    /* Re-derive the source after resolve_result's possible allocation. */
+    bv = (CL_BitVector *)CL_OBJ_TO_PTR(args[0]);
 
     for (i = 0; i < nwords; i++)
         result->data[i] = ~bv->data[i];
