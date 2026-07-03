@@ -1177,6 +1177,12 @@ static void print_obj(CL_Obj obj)
                     result = cl_vm_apply(hook_val, hook_args, 1);
                     current_depth--;
                     pr_inprog_top--;
+                    /* GC SAFETY: the hook can compact — obj and the raw st
+                     * pointer are stale.  pr_inprog[] is GC-updated, so
+                     * recover the forwarded offset from the slot just popped
+                     * and refresh both (same as the TYPE_CONDITION case). */
+                    obj = pr_inprog[pr_inprog_top];
+                    st = (CL_Struct *)CL_OBJ_TO_PTR(obj);
                 }
                 if (!CL_NULL_P(result) && CL_HEAP_P(result) &&
                     CL_HDR_TYPE(CL_OBJ_TO_PTR(result)) == TYPE_STRING) {
@@ -1203,18 +1209,28 @@ static void print_obj(CL_Obj obj)
             pp_indent_stack[pp_indent_top++] = current_column;
         if (!CL_NULL_P(st->type_desc))
             out_str(cl_symbol_name(st->type_desc));
-        for (i = 0; i < st->n_slots; i++) {
-            if (pretty && current_column >= margin)
-                pp_newline_indent();
-            else
+        /* GC SAFETY: the recursive print_obj on a slot can compact (nested
+         * hook dispatch, bignum printing) — root obj and the slot_names
+         * cursor and re-derive st each iteration. */
+        {
+            uint32_t nslots = st->n_slots;
+            CL_GC_PROTECT(obj);
+            CL_GC_PROTECT(slot_names);
+            for (i = 0; i < nslots; i++) {
+                if (pretty && current_column >= margin)
+                    pp_newline_indent();
+                else
+                    out_char(' ');
+                if (!CL_NULL_P(slot_names)) {
+                    out_char(':');
+                    out_str(cl_symbol_name(cl_car(slot_names)));
+                    slot_names = cl_cdr(slot_names);
+                }
                 out_char(' ');
-            if (!CL_NULL_P(slot_names)) {
-                out_char(':');
-                out_str(cl_symbol_name(cl_car(slot_names)));
-                slot_names = cl_cdr(slot_names);
+                st = (CL_Struct *)CL_OBJ_TO_PTR(obj);
+                print_obj(st->slots[i]);
             }
-            out_char(' ');
-            print_obj(st->slots[i]);
+            CL_GC_UNPROTECT(2);
         }
         if (pretty && pp_indent_top > 0)
             pp_indent_top--;

@@ -1918,6 +1918,23 @@ static void gc_mark(void)
 static void gc_finalize_dead(uint8_t *ptr)
 {
     switch (CL_HDR_TYPE(ptr)) {
+    case TYPE_BYTECODE: {
+        /* Free the JIT artifacts owned by a dead bytecode: native_code and
+         * the reloc table are platform_alloc'd (see cl_jit_compile) and were
+         * otherwise leaked for good when the object is swept.  Safe here:
+         * the world is stopped and a DEAD (unmarked) bytecode cannot be
+         * executing — any running bytecode is reachable from a VM frame or
+         * the conservative JIT stack scan and would have been marked.
+         * Fields are NULLed so a re-finalize is a no-op. */
+        CL_Bytecode *bc = (CL_Bytecode *)ptr;
+        if (bc->native_code)   { platform_free(bc->native_code); }
+        if (bc->native_relocs) { platform_free(bc->native_relocs); }
+        bc->native_code = NULL;
+        bc->native_relocs = NULL;
+        bc->native_len = 0;
+        bc->native_reloc_count = 0;
+        break;
+    }
     case TYPE_STREAM:
         /* Output-stream outbuf slots are NOT freed here.  Freeing a dead
          * stream's st->out_buf_handle is unsafe: the slot's handle may already

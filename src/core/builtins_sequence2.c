@@ -723,6 +723,15 @@ static CL_Obj bi_mismatch(CL_Obj *args, int n)
             end2 = CL_FIXNUM_VAL(args[ki + 1]);
     }
 
+    /* GC SAFETY: apply_key/call_test run user code that can compact — the
+     * seq/test/key locals are re-read every iteration, and e1 is held across
+     * e2's apply_key.  Protect them all (returned values are immediates). */
+    CL_GC_PROTECT(seq1);
+    CL_GC_PROTECT(seq2);
+    CL_GC_PROTECT(test_fn);
+    CL_GC_PROTECT(test_not_fn);
+    CL_GC_PROTECT(key_fn);
+
     if (from_end) {
         /* Search from the end; return position in seq1 of rightmost mismatch + 1,
          * or NIL if subsequences are identical. Per CL spec, the returned index
@@ -734,10 +743,14 @@ static CL_Obj bi_mismatch(CL_Obj *args, int n)
         j = end2 - 1;
         while (i >= start1 && j >= start2) {
             CL_Obj e1 = apply_key(key_fn, seq_elt(seq1, i));
-            CL_Obj e2 = apply_key(key_fn, seq_elt(seq2, j));
-            int match = !CL_NULL_P(test_not_fn)
+            CL_Obj e2;
+            int match;
+            CL_GC_PROTECT(e1);
+            e2 = apply_key(key_fn, seq_elt(seq2, j));
+            match = !CL_NULL_P(test_not_fn)
                 ? CL_NULL_P(call_test(test_not_fn, e1, e2))
                 : !CL_NULL_P(call_test(test_fn, e1, e2));
+            CL_GC_UNPROTECT(1);
             if (!match) {
                 mismatch_pos = i + 1;
                 break;
@@ -745,6 +758,7 @@ static CL_Obj bi_mismatch(CL_Obj *args, int n)
             i--;
             j--;
         }
+        CL_GC_UNPROTECT(5);
         if (mismatch_pos >= 0) return CL_MAKE_FIXNUM(mismatch_pos);
         /* All compared elements matched; check if lengths differ */
         if (sublen1 != sublen2) {
@@ -759,16 +773,23 @@ static CL_Obj bi_mismatch(CL_Obj *args, int n)
     j = start2;
     while (i < end1 && j < end2) {
         CL_Obj e1 = apply_key(key_fn, seq_elt(seq1, i));
-        CL_Obj e2 = apply_key(key_fn, seq_elt(seq2, j));
-        int match = !CL_NULL_P(test_not_fn)
+        CL_Obj e2;
+        int match;
+        CL_GC_PROTECT(e1);
+        e2 = apply_key(key_fn, seq_elt(seq2, j));
+        match = !CL_NULL_P(test_not_fn)
             ? CL_NULL_P(call_test(test_not_fn, e1, e2))
             : !CL_NULL_P(call_test(test_fn, e1, e2));
-        if (!match)
+        CL_GC_UNPROTECT(1);
+        if (!match) {
+            CL_GC_UNPROTECT(5);
             return CL_MAKE_FIXNUM(i);
+        }
         i++;
         j++;
     }
 
+    CL_GC_UNPROTECT(5);
     /* If both subsequences exhausted, no mismatch */
     if (i == end1 && j == end2) return CL_NIL;
     /* Otherwise mismatch at position where one ended */
@@ -824,6 +845,14 @@ static CL_Obj bi_search(CL_Obj *args, int n)
     if (sublen <= 0)
         return CL_MAKE_FIXNUM(from_end ? end2 : start2);
 
+    /* GC SAFETY: same as bi_mismatch — protect the seq/test/key locals for
+     * the whole scan and e1 across e2's apply_key. */
+    CL_GC_PROTECT(seq1);
+    CL_GC_PROTECT(seq2);
+    CL_GC_PROTECT(test_fn);
+    CL_GC_PROTECT(test_not_fn);
+    CL_GC_PROTECT(key_fn);
+
     /* Brute-force search.  With :from-end, scan right-to-left and return the
      * leftmost index of the rightmost match. */
     if (from_end) {
@@ -831,14 +860,22 @@ static CL_Obj bi_search(CL_Obj *args, int n)
             int match = 1;
             for (j = 0; j < sublen; j++) {
                 CL_Obj e1 = apply_key(key_fn, seq_elt(seq1, start1 + j));
-                CL_Obj e2 = apply_key(key_fn, seq_elt(seq2, i + j));
-                int m = !CL_NULL_P(test_not_fn)
+                CL_Obj e2;
+                int m;
+                CL_GC_PROTECT(e1);
+                e2 = apply_key(key_fn, seq_elt(seq2, i + j));
+                m = !CL_NULL_P(test_not_fn)
                     ? CL_NULL_P(call_test(test_not_fn, e1, e2))
                     : !CL_NULL_P(call_test(test_fn, e1, e2));
+                CL_GC_UNPROTECT(1);
                 if (!m) { match = 0; break; }
             }
-            if (match) return CL_MAKE_FIXNUM(i);
+            if (match) {
+                CL_GC_UNPROTECT(5);
+                return CL_MAKE_FIXNUM(i);
+            }
         }
+        CL_GC_UNPROTECT(5);
         return CL_NIL;
     }
 
@@ -846,15 +883,23 @@ static CL_Obj bi_search(CL_Obj *args, int n)
         int match = 1;
         for (j = 0; j < sublen; j++) {
             CL_Obj e1 = apply_key(key_fn, seq_elt(seq1, start1 + j));
-            CL_Obj e2 = apply_key(key_fn, seq_elt(seq2, i + j));
-            int m = !CL_NULL_P(test_not_fn)
+            CL_Obj e2;
+            int m;
+            CL_GC_PROTECT(e1);
+            e2 = apply_key(key_fn, seq_elt(seq2, i + j));
+            m = !CL_NULL_P(test_not_fn)
                 ? CL_NULL_P(call_test(test_not_fn, e1, e2))
                 : !CL_NULL_P(call_test(test_fn, e1, e2));
+            CL_GC_UNPROTECT(1);
             if (!m) { match = 0; break; }
         }
-        if (match) return CL_MAKE_FIXNUM(i);
+        if (match) {
+            CL_GC_UNPROTECT(5);
+            return CL_MAKE_FIXNUM(i);
+        }
     }
 
+    CL_GC_UNPROTECT(5);
     return CL_NIL;
 }
 
@@ -872,11 +917,18 @@ static CL_Obj list_merge(CL_Obj a, CL_Obj b, CL_Obj pred, CL_Obj key_fn)
     CL_GC_PROTECT(tail);
     CL_GC_PROTECT(a);
     CL_GC_PROTECT(b);
+    /* GC SAFETY: pred/key_fn are re-read each iteration across the user
+     * calls; ka is held across kb's apply_key. */
+    CL_GC_PROTECT(pred);
+    CL_GC_PROTECT(key_fn);
 
     while (!CL_NULL_P(a) && !CL_NULL_P(b)) {
-        CL_Obj ka = apply_key(key_fn, cl_car(a));
-        CL_Obj kb = apply_key(key_fn, cl_car(b));
+        CL_Obj ka = CL_NIL, kb;
         CL_Obj pick;
+        CL_GC_PROTECT(ka);
+        ka = apply_key(key_fn, cl_car(a));
+        kb = apply_key(key_fn, cl_car(b));
+        CL_GC_UNPROTECT(1);
         /* Stable merge: pick `b` only when pred(kb, ka) is true, i.e.
            b is strictly less than a.  Otherwise (a strictly less, or
            equal, or incomparable) pick `a` — this preserves the
@@ -905,7 +957,7 @@ static CL_Obj list_merge(CL_Obj a, CL_Obj b, CL_Obj pred, CL_Obj key_fn)
         else ((CL_Cons *)CL_OBJ_TO_PTR(tail))->cdr = b;
     }
 
-    CL_GC_UNPROTECT(4);
+    CL_GC_UNPROTECT(6);
     return result;
 }
 
@@ -944,46 +996,60 @@ static CL_Obj list_merge_sort(CL_Obj list, CL_Obj pred, CL_Obj key_fn)
 /* MERGE                                                   */
 /* ======================================================= */
 
-/* Helper: collect sequence elements into platform_alloc'd array. */
-static void seq_to_array(CL_Obj seq, CL_Obj **out, int32_t *out_len)
+/* Helper: collect sequence elements into a GC-managed vector.  A GC vector
+ * (not a platform_alloc C array) is required: the merge loop below runs
+ * user :key/predicate code that can compact, and only a heap vector's
+ * elements are traced and forwarded across that.  Caller must GC-protect
+ * the returned handle.  seq must be GC-protected by the caller (the
+ * cl_make_vector here can itself compact). */
+static CL_Obj seq_to_gc_vector(CL_Obj seq, int32_t *out_len)
 {
     int32_t len, i;
-    CL_Obj *arr;
+    CL_Obj vec;
     CL_Obj cur;
 
-    if (CL_NULL_P(seq)) { *out = NULL; *out_len = 0; return; }
+    if (CL_NULL_P(seq)) { *out_len = 0; return CL_NIL; }
 
     if (CL_CONS_P(seq)) {
         len = 0;
         cur = seq;
         while (!CL_NULL_P(cur)) { len++; cur = cl_cdr(cur); }
-        arr = (CL_Obj *)platform_alloc((uint32_t)(len * (int32_t)sizeof(CL_Obj)));
+        vec = cl_make_vector((uint32_t)len);
+        /* Filling allocates nothing; re-read the (caller-protected) seq
+         * after the allocation above. */
         cur = seq;
-        for (i = 0; i < len; i++) { arr[i] = cl_car(cur); cur = cl_cdr(cur); }
+        for (i = 0; i < len; i++) {
+            cl_vector_data((CL_Vector *)CL_OBJ_TO_PTR(vec))[i] = cl_car(cur);
+            cur = cl_cdr(cur);
+        }
     } else if (CL_VECTOR_P(seq)) {
-        CL_Vector *v = (CL_Vector *)CL_OBJ_TO_PTR(seq);
-        len = (int32_t)cl_vector_active_length(v);
-        arr = (CL_Obj *)platform_alloc((uint32_t)(len * (int32_t)sizeof(CL_Obj)));
-        for (i = 0; i < len; i++) arr[i] = cl_vector_data(v)[i];
+        len = (int32_t)cl_vector_active_length((CL_Vector *)CL_OBJ_TO_PTR(seq));
+        vec = cl_make_vector((uint32_t)len);
+        for (i = 0; i < len; i++)
+            cl_vector_data((CL_Vector *)CL_OBJ_TO_PTR(vec))[i] =
+                cl_vector_data((CL_Vector *)CL_OBJ_TO_PTR(seq))[i];
     } else if (CL_ANY_STRING_P(seq)) {
         len = (int32_t)cl_string_length(seq);
-        arr = (CL_Obj *)platform_alloc((uint32_t)(len * (int32_t)sizeof(CL_Obj)));
+        vec = cl_make_vector((uint32_t)len);
         for (i = 0; i < len; i++)
-            arr[i] = CL_MAKE_CHAR(cl_string_char_at(seq, (uint32_t)i));
+            cl_vector_data((CL_Vector *)CL_OBJ_TO_PTR(vec))[i] =
+                CL_MAKE_CHAR(cl_string_char_at(seq, (uint32_t)i));
     } else if (CL_BIT_VECTOR_P(seq)) {
-        CL_BitVector *bv = (CL_BitVector *)CL_OBJ_TO_PTR(seq);
-        len = (int32_t)cl_bv_active_length(bv);
-        arr = (CL_Obj *)platform_alloc((uint32_t)(len * (int32_t)sizeof(CL_Obj)));
+        len = (int32_t)cl_bv_active_length((CL_BitVector *)CL_OBJ_TO_PTR(seq));
+        vec = cl_make_vector((uint32_t)len);
         for (i = 0; i < len; i++)
-            arr[i] = CL_MAKE_FIXNUM(cl_bv_get_bit(bv, (uint32_t)i));
+            cl_vector_data((CL_Vector *)CL_OBJ_TO_PTR(vec))[i] =
+                CL_MAKE_FIXNUM(cl_bv_get_bit((CL_BitVector *)CL_OBJ_TO_PTR(seq),
+                                             (uint32_t)i));
     } else {
-        *out = NULL; *out_len = 0;
+        *out_len = 0;
         cl_error(CL_ERR_TYPE, "MERGE: not a sequence");
-        return;
+        return CL_NIL;
     }
-    *out = arr;
     *out_len = len;
+    return vec;
 }
+#define MERGE_ELT(vec, i) (cl_vector_data((CL_Vector *)CL_OBJ_TO_PTR(vec))[(i)])
 
 /* (merge result-type sequence1 sequence2 predicate &key key)
  * Merge two sorted sequences into one sorted sequence of result-type. */
@@ -1023,104 +1089,101 @@ static CL_Obj bi_merge(CL_Obj *args, int n)
         }
     }
 
-    /* General path: collect into arrays, merge, build result */
+    /* General path: collect into GC vectors, merge, build result.
+     * GC SAFETY: platform_alloc arrays are invisible to the GC — after any
+     * compacting :key/pred call their remaining CL_Obj entries are stale.
+     * GC vectors are traced and forwarded; only the handles need roots, and
+     * the data pointer is re-derived (MERGE_ELT) after every allocation. */
     {
-        CL_Obj *a1 = NULL, *a2 = NULL, *out = NULL;
+        CL_Obj a1 = CL_NIL, a2 = CL_NIL, out = CL_NIL;
         int32_t n1 = 0, n2 = 0, ntotal, ia, ib, io;
         CL_Obj result = CL_NIL, tail = CL_NIL;
 
-        seq_to_array(seq1, &a1, &n1);
-        seq_to_array(seq2, &a2, &n2);
-        ntotal = n1 + n2;
-        if (ntotal > 0)
-            out = (CL_Obj *)platform_alloc((uint32_t)(ntotal * (int32_t)sizeof(CL_Obj)));
-
-        /* Protect pred/key_fn across CL user function calls in the merge loop */
+        CL_GC_PROTECT(seq1);
+        CL_GC_PROTECT(seq2);
         CL_GC_PROTECT(pred);
         CL_GC_PROTECT(key_fn);
+        CL_GC_PROTECT(a1);
+        CL_GC_PROTECT(a2);
+        CL_GC_PROTECT(out);
 
-        /* Merge a1 and a2 into out[] using stable merge.
-         * Read each element into a GC-protected local before calling user
-         * functions — apply_key/call_test can trigger compaction, which would
-         * leave the raw a1[]/a2[] pointers holding stale arena offsets. */
+        a1 = seq_to_gc_vector(seq1, &n1);
+        a2 = seq_to_gc_vector(seq2, &n2);
+        ntotal = n1 + n2;
+        if (ntotal > 0)
+            out = cl_make_vector((uint32_t)ntotal);
+
+        /* Stable merge into out.  Elements are read fresh from the protected
+         * vectors on every access; ea/ka are additionally held across the
+         * second apply_key / call_test. */
         ia = 0; ib = 0; io = 0;
         while (ia < n1 && ib < n2) {
-            CL_Obj ea = a1[ia], eb = a2[ib], ka, kb;
-            CL_GC_PROTECT(ea);
-            CL_GC_PROTECT(eb);
-            ka = apply_key(key_fn, ea);
-            CL_GC_PROTECT(ka);
-            kb = apply_key(key_fn, eb);
+            CL_Obj ka = CL_NIL, kb;
+            CL_GC_PROTECT(ka);  /* rooted while the second apply_key runs */
+            ka = apply_key(key_fn, MERGE_ELT(a1, ia));
+            kb = apply_key(key_fn, MERGE_ELT(a2, ib));
             /* Take from b only if pred(kb, ka) is true */
             if (!CL_NULL_P(call_test(pred, kb, ka)))
-                { out[io++] = eb; ib++; }
+                { MERGE_ELT(out, io) = MERGE_ELT(a2, ib); io++; ib++; }
             else
-                { out[io++] = ea; ia++; }
-            CL_GC_UNPROTECT(3); /* ea, eb, ka */
+                { MERGE_ELT(out, io) = MERGE_ELT(a1, ia); io++; ia++; }
+            CL_GC_UNPROTECT(1); /* ka */
         }
-        while (ia < n1) out[io++] = a1[ia++];
-        while (ib < n2) out[io++] = a2[ib++];
-
-        CL_GC_UNPROTECT(2); /* pred, key_fn */
-
-        if (a1) platform_free(a1);
-        if (a2) platform_free(a2);
+        while (ia < n1) { MERGE_ELT(out, io) = MERGE_ELT(a1, ia); io++; ia++; }
+        while (ib < n2) { MERGE_ELT(out, io) = MERGE_ELT(a2, ib); io++; ib++; }
 
         /* A declared length must match the actual result length. */
         if (len_constraint >= 0 && len_constraint != ntotal) {
-            if (out) platform_free(out);
+            CL_GC_UNPROTECT(7);
             cl_error(CL_ERR_TYPE, "MERGE: result length does not match result-type");
         }
 
         if (rt == 0) {
             /* result-type NULL: only the empty merge is well typed. */
-            if (out) platform_free(out);
+            CL_GC_UNPROTECT(7);
             if (ntotal != 0)
                 cl_error(CL_ERR_TYPE, "MERGE: non-empty result for result-type NULL");
             return CL_NIL;
         } else if (rt == 1) {
-            /* Build list result, reading each out[] element into a protected
-             * local so cl_cons compaction cannot make later out[i] reads stale */
-            CL_Obj elem = CL_NIL;
+            /* Build list result — out is a traced vector, so its elements
+             * stay valid across the cl_cons allocations. */
             CL_GC_PROTECT(result);
             CL_GC_PROTECT(tail);
-            CL_GC_PROTECT(elem);
             for (i = 0; i < ntotal; i++) {
-                CL_Obj cell;
-                elem = out[i];
-                cell = cl_cons(elem, CL_NIL);
+                CL_Obj cell = cl_cons(MERGE_ELT(out, i), CL_NIL);
                 if (CL_NULL_P(result)) result = cell;
                 else ((CL_Cons *)CL_OBJ_TO_PTR(tail))->cdr = cell;
                 tail = cell;
             }
-            CL_GC_UNPROTECT(3);
+            CL_GC_UNPROTECT(2);
         } else if (rt == 2) {
-            /* String result.  Merged elements are characters (immediate
-             * values), so out[] cannot go stale across the alloc. */
+            /* String result (characters are immediates, but read through the
+             * protected vector anyway — it is re-derived after the alloc). */
             result = cl_make_string(NULL, (uint32_t)ntotal);
             for (i = 0; i < ntotal; i++)
                 cl_string_set_char_at(result, (uint32_t)i,
-                                      CL_CHAR_P(out[i]) ? CL_CHAR_VAL(out[i]) : 0);
+                                      CL_CHAR_P(MERGE_ELT(out, i))
+                                      ? CL_CHAR_VAL(MERGE_ELT(out, i)) : 0);
         } else if (rt == 4) {
-            /* Bit-vector result.  Merged elements are fixnums 0/1 (immediate). */
+            /* Bit-vector result. */
             result = cl_make_bit_vector((uint32_t)ntotal);
             {
                 CL_BitVector *bv = (CL_BitVector *)CL_OBJ_TO_PTR(result);
                 for (i = 0; i < ntotal; i++)
                     cl_bv_set_bit(bv, (uint32_t)i,
-                                  (CL_FIXNUM_P(out[i]) && CL_FIXNUM_VAL(out[i]) != 0));
+                                  (CL_FIXNUM_P(MERGE_ELT(out, i)) &&
+                                   CL_FIXNUM_VAL(MERGE_ELT(out, i)) != 0));
             }
         } else {
-            /* General vector result */
+            /* General vector result — re-derive both data pointers AFTER the
+             * allocation (the old code read out[] through a pre-alloc pointer). */
             result = cl_make_vector((uint32_t)ntotal);
-            {
-                CL_Vector *v = (CL_Vector *)CL_OBJ_TO_PTR(result);
-                for (i = 0; i < ntotal; i++)
-                    cl_vector_data(v)[i] = out[i];
-            }
+            for (i = 0; i < ntotal; i++)
+                cl_vector_data((CL_Vector *)CL_OBJ_TO_PTR(result))[i] =
+                    MERGE_ELT(out, i);
         }
 
-        if (out) platform_free(out);
+        CL_GC_UNPROTECT(7);
         return result;
     }
 }

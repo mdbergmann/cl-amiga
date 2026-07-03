@@ -122,15 +122,21 @@ static CL_Obj bi_make_package(CL_Obj *args, int nargs)
         }
     }
 
+    /* GC SAFETY: cl_make_package and every loop below allocate and can
+     * compact — the keyword-list locals (read from args before this point)
+     * and all walk cursors must be forwarded roots. */
+    CL_GC_PROTECT(nicknames);
+    CL_GC_PROTECT(use);
+    CL_GC_PROTECT(local_nicks);
     pkg = cl_make_package(name);
     CL_GC_PROTECT(pkg);
 
     /* Set nicknames — convert designators (symbols/strings) to string objects */
     if (!CL_NULL_P(nicknames)) {
-        CL_Package *p = (CL_Package *)CL_OBJ_TO_PTR(pkg);
         CL_Obj nick_list = CL_NIL;
-        CL_GC_PROTECT(nick_list);
         CL_Obj rest = nicknames;
+        CL_GC_PROTECT(nick_list);
+        CL_GC_PROTECT(rest);
         while (!CL_NULL_P(rest)) {
             CL_Obj nick = cl_car(rest);
             const char *nstr;
@@ -140,14 +146,16 @@ static CL_Obj bi_make_package(CL_Obj *args, int nargs)
             nick_list = cl_cons(nick_string, nick_list);
             rest = cl_cdr(rest);
         }
-        p->nicknames = nick_list;
-        CL_GC_UNPROTECT(1);
+        /* Re-derive the package pointer AFTER the allocating loop — a
+         * pre-loop CL_Package* would be a stale write target. */
+        ((CL_Package *)CL_OBJ_TO_PTR(pkg))->nicknames = nick_list;
+        CL_GC_UNPROTECT(2);
     }
 
     /* Register */
     cl_register_package(pkg);
 
-    /* Process :use list */
+    /* Process :use list (cl_use_package conses — `use` is protected) */
     while (!CL_NULL_P(use)) {
         CL_Obj used_pkg = coerce_to_package(cl_car(use));
         cl_use_package(used_pkg, pkg);
@@ -158,19 +166,21 @@ static CL_Obj bi_make_package(CL_Obj *args, int nargs)
     while (!CL_NULL_P(local_nicks)) {
         CL_Obj pair = cl_car(local_nicks);
         CL_Obj nick_designator = cl_car(pair);
-        CL_Obj target_designator = cl_car(cl_cdr(pair));
         CL_Obj nick_str, target_pkg;
         const char *nick_name;
         uint32_t nick_len;
 
         get_name_str(nick_designator, &nick_name, &nick_len);
         nick_str = cl_make_string(nick_name, nick_len);
-        target_pkg = coerce_to_package(target_designator);
+        /* Re-read the pair from the protected cursor: cl_make_string above
+         * may have compacted. */
+        pair = cl_car(local_nicks);
+        target_pkg = coerce_to_package(cl_car(cl_cdr(pair)));
         cl_add_package_local_nickname(nick_str, target_pkg, pkg);
         local_nicks = cl_cdr(local_nicks);
     }
 
-    CL_GC_UNPROTECT(1);
+    CL_GC_UNPROTECT(4);  /* pkg, local_nicks, use, nicknames */
     return pkg;
 }
 
@@ -241,17 +251,23 @@ static CL_Obj bi_delete_package(CL_Obj *args, int nargs)
 static CL_Obj bi_rename_package(CL_Obj *args, int nargs)
 {
     CL_Obj pkg = coerce_to_package(args[0]);
-    CL_Package *p = (CL_Package *)CL_OBJ_TO_PTR(pkg);
+    CL_Obj name_str;
     const char *new_name;
     uint32_t new_len;
 
+    /* GC SAFETY: cl_make_string can compact — never write through a
+     * CL_Package* captured before an allocation; re-derive from the
+     * protected pkg handle at each store. */
+    CL_GC_PROTECT(pkg);
     get_name_str(args[1], &new_name, &new_len);
-    p->name = cl_make_string(new_name, new_len);
+    name_str = cl_make_string(new_name, new_len);
+    ((CL_Package *)CL_OBJ_TO_PTR(pkg))->name = name_str;
 
     if (nargs > 2 && !CL_NULL_P(args[2])) {
         CL_Obj nick_list = CL_NIL;
-        CL_GC_PROTECT(nick_list);
         CL_Obj rest = args[2];
+        CL_GC_PROTECT(nick_list);
+        CL_GC_PROTECT(rest);
         while (!CL_NULL_P(rest)) {
             CL_Obj nick = cl_car(rest);
             const char *nstr;
@@ -261,12 +277,13 @@ static CL_Obj bi_rename_package(CL_Obj *args, int nargs)
             nick_list = cl_cons(nick_string, nick_list);
             rest = cl_cdr(rest);
         }
-        p->nicknames = nick_list;
-        CL_GC_UNPROTECT(1);
+        ((CL_Package *)CL_OBJ_TO_PTR(pkg))->nicknames = nick_list;
+        CL_GC_UNPROTECT(2);
     } else {
-        p->nicknames = CL_NIL;
+        ((CL_Package *)CL_OBJ_TO_PTR(pkg))->nicknames = CL_NIL;
     }
 
+    CL_GC_UNPROTECT(1);
     return pkg;
 }
 
@@ -281,10 +298,15 @@ static CL_Obj bi_export(CL_Obj *args, int nargs)
         cl_export_symbol(symbols, pkg);
     } else {
         /* List of symbols */
+        /* GC SAFETY: cl_export_symbol conses (package lists grow) — the cursor
+         * and pkg are re-read across those allocations. */
+        CL_GC_PROTECT(symbols);
+        CL_GC_PROTECT(pkg);
         while (!CL_NULL_P(symbols)) {
             cl_export_symbol(cl_car(symbols), pkg);
             symbols = cl_cdr(symbols);
         }
+        CL_GC_UNPROTECT(2);
     }
     return SYM_T;
 }
@@ -298,10 +320,15 @@ static CL_Obj bi_unexport(CL_Obj *args, int nargs)
     if (CL_SYMBOL_P(symbols) || CL_NULL_P(symbols)) {
         cl_unexport_symbol(symbols, pkg);
     } else {
+        /* GC SAFETY: cl_unexport_symbol conses (package lists grow) — the cursor
+         * and pkg are re-read across those allocations. */
+        CL_GC_PROTECT(symbols);
+        CL_GC_PROTECT(pkg);
         while (!CL_NULL_P(symbols)) {
             cl_unexport_symbol(cl_car(symbols), pkg);
             symbols = cl_cdr(symbols);
         }
+        CL_GC_UNPROTECT(2);
     }
     return SYM_T;
 }
@@ -315,10 +342,15 @@ static CL_Obj bi_import(CL_Obj *args, int nargs)
     if (CL_SYMBOL_P(symbols) || CL_NULL_P(symbols)) {
         cl_import_symbol(symbols, pkg);
     } else {
+        /* GC SAFETY: cl_import_symbol conses (package lists grow) — the cursor
+         * and pkg are re-read across those allocations. */
+        CL_GC_PROTECT(symbols);
+        CL_GC_PROTECT(pkg);
         while (!CL_NULL_P(symbols)) {
             cl_import_symbol(cl_car(symbols), pkg);
             symbols = cl_cdr(symbols);
         }
+        CL_GC_UNPROTECT(2);
     }
     return SYM_T;
 }
@@ -332,11 +364,14 @@ static CL_Obj bi_use_package(CL_Obj *args, int nargs)
     if (CL_PACKAGE_P(to_use) || CL_STRING_P(to_use) || CL_SYMBOL_P(to_use)) {
         cl_use_package(coerce_to_package(to_use), pkg);
     } else {
-        /* List */
+        /* List.  GC SAFETY: cl_use_package conses — protect cursor+pkg. */
+        CL_GC_PROTECT(to_use);
+        CL_GC_PROTECT(pkg);
         while (!CL_NULL_P(to_use)) {
             cl_use_package(coerce_to_package(cl_car(to_use)), pkg);
             to_use = cl_cdr(to_use);
         }
+        CL_GC_UNPROTECT(2);
     }
     return SYM_T;
 }
@@ -350,10 +385,13 @@ static CL_Obj bi_unuse_package(CL_Obj *args, int nargs)
     if (CL_PACKAGE_P(to_unuse) || CL_STRING_P(to_unuse) || CL_SYMBOL_P(to_unuse)) {
         cl_unuse_package(coerce_to_package(to_unuse), pkg);
     } else {
+        CL_GC_PROTECT(to_unuse);
+        CL_GC_PROTECT(pkg);
         while (!CL_NULL_P(to_unuse)) {
             cl_unuse_package(coerce_to_package(cl_car(to_unuse)), pkg);
             to_unuse = cl_cdr(to_unuse);
         }
+        CL_GC_UNPROTECT(2);
     }
     return SYM_T;
 }
@@ -370,6 +408,9 @@ static CL_Obj bi_shadow(CL_Obj *args, int nargs)
         get_name_str(symbols, &name, &len);
         cl_shadow_symbol(name, len, pkg);
     } else {
+        /* GC SAFETY: cl_shadow_symbol interns/conses — protect cursor+pkg. */
+        CL_GC_PROTECT(symbols);
+        CL_GC_PROTECT(pkg);
         while (!CL_NULL_P(symbols)) {
             const char *name;
             uint32_t len;
@@ -377,6 +418,7 @@ static CL_Obj bi_shadow(CL_Obj *args, int nargs)
             cl_shadow_symbol(name, len, pkg);
             symbols = cl_cdr(symbols);
         }
+        CL_GC_UNPROTECT(2);
     }
     return SYM_T;
 }
@@ -568,21 +610,31 @@ static CL_Obj bi_list_all_packages(CL_Obj *args, int nargs)
 static CL_Obj bi_package_symbols(CL_Obj *args, int nargs)
 {
     CL_Obj pkg_obj = coerce_to_package(args[0]);
-    CL_Package *pkg = (CL_Package *)CL_OBJ_TO_PTR(pkg_obj);
-    CL_Vector *tbl = (CL_Vector *)CL_OBJ_TO_PTR(pkg->symbols);
     CL_Obj result = CL_NIL;
-    uint32_t i;
+    uint32_t i, tbl_len;
     (void)nargs;
 
+    /* GC SAFETY: cl_cons can compact — re-derive the symbol-table pointer
+     * from the protected package handle on every access and root the
+     * bucket cursor (raw vector pointers and cursor locals go stale). */
+    CL_GC_PROTECT(pkg_obj);
     CL_GC_PROTECT(result);
-    for (i = 0; i < tbl->length; i++) {
-        CL_Obj bucket = tbl->data[i];
-        while (!CL_NULL_P(bucket)) {
-            result = cl_cons(cl_normalize_nil_symbol(cl_car(bucket)), result);
-            bucket = cl_cdr(bucket);
+    tbl_len = ((CL_Vector *)CL_OBJ_TO_PTR(
+                   ((CL_Package *)CL_OBJ_TO_PTR(pkg_obj))->symbols))->length;
+    {
+        CL_Obj bucket = CL_NIL;
+        CL_GC_PROTECT(bucket);
+        for (i = 0; i < tbl_len; i++) {
+            bucket = ((CL_Vector *)CL_OBJ_TO_PTR(
+                          ((CL_Package *)CL_OBJ_TO_PTR(pkg_obj))->symbols))->data[i];
+            while (!CL_NULL_P(bucket)) {
+                result = cl_cons(cl_normalize_nil_symbol(cl_car(bucket)), result);
+                bucket = cl_cdr(bucket);
+            }
         }
+        CL_GC_UNPROTECT(1);
     }
-    CL_GC_UNPROTECT(1);
+    CL_GC_UNPROTECT(2);
     return result;
 }
 
@@ -597,17 +649,16 @@ static CL_Obj bi_package_external_symbols(CL_Obj *args, int nargs)
     (void)nargs;
     CL_GC_PROTECT(pkg_obj);
     CL_GC_PROTECT(result);
+    /* GC SAFETY: keeping the package ALIVE via pkg_obj does not FORWARD the
+     * `list` C local — after a compaction inside cl_cons the cursor holds a
+     * stale pre-move offset.  Root the cursor itself. */
     list = ((CL_Package *)CL_OBJ_TO_PTR(pkg_obj))->exported_symbols;
+    CL_GC_PROTECT(list);
     while (!CL_NULL_P(list)) {
         result = cl_cons(cl_normalize_nil_symbol(cl_car(list)), result);
-        /* cl_cons may have GC-compacted; re-walk by stepping cdr from
-         * a fresh pkg pointer — but since the list is itself rooted
-         * via pkg_obj (GC_PROTECT keeps the package alive), the list's
-         * spine survives compaction.  Re-read cdr through the cons cell
-         * we just observed. */
         list = cl_cdr(list);
     }
-    CL_GC_UNPROTECT(2);
+    CL_GC_UNPROTECT(3);
     return result;
 }
 
@@ -658,7 +709,11 @@ static CL_Obj bi_package_used_by_list(CL_Obj *args, int nargs)
     CL_Obj reg = cl_package_registry;
     (void)nargs;
 
+    /* GC SAFETY: cl_cons can compact — reg is re-read after it, and the
+     * identity compare against target must see the forwarded offset. */
     CL_GC_PROTECT(result);
+    CL_GC_PROTECT(reg);
+    CL_GC_PROTECT(target);
     while (!CL_NULL_P(reg)) {
         CL_Obj pkg = cl_cdr(cl_car(reg));
         CL_Package *p = (CL_Package *)CL_OBJ_TO_PTR(pkg);
@@ -672,7 +727,7 @@ static CL_Obj bi_package_used_by_list(CL_Obj *args, int nargs)
         }
         reg = cl_cdr(reg);
     }
-    CL_GC_UNPROTECT(1);
+    CL_GC_UNPROTECT(3);
     return result;
 }
 

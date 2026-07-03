@@ -581,6 +581,10 @@ static CL_Obj bi_make_array(CL_Obj *args, int n)
             return cl_make_vector(length);
         }
 
+        /* GC SAFETY: cl_make_array can compact — initial_element and
+         * initial_contents are read AFTER it, so they must be forwarded. */
+        CL_GC_PROTECT(initial_element);
+        CL_GC_PROTECT(initial_contents);
         result = cl_make_array(length, 0, NULL, flags, fill_ptr);
         v = (CL_Vector *)CL_OBJ_TO_PTR(result);
         v->elt_type = element_type_code;
@@ -599,6 +603,7 @@ static CL_Obj bi_make_array(CL_Obj *args, int n)
             for (j = 0; j < ic_len; j++)
                 elts[j] = seq_elt(initial_contents, j);
         }
+        CL_GC_UNPROTECT(2);
         return result;
     }
 
@@ -665,10 +670,15 @@ static CL_Obj bi_make_array(CL_Obj *args, int n)
                 CL_Obj vec;
                 CL_Vector *vv;
                 CL_Obj *elts;
-                CL_Obj fill = has_initial_element ? initial_element
-                                                  : CL_MAKE_CHAR(' ');
+                CL_Obj fill;
+                /* GC SAFETY: read fill/initial_contents only after the
+                 * allocation, through protected locals. */
+                CL_GC_PROTECT(initial_element);
+                CL_GC_PROTECT(initial_contents);
                 vec = cl_make_array(dims[0], 0, NULL,
                                     flags | CL_VEC_FLAG_STRING, fill_ptr);
+                fill = has_initial_element ? initial_element
+                                           : CL_MAKE_CHAR(' ');
                 vv = (CL_Vector *)CL_OBJ_TO_PTR(vec);
                 elts = cl_vector_data(vv);
                 for (j = 0; j < dims[0]; j++) elts[j] = fill;
@@ -680,6 +690,7 @@ static CL_Obj bi_make_array(CL_Obj *args, int n)
                         if (CL_CHAR_P(elem)) elts[j] = elem;
                     }
                 }
+                CL_GC_UNPROTECT(2);
                 return vec;
             }
             /* :displaced-to to a string: copy active substring (mirrors the
@@ -726,6 +737,10 @@ static CL_Obj bi_make_array(CL_Obj *args, int n)
             CL_GC_UNPROTECT(1);
             return str;
         }
+        /* GC SAFETY: the allocations below can compact — initial_element /
+         * initial_contents are read after them in the fill loops. */
+        CL_GC_PROTECT(initial_element);
+        CL_GC_PROTECT(initial_contents);
         if (rank == 1) {
             /* List of one element = 1D array */
             result = cl_make_array(dims[0], 0, NULL, flags, fill_ptr);
@@ -770,6 +785,7 @@ static CL_Obj bi_make_array(CL_Obj *args, int n)
                     dv->data[di] = CL_MAKE_FIXNUM((int32_t)dims[di]);
                 dv->data[rank] = displaced_to;
                 dv->data[rank + 1] = CL_MAKE_FIXNUM((int32_t)displaced_offset);
+                CL_GC_UNPROTECT(2);  /* initial_element, initial_contents */
                 return result;
             }
             result = cl_make_array(total, rank, dims, flags, CL_NO_FILL_POINTER);
@@ -799,6 +815,7 @@ static CL_Obj bi_make_array(CL_Obj *args, int n)
                 flatten_contents(initial_contents, elts, total, &j);
             }
         }
+        CL_GC_UNPROTECT(2);  /* initial_element, initial_contents */
         return result;
     }
 
@@ -1696,9 +1713,12 @@ static CL_Obj bi_adjust_array(CL_Obj *args, int n)
     {
         uint8_t new_flags =
             (old_vec->flags | CL_VEC_FLAG_ADJUSTABLE) & ~CL_VEC_FLAG_DISPLACED;
+        /* GC SAFETY: initial_element is read AFTER this allocation (the
+         * new-element fill below) — keep it forwarded across the compaction. */
         CL_GC_PROTECT(args[0]);
+        CL_GC_PROTECT(initial_element);
         new_arr = cl_make_array(new_len, 0, NULL, new_flags, new_fp);
-        CL_GC_UNPROTECT(1);
+        CL_GC_UNPROTECT(2);
     }
 
     /* Re-fetch after potential GC */

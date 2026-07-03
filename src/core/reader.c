@@ -1196,9 +1196,14 @@ static CL_Obj read_expr(void)
             CL_Obj saved_pkg = cl_current_package;
             CL_Obj feat_expr;
             int present;
+            /* GC SAFETY: read_expr allocates and can compact — without a
+             * root the restore below writes a stale package offset into the
+             * cl_current_package global (the *PACKAGE*-clobber class). */
+            CL_GC_PROTECT(saved_pkg);
             cl_current_package = cl_package_keyword;
             feat_expr = read_expr();
             cl_current_package = saved_pkg;
+            CL_GC_UNPROTECT(1);
             present = eval_feature_expr(feat_expr);
             if (ch == '-') present = !present;
             if (present) {
