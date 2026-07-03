@@ -2408,9 +2408,10 @@ check_absent   "no stale throw values / lost catch tags under GC stress" \
 # already advanced the bump pointer; the guard's longjmp left a
 # headerless region inside the walked bump front, and every later arena
 # walk (sweep/forwarding/slide) desynced there — live objects above the
-# hole were overwritten.  (make-array 3000000) passes the element-count
-# check but requests ~12MB of bytes, hitting the guard whenever the heap
-# is big enough for the request to fit in bump space.
+# hole were overwritten.  (ash 1 100000000) requests ~12.5MB of bignum
+# limbs in a single allocation, hitting the guard.  ((make-array 3000000)
+# no longer reaches it: the ARRAY-DIMENSION-LIMIT check rejects the
+# dimension first — asserted separately below.)
 # Note: the oversized-allocation guard signals via cl_storage_error (a
 # C-level error frame, deliberately allocation-free), which aborts the
 # offending top-level form rather than unwinding into handler-case; the
@@ -2418,6 +2419,7 @@ check_absent   "no stale throw values / lost catch tags under GC stress" \
 # error message and (b) a fully intact heap afterwards — the C-level
 # regression (bump must not advance) is asserted by tests/test_alloc_guard.c.
 cat > "$WORK/bigalloc.lisp" <<'EOF'
+(ash 1 100000000)
 (make-array 3000000)
 ;; The heap must be fully intact afterwards: allocate, force compaction,
 ;; and verify data survives.
@@ -2433,7 +2435,8 @@ cat > "$WORK/bigalloc.lisp" <<'EOF'
     (format t "BIGALLOC-2:~a~%" ok)))
 EOF
 out=$(run_stress "$WORK/bigalloc.lisp")
-check_contains "oversized make-array signals a clean storage error" "Allocation too large for header" "$out"
+check_contains "oversized bignum allocation signals a clean storage error" "Allocation too large for header" "$out"
+check_contains "oversized make-array signals a clean dimension-limit error" "exceeds ARRAY-DIMENSION-LIMIT" "$out"
 check_contains "heap fully intact after oversized-allocation error"   "BIGALLOC-2:T" "$out"
 check_absent   "no arena-walk corruption after oversized allocation" \
   "corrupted\|not of type\|type 0\|Guru" "$out"
