@@ -3377,6 +3377,156 @@ check_contains "tier-4 io/strings/reader cases run to completion" \
 check_absent   "no corruption in tier-4 io/strings/reader cases" \
   "corrupted pointer\|not of type\|Guru\|SIGSEGV\|badmark" "$out"
 
+# ============================================================================
+# Tier-4 batch 4: sequences / lists / hashtable / VM opcodes under GC stress.
+# Each case targets one audited stale-local / unrooted-cursor site; the
+# allocating lambdas ((car (list x)) etc.) force a compaction inside every
+# user-callback window so pre-fix binaries corrupt deterministically.
+# ============================================================================
+cat > "$WORK/tier4-seq.lisp" <<'EOF'
+(in-package :cl-user)
+;; S4: list merge sort roots pred/key across the recursive sorts.
+(format t "T4S-S4:~s ~s~%"
+        (sort (list 5 3 8 1 9 2 7 6 4)
+              (lambda (a b) (< (car (list a)) (car (list b)))))
+        (sort (list 3 1 2) #'< :key (lambda (x) (car (list x)))))
+;; S6: string/bit-vector insertion sort roots kval across the inner loop
+;; (:key returns a fresh heap string here).
+(format t "T4S-S6:~a ~s~%"
+        (sort (copy-seq "dcba") #'string< :key #'string)
+        (sort (copy-seq #*0110)
+              (lambda (a b) (< (car (list a)) (car (list b))))))
+;; S5: map to string/vector re-reads the seq cursors after the result alloc.
+(format t "T4S-S5:~a ~s~%"
+        (map 'string #'char-upcase (coerce "hello" 'list))
+        (map 'vector (lambda (x) (* x 2)) (list 1 2 3 4 5)))
+;; S7: map result-type via deftype expansion + (or ...) branch resolution.
+(deftype t4s-str () 'string)
+(format t "T4S-S7:~a ~s~%"
+        (map 't4s-str #'char-upcase "abc")
+        (map '(or symbol (vector t 3)) #'1+ (list 1 2 3)))
+;; S8: merge classifies a deftype result-type BEFORE reading operands.
+(deftype t4s-lst () 'list)
+(format t "T4S-S8:~s ~s~%"
+        (merge 't4s-lst (list 1 3 5) (list 2 4 6) #'<)
+        (merge 'vector (vector 1 4) (list 2 3) #'<
+               :key (lambda (x) (car (list x)))))
+;; S1: remove family re-reads elem after the allocating match test.
+(format t "T4S-S1:~s ~s~%"
+        (remove 3 (list 1 2 3 4 3 5)
+                :test (lambda (a b) (eql a (car (list b)))))
+        (remove-if (lambda (x) (oddp (car (list x))))
+                   (list 1 2 3 4 5 6) :from-end t :count 2))
+;; S2/S3: reduce seeds its list cursor from the rooted arg slot.
+(format t "T4S-S2:~s ~s ~s~%"
+        (reduce #'cons (list 1 2 3 4) :from-end t :initial-value 'end)
+        (reduce (lambda (a e) (cons e a)) (list 1 2 3 4) :initial-value nil)
+        (reduce #'+ (list 1 2 3) :from-end t
+                :key (lambda (x) (car (list x)))))
+;; L1: nsubst stores through the per-frame rooted tree after user :test.
+(format t "T4S-L1:~s~%"
+        (nsubst 'x 'b (list 'a (list 'b 'c) 'b)
+                :test (lambda (a b) (eq a (car (list b))))))
+;; L2: reverse of vector/bit-vector re-derives from the protected seq.
+(format t "T4S-L2:~s ~s~%" (reverse (vector 1 2 3 4 5)) (reverse #*10010))
+;; L3: make-list re-reads the heap :initial-element on every cons.
+(let ((l (make-list 12 :initial-element (list 'x))))
+  (format t "T4S-L3:~a ~s~%"
+          (count-if (lambda (e) (equal e '(x))) l) (first l)))
+;; AH1: hash iteration (LOOP + maphash, backed by %hash-table-pairs) conses
+;; per entry while walking bucket chains.
+(let ((h (make-hash-table)))
+  (dotimes (i 10) (setf (gethash i h) (* i i)))
+  (format t "T4S-AH1:~a ~a~%"
+          (loop for v being the hash-values of h sum v)
+          (let ((n 0))
+            (maphash (lambda (k v) (declare (ignore k v)) (incf n)) h)
+            n)))
+;; AH2: make-array materializes keywords from rooted args[] slots after the
+;; deftype classify (keyword ORDER matters: values before :element-type).
+(deftype t4s-oct () '(unsigned-byte 8))
+(deftype t4s-any () 't)
+(format t "T4S-AH2:~s ~s~%"
+        (make-array 4 :initial-contents (list 1 2 3 4)
+                      :element-type 't4s-oct)
+        (let ((a (make-array (list 2 2) :initial-element (list 7)
+                             :element-type 't4s-any)))
+          (aref a 1 1)))
+;; V2/V3/V4: def* opcodes push the (forwarded) constants-pool entry, not the
+;; pre-registrar stale local.
+(format t "T4S-V2:~a~%" (defmacro t4s-dm (x) (list 'list x)))
+(format t "T4S-V3:~a~%" (deftype t4s-ty () 'integer))
+(defun t4s-get (x) (car x))
+(defun t4s-set (x v) (setf (car x) v))
+(format t "T4S-V4:~a~%" (defsetf t4s-get t4s-set))
+;; V1: OP_ASSERT_TYPE re-reads val/type-spec across the deftype-expanding
+;; typep and between the condition-slot conses.
+(deftype t4s-small () '(integer 0 9))
+(format t "T4S-V1:~a ~s~%"
+        (the t4s-small 5)
+        (handler-case (let ((v 99)) (the t4s-small v))
+          (type-error (c) (list (type-error-datum c)
+                                (type-error-expected-type c)))))
+;; V5/V6: traced user fn (incl. tail-recursive self-call) — the trace prints
+;; allocate; func_obj/callee_bc must be re-derived after them.
+(defun t4s-tr (n) (if (zerop n) (list 'done) (t4s-tr (1- n))))
+(trace t4s-tr)
+(format t "T4S-V5:~s~%" (t4s-tr 3))
+(untrace t4s-tr)
+;; V5b: traced builtin via OP_CALL (f re-derived, result rooted).
+(trace char-upcase)
+(format t "T4S-V5B:~s~%" (char-upcase #\a))
+(untrace char-upcase)
+;; V7: traced builtin via OP_APPLY (apply_func rooted, result rooted).
+(trace +)
+(format t "T4S-V7:~a~%" (apply #'+ 1 2 (list 3 4)))
+(untrace +)
+(format t "T4S-DONE~%")
+EOF
+out=$(run_stress "$WORK/tier4-seq.lisp")
+check_contains "S4 sort with allocating pred/key" \
+  "T4S-S4:(1 2 3 4 5 6 7 8 9) (1 2 3)" "$out"
+check_contains "S6 string/bit-vector sort with heap kval" \
+  "T4S-S6:abcd #\*0011" "$out"
+check_contains "S5 map string/vector cursors re-read after result alloc" \
+  "T4S-S5:HELLO #(2 4 6 8 10)" "$out"
+check_contains "S7 map deftype + (or ...) result-types" \
+  "T4S-S7:ABC #(2 3 4)" "$out"
+check_contains "S8 merge deftype result-type classified first" \
+  "T4S-S8:(1 2 3 4 5 6) #(1 2 3 4)" "$out"
+check_contains "S1 remove family re-reads elem after match test" \
+  "T4S-S1:(1 2 4 5) (1 2 4 6)" "$out"
+check_contains "S2/S3 reduce cursors from rooted arg slot" \
+  "T4S-S2:(1 2 3 4 . END) (4 3 2 1) 6" "$out"
+check_contains "L1 nsubst destructive stores through rooted tree" \
+  "T4S-L1:(A (X C) X)" "$out"
+check_contains "L2 reverse vector/bit-vector re-derives protected seq" \
+  "T4S-L2:#(5 4 3 2 1) #\*01001" "$out"
+check_contains "L3 make-list heap initial-element rooted" \
+  "T4S-L3:12 (X)" "$out"
+check_contains "AH1 hash iteration chain cursor rooted" \
+  "T4S-AH1:285 10" "$out"
+check_contains "AH2 make-array keywords from rooted slots after classify" \
+  "T4S-AH2:#(1 2 3 4) (7)" "$out"
+check_contains "V2 defmacro pushes forwarded pool entry" \
+  "T4S-V2:T4S-DM" "$out"
+check_contains "V3 deftype pushes forwarded pool entry" \
+  "T4S-V3:T4S-TY" "$out"
+check_contains "V4 defsetf pushes forwarded pool entry" \
+  "T4S-V4:T4S-GET" "$out"
+check_contains "V1 assert-type re-reads across deftype typep" \
+  "T4S-V1:5 (99 T4S-SMALL)" "$out"
+check_contains "V5 traced tail-recursive fn under stress" \
+  "T4S-V5:(DONE)" "$out"
+check_contains "V5b traced builtin call under stress" \
+  "T4S-V5B:#\\\\A" "$out"
+check_contains "V7 traced builtin apply under stress" \
+  "T4S-V7:10" "$out"
+check_contains "tier-4 sequence/list/hash/vm cases run to completion" \
+  "T4S-DONE" "$out"
+check_absent   "no corruption in tier-4 sequence/list/hash/vm cases" \
+  "corrupted pointer\|not of type\|Guru\|SIGSEGV\|badmark" "$out"
+
 echo ""
 echo "$passed passed, $failed failed, $total total"
 [ "$failed" -eq 0 ]

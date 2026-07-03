@@ -612,10 +612,16 @@ static int is_func_traced(CL_Obj func_obj)
     return 0;
 }
 
+/* GC SAFETY (both trace printers): the trace-stream writes and
+ * cl_prin1_to_string can allocate (stream buffering, printer state) and
+ * compact — the by-value parameters are C locals of this frame, so root
+ * them for the duration.  `args` points at rooted VM-stack slots, which are
+ * forwarded in place, so re-reading args[i] each iteration is safe. */
 static void trace_print_entry(CL_Obj name_sym, CL_Obj *args, int nargs)
 {
     char buf[128];
     int i;
+    CL_GC_PROTECT(name_sym);
     for (i = 0; i < cl_trace_depth; i++)
         cl_write_cstring_to_trace("  ");
     snprintf(buf, sizeof(buf), "%d: (", cl_trace_depth);
@@ -627,12 +633,15 @@ static void trace_print_entry(CL_Obj name_sym, CL_Obj *args, int nargs)
         cl_write_cstring_to_trace(buf);
     }
     cl_write_cstring_to_trace(")\n");
+    CL_GC_UNPROTECT(1);
 }
 
 static void trace_print_exit(CL_Obj name_sym, CL_Obj result)
 {
     char buf[128];
     int i;
+    CL_GC_PROTECT(name_sym);
+    CL_GC_PROTECT(result);
     for (i = 0; i < cl_trace_depth; i++)
         cl_write_cstring_to_trace("  ");
     snprintf(buf, sizeof(buf), "%d: ", cl_trace_depth);
@@ -642,6 +651,7 @@ static void trace_print_exit(CL_Obj name_sym, CL_Obj result)
     cl_prin1_to_string(result, buf, sizeof(buf));
     cl_write_cstring_to_trace(buf);
     cl_write_cstring_to_trace("\n");
+    CL_GC_UNPROTECT(2);
 }
 
 /* --- Backtrace capture --- */
@@ -2071,12 +2081,23 @@ static CL_Obj cl_vm_run(int base_fp, int base_nlx)
                 CL_Obj result;
                 if (traced) {
                     trace_print_entry(f->name, arg_base, nargs);
+                    /* The trace print can allocate/compact — re-derive f
+                     * from the (rooted, forwarded) function stack slot
+                     * before handing it to call_builtin. */
+                    f = (CL_Function *)CL_OBJ_TO_PTR(
+                            cl_vm.stack[cl_vm.sp - nargs - 1]);
                     cl_trace_depth++;
                 }
                 result = call_builtin(f, arg_base, nargs);
                 if (traced) {
                     cl_trace_depth--;
+                    /* f is stale after the builtin ran; result must survive
+                     * the exit print's own allocations before the push. */
+                    f = (CL_Function *)CL_OBJ_TO_PTR(
+                            cl_vm.stack[cl_vm.sp - nargs - 1]);
+                    CL_GC_PROTECT(result);
                     trace_print_exit(f->name, result);
+                    CL_GC_UNPROTECT(1);
                 }
                 cl_vm.sp -= (nargs + 1);
                 cl_vm_push(result);
@@ -2204,6 +2225,17 @@ static CL_Obj cl_vm_run(int base_fp, int base_nlx)
                             cl_trace_depth--;
                         if (is_func_traced(func_obj)) {
                             trace_print_entry(callee_bc->name, arg_base, nargs);
+                            /* The trace print can allocate/compact: re-read
+                             * func_obj from its (rooted, forwarded) stack slot
+                             * — it is stored into frame->bytecode below — and
+                             * re-derive the raw callee_bc pointer from it. */
+                            func_obj = cl_vm.stack[cl_vm.sp - nargs - 1];
+                            if (CL_CLOSURE_P(func_obj)) {
+                                CL_Closure *tcl = (CL_Closure *)CL_OBJ_TO_PTR(func_obj);
+                                callee_bc = (CL_Bytecode *)CL_OBJ_TO_PTR(tcl->bytecode);
+                            } else {
+                                callee_bc = (CL_Bytecode *)CL_OBJ_TO_PTR(func_obj);
+                            }
                             cl_trace_depth++;
                         }
                     }
@@ -2345,6 +2377,16 @@ static CL_Obj cl_vm_run(int base_fp, int base_nlx)
                     /* Trace: entry for normal call */
                     if (is_func_traced(func_obj))  {
                         trace_print_entry(callee_bc->name, arg_base, nargs);
+                        /* Re-read func_obj / re-derive callee_bc after the
+                         * (allocating) trace print — the stack slot is still
+                         * live until the shift below (see tailcall twin). */
+                        func_obj = cl_vm.stack[cl_vm.sp - nargs - 1];
+                        if (CL_CLOSURE_P(func_obj)) {
+                            CL_Closure *tcl = (CL_Closure *)CL_OBJ_TO_PTR(func_obj);
+                            callee_bc = (CL_Bytecode *)CL_OBJ_TO_PTR(tcl->bytecode);
+                        } else {
+                            callee_bc = (CL_Bytecode *)CL_OBJ_TO_PTR(func_obj);
+                        }
                         cl_trace_depth++;
                     }
 
@@ -2598,13 +2640,17 @@ static CL_Obj cl_vm_run(int base_fp, int base_nlx)
             result = (cl_vm.sp > (int)(frame->bp + frame->n_locals))
                             ? cl_vm_pop() : CL_NIL;
 
-            /* Trace: print return value */
+            /* Trace: print return value.  result was popped ABOVE sp (no
+             * longer a rooted stack slot) and is pushed to the caller after
+             * this — root it across the allocating trace print. */
             if (cl_trace_count > 0) {
                 CL_Obj ret_name = get_func_name(frame->bytecode);
                 if (!CL_NULL_P(ret_name) && CL_SYMBOL_P(ret_name) &&
                     (((CL_Symbol *)CL_OBJ_TO_PTR(ret_name))->flags & CL_SYM_TRACED)) {
                     cl_trace_depth--;
+                    CL_GC_PROTECT(result);
                     trace_print_exit(ret_name, result);
+                    CL_GC_UNPROTECT(1);
                 }
             }
 
@@ -2741,7 +2787,10 @@ static CL_Obj cl_vm_run(int base_fp, int base_nlx)
             CL_Obj name = constants[idx];
             CL_Obj expander = cl_vm_pop();
             cl_register_macro(name, expander);
-            cl_vm_push(name);
+            /* Re-read from the constants pool: cl_register_macro allocates
+             * (and can compact), staling the local — the pool lives in
+             * platform memory with its entries forwarded in place. */
+            cl_vm_push(constants[idx]);
             VM_BREAK;
         }
 
@@ -2750,7 +2799,8 @@ static CL_Obj cl_vm_run(int base_fp, int base_nlx)
             CL_Obj name = constants[idx];
             CL_Obj expander = cl_vm_pop();
             cl_register_type(name, expander);
-            cl_vm_push(name);
+            /* Re-read after the allocating registrar (see OP_DEFMACRO). */
+            cl_vm_push(constants[idx]);
             VM_BREAK;
         }
 
@@ -2767,7 +2817,8 @@ static CL_Obj cl_vm_run(int base_fp, int base_nlx)
                 setf_table = cl_cons(pair, setf_table);
                 cl_tables_rwunlock();
             }
-            cl_vm_push(accessor);
+            /* Re-read after the allocating conses (see OP_DEFMACRO). */
+            cl_vm_push(constants[acc_idx]);
             VM_BREAK;
         }
 
@@ -2866,21 +2917,29 @@ static CL_Obj cl_vm_run(int base_fp, int base_nlx)
             CL_Obj type_spec = constants[idx];
             CL_Obj val = cl_vm.stack[cl_vm.sp - 1]; /* peek TOS */
             if (!cl_typep(val, type_spec)) {
-                /* Build type-error condition with :datum and :expected-type */
+                /* Build type-error condition with :datum and :expected-type.
+                 * cl_typep can run SATISFIES/deftype code (cl_vm_apply) and
+                 * compact — re-read val from its rooted stack slot and
+                 * type_spec from the constants pool after it, and re-read val
+                 * again between the two allocating cons lines. */
                 CL_Obj slots = CL_NIL;
                 CL_Obj cond;
+                type_spec = constants[idx];
                 CL_GC_PROTECT(slots);
                 slots = cl_cons(cl_cons(KW_EXPECTED_TYPE, type_spec), slots);
+                val = cl_vm.stack[cl_vm.sp - 1];
                 slots = cl_cons(cl_cons(KW_DATUM, val), slots);
                 CL_GC_UNPROTECT(1);
                 cond = cl_make_condition(SYM_TYPE_ERROR, slots, CL_NIL);
                 cl_signal_condition(cond);
-                /* If no handler transferred control, fall to C error */
+                /* If no handler transferred control, fall to C error —
+                 * re-read both again: the condition machinery above ran
+                 * arbitrary allocating handler code. */
                 {
                     char buf[128];
                     char tbuf[64];
-                    cl_prin1_to_string(val, buf, sizeof(buf));
-                    cl_prin1_to_string(type_spec, tbuf, sizeof(tbuf));
+                    cl_prin1_to_string(cl_vm.stack[cl_vm.sp - 1], buf, sizeof(buf));
+                    cl_prin1_to_string(constants[idx], tbuf, sizeof(tbuf));
                     cl_error(CL_ERR_TYPE, "THE: value %s is not of type %s", buf, tbuf);
                 }
             }
@@ -3280,6 +3339,13 @@ static CL_Obj cl_vm_run(int base_fp, int base_nlx)
             int ai;
             int args_base = cl_vm.sp;  /* spread args live at [args_base..sp) */
 
+            /* apply_func was popped ABOVE sp and its old slot is overwritten
+             * by the spread below — from here on it is invisible to the GC
+             * unless rooted.  Root it for the whole opcode (the builtin call
+             * and the &rest/trace allocations all run with it live); error
+             * paths unwind the root via the error frame's gc_root_mark. */
+            CL_GC_PROTECT(apply_func);
+
             /* Spread arglist directly onto the VM stack (GC-rooted, no fixed
              * buffer).  Neither cl_car/cl_cdr nor cl_vm_push allocate, so
              * `arglist` cannot move mid-loop.  Bounded by CALL-ARGUMENTS-LIMIT
@@ -3316,15 +3382,26 @@ static CL_Obj cl_vm_run(int base_fp, int base_nlx)
                 CL_Obj result;
                 if (traced) {
                     trace_print_entry(f->name, &cl_vm.stack[args_base], nflat);
+                    /* Re-derive f after the allocating trace print —
+                     * apply_func is rooted, the raw pointer is not. */
+                    f = (CL_Function *)CL_OBJ_TO_PTR(apply_func);
                     cl_trace_depth++;
                 }
                 result = call_builtin(f, &cl_vm.stack[args_base], nflat);
                 cl_vm.sp = args_base;  /* drop the spread args */
                 if (traced) {
                     cl_trace_depth--;
+                    /* f is stale after the builtin ran; root result across
+                     * the exit print before it is pushed. */
+                    f = (CL_Function *)CL_OBJ_TO_PTR(apply_func);
+                    CL_GC_PROTECT(result);
                     trace_print_exit(f->name, result);
+                    CL_GC_UNPROTECT(1);
                 }
 #ifdef DEBUG_COMPILER
+                /* Re-derive f — the builtin may have compacted (apply_func
+                 * is rooted; the raw pointer is not). */
+                f = (CL_Function *)CL_OBJ_TO_PTR(apply_func);
                 /* Validate code pointer after builtin returns */
                 if (!code) {
                     fprintf(stderr, "[VM] BUG: OP_APPLY builtin returned but code=NULL! fn=%s ip=%u fp=%d\n",
@@ -3543,6 +3620,7 @@ static CL_Obj cl_vm_run(int base_fp, int base_nlx)
                     new_frame->bp = new_bp;
                     new_frame->n_locals = callee_bc->n_locals;
                     new_frame->nargs = call_nargs;
+                    new_frame->nlx_level = cl_nlx_top;  /* mirror OP_CALL */
 
                     /* DIAG: OP_APPLY frame push */
                     if (0 && cl_vm.fp >= 44) {
@@ -3562,6 +3640,7 @@ static CL_Obj cl_vm_run(int base_fp, int base_nlx)
             } else {
                 cl_error(CL_ERR_TYPE, "APPLY: not a callable function");
             }
+            CL_GC_UNPROTECT(1);  /* apply_func */
             VM_BREAK;
         }
 
