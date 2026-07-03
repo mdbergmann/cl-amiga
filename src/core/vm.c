@@ -2918,6 +2918,7 @@ static CL_Obj cl_vm_run(int base_fp, int base_nlx)
             nlx->error_mark = cl_error_frame_top;
             nlx->gc_root_mark = gc_root_count;
             nlx->compiler_mark = cl_compiler_mark();
+            nlx->printer_mark = cl_printer_state_save();
             nlx->mv_count = 1;
             nlx->saved_pending_mark = cl_saved_pending_top;
             nlx->saved_jit_depth = CT->jit_depth;
@@ -2953,6 +2954,7 @@ static CL_Obj cl_vm_run(int base_fp, int base_nlx)
                 gc_root_count = nlx->gc_root_mark;
                 cl_jit_restore_depth(nlx->saved_jit_depth);
                 cl_compiler_restore_to(nlx->compiler_mark);
+                cl_printer_state_restore(nlx->printer_mark);
                 cl_saved_pending_top = nlx->saved_pending_mark;
                 {
                     CL_Obj block_result = nlx->result;
@@ -3081,6 +3083,7 @@ static CL_Obj cl_vm_run(int base_fp, int base_nlx)
             nlx->error_mark = cl_error_frame_top;
             nlx->gc_root_mark = gc_root_count;
             nlx->compiler_mark = cl_compiler_mark();
+            nlx->printer_mark = cl_printer_state_save();
             nlx->saved_pending_mark = cl_saved_pending_top;
             nlx->saved_jit_depth = CT->jit_depth;
 
@@ -3120,6 +3123,7 @@ static CL_Obj cl_vm_run(int base_fp, int base_nlx)
                 gc_root_count = nlx->gc_root_mark;
                 cl_jit_restore_depth(nlx->saved_jit_depth);
                 cl_compiler_restore_to(nlx->compiler_mark);
+                cl_printer_state_restore(nlx->printer_mark);
                 cl_saved_pending_top = nlx->saved_pending_mark;
                 {
                     CL_Obj tag_index = nlx->result;
@@ -3590,6 +3594,7 @@ static CL_Obj cl_vm_run(int base_fp, int base_nlx)
             nlx->error_mark = cl_error_frame_top;
             nlx->gc_root_mark = gc_root_count;
             nlx->compiler_mark = cl_compiler_mark();
+            nlx->printer_mark = cl_printer_state_save();
             nlx->mv_count = 1;
             nlx->saved_pending_mark = cl_saved_pending_top;
             nlx->saved_jit_depth = CT->jit_depth;
@@ -3617,6 +3622,7 @@ static CL_Obj cl_vm_run(int base_fp, int base_nlx)
                 gc_root_count = nlx->gc_root_mark;
                 cl_jit_restore_depth(nlx->saved_jit_depth);
                 cl_compiler_restore_to(nlx->compiler_mark);
+                cl_printer_state_restore(nlx->printer_mark);
                 cl_saved_pending_top = nlx->saved_pending_mark;
                 {
                     CL_Obj throw_result = nlx->result;
@@ -3687,6 +3693,7 @@ static CL_Obj cl_vm_run(int base_fp, int base_nlx)
             nlx->error_mark = cl_error_frame_top;
             nlx->gc_root_mark = gc_root_count;
             nlx->compiler_mark = cl_compiler_mark();
+            nlx->printer_mark = cl_printer_state_save();
 
             if (CL_SETJMP(nlx->buf) == 0) {
                 /* Normal path: save and clear pending throw state so that a
@@ -3697,11 +3704,30 @@ static CL_Obj cl_vm_run(int base_fp, int base_nlx)
                 {
                     CL_SavedPending *sp = &cl_saved_pending_stack[cl_saved_pending_top++];
                     sp->pending_throw    = cl_pending_throw;
-                    sp->pending_tag      = cl_pending_tag;
-                    sp->pending_value    = cl_pending_value;
-                    sp->pending_mv_count = cl_pending_mv_count;
-                    { int _mi; for (_mi = 0; _mi < cl_pending_mv_count && _mi < CL_MAX_MV; _mi++)
-                        sp->pending_mv_values[_mi] = cl_pending_mv_values[_mi]; }
+                    /* GC SAFETY (audit tier 4): with no throw in flight the
+                     * tag/value globals still hold the last COMPLETED throw's
+                     * objects.  This parking slot is deliberately skipped by
+                     * the GC walks while pending_throw==0 (it may hold
+                     * garbage), so parking those live offsets here lets the
+                     * cleanup body's compactions move the objects out from
+                     * under the copies; UWRETHROW then restores STALE offsets
+                     * into the always-marked cl_pending_tag/value — the next
+                     * mark walk follows them into arbitrary object interiors
+                     * and ORs mark bits mid-object (observed: a GF dispatch
+                     * cache's bucket array → circular chain → GC spins
+                     * forever).  Park NILs instead; the values are
+                     * meaningless without an armed throw. */
+                    if (cl_pending_throw) {
+                        sp->pending_tag      = cl_pending_tag;
+                        sp->pending_value    = cl_pending_value;
+                        sp->pending_mv_count = cl_pending_mv_count;
+                        { int _mi; for (_mi = 0; _mi < cl_pending_mv_count && _mi < CL_MAX_MV; _mi++)
+                            sp->pending_mv_values[_mi] = cl_pending_mv_values[_mi]; }
+                    } else {
+                        sp->pending_tag      = CL_NIL;
+                        sp->pending_value    = CL_NIL;
+                        sp->pending_mv_count = 0;
+                    }
                     sp->pending_error_code = cl_pending_error_code;
                     strncpy(sp->pending_error_msg, cl_pending_error_msg,
                             sizeof(sp->pending_error_msg) - 1);
@@ -3749,6 +3775,7 @@ static CL_Obj cl_vm_run(int base_fp, int base_nlx)
                 gc_root_count = nlx->gc_root_mark;
                 cl_jit_restore_depth(nlx->saved_jit_depth);
                 cl_compiler_restore_to(nlx->compiler_mark);
+                cl_printer_state_restore(nlx->printer_mark);
                 cl_saved_pending_top = nlx->saved_pending_mark;
                 /* The saved slot was pushed at arming time (before the throw).
                  * Update it now with the actual pending state that triggered

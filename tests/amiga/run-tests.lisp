@@ -7919,6 +7919,62 @@
 (check "t3 merge-pathnames relative" "f"
        (pathname-name (merge-pathnames "sub/f.lisp" #P"/base/d/")))
 
+; --- Tier-4 audit batch 2: format directives + printer element loops ---
+; Mirrors the host gc-stress tier4-printer block (see
+; tests/test_gc_stress_regression.sh); behavior-level checks here.
+(defstruct t4b-pt x y)
+(check "t4 print vector of structs" "#(#S(T4B-PT :X 1 :Y 2) #S(T4B-PT :X 3 :Y 4))"
+       (format nil "~S" (vector (make-t4b-pt :x 1 :y 2) (make-t4b-pt :x 3 :y 4))))
+(check "t4 print #2A of structs" "#2A((#S(T4B-PT :X 1 :Y 2) 5) (6 #S(T4B-PT :X 3 :Y 4)))"
+       (format nil "~S" (make-array '(2 2)
+                         :initial-contents (list (list (make-t4b-pt :x 1 :y 2) 5)
+                                                 (list 6 (make-t4b-pt :x 3 :y 4))))))
+(check "t4 grouped 101-digit bignum length" 201
+       (length (format nil "~,,,1:D" (expt 10 100))))
+(check "t4 grouped integer commas" "1,234,567" (format nil "~:D" 1234567))
+(check "t4 goto negative clamps" t (stringp (format nil "~-5*~A" 1)))
+(check "t4 recursive format string control" "<1 2> 3"
+       (format nil "~? ~A" "<~A ~A>" (list 1 2) 3))
+(check "t4 print-base/radix restore" "#b11"
+       (let ((*print-radix* t) (*print-base* 2))
+         (format nil "~X" 255)
+         (write-to-string 3)))
+(deftype t4b-small () '(integer 0 9))
+(set-pprint-dispatch 't4b-small (lambda (s obj) (format s "<small ~D>" obj)))
+(check "t4 pprint dispatch buffer-mode capture" "<small 5>"
+       (write-to-string 5 :pretty t))
+(check "t4 restart report fn print" "resume-123"
+       (restart-case
+           (let ((r (find-restart 't4b-resume)))
+             (format nil "~A" r))
+         (t4b-resume () :report
+                      (lambda (s) (format s "resume-~{~A~}" (list 1 2 3)))
+                      nil)))
+(defparameter *t4b-n* 0)
+(defstruct t4b-once v)
+(defmethod print-object ((o t4b-once) s)
+  (incf *t4b-n*)
+  (if (= *t4b-n* 1) (error "first print boom") (format s "[ok ~A]" (t4b-once-v o))))
+(defparameter *t4b-obj* (make-t4b-once :v 7))
+(check "t4 aborted print caught" :caught
+       (handler-case (progn (format nil "~A" *t4b-obj*) :printed)
+         (error () :caught)))
+(check "t4 no leaked pr-inprog marker" "[ok 7]" (format nil "~A" *t4b-obj*))
+(deftype t4b-neg () '(integer -9 -1))
+(set-pprint-dispatch 't4b-neg (lambda (s o) (declare (ignore s o)) (error "dispatch boom")))
+(check "t4 erroring dispatch fn caught" :caught
+       (handler-case (progn (let ((*print-pretty* t)) (prin1-to-string -5)) :printed)
+         (error () :caught)))
+(check "t4 pprint dispatch survives aborted dispatch" "<small 5>"
+       (let ((*print-pretty* t)) (prin1-to-string 5)))
+(set-pprint-dispatch 't4b-neg nil)
+(check "t4 set-pprint-dispatch removal" "-5"
+       (let ((*print-pretty* t)) (prin1-to-string -5)))
+(check "t4 uwprot after completed throw" 1
+       (let ((tag (cons nil nil)))
+         (catch tag (throw tag 1))
+         (unwind-protect (progn (make-list 10) 1) (make-list 100))))
+
 ; --- Summary ---
 (format t "~%=== Results ===~%")
 (format t "Passed: ~A~%" *pass-count*)

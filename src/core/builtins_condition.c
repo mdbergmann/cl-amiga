@@ -1673,6 +1673,7 @@ static CL_Obj bi_warn(CL_Obj *args, int n)
         frame->error_mark = cl_error_frame_top;
         frame->gc_root_mark = gc_root_count;
         frame->compiler_mark = cl_compiler_mark();
+        frame->printer_mark = cl_printer_state_save();
         frame->saved_pending_mark = cl_saved_pending_top;
         /* Snapshot the handler ACTIVE mask too: cl_signal_condition
          * disables the running handler's band while it executes, and the
@@ -1722,6 +1723,7 @@ static CL_Obj bi_warn(CL_Obj *args, int n)
             cl_error_frame_top = f->error_mark;
             gc_root_count = f->gc_root_mark;
             cl_compiler_restore_to(f->compiler_mark);
+            cl_printer_state_restore(f->printer_mark);
             cl_saved_pending_top = f->saved_pending_mark;
             cl_vm.sp = f->vm_sp;
             cl_vm.fp = f->vm_fp;

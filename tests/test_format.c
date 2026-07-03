@@ -269,6 +269,49 @@ TEST(with_output_to_string_target)
         "1");
 }
 
+/* ================================================================
+ * Tier-4 GC audit batch 2 — format directive regressions
+ * ================================================================ */
+
+TEST(grouped_integer_100_digits_no_smash)
+{
+    /* FS1: ~,,,1:D groups EVERY digit; (expt 10 100) renders 101 digits +
+     * 100 separators = 201 bytes, which overran the old 192-byte
+     * with_commas[] on the C stack (stack smash).  Verify the full grouped
+     * string: length, leading 1, 100 commas, all other digits 0. */
+    ASSERT_STR_EQ(eval_print(
+        "(let ((s (format nil \"~,,,1:D\" (expt 10 100))))"
+        "  (list (length s) (char s 0) (count #\\, s)"
+        "        (every (lambda (c) (char= c #\\0)) (remove #\\, (subseq s 1)))))"),
+        "(201 #\\1 100 T)");
+}
+
+TEST(grouped_integer_grouping_correct)
+{
+    /* The rewritten single grouping loop must keep ordinary output intact,
+     * including custom comma char and interval. */
+    ASSERT_STR_EQ(eval_print("(format nil \"~:D\" 1234567)"), "\"1,234,567\"");
+    ASSERT_STR_EQ(eval_print("(format nil \"~:D\" -1234567)"), "\"-1,234,567\"");
+    ASSERT_STR_EQ(eval_print("(format nil \"~,,'.,2:D\" 123456)"), "\"12.34.56\"");
+}
+
+TEST(goto_negative_and_overshoot_clamp)
+{
+    /* FS3: plain ~n* with a negative n indexed before the arg vector
+     * (ctx->args[-3] OOB read fed to the printer).  Both directions must
+     * clamp instead of crashing/reading garbage. */
+    ASSERT_STR_EQ(eval_print("(stringp (format nil \"~-5*~A\" 1))"), "T");
+    ASSERT_STR_EQ(eval_print("(format nil \"~A~100*x\" 1)"), "\"1x\"");
+}
+
+TEST(recursive_format_string_control)
+{
+    /* FS2: ~? with a string control snapshots the arg list into a C array;
+     * behavior check here, GC-stress coverage in the shell suite. */
+    ASSERT_STR_EQ(eval_print("(format nil \"~? ~A\" \"<~A ~A>\" (list 1 2) 3)"),
+                  "\"<1 2> 3\"");
+}
+
 int main(void)
 {
     setup();
@@ -292,6 +335,11 @@ int main(void)
     RUN(format_a_wide_string);
     RUN(with_output_to_string_wide);
     RUN(justify_wide_glyph_segments);
+
+    RUN(grouped_integer_100_digits_no_smash);
+    RUN(grouped_integer_grouping_correct);
+    RUN(goto_negative_and_overshoot_clamp);
+    RUN(recursive_format_string_control);
 
     teardown();
     REPORT();
