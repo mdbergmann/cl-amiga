@@ -180,6 +180,18 @@ void cl_stream_init(void)
     cl_stderr_stream = cl_make_stream(CL_STREAM_OUTPUT, CL_STREAM_CONSOLE);
     CL_GC_UNPROTECT(2);
 
+    /* The C runtime writes through these cached handles directly
+     * (platform console I/O, REPL banner, error output).  The stream
+     * objects stay live via the *STANDARD-INPUT* / *STANDARD-OUTPUT* /
+     * *ERROR-OUTPUT* symbol values, but the C globals hold raw offsets the compactor
+     * only rewrites for registered roots — unregistered, the first
+     * compaction that relocates a console stream leaves them pointing
+     * into whatever moved there.  Registration is idempotent across
+     * re-init. */
+    cl_gc_register_root(&cl_stdin_stream);
+    cl_gc_register_root(&cl_stdout_stream);
+    cl_gc_register_root(&cl_stderr_stream);
+
     /* Bind standard stream variables to console streams */
     s = (CL_Symbol *)CL_OBJ_TO_PTR(SYM_STANDARD_INPUT);
     s->value = cl_stdin_stream;
