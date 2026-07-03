@@ -251,6 +251,11 @@ int platform_atomic_cas(volatile uint32_t *ptr, uint32_t expected,
     return __sync_bool_compare_and_swap(ptr, expected, desired) ? 1 : 0;
 }
 
+void platform_memory_barrier(void)
+{
+    __sync_synchronize();
+}
+
 /* ================================================================
  * TLS (Thread-Local Storage for cl_current_thread)
  *

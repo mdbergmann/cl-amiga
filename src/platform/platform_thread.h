@@ -50,6 +50,13 @@ uint32_t platform_atomic_inc(volatile uint32_t *ptr);
 uint32_t platform_atomic_dec(volatile uint32_t *ptr);
 int      platform_atomic_cas(volatile uint32_t *ptr, uint32_t expected,
                              uint32_t desired);  /* 1 = swapped, 0 = failed */
+/* Full memory barrier for lock-free flag/payload pairs read outside any
+ * mutex (e.g. interrupt_func published before interrupt_pending, consumed
+ * at safepoints without taking a lock).  Both sides need it: the writer
+ * orders payload-before-flag, the reader orders flag-before-payload — on
+ * weakly-ordered hosts (ARM64) either reorder loses the payload.  On the
+ * single-core 68k this reduces to a compiler barrier. */
+void     platform_memory_barrier(void);
 
 /* ---- TLS (for cl_current_thread) ----
  *

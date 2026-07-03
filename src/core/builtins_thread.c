@@ -447,6 +447,11 @@ static CL_Obj bi_make_thread(CL_Obj *args, int n)
         for (i = 1; i < CL_MAX_THREADS; i++) {
             zombie = cl_thread_table[i];
             if (!zombie || zombie->status < 2) continue;
+            /* A claimed join owns this worker's cleanup: the joiner is
+             * (or will be) parked in platform_thread_join on the claimed
+             * handle and frees the worker itself.  Freeing it here would
+             * be a use-after-free / double free. */
+            if (zombie->join_in_progress) continue;
             cl_thread_table[i] = NULL;
             if (zombie->platform_handle) {
                 platform_thread_detach(zombie->platform_handle);
@@ -543,27 +548,63 @@ static CL_Obj bi_join_thread(CL_Obj *args, int n)
     CL_ThreadObj *tobj;
     CL_Thread *t;
     CL_Obj result;
+    void *handle;
+    uint32_t id;
     CL_UNUSED(n);
 
     if (!CL_THREAD_P(args[0]))
         cl_error(CL_ERR_TYPE, "MP:JOIN-THREAD: argument must be a thread");
 
     tobj = (CL_ThreadObj *)CL_OBJ_TO_PTR(args[0]);
-    if (tobj->thread_id >= CL_MAX_THREADS)
+    id = tobj->thread_id;
+    if (id >= CL_MAX_THREADS)
         cl_error(CL_ERR_GENERAL, "MP:JOIN-THREAD: invalid thread id");
 
-    t = cl_thread_table[tobj->thread_id];
-    if (!t)
+    /* Claim the join under the table lock.  Without mutual exclusion two
+     * joiners both called platform_thread_join on the same handle (double
+     * pthread_join — UB and a double free of the handle struct) and both
+     * freed the worker; the zombie reaper could also free a finished
+     * worker while a joiner was still parked inside the join. */
+    platform_mutex_lock(cl_thread_list_lock);
+    t = cl_thread_table[id];
+    if (!t) {
+        platform_mutex_unlock(cl_thread_list_lock);
         cl_error(CL_ERR_GENERAL, "MP:JOIN-THREAD: thread already collected");
-
-    if (!t->platform_handle)
+    }
+    if (!t->platform_handle && !t->join_in_progress) {
+        platform_mutex_unlock(cl_thread_list_lock);
         cl_error(CL_ERR_GENERAL, "MP:JOIN-THREAD: cannot join main thread");
+    }
+    if (t->join_in_progress) {
+        /* Another joiner owns the OS-level join and the cleanup.  Wait
+         * for it to finish (table slot cleared), then read the result
+         * from the GC-managed wrapper like the owner does.  Pointer
+         * comparison only — `t` may be freed by the owner at any time. */
+        platform_mutex_unlock(cl_thread_list_lock);
+        cl_gc_enter_safe_region();
+        while (cl_thread_table[id] == t)
+            platform_thread_yield();
+        cl_gc_leave_safe_region();
+        /* The owner's cl_thread_table_free() is a plain store, not paired
+         * with a lock this waiter takes, so the unsynchronized read of
+         * cl_thread_table[id] above is not guaranteed to observe the
+         * owner's prior write of tobj->result on weakly-ordered hardware.
+         * Pair it with an explicit barrier, matching the rigor already
+         * applied to interrupt_pending/destroy_requested. */
+        platform_memory_barrier();
+        tobj = (CL_ThreadObj *)CL_OBJ_TO_PTR(args[0]);  /* re-derive (moved?) */
+        return tobj->result;
+    }
+    t->join_in_progress = 1;
+    handle = t->platform_handle;
+    t->platform_handle = NULL;   /* claimed: reaper must not detach it */
+    platform_mutex_unlock(cl_thread_list_lock);
 
     /* Wait for thread to finish.  pthread_join blocks the caller outside
      * the VM dispatch loop — bracket it with the safe-region marker so a
      * concurrent stop-the-world GC counts us as already stopped. */
     cl_gc_enter_safe_region();
-    platform_thread_join(t->platform_handle, NULL);
+    platform_thread_join(handle, NULL);
     cl_gc_leave_safe_region();
 
     /* Re-derive tobj: cl_gc_leave_safe_region() can PARK this thread while a
@@ -615,11 +656,18 @@ static CL_Obj bi_thread_alive_p(CL_Obj *args, int n)
     if (tobj->thread_id >= CL_MAX_THREADS)
         return CL_NIL;
 
-    t = cl_thread_table[tobj->thread_id];
-    if (!t) return CL_NIL;
-
-    /* status: 0=created, 1=running, 2=finished, 3=aborted */
-    return (t->status <= 1) ? CL_T : CL_NIL;
+    /* Read table slot and status under the lock: the zombie reaper and
+     * a completing JOIN free workers under the same lock, so an
+     * unlocked read here could dereference a just-freed CL_Thread. */
+    {
+        int alive;
+        platform_mutex_lock(cl_thread_list_lock);
+        t = cl_thread_table[tobj->thread_id];
+        /* status: 0=created, 1=running, 2=finished, 3=aborted */
+        alive = (t && t->status <= 1);
+        platform_mutex_unlock(cl_thread_list_lock);
+        return alive ? CL_T : CL_NIL;
+    }
 }
 
 /* (mp:current-thread) -> thread */
@@ -657,38 +705,57 @@ static CL_Obj bi_current_thread(CL_Obj *args, int n)
 static CL_Obj bi_all_threads(CL_Obj *args, int n)
 {
     CL_Obj result = CL_NIL;
-    CL_Obj wrapper;
-    int i;
+    CL_Obj snap;
+    int i, count = 0;
     CL_UNUSED(args);
     CL_UNUSED(n);
 
-    CL_GC_PROTECT(result);
-    for (i = CL_MAX_THREADS - 1; i >= 0; i--) {
-        CL_Thread *t = cl_thread_table[i];
-        if (!t) continue;
-
-        if (i == 0) {
-            /* Main thread */
-            result = cl_cons(main_thread_obj, result);
-        } else {
-            /* Skip finished (status=2) / aborted (status=3) workers.
-             * The slot+wrapper survive until the wrapper is GC'd so
-             * accessors like THREAD-NAME still work on a held handle,
-             * but ALL-THREADS must report only live threads
-             * (bordeaux-threads / SBCL / CCL contract). */
-            if (t->status >= 2) continue;
-
-            /* Reuse the canonical wrapper that was created at make-thread
-             * time (stashed in CL_Thread->thread_obj).  Allocating a
-             * fresh wrapper would create an alias with the same
-             * thread_id; when one wrapper later dies, gc_finalize_dead
-             * would race over which one "owns" the slot. */
-            wrapper = t->thread_obj;
-            if (CL_NULL_P(wrapper)) continue;
-            result = cl_cons(wrapper, result);
+    /* Two phases.  The table walk must hold cl_thread_list_lock (the
+     * zombie reaper / a completing JOIN free workers under it — an
+     * unlocked t->status read is a use-after-free), but we must NOT
+     * allocate while holding it: an allocation can trigger stop-the-
+     * world GC while an exiting peer blocks on this lock and can never
+     * park.  So: allocate a snapshot vector first, fill it under the
+     * lock (plain stores), and cons the result after releasing.  The
+     * vector roots the wrappers across the consing. */
+    snap = cl_make_vector(CL_MAX_THREADS);
+    CL_GC_PROTECT(snap);
+    {
+        CL_Vector *v = (CL_Vector *)CL_OBJ_TO_PTR(snap);
+        platform_mutex_lock(cl_thread_list_lock);
+        for (i = 0; i < CL_MAX_THREADS; i++) {
+            CL_Thread *t = cl_thread_table[i];
+            if (!t) continue;
+            if (i == 0) {
+                v->data[count++] = main_thread_obj;
+            } else {
+                /* Skip finished (status=2) / aborted (status=3) workers.
+                 * The slot+wrapper survive until the wrapper is GC'd so
+                 * accessors like THREAD-NAME still work on a held handle,
+                 * but ALL-THREADS must report only live threads
+                 * (bordeaux-threads / SBCL / CCL contract). */
+                if (t->status >= 2) continue;
+                /* Reuse the canonical wrapper that was created at
+                 * make-thread time (stashed in CL_Thread->thread_obj).
+                 * Allocating a fresh wrapper would create an alias with
+                 * the same thread_id; when one wrapper later dies,
+                 * gc_finalize_dead would race over which one "owns" the
+                 * slot. */
+                if (CL_NULL_P(t->thread_obj)) continue;
+                v->data[count++] = t->thread_obj;
+            }
         }
+        platform_mutex_unlock(cl_thread_list_lock);
     }
-    CL_GC_UNPROTECT(1);
+
+    CL_GC_PROTECT(result);
+    for (i = count - 1; i >= 0; i--) {
+        /* Re-derive the vector pointer each iteration: cl_cons can
+         * compact and move the snapshot vector. */
+        CL_Vector *v = (CL_Vector *)CL_OBJ_TO_PTR(snap);
+        result = cl_cons(v->data[i], result);
+    }
+    CL_GC_UNPROTECT(2);
     return result;
 }
 
@@ -1112,20 +1179,33 @@ static CL_Obj bi_interrupt_thread(CL_Obj *args, int n)
         return CL_T;
     }
 
+    /* Lookup and publish under the table lock so the reaper / a
+     * completing JOIN cannot free `target` between the lookup and the
+     * stores (use-after-free write). */
+    platform_mutex_lock(cl_thread_list_lock);
     target = cl_thread_table[tobj->thread_id];
-    if (!target)
+    if (!target) {
+        platform_mutex_unlock(cl_thread_list_lock);
         cl_error(CL_ERR_GENERAL,
                  "MP:INTERRUPT-THREAD: thread has already exited");
-
+    }
     /* status: 0=created, 1=running, 2=finished, 3=aborted */
-    if (target->status >= 2)
+    if (target->status >= 2) {
+        platform_mutex_unlock(cl_thread_list_lock);
         cl_error(CL_ERR_GENERAL,
                  "MP:INTERRUPT-THREAD: thread is no longer running");
+    }
 
-    /* Store function and set pending flag.
-     * Write order matters: func before flag (strongly ordered on x86/68020). */
+    /* Store function, then set the pending flag.  The target consumes
+     * the pair at safepoints WITHOUT taking this lock, so the
+     * payload-before-flag order needs an explicit barrier — on ARM64
+     * the two stores can otherwise become visible flag-first and the
+     * target consumes pending with a stale (NIL) func, silently
+     * dropping the interrupt. */
     target->interrupt_func = func;
+    platform_memory_barrier();
     target->interrupt_pending = 1;
+    platform_mutex_unlock(cl_thread_list_lock);
 
     return CL_T;
 }
@@ -1151,18 +1231,26 @@ static CL_Obj bi_destroy_thread(CL_Obj *args, int n)
     if (tobj->thread_id == self->id)
         cl_abort_current_thread("Thread destroyed");
 
+    /* Same locking + publication discipline as MP:INTERRUPT-THREAD. */
+    platform_mutex_lock(cl_thread_list_lock);
     target = cl_thread_table[tobj->thread_id];
-    if (!target)
+    if (!target) {
+        platform_mutex_unlock(cl_thread_list_lock);
         cl_error(CL_ERR_GENERAL,
                  "MP:DESTROY-THREAD: thread has already exited");
-
-    if (target->status >= 2)
+    }
+    if (target->status >= 2) {
+        platform_mutex_unlock(cl_thread_list_lock);
         cl_error(CL_ERR_GENERAL,
                  "MP:DESTROY-THREAD: thread is no longer running");
+    }
 
-    /* Set destroy flag and pending flag */
+    /* Set destroy flag, then the pending flag (payload before flag —
+     * see MP:INTERRUPT-THREAD). */
     target->destroy_requested = 1;
+    platform_memory_barrier();
     target->interrupt_pending = 1;
+    platform_mutex_unlock(cl_thread_list_lock);
 
     return CL_T;
 }
