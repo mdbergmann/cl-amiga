@@ -3216,6 +3216,167 @@ check_contains "IO5 set-pprint-dispatch removal rebuild under GC stress" \
 check_absent   "no corruption in tier-4 printer/format cases" \
   "T4B-BAD\|corrupted pointer\|not of type\|Guru\|SIGSEGV" "$out"
 
+# --- Tier-4 audit batch 3: IO / strings / reader ----------------------------
+# (audit 2026-07 tier 4, batch 3)
+#   IO2/IO3/FS12 write/pprint/write-to-string saved the *PRINT-* controls in
+#       unrooted C locals across the (compacting) print — the restore wrote
+#       stale offsets back into the control symbols, corrupting *PRINT-BASE*
+#       etc. for the rest of the session.  Now a shared rooted-snapshot helper
+#       (cl_print_controls_save/restore).  bi_write also returned a stale obj.
+#   IO4  read-delimited-list held `stream` unprotected across nested reads.
+#   IO6/IO7 copy-pprint-dispatch / pprint-dispatch walked cursors across
+#       allocating cl_cons / cl_typep (deftype expander) calls.
+#   IO8  require walked the pathnames list + a C-local load_args slot across
+#       bi_load (which compacts massively and re-reads args[0]).
+#   IO9  macroexpand held form/env across expander applies; macroexpand-1's
+#       expanded-p EQ test compared against a stale form copy.
+#   IO10 disassemble read through a stale CL_Bytecode* while the output
+#       stream (string/Gray) allocated.
+#   IO12 bi_load/compile-file-pathname passed an unrooted C-local merge_args
+#       slot to allocating bi_merge_pathnames.
+#   FS10 string-trim family read the char-bag from args[0] BEFORE the coerce
+#       of a char designator allocated.
+#   FS11 concatenate compound result-type staled `rest` across the deftype-
+#       expanding element-type checks.
+#   R1   #nA reader flattened nested lists with unprotected work[]/cursor.
+#   R2/R3/R4 nested-read save/restore staled saved_stream/saved_uninterned.
+#   R5   feature keyword roots registered only after all three interns.
+#   R6   (conformance) quote/backquote/#'/dotted-cdr/#nA embedded the 0x06
+#       CL_READER_SKIP sentinel when a false #+/#- preceded the sub-form.
+mkdir -p "$WORK"
+cat > "$WORK/t4io-mod.lisp" <<'EOF'
+(if (boundp 'cl-user::*t4io-mod-loads*)
+    (incf cl-user::*t4io-mod-loads*)
+    (defparameter cl-user::*t4io-mod-loads* 1))
+(provide "t4io-mod")
+EOF
+cat > "$WORK/tier4-io.lisp" <<'EOF'
+(in-package :cl-user)
+;; IO2: write keyword overrides restore *print-base* and return the object.
+(format t "T4C-IO2:~a ~a ~a~%"
+        (let ((s (make-string-output-stream)))
+          (write 255 :stream s :base 16)
+          (get-output-stream-string s))
+        (write-to-string 255)
+        (let ((s (make-string-output-stream))) (write 7 :stream s)))
+;; FS12: write-to-string keyword overrides restore.
+(format t "T4C-FS12:~a ~a~%" (write-to-string 255 :base 16) (write-to-string 255))
+;; IO3: pprint restores the caller's *print-escape*/*print-pretty* bindings.
+(format t "T4C-IO3:~a~%"
+        (let ((*print-escape* nil))
+          (let ((s (make-string-output-stream))) (pprint '(1 2) s))
+          (if *print-escape* :leaked :restored)))
+;; IO4: read-delimited-list conses per element under stress.
+(format t "T4C-IO4:~s~%"
+        (with-input-from-string (in "1 2 3 4 5 6 7 8 9 10 ]")
+          (read-delimited-list #\] in)))
+;; IO7: pprint-dispatch builtin walks entries across deftype-expanding typep.
+(deftype t4c-small () '(integer 0 9))
+(deftype t4c-big () '(integer 100 999))
+(set-pprint-dispatch 't4c-small (lambda (s o) (format s "[sm ~d]" o)))
+(set-pprint-dispatch 't4c-big (lambda (s o) (format s "[bg ~d]" o)))
+(format t "T4C-IO7:~a~%"
+        (let ((fn (pprint-dispatch 5)))
+          (with-output-to-string (s) (funcall fn s 5))))
+;; IO6: copy-pprint-dispatch rebuild loop; copy must still dispatch.
+(format t "T4C-IO6:~a ~a~%"
+        (length (copy-pprint-dispatch))
+        (if (nth-value 1 (pprint-dispatch 5 (copy-pprint-dispatch))) :hit :miss))
+;; IO9: macroexpand chains + correct expanded-p secondary values.
+(defmacro t4c-m1 (x) (list 't4c-m2 x))
+(defmacro t4c-m2 (x) (list 'list x x))
+(format t "T4C-IO9:~s ~s ~s~%"
+        (multiple-value-list (macroexpand '(t4c-m1 3)))
+        (nth-value 1 (macroexpand-1 '(quote z)))
+        (nth-value 1 (macroexpand-1 '(t4c-m2 1))))
+;; IO10: disassemble to a string stream (allocating output path).
+(defun t4c-d (x) (+ x 1))
+(format t "T4C-IO10:~a~%"
+        (let ((out (with-output-to-string (*standard-output*)
+                     (disassemble 't4c-d))))
+          (if (and (search "Disassembly" out) (search "Constants" out)) :ok :fail)))
+;; IO12: compile-file-pathname merges through the rooted args slot.
+(format t "T4C-IO12:~a~%" (pathname-type (compile-file-pathname "t4c-x.lisp")))
+;; IO8: require with a LIST of pathnames (two loads of the same module file).
+(require "t4io-mod" (list (merge-pathnames "t4io-mod.lisp" *load-pathname*)
+                          (merge-pathnames "t4io-mod.lisp" *load-pathname*)))
+(format t "T4C-IO8:~a ~a~%" *t4io-mod-loads*
+        (if (member "t4io-mod" *modules* :test 'equal) :provided :missing))
+;; FS10: char designator char-bag allocates in the coerce.
+(format t "T4C-FS10:~a|~a|~a~%"
+        (string-trim "x" #\a)
+        (string-left-trim '(#\a) "aabca")
+        (string-right-trim "A" 'xa))
+;; FS11: concatenate with a deftype-compound result type.
+(deftype t4c-oct () '(unsigned-byte 8))
+(format t "T4C-FS11:~s ~s~%"
+        (concatenate '(vector t4c-oct) #(1 2) #(3))
+        (concatenate '(vector character) "ab" "c"))
+;; R1: #3A flatten conses per element under stress.
+(defparameter *t4c-arr*
+  (read-from-string "#3A(((1 2) (3 4)) ((5 6) (7 8)))"))
+(format t "T4C-R1:~a ~a ~a~%"
+        (aref *t4c-arr* 0 0 0) (aref *t4c-arr* 1 0 1) (aref *t4c-arr* 1 1 1))
+;; R2/R3: nested read (read-from-string inside #. during an outer read).
+(format t "T4C-R2:~s~%"
+        (read-from-string "(a #.(cl:read-from-string \"(x y)\") b)"))
+;; R5: first cons feature-expressions of the session — the operator-keyword
+;; interns inside ensure_feature_keywords can compact while expr is live.
+(format t "T4C-R5:~s ~s ~s~%"
+        (read-from-string "#+(and) 7")
+        (read-from-string "#-(or) 8")
+        (read-from-string "#+(and common-lisp (not t4c-no-such-ft)) 9"))
+;; R6: false #+/#- must skip cleanly inside quote/function/dotted/array forms.
+(format t "T4C-R6:~s ~s ~s ~s~%"
+        (read-from-string "'#+t4c-no-such-feature foo bar")
+        (read-from-string "#'#+t4c-no-such-feature foo bar")
+        (read-from-string "(a . #+t4c-no-such-feature b c)")
+        (read-from-string "#2A#+t4c-no-such-feature x ((1 2) (3 4))"))
+;; R6b: false #+/#- must also skip cleanly inside #. read-time eval.
+(format t "T4C-R6B:~s~%"
+        (read-from-string "#.#+t4c-no-such-feature x 5"))
+(format t "T4C-DONE~%")
+EOF
+out=$(run_stress "$WORK/tier4-io.lisp")
+check_contains "IO2 write :base override restored + returns object" \
+  "T4C-IO2:FF 255 7" "$out"
+check_contains "FS12 write-to-string :base override restored" \
+  "T4C-FS12:FF 255" "$out"
+check_contains "IO3 pprint restores caller print-control bindings" \
+  "T4C-IO3:RESTORED" "$out"
+check_contains "IO4 read-delimited-list under GC stress" \
+  "T4C-IO4:(1 2 3 4 5 6 7 8 9 10)" "$out"
+check_contains "IO7 pprint-dispatch walk across deftype typep" \
+  "T4C-IO7:\[sm 5\]" "$out"
+check_contains "IO6 copy-pprint-dispatch rebuild + copy dispatches" \
+  "T4C-IO6:2 HIT" "$out"
+check_contains "IO9 macroexpand chain + expanded-p values" \
+  "T4C-IO9:((LIST 3 3) T) NIL T" "$out"
+check_contains "IO10 disassemble to allocating string stream" \
+  "T4C-IO10:OK" "$out"
+check_contains "IO12 compile-file-pathname through rooted merge slot" \
+  "T4C-IO12:fasl" "$out"
+check_contains "IO8 require list-of-pathnames loads all + provides" \
+  "T4C-IO8:2 PROVIDED" "$out"
+check_contains "FS10 string-trim family char designators" \
+  "T4C-FS10:a|bca|X" "$out"
+check_contains "FS11 concatenate deftype compound result types" \
+  "T4C-FS11:#(1 2 3) \"abc\"" "$out"
+check_contains "R1 #3A reader flatten under GC stress" \
+  "T4C-R1:1 6 8" "$out"
+check_contains "R2 nested read-from-string restores reader state" \
+  "T4C-R2:(A (X Y) B)" "$out"
+check_contains "R5 first-use cons feature expressions" \
+  "T4C-R5:7 8 9" "$out"
+check_contains "R6 skip sentinel filtered in quote/fn/dotted/#nA" \
+  "T4C-R6:(QUOTE BAR) (FUNCTION BAR) (A . C) #2A((1 2) (3 4))" "$out"
+check_contains "R6b skip sentinel filtered in #. read-time eval" \
+  "T4C-R6B:5" "$out"
+check_contains "tier-4 io/strings/reader cases run to completion" \
+  "T4C-DONE" "$out"
+check_absent   "no corruption in tier-4 io/strings/reader cases" \
+  "corrupted pointer\|not of type\|Guru\|SIGSEGV\|badmark" "$out"
+
 echo ""
 echo "$passed passed, $failed failed, $total total"
 [ "$failed" -eq 0 ]

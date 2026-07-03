@@ -163,13 +163,16 @@ static CL_Obj kw_not = CL_NIL;
 
 static void ensure_feature_keywords(void)
 {
+    /* GC SAFETY (audit tier 4, R5): register each cached symbol as a root
+     * IMMEDIATELY after its intern — the next cl_intern_keyword can compact,
+     * and a root registered afterwards would pin a stale offset permanently
+     * (these are one-shot registrations). */
     if (CL_NULL_P(kw_and)) {
         kw_and = cl_intern_keyword("AND", 3);
-        kw_or  = cl_intern_keyword("OR", 2);
-        kw_not = cl_intern_keyword("NOT", 3);
-        /* Register cached symbols for GC compaction forwarding */
         cl_gc_register_root(&kw_and);
+        kw_or  = cl_intern_keyword("OR", 2);
         cl_gc_register_root(&kw_or);
+        kw_not = cl_intern_keyword("NOT", 3);
         cl_gc_register_root(&kw_not);
     }
 }
@@ -183,9 +186,16 @@ static int eval_feature_expr(CL_Obj expr)
         return feature_member(expr);
     }
     if (CL_CONS_P(expr)) {
-        CL_Obj head = cl_car(expr);
-        CL_Obj rest = cl_cdr(expr);
+        CL_Obj head, rest;
+        /* First-call interns can compact — keep expr forwarded across the
+         * ensure and read head/rest AFTER it (R5), so neither the expr cons
+         * nor the freshly-registered kw_* roots are stale for the compares
+         * below. */
+        CL_GC_PROTECT(expr);
         ensure_feature_keywords();
+        CL_GC_UNPROTECT(1);
+        head = cl_car(expr);
+        rest = cl_cdr(expr);
         if (head == kw_and) {
             /* (:and f1 f2 ...) — all must be true */
             while (CL_CONS_P(rest)) {
@@ -875,8 +885,10 @@ static CL_Obj read_list(void)
                 int next = read_char();
                 if (is_delimiter(next)) {
                     unread_char(next);
-                    /* Read cdr of dotted pair */
-                    elem = read_expr();
+                    /* Read cdr of dotted pair — skip past #+/#- voids (R6),
+                     * else the 0x06 skip sentinel becomes the list's cdr */
+                    do { elem = read_expr(); }
+                    while (elem == CL_READER_SKIP && !eof_seen);
                     if (!CL_NULL_P(tail)) {
                         ((CL_Cons *)CL_OBJ_TO_PTR(tail))->cdr = elem;
                     }
@@ -950,12 +962,17 @@ static CL_Obj read_expr(void)
     case '(':
         return read_list();
 
+    /* NOTE (audit tier 4, R6 / CLHS 2.4.8.17): a false #+/#- consumes its
+     * feature expression AND the following form, yielding nothing — so
+     * every "read one sub-form" site below must loop past CL_READER_SKIP
+     * (e.g. '#+nope foo bar must read as 'BAR), or the internal 0x06
+     * sentinel leaks into user structure. */
     case '\'': /* quote */
-        obj = read_expr();
+        do { obj = read_expr(); } while (obj == CL_READER_SKIP && !eof_seen);
         return cl_cons(SYM_QUOTE, cl_cons(obj, CL_NIL));
 
     case '`': /* quasiquote */
-        obj = read_expr();
+        do { obj = read_expr(); } while (obj == CL_READER_SKIP && !eof_seen);
         return cl_cons(SYM_QUASIQUOTE, cl_cons(obj, CL_NIL));
 
     case ',': /* unquote / unquote-splicing */
@@ -966,11 +983,11 @@ static CL_Obj read_expr(void)
          * expansion, and iterate relies on the form being accepted at
          * read time).  Treat them the same here. */
         if (ch == '@' || ch == '.') {
-            obj = read_expr();
+            do { obj = read_expr(); } while (obj == CL_READER_SKIP && !eof_seen);
             return cl_cons(SYM_UNQUOTE_SPLICING, cl_cons(obj, CL_NIL));
         }
         unread_char(ch);
-        obj = read_expr();
+        do { obj = read_expr(); } while (obj == CL_READER_SKIP && !eof_seen);
         return cl_cons(SYM_UNQUOTE, cl_cons(obj, CL_NIL));
 
     case '#': {
@@ -1016,8 +1033,8 @@ static CL_Obj read_expr(void)
             return CL_READER_SKIP;
         }
         if (ch == '\'') {
-            /* #'foo => (FUNCTION foo) */
-            obj = read_expr();
+            /* #'foo => (FUNCTION foo) — skip past #+/#- voids (R6) */
+            do { obj = read_expr(); } while (obj == CL_READER_SKIP && !eof_seen);
             return cl_cons(SYM_FUNCTION, cl_cons(obj, CL_NIL));
         }
         if (ch == '\\') {
@@ -1396,9 +1413,11 @@ static CL_Obj read_expr(void)
         }
         if (ch == '.') {
             /* #. read-time eval */
-            CL_Obj form = read_expr();
+            CL_Obj form;
             CL_Obj bytecode, result;
             CL_Symbol *re_sym;
+
+            do { form = read_expr(); } while (form == CL_READER_SKIP && !eof_seen);
 
             if (read_suppress) return CL_NIL;
 
@@ -1434,7 +1453,7 @@ static CL_Obj read_expr(void)
                 if (ch == 'A' || ch == 'a') {
                     /* #nA(...) — n-dimensional array */
                     int rank = num_val;
-                    CL_Obj contents = read_expr();
+                    CL_Obj contents;
                     uint32_t dims[8];
                     uint32_t total = 1;
                     int d;
@@ -1442,6 +1461,10 @@ static CL_Obj read_expr(void)
                     CL_Vector *vp;
                     CL_Obj flat_elems = CL_NIL;
                     CL_Obj flat_tail = CL_NIL;
+
+                    /* skip past #+/#- voids before the contents form (R6) */
+                    do { contents = read_expr(); }
+                    while (contents == CL_READER_SKIP && !eof_seen);
 
                     if (read_suppress) return CL_NIL;
                     if (rank < 0 || rank > 8) {
@@ -1481,16 +1504,33 @@ static CL_Obj read_expr(void)
 
                     /* Recursively flatten nested lists into flat_elems */
                     {
-                        /* Use a simple iterative approach with a work stack */
-                        /* For simplicity, we flatten recursively for depth = rank */
+                        /* Use a simple iterative approach with a work stack.
+                         * GC SAFETY (audit tier 4, R1): every cl_cons below
+                         * can compact — the per-level cursors work[0..7] and
+                         * the inner list cursor must be registered roots
+                         * (rank is capped at 8 above), or the walk continues
+                         * through pre-compaction offsets after the first
+                         * element is consed. */
                         CL_Obj work[8]; /* One per dimension level */
+                        CL_Obj lst = CL_NIL;
                         int level = 0;
                         uint32_t fi = 0;
+                        int wi;
+                        for (wi = 1; wi < 8; wi++) work[wi] = CL_NIL;
                         work[0] = contents;
+                        CL_GC_PROTECT(work[0]);
+                        CL_GC_PROTECT(work[1]);
+                        CL_GC_PROTECT(work[2]);
+                        CL_GC_PROTECT(work[3]);
+                        CL_GC_PROTECT(work[4]);
+                        CL_GC_PROTECT(work[5]);
+                        CL_GC_PROTECT(work[6]);
+                        CL_GC_PROTECT(work[7]);
+                        CL_GC_PROTECT(lst);
                         while (fi < total) {
                             if (level == rank - 1) {
                                 /* Innermost: collect elements from list */
-                                CL_Obj lst = work[level];
+                                lst = work[level];
                                 while (CL_CONS_P(lst) && fi < total) {
                                     CL_Obj cell = cl_cons(cl_car(lst), CL_NIL);
                                     if (CL_NULL_P(flat_elems)) {
@@ -1518,6 +1558,7 @@ static CL_Obj read_expr(void)
                                 }
                             }
                         }
+                        CL_GC_UNPROTECT(9); /* work[0..7], lst */
                     }
 
                     arr = cl_make_array(total, (uint8_t)rank, dims, 0,
@@ -1617,9 +1658,13 @@ CL_Obj cl_read(void)
     reader_line = 1;
     eof_seen = 0;
     rd_uninterned = CL_NIL;
+    /* GC SAFETY (audit tier 4, R4): read_expr compacts — the saved
+     * uninterned alist must stay forwarded for the nested-read restore. */
+    CL_GC_PROTECT(saved_uninterned);
     do { result = read_expr(); } while (result == CL_READER_SKIP && !eof_seen);
     CT->rd_last_eof = eof_seen;
     rd_uninterned = saved_uninterned;
+    CL_GC_UNPROTECT(1);
     return result;
 }
 
@@ -1654,10 +1699,14 @@ CL_Obj cl_read_from_stream(CL_Obj stream)
      * we must GC-protect `stream` and re-derive `st` before writing back
      * st->line. Without this, st->line = reader_line writes to the stream's
      * stale (now-relocated) slot, corrupting whatever object — frequently a
-     * cons cell of the freshly-read list — now occupies that memory. */
+     * cons cell of the freshly-read list — now occupies that memory.
+     * saved_stream too (audit tier 4, R2): it was the one unprotected member
+     * of the save set — restoring it stale left CT->rd_stream pointing into
+     * a pre-compaction offset for the parent read. */
     CL_GC_PROTECT(stream);
     CL_GC_PROTECT(saved_labels);
     CL_GC_PROTECT(saved_uninterned);
+    CL_GC_PROTECT(saved_stream);
     do { result = read_expr(); } while (result == CL_READER_SKIP && !eof_seen);
 
     st = (CL_Stream *)CL_OBJ_TO_PTR(stream);
@@ -1669,7 +1718,7 @@ CL_Obj cl_read_from_stream(CL_Obj stream)
     rd_uninterned = saved_uninterned;
     rd_labels     = saved_labels;
     rd_label_backrefs = saved_backrefs;
-    CL_GC_UNPROTECT(3); /* stream, saved_labels, saved_uninterned */
+    CL_GC_UNPROTECT(4); /* stream, saved_labels, saved_uninterned, saved_stream */
     return result;
 }
 
@@ -1685,9 +1734,13 @@ CL_Obj cl_read_from_string(CL_ReadStream *stream)
     CL_Stream *st;
     CL_Obj result;
 
-    /* Protect saved alists before any allocation — cl_make_string can compact */
+    /* Protect saved alists before any allocation — cl_make_string can compact.
+     * saved_stream too (audit tier 4, R3): the setup allocs AND read_expr
+     * compact; restoring a stale saved_stream corrupts the parent reader's
+     * stream for the rest of its read. */
     CL_GC_PROTECT(saved_labels);
     CL_GC_PROTECT(saved_uninterned);
+    CL_GC_PROTECT(saved_stream);
     str = cl_make_string(stream->buf, (uint32_t)stream->len);
     CL_GC_PROTECT(str);
     s = cl_make_string_input_stream(str, (uint32_t)stream->pos, (uint32_t)stream->len);
@@ -1743,7 +1796,7 @@ CL_Obj cl_read_from_string(CL_ReadStream *stream)
     rd_uninterned = saved_uninterned;
     rd_labels     = saved_labels;
     rd_label_backrefs = saved_backrefs;
-    CL_GC_UNPROTECT(3); /* s, saved_labels, saved_uninterned */
+    CL_GC_UNPROTECT(4); /* s, saved_labels, saved_uninterned, saved_stream */
     return result;
 }
 
