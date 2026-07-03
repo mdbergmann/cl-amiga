@@ -2403,6 +2403,38 @@ check_contains "throw values survive allocating unwind-protect cleanup" "THROWMV
 check_absent   "no stale throw values / lost catch tags under GC stress" \
   "BAD-THROW-MV\|BAD-NESTED-MV\|No catch for tag\|corrupted" "$out"
 
+# --- Case: compiling LET-wrapped iteration forms under GC stress -----------
+# Coverage for the compile_let -> compile_dotimes/do/do* -> compile_tagbody
+# recursion with inner LET + closures + macro-expanding bodies (INCF), the
+# shape of a compile-time SIGBUS observed 2026-07-03 on master@8ed36ee
+# (backtrace ended in cl_alloc inside a stress compaction).  The original
+# exact form was lost and the crash has not been reproduced since; these
+# shapes keep the suspect compile paths exercised under forced compaction.
+cat > "$WORK/looping.lisp" <<'EOF'
+(let ((ok t))
+  (dotimes (i 20)
+    (let ((v (make-array 4 :initial-element i)))
+      (unless (eql (aref v 2) i) (setf ok nil))))
+  (dotimes (i 20)
+    (let ((v (lambda () i)))
+      (unless (eql (funcall v) i) (setf ok nil))))
+  (let ((acc 0))
+    (do ((i 0 (+ i 1)))
+        ((>= i 20))
+      (let ((v (lambda () (incf acc i))))
+        (funcall v)))
+    (unless (= acc 190) (setf ok nil)))
+  (do* ((j 0 (+ j 1))
+        (w (list j) (list j)))
+       ((>= j 10))
+    (let ((u (lambda () (first w))))
+      (when (< (funcall u) 0) (setf ok nil))))
+  (format t "LOOPCOMPILE:~a~%" ok))
+EOF
+out=$(run_stress "$WORK/looping.lisp")
+check_contains "LET-wrapped dotimes/do/do* with closures compile+run under GC stress" \
+  "LOOPCOMPILE:T" "$out"
+
 # --- Case: wide-string copy from an arena-interior source ------------------
 # Bug: cl_make_wide_string lacked cl_make_string's arena-interior source
 # guard.  cl_string_copy / cl_string_substring pass ws->data (an interior
