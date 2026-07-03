@@ -579,13 +579,38 @@ CL_Obj cl_make_string(const char *str, uint32_t len)
 CL_Obj cl_make_wide_string(const uint32_t *chars, uint32_t len)
 {
     uint32_t alloc_size = sizeof(CL_WideString) + len * sizeof(uint32_t);
-    CL_WideString *s = (CL_WideString *)cl_alloc(TYPE_WIDE_STRING, alloc_size);
-    if (!s) return CL_NIL;
+    CL_WideString *s;
+    uint32_t stack_buf[64];
+    uint32_t *safe_chars = NULL;
+
+    /* If chars points into the arena, copy to a safe buffer first.
+     * cl_alloc below may trigger GC compaction which moves arena objects,
+     * making the original pointer stale (same guard as cl_make_string). */
+    if (chars && (const uint8_t *)chars >= cl_heap.arena &&
+        (const uint8_t *)chars < cl_heap.arena + cl_heap.arena_size) {
+        if (len <= sizeof(stack_buf) / sizeof(stack_buf[0])) {
+            memcpy(stack_buf, chars, len * sizeof(uint32_t));
+            safe_chars = stack_buf;
+        } else {
+            safe_chars = (uint32_t *)platform_alloc(len * sizeof(uint32_t));
+            if (safe_chars)
+                memcpy(safe_chars, chars, len * sizeof(uint32_t));
+        }
+        chars = safe_chars ? safe_chars : chars;
+    }
+
+    s = (CL_WideString *)cl_alloc(TYPE_WIDE_STRING, alloc_size);
+    if (!s) {
+        if (safe_chars && safe_chars != stack_buf) platform_free(safe_chars);
+        return CL_NIL;
+    }
     s->length = len;
     if (chars)
         memcpy(s->data, chars, len * sizeof(uint32_t));
     else
         memset(s->data, 0, len * sizeof(uint32_t));
+
+    if (safe_chars && safe_chars != stack_buf) platform_free(safe_chars);
     return CL_PTR_TO_OBJ(s);
 }
 #endif

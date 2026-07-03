@@ -2403,6 +2403,38 @@ check_contains "throw values survive allocating unwind-protect cleanup" "THROWMV
 check_absent   "no stale throw values / lost catch tags under GC stress" \
   "BAD-THROW-MV\|BAD-NESTED-MV\|No catch for tag\|corrupted" "$out"
 
+# --- Case: wide-string copy from an arena-interior source ------------------
+# Bug: cl_make_wide_string lacked cl_make_string's arena-interior source
+# guard.  cl_string_copy / cl_string_substring pass ws->data (an interior
+# pointer into the source wide string); the cl_alloc inside
+# cl_make_wide_string compacts (stress: before every alloc) and MOVES the
+# source, so the memcpy reads from the source's pre-move address.
+# Repro shape matters: the dead space below the source must be SMALL (one
+# cons) so the destination allocation lands overlapping the source's old
+# tail — cl_alloc's memset then zeroes the stale bytes before the copy.
+# (A large dead gap slides the source far down but leaves its old bytes
+# intact, so the stale read still returns the right data and hides the bug.)
+cat > "$WORK/widecopy.lisp" <<'EOF'
+(let ((ok t))
+  (dotimes (i 30)
+    (let ((junk (cons 1 2))
+          (src (concatenate 'string "αβγδεζ" "ηθικλμ")))
+      (setf junk nil)
+      (let ((s (subseq src 3 9)))
+        (unless (string= s "δεζηθι")
+          (format t "BAD-WIDE-COPY:~s~%" s)
+          (setf ok nil)))
+      (let ((c (copy-seq src)))
+        (unless (string= c "αβγδεζηθικλμ")
+          (format t "BAD-WIDE-COPY2:~s~%" c)
+          (setf ok nil)))))
+  (format t "WIDECOPY:~a~%" ok))
+EOF
+out=$(run_stress "$WORK/widecopy.lisp")
+check_contains "wide-string subseq/copy-seq survive compaction of the source" "WIDECOPY:T" "$out"
+check_absent   "no garbage code points in wide-string copies under GC stress" \
+  "BAD-WIDE-COPY" "$out"
+
 # --- Case: oversized allocation must not corrupt the arena -----------------
 # Bug: cl_alloc's >8MB header-size guard ran AFTER alloc_from_bump had
 # already advanced the bump pointer; the guard's longjmp left a
