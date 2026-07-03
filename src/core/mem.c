@@ -2552,20 +2552,48 @@ static void gc_update_all_references(void)
     }
 }
 
+/* Chunk size for splitting a free gap of `total` bytes under alignment
+ * `align`: at most CL_HDR_SIZE_MASK, align-multiple, and never leaving a
+ * remainder too small to hold a CL_FreeBlock header.  With align=4
+ * (Amiga) the naive cap CL_HDR_SIZE_MASK & ~3 can leave a 4-byte
+ * remainder; the next iteration's CL_FreeBlock write (8 bytes) would
+ * then overrun the gap and smash the following — pinned — object's
+ * header.  Non-static so the unit test can exercise the align=4
+ * arithmetic on the host (whose CL_ALIGN is 8). */
+uint32_t gc_free_gap_chunk(uint32_t total, uint32_t align)
+{
+    uint32_t chunk = total;
+    if (chunk > CL_HDR_SIZE_MASK) {
+        chunk = CL_HDR_SIZE_MASK & ~(align - 1u);
+        if (total - chunk < (uint32_t)sizeof(CL_FreeBlock))
+            chunk -= CL_MIN_ALLOC_SIZE;
+    }
+    return chunk;
+}
+
 /* Write valid free-block header(s) covering [offset, offset+total) and
  * thread them onto the free list, so the arena's linear "walk by header
  * size" stays consistent across the gap.  Mirrors gc_sweep's free-block
  * format (size in the header low bits, type/mark = 0 → an unmarked block
  * the walk skips).  Splits gaps larger than the 23-bit size field into
- * multiple blocks.  `total` is always a CL_ALIGN multiple and, when
- * non-zero, >= CL_MIN_ALLOC_SIZE (>= sizeof(CL_FreeBlock)), so every
- * piece can hold the 8-byte header. */
+ * multiple blocks (see gc_free_gap_chunk for the remainder invariant).
+ * `total` is always a CL_ALIGN multiple and, when non-zero,
+ * >= CL_MIN_ALLOC_SIZE (>= sizeof(CL_FreeBlock)), so every piece can
+ * hold the 8-byte header. */
 static void gc_make_free_gap(uint32_t offset, uint32_t total)
 {
     while (total > 0) {
-        uint32_t chunk = total;
-        if (chunk > CL_HDR_SIZE_MASK)
-            chunk = CL_HDR_SIZE_MASK & ~(uint32_t)(CL_ALIGN - 1);
+        uint32_t chunk = gc_free_gap_chunk(total, CL_ALIGN);
+        if (chunk < (uint32_t)sizeof(CL_FreeBlock)) {
+            /* Degenerate sub-header gap (caller invariant broken — total
+             * itself smaller than a CL_FreeBlock).  Write a bare size-only
+             * header so the linear arena walk stays in sync, but leave the
+             * block off the free list: there is no room for the
+             * next_offset link, and writing one would smash the following
+             * object.  The space is reclaimed by the next compaction. */
+            ((CL_Header *)(cl_heap.arena + offset))->header = chunk;
+            return;
+        }
         {
             CL_FreeBlock *fb = (CL_FreeBlock *)(cl_heap.arena + offset);
             fb->size = chunk;                       /* type=0, mark=0, size=chunk */
