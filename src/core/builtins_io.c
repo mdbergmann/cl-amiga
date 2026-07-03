@@ -387,6 +387,10 @@ static int cf_emit_fasl_unit(CL_FaslWriter *fw,
 static CL_Obj bi_load(CL_Obj *args, int n)
 {
     CL_String *path_str;
+    /* The load path as a C copy: the CL_String moves under compaction and
+     * this function allocates all over (parse-namestring, compile, eval) —
+     * a path_str->data read after any of those would be stale. */
+    char path_buf[1024];
     char *buf;
     unsigned long size;
     CL_Obj stream, expr, bytecode;
@@ -398,11 +402,17 @@ static CL_Obj bi_load(CL_Obj *args, int n)
        doesn't affect the caller */
     CL_Obj saved_package = cl_current_package;
     CL_Obj load_pathname_obj, load_truename_obj;
+    /* GC SAFETY: saved_package (and the saved *LOAD-* values below) are
+     * restored AFTER the load evaluates arbitrary code — without roots the
+     * restore would write stale pre-compaction offsets into the globals
+     * (the *PACKAGE*-clobber class of corruption). */
     CL_Symbol *lp_sym, *lt_sym;
     CL_Obj saved_load_pathname, saved_load_truename;
     int verbose_explicit = 0, verbose = 0;
     CL_Obj if_dne = CL_UNBOUND;
     int i;
+
+    CL_GC_PROTECT(saved_package);
 
     /* Parse keyword args: :verbose, :print, :if-does-not-exist, :external-format */
     for (i = 1; i + 1 < n; i += 2) {
@@ -462,12 +472,15 @@ static CL_Obj bi_load(CL_Obj *args, int n)
     }
 
     path_str = (CL_String *)CL_OBJ_TO_PTR(args[0]);
+    strncpy(path_buf, path_str->data, sizeof(path_buf) - 1);
+    path_buf[sizeof(path_buf) - 1] = '\0';
 
     /* :if-does-not-exist NIL → return NIL without erroring.
        Check before the FASL cache block so we never substitute a stale cached
        FASL for a source file the caller explicitly said is OK to be missing. */
-    if (if_dne == CL_NIL && !platform_file_exists(path_str->data)) {
+    if (if_dne == CL_NIL && !platform_file_exists(path_buf)) {
         cl_current_package = saved_package;
+        CL_GC_UNPROTECT(1);  /* saved_package */
         return CL_NIL;
     }
 
@@ -482,15 +495,15 @@ static CL_Obj bi_load(CL_Obj *args, int n)
          the caller asked for). */
     {
         char cache_path[1024];
-        size_t plen2 = strlen(path_str->data);
+        size_t plen2 = strlen(path_buf);
         int skip_cache =
-            (plen2 >= 4 && strcmp(path_str->data + plen2 - 4, ".asd") == 0) ||
-            (plen2 >= 5 && strcmp(path_str->data + plen2 - 5, ".fasl") == 0);
+            (plen2 >= 4 && strcmp(path_buf + plen2 - 4, ".asd") == 0) ||
+            (plen2 >= 5 && strcmp(path_buf + plen2 - 5, ".fasl") == 0);
         if (!skip_cache &&
-            make_fasl_cache_path(path_str->data, cache_path, sizeof(cache_path)) &&
+            make_fasl_cache_path(path_buf, cache_path, sizeof(cache_path)) &&
             platform_file_exists(cache_path))
         {
-            uint32_t src_mtime = platform_file_mtime(path_str->data);
+            uint32_t src_mtime = platform_file_mtime(path_buf);
             uint32_t fasl_mtime = platform_file_mtime(cache_path);
             if (fasl_mtime > 0 && fasl_mtime >= src_mtime) {
                 /* Load cached FASL instead of source */
@@ -519,12 +532,12 @@ static CL_Obj bi_load(CL_Obj *args, int n)
                             /* Bind load-pathname and load-truename */
                             {
                                 extern CL_Obj cl_parse_namestring(const char *str, uint32_t len);
-                                load_pathname_obj = cl_parse_namestring(path_str->data,
-                                    (uint32_t)strlen(path_str->data));
+                                load_pathname_obj = cl_parse_namestring(path_buf,
+                                    (uint32_t)strlen(path_buf));
                             }
                             {
                                 char resolved[512];
-                                if (platform_realpath(path_str->data, resolved, (int)sizeof(resolved))) {
+                                if (platform_realpath(path_buf, resolved, (int)sizeof(resolved))) {
                                     extern CL_Obj cl_parse_namestring(const char *str, uint32_t len);
                                     load_truename_obj = cl_parse_namestring(resolved,
                                         (uint32_t)strlen(resolved));
@@ -538,6 +551,8 @@ static CL_Obj bi_load(CL_Obj *args, int n)
                             lt_sym = (CL_Symbol *)CL_OBJ_TO_PTR(SYM_STAR_LOAD_TRUENAME);
                             saved_load_pathname = cl_symbol_value(SYM_STAR_LOAD_PATHNAME);
                             saved_load_truename = cl_symbol_value(SYM_STAR_LOAD_TRUENAME);
+                            CL_GC_PROTECT(saved_load_pathname);
+                            CL_GC_PROTECT(saved_load_truename);
                             cl_set_symbol_value(SYM_STAR_LOAD_PATHNAME, load_pathname_obj);
                             cl_set_symbol_value(SYM_STAR_LOAD_TRUENAME, load_truename_obj);
 
@@ -562,12 +577,13 @@ static CL_Obj bi_load(CL_Obj *args, int n)
 
                                     cl_set_symbol_value(SYM_STAR_LOAD_PATHNAME, saved_load_pathname);
                                     cl_set_symbol_value(SYM_STAR_LOAD_TRUENAME, saved_load_truename);
-                                    CL_GC_UNPROTECT(2);
+                                    CL_GC_UNPROTECT(4);  /* saved_lt, saved_lp, lt_obj, lp_obj */
                                     cl_current_package = saved_package;
                                     {
                                         CL_Symbol *pkg_sym = (CL_Symbol *)CL_OBJ_TO_PTR(SYM_STAR_PACKAGE);
                                         cl_set_symbol_value(SYM_STAR_PACKAGE, saved_package);
                                     }
+                                    CL_GC_UNPROTECT(1);  /* saved_package */
                                     return SYM_T;
                                 } else {
                                     /* Restore VM state leaked by aborted cl_vm_eval */
@@ -581,7 +597,7 @@ static CL_Obj bi_load(CL_Obj *args, int n)
                                         platform_free(buf);
                                         cl_set_symbol_value(SYM_STAR_LOAD_PATHNAME, saved_load_pathname);
                                         cl_set_symbol_value(SYM_STAR_LOAD_TRUENAME, saved_load_truename);
-                                        CL_GC_UNPROTECT(2);
+                                        CL_GC_UNPROTECT(4);  /* saved_lt, saved_lp, lt_obj, lp_obj */
                                         cl_current_package = saved_package;
                                         cl_set_symbol_value(SYM_STAR_PACKAGE, saved_package);
                                         cl_error(CL_ERR_EXIT, "");
@@ -591,7 +607,7 @@ static CL_Obj bi_load(CL_Obj *args, int n)
                                 buf = NULL;
                                 cl_set_symbol_value(SYM_STAR_LOAD_PATHNAME, saved_load_pathname);
                                 cl_set_symbol_value(SYM_STAR_LOAD_TRUENAME, saved_load_truename);
-                                CL_GC_UNPROTECT(2);
+                                CL_GC_UNPROTECT(4);  /* saved_lt, saved_lp, lt_obj, lp_obj */
                                 cl_current_package = saved_package;
                                 {
                                     CL_Symbol *pkg_sym = (CL_Symbol *)CL_OBJ_TO_PTR(SYM_STAR_PACKAGE);
@@ -609,31 +625,32 @@ static CL_Obj bi_load(CL_Obj *args, int n)
         }
     }
 
-    buf = platform_file_read(path_str->data, &size);
+    buf = platform_file_read(path_buf, &size);
     if (!buf) {
-        if (!platform_file_exists(path_str->data)) {
+        if (!platform_file_exists(path_buf)) {
             /* File disappeared between the earlier existence check and now (TOCTOU),
                or was never there.  Honour :if-does-not-exist nil. */
             if (if_dne == CL_NIL) {
                 cl_current_package = saved_package;
+                CL_GC_UNPROTECT(1);  /* saved_package */
                 return CL_NIL;
             }
-            cl_error(CL_ERR_GENERAL, "LOAD: file does not exist: %s", path_str->data);
+            cl_error(CL_ERR_GENERAL, "LOAD: file does not exist: %s", path_buf);
         } else {
-            cl_error(CL_ERR_GENERAL, "LOAD: cannot read file: %s", path_str->data);
+            cl_error(CL_ERR_GENERAL, "LOAD: cannot read file: %s", path_buf);
         }
     }
 
     /* Bind *load-pathname* and *load-truename* per CL spec */
     {
         extern CL_Obj cl_parse_namestring(const char *str, uint32_t len);
-        load_pathname_obj = cl_parse_namestring(path_str->data,
-                                                (uint32_t)strlen(path_str->data));
+        load_pathname_obj = cl_parse_namestring(path_buf,
+                                                (uint32_t)strlen(path_buf));
     }
     /* Resolve truename to absolute path */
     {
         char resolved[512];
-        if (platform_realpath(path_str->data, resolved, (int)sizeof(resolved))) {
+        if (platform_realpath(path_buf, resolved, (int)sizeof(resolved))) {
             extern CL_Obj cl_parse_namestring(const char *str, uint32_t len);
             load_truename_obj = cl_parse_namestring(resolved,
                                                     (uint32_t)strlen(resolved));
@@ -647,6 +664,8 @@ static CL_Obj bi_load(CL_Obj *args, int n)
     lt_sym = (CL_Symbol *)CL_OBJ_TO_PTR(SYM_STAR_LOAD_TRUENAME);
     saved_load_pathname = cl_symbol_value(SYM_STAR_LOAD_PATHNAME);
     saved_load_truename = cl_symbol_value(SYM_STAR_LOAD_TRUENAME);
+    CL_GC_PROTECT(saved_load_pathname);
+    CL_GC_PROTECT(saved_load_truename);
     cl_set_symbol_value(SYM_STAR_LOAD_PATHNAME, load_pathname_obj);
     cl_set_symbol_value(SYM_STAR_LOAD_TRUENAME, load_truename_obj);
 
@@ -656,7 +675,7 @@ static CL_Obj bi_load(CL_Obj *args, int n)
             : !CL_NULL_P(cl_symbol_value(SYM_STAR_LOAD_VERBOSE));
         if (do_verbose) {
             cl_write_cstring_to_stdout("; Loading ");
-            cl_write_cstring_to_stdout(path_str->data);
+            cl_write_cstring_to_stdout(path_buf);
             cl_write_cstring_to_stdout("\n");
         }
     }
@@ -683,12 +702,13 @@ static CL_Obj bi_load(CL_Obj *args, int n)
             /* Restore *load-pathname*, *load-truename*, *package* */
             cl_set_symbol_value(SYM_STAR_LOAD_PATHNAME, saved_load_pathname);
             cl_set_symbol_value(SYM_STAR_LOAD_TRUENAME, saved_load_truename);
-            CL_GC_UNPROTECT(2);
+            CL_GC_UNPROTECT(4);  /* saved_lt, saved_lp, lt_obj, lp_obj */
             cl_current_package = saved_package;
             {
                 CL_Symbol *pkg_sym = (CL_Symbol *)CL_OBJ_TO_PTR(SYM_STAR_PACKAGE);
                 cl_set_symbol_value(SYM_STAR_PACKAGE, saved_package);
             }
+            CL_GC_UNPROTECT(1);  /* saved_package */
             return SYM_T;
         }
     }
@@ -719,13 +739,13 @@ static CL_Obj bi_load(CL_Obj *args, int n)
         CL_FaslWriter *fw = NULL;
         int do_cache = 0;
 
-        if (make_fasl_cache_path(path_str->data, auto_cache_path, sizeof(auto_cache_path))) {
+        if (make_fasl_cache_path(path_buf, auto_cache_path, sizeof(auto_cache_path))) {
             /* Skip auto-caching for .asd files — they are ASDF system definitions
              * and would collide with .lisp files of the same name in the cache
              * (e.g. mt19937.asd and mt19937.lisp both map to mt19937.fasl) */
-            size_t plen = strlen(path_str->data);
-            int is_asd = (plen >= 4 && strcmp(path_str->data + plen - 4, ".asd") == 0);
-            int is_fasl = (plen >= 5 && strcmp(path_str->data + plen - 5, ".fasl") == 0);
+            size_t plen = strlen(path_buf);
+            int is_asd = (plen >= 4 && strcmp(path_buf + plen - 4, ".asd") == 0);
+            int is_fasl = (plen >= 5 && strcmp(path_buf + plen - 5, ".fasl") == 0);
             if (!is_asd && !is_fasl) {
             fasl_buf = (uint8_t *)platform_alloc(fasl_capacity);
             unit_buf = (uint8_t *)platform_alloc(unit_capacity);
@@ -751,7 +771,7 @@ static CL_Obj bi_load(CL_Obj *args, int n)
     prev_file = cl_current_source_file;
     prev_file_id = cl_current_file_id;
     prev_line = cl_reader_get_line();
-    cl_current_source_file = cl_intern_source_file(path_str->data);
+    cl_current_source_file = cl_intern_source_file(path_buf);
     cl_current_file_id++;
     cl_reader_reset_line();
 
@@ -868,7 +888,7 @@ static CL_Obj bi_load(CL_Obj *args, int n)
     /* Restore *load-pathname* and *load-truename* */
     cl_set_symbol_value(SYM_STAR_LOAD_PATHNAME, saved_load_pathname);
     cl_set_symbol_value(SYM_STAR_LOAD_TRUENAME, saved_load_truename);
-    CL_GC_UNPROTECT(2); /* load_truename_obj, load_pathname_obj */
+    CL_GC_UNPROTECT(4); /* saved_lt, saved_lp, load_truename_obj, load_pathname_obj */
 
     /* Restore source file context */
     cl_current_source_file = prev_file;
@@ -882,6 +902,7 @@ static CL_Obj bi_load(CL_Obj *args, int n)
         cl_set_symbol_value(SYM_STAR_PACKAGE, saved_package);
     }
 
+    CL_GC_UNPROTECT(1);  /* saved_package */
     return SYM_T;
 }
 
@@ -1433,10 +1454,17 @@ static CL_Obj bi_compile_file(CL_Obj *args, int n)
     CL_Obj saved_package = cl_current_package;
     CL_Symbol *cfp_sym, *cft_sym;
     CL_Obj saved_cfp, saved_cft;
+    /* GC SAFETY: saved_package/saved_cfp/saved_cft are restored after the
+     * whole file has been compiled+evaluated — they must be forwarded roots
+     * (see the matching note in bi_load).  The early return CL_NIL sites sit
+     * after cl_error longjmps and never execute; the error unwind restores
+     * gc_root_count, so only the final return pops these. */
     CL_Obj output_pathname;
     int verbose = 0;
     int i;
     int prev_compiling_to_file;
+
+    CL_GC_PROTECT(saved_package);
 #ifdef DEBUG_COMPILER
     int cf_form_count = 0;
 #endif
@@ -1575,7 +1603,9 @@ static CL_Obj bi_compile_file(CL_Obj *args, int n)
         saved_cft = cl_symbol_value(SYM_STAR_COMPILE_FILE_TRUENAME);
         cl_set_symbol_value(SYM_STAR_COMPILE_FILE_PATHNAME, cfp_path);
         cl_set_symbol_value(SYM_STAR_COMPILE_FILE_TRUENAME, cft_path);
-        CL_GC_UNPROTECT(2);
+        CL_GC_UNPROTECT(2);  /* cft_path, cfp_path */
+        CL_GC_PROTECT(saved_cfp);
+        CL_GC_PROTECT(saved_cft);
     }
 
     /* Save source file context.  in_path is a stack-local buffer; intern
@@ -1859,6 +1889,7 @@ static CL_Obj bi_compile_file(CL_Obj *args, int n)
         CL_Symbol *pkg_sym = (CL_Symbol *)CL_OBJ_TO_PTR(SYM_STAR_PACKAGE);
         cl_set_symbol_value(SYM_STAR_PACKAGE, saved_package);
     }
+    CL_GC_UNPROTECT(3);  /* saved_cft, saved_cfp, saved_package */
 
     /* Return (values output-truename nil nil) per CL spec */
     fprintf(stderr, "; Done compiling %s\n", in_path);

@@ -137,6 +137,9 @@ static CL_Obj bi_copy_list(CL_Obj *args, int n)
 
     CL_GC_PROTECT(result);
     CL_GC_PROTECT(tail);
+    /* GC SAFETY: cl_cons can compact — the input cursor is re-read after
+     * every allocation and must be a forwarded root. */
+    CL_GC_PROTECT(list);
 
     while (CL_CONS_P(list)) {
         CL_Obj cell = cl_cons(cl_car(list), CL_NIL);
@@ -153,7 +156,7 @@ static CL_Obj bi_copy_list(CL_Obj *args, int n)
         ((CL_Cons *)CL_OBJ_TO_PTR(tail))->cdr = list;
     }
 
-    CL_GC_UNPROTECT(2);
+    CL_GC_UNPROTECT(3);
     return result;
 }
 
@@ -166,6 +169,9 @@ static CL_Obj bi_pairlis(CL_Obj *args, int n)
     CL_GC_PROTECT(result);
     CL_GC_PROTECT(pairs);
     CL_GC_PROTECT(ptail);
+    /* GC SAFETY: both input cursors are re-read after the conses below. */
+    CL_GC_PROTECT(keys);
+    CL_GC_PROTECT(data);
 
     while (!CL_NULL_P(keys) && !CL_NULL_P(data)) {
         CL_Obj pair = cl_cons(cl_car(keys), cl_car(data));
@@ -186,7 +192,7 @@ static CL_Obj bi_pairlis(CL_Obj *args, int n)
         result = pairs;
     }
 
-    CL_GC_UNPROTECT(3);
+    CL_GC_UNPROTECT(5);
     return result;
 }
 
@@ -600,6 +606,8 @@ static CL_Obj bi_butlast(CL_Obj *args, int n)
 
         CL_GC_PROTECT(result);
         CL_GC_PROTECT(tail);
+        /* GC SAFETY: p is re-read after each cl_cons compaction. */
+        CL_GC_PROTECT(p);
 
         p = list;
         while (keep > 0) {
@@ -614,7 +622,7 @@ static CL_Obj bi_butlast(CL_Obj *args, int n)
             keep--;
         }
 
-        CL_GC_UNPROTECT(2);
+        CL_GC_UNPROTECT(3);
     }
     return result;
 }
