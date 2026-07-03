@@ -130,8 +130,29 @@ static int n_global_roots = 0;
 
 void cl_gc_register_root(CL_Obj *root_ptr)
 {
-    if (n_global_roots < CL_MAX_GLOBAL_ROOTS)
-        global_roots[n_global_roots++] = root_ptr;
+    int i;
+    /* Idempotent: registering the same address twice must be a no-op.
+     * gc_forward is NOT idempotent (the forwarding table is keyed by
+     * pre-compaction offsets), so a slot forwarded twice through two
+     * registry entries would be rewritten to an unrelated object.  The
+     * init functions that register handles re-run on every heap
+     * re-initialization (each C unit test, embedded restarts) and would
+     * otherwise duplicate every entry.  Registration is boot-time-only,
+     * so the linear scan costs nothing at runtime. */
+    for (i = 0; i < n_global_roots; i++) {
+        if (global_roots[i] == root_ptr)
+            return;
+    }
+    if (n_global_roots >= CL_MAX_GLOBAL_ROOTS) {
+        /* A silently-dropped root is a guaranteed future memory
+         * corruption (the slot goes stale on the next compaction and is
+         * never marked).  Fail loudly at boot instead. */
+        platform_write_string(
+            "FATAL: cl_gc_register_root: CL_MAX_GLOBAL_ROOTS exceeded — "
+            "raise the limit in mem.h\n");
+        exit(1);
+    }
+    global_roots[n_global_roots++] = root_ptr;
 }
 
 /* Align size up to CL_ALIGN boundary */
@@ -168,6 +189,13 @@ void cl_mem_init(uint32_t heap_size)
 
     gc_root_count = 0;
     gc_mark_top = 0;
+
+    /* Reset the global root registry: registered slots are static C
+     * globals still holding offsets into the PREVIOUS heap after a
+     * shutdown/re-init cycle.  Marking them before their init functions
+     * re-assign and re-register would set mark bits at arbitrary offsets
+     * in the fresh arena. */
+    n_global_roots = 0;
 
     /* Initialize allocation mutex */
     platform_mutex_init(&alloc_mutex);
