@@ -2505,6 +2505,227 @@ check_contains "heap fully intact after oversized-allocation error"   "BIGALLOC-
 check_absent   "no arena-walk corruption after oversized allocation" \
   "corrupted\|not of type\|type 0\|Guru" "$out"
 
+# --- Tier-2 audit: builtin cursors under compacting :test/:key --------------
+# Every op below runs with an ALLOCATING :test/:key (conses per call), so
+# under stress each element visit compacts the heap.  Pre-fix, the walk
+# cursors / element snapshots / SeqArgs fields / raw object pointers held
+# stale offsets after the first user call (audit 2026-07 tier 2: the
+# FIND/POSITION/COUNT family, remove family, remove-duplicates, substitute,
+# mismatch/search/merge, reduce, maphash, equalp, hashtable-equalp,
+# copy-list/append/reverse/butlast/pairlis, make-array/adjust-array
+# :initial-element, string comparators with char designators, concatenate).
+# DISCRIMINATING: the pre-fix binary dies here with
+# "CAR: corrupted pointer" inside the sequence walks.
+cat > "$WORK/tier2-builtins.lisp" <<'LISPEOF'
+(defun k (x) (car (list x)))                 ; allocating identity :key
+(defun teq (a b) (eql (car (list a)) b))     ; allocating :test
+(let ((ok t))
+  (macrolet ((chk (name form want)
+               `(let ((got ,form))
+                  (unless (equalp got ,want)
+                    (format t "T2-BAD ~a:~s~%" ,name got)
+                    (setf ok nil)))))
+    (dotimes (i 5)
+      (chk "find"       (find 3 '(1 2 3 4) :test #'teq :key #'k) 3)
+      (chk "find-fe"    (find 2 '(1 2 3 2 1) :test #'teq :from-end t) 2)
+      (chk "find-if"    (find-if #'evenp '(1 3 4 5) :key #'k) 4)
+      (chk "pos"        (position 3 #(1 2 3 4) :test #'teq :key #'k) 2)
+      (chk "pos-fe"     (position 2 '(1 2 3 2 1) :test #'teq :from-end t) 3)
+      (chk "count"      (count 2 '(2 1 2 1 2) :test #'teq :key #'k) 3)
+      (chk "count-fe"   (count-if #'oddp '(1 2 3 4 5) :key #'k :from-end t) 3)
+      (chk "count-if-not-fe" (count-if-not #'oddp '(1 2 3 4 5) :key #'k :from-end t) 2)
+      (chk "remove"     (remove 2 '(1 2 3 2) :test #'teq :key #'k) '(1 3))
+      (chk "remove-str" (remove-if (lambda (c) (char= (k c) #\b)) "abcb") "ac")
+      (chk "remove-vec" (remove 2 #(1 2 3 2) :test #'teq) #(1 3))
+      (chk "remove-bv"  (remove 0 #*0101 :test #'teq) #*11)
+      (chk "delete"     (delete 9 (list 9 1 9 2) :test #'teq) '(1 2))
+      (chk "remdup"     (remove-duplicates '(1 2 1 3 2) :test #'teq :key #'k) '(1 3 2))
+      (chk "remdup-fe"  (remove-duplicates '(1 2 1 3 2) :test #'teq :from-end t) '(1 2 3))
+      (chk "subst"      (substitute 9 2 '(1 2 3 2) :test #'teq :key #'k) '(1 9 3 9))
+      (chk "mismatch"   (mismatch '(1 2 3) '(1 2 4) :test #'teq :key #'k) 2)
+      (chk "mismatch-fe" (mismatch "abcd" "abed" :from-end t
+                                   :test (lambda (a b) (char= (k a) b))) 3)
+      (chk "search"     (search '(2 3) '(1 2 3 4) :test #'teq :key #'k) 1)
+      (chk "search-fe"  (search "ab" "abab" :from-end t
+                                :test (lambda (a b) (char= (k a) b))) 2)
+      (chk "merge-l"    (merge 'list (list 1 3) (list 2 4) #'< :key #'k) '(1 2 3 4))
+      (chk "merge-v"    (merge 'vector (vector 1 3) (vector 2 4) #'< :key #'k) #(1 2 3 4))
+      (chk "merge-s"    (merge 'string "ac" "bd" #'char< :key #'k) "abcd")
+      (chk "reduce"     (reduce #'+ '(1 2 3 4) :key #'k) 10)
+      (chk "reduce-fe"  (reduce #'cons '(1 2 3) :from-end t :initial-value nil)
+                        '(1 2 3))
+      (chk "reduce-vec" (reduce #'+ #(1 2 3 4) :key #'k :from-end t) 10)
+      (chk "cat-list"   (concatenate 'list '(1 2) #(3 4) "ab")
+                        (list 1 2 3 4 #\a #\b))
+      (chk "copy-list"  (copy-list '(1 2 3 . 4)) '(1 2 3 . 4))
+      (chk "append"     (append '(1 2) '(3) '(4 5)) '(1 2 3 4 5))
+      (chk "reverse"    (reverse '(1 2 3 4)) '(4 3 2 1))
+      (chk "butlast"    (butlast '(1 2 3 4) 2) '(1 2))
+      (chk "pairlis"    (pairlis '(a b) '(1 2) '((c . 3)))
+                        '((a . 1) (b . 2) (c . 3)))
+      ;; equalp recursion allocates via ratio compare — cons/vector paths
+      (chk "equalp"     (equalp (list 1/3 (vector 2/7 "Ab"))
+                                (list 1/3 (vector 2/7 "aB"))) t)
+      ;; maphash with an allocating fn; hash-table equalp
+      (let ((h1 (make-hash-table :test 'equal))
+            (h2 (make-hash-table :test 'equal))
+            (n 0))
+        (dotimes (j 8)
+          (setf (gethash (format nil "k~d" j) h1) (list j))
+          (setf (gethash (format nil "k~d" j) h2) (list j)))
+        (maphash (lambda (key val) (setf n (+ n (k (first val)) (length key)))) h1)
+        (chk "maphash" n 44)
+        (chk "ht-equalp" (equalp h1 h2) t))
+      ;; make-array / adjust-array :initial-element is a heap object
+      (let ((a (make-array 5 :initial-element (list i))))
+        (chk "ma-ie" (aref a 4) (list i))
+        (let ((b (adjust-array a 9 :initial-element (list 99))))
+          (chk "adj-ie" (aref b 8) (list 99))))
+      (let ((m (make-array '(2 3) :initial-element "x")))
+        (chk "ma-md" (aref m 1 2) "x"))
+      ;; string comparators with character designators (coercing b conses)
+      (chk "str=chr"  (string= #\a "a") t)
+      (chk "str<chr"  (and (string-lessp "A" #\b) t) t)))
+  (format t "T2-BUILTINS:~a~%" ok))
+LISPEOF
+out=$(run_stress "$WORK/tier2-builtins.lisp")
+check_contains "tier-2 builtin cursor fixes survive compacting :test/:key" "T2-BUILTINS:T" "$out"
+check_absent   "no tier-2 builtin corruption under GC stress" "T2-BAD\|corrupted pointer\|not of type" "$out"
+
+# --- Tier-2 audit: compiler / format / package / reader stale locals --------
+# Loading this file from source compiles every form under stress, exercising
+# the compile_* handlers' post-allocation re-reads (catch, unwind-protect,
+# macrolet, progv, flet/labels, cond, the, setq/setf places, mvc, eval-when,
+# defsetf, defmacro destructuring, nlx_scan), the format ~{~} iteration
+# snapshots, package make/export/rename cursors, struct printing, and the
+# reader #+/#- saved-package root.  Coverage (not layout-discriminating):
+# these sites need a specific relocation to corrupt, but any regression that
+# crashes or mis-compiles fails the assertions.
+cat > "$WORK/tier2-forms.lisp" <<'LISPEOF'
+;; Top-level definitions (must exist at compile time of the checks below)
+(defvar *t2-g* nil)
+(defun t2-acc (x) (car x))
+(defun t2-upd (x v) (setf (car x) v) v)
+(defsetf t2-acc t2-upd)
+;; defmacro destructuring rewrite: list params + &environment not first
+(defmacro t2-dm ((a b) &rest rest &environment env)
+  (declare (ignore env))
+  `(list ,a ,b ,@rest))
+;; eval-when with defmacro (two-pass top-level body)
+(eval-when (:compile-toplevel :load-toplevel :execute)
+  (defmacro t2-ew () `(list :ew)))
+(defstruct t2s a b)
+
+(let ((ok t))
+  (macrolet ((chk (name form want)
+               `(let ((got ,form))
+                  (unless (equalp got ,want)
+                    (format t "T2F-BAD ~a:~s~%" ,name got)
+                    (setf ok nil)))))
+    ;; catch: body compiled after allocating tag expr
+    (chk "catch" (catch (intern (format nil "T2-TAG"))
+                   (list 1 2) 42) 42)
+    ;; unwind-protect: cleanup list derived after protected form compiles
+    (let ((fx nil))
+      (chk "uwp" (unwind-protect (values 1 2) (push (list :c) fx)) 1)
+      (chk "uwp-c" (length fx) 1))
+    ;; macrolet: body re-derived after expander install compiles+evals
+    (chk "macrolet" (macrolet ((m (x) `(list ,x ,x))) (m 7)) '(7 7))
+    ;; progv: values-form and body re-derived after symbols-form compiles
+    (chk "progv" (progv (list (intern "T2-PV")) (list 5)
+                   (symbol-value (intern "T2-PV"))) 5)
+    ;; flet/labels: lambda-list re-derived after block-form conses; body
+    ;; re-derived after phase compiles; implicit block works
+    (chk "flet" (flet ((f (a &optional (b (list a))) (list a b)))
+                  (f 1)) '(1 (1)))
+    (chk "labels" (labels ((e? (n) (if (zerop n) t (o? (- n 1))))
+                           (o? (n) (if (zerop n) nil (e? (- n 1)))))
+                    (list (e? 10) (o? 7))) '(t t))
+    ;; return-from inside flet body (nlx_scan flet handler cursors)
+    (chk "flet-rf" (block b (flet ((g () (return-from b 9))) (g) 1)) 9)
+    ;; cond: body re-derived after test compiles
+    (chk "cond" (cond ((consp (list 1)) (list :yes)) (t :no)) '(:yes))
+    ;; the: type-spec re-derived after value-form compiles
+    (chk "the" (the (integer 0 100) (+ 40 2)) 42)
+    ;; setq: var re-derived after value compiles (global store path)
+    (setq *t2-g* (list 1 2))
+    (chk "setq" *t2-g* '(1 2))
+    ;; setf place paths: values, getf, nth-accessor, the
+    (let ((c (list 1 2)) (pl (list :a 1)))
+      (setf (values (car c) (cadr c)) (values 10 20))
+      (chk "setf-values" c '(10 20))
+      (setf (getf pl :b) (list 3))
+      (chk "setf-getf" (getf pl :b) '(3))
+      (setf (second c) 99)
+      (chk "setf-second" c '(10 99))
+      (setf (the integer (car c)) 7)
+      (chk "setf-the" (car c) 7))
+    ;; multiple-value-call: cursor + interned syms across cons chains
+    (chk "mvc" (multiple-value-call #'list (values 1 2) 3 (values 4)) '(1 2 3 4))
+    (chk "eval-when" (t2-ew) '(:ew))
+    (let ((c (list 0)))
+      (setf (t2-acc c) 5)
+      (chk "defsetf" (t2-acc c) 5))
+    (chk "dm-destr" (t2-dm (1 2) 3 4) '(1 2 3 4))
+    (chk "db-key" (destructuring-bind (&key t2-fresh-kw-one t2-fresh-kw-two)
+                      '(:t2-fresh-kw-one 1 :t2-fresh-kw-two 2)
+                    (list t2-fresh-kw-one t2-fresh-kw-two)) '(1 2))
+    (chk "db-aux" (destructuring-bind (a &aux (b (list a a))) '(5)
+                    (list a b)) '(5 (5 5)))
+    (chk "db-nest" (destructuring-bind ((a &optional (b (+ 1 2))) c) '((7) 9)
+                     (list a b c)) '(7 3 9))
+    ;; format iteration: ~{~} / ~:{~} / ~@{~} snapshots across fmt_run
+    (chk "fmt-iter"  (format nil "~{~a-~}" '(1 2 3)) "1-2-3-")
+    (chk "fmt-citer" (format nil "~:{[~a ~a]~}" '((1 2) (3 4))) "[1 2][3 4]")
+    (chk "fmt-aiter" (format nil "~@{~a+~}" 1 2 3) "1+2+3+")
+    ;; struct printing under stress (slot loop re-derives st)
+    (let ((str (format nil "~s" (make-t2s :a (list 1) :b "x"))))
+      (chk "struct-print" (and (search "T2S" str) t) t))
+    ;; reader feature conditionals (saved_pkg root)
+    #+common-lisp (chk "feat+" (list :plus) '(:plus))
+    #-(or) (chk "feat-" (list :minus) '(:minus))
+    ;; package ops: nicknames/use/export/rename cursors
+    (let ((p (make-package "T2-PKG-A" :nicknames '("T2-NICK-A")
+                           :use '("COMMON-LISP"))))
+      (let ((syms (list (intern "T2-X" p) (intern "T2-Y" p))))
+        (export syms p)
+        (chk "pkg-export"
+             (list (nth-value 1 (find-symbol "T2-X" "T2-NICK-A"))
+                   (nth-value 1 (find-symbol "T2-Y" "T2-PKG-A")))
+             '(:external :external)))
+      (rename-package p "T2-PKG-B" '("T2-NICK-B"))
+      (chk "pkg-rename" (and (find-package "T2-NICK-B") t) t)))
+  (format t "T2-FORMS:~a~%" ok))
+LISPEOF
+out=$(run_stress "$WORK/tier2-forms.lisp")
+check_contains "tier-2 compiler/format/package/reader paths correct under GC stress" "T2-FORMS:T" "$out"
+check_absent   "no tier-2 compile-time corruption under GC stress" \
+  "T2F-BAD\|Unbound variable\|Undefined function\|corrupted pointer\|malformed" "$out"
+
+# --- Dead-bytecode finalization (gc_finalize_dead TYPE_BYTECODE) -----------
+# Ephemeral compiled closures: each iteration compiles a fresh lambda, calls
+# it, then drops the only reference, so the bytecode object dies and is
+# swept+finalized under the next compaction (forced every alloc under
+# stress). Exercises the TYPE_BYTECODE case in gc_finalize_dead — a dead
+# bytecode's native_code/native_relocs are freed there (NULL on host since
+# JIT_M68K is Amiga-only, but the finalizer branch and NULLing still run for
+# every swept bytecode, so a double-free/UAF regression would still corrupt
+# the heap here).
+cat > "$WORK/bytecode-fin.lisp" <<'LISPEOF'
+(let ((ok t))
+  (dotimes (i 200)
+    (unless (= (funcall (eval (list 'lambda '(x) (list '+ 'x i))) 10) (+ 10 i))
+      (setf ok nil)))
+  (ext:gc-compact)
+  (dotimes (i 50)
+    (unless (= (1+ i) (+ i 1)) (setf ok nil)))
+  (format t "BCFIN:~a~%" ok))
+LISPEOF
+out=$(run_stress "$WORK/bytecode-fin.lisp")
+check_contains "ephemeral compiled closures die and finalize cleanly under GC stress" "BCFIN:T" "$out"
+check_absent   "no corruption from dead-bytecode TYPE_BYTECODE finalizer under GC stress" \
+  "corrupted pointer\|not of type\|Guru\|double free" "$out"
+
 echo ""
 echo "$passed passed, $failed failed, $total total"
 [ "$failed" -eq 0 ]

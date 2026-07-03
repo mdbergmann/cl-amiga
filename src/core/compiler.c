@@ -2391,6 +2391,11 @@ static void compile_setq(CL_Compiler *c, CL_Obj form)
         compile_expr(c, val);
         c->in_tail = saved_tail;
 
+        /* GC SAFETY: compile_expr(val) can compact — re-derive var from the
+         * protected cursor, else a stale symbol offset is looked up and (for
+         * the global path) emitted into the constant pool. */
+        var = cl_car(rest);
+
         slot = cl_env_lookup(c->env, var);
         if (slot >= 0) {
             if (c->env->boxed[slot]) {
@@ -2582,7 +2587,12 @@ static void compile_setf_place(CL_Compiler *c, CL_Obj place, CL_Obj val_form)
                          cl_symbol_name(place));
             }
         }
+        /* GC SAFETY: compile_expr can compact — protect place so the lookup
+         * and (global path) cl_add_constant below see the forwarded symbol,
+         * not a stale pre-move offset. */
+        CL_GC_PROTECT(place);
         compile_expr(c, val_form);
+        CL_GC_UNPROTECT(1);
         slot = cl_env_lookup(c->env, place);
         if (slot >= 0) {
             if (c->env->boxed[slot]) {
@@ -2658,11 +2668,13 @@ static void compile_setf_place(CL_Compiler *c, CL_Obj place, CL_Obj val_form)
                      * (see compile_macrolet); see also bi_call_macro_expander. */
                     CL_Obj call_args[2];
                     CL_Obj lex_env;
-                    /* GC SAFETY: protect local_exp AND place before
-                     * cl_build_lex_env allocates/compacts — same stale-closure
-                     * hazard as the function-position local-macro path. */
+                    /* GC SAFETY: protect local_exp, place AND val_form before
+                     * cl_build_lex_env / cl_vm_apply allocate/compact — same
+                     * stale-closure hazard as the function-position
+                     * local-macro path (val_form is recursed on after). */
                     CL_GC_PROTECT(local_exp);
                     CL_GC_PROTECT(place);
+                    CL_GC_PROTECT(val_form);
                     lex_env = cl_build_lex_env(c->env);
                     call_args[0] = place;
                     call_args[1] = lex_env;
@@ -2670,25 +2682,34 @@ static void compile_setf_place(CL_Compiler *c, CL_Obj place, CL_Obj val_form)
                     {
                         CL_Obj expanded;
                         expanded = cl_vm_apply(local_exp, call_args, 2);
-                        CL_GC_UNPROTECT(3);
+                        CL_GC_UNPROTECT(4);
                         compile_setf_place(c, expanded, val_form);
                         c->in_tail = saved_tail;
                         return;
                     }
                 }
             }
-            /* No setf expander, no local macro — try global macros */
+            /* No setf expander, no local macro — try global macros.
+             * GC SAFETY: cl_build_lex_env allocates/compacts — protect place
+             * (used by cl_macroexpand_1_env and, on fall-through, the rest of
+             * this function) and val_form across it. */
             if (!CL_NULL_P(cl_get_macro(head))) {
-                CL_Obj lex_env = cl_build_lex_env(c->env);
+                CL_Obj lex_env;
                 CL_Obj expanded;
+                CL_GC_PROTECT(place);
+                CL_GC_PROTECT(val_form);
+                lex_env = cl_build_lex_env(c->env);
                 CL_GC_PROTECT(lex_env);
                 expanded = cl_macroexpand_1_env(place, lex_env);
-                CL_GC_UNPROTECT(1);
+                CL_GC_UNPROTECT(3);
                 if (expanded != place) {
                     compile_setf_place(c, expanded, val_form);
                     c->in_tail = saved_tail;
                     return;
                 }
+                /* Fall-through keeps using head — re-derive from the
+                 * forwarded place (the expansion attempt may have compacted). */
+                head = cl_car(place);
             }
         }
 
@@ -2704,9 +2725,13 @@ static void compile_setf_place(CL_Compiler *c, CL_Obj place, CL_Obj val_form)
 
             CL_GC_PROTECT(tmps);
             CL_GC_PROTECT(setfs);
+            /* GC SAFETY: val_form is consed into mvb_form after many
+             * allocations below; the p cursor is re-read across them. */
+            CL_GC_PROTECT(val_form);
 
             /* Build list of gensyms and setf forms (in reverse) */
             p = places;
+            CL_GC_PROTECT(p);
             while (CL_CONS_P(p)) {
                 char buf[16];
                 CL_Obj tmp, name_str;
@@ -2714,15 +2739,20 @@ static void compile_setf_place(CL_Compiler *c, CL_Obj place, CL_Obj val_form)
                 len = snprintf(buf, sizeof(buf), "%%MV%d", n);
                 name_str = cl_make_string(buf, (uint32_t)len);
                 tmp = cl_make_symbol(name_str);
+                /* GC SAFETY: tmp is re-read in the setfs cons below, after
+                 * the tmps cons may have compacted — keep it forwarded. */
+                CL_GC_PROTECT(tmp);
                 tmps = cl_cons(tmp, tmps);
                 /* Build (setf place-i tmp-i) */
                 setfs = cl_cons(
                     cl_cons(cl_intern_in("SETF", 4, cl_package_cl),
                             cl_cons(cl_car(p), cl_cons(tmp, CL_NIL))),
                     setfs);
+                CL_GC_UNPROTECT(1);
                 n++;
                 p = cl_cdr(p);
             }
+            CL_GC_UNPROTECT(1);  /* p */
 
             /* Reverse tmps and setfs */
             {
@@ -2743,7 +2773,6 @@ static void compile_setf_place(CL_Compiler *c, CL_Obj place, CL_Obj val_form)
             }
 
             /* Build: (multiple-value-bind tmps val-form (setf p1 t1) ... (setf pn tn) t1) */
-            sym_mvb = cl_intern_in("MULTIPLE-VALUE-BIND", 19, cl_package_cl);
             /* Append first tmp to end of setfs for return value */
             {
                 CL_Obj body = cl_cons(cl_car(tmps), CL_NIL); /* (t1) */
@@ -2760,11 +2789,18 @@ static void compile_setf_place(CL_Compiler *c, CL_Obj place, CL_Obj val_form)
                     body = cl_cons(cl_car(rev_s), body);
                     rev_s = cl_cdr(rev_s);
                 }
-                mvb_form = cl_cons(sym_mvb, cl_cons(tmps, cl_cons(val_form, body)));
+                /* GC SAFETY: build the chain one cl_cons at a time — a nested
+                 * cl_cons(x, cl_cons(...)) may read x before the inner cons
+                 * compacts; sym_mvb is interned only after the conses that
+                 * precede its use. */
+                mvb_form = cl_cons(val_form, body);
+                mvb_form = cl_cons(tmps, mvb_form);
+                sym_mvb = cl_intern_in("MULTIPLE-VALUE-BIND", 19, cl_package_cl);
+                mvb_form = cl_cons(sym_mvb, mvb_form);
                 CL_GC_UNPROTECT(2);
             }
 
-            CL_GC_UNPROTECT(2);
+            CL_GC_UNPROTECT(3);  /* tmps, setfs, val_form */
             compile_expr(c, mvb_form);
             c->in_tail = saved_tail;
             return;
@@ -3115,18 +3151,23 @@ static void compile_setf_place(CL_Compiler *c, CL_Obj place, CL_Obj val_form)
             CL_Obj rest3      = cl_cdr(cl_cdr(cl_cdr(place)));  /* (DEFAULT) or () */
             int has_default   = !CL_NULL_P(rest3);
             CL_Obj default_arg = has_default ? cl_car(rest3) : CL_NIL;
-            CL_Obj gensym_i  = cl_gensym_with_name("I");
-            CL_Obj gensym_d  = has_default ? cl_gensym_with_name("D") : CL_NIL;
-            CL_Obj gensym_v  = cl_gensym_with_name("V");
+            CL_Obj gensym_i, gensym_d, gensym_v;
             CL_Obj inner_place;            /* PLACE form rewritten with temps */
             CL_Obj sub_bindings = CL_NIL;  /* temps from PLACE's subforms (if cons) */
             CL_Obj helper_call, setf_place_form, let_bindings, let_form;
 
+            /* GC SAFETY: protect the place subforms BEFORE the gensym
+             * allocations (each can compact — protecting an already-stale
+             * value would forward garbage), and each gensym as it is created
+             * (the next gensym allocation would stale it). */
             CL_GC_PROTECT(place_arg);
             CL_GC_PROTECT(ind_arg);
             CL_GC_PROTECT(default_arg);
+            gensym_i = cl_gensym_with_name("I");
             CL_GC_PROTECT(gensym_i);
+            gensym_d = has_default ? cl_gensym_with_name("D") : CL_NIL;
             CL_GC_PROTECT(gensym_d);
+            gensym_v = cl_gensym_with_name("V");
             CL_GC_PROTECT(gensym_v);
             CL_GC_PROTECT(sub_bindings);
 
@@ -3147,9 +3188,13 @@ static void compile_setf_place(CL_Compiler *c, CL_Obj place, CL_Obj val_form)
                 CL_GC_PROTECT(bind_head);
                 CL_GC_PROTECT(bind_tail);
                 while (!CL_NULL_P(rest)) {
-                    CL_Obj sub = cl_car(rest);
                     CL_Obj gs = cl_gensym_with_name("T");
-                    CL_Obj cell, binding;
+                    CL_Obj sub, cell, binding;
+                    /* GC SAFETY: gs is re-read across the conses below —
+                     * keep it forwarded.  sub is read from the protected
+                     * cursor only after the gensym allocation. */
+                    CL_GC_PROTECT(gs);
+                    sub = cl_car(rest);
                     /* binding: (gs sub) */
                     binding = cl_cons(sub, CL_NIL);
                     binding = cl_cons(gs, binding);
@@ -3162,6 +3207,7 @@ static void compile_setf_place(CL_Compiler *c, CL_Obj place, CL_Obj val_form)
                     if (CL_NULL_P(temps_head)) temps_head = cell;
                     else ((CL_Cons *)CL_OBJ_TO_PTR(temps_tail))->cdr = cell;
                     temps_tail = cell;
+                    CL_GC_UNPROTECT(1);  /* gs */
                     rest = cl_cdr(rest);
                 }
                 inner_place = cl_cons(op, temps_head);
@@ -3689,6 +3735,12 @@ static void compile_call(CL_Compiler *c, CL_Obj form)
                 compile_expr(c, expanded);
                 return;
             }
+            /* GC SAFETY: declined (or errored) — the expander may have
+             * compacted.  form was protected across cl_vm_apply so the local
+             * holds the forwarded offset; re-derive func from it (every
+             * fall-through path below keeps using func, including
+             * cl_add_constant for the FLOAD). */
+            func = cl_car(form);
         }
     }
 

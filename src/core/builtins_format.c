@@ -1055,7 +1055,16 @@ static void fmt_iteration(FmtCtx *ctx, FmtDirective *d)
             sub.nargs = sub_n;
             sub.ai = 0;
             sub.escape = 0;
-            fmt_run(&sub);
+            /* GC SAFETY: fmt_run can allocate (user ~/fn/, number printing)
+             * and compact — root the C-array snapshot so its entries are
+             * forwarded while the body runs. */
+            {
+                int k;
+                for (k = 0; k < sub_n; k++)
+                    CL_GC_PROTECT(sub_args[k]);
+                fmt_run(&sub);
+                cl_gc_pop_roots(sub_n);
+            }
             /* ~^ only terminates current step for ~:@{ */
             iter_count++;
         }
@@ -1079,6 +1088,8 @@ static void fmt_iteration(FmtCtx *ctx, FmtDirective *d)
         /* ~:{body~} — consume list of sublists */
         /* ~^ in sub-context only terminates current step, not whole iteration */
         CL_Obj list = fmt_next_arg(ctx);
+        /* GC SAFETY: the list cursor is re-read after each fmt_run. */
+        CL_GC_PROTECT(list);
         while (!CL_NULL_P(list) && iter_count < max_iter) {
             CL_Obj sublist = cl_car(list);
             CL_Obj tmp;
@@ -1099,12 +1110,20 @@ static void fmt_iteration(FmtCtx *ctx, FmtDirective *d)
             sub.nargs = sub_n;
             sub.ai = 0;
             sub.escape = 0;
-            fmt_run(&sub);
+            /* GC SAFETY: root the snapshot across fmt_run (see ~:@{). */
+            {
+                int k;
+                for (k = 0; k < sub_n; k++)
+                    CL_GC_PROTECT(sub_args[k]);
+                fmt_run(&sub);
+                cl_gc_pop_roots(sub_n);
+            }
             /* ~^ only terminates current step for ~:{ */
 
             list = cl_cdr(list);
             iter_count++;
         }
+        CL_GC_UNPROTECT(1);  /* list */
     } else {
         /* ~{body~} — consume list, elements become args.
          * CLHS 22.3.7.4: NIL → no iterations.  Non-list non-NIL is allowed
@@ -1130,6 +1149,13 @@ static void fmt_iteration(FmtCtx *ctx, FmtDirective *d)
             }
         }
 
+        /* GC SAFETY: root the snapshot for the whole loop — fmt_run can
+         * compact and the array is re-read across iterations. */
+        {
+            int k;
+            for (k = 0; k < list_n; k++)
+                CL_GC_PROTECT(list_args[k]);
+        }
         while (iter_count < max_iter) {
             FmtCtx sub;
             int prev_ai;
@@ -1147,6 +1173,7 @@ static void fmt_iteration(FmtCtx *ctx, FmtDirective *d)
             iter_count++;
             if (sub.ai > prev_ai && sub.ai >= list_n) break;
         }
+        cl_gc_pop_roots(list_n);
     }
 
     platform_free(body_copy);

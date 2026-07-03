@@ -1927,3 +1927,28 @@
 (check "jit-reloc-sum gc-safe result" 5050
   (let ((filler (make-array 50000 :initial-element 1)))
     (+ (jit-reloc-sum 100) (aref filler 0) -1)))
+
+; --- GC sweep frees a dead bytecode's JIT artifacts.  gc_finalize_dead's
+; TYPE_BYTECODE arm platform_frees native_code + native_relocs (they were
+; leaked for good before); host builds never attach native code, so this
+; Amiga run is the only end-to-end coverage of the free itself.  The loop
+; churns out short-lived JIT'd leaves, drops every reference, and
+; compacts each batch — a double-free or use-after-free would guru the
+; suite here.  The second compact re-walks the corpses (NULLed fields
+; must make re-finalization a no-op), and the probe proves fresh JIT
+; compilation still works afterwards.
+(check "jit-dead-bytecode-native-freed" 42
+  (progn
+    (dotimes (i 24)
+      (let ((name (intern (format nil "JIT-DEAD-FN-~D" i))))
+        (eval (list 'defun name '() i))
+        ; must actually be JIT'd, else the finalizer has nothing to free
+        (unless (clamiga::%jit-dump-bytes (symbol-function name))
+          (error "expected ~S to be JIT-compiled" name))
+        (funcall name)
+        (fmakunbound name)
+        (unintern name))
+      (ext:gc-compact))
+    (ext:gc-compact)
+    (defun jit-after-free-probe () 42)
+    (jit-after-free-probe)))

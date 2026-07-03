@@ -123,9 +123,9 @@ static CL_Obj bi_acons(CL_Obj *args, int n)
 {
     CL_Obj pair;
     CL_UNUSED(n);
-    CL_GC_PROTECT(args[2]);
+    /* args[] slots are already-rooted VM-stack slots — no CL_GC_PROTECT
+     * (double registration would double-forward them on compaction). */
     pair = cl_cons(args[0], args[1]);
-    CL_GC_UNPROTECT(1);
     return cl_cons(pair, args[2]);
 }
 
@@ -137,6 +137,9 @@ static CL_Obj bi_copy_list(CL_Obj *args, int n)
 
     CL_GC_PROTECT(result);
     CL_GC_PROTECT(tail);
+    /* GC SAFETY: cl_cons can compact — the input cursor is re-read after
+     * every allocation and must be a forwarded root. */
+    CL_GC_PROTECT(list);
 
     while (CL_CONS_P(list)) {
         CL_Obj cell = cl_cons(cl_car(list), CL_NIL);
@@ -153,7 +156,7 @@ static CL_Obj bi_copy_list(CL_Obj *args, int n)
         ((CL_Cons *)CL_OBJ_TO_PTR(tail))->cdr = list;
     }
 
-    CL_GC_UNPROTECT(2);
+    CL_GC_UNPROTECT(3);
     return result;
 }
 
@@ -166,6 +169,9 @@ static CL_Obj bi_pairlis(CL_Obj *args, int n)
     CL_GC_PROTECT(result);
     CL_GC_PROTECT(pairs);
     CL_GC_PROTECT(ptail);
+    /* GC SAFETY: both input cursors are re-read after the conses below. */
+    CL_GC_PROTECT(keys);
+    CL_GC_PROTECT(data);
 
     while (!CL_NULL_P(keys) && !CL_NULL_P(data)) {
         CL_Obj pair = cl_cons(cl_car(keys), cl_car(data));
@@ -186,7 +192,7 @@ static CL_Obj bi_pairlis(CL_Obj *args, int n)
         result = pairs;
     }
 
-    CL_GC_UNPROTECT(3);
+    CL_GC_UNPROTECT(5);
     return result;
 }
 
@@ -194,33 +200,60 @@ static CL_Obj bi_pairlis(CL_Obj *args, int n)
 
 static CL_Obj bi_assoc(CL_Obj *args, int n)
 {
-    CL_Obj key = args[0], alist = args[1];
-    CL_Obj test_fn = extract_test_arg(args, n, 2);
+    CL_Obj key, alist, test_fn;
+    CL_Obj pair = CL_NIL;
 
+    /* GC SAFETY: extract_test_arg interns and a Lisp :test can allocate —
+     * either can compact.  Read the args AFTER the intern (args[] is a
+     * rooted VM-stack slice) and keep the C-local key/cursor/test/pair
+     * forwarded across every call_test. */
+    test_fn = extract_test_arg(args, n, 2);
+    key = args[0];
+    alist = args[1];
+
+    CL_GC_PROTECT(key);
+    CL_GC_PROTECT(alist);
+    CL_GC_PROTECT(test_fn);
+    CL_GC_PROTECT(pair);
     while (!CL_NULL_P(alist)) {
-        CL_Obj pair = cl_car(alist);
+        pair = cl_car(alist);
         if (CL_CONS_P(pair)) {
-            if (!CL_NULL_P(call_test(test_fn, key, cl_car(pair))))
+            if (!CL_NULL_P(call_test(test_fn, key, cl_car(pair)))) {
+                CL_GC_UNPROTECT(4);
                 return pair;
+            }
         }
         alist = cl_cdr(alist);
     }
+    CL_GC_UNPROTECT(4);
     return CL_NIL;
 }
 
 static CL_Obj bi_rassoc(CL_Obj *args, int n)
 {
-    CL_Obj item = args[0], alist = args[1];
-    CL_Obj test_fn = extract_test_arg(args, n, 2);
+    CL_Obj item, alist, test_fn;
+    CL_Obj pair = CL_NIL;
 
+    /* GC SAFETY: same shape as bi_assoc — see the comment there. */
+    test_fn = extract_test_arg(args, n, 2);
+    item = args[0];
+    alist = args[1];
+
+    CL_GC_PROTECT(item);
+    CL_GC_PROTECT(alist);
+    CL_GC_PROTECT(test_fn);
+    CL_GC_PROTECT(pair);
     while (!CL_NULL_P(alist)) {
-        CL_Obj pair = cl_car(alist);
+        pair = cl_car(alist);
         if (CL_CONS_P(pair)) {
-            if (!CL_NULL_P(call_test(test_fn, item, cl_cdr(pair))))
+            if (!CL_NULL_P(call_test(test_fn, item, cl_cdr(pair)))) {
+                CL_GC_UNPROTECT(4);
                 return pair;
+            }
         }
         alist = cl_cdr(alist);
     }
+    CL_GC_UNPROTECT(4);
     return CL_NIL;
 }
 
@@ -336,40 +369,84 @@ static CL_Obj extract_test_arg_subst(CL_Obj *args, int n, int start)
     }
 }
 
-static CL_Obj bi_subst(CL_Obj *args, int n)
+/* Recursive core of SUBST.  Takes the already-resolved test function so
+ * the recursion never re-reads an unrooted C sub_args array after an
+ * allocating call.  GC SAFETY: every parameter is a by-value C local of
+ * THIS frame — the caller's protections don't cover them — so protect
+ * them all before call_test/the recursion can compact. */
+static CL_Obj subst_rec(CL_Obj new_obj, CL_Obj old_obj, CL_Obj tree,
+                        CL_Obj test_fn)
 {
-    CL_Obj new_obj = args[0], old_obj = args[1], tree = args[2];
-    CL_Obj test_fn = extract_test_arg_subst(args, n, 3);
     CL_Obj car_r, cdr_r;
-
-    if (!CL_NULL_P(call_test(test_fn, old_obj, tree)))
-        return new_obj;
-    if (!CL_CONS_P(tree))
-        return tree;
 
     CL_GC_PROTECT(new_obj);
     CL_GC_PROTECT(old_obj);
+    CL_GC_PROTECT(tree);
     CL_GC_PROTECT(test_fn);
 
-    {
-        CL_Obj sub_args[5];
-        sub_args[0] = new_obj;
-        sub_args[1] = old_obj;
-        sub_args[2] = cl_car(tree);
-        /* Pass :test through */
-        if (n > 3) { sub_args[3] = args[3]; sub_args[4] = args[4]; }
-        car_r = bi_subst(sub_args, n);
+    if (!CL_NULL_P(call_test(test_fn, old_obj, tree))) {
+        CL_GC_UNPROTECT(4);
+        return new_obj;
     }
+    if (!CL_CONS_P(tree)) {
+        CL_GC_UNPROTECT(4);
+        return tree;
+    }
+
+    car_r = subst_rec(new_obj, old_obj, cl_car(tree), test_fn);
     CL_GC_PROTECT(car_r);
-    {
-        CL_Obj sub_args[5];
-        sub_args[0] = new_obj;
-        sub_args[1] = old_obj;
-        sub_args[2] = cl_cdr(tree);
-        if (n > 3) { sub_args[3] = args[3]; sub_args[4] = args[4]; }
-        cdr_r = bi_subst(sub_args, n);
+    cdr_r = subst_rec(new_obj, old_obj, cl_cdr(tree), test_fn);
+    CL_GC_UNPROTECT(5);
+
+    if (car_r == cl_car(tree) && cdr_r == cl_cdr(tree))
+        return tree;
+    return cl_cons(car_r, cdr_r);
+}
+
+static CL_Obj bi_subst(CL_Obj *args, int n)
+{
+    /* args[] is a rooted VM-stack slice, so re-reading it after the
+     * (potentially allocating) keyword interning in extract_test_arg_subst
+     * is safe. */
+    CL_Obj test_fn = extract_test_arg_subst(args, n, 3);
+    return subst_rec(args[0], args[1], args[2], test_fn);
+}
+
+/* Recursive core of SUBLIS — same shape and GC-safety rules as subst_rec. */
+static CL_Obj sublis_rec(CL_Obj alist, CL_Obj tree, CL_Obj test_fn)
+{
+    CL_Obj al, car_r, cdr_r;
+    CL_Obj pair = CL_NIL;
+
+    CL_GC_PROTECT(alist);
+    CL_GC_PROTECT(tree);
+    CL_GC_PROTECT(test_fn);
+    CL_GC_PROTECT(pair);
+    al = alist;
+    CL_GC_PROTECT(al);
+
+    /* Check each alist entry against tree */
+    while (!CL_NULL_P(al)) {
+        pair = cl_car(al);
+        if (CL_CONS_P(pair)) {
+            if (!CL_NULL_P(call_test(test_fn, cl_car(pair), tree))) {
+                CL_Obj hit = cl_cdr(pair);
+                CL_GC_UNPROTECT(5);
+                return hit;
+            }
+        }
+        al = cl_cdr(al);
     }
-    CL_GC_UNPROTECT(4);
+
+    if (!CL_CONS_P(tree)) {
+        CL_GC_UNPROTECT(5);
+        return tree;
+    }
+
+    car_r = sublis_rec(alist, cl_car(tree), test_fn);
+    CL_GC_PROTECT(car_r);
+    cdr_r = sublis_rec(alist, cl_cdr(tree), test_fn);
+    CL_GC_UNPROTECT(6);
 
     if (car_r == cl_car(tree) && cdr_r == cl_cdr(tree))
         return tree;
@@ -378,62 +455,32 @@ static CL_Obj bi_subst(CL_Obj *args, int n)
 
 static CL_Obj bi_sublis(CL_Obj *args, int n)
 {
-    CL_Obj alist = args[0], tree = args[1];
     CL_Obj test_fn = extract_test_arg(args, n, 2);
-    CL_Obj pair, car_r, cdr_r;
-
-    /* Check each alist entry against tree */
-    {
-        CL_Obj al = alist;
-        while (!CL_NULL_P(al)) {
-            pair = cl_car(al);
-            if (CL_CONS_P(pair)) {
-                if (!CL_NULL_P(call_test(test_fn, cl_car(pair), tree)))
-                    return cl_cdr(pair);
-            }
-            al = cl_cdr(al);
-        }
-    }
-
-    if (!CL_CONS_P(tree))
-        return tree;
-
-    CL_GC_PROTECT(alist);
-    CL_GC_PROTECT(test_fn);
-
-    {
-        CL_Obj sub_args[4];
-        sub_args[0] = alist;
-        sub_args[1] = cl_car(tree);
-        if (n > 2) { sub_args[2] = args[2]; sub_args[3] = args[3]; }
-        car_r = bi_sublis(sub_args, n);
-    }
-    CL_GC_PROTECT(car_r);
-    {
-        CL_Obj sub_args[4];
-        sub_args[0] = alist;
-        sub_args[1] = cl_cdr(tree);
-        if (n > 2) { sub_args[2] = args[2]; sub_args[3] = args[3]; }
-        cdr_r = bi_sublis(sub_args, n);
-    }
-    CL_GC_UNPROTECT(3);
-
-    if (car_r == cl_car(tree) && cdr_r == cl_cdr(tree))
-        return tree;
-    return cl_cons(car_r, cdr_r);
+    return sublis_rec(args[0], args[1], test_fn);
 }
 
 static CL_Obj bi_adjoin(CL_Obj *args, int n)
 {
-    CL_Obj item = args[0], list = args[1];
-    CL_Obj test_fn = extract_test_arg(args, n, 2);
-    CL_Obj l;
+    CL_Obj item, list, test_fn, l;
 
-    /* Check if item is already a member */
-    for (l = list; !CL_NULL_P(l); l = cl_cdr(l)) {
-        if (!CL_NULL_P(call_test(test_fn, item, cl_car(l))))
+    /* GC SAFETY: same shape as bi_assoc — protect the C locals across
+     * every (potentially compacting) call_test. */
+    test_fn = extract_test_arg(args, n, 2);
+    item = args[0];
+    list = args[1];
+
+    CL_GC_PROTECT(item);
+    CL_GC_PROTECT(list);
+    CL_GC_PROTECT(test_fn);
+    l = list;
+    CL_GC_PROTECT(l);
+    for (; !CL_NULL_P(l); l = cl_cdr(l)) {
+        if (!CL_NULL_P(call_test(test_fn, item, cl_car(l)))) {
+            CL_GC_UNPROTECT(4);
             return list;
+        }
     }
+    CL_GC_UNPROTECT(4);
     return cl_cons(item, list);
 }
 
@@ -600,6 +647,8 @@ static CL_Obj bi_butlast(CL_Obj *args, int n)
 
         CL_GC_PROTECT(result);
         CL_GC_PROTECT(tail);
+        /* GC SAFETY: p is re-read after each cl_cons compaction. */
+        CL_GC_PROTECT(p);
 
         p = list;
         while (keep > 0) {
@@ -614,7 +663,7 @@ static CL_Obj bi_butlast(CL_Obj *args, int n)
             keep--;
         }
 
-        CL_GC_UNPROTECT(2);
+        CL_GC_UNPROTECT(3);
     }
     return result;
 }
