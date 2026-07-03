@@ -25,14 +25,41 @@
  * Exec Task).  The wrapper struct holds join synchronization state.
  * ================================================================ */
 
+/* Join/exit protocol.  The old protocol had four corruption bugs
+ * (GC/threading audit tier 1):
+ *
+ *  - amiga_thread_entry Signal()ed the parent through `at` AFTER
+ *    publishing finished=1, so a joiner that observed the flag via the
+ *    semaphore poll freed `at` (and FreeSignal'd the bit) while the
+ *    child was still about to read at->parent / at->join_sig — a
+ *    use-after-free, plus a stray Signal into whatever task later
+ *    reallocated that bit.
+ *  - join_sig was allocated in the CREATOR's task at create time.  A
+ *    join from any other task Wait()ed on a bit that was never going
+ *    to be signalled (hang), and its FreeSignal released a bit number
+ *    it never owned in its own task, corrupting that task's signal
+ *    allocation while leaking the creator's.
+ *  - platform_thread_detach leaked the AmigaThread struct AND the
+ *    creator's signal bit.  A task has ~16 free user signal bits, so a
+ *    few detached threads exhausted AllocSignal — after which every
+ *    platform_condvar_wait hit its sig<0 fallback (see condvar notes).
+ *
+ * New protocol: no signal bit at create time.  The JOINER allocates
+ * its own bit and registers (task, bit) in `at` under Forbid(); the
+ * child's exit path extracts them into locals under Forbid() — its
+ * very last access to `at` — and Signal()s using only the locals.
+ * On the single-core Amiga, Forbid() blocks preemption, so the joiner
+ * cannot observe finished=1 (and free `at`) until the child Permit()s.
+ * Detach hands `at` to whichever side finishes last. */
+
 typedef struct {
-    struct SignalSemaphore  join_sem;
     volatile int            finished;
+    volatile int            detached;
     void                   *result;
     void                  *(*func)(void *);
     void                   *arg;
-    struct Task            *parent;    /* for join signaling */
-    BYTE                    join_sig;  /* signal bit in parent */
+    struct Task            *joiner;    /* registered by platform_thread_join */
+    BYTE                    join_sig;  /* signal bit in JOINER's task */
     struct Process         *proc;
 } AmigaThread;
 
@@ -41,16 +68,28 @@ static void amiga_thread_entry(void)
 {
     struct Task *me = FindTask(NULL);
     AmigaThread *at = (AmigaThread *)me->tc_UserData;
+    struct Task *joiner_local;
+    BYTE sig_local;
+    int free_self;
 
     at->result = at->func(at->arg);
 
-    ObtainSemaphore(&at->join_sem);
+    /* Publish completion and take our last look at `at` atomically —
+     * after Permit() we touch only locals (the joiner may free `at`
+     * the moment it can run and observe finished). */
+    Forbid();
     at->finished = 1;
-    ReleaseSemaphore(&at->join_sem);
+    joiner_local = at->joiner;
+    sig_local    = at->join_sig;
+    free_self    = at->detached;
+    Permit();
 
-    /* Wake parent if waiting in join */
-    if (at->parent && at->join_sig >= 0)
-        Signal(at->parent, 1UL << at->join_sig);
+    if (free_self) {
+        /* Detached: nobody joins; we own the struct now. */
+        FreeVec(at);
+    } else if (joiner_local && sig_local >= 0) {
+        Signal(joiner_local, 1UL << sig_local);
+    }
 }
 
 int platform_thread_create(void **handle, void *(*func)(void *), void *arg,
@@ -62,18 +101,13 @@ int platform_thread_create(void **handle, void *(*func)(void *), void *arg,
     at = (AmigaThread *)AllocVec(sizeof(AmigaThread), MEMF_CLEAR);
     if (!at) return -1;
 
-    InitSemaphore(&at->join_sem);
     at->finished = 0;
+    at->detached = 0;
     at->result = NULL;
     at->func = func;
     at->arg = arg;
-    at->parent = FindTask(NULL);
-    at->join_sig = AllocSignal(-1);
-
-    if (at->join_sig < 0) {
-        FreeVec(at);
-        return -1;
-    }
+    at->joiner = NULL;
+    at->join_sig = -1;
 
     if (stack_size == 0) stack_size = 65536;
 
@@ -91,7 +125,6 @@ int platform_thread_create(void **handle, void *(*func)(void *), void *arg,
 
     if (!proc) {
         Permit();
-        FreeSignal(at->join_sig);
         FreeVec(at);
         return -1;
     }
@@ -109,36 +142,61 @@ int platform_thread_create(void **handle, void *(*func)(void *), void *arg,
 int platform_thread_join(void *handle, void **result)
 {
     AmigaThread *at = (AmigaThread *)handle;
+    BYTE sig = AllocSignal(-1);
+    int need_wait = 0;
 
-    /* Wait until child signals completion */
-    for (;;) {
-        ObtainSemaphore(&at->join_sem);
-        if (at->finished) {
-            ReleaseSemaphore(&at->join_sem);
-            break;
+    /* Register as the joiner (works from ANY task, not just the
+     * creator) and decide atomically whether the child already
+     * finished.  If no signal bit is free, degrade to a Delay() poll —
+     * correct, just coarser. */
+    Forbid();
+    if (!at->finished) {
+        if (sig < 0) {
+            while (!at->finished) {
+                Permit();
+                Delay(1);      /* give the child CPU time (1/50s tick) */
+                Forbid();
+            }
+        } else {
+            at->joiner   = FindTask(NULL);
+            at->join_sig = sig;
+            need_wait = 1;
         }
-        ReleaseSemaphore(&at->join_sem);
-        Wait(1UL << at->join_sig);
     }
+    Permit();
+
+    if (need_wait)
+        Wait(1UL << sig);   /* child's Signal() uses locals only */
+    if (sig >= 0)
+        FreeSignal(sig);    /* our own task's bit, consumed or unused */
 
     if (result) *result = at->result;
-
-    FreeSignal(at->join_sig);
     FreeVec(at);
     return 0;
 }
 
-/* AmigaOS detach: caller guarantees the worker is finished (status >= 2),
- * so amiga_thread_entry has already executed the post-Signal section by
- * the time the OS scheduler completes the process exit.  However, we have
- * no portable way to wait specifically for the process structure to be
- * reclaimed without joining, so we conservatively leak the AmigaThread
- * struct (small — ~32 bytes per detached thread) and the join signal.
- * This avoids any race where amiga_thread_entry's epilogue is still
- * touching `at` after we'd freed it. */
+/* Detach: hand `at` to whichever side finishes last.  If the child
+ * already published finished (its final access to `at`), free the
+ * struct here; otherwise mark it detached and the child frees it in
+ * its exit path.  Closes the old ~32-bytes + one-signal-bit leak per
+ * detached thread (the bit exhaustion starved every later condvar
+ * wait into its degraded fallback). */
 void platform_thread_detach(void *handle)
 {
-    (void)handle;
+    AmigaThread *at = (AmigaThread *)handle;
+    int free_now;
+
+    Forbid();
+    if (at->finished) {
+        free_now = 1;
+    } else {
+        at->detached = 1;
+        free_now = 0;
+    }
+    Permit();
+
+    if (free_now)
+        FreeVec(at);
 }
 
 void platform_thread_yield(void)
@@ -263,19 +321,34 @@ void platform_condvar_wait(void *handle, void *mutex)
     AmigaCondVar *cv = (AmigaCondVar *)handle;
     struct Task *me = FindTask(NULL);
     BYTE sig = AllocSignal(-1);
-    int idx;
+    int registered = 0;
 
-    if (sig < 0) return;  /* no signal bits available — degrade gracefully */
-
-    /* Register as waiter */
-    ObtainSemaphore(&cv->lock);
-    idx = cv->count;
-    if (idx < AMIGA_CV_MAX_WAITERS) {
-        cv->waiters[idx] = me;
-        cv->signals[idx] = sig;
-        cv->count++;
+    /* Degraded paths (no free signal bit / waiter table full) must
+     * behave like a SPURIOUS WAKEUP: release the mutex so the
+     * signalling side can make progress, yield, re-acquire, return.
+     * The old code returned WITHOUT releasing the mutex (sig < 0) or
+     * Wait()ed on a signal nobody would ever send (table full) —
+     * either way the caller's predicate loop then held the mutex
+     * forever and every signaller deadlocked (observed as a gc_mutex
+     * deadlock once detached threads had exhausted the signal bits). */
+    if (sig >= 0) {
+        ObtainSemaphore(&cv->lock);
+        if (cv->count < AMIGA_CV_MAX_WAITERS) {
+            cv->waiters[cv->count] = me;
+            cv->signals[cv->count] = sig;
+            cv->count++;
+            registered = 1;
+        }
+        ReleaseSemaphore(&cv->lock);
     }
-    ReleaseSemaphore(&cv->lock);
+
+    if (!registered) {
+        if (sig >= 0) FreeSignal(sig);
+        platform_mutex_unlock(mutex);
+        Delay(1);                      /* spurious wakeup, 1/50s backoff */
+        platform_mutex_lock(mutex);
+        return;
+    }
 
     /* Release the mutex, wait for signal, re-acquire mutex */
     platform_mutex_unlock(mutex);
@@ -290,63 +363,78 @@ int platform_condvar_wait_timeout(void *handle, void *mutex, uint32_t ms)
     AmigaCondVar *cv = (AmigaCondVar *)handle;
     struct Task *me = FindTask(NULL);
     BYTE sig = AllocSignal(-1);
-    BYTE timer_sig;
-    ULONG sigs;
-    int idx, timed_out = 0;
+    int registered = 0;
+    int got = 0;
     int i;
 
-    if (sig < 0) return 1;
-
-    /* Register as waiter */
-    ObtainSemaphore(&cv->lock);
-    idx = cv->count;
-    if (idx < AMIGA_CV_MAX_WAITERS) {
-        cv->waiters[idx] = me;
-        cv->signals[idx] = sig;
-        cv->count++;
+    if (sig >= 0) {
+        ObtainSemaphore(&cv->lock);
+        if (cv->count < AMIGA_CV_MAX_WAITERS) {
+            cv->waiters[cv->count] = me;
+            cv->signals[cv->count] = sig;
+            cv->count++;
+            registered = 1;
+        }
+        ReleaseSemaphore(&cv->lock);
     }
-    ReleaseSemaphore(&cv->lock);
+
+    if (!registered) {
+        /* Same spurious-wakeup degradation as platform_condvar_wait. */
+        if (sig >= 0) FreeSignal(sig);
+        platform_mutex_unlock(mutex);
+        Delay(ms / 20 + 1);
+        platform_mutex_lock(mutex);
+        return 1;
+    }
 
     platform_mutex_unlock(mutex);
 
-    /* Simple timed wait: use Delay() approximation.
-     * Proper timer.device usage would be more precise but much more code. */
-    timer_sig = AllocSignal(-1);
-    if (timer_sig >= 0) {
-        /* Poll with short delays — crude but functional */
+    /* Timed wait via a Delay() poll — crude but functional.  Track the
+     * signal in `got`: the old code re-tested SetSignal AFTER the loop,
+     * but the in-loop SetSignal had already CONSUMED the bit, so every
+     * wait that was signalled during the poll was misreported as a
+     * timeout. */
+    {
         uint32_t elapsed = 0;
         uint32_t step = ms < 50 ? ms : 50;  /* 50ms steps */
-        while (elapsed < ms) {
-            sigs = SetSignal(0, 1UL << sig);
-            if (sigs & (1UL << sig)) break;
+        for (;;) {
+            if (SetSignal(0, 1UL << sig) & (1UL << sig)) {
+                got = 1;
+                break;
+            }
+            if (elapsed >= ms) break;
             Delay(step / 20 + 1);  /* Delay() uses 1/50s ticks */
             elapsed += step;
         }
-        if (!(SetSignal(0, 1UL << sig) & (1UL << sig)))
-            timed_out = 1;
-        FreeSignal(timer_sig);
-    } else {
-        /* Fallback: just wait without timeout */
-        Wait(1UL << sig);
     }
 
-    /* Remove ourselves from waiter list if timed out */
-    if (timed_out) {
+    if (!got) {
+        /* Timed out — remove ourselves from the waiter list.  If we are
+         * NOT in the list, a signaller already popped us and Signal()ed
+         * (inside cv->lock, so the send completed before we got the
+         * lock): that wakeup targeted us and must not be dropped —
+         * consume it and report "signalled". */
+        int found = 0;
         ObtainSemaphore(&cv->lock);
         for (i = 0; i < cv->count; i++) {
             if (cv->waiters[i] == me && cv->signals[i] == sig) {
                 cv->count--;
                 cv->waiters[i] = cv->waiters[cv->count];
                 cv->signals[i] = cv->signals[cv->count];
+                found = 1;
                 break;
             }
         }
         ReleaseSemaphore(&cv->lock);
+        if (!found) {
+            Wait(1UL << sig);   /* delivered or in flight — consume it */
+            got = 1;
+        }
     }
 
     platform_mutex_lock(mutex);
     FreeSignal(sig);
-    return timed_out;
+    return got ? 0 : 1;
 }
 
 void platform_condvar_signal(void *handle)
